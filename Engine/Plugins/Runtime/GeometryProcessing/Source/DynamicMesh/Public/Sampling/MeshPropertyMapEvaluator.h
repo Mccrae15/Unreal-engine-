@@ -20,7 +20,8 @@ enum class EMeshPropertyMapType
 	FacetNormal = 3,
 	UVPosition = 4,
 	MaterialID = 5,
-	VertexColor = 6
+	VertexColor = 6,
+	PolyGroupID = 7
 };
 
 /**
@@ -52,6 +53,7 @@ public:
 	static void EvaluateDefault(float*& Out, void* EvalData);
 
 	static void EvaluateColor(const int DataIdx, float*& In, FVector4f& Out, void* EvalData);
+	static void EvaluateChannel(const int DataIdx, float*& In, float& Out, void* EvalData);
 
 protected:
 	// Cached data

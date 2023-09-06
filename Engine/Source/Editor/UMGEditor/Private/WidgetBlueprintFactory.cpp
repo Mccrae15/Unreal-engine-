@@ -8,6 +8,7 @@
 #include "WidgetBlueprint.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Modules/ModuleManager.h"
+#include "UMGEditorModule.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "UMGEditorProjectSettings.h"
@@ -56,6 +57,7 @@ UWidgetBlueprintFactory::UWidgetBlueprintFactory(const FObjectInitializer& Objec
 
 bool UWidgetBlueprintFactory::ConfigureProperties()
 {
+	if (GetDefault<UUMGEditorProjectSettings>()->bUseUserWidgetParentClassViewerSelector || GetDefault<UUMGEditorProjectSettings>()->bUseUserWidgetParentDefaultClassViewerSelector)
 	{
 		FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
 
@@ -65,11 +67,13 @@ bool UWidgetBlueprintFactory::ConfigureProperties()
 		Options.Mode = EClassViewerMode::ClassPicker;
 		Options.bShowNoneOption = false;
 		Options.bExpandAllNodes = true;
+		Options.bShowDefaultClasses = GetDefault<UUMGEditorProjectSettings>()->bUseUserWidgetParentDefaultClassViewerSelector;
+		Options.bShowClassesViewer = GetDefault<UUMGEditorProjectSettings>()->bUseUserWidgetParentClassViewerSelector;
 
 		TSharedPtr<FWidgetClassFilter> Filter = MakeShareable(new FWidgetClassFilter);
 		Options.ClassFilters.Add(Filter.ToSharedRef());
 
-		TArray<TSoftClassPtr<UUserWidget>> FavoriteWidgetParentClasses = GetDefault <UUMGEditorProjectSettings>()->FavoriteWidgetParentClasses;
+		const TArray<TSoftClassPtr<UUserWidget>>& FavoriteWidgetParentClasses = GetDefault<UUMGEditorProjectSettings>()->FavoriteWidgetParentClasses;
 		for (int32 Index = 0; Index < FavoriteWidgetParentClasses.Num(); ++Index)
 		{
 			UClass* FavoriteWidgetParentClass = FavoriteWidgetParentClasses[Index].LoadSynchronous();
@@ -87,7 +91,7 @@ bool UWidgetBlueprintFactory::ConfigureProperties()
 			Options.ExtraPickerCommonClasses.Add(UUserWidget::StaticClass());
 		}
 
-		Filter->DisallowedClassFlags = CLASS_Deprecated | CLASS_NewerVersionExists;
+		Filter->DisallowedClassFlags = CLASS_Deprecated | CLASS_NewerVersionExists | CLASS_Hidden | CLASS_HideDropDown;
 		Filter->AllowedChildrenOfClasses.Add(UUserWidget::StaticClass());
 
 		const FText TitleText = LOCTEXT("CreateWidgetBlueprint", "Pick Parent Class for New Widget Blueprint");
@@ -101,6 +105,7 @@ bool UWidgetBlueprintFactory::ConfigureProperties()
 			return false;
 		}
 	}
+
 	if (GetDefault<UUMGEditorProjectSettings>()->bUseWidgetTemplateSelector)
 	{
 		// Load the classviewer module to display a class picker
@@ -188,6 +193,15 @@ UObject* UWidgetBlueprintFactory::FactoryCreateNew(UClass* Class, UObject* InPar
 				UWidget* Root = NewBP->WidgetTree->ConstructWidget<UWidget>(RootWidgetPanel);
 				NewBP->WidgetTree->RootWidget = Root;
 			}
+		}
+
+		{
+			IUMGEditorModule::FWidgetBlueprintCreatedArgs Args;
+			Args.ParentClass = CurrentParentClass;
+			Args.Blueprint = NewBP;
+
+			IUMGEditorModule& UMGEditor = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
+			UMGEditor.OnWidgetBlueprintCreated().Broadcast(Args);
 		}
 
 		return NewBP;

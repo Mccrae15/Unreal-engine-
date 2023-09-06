@@ -36,9 +36,13 @@
 #include "Experimental/ChaosDerivedData.h"
 #include "Physics/Experimental/ChaosDerivedDataReader.h"
 #include "Chaos/CollisionConvexMesh.h"
-#include "Experimental/ChaosCooking.h"
+#include "PhysicsEngine/Experimental/ChaosCooking.h"
 #include "PhysicsEngine/SphylElem.h"
 #include "PhysicsEngine/TaperedCapsuleElem.h"
+
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BodySetup)
 
@@ -397,12 +401,8 @@ FByteBulkData* UBodySetup::GetCookedFormatData()
 
 void UBodySetup::CreatePhysicsMeshes()
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(UBodySetup::CreatePhysicsMeshes);
-
-	SCOPE_CYCLE_COUNTER(STAT_CreatePhysicsMeshes);
-
 	// Create meshes from cooked data if not already done
-	if(bCreatedPhysicsMeshes)
+	if (bCreatedPhysicsMeshes)
 	{
 		return;
 	}
@@ -412,6 +412,8 @@ void UBodySetup::CreatePhysicsMeshes()
 	{
 		return;
 	}
+
+	SCOPE_CYCLE_COUNTER(STAT_CreatePhysicsMeshes);
 	
 	bool bClearMeshes = true;
 	bool bSkipProcessFormatData = false;
@@ -1518,7 +1520,7 @@ void UBodySetup::CopyBodySetupProperty(const UBodySetup* Other)
 	BuildScale3D = Other->BuildScale3D;
 }
 
-EDataValidationResult UBodySetup::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult UBodySetup::IsDataValid(FDataValidationContext& Context) const
 {
 	EDataValidationResult Result = EDataValidationResult::Valid;
 
@@ -1526,7 +1528,7 @@ EDataValidationResult UBodySetup::IsDataValid(TArray<FText>& ValidationErrors)
 	int32 NumElements = AggGeom.GetElementCount();
 	if (NumElements == 0)
 	{
-		ValidationErrors.Add(FText::Format(LOCTEXT("UBodySetupHasNoCollision", "Bone {0} requires at least one collision shape"), FText::FromName(BoneName)));
+		Context.AddError(FText::Format(LOCTEXT("UBodySetupHasNoCollision", "Bone {0} requires at least one collision shape"), FText::FromName(BoneName)));
 		Result = EDataValidationResult::Invalid;
 	}
 
@@ -1547,7 +1549,7 @@ EDataValidationResult UBodySetup::IsDataValid(TArray<FText>& ValidationErrors)
 		
 		if (NumMassContributors == 0)
 		{
-			ValidationErrors.Add(FText::Format(LOCTEXT("UBodySetupHasNoMass", "Bone {0} requires at least one shape with 'Contribute to Mass' set to 'true'"), FText::FromName(BoneName)));
+			Context.AddError(FText::Format(LOCTEXT("UBodySetupHasNoMass", "Bone {0} requires at least one shape with 'Contribute to Mass' set to 'true'"), FText::FromName(BoneName)));
 			Result = EDataValidationResult::Invalid;
 		}
 	}
@@ -2275,6 +2277,14 @@ void FKLevelSetElem::ScaleElem(FVector DeltaSize, float MinSize)
 	FTransform ScaledTransform = GetTransform();
 	ScaledTransform.SetScale3D(ScaledTransform.GetScale3D() + DeltaSize);
 	SetTransform(ScaledTransform);
+}
+
+
+/** Helper function to safely copy instances of this shape*/
+void FKSkinnedLevelSetElem::CloneElem(const FKSkinnedLevelSetElem& Other)
+{
+	Super::CloneElem(Other);
+	WeightedLevelSet = Other.WeightedLevelSet;
 }
 
 #if WITH_EDITOR

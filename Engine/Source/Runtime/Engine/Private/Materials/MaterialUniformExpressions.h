@@ -83,7 +83,7 @@ public:
 	FMaterialUniformExpressionTexture();
 	FMaterialUniformExpressionTexture(int32 InTextureIndex, EMaterialSamplerType InSamplerType, ESamplerSourceMode InSamplerSource, bool InVirtualTexture);
 	FMaterialUniformExpressionTexture(int32 InTextureIndex, int16 InTextureLayerIndex, int16 InPageTableLayerIndex, EMaterialSamplerType InSamplerType);
-	FMaterialUniformExpressionTexture(int32 InTextureIndex, int16 InSubTextureIndex, EMaterialSamplerType InSamplerType);
+	FMaterialUniformExpressionTexture(int32 InTextureIndex, EMaterialSamplerType InSamplerType);
 
 	//~ Begin FMaterialUniformExpression Interface.
 	virtual class FMaterialUniformExpressionTexture* GetTextureUniformExpression() { return this; }
@@ -409,8 +409,8 @@ public:
 		, ParameterInfo(InParameterInfo)
 	{}
 
-	FMaterialUniformExpressionTextureParameter(const FMaterialParameterInfo& InParameterInfo, int32 InTextureIndex, int16 InSubTextureIndex, EMaterialSamplerType InSamplerType)
-		: Super(InTextureIndex, InSubTextureIndex, InSamplerType)
+	FMaterialUniformExpressionTextureParameter(const FMaterialParameterInfo& InParameterInfo, int32 InTextureIndex, EMaterialSamplerType InSamplerType)
+		: Super(InTextureIndex, InSamplerType)
 		, ParameterInfo(InParameterInfo)
 	{}
 
@@ -753,6 +753,119 @@ private:
 	TRefCountPtr<FMaterialUniformExpression> X;
 };
 
+/**
+ */
+class FMaterialUniformExpressionExponential : public FMaterialUniformExpression
+{
+	DECLARE_MATERIALUNIFORMEXPRESSION_TYPE(FMaterialUniformExpressionExponential);
+public:
+
+	FMaterialUniformExpressionExponential()
+	{}
+	FMaterialUniformExpressionExponential(FMaterialUniformExpression* InX) :
+		X(InX)
+	{}
+
+	// FMaterialUniformExpression interface.
+	virtual void WriteNumberOpcodes(UE::Shader::FPreshaderData& OutData) const override
+	{
+		X->WriteNumberOpcodes(OutData);
+		OutData.WriteOpcode(UE::Shader::EPreshaderOpcode::Exp);
+	}
+	bool IsConstant() const override
+	{
+		return X->IsConstant();
+	}
+	bool IsIdentical(const FMaterialUniformExpression* OtherExpression) const override
+	{
+		if(GetType() != OtherExpression->GetType())
+		{
+			return false;
+		}
+
+		const FMaterialUniformExpressionExponential* OtherExp = static_cast<const FMaterialUniformExpressionExponential*>(OtherExpression);
+		return X->IsIdentical(OtherExp->X);
+	}
+
+private:
+	TRefCountPtr<FMaterialUniformExpression> X;
+};
+
+/**
+ */
+class FMaterialUniformExpressionExponential2 : public FMaterialUniformExpression
+{
+	DECLARE_MATERIALUNIFORMEXPRESSION_TYPE(FMaterialUniformExpressionExponential2);
+public:
+
+	FMaterialUniformExpressionExponential2()
+	{}
+	FMaterialUniformExpressionExponential2(FMaterialUniformExpression* InX) :
+		X(InX)
+	{}
+
+	// FMaterialUniformExpression interface.
+	virtual void WriteNumberOpcodes(UE::Shader::FPreshaderData& OutData) const override
+	{
+		X->WriteNumberOpcodes(OutData);
+		OutData.WriteOpcode(UE::Shader::EPreshaderOpcode::Exp2);
+	}
+	bool IsConstant() const override
+	{
+		return X->IsConstant();
+	}
+	bool IsIdentical(const FMaterialUniformExpression* OtherExpression) const override
+	{
+		if(GetType() != OtherExpression->GetType())
+		{
+			return false;
+		}
+
+		const FMaterialUniformExpressionExponential2* OtherExp2= static_cast<const FMaterialUniformExpressionExponential2*>(OtherExpression);
+		return X->IsIdentical(OtherExp2->X);
+	}
+
+private:
+	TRefCountPtr<FMaterialUniformExpression> X;
+};
+
+/**
+ */
+class FMaterialUniformExpressionLogarithm : public FMaterialUniformExpression
+{
+	DECLARE_MATERIALUNIFORMEXPRESSION_TYPE(FMaterialUniformExpressionLogarithm);
+public:
+
+	FMaterialUniformExpressionLogarithm()
+	{}
+	FMaterialUniformExpressionLogarithm(FMaterialUniformExpression* InX) :
+		X(InX)
+	{}
+
+	// FMaterialUniformExpression interface.
+	virtual void WriteNumberOpcodes(UE::Shader::FPreshaderData& OutData) const override
+	{
+		X->WriteNumberOpcodes(OutData);
+		OutData.WriteOpcode(UE::Shader::EPreshaderOpcode::Log);
+	}
+	bool IsConstant() const override
+	{
+		return X->IsConstant();
+	}
+	bool IsIdentical(const FMaterialUniformExpression* OtherExpression) const override
+	{
+		if(GetType() != OtherExpression->GetType())
+		{
+			return false;
+		}
+
+		const FMaterialUniformExpressionLogarithm* OtherLog = static_cast<const FMaterialUniformExpressionLogarithm*>(OtherExpression);
+		return X->IsIdentical(OtherLog->X);
+	}
+
+private:
+	TRefCountPtr<FMaterialUniformExpression> X;
+};
 
 /**
  */

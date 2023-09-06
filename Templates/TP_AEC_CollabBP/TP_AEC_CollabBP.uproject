@@ -40,14 +40,7 @@
 			]
 		},
 		{
-			"Name": "DatasmithIFCImporter",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64"
-			]
-		},
-		{
-			"Name": "DatasmithGLTFImporter",
+			"Name": "InterchangeEditor",
 			"Enabled": true
 		},
 		{
@@ -69,22 +62,6 @@
 				"Linux",
 				"Android",
 				"HoloLens"
-			]
-		},
-		{
-			"Name": "OculusVR",
-			"Enabled": false,
-			"SupportedTargetPlatforms": [
-				"Win32",
-				"Win64"
-			]
-		},
-		{
-			"Name": "SteamVR",
-			"Enabled": false,
-			"SupportedTargetPlatforms": [
-				"Win32",
-				"Win64"
 			]
 		}
 	]

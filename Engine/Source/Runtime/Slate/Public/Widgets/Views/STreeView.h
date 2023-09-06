@@ -119,7 +119,6 @@ public:
 		, _OnGeneratePinnedRow()
 		, _OnGetChildren()
 		, _OnSetExpansionRecursive()
-		, _TreeItemsSource( static_cast< const TArray<ItemType>* >(nullptr) ) //@todo Slate Syntax: Initializing from nullptr without a cast
 		, _ItemHeight(16)
 		, _MaxPinnedItems(6) // Having more than the max amount of items leads to the extra items in the middle being collapsed into ellipses, and the last item is fully shown
 		, _OnContextMenuOpening()
@@ -166,7 +165,7 @@ public:
 
 		SLATE_EVENT( FOnSetExpansionRecursive, OnSetExpansionRecursive )
 
-		SLATE_ARGUMENT( const TArray<ItemType>*, TreeItemsSource )
+		SLATE_ITEMS_SOURCE_ARGUMENT( ItemType, TreeItemsSource )
 
 		SLATE_ATTRIBUTE( float, ItemHeight )
 
@@ -225,6 +224,9 @@ public:
 
 		/** If true, Show the current hierarchy of items pinned at the top of the Tree View */
 		SLATE_ATTRIBUTE(bool, ShouldStackHierarchyHeaders)
+	
+		/** Callback delegate to have first chance handling of the OnKeyDown event */
+		SLATE_EVENT(FOnKeyDown, OnKeyDownHandler)
 
 	SLATE_END_ARGS()
 
@@ -244,8 +246,10 @@ public:
 		this->OnItemScrolledIntoView = InArgs._OnItemScrolledIntoView;
 		this->OnGetChildren = InArgs._OnGetChildren;
 		this->OnSetExpansionRecursive = InArgs._OnSetExpansionRecursive;
-		this->TreeItemsSource = InArgs._TreeItemsSource;
 
+		this->SetRootItemsSource(InArgs.MakeTreeItemsSource(this->SharedThis(this)));
+
+		this->OnKeyDownHandler = InArgs._OnKeyDownHandler;
 		this->OnContextMenuOpening = InArgs._OnContextMenuOpening;
 		this->OnClick = InArgs._OnMouseButtonClick;
 		this->OnDoubleClick = InArgs._OnMouseButtonDoubleClick;
@@ -290,7 +294,7 @@ public:
 				ErrorString += TEXT("Please specify an OnGenerateRow. \n");
 			}
 
-			if ( this->TreeItemsSource == nullptr )
+			if (!this->HasValidRootItemsSource())
 			{
 				ErrorString += TEXT("Please specify a TreeItemsSource. \n");
 			}
@@ -327,18 +331,26 @@ public:
 	/** Default constructor. */
 	STreeView()
 		: SListView< ItemType >( ETableViewMode::Tree )
-		, TreeItemsSource( nullptr )
 		, bTreeItemsAreDirty( true )
 	{
-		this->SetItemsSource(&LinearizedItems);
+		SListView<ItemType>::SetItemsSource(&LinearizedItems);
 	}
 
 public:
 
-	// SWidget overrides
+	//~ SWidget overrides
 
 	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override
 	{
+		if (this->OnKeyDownHandler.IsBound())
+		{
+			FReply Reply = this->OnKeyDownHandler.Execute(MyGeometry, InKeyEvent);
+			if (Reply.IsEventHandled())
+			{
+				return Reply;
+			}
+		}
+		
 		// Check for selection/expansion toggling keys (Left, Right)
 		// SelectorItem represents the keyboard selection. If it isn't valid then we don't know what to expand.
 		// Don't respond to key-presses containing "Alt" as a modifier
@@ -405,13 +417,13 @@ public:
 			}
 		}
 
-		return SListView<ItemType>::OnKeyDown(MyGeometry, InKeyEvent);
+		return SListView<ItemType>::OnKeyDown_Internal(MyGeometry, InKeyEvent);
 	}
 	
 private:
 
-	// Tree View adds the ability to expand/collapse items.
-	// All the selection functionality is inherited from ListView.
+	//~ Tree View adds the ability to expand/collapse items.
+	//~ All the selection functionality is inherited from ListView.
 
 	virtual bool Private_IsItemExpanded( const ItemType& TheItem ) const override
 	{
@@ -552,7 +564,7 @@ public:
 				// We are about to repopulate linearized items; the ListView that TreeView is built on top of will also need to refresh.
 				bTreeItemsAreDirty = false;
 
-				if ( OnGetChildren.IsBound() && TreeItemsSource != nullptr )								
+				if ( OnGetChildren.IsBound() && HasValidRootItemsSource() )
 				{
 					// We make copies of the old expansion and selection sets so that we can remove
 					// any items that are no longer seen by the tree.
@@ -562,7 +574,7 @@ public:
 					
 					// Rebuild the linearized view of the tree data.
 					LinearizedItems.Empty();
-					PopulateLinearizedItems( *TreeItemsSource, LinearizedItems, TempDenseItemInfos, TBitArray<>(), TempSelectedItemsMap, TempSparseItemInfo, true, INDEX_NONE );
+					PopulateLinearizedItems(GetRootItems(), LinearizedItems, TempDenseItemInfos, TBitArray<>(), TempSelectedItemsMap, TempSparseItemInfo, true, INDEX_NONE);
 
 					if( !bAllowInvisibleItemSelection &&
 						(this->SelectedItems.Num() != TempSelectedItemsMap.Num() ||
@@ -625,9 +637,9 @@ public:
 	 * @return true if we encountered expanded children; false otherwise.
 	 */
 	bool PopulateLinearizedItems(
-		const TArray<ItemType>& InItemsSource,
-		TArray< ItemType >& InLinearizedItems,
-		TArray< FItemInfo >& NewDenseItemInfos,
+		TArrayView<const ItemType> InItemsSource,
+		TArray<ItemType>& InLinearizedItems,
+		TArray<FItemInfo>& NewDenseItemInfos,
 		TBitArray<> NeedsParentWire,
 		TItemSet& OutNewSelectedItems,
 		TSparseItemMap& NewSparseItemInfo,
@@ -886,16 +898,105 @@ public:
 		return Private_IsItemExpanded( InItem );
 	}
 
-		
+public:
+	//~ Hide the base function from SListView 
+	UE_DEPRECATED(5.3, "SetItemsSource is deprecated. You probably want to use SetTreeItemsSource.")
+	void SetItemsSource(const TArray<ItemType>* InListItemsSource)
+	{
+		SListView<ItemType>::SetItemsSource(InListItemsSource);
+	}
+	UE_DEPRECATED(5.3, "SetItemsSource is deprecated. You probably want to use SetTreeItemsSource.")
+	void SetItemsSource(TSharedRef<::UE::Slate::Containers::TObservableArray<ItemType>> InListItemsSource)
+	{
+		SListView<ItemType>::SetItemsSource(InListItemsSource);
+	}
+	UE_DEPRECATED(5.3, "SetItemsSource is deprecated. You probably want to use SetTreeItemsSource.")
+	void SetItemsSource(TUniquePtr<UE::Slate::ItemsSource::IItemsSource<ItemType>> Provider)
+	{
+		SListView<ItemType>::SetItemsSource(MoveTemp(Provider));
+	}
+	UE_DEPRECATED(5.3, "ClearItemsSource is deprecated. You probably want to use ClearRootItemsSource.")
+	void ClearItemsSource()
+	{
+		SListView<ItemType>::ClearItemsSource();
+	}
+	UE_DEPRECATED(5.3, "HasValidItemsSource is deprecated. You probably want to use HasValidRootItemsSource.")
+	bool HasValidItemsSource() const
+	{
+		return SListView<ItemType>::HasValidItemsSource();
+	}
+	UE_DEPRECATED(5.3, "GetItems is deprecated. You probably want to use GetRootItems.")
+	TArrayView<const ItemType> GetItems() const
+	{
+		return SListView<ItemType>::GetItems();
+	}
+
+public:
+
 	/**
 	 * Set the TreeItemsSource. The Tree will generate widgets to represent these items.
-	 *
 	 * @param InItemsSource  A pointer to the array of items that should be observed by this TreeView.
 	 */
 	void SetTreeItemsSource( const TArray<ItemType>* InItemsSource)
 	{
-		TreeItemsSource = InItemsSource;
+		SetRootItemsSource(InItemsSource);
+	}
+
+	/**
+	 * Set the Root items. The tree will generate widgets to represent these items.
+	 * @param InItemsSource  A pointer to the array of items that should be observed by this TreeView.
+	 */
+	void SetRootItemsSource(const TArray<ItemType>* InItemsSource)
+	{
+		ensureMsgf(InItemsSource, TEXT("The TreeItemsSource is invalid."));
+		if (TreeViewSource == nullptr || !TreeViewSource->IsSame(reinterpret_cast<const void*>(InItemsSource)))
+		{
+			if (InItemsSource)
+			{
+				SetRootItemsSource(MakeUnique<UE::Slate::ItemsSource::FArrayPointer<ItemType>>(InItemsSource));
+			}
+			else
+			{
+				ClearRootItemsSource();
+			}
+		}
+	}
+
+	/**
+	 * Set the RootItemsSource. The tree will generate widgets to represent these items.
+	 * @param InItemsSource  A pointer to the array of items that should be observed by this TreeView.
+	 */
+	void SetRootItemsSource(TSharedRef<UE::Slate::Containers::TObservableArray<ItemType>> InItemsSource)
+	{
+		if (TreeViewSource == nullptr || !TreeViewSource->IsSame(reinterpret_cast<const void*>(&InItemsSource.Get())))
+		{
+			SetRootItemsSource(MakeUnique<UE::Slate::ItemsSource::FSharedObservableArray<ItemType>>(this->SharedThis(this), MoveTemp(InItemsSource)));
+		}
+	}
+
+	/**
+	 * Establishes a new list of root items being observed by the list.
+	 * Wipes all existing state and requests and will fully rebuild on the next tick.
+	 */
+	void SetRootItemsSource(TUniquePtr<UE::Slate::ItemsSource::IItemsSource<ItemType>> Provider)
+	{
+		TreeViewSource = MoveTemp(Provider);
 		RequestTreeRefresh();
+	}
+
+	void ClearRootItemsSource()
+	{
+		SetRootItemsSource(TUniquePtr<UE::Slate::ItemsSource::IItemsSource<ItemType>>());
+	}
+
+	bool HasValidRootItemsSource() const
+	{
+		return TreeViewSource != nullptr;
+	}
+
+	TArrayView<const ItemType> GetRootItems() const
+	{
+		return TreeViewSource ? TreeViewSource->GetItems() : TArrayView<const ItemType>();
 	}
 
 	/**
@@ -950,6 +1051,7 @@ protected:
 	/** The delegate that is invoked to recursively expand/collapse a tree items children. */
 	FOnSetExpansionRecursive OnSetExpansionRecursive;
 
+	UE_DEPRECATED(5.3, "Protected access to TreeItemsSource is deprecated. Please use GetTreeItems, SetTreeItemsSource or HasValidTreeItemsSource.")
 	/** A pointer to the items being observed by the tree view. */
 	const TArray<ItemType>* TreeItemsSource;		
 		
@@ -972,6 +1074,8 @@ protected:
 	const FTableViewStyle* Style;
 
 private:		
+	/** Pointer to the source data that we are observing */
+	TUniquePtr<UE::Slate::ItemsSource::IItemsSource<ItemType>> TreeViewSource;
 
 	/** true when the LinearizedItems need to be regenerated. */
 	bool bTreeItemsAreDirty = false;

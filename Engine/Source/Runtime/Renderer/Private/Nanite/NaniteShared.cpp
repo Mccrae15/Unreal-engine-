@@ -16,8 +16,8 @@ IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FNaniteUniformParameters, "Nanite", Nanit
 IMPLEMENT_STATIC_UNIFORM_BUFFER_SLOT(NaniteRayTracing);
 IMPLEMENT_STATIC_AND_SHADER_UNIFORM_BUFFER_STRUCT(FNaniteRayTracingUniformParameters, "NaniteRayTracing", NaniteRayTracing);
 
-extern float GNaniteMaxPixelsPerEdge;
-extern float GNaniteMinPixelsPerEdgeHW;
+extern TAutoConsoleVariable<float> CVarNaniteMaxPixelsPerEdge;
+extern TAutoConsoleVariable<float> CVarNaniteMinPixelsPerEdgeHW;
 
 // Optimized compute dual depth export pass on supported platforms.
 int32 GNaniteExportDepth = 1;
@@ -52,6 +52,22 @@ FAutoConsoleVariableRef CVarNaniteMaxVisibleClusters(
 	ECVF_RenderThreadSafe
 );
 
+int32 GNaniteMaxCandidatePatches = 2 * 1048576;
+FAutoConsoleVariableRef CVarNaniteMaxCandidatePatches(
+	TEXT("r.Nanite.MaxCandidatePatches"),
+	GNaniteMaxCandidatePatches,
+	TEXT("Maximum number of Nanite patches considered for splitting."),
+	ECVF_RenderThreadSafe
+);
+
+int32 GNaniteMaxVisiblePatches = 2 * 1048576;
+FAutoConsoleVariableRef CVarNaniteMaxVisiblePatches(
+	TEXT("r.Nanite.MaxVisiblePatches"),
+	GNaniteMaxVisiblePatches,
+	TEXT("Maximum number of visible Nanite patches."),
+	ECVF_RenderThreadSafe
+);
+
 #define MAX_CLUSTERS	(16 * 1024 * 1024)
 
 
@@ -68,17 +84,6 @@ void FPackedView::UpdateLODScales(const float NaniteMaxPixelsPerEdge, const floa
 	LODScales = FVector2f(LODScale, LODScaleHW);
 }
 
-FMatrix44f FPackedView::CalcTranslatedWorldToSubpixelClip(const FMatrix44f& TranslatedWorldToClip, const FIntRect& ViewRect)
-{
-	const FVector2f SubpixelScale = FVector2f(0.5f * ViewRect.Width() * NANITE_SUBPIXEL_SAMPLES,
-		-0.5f * ViewRect.Height() * NANITE_SUBPIXEL_SAMPLES);
-
-	const FVector2f SubpixelOffset = FVector2f((0.5f * ViewRect.Width() + ViewRect.Min.X) * NANITE_SUBPIXEL_SAMPLES,
-		(0.5f * ViewRect.Height() + ViewRect.Min.Y) * NANITE_SUBPIXEL_SAMPLES);
-
-	return TranslatedWorldToClip * FScaleMatrix44f(FVector3f(SubpixelScale, 1.0f))* FTranslationMatrix44f(FVector3f(SubpixelOffset, 0.0f));
-}
-
 
 FPackedView CreatePackedView( const FPackedViewParams& Params )
 {
@@ -93,15 +98,14 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 	const FIntRect& ViewRect = Params.ViewRect;
 	const FVector4f ViewSizeAndInvSize(ViewRect.Width(), ViewRect.Height(), 1.0f / float(ViewRect.Width()), 1.0f / float(ViewRect.Height()));
 
-	const float NaniteMaxPixelsPerEdge = GNaniteMaxPixelsPerEdge * Params.MaxPixelsPerEdgeMultipler;
-	const float NaniteMinPixelsPerEdgeHW = GNaniteMinPixelsPerEdgeHW;
+	const float NaniteMaxPixelsPerEdge = CVarNaniteMaxPixelsPerEdge.GetValueOnRenderThread() * Params.MaxPixelsPerEdgeMultipler;
+	const float NaniteMinPixelsPerEdgeHW = CVarNaniteMinPixelsPerEdgeHW.GetValueOnRenderThread();
 	const FVector3f ViewTilePosition = AbsoluteViewOrigin.GetTile();
 	const FVector DrawDistanceOrigin = Params.bOverrideDrawDistanceOrigin ? Params.DrawDistanceOrigin : Params.ViewMatrices.GetViewOrigin();
 
 	FPackedView PackedView;
 	PackedView.TranslatedWorldToView		= FMatrix44f(Params.ViewMatrices.GetOverriddenTranslatedViewMatrix());	// LWC_TODO: Precision loss? (and below)
 	PackedView.TranslatedWorldToClip		= FMatrix44f(Params.ViewMatrices.GetTranslatedViewProjectionMatrix());
-	PackedView.TranslatedWorldToSubpixelClip= FPackedView::CalcTranslatedWorldToSubpixelClip(PackedView.TranslatedWorldToClip, Params.ViewRect);
 	PackedView.ViewToClip					= RelativeMatrices.ViewToClip;
 	PackedView.ClipToRelativeWorld			= RelativeMatrices.ClipToRelativeWorld;
 	PackedView.RelativePreViewTranslation	= FVector3f(Params.ViewMatrices.GetPreViewTranslation() + ViewTileOffset);
@@ -165,6 +169,36 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 
 }
 
+FPackedViewArray* FPackedViewArray::Create(FRDGBuilder& GraphBuilder, const FPackedView& View)
+{
+	FPackedViewArray* ViewArray = GraphBuilder.AllocObject<FPackedViewArray>(1, 1);
+	ViewArray->Views.Add(View);
+	return ViewArray;
+}
+
+FPackedViewArray* FPackedViewArray::Create(FRDGBuilder& GraphBuilder, uint32 NumPrimaryViews, uint32 MaxNumMips, ArrayType&& View)
+{
+	FPackedViewArray* ViewArray = GraphBuilder.AllocObject<FPackedViewArray>(NumPrimaryViews, MaxNumMips);
+	ViewArray->Views = Forward<ArrayType&&>(View);
+	checkf(ViewArray->Views.Num() == ViewArray->NumViews, TEXT("Expected View array to have %d elements, but it only has %d"), ViewArray->Views.Num(), ViewArray->NumViews);
+	return ViewArray;
+}
+
+FPackedViewArray* FPackedViewArray::CreateWithSetupTask(FRDGBuilder& GraphBuilder, uint32 NumPrimaryViews, uint32 MaxNumMips, TaskLambdaType&& TaskLambda, UE::Tasks::FPipe* Pipe, bool bExecuteInTask)
+{
+	FPackedViewArray* ViewArray = GraphBuilder.AllocObject<FPackedViewArray>(NumPrimaryViews, MaxNumMips);
+
+	ViewArray->SetupTask = GraphBuilder.AddSetupTask([ViewArray, TaskLambda = MoveTemp(TaskLambda)]
+	{
+		ViewArray->Views.Reserve(ViewArray->NumViews);
+		TaskLambda(ViewArray->Views);
+		checkf(ViewArray->Views.Num() == ViewArray->NumViews, TEXT("Expected View array to have %d elements, but it only has %d"), ViewArray->Views.Num(), ViewArray->NumViews);
+
+	}, Pipe, UE::Tasks::ETaskPriority::Normal, bExecuteInTask);
+
+	return ViewArray;
+}
+
 FPackedView CreatePackedViewFromViewInfo
 (
 	const FViewInfo& View,
@@ -177,6 +211,7 @@ FPackedView CreatePackedViewFromViewInfo
 	const FIntRect* InHZBTestViewRect
 )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(CreatePackedViewFromViewInfo);
 	FPackedViewParams Params;
 	Params.ViewMatrices = View.ViewMatrices;
 	Params.PrevViewMatrices = View.PrevViewInfo.ViewMatrices;
@@ -193,7 +228,13 @@ FPackedView CreatePackedViewFromViewInfo
 	return CreatePackedView(Params);
 }
 
-void FGlobalResources::InitRHI()
+bool ShouldDrawSceneViewsInOneNanitePass(const FViewInfo& View)
+{
+	static const TConsoleVariableData<int32>* CVarDrawSceneViewsInOneNanitePass = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Nanite.MultipleSceneViewsInOnePass"));
+	return View.bIsMultiViewportEnabled && CVarDrawSceneViewsInOneNanitePass && (CVarDrawSceneViewsInOneNanitePass->GetValueOnRenderThread() > 0);
+}
+
+void FGlobalResources::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	if (DoesPlatformSupportNanite(GMaxRHIShaderPlatform))
 	{
@@ -222,12 +263,16 @@ void FGlobalResources::ReleaseRHI()
 
 		PickingBuffers.Reset();
 
+		SplitWorkQueueBuffer.SafeRelease();
+		OccludedPatchesBuffer.SafeRelease();
+
 		MainPassBuffers.StatsRasterizeArgsSWHWBuffer.SafeRelease();
 		PostPassBuffers.StatsRasterizeArgsSWHWBuffer.SafeRelease();
 
 		MainAndPostNodesAndClusterBatchesBuffer.Buffer.SafeRelease();
 
 		StatsBuffer.SafeRelease();
+		ShadingBinMetaBuffer.SafeRelease();
 
 #if !UE_BUILD_SHIPPING
 		delete FeedbackManager;
@@ -243,7 +288,7 @@ void FGlobalResources::Update(FRDGBuilder& GraphBuilder)
 
 uint32 FGlobalResources::GetMaxCandidateClusters()
 {
-	checkf(GNaniteMaxCandidateClusters <= MAX_CLUSTERS, TEXT("r.Nanite.MaxCandidateClusters must be <= MAX_CLUSTERS"));
+	// NOTE: Candidate clusters can currently be allowed to exceed MAX_CLUSTERS
 	const uint32 MaxCandidateClusters = GNaniteMaxCandidateClusters & -NANITE_PERSISTENT_CLUSTER_CULLING_GROUP_SIZE;
 	return MaxCandidateClusters;
 }
@@ -264,6 +309,16 @@ uint32 FGlobalResources::GetMaxVisibleClusters()
 uint32 FGlobalResources::GetMaxNodes()
 {
 	return GNaniteMaxNodes & -NANITE_MAX_BVH_NODES_PER_GROUP;
+}
+
+uint32 FGlobalResources::GetMaxCandidatePatches()
+{
+	return GNaniteMaxCandidatePatches;
+}
+
+uint32 FGlobalResources::GetMaxVisiblePatches()
+{
+	return GNaniteMaxVisiblePatches;
 }
 
 TGlobalResource< FGlobalResources > GGlobalResources;

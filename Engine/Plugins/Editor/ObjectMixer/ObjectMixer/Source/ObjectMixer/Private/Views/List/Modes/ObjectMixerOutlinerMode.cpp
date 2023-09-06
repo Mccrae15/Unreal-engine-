@@ -9,6 +9,7 @@
 #include "Views/List/Modes/ObjectMixerOutlinerHierarchy.h"
 #include "Views/List/Modes/SFilterClassMenuItem.h"
 #include "Views/List/ObjectMixerUtils.h"
+#include "Views/List/RowTypes/ObjectMixerEditorListRowActor.h"
 #include "Views/Widgets/ObjectMixerEditorListMenuContext.h"
 
 #include "ActorDescTreeItem.h"
@@ -59,7 +60,6 @@
 #include "WorldPartition/IWorldPartitionEditorModule.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 
 static int32 GSceneOutlinerAutoRepresentingWorldNetModeForObjectMixer = NM_Client;
 static FAutoConsoleVariableRef CVarAutoRepresentingWorldNetMode(
@@ -321,23 +321,7 @@ FObjectMixerOutlinerMode::FObjectMixerOutlinerMode(
 			FObjectMixerOutlinerModeConfig* Settings = GetMutableConfig();
 			if (Settings && Settings->bShowOnlyActorsInCurrentDataLayers)
 			{
-				const UDataLayerSubsystem* DataLayerSubsystem = RepresentingWorld.IsValid() ? RepresentingWorld->GetSubsystem<UDataLayerSubsystem>() : nullptr;
-				if (!DataLayerSubsystem || DataLayerSubsystem->GetActorEditorContextDataLayers().IsEmpty())
-				{
-					return true;
-				}
-				
-				for (const FName& DataLayerInstanceName : ActorDesc->GetDataLayerInstanceNames())
-				{
-					if (const UDataLayerInstance* const DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerInstanceName))
-					{
-						if (DataLayerInstance->IsInActorEditorContext())
-						{
-							return true;
-						}
-					}
-				}
-				return false;
+				return true;
 			}
 			return true;
 		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
@@ -471,7 +455,7 @@ FObjectMixerOutlinerMode::FObjectMixerOutlinerMode(
 		{
 			const TSet<FName>& SelectedCollections = ListModel->GetSelectedCollections();
 
-			if (SelectedCollections.Num() == 0)
+			if (SelectedCollections.Num() == 0 || (SelectedCollections.Num() == 1 && SelectedCollections.Find("All")))
 			{
 				// "All" collection selected
 				return true;
@@ -823,7 +807,8 @@ void FObjectMixerOutlinerMode::OnActorLabelChanged(AActor* ChangedActor)
 	if (IsActorDisplayable(ChangedActor) && RepresentingWorld.Get() == ChangedActor->GetWorld())
 	{
 		// Force create the item otherwise the outliner may not be notified of a change to the item if it is filtered out
-		if (FSceneOutlinerTreeItemPtr Item = CreateItemFor<FActorTreeItem>(ChangedActor, true))
+		if (FSceneOutlinerTreeItemPtr Item = CreateItemFor<FObjectMixerEditorListRowActor>(
+			FObjectMixerEditorListRowActor(ChangedActor, GetSceneOutliner()), true))
 		{
 			SceneOutliner->OnItemLabelChanged(Item);
 		}
@@ -837,7 +822,8 @@ void FObjectMixerOutlinerMode::OnObjectsReplaced(const TMap<UObject*, UObject*>&
 		AActor* Actor = Cast<AActor>(Pair.Value);
 		if (Actor && RepresentingWorld.Get() == Actor->GetWorld() && IsActorDisplayable(Actor))
 		{
-			if (FSceneOutlinerTreeItemPtr Item = CreateItemFor<FActorTreeItem>(Actor, true))
+			if (FSceneOutlinerTreeItemPtr Item = CreateItemFor<FObjectMixerEditorListRowActor>(
+				FObjectMixerEditorListRowActor(Actor, GetSceneOutliner()), true))
 			{
 				SceneOutliner->OnItemLabelChanged(Item);
 			}
@@ -1181,7 +1167,7 @@ TSharedRef<SWidget> FObjectMixerOutlinerMode::OnGenerateFilterClassMenu()
 							}
 						}
 
-						PinnedList->CacheAndRebuildFilters();
+						PinnedList->CacheAndRebuildFilters(true);
 					}
 
 					return FReply::Handled();
@@ -1401,21 +1387,7 @@ TSharedRef<FSceneOutlinerFilter> FObjectMixerOutlinerMode::CreateIsInCurrentData
 {
 	return MakeShareable(new FActorFilter(FActorTreeItem::FFilterPredicate::CreateStatic([](const AActor* InActor)
 		{
-			const UDataLayerSubsystem* DataLayerSubsystem = InActor->GetWorld() ? InActor->GetWorld()->GetSubsystem<UDataLayerSubsystem>() : nullptr;
-			if (!DataLayerSubsystem || DataLayerSubsystem->GetActorEditorContextDataLayers().IsEmpty())
-			{
-				return true;
-			}
-
-			for (const UDataLayerInstance* DataLayerInstance : InActor->GetDataLayerInstances())
-			{
-				if (DataLayerInstance->IsInActorEditorContext())
-				{
-					return true;
-				}
-			}
-
-			return false;
+			return true;
 		}), FSceneOutlinerFilter::EDefaultBehaviour::Pass));
 }
 
@@ -1787,13 +1759,6 @@ void FObjectMixerOutlinerMode::OnItemAdded(FSceneOutlinerTreeItemPtr Item)
 			}
 		}
 	}
-	else if (FActorFolderTreeItem* FolderItem = Item->CastTo<FActorFolderTreeItem>())
-	{
-		if (FolderItem->World.IsValid())
-		{
-			FolderItem->Flags.bIsExpanded = FActorFolders::Get().IsFolderExpanded(*FolderItem->World, FolderItem->GetFolder());
-		}
-	}
 	else if (Item->IsA<FActorDescTreeItem>())
 	{
 		if (!Item->Flags.bIsFilteredOut)
@@ -1835,19 +1800,31 @@ void FObjectMixerOutlinerMode::OnLevelActorDeleted(AActor* Actor)
 
 void FObjectMixerOutlinerMode::OnSelectUnloadedActors(const TArray<FGuid>& ActorGuids)
 {
-	TArray<FSceneOutlinerTreeItemPtr> ItemsToSelect;
-	ItemsToSelect.Reserve(ActorGuids.Num());
-	for (const FGuid& ActorGuid : ActorGuids)
+	if (UWorldPartition* WorldPartition = RepresentingWorld->GetWorldPartition())
 	{
-		if (FSceneOutlinerTreeItemPtr ItemPtr = SceneOutliner->GetTreeItem(ActorGuid))
+		TArray<FSceneOutlinerTreeItemPtr> ItemsToSelect;
+		ItemsToSelect.Reserve(ActorGuids.Num());
+		for (const FGuid& ActorGuid : ActorGuids)
 		{
-			ItemsToSelect.Add(ItemPtr);
+			if (FWorldPartitionActorDesc* ActorDesc = WorldPartition->GetActorDesc(ActorGuid))
+			{
+				if (FSceneOutlinerTreeItemPtr ItemPtr = SceneOutliner->GetTreeItem(FActorDescTreeItem::ComputeTreeItemID(ActorDesc->GetGuid(), ActorDesc->GetContainer())))
+				{
+					ItemsToSelect.Add(ItemPtr);
+				}
+			}
 		}
-	}
 
-	if (ItemsToSelect.Num())
-	{
-		SceneOutliner->SetItemSelection(ItemsToSelect, true);
+		if (ItemsToSelect.Num())
+		{
+			SceneOutliner->SetItemSelection(ItemsToSelect, true);
+			SceneOutliner->ScrollItemIntoView(ItemsToSelect.Last());
+
+			if (const FActorDescTreeItem* ActorDescItem = ItemsToSelect.Last()->CastTo<FActorDescTreeItem>())
+			{
+				ActorDescItem->FocusActorBounds();
+			}
+		}
 	}
 }
 
@@ -2102,15 +2079,12 @@ void FObjectMixerOutlinerMode::RepairErrors() const
 			ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
 			ISourceControlProvider& SourceControlProvider = SourceControlModule.GetProvider();
 
-			TArray<FWorldPartitionActorDesc*> InvalidActorDescs;
-			WorldPartition->ForEachActorDescContainer([&InvalidActorDescs](UActorDescContainer* ActorDescContainer)
+			TArray<FAssetData> InvalidActorAssets;
+			WorldPartition->ForEachActorDescContainer([&InvalidActorAssets](UActorDescContainer* ActorDescContainer)
 			{
-				for (const TUniquePtr<FWorldPartitionActorDesc>& InvalidActor : ActorDescContainer->GetInvalidActors())
+				for (const FAssetData& InvalidActor : ActorDescContainer->GetInvalidActors())
 				{
-					if (FWorldPartitionActorDesc* InvalidActorDesc = InvalidActor.Get())
-					{
-						InvalidActorDescs.Add(InvalidActorDesc);
-					}
+					InvalidActorAssets.Add(InvalidActor);
 				}
 				ActorDescContainer->ClearInvalidActors();
 			});
@@ -2118,13 +2092,13 @@ void FObjectMixerOutlinerMode::RepairErrors() const
 			TArray<FString> ActorFilesToDelete;
 			TArray<FString> ActorFilesToRevert;
 			{
-				FScopedSlowTask SlowTask(InvalidActorDescs.Num(), LOCTEXT("UpdatingSourceControlStatus", "Updating revision control status..."));
+				FScopedSlowTask SlowTask(InvalidActorAssets.Num(), LOCTEXT("UpdatingSourceControlStatus", "Updating source control status..."));
 				SlowTask.MakeDialogDelayed(1.0f);
 
-				for (const FWorldPartitionActorDesc* InvalidActorDesc : InvalidActorDescs)
+				for (const FAssetData& InvalidActorAsset : InvalidActorAssets)
 				{
 					FPackagePath PackagePath;
-					if (FPackagePath::TryFromPackageName(InvalidActorDesc->GetActorPackage(), PackagePath))
+					if (FPackagePath::TryFromPackageName(InvalidActorAsset.PackageName, PackagePath))
 					{
 						const FString ActorFile = PackagePath.GetLocalFullPath();
 						FSourceControlStatePtr SCState = SourceControlProvider.GetState(ActorFile, EStateCacheUsage::ForceUpdate);

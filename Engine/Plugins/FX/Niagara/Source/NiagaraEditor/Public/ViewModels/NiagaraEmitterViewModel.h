@@ -24,6 +24,9 @@ class FNiagaraEmitterHandleViewModel;
 struct FNiagaraEventScriptProperties;
 class UNiagaraScriptVariable;
 class UNiagaraParameterDefinitions;
+class UNiagaraSummaryViewViewModel;
+struct FNiagaraMessageSourceAndStore;
+class UNiagaraSummaryViewViewModel;
 
 
 /** The view model for the UNiagaraEmitter objects */
@@ -31,6 +34,7 @@ class FNiagaraEmitterViewModel
 	: public TSharedFromThis<FNiagaraEmitterViewModel>
 	, public TNiagaraViewModelManager<UNiagaraEmitter, FNiagaraEmitterViewModel>
 	, public INiagaraParameterDefinitionsSubscriberViewModel
+	, public FGCObject
 {
 public:
 	DECLARE_MULTICAST_DELEGATE(FOnEmitterChanged);
@@ -90,7 +94,9 @@ public:
 	
 	/** Geta a view model for the update/spawn Script. */
 	TSharedRef<FNiagaraScriptViewModel> GetSharedScriptViewModel();
-	
+
+	NIAGARAEDITOR_API UNiagaraSummaryViewViewModel* GetSummaryHierarchyViewModel();
+
 	/* Get the latest status of this view-model's script compilation.*/
 	ENiagaraScriptCompileStatus GetLatestCompileStatus();
 
@@ -116,13 +122,12 @@ public:
 	NIAGARAEDITOR_API const UNiagaraEmitterEditorData& GetEditorData() const;
 
 	/** Gets editor specific data which is stored per emitter.  If this data hasn't been created then it will be created. */
-	NIAGARAEDITOR_API UNiagaraEmitterEditorData& GetOrCreateEditorData();
+	NIAGARAEDITOR_API UNiagaraEmitterEditorData& GetEditorData();
+
+	void GetEmitterMessageStores(TArray<FNiagaraMessageSourceAndStore>& OutMessageStores);
 
 	/** Add an event script to the owned emitter. Sets the Usage, UsageID and Source of the EventScriptProperties. */
 	NIAGARAEDITOR_API void AddEventHandler(FNiagaraEventScriptProperties& EventScriptProperties, bool bResetGraphForOutput = false);
-
-	bool GetSummaryIsInEditMode() const { return bSummaryIsInEditMode; }
-	void SetSummaryIsInEditMode(bool bInSummaryIsInEditMode) { bSummaryIsInEditMode = bInSummaryIsInEditMode; }
 
 	void Cleanup();
 
@@ -149,6 +154,11 @@ private:
 
 	void OnEmitterPropertiesChanged();
 
+	void OnSummaryViewHierarchyChanged();
+	
+	virtual FString GetReferencerName() const override;
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	
 	/** The text format stats display .*/
 	static const FText StatsFormat;
 
@@ -166,6 +176,8 @@ private:
 	
 	/** The view model for the update/spawn/event script. */
 	TSharedPtr<FNiagaraScriptViewModel> SharedScriptViewModel;
+
+	TObjectPtr<UNiagaraSummaryViewViewModel> SummaryViewHierarchyViewModel;
 
 	/** A flag to prevent reentrancy when updating selection sets. */
 	bool bUpdatingSelectionInternally;
@@ -197,6 +209,4 @@ private:
 	TMap<FObjectKey, FDelegateHandle> ScriptToOnParameterStoreChangedHandleMap;
 
 	TSharedPtr<SWindow> NewParentWindow;
-
-	bool bSummaryIsInEditMode;
 };

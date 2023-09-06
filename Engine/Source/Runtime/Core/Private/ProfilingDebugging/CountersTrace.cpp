@@ -27,6 +27,18 @@ UE_TRACE_EVENT_BEGIN(Counters, SetValueFloat)
 	UE_TRACE_EVENT_FIELD(uint16, CounterId)
 UE_TRACE_EVENT_END()
 
+const TCHAR* FCountersTrace::AllocAndCopyCounterName(const TCHAR* InCounterName)
+{
+	int32 Len = FCString::Strlen(InCounterName);
+	const TCHAR* CounterName = new TCHAR[Len + 1];
+	FCString::Strncpy((TCHAR*)CounterName, InCounterName, Len + 1);
+	return CounterName;
+}
+
+void FCountersTrace::FreeCounterName(const TCHAR* InCounterName)
+{
+	delete[] InCounterName;
+}
 
 uint16 FCountersTrace::OutputInitCounter(const TCHAR* CounterName, ETraceCounterType CounterType, ETraceCounterDisplayHint CounterDisplayHint)
 {
@@ -35,15 +47,18 @@ uint16 FCountersTrace::OutputInitCounter(const TCHAR* CounterName, ETraceCounter
 		return 0;
 	}
 
-	static TAtomic<uint16> NextId;
+	static std::atomic<uint32> NextId { 0 };
+	uint16 CounterId = uint16(++NextId);
 
-	uint16 CounterId = uint16(NextId++) + 1;
+	check(CounterName); // a trace counter object (TCounter<>) is used before it is constructed!?
 	uint16 NameLen = uint16(FCString::Strlen(CounterName));
+
 	UE_TRACE_LOG(Counters, Spec, CountersChannel, NameLen * sizeof(ANSICHAR))
 		<< Spec.Id(CounterId)
 		<< Spec.Type(uint8(CounterType))
 		<< Spec.DisplayHint(uint8(CounterDisplayHint))
 		<< Spec.Name(CounterName, NameLen);
+
 	return CounterId;
 }
 
@@ -73,4 +88,4 @@ void FCountersTrace::OutputSetValue(uint16 CounterId, double Value)
 		<< SetValueFloat.CounterId(CounterId);
 }
 
-#endif
+#endif // COUNTERSTRACE_ENABLED

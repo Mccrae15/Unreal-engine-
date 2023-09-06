@@ -11,8 +11,8 @@ class UNiagaraStackItemFooter;
 class UNiagaraNode;
 class UNiagaraClipboardContent;
 
-UCLASS()
-class NIAGARAEDITOR_API UNiagaraStackItem : public UNiagaraStackEntry
+UCLASS(MinimalAPI)
+class UNiagaraStackItem : public UNiagaraStackEntry
 {
 	GENERATED_BODY()
 
@@ -22,43 +22,47 @@ public:
 	DECLARE_DELEGATE_ThreeParams(FOnRequestPaste, const UNiagaraClipboardContent* /* ClipboardContent */, int32 /* PasteIndex */, FText& /* OutPasteWarning */);
 
 public:
-	void Initialize(FRequiredEntryData InRequiredEntryData, FString InStackEditorDataKey);
+	NIAGARAEDITOR_API void Initialize(FRequiredEntryData InRequiredEntryData, FString InStackEditorDataKey);
 
-	virtual EStackRowStyle GetStackRowStyle() const override;
+	NIAGARAEDITOR_API virtual EStackRowStyle GetStackRowStyle() const override;
 
-	FOnModifiedGroupItems& OnModifiedGroupItems();
+	NIAGARAEDITOR_API FOnModifiedGroupItems& OnModifiedGroupItems();
 
-	void SetOnRequestCanPaste(FOnRequestCanPaste InOnRequestCanPaste);
-	void SetOnRequestPaste(FOnRequestPaste InOnRequestCanPaste);
+	NIAGARAEDITOR_API void SetOnRequestCanPaste(FOnRequestCanPaste InOnRequestCanPaste);
+	NIAGARAEDITOR_API void SetOnRequestPaste(FOnRequestPaste InOnRequestCanPaste);
 
 	virtual bool SupportsChangeEnabled() const { return false; }
-	void SetIsEnabled(bool bInIsEnabled);
+	NIAGARAEDITOR_API void SetIsEnabled(bool bInIsEnabled);
 
 	virtual bool SupportsResetToBase() const { return false; }
 	virtual bool TestCanResetToBaseWithMessage(FText& OutCanResetToBaseMessage) const { return false; }
 	virtual void ResetToBase() { }
 
 	virtual bool SupportsEditMode() const { return false; }
-	virtual bool GetEditModeIsActive() const { return false; }
-	virtual void SetEditModeIsActive(bool bInEditModeIsActive) { }
+	virtual void OnEditButtonClicked() { }
+	virtual TOptional<FText> GetEditModeButtonText() const { return TOptional<FText>(); }
+	virtual TOptional<FText> GetEditModeButtonTooltip() const { return TOptional<FText>(); }
+	virtual EVisibility IsEditButtonVisible() const { return SupportsEditMode() ? EVisibility::Visible : EVisibility::Collapsed; }
 
 	virtual bool GetIsInherited() const { return false; }
-	
+
 protected:
-	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
+	NIAGARAEDITOR_API virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
 
-	virtual void PostRefreshChildrenInternal() override;
+	NIAGARAEDITOR_API virtual void PostRefreshChildrenInternal() override;
 
-	virtual int32 GetChildIndentLevel() const override;
+	NIAGARAEDITOR_API virtual int32 GetChildIndentLevel() const override;
 
 	virtual void SetIsEnabledInternal(bool bInIsEnabled) { }
 
 private:
-	bool FilterAdvancedChildren(const UNiagaraStackEntry& Child) const;
+	NIAGARAEDITOR_API bool FilterAdvancedChildren(const UNiagaraStackEntry& Child) const;
 
-	bool FilterHiddenChildren(const UNiagaraStackEntry& Child) const;
+	NIAGARAEDITOR_API bool FilterHiddenChildren(const UNiagaraStackEntry& Child) const;
 
-	void ToggleShowAdvanced();
+	NIAGARAEDITOR_API void ToggleShowAdvanced();
+
+	virtual void ToggleShowAdvancedInternal();
 
 protected:
 	FOnModifiedGroupItems ModifiedGroupItemsDelegate;
@@ -70,30 +74,30 @@ private:
 	TObjectPtr<UNiagaraStackItemFooter> ItemFooter;
 };
 
-UCLASS()
-class NIAGARAEDITOR_API UNiagaraStackItemContent : public UNiagaraStackEntry
+UCLASS(MinimalAPI)
+class UNiagaraStackItemContent : public UNiagaraStackEntry
 {
 	GENERATED_BODY()
 
 public:
-	void Initialize(FRequiredEntryData InRequiredEntryData, FString InOwningStackItemEditorDataKey, FString InStackEditorDataKey);
+	NIAGARAEDITOR_API void Initialize(FRequiredEntryData InRequiredEntryData, FString InOwningStackItemEditorDataKey, FString InStackEditorDataKey);
 
-	virtual EStackRowStyle GetStackRowStyle() const override;
+	NIAGARAEDITOR_API virtual EStackRowStyle GetStackRowStyle() const override;
 
-	bool GetIsAdvanced() const;
+	NIAGARAEDITOR_API bool GetIsAdvanced() const;
 
-	bool GetIsHidden() const;
+	NIAGARAEDITOR_API bool GetIsHidden() const;
 
-	void SetIsHidden(bool bInIsHidden);
+	NIAGARAEDITOR_API void SetIsHidden(bool bInIsHidden);
 
 	// Returns true if this stack entry was changed by a user and differs from the default value
-	virtual bool HasOverridenContent() const;
+	NIAGARAEDITOR_API virtual bool HasOverridenContent() const;
 
-	bool FilterHiddenChildren(const UNiagaraStackEntry& Child) const;
+	NIAGARAEDITOR_API bool FilterHiddenChildren(const UNiagaraStackEntry& Child) const;
 protected:
-	FString GetOwnerStackItemEditorDataKey() const;
+	NIAGARAEDITOR_API FString GetOwnerStackItemEditorDataKey() const;
 
-	void SetIsAdvanced(bool bInIsAdvanced);
+	NIAGARAEDITOR_API void SetIsAdvanced(bool bInIsAdvanced);
 
 private:
 	bool FilterAdvancedChildren(const UNiagaraStackEntry& Child) const;
@@ -104,15 +108,15 @@ private:
 	bool bIsHidden;
 };
 
-UCLASS()
-class NIAGARAEDITOR_API UNiagaraStackItemTextContent : public UNiagaraStackItemContent
+UCLASS(MinimalAPI)
+class UNiagaraStackItemTextContent : public UNiagaraStackItemContent
 {
 	GENERATED_BODY()
 
 public:
-	void Initialize(FRequiredEntryData InRequiredEntryData, FText InDisplayText, FString InOwningStackItemEditorDataKey);
+	NIAGARAEDITOR_API void Initialize(FRequiredEntryData InRequiredEntryData, FText InDisplayText, FString InOwningStackItemEditorDataKey);
 
-	virtual FText GetDisplayName() const override;
+	NIAGARAEDITOR_API virtual FText GetDisplayName() const override;
 
 private:
 	FText DisplayText;

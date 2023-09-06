@@ -4,50 +4,54 @@
 
 #include "Particles/ParticlePerfStats.h"
 #include "PrimitiveSceneProxy.h"
+#include "HeterogeneousVolumeInterface.h"
 
 class FNiagaraGpuComputeDispatchInterface;
 class FNiagaraSystemRenderData;
 class UNiagaraComponent;
+enum class ENiagaraOcclusionQueryMode : uint8;
+
+#define NIAGARAPROXY_EVENTS_ENABLED	(!STATS && (ENABLE_STATNAMEDEVENTS || CPUPROFILERTRACE_ENABLED))
 
 /**
 * Scene proxy for drawing niagara particle simulations.
 */
-class NIAGARA_API FNiagaraSceneProxy : public FPrimitiveSceneProxy
+class FNiagaraSceneProxy : public FPrimitiveSceneProxy
 {
 public:
-	virtual SIZE_T GetTypeHash() const override;
+	NIAGARA_API virtual SIZE_T GetTypeHash() const override;
 
-	FNiagaraSceneProxy(UNiagaraComponent* InComponent);
-	~FNiagaraSceneProxy();
+	NIAGARA_API FNiagaraSceneProxy(UNiagaraComponent* InComponent);
+	NIAGARA_API ~FNiagaraSceneProxy();
 
 	/** Retrieves the render data for a single system */
 	FNiagaraSystemRenderData* GetSystemRenderData() { return RenderData; }
 
 	/** Called to allow renderers to free render state */
-	void DestroyRenderState_Concurrent();
+	NIAGARA_API void DestroyRenderState_Concurrent();
 
 	/** Gets whether or not this scene proxy should be rendered. */
-	bool GetRenderingEnabled() const;
+	NIAGARA_API bool GetRenderingEnabled() const;
 
 	/** Sets whether or not this scene proxy should be rendered. */
-	void SetRenderingEnabled(bool bInRenderingEnabled);
+	NIAGARA_API void SetRenderingEnabled(bool bInRenderingEnabled);
 
 	FNiagaraGpuComputeDispatchInterface* GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
 
 #if RHI_RAYTRACING
-	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override;
+	NIAGARA_API virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override;
 	virtual bool IsRayTracingRelevant() const override { return true; }
 	virtual bool HasRayTracingRepresentation() const override { return true; }
 #endif
 
 	FORCEINLINE const FMatrix& GetLocalToWorldInverse() const { return LocalToWorldInverse; }
 
-	const FVector3f& GetLWCRenderTile() const;
+	NIAGARA_API const FVector3f& GetLWCRenderTile() const;
 
-	TUniformBuffer<FPrimitiveUniformShaderParameters>* GetCustomUniformBufferResource(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
-	FRHIUniformBuffer* GetCustomUniformBuffer(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
+	NIAGARA_API TUniformBuffer<FPrimitiveUniformShaderParameters>* GetCustomUniformBufferResource(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
+	NIAGARA_API FRHIUniformBuffer* GetCustomUniformBuffer(bool bHasVelocity, const FBox& InstanceBounds = FBox(ForceInitToZero)) const;
 
-	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
+	NIAGARA_API virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 
 	/** Some proxy wide dynamic settings passed down with the emitter dynamic data. */
 	struct FDynamicData
@@ -62,32 +66,25 @@ public:
 	void SetProxyDynamicData(const FDynamicData& NewData) { DynamicData = NewData; }
 
 private:
-	void ReleaseRenderThreadResources();
+	NIAGARA_API void ReleaseRenderThreadResources();
 
-	void ReleaseUniformBuffers(bool bEmpty);
+	NIAGARA_API void ReleaseUniformBuffers(bool bEmpty);
 
 	//~ Begin FPrimitiveSceneProxy Interface.
-	virtual void CreateRenderThreadResources() override;
+	NIAGARA_API virtual void CreateRenderThreadResources() override;
 
 	//virtual void OnActorPositionChanged() override;
-	virtual void OnTransformChanged() override;
+	NIAGARA_API virtual void OnTransformChanged() override;
 
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
+	NIAGARA_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
-
-	virtual bool CanBeOccluded() const override
-	{
-		// TODO account for MaterialRelevance.bDisableDepthTest and MaterialRelevance.bPostMotionBlurTranslucency as well
-		return !ShouldRenderCustomDepth();
-	}
-
-
+	NIAGARA_API virtual bool CanBeOccluded() const override;
 	/** Callback from the renderer to gather simple lights that this proxy wants renderered. */
-	virtual void GatherSimpleLights(const FSceneViewFamily& ViewFamily, FSimpleLightArray& OutParticleLights) const override;
+	NIAGARA_API virtual void GatherSimpleLights(const FSceneViewFamily& ViewFamily, FSimpleLightArray& OutParticleLights) const override;
 
-	virtual uint32 GetMemoryFootprint() const override;
+	NIAGARA_API virtual uint32 GetMemoryFootprint() const override;
 
-	uint32 GetAllocatedSize() const;
+	NIAGARA_API uint32 GetAllocatedSize() const;
 
 private:
 	/** Custom Uniform Buffers, allows us to have renderer specific data packed inside such as pre-skinned bounds. */
@@ -101,7 +98,12 @@ private:
 	FMatrix LocalToWorldInverse;
 
 	TStatId SystemStatID;
+#if NIAGARAPROXY_EVENTS_ENABLED
+	FString SystemStatString;
+#endif
 
 	FDynamicData DynamicData;
+
+	ENiagaraOcclusionQueryMode OcclusionQueryMode;
 };
 

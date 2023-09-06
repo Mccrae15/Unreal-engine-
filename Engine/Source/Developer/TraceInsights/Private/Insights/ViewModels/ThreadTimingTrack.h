@@ -67,6 +67,7 @@ public:
 	bool IsCpuTrackVisible(uint32 InThreadId) const;
 
 	void GetVisibleCpuThreads(TSet<uint32>& OutSet) const;
+	void GetVisibleTimelineIndexes(TSet<uint32>& OutSet) const;
 
 	//////////////////////////////////////////////////
 	// ITimingViewExtender interface
@@ -112,7 +113,7 @@ private:
 	TMap<uint32, TSharedPtr<FCpuTimingTrack>> CpuTracks;
 
 	/** Maps thread group name to thread group info. */
-	TMap<const TCHAR*, FThreadGroup> ThreadGroups;
+	TMap<const TCHAR*, FThreadGroup, FDefaultSetAllocator, TStringPointerMapKeyFuncs_DEPRECATED<const TCHAR*, FThreadGroup>> ThreadGroups;
 
 	uint64 TimingProfilerTimelineCount;
 	uint64 LoadTimeProfilerTimelineCount;
@@ -129,6 +130,7 @@ enum class EFilterField : int32
 	TimerId = 4,
 	TimerName = 5,
 	CoreEventName = 6,
+	RegionName = 7,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -210,7 +212,7 @@ private:
 	FThreadTimingSharedState& SharedState;
 
 	TSharedPtr<Insights::FFilterConfigurator> FilterConfigurator;
-	FDelegateHandle OnFilterChangesCommitedHandle;
+	FDelegateHandle OnFilterChangesCommittedHandle;
 
 	// Search cache
 	mutable TTimingEventSearchCache<TraceServices::FTimingProfilerEvent> SearchCache;

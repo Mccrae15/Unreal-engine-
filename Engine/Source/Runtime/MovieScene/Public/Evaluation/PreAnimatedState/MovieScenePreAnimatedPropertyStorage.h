@@ -167,14 +167,12 @@ struct TPreAnimatedPropertyStorageImpl<PropertyTraits, TPropertyMetaData<MetaDat
 		for (int32 Index = 0; Index < Num; ++Index)
 		{
 			UObject* BoundObject  = BoundObjects[Index];
-			FName    PropertyPath = PropertyBindings[Index].PropertyPath;
+			if (!BoundObject)
+			{
+				continue;
+			}
 
-			TTuple<FObjectKey, FName> Key{ BoundObject, PropertyPath };
-
-			FPreAnimatedStorageGroupHandle GroupHandle  = this->Traits.MakeGroup(BoundObject);
-			FPreAnimatedStorageIndex       StorageIndex = this->GetOrCreateStorageIndex(Key);
-
-			FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
+			FPreAnimatedStateEntry Entry = this->MakeEntry(BoundObject, PropertyBindings[Index].PropertyPath);
 			EntityMetaData->BeginTrackingEntity(Entry, EntityIDs[Index], InstanceHandles[Index], bWantsRestore);
 		}
 	}
@@ -195,26 +193,20 @@ struct TPreAnimatedPropertyStorageImpl<PropertyTraits, TPropertyMetaData<MetaDat
 		for (int32 Index = 0; Index < Num; ++Index)
 		{
 			UObject* BoundObject  = BoundObjects[Index];
-			FName    PropertyPath = PropertyBindings[Index].PropertyPath;
-
-			TTuple<FObjectKey, FName> Key{ BoundObject, PropertyPath };
-
-			FPreAnimatedStorageGroupHandle GroupHandle  = this->Traits.MakeGroup(BoundObject);
-			FPreAnimatedStorageIndex       StorageIndex = this->GetOrCreateStorageIndex(Key);
-
-			FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
-
-			if (this->ParentExtension->IsCapturingGlobalState())
+			if (!BoundObject)
 			{
-				this->ParentExtension->EnsureMetaData(Entry);
+				continue;
 			}
-			else if (!this->ParentExtension->MetaDataExists(Entry))
+
+			FPreAnimatedStateEntry Entry = this->MakeEntry(BoundObject, PropertyBindings[Index].PropertyPath);
+
+			if (!this->TrackCaptureSource(Entry, EPreAnimatedCaptureSourceTracking::CacheIfTracked))
 			{
 				continue;
 			}
 
 			EPreAnimatedStorageRequirement StorageRequirement = this->ParentExtension->GetStorageRequirement(Entry);
-			if (!this->IsStorageRequirementSatisfied(StorageIndex, StorageRequirement))
+			if (!this->IsStorageRequirementSatisfied(Entry.ValueHandle.StorageIndex, StorageRequirement))
 			{
 				StorageType NewValue(MetaData.template Get<MetaDataIndices>()[Index]...);
 
@@ -238,12 +230,12 @@ struct TPreAnimatedPropertyStorageImpl<PropertyTraits, TPropertyMetaData<MetaDat
 					PropertyTraits::GetObjectPropertyValue(BoundObjects[Index], MetaData.template Get<MetaDataIndices>()[Index]..., Bindings.Get(), NewValue.Data);
 				}
 
-				this->AssignPreAnimatedValue(StorageIndex, StorageRequirement, MoveTemp(NewValue));
+				this->AssignPreAnimatedValue(Entry.ValueHandle.StorageIndex, StorageRequirement, MoveTemp(NewValue));
 			}
 
 			if (Params.bForcePersist)
 			{
-				this->ForciblyPersistStorage(StorageIndex);
+				this->ForciblyPersistStorage(Entry.ValueHandle.StorageIndex);
 			}
 		}
 	}

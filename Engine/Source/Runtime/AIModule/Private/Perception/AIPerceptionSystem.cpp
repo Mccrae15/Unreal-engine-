@@ -1,18 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Perception/AIPerceptionSystem.h"
+
+#include "AISystem.h"
+#include "Engine/Engine.h"
 #include "EngineGlobals.h"
 #include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
-#include "TimerManager.h"
-#include "Engine/Engine.h"
-#include "AISystem.h"
-#include "Perception/AISense_Hearing.h"
-#include "Perception/AISenseConfig.h"
 #include "Perception/AIPerceptionComponent.h"
-#include "VisualLogger/VisualLogger.h"
-#include "ProfilingDebugging/CsvProfiler.h"
+#include "Perception/AISenseConfig.h"
 #include "Perception/AISenseEvent.h"
+#include "Perception/AISense_Hearing.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "TimerManager.h"
+#include "VisualLogger/VisualLogger.h"
+
+#if WITH_GAMEPLAY_DEBUGGER_MENU
+#include "GameplayDebuggerTypes.h"
+#include "GameplayDebuggerCategory.h"
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AIPerceptionSystem)
 
@@ -40,12 +46,6 @@ UAIPerceptionSystem::UAIPerceptionSystem(const FObjectInitializer& ObjectInitial
 	, NextStimuliAgingTick(0.)
 	, CurrentTime(0.)
 {
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-#if WITH_EDITORONLY_DATA
-	bStimuliSourcesRefreshRequired = false;
-#endif
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	StimuliSourceEndPlayDelegate.BindDynamic(this, &UAIPerceptionSystem::OnPerceptionStimuliSourceEndPlay);
 }
 
@@ -699,9 +699,19 @@ void UAIPerceptionSystem::ReportPerceptionEvent(UObject* WorldContextObject, UAI
 }
 
 //----------------------------------------------------------------------//
-// Deprecated
+// Debug
 //----------------------------------------------------------------------//
-void UAIPerceptionSystem::AgeStimuli()
+#if WITH_GAMEPLAY_DEBUGGER_MENU
+void UAIPerceptionSystem::DescribeSelfToGameplayDebugger(FGameplayDebuggerCategory& DebuggerCategory) const
 {
-	AgeStimuli(PerceptionAgingRate);
+	DebuggerCategory.AddTextLine(FString::Printf(TEXT("%d Listeners"), ListenerContainer.Num()));
+
+	for (const UAISense* Sense : Senses)
+	{
+		if (Sense)
+		{
+			Sense->DescribeSelfToGameplayDebugger(*this, DebuggerCategory);
+		}
+	}
 }
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU

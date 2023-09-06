@@ -4,10 +4,12 @@
 
 #if WITH_EDITOR
 
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/Array.h"
 #include "Containers/List.h"
 #include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
+#include "Hash/Blake3.h"
 #include "HAL/PlatformCrt.h"
 #include "HAL/PreprocessorHelpers.h"
 #include "Misc/Optional.h"
@@ -18,6 +20,7 @@
 class UClass;
 class UObject;
 class UPackage;
+struct FAssetDependency;
 template <typename FuncType> class TFunctionRef;
 
 /**
@@ -27,6 +30,15 @@ template <typename FuncType> class TFunctionRef;
 class ICookPackageSplitter
 {
 public:
+	// Static API functions - these static functions are referenced by REGISTER_COOKPACKAGE_SPLITTER
+	// before creating an instance of the class.
+	/** Return whether the CookPackageSplitter subclass should handle the given SplitDataClass instance. */
+	static bool ShouldSplit(UObject* SplitData) { return false; }
+	/** Return DebugName for this SplitterClass in cook log messages. */
+	static FString GetSplitterDebugName() { return TEXT("<NoNameSpecified>"); }
+
+
+	// Virtual API functions - functions called from the cooker after creating the splitter.
 	virtual ~ICookPackageSplitter() {}
 
 	enum class ETeardown
@@ -37,30 +49,37 @@ public:
 	/** Do teardown actions after all packages have saved, or when the cook is cancelled. Always called before destruction. */
 	virtual void Teardown(ETeardown Status) {}
 
+	/**
+	 * If true, this splitter forces the Generator package objects it needs to remain referenced, and the cooker
+	 * should expect them to still be in memory after a garbage collect so long as the splitter is alive.
+	 */
+	virtual bool UseInternalReferenceToAvoidGarbageCollect() { return false; }
+
 	/** Data sent to the cooker to describe each desired generated package */
 	struct FGeneratedPackage
 	{
+		/** Parent path for the generated package. If empty, uses the generator's package path. */
 		FString GeneratedRootPath;
-		FString RelativePath;		// Generated package relative to GeneratedRootPath/Generated_ if GeneratedRootPath member is specified, relative to  Parent/Generated otherwise.
-		TArray<FName> Dependencies; // LongPackageNames that the generated package references
+		/** Generated package relative to <GeneratedRootPath>/_Generated_. */
+		FString RelativePath;
+		UE_DEPRECATED(5.3, "Write to PackageDependencies instead")
+		TArray<FName> Dependencies;
+		/**
+		 * AssetRegistry dependencies for the generated package. AR dependencies cause packages to be added to the
+		 * current cook and cause invalidation of this package in iterative cooks if any dependencies change.
+		 */
+		TArray<FAssetDependency> PackageDependencies;
+		/**
+		 * Hash of the data used to construct the generated package that is not covered by the dependencies.
+		 * Changes to this hash will cause invalidation of the package during iterative cooks.
+		 */
+		FBlake3Hash GenerationHash;
 		/* GetGenerateList must specify true if the package will be a map (.umap, contains a UWorld or ULevel), else false */
 		void SetCreateAsMap(bool bInCreateAsMap) { bCreateAsMap = bInCreateAsMap; }
 		const TOptional<bool>& GetCreateAsMap() const { return bCreateAsMap; }
 	private:
 		TOptional<bool> bCreateAsMap;
 	};
-	
-	/** 
-	 * Return whether the CookPackageSplitter subclass should handle the given SplitDataClass instance. 
-	 * Note that this is a static function referenced by macros, not part of the virtual api.
-	 */
-	static bool ShouldSplit(UObject* SplitData) { return false; }
-	
-	/**
-	 * If true, this splitter forces the Generator package objects it needs to remain referenced, and the cooker
-	 * should expect them to still be in memory after a garbage collect so long as the splitter is alive.
-	 */
-	virtual bool UseInternalReferenceToAvoidGarbageCollect() { return false; }
 
 	/** Return the list of packages to generate. */
 	virtual TArray<FGeneratedPackage> GetGenerateList(const UPackage* OwnerPackage, const UObject* OwnerObject) = 0;
@@ -207,21 +226,22 @@ namespace Private
 {
 
 /** Interface for internal use only (used by REGISTER_COOKPACKAGE_SPLITTER to register an ICookPackageSplitter for a class) */
-class UNREALED_API FRegisteredCookPackageSplitter
+class FRegisteredCookPackageSplitter
 {
 public:
-	FRegisteredCookPackageSplitter();
-	virtual ~FRegisteredCookPackageSplitter();
+	UNREALED_API FRegisteredCookPackageSplitter();
+	UNREALED_API virtual ~FRegisteredCookPackageSplitter();
 
 	virtual UClass* GetSplitDataClass() const = 0;
 	virtual bool ShouldSplitPackage(UObject* Object) const = 0;
 	virtual ICookPackageSplitter* CreateInstance(UObject* Object) const = 0;
+	virtual FString GetSplitterDebugName() const = 0;
 
-	static void ForEach(TFunctionRef<void(FRegisteredCookPackageSplitter*)> Func);
+	static UNREALED_API void ForEach(TFunctionRef<void(FRegisteredCookPackageSplitter*)> Func);
 
 private:
 	
-	static TLinkedList<FRegisteredCookPackageSplitter*>*& GetRegisteredList();
+	static UNREALED_API TLinkedList<FRegisteredCookPackageSplitter*>*& GetRegisteredList();
 	TLinkedList<FRegisteredCookPackageSplitter*> GlobalListLink;
 };
 
@@ -243,6 +263,7 @@ class PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(SplitterClass, SplitDataClass), _Regis
 	virtual UClass* GetSplitDataClass() const override { return SplitDataClass::StaticClass(); } \
 	virtual bool ShouldSplitPackage(UObject* Object) const override { return SplitterClass::ShouldSplit(Object); } \
 	virtual ICookPackageSplitter* CreateInstance(UObject* SplitData) const override { return new SplitterClass(); } \
+	virtual FString GetSplitterDebugName() const override { return SplitterClass::GetSplitterDebugName(); } \
 }; \
 namespace PREPROCESSOR_JOIN(SplitterClass, SplitDataClass) \
 { \

@@ -25,6 +25,7 @@
 #include "ImageCore.h"
 #if WITH_EDITORONLY_DATA
 #include "Misc/TVariant.h"
+#include "ObjectCacheEventSink.h"
 #include "DerivedDataCacheKeyProxy.h"
 #endif
 
@@ -45,6 +46,7 @@
 namespace FOodleDataCompression {enum class ECompressor : uint8; enum class ECompressionLevel : int8; }
 
 class FTextureReference;
+class FTextureResource;
 class ITargetPlatform;
 class UAssetUserData;
 struct FPropertyChangedEvent;
@@ -91,7 +93,7 @@ struct FTextureSource
 	ENGINE_API FTextureSource();
 
 	// should match ERawImageFormat::GetBytesPerPixel
-	ENGINE_API static int32 GetBytesPerPixel(ETextureSourceFormat Format);
+	ENGINE_API static int64 GetBytesPerPixel(ETextureSourceFormat Format);
 	// should match ERawImageFormat::IsHDR
 	FORCEINLINE static bool IsHDR(ETextureSourceFormat Format) { return UE::TextureDefines::IsHDR(Format); }
 	
@@ -268,10 +270,10 @@ struct FTextureSource
 	/** Unlock a mip. */
 	ENGINE_API void UnlockMip(int32 BlockIndex, int32 LayerIndex, int32 MipIndex);
 
-	/** Retrieve a copy of the data for a particular mip. */
+	/** Retrieve a copy of the data for a particular mip.  Prefer GetMipImage. */
 	ENGINE_API bool GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, int32 LayerIndex, int32 MipIndex, class IImageWrapperModule* ImageWrapperModule = nullptr);
 	
-	/** Legacy API that defaults to LayerIndex 0 */
+	/** Legacy API that defaults to LayerIndex 0.  Prefer GetMipImage. */
 	FORCEINLINE bool GetMipData(TArray64<uint8>& OutMipData, int32 MipIndex, class IImageWrapperModule* ImageWrapperModule = nullptr)
 	{
 		return GetMipData(OutMipData, 0, 0, MipIndex, ImageWrapperModule);
@@ -293,7 +295,7 @@ struct FTextureSource
 	ENGINE_API int64 CalcMipSize(int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const;
 
 	/** Computes the number of bytes per-pixel. */
-	ENGINE_API int32 GetBytesPerPixel(int32 LayerIndex = 0) const;
+	ENGINE_API int64 GetBytesPerPixel(int32 LayerIndex = 0) const;
 
 	/** Return true if the source XY size is power-of-2.  Does not check Z size for volumes.  */
 	ENGINE_API bool IsPowerOfTwo(int32 BlockIndex = 0) const;
@@ -336,8 +338,8 @@ struct FTextureSource
 	/** Trivial accessors. These will only give values for Block0 so may not be correct for UDIM/multi-block textures, use GetBlock() for this case. */
 	FGuid GetPersistentId() const { return BulkData.GetIdentifier(); }
 	ENGINE_API FGuid GetId() const;
-	FORCEINLINE int32 GetSizeX() const { return SizeX; }
-	FORCEINLINE int32 GetSizeY() const { return SizeY; }
+	FORCEINLINE int64 GetSizeX() const { return SizeX; }
+	FORCEINLINE int64 GetSizeY() const { return SizeY; }
 	FORCEINLINE int32 GetNumSlices() const { return NumSlices; }
 	FORCEINLINE int32 GetNumMips() const { return NumMips; }
 	FORCEINLINE int32 GetNumLayers() const { return NumLayers; }
@@ -437,7 +439,7 @@ struct FTextureSource
 	};
 
 	/** Structure that encapsulates the decompressed texture data and can be accessed per mip */
-	struct ENGINE_API FMipData
+	struct FMipData
 	{
 		/** Allow the copy constructor by rvalue*/
 		FMipData(FMipData&& Other)
@@ -455,13 +457,22 @@ struct FTextureSource
 		FMipData& operator=(FMipData&& Other) = delete;
 
 		/** Get a copy of a given texture mip, to be stored in OutMipData */
-		bool GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const;
+		ENGINE_API bool GetMipData(TArray64<uint8>& OutMipData, int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const;
+
+		/** 
+		 * Access the given texture mip in the form of a read only FSharedBuffer.
+		 * This method does not make a copy of the mip but instead returns a view.
+		 * The returned buffer will keep a ref count on the original full mip chain
+		 * allocation, so will remain valid even after the FMipData object has been 
+		 * destroyed.
+		 */
+		ENGINE_API FSharedBuffer GetMipData(int32 BlockIndex, int32 LayerIndex, int32 MipIndex) const;
 
 	private:
 		// We only want to allow FTextureSource to create FMipData objects
 		friend struct FTextureSource;
 
-		FMipData(const FTextureSource& InSource, FSharedBuffer InData);
+		ENGINE_API FMipData(const FTextureSource& InSource, FSharedBuffer InData);
 
 		const FTextureSource& TextureSource;
 		FSharedBuffer MipData;
@@ -471,17 +482,17 @@ struct FTextureSource
 	* FMipLock to encapsulate a locked mip
 	*  acquires the lock in construct and unlocks in destruct
 	*/
-	struct ENGINE_API FMipLock
+	struct FMipLock
 	{
 		// constructor locks the mip (can fail, pointer will be null)
-		FMipLock(ELockState InLockState,FTextureSource * InTextureSource,int32 InBlockIndex, int32 InLayerIndex, int32 InMipIndex);
-		FMipLock(ELockState InLockState,FTextureSource * InTextureSource,int32 InMipIndex);
+		ENGINE_API FMipLock(ELockState InLockState,FTextureSource * InTextureSource,int32 InBlockIndex, int32 InLayerIndex, int32 InMipIndex);
+		ENGINE_API FMipLock(ELockState InLockState,FTextureSource * InTextureSource,int32 InMipIndex);
 		
 		// move constructor
-		FMipLock(FMipLock&&);
+		ENGINE_API FMipLock(FMipLock&&);
 
 		// destructor unlocks
-		~FMipLock();
+		ENGINE_API ~FMipLock();
 		
 		ELockState LockState;
 		FTextureSource * TextureSource;
@@ -549,6 +560,8 @@ private:
 
 	/** The state of any lock being held on the mip data */
 	ELockState LockState;
+
+	void CheckTextureIsUnlocked(const TCHAR* DebugMessage);
 
 #if WITH_EDITOR
 	/** Pointer to locked mip data, if any. */
@@ -749,7 +762,7 @@ struct FTexturePlatformData
 	//		determinism issues.
 	// We only have this data if the textures were rebuilt after adding it (I didn't invalidate the ddc for this),
 	// hence bSourceMipsAlphaDetectedValid. The Hashes are zero if the data isn't present. 
-	FIoHash PreEncodeMipsHash;
+	uint64 PreEncodeMipsHash=0; // XxHash64
 	bool bSourceMipsAlphaDetectedValid=false;
 	bool bSourceMipsAlphaDetected=false;
 
@@ -873,10 +886,10 @@ public:
 	 *
 	 * @param Ar Archive to serialize with
 	 * @param Owner Owner texture
-	 * @param bStreamable Store some mips inline, only used during cooking
+	 * @param bStreamable set up serialization to stream some mips
+	 * @param bSerializeMipData if false, no mip bulk data will be serialized.  This should only be false when an alternate All Mip Data Provider is attached.
 	 */
-	void SerializeCooked(FArchive& Ar, class UTexture* Owner, bool bStreamable);
-	
+	void SerializeCooked(FArchive& Ar, class UTexture* Owner, bool bStreamable, const bool bSerializeMipData);
 	
 	inline void SetPackedData(int32 InNumSlices, bool bInHasOptData, bool bInCubeMap)
 	{
@@ -1077,7 +1090,8 @@ class UTexture : public UStreamableRenderAsset, public IInterface_AssetUserData,
 	--------------------------------------------------------------------------*/
 
 #if WITH_EDITORONLY_DATA
-	/* Dynamic textures will have ! Source.IsValid() */
+	/* Dynamic textures will have ! Source.IsValid() ;
+	Also in UEFN , Textures from the cooked-only texture library.  Always check Source.IsValid before using Source. */
 	UPROPERTY()
 	FTextureSource Source;
 #endif
@@ -1161,7 +1175,7 @@ public:
 	FName OodleTextureSdkVersion;
 
 	/** The maximum resolution for generated textures. A value of 0 means the maximum size for the format on each platform. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Compression, meta=(DisplayName="Maximum Texture Size", ClampMin = "0.0"), AdvancedDisplay)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compression, meta=(DisplayName="Maximum Texture Size", ClampMin = "0.0"), AdvancedDisplay)
 	int32 MaxTextureSize;
 
 	/** The compression quality for generated ASTC textures (i.e. mobile platform textures). */
@@ -1219,14 +1233,48 @@ public:
 	/** Per asset specific setting to define the mip-map generation properties like sharpening and kernel size. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=LevelOfDetail)
 	TEnumAsByte<enum TextureMipGenSettings> MipGenSettings;
-	
+
 	/**
 	 * Can be defined to modify the roughness based on the normal map variation (mostly from mip maps).
 	 * MaxAlpha comes in handy to define a base roughness if no source alpha was there.
 	 * Make sure the normal map has at least as many mips as this texture.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compositing)
+	UE_DEPRECATED(5.3, "Use GetCompositeTexture() and SetCompositeTexture() instead.")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compositing, meta = (AllowPrivateAccess), Setter = SetCompositeTexture, Getter = GetCompositeTexture)
 	TObjectPtr<class UTexture> CompositeTexture;
+
+private:
+	/** Used to track down when CompositeTexture has been modified for notification purpose.
+	*	NOTE: Do not make a TObjectPtr or UPROPERTY as it would defeat the purpose.
+	*/
+	class UTexture* KnownCompositeTexture = nullptr;
+
+	/** Called when the CompositeTexture property gets overwritten without us knowing about it */
+	ENGINE_API void OutdatedKnownCompositeTextureDetected() const;
+	ENGINE_API void NotifyIfCompositeTextureChanged();
+
+public:
+	void SetCompositeTexture(UTexture* InCompositeTexture)
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		CompositeTexture = InCompositeTexture;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		NotifyIfCompositeTextureChanged();
+	}
+
+	UTexture* GetCompositeTexture() const
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		// This should never happen and is a last resort, we should have caught the property overwrite well before we reach this code
+		// but this can happen from legacy code that use reflection to set the property without using the new _InContainer functions
+		// which will bypass the setter we put in place.
+		if (KnownCompositeTexture != CompositeTexture)
+		{
+			OutdatedKnownCompositeTextureDetected();
+		}
+		return CompositeTexture;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
 	/* defines how the CompositeTexture is applied, e.g. CTM_RoughnessFromNormalAlpha */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Compositing, AdvancedDisplay)
@@ -1343,7 +1391,11 @@ public:
 	UPROPERTY()
 	uint8 CompressionYCoCg : 1;
 
-	/** If true, the RHI texture will be created without TexCreate_OfflineProcessed. */
+	/** If true, the RHI texture will be created without TexCreate_OfflineProcessed.
+	  * This controls what format the data will be uploaded to RHI.
+	  * Offline processed textures may have platform specific tiling applied, and/or have their mip tails pre-combined into a single mip's data.
+	  * If NotOffline, then it will expect data to be uploaded in standard per-mip layouts.
+	  */
 	UPROPERTY(transient)
 	uint8 bNotOfflineProcessed : 1;
 
@@ -1453,12 +1505,12 @@ public:
 
 	/** Cache the combined LOD bias based on texture LOD group and LOD bias. */
 	UE_DEPRECATED(5.2, "UpdateCachedLODBias does nothing, remove call")
-	ENGINE_API void UpdateCachedLODBias()
+	void UpdateCachedLODBias()
 	{
 		// no longer cached, now does nothing
 	}
 	
-	ENGINE_API int32 GetCachedLODBias() const override
+	int32 GetCachedLODBias() const override
 	{
 		// this is the combined LOD Bias with cinematic bias
 		return CalculateLODBias(true);
@@ -1499,11 +1551,17 @@ public:
 	virtual TMap<FString, FTexturePlatformData*>* GetCookedPlatformData() { return NULL; }
 
 	void CleanupCachedRunningPlatformData();
+	
+	/**
+	 * Get the dimensions of the largest mip of the texture when built for the target platform
+	 *   accounting for LODBias and other constraints
+	 */
+	ENGINE_API void GetBuiltTextureSize( const ITargetPlatform* TargetPlatform , int32 & OutSizeX, int32 & OutSizeY ) const;
 
 	/**
 	 * Serializes cooked platform data.
 	 */
-	ENGINE_API void SerializeCookedPlatformData(class FArchive& Ar);
+	ENGINE_API void SerializeCookedPlatformData(class FArchive& Ar, const bool bSerializeMipData = true);
 
 	//~ Begin IInterface_AssetUserData Interface
 	ENGINE_API virtual void AddAssetUserData(UAssetUserData* InUserData) override;
@@ -1612,10 +1670,17 @@ public:
 	/* Change the Oodle Texture Sdk Version used to encode this texture to latest.
 	*  You should do this any time the texture is modified, such as on reimport, since the bits are changing anyway.
 	*/
-	ENGINE_API virtual void UpdateOodleTextureSdkVersionToLatest(void);
+	ENGINE_API virtual void UpdateOodleTextureSdkVersionToLatest(bool bDoPrePostEditChangeIfChanging = false);
+	
+	/** Get TextureFormatName with platform remaps and conditional prefix
+	 *   this is the entry point API for getting the final texture format name
+	 *  OutFormats will be resized to the number of sub-flavors of the platform (typically just 1)
+	 *  OutFormats[i] gets an array of format names, one per layer
+	 */
+	ENGINE_API void GetPlatformTextureFormatNamesWithPrefix(const class ITargetPlatform* TargetPlatform,TArray< TArray<FName> >& OutFormats) const;
 #endif // WITH_EDITOR
 
-	ENGINE_API EGammaSpace GetGammaSpace() const
+	EGammaSpace GetGammaSpace() const
 	{
 		// note: does not validate that the Format respects gamma (TextureSource::GetGammaSpace does)
 		
@@ -1833,6 +1898,12 @@ public:
 	* this is not for the current RHI (which may have a lower limit), this is for a Texture in general
 	*/
 	ENGINE_API static int32 GetMaximumDimensionOfNonVT();
+
+	/*
+	 * Downsize the 2D Image with the build setting of the texture.
+	 * Try to get as close as it can to the target resolution but it will stay above it if it can reach it
+	 */
+	ENGINE_API bool DownsizeImageUsingTextureSettings(const ITargetPlatform* TargetPlatform, FImage& InOutImage, int32 TargetSize, int32 LayerIndex);
 #endif
 
 protected:

@@ -9,13 +9,25 @@
 
 #include "RayTracingPayloadType.h"
 
-uint32 GetRaytracingMaterialPayloadSize()
+uint32 GetRaytracingMaterialPayloadSizeFullySimplified()
 {
-	return Strata::IsStrataEnabled() ? Strata::GetRayTracingMaterialPayloadSizeInBytes() : 64u;
+	if (Strata::IsStrataEnabled())
+	{
+		// All the data from FPackedMaterialClosestHitPayload except FStrataRaytracingPayload (see RayTracingCommon.ush)
+		uint32 PayloadSizeBytes = 6 * sizeof(uint32);
+
+		// The remaining data from FStrataRaytracingPayload.
+		const bool bFullySimplifiedMaterial = true;	// This is needed because ERayTracingPayloadType::RayTracingMaterial will be fully simplified, see FShaderType::ModifyCompilationEnvironment.
+		PayloadSizeBytes += Strata::GetRayTracingMaterialPayloadSizeInBytes(bFullySimplifiedMaterial);
+
+		return PayloadSizeBytes;
+	}
+
+	return 64u;
 }
 
 IMPLEMENT_RT_PAYLOAD_TYPE(ERayTracingPayloadType::Default, 24);
-IMPLEMENT_RT_PAYLOAD_TYPE_FUNCTION(ERayTracingPayloadType::RayTracingMaterial, GetRaytracingMaterialPayloadSize);
+IMPLEMENT_RT_PAYLOAD_TYPE_FUNCTION(ERayTracingPayloadType::RayTracingMaterial, GetRaytracingMaterialPayloadSizeFullySimplified);
 
 IMPLEMENT_GLOBAL_SHADER( FDefaultPayloadMS, "/Engine/Private/RayTracing/RayTracingBuiltInShaders.usf", "DefaultPayloadMS", SF_RayMiss);
 IMPLEMENT_GLOBAL_SHADER( FPackedMaterialClosestHitPayloadMS, "/Engine/Private/RayTracing/RayTracingBuiltInShaders.usf", "PackedMaterialClosestHitPayloadMS", SF_RayMiss);
@@ -56,18 +68,24 @@ void FRayTracingDispatchDescCS::Dispatch(FRHICommandList& RHICmdList,
 	FUintVector4 DispatchDescData[DispatchDescMaxSizeUint4s] = {};
 	FMemory::Memcpy(DispatchDescData, DispatchDescInput, DispatchDescSize);
 
-	SetShaderValueArray(RHICmdList, ShaderRHI, ComputeShader->DispatchDescInputParam, DispatchDescData, DispatchDescMaxSizeUint4s);
-	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->DispatchDescSizeDwordsParam, DispatchDescSizeDwords);
-	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->DispatchDescDimensionsOffsetDwordsParam, DispatchDescDimensionsOffsetDwords);
-	SetShaderValue(RHICmdList, ShaderRHI, ComputeShader->DimensionsBufferOffsetDwordsParam, DimensionsBufferOffsetDwords);
+	FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
 
-	SetSRVParameter(RHICmdList, ShaderRHI, ComputeShader->DispatchDimensionsParam, DispatchDimensionsSRV);
-	SetUAVParameter(RHICmdList, ShaderRHI, ComputeShader->DispatchDescOutputParam, DispatchDescOutputUAV);
+	SetShaderValueArray(BatchedParameters, ComputeShader->DispatchDescInputParam, DispatchDescData, DispatchDescMaxSizeUint4s);
+	SetShaderValue(BatchedParameters, ComputeShader->DispatchDescSizeDwordsParam, DispatchDescSizeDwords);
+	SetShaderValue(BatchedParameters, ComputeShader->DispatchDescDimensionsOffsetDwordsParam, DispatchDescDimensionsOffsetDwords);
+	SetShaderValue(BatchedParameters, ComputeShader->DimensionsBufferOffsetDwordsParam, DimensionsBufferOffsetDwords);
+
+	SetSRVParameter(BatchedParameters, ComputeShader->DispatchDimensionsParam, DispatchDimensionsSRV);
+	SetUAVParameter(BatchedParameters, ComputeShader->DispatchDescOutputParam, DispatchDescOutputUAV);
+	RHICmdList.SetBatchedShaderParameters(ComputeShader.GetComputeShader(), BatchedParameters);
 
 	RHICmdList.DispatchComputeShader(1, 1, 1);
 
-	SetSRVParameter(RHICmdList, ShaderRHI, ComputeShader->DispatchDimensionsParam, nullptr);
-	SetUAVParameter(RHICmdList, ShaderRHI, ComputeShader->DispatchDescOutputParam, nullptr);
+	FRHIBatchedShaderUnbinds& BatchedUnbinds = RHICmdList.GetScratchShaderUnbinds();
+
+	UnsetSRVParameter(BatchedUnbinds, ComputeShader->DispatchDimensionsParam);
+	UnsetUAVParameter(BatchedUnbinds, ComputeShader->DispatchDescOutputParam);
+	RHICmdList.SetBatchedShaderUnbinds(ComputeShader.GetComputeShader(), BatchedUnbinds);
 }
 
 #endif // RHI_RAYTRACING

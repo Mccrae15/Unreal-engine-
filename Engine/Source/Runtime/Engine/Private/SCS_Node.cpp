@@ -5,6 +5,7 @@
 #include "UObject/LinkerLoad.h"
 #include "Engine/World.h"
 #include "Engine/InheritableComponentHandler.h"
+#include "StaticMeshResources.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SCS_Node)
 
@@ -119,9 +120,7 @@ UActorComponent* USCS_Node::ExecuteNodeOnActor(AActor* Actor, USceneComponent* P
 		{
 			// Only register scene components if the world is initialized
 			UWorld* World = Actor->GetWorld();
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			bool bRegisterComponent = World && World->HasEverBeenInitialized_DONOTUSE();
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			bool bRegisterComponent = World && World->bIsWorldInitialized;
 
 			// If NULL is passed in, we are the root, so set transform and assign as RootComponent on Actor, similarly if the 
 			// NewSceneComp is the ParentComponent then we are the root component. This happens when the root component is recycled
@@ -172,6 +171,11 @@ UActorComponent* USCS_Node::ExecuteNodeOnActor(AActor* Actor, USceneComponent* P
 			// Register SCS scene components now (if necessary). Non-scene SCS component registration is deferred until after SCS execution, as there can be dependencies on the scene hierarchy.
 			if (bRegisterComponent)
 			{
+				FStaticMeshComponentBulkReregisterContext* ReregisterContext = Cast<USimpleConstructionScript>(GetOuter())->GetReregisterContext();
+				if (ReregisterContext)
+				{
+					ReregisterContext->AddConstructedComponent(NewSceneComp);
+				}
 				USimpleConstructionScript::RegisterInstancedComponent(NewSceneComp);
 			}
 		}
@@ -347,10 +351,25 @@ void USCS_Node::PreloadChain()
 		if (ensureMsgf(ComponentTemplate->GetLinker(), TEXT("Failed to find linker for %s, likely a circular dependency"), *ComponentTemplate->GetPathName()))
 		{
 			ComponentTemplate->GetLinker()->Preload(ComponentTemplate);
+
+			TArray<UObject*> Children;
+			GetObjectsWithOuter(ComponentTemplate, Children, true, RF_LoadCompleted);
+			for (UObject* Obj : Children)
+			{
+				if (!Obj->HasAnyFlags(RF_WasLoaded))
+				{
+					continue;
+				}
+
+				if (FLinkerLoad* Linker = Obj->GetLinker())
+				{
+					Linker->Preload(Obj);
+				}
+			}
 		}
 	}
 
-	for( TArray<USCS_Node*>::TIterator ChildIt(ChildNodes); ChildIt; ++ChildIt )
+	for( decltype(ChildNodes)::TIterator ChildIt(ChildNodes); ChildIt; ++ChildIt )
 	{
 		USCS_Node* CurrentChild = *ChildIt;
 		if( CurrentChild )
@@ -646,15 +665,15 @@ void USCS_Node::ValidateGuid()
 	}
 }
 
-EDataValidationResult USCS_Node::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult USCS_Node::IsDataValid(FDataValidationContext& Context) const
 {
-	EDataValidationResult Result = Super::IsDataValid(ValidationErrors);
+	EDataValidationResult Result = Super::IsDataValid(Context);
 	Result = (Result == EDataValidationResult::NotValidated) ? EDataValidationResult::Valid : Result;
 
 	// check the component that this node represents
 	if (ComponentTemplate)
 	{
-		EDataValidationResult ComponentResult = ComponentTemplate->IsDataValid(ValidationErrors);
+		EDataValidationResult ComponentResult = AsConst(*ComponentTemplate).IsDataValid(Context);
 		Result = CombineDataValidationResults(Result, ComponentResult);
 	}
 
@@ -663,7 +682,7 @@ EDataValidationResult USCS_Node::IsDataValid(TArray<FText>& ValidationErrors)
 	{
 		if (Child)
 		{
-			EDataValidationResult ChildResult = Child->IsDataValid(ValidationErrors);
+			EDataValidationResult ChildResult = Child->IsDataValid(Context);
 			Result = CombineDataValidationResults(Result, ChildResult);
 		}
 	}

@@ -132,7 +132,7 @@ public:
 	 */
 	void Upload()
 	{
-		check(IsInRenderingThread());
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 		if (TriangleCount == 0)
 		{
@@ -153,18 +153,18 @@ public:
 		this->VertexFactory.SetData(Data);
 
 		InitOrUpdateResource(&this->VertexFactory);
-		PositionVertexBuffer.InitResource();
-		StaticMeshVertexBuffer.InitResource();
-		ColorVertexBuffer.InitResource();
-		VertexFactory.InitResource();
+		PositionVertexBuffer.InitResource(RHICmdList);
+		StaticMeshVertexBuffer.InitResource(RHICmdList);
+		ColorVertexBuffer.InitResource(RHICmdList);
+		VertexFactory.InitResource(RHICmdList);
 
 		if (IndexBuffer.Indices.Num() > 0)
 		{
-			IndexBuffer.InitResource();
+			IndexBuffer.InitResource(RHICmdList);
 		}
 		if (bEnableSecondaryIndexBuffer && SecondaryIndexBuffer.Indices.Num() > 0)
 		{
-			SecondaryIndexBuffer.InitResource();
+			SecondaryIndexBuffer.InitResource(RHICmdList);
 		}
 
 		InvalidateRayTracingData();
@@ -247,9 +247,8 @@ public:
 	 * size/counts of any of the sub-buffers, a direct memcopy from the CPU-side buffer to the RHI buffer is used.
 	 * @warning This can only be called on the Rendering Thread.
 	 */
-	void TransferVertexUpdateToGPU(bool bPositions, bool bNormals, bool bTexCoords, bool bColors)
+	void TransferVertexUpdateToGPU(FRHICommandListBase& RHICmdList, bool bPositions, bool bNormals, bool bTexCoords, bool bColors)
 	{
-		check(IsInRenderingThread());
 		if (TriangleCount == 0)
 		{
 			return;
@@ -258,36 +257,41 @@ public:
 		if (bPositions)
 		{
 			FPositionVertexBuffer& VertexBuffer = this->PositionVertexBuffer;
-			void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+			void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
 			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-			RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBuffer.VertexBufferRHI);
 		}
 		if (bNormals)
 		{
 			FStaticMeshVertexBuffer& VertexBuffer = this->StaticMeshVertexBuffer;
-			void* VertexBufferData = RHILockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
+			void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
 			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTangentData(), VertexBuffer.GetTangentSize());
-			RHIUnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
 		}
 		if (bColors)
 		{
 			FColorVertexBuffer& VertexBuffer = this->ColorVertexBuffer;
-			void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+			void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
 			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-			RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBuffer.VertexBufferRHI);
 		}
 		if (bTexCoords)
 		{
 			FStaticMeshVertexBuffer& VertexBuffer = this->StaticMeshVertexBuffer;
-			void* VertexBufferData = RHILockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
+			void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
 			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTexCoordData(), VertexBuffer.GetTexCoordSize());
-			RHIUnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
 		}
 
 		InvalidateRayTracingData();
 		ValidateRayTracingData();		// currently we are immediately validating. This may be revisited in future.
 	}
 
+	UE_DEPRECATED(5.3, "TransferVertexUpdateToGPU now requires a command list")
+	void TransferVertexUpdateToGPU(bool bPositions, bool bNormals, bool bTexCoords, bool bColors)
+	{
+		TransferVertexUpdateToGPU(FRHICommandListImmediate::Get(), bPositions, bNormals, bTexCoords, bColors);
+	}
 
 	void InvalidateRayTracingData()
 	{
@@ -321,6 +325,7 @@ protected:
 		// do we always want to do this?
 		PrimaryRayTracingGeometry.ReleaseResource();		
 		SecondaryRayTracingGeometry.ReleaseResource();
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 			
 		for (int32 k = 0; k < 2; ++k)
 		{
@@ -340,7 +345,7 @@ protected:
 			Initializer.bAllowUpdate = false;
 
 			RayTracingGeometry.SetInitializer(Initializer);
-			RayTracingGeometry.InitResource();
+			RayTracingGeometry.InitResource(RHICmdList);
 
 			FRayTracingGeometrySegment Segment;
 			Segment.VertexBuffer = PositionVertexBuffer.VertexBufferRHI;
@@ -348,7 +353,7 @@ protected:
 			Segment.MaxVertices = PositionVertexBuffer.GetNumVertices();
 			RayTracingGeometry.Initializer.Segments.Add(Segment);
 
-			RayTracingGeometry.UpdateRHI();
+			RayTracingGeometry.UpdateRHI(RHICmdList);
 		}
 #endif
 	}
@@ -361,15 +366,15 @@ protected:
 	 */
 	void InitOrUpdateResource(FRenderResource* Resource)
 	{
-		check(IsInRenderingThread());
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 		if (!Resource->IsInitialized())
 		{
-			Resource->InitResource();
+			Resource->InitResource(RHICmdList);
 		}
 		else
 		{
-			Resource->UpdateRHI();
+			Resource->UpdateRHI(RHICmdList);
 		}
 	}
 
@@ -408,7 +413,7 @@ protected:
  * for a UBaseDynamicMeshComponent, where the assumption is that mesh data
  * will be stored in FMeshRenderBufferSet instances
  */
-class GEOMETRYFRAMEWORK_API FBaseDynamicMeshSceneProxy : public FPrimitiveSceneProxy
+class FBaseDynamicMeshSceneProxy : public FPrimitiveSceneProxy
 {
 	using FIndex2i = UE::Geometry::FIndex2i;
 	using FIndex3i = UE::Geometry::FIndex3i;
@@ -434,6 +439,23 @@ public:
 	 * Per-triangle color function. Only called if bUsePerTriangleColor=true
 	 */
 	TFunction<FColor(const FDynamicMesh3*, int)> PerTriangleColorFunc = nullptr;
+
+
+	/**
+	 * If true, VertexColorRemappingFunc is called on Vertex Colors provided from Mesh to remap them to a different color
+	 */
+	bool bApplyVertexColorRemapping = false;
+
+	/**
+	 * Vertex color remapping function. Only called if bApplyVertexColorRemapping == true, for mesh vertex colors
+	 */
+	TUniqueFunction<void(FVector4f&)> VertexColorRemappingFunc = nullptr;
+
+	/**
+	 * Color Space Transform/Conversion applied to Vertex Colors provided from Mesh Color Overlay Attribute
+	 * Color Space Conversion is applied after any Vertex Color Remapping.
+	 */
+	EDynamicMeshVertexColorTransformMode ColorSpaceTransformMode = EDynamicMeshVertexColorTransformMode::NoTransform;
 
 	/**
 	* If true, a facet normals are used instead of mesh normals
@@ -465,9 +487,9 @@ protected:
 	bool bEnableViewModeOverrides = true;
 
 public:
-	FBaseDynamicMeshSceneProxy(UBaseDynamicMeshComponent* Component);
+	GEOMETRYFRAMEWORK_API FBaseDynamicMeshSceneProxy(UBaseDynamicMeshComponent* Component);
 
-	virtual ~FBaseDynamicMeshSceneProxy();
+	GEOMETRYFRAMEWORK_API virtual ~FBaseDynamicMeshSceneProxy();
 
 
 	//
@@ -492,12 +514,12 @@ public:
 	 * Allocates a set of render buffers. FPrimitiveSceneProxy will keep track of these
 	 * buffers and destroy them on destruction.
 	 */
-	virtual FMeshRenderBufferSet* AllocateNewRenderBufferSet();
+	GEOMETRYFRAMEWORK_API virtual FMeshRenderBufferSet* AllocateNewRenderBufferSet();
 
 	/**
 	 * Explicitly release a set of RenderBuffers
 	 */
-	virtual void ReleaseRenderBufferSet(FMeshRenderBufferSet* BufferSet);
+	GEOMETRYFRAMEWORK_API virtual void ReleaseRenderBufferSet(FMeshRenderBufferSet* BufferSet);
 
 
 	/**
@@ -613,7 +635,7 @@ public:
 				}
 
 				FColor VertexFColor = (bHaveColors && TriColor[j] != FDynamicMesh3::InvalidID) ?
-					UE::Geometry::ToFColor(ColorOverlay->GetElement(TriColor[j])) : UniformTriColor;
+					GetOverlayColorAsFColor(ColorOverlay, TriColor[j]) : UniformTriColor;
 
 				RenderBuffers->ColorVertexBuffer.VertexColor(VertIdx) = VertexFColor;
 
@@ -636,6 +658,30 @@ public:
 	}
 
 
+	FColor GetOverlayColorAsFColor(
+		const FDynamicMeshColorOverlay* ColorOverlay,
+		int32 ElementID)
+	{
+		checkSlow(ColorOverlay);
+		FVector4f UseColor = ColorOverlay->GetElement(ElementID);
+
+		if (bApplyVertexColorRemapping)
+		{
+			VertexColorRemappingFunc(UseColor);
+		}
+
+		if (ColorSpaceTransformMode == EDynamicMeshVertexColorTransformMode::SRGBToLinear)
+		{
+			// is there a better way to do this? 
+			FColor QuantizedSRGBColor = ((FLinearColor)UseColor).ToFColor(false);
+			return FLinearColor(QuantizedSRGBColor).ToFColor(false);
+		}
+		else
+		{
+			bool bConvertToSRGB = (ColorSpaceTransformMode == EDynamicMeshVertexColorTransformMode::LinearToSRGB);
+			return ((FLinearColor)UseColor).ToFColor(bConvertToSRGB);
+		}
+	}
 
 
 	/**
@@ -807,7 +853,7 @@ public:
 				if (bUpdateColors)
 				{
 					FColor VertexFColor = (bHaveColors  && TriColor[j] != FDynamicMesh3::InvalidID) ?
-						UE::Geometry::ToFColor(ColorOverlay->GetElement(TriColor[j])) : UniformTriColor;
+						GetOverlayColorAsFColor(ColorOverlay, TriColor[j]) : UniformTriColor;
 					RenderBuffers->ColorVertexBuffer.VertexColor(VertIdx) = VertexFColor;
 				}
 
@@ -876,12 +922,12 @@ public:
 	/**
 	 * @return number of active materials
 	 */
-	virtual int32 GetNumMaterials() const;
+	GEOMETRYFRAMEWORK_API virtual int32 GetNumMaterials() const;
 
 	/**
 	 * Safe GetMaterial function that will never return nullptr
 	 */
-	virtual UMaterialInterface* GetMaterial(int32 k) const;
+	GEOMETRYFRAMEWORK_API virtual UMaterialInterface* GetMaterial(int32 k) const;
 
 	/**
 	 * Set whether or not to validate mesh batch materials against the component materials.
@@ -897,18 +943,22 @@ public:
 	 * the check in FPrimitiveSceneProxy::VerifyUsedMaterial() will fail if an override
 	 * material is set, if materials change, etc, etc
 	 */
-	virtual void UpdatedReferencedMaterials();
+	GEOMETRYFRAMEWORK_API virtual void UpdatedReferencedMaterials();
 
 
 	//
 	// FBaseDynamicMeshSceneProxy implementation
 	//
 
+	/**
+	 * If EngineShowFlags request vertex color rendering, returns the appropriate vertex color override material's render proxy.  Otherwise returns nullptr.
+	 */
+	GEOMETRYFRAMEWORK_API static FMaterialRenderProxy* GetEngineVertexColorMaterialProxy(FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags, bool bProxyIsSelected, bool bIsHovered);
 
 	/**
 	 * Render set of active RenderBuffers returned by GetActiveRenderBufferSets
 	 */
-	virtual void GetDynamicMeshElements(
+	GEOMETRYFRAMEWORK_API virtual void GetDynamicMeshElements(
 		const TArray<const FSceneView*>& Views, 
 		const FSceneViewFamily& ViewFamily, 
 		uint32 VisibilityMap, 
@@ -918,7 +968,7 @@ public:
 	/**
 	 * Draw a single-frame FMeshBatch for a FMeshRenderBufferSet
 	 */
-	virtual void DrawBatch(FMeshElementCollector& Collector,
+	GEOMETRYFRAMEWORK_API virtual void DrawBatch(FMeshElementCollector& Collector,
 		const FMeshRenderBufferSet& RenderBuffers,
 		const FDynamicMeshIndexBuffer32& IndexBuffer,
 		FMaterialRenderProxy* UseMaterial,
@@ -929,16 +979,16 @@ public:
 
 #if RHI_RAYTRACING
 
-	virtual bool IsRayTracingRelevant() const override;
-	virtual bool HasRayTracingRepresentation() const override;
+	GEOMETRYFRAMEWORK_API virtual bool IsRayTracingRelevant() const override;
+	GEOMETRYFRAMEWORK_API virtual bool HasRayTracingRepresentation() const override;
 
-	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override;
+	GEOMETRYFRAMEWORK_API virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override;
 
 
 	/**
 	* Draw a single-frame raytracing FMeshBatch for a FMeshRenderBufferSet
 	*/
-	virtual void DrawRayTracingBatch(
+	GEOMETRYFRAMEWORK_API virtual void DrawRayTracingBatch(
 		FRayTracingMaterialGatheringContext& Context,
 		const FMeshRenderBufferSet& RenderBuffers,
 		const FDynamicMeshIndexBuffer32& IndexBuffer,

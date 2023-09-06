@@ -9,11 +9,12 @@
 #include "DynamicResolutionState.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
-#include "PostProcess/PostProcessing.h"
 #include "RHI.h"
-#include "SceneRendering.h"
 #include "ScreenPass.h"
 #include "SceneView.h"
+
+#include "PostProcess/PostProcessing.h"
+#include "SceneRendering.h"
 
 // Set this to 1 to clip pixels outside of bounding box.
 #define CLIP_PIXELS_OUTSIDE_AABB 1
@@ -284,47 +285,27 @@ namespace
 			Parameters->PostProcessOutput = SceneTextureViewportParams;
 			Parameters->View = View.ViewUniformBuffer;
 
-			FRHIBlendState* DefaultBlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
-				
 			FRHIResourceCreateInfo CreateInfo(TEXT("CCR_StencilIdBuffer"));
 
 			Parameters->StencilIds = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(CreateStructuredBuffer(GraphBuilder, TEXT("CCR.StencilIdBuffer"), sizeof(uint32), StencilIds.Num(), &StencilIds[0], sizeof(uint32) * StencilIds.Num())));
 			Parameters->StencilIdCount = StencilIds.Num();
 
-			{
-				GraphBuilder.AddPass(
-					RDG_EVENT_NAME("ColorCorrectRegions_StencilMerger"),
-					Parameters,
-					ERDGPassFlags::Raster,
-						[&View,
-						StencilMergerVS,
-						StencilMergerPS,
-						Parameters,
-						RegionViewport,
-						DefaultBlendState](FRHICommandList& RHICmdList)
-					{
-						check(true);
-						DrawScreenPass(
-							RHICmdList,
-							static_cast<const FViewInfo&>(View),
-							RegionViewport,
-							RegionViewport,
-							FScreenPassPipelineState(StencilMergerVS, StencilMergerPS, DefaultBlendState, FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI()),
-							EScreenPassDrawFlags::None,
-							[&](FRHICommandList& RHICmdList)
-							{
-								SetShaderParameters(RHICmdList, StencilMergerPS, StencilMergerPS.GetPixelShader(), *Parameters);
-							});
-					}
-				);
-			}
+			AddDrawScreenPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("ColorCorrectRegions_StencilMerger"),
+				View,
+				RegionViewport,
+				RegionViewport,
+				StencilMergerVS,
+				StencilMergerPS,
+				Parameters
+			);
 		}
 	}
 
 	bool RenderRegion
 		( FRDGBuilder& GraphBuilder
 		, const FSceneView& View
-		, const FPostProcessingInputs& Inputs
 		, const FSceneViewFamily& ViewFamily
 		, AColorCorrectRegion* Region
 		, const FIntRect& PrimaryViewRect
@@ -550,24 +531,17 @@ namespace
 			TShaderMapRef<FColorCorrectScreenPassVS> ScreenPassVS(GlobalShaderMap);
 			Parameters->RenderTargets[0] = BackBufferRenderTarget.GetRenderTargetBinding();
 
-			GraphBuilder.AddPass(
+			AddDrawScreenPass(
+				GraphBuilder,
 				RDG_EVENT_NAME("ColorCorrectRegions_ClearViewport"),
-				Parameters,
-				ERDGPassFlags::Raster,
-				[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, DefaultBlendState](FRHICommandList& RHICmdList)
-				{
-					DrawScreenPass(
-						RHICmdList,
-						static_cast<const FViewInfo&>(View),
-						RegionViewport,
-						RegionViewport,
-						FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, DefaultBlendState),
-						EScreenPassDrawFlags::None,
-						[&](FRHICommandList&)
-						{
-							SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
-						});
-				});
+				View,
+				RegionViewport,
+				RegionViewport,
+				ScreenPassVS,
+				CopyPixelShader,
+				DefaultBlendState,
+				Parameters
+			);
 		}
 #endif
 		// Main region rendering.
@@ -592,27 +566,35 @@ namespace
 			{
 				DrawScreenPass(
 					RHICmdList,
-					static_cast<const FViewInfo&>(View),
+					View,
 					RegionViewport, // Output Viewport
 					RegionViewport, // Input Viewport
 					FScreenPassPipelineState(VertexShader, PixelShader, DefaultBlendState, DepthStencilState),
 					EScreenPassDrawFlags::None,
 					[&](FRHICommandList& RHICmdList)
 					{
-						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRRegionDataInputParameter>(), RegionData);
-						SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectParameter>(), CCBase);
+						FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+
+						SetUniformBufferParameterImmediate(BatchedParameters, PixelShader->GetUniformBufferParameter<FCCRRegionDataInputParameter>(), RegionData);
+						SetUniformBufferParameterImmediate(BatchedParameters, PixelShader->GetUniformBufferParameter<FCCRColorCorrectParameter>(), CCBase);
 						if (bIsAdvanced)
 						{
-							SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectShadowsParameter>(), CCShadows);
-							SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectMidtonesParameter>(), CCMidtones);
-							SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectHighlightsParameter>(), CCHighlights);
+							SetUniformBufferParameterImmediate(BatchedParameters, PixelShader->GetUniformBufferParameter<FCCRColorCorrectShadowsParameter>(), CCShadows);
+							SetUniformBufferParameterImmediate(BatchedParameters, PixelShader->GetUniformBufferParameter<FCCRColorCorrectMidtonesParameter>(), CCMidtones);
+							SetUniformBufferParameterImmediate(BatchedParameters, PixelShader->GetUniformBufferParameter<FCCRColorCorrectHighlightsParameter>(), CCHighlights);
 						}
 
-						VertexShader->SetParameters(RHICmdList, View);
-						SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), *PostProcessMaterialParameters);
+						PixelShader->SetParameters(BatchedParameters, View);
+						SetShaderParameters(BatchedParameters, PixelShader, *PostProcessMaterialParameters);
 
-						PixelShader->SetParameters(RHICmdList, View);
-						SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PostProcessMaterialParameters);
+						RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
+
+						BatchedParameters.Reset();
+
+						VertexShader->SetParameters(BatchedParameters, View);
+						SetShaderParameters(BatchedParameters, VertexShader, *PostProcessMaterialParameters);
+
+						RHICmdList.SetBatchedShaderParameters(VertexShader.GetVertexShader(), BatchedParameters);
 					});
 
 			});
@@ -643,7 +625,7 @@ namespace
 			{
 				DrawScreenPass(
 					RHICmdList,
-					static_cast<const FViewInfo&>(View),
+					View,
 					RegionViewport,
 					RegionViewport,
 					FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, CopyBlendState),
@@ -735,7 +717,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 		// Because we are not using proxy material, but plain global shader, we need to setup Scene textures ourselves.
 		// We don't need to do this per region.
 		check(View.bIsViewInfo);
-		FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, ((const FViewInfo&)View).GetSceneTexturesChecked(), View.GetFeatureLevel(), ESceneTextureSetupMode::All);
+		FSceneTextureShaderParameters SceneTextures = CreateSceneTextureShaderParameters(GraphBuilder, View, ESceneTextureSetupMode::All);
 
 		WorldSubsystem->SortRegionsByDistance(View.ViewLocation);
 		{
@@ -745,7 +727,6 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 				AColorCorrectRegion* Region = *It;
 				RenderRegion(GraphBuilder
 					, View
-					, Inputs
 					, ViewFamily
 					, Region
 					, PrimaryViewRect
@@ -763,7 +744,6 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 				AColorCorrectRegion* Region = *It;
 				RenderRegion(GraphBuilder
 					, View
-					, Inputs
 					, ViewFamily
 					, Region
 					, PrimaryViewRect

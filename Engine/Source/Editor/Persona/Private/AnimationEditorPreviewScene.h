@@ -21,6 +21,7 @@ public:
 	~FAnimationEditorPreviewScene();
 
 	/** IPersonaPreviewScene interface */
+	virtual void UnregisterForUndo() override;
 	virtual TSharedRef<class IPersonaToolkit> GetPersonaToolkit() const override { return PersonaToolkit.Pin().ToSharedRef(); }
 	virtual void SetPreviewAnimationAsset(UAnimationAsset* AnimAsset, bool bEnablePreview = true) override;
 	virtual UAnimationAsset* GetPreviewAnimationAsset() const override;
@@ -361,13 +362,13 @@ private:
 	}
 private:
 	/** The one and only actor we have */
-	AActor* Actor;
+	TObjectPtr<AActor> Actor;
 
 	/** The main preview skeletal mesh component */
-	UDebugSkelMeshComponent*			SkeletalMeshComponent;
+	TObjectPtr<UDebugSkelMeshComponent>			SkeletalMeshComponent;
 
 	/** Array of loaded additional meshes */
-	TArray<USkeletalMeshComponent*>		AdditionalMeshes;
+	TArray<TObjectPtr<USkeletalMeshComponent>>		AdditionalMeshes;
 
 	/** The editable skeleton we are viewing/editing */
 	TWeakPtr<class IEditableSkeleton> EditableSkeletonPtr;
@@ -391,7 +392,7 @@ private:
 	FOnMeshClickMulticaster OnMeshClick;
 
 	/** Configuration object for editing in details panels */
-	class UPersonaPreviewSceneDescription* PreviewSceneDescription;
+	TObjectPtr<class UPersonaPreviewSceneDescription> PreviewSceneDescription;
 
 	/** Previous information of a wind actor */
 	FVector PrevWindLocation;

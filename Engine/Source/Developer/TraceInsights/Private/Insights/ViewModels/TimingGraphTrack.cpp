@@ -12,10 +12,15 @@
 #include "Insights/Common/PaintUtils.h"
 #include "Insights/Common/TimeUtils.h"
 #include "Insights/InsightsManager.h"
+#include "Insights/TimingProfilerManager.h"
 #include "Insights/ViewModels/AxisViewportDouble.h"
+#include "Insights/ViewModels/FrameStatsHelper.h"
 #include "Insights/ViewModels/GraphTrackBuilder.h"
 #include "Insights/ViewModels/ITimingViewDrawHelper.h"
 #include "Insights/ViewModels/TimingTrackViewport.h"
+#include "Insights/ViewModels/ThreadTimingTrack.h"
+#include "Insights/Widgets/STimingProfilerWindow.h"
+#include "Insights/Widgets/STimingView.h"
 
 #define LOCTEXT_NAMESPACE "GraphTrack"
 
@@ -51,6 +56,7 @@ FString FTimingGraphSeries::FormatValue(double Value) const
 		return FString::Printf(TEXT("%s (%g fps)"), *TimeUtils::FormatTimeAuto(Value), 1.0 / Value);
 
 	case FTimingGraphSeries::ESeriesType::Timer:
+	case FTimingGraphSeries::ESeriesType::FrameStatsTimer:
 		return TimeUtils::FormatTimeAuto(Value);
 
 	case FTimingGraphSeries::ESeriesType::StatsCounter:
@@ -135,6 +141,20 @@ FTimingGraphTrack::FTimingGraphTrack()
 
 FTimingGraphTrack::~FTimingGraphTrack()
 {
+	if (OnTrackVisibilityChangedHandle.IsValid())
+	{
+		TSharedPtr<class STimingProfilerWindow> TimingWindow = FTimingProfilerManager::Get()->GetProfilerWindow();
+		if (TimingWindow.IsValid())
+		{
+			TSharedPtr<STimingView> TimingView = TimingWindow->GetTimingView();
+			if (TimingView.IsValid())
+			{
+				TimingView->OnTrackVisibilityChanged().Remove(OnTrackVisibilityChangedHandle);
+				TimingView->OnTrackAdded().Remove(OnTrackAddedHandle);
+				TimingView->OnTrackRemoved().Remove(OnTrackRemovedHandle);
+			}
+		}
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -142,6 +162,36 @@ FTimingGraphTrack::~FTimingGraphTrack()
 void FTimingGraphTrack::Update(const ITimingTrackUpdateContext& Context)
 {
 	FGraphTrack::Update(Context);
+	if (!OnTrackVisibilityChangedHandle.IsValid())
+	{
+		TSharedPtr<class STimingProfilerWindow> TimingWindow = FTimingProfilerManager::Get()->GetProfilerWindow();
+		if (TimingWindow.IsValid())
+		{
+			TSharedPtr<STimingView> TimingView = TimingWindow->GetTimingView();
+			if (TimingView.IsValid())
+			{
+				auto OnTrackAddedRemovedLamda = [this](const TSharedPtr<const FBaseTimingTrack> Track)
+				{
+					if (Track->Is<FThreadTimingTrack>())
+					{
+						// If there are more series than the default frame series.
+						if (this->AllSeries.Num() > ETraceFrameType::TraceFrameType_Count)
+						{
+							this->SetDirtyFlag();
+						}
+					}
+				};
+
+				OnTrackAddedHandle = TimingView->OnTrackAdded().AddLambda(OnTrackAddedRemovedLamda);
+				OnTrackRemovedHandle = TimingView->OnTrackRemoved().AddLambda(OnTrackAddedRemovedLamda);
+
+				OnTrackVisibilityChangedHandle = TimingView->OnTrackVisibilityChanged().AddLambda([this]()
+					{
+						this->SetDirtyFlag();
+					});
+			}
+		}
+	}
 
 	const bool bIsEntireGraphTrackDirty = IsDirty() || Context.GetViewport().IsHorizontalViewportDirty();
 	bool bNeedsUpdate = bIsEntireGraphTrackDirty;
@@ -183,6 +233,10 @@ void FTimingGraphTrack::Update(const ITimingTrackUpdateContext& Context)
 
 				case FTimingGraphSeries::ESeriesType::Timer:
 					UpdateTimerSeries(*TimingSeries, Viewport);
+					break;
+
+				case FTimingGraphSeries::ESeriesType::FrameStatsTimer:
+					UpdateFrameStatsTimerSeries(*TimingSeries, Viewport);
 					break;
 
 				case FTimingGraphSeries::ESeriesType::StatsCounter:
@@ -313,8 +367,10 @@ void FTimingGraphTrack::UpdateTimerSeries(FTimingGraphSeries& Series, const FTim
 	{
 		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
+		TSet<uint32> Timelines;
+		GetVisibleTimelineIndexes(Timelines);
 		const double SessionDuration = Session->GetDurationSeconds();
-		if (Series.CachedSessionDuration != SessionDuration)
+		if (Series.CachedSessionDuration != SessionDuration || Series.CachedTimelinesNum != Timelines.Num())
 		{
 			Series.CachedSessionDuration = SessionDuration;
 
@@ -325,7 +381,11 @@ void FTimingGraphTrack::UpdateTimerSeries(FTimingGraphSeries& Series, const FTim
 
 			const uint32 TimelineCount = TimingProfilerProvider.GetTimelineCount();
 			uint32 NumTimelinesContainingEvent = 0;
-			for (uint32 TimelineIndex = 0; TimelineIndex < TimelineCount; ++TimelineIndex)
+
+			Series.CachedTimelinesNum = Timelines.Num();
+			Series.CachedEvents.Empty();
+
+			for (uint32 TimelineIndex : Timelines)
 			{
 				TimingProfilerProvider.ReadTimeline(TimelineIndex,
 					[SessionDuration, &Series, TimerReader, &Viewport, &NumTimelinesContainingEvent](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
@@ -395,6 +455,114 @@ void FTimingGraphTrack::UpdateTimerSeries(FTimingGraphSeries& Series, const FTim
 		{
 			const FTimingGraphSeries::FSimpleTimingEvent& Event = Series.CachedEvents[Index];
 			Builder.AddEvent(Event.StartTime, Event.Duration, Event.Duration);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Frams Stats Timer Series
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedPtr<FTimingGraphSeries> FTimingGraphTrack::GetFrameStatsTimerSeries(uint32 TimerId, ETraceFrameType FrameType)
+{
+	TSharedPtr<FGraphSeries>* Ptr = AllSeries.FindByPredicate([TimerId, FrameType](const TSharedPtr<FGraphSeries>& Series)
+		{
+			const TSharedPtr<FTimingGraphSeries> TimingSeries = StaticCastSharedPtr<FTimingGraphSeries>(Series);
+			return TimingSeries->Type == FTimingGraphSeries::ESeriesType::FrameStatsTimer && TimingSeries->TimerId == TimerId && TimingSeries->FrameType == FrameType;
+		});
+	return (Ptr != nullptr) ? StaticCastSharedPtr<FTimingGraphSeries>(*Ptr) : nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedPtr<FTimingGraphSeries> FTimingGraphTrack::AddFrameStatsTimerSeries(uint32 TimerId, ETraceFrameType FrameType, FLinearColor Color)
+{
+	TSharedRef<FTimingGraphSeries> Series = MakeShared<FTimingGraphSeries>(FTimingGraphSeries::ESeriesType::FrameStatsTimer);
+
+	Series->SetName(TEXT("<Frame Stats Timer>"));
+	Series->SetDescription(TEXT("Frame Stats Timer series"));
+
+	const FLinearColor BorderColor(Color.R + 0.4f, Color.G + 0.4f, Color.B + 0.4f, 1.0f);
+	Series->SetColor(Color, BorderColor);
+
+	Series->TimerId = TimerId;
+	Series->FrameType = FrameType;
+
+	// Use shared viewport.
+	Series->SetBaselineY(SharedValueViewport.GetBaselineY());
+	Series->SetScaleY(SharedValueViewport.GetScaleY());
+	Series->EnableSharedViewport();
+
+	Series->CachedSessionDuration = 0.0;
+
+	AllSeries.Add(Series);
+	return Series;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTimingGraphTrack::RemoveFrameStatsTimerSeries(uint32 TimerId, ETraceFrameType FrameType)
+{
+	AllSeries.RemoveAll([TimerId, FrameType](const TSharedPtr<FGraphSeries>& Series)
+		{
+			const TSharedPtr<FTimingGraphSeries> TimingSeries = StaticCastSharedPtr<FTimingGraphSeries>(Series);
+			return TimingSeries->Type == FTimingGraphSeries::ESeriesType::FrameStatsTimer && TimingSeries->TimerId == TimerId && TimingSeries->FrameType == FrameType;
+		});
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTimingGraphTrack::UpdateFrameStatsTimerSeries(FTimingGraphSeries& Series, const FTimingTrackViewport& Viewport)
+{
+	FGraphTrackBuilder Builder(*this, Series, Viewport);
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	if (Session.IsValid())
+	{
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+
+		TSet<uint32> VisibleTimelines;
+		GetVisibleTimelineIndexes(VisibleTimelines);
+		const double SessionDuration = Session->GetDurationSeconds();
+		if (Series.CachedSessionDuration != SessionDuration || Series.CachedTimelinesNum != VisibleTimelines.Num())
+		{
+			Series.CachedSessionDuration = SessionDuration;
+			Series.CachedTimelinesNum = VisibleTimelines.Num();
+
+			const TraceServices::IFrameProvider& FramesProvider = ReadFrameProvider(*Session.Get());
+
+			Series.FrameStatsCachedEvents.Empty();
+			uint64 FrameCount = FramesProvider.GetFrameCount(ETraceFrameType::TraceFrameType_Game);
+			if (FrameCount == 0)
+			{
+				return;
+			}
+
+			FramesProvider.EnumerateFrames(Series.FrameType, 0ull, FrameCount, [&Series](const TraceServices::FFrame& Frame)
+				{
+					Insights::FFrameStatsCachedEvent Event;
+					Event.FrameStartTime = Frame.StartTime;
+					Event.FrameEndTime = Frame.EndTime;
+					Event.Duration.store(0.0f);
+					Series.FrameStatsCachedEvents.Add(Event);
+				});
+
+			Insights::FFrameStatsHelper::ComputeFrameStatsForTimer(Series.FrameStatsCachedEvents, Series.TimerId, VisibleTimelines);
+		}
+
+		int32 StartIndex = Algo::UpperBoundBy(Series.FrameStatsCachedEvents, Viewport.GetStartTime(), &Insights::FFrameStatsCachedEvent::FrameStartTime);
+		if (StartIndex > 0)
+		{
+			StartIndex--;
+		}
+		int32 EndIndex = Algo::UpperBoundBy(Series.FrameStatsCachedEvents, Viewport.GetEndTime(), &Insights::FFrameStatsCachedEvent::FrameStartTime);
+		if (EndIndex < Series.FrameStatsCachedEvents.Num())
+		{
+			EndIndex++;
+		}
+		for (int32 Index = StartIndex; Index < EndIndex; ++Index)
+		{
+			const Insights::FFrameStatsCachedEvent& Entry = Series.FrameStatsCachedEvents[Index];
+			Builder.AddEvent(Entry.FrameStartTime, Entry.Duration.load(), Entry.Duration.load());
 		}
 	}
 }
@@ -544,6 +712,26 @@ void FTimingGraphTrack::UpdateStatsCounterSeries(FTimingGraphSeries& Series, con
 			}
 		});
 	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTimingGraphTrack::GetVisibleTimelineIndexes(TSet<uint32>& TimelineIndexes)
+{
+	TSharedPtr<class STimingProfilerWindow> TimingWindow = FTimingProfilerManager::Get()->GetProfilerWindow();
+	if (!TimingWindow.IsValid())
+	{
+		return;
+	}
+
+	TSharedPtr<STimingView> TimingView = TimingWindow->GetTimingView();
+	if (!TimingView.IsValid())
+	{
+		return;
+	}
+
+	TSharedPtr<FThreadTimingSharedState> ThreadSharedState = TimingView->GetThreadTimingSharedState();
+	ThreadSharedState->GetVisibleTimelineIndexes(TimelineIndexes);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

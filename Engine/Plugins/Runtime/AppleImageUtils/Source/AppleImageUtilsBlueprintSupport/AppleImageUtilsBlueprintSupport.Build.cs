@@ -15,12 +15,11 @@ namespace UnrealBuildTool.Rules
 
             PrivateIncludePaths.AddRange(
                 new string[] {
-                    "AppleImageUtils/Public",
-                    "AppleImageUtilsBlueprintSupport/Classes"
                     // ... add other private include paths required here ...
                 }
                 );
 
+			PrivateIncludePathModuleNames.Add("AppleImageUtils");
 
             PublicDependencyModuleNames.AddRange(
                 new string[]

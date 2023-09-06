@@ -25,6 +25,8 @@ namespace MovieScene
 struct FInstanceHandle;
 struct FRootInstanceHandle;
 
+enum class ESequenceInstanceUpdateFlags : uint8;
+
 
 /**
  * Interface for an object that will update a sequence based on the current context. It holds several responsibilities:
@@ -51,6 +53,11 @@ public:
 
 	/** Virtual destructor */
 	virtual ~ISequenceUpdater() {}
+
+	/**
+	 * Called to initialize the flag structure that denotes what functions need to be called on this updater
+	 */
+	virtual void PopulateUpdateFlags(UMovieSceneEntitySystemLinker* InLinker, IMovieScenePlayer* InPlayer, ESequenceInstanceUpdateFlags& OutUpdateFlags) = 0;
 
 	/**
 	 * Called before any updates to the sequence to allow this updater to dissect the context into smaller ranges that should be evaluated independently for the purpose of ensuring determinism.

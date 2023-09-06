@@ -18,10 +18,10 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"GameplayTags",
-					"MassEntity",
 					"SmartObjectsModule",
 					"StructUtils",
-					"WorldConditions"
+					"WorldConditions",
+					"NavigationSystem"
 				}
 			);
 

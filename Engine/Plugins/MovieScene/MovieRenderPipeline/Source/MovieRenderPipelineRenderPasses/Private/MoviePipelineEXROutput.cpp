@@ -256,7 +256,7 @@ bool FEXRImageWriteTask::WriteToDisk()
 #if WITH_EDITOR
 			catch (const IEX_NAMESPACE::BaseExc& Exception)
 			{
-				UE_LOG(LogMovieRenderPipelineIO, Error, TEXT("Caught exception: %s"), Exception.message().c_str());
+				UE_LOG(LogMovieRenderPipelineIO, Error, TEXT("Caught exception: %hs"), Exception.message().c_str());
 			}
 #endif
 		}
@@ -643,10 +643,10 @@ UMoviePipelineImageSequenceOutput_EXR::FColorSpaceMetadata UMoviePipelineImageSe
 		else if (!InColorSettings->bDisableToneCurve)
 		{
 			TPair<UE::Color::EColorSpace, FString> ColorSpaceType = GetDisplayGamutTypeFn(HDRGetDefaultDisplayColorGamut());
-			UE::Color::FColorSpace OuptutCS = UE::Color::FColorSpace(ColorSpaceType.Key);
+			UE::Color::FColorSpace OutputCS = UE::Color::FColorSpace(ColorSpaceType.Key);
 
 			OutMetadata.DestinationName = ColorSpaceType.Value;
-			OutMetadata.Chromaticities = { OuptutCS.GetRedChromaticity(), OuptutCS.GetGreenChromaticity(), OuptutCS.GetBlueChromaticity(), OuptutCS.GetWhiteChromaticity() };
+			OutMetadata.Chromaticities = { OutputCS.GetRedChromaticity(), OutputCS.GetGreenChromaticity(), OutputCS.GetBlueChromaticity(), OutputCS.GetWhiteChromaticity() };
 		}
 		else
 		{

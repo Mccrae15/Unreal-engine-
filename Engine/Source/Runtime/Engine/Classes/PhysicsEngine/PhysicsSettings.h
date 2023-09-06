@@ -48,11 +48,11 @@ struct FPhysicalSurfaceName
   * See: IChaosSettingsProvider
   */
 USTRUCT()
-struct ENGINE_API FChaosPhysicsSettings
+struct FChaosPhysicsSettings
 {
 	GENERATED_BODY()
 
-	FChaosPhysicsSettings();
+	ENGINE_API FChaosPhysicsSettings();
 
 	/** Default threading model to use on module initialisation. Can be switched at runtime using p.Chaos.ThreadingModel */
 	UPROPERTY(EditAnywhere, Category = ChaosPhysics)
@@ -66,7 +66,7 @@ struct ENGINE_API FChaosPhysicsSettings
 	UPROPERTY(EditAnywhere, Category = Framerate)
 	EChaosBufferMode DedicatedThreadBufferMode;
 
-	void OnSettingsUpdated();
+	ENGINE_API void OnSettingsUpdated();
 };
 
 UENUM()
@@ -84,6 +84,36 @@ namespace ESettingsDOF
 		XYPlane,
 	};
 }
+
+/** Physics Prediction Settings */
+USTRUCT()
+struct FPhysicsPredictionSettings
+{
+	GENERATED_BODY();
+
+	/** Enable networked physics prediction */
+	UPROPERTY(EditAnywhere, Category = "Replication")
+	bool bEnablePhysicsPrediction;
+
+	/** Enable physics resimulation */
+	UPROPERTY(EditAnywhere, Category = "Replication", meta = (editcondition = "bEnablePhysicsPrediction"))
+	bool bEnablePhysicsResimulation;
+
+	/** Distance in centimeters before a state discrepancy triggers a resimulation */
+	UPROPERTY(EditAnywhere, Category = "Replication", meta = (editcondition = "bEnablePhysicsPrediction"))
+	float ResimulationErrorThreshold;
+
+	/** Amount of RTT (Round Trip Time) latency for the prediction to support in milliseconds. */
+	UPROPERTY(EditAnywhere, Category = "Replication", meta = (editcondition = "bEnablePhysicsPrediction"))
+	float MaxSupportedLatencyPrediction;
+
+	FPhysicsPredictionSettings()
+		: bEnablePhysicsPrediction(false)
+		, bEnablePhysicsResimulation(false)
+		, ResimulationErrorThreshold(10.0)
+		, MaxSupportedLatencyPrediction(1000)
+	{ }
+};
 
 UENUM()
 namespace ESettingsLockedAxis
@@ -106,10 +136,14 @@ namespace ESettingsLockedAxis
 /**
  * Default physics settings.
  */
-UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Physics"))
-class ENGINE_API UPhysicsSettings : public UPhysicsSettingsCore
+UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Physics"), MinimalAPI)
+class UPhysicsSettings : public UPhysicsSettingsCore
 {
 	GENERATED_UCLASS_BODY()
+
+	/** Settings for Networked Physics Prediction, experimental. */
+	UPROPERTY(Config, EditAnywhere, Category = Replication, meta = (DisplayName = "Physics Prediction (Experimental)"))
+	FPhysicsPredictionSettings PhysicsPrediction;
 
 	/** Error correction data for replicating simulated physics (rigid bodies) */
 	UPROPERTY(config, EditAnywhere, Category = Replication)
@@ -221,15 +255,21 @@ public:
 
 	static UPhysicsSettings* Get() { return CastChecked<UPhysicsSettings>(UPhysicsSettings::StaticClass()->GetDefaultObject()); }
 
-	virtual void PostInitProperties() override;
+	UFUNCTION(BlueprintCallable, Category = "Physics")
+	int32 GetPhysicsHistoryCount() const
+	{
+		return FMath::CeilToInt(1.f / AsyncFixedTimeStepSize) * (PhysicsPrediction.MaxSupportedLatencyPrediction / 1000.f);
+	}
+
+	ENGINE_API virtual void PostInitProperties() override;
 
 #if WITH_EDITOR
-	virtual bool CanEditChange( const FProperty* Property ) const override;
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual bool CanEditChange( const FProperty* Property ) const override;
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	/** Load Material Type data from INI file **/
 	/** this changes displayname meta data. That means we won't need it outside of editor*/
-	void LoadSurfaceType();
+	ENGINE_API void LoadSurfaceType();
 
 #endif // WITH_EDITOR
 };

@@ -24,8 +24,11 @@
 #include "MetasoundEditorGraphValidation.h"
 #include "MetasoundEditorModule.h"
 #include "MetasoundEditorSettings.h"
+#include "MetasoundEditorSubsystem.h"
+#include "MetasoundFactory.h"
 #include "MetasoundFrontendDataTypeRegistry.h"
 #include "MetasoundFrontendDocumentAccessPtr.h"
+#include "MetasoundFrontendDocumentBuilder.h"
 #include "MetasoundFrontendDocumentVersioning.h"
 #include "MetasoundFrontendQuery.h"
 #include "MetasoundFrontendQuerySteps.h"
@@ -119,26 +122,9 @@ namespace Metasound
 				}
 
 				// If no graph is set, MetaSound has been created outside of asset factory, so initialize it here.
-				// TODO: Move factory initialization and this code to single builder function (in header so cannot move
-				// until 5.1+).
 				if (!MetaSoundAsset->GetGraph())
 				{
-					FString Author = UKismetSystemLibrary::GetPlatformUserName();
-					if (const UMetasoundEditorSettings* EditorSettings = GetDefault<UMetasoundEditorSettings>())
-					{
-						if (!EditorSettings->DefaultAuthor.IsEmpty())
-						{
-							Author = EditorSettings->DefaultAuthor;
-						}
-					}
-
-					FGraphBuilder::InitMetaSound(InMetaSound, Author);
-
-					// Initial graph generation is not something to be managed by the transaction
-					// stack, so don't track dirty state until after initial setup if necessary.
-					UMetasoundEditorGraph* Graph = NewObject<UMetasoundEditorGraph>(&InMetaSound, FName(), RF_Transactional);
-					Graph->Schema = UMetasoundEditorGraphSchema::StaticClass();
-					MetaSoundAsset->SetGraph(Graph);
+					UMetaSoundEditorSubsystem::GetChecked().InitAsset(InMetaSound);
 				}
 
 				bEditorGraphModified |= FGraphBuilder::SynchronizeGraphMembers(InMetaSound);
@@ -570,6 +556,11 @@ namespace Metasound
 		{
 			NewGraphNode->SetNodeID(InNodeHandle->GetID());
 			RebuildNodePins(*NewGraphNode);
+		}
+
+		void FGraphBuilder::InitGraphNodeIDFromNodeHandle(const Frontend::FConstNodeHandle& InNodeHandle, UMetasoundEditorGraphNode* NewGraphNode)
+		{
+			NewGraphNode->SetNodeID(InNodeHandle->GetID());
 		}
 
 		FGraphValidationResults FGraphBuilder::ValidateGraph(UObject& InMetaSound)
@@ -1104,10 +1095,22 @@ namespace Metasound
 							}
 						}
 					}
-					
+
 					if (!bObjectFound)
 					{
-						OutDefaultLiteral.Set(static_cast<UObject*>(nullptr));
+						// If the class default literal is the default (type is None), then the literal should be set to that.
+						// However, if the class default literal is set to an object, the literal should be set to a valid, null object.
+						// This is used for reset to default behavior, where an valid object literal with a null value is a separate case
+						// from an inherited cleared default literal. 
+						const FMetasoundFrontendLiteral* ClassDefaultLiteral = InputHandle->GetClassDefaultLiteral();
+						if (ClassDefaultLiteral && ClassDefaultLiteral->GetType() == EMetasoundFrontendLiteralType::None)
+						{
+							OutDefaultLiteral.Clear();	
+						}
+						else
+						{
+							OutDefaultLiteral.Set(static_cast<UObject*>(nullptr));
+						}
 					}
 				}
 				break;
@@ -1542,25 +1545,33 @@ namespace Metasound
 			using namespace Frontend;
 			using namespace GraphBuilderPrivate;
 
-			FMetasoundFrontendClassMetadata Metadata;
-
-			// 1. Set default class Metadata
-			Metadata.SetClassName(FMetasoundFrontendClassName(FName(), *FGuid::NewGuid().ToString(), FName()));
-			Metadata.SetVersion({ 1, 0 });
-			Metadata.SetType(EMetasoundFrontendClassType::Graph);
-			Metadata.SetAuthor(InAuthor);
-
 			FMetasoundAssetBase* MetaSoundAsset = IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(&InMetaSound);
 			check(MetaSoundAsset);
-			MetaSoundAsset->SetMetadata(Metadata);
+			FMetasoundFrontendDocument& Doc = MetaSoundAsset->GetDocumentChecked();
+
+			// 1. Set default class Metadata
+			Doc.RootGraph.Metadata.SetClassName(FMetasoundFrontendClassName(FName(), *FGuid::NewGuid().ToString(), FName()));
+			Doc.RootGraph.Metadata.SetVersion({ 1, 0 });
+			Doc.RootGraph.Metadata.SetType(EMetasoundFrontendClassType::Graph);
+			Doc.RootGraph.Metadata.SetAuthor(InAuthor);
+
+			if (Doc.RootGraph.Metadata.GetType() != EMetasoundFrontendClassType::Graph)
+			{
+				UE_LOG(LogMetaSound, Display, TEXT("Forcing class type to EMetasoundFrontendClassType::Graph on root graph metadata"));
+				Doc.RootGraph.Metadata.SetType(EMetasoundFrontendClassType::Graph);
+			}
 
 			// 2. Set default doc version Metadata
-			FDocumentHandle DocumentHandle = MetaSoundAsset->GetDocumentHandle();
-			FMetasoundFrontendDocumentMetadata* DocMetadata = DocumentHandle->GetMetadata();
-			check(DocMetadata);
-			DocMetadata->Version.Number = FMetasoundFrontendDocument::GetMaxVersion();
+			Doc.Metadata.Version.Number = FMetasoundFrontendDocument::GetMaxVersion();
 
-			MetaSoundAsset->AddDefaultInterfaces();
+			// 3. Add default interfaces
+			{
+				UClass* AssetClass = InMetaSound.GetClass();
+				check(AssetClass);
+
+				TArray<FMetasoundFrontendVersion> InitVersions = ISearchEngine::Get().FindUClassDefaultInterfaceVersions(AssetClass->GetClassPathName());
+				FModifyRootGraphInterfaces({ }, InitVersions).Transform(Doc);
+			}
 
 			FGraphHandle GraphHandle = MetaSoundAsset->GetRootGraphHandle();
 			FVector2D InputNodeLocation = FVector2D::ZeroVector;

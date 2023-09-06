@@ -32,6 +32,11 @@ public:
 	/** Method to process ini files for the plugin during activation */
 	void InitializeHierarchicalPluginIniFiles(const FString& PluginInstalledFilename) const;
 
+	UFUNCTION(BlueprintCallable, Category = "GameFeature")
+	static void GetPluginName(const UGameFeatureData* GFD, FString& PluginName);
+
+	void GetPluginName(FString& PluginName) const;
+
 #if WITH_EDITOR
 	static FName GetContentBundleGuidsAssetRegistryTag();
 	static void GetContentBundleGuidsFromAsset(const FAssetData& Asset, TArray<FGuid>& OutContentBundleGuids);
@@ -47,7 +52,7 @@ public:
 
 	//~UObject interface
 #if WITH_EDITOR
-	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 #endif
 	//~End of UObject interface
 

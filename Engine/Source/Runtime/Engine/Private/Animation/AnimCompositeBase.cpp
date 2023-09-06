@@ -13,8 +13,22 @@
 #include "Animation/AnimationPoseData.h"
 #include "Animation/AttributesRuntime.h"
 #include "EngineLogs.h"
+#include "UObject/LinkerLoad.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimCompositeBase)
+
+#if WITH_EDITOR
+namespace UE
+{
+	namespace Anim
+	{		
+		TAutoConsoleVariable<bool> CVarOutputMontageFrameRateWarning(
+			TEXT("a.OutputMontageFrameRateWarning"),
+			false,
+			TEXT("If true will warn the user about Animation Montages/Composites composed of incompatible animation assets (incompatible frame-rates)."));
+	}
+}
+#endif // WITH_EDITOR
 
 ///////////////////////////////////////////////////////
 // FAnimSegment
@@ -127,7 +141,10 @@ void FAnimSegment::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackP
 			// Get starting position, closest overlap.
 			float AnimStartPosition = ConvertTrackPosToAnimPos( bTrackPlayingBackwards ? FMath::Min(PreviousTrackPosition, SegmentEndPos) : FMath::Max(PreviousTrackPosition, SegmentStartPos) );
 			AnimStartPosition = FMath::Clamp(AnimStartPosition, AnimStartTime, AnimEndTime);
-			float TrackTimeToGo = FMath::Abs(CurrentTrackPosition - PreviousTrackPosition);
+
+			// When looping, the current track position could exceed the current segment (anim montage loops the track position after firing notifies)
+			// We need to make sure to clamp the current/previous track positions within our segment
+			float TrackTimeToGo = FMath::Abs(FMath::Clamp(CurrentTrackPosition, SegmentStartPos, SegmentEndPos) - FMath::Clamp(PreviousTrackPosition, SegmentStartPos, SegmentEndPos));
 
 			// The track can be playing backwards and the animation can be playing backwards, so we
 			// need to combine to work out what direction we are traveling through the animation
@@ -705,35 +722,56 @@ bool FAnimTrack::IsNotifyAvailable() const
 	return false;
 }
 
-bool FAnimTrack::IsValidToAdd(const UAnimSequenceBase* SequenceBase) const
+int32 FAnimTrack::GetTotalBytesUsed() const
+{
+	return AnimSegments.GetAllocatedSize();
+}
+
+bool FAnimTrack::IsValidToAdd(const UAnimSequenceBase* SequenceBase, FText* OutReason /*= nullptr*/) const
 {
 	bool bValid = false;
 	// remove asset if invalid
 	if (SequenceBase)
 	{
-		if (SequenceBase->GetPlayLength() <= 0.f)
+		const float PlayLength = SequenceBase->GetPlayLength();
+		if (PlayLength <= 0.f)
 		{
 			UE_LOG(LogAnimation, Warning, TEXT("Remove Empty Sequence (%s)"), *SequenceBase->GetFullName());
+
+			if (OutReason)
+			{
+				*OutReason = FText::FromString(FString::Printf(TEXT("Animation Asset %s has invalid playable length of %f"), *SequenceBase->GetName(), PlayLength));
+			}			
+			
+			return false;
 		}
-		else if (!SequenceBase->CanBeUsedInComposition())
+
+		if (!SequenceBase->CanBeUsedInComposition())
 		{
 			UE_LOG(LogAnimation, Warning, TEXT("Remove Invalid Sequence (%s)"), *SequenceBase->GetFullName());
+			if (OutReason)
+			{
+				*OutReason = FText::FromString(FString::Printf(TEXT("Animation Asset %s cannot be used in an Animation Composite/Montage"), *SequenceBase->GetName()));
+			}
+			return false;
 		}
-		else
+		
+		const int32 TrackType = GetTrackAdditiveType();
+		const EAdditiveAnimationType AnimAdditiveType = SequenceBase->GetAdditiveAnimType();
+		if (TrackType != AnimAdditiveType && TrackType != INDEX_NONE)
 		{
-			int32 TrackType = GetTrackAdditiveType();
-			if ((TrackType == -1) || (TrackType == SequenceBase->GetAdditiveAnimType()))
+			const UEnum* TypeEnum = FindObject<UEnum>(nullptr, TEXT("/Script/Engine.EAdditiveAnimationType"));	
+			if (OutReason)
 			{
-				bValid = true;
+				*OutReason = FText::FromString(FString::Printf(TEXT("Animation Asset %s has an additive type %s that does not match the target's %s"), *SequenceBase->GetName(), *TypeEnum->GetNameStringByValue(AnimAdditiveType), *TypeEnum->GetNameStringByValue(TrackType)));
 			}
-			else
-			{
-				UE_LOG(LogAnimation, Warning, TEXT("Additivie type (%s) does not match. Make sure you add same type of additive animation."), *SequenceBase->GetFullName());
-			}
+			return false;
 		}
+		
+		return true;
 	}
 
-	return bValid;
+	return true;
 }
 ///////////////////////////////////////////////////////
 // UAnimCompositeBase
@@ -779,6 +817,10 @@ FFrameRate UAnimCompositeBase::GetSamplingFrameRate() const
 void UAnimCompositeBase::PostLoad()
 {
 	Super::PostLoad();
+
+#if WITH_EDITOR
+	UpdateCommonTargetFrameRate();
+#endif // WITH_EDITOR
 
 	InvalidateRecursiveAsset();
 }

@@ -1,17 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Xml;
 using System.Linq;
+using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Security;
+using System.Threading.Tasks;
+using System.Xml;
 using EpicGames.Core;
-using UnrealBuildBase;
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
+using Newtonsoft.Json.Linq;
 
 namespace UnrealBuildTool
 {
@@ -54,10 +57,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The name of this context
 		/// </summary>
-		public string Name
-		{
-			get { return String.Format("{0}|{1}", ConfigurationName, PlatformName); }
-		}
+		public string Name => String.Format("{0}|{1}", ConfigurationName, PlatformName);
 
 		/// <summary>
 		/// Serializes this context to a string for debugging
@@ -75,24 +75,21 @@ namespace UnrealBuildTool
 	abstract class MSBuildProjectFile : ProjectFile
 	{
 		/// The project file version string
-		static public readonly string VCProjectFileVersionString = "10.0.30319.1";
+		public static readonly string VCProjectFileVersionString = "10.0.30319.1";
 
 		/// The build configuration name to use for stub project configurations.  These are projects whose purpose
 		/// is to make it easier for developers to find source files and to provide IntelliSense data for the module
 		/// to Visual Studio
-		static public readonly string StubProjectConfigurationName = "BuiltWithUnrealBuildTool";
+		public static readonly string StubProjectConfigurationName = "BuiltWithUnrealBuildTool";
 
 		/// The name of the Visual C++ platform to use for stub project configurations
 		/// NOTE: We always use Win32 for the stub project's platform, since that is guaranteed to be supported by Visual Studio
-		static public readonly string StubProjectPlatformName = "Win64";
+		public static readonly string StubProjectPlatformName = "Win64";
 
 		/// <summary>
 		/// The Guid representing the project type e.g. C# or C++
 		/// </summary>
-		public virtual string ProjectTypeGUID
-		{
-			get { throw new BuildException("Unrecognized type of project file for Visual Studio solution"); }
-		}
+		public virtual string ProjectTypeGUID => throw new BuildException("Unrecognized type of project file for Visual Studio solution");
 
 		static Guid PathNamespaceGuid { get; } = new Guid("2D8570D5-7FFC-4E6D-A9D7-E860E117D717");
 
@@ -127,7 +124,6 @@ namespace UnrealBuildTool
 				ProjectGUID = VCProjectFileGenerator.MakeMd5Guid(PathNamespaceGuid, ProjectFilePath.FullName);
 			}
 		}
-
 
 		/// <summary>
 		/// Attempts to load the project's GUID from an existing project file on disk
@@ -203,7 +199,6 @@ namespace UnrealBuildTool
 				}
 			}
 
-
 			UEBuildPlatform? BuildPlatform;
 			if (!UEBuildPlatform.TryGetBuildPlatform(Platform, out BuildPlatform))
 			{
@@ -214,7 +209,6 @@ namespace UnrealBuildTool
 			{
 				return false;
 			}
-
 
 			List<UnrealTargetConfiguration> SupportedConfigurations = new List<UnrealTargetConfiguration>();
 			List<UnrealTargetPlatform> SupportedPlatforms = new List<UnrealTargetPlatform>();
@@ -281,6 +275,7 @@ namespace UnrealBuildTool
 	{
 		VCProjectFileFormat ProjectFileFormat;
 		bool bUsePrecompiled;
+		bool bMakeProjectPerTarget;
 		string? BuildToolOverride;
 		Dictionary<DirectoryReference, string> ModuleDirToForceIncludePaths = new Dictionary<DirectoryReference, string>();
 		Dictionary<DirectoryReference, string> ModuleDirToPchHeaderFile = new Dictionary<DirectoryReference, string>();
@@ -292,10 +287,7 @@ namespace UnrealBuildTool
 		public const string DefaultPlatformName = "Win64";
 
 		// This is the GUID that Visual Studio uses to identify a C++ project file in the solution
-		public override string ProjectTypeGUID
-		{
-			get { return "{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}"; }
-		}
+		public override string ProjectTypeGUID => "{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}";
 
 		/// <summary>
 		/// Constructs a new project file object
@@ -304,13 +296,15 @@ namespace UnrealBuildTool
 		/// <param name="BaseDir">The base directory for files within this project</param>
 		/// <param name="ProjectFileFormat">Visual C++ project file version</param>
 		/// <param name="bUsePrecompiled">Whether to add the -UsePrecompiled argumemnt when building targets</param>
+		/// <param name="bMakeProjectPerTarget">Whether to add roll the target type into the config (ie "Development Editor")</param>
 		/// <param name="BuildToolOverride">Optional arguments to pass to UBT when building</param>
 		/// <param name="Settings">Other settings</param>
-		public VCProjectFile(FileReference FilePath, DirectoryReference BaseDir, VCProjectFileFormat ProjectFileFormat, bool bUsePrecompiled, string? BuildToolOverride, VCProjectFileSettings Settings)
+		public VCProjectFile(FileReference FilePath, DirectoryReference BaseDir, VCProjectFileFormat ProjectFileFormat, bool bUsePrecompiled, bool bMakeProjectPerTarget, string? BuildToolOverride, VCProjectFileSettings Settings)
 			: base(FilePath, BaseDir)
 		{
 			this.ProjectFileFormat = ProjectFileFormat;
 			this.bUsePrecompiled = bUsePrecompiled;
+			this.bMakeProjectPerTarget = bMakeProjectPerTarget;
 			this.BuildToolOverride = BuildToolOverride;
 			this.Settings = Settings;
 		}
@@ -360,7 +354,7 @@ namespace UnrealBuildTool
 				ProjectPlatformName = DefaultPlatformName;
 			}
 
-			if (TargetConfigurationName != TargetType.Game)
+			if (!bMakeProjectPerTarget && TargetConfigurationName != TargetType.Game)
 			{
 				ProjectConfigurationName += "_" + TargetConfigurationName.ToString();
 			}
@@ -415,7 +409,7 @@ namespace UnrealBuildTool
 					{
 						if (ProjectTarget.TargetRules != null)
 						{
-							if (TargetConfigurationName == ProjectTarget.TargetRules.Type)
+							if (bMakeProjectPerTarget || TargetConfigurationName == ProjectTarget.TargetRules.Type)
 							{
 								MatchingProjectTargets.Add(ProjectTarget);
 							}
@@ -524,10 +518,7 @@ namespace UnrealBuildTool
 				ProjectTarget = InProjectTarget;
 			}
 
-			public string? ProjectConfigurationAndPlatformName
-			{
-				get { return (ProjectPlatformName == null) ? null : (ProjectConfigurationName + "|" + ProjectPlatformName); }
-			}
+			public string? ProjectConfigurationAndPlatformName => (ProjectPlatformName == null) ? null : (ProjectConfigurationName + "|" + ProjectPlatformName);
 
 			public override string ToString()
 			{
@@ -565,19 +556,6 @@ namespace UnrealBuildTool
 			else
 			{
 				return Location.FullName;
-			}
-		}
-
-		WindowsCompiler GetCompilerForIntellisense()
-		{
-			switch (ProjectFileFormat)
-			{
-				case VCProjectFileFormat.VisualStudio2022:
-					return WindowsCompiler.VisualStudio2022;
-				case VCProjectFileFormat.VisualStudio2019:
-					return WindowsCompiler.VisualStudio2019;
-				default:
-					return WindowsCompiler.VisualStudio2019;
 			}
 		}
 
@@ -668,7 +646,7 @@ namespace UnrealBuildTool
 				}
 				return string.Join(' ', Arguments);
 			}
-			return string.Empty;
+			return String.Empty;
 		}
 
 		/// <summary>
@@ -678,7 +656,7 @@ namespace UnrealBuildTool
 		{
 			if (IntelliSenseEnableCoroutines)
 			{
-				if (GetCompilerForIntellisense().IsMSVC())
+				if (VCProjectFileGenerator.GetCompilerForIntellisense(ProjectFileFormat).IsMSVC())
 				{
 					return "/await:strict";
 				}
@@ -686,7 +664,7 @@ namespace UnrealBuildTool
 				return "-fcoroutines-ts";
 			}
 
-			return string.Empty;
+			return String.Empty;
 		}
 
 		HashSet<string>? InvalidConfigPlatformNames;
@@ -760,7 +738,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-
 		/// <summary>
 		/// If found writes a debug project file to disk
 		/// </summary>
@@ -773,7 +750,6 @@ namespace UnrealBuildTool
 			List<Tuple<ProjectFile, string>> ProjectFiles = new List<Tuple<ProjectFile, string>>();
 
 			BuildProjectConfigAndTargetCombinations(InPlatforms, InConfigurations, PlatformProjectGenerators, Logger);
-
 
 			foreach (ProjectConfigAndTargetCombination Combination in ProjectConfigAndTargetCombinations!)
 			{
@@ -906,43 +882,30 @@ namespace UnrealBuildTool
 			StringBuilder SharedIncludeSearchPaths = new StringBuilder();
 			{
 				// Find out how many source files there are in each directory
-				Dictionary<DirectoryReference, int> SourceDirToCount = new Dictionary<DirectoryReference, int>();
-				foreach (SourceFile SourceFile in SourceFiles)
+				ConcurrentDictionary<DirectoryReference, int> SourceDirToCount = new();
+				Parallel.ForEach(SourceFiles.Where(sf => sf.Reference.HasExtension(".cpp")), SourceFile =>
 				{
-					if (SourceFile.Reference.HasExtension(".cpp"))
-					{
-						DirectoryReference SourceDir = SourceFile.Reference.Directory;
-
-						int Count;
-						SourceDirToCount.TryGetValue(SourceDir, out Count);
-						SourceDirToCount[SourceDir] = Count + 1;
-					}
-				}
+					SourceDirToCount.AddOrUpdate(SourceFile.Reference.Directory, _ => 1, (k, v) => v + 1);
+				});
 
 				// Figure out the most common include paths
-				Dictionary<DirectoryReference, int> IncludePathToCount = new Dictionary<DirectoryReference, int>();
-				foreach (KeyValuePair<DirectoryReference, int> Pair in SourceDirToCount)
+				ConcurrentDictionary<DirectoryReference, int> IncludePathToCount = new();
+				Parallel.ForEach(SourceDirToCount, Pair =>
 				{
-					for (DirectoryReference? CurrentDir = Pair.Key; CurrentDir != null; CurrentDir = CurrentDir.ParentDirectory)
+					if (TryGetBuildEnvironment(Pair.Key, out BuildEnvironment? OutBuildEnvironment))
 					{
-						BuildEnvironment? BuildEnvironment;
-						if (BaseDirToBuildEnvironment.TryGetValue(CurrentDir, out BuildEnvironment))
+						foreach (DirectoryReference IncludePath in OutBuildEnvironment.UserIncludePaths.AbsolutePaths)
 						{
-							foreach (DirectoryReference IncludePath in BuildEnvironment.UserIncludePaths.AbsolutePaths)
-							{
-								int Count;
-								IncludePathToCount.TryGetValue(IncludePath, out Count);
-								IncludePathToCount[IncludePath] = Count + Pair.Value;
-							}
-							break;
+							IncludePathToCount.AddOrUpdate(IncludePath, _ => Pair.Value, (k, v) => v + Pair.Value);
 						}
+						return;
 					}
-				}
+				});
 
 				// Append the most common include paths to the search list.
 				if (Settings.MaxSharedIncludePaths > 0)
 				{
-					foreach (DirectoryReference IncludePath in IncludePathToCount.OrderByDescending(x => x.Value).Select(x => x.Key))
+					foreach (DirectoryReference IncludePath in IncludePathToCount.OrderByDescending(x => x.Value).ThenBy(x => x.Key).Select(x => x.Key))
 					{
 						string RelativePath = NormalizeProjectPath(IncludePath);
 						if (SharedIncludeSearchPaths.Length + RelativePath.Length >= Settings.MaxSharedIncludePaths)
@@ -958,18 +921,7 @@ namespace UnrealBuildTool
 					}
 				}
 
-				// Add all the default system include paths
-				if (OperatingSystem.IsWindows())
-				{
-					if (InPlatforms.Contains(UnrealTargetPlatform.Win64))
-					{
-						SharedIncludeSearchPaths.Append(VCToolChain.GetVCIncludePaths(UnrealTargetPlatform.Win64, GetCompilerForIntellisense(), null, Logger) + ";");
-					}
-				}
-				else
-				{
-					Logger.LogInformation("Unable to compute VC include paths on non-Windows host");
-				}
+				SharedIncludeSearchPaths.AppendFormat("$(DefaultSystemIncludePaths);");
 			}
 
 			StringBuilder VCPreprocessorDefinitions = new StringBuilder();
@@ -1010,6 +962,8 @@ namespace UnrealBuildTool
 			List<UnrealTargetPlatform> ProjectPlatforms = new List<UnrealTargetPlatform>();
 			List<Tuple<string, UnrealTargetPlatform>> ProjectPlatformNameAndPlatforms = new List<Tuple<string, UnrealTargetPlatform>>();    // ProjectPlatformName, Platform
 			List<Tuple<string, UnrealTargetConfiguration>> ProjectConfigurationNameAndConfigurations = new List<Tuple<string, UnrealTargetConfiguration>>();    // ProjectConfigurationName, Configuration
+			List<ProjectConfigAndTargetCombination> ValidProjectConfigAndTargetCombinations = new List<ProjectConfigAndTargetCombination>();
+			Dictionary<string, HashSet<UnrealTargetPlatform>> ProjectPlatformNameToPlatform = new Dictionary<string, HashSet<UnrealTargetPlatform>>();
 			foreach (ProjectConfigAndTargetCombination Combination in ProjectConfigAndTargetCombinations!)
 			{
 				if (Combination.Platform == null)
@@ -1031,6 +985,17 @@ namespace UnrealBuildTool
 				if (!ProjectConfigurationNameAndConfigurations.Any(ProjectConfigurationNameAndConfigurationTuple => ProjectConfigurationNameAndConfigurationTuple.Item1 == Combination.ProjectConfigurationName))
 				{
 					ProjectConfigurationNameAndConfigurations.Add(Tuple.Create(Combination.ProjectConfigurationName, Combination.Configuration));
+				}
+
+				ValidProjectConfigAndTargetCombinations.Add(Combination);
+
+				if (ProjectPlatformNameToPlatform.TryGetValue(Combination.ProjectPlatformName, out HashSet<UnrealTargetPlatform>? PlatformList))
+				{
+					PlatformList.Add(Combination.Platform.Value);
+				}
+				else
+				{
+					ProjectPlatformNameToPlatform.Add(Combination.ProjectPlatformName, new HashSet<UnrealTargetPlatform>() { Combination.Platform.Value });
 				}
 			}
 
@@ -1079,13 +1044,7 @@ namespace UnrealBuildTool
 			{
 				VCProjectFileContent.AppendLine("  <PropertyGroup Label=\"Globals\">");
 				VCProjectFileContent.AppendLine("    <ProjectGuid>{0}</ProjectGuid>", ProjectGUID.ToString("B").ToUpperInvariant());
-				VCProjectFileContent.AppendLine("    <Keyword>MakeFileProj</Keyword>");
 				VCProjectFileContent.AppendLine("    <RootNamespace>{0}</RootNamespace>", ProjectName);
-				VCProjectFileGenerator.AppendPlatformToolsetProperty(VCProjectFileContent, ProjectFileFormat);
-				VCProjectFileContent.AppendLine("    <MinimumVisualStudioVersion>{0}</MinimumVisualStudioVersion>", VCProjectFileGenerator.GetProjectFileToolVersionString(ProjectFileFormat));
-				VCProjectFileContent.AppendLine("    <VCProjectVersion>{0}</VCProjectVersion>", VCProjectFileGenerator.GetProjectFileToolVersionString(ProjectFileFormat));
-				VCProjectFileContent.AppendLine("    <NMakeUseOemCodePage>true</NMakeUseOemCodePage>"); // Fixes mojibake with non-Latin character sets (UE-102825)
-				VCProjectFileContent.AppendLine("    <TargetRuntime>Native</TargetRuntime>");
 				VCProjectFileContent.AppendLine("  </PropertyGroup>");
 			}
 
@@ -1103,6 +1062,59 @@ namespace UnrealBuildTool
 			}
 
 			// Write each project configuration PreDefaultProps section
+			HashSet<UnrealTargetPlatform> CommonPlatformsWritten = new HashSet<UnrealTargetPlatform>();
+			foreach (ProjectConfigAndTargetCombination Combination in ValidProjectConfigAndTargetCombinations)
+			{
+				if (Combination.Platform != null)
+				{
+					UnrealTargetPlatform TargetPlatform = Combination.Platform.Value;
+					PlatformProjectGenerator? ProjGenerator = PlatformProjectGenerators.GetPlatformProjectGenerator(TargetPlatform, true);
+					if (ProjGenerator != null)
+					{
+						bool ProjectPlatformRequiresConfigurationName = false;
+						if (ProjectPlatformNameToPlatform.TryGetValue(Combination.ProjectPlatformName, out HashSet<UnrealTargetPlatform>? PlatformList))
+						{
+							ProjectPlatformRequiresConfigurationName = PlatformList.Count > 1;
+						}
+
+						// Properties that are common for the unique platform
+						// Note that if the platform name is not unique then the common properties will be added below
+						if (!ProjectPlatformRequiresConfigurationName && !CommonPlatformsWritten.Contains(Combination.Platform.Value))
+						{
+							StringBuilder CommonPlatformToolsetString = new StringBuilder();
+							ProjGenerator.GetVisualStudioPreDefaultString(TargetPlatform, CommonPlatformToolsetString);
+
+							if (CommonPlatformToolsetString.Length > 0)
+							{
+								string ConditionString = "Condition=\"'$(Platform)'=='" + Combination.ProjectPlatformName + "'\"";
+								VCProjectFileContent.AppendLine("  <PropertyGroup " + ConditionString + " Label=\"Configuration\">");
+								VCProjectFileContent.Append(CommonPlatformToolsetString);
+								VCProjectFileContent.AppendLine("  </PropertyGroup>");
+							}
+							CommonPlatformsWritten.Add(TargetPlatform);
+						}
+
+						// Properties that require the configuration and platform name
+						StringBuilder PlatformToolsetString = new StringBuilder();
+						if (ProjectPlatformRequiresConfigurationName)
+						{
+							ProjGenerator.GetVisualStudioPreDefaultString(TargetPlatform, PlatformToolsetString);
+						}
+
+						ProjGenerator.GetVisualStudioPreDefaultString(TargetPlatform, Combination.Configuration, PlatformToolsetString);
+						if (PlatformToolsetString.Length > 0)
+						{
+							string ProjectConfigurationAndPlatformName = Combination.ProjectConfigurationName + "|" + Combination.ProjectPlatformName;
+							string ConditionString = "Condition=\"'$(Configuration)|$(Platform)'=='" + ProjectConfigurationAndPlatformName + "'\"";
+							VCProjectFileContent.AppendLine("  <PropertyGroup " + ConditionString + " Label=\"Configuration\">");
+							VCProjectFileContent.Append(PlatformToolsetString);
+							VCProjectFileContent.AppendLine("  </PropertyGroup>");
+						}
+					}
+				}
+			}
+
+			// Write the per platform/config configuration info
 			foreach (Tuple<string, UnrealTargetConfiguration> ConfigurationTuple in ProjectConfigurationNameAndConfigurations)
 			{
 				string ProjectConfigurationName = ConfigurationTuple.Item1;
@@ -1111,53 +1123,44 @@ namespace UnrealBuildTool
 				{
 					string ProjectPlatformName = PlatformTuple.Item1;
 					UnrealTargetPlatform TargetPlatform = PlatformTuple.Item2;
-					WritePreDefaultPropsConfiguration(TargetPlatform, TargetConfiguration, ProjectPlatformName, ProjectConfigurationName, PlatformProjectGenerators, VCProjectFileContent);
+
+					PlatformProjectGenerator? ProjGenerator = PlatformProjectGenerators.GetPlatformProjectGenerator(TargetPlatform, true);
+					if (ProjGenerator == null)
+					{
+						continue;
+					}
+
+					StringBuilder PlatformToolsetString = new StringBuilder();
+					ProjGenerator.GetVisualStudioPlatformToolsetString(TargetPlatform, TargetConfiguration, ProjectFileFormat, PlatformToolsetString);
+					string PlatformConfigurationType = ProjGenerator.GetVisualStudioPlatformConfigurationType(TargetPlatform, ProjectFileFormat);
+
+					// if we are using the defaults set earlier then skip writing this
+					if (PlatformConfigurationType == PlatformProjectGenerator.DefaultPlatformConfigurationType && PlatformToolsetString.Length == 0)
+					{
+						continue;
+					}
+
+					string ProjectConfigurationAndPlatformName = ProjectConfigurationName + "|" + ProjectPlatformName;
+					string ConditionString = "Condition=\"'$(Configuration)|$(Platform)'=='" + ProjectConfigurationAndPlatformName + "'\"";
+					VCProjectFileContent.AppendLine("  <PropertyGroup {0} Label=\"Configuration\">", ConditionString);
+					VCProjectFileContent.AppendLine("    <ConfigurationType>{0}</ConfigurationType>", PlatformConfigurationType);
+
+					if (PlatformToolsetString.Length == 0)
+					{
+						VCProjectFileGenerator.AppendPlatformToolsetProperty(VCProjectFileContent, ProjectFileFormat);
+					}
+					else
+					{
+						VCProjectFileContent.Append(PlatformToolsetString);
+					}
+
+					VCProjectFileContent.AppendLine("  </PropertyGroup>");
 				}
 			}
 
-			VCProjectFileContent.AppendLine("  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.Default.props\" />");
-
-			// Write the invalid configuration data
-			foreach (string InvalidConfigPlatformName in InvalidConfigPlatformNames)
-			{
-				VCProjectFileContent.AppendLine("  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Invalid|{0}'\" Label=\"Configuration\">", InvalidConfigPlatformName);
-				VCProjectFileContent.AppendLine("    <ConfigurationType>Makefile</ConfigurationType>");
-				VCProjectFileContent.AppendLine("  </PropertyGroup>");
-			}
-
-			// Write each project configuration PreDefaultProps section
-			foreach (Tuple<string, UnrealTargetConfiguration> ConfigurationTuple in ProjectConfigurationNameAndConfigurations)
-			{
-				string ProjectConfigurationName = ConfigurationTuple.Item1;
-				UnrealTargetConfiguration TargetConfiguration = ConfigurationTuple.Item2;
-				foreach (Tuple<string, UnrealTargetPlatform> PlatformTuple in ProjectPlatformNameAndPlatforms)
-				{
-					string ProjectPlatformName = PlatformTuple.Item1;
-					UnrealTargetPlatform TargetPlatform = PlatformTuple.Item2;
-					WritePostDefaultPropsConfiguration(TargetPlatform, TargetConfiguration, ProjectPlatformName, ProjectConfigurationName, PlatformProjectGenerators, VCProjectFileContent, Logger);
-				}
-			}
-
-			VCProjectFileContent.AppendLine("  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.props\" />");
+			VCProjectFileContent.AppendLine("  <Import Project=\"UECommon.props\" />");
 			VCProjectFileContent.AppendLine("  <ImportGroup Label=\"ExtensionSettings\" />");
 			VCProjectFileContent.AppendLine("  <PropertyGroup Label=\"UserMacros\" />");
-
-			// Write the invalid configuration
-			foreach (string InvalidConfigPlatformName in InvalidConfigPlatformNames)
-			{
-				const string InvalidMessage = "echo The selected platform/configuration is not valid for this target.";
-
-				string ProjectRelativeUnusedDirectory = NormalizeProjectPath(DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "Unused"));
-
-				VCProjectFileContent.AppendLine("  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Invalid|{0}'\">", InvalidConfigPlatformName);
-				VCProjectFileContent.AppendLine("    <NMakeBuildCommandLine>{0}</NMakeBuildCommandLine>", InvalidMessage);
-				VCProjectFileContent.AppendLine("    <NMakeReBuildCommandLine>{0}</NMakeReBuildCommandLine>", InvalidMessage);
-				VCProjectFileContent.AppendLine("    <NMakeCleanCommandLine>{0}</NMakeCleanCommandLine>", InvalidMessage);
-				VCProjectFileContent.AppendLine("    <NMakeOutput>Invalid Output</NMakeOutput>", InvalidMessage);
-				VCProjectFileContent.AppendLine("    <OutDir>{0}{1}</OutDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
-				VCProjectFileContent.AppendLine("    <IntDir>{0}{1}</IntDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
-				VCProjectFileContent.AppendLine("  </PropertyGroup>");
-			}
 
 			// Write each project configuration
 			TargetRules? DefaultRules = null;
@@ -1222,17 +1225,224 @@ namespace UnrealBuildTool
 					LocalAliasedFiles.Add(new AliasedFile(CurFile.Reference, ProjectRelativeSourceFile, FilterRelativeSourceDirectory));
 				}
 
+				ConcurrentDictionary<DirectoryReference, string?> DirectoryToPchFile = new();
+				ConcurrentDictionary<DirectoryReference, string> DirectoryToForceIncludePaths = new();
+				ConcurrentDictionary<DirectoryReference, string> DirectoryToIncludeSearchPaths = new();
+				Parallel.ForEach(LocalAliasedFiles, LocalAliasedFile =>
+				{
+					// get the filetype as represented to Visual Studio
+					string VCFileType = GetVCFileType(LocalAliasedFile.FileSystemPath);
+					DirectoryReference FileSystemPathDir = new DirectoryReference(LocalAliasedFile.FileSystemPath);
+
+					// if the filetype is an include and its path is filtered out, skip it entirely (should we do this for any type of
+					// file? Possibly, but not today due to potential fallout)
+					if (VCFileType == "ClInclude" && IncludePathIsFilteredOut(FileSystemPathDir))
+					{
+						return;
+					}
+
+					// Allow filtering of any type of file
+					if (FilePathIsFilteredOut(FileSystemPathDir))
+					{
+						return;
+					}
+
+					if (VCFileType != "ClCompile")
+					{
+						return;
+					}
+
+					DirectoryReference Directory = LocalAliasedFile.Location.Directory;
+
+					// Find the PCH file
+					DirectoryToPchFile.GetOrAdd(Directory, _ =>
+					{
+						string? PchHeaderFile = null;
+						for (DirectoryReference? ParentDir = Directory; ParentDir != null; ParentDir = ParentDir.ParentDirectory)
+						{
+							if (ModuleDirToPchHeaderFile.TryGetValue(ParentDir, out PchHeaderFile))
+							{
+								break;
+							}
+						}
+						return PchHeaderFile;
+					});
+
+					// Find the force-included headers
+					DirectoryToForceIncludePaths.GetOrAdd(Directory, _ =>
+					{
+						string? ForceIncludePaths = null;
+						for (DirectoryReference? ParentDir = Directory; ParentDir != null; ParentDir = ParentDir.ParentDirectory)
+						{
+							if (ModuleDirToForceIncludePaths.TryGetValue(ParentDir, out ForceIncludePaths))
+							{
+								break;
+							}
+						}
+
+						// filter here. It's a little more graceful to do it where this info is built but easier to follow if we filter 
+						// things our right before they're written.
+						if (!String.IsNullOrEmpty(ForceIncludePaths))
+						{
+							IEnumerable<string> PathList = ForceIncludePaths.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+							ForceIncludePaths = String.Join(";", PathList.Where(P => !IncludePathIsFilteredOut(new DirectoryReference(P))));
+						}
+
+						ForceIncludePaths ??= String.Empty;
+
+						return ForceIncludePaths;
+					});
+
+					if (TryGetBuildEnvironment(Directory, out BuildEnvironment? BuildEnvironment))
+					{
+						DirectoryToIncludeSearchPaths.GetOrAdd(Directory, _ =>
+						{
+							StringBuilder Builder = new StringBuilder();
+							AppendIncludePaths(Builder, BuildEnvironment.UserIncludePaths, SharedIncludeSearchPathsSet);
+							AppendIncludePaths(Builder, BuildEnvironment.SystemIncludePaths, SharedIncludeSearchPathsSet);
+							return Builder.ToString();
+						});
+					}
+				});
+
+				// Collapse common values
+				{
+					StringBuilder CommonProjectFileContent = new StringBuilder();
+
+					var AddProperties = (IDictionary<DirectoryReference, string> DirectoryToStringDict, string CommonPropertyPrefix, string PropertyNamePrefix, string PropertyValuePrefix) =>
+					{
+						Dictionary<string, string> UpdatedValues = new();
+						List<KeyValuePair<DirectoryReference, string>> KVPList = DirectoryToStringDict.ToList();
+						KVPList.SortBy(kvp => kvp.Key);
+
+						// Map each directory to a property
+						{
+							int PropertyIndex = 0;
+							foreach (KeyValuePair<DirectoryReference, string> DirectoryKVP in KVPList)
+							{
+								string? Value = DirectoryKVP.Value;
+								if (!String.IsNullOrEmpty(Value))
+								{
+									if (!UpdatedValues.ContainsKey(Value))
+									{
+										string PropertyName = PropertyNamePrefix;
+										if (PropertyIndex > 0)
+										{
+											PropertyName += "_" + PropertyIndex;
+										}
+										PropertyIndex++;
+										UpdatedValues.Add(Value, PropertyName);
+									}
+									DirectoryToStringDict[DirectoryKVP.Key] = UpdatedValues[Value];
+								}
+							}
+						}
+
+						// Find the common property values
+						Dictionary<string, string> ValueToCommonPropertyDict = new();
+						{
+							Dictionary<string, int> ValueAndCount = new();
+							foreach (var PropertyValue in UpdatedValues.Keys)
+							{
+								if (!String.IsNullOrEmpty(PropertyValue))
+								{
+									IEnumerable<string> PathList = PropertyValue.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+									foreach (string Path in PathList)
+									{
+										if (ValueAndCount.TryGetValue(Path, out int PathCount))
+										{
+											ValueAndCount[Path] = ++PathCount;
+										}
+										else
+										{
+											ValueAndCount[Path] = 1;
+										}
+									}
+								}
+							}
+
+							var CommonProperties = ValueAndCount.Where(kvp => kvp.Value > 1).Select(kvp => kvp.Key).ToList();
+							CommonProperties.Sort();
+
+							// Write out the common property values
+							int CommonPropertyValueIndex = 0;
+							foreach (var CommonProperty in CommonProperties)
+							{
+								string PropertyName = CommonPropertyPrefix;
+								if (CommonPropertyValueIndex > 0)
+								{
+									PropertyName += "_" + CommonPropertyValueIndex;
+								}
+								CommonPropertyValueIndex++;
+								ValueToCommonPropertyDict.Add(CommonProperty, $"$({PropertyName})");
+								CommonProjectFileContent.AppendLine($"    <{PropertyName}>{CommonProperty}</{PropertyName}>");
+							}
+						}
+
+						// Write out the updated properties
+						foreach (KeyValuePair<string, string> kvp in UpdatedValues)
+						{
+							string[] PathArray = kvp.Key.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+							for (int Index = 0; Index < PathArray.Length; Index++)
+							{
+								if (ValueToCommonPropertyDict.TryGetValue(PathArray[Index], out string? PropertyValue) && !String.IsNullOrEmpty(PropertyValue))
+								{
+									PathArray[Index] = PropertyValue;
+								}
+							}
+							string NewValue = String.Join(";", PathArray);
+							CommonProjectFileContent.AppendLine($"    <{kvp.Value}>{PropertyValuePrefix}{NewValue}</{kvp.Value}>");
+						}
+					};
+
+					//AdditionalIncludeDirectories
+					AddProperties(DirectoryToIncludeSearchPaths, "ProjectAdditionalIncludeDirectories", "ClCompile_AdditionalIncludeDirectories", "$(NMakeIncludeSearchPath);");
+
+					//ForcedIncludeFiles
+					AddProperties(DirectoryToForceIncludePaths, "ProjectForcedIncludeFiles", "ClCompile_ForcedIncludeFiles", String.Empty);
+
+					// AdditionalOptions
+					{
+						int ValueIndex = 0;
+						Dictionary<string, string> UpdatedValues = new();
+						List<KeyValuePair<DirectoryReference, string?>> KVPList = DirectoryToPchFile.ToList();
+						KVPList.SortBy(kvp => kvp.Key);
+						foreach (KeyValuePair<DirectoryReference, string?> DirectoryKVP in KVPList)
+						{
+							string? Value = DirectoryKVP.Value;
+							if (!String.IsNullOrEmpty(Value))
+							{
+								if (!UpdatedValues.ContainsKey(Value))
+								{
+									string PropertyName = "ClCompile_AdditionalOptions";
+									if (ValueIndex > 0)
+									{
+										PropertyName += "_" + ValueIndex;
+									}
+									ValueIndex++;
+									UpdatedValues.Add(Value, PropertyName);
+									CommonProjectFileContent.AppendLine($"    <{PropertyName}>$(AdditionalOptions) /Yu\"{Value}\"</{PropertyName}>");
+								}
+								DirectoryToPchFile[DirectoryKVP.Key] = UpdatedValues[Value];
+							}
+						}
+					}
+
+					if (CommonProjectFileContent.Length > 0)
+					{
+						VCProjectFileContent.AppendLine("  <PropertyGroup>");
+						VCProjectFileContent.Append(CommonProjectFileContent);
+						VCProjectFileContent.AppendLine("  </PropertyGroup>");
+					}
+				}
+
 				VCFiltersFileContent.AppendLine("  <ItemGroup>");
 
 				VCProjectFileContent.AppendLine("  <ItemGroup>");
 
 				// Add all file directories to the filters file as solution filters
 				HashSet<string> FilterDirectories = new HashSet<string>();
-				//UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(BuildHostPlatform.Current.Platform);
 
-				Dictionary<DirectoryReference, string> DirectoryToIncludeSearchPaths = new Dictionary<DirectoryReference, string>();
-				Dictionary<DirectoryReference, string> DirectoryToForceIncludePaths = new Dictionary<DirectoryReference, string>();
-				Dictionary<DirectoryReference, string?> DirectoryToPchFile = new Dictionary<DirectoryReference, string?>();
 				foreach (AliasedFile AliasedFile in LocalAliasedFiles)
 				{
 					// No need to add the root directory relative to the project (it would just be an empty string!)
@@ -1243,16 +1453,17 @@ namespace UnrealBuildTool
 
 					// get the filetype as represented to Visual Studio
 					string VCFileType = GetVCFileType(AliasedFile.FileSystemPath);
+					DirectoryReference FileSystemPathDir = new DirectoryReference(AliasedFile.FileSystemPath);
 
 					// if the filetype is an include and its path is filtered out, skip it entirely (should we do this for any type of
 					// file? Possibly, but not today due to potential fallout)
-					if (VCFileType == "ClInclude" && IncludePathIsFilteredOut(new DirectoryReference(AliasedFile.FileSystemPath)))
+					if (VCFileType == "ClInclude" && IncludePathIsFilteredOut(FileSystemPathDir))
 					{
 						continue;
 					}
 
 					// Allow filtering of any type of file
-					if (FilePathIsFilteredOut(new DirectoryReference(AliasedFile.FileSystemPath)))
+					if (FilePathIsFilteredOut(FileSystemPathDir))
 					{
 						continue;
 					}
@@ -1265,68 +1476,26 @@ namespace UnrealBuildTool
 					{
 						DirectoryReference Directory = AliasedFile.Location.Directory;
 
-						// Find the force-included headers
-						string? ForceIncludePaths;
-						if (!DirectoryToForceIncludePaths.TryGetValue(Directory, out ForceIncludePaths))
-						{
-							for (DirectoryReference? ParentDir = Directory; ParentDir != null; ParentDir = ParentDir.ParentDirectory)
-							{
-								if (ModuleDirToForceIncludePaths.TryGetValue(ParentDir, out ForceIncludePaths))
-								{
-									break;
-								}
-							}
-
-							// filter here. It's a little more graceful to do it where this info is built but easier to follow if we filter 
-							// things our right before they're written.
-							if (!string.IsNullOrEmpty(ForceIncludePaths))
-							{
-								IEnumerable<string> PathList = ForceIncludePaths.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-								ForceIncludePaths = string.Join(";", PathList.Where(P => !IncludePathIsFilteredOut(new DirectoryReference(P))));
-							}
-
-							ForceIncludePaths ??= String.Empty;
-
-							DirectoryToForceIncludePaths[Directory] = ForceIncludePaths;
-						}
-
-						// Find the PCH file
-						string? PchHeaderFile;
-						if (!DirectoryToPchFile.TryGetValue(Directory, out PchHeaderFile))
-						{
-							for (DirectoryReference? ParentDir = Directory; ParentDir != null; ParentDir = ParentDir.ParentDirectory)
-							{
-								if (ModuleDirToPchHeaderFile.TryGetValue(ParentDir, out PchHeaderFile))
-								{
-									break;
-								}
-							}
-							DirectoryToPchFile[Directory] = PchHeaderFile;
-						}
-
 						// Find the include search paths
-						VCProjectFileContent.AppendLine("    <{0} Include=\"{1}\">", VCFileType, EscapeFileName(AliasedFile.FileSystemPath));
 						if (TryGetBuildEnvironment(Directory, out BuildEnvironment? BuildEnvironment))
 						{
-							string? IncludeSearchPaths = String.Empty;
-							if (!DirectoryToIncludeSearchPaths.TryGetValue(Directory, out IncludeSearchPaths))
-							{
-								StringBuilder Builder = new StringBuilder();
-								AppendIncludePaths(Builder, BuildEnvironment.UserIncludePaths, SharedIncludeSearchPathsSet);
-								AppendIncludePaths(Builder, BuildEnvironment.SystemIncludePaths, SharedIncludeSearchPathsSet);
-								IncludeSearchPaths = Builder.ToString();
+							VCProjectFileContent.AppendLine("    <{0} Include=\"{1}\">", VCFileType, EscapeFileName(AliasedFile.FileSystemPath));
 
-								DirectoryToIncludeSearchPaths.Add(Directory, IncludeSearchPaths);
-							}
-							VCProjectFileContent.AppendLine("      <AdditionalIncludeDirectories>$(NMakeIncludeSearchPath);{0}</AdditionalIncludeDirectories>", IncludeSearchPaths);
-							VCProjectFileContent.AppendLine("      <ForcedIncludeFiles>{0}</ForcedIncludeFiles>", ForceIncludePaths);
+							VCProjectFileContent.AppendLine($"      <AdditionalIncludeDirectories>$({DirectoryToIncludeSearchPaths[Directory]})</AdditionalIncludeDirectories>");
+							VCProjectFileContent.AppendLine($"      <ForcedIncludeFiles>$({DirectoryToForceIncludePaths[Directory]})</ForcedIncludeFiles>");
+
+							string? PchHeaderFile = DirectoryToPchFile[Directory];
 							if (PchHeaderFile != null && ProjectFileFormat >= VCProjectFileFormat.VisualStudio2022)
 							{
-								VCProjectFileContent.AppendLine("      <AdditionalOptions>$(AdditionalOptions) /Yu\"{0}\"</AdditionalOptions>",
-									PchHeaderFile);
+								VCProjectFileContent.AppendLine($"      <AdditionalOptions>$({DirectoryToPchFile[Directory]})</AdditionalOptions>");
 							}
+
+							VCProjectFileContent.AppendLine("    </{0}>", VCFileType);
 						}
-						VCProjectFileContent.AppendLine("    </{0}>", VCFileType);
+						else
+						{
+							VCProjectFileContent.AppendLine("    <{0} Include=\"{1}\"/>", VCFileType, EscapeFileName(AliasedFile.FileSystemPath));
+						}
 					}
 
 					if (!String.IsNullOrWhiteSpace(AliasedFile.ProjectPath))
@@ -1454,7 +1623,6 @@ namespace UnrealBuildTool
 				bSuccess = ProjectFileGenerator.WriteFileIfChanged(ProjectFilePath.FullName, VCProjectFileContent.ToString(), Logger);
 			}
 
-
 			// Save the filters file
 			if (bSuccess)
 			{
@@ -1498,14 +1666,14 @@ namespace UnrealBuildTool
 		private class ProjectConfigurationForGenerator : ProjectBuildConfiguration
 		{
 			public override string ConfigurationName => Combination.ProjectConfigurationName;
-			public override string BuildCommand      => $"{EscapePath(NormalizeProjectPath(CommandBuilder.BuildScript))} {CommandBuilder.GetBuildArguments()}";
+			public override string BuildCommand => $"{EscapePath(NormalizeProjectPath(CommandBuilder.BuildScript))} {CommandBuilder.GetBuildArguments()}";
 
 			private ProjectConfigAndTargetCombination Combination;
-			private BuildCommandBuilder               CommandBuilder;
+			private BuildCommandBuilder CommandBuilder;
 
 			public ProjectConfigurationForGenerator(ProjectConfigAndTargetCombination InCombination, BuildCommandBuilder InCommandBuilder)
 			{
-				Combination    = InCombination;
+				Combination = InCombination;
 				CommandBuilder = InCommandBuilder;
 			}
 		}
@@ -1642,62 +1810,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-		// Anonymous function that writes pre-Default.props configuration data
-		private void WritePreDefaultPropsConfiguration(UnrealTargetPlatform TargetPlatform, UnrealTargetConfiguration TargetConfiguration, string ProjectPlatformName, string ProjectConfigurationName, PlatformProjectGeneratorCollection PlatformProjectGenerators, StringBuilder VCProjectFileContent)
-		{
-			PlatformProjectGenerator? ProjGenerator = PlatformProjectGenerators.GetPlatformProjectGenerator(TargetPlatform, true);
-			if (ProjGenerator == null)
-			{
-				return;
-			}
-
-			string ProjectConfigurationAndPlatformName = ProjectConfigurationName + "|" + ProjectPlatformName;
-			string ConditionString = "Condition=\"'$(Configuration)|$(Platform)'=='" + ProjectConfigurationAndPlatformName + "'\"";
-
-			if (ProjGenerator != null)
-			{
-				StringBuilder PlatformToolsetString = new StringBuilder();
-				ProjGenerator.GetVisualStudioPreDefaultString(TargetPlatform, TargetConfiguration, PlatformToolsetString);
-
-				if (PlatformToolsetString.Length > 0)
-				{
-					VCProjectFileContent.AppendLine("  <PropertyGroup " + ConditionString + " Label=\"Configuration\">", ConditionString);
-					VCProjectFileContent.Append(PlatformToolsetString);
-					VCProjectFileContent.AppendLine("  </PropertyGroup>");
-				}
-			}
-		}
-
-		// Anonymous function that writes post-Default.props configuration data
-		private void WritePostDefaultPropsConfiguration(UnrealTargetPlatform TargetPlatform, UnrealTargetConfiguration TargetConfiguration, string ProjectPlatformName, string ProjectConfigurationName, PlatformProjectGeneratorCollection PlatformProjectGenerators, StringBuilder VCProjectFileContent, ILogger Logger)
-		{
-			PlatformProjectGenerator? ProjGenerator = PlatformProjectGenerators.GetPlatformProjectGenerator(TargetPlatform, true);
-
-			string ProjectConfigurationAndPlatformName = ProjectConfigurationName + "|" + ProjectPlatformName;
-			string ConditionString = "Condition=\"'$(Configuration)|$(Platform)'=='" + ProjectConfigurationAndPlatformName + "'\"";
-
-			StringBuilder PlatformToolsetString = new StringBuilder();
-			if (ProjGenerator != null)
-			{
-				ProjGenerator.GetVisualStudioPlatformToolsetString(TargetPlatform, TargetConfiguration, ProjectFileFormat, PlatformToolsetString);
-			}
-
-			string PlatformConfigurationType = (ProjGenerator == null) ? "Makefile" : ProjGenerator.GetVisualStudioPlatformConfigurationType(TargetPlatform, ProjectFileFormat);
-			VCProjectFileContent.AppendLine("  <PropertyGroup {0} Label=\"Configuration\">", ConditionString);
-			VCProjectFileContent.AppendLine("    <ConfigurationType>{0}</ConfigurationType>", PlatformConfigurationType);
-
-			if (PlatformToolsetString.Length == 0)
-			{
-				VCProjectFileGenerator.AppendPlatformToolsetProperty(VCProjectFileContent, ProjectFileFormat);
-			}
-			else
-			{
-				VCProjectFileContent.Append(PlatformToolsetString);
-			}
-
-			VCProjectFileContent.AppendLine("  </PropertyGroup>");
-		}
-
 		// Helper class to generate NMake build commands and arguments
 		public class BuildCommandBuilder
 		{
@@ -1710,11 +1822,11 @@ namespace UnrealBuildTool
 			public bool bIsFromMSBuild;
 
 			public PlatformProjectGenerator? ProjectGenerator;
-			
+
 			public FileReference BuildScript { get; }
 			public FileReference RebuildScript { get; }
 			public FileReference CleanScript { get; }
-			
+
 			private readonly string? BuildToolOverride;
 
 			private readonly string UProjectPath;
@@ -1731,20 +1843,20 @@ namespace UnrealBuildTool
 				ProjectTarget = InProjectTarget;
 				UProjectPath = InUProjectPath;
 				BuildToolOverride = InBuildToolOverride;
-				
+
 				DirectoryReference BatchFilesDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Build", "BatchFiles");
 				BuildScript = FileReference.Combine(BatchFilesDirectory, "Build.bat");
 				RebuildScript = FileReference.Combine(BatchFilesDirectory, "Rebuild.bat");
 				CleanScript = FileReference.Combine(BatchFilesDirectory, "Clean.bat");
 			}
-			
+
 			public string GetBuildArguments()
 			{
 				TargetRules TargetRulesObject = ProjectTarget.TargetRules!;
 				string TargetName = ProjectTarget.TargetFilePath.GetFileNameWithoutAnyExtensions();
 
 				StringBuilder BuildArguments = new StringBuilder();
-				
+
 				BuildArguments.AppendFormat("{0} {1} {2}", TargetName, Platform.ToString(), Configuration.ToString());
 				if (UProjectPath.Length > 0)
 				{
@@ -1825,7 +1937,7 @@ namespace UnrealBuildTool
 
 			return Builder;
 		}
-		
+
 		// Anonymous function that writes project configuration data
 		private void WriteConfiguration(string ProjectName, ProjectConfigAndTargetCombination Combination, StringBuilder VCProjectFileContent, PlatformProjectGeneratorCollection PlatformProjectGenerators, StringBuilder? VCUserFileContent, ILogger Logger)
 		{
@@ -1843,23 +1955,24 @@ namespace UnrealBuildTool
 			string ConditionString = "Condition=\"'$(Configuration)|$(Platform)'=='" + Combination.ProjectConfigurationAndPlatformName + "'\"";
 
 			{
-				VCProjectFileContent.AppendLine("  <ImportGroup {0} Label=\"PropertySheets\">", ConditionString);
-				VCProjectFileContent.AppendLine("    <Import Project=\"$(UserRootDir)\\Microsoft.Cpp.$(Platform).user.props\" Condition=\"exists('$(UserRootDir)\\Microsoft.Cpp.$(Platform).user.props')\" Label=\"LocalAppDataPlatform\" />");
+				// Add custom import info
 				if (ProjGenerator != null)
 				{
-					ProjGenerator.GetVisualStudioImportGroupProperties(Combination.Platform!.Value, VCProjectFileContent);
+					StringBuilder CustomImportGroupInfo = new StringBuilder();
+					ProjGenerator.GetVisualStudioImportGroupProperties(Combination.Platform!.Value, CustomImportGroupInfo);
+					if (CustomImportGroupInfo.Length != 0)
+					{
+						VCProjectFileContent.AppendLine("  <ImportGroup {0} Label=\"PropertySheets\">", ConditionString);
+						VCProjectFileContent.Append(CustomImportGroupInfo);
+						VCProjectFileContent.AppendLine("  </ImportGroup>");
+					}
 				}
-				VCProjectFileContent.AppendLine("  </ImportGroup>");
 
 				DirectoryReference ProjectDirectory = ProjectFilePath.Directory;
 
 				if (IsStubProject)
 				{
-					string ProjectRelativeUnusedDirectory = NormalizeProjectPath(DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "Unused"));
-
 					VCProjectFileContent.AppendLine("  <PropertyGroup {0}>", ConditionString);
-					VCProjectFileContent.AppendLine("    <OutDir>{0}{1}</OutDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
-					VCProjectFileContent.AppendLine("    <IntDir>{0}{1}</IntDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
 					VCProjectFileContent.AppendLine("    <NMakeBuildCommandLine>@rem Nothing to do.</NMakeBuildCommandLine>");
 					VCProjectFileContent.AppendLine("    <NMakeReBuildCommandLine>@rem Nothing to do.</NMakeReBuildCommandLine>");
 					VCProjectFileContent.AppendLine("    <NMakeCleanCommandLine>@rem Nothing to do.</NMakeCleanCommandLine>");
@@ -1869,14 +1982,10 @@ namespace UnrealBuildTool
 				else if (Unreal.IsEngineInstalled() && Combination.ProjectTarget != null && Combination.ProjectTarget.TargetRules != null &&
 					(Combination.Platform == null || !Combination.ProjectTarget.SupportedPlatforms.Contains(Combination.Platform.Value)))
 				{
-					string ProjectRelativeUnusedDirectory = NormalizeProjectPath(DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "Unused"));
-
 					string TargetName = Combination.ProjectTarget.TargetFilePath.GetFileNameWithoutAnyExtensions();
 					string ValidPlatforms = String.Join(", ", Combination.ProjectTarget.SupportedPlatforms.Select(x => x.ToString()));
 
 					VCProjectFileContent.AppendLine("  <PropertyGroup {0}>", ConditionString);
-					VCProjectFileContent.AppendLine("    <OutDir>{0}{1}</OutDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
-					VCProjectFileContent.AppendLine("    <IntDir>{0}{1}</IntDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
 					VCProjectFileContent.AppendLine("    <NMakeBuildCommandLine>@echo {0} is not a supported platform for {1}. Valid platforms are {2}.</NMakeBuildCommandLine>", Combination.Platform!, TargetName, ValidPlatforms);
 					VCProjectFileContent.AppendLine("    <NMakeReBuildCommandLine>@echo {0} is not a supported platform for {1}. Valid platforms are {2}.</NMakeReBuildCommandLine>", Combination.Platform!, TargetName, ValidPlatforms);
 					VCProjectFileContent.AppendLine("    <NMakeCleanCommandLine>@echo {0} is not a supported platform for {1}. Valid platforms are {2}.</NMakeCleanCommandLine>", Combination.Platform!, TargetName, ValidPlatforms);
@@ -1897,9 +2006,12 @@ namespace UnrealBuildTool
 
 					// Figure out if this is a monolithic build
 					bool bShouldCompileMonolithic = BuildPlatform.ShouldCompileMonolithicBinary(Platform);
-					if (!bShouldCompileMonolithic)
+					try
 					{
-						bShouldCompileMonolithic = (Combination.ProjectTarget.CreateRulesDelegate(Platform, Configuration).LinkType == TargetLinkType.Monolithic);
+						bShouldCompileMonolithic |= (Combination.ProjectTarget.CreateRulesDelegate(Platform, Configuration).LinkType == TargetLinkType.Monolithic);
+					}
+					catch (BuildException)
+					{
 					}
 
 					// Get the .uproject directory
@@ -1919,7 +2031,7 @@ namespace UnrealBuildTool
 					// Get the output directory
 					DirectoryReference OutputDirectory = DirectoryReference.Combine(RootOutputDirectory, "Binaries", UBTPlatformName);
 
-					if (!string.IsNullOrEmpty(TargetRulesObject.ExeBinariesSubFolder))
+					if (!String.IsNullOrEmpty(TargetRulesObject.ExeBinariesSubFolder))
 					{
 						OutputDirectory = DirectoryReference.Combine(OutputDirectory, TargetRulesObject.ExeBinariesSubFolder);
 					}
@@ -1945,24 +2057,11 @@ namespace UnrealBuildTool
 
 					VCProjectFileContent.AppendLine("  <PropertyGroup {0}>", ConditionString);
 
-					StringBuilder PathsStringBuilder = new StringBuilder();
 					if (ProjGenerator != null)
 					{
+						StringBuilder PathsStringBuilder = new StringBuilder();
 						ProjGenerator.GetVisualStudioPathsEntries(Platform, Configuration, TargetRulesObject.Type, TargetFilePath, ProjectFilePath, NMakePath, ProjectFileFormat, PathsStringBuilder);
-					}
-
-					string PathStrings = PathsStringBuilder.ToString();
-					if (string.IsNullOrEmpty(PathStrings) || (PathStrings.Contains("<IntDir>") == false))
-					{
-						string ProjectRelativeUnusedDirectory = "$(ProjectDir)..\\Build\\Unused";
-						VCProjectFileContent.Append(PathStrings);
-
-						VCProjectFileContent.AppendLine("    <OutDir>{0}{1}</OutDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
-						VCProjectFileContent.AppendLine("    <IntDir>{0}{1}</IntDir>", ProjectRelativeUnusedDirectory, Path.DirectorySeparatorChar);
-					}
-					else
-					{
-						VCProjectFileContent.Append(PathStrings);
+						VCProjectFileContent.Append(PathsStringBuilder.ToString());
 					}
 
 					// This is the standard UE based project NMake build line:
@@ -1973,9 +2072,9 @@ namespace UnrealBuildTool
 					string BuildArguments = Builder.GetBuildArguments();
 
 					// NMake Build command line
-					VCProjectFileContent.AppendLine("    <NMakeBuildCommandLine>{0} {1}</NMakeBuildCommandLine>", EscapePath(NormalizeProjectPath(Builder.BuildScript)), BuildArguments);
-					VCProjectFileContent.AppendLine("    <NMakeReBuildCommandLine>{0} {1}</NMakeReBuildCommandLine>", EscapePath(NormalizeProjectPath(Builder.RebuildScript)), BuildArguments);
-					VCProjectFileContent.AppendLine("    <NMakeCleanCommandLine>{0} {1}</NMakeCleanCommandLine>", EscapePath(NormalizeProjectPath(Builder.CleanScript)), BuildArguments);
+					VCProjectFileContent.AppendLine("    <NMakeBuildCommandLine>$(BuildBatchScript) {0}</NMakeBuildCommandLine>", BuildArguments);
+					VCProjectFileContent.AppendLine("    <NMakeReBuildCommandLine>$(RebuildBatchScript) {0}</NMakeReBuildCommandLine>", BuildArguments);
+					VCProjectFileContent.AppendLine("    <NMakeCleanCommandLine>$(CleanBatchScript) {0}</NMakeCleanCommandLine>", BuildArguments);
 					VCProjectFileContent.AppendLine("    <NMakeOutput>{0}</NMakeOutput>", NormalizeProjectPath(NMakePath.FullName));
 					VCProjectFileContent.AppendLine("    <AdditionalOptions>{0} {1} {2}</AdditionalOptions>", GetCppStandardCompileArgument(TargetRulesObject.CppStandard), GetEnableCoroutinesArgument(), GetConformanceCompileArguments(TargetRulesObject));
 
@@ -1991,6 +2090,12 @@ namespace UnrealBuildTool
 					{
 						VCProjectFileContent.Append(ProjGenerator.GetVisualStudioLayoutDirSection(Platform, Configuration, ConditionString, Combination.ProjectTarget.TargetRules!.Type, Combination.ProjectTarget.TargetFilePath, ProjectFilePath, NMakePath, ProjectFileFormat));
 					}
+
+					VCProjectFileContent.AppendLine("  <ItemDefinitionGroup {0}>", ConditionString);
+					VCProjectFileContent.AppendLine("    <NMakeCompile>");
+					VCProjectFileContent.AppendLine("      <NMakeCompileFileCommandLine>$(BuildBatchScript) {0} -WorkingDir=$(MSBuildProjectDirectory) -Files=$(SelectedFiles)</NMakeCompileFileCommandLine>", BuildArguments);
+					VCProjectFileContent.AppendLine("    </NMakeCompile>");
+					VCProjectFileContent.AppendLine("  </ItemDefinitionGroup>");
 				}
 
 				if (VCUserFileContent != null && Combination.ProjectTarget != null)
@@ -1999,14 +2104,13 @@ namespace UnrealBuildTool
 
 					if (ProjGenerator != null)
 					{
-						string? ForeignUProjectPath = (IsForeignProject && !string.IsNullOrEmpty(UProjectPath)) ? UProjectPath : null;
+						string? ForeignUProjectPath = (IsForeignProject && !String.IsNullOrEmpty(UProjectPath)) ? UProjectPath : null;
 						VCUserFileContent.Append(ProjGenerator.GetVisualStudioUserFileStrings(Combination.Platform!.Value, Configuration, ConditionString, TargetRulesObject, Combination.ProjectTarget.TargetFilePath, ProjectFilePath, ProjectName, ForeignUProjectPath));
 					}
 				}
 			}
 		}
 	}
-
 
 	/// <summary>
 	/// A Visual C# project.
@@ -2016,10 +2120,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// This is the GUID that Visual Studio uses to identify a C# project file in the solution
 		/// </summary>
-		public override string ProjectTypeGUID
-		{
-			get { return "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"; }
-		}
+		public override string ProjectTypeGUID => "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
 
 		/// <summary>
 		/// Platforms that this project supports
@@ -2085,7 +2186,9 @@ namespace UnrealBuildTool
 						XmlNodeList ConfigNodeList = PropertyGroup.GetElementsByTagName("Configurations");
 						// if this property group does not set configurations we do not care about it
 						if (ConfigNodeList.Count == 0)
+						{
 							continue;
+						}
 
 						if (PropertyGroup.HasAttribute("Condition"))
 						{

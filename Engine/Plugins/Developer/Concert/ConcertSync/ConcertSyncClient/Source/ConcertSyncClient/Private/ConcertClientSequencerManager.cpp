@@ -8,13 +8,14 @@
 #include "Misc/QualifiedFrameTime.h"
 #include "Modules/ModuleManager.h"
 #include "Logging/LogMacros.h"
+#include "Logging/StructuredLog.h"
 
 #include "IConcertClient.h"
 #include "IConcertSyncClient.h"
 #include "IConcertSession.h"
 #include "ConcertSettings.h"
 #include "ConcertClientSettings.h"
-
+#include "ConcertSyncArchives.h"
 #include "ConcertClientWorkspace.h"
 
 #include "Engine/GameEngine.h"
@@ -27,6 +28,7 @@
 #include "UObject/UObjectGlobals.h"
 
 #if WITH_EDITOR
+	#include "AnimatedRange.h"
 	#include "ISequencerModule.h"
 	#include "ISequencer.h"
 	#include "SequencerSettings.h"
@@ -59,8 +61,53 @@ static TAutoConsoleVariable<int32> CVarEnableUnrelatedTimelineSync(TEXT("Concert
 static TAutoConsoleVariable<int32> CVarAlwaysCloseGamePlayerOnCloseEvent(
 	TEXT("Concert.AlwaysCloseGamePlayerOnCloseEvent"), 1, TEXT("Force this player to close even if other editors have it open. This CVar only works on `-game` instances."));
 
+
+class FConcertClientSequencePreloader : public TSharedFromThis<FConcertClientSequencePreloader>
+{
+public:
+	void OnPreloadEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerPreloadRequest& InEvent);
+
+	void OnRegister(TSharedRef<IConcertClientSession> InSession)
+	{
+		WeakSession = InSession;
+
+		InSession->RegisterCustomEventHandler<FConcertSequencerPreloadRequest>(this, &FConcertClientSequencePreloader::OnPreloadEvent);
+	}
+
+	void OnUnregister(TSharedRef<IConcertClientSession> InSession)
+	{
+		PreloadPendingSequences.Empty();
+		PreloadedSequences.Empty();
+
+		// Unregister our events and explicitly reset the session ptr
+		if (TSharedPtr<IConcertClientSession> Session = WeakSession.Pin())
+		{
+			check(Session == InSession);
+			Session->UnregisterCustomEventHandler<FConcertSequencerPreloadRequest>(this);
+		}
+
+		WeakSession.Reset();
+	}
+
+	void AddReferencedObjects(FReferenceCollector& Collector)
+	{
+		Collector.AddReferencedObjects(PreloadedSequences);
+	}
+
+protected:
+	TWeakPtr<IConcertClientSession> WeakSession;
+
+	/** Map of sequence assets for which preload has been requested but not completed. */
+	TMap<FTopLevelAssetPath, TSoftObjectPtr<ULevelSequence>> PreloadPendingSequences;
+
+	/** Map of preloaded sequence assets. */
+	TMap<FTopLevelAssetPath, TObjectPtr<ULevelSequence>> PreloadedSequences;
+};
+
+
 FConcertClientSequencerManager::FConcertClientSequencerManager(IConcertSyncClient* InOwnerSyncClient)
 	: OwnerSyncClient(InOwnerSyncClient)
+	, Preloader(MakeShared<FConcertClientSequencePreloader>())
 {
 	check(OwnerSyncClient);
 
@@ -70,6 +117,16 @@ FConcertClientSequencerManager::FConcertClientSequencerManager(IConcertSyncClien
 	OnSequencerCreatedHandle = SequencerModule.RegisterOnSequencerCreated(FOnSequencerCreated::FDelegate::CreateRaw(this, &FConcertClientSequencerManager::OnSequencerCreated));
 
 	FCoreUObjectDelegates::OnPackageReloaded.AddRaw(this, &FConcertClientSequencerManager::HandleAssetReload);
+}
+
+namespace UE::Private::ConcertClientSequencerManager
+{
+const FString PendingTakePath = TEXT("/Temp/TakeRecorder/PendingTake.PendingTake:PendingTake");
+
+bool IsPendingTakePath(const FString& InSequencePath)
+{
+	return InSequencePath == PendingTakePath;
+}
 }
 
 FConcertClientSequencerManager::~FConcertClientSequencerManager()
@@ -140,6 +197,25 @@ void FConcertClientSequencerManager::OnSequencerCreated(TSharedRef<ISequencer> I
 				FConcertSequencerOpenEvent OpenEvent;
 				OpenEvent.SequenceObjectPath = SequenceObjectPath;
 
+				if (UE::Private::ConcertClientSequencerManager::IsPendingTakePath(SequenceObjectPath))
+				{
+					// The pending take may have a level sequence loaded into it.  So we have to capture it with the object writer
+					// and transmit in our open event message.
+					//
+					ULevelSequence* LevelSequence = Cast<ULevelSequence>(Sequence);
+
+					FConcertSyncRemapObjectPath RemapperDelegate;
+					RemapperDelegate.BindLambda([](FString& InPath)
+					{
+						if (UE::Private::ConcertClientSequencerManager::IsPendingTakePath(InPath))
+						{
+							InPath = TEXT("/Engine/Transient.__PendingLevelSequence__");
+						}
+					});
+					FConcertSyncObjectWriter SyncObjectWriter(nullptr, LevelSequence, OpenEvent.TakeData.Bytes, true, false, RemapperDelegate);
+					SyncObjectWriter.SetSerializeNestedObjects(true);
+					SyncObjectWriter.SerializeObject(LevelSequence);
+				}
 				UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Sending OpenEvent: %s"), *OpenEvent.SequenceObjectPath);
 				Session->SendCustomEvent(OpenEvent, Session->GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
 			}
@@ -198,6 +274,8 @@ void FConcertClientSequencerManager::Register(TSharedRef<IConcertClientSession> 
 	InSession->RegisterCustomEventHandler<FConcertSequencerOpenEvent>(this, &FConcertClientSequencerManager::OnOpenEvent);
 	InSession->RegisterCustomEventHandler<FConcertSequencerStateSyncEvent>(this, &FConcertClientSequencerManager::OnStateSyncEvent);
 	InSession->RegisterCustomEventHandler<FConcertSequencerTimeAdjustmentEvent>(this, &FConcertClientSequencerManager::OnTimeAdjustmentEvent);
+
+	Preloader->OnRegister(InSession);
 }
 
 void FConcertClientSequencerManager::Unregister(TSharedRef<IConcertClientSession> InSession)
@@ -206,13 +284,36 @@ void FConcertClientSequencerManager::Unregister(TSharedRef<IConcertClientSession
 	if (TSharedPtr<IConcertClientSession> Session = WeakSession.Pin())
 	{
 		check(Session == InSession);
+
 		Session->UnregisterCustomEventHandler<FConcertSequencerStateEvent>(this);
 		Session->UnregisterCustomEventHandler<FConcertSequencerCloseEvent>(this);
 		Session->UnregisterCustomEventHandler<FConcertSequencerOpenEvent>(this);
 		Session->UnregisterCustomEventHandler<FConcertSequencerStateSyncEvent>(this);
 		Session->UnregisterCustomEventHandler<FConcertSequencerTimeAdjustmentEvent>(this);
+		Session->UnregisterCustomEventHandler<FConcertSequencerPreloadRequest>(this);
+
+		if (GEditor)
+		{
+			TArray<UMovieSceneSequence*> Sequences;
+			for (FOpenSequencerData& OpenSequencer : OpenSequencers)
+			{
+				TSharedPtr<ISequencer> Sequencer = OpenSequencer.WeakSequencer.Pin();
+				if (Sequencer.IsValid() && Sequencer->GetRootMovieSceneSequence())
+				{
+					Sequences.Add(Sequencer->GetRootMovieSceneSequence());
+				}
+			}
+
+			for (UMovieSceneSequence* MovieSequence : Sequences)
+			{
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(MovieSequence);
+			}
+		}
 	}
+
 	WeakSession.Reset();
+
+	Preloader->OnUnregister(InSession);
 }
 
 void SetConsoleVariableRespectingPriority(IConsoleVariable* AsVariable, bool bValue)
@@ -445,7 +546,8 @@ void FConcertClientSequencerManager::OnStateSyncEvent(const FConcertSessionConte
 		if (!bFoundSequencerForObject)
 		{
 			UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    No existing Sequencer with sequence %s open. Will open and sync a new one at end of frame."), *SequencerState.SequenceObjectPath);
-			PendingSequenceOpenEvents.Add(SequencerState.SequenceObjectPath);
+			FConcertSequencerOpenEvent OpenEvent{SequencerState.SequenceObjectPath, SequencerState.TakeData};
+			PendingSequenceOpenEvents.Add(MoveTemp(OpenEvent));
 			PendingSequencerEvents.Add(SequencerState);
 		}
 	}
@@ -520,7 +622,7 @@ void FConcertClientSequencerManager::OnCloseEvent(const FConcertSessionContext&,
 void FConcertClientSequencerManager::OnOpenEvent(const FConcertSessionContext&, const FConcertSequencerOpenEvent& InEvent)
 {
 	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Event Received - Open: %s. Deferring until end of frame."), *InEvent.SequenceObjectPath);
-	PendingSequenceOpenEvents.Add(InEvent.SequenceObjectPath);
+	PendingSequenceOpenEvents.Add(InEvent);
 }
 
 void FConcertClientSequencerManager::HandleAssetReload(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent)
@@ -530,12 +632,11 @@ void FConcertClientSequencerManager::HandleAssetReload(const EPackageReloadPhase
 		return;
 	}
 
-	for (TTuple<FName, FSequencePlayer>& Item : SequencePlayers)
+	for (TTuple<FName, TObjectPtr<ALevelSequenceActor>>& Item : SequencePlayers)
 	{
-		ALevelSequenceActor* LevelSequenceActor = Item.Value.Actor.Get();
+		ALevelSequenceActor* LevelSequenceActor = Item.Value;
 		// If we have a null LevelSequenceActor it means that it has already been destroyed by a close event.  We will not
 		// recreate the asset until all editors have closed it.
-		//
 		if (LevelSequenceActor)
 		{
 			const UPackage* PackageReloaded = InPackageReloadedEvent->GetNewPackage();
@@ -555,14 +656,14 @@ void FConcertClientSequencerManager::ApplyCloseEventToPlayers(const FConcertSequ
 {
 	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Closing sequence players: %s, is from controller: %d"), *CloseEvent.SequenceObjectPath, CloseEvent.bControllerClose);
 
-	FSequencePlayer* Player = SequencePlayers.Find(*CloseEvent.SequenceObjectPath);
+	TObjectPtr<ALevelSequenceActor>* Player = SequencePlayers.Find(*CloseEvent.SequenceObjectPath);
 	if (!Player)
 	{
 		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("        No open players to close for sequence %s"), *CloseEvent.SequenceObjectPath);
 		return;
 	}
 
-	ALevelSequenceActor* LevelSequenceActor = Player->Actor.Get();
+	ALevelSequenceActor* LevelSequenceActor = *Player;
 
 	if (CloseEvent.bControllerClose && LevelSequenceActor && LevelSequenceActor->SequencePlayer)
 	{
@@ -574,9 +675,7 @@ void FConcertClientSequencerManager::ApplyCloseEventToPlayers(const FConcertSequ
 		return;
 	}
 
-	DestroyPlayer(*Player, LevelSequenceActor);
-
-	Player->Actor = nullptr;
+	DestroyPlayer(LevelSequenceActor);
 
 	// Always remove the player on close event. This will allow it to be re-opened on an OpenEvent.
 	UE_LOG(LogConcertSequencerSync, VeryVerbose, TEXT("    Removing sequence player for sequence: %s"), *CloseEvent.SequenceObjectPath);
@@ -633,22 +732,57 @@ void FConcertClientSequencerManager::ApplyCloseEvent(const FConcertSequencerClos
 	ApplyCloseEventToPlayers(CloseEvent);
 }
 
-void FConcertClientSequencerManager::ApplyOpenEvent(const FString& SequenceObjectPath)
+void FConcertClientSequencerManager::ApplyOpenEvent(const FConcertSequencerOpenEvent& InOpenEvent)
 {
 	TGuardValue<bool> ReentrancyGuard(bRespondingToTransportEvent, true);
-
+	FString SequenceObjectPath = InOpenEvent.SequenceObjectPath;
 	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("Handling Event - Open: %s"), *SequenceObjectPath);
 
+	bool bDidOpen = false;
 #if WITH_EDITOR
 	if (IsSequencerRemoteOpenEnabled() && GIsEditor)
 	{
-		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SequenceObjectPath);
+		if (!UE::Private::ConcertClientSequencerManager::IsPendingTakePath(SequenceObjectPath))
+		{
+			// Don't open the asset until we have loaded in the pending take data.
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SequenceObjectPath);
+		}
+
+		bDidOpen = true;
 	}
 
 #endif
 	if (!GIsEditor && CVarEnableSequencePlayer.GetValueOnAnyThread() > 0)
 	{
 		CreateNewSequencePlayerIfNotExists(*SequenceObjectPath);
+		bDidOpen = true;
+	}
+
+	if (bDidOpen && UE::Private::ConcertClientSequencerManager::IsPendingTakePath(SequenceObjectPath))
+	{
+		ULevelSequence* PendingLevelSequence = FindObject<ULevelSequence>(nullptr, *UE::Private::ConcertClientSequencerManager::PendingTakePath);
+
+		// Apply pending take data to our version of the pending take.
+		//
+		FConcertSyncEncounteredMissingObject MissingObjectDelegate;
+		MissingObjectDelegate.BindLambda([](const FStringView MissingObject)
+			{
+				UE_LOG(LogConcertSequencerSync, Display, TEXT("Missing Object %s when loading PendingTake"), MissingObject);
+			});
+
+		FConcertSyncWorldRemapper Remapper(
+			TEXT("/Engine/Transient.__PendingLevelSequence__"), PendingLevelSequence->GetPathName());
+		FConcertSyncObjectReader Reader(nullptr, MoveTemp(Remapper), nullptr, PendingLevelSequence, InOpenEvent.TakeData.Bytes,
+										MissingObjectDelegate);
+		Reader.SetSerializeNestedObjects(true);
+		Reader.SerializeObject(PendingLevelSequence);
+		#if WITH_EDITOR
+		if (GIsEditor)
+		{
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SequenceObjectPath);
+		}
+		#endif
+		PendingLevelSequence->GetPackage()->SetDirtyFlag(false);
 	}
 }
 
@@ -694,7 +828,7 @@ bool FConcertClientSequencerManager::CanClose(const FConcertSequencerCloseEvent&
 	return InEvent.EditorsWithSequencerOpened == 0 || bShouldClose;
 }
 
-void FConcertClientSequencerManager::DestroyPlayer(FSequencePlayer& Player, ALevelSequenceActor* LevelSequenceActor)
+void FConcertClientSequencerManager::DestroyPlayer(ALevelSequenceActor* LevelSequenceActor)
 {
 	if (LevelSequenceActor && LevelSequenceActor->SequencePlayer)
 	{
@@ -794,14 +928,14 @@ void FConcertClientSequencerManager::ApplyTimeAdjustmentToPlayers(const FConcert
 {
 	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    TimeAdjustment: Updating sequence players for sequence %s"), *TimeAdjustmentEvent.SequenceObjectPath);
 
-	FSequencePlayer* SeqPlayer = SequencePlayers.Find(*TimeAdjustmentEvent.SequenceObjectPath);
+	TObjectPtr<ALevelSequenceActor>* SeqPlayer = SequencePlayers.Find(*TimeAdjustmentEvent.SequenceObjectPath);
 	if (!SeqPlayer)
 	{
 		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("        No sequence player for sequence %s"), *TimeAdjustmentEvent.SequenceObjectPath);
 		return;
 	}
 
-	ALevelSequenceActor* LevelSequenceActor = SeqPlayer->Actor.Get();
+	ALevelSequenceActor* LevelSequenceActor = *SeqPlayer;
 	if (LevelSequenceActor && LevelSequenceActor->SequencePlayer)
 	{
 		UMovieScene* MovieScene = LevelSequenceActor->LevelSequenceAsset->GetMovieScene();
@@ -812,6 +946,115 @@ void FConcertClientSequencerManager::ApplyTimeAdjustmentToPlayers(const FConcert
 	}
 }
 
+void FConcertClientSequencePreloader::OnPreloadEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerPreloadRequest& InEvent)
+{
+	for (const FTopLevelAssetPath& SequenceObjectPath : InEvent.SequenceObjectPaths)
+	{
+		const bool bShouldPreload = InEvent.bShouldBePreloaded;
+		UE_LOGFMT(LogConcertSequencerSync, Verbose, "OnPreloadEvent: {Path} should be {Action} the preload set",
+			SequenceObjectPath.ToString(), bShouldPreload ? TEXT("added to") : TEXT("removed from"));
+		if (bShouldPreload)
+		{
+			if (TObjectPtr<ULevelSequence>* ExistingSequence = PreloadedSequences.Find(SequenceObjectPath);
+				ExistingSequence && *ExistingSequence)
+			{
+				UE_LOGFMT(LogConcertSequencerSync, Warning, "OnPreloadEvent: {Path} already in preload set", SequenceObjectPath.ToString());
+				continue;
+			}
+			else if (PreloadPendingSequences.Contains(SequenceObjectPath))
+			{
+				UE_LOGFMT(LogConcertSequencerSync, Warning, "OnPreloadEvent: {Path} already has outstanding async load", SequenceObjectPath.ToString());
+				continue;
+			}
+
+			const FSoftObjectPath SoftSequenceObjectPath(SequenceObjectPath);
+			TSoftObjectPtr<ULevelSequence> SoftSequenceObject(SoftSequenceObjectPath);
+
+			if (ULevelSequence* AlreadyLoadedSequence = SoftSequenceObject.Get())
+			{
+				UE_LOGFMT(LogConcertSequencerSync, Verbose, "OnPreloadEvent: {Path} was already loaded", SequenceObjectPath.ToString());
+				PreloadedSequences.Add(SequenceObjectPath, AlreadyLoadedSequence);
+
+				if (TSharedPtr<IConcertClientSession> Session = WeakSession.Pin(); ensure(Session))
+				{
+					// Inform the server.
+					FConcertSequencerPreloadAssetStatusMap Response;
+					Response.Sequences.Add(SequenceObjectPath, EConcertSequencerPreloadStatus::Succeeded);
+					Session->SendCustomEvent(Response, Session->GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
+				}
+			}
+			else
+			{
+				UE_LOGFMT(LogConcertSequencerSync, Verbose, "OnPreloadEvent: Initiating async package load for {Path}", SequenceObjectPath.ToString());
+				PreloadPendingSequences.Add(SequenceObjectPath, SoftSequenceObject);
+				LoadPackageAsync(SoftSequenceObject.GetLongPackageName(), FLoadPackageAsyncDelegate::CreateLambda(
+					[WeakThis = AsWeak(),
+					WeakRequestSession = WeakSession,
+					SequenceObjectPath,
+					SoftSequenceObject]
+					(const FName& PackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
+					{
+						TSharedPtr<FConcertClientSequencePreloader> This = WeakThis.Pin();
+						if (!This)
+						{
+							UE_LOGFMT(LogConcertSequencerSync, Warning, "Discarding async load result for stale preloader");
+							return;
+						}
+
+						TSharedPtr<IConcertClientSession> Session = This->WeakSession.Pin();
+						if (!Session || Session != WeakRequestSession)
+						{
+							UE_LOGFMT(LogConcertSequencerSync, Warning, "Discarding async load result issued by mismatched session");
+							return;
+						}
+
+						if (!This->PreloadPendingSequences.Remove(SequenceObjectPath))
+						{
+							UE_LOGFMT(LogConcertSequencerSync, Warning, "Discarding async load result for sequence no longer pending");
+							return;
+						}
+
+						if (Result != EAsyncLoadingResult::Succeeded)
+						{
+							UE_LOGFMT(LogConcertSequencerSync, Error, "EAsyncLoadingResult != Succeeded for {Package} ({Result})", PackageName, Result);
+						}
+
+						ULevelSequence* LoadedSequence = SoftSequenceObject.Get();
+						if (!LoadedSequence)
+						{
+							UE_LOGFMT(LogConcertSequencerSync, Error, "Failed to resolve {Path} after async package load", SequenceObjectPath.ToString());
+						}
+
+						// Inform the server of the async load result, and GC ref the loaded sequence if successful.
+						FConcertSequencerPreloadAssetStatusMap Response;
+
+						if (Result == EAsyncLoadingResult::Succeeded && LoadedSequence)
+						{
+							UE_LOGFMT(LogConcertSequencerSync, Verbose, "OnPreloadEvent: Async load completed successfully for {Path}", SequenceObjectPath.ToString());
+							This->PreloadedSequences.Add(SequenceObjectPath, LoadedSequence);
+
+							Response.Sequences.Add(SequenceObjectPath, EConcertSequencerPreloadStatus::Succeeded);
+						}
+						else
+						{
+							Response.Sequences.Add(SequenceObjectPath, EConcertSequencerPreloadStatus::Failed);
+						}
+
+						Session->SendCustomEvent(Response, Session->GetSessionServerEndpointId(), EConcertMessageFlags::ReliableOrdered);
+					}
+				));
+			}
+		}
+		else
+		{
+			if (!(PreloadPendingSequences.Remove(SequenceObjectPath)
+				|| PreloadedSequences.Remove(SequenceObjectPath)))
+			{
+				UE_LOGFMT(LogConcertSequencerSync, Warning, "OnPreloadEvent: Tried to remove {Path} not in preload set", *SequenceObjectPath.ToString());
+			}
+		}
+	}
+}
 
 void FConcertClientSequencerManager::ApplyTransportEvent(const FConcertSequencerState& EventState)
 {
@@ -937,14 +1180,14 @@ void FConcertClientSequencerManager::ApplyEventToPlayers(const FConcertSequencer
 {
 	UE_LOG(LogConcertSequencerSync, Verbose, TEXT("    Transport: Update sequence player for sequence %s, at frame: %d"), *EventState.SequenceObjectPath, EventState.Time.Time.FrameNumber.Value);
 
-	FSequencePlayer* SeqPlayer = SequencePlayers.Find(*EventState.SequenceObjectPath);
+	TObjectPtr<ALevelSequenceActor>* SeqPlayer = SequencePlayers.Find(*EventState.SequenceObjectPath);
 	if (!SeqPlayer)
 	{
 		UE_LOG(LogConcertSequencerSync, Verbose, TEXT("        No sequence player for sequence %s"), *EventState.SequenceObjectPath);
 		return;
 	}
 
-	ALevelSequenceActor* LevelSequenceActor = SeqPlayer->Actor.Get();
+	ALevelSequenceActor* LevelSequenceActor = *SeqPlayer;
 	if (LevelSequenceActor && LevelSequenceActor->SequencePlayer)
 	{
 		ULevelSequencePlayer* Player = LevelSequenceActor->SequencePlayer;
@@ -1055,9 +1298,9 @@ void FConcertClientSequencerManager::OnWorkspaceEndFrameCompleted()
 	{
 		for (const TTuple<FName, FString>& Player : PendingDestroy)
 		{
-			if (FSequencePlayer* SequencePlayer = SequencePlayers.Find(Player.Get<0>()))
+			if (TObjectPtr<ALevelSequenceActor>* SequencePlayer = SequencePlayers.Find(Player.Get<0>()))
 			{
-				DestroyPlayer(*SequencePlayer, SequencePlayer->Actor.Get());
+				DestroyPlayer(*SequencePlayer);
 				SequencePlayers.Remove(Player.Get<0>());
 				PendingCreate.Add(Player.Get<1>());
 			}
@@ -1083,9 +1326,9 @@ void FConcertClientSequencerManager::OnWorkspaceEndFrameCompleted()
 	}
 	PendingCreate.Reset();
 
-	for (const FString& SequenceObjectPath : PendingSequenceOpenEvents)
+	for (const FConcertSequencerOpenEvent& SequenceOpenEvent : PendingSequenceOpenEvents)
 	{
-		ApplyOpenEvent(SequenceObjectPath);
+		ApplyOpenEvent(SequenceOpenEvent);
 	}
 	PendingSequenceOpenEvents.Reset();
 
@@ -1104,15 +1347,8 @@ void FConcertClientSequencerManager::OnWorkspaceEndFrameCompleted()
 
 void FConcertClientSequencerManager::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	TArray<ALevelSequenceActor*> Actors;
-	for (TTuple<FName, FSequencePlayer>& Item : SequencePlayers)
-	{
-		if (Item.Value.Actor.IsValid())
-		{
-			Actors.Add(Item.Value.Actor.Get());
-		}
-	}
-	Collector.AddReferencedObjects(Actors);
+	Collector.AddReferencedObjects(SequencePlayers);
+	Preloader->AddReferencedObjects(Collector);
 }
 
 #endif

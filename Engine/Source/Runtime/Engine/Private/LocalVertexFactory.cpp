@@ -29,16 +29,16 @@ class FSpeedTreeWindNullUniformBuffer : public TUniformBuffer<FSpeedTreeUniformP
 {
 	typedef TUniformBuffer< FSpeedTreeUniformParameters > Super;
 public:
-	virtual void InitDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
-void FSpeedTreeWindNullUniformBuffer::InitDynamicRHI()
+void FSpeedTreeWindNullUniformBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FSpeedTreeUniformParameters Parameters;
 	FMemory::Memzero(Parameters);
 	SetContentsNoUpdate(Parameters);
 	
-	Super::InitDynamicRHI();
+	Super::InitRHI(RHICmdList);
 }
 
 static TGlobalResource< FSpeedTreeWindNullUniformBuffer > GSpeedTreeWindNullUniformBuffer;
@@ -292,16 +292,14 @@ bool FLocalVertexFactory::ShouldCompilePermutation(const FVertexFactoryShaderPer
 
 void FLocalVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
-	// Don't override e.g. SplineMesh's opt-out
-	if (!OutEnvironment.GetDefinitions().Contains("VF_SUPPORTS_SPEEDTREE_WIND"))
-	{
-		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_SPEEDTREE_WIND"), TEXT("1"));
-	}
+	FVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 
-	const bool ContainsManualVertexFetch = OutEnvironment.GetDefinitions().Contains("MANUAL_VERTEX_FETCH");
-	if (!ContainsManualVertexFetch && RHISupportsManualVertexFetch(Parameters.Platform))
+	// Don't override e.g. SplineMesh's opt-out
+	OutEnvironment.SetDefineIfUnset(TEXT("VF_SUPPORTS_SPEEDTREE_WIND"), TEXT("1"));
+
+	if (RHISupportsManualVertexFetch(Parameters.Platform))
 	{
-		OutEnvironment.SetDefine(TEXT("MANUAL_VERTEX_FETCH"), TEXT("1"));
+		OutEnvironment.SetDefineIfUnset(TEXT("MANUAL_VERTEX_FETCH"), TEXT("1"));
 	}
 
 	const bool bVFSupportsPrimtiveSceneData = Parameters.VertexFactoryType->SupportsPrimitiveIdStream() && UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform));
@@ -315,6 +313,9 @@ void FLocalVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShade
 	{
 		OutEnvironment.SetDefine(TEXT("SUPPORT_GPUSKIN_PASSTHROUGH"), IsGPUSkinPassThroughSupported(Parameters.Platform));
 	}
+
+	OutEnvironment.SetDefine(TEXT("ALWAYS_EVALUATE_WORLD_POSITION_OFFSET"),
+		Parameters.MaterialParameters.bAlwaysEvaluateWorldPositionOffset ? 1 : 0);
 }
 
 void FLocalVertexFactory::ValidateCompiledResult(const FVertexFactoryType* Type, EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors)
@@ -322,7 +323,7 @@ void FLocalVertexFactory::ValidateCompiledResult(const FVertexFactoryType* Type,
 	if (Type->SupportsPrimitiveIdStream() 
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform)) 
 		&& !IsMobilePlatform(Platform) // On mobile VS may use PrimtiveUB while GPUScene is enabled
-		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
+		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 	{
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}
@@ -333,28 +334,36 @@ void FLocalVertexFactory::ValidateCompiledResult(const FVertexFactoryType* Type,
 */
 void FLocalVertexFactory::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
 {
-	Elements.Add(FVertexElement(0, 0, VET_Float3, 0, 12, false));
+	Elements.Add(FVertexElement(0, 0, VET_Float3, 0, sizeof(float)*3u, false));
+	
+	if (VertexInputStreamType == EVertexInputStreamType::PositionAndNormalOnly)
+	{
+		// 2-axis TangentBasis components in a single buffer, hence *2u
+		Elements.Add(FVertexElement(1, 4, VET_PackedNormal, 2, sizeof(FPackedNormal)*2u, false));
+	}
 
-	switch (VertexInputStreamType)
+	if (UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel))
 	{
-	case EVertexInputStreamType::Default:
-	{
-		Elements.Add(FVertexElement(1, 0, VET_UInt, 13, 0, true));
-		break;
-	}
-	case EVertexInputStreamType::PositionOnly:
-	{
-		Elements.Add(FVertexElement(1, 0, VET_UInt, 1, 0, true));
-		break;
-	}
-	case EVertexInputStreamType::PositionAndNormalOnly:
-	{
-		Elements.Add(FVertexElement(1, 4, VET_PackedNormal, 2, 0, false));
-		Elements.Add(FVertexElement(2, 0, VET_UInt, 1, 0, true));
-		break;
-	}
-	default:
-		checkNoEntry();
+		switch (VertexInputStreamType)
+		{
+		case EVertexInputStreamType::Default:
+		{
+			Elements.Add(FVertexElement(1, 0, VET_UInt, 13, sizeof(uint32), true));
+			break;
+		}
+		case EVertexInputStreamType::PositionOnly:
+		{
+			Elements.Add(FVertexElement(1, 0, VET_UInt, 1, sizeof(uint32), true));
+			break;
+		}
+		case EVertexInputStreamType::PositionAndNormalOnly:
+		{
+			Elements.Add(FVertexElement(2, 0, VET_UInt, 1, sizeof(uint32), true));
+			break;
+		}
+		default:
+			checkNoEntry();
+		}
 	}
 }
 
@@ -364,16 +373,16 @@ void FLocalVertexFactory::GetVertexElements(ERHIFeatureLevel::Type FeatureLevel,
 	int32 ColorStreamIndex;
 	GetVertexElements(FeatureLevel, InputStreamType, bSupportsManualVertexFetch, Data, Elements, VertexStreams, ColorStreamIndex);
 
-	// For ES3.1 attribute ID needs to be done differently
-	check(FeatureLevel > ERHIFeatureLevel::ES3_1);
-	Elements.Add(FVertexElement(VertexStreams.Num(), 0, VET_UInt, 13, 0, true));
+	if (UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel))
+	{
+		// For ES3.1 attribute ID needs to be done differently
+		check(FeatureLevel > ERHIFeatureLevel::ES3_1);
+		Elements.Add(FVertexElement(VertexStreams.Num(), 0, VET_UInt, 13, 0, true));
+	}
 }
-
 
 void FLocalVertexFactory::SetData(const FDataType& InData)
 {
-	check(IsInRenderingThread());
-
 	{
 		//const int NumTexCoords = InData.NumTexCoords;
 		//const int LightMapCoordinateIndex = InData.LightMapCoordinateIndex;
@@ -390,7 +399,7 @@ void FLocalVertexFactory::SetData(const FDataType& InData)
 	check((InData.ColorComponent.Type == VET_None) || (InData.ColorComponent.Type == VET_Color));
 
 	Data = InData;
-	UpdateRHI();
+	UpdateRHI(FRHICommandListImmediate::Get());
 }
 
 /**
@@ -409,7 +418,7 @@ void FLocalVertexFactory::Copy(const FLocalVertexFactory& Other)
 	BeginUpdateResourceRHI(this);
 }
 
-void FLocalVertexFactory::InitRHI()
+void FLocalVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	SCOPED_LOADTIMER(FLocalVertexFactory_InitRHI);
 

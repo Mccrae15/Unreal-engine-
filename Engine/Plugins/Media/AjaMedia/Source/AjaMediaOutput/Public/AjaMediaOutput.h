@@ -4,6 +4,7 @@
 
 #include "MediaOutput.h"
 
+#include "AjaMediaDefinitions.h"
 #include "MediaIOCoreDefinitions.h"
 
 #include "AjaMediaOutput.generated.h"
@@ -110,6 +111,12 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category="Output")
 	bool bInterlacedFieldsTimecodeNeedToMatch;
+
+	/**
+	 * HDR Metadata of the video signal.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Output", DisplayName="HDR")
+	FAjaMediaHDROptions HDROptions;
 
 	/** Try to maintain a the engine "Genlock" with the VSync signal. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Synchronization")

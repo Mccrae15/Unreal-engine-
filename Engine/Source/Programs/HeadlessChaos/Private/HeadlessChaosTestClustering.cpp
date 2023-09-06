@@ -110,7 +110,8 @@ namespace ChaosTest {
 		}
 
 		FClusterCreationParameters ClusterParams;
-		Chaos::FPBDRigidParticleHandle* RootClusterHandle = Evolution.GetRigidClustering().CreateClusterParticle(0, MoveTemp(ClusterHandles), ClusterParams);
+		TArray<Chaos::FPBDRigidParticleHandle* > ClusterHandlesCopy = ClusterHandles;
+		Chaos::FPBDRigidParticleHandle* RootClusterHandle = Evolution.GetRigidClustering().CreateClusterParticle(0, MoveTemp(ClusterHandlesCopy), ClusterParams);
 		FVec3 InitialVelocity((FReal)50, (FReal)20, (FReal)100);
 
 		RootClusterHandle->V() = InitialVelocity;		
@@ -146,7 +147,7 @@ namespace ChaosTest {
 				EXPECT_NE(Particle.Handle(), ClusteredParticles.Handle(BoxID));	//make sure boxes are not in non disabled array
 			}
 
-			EXPECT_TRUE(Evolution.GetIslandManager().DebugCheckParticleNotInGraph(ClusteredParticles.Handle(BoxID)));
+			EXPECT_FALSE(ClusteredParticles.Handle(BoxID)->IsInConstraintGraph());
 		}
 
 		for (Chaos::FPBDRigidParticleHandle* ClusterHandle : ClusterHandles)
@@ -172,7 +173,7 @@ namespace ChaosTest {
 				EXPECT_NE(Particle.Handle(), ClusterHandle);	//make sure boxes are not in non disabled array
 			}
 
-			EXPECT_TRUE(Evolution.GetIslandManager().DebugCheckParticleNotInGraph(ClusterHandle));
+			EXPECT_FALSE(ClusterHandle->IsInConstraintGraph());
 		}
 
 		EXPECT_EQ(Particles.GetNonDisabledView().Num(), NumBoxes);
@@ -246,7 +247,7 @@ namespace ChaosTest {
 		PhysicalMaterial->DisabledLinearThreshold = 0;
 		PhysicalMaterial->DisabledAngularThreshold = 0;
 
-		Chaos::TArrayCollectionArray<FReal>& SolverStrainArray = Evolution.GetRigidClustering().GetStrainArray();
+		Chaos::TArrayCollectionArray<FRealSingle>& SolverStrainArray = Evolution.GetRigidClustering().GetStrainArray();
 
 		for (int i = 0; i < NumBoxes + NumBoxes / 4 + 1; ++i)
 		{
@@ -271,7 +272,7 @@ namespace ChaosTest {
 		{
 			EXPECT_TRUE(ClusteredParticles.Disabled(BoxID));	//no boxes should be active yet
 			EXPECT_TRUE(Evolution.GetRigidClustering().GetTopLevelClusterParents().Contains(ClusteredParticles.Handle(BoxID)) == false);
-			EXPECT_TRUE(Evolution.GetIslandManager().DebugCheckParticleNotInGraph(ClusteredParticles.Handle(BoxID)));
+			EXPECT_FALSE(ClusteredParticles.Handle(BoxID)->IsInConstraintGraph());
 		}
 
 		SolverStrainArray[NumBoxes + NumBoxes / 4 + 1] = (FReal)1;
@@ -288,7 +289,7 @@ namespace ChaosTest {
 		{
 			EXPECT_TRUE(ClusteredParticles.Disabled(BoxID));	//no boxes should be active yet
 			EXPECT_TRUE(Evolution.GetRigidClustering().GetTopLevelClusterParents().Contains(ClusteredParticles.Handle(BoxID)) == false);
-			EXPECT_TRUE(Evolution.GetIslandManager().DebugCheckParticleNotInGraph(ClusteredParticles.Handle(BoxID)));
+			EXPECT_FALSE(ClusteredParticles.Handle(BoxID)->IsInConstraintGraph());
 		}
 		
 	}

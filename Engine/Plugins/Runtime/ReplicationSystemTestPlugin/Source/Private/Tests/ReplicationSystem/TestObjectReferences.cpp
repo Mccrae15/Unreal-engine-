@@ -9,7 +9,7 @@
 #include "Iris/ReplicationSystem/ReplicationOperationsInternal.h"
 #include "Iris/ReplicationSystem/ReplicationSystemInternal.h"
 #include "Iris/ReplicationSystem/ReplicationFragmentUtil.h"
-#include "Engine/Public/Net/UnrealNetwork.h"
+#include "Net/UnrealNetwork.h"
 #include "Iris/ReplicationSystem/Filtering/NetObjectFilter.h"
 #include "Iris/Core/IrisDebugging.h"
 
@@ -17,7 +17,6 @@ class UObject;
 
 void UTestObjectReferences_TestClassWithReferences::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
 	UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
 }
 
@@ -32,6 +31,7 @@ void UTestObjectReferences_TestClassWithReferences::GetLifetimeReplicatedProps(T
 	DOREPLIFETIME(UTestObjectReferences_TestClassWithReferences, StructWithRef_CArray);
 	DOREPLIFETIME(UTestObjectReferences_TestClassWithReferences, StructWithRef_TArray);
 	DOREPLIFETIME(UTestObjectReferences_TestClassWithReferences, TestStructWithNestedRefTArray_TArray);
+	DOREPLIFETIME(UTestObjectReferences_TestClassWithReferences, TestStructWithNestedRefCArray_CArray);
 	DOREPLIFETIME(UTestObjectReferences_TestClassWithReferences, Ref_FastArray);
 	DOREPLIFETIME(UTestObjectReferences_TestClassWithReferences, Ref_NativeFastArray);
 }
@@ -44,7 +44,6 @@ UTestObjectReferences_TestClassWithDefaultSubObject::UTestObjectReferences_TestC
 
 void UTestObjectReferences_TestClassWithDefaultSubObject::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
 	UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
 
 	// Include subobject as well in the protocol
@@ -62,8 +61,9 @@ void UTestObjectReferences_TestClassWithDefaultSubObject::GetLifetimeReplicatedP
 namespace UE::Net::Private
 {
 
-struct FTestObjectReferencesFixture : public FReplicationSystemServerClientTestFixture
+class FTestObjectReferencesFixture : public FReplicationSystemServerClientTestFixture
 {
+public:
 	struct FReferenceCollector
 	{
 		void Reset() { References.Reset(); }
@@ -126,6 +126,13 @@ struct FTestObjectReferencesFixture : public FReplicationSystemServerClientTestF
 				ReferenceCollector.BitArray.SetBit(Info.ChangeMaskInfo.BitOffset);
 			}				
 		}
+	}
+
+	void SetMemberDirty(FNetBitArrayView ChangeMask, uint32 MemberIndex)
+	{
+		const FReplicationStateDescriptor* Descriptor = TestObjectProtocol->ReplicationStateDescriptors[1];
+		const FReplicationStateMemberChangeMaskDescriptor& ChangeMaskDesciptor = Descriptor->MemberChangeMaskDescriptors[MemberIndex];
+		ChangeMask.SetBits(ChangeMaskDesciptor.BitOffset, ChangeMaskDesciptor.BitCount);
 	}
 
 	FReferenceCollector CollectAllCollector;
@@ -685,9 +692,8 @@ UE_NET_TEST_FIXTURE(FTestObjectReferencesFixture, TestVisitAllDirty)
 	TestObject->TestStructWithNestedRefCArray_CArray[1].StructWithRef_CArray[1].Ref_CArray[1] = TestReferences[CurrentReferenceIndex++]; // 13
 	TestObject->TestStructWithNestedRefCArray_CArray[2].StructWithRef_CArray[2].Ref_CArray[2] = TestReferences[CurrentReferenceIndex++]; // 14
 
-	uint32 ChangeMaskData[8];
-
-	FNetBitArrayView ChangeMask(ChangeMaskData, TestObjectProtocol->ChangeMaskBitCount, FNetBitArrayView::ResetOnInit);
+	FNetBitArray ChangeMaskStorage(TestObjectProtocol->ChangeMaskBitCount);
+	FNetBitArrayView ChangeMask = MakeNetBitArrayView(ChangeMaskStorage);
 
 	// To trigger copy of data
 	Server->PreSendUpdate();
@@ -707,20 +713,23 @@ UE_NET_TEST_FIXTURE(FTestObjectReferencesFixture, TestVisitAllDirty)
 
 		VisitReferences(TestObjectStateBuffer, TestObjectProtocol, Collector);
 		UE_NET_ASSERT_EQ((uint32)Collector.References.Num(), 1U);
-		UE_NET_ASSERT_TRUE(Collector.References[0].GetRefHandle() == TestReferences[0]->NetRefHandle);
+		UE_NET_ASSERT_EQ(Collector.References[0].GetRefHandle(), TestReferences[0]->NetRefHandle);
 	}
 
 	// Partial
 	{
 		FCollectValidReferenceCollector Collector(false, ChangeMask);
 		ChangeMask.Reset();
-		ChangeMask.SetBit(11);
+
+		// Mark member 11 as dirty. This corresponds to TestStructWithNestedRefTArray_TArray.
+		SetMemberDirty(ChangeMask, 11);
+
 		VisitReferences(TestObjectStateBuffer, TestObjectProtocol, Collector);
 
 		UE_NET_ASSERT_EQ(Collector.References.Num(), 3);
 		for (int32 It = 0; It < Collector.References.Num(); ++It)
 		{
-			UE_NET_ASSERT_TRUE(Collector.References[It].GetRefHandle() == TestReferences[It + 20]->NetRefHandle);
+			UE_NET_ASSERT_EQ(Collector.References[It].GetRefHandle(), TestReferences[It + 20]->NetRefHandle);
 		}
 	}
 
@@ -733,7 +742,7 @@ UE_NET_TEST_FIXTURE(FTestObjectReferencesFixture, TestVisitAllDirty)
 		UE_NET_ASSERT_EQ((uint32)Collector.References.Num(), CurrentReferenceIndex);
 		for (int32 It = 0; It < Collector.References.Num(); ++It)
 		{
-			UE_NET_ASSERT_TRUE(Collector.References[It].GetRefHandle() == TestReferences[It]->NetRefHandle);
+			UE_NET_ASSERT_EQ(Collector.References[It].GetRefHandle(), TestReferences[It]->NetRefHandle);
 		}
 	}
 
@@ -746,7 +755,7 @@ UE_NET_TEST_FIXTURE(FTestObjectReferencesFixture, TestVisitAllDirty)
 		UE_NET_ASSERT_EQ((uint32)Collector.References.Num(), CurrentReferenceIndex - 1);
 		for (int32 It = 0; It < Collector.References.Num(); ++It)
 		{
-			UE_NET_ASSERT_TRUE(Collector.References[It].GetRefHandle() == TestReferences[It + 1]->NetRefHandle);
+			UE_NET_ASSERT_EQ(Collector.References[It].GetRefHandle(), TestReferences[It + 1]->NetRefHandle);
 		}
 	}
 }
@@ -762,7 +771,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestInlinedSubObj
 
 	// Verify subobject
 	UE_NET_ASSERT_TRUE(Object->CreatedSubObjectRef != nullptr);
-	UE_NET_ASSERT_TRUE(Object->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || Object->IsDefaultSubobject());
+	UE_NET_ASSERT_TRUE((Object->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || Object->IsDefaultSubobject()));
 
 	// Replicate object
 	Server->PreSendUpdate();
@@ -774,7 +783,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestInlinedSubObj
 
 	// Verify that default subobject is created
 	UE_NET_ASSERT_TRUE(ClientObject->CreatedSubObjectRef != nullptr);
-	UE_NET_ASSERT_TRUE(ClientObject->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || ClientObject->IsDefaultSubobject());
+	UE_NET_ASSERT_TRUE((ClientObject->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || ClientObject->IsDefaultSubobject()));
 	
 	// Set a reference to subobject
 	Object->ObjectRef = Object->CreatedSubObjectRef;
@@ -800,7 +809,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestExternalSubOb
 
 	// Verify internal subobject
 	UE_NET_ASSERT_TRUE(Object->CreatedSubObjectRef != nullptr);
-	UE_NET_ASSERT_TRUE(Object->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || Object->IsDefaultSubobject());
+	UE_NET_ASSERT_TRUE((Object->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || Object->IsDefaultSubobject()));
 
 	// Create external subobject
 	UTestObjectReferences_TestClassWithDefaultSubObject* ExternalSubObject = Server->CreateSubObject<UTestObjectReferences_TestClassWithDefaultSubObject>(Object->NetRefHandle);
@@ -817,7 +826,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestExternalSubOb
 	// Verify that default subobject is created
 	UE_NET_ASSERT_TRUE(ClientObject->CreatedSubObjectRef != nullptr);
 	UE_NET_ASSERT_TRUE(ClientExternalSubObject != nullptr);
-	UE_NET_ASSERT_TRUE(ClientObject->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || ClientObject->IsDefaultSubobject());
+	UE_NET_ASSERT_TRUE((ClientObject->CreatedSubObjectRef->HasAnyFlags(RF_DefaultSubObject) || ClientObject->IsDefaultSubobject()));
 		
 	// Set a reference to external subobject
 	Object->ObjectRef = ExternalSubObject;
@@ -942,7 +951,9 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestOutOfOrderRes
 	Item.ObjectRef = ServerReferencedObjectC;
 	ServerFastArray.Items.Add(Item);
 	ServerFastArray.MarkItemDirty(ServerFastArray.Items[2]);
+#if !UE_BUILD_SHIPPING
 	UE::Net::IrisDebugHelper::DebugOutputNetObjectState(ServerObject->NetRefHandle.GetId(), ServerObject->NetRefHandle.GetReplicationSystemId());
+#endif
 
 	// Make sure that references are not replicated to client
 	Server->ReplicationSystem->AddToGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectA->NetRefHandle);
@@ -976,7 +987,9 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestOutOfOrderRes
 	Server->SendAndDeliverTo(Client, true);
 	Server->PostSendUpdate();
 
+#if !UE_BUILD_SHIPPING
 	UE::Net::IrisDebugHelper::DebugOutputNetObjectState(ClientObject->NetRefHandle.GetId(), ClientObject->NetRefHandle.GetReplicationSystemId());
+#endif
 
 	// Verify that we managed to resolve objectA even though we have other unresolved objects in the array
 	UE_NET_ASSERT_TRUE(ClientFastArray.Items[0].ObjectRef != nullptr);

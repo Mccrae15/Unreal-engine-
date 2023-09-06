@@ -2,13 +2,12 @@
 
 #include "RHI.h"
 #include "Modules/ModuleManager.h"
+#include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/MessageDialog.h"
 #include "Containers/StaticArray.h"
 #include "DataDrivenShaderPlatformInfo.h"
-
-#if WINDOWS_USE_FEATURE_DYNAMIC_RHI
 
 #include "Windows/WindowsPlatformApplicationMisc.h"
 
@@ -125,7 +124,12 @@ static FString GetRHINameFromWindowsRHI(EWindowsRHI InWindowsRHI, ERHIFeatureLev
 		GetFeatureLevelName(InFeatureLevel, FeatureLevelName);
 		return FString::Printf(TEXT("DirectX 12 (%s)"), *FeatureLevelName);
 	}
-	case EWindowsRHI::Vulkan: return TEXT("Vulkan");
+	case EWindowsRHI::Vulkan:
+	{
+		FString FeatureLevelName;
+		GetFeatureLevelName(InFeatureLevel, FeatureLevelName);
+		return FString::Printf(TEXT("Vulkan (%s)"), *FeatureLevelName);
+	}
 	case EWindowsRHI::OpenGL: return TEXT("OpenGL");
 	}
 }
@@ -552,13 +556,40 @@ static bool ShouldDevicePreferSM5(uint32 DeviceId)
 	return false;
 }
 
+// Whether a SM6 capable device should always default to SM6
+// regardless of other heuristics suggesting otherwise.
+static bool ShouldDevicePreferSM6(uint32 SM6CapableDeviceId)
+{
+	TArray<FString> SM6PreferredDeviceIds;
+	GConfig->GetArray(TEXT("D3D12_SM6"), TEXT("SM6PreferredGPUDeviceIDs"), SM6PreferredDeviceIds, GEngineIni);
+
+	for (const FString& PreferredDeviceID : SM6PreferredDeviceIds)
+	{
+		if (SM6CapableDeviceId == FCString::Strtoi(*PreferredDeviceID, nullptr, 10) ||
+			SM6CapableDeviceId == FCString::Strtoi(*PreferredDeviceID, nullptr, 16))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static bool IsRHIAllowedAsDefault(EWindowsRHI InRHI, ERHIFeatureLevel::Type InFeatureLevel)
 {
+	static const FWindowsPlatformApplicationMisc::FGPUInfo BestGPUInfo = FWindowsPlatformApplicationMisc::GetBestGPUInfo();
+
+	if (InRHI == EWindowsRHI::D3D12 && InFeatureLevel == ERHIFeatureLevel::SM6)
+	{
+		if (ShouldDevicePreferSM6(BestGPUInfo.DeviceId)) 
+		{
+			return true;
+		}
+	}
+
 	bool bAllowed = true;
 	if (InRHI == EWindowsRHI::D3D12 && InFeatureLevel >= ERHIFeatureLevel::SM6)
 	{
-		static const FWindowsPlatformApplicationMisc::FGPUInfo BestGPUInfo = FWindowsPlatformApplicationMisc::GetBestGPUInfo();
-
 		int32 MinDedicatedMemoryMB = 0;
 		if (GConfig->GetInt(TEXT("D3D12_SM6"), TEXT("MinDedicatedMemory"), MinDedicatedMemoryMB, GEngineIni))
 		{
@@ -807,7 +838,7 @@ static bool HandleUnsupportedFeatureLevel(EWindowsRHI& WindowsRHI, ERHIFeatureLe
 			UE_LOG(LogRHI, Log, TEXT("RHI %s with Feature Level %s is not supported on your system."), GetLogName(WindowsRHI), GetLogName(FeatureLevel));
 
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RequiredDX12SM6", "DirectX 12 with Feature Level SM6 is not supported on your system. Try running without the -sm6 command line argument."));
-			FPlatformMisc::RequestExit(1);
+			FPlatformMisc::RequestExit(true, TEXT("HandleUnsupportedFeatureLevel"));
 		}
 
 		return false;
@@ -836,7 +867,7 @@ static bool HandleUnsupportedRHI(EWindowsRHI& WindowsRHI, ERHIFeatureLevel::Type
 			UE_LOG(LogRHI, Log, TEXT("RHI %s with Feature Level %s is not supported on your system."), GetLogName(WindowsRHI), GetLogName(FeatureLevel));
 
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RequiredDX12", "DirectX 12 is not supported on your system. Try running without the -dx12 or -d3d12 command line argument."));
-			FPlatformMisc::RequestExit(1);
+			FPlatformMisc::RequestExit(true, TEXT("HandleUnsupportedRHI.ForcedRHI"));
 			return false;
 		}
 	}
@@ -856,25 +887,25 @@ static bool HandleUnsupportedRHI(EWindowsRHI& WindowsRHI, ERHIFeatureLevel::Type
 	if (WindowsRHI == EWindowsRHI::D3D12)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RequiredDX12", "DirectX 12 is not supported on your system. Try running without the -dx12 or -d3d12 command line argument."));
-		FPlatformMisc::RequestExit(1);
+		FPlatformMisc::RequestExit(true, TEXT("HandleUnsupportedRHI.D3D12"));
 	}
 
 	if (WindowsRHI == EWindowsRHI::D3D11)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RequiredDX11Feature_11_SM5", "A D3D11-compatible GPU (Feature Level 11.0, Shader Model 5.0) is required to run the engine."));
-		FPlatformMisc::RequestExit(1);
+		FPlatformMisc::RequestExit(true, TEXT("HandleUnsupportedRHI.D3D11"));
 	}
 
 	if (WindowsRHI == EWindowsRHI::Vulkan)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RequiredVulkan", "Vulkan Driver is required to run the engine."));
-		FPlatformMisc::RequestExit(1);
+		FPlatformMisc::RequestExit(true, TEXT("HandleUnsupportedRHI.Vulkan"));
 	}
 
 	if (WindowsRHI == EWindowsRHI::OpenGL)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RequiredOpenGL", "OpenGL 4.3 is required to run the engine."));
-		FPlatformMisc::RequestExit(1);
+		FPlatformMisc::RequestExit(true, TEXT("HandleUnsupportedRHI.OpenGL"));
 	}
 
 	return false;
@@ -1015,4 +1046,3 @@ const TCHAR* GetSelectedDynamicRHIModuleName(bool bCleanup)
 
 #undef LOCTEXT_NAMESPACE
 
-#endif //WINDOWS_USE_FEATURE_DYNAMIC_RHI

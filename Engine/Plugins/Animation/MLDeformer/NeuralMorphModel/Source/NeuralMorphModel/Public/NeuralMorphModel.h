@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerMorphModel.h"
 #include "GeometryCache.h"
 #include "NeuralMorphTypes.h"
+#include "Containers/Map.h"
 #include "NeuralMorphModel.generated.h"
 
 class USkeletalMesh;
@@ -49,28 +50,38 @@ public:
 
 	// UObject overrides.
 	virtual void Serialize(FArchive& Archive) override;
+	virtual void PostLoad() override;
 	// ~END UObject overrides.
 
 	// UMLDeformerModel overrides.
-	virtual FString GetDisplayName() const override			{ return "Neural Morph Model"; }
+	virtual FString GetDisplayName() const override					{ return "Neural Morph Model"; }
 	virtual UMLDeformerModelInstance* CreateModelInstance(UMLDeformerComponent* Component) override;
-	virtual UMLDeformerInputInfo* CreateInputInfo();
+	virtual UMLDeformerInputInfo* CreateInputInfo() override;
+	virtual int32 GetNumFloatsPerCurve() const override;
 	// ~END UMLDeformerModel overrides.
 
 	const TArray<FNeuralMorphBoneGroup>& GetBoneGroups() const		{ return BoneGroups; }
 	const TArray<FNeuralMorphCurveGroup>& GetCurveGroups() const	{ return CurveGroups; }
-	UNeuralMorphNetwork* GetNeuralMorphNetwork() const		{ return NeuralMorphNetwork.Get(); }
-	void SetNeuralMorphNetwork(UNeuralMorphNetwork* Net)	{ NeuralMorphNetwork = Net; }
-	ENeuralMorphMode GetModelMode() const					{ return Mode; }
-	int32 GetLocalNumHiddenLayers() const					{ return LocalNumHiddenLayers; }
-	int32 GetLocalNumNeuronsPerLayer() const				{ return LocalNumNeuronsPerLayer; }
-	int32 GetGlobalNumHiddenLayers() const					{ return GlobalNumHiddenLayers; }
-	int32 GetGlobalNumNeuronsPerLayer() const				{ return GlobalNumNeuronsPerLayer; }
-	int32 GetNumIterations() const							{ return NumIterations; }
-	int32 GetBatchSize() const								{ return BatchSize; }
-	float GetLearningRate() const							{ return LearningRate; }
-	float GetLearningRateDecay() const						{ return LearningRateDecay; }
-	float GetRegularizationFactor() const					{ return RegularizationFactor; }
+	UNeuralMorphNetwork* GetNeuralMorphNetwork() const				{ return NeuralMorphNetwork.Get(); }
+	ENeuralMorphMode GetModelMode() const							{ return Mode; }
+	int32 GetLocalNumMorphsPerBone() const							{ return LocalNumMorphTargetsPerBone; }
+	int32 GetLocalNumHiddenLayers() const							{ return LocalNumHiddenLayers; }
+	int32 GetLocalNumNeuronsPerLayer() const						{ return LocalNumNeuronsPerLayer; }
+	int32 GetGlobalNumMorphs() const								{ return GlobalNumMorphTargets; }
+	int32 GetGlobalNumHiddenLayers() const							{ return GlobalNumHiddenLayers; }
+	int32 GetGlobalNumNeuronsPerLayer() const						{ return GlobalNumNeuronsPerLayer; }
+	int32 GetNumIterations() const									{ return NumIterations; }
+	int32 GetBatchSize() const										{ return BatchSize; }
+	int32 GetLocalNumMorphsPerBoneOrCurve() const					{ return LocalNumMorphTargetsPerBone; }
+	float GetLearningRate() const									{ return LearningRate; }
+	float GetSmoothLossBeta() const									{ return SmoothLossBeta; }
+	float GetRegularizationFactor() const							{ return RegularizationFactor; }
+	bool IsBoneMaskingEnabled() const								{ return bEnableBoneMasks; }
+
+	void UpdateMissingGroupNames();
+	void SetNeuralMorphNetwork(UNeuralMorphNetwork* Net);
+
+	void SetNumIterations(int32 InNumIterations)					{ check(InNumIterations > 0); NumIterations = InNumIterations; }
 
 public:
 	/**
@@ -78,7 +89,7 @@ public:
 	 * This can be used in case multiple bones are correlated to each other and work together to produce given shapes.
 	 * Groups are only used when the model is in Local mode.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Inputs and Output")
+	UPROPERTY()
 	TArray<FNeuralMorphBoneGroup> BoneGroups;
 
 	/**
@@ -86,8 +97,26 @@ public:
 	 * This can be used in case multiple curves are correlated to each other and work together to produce given shapes.
 	 * Groups are only used when the model is in Local mode.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Inputs and Output")
+	UPROPERTY()
 	TArray<FNeuralMorphCurveGroup> CurveGroups;
+
+	/**
+	 * Information needed to generate a mask for each bone.
+	 * Each mask info object contains a list of bones who's skinning influence regions should be included in the final mask for the specific bone.
+	 * This information (and bone masking in general) is used inside the ENeuralMorphMode::Local mode.
+	 * The FName map key represents the bone name.
+	 */
+	UPROPERTY()
+	TMap<FName, FNeuralMorphMaskInfo> BoneMaskInfos;
+
+	/**
+	 * Information needed to generate a mask for each bone group.
+	 * So the size of the array is NumGroupsInInputInfo.
+	 * Each mask info object contains a list of bones who's skinning influence regions should be included in the final mask for the specific bone.
+	 * This information (and bone masking in general) is used inside the ENeuralMorphMode::Local mode.
+	 */
+	UPROPERTY()
+	TMap<FName, FNeuralMorphMaskInfo> BoneGroupMaskInfos;
 
 	/**
 	 * The mode that the neural network will operate in. 
@@ -153,20 +182,29 @@ public:
 	float LearningRate = 0.001f;
 
 	/** 
-	 * The learning rate decay rate. If this is set to 1, the learning rate will not change. 
-	 * This is a multiplication factor. Every 1000 iterations, the new learning rate will be equal to
-	 * CurrentLearningRate * LearningRateDecay. This allows us to take slightly larger steps in the first iterations, and slowly take smaller steps.
-	 * Generally you want this to be between 0.9 and 1.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Training Settings", meta = (ClampMin = "0.1", ClampMax = "1.0"))
-	float LearningRateDecay = 0.98f;
-
-	/** 
 	 * The regularization factor. Higher values can help generate more sparse morph targets, but can also lead to visual artifacts. 
 	 * A value of 0 disables the regularization, and gives the highest quality, at the cost of higher runtime memory usage.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Training Settings", meta = (ClampMin = "0.0", ClampMax = "10.0"))
 	float RegularizationFactor = 1.0f;
+
+	/** 
+	 * Enable the use of per bone and bone group masks.
+	 * When enabled, an influence mask is generated per bone based on skinning info. This will enforce deformations localized to the area around the joint.
+	 * The benefit of enabling this can be reduced GPU memory footprint, faster GPU performance and more localized deformations.
+	 * If deformations do not happen near the joint then this enabling this setting can lead to those deformations possibly not being captured.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Training Settings", meta = (EditCondition = "Mode == ENeuralMorphMode::Local"))
+	bool bEnableBoneMasks = false;
+
+	/**
+	 * The beta parameter in the smooth L1 loss function, which describes below which absolute error to use a squared term. If the error is above or equal to this beta value, it will use the L1 loss.
+	 * This is a non-negative value, where 0 makes it behave exactly the same as an L1 loss.
+	 * The value entered represents how many cm of error to allow before an L1 loss is used. Typically higher values give smoother results.
+	 * If you see some noise in the trained results, even with large amount of samples and iterations, try increasing this value.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Training Settings", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+	float SmoothLossBeta = 1.0f;
 
 	/**
 	 * The neural morph model network.

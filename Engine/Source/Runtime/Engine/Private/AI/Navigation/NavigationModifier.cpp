@@ -18,15 +18,26 @@
 // should be less than voxel size (recast navmesh)
 static const FVector::FReal CONVEX_HULL_POINTS_MIN_DISTANCE_SQ = 4.0f * 4.0f;
 
+bool FCompositeNavModifier::bEnableNavMeshResolutions = true;
+
+namespace UE::Navigation::Private
+{
+	FAutoConsoleVariableRef CVarEnableNavMeshResolutions(TEXT("ai.nav.EnableNavMeshResolutions"), FCompositeNavModifier::bEnableNavMeshResolutions, TEXT("When set to false, navmesh resoutions will be ignored."), ECVF_Default);
+}
+
 //----------------------------------------------------------------------//
 // FNavigationLinkBase
 //----------------------------------------------------------------------//
 FNavigationLinkBase::FNavigationLinkBase() 
-	: LeftProjectHeight(0.0f), MaxFallDownLength(1000.0f), UserId(InvalidUserId), SnapRadius(30.f), SnapHeight(50.0f),
+	: LeftProjectHeight(0.0f), MaxFallDownLength(1000.0f), SnapRadius(30.f), SnapHeight(50.0f),
 	  Direction(ENavLinkDirection::BothWays), bUseSnapHeight(false), bSnapToCheapestArea(true),
 	  bCustomFlag0(false), bCustomFlag1(false), bCustomFlag2(false), bCustomFlag3(false), bCustomFlag4(false),
 	  bCustomFlag5(false), bCustomFlag6(false), bCustomFlag7(false)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UserId = InvalidUserId;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	AreaClass = nullptr;
 	SupportedAgentsBits = 0xFFFFFFFF;
 }
@@ -658,7 +669,7 @@ void FSimpleLinkNavModifier::SetSegmentLinks(const TArray<FNavigationSegmentLink
 	for (int32 Idx = 0; Idx < SegmentLinks.Num(); Idx++)
 	{
 		FNavigationSegmentLink& LinkData = SegmentLinks[Idx];
-		LinkData.UserId = UserId;
+		LinkData.NavLinkId = NavLinkId;
 
 		bHasMetaAreasSegment |= LinkData.HasMetaArea();
 		bHasFallDownLinks |= LinkData.MaxFallDownLength > 0.f;
@@ -691,7 +702,7 @@ void FSimpleLinkNavModifier::AppendSegmentLinks(const TArray<FNavigationSegmentL
 	for (int32 Idx = 0; Idx < InLinks.Num(); Idx++)
 	{
 		FNavigationSegmentLink& LinkData = SegmentLinks[LinkBase + Idx];
-		LinkData.UserId = UserId;
+		LinkData.NavLinkId = NavLinkId;
 
 		bHasMetaAreasSegment |= LinkData.HasMetaArea();
 		bHasFallDownLinks |= LinkData.MaxFallDownLength > 0.f;
@@ -716,7 +727,7 @@ void FSimpleLinkNavModifier::AddSegmentLink(const FNavigationSegmentLink& InLink
 	const int32 LinkIdx = SegmentLinks.Add(InLink);
 
 	FNavigationSegmentLink& LinkData = SegmentLinks[LinkIdx];
-	LinkData.UserId = UserId;
+	LinkData.NavLinkId = NavLinkId;
 
 	bHasMetaAreasSegment |= LinkData.HasMetaArea();
 	bHasFallDownLinks |= LinkData.MaxFallDownLength > 0.f;
@@ -820,7 +831,7 @@ FCompositeNavModifier FCompositeNavModifier::GetInstantiatedMetaModifier(const F
 			{
 				Area->SetAreaClass(UNavAreaBase::PickAreaClassForAgent(Area->GetAreaClass(), *ActorOwner, *NavAgent));
 				Area->SetAreaClassToReplace(UNavAreaBase::PickAreaClassForAgent(Area->GetAreaClassToReplace(), *ActorOwner, *NavAgent));
-				Result.bHasMetaAreas = true;
+				Result.bHasMetaAreas = -1;
 			}
 		}
 	}

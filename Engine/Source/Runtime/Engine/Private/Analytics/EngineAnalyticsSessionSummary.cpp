@@ -14,6 +14,7 @@
 #include "Misc/EngineVersion.h"
 #include "UserActivityTracking.h"
 #include "RHI.h"
+#include "RHIStats.h"
 
 #if PLATFORM_WINDOWS
 #include "HAL/FileManager.h"
@@ -118,7 +119,6 @@ namespace EngineAnalyticsProperties
 		}
 		return true; // Shutdown|Terminate|Abnormal can overwrite each other.
 	}
-
 } // namespace EngineAnalyticsProperties
 
 
@@ -143,6 +143,9 @@ FEngineAnalyticsSessionSummary::FEngineAnalyticsSessionSummary(TSharedPtr<IAnaly
 	FString OSMajor;
 	FString OSMinor;
 	FPlatformMisc::GetOSVersions(/*out*/ OSMajor, /*out*/ OSMinor);
+
+	FTextureMemoryStats TextureMemStats;
+	RHIGetTextureMemoryStats(TextureMemStats);
 
 	// Get project settings.
 	const UGeneralProjectSettings& ProjectSettings = *GetDefault<UGeneralProjectSettings>();
@@ -175,6 +178,7 @@ FEngineAnalyticsSessionSummary::FEngineAnalyticsSessionSummary(TSharedPtr<IAnaly
 	Store->Set(TEXT("GRHIAdapterUserDriverVersion"), GRHIAdapterUserDriverVersion);
 	Store->Set(TEXT("GRHIName"), FString(GDynamicRHI ? GDynamicRHI->GetName() : TEXT("")));
 	Store->Set(TEXT("GRHIAdapterDriverOnDenyList"), GRHIAdapterDriverOnDenyList);
+	Store->Set(TEXT("GRHIAdapterMemory"), static_cast<uint64>(TextureMemStats.DedicatedVideoMemory));
 	Store->Set(TEXT("ProjectName"), EngineAnalyticsProperties::GetProjectName(ProjectSettings));
 	Store->Set(TEXT("ProjectID"), ProjectSettings.ProjectID.ToString(EGuidFormats::DigitsWithHyphens));
 	Store->Set(TEXT("ProjectDescription"), ProjectSettings.Description);
@@ -213,7 +217,7 @@ FEngineAnalyticsSessionSummary::FEngineAnalyticsSessionSummary(TSharedPtr<IAnaly
 
 	// Listen to interesting events.
 	FCoreDelegates::OnHandleSystemError.AddRaw(this, &FEngineAnalyticsSessionSummary::OnCrashing); // WARNING: Don't assume this function is only called from game thread.
-	FCoreDelegates::ApplicationWillTerminateDelegate.AddRaw(this, &FEngineAnalyticsSessionSummary::OnTerminate); // WARNING: Don't assume this function is only called from game thread.
+	FCoreDelegates::GetApplicationWillTerminateDelegate().AddRaw(this, &FEngineAnalyticsSessionSummary::OnTerminate); // WARNING: Don't assume this function is only called from game thread.
 	FCoreDelegates::IsVanillaProductChanged.AddRaw(this, &FEngineAnalyticsSessionSummary::OnVanillaStateChanged);
 	FCoreDelegates::OnUserLoginChangedEvent.AddRaw(this, &FEngineAnalyticsSessionSummary::OnUserLoginChanged);
 	FUserActivityTracking::OnActivityChanged.AddRaw(this, &FEngineAnalyticsSessionSummary::OnUserActivity);
@@ -227,7 +231,7 @@ void FEngineAnalyticsSessionSummary::Shutdown()
 		ShutdownInternal();
 
 		FCoreDelegates::OnHandleSystemError.RemoveAll(this);
-		FCoreDelegates::ApplicationWillTerminateDelegate.RemoveAll(this);
+		FCoreDelegates::GetApplicationWillTerminateDelegate().RemoveAll(this);
 		FCoreDelegates::IsVanillaProductChanged.RemoveAll(this);
 		FCoreDelegates::OnUserLoginChangedEvent.RemoveAll(this);
 		FUserActivityTracking::OnActivityChanged.RemoveAll(this);

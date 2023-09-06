@@ -5,38 +5,35 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 
+struct FOptionalSize;
+struct FSlateColor;
 class SDMXControlConsoleEditorExpandArrowButton;
 class SDMXControlConsoleEditorFader;
+class SHorizontalBox;
+class SInlineEditableTextBlock;
 class UDMXControlConsoleFaderBase;
 class UDMXControlConsoleFixturePatchCellAttributeFader;
 class UDMXControlConsoleFixturePatchMatrixCell;
-
-struct FSlateColor;
-class SHorizontalBox;
-class SInlineEditableTextBlock;
 
 
 /** Individual Matrix Cell UI class */
 class SDMXControlConsoleEditorMatrixCell
 	: public SCompoundWidget
-{	
+{
 public:
 	SLATE_BEGIN_ARGS(SDMXControlConsoleEditorMatrixCell)
 	{}
 
 	SLATE_END_ARGS()
 
-	/** Constructs the widget */
-	void Construct(const FArguments& InArgs, const TObjectPtr<UDMXControlConsoleFixturePatchMatrixCell>& InMatrixCell);
+		/** Constructs the widget */
+		void Construct(const FArguments& InArgs, const TObjectPtr<UDMXControlConsoleFixturePatchMatrixCell>& InMatrixCell);
 
 	/** Gets reference to the Matrix Cell showned by this widget */
 	UDMXControlConsoleFixturePatchMatrixCell* GetMatrixCell() { return MatrixCell.Get(); }
 
 	/** Gets a reference to this widget's ExpandArrow button */
 	TSharedPtr<SDMXControlConsoleEditorExpandArrowButton>& GetExpandArrowButton() { return ExpandArrowButton; }
-
-	/** Filters children by given search string  */
-	void ApplyGlobalFilter(const FString& InSearchString);
 
 protected:
 	//~ Begin SWidget interface
@@ -63,11 +60,17 @@ private:
 	/** Returns true if any of this Matrix Cell's Cell Attribute Fader is selected */
 	bool IsAnyCellAttributeFaderSelected() const;
 
+	/** Gets the height of the Matrix Cell according to the current Faders View Mode  */
+	FOptionalSize GetMatrixCellHeightByFadersViewMode() const;
+
 	/** Gets Matrix Cell ID as text */
 	FText GetMatrixCellLabelText() const;
 
 	/** Gets label background color */
 	FSlateColor GetLabelBorderColor() const;
+
+	/** Gets visibility for each Fader widget in this view */
+	EVisibility GetFaderWidgetVisibility(const UDMXControlConsoleFaderBase* Fader) const;
 
 	/** Gets visibility of CellAttributeFadersHorizontalBox widget */
 	EVisibility GetCellAttributeFadersHorizontalBoxVisibility() const;

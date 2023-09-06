@@ -23,6 +23,13 @@ namespace BeaconConsoleVariables
 		TEXT("Delay time before finishing handshake by calling client RPC\n")
 		TEXT("Time in seconds. A value of 0 means no delay, and a negative value means never call it."),
 		ECVF_Default);
+
+	TAutoConsoleVariable<FString> CVarDelayFinishHandshakeType(
+		TEXT("beacon.DelayFinishHandshakeBeaconType"),
+		TEXT(""),
+		TEXT("The type of beacon to apply the handshake delay to.\n")
+		TEXT("Leave blank for all."),
+		ECVF_Default);
 }
 #endif
 
@@ -96,7 +103,7 @@ bool AOnlineBeaconHost::InitHost()
 		if (InitBase() && NetDriver)
 		{
 			FString Error;
-			if (NetDriver->InitListen(this, URL, false, Error))
+			if (NetDriver->InitListen(this, URL, bReuseAddressAndPort, Error))
 			{
 				ListenPort = URL.Port;
 				NetDriver->SetWorld(GetWorld());
@@ -307,14 +314,14 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 			// Try to kick off verification for this player.
 			const FString AuthTicket = UGameplayStatics::ParseOption(OptionsURL, TEXT("AuthTicket"));
 
+			bool bStartedAuth = false;
+
 			// Try to start deprecated auth method.
 			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			const bool bStartedAuthDeprecated = StartVerifyAuthentication(*UniqueIdRepl, AuthTicket);
+			bStartedAuth = StartVerifyAuthentication(*UniqueIdRepl, AuthTicket);
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-			// Don't start new auth method if deprecated auth is active.
-			bool bStartedNewAuth = false;
-			if (!bStartedAuthDeprecated)
+			if (!bStartedAuth)
 			{
 				// Create completion delegate.
 				FOnAuthenticationVerificationCompleteDelegate OnAuthComplete = FOnAuthenticationVerificationCompleteDelegate::CreateWeakLambda(this, [this, WeakConnection = TWeakObjectPtr<UNetConnection>(Connection)](const FOnlineError& OnlineError)
@@ -322,10 +329,19 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 					OnAuthenticationVerificationComplete(WeakConnection.Get(), OnlineError);
 				});
 
-				bStartedNewAuth = StartVerifyAuthentication(*UniqueIdRepl, AuthTicket, OnAuthComplete);
+				// Try to start deprecated auth method.
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				bStartedAuth = StartVerifyAuthentication(*UniqueIdRepl, AuthTicket, OnAuthComplete);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+				// Don't start new auth method if deprecated auth is active.
+				if (!bStartedAuth)
+				{
+					bStartedAuth = StartVerifyAuthentication(*UniqueIdRepl, OptionsURL, AuthTicket, OnAuthComplete);
+				}
 			}
 
-			if (!bStartedAuthDeprecated && !bStartedNewAuth)
+			if (!bStartedAuth)
 			{
 				static const FText ErrorTxt = NSLOCTEXT("NetworkErrors", "BeaconLoginInvalidAuthHandlerError", "Login Failure. Unable to process authentication.");
 				SendFailurePacket(Connection, ENetCloseResult::BeaconLoginInvalidAuthHandlerError, ErrorTxt);
@@ -391,6 +407,18 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 
 					return false;
 				}
+
+				if (!VerifyJoinForBeaconType(*UniqueId, BeaconType))
+				{
+					static const FText AuthErrorText = NSLOCTEXT("NetworkErrors", "BeaconAuthError", "Unable to authenticate for beacon. Verifying auth for beacon type {0} failed for connection owned by {1}");
+
+					SendFailurePacket(Connection, ENetCloseResult::BeaconAuthError,
+										FText::Format(AuthErrorText, FText::FromString(BeaconType),
+														FText::FromString(Connection->PlayerId.ToDebugString())));
+
+					return false;
+				}
+
 				UE_LOG(LogBeacon, Log, TEXT("%s: Beacon Join %s %s"), *GetDebugName(Connection), *BeaconType, *UniqueId.ToDebugString());
 			}
 			else
@@ -468,22 +496,26 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 
 #if UE_BUILD_SHIPPING
 			const float Delay = 0.0f;
+			const FString DelayBeaconType;
+			const bool bDelayAllowedForBeaconType = false;
 #else
 			const float Delay = BeaconConsoleVariables::CVarDelayFinishHandshake.GetValueOnGameThread();
+			const FString DelayBeaconType = BeaconConsoleVariables::CVarDelayFinishHandshakeType.GetValueOnGameThread();
+			const bool bDelayAllowedForBeaconType = DelayBeaconType.IsEmpty() || DelayBeaconType == BeaconType;
 #endif
-			if (Delay == 0.0f)
+			if (Delay == 0.0f || !bDelayAllowedForBeaconType)
 			{
 				FinishHandshake(Connection, MoveTemp(BeaconType));
 			}
 			else if (Delay > 0.0f)
 			{
-				UE_LOG(LogBeacon, Verbose, TEXT("%s: Delay for handshake completion: %.3f"), *GetDebugName(Connection), Delay);
+				UE_LOG(LogBeacon, Verbose, TEXT("%s: BeaconType: %s, Delay for handshake completion: %.3f"), *GetDebugName(Connection), *BeaconType, Delay);
 				FTimerDelegate TimerDelegate = FTimerDelegate::CreateUObject(this, &AOnlineBeaconHost::FinishHandshake, Connection, MoveTemp(BeaconType));
 				GetWorldTimerManager().SetTimer(ConnState->FinishHandshakeTimerHandle, TimerDelegate, Delay, false);
 			}
 			else
 			{
-				UE_LOG(LogBeacon, Verbose, TEXT("%s: Handshake will never complete, client will either timeout or hang if timeouts are disabled."), *GetDebugName(Connection));
+				UE_LOG(LogBeacon, Verbose, TEXT("%s: BeaconType: %s, Handshake will never complete, client will either timeout or hang if timeouts are disabled."), *GetDebugName(Connection), *BeaconType);
 			}
 		}
 
@@ -556,20 +588,6 @@ void AOnlineBeaconHost::SendFailurePacket(UNetConnection* Connection, FNetCloseR
 	}
 }
 
-void AOnlineBeaconHost::SendFailurePacket(UNetConnection* Connection, const FText& ErrorText)
-{
-	if (Connection != nullptr)
-	{
-		FString ErrorMsg = ErrorText.ToString();
-
-		UE_LOG(LogBeacon, Log, TEXT("%s: Send failure: %s"), ToCStr(GetDebugName(Connection)), ToCStr(ErrorMsg));
-
-		FNetControlMessage<NMT_Failure>::Send(Connection, ErrorMsg);
-		Connection->FlushNet(true);
-		Connection->Close();
-	}
-}
-
 void AOnlineBeaconHost::CloseHandshakeConnection(UNetConnection* Connection)
 {
 	if (Connection && Connection->GetConnectionState() != USOCK_Closed)
@@ -631,12 +649,16 @@ void AOnlineBeaconHost::RemoveClientActor(AOnlineBeaconClient* ClientActor)
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool AOnlineBeaconHost::StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& AuthenticationToken)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 {
 	return false;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void AOnlineBeaconHost::OnAuthenticationVerificationComplete(const class FUniqueNetId& PlayerId, const FOnlineError& Error)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 {
 	UNetConnection* Connection = nullptr;
 	FConnectionState* ConnState = nullptr;
@@ -646,9 +668,21 @@ void AOnlineBeaconHost::OnAuthenticationVerificationComplete(const class FUnique
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool AOnlineBeaconHost::StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& AuthenticationToken, const FOnAuthenticationVerificationCompleteDelegate& OnComplete)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 {
 	return false;
+}
+
+bool AOnlineBeaconHost::StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& LoginOptions, const FString& AuthenticationToken, const FOnAuthenticationVerificationCompleteDelegate& OnComplete)
+{
+	return false;
+}
+
+bool AOnlineBeaconHost::VerifyJoinForBeaconType(const FUniqueNetId& PlayerId, const FString& BeaconType)
+{
+	return true;
 }
 
 void AOnlineBeaconHost::OnAuthenticationVerificationComplete(UNetConnection* Connection, const FOnlineError& Error)

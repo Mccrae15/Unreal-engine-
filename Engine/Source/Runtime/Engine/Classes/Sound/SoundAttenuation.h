@@ -91,7 +91,7 @@ enum class EPriorityAttenuationMethod : uint8
 
 
 USTRUCT(BlueprintType)
-struct ENGINE_API FSoundAttenuationPluginSettings
+struct FSoundAttenuationPluginSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -113,7 +113,7 @@ struct ENGINE_API FSoundAttenuationPluginSettings
 };
 
 USTRUCT(BlueprintType)
-struct ENGINE_API FAttenuationSubmixSendSettings
+struct FAttenuationSubmixSendSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -150,11 +150,26 @@ struct ENGINE_API FAttenuationSubmixSendSettings
 	FRuntimeFloatCurve CustomSubmixSendCurve;
 };
 
+
+// Defines how to speaker map the sound when using the non-spatialized radius feature
+UENUM(BlueprintType)
+enum class ENonSpatializedRadiusSpeakerMapMode : uint8
+{
+	// Will blend the 3D sound to an omni-directional sound (equal output mapping in all directions)
+	OmniDirectional,
+
+	// Will blend the 3D source to the same representation speaker map used when playing the asset 2D
+	Direct2D,
+
+	// Will blend the 3D source to a multichannel 2D version (i.e. upmix stereo to quad) if rendering in surround
+	Surround2D,
+};
+
 /*
 The settings for attenuating.
 */
 USTRUCT(BlueprintType)
-struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
+struct FSoundAttenuationSettings : public FBaseAttenuationSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -253,11 +268,22 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TEnumAsByte<enum ESoundDistanceCalc> DistanceType_DEPRECATED;
+
+ 	UPROPERTY()
+ 	float OmniRadius_DEPRECATED;
 #endif
 
-	/** The distance below which a sound is non-spatialized (2D). This prevents near-field audio from flipping as audio crosses the listener's position. This does not apply when using a 3rd party binaural plugin (audio will remain spatialized). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta=(ClampMin = "0", EditCondition="bSpatialize", DisplayName="Non-Spatialized Radius"))
-	float OmniRadius;
+	/** The distance below which a sound begins to linearly interpolate towards being non-spatialized (2D). See "Non Spatialized Radius End" to define the end of the interpolation and the "Non Spatialized Radius Mode" for the mode of the interpolation. Note: this does not apply when using a 3rd party binaural plugin (audio will remain spatialized). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize"))
+	float NonSpatializedRadiusStart;
+
+	/** The distance below which a sound is fully non-spatialized (2D). See "Non Spatialized Radius Start" to define the start of the interpolation and the "Non Spatialized Radius Mode" for the mode of the interpolation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize"))
+	float NonSpatializedRadiusEnd;
+
+	/** Defines how to interpolate a 3D sound towards a 2D sound when using the non-spatialized radius start and end properties. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize"))
+	ENonSpatializedRadiusSpeakerMapMode NonSpatializedRadiusMode;
 
 	/** The world-space distance between left and right stereo channels when stereo assets are 3D spatialized. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize", DisplayName = "3D Stereo Spread"))
@@ -438,8 +464,11 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 		, PriorityAttenuationMethod(EPriorityAttenuationMethod::Linear)
 #if WITH_EDITORONLY_DATA
 		, DistanceType_DEPRECATED(SOUNDDISTANCE_Normal)
+		, OmniRadius_DEPRECATED(0.0f)
 #endif
-		, OmniRadius(0.0f)
+		, NonSpatializedRadiusStart(0.0f)
+		, NonSpatializedRadiusEnd(0.0f)
+		, NonSpatializedRadiusMode(ENonSpatializedRadiusSpeakerMapMode::OmniDirectional)
 		, StereoSpread(200.0f)
 #if WITH_EDITORONLY_DATA
 		, SpatializationPluginSettings_DEPRECATED(nullptr)
@@ -482,15 +511,15 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	{
 	}
 
-	bool operator==(const FSoundAttenuationSettings& Other) const;
+	ENGINE_API bool operator==(const FSoundAttenuationSettings& Other) const;
 #if WITH_EDITORONLY_DATA
-	void PostSerialize(const FArchive& Ar);
+	ENGINE_API void PostSerialize(const FArchive& Ar);
 #endif
 
-	virtual void CollectAttenuationShapesForVisualization(TMultiMap<EAttenuationShape::Type, FBaseAttenuationSettings::AttenuationShapeDetails>& ShapeDetailsMap) const override;
-	float GetFocusPriorityScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
-	float GetFocusAttenuation(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
-	float GetFocusDistanceScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
+	ENGINE_API virtual void CollectAttenuationShapesForVisualization(TMultiMap<EAttenuationShape::Type, FBaseAttenuationSettings::AttenuationShapeDetails>& ShapeDetailsMap) const override;
+	ENGINE_API float GetFocusPriorityScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
+	ENGINE_API float GetFocusAttenuation(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
+	ENGINE_API float GetFocusDistanceScale(const struct FGlobalFocusSettings& FocusSettings, float FocusFactor) const;
 };
 
 #if WITH_EDITORONLY_DATA
@@ -512,7 +541,7 @@ class USoundAttenuation : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Settings, meta = (CustomizeProperty))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Settings, meta = (CustomizeProperty))
 	FSoundAttenuationSettings Attenuation;
 };
 
@@ -542,4 +571,30 @@ namespace Audio
 
 		ENGINE_API Audio::FParameterInterfacePtr GetInterface();
 	} // namespace SpatializationInterface
+
+	namespace SourceOrientationInterface
+	{
+		ENGINE_API const extern FName Name;
+
+		namespace Inputs
+		{
+			ENGINE_API const extern FName Azimuth;
+			ENGINE_API const extern FName Elevation;
+		} // namespace Inputs
+
+		ENGINE_API Audio::FParameterInterfacePtr GetInterface();
+	} // namespace EmitterInterface
+
+	namespace ListenerOrientationInterface
+	{
+		ENGINE_API const extern FName Name;
+
+		namespace Inputs
+		{
+			ENGINE_API const extern FName Azimuth;
+			ENGINE_API const extern FName Elevation;
+		} // namespace Inputs
+
+		ENGINE_API Audio::FParameterInterfacePtr GetInterface();
+	} // namespace EmitterInterface
 } // namespace Audio

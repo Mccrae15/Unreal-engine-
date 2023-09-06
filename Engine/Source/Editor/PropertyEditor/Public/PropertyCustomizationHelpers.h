@@ -210,6 +210,8 @@ public:
 		SLATE_ARGUMENT(bool, DisplayUseSelected)
 		/** Whether to show the 'Browse' button */
 		SLATE_ARGUMENT(bool, DisplayBrowse)
+		/** Optional delegate called when the 'Browse' button is clicked. Used to override the default editor behavior */
+		SLATE_EVENT(FSimpleDelegate, OnBrowseOverride)
 		/** Whether to enable the content Picker */
 		SLATE_ARGUMENT(bool, EnableContentPicker)
 		/** Whether or not to display a smaller, compact size for the asset thumbnail */ 
@@ -226,6 +228,8 @@ public:
 	PROPERTYEDITOR_API void Construct( const FArguments& InArgs );
 
 	PROPERTYEDITOR_API void GetDesiredWidth(float& OutMinDesiredWidth, float &OutMaxDesiredWidth);
+
+	PROPERTYEDITOR_API void OpenEntryBox();
 
 private:
 	/**
@@ -419,18 +423,17 @@ public:
 		, bDisplayElementNum(InDisplayElementNum)
 	{
 		check( ArrayProperty.IsValid() );
-
+		
 		// Delegate for when the number of children in the array changes
 		FSimpleDelegate OnNumChildrenChanged = FSimpleDelegate::CreateRaw( this, &FDetailArrayBuilder::OnNumChildrenChanged );
-		ArrayProperty->SetOnNumElementsChanged( OnNumChildrenChanged );
+		OnNumElementsChangedHandle = ArrayProperty->SetOnNumElementsChanged( OnNumChildrenChanged );
 
 		BaseProperty->MarkHiddenByCustomization();
 	}
 	
 	~FDetailArrayBuilder()
 	{
-		FSimpleDelegate Empty;
-		ArrayProperty->SetOnNumElementsChanged( Empty );
+		ArrayProperty->UnregisterOnNumElementsChanged(OnNumElementsChangedHandle);
 	}
 
 	void SetDisplayName( const FText& InDisplayName )
@@ -541,6 +544,7 @@ private:
 	bool bGenerateHeader;
 	bool bDisplayResetToDefault;
 	bool bDisplayElementNum;
+	FDelegateHandle OnNumElementsChangedHandle;
 };
 
 /**

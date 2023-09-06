@@ -7,6 +7,8 @@
 
 #include "AssetUtils/CreateStaticMeshUtil.h"
 #include "AssetUtils/CreateTexture2DUtil.h"
+#include "AssetUtils/CreateMaterialUtil.h"
+#include "Physics/ComponentCollisionUtil.h"
 
 #include "ConversionUtils/DynamicMeshToVolume.h"
 #include "MeshDescriptionToDynamicMesh.h"
@@ -35,6 +37,7 @@
 
 using namespace UE::Geometry;
 
+extern UNREALED_API UEditorEngine* GEditor;
 
 UEditorModelingObjectsCreationAPI* UEditorModelingObjectsCreationAPI::Register(UInteractiveToolsContext* ToolsContext)
 {
@@ -95,8 +98,20 @@ FCreateTextureObjectResult UEditorModelingObjectsCreationAPI::CreateTextureObjec
 {
 	FCreateTextureObjectParams LocalParams = CreateTexParams;
 	return CreateTextureObject(MoveTemp(LocalParams));
-
 }
+
+FCreateMaterialObjectResult UEditorModelingObjectsCreationAPI::CreateMaterialObject(const FCreateMaterialObjectParams& CreateMaterialParams)
+{
+	FCreateMaterialObjectParams LocalParams = CreateMaterialParams;
+	return CreateMaterialObject(MoveTemp(LocalParams));
+}
+
+FCreateActorResult UEditorModelingObjectsCreationAPI::CreateNewActor(const FCreateActorParams& CreateActorParams)
+{
+	FCreateActorParams LocalParams = CreateActorParams;
+	return CreateNewActor(MoveTemp(LocalParams));
+}
+
 
 
 FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateMeshObject(FCreateMeshObjectParams&& CreateMeshParams)
@@ -141,17 +156,29 @@ TArray<UMaterialInterface*> UEditorModelingObjectsCreationAPI::FilterMaterials(c
 
 FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateVolume(FCreateMeshObjectParams&& CreateMeshParams)
 {
-	// spawn new actor
-	FActorSpawnParameters SpawnInfo;
-	FTransform NewActorTransform = FTransform::Identity;
+	// determine volume actor type
 	UClass* VolumeClass = ABlockingVolume::StaticClass();
 	if (CreateMeshParams.TypeHintClass
-		&& Cast<AVolume>(CreateMeshParams.TypeHintClass.Get()->GetDefaultObject(false)) != nullptr )
+		&& Cast<AVolume>(CreateMeshParams.TypeHintClass.Get()->GetDefaultObject(false)) != nullptr)
 	{
 		VolumeClass = CreateMeshParams.TypeHintClass;
 	}
 
-	AVolume* NewVolumeActor = (AVolume*)CreateMeshParams.TargetWorld->SpawnActor(VolumeClass, &NewActorTransform, SpawnInfo);
+	// create new volume actor using factory
+	AVolume* const NewVolumeActor = [VolumeClass, &CreateMeshParams]() -> AVolume*
+	{
+		if (UActorFactory* const VolumeFactory = FActorFactoryAssetProxy::GetFactoryForAssetObject(VolumeClass))
+		{
+			AActor* const Actor = VolumeFactory->CreateActor(VolumeClass, CreateMeshParams.TargetWorld->GetCurrentLevel(), FTransform::Identity);
+			FActorLabelUtilities::SetActorLabelUnique(Actor, CreateMeshParams.BaseName);
+			return Cast<AVolume>(Actor);
+		}
+		return nullptr;
+	}();
+	if (!NewVolumeActor)
+	{
+		return FCreateMeshObjectResult{ECreateModelingObjectResult::Failed_ActorCreationFailed};
+	}
 
 	NewVolumeActor->BrushType = EBrushType::Brush_Add;
 	UModel* Model = NewObject<UModel>(NewVolumeActor);
@@ -241,9 +268,15 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateDynamicMeshActo
 	// configure collision
 	if (CreateMeshParams.bEnableCollision)
 	{
+		if (CreateMeshParams.CollisionShapeSet.IsSet())
+		{
+			UE::Geometry::SetSimpleCollision(NewComponent, CreateMeshParams.CollisionShapeSet.GetPtrOrNull());
+		}
+
 		NewComponent->CollisionType = CreateMeshParams.CollisionMode;
 		// enable complex collision so that raycasts can hit this object
 		NewComponent->bEnableComplexCollision = true;
+
 		// force collision update
 		NewComponent->UpdateCollision(false);
 	}
@@ -267,21 +300,17 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateDynamicMeshActo
 
 FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset(FCreateMeshObjectParams&& CreateMeshParams)
 {
-	if (!ensure(CreateMeshParams.TargetWorld)) { return FCreateMeshObjectResult{ ECreateModelingObjectResult::Failed_InvalidWorld }; }
-
 	UE::AssetUtils::FStaticMeshAssetOptions AssetOptions;
-
-	if (GetNewAssetPathNameCallback.IsBound())
+	
+	ECreateModelingObjectResult AssetPathResult = GetNewAssetPath(
+		AssetOptions.NewAssetPath,
+		CreateMeshParams.BaseName,
+		nullptr,
+		CreateMeshParams.TargetWorld);
+		
+	if (AssetPathResult != ECreateModelingObjectResult::Ok)
 	{
-		AssetOptions.NewAssetPath = GetNewAssetPathNameCallback.Execute(CreateMeshParams.BaseName, CreateMeshParams.TargetWorld, FString());
-		if (AssetOptions.NewAssetPath.Len() == 0)
-		{
-			return FCreateMeshObjectResult{ ECreateModelingObjectResult::Cancelled };
-		}
-	}
-	else
-	{
-		AssetOptions.NewAssetPath = "/Game/" + CreateMeshParams.BaseName;
+		return FCreateMeshObjectResult{ AssetPathResult };
 	}
 
 	AssetOptions.NumSourceModels = 1;
@@ -293,6 +322,7 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset
 	AssetOptions.bEnableRecomputeTangents = CreateMeshParams.bEnableRecomputeTangents;
 	AssetOptions.bGenerateNaniteEnabledMesh = CreateMeshParams.bEnableNanite;
 	AssetOptions.NaniteSettings = CreateMeshParams.NaniteSettings;
+	AssetOptions.bGenerateLightmapUVs = CreateMeshParams.bGenerateLightmapUVs;
 
 	AssetOptions.bCreatePhysicsBody = CreateMeshParams.bEnableCollision;
 	AssetOptions.CollisionType = CreateMeshParams.CollisionMode;
@@ -343,9 +373,6 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset
 
 	// this disconnects the component from various events
 	StaticMeshComponent->UnregisterComponent();
-	// Configure flags of the component. Is this necessary?
-	StaticMeshComponent->SetMobility(EComponentMobility::Movable);
-	StaticMeshComponent->bSelectable = true;
 	// replace the UStaticMesh in the component
 	StaticMeshComponent->SetStaticMesh(NewStaticMesh);
 
@@ -354,6 +381,13 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset
 	for (int32 k = 0; k < ComponentMaterials.Num(); ++k)
 	{
 		StaticMeshComponent->SetMaterial(k, ComponentMaterials[k]);
+	}
+
+	// set simple collision geometry
+	if (CreateMeshParams.CollisionShapeSet.IsSet())
+	{
+		UE::Geometry::SetSimpleCollision(StaticMeshComponent, CreateMeshParams.CollisionShapeSet.GetPtrOrNull(),
+			UE::Geometry::GetCollisionSettings(StaticMeshComponent));
 	}
 
 	// re-connect the component (?)
@@ -380,36 +414,17 @@ FCreateMeshObjectResult UEditorModelingObjectsCreationAPI::CreateStaticMeshAsset
 
 FCreateTextureObjectResult UEditorModelingObjectsCreationAPI::CreateTextureObject(FCreateTextureObjectParams&& CreateTexParams)
 {
-	FString RelativeToObjectFolder;
-	if (CreateTexParams.StoreRelativeToObject != nullptr)
-	{
-		// find path to asset
-		UPackage* AssetOuterPackage = CastChecked<UPackage>(CreateTexParams.StoreRelativeToObject->GetOuter());
-		if (ensure(AssetOuterPackage))
-		{
-			FString AssetPackageName = AssetOuterPackage->GetName();
-			RelativeToObjectFolder = FPackageName::GetLongPackagePath(AssetPackageName);
-		}
-	}
-	else
-	{
-		if (!ensure(CreateTexParams.TargetWorld)) { return FCreateTextureObjectResult{ ECreateModelingObjectResult::Failed_InvalidWorld }; }
-	}
-
 	UE::AssetUtils::FTexture2DAssetOptions AssetOptions;
 
-	if (GetNewAssetPathNameCallback.IsBound())
+	ECreateModelingObjectResult AssetPathResult = GetNewAssetPath(
+		AssetOptions.NewAssetPath,
+		CreateTexParams.BaseName,
+		CreateTexParams.StoreRelativeToObject,
+		CreateTexParams.TargetWorld);
+
+	if (AssetPathResult != ECreateModelingObjectResult::Ok)
 	{
-		AssetOptions.NewAssetPath = GetNewAssetPathNameCallback.Execute(CreateTexParams.BaseName, CreateTexParams.TargetWorld, RelativeToObjectFolder);
-		if (AssetOptions.NewAssetPath.Len() == 0)
-		{
-			return FCreateTextureObjectResult{ ECreateModelingObjectResult::Cancelled };
-		}
-	}
-	else
-	{
-		FString UseBaseFolder = (RelativeToObjectFolder.Len() > 0) ? RelativeToObjectFolder : TEXT("/Game");
-		AssetOptions.NewAssetPath = FPaths::Combine(UseBaseFolder, CreateTexParams.BaseName);
+		return FCreateTextureObjectResult{ AssetPathResult };
 	}
 
 	// currently we cannot create a new texture without an existing generated texture to store
@@ -435,5 +450,126 @@ FCreateTextureObjectResult UEditorModelingObjectsCreationAPI::CreateTextureObjec
 	OnModelingTextureCreated.Broadcast(ResultOut);
 
 	return ResultOut;
+}
 
+
+
+
+FCreateMaterialObjectResult UEditorModelingObjectsCreationAPI::CreateMaterialObject(FCreateMaterialObjectParams&& CreateMaterialParams)
+{
+	UE::AssetUtils::FMaterialAssetOptions AssetOptions;
+
+	ECreateModelingObjectResult AssetPathResult = GetNewAssetPath(
+		AssetOptions.NewAssetPath,
+		CreateMaterialParams.BaseName,
+		CreateMaterialParams.StoreRelativeToObject,
+		CreateMaterialParams.TargetWorld);
+
+	if (AssetPathResult != ECreateModelingObjectResult::Ok)
+	{
+		return FCreateMaterialObjectResult{ AssetPathResult };
+	}
+
+	// Currently we cannot create a new material without duplicating an existing material
+	if (!ensure(CreateMaterialParams.MaterialToDuplicate))
+	{
+		return FCreateMaterialObjectResult{ ECreateModelingObjectResult::Failed_InvalidMaterial };
+	}
+
+	UE::AssetUtils::FMaterialAssetResults ResultData;
+	UE::AssetUtils::ECreateMaterialResult AssetResult = UE::AssetUtils::CreateDuplicateMaterial(
+		CreateMaterialParams.MaterialToDuplicate,
+		AssetOptions,
+		ResultData);
+
+	if (AssetResult != UE::AssetUtils::ECreateMaterialResult::Ok)
+	{
+		return FCreateMaterialObjectResult{ ECreateModelingObjectResult::Failed_AssetCreationFailed };
+	}
+
+	// emit result
+	FCreateMaterialObjectResult ResultOut;
+	ResultOut.ResultCode = ECreateModelingObjectResult::Ok;
+	ResultOut.NewAsset = ResultData.NewMaterial;
+
+	OnModelingMaterialCreated.Broadcast(ResultOut);
+
+	return ResultOut;
+}
+
+
+
+
+FCreateActorResult UEditorModelingObjectsCreationAPI::CreateNewActor(FCreateActorParams&& CreateActorParams)
+{
+	// create new Actor
+	AActor* NewActor = nullptr;
+	
+	if (GEditor && CreateActorParams.TemplateActor)
+	{
+		if (UClass* ActorClass = CreateActorParams.TemplateActor->GetClass())
+		{
+			if (UActorFactory* const ActorFactory = GEditor->FindActorFactoryForActorClass(ActorClass))
+			{
+				NewActor = ActorFactory->CreateActor(ActorClass, CreateActorParams.TargetWorld->GetCurrentLevel(), CreateActorParams.Transform);
+				FActorLabelUtilities::SetActorLabelUnique(NewActor, CreateActorParams.BaseName);
+			}
+		}
+	}
+
+	if (!NewActor)
+	{
+		return FCreateActorResult{ ECreateModelingObjectResult::Failed_ActorCreationFailed };
+	}
+
+	FCreateActorResult ResultOut;
+	ResultOut.ResultCode = ECreateModelingObjectResult::Ok;
+	ResultOut.NewActor = NewActor;
+
+	OnModelingActorCreated.Broadcast(ResultOut);
+
+	return ResultOut;
+}
+
+
+
+ECreateModelingObjectResult UEditorModelingObjectsCreationAPI::GetNewAssetPath(
+	FString& OutNewAssetPath,
+	const FString& BaseName,
+	const UObject* StoreRelativeToObject,
+	const UWorld* TargetWorld)
+{
+	FString RelativeToObjectFolder;
+	if (StoreRelativeToObject != nullptr)
+	{
+		// find path to asset
+		UPackage* AssetOuterPackage = CastChecked<UPackage>(StoreRelativeToObject->GetOuter());
+		if (ensure(AssetOuterPackage))
+		{
+			FString AssetPackageName = AssetOuterPackage->GetName();
+			RelativeToObjectFolder = FPackageName::GetLongPackagePath(AssetPackageName);
+		}
+	}
+	else
+	{
+		if (!ensure(TargetWorld)) {
+			return ECreateModelingObjectResult::Failed_InvalidWorld;
+		}
+	}
+
+	if (GetNewAssetPathNameCallback.IsBound())
+	{
+		OutNewAssetPath = GetNewAssetPathNameCallback.Execute(BaseName, TargetWorld, RelativeToObjectFolder);
+		if (OutNewAssetPath.Len() == 0)
+		{
+			return ECreateModelingObjectResult::Cancelled;
+		}
+	}
+	else
+	{
+		FString UseBaseFolder = (RelativeToObjectFolder.Len() > 0) ? RelativeToObjectFolder : TEXT("/Game");
+		OutNewAssetPath = FPaths::Combine(UseBaseFolder, BaseName);
+	}
+
+	return ECreateModelingObjectResult::Ok;
 }

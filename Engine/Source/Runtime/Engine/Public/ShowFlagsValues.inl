@@ -163,8 +163,6 @@ SHOWFLAG_FIXED_IN_SHIPPING(0, GameplayDebug, SFG_Developer, NSLOCTEXT("UnrealEd"
 SHOWFLAG_ALWAYS_ACCESSIBLE(TexturedLightProfiles,  SFG_LightingFeatures, NSLOCTEXT("UnrealEd", "TexturedLightProfilesSF", "Textured Light Profiles (IES Texture)"))
 /** LightFunctions (masking light sources with a material), for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
 SHOWFLAG_ALWAYS_ACCESSIBLE(LightFunctions, SFG_LightingFeatures, NSLOCTEXT("UnrealEd", "LightFunctionsSF", "Light Functions"))
-/** Draws Nanite meshes */
-SHOWFLAG_ALWAYS_ACCESSIBLE(NaniteMeshes, SFG_Advanced, NSLOCTEXT("UnrealEd", "NaniteMeshesSF", "Nanite Meshes"))
 /** Draws instanced static meshes that are not foliage or grass, for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
 SHOWFLAG_ALWAYS_ACCESSIBLE(InstancedStaticMeshes, SFG_Advanced, NSLOCTEXT("UnrealEd", "InstancedStaticMeshesSF", "Instanced Static Meshes"))
 /** Draws instanced foliage, for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
@@ -183,6 +181,8 @@ SHOWFLAG_ALWAYS_ACCESSIBLE(DynamicShadows, SFG_LightingComponents, NSLOCTEXT("Un
 SHOWFLAG_ALWAYS_ACCESSIBLE(Particles, SFG_Normal, NSLOCTEXT("UnrealEd", "ParticlesSF", "Particle Sprites"))
 /** Niagara, for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
 SHOWFLAG_FIXED_IN_SHIPPING(1, Niagara, SFG_Advanced, NSLOCTEXT("UnrealEd", "NiagaraSF", "Niagara Renderers"))
+/** HeterogeneousVolumes, for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
+SHOWFLAG_FIXED_IN_SHIPPING(1, HeterogeneousVolumes, SFG_Advanced, NSLOCTEXT("UnrealEd", "HeterogeneousVolumesSF", "Heterogeneous Volumes"))
 /** if SkeletalMeshes are getting rendered, for now SHOWFLAG_ALWAYS_ACCESSIBLE because it's exposed in SceneCapture */
 SHOWFLAG_ALWAYS_ACCESSIBLE(SkeletalMeshes, SFG_Normal, NSLOCTEXT("UnrealEd", "SkeletalMeshesSF", "Skeletal Meshes"))
 /** if the builder brush (editor) is getting rendered */
@@ -430,6 +430,11 @@ SHOWFLAG_ALWAYS_ACCESSIBLE(LumenFarFieldTraces, SFG_Lumen, NSLOCTEXT("UnrealEd",
 SHOWFLAG_ALWAYS_ACCESSIBLE(LumenSecondaryBounces, SFG_Lumen, NSLOCTEXT("UnrealEd", "LumenSecondaryBouncesSF", "Secondary Bounces"))
 /** Compute screen space directional occlusion in Lumen */
 SHOWFLAG_ALWAYS_ACCESSIBLE(LumenShortRangeAmbientOcclusion, SFG_Lumen, NSLOCTEXT("UnrealEd", "LumenShortRangeAmbientOcclusionSF", "Short Range Ambient Occlusion"))
+
+/** Draw Nanite meshes */
+SHOWFLAG_ALWAYS_ACCESSIBLE(NaniteMeshes, SFG_Nanite, NSLOCTEXT("UnrealEd", "NaniteMeshesSF", "Meshes"))
+/** Draw Nanite streaming geometry */
+SHOWFLAG_ALWAYS_ACCESSIBLE(NaniteStreamingGeometry, SFG_Nanite, NSLOCTEXT("UnrealEd", "NaniteStreamingGeometrySF", "Streaming Geometry"))
 
 /** Visualize Skin Cache */
 SHOWFLAG_FIXED_IN_SHIPPING(0, VisualizeGPUSkinCache, SFG_Hidden, NSLOCTEXT("UnrealEd", "VisualizeGPUSkinCache", "Visualize GPU Skin Cache"))

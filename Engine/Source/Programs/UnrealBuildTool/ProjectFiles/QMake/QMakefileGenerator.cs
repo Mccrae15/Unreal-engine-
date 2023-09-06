@@ -2,12 +2,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.IO;
 using System.Linq;
+using System.Text;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -31,13 +31,7 @@ namespace UnrealBuildTool
 		}
 
 		/// File extension for project files we'll be generating (e.g. ".vcxproj")
-		override public string ProjectFileExtension
-		{
-			get
-			{
-				return ".pro";
-			}
-		}
+		public override string ProjectFileExtension => ".pro";
 
 		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators, ILogger Logger)
 		{
@@ -153,7 +147,6 @@ namespace UnrealBuildTool
 				{
 					AddIncludeDirectory(ref SystemIncludeDirectories, CurPath, Path.GetDirectoryName(QMakeProject.ProjectFilePath.FullName)!);
 				}
-
 			}
 
 			// Remove duplicate paths from include dir and system include dir list
@@ -183,7 +176,7 @@ namespace UnrealBuildTool
 					if (!DefinesOnly.Contains(define))
 					{
 						// Logger.LogInformation (CurDefine);
-						if (string.IsNullOrEmpty(value))
+						if (String.IsNullOrEmpty(value))
 						{
 							DefinesAndValues.Add("\t");
 							DefinesAndValues.Add(String.Format("{0}=", define));
@@ -195,7 +188,7 @@ namespace UnrealBuildTool
 							// If the value contains spaces, we must put the whole value inside quotes
 							value = value.Replace("\"", "\\\\\\\"");
 							bool hasSpaces = false;
-							if (value.Contains(" "))
+							if (value.Contains(' '))
 							{
 								value = value.Replace(" ", "\\ ");
 								hasSpaces = true;
@@ -207,10 +200,16 @@ namespace UnrealBuildTool
 							DefinesAndValues.Add(define);
 							DefinesAndValues.Add("=");
 							if (hasSpaces)
+							{
 								DefinesAndValues.Add("\"");
+							}
+
 							DefinesAndValues.Add(value);
 							if (hasSpaces)
+							{
 								DefinesAndValues.Add("\"");
+							}
+
 							DefinesAndValues.Add(" \\\n");
 						}
 						DefinesOnly.Add(define);
@@ -251,7 +250,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				BuildCommand = string.Format("build=bash $$unrealRootPath{0}Engine{0}Build{0}BatchFiles{0}{1}{0}Build.sh\n", Seperator, CurrentPlatform);
+				BuildCommand = String.Format("build=bash $$unrealRootPath{0}Engine{0}Build{0}BatchFiles{0}{1}{0}Build.sh\n", Seperator, CurrentPlatform);
 			}
 
 			string UnrealRootPath = Unreal.RootDirectory.FullName;
@@ -372,7 +371,6 @@ namespace UnrealBuildTool
 						}
 					}
 				}
-
 			}
 
 			// Add section end to section strings;
@@ -396,9 +394,9 @@ namespace UnrealBuildTool
 						continue;
 					}
 
-					string TargetName = TargetFile.TargetFilePath.GetFileNameWithoutAnyExtensions();		// Remove both ".cs" and ".
+					string TargetName = TargetFile.TargetFilePath.GetFileNameWithoutAnyExtensions();        // Remove both ".cs" and ".
 
-					foreach (UnrealTargetConfiguration CurConfiguration in (UnrealTargetConfiguration[]) Enum.GetValues(typeof(UnrealTargetConfiguration)))
+					foreach (UnrealTargetConfiguration CurConfiguration in (UnrealTargetConfiguration[])Enum.GetValues(typeof(UnrealTargetConfiguration)))
 					{
 						if (CurConfiguration != UnrealTargetConfiguration.Unknown && CurConfiguration != UnrealTargetConfiguration.Development)
 						{
@@ -426,10 +424,10 @@ namespace UnrealBuildTool
 			}
 
 			QMakeFileContent.Append(QMakeTargetList.TrimEnd('\\'));
-			
+
 			string FullFileName = Path.Combine(PrimaryProjectPath.FullName, FileName);
 			string QMakeFilePath = Path.Combine(ProjectFileGenerator.PrimaryProjectPath.FullName, QMakeFilesDirectory);
-			
+
 			string FullQMakeDefinesFileName = Path.Combine(QMakeFilePath, QMakeDefinesFileName);
 			string FullQMakeIncludesFileName = Path.Combine(QMakeFilePath, QMakeIncludesFileName);
 			string FullQMakeSourcePriFileName = Path.Combine(QMakeFilePath, QMakeSourcePriFileName);

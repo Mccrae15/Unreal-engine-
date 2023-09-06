@@ -6,12 +6,6 @@ public class SkeletalMeshModelingTools : ModuleRules
 {
 	public SkeletalMeshModelingTools(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"SkeletalMeshModelingTools/Private",
-			}
-		);
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -29,14 +23,23 @@ public class SkeletalMeshModelingTools : ModuleRules
 				"MeshModelingToolsExp",
 				"ModelingComponentsEditorOnly",
 				"ModelingToolsEditorMode",
+				"SkeletalMeshEditor",
 				"SkeletalMeshUtilitiesCommon",
 				"Slate",
 				"SlateCore",
-				"StylusInput",
 				"ToolMenus",
 				"ToolWidgets",
-				"UnrealEd", 
+				"UnrealEd",
+				"StatusBar",
+				"PropertyEditor",
+				"AnimationCore",
+				"AnimationWidgets",
+				"ApplicationCore",
+				"WidgetRegistration",
+				"SkeletalMeshModifiers"
 			}
 		);
+
+		ShortName = "SkelMeshModTools";
 	}
 }

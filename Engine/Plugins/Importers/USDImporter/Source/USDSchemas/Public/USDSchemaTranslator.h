@@ -128,10 +128,23 @@ protected:
 
 struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUsdSchemaTranslationContext >
 {
+	// Explicitly declare these defaulted special functions or else the compiler will do it elsewhere and emit
+	// deprecated warnings due to usage of bCollapseTopLevelPointInstancers
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FUsdSchemaTranslationContext(const FUsdSchemaTranslationContext& Other) = default;
+	FUsdSchemaTranslationContext& operator=(const FUsdSchemaTranslationContext& Other) = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	explicit FUsdSchemaTranslationContext( const UE::FUsdStage& InStage, UUsdAssetCache2& InAssetCache );
 
 	/** True if we're a context created by the USDStageImporter to fully import to persistent assets and actors */
 	bool bIsImporting = false;
+
+	/**
+	 * True if we're building the InfoCache assigned to this context. This usually means we shouldn't query it for information, and should instead
+	 * compute it manually so that it can be cached
+	 */
+	bool bIsBuildingInfoCache = false;
 
 	/** pxr::UsdStage we're translating from */
 	UE::FUsdStage Stage;
@@ -176,6 +189,7 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 	 * When parsing materials, we keep track of which primvar we mapped to which UV channel.
 	 * When parsing meshes later, we use this data to place the correct primvar values in each UV channel.
 	 */
+	UE_DEPRECATED( 5.3, "This mapping is now stored directly on Material AssetImportData/AssetUserData" )
 	TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = nullptr;
 
 	/**
@@ -215,6 +229,9 @@ struct USDSCHEMAS_API FUsdSchemaTranslationContext : public TSharedFromThis< FUs
 
 	/** If true, we will also try creating UAnimSequence skeletal animation assets when parsing SkelRoot prims */
 	bool bAllowParsingSkeletalAnimations = true;
+
+	/** If true, means we will try generating GroomAssets, GroomCaches and GroomBindings */
+	bool bAllowParsingGroomAssets = true;
 
 	/** Skip the import of materials that aren't being used by any prim on the stage */
 	bool bTranslateOnlyUsedMaterials = false;
@@ -282,6 +299,13 @@ public:
 	virtual void UpdateComponents( USceneComponent* SceneComponent ) {}
 
 	virtual bool CollapsesChildren( ECollapsingType CollapsingType ) const { return false; }
+
+	/**
+	 * Returns the set of prims that also need to be read in order to translate the prim at PrimPath.
+	 * Note: This function never needs to return PrimPath itself, as the query function in the InfoCache will always
+	 * append it to the result
+	 */
+	virtual TSet<UE::FSdfPath> CollectAuxiliaryPrims() const { return {}; }
 
 	bool IsCollapsed( ECollapsingType CollapsingType ) const;
 	virtual bool CanBeCollapsed( ECollapsingType CollapsingType ) const { return false; }

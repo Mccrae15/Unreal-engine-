@@ -11,10 +11,17 @@ FString FNetRefHandle::ToString() const
 {
 	FString Result;
 #if UE_NET_ALLOW_MULTIPLE_REPLICATION_SYSTEMS
-	const uint32 ReplicationSystemIdToDisplay = ReplicationSystemId - 1U;
-	Result = FString::Printf(TEXT("NetRefHandle (Id=%u):(RepSystemId=%u)"), GetId(), ReplicationSystemIdToDisplay);
+	if (IsCompleteHandle())
+	{
+		const uint32 ReplicationSystemIdToDisplay = GetReplicationSystemId();
+		Result = FString::Printf(TEXT("NetRefHandle (Id=%" UINT64_FMT "):(RepSystemId=%u)"), GetId(), ReplicationSystemIdToDisplay);
+	}
+	else
+	{
+		Result = FString::Printf(TEXT("NetRefHandle (Id=%" UINT64_FMT "):(Incomplete)"), GetId());
+	}
 #else
-	Result = FString::Printf(TEXT("NetRefHandle (Id=%u)"), GetId());
+	Result = FString::Printf(TEXT("NetRefHandle (Id=%" UINT64_FMT ")"), GetId());
 #endif
 	return Result;
 }
@@ -24,10 +31,17 @@ FString FNetRefHandle::ToString() const
 FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const UE::Net::FNetRefHandle& NetRefHandle) 
 { 	
 #if UE_NET_ALLOW_MULTIPLE_REPLICATION_SYSTEMS
-	const uint32 ReplicationSystemIdToDisplay = NetRefHandle.GetReplicationSystemId() - 1U;
-	Builder.Appendf(TEXT("NetRefHandle (Id=%u):(RepSystemId=%u)"), NetRefHandle.GetId(), ReplicationSystemIdToDisplay);
+	if (NetRefHandle.IsCompleteHandle())
+	{
+		const uint32 ReplicationSystemIdToDisplay = NetRefHandle.GetReplicationSystemId();
+		Builder.Appendf(TEXT("NetRefHandle (Id=%" UINT64_FMT "):(RepSystemId=%u)"), NetRefHandle.GetId(), ReplicationSystemIdToDisplay);
+	}
+	else
+	{
+		Builder.Appendf(TEXT("NetRefHandle (Id=%" UINT64_FMT "):(Incomplete)"), NetRefHandle.GetId());
+	}
 #else
-	Builder.Appendf(TEXT("NetRefHandle (Id=%u)"), NetRefHandle.GetId());
+	Builder.Appendf(TEXT("NetRefHandle (Id=%" UINT64_FMT ")"), NetRefHandle.GetId());
 #endif
 	return Builder;
 }
@@ -35,10 +49,17 @@ FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const UE::Net::FNetR
 FAnsiStringBuilderBase& operator<<(FAnsiStringBuilderBase& Builder, const UE::Net::FNetRefHandle& NetRefHandle)
 {
 #if UE_NET_ALLOW_MULTIPLE_REPLICATION_SYSTEMS
-	const uint32 ReplicationSystemIdToDisplay = NetRefHandle.GetReplicationSystemId() - 1U;
-	Builder.Appendf("NetRefHandle (Id=%u):(RepSystemId=%u)", NetRefHandle.GetId(), ReplicationSystemIdToDisplay);
+	if (NetRefHandle.IsCompleteHandle())
+	{
+		const uint32 ReplicationSystemIdToDisplay = NetRefHandle.GetReplicationSystemId();
+		Builder.Appendf("NetRefHandle (Id=%" UINT64_FMT "):(RepSystemId=%u)", NetRefHandle.GetId(), ReplicationSystemIdToDisplay);
+	}
+	else
+	{
+		Builder.Appendf("NetRefHandle (Id=%" UINT64_FMT "):(Incomplete)", NetRefHandle.GetId());
+	}
 #else
-	Builder.Appendf("NetRefHandle (Id=%u)", NetRefHandle.GetId());
+	Builder.Appendf("NetRefHandle (Id=%" UINT64_FMT ")", NetRefHandle.GetId());
 #endif
 	return Builder;
 }

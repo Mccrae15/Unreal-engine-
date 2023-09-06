@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MemoryModule.h"
+
 #include "Analyzers/AllocationsAnalysis.h"
 #include "Analyzers/CallstacksAnalysis.h"
 #include "Analyzers/MemoryAnalysis.h"
@@ -14,10 +15,10 @@
 namespace TraceServices
 {
 
-static const FName MemoryModuleName("TraceModule_Memory");
-
 void FMemoryModule::GetModuleInfo(FModuleInfo& OutModuleInfo)
 {
+	static const FName MemoryModuleName("TraceModule_Memory");
+
 	OutModuleInfo.Name = MemoryModuleName;
 	OutModuleInfo.DisplayName = TEXT("Memory");
 }
@@ -40,12 +41,12 @@ void FMemoryModule::OnAnalysisBegin(IAnalysisSession& Session)
 
 	// Metadata
 	TSharedPtr<FMetadataProvider> MetadataProvider = MakeShared<FMetadataProvider>(Session);
-	Session.AddProvider(GetMetadataProviderName(), MetadataProvider);
+	Session.AddProvider(GetMetadataProviderName(), MetadataProvider, MetadataProvider);
 	Session.AddAnalyzer(new FMetadataAnalysis(Session, MetadataProvider.Get()));
 
 	// Allocations
 	TSharedPtr<FAllocationsProvider> AllocationsProvider = MakeShared<FAllocationsProvider>(Session, *MetadataProvider);
-	Session.AddProvider(GetAllocationsProviderName(), AllocationsProvider);
+	Session.AddProvider(GetAllocationsProviderName(), AllocationsProvider, AllocationsProvider);
 	Session.AddAnalyzer(new FAllocationsAnalyzer(Session, *AllocationsProvider, *MetadataProvider));
 }
 

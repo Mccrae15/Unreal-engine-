@@ -6,11 +6,11 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Net.Mime;
 using System.Text;
 using System.Threading.Tasks;
 using Jupiter.FunctionalTests.Storage;
-using Jupiter;
 using Jupiter.Implementation;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.Hosting;
@@ -32,6 +32,7 @@ namespace Jupiter.FunctionalTests.CompressedBlobs
             {
                 new KeyValuePair<string, string>("UnrealCloudDDC:ContentIdStoreImplementation", UnrealCloudDDCSettings.ContentIdStoreImplementations.Scylla.ToString()),
                 new KeyValuePair<string, string>("UnrealCloudDDC:StorageImplementations:0", UnrealCloudDDCSettings.StorageBackendImplementations.S3.ToString()),
+                new KeyValuePair<string, string>("CacheContentId:Enabled", "false"),
                 new KeyValuePair<string, string>("S3:BucketName", $"tests-{TestNamespace}")
             };
         }
@@ -57,6 +58,7 @@ namespace Jupiter.FunctionalTests.CompressedBlobs
             {
                 new KeyValuePair<string, string>("UnrealCloudDDC:ContentIdStoreImplementation", UnrealCloudDDCSettings.ContentIdStoreImplementations.Mongo.ToString()),
                 new KeyValuePair<string, string>("UnrealCloudDDC:StorageImplementations:0", UnrealCloudDDCSettings.StorageBackendImplementations.S3.ToString()),
+                new KeyValuePair<string, string>("CacheContentId:Enabled", "false"),
                 new KeyValuePair<string, string>("S3:BucketName", $"tests-{TestNamespace}")
             };
         }
@@ -138,7 +140,8 @@ namespace Jupiter.FunctionalTests.CompressedBlobs
             HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative), content);
             result.EnsureSuccessStatusCode();
 
-            InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+            InsertResponse? response = await result.Content.ReadFromJsonAsync<InsertResponse>();
+            Assert.IsNotNull(response);
             Assert.AreNotEqual(compressedPayloadIdentifier, response.Identifier);
             Assert.AreEqual(uncompressedPayloadIdentifier, response.Identifier);
         }
@@ -156,7 +159,8 @@ namespace Jupiter.FunctionalTests.CompressedBlobs
                 HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative), content);
                 result.EnsureSuccessStatusCode();
 
-                InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                InsertResponse? response = await result.Content.ReadFromJsonAsync<InsertResponse>();
+                Assert.IsNotNull(response);
                 Assert.IsNotNull(response.Identifier);
                 Assert.AreNotEqual(compressedPayloadIdentifier, response.Identifier);
                 Assert.AreEqual(uncompressedPayloadIdentifier, ContentId.FromBlobIdentifier(response.Identifier));
@@ -185,6 +189,53 @@ namespace Jupiter.FunctionalTests.CompressedBlobs
                 // the uncompressed payload should not be valid in the blob endpoint
                 HttpResponseMessage result = await Client!.GetAsync(new Uri($"api/v1/blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative));
                 Assert.AreEqual(HttpStatusCode.NotFound, result.StatusCode);
+            }
+        }
+
+
+        [TestMethod]
+        public async Task RecompressionTest()
+        {
+            ContentId uncompressedPayloadIdentifier = new ContentId("A2AC0ECED768698F7413F131D064D36B7EC6F7DA");
+            byte[] texturePayloadSmaller = await File.ReadAllBytesAsync("ContentId/Payloads/smallerfile");
+            BlobIdentifier compressedPayloadIdentifierSmaller = BlobIdentifier.FromBlob(texturePayloadSmaller);
+           
+            {
+                using ByteArrayContent content = new(texturePayloadSmaller);
+                content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompressedBuffer);
+                HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative), content);
+                result.EnsureSuccessStatusCode();
+
+                InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                Assert.IsNotNull(response.Identifier);
+                Assert.AreNotEqual(compressedPayloadIdentifierSmaller, response.Identifier);
+                Assert.AreEqual(uncompressedPayloadIdentifier, ContentId.FromBlobIdentifier(response.Identifier));
+            }
+
+            byte[] texturePayloadLarger = await File.ReadAllBytesAsync("ContentId/Payloads/largerfile");
+            BlobIdentifier compressedPayloadIdentifierLarger = BlobIdentifier.FromBlob(texturePayloadLarger);
+
+            {
+                using ByteArrayContent content = new(texturePayloadLarger);
+                content.Headers.ContentType = new MediaTypeHeaderValue(CustomMediaTypeNames.UnrealCompressedBuffer);
+                HttpResponseMessage result = await Client!.PutAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative), content);
+                result.EnsureSuccessStatusCode();
+
+                InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                Assert.IsNotNull(response.Identifier);
+                Assert.AreNotEqual(compressedPayloadIdentifierLarger, response.Identifier);
+                Assert.AreEqual(uncompressedPayloadIdentifier, ContentId.FromBlobIdentifier(response.Identifier));
+            }
+
+            {
+                // fetch the overloaded content id, it should be returning the smaller payload
+                HttpResponseMessage result = await Client!.GetAsync(new Uri($"api/v1/compressed-blobs/{TestNamespace}/{uncompressedPayloadIdentifier}", UriKind.Relative));
+                result.EnsureSuccessStatusCode();
+                Assert.AreEqual(CustomMediaTypeNames.UnrealCompressedBuffer, result.Content.Headers.ContentType!.MediaType);
+
+                byte[] blobContent = await result.Content.ReadAsByteArrayAsync();
+                Assert.AreEqual(compressedPayloadIdentifierSmaller, BlobIdentifier.FromBlob(blobContent));
+                CollectionAssert.AreEqual(texturePayloadSmaller, blobContent);
             }
         }
 
@@ -218,7 +269,8 @@ namespace Jupiter.FunctionalTests.CompressedBlobs
 
                 result.EnsureSuccessStatusCode();
 
-                InsertResponse response = await result.Content.ReadAsAsync<InsertResponse>();
+                InsertResponse? response = await result.Content.ReadFromJsonAsync<InsertResponse>();
+                Assert.IsNotNull(response);
                 Assert.IsNotNull(response.Identifier);
                 Assert.AreEqual(uncompressedPayloadIdentifier, response.Identifier);
                 Assert.AreNotEqual(compressedPayloadIdentifier, response.Identifier);

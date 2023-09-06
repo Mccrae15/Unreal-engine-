@@ -3,6 +3,10 @@
 #include "EnhancedActionKeyMapping.h"
 #include "PlayerMappableKeySettings.h"
 
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EnhancedActionKeyMapping)
 
 #define LOCTEXT_NAMESPACE "ActionKeyMapping"
@@ -21,7 +25,31 @@ UPlayerMappableKeySettings* FEnhancedActionKeyMapping::GetPlayerMappableKeySetti
 	return nullptr;
 }
 
-ENHANCEDINPUT_API FName FEnhancedActionKeyMapping::GetMappingName() const
+#if WITH_EDITORONLY_DATA
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FEnhancedActionKeyMapping::FEnhancedActionKeyMapping(const UInputAction* InAction /*= nullptr*/, const FKey InKey /*= EKeys::Invalid*/)
+	: PlayerMappableOptions(InAction)
+	, Action(InAction)
+	, Key(InKey)
+	, bShouldBeIgnored(false)
+	, bIsPlayerMappable(false)
+{}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+#else
+
+FEnhancedActionKeyMapping::FEnhancedActionKeyMapping(const UInputAction* InAction /*= nullptr*/, const FKey InKey /*= EKeys::Invalid*/)
+	: Action(InAction)
+	, Key(InKey)
+	, bShouldBeIgnored(false)
+{}
+
+#endif	// WITH_EDITORONLY_DATA
+
+
+
+FName FEnhancedActionKeyMapping::GetMappingName() const
 {
 	if (IsPlayerMappable())
 	{
@@ -29,18 +57,35 @@ ENHANCEDINPUT_API FName FEnhancedActionKeyMapping::GetMappingName() const
 		{
 			return MappableKeySettings->MakeMappingName(this);
 		}
-		return PlayerMappableOptions.Name;
 	}
 	return NAME_None;
 }
 
+const FText& FEnhancedActionKeyMapping::GetDisplayName() const
+{
+	if (UPlayerMappableKeySettings* MappableKeySettings = GetPlayerMappableKeySettings())
+	{
+		return MappableKeySettings->DisplayName;
+	}
+	return FText::GetEmpty();
+}
+
+const FText& FEnhancedActionKeyMapping::GetDisplayCategory() const
+{
+	if (UPlayerMappableKeySettings* MappableKeySettings = GetPlayerMappableKeySettings())
+	{
+		return MappableKeySettings->DisplayCategory;
+	}
+	return FText::GetEmpty();
+}
+
 bool FEnhancedActionKeyMapping::IsPlayerMappable() const
 {
-	return GetPlayerMappableKeySettings() != nullptr || bIsPlayerMappable;
+	return GetPlayerMappableKeySettings() != nullptr;
 }
 
 #if WITH_EDITOR
-EDataValidationResult FEnhancedActionKeyMapping::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult FEnhancedActionKeyMapping::IsDataValid(FDataValidationContext& Context) const
 {
 	EDataValidationResult Result = EDataValidationResult::Valid;
 
@@ -48,38 +93,31 @@ EDataValidationResult FEnhancedActionKeyMapping::IsDataValid(TArray<FText>& Vali
 	if (Action == nullptr)
 	{
 		Result = EDataValidationResult::Invalid;
-		ValidationErrors.Add(LOCTEXT("NullInputAction", "A mapping cannot have an empty input action!"));
-	}
-
-	//Validate Player Mappable Options Name.
-	if (bIsPlayerMappable && PlayerMappableOptions.Name == NAME_None)
-	{
-		ValidationErrors.Add(LOCTEXT("InvalidPlayerMappableName", "A player mappable key mapping must have a valid 'Name'"));
-		return EDataValidationResult::Invalid;
+		Context.AddError(LOCTEXT("NullInputAction", "A mapping cannot have an empty input action!"));
 	}
 
 	// Validate Settings.
 	if (PlayerMappableKeySettings != nullptr)
 	{
-		Result = CombineDataValidationResults(Result, PlayerMappableKeySettings->IsDataValid(ValidationErrors));
+		Result = CombineDataValidationResults(Result, PlayerMappableKeySettings->IsDataValid(Context));
 	}
 
 	// Validate the triggers.
 	bool bContextContainsComboTrigger = false;
 	bool bContextContainsNonComboTrigger = false;
-	for (const TObjectPtr<UInputTrigger> Trigger : Triggers)
+	for (const UInputTrigger* Trigger : Triggers)
 	{
 		if (Trigger != nullptr)
 		{
 			// check if it the trigger is a combo or not
-			Trigger.IsA(UInputTriggerCombo::StaticClass()) ? bContextContainsComboTrigger = true : bContextContainsNonComboTrigger = true;
+			Trigger->IsA(UInputTriggerCombo::StaticClass()) ? bContextContainsComboTrigger = true : bContextContainsNonComboTrigger = true;
 			
-			Result = CombineDataValidationResults(Result, Trigger->IsDataValid(ValidationErrors));
+			Result = CombineDataValidationResults(Result, Trigger->IsDataValid(Context));
 		}
 		else
 		{
 			Result = EDataValidationResult::Invalid;
-			ValidationErrors.Add(LOCTEXT("NullInputTrigger", "There cannot be a null Input Trigger on a key mapping"));
+			Context.AddError(LOCTEXT("NullInputTrigger", "There cannot be a null Input Trigger on a key mapping"));
 		}
 	}
 
@@ -88,11 +126,11 @@ EDataValidationResult FEnhancedActionKeyMapping::IsDataValid(TArray<FText>& Vali
 		bool bInputActionContainsComboTrigger = false;
 	    bool bInputActionContainsNonComboTrigger = false;
 		// we also need to check the input action triggers for combo triggers
-		for (const TObjectPtr<UInputTrigger> Trigger : Action->Triggers)
+		for (const UInputTrigger* Trigger : Action->Triggers)
 		{
 			if (Trigger != nullptr)
 			{
-				Trigger.IsA(UInputTriggerCombo::StaticClass()) ? bInputActionContainsComboTrigger = true : bInputActionContainsNonComboTrigger = true;
+				Trigger->IsA(UInputTriggerCombo::StaticClass()) ? bInputActionContainsComboTrigger = true : bInputActionContainsNonComboTrigger = true;
 			}
 		}
 
@@ -107,14 +145,14 @@ EDataValidationResult FEnhancedActionKeyMapping::IsDataValid(TArray<FText>& Vali
 			{
 				Result = EDataValidationResult::Invalid;
 				Args.Add("NonComboTriggerLocation", LOCTEXT("NonComboInContextText", "From the Mapping Context"));
-				ValidationErrors.Add(FText::Format(DefaultComboNonComboWarning, Args));
+				Context.AddError(FText::Format(DefaultComboNonComboWarning, Args));
 			}
 			// Input Action contains non-combo trigger(s) 
 			if (bInputActionContainsNonComboTrigger)
 			{
 				Args.Add("NonComboTriggerLocation", LOCTEXT("NonComboInInputActionText", "From the Input Action"));
 				Result = EDataValidationResult::Invalid;
-				ValidationErrors.Add(FText::Format(DefaultComboNonComboWarning, Args));
+				Context.AddError(FText::Format(DefaultComboNonComboWarning, Args));
 			}
 		}
 		// Input Action contains combo trigger(s)
@@ -126,34 +164,42 @@ EDataValidationResult FEnhancedActionKeyMapping::IsDataValid(TArray<FText>& Vali
 			{
 				Result = EDataValidationResult::Invalid;
 				Args.Add("NonComboTriggerLocation", LOCTEXT("NonComboInContextText", "From the Mapping Context"));
-				ValidationErrors.Add(FText::Format(DefaultComboNonComboWarning, Args));
+				Context.AddError(FText::Format(DefaultComboNonComboWarning, Args));
 			}
 			// Input Action contains non-combo trigger(s) 
 			if (bInputActionContainsNonComboTrigger)
 			{
 				Args.Add("NonComboTriggerLocation", LOCTEXT("NonComboInInputActionText", "From the Input Action"));
 				Result = EDataValidationResult::Invalid;
-				ValidationErrors.Add(FText::Format(DefaultComboNonComboWarning, Args));
+				Context.AddError(FText::Format(DefaultComboNonComboWarning, Args));
 			}
 		}
 	}
 	
 	// Validate the modifiers.
-	for (const TObjectPtr<UInputModifier> Modifier : Modifiers)
+	for (const UInputModifier* Modifier : Modifiers)
 	{
 		if (Modifier != nullptr)
 		{
-			Result = CombineDataValidationResults(Result, Modifier->IsDataValid(ValidationErrors));
+			Result = CombineDataValidationResults(Result, Modifier->IsDataValid(Context));
 		}
 		else
 		{
 			Result = EDataValidationResult::Invalid;
-			ValidationErrors.Add(LOCTEXT("NullInputModifier", "There cannot be a null Input Modifier on a key mapping"));
+			Context.AddError(LOCTEXT("NullInputModifier", "There cannot be a null Input Modifier on a key mapping"));
 		}
 	}
 	return Result;
 }
 
 #endif // WITH_EDITOR
+
+bool FEnhancedActionKeyMapping::operator==(const FEnhancedActionKeyMapping& Other) const
+{
+	return (Action == Other.Action &&
+			Key == Other.Key &&
+			Triggers == Other.Triggers &&
+			Modifiers == Other.Modifiers);
+}
 
 #undef LOCTEXT_NAMESPACE

@@ -171,6 +171,8 @@ FText FNiagaraStackEditorWidgetsUtilities::GetIconTextForInputMode(UNiagaraStack
 		return FEditorFontGlyphs::Link;
 	case UNiagaraStackFunctionInput::EValueMode::Data:
 		return FEditorFontGlyphs::Database;
+	case UNiagaraStackFunctionInput::EValueMode::ObjectAsset:
+		return FEditorFontGlyphs::Database;
 	case UNiagaraStackFunctionInput::EValueMode::Dynamic:
 		return FEditorFontGlyphs::Line_Chart;
 	case UNiagaraStackFunctionInput::EValueMode::Expression:
@@ -195,6 +197,8 @@ FText FNiagaraStackEditorWidgetsUtilities::GetIconToolTipForInputMode(UNiagaraSt
 		return LOCTEXT("LinkInputIconToolTip", "Linked Value");
 	case UNiagaraStackFunctionInput::EValueMode::Data:
 		return LOCTEXT("DataInterfaceInputIconToolTip", "Data Value");
+	case UNiagaraStackFunctionInput::EValueMode::ObjectAsset:
+		return LOCTEXT("ObjectReferenceIconToolTip", "Object Asset");
 	case UNiagaraStackFunctionInput::EValueMode::Dynamic:
 		return LOCTEXT("DynamicInputIconToolTip", "Dynamic Value");
 	case UNiagaraStackFunctionInput::EValueMode::Expression:
@@ -218,6 +222,8 @@ FName FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForInputMode(UNiagara
 		return "NiagaraEditor.Stack.InputValueIconColor.Linked";
 	case UNiagaraStackFunctionInput::EValueMode::Data:
 		return "NiagaraEditor.Stack.InputValueIconColor.Data";
+	case UNiagaraStackFunctionInput::EValueMode::ObjectAsset:
+		return "NiagaraEditor.Stack.InputValueIconColor.ObjectAsset";
 	case UNiagaraStackFunctionInput::EValueMode::Dynamic:
 		return "NiagaraEditor.Stack.InputValueIconColor.Dynamic";
 	case UNiagaraStackFunctionInput::EValueMode::Expression:
@@ -557,63 +563,6 @@ bool FNiagaraStackEditorWidgetsUtilities::HandleDropForStackEntry(const FDragDro
 FString FNiagaraStackEditorWidgetsUtilities::StackEntryToStringForListDebug(UNiagaraStackEntry* StackEntry)
 {
 	return FString::Printf(TEXT("0x%08x - %s - %s"), StackEntry, *StackEntry->GetClass()->GetName(), *StackEntry->GetDisplayName().ToString());
-}
-
-TOptional<FFunctionInputSummaryViewKey> FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(UNiagaraStackFunctionInput* FunctionInput)
-{
-	const FGuid NodeGuid = FunctionInput->GetInputFunctionCallNode().NodeGuid;
-
-	const UNiagaraNodeFunctionCall& InputCallNode = FunctionInput->GetInputFunctionCallNode();
-	if (InputCallNode.IsA<UNiagaraNodeAssignment>())
-	{		
-		return FFunctionInputSummaryViewKey(NodeGuid, FunctionInput->GetInputParameterHandle().GetParameterHandleString());
-	}
-	
-	const TOptional<FGuid> VariableGuid = FunctionInput->GetMetadataGuid();
-	if (VariableGuid.IsSet() && VariableGuid.GetValue().IsValid())
-	{
-		return FFunctionInputSummaryViewKey(NodeGuid, VariableGuid.GetValue());
-	}
-	
-	return TOptional<FFunctionInputSummaryViewKey>();
-}
-
-UNiagaraStackFunctionInput* FNiagaraStackEditorWidgetsUtilities::GetParentInputForSummaryView(UNiagaraStackFunctionInput* FunctionInput)
-{
-	const UNiagaraEmitterEditorData* EditorData = (FunctionInput && FunctionInput->GetEmitterViewModel())? &FunctionInput->GetEmitterViewModel()->GetEditorData() : nullptr;
-
-	// Find outermost function input first, as this will traverse the chain of dynamic inputs to find the base input which is what needs to go to summary view
-	
-	if (EditorData)
-	{
-		while (FunctionInput->GetTypedOuter<UNiagaraStackFunctionInput>())
-		{
-			FunctionInput = FunctionInput->GetTypedOuter<UNiagaraStackFunctionInput>();
-		}
-		
-		TOptional<FFunctionInputSummaryViewKey> Key = FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(FunctionInput);
-
-		TOptional<FNiagaraVariableMetaData> Metadata = FunctionInput->GetMetadata();
-		if (Metadata.IsSet() && !Metadata->ParentAttribute.IsNone())
-		{
-			UNiagaraStackInputCategory* Category = CastChecked<UNiagaraStackInputCategory>(FunctionInput->GetOuter());
-
-			TArray<UNiagaraStackEntry*> Children;
-			Category->GetFilteredChildrenOfTypes(Children, { UNiagaraStackFunctionInput::StaticClass() });
-
-			for (UNiagaraStackEntry* Entry : Children)
-			{
-				UNiagaraStackFunctionInput* Input = CastChecked<UNiagaraStackFunctionInput>(Entry);
-
-				if (Input->GetInputParameterHandle().GetName() == Metadata->ParentAttribute)
-				{
-					return Input;
-				}				
-			}
-		}
-	}
-
-	return FunctionInput;	
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -16,8 +16,8 @@ class FSceneInterface;
 /**
  *	Used to capture a 'snapshot' of the scene from a single plane and feed it to a render target.
  */
-UCLASS(hidecategories=(Collision, Object, Physics, SceneComponent), ClassGroup=Rendering, editinlinenew, meta=(BlueprintSpawnableComponent))
-class ENGINE_API USceneCaptureComponent2D : public USceneCaptureComponent
+UCLASS(hidecategories=(Collision, Object, Physics, SceneComponent), ClassGroup=Rendering, editinlinenew, meta=(BlueprintSpawnableComponent), MinimalAPI)
+class USceneCaptureComponent2D : public USceneCaptureComponent
 {
 	GENERATED_UCLASS_BODY()
 		
@@ -49,7 +49,7 @@ public:
 	UPROPERTY(interp, Category=PostProcessVolume, BlueprintReadWrite, meta=(UIMin = "0.0", UIMax = "1.0"))
 	float PostProcessBlendWeight;
 
-	UPROPERTY(EditAnywhere, Category = Projection, meta = (InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Projection, meta = (InlineEditConditionToggle))
 	uint32 bOverride_CustomNearClippingPlane : 1;
 
 	/** 
@@ -106,8 +106,8 @@ public:
 	UPROPERTY(Transient, BlueprintReadWrite, Category = SceneCapture)
 	uint32 bCameraCutThisFrame : 1;
 
-	/** Treat unrendered opaque pixels as fully translucent. This is important for effects such as exponential weight fog, so it does not get applied on unrendered opaque pixels. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture)
+	/** Whether to only render exponential height fog on opaque pixels which were rendered by the scene capture. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SceneCapture, meta = (DisplayName = "Fog only on rendered pixels"))
 	uint32 bConsiderUnrenderedOpaquePixelAsFullyTranslucent : 1;
 
 	/** Array of scene view extensions specifically to apply to this scene capture */
@@ -117,35 +117,35 @@ public:
 	int32 TileID = 0;
 
 	//~ Begin UActorComponent Interface
-	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
-	virtual void OnRegister() override;
-	virtual void SendRenderTransform_Concurrent() override;
+	ENGINE_API virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
+	ENGINE_API virtual void OnRegister() override;
+	ENGINE_API virtual void SendRenderTransform_Concurrent() override;
 	virtual bool RequiresGameThreadEndOfFrameUpdates() const override
 	{
 		// this method could probably be removed allowing them to run on any thread, but it isn't worth the trouble
 		return true;
 	}
-	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
+	ENGINE_API virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 
 	/** Reset Orthographic tiling counter */
-	void ResetOrthographicTilingCounter();
+	ENGINE_API void ResetOrthographicTilingCounter();
 
 	//~ End UActorComponent Interface
 
 	//~ Begin UObject Interface
 #if WITH_EDITOR
-	virtual bool CanEditChange(const FProperty* InProperty) const override;
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual bool CanEditChange(const FProperty* InProperty) const override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
-	virtual void Serialize(FArchive& Ar);
+	static ENGINE_API void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	ENGINE_API virtual void Serialize(FArchive& Ar);
 
 	//~ End UObject Interface
 
-	void SetCameraView(const FMinimalViewInfo& DesiredView);
+	ENGINE_API void SetCameraView(const FMinimalViewInfo& DesiredView);
 
-	virtual void GetCameraView(float DeltaTime, FMinimalViewInfo& OutDesiredView);
+	ENGINE_API virtual void GetCameraView(float DeltaTime, FMinimalViewInfo& OutDesiredView);
 
 	/** Adds an Blendable (implements IBlendableInterface) to the array of Blendables (if it doesn't exist) and update the weight */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
@@ -155,8 +155,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	void RemoveBlendable(TScriptInterface<IBlendableInterface> InBlendableObject) { PostProcessSettings.RemoveBlendable(InBlendableObject); }
 
-	/** Render the scene to the texture the next time the main view is rendered. */
-	void CaptureSceneDeferred();
+	/**
+	 * Render the scene to the texture the next time the main view is rendered.
+	 * If r.SceneCapture.CullByDetailMode is set, nothing will happen if DetailMode is higher than r.DetailMode.
+	 */
+	ENGINE_API void CaptureSceneDeferred();
 
 	// For backwards compatibility
 	void UpdateContent() { CaptureSceneDeferred(); }
@@ -164,25 +167,26 @@ public:
 	/** 
 	 * Render the scene to the texture target immediately.  
 	 * This should not be used if bCaptureEveryFrame is enabled, or the scene capture will render redundantly. 
+	 * If r.SceneCapture.CullByDetailMode is set, nothing will happen if DetailMode is higher than r.DetailMode.
 	 */
 	UFUNCTION(BlueprintCallable,Category = "Rendering|SceneCapture")
-	void CaptureScene();
+	ENGINE_API void CaptureScene();
 
-	void UpdateSceneCaptureContents(FSceneInterface* Scene) override;
+	ENGINE_API void UpdateSceneCaptureContents(FSceneInterface* Scene) override;
 
 	/* Return if orthographic tiling rendering is enabled or not */
-	bool GetEnableOrthographicTiling() const;
+	ENGINE_API bool GetEnableOrthographicTiling() const;
 
 	/* Return number of X tiles to render (to be used when orthographic tiling rendering is enabled) */
-	int32 GetNumXTiles() const;
+	ENGINE_API int32 GetNumXTiles() const;
 
 	/* Return number of Y tiles to render (to be used when orthographic tiling rendering is enabled) */
-	int32 GetNumYTiles() const;
+	ENGINE_API int32 GetNumYTiles() const;
 
 #if WITH_EDITORONLY_DATA
-	void UpdateDrawFrustum();
+	ENGINE_API void UpdateDrawFrustum();
 
 	/** The frustum component used to show visually where the camera field of view is */
-	class UDrawFrustumComponent* DrawFrustum;
+	TObjectPtr<class UDrawFrustumComponent> DrawFrustum;
 #endif
 };

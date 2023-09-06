@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*================================================================================
-	DelegateInstancesImpl.inl: Inline implementation of delegate bindings.
+	DelegateInstancesImpl.h: Inline implementation of delegate bindings.
 
 	The types declared in this file are for internal use only. 
 ================================================================================*/
@@ -12,6 +12,9 @@
 
 #include "CoreTypes.h"
 #include "Delegates/DelegateInstanceInterface.h"
+#include "Delegates/DelegateInstancesImplFwd.h"
+#include "Delegates/IDelegateInstance.h"
+#include "Delegates/DelegateBase.h"
 #include "Misc/AssertionMacros.h"
 #include "Templates/RemoveReference.h"
 #include "Templates/SharedPointer.h"
@@ -20,9 +23,6 @@
 #include "UObject/NameTypes.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 
-class FDelegateBase;
-class FDelegateHandle;
-enum class ESPMode : uint8;
 
 namespace UE::Delegates::Private
 {
@@ -54,13 +54,8 @@ protected:
 	FDelegateHandle Handle;
 };
 
-/**
- * Implements a delegate binding for UFunctions.
- *
- * @params UserClass Must be an UObject derived class.
- */
-template <class UserClass, typename FuncType, typename UserPolicy, typename... VarTypes>
-class TBaseUFunctionDelegateInstance;
+/* Delegate binding types
+ *****************************************************************************/
 
 template <class UserClass, typename RetValType, typename... ParamTypes, typename UserPolicy, typename... VarTypes>
 class TBaseUFunctionDelegateInstance<UserClass, RetValType(ParamTypes...), UserPolicy, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -132,9 +127,19 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TBaseUFunctionDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TBaseUFunctionDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseUFunctionDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseUFunctionDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
@@ -144,7 +149,7 @@ public:
 		checkSlow(IsSafeToExecute());
 
 		TPlacementNewer<FParmsWithPayload> PayloadAndParams;
-		this->Payload.ApplyAfter(PayloadAndParams, Params...);
+		this->Payload.ApplyAfter(PayloadAndParams, Forward<ParamTypes>(Params)...);
 		UserObjectPtr->ProcessEvent(CachedFunction, &PayloadAndParams);
 		return PayloadAndParams->GetResult();
 	}
@@ -156,7 +161,7 @@ public:
 			using FParmsWithPayload = TPayload<RetValType(typename TDecay<ParamTypes>::Type..., typename TDecay<VarTypes> ::Type...)>;
 
 			TPlacementNewer<FParmsWithPayload> PayloadAndParams;
-			this->Payload.ApplyAfter(PayloadAndParams, Params...);
+			this->Payload.ApplyAfter(PayloadAndParams, Forward<ParamTypes>(Params)...);
 			ActualUserObject->ProcessEvent(CachedFunction, &PayloadAndParams);
 			return true;
 		}
@@ -176,15 +181,6 @@ public:
 	TWeakObjectPtr<UserClass> UserObjectPtr;
 };
 
-
-/* Delegate binding types
- *****************************************************************************/
-
-/**
- * Implements a delegate binding for shared pointer member functions.
- */
-template <bool bConst, class UserClass, ESPMode SPMode, typename FuncType, typename UserPolicy, typename... VarTypes>
-class TBaseSPMethodDelegateInstance;
 
 template <bool bConst, class UserClass, ESPMode SPMode, typename RetValType, typename... ParamTypes, typename UserPolicy, typename... VarTypes>
 class TBaseSPMethodDelegateInstance<bConst, UserClass, SPMode, RetValType(ParamTypes...), UserPolicy, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -252,14 +248,24 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TBaseSPMethodDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TBaseSPMethodDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseSPMethodDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseSPMethodDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
 	{
-		using MutableUserClass = typename TRemoveConst<UserClass>::Type;
+		using MutableUserClass = std::remove_const_t<UserClass>;
 
 		// Verify that the user object is still valid.  We only have a weak reference to it.
 		TSharedPtr<UserClass, SPMode> SharedUserObject = UserObject.Pin();
@@ -272,7 +278,7 @@ public:
 
 		checkSlow(MethodPtr != nullptr);
 
-		return this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Params...);
+		return this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Forward<ParamTypes>(Params)...);
 	}
 
 	bool ExecuteIfSafe(ParamTypes... Params) const final
@@ -280,7 +286,7 @@ public:
 		// Verify that the user object is still valid.  We only have a weak reference to it.
 		if (TSharedPtr<UserClass, SPMode> SharedUserObject = this->UserObject.Pin())
 		{
-			using MutableUserClass = typename TRemoveConst<UserClass>::Type;
+			using MutableUserClass = std::remove_const_t<UserClass>;
 
 			// Safely remove const to work around a compiler issue with instantiating template permutations for 
 			// overloaded functions that take a function pointer typedef as a member of a templated class.  In
@@ -289,7 +295,7 @@ public:
 
 			checkSlow(MethodPtr != nullptr);
 
-			(void)this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Params...);
+			(void)this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Forward<ParamTypes>(Params)...);
 
 			return true;
 		}
@@ -307,11 +313,105 @@ protected:
 };
 
 
-/**
- * Implements a delegate binding for C++ member functions.
- */
-template <bool bConst, class UserClass, typename FuncType, typename UserPolicy, typename... VarTypes>
-class TBaseRawMethodDelegateInstance;
+template <typename UserClass, ESPMode SPMode, typename RetValType, typename... ParamTypes, typename UserPolicy, typename FunctorType, typename... VarTypes>
+	class TBaseSPLambdaDelegateInstance<UserClass, SPMode, RetValType(ParamTypes...), UserPolicy, FunctorType, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
+{
+private:
+	static_assert(std::is_same_v<FunctorType, typename TRemoveReference<FunctorType>::Type>, "FunctorType cannot be a reference");
+
+	using Super = TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>;
+	using DelegateBaseType = typename UserPolicy::FDelegateExtras;
+
+public:
+	template <typename InFunctorType, typename... InVarTypes>
+	explicit TBaseSPLambdaDelegateInstance(const TSharedPtr<UserClass, SPMode>& InContextObject, InFunctorType&& InFunctor, InVarTypes&&... Vars)
+		: Super(Forward<InVarTypes>(Vars)...)
+		, ContextObject(InContextObject)
+		, Functor(Forward<InFunctorType>(InFunctor))
+	{
+	}
+
+	// IDelegateInstance interface
+
+#if USE_DELEGATE_TRYGETBOUNDFUNCTIONNAME
+
+	FName TryGetBoundFunctionName() const final
+	{
+		return NAME_None;
+	}
+
+#endif
+
+	UObject* GetUObject() const final
+	{
+		return nullptr;
+	}
+
+	const void* GetObjectForTimerManager() const final
+	{
+		return ContextObject.Pin().Get();
+	}
+
+	uint64 GetBoundProgramCounterForTimerManager() const final
+	{
+		return 0;
+	}
+
+	// Deprecated
+	bool HasSameObject(const void* InContextObject) const final
+	{
+		return ContextObject.Pin().Get() == InContextObject;
+	}
+
+	bool IsSafeToExecute() const final
+	{
+		return ContextObject.IsValid();
+	}
+
+public:
+
+public:
+	// IBaseDelegateInstance interface
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseSPLambdaDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseSPLambdaDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseSPLambdaDelegateInstance>(*this);
+	}
+
+	RetValType Execute(ParamTypes... Params) const final
+	{
+		return this->Payload.ApplyAfter(Functor, Forward<ParamTypes>(Params)...);
+	}
+
+	bool ExecuteIfSafe(ParamTypes... Params) const final
+	{
+		if (ContextObject.IsValid())
+		{
+			(void)this->Payload.ApplyAfter(Functor, Forward<ParamTypes>(Params)...);
+			return true;
+		}
+
+		return false;
+	}
+
+private:
+
+	// Weak reference to an instance of the user's class that controls the validity of the lambda.
+	TWeakPtr<UserClass, SPMode> ContextObject;
+
+	// We make this mutable to allow mutable lambdas to be bound and executed.
+	mutable std::remove_const_t<FunctorType> Functor;
+};
+
 
 template <bool bConst, class UserClass, typename RetValType, typename... ParamTypes, typename UserPolicy, typename... VarTypes>
 class TBaseRawMethodDelegateInstance<bConst, UserClass, RetValType(ParamTypes...), UserPolicy, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -388,14 +488,24 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TBaseRawMethodDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TBaseRawMethodDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseRawMethodDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseRawMethodDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
 	{
-		using MutableUserClass = typename TRemoveConst<UserClass>::Type;
+		using MutableUserClass = std::remove_const_t<UserClass>;
 
 		// Safely remove const to work around a compiler issue with instantiating template permutations for 
 		// overloaded functions that take a function pointer typedef as a member of a templated class.  In
@@ -404,13 +514,13 @@ public:
 
 		checkSlow(MethodPtr != nullptr);
 
-		return this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Params...);
+		return this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Forward<ParamTypes>(Params)...);
 	}
 
 
 	bool ExecuteIfSafe(ParamTypes... Params) const final
 	{
-		using MutableUserClass = typename TRemoveConst<UserClass>::Type;
+		using MutableUserClass = std::remove_const_t<UserClass>;
 
 		// Safely remove const to work around a compiler issue with instantiating template permutations for 
 		// overloaded functions that take a function pointer typedef as a member of a templated class.  In
@@ -419,7 +529,7 @@ public:
 
 		checkSlow(MethodPtr != nullptr);
 
-		(void)this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Params...);
+		(void)this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Forward<ParamTypes>(Params)...);
 
 		return true;
 	}
@@ -433,11 +543,6 @@ protected:
 	FMethodPtr MethodPtr;
 };
 
-/**
- * Implements a delegate binding for UObject methods.
- */
-template <bool bConst, class UserClass, typename FuncType, typename UserPolicy, typename... VarTypes>
-class TBaseUObjectMethodDelegateInstance;
 
 template <bool bConst, class UserClass, typename RetValType, typename... ParamTypes, typename UserPolicy, typename... VarTypes>
 class TBaseUObjectMethodDelegateInstance<bConst, UserClass, RetValType(ParamTypes...), UserPolicy, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -512,14 +617,24 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TBaseUObjectMethodDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TBaseUObjectMethodDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseUObjectMethodDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseUObjectMethodDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
 	{
-		using MutableUserClass = typename TRemoveConst<UserClass>::Type;
+		using MutableUserClass = std::remove_const_t<UserClass>;
 
 		// Verify that the user object is still valid.  We only have a weak reference to it.
 		checkSlow(UserObject.IsValid());
@@ -531,14 +646,14 @@ public:
 
 		checkSlow(MethodPtr != nullptr);
 
-		return this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Params...);
+		return this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Forward<ParamTypes>(Params)...);
 	}
 
 	bool ExecuteIfSafe(ParamTypes... Params) const final
 	{
 		if (UserClass* ActualUserObject = this->UserObject.Get())
 		{
-			using MutableUserClass = typename TRemoveConst<UserClass>::Type;
+			using MutableUserClass = std::remove_const_t<UserClass>;
 
 			// Safely remove const to work around a compiler issue with instantiating template permutations for 
 			// overloaded functions that take a function pointer typedef as a member of a templated class.  In
@@ -547,7 +662,7 @@ public:
 
 			checkSlow(MethodPtr != nullptr);
 
-			(void)this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Params...);
+			(void)this->Payload.ApplyAfter(MethodPtr, MutableUserObject, Forward<ParamTypes>(Params)...);
 
 			return true;
 		}
@@ -563,12 +678,6 @@ protected:
 	FMethodPtr MethodPtr;
 };
 
-
-/**
- * Implements a delegate binding for regular C++ functions.
- */
-template <typename FuncType, typename UserPolicy, typename... VarTypes>
-class TBaseStaticDelegateInstance;
 
 template <typename RetValType, typename... ParamTypes, typename UserPolicy, typename... VarTypes>
 class TBaseStaticDelegateInstance<RetValType(ParamTypes...), UserPolicy, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -635,9 +744,19 @@ public:
 
 	// IBaseDelegateInstance interface
 
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TBaseStaticDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TBaseStaticDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseStaticDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseStaticDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
@@ -645,7 +764,7 @@ public:
 		// Call the static function
 		checkSlow(StaticFuncPtr != nullptr);
 
-		return this->Payload.ApplyAfter(StaticFuncPtr, Params...);
+		return this->Payload.ApplyAfter(StaticFuncPtr, Forward<ParamTypes>(Params)...);
 	}
 
 	bool ExecuteIfSafe(ParamTypes... Params) const final
@@ -653,7 +772,7 @@ public:
 		// Call the static function
 		checkSlow(StaticFuncPtr != nullptr);
 
-		(void)this->Payload.ApplyAfter(StaticFuncPtr, Params...);
+		(void)this->Payload.ApplyAfter(StaticFuncPtr, Forward<ParamTypes>(Params)...);
 
 		return true;
 	}
@@ -664,11 +783,6 @@ private:
 	FFuncPtr StaticFuncPtr;
 };
 
-/**
- * Implements a delegate binding for C++ functors, e.g. lambdas.
- */
-template <typename FuncType, typename UserPolicy, typename FunctorType, typename... VarTypes>
-class TBaseFunctorDelegateInstance;
 
 template <typename RetValType, typename... ParamTypes, typename UserPolicy, typename FunctorType, typename... VarTypes>
 class TBaseFunctorDelegateInstance<RetValType(ParamTypes...), UserPolicy, FunctorType, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -728,20 +842,30 @@ public:
 
 public:
 	// IBaseDelegateInstance interface
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TBaseFunctorDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TBaseFunctorDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseFunctorDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TBaseFunctorDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
 	{
-		return this->Payload.ApplyAfter(Functor, Params...);
+		return this->Payload.ApplyAfter(Functor, Forward<ParamTypes>(Params)...);
 	}
 
 	bool ExecuteIfSafe(ParamTypes... Params) const final
 	{
 		// Functors are always considered safe to execute!
-		(void)this->Payload.ApplyAfter(Functor, Params...);
+		(void)this->Payload.ApplyAfter(Functor, Forward<ParamTypes>(Params)...);
 
 		return true;
 	}
@@ -751,14 +875,9 @@ private:
 	// We make this mutable to allow mutable lambdas to be bound and executed.  We don't really want to
 	// model the Functor as being a direct subobject of the delegate (which would maintain transivity of
 	// const - because the binding doesn't affect the substitutability of a copied delegate.
-	mutable typename TRemoveConst<FunctorType>::Type Functor;
+	mutable std::remove_const_t<FunctorType> Functor;
 };
 
-/**
- * Implements a weak object delegate binding for C++ functors, e.g. lambdas.
- */
-template <typename UserClass, typename FuncType, typename UserPolicy, typename FunctorType, typename... VarTypes>
-class TWeakBaseFunctorDelegateInstance;
 
 template <typename UserClass, typename RetValType, typename... ParamTypes, typename UserPolicy, typename FunctorType, typename... VarTypes>
 class TWeakBaseFunctorDelegateInstance<UserClass, RetValType(ParamTypes...), UserPolicy, FunctorType, VarTypes...> : public TCommonDelegateInstanceState<RetValType(ParamTypes...), UserPolicy, VarTypes...>
@@ -822,21 +941,31 @@ public:
 
 public:
 	// IBaseDelegateInstance interface
-	void CreateCopy(DelegateBaseType& Base) const final
+	void CreateCopy(TDelegateBase<FThreadSafeDelegateMode>& Base) const final
 	{
-		new (Base) TWeakBaseFunctorDelegateInstance(*this);
+		Base.template CreateDelegateInstance<TWeakBaseFunctorDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TWeakBaseFunctorDelegateInstance>(*this);
+	}
+
+	void CreateCopy(TDelegateBase<FNotThreadSafeNotCheckedDelegateMode>& Base) const final
+	{
+		Base.template CreateDelegateInstance<TWeakBaseFunctorDelegateInstance>(*this);
 	}
 
 	RetValType Execute(ParamTypes... Params) const final
 	{
-		return this->Payload.ApplyAfter(Functor, Params...);
+		return this->Payload.ApplyAfter(Functor, Forward<ParamTypes>(Params)...);
 	}
 
 	bool ExecuteIfSafe(ParamTypes... Params) const final
 	{
 		if (ContextObject.IsValid())
 		{
-			(void)this->Payload.ApplyAfter(Functor, Params...);
+			(void)this->Payload.ApplyAfter(Functor, Forward<ParamTypes>(Params)...);
 			return true;
 		}
 
@@ -851,5 +980,5 @@ private:
 	// We make this mutable to allow mutable lambdas to be bound and executed.  We don't really want to
 	// model the Functor as being a direct subobject of the delegate (which would maintain transivity of
 	// const - because the binding doesn't affect the substitutability of a copied delegate.
-	mutable typename TRemoveConst<FunctorType>::Type Functor;
+	mutable std::remove_const_t<FunctorType> Functor;
 };

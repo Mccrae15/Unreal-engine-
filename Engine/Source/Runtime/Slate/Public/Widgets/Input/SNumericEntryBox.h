@@ -92,6 +92,7 @@ public:
 		, _MaxSliderValue(NumericType(100))
 		, _SliderExponent(1.f)
 		, _AllowWheel(true)
+		, _BroadcastValueChangesPerKey(false)
 		, _MinDesiredValueWidth(0.f)
 		, _DisplayToggle(false)
 		, _ToggleChecked(ECheckBoxState::Checked)
@@ -158,6 +159,8 @@ public:
 		SLATE_ATTRIBUTE(NumericType, SliderExponentNeutralValue )
 		/** Whether this spin box should have mouse wheel feature enabled, defaults to true */
 		SLATE_ARGUMENT( bool, AllowWheel )
+		/** True to broadcast every time we type */
+		SLATE_ARGUMENT( bool, BroadcastValueChangesPerKey)
 		/** Step to increment or decrement the value by when scrolling the mouse wheel. If not specified will determine automatically */
 		SLATE_ATTRIBUTE( TOptional< NumericType >, WheelStep )
 		/** The minimum desired width for the value portion of the control. */
@@ -210,6 +213,11 @@ public:
 		BorderImageFocused = &InArgs._EditableTextBoxStyle->BackgroundImageFocused;
 		Interface = InArgs._TypeInterface.IsValid() ? InArgs._TypeInterface : MakeShareable( new TDefaultNumericTypeInterface<NumericType> );
 
+		if (InArgs._TypeInterface.IsValid() && Interface->GetOnSettingChanged())
+		{
+			Interface->GetOnSettingChanged()->AddSP(this, &SNumericEntryBox::ResetCachedValueString);
+		}
+
 		MinFractionalDigits = (InArgs._MinFractionalDigits.Get().IsSet()) ? InArgs._MinFractionalDigits : DefaultMinFractionalDigits;
 		MaxFractionalDigits = (InArgs._MaxFractionalDigits.Get().IsSet()) ? InArgs._MaxFractionalDigits : DefaultMaxFractionalDigits;
 		SetMinFractionalDigits(MinFractionalDigits);
@@ -258,16 +266,19 @@ public:
 				.SliderExponent(InArgs._SliderExponent)
 				.SliderExponentNeutralValue(InArgs._SliderExponentNeutralValue)
 				.EnableWheel(InArgs._AllowWheel)
+				.BroadcastValueChangesPerKey(InArgs._BroadcastValueChangesPerKey)
 				.WheelStep(InArgs._WheelStep)
 				.OnBeginSliderMovement(InArgs._OnBeginSliderMovement)
 				.OnEndSliderMovement(InArgs._OnEndSliderMovement)
 				.MinDesiredWidth(InArgs._MinDesiredValueWidth)
-				.TypeInterface(Interface);
+				.TypeInterface(Interface)
+				.ToolTipText(this, &SNumericEntryBox<NumericType>::GetValueAsText);
 		}
 
 		// Always create an editable text box.  In the case of an undetermined value being passed in, we cant use the spinbox.
 		SAssignNew(EditableText, SEditableText)
 			.Text(this, &SNumericEntryBox<NumericType>::OnGetValueForTextBox)
+			.ToolTipText(this, &SNumericEntryBox<NumericType>::GetValueAsText)
 			.ColorAndOpacity(InArgs._EditableTextBoxStyle->ForegroundColor)
 			.Visibility(bAllowSpin ? EVisibility::Collapsed : EVisibility::Visible)
 			.Font(InArgs._Font.IsSet() ? InArgs._Font : InArgs._EditableTextBoxStyle->TextStyle.Font)
@@ -544,23 +555,19 @@ private:
 
 	FString GetCachedString(const NumericType CurrentValue) const
 	{
-		bool bUseCachedString = CachedExternalValue.IsSet() && CurrentValue == CachedExternalValue.GetValue() && !bCachedValueStringDirty;
-		if (!bUseCachedString)
-		{
-			CachedValueString = Interface->ToString(CurrentValue);
-			bCachedValueStringDirty = false;
-		}
-		return CachedValueString;
+		const bool bUseCachedString = CachedExternalValue.IsSet() && CurrentValue == CachedExternalValue.GetValue() && !bCachedValueStringDirty;
+		return bUseCachedString ? CachedValueString : Interface->ToString(CurrentValue);  
 	}
 
+	/** @return the value being observed by the Numeric Entry Box as a FText */
 	FText GetValueAsText() const
 	{
 		const TOptional<NumericType>& Value = ValueAttribute.Get();
 		if (Value.IsSet() == true)
 		{
-			return FText::FromString(GetCachedString(Value.GetValue()));
+			NumericType CurrentValue = Value.GetValue();
+			return FText::FromString(GetCachedString(CurrentValue));
 		}
-		
 		return FText::GetEmpty();
 	}
 
@@ -569,25 +576,21 @@ private:
 	 */
 	FText OnGetValueForTextBox() const
 	{
-		FText NewText = FText::GetEmpty();
-
 		if( EditableText->GetVisibility() == EVisibility::Visible )
 		{
-			const auto& Value = ValueAttribute.Get();
-
-			// If the value was set convert it to a string, otherwise the value cannot be determined
-			if( Value.IsSet() == true )
+			const TOptional<NumericType>& Value = ValueAttribute.Get();
+			if (Value.IsSet() == true)
 			{
-				NewText = FText::FromString(GetCachedString(Value.GetValue()));
+				return FText::FromString(GetCachedString(Value.GetValue()));
 			}
 			else
 			{
-				NewText = UndeterminedString;
+				return UndeterminedString;
 			}
 		}
 
-		// The box isnt visible, just return an empty string
-		return NewText;
+		// The box isnt visible, just return an empty Text
+		return  FText::GetEmpty();
 	}
 
 
@@ -690,31 +693,32 @@ private:
 	 */
 	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override
 	{
-		// Visibility toggle only matters if the spinbox is used
-		if (!SpinBox.IsValid())
-		{
-			return;
-		}
-
-		const auto& Value = ValueAttribute.Get();
-
+		// Update the cached value, if needed.
+		const TOptional<NumericType>& Value = ValueAttribute.Get();
 		if (Value.IsSet() == true)
 		{
 			SetCachedString(Value.GetValue());
-
-			if (SpinBox->GetVisibility() != EVisibility::Visible)
-			{
-				// Set the visibility of the spinbox to visible if we have a valid value
-				SpinBox->SetVisibility( EVisibility::Visible );
-				// The text box should be invisible
-				EditableText->SetVisibility( EVisibility::Collapsed );
-			}
 		}
-		else
+		
+		// Visibility toggle only matters if the spinbox is used
+		if (SpinBox.IsValid())
 		{
-			// The value isn't set so the spinbox should be hidden and the text box shown
-			SpinBox->SetVisibility(EVisibility::Collapsed);
-			EditableText->SetVisibility(EVisibility::Visible);
+			if (Value.IsSet() == true)
+			{
+				if (SpinBox->GetVisibility() != EVisibility::Visible)
+				{
+					// Set the visibility of the spinbox to visible if we have a valid value
+					SpinBox->SetVisibility( EVisibility::Visible );
+					// The text box should be invisible
+					EditableText->SetVisibility( EVisibility::Collapsed );
+				}
+			}
+			else
+			{
+				// The value isn't set so the spinbox should be hidden and the text box shown
+				SpinBox->SetVisibility(EVisibility::Collapsed);
+				EditableText->SetVisibility(EVisibility::Visible);
+			}
 		}
 	}
 
@@ -740,6 +744,14 @@ private:
 		if(OnToggleChanged.IsBound())
 		{
 			OnToggleChanged.Execute(InCheckState);
+		}
+	}
+
+	void ResetCachedValueString() 
+	{ 
+		if (ValueAttribute.Get().IsSet())
+		{
+			bCachedValueStringDirty = true;
 		}
 	}
 
@@ -784,9 +796,9 @@ private:
 	/** Cached value of entry box, updated on set & per tick */
 	TOptional<NumericType> CachedExternalValue;
 	/** Used to prevent per-frame re-conversion of the cached numeric value to a string. */
-	mutable FString CachedValueString;
+	FString CachedValueString;
 	/** Whetever the interfaced setting changed and the CachedValueString needs to be recomputed. */
-	mutable bool bCachedValueStringDirty;
+	bool bCachedValueStringDirty;
 	TAttribute< TOptional<int32> > MinFractionalDigits;
 	TAttribute< TOptional<int32> > MaxFractionalDigits;
 };

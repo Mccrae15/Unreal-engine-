@@ -22,6 +22,7 @@ namespace UnrealBuildTool.Rules
 					"MediaUtils",
 					"MovieScene",
 					"MovieSceneTracks",
+					"RenderCore",
 					"RHI",
 					"Sequencer",
 					"SequenceRecorder",
@@ -35,13 +36,6 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"MovieSceneTools",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"MediaCompositingEditor/Private",
-					"MediaCompositingEditor/Private/Sequencer",
-					"MediaCompositingEditor/Private/Shared",
 				});
 		}
 	}

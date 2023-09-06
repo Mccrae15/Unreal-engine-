@@ -10,10 +10,14 @@
 #include "Iris/Serialization/NetSerializationContext.h"
 #include "Engine/EngineTypes.h"
 #include "EnumTestTypes.h"
+#include "Net/UnrealNetwork.h"
 #include "UObject/StrongObjectPtr.h"
 
 void UClassWithNetRoleSwapping::GetLifetimeReplicatedProps( TArray< class FLifetimeProperty > & OutLifetimeProps ) const
 {
+	DOREPLIFETIME(ThisClass, Role);
+	DOREPLIFETIME(ThisClass, JustSomeReplicatedPropertyInBetween);
+	DOREPLIFETIME(ThisClass, RemoteRole);
 }
 
 namespace UE::Net::Private
@@ -44,10 +48,9 @@ public:
 	void TestDequantizeSwapsRoles();
 	void TestDowngradeRole();
 
-private:
+protected:
 	virtual void SetUp() override;
 
-protected:
 	static TArray<uint8> Values;
 	static TArray<uint8> InvalidValues;
 	static FNetRoleNetSerializerConfig Config;
@@ -205,7 +208,7 @@ void FTestNetRoleNetSerializer::TestValidate()
 
 	// Check invalid values
 	{
-		UE_NET_EXPECT_GT(InvalidValues.Num(), 0) << "No invalid values found to test EnumIntSerializer::Validate.";
+		UE_NET_EXPECT_GT_MSG(InvalidValues.Num(), 0, "No invalid values found to test EnumIntSerializer::Validate.");
 
 		TArray<bool> ExpectedResults;
 		ExpectedResults.SetNumZeroed(InvalidValues.Num());
@@ -279,8 +282,8 @@ void FTestNetRoleNetSerializer::TestDequantizeSwapsRoles()
 		constexpr bool bPushAll = true;
 		TargetReplicationState.PushPropertyReplicationState(Target.Get(), bPushAll);
 		
-		UE_NET_ASSERT_EQ(Target->RemoteRole, Source->Role) << "Roles were not swapped";
-		UE_NET_ASSERT_EQ(Target->Role, Source->RemoteRole) << "Roles were not swapped";
+		UE_NET_ASSERT_EQ_MSG(Target->RemoteRole, Source->Role, "Roles were not swapped");
+		UE_NET_ASSERT_EQ_MSG(Target->Role, Source->RemoteRole, "Roles were not swapped");
 	}
 }
 
@@ -327,8 +330,8 @@ void FTestNetRoleNetSerializer::TestDowngradeRole()
 		constexpr bool bPushAll = true;
 		TargetReplicationState.PushPropertyReplicationState(Target.Get(), bPushAll);
 		
-		UE_NET_ASSERT_EQ(Target->RemoteRole, Source->Role) << "Roles were not swapped";
-		UE_NET_ASSERT_EQ(Target->Role, TEnumAsByte<ENetRole>(ENetRole::ROLE_SimulatedProxy)) << "Role was not downgraded";
+		UE_NET_ASSERT_EQ_MSG(Target->RemoteRole, Source->Role, "Roles were not swapped");
+		UE_NET_ASSERT_EQ_MSG(Target->Role, TEnumAsByte<ENetRole>(ENetRole::ROLE_SimulatedProxy), "Role was not downgraded");
 	}
 }
 

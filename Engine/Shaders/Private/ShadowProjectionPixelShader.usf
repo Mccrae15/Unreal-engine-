@@ -123,7 +123,7 @@ void Main(
 	bIsSubsurfaceCompatible = false;
 #endif
 
-	float4 ScreenPosition = float4(((ScreenUV.xy - View.ScreenPositionScaleBias.wz ) / View.ScreenPositionScaleBias.xy) * SceneW, SceneW, 1);
+	float4 ScreenPosition = float4(GetScreenPositionForProjectionType(((ScreenUV.xy - View.ScreenPositionScaleBias.wz ) / View.ScreenPositionScaleBias.xy),SceneW), SceneW, 1);
 	float4 ShadowPosition = mul(ScreenPosition, ScreenToShadowMatrix);
 	float3 TranslateWorldPosition = mul(ScreenPosition, View.ScreenToTranslatedWorld).xyz;
 
@@ -258,11 +258,11 @@ void Main(
 	#if STRATA_ENABLED
 		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelCoord.xy, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
 		FStrataPixelHeader StrataHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
-		if (IsStrataMaterial(StrataHeader))
+		if (StrataHeader.IsStrataMaterial())
 		{
-			bIsEyeOrHair				= StrataGetBSDFType(StrataHeader) == STRATA_BSDF_TYPE_HAIR || StrataGetBSDFType(StrataHeader) == STRATA_BSDF_TYPE_EYE;
-			bHasSubsurface				= HasSubsurface(StrataHeader) || bIsEyeOrHair;
-			bHasSubsurfaceTransmission	= HasSubsurface(StrataHeader);
+			bIsEyeOrHair				= StrataHeader.StrataGetBSDFType() == STRATA_BSDF_TYPE_HAIR || StrataHeader.StrataGetBSDFType() == STRATA_BSDF_TYPE_EYE;
+			bHasSubsurface				= StrataHeader.HasSubsurface() || bIsEyeOrHair;
+			bHasSubsurfaceTransmission	= StrataHeader.HasSubsurface();
 		}
 	#else // STRATA_ENABLED
 		FGBufferData GBufferData = GetGBufferData(ScreenUV);
@@ -311,16 +311,25 @@ void Main(
 			#if USE_TRANSMISSION
 			if (bHasSubsurfaceTransmission)
 			{
+				// This branch is only taken by SSS profiles and SSS per pixel diffusion methods.
 			#if STRATA_ENABLED
 				const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(SVPos.xy, 0)));
 				const float3 WorldNormal = TopLayerData.WorldNormal;
 
-				// For non-profile version, use default transmission parameters (only NormalScale & ExtinctionScale are used)
 				FTransmissionProfileParams TransmissionParams = InitTransmissionProfileParams();
 				if (SSSType == SSS_TYPE_DIFFUSION_PROFILE)
 				{
 					TransmissionParams = GetTransmissionProfileParams(StrataSubSurfaceHeaderGetProfileId(SSSHeader));
 				}
+				else if (SSSType == SSS_TYPE_DIFFUSION)
+				{
+					//For per pixel diffusion, use default transmission parameters (only NormalScale & ExtinctionScale are used)
+					const float3 ColoredMFP = StrataSubSurfaceHeaderGetMFP(SSSHeader);
+					const float3 GreyMFP    = StrataShadowColoredMFPToGreyScaleMFP(ColoredMFP);
+					const float Extinction  = StrataShadowMFPToExtinction(GreyMFP);
+					TransmissionParams.ExtinctionScale = Extinction;
+				}
+
 			#else // STRATA_ENABLED
 				float3 WorldNormal = GBufferData.WorldNormal;
 				FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(ExtractSubsurfaceProfileInt(GBufferData));
@@ -330,6 +339,7 @@ void Main(
 			else
 			#endif
 			{
+				// This branch is taken by Subsurface shading model (Wrap for Substrate)
 				// ideally we use a larger filter kernel for SSSbut as Gather4 makes that harder
 				SSSTransmission = ManualPCF(ShadowPosition.xy, Settings);
 			}
@@ -414,14 +424,14 @@ void MainOnePassPointLightPS(
 #endif
 
 	float2 ScreenPosition = ( ScreenUV.xy - View.ScreenPositionScaleBias.wz ) / View.ScreenPositionScaleBias.xy;
-	float3 TranslateWorldPosition = mul(float4(ScreenPosition.xy * SceneW, SceneW, 1), View.ScreenToTranslatedWorld).xyz;
+	float3 TranslateWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, SceneW), SceneW, 1), View.ScreenToTranslatedWorld).xyz;
 
 	// For debugging
 #define OUTPUT_CUBE_SHADOW_DEPTH_NO_FILTERING 0
 	float3 WorldSampleToLightVec = LightPositionAndInvRadius.xyz - TranslateWorldPosition.xyz;
 #if OUTPUT_CUBE_SHADOW_DEPTH_NO_FILTERING
 	// Note: point light shadow depth is Z / W, not linear
-#if OPENGL_PROFILE || COMPILER_VULKAN || COMPILER_SWITCH
+#if USE_SEPARATE_SHADOW_DEPTH_CUBE_TEXTURE
 	float Shadow = TextureCubeSampleLevel(ShadowDepthCubeTexture2, ShadowDepthTextureSampler, WorldSampleToLightVec, 0);
 #else
 	float Shadow = TextureCubeSampleLevel(ShadowDepthCubeTexture, ShadowDepthTextureSampler, WorldSampleToLightVec, 0);
@@ -477,10 +487,24 @@ void MainOnePassPointLightPS(
 	const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(SVPos.xy, 0)));
 
 	const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, SVPos.xy);
+	const uint SSSType = StrataSubSurfaceHeaderGetSSSType(SSSHeader);
 
 	const bool IsSubsurfaceProfile = StrataSubSurfaceHeaderGetUseDiffusion(SSSHeader);
 	const float3 WorldNormal = TopLayerData.WorldNormal;
-	const FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(StrataSubSurfaceHeaderGetProfileId(SSSHeader));
+
+	FTransmissionProfileParams TransmissionParams = InitTransmissionProfileParams();
+	if (SSSType == SSS_TYPE_DIFFUSION_PROFILE)
+	{
+		TransmissionParams = GetTransmissionProfileParams(StrataSubSurfaceHeaderGetProfileId(SSSHeader));
+	}
+	else if (SSSType == SSS_TYPE_DIFFUSION)
+	{
+		//For per pixel diffusion, use default transmission parameters (only NormalScale & ExtinctionScale are used)
+		const float3 ColoredMFP = StrataSubSurfaceHeaderGetMFP(SSSHeader);
+		const float3 GreyMFP    = StrataShadowColoredMFPToGreyScaleMFP(ColoredMFP);
+		const float Extinction  = StrataShadowMFPToExtinction(GreyMFP);
+		TransmissionParams.ExtinctionScale = Extinction;
+	}
 
 #else // STRATA_ENABLED
 

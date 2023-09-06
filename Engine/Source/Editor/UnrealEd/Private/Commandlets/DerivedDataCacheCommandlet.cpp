@@ -30,6 +30,7 @@ DerivedDataCacheCommandlet.cpp: Commandlet for DDC maintenence
 #include "PackageHelperFunctions.h"
 #include "Settings/ProjectPackagingSettings.h"
 #include "ShaderCompiler.h"
+#include "TextureEncodingSettings.h"
 #include "UObject/CoreRedirects.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
@@ -42,7 +43,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogDerivedDataCacheCommandlet, Log, All);
 class UDerivedDataCacheCommandlet::FObjectReferencer : public FGCObject
 {
 public:
-	FObjectReferencer(TMap<UObject*, FCachingData>& InReferencedObjects)
+	FObjectReferencer(TMap<TObjectPtr<UObject>, FCachingData>& InReferencedObjects)
 		: ReferencedObjects(InReferencedObjects)
 	{
 	}
@@ -61,7 +62,7 @@ private:
 	}
 
 	FString ReferencerName;
-	TMap<UObject*, FCachingData>& ReferencedObjects;
+	TMap<TObjectPtr<UObject>, FCachingData>& ReferencedObjects;
 };
 
 class UDerivedDataCacheCommandlet::FPackageListener : public FUObjectArray::FUObjectCreateListener, public FUObjectArray::FUObjectDeleteListener
@@ -464,8 +465,7 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 	FParse::Value(*Params, TEXT("SubsetTarget="), SubsetTarget);
 	bool bDoSubset = SubsetMod > 0 && SubsetTarget < SubsetMod;
 
-	static auto CVarSharedLinearTextureEncoding = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SharedLinearTextureEncoding"));
-	if (CVarSharedLinearTextureEncoding->GetValueOnAnyThread())
+	if (FResolvedTextureEncodingSettings::Get().Project.bSharedLinearTextureEncoding)
 	{
 		bSharedLinearTextureEncodingEnabled = true;
 	}
@@ -866,6 +866,7 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 					else
 					{
 						UE_LOG(LogDerivedDataCacheCommandlet, Verbose, TEXT("Skipping soft reference '%s': %s, %s "), 
+							*SoftRefName.ToString(),									 
 							PackagesToProcess.Contains(SoftRefName) ? TEXT("ALREADY QUEUED") : TEXT("NOT QUEUED"),
 							ProcessedPackages.Contains(SoftRefName) ? TEXT("ALREADY PROCESSED") : TEXT("NOT PROCESSED")
 						);

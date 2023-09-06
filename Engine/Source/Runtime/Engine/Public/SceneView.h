@@ -39,8 +39,15 @@ class FViewElementDrawer;
 class ISceneViewExtension;
 class FSceneViewFamily;
 class FVolumetricFogViewResources;
+class ISceneRenderer;
 class ISpatialUpscaler;
+
+namespace UE::Renderer::Private
+{
+
 class ITemporalUpscaler;
+
+}
 
 class FRenderTarget;
 
@@ -277,6 +284,7 @@ struct FViewMatrices
 		OverriddenInvTranslatedViewMatrix.SetIdentity();
 		TranslatedViewProjectionMatrix.SetIdentity();
 		InvTranslatedViewProjectionMatrix.SetIdentity();
+		ScreenToClipMatrix.SetIdentity();
 		PreViewTranslation = FVector::ZeroVector;
 		ViewOrigin = FVector::ZeroVector;
 		ProjectionScale = FVector2D::ZeroVector;
@@ -319,6 +327,8 @@ private:
 	FMatrix		TranslatedViewProjectionMatrix;
 	/** The inverse view-projection transform, ending with world-space points translated by -ViewOrigin. */
 	FMatrix		InvTranslatedViewProjectionMatrix;
+	/** The screen to clip matrix (defined depending on whether this is a perspective or ortho projection view)*/
+	FMatrix		ScreenToClipMatrix;
 	/** The translation to apply to the world before TranslatedViewProjectionMatrix. Usually it is -ViewOrigin but with rereflections this can differ */
 	FVector		PreViewTranslation;
 	/** To support ortho and other modes this is redundant, in world space */
@@ -337,6 +347,9 @@ private:
 	 *		ScreenRadius = ScreenScale * SphereRadius / ProjectedSpherePosition.W
 	 */
 	float ScreenScale;
+
+	/** Depth test scaling; differs between perspective and orthographic  */
+	float PerProjectionDepthThicknessScale;
 
 	//
 	// World = TranslatedWorld - PreViewTranslation
@@ -420,6 +433,11 @@ public:
 		return InvTranslatedViewProjectionMatrix;
 	}
 
+	inline const FMatrix& GetScreenToClipMatrix() const
+	{
+		return ScreenToClipMatrix;
+	}
+
 	inline const FVector& GetPreViewTranslation() const
 	{
 		return PreViewTranslation;
@@ -445,6 +463,47 @@ public:
 	{
 		return ProjectionMatrix.M[3][3] < 1.0f;
 	}
+
+	inline FVector2f GetInvTanHalfFov() const
+	{
+		//No concept of FOV for orthographic projection so only return perspective related values or 1.0f
+		if (IsPerspectiveProjection())
+		{
+			return FVector2f(static_cast<float>(ProjectionMatrix.M[0][0]), static_cast<float>(ProjectionMatrix.M[1][1]));
+		}
+		return  FVector2f(1.0f, 1.0f);
+	}
+
+	inline FVector2f GetTanHalfFov() const
+	{
+		//No concept of FOV for orthographic projection so only return perspective related values or 1.0f
+		if (IsPerspectiveProjection())
+		{
+			return FVector2f(static_cast<float>(InvProjectionMatrix.M[0][0]), static_cast<float>(InvProjectionMatrix.M[1][1]));
+		}
+		return  FVector2f(1.0f,1.0f);
+	}
+
+	//Used for initializing the View Uniform Buffer TanAndInvTanHalfFOV variable without repeated calls to IsPerspectiveProjection
+	inline FVector4f GetTanAndInvTanHalfFOV() const
+	{
+		//No concept of FOV for orthographic projection so only return perspective related values or 1.0f
+		if (IsPerspectiveProjection())
+		{
+			return FVector4f(static_cast<float>(InvProjectionMatrix.M[0][0]), //ClipToView[0][0] - X axis
+							 static_cast<float>(InvProjectionMatrix.M[1][1]), //ClipToView[1][1] - Y axis
+							 static_cast<float>(ProjectionMatrix.M[0][0]), //ViewToClip[0][0] - 1/X axis
+							 static_cast<float>(ProjectionMatrix.M[1][1])); //ViewToClip[1][1] - 1/Y axis
+		}
+		return FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+	}
+
+	inline float GetPerProjectionDepthThicknessScale() const
+	{
+		return PerProjectionDepthThicknessScale;
+	}
+
+	FMatrix ScreenToClipProjectionMatrix() const;
 
 	ENGINE_API void HackOverrideViewMatrixForShadows(const FMatrix& InViewMatrix);
 
@@ -629,7 +688,6 @@ enum ETranslucencyVolumeCascade
 // View uniform buffer member declarations
 #define VIEW_UNIFORM_BUFFER_MEMBER_TABLE \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FMatrix44f, TranslatedWorldToClip) \
-	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FMatrix44f, TranslatedWorldToSubpixelClip) \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FMatrix44f, RelativeWorldToClip) \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FMatrix44f, ClipToRelativeWorld)  \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FMatrix44f, TranslatedWorldToView) \
@@ -686,6 +744,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector2f, BufferToSceneTextureScale) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, ResolutionFractionAndInv) \
 	VIEW_UNIFORM_BUFFER_MEMBER(int32, NumSceneColorMSAASamples) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(float, ProjectionDepthThicknessScale) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, PreExposure) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, OneOverPreExposure) \
 	VIEW_UNIFORM_BUFFER_MEMBER_EX(FVector4f, DiffuseOverrideParameter, EShaderPrecisionModifier::Half) \
@@ -705,6 +764,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(float, MaterialTextureDerivativeMultiply) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, Random) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, FrameNumber) \
+	VIEW_UNIFORM_BUFFER_MEMBER(uint32, FrameCounter) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, StateFrameIndexMod8) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, StateFrameIndex) \
 	VIEW_UNIFORM_BUFFER_MEMBER(uint32, DebugViewModeMask) \
@@ -795,7 +855,11 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricFogInvGridSize) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricFogGridZParams) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogSVPosToVolumeUV) \
-	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogScreenUVToHistoryVolumeUV) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogViewGridUVToPrevViewRectUV) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogPrevViewGridRectUVToResourceUV) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogPrevUVMax) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogScreenToResourceUV) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector2f, VolumetricFogUVMax) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, VolumetricFogMaxDistance) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricLightmapWorldToUVScale) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, VolumetricLightmapWorldToUVAdd) \
@@ -824,6 +888,7 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(float, bSubsurfacePostprocessEnabled) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4f, SSProfilesTextureSizeAndInvSize) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector4f, SSProfilesPreIntegratedTextureSizeAndInvSize) \
+	VIEW_UNIFORM_BUFFER_MEMBER(FVector4f, SpecularProfileTextureSizeAndInvSize) \
 	VIEW_UNIFORM_BUFFER_MEMBER(FVector3f, PhysicsFieldClipmapCenter) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, PhysicsFieldClipmapDistance) \
 	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapResolution) \
@@ -831,10 +896,13 @@ enum ETranslucencyVolumeCascade
 	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldClipmapCount) \
 	VIEW_UNIFORM_BUFFER_MEMBER(int, PhysicsFieldTargetCount) \
 	VIEW_UNIFORM_BUFFER_MEMBER_ARRAY(FIntVector4, PhysicsFieldTargets, MAX_PHYSICS_FIELD_TARGETS) \
-	VIEW_UNIFORM_BUFFER_MEMBER(uint32, InstanceSceneDataSOAStride) \
 	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(uint32, GPUSceneViewId) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, ViewResolutionFraction) \
 	VIEW_UNIFORM_BUFFER_MEMBER(float, SubSurfaceColorAsTransmittanceAtDistanceInMeters) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector4f, TanAndInvTanHalfFOV) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector4f, PrevTanAndInvTanHalfFOV) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector4f, GlintLUTParameters0) \
+	VIEW_UNIFORM_BUFFER_MEMBER_PER_VIEW(FVector4f, GlintLUTParameters1) \
 
 /** The uniform shader parameters associated with a view. */
 #define VIEW_UNIFORM_BUFFER_MEMBER(type, identifier) \
@@ -888,6 +956,9 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_TEXTURE(Texture3D, GlobalDistanceFieldCoverageAtlasTexture)
 	SHADER_PARAMETER_TEXTURE(Texture3D<uint>, GlobalDistanceFieldPageTableTexture)
 	SHADER_PARAMETER_TEXTURE(Texture3D, GlobalDistanceFieldMipTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, GlobalDistanceFieldPageAtlasTextureSampler)
+	SHADER_PARAMETER_SAMPLER(SamplerState, GlobalDistanceFieldCoverageAtlasTextureSampler)
+	SHADER_PARAMETER_SAMPLER(SamplerState, GlobalDistanceFieldMipTextureSampler)
 
 	SHADER_PARAMETER_TEXTURE(Texture2D, AtmosphereTransmittanceTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, AtmosphereTransmittanceTextureSampler)
@@ -909,10 +980,6 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_SAMPLER(SamplerState, SharedTrilinearClampedSampler)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedBRDF)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedBRDFSampler)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, PrimitiveSceneData)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, InstanceSceneData)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, InstancePayloadData)
-	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, LightmapSceneData)
 	SHADER_PARAMETER_SRV(StructuredBuffer<float4>, SkyIrradianceEnvironmentMap)
 	// Atmosphere
 	SHADER_PARAMETER_TEXTURE(Texture2D, TransmittanceLutTexture)
@@ -930,11 +997,13 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	// Hair
 	SHADER_PARAMETER_TEXTURE(Texture3D, HairScatteringLUTTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HairScatteringLUTSampler)
-	// Rect area light	
-	SHADER_PARAMETER_TEXTURE(Texture2D, LTCMatTexture)
-	SHADER_PARAMETER_SAMPLER(SamplerState, LTCMatSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, LTCAmpTexture)
-	SHADER_PARAMETER_SAMPLER(SamplerState, LTCAmpSampler)
+	// GGX/Sheen LTC textures
+	SHADER_PARAMETER_TEXTURE(Texture2D, GGXLTCMatTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, GGXLTCMatSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, GGXLTCAmpTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, GGXLTCAmpSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, SheenLTCTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SheenLTCSampler)
 	// Energy conservation
 	SHADER_PARAMETER(uint32, bShadingEnergyConservation)
 	SHADER_PARAMETER(uint32, bShadingEnergyPreservation)
@@ -943,12 +1012,23 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_TEXTURE(Texture2D<float2>, ShadingEnergyClothSpecTexture)
 	SHADER_PARAMETER_TEXTURE(Texture2D<float>, ShadingEnergyDiffuseTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ShadingEnergySampler)
+	// Glints
+	SHADER_PARAMETER_TEXTURE(Texture2DArray<float4>, GlintTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, GlintSampler)
+	// Simple volume texture
+	SHADER_PARAMETER_TEXTURE(Texture3D<float>, SimpleVolumeTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SimpleVolumeTextureSampler)
+	SHADER_PARAMETER_TEXTURE(Texture3D<float>, SimpleVolumeEnvTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SimpleVolumeEnvTextureSampler)
 	// SSS
 	SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SSProfilesSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SSProfilesTransmissionSampler)
 	SHADER_PARAMETER_TEXTURE(Texture2DArray, SSProfilesPreIntegratedTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SSProfilesPreIntegratedSampler)
+	// Specular Profile
+	SHADER_PARAMETER_TEXTURE(Texture2DArray, SpecularProfileTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, SpecularProfileSampler)
 	// Water
 	SHADER_PARAMETER_SRV(Buffer<float4>, WaterIndirection)
 	SHADER_PARAMETER_SRV(Buffer<float4>, WaterData)
@@ -966,16 +1046,13 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT_WITH_CONSTRUCTOR(FViewUniformShaderParamete
 	SHADER_PARAMETER_SRV(Buffer<uint>, LandscapeIndirection)
 	SHADER_PARAMETER_SRV(Buffer<float>, LandscapePerComponentData)
 
-	SHADER_PARAMETER_UAV(RWBuffer<uint>, VTFeedbackBuffer)
-	SHADER_PARAMETER_SRV(Buffer<uint>, EditorVisualizeLevelInstanceIds)
-	SHADER_PARAMETER_SRV(Buffer<uint>, EditorSelectedHitProxyIds)
+	SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VTFeedbackBuffer)
 
 	SHADER_PARAMETER_SRV(Buffer<float>, PhysicsFieldClipmapBuffer)
 
 	// Ray tracing
 	SHADER_PARAMETER(FVector3f, TLASRelativePreViewTranslation)
 	SHADER_PARAMETER(FVector3f, TLASViewTilePosition)
-
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 #undef VIEW_UNIFORM_BUFFER_MEMBER
@@ -1089,7 +1166,7 @@ namespace EDrawDynamicFlags
 /**
  * A projection from scene space into a 2D screen region.
  */
-class ENGINE_API FSceneView
+class FSceneView
 {
 public:
 	const FSceneViewFamily* Family;
@@ -1170,6 +1247,9 @@ public:
 
 	// Whether to use FOV when computing mesh LOD.
 	bool bUseFieldOfViewForLOD;
+
+	// Whether this view should use an HMD hidden area mask where appropriate.
+	bool bHMDHiddenAreaMaskActive = false;
 
 	/** Actual field of view and that desired by the camera originally */
 	float FOV;
@@ -1332,6 +1412,9 @@ public:
 	/** True if we should force the path tracer to reset its internal accumulation state */
 	bool bForcePathTracerReset;
 
+	/** Whether we should disable distance-based fade transitions for this frame (usually after a large camera movement.) */
+	bool bDisableDistanceBasedFadeTransitions;
+
 	/** Global clipping plane being applied to the scene, or all 0's if disabled.  This is used when rendering the planar reflection pass. */
 	FPlane GlobalClippingPlane;
 
@@ -1380,6 +1463,8 @@ public:
 	FLinearColor SelectionOutlineColor;
 	/** Selection color for use in the editor with inactive primitives */
 	FLinearColor SubduedSelectionOutlineColor;
+	/** Additional selection colors for the editor (used by post processing) */
+	TStaticArray<FLinearColor, 6> AdditionalSelectionOutlineColors;
 	/** True if any components are selected in isolation (independent of actor selection) */
 	bool bHasSelectedComponents;
 #endif
@@ -1425,11 +1510,8 @@ protected:
 
 public:
 
-	static const int32 NumBufferedSubIsOccludedArrays = 2;
-	TArray<bool> FrameSubIsOccluded[NumBufferedSubIsOccludedArrays];
-
 	/** Initialization constructor. */
-	FSceneView(const FSceneViewInitOptions& InitOptions);
+	ENGINE_API FSceneView(const FSceneViewInitOptions& InitOptions);
 
 	/** These are only needed because of deprecated members being accessed in them */
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -1442,43 +1524,43 @@ public:
 
 #if DO_CHECK || USING_CODE_ANALYSIS
 	/** Verifies all the assertions made on members. */
-	bool VerifyMembersChecks() const;
+	ENGINE_API bool VerifyMembersChecks() const;
 #endif
 
 	FORCEINLINE bool AllowGPUParticleUpdate() const { return !bIsPlanarReflection && !bIsSceneCapture && !bIsReflectionCapture; }
 
 	/** Transforms a point from world-space to the view's screen-space. */
-	FVector4 WorldToScreen(const FVector& WorldPoint) const;
+	ENGINE_API FVector4 WorldToScreen(const FVector& WorldPoint) const;
 
 	/** Transforms a point from the view's screen-space to world-space. */
-	FVector ScreenToWorld(const FVector4& ScreenPoint) const;
+	ENGINE_API FVector ScreenToWorld(const FVector4& ScreenPoint) const;
 
 	/** Transforms a point from the view's screen-space into pixel coordinates relative to the view's X,Y. */
-	bool ScreenToPixel(const FVector4& ScreenPoint,FVector2D& OutPixelLocation) const;
+	ENGINE_API bool ScreenToPixel(const FVector4& ScreenPoint,FVector2D& OutPixelLocation) const;
 
 	/** Transforms a point from pixel coordinates relative to the view's X,Y (left, top) into the view's screen-space. */
-	FVector4 PixelToScreen(float X,float Y,float Z) const;
+	ENGINE_API FVector4 PixelToScreen(float X,float Y,float Z) const;
 
 	/** Transforms a cursor location in render target pixel coordinates into the view's screen-space, taking into account the viewport rectangle. */
-	FVector4 CursorToScreen(float X, float Y, float Z) const;
+	ENGINE_API FVector4 CursorToScreen(float X, float Y, float Z) const;
 
 	/** Transforms a point from the view's world-space into pixel coordinates relative to the view's X,Y (left, top). */
-	bool WorldToPixel(const FVector& WorldPoint,FVector2D& OutPixelLocation) const;
+	ENGINE_API bool WorldToPixel(const FVector& WorldPoint,FVector2D& OutPixelLocation) const;
 
 	/** Transforms a point from pixel coordinates relative to the view's X,Y (left, top) into the view's world-space. */
-	FVector4 PixelToWorld(float X,float Y,float Z) const;
+	ENGINE_API FVector4 PixelToWorld(float X,float Y,float Z) const;
 
 	/** 
 	 * Transforms a point from the view's world-space into the view's screen-space. 
 	 * Divides the resulting X, Y, Z by W before returning. 
 	 */
-	FPlane Project(const FVector& WorldPoint) const;
+	ENGINE_API FPlane Project(const FVector& WorldPoint) const;
 
 	/** 
 	 * Transforms a point from the view's screen-space into world coordinates
 	 * multiplies X, Y, Z by W before transforming. 
 	 */
-	FVector Deproject(const FPlane& ScreenPoint) const;
+	ENGINE_API FVector Deproject(const FPlane& ScreenPoint) const;
 
 	/** 
 	 * Transforms 2D screen coordinates into a 3D world-space origin and direction 
@@ -1486,7 +1568,7 @@ public:
 	 * @param out_WorldOrigin (out) - world-space origin vector
 	 * @param out_WorldDirection (out) - world-space direction vector
 	 */
-	void DeprojectFVector2D(const FVector2D& ScreenPos, FVector& out_WorldOrigin, FVector& out_WorldDirection) const;
+	ENGINE_API void DeprojectFVector2D(const FVector2D& ScreenPos, FVector& out_WorldOrigin, FVector& out_WorldDirection) const;
 
 	/** 
 	 * Transforms 2D screen coordinates into a 3D world-space origin and direction 
@@ -1497,10 +1579,10 @@ public:
 	 * @param out_WorldOrigin (out) - world-space origin vector
 	 * @param out_WorldDirection (out) - world-space direction vector
 	 */
-	static void DeprojectScreenToWorld(const FVector2D& ScreenPos, const FIntRect& ViewRect, const FMatrix& InvViewMatrix, const FMatrix& InvProjMatrix, FVector& out_WorldOrigin, FVector& out_WorldDirection);
+	static ENGINE_API void DeprojectScreenToWorld(const FVector2D& ScreenPos, const FIntRect& ViewRect, const FMatrix& InvViewMatrix, const FMatrix& InvProjMatrix, FVector& out_WorldOrigin, FVector& out_WorldDirection);
 
 	/** Overload to take a single combined view projection matrix. */
-	static void DeprojectScreenToWorld(const FVector2D& ScreenPos, const FIntRect& ViewRect, const FMatrix& InvViewProjMatrix, FVector& out_WorldOrigin, FVector& out_WorldDirection);
+	static ENGINE_API void DeprojectScreenToWorld(const FVector2D& ScreenPos, const FIntRect& ViewRect, const FMatrix& InvViewProjMatrix, FVector& out_WorldOrigin, FVector& out_WorldDirection);
 
 	/** 
 	 * Transforms 3D world-space origin into 2D screen coordinates
@@ -1509,7 +1591,7 @@ public:
 	 * @param ViewProjectionMatrix - combined view projection matrix
 	 * @param out_ScreenPos (out) - screen coordinates in pixels
 	 */
-	static bool ProjectWorldToScreen(const FVector& WorldPosition, const FIntRect& ViewRect, const FMatrix& ViewProjectionMatrix, FVector2D& out_ScreenPos);
+	static ENGINE_API bool ProjectWorldToScreen(const FVector& WorldPosition, const FIntRect& ViewRect, const FMatrix& ViewProjectionMatrix, FVector2D& out_ScreenPos);
 
 	inline FVector GetViewRight() const { return ViewMatrices.GetViewMatrix().GetColumn(0); }
 	inline FVector GetViewUp() const { return ViewMatrices.GetViewMatrix().GetColumn(1); }
@@ -1530,85 +1612,85 @@ public:
 	 * @param Index, 0 or 1, which LOD origin to return
 	 * @return LOD origin
 	 */
-	FVector GetTemporalLODOrigin(int32 Index, bool bUseLaggedLODTransition = true) const;
+	ENGINE_API FVector GetTemporalLODOrigin(int32 Index, bool bUseLaggedLODTransition = true) const;
 
 	/** 
 	 * Returns the blend factor between the last two LOD samples
 	 */
-	float GetTemporalLODTransition() const;
+	ENGINE_API float GetTemporalLODTransition() const;
 
 	/**
 	 * returns the distance field temporal sample index or 0 if there is no view state
 	 */
-	uint32 GetDistanceFieldTemporalSampleIndex() const;
+	ENGINE_API uint32 GetDistanceFieldTemporalSampleIndex() const;
 
 	/** 
 	 * returns a unique key for the view state if one exists, otherwise returns zero
 	 */
-	uint32 GetViewKey() const;
+	ENGINE_API uint32 GetViewKey() const;
 
 	/** 
 	 * returns a the occlusion frame counter or MAX_uint32 if there is no view state
 	 */
-	uint32 GetOcclusionFrameCounter() const;
+	ENGINE_API uint32 GetOcclusionFrameCounter() const;
 
-	void UpdateProjectionMatrix(const FMatrix& NewProjectionMatrix);
+	ENGINE_API void UpdateProjectionMatrix(const FMatrix& NewProjectionMatrix);
 
 	/** Allow things like HMD displays to update the view matrix at the last minute, to minimize perceived latency */
-	void UpdateViewMatrix();
+	ENGINE_API void UpdateViewMatrix();
 
 	/** If we late update a view, we need to also late update any planar reflection views derived from it */
-	void UpdatePlanarReflectionViewMatrix(const FSceneView& SourceView, const FMirrorMatrix& MirrorMatrix);
+	ENGINE_API void UpdatePlanarReflectionViewMatrix(const FSceneView& SourceView, const FMirrorMatrix& MirrorMatrix);
 
 	/** Setup defaults and depending on view position (postprocess volumes) */
-	void StartFinalPostprocessSettings(FVector InViewLocation);
+	ENGINE_API void StartFinalPostprocessSettings(FVector InViewLocation);
 
 	/**
 	 * custom layers can be combined with the existing settings
 	 * @param Weight usually 0..1 but outside range is clamped
 	 */
-	void OverridePostProcessSettings(const FPostProcessSettings& Src, float Weight);
+	ENGINE_API void OverridePostProcessSettings(const FPostProcessSettings& Src, float Weight);
 
 	/** applied global restrictions from show flags */
-	void EndFinalPostprocessSettings(const FSceneViewInitOptions& ViewInitOptions);
+	ENGINE_API void EndFinalPostprocessSettings(const FSceneViewInitOptions& ViewInitOptions);
 
-	void SetupAntiAliasingMethod();
+	ENGINE_API void SetupAntiAliasingMethod();
 
 	/** Configure post process settings for the buffer visualization system */
-	void ConfigureBufferVisualizationSettings();
+	ENGINE_API void ConfigureBufferVisualizationSettings();
 
 #if !(UE_BUILD_SHIPPING)
 	/** Configure post process settings for calibration material */
-	void ConfigureVisualizeCalibrationSettings();
+	ENGINE_API void ConfigureVisualizeCalibrationSettings();
 #endif
 
 	/** Get the feature level for this view (cached from the scene so this is not different per view) **/
 	ERHIFeatureLevel::Type GetFeatureLevel() const { return FeatureLevel; }
 
 	/** Get the feature level for this view **/
-	EShaderPlatform GetShaderPlatform() const;
+	ENGINE_API EShaderPlatform GetShaderPlatform() const;
 
 	/** True if the view should render as an instanced stereo pass */
-	bool IsInstancedStereoPass() const;
+	ENGINE_API bool IsInstancedStereoPass() const;
 
 	/** Instance factor for a stereo pass (normally 2 for ISR views, but see IStereoRendering::GetDesiredNumberOfViews()). Returns 1 for non-instanced stereo views or regular (split screen etc) views. */
-	int32 GetStereoPassInstanceFactor() const;
+	ENGINE_API int32 GetStereoPassInstanceFactor() const;
 
 	/** Sets up the view rect parameters in the view's uniform shader parameters */
-	void SetupViewRectUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters, 
+	ENGINE_API void SetupViewRectUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters, 
 		const FIntPoint& InBufferSize,
 		const FIntRect& InEffectiveViewRect,
 		const FViewMatrices& InViewMatrices,
 		const FViewMatrices& InPrevViewMatrice) const;
 
-	FVector4f GetScreenPositionScaleBias(const FIntPoint& BufferSize, const FIntRect& ViewRect) const;
+	ENGINE_API FVector4f GetScreenPositionScaleBias(const FIntPoint& BufferSize, const FIntRect& ViewRect) const;
 
 	/** 
 	 * Populates the uniform buffer prameters common to all scene view use cases
 	 * View parameters should be set up in this method if they are required for the view to render properly.
 	 * This is to avoid code duplication and uninitialized parameters in other places that create view uniform parameters (e.g Slate) 
 	 */
-	void SetupCommonViewUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters,
+	ENGINE_API void SetupCommonViewUniformBufferParameters(FViewUniformShaderParameters& ViewUniformShaderParameters,
 		const FIntPoint& InBufferSize,
 		int32 NumMSAASamples,
 		const FIntRect& InEffectiveViewRect,
@@ -1621,22 +1703,22 @@ public:
 #endif
 
 	UE_DEPRECATED(5.2, "Use HasValidEyeAdaptationBuffer() instead.")
-	bool HasValidEyeAdaptationTexture() const;
+	ENGINE_API bool HasValidEyeAdaptationTexture() const;
 
 	/** Tells if the eye adaptation buffer exists without attempting to allocate it. */
-	bool HasValidEyeAdaptationBuffer() const;
+	ENGINE_API bool HasValidEyeAdaptationBuffer() const;
 
 	UE_DEPRECATED(5.2, "Use GetEyeAdaptationBuffer() instead.")
-	IPooledRenderTarget* GetEyeAdaptationTexture() const;
+	ENGINE_API IPooledRenderTarget* GetEyeAdaptationTexture() const;
 
 	/** Returns the eye adaptation buffer or null if it doesn't exist. */
-	FRDGPooledBuffer* GetEyeAdaptationBuffer() const;
+	ENGINE_API FRDGPooledBuffer* GetEyeAdaptationBuffer() const;
 
 	/** Returns the eye adaptation exposure or 0.0f if it doesn't exist. */
-	float GetLastEyeAdaptationExposure() const;
+	ENGINE_API float GetLastEyeAdaptationExposure() const;
 
 	/** Get the primary view associated with the secondary view. */
-	const FSceneView* GetPrimarySceneView() const;
+	ENGINE_API const FSceneView* GetPrimarySceneView() const;
 
 	/** Checks whether this is the primary view of a stereo pair (important in instanced stereo rendering). Will also be true for any view that isn't stereo. */
 	inline bool IsPrimarySceneView() const
@@ -1645,7 +1727,7 @@ public:
 	}
 
 	/** Get the first secondary view associated with the primary view. */
-	const FSceneView* GetInstancedSceneView() const;
+	ENGINE_API const FSceneView* GetInstancedSceneView() const;
 
 	/** Checks whether this is the instanced view of a stereo pair. If the technique supports instanced rendering stereo and ISR is enabled, such views can be skipped. */
 	inline bool IsInstancedSceneView() const
@@ -1654,12 +1736,18 @@ public:
 	}
 
 	/** Get all secondary views associated with the primary view. */
-	TArray<const FSceneView*> GetSecondaryViews() const;
+	ENGINE_API TArray<const FSceneView*> GetSecondaryViews() const;
 
 	/** Returns uniform buffer that is used to access (first) instanced view's properties. Note: it is not the same as that view's ViewUniformBuffer, albeit it contains all relevant data from it. */
 	const TUniformBufferRef<FInstancedViewUniformShaderParameters>& GetInstancedViewUniformBuffer() const
 	{
 		return InstancedViewUniformBuffer;
+	}
+
+	/** Returns the load action to use when overwriting all pixels of a target that you intend to read from. Takes into account the HMD hidden area mesh. */
+	inline ERenderTargetLoadAction GetOverwriteLoadAction() const
+	{
+		return bHMDHiddenAreaMaskActive ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ENoAction;
 	}
 
 protected:
@@ -1698,7 +1786,7 @@ struct FDisplayInternalsData
 /**
  * Generic plugin extension that have a lifetime of the FSceneViewFamily
  */
-class ENGINE_API ISceneViewFamilyExtention
+class ISceneViewFamilyExtention
 {
 protected:
 	/** 
@@ -1713,7 +1801,7 @@ protected:
 /**
  * Generic plugin extension that have a lifetime of the FSceneViewFamily that can contain arbitrary data to passdown from game thread to render thread.
  */
-class ENGINE_API ISceneViewFamilyExtentionData : public ISceneViewFamilyExtention
+class ISceneViewFamilyExtentionData : public ISceneViewFamilyExtention
 {
 public:
 	/** Returns a const TCHAR* to uniquely identify what implementation ISceneViewFamilyExtentionData is. */
@@ -1727,7 +1815,7 @@ public:
  * The renderer reserves the right to delete and replace the view family's screen percentage interface
  * for testing purposes with the r.Test.OverrideScreenPercentageInterface CVar.
  */
-class ENGINE_API ISceneViewFamilyScreenPercentage : ISceneViewFamilyExtention
+class ISceneViewFamilyScreenPercentage : ISceneViewFamilyExtention
 {
 public:
 	// Sets the minimal and max screen percentage.
@@ -1775,7 +1863,7 @@ protected:
 /**
  * A set of views into a scene which only have different view transforms and owner actors.
  */
-class ENGINE_API FSceneViewFamily
+class FSceneViewFamily
 {
 public:
 	/**
@@ -1893,6 +1981,14 @@ public:
 	/** Copy from main thread GFrameNumber to be accessible on render thread side. UINT_MAX before CreateSceneRenderer() or BeginRenderingViewFamily() was called */
 	uint32 FrameNumber;
 
+	/** Copy from main thread GFrameCounter to be accessible on render thread side. GFrameCounter is incremented once per engine tick, so multi views of the same frame have the same value. */
+	uint64 FrameCounter = 0;
+
+	// When deleted, remove PRAGMA_DISABLE_DEPRECATION_WARNINGS / PRAGMA_ENABLE_DEPRECATION_WARNINGS from ~FSceneViewFamily()
+	/** If set, overrides FrameCounter value, useful for determistic Movie Render Queue behaviour. **/
+	UE_DEPRECATED(5.3, "Do not use, this is here as a temporary workaround for another issue.")
+	TOptional<uint64> OverrideFrameCounter;
+
 	/** Indicates this view family is an additional one. */
 	bool bAdditionalViewFamily;
 
@@ -2009,14 +2105,14 @@ public:
 	float* ProfileSceneRenderTime;
 
 	/** Initialization constructor. */
-	FSceneViewFamily( const ConstructionValues& CVS );
-	virtual ~FSceneViewFamily();
+	ENGINE_API FSceneViewFamily( const ConstructionValues& CVS );
+	ENGINE_API virtual ~FSceneViewFamily();
 
-	ERHIFeatureLevel::Type GetFeatureLevel() const;
+	ENGINE_API ERHIFeatureLevel::Type GetFeatureLevel() const;
 
 	EShaderPlatform GetShaderPlatform() const { return GShaderPlatformForFeatureLevel[GetFeatureLevel()]; }
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if WITH_DEBUG_VIEW_MODES
 	EDebugViewShaderMode DebugViewShaderMode;
 	int32 ViewModeParam;
 	FName ViewModeParamName;
@@ -2025,7 +2121,7 @@ public:
 	FORCEINLINE EDebugViewShaderMode GetDebugViewShaderMode() const { return DebugViewShaderMode; }
 	FORCEINLINE int32 GetViewModeParam() const { return ViewModeParam; }
 	FORCEINLINE const FName& GetViewModeParamName() const { return ViewModeParamName; }
-	EDebugViewShaderMode ChooseDebugViewShaderMode() const;
+	ENGINE_API EDebugViewShaderMode ChooseDebugViewShaderMode() const;
 	FORCEINLINE bool UseDebugViewVSDSHS() const { return bUsedDebugViewVSDSHS; }
 	FORCEINLINE bool UseDebugViewPS() const { return DebugViewShaderMode != DVSM_None; }
 #else
@@ -2037,7 +2133,7 @@ public:
 #endif
 
 	/** Returns whether the screen percentage show flag is supported or not for this view family. */
-	bool SupportsScreenPercentage() const;
+	ENGINE_API bool SupportsScreenPercentage() const;
 
 	FORCEINLINE bool AllowTranslucencyAfterDOF() const { return bAllowTranslucencyAfterDOF; }
 
@@ -2103,14 +2199,14 @@ public:
 		return ViewExtensionData;
 	}
 
-	FORCEINLINE void SetTemporalUpscalerInterface(ITemporalUpscaler* InTemporalUpscalerInterface)
+	FORCEINLINE void SetTemporalUpscalerInterface(UE::Renderer::Private::ITemporalUpscaler* InTemporalUpscalerInterface)
 	{
 		check(InTemporalUpscalerInterface);
 		checkf(TemporalUpscalerInterface == nullptr, TEXT("View family already had a temporal upscaler assigned."));
 		TemporalUpscalerInterface = InTemporalUpscalerInterface;
 	}
 
-	FORCEINLINE const ITemporalUpscaler* GetTemporalUpscalerInterface() const
+	FORCEINLINE const UE::Renderer::Private::ITemporalUpscaler* GetTemporalUpscalerInterface() const
 	{
 		return TemporalUpscalerInterface;
 	}
@@ -2142,12 +2238,18 @@ public:
 	inline bool GetIsInFocus() const				{ return bIsInFocus; }
 	inline void SetIsInFocus(bool bInIsInFocus)		{ bIsInFocus = bInIsInFocus; }
 
+	void SetSceneRenderer(ISceneRenderer* NewSceneRenderer) { SceneRenderer = NewSceneRenderer; }
+	ISceneRenderer* GetSceneRenderer() const { check(SceneRenderer); return SceneRenderer; }
+
 private:
+	/** The scene renderer that is rendering this view family. This is only initialized in the rendering thread's copies of the FSceneViewFamily. */
+	ISceneRenderer* SceneRenderer;
+
 	/** Interface to handle screen percentage of the views of the family. */
 	ISceneViewFamilyScreenPercentage* ScreenPercentageInterface;
 
 	/** Renderer private interfaces, automatically have same lifetime as FSceneViewFamily. */
-	ITemporalUpscaler* TemporalUpscalerInterface;
+	UE::Renderer::Private::ITemporalUpscaler* TemporalUpscalerInterface;
 	ISpatialUpscaler* PrimarySpatialUpscalerInterface;
 	ISpatialUpscaler* SecondarySpatialUpscalerInterface;
 

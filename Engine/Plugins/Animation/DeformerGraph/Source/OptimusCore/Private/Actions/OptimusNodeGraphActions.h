@@ -6,11 +6,13 @@
 #include "OptimusDataDomain.h"
 #include "OptimusBindingTypes.h"
 #include "Nodes/OptimusNode_ComputeKernelBase.h"
+#include "IOptimusNodeAdderPinProvider.h"
 
 #include "UObject/UnrealNames.h"
 
 #include "OptimusNodeGraphActions.generated.h"
 
+class IOptimusNodeAdderPinProvider;
 class UOptimusNode_ComputeKernelFunction;
 class UOptimusNode_CustomComputeKernel;
 enum class EOptimusNodeGraphType;
@@ -355,6 +357,33 @@ protected:
 	bool Undo(IOptimusPathResolver* InRoot) override { return AddLink(InRoot); }
 };
 
+USTRUCT()
+struct FOptimusNodeGraphAction_ConnectAdderPin
+	: public FOptimusNodeGraphAction_AddRemoveLink
+{
+	GENERATED_BODY()
+	
+	FOptimusNodeGraphAction_ConnectAdderPin() = default;
+
+	FOptimusNodeGraphAction_ConnectAdderPin(
+		IOptimusNodeAdderPinProvider* InAdderPinProvider,
+		const IOptimusNodeAdderPinProvider::FAdderPinAction& InAction,
+		UOptimusNodePin* InSourcePin
+		);
+
+protected:
+	bool Do(IOptimusPathResolver* InRoot) override; 
+	bool Undo(IOptimusPathResolver* InRoot) override;
+
+private:
+	FString NodePath;
+
+	IOptimusNodeAdderPinProvider::FAdderPinAction Action;	
+	
+	FString SourcePinPath;
+
+	TArray<FString> AddedPinPaths;
+};
 
 USTRUCT()
 struct FOptimusNodeGraphAction_PackageKernelFunction :

@@ -6,18 +6,19 @@
 #include "Tools/DragOperation_Stretch.h"
 #include "Tools/SequencerEditTool_Movement.h"
 
-#include "MVVM/ViewModels/ViewModel.h"
-#include "MVVM/ViewModels/SequenceModel.h"
-#include "MVVM/ViewModels/ObjectBindingModel.h"
-#include "MVVM/ViewModels/LayerBarModel.h"
 #include "MVVM/ObjectBindingModelStorageExtension.h"
+#include "MVVM/ViewModels/LayerBarModel.h"
+#include "MVVM/ViewModels/ObjectBindingModel.h"
+#include "MVVM/ViewModels/SequenceModel.h"
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/ViewModels/TrackAreaViewModel.h"
+#include "MVVM/Selection/Selection.h"
+#include "MVVM/ViewModels/ViewModel.h"
+#include "MVVM/Views/STrackAreaView.h"
 
 #include "CommonMovieSceneTools.h"
 #include "SequencerCommonHelpers.h"
 #include "MovieSceneTimeHelpers.h"
-#include "SequencerSelection.h"
 #include "Sequencer.h"
 #include "ISequencerSection.h"
 
@@ -62,11 +63,11 @@ struct FLayerBarHotspot
 
 		FSequencerSelection& Selection = Sequencer->GetSelection();
 
-		if (!Selection.IsSelected(LayerBar))
+		if (!Selection.TrackArea.IsSelected(LayerBar))
 		{
-			Selection.EmptySelectedKeys();
-			Selection.EmptySelectedTrackAreaItems();
-			Selection.AddToSelection(LayerBar);
+			Selection.KeySelection.Empty();
+			Selection.TrackArea.Empty();
+			Selection.TrackArea.Select(LayerBar);
 		}
 
 		if (!MouseEvent.IsShiftDown())
@@ -121,11 +122,11 @@ struct FLayerBarStretchHotspot
 		TSharedPtr<FSequencer> Sequencer = WeakSequencer.Pin();
 		FSequencerSelection& Selection = Sequencer->GetSelection();
 
-		if (!Selection.IsSelected(LayerBar))
+		if (!Selection.TrackArea.IsSelected(LayerBar))
 		{
-			Selection.EmptySelectedKeys();
-			Selection.EmptySelectedTrackAreaItems();
-			Selection.AddToSelection(LayerBar);
+			Selection.KeySelection.Empty();
+			Selection.TrackArea.Empty();
+			Selection.TrackArea.Select(LayerBar);
 		}
 
 		return MakeShared<FEditToolDragOperation_Stretch>(Sequencer.Get(), StretchConstraint, GetTime().GetValue());
@@ -162,8 +163,9 @@ public:
 		SLATE_ATTRIBUTE(const FSlateBrush*, BackgroundBrush)
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, TWeakPtr<SSequencerLayerBar> InWeakParent, EStretchConstraint InHandleType)
+	void Construct(const FArguments& InArgs, TWeakPtr<FTrackAreaViewModel> InWeakTrackArea, TWeakPtr<SSequencerLayerBar> InWeakParent, EStretchConstraint InHandleType)
 	{
+		WeakTrackArea = InWeakTrackArea;
 		WeakParent = InWeakParent;
 		HandleType = InHandleType;
 
@@ -181,9 +183,9 @@ public:
 		if (LayerBarWidget)
 		{
 			TSharedPtr<FLayerBarModel> LayerBar  = LayerBarWidget->GetLayerBarModel();
-			TSharedPtr<FTrackAreaViewModel> TrackArea = Sequencer->GetViewModel()->GetTrackArea();
 			if (LayerBar)
 			{
+				TSharedPtr<FTrackAreaViewModel> TrackArea = WeakTrackArea.Pin();
 				TrackArea->AddHotspot(MakeShared<FLayerBarStretchHotspot>(LayerBar, HandleType, Sequencer));
 			}
 		}
@@ -197,21 +199,25 @@ public:
 		TSharedPtr<FLayerBarModel> LayerBar  = LayerBarWidget->GetLayerBarModel();
 		if (LayerBarWidget)
 		{
-			TSharedPtr<FTrackAreaViewModel> TrackArea = LayerBarWidget->GetSequencer()->GetViewModel()->GetTrackArea();
+			TSharedPtr<FTrackAreaViewModel> TrackArea = WeakTrackArea.Pin();
 			TrackArea->RemoveHotspot(FLayerBarStretchHotspot::ID);
 		}
 
 		SCompoundWidget::OnMouseLeave(MouseEvent);
 	}
 
+	TWeakPtr<FTrackAreaViewModel> WeakTrackArea;
 	TWeakPtr<SSequencerLayerBar> WeakParent;
 	EStretchConstraint HandleType;
 };
 
-void SSequencerLayerBar::Construct(const FArguments& InArgs, TWeakPtr<FSequencerEditorViewModel> InWeakEditor, TWeakPtr<FLayerBarModel> InWeakLayerBar)
+void SSequencerLayerBar::Construct(const FArguments& InArgs, TWeakPtr<STrackAreaView> InWeakTrackArea, TWeakPtr<FSequencerEditorViewModel> InWeakEditor, TWeakPtr<FLayerBarModel> InWeakLayerBar)
 {
 	WeakLayerBar   = InWeakLayerBar;
 	WeakEditor     = InWeakEditor;
+	WeakTrackArea  = InWeakTrackArea;
+
+	TSharedPtr<STrackAreaView> TrackArea = WeakTrackArea.Pin();
 
 	ChildSlot
 	[
@@ -225,7 +231,7 @@ void SSequencerLayerBar::Construct(const FArguments& InArgs, TWeakPtr<FSequencer
 			SNew(SBox)
 			.WidthOverride(8.f)
 			[
-				SNew(SSequencerLayerBarHandle, SharedThis(this), EStretchConstraint::AnchorToEnd)
+				SNew(SSequencerLayerBarHandle, TrackArea->GetViewModel(), SharedThis(this), EStretchConstraint::AnchorToEnd)
 				.BackgroundBrush(FAppStyle::Get().GetBrush("Sequencer.LayerBar.HandleLeft"))
 			]
 		]
@@ -242,7 +248,7 @@ void SSequencerLayerBar::Construct(const FArguments& InArgs, TWeakPtr<FSequencer
 			SNew(SBox)
 			.WidthOverride(8.f)
 			[
-				SNew(SSequencerLayerBarHandle, SharedThis(this), EStretchConstraint::AnchorToStart)
+				SNew(SSequencerLayerBarHandle, TrackArea->GetViewModel(), SharedThis(this), EStretchConstraint::AnchorToStart)
 				.BackgroundBrush(FAppStyle::Get().GetBrush("Sequencer.LayerBar.HandleRight"))
 			]
 		]
@@ -308,7 +314,7 @@ int32 SSequencerLayerBar::OnPaint(const FPaintArgs& Args, const FGeometry& Allot
 	ESelectionPreviewState SelectionPreviewState = SelectionPreview.GetSelectionState(WeakLayerBar);
 
 	const bool bIsPreviewUnselected = SelectionPreviewState == ESelectionPreviewState::NotSelected;
-	const bool bIsUnSelected        = SelectionPreviewState == ESelectionPreviewState::Undefined && !Selection.IsSelected(WeakLayerBar);
+	const bool bIsUnSelected        = SelectionPreviewState == ESelectionPreviewState::Undefined && !Selection.TrackArea.IsSelected(WeakLayerBar);
 
 	if (!bIsPreviewUnselected && !bIsUnSelected)
 	{
@@ -350,7 +356,7 @@ void SSequencerLayerBar::OnMouseEnter(const FGeometry& MyGeometry, const FPointe
 	if (LayerBar)
 	{
 		TSharedPtr<FSequencer> Sequencer = GetSequencer();
-		TSharedPtr<FTrackAreaViewModel> TrackArea = Sequencer->GetViewModel()->GetTrackArea();
+		TSharedPtr<FTrackAreaViewModel> TrackArea = WeakTrackArea.Pin()->GetViewModel();
 		TrackArea->AddHotspot(MakeShared<FLayerBarHotspot>(LayerBar, Sequencer));
 	}
 
@@ -367,7 +373,7 @@ void SSequencerLayerBar::OnMouseLeave(const FPointerEvent& MouseEvent)
 	TSharedPtr<FLayerBarModel> LayerBar = WeakLayerBar.Pin();
 	if (LayerBar)
 	{
-		TSharedPtr<FTrackAreaViewModel> TrackArea = GetSequencer()->GetViewModel()->GetTrackArea();
+		TSharedPtr<FTrackAreaViewModel> TrackArea = WeakTrackArea.Pin()->GetViewModel();
 		TrackArea->RemoveHotspot(FLayerBarHotspot::ID);
 	}
 

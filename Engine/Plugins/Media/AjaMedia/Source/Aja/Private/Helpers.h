@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AjaCoreModule.h"
 
 #define MSWindows 1
 #define AJA_WINDOWS 1
@@ -10,7 +11,7 @@
 
 THIRD_PARTY_INCLUDES_START
 
-__pragma(warning(disable: 4263))  /* Member function does not override any base class virtual member function. */ 
+__pragma(warning(disable: 4263))  /* Member function does not override any base class virtual member function. */
 __pragma(warning(disable: 4264))  /* No override available for virtual member function from base. */
 
 #if PLATFORM_WINDOWS
@@ -45,7 +46,6 @@ __pragma(warning(disable: 4264))  /* No override available for virtual member fu
 #endif //PLATFORM_WINDOWS
 
 THIRD_PARTY_INCLUDES_END
-
 
 #include "AJALib.h"
 #include <optional>
@@ -93,11 +93,27 @@ namespace AJA
 			static NTV2FrameBufferFormat ConvertPixelFormatToFrameBufferFormat(EPixelFormat InPixelFormat);
 			static EPixelFormat ConvertFrameBufferFormatToPixelFormat(NTV2FrameBufferFormat InPixelFormat);
 			static AJA_PixelFormat ConvertToPixelFormat(EPixelFormat InPixelFormat);
+			
+			/** Convert HDR transfer characteristics from Unreal to Aja format. */
+			static NTV2HDRXferChars ConvertToAjaHDRXferChars(EAjaHDRMetadataEOTF HDRXferChars);
+			/** Convert HDR transfer characteristics from Aja to Unreal format. */
+			static EAjaHDRMetadataEOTF ConvertFromAjaHDRXferChars(NTV2HDRXferChars XferChar);
+			/** Convert HDR colorimetry from Unreal to Aja format. */
+			static NTV2HDRColorimetry ConvertToAjaHDRColorimetry(EAjaHDRMetadataGamut Colorimetry);
+			/** Convert HDR colorimetry from Aja to unreal format. */
+			static EAjaHDRMetadataGamut ConvertFromAjaHDRColorimetry(NTV2HDRColorimetry);
+			/** Convert HDR luminance from Unreal to Aja format. */
+			static NTV2HDRLuminance ConvertToAjaHDRLuminance(EAjaHDRMetadataLuminance HDRLuminance);
+			/** Convert HDR luminance from Aja to Unreal format. */
+			static EAjaHDRMetadataLuminance ConvertFromAjaHDRLuminance(NTV2HDRLuminance AjaHDRLuminance);
+			
 			static NTV2FrameRate ConvertToFrameRate(uint32_t InNumerator, uint32_t InDenominator);
 			static TimecodeFormat ConvertToTimecodeFormat(NTV2VideoFormat InVideoFormat);
 
 			static bool TryVideoFormatIndexToNTV2VideoFormat(FAJAVideoFormat InVideoFormatIndex, NTV2VideoFormat& OutFoundVideoFormat);
 			static bool GetInputVideoFormat(CNTV2Card* InCard, ETransportType InTransportType, NTV2Channel InChannel, NTV2InputSource InInputSource, NTV2VideoFormat InExpectedVideoFormat, NTV2VideoFormat& OutFoundVideoFormat, bool bSetSDIConversion, std::string& OutFailedReason, bool bEnforceExpectedFormat = true);
+			/** Fetch HDR Metadata from VPID registers. */
+			static bool GetInputHDRMetadata(CNTV2Card* InCard, NTV2Channel InChannel, FAjaHDROptions& OutHDRMetadata);
 			static std::optional<NTV2VideoFormat> GetInputVideoFormat(CNTV2Card* InCard, ETransportType InTransportType, NTV2Channel InChannel, NTV2InputSource InInputSource, NTV2VideoFormat InExpectedVideoFormat, bool bSetSDIConversion, std::string& OutFailedReason);
 			static bool CompareFormats(NTV2VideoFormat LHS, NTV2VideoFormat& RHS, std::string& OutFailedReason);
 			static void RouteSdiSignal(CNTV2Card* InCard, ETransportType InTransportType, NTV2Channel InChannel, NTV2VideoFormat InVideoFormat, NTV2FrameBufferFormat InPixelFormat, bool bIsInput, bool bIsInputColorRgb, bool bWillUseKey);
@@ -119,6 +135,7 @@ namespace AJA
 			static bool IsSdiTransport(ETransportType InTransportType);
 			static bool IsHdmiTransport(ETransportType InTransportType);
 			static const char* TransportTypeToString(ETransportType InTransportType);
+			static const char* ReferenceTypeToString(EAJAReferenceType InReferenceType);
 
 			static NTV2VideoFormat Get372Format(NTV2VideoFormat InFormat);
 			static NTV2VideoFormat GetLevelA(NTV2VideoFormat InFormat);

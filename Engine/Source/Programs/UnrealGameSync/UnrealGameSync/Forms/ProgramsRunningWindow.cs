@@ -2,33 +2,39 @@
 
 using EpicGames.Core;
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
-using System.Drawing;
 using System.Linq;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
 	public partial class ProgramsRunningWindow : Form
 	{
-		object _syncObject = new object();
+		readonly object _syncObject = new object();
 		FileReference[] _programs;
-		Func<FileReference[]> _enumeratePrograms;
+		readonly Func<FileReference[]> _enumeratePrograms;
 		ManualResetEvent? _terminateEvent;
 		Thread? _backgroundThread;
 
 		public ProgramsRunningWindow(Func<FileReference[]> enumeratePrograms, FileReference[] programs)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._programs = programs.OrderBy(x => x).ToArray();
-			this._enumeratePrograms = enumeratePrograms;
-			this.ProgramListBox.Items.AddRange(programs);
+			_programs = programs.OrderBy(x => x).ToArray();
+			_enumeratePrograms = enumeratePrograms;
+			ProgramListBox.Items.AddRange(programs);
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			if (disposing)
+			{
+				_terminateEvent?.Dispose();
+				components?.Dispose();
+			}
+			base.Dispose(disposing);
 		}
 
 		private void ProgramsRunningWindow_Load(object sender, EventArgs e)

@@ -11,6 +11,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
 
 class FGCObject;
 
@@ -27,8 +28,6 @@ class UGCObjectReferencer : public UObject
 	/** Current FGCObject* that references are being added from  */
 	FGCObject* CurrentlySerializingObject = nullptr;
 
-	/** True if the list of referenced objects has changed since we last ran VerifyGCObjectNames */
-	bool bReferencedObjectsChangedSinceLastNameVerify = false;
 	friend struct FReplaceReferenceHelper;
 
 public:
@@ -78,11 +77,6 @@ public:
 	virtual void FinishDestroy() override;
 
 	/**
-	 * Verifies that all FGCObjects have specified names
-	 */
-	COREUOBJECT_API void VerifyGCObjectNames();
-
-	/**
 	 * Returns the currently serializing object
 	 */
 	FGCObject* GetCurrentlySerializingObject() const
@@ -115,17 +109,17 @@ public:
  * non-UObject classes. It is an abstract base class requiring you to implement
  * the AddReferencedObjects() method.
  */
-class COREUOBJECT_API FGCObject
+class FGCObject
 {
 public:
 	/**
 	 * The static object referencer object that is shared across all
 	 * garbage collectible non-UObject objects.
 	 */
-	static UGCObjectReferencer* GGCObjectReferencer;
+	static COREUOBJECT_API UGCObjectReferencer* GGCObjectReferencer;
 
 	/** Initializes the global object referencer and adds it to the root set. */
-	static void StaticInit();
+	static COREUOBJECT_API void StaticInit();
 
 	/**
 	 * Tells the global object that forwards AddReferencedObjects calls on to objects
@@ -161,7 +155,7 @@ public:
 		 */
 		AddStableNativeReferencesOnly = 1 << 1,
 	};
-	explicit FGCObject(EFlags Flags);
+	COREUOBJECT_API explicit FGCObject(EFlags Flags);
 
 	virtual ~FGCObject()
 	{
@@ -172,10 +166,10 @@ public:
 	FGCObject& operator=(FGCObject&&) {return *this;}
 
 	/** Register with GC, only needed if constructed with EFlags::RegisterLater or after unregistering */
-	void RegisterGCObject();
+	COREUOBJECT_API void RegisterGCObject();
 
 	/** Unregister ahead of destruction. Safe to call multiple times. */
-	void UnregisterGCObject();
+	COREUOBJECT_API void UnregisterGCObject();
 
 	/**
 	 * Pure virtual that must be overloaded by the inheriting class. Use this
@@ -186,10 +180,7 @@ public:
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) = 0;
 
 	/** Overload this method to report a name for your referencer */
-	virtual FString GetReferencerName() const
-	{
-		return UnknownGCObjectName;
-	}
+	virtual FString GetReferencerName() const = 0;
 
 	/** Overload this method to report how the specified object is referenced, if necessary */
 	virtual bool GetReferencerPropertyName(UObject* Object, FString& OutPropertyName) const
@@ -199,7 +190,7 @@ public:
 
 private:
 	friend UGCObjectReferencer;
-	static const TCHAR* UnknownGCObjectName;
+	static COREUOBJECT_API const TCHAR* UnknownGCObjectName;
 
 	const bool bCanMakeInitialReferences = false;
 	bool bReferenceAdded = false;	

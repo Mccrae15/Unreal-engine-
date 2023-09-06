@@ -48,6 +48,7 @@
 
 #include "Render/Viewport/IDisplayClusterViewportManager.h"
 #include "Render/Viewport/IDisplayClusterViewport.h"
+#include "Render/Viewport/RenderFrame/DisplayClusterRenderFrame.h"
 
 #include "Config/DisplayClusterConfigManager.h"
 #include "UObject/Package.h"
@@ -92,6 +93,14 @@ static FAutoConsoleVariableRef CVarDisplayClusterLumenPerView(
 	TEXT("DC.LumenPerView"),
 	GDisplayClusterLumenPerView,
 	TEXT("Separate Lumen scene cache allocated for each View.  Reduces artifacts where views affect one another, at a cost in GPU memory."),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterDebugDraw = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterDebugDraw(
+	TEXT("DC.DebugDraw"),
+	GDisplayClusterDebugDraw,
+	TEXT("Enable debug draw for nDisplay views.  Debug draw features are separately enabled, and default to off, this just provides an additional global toggle."),
 	ECVF_RenderThreadSafe
 );
 
@@ -464,15 +473,22 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 		return;
 	}
 
+	IDisplayClusterViewportManager* RenderFrameViewportManager = RenderFrame.GetViewportManager();
+	if (!RenderFrameViewportManager)
+	{
+		// skip rendering: Can't find render manager
+		return;
+	}
+
 	// Handle special viewports game-thread logic at frame begin
 	DCRenderDevice->InitializeNewFrame();
 
-	for (FDisplayClusterRenderFrame::FFrameRenderTarget& DCRenderTarget : RenderFrame.RenderTargets)
+	for (FDisplayClusterRenderFrameTarget& DCRenderTarget : RenderFrame.RenderTargets)
 	{
-		for (FDisplayClusterRenderFrame::FFrameViewFamily& DCViewFamily : DCRenderTarget.ViewFamilies)
+		for (FDisplayClusterRenderFrameTargetViewFamily& DCViewFamily : DCRenderTarget.ViewFamilies)
 		{
 			// Create the view family for rendering the world scene to the viewport's render target
-			ViewFamilies.Add(new FSceneViewFamilyContext(RenderFrame.ViewportManager->CreateViewFamilyConstructionValues(
+			ViewFamilies.Add(new FSceneViewFamilyContext(RenderFrameViewportManager->CreateViewFamilyConstructionValues(
 				DCRenderTarget,
 				MyWorld->Scene,
 				EngineShowFlags,
@@ -482,7 +498,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 			bool bIsFamilyVisible = false;
 
 			// Configure family
-			RenderFrame.ViewportManager->ConfigureViewFamily(DCRenderTarget, DCViewFamily, ViewFamily);
+			RenderFrameViewportManager->ConfigureViewFamily(DCRenderTarget, DCViewFamily, ViewFamily);
 
 #if WITH_EDITOR
 			if (GIsEditor)
@@ -536,16 +552,16 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 			FAudioDeviceHandle RetrievedAudioDevice = MyWorld->GetAudioDevice();
 			TArray<FSceneView*> Views;
 
-			for (FDisplayClusterRenderFrame::FFrameView& DCView : DCViewFamily.Views)
+			for (FDisplayClusterRenderFrameTargetView& DCView : DCViewFamily.Views)
 			{
 				const FDisplayClusterViewport_Context ViewportContext = DCView.Viewport->GetContexts()[DCView.ContextNum];
 
 				// Calculate the player's view information.
 				FVector		ViewLocation;
 				FRotator	ViewRotation;
-				FSceneView* View = LocalPlayer->CalcSceneView(&ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, ViewportContext.StereoViewIndex);
+				FSceneView* View = RenderFrameViewportManager->CalcSceneView(LocalPlayer, &ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, ViewportContext.StereoViewIndex);
 
-				if (View && !DCView.ShouldRenderSceneView())
+				if (View && !DCView.IsViewportContextCanBeRendered())
 				{
 					ViewFamily.Views.Remove(View);
 
@@ -706,7 +722,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 				}
 
 				// Set up secondary resolution fraction for the view family.
-				if (!bStereoRendering && ViewFamily.SupportsScreenPercentage())
+				if (ViewFamily.SupportsScreenPercentage())
 				{
 					float CustomSecondaryScreenPercentage = IConsoleManager::Get().FindConsoleVariable(TEXT("r.SecondaryScreenPercentage.GameViewport"), false)->GetFloat();
 					if (CustomSecondaryScreenPercentage > 0.0)
@@ -765,7 +781,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					float CustomBufferRatio = DCViewFamily.CustomBufferRatio;
 
 					float GlobalResolutionFraction = 1.0f;
-					float SecondaryScreenPercentage = 1.0f;
+					float SecondaryScreenPercentage = ViewFamily.SecondaryViewFraction;
 
 					if (ViewFamily.EngineShowFlags.ScreenPercentage)
 					{
@@ -876,12 +892,6 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 				}
 			}
 		}
-
-		for (FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
-		{
-			delete ViewFamilyContext;
-		}
-		ViewFamilies.Empty();
 	}
 	else
 	{
@@ -928,7 +938,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 		SceneCanvas->Flush_GameThread();
 
 		// After all render target rendered call nDisplay frame rendering
-		RenderFrame.ViewportManager->RenderFrame(InViewport);
+		RenderFrameViewportManager->RenderFrame(InViewport);
 
 		OnDrawn().Broadcast();
 
@@ -960,11 +970,25 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 #endif
 		}
 
+		if (GDisplayClusterDebugDraw && !ViewFamilies.IsEmpty())
+		{
+			UDebugDrawService::Draw(ViewFamilies.Last()->EngineShowFlags, InViewport, const_cast<FSceneView*>(ViewFamilies.Last()->Views[0]), DebugCanvas, DebugCanvasObject);
+		}
+
 		// Render the console absolutely last because developer input is was matter the most.
 		if (ViewportConsole)
 		{
 			ViewportConsole->PostRender_Console(DebugCanvasObject);
 		}
+	}
+
+	if (!ViewFamilies.IsEmpty())
+	{
+		for (FSceneViewFamilyContext* ViewFamilyContext : ViewFamilies)
+		{
+			delete ViewFamilyContext;
+		}
+		ViewFamilies.Empty();
 	}
 
 	OnEndDraw().Broadcast();
@@ -998,19 +1022,6 @@ bool UDisplayClusterViewportClient::Draw_PIE(FViewport* InViewport, FCanvas* Sce
 		return false;
 	}
 
-	//@todo add render mode select
-	EDisplayClusterRenderFrameMode RenderFrameMode = EDisplayClusterRenderFrameMode::Mono;
-	switch (RootActor->RenderMode)
-	{
-	case EDisplayClusterConfigurationRenderMode::SideBySide:
-		RenderFrameMode = EDisplayClusterRenderFrameMode::SideBySide;
-		break;
-	case EDisplayClusterConfigurationRenderMode::TopBottom:
-		RenderFrameMode = EDisplayClusterRenderFrameMode::TopBottom;
-		break;
-	default:
-		break;
-	}
 
 	//Get world for render
 	UWorld* const MyWorld = GetWorld();
@@ -1026,7 +1037,8 @@ bool UDisplayClusterViewportClient::Draw_PIE(FViewport* InViewport, FCanvas* Sce
 	PreviewSettings.bIsPIE = true;
 
 	// Update local node viewports (update\create\delete) and build new render frame
-	if (ViewportManager->UpdateConfiguration(RenderFrameMode, LocalNodeId, RootActor, &PreviewSettings) == false)
+	const EDisplayClusterRenderFrameMode PreviewRenderMode = RootActor->GetPreviewRenderMode();
+	if (ViewportManager->UpdateConfiguration(PreviewRenderMode, LocalNodeId, RootActor, &PreviewSettings) == false)
 	{
 		return false;
 	}

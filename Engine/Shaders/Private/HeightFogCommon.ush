@@ -4,8 +4,10 @@
 	HeightFogCommon.usf: 
 =============================================================================*/
 
+#pragma once
+
 #ifndef PERMUTATION_SUPPORT_FOG_INSCATTERING_TEXTURE
-#define PERMUTATION_SUPPORT_FOG_INSCATTERING_TEXTURE (FEATURE_LEVEL >= FEATURE_LEVEL_SM4)
+#define PERMUTATION_SUPPORT_FOG_INSCATTERING_TEXTURE 1
 #endif
 
 #ifndef PERMUTATION_SUPPORT_FOG_DIRECTIONAL_LIGHT_INSCATTERING
@@ -13,7 +15,7 @@
 #endif
 
 #ifndef PERMUTATION_SUPPORT_VOLUMETRIC_FOG
-#define PERMUTATION_SUPPORT_VOLUMETRIC_FOG (FEATURE_LEVEL >= FEATURE_LEVEL_SM4)
+#define PERMUTATION_SUPPORT_VOLUMETRIC_FOG 1
 #endif
 
 #ifndef PERMUTATION_SUPPORT_FOG_START_DISTANCE
@@ -217,7 +219,7 @@ half4 CalculateHeightFog(float3 WorldPositionRelativeToCamera)
 	ExcludeDistance = View.VolumetricFogMaxDistance * InvCosAngle;
 #endif
 
-	float4 FogInscatteringAndOpacity = GetExponentialHeightFog(WorldPositionRelativeToCamera, ExcludeDistance);
+	half4 FogInscatteringAndOpacity = GetExponentialHeightFog(WorldPositionRelativeToCamera, ExcludeDistance);
 	return FogInscatteringAndOpacity;
 }
 
@@ -274,7 +276,8 @@ float ComputeNormalizedZSliceFromDepth(float SceneDepth)
 float3 ComputeVolumeUVFromNDC(float4 NDCPosition)
 {
 	NDCPosition.xy /= NDCPosition.w;
-	return float3(NDCPosition.xy * float2(.5f, -.5f) + .5f, ComputeNormalizedZSliceFromDepth(NDCPosition.w));
+	float3 VolumeUV = float3(NDCPosition.xy * float2(.5f, -.5f) + .5f, ComputeNormalizedZSliceFromDepth(NDCPosition.w));
+	return min(VolumeUV * float3(View.VolumetricFogScreenToResourceUV.xy, 1.0), float3(View.VolumetricFogUVMax, 1.0));
 }
 float3 ComputeVolumeUV_DEPRECATED(float3 WorldPosition, float4x4 WorldToClip)
 {
@@ -285,4 +288,21 @@ float3 ComputeVolumeUV(FLWCVector3 WorldPosition, FLWCInverseMatrix WorldToClip)
 {
 	float4 NDCPosition = LWCMultiply(MakeLWCVector4(WorldPosition, 1.0f), WorldToClip);
 	return ComputeVolumeUVFromNDC(NDCPosition);
+}
+
+float3 ComputeHistoryVolumeUVFromNDC(float4 NDCPosition)
+{
+	NDCPosition.xy /= NDCPosition.w;
+	float3 VolumeUV = float3(NDCPosition.xy * float2(.5f, -.5f) + .5f, ComputeNormalizedZSliceFromDepth(NDCPosition.w));
+	return min(VolumeUV * float3(View.VolumetricFogViewGridUVToPrevViewRectUV.xy * View.VolumetricFogPrevViewGridRectUVToResourceUV.xy, 1.0), float3(View.VolumetricFogPrevUVMax, 1.0));
+}
+float3 ComputeHistoryVolumeUV_DEPRECATED(float3 WorldPosition, float4x4 WorldToClip)
+{
+	float4 NDCPosition = mul(float4(WorldPosition, 1), WorldToClip);
+	return ComputeHistoryVolumeUVFromNDC(NDCPosition);
+}
+float3 ComputeHistoryVolumeUV(FLWCVector3 WorldPosition, FLWCInverseMatrix WorldToClip)
+{
+	float4 NDCPosition = LWCMultiply(MakeLWCVector4(WorldPosition, 1.0f), WorldToClip);
+	return ComputeHistoryVolumeUVFromNDC(NDCPosition);
 }

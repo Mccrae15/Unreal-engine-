@@ -38,9 +38,19 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		virtual int32 GetOwnerLODIndex(int32 LODIndex) const override;
 		virtual bool IsValidLODIndex(int32 LODIndex) const override;
 		virtual int32 GetNumPoints(int32 LODIndex) const override;
+		virtual int32 GetNumPatternPoints(int32 LODIndex) const override;
 		virtual TConstArrayView<FVector3f> GetPositions(int32 LODIndex) const override;
+		virtual TConstArrayView<FVector2f> GetPatternPositions(int32 LODIndex) const override;
 		virtual TConstArrayView<FVector3f> GetNormals(int32 LODIndex) const override;
 		virtual TConstArrayView<uint32> GetIndices(int32 LODIndex) const override;
+		virtual TConstArrayView<uint32> GetPatternIndices(int32 LODIndex) const override;
+		virtual TConstArrayView<uint32> GetPatternToWeldedIndices(int32 LODIndex) const override;
+		virtual TArray<FName> GetWeightMapNames(int32 LODIndex) const override;
+		UE_DEPRECATED(5.3, "Use LODIndex version.")
+		virtual TArray<FName> GetWeightMapNames() const override { return GetWeightMapNames(0); }
+		virtual TMap<FString, int32> GetWeightMapIndices(int32 LODIndex) const override;
+		UE_DEPRECATED(5.3, "Use LODIndex version.")
+		virtual TMap<FString, int32> GetWeightMapIndices() const override { return GetWeightMapIndices(0); }
 		virtual TArray<TConstArrayView<FRealSingle>> GetWeightMaps(int32 LODIndex) const override;
 		virtual TArray<TConstArrayView<TTuple<int32, int32, float>>> GetTethers(int32 LODIndex, bool bUseGeodesicTethers) const override;
 		virtual int32 GetReferenceBoneIndex() const override;

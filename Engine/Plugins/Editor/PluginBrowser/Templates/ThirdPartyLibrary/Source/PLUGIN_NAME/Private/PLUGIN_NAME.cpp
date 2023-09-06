@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PLUGIN_NAME.h"
-#include "Core.h"
+#include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/Paths.h"
+#include "HAL/PlatformProcess.h"
 #include "PLUGIN_NAMELibrary/ExampleLibrary.h"
 
 #define LOCTEXT_NAMESPACE "FPLUGIN_NAMEModule"

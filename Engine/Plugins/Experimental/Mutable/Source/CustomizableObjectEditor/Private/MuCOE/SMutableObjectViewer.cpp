@@ -10,8 +10,10 @@
 #include "MuCOE/CustomizableObjectEditorStyle.h"
 #include "MuCOE/SMutableCodeViewer.h"
 #include "MuCOE/SMutableGraphViewer.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/STextComboBox.h"
+#include "Widgets/Input/SNumericDropDown.h"
 #include "Widgets/Views/STreeView.h"
 
 class FExtender;
@@ -196,7 +198,7 @@ void SMutableObjectViewer::Construct(const FArguments& InArgs, UCustomizableObje
 		.VAlign(VAlign_Fill)
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(UE_MUTABLE_GET_BRUSH("ToolPanel.GroupBorder"))
 			.Padding(FMargin(4.0f, 4.0f))
 			[
 				SAssignNew(TreeView, STreeView<TSharedPtr<FMutableObjectTreeElement>>)
@@ -213,7 +215,7 @@ void SMutableObjectViewer::Construct(const FArguments& InArgs, UCustomizableObje
 void SMutableObjectViewer::GenerateMutableGraphPressed()
 {
 	// Convert from Unreal graph to Mutable graph.
-	mu::NodePtr RootNode = Compiler.Export(CustomizableObject, CompileOptions);
+	mu::Ptr<mu::Node> RootNode = Compiler.Export(CustomizableObject, CompileOptions);
 	if (!RootNode)
 	{
 		// TODO: Show errors
@@ -244,16 +246,17 @@ void SMutableObjectViewer::CompileMutableCodePressed()
 		for (int32 Bias = 0; Bias < MaxBias; ++Bias)
 		{
 			CompileOptions.DebugBias = Bias;
-				
+
 			mu::NodePtr RootNode = Compiler.Export(CustomizableObject, CompileOptions);
 			if (!RootNode)
 			{
 				// TODO: Show errors
+				ensure(false);
 				return;
 			}
 
 			// Do the compilation to Mutable Code synchronously.
-			TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode, false));
+			TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode));
 			CompileTask->Options = CompileOptions;
 			CompileTask->Init();
 			CompileTask->Run();
@@ -266,11 +269,12 @@ void SMutableObjectViewer::CompileMutableCodePressed()
 	if (!RootNode)
 	{
 		// TODO: Show errors
+		ensure(false);
 		return;
 	}
 
 	// Do the compilation to Mutable Code synchronously.
-	TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode, false));
+	TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode));
 	CompileTask->Options = CompileOptions;
 	CompileTask->Init();
 	CompileTask->Run();
@@ -369,18 +373,21 @@ TSharedRef<SWidget> SMutableObjectViewer::GenerateCompileOptionsMenuContent()
 			;
 		MenuBuilder.AddWidget(CompileOptimizationCombo.ToSharedRef(), LOCTEXT("MutableCompileOptimizationLevel", "Optimization Level"));
 
-		// Parallel compilation
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("Generate_MutableEnableParallelCompilation", "Enable compiling in multiple threads."),
-			LOCTEXT("Generate_MutableEnableParallelCompilationTooltip", "This is faster but use more memory."),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([this]() { CompileOptions.bUseParallelCompilation = !CompileOptions.bUseParallelCompilation; }),
-				FCanExecuteAction(),
-				FIsActionChecked::CreateLambda([this]() { return CompileOptions.bUseParallelCompilation; })),
-			NAME_None,
-			EUserInterfaceActionType::ToggleButton
-		);
+		// Image tiling
+		// Unfortunately SNumericDropDown doesn't work with integers at the time of writing.
+		TArray<SNumericDropDown<float>::FNamedValue> TilingOptions;
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(0, FText::FromString(TEXT("0")), FText::FromString(TEXT("Disabled"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(64, FText::FromString(TEXT("64")), FText::FromString(TEXT("64"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(128, FText::FromString(TEXT("128")), FText::FromString(TEXT("128"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(256, FText::FromString(TEXT("256")), FText::FromString(TEXT("256"))));
+		TilingOptions.Add(SNumericDropDown<float>::FNamedValue(512, FText::FromString(TEXT("512")), FText::FromString(TEXT("512"))));
+
+		CompileTilingCombo = SNew(SNumericDropDown<float>)
+			.DropDownValues(TilingOptions)
+			.Value_Lambda( [&]() { return float(CompileOptions.ImageTiling); })
+			.OnValueChanged_Lambda( [&](float Value) { CompileOptions.ImageTiling = int32(Value); } )
+			;
+		MenuBuilder.AddWidget(CompileTilingCombo.ToSharedRef(), LOCTEXT("MutableCompileImageTiling", "Image Tiling"));
 
 		// Disk as cache
 		MenuBuilder.AddMenuEntry(

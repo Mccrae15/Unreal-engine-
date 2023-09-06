@@ -47,7 +47,7 @@ static void HairStrandsDataToEditableHairStrands(const FHairStrandsDatas& In, TA
 		const FVector3f GuideWeights = bHasValidClosestGuide ? (FVector3f)In.StrandsCurves.CurvesClosestGuideIDs[StrandsIt] : FVector3f::ZeroVector;
 
 		Out[StrandsIt].StrandID		= bHasValidStrandsIDs ? In.StrandsCurves.StrandIDs[StrandsIt] : StrandsIt;
-		Out[StrandsIt].ClumpID		= bHasValidClumpIDs ? In.StrandsCurves.ClumpIDs[StrandsIt] : 0;
+		Out[StrandsIt].ClumpID		= bHasValidClumpIDs ? In.StrandsCurves.ClumpIDs[StrandsIt].X : 0;
 		Out[StrandsIt].RootUV		= In.StrandsCurves.CurvesRootUV[StrandsIt];
 		Out[StrandsIt].GuideIDs[0]  = GuideIDs.X;
 		Out[StrandsIt].GuideIDs[1]  = GuideIDs.Y;
@@ -65,7 +65,7 @@ static void HairStrandsDataToEditableHairStrands(const FHairStrandsDatas& In, TA
 			const uint32 EffectiveIndex = PointIt + PointOffset;
 			Out[StrandsIt].ControlPoints[PointIt].Position	= In.StrandsPoints.PointsPosition[EffectiveIndex];
 			Out[StrandsIt].ControlPoints[PointIt].U			= In.StrandsPoints.PointsCoordU[EffectiveIndex];
-			Out[StrandsIt].ControlPoints[PointIt].Radius	= In.StrandsPoints.PointsRadius[EffectiveIndex] * In.StrandsCurves.MaxRadius;
+			Out[StrandsIt].ControlPoints[PointIt].Radius	= In.StrandsPoints.PointsRadius[EffectiveIndex];
 			Out[StrandsIt].ControlPoints[PointIt].BaseColor	= In.StrandsPoints.PointsBaseColor[EffectiveIndex];
 			Out[StrandsIt].ControlPoints[PointIt].Roughness	= In.StrandsPoints.PointsRoughness[EffectiveIndex];
 			Out[StrandsIt].ControlPoints[PointIt].AO		= In.StrandsPoints.PointsAO[EffectiveIndex];
@@ -166,7 +166,7 @@ void ConvertFromGroomAsset(UGroomAsset* InGroom, FEditableGroom* OutGroom)
 		FHairGroupInfo GroupInfo;
 		FHairStrandsDatas StrandsData;
 		FHairStrandsDatas GuidesData;
-		FGroomBuilder::BuildData(HairDescriptionGroups.HairGroups[GroupIndex], In.HairGroupsInterpolation[GroupIndex], GroupInfo, StrandsData, GuidesData);
+		FGroomBuilder::BuildData(HairDescriptionGroups.HairGroups[GroupIndex], In.GetHairGroupsInterpolation()[GroupIndex], GroupInfo, StrandsData, GuidesData);
 
 		Out.Groups[GroupIndex].GroupID = GroupInfo.GroupID;
 		Out.Groups[GroupIndex].GroupName = GroupInfo.GroupName;

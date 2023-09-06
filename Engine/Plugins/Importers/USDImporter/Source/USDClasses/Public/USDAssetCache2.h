@@ -47,7 +47,7 @@ public:
 
 	/**
 	 * Returns true if the asset with the given hash can be removed from the cache. It will return false in case the
-	 * asset is still being used, either by another dependent asset or directly by some referencer.
+	 * asset is still being used, either by another consumer asset or directly by some referencer.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Caching", meta = (CallInEditor = "true"))
 	bool CanRemoveAsset(const FString& Hash);
@@ -69,6 +69,13 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Caching", meta = (CallInEditor = "true"))
 	UObject* GetCachedAsset(const FString& Hash);
+
+	/**
+	 * Marks the provided asset as being used at this point, optionally adding a specific referencer.
+	 * This is useful because the asset cache will always prioritize retaining the most recently used assets
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Caching", meta = (CallInEditor = "true"))
+	bool TouchAsset(const UObject* Asset, const UObject* Referencer = nullptr);
 
 	/**
 	 * Adds a new UObject referencer to a particular asset, returning true if the operation succeeded.
@@ -170,6 +177,8 @@ private:
 	// Tries unloading unreferenced, persistent assets back to bulkdata on disk if we can
 	bool TryUnloadAsset(FCachedAssetInfo& InOutInfo);
 	bool IsAssetOwnedByCacheInternal(const FString& AssetPath) const;
+	bool AddAssetReferenceInternal(const UObject* Asset, const UObject* Referencer);
+	void TouchAssetInternal(const UObject* Asset, const UObject* Referencer = nullptr);
 
 private:
 	friend struct FUsdScopedAssetCacheReferencer;
@@ -208,7 +217,7 @@ private:
 		uint64 SizeOnDiskInBytes = 0;
 		uint64 SizeOnMemoryInBytes = 0;
 		TSet<FSoftObjectPath> Dependencies;
-		TSet<FSoftObjectPath> Dependents;
+		TSet<FSoftObjectPath> Consumers;
 
 		// Transient stuff
 		ECacheStorageType CurrentStorageType = ECacheStorageType::None;  // Only used internally during RefreshStorage()

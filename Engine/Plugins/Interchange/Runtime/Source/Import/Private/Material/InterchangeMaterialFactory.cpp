@@ -9,6 +9,7 @@
 #include "InterchangeSourceData.h"
 #include "InterchangeTextureNode.h"
 #include "InterchangeTextureFactoryNode.h"
+#include "InterchangeTranslatorBase.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionClearCoatNormalCustomOutput.h"
@@ -83,7 +84,7 @@ namespace UE
 				{
 					int32 ExpressionInputIndex = 0;
 
-					for (const FExpressionInput* ExpressionInput : MaterialExpression.GetInputs())
+					for (const FExpressionInput* ExpressionInput : MaterialExpression.GetInputsView())
 					{
 						// MaterialFuncCall appends the type to the input name when calling GetInputName
 						// and the InputName in FExpressionInput is optional so we'll check both here to be safe
@@ -101,7 +102,17 @@ namespace UE
 
 				int32 GetOutputIndex(UMaterialExpression& MaterialExpression, const FString& OutputName)
 				{
-					int32 ExpressionOutputIndex = 0;
+					// Check whether OutputName stores an index
+					int32 ExpressionOutputIndex = UInterchangeShaderPortsAPI::GetOutputIndexFromName(OutputName);
+					if (ExpressionOutputIndex != INDEX_NONE)
+					{
+						if (MaterialExpression.GetOutputs().IsValidIndex(ExpressionOutputIndex))
+						{
+							return ExpressionOutputIndex;
+						}
+					}
+
+					ExpressionOutputIndex = 0;
 
 					for (const FExpressionOutput& ExpressionOutput : MaterialExpression.GetOutputs())
 					{
@@ -331,6 +342,119 @@ namespace UE
 					TMap<FString, UMaterialExpression*> Expressions;
 				};
 #endif // #if WITH_EDITOR
+
+				void UpdateParameterBool(UMaterialInstance& MaterialInstance, const FString& InputName, const UInterchangeMaterialInstanceFactoryNode& FactoryNode)
+				{
+#if WITH_EDITORONLY_DATA
+					const FName ParameterName = *InputName;
+					bool bInstanceValue;
+					FGuid Uid;
+					if (MaterialInstance.GetStaticSwitchParameterValue(ParameterName, bInstanceValue, Uid))
+					{
+						bool bInputValue = false;
+						FactoryNode.GetBooleanAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), bInputValue);
+
+						if (bInputValue != bInstanceValue)
+						{
+							if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(&MaterialInstance))
+							{
+								MaterialInstanceConstant->SetStaticSwitchParameterValueEditorOnly(ParameterName, bInputValue);
+							}
+						}
+					}
+#endif // #if WITH_EDITORONLY_DATA
+				}
+
+				void UpdateParameterFloat(UMaterialInstance& MaterialInstance, const FString& InputName, const UInterchangeMaterialInstanceFactoryNode& FactoryNode)
+				{
+					const FName ParameterName = *InputName;
+					float InstanceValue;
+
+					if (MaterialInstance.GetScalarParameterValue(ParameterName, InstanceValue))
+					{
+						float InputValue = 0.f;
+						FactoryNode.GetFloatAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), InputValue);
+
+						if (!FMath::IsNearlyEqual(InputValue, InstanceValue))
+						{
+#if WITH_EDITOR
+							if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(&MaterialInstance))
+							{
+								MaterialInstanceConstant->SetScalarParameterValueEditorOnly(ParameterName, InputValue);
+							}
+							else
+#endif // #if WITH_EDITOR
+							if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(&MaterialInstance))
+							{
+								MaterialInstanceDynamic->SetScalarParameterValue(ParameterName, InputValue);
+							}
+						}
+					}
+				}
+
+				void UpdateParameterLinearColor(UMaterialInstance& MaterialInstance, const FString& InputName, const UInterchangeMaterialInstanceFactoryNode& FactoryNode)
+				{
+					const FName ParameterName = *InputName;
+					FLinearColor InstanceValue;
+
+					if (MaterialInstance.GetVectorParameterValue(ParameterName, InstanceValue))
+					{
+						FLinearColor InputValue;
+						if (FactoryNode.GetLinearColorAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), InputValue))
+						{
+							if (!InputValue.Equals(InstanceValue))
+							{
+#if WITH_EDITOR
+								if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(&MaterialInstance))
+								{
+									MaterialInstanceConstant->SetVectorParameterValueEditorOnly(ParameterName, InputValue);
+								}
+								else
+#endif // #if WITH_EDITOR
+								if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(&MaterialInstance))
+								{
+									MaterialInstanceDynamic->SetVectorParameterValue(ParameterName, InputValue);
+								}
+							}
+						}
+					}
+				}
+
+				void UpdateParameterTexture(UMaterialInstance& MaterialInstance, const FString& InputName, const UInterchangeMaterialInstanceFactoryNode& FactoryNode, const UInterchangeBaseNodeContainer& NodeContainer)
+				{
+					const FName ParameterName = *InputName;
+					UTexture* InstanceValue;
+
+					if (MaterialInstance.GetTextureParameterValue(ParameterName, InstanceValue))
+					{
+						FString InputValue;
+						if (FactoryNode.GetStringAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), InputValue))
+						{
+							if (const UInterchangeTextureFactoryNode* TextureFactoryNode = Cast<UInterchangeTextureFactoryNode>(NodeContainer.GetNode(InputValue)))
+							{
+								FSoftObjectPath ReferenceObject;
+								TextureFactoryNode->GetCustomReferenceObject(ReferenceObject);
+								if (UTexture* InputTexture = Cast<UTexture>(ReferenceObject.TryLoad()))
+								{
+									if (InputTexture != InstanceValue)
+									{
+#if WITH_EDITOR
+										if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(&MaterialInstance))
+										{
+											MaterialInstanceConstant->SetTextureParameterValueEditorOnly(ParameterName, InputTexture);
+										}
+										else
+#endif // #if WITH_EDITOR
+										if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(&MaterialInstance))
+										{
+											MaterialInstanceDynamic->SetTextureParameterValue(ParameterName, InputTexture);
+										}
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -341,17 +465,20 @@ UClass* UInterchangeMaterialFactory::GetFactoryClass() const
 	return UMaterialInterface::StaticClass();
 }
 
-UObject* UInterchangeMaterialFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeMaterialFactory::BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
 	UObject* Material = nullptr;
 
-	auto CouldNotCreateMaterialLog = [this, &Arguments](const FText& Info)
+	auto CouldNotCreateMaterialLog = [this, &Arguments, &ImportAssetResult](const FText& Info)
 	{
 		UInterchangeResultError_Generic* Message = AddMessage<UInterchangeResultError_Generic>();
 		Message->SourceAssetName = Arguments.SourceData->GetFilename();
 		Message->DestinationAssetName = Arguments.AssetName;
 		Message->AssetType = GetFactoryClass();
 		Message->Text = FText::Format(LOCTEXT("MatFactory_CouldNotCreateMat", "Could not create Material asset %s. Reason: %s"), FText::FromString(Arguments.AssetName), Info);
+		bSkipImport = true;
+		ImportAssetResult.bIsFactorySkipAsset = true;
 	};
 	
 	const FText MissMatchClassText = LOCTEXT("MatFactory_CouldNotCreateMat_MissMatchClass", "Missmatch between interchange material factory node class and factory class.");
@@ -359,25 +486,34 @@ UObject* UInterchangeMaterialFactory::ImportAssetObject_GameThread(const FImport
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
 		CouldNotCreateMaterialLog(MissMatchClassText);
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.AssetNode);
 	if (MaterialFactoryNode == nullptr)
 	{
 		CouldNotCreateMaterialLog(LOCTEXT("MatFactory_CouldNotCreateMat_CannotCastFactoryNode", "Cannot cast interchange factory node to UInterchangeBaseMaterialFactoryNode."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UClass* MaterialClass = MaterialFactoryNode->GetObjectClass();
 	if (!ensure(MaterialClass && MaterialClass->IsChildOf(GetFactoryClass())))
 	{
 		CouldNotCreateMaterialLog(MissMatchClassText);
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+	const bool bIsReimport = Arguments.ReimportObject != nullptr;
+
+	UObject* ExistingAsset = Arguments.ReimportObject;
+	if (!ExistingAsset)
+	{
+		FSoftObjectPath ReferenceObject;
+		if (MaterialFactoryNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ExistingAsset = ReferenceObject.TryLoad();
+		}
+	}
 
 	// create a new material or overwrite existing asset, if possible
 	if (!ExistingAsset)
@@ -403,126 +539,164 @@ UObject* UInterchangeMaterialFactory::ImportAssetObject_GameThread(const FImport
 	{
 		//This is a reimport, we are just re-updating the source data
 		Material = ExistingAsset;
+		//We allow override of existing materials only if the translator is a pure material translator or the user directly ask to re-import this object
+		if (!bIsReimport && Arguments.Translator->GetSupportedAssetTypes() != EInterchangeTranslatorAssetType::Materials)
+		{
+			//Do not override the material asset
+			ImportAssetResult.bIsFactorySkipAsset = true;
+			bSkipImport = true;
+		}
 	}
 
 	if (!Material)
 	{
 		CouldNotCreateMaterialLog(LOCTEXT("MatFactory_CouldNotCreateMat_MaterialCreationFail", "Material creation fail."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 #if WITH_EDITOR
-	Material->PreEditChange(nullptr);
-
-	if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(Material))
+	if (!bSkipImport)
 	{
-		if (const UInterchangeMaterialInstanceFactoryNode* MaterialInstanceFactoryNode = Cast<UInterchangeMaterialInstanceFactoryNode>(MaterialFactoryNode))
-		{
-			FString ParentPath;
-			if (MaterialInstanceFactoryNode->GetCustomParent(ParentPath))
-			{
-				FSoftObjectPath ParentMaterial(ParentPath);
-				MaterialInstanceConstant->SetParentEditorOnly(Cast<UMaterialInterface>(ParentMaterial.TryLoad()));
-			}
-		}
+		Material->PreEditChange(nullptr);
 	}
 #endif //WITH_EDITOR
 
-	return Material;
+	// Setup material instance based on reimport policy if applicable
+	if (const UInterchangeMaterialInstanceFactoryNode* MaterialInstanceFactoryNode = Cast<UInterchangeMaterialInstanceFactoryNode>(MaterialFactoryNode))
+	{
+		if (UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Material))
+		{
+			const EReimportStrategyFlags ReimportStrategyFlags = MaterialFactoryNode->GetReimportStrategyFlags();
+			bool bApplyPipelineProperties = !Arguments.ReimportObject || ReimportStrategyFlags != EReimportStrategyFlags::ApplyNoProperties;
+
+#if WITH_EDITORONLY_DATA
+			// For the time being, reimport policies are only enforced on UMaterialInstanceConstant
+			if (Arguments.ReimportObject && MaterialInstance->IsA<UMaterialInstanceConstant>())
+			{
+
+				if (ReimportStrategyFlags == EReimportStrategyFlags::ApplyEditorChangedProperties)
+				{
+					if (UInterchangeAssetImportData* AssetImportData = Cast<UInterchangeAssetImportData>(MaterialInstance->AssetImportData))
+					{
+						UInterchangeMaterialInstanceFactoryNode* PreviousNode = Cast<UInterchangeMaterialInstanceFactoryNode>(AssetImportData->GetStoredFactoryNode(AssetImportData->NodeUniqueID));
+
+						if (PreviousNode)
+						{
+							FString PreviousParentPath;
+							FString ParentPath;
+							if (PreviousNode->GetCustomParent(PreviousParentPath) && MaterialInstanceFactoryNode->GetCustomParent(ParentPath))
+							{
+								if (ParentPath == PreviousParentPath)
+								{
+									SetupReimportedMaterialInstance(*MaterialInstance, *Arguments.NodeContainer, *MaterialInstanceFactoryNode, *PreviousNode);
+									bApplyPipelineProperties = false;
+								}
+							}
+						}
+					}
+				}
+			}
+#endif
+
+			if (bApplyPipelineProperties)
+			{
+#if WITH_EDITOR
+				if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(MaterialInstance))
+				{
+					FString ParentPath;
+					if (MaterialInstanceFactoryNode->GetCustomParent(ParentPath))
+					{
+						UMaterialInterface* ParentMaterial = Cast<UMaterialInterface>(FSoftObjectPath(ParentPath).TryLoad());
+						MaterialInstanceConstant->SetParentEditorOnly(ParentMaterial);
+					}
+				}
+#endif
+
+				SetupMaterialInstance(*MaterialInstance, *Arguments.NodeContainer, *MaterialInstanceFactoryNode, !Arguments.ReimportObject);
+			}
+		}
+	}
+
+	ImportAssetResult.ImportedObject = Material;
+	return ImportAssetResult;
 }
 
-UObject* UInterchangeMaterialFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeMaterialFactory::ImportAsset_Async(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
+	ImportAssetResult.bIsFactorySkipAsset = bSkipImport;
+
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.AssetNode);
 	if (MaterialFactoryNode == nullptr)
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	const UClass* MaterialClass = MaterialFactoryNode->GetObjectClass();
-	check(MaterialClass && MaterialClass->IsChildOf(GetFactoryClass()));
+	UObject* MaterialObject = UE::Interchange::FFactoryCommon::AsyncFindObject(MaterialFactoryNode, GetFactoryClass(), Arguments.Parent, Arguments.AssetName);
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
-
-	UObject* MaterialObject = nullptr;
-	// create a new material or overwrite existing asset, if possible
-	if (!ExistingAsset)
+	//Do not override an asset we skip
+	if (bSkipImport)
 	{
-		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
-		//The UObject should have been created by calling CreateEmptyAsset on the main thread.
-		if (IsInGameThread())
-		{
-			MaterialObject = NewObject<UObject>(Arguments.Parent, MaterialClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		}
-		else
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Material asset [%s] outside of the game thread"), *Arguments.AssetName);
-			return nullptr;
-		}
+		ImportAssetResult.ImportedObject = MaterialObject;
+		return ImportAssetResult;
 	}
-	else if(ExistingAsset->GetClass()->IsChildOf(MaterialClass))
-	{
-		//This is a reimport, we are just re-updating the source data
-		MaterialObject = ExistingAsset;
-	}
+	const bool bReimport = Arguments.ReimportObject && MaterialObject;
 
 	if (!MaterialObject)
 	{
-		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create Material asset %s"), *Arguments.AssetName);
-		return nullptr;
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not import the Material asset %s, because the asset do not exist."), *Arguments.AssetName);
+		return ImportAssetResult;
 	}
 
-	if (MaterialObject)
+	UMaterialInterface* MaterialInterface = Cast<UMaterialInterface>(MaterialObject);
+	if (!ensure(MaterialInterface))
 	{
-		//Currently material re-import will not touch the material at all
-		//TODO design a re-import process for the material (expressions and input connections)
-		if(!Arguments.ReimportObject)
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not cast to Material asset %s"), *Arguments.AssetName);
+		return ImportAssetResult;
+	}
+
+	// Currently re-import of UMaterial will not touch the material at all
+	//TODO: Design a re-import process for the material (expressions and input connections)
+	if(!Arguments.ReimportObject)
+	{
+		if (MaterialInterface)
 		{
-			if (UMaterialInterface* MaterialInterface = Cast<UMaterialInterface>(MaterialObject))
-			{
 #if WITH_EDITOR
-				if (UMaterial* Material = Cast<UMaterial>(MaterialObject))
-				{
-					SetupMaterial(Material, Arguments, MaterialFactoryNode);
-				}
+			if (UMaterial* Material = Cast<UMaterial>(MaterialObject))
+			{
+				SetupMaterial(Material, Arguments, MaterialFactoryNode);
+			}
 #endif // #if WITH_EDITOR
 
-				MaterialFactoryNode->ApplyAllCustomAttributeToObject(MaterialObject);
-			}
+			MaterialFactoryNode->ApplyAllCustomAttributeToObject(MaterialObject);
 		}
+	}
 #if WITH_EDITORONLY_DATA
-		else
+	else if(UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(MaterialObject))
+	{
+		//Apply the re import strategy 
+		UInterchangeAssetImportData* InterchangeAssetImportData = Cast<UInterchangeAssetImportData>(MaterialInstance->AssetImportData);
+		UInterchangeFactoryBaseNode* PreviousNode = nullptr;
+		if(InterchangeAssetImportData)
 		{
-			if(UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(MaterialObject))
-			{
-				//Apply the re import strategy 
-				UInterchangeAssetImportData* InterchangeAssetImportData = Cast<UInterchangeAssetImportData>(MaterialInstance->AssetImportData);
-				UInterchangeFactoryBaseNode* PreviousNode = nullptr;
-				if(InterchangeAssetImportData)
-				{
-					PreviousNode = InterchangeAssetImportData->NodeContainer->GetFactoryNode(InterchangeAssetImportData->NodeUniqueID);
-				}
-				UInterchangeFactoryBaseNode* CurrentNode = NewObject<UInterchangeMaterialFactoryNode>(GetTransientPackage());
-				UInterchangeBaseNode::CopyStorage(MaterialFactoryNode, CurrentNode);
-				CurrentNode->FillAllCustomAttributeFromObject(MaterialInstance);
-				UE::Interchange::FFactoryCommon::ApplyReimportStrategyToAsset(MaterialInstance, PreviousNode, CurrentNode, MaterialFactoryNode);
-			}
+			PreviousNode = InterchangeAssetImportData->GetStoredFactoryNode(InterchangeAssetImportData->NodeUniqueID);
 		}
+		UInterchangeFactoryBaseNode* CurrentNode = NewObject<UInterchangeMaterialFactoryNode>(GetTransientPackage());
+		UInterchangeBaseNode::CopyStorage(MaterialFactoryNode, CurrentNode);
+		CurrentNode->FillAllCustomAttributeFromObject(MaterialInstance);
+		UE::Interchange::FFactoryCommon::ApplyReimportStrategyToAsset(MaterialInstance, PreviousNode, CurrentNode, MaterialFactoryNode);
+	}
 #endif // #if WITH_EDITORONLY_DATA
 
-		//Getting the file Hash will cache it into the source data
-		Arguments.SourceData->GetFileContentHash();
+	//Getting the file Hash will cache it into the source data
+	Arguments.SourceData->GetFileContentHash();
 
-		//The interchange completion task (call in the GameThread after the factories pass), will call PostEditChange which will trig another asynchronous system that will build all material in parallel
-	}
-
-	return MaterialObject;
+	return ImportAssetResult;
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
@@ -530,6 +704,11 @@ void UInterchangeMaterialFactory::SetupObject_GameThread(const FSetupObjectParam
 {
 	check(IsInGameThread());
 	Super::SetupObject_GameThread(Arguments);
+
+	if (bSkipImport)
+	{
+		return;
+	}
 
 	if (ensure(Arguments.ImportedObject && Arguments.SourceData))
 	{
@@ -548,13 +727,7 @@ void UInterchangeMaterialFactory::SetupObject_GameThread(const FSetupObjectParam
 				}
 			}
 		}
-		else
 #endif // WITH_EDITOR
-		if (UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(ImportedMaterialInterface))
-		{
-			// Material instances expect their parameters to only be updated from the game thread
-			SetupMaterialInstance(MaterialInstance, Arguments.NodeContainer, Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.FactoryNode));
-		}
 
 #if WITH_EDITORONLY_DATA
 		UE::Interchange::FFactoryCommon::FUpdateImportAssetDataParameters UpdateImportAssetDataParameters(ImportedMaterialInterface
@@ -600,6 +773,13 @@ void UInterchangeMaterialFactory::SetupMaterial(UMaterial* Material, const FImpo
 	using namespace UE::Interchange::MaterialFactory::Internal;
 
 	const UInterchangeMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeMaterialFactoryNode>(BaseMaterialFactoryNode);
+
+	{//Screen Space Reflections:
+		if (bool bScreenSpaceReflections; MaterialFactoryNode->GetCustomScreenSpaceReflections(bScreenSpaceReflections))
+		{
+			Material->bScreenSpaceReflections = bScreenSpaceReflections;
+		}
+	}
 
 	FMaterialExpressionBuilder Builder(Material, nullptr, Arguments);
 
@@ -1038,125 +1218,150 @@ void UInterchangeMaterialFactory::SetupMaterial(UMaterial* Material, const FImpo
 }
 #endif // #if WITH_EDITOR
 
-void UInterchangeMaterialFactory::SetupMaterialInstance(UMaterialInstance* MaterialInstance, const UInterchangeBaseNodeContainer* NodeContainer, const UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode)
+void UInterchangeMaterialFactory::SetupMaterialInstance(UMaterialInstance& MaterialInstance, const UInterchangeBaseNodeContainer& NodeContainer, const UInterchangeMaterialInstanceFactoryNode& FactoryNode, bool bResetInstance)
 {
-	if (!MaterialFactoryNode || !NodeContainer)
+	using namespace UE::Interchange::MaterialFactory::Internal;
+
+	if (bResetInstance)
 	{
-		return;
+		// Clear all material instance's parameters before applying new ones
+#if WITH_EDITOR
+		if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(&MaterialInstance))
+		{
+			MaterialInstanceConstant->ClearParameterValuesEditorOnly();
+		}
+		else
+#endif
+		if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(&MaterialInstance))
+		{
+			MaterialInstanceDynamic->ClearParameterValues();
+		}
 	}
 
 	TArray<FString> Inputs;
-	UInterchangeShaderPortsAPI::GatherInputs(MaterialFactoryNode, Inputs);
+	UInterchangeShaderPortsAPI::GatherInputs(&FactoryNode, Inputs);
 
 	for (const FString& InputName : Inputs)
 	{
 		const FName ParameterName = *InputName;
 
-		switch(UInterchangeShaderPortsAPI::GetInputType(MaterialFactoryNode, InputName))
+		switch(UInterchangeShaderPortsAPI::GetInputType(&FactoryNode, InputName))
+		{
+		case UE::Interchange::EAttributeTypes::Bool:
+			UpdateParameterBool(MaterialInstance, InputName, FactoryNode);
+		    break;
+		case UE::Interchange::EAttributeTypes::Float:
+			UpdateParameterFloat(MaterialInstance, InputName, FactoryNode);
+			break;
+		case UE::Interchange::EAttributeTypes::LinearColor:
+			UpdateParameterLinearColor(MaterialInstance, InputName, FactoryNode);
+			break;
+		case UE::Interchange::EAttributeTypes::String:
+			UpdateParameterTexture(MaterialInstance, InputName, FactoryNode, NodeContainer);
+			break;
+		}
+	}
+}
+
+void UInterchangeMaterialFactory::SetupReimportedMaterialInstance(UMaterialInstance& MaterialInstance, const UInterchangeBaseNodeContainer& NodeContainer, const UInterchangeMaterialInstanceFactoryNode& FactoryNode, const UInterchangeMaterialInstanceFactoryNode& PreviousFactoryNode)
+{
+	using namespace UE::Interchange::MaterialFactory::Internal;
+
+	auto ValidateBool = [&](const FString& InputName) -> bool
+	{
+
+		return true;
+	};
+
+	TArray<FString> Inputs;
+	UInterchangeShaderPortsAPI::GatherInputs(&FactoryNode, Inputs);
+
+	for (const FString& InputName : Inputs)
+	{
+		const FString ParameterName = *InputName;
+		const FString AttributKey = UInterchangeShaderPortsAPI::MakeInputValueKey(InputName);
+
+		FGuid Uid;
+		switch (UInterchangeShaderPortsAPI::GetInputType(&FactoryNode, InputName))
 		{
 #if WITH_EDITORONLY_DATA
 		case UE::Interchange::EAttributeTypes::Bool:
-		    {
+			{
 				bool bInstanceValue;
-				FGuid Uid;
-				if(MaterialInstance->GetStaticSwitchParameterValue(ParameterName, bInstanceValue, Uid))
+				if (MaterialInstance.GetStaticSwitchParameterValue(*InputName, bInstanceValue, Uid))
 				{
-					bool bInputValue = false;
-					MaterialFactoryNode->GetBooleanAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), bInputValue);
-
-					if(bInputValue != bInstanceValue)
+					bool bPreviousInputValue = false;
+					if (!PreviousFactoryNode.GetBooleanAttribute(AttributKey, bPreviousInputValue))
 					{
-						if(UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(MaterialInstance))
-						{
-							MaterialInstanceConstant->SetStaticSwitchParameterValueEditorOnly(ParameterName, bInputValue);
-						}
+						bPreviousInputValue = bInstanceValue;
+					}
+
+					bool bInputValue = false;
+					FactoryNode.GetBooleanAttribute(AttributKey, bInputValue);
+
+					if (bInstanceValue == bPreviousInputValue)
+					{
+						UpdateParameterBool(MaterialInstance, InputName, FactoryNode);
 					}
 				}
-		    }
-		    break;
-#endif // #if WITH_EDITORONLY_DATA
+			}
+			break;
+#endif
 		case UE::Interchange::EAttributeTypes::Float:
 			{
-				float InstanceValue;
-				if (MaterialInstance->GetScalarParameterValue(ParameterName, InstanceValue))
+				bool bUpdateParameter = true;
+				float PreviousValue;
+				if (PreviousFactoryNode.GetFloatAttribute(AttributKey, PreviousValue))
 				{
-					float InputValue = 0.f;
-					MaterialFactoryNode->GetFloatAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), InputValue);
-
-					if ( !FMath::IsNearlyEqual(InputValue, InstanceValue) )
+					float CurrentValue;
+					if (MaterialInstance.GetScalarParameterValue(*InputName, CurrentValue))
 					{
-#if WITH_EDITOR
-						if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(MaterialInstance))
-						{
-							MaterialInstanceConstant->SetScalarParameterValueEditorOnly(ParameterName, InputValue);
-						}
-						else
-#endif // #if WITH_EDITOR
-						if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(MaterialInstance))
-						{
-							MaterialInstanceDynamic->SetScalarParameterValue(ParameterName, InputValue);
-						}
+						bUpdateParameter = FMath::IsNearlyEqual(PreviousValue, CurrentValue);
 					}
+				}
+
+				if(bUpdateParameter)
+				{
+					UpdateParameterFloat(MaterialInstance, InputName, FactoryNode);
 				}
 			}
 			break;
 		case UE::Interchange::EAttributeTypes::LinearColor:
 			{
-				FLinearColor InstanceValue;
-				if (MaterialInstance->GetVectorParameterValue(ParameterName, InstanceValue))
+				bool bUpdateParameter = true;
+				FLinearColor PreviousValue;
+				if (PreviousFactoryNode.GetLinearColorAttribute(AttributKey, PreviousValue))
 				{
-					FLinearColor InputValue;
-					if (MaterialFactoryNode->GetLinearColorAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), InputValue))
+					FLinearColor CurrentValue;
+					if (MaterialInstance.GetVectorParameterValue(*InputName, CurrentValue))
 					{
-						if ( !InputValue.Equals(InstanceValue) )
-						{
-#if WITH_EDITOR
-							if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(MaterialInstance))
-							{
-								MaterialInstanceConstant->SetVectorParameterValueEditorOnly(ParameterName, InputValue);
-							}
-							else
-#endif // #if WITH_EDITOR
-							if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(MaterialInstance))
-							{
-								MaterialInstanceDynamic->SetVectorParameterValue(ParameterName, InputValue);
-							}
-						}
+						bUpdateParameter = PreviousValue.Equals(CurrentValue);
 					}
+				}
+
+				if (bUpdateParameter)
+				{
+					UpdateParameterLinearColor(MaterialInstance, InputName, FactoryNode);
 				}
 			}
 			break;
 		case UE::Interchange::EAttributeTypes::String:
 			{
-				UTexture* InstanceValue;
-				if (MaterialInstance->GetTextureParameterValue(ParameterName, InstanceValue))
+				bool bUpdateParameter = true;
+				FString PreviousValue;
+				if (PreviousFactoryNode.GetStringAttribute(AttributKey, PreviousValue))
 				{
-					FString InputValue;
-					if (MaterialFactoryNode->GetStringAttribute(UInterchangeShaderPortsAPI::MakeInputValueKey(InputName), InputValue))
+					UTexture* CurrentValue;
+					if (MaterialInstance.GetTextureParameterValue(*InputName, CurrentValue))
 					{
-						if (const UInterchangeTextureFactoryNode* TextureFactoryNode = Cast<UInterchangeTextureFactoryNode>(NodeContainer->GetNode(InputValue)))
-						{
-							FSoftObjectPath ReferenceObject;
-							TextureFactoryNode->GetCustomReferenceObject(ReferenceObject);
-							if (UTexture* InputTexture = Cast<UTexture>(ReferenceObject.TryLoad()))
-							{
-								if ( InputTexture != InstanceValue )
-								{
-#if WITH_EDITOR
-									if (UMaterialInstanceConstant* MaterialInstanceConstant = Cast<UMaterialInstanceConstant>(MaterialInstance))
-									{
-										MaterialInstanceConstant->SetTextureParameterValueEditorOnly(ParameterName, InputTexture);
-									}
-									else
-#endif // #if WITH_EDITOR
-									if (UMaterialInstanceDynamic* MaterialInstanceDynamic = Cast<UMaterialInstanceDynamic>(MaterialInstance))
-									{
-										MaterialInstanceDynamic->SetTextureParameterValue(ParameterName, InputTexture);
-									}
-								}
-							}
-						}
+						FSoftObjectPath PreviousObjectPath(PreviousValue);
+						bUpdateParameter = PreviousObjectPath == FSoftObjectPath(CurrentValue);
 					}
+				}
+
+				if (bUpdateParameter)
+				{
+					UpdateParameterTexture(MaterialInstance, InputName, FactoryNode, NodeContainer);
 				}
 			}
 			break;
@@ -1169,17 +1374,20 @@ UClass* UInterchangeMaterialFunctionFactory::GetFactoryClass() const
 	return UMaterialFunctionInterface::StaticClass();
 }
 
-UObject* UInterchangeMaterialFunctionFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeMaterialFunctionFactory::BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
 	UObject* Material = nullptr;
 
-	auto CouldNotCreateMaterialLog = [this, &Arguments](const FText& Info)
+	auto CouldNotCreateMaterialLog = [this, &Arguments, &ImportAssetResult](const FText& Info)
 	{
 		UInterchangeResultError_Generic* Message = AddMessage<UInterchangeResultError_Generic>();
 		Message->SourceAssetName = Arguments.SourceData->GetFilename();
 		Message->DestinationAssetName = Arguments.AssetName;
 		Message->AssetType = GetFactoryClass();
 		Message->Text = FText::Format(LOCTEXT("MatFunc_CouldNotCreateMat", "Could not create Material asset %s. Reason: %s"), FText::FromString(Arguments.AssetName), Info);
+		bSkipImport = true;
+		ImportAssetResult.bIsFactorySkipAsset = true;
 	};
 
 	const FText MissMatchClassText = LOCTEXT("MatFunc_CouldNotCreateMat_MissMatchClass", "Missmatch between interchange material factory node class and factory class.");
@@ -1187,25 +1395,34 @@ UObject* UInterchangeMaterialFunctionFactory::ImportAssetObject_GameThread(const
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
 		CouldNotCreateMaterialLog(MissMatchClassText);
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UInterchangeMaterialFunctionFactoryNode* MaterialFactoryNode = Cast<UInterchangeMaterialFunctionFactoryNode>(Arguments.AssetNode);
 	if (!ensure(MaterialFactoryNode))
 	{
 		CouldNotCreateMaterialLog(LOCTEXT("MatFunc_CouldNotCreateMat_CannotCastFactoryNode", "Cannot cast interchange factory node to UInterchangeBaseMaterialFactoryNode."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UClass* MaterialClass = MaterialFactoryNode->GetObjectClass();
 	if (!ensure(MaterialClass && MaterialClass->IsChildOf(GetFactoryClass())))
 	{
 		CouldNotCreateMaterialLog(MissMatchClassText);
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+	const bool bIsReimport = Arguments.ReimportObject != nullptr;
+
+	UObject* ExistingAsset = Arguments.ReimportObject;
+	if (!ExistingAsset)
+	{
+		FSoftObjectPath ReferenceObject;
+		if (MaterialFactoryNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ExistingAsset = ReferenceObject.TryLoad();
+		}
+	}
 
 	// create a new material or overwrite existing asset, if possible
 	if (!ExistingAsset)
@@ -1216,97 +1433,95 @@ UObject* UInterchangeMaterialFunctionFactory::ImportAssetObject_GameThread(const
 	{
 		//This is a reimport, we are just re-updating the source data
 		Material = ExistingAsset;
+		//We allow override of existing materials only if the translator is a pure material translator
+		if (!bIsReimport && Arguments.Translator->GetSupportedAssetTypes() != EInterchangeTranslatorAssetType::Materials)
+		{
+			//Do not override the asset
+			bSkipImport = true;
+			ImportAssetResult.bIsFactorySkipAsset = bSkipImport;
+		}
 	}
 
 	if (!Material)
 	{
 		CouldNotCreateMaterialLog(LOCTEXT("MatFunc_CouldNotCreateMat_MaterialCreationFail", "Material creation fail."));
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 #if WITH_EDITOR
-	Material->PreEditChange(nullptr);
+	if (!bSkipImport)
+	{
+		Material->PreEditChange(nullptr);
+	}
 #endif //WITH_EDITOR
 
-	return Material;
+	ImportAssetResult.ImportedObject = Material;
+	return ImportAssetResult;
 }
 
-UObject* UInterchangeMaterialFunctionFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeMaterialFunctionFactory::ImportAsset_Async(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
+	ImportAssetResult.bIsFactorySkipAsset = bSkipImport;
+
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	const UInterchangeMaterialFunctionFactoryNode* MaterialFactoryNode = Cast<UInterchangeMaterialFunctionFactoryNode>(Arguments.AssetNode);
 	if (!ensure(MaterialFactoryNode))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	const UClass* MaterialClass = MaterialFactoryNode->GetObjectClass();
-	check(MaterialClass && MaterialClass->IsChildOf(GetFactoryClass()));
+	UObject* MaterialObject = UE::Interchange::FFactoryCommon::AsyncFindObject(Arguments.AssetNode, GetFactoryClass(), Arguments.Parent, Arguments.AssetName);
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
-
-	UObject* MaterialObject = nullptr;
-	// create a new material or overwrite existing asset, if possible
-	if (!ExistingAsset)
+	//Do not override an asset we skip
+	if (bSkipImport)
 	{
-		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
-		//The UObject should have been created by calling CreateEmptyAsset on the main thread.
-		if (IsInGameThread())
-		{
-			MaterialObject = NewObject<UObject>(Arguments.Parent, MaterialClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		}
-		else
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Material asset [%s] outside of the game thread"), *Arguments.AssetName);
-			return nullptr;
-		}
+		ImportAssetResult.ImportedObject = MaterialObject;
+		return ImportAssetResult;
 	}
-	else if (ExistingAsset->GetClass()->IsChildOf(MaterialClass))
-	{
-		//This is a reimport, we are just re-updating the source data
-		MaterialObject = ExistingAsset;
-	}
+
+	const bool bReimport = Arguments.ReimportObject && MaterialObject;
 
 	if (!MaterialObject)
 	{
-		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create Material asset %s"), *Arguments.AssetName);
-		return nullptr;
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not import the Material asset %s, because the asset do not exist."), *Arguments.AssetName);
+		return ImportAssetResult;
 	}
 
-	if (MaterialObject)
+	//Currently material re-import will not touch the material at all
+	//TODO design a re-import process for the material (expressions and input connections)
+	if (!Arguments.ReimportObject)
 	{
-		//Currently material re-import will not touch the material at all
-		//TODO design a re-import process for the material (expressions and input connections)
-		if (!Arguments.ReimportObject)
+		if (UMaterialFunction* MaterialFunction = Cast<UMaterialFunction>(MaterialObject))
 		{
-			if (UMaterialFunction* MaterialFunction = Cast<UMaterialFunction>(MaterialObject))
-			{
 #if WITH_EDITOR
-				SetupMaterial(MaterialFunction, Arguments, MaterialFactoryNode);
+			SetupMaterial(MaterialFunction, Arguments, MaterialFactoryNode);
 #endif // #if WITH_EDITOR
 
-				MaterialFactoryNode->ApplyAllCustomAttributeToObject(MaterialObject);
-			}
+			MaterialFactoryNode->ApplyAllCustomAttributeToObject(MaterialObject);
 		}
-
-		//Getting the file Hash will cache it into the source data
-		Arguments.SourceData->GetFileContentHash();
-
-		//The interchange completion task (call in the GameThread after the factories pass), will call PostEditChange which will trig another asynchronous system that will build all material in parallel
 	}
 
-	return MaterialObject;
+	//Getting the file Hash will cache it into the source data
+	Arguments.SourceData->GetFileContentHash();
+
+	ImportAssetResult.ImportedObject = MaterialObject;
+	return ImportAssetResult;
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
 void UInterchangeMaterialFunctionFactory::SetupObject_GameThread(const FSetupObjectParams& Arguments)
 {
 	Super::SetupObject_GameThread(Arguments);
+
+	if (bSkipImport)
+	{
+		return;
+	}
 
 #if WITH_EDITORONLY_DATA
 	if (ensure(Arguments.ImportedObject && Arguments.SourceData))
@@ -1367,16 +1582,16 @@ void UInterchangeMaterialFunctionFactory::SetupMaterial(UMaterialFunction* Mater
 	// Only material functions with BSDF output are supported for now
 	if (!ConnectInput(Common::Parameters::BxDF.ToString(), Attrib->GetInput(0)))
 	{
-		ConnectInput(PBR::Parameters::BaseColor.ToString(), &Attrib->BaseColor);
-		ConnectInput(PBR::Parameters::Metallic.ToString(), &Attrib->Metallic);
-		ConnectInput(PBR::Parameters::Specular.ToString(), &Attrib->Specular);
-		ConnectInput(PBR::Parameters::Roughness.ToString(), &Attrib->Roughness);
-		ConnectInput(PBR::Parameters::EmissiveColor.ToString(), &Attrib->EmissiveColor);
-		ConnectInput(PBR::Parameters::Normal.ToString(), &Attrib->Normal);
-		ConnectInput(PBR::Parameters::Anisotropy.ToString(), &Attrib->Anisotropy);
-		ConnectInput(PBR::Parameters::Tangent.ToString(), &Attrib->Tangent);
-		ConnectInput(PBR::Parameters::IndexOfRefraction.ToString(), &Attrib->Refraction);
-		ConnectInput(PBR::Parameters::Occlusion.ToString(), &Attrib->AmbientOcclusion);
+		ConnectInput(PBRMR::Parameters::BaseColor.ToString(), &Attrib->BaseColor);
+		ConnectInput(PBRMR::Parameters::Metallic.ToString(), &Attrib->Metallic);
+		ConnectInput(PBRMR::Parameters::Specular.ToString(), &Attrib->Specular);
+		ConnectInput(PBRMR::Parameters::Roughness.ToString(), &Attrib->Roughness);
+		ConnectInput(PBRMR::Parameters::EmissiveColor.ToString(), &Attrib->EmissiveColor);
+		ConnectInput(PBRMR::Parameters::Normal.ToString(), &Attrib->Normal);
+		ConnectInput(PBRMR::Parameters::Anisotropy.ToString(), &Attrib->Anisotropy);
+		ConnectInput(PBRMR::Parameters::Tangent.ToString(), &Attrib->Tangent);
+		ConnectInput(PBRMR::Parameters::IndexOfRefraction.ToString(), &Attrib->Refraction);
+		ConnectInput(PBRMR::Parameters::Occlusion.ToString(), &Attrib->AmbientOcclusion);
 		ConnectInput(ClearCoat::Parameters::ClearCoat.ToString(), &Attrib->ClearCoat);
 		ConnectInput(ClearCoat::Parameters::ClearCoatRoughness.ToString(), &Attrib->ClearCoatRoughness);
 		ConnectInput(Subsurface::Parameters::SubsurfaceColor.ToString(), &Attrib->SubsurfaceColor);

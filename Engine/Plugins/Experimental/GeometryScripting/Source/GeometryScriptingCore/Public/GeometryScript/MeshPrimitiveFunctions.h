@@ -30,6 +30,23 @@ enum class EGeometryScriptPrimitiveUVMode : uint8
 	ScaleToFill = 1
 };
 
+UENUM(BlueprintType)
+enum class EGeometryScriptPolygonFillMode : uint8
+{
+	// Keep all triangles, regardless of whether they were enclosed by constrained edges
+	All = 0,
+	// Fill everything inside the outer boundaries of constrained edges, ignoring edge orientation and any internal holes
+	Solid = 1,
+	// Fill where the 'winding number' is positive
+	PositiveWinding = 2,
+	// Fill where the 'winding number' is not zero
+	NonZeroWinding = 3,
+	// Fill where the 'winding number' is negative
+	NegativeWinding = 4,
+	// Fill where the 'winding number' is an odd number
+	OddWinding = 5
+};
+
 
 USTRUCT(BlueprintType)
 struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPrimitiveOptions
@@ -95,13 +112,51 @@ public:
 };
 
 
+USTRUCT(BlueprintType)
+struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptConstrainedDelaunayTriangulationOptions
+{
+	GENERATED_BODY()
+public:
+	/** How to decide which parts of the shape defined by constrained edges should be filled with triangles */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	EGeometryScriptPolygonFillMode ConstrainedEdgesFillMode = EGeometryScriptPolygonFillMode::All;
+
+	/**
+	 * Whether the triangulation should be considered a failure if it doesn't include the requested Constrained Edges.
+	 * (Edges may be missing e.g. due to intersecting edges in the input.) 
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	bool bValidateEdgesInResult = true;
+
+	/** Whether to remove duplicate vertices from the output.  If false, duplicate vertices will not be used in any triangles, but will remain in the output mesh. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	bool bRemoveDuplicateVertices = false;
+
+};
+
+
+USTRUCT(BlueprintType)
+struct GEOMETRYSCRIPTINGCORE_API FGeometryScriptPolygonsTriangulationOptions
+{
+	GENERATED_BODY()
+public:
+
+	/** Whether to still append the triangulation in error cases -- typically, cases where the input contained intersecting edges. Resulting triangulation likely will appear correct except at the intersecting edges. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Options)
+	bool bStillAppendOnTriangulationError = true;
+
+};
+
+
 UCLASS(meta = (ScriptName = "GeometryScript_Primitives"))
 class GEOMETRYSCRIPTINGCORE_API UGeometryScriptLibrary_MeshPrimitiveFunctions : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 public:
 
-
+	/**
+	* Appends a 3D box to the Target Mesh.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendBox( 
@@ -117,7 +172,25 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Base,
 		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	 * Appends a 3D box to the Target Mesh with dimensions and origin taken from the input Box
+	 */
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
+	AppendBoundingBox( 
+		UDynamicMesh* TargetMesh, 
+		FGeometryScriptPrimitiveOptions PrimitiveOptions,
+		FTransform Transform,
+		FBox Box,
+		int32 StepsX = 0,
+		int32 StepsY = 0,
+		int32 StepsZ = 0,
+		UGeometryScriptDebug* Debug = nullptr);
 
+
+	/**
+	* Appends a 3D Sphere triangulated using latitude/longitude topology to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendSphereLatLong( 
@@ -130,7 +203,9 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Center,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Appends a 3D sphere triangulated using box topology to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendSphereBox( 
@@ -144,7 +219,9 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Center,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Appends a 3D Capsule to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendCapsule( 
@@ -158,7 +235,9 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Base,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Appends a 3D Cylinder (with optional end caps) to the Target Mesh.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendCylinder( 
@@ -173,7 +252,9 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Base,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Appends a 3D cone to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendCone( 
@@ -189,7 +270,9 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Base,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Appends a 3D torus (donut) or partial torus to the Target Mesh.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendTorus( 
@@ -221,7 +304,9 @@ public:
 		int32 Steps = 8,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+    /**
+	* Revolves a 2D polygon on a helical path, like one used to create a vertical spiral, appending the result to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta = (ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh*
 	AppendSpiralRevolvePolygon(
@@ -235,7 +320,9 @@ public:
 		float RisePerRevolution = 50,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Revolves an open 2D path, with optional top and bottom end caps, appending the result to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendRevolvePath( 
@@ -255,7 +342,7 @@ public:
 	 * @param PolylineVertices vertices of the open 2D path that will be swept along the SweepPath
 	 * @param SweepPath defines the 3D sweep path curve as a 3D poly-path, with rotation and scaling at each polypath vertex taken from the Transform
 	 * @param PolylineTexParamU defines U coordinate value for each element in PolylineVertices. Must be same length as PolylineVertices (ignored if length=0).
-	 * @param SweepPathTexParamV defines V coordinate value for each element in SweepPath. Must be same length as PolylineVertices if bLoop=false, length+1 if bLoop=true, and ignored if length=0.
+	 * @param SweepPathTexParamV defines V coordinate value for each element in SweepPath. Must be same length as SweepPath if bLoop=false, length+1 if bLoop=true, and ignored if length=0.
 	 * @param bLoop if true, SweepPath is considered to be a Loop and a section connecting the end and start of the path is added (bCapped is ignored)
 	 * @param StartScale uniform scaling applied to the 2D polygon at the start of the path. Interpolated via arc length to EndScale at the end of the path.
 	 * @param EndScale uniform scaling applied to the 2D polygon at the end of the path
@@ -294,7 +381,9 @@ public:
 		EGeometryScriptPrimitiveOriginMode Origin = EGeometryScriptPrimitiveOriginMode::Base,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Sweeps a 2D polygon along an arbitrary 3D path, appending the result to the Target Mesh.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendSimpleSweptPolygon( 
@@ -337,6 +426,9 @@ public:
 		UGeometryScriptDebug* Debug = nullptr);
 
 
+	/**
+	* Appends a planar Rectangle to a Dynamic Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendRectangleXY( 
@@ -349,6 +441,9 @@ public:
 		int32 StepsHeight = 0,
 		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	* Appends a planar Rectangle with Rounded Corners (RoundRect) to the Target Mesh.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendRoundRectangleXY( 
@@ -363,6 +458,9 @@ public:
 		int32 StepsRound = 4,
 		UGeometryScriptDebug* Debug = nullptr);
 
+	/**
+	* Appends a planar disc to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendDisc( 
@@ -378,6 +476,7 @@ public:
 		UGeometryScriptDebug* Debug = nullptr);
 
 	/**
+	* Appends a Triangulated Polygon to the Target Mesh.
 	* Polygon should be oriented counter-clockwise to produce a correctly-oriented shape, otherwise it will be inside-out
 	* Polygon endpoint is not repeated.
 	*/
@@ -392,7 +491,9 @@ public:
 		UGeometryScriptDebug* Debug = nullptr);
 
 
-
+	/**
+	* Appends a linear staircase to the Target Mesh.
+	*/
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendLinearStairs( 
@@ -406,7 +507,9 @@ public:
 		bool bFloating = false,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Appends a rising circular staircase to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta=(ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh* 
 	AppendCurvedStairs( 
@@ -421,7 +524,9 @@ public:
 		bool bFloating = false,
 		UGeometryScriptDebug* Debug = nullptr);
 
-
+	/**
+	* Generates triangulated Voronoi Cells from the provided Voronoi Sites, identifying each with PolyGroups, and appends to the Target Mesh.
+	*/ 
 	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta = (ScriptMethod))
 	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh*
 	AppendVoronoiDiagram2D(
@@ -431,6 +536,45 @@ public:
 		const TArray<FVector2D>& VoronoiSites,
 		FGeometryScriptVoronoiOptions VoronoiOptions,
 		UGeometryScriptDebug* Debug = nullptr);
+
+	/**
+	* Generates a Delaunay Triangulation of the provided vertices, and appends it to the Target Mesh.
+	* If optional Constrained Edges are provided, will generate a Constrained Delaunay Triangulation which connects the specified vertices with edges.
+	* On success, all vertices are always appended to the output mesh, though duplicate vertices will not be used in any triangles and may optionally be removed.
+	* Use PositionsToVertexIDs to map indices in the input VertexPositions array to vertex IDs in the Dynamic Mesh.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives", meta = (ScriptMethod, AutoCreateRefTerm = "ConstrainedEdges"))
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh*
+	AppendDelaunayTriangulation2D(
+		UDynamicMesh* TargetMesh,
+		FGeometryScriptPrimitiveOptions PrimitiveOptions,
+		FTransform Transform,
+		const TArray<FVector2D>& VertexPositions,
+		const TArray<FIntPoint>& ConstrainedEdges,
+		FGeometryScriptConstrainedDelaunayTriangulationOptions TriangulationOptions,
+		TArray<int32>& PositionsToVertexIDs,
+		bool& bHasDuplicateVertices,
+		UGeometryScriptDebug* Debug = nullptr);
+
+
+	/**
+	* Generates a Delaunay Triangulation of the provided Polygon List, and appends it to the Target Mesh.
+	* @param bTriangulationError Reports whether the triangulation contains errors, typically due to intersecting edges in the input. Consider pre-processing the PolygonsList with PolygonsUnion to resolve intersections and prevent this error.
+	* @param bStillAppendOnError Whether to still append a best-effort triangulation in error cases. Often this will be a triangulation that does not quite match the polygon shape near intersecting edges in the input, but otherwise is as-expected.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "GeometryScript|Primitives")
+	static UPARAM(DisplayName = "Target Mesh") UDynamicMesh*
+	AppendPolygonListTriangulation(
+		UDynamicMesh* TargetMesh,
+		FGeometryScriptPrimitiveOptions PrimitiveOptions,
+		FTransform Transform,
+		FGeometryScriptGeneralPolygonList PolygonList,
+		FGeometryScriptPolygonsTriangulationOptions TriangulationOptions,
+		bool& bTriangulationError,
+		UGeometryScriptDebug* Debug = nullptr);
+
+
+
 
 
 

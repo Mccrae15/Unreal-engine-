@@ -75,7 +75,7 @@ void FAnimNode_RigLogic::CacheBones_AnyThread(const FAnimationCacheBonesContext&
 		return;
 	}
 
-	TSharedPtr<FSharedRigRuntimeContext> SharedRigRuntimeContext = DNAAsset->GetRigRuntimeContext(UDNAAsset::EDNARetentionPolicy::Unload);
+	TSharedPtr<FSharedRigRuntimeContext> SharedRigRuntimeContext = DNAAsset->GetRigRuntimeContext();
 	if (!SharedRigRuntimeContext.IsValid())
 	{
 		return;
@@ -98,12 +98,16 @@ void FAnimNode_RigLogic::CacheBones_AnyThread(const FAnimationCacheBonesContext&
 	{
 		RigInstance->SetLOD(Context.AnimInstanceProxy->GetLODLevel());
 		const uint16 CurrentLOD = RigInstance->GetLOD();
-		const TArray<uint16>& VariableJointIndices = DNAAsset->RigRuntimeContext->VariableJointIndicesPerLOD[CurrentLOD].Values;
-		JointsMapDNAIndicesToCompactPoseBoneIndices.Reset(VariableJointIndices.Num());
+		const TArray<uint16>& VariableJointIndices = LocalRigRuntimeContext->VariableJointIndicesPerLOD[CurrentLOD].Values;
+		JointsMapDNAIndicesToCompactPoseBoneIndices.Empty();
+		JointsMapDNAIndicesToCompactPoseBoneIndices.Reserve(VariableJointIndices.Num());
 		for (const uint16 JointIndex : VariableJointIndices)
 		{
 			const FMeshPoseBoneIndex MeshPoseBoneIndex = LocalDNAIndexMapping->JointsMapDNAIndicesToMeshPoseBoneIndices[JointIndex];
-			JointsMapDNAIndicesToCompactPoseBoneIndices.Add(RequiredBones.MakeCompactPoseIndex(MeshPoseBoneIndex));
+			const FCompactPoseBoneIndex CompactPoseBoneIndex = RequiredBones.MakeCompactPoseIndex(MeshPoseBoneIndex);
+			if (CompactPoseBoneIndex != INDEX_NONE) {
+				JointsMapDNAIndicesToCompactPoseBoneIndices.Add({JointIndex, CompactPoseBoneIndex});
+			}
 		}
 	}
 }
@@ -128,13 +132,17 @@ void FAnimNode_RigLogic::Evaluate_AnyThread(FPoseContext& OutputContext)
 	{
 		return;
 	}
-	UpdateControlCurves(OutputContext, LocalDNAIndexMapping.Get());
-	CalculateRigLogic(LocalRigRuntimeContext->RigLogic.Get());
-	const uint16 CurrentLOD = RigInstance->GetLOD();
-	TArrayView<const uint16> VariableJointIndices = LocalRigRuntimeContext->VariableJointIndicesPerLOD[CurrentLOD].Values;
-	UpdateJoints(VariableJointIndices, LocalRigRuntimeContext->RigLogic->GetRawNeutralJointValues(), RigInstance->GetRawJointOutputs(), OutputContext);
-	UpdateBlendShapeCurves(LocalDNAIndexMapping.Get(), RigInstance->GetBlendShapeOutputs(), OutputContext);
-	UpdateAnimMapCurves(LocalDNAIndexMapping.Get(), RigInstance->GetAnimatedMapOutputs(), OutputContext);
+
+	if (IsLODEnabled(OutputContext.AnimInstanceProxy))
+	{
+		UpdateControlCurves(OutputContext, LocalDNAIndexMapping.Get());
+		CalculateRigLogic(LocalRigRuntimeContext->RigLogic.Get());
+		const uint16 CurrentLOD = RigInstance->GetLOD();
+		TArrayView<const uint16> VariableJointIndices = LocalRigRuntimeContext->VariableJointIndicesPerLOD[CurrentLOD].Values;
+		UpdateJoints(VariableJointIndices, LocalRigRuntimeContext->RigLogic->GetRawNeutralJointValues(), RigInstance->GetRawJointOutputs(), OutputContext);
+		UpdateBlendShapeCurves(LocalDNAIndexMapping.Get(), RigInstance->GetBlendShapeOutputs(), OutputContext);
+		UpdateAnimMapCurves(LocalDNAIndexMapping.Get(), RigInstance->GetAnimatedMapOutputs(), OutputContext);
+	}
 }
 
 void FAnimNode_RigLogic::GatherDebugData(FNodeDebugData& DebugData)
@@ -147,15 +155,26 @@ void FAnimNode_RigLogic::UpdateControlCurves(const FPoseContext& InputContext, c
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_UpdateControlCurves);
 
-	const int32 RawControlCount = RigInstance->GetRawControlCount();
-	for (int32 ControlIndex = 0; ControlIndex < RawControlCount; ++ControlIndex)
-	{
-		const int32 ControlCurveUID = DNAIndexMapping->ControlAttributesMapDNAIndicesToUEUIDs[ControlIndex];
-		if (ControlCurveUID != INDEX_NONE)
+	// Combine control attribute curve with input curve to get indexed curve to apply to rig
+	// Curve elements that dont have a control mapping will have INDEX_NONE as their index
+	UE::Anim::FNamedValueArrayUtils::Union(InputContext.Curve, DNAIndexMapping->ControlAttributeCurves,
+		[this](const UE::Anim::FCurveElement& InCurveElement, const UE::Anim::FCurveElementIndexed& InControlAttributeCurveElement, UE::Anim::ENamedValueUnionFlags InFlags)
 		{
-			const float Value = InputContext.Curve.Get(static_cast<SmartName::UID_Type>(ControlCurveUID));
-			RigInstance->SetRawControl(ControlIndex, Value);
-		}
+			if (InControlAttributeCurveElement.Index != INDEX_NONE)
+ 			{
+				RigInstance->SetRawControl(InControlAttributeCurveElement.Index, InCurveElement.Value);
+			}
+		});
+
+	if (RigInstance->GetNeuralNetworkCount() != 0) {
+		UE::Anim::FNamedValueArrayUtils::Union(InputContext.Curve, DNAIndexMapping->NeuralNetworkMaskCurves,
+			[this](const UE::Anim::FCurveElement& InCurveElement, const UE::Anim::FCurveElementIndexed& InControlAttributeCurveElement, UE::Anim::ENamedValueUnionFlags InFlags)
+			{
+				if (InControlAttributeCurveElement.Index != INDEX_NONE)
+ 				{
+					RigInstance->SetNeuralNetworkMask(InControlAttributeCurveElement.Index, InCurveElement.Value);
+ 				}
+			});
 	}
 }
 
@@ -173,22 +192,16 @@ void FAnimNode_RigLogic::UpdateJoints(TArrayView<const uint16> VariableJointIndi
 
 	const float* N = NeutralJointValues.GetData();
 	const float* D = DeltaJointValues.GetData();
-	check(VariableJointIndices.Num() == JointsMapDNAIndicesToCompactPoseBoneIndices.Num());
-	for (int32 MappingIndex = 0; MappingIndex < JointsMapDNAIndicesToCompactPoseBoneIndices.Num(); ++MappingIndex)
+	for (const FJointCompactPoseBoneMapping& Mapping : JointsMapDNAIndicesToCompactPoseBoneIndices)
 	{
-		const uint16 JointIndex = VariableJointIndices[MappingIndex];
-		const FCompactPoseBoneIndex CompactPoseBoneIndex = JointsMapDNAIndicesToCompactPoseBoneIndices[MappingIndex];
-		if (CompactPoseBoneIndex != INDEX_NONE)
-		{
-			const uint16 AttrIndex = JointIndex * ATTR_COUNT_PER_JOINT;
-			FTransform& CompactPose = OutputContext.Pose[CompactPoseBoneIndex];
-			// Translation: X = X, Y = -Y, Z = Z
-			CompactPose.SetTranslation(FVector((N[AttrIndex + 0] + D[AttrIndex + 0]), -(N[AttrIndex + 1] + D[AttrIndex + 1]), (N[AttrIndex + 2] + D[AttrIndex + 2])));
-			// Rotation: X = -Y, Y = -Z, Z = X
-			CompactPose.SetRotation(FQuat(FRotator(-N[AttrIndex + 4], -N[AttrIndex + 5], N[AttrIndex + 3])) * FQuat(FRotator(-D[AttrIndex + 4], -D[AttrIndex + 5], D[AttrIndex + 3])));
-			// Scale: X = X, Y = Y, Z = Z
-			CompactPose.SetScale3D(FVector((N[AttrIndex + 6] + D[AttrIndex + 6]), (N[AttrIndex + 7] + D[AttrIndex + 7]), (N[AttrIndex + 8] + D[AttrIndex + 8])));
-		}
+		const uint16 AttrIndex = Mapping.JointIndex * ATTR_COUNT_PER_JOINT;
+		FTransform& CompactPose = OutputContext.Pose[Mapping.CompactPoseBoneIndex];
+		// Translation: X = X, Y = -Y, Z = Z
+		CompactPose.SetTranslation(FVector((N[AttrIndex + 0] + D[AttrIndex + 0]), -(N[AttrIndex + 1] + D[AttrIndex + 1]), (N[AttrIndex + 2] + D[AttrIndex + 2])));
+		// Rotation: X = -Y, Y = -Z, Z = X
+		CompactPose.SetRotation(FQuat(FRotator(-N[AttrIndex + 4], -N[AttrIndex + 5], N[AttrIndex + 3])) * FQuat(FRotator(-D[AttrIndex + 4], -D[AttrIndex + 5], D[AttrIndex + 3])));
+		// Scale: X = X, Y = Y, Z = Z
+		CompactPose.SetScale3D(FVector((N[AttrIndex + 6] + D[AttrIndex + 6]), (N[AttrIndex + 7] + D[AttrIndex + 7]), (N[AttrIndex + 8] + D[AttrIndex + 8])));
 	}
 }
 
@@ -196,21 +209,17 @@ void FAnimNode_RigLogic::UpdateBlendShapeCurves(const FDNAIndexMapping* DNAIndex
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_UpdateBlendShapeCurves);
-
+	
 	const uint16 LOD = RigInstance->GetLOD();
-	const TArray<int32>& BlendShapeIndices = DNAIndexMapping->BlendShapeIndicesPerLOD[LOD].Values;
-	const TArray<int32>& MorphTargetIndices = DNAIndexMapping->MorphTargetIndicesPerLOD[LOD].Values;
-	check(BlendShapeIndices.Num() == MorphTargetIndices.Num());
-	for (uint32 MappingIndex = 0; MappingIndex < static_cast<uint32>(BlendShapeIndices.Num()); ++MappingIndex)
+	const FDNAIndexMapping::FCachedIndexedCurve& MorphTargetCurve = DNAIndexMapping->MorphTargetCurvesPerLOD[LOD];
+	UE::Anim::FNamedValueArrayUtils::Union(OutputContext.Curve, MorphTargetCurve, [&BlendShapeValues](UE::Anim::FCurveElement& InOutResult, const UE::Anim::FCurveElementIndexed& InSource, UE::Anim::ENamedValueUnionFlags InFlags)
 	{
-		const int32 BlendShapeIndex = BlendShapeIndices[MappingIndex];
-		const int32 MorphTargetCurveUID = MorphTargetIndices[MappingIndex];
-		if (MorphTargetCurveUID != INDEX_NONE)
+		if (BlendShapeValues.IsValidIndex(InSource.Index))
 		{
-			const float Value = BlendShapeValues[BlendShapeIndex];
-			OutputContext.Curve.Set(static_cast<SmartName::UID_Type>(MorphTargetCurveUID), Value);
+			InOutResult.Value = BlendShapeValues[InSource.Index];
+			InOutResult.Flags |= UE::Anim::ECurveElementFlags::MorphTarget;
 		}
-	}
+	});
 }
 
 void FAnimNode_RigLogic::UpdateAnimMapCurves(const FDNAIndexMapping* DNAIndexMapping, TArrayView<const float> AnimMapOutputs, FPoseContext& OutputContext)
@@ -219,18 +228,14 @@ void FAnimNode_RigLogic::UpdateAnimMapCurves(const FDNAIndexMapping* DNAIndexMap
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_AnimNode_RigLogic_UpdateAnimMapCurves);
 
 	const uint16 LOD = RigInstance->GetLOD();
-	const TArray<int32>& AnimatedMapIndices = DNAIndexMapping->AnimatedMapIndicesPerLOD[LOD].Values;
-	const TArray<int32>& MaskMultiplierIndices = DNAIndexMapping->MaskMultiplierIndicesPerLOD[LOD].Values;
-	check(AnimatedMapIndices.Num() == MaskMultiplierIndices.Num());
-	for (uint32 MappingIndex = 0; MappingIndex < static_cast<uint32>(AnimatedMapIndices.Num()); ++MappingIndex)
+	const FDNAIndexMapping::FCachedIndexedCurve& MaskMultiplierCurve = DNAIndexMapping->MaskMultiplierCurvesPerLOD[LOD];
+	UE::Anim::FNamedValueArrayUtils::Union(OutputContext.Curve, MaskMultiplierCurve, [&AnimMapOutputs](UE::Anim::FCurveElement& InOutResult, const UE::Anim::FCurveElementIndexed& InSource, UE::Anim::ENamedValueUnionFlags InFlags)
 	{
-		const int32 AnimatedMapIndex = AnimatedMapIndices[MappingIndex];
-		const int32 MaskMultiplierUID = MaskMultiplierIndices[MappingIndex];
-		if (MaskMultiplierUID != INDEX_NONE)
+		if (AnimMapOutputs.IsValidIndex(InSource.Index))
 		{
-			const float Value = AnimMapOutputs[AnimatedMapIndex];
-			OutputContext.Curve.Set(static_cast<SmartName::UID_Type>(MaskMultiplierUID), Value);
+			InOutResult.Value = AnimMapOutputs[InSource.Index];
+			InOutResult.Flags |= UE::Anim::ECurveElementFlags::Material;
 		}
-	}
+	});
 }
 

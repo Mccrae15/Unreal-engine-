@@ -2,15 +2,8 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Xml;
-using System.Xml.Linq;
-using System.Diagnostics;
 using System.IO;
-using EpicGames.Core;
-
-using Ionic.Zip;
+using System.Xml.Linq;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -140,7 +133,7 @@ namespace UnrealBuildTool
 			{
 				string PackageDirectory = Path.Combine(Repository, PackagePath, BaseName, Version);
 
-                if (Directory.Exists(PackageDirectory))
+				if (Directory.Exists(PackageDirectory))
 				{
 					return PackageDirectory;
 				}
@@ -182,10 +175,10 @@ namespace UnrealBuildTool
 			try
 			{
 				string[] Sections = VersionString.Split(".".ToCharArray());
-				Value |= (Sections.Length > 0) ? (uint.Parse(Sections[0]) << 24) : 0;
-				Value |= (Sections.Length > 1) ? (uint.Parse(Sections[1]) << 16) : 0;
-				Value |= (Sections.Length > 2) ? (uint.Parse(Sections[2]) << 8) : 0;
-				Value |= (Sections.Length > 3) ? uint.Parse(Sections[3]) : 0;
+				Value |= (Sections.Length > 0) ? (UInt32.Parse(Sections[0]) << 24) : 0;
+				Value |= (Sections.Length > 1) ? (UInt32.Parse(Sections[1]) << 16) : 0;
+				Value |= (Sections.Length > 2) ? (UInt32.Parse(Sections[2]) << 8) : 0;
+				Value |= (Sections.Length > 3) ? UInt32.Parse(Sections[3]) : 0;
 			}
 			catch (Exception)
 			{
@@ -202,7 +195,7 @@ namespace UnrealBuildTool
 			string WorkVersion = InVersion;
 
 			// if has commas, keep the rightmost part with actual numbers
-			if (WorkVersion.Contains(","))
+			if (WorkVersion.Contains(','))
 			{
 				string[] CommaParts = WorkVersion.Split(',');
 				WorkVersion = "";
@@ -484,13 +477,13 @@ namespace UnrealBuildTool
 				string Filename = Entry.Filename + ".jar";
 				string BaseName = Path.GetFileName(Filename);
 				string TargetPath = Path.Combine(DestinationPath, BaseName);
-                //Logger.LogInformation("Attempting to copy JAR {Filename} {BaseName} {TargetPath}", Filename, BaseName, TargetPath);
+				//Logger.LogInformation("Attempting to copy JAR {Filename} {BaseName} {TargetPath}", Filename, BaseName, TargetPath);
 
-                if (!File.Exists(Filename))
-                {
-                    Logger.LogInformation("JAR doesn't exist! {Filename}", Filename);
-                }
-                if (!File.Exists(TargetPath))
+				if (!File.Exists(Filename))
+				{
+					Logger.LogInformation("JAR doesn't exist! {Filename}", Filename);
+				}
+				if (!File.Exists(TargetPath))
 				{
 					Logger.LogInformation("Copying JAR {BaseName}", BaseName);
 					File.Copy(Filename, TargetPath);
@@ -521,7 +514,8 @@ namespace UnrealBuildTool
 				if (!File.Exists(TargetManifestFileName))
 				{
 					Logger.LogInformation("Extracting AAR {BaseName}", BaseName);
-					/*IEnumerable<string> FileNames =*/ UnzipFiles(Entry.Filename + ".aar", TargetPath, Logger);
+					/*IEnumerable<string> FileNames =*/
+					UnzipFiles(Entry.Filename + ".aar", TargetPath, Logger);
 
 					// Must have a src directory (even if empty)
 					string SrcDirectory = Path.Combine(TargetPath, "src");
@@ -638,6 +632,5 @@ namespace UnrealBuildTool
 				return OutputFileNames;
 			}
 		}
-
 	}
 }

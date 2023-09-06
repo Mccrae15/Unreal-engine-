@@ -103,7 +103,8 @@ FSlateColor SGraphNodeAnimStateAlias::GetBorderBackgroundColor_Internal(FLinearC
 		}
 	}
 
-	return InactiveStateColor;
+	// Override inactive state color for aliases.
+	return FLinearColor(0.45f, 0.33f, 0.37f);
 }
 
 FText SGraphNodeAnimStateAlias::GetPreviewCornerText() const

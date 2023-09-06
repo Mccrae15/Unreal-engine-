@@ -18,12 +18,16 @@
 
 void UContentBundleEditingSubmodule::DoInitialize()
 {
+	check(GEditor);
 	UActorEditorContextSubsystem::Get()->RegisterClient(this);
 }
 
 void UContentBundleEditingSubmodule::DoDenitialize()
 {
-	UActorEditorContextSubsystem::Get()->UnregisterClient(this);
+	if (GEditor)
+	{
+		UActorEditorContextSubsystem::Get()->UnregisterClient(this);
+	}
 
 	EditingContentBundleGuid.Invalidate();
 	EditingContentBundlesStack.Empty();
@@ -284,6 +288,7 @@ void UContentBundleEditorSubsystem::NotifyContentBundleRemovedContent(const FCon
 		GetEditingSubmodule()->DeactivateCurrentContentBundleEditing();
 	}
 
+	OnContentBundleRemovedContent().Broadcast(ContentBundle);
 	NotifyContentBundleChanged(ContentBundle);
 }
 
@@ -377,6 +382,16 @@ bool UContentBundleEditorSubsystem::DeactivateContentBundleEditing(TSharedPtr<FC
 bool UContentBundleEditorSubsystem::IsContentBundleEditingActivated(TSharedPtr<FContentBundleEditor>& ContentBundleEditor) const
 {
 	return ContentBundleEditor.IsValid() && IsEditingContentBundle(ContentBundleEditor->GetDescriptor()->GetGuid());
+}
+
+void UContentBundleEditorSubsystem::PushContentBundleEditing()
+{
+	ContentBundleEditingSubModule->PushContentBundleEditing();
+}
+
+void UContentBundleEditorSubsystem::PopContentBundleEditing()
+{
+	ContentBundleEditingSubModule->PopContentBundleEditing();
 }
 
 void UContentBundleEditorSubsystem::SelectActorsInternal(FContentBundleEditor& EditorContentBundle, bool bSelect)

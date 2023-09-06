@@ -113,6 +113,8 @@ struct Catch::StringMaker<TTuple<KeyType, ValueType>>
 	}
 };
 
+#define TEST_CASE_NAMED(ClassName, ...) TEST_CASE(__VA_ARGS__)
+
 #define VERIFY(What, Actual)\
 	CAPTURE(What);\
 	CHECK(Actual == true)
@@ -123,17 +125,36 @@ struct Catch::StringMaker<TTuple<KeyType, ValueType>>
 #define ADD_ERROR(What)\
 	FAIL(What)
 
+#define FAIL_ON_MESSAGE(What)
+
 #define CHECK_EQUAL(Actual, Expected)\
 	CHECK(Actual == Expected)
 
 #define CHECK_NOT_EQUAL(Actual, Expected)\
 	CHECK(Actual != Expected)
 
+//-V:CHECK_MESSAGE:571
+#define CHECK_MESSAGE(What, Value) do { \
+	INFO(What); \
+	CHECK((Value)==true); \
+} while (false)
+
+#define CHECK_FALSE_MESSAGE(What, Value) do { \
+	INFO(What); \
+	CHECK_FALSE(Value); \
+} while (false)
+
 #define REQUIRE_EQUAL(Actual, Expected)\
 	REQUIRE(Actual == Expected)
 
 #define REQUIRE_NOT_EQUAL(Actual, Expected)\
 	REQUIRE(Actual != Expected)
+
+//-V:REQUIRE_MESSAGE:571
+#define REQUIRE_MESSAGE(What, Value) do { \
+	INFO(What); \
+	REQUIRE((Value)==true); \
+} while (false)
 
 #define TEST_TRUE(What, Value)\
 	INFO(What);\

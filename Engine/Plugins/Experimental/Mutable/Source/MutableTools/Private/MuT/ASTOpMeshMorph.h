@@ -25,8 +25,8 @@ namespace mu
 		//! Base mesh to morph.
 		ASTChild Base;
 
-		//! Targets to apply on the base depending on the factor
-		TArray<ASTChild> Targets;
+		//! Target to apply on the base depending on the factor
+		ASTChild Target;
 
 	public:
 
@@ -35,16 +35,14 @@ namespace mu
 		~ASTOpMeshMorph() override;
 
 		// ASTOp interface
-		OP_TYPE GetOpType() const override { return OP_TYPE::ME_MORPH2; }
+		OP_TYPE GetOpType() const override { return OP_TYPE::ME_MORPH; }
 		uint64 Hash() const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
-		void Link(FProgram& program, const FLinkerOptions*) override;
+		void Link(FProgram& program, FLinkerOptions*) override;
 		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const override;
 
-		// Own interface
-		void AddTarget(const Ptr<ASTOp>&);
 	};
 
 }

@@ -5,6 +5,7 @@
 #include "ReplicationProtocol.h"
 #include "ReplicationProtocolManager.h"
 #include "Iris/Core/IrisLog.h"
+#include "Iris/Core/IrisProfiler.h"
 #include "Iris/Serialization/NetSerializationContext.h"
 #include "Iris/Serialization/InternalNetSerializationContext.h"
 #include "Net/Core/Trace/NetTrace.h"
@@ -22,14 +23,17 @@ FNetRefHandleManager::FNetRefHandleManager(FReplicationProtocolManager& InReplic
 , ReplicationSystemId(InReplicationSystemId)
 , ScopableInternalIndices(MaxActiveObjectCount)
 , PrevFrameScopableInternalIndices(MaxActiveObjectCount)
+, RelevantObjectsInternalIndices(MaxActiveObjectCount)
+, PolledObjectsInternalIndices(MaxActiveObjectCount)
+, DirtyObjectsToCopy(MaxActiveObjectCount)
 , AssignedInternalIndices(MaxActiveObjectCount)
 , SubObjectInternalIndices(MaxActiveObjectCount)
 , DependentObjectInternalIndices(MaxActiveObjectCount)
 , ObjectsWithDependentObjectsInternalIndices(MaxActiveObjectCount)
 , DestroyedStartupObjectInternalIndices(MaxActiveObjectCount)
 , WantToBeDormantInternalIndices(MaxActiveObjectCount)
-, NextStaticHandleIndex(1U) // Index 0 is always reserved, for both static and dynamic handles
-, NextDynamicHandleIndex(1U)
+, NextStaticHandleIndex(1) // Index 0 is always reserved, for both static and dynamic handles
+, NextDynamicHandleIndex(1)
 , ReplicationProtocolManager(InReplicationProtocolManager)
 {
 	static_assert(InvalidInternalIndex == 0, "FNetRefHandleManager::InvalidInternalIndex has an unexpected value");
@@ -46,12 +50,12 @@ FNetRefHandleManager::FNetRefHandleManager(FReplicationProtocolManager& InReplic
 	ReplicatedObjectData[InvalidInternalIndex] = FReplicatedObjectData();
 }
 
-uint32 FNetRefHandleManager::GetNextNetRefHandleId(uint32 HandleId) const
+uint64 FNetRefHandleManager::GetNextNetRefHandleId(uint64 HandleId) const
 {
-	// Since we use the lowest bit in the index to indicate if the handle is static or dynamic we can not use all bits as the index
-	constexpr uint32 NetHandleIdIndexBitMask = (1U << (FNetRefHandle::IdBits - 1U)) - 1U;
+	// Since we use the lowest bit in the index to indicate if the handle is static or dynamic we cannot use all bits as the index
+	constexpr uint64 NetHandleIdIndexBitMask = (1ULL << (FNetRefHandle::IdBits - 1)) - 1;
 
-	uint32 NextHandleId = (HandleId + 1) & NetHandleIdIndexBitMask;
+	uint64 NextHandleId = (HandleId + 1) & NetHandleIdIndexBitMask;
 	if (NextHandleId == 0)
 	{
 		++NextHandleId;
@@ -113,6 +117,12 @@ FInternalNetRefIndex FNetRefHandleManager::InternalCreateNetObject(const FNetRef
 		// When a handle is first created, it is not set to be a subobject
 		SubObjectInternalIndices.ClearBit(InternalIndex);
 
+		// Need a full copy if set, normally only needed for new objects.
+		Data.bNeedsFullCopyAndQuantize = 1U;
+
+		// Make sure we do a full poll of all properties the first time the object gets polled.
+		Data.bWantsFullPoll = 1U;
+
 		ReplicatedObjectRefCount[InternalIndex] = 0;
 
 		return InternalIndex;
@@ -150,9 +160,9 @@ const FReplicationInstanceProtocol* FNetRefHandleManager::DetachInstanceProtocol
 
 FNetRefHandle FNetRefHandleManager::AllocateNetRefHandle(bool bIsStatic)
 {
-	uint32& NextHandleId = bIsStatic ? NextStaticHandleIndex : NextDynamicHandleIndex;
+	uint64& NextHandleId = bIsStatic ? NextStaticHandleIndex : NextDynamicHandleIndex;
 
-	const uint32 NewHandleId = MakeNetRefHandleId(NextHandleId, bIsStatic);
+	const uint64 NewHandleId = MakeNetRefHandleId(NextHandleId, bIsStatic);
 	FNetRefHandle NewHandle = MakeNetRefHandle(NewHandleId, ReplicationSystemId);
 
 	// Verify that the handle is free
@@ -385,11 +395,14 @@ void FNetRefHandleManager::DestroyNetObject(FNetRefHandle RefHandle)
 
 void FNetRefHandleManager::DestroyObjectsPendingDestroy()
 {
+	IRIS_PROFILER_SCOPE(FNetRefHandleManager_DestroyObjectsPendingDestroy);
+
 	// Destroy Objects pending destroy
 	for (int32 It = PendingDestroyInternalIndices.Num() - 1; It >= 0; --It)
 	{
 		const FInternalNetRefIndex InternalIndex = PendingDestroyInternalIndices[It];
-		if (ReplicatedObjectRefCount[InternalIndex] == 0)
+		// If we have subobjects pending tear off and such then wait before destroying the parent.
+		if (ReplicatedObjectRefCount[InternalIndex] == 0 && GetSubObjects(InternalIndex).Num() <= 0)
 		{
 			InternalDestroyNetObject(InternalIndex);
 			PendingDestroyInternalIndices.RemoveAtSwap(It);
@@ -500,6 +513,7 @@ void FNetRefHandleManager::InternalRemoveSubObject(FInternalNetRefIndex OwnerInt
 		}
 
 		SubObjectData.SubObjectRootIndex = InvalidInternalIndex;
+		SubObjectData.SubObjectParentIndex = InvalidInternalIndex;
 		SubObjectData.bDestroySubObjectWithOwner = false;
 
 		SetIsSubObject(SubObjectInternalIndex, false);
@@ -745,12 +759,12 @@ void FNetRefHandleManager::AddReferencedObjects(FReferenceCollector& Collector)
 	Collector.AddReferencedObjects(ReplicatedInstances);
 }
 
-uint32 FNetRefHandleManager::MakeNetRefHandleId(uint32 Id, bool bIsStatic)
+uint64 FNetRefHandleManager::MakeNetRefHandleId(uint64 Id, bool bIsStatic)
 {
 	return (Id << 1U) | (bIsStatic ? 1U : 0U);
 }
 
-FNetRefHandle FNetRefHandleManager::MakeNetRefHandle(uint32 Id, uint32 ReplicationSystemId)
+FNetRefHandle FNetRefHandleManager::MakeNetRefHandle(uint64 Id, uint32 ReplicationSystemId)
 {
 	check((Id & FNetRefHandle::IdMask) == Id);
 	check(ReplicationSystemId < FNetRefHandle::MaxReplicationSystemId);
@@ -763,9 +777,10 @@ FNetRefHandle FNetRefHandleManager::MakeNetRefHandle(uint32 Id, uint32 Replicati
 	return Handle;
 }
 
-FNetRefHandle FNetRefHandleManager::MakeNetRefHandleFromId(uint32 Id)
+FNetRefHandle FNetRefHandleManager::MakeNetRefHandleFromId(uint64 Id)
 {
-	check((Id & FNetRefHandle::IdMask) == Id);
+	// This is called on the receiving end when deserializing replicated objects. We don't want to crash on bit stream errors leading to invalid handle IDs being read.
+	ensureAlways((Id & FNetRefHandle::IdMask) == Id);
 
 	FNetRefHandle Handle;
 

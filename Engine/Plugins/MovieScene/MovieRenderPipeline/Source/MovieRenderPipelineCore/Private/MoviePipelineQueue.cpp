@@ -195,6 +195,36 @@ void UMoviePipelineExecutorJob::PostEditChangeProperty(FPropertyChangedEvent& Pr
 }
 #endif
 
+void UMoviePipelineExecutorJob::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
+
+#if WITH_EDITOR
+	VariableAssignments->UpdateGraphVariableOverrides();
+#endif
+}
+
+void UMoviePipelineExecutorJob::PostLoad()
+{
+	Super::PostLoad();
+	
+	if (VariableAssignments)
+	{
+		VariableAssignments->SetGraphConfig(GraphPreset.LoadSynchronous());
+	}
+
+	// Update the job's variable overrides whenever the graph's variables change
+	if (UMovieGraphConfig* Config = GraphPreset.LoadSynchronous())
+	{
+#if WITH_EDITOR
+		Config->OnGraphVariablesChangedDelegate.AddUObject(VariableAssignments, &UMovieJobVariableAssignmentContainer::UpdateGraphVariableOverrides);
+#endif
+	}
+
+	// TODO: The variable assignments need to be updated here, but currently GraphPreset.LoadSynchronous() does not
+	// provide a fully-loaded object (ie, GraphPreset will only be partially loaded at this point).
+}
+
 void UMoviePipelineExecutorJob::SetSequence(FSoftObjectPath InSequence)
 {
 	Sequence = InSequence;
@@ -297,3 +327,32 @@ void UMoviePipelineExecutorShot::SetShotOverridePresetOrigin(UMoviePipelineShotC
 	}
 }
 
+void UMoviePipelineExecutorShot::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
+
+#if WITH_EDITOR
+	VariableAssignments->UpdateGraphVariableOverrides();
+#endif
+}
+
+void UMoviePipelineExecutorShot::PostLoad()
+{
+	Super::PostLoad();
+
+	if (VariableAssignments)
+	{
+		VariableAssignments->SetGraphConfig(GraphPreset.LoadSynchronous());
+	}
+
+	// Update the job's variable overrides whenever the graph's variables change
+	if (UMovieGraphConfig* Config = GraphPreset.LoadSynchronous())
+	{
+#if WITH_EDITOR
+		Config->OnGraphVariablesChangedDelegate.AddUObject(VariableAssignments, &UMovieJobVariableAssignmentContainer::UpdateGraphVariableOverrides);
+#endif
+	}
+
+	// TODO: The variable assignments need to be updated here, but currently GraphPreset.LoadSynchronous() does not
+	// provide a fully-loaded object (ie, GraphPreset will only be partially loaded at this point).
+}

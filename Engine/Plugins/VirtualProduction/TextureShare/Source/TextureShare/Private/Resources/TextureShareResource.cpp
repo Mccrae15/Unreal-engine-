@@ -9,6 +9,7 @@
 #include "ITextureShareCoreObject.h"
 
 #include "RHI.h"
+#include "RHICommandList.h"
 #include "RenderResource.h"
 
 using namespace UE::TextureShareCore;
@@ -164,7 +165,7 @@ bool FTextureShareResource::ReleaseTextureShareHandle_RenderThread()
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
-void FTextureShareResource::InitDynamicRHI()
+void FTextureShareResource::InitRHI(FRHICommandListBase&)
 {
 	FTexture2DRHIRef NewTextureRHI;
 	switch (CoreObject->GetObjectDesc_RenderThread().ProcessDesc.DeviceType)

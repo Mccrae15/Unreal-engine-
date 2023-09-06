@@ -3,6 +3,7 @@
 #include "MovieSceneLiveLinkSource.h"
 #include "Features/IModularFeatures.h"
 #include "ILiveLinkClient.h"
+#include "ILiveLinkSource.h"
 
 FMovieSceneLiveLinkSource::FMovieSceneLiveLinkSource()
 	: Client(nullptr)
@@ -55,7 +56,7 @@ void FMovieSceneLiveLinkSource::ReceiveClient(ILiveLinkClient* InClient, FGuid I
 	const bool bIncludeDisabledSubjects = false;
 	const bool bIncludeVirtualSubjects = false;
 	TArray<FLiveLinkSubjectKey> EnabledSubjects = Client->GetSubjects(bIncludeDisabledSubjects, bIncludeVirtualSubjects);
-	const FLiveLinkSubjectKey* FoundSubjectPtr = EnabledSubjects.FindByPredicate([=](const FLiveLinkSubjectKey& InOther) { return SubjectPreset.Key.SubjectName.Name == InOther.SubjectName.Name; });
+	const FLiveLinkSubjectKey* FoundSubjectPtr = EnabledSubjects.FindByPredicate([this](const FLiveLinkSubjectKey& InOther) { return SubjectPreset.Key.SubjectName.Name == InOther.SubjectName.Name; });
 	if (FoundSubjectPtr && FoundSubjectPtr->Source != SourceGuid)
 	{
 		PreviousSubjectEnabled = *FoundSubjectPtr;
@@ -66,6 +67,13 @@ void FMovieSceneLiveLinkSource::ReceiveClient(ILiveLinkClient* InClient, FGuid I
 	}
 
 	Client->CreateSubject(SubjectPreset);
+}
+
+void FMovieSceneLiveLinkSource::InitializeSettings(ULiveLinkSourceSettings* Settings)
+{
+	ILiveLinkSource::InitializeSettings(Settings);
+
+	Settings->BufferSettings.MaxNumberOfFrameToBuffered = 1;
 }
 
 bool FMovieSceneLiveLinkSource::IsSourceStillValid() const

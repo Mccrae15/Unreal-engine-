@@ -110,6 +110,27 @@ public:
 	/** Get the source control status as plain, human-readable text */
 	virtual FText GetStatusText() const = 0;
 
+	enum class EStatus
+	{
+		Enabled,
+		Connected,
+		Port,
+		User,
+		Client,
+		Repository,
+		Remote,
+		Branch,
+		Email,
+		ScmVersion,
+		PluginVersion,
+		Workspace,
+		WorkspacePath,
+		Changeset
+	};
+
+	/** Get the source control status as a series of key value pairs */
+	virtual TMap<EStatus, FString> GetStatus() const = 0;
+
 	/** Quick check if source control is enabled. Specifically, it returns true if a source control provider is set (regardless of whether the provider is available) and false if no provider is set. So all providers except the stub DefalutSourceProvider will return true. */
 	virtual bool IsEnabled() const = 0;
 
@@ -245,6 +266,13 @@ public:
 	 * Helper overload for operation execution, see Execute().
 	*/
 	SOURCECONTROL_API virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete());
+
+	/**
+	 * Check to see if we can execute an operation.
+	 * @param	InOperation		The operation to check.
+	 * @return true if the operation can be executed.
+	 */
+	virtual bool CanExecuteOperation( const FSourceControlOperationRef& InOperation ) const = 0;
 
 	/**
 	 * Check to see if we can cancel an operation.

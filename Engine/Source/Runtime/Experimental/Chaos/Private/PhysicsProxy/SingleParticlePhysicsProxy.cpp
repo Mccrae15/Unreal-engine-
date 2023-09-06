@@ -16,14 +16,22 @@
 #include "Chaos/ChaosMarshallingManager.h"
 #include "Chaos/PullPhysicsDataImp.h"
 #include "RewindData.h"
+#include "Chaos/DebugDrawQueue.h"
 
 namespace Chaos
 {
 
-// This is a temporary workaround to avoid GT copying position from physics results for kinematics, as they are already at target.
-// Velocity and such is still copied. This will be handled better in the future.
-int32 SyncKinematicOnGameThread = 0;
-FAutoConsoleVariableRef CVar_SyncKinematicOnGameThread(TEXT("P.Chaos.SyncKinematicOnGameThread"), SyncKinematicOnGameThread, TEXT("If set to 1, if a kinematic is flagged to send position back to game thread, move component, if 0, do not."));
+// This allows forcing the game thread/actor to get or not get transform updates from the simulation result for
+// kinematics - noting that they may already have been set in the SetKinematicTransform function.
+// Velocity and such will still be copied in any case. The default value of -1 uses the UpdateKinematicFromSimulation 
+// flag on the BodyInstance.
+CHAOS_API int32 SyncKinematicOnGameThread = -1;
+FAutoConsoleVariableRef CVar_SyncKinematicOnGameThread(TEXT("P.Chaos.SyncKinematicOnGameThread"), 
+	SyncKinematicOnGameThread, TEXT(
+		"If set to 1, kinematic bodies will always send their transforms back to the game thread, following the "
+		"simulation step/results. If 0, then they will never do so, and kinematics will be updated immediately "
+		"their kinematic target is set. Any other value (e.g. the default -1) means that the behavior is "
+		"determined on a per-object basis with the UpdateKinematicFromSimulation flag in BodyInstance."));
 
 FSingleParticlePhysicsProxy::FSingleParticlePhysicsProxy(TUniquePtr<PARTICLE_TYPE>&& InParticle, FParticleHandle* InHandle, UObject* InOwner)
 	: IPhysicsProxyBase(EPhysicsProxyType::SingleParticleProxy, InOwner, MakeShared<FSingleParticleProxyTimestamp>())
@@ -145,9 +153,9 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 			}
 		}
 		
-		if (bHasMaterial)
+		// If the material, geometry, shape data, or sleep properties changed, we need to notify any systems that cache material data
+		if (bHasMaterial || bUpdateCollisionData || NewNonFrequentData || bHasDynamicData)
 		{
-			// If materials changed, collisions need to recache their material data
 			Evolution.ParticleMaterialChanged(Handle);
 		}
 
@@ -169,6 +177,8 @@ void PushToPhysicsStateImp(const Chaos::FDirtyPropertiesManager& Manager, Chaos:
 
 			if(bHasCollision)
 			{
+				// destroy collision constraints so that mid-phase is recreated with newly added shapes if any
+				Evolution.DestroyTransientConstraints(Handle);
 				//make sure it's in acceleration structure
 				Evolution.DirtyParticle(*Handle);
 			}
@@ -244,30 +254,56 @@ void FSingleParticlePhysicsProxy::BufferPhysicsResults_External(Chaos::FDirtyRig
 	}
 }
 
-FRealSingle ResimInterpStrength = 0.2f;
-FAutoConsoleVariableRef CVarResimInterpStrength(TEXT("p.ResimInterpStrength"), ResimInterpStrength, TEXT("How strong the resim interp leash is. 1 means immediately snap to new target, 0 means do not interpolate at all"));
 
-FRealSingle ResimInterpStrength2 = 0.05f;
-FAutoConsoleVariableRef CVarResimInterpStrength2(TEXT("p.ResimInterpStrength2"), ResimInterpStrength2, TEXT("How strong the resim interp leash is for object in channel 2. 1 means immediately snap to new target, 0 means do not interpolate at all"));
+float RenderInterpErrorCorrectionDuration = 0.5f;
+FAutoConsoleVariableRef CVarRenderInterpErrorCorrectionDuration(TEXT("p.RenderInterp.ErrorCorrectionDuration"), RenderInterpErrorCorrectionDuration, TEXT("How long in seconds to apply error correction over."));
 
-FRealSingle MinLinError2ForResimInterp = 1.f;
-FAutoConsoleVariableRef CVarMinLinError2ForResimInterp(TEXT("p.MinLinError2ForResimInterp"), MinLinError2ForResimInterp, TEXT("The minimum squared error needed to continue interpolation during a resim"));
+float RenderInterpErrorVelocitySmoothingDuration = 0.5f;
+FAutoConsoleVariableRef CVarRenderInterpErrorVelocitySmoothingDuration(TEXT("p.RenderInterp.ErrorVelocitySmoothingDuration"), RenderInterpErrorVelocitySmoothingDuration, TEXT("How long in seconds to apply error velocity smoothing correction over, should be smaller than or equal to p.RenderInterp.ErrorCorrectionDuration. RENDERINTERPOLATION_VELOCITYSMOOTHING needs to be defined."));
 
-FRealSingle MinRotErrorForResimInterp = 0.1f;
-FAutoConsoleVariableRef CVarMinRotErrorForResimInterp(TEXT("p.MinRotErrorForResimInterp"), MinRotErrorForResimInterp, TEXT("The minimum rotation error needed to continue interpolation during a resim"));
+int32 RenderInterpDebugDraw = 0;
+FAutoConsoleVariableRef CVarRenderInterpDebugDraw(TEXT("p.RenderInterp.DebugDraw"), RenderInterpDebugDraw, TEXT("Draw debug lines for physics render interpolation, also needs p.Chaos.DebugDraw.Enabled set"));
 
-bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData,int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData, const Chaos::FRealSingle* Alpha)
+bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData,int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData, const Chaos::FRealSingle* Alpha, const FDirtyRigidParticleReplicationErrorData* Error, const Chaos::FReal AsyncFixedTimeStep)
 {
 	using namespace Chaos;
 	// Move buffered data into the TPBDRigidParticle without triggering invalidation of the physics state.
 	auto Rigid = Particle ? Particle->CastToRigidParticle() : nullptr;
 	if(Rigid)
 	{
-		const bool bSyncXR = SyncKinematicOnGameThread || (Rigid->ObjectState() != EObjectStateType::Kinematic);
+		// Note that kinematics should either be updated here (following simulation), or when the
+		// kinematic target is set in FChaosEngineInterface::SetKinematicTarget_AssumesLocked If the
+		// logic in one place is changed, it should be checked in the other place too.
+		bool bUpdatePositionFromSimulation = true;
+		if (Rigid->ObjectState() == EObjectStateType::Kinematic)
+		{
+			switch (SyncKinematicOnGameThread)
+			{
+			case 0:
+				bUpdatePositionFromSimulation = false ; break;
+			case 1: 
+				bUpdatePositionFromSimulation = true; break;
+			default:
+				bUpdatePositionFromSimulation = Rigid->UpdateKinematicFromSimulation();
+			}
+		}
 
 		const FSingleParticleProxyTimestamp* ProxyTimestamp = PullData.GetTimestamp();
 		
-		if(NextPullData)
+#if RENDERINTERP_ERRORVELOCITYSMOOTHING
+		const int32 RenderInterpErrorVelocitySmoothingDurationTicks = FMath::FloorToInt32(RenderInterpErrorVelocitySmoothingDuration / AsyncFixedTimeStep); // Convert duration from seconds to simulation ticks
+#endif
+
+		if (Error)
+		{
+			const int32 RenderInterpErrorCorrectionDurationTicks = FMath::FloorToInt32(RenderInterpErrorCorrectionDuration / AsyncFixedTimeStep); // Convert duration from seconds to simulation ticks
+			InterpolationData.AccumlateErrorXR(Error->ErrorX, Error->ErrorR, SolverSyncTimestamp, RenderInterpErrorCorrectionDurationTicks);
+#if RENDERINTERP_ERRORVELOCITYSMOOTHING
+			InterpolationData.SetVelocitySmoothing(Rigid->V(), Rigid->X(), RenderInterpErrorVelocitySmoothingDurationTicks);
+#endif
+		}
+
+		if (NextPullData)
 		{
 			auto LerpHelper = [SolverSyncTimestamp](const auto& Prev, const auto& OverwriteProperty) -> const auto*
 			{
@@ -279,43 +315,80 @@ bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidP
 				return OverwriteProperty.Timestamp <= SolverSyncTimestamp ? (OverwriteProperty.Timestamp < SolverSyncTimestamp ? &Prev : &OverwriteProperty.Value) : nullptr;
 			};
 
-			if (bSyncXR)
+			if (bUpdatePositionFromSimulation)
 			{
-				const float UseResimInterpStrength = InterpolationData.GetInterpChannel_External() == 0 ? ResimInterpStrength : ResimInterpStrength2;
+				const bool bIsReplicationErrorSmoothing = InterpolationData.IsErrorSmoothing();
+#if RENDERINTERP_ERRORVELOCITYSMOOTHING
+				const bool bIsErrorVelocitySmoothing = InterpolationData.IsErrorVelocitySmoothing();
+#endif
 
-				bool bKeepSmoothing = false;
+				InterpolationData.UpdateError(SolverSyncTimestamp, AsyncFixedTimeStep);
+
 				if (const FVec3* Prev = LerpHelper(PullData.X, ProxyTimestamp->OverWriteX))
 				{
 					FVec3 Target = FMath::Lerp(*Prev, NextPullData->X, *Alpha);
-					if (InterpolationData.IsResimSmoothing())
+					if (bIsReplicationErrorSmoothing)
 					{
-						const FVec3 SmoothedTarget = FMath::Lerp(Rigid->X(), Target, UseResimInterpStrength);
-						if((SmoothedTarget - Target).SizeSquared() > MinLinError2ForResimInterp)
-						{
-							bKeepSmoothing = true;
-							Target = SmoothedTarget;
-						}
+						Target += InterpolationData.GetErrorX(*Alpha);
 
+#if RENDERINTERP_ERRORVELOCITYSMOOTHING
+						if (bIsErrorVelocitySmoothing)
+						{
+#if CHAOS_DEBUG_DRAW
+							if (!!RenderInterpDebugDraw)
+							{
+								Chaos::FDebugDrawQueue::GetInstance().DrawDebugDirectionalArrow((Target - InterpolationData.GetErrorX(*Alpha)), Target, 1, FColor::Blue, false, 5.0f, 0, 0.5f);
+								Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(Target, FVector(2, 1, 1), Rigid->R(), FColor::Cyan, false, 5.f, 0, 0.25f);
+							}
+#endif // CHAOS_DEBUG_DRAW
+
+							Target = FMath::Lerp(Target, InterpolationData.GetErrorVelocitySmoothingX(*Alpha), InterpolationData.GetErrorVelocitySmoothingAlpha(RenderInterpErrorVelocitySmoothingDurationTicks));
+						}
+#endif // RENDERINTERP_ERRORVELOCITYSMOOTHING
 					}
-					Rigid->SetX(Target, false);
+
+					Rigid->SetX(Target, false);					
 				}
 
 				if (const FQuat* Prev = LerpHelper(PullData.R, ProxyTimestamp->OverWriteR))
 				{
 					FQuat Target = FMath::Lerp(*Prev, NextPullData->R, *Alpha);
-					if (InterpolationData.IsResimSmoothing())
+					if (bIsReplicationErrorSmoothing)
 					{
-						const FQuat SmoothedTarget = FMath::Lerp<FQuat>(Rigid->R(), Target, UseResimInterpStrength);
-						if(FQuat::ErrorAutoNormalize(SmoothedTarget, Target) > MinRotErrorForResimInterp)
-						{
-							bKeepSmoothing = true;
-							Target = SmoothedTarget;
-						}
+						Target = InterpolationData.GetErrorR(*Alpha) * Target;
 					}
 					Rigid->SetR(Target, false);
 				}
+				
+#if CHAOS_DEBUG_DRAW
+				if (!!RenderInterpDebugDraw)
+				{
+					Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(NextPullData->X, FVector(2, 1, 1), NextPullData->R, FColor::Yellow, false, 5.f, 0, 0.5f);
+					Chaos::FDebugDrawQueue::GetInstance().DrawDebugDirectionalArrow(PullData.X, NextPullData->X, 0.5f, FColor::Yellow, false, 5.0f, 0, 0.5f);
+					Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(Rigid->X(), FVector(2, 1, 1), Rigid->R(), FColor::Green, false, 5.f, 0, 0.5f);
 
-				InterpolationData.SetResimSmoothing(bKeepSmoothing);
+					if (bIsReplicationErrorSmoothing)
+					{
+						if (Error)
+						{
+							Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(PullData.X, FVector(4, 2, 2), PullData.R, FColor::Red, false, 5.f, 0, 0.5f);
+							Chaos::FDebugDrawQueue::GetInstance().DrawDebugDirectionalArrow(PullData.X, (PullData.X + InterpolationData.GetErrorX(0)), 1, FColor::Red, false, 5.0f, 0, 0.5f);
+						}
+
+#if RENDERINTERP_ERRORVELOCITYSMOOTHING
+						if (bIsErrorVelocitySmoothing)
+						{
+							Chaos::FDebugDrawQueue::GetInstance().DrawDebugBox(InterpolationData.GetErrorVelocitySmoothingX(*Alpha), FVector(2, 2, 2), Rigid->R(), FColor::Purple, false, 5.f, 0, 0.5f);
+						}
+						else
+#endif // RENDERINTERP_ERRORVELOCITYSMOOTHING
+						{
+							Chaos::FDebugDrawQueue::GetInstance().DrawDebugDirectionalArrow((Rigid->X() - InterpolationData.GetErrorX(*Alpha)), Rigid->X(), 1, FColor::Blue, false, 5.0f, 0, 0.5f);
+						}
+					}
+
+				}
+#endif // CHAOS_DEBUG_DRAW
 			}
 
 			if (const FVec3* Prev = LerpHelper(PullData.V, ProxyTimestamp->OverWriteV))
@@ -345,7 +418,7 @@ bool FSingleParticlePhysicsProxy::PullFromPhysicsState(const Chaos::FDirtyRigidP
 		}
 		else
 		{
-			if (bSyncXR)
+			if (bUpdatePositionFromSimulation)
 			{
 				//no interpolation, just ignore if overwrite comes after
 				if (SolverSyncTimestamp >= ProxyTimestamp->OverWriteX.Timestamp)

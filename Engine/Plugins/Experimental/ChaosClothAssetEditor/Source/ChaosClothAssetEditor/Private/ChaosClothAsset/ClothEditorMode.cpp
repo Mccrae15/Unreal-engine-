@@ -5,11 +5,14 @@
 #include "ChaosClothAsset/ClothEditorModeToolkit.h"
 #include "ChaosClothAsset/ClothAsset.h"
 #include "ChaosClothAsset/ClothComponent.h"
-#include "ChaosClothAsset/ClothCollection.h"
-#include "ChaosClothAsset/ClothAdapter.h"
+#include "ChaosClothAsset/CollectionClothFacade.h"
 #include "ChaosClothAsset/ClothEditorRestSpaceViewportClient.h"
 #include "ChaosClothAsset/ClothPatternToDynamicMesh.h"
 #include "ChaosClothAsset/ClothEditorPreviewScene.h"
+#include "ChaosClothAsset/ClothEditorContextObject.h"
+#include "ChaosClothAsset/AddWeightMapNode.h"
+#include "ChaosClothAsset/TransferSkinWeightsNode.h"
+#include "ChaosClothAsset/SelectionNode.h"
 #include "AssetEditorModeManager.h"
 #include "Drawing/MeshElementsVisualizer.h"
 #include "EditorViewportClient.h"
@@ -34,8 +37,8 @@
 #include "AttributeEditorTool.h"
 #include "MeshAttributePaintTool.h"
 #include "ChaosClothAsset/ClothWeightMapPaintTool.h"
-#include "ChaosClothAsset/ClothTrainingTool.h"
 #include "ChaosClothAsset/ClothTransferSkinWeightsTool.h"
+#include "ChaosClothAsset/ClothMeshSelectionTool.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "DynamicMesh/DynamicVertexSkinWeightsAttribute.h"
 #include "DynamicMeshEditor.h"
@@ -52,6 +55,15 @@
 #include "ToolSetupUtil.h"
 #include "Dataflow/DataflowComponent.h"
 #include "Elements/Framework/EngineElementsLibrary.h"
+#include "ToolTargets/SkeletalMeshComponentToolTarget.h"
+#include "Dataflow/DataflowGraphEditor.h"
+#include "ContextObjectStore.h"
+#include "BaseGizmos/TransformGizmoUtil.h"
+#include "Materials/Material.h"
+#include "MaterialDomain.h"
+#include "Dataflow/DataflowSNode.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "ChaosClothAsset/ClothEditorToolBuilder.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ClothEditorMode)
 
@@ -62,31 +74,13 @@ const FEditorModeID UChaosClothAssetEditorMode::EM_ChaosClothAssetEditorModeId =
 
 namespace ChaosClothAssetEditorModeHelpers
 {
-	TArray<FName> GetClothAssetWeightMapNames(const UE::Chaos::ClothAsset::FClothAdapter& ClothAdapter)
+	void RemoveClothWeightMaps(UE::Chaos::ClothAsset::FCollectionClothFacade& ClothFacade, const TArray<FName>& WeightMapNames)
 	{
-		const TSharedPtr<const UE::Chaos::ClothAsset::FClothCollection> ClothCollection = ClothAdapter.FClothConstAdapter::GetClothCollection();
-
-		TArray<FName> OutWeightMapNames;
-		const TArray<FName> SimVerticesAttributeNames = ClothCollection->AttributeNames(UE::Chaos::ClothAsset::FClothCollection::SimVerticesGroup);
-		for (const FName& AttributeName : SimVerticesAttributeNames)
+		for (const FName& WeightMapName : WeightMapNames)
 		{
-			if (ClothCollection->FindAttributeTyped<float>(AttributeName, UE::Chaos::ClothAsset::FClothCollection::SimVerticesGroup))
+			if (ClothFacade.HasWeightMap(WeightMapName))
 			{
-				OutWeightMapNames.Add(AttributeName);
-			}
-		}
-
-		return OutWeightMapNames;
-	}
-
-	void RemoveClothWeightMaps(UE::Chaos::ClothAsset::FClothAdapter& ClothAdapter, const TArray<FName>& WeightMapNames)
-	{
-		const TSharedPtr<const UE::Chaos::ClothAsset::FClothCollection> ClothCollection = ClothAdapter.GetClothCollection();
-		for (const FName& RemovedMap : WeightMapNames)
-		{
-			if (ClothCollection->FindAttributeTyped<float>(RemovedMap, UE::Chaos::ClothAsset::FClothCollection::SimVerticesGroup))
-			{
-				ClothAdapter.RemoveWeightMap(RemovedMap);
+				ClothFacade.RemoveWeightMap(WeightMapName);
 			}
 		}
 	}
@@ -131,34 +125,8 @@ void UChaosClothAssetEditorMode::Enter()
 {
 	UBaseCharacterFXEditorMode::Enter();
 
-	SelectionModifiedEventHandle = USelection::SelectionChangedEvent.AddLambda([this](UObject*)
-	{
-		if (!GetModeManager() || !GetModeManager()->GetSelectedComponents())
-		{
-			return;
-		}
-
-		constexpr FColor UnselectedColor = FColor(128, 128, 128);
-		const FColor SelectedColor = GetDefault<UEditorStyleSettings>()->SelectionColor.ToFColor(true);
-
-		const USelection* const SelectedComponents = GetModeManager()->GetSelectedComponents();
-
-		check(DynamicMeshComponents.Num() == WireframesToTick.Num());
-
-		for (int MeshIndex = 0; MeshIndex < WireframesToTick.Num(); ++MeshIndex)
-		{
-			const TObjectPtr<UMeshElementsVisualizer> WireframeDisplay = WireframesToTick[MeshIndex];
-			if (SelectedComponents->IsSelected(DynamicMeshComponents[MeshIndex]))
-			{
-				WireframeDisplay->Settings->WireframeColor = SelectedColor;
-			}
-			else
-			{
-				WireframeDisplay->Settings->WireframeColor = UnselectedColor;
-			}
-		}
-	});
-
+	// Register gizmo ContextObject for use inside interactive tools
+	UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(GetInteractiveToolsContext());
 }
 
 void UChaosClothAssetEditorMode::AddToolTargetFactories()
@@ -167,63 +135,195 @@ void UChaosClothAssetEditorMode::AddToolTargetFactories()
 	GetInteractiveToolsContext()->TargetManager->AddTargetFactory(NewObject<UClothComponentToolTargetFactory>(GetToolManager()));
 }
 
+void UChaosClothAssetEditorMode::RegisterClothTool(TSharedPtr<FUICommandInfo> UICommand, 
+	FString ToolIdentifier, 
+	UInteractiveToolBuilder* Builder, 
+	const IChaosClothAssetEditorToolBuilder* ClothToolBuilder,
+	UEditorInteractiveToolsContext* const ToolsContext, 
+	EToolsContextScope ToolScope)
+{
+	if (!Toolkit.IsValid())
+	{
+		return;
+	}
+
+	if (!ToolsContext)
+	{
+		return;
+	}
+
+	if (ToolScope == EToolsContextScope::Default)
+	{
+		ToolScope = GetDefaultToolScope();
+	}
+	ensure(ToolScope != EToolsContextScope::Editor);
+
+	ToolsContext->ToolManager->RegisterToolType(ToolIdentifier, Builder);
+
+	const TSharedRef<FUICommandList>& CommandList = Toolkit->GetToolkitCommands();
+
+	CommandList->MapAction(UICommand,
+		FExecuteAction::CreateWeakLambda(ToolsContext, [this, ToolsContext, ToolIdentifier, ClothToolBuilder]()
+		{
+			// Check if we need to switch view modes before starting the tool
+			TArray<UE::Chaos::ClothAsset::EClothPatternVertexType> SupportedModes;
+			ClothToolBuilder->GetSupportedViewModes(SupportedModes);
+
+			if (SupportedModes.Num() > 0 && !SupportedModes.Contains(this->GetConstructionViewMode()))
+			{
+				if (!bShouldRestoreSavedConstructionViewMode)
+				{
+					// remember the current view mode so we can restore it later
+					SavedConstructionViewMode = this->GetConstructionViewMode();	
+					bShouldRestoreSavedConstructionViewMode = true;
+				}
+
+				// switch to the preferred view mode for the tool that's about to start
+				this->SetConstructionViewMode(SupportedModes[0]);
+			}
+
+			// Check if we need to disable wireframe mode before starting tool.
+			const bool bCanSetWireframeActive = ClothToolBuilder->CanSetConstructionViewWireframeActive();
+			if (!bCanSetWireframeActive)
+			{
+				if (!bShouldRestoreConstructionViewWireframe)
+				{
+					bShouldRestoreConstructionViewWireframe = bConstructionViewWireframe;
+				}
+				bConstructionViewWireframe = false;
+			}
+
+			ActiveToolsContext = ToolsContext;
+			ToolsContext->StartTool(ToolIdentifier);
+		}),
+		FCanExecuteAction::CreateWeakLambda(ToolsContext, [this, ToolIdentifier, ToolsContext]() 
+		{
+			return ShouldToolStartBeAllowed(ToolIdentifier) &&
+			ToolsContext->ToolManager->CanActivateTool(EToolSide::Mouse, ToolIdentifier);
+		}),
+		FIsActionChecked::CreateUObject(ToolsContext, &UEdModeInteractiveToolsContext::IsToolActive, EToolSide::Mouse, ToolIdentifier),
+		EUIActionRepeatMode::RepeatDisabled);
+
+}
+
+void UChaosClothAssetEditorMode::RegisterAddNodeCommand(TSharedPtr<FUICommandInfo> AddNodeCommand, const FName& NewNodeType, TSharedPtr<FUICommandInfo> StartToolCommand)
+{
+	auto AddNode = [this](const FName& NewNodeType)
+	{
+		const FName ConnectionType = FManagedArrayCollection::StaticType();
+		const FName ConnectionName("Collection");
+
+		UEdGraphNode* const CurrentlySelectedNode = GetSingleSelectedNodeWithOutputType(ConnectionType);
+		checkf(CurrentlySelectedNode, TEXT("No node with FManagedArrayCollection output is currently selected in the Dataflow graph"));
+
+		const UEdGraphNode* const NewNode = CreateAndConnectNewNode(NewNodeType, *CurrentlySelectedNode, ConnectionType, ConnectionName);
+		verifyf(NewNode, TEXT("Failed to create a new node: %s"), *NewNodeType.ToString());
+
+		StartToolForSelectedNode(NewNode);
+	};
+
+	auto CanAddNode = [this](const FName& NewNodeType) -> bool
+	{
+		const UEdGraphNode* const CurrentlySelectedNode = GetSingleSelectedNodeWithOutputType(FManagedArrayCollection::StaticType());
+		return (CurrentlySelectedNode != nullptr);
+	};
+
+	const TSharedRef<FUICommandList>& CommandList = Toolkit->GetToolkitCommands();
+
+	CommandList->MapAction(AddNodeCommand,
+		FExecuteAction::CreateWeakLambda(this, AddNode, NewNodeType),
+		FCanExecuteAction::CreateWeakLambda(this, CanAddNode, NewNodeType)
+	);
+
+	NodeTypeToToolCommandMap.Add(NewNodeType, StartToolCommand);
+}
+
+
+void UChaosClothAssetEditorMode::RegisterPreviewTools()
+{
+}
+
 void UChaosClothAssetEditorMode::RegisterTools()
 {
+	using namespace UE::Chaos::ClothAsset;
+
 	const FChaosClothAssetEditorCommands& CommandInfos = FChaosClothAssetEditorCommands::Get();
 
-	// Note that the identifiers below need to match the command names so that the tool icons can 
-	// be easily retrieved from the active tool name in ChaosClothAssetEditorModeToolkit::OnToolStarted. Otherwise
-	// we would need to keep some other mapping from tool identifier to tool icon.
+	UEditorInteractiveToolsContext* const ConstructionViewportToolsContext = GetInteractiveToolsContext();
 
-	// TODO: Re-add the remesh tool when we have a way to remesh both 2d and 3d rest space meshes at the same time
-	//RegisterTool(CommandInfos.BeginRemeshTool, FChaosClothAssetEditorCommands::BeginRemeshToolIdentifier, NewObject<URemeshMeshToolBuilder>());
+	UClothEditorWeightMapPaintToolBuilder* WeightMapPaintToolBuilder = NewObject<UClothEditorWeightMapPaintToolBuilder>();
+	RegisterClothTool(CommandInfos.BeginWeightMapPaintTool, FChaosClothAssetEditorCommands::BeginWeightMapPaintToolIdentifier, WeightMapPaintToolBuilder, WeightMapPaintToolBuilder, ConstructionViewportToolsContext);
+	RegisterAddNodeCommand(CommandInfos.AddWeightMapNode, FChaosClothAssetAddWeightMapNode::StaticType(), CommandInfos.BeginWeightMapPaintTool);
 
-	RegisterTool(CommandInfos.BeginAttributeEditorTool, FChaosClothAssetEditorCommands::BeginAttributeEditorToolIdentifier, NewObject<UAttributeEditorToolBuilder>());
-	RegisterTool(CommandInfos.BeginWeightMapPaintTool, FChaosClothAssetEditorCommands::BeginWeightMapPaintToolIdentifier, NewObject<UClothEditorWeightMapPaintToolBuilder>());
-	RegisterTool(CommandInfos.BeginClothTrainingTool, FChaosClothAssetEditorCommands::BeginClothTrainingToolIdentifier, NewObject<UClothTrainingToolBuilder>());
-	RegisterTool(CommandInfos.BeginTransferSkinWeightsTool, FChaosClothAssetEditorCommands::BeginTransferSkinWeightsToolIdentifier, NewObject<UClothTransferSkinWeightsToolBuilder>());
+	UClothTransferSkinWeightsToolBuilder* TransferToolBuilder = NewObject<UClothTransferSkinWeightsToolBuilder>();
+	RegisterClothTool(CommandInfos.BeginTransferSkinWeightsTool, FChaosClothAssetEditorCommands::BeginTransferSkinWeightsToolIdentifier, TransferToolBuilder, TransferToolBuilder, ConstructionViewportToolsContext);
+	RegisterAddNodeCommand(CommandInfos.AddTransferSkinWeightsNode, FChaosClothAssetTransferSkinWeightsNode::StaticType(), CommandInfos.BeginTransferSkinWeightsTool);
+
+	UClothMeshSelectionToolBuilder* SelectionToolBuilder = NewObject<UClothMeshSelectionToolBuilder>();
+	RegisterClothTool(CommandInfos.BeginMeshSelectionTool, FChaosClothAssetEditorCommands::BeginMeshSelectionToolIdentifier, SelectionToolBuilder, SelectionToolBuilder, ConstructionViewportToolsContext);
+	RegisterAddNodeCommand(CommandInfos.AddMeshSelectionNode, FChaosClothAssetSelectionNode::StaticType(), CommandInfos.BeginMeshSelectionTool);
 }
 
 bool UChaosClothAssetEditorMode::ShouldToolStartBeAllowed(const FString& ToolIdentifier) const
 {
-	// For now we've decided to disallow switch-away on accept/cancel tools in the Cloth editor.
-	if (GetInteractiveToolsContext()->ActiveToolHasAccept())
+	// Allow switching away from tool if no changes have been made in the tool yet (which we infer from the CanAccept status)
+	if (GetInteractiveToolsContext()->CanAcceptActiveTool())
 	{
 		return false;
 	}
 	
+	if (PreviewScene && PreviewScene->GetClothPreviewEditorModeManager() && PreviewScene->GetClothPreviewEditorModeManager()->GetInteractiveToolsContext())
+	{
+		if (PreviewScene->GetClothPreviewEditorModeManager()->GetInteractiveToolsContext()->HasActiveTool())
+		{
+			return false;
+		}
+	}
+
 	return Super::ShouldToolStartBeAllowed(ToolIdentifier);
 }
 
 void UChaosClothAssetEditorMode::CreateToolkit()
 {
-	Toolkit = MakeShared<FChaosClothAssetEditorModeToolkit>();
+	Toolkit = MakeShared<UE::Chaos::ClothAsset::FChaosClothAssetEditorModeToolkit>();
 }
 
 void UChaosClothAssetEditorMode::OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
 {
-	FChaosClothAssetEditorCommands::UpdateToolCommandBinding(Tool, ToolCommandList, false);
+	using namespace UE::Chaos::ClothAsset;
 
-	bCanTogglePattern2DMode = false;
+	FChaosClothAssetEditorCommands::UpdateToolCommandBinding(Tool, ToolCommandList, false);
 }
 
 void UChaosClothAssetEditorMode::OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
 {
-	FChaosClothAssetEditorCommands::UpdateToolCommandBinding(Tool, ToolCommandList, true);
+	UE::Chaos::ClothAsset::FChaosClothAssetEditorCommands::UpdateToolCommandBinding(Tool, ToolCommandList, true);
 
-	bCanTogglePattern2DMode = true;
+	if (bShouldRestoreConstructionViewWireframe)
+	{
+		bConstructionViewWireframe = true;
+		bShouldRestoreConstructionViewWireframe = false;
+	}
 
-	UpdateSimulationMeshes();
-	ReinitializeDynamicMeshComponents();
-}
+	if (bShouldRestoreSavedConstructionViewMode)
+	{
+		SetConstructionViewMode(SavedConstructionViewMode);
+		bShouldRestoreSavedConstructionViewMode = false;
+	}
+	else
+	{
+		ReinitializeDynamicMeshComponents();
+	}
 
-void UChaosClothAssetEditorMode::PostUndo()
-{
-	ReinitializeDynamicMeshComponents();
+	if (TSharedPtr<SDataflowGraphEditor> GraphEditor = DataflowGraphEditor.Pin())
+	{
+		GraphEditor->SetEnabled(true);
+	}
 }
 
 void UChaosClothAssetEditorMode::BindCommands()
 {
+	using namespace UE::Chaos::ClothAsset;
 	const FChaosClothAssetEditorCommands& CommandInfos = FChaosClothAssetEditorCommands::Get();
 	const TSharedRef<FUICommandList>& CommandList = Toolkit->GetToolkitCommands();
 
@@ -252,115 +352,59 @@ void UChaosClothAssetEditorMode::BindCommands()
 
 void UChaosClothAssetEditorMode::Exit()
 {
-	USelection::SelectionChangedEvent.Remove(SelectionModifiedEventHandle);
 	UActorComponent::MarkRenderStateDirtyEvent.RemoveAll(this);
 
-	for (TObjectPtr<UDynamicMeshComponent> DynamicMeshComp : DynamicMeshComponents)
+	if (DynamicMeshComponent)
 	{
-		DynamicMeshComp->UnregisterComponent();
-		DynamicMeshComp->SelectionOverrideDelegate.Unbind();
+		DynamicMeshComponent->UnregisterComponent();
+		DynamicMeshComponent->SelectionOverrideDelegate.Unbind();
+	}
+	DynamicMeshComponent = nullptr;
+	DynamicMeshComponentParentActor = nullptr;
+
+	if (WireframeToTick)
+	{
+		WireframeToTick->Disconnect();
+	}
+	WireframeToTick = nullptr;
+
+	if (DataflowComponent)
+	{
+		DataflowComponent->UnregisterComponent();
+		DataflowComponent->DestroyComponent();
 	}
 
-	for (TObjectPtr<UMeshElementsVisualizer> WireframeDisplay : WireframesToTick)
-	{
-		WireframeDisplay->Disconnect();
-	}
-	WireframesToTick.Reset();
-	DynamicMeshComponents.Reset();
 	PropertyObjectsToTick.Empty();
 	PreviewScene = nullptr;
 
 	Super::Exit();
 }
 
-void UChaosClothAssetEditorMode::SetPreviewScene(FChaosClothPreviewScene* InPreviewScene)
+void UChaosClothAssetEditorMode::SetPreviewScene(UE::Chaos::ClothAsset::FChaosClothPreviewScene* InPreviewScene)
 {
+	using namespace UE::Chaos::ClothAsset;
+
 	PreviewScene = InPreviewScene;
-}
 
-void UChaosClothAssetEditorMode::UpdateSimulationMeshes()
-{
-	GetToolManager()->BeginUndoTransaction(LOCTEXT("ChaosClothAssetEditorApplyChangesTransaction", "Cloth Editor Apply Changes"));
 
-	UChaosClothAsset* ChaosClothAsset = PreviewScene->ClothComponent->GetClothAsset();
-	ChaosClothAsset->Modify();
+	UEditorInteractiveToolsContext* const PreviewToolsContext = PreviewScene->GetClothPreviewEditorModeManager()->GetInteractiveToolsContext();
+	UInteractiveToolManager* const PreviewToolManager = PreviewToolsContext->ToolManager;
+	PreviewToolsContext->TargetManager->AddTargetFactory(NewObject<UClothComponentToolTargetFactory>(PreviewToolManager));
+	PreviewToolsContext->TargetManager->AddTargetFactory(NewObject<USkeletalMeshComponentToolTargetFactory>(PreviewToolManager));
 
-	UE::Chaos::ClothAsset::FClothAdapter ClothAdapter(ChaosClothAsset->GetClothCollection());
+	PreviewToolManager->OnToolStarted.AddUObject(this, &UChaosClothAssetEditorMode::OnToolStarted);
+	PreviewToolManager->OnToolEnded.AddUObject(this, &UChaosClothAssetEditorMode::OnToolEnded);
 
-	check(DynamicMeshSourceInfos.Num() == DynamicMeshComponents.Num());
+	check(Toolkit.IsValid());
+	
+	// FBaseToolkit's OnToolStarted and OnToolEnded are protected, so we use the subclass to get at them
+	FChaosClothAssetEditorModeToolkit* const ClothModeToolkit = static_cast<FChaosClothAssetEditorModeToolkit*>(Toolkit.Get());	
 
-	// Search for weight map names that are in the original cloth asset, but are not in *all* dynamic mesh components. These are weight maps
-	// that have been removed by one of the mesh tools, and so should be removed from the asset.
-	const TSet<FName> ClothAssetWeightMapNames = TSet<FName>(ChaosClothAssetEditorModeHelpers::GetClothAssetWeightMapNames(ClothAdapter));
-	TSet<FName> CommonDynamicMeshWeightMapNames;
-	bool bFirstIteration = true;
+	PreviewToolManager->OnToolStarted.AddSP(ClothModeToolkit, &FChaosClothAssetEditorModeToolkit::OnToolStarted);
+	PreviewToolManager->OnToolEnded.AddSP(ClothModeToolkit, &FChaosClothAssetEditorModeToolkit::OnToolEnded);
 
-	for (int DynamicMeshIndex = 0; DynamicMeshIndex < DynamicMeshComponents.Num(); ++DynamicMeshIndex)
-	{
-		const int32 LodIndex = DynamicMeshSourceInfos[DynamicMeshIndex].LodIndex;
-		const int32 PatternIndex = DynamicMeshSourceInfos[DynamicMeshIndex].PatternIndex;
-
-		UE::Chaos::ClothAsset::FClothLodAdapter ClothLodAdapter = ClothAdapter.GetLod(LodIndex);
-		UE::Chaos::ClothAsset::FClothPatternAdapter ClothPatternAdapter = ClothLodAdapter.GetPattern(PatternIndex);
-
-		const UDynamicMeshComponent& DynamicMeshComponent = *DynamicMeshComponents[DynamicMeshIndex];
-		const UE::Geometry::FDynamicMesh3* DynamicMesh = DynamicMeshComponent.GetMesh();
-
-		//
-		// TODO: Set vertices and triangles on the pattern, e.g.:
-		// void Initialize(const TArray<FVector2f>& Positions, const TArray<FVector3f>& RestPositions, const TArray<uint32>& Indices)
-		//
-
-		//
-		// Weight maps
-		//
-
-		if (!DynamicMesh->HasAttributes() || DynamicMesh->Attributes()->NumWeightLayers() == 0)
-		{
-			continue;
-		}
-		 
-		const TSet<FName> DynamicMeshWeightMapNames(ChaosClothAssetEditorModeHelpers::GetDynamicMeshWeightMapNames(*DynamicMesh));
-		if (bFirstIteration)
-		{
-			CommonDynamicMeshWeightMapNames = DynamicMeshWeightMapNames;
-			bFirstIteration = false;
-		}
-		else
-		{
-			CommonDynamicMeshWeightMapNames = CommonDynamicMeshWeightMapNames.Intersect(DynamicMeshWeightMapNames);
-		}
-
-		const int NumInputWeightElements = DynamicMesh->MaxVertexID();
-
-		for (int32 DynamicMeshWeightMapIndex = 0; DynamicMeshWeightMapIndex < DynamicMesh->Attributes()->NumWeightLayers(); ++DynamicMeshWeightMapIndex)
-		{
-			const UE::Geometry::FDynamicMeshWeightAttribute* WeightMapAttribute = DynamicMesh->Attributes()->GetWeightLayer(DynamicMeshWeightMapIndex);
-			const FName WeightMapName = WeightMapAttribute->GetName();
-
-			ClothAdapter.AddWeightMap(WeightMapName);		// Does nothing if weight map already exists
-
-			TArrayView<float> PatternWeights = ClothPatternAdapter.GetWeightMap(WeightMapName);
-			for (int VertexID = 0; VertexID < NumInputWeightElements; ++VertexID)
-			{
-				float Val;
-				WeightMapAttribute->GetValue(VertexID, &Val);
-				PatternWeights[VertexID] = Val;
-			}
-		}
-	}
-
-	const TSet<FName> WeightMapsToRemove = ClothAssetWeightMapNames.Difference(CommonDynamicMeshWeightMapNames);
-	ChaosClothAssetEditorModeHelpers::RemoveClothWeightMaps(ClothAdapter, WeightMapsToRemove.Array());
-
-	ChaosClothAsset->Build();
-
-	// Reset cloth component
-	{
-		const FComponentReregisterContext Context(PreviewScene->ClothComponent);
-	}
-
-	GetToolManager()->EndUndoTransaction();
+	// TODO: It would be nice if the PreviewScene could be specified before the UBaseCharacterFXEditorMode::Enter() function is called. Then we could register both sets of tools from there.
+	RegisterPreviewTools();
 }
 
 void UChaosClothAssetEditorMode::CreateToolTargets(const TArray<TObjectPtr<UObject>>& AssetsIn) 
@@ -388,205 +432,206 @@ bool UChaosClothAssetEditorMode::IsComponentSelected(const UPrimitiveComponent* 
 }
 
 
+void UChaosClothAssetEditorMode::SetSelectedClothCollection(TSharedPtr<FManagedArrayCollection> Collection)
+{
+	SelectedClothCollection = Collection;
+	ReinitializeDynamicMeshComponents();
+
+	// The first time we get a valid mesh, refocus the camera on it
+	FirstTimeFocusRestSpaceViewport();
+}
+
+TSharedPtr<FManagedArrayCollection> UChaosClothAssetEditorMode::GetClothCollection()
+{
+	return SelectedClothCollection;
+
+	// TODO: If no cloth collection node is selected, show the ClothAsset's collection. In this case, also ensure that any interactive tools are disabled. (UE-181574)
+}
+
+
 void UChaosClothAssetEditorMode::ReinitializeDynamicMeshComponents()
 {
-	// Clean up any existing DynamicMeshComponents
-	// Save indices of selected mesh components
-	TArray<int32> PreviouslySelectedDynamicMeshComponents;
-	const int32 TotalNumberExistingDynamicMeshComponents = DynamicMeshComponents.Num();
+	using namespace UE::Chaos::ClothAsset;
 
-	USelection* SelectedComponents = GetModeManager()->GetSelectedComponents();
-	for (int32 DynamicMeshComponentIndex = 0; DynamicMeshComponentIndex < DynamicMeshComponents.Num(); ++DynamicMeshComponentIndex)
+	auto SetUpDynamicMeshComponentMaterial = [this](const UE::Chaos::ClothAsset::FCollectionClothConstFacade& ClothFacade, UDynamicMeshComponent& MeshComponent)
 	{
-		// TODO: Check for any outstanding changes on the dynamic mesh component?
-
-		TObjectPtr<UDynamicMeshComponent> DynamicMeshComp = DynamicMeshComponents[DynamicMeshComponentIndex];
-		DynamicMeshComp->UnregisterComponent();
-		DynamicMeshComp->SelectionOverrideDelegate.Unbind();
-
-		if (SelectedComponents->IsSelected(DynamicMeshComp))
+		switch (ConstructionViewMode)
 		{
-			PreviouslySelectedDynamicMeshComponents.Add(DynamicMeshComponentIndex);
-			SelectedComponents->Deselect(DynamicMeshComp);
-		}
-	}
-
-	for (const TObjectPtr<UMeshElementsVisualizer> Wireframe : WireframesToTick)
-	{
-		Wireframe->Disconnect();
-	}
-
-	DynamicMeshComponents.Empty();
-	DynamicMeshComponentParentActors.Empty();
-	PropertyObjectsToTick.Empty();	// TODO: We only want to empty the wireframe display properties. Is anything else using this array?
-	WireframesToTick.Empty();
-	DynamicMeshSourceInfos.Empty();
-
-	if (!PreviewScene->ClothComponent)
-	{
-		return;
-	}
-
-	const UChaosClothAsset* ChaosClothAsset = PreviewScene->ClothComponent->GetClothAsset();
-
-	if (!ChaosClothAsset)
-	{
-		return;
-	}
-
-	const UE::Chaos::ClothAsset::FClothConstAdapter ClothAdapter(ChaosClothAsset->GetClothCollection());
-
-	for (int32 LodIndex = 0; LodIndex < ClothAdapter.GetNumLods(); ++LodIndex)
-	{
-		const UE::Chaos::ClothAsset::FClothLodConstAdapter ClothLodAdapter = ClothAdapter.GetLod(LodIndex);
-
-		if (bCombineAllPatterns)
-		{
-			// TODO: Enable a mode where all patterns are edited as one dynamic mesh component. Will require some fun bookkeeping.
-			check(0);
-		}
-		else
-		{
-			const int32 NumComponents = ClothLodAdapter.GetNumPatterns();
-			DynamicMeshComponents.SetNum(NumComponents);
-			DynamicMeshComponentParentActors.SetNum(NumComponents);
-
-			for (int32 PatternIndex = 0; PatternIndex < ClothLodAdapter.GetNumPatterns(); ++PatternIndex)
+			case EClothPatternVertexType::Sim2D:
 			{
-				UE::Geometry::FDynamicMesh3 PatternMesh;
-				FClothPatternToDynamicMesh Converter;
-				Converter.Convert(ChaosClothAsset, LodIndex, PatternIndex, bPattern2DMode, PatternMesh);
-
-				// We only need an actor to allow use of HHitProxy for selection
-				const FRotator Rotation(0.0f, 0.0f, 0.0f);
-				const FActorSpawnParameters SpawnInfo;
-				const TObjectPtr<AActor> ParentActor = this->GetWorld()->SpawnActor<AActor>(FVector::ZeroVector, Rotation, SpawnInfo);
-				DynamicMeshComponentParentActors[PatternIndex] = ParentActor;
-
-				TObjectPtr<UDynamicMeshComponent> PatternMeshComponent = NewObject<UDynamicMeshComponent>(ParentActor);
-				PatternMeshComponent->SetMesh(MoveTemp(PatternMesh));
-
-				PatternMeshComponent->SelectionOverrideDelegate = UPrimitiveComponent::FSelectionOverride::CreateUObject(this, &UChaosClothAssetEditorMode::IsComponentSelected);
-
-				UMaterialInterface* Material = ToolSetupUtil::GetDefaultSculptMaterial(GetToolManager());
-				UMaterialInstanceDynamic* MatInstance = UMaterialInstanceDynamic::Create(Material, GetToolManager());
-				MatInstance->SetVectorParameterValue(TEXT("Color"), FLinearColor::Gray);
-				MatInstance->TwoSided = 1;
-				PatternMeshComponent->SetMaterial(0, MatInstance);
-
-				if (bPattern2DMode)
+				UMaterialInterface* const Material = ToolSetupUtil::GetCustomTwoSidedDepthOffsetMaterial(GetToolManager(), FLinearColor{ 0.6, 0.6, 0.6 }, 0.0);
+				MeshComponent.SetMaterial(0, Material);
+			}
+			break;
+			case EClothPatternVertexType::Sim3D:
+			{
+				UMaterialInterface* const Material = ToolSetupUtil::GetDefaultSculptMaterial(GetToolManager());
+				MeshComponent.SetMaterial(0, Material);
+			}
+			break;
+			case EClothPatternVertexType::Render:
+			{
+				const TArrayView<const FString> MaterialPaths = ClothFacade.GetRenderMaterialPathName();
+				for (int32 MaterialIndex = 0; MaterialIndex < MaterialPaths.Num(); ++MaterialIndex)
 				{
-					// The LVT_OrthoXY viewport transform results in the positive y axis pointing down in screen space. The following transform rotates 
-					// the mesh around the z axis so that increasing y value in the cloth asset corresponds to "up" in screen space
-					PatternMeshComponent->SetWorldRotation(FQuat(FVector(0,0,1), FMathd::Pi));
+					const FString& Path = MaterialPaths[MaterialIndex];
+					UMaterialInterface* const Material = LoadObject<UMaterialInterface>(nullptr, *Path);
+					MeshComponent.SetMaterial(MaterialIndex, Material);
 				}
 
-				PatternMeshComponent->RegisterComponentWithWorld(this->GetWorld());
-				DynamicMeshComponents[PatternIndex] = PatternMeshComponent;
-				DynamicMeshSourceInfos.Add(FDynamicMeshSourceInfo{ LodIndex, PatternIndex });
-			}
-		}
+				// Fix up any triangles without valid material IDs
+				int32 DefaultMaterialID = INDEX_NONE;
+				for (const int32 TriID : MeshComponent.GetMesh()->TriangleIndicesItr())
+				{
+					const int32 MaterialID = MeshComponent.GetMesh()->Attributes()->GetMaterialID()->GetValue(TriID);
+					if (!MeshComponent.GetMaterial(MaterialID))
+					{
+						if (DefaultMaterialID == INDEX_NONE)
+						{
+							DefaultMaterialID = MeshComponent.GetNumMaterials();
+							MeshComponent.SetMaterial(DefaultMaterialID, UMaterial::GetDefaultMaterial(MD_Surface));
+						}
+						MeshComponent.GetMesh()->Attributes()->GetMaterialID()->SetValue(TriID, DefaultMaterialID);
+					}
+				}
 
-		// If we found any patterns, use this LOD
-		// TODO: Give the user the ability to specify which LOD to display
-		if (ClothLodAdapter.GetNumPatterns() > 0)
-		{
+			}
 			break;
 		}
+	};
+	
+	// Clean up existing DynamicMeshComponent
+	// Save indices of selected mesh components
+
+	USelection* SelectedComponents = GetModeManager()->GetSelectedComponents();
+
+	if (DynamicMeshComponent)
+	{
+		DynamicMeshComponent->UnregisterComponent();
+		DynamicMeshComponent->SelectionOverrideDelegate.Unbind();
+
+		if (SelectedComponents->IsSelected(DynamicMeshComponent))
+		{
+			SelectedComponents->Deselect(DynamicMeshComponent);
+			DynamicMeshComponent->PushSelectionToProxy();
+		}
 	}
 
-	for (TObjectPtr<UDynamicMeshComponent> RestSpaceMeshComponent : DynamicMeshComponents)
+	if (WireframeToTick)
 	{
-		// Set up the wireframe display of the rest space mesh.
-		TObjectPtr<UMeshElementsVisualizer> WireframeDisplay = NewObject<UMeshElementsVisualizer>(this);
+		WireframeToTick->Disconnect();
+	}
 
-		// The LVT_OrthoXY viewport transform results in the positive y axis pointing down in screen space. The following transform rotates 
-		// the mesh around the z axis so that increasing y value in the cloth asset corresponds to "up" in screen space
-		const FTransform WireframeTransform = bPattern2DMode ? FTransform(FQuat(FVector(0, 0, 1), FMathd::Pi)) : FTransform::Identity;
+	PropertyObjectsToTick.Empty();	// TODO: We only want to empty the wireframe display properties. Is anything else using this array?
+	DynamicMeshComponent = nullptr;
+	DynamicMeshComponentParentActor = nullptr;
+	WireframeToTick = nullptr;
 
-		WireframeDisplay->CreateInWorld(GetWorld(), WireframeTransform);
+	TSharedPtr<FManagedArrayCollection> Collection = GetClothCollection();
+	if (!Collection)
+	{
+		return;
+	}
 
-		WireframeDisplay->Settings->DepthBias = 2.0;
-		WireframeDisplay->Settings->bAdjustDepthBiasUsingMeshSize = false;
-		WireframeDisplay->Settings->bShowWireframe = true;
-		WireframeDisplay->Settings->bShowBorders = true;
-		WireframeDisplay->Settings->bShowUVSeams = false;
-		WireframeDisplay->Settings->bShowNormalSeams = false;
+	const UE::Chaos::ClothAsset::FCollectionClothConstFacade ClothFacade(Collection.ToSharedRef());
 
-		// These are not exposed at the visualizer level yet
-		// TODO: Should they be?
-		WireframeDisplay->WireframeComponent->BoundaryEdgeThickness = 2;
+	UE::Geometry::FDynamicMesh3 LodMesh;
+	LodMesh.EnableAttributes();
+	FClothPatternToDynamicMesh Converter;
+	Converter.Convert(Collection.ToSharedRef(), INDEX_NONE, ConstructionViewMode, LodMesh);
 
-		WireframeDisplay->SetMeshAccessFunction([RestSpaceMeshComponent](UMeshElementsVisualizer::ProcessDynamicMeshFunc ProcessFunc)
+	if (ConstructionViewMode == EClothPatternVertexType::Sim2D)
+	{
+		// Use per-triangle normals for the 2D view
+		UE::Geometry::FMeshNormals::InitializeMeshToPerTriangleNormals(&LodMesh);
+	}
+
+	// We only need an actor to allow use of HHitProxy for selection
+	const FRotator Rotation(0.0f, 0.0f, 0.0f);
+	const FActorSpawnParameters SpawnInfo;
+	DynamicMeshComponentParentActor = this->GetWorld()->SpawnActor<AActor>(FVector::ZeroVector, Rotation, SpawnInfo);
+
+	DynamicMeshComponent = NewObject<UDynamicMeshComponent>(DynamicMeshComponentParentActor);
+	DynamicMeshComponent->SetMesh(MoveTemp(LodMesh));
+
+	SetUpDynamicMeshComponentMaterial(ClothFacade, *DynamicMeshComponent);
+
+	DynamicMeshComponent->SelectionOverrideDelegate = UPrimitiveComponent::FSelectionOverride::CreateUObject(this, &UChaosClothAssetEditorMode::IsComponentSelected);
+	DynamicMeshComponent->RegisterComponentWithWorld(this->GetWorld());
+
+	// Set up the wireframe display of the rest space mesh.
+	WireframeToTick = NewObject<UMeshElementsVisualizer>(this);
+	WireframeToTick->CreateInWorld(GetWorld(), FTransform::Identity);
+
+	WireframeToTick->Settings->DepthBias = 2.0;
+	WireframeToTick->Settings->bAdjustDepthBiasUsingMeshSize = false;
+	WireframeToTick->Settings->bShowWireframe = true;
+	WireframeToTick->Settings->bShowBorders = true;
+	WireframeToTick->Settings->bShowUVSeams = false;
+	WireframeToTick->Settings->bShowNormalSeams = false;
+
+	// These are not exposed at the visualizer level yet
+	// TODO: Should they be?
+	WireframeToTick->WireframeComponent->BoundaryEdgeThickness = 2;
+
+	WireframeToTick->SetMeshAccessFunction([this](UMeshElementsVisualizer::ProcessDynamicMeshFunc ProcessFunc)
+	{
+		ProcessFunc(*DynamicMeshComponent->GetMesh());
+	});
+
+	DynamicMeshComponent->OnMeshChanged.Add(
+		FSimpleMulticastDelegate::FDelegate::CreateLambda([this]()
 		{
-			ProcessFunc(*RestSpaceMeshComponent->GetMesh());
-		});
-
-		RestSpaceMeshComponent->OnMeshChanged.Add(
-			FSimpleMulticastDelegate::FDelegate::CreateLambda([WireframeDisplay]()
-		{
-			WireframeDisplay->NotifyMeshChanged();
+			WireframeToTick->NotifyMeshChanged();
 		}));
 
-		// The settings object and wireframe are not part of a tool, so they won't get ticked like they
-		// are supposed to (to enable property watching), unless we add this here.
-		PropertyObjectsToTick.Add(WireframeDisplay->Settings);
-		int32 WireframeIndex = WireframesToTick.Add(WireframeDisplay);
+	// The settings object and wireframe are not part of a tool, so they won't get ticked like they
+	// are supposed to (to enable property watching), unless we add this here.
+	PropertyObjectsToTick.Add(WireframeToTick->Settings);
 
-		// Some interactive tools will hide the input DynamicMeshComponent and create their own temporary PreviewMesh for visualization. If this
-		// occurs, we should also hide the corresponding WireframeDisplay (and un-hide it when the tool finishes).
-		UActorComponent::MarkRenderStateDirtyEvent.AddWeakLambda(this, [WireframeIndex, this](UActorComponent& ActorComponent)
-		{
-			if (WireframeIndex >= WireframesToTick.Num() || WireframeIndex >= DynamicMeshComponents.Num())
-			{
-				return;
-			}
-
-			TObjectPtr<UMeshElementsVisualizer> WireframeDisplay = WireframesToTick[WireframeIndex];
-			const TObjectPtr<UDynamicMeshComponent> RestSpaceMesh = DynamicMeshComponents[WireframeIndex];
-
-			if (!WireframeDisplay || !RestSpaceMesh)
-			{
-				return;
-			}
-
-			bool bRestSpaceMeshVisible = RestSpaceMesh->GetVisibleFlag();
-			WireframeDisplay->SetAllVisible(bRestSpaceMeshVisible);
-			WireframeDisplay->Settings->bVisible = bRestSpaceMeshVisible;
-		});
-
-	}
-
-	const bool bNumberDynamicMeshesUnchanged = (TotalNumberExistingDynamicMeshComponents == DynamicMeshComponents.Num());
-	if (bNumberDynamicMeshesUnchanged && PreviouslySelectedDynamicMeshComponents.Num() > 0)
+	// Some interactive tools will hide the input DynamicMeshComponent and create their own temporary PreviewMesh for visualization. If this
+	// occurs, we should also hide the corresponding WireframeDisplay (and un-hide it when the tool finishes).
+	UActorComponent::MarkRenderStateDirtyEvent.AddWeakLambda(this, [this](UActorComponent& ActorComponent)
 	{
-		SelectedComponents->Modify();
-		SelectedComponents->BeginBatchSelectOperation();
-		for (int32 DynamicMeshComponentIndex : PreviouslySelectedDynamicMeshComponents)
+		if (!WireframeToTick || !DynamicMeshComponent)
 		{
-			if (DynamicMeshComponentIndex < DynamicMeshComponents.Num())
-			{
-				SelectedComponents->Select(DynamicMeshComponents[DynamicMeshComponentIndex]);
-			}
+			return;
 		}
-		SelectedComponents->EndBatchSelectOperation();
-	}
+		const bool bRestSpaceMeshVisible = DynamicMeshComponent->GetVisibleFlag();
+		WireframeToTick->Settings->bVisible = bRestSpaceMeshVisible && bConstructionViewWireframe;
+	});
 
+	const bool bRestSpaceMeshVisible = DynamicMeshComponent->GetVisibleFlag();
+	WireframeToTick->Settings->bVisible = bRestSpaceMeshVisible && bConstructionViewWireframe;
+
+	SelectedComponents->DeselectAll();
+	SelectedComponents->Select(DynamicMeshComponent);
+	DynamicMeshComponent->PushSelectionToProxy();
+
+	// Update the context object with the ConstructionViewMode and Collection used to build the DynamicMeshComponents, so 
+	// tools know how to use the components.
+	UEditorInteractiveToolsContext* const RestSpaceToolsContext = GetInteractiveToolsContext();
+	UClothEditorContextObject* EditorContextObject = RestSpaceToolsContext->ContextObjectStore->FindContext<UClothEditorContextObject>();
+	if (ensure(EditorContextObject))
+	{
+		EditorContextObject->SetClothCollection(ConstructionViewMode, Collection);
+	}
 }
 
 void UChaosClothAssetEditorMode::RefocusRestSpaceViewportClient()
 {
-	TSharedPtr<FEditorViewportClient, ESPMode::ThreadSafe> PinnedVC = RestSpaceViewportClient.Pin();
+	TSharedPtr<UE::Chaos::ClothAsset::FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> PinnedVC = RestSpaceViewportClient.Pin();
 	if (PinnedVC.IsValid())
 	{
 		// This will happen in FocusViewportOnBox anyways; do it now to get a consistent end result
 		PinnedVC->ToggleOrbitCamera(false);
 
 		const FBox SceneBounds = SceneBoundingBox();
+		const bool bPattern2DMode = (ConstructionViewMode == UE::Chaos::ClothAsset::EClothPatternVertexType::Sim2D);
 		if (bPattern2DMode)
 		{
 			// 2D pattern
-			PinnedVC->SetInitialViewTransform(ELevelViewportType::LVT_OrthoXY, FVector(0, 0, 0), FRotator(0, 0, 0), DEFAULT_ORTHOZOOM);
+			PinnedVC->SetInitialViewTransform(ELevelViewportType::LVT_Perspective, FVector(0, 0, -100), FRotator(90, -90, 0), DEFAULT_ORTHOZOOM);
 		}
 		else
 		{
@@ -596,6 +641,30 @@ void UChaosClothAssetEditorMode::RefocusRestSpaceViewportClient()
 
 		constexpr bool bInstant = true;
 		PinnedVC->FocusViewportOnBox(SceneBounds, bInstant);
+
+		// Recompute near/far clip planes
+		PinnedVC->SetConstructionViewMode(ConstructionViewMode);
+	}
+}
+
+void UChaosClothAssetEditorMode::FirstTimeFocusRestSpaceViewport()
+{
+	// If this is the first time seeing a valid 2D or 3D mesh, refocus the camera on it.
+	const bool bIsValid = (SelectedClothCollection && DynamicMeshComponent && DynamicMeshComponent->GetMesh()->TriangleCount() > 0);
+	const bool bIs2D = ConstructionViewMode == UE::Chaos::ClothAsset::EClothPatternVertexType::Sim2D;
+
+	if (bIsValid)
+	{
+		if (bIs2D && bFirstValid2DMesh)
+		{
+			bFirstValid2DMesh = false;
+			RefocusRestSpaceViewportClient();
+		}
+		else if (!bIs2D && bFirstValid3DMesh)
+		{
+			bFirstValid3DMesh = false;
+			RefocusRestSpaceViewportClient();
+		}
 	}
 }
 
@@ -604,36 +673,10 @@ void UChaosClothAssetEditorMode::InitializeTargets(const TArray<TObjectPtr<UObje
 	// InitializeContexts needs to have been called first so that we have the 3d preview world ready.
 	check(PreviewScene);
 
-	OriginalObjectsToEdit = AssetsIn;
-
-	CreateToolTargets(AssetsIn);
-
-	// NOTE: This ensure will fire until we are able to build a tool target associated with ClothComponent
-	//if (!ensure(AssetsIn.Num() == ToolTargets.Num()))
-	//{
-	//	return;
-	//}
-
-	for (TObjectPtr<UObject> Asset : AssetsIn)
-	{
-		if (UChaosClothAsset* ChaosClothAsset = Cast<UChaosClothAsset>(Asset))
-		{
-			PreviewScene->CreateClothActor(ChaosClothAsset);
-
-			USelection* SelectedComponents = GetModeManager()->GetSelectedComponents();
-			SelectedComponents->Modify();
-			SelectedComponents->Select(PreviewScene->ClothComponent);
-
-			break;
-		}
-	}
-
-	ReinitializeDynamicMeshComponents();
+	UBaseCharacterFXEditorMode::InitializeTargets(AssetsIn);
 
 	DataflowComponent = NewObject<UDataflowComponent>();
 	DataflowComponent->RegisterComponentWithWorld(PreviewScene->GetWorld());
-
-	bShouldFocusRestSpaceView = true;
 }
 
 void UChaosClothAssetEditorMode::SoftResetSimulation()
@@ -652,28 +695,81 @@ void UChaosClothAssetEditorMode::HardResetSimulation()
 
 void UChaosClothAssetEditorMode::SuspendSimulation()
 {
-	if (PreviewScene && PreviewScene->ClothComponent)
+	if (PreviewScene && PreviewScene->GetClothComponent())
 	{
-		PreviewScene->ClothComponent->SuspendSimulation();
+		PreviewScene->GetClothComponent()->SuspendSimulation();
 	}
 }
 
 void UChaosClothAssetEditorMode::ResumeSimulation()
 {
-	if (PreviewScene && PreviewScene->ClothComponent)
+	if (PreviewScene && PreviewScene->GetClothComponent())
 	{
-		PreviewScene->ClothComponent->ResumeSimulation();
+		PreviewScene->GetClothComponent()->ResumeSimulation();
 	}
 }
 
 bool UChaosClothAssetEditorMode::IsSimulationSuspended() const
 {
-	if (PreviewScene && PreviewScene->ClothComponent)
+	if (PreviewScene && PreviewScene->GetClothComponent() && PreviewScene->GetClothComponent()->GetClothSimulationProxy())
 	{
-		return PreviewScene->ClothComponent->IsSimulationSuspended();
+		return PreviewScene->GetClothComponent()->IsSimulationSuspended();
 	}
 
 	return false;
+}
+
+void UChaosClothAssetEditorMode::SetEnableSimulation(bool bEnable)
+{
+	if (PreviewScene && PreviewScene->GetClothComponent())
+	{
+		PreviewScene->GetClothComponent()->SetEnableSimulation(bEnable);
+	}
+}
+
+bool UChaosClothAssetEditorMode::IsSimulationEnabled() const
+{
+	if (PreviewScene && PreviewScene->GetClothComponent())
+	{
+		return PreviewScene->GetClothComponent()->IsSimulationEnabled();
+	}
+
+	return false;
+}
+
+void UChaosClothAssetEditorMode::SetLODModel(int32 LODIndex)
+{
+	if (PreviewScene && PreviewScene->GetClothComponent())
+	{
+		PreviewScene->GetClothComponent()->SetForcedLOD(LODIndex + 1);
+	}
+}
+
+bool UChaosClothAssetEditorMode::IsLODModelSelected(int32 LODIndex) const
+{
+	if (PreviewScene && PreviewScene->GetClothComponent())
+	{
+		return PreviewScene->GetClothComponent()->GetForcedLOD() == LODIndex + 1;
+	}
+	return false;
+}
+
+int32 UChaosClothAssetEditorMode::GetLODModel() const
+{
+	if (PreviewScene && PreviewScene->GetClothComponent())
+	{
+		return PreviewScene->GetClothComponent()->GetForcedLOD() - 1;
+	}
+	return INDEX_NONE;
+}
+
+int32 UChaosClothAssetEditorMode::GetNumLODs() const
+{
+	if (PreviewScene && PreviewScene->GetClothComponent())
+	{
+		return PreviewScene->GetClothComponent()->GetNumLODs();
+	}
+	return 0;
 }
 
 UDataflowComponent* UChaosClothAssetEditorMode::GetDataflowComponent() const
@@ -685,6 +781,22 @@ void UChaosClothAssetEditorMode::ModeTick(float DeltaTime)
 {
 	Super::ModeTick(DeltaTime);
 	
+
+	if (TSharedPtr<SDataflowGraphEditor> GraphEditor = DataflowGraphEditor.Pin())
+	{
+		// For now don't allow selection change once the tool has uncommitted changes
+		// TODO: We might want to auto-accept unsaved changes and allow switching between nodes
+		if (GetInteractiveToolsContext()->CanAcceptActiveTool())
+		{
+			GraphEditor->SetEnabled(false);
+		}
+		else
+		{
+			GraphEditor->SetEnabled(true);
+		}
+	}
+
+
 	for (TObjectPtr<UInteractiveToolPropertySet>& Propset : PropertyObjectsToTick)
 	{
 		if (Propset)
@@ -700,18 +812,15 @@ void UChaosClothAssetEditorMode::ModeTick(float DeltaTime)
 		}
 	}
 
-	for (TWeakObjectPtr<UMeshElementsVisualizer> WireframeDisplay : WireframesToTick)
+	if (WireframeToTick)
 	{
-		if (WireframeDisplay.IsValid())
-		{
-			WireframeDisplay->OnTick(DeltaTime);
-		}
+		WireframeToTick->OnTick(DeltaTime);
 	}
 
 
 	if (bShouldClearTeleportFlag)
 	{
-		PreviewScene->ClothComponent->ResetTeleportMode();
+		PreviewScene->GetClothComponent()->ResetTeleportMode();
 		bShouldClearTeleportFlag = false;
 	}
 
@@ -719,16 +828,31 @@ void UChaosClothAssetEditorMode::ModeTick(float DeltaTime)
 	{
 		if (bHardReset)
 		{
-			const FComponentReregisterContext Context(PreviewScene->ClothComponent);
+			const FComponentReregisterContext Context(PreviewScene->GetClothComponent());
 		}
 		else
 		{
-			PreviewScene->ClothComponent->ForceNextUpdateTeleportAndReset();
+			PreviewScene->GetClothComponent()->ForceNextUpdateTeleportAndReset();
 		}
 
 		bShouldResetSimulation = false;
 		bShouldClearTeleportFlag = true;		// clear the flag next tick
 	}
+
+
+	if (!NodeTypeForPendingToolStart.IsNone() && !GetToolManager()->HasActiveTool(EToolSide::Left))
+	{
+		const TSharedRef<FUICommandList> CommandList = Toolkit->GetToolkitCommands();
+		const UE::Chaos::ClothAsset::FChaosClothAssetEditorCommands& CommandInfos = UE::Chaos::ClothAsset::FChaosClothAssetEditorCommands::Get();
+
+		if (const TSharedPtr<const FUICommandInfo>* const Command = NodeTypeToToolCommandMap.Find(NodeTypeForPendingToolStart))
+		{
+			CommandList->TryExecuteAction(Command->ToSharedRef());
+		}
+
+		NodeTypeForPendingToolStart = FName();
+	}
+
 
 	if (PreviewScene->GetWorld())
 	{
@@ -751,20 +875,9 @@ FBox UChaosClothAssetEditorMode::SceneBoundingBox() const
 {
 	FBoxSphereBounds TotalBounds(ForceInitToZero);
 	
-	bool bFoundMeshBounds = false;
-	for (const TObjectPtr<UDynamicMeshComponent> DynamicMeshComponent : DynamicMeshComponents)
+	if (DynamicMeshComponent)
 	{
-		const FBoxSphereBounds& CurrentBounds = DynamicMeshComponent->Bounds;
-
-		if (!bFoundMeshBounds)
-		{
-			TotalBounds = CurrentBounds;
-			bFoundMeshBounds = true;
-		}
-		else
-		{
-			TotalBounds = TotalBounds + CurrentBounds;
-		}
+		TotalBounds = DynamicMeshComponent->Bounds;
 	}
 
 	return TotalBounds.GetBox();
@@ -772,82 +885,139 @@ FBox UChaosClothAssetEditorMode::SceneBoundingBox() const
 
 FBox UChaosClothAssetEditorMode::SelectionBoundingBox() const
 {
-	FBoxSphereBounds TotalBounds;
-
 	const USelection* const SelectedComponents = GetModeManager()->GetSelectedComponents();
 
-	bool bFoundSelected = false;
-	for (const TObjectPtr<UDynamicMeshComponent> DynamicMeshComponent : DynamicMeshComponents)
+	if (DynamicMeshComponent && SelectedComponents->IsSelected(DynamicMeshComponent))
 	{
-		if (SelectedComponents->IsSelected(DynamicMeshComponent))
-		{
-			const FBoxSphereBounds& CurrentBounds = DynamicMeshComponent->Bounds;
-
-			if (!bFoundSelected)
-			{
-				TotalBounds = CurrentBounds;
-				bFoundSelected = true;
-			}
-			else
-			{
-				TotalBounds = TotalBounds + CurrentBounds;
-			}
-			
-		}
+		return DynamicMeshComponent->Bounds.GetBox();
 	}
-
-	if (bFoundSelected)
-	{
-		return TotalBounds.GetBox();
-	}
-	else
-	{
-		// Nothing selected, return the whole scene
-		return SceneBoundingBox();
-	}
-
+	
+	// Nothing selected, return the whole scene
+	return SceneBoundingBox();
 }
 
 
 FBox UChaosClothAssetEditorMode::PreviewBoundingBox() const
 {
-	if (PreviewScene->ClothComponent)
+	FBox Bounds(ForceInit);
+
+	if (const UChaosClothComponent* const Cloth = PreviewScene->GetClothComponent())
 	{
-		FBoxSphereBounds Bounds = PreviewScene->ClothComponent->Bounds;
-		return Bounds.GetBox();
+		if (Cloth->GetClothAsset())
+		{
+			Bounds += Cloth->Bounds.GetBox();
+		}
 	}
 
-	return FBox(ForceInitToZero);
+	if (const USkeletalMeshComponent* const SkeletalMesh = PreviewScene->GetSkeletalMeshComponent())
+	{
+		if (SkeletalMesh->GetSkeletalMeshAsset())
+		{
+			Bounds += SkeletalMesh->Bounds.GetBox();
+		}
+	}
+
+	return Bounds;
 }
 
-void UChaosClothAssetEditorMode::TogglePatternMode()
+void UChaosClothAssetEditorMode::SetConstructionViewMode(UE::Chaos::ClothAsset::EClothPatternVertexType InMode)
 {
-	bPattern2DMode = !bPattern2DMode;
+	// We will first check if there is an active tool. If so, we'll shut down the tool and save the results to the Node, then change view modes, then restart the tool again.
+	bool bEndedActiveTool = false;
+	UInteractiveToolManager* const ToolManager = GetInteractiveToolsContext()->ToolManager;
+	checkf(ToolManager, TEXT("No valid ToolManager found for UChaosClothAssetEditorMode"));
+	if (UInteractiveTool* const ActiveTool = ToolManager->GetActiveTool(EToolSide::Left))
+	{
+		// avoid switching back to the previous view mode when the tool ends here
+		const bool bTempShouldRestoreVal = bShouldRestoreSavedConstructionViewMode;
+		bShouldRestoreSavedConstructionViewMode = false;
+
+		ToolManager->PostActiveToolShutdownRequest(ActiveTool, EToolShutdownType::Accept);
+		bEndedActiveTool = true;
+
+		// now we can restore the previous view mode the next time the tool ends
+		bShouldRestoreSavedConstructionViewMode = bTempShouldRestoreVal;
+	}
+
+	ConstructionViewMode = InMode;
 	ReinitializeDynamicMeshComponents();
 
-	TSharedPtr<FChaosClothEditorRestSpaceViewportClient> VC = RestSpaceViewportClient.Pin();
+	const TSharedPtr<UE::Chaos::ClothAsset::FChaosClothEditorRestSpaceViewportClient> VC = RestSpaceViewportClient.Pin();
 	if (VC.IsValid())
 	{
-		VC->Set2DMode(bPattern2DMode);
+		VC->SetConstructionViewMode(ConstructionViewMode);
 	}
 
-	RefocusRestSpaceViewportClient();
+	// If we are switching to a mode with a valid mesh for the first time, focus the camera on it
+	FirstTimeFocusRestSpaceViewport();
+
+	if (bEndedActiveTool)
+	{
+		// If we ended the active tool in order to change modes, restart it now
+		if (const TSharedPtr<const SDataflowGraphEditor> PinnedGraphEditor = DataflowGraphEditor.Pin())
+		{
+			const FGraphPanelSelectionSet& SelectedNodes = PinnedGraphEditor->GetSelectedNodes();
+			if (SelectedNodes.Num() == 1)
+			{
+				StartToolForSelectedNode(*SelectedNodes.CreateConstIterator());
+			}
+		}
+	}
+
 }
 
-bool UChaosClothAssetEditorMode::CanTogglePatternMode() const
+UE::Chaos::ClothAsset::EClothPatternVertexType UChaosClothAssetEditorMode::GetConstructionViewMode() const
 {
-	return bCanTogglePattern2DMode;
+	return ConstructionViewMode;
 }
 
+bool UChaosClothAssetEditorMode::CanChangeConstructionViewModeTo(UE::Chaos::ClothAsset::EClothPatternVertexType NewViewMode) const
+{
+	if (!GetToolManager()->HasActiveTool(EToolSide::Left))
+	{
+		return true;
+	}
 
-void UChaosClothAssetEditorMode::SetRestSpaceViewportClient(TWeakPtr<FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> InViewportClient)
+	const UInteractiveToolBuilder* const ActiveToolBuilder = GetToolManager()->GetActiveToolBuilder(EToolSide::Left);
+	checkf(ActiveToolBuilder, TEXT("No Active Tool Builder found despite having an Active Tool"));
+
+	const IChaosClothAssetEditorToolBuilder* const ClothToolBuilder = Cast<const IChaosClothAssetEditorToolBuilder>(ActiveToolBuilder);
+	checkf(ClothToolBuilder, TEXT("Cloth Editor has an active Tool Builder that does not implement IChaosClothAssetEditorToolBuilder"));
+
+	TArray<UE::Chaos::ClothAsset::EClothPatternVertexType> SupportedViewModes;
+	ClothToolBuilder->GetSupportedViewModes(SupportedViewModes);
+	return SupportedViewModes.Contains(NewViewMode);
+}
+
+void UChaosClothAssetEditorMode::ToggleConstructionViewWireframe()
+{
+	bConstructionViewWireframe = !bConstructionViewWireframe;
+	ReinitializeDynamicMeshComponents();
+}
+
+bool UChaosClothAssetEditorMode::CanSetConstructionViewWireframeActive() const
+{
+	if (!GetToolManager()->HasActiveTool(EToolSide::Left))
+	{
+		return true;
+	}
+
+	const UInteractiveToolBuilder* const ActiveToolBuilder = GetToolManager()->GetActiveToolBuilder(EToolSide::Left);
+	checkf(ActiveToolBuilder, TEXT("No Active Tool Builder found despite having an Active Tool"));
+
+	const IChaosClothAssetEditorToolBuilder* const ClothToolBuilder = Cast<const IChaosClothAssetEditorToolBuilder>(ActiveToolBuilder);
+	checkf(ClothToolBuilder, TEXT("Cloth Editor has an active Tool Builder that does not implement IChaosClothAssetEditorToolBuilder"));
+	return ClothToolBuilder->CanSetConstructionViewWireframeActive();
+}
+
+void UChaosClothAssetEditorMode::SetRestSpaceViewportClient(TWeakPtr<UE::Chaos::ClothAsset::FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> InViewportClient)
 {
 	RestSpaceViewportClient = InViewportClient;
 
-	TSharedPtr<FChaosClothEditorRestSpaceViewportClient> VC = RestSpaceViewportClient.Pin();
+	TSharedPtr<UE::Chaos::ClothAsset::FChaosClothEditorRestSpaceViewportClient> VC = RestSpaceViewportClient.Pin();
 	if (VC.IsValid())
 	{
-		VC->Set2DMode(bPattern2DMode);
+		VC->SetConstructionViewMode(ConstructionViewMode);
 		VC->SetToolCommandList(ToolCommandList);
 
 		if (VC->Viewport)
@@ -855,6 +1025,186 @@ void UChaosClothAssetEditorMode::SetRestSpaceViewportClient(TWeakPtr<FChaosCloth
 			VC->Viewport->ViewportResizedEvent.AddUObject(this, &UChaosClothAssetEditorMode::RestSpaceViewportResized);
 		}
 	}
+}
+
+
+void UChaosClothAssetEditorMode::InitializeContextObject()
+{
+	UEditorInteractiveToolsContext* const RestSpaceToolsContext = GetInteractiveToolsContext();
+
+	UClothEditorContextObject* EditorContextObject = RestSpaceToolsContext->ContextObjectStore->FindContext<UClothEditorContextObject>();
+	if (!EditorContextObject)
+	{
+		EditorContextObject = NewObject<UClothEditorContextObject>();
+		RestSpaceToolsContext->ContextObjectStore->AddContextObject(EditorContextObject);
+	}
+
+	EditorContextObject->Init(DataflowGraphEditor, ConstructionViewMode, SelectedClothCollection);
+
+	check(EditorContextObject);
+
+}
+
+void UChaosClothAssetEditorMode::DeleteContextObject()
+{
+	UEditorInteractiveToolsContext* const RestSpaceToolsContext = GetInteractiveToolsContext();
+	if (UClothEditorContextObject* ClothEditorContextObject = RestSpaceToolsContext->ContextObjectStore->FindContext<UClothEditorContextObject>())
+	{
+		RestSpaceToolsContext->ContextObjectStore->RemoveContextObject(ClothEditorContextObject);
+	}
+}
+
+void UChaosClothAssetEditorMode::SetDataflowGraphEditor(TSharedPtr<SDataflowGraphEditor> InGraphEditor)
+{
+	if (InGraphEditor)
+	{
+		DataflowGraphEditor = InGraphEditor;
+		InitializeContextObject();
+	}
+	else
+	{
+		DeleteContextObject();
+	}
+}
+
+void UChaosClothAssetEditorMode::StartToolForSelectedNode(const UObject* SelectedNode)
+{
+	if (const UDataflowEdNode* const EdNode = Cast<UDataflowEdNode>(SelectedNode))
+	{
+		if (const TSharedPtr<const FDataflowNode> DataflowNode = EdNode->GetDataflowNode())
+		{
+			const FName DataflowNodeType = DataflowNode->GetType();
+			NodeTypeForPendingToolStart = DataflowNodeType;
+		}
+	}
+}
+
+
+void UChaosClothAssetEditorMode::OnDataflowNodeDeleted(const TSet<UObject*>& DeletedNodes)
+{
+	UEditorInteractiveToolsContext* const ToolsContext = GetInteractiveToolsContext();
+	checkf(ToolsContext, TEXT("No valid ToolsContext found for UChaosClothAssetEditorMode"));
+	const bool bCanCancel = ToolsContext->CanCancelActiveTool();
+	ToolsContext->EndTool(bCanCancel ? EToolShutdownType::Cancel : EToolShutdownType::Completed);
+}
+
+UEdGraphNode* UChaosClothAssetEditorMode::GetSingleSelectedNodeWithOutputType(const FName& SelectedNodeOutputTypeName) const
+{
+	const TSharedPtr<const SDataflowGraphEditor> PinnedDataflowGraphEditor = DataflowGraphEditor.Pin();
+	if (!PinnedDataflowGraphEditor)
+	{
+		return nullptr;
+	}
+
+	UEdGraphNode* const SelectedNode = PinnedDataflowGraphEditor->GetSingleSelectedNode();
+	if (!SelectedNode)
+	{
+		return nullptr;
+	}
+
+	const UDataflowEdNode* const SelectedDataflowEdNode = CastChecked<UDataflowEdNode>(SelectedNode);
+	const TSharedPtr<const FDataflowNode> SelectedDataflowNode = SelectedDataflowEdNode->GetDataflowNode();
+
+	if (!SelectedDataflowNode)
+	{
+		// This can happen when the user deletes a node. Seems like the Dataflow FGraph is updated with the removed node before the graph editor can update.
+		return nullptr;
+	}
+
+	for (const FDataflowOutput* const Output : SelectedDataflowNode->GetOutputs())
+	{
+		if (Output->GetType() == SelectedNodeOutputTypeName)
+		{
+			return SelectedNode;
+		}
+	}
+
+	return nullptr;
+}
+
+UEdGraphNode* UChaosClothAssetEditorMode::CreateNewNode(const FName& NewNodeTypeName)
+{
+	const TSharedPtr<const SDataflowGraphEditor> PinnedDataflowGraphEditor = DataflowGraphEditor.Pin();
+	if (!PinnedDataflowGraphEditor)
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FAssetSchemaAction_Dataflow_CreateNode_DataflowEdNode> NodeAction =
+		FAssetSchemaAction_Dataflow_CreateNode_DataflowEdNode::CreateAction(DataflowGraph, NewNodeTypeName);
+	constexpr UEdGraphPin* FromPin = nullptr;
+	constexpr bool bSelectNewNode = true;
+	UEdGraphNode* const NewEdNode = NodeAction->PerformAction(DataflowGraph, FromPin, PinnedDataflowGraphEditor->GetPasteLocation(), bSelectNewNode);
+
+	return NewEdNode;
+}
+
+
+UEdGraphNode* UChaosClothAssetEditorMode::CreateAndConnectNewNode(const FName& NewNodeTypeName, UEdGraphNode& UpstreamNode, const FName& ConnectionTypeName, const FName& NewNodeConnectionName)
+{
+	// First find the specified output of the upstream node, plus any pins it's connected to
+
+	UEdGraphPin* UpstreamNodeOutputPin = nullptr;
+	TArray<UEdGraphPin*> ExistingNodeInputPins;
+
+	const UDataflowEdNode* const UpstreamDataflowEdNode = CastChecked<UDataflowEdNode>(&UpstreamNode);
+	const TSharedPtr<const FDataflowNode> UpstreamDataflowNode = UpstreamDataflowEdNode->GetDataflowNode();
+
+	for (const FDataflowOutput* const Output : UpstreamDataflowNode->GetOutputs())
+	{
+		if (Output->GetType() == ConnectionTypeName)
+		{
+			UpstreamNodeOutputPin = UpstreamDataflowEdNode->FindPin(*Output->GetName().ToString(), EGPD_Output);
+			ExistingNodeInputPins = UpstreamNodeOutputPin->LinkedTo;
+			break;
+		}
+	}
+
+	// Add the new node 
+
+	UEdGraphNode* const NewEdNode = CreateNewNode(NewNodeTypeName);
+	checkf(NewEdNode, TEXT("Failed to create a new node in the DataflowGraph"));
+
+	UDataflowEdNode* const NewDataflowEdNode = CastChecked<UDataflowEdNode>(NewEdNode);
+	const TSharedPtr<FDataflowNode> NewDataflowNode = NewDataflowEdNode->GetDataflowNode();
+
+	// Re-wire the graph
+
+	if (UpstreamNodeOutputPin)
+	{
+		UEdGraphPin* NewNodeInputPin = nullptr;
+		for (const FDataflowInput* const NewNodeInput : NewDataflowNode->GetInputs())
+		{
+			if (NewNodeInput->GetType() == ConnectionTypeName && NewNodeInput->GetName() == NewNodeConnectionName)
+			{
+				NewNodeInputPin = NewDataflowEdNode->FindPin(*NewNodeInput->GetName().ToString(), EGPD_Input);
+			}
+		}
+
+		UEdGraphPin* NewNodeOutputPin = nullptr;
+		for (const FDataflowOutput* const NewNodeOutput : NewDataflowNode->GetOutputs())
+		{
+			if (NewNodeOutput->GetType() == ConnectionTypeName && NewNodeOutput->GetName() == NewNodeConnectionName)
+			{
+				NewNodeOutputPin = NewDataflowEdNode->FindPin(*NewNodeOutput->GetName().ToString(), EGPD_Output);
+				break;
+			}
+		}
+
+		check(NewNodeInputPin);
+		check(NewNodeOutputPin);
+
+		DataflowGraph->GetSchema()->TryCreateConnection(UpstreamNodeOutputPin, NewNodeInputPin);
+
+		for (UEdGraphPin* DownstreamInputPin : ExistingNodeInputPins)
+		{
+			DataflowGraph->GetSchema()->TryCreateConnection(NewNodeOutputPin, DownstreamInputPin);
+		}
+	}
+
+	DataflowGraph->NotifyGraphChanged();
+
+	return NewEdNode;
 }
 
 #undef LOCTEXT_NAMESPACE

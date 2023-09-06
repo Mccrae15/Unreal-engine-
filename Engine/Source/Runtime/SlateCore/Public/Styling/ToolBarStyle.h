@@ -12,20 +12,20 @@
  * Represents the appearance of a toolbar 
  */
 USTRUCT(BlueprintType)
-struct SLATECORE_API FToolBarStyle : public FSlateWidgetStyle
+struct FToolBarStyle : public FSlateWidgetStyle
 {
 	GENERATED_BODY()
 
-	FToolBarStyle();
+	SLATECORE_API FToolBarStyle();
 
 	virtual ~FToolBarStyle() {}
 
-	virtual void GetResources(TArray<const FSlateBrush*>& OutBrushes) const override;
+	SLATECORE_API virtual void GetResources(TArray<const FSlateBrush*>& OutBrushes) const override;
 
-	static const FName TypeName;
+	static SLATECORE_API const FName TypeName;
 	virtual const FName GetTypeName() const override { return TypeName; };
 
-	static const FToolBarStyle& GetDefault();
+	static SLATECORE_API const FToolBarStyle& GetDefault();
 
 	/** The brush used for the background of the toolbar */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
@@ -78,6 +78,22 @@ struct SLATECORE_API FToolBarStyle : public FSlateWidgetStyle
 	FToolBarStyle& SetLabelPadding(const FMargin& InLabelPadding) { LabelPadding = InLabelPadding; return *this; }
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	float UniformBlockWidth;
+	FToolBarStyle& SetUniformBlockWidth(const float InUniformBlockWidth) { UniformBlockWidth = InUniformBlockWidth; return *this; }
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	float UniformBlockHeight;
+	FToolBarStyle& SetUniformBlockHeight(const float InUniformBlockHeight) { UniformBlockHeight = InUniformBlockHeight; return *this; }
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	int32 NumColumns;
+	FToolBarStyle& SetNumColumns(const int32 InNumColumns) { NumColumns = InNumColumns; return *this; }
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	FMargin IconPadding;
+	FToolBarStyle& SetIconPadding(const FMargin& InIconPadding) { IconPadding = InIconPadding; return *this; }
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
 	FMargin SeparatorPadding;
 	FToolBarStyle& SetSeparatorPadding(const FMargin& InSeparatorPadding) { SeparatorPadding = InSeparatorPadding; return *this; }
 
@@ -112,4 +128,21 @@ struct SLATECORE_API FToolBarStyle : public FSlateWidgetStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
 	bool bShowLabels;
 	FToolBarStyle& SetShowLabels(bool bInShowLabels) { bShowLabels = bInShowLabels; return *this; }
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
+	float ButtonContentMaxWidth = 64.0f;
+	FToolBarStyle& SetButtonContentMaxWidth(float InButtonContentMaxWidth) { ButtonContentMaxWidth = InButtonContentMaxWidth; return *this; }
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Appearance)
+	float ButtonContentFillWidth = 1.0f;
+	FToolBarStyle& SetButtonContentFillWidth(float InButtonContentFillWidth) { ButtonContentFillWidth = InButtonContentFillWidth; return *this; }
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	FMargin IconPaddingWithVisibleLabel;
+	FToolBarStyle& SetIconPaddingWithVisibleLabel(const FMargin& InIconPaddingWithVisibleLabel) { IconPaddingWithVisibleLabel = InIconPaddingWithVisibleLabel; return *this; }
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Appearance)
+	FMargin IconPaddingWithCollapsedLabel;
+	FToolBarStyle& SetIconPaddingWithCollapsedLabel(const FMargin& InIconPaddingWithCollapsedLabel) { IconPaddingWithCollapsedLabel = InIconPaddingWithCollapsedLabel; return *this; }
+	
 };

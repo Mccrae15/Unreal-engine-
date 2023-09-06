@@ -1,10 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
 using System.Collections.Generic;
 using System.Text;
-using System.Diagnostics;
-using System.IO;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
@@ -65,7 +62,7 @@ namespace UnrealBuildTool
 					DebugOptions += ForeignUProjectPath;
 					DebugOptions += " -skipcompile";
 				}
-				else if (InTargetRules.Type == TargetType.Editor && ProjectName != ProjectFileGenerator.EngineProjectFileNameBase)
+				else if (InTargetRules.Type == TargetType.Editor && InTargetRules.ProjectFile != null)
 				{
 					DebugOptions += ProjectName;
 				}
@@ -74,7 +71,6 @@ namespace UnrealBuildTool
 			}
 			VCUserFileContent.AppendLine("    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>");
 			VCUserFileContent.AppendLine("  </PropertyGroup>");
-
 
 			return VCUserFileContent.ToString();
 		}

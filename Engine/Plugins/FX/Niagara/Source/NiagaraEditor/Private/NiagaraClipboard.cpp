@@ -56,7 +56,7 @@ UNiagaraClipboardFunctionInput* MakeNewInput(UObject* InOuter, FName InInputName
 
 const UNiagaraClipboardFunctionInput* UNiagaraClipboardFunctionInput::CreateLocalValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType, TOptional<bool> bInEditConditionValue, TArray<uint8>& InLocalValueData)
 {
-	checkf(InLocalValueData.Num() == InInputType.GetSize(), TEXT("Input data size didn't match type size."))
+	checkf(InLocalValueData.Num() == InInputType.GetSize(), TEXT("Input data size (%d) didn't match type size (%d)."), InLocalValueData.Num(), InInputType.GetSize());
 	UNiagaraClipboardFunctionInput* NewInput = MakeNewInput(InOuter, InInputName, InInputType, bInEditConditionValue, ENiagaraClipboardFunctionInputValueMode::Local);
 	NewInput->Local = InLocalValueData;
 	return NewInput;
@@ -77,6 +77,13 @@ const UNiagaraClipboardFunctionInput* UNiagaraClipboardFunctionInput::CreateData
 	return NewInput;
 }
 
+const UNiagaraClipboardFunctionInput* UNiagaraClipboardFunctionInput::CreateObjectAssetValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType, TOptional<bool> bInEditConditionValue, UObject* InObject)
+{
+	UNiagaraClipboardFunctionInput* NewInput = MakeNewInput(InOuter, InInputName, InInputType, bInEditConditionValue, ENiagaraClipboardFunctionInputValueMode::ObjectAsset);
+	NewInput->ObjectAsset = InObject;
+	return NewInput;
+}
+
 const UNiagaraClipboardFunctionInput* UNiagaraClipboardFunctionInput::CreateExpressionValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType, TOptional<bool> bInEditConditionValue, const FString& InExpressionValue)
 {
 	UNiagaraClipboardFunctionInput* NewInput = MakeNewInput(InOuter, InInputName, InInputType, bInEditConditionValue, ENiagaraClipboardFunctionInputValueMode::Expression);
@@ -88,6 +95,13 @@ const UNiagaraClipboardFunctionInput* UNiagaraClipboardFunctionInput::CreateDyna
 {
 	UNiagaraClipboardFunctionInput* NewInput = MakeNewInput(InOuter, InInputName, InInputType, bInEditConditionValue, ENiagaraClipboardFunctionInputValueMode::Dynamic);
 	NewInput->Dynamic = UNiagaraClipboardFunction::CreateScriptFunction(NewInput, InDynamicValueName, InDynamicValue, InScriptVersion);
+	return NewInput;
+}
+
+const UNiagaraClipboardFunctionInput* UNiagaraClipboardFunctionInput::CreateDefaultInputValue(UObject* InOuter, FName InInputName, FNiagaraTypeDefinition InInputType)
+{
+	UNiagaraClipboardFunctionInput* NewInput = MakeNewInput(InOuter, InInputName, InInputType, TOptional<bool>(), ENiagaraClipboardFunctionInputValueMode::ResetToDefault);
+	NewInput->Local.SetNumZeroed(InInputType.GetSize());
 	return NewInput;
 }
 

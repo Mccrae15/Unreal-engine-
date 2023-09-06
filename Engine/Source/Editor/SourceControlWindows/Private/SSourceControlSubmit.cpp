@@ -27,6 +27,9 @@
 #include "Virtualization/VirtualizationSystem.h"
 #include "Logging/MessageLog.h"
 #include "RevisionControlStyle/RevisionControlStyle.h"
+#include "Bookmarks/BookmarkScoped.h"
+#include "HAL/IConsoleManager.h"
+#include "Algo/AllOf.h"
 
 #if SOURCE_CONTROL_WITH_SLATE
 
@@ -248,7 +251,7 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 			.OnContextMenuOpening(this, &SSourceControlSubmitWidget::OnCreateContextMenu)
 			.OnMouseButtonDoubleClick(this, &SSourceControlSubmitWidget::OnDiffAgainstDepotSelected)
 			.HeaderRow(HeaderRowWidget)
-			.SelectionMode(ESelectionMode::Single)
+			.SelectionMode(ESelectionMode::Multi)
 		]
 	];
 
@@ -437,11 +440,11 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 /** Corvus: Called to create a context menu when right-clicking on an item */
 TSharedPtr<SWidget> SSourceControlSubmitWidget::OnCreateContextMenu()
 {
-	if (SSourceControlSubmitWidget::CanDiffAgainstDepot())
-	{
-		FMenuBuilder MenuBuilder(true, NULL);
+	FMenuBuilder MenuBuilder(true, NULL);
 
-		MenuBuilder.BeginSection("Source Control", NSLOCTEXT("SourceControl.SubmitWindow.Menu", "SourceControlSectionHeader", "Revision Control"));
+	MenuBuilder.BeginSection("Source Control", NSLOCTEXT("SourceControl.SubmitWindow.Menu", "SourceControlSectionHeader", "Revision Control"));
+	{
+		if (SSourceControlSubmitWidget::CanDiffAgainstDepot())
 		{
 			MenuBuilder.AddMenuEntry(
 				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "DiffAgainstDepot", "Diff Against Depot"),
@@ -453,14 +456,23 @@ TSharedPtr<SWidget> SSourceControlSubmitWidget::OnCreateContextMenu()
 				)
 			);
 		}
-		MenuBuilder.EndSection();
 
-		return MenuBuilder.MakeWidget();
+		if (AllowRevert())
+		{
+			MenuBuilder.AddMenuEntry(
+				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "Revert", "Revert"),
+				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "RevertTooltip", "Revert the selected assets to their original state from revision control."),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Revert"),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SSourceControlSubmitWidget::OnRevert),
+					FCanExecuteAction::CreateSP(this, &SSourceControlSubmitWidget::CanRevert)
+				)
+			);
+		}
 	}
-	else
-	{
-		return nullptr;
-	}
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
 }
 
 bool SSourceControlSubmitWidget::CanDiffAgainstDepot() const
@@ -506,6 +518,96 @@ void SSourceControlSubmitWidget::OnDiffAgainstDepotSelected(TSharedPtr<FFileTree
 					FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
 					AssetToolsModule.Get().DiffAgainstDepot(CurrentObject, PackageName, AssetName);
 				}
+			}
+		}
+	}
+}
+
+bool SSourceControlSubmitWidget::AllowRevert() const
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("SourceControl.Revert.EnableFromSubmitWidget")))
+	{
+		return CVar->GetBool();
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool SSourceControlSubmitWidget::CanRevert() const
+{
+	const auto& SelectedItems = ListView->GetSelectedItems();
+	if (SelectedItems.Num() > 0)
+	{
+		return Algo::AllOf(SelectedItems, [](const FFileTreeItemPtr& SelectedItem)
+			{
+				return SelectedItem->CanRevert();
+			}
+		);
+	}
+	return false;
+}
+
+void SSourceControlSubmitWidget::OnRevert()
+{
+	const auto& SelectedItems = ListView->GetSelectedItems();
+	if (SelectedItems.Num() < 1)
+	{
+		return;
+	}
+
+	auto RemoveItemsFromListView = [this](TArray<FString>& ItemsToRemove)
+	{
+		ListViewItems.RemoveAll([&ItemsToRemove](const FFileTreeItemPtr& ListViewItem) -> bool
+			{
+				return ItemsToRemove.ContainsByPredicate([&ListViewItem](const FString& ItemToRemove) -> bool
+					{
+						return ItemToRemove == ListViewItem->GetFileName().ToString();
+					}
+				);
+			}
+		);
+	};
+
+	TArray<FString> PackagesToRevert;
+	TArray<FString> FilesToRevert;
+	for (const auto& SelectedItem : SelectedItems)
+	{
+		if (FPackageName::IsPackageFilename(SelectedItem->GetFileName().ToString()))
+		{
+			PackagesToRevert.Add(SelectedItem->GetFileName().ToString());
+		}
+		else
+		{
+			FilesToRevert.Add(SelectedItem->GetFileName().ToString());
+		}
+	}
+
+	{
+		FBookmarkScoped BookmarkScoped;
+		bool bAnyReverted = false;
+		if (PackagesToRevert.Num() > 0)
+		{
+			bAnyReverted = SourceControlHelpers::RevertAndReloadPackages(PackagesToRevert, /*bRevertAll=*/false, /*bReloadWorld=*/true);
+			RemoveItemsFromListView(PackagesToRevert);
+		}
+		if (FilesToRevert.Num() > 0)
+		{
+			bAnyReverted |= SourceControlHelpers::RevertFiles(FilesToRevert);
+			RemoveItemsFromListView(FilesToRevert);
+		}
+		
+		if (bAnyReverted)
+		{
+			if (ListViewItems.IsEmpty())
+			{
+				DialogResult = ESubmitResults::SUBMIT_CANCELED;
+				ParentFrame.Pin()->RequestDestroyWindow();
+			}
+			else
+			{
+				ListView->RebuildList();
 			}
 		}
 	}
@@ -671,7 +773,7 @@ FReply SSourceControlSubmitWidget::SaveAndCloseClicked()
 
 bool SSourceControlSubmitWidget::IsSubmitEnabled() const
 {
-	return bAllowSubmit && !ChangeListDescriptionTextCtrl->GetText().IsEmpty();
+	return bAllowSubmit && !ChangeListDescriptionTextCtrl->GetText().IsEmpty() && ListViewItems.Num() > 0;
 }
 
 
@@ -705,8 +807,7 @@ TSharedRef<ITableRow> SSourceControlSubmitWidget::OnGenerateRowForList(TSharedPt
 	TSharedRef<ITableRow> Row =
 	SNew(SSourceControlSubmitListRow, OwnerTable)
 		.SourceControlSubmitWidget(SharedThis(this))
-		.Item(SubmitItem)
-		.IsEnabled(SubmitItem->IsEnabled());
+		.Item(SubmitItem);
 
 	return Row;
 }

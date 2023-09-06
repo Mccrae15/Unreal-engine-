@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+
 #pragma once
 
 #include "GameFramework/Actor.h"
@@ -12,18 +13,21 @@
 
 class UHLODLayer;
 class UHLODSubsystem;
+class UWorldPartitionHLODSourceActors;
 
-UCLASS(NotPlaceable)
-class ENGINE_API AWorldPartitionHLOD : public AActor
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogHLODHash, Log, All);
+
+UCLASS(NotPlaceable, MinimalAPI)
+class AWorldPartitionHLOD : public AActor
 {
 	GENERATED_UCLASS_BODY()
 
 	typedef TMap<FName, int64>	FStats;
 
 public:
-	void SetVisibility(bool bInVisible);
+	ENGINE_API void SetVisibility(bool bInVisible);
 
-	inline FGuid GetSourceCellGuid() const { return SourceCellGuid; }
+	ENGINE_API const FGuid& GetSourceCellGuid() const;
 	inline uint32 GetLODLevel() const { return LODLevel; }
 
 	virtual bool IsHLODRelevant() const override { return true; }
@@ -31,27 +35,25 @@ public:
 	bool DoesRequireWarmup() const { return bRequireWarmup; }
 
 #if WITH_EDITOR
-	void SetHLODComponents(const TArray<UActorComponent*>& InHLODComponents);
+	ENGINE_API void SetHLODComponents(const TArray<UActorComponent*>& InHLODComponents);
 
-	void SetSubActors(const TArray<FHLODSubActor>& InSubActorMappings);
-	const TArray<FHLODSubActor>& GetSubActors() const;
-
-	void SetSubActorsHLODLayer(const UHLODLayer* InSubActorsHLODLayer);
-	const UHLODLayer* GetSubActorsHLODLayer() const { return SubActorsHLODLayer; }
+	ENGINE_API void SetSourceActors(UWorldPartitionHLODSourceActors* InSourceActors);
+	ENGINE_API UWorldPartitionHLODSourceActors* GetSourceActors();
+	ENGINE_API const UWorldPartitionHLODSourceActors* GetSourceActors() const;
 
 	void SetRequireWarmup(bool InRequireWarmup) { bRequireWarmup = InRequireWarmup; }
 
-	void SetSourceCellGuid(const FGuid& InSourceCellGuid);
+	ENGINE_API void SetSourceCellGuid(const FGuid& InSourceCellGuid);
 	inline void SetLODLevel(uint32 InLODLevel) { LODLevel = InLODLevel; }
 
-	const FBox& GetHLODBounds() const;
-	void SetHLODBounds(const FBox& InBounds);
+	ENGINE_API const FBox& GetHLODBounds() const;
+	ENGINE_API void SetHLODBounds(const FBox& InBounds);
 
 	double GetMinVisibleDistance() const { return MinVisibleDistance; }
 	void SetMinVisibleDistance(double InMinVisibleDistance) { MinVisibleDistance = InMinVisibleDistance; }
 
-	void BuildHLOD(bool bForceBuild = false);
-	uint32 GetHLODHash() const;
+	ENGINE_API void BuildHLOD(bool bForceBuild = false);
+	ENGINE_API uint32 GetHLODHash() const;
 
 	const FStats& GetStats() const { return HLODStats; }
 	int64 GetStat(FName InStatName) const { return HLODStats.FindRef(InStatName); }
@@ -61,25 +63,26 @@ public:
 
 protected:
 	//~ Begin UObject Interface.
-	virtual void Serialize(FArchive& Ar) override;
-	virtual bool NeedsLoadForServer() const override;
-	virtual void PostLoad() override;
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+	ENGINE_API virtual bool NeedsLoadForServer() const override;
+	ENGINE_API virtual void PostLoad() override;
 #if WITH_EDITOR
-	virtual void RerunConstructionScripts() override;
+	ENGINE_API virtual void RerunConstructionScripts() override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override { return false; }
 	virtual bool CanEditChangeComponent(const UActorComponent* Component, const FProperty* InProperty) const override { return false; }
 #endif
 	//~ End UObject Interface.
 
 	//~ Begin AActor Interface.
-	virtual void BeginPlay() override;
-	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	ENGINE_API virtual void PreRegisterAllComponents() override;
+	ENGINE_API virtual void BeginPlay() override;
+	ENGINE_API virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual bool IsRuntimeOnly() const override { return true; }
 #if WITH_EDITOR
-	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
+	ENGINE_API virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
 
-	virtual void GetActorBounds(bool bOnlyCollidingComponents, FVector& Origin, FVector& BoxExtent, bool bIncludeFromChildActors) const override;
-	virtual FBox GetStreamingBounds() const override;
+	ENGINE_API virtual void GetActorBounds(bool bOnlyCollidingComponents, FVector& Origin, FVector& BoxExtent, bool bIncludeFromChildActors) const override;
+	ENGINE_API virtual FBox GetStreamingBounds() const override;
 
 	virtual bool ShouldImport(FStringView ActorPropString, bool IsMovingLevel) override { return false; }
 	virtual bool IsLockLocation() const override { return true; }
@@ -88,12 +91,13 @@ protected:
 	//~ End AActor Interface.
 
 private:
+#if WITH_EDITOR
+	ENGINE_API void OnWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResources);
+#endif
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<FHLODSubActor> HLODSubActors;
-
-	UPROPERTY()
-	TObjectPtr<const UHLODLayer> SubActorsHLODLayer;
+	TObjectPtr<UWorldPartitionHLODSourceActors> SourceActors;
 
 	UPROPERTY()
 	FBox HLODBounds;
@@ -115,13 +119,21 @@ private:
 	bool bRequireWarmup;
 
 	UPROPERTY()
+	FGuid SourceCellGuid;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
 	TSoftObjectPtr<UWorldPartitionRuntimeCell> SourceCell_DEPRECATED;
 
 	UPROPERTY()
 	FName SourceCellName_DEPRECATED;
 
 	UPROPERTY()
-	FGuid SourceCellGuid;
+	TArray<FHLODSubActor> HLODSubActors_DEPRECATED;
+
+	UPROPERTY()
+	TObjectPtr<const UHLODLayer> SubActorsHLODLayer_DEPRECATED;
+#endif	
 };
 
 DEFINE_ACTORDESC_TYPE(AWorldPartitionHLOD, FHLODActorDesc);

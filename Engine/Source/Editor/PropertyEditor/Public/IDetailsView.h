@@ -8,6 +8,7 @@
 #include "Framework/Commands/UICommandList.h"
 #include "DetailsViewArgs.h"
 
+class FDetailTreeNode;
 class AActor;
 class FNotifyHook;
 class FPropertyPath;
@@ -194,6 +195,21 @@ public:
 	 * row numbers. If you need a list of all properties independent of expansion state, use GetPropertiesInOrderDisplayed
 	 */
 	virtual TArray<TPair<int32, FPropertyPath>> GetPropertyRowNumbers() const  = 0;
+
+	/**
+	 * Returns the boundary (in paint space) of a detail tree node if it's currently visible Otherwise return an invalid boundary
+	 */
+	virtual FSlateRect GetPaintSpacePropertyBounds(const TSharedRef<FDetailTreeNode>& InDetailTreeNode, bool IncludeChildren = true) const {return FSlateRect();}
+	
+	/**
+	 * Returns the boundary (in tick space) of a detail tree node if it's currently visible Otherwise return an invalid boundary
+	 */
+	virtual FSlateRect GetTickSpacePropertyBounds(const TSharedRef<FDetailTreeNode>& InDetailTreeNode, bool IncludeChildren = true) const {return FSlateRect();}
+
+	/**
+	 * Returns true if the provided detail tree node is part of a collapsed/hidden subsection of the details panel
+	 */
+	virtual bool IsAncestorCollapsed(const TSharedRef<IDetailTreeNode>& Node) const { return false; }
 	
 	/**
 	 * returns the number of rows in the underlying TableView

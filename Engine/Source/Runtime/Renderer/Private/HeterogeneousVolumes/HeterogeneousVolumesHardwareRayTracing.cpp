@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HeterogeneousVolumes.h"
+#include "HeterogeneousVolumeInterface.h"
 
 #include "LightRendering.h"
 #include "PixelShaderUtils.h"
@@ -113,7 +114,7 @@ void GenerateRayTracingGeometryInstance(
 	const FScene* Scene,
 	const FViewInfo& View,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	// Volume data
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -157,7 +158,7 @@ void GenerateRayTracingGeometryInstance(
 
 	FRayTracingGeometryInitializer GeometryInitializer;
 	// TODO: REMOVE STRING ALLOCATION
-	GeometryInitializer.DebugName = *PrimitiveSceneProxy->GetResourceName().ToString();// +TEXT(" (HeterogeneousVolume)");
+	//GeometryInitializer.DebugName = *PrimitiveSceneProxy->GetResourceName().ToString();// +TEXT(" (HeterogeneousVolume)");
 	//GeometryInitializer.IndexBuffer = EmptyIndexBuffer;
 	GeometryInitializer.GeometryType = RTGT_Procedural;
 	GeometryInitializer.bFastBuild = false;
@@ -171,7 +172,7 @@ void GenerateRayTracingGeometryInstance(
 	GeometryInitializer.Segments.Add(Segment);
 	GeometryInitializer.TotalPrimitiveCount = Segment.NumPrimitives;
 	RayTracingGeometries.Add(RHICreateRayTracingGeometry(GeometryInitializer));
-	RayTracingTransforms.Add(PrimitiveSceneProxy->GetLocalToWorld());
+	RayTracingTransforms.Add(HeterogeneousVolumeInterface->GetLocalToWorld());
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FBuildBLASPassParams, )
@@ -181,6 +182,7 @@ END_SHADER_PARAMETER_STRUCT()
 BEGIN_SHADER_PARAMETER_STRUCT(FBuildTLASPassParams, )
 	RDG_BUFFER_ACCESS(RayTracingSceneScratchBuffer, ERHIAccess::UAVCompute)
 	RDG_BUFFER_ACCESS(RayTracingSceneInstanceBuffer, ERHIAccess::SRVCompute)
+	RDG_BUFFER_ACCESS(RayTracingSceneBuffer, ERHIAccess::BVHWrite)
 END_SHADER_PARAMETER_STRUCT()
 
 void GenerateRayTracingScene(
@@ -188,8 +190,6 @@ void GenerateRayTracingScene(
 	// Scene data
 	const FScene* Scene,
 	const FViewInfo& View,
-	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	// Ray tracing data
 	TArray<FRayTracingGeometryRHIRef>& RayTracingGeometries,
 	TArray<FMatrix>& RayTracingTransforms,
@@ -236,13 +236,13 @@ void GenerateRayTracingScene(
 
 	// Create RayTracingScene
 	const FGPUScene* EmptyGPUScene = nullptr;
-	FViewMatrices EmptyViewMatrices;
-	RayTracingScene.Create(GraphBuilder, EmptyGPUScene, EmptyViewMatrices);
+	RayTracingScene.Create(GraphBuilder, View, EmptyGPUScene);
 
 	// Build TLAS
 	FBuildTLASPassParams* PassParamsTLAS = GraphBuilder.AllocParameters<FBuildTLASPassParams>();
 	PassParamsTLAS->RayTracingSceneScratchBuffer = RayTracingScene.BuildScratchBuffer;
 	PassParamsTLAS->RayTracingSceneInstanceBuffer = RayTracingScene.InstanceBuffer;
+	PassParamsTLAS->RayTracingSceneBuffer = RayTracingScene.GetBufferChecked();
 
 	const bool bRayTracingAsyncBuild = false;//CVarRayTracingAsyncBuild.GetValueOnRenderThread() != 0 && GRHISupportsRayTracingAsyncBuildAccelerationStructure;
 	const ERDGPassFlags ComputePassFlags = bRayTracingAsyncBuild ? ERDGPassFlags::AsyncCompute : ERDGPassFlags::Compute;
@@ -257,7 +257,7 @@ void GenerateRayTracingScene(
 		](FRHIComputeCommandList& RHICmdList)
 		{
 			FRHIRayTracingScene* RayTracingSceneRHI = RayTracingScene.GetRHIRayTracingSceneChecked();
-			FRHIBuffer* AccelerationStructureBuffer = RayTracingScene.GetBufferChecked();
+			FRHIBuffer* AccelerationStructureBuffer = PassParamsTLAS->RayTracingSceneBuffer->GetRHI();
 
 			FRayTracingSceneBuildParams SceneBuildParams;
 			SceneBuildParams.Scene = RayTracingSceneRHI;
@@ -343,7 +343,7 @@ class FRenderLightingCacheWithPreshadingRGS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		// Scene 
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 
@@ -421,7 +421,7 @@ class FRenderSingleScatteringWithPreshadingRGS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		// Scene 
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 
@@ -579,7 +579,7 @@ void RenderLightingCacheWithPreshadingHardwareRayTracing(
 	const FVisibleLightInfo* VisibleLightInfo,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	// Sparse voxel data
 	TRDGUniformBufferRef<FSparseVoxelUniformBufferParameters> SparseVoxelUniformBuffer,
 	// Ray tracing data
@@ -595,7 +595,7 @@ void RenderLightingCacheWithPreshadingHardwareRayTracing(
 	FRenderLightingCacheWithPreshadingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRenderLightingCacheWithPreshadingRGS::FParameters>();
 	{
 		// Scene
-		PassParameters->TLAS = RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
+		PassParameters->TLAS = RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base);
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
@@ -612,7 +612,8 @@ void RenderLightingCacheWithPreshadingHardwareRayTracing(
 		PassParameters->SparseVoxelUniformBuffer = SparseVoxelUniformBuffer;
 
 		// Transmittance volume
-		PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+		PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
+		PassParameters->LightingCache.LightingCacheVoxelBias = HeterogeneousVolumeInterface->GetShadowBiasFactor();
 		//PassParameters->LightingCache.LightingCacheTexture = GraphBuilder.CreateSRV(LightingCacheTexture);
 
 		// Ray data
@@ -665,7 +666,7 @@ void RenderLightingCacheWithPreshadingHardwareRayTracing(
 	FRenderLightingCacheWithPreshadingRGS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FRenderLightingCacheWithPreshadingRGS::FLightingCacheMode>(HeterogeneousVolumes::GetLightingCacheMode() - 1);
 	TShaderRef<FRenderLightingCacheWithPreshadingRGS> RayGenerationShader = View.ShaderMap->GetShader<FRenderLightingCacheWithPreshadingRGS>(PermutationVector);
-	FIntVector VolumeResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+	FIntVector VolumeResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
 	FIntPoint DispatchResolution = FIntPoint(VolumeResolution.X, VolumeResolution.Y * VolumeResolution.Z);
 
 	GraphBuilder.AddPass(
@@ -720,7 +721,7 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 	const FVisibleLightInfo* VisibleLightInfo,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	// Sparse voxel data
 	TRDGUniformBufferRef<FSparseVoxelUniformBufferParameters> SparseVoxelUniformBuffer,
 	// Ray tracing data
@@ -742,7 +743,7 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 	FRenderSingleScatteringWithPreshadingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRenderSingleScatteringWithPreshadingRGS::FParameters>();
 	{
 		// Scene
-		PassParameters->TLAS = RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
+		PassParameters->TLAS = RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base);
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
@@ -781,7 +782,7 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 
 		// Indirect lighting data
 		auto* LumenUniforms = GraphBuilder.AllocParameters<FLumenTranslucencyLightingUniforms>();
-		LumenUniforms->Parameters = GetLumenTranslucencyLightingParameters(GraphBuilder, View.LumenTranslucencyGIVolume, View.LumenFrontLayerTranslucency);
+		LumenUniforms->Parameters = GetLumenTranslucencyLightingParameters(GraphBuilder, View.GetLumenTranslucencyGIVolume(), View.LumenFrontLayerTranslucency);
 		PassParameters->LumenGIVolumeStruct = GraphBuilder.CreateUniformBuffer(LumenUniforms);
 
 		// Sparse Voxel data
@@ -793,7 +794,8 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 		// Transmittance volume
 		if ((HeterogeneousVolumes::UseLightingCacheForTransmittance() && bApplyShadowTransmittance) || HeterogeneousVolumes::UseLightingCacheForInscattering())
 		{
-			PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+			PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
+			PassParameters->LightingCache.LightingCacheVoxelBias = HeterogeneousVolumeInterface->GetShadowBiasFactor();
 			PassParameters->LightingCache.LightingCacheTexture = LightingCacheTexture;
 		}
 
@@ -810,7 +812,7 @@ void RenderSingleScatteringWithPreshadingHardwareRayTracing(
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingRGS::FApplyShadowTransmittanceDim>(bApplyShadowTransmittance);
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingRGS::FUseTransmittanceVolume>(HeterogeneousVolumes::UseLightingCacheForTransmittance());
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingRGS::FUseInscatteringVolume>(HeterogeneousVolumes::UseLightingCacheForInscattering());
-	PermutationVector.Set<FRenderSingleScatteringWithPreshadingRGS::FUseLumenGI>(HeterogeneousVolumes::UseIndirectLighting() && View.LumenTranslucencyGIVolume.Texture0 != nullptr);
+	PermutationVector.Set<FRenderSingleScatteringWithPreshadingRGS::FUseLumenGI>(HeterogeneousVolumes::UseIndirectLighting() && View.GetLumenTranslucencyGIVolume().Texture0 != nullptr);
 	TShaderRef<FRenderSingleScatteringWithPreshadingRGS> RayGenerationShader = View.ShaderMap->GetShader<FRenderSingleScatteringWithPreshadingRGS>(PermutationVector);
 	FIntPoint DispatchResolution = View.ViewRect.Size();
 

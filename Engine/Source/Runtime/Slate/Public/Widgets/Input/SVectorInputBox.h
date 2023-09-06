@@ -72,6 +72,12 @@ private:
 
 		/** Menu extender delegate for the X value */
 		SLATE_EVENT(FMenuExtensionDelegate, ContextMenuExtenderX)
+
+		/** Called when the x value of the vector slider began movement */
+		SLATE_EVENT(FSimpleDelegate, OnXBeginSliderMovement)
+
+		/** Called when the x value of the vector slider ended movement */
+		SLATE_EVENT(FOnNumericValueChanged, OnXEndSliderMovement)
 	};
 
 	struct FVectorYArgumentsEmpty {};
@@ -101,6 +107,12 @@ private:
 
 		/** Menu extender delegate for the Y value */
 		SLATE_EVENT(FMenuExtensionDelegate, ContextMenuExtenderY)
+
+		/** Called when the y value of the vector slider began movement */
+		SLATE_EVENT(FSimpleDelegate, OnYBeginSliderMovement)
+
+		/** Called when the y value of the vector slider ended movement */
+		SLATE_EVENT(FOnNumericValueChanged, OnYEndSliderMovement)
 	};
 
 	struct FVectorZArgumentsEmpty {};
@@ -130,6 +142,12 @@ private:
 
 		/** Menu extender delegate for the Z value */
 		SLATE_EVENT(FMenuExtensionDelegate, ContextMenuExtenderZ)
+
+		/** Called when the z value of the vector slider began movement */
+		SLATE_EVENT(FSimpleDelegate, OnZBeginSliderMovement)
+
+		/** Called when the z value of the vector slider ended movement */
+		SLATE_EVENT(FOnNumericValueChanged, OnZEndSliderMovement)
 	};
 
 	struct FVectorWArgumentsEmpty {};
@@ -159,6 +177,12 @@ private:
 
 		/** Menu extender delegate for the W value */
 		SLATE_EVENT(FMenuExtensionDelegate, ContextMenuExtenderW)
+
+		/** Called when the w value of the vector slider began movement */
+		SLATE_EVENT(FSimpleDelegate, OnWBeginSliderMovement)
+
+		/** Called when the w value of the vector slider ended movement */
+		SLATE_EVENT(FOnNumericValueChanged, OnWEndSliderMovement)
 	};
 
 public:
@@ -390,7 +414,9 @@ private:
 		const FOnNumericValueCommitted& OnComponentCommitted,
 		const TAttribute<ECheckBoxState> ToggleChecked,
 		const FOnCheckStateChanged& OnToggleChanged,
-		const FMenuExtensionDelegate& OnContextMenuExtenderComponent)
+		const FMenuExtensionDelegate& OnContextMenuExtenderComponent,
+		const FSimpleDelegate& OnComponentBeginSliderMovement,
+		const FOnNumericValueChanged& OnComponentEndSliderMovement)
 	{
 		TSharedRef<SWidget> LabelWidget = SNullWidget::NullWidget;
 		if (InArgs._bColorAxisLabels)
@@ -430,8 +456,8 @@ private:
 			.MaxSliderValue(CreatePerComponentGetter(ComponentIndex, TOptional<NumericType>(), InArgs._MaxSliderVector))
 			.LinearDeltaSensitivity(InArgs._LinearDeltaSensitivity)
 			.Delta(InArgs._SpinDelta)
-			.OnBeginSliderMovement(InArgs._OnBeginSliderMovement)
-			.OnEndSliderMovement(InArgs._OnEndSliderMovement)
+			.OnBeginSliderMovement(CreatePerComponentSliderMovementEvent(InArgs._OnBeginSliderMovement, OnComponentBeginSliderMovement))
+			.OnEndSliderMovement(CreatePerComponentSliderMovementEvent<FOnNumericValueChanged, NumericType>(InArgs._OnEndSliderMovement, OnComponentEndSliderMovement))
 			.LabelPadding(FMargin(3.f))
 			.LabelLocation(SNumericEntryBox<NumericType>::ELabelLocation::Inside)
 			.Label()
@@ -460,7 +486,9 @@ private:
 			InArgs._OnXCommitted,
 			InArgs._ToggleXChecked,
 			InArgs._OnToggleXChanged,
-			InArgs._ContextMenuExtenderX
+			InArgs._ContextMenuExtenderX,
+			InArgs._OnXBeginSliderMovement,
+			InArgs._OnXEndSliderMovement
 		);
 	}
 
@@ -479,7 +507,9 @@ private:
 			InArgs._OnYCommitted,
 			InArgs._ToggleYChecked,
 			InArgs._OnToggleYChanged,
-			InArgs._ContextMenuExtenderY
+			InArgs._ContextMenuExtenderY,
+			InArgs._OnYBeginSliderMovement,
+			InArgs._OnYEndSliderMovement
 		);
 	}
 
@@ -498,7 +528,9 @@ private:
 			InArgs._OnZCommitted,
 			InArgs._ToggleZChecked,
 			InArgs._OnToggleZChanged,
-			InArgs._ContextMenuExtenderZ
+			InArgs._ContextMenuExtenderZ,
+			InArgs._OnZBeginSliderMovement,
+			InArgs._OnZEndSliderMovement
 		);
 	}
 
@@ -517,7 +549,9 @@ private:
 			InArgs._OnWCommitted,
 			InArgs._ToggleWChecked,
 			InArgs._OnToggleWChanged,
-			InArgs._ContextMenuExtenderW
+			InArgs._ContextMenuExtenderW,
+			InArgs._OnWBeginSliderMovement,
+			InArgs._OnWEndSliderMovement
 		);
 	}
 
@@ -609,6 +643,26 @@ private:
 				});
 		}
 		return OnComponentCommitted;
+	}
+
+	/**
+	 * Creates a lambda to react to a begin/end slider movement event
+	 */
+	template<typename EventType, typename... ArgsType>
+	EventType CreatePerComponentSliderMovementEvent(
+		const EventType OnSliderMovement,
+		const EventType OnComponentSliderMovement)
+	{
+		if(OnSliderMovement.IsBound())
+		{
+			return EventType::CreateLambda(
+				[OnSliderMovement, OnComponentSliderMovement](ArgsType... Args)
+				{
+					OnSliderMovement.ExecuteIfBound(Args...);
+					OnComponentSliderMovement.ExecuteIfBound(Args...);
+				});
+		}
+		return OnComponentSliderMovement;
 	}
 
 	bool bUseVectorGetter = true;

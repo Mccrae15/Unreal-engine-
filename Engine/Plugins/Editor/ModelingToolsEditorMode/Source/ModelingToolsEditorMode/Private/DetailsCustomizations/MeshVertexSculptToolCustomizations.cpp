@@ -30,6 +30,11 @@ TSharedRef<IDetailCustomization> FSculptBrushPropertiesDetails::MakeInstance()
 
 void FSculptBrushPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
+	TArray<TWeakObjectPtr<UObject>> ObjectsBeingCustomized;
+	DetailBuilder.GetObjectsBeingCustomized(ObjectsBeingCustomized);
+	check(ObjectsBeingCustomized.Num() > 0);
+	USculptBrushProperties* BrushProperties = Cast<USculptBrushProperties>(ObjectsBeingCustomized[0]);
+
 	TSharedPtr<IPropertyHandle> FlowRateHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(USculptBrushProperties, FlowRate), USculptBrushProperties::StaticClass());
 	ensure(FlowRateHandle->IsValidHandle());
 
@@ -37,20 +42,43 @@ void FSculptBrushPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 	ensure(SpacingHandle->IsValidHandle());
 	SpacingHandle->MarkHiddenByCustomization();
 
+	TSharedPtr<IPropertyHandle> FalloffHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(USculptBrushProperties, BrushFalloffAmount), USculptBrushProperties::StaticClass());
+	ensure(FalloffHandle->IsValidHandle());
+	FalloffHandle->MarkHiddenByCustomization();
+
 	TSharedPtr<SDynamicNumericEntry::FDataSource> FlowRateSource = SDynamicNumericEntry::MakeSimpleDataSource(
 		FlowRateHandle, TInterval<float>(0.0f, 1.0f), TInterval<float>(0.0f, 1.0f));
-	TSharedPtr<SDynamicNumericEntry::FDataSource> SpacingSource = SDynamicNumericEntry::MakeSimpleDataSource(
-		SpacingHandle, TInterval<float>(0.0f, 1000.0f), TInterval<float>(0.0f, 4.0f));
 
-	DetailBuilder.EditDefaultProperty(FlowRateHandle)->CustomWidget()
-		.OverrideResetToDefault(FResetToDefaultOverride::Hide())
-		.WholeRowContent()
-	[
-		MakeTwoWidgetDetailRowHBox(
-			MakeFixedWidthLabelSliderHBox(FlowRateHandle, FlowRateSource, FSculptToolsUIConstants::SculptShortLabelWidth),
-			MakeFixedWidthLabelSliderHBox(SpacingHandle, SpacingSource, FSculptToolsUIConstants::SculptShortLabelWidth)
-		)
-	];
+	if ( BrushProperties->bShowSpacing )
+	{
+		TSharedPtr<SDynamicNumericEntry::FDataSource> SpacingSource = SDynamicNumericEntry::MakeSimpleDataSource(
+			SpacingHandle, TInterval<float>(0.0f, 1000.0f), TInterval<float>(0.0f, 4.0f));
+
+		DetailBuilder.EditDefaultProperty(FlowRateHandle)->CustomWidget()
+			.OverrideResetToDefault(FResetToDefaultOverride::Hide())
+			.WholeRowContent()
+		[
+			MakeTwoWidgetDetailRowHBox(
+				MakeFixedWidthLabelSliderHBox(FlowRateHandle, FlowRateSource, FSculptToolsUIConstants::SculptShortLabelWidth),
+				MakeFixedWidthLabelSliderHBox(SpacingHandle, SpacingSource, FSculptToolsUIConstants::SculptShortLabelWidth)
+			)
+		];
+	}
+	else   // if bShowFalloff
+	{
+		TSharedPtr<SDynamicNumericEntry::FDataSource> FalloffSource = SDynamicNumericEntry::MakeSimpleDataSource(
+			FalloffHandle, TInterval<float>(0.0f, 1.0f), TInterval<float>(0.0f, 1.0f));
+
+		DetailBuilder.EditDefaultProperty(FlowRateHandle)->CustomWidget()
+			.OverrideResetToDefault(FResetToDefaultOverride::Hide())
+			.WholeRowContent()
+			[
+				MakeTwoWidgetDetailRowHBox(
+					MakeFixedWidthLabelSliderHBox(FalloffHandle, FalloffSource, FSculptToolsUIConstants::SculptShortLabelWidth),
+					MakeFixedWidthLabelSliderHBox(FlowRateHandle, FlowRateSource, FSculptToolsUIConstants::SculptShortLabelWidth)
+				)
+			];
+	}
 
 	TSharedPtr<IPropertyHandle> LazynessHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(USculptBrushProperties, Lazyness), USculptBrushProperties::StaticClass());
 	ensure(LazynessHandle->IsValidHandle());
@@ -81,12 +109,19 @@ TSharedRef<IDetailCustomization> FVertexBrushSculptPropertiesDetails::MakeInstan
 	return MakeShareable(new FVertexBrushSculptPropertiesDetails);
 }
 
+FVertexBrushSculptPropertiesDetails::~FVertexBrushSculptPropertiesDetails()
+{
+	if (TargetTool.IsValid())
+	{
+		TargetTool.Get()->OnDetailsPanelRequestRebuild.Remove(FalloffTypeUpdateHandle);
+	}
+}
+
 void FVertexBrushSculptPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
 	TSharedPtr<IPropertyHandle> BrushTypeHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UVertexBrushSculptProperties, PrimaryBrushType), UVertexBrushSculptProperties::StaticClass());
 	ensure(BrushTypeHandle->IsValidHandle());
 
-	TArray<TWeakObjectPtr<UObject>> ObjectsBeingCustomized;
 	DetailBuilder.GetObjectsBeingCustomized(ObjectsBeingCustomized);
 	check(ObjectsBeingCustomized.Num() > 0);
 	UVertexBrushSculptProperties* BrushProperties = CastChecked<UVertexBrushSculptProperties>(ObjectsBeingCustomized[0]);
@@ -153,7 +188,7 @@ void FVertexBrushSculptPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder&
 		FalloffTypeItems.Add(NewFalloffTypeItem);
 	}
 
-	TSharedPtr<SComboPanel> FalloffTypeCombo = SNew(SComboPanel)
+	FalloffTypeCombo = SNew(SComboPanel)		
 		.ToolTipText(FalloffTypeHandle->GetToolTipText())
 		.ComboButtonTileSize(FVector2D(18, 18))
 		.FlyoutTileSize(FVector2D(FlyoutIconSize, FlyoutIconSize))
@@ -168,6 +203,13 @@ void FVertexBrushSculptPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder&
 		})
 		.FlyoutHeaderText(LOCTEXT("FalloffsHeader", "Falloff Types"))
 		.InitialSelectionIndex(CurrentFalloffTypeIndex);
+
+	FalloffTypeUpdateHandle = TargetTool.Get()->OnDetailsPanelRequestRebuild.AddLambda([this]() {
+			UVertexBrushSculptProperties* BrushProperties = CastChecked<UVertexBrushSculptProperties>(ObjectsBeingCustomized[0]);
+			const TArray<UMeshSculptToolBase::FFalloffTypeInfo>& FalloffTypeInfos = TargetTool->GetRegisteredPrimaryFalloffTypes();
+			int32 CurrentFalloffType = (int32)BrushProperties->PrimaryFalloffType;
+			FalloffTypeCombo->SetSelectionIndex(CurrentFalloffType);
+	});
 
 	//DetailBuilder.HideProperty(FalloffTypeHandle);
 	FalloffTypeHandle->MarkHiddenByCustomization();
@@ -409,6 +451,14 @@ TSharedRef<IDetailCustomization> FVertexBrushAlphaPropertiesDetails::MakeInstanc
 	return MakeShareable(new FVertexBrushAlphaPropertiesDetails);
 }
 
+FVertexBrushAlphaPropertiesDetails::~FVertexBrushAlphaPropertiesDetails()
+{
+	if (TargetTool.IsValid())
+	{
+		TargetTool.Get()->OnDetailsPanelRequestRebuild.Remove(AlphaTextureUpdateHandle);
+	}
+}
+
 void FVertexBrushAlphaPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
 	// TODO: move this to a subsystem or UObject CDO
@@ -423,6 +473,11 @@ void FVertexBrushAlphaPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& 
 	}
 	RecentAlphasProvider = RecentAlphasStatic.RecentAlphas;
 
+	DetailBuilder.GetObjectsBeingCustomized(ObjectsBeingCustomized);
+	check(ObjectsBeingCustomized.Num() > 0);
+	UVertexBrushAlphaProperties* AlphaProperties = CastChecked<UVertexBrushAlphaProperties>(ObjectsBeingCustomized[0]);
+	UMeshVertexSculptTool* Tool = AlphaProperties->Tool.Get();
+	TargetTool = Tool;
 
 
 	TSharedPtr<IPropertyHandle> AlphaHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UVertexBrushAlphaProperties, Alpha), UVertexBrushAlphaProperties::StaticClass());
@@ -460,7 +515,7 @@ void FVertexBrushAlphaPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& 
 		BrushAlphasLists.Add(CollectionSet);
 	}
 
-	TSharedPtr<SToolInputAssetComboPanel> AlphaAssetPicker = SNew(SToolInputAssetComboPanel)
+	AlphaAssetPicker = SNew(SToolInputAssetComboPanel)
 		.AssetClassType(UTexture2D::StaticClass())		// can infer from property...
 		.Property(AlphaHandle)
 		.ComboButtonTileSize(FVector2D(ComboIconSize, ComboIconSize))
@@ -468,6 +523,10 @@ void FVertexBrushAlphaPropertiesDetails::CustomizeDetails(IDetailLayoutBuilder& 
 		.FlyoutSize(FVector2D(1000, 600))
 		.RecentAssetsProvider(RecentAlphasProvider)
 		.CollectionSets(BrushAlphasLists);
+
+	AlphaTextureUpdateHandle = TargetTool.Get()->OnDetailsPanelRequestRebuild.AddLambda([this]() {
+		AlphaAssetPicker->RefreshThumbnailFromProperty();
+	});
 
 	DetailBuilder.EditDefaultProperty(AlphaHandle)->CustomWidget()
 		.OverrideResetToDefault(FResetToDefaultOverride::Hide())

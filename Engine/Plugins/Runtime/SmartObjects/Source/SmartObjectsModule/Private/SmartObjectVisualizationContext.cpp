@@ -3,8 +3,21 @@
 #include "CanvasTypes.h"
 #include "SceneView.h"
 #include "SceneManagement.h"
+#include "SmartObjectDefinition.h"
+#include "SmartObjectTypes.h"
 
-#if UE_ENABLE_DEBUG_DRAWING
+#if WITH_EDITOR
+
+FSmartObjectVisualizationContext::FSmartObjectVisualizationContext(const USmartObjectDefinition& InDefinition, const UWorld& InWorld)
+	: Definition(InDefinition)
+	, World(InWorld)
+{
+	PreviewValidationFilterClass = InDefinition.GetPreviewValidationFilterClass();
+	if (PreviewValidationFilterClass.Get() == nullptr)
+	{
+		PreviewValidationFilterClass = USmartObjectSlotValidationFilter::StaticClass(); 
+	}
+}
 
 bool FSmartObjectVisualizationContext::IsValidForDraw() const
 {
@@ -40,6 +53,15 @@ FVector2D FSmartObjectVisualizationContext::Project(const FVector& Location) con
 bool FSmartObjectVisualizationContext::IsLocationVisible(const FVector& Location) const
 {
 	return View != nullptr && View->ViewFrustum.IntersectPoint(Location);
+}
+
+FVector::FReal FSmartObjectVisualizationContext::GetDistanceToCamera(const FVector& Location) const
+{
+	if (View)
+	{
+		return FVector::Distance(Location, View->ViewLocation);
+	}
+	return UE_DOUBLE_BIG_NUMBER;
 }
 
 void FSmartObjectVisualizationContext::DrawString(const float StartX, const float StartY, const TCHAR* Text, const FLinearColor& Color, const FLinearColor& ShadowColor) const
@@ -90,4 +112,4 @@ void FSmartObjectVisualizationContext::DrawArrow(const FVector& Start, const FVe
 	PDI->DrawTranslucentLine(EndLoc, EndLoc - Dir * ArrowHeadLength - Side * ArrowHeadLength * 0.5f, Color, DepthPriorityGroup, Thickness, DepthBias, bScreenSpace);
 }
 
-#endif // UE_ENABLE_DEBUG_DRAWING
+#endif // WITH_EDITOR

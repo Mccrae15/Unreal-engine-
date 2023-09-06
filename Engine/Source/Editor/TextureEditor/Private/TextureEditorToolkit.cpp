@@ -317,6 +317,17 @@ void FTextureEditorToolkit::InitTextureEditor( const EToolkitMode::Type Mode, co
 
 	RegenerateMenusAndToolbars();
 
+	// If we're opening the texture editor then we likely want to see the Final
+	// texture quality for evaluation and parameter adjustment. This ends up latching
+	// for the current editor session, but since it's already getting built this is
+	// fine. This doesn't need the normal Modify() / PreEditChange/PostEditChange incantations
+	// because it's transient, and any async build was completed above.
+	if ( Texture->Source.IsValid() && ( (int64)Texture->Source.GetSizeX() * Texture->Source.GetSizeY() <= 4096*4096  ) )
+	{
+		Texture->CompressFinal = true;
+	}
+	PostTextureRecode();
+
 	// @todo toolkit world centric editing
 	/*if(IsWorldCentricAssetEditor())
 	{
@@ -332,9 +343,9 @@ void FTextureEditorToolkit::InitTextureEditor( const EToolkitMode::Type Mode, co
 
 void FTextureEditorToolkit::CalculateTextureDimensions(int32& OutWidth, int32& OutHeight, int32& OutDepth, int32& OutArraySize, bool bInIncludeBorderSize) const
 {
-	OutWidth = Texture->GetSurfaceWidth();
-	OutHeight = Texture->GetSurfaceHeight();
-	OutDepth = Texture->GetSurfaceDepth();
+	OutWidth = static_cast<int32>(Texture->GetSurfaceWidth());
+	OutHeight = static_cast<int32>(Texture->GetSurfaceHeight());
+	OutDepth = static_cast<int32>(Texture->GetSurfaceDepth());
 	OutArraySize = IsArrayTexture() ? (IsCubeTexture() ? Texture->GetSurfaceArraySize() / 6 : Texture->GetSurfaceArraySize()) : 0;
 	const int32 BorderSize = GetDefault<UTextureEditorSettings>()->TextureBorderEnabled ? 1 : 0;
 
@@ -379,8 +390,8 @@ void FTextureEditorToolkit::CalculateTextureDimensions(int32& OutWidth, int32& O
 	}
 	else
 	{
-		OutWidth = PreviewEffectiveTextureWidth * Zoom;
-		OutHeight = PreviewEffectiveTextureHeight * Zoom;
+		OutWidth = static_cast<int32>(PreviewEffectiveTextureWidth * Zoom);
+		OutHeight = static_cast<int32>(PreviewEffectiveTextureHeight * Zoom);
 	}
 
 	if (bInIncludeBorderSize)
@@ -645,8 +656,8 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 
 				if (ResultMetadata.OodleRDO == 0)
 				{
-					const UTextureEncodingProjectSettings* Settings = GetDefault<UTextureEncodingProjectSettings>();
-					const bool bDisabledGlobally = ResultMetadata.EncodeSpeed == (uint8)ETextureEncodeSpeed::Fast ? !Settings->bFastUsesRDO : !Settings->bFinalUsesRDO;
+					const FResolvedTextureEncodingSettings& Settings = FResolvedTextureEncodingSettings::Get();
+					const bool bDisabledGlobally = ResultMetadata.EncodeSpeed == (uint8)ETextureEncodeSpeed::Fast ? !Settings.Project.bFastUsesRDO : !Settings.Project.bFinalUsesRDO;
 
 					OodleRDOText->SetText(NSLOCTEXT("TextureEditor", "QuickInfo_Oodle_RDODisable", "Disabled"));
 					if (ResultMetadata.bWasEditorCustomEncoding)
@@ -713,9 +724,9 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 	const bool bIsArray = IsArrayTexture();
 	const bool bIsCube = IsCubeTexture();
 
-	const int32 SurfaceWidth = Texture->GetSurfaceWidth();
-	const int32 SurfaceHeight = Texture->GetSurfaceHeight();
-	const int32 SurfaceDepth = Texture->GetSurfaceDepth();
+	const int32 SurfaceWidth = static_cast<int32>(Texture->GetSurfaceWidth());
+	const int32 SurfaceHeight = static_cast<int32>(Texture->GetSurfaceHeight());
+	const int32 SurfaceDepth = static_cast<int32>(Texture->GetSurfaceDepth());
 	const int32 NumSurfaces = Texture->GetSurfaceArraySize();
 	const int32 ArraySize = bIsArray ? (bIsCube ? NumSurfaces / 6 : NumSurfaces) : 0;
 
@@ -899,7 +910,7 @@ void FTextureEditorToolkit::SetCustomZoomLevel( double ZoomValue )
 	// the mouse wheel zoom is quantized on ZoomFactorLogSteps
 	//	but that's too chunky for the drag slider, give it more steps, but on the same quantization grid
 	double QuantizationSteps = ZoomFactorLogSteps*2.0;
-	double LogZoomQuantized = (1.0/QuantizationSteps) * FMath::RoundToInt( QuantizationSteps * LogZoom );
+	double LogZoomQuantized = (1.0/QuantizationSteps) * (double)FMath::RoundToInt( QuantizationSteps * LogZoom );
 	ZoomValue = pow(2.0,LogZoomQuantized);
 
 	ZoomValue = FMath::Clamp(ZoomValue, MinZoom, MaxZoom);
@@ -1153,6 +1164,11 @@ TSharedRef<SWidget> FTextureEditorToolkit::BuildTexturePropertiesWidget( )
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	TexturePropertiesWidget = PropertyModule.CreateDetailView(Args);
 	TexturePropertiesWidget->SetObject(Texture);
+	
+	// todo, maybe :
+	// check cvar "r.VT.MenuRestricted"
+	// if set, hide the "VirtualTextureStreaming" property
+	// TexturePropertiesWidget->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateSP(this, &FTextureEditorToolkit::ShowTextureProperty));
 
 	return TexturePropertiesWidget.ToSharedRef();
 }
@@ -1192,8 +1208,17 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 
 	OodleCompressionLevel = FOodleDataCompression::ECompressionLevel::Optimal3;
 	const TCHAR* LevelName;
-	{		 
-		FOodleDataCompression::ECompressionLevelFromValue(ProjectSettings->PackageCompressionLevel_Distribution, OodleCompressionLevel);
+	{
+		int8 PackageCompressionLevel_Distribution8 = 0;
+		if (IntFitsIn<int8>(ProjectSettings->PackageCompressionLevel_Distribution))
+		{
+			PackageCompressionLevel_Distribution8 = static_cast<int8>(ProjectSettings->PackageCompressionLevel_Distribution);
+		}
+		else
+		{
+			UE_LOG(LogTextureEditor, Warning, TEXT("PackageCompressionLevel_Distribution in Project Settings is an invalid value = %d, must be [-128, 127]"), ProjectSettings->PackageCompressionLevel_Distribution);
+		}
+		FOodleDataCompression::ECompressionLevelFromValue(PackageCompressionLevel_Distribution8, OodleCompressionLevel);
 		FOodleDataCompression::ECompressionLevelToString(OodleCompressionLevel, &LevelName);
 	}
 
@@ -2643,7 +2668,7 @@ void FTextureEditorToolkit::HandleZoomSliderChanged(float SliderValue)
 
 float FTextureEditorToolkit::HandleZoomSliderValue() const
 {
-	float ZoomValue = CalculateDisplayedZoomLevel();
+	double ZoomValue = CalculateDisplayedZoomLevel();
 	double Octaves = log2( MaxZoom/MinZoom );
 	double SliderValue = log2( ZoomValue/MinZoom ) / Octaves;
 
@@ -2659,7 +2684,7 @@ void FTextureEditorToolkit::EditorOodleSettingsEffortChanged(int32 NewValue, ESe
 {
 	bool bChanged = CustomEncoding->OodleEncodeEffort != NewValue;
 
-	CustomEncoding->OodleEncodeEffort = NewValue;
+	CustomEncoding->OodleEncodeEffort = IntCastChecked<uint8>(NewValue);
 
 	if (CustomEncoding->bUseCustomEncode || bChanged)
 	{
@@ -2675,7 +2700,7 @@ int32 FTextureEditorToolkit::GetEditorOodleSettingsTiling() const
 void FTextureEditorToolkit::EditorOodleSettingsTilingChanged(int32 NewValue, ESelectInfo::Type SelectionType)
 {
 	bool bChanged = CustomEncoding->OodleUniversalTiling != NewValue;
-	CustomEncoding->OodleUniversalTiling = NewValue;
+	CustomEncoding->OodleUniversalTiling = IntCastChecked<uint8>(NewValue);
 
 	if (CustomEncoding->bUseCustomEncode && bChanged)
 	{
@@ -3187,7 +3212,7 @@ void FTextureEditorToolkit::PackagingSettingsChanged(TSharedPtr<FString> Selecti
 	if (Selection.IsValid())
 	{
 		UProjectPackagingSettings const* ProjectSettings = GetDefault<UProjectPackagingSettings>();
-		int8 CompressionLevelFromSettings = (int8)FOodleDataCompression::ECompressionLevel::Optimal3;
+		int32 CompressionLevelFromSettings = (int32)FOodleDataCompression::ECompressionLevel::Optimal3;
 		if (*Selection == TEXT("DebugDevelopment"))
 		{
 			CompressionLevelFromSettings = ProjectSettings->PackageCompressionLevel_DebugDevelopment;
@@ -3201,8 +3226,14 @@ void FTextureEditorToolkit::PackagingSettingsChanged(TSharedPtr<FString> Selecti
 			CompressionLevelFromSettings = ProjectSettings->PackageCompressionLevel_Distribution;
 		}
 
+		if (IntFitsIn<int8>(CompressionLevelFromSettings) == false)
+		{
+			UE_LOG(LogTextureEditor, Warning, TEXT("PackageCompressionLevel_%s in Project Settings is an invalid value = %d, must be [-128, 127]"), **Selection, CompressionLevelFromSettings);
+			CompressionLevelFromSettings = (int32)FOodleDataCompression::ECompressionLevel::Optimal3;
+		}
+
 		FOodleDataCompression::ECompressionLevel OldLevel = OodleCompressionLevel;
-		FOodleDataCompression::ECompressionLevelFromValue(CompressionLevelFromSettings, OodleCompressionLevel);
+		FOodleDataCompression::ECompressionLevelFromValue(static_cast<int8>(CompressionLevelFromSettings), OodleCompressionLevel);
 
 		const TCHAR* LevelName;
 		FOodleDataCompression::ECompressionLevelToString(OodleCompressionLevel, &LevelName);

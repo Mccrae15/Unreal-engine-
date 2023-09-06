@@ -15,18 +15,32 @@ class OPTIMUSCORE_API UOptimusNodeAdderPinProvider :
 };
 
 /**
-* Interface that provides a mechanism to query information about parameter bindings
+* Interface that provides a mechanism to add pins to node from existing pins
 */
 class OPTIMUSCORE_API IOptimusNodeAdderPinProvider
 {
 	GENERATED_BODY()
 
 public:
-	virtual bool CanAddPinFromPin(const UOptimusNodePin* InSourcePin, EOptimusNodePinDirection InNewPinDirection, FString* OutReason = nullptr) const = 0;
-
-	virtual UOptimusNodePin* TryAddPinFromPin(UOptimusNodePin* InSourcePin, FName InNewPinName) = 0;
+	struct FAdderPinAction
+	{
+		FName DisplayName;
+		EOptimusNodePinDirection NewPinDirection;
+		FName Key;
+		FText ToolTip;
+		bool bCanAutoLink;
+	};
 	
-	virtual bool RemoveAddedPin(UOptimusNodePin* InAddedPinToRemove) = 0;
-
-	virtual FName GetSanitizedNewPinName(FName InPinName)= 0;
+	virtual TArray<FAdderPinAction> GetAvailableAdderPinActions(
+		const UOptimusNodePin* InSourcePin,
+		EOptimusNodePinDirection InNewPinDirection,
+		FString* OutReason = nullptr
+		) const = 0;
+	
+	virtual TArray<UOptimusNodePin*> TryAddPinFromPin(
+		const FAdderPinAction& InSelectedAction,
+		UOptimusNodePin* InSourcePin
+		) = 0;
+	
+	virtual bool RemoveAddedPins(TConstArrayView<UOptimusNodePin*> InAddedPinsToRemove) = 0;
 };

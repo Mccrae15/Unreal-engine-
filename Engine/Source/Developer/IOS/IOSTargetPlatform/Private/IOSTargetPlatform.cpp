@@ -19,7 +19,7 @@
 #include "Windows/WindowsHWrapper.h"
 #endif
 #if WITH_ENGINE
-#include "Engine/TextureCube.h"
+#include "Engine/Texture.h"
 #include "Sound/SoundWave.h"
 #include "TextureResource.h"
 #include "AudioCompressionSettings.h"
@@ -282,9 +282,13 @@ int32 FIOSTargetPlatform::CheckRequirements(bool bProjectHasCode, EBuildConfigur
 	FString CmdExe = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Binaries/DotNET/IOS/IPhonePackager.exe"));
 	FString CommandLine = FString::Printf(TEXT("Validate Engine -project \"%s\" -bundlename \"%s\" %s"), *ProjectPath, *(BundleIdentifier), (bForDistribtion ? TEXT("-distribution") : TEXT("")) );
 	FString RemoteServerName;
+	FString SecondaryRemoteServerName;
 	FString RSyncUsername;
+	FString SecondaryRSyncUsername;
 	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("RemoteServerName"), RemoteServerName, GEngineIni);
 	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("RSyncUsername"), RSyncUsername, GEngineIni);
+	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("SecondaryRemoteServerName"), SecondaryRemoteServerName, GEngineIni);
+	GConfig->GetString(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("SecondaryRSyncUsername"), SecondaryRSyncUsername, GEngineIni);
 	if (RemoteServerName.Len() == 0 || RSyncUsername.Len() == 0)
 	{
 		bReadyToBuild |= ETargetPlatformReadyStatus::RemoveServerNameEmpty;
@@ -362,6 +366,9 @@ void FIOSTargetPlatform::HandlePongMessage( const FIOSLaunchDaemonPong& Message,
 		Device->SetDeviceId(DeviceId);
 		Device->SetDeviceName(Message.DeviceName);
 		Device->SetDeviceType(Message.DeviceType);
+		Device->SetModelId(Message.DeviceModelId);
+		Device->SetOSVersion(Message.DeviceOSVersion);
+		Device->SetDeviceConnectionType(Message.DeviceConnectionType);
 		Device->SetDeviceEndpoint(Context->GetSender());
 		Device->SetIsSimulated(Message.DeviceID.Contains(TEXT("Simulator")));
 
@@ -391,6 +398,9 @@ void FIOSTargetPlatform::HandleDeviceConnected(const FIOSLaunchDaemonPong& Messa
 			Device->SetDeviceName(Message.DeviceName);
 			Device->SetAuthorized(Message.bIsAuthorized);
 			Device->SetDeviceType(Message.DeviceType);
+			Device->SetModelId(Message.DeviceModelId);
+			Device->SetOSVersion(Message.DeviceOSVersion);
+			Device->SetDeviceConnectionType(Message.DeviceConnectionType);
 			Device->SetIsSimulated(Message.DeviceID.Contains(TEXT("Simulator")));
 
 			OnDeviceDiscovered().Broadcast(Device.ToSharedRef());
@@ -482,7 +492,20 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 
 		case ETargetPlatformFeatures::DistanceFieldAO:
 			return UsesDistanceFields();
-		
+
+		case ETargetPlatformFeatures::NormalmapLAEncodingMode:
+		{
+			static IConsoleVariable* CompressorCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("cook.ASTCTextureCompressor"));
+			const bool bUsesARMCompressor = (CompressorCVar ? (CompressorCVar->GetInt() != 0) : false);
+			return bUsesARMCompressor;
+		}
+
+		case ETargetPlatformFeatures::ShowAsPlatformGroup:
+			return false;
+
+		case ETargetPlatformFeatures::SupportsMultipleConnectionTypes:
+			return true;
+
 		default:
 			break;
 	}
@@ -490,10 +513,10 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 	return TTargetPlatformBase<FIOSPlatformProperties>::SupportsFeature(Feature);
 }
 
-
 void FIOSTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const
 {
 	static FName NAME_SF_METAL(TEXT("SF_METAL"));
+	static FName NAME_SF_METAL_SIM(TEXT("SF_METAL_SIM"));
 	static FName NAME_SF_METAL_MRT(TEXT("SF_METAL_MRT"));
 	static FName NAME_SF_METAL_TVOS(TEXT("SF_METAL_TVOS"));
 	static FName NAME_SF_METAL_MRT_TVOS(TEXT("SF_METAL_MRT_TVOS"));
@@ -517,6 +540,13 @@ void FIOSTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats 
 		if (SupportsMetal())
 		{
 			OutFormats.AddUnique(NAME_SF_METAL);
+
+			bool bEnableSimulatorSupport = false;
+			GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bEnableSimulatorSupport"), bEnableSimulatorSupport, GEngineIni);
+			if (bEnableSimulatorSupport)
+			{
+				OutFormats.AddUnique(NAME_SF_METAL_SIM);
+			}
 		}
 
 		if (SupportsMetalMRT())
@@ -555,6 +585,8 @@ void FIOSTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats 
 }
 
 static const FName NameASTC_RGB_HDR(TEXT("ASTC_RGB_HDR"));
+static const FName NameBC5(TEXT("BC5"));
+static const FName NameASTC_NormalLA(TEXT("ASTC_NormalLA"));
 
 // we remap some of the defaults
 static const FName FormatRemap[] =
@@ -564,7 +596,7 @@ static const FName FormatRemap[] =
 	FName(TEXT("DXT1")),	FName(TEXT("ASTC_RGB")),
 	FName(TEXT("DXT5")),	FName(TEXT("ASTC_RGBA")),
 	FName(TEXT("DXT5n")),	FName(TEXT("ASTC_NormalAG")),
-	FName(TEXT("BC5")),		FName(TEXT("ASTC_NormalRG")),
+	NameBC5,				FName(TEXT("ASTC_NormalRG")),
 	FName(TEXT("BC4")),		FName(TEXT("ETC2_R11")),
 	FName(TEXT("BC6H")),	NameASTC_RGB_HDR,
 	FName(TEXT("BC7")),		FName(TEXT("ASTC_RGBA_HQ"))
@@ -582,6 +614,9 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 	TextureFormatNames.Reserve(NumLayers);
 
 	// optionaly compress landscape weightmaps for a mobile rendering
+	// @todo Oodle: this should not be here
+	//	should be in GetDefaultTextureFormatNamePerLayer
+	//	so that 4x4 checks can be applied correctly, etc.
 	static const auto CompressLandscapeWeightMapsVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.CompressLandscapeWeightMaps"));
 	static const bool bCompressLandscapeWeightMaps = (CompressLandscapeWeightMapsVar && CompressLandscapeWeightMapsVar->GetValueOnAnyThread() != 0);
 	if (Texture->LODGroup == TEXTUREGROUP_Terrain_Weightmap && bCompressLandscapeWeightMaps)
@@ -600,9 +635,18 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 		GetDefaultTextureFormatNamePerLayer(TextureFormatNames, this, Texture, bSupportCompressedVolumeTexture, BlockSize, bSupportFilteredFloat32Textures);
 	}
 
+	// L+A mode for normal map compression
+	const bool bSupportsNormalLA = SupportsFeature(ETargetPlatformFeatures::NormalmapLAEncodingMode);
+
 	// include the formats we want
 	for (FName& TextureFormatName : TextureFormatNames)
 	{
+		if (bSupportsNormalLA && TextureFormatName == NameBC5)
+		{
+			TextureFormatName = NameASTC_NormalLA;
+			continue;
+		}
+		
 		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 2)
 		{
 			if (TextureFormatName == FormatRemap[RemapIndex])
@@ -626,20 +670,28 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 		}
 	}
 
+	bool bEnableSimulatorSupport = false;
+	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bEnableSimulatorSupport"), bEnableSimulatorSupport, GEngineIni);
+
 	for (FName& TextureFormatName : OutFormats.Last())
 	{
-		if (Texture->IsA(UTextureCube::StaticClass()))
+		if (Texture->GetTextureClass() == ETextureClass::Cube) 
 		{
-			const UTextureCube* Cube = CastChecked<UTextureCube>(Texture);
-			if (Cube != nullptr)
+			FTextureFormatSettings FormatSettings;
+			Texture->GetDefaultFormatSettings(FormatSettings);
+			// TC_EncodedReflectionCapture is no longer used and could be deleted
+			if (FormatSettings.CompressionSettings == TC_EncodedReflectionCapture && !FormatSettings.CompressionNone)
 			{
-				FTextureFormatSettings FormatSettings;
-				Cube->GetDefaultFormatSettings(FormatSettings);
-				if (FormatSettings.CompressionSettings == TC_EncodedReflectionCapture && !FormatSettings.CompressionNone)
-				{
-					TextureFormatName = FName(TEXT("ETC2_RGBA"));
-				}
+				TextureFormatName = FName(TEXT("ETC2_RGBA"));
 			}
+		}
+
+		// Currently (Xcode14), the iOS Simulator does not support compressed Volume textures.
+		if (bEnableSimulatorSupport && Texture->GetTextureClass() == ETextureClass::Volume)
+		{
+			FTextureFormatSettings FormatSettings;
+			Texture->GetDefaultFormatSettings(FormatSettings);
+			TextureFormatName = FName(TEXT("RGB8"));
 		}
 	}
 }
@@ -688,6 +740,7 @@ FName FIOSTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) const
 //		{ { FName(TEXT("ASTC_RGB_HDR")) },		{ NameRGBA16F } }, // ?
 		{ { FName(TEXT("ASTC_NormalAG")) },		{ NameETC2_RGB } },
 		{ { FName(TEXT("ASTC_NormalRG")) },		{ NameETC2_RG11 } },
+		{ { FName(TEXT("ASTC_NormalLA")) },	    { NameETC2_RG11 } },
 	};
 
 	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(ETCRemap); RemapIndex++)

@@ -35,6 +35,7 @@
 #include "Internationalization/Text.h"
 
 #include "FractureTool.h"
+#include "FractureModeSettings.h"
 
 #include "GeometryCollection/GeometryCollectionActor.h"
 #include "GeometryCollection/GeometryCollection.h"
@@ -47,6 +48,7 @@
 #include "FractureEditorStyle.h"
 #include "ScopedTransaction.h"
 #include "Modules/ModuleManager.h"
+#include "ISettingsModule.h"
 
 #include "PlanarCut.h"
 #include "FractureToolAutoCluster.h" 
@@ -56,6 +58,7 @@
 #include "FractureSelectionTools.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
+#include "GeometryCollection/Facades/CollectionHierarchyFacade.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
@@ -68,6 +71,7 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "PropertyHandle.h"
+#include "Widgets/Input/STextComboBox.h"
 
 #include "LevelEditor.h"
 
@@ -199,7 +203,50 @@ FFractureEditorModeToolkit::~FFractureEditorModeToolkit()
 		auto& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
 		LevelEditorModule.OnMapChanged().RemoveAll(this);
 	}
+	UFractureModeSettings* Settings = GetMutableDefault<UFractureModeSettings>();
+	Settings->OnModified.Remove(ProjectSettingsModifiedHandle);
 }
+
+void FFractureEditorModeToolkit::UpdateAssetLocationMode(TSharedPtr<FString> NewString)
+{
+	UFractureModeSettings* Settings = GetMutableDefault<UFractureModeSettings>();
+	EFractureModeNewAssetLocation NewAssetLocation = EFractureModeNewAssetLocation::SourceAssetFolder;
+	if (NewString == AssetLocationModes[0])
+	{
+		NewAssetLocation = EFractureModeNewAssetLocation::SourceAssetFolder;
+	}
+	else if (NewString == AssetLocationModes[1])
+	{
+		NewAssetLocation = EFractureModeNewAssetLocation::LastUsedFolder;
+	}
+	else if (NewString == AssetLocationModes[2])
+	{
+		NewAssetLocation = EFractureModeNewAssetLocation::ContentBrowserFolder;
+	}
+
+	Settings->NewAssetLocation = NewAssetLocation;
+	Settings->SaveConfig();
+}
+
+void FFractureEditorModeToolkit::UpdateAssetPanelFromSettings()
+{
+	const UFractureModeSettings* Settings = GetDefault<UFractureModeSettings>();
+
+	switch (Settings->NewAssetLocation)
+	{
+	case EFractureModeNewAssetLocation::ContentBrowserFolder:
+		AssetLocationMode->SetSelectedItem(AssetLocationModes[2]);
+		break;
+	case EFractureModeNewAssetLocation::LastUsedFolder:
+		AssetLocationMode->SetSelectedItem(AssetLocationModes[1]);
+		break;
+	case EFractureModeNewAssetLocation::SourceAssetFolder:
+	default:
+		AssetLocationMode->SetSelectedItem(AssetLocationModes[0]);
+		break;
+	}
+}
+
 
 void FFractureEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost, TWeakObjectPtr<UEdMode> InOwningMode)
 {
@@ -246,13 +293,78 @@ void FFractureEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolki
 	EditModule.RegisterCustomClassLayout("OutlinerSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FOutlinerSettingsCustomization::MakeInstance, this));
 	OutlinerDetailsView->SetObject(GetMutableDefault<UOutlinerSettings>());
 
+	AssetLocationModes.Reset();
+	AssetLocationModes.Add(MakeShared<FString>(TEXT("Source Asset Folder")));
+	AssetLocationModes.Add(MakeShared<FString>(TEXT("Last Used Folder")));
+	AssetLocationModes.Add(MakeShared<FString>(TEXT("Content Browser Folder")));
+	AssetLocationMode = SNew(STextComboBox)
+		.OptionsSource(&AssetLocationModes)
+		.OnSelectionChanged_Lambda([&](TSharedPtr<FString> String, ESelectInfo::Type) { UpdateAssetLocationMode(String); });
+
+	const TSharedPtr<SVerticalBox> Content = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().HAlign(HAlign_Fill)
+		[
+			SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().Padding(0).HAlign(HAlign_Left).VAlign(VAlign_Center).FillWidth(2.f)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("AssetLocationLabel", "New Asset Location"))
+				]
+				+ SHorizontalBox::Slot().Padding(0).FillWidth(4.0f)
+				[
+					AssetLocationMode->AsShared()
+				]
+		];
+
+	TSharedPtr<SExpandableArea> AssetConfigPanel = SNew(SExpandableArea)
+		.HeaderPadding(FMargin(0.f))
+		.Padding(FMargin(8.f))
+		.BorderImage(FAppStyle::Get().GetBrush("DetailsView.CategoryTop"))
+		.AreaTitleFont(FAppStyle::Get().GetFontStyle("EditorModesPanel.CategoryFontStyle"))
+		.BodyContent()
+		[
+			Content->AsShared()
+		]
+		.HeaderContent()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().HAlign(HAlign_Left).VAlign(VAlign_Center).FillWidth(2.f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("FractureSettingsPanelHeader", "Fracture Mode Quick Settings"))
+			]
+
+			+ SHorizontalBox::Slot().HAlign(HAlign_Right).VAlign(VAlign_Center).AutoWidth()
+			[
+				SNew(SComboButton)
+				.HasDownArrow(false)
+				.MenuPlacement(EMenuPlacement::MenuPlacement_MenuRight)
+				.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+				.OnGetMenuContent(FOnGetContent::CreateLambda([this]()
+				{
+					return MakeMenu_FractureModeConfigSettings();
+				}))
+				.ContentPadding(FMargin(3.0f, 1.0f))
+				.ButtonContent()
+				[
+					SNew(SImage)
+					.Image(FFractureEditorStyle::Get().GetBrush("FractureEditor.DefaultSettings"))
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				]
+			]
+
+		];
+
+	const TSharedPtr<SVerticalBox> ToolkitWidgetVBox = SNew(SVerticalBox);
+
 	float Padding = 4.0f;
 	FMargin MorePadding = FMargin(10.0f, 2.0f);
-	SAssignNew(ToolkitWidget, SBox)
-	[
-		SNew(SVerticalBox)
-
-		+SVerticalBox::Slot()
+	SAssignNew(ToolkitWidget, SBorder).HAlign(HAlign_Fill)
+		.Padding(4)
+		[
+			ToolkitWidgetVBox->AsShared()
+		];
+	ToolkitWidgetVBox->AddSlot().HAlign(HAlign_Fill).FillHeight(1.f)
 		[
 
 			SNew(SSplitter)
@@ -304,18 +416,85 @@ void FFractureEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolki
 					]
 				]
 			]
-		]
-	];
+		];
+	ToolkitWidgetVBox->AddSlot().AutoHeight().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(0)
+		[
+			AssetConfigPanel->AsShared()
+		];
 
 
+	// register callback
+	UFractureModeSettings* FractureModeSettings = GetMutableDefault<UFractureModeSettings>();
+	ProjectSettingsModifiedHandle = FractureModeSettings->OnModified.AddLambda([this](UObject*, FProperty*) { OnProjectSettingsModified(); });
 
-
+	// initialize combos
+	UpdateAssetPanelFromSettings();
 
 	// Bind Chaos Commands;
 	BindCommands();
 
 	FModeToolkit::Init(InitToolkitHost, InOwningMode);
 
+}
+
+void FFractureEditorModeToolkit::OnProjectSettingsModified()
+{
+	UpdateAssetPanelFromSettings();
+}
+
+namespace
+{
+
+	void MakeFractureQuickSettings(FMenuBuilder& MenuBuilder)
+	{
+		const FUIAction OpenFractureModeProjectSettings(
+			FExecuteAction::CreateLambda([]
+				{
+					if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+					{
+						SettingsModule->ShowViewer("Project", "Plugins", "FractureMode");
+					}
+				}), FCanExecuteAction(), FIsActionChecked());
+		MenuBuilder.AddMenuEntry(LOCTEXT("FractureModeProjectSettings", "Project Settings"),
+			LOCTEXT("FractureModeProjectSettings_Tooltip", "Jump to the Project Settings for Fracture Mode. Project Settings are Project-specific."),
+			FSlateIcon(), OpenFractureModeProjectSettings, NAME_None, EUserInterfaceActionType::Button);
+
+		const FUIAction OpenFractureModeEditorSettings(
+			FExecuteAction::CreateLambda([]
+				{
+					if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
+					{
+						SettingsModule->ShowViewer("Editor", "Plugins", "FractureEditor");
+					}
+				}), FCanExecuteAction(), FIsActionChecked());
+		MenuBuilder.AddMenuEntry(LOCTEXT("FractureModeEditorSettings", "Editor Settings"),
+			LOCTEXT("FractureModeEditorSettings_Tooltip", "Jump to the Editor Settings for Fracture Mode. Editor Settings apply across all Projects."),
+			FSlateIcon(), OpenFractureModeEditorSettings, NAME_None, EUserInterfaceActionType::Button);
+	}
+}
+
+TSharedRef<SWidget> FFractureEditorModeToolkit::MakeMenu_FractureModeConfigSettings()
+{
+	FMenuBuilder MenuBuilder(true, TSharedPtr<FUICommandList>());
+
+	MenuBuilder.BeginSection("Section_Settings", LOCTEXT("Section_Settings", "Quick Settings"));
+	constexpr bool bQuickSettingsInSubMenu = false;
+	if (!bQuickSettingsInSubMenu)
+	{
+		MakeFractureQuickSettings(MenuBuilder);
+	}
+	else
+	{
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("QuickSettingsSubMenu", "Jump To Settings"), LOCTEXT("QuickSettingsSubMenu_ToolTip", "Jump to sections of the Settings dialogs relevant to Fracture Mode"),
+			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
+				MakeFractureQuickSettings(SubMenuBuilder);
+				}));
+	}
+	MenuBuilder.EndSection();
+
+	TSharedRef<SWidget> MenuWidget = MenuBuilder.MakeWidget();
+	return MenuWidget;
 }
 
 void FFractureEditorModeToolkit::RequestModeUITabs()
@@ -345,9 +524,27 @@ void FFractureEditorModeToolkit::RequestModeUITabs()
 	}
 }
 
+TSharedPtr<SWidget> FFractureEditorModeToolkit::GetInlineContent() const
+{
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.FillHeight(1.0f)
+		.VAlign(VAlign_Fill)
+		[
+			ToolkitWidget.ToSharedRef()
+		];
+}
+
 void FFractureEditorModeToolkit::InvokeUI()
 {
 	FModeToolkit::InvokeUI();
+
+	// (Note this logic is from ModelingToolsEditorModeToolkit.cpp, as the modeling tools had the same issue)
+	// FModeToolkit::UpdatePrimaryModePanel() wrapped our GetInlineContent() output in a SScrollBar widget,
+	// however this doesn't make sense as we want to dock panels to the "top" and "bottom" of our mode panel area,
+	// and the details panel in the middle has it's own scrollbar already. The SScrollBar is hardcoded as the content
+	// of FModeToolkit::InlineContentHolder so we can just replace it here
+	InlineContentHolder->SetContent(GetInlineContent().ToSharedRef());
 
 	if (TSharedPtr<FAssetEditorModeUILayer> ModeUILayerPtr = ModeUILayer.Pin())
 	{
@@ -681,6 +878,21 @@ TSharedRef<SDockTab> FFractureEditorModeToolkit::CreateStatisticsTab(const FSpaw
 	return CreatedTab.ToSharedRef();
 }
 
+void FFractureEditorModeToolkit::SetOutlinerColumnMode(EOutlinerColumnMode ColumnMode)
+{
+	UOutlinerSettings* OutlinerSettings = GetMutableDefault<UOutlinerSettings>();
+	OutlinerSettings->ColumnMode = ColumnMode;
+	UpdateOutlinerHeader();
+}
+
+void FFractureEditorModeToolkit::UpdateOutlinerHeader()
+{
+	OutlinerView->RegenerateHeader();
+	FGeometryCollectionStatistics Stats;
+	GetStatisticsSummary(Stats);
+	StatisticsView->SetStatistics(Stats);
+}
+
 void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPropertyChangedEvent& PropertyChangedEvent )
 {
 	if (PropertyChangedEvent.Property)
@@ -715,17 +927,11 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ColorByLevel))
 		{
-			OutlinerView->RegenerateItems();
-			FGeometryCollectionStatistics Stats;
-			GetStatisticsSummary(Stats);
-			StatisticsView->SetStatistics(Stats);
+			UpdateOutlinerHeader();
 		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ColumnMode))
 		{
-			OutlinerView->RegenerateHeader();
-			FGeometryCollectionStatistics Stats;
-			GetStatisticsSummary(Stats);
-			StatisticsView->SetStatistics(Stats);
+			UpdateOutlinerHeader();
 		}
 	}
 }
@@ -864,6 +1070,7 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 	else if (PaletteIndex == TEXT("Utilities"))
 	{
 		ToolbarBuilder.AddToolBarButton(Commands.AutoUV);
+		ToolbarBuilder.AddToolBarButton(Commands.Materials);
 		ToolbarBuilder.AddToolBarButton(Commands.RecomputeNormals);
 		ToolbarBuilder.AddToolBarButton(Commands.Resample);
 		ToolbarBuilder.AddToolBarButton(Commands.ConvertToMesh);
@@ -897,19 +1104,19 @@ void FFractureEditorModeToolkit::BindCommands()
 
 	ToolkitCommands->MapAction(
 		Commands.ExplodeMore,
-		FExecuteAction::CreateLambda([=]() { this->OnSetExplodedViewValue( FMath::Min(1.0, this->GetExplodedViewValue() + .1) ); } ),
+		FExecuteAction::CreateLambda([this]() { this->OnSetExplodedViewValue( FMath::Min(1.0, this->GetExplodedViewValue() + .1) ); } ),
 		EUIActionRepeatMode::RepeatEnabled
 	);
 
 	ToolkitCommands->MapAction(
 		Commands.ExplodeLess,
-		FExecuteAction::CreateLambda([=]() { this->OnSetExplodedViewValue( FMath::Max(0.0, this->GetExplodedViewValue() - .1) ); } ),
+		FExecuteAction::CreateLambda([this]() { this->OnSetExplodedViewValue( FMath::Max(0.0, this->GetExplodedViewValue() - .1) ); } ),
 		EUIActionRepeatMode::RepeatEnabled
 	);
 
 	ToolkitCommands->MapAction(
 		Commands.CancelTool,
-		FExecuteAction::CreateLambda([=]()
+		FExecuteAction::CreateLambda([this]()
 		{
 			if (GetActiveTool())
 			{
@@ -1098,16 +1305,12 @@ void FFractureEditorModeToolkit::OnExplodedViewValueChanged()
 		Actor->GetComponents(Components);
 		for (UPrimitiveComponent* PrimitiveComponent : Components)
 		{
-			AGeometryCollectionActor* GeometryCollectionActor = Cast<AGeometryCollectionActor>(Actor);
-			if(GeometryCollectionActor)
+			if (UGeometryCollectionComponent* GeometryCollectionComponent = Cast<UGeometryCollectionComponent>(PrimitiveComponent))
 			{
-				if (UGeometryCollectionComponent* GeometryCollectionComponent = Cast<UGeometryCollectionComponent>(PrimitiveComponent))
-				{
 
-					UpdateExplodedVectors(GeometryCollectionComponent);
+				UpdateExplodedVectors(GeometryCollectionComponent);
 
-					GeometryCollectionComponent->MarkRenderStateDirty();
-				}	
+				GeometryCollectionComponent->MarkRenderStateDirty();
 			}
 		}
 	}
@@ -1183,6 +1386,7 @@ void FFractureEditorModeToolkit::OnLevelViewValueChanged()
 			EditBoneColor.SetLevelViewMode(FractureLevel);
 			// Clear selection below currently-selected view level and update highlights,
 			// so the selection is compatible with the current 3D view and outliner (e.g., doesn't hide selection of children)
+			EditBoneColor.Sanitize();
 			EditBoneColor.FilterSelectionToLevel();
 			UpdateExplodedVectors(Comp);
 			Comp->MarkRenderStateDirty();
@@ -1388,7 +1592,7 @@ void FFractureEditorModeToolkit::SetActiveTool(UFractureModalTool* InActiveTool)
 	{
 		ActiveTool->OnPropertyModifiedDirectlyByTool.AddSP(this, &FFractureEditorModeToolkit::InvalidateCachedDetailPanelState);
 
-		ActiveTool->Setup();
+		ActiveTool->Setup(StaticCastSharedRef<FFractureEditorModeToolkit>(AsShared()));
 
 		Settings.Append(ActiveTool->GetSettingsObjects());
 
@@ -1451,16 +1655,17 @@ void FFractureEditorModeToolkit::SetOutlinerComponents(const TArray<UGeometryCol
 
 		if (IsValid(FracturedGeometryCollection)) // Prevents crash when GC is deleted from content browser and actor is selected.
 		{
-			TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = FracturedGeometryCollection->GetGeometryCollection();
+			if (TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = FracturedGeometryCollection->GetGeometryCollection())
+			{
+				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollectionPtr.Get(), -1);
+				UpdateExplodedVectors(Component);
+				UpdateHideForComponent(Component);
 
-			FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollectionPtr.Get(), -1);
-			UpdateExplodedVectors(Component);
-			UpdateHideForComponent(Component);
+				UpdateGeometryComponentAttributes(Component);
+				ComponentsToEdit.Add(Component);
 
-			UpdateGeometryComponentAttributes(Component);
-			ComponentsToEdit.Add(Component);
-
-			Component->MarkRenderStateDirty();
+				Component->MarkRenderStateDirty();
+			}
 		}	
 	}
 
@@ -1479,6 +1684,15 @@ void FFractureEditorModeToolkit::SetOutlinerComponents(const TArray<UGeometryCol
 		FGeometryCollectionStatistics Stats;
 		GetStatisticsSummary(Stats);
 		StatisticsView->SetStatistics(Stats);
+	}
+
+	// update view rest collection
+	UFractureSettings* FractureSettings = GetMutableDefault<UFractureSettings>();
+	FractureSettings->RestCollection = nullptr;
+	for (UGeometryCollectionComponent* Component : InNewComponents)
+	{
+		FractureSettings->RestCollection = Component->GetRestCollection();
+		break;
 	}
 
 	if (ActiveTool != nullptr)
@@ -1693,6 +1907,11 @@ void FFractureEditorModeToolkit::UpdateExplodedVectors(UGeometryCollectionCompon
 	}
 #endif
 
+	if (GeometryCollectionComponent == nullptr || GeometryCollectionComponent->GetRestCollection() == nullptr)
+	{
+		return;
+	}
+
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = GeometryCollectionComponent->GetRestCollection()->GetGeometryCollection();
 	const FGeometryCollection* OutGeometryCollectionConst = GeometryCollectionPtr.Get();
 
@@ -1905,7 +2124,8 @@ void FFractureEditorModeToolkit::GetStatisticsSummary(FGeometryCollectionStatist
 
 	if (GeometryCollectionArray.Num() > 0)
 	{
-		TArray<int32> LevelTransformsAll;
+		TArray<uint32> TransformCountPerLevel;
+		TArray<uint32> ConvexCountPerLevel;
 		int32 LevelMax = INT_MIN;
 		int32 EmbeddedCount = 0;
 
@@ -1915,13 +2135,14 @@ void FFractureEditorModeToolkit::GetStatisticsSummary(FGeometryCollectionStatist
 
 			check(GeometryCollection);
 
-			if(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup))
+			if(const TManagedArray<int32>* Levels = GeometryCollection->FindAttribute<int32>("Level", FGeometryCollection::TransformGroup))
 			{
-				const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
+
+				// num transforms per level
 				const TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
 
 				TArray<int32> LevelTransforms;
-				for(int32 Element = 0, NumElement = Levels.Num(); Element < NumElement; ++Element)
+				for(int32 Element = 0, NumElement = Levels->Num(); Element < NumElement; ++Element)
 				{
 					if (SimulationType[Element] == FGeometryCollection::ESimulationTypes::FST_None)
 					{
@@ -1929,7 +2150,7 @@ void FFractureEditorModeToolkit::GetStatisticsSummary(FGeometryCollectionStatist
 					}
 					else
 					{
-						const int32 NodeLevel = Levels[Element];
+						const int32 NodeLevel = (*Levels)[Element];
 						if (LevelTransforms.Num() <= NodeLevel)
 						{
 							LevelTransforms.SetNumZeroed(NodeLevel + 1);
@@ -1938,28 +2159,69 @@ void FFractureEditorModeToolkit::GetStatisticsSummary(FGeometryCollectionStatist
 					}		
 				}
 
-				if (LevelTransformsAll.Num() < LevelTransforms.Num())
+				if (TransformCountPerLevel.Num() < LevelTransforms.Num())
 				{
-					LevelTransformsAll.SetNumZeroed(LevelTransforms.Num());
+					TransformCountPerLevel.SetNumZeroed(LevelTransforms.Num());
 				}
 				for(int32 Level = 0; Level < LevelTransforms.Num(); ++Level)
 				{
-					LevelTransformsAll[Level] += LevelTransforms[Level];
+					TransformCountPerLevel[Level] += LevelTransforms[Level];
 				}
 
 				if(LevelTransforms.Num() > LevelMax)
 				{
 					LevelMax = LevelTransforms.Num();
 				}
+
+				// convex per level
+				// todo(chaos) : should probably share some of this logic with the outliner 
+				TManagedArrayAccessor<TSet<int32>> GCTransformToConvexIndicesAttribute(*GeometryCollection, "TransformToConvexIndices", FGeometryCollection::TransformGroup);
+				if (GCTransformToConvexIndicesAttribute.IsValid())
+				{
+					const TManagedArray<TSet<int32>>& GCTransformToConvexIndices = GCTransformToConvexIndicesAttribute.Get();
+
+					Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(*GeometryCollection);
+					const TArray<int32> TransformIndices = HierarchyFacade.GetTransformArrayInDepthFirstOrder();
+
+					TArray<int32> ConvexCountArray;
+					ConvexCountArray.SetNumZeroed(TransformIndices.Num());
+
+					int32 MaxLevel = 0;
+					for (int32 TransformIndex : TransformIndices)
+					{
+						const int32 ConvexCount = GCTransformToConvexIndices[TransformIndex].Num();
+						if (ConvexCount > 0)
+						{
+							ConvexCountArray[TransformIndex] = ConvexCount;
+						}
+						// if count == 0 then we have already accumulated the children in the parents, no need to do anything
+						// so now just pass it to the direct parent ( we parse the index in a depth first manner ) 
+						const int32 ParentTransformIndex = GeometryCollection->Parent[TransformIndex];
+						if (ParentTransformIndex != INDEX_NONE)
+						{
+							// if parent has no convex then it will be a union of the aggregated children
+							const int32 ParentConvexCount = GCTransformToConvexIndices[ParentTransformIndex].Num();
+							if (ParentConvexCount == 0)
+							{
+								ConvexCountArray[ParentTransformIndex] += ConvexCountArray[TransformIndex];
+							}
+						}
+
+						const int32 Level = (*Levels)[TransformIndex];
+						MaxLevel = FMath::Max(MaxLevel, Level);
+					}
+					ConvexCountPerLevel.SetNumZeroed(MaxLevel + 1);
+					for (int32 TransformIndex = 0; TransformIndex < ConvexCountArray.Num(); TransformIndex++)
+					{
+						const int32 Level = (*Levels)[TransformIndex];
+						ConvexCountPerLevel[Level] += ConvexCountArray[TransformIndex];
+					}
+				}
 			}
 		}
 
-		Stats.CountsPerLevel.Reset();
-		for (int32 Level = 0; Level < LevelMax; ++Level)
-		{
-			Stats.CountsPerLevel.Add(LevelTransformsAll[Level]);
-		}
-
+		Stats.CountsPerLevel = TransformCountPerLevel;
+		Stats.ConvexCountPerLevel = ConvexCountPerLevel;
 		Stats.EmbeddedCount = EmbeddedCount;
 	}
 }

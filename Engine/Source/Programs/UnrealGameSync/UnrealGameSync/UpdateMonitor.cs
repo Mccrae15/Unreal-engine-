@@ -1,14 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using EpicGames.Perforce;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -23,9 +18,11 @@ namespace UnrealGameSync
 	class UpdateMonitor : IDisposable
 	{
 		Task? _workerTask;
-		CancellationTokenSource _cancellationSource = new CancellationTokenSource();
-		ILogger _logger;
-		IAsyncDisposer _asyncDisposer;
+#pragma warning disable CA2213 // warning CA2213: 'UpdateMonitor' contains field '_cancellationSource' that is of IDisposable type 'CancellationTokenSource', but it is never disposed. Change the Dispose method on 'UpdateMonitor' to call Close or Dispose on this field.
+		readonly CancellationTokenSource _cancellationSource = new CancellationTokenSource();
+#pragma warning restore CA2213
+		readonly ILogger _logger;
+		readonly IAsyncDisposer _asyncDisposer;
 
 		public Action<UpdateType>? OnUpdateAvailable;
 
@@ -37,8 +34,8 @@ namespace UnrealGameSync
 
 		public UpdateMonitor(IPerforceSettings perforceSettings, string? watchPath, IServiceProvider serviceProvider)
 		{
-			this._logger = serviceProvider.GetRequiredService<ILogger<UpdateMonitor>>();
-			this._asyncDisposer = serviceProvider.GetRequiredService<IAsyncDisposer>();
+			_logger = serviceProvider.GetRequiredService<ILogger<UpdateMonitor>>();
+			_asyncDisposer = serviceProvider.GetRequiredService<IAsyncDisposer>();
 
 			if(watchPath != null)
 			{
@@ -54,7 +51,7 @@ namespace UnrealGameSync
 			if (_workerTask != null)
 			{
 				_cancellationSource.Cancel();
-				_asyncDisposer.Add(_workerTask.ContinueWith(_ => _cancellationSource.Dispose()));
+				_asyncDisposer.Add(_workerTask.ContinueWith(_ => _cancellationSource.Dispose(), TaskScheduler.Default));
 				_workerTask = null;
 			}
 		}
@@ -100,7 +97,7 @@ namespace UnrealGameSync
 
 		public void TriggerUpdate(UpdateType updateType, bool? relaunchPreview)
 		{
-			this.RelaunchPreview = relaunchPreview;
+			RelaunchPreview = relaunchPreview;
 			IsUpdateAvailable = true;
 			if(OnUpdateAvailable != null)
 			{

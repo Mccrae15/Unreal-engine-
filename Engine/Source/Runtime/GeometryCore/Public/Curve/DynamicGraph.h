@@ -189,6 +189,17 @@ protected:
 		return VID;
 	}
 
+	bool insert_vertex_internal(int32 Vid)
+	{
+		if (!vertices_refcount.AllocateAt(Vid))
+		{
+			return false;
+		}
+		allocate_edges_list(Vid);
+		updateTimeStamp(true);
+		return true;
+	}
+
 private:
 	void allocate_edges_list(int VID)
 	{
@@ -280,7 +291,7 @@ public:
 	 */
 	value_iteration<FEdge> Edges() const
 	{
-		return edges_refcount.MappedIndices<FEdge>([=](int EID) {
+		return edges_refcount.MappedIndices<FEdge>([this](int EID) {
 			return edges[EID];
 		});
 	}

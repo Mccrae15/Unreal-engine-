@@ -16,21 +16,24 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Misc/Paths.h"
-
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetData.h"
 
 
 IMPLEMENT_MODULE(FRigLogicEditor, RigLogicEditor)
 
 DEFINE_LOG_CATEGORY_STATIC(LogRigLogicEditor, Log, All);
 
-#define LOCTEXT_NAMESPACE "DNAAssetImport"
+#define LOCTEXT_NAMESPACE "RigLogicEditor"
 
 void FRigLogicEditor::StartupModule()
 {
-	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));	
-	TArray<FContentBrowserMenuExtender_SelectedAssets>& MenuExtenderDelegates = ContentBrowserModule.GetAllAssetViewContextMenuExtenders(); 
-	
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+	TArray<FContentBrowserMenuExtender_SelectedAssets>& MenuExtenderDelegates = ContentBrowserModule.GetAllAssetViewContextMenuExtenders();
+
 	MenuExtenderDelegates.Add(FContentBrowserMenuExtender_SelectedAssets::CreateStatic(&FRigLogicEditor::OnExtendSkelMeshWithDNASelectionMenu));
+
+	UObject::FAssetRegistryTag::OnGetExtraObjectTags.AddStatic(&GetAssetRegistryTagsForDNA);
 }
 
 
@@ -49,9 +52,11 @@ TSharedRef<FExtender> FRigLogicEditor::OnExtendSkelMeshWithDNASelectionMenu(cons
 
 void FRigLogicEditor::CreateDnaActionsSubMenu(FMenuBuilder& MenuBuilder, const TArray<FAssetData> SelectedAssets)
 {
+	check(!SelectedAssets.IsEmpty());
 	const FAssetData& Asset = SelectedAssets[0];
+	UClass* AssetClass = Asset.GetClass();
 
-	if (Asset.GetClass()->IsChildOf(USkeletalMesh::StaticClass()))
+	if ((AssetClass != nullptr) && AssetClass->IsChildOf(USkeletalMesh::StaticClass()))
 	{
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("DNASkeletalMeshSubmenu", "MetaHuman DNA"),
@@ -59,17 +64,18 @@ void FRigLogicEditor::CreateDnaActionsSubMenu(FMenuBuilder& MenuBuilder, const T
 			FNewMenuDelegate::CreateStatic(&FRigLogicEditor::GetDNAMenu, SelectedAssets),
 			false,
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import")
-		);	
+		);
 	}
-	
+
 }
 
 void FRigLogicEditor::GetDNAMenu(FMenuBuilder& MenuBuilder, const TArray<FAssetData> SelectedAssets)
 {
+	check(!SelectedAssets.IsEmpty());
 	auto Mesh = SelectedAssets[0].GetAsset();
-	
+
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("Add DNA", "Import new DNA File"),
+		LOCTEXT("Import DNA", "Import new DNA File"),
 		LOCTEXT("ImportDNA_Tooltip", "Import DNA"),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import"),
 		FUIAction(FExecuteAction::CreateStatic(&FRigLogicEditor::ExecuteDNAImport, static_cast<UObject*>(Mesh)))
@@ -86,13 +92,20 @@ void FRigLogicEditor::GetDNAMenu(FMenuBuilder& MenuBuilder, const TArray<FAssetD
 void FRigLogicEditor::ExecuteDNAImport(UObject* Mesh)
 {
 	FAssetToolsModule& AssetToolsModule = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools");
-	
+
 	FDNAImporter* DNAImporter = FDNAImporter::GetInstance();
 	const TArray<FString> Filenames = { DNAImporter->PromptForDNAImportFile() };
 	UFactory* Factory = Cast<UFactory>(UDNAAssetImportFactory::StaticClass()->GetDefaultObject());
 	FString Path = FPaths::GetPath(Mesh->GetPathName());
-	
-	AssetToolsModule.Get().ImportAssets(Filenames,Path, Factory,true, nullptr,true);
+
+	if ((Mesh->GetFName()).ToString().Compare(Filenames[0]))
+	{
+		FReimportManager::Instance()->Reimport(Mesh, false, true, Filenames[0]);
+	}
+	else
+	{
+		AssetToolsModule.Get().ImportAssets(Filenames, Path, Factory, true, nullptr, true);
+	}
 }
 
 void FRigLogicEditor::ExecuteDNAReimport(class UObject* Mesh)
@@ -101,16 +114,23 @@ void FRigLogicEditor::ExecuteDNAReimport(class UObject* Mesh)
 	USkeletalMesh* SkelMesh = Cast<USkeletalMesh>(Mesh);
 	const TArray<UAssetUserData*>* AssetData = SkelMesh->GetAssetUserDataArray();
 
-	if(!AssetData->IsEmpty())
+	if (!AssetData->IsEmpty())
 	{
-		const UDNAAsset* DNAAsset = Cast<UDNAAsset>(&AssetData[0]);
-		if(DNAAsset)
+		const UDNAAsset* DNAAsset = Cast<UDNAAsset>((*AssetData)[0]);
+		if (DNAAsset)
 		{
 			const TArray<FString> Filenames = { DNAAsset->DnaFileName };
 			UFactory* Factory = Cast<UFactory>(UDNAAssetImportFactory::StaticClass()->GetDefaultObject());
 			FString Path = FPaths::GetPath(Mesh->GetPathName());
 
-			AssetToolsModule.Get().ImportAssets(Filenames, Path, Factory, true, nullptr, true);
+			if ((Mesh->GetFName()).ToString().Compare(Filenames[0]))
+			{
+				FReimportManager::Instance()->Reimport(Mesh, false, true, Filenames[0]);
+			}
+			else
+			{
+				AssetToolsModule.Get().ImportAssets(Filenames, Path, Factory, true, nullptr, true);
+			}
 		}
 	}
 	else
@@ -126,9 +146,33 @@ void FRigLogicEditor::ExecuteDNAReimport(class UObject* Mesh)
 	}
 }
 
+void FRigLogicEditor::GetAssetRegistryTagsForDNA(const class UObject* Object, TArray<UObject::FAssetRegistryTag>& OutTags)
+{
+	if ((Object != nullptr) && (Object->GetClass() != nullptr) && Object->GetClass()->IsChildOf(USkeletalMesh::StaticClass()))
+	{
+		FString DNAname = (LOCTEXT("DnaNotOnSkeletalMesh", "No DNA Attached")).ToString();
+		USkeletalMesh* SkelMesh = const_cast<USkeletalMesh*>(Cast<USkeletalMesh>(Object));
+		const TArray<UAssetUserData*>* AssetDataArr = SkelMesh->GetAssetUserDataArray();
+		if (!AssetDataArr->IsEmpty())
+		{
+			UAssetUserData* UserData = SkelMesh->GetAssetUserDataOfClass(UDNAAsset::StaticClass());
+			if (UserData)
+			{
+				const UDNAAsset* DNAAsset = Cast<UDNAAsset>(UserData);
+				if (DNAAsset)
+				{
+					DNAname = DNAAsset->DnaFileName;
+					FPaths::NormalizeFilename(DNAname);
+				}
+			}
+		}
+		OutTags.Add(UObject::FAssetRegistryTag("DNA", DNAname, UObject::FAssetRegistryTag::TT_Alphabetical));
+	}
+}
+
 void FRigLogicEditor::ShutdownModule()
 {
-
 }
+
 
 #undef LOCTEXT_NAMESPACE

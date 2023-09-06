@@ -63,10 +63,6 @@ USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(const USocialUser* InTarget
 	, OnJoinComplete(InOnJoinComplete)
 {}
 
-USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(const USocialUser* InTargetUser, const FOnlinePartyTypeId& InPartyTypeId, const FOnJoinPartyAttemptComplete& InOnJoinComplete)
-	: USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(InTargetUser, InPartyTypeId, PartyJoinMethod::Unspecified, InOnJoinComplete)
-{}
-
 USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(TSharedRef<const FRejoinableParty> InRejoinInfo)
 	: PartyTypeId(IOnlinePartySystem::GetPrimaryPartyTypeId())
 	, JoinMethod(InRejoinInfo->OriginalJoinMethod)
@@ -75,13 +71,12 @@ USocialManager::FJoinPartyAttempt::FJoinPartyAttempt(TSharedRef<const FRejoinabl
 
 FString USocialManager::FJoinPartyAttempt::ToDebugString() const
 {
-	return FString::Printf(TEXT("IsRejoin (%s), TargetUser (%s), PartyId (%s), TypeId (%d), TargetUserPlatformId (%s), PlatformSessionId (%s), JoinMethod (%s)"),
+	return FString::Printf(TEXT("IsRejoin (%s), TargetUser (%s), PartyId (%s), TypeId (%d), TargetUserPlatformId (%s), JoinMethod (%s)"),
 		RejoinInfo.IsValid() ? TEXT("true") : TEXT("false"),
 		TargetUser.IsValid() ? *TargetUser->ToDebugString() : TEXT("invalid"),
 		JoinInfo.IsValid() ? *JoinInfo->GetPartyId()->ToDebugString() : RejoinInfo.IsValid() ? *RejoinInfo->PartyId->ToDebugString() : TEXT("unknown"),
 		PartyTypeId.GetValue(),
 		*TargetUserPlatformId.ToDebugString(),
-		*PlatformSessionId,
 		*JoinMethod.ToString());
 }
 
@@ -98,7 +93,6 @@ const FName USocialManager::FJoinPartyAttempt::Step_WaitForPersistentPartyCreati
 
 TArray<ESocialSubsystem> USocialManager::DefaultSubsystems;
 TArray<FSocialInteractionHandle> USocialManager::RegisteredInteractions;
-TMap<TWeakObjectPtr<UGameInstance>, TWeakObjectPtr<USocialManager>> USocialManager::AllManagersByGameInstance;
 
 /*static*/bool USocialManager::IsSocialSubsystemEnabled(ESocialSubsystem SubsystemType)
 {
@@ -161,11 +155,6 @@ USocialManager::USocialManager()
 {
 	if (!IsTemplate())
 	{
-		if (ensureMsgf(!AllManagersByGameInstance.Contains(&GetGameInstance()), TEXT("More than one SocialManager has been created for a game instance! Chaos is sure to ensue. Make sure you only have a single instance living on your GameInstance.")))
-		{
-			AllManagersByGameInstance.Add(&GetGameInstance(), this);
-		}
-
 		if (DefaultSubsystems.Num() == 0)
 		{
 			//@todo DanH social: This module assumes there is a primary (aka mcp) OSS available that other accounts are linked to. Consider whether we want to support platform-only situations with this module #future
@@ -244,7 +233,7 @@ void USocialManager::ShutdownSocialManager()
 
 	// Mark all parties and members pending kill to prevent any callbacks from being triggered on them during shutdown
 	const auto ShutdownPartiesFunc =
-		[this] (TMap<FOnlinePartyTypeId, USocialParty*>& PartiesByTypeId)
+		[this] (TMap<FOnlinePartyTypeId, TObjectPtr<USocialParty>>& PartiesByTypeId)
 		{
 			for (auto& TypeIdPartyPair : PartiesByTypeId)
 			{
@@ -403,7 +392,7 @@ void USocialManager::CreateParty(const FOnlinePartyTypeId& PartyTypeId, const FP
 {
 	if (const USocialParty* ExistingParty = GetPartyInternal(PartyTypeId, true))
 	{
-		UE_LOG(LogParty, Warning, TEXT("Existing party [%s] of type [%d] found when trying to create a new one. Cannot create new one until the existing one has been left."), *ExistingParty->GetPartyId().ToDebugString());
+		UE_LOG(LogParty, Warning, TEXT("Existing party [%s] of type [%d] found when trying to create a new one. Cannot create new one until the existing one has been left."), *ExistingParty->GetPartyId().ToDebugString(), PartyTypeId.GetValue());
 		OnCreatePartyComplete.ExecuteIfBound(ECreatePartyCompletionResult::AlreadyInPartyOfSpecifiedType);
 	}
 	else
@@ -628,6 +617,7 @@ void USocialManager::JoinParty(const USocialUser& UserToJoin, const FOnlineParty
 	UE_LOG(LogParty, Verbose, TEXT("Attempting to join user [%s]'s party of type [%d] by [%s]"), *UserToJoin.ToDebugString(), PartyTypeId.GetValue(), *JoinMethod.ToString());
 
 	FJoinPartyAttempt NewAttempt(&UserToJoin, PartyTypeId, JoinMethod, OnJoinPartyComplete);
+	NewAttempt.AnalyticsContext = UserToJoin.GetAnalyticsContext();
 	const FJoinPartyResult ValidationResult = ValidateJoinTarget(UserToJoin, PartyTypeId);
 	if (ValidationResult.WasSuccessful())
 	{
@@ -870,7 +860,7 @@ void USocialManager::FinishJoinPartyAttempt(FJoinPartyAttempt& JoinAttemptToDest
 
 USocialParty* USocialManager::GetPersistentPartyInternal(bool bEvenIfLeaving /*= false*/) const
 {
-	USocialParty* const* PersistentParty = JoinedPartiesByTypeId.Find(IOnlinePartySystem::GetPrimaryPartyTypeId());
+	auto* PersistentParty = JoinedPartiesByTypeId.Find(IOnlinePartySystem::GetPrimaryPartyTypeId());
 	if (PersistentParty && ensure(*PersistentParty) && (bEvenIfLeaving || !(*PersistentParty)->IsLeavingParty()))
 	{
 		return *PersistentParty;
@@ -919,7 +909,7 @@ USocialParty* USocialManager::EstablishNewParty(const FUniqueNetId& LocalUserId,
 
 USocialParty* USocialManager::GetPartyInternal(const FOnlinePartyTypeId& PartyTypeId, bool bIncludeLeavingParties) const
 {
-	USocialParty* const* Party = JoinedPartiesByTypeId.Find(PartyTypeId);
+	auto* Party = JoinedPartiesByTypeId.Find(PartyTypeId);
 	if (!Party && bIncludeLeavingParties)
 	{
 		Party = LeavingPartiesByTypeId.Find(PartyTypeId);
@@ -1401,6 +1391,7 @@ void USocialManager::HandleFindSessionForJoinComplete(bool bWasSuccessful, const
 	}
 }
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool USocialManager::Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out)
 {
 	if (FParse::Command(&Cmd, TEXT("SOCIAL")))
@@ -1423,9 +1414,9 @@ bool USocialManager::Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice
 	}
 	return false;
 }
+#endif // UE_ALLOW_EXEC_COMMANDS
 
 USocialDebugTools* USocialManager::GetDebugTools() const
 {
 	return SocialDebugTools;
 }
-

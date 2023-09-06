@@ -28,6 +28,7 @@
 #include "Tracks/MovieSceneFloatTrack.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Sections/MovieScene3DTransformSection.h"
+#include "Sections/MovieScene3DConstraintSection.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "LevelSequence.h"
@@ -57,6 +58,7 @@
 #include "IMovieScenePlayer.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Tracks/MovieScene3DConstraintTrack.h"
 #include "Sections/MovieSceneCameraCutSection.h"
 #include "Engine/LevelStreaming.h"
 #include "FbxExporter.h"
@@ -77,11 +79,15 @@
 #include "FrameNumberDetailsCustomization.h"
 #include "PropertyEditorDelegates.h"
 #include "INodeAndChannelMappings.h"
+#include "BakingAnimationKeySettings.h"
+#include "Channels/MovieSceneChannelTraits.h"
 #include "Channels/MovieSceneIntegerChannel.h"
 #include "Channels/MovieSceneByteChannel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 #include "ConstraintsManager.h"
+#include "Constraints/MovieSceneConstraintChannelHelper.inl"
+#include "Exporters/FbxExportOption.h"
 
 /* FSkelMeshRecorder
  ***********/
@@ -121,11 +127,11 @@ void FSkelMeshRecorderState::FinishRecording()
 /* MovieSceneToolHelpers
  *****************************************************************************/
 
-void MovieSceneToolHelpers::TrimSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bTrimLeft, bool bDeleteKeys)
+void MovieSceneToolHelpers::TrimSection(const TSet<UMovieSceneSection*>& Sections, FQualifiedFrameTime Time, bool bTrimLeft, bool bDeleteKeys)
 {
-	for (auto Section : Sections)
+	for (UMovieSceneSection* Section : Sections)
 	{
-		if (Section.IsValid())
+		if (Section)
 		{
 			Section->TrimSection(Time, bTrimLeft, bDeleteKeys);
 		}
@@ -215,11 +221,11 @@ void MovieSceneToolHelpers::TrimOrExtendSection(UMovieSceneTrack* Track, TOption
 }
 
 
-void MovieSceneToolHelpers::SplitSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bDeleteKeys)
+void MovieSceneToolHelpers::SplitSection(const TSet<UMovieSceneSection*>& Sections, FQualifiedFrameTime Time, bool bDeleteKeys)
 {
-	for (auto Section : Sections)
+	for (UMovieSceneSection* Section : Sections)
 	{
-		if (Section.IsValid())
+		if (Section)
 		{
 			Section->SplitSection(Time, bDeleteKeys);
 		}
@@ -327,10 +333,11 @@ bool MovieSceneToolHelpers::ParseShotName(const FString& InShotName, FString& Sh
 		}
 	}
 
-	// If take number wasn't found, search backwards to find the first take separator and assume [shot prefix]_[take number]
+	// If take number wasn't found, start over with the original shot name, search backwards to find the first take separator and assume [shot prefix]_[take number]
 	//
 	if (!ParsedTakeNumber.IsSet())
 	{
+		ShotName = InShotName;
 		int32 LastSlashPos = ShotName.Find(ProjectSettings->TakeSeparator, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 		if (LastSlashPos != INDEX_NONE)
 		{
@@ -339,10 +346,14 @@ bool MovieSceneToolHelpers::ParseShotName(const FString& InShotName, FString& Sh
 				ShotPrefix = ShotName.Left(LastSlashPos);
 			}
 			
-			ShotNumber = INDEX_NONE; // Nullify the shot number since we only have a shot prefix
-			TakeNumber = FCString::Atoi(*ShotName.RightChop(LastSlashPos+1));
-			TakeNumberDigits = ShotName.Len() - (LastSlashPos+1);
-			return true;
+			FString TakeStr = ShotName.RightChop(LastSlashPos + 1);
+			if (TakeStr.IsNumeric())
+			{
+				ShotNumber = INDEX_NONE; // Nullify the shot number since we only have a shot prefix
+				TakeNumber = FCString::Atoi(*TakeStr);
+				TakeNumberDigits = ShotName.Len() - (LastSlashPos+1);
+				return true;
+			}
 		}
 	}
 
@@ -351,9 +362,17 @@ bool MovieSceneToolHelpers::ParseShotName(const FString& InShotName, FString& Sh
 		TakeNumber = ParsedTakeNumber.GetValue();
 	}
 
+	if (FirstShotNumberIndex == INDEX_NONE)
+	{
+		ShotPrefix = InShotName;
+		ShotNumber = INDEX_NONE; // Nullify the shot number since we only have a shot prefix
+		TakeNumber = 0;
+		TakeNumberDigits = ProjectSettings->TakeNumDigits;
+		return true;
+	}
+
 	return FirstShotNumberIndex != INDEX_NONE;
 }
-
 
 FString MovieSceneToolHelpers::ComposeShotName(const FString& ShotPrefix, uint32 ShotNumber, uint32 TakeNumber, uint32 ShotNumberDigits, uint32 TakeNumberDigits)
 {
@@ -391,6 +410,12 @@ bool IsPackageNameUnique(const TArray<FAssetData>& ObjectList, FString& NewPacka
 FString MovieSceneToolHelpers::GenerateNewShotPath(UMovieScene* SequenceMovieScene, FString& NewShotName)
 {
 	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
+	return GenerateNewSubsequencePath(SequenceMovieScene, ProjectSettings->ShotDirectory, NewShotName);
+}
+
+FString MovieSceneToolHelpers::GenerateNewSubsequencePath(UMovieScene * SequenceMovieScene, const FString& SubsequenceDirectory, FString &NewShotName)
+{
+	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
@@ -410,18 +435,18 @@ FString MovieSceneToolHelpers::GenerateNewShotPath(UMovieScene* SequenceMovieSce
 	uint32 TakeNumberDigits = ProjectSettings->TakeNumDigits;
 	ParseShotName(NewShotName, NewShotPrefix, NewShotNumber, NewTakeNumber, ShotNumberDigits, TakeNumberDigits);
 
-	FString NewShotDirectory = ComposeShotName(NewShotPrefix, NewShotNumber, INDEX_NONE, ShotNumberDigits, TakeNumberDigits);
-	FString NewShotPath = SequencePath;
+	FString NewDirectory = ComposeShotName(NewShotPrefix, NewShotNumber, INDEX_NONE, ShotNumberDigits, TakeNumberDigits);
+	FString NewPath = SequencePath;
 
-	FString ShotDirectory = ProjectSettings->ShotDirectory;
-	if (!ShotDirectory.IsEmpty())
+	FString Directory = SubsequenceDirectory;
+	if (!Directory.IsEmpty())
 	{
-		NewShotPath /= ShotDirectory;
+		NewPath /= Directory;
 	}
-	NewShotPath /= NewShotDirectory; // put this in the shot directory, ie. /Game/cine/max/shots/shot0010
+	NewPath /= NewDirectory; // put this in the shot directory, ie. /Game/cine/max/shots/shot0010
 
 	// Make sure this shot path is unique
-	FString NewPackageName = NewShotPath;
+	FString NewPackageName = NewPath;
 	NewPackageName /= NewShotName; // ie. /Game/cine/max/shots/shot0010/shot0010_001
 	if (!IsPackageNameUnique(ObjectList, NewPackageName))
 	{
@@ -429,15 +454,15 @@ FString MovieSceneToolHelpers::GenerateNewShotPath(UMovieScene* SequenceMovieSce
 		{
 			NewShotNumber += ProjectSettings->ShotIncrement;
 			NewShotName = ComposeShotName(NewShotPrefix, NewShotNumber, NewTakeNumber, ShotNumberDigits, TakeNumberDigits);
-			NewShotDirectory = ComposeShotName(NewShotPrefix, NewShotNumber, INDEX_NONE, ShotNumberDigits, TakeNumberDigits);
-			NewShotPath = SequencePath;
-			if (!ShotDirectory.IsEmpty())
+			NewDirectory = ComposeShotName(NewShotPrefix, NewShotNumber, INDEX_NONE, ShotNumberDigits, TakeNumberDigits);
+			NewPath = SequencePath;
+			if (!Directory.IsEmpty())
 			{
-				NewShotPath /= ShotDirectory;
+				NewPath /= Directory;
 			}
-			NewShotPath /= NewShotDirectory;
+			NewPath /= NewDirectory;
 
-			NewPackageName = NewShotPath;
+			NewPackageName = NewPath;
 			NewPackageName /= NewShotName;
 			if (IsPackageNameUnique(ObjectList, NewPackageName))
 			{
@@ -446,90 +471,113 @@ FString MovieSceneToolHelpers::GenerateNewShotPath(UMovieScene* SequenceMovieSce
 		}
 	}
 
-	return NewShotPath;
+	return NewPath;
 }
-
 
 FString MovieSceneToolHelpers::GenerateNewShotName(const TArray<UMovieSceneSection*>& AllSections, FFrameNumber Time)
 {
 	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
-	UMovieSceneCinematicShotSection* BeforeShot = nullptr;
-	UMovieSceneCinematicShotSection* NextShot = nullptr;
+	return GenerateNewSubsequenceName(AllSections, ProjectSettings->ShotPrefix, Time);
+}
 
-	FFrameNumber MinEndDiff = TNumericLimits<int32>::Max();
-	FFrameNumber MinStartDiff = TNumericLimits<int32>::Max();
+FString MovieSceneToolHelpers::GenerateNewSubsequenceName(const TArray<UMovieSceneSection*>&AllSections, const FString& SubsequencePrefix, FFrameNumber Time)
+{
+	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
-	for (auto Section : AllSections)
+	UMovieSceneSubSection* CurrentSection = Cast<UMovieSceneSubSection>(MovieSceneHelpers::FindSectionAtTime(AllSections, Time));
+	UMovieSceneSubSection* NextSection = Cast<UMovieSceneSubSection>(MovieSceneHelpers::FindNextSection(AllSections, Time));
+
+	if (!CurrentSection)
 	{
-		if (Section->HasEndFrame() && Section->GetExclusiveEndFrame() >= Time)
-		{
-			FFrameNumber EndDiff = Section->GetExclusiveEndFrame() - Time;
-			if (MinEndDiff > EndDiff)
-			{
-				MinEndDiff = EndDiff;
-				BeforeShot = Cast<UMovieSceneCinematicShotSection>(Section);
-			}
-		}
-		if (Section->HasStartFrame() && Section->GetInclusiveStartFrame() <= Time)
-		{
-			FFrameNumber StartDiff = Time - Section->GetInclusiveStartFrame();
-			if (MinStartDiff > StartDiff)
-			{
-				MinStartDiff = StartDiff;
-				NextShot = Cast<UMovieSceneCinematicShotSection>(Section);
-			}
-		}
+		CurrentSection = Cast<UMovieSceneSubSection>(MovieSceneHelpers::FindPreviousSection(AllSections, Time));
 	}
-	
-	// There aren't any shots, let's create the first shot name
-	if (BeforeShot == nullptr || NextShot == nullptr)
+
+	if (!NextSection)
 	{
-		// Default case
+		NextSection = CurrentSection;
 	}
-	// This is the last shot
-	else if (BeforeShot == NextShot)
+
+	FString NextSectionName = NextSection && NextSection->GetSequence() ? NextSection->GetSequence()->GetName() : FString();
+	if (const UMovieSceneCinematicShotSection* ShotSection = Cast<UMovieSceneCinematicShotSection>(NextSection))
 	{
-		FString NextShotPrefix = ProjectSettings->ShotPrefix;
+		NextSectionName = ShotSection->GetShotDisplayName();
+	}
+
+	FString CurrentSectionName = CurrentSection && CurrentSection->GetSequence() ? CurrentSection->GetSequence()->GetName() : FString();
+	if (const UMovieSceneCinematicShotSection* ShotSection = Cast<UMovieSceneCinematicShotSection>(CurrentSection))
+	{
+		CurrentSectionName = ShotSection->GetShotDisplayName();
+	}
+
+	// This is the first or last shot
+	if ((CurrentSection == nullptr && NextSection) || (CurrentSection != nullptr && CurrentSection == NextSection))
+	{
+		FString NextShotPrefix = SubsequencePrefix;
 		uint32 NextShotNumber = ProjectSettings->FirstShotNumber;
 		uint32 NextTakeNumber = ProjectSettings->FirstTakeNumber;
 		uint32 ShotNumberDigits = ProjectSettings->ShotNumDigits;
 		uint32 TakeNumberDigits = ProjectSettings->TakeNumDigits;
 
-		if (ParseShotName(NextShot->GetShotDisplayName(), NextShotPrefix, NextShotNumber, NextTakeNumber, ShotNumberDigits, TakeNumberDigits))
+		if (ParseShotName(NextSectionName, NextShotPrefix, NextShotNumber, NextTakeNumber, ShotNumberDigits, TakeNumberDigits))
 		{
-			uint32 NewShotNumber = NextShotNumber + ProjectSettings->ShotIncrement;
-			return ComposeShotName(NextShotPrefix, NewShotNumber, ProjectSettings->FirstTakeNumber, ShotNumberDigits, TakeNumberDigits);
+			// Valid shot number
+			if (NextShotNumber != INDEX_NONE)
+			{
+				uint32 NewShotNumber = NextShotNumber + ProjectSettings->ShotIncrement;
+				return ComposeShotName(NextShotPrefix, NewShotNumber, ProjectSettings->FirstTakeNumber, ShotNumberDigits, TakeNumberDigits);
+			}
+			// No shot number, but valid take number
+			else if (NextTakeNumber != INDEX_NONE)
+			{
+				uint32 NewTakeNumber = NextTakeNumber + ProjectSettings->ShotIncrement;
+				return ComposeShotName(NextShotPrefix, INDEX_NONE, NewTakeNumber, ShotNumberDigits, TakeNumberDigits);
+			}
 		}
 	}
 	// This is in between two shots
-	else 
+	else if (CurrentSection && NextSection)
 	{
-		FString BeforeShotPrefix = ProjectSettings->ShotPrefix;
-		uint32 BeforeShotNumber = ProjectSettings->FirstShotNumber;
-		uint32 BeforeTakeNumber = ProjectSettings->FirstTakeNumber;
-		uint32 BeforeShotNumberDigits = ProjectSettings->ShotNumDigits;
-		uint32 BeforeTakeNumberDigits = ProjectSettings->TakeNumDigits;
+		FString CurrentShotPrefix = SubsequencePrefix;
+		uint32 CurrentShotNumber = ProjectSettings->FirstShotNumber;
+		uint32 CurrentTakeNumber = ProjectSettings->FirstTakeNumber;
+		uint32 CurrentShotNumberDigits = ProjectSettings->ShotNumDigits;
+		uint32 CurrentTakeNumberDigits = ProjectSettings->TakeNumDigits;
 
-		FString NextShotPrefix = ProjectSettings->ShotPrefix;
+		FString NextShotPrefix = SubsequencePrefix;
 		uint32 NextShotNumber = ProjectSettings->FirstShotNumber;
 		uint32 NextTakeNumber = ProjectSettings->FirstTakeNumber;
 		uint32 NextShotNumberDigits = ProjectSettings->ShotNumDigits;
 		uint32 NextTakeNumberDigits = ProjectSettings->TakeNumDigits;
 
-		if (ParseShotName(BeforeShot->GetShotDisplayName(), BeforeShotPrefix, BeforeShotNumber, BeforeTakeNumber, BeforeShotNumberDigits, BeforeTakeNumberDigits) &&
-			ParseShotName(NextShot->GetShotDisplayName(), NextShotPrefix, NextShotNumber, NextTakeNumber, NextShotNumberDigits, NextTakeNumberDigits))
+		if (ParseShotName(CurrentSectionName, CurrentShotPrefix, CurrentShotNumber, CurrentTakeNumber, CurrentShotNumberDigits, CurrentTakeNumberDigits) &&
+			ParseShotName(NextSectionName, NextShotPrefix, NextShotNumber, NextTakeNumber, NextShotNumberDigits, NextTakeNumberDigits))
 		{
-			if (BeforeShotNumber < NextShotNumber)
+			// Valid shot numbers
+			if (NextShotNumber != INDEX_NONE && CurrentShotNumber != INDEX_NONE)
 			{
-				uint32 NewShotNumber = BeforeShotNumber + ( (NextShotNumber - BeforeShotNumber) / 2); // what if we can't find one? or conflicts with another?
-				return ComposeShotName(BeforeShotPrefix, NewShotNumber, ProjectSettings->FirstTakeNumber, BeforeShotNumberDigits, BeforeTakeNumberDigits); // use before or next shot?
+				uint32 NewShotNumber = CurrentShotNumber + ProjectSettings->ShotIncrement;
+				if (NextShotNumber - CurrentShotNumber > 1)
+				{
+					NewShotNumber = CurrentShotNumber + ( (NextShotNumber - CurrentShotNumber) / 2); // what if we can't find one? or conflicts with another?
+				}
+				return ComposeShotName(CurrentShotPrefix, NewShotNumber, ProjectSettings->FirstTakeNumber, CurrentShotNumberDigits, CurrentTakeNumberDigits); // use before or next shot?
+			}
+			// No shot numbers, but valid take numbers
+			else if (NextTakeNumber != INDEX_NONE && CurrentTakeNumber != INDEX_NONE)
+			{
+				uint32 NewTakeNumber = CurrentTakeNumber + ProjectSettings->ShotIncrement;
+				if (NextTakeNumber - CurrentTakeNumber > 1)
+				{
+					NewTakeNumber = CurrentTakeNumber + ( (NextTakeNumber - CurrentTakeNumber) / 2); // what if we can't find one? or conflicts with another?
+				}
+				return ComposeShotName(CurrentShotPrefix, INDEX_NONE, NewTakeNumber, CurrentShotNumberDigits, CurrentTakeNumberDigits); // use before or next shot?
 			}
 		}
 	}
 
 	// Default case
-	return ComposeShotName(ProjectSettings->ShotPrefix, ProjectSettings->FirstShotNumber, ProjectSettings->FirstTakeNumber, ProjectSettings->ShotNumDigits, ProjectSettings->TakeNumDigits);
+	return ComposeShotName(SubsequencePrefix, ProjectSettings->FirstShotNumber, ProjectSettings->FirstTakeNumber, ProjectSettings->ShotNumDigits, ProjectSettings->TakeNumDigits);
 }
 
 UMovieSceneSequence* MovieSceneToolHelpers::CreateSequence(FString& NewSequenceName, FString& NewSequencePath, UMovieSceneSubSection* SectionToDuplicate)
@@ -632,36 +680,33 @@ void MovieSceneToolHelpers::GatherTakes(const UMovieSceneSection* Section, TArra
 	uint32 TakeNumberDigits = 0;
 
 	FString SubSectionName = SubSection->GetSequence()->GetName();
-	if (SubSection->IsA<UMovieSceneCinematicShotSection>())
+	if (const UMovieSceneCinematicShotSection* ShotSection = Cast<UMovieSceneCinematicShotSection>(SubSection))
 	{
-		const UMovieSceneCinematicShotSection* ShotSection = Cast<UMovieSceneCinematicShotSection>(SubSection);
 		SubSectionName = ShotSection->GetShotDisplayName();
 	}
 
-	if (ParseShotName(SubSectionName, ShotPrefix, ShotNumber, OutCurrentTakeNumber, ShotNumberDigits, TakeNumberDigits))
+	ParseShotName(SubSectionName, ShotPrefix, ShotNumber, OutCurrentTakeNumber, ShotNumberDigits, TakeNumberDigits);
+
+	// Gather up all level sequence assets
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<FAssetData> ObjectList;
+	AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetClassPathName(), ObjectList);
+
+	for (auto AssetObject : ObjectList)
 	{
-		// Gather up all level sequence assets
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		TArray<FAssetData> ObjectList;
-		AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetClassPathName(), ObjectList);
+		FString AssetPackagePath = AssetObject.PackagePath.ToString();
 
-		for (auto AssetObject : ObjectList)
+		if (AssetPackagePath == ShotPackagePath)
 		{
-			FString AssetPackagePath = AssetObject.PackagePath.ToString();
+			FString AssetShotPrefix;
+			uint32 AssetShotNumber = INDEX_NONE;
+			uint32 AssetTakeNumber = INDEX_NONE;
 
-			if (AssetPackagePath == ShotPackagePath)
+			ParseShotName(AssetObject.AssetName.ToString(), AssetShotPrefix, AssetShotNumber, AssetTakeNumber, ShotNumberDigits, TakeNumberDigits);
+			
+			if (AssetShotPrefix == ShotPrefix && AssetShotNumber == ShotNumber)
 			{
-				FString AssetShotPrefix;
-				uint32 AssetShotNumber = INDEX_NONE;
-				uint32 AssetTakeNumber = INDEX_NONE;
-
-				if (ParseShotName(AssetObject.AssetName.ToString(), AssetShotPrefix, AssetShotNumber, AssetTakeNumber, ShotNumberDigits, TakeNumberDigits))
-				{
-					if (AssetShotPrefix == ShotPrefix && AssetShotNumber == ShotNumber)
-					{
-						AssetData.Add(AssetObject);
-					}
-				}
+				AssetData.Add(AssetObject);
 			}
 		}
 	}
@@ -690,42 +735,39 @@ bool MovieSceneToolHelpers::GetTakeNumber(const UMovieSceneSection* Section, FAs
 	uint32 TakeNumberDigits = 0;
 
 	FString SubSectionName = SubSection->GetSequence()->GetName();
-	if (SubSection->IsA<UMovieSceneCinematicShotSection>())
+	if (const UMovieSceneCinematicShotSection* ShotSection = Cast<UMovieSceneCinematicShotSection>(SubSection))
 	{
-		const UMovieSceneCinematicShotSection* ShotSection = Cast<UMovieSceneCinematicShotSection>(SubSection);
 		SubSectionName = ShotSection->GetShotDisplayName();
 	}
 
-	if (ParseShotName(SubSectionName, ShotPrefix, ShotNumber, TakeNumberDummy, ShotNumberDigits, TakeNumberDigits))
+	ParseShotName(SubSectionName, ShotPrefix, ShotNumber, TakeNumberDummy, ShotNumberDigits, TakeNumberDigits);
+	
+	// Gather up all level sequence assets
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<FAssetData> ObjectList;
+	AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetClassPathName(), ObjectList);
+
+	for (auto AssetObject : ObjectList)
 	{
-		// Gather up all level sequence assets
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		TArray<FAssetData> ObjectList;
-		AssetRegistryModule.Get().GetAssetsByClass(ULevelSequence::StaticClass()->GetClassPathName(), ObjectList);
-
-		for (auto AssetObject : ObjectList)
+		if (AssetObject == AssetData)
 		{
-			if (AssetObject == AssetData)
+			FString AssetPackagePath = AssetObject.PackagePath.ToString();
+			int32 AssetLastSlashPos = INDEX_NONE;
+			AssetPackagePath.FindLastChar(TCHAR('/'), AssetLastSlashPos);
+			AssetPackagePath.LeftInline(AssetLastSlashPos, false);
+
+			if (AssetPackagePath == ShotPackagePath)
 			{
-				FString AssetPackagePath = AssetObject.PackagePath.ToString();
-				int32 AssetLastSlashPos = INDEX_NONE;
-				AssetPackagePath.FindLastChar(TCHAR('/'), AssetLastSlashPos);
-				AssetPackagePath.LeftInline(AssetLastSlashPos, false);
+				FString AssetShotPrefix;
+				uint32 AssetShotNumber = INDEX_NONE;
+				uint32 AssetTakeNumber = INDEX_NONE;
 
-				if (AssetPackagePath == ShotPackagePath)
+				ParseShotName(AssetObject.AssetName.ToString(), AssetShotPrefix, AssetShotNumber, AssetTakeNumber, ShotNumberDigits, TakeNumberDigits);
+
+				if (AssetShotPrefix == ShotPrefix && AssetShotNumber == ShotNumber)
 				{
-					FString AssetShotPrefix;
-					uint32 AssetShotNumber = INDEX_NONE;
-					uint32 AssetTakeNumber = INDEX_NONE;
-
-					if (ParseShotName(AssetObject.AssetName.ToString(), AssetShotPrefix, AssetShotNumber, AssetTakeNumber, ShotNumberDigits, TakeNumberDigits))
-					{
-						if (AssetShotPrefix == ShotPrefix && AssetShotNumber == ShotNumber)
-						{
-							OutTakeNumber = AssetTakeNumber;
-							return true;
-						}
-					}
+					OutTakeNumber = AssetTakeNumber;
+					return true;
 				}
 			}
 		}
@@ -1454,455 +1496,193 @@ void ImportTransformChannelToInteger(const FRichCurve& Source, FMovieSceneIntege
 }
 
 void SetChannelValue(FMovieSceneDoubleChannel* DoubleChannel, FMovieSceneFloatChannel* FloatChannel, FMovieSceneBoolChannel *BoolChannel, FMovieSceneByteChannel *EnumChannel, FMovieSceneIntegerChannel* IntegerChannel,
-	FFrameRate FrameRate, FFrameNumber StartFrame,
+	const FFrameRate& FrameRate, const FFrameNumber& StartFrame,
 	FControlRigChannelEnum ChannelEnum, UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings,
-	FTransform& DefaultTransform,
-	FRichCurve& TranslationX, FRichCurve& TranslationY, FRichCurve& TranslationZ,
-	FRichCurve& EulerRotationX, FRichCurve& EulerRotationY, FRichCurve& EulerRotationZ,
-	FRichCurve& ScaleX, FRichCurve& ScaleY, FRichCurve& ScaleZ)
+	const FTransform& DefaultTransform,
+	const FRichCurve& TranslationX, const FRichCurve& TranslationY, const FRichCurve& TranslationZ,
+	const FRichCurve& EulerRotationX, const FRichCurve& EulerRotationY, const FRichCurve& EulerRotationZ,
+	const FRichCurve& ScaleX, const FRichCurve& ScaleY, const FRichCurve& ScaleZ)
 {
+	const FRichCurve* TransformCurves[9] = {&TranslationX, &TranslationY, &TranslationZ, &EulerRotationX, &EulerRotationY, &EulerRotationZ, &ScaleX, &ScaleY, &ScaleZ};
+	
 	FVector Location = DefaultTransform.GetLocation(), Rotation = DefaultTransform.GetRotation().Euler(), Scale3D = DefaultTransform.GetScale3D();
+	const double DefaultTransformValues[9] = {Location[0], Location[1], Location[2], Rotation[0], Rotation[1], Rotation[2], Scale3D[0], Scale3D[1], Scale3D[2]};
 
-	for (FControlToTransformMappings& Mapping: ImportFBXControlRigSettings->ControlChannelMappings)
+	const FRichCurve *RichCurve = &TranslationX;
+	float DefaultValue = Location.X;
+	bool bNegate = false;
+
+	uint8 ChannelIndex = 0; // Default Channel is TX
+	
+	if (const FControlToTransformMappings* ChannelMapping = ImportFBXControlRigSettings->ControlChannelMappings.FindByPredicate(
+		[ChannelEnum](const FControlToTransformMappings& Mapping)	{ return ChannelEnum == Mapping.ControlChannel; }))
 	{
-		if (ChannelEnum == Mapping.ControlChannel)
-		{
-			bool bNegate = Mapping.bNegate;
-			if (Mapping.FBXChannel == FTransformChannelEnum::TranslateX)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Location.X == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(TranslationX, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Location.X : Location.X;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(TranslationX, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Location.X : Location.X;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(TranslationX, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Location.X : Location.X;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(TranslationX, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
+		bNegate = ChannelMapping->bNegate;
+		
+		ChannelIndex = (uint8)ChannelMapping->FBXChannel;
+	}
+	else
+	{
+		const uint8 ChannelEnumIndex = (uint8)ChannelEnum;
 
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Location.X : Location.X;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(TranslationX, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::TranslateY)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Location.Y == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(TranslationY, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Location.Y : Location.Y;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(TranslationY, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Location.Y : Location.Y;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(TranslationY, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					bNegate = !bNegate;
-					float Default = bNegate ? -Location.Y : Location.Y;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(TranslationY, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					bNegate = !bNegate;
-					float Default = bNegate ? -Location.Y : Location.Y;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(TranslationY, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::TranslateZ)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Location.Z == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(TranslationZ, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Location.Z : Location.Z;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(TranslationZ, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Location.Z : Location.Z;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(TranslationZ, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Location.Z : Location.Z;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(TranslationZ, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Location.Z : Location.Z;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(TranslationZ, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::RotateX)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Rotation.X == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(EulerRotationX, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Rotation.X : Rotation.X;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(EulerRotationX, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Rotation.X : Rotation.X;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(EulerRotationX, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Rotation.X : Rotation.X;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(EulerRotationX, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Rotation.X : Rotation.X;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(EulerRotationX, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::RotateY)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Rotation.Y == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(EulerRotationY, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Rotation.Y : Rotation.Y;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(EulerRotationY, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Rotation.Y : Rotation.Y;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(EulerRotationY, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Rotation.Y : Rotation.Y;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(EulerRotationY, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Rotation.Y : Rotation.Y;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(EulerRotationY, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::RotateZ)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Rotation.Z == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(EulerRotationZ, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Rotation.Z : Rotation.Z;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(EulerRotationZ, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Rotation.Z : Rotation.Z;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(EulerRotationZ, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Rotation.Z : Rotation.Z;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(EulerRotationZ, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Rotation.Z : Rotation.Z;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(EulerRotationZ, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::ScaleX)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Scale3D.X == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(ScaleX, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Scale3D.X : Scale3D.X;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(ScaleX, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Scale3D.X : Scale3D.X;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(ScaleX, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Scale3D.X : Scale3D.X;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(ScaleX, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Scale3D.X : Scale3D.X;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(ScaleX, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::ScaleY)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Scale3D.Y == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(ScaleY, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Scale3D.Y : Scale3D.Y;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(ScaleY, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Scale3D.Y : Scale3D.Y;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(ScaleY, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Scale3D.Y : Scale3D.Y;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(ScaleY, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Scale3D.Y : Scale3D.Y;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(ScaleY, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
-			else if (Mapping.FBXChannel == FTransformChannelEnum::ScaleZ)
-			{
-				if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
-				{
-					bool bDefault = Scale3D.Z == 0.0 ? false : true;
-					BoolChannel->SetDefault(bDefault);
-					ImportTransformChannelToBool(ScaleZ, BoolChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
-				{
-					uint8 bDefault = (uint8)bNegate ? -Scale3D.Z : Scale3D.Z;
-					EnumChannel->SetDefault(bDefault);
-					ImportTransformChannelToEnum(ScaleZ, EnumChannel, FrameRate, false, StartFrame);
-				}
-				else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
-				{
-					int32 bDefault = (int32)bNegate ? -Scale3D.Z : Scale3D.Z;
-					IntegerChannel->SetDefault(bDefault);
-					ImportTransformChannelToInteger(ScaleZ, IntegerChannel, FrameRate, false, StartFrame);
-				}
-				else if (FloatChannel)
-				{
-					float Default = bNegate ? -Scale3D.Z : Scale3D.Z;
-					FloatChannel->SetDefault(Default);
-					ImportTransformChannelToFloat(ScaleZ, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-				else if (DoubleChannel)
-				{
-					float Default = bNegate ? -Scale3D.Z : Scale3D.Z;
-					DoubleChannel->SetDefault(Default);
-					ImportTransformChannelToDouble(ScaleZ, DoubleChannel, FrameRate, false, false, StartFrame, bNegate);
-				}
-			}
+		// 2DX, Bool and other default to TX
+		if (ChannelEnum == FControlRigChannelEnum::Vector2DY)
+		{
+			ChannelIndex = 1;
+		}
+		else if (ChannelEnumIndex >= (uint8)FControlRigChannelEnum::PositionX && ChannelEnumIndex <= (uint8)FControlRigChannelEnum::ScaleZ)
+		{
+			ChannelIndex = ChannelEnumIndex - (uint8)FControlRigChannelEnum::PositionX;
 		}
 	}
 
+	if (ChannelIndex < 9)
+	{
+		DefaultValue = DefaultTransformValues[ChannelIndex];
+		RichCurve = TransformCurves[ChannelIndex];
+	}
+	
 	if (ChannelEnum == FControlRigChannelEnum::Bool && BoolChannel)
 	{
-		bool bDefault = Location.X == 0.0 ? false : true;
-		BoolChannel->SetDefault(bDefault);
-		ImportTransformChannelToBool(TranslationX, BoolChannel, FrameRate, false, StartFrame);
+		const bool Default = DefaultValue != 0.0 ? !bNegate : bNegate;
 
+		BoolChannel->SetDefault(Default);
+		ImportTransformChannelToBool(*RichCurve, BoolChannel, FrameRate, false, StartFrame);
 	}
 	else if (ChannelEnum == FControlRigChannelEnum::Enum && EnumChannel)
 	{
-		bool bNegate = false;
-		uint8 Default = (uint8) Location.X;
+		const uint8 Default = (uint8)(bNegate ? -DefaultValue : DefaultValue);
 		EnumChannel->SetDefault(Default);
-		ImportTransformChannelToEnum(TranslationX, EnumChannel, FrameRate, false, StartFrame);
+		ImportTransformChannelToEnum(*RichCurve, EnumChannel, FrameRate, false, StartFrame);
 	}
 	else if (ChannelEnum == FControlRigChannelEnum::Integer && IntegerChannel)
 	{
-		bool bNegate = false;
-		int32  Default = (int32 )Location.X;
+		const int32 Default = (int32)(bNegate ? -DefaultValue : DefaultValue);
 		IntegerChannel->SetDefault(Default);
-		ImportTransformChannelToInteger(TranslationX, IntegerChannel, FrameRate, false, StartFrame);
+		ImportTransformChannelToInteger(*RichCurve, IntegerChannel, FrameRate, false, StartFrame);
 	}
-	else if (ChannelEnum == FControlRigChannelEnum::Float)
+	else if (FloatChannel || DoubleChannel)
 	{
-		bool bNegate = false;
-		float Default = Location.X;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(TranslationX, FloatChannel, FrameRate, false,false, StartFrame, bNegate);
+		if (*RichCurve == TranslationY)
+		{
+			bNegate = !bNegate;
+		}
+		
+		const float Default = bNegate ? -DefaultValue : DefaultValue;
+		if (FloatChannel)
+		{
+			FloatChannel->SetDefault(Default);
+			ImportTransformChannelToFloat(*RichCurve, FloatChannel, FrameRate, bNegate, false, StartFrame, bNegate);
+		}
+		else if (DoubleChannel)
+		{
+			DoubleChannel->SetDefault(Default);
+			ImportTransformChannelToDouble(*RichCurve, DoubleChannel, FrameRate, bNegate, false, StartFrame, bNegate);
+		}
 	}
-	else if (ChannelEnum == FControlRigChannelEnum::Vector2DX)
-	{
-		bool bNegate = false;
-		float Default = Location.X;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(TranslationX, FloatChannel, FrameRate, false, false,StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::Vector2DY)
-	{
-		bool bNegate = true;
-		float Default = -Location.Y;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(TranslationY, FloatChannel, FrameRate, false, false,StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::PositionX)
-	{
-		bool bNegate = false;
-		float Default = Location.X;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(TranslationX, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::PositionY)
-	{
-		bool bNegate = true;
-		float Default = -Location.Y;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(TranslationY, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::PositionZ)
-	{
-		bool bNegate = false;
-		float Default = Location.Z;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(TranslationZ, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::RotatorX)
-	{
-		bool bNegate = false;
-		float Default = Rotation.X;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(EulerRotationX, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::RotatorY)
-	{
-		bool bNegate = false;
-		float Default = Rotation.Y;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(EulerRotationY, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::RotatorZ)
-	{
-		bool bNegate = false;
-		float Default =  Rotation.Z;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(EulerRotationZ, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::ScaleX)
-	{
-		bool bNegate = false;
-		float Default = Scale3D.X;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(ScaleX, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::ScaleY)
-	{
-		bool bNegate = false;
-		float Default = Scale3D.Y;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(ScaleY, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-	else if (ChannelEnum == FControlRigChannelEnum::ScaleZ)
-	{
-		bool bNegate = false;
-		float Default = Scale3D.Z;
-		FloatChannel->SetDefault(Default);
-		ImportTransformChannelToFloat(ScaleZ, FloatChannel, FrameRate, false, false, StartFrame, bNegate);
-	}
-
 }
+
+static bool ImportFBXNonTransformCurvesToChannels(const FString& NodeName, const UMovieSceneUserImportFBXSettings* ImportFBXSettings,UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings,
+                                                  const FFrameNumber StartFrame, const FFrameRate FrameRate, FRigControlFBXNodeAndChannels& NodeAndChannels, UnFbx::FFbxCurvesAPI& CurveAPI)
+{
+	FbxNode* Node = CurveAPI.Scene->GetRootNode()->FindChild(TCHAR_TO_UTF8(*NodeName));
+	if (!Node)
+	{
+		return false;
+	}
+	FRichCurve EmptyDefaultCurve;
+
+	FbxProperty Property = Node->FindProperty(TCHAR_TO_UTF8(*NodeAndChannels.ControlName.ToString()));
+	if (!Property.IsValid())
+	{
+		return false;
+	}	
+	EmptyDefaultCurve.SetDefaultValue(Property.Get<float>());
+
+	TMap<FName, FRichCurve> Curves;
+	CurveAPI.GetConvertedNonTransformCurveData(NodeName, true, ImportFBXSettings->ImportUniformScale, Curves);
+
+	FRichCurve* Curve = Curves.Find(NodeAndChannels.ControlName);
+	if (!Curve)
+	{
+		Curve = &EmptyDefaultCurve;
+	}
+	
+	const float CurveDefault = Curve->GetDefaultValue();
+
+	auto ShouldNegateChannel = [ImportFBXControlRigSettings](FControlRigChannelEnum ChannelType)
+	{
+		const FControlToTransformMappings* ControlMapping = ImportFBXControlRigSettings->ControlChannelMappings.FindByPredicate(
+		[ChannelType](const FControlToTransformMappings& Mapping)
+			{
+				return Mapping.ControlChannel == ChannelType;
+			}
+		);
+		return ControlMapping && ControlMapping->bNegate;
+	};
+	
+	if (!NodeAndChannels.BoolChannels.IsEmpty())
+	{
+		const bool bNegate = ShouldNegateChannel(FControlRigChannelEnum::Bool);
+		const bool ChannelDefault = bNegate ? CurveDefault == 0.0 : CurveDefault != 0.0;
+		
+		NodeAndChannels.BoolChannels[0]->SetDefault(ChannelDefault);
+		ImportTransformChannelToBool(*Curve, NodeAndChannels.BoolChannels[0], FrameRate, false, StartFrame);
+	}
+	else if (!NodeAndChannels.EnumChannels.IsEmpty())
+	{
+		const bool bNegate = ShouldNegateChannel(FControlRigChannelEnum::Enum);
+		const uint8 ChannelDefault = bNegate ? -(uint8)CurveDefault : (uint8)CurveDefault;
+		
+		NodeAndChannels.EnumChannels[0]->SetDefault(ChannelDefault);
+		ImportTransformChannelToEnum(*Curve, NodeAndChannels.EnumChannels[0], FrameRate, false, StartFrame);
+	}
+	else if (!NodeAndChannels.IntegerChannels.IsEmpty())
+	{
+		const bool bNegate = ShouldNegateChannel(FControlRigChannelEnum::Integer);
+		const int32 ChannelDefault = bNegate ? -(int32)CurveDefault : (int32)CurveDefault;
+		NodeAndChannels.IntegerChannels[0]->SetDefault(ChannelDefault);
+		
+		ImportTransformChannelToInteger(*Curve, NodeAndChannels.IntegerChannels[0], FrameRate, false, StartFrame);
+	}
+	else if (!NodeAndChannels.FloatChannels.IsEmpty())
+	{
+		const bool bNegate = ShouldNegateChannel(FControlRigChannelEnum::Integer);
+		const float ChannelDefault = bNegate ? -CurveDefault : CurveDefault;
+		NodeAndChannels.FloatChannels[0]->SetDefault(ChannelDefault);
+		
+		ImportTransformChannelToFloat(*Curve, NodeAndChannels.FloatChannels[0], FrameRate, false, false, StartFrame, bNegate);
+	}
+	else
+	{
+		return false;	
+	}
+	return true;
+}
+
 //if one channel goes to Y
 //if two channel go to X Y
 //if three channel to to x y z
 // if 9 due full
-static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUserImportFBXSettings* ImportFBXSettings,UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings,  FFrameNumber StartFrame, FFrameRate FrameRate, FFBXNodeAndChannels& NodeAndChannels,
-	 UnFbx::FFbxCurvesAPI& CurveAPI)
+static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUserImportFBXSettings* ImportFBXSettings,UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings,
+                                         const FFrameNumber StartFrame, const FFrameRate FrameRate, FRigControlFBXNodeAndChannels& NodeAndChannels, UnFbx::FFbxCurvesAPI& CurveAPI)
 {
-
 	TArray<FMovieSceneDoubleChannel*>& DoubleChannels = NodeAndChannels.DoubleChannels;
 	TArray<FMovieSceneFloatChannel*>& FloatChannels = NodeAndChannels.FloatChannels;
 	TArray<FMovieSceneBoolChannel*>& BoolChannels = NodeAndChannels.BoolChannels;
 	TArray<FMovieSceneByteChannel*>& EnumChannels = NodeAndChannels.EnumChannels;
 	TArray<FMovieSceneIntegerChannel*>& IntegerChannels = NodeAndChannels.IntegerChannels;
-
-
+	
 	// Look for transforms explicitly
-	FRichCurve Translation[3];
-	FRichCurve EulerRotation[3];
-	FRichCurve Scale[3];
+	FRichCurve Transform[9];
 	FTransform DefaultTransform;
 	const bool bUseSequencerCurve = true;
-	CurveAPI.GetConvertedTransformCurveData(NodeName, Translation[0], Translation[1], Translation[2], EulerRotation[0], EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2], DefaultTransform, true, ImportFBXSettings->ImportUniformScale);
-
-
+	CurveAPI.GetConvertedTransformCurveData(NodeName, Transform[0], Transform[1], Transform[2], Transform[3], Transform[4], Transform[5], Transform[6], Transform[7], Transform[8], DefaultTransform, bUseSequencerCurve, ImportFBXSettings->ImportUniformScale);
+	
 	FVector Location = DefaultTransform.GetLocation(), Rotation = DefaultTransform.GetRotation().Euler(), Scale3D = DefaultTransform.GetScale3D();
+	const double DefaultTransformValues[] = {Location[0], Location[1], Location[2], Rotation[0], Rotation[1], Rotation[2], Scale3D[0], Scale3D[1], Scale3D[2]};
+	
+		
 	//For non-transforms we need to re-negate the Y since it happens automatically(todo double check.).
 	//But then if we negate we need to re-re-negate... so leave it alone.
 
@@ -1911,8 +1691,8 @@ static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUser
 		FControlRigChannelEnum Channel = FControlRigChannelEnum::Bool;
 		SetChannelValue(nullptr, nullptr, BoolChannels[0], nullptr,nullptr, FrameRate, StartFrame,
 			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			Transform[0], Transform[1], Transform[2], Transform[3],
+			Transform[4], Transform[5], Transform[6], Transform[7], Transform[8]);
 	}
 
 	if (EnumChannels.Num() == 1)
@@ -1920,8 +1700,8 @@ static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUser
 		FControlRigChannelEnum Channel = FControlRigChannelEnum::Enum;
 		SetChannelValue(nullptr, nullptr, nullptr, EnumChannels[0], nullptr, FrameRate, StartFrame,
 			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			Transform[0], Transform[1], Transform[2], Transform[3],
+			Transform[4], Transform[5], Transform[6], Transform[7], Transform[8]);
 	}
 
 	if (IntegerChannels.Num() == 1)
@@ -1929,243 +1709,105 @@ static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUser
 		FControlRigChannelEnum Channel = FControlRigChannelEnum::Integer;
 		SetChannelValue(nullptr, nullptr, nullptr, nullptr, IntegerChannels[0], FrameRate, StartFrame,
 			Channel,  ImportFBXControlRigSettings,DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0], 
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			Transform[0], Transform[1], Transform[2], Transform[3], 
+			Transform[4], Transform[5], Transform[6], Transform[7], Transform[8]);
 	}
+
+	int ChannelEnumIndex = INDEX_NONE;
 
 	if (FloatChannels.Num() == 1)
 	{
-		FControlRigChannelEnum Channel = FControlRigChannelEnum::Float;
-		SetChannelValue(nullptr, FloatChannels[0], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+		ChannelEnumIndex = (int)FControlRigChannelEnum::Float;
 	}
 	else if (FloatChannels.Num() == 2)
 	{
-		FControlRigChannelEnum Channel = FControlRigChannelEnum::Vector2DX;
-
-		SetChannelValue(nullptr, FloatChannels[0], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-		Channel = FControlRigChannelEnum::Vector2DY;
-		SetChannelValue(nullptr, FloatChannels[1], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+		ChannelEnumIndex = (int)FControlRigChannelEnum::Vector2DX;
 	}
 	else if (FloatChannels.Num() == 3)
 	{
 		if (NodeAndChannels.ControlType == FFBXControlRigTypeProxyEnum::Position)
 		{
-			FControlRigChannelEnum Channel = FControlRigChannelEnum::PositionX;
-
-			SetChannelValue(nullptr, FloatChannels[0], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::PositionY;
-			SetChannelValue(nullptr, FloatChannels[1], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::PositionZ;
-			SetChannelValue(nullptr, FloatChannels[2], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::PositionX;
 		}
 		else if (NodeAndChannels.ControlType == FFBXControlRigTypeProxyEnum::Rotator)
 		{
-			FControlRigChannelEnum Channel = FControlRigChannelEnum::RotatorX;
-			SetChannelValue(nullptr, FloatChannels[0], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::RotatorY;
-			SetChannelValue(nullptr, FloatChannels[1], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::RotatorZ;
-			SetChannelValue(nullptr, FloatChannels[2], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::RotatorX;
 		}
 		else if (NodeAndChannels.ControlType == FFBXControlRigTypeProxyEnum::Scale)
 		{
-			FControlRigChannelEnum Channel = FControlRigChannelEnum::ScaleX;
-			SetChannelValue(nullptr, FloatChannels[0], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-			Channel = FControlRigChannelEnum::ScaleY;
-			SetChannelValue(nullptr, FloatChannels[1], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-			Channel = FControlRigChannelEnum::ScaleZ;
-			SetChannelValue(nullptr, FloatChannels[2], nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::ScaleX;
+		}
+	}
+	if (ChannelEnumIndex != INDEX_NONE)
+	{
+		for (int i = 0; i < FloatChannels.Num(); i++)
+		{
+			const FControlRigChannelEnum ChannelEnum = (FControlRigChannelEnum)(ChannelEnumIndex + i);
+			SetChannelValue(nullptr, FloatChannels[i], nullptr, nullptr, nullptr,
+				FrameRate, StartFrame, ChannelEnum, ImportFBXControlRigSettings, DefaultTransform,
+				Transform[0], Transform[1], Transform[2], Transform[3],
+				Transform[4], Transform[5], Transform[6], Transform[7], Transform[8]);	
 		}
 	}
 	else if (FloatChannels.Num() == 9 || FloatChannels.Num() == 6)
 	{
-		FloatChannels[0]->SetDefault(Location.X);
-		FloatChannels[1]->SetDefault(Location.Y);
-		FloatChannels[2]->SetDefault(Location.Z);
-
-		FloatChannels[3]->SetDefault(Rotation.X);
-		FloatChannels[4]->SetDefault(Rotation.Y);
-		FloatChannels[5]->SetDefault(Rotation.Z);
-
-		if (FloatChannels.Num() > 6) //noscale
+		for (int i = 0; i < FloatChannels.Num(); i++)
 		{
-			FloatChannels[6]->SetDefault(Scale3D.X);
-			FloatChannels[7]->SetDefault(Scale3D.Y);
-			FloatChannels[8]->SetDefault(Scale3D.Z);
-		}
-
-		ImportTransformChannelToFloat(Translation[0], FloatChannels[0], FrameRate, false, false, StartFrame);
-		ImportTransformChannelToFloat(Translation[1], FloatChannels[1], FrameRate, true, false, StartFrame);
-		ImportTransformChannelToFloat(Translation[2], FloatChannels[2], FrameRate, false, false, StartFrame);
-
-		ImportTransformChannelToFloat(EulerRotation[0], FloatChannels[3], FrameRate, false, false, StartFrame);
-		ImportTransformChannelToFloat(EulerRotation[1], FloatChannels[4], FrameRate, true, false, StartFrame);
-		ImportTransformChannelToFloat(EulerRotation[2], FloatChannels[5], FrameRate, true, false, StartFrame);
-
-		if (FloatChannels.Num() > 6) //noscale
-		{
-			ImportTransformChannelToFloat(Scale[0], FloatChannels[6], FrameRate, false, false, StartFrame);
-			ImportTransformChannelToFloat(Scale[1], FloatChannels[7], FrameRate, false, false, StartFrame);
-			ImportTransformChannelToFloat(Scale[2], FloatChannels[8], FrameRate, false, false, StartFrame);
+			FloatChannels[i]->SetDefault(DefaultTransformValues[i]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::PositionX;
+			bool bNegate = false;
+			const FControlRigChannelEnum ChannelEnum = (FControlRigChannelEnum)(ChannelEnumIndex + i);
+			if (const FControlToTransformMappings* ChannelMapping = ImportFBXControlRigSettings->ControlChannelMappings.FindByPredicate(
+				[ChannelEnum](const FControlToTransformMappings& Mapping) { return ChannelEnum == Mapping.ControlChannel; }))
+			{
+				bNegate = ChannelMapping->bNegate;
+			}
+			ImportTransformChannelToFloat(Transform[i], FloatChannels[i], FrameRate, bNegate, false, StartFrame, bNegate);
 		}
 	}
 
+	ChannelEnumIndex = INDEX_NONE;
 
 	if (DoubleChannels.Num() == 1)
 	{
-		FControlRigChannelEnum Channel = FControlRigChannelEnum::Float; //todo control rig doesn't support double but may
-		SetChannelValue(DoubleChannels[0], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+		ChannelEnumIndex = (int)FControlRigChannelEnum::Float;
 	}
 	else if (DoubleChannels.Num() == 2)
 	{
-		FControlRigChannelEnum Channel = FControlRigChannelEnum::Vector2DX;
-
-		SetChannelValue(DoubleChannels[0], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-		Channel = FControlRigChannelEnum::Vector2DY;
-		SetChannelValue(DoubleChannels[1], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-			Channel, ImportFBXControlRigSettings, DefaultTransform,
-			Translation[0], Translation[1], Translation[2], EulerRotation[0],
-			EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+		ChannelEnumIndex = (int)FControlRigChannelEnum::Vector2DX;
 	}
 	else if (DoubleChannels.Num() == 3)
 	{
 		if (NodeAndChannels.ControlType == FFBXControlRigTypeProxyEnum::Position)
 		{
-			FControlRigChannelEnum Channel = FControlRigChannelEnum::PositionX;
-			SetChannelValue(DoubleChannels[0], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::PositionY;
-			SetChannelValue(DoubleChannels[1], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::PositionZ;
-			SetChannelValue(DoubleChannels[2], nullptr,nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::PositionX;
 		}
 		else if (NodeAndChannels.ControlType == FFBXControlRigTypeProxyEnum::Rotator)
 		{
-			FControlRigChannelEnum Channel = FControlRigChannelEnum::RotatorX;
-			SetChannelValue(DoubleChannels[0], nullptr,nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::RotatorY;
-			SetChannelValue(DoubleChannels[1], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-
-			Channel = FControlRigChannelEnum::RotatorZ;
-			SetChannelValue(DoubleChannels[2], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::RotatorX;
 		}
 		else if (NodeAndChannels.ControlType == FFBXControlRigTypeProxyEnum::Scale)
 		{
-			FControlRigChannelEnum Channel = FControlRigChannelEnum::ScaleX;
-			SetChannelValue(DoubleChannels[0], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-			Channel = FControlRigChannelEnum::ScaleY;
-			SetChannelValue(DoubleChannels[1], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
-			Channel = FControlRigChannelEnum::ScaleZ;
-			SetChannelValue(DoubleChannels[2], nullptr, nullptr, nullptr, nullptr, FrameRate, StartFrame,
-				Channel, ImportFBXControlRigSettings, DefaultTransform,
-				Translation[0], Translation[1], Translation[2], EulerRotation[0],
-				EulerRotation[1], EulerRotation[2], Scale[0], Scale[1], Scale[2]);
+			ChannelEnumIndex = (int)FControlRigChannelEnum::ScaleX;
+		}
+	}
+	if (ChannelEnumIndex != INDEX_NONE)
+	{
+		for (int i = 0; i < DoubleChannels.Num(); i++)
+		{
+			const FControlRigChannelEnum ChannelEnum = (FControlRigChannelEnum)(ChannelEnumIndex + i);
+			SetChannelValue(DoubleChannels[i], nullptr, nullptr, nullptr, nullptr,
+				FrameRate, StartFrame, ChannelEnum, ImportFBXControlRigSettings, DefaultTransform,
+				Transform[0], Transform[1], Transform[2], Transform[3],
+				Transform[4], Transform[5], Transform[6], Transform[7], Transform[8]);	
 		}
 	}
 	else if (DoubleChannels.Num() == 9 || DoubleChannels.Num() == 6)
 	{
-		DoubleChannels[0]->SetDefault(Location.X);
-		DoubleChannels[1]->SetDefault(Location.Y);
-		DoubleChannels[2]->SetDefault(Location.Z);
-
-		DoubleChannels[3]->SetDefault(Rotation.X);
-		DoubleChannels[4]->SetDefault(Rotation.Y);
-		DoubleChannels[5]->SetDefault(Rotation.Z);
-
-		if (DoubleChannels.Num() > 6) //noscale
+		for (int i = 0; i < DoubleChannels.Num(); i++)
 		{
-			DoubleChannels[6]->SetDefault(Scale3D.X);
-			DoubleChannels[7]->SetDefault(Scale3D.Y);
-			DoubleChannels[8]->SetDefault(Scale3D.Z);
-		}
-
-		ImportTransformChannelToDouble(Translation[0], DoubleChannels[0], FrameRate, false, false, StartFrame);
-		ImportTransformChannelToDouble(Translation[1], DoubleChannels[1], FrameRate, false, false, StartFrame);
-		ImportTransformChannelToDouble(Translation[2], DoubleChannels[2], FrameRate, false, false, StartFrame);
-
-		ImportTransformChannelToDouble(EulerRotation[0], DoubleChannels[3], FrameRate, false,false, StartFrame);
-		ImportTransformChannelToDouble(EulerRotation[1], DoubleChannels[4], FrameRate, false, false, StartFrame);
-		ImportTransformChannelToDouble(EulerRotation[2], DoubleChannels[5], FrameRate, false, false, StartFrame);
-
-		if (DoubleChannels.Num() > 6) //noscale
-		{
-			ImportTransformChannelToDouble(Scale[0], DoubleChannels[6], FrameRate, false, false, StartFrame);
-			ImportTransformChannelToDouble(Scale[1], DoubleChannels[7], FrameRate, false, false, StartFrame);
-			ImportTransformChannelToDouble(Scale[2], DoubleChannels[8], FrameRate, false, false, StartFrame);
+			DoubleChannels[i]->SetDefault(DefaultTransformValues[i]);
+			ImportTransformChannelToDouble(Transform[i], DoubleChannels[i], FrameRate, false, false, StartFrame);
 		}
 	}
 	return true;
@@ -2173,14 +1815,20 @@ static bool ImportFBXTransformToChannels(FString NodeName, const UMovieSceneUser
 static FString GetNewString(const FString& InString, UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings)
 {
 	FString NewString = InString;
+	int Index = INDEX_NONE;
+	
+	if (ImportFBXControlRigSettings->bStripNamespace && InString.FindLastChar(':', Index))
+	{
+		NewString.RightChopInline(Index + 1);
+	}
 	for (const FControlFindReplaceString& FindReplace : ImportFBXControlRigSettings->FindAndReplaceStrings)
 	{
-		NewString = NewString.Replace(*FindReplace.Find, *FindReplace.Replace); //ignores tupe
+		NewString.ReplaceInline(*FindReplace.Find, *FindReplace.Replace); //ignores tupe
 	}
 	return NewString;
 }
 
-static void PrepForInsertReplaceAnimation(bool bInsert, const FFBXNodeAndChannels& NodeAndChannel,
+static void PrepForInsertReplaceAnimation(bool bInsert, const FRigControlFBXNodeAndChannels& NodeAndChannel,
 	FFrameNumber  FrameToInsertOrReplace, FFrameNumber  StartFrame, FFrameNumber  EndFrame)
 {
 
@@ -2337,8 +1985,7 @@ class SControlRigImportFBXSettings : public SCompoundWidget
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
-
-
+		
 		MenuBuilder.AddMenuEntry(
 			NSLOCTEXT("MovieSceneTools", "MetaHumanControlMappings", "MetaHuman Control Mappings"),
 			NSLOCTEXT("MovieSceneTools", "MetaHumanControlMappings_Tooltip", "Use MetaHuman Control Mappings Preset"),
@@ -2349,7 +1996,6 @@ class SControlRigImportFBXSettings : public SCompoundWidget
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
-
 
 		return MenuBuilder.MakeWidget();
 	}
@@ -2396,20 +2042,16 @@ class SControlRigImportFBXSettings : public SCompoundWidget
 			ImportFBXSettings->ImportedFileName = FileName;
 		}
 	}
-	void SetNodeAndChannels(TArray<FFBXNodeAndChannels>* InNodeAndChannels)
+	void SetNodeAndChannels(TArray<FRigControlFBXNodeAndChannels>* InNodeAndChannels)
 	{
 		NodeAndChannels = InNodeAndChannels;
 	}
-
-
-
 
 private:
 
 	FReply OnImportFBXClicked()
 	{
-
-		if (Sequencer.IsValid() == false)
+		if (!Sequencer.IsValid() || !NodeAndChannels)
 		{
 			return  FReply::Unhandled();
 		}
@@ -2417,7 +2059,7 @@ private:
 		UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings = GetMutableDefault<UMovieSceneUserImportFBXControlRigSettings>();
 		
 		TArray<FName> SelectedControlNames;
-		for (FFBXNodeAndChannels& NodeAndChannel : *NodeAndChannels)
+		for (const FRigControlFBXNodeAndChannels& NodeAndChannel : *NodeAndChannels)
 		{
 			if (NodeAndChannel.MovieSceneTrack)
 			{
@@ -2429,14 +2071,13 @@ private:
 					SelectedControlNames.Append(LocalControls);
 				}
 			}
-
-
 		}
-		bool bValid = MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(Sequencer.Pin()->GetFocusedMovieSceneSequence()->GetMovieScene(), ImportFilename, ImportFBXControlRigSettings, 
-			NodeAndChannels,SelectedControlNames, Sequencer.Pin()->GetFocusedTickResolution());
-		
 
-		TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
+		const bool bValid = MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(
+			Sequencer.Pin()->GetFocusedMovieSceneSequence()->GetMovieScene(), ImportFilename, ImportFBXControlRigSettings, 
+		    NodeAndChannels,SelectedControlNames, Sequencer.Pin()->GetFocusedTickResolution());
+		
+		const TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
 
 		if (Window.IsValid())
 		{
@@ -2447,109 +2088,196 @@ private:
 			Sequencer.Pin()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
 		}
 		return bValid ? FReply::Handled() : FReply::Unhandled();
-
 	}
 
-	void SetPresets(bool bMetaHuman)
+	void SetPresets(const bool bMetaHuman) const
 	{
-		//since we can't change the API unfortunately need to do this here.
 		UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings = GetMutableDefault<UMovieSceneUserImportFBXControlRigSettings>();
-		ImportFBXControlRigSettings->ControlChannelMappings.SetNum(0); //clear and reset
-		FControlToTransformMappings Bool;
-		Bool.bNegate = false;
-		Bool.ControlChannel = FControlRigChannelEnum::Bool;
-		Bool.FBXChannel = FTransformChannelEnum::TranslateX;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(Bool);
-
-		FControlToTransformMappings Float;
-		Float.bNegate = false;
-		Float.ControlChannel = FControlRigChannelEnum::Float;
-		if (bMetaHuman)
-		{
-			Float.FBXChannel = FTransformChannelEnum::TranslateY;  //use Y for metahuman
-		}
-		else
-		{
-			Float.FBXChannel = FTransformChannelEnum::TranslateX;
-		}
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(Float);
-
-		FControlToTransformMappings Vector2DX;
-		Vector2DX.bNegate = false;
-		Vector2DX.ControlChannel = FControlRigChannelEnum::Vector2DX;
-		Vector2DX.FBXChannel = FTransformChannelEnum::TranslateX;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(Vector2DX);
-
-		FControlToTransformMappings Vector2DY;
-		Vector2DY.bNegate = false;
-		Vector2DY.ControlChannel = FControlRigChannelEnum::Vector2DY;
-		Vector2DY.FBXChannel = FTransformChannelEnum::TranslateY;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(Vector2DY);
-
-		FControlToTransformMappings PositionX;
-		PositionX.bNegate = false;
-		PositionX.ControlChannel = FControlRigChannelEnum::PositionX;
-		PositionX.FBXChannel = FTransformChannelEnum::TranslateX;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(PositionX);
-
-		FControlToTransformMappings PositionY;
-		PositionY.bNegate = false;
-		PositionY.ControlChannel = FControlRigChannelEnum::PositionY;
-		PositionY.FBXChannel = FTransformChannelEnum::TranslateY;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(PositionY);
-
-		FControlToTransformMappings PositionZ;
-		PositionZ.bNegate = false;
-		PositionZ.ControlChannel = FControlRigChannelEnum::PositionZ;
-		PositionZ.FBXChannel = FTransformChannelEnum::TranslateZ;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(PositionZ);
-
-		FControlToTransformMappings RotatorX;
-		RotatorX.bNegate = false;
-		RotatorX.ControlChannel = FControlRigChannelEnum::RotatorX;
-		RotatorX.FBXChannel = FTransformChannelEnum::RotateX;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(RotatorX);
-
-		FControlToTransformMappings RotatorY;
-		RotatorY.bNegate = false;
-		RotatorY.ControlChannel = FControlRigChannelEnum::RotatorY;
-		RotatorY.FBXChannel = FTransformChannelEnum::RotateY;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(RotatorY);
-
-		FControlToTransformMappings RotatorZ;
-		RotatorZ.bNegate = false;
-		RotatorZ.ControlChannel = FControlRigChannelEnum::RotatorZ;
-		RotatorZ.FBXChannel = FTransformChannelEnum::RotateZ;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(RotatorZ);
-
-		FControlToTransformMappings ScaleX;
-		ScaleX.bNegate = false;
-		ScaleX.ControlChannel = FControlRigChannelEnum::ScaleX;
-		ScaleX.FBXChannel = FTransformChannelEnum::ScaleX;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(ScaleX);
-
-		FControlToTransformMappings ScaleY;
-		ScaleY.bNegate = false;
-		ScaleY.ControlChannel = FControlRigChannelEnum::ScaleY;
-		ScaleY.FBXChannel = FTransformChannelEnum::ScaleY;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(ScaleY);
-
-		FControlToTransformMappings ScaleZ;
-		ScaleZ.bNegate = false;
-		ScaleZ.ControlChannel = FControlRigChannelEnum::ScaleZ;
-		ScaleZ.FBXChannel = FTransformChannelEnum::ScaleZ;
-		ImportFBXControlRigSettings->ControlChannelMappings.Add(ScaleZ);
+		ImportFBXControlRigSettings->LoadControlMappingsFromPreset(bMetaHuman);
 	}
 
 	TSharedPtr<IDetailsView> DetailView;
 	FString ImportFilename;
-	TArray<FFBXNodeAndChannels>* NodeAndChannels;
+	TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels = nullptr;
 	TWeakPtr<ISequencer> Sequencer;
+};
 
+class SControlRigExportFBXSettings : public SCompoundWidget
+{
+	SLATE_BEGIN_ARGS(SControlRigExportFBXSettings) {}
+	SLATE_ARGUMENT(FString, ExportFilename)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs,  const TSharedRef<ISequencer>& InSequencer, TWeakObjectPtr<UMovieSceneTrack> InTrack)
+	{
+		Sequencer = InSequencer;
+		Track = InTrack;
+		
+		UMovieSceneUserExportFBXControlRigSettings* ExportFBXSettings = GetMutableDefault<UMovieSceneUserExportFBXControlRigSettings>();
+		ExportFBXSettings->ExportFileName = InArgs._ExportFilename;
+
+		FPropertyEditorModule& PropertyEditor = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		
+		FDetailsViewArgs DetailsViewArgs;
+		DetailsViewArgs.bShowOptions = false;
+		DetailsViewArgs.bAllowSearch = false;
+		DetailsViewArgs.bShowPropertyMatrixButton = false;
+		DetailsViewArgs.bUpdatesFromSelection = false;
+		DetailsViewArgs.bLockable = false;
+		DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+		DetailsViewArgs.ViewIdentifier = "Export FBX Settings";
+
+		DetailView = PropertyEditor.CreateDetailView(DetailsViewArgs);
+		DetailView->SetObject(ExportFBXSettings);
+
+		ChildSlot
+		[
+			SNew(SVerticalBox)
+
+			+ SVerticalBox::Slot()
+			[
+				DetailView.ToSharedRef()
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SComboButton)
+				.HasDownArrow(true)
+				.OnGetMenuContent(this, &SControlRigExportFBXSettings::HandlePresetMenuContent)
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("MovieSceneTools", "ControlMappingPresets", "Control Mapping Presets"))
+					.ToolTipText(NSLOCTEXT("MovieSceneTools", "SetControlMappingFromAPreset", "Set Control Mappings From A Preset"))
+				]
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.HAlign(HAlign_Right)
+			.Padding(5.f)
+			[
+				SNew(SButton)
+				.ContentPadding(FMargin(10, 5))
+				.Text(NSLOCTEXT("MovieSceneTools", "ExportFBXButtonText", "Export"))
+				.OnClicked(this, &SControlRigExportFBXSettings::OnExportFBXClicked)
+			]
+		];
+	}
+	TSharedRef<SWidget> HandlePresetMenuContent()
+	{
+		FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+		MenuBuilder.AddMenuEntry(
+			NSLOCTEXT("MovieSceneTools", "EmptyControlMappings", "Empty Control Mappings"),
+			NSLOCTEXT("MovieSceneTools", "EmptyControlMappings_Tooltip",
+				"Do not use Control Mappings. Bool, Enum, Int and Float channels will be exported as attributes of the corresponding data type"),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SControlRigExportFBXSettings::ClearPresets)
+			),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+		
+		MenuBuilder.AddMenuEntry(
+			NSLOCTEXT("MovieSceneTools", "DefaultControlMappings", "Default Control Mappings"),
+			NSLOCTEXT("MovieSceneTools", "DefaultControlMappings_Tooltip", "Use Default Control Mappings Preset"),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SControlRigExportFBXSettings::SetPresets, false)
+			),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+
+		MenuBuilder.AddMenuEntry(
+			NSLOCTEXT("MovieSceneTools", "MetaHumanControlMappings", "MetaHuman Control Mappings"),
+			NSLOCTEXT("MovieSceneTools", "MetaHumanControlMappings_Tooltip", "Use MetaHuman Control Mappings Preset"),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SControlRigExportFBXSettings::SetPresets, true)
+			),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+
+		return MenuBuilder.MakeWidget();
+	}
+
+private:
+
+	FReply OnExportFBXClicked()
+	{
+		if (!Sequencer.IsValid() || !Track.IsValid())
+		{
+			return  FReply::Unhandled();
+		}
+
+		UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings = GetMutableDefault<UMovieSceneUserExportFBXControlRigSettings>();
+		
+		TArray<FName> SelectedControlNames;
+		if (Track.IsValid())
+		{
+			if (INodeAndChannelMappings* ChannelMapping = Cast<INodeAndChannelMappings>(Track.Get()))
+			{
+				ChannelMapping->GetSelectedNodes(SelectedControlNames);
+			}
+		}
+
+		FMovieSceneSequenceTransform RootToLocalTransform;
+		if (Sequencer.IsValid())
+		{
+			RootToLocalTransform = Sequencer.Pin()->GetFocusedMovieSceneSequenceTransform();
+		}
+
+		const bool bValid = MovieSceneToolHelpers::ExportFBXFromControlRigChannels(
+			Track.Get()->GetSectionToKey(), ExportFBXControlRigSettings, SelectedControlNames, RootToLocalTransform);
+
+		if (bValid)
+		{
+			FNotificationInfo Info(NSLOCTEXT("MovieSceneTools", "ExportControlRigFBXSucceeded", "FBX Export Succeeded."));
+			Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString InFilename) { FPlatformProcess::ExploreFolder(*InFilename); }, ExportFBXControlRigSettings->ExportFileName);
+			Info.HyperlinkText = FText::FromString(ExportFBXControlRigSettings->ExportFileName);
+			Info.ExpireDuration = 5.0f;
+			FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Success);
+		}
+		else
+		{
+			FNotificationInfo Info(NSLOCTEXT("MovieSceneTools", "ExportControlRigFBXFailed", "FBX Export Failed."));
+			Info.ExpireDuration = 5.0f;
+			FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);
+		}
+		
+		const TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
+
+		if (Window.IsValid())
+		{
+			Window->RequestDestroyWindow();
+		}
+		return bValid ? FReply::Handled() : FReply::Unhandled();
+	}
+
+	void SetPresets(const bool bMetaHuman) const
+	{
+		UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings = GetMutableDefault<UMovieSceneUserExportFBXControlRigSettings>();
+		ExportFBXControlRigSettings->LoadControlMappingsFromPreset(bMetaHuman);
+	}
+
+	void ClearPresets() const
+	{
+		UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings = GetMutableDefault<UMovieSceneUserExportFBXControlRigSettings>();
+		ExportFBXControlRigSettings->ControlChannelMappings.Empty();
+	}
+	
+	TSharedPtr<IDetailsView> DetailView;
+	TWeakPtr<ISequencer> Sequencer;
+	TWeakObjectPtr<UMovieSceneTrack> Track;
 };
 
 bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieScene,const FString& ImportFilename, UMovieSceneUserImportFBXControlRigSettings* ImportFBXControlRigSettings,
-	TArray<FFBXNodeAndChannels>* NodeAndChannels, const TArray<FName>& SelectedControlNames, FFrameRate FrameRate)
+	TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels, const TArray<FName>& SelectedControlNames, FFrameRate FrameRate)
 {
 	UnFbx::FFbxImporter* FbxImporter = UnFbx::FFbxImporter::GetInstance();
 
@@ -2600,21 +2328,9 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 		//if matching selected remove out the non-selected
 		if (ImportFBXControlRigSettings->bImportOntoSelectedControls)
 		{
-			for (int32 Index = NodeAndChannels->Num() - 1; Index >= 0; --Index)
-			{
-				bool bHasOneMatch = false;
-				for (const FName& SelectedName : SelectedControlNames)
-				{
-					if (FCString::Strcmp(*SelectedName.ToString().ToUpper(), *((*NodeAndChannels)[Index].NodeName).ToUpper()) == 0)
-					{
-						bHasOneMatch = true;
-					}
-				}
-				if (!bHasOneMatch)
-				{
-					NodeAndChannels->RemoveAt(Index);
-				}
-			}
+			NodeAndChannels->RemoveAll([SelectedControlNames](const FRigControlFBXNodeAndChannels& A)
+				{ return !SelectedControlNames.Contains(A.ControlName); }
+			);
 		}
 
 		FFrameNumber  FrameToInsertOrReplace = ImportFBXControlRigSettings->TimeToInsertOrReplaceAnimation;
@@ -2650,21 +2366,14 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 
 		TSet<UMovieSceneSection*> AllModifiedSections;
 
-		for (int32 NodeIndex = 0; NodeIndex < AllNodeNames.Num(); ++NodeIndex)
+		for (const FString& NodeName : AllNodeNames)
 		{
-			FString NodeName = AllNodeNames[NodeIndex];
-			/** Why was this here I think due to speeed....
-			if (NodeName[0] != 'C')
-			{
-				continue;
-			}
-			*/
-			FString NewNodeName = GetNewString(*(NodeName).ToUpper(), ImportFBXControlRigSettings);
+			const FString NewNodeName = GetNewString(*NodeName, ImportFBXControlRigSettings);
 
 			TSet<UMovieSceneSection*> ModifiedSections;
-			for (FFBXNodeAndChannels& NodeAndChannel : *NodeAndChannels)
+			for (FRigControlFBXNodeAndChannels& NodeAndChannel : *NodeAndChannels)
 			{
-				if (FCString::Strcmp(*(NodeAndChannel.NodeName).ToUpper(), *NewNodeName.ToUpper()) == 0)
+				if (NodeAndChannel.NodeName.Equals(NewNodeName, ESearchCase::IgnoreCase))
 				{
 					if (NodeAndChannel.MovieSceneTrack)
 					{
@@ -2687,7 +2396,16 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 						FrameToInsertOrReplace,
 						StartFrame, EndFrame);
 
-					ImportFBXTransformToChannels(NodeName, CurrentImportFBXSettings, ImportFBXControlRigSettings, FrameToInsertOrReplace, FrameRate, NodeAndChannel, CurveAPI);
+					FFBXControlRigTypeProxyEnum ControlType = NodeAndChannel.ControlType;
+					bool bTryImportNonTransformCurves = ControlType == FFBXControlRigTypeProxyEnum::Bool || ControlType == FFBXControlRigTypeProxyEnum::Float || ControlType == FFBXControlRigTypeProxyEnum::Integer;
+
+					// If the node channels could not be imported from custom FBX attribute curves, try importing it them from the FBX transform channels, using the corresponding mapping 
+					if (!bTryImportNonTransformCurves || !ImportFBXNonTransformCurvesToChannels(
+						NodeName, CurrentImportFBXSettings, ImportFBXControlRigSettings, FrameToInsertOrReplace,
+						FrameRate, NodeAndChannel, CurveAPI))
+					{
+						ImportFBXTransformToChannels(NodeName, CurrentImportFBXSettings, ImportFBXControlRigSettings, FrameToInsertOrReplace, FrameRate, NodeAndChannel, CurveAPI);
+					}
 				}
 			}
 
@@ -2760,7 +2478,102 @@ bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannels(UMovieScene* MovieSc
 	return bValid;
 }
 
-bool MovieSceneToolHelpers::ImportFBXIntoChannelsWithDialog(const TSharedRef<ISequencer>& InSequencer,TArray<FFBXNodeAndChannels>* NodeAndChannels)
+bool MovieSceneToolHelpers::ExportFBXFromControlRigChannels(const UMovieSceneSection* Section,
+	const UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings, const TArray<FName>& SelectedControlNames,
+	const FMovieSceneSequenceTransform& RootToLocalTransform)
+{
+	if (!Section)
+	{
+		return false;
+	}
+
+	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
+
+	UFbxExportOption* ExportOptions = Exporter->GetExportOptions();
+	ExportOptions->FbxExportCompatibility = ExportFBXControlRigSettings->FbxExportCompatibility;
+	ExportOptions->bASCII = ExportFBXControlRigSettings->bASCII;
+	ExportOptions->bForceFrontXAxis = ExportFBXControlRigSettings->bForceFrontXAxis;
+	ExportOptions->bExportLocalTime = ExportFBXControlRigSettings->bExportLocalTime;
+	
+	Exporter->CreateDocument();
+	Exporter->SetTransformBaking(true);
+	Exporter->SetKeepHierarchy(true);
+
+	TArray<FControlRigFbxNodeMapping> ChannelsMapping;
+
+	// Map to make it easier to convert from Control Rig Channel Enum to Control Rig Type Proxy + Transform Channel Index
+	const TMap<FControlRigChannelEnum, TPair<FFBXControlRigTypeProxyEnum, uint8>> ProxyMapping = {
+		{ FControlRigChannelEnum::Vector2DX, { FFBXControlRigTypeProxyEnum::Vector2D, 0 } },
+		{ FControlRigChannelEnum::Vector2DY, { FFBXControlRigTypeProxyEnum::Vector2D, 1 } },
+		{ FControlRigChannelEnum::PositionX, { FFBXControlRigTypeProxyEnum::Position, 0 } },
+		{ FControlRigChannelEnum::PositionY, { FFBXControlRigTypeProxyEnum::Position, 1 } },
+		{ FControlRigChannelEnum::PositionZ, { FFBXControlRigTypeProxyEnum::Position, 2 } },
+		{ FControlRigChannelEnum::RotatorX, { FFBXControlRigTypeProxyEnum::Rotator, 0 } },
+		{ FControlRigChannelEnum::RotatorY, { FFBXControlRigTypeProxyEnum::Rotator, 1 } },
+		{ FControlRigChannelEnum::RotatorZ, { FFBXControlRigTypeProxyEnum::Rotator, 2 } },
+		{ FControlRigChannelEnum::ScaleX, { FFBXControlRigTypeProxyEnum::Scale, 0 } },
+		{ FControlRigChannelEnum::ScaleY, { FFBXControlRigTypeProxyEnum::Scale, 1 } },
+		{ FControlRigChannelEnum::ScaleZ, { FFBXControlRigTypeProxyEnum::Scale, 2 } }
+	}; 
+
+	for (const FControlToTransformMappings& ControlMapping : ExportFBXControlRigSettings->ControlChannelMappings)
+	{
+		FControlRigFbxNodeMapping ChannelMapping;
+		
+		if (ControlMapping.ControlChannel == FControlRigChannelEnum::Bool)
+		{
+			ChannelMapping.ChannelType = FMovieSceneBoolChannel::StaticStruct()->GetFName();
+			ChannelMapping.ControlType = FFBXControlRigTypeProxyEnum::Bool;
+		}
+		else if (ControlMapping.ControlChannel == FControlRigChannelEnum::Enum)
+		{
+			ChannelMapping.ChannelType = FMovieSceneByteChannel::StaticStruct()->GetFName();
+			ChannelMapping.ControlType = FFBXControlRigTypeProxyEnum::Integer;
+		}
+		else if (ControlMapping.ControlChannel == FControlRigChannelEnum::Integer)
+		{
+			ChannelMapping.ChannelType = FMovieSceneIntegerChannel::StaticStruct()->GetFName();
+			ChannelMapping.ControlType = FFBXControlRigTypeProxyEnum::Integer;
+		}
+		else
+		{
+			ChannelMapping.ChannelType = FMovieSceneFloatChannel::StaticStruct()->GetFName();
+
+			// Convert Control Channel Type to Control Type and Transform Component Index (0-2)
+			if (const TPair<FFBXControlRigTypeProxyEnum, uint8>* Mapping = ProxyMapping.Find(ControlMapping.ControlChannel))
+			{
+				ChannelMapping.ControlType = Mapping->Key;
+				ChannelMapping.ChannelAttrIndex = Mapping->Value;
+			}
+			else
+			{
+				ChannelMapping.ControlType = FFBXControlRigTypeProxyEnum::Float;
+			}
+		}
+
+		// Convert FBXChannel Type to Transform Component Index (0-8)
+		ChannelMapping.FbxAttrIndex = (uint8)ControlMapping.FBXChannel;
+		
+		ChannelMapping.bNegate = ControlMapping.bNegate;
+		ChannelsMapping.Add(ChannelMapping);
+	}
+
+	// Filter only selected controls if required
+	TArray<FName> ControlsFilter;
+	if (ExportFBXControlRigSettings->bExportOnlySelectedControls)
+	{
+		ControlsFilter = SelectedControlNames;
+	}
+
+	Exporter->ExportControlRigSection(Section, ChannelsMapping, ControlsFilter, RootToLocalTransform);
+
+	// Save to disk
+	Exporter->WriteToFile(*ExportFBXControlRigSettings->ExportFileName);
+	
+	return true;
+}
+
+bool MovieSceneToolHelpers::ImportFBXIntoControlRigChannelsWithDialog(const TSharedRef<ISequencer>& InSequencer,TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels)
 {
 	TArray<FString> OpenFilenames;
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
@@ -2789,8 +2602,7 @@ bool MovieSceneToolHelpers::ImportFBXIntoChannelsWithDialog(const TSharedRef<ISe
 	{
 		return false;
 	}
-
-
+	
 	const FText TitleText = NSLOCTEXT("MovieSceneTools", "ImportFBXTitleOnToControlRig", "Import FBX Onto Control Rig");
 
 	// Create the window to choose our options
@@ -2798,7 +2610,7 @@ bool MovieSceneToolHelpers::ImportFBXIntoChannelsWithDialog(const TSharedRef<ISe
 		.Title(TitleText)
 		.HasCloseButton(true)
 		.SizingRule(ESizingRule::UserSized)
-		.ClientSize(FVector2D(400.0f, 200.0f))
+		.ClientSize(FVector2D(500.f, 700.f))
 		.AutoCenter(EAutoCenter::PreferredWorkArea)
 		.SupportsMinimize(false);
 
@@ -2849,6 +2661,53 @@ bool MovieSceneToolHelpers::ImportFBXIntoChannelsWithDialog(const TSharedRef<ISe
 	return true;
 
 }
+
+bool MovieSceneToolHelpers::ExportFBXFromControlRigChannelsWithDialog(const TSharedRef<ISequencer>& InSequencer, UMovieSceneTrack* Track)
+{
+	FString ExportFilename;
+		
+	if (IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get())
+	{
+		TArray<FString> SavedFiles;
+
+		const bool bFilePicked = DesktopPlatform->SaveFileDialog(
+			FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+			NSLOCTEXT("MovieSceneTools", "ExportControlRigFBX", "Export Control Rig FBX" ).ToString(),
+			*(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::FBX)),
+			TEXT(""),
+			TEXT("FBX document|*.fbx"),
+			EFileDialogFlags::None,
+			SavedFiles);
+
+		if (!bFilePicked || SavedFiles.IsEmpty())
+		{
+			return false;
+		}
+		ExportFilename = SavedFiles[0];
+		FEditorDirectories::Get().SetLastDirectory(ELastDirectory::FBX, FPaths::GetPath(ExportFilename)); 
+	}
+
+	const FText TitleText = NSLOCTEXT("MovieSceneTools", "ExportFBXFromControlRigTitle", "Export FBX from Control Rig");
+
+	// Create the window to choose our options
+	const TSharedRef<SWindow> Window = SNew(SWindow)
+		.Title(TitleText)
+		.HasCloseButton(true)
+		.SizingRule(ESizingRule::UserSized)
+		.ClientSize(FVector2D(450.0f, 300.0f))
+		.AutoCenter(EAutoCenter::PreferredWorkArea)
+		.SupportsMinimize(false);
+
+	const TSharedRef<SControlRigExportFBXSettings> DialogWidget = SNew(SControlRigExportFBXSettings, InSequencer, Track)
+		.ExportFilename(ExportFilename);
+
+	Window->SetContent(DialogWidget);
+
+	FSlateApplication::Get().AddWindow(Window);
+
+	return true;
+}
+
 bool ImportFBXTransform(FString NodeName, FGuid ObjectBinding, UnFbx::FFbxCurvesAPI& CurveAPI, UMovieSceneSequence* InSequence)
 {
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
@@ -3555,7 +3414,7 @@ private:
 
 	TSharedPtr<IDetailsView> DetailView;
 	FString ImportFilename;
-	UMovieSceneSequence* Sequence;
+	TObjectPtr<UMovieSceneSequence> Sequence;
 	ISequencer* Sequencer;
 	TMap<FGuid, FString> ObjectBindingMap;
 	TOptional<bool> bCreateCameras;
@@ -4103,6 +3962,7 @@ bool MovieSceneToolHelpers::ExportToAnimSequence(UAnimSequence* AnimSequence, UA
 		RecordingSettings.bRecordInWorldSpace = ExportOptions->bRecordInWorldSpace;
 		RecordingSettings.IncludeAnimationNames = ExportOptions->IncludeAnimationNames;
 		RecordingSettings.ExcludeAnimationNames = ExportOptions->ExcludeAnimationNames;
+		RecordingSettings.bTransactRecording = ExportOptions->bTransactRecording;
 		AnimationRecorder.Init(SkelMeshComp, AnimSequence, nullptr, RecordingSettings);	
 		});
 
@@ -4591,7 +4451,7 @@ bool MovieSceneToolHelpers::IsValidAsset(UMovieSceneSequence* Sequence, const FA
 	return true;
 }
 
-void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& ChannelData, FFrameNumber Time, float Value)
+void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& ChannelData, FFrameNumber Time, float Value, const EMovieSceneKeyInterpolation Interpolation)
 {
 	int32 ExistingIndex = ChannelData.FindKey(Time);
 	if (ExistingIndex != INDEX_NONE)
@@ -4610,7 +4470,62 @@ void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatV
 		NewKey.Tangent.TangentWeightMode = WeightedMode;
 		NewKey.Tangent.ArriveTangentWeight = 0.0f;
 		NewKey.Tangent.LeaveTangentWeight = 0.0f;
+
+		switch (Interpolation)
+		{
+			case EMovieSceneKeyInterpolation::SmartAuto:    
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_SmartAuto;
+			}
+			break;
+			case EMovieSceneKeyInterpolation::Auto:  
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_Auto;
+			}
+			break;
+			case EMovieSceneKeyInterpolation::User: 
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_User;
+			}
+			break;
+			case EMovieSceneKeyInterpolation::Break:  
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_Auto;
+			}
+			break;
+
+			case EMovieSceneKeyInterpolation::Linear:
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Linear;
+			}
+			break;
+
+			case EMovieSceneKeyInterpolation::Constant:
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Constant;
+			}
+			break;
+
+		}
 		ChannelData.AddKey(Time, NewKey);
+	}
+}
+
+void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& ChannelData, FFrameNumber Time, const FMovieSceneFloatValue& Value)
+{
+	int32 ExistingIndex = ChannelData.FindKey(Time);
+	if (ExistingIndex != INDEX_NONE)
+	{
+		FMovieSceneFloatValue& FloatValue = ChannelData.GetValues()[ExistingIndex]; //-V758
+		FloatValue.Value = Value.Value;
+	}
+	else
+	{
+		ChannelData.AddKey(Time, Value);
 	}
 }
 
@@ -4618,41 +4533,49 @@ void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatV
 		float ArriveTangent, float LeaveTangent, ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode, 
 		FFrameRate FrameRate, ERichCurveTangentWeightMode WeightedMode, float ArriveTangentWeight, float LeaveTangentWeight)
 {
-	if (ChannelData.FindKey(Time) == INDEX_NONE)
-	{
-		FMovieSceneFloatValue NewKey(Value);
+	FMovieSceneFloatValue NewKey(Value);
 
-		NewKey.InterpMode = InterpMode;
-		NewKey.TangentMode = TangentMode;
-		NewKey.Tangent.ArriveTangent = ArriveTangent / FrameRate.AsDecimal();
-		NewKey.Tangent.LeaveTangent = LeaveTangent / FrameRate.AsDecimal();
-		NewKey.Tangent.TangentWeightMode = WeightedMode;
-		NewKey.Tangent.ArriveTangentWeight = ArriveTangentWeight;
-		NewKey.Tangent.LeaveTangentWeight = LeaveTangentWeight;
-		ChannelData.AddKey(Time, NewKey);
-	}
+	NewKey.InterpMode = InterpMode;
+	NewKey.TangentMode = TangentMode;
+	NewKey.Tangent.ArriveTangent = ArriveTangent / FrameRate.AsDecimal();
+	NewKey.Tangent.LeaveTangent = LeaveTangent / FrameRate.AsDecimal();
+	NewKey.Tangent.TangentWeightMode = WeightedMode;
+	NewKey.Tangent.ArriveTangentWeight = ArriveTangentWeight;
+	NewKey.Tangent.LeaveTangentWeight = LeaveTangentWeight;
+	ChannelData.AddKey(Time, NewKey);
+	MovieSceneToolHelpers::SetOrAddKey(ChannelData, Time, NewKey);
 }
 
 void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value, 
 		float ArriveTangent, float LeaveTangent, ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode, 
 		FFrameRate FrameRate, ERichCurveTangentWeightMode WeightedMode, float ArriveTangentWeight, float LeaveTangentWeight)
 {
-	if (ChannelData.FindKey(Time) == INDEX_NONE)
-	{
-		FMovieSceneDoubleValue NewKey(Value);
+	FMovieSceneDoubleValue NewKey(Value);
+	NewKey.InterpMode = InterpMode;
+	NewKey.TangentMode = TangentMode;
+	NewKey.Tangent.ArriveTangent = ArriveTangent / FrameRate.AsDecimal();
+	NewKey.Tangent.LeaveTangent = LeaveTangent / FrameRate.AsDecimal();
+	NewKey.Tangent.TangentWeightMode = WeightedMode;
+	NewKey.Tangent.ArriveTangentWeight = ArriveTangentWeight;
+	NewKey.Tangent.LeaveTangentWeight = LeaveTangentWeight;
+	MovieSceneToolHelpers::SetOrAddKey(ChannelData, Time, NewKey);
+}
 
-		NewKey.InterpMode = InterpMode;
-		NewKey.TangentMode = TangentMode;
-		NewKey.Tangent.ArriveTangent = ArriveTangent / FrameRate.AsDecimal();
-		NewKey.Tangent.LeaveTangent = LeaveTangent / FrameRate.AsDecimal();
-		NewKey.Tangent.TangentWeightMode = WeightedMode;
-		NewKey.Tangent.ArriveTangentWeight = ArriveTangentWeight;
-		NewKey.Tangent.LeaveTangentWeight = LeaveTangentWeight;
-		ChannelData.AddKey(Time, NewKey);
+void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, FMovieSceneDoubleValue Value)
+{
+	int32 ExistingIndex = ChannelData.FindKey(Time);
+	if (ExistingIndex != INDEX_NONE)
+	{
+		FMovieSceneDoubleValue& DoubleValue = ChannelData.GetValues()[ExistingIndex]; //-V758
+		DoubleValue.Value = Value.Value;
+	}
+	else
+	{
+		ChannelData.AddKey(Time, Value);
 	}
 }
 
-void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value)
+void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value, const EMovieSceneKeyInterpolation Interpolation)
 {
 	int32 ExistingIndex = ChannelData.FindKey(Time);
 	if (ExistingIndex != INDEX_NONE)
@@ -4671,6 +4594,47 @@ void MovieSceneToolHelpers::SetOrAddKey(TMovieSceneChannelData<FMovieSceneDouble
 		NewKey.Tangent.TangentWeightMode = WeightedMode;
 		NewKey.Tangent.ArriveTangentWeight = 0.0f;
 		NewKey.Tangent.LeaveTangentWeight = 0.0f;
+
+		switch (Interpolation)
+		{
+			case EMovieSceneKeyInterpolation::SmartAuto:    
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_SmartAuto;
+			}
+			break;
+			case EMovieSceneKeyInterpolation::Auto:  
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_Auto;
+			}
+			break;
+			case EMovieSceneKeyInterpolation::User: 
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_User;
+			}
+			break;
+			case EMovieSceneKeyInterpolation::Break:  
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Cubic;
+				NewKey.TangentMode = ERichCurveTangentMode::RCTM_Auto;
+			}
+			break;
+
+			case EMovieSceneKeyInterpolation::Linear:
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Linear;
+			}
+			break;
+
+			case EMovieSceneKeyInterpolation::Constant:
+			{
+				NewKey.InterpMode = ERichCurveInterpMode::RCIM_Constant;
+			}
+			break;
+
+		}
 		ChannelData.AddKey(Time, NewKey);
 	}
 }
@@ -4712,10 +4676,138 @@ void MovieSceneToolHelpers::GetActorWorldTransforms(IMovieScenePlayer* Player, U
 	}
 }
 
+void MovieSceneToolHelpers::GetActorParents(const FActorForWorldTransforms& ActorSelection,
+	TArray<FActorForWorldTransforms>& OutParentActors)
+{
+	if (ActorSelection.Actor.IsValid())
+	{
+		//has component so parent is next component
+		if (ActorSelection.Component.IsValid() && ActorSelection.Component->GetAttachParent())
+		{
+			FActorForWorldTransforms OutParentActor;
+			OutParentActor.Actor = ActorSelection.Actor;
+			OutParentActor.Component = ActorSelection.Component->GetAttachParent();
+			OutParentActors.AddUnique(OutParentActor);
+			GetActorParents(OutParentActor, OutParentActors);
+		}
+		else if (AActor* ParentActor = ActorSelection.Actor->GetAttachParentActor())
+		{
+			FActorForWorldTransforms OutParentActor;
+			OutParentActor.Actor = ParentActor;
+			OutParentActors.AddUnique(OutParentActor);
+			GetActorParents(OutParentActor, OutParentActors);
+		}
+	}
+}
+
+void MovieSceneToolHelpers::GetActorParentsWithAttachments(ISequencer* Sequencer, const FActorForWorldTransforms& ActorSelection,
+	TArray<FActorForWorldTransforms>& OutParentActors)
+{
+	if (Sequencer == nullptr)
+	{
+		return;
+	}
+
+	UMovieScene* FocusedMovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
+	if (!FocusedMovieScene)
+	{
+		return;
+	}
+
+	if (ActorSelection.Actor.IsValid())
+	{
+		FGuid Guid;
+		if (ActorSelection.Component.Get())
+		{
+			Guid = Sequencer->GetHandleToObject(ActorSelection.Component.Get(), false);
+		}
+		if (!Guid.IsValid())
+		{
+			Guid = Sequencer->GetHandleToObject(ActorSelection.Actor.Get(), false);
+		}
+		if (Guid.IsValid())
+		{
+			for (UMovieSceneTrack* Track : FocusedMovieScene->FindTracks(UMovieScene3DConstraintTrack::StaticClass(), Guid))
+			{
+				if (UMovieScene3DConstraintTrack* ConstraintTrack = Cast<UMovieScene3DConstraintTrack>(Track))
+				{
+					for (UMovieSceneSection* ConstraintSection : ConstraintTrack->GetAllSections())
+					{
+						FMovieSceneObjectBindingID ConstraintBindingID = (Cast<UMovieScene3DConstraintSection>(ConstraintSection))->GetConstraintBindingID();
+						for (TWeakObjectPtr<> ParentObject : ConstraintBindingID.ResolveBoundObjects(Sequencer->GetFocusedTemplateID(), *Sequencer))
+						{
+							FActorForWorldTransforms OutParentActor;
+							OutParentActor.Actor = Cast<AActor>(ParentObject.Get());;
+							OutParentActors.AddUnique(OutParentActor);
+							GetActorParents(OutParentActor, OutParentActors);
+							break;
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			//has component so parent is next component
+			if (ActorSelection.Component.IsValid() && ActorSelection.Component->GetAttachParent())
+			{
+				FActorForWorldTransforms OutParentActor;
+				OutParentActor.Actor = ActorSelection.Actor;
+				OutParentActor.Component = ActorSelection.Component->GetAttachParent();
+				OutParentActors.AddUnique(OutParentActor);
+				GetActorParents(OutParentActor, OutParentActors);
+			}
+			else if (AActor* ParentActor = ActorSelection.Actor->GetAttachParentActor())
+			{
+				FActorForWorldTransforms OutParentActor;
+				OutParentActor.Actor = ParentActor;
+				OutParentActors.AddUnique(OutParentActor);
+				GetActorParents(OutParentActor, OutParentActors);
+			}
+		}
+	}
+}
+
+void MovieSceneToolHelpers::GetActorsAndParentsKeyFrames(ISequencer* Sequencer, const FActorForWorldTransforms& InActor,
+	const FFrameNumber& StartFrame, const FFrameNumber& EndFrame, TSortedMap<FFrameNumber, FFrameNumber>& OutFrameMap)
+{
+	TArray<FFrameNumber> FramesToUse;
+	TArray<FActorForWorldTransforms> ParentActors;
+	ParentActors.Add(InActor);
+	GetActorParentsWithAttachments(Sequencer, InActor, ParentActors);
+
+	for (FActorForWorldTransforms& Actor : ParentActors)
+	{
+		FGuid Guid;
+		if (Actor.Component.Get())
+		{
+			Guid = Sequencer->GetHandleToObject(Actor.Component.Get(), false);
+		}
+		if (!Guid.IsValid())
+		{
+			Guid = Sequencer->GetHandleToObject(Actor.Actor.Get(), false);
+		}
+		if (Guid.IsValid())
+		{
+			if (UMovieScene3DTransformSection* TransformSection = MovieSceneToolHelpers::GetTransformSection(Sequencer, Guid))
+			{
+				TArrayView<FMovieSceneDoubleChannel*> Channels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+				TArray<FFrameNumber> TransformFrameTimes = FMovieSceneConstraintChannelHelper::GetTransformTimes(
+					Channels, StartFrame, EndFrame);
+				for (FFrameNumber& FrameNumber : TransformFrameTimes)
+				{
+					OutFrameMap.Add(FrameNumber,FrameNumber);
+				}
+			}
+		}
+	}
+}
+
 void MovieSceneToolHelpers::CalculateFramesBetween(
 	const UMovieScene* MovieScene,
 	FFrameNumber StartFrame,
 	FFrameNumber EndFrame,
+	int32 FrameInc,
 	TArray<FFrameNumber>& OutFrames)
 {
 	const bool bReverse = StartFrame > EndFrame;
@@ -4739,20 +4831,332 @@ void MovieSceneToolHelpers::CalculateFramesBetween(
 
 	if (bReverse)
 	{
+		int32 FrameIndex = 0;
 		for (FFrameNumber DisplayFrameNumber = EndTimeInDisplay; DisplayFrameNumber >= StartTimeInDisplay; --DisplayFrameNumber)
 		{
-			FFrameNumber TickFrameNumber = FFrameRate::TransformTime(FFrameTime(DisplayFrameNumber), DisplayResolution, TickResolution).FrameNumber;
-			OutFrames.Add(TickFrameNumber);
+			if (FrameIndex % FrameInc == 0)
+			{
+				FFrameNumber TickFrameNumber = FFrameRate::TransformTime(FFrameTime(DisplayFrameNumber), DisplayResolution, TickResolution).FrameNumber;
+				OutFrames.Add(TickFrameNumber);
+			}
+			++FrameIndex;
 		}
 	}
 	else
 	{
+		int32 FrameIndex = 0;
 		for (FFrameNumber DisplayFrameNumber = StartTimeInDisplay; DisplayFrameNumber <= EndTimeInDisplay; ++DisplayFrameNumber)
 		{
-			FFrameNumber TickFrameNumber = FFrameRate::TransformTime(FFrameTime(DisplayFrameNumber), DisplayResolution, TickResolution).FrameNumber;
-			OutFrames.Add(TickFrameNumber);
+			if (FrameIndex % FrameInc == 0)
+			{
+				FFrameNumber TickFrameNumber = FFrameRate::TransformTime(FFrameTime(DisplayFrameNumber), DisplayResolution, TickResolution).FrameNumber;
+				OutFrames.Add(TickFrameNumber);
+			}
+			++FrameIndex;
 		}
 	}
+}
+
+UENUM(BlueprintType)
+enum class FChannelMergeAlgorithm : uint8
+{
+	/**Average values together*/
+	Average,
+	/**Add values together*/
+	Add
+};
+
+//merge the channels onto the first one using the passed in algorithm, we may skip the last channel also (since it may be weight).
+template<typename ChannelType>
+static bool MergeChannels(TArray<ChannelType*>& Channels,const  TArray<UMovieSceneSection*>& Sections, const TRange<FFrameNumber>& Range,
+	FChannelMergeAlgorithm MergeAlgorithm)
+{
+	if (Channels.Num() < 2 && Channels.Num() != Sections.Num())
+	{
+		return false;
+	}
+	using ChannelValueType = typename ChannelType::ChannelValueType;
+	using CurveValueType = typename ChannelType::CurveValueType;
+
+	//base channel we set values on
+	ChannelType* BaseChannel = Channels[0];
+	TMovieSceneChannelData<ChannelValueType> BaseChannelData = BaseChannel->GetData();
+	//iterate over each key
+	TArray<FFrameNumber> KeyTimes;
+	TArray<FKeyHandle> Handles;
+	//cached set that we set at the end
+	TArray<TPair< FFrameNumber, ChannelValueType>> KeysToSet;
+	for (int32 ChannelIndex = 0; ChannelIndex < Channels.Num(); ++ChannelIndex)
+	{
+		KeyTimes.Reset();
+		Handles.Reset();
+		ChannelType* Channel = Channels[ChannelIndex];
+		Channel->GetKeys(Range, &KeyTimes, &Handles);
+		double DNumChannels = (double)(Channels.Num());
+		for (int32 FrameIndex = 0; FrameIndex < KeyTimes.Num(); ++FrameIndex)
+		{
+			const FFrameNumber& Frame = KeyTimes[FrameIndex];
+			const FFrameTime FrameTime(Frame);
+			int32 KeyIndex = Channel->GetData().GetIndex(Handles[FrameIndex]);
+			ChannelValueType Value = Channel->GetData().GetValues()[KeyIndex];
+			//got value with tangents and times, now we perform the operation
+			Value.Value = 0.0; //zero out the value we calculate it 
+			if (MergeAlgorithm == FChannelMergeAlgorithm::Average)
+			{
+				for (int32 WeightIndex = 0; WeightIndex < Sections.Num(); ++WeightIndex)
+				{
+					float Weight = Sections[WeightIndex]->GetTotalWeightValue(FrameTime);
+					CurveValueType WeightedValue = 0.0;
+					ChannelType* EachChannel = Channels[WeightIndex];
+					EachChannel->Evaluate(FrameTime, WeightedValue);
+					WeightedValue *= ((double)Weight / DNumChannels);
+					Value.Value += WeightedValue;
+				}
+			}
+			else if (MergeAlgorithm == FChannelMergeAlgorithm::Add)
+			{
+				for (int32 WeightIndex = 0; WeightIndex < Sections.Num(); ++WeightIndex)
+				{
+					float Weight = Sections[WeightIndex]->GetTotalWeightValue(FrameTime);
+					CurveValueType WeightedValue = 0.0;
+					ChannelType* EachChannel = Channels[WeightIndex];
+					EachChannel->Evaluate(FrameTime, WeightedValue);
+					WeightedValue *= Weight;
+					Value.Value += WeightedValue;
+				}
+			}
+			KeysToSet.Add(TPair<FFrameNumber, ChannelValueType>(Frame, Value));
+		}
+	}
+	for (TPair<FFrameNumber, ChannelValueType>& KeyToSet : KeysToSet)
+	{
+		MovieSceneToolHelpers::SetOrAddKey(BaseChannelData, KeyToSet.Key, KeyToSet.Value);
+	}
+
+	return true;
+}
+
+bool MovieSceneToolHelpers::OptimizeSection(const FKeyDataOptimizationParams& InParams, UMovieSceneSection* InSection)
+{
+	TArrayView<FMovieSceneFloatChannel*> FloatChannels = InSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+	for (FMovieSceneFloatChannel* Channel : FloatChannels)
+	{
+		Channel->Optimize(InParams);
+	}
+	TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = InSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+	for (FMovieSceneDoubleChannel* Channel : DoubleChannels)
+	{
+		Channel->Optimize(InParams);
+	}
+	return true;
+}
+
+template<typename ChannelType>
+static bool MergeSections(UMovieSceneSection* BaseSection, TArrayView<ChannelType*> BaseDoubleChannels, TArray<UMovieSceneSection*>& AbsoluteSections, TArray<UMovieSceneSection*>& AdditiveSections,
+	const TRange<FFrameNumber>& Range,bool bSkipLastChannel)
+{
+	TArrayView<ChannelType*> BaseChannels = BaseSection->GetChannelProxy().GetChannels<ChannelType>();
+	if (BaseChannels.Num() > 0)
+	{
+		int32 SectionIndex = 0;
+		//sanity check to make sure channels are the same size
+		for (SectionIndex = 0; SectionIndex < AbsoluteSections.Num(); ++SectionIndex)
+		{
+			TArrayView<ChannelType*>Channels = AbsoluteSections[SectionIndex]->GetChannelProxy().GetChannels<ChannelType>();
+			if (Channels.Num() != BaseChannels.Num())
+			{
+				UE_LOG(LogMovieScene, Warning, TEXT("MergeSections:: Invalid number of channels"));
+				return false;
+			}
+		}
+		for (SectionIndex = 0; SectionIndex < AdditiveSections.Num(); ++SectionIndex)
+		{
+			TArrayView<ChannelType*>Channels = AdditiveSections[SectionIndex]->GetChannelProxy().GetChannels<ChannelType>();
+			if (Channels.Num() != BaseChannels.Num())
+			{
+				UE_LOG(LogMovieScene, Warning, TEXT("MergeSections:: Invalid number of channels"));
+				return false;
+			}
+		}
+		BaseSection->Modify();
+
+		TArray<ChannelType*> Channels;
+		int32 ChannelIndex = 0;
+		bSkipLastChannel = false;
+		int32 BaseChannelsNum = bSkipLastChannel ? BaseChannels.Num() - 1 : BaseChannels.Num();
+		for (ChannelIndex = 0; ChannelIndex < BaseChannels.Num(); ++ChannelIndex)
+		{
+			if (AbsoluteSections.Num() > 0)
+			{
+				Channels.Reset();
+				for (SectionIndex = 0; SectionIndex < AbsoluteSections.Num(); ++SectionIndex)
+				{
+					TArrayView<ChannelType*>OurChannels = AbsoluteSections[SectionIndex]->GetChannelProxy().GetChannels<ChannelType>();
+					Channels.Add(OurChannels[ChannelIndex]);
+				}
+				//now blend them
+				if (MergeChannels(Channels, AbsoluteSections, Range,
+					FChannelMergeAlgorithm::Average) == false)
+				{
+					UE_LOG(LogMovieScene, Warning, TEXT("MergeSections:: Could not merge channels"));
+					return false;
+				}
+			}
+			if (AdditiveSections.Num() > 0)
+			{
+				//now do additives
+				Channels.Reset();
+				for (SectionIndex = 0; SectionIndex < AdditiveSections.Num(); ++SectionIndex)
+				{
+					TArrayView<ChannelType*>OurChannels = AdditiveSections[SectionIndex]->GetChannelProxy().GetChannels<ChannelType>();
+					Channels.Add(OurChannels[ChannelIndex]);
+				}
+				//now blend them
+				if (MergeChannels(Channels, AdditiveSections, Range,
+					FChannelMergeAlgorithm::Add) == false)
+				{
+					UE_LOG(LogMovieScene, Warning, TEXT("MergeSections:: Could not merge channels"));
+					return false;
+				}
+			}
+		}
+		for (ChannelType* Channel : BaseChannels)
+		{
+			Channel->AutoSetTangents();
+		}
+	}
+	else
+	{
+		return false;
+	}
+	return true;
+}
+
+bool MovieSceneToolHelpers::CollapseSection(TSharedPtr<ISequencer>& SequencerPtr, UMovieSceneTrack* OwnerTrack, TArray<UMovieSceneSection*> Sections,
+	const FBakingAnimationKeySettings& InSettings)
+{
+	if (SequencerPtr.IsValid() && Sections.Num() > 1)
+	{
+		TRange<FFrameNumber> Range(InSettings.StartFrame, InSettings.EndFrame);
+		//we get the  first absolute section or if no absolute sections, first additive,
+		// that's the one we collapse onto
+		UMovieSceneSection* BaseSection = nullptr;
+		//get first absolute
+		for (UMovieSceneSection* Section: Sections)
+		{
+			if (Section->IsActive() == false)
+			{
+				continue;
+			}
+			if (Section->GetBlendType().Get() == EMovieSceneBlendType::Absolute)
+			{
+				BaseSection = Section;
+				break;
+			}
+			else if (Section->GetBlendType().Get() == EMovieSceneBlendType::Additive)
+			{
+				if (BaseSection == nullptr)
+				{
+					BaseSection = Section; //don't stop though may have an absolute later
+				}
+			}
+		}
+		if (BaseSection == nullptr)
+		{
+			UE_LOG(LogMovieScene, Warning, TEXT("CollapseSection:: Invalid section(s) to collapse"));
+			return false;
+		}
+		//now find other sections.
+		TArray<UMovieSceneSection*> AbsoluteSections;
+		TArray<UMovieSceneSection*> AdditiveSections;
+		for (UMovieSceneSection* Section : Sections)
+		{
+			if (Section != BaseSection && Section->IsActive())
+			{
+				if (Section->GetBlendType().Get() == EMovieSceneBlendType::Absolute)
+				{
+					AbsoluteSections.Add(Section);
+				}
+				else if (Section->GetBlendType().Get() == EMovieSceneBlendType::Additive)
+				{
+					AdditiveSections.Add(Section);
+				}
+			}
+		}
+		//now make sure we have sections to blend with and if so add base section to them
+		if (AbsoluteSections.Num() > 0 || AdditiveSections.Num() > 0)
+		{
+			if (AbsoluteSections.Num() > 0)
+			{
+				AbsoluteSections.Insert(BaseSection, 0);
+			}
+			if (AdditiveSections.Num() > 0)
+			{
+				AdditiveSections.Insert(BaseSection, 0);
+			}
+		}
+		else
+		{
+			UE_LOG(LogMovieScene, Warning, TEXT("CollapseSection:: Invalid section(s) to collapse"));
+			return false;
+		}
+
+		FScopedTransaction Transaction(NSLOCTEXT("MovieSceneTools", "CollapseAllSections", "Collapse All Sections"));
+
+		TArrayView<FMovieSceneFloatChannel*> BaseFloatChannels = BaseSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+		TArrayView<FMovieSceneDoubleChannel*> BaseDoubleChannels = BaseSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+		if (BaseDoubleChannels.Num() > 0) //transforms
+		{
+			if (MergeSections(BaseSection, BaseDoubleChannels, AbsoluteSections, AdditiveSections, Range, false /*bSkipLastChannel*/) == false)
+			{
+				Transaction.Cancel();
+				return false;
+			}
+		}
+		else if(BaseFloatChannels.Num() > 0) //control rig
+		{
+			//skip weight channel for control rig
+			if (MergeSections(BaseSection, BaseFloatChannels, AbsoluteSections, AdditiveSections, Range, true /*bSkipLastChannel*/) == false)
+			{
+				Transaction.Cancel();
+				return false;
+			}
+		}
+		//delete other sections
+		OwnerTrack->Modify();
+		for (int32 SectionIndex = Sections.Num() - 1; SectionIndex >= 0; --SectionIndex)
+		{
+			if (Sections[SectionIndex] != BaseSection)
+			{
+				TArray<UMovieSceneSection*> AllSections = OwnerTrack->GetAllSections();
+				int32 TrackSectionIndex = INDEX_NONE;
+				if (AllSections.Find(Sections[SectionIndex], TrackSectionIndex))
+				{
+					if (TrackSectionIndex != INDEX_NONE)
+					{
+						OwnerTrack->RemoveSectionAt(TrackSectionIndex);
+					}
+				}
+			}
+		}
+		if (InSettings.bReduceKeys)
+		{
+			FKeyDataOptimizationParams Params;
+			Params.bAutoSetInterpolation = true;
+			Params.Tolerance = InSettings.Tolerance;
+			FMovieSceneChannelProxy& ChannelProxy = BaseSection->GetChannelProxy();
+			TArrayView<FMovieSceneFloatChannel*> FloatChannels = ChannelProxy.GetChannels<FMovieSceneFloatChannel>();
+
+			for (FMovieSceneFloatChannel* Channel : FloatChannels)
+			{
+				Channel->Optimize(Params); //should also auto tangent
+			}
+		}
+		//reset everything back
+		SequencerPtr->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
+	}
+	return true;
+
 }
 
 UMovieScene3DTransformSection* MovieSceneToolHelpers::GetTransformSection(
@@ -4774,8 +5178,7 @@ UMovieScene3DTransformSection* MovieSceneToolHelpers::GetTransformSection(
 	UMovieScene3DTransformTrack* TransformTrack = MovieScene->FindTrack<UMovieScene3DTransformTrack>(InGuid);
 	if (!TransformTrack)
 	{
-		MovieScene->Modify();
-		TransformTrack = MovieScene->AddTrack<UMovieScene3DTransformTrack>(InGuid);
+		return nullptr;
 	}
 	TransformTrack->Modify();
 

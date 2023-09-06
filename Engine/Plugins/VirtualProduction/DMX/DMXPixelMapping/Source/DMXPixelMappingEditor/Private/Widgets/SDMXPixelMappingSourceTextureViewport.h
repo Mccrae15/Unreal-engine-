@@ -16,43 +16,41 @@ class SDMXPixelMappingSourceTextureViewport
 	: public SCompoundWidget
 {
 public:
-
-	SLATE_BEGIN_ARGS(SDMXPixelMappingSourceTextureViewport) { }
+	SLATE_BEGIN_ARGS(SDMXPixelMappingSourceTextureViewport) 
+	{}
+	
 	SLATE_END_ARGS()
 
 public:
-	/**
-	 * Constructs the widget.
-	 *
-	 * @param InArgs The construction arguments.
-	 */
+	/** Constructs this widget */
 	void Construct(const FArguments& InArgs, const TSharedPtr<FDMXPixelMappingToolkit>& InToolkit);
 
-	/** Enable viewport rendering */
-	void EnableRendering();
-
-	/** Disable viewport rendering */
-	void DisableRendering();
-
+	/** Returns the viewport of this widget */
 	TSharedPtr<FSceneViewport> GetViewport() const { return Viewport; }
 
+	/** Returns the viewport widget of this viewport */
 	TSharedPtr<SViewport> GetViewportWidget() const { return ViewportWidget; }
 
+	/** Returns the texture width, in graph space  */
+	FOptionalSize GetWidthGraphSpace() const;
+
+	/** Returns the texture height, in graph space  */
+	FOptionalSize GetHeightGraphSpace() const;
+
+protected:
 	// Begin SWidget interface
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	// End of SWidget interface
 
-	FOptionalSize GetPreviewAreaWidth() const;
+private:
+	/** Returns the padding of content, in graph space */
+	FMargin GetPaddingGraphSpace() const;
 
-	FOptionalSize GetPreviewAreaHeight() const;
-
+	/** Returns the input texture currently in use */
 	UTexture* GetInputTexture() const;
 
-	const FTextureResource* GetInputTextureResource() const;
-
-private:
 	/** Weak pointer to the editor toolkit */
-	TWeakPtr<FDMXPixelMappingToolkit> ToolkitWeakPtr;
+	TWeakPtr<FDMXPixelMappingToolkit> WeakToolkit;
 
 	/** viewport client. */
 	TSharedPtr<FDMXPixelMappingSourceTextureViewportClient> ViewportClient;
@@ -62,7 +60,4 @@ private:
 
 	/** Viewport widget. */
 	TSharedPtr<SViewport> ViewportWidget;
-
-	/** Is rendering currently enabled? (disabled when reimporting a texture) */
-	bool bIsRenderingEnabled;
 };

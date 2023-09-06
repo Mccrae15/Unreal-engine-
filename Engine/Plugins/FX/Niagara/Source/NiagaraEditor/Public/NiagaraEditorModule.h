@@ -8,7 +8,7 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "NiagaraTypes.h"
 #include "INiagaraCompiler.h"
-#include "AssetTypeCategories.h"
+#include "NiagaraCompilationTypes.h"
 #include "NiagaraPerfBaseline.h"
 #include "NiagaraDebuggerCommon.h"
 #include "NiagaraRendererProperties.h"
@@ -48,14 +48,17 @@ class UNiagaraParameterDefinitions;
 class UNiagaraReservedParametersManager;
 class FNiagaraGraphDataCache;
 class UNiagaraParameterCollection;
+struct FNiagaraSystemAsyncCompileResults;
 
 DECLARE_STATS_GROUP(TEXT("Niagara Editor"), STATGROUP_NiagaraEditor, STATCAT_Advanced);
 
 extern NIAGARAEDITOR_API int32 GbShowNiagaraDeveloperWindows;
 extern NIAGARAEDITOR_API int32 GbPreloadSelectablePluginAssetsOnDemand;
+extern NIAGARAEDITOR_API int32 GbEnableExperimentalInlineDynamicInputs;
+extern NIAGARAEDITOR_API int32 GbEnableCustomInlineDynamicInputFormats;
 
 /* Defines methods for allowing external modules to supply widgets to the core editor module. */
-class NIAGARAEDITOR_API INiagaraEditorWidgetProvider
+class INiagaraEditorWidgetProvider
 {
 public:
 	virtual TSharedRef<SWidget> CreateStackView(UNiagaraStackViewModel& StackViewModel) const = 0;
@@ -98,7 +101,7 @@ private:
 };
 
 USTRUCT()
-struct NIAGARAEDITOR_API FNiagaraRendererCreationInfo
+struct FNiagaraRendererCreationInfo
 {
 	DECLARE_DELEGATE_RetVal_OneParam(UNiagaraRendererProperties*, FRendererFactory, UObject* OuterEmitter);
 
@@ -146,7 +149,7 @@ public:
 
 	/** Start the compilation of the specified script. */
 	virtual int32 CompileScript(const FNiagaraCompileRequestDataBase* InCompileRequest, const FNiagaraCompileRequestDuplicateDataBase* InCompileRequestDuplicate, const FNiagaraCompileOptions& InCompileOptions);
-	virtual TSharedPtr<FNiagaraVMExecutableData> GetCompilationResult(int32 JobID, bool bWait);
+	virtual TSharedPtr<FNiagaraVMExecutableData> GetCompilationResult(int32 JobID, bool bWait, FNiagaraScriptCompileMetrics& ScriptMetrics);
 
 	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> Precompile(UObject* InObj, FGuid Version);
 	TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> PrecompileDuplicate(
@@ -157,6 +160,9 @@ public:
 		FGuid TargetVersion);
 	TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> CacheGraphTraversal(const UObject* Obj, FGuid Version);
 
+	FNiagaraCompilationTaskHandle RequestCompileSystem(UNiagaraSystem* System, bool bForce);
+	bool PollSystemCompile(FNiagaraCompilationTaskHandle, FNiagaraSystemAsyncCompileResults&, bool /*bWait*/, bool /*bPeek*/);
+	void AbortSystemCompile(FNiagaraCompilationTaskHandle);
 
 	/** Gets the extensibility managers for outside entities to extend static mesh editor's menus and toolbars */
 	virtual TSharedPtr<FExtensibilityManager> GetMenuExtensibilityManager() override {return MenuExtensibilityManager;}
@@ -186,7 +192,7 @@ public:
 
 	/** Registers a new renderer creation delegate with the display name it's going to use for the UI. */
 	NIAGARAEDITOR_API void RegisterRendererCreationInfo(FNiagaraRendererCreationInfo RendererCreationInfo);
-	NIAGARAEDITOR_API const TArray<FNiagaraRendererCreationInfo>& GetRendererCreationInfos() const { return RendererCreationInfo; }
+	const TArray<FNiagaraRendererCreationInfo>& GetRendererCreationInfos() const { return RendererCreationInfo; }
 	
 	void RegisterParameterTrackCreatorForType(const UScriptStruct& StructType, FOnCreateMovieSceneTrackForParameter CreateTrack);
 	void UnregisterParameterTrackCreatorForType(const UScriptStruct& StructType);
@@ -294,6 +300,7 @@ private:
 				{
 					if (AssetType* Asset = Cast<AssetType>(AssetDatum.GetAsset()))
 					{
+						Asset->ConditionalPostLoad();
 						CachedAssets.Add(MakeWeakObjectPtr(Asset));
 					}
 				}
@@ -324,6 +331,9 @@ private:
 	}
 
 	void TestCompileScriptFromConsole(const TArray<FString>& Arguments);
+
+	void ValidateScriptVariableIds(const TArray<FString>& ScriptPathArgs, bool bFix = false);
+	
 	void ReinitializeStyle();
 
 	void EnqueueObjectForDeferredDestructionInternal(FDeferredDestructionContainerBase* InObjectToDestruct);
@@ -335,8 +345,9 @@ private:
 		StackIssueGenerators.Add(StructName) = Generator;
 	}
 
-	void OnAssetCreated(UObject* DeletedObject);
-	void OnAssetDeleted(UObject* DeletedObject);
+	void OnAssetRegistryLoadComplete();
+	
+	void OnAssetsPreDelete(const TArray<UObject*>& Objects);
 
 private:
 	TSharedPtr<FExtensibilityManager> MenuExtensibilityManager;
@@ -365,16 +376,22 @@ private:
 	FDelegateHandle PrecompilerHandle;
 	FDelegateHandle PrecompileDuplicatorHandle;
 	FDelegateHandle GraphCacheTraversalHandle;
+	FDelegateHandle RequestCompileSystemHandle;
+	FDelegateHandle PollSystemCompileHandle;
+	FDelegateHandle AbortSystemCompileHandle;
 
 	FDelegateHandle DeviceProfileManagerUpdatedHandle;
 
 	FDelegateHandle PreviewPlatformChangedHandle;
 	FDelegateHandle PreviewFeatureLevelChangedHandle;
 
-	FDelegateHandle OnAssetCreatedHandle;
-	FDelegateHandle OnAssetDeletedHandle;
+	FDelegateHandle AssetRegistryOnLoadCompleteHandle;
 	
-	USequencerSettings* SequencerSettings;
+	FDelegateHandle OnAssetsPreDeleteHandle;
+
+	FDelegateHandle DefaultTrackHandle;
+	
+	TObjectPtr<USequencerSettings> SequencerSettings;
 
 	TSharedPtr<INiagaraEditorWidgetProvider> WidgetProvider;
 
@@ -387,12 +404,15 @@ private:
 	TMap<const UScriptStruct*, FOnCreateMovieSceneTrackForParameter> TypeToParameterTrackCreatorMap;
 
 	IConsoleCommand* TestCompileScriptCommand;
+	IConsoleCommand* ValidateScriptVariableGuidsCommand;
+	IConsoleCommand* ValidateAndFixScriptVariableGuidsCommand;
 	IConsoleCommand* DumpRapidIterationParametersForAsset;
 	IConsoleCommand* PreventSystemRecompileCommand;
 	IConsoleCommand* PreventAllSystemRecompilesCommand;
 	IConsoleCommand* UpgradeAllNiagaraAssetsCommand;
 	IConsoleCommand* DumpCompileIdDataForAssetCommand;
 	IConsoleCommand* LoadAllSystemsInFolderCommand;
+	IConsoleCommand* DumpEmitterDependenciesCommand;
 
 	FOnCheckScriptToolkitsShouldFocusGraphElement OnCheckScriptToolkitsShouldFocusGraphElement;
 
@@ -405,7 +425,13 @@ private:
 
 	IConsoleCommand* ReinitializeStyleCommand;
 
-	TMap<int32, TSharedPtr<FHlslNiagaraCompiler>> ActiveCompilations;
+	struct FActiveCompilation
+	{
+		TSharedPtr<FHlslNiagaraCompiler> Compiler;
+		float TranslationTime = 0.0f;
+	};
+
+	TMap<int32, FActiveCompilation> ActiveCompilations;
 
 	TArray<TSharedRef<const FDeferredDestructionContainerBase>> EnqueuedForDeferredDestruction;
 

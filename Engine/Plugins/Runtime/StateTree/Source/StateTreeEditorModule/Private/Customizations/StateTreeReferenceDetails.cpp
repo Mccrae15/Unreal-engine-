@@ -5,8 +5,10 @@
 #include "StateTree.h"
 #include "StateTreeDelegates.h"
 #include "IDetailChildrenBuilder.h"
+#include "IPropertyUtilities.h"
 #include "PropertyCustomizationHelpers.h"
 #include "StateTreeReference.h"
+#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -18,10 +20,15 @@ TSharedRef<IPropertyTypeCustomization> FStateTreeReferenceDetails::MakeInstance(
 void FStateTreeReferenceDetails::CustomizeHeader(const TSharedRef<IPropertyHandle> InStructPropertyHandle, FDetailWidgetRow& InHeaderRow, IPropertyTypeCustomizationUtils& InCustomizationUtils)
 {
 	StructPropertyHandle = InStructPropertyHandle;
+	PropUtils = InCustomizationUtils.GetPropertyUtilities();
 
 	// Make sure parameters are synced when displaying StateTreeReference.
 	// Associated StateTree asset might have been recompiled after the StateTreeReference was loaded.
-	SyncParameters();
+	// Note: SyncParameters() will create an undoable transaction, do not try to sync when called during Undo/redo as it would overwrite the undo.   
+	if (!GIsTransacting)
+	{
+		SyncParameters();
+	}
 
 	const TSharedPtr<IPropertyHandle> StateTreeProperty = StructPropertyHandle->GetChildHandle(FName(TEXT("StateTree")));
 	check(StateTreeProperty.IsValid());
@@ -48,49 +55,7 @@ void FStateTreeReferenceDetails::CustomizeHeader(const TSharedRef<IPropertyHandl
 	
 	StateTreeProperty->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([this]()
 		{
-			TArray<void*> RawData;
-			StructPropertyHandle->AccessRawData(RawData);
-
-			const TSharedPtr<IPropertyHandle> ParametersProperty = StructPropertyHandle->GetChildHandle(FName(TEXT("Parameters")));
-
-			if (ParametersProperty.IsValid() && !RawData.IsEmpty())
-			{
-				FStateTreeReference* StateTreeReference = static_cast<FStateTreeReference*>(RawData[0]);
-				check(StateTreeReference);
-
-				const UStateTree* StateTreeAsset = StateTreeReference->GetStateTree();
-				
-				FInstancedPropertyBag NewValue;
-				bool bSetNewValue = true;
-
-				if (RawData.Num() == 1)
-				{
-					bSetNewValue = StateTreeReference->RequiresParametersSync();
-
-					// When only one element is selected we can migrate the Parameters in case we are able to preserve some matching parameters
-					if (bSetNewValue)
-					{
-						StateTreeReference->SyncParametersToMatchStateTree(NewValue);
-					}
-				}
-				else if (StateTreeAsset)
-				{
-					// In case where multiple elements are selected we use the default parameters from the StateTree since
-					// the property handle will set value on all elements at once. In this scenario we can't "migrate" parameters since
-					// they might be associated to different StateTree so the resulting parameters would have been different for each element. 
-					NewValue = StateTreeAsset->GetDefaultParameters();
-				}
-
-				// Set new value through property handle to propagate changes to loaded instances
-				if (bSetNewValue)
-				{
-					const FStructProperty* StructProperty = CastFieldChecked<FStructProperty>(ParametersProperty->GetProperty());
-
-					FString TextValue;
-					StructProperty->Struct->ExportText(TextValue, &NewValue, /*Defaults*/nullptr, /*OwnerObject*/nullptr, EPropertyPortFlags::PPF_None, /*ExportRootScope*/nullptr);
-					ensure(ParametersProperty->SetValueFromFormattedString(TextValue, EPropertyValueSetFlags::DefaultFlags) == FPropertyAccess::Result::Success);
-				}
-			}
+			SyncParameters();
 		}));
 
 	// Registers a delegate to be notified when the associated StateTree asset get successfully recompiled
@@ -123,34 +88,40 @@ void FStateTreeReferenceDetails::SyncParameters(const UStateTree* StateTreeToSyn
 {
 	check(StructPropertyHandle.IsValid());
 
+	// This function will get called in 3 situations:
+	// - auto update when the property customization is created
+	// - auto update when a state tree is compiled.
+	// - when the associate state tree asset is changed
+	
 	TArray<UObject*> OuterObjects;
 	StructPropertyHandle->GetOuterObjects(OuterObjects);
 
 	TArray<void*> RawData;
 	StructPropertyHandle->AccessRawData(RawData);
 
+	bool bDidSync = false;
+	
 	for (int32 i = 0; i < RawData.Num(); i++)
 	{
 		if (FStateTreeReference* StateTreeReference = static_cast<FStateTreeReference*>(RawData[i]))
 		{
 			const UStateTree* StateTreeAsset = StateTreeReference->GetStateTree();
 
-			if (StateTreeAsset
-				&& (StateTreeToSync == nullptr || StateTreeAsset == StateTreeToSync) 
+			if ((StateTreeToSync == nullptr || StateTreeAsset == StateTreeToSync) 
 				&& StateTreeReference->RequiresParametersSync())
 			{
+				// Changing the data without Modify().
+				// When called on property row creation, we don't expect to dirty the owner.
+				// In other cases we expect the outer to already been modified.
 				StateTreeReference->SyncParameters();
-
-				// StateTree compilation is not a Transaction so we simply dirty outer object
-				if (OuterObjects.Num() == RawData.Num())
-				{
-					if (const UObject* Outer = OuterObjects[i])
-					{
-						Outer->MarkPackageDirty();
-					}
-				}
+				bDidSync = true;
 			}
 		}
+	}
+
+	if (bDidSync && PropUtils)
+	{
+		PropUtils->RequestRefresh();
 	}
 }
 

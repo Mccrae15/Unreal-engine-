@@ -5,6 +5,7 @@
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/CustomizableObject.h"
 #include "TextureResource.h"
+#include "MuR/Parameters.h"
 
 
 //-------------------------------------------------------------------------------------------------
@@ -34,19 +35,19 @@ namespace
 			break;
 		}
 
-		pResult = new mu::Image(SizeX, SizeY, LODs, MutableFormat);
-
 		// If not locked ReadOnly the Texture Source's FGuid can change, invalidating the texture's caching/shaders
 		// making shader compile and cook times increase
 		const uint8* pSource = Texture->Source.LockMipReadOnly(MipmapsToSkip);
 		if (pSource)
 		{
+			pResult = new mu::Image(SizeX, SizeY, LODs, MutableFormat, mu::EInitializationType::NotInitialized);
 			FMemory::Memcpy(pResult->GetData(), pSource, pResult->GetDataSize());
 			Texture->Source.UnlockMip(MipmapsToSkip);
 		}
 		else
 		{
 			check(false);
+			pResult = new mu::Image(SizeX, SizeY, LODs, MutableFormat, mu::EInitializationType::Black);
 		}
 
 
@@ -71,20 +72,20 @@ namespace
 			break;
 		}
 
-		pResult = new mu::Image(SizeX, SizeY, LODs, MutableFormat);
-
 		// If not locked ReadOnly the Texture Source's FGuid can change, invalidating the texture's caching/shaders
 		// making shader compile and cook times increase
 		const void* pSource = Texture->GetPlatformData()->Mips[MipmapsToSkip].BulkData.LockReadOnly();
 
 		if (pSource)
 		{
+			pResult = new mu::Image(SizeX, SizeY, LODs, MutableFormat, mu::EInitializationType::NotInitialized);
 			FMemory::Memcpy(pResult->GetData(), pSource, pResult->GetDataSize());
 			Texture->GetPlatformData()->Mips[MipmapsToSkip].BulkData.Unlock();
 		}
 		else
 		{
 			check(false);
+			pResult = new mu::Image(SizeX, SizeY, LODs, MutableFormat, mu::EInitializationType::Black);
 		}
 
 #endif
@@ -115,7 +116,11 @@ mu::EImageFormat GetMutablePixelFormat(EPixelFormat InTextureFormat)
 
 
 //-------------------------------------------------------------------------------------------------
-TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageAsync(mu::EXTERNAL_IMAGE_ID id, uint8 MipmapsToSkip, TFunction<void (mu::Ptr<mu::Image>)>& ResultCallback)
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+	TTuple<UE::Tasks::FTask, TFunction<void()>> FUnrealMutableImageProvider::GetImageAsync(FName Id, uint8 MipmapsToSkip, TFunction<void(mu::Ptr<mu::Image>)>& ResultCallback)
+#else
+	TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageAsync(FName Id, uint8 MipmapsToSkip, TFunction<void(mu::Ptr<mu::Image>)>& ResultCallback)
+#endif
 {
 	// Thread: worker
 	MUTABLE_CPUPROFILER_SCOPE(FUnrealMutableImageProvider::GetImage);
@@ -133,6 +138,15 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 	mu::EImageFormat MutImageFormat = mu::EImageFormat::IF_NONE;
 	int32 MutImageDataSize = 0;
 
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+	auto TrivialReturn = []() -> TTuple<UE::Tasks::FTask, TFunction<void()>>
+	{
+		UE::Tasks::FTaskEvent CompletionEvent(TEXT("GetImageAsyncCompleted"));
+		CompletionEvent.Trigger();
+
+		return MakeTuple(CompletionEvent, []() -> void {});
+	};
+#else
 	auto TrivialReturn = []() -> TTuple<FGraphEventRef, TFunction<void()>>
 	{
 		FGraphEventRef CompletionEvent = FGraphEvent::CreateGraphEvent();
@@ -140,20 +154,23 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 
 		return MakeTuple(CompletionEvent, []() -> void {});
 	};
+#endif
 
 	{
 		FScopeLock Lock(&ExternalImagesLock);
 		// Inside this scope it's safe to access GlobalExternalImages
 
 
-		if (!GlobalExternalImages.Contains(id))
+		if (!GlobalExternalImages.Contains(Id))
 		{
 			// Null case, no image was provided
+			UE_LOG(LogMutable, Warning, TEXT("Failed to get external image [%s]. GlobalExternalImage not found."), *Id.ToString());
+
 			ResultCallback(CreateDummy());
 			return Invoke(TrivialReturn);
 		}
 
-		const FUnrealMutableImageInfo& ImageInfo = GlobalExternalImages[id];
+		const FUnrealMutableImageInfo& ImageInfo = GlobalExternalImages[Id];
 
 		if (ImageInfo.Image)
 		{
@@ -167,7 +184,19 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 			// not being modified by the game thread at the moment and the texture cannot be GCed because of the AddReferencedObjects
 			// in the FUnrealMutableImageProvider
 
-			uint8 MipIndex = MipmapsToSkip < TextureToLoad->GetPlatformData()->Mips.Num() ? MipmapsToSkip : TextureToLoad->GetPlatformData()->Mips.Num() - 1;
+#if WITH_EDITOR
+			if (!TextureToLoad->IsAsyncCacheComplete())
+			{
+				// If the UE texture is being compiled/processed in a background process, it's not safe to access
+				FString TextureName;
+				TextureToLoad->GetName(TextureName);
+				UE_LOG(LogMutable, Warning, TEXT("Failed to get the external texture [%s] because it's still being async cached. Wait until all background processed finish and retry again."), *TextureName);
+				ResultCallback(CreateDummy());
+				return Invoke(TrivialReturn);
+			}
+#endif
+
+			int32 MipIndex = MipmapsToSkip < TextureToLoad->GetPlatformData()->Mips.Num() ? MipmapsToSkip : TextureToLoad->GetPlatformData()->Mips.Num() - 1;
 
 			// Mips in the mip tail are inlined and can't be streamed, find the smallest mip available.
 			for (; MipIndex > 0; --MipIndex)
@@ -190,7 +219,7 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 			// Check if it's a format we support
 			if (MutImageFormat == mu::EImageFormat::IF_NONE)
 			{
-				UE_LOG(LogMutable, Warning, TEXT("Failed to get external image. Unexpected image format. EImageFormat [%s]."), GetPixelFormatString(Format));
+				UE_LOG(LogMutable, Warning, TEXT("Failed to get external image [%s]. Unexpected image format. EImageFormat [%s]."), *Id.ToString(), GetPixelFormatString(Format));
 				ResultCallback(CreateDummy());
 				return Invoke(TrivialReturn);
 			}
@@ -198,7 +227,7 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 			int SizeX = TextureToLoad->GetSizeX() >> MipIndex;
 			int SizeY = TextureToLoad->GetSizeY() >> MipIndex;
 
-			Image = new mu::Image(SizeX, SizeY, LODs, MutImageFormat);
+			Image = new mu::Image(SizeX, SizeY, LODs, MutImageFormat, mu::EInitializationType::NotInitialized);
 			MutImageDataSize = Image->GetDataSize();
 
 			// In a packaged game the bulk data has to be loaded
@@ -210,8 +239,8 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 
 			if (BulkDataSize != MutImageDataSize)
 			{
-				UE_LOG(LogMutable, Warning, TEXT("Failed to get external image. Bulk data size is different than the expected size. BulkData size [%d]. Mutable image data size [%d]."),
-					BulkDataSize, MutImageDataSize);
+				UE_LOG(LogMutable, Warning, TEXT("Failed to get external image [%s]. Bulk data size is different than the expected size. BulkData size [%d]. Mutable image data size [%d]."),
+					*Id.ToString(),	BulkDataSize, MutImageDataSize);
 
 				ResultCallback(CreateDummy());
 				return Invoke(TrivialReturn);
@@ -220,7 +249,12 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 			// Create a streaming request if the data is not loaded or copy the mip data
 			if (!BulkData.IsBulkDataLoaded())
 			{
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+				UE::Tasks::FTaskEvent IORequestCompletionEvent(TEXT("Mutable_IORequestCompletionEvent"));
+#else
 				FGraphEventRef IORequestCompletionEvent = FGraphEvent::CreateGraphEvent();
+#endif
+
 
 				TFunction<void(bool, IBulkDataIORequest*)> IOCallback =
 					[
@@ -235,15 +269,21 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 				{
 					ON_SCOPE_EXIT
 					{
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+						UE::Tasks::FTaskEvent EventCopy = IORequestCompletionEvent;
+						EventCopy.Trigger();
+#else
 						if (IORequestCompletionEvent.IsValid())
 						{
 							IORequestCompletionEvent->DispatchSubsequents();
 						}
+#endif
 					};
 					
 					// Should we do someting different than returning a dummy image if cancelled?
 					if (bWasCancelled)
 					{
+						UE_LOG(LogMutable, Warning, TEXT("Failed to get external image. Cancelled IO Request"));
 						ResultCallback(CreateDummy());
 						return;
 					}
@@ -310,6 +350,8 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 				{
 					UE_LOG(LogMutable, Warning, TEXT("Failed to create an IORequest for a UTexture2D BulkData for an application-specific image parameter."));
 
+					IORequestCompletionEvent->DispatchSubsequents();
+					
 					ResultCallback(CreateDummy());
 					return Invoke(TrivialReturn);
 				}
@@ -317,7 +359,7 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 			else
 			{
 				// Bulk data already loaded
-				const void* Data = BulkData.IsUnlocked() ? BulkData.LockReadOnly() : nullptr; // TODO: Retry if it fails?
+				const void* Data = (!BulkData.IsLocked()) ? BulkData.LockReadOnly() : nullptr; // TODO: Retry if it fails?
 				
 				if (Data)
 				{
@@ -351,7 +393,7 @@ TTuple<FGraphEventRef, TFunction<void()>> FUnrealMutableImageProvider::GetImageA
 
 
 // This should mantain parity with the descriptor of the images generated by GetImageAsync 
-mu::FImageDesc FUnrealMutableImageProvider::GetImageDesc(mu::EXTERNAL_IMAGE_ID id, uint8 MipmapsToSkip) 
+mu::FImageDesc FUnrealMutableImageProvider::GetImageDesc(FName Id, uint8 MipmapsToSkip)
 {
 	MUTABLE_CPUPROFILER_SCOPE(FUnrealMutableImageProvider::GetImageDesc);
 
@@ -360,13 +402,13 @@ mu::FImageDesc FUnrealMutableImageProvider::GetImageDesc(mu::EXTERNAL_IMAGE_ID i
 		FScopeLock Lock(&ExternalImagesLock);
 		// Inside this scope it's safe to access GlobalExternalImages
 
-		if (!GlobalExternalImages.Contains(id))
+		if (!GlobalExternalImages.Contains(Id))
 		{
 			// Null case, no image was provided
 			return CreateDummyDesc();
 		}
 
-		const FUnrealMutableImageInfo& ImageInfo = GlobalExternalImages[id];
+		const FUnrealMutableImageInfo& ImageInfo = GlobalExternalImages[Id];
 
 		if (ImageInfo.Image)
 		{
@@ -379,7 +421,7 @@ mu::FImageDesc FUnrealMutableImageProvider::GetImageDesc(mu::EXTERNAL_IMAGE_ID i
 			// not being modified by the game thread at the moment and the texture cannot be GCed because of the AddReferencedObjects
 			// in the FUnrealMutableImageProvider
 
-			uint8 MipIndex = MipmapsToSkip < TextureToLoad->GetPlatformData()->Mips.Num() ? MipmapsToSkip : TextureToLoad->GetPlatformData()->Mips.Num() - 1;
+			int32 MipIndex = MipmapsToSkip < TextureToLoad->GetPlatformData()->Mips.Num() ? MipmapsToSkip : TextureToLoad->GetPlatformData()->Mips.Num() - 1;
 
 			// Mips in the mip tail are inlined and can't be streamed, find the smallest mip available.
 			for (; MipIndex > 0; --MipIndex)
@@ -421,108 +463,198 @@ mu::FImageDesc FUnrealMutableImageProvider::GetImageDesc(mu::EXTERNAL_IMAGE_ID i
 }
 
 
-void FUnrealMutableImageProvider::CacheImage(mu::EXTERNAL_IMAGE_ID id)
+void FUnrealMutableImageProvider::CacheImage(FName Id, bool bUser)
 {
 	check( IsInGameThread() );
 
-	mu::ImagePtr pResult;
-	UTexture2D* UnrealDeferredTexture = nullptr;
-
-	// See if any provider provides this id.
-	for (int32 p = 0; !pResult && p < ImageProviders.Num(); ++p)
+	if (Id == FName())
 	{
-		TWeakObjectPtr<UCustomizableSystemImageProvider> Provider = ImageProviders[p];
-
-		if (Provider.IsValid())
-		{
-			switch (Provider->HasTextureParameterValue(id))
-			{
-
-			case UCustomizableSystemImageProvider::ValueType::Raw:
-			{
-				FIntVector desc = Provider->GetTextureParameterValueSize(id);
-				pResult = new mu::Image(desc[0], desc[1], 1, mu::EImageFormat::IF_RGBA_UBYTE);
-				Provider->GetTextureParameterValueData(id, pResult->GetData());
-				break;
-			}
-
-			case UCustomizableSystemImageProvider::ValueType::Unreal:
-			{
-				UTexture2D* UnrealTexture = Provider->GetTextureParameterValue(id);
-				pResult = ConvertTextureUnrealToMutable(UnrealTexture, 0);
-				break;
-			}
-
-			case UCustomizableSystemImageProvider::ValueType::Unreal_Deferred:
-			{
-				UnrealDeferredTexture = Provider->GetTextureParameterValue(id);
-				break;
-			}
-
-			default:
-				break;
-			}
-		}
-	}
-
-	if (!pResult && !UnrealDeferredTexture)
-	{
-		pResult = CreateDummy();
-	}
+		return;	
+	}	
 
 	{
 		FScopeLock Lock(&ExternalImagesLock);
 
-		GlobalExternalImages.Add(id, FUnrealMutableImageInfo(pResult, UnrealDeferredTexture));
-	}
-}
-
-
-void FUnrealMutableImageProvider::UnCacheImage(mu::EXTERNAL_IMAGE_ID id)
-{
-	check(IsInGameThread());
-
-	FScopeLock Lock(&ExternalImagesLock);
-	GlobalExternalImages.Remove(id);
-}
-
-
-void FUnrealMutableImageProvider::CacheAllImagesInAllProviders(bool bClearPreviousCacheImages)
-{
-	check(IsInGameThread());
-
-	FScopeLock Lock(&ExternalImagesLock);
-
-	if (bClearPreviousCacheImages)
-	{
-		ClearCache();
-	}
-
-	// See if any provider provides this id.
-	for (int32 p = 0; p < ImageProviders.Num(); ++p)
-	{
-		TWeakObjectPtr<UCustomizableSystemImageProvider> Provider = ImageProviders[p];
-
-		if (Provider.IsValid())
+		if (FUnrealMutableImageInfo* Result = GlobalExternalImages.Find(Id))
 		{
-			TArray<FCustomizableObjectExternalTexture> OutValues;
-			Provider->GetTextureParameterValues(OutValues);
-
-			for (const FCustomizableObjectExternalTexture& Value : OutValues)
+			if (bUser)
 			{
-				CacheImage(Value.Value);
+				Result->ReferencesUser = true;			
 			}
+			else
+			{
+				Result->ReferencesSystem++;							
+			}
+		}
+		else
+		{
+			mu::ImagePtr pResult;
+			UTexture2D* UnrealDeferredTexture = nullptr;
+
+			// See if any provider provides this id.
+			for (int32 p = 0; !pResult && p < ImageProviders.Num(); ++p)
+			{
+				TWeakObjectPtr<UCustomizableSystemImageProvider> Provider = ImageProviders[p];
+
+				if (Provider.IsValid())
+				{
+					// \TODO: all these queries could probably be optimized into a single call.
+					switch (Provider->HasTextureParameterValue(Id))
+					{
+
+					case UCustomizableSystemImageProvider::ValueType::Raw:
+					{
+						FIntVector desc = Provider->GetTextureParameterValueSize(Id);
+						pResult = new mu::Image(desc[0], desc[1], 1, mu::EImageFormat::IF_RGBA_UBYTE, mu::EInitializationType::Black);
+						Provider->GetTextureParameterValueData(Id, pResult->GetData());
+						break;
+					}
+
+					case UCustomizableSystemImageProvider::ValueType::Unreal:
+					{
+						UTexture2D* UnrealTexture = Provider->GetTextureParameterValue(Id);
+						pResult = ConvertTextureUnrealToMutable(UnrealTexture, 0);
+						break;
+					}
+
+					case UCustomizableSystemImageProvider::ValueType::Unreal_Deferred:
+					{
+						UnrealDeferredTexture = Provider->GetTextureParameterValue(Id);
+						break;
+					}
+
+					default:
+						break;
+					}
+				}
+			}
+
+			if (!pResult && !UnrealDeferredTexture)
+			{
+				UE_LOG(LogMutable, Warning, TEXT("Failed to cache external image %s. Missing result or source texture. Result [%d]. Unreal texture [%d]. Num providers [%d]"),
+					*Id.ToString(),
+					pResult ? 1 : 0,
+					UnrealDeferredTexture ? 1 : 0,
+					ImageProviders.Num());
+
+				return;
+			}
+			
+			FUnrealMutableImageInfo ImageInfo(pResult, UnrealDeferredTexture);
+
+			if (bUser)
+			{
+				ImageInfo.ReferencesUser = true;			
+			}
+			else
+			{
+				ImageInfo.ReferencesSystem++;							
+			}
+			
+			GlobalExternalImages.Add(Id, ImageInfo);
 		}
 	}
 }
 
 
-void FUnrealMutableImageProvider::ClearCache()
+void FUnrealMutableImageProvider::UnCacheImage(FName Id, bool bUser)
+{
+	// TODO: Review GM
+	//check(IsInGameThread());
+
+	if (Id == FName())
+	{
+		return;	
+	}
+	
+	FScopeLock Lock(&ExternalImagesLock);
+	if (FUnrealMutableImageInfo* Result = GlobalExternalImages.Find(Id))
+	{
+		if (bUser)
+		{
+			Result->ReferencesUser = false;			
+		}
+		else
+		{
+			--Result->ReferencesSystem;
+			check(Result->ReferencesSystem >= 0); // Something went wrong. The image has been uncached more times than it has been cached.
+		}
+		
+		if (Result->ReferencesUser + Result->ReferencesSystem == 0)
+		{
+			GlobalExternalImages.Remove(Id);		
+		}
+	}
+	else
+	{
+		UE_LOG(LogMutable, Warning, TEXT("Failed to uncache external image %s. Possible double free!"), *Id.ToString());
+	}
+}
+
+
+void FUnrealMutableImageProvider::ClearCache(bool bUser)
 {
 	check(IsInGameThread());
 
 	FScopeLock Lock(&ExternalImagesLock);
-	GlobalExternalImages.Empty();
+	for (TTuple<FName, FUnrealMutableImageInfo> Tuple : GlobalExternalImages)
+	{
+		UnCacheImage(Tuple.Key, bUser);
+	}	
+}
+
+
+void FUnrealMutableImageProvider::CacheImages(const mu::Parameters& Parameters)
+{
+	const int32 NumParams = Parameters.GetCount();
+	for (int32 ParamIndex = 0; ParamIndex < NumParams; ++ParamIndex)
+	{
+		if (Parameters.GetType(ParamIndex) != mu::PARAMETER_TYPE::T_IMAGE)
+		{
+			continue;
+		}
+	
+		{
+			const FName TextureId = Parameters.GetImageValue(ParamIndex);
+			CacheImage(TextureId, false);
+		}
+
+		const int32 NumValues = Parameters.GetValueCount(ParamIndex);
+		for (int32 ValueIndex = 0; ValueIndex < NumValues; ++ValueIndex)
+		{
+			mu::Ptr<const mu::RangeIndex> Range = Parameters.GetValueIndex(ParamIndex, ValueIndex);
+			const FName TextureId = Parameters.GetImageValue(ParamIndex, Range);
+
+			CacheImage(TextureId, false);
+		}
+	}
+}
+
+
+void FUnrealMutableImageProvider::UnCacheImages(const mu::Parameters& Parameters)
+{
+	const int32 NumParams = Parameters.GetCount();
+	for (int32 ParamIndex = 0; ParamIndex < NumParams; ++ParamIndex)
+	{
+		if (Parameters.GetType(ParamIndex) != mu::PARAMETER_TYPE::T_IMAGE)
+		{
+			continue;
+		}
+	
+		{
+			const FName TextureId = Parameters.GetImageValue(ParamIndex);
+			UnCacheImage(TextureId, false);				
+		}
+
+		const int32 NumValues = Parameters.GetValueCount(ParamIndex);
+		for (int32 ValueIndex = 0; ValueIndex < NumValues; ++ValueIndex)
+		{
+			mu::Ptr<const mu::RangeIndex> Range = Parameters.GetValueIndex(ParamIndex, ValueIndex);
+			const FName TextureId = Parameters.GetImageValue(ParamIndex, Range);
+
+			UnCacheImage(TextureId, false);
+		}
+	}
 }
 
 
@@ -532,9 +664,14 @@ mu::ImagePtr FUnrealMutableImageProvider::CreateDummy()
 	const int size = DUMMY_IMAGE_DESC.m_size[0];
 	const int checkerSize = 4;
 	constexpr int checkerTileCount = 2;
-	uint8_t colours[checkerTileCount][4] = { { 255,255,0,255 },{ 0,0,255,255 } };
+	
+#if !UE_BUILD_SHIPPING
+	uint8_t colours[checkerTileCount][4] = { { 255, 255, 0, 255 },{ 0, 0, 255, 255 } };
+#else
+	uint8_t colours[checkerTileCount][4] = { { 255, 255, 0, 0 },  { 0, 0, 255, 0 } };
+#endif
 
-	mu::ImagePtr pResult = new mu::Image(size, size, DUMMY_IMAGE_DESC.m_lods, DUMMY_IMAGE_DESC.m_format);
+	mu::ImagePtr pResult = new mu::Image(size, size, DUMMY_IMAGE_DESC.m_lods, DUMMY_IMAGE_DESC.m_format, mu::EInitializationType::NotInitialized);
 
 	uint8_t* pData = pResult->GetData();
 	for (int x = 0; x < size; ++x)
@@ -562,7 +699,7 @@ mu::FImageDesc FUnrealMutableImageProvider::CreateDummyDesc()
 
 void FUnrealMutableImageProvider::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	for (TPair<uint64, FUnrealMutableImageInfo>& Image : GlobalExternalImages)
+	for (TPair<FName, FUnrealMutableImageInfo>& Image : GlobalExternalImages)
 	{
 		if (Image.Value.TextureToLoad)
 		{

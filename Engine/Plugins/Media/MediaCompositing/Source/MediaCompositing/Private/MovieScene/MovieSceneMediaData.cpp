@@ -28,6 +28,7 @@ FMovieSceneMediaData::~FMovieSceneMediaData()
 	{
 		MediaPlayer->OnMediaEvent().RemoveAll(this);
 		MediaPlayer->Close();
+		MediaPlayer->CleanUpBeforeDestroy();
 		MediaPlayer->RemoveFromRoot();
 	}
 }

@@ -21,9 +21,11 @@
 #include "MeshCardRepresentation.h"
 #include "Misc/QueuedThreadPoolWrapper.h"
 #include "ObjectCacheContext.h"
+#include "RenderGraphUtils.h"
 
 #if WITH_EDITOR
 #include "DerivedDataCacheInterface.h"
+#include "DerivedDataCacheKey.h"
 #include "StaticMeshCompiler.h"
 #endif
 
@@ -136,6 +138,7 @@ FString BuildDistanceFieldDerivedDataKey(const FString& InMeshKey)
 	const float VoxelDensity = CVarDensity->GetValueOnAnyThread();
 	const FString VoxelDensityString = VoxelDensity == .1f ? TEXT("") : FString::Printf(TEXT("_%.3f"), VoxelDensity);
 
+	static UE::DerivedData::FCacheBucket LegacyBucket(TEXTVIEW("LegacyDIST"), TEXTVIEW("DistanceField"));
 	return FDerivedDataCacheInterface::BuildCacheKey(
 		TEXT("DIST"),
 		*FString::Printf(TEXT("%s_%s%s%s"), *InMeshKey, DISTANCEFIELD_DERIVEDDATA_VER, *PerMeshMaxString, *VoxelDensityString),
@@ -218,7 +221,7 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InStaticMeshDeriv
 		NewTask->MaterialBlendModes = MoveTemp(BuildMaterialData);
 
 		// Nanite overrides source static mesh with a coarse representation. Need to load original data before we build the mesh SDF.
-		if (Mesh->NaniteSettings.bEnabled)
+		if (Mesh->IsNaniteEnabled())
 		{
 			IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
 			if (!MeshBuilderModule.BuildMeshVertexPositions(Mesh, NewTask->SourceMeshData.TriangleIndices, NewTask->SourceMeshData.VertexPositions))
@@ -477,7 +480,8 @@ void FDistanceFieldAsyncQueue::StartBackgroundTask(FAsyncDistanceFieldTask* Task
 {
 	check(Task->AsyncTask == nullptr);
 	Task->AsyncTask = MakeUnique<FAsyncTask<FAsyncDistanceFieldTaskWorker>>(*Task);
-	Task->AsyncTask->StartBackgroundTask(ThreadPool.Get(), EQueuedWorkPriority::Lowest, EQueuedWorkFlags::DoNotRunInsideBusyWait);
+	int64 RequiredMemory = -1; // @todo RequiredMemory
+	Task->AsyncTask->StartBackgroundTask(ThreadPool.Get(), EQueuedWorkPriority::Lowest, EQueuedWorkFlags::DoNotRunInsideBusyWait, RequiredMemory, TEXT("DistanceField") );
 }
 
 void FDistanceFieldAsyncQueue::ProcessPendingTasks()
@@ -1226,6 +1230,11 @@ uint32 FLandscapeTextureAtlas::GetAllocationHandle(UTexture2D* Texture) const
 FVector4f FLandscapeTextureAtlas::GetAllocationScaleBias(uint32 Handle) const
 {
 	return AddrSpaceAllocator.GetScaleBias(Handle);
+}
+
+FRDGTexture* FLandscapeTextureAtlas::GetAtlasTexture(FRDGBuilder& GraphBuilder) const
+{
+	return TryRegisterExternalTexture(GraphBuilder, AtlasTextureRHI);
 }
 
 void FLandscapeTextureAtlas::FSubAllocator::Init(uint32 InTileSize, uint32 InBorderSize, uint32 InDimInTiles)

@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "ImagePlateFileSequence.h"
 #include "Brushes/SlateImageBrush.h"
 #include "Styling/SlateStyle.h"
 #include "Misc/Paths.h"
+#include "Modules/ModuleInterface.h"
+#include "Modules/ModuleManager.h"
 #include "Styling/SlateStyleRegistry.h"
-#include "AssetTypeActions_ImagePlateFileSequence.h"
 #include "ISettingsModule.h"
 
 #define LOCTEXT_NAMESPACE "ImagePlateEditor"
@@ -62,10 +64,6 @@ public:
 	virtual void StartupModule() override
 	{
 		FImagePlateEditorStyle::Get();
-		AssetTypeActions = MakeShared<FAssetTypeActions_ImagePlateFileSequence>();
-
-		IAssetTools& AssetToolsModule = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-		AssetToolsModule.RegisterAssetTypeActions(AssetTypeActions.ToSharedRef());
 
 		ISettingsModule& SettingsModule = FModuleManager::LoadModuleChecked<ISettingsModule>("Settings");
 		SettingsModule.RegisterSettings("Project", "Plugins", "ImagePlate",
@@ -78,22 +76,13 @@ public:
 	virtual void ShutdownModule() override
 	{
 		FImagePlateEditorStyle::Destroy();
-
-		FAssetToolsModule* AssetToolsModule = FModuleManager::Get().GetModulePtr<FAssetToolsModule>("AssetTools");
-		if (AssetToolsModule)
-		{
-			AssetToolsModule->Get().UnregisterAssetTypeActions(AssetTypeActions.ToSharedRef());
-		}
 		
 		ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
 		if (SettingsModule)
 		{
 			SettingsModule->UnregisterSettings("Project", "Plugins", "ImagePlate");
 		}
-
 	}
-
-	TSharedPtr<FAssetTypeActions_ImagePlateFileSequence> AssetTypeActions;
 };
 
 IMPLEMENT_MODULE(FImagePlateEditorModule, ImagePlateEditor);

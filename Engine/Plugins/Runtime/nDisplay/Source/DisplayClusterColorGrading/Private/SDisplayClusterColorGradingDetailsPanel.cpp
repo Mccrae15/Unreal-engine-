@@ -10,6 +10,7 @@
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSplitter.h"
@@ -103,6 +104,12 @@ private:
 	{
 		if (DetailsSection)
 		{
+			// If there is nothing to display in the title bar, don't display one
+			if (DetailsSection->DisplayName.IsEmpty() && !DetailsSection->EditConditionPropertyHandle.IsValid() && DetailsSection->Subsections.Num() == 0)
+			{
+				return SNullWidget::NullWidget;
+			}
+
 			TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
 
 			if (DetailsSection->EditConditionPropertyHandle.IsValid() && DetailsSection->EditConditionPropertyHandle->IsValidHandle())
@@ -110,7 +117,7 @@ private:
 				HorizontalBox->AddSlot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				.Padding(2, 0, 4, 0)
+				.Padding(2, 0, 0, 0)
 				[
 					DetailsSection->EditConditionPropertyHandle->CreatePropertyValueWidget(false)
 				];
@@ -119,7 +126,7 @@ private:
 			HorizontalBox->AddSlot()
 			.FillWidth(1.0f)
 			.VAlign(VAlign_Center)
-			.Padding(2, 0, 0, 0)
+			.Padding(6, 0, 0, 0)
 			[
 				SNew(STextBlock)
 				.Text(DetailsSection->DisplayName)
@@ -136,7 +143,11 @@ private:
 				];
 			}
 
-			return HorizontalBox;
+			return SNew(SBox)
+				.HeightOverride(18)
+				[
+					HorizontalBox
+				];
 		}
 
 		return SNullWidget::NullWidget;
@@ -275,6 +286,23 @@ void SDisplayClusterColorGradingDetailsPanel::SetDrawerState(const FDisplayClust
 void SDisplayClusterColorGradingDetailsPanel::FillDetailsSections()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(SDisplayClusterColorGradingDetailsPanel::FillDetailsSections);
+	
+	TSharedPtr<SColorPicker> ExistingColorPicker = GetColorPicker();
+	if (ExistingColorPicker.IsValid())
+	{
+		// Color picker has special handling -- FColorStructCustomization relies on listening to SColorPicker window closed
+		// events in order to fully commit changes and close out an open transaction. If we destroy the details section views
+		// before the window close event fires we will leave an open transaction and this will cause problems with undo history
+		// and transacting changes to MU.
+	
+		// Similar handling is done in SDetailsView. On PreSetObject, GetOptionalOwningDetailsView is checked and the picker
+		// closed if they do not own the picker, and then closed on PostSetObject if they do own it. Our implementation doesn't rely
+		// on PreSet/PostSet, and there is never a case where we own the color picker, so we should always close it.
+		
+		DestroyColorPicker();
+		ExistingColorPicker.Reset();
+	}
+	
 	if (ColorGradingDataModel.IsValid())
 	{
 		TArray<TWeakObjectPtr<UObject>> Objects = ColorGradingDataModel->GetObjects();

@@ -16,7 +16,7 @@
 #include "Windows/WindowsHWrapper.h"
 #include "Misc/MonitoredProcess.h"
 #include "LiveCodingManifest.h"
-#include "SourceCodeAccess/Public/ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessModule.h"
 #include "Modules/ModuleInterface.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -51,8 +51,6 @@ private:
 	bool bDisableActionLimit;
 	bool bHasReinstancingProcess;
 	bool bWarnOnRestart;
-	FDateTime LastPatchTime;
-	FDateTime NextPatchStartTime;
 
 public:
 	FLiveCodingConsoleApp(FSlateApplication& InSlate, ILiveCodingServer& InServer)
@@ -62,8 +60,6 @@ public:
 		, bDisableActionLimit(false)
 		, bHasReinstancingProcess(false)
 		, bWarnOnRestart(false)
-		, LastPatchTime(FDateTime::MinValue())
-		, NextPatchStartTime(FDateTime::MinValue())
 	{
 	}
 
@@ -265,11 +261,9 @@ private:
 		LogWidget->AppendLine(GetLogColor(Verbosity), MoveTemp(Text));
 	}
 
-	ELiveCodingCompileResult CompilePatch(const TArray<FString>& Targets, const TArray<FString>& ValidModules, TArray<FString>& RequiredModules, FModuleToModuleFiles& ModuleToModuleFiles, ELiveCodingCompileReason CompileReason)
+	ELiveCodingCompileResult CompilePatch(const TArray<FString>& Targets, const TArray<FString>& ValidModules, const TSet<FString>& LazyLoadModules,
+		TArray<FString>& RequiredModules, FModuleToModuleFiles& ModuleToModuleFiles, ELiveCodingCompileReason CompileReason)
 	{
-		// Update the compile start time. This gets copied into the last patch time once a patch has been confirmed to have been applied.
-		NextPatchStartTime = FDateTime::UtcNow();
-
 		// Get the UBT path
 		FString Executable;
 		FString Entry;
@@ -284,8 +278,36 @@ private:
 		FPaths::MakePlatformFilename(Executable);
 
 		// Write out the list of lazy-loaded modules for UBT to check
-		FString ModulesFileName = FPaths::ConvertRelativePathToFull(FPaths::EngineIntermediateDir() / TEXT("LiveCodingModules.txt"));
-		FFileHelper::SaveStringArrayToFile(ValidModules, *ModulesFileName);
+		FString ModulesFileName = FPaths::ConvertRelativePathToFull(FPaths::EngineIntermediateDir() / TEXT("LiveCodingModules.json"));
+
+		// Create and open a new Json file for writing, and initialize a JsonWriter to serialize the contents
+		{
+			TArray<uint8> TCharJsonData;
+			FMemoryWriter MemWriter(TCharJsonData, true);
+			{
+				TSharedRef<TJsonWriter<>> JsonWriter = TJsonWriterFactory<>::Create(&MemWriter);
+				JsonWriter->WriteObjectStart();
+				JsonWriter->WriteArrayStart(TEXT("EnabledModules"));
+				for (const FString& name : ValidModules)
+				{
+					JsonWriter->WriteValue(name);
+				}
+				JsonWriter->WriteArrayEnd();
+				JsonWriter->WriteArrayStart(TEXT("LazyLoadModules"));
+				for (const FString& name : LazyLoadModules)
+				{
+					JsonWriter->WriteValue(name);
+				}
+				JsonWriter->WriteArrayEnd();
+				JsonWriter->WriteObjectEnd();
+			}
+			MemWriter.Close();
+
+			TCharJsonData.AddZeroed(sizeof(TCHAR));
+			auto Utf8Data = StringCast<UTF8CHAR>((const TCHAR*)TCharJsonData.GetData());
+			TSharedPtr<FArchive> Ar(IFileManager::Get().CreateFileWriter(*ModulesFileName));
+			Ar->Serialize(const_cast<UTF8CHAR*>(Utf8Data.Get()), Utf8Data.Length());
+		}
 
 		// Delete the output file for non-allowed modules
 		FString ModulesOutputFileName = ModulesFileName + TEXT(".out");
@@ -348,7 +370,7 @@ private:
 				const FText Message = LOCTEXT("LimitText", "Live Coding action limit reached.  Do you wish to compile anyway?\n\n"
 				"The limit can be permanently changed or disabled by setting the ActionLimit or DisableActionLimit setting for the LiveCodingConsole program.");
 				const FText Title = LOCTEXT("LimitTitle", "Live Coding Action Limit Reached");
-				EAppReturnType::Type ReturnType = FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title);
+				EAppReturnType::Type ReturnType = FMessageDialog::Open(EAppMsgType::YesNo, Message, Title);
 				CompileResult = ReturnType == EAppReturnType::Yes ? ELiveCodingCompileResult::Retry : ELiveCodingCompileResult::Canceled;
 			}
 
@@ -371,22 +393,12 @@ private:
 		// Override the linker path
 		Server.SetLinkerPath(*Manifest.LinkerPath, Manifest.LinkerEnvironment);
 
-		// Strip out all the files that haven't been modified
-		IFileManager& FileManager = IFileManager::Get();
+		// Add all the sources regardless of modification time.  The patch will exclude old ones
 		for(TPair<FString, TArray<FString>>& Pair : Manifest.BinaryToObjectFiles)
 		{
-			FDateTime MinTimeStamp = FileManager.GetTimeStamp(*Pair.Key);
-			if(LastPatchTime > MinTimeStamp)
-			{
-				MinTimeStamp = LastPatchTime;
-			}
-
 			for (const FString& ObjectFileName : Pair.Value)
 			{
-				if (FileManager.GetTimeStamp(*ObjectFileName) > MinTimeStamp)
-				{
-					ModuleToModuleFiles.FindOrAdd(Pair.Key).Objects.Add(ObjectFileName);
-				}
+				ModuleToModuleFiles.FindOrAdd(Pair.Key).Objects.Add(ObjectFileName);
 			}
 		}
 
@@ -398,10 +410,6 @@ private:
 				ModuleToModuleFiles.FindOrAdd(Pair.Key).Libraries.Add(Library);
 			}
 		}
-
-		// Force the next patch time to include any CPP files modified this time around.  This avoids the issue 
-		// where a patch might be generated for a file twice instead of just once.
-		NextPatchStartTime = FDateTime::UtcNow();
 
 		return ELiveCodingCompileResult::Success;
 	}
@@ -424,7 +432,7 @@ private:
 		{
 			const FText Message = LOCTEXT("RestartWarningText", "Restarting after patching while re-instancing was enabled can lead to unexpected results.\r\n\r\nDo you wish to continue?");
 			const FText Title = LOCTEXT("RestartWarningTitle", "Restarting after patching while re-instancing was enabled?");
-			EAppReturnType::Type ReturnType = FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title);
+			EAppReturnType::Type ReturnType = FMessageDialog::Open(EAppMsgType::YesNo, Message, Title);
 			if (ReturnType != EAppReturnType::Yes)
 			{
 				return FReply::Handled();
@@ -469,7 +477,6 @@ private:
 		FScopeLock Lock(&CriticalSection);
 		MainThreadTasks.Add(FSimpleDelegate::CreateRaw(this, &FLiveCodingConsoleApp::OnCompileStarted));
 		bRequestCancel = false;
-		NextPatchStartTime = FDateTime::UtcNow();
 	}
 
 	void OnCompileStarted()
@@ -495,11 +502,6 @@ private:
 	{
 		FScopeLock Lock(&CriticalSection);
 		MainThreadTasks.Add(FSimpleDelegate::CreateLambda([this, Result, Status](){ OnCompileFinished(Result, Status); }));
-
-		if (Result == ELiveCodingResult::Success)
-		{
-			LastPatchTime = NextPatchStartTime;
-		}
 	}
 
 	void OnCompileFinished(ELiveCodingResult Result, const FString& Status)

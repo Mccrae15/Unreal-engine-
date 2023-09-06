@@ -2,6 +2,9 @@
 
 #include "Elements/Metadata/PCGMetadataMakeVector.h"
 
+#include "PCGParamData.h"
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
+#include "Metadata/PCGMetadata.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataMakeVector)
 
@@ -147,19 +150,19 @@ bool UPCGMetadataMakeVectorSettings::IsSupportedInputType(uint16 TypeId, uint32 
 
 	if (Label == PCGMetadataMakeVectorConstants::XYZLabel)
 	{
-		return PCG::Private::IsOfTypes<FVector>(TypeId);
+		return PCG::Private::IsOfTypes<FVector, FVector2D, float, double, int32, int64>(TypeId);
 	}
 	else if (Label == PCGMetadataMakeVectorConstants::XYLabel || Label == PCGMetadataMakeVectorConstants::ZWLabel)
 	{
-		return PCG::Private::IsOfTypes<FVector2D>(TypeId);
+		return PCG::Private::IsOfTypes<FVector2D, float, double, int32, int64>(TypeId);
 	}
 	else
 	{
-		return PCG::Private::IsOfTypes<float, double>(TypeId);
+		return PCG::Private::IsOfTypes<float, double, int32, int64>(TypeId);
 	}
 }
 
-FPCGAttributePropertySelector UPCGMetadataMakeVectorSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataMakeVectorSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -172,7 +175,7 @@ FPCGAttributePropertySelector UPCGMetadataMakeVectorSettings::GetInputSource(uin
 	case 3:
 		return InputSource4;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
@@ -190,6 +193,54 @@ FName UPCGMetadataMakeVectorSettings::GetDefaultNodeName() const
 FText UPCGMetadataMakeVectorSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataMakeVectorSettings", "NodeTitle", "Make Vector Attribute");
+}
+#endif // WITH_EDITOR
+
+bool UPCGMetadataMakeVectorSettings::DoesInputSupportDefaultValue(uint32 Index) const
+{
+	return true;
+}
+
+UPCGParamData* UPCGMetadataMakeVectorSettings::CreateDefaultValueParam(uint32 Index) const
+{
+	// Use labels since the logic is already done there.
+	FName Label = GetInputPinLabel(Index);
+	UPCGParamData* NewParamData = NewObject<UPCGParamData>();
+
+	if (Label == PCGMetadataMakeVectorConstants::XYZLabel)
+	{
+		NewParamData->Metadata->CreateAttribute<FVector>(NAME_None, FVector::ZeroVector, /*bAllowsInterpolation=*/ true, /*bOverrideParent=*/ false);
+	}
+	else if (Label == PCGMetadataMakeVectorConstants::XYLabel || Label == PCGMetadataMakeVectorConstants::ZWLabel)
+	{
+		NewParamData->Metadata->CreateAttribute<FVector2D>(NAME_None, FVector2D::ZeroVector, /*bAllowsInterpolation=*/ true, /*bOverrideParent=*/ false);
+	}
+	else
+	{
+		NewParamData->Metadata->CreateAttribute<double>(NAME_None, 0, /*bAllowsInterpolation=*/ true, /*bOverrideParent=*/ false);
+	}
+	
+	return NewParamData;
+}
+
+#if WITH_EDITOR
+FString UPCGMetadataMakeVectorSettings::GetDefaultValueString(uint32 Index) const
+{
+	// Use labels since the logic is already done there.
+	FName Label = GetInputPinLabel(Index);
+
+	if (Label == PCGMetadataMakeVectorConstants::XYZLabel)
+	{
+		return FVector::ZeroVector.ToString();
+	}
+	else if (Label == PCGMetadataMakeVectorConstants::XYLabel || Label == PCGMetadataMakeVectorConstants::ZWLabel)
+	{
+		return FVector2D::ZeroVector.ToString();
+	}
+	else
+	{
+		return FString::Printf(TEXT("%f"), 0.0);
+	}
 }
 #endif // WITH_EDITOR
 

@@ -8,8 +8,15 @@
 #include "LandscapeSubsystem.generated.h"
 
 class ALandscapeProxy;
+class AWorldSettings;
+class IConsoleVariable;
 class ULandscapeInfo;
 class FLandscapeNotificationManager;
+struct FDateTime;
+namespace UE::Landscape
+{
+	enum class EOutdatedDataFlags : uint8;
+} // end of namespace UE::Landscape
 
 #if WITH_EDITOR
 struct FOnHeightmapStreamedContext
@@ -64,17 +71,27 @@ public:
 #if WITH_EDITOR
 	LANDSCAPE_API void BuildAll();
 	LANDSCAPE_API void BuildGrassMaps();
-	LANDSCAPE_API int32 GetOutdatedGrassMapCount();
-	LANDSCAPE_API void BuildGIBakedTextures();
-	LANDSCAPE_API int32 GetOutdatedGIBakedTextureComponentsCount();
 	LANDSCAPE_API void BuildPhysicalMaterial();
-	LANDSCAPE_API int32 GetOudatedPhysicalMaterialComponentsCount();
+
+	UE_DEPRECATED(5.3, "BuildGIBakedTextures is officially deprecated nowe")
+	void BuildGIBakedTextures() {}
+	UE_DEPRECATED(5.3, "GetOutdatedGIBakedTextureComponentsCount is officially deprecated now")
+	int32 GetOutdatedGIBakedTextureComponentsCount() { return 0; }
+
 	/**
 	 * Updates the Nanite mesh on all landscape actors whose mesh is not up to date.
 	 * @param InProxiesToBuild - If specified, only the Nanite meshes of the specified landscape actors (recursively for all streaming proxies, in the case of a 1 ALandscape / N ALandscapeStreamingProxy setup) will be built
 	 * @param bForceRebuild - If true, forces the Nanite meshes to be rebuilt, no matter if they're up to date or not
 	 */
 	LANDSCAPE_API void BuildNanite(TArrayView<ALandscapeProxy*> InProxiesToBuild = TArrayView<ALandscapeProxy*>(), bool bForceRebuild = false);
+	
+	LANDSCAPE_API TArray<ALandscapeProxy*> GetOutdatedProxies(UE::Landscape::EOutdatedDataFlags InMatchingOutdatedDataFlags, bool bInMustMatchAllFlags) const;
+	
+	UE_DEPRECATED(5.3, "GetOutdatedGrassMapCount is now deprecated, use GetOutdatedProxies")
+	LANDSCAPE_API int32 GetOutdatedGrassMapCount();
+	UE_DEPRECATED(5.3, "GetOudatedPhysicalMaterialComponentsCount is now deprecated, use GetOutdatedProxies")
+	LANDSCAPE_API int32 GetOudatedPhysicalMaterialComponentsCount();
+
 	LANDSCAPE_API bool IsGridBased() const;
 	LANDSCAPE_API void ChangeGridSize(ULandscapeInfo* LandscapeInfo, uint32 NewGridSizeInComponents);
 	LANDSCAPE_API ALandscapeProxy* FindOrAddLandscapeProxy(ULandscapeInfo* LandscapeInfo, const FIntPoint& SectionBase);
@@ -82,32 +99,55 @@ public:
 	LANDSCAPE_API void MarkModifiedLandscapesAsDirty();
 	LANDSCAPE_API void SaveModifiedLandscapes();
 	LANDSCAPE_API bool HasModifiedLandscapes() const;
+	UE_DEPRECATED(5.3, "Use GetDirtyOnlyInMode instead")
 	LANDSCAPE_API static bool IsDirtyOnlyInModeEnabled();
+	LANDSCAPE_API bool GetDirtyOnlyInMode() const;
 	FLandscapeNotificationManager* GetNotificationManager() { return NotificationManager; }
 	FOnHeightmapStreamedDelegate& GetOnHeightmapStreamedDelegate() { return OnHeightmapStreamed; }
-	LANDSCAPE_API bool AnyViewShowCollisions() const { return bAnyViewShowCollisions; }  //! Returns true if any view has view collisions enabled.
+	bool AnyViewShowCollisions() const { return bAnyViewShowCollisions; }  //! Returns true if any view has view collisions enabled.
+	FDateTime GetAppCurrentDateTime();
+	LANDSCAPE_API void AddAsyncEvent(FGraphEventRef GraphEventRef);
+
+
+	// Returns true if we should build nanite meshes in parallel asynchronously. 
+	bool IsMultithreadedNaniteBuildEnabled();
+
+	// Returns true if the user has requested Nanite Meshes to be generated on landscape edit. If we return false then the nanite build will happen either on map save or explicit build 
+	bool IsLiveNaniteRebuildEnabled();
+
+	bool AreNaniteBuildsInProgress() const;
+	void IncNaniteBuild();
+	void DecNaniteBuild();
 #endif // WITH_EDITOR
 
 private:
-#if WITH_EDITOR
 	LANDSCAPE_API void ForEachLandscapeInfo(TFunctionRef<bool(ULandscapeInfo*)> ForEachLandscapeInfoFunc) const;
-#endif
 
 	// Begin USubsystem
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	// End USubsystem
 
-	bool bIsGrassCreationPrioritized;
+	void OnNaniteWorldSettingsChanged(AWorldSettings* WorldSettings) { RegenerateGrass(true, true); }
+	void OnNaniteEnabledChanged(IConsoleVariable*);
+
+	bool bIsGrassCreationPrioritized = false;
 	TArray<TWeakObjectPtr<ALandscapeProxy>> Proxies;
+	FDelegateHandle OnNaniteWorldSettingsChangedHandle;
 
 #if WITH_EDITOR
-	class FLandscapeGrassMapsBuilder* GrassMapsBuilder;
-	class FLandscapeGIBakedTextureBuilder* GIBakedTextureBuilder;
-	class FLandscapePhysicalMaterialBuilder* PhysicalMaterialBuilder;
+	class FLandscapeGrassMapsBuilder* GrassMapsBuilder = nullptr;
+	class FLandscapePhysicalMaterialBuilder* PhysicalMaterialBuilder = nullptr;
 	
-	FLandscapeNotificationManager* NotificationManager;
+	FLandscapeNotificationManager* NotificationManager = nullptr;
 	FOnHeightmapStreamedDelegate OnHeightmapStreamed;
 	bool bAnyViewShowCollisions = false;
+	FDateTime AppCurrentDateTime; // Represents FDateTime::Now(), at the beginning of the frame (useful to get a human-readable date/time that is fixed during the frame)
+	int32 LastTickFrameNumber = -1;
+
+	TArray<FGraphEventRef> NaniteMeshBuildEvents;
+	float NumNaniteMeshUpdatesAvailable = 0.0f;
+
+	std::atomic<int32> NaniteBuildsInFlight;
 #endif // WITH_EDITOR
 };

@@ -62,6 +62,7 @@ Landscape.cpp: Terrain rendering
 #include "ComponentRecreateRenderStateContext.h"
 #include "LandscapeWeightmapUsage.h"
 #include "LandscapeSubsystem.h"
+#include "LandscapeCulling.h"
 #include "ContentStreaming.h"
 #include "UObject/ObjectSaveContext.h"
 #include "GlobalShader.h"
@@ -71,34 +72,38 @@ Landscape.cpp: Terrain rendering
 #include "Rendering/Texture2DResource.h"
 #include "RenderCaptureInterface.h"
 #include "VisualLogger/VisualLogger.h"
-#include "LandscapeSettings.h"
-
-#if WITH_EDITOR
-#include "LandscapeEdit.h"
-#include "MaterialUtilities.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
-#include "Algo/Transform.h"
-#include "Algo/BinarySearch.h"
-#include "Engine/Texture2D.h"
-#endif
+#include "NaniteSceneProxy.h"
+#include "Misc/ArchiveMD5.h"
+#include "LandscapeTextureStorageProvider.h"
 #include "LandscapeVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
+#include "UObject/EditorObjectVersion.h"
+#include "UObject/UObjectThreadContext.h"
 #include "LandscapeDataAccess.h"
 #include "LandscapeNotification.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
-#include "UObject/EditorObjectVersion.h"
 #include "Algo/BinarySearch.h"
+#include "Algo/Count.h"
+#include "Algo/Transform.h"
+#include "Algo/AllOf.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "WorldPartition/WorldPartitionHandle.h"
 #include "WorldPartition/Landscape/LandscapeActorDesc.h"
+
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
 #include "Misc/ScopedSlowTask.h"
 #include "UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
+#include "LandscapeEdit.h"
+#include "LandscapeEditTypes.h"
+#include "MaterialUtilities.h"
+#include "Editor.h"
+#include "Editor/EditorEngine.h"
+#include "Engine/Texture2D.h"
+#include "AssetCompilingManager.h"
 #endif
 
 /** Landscape stats */
@@ -154,12 +159,27 @@ static FAutoConsoleVariableRef CVarRenderCaptureNextHeightmapRenders(
 
 #if WITH_EDITOR
 
-int32 LiveRebuildNaniteOnModification = 0;
-static FAutoConsoleVariableRef CVarLiveRebuildNaniteOnModification(
-	TEXT("landscape.LiveRebuildNaniteOnModification"),
-	LiveRebuildNaniteOnModification,
-	TEXT("Trigger a rebuild of Nanite representation immediately when a modification is performed"));
+float LandscapeNaniteAsyncDebugWait = 0.0f;
+static FAutoConsoleVariableRef CVarNaniteAsyncDebugWait(
+	TEXT("landscape.Nanite.AsyncDebugWait"),
+	LandscapeNaniteAsyncDebugWait,
+	TEXT("Time in seconds to pause the async Nanite build. Used for debugging"));
 
+float LandscapeNaniteBuildLag = 0.25f;
+static FAutoConsoleVariableRef CVarNaniteUpdateLag(
+	TEXT("landscape.Nanite.UpdateLag"),
+	LandscapeNaniteBuildLag,
+	TEXT("Time to wait in seconds after the last landscape update before triggering a nanite rebuild"));
+
+static FAutoConsoleVariable CVarForceInvalidateNaniteOnLoad(
+	TEXT("landscape.ForceInvalidateNaniteOnLoad"),
+	false,
+	TEXT("Trigger a rebuild of Nanite representation on load (for debugging purposes)"));
+
+static FAutoConsoleVariable CVarSilenceSharedPropertyDeprecationFixup(
+	TEXT("landscape.SilenceSharedPropertyDeprecationFixup"),
+	true,
+	TEXT("Silently performs the fixup of discrepancies in shared properties when handling data modified before the enforcement introduction."));
 #endif // WITH_EDITOR
 
 int32 GRenderNaniteLandscape = 1;
@@ -169,6 +189,25 @@ FAutoConsoleVariableRef CVarRenderNaniteLandscape(
 	TEXT("Render Landscape using Nanite."),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
+
+struct FCompareULandscapeComponentClosest
+{
+	FCompareULandscapeComponentClosest(const FIntPoint& InCenter) : Center(InCenter) {}
+
+	FORCEINLINE bool operator()(const ULandscapeComponent* A, const ULandscapeComponent* B) const
+	{
+		const FIntPoint ABase = A->GetSectionBase();
+		const FIntPoint BBase = B->GetSectionBase();
+
+		int32 DistA = (ABase - Center).SizeSquared();
+		int32 DistB = (BBase - Center).SizeSquared();
+
+		return DistA < DistB;
+	}
+
+	FIntPoint Center;
+
+};
 
 ULandscapeComponent::ULandscapeComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -293,81 +332,133 @@ bool ALandscapeProxy::IsNaniteMeshUpToDate() const
 	if (IsNaniteEnabled() && !HasAnyFlags(RF_ClassDefaultObject) && LandscapeComponents.Num() > 0)
 	{
 		const FGuid NaniteContentId = GetNaniteContentId();
-		return (NaniteComponent != nullptr) && (NaniteComponent->GetProxyContentId() == NaniteContentId);
+		return AreNaniteComponentsValid(NaniteContentId);
 	}
 
 	return true;
 }
 
-void ALandscapeProxy::UpdateNaniteRepresentation(const ITargetPlatform* InTargetPlatform)
+FGraphEventRef ALandscapeProxy::UpdateNaniteRepresentationAsync(const ITargetPlatform* InTargetPlatform)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ALandscapeProxy::UpdateNaniteRepresentationAsync);
+	FGraphEventRef BatchBuildEvent;
+
 	if (IsNaniteEnabled() && !HasAnyFlags(RF_ClassDefaultObject) && LandscapeComponents.Num() > 0)
 	{
 		const FGuid NaniteContentId = GetNaniteContentId();
-		if (NaniteComponent == nullptr)
-		{
-			NaniteComponent = NewObject<ULandscapeNaniteComponent>(this, TEXT("LandscapeNaniteComponent"));
 
-			NaniteComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
-			NaniteComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-			NaniteComponent->SetMobility(EComponentMobility::Static);
-			NaniteComponent->SetGenerateOverlapEvents(false);
-			NaniteComponent->SetCanEverAffectNavigation(false);
-			NaniteComponent->CanCharacterStepUpOn = ECanBeCharacterBase::ECB_No;
-			NaniteComponent->bSelectable = false;
-			NaniteComponent->DepthPriorityGroup = SDPG_World;
-			NaniteComponent->RegisterComponent();
-			NaniteComponent->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+		int32 NumNewNaniteComponents = NumNaniteRequiredComponents();
+		if (NumNewNaniteComponents != NaniteComponents.Num())
+		{
+			RemoveNaniteComponents();
+			CreateNaniteComponents(NumNewNaniteComponents);
 		}
 
-		bool bSuccess = true;
-		if (NaniteComponent->GetProxyContentId() != NaniteContentId)
-		{
-			FScopedSlowTask ProgressDialog(1, LOCTEXT("BuildingLandscapeNanite", "Building Landscape Nanite Data"));
-			ProgressDialog.MakeDialogDelayed(/*Threshold = */1.0f);
+		const FGuid ComponentNaniteContentId = GetNaniteComponentContentId();
+		const bool bNaniteContentDirty = ComponentNaniteContentId != NaniteContentId;
 
-			bSuccess &= NaniteComponent->InitializeForLandscape(this, NaniteContentId);
-		}
+		UE_LOG(LogLandscape, Log, TEXT("UpdateNaniteRepresentationAsync actor: '%s' package:'%s' dirty:%i component guid:'%s' proxy guid:'%s'"), *GetActorNameOrLabel(), *GetPackage()->GetName(), bNaniteContentDirty, *ComponentNaniteContentId.ToString(), *NaniteContentId.ToString());
 
-		if (bSuccess)
+		TArray<ULandscapeComponent*> StableOrderComponents(LandscapeComponents);
+		ULandscapeSubsystem* Subsystem = GetWorld()->GetSubsystem<ULandscapeSubsystem>();
+		FGraphEventArray UpdateDependencies;
+		for (int32 i = 0; i < NumNewNaniteComponents; ++i)
 		{
+			FGraphEventArray SingleProxyDependencies;
+
+			if (bNaniteContentDirty)
+			{
+				const int32 StartComponentIndex = i * NaniteMaxComponents;
+				const int32 EndComponentIndex = FMath::Min(LandscapeComponents.Num(), (i + 1) * NaniteMaxComponents);
+				const int32 NumComponents = EndComponentIndex - StartComponentIndex;
+
+				TArrayView<ULandscapeComponent*> StableOrderComponentsView = TArrayView<ULandscapeComponent*>(&StableOrderComponents[StartComponentIndex], LandscapeComponents.Num() - StartComponentIndex);
+
+				ULandscapeComponent** MinComponent = Algo::MinElementBy(StableOrderComponentsView,
+					[](const ULandscapeComponent* Component) { return Component->GetSectionBase(); },
+					[](const FIntPoint& A, const FIntPoint& B) { return (A.Y == B.Y) ? (A.X < B.X) : (A.Y < B.Y); }
+				);
+				check(MinComponent);
+				Algo::Sort(StableOrderComponentsView, FCompareULandscapeComponentClosest((*MinComponent)->GetSectionBase()));
+
+				TArrayView<ULandscapeComponent*> ComponentsToExport(StableOrderComponentsView.GetData(), NumComponents);
+				SingleProxyDependencies.Add(NaniteComponents[i]->InitializeForLandscapeAsync(this, NaniteContentId, Subsystem->IsMultithreadedNaniteBuildEnabled(), ComponentsToExport, i) );
+			}
+
 			// TODO: Add a flag that only initializes the platform if we called InitializeForLandscape during the PreSave for this or a previous platform
-			bSuccess &= NaniteComponent->InitializePlatformForLandscape(this, InTargetPlatform);
-		}
+			TWeakObjectPtr<ULandscapeNaniteComponent> WeakComponent = NaniteComponents[i];
+			TWeakObjectPtr<ALandscapeProxy> WeakProxy = this;
+			FGraphEventRef FinalizeEvent = FFunctionGraphTask::CreateAndDispatchWhenReady([WeakComponent, WeakProxy, Name = GetActorNameOrLabel(), InTargetPlatform]() {
+				if (!WeakComponent.IsValid() || !WeakProxy.IsValid())
+				{
+					UE_LOG(LogLandscape, Log, TEXT("UpdateNaniteRepresentationAsync Component on: '%s' Is Invalid"), *Name);
+					return;
+				}
+				WeakComponent->InitializePlatformForLandscape(WeakProxy.Get(), InTargetPlatform);
+				WeakComponent->UpdatedSharedPropertiesFromActor();
+				},
+				TStatId(),
+				&SingleProxyDependencies,
+				ENamedThreads::GameThread);
 
-		if (bSuccess)
-		{
-			NaniteComponent->UpdatedSharedPropertiesFromActor();
+			UpdateDependencies.Add(FinalizeEvent);
 		}
-		else
-		{
-			// This will delete the Nanite component and will revert back to normal landscape rendering
-			InvalidateNaniteRepresentation(/* bCheckContentId = */ false);
-		}
+			
+		BatchBuildEvent = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId(), &UpdateDependencies, ENamedThreads::GameThread);
+
+
 	}
 	else
 	{
 		InvalidateNaniteRepresentation(/* bInCheckContentId = */false);
 	}
+
+	return BatchBuildEvent;
+}
+
+void ALandscapeProxy::UpdateNaniteRepresentation(const ITargetPlatform* InTargetPlatform)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ALandscapeProxy::UpdateNaniteRepresentation);
+
+	FGraphEventRef GraphEvent = UpdateNaniteRepresentationAsync(InTargetPlatform);
+	ULandscapeSubsystem* Subsystem = GetWorld()->GetSubsystem<ULandscapeSubsystem>();
+
+	if (!GraphEvent.IsValid())
+	{
+		return;
+	}
+
+	UE_LOG(LogLandscape, Display, TEXT("UpdateNaniteRepresentation proxy:%p target platform:%p subsystem:%p"), this, InTargetPlatform, Subsystem);
+	if (!Subsystem->IsMultithreadedNaniteBuildEnabled() || IsRunningCookCommandlet())
+	{
+		UE_LOG(LogLandscape, Display, TEXT("Waiting for nanite build: '%s'"), *GetActorNameOrLabel());
+		while (!GraphEvent->IsComplete())
+		{
+			ENamedThreads::Type CurrentThread = FTaskGraphInterface::Get().GetCurrentThreadIfKnown();
+			FTaskGraphInterface::Get().ProcessThreadUntilIdle(CurrentThread);
+			FAssetCompilingManager::Get().ProcessAsyncTasks();	
+		}
+		UE_LOG(LogLandscape, Display, TEXT("Complete nanite build '%s'"), *GetActorNameOrLabel());
+	}
 }
 
 void ALandscapeProxy::InvalidateNaniteRepresentation(bool bInCheckContentId)
 {
-	if (NaniteComponent != nullptr)
+	if (HasNaniteComponents())
 	{
-		if (!bInCheckContentId || NaniteComponent->GetProxyContentId() != GetNaniteContentId())
+		if (!bInCheckContentId || GetNaniteComponentContentId() != GetNaniteContentId())
 		{
-			// Don't call modify when detaching the nanite component, this is non-transactional "derived data", regenerated any time the source landscape data changes. This prevents needlessly dirtying the package :
-			NaniteComponent->DetachFromComponent(FDetachmentTransformRules(EDetachmentRule::KeepRelative, /*bInCallModify = */false));
-			NaniteComponent->DestroyComponent();
-			NaniteComponent = nullptr;
+			RemoveNaniteComponents();
 		}
 	}
 }
 
 void ALandscapeProxy::InvalidateOrUpdateNaniteRepresentation(bool bInCheckContentId, const ITargetPlatform* InTargetPlatform)
 {
-	if (LiveRebuildNaniteOnModification != 0)
+	TRACE_BOOKMARK(TEXT("ALandscapeProxy::InvalidateOrUpdateNaniteRepresentation"));	
+
+	ULandscapeSubsystem* Subsystem = GetWorld()->GetSubsystem<ULandscapeSubsystem>();
+	if (Subsystem->IsLiveNaniteRebuildEnabled())
 	{
 		UpdateNaniteRepresentation(InTargetPlatform);
 	}
@@ -386,16 +477,27 @@ FGuid ALandscapeProxy::GetNaniteContentId() const
 
 	FBufferArchive ContentStateAr;
 
+	int32 LocalNaniteLODIndex = GetNaniteLODIndex();
+	ContentStateAr << LocalNaniteLODIndex;
+
 	struct FCompareULandscapeComponentBySectionBase
 	{
-		FORCEINLINE bool operator()(const ULandscapeComponent& A, const ULandscapeComponent& B) const
+		FORCEINLINE bool operator()(const ULandscapeComponent* A, const ULandscapeComponent* B) const
 		{
+			if (!A)
+			{
+				return true;
+			}
+			if (!B)
+			{
+				return false;
+			}
 			// Sort components based on their SectionBase (i.e. 2D index relative to the entire landscape) to ensure stable ID generation
-			return (A.GetSectionBase().X == B.GetSectionBase().X) ? (A.GetSectionBase().Y < B.GetSectionBase().Y) : (A.GetSectionBase().X < B.GetSectionBase().X);
+			return (A->GetSectionBase().X == B->GetSectionBase().X) ? (A->GetSectionBase().Y < B->GetSectionBase().Y) : (A->GetSectionBase().X < B->GetSectionBase().X);
 		}
 	};
 	TArray<ULandscapeComponent*> StableOrderComponents(LandscapeComponents);
-	StableOrderComponents.Sort(FCompareULandscapeComponentBySectionBase());
+	Algo::Sort(StableOrderComponents, FCompareULandscapeComponentBySectionBase());
 
 	for (ULandscapeComponent* Component : StableOrderComponents)
 	{
@@ -404,6 +506,10 @@ FGuid ALandscapeProxy::GetNaniteContentId() const
 			continue;
 		}
 
+		// Bump if changes to ULandscapeNaniteComponent::InitializeForLandscape() need to be enforced.
+		static FGuid ExportRawMeshGuid("36208D9A475B4D93B33BF84FFEDA1536");
+		ContentStateAr << ExportRawMeshGuid;
+
 		FGuid HeightmapGuid = Component->GetHeightmap()->Source.GetId();
 		ContentStateAr << HeightmapGuid;
 
@@ -411,6 +517,9 @@ FGuid ALandscapeProxy::GetNaniteContentId() const
 		ContentStateAr << Component->HeightmapScaleBias.Z;
 		ContentStateAr << Component->HeightmapScaleBias.W;
 
+		// Visibility affects the generated Nanite mesh so it has to be taken into account :
+		//  Note : visibility might be different at runtime if using a masked material (per-pixel visibility) but we obviously cannot take that into account
+		//  when baking the visibility into the mesh like we do with Nanite landscape
 		if (Component->ComponentHasVisibilityPainted())
 		{
 			const TArray<UTexture2D*>& WeightmapTextures = Component->GetWeightmapTextures();
@@ -422,19 +531,20 @@ FGuid ALandscapeProxy::GetNaniteContentId() const
 					UTexture2D* VisibilityWeightmap = WeightmapTextures[AllocInfo.WeightmapTextureIndex];
 					check(VisibilityWeightmap != nullptr);
 
+					// TODO [jonathan.bard] : technically, this is not good, we would need to only check the hash of AllocInfo.WeightmapTextureChannel. We'll leave it as is, though, for 
+					//  as long as we don't store the source weightmaps individually, so that this function stays fast : 
 					FGuid VisibilityWeightmapGuid = VisibilityWeightmap->Source.GetId();
 					ContentStateAr << VisibilityWeightmapGuid;
 				}
 			}
 		}
-
-		// Nanite only cares about LOD0 data
-		if (UMaterialInterface* LandscapeLOD0Material = Component->GetLandscapeMaterial(/*InLODIndex = */ 0))
-		{
-			FGuid LocalStateId = LandscapeLOD0Material->GetMaterial_Concurrent()->StateId;
-			ContentStateAr << LocalStateId;
-		}
 	}
+
+	// nanite content depends on if the skirt geometry is enabled & the depth.
+	int32 NaniteSkirtEnabled = bNaniteSkirtEnabled;
+	float NaniteSkirtDepthTest = bNaniteSkirtEnabled ? NaniteSkirtDepth : 0.0f; // The hash should only change if Skirts are enabled.
+	ContentStateAr << NaniteSkirtEnabled;
+	ContentStateAr << NaniteSkirtDepthTest;
 
 	uint32 Hash[5];
 	FSHA1::HashBuffer(ContentStateAr.GetData(), ContentStateAr.Num(), (uint8*)Hash);
@@ -631,8 +741,8 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		{
 			// These are used for SM5 rendering
 			UTexture2D* BackupXYOffsetmapTexture = nullptr;
-			TArray<UMaterialInstanceConstant*> BackupMaterialInstances;
-			TArray<UTexture2D*> BackupWeightmapTextures;
+			TArray<TObjectPtr<UMaterialInstanceConstant>> BackupMaterialInstances;
+			TArray<TObjectPtr<UTexture2D>> BackupWeightmapTextures;
 
 			Exchange(BackupXYOffsetmapTexture, XYOffsetmapTexture);
 			Exchange(BackupMaterialInstances, MaterialInstances);
@@ -647,8 +757,8 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		else if (!Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::MobileRendering))
 		{
 			// These properties are only for Mobile
-			TArray<UMaterialInterface*> BackupMobileMaterialInterfaces;
-			TArray<UTexture2D*> BackupMobileWeightmapTextures;
+			TArray<TObjectPtr<UMaterialInterface>> BackupMobileMaterialInterfaces;
+			TArray<TObjectPtr<UTexture2D>> BackupMobileWeightmapTextures;
 
 			Exchange(MobileMaterialInterfaces, BackupMobileMaterialInterfaces);
 			Exchange(MobileWeightmapTextures, BackupMobileWeightmapTextures);
@@ -751,8 +861,6 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 #if WITH_EDITOR
 	if (Ar.IsSaving() && Ar.IsPersistent())
 	{
-		//Update the last saved Guid for GI texture
-		LastBakedTextureMaterialGuid = BakedTextureMaterialGuid;
 		//Update the last saved Hash for physical material
 		LastSavedPhysicalMaterialHash = PhysicalMaterialHash;
 	}
@@ -766,7 +874,6 @@ void ULandscapeComponent::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceS
 	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(GrassData->GetAllocatedSize());
 }
 
-#if WITH_EDITOR
 UMaterialInterface* ULandscapeComponent::GetLandscapeMaterial(int8 InLODIndex) const
 {
 	if (InLODIndex != INDEX_NONE)
@@ -811,6 +918,7 @@ UMaterialInterface* ULandscapeComponent::GetLandscapeHoleMaterial() const
 	return nullptr;
 }
 
+#if WITH_EDITOR
 bool ULandscapeComponent::IsLandscapeHoleMaterialValid() const
 {
 	UMaterialInterface* HoleMaterial = GetLandscapeHoleMaterial();
@@ -833,6 +941,19 @@ bool ULandscapeComponent::ComponentHasVisibilityPainted() const
 	}
 
 	return false;
+}
+
+ULandscapeLayerInfoObject* ULandscapeComponent::GetVisibilityLayer() const
+{
+	for (const FWeightmapLayerAllocationInfo& Allocation : WeightmapLayerAllocations)
+	{
+		if (Allocation.LayerInfo == ALandscapeProxy::VisibilityLayer)
+		{
+			return Allocation.LayerInfo;
+		}
+	}
+
+	return nullptr;
 }
 
 void ULandscapeComponent::GetLayerDebugColorKey(int32& R, int32& G, int32& B) const
@@ -921,6 +1042,8 @@ void ULandscapeComponent::UpdatedSharedPropertiesFromActor()
 	CustomDepthStencilValue = LandscapeProxy->CustomDepthStencilValue;
 	SetCullDistance(LandscapeProxy->LDMaxDrawDistance);
 	LightingChannels = LandscapeProxy->LightingChannels;
+	ShadowCacheInvalidationBehavior = LandscapeProxy->ShadowCacheInvalidationBehavior;
+
 	UpdateNavigationRelevance();
 	UpdateRejectNavmeshUnderneath();
 }
@@ -956,12 +1079,18 @@ void ULandscapeComponent::PostLoad()
 			VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(&FLandscapeFixedGridVertexFactory::StaticType));
 		}
 
+		using namespace UE::Landscape;
+		
+		if (Culling::UseCulling(GMaxRHIShaderPlatform))
+		{
+			VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(Culling::GetTileVertexFactoryType()));
+		}
+
 		TArray<FMaterialPSOPrecacheRequestID> MaterialPrecacheRequestIDs;
 		for (UMaterialInterface* MaterialInterface : Materials)
 		{
 			if (MaterialInterface)
 			{
-				MaterialInterface->ConditionalPostLoad();
 				MaterialInterface->PrecachePSOs(VertexFactoryDataList, PrecachePSOParams, EPSOPrecachePriority::High, MaterialPrecacheRequestIDs);
 			}
 		}
@@ -1019,26 +1148,6 @@ void ULandscapeComponent::PostLoad()
 			}
 		}
 
-		if (GIBakedBaseColorTexture)
-		{
-			if (GIBakedBaseColorTexture->GetOutermost() != GetOutermost())
-			{
-				// The GIBakedBaseColorTexture property was never intended to be reassigned, but it was previously editable so we need to null any invalid values
-				// it will get recreated by ALandscapeProxy::UpdateBakedTextures()
-				GIBakedBaseColorTexture = nullptr;
-				BakedTextureMaterialGuid = FGuid();
-			}
-			else
-			{
-				// Remove public flag from GI textures to stop them being visible in the content browser.
-				// Previous version of landscape set these flags on creation.
-				if (GIBakedBaseColorTexture->HasAnyFlags(RF_Public))
-				{
-					GIBakedBaseColorTexture->ClearFlags(RF_Public);
-				}
-			}
-		}
-		LastBakedTextureMaterialGuid = BakedTextureMaterialGuid;
 		LastSavedPhysicalMaterialHash = PhysicalMaterialHash;
 
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS;
@@ -1068,6 +1177,34 @@ void ULandscapeComponent::PostLoad()
 			UpdateMaterialInstances();
 		}
 	}
+
+	auto DropMipChain = [](UTexture2D* InTexture) 
+	{
+		if (InTexture->Source.GetNumMips() <= 1)
+		{
+			return;
+		}
+
+		TArray64<uint8> TopMipData;
+		InTexture->Source.GetMipData(TopMipData, 0);
+
+		InTexture->PreEditChange(nullptr);
+		InTexture->Source.Init(InTexture->Source.GetSizeX(), InTexture->Source.GetSizeY(), 1, 1, InTexture->Source.GetFormat(), TopMipData.GetData());
+		InTexture->UpdateResource();
+
+		InTexture->PostEditChange();
+	};
+
+	// Remove Non zero mip levels found in layer textures
+	for (auto& LayerIt : LayersData)
+	{
+		DropMipChain(LayerIt.Value.HeightmapData.Texture);
+		for (int32 i = 0; i < LayerIt.Value.WeightmapData.Textures.Num(); ++i)
+		{
+			DropMipChain(LayerIt.Value.WeightmapData.Textures[i]);
+		}
+	}
+	
 #endif
 
 	auto ReparentObject = [this](UObject* Object)
@@ -1129,7 +1266,7 @@ void ULandscapeComponent::PostLoad()
 		}
 	}
 
-	for (UMaterialInstance* MobileCombinationMaterialInstance : MobileCombinationMaterialInstances)
+ 	for (UMaterialInstance* MobileCombinationMaterialInstance : MobileCombinationMaterialInstances)
 	{
 		while (ReparentObject(MobileCombinationMaterialInstance))
 		{
@@ -1208,10 +1345,17 @@ void ULandscapeComponent::PostLoad()
 	}
 #endif // UE_BUILD_SHIPPING
 
+
+	// May have been saved without mobile layer allocations, but those are serialized now
+	if (MobileWeightmapLayerAllocations.Num() == 0)
+	{
+		GenerateMobileWeightmapLayerAllocations();
+	}
+
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
-		UWorld* World = GetWorld();
-		ERHIFeatureLevel::Type FeatureLevel = ((GEngine->GetDefaultWorldFeatureLevel() == ERHIFeatureLevel::ES3_1) || (World && (World->FeatureLevel <= ERHIFeatureLevel::ES3_1))) 
+		FSceneInterface* SceneInterface = GetScene();
+		ERHIFeatureLevel::Type FeatureLevel = ((GEngine->GetDefaultWorldFeatureLevel() == ERHIFeatureLevel::ES3_1) || (SceneInterface && (SceneInterface->GetFeatureLevel() <= ERHIFeatureLevel::ES3_1)))
 			? ERHIFeatureLevel::ES3_1 : GMaxRHIFeatureLevel;
 
 		// If we're loading on a platform that doesn't require cooked data, but defaults to a mobile feature level, generate or preload data from the DDC
@@ -1298,6 +1442,7 @@ ALandscapeProxy::ALandscapeProxy(const FObjectInitializer& ObjectInitializer)
 	LOD0DistributionSetting = 1.25f;
 	LODDistributionSetting = 3.0f;
 	bCastStaticShadow = true;
+	ShadowCacheInvalidationBehavior = EShadowCacheInvalidationBehavior::Auto;
 	bUsedForNavigation = true;
 	bFillCollisionUnderLandscapeForNavmesh = false;
 	BodyInstance.SetCollisionProfileName(UCollisionProfile::BlockAll_ProfileName);
@@ -1310,7 +1455,6 @@ ALandscapeProxy::ALandscapeProxy(const FObjectInitializer& ObjectInitializer)
 #if WITH_EDITOR
 	NumComponentsNeedingGrassMapRender = 0;
 	NumTexturesToStreamForVisibleGrassMapRender = 0;
-	NumComponentsNeedingTextureBaking = 0;
 
 	if (VisibilityLayer == nullptr)
 	{
@@ -1411,6 +1555,48 @@ ALandscape* ALandscapeStreamingProxy::GetLandscapeActor()
 void ALandscapeStreamingProxy::SetLandscapeActor(ALandscape* InLandscape)
 {
 	LandscapeActorRef = InLandscape;
+}
+
+void ALandscape::SetLODGroupKey(uint32 InLODGroupKey)
+{
+	SetLODGroupKeyInternal(InLODGroupKey);
+
+	// change LODGroupKey on any proxies that are currently registered
+	// (any proxies that get registered later will copy the value on registration)
+	if (ULandscapeInfo* Info = GetLandscapeInfo())
+	{
+		Info->ForEachLandscapeProxy([InLODGroupKey](ALandscapeProxy* Proxy)
+			{
+				Proxy->SetLODGroupKeyInternal(InLODGroupKey);
+				return true;
+			});
+	}
+}
+
+void ALandscapeProxy::SetLODGroupKeyInternal(uint32 InLODGroupKey)
+{
+	if (LODGroupKey != InLODGroupKey)
+	{
+		LODGroupKey = InLODGroupKey;
+		MarkComponentsRenderStateDirty();
+	}
+}
+
+uint32 ALandscape::GetLODGroupKey()
+{
+	return LODGroupKey;
+}
+
+void ALandscape::MarkAllLandscapeRenderStateDirty()
+{
+	if (ULandscapeInfo* Info = GetLandscapeInfo())
+	{
+		Info->ForEachLandscapeProxy([](ALandscapeProxy* Proxy)
+			{
+				Proxy->MarkComponentsRenderStateDirty();
+				return true;
+			});
+	}
 }
 
 ULandscapeInfo* ALandscapeProxy::CreateLandscapeInfo(bool bMapCheck, bool bUpdateAllAddCollisions)
@@ -1619,6 +1805,11 @@ void ULandscapeComponent::PropagateLightingScenarioChange()
 
 bool ULandscapeComponent::IsHLODRelevant() const
 {
+	if (HasAnyFlags(RF_Transient))
+	{
+		return false;
+	}
+
 #if WITH_EDITOR
 	return bEnableAutoLODGeneration;
 #else
@@ -1838,7 +2029,7 @@ const TArray<UTexture2D*>& ULandscapeComponent::GetWeightmapTextures(bool InRetu
 	return WeightmapTextures;
 }
 
-TArray<UTexture2D*>& ULandscapeComponent::GetWeightmapTextures(bool InReturnEditingWeightmap)
+TArray<TObjectPtr<UTexture2D>>& ULandscapeComponent::GetWeightmapTextures(bool InReturnEditingWeightmap)
 {
 #if WITH_EDITORONLY_DATA
 	if (InReturnEditingWeightmap)
@@ -1868,7 +2059,7 @@ const TArray<UTexture2D*>& ULandscapeComponent::GetWeightmapTextures(const FGuid
 	return WeightmapTextures;
 }
 
-TArray<UTexture2D*>& ULandscapeComponent::GetWeightmapTextures(const FGuid& InLayerGuid)
+TArray<TObjectPtr<UTexture2D>>& ULandscapeComponent::GetWeightmapTextures(const FGuid& InLayerGuid)
 {
 #if WITH_EDITORONLY_DATA
 	if (InLayerGuid.IsValid())
@@ -1943,17 +2134,30 @@ TArray<FWeightmapLayerAllocationInfo>& ULandscapeComponent::GetWeightmapLayerAll
 	return WeightmapLayerAllocations;
 }
 
+const TArray<FWeightmapLayerAllocationInfo>& ULandscapeComponent::GetCurrentRuntimeWeightmapLayerAllocations() const
+{
+
+	bool bIsMobile = GetWorld()->GetFeatureLevel() == ERHIFeatureLevel::ES3_1;
+	return bIsMobile ? MobileWeightmapLayerAllocations : WeightmapLayerAllocations;
+}
+
+TArray<FWeightmapLayerAllocationInfo>& ULandscapeComponent::GetCurrentRuntimeWeightmapLayerAllocations()
+{
+	bool bIsMobile = GetWorld()->GetFeatureLevel() == ERHIFeatureLevel::ES3_1;
+	return bIsMobile ? MobileWeightmapLayerAllocations : WeightmapLayerAllocations;
+}
+
 #if WITH_EDITOR
 
 FLandscapeLayerComponentData* ULandscapeComponent::GetEditingLayer()
 {
-	const FGuid& EditingLayerGuid = GetLandscapeActor()->EditingLayer;
+	const FGuid& EditingLayerGuid = GetLandscapeActor()->GetEditingLayer();
 	return EditingLayerGuid.IsValid() ? LayersData.Find(EditingLayerGuid) : nullptr;
 }
 
 const FLandscapeLayerComponentData* ULandscapeComponent::GetEditingLayer() const
 {
-	const FGuid& EditingLayerGuid = GetLandscapeActor()->EditingLayer;
+	const FGuid& EditingLayerGuid = GetLandscapeActor()->GetEditingLayer();
 	return EditingLayerGuid.IsValid() ? LayersData.Find(EditingLayerGuid) : nullptr;
 }
 
@@ -1988,7 +2192,7 @@ void ULandscapeComponent::CopyFinalLayerIntoEditingLayer(FLandscapeEditDataInter
 	const bool bSaveToTransactionBuffer = true;
 	ReallocateWeightmaps(&DataInterface, bEditingWeighmaps, bSaveToTransactionBuffer);
 
-	const TArray<UTexture2D*>& EditingWeightmapTextures = GetWeightmapTextures(true);
+	const TArray<TObjectPtr<UTexture2D>>& EditingWeightmapTextures = GetWeightmapTextures(true);
 	for (const FWeightmapLayerAllocationInfo& AllocInfo : EditingLayerWeightmapLayerAllocations)
 	{
 		DataInterface.CopyTextureFromWeightmap(EditingWeightmapTextures[AllocInfo.WeightmapTextureIndex], AllocInfo.WeightmapTextureChannel, this, AllocInfo.LayerInfo, 0);
@@ -2050,10 +2254,9 @@ void ULandscapeComponent::AddDefaultLayerData(const FGuid& InLayerGuid, const TA
 
 		if (LayerHeightmap == nullptr)
 		{
-			UTexture2D* NewLayerHeightmap = GetLandscapeProxy()->CreateLandscapeTexture(ComponentHeightmap->Source.GetSizeX(), ComponentHeightmap->Source.GetSizeY(), TEXTUREGROUP_Terrain_Heightmap, ComponentHeightmap->Source.GetFormat());
+			// No mipchain required as these layer weight maps are used in layer compositing to generate a final set of weight maps to be used for rendering
+			UTexture2D* NewLayerHeightmap = GetLandscapeProxy()->CreateLandscapeTexture(ComponentHeightmap->Source.GetSizeX(), ComponentHeightmap->Source.GetSizeY(), TEXTUREGROUP_Terrain_Heightmap, ComponentHeightmap->Source.GetFormat(), /* OptionalOverrideOuter = */ nullptr, /* bCompress = */ false, /* bMipChain = */ false);
 			LayerHeightmap = &InOutCreatedHeightmapTextures.Add(ComponentHeightmap, NewLayerHeightmap);
-
-			ULandscapeComponent::CreateEmptyTextureMips(NewLayerHeightmap, true);
 
 			// Init Mip0 to be at 32768 which is equal to "0"
 			TArrayView<FColor> Mip0Data((FColor*)NewLayerHeightmap->Source.LockMip(0), NewLayerHeightmap->Source.GetSizeX() * NewLayerHeightmap->Source.GetSizeY());
@@ -2140,6 +2343,27 @@ void ULandscapeComponent::SetWeightmapTextures(const TArray<UTexture2D*>& InNewW
 	}
 }
 
+// Note that there is a slight difference in behavior with the Internal function:
+// unlike SetWeightmapTextures, this function will never set the runtime WeightmapTextures when you intended to set an edit layer's WeightmapData.Textures
+void ULandscapeComponent::SetWeightmapTexturesInternal(const TArray<UTexture2D*>& InNewWeightmapTextures, const FGuid& InEditLayerGuid)
+{
+	if (InEditLayerGuid.IsValid())
+	{
+#if WITH_EDITOR
+		FLandscapeLayerComponentData* EditingLayer = GetLayerData(InEditLayerGuid);
+		if (ensure(EditingLayer))
+		{
+			EditingLayer->WeightmapData.Textures.Reset(InNewWeightmapTextures.Num());
+			EditingLayer->WeightmapData.Textures.Append(InNewWeightmapTextures);
+		}
+#endif // WITH_EDITOR
+	}
+	else
+	{
+		WeightmapTextures = InNewWeightmapTextures;
+	}
+}
+
 
 #if WITH_EDITOR
 void ULandscapeComponent::SetWeightmapLayerAllocations(const TArray<FWeightmapLayerAllocationInfo>& InNewWeightmapLayerAllocations)
@@ -2147,7 +2371,7 @@ void ULandscapeComponent::SetWeightmapLayerAllocations(const TArray<FWeightmapLa
 	WeightmapLayerAllocations = InNewWeightmapLayerAllocations;
 }
 
-TArray<ULandscapeWeightmapUsage*>& ULandscapeComponent::GetWeightmapTexturesUsage(bool InReturnEditingWeightmap)
+TArray<TObjectPtr<ULandscapeWeightmapUsage>>& ULandscapeComponent::GetWeightmapTexturesUsage(bool InReturnEditingWeightmap)
 {
 	if (InReturnEditingWeightmap)
 	{
@@ -2173,7 +2397,7 @@ const TArray<ULandscapeWeightmapUsage*>& ULandscapeComponent::GetWeightmapTextur
 	return WeightmapTexturesUsage;
 }
 
-TArray<ULandscapeWeightmapUsage*>& ULandscapeComponent::GetWeightmapTexturesUsage(const FGuid& InLayerGuid)
+TArray<TObjectPtr<ULandscapeWeightmapUsage>>& ULandscapeComponent::GetWeightmapTexturesUsage(const FGuid& InLayerGuid)
 {
 	if (InLayerGuid.IsValid())
 	{
@@ -2214,11 +2438,30 @@ void ULandscapeComponent::SetWeightmapTexturesUsage(const TArray<ULandscapeWeigh
 	}
 }
 
+void ULandscapeComponent::SetWeightmapTexturesUsageInternal(const TArray<ULandscapeWeightmapUsage*>& InNewWeightmapTexturesUsage, const FGuid& InEditLayerGuid)
+{
+	if (InEditLayerGuid.IsValid())
+	{
+#if WITH_EDITOR
+		FLandscapeLayerComponentData* EditingLayer = GetLayerData(InEditLayerGuid);
+		if (ensure(EditingLayer))
+		{
+			EditingLayer->WeightmapData.TextureUsages.Reset(InNewWeightmapTexturesUsage.Num());
+			EditingLayer->WeightmapData.TextureUsages.Append(InNewWeightmapTexturesUsage);
+		}
+#endif // WITH_EDITOR
+	}
+	else
+	{
+		WeightmapTexturesUsage = InNewWeightmapTexturesUsage;
+	}
+}
+
 void ULandscapeComponent::DeleteLayerAllocation(const FGuid& InEditLayerGuid, int32 InLayerAllocationIdx, bool bInShouldDirtyPackage)
 {
 	TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = GetWeightmapLayerAllocations(InEditLayerGuid);
-	TArray<UTexture2D*>& ComponentWeightmapTextures = GetWeightmapTextures(InEditLayerGuid);
-	TArray<ULandscapeWeightmapUsage*>& ComponentWeightmapTexturesUsage = GetWeightmapTexturesUsage(InEditLayerGuid);
+	TArray<TObjectPtr<UTexture2D>>& ComponentWeightmapTextures = GetWeightmapTextures(InEditLayerGuid);
+	TArray<TObjectPtr<ULandscapeWeightmapUsage>>& ComponentWeightmapTexturesUsage = GetWeightmapTexturesUsage(InEditLayerGuid);
 
 	const FWeightmapLayerAllocationInfo& LayerAllocation = ComponentWeightmapLayerAllocations[InLayerAllocationIdx];
 	const int32 DeleteLayerWeightmapTextureIndex = LayerAllocation.WeightmapTextureIndex;
@@ -2270,6 +2513,7 @@ void ULandscapeComponent::DeleteLayerAllocation(const FGuid& InEditLayerGuid, in
 void ALandscapeProxy::PostRegisterAllComponents()
 {
 	Super::PostRegisterAllComponents();
+
 	ULandscapeInfo* LandscapeInfo = nullptr;
 	if (!IsPendingKillPending())
 	{
@@ -2411,23 +2655,6 @@ void ALandscape::PostInitProperties()
 			{
 				if (FLandscapeNotificationManager* LandscapeNotificationManager = LandscapeSubSystem->GetNotificationManager())
 				{
-					// Create conditional TextureBakingNotification
-					TextureBakingNotification = MakeShared<FLandscapeNotification>(this, FLandscapeNotification::EType::TextureBaking,
-						[this]() { return NumComponentsNeedingTextureBaking > 0; },
-						[this](FText& InText)
-						{
-							// Accumulating all outstanding textures needing baking for ALL landscapes because only one such notification can be displayed at a time
-							int ComponentsNeedingTextureBakingAllLandscapes = 0;
-							for (const ALandscape* Landscape : TObjectRange<ALandscape>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
-							{
-								ComponentsNeedingTextureBakingAllLandscapes += Landscape->NumComponentsNeedingTextureBaking;
-							}
-							
-							FFormatNamedArguments Args;
-							Args.Add(TEXT("OutstandingTextures"), FText::AsNumber(ComponentsNeedingTextureBakingAllLandscapes));
-							InText = FText::Format(NSLOCTEXT("TextureBaking", "TextureBakingFormat", "Baking Landscape Textures ({OutstandingTextures})"), Args);
-						});
-			
 					// Create conditional GrassRenderingNotification
 					GrassRenderingNotification = MakeShared<FLandscapeNotification>(this, FLandscapeNotification::EType::GrassRendering,
 						[this]() { return NumComponentsNeedingGrassMapRender > 0 && !(FSlateApplication::Get().HasAnyMouseCaptor() || GUnrealEd->IsUserInteracting()); },
@@ -2445,7 +2672,6 @@ void ALandscape::PostInitProperties()
 							InText = FText::Format(NSLOCTEXT("GrassMapRender", "GrassMapRenderFormat", "Building Grass Maps ({OutstandingGrassMaps})"), Args);
 						});
 			
-					LandscapeNotificationManager->RegisterNotification(TextureBakingNotification);
 					LandscapeNotificationManager->RegisterNotification(GrassRenderingNotification);
 				}
 			}
@@ -2887,11 +3113,6 @@ FBox ALandscape::GetCompleteBounds() const
 	}
 }
 
-bool ALandscape::IsNaniteEnabled() const
-{
-	return bEnableNanite;
-}
-
 void ALandscape::SetUseGeneratedLandscapeSplineMeshesActors(bool bInEnabled)
 {
 	if (bUseGeneratedLandscapeSplineMeshesActors != bInEnabled)
@@ -2941,8 +3162,6 @@ void ALandscapeProxy::PreSave(FObjectPreSaveContext ObjectSaveContext)
 #if WITH_EDITOR
 	// Work out whether we have grass or not for the next game run
 	BuildGrassMaps();
-	//Update the baked textures before saving
-	BuildGIBakedTextures();
 
 	for (ULandscapeComponent* Component : LandscapeComponents)
 	{
@@ -2950,6 +3169,12 @@ void ALandscapeProxy::PreSave(FObjectPreSaveContext ObjectSaveContext)
 		Component->GrassData->bIsDirty = false;
 	}
 
+	
+	if (ULandscapeInfo* LandscapeInfo = GetLandscapeInfo())
+	{
+		LandscapeInfo->UpdateNanite(ObjectSaveContext.GetTargetPlatform());
+	}
+	
 	if (ALandscape* Landscape = GetLandscapeActor())
 	{
 		for (ULandscapeComponent* LandscapeComponent : LandscapeComponents)
@@ -2965,9 +3190,18 @@ void ALandscapeProxy::PreSave(FObjectPreSaveContext ObjectSaveContext)
 				}
 			});
 		}
-
 		UpdateNaniteRepresentation(ObjectSaveContext.GetTargetPlatform());
 		UpdateRenderingMethod();
+	}
+
+	// Warn if there are any active Physical Material Renders on this Proxy
+	// don.boogert todo: We should block or wait for this to complete within some timeout period.
+	for (ULandscapeComponent* LandscapeComponent : LandscapeComponents)
+	{
+		if (LandscapeComponent->PhysicalMaterialTask.IsInProgress())
+		{
+			UE_LOG(LogLandscape, Warning, TEXT("Physical material render on component: '%s' in progress."), *LandscapeComponent->GetFullName());
+		}
 	}
 
 	if (LandscapeGuid.IsValid())
@@ -2975,6 +3209,22 @@ void ALandscapeProxy::PreSave(FObjectPreSaveContext ObjectSaveContext)
 		if (ULandscapeInfo* LandscapeInfo = GetLandscapeInfo())
 		{
 			LandscapeInfo->OnModifiedPackageSaved(GetPackage());
+		}
+	}
+
+	if (bUseCompressedHeightmapStorage && ObjectSaveContext.IsCooking())
+	{
+		FString PlatformName = ObjectSaveContext.GetTargetPlatform()->PlatformName();
+
+		// TODO [chris.tchou] : remove the limitation to only work on windows, once we validate other platforms work as well...
+		if (PlatformName.StartsWith(TEXT("Windows")))
+		{
+			for (ULandscapeComponent* LandscapeComponent : LandscapeComponents)
+			{
+				UTexture2D* Tex = LandscapeComponent->GetHeightmap();
+				FVector LandscapeGridScale = GetRootComponent()->GetRelativeScale3D();
+				ULandscapeTextureStorageProviderFactory::ApplyTo(Tex, LandscapeGridScale);
+			}
 		}
 	}
 #endif // WITH_EDITOR
@@ -2987,6 +3237,7 @@ void ALandscapeProxy::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FLandscapeCustomVersion::GUID);
 	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
 	Ar.UsingCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 
 #if WITH_EDITORONLY_DATA
 	if (Ar.IsLoading() && Ar.CustomVer(FLandscapeCustomVersion::GUID) < FLandscapeCustomVersion::MigrateOldPropertiesToNewRenderingProperties)
@@ -3008,23 +3259,6 @@ void ALandscapeProxy::Serialize(FArchive& Ar)
 				LOD0DistributionSetting = LOD0SquareRootDistributionSettingMigrationTable[FMath::RoundToInt(LODDistanceFactor_DEPRECATED)];
 				LODDistributionSetting = LODDSquareRootDistributionSettingMigrationTable[FMath::RoundToInt(LODDistanceFactor_DEPRECATED)];
 			}
-		}
-	}
-
-	if (Ar.IsLoading())
-	{
-		// Fixup Nanite meshes which were using the wrong material and didn't have proper UVs :
-		if (Ar.CustomVer(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::FixupNaniteLandscapeMeshes)
-		{
-			// This will force the Nanite meshes to be properly regenerated during the next save :
-			InvalidateNaniteRepresentation(/* bCheckContentId = */ false);
-		}
-
-		// Remove cooked collision data from Nanite landscape meshes, since collisions are handled by ULandscapeHeighfieldCollisionComponent :		
-		if (Ar.CustomVer(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::RemoveUselessLandscapeMeshesCookedCollisionData)
-		{
-			// This will force the Nanite meshes to be properly regenerated during the next save :
-			InvalidateNaniteRepresentation(/* bCheckContentId = */ false);
 		}
 	}
 #endif
@@ -3075,7 +3309,7 @@ FLandscapeEditorLayerSettings& ULandscapeInfo::GetLayerEditorSettings(ULandscape
 
 void ULandscapeInfo::CreateLayerEditorSettingsFor(ULandscapeLayerInfoObject* LayerInfo)
 {
-	ForAllLandscapeProxies([LayerInfo](ALandscapeProxy* Proxy)
+	ForEachLandscapeProxy([LayerInfo](ALandscapeProxy* Proxy)
 	{
 		FLandscapeEditorLayerSettings* EditorLayerSettings = Proxy->EditorLayerSettings.FindByKey(LayerInfo);
 		if (!EditorLayerSettings)
@@ -3083,6 +3317,7 @@ void ULandscapeInfo::CreateLayerEditorSettingsFor(ULandscapeLayerInfoObject* Lay
 			Proxy->Modify();
 			Proxy->EditorLayerSettings.Add(FLandscapeEditorLayerSettings(LayerInfo));
 		}
+		return true;
 	});
 }
 
@@ -3279,6 +3514,17 @@ bool ULandscapeInfo::UpdateLayerInfoMapInternal(ALandscapeProxy* Proxy, bool bIn
 						Proxy->EditorLayerSettings.RemoveAt(i--);
 					}
 				}
+
+				// Add Visibility Layer info if not initialized
+				if (ALandscapeProxy::VisibilityLayer != nullptr)
+				{
+					int32 LayerInfoIndex = GetLayerInfoIndex(ALandscapeProxy::VisibilityLayer->LayerName);
+
+					if ((LayerInfoIndex != INDEX_NONE) && (Layers[LayerInfoIndex].LayerInfoObj == nullptr))
+					{
+						Layers[LayerInfoIndex].LayerInfoObj = ALandscapeProxy::VisibilityLayer;
+					}
+				}
 			}
 		}
 		else // !Proxy
@@ -3287,21 +3533,17 @@ bool ULandscapeInfo::UpdateLayerInfoMapInternal(ALandscapeProxy* Proxy, bool bIn
 
 			if (!bInvalidate)
 			{
-				ForAllLandscapeProxies([this](ALandscapeProxy* EachProxy)
+				ForEachLandscapeProxy([this](ALandscapeProxy* EachProxy)
 				{
 					if (!EachProxy->IsPendingKillPending())
 					{
 						checkSlow(EachProxy->GetLandscapeInfo() == this);
 						UpdateLayerInfoMapInternal(EachProxy, false);
 					}
+					return true;
 				});
 			}
 		}
-
-		//if (GCallbackEvent)
-		//{
-		//	GCallbackEvent->Send( CALLBACK_EditorPostModal );
-		//}
 	}
 	return bHasCollision;
 }
@@ -3322,9 +3564,62 @@ bool ULandscapeInfo::UpdateLayerInfoMap(ALandscapeProxy* Proxy /*= nullptr*/, bo
 
 #endif // WITH_EDITOR
 
+/* if the outer world is instanced, we need to change our landscape guid(in a deterministic way)
+ * this avoids guid collisions when you instance a world (and its landscapes) multiple times,
+ * while maintaining the same GUID between landscape proxy objects within an instance
+ */ 
+void ALandscapeProxy::PostLoadFixupLandscapeGuidsIfInstanced()
+{
+	// record the original value before modification
+	check(!OriginalLandscapeGuid.IsValid() || (OriginalLandscapeGuid == LandscapeGuid));
+	OriginalLandscapeGuid = this->LandscapeGuid;
+
+	// we shouldn't be dealing with any instanced landscapes in these cases, early out
+	if (this->IsTemplate() || IsRunningCookCommandlet())
+	{
+		return;
+	}
+
+	UWorldPartition* WorldPartition = FWorldPartitionHelpers::GetWorldPartition(this);
+	UWorld* OuterWorld = WorldPartition ? WorldPartition->GetTypedOuter<UWorld>() : this->GetTypedOuter<UWorld>();
+
+	// TODO [chris.tchou] : Note this is not 100% correct, IsInstanced() returns TRUE when using PIE on non-instanced landscapes.
+	// That is generally ok however, as the GUID remaps are still deterministic and landscape still works.
+	if (OuterWorld && OuterWorld->IsInstanced())
+	{
+		FArchiveMD5 Ar;
+		FGuid OldLandscapeGuid = this->LandscapeGuid;
+		Ar << OldLandscapeGuid;
+
+		UPackage* OuterWorldPackage = OuterWorld->GetPackage();
+		if (ensure(OuterWorldPackage))
+		{
+			FName PackageName = OuterWorldPackage->GetFName();
+			Ar << PackageName;
+		}
+
+		this->LandscapeGuid = Ar.GetGuidFromHash();
+	}
+}
+
 void ALandscapeProxy::PostLoad()
 {
 	Super::PostLoad();
+
+	PostLoadFixupLandscapeGuidsIfInstanced();
+
+#if WITH_EDITOR
+	FixupOverriddenSharedProperties();
+
+	ALandscape* LandscapeActor = GetLandscapeActor();
+
+	// Try to fixup shared properties if everything is ready for it as some postload process may depend on it.
+	if ((GetLandscapeInfo() != nullptr) && (LandscapeActor != nullptr) && (LandscapeActor != this))
+	{
+		const bool bMapCheck = true;
+		FixupSharedData(LandscapeActor, bMapCheck);
+	}
+#endif // WITH_EDITOR
 
 	// Temporary
 	if (ComponentSizeQuads == 0 && LandscapeComponents.Num() > 0)
@@ -3342,7 +3637,7 @@ void ALandscapeProxy::PostLoad()
 	{
 		BodyInstance.FixupData(this);
 	}
-	
+
 #if WITH_EDITOR
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	if (!LandscapeMaterialsOverride_DEPRECATED.IsEmpty())
@@ -3399,34 +3694,50 @@ void ALandscapeProxy::PostLoad()
 
 	bool bFixedUpInvalidMaterialInstances = false;
 
+	UMaterial* BaseLandscapeMaterial = GetLandscapeMaterial()->GetMaterial();
+
 	for (ULandscapeComponent* Comp : LandscapeComponents)
 	{
-		if (Comp)
+		if (Comp == nullptr)
 		{
-			// Validate the layer combination and store it in the MaterialInstanceConstantMap
-			if (UMaterialInstance* MaterialInstance = Comp->GetMaterialInstance(0, false))
+			continue;
+		}
+
+		// Validate the layer combination and store it in the MaterialInstanceConstantMap
+		UMaterialInstance* MaterialInstance = Comp->GetMaterialInstance(0, false);
+
+		if (MaterialInstance == nullptr)
+		{
+			continue;
+		}
+
+		UMaterialInstanceConstant* CombinationMaterialInstance = Cast<UMaterialInstanceConstant>(MaterialInstance->Parent);
+		// Only validate if uncooked and in the editor/commandlet mode (we cannot re-build material instance constants if this is not the case : see UMaterialInstance::CacheResourceShadersForRendering, which is only called if FApp::CanEverRender() returns true) 
+		if (!Comp->GetOutermost()->HasAnyPackageFlags(PKG_FilterEditorOnly) && (GIsEditor && FApp::CanEverRender()))
+		{
+			// MaterialInstance is different from the used LandscapeMaterial, we need to update the material as we cannot properly validate used combinations.
+			if (MaterialInstance->GetMaterial() != BaseLandscapeMaterial)
 			{
-				UMaterialInstanceConstant* CombinationMaterialInstance = Cast<UMaterialInstanceConstant>(MaterialInstance->Parent);
-				// Only validate if uncooked and in the editor/commandlet mode (we cannot re-build material instance constants if this is not the case : see UMaterialInstance::CacheResourceShadersForRendering, which is only called if FApp::CanEverRender() returns true) 
-				if (!Comp->GetOutermost()->HasAnyPackageFlags(PKG_FilterEditorOnly) && (GIsEditor && FApp::CanEverRender()))
-				{
-					if (Comp->ValidateCombinationMaterial(CombinationMaterialInstance))
-					{
-						MaterialInstanceConstantMap.Add(*ULandscapeComponent::GetLayerAllocationKey(Comp->GetWeightmapLayerAllocations(), CombinationMaterialInstance->Parent), CombinationMaterialInstance);
-					}
-					else
-					{
-						// There was a problem with the loaded material : it doesn't match the expected material combination, we need to regenerate the material instances : 
-						Comp->UpdateMaterialInstances();
-						bFixedUpInvalidMaterialInstances = true;
-					}
-				}
-				else if (CombinationMaterialInstance)
-				{
-					// Skip ValidateCombinationMaterial
-					MaterialInstanceConstantMap.Add(*ULandscapeComponent::GetLayerAllocationKey(Comp->GetWeightmapLayerAllocations(), CombinationMaterialInstance->Parent), CombinationMaterialInstance);
-				}
+				Comp->UpdateMaterialInstances();
+				bFixedUpInvalidMaterialInstances = true;
+				continue;
 			}
+
+			if (Comp->ValidateCombinationMaterial(CombinationMaterialInstance))
+			{
+				MaterialInstanceConstantMap.Add(*ULandscapeComponent::GetLayerAllocationKey(Comp->GetWeightmapLayerAllocations(), CombinationMaterialInstance->Parent), CombinationMaterialInstance);
+			}
+			else
+			{
+				// There was a problem with the loaded material : it doesn't match the expected material combination, we need to regenerate the material instances : 
+				Comp->UpdateMaterialInstances();
+				bFixedUpInvalidMaterialInstances = true;
+			}
+		}
+		else if (CombinationMaterialInstance)
+		{
+			// Skip ValidateCombinationMaterial
+			MaterialInstanceConstantMap.Add(*ULandscapeComponent::GetLayerAllocationKey(Comp->GetWeightmapLayerAllocations(), CombinationMaterialInstance->Parent), CombinationMaterialInstance);
 		}
 	}
 
@@ -3439,7 +3750,6 @@ void ALandscapeProxy::PostLoad()
 			->AddToken(FTextToken::Create(FText::Format(LOCTEXT("MapCheck_Message_FixedUpInvalidLandscapeMaterialInstances", "{LandscapeName} : Fixed up invalid landscape material instances. Please re-save {ProxyPackage}."), Arguments)))
 			->AddToken(FMapErrorToken::Create(FMapErrors::FixedUpInvalidLandscapeMaterialInstances));
 	}
-
 	UWorld* World = GetWorld();
 
 	// track feature level change to flush grass cache
@@ -3449,17 +3759,35 @@ void ALandscapeProxy::PostLoad()
 		FeatureLevelChangedDelegateHandle = World->AddOnFeatureLevelChangedHandler(FeatureLevelChangedDelegate);
 	}
 	RepairInvalidTextures();
-
-	if (World && !HasAnyFlags(RF_ClassDefaultObject) && !FPlatformProperties::RequiresCookedData())
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (NaniteComponent_DEPRECATED)
 	{
-		// TODO: Need to sort out occasional StaticAllocateObject problem on load
-		//UpdateNaniteRepresentation(/*InTargetPlatform = */nullptr);
+		NaniteComponents.Add(NaniteComponent_DEPRECATED);
+		NaniteComponent_DEPRECATED = nullptr;
 	}
-
-	// Remove RF_Transactional from Nanite components : they're re-created upon transacting now : 
-	if (NaniteComponent != nullptr)
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	// Handle Nanite representation invalidation on load: 
+	if (!HasAnyFlags(RF_ClassDefaultObject) && !FPlatformProperties::RequiresCookedData())
 	{
-		NaniteComponent->ClearFlags(RF_Transactional);
+		// FFortniteReleaseBranchCustomObjectVersion::FixupNaniteLandscapeMeshes : Fixup Nanite meshes which were using the wrong material and didn't have proper UVs
+		// FFortniteReleaseBranchCustomObjectVersion::RemoveUselessLandscapeMeshesCookedCollisionData : Remove cooked collision data from Nanite landscape meshes, since collisions are handled by ULandscapeHeightfieldCollisionComponent
+		// FFortniteReleaseBranchCustomObjectVersion::FixNaniteLandscapeMeshNames : Fix the names of the generated Nanite landscape UStaticMesh so that it's unique in a given package
+		// FFortniteMainBranchObjectVersion::FixNaniteLandscapeMeshDDCKey : Fix the non-deterministic hash being used by the generated Nanite landscape UStaticMesh so that it can benefit from DDC sharing if it's identical to a previously uploaded mesh derived data
+		if ((GetLinkerCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::FixNaniteLandscapeMeshNames)
+			|| (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::FixNaniteLandscapeMeshDDCKey)
+			|| CVarForceInvalidateNaniteOnLoad->GetBool())
+		{
+			// This will force the Nanite meshes to be properly regenerated during the next save :
+			InvalidateNaniteRepresentation(/* bCheckContentId = */ false);
+		}
+		else
+		{
+			// On load, get rid of the Nanite representation if it's not up-to-date so that it's marked as needing an update and will get fixed by the user when building Nanite data
+			InvalidateNaniteRepresentation(/* bCheckContentId = */ true);
+		}
+
+		// Remove RF_Transactional from Nanite components : they're re-created upon transacting now : 
+		ClearNaniteTransactional();
 	}
 #endif // WITH_EDITOR
 
@@ -3493,6 +3821,9 @@ void ALandscapeProxy::Destroyed()
 		NumTexturesToStreamForVisibleGrassMapRender = 0;
 	}
 
+	// Destroy the Nanite component when we get destroyed so that we don't restore a garbage Nanite component (it's non-transactional and will get regenerated anyway)
+	InvalidateNaniteRepresentation(/* bInCheckContentId = */false);
+
 	// unregister feature level changed handler for grass
 	if (FeatureLevelChangedDelegateHandle.IsValid())
 	{
@@ -3509,11 +3840,11 @@ void ALandscapeProxy::GetSharedProperties(ALandscapeProxy* Landscape)
 		Modify();
 
 		LandscapeGuid = Landscape->LandscapeGuid;
+		OriginalLandscapeGuid = Landscape->OriginalLandscapeGuid;
 
 		//@todo UE merge, landscape, this needs work
 		RootComponent->SetRelativeScale3D(Landscape->GetRootComponent()->GetComponentToWorld().GetScale3D());
 
-		//PrePivot = Landscape->PrePivot;
 		StaticLightingResolution = Landscape->StaticLightingResolution;
 		CastShadow = Landscape->CastShadow;
 		bCastDynamicShadow = Landscape->bCastDynamicShadow;
@@ -3536,6 +3867,7 @@ void ALandscapeProxy::GetSharedProperties(ALandscapeProxy* Landscape)
 		LODDistributionSetting = Landscape->LODDistributionSetting;
 		LOD0DistributionSetting = Landscape->LOD0DistributionSetting;
 		LOD0ScreenSize = Landscape->LOD0ScreenSize;
+		LODGroupKey = Landscape->LODGroupKey;
 		NegativeZBoundsExtension = Landscape->NegativeZBoundsExtension;
 		PositiveZBoundsExtension = Landscape->PositiveZBoundsExtension;
 		CollisionMipLevel = Landscape->CollisionMipLevel;
@@ -3546,6 +3878,15 @@ void ALandscapeProxy::GetSharedProperties(ALandscapeProxy* Landscape)
 		bVirtualTextureRenderWithQuadHQ = Landscape->bVirtualTextureRenderWithQuadHQ;
 		VirtualTextureNumLods = Landscape->VirtualTextureNumLods;
 		VirtualTextureRenderPassType = Landscape->VirtualTextureRenderPassType;
+		bEnableNanite = Landscape->bEnableNanite;
+		ShadowCacheInvalidationBehavior = Landscape->ShadowCacheInvalidationBehavior;
+
+		bUseCompressedHeightmapStorage = Landscape->bUseCompressedHeightmapStorage;
+#if WITH_EDITORONLY_DATA
+		bNaniteSkirtEnabled = Landscape->bNaniteSkirtEnabled;
+		NaniteSkirtDepth = Landscape->NaniteSkirtDepth;
+		NaniteLODIndex = Landscape->NaniteLODIndex;
+#endif // WITH_EDITORONLY_DATA
 
 		if (!LandscapeMaterial)
 		{
@@ -3578,131 +3919,177 @@ void ALandscapeProxy::GetSharedProperties(ALandscapeProxy* Landscape)
 
 #if WITH_EDITOR
 
-void ALandscapeProxy::FixupSharedData(ALandscape* Landscape)
+namespace UE::Landscape::Private
 {
-	if (Landscape == nullptr)
+	static bool CopyProperty(FProperty* InProperty, UObject* InSourceObject, UObject* InDestinationObject)
 	{
-		return;
-	}
+		void* SrcValuePtr = InProperty->ContainerPtrToValuePtr<void>(InSourceObject);
+		void* DestValuePtr = InProperty->ContainerPtrToValuePtr<void>(InDestinationObject);
 
-	bool bUpdated = false;
-
-	if (MaxLODLevel != Landscape->MaxLODLevel)
-	{
-		MaxLODLevel = Landscape->MaxLODLevel;
-		bUpdated = true;
-	}
-	
-	if (ComponentScreenSizeToUseSubSections != Landscape->ComponentScreenSizeToUseSubSections)
-	{
-		ComponentScreenSizeToUseSubSections = Landscape->ComponentScreenSizeToUseSubSections;
-		bUpdated = true;
-	}
-
-	if (LODDistributionSetting != Landscape->LODDistributionSetting)
-	{
-		LODDistributionSetting = Landscape->LODDistributionSetting;
-		bUpdated = true;
-	}
-
-	if (LOD0DistributionSetting != Landscape->LOD0DistributionSetting)
-	{
-		LOD0DistributionSetting = Landscape->LOD0DistributionSetting;
-		bUpdated = true;
-	}
-
-	if (LOD0ScreenSize != Landscape->LOD0ScreenSize)
-	{
-		LOD0ScreenSize = Landscape->LOD0ScreenSize;
-		bUpdated = true;
-	}
-
-	if (TargetDisplayOrder != Landscape->TargetDisplayOrder)
-	{
-		TargetDisplayOrder = Landscape->TargetDisplayOrder;
-		bUpdated = true;
-	}
-
-	if (TargetDisplayOrderList != Landscape->TargetDisplayOrderList)
-	{
-		TargetDisplayOrderList = Landscape->TargetDisplayOrderList;
-		bUpdated = true;
-	}
-
-
-	TSet<FGuid> LayerGuids;
-	Algo::Transform(Landscape->LandscapeLayers, LayerGuids, [](const FLandscapeLayer& Layer) { return Layer.Guid; });
-	bUpdated |= RemoveObsoleteLayers(LayerGuids);
-
-	for (const FLandscapeLayer& Layer : Landscape->LandscapeLayers)
-	{
-		bUpdated |= AddLayer(Layer.Guid);
-	}
-
-	if (bUpdated)
-	{
-		MarkPackageDirty();
-	}
-}
-
-void ALandscapeProxy::SetAbsoluteSectionBase(FIntPoint InSectionBase)
-{
-	FIntPoint Difference = InSectionBase - LandscapeSectionOffset;
-	LandscapeSectionOffset = InSectionBase;
-
-	RecreateComponentsRenderState([Difference](ULandscapeComponent* Comp)
-	{
-		FIntPoint AbsoluteSectionBase = Comp->GetSectionBase() + Difference;
-		Comp->SetSectionBase(AbsoluteSectionBase);
-	});
-
-	for (int32 CompIdx = 0; CompIdx < CollisionComponents.Num(); CompIdx++)
-	{
-		ULandscapeHeightfieldCollisionComponent* Comp = CollisionComponents[CompIdx];
-		if (Comp)
+		if ((DestValuePtr == nullptr) || (SrcValuePtr == nullptr))
 		{
-			FIntPoint AbsoluteSectionBase = Comp->GetSectionBase() + Difference;
-			Comp->SetSectionBase(AbsoluteSectionBase);
+			return false;
+		}
+
+		InProperty->CopyCompleteValue(DestValuePtr, SrcValuePtr);
+
+		return true;
+	}
+
+	static bool CopyPostEditPropertyByName(const TWeakObjectPtr<ALandscapeProxy>& InLandscapeProxy, const TWeakObjectPtr<ALandscape>& InParentLandscape, const FString& InPropertyName)
+	{
+		if (!InLandscapeProxy.IsValid() || !InParentLandscape.IsValid())
+		{
+			return false;
+		}
+
+		UClass* LandscapeProxyClass = InLandscapeProxy->GetClass();
+
+		if (LandscapeProxyClass == nullptr)
+		{
+			return false;
+		}
+
+		FProperty* PropertyToCopy = LandscapeProxyClass->FindPropertyByName(FName(InPropertyName));
+
+		if (PropertyToCopy == nullptr)
+		{
+			return false;
+		}
+
+		CopyProperty(PropertyToCopy, InParentLandscape.Get(), InLandscapeProxy.Get());
+
+		// Some properties may need additional processing (ex: LandscapeMaterial), notify the proxy of the change.
+		FPropertyChangedEvent PropertyChangedEvent(PropertyToCopy);
+		InLandscapeProxy->PostEditChangeProperty(PropertyChangedEvent);
+
+		InLandscapeProxy->Modify();
+
+		return true;
+	}
+
+	static void DisplaySynchronizedPropertiesMapcheckWarning(const TArray<FName>& InSynchronizedProperties, const ALandscapeProxy& InSynchronizedProxy, const ALandscapeProxy& InParentLandscape, const bool bAddSilencingMessage = false)
+	{
+		TStringBuilder<1024> SynchronizedPropertiesStringBuilder;
+		ULandscapeSubsystem* LandscapeSubsystem = InSynchronizedProxy.GetWorld() ? InSynchronizedProxy.GetWorld()->GetSubsystem<ULandscapeSubsystem>() : nullptr;
+		checkf(LandscapeSubsystem != nullptr, TEXT("DisplaySynchronizedPropertiesMapcheckWarning can only be called when a subsystem is available"));
+
+		for (const FName& SynchronizedProperty : InSynchronizedProperties)
+		{
+			if (SynchronizedPropertiesStringBuilder.Len() > 0)
+			{
+				SynchronizedPropertiesStringBuilder.Append(TEXT(", "));
+			}
+
+			SynchronizedPropertiesStringBuilder.Append(SynchronizedProperty.ToString());
+		}
+
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("Proxy"), FText::FromString(InSynchronizedProxy.GetActorNameOrLabel()));
+		Arguments.Add(TEXT("Landscape"), FText::FromString(InParentLandscape.GetActorNameOrLabel()));
+		TSharedRef<FTokenizedMessage> Message = FMessageLog("MapCheck").Warning()
+			->AddToken(FUObjectToken::Create(&InSynchronizedProxy, FText::FromString(InSynchronizedProxy.GetActorNameOrLabel())))
+			->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_LandscapeProxy_FixupSharedData", "had some shared properties not in sync with its parent landscape actor. This has been fixed but the proxy needs to be saved in order to ensure cooking behaves as expected. ")))
+			->AddToken(FActionToken::Create(LOCTEXT("MapCheck_SaveFixedUpData", "Save Modified Landscapes"), LOCTEXT("MapCheck_SaveFixedUpData_Desc", "Saves the modified landscape proxy actors"),
+				FOnActionTokenExecuted::CreateUObject(LandscapeSubsystem, &ULandscapeSubsystem::SaveModifiedLandscapes),
+				FCanExecuteActionToken::CreateUObject(LandscapeSubsystem, &ULandscapeSubsystem::HasModifiedLandscapes),
+				/*bInSingleUse = */false))
+			->AddToken(FTextToken::Create(FText::Format(LOCTEXT("MapCheck_Message_LandscapeProxy_FixupSharedData_SharedProperties", "The following properties were synchronized: {0}."), FText::FromString(SynchronizedPropertiesStringBuilder.ToString()))));
+			
+		if (bAddSilencingMessage)
+		{
+			Message->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_LandscapeProxy_SilenceWarning", "You can silence this warning and perform the deprecation silently using the landscape.SilenceSharedPropertyDeprecationFixup CVar. ")));
+		}
+
+		Message->AddToken(FMapErrorToken::Create(FMapErrors::LandscapeComponentPostLoad_Warning));
+
+		// Show MapCheck window
+		FMessageLog("MapCheck").Open(EMessageSeverity::Warning);
+	}
+} // namespace UE::Landscape::Private
+
+void ALandscapeProxy::CopySharedProperties(ALandscapeProxy* InLandscape)
+{
+	SynchronizeUnmarkedSharedProperties(InLandscape);
+
+	for (TFieldIterator<FProperty> PropertyIterator(GetClass()); PropertyIterator; ++PropertyIterator)
+	{
+		FProperty* Property = *PropertyIterator;
+
+		if (Property == nullptr)
+		{
+			continue;
+		}
+
+		if (IsSharedProperty(Property))
+		{
+			UE::Landscape::Private::CopyProperty(Property, InLandscape, this);
 		}
 	}
 }
 
-void ALandscapeProxy::RecreateComponentsState()
+TArray<FName> ALandscapeProxy::SynchronizeSharedProperties(ALandscapeProxy* InLandscape)
 {
-	RecreateComponentsRenderState([](ULandscapeComponent* Comp)
-	{
-		Comp->UpdateComponentToWorld();
-		Comp->UpdateCachedBounds();
-		Comp->UpdateBounds();
-	});
+	TArray<FName> SynchronizedProperties = SynchronizeUnmarkedSharedProperties(InLandscape);
 
-	for (int32 ComponentIndex = 0; ComponentIndex < CollisionComponents.Num(); ComponentIndex++)
+	for (TFieldIterator<FProperty> PropertyIterator(GetClass()); PropertyIterator; ++PropertyIterator)
 	{
-		ULandscapeHeightfieldCollisionComponent* Comp = CollisionComponents[ComponentIndex];
-		if (Comp)
+		FProperty* Property = *PropertyIterator;
+
+		if (Property == nullptr)
 		{
-			Comp->UpdateComponentToWorld();
-			Comp->RecreatePhysicsState();
+			continue;
+		}
+
+		if ((IsPropertyInherited(Property) ||
+			(IsPropertyOverridable(Property) && !IsSharedPropertyOverridden(Property->GetName()))) &&
+			!Property->Identical_InContainer(this, InLandscape))
+		{
+			SynchronizedProperties.Emplace(Property->GetFName());
+			UE::Landscape::Private::CopyProperty(Property, InLandscape, this);
 		}
 	}
-}
 
-void ALandscapeProxy::RecreateComponentsRenderState(TFunctionRef<void(ULandscapeComponent*)> Fn)
-{
-	// Batch component render state recreation
-	TArray<FComponentRecreateRenderStateContext> ComponentRecreateRenderStates;
-	ComponentRecreateRenderStates.Reserve(LandscapeComponents.Num());
-
-	for (int32 ComponentIndex = 0; ComponentIndex < LandscapeComponents.Num(); ComponentIndex++)
+	if (!SynchronizedProperties.IsEmpty())
 	{
-		ULandscapeComponent* Comp = LandscapeComponents[ComponentIndex];
-		if (Comp)
-		{
-			Fn(Comp);
-			ComponentRecreateRenderStates.Emplace(Comp);
-		}
+		Modify();
 	}
+
+	return SynchronizedProperties;
 }
+
+bool ALandscapeProxy::IsSharedProperty(const FName& InPropertyName) const
+{
+	FProperty* Property = StaticClass()->FindPropertyByName(InPropertyName);
+
+	return IsSharedProperty(Property);
+}
+
+bool ALandscapeProxy::IsSharedProperty(const FProperty* InProperty) const
+{
+	return IsPropertyInherited(InProperty) || IsPropertyOverridable(InProperty);
+}
+
+bool ALandscapeProxy::IsPropertyInherited(const FProperty* InProperty) const
+{
+	if (InProperty == nullptr)
+	{
+		return false;
+	}
+
+	return InProperty->HasMetaData(LandscapeInheritedTag);
+}
+
+bool ALandscapeProxy::IsPropertyOverridable(const FProperty* InProperty) const
+{
+	if (InProperty == nullptr)
+	{
+		return false;
+	}
+
+	return InProperty->HasMetaData(LandscapeOverridableTag);
+}
+#endif // WITH_EDITOR
 
 UMaterialInterface* ALandscapeProxy::GetLandscapeMaterial(int8 InLODIndex) const
 {
@@ -3770,52 +4157,255 @@ UMaterialInterface* ALandscapeStreamingProxy::GetLandscapeHoleMaterial() const
 	return nullptr;
 }
 
-bool ALandscapeStreamingProxy::IsNaniteEnabled() const
+#if WITH_EDITOR
+
+bool ALandscapeStreamingProxy::IsSharedPropertyOverridden(const FString& InPropertyName) const
 {
-	if (const ALandscape* Landscape = GetLandscapeActor())
+	return OverriddenSharedProperties.Contains(InPropertyName);
+}
+
+void ALandscapeStreamingProxy::SetSharedPropertyOverride(const FString& InPropertyName, const bool bIsOverridden)
+{
+	check(IsSharedProperty(FName(InPropertyName)));
+
+	Modify();
+
+	if (bIsOverridden)
 	{
-		return Landscape->IsNaniteEnabled();
+		OverriddenSharedProperties.Add(InPropertyName);
 	}
-	
+	else
+	{
+		TWeakObjectPtr<ALandscapeProxy> LandscapeProxy = this;
+		TWeakObjectPtr<ALandscape> ParentLandscape = GetLandscapeActor();
+		
+		if (!ParentLandscape.IsValid())
+		{
+			UE_LOG(LogLandscape, Warning, TEXT("Unable to retrieve the parent landscape's shared property value (ALandscapeStreamingProxy: %s, Property: %s). The proper value will be fixedup when reloading this proxy."),
+				   *GetFullName(), *InPropertyName);
+		}
+		else
+		{
+			UE::Landscape::Private::CopyPostEditPropertyByName(LandscapeProxy, ParentLandscape, InPropertyName);
+		}
+
+		OverriddenSharedProperties.Remove(InPropertyName);
+	}
+}
+
+void ALandscapeStreamingProxy::FixupOverriddenSharedProperties()
+{
+	const UClass* StreamingProxyClass = StaticClass();
+
+	for (const FString& PropertyName : OverriddenSharedProperties)
+	{
+		const FProperty* Property = StreamingProxyClass->FindPropertyByName(FName(PropertyName));
+		checkf(Property != nullptr, TEXT("An overridden property is referenced but cannot be found. Please check this property hasn't been renamed or deprecated and/or provide the proper adapting mechanism."));
+	}
+}
+
+void ALandscapeProxy::UpgradeSharedProperties(ALandscape* InParentLandscape)
+{
+	TArray<FName> SynchronizedProperties;
+	bool bOpenMapCheckWindow = false;
+	ULandscapeInfo* LandscapeInfo = GetLandscapeInfo();
+	checkf(LandscapeInfo != nullptr, TEXT("UpgradeSharedProperties can only be called after the proxies are registered to ULandscapeInfo"));
+
+	for (TFieldIterator<FProperty> PropertyIterator(GetClass()); PropertyIterator; ++PropertyIterator)
+	{
+		FProperty* Property = *PropertyIterator;
+
+		if (Property == nullptr)
+		{
+			continue;
+		}
+
+		if (IsPropertyInherited(Property) && !Property->Identical_InContainer(this, InParentLandscape))
+		{
+			SynchronizedProperties.Emplace(Property->GetFName());
+			UE::Landscape::Private::CopyProperty(Property, InParentLandscape, this);
+		}
+		else if (IsPropertyOverridable(Property) && !IsSharedPropertyOverridden(Property->GetName()) && !Property->Identical_InContainer(this, InParentLandscape))
+		{
+			if (CVarSilenceSharedPropertyDeprecationFixup->GetBool())
+			{
+				SetSharedPropertyOverride(Property->GetName(), true);
+			}
+			else
+			{
+				FFormatNamedArguments Arguments;
+				TWeakObjectPtr<ALandscapeProxy> LandscapeProxy = this;
+				TWeakObjectPtr<ALandscape> ParentLandscape = InParentLandscape;
+				const FString PropertyName = Property->GetName();
+
+				bOpenMapCheckWindow = true;
+
+				Arguments.Add(TEXT("Proxy"), FText::FromString(GetActorNameOrLabel()));
+				Arguments.Add(TEXT("Landscape"), FText::FromString(InParentLandscape->GetActorNameOrLabel()));
+				FMessageLog("MapCheck").Warning()
+					->AddToken(FUObjectToken::Create(this, FText::FromString(GetActorNameOrLabel())))
+					->AddToken(FTextToken::Create(FText::Format(LOCTEXT("MapCheck_Message_LandscapeProxy_UpgradeSharedProperties", "Contains a property ({0}) different from parent's landscape actor. Please select between "), FText::FromString(PropertyName))))
+					->AddToken(FActionToken::Create(LOCTEXT("MapCheck_OverrideProperty", "Override property"), LOCTEXT("MapCheck_OverrideProperty_Desc", "Keeping the current value and marking the property as overriding the parent landscape's value."),
+						FOnActionTokenExecuted::CreateLambda([LandscapeProxy, PropertyName]()
+							{
+								if (LandscapeProxy.IsValid())
+								{
+									LandscapeProxy->SetSharedPropertyOverride(PropertyName, true);
+								}
+							}),
+						/*bInSingleUse = */true))
+					->AddToken(FTextToken::Create(LOCTEXT("MapCheck_Message_LandscapeProxy_UpgradeSharedProperties_Or", " or ")))
+					->AddToken(FActionToken::Create(LOCTEXT("MapCheck_InheritProperty", "Inherit from parent landscape"), LOCTEXT("MapCheck_InheritProperty_Desc", "Copying the parent landscape's value for this property."),
+							FOnActionTokenExecuted::CreateLambda([LandscapeProxy, ParentLandscape, PropertyName]()
+								{
+									UE::Landscape::Private::CopyPostEditPropertyByName(LandscapeProxy, ParentLandscape, PropertyName);
+								}),
+							/*bInSingleUse = */true))
+					->AddToken(FMapErrorToken::Create(FMapErrors::LandscapeComponentPostLoad_Warning));
+			}
+		}
+	}
+
+	if (!SynchronizedProperties.IsEmpty())
+	{
+		LandscapeInfo->MarkObjectDirty(/*InObject = */this, /*bInForceResave = */true);
+
+		if (!CVarSilenceSharedPropertyDeprecationFixup->GetBool())
+		{
+			UE::Landscape::Private::DisplaySynchronizedPropertiesMapcheckWarning(SynchronizedProperties, *this, *InParentLandscape, true);
+		}
+	}
+
+	if (bOpenMapCheckWindow)
+	{
+		// Show MapCheck window
+		FMessageLog("MapCheck").Open(EMessageSeverity::Warning);
+	}
+}
+
+void ALandscapeProxy::FixupSharedData(ALandscape* Landscape, const bool bMapCheck)
+{
+	if ((Landscape == nullptr) || (Landscape == this))
+	{
+		return;
+	}
+
+	if (!bUpgradeSharedPropertiesPerformed && GetLinkerCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID) < FFortniteReleaseBranchCustomObjectVersion::LandscapeSharedPropertiesEnforcement)
+	{
+		UpgradeSharedProperties(Landscape);
+		bUpgradeSharedPropertiesPerformed = true;
+	}
+	else
+	{
+		ULandscapeInfo* LandscapeInfo = GetLandscapeInfo();
+		checkf(LandscapeInfo != nullptr, TEXT("FixupSharedData can only be called after the proxies are registered to ULandscapeInfo"));
+
+		TArray<FName> SynchronizedProperties = SynchronizeSharedProperties(Landscape);
+		bool bUpdated = !SynchronizedProperties.IsEmpty();
+
+		TSet<FGuid> LayerGuids;
+		Algo::Transform(Landscape->LandscapeLayers, LayerGuids, [](const FLandscapeLayer& Layer) { return Layer.Guid; });
+		bUpdated |= RemoveObsoleteLayers(LayerGuids);
+
+		for (const FLandscapeLayer& Layer : Landscape->LandscapeLayers)
+		{
+			bUpdated |= AddLayer(Layer.Guid);
+		}
+
+		if (bUpdated)
+		{
+			// Force resave the proxy through the modified landscape system, so that the user can then use the Save Modified Landscapes menu and therefore manually trigger the re-save of all modified proxies. * /
+			bool bNeedsManualResave = LandscapeInfo->MarkObjectDirty(/*InObject = */this, /*bInForceResave = */true);
+
+			if (bMapCheck && bNeedsManualResave)
+			{
+				UE::Landscape::Private::DisplaySynchronizedPropertiesMapcheckWarning(SynchronizedProperties, *this, *Landscape);
+			}
+		}
+	}
+}
+
+void ALandscapeProxy::SetAbsoluteSectionBase(FIntPoint InSectionBase)
+{
+	FIntPoint Difference = InSectionBase - LandscapeSectionOffset;
+	LandscapeSectionOffset = InSectionBase;
+
+	RecreateComponentsRenderState([Difference](ULandscapeComponent* Comp)
+	{
+		FIntPoint AbsoluteSectionBase = Comp->GetSectionBase() + Difference;
+		Comp->SetSectionBase(AbsoluteSectionBase);
+	});
+
+	for (int32 CompIdx = 0; CompIdx < CollisionComponents.Num(); CompIdx++)
+	{
+		ULandscapeHeightfieldCollisionComponent* Comp = CollisionComponents[CompIdx];
+		if (Comp)
+		{
+			FIntPoint AbsoluteSectionBase = Comp->GetSectionBase() + Difference;
+			Comp->SetSectionBase(AbsoluteSectionBase);
+		}
+	}
+}
+
+void ALandscapeProxy::RecreateComponentsState()
+{
+	RecreateComponentsRenderState([](ULandscapeComponent* Comp)
+	{
+		Comp->UpdateComponentToWorld();
+		Comp->UpdateCachedBounds();
+		Comp->UpdateBounds();
+	});
+
+	for (int32 ComponentIndex = 0; ComponentIndex < CollisionComponents.Num(); ComponentIndex++)
+	{
+		ULandscapeHeightfieldCollisionComponent* Comp = CollisionComponents[ComponentIndex];
+		if (Comp)
+		{
+			Comp->UpdateComponentToWorld();
+			Comp->RecreatePhysicsState();
+		}
+	}
+}
+
+void ALandscapeProxy::RecreateComponentsRenderState(TFunctionRef<void(ULandscapeComponent*)> Fn)
+{
+	// Batch component render state recreation
+	TArray<FComponentRecreateRenderStateContext> ComponentRecreateRenderStates;
+	ComponentRecreateRenderStates.Reserve(LandscapeComponents.Num());
+
+	for (int32 ComponentIndex = 0; ComponentIndex < LandscapeComponents.Num(); ComponentIndex++)
+	{
+		ULandscapeComponent* Comp = LandscapeComponents[ComponentIndex];
+		if (Comp)
+		{
+			Fn(Comp);
+			ComponentRecreateRenderStates.Emplace(Comp);
+		}
+	}
+}
+
+bool ULandscapeInfo::GetDirtyOnlyInMode() const
+{
+	if (const ALandscape* Landscape = LandscapeActor.Get())
+	{
+		if (const UWorld* World = Landscape->GetWorld())
+		{
+			if (const ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				return LandscapeSubsystem->GetDirtyOnlyInMode();
+			}
+		}
+		return false;
+	}
+
 	return false;
-}
-
-void ALandscape::PreSave(const class ITargetPlatform* TargetPlatform)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-	Super::PreSave(TargetPlatform);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
-}
-
-void ALandscape::PreSave(FObjectPreSaveContext ObjectSaveContext)
-{
-	Super::PreSave(ObjectSaveContext);
-	//ULandscapeInfo* Info = GetLandscapeInfo();
-	//if (GIsEditor && Info && !ObjectSaveContext.IsProceduralSave())
-	//{
-	//	for (TSet<ALandscapeProxy*>::TIterator It(Info->StreamingProxies); It; ++It)
-	//	{
-	//		ALandscapeProxy* Proxy = *It;
-	//		if (!ensure(Proxy->LandscapeActor == this))
-	//		{
-	//			Proxy->LandscapeActor = this;
-	//			Proxy->GetSharedProperties(this);
-	//		}
-	//	}
-	//}
-}
-
-bool ULandscapeInfo::IsDirtyOnlyInModeEnabled()
-{
-	const ULandscapeSettings* Settings = GetDefault<ULandscapeSettings>();
-	return Settings->LandscapeDirtyingMode == ELandscapeDirtyingMode::InLandscapeModeOnly || Settings->LandscapeDirtyingMode == ELandscapeDirtyingMode::InLandscapeModeAndUserTriggeredChanges;
 }
 
 FLandscapeDirtyOnlyInModeScope::FLandscapeDirtyOnlyInModeScope(ULandscapeInfo* InLandscapeInfo)
 	: LandscapeInfo(InLandscapeInfo)
 	, bDirtyOnlyInModePrevious(InLandscapeInfo->bDirtyOnlyInMode)
 {
-	LandscapeInfo->bDirtyOnlyInMode = ULandscapeInfo::IsDirtyOnlyInModeEnabled();
+	LandscapeInfo->bDirtyOnlyInMode = LandscapeInfo->GetDirtyOnlyInMode();
 }
 
 
@@ -3840,14 +4430,9 @@ TArray<UPackage*> ULandscapeInfo::GetModifiedPackages() const
 {
 	TArray<UPackage*> LocalModifiedPackages;
 	LocalModifiedPackages.Reserve(ModifiedPackages.Num());
-	for (const TWeakObjectPtr<UPackage>& WeakPackagePtr : ModifiedPackages)
-	{
-		if (UPackage* Package = WeakPackagePtr.Get())
-		{
-			LocalModifiedPackages.Add(Package);
-		}
-	}
-
+	Algo::TransformIf(ModifiedPackages, LocalModifiedPackages, 
+		[](const TWeakObjectPtr<UPackage>& InWeakPackagePtr) { return InWeakPackagePtr.IsValid(); }, 
+		[](const TWeakObjectPtr<UPackage>& InWeakPackagePtr) { return InWeakPackagePtr.Get(); });
 	return LocalModifiedPackages;
 }
 
@@ -3865,24 +4450,51 @@ void ULandscapeInfo::MarkModifiedPackagesAsDirty()
 
 int32 ULandscapeInfo::GetModifiedPackageCount() const
 {
-	int32 ModifiedPackageCount = 0;
-
-	for (const TWeakObjectPtr<UPackage>& WeakPackagePtr : ModifiedPackages)
-	{
-		if (UPackage* Package = WeakPackagePtr.Get())
-		{
-			ModifiedPackageCount++;
-		}
-	}
-
-	return ModifiedPackageCount;
+	return IntCastChecked<int32>(Algo::CountIf(ModifiedPackages, [](const TWeakObjectPtr<UPackage>& InWeakPackagePtr) { return InWeakPackagePtr.IsValid(); }));
 }
 
-void ULandscapeInfo::MarkObjectDirty(UObject* InObject)
+bool ULandscapeInfo::TryAddToModifiedPackages(UPackage* InPackage)
+{
+	ALandscape* LocalLandscapeActor = LandscapeActor.Get();
+	check(LocalLandscapeActor);
+
+	// We don't want to bother with packages being marked dirty for anything else than the Editor world 
+	if (LocalLandscapeActor->GetWorld()->WorldType != EWorldType::Editor)
+	{
+		return false;
+	}
+
+	// Also don't track packages when rolling back a transaction because they are already dirty anyway 
+	if (GIsTransacting)
+	{
+		return false;
+	}
+
+	// Don't consider unsaved packages as modified/not dirty because they will be saved later on anyway. What we're really after are existing packages made dirty on load
+	if (FPackageName::IsTempPackage(InPackage->GetName()))
+	{
+		return false;
+	}
+
+	ModifiedPackages.Add(InPackage);
+	return true;
+}
+
+bool ULandscapeInfo::MarkObjectDirty(UObject* InObject, bool bInForceResave)
 {
 	check(InObject && (InObject->IsA<ALandscapeProxy>() || InObject->GetTypedOuter<ALandscapeProxy>() != nullptr));
-		
-	if (bDirtyOnlyInMode)
+
+	bool bWasAddedToModifiedPackages = false;
+	if (bInForceResave)
+	{
+		if (!InObject->MarkPackageDirty())
+		{
+			// When force-resaving (e.g. when syncing must-sync properties on load), unconditionally add the package to the list of packages to save if we couldn't mark it dirty already, so that 
+			//  the user can manually resave all that needs to be saved with the Save Modified Landscapes button :
+			bWasAddedToModifiedPackages = TryAddToModifiedPackages(InObject->GetPackage());
+		}
+	}
+	else if (bDirtyOnlyInMode)
 	{
 		ALandscape* LocalLandscapeActor = LandscapeActor.Get();
 		check(LocalLandscapeActor);
@@ -3892,18 +4504,21 @@ void ULandscapeInfo::MarkObjectDirty(UObject* InObject)
 		}
 		else
 		{
-			ModifiedPackages.Add(InObject->GetPackage());
+			bWasAddedToModifiedPackages = TryAddToModifiedPackages(InObject->GetPackage());
 		}
 	}
 	else
 	{
 		InObject->MarkPackageDirty();
 	}
+
+	return bWasAddedToModifiedPackages;
 }
 
-void ULandscapeInfo::ModifyObject(UObject* InObject, bool bAlwaysMarkDirty)
+bool ULandscapeInfo::ModifyObject(UObject* InObject, bool bAlwaysMarkDirty)
 {
 	check(InObject && (InObject->IsA<ALandscapeProxy>() || InObject->GetTypedOuter<ALandscapeProxy>() != nullptr));
+	bool bWasAddedToModifiedPackages = false;
 	
 	if (!bAlwaysMarkDirty)
 	{
@@ -3924,20 +4539,25 @@ void ULandscapeInfo::ModifyObject(UObject* InObject, bool bAlwaysMarkDirty)
 		else 
 		{
 			InObject->Modify(false);
-			ModifiedPackages.Add(InObject->GetPackage());
+			bWasAddedToModifiedPackages = TryAddToModifiedPackages(InObject->GetPackage());
 		}
 	}
+
+	return bWasAddedToModifiedPackages;
 }
 
 ALandscapeProxy* ULandscapeInfo::GetLandscapeProxyForLevel(ULevel* Level) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ULandscapeInfo::GetLandscapeProxyForLevel);
 	ALandscapeProxy* LandscapeProxy = nullptr;
-	ForAllLandscapeProxies([&LandscapeProxy, Level](ALandscapeProxy* Proxy)
+	ForEachLandscapeProxy([&LandscapeProxy, Level](ALandscapeProxy* Proxy) -> bool 
 	{
 		if (Proxy->GetLevel() == Level)
 		{
 			LandscapeProxy = Proxy;
+			return false;
 		}
+		return true;
 	});
 	return LandscapeProxy;
 }
@@ -3946,8 +4566,10 @@ ALandscapeProxy* ULandscapeInfo::GetLandscapeProxyForLevel(ULevel* Level) const
 
 ALandscapeProxy* ULandscapeInfo::GetCurrentLevelLandscapeProxy(bool bRegistered) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ULandscapeInfo::GetCurrentLevelLandscapeProxy);
+
 	ALandscapeProxy* LandscapeProxy = nullptr;
-	ForAllLandscapeProxies([&LandscapeProxy, bRegistered](ALandscapeProxy* Proxy)
+	ForEachLandscapeProxy([&LandscapeProxy, bRegistered](ALandscapeProxy* Proxy) -> bool
 	{
 		if (!bRegistered || Proxy->GetRootComponent()->IsRegistered())
 		{
@@ -3956,8 +4578,10 @@ ALandscapeProxy* ULandscapeInfo::GetCurrentLevelLandscapeProxy(bool bRegistered)
 				ProxyWorld->GetCurrentLevel() == Proxy->GetOuter())
 			{
 				LandscapeProxy = Proxy;
+				return false;
 			}
 		}
+		return true;
 	});
 	return LandscapeProxy;
 }
@@ -3972,8 +4596,9 @@ ALandscapeProxy* ULandscapeInfo::GetLandscapeProxy() const
 	if (LandscapeActor.IsValid())
 	{
 		ALandscape* Landscape = LandscapeActor.Get();
-		if (Landscape != nullptr &&
-			Landscape->GetRootComponent()->IsRegistered())
+		USceneComponent* LandscapeRootComponent = (Landscape != nullptr) ? Landscape->GetRootComponent() : nullptr;
+
+		if ((LandscapeRootComponent != nullptr) && (LandscapeRootComponent->IsRegistered()))
 		{
 			return Landscape;
 		}
@@ -3989,8 +4614,9 @@ ALandscapeProxy* ULandscapeInfo::GetLandscapeProxy() const
 	for (TWeakObjectPtr<ALandscapeStreamingProxy> ProxyPtr : StreamingProxies)
 	{
 		ALandscapeStreamingProxy* Proxy = ProxyPtr.Get();
-		if (Proxy != nullptr &&
-			Proxy->GetRootComponent()->IsRegistered())
+		USceneComponent* ProxyRootComponent = (Proxy != nullptr) ? Proxy->GetRootComponent() : nullptr;
+
+		if ((ProxyRootComponent != nullptr) && (ProxyRootComponent->IsRegistered()))
 		{
 			return Proxy;
 		}
@@ -4079,12 +4705,13 @@ void ULandscapeInfo::FixupProxiesTransform(bool bDirty)
 
 void ULandscapeInfo::UpdateComponentLayerAllowList()
 {
-	ForAllLandscapeProxies([](ALandscapeProxy* Proxy)
+	ForEachLandscapeProxy([](ALandscapeProxy* Proxy)
 	{
 		for (ULandscapeComponent* Comp : Proxy->LandscapeComponents)
 		{
 			Comp->UpdateLayerAllowListFromPaintedLayers();
 		}
+		return true;
 	});
 }
 
@@ -4209,6 +4836,79 @@ void ULandscapeInfo::ForAllLandscapeProxies(TFunctionRef<void(ALandscapeProxy*)>
 	}
 }
 
+void ULandscapeInfo::ForEachLandscapeProxy(TFunctionRef<bool(ALandscapeProxy*)> Fn) const
+{
+	if (ALandscape* Landscape = LandscapeActor.Get())
+	{
+		if (!Fn(Landscape))
+		{
+			return;
+		}
+	}
+
+	for (TWeakObjectPtr<ALandscapeStreamingProxy> StreamingProxyPtr : StreamingProxies)
+	{
+		if (ALandscapeProxy* LandscapeProxy = StreamingProxyPtr.Get())
+		{
+			if (!Fn(LandscapeProxy))
+			{
+				return;
+			}
+		}
+	}
+}
+
+void ULandscapeInfo::UpdateNanite(const ITargetPlatform* InTargetPlatform)
+{
+	ALandscape* Landscape = LandscapeActor.Get();
+	if (!Landscape)
+	{
+		return;
+	}
+
+#if WITH_EDITOR
+	if (!Landscape->IsNaniteEnabled())
+	{
+		return;
+	}
+
+	UWorld* World = nullptr;
+	FGraphEventArray AsyncEvents;
+	ForEachLandscapeProxy([&AsyncEvents, InTargetPlatform, &World](ALandscapeProxy* LandscapeProxy)
+		{
+			AsyncEvents.Add(LandscapeProxy->UpdateNaniteRepresentationAsync(InTargetPlatform));
+			if (!World)
+			{
+				World = LandscapeProxy->GetWorld();
+			}
+			
+			return true;
+		});
+
+
+	if (!World)
+	{
+		return;
+	}
+
+	FGraphEventRef WaitForAllNaniteUpdates = FFunctionGraphTask::CreateAndDispatchWhenReady([]() {
+		},
+		TStatId(),
+			&AsyncEvents,
+			ENamedThreads::GameThread);
+
+	// we have to drain the game thread tasks and static mesh builds
+	ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>();
+	while (LandscapeSubsystem->AreNaniteBuildsInProgress())
+	{
+		ENamedThreads::Type CurrentThread = FTaskGraphInterface::Get().GetCurrentThreadIfKnown();
+		FTaskGraphInterface::Get().ProcessThreadUntilIdle(CurrentThread);
+		FAssetCompilingManager::Get().ProcessAsyncTasks();
+	}
+#endif //WITH_EDITOR
+
+}
+
 bool ULandscapeInfo::IsRegistered(const ALandscapeProxy* Proxy) const
 {
 	if (Proxy == nullptr)
@@ -4300,8 +5000,9 @@ void ULandscapeInfo::RegisterActor(ALandscapeProxy* Proxy, bool bMapCheck, bool 
 				{
 					StreamingProxy->SetLandscapeActor(LandscapeActor.Get());
 #if WITH_EDITOR
-					StreamingProxy->FixupSharedData(Landscape);
+					StreamingProxy->FixupSharedData(Landscape, bMapCheck);
 #endif // WITH_EDITOR
+					StreamingProxy->SetLODGroupKeyInternal(Landscape->LODGroupKey);
 				}
 			}
 		}
@@ -4345,10 +5046,14 @@ void ULandscapeInfo::RegisterActor(ALandscapeProxy* Proxy, bool bMapCheck, bool 
 			StreamingProxies.Insert(StreamingProxyPtr, InsertIndex);
 		}
 
-		StreamingProxy->SetLandscapeActor(LandscapeActor.Get());
+		if (LandscapeActor.IsValid())	// don't overwrite the proxy's landscape actor if we don't have one registered yet
+		{
+			StreamingProxy->SetLandscapeActor(LandscapeActor.Get());
+			StreamingProxy->SetLODGroupKeyInternal(LandscapeActor.Get()->LODGroupKey);
 #if WITH_EDITOR
-		StreamingProxy->FixupSharedData(LandscapeActor.Get());
+			StreamingProxy->FixupSharedData(LandscapeActor.Get(), bMapCheck);
 #endif // WITH_EDITOR
+		}
 	}
 
 #if WITH_EDITOR
@@ -4406,7 +5111,6 @@ void ULandscapeInfo::UnregisterActor(ALandscapeProxy* Proxy)
 		ALandscapeStreamingProxy* StreamingProxy = CastChecked<ALandscapeStreamingProxy>(Proxy);
 		TWeakObjectPtr<ALandscapeStreamingProxy> StreamingProxyPtr = StreamingProxy;
 		StreamingProxies.Remove(StreamingProxyPtr);
-		StreamingProxy->SetLandscapeActor(nullptr);
 	}
 
 #if WITH_EDITOR
@@ -4524,7 +5228,7 @@ void ULandscapeInfo::UpdateRegistrationForSplineActor(UWorld* InWorld, TScriptIn
 	FGuid SplineLandscapeGUID = InSplineActor->GetLandscapeGuid();
 
 	// first let's unregister from any landscapes that have it (incorrectly) registered
-	for (const TPair<FGuid, ULandscapeInfo*>& pair : LandscapeInfoMap.Map)
+	for (const auto& pair : LandscapeInfoMap.Map)
 	{
 		ULandscapeInfo* LandscapeInfo = pair.Value;
 
@@ -4802,20 +5506,16 @@ FBox ULandscapeInfo::GetCompleteBounds() const
 	FWorldPartitionHelpers::ForEachActorDesc<ALandscapeProxy>(Landscape->GetWorld()->GetWorldPartition(), [this, &Bounds, Landscape](const FWorldPartitionActorDesc* ActorDesc)
 	{
 		FLandscapeActorDesc* LandscapeActorDesc = (FLandscapeActorDesc*)ActorDesc;
+		ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(ActorDesc->GetActor());
 
-		if (LandscapeActorDesc->GridGuid == LandscapeGuid)
+		// Prioritize loaded bounds, as the bounds in the actor desc might not be up-to-date
+		if(LandscapeProxy && (LandscapeProxy->GetGridGuid() == LandscapeGuid))
 		{
-			ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(ActorDesc->GetActor());
-
-			if (LandscapeProxy)
-			{
-				// Prioritize loaded bounds, as the bounds in the actor desc might not be up-to-date
-				LandscapeInfoBoundsHelper::AccumulateBounds(LandscapeProxy, Bounds);
-			}
-			else
-			{
-				Bounds += ActorDesc->GetEditorBounds();
-			}
+			LandscapeInfoBoundsHelper::AccumulateBounds(LandscapeProxy, Bounds);
+		}
+		else if (LandscapeActorDesc->GridGuid == LandscapeGuid)
+		{
+			Bounds += ActorDesc->GetEditorBounds();
 		}
 
 		return true;
@@ -4904,6 +5604,7 @@ ULandscapeMeshProxyComponent::ULandscapeMeshProxyComponent(const FObjectInitiali
 void ULandscapeMeshProxyComponent::InitializeForLandscape(ALandscapeProxy* Landscape, int8 InProxyLOD)
 {
 	LandscapeGuid = Landscape->GetLandscapeGuid();
+	LODGroupKey = Landscape->GetLandscapeActor()->GetLODGroupKey();
 
 	for (ULandscapeComponent* Component : Landscape->LandscapeComponents)
 	{
@@ -4915,11 +5616,33 @@ void ULandscapeMeshProxyComponent::InitializeForLandscape(ALandscapeProxy* Lands
 
 	if (InProxyLOD != INDEX_NONE)
 	{
-		ProxyLOD = static_cast<int8>(FMath::Clamp<int32>(InProxyLOD, 0, FMath::CeilLogTwo(Landscape->SubsectionSizeQuads + 1) - 1));
+		ProxyLOD = FMath::Clamp<int8>(InProxyLOD, 0, static_cast<int8>(FMath::CeilLogTwo(Landscape->SubsectionSizeQuads + 1) - 1));
 	}
 }
 
 #if WITH_EDITOR
+
+void  ALandscapeProxy::CreateNaniteComponents(int32 InNumComponents) 
+{
+	for (int32 i = 0; i < InNumComponents; ++i)
+	{
+		ULandscapeNaniteComponent* NaniteComponent = NewObject<ULandscapeNaniteComponent>(this, *FString::Format(TEXT("LandscapeNaniteComponent_{0}"), {{ i }}));
+		NaniteComponent->SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
+		NaniteComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		NaniteComponent->SetMobility(EComponentMobility::Static);
+		NaniteComponent->SetGenerateOverlapEvents(false);
+		NaniteComponent->SetCanEverAffectNavigation(false);
+		NaniteComponent->CanCharacterStepUpOn = ECanBeCharacterBase::ECB_No;
+		NaniteComponent->bSelectable = false;
+		NaniteComponent->DepthPriorityGroup = SDPG_World;
+		NaniteComponent->bForceNaniteForMasked = true;
+		NaniteComponent->RegisterComponent();
+		NaniteComponent->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+
+		NaniteComponents.Add(NaniteComponent);
+	}
+}
+
 void ALandscapeProxy::SerializeStateHashes(FArchive& Ar)
 {
 	for (FLandscapePerLODMaterialOverride& MaterialOverride : PerLODOverrideMaterials)
@@ -4983,304 +5706,6 @@ void ULandscapeComponent::SerializeStateHashes(FArchive& Ar)
 	Proxy->SerializeStateHashes(Ar);
 }
 
-FLandscapeGIBakedTextureBuilder::FLandscapeGIBakedTextureBuilder(UWorld* InWorld)
-	:World(InWorld)
-	,OutdatedGIBakedTextureComponentsCount(0)
-	,GIBakedTexturesLastCheckTime(0)
-{
-
-}
-
-void FLandscapeGIBakedTextureBuilder::Build()
-{
-	if (World)
-	{
-		for (TActorIterator<ALandscapeProxy> ProxyIt(World); ProxyIt; ++ProxyIt)
-		{
-			ProxyIt->BuildGIBakedTextures();
-		}
-		//Force update the outdated count when using the build menu option.
-		OutdatedGIBakedTextureComponentsCount = 0;
-		GIBakedTexturesLastCheckTime = FPlatformTime::Seconds();
-
-	}
-}
-
-int32 FLandscapeGIBakedTextureBuilder::GetOutdatedGIBakedTextureComponentsCount(bool bInForceUpdate) const
-{
-	if (World)
-	{
-		bool bUpdate = bInForceUpdate;
-		double GIBakedTexturesTimeNow = FPlatformTime::Seconds();
-		if (!bUpdate)
-		{
-			// Recheck every 20 secs
-			if ((GIBakedTexturesTimeNow - GIBakedTexturesLastCheckTime) > 20)
-			{
-				bUpdate = true;
-			}
-		}
-		if (bUpdate)
-		{
-			GIBakedTexturesLastCheckTime = GIBakedTexturesTimeNow;
-			OutdatedGIBakedTextureComponentsCount = 0;
-			for (TActorIterator<ALandscapeProxy> ProxyIt(World); ProxyIt; ++ProxyIt)
-			{
-				OutdatedGIBakedTextureComponentsCount += ProxyIt->GetOutdatedGIBakedTextureComponentsCount();
-			}
-		}
-	}
-	return OutdatedGIBakedTextureComponentsCount;
-}
-
-void ALandscapeProxy::BuildGIBakedTextures(struct FScopedSlowTask* InSlowTask /* = nullptr */)
-{
-	if (!HasAnyFlags(RF_ClassDefaultObject))
-	{
-		const bool bShouldMarkDirty = true;
-		UpdateGIBakedTextureData(bShouldMarkDirty);
-	}
-	}
-
-int32 ALandscapeProxy::GetOutdatedGIBakedTextureComponentsCount() const
-	{
-	int32 OutdatedGITextureComponentsCount = 0;
-	UpdateGIBakedTextureStatus(nullptr, nullptr, &OutdatedGITextureComponentsCount);
-	return OutdatedGITextureComponentsCount;
-	}
-
-void ALandscapeProxy::UpdateGIBakedTextureStatus(bool* bOutGenerateLandscapeGIData, TMap<UTexture2D*, FGIBakedTextureState>* OutComponentsNeedBakingByHeightmap, int32* OutdatedComponentsCount) const
-{
-	int32 OutdatedComponents = 0;
-	int32 ComponentsNeedToBeCleared = 0;
-	int32 ComponentsNeedToBeBaked = 0;
-
-	//@todo - remove Landscape GI Data
-	if (true)
-	{
-		if (bOutGenerateLandscapeGIData)
-		{
-			*bOutGenerateLandscapeGIData = false;
-		}
-
-		for (ULandscapeComponent* Component : LandscapeComponents)
-		{
-			if (Component != nullptr && Component->GIBakedBaseColorTexture != nullptr)
-			{
-				ComponentsNeedToBeCleared++;
-			}
-		}
-
-		OutdatedComponents += ComponentsNeedToBeCleared;
-	}
-	else
-	{
-		// Stores the components and their state hash data for a single atlas
-		struct FGIBakeTextureStateBuilder
-		{
-			// pointer as FMemoryWriter caches the address of the FBufferArchive, and this struct could be relocated on a realloc.
-			TUniquePtr<FBufferArchive> ComponentStateAr;
-			TArray<ULandscapeComponent*> Components;
-
-			FGIBakeTextureStateBuilder()
-			{
-				ComponentStateAr = MakeUnique<FBufferArchive>();
-			}
-		};
-
-		TMap<UTexture2D*, FGIBakeTextureStateBuilder> ComponentsByHeightmap;
-		for (ULandscapeComponent* Component : LandscapeComponents)
-		{
-			if (Component == nullptr)
-			{
-				continue;
-			}
-
-			FGIBakeTextureStateBuilder& Info = ComponentsByHeightmap.FindOrAdd(Component->GetHeightmap());
-			Info.Components.Add(Component);
-			Component->SerializeStateHashes(*Info.ComponentStateAr);
-		}
-
-		for (auto It = ComponentsByHeightmap.CreateIterator(); It; ++It)
-		{
-			FGIBakeTextureStateBuilder& Info = It.Value();
-
-			// Calculate a combined Guid-like ID we can use for this component
-			uint32 Hash[5];
-			FSHA1::HashBuffer(Info.ComponentStateAr->GetData(), Info.ComponentStateAr->Num(), (uint8*)Hash);
-			FGuid CombinedStateId = FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
-
-			if (Info.Components[0]->BakedTextureMaterialGuid != CombinedStateId)
-			{
-				ComponentsNeedToBeBaked += Info.Components.Num();
-				if (OutComponentsNeedBakingByHeightmap)
-				{
-					FGIBakedTextureState& GIBakedTextureState = OutComponentsNeedBakingByHeightmap->FindOrAdd(It.Key());
-					GIBakedTextureState.Components = MoveTemp(Info.Components);
-					GIBakedTextureState.CombinedStateId = CombinedStateId;
-				}
-			}
-		}
-		OutdatedComponents += ComponentsNeedToBeBaked;
-	}
-
-	if (OutdatedComponentsCount)
-	{
-		if (OutdatedComponents == 0)
-		{
-			for (auto Component : LandscapeComponents)
-			{
-				const bool bIsDirty = Component->GetPackage()->IsDirty();
-				if (Component->LastBakedTextureMaterialGuid != Component->BakedTextureMaterialGuid && !bIsDirty)
-				{
-					OutdatedComponents++;
-				}
-			}
-		}
-		*OutdatedComponentsCount = OutdatedComponents;
-	}
-}
-
-void ALandscapeProxy::UpdateGIBakedTextureData(bool bInShouldMarkDirty)
-{
-	const bool bBakeAllGITextures = true;
-	UpdateGIBakedTextures(bBakeAllGITextures);
-	if (bInShouldMarkDirty && GetOutdatedGIBakedTextureComponentsCount() > 0)
-	{
-		MarkPackageDirty();
-	}
-}
-
-void ALandscapeProxy::UpdateGIBakedTextures(bool bBakeAllGITextures)
-{
-	// See if we can render
-	UWorld* World = GetWorld();
-	if (!GIsEditor || GUsingNullRHI || !World || World->IsGameWorld() || World->FeatureLevel < ERHIFeatureLevel::SM5)
-	{
-		return;
-	}
-
-	if (!bBakeAllGITextures && UpdateBakedTexturesCountdown-- > 0)
-	{
-		return;
-	}
-
-	bool bGenerateLandscapeGIData = true;
-	TMap<UTexture2D*, FGIBakedTextureState> ComponentsToBeBakedByHeightmap;
-	UpdateGIBakedTextureStatus(&bGenerateLandscapeGIData, &ComponentsToBeBakedByHeightmap);
-	
-	if (!bGenerateLandscapeGIData)
-	{
-		// Clear out any existing GI textures
-		for (ULandscapeComponent* Component : LandscapeComponents)
-		{
-			if (Component != nullptr && Component->GIBakedBaseColorTexture != nullptr)
-			{
-				Component->BakedTextureMaterialGuid.Invalidate();
-				Component->GIBakedBaseColorTexture = nullptr;
-				Component->MarkRenderStateDirty();
-			}
-		}
-
-		// Don't check if we need to update anything for another 60 frames
-		UpdateBakedTexturesCountdown = 60;
-
-		return;
-	}
-
-	NumComponentsNeedingTextureBaking = 0;
-	int32 NumGenerated = 0;
-
-	for (auto It = ComponentsToBeBakedByHeightmap.CreateConstIterator(); It; ++It)
-	{
-		const FGIBakedTextureState& Info = It.Value();
-
-		bool bCanBake = true;
-		for (ULandscapeComponent* Component : Info.Components)
-		{
-			// not registered; ignore this component
-			if (!Component->SceneProxy)
-			{
-				continue;
-			}
-
-			// Check we can render the material
-			UMaterialInstance* MaterialInstance = Component->GetMaterialInstance(0, false);
-			if (!MaterialInstance)
-			{
-				// Cannot render this component yet as it doesn't have a material; abandon the atlas for this heightmap
-				bCanBake = false;
-				break;
-			}
-
-			FMaterialResource* MaterialResource = MaterialInstance->GetMaterialResource(World->FeatureLevel);
-			if (!MaterialResource || !MaterialResource->HasValidGameThreadShaderMap())
-			{
-				// Cannot render this component yet as its shaders aren't compiled; abandon the atlas for this heightmap
-				bCanBake = false;
-				break;
-			}
-		}
-
-		if (bCanBake)
-		{
-			// We throttle, baking only one atlas per frame if bBakeAllGITextures is false.
-			if (!bBakeAllGITextures && NumGenerated > 0)
-				{
-					NumComponentsNeedingTextureBaking += Info.Components.Num();
-				}
-				else
-				{
-					UTexture2D* HeightmapTexture = It.Key();
-					// 1/8 the res of the heightmap
-				FIntPoint AtlasSize(HeightmapTexture->Source.GetSizeX() >> 3, HeightmapTexture->Source.GetSizeY() >> 3);
-
-					TArray<FColor> AtlasSamples;
-					AtlasSamples.AddZeroed(AtlasSize.X * AtlasSize.Y);
-
-					for (ULandscapeComponent* Component : Info.Components)
-					{
-						// not registered; ignore this component
-						if (!Component->SceneProxy)
-						{
-							continue;
-						}
-
-						int32 ComponentSamples = (SubsectionSizeQuads + 1) * NumSubsections;
-						check(FMath::IsPowerOfTwo(ComponentSamples));
-
-						int32 BakeSize = ComponentSamples >> 3;
-						TArray<FColor> Samples;
-						if (FMaterialUtilities::ExportBaseColor(Component, BakeSize, Samples))
-						{
-							const int32 AtlasOffsetX = FMath::RoundToInt32(Component->HeightmapScaleBias.Z * HeightmapTexture->Source.GetSizeX()) >> 3;
-							const int32 AtlasOffsetY = FMath::RoundToInt32(Component->HeightmapScaleBias.W * HeightmapTexture->Source.GetSizeY()) >> 3;
-							for (int32 y = 0; y < BakeSize; y++)
-							{
-								FMemory::Memcpy(&AtlasSamples[(y + AtlasOffsetY) * AtlasSize.X + AtlasOffsetX], &Samples[y * BakeSize], sizeof(FColor) * BakeSize);
-							}
-							NumGenerated++;
-						}
-					}
-				UTexture2D* AtlasTexture = FMaterialUtilities::CreateTexture(GetOutermost(), HeightmapTexture->GetName() + TEXT("_BaseColor"), AtlasSize, AtlasSamples, TC_Default, TEXTUREGROUP_World, RF_NoFlags, true, Info.CombinedStateId);
-
-					for (ULandscapeComponent* Component : Info.Components)
-					{
-						Component->BakedTextureMaterialGuid = Info.CombinedStateId;
-						Component->GIBakedBaseColorTexture = AtlasTexture;
-						Component->MarkRenderStateDirty();
-					}
-				}
-			}
-		}
-	
-	if (NumGenerated == 0)
-	{
-		// Don't check if we need to update anything for another 60 frames
-		UpdateBakedTexturesCountdown = 60;
-	}
-}
-
 FLandscapePhysicalMaterialBuilder::FLandscapePhysicalMaterialBuilder(UWorld* InWorld)
 	:World(InWorld)
 	,OudatedPhysicalMaterialComponentsCount(0)
@@ -5293,6 +5718,18 @@ void FLandscapePhysicalMaterialBuilder::Build()
 	{
 		for (TActorIterator<ALandscapeProxy> ProxyIt(World); ProxyIt; ++ProxyIt)
 		{
+			ProxyIt->BuildPhysicalMaterial();
+		}
+	}
+}
+
+void FLandscapePhysicalMaterialBuilder::Rebuild()
+{
+	if (World)
+	{
+		for (TActorIterator<ALandscapeProxy> ProxyIt(World); ProxyIt; ++ProxyIt)
+		{
+			ProxyIt->InvalidatePhysicalMaterial();
 			ProxyIt->BuildPhysicalMaterial();
 		}
 	}
@@ -5318,6 +5755,58 @@ int32 ALandscapeProxy::GetOudatedPhysicalMaterialComponentsCount() const
 	return OudatedPhysicalMaterialComponentsCount;
 }
 
+UE::Landscape::EOutdatedDataFlags ALandscapeProxy::GetOutdatedDataFlags() const
+{
+	UE::Landscape::EOutdatedDataFlags OutdatedDataFlags = UE::Landscape::EOutdatedDataFlags::None;
+
+	if (GetOutdatedGrassMapCount() > 0)
+	{
+		OutdatedDataFlags |= UE::Landscape::EOutdatedDataFlags::GrassMaps;
+	}
+
+	if (GetOudatedPhysicalMaterialComponentsCount() > 0)
+	{
+		OutdatedDataFlags |= UE::Landscape::EOutdatedDataFlags::PhysicalMaterials;
+	}
+
+	if (!IsNaniteMeshUpToDate())
+	{
+		OutdatedDataFlags |= UE::Landscape::EOutdatedDataFlags::NaniteMeshes;
+	}
+
+	return OutdatedDataFlags;
+}
+
+void ALandscapeProxy::ClearNaniteTransactional()
+{
+	for (ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (NaniteComponent)
+		{
+			NaniteComponent->ClearFlags(RF_Transactional);
+		}
+	}
+}
+
+void ALandscapeProxy::UpdateNaniteSharedPropertiesFromActor()
+{	
+	for (ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (NaniteComponent)
+		{
+			NaniteComponent->UpdatedSharedPropertiesFromActor();
+		}	
+	}
+}
+
+void ALandscapeProxy::InvalidatePhysicalMaterial()
+{
+	for (ULandscapeComponent* Component : LandscapeComponents)
+	{
+		Component->PhysicalMaterialHash = 0;
+	}
+}
+
 void ALandscapeProxy::BuildPhysicalMaterial(struct FScopedSlowTask* InSlowTask)
 {
 	if (!HasAnyFlags(RF_ClassDefaultObject))
@@ -5330,7 +5819,7 @@ void ALandscapeProxy::BuildPhysicalMaterial(struct FScopedSlowTask* InSlowTask)
 void ALandscapeProxy::UpdatePhysicalMaterialTasksStatus(TSet<ULandscapeComponent*>* OutdatedComponents, int32* OutdatedComponentsCount) const
 {
 	int32 OutdatedCount = 0;
-	for (auto Component : LandscapeComponents)
+	for (ULandscapeComponent* Component : LandscapeComponents)
 	{
 		uint32 Hash = Component->CalculatePhysicalMaterialTaskHash();
 		if (Component->PhysicalMaterialHash != Hash || Component->PhysicalMaterialTask.IsValid())
@@ -5345,7 +5834,7 @@ void ALandscapeProxy::UpdatePhysicalMaterialTasksStatus(TSet<ULandscapeComponent
 
 	if (OutdatedCount == 0)
 	{
-		for (auto Component : LandscapeComponents)
+		for (ULandscapeComponent* Component : LandscapeComponents)
 		{
 			const bool bIsDirty = Component->GetPackage()->IsDirty();
 			if (Component->LastSavedPhysicalMaterialHash != Component->PhysicalMaterialHash && !bIsDirty)
@@ -5375,7 +5864,106 @@ void ALandscapeProxy::UpdatePhysicalMaterialTasks(bool bInShouldMarkDirty)
 		MarkPackageDirty();
 	}
 }
-#endif
+
+void ALandscapeProxy::RemoveNaniteComponents()
+{
+	for (ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (NaniteComponent)
+		{
+			// Don't call modify when detaching the nanite component, this is non-transactional "derived data", regenerated any time the source landscape data changes. This prevents needlessly dirtying the package :
+			NaniteComponent->DetachFromComponent(FDetachmentTransformRules(EDetachmentRule::KeepRelative, /*bInCallModify = */false));
+			NaniteComponent->DestroyComponent();
+		}
+	}
+
+	NaniteComponents.Empty();
+
+}
+#endif // WITH_EDITOR
+
+void ALandscapeProxy::EnableNaniteComponents(bool bInNaniteActive)
+{
+	for (ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (NaniteComponent)
+		{
+			NaniteComponent->SetEnabled(bInNaniteActive);
+		}
+	}
+}
+
+bool ALandscapeProxy::AreNaniteComponentsValid(const FGuid& InProxyContentId) const
+{
+	if (NaniteComponents.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (!NaniteComponent)
+		{
+			return false;
+		}
+
+		if (NaniteComponent->GetProxyContentId() != InProxyContentId)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+TSet<FPrimitiveComponentId> ALandscapeProxy::GetNanitePrimitiveComponentIds() const
+{
+	TSet<FPrimitiveComponentId> PrimitiveComponentIds;
+	for (const ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (NaniteComponent && NaniteComponent->SceneProxy)
+		{
+			PrimitiveComponentIds.Add(NaniteComponent->SceneProxy->GetPrimitiveComponentId());
+		}
+
+	}
+	return PrimitiveComponentIds;
+}
+
+FGuid ALandscapeProxy::GetNaniteComponentContentId() const
+{
+	if (NaniteComponents.IsEmpty())
+	{
+		return FGuid();
+	}
+
+	FGuid ContentId = NaniteComponents[0] ? NaniteComponents[0]->GetProxyContentId() : FGuid();
+	return ContentId;
+}
+
+bool ALandscapeProxy::AuditNaniteMaterials() const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ALandscapeProxy::AuditMaterials);
+	for (const ULandscapeNaniteComponent* NaniteComponent : NaniteComponents)
+	{
+		if (!NaniteComponent)
+		{
+			return false;
+		}
+
+		Nanite::FMaterialAudit NaniteMaterials;
+		Nanite::AuditMaterials(NaniteComponent, NaniteMaterials);
+
+		const bool bIsMaskingAllowed = Nanite::IsMaskingAllowed(GetWorld(), NaniteComponent->bForceNaniteForMasked);
+		if (!NaniteMaterials.IsValid(bIsMaskingAllowed))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+
 
 void ALandscapeProxy::InvalidateGeneratedComponentData(bool bInvalidateLightingCache)
 {
@@ -5392,7 +5980,6 @@ void ALandscapeProxy::InvalidateGeneratedComponentData(const TArray<ULandscapeCo
 		{
 			Component->InvalidateLightingCache();
 		}
-		Component->BakedTextureMaterialGuid.Invalidate();
 		ByProxy.FindOrAdd(Component->GetLandscapeProxy()).Add(Component);
 	}
 
@@ -5402,8 +5989,16 @@ void ALandscapeProxy::InvalidateGeneratedComponentData(const TArray<ULandscapeCo
 		Proxy->FlushGrassComponents(&Iter.Value());
 
 	#if WITH_EDITOR
-		Proxy->InvalidateOrUpdateNaniteRepresentation(/* bInCheckContentId = */true, /*InTargetPlatform = */nullptr);
-
+		ULandscapeSubsystem* Subsystem = Proxy->GetWorld()->GetSubsystem<ULandscapeSubsystem>();
+		if (Subsystem->IsLiveNaniteRebuildEnabled())
+		{
+			Proxy->GetAsyncWorkMonitor().SetDelayedUpdateTimer(FAsyncWorkMonitor::EAsyncWorkType::BuildNaniteMeshes, LandscapeNaniteBuildLag);
+		}
+		else
+		{
+			Proxy->InvalidateOrUpdateNaniteRepresentation(/* bInCheckContentId = */true, /*InTargetPlatform = */nullptr);
+		}
+		
 		FLandscapeProxyComponentDataChangedParams ChangeParams(Iter.Value());
 		Proxy->OnComponentDataChanged.Broadcast(Iter.Key(), ChangeParams);
 	#endif
@@ -5426,8 +6021,7 @@ void ALandscapeProxy::UpdateRenderingMethod()
 	}
 
 	bool bNaniteActive = false;
-
-	if (NaniteComponent != nullptr && GRenderNaniteLandscape != 0)
+	if ((GRenderNaniteLandscape != 0) && HasNaniteComponents())
 	{
 		bNaniteActive = UseNanite(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]);
 #if WITH_EDITOR
@@ -5435,13 +6029,25 @@ void ALandscapeProxy::UpdateRenderingMethod()
 		{
 			if (UWorld* World = LandscapeActor->GetWorld())
 			{
-				if ((GEngine->GetDefaultWorldFeatureLevel() == ERHIFeatureLevel::ES3_1) || (World->FeatureLevel <= ERHIFeatureLevel::ES3_1))
+				if ((GEngine->GetDefaultWorldFeatureLevel() == ERHIFeatureLevel::ES3_1) || (World->GetFeatureLevel() <= ERHIFeatureLevel::ES3_1))
 				{
 					bNaniteActive = UseNanite(GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1]);
 				}
 			}
 		}
-#endif
+#endif //WITH_EDITOR
+	}
+
+#if WITH_EDITOR
+	if (bNaniteActive)
+	{
+		bNaniteActive = GetNaniteComponentContentId() == GetNaniteContentId();
+	}
+#endif //WITH_EDITOR
+
+	if (bNaniteActive)
+	{
+		bNaniteActive = AuditNaniteMaterials();
 	}
 
 	for (ULandscapeComponent* Component : LandscapeComponents)
@@ -5452,10 +6058,7 @@ void ALandscapeProxy::UpdateRenderingMethod()
 		}
 	}
 
-	if (NaniteComponent)
-	{
-		NaniteComponent->SetEnabled(bNaniteActive);
-	}
+	EnableNaniteComponents(bNaniteActive);
 }
 
 ULandscapeLODStreamingProxy_DEPRECATED::ULandscapeLODStreamingProxy_DEPRECATED(const FObjectInitializer& ObjectInitializer)
@@ -5476,6 +6079,40 @@ void FLandscapeProxyComponentDataChangedParams::ForEachComponent(TFunctionRef<vo
 		Func(Component);
 	}
 }
-#endif
+
+
+
+bool FAsyncWorkMonitor::CheckIfUpdateTriggeredAndClear(EAsyncWorkType WorkType)
+{
+	bool& bUpdateTriggered = WorkTypeInfos[static_cast<uint32>(WorkType)].bUpdateTriggered;
+
+	bool bReturn = bUpdateTriggered;
+	bUpdateTriggered = false;
+	return bReturn;
+}
+
+void FAsyncWorkMonitor::SetDelayedUpdateTimer(EAsyncWorkType WorkType, float InSecondsUntilDelayedUpdateTrigger)
+{
+	FAsyncWorkTypeInfo& Info = WorkTypeInfos[static_cast<uint32>(WorkType)];
+	Info.SecondsUntilDelayedUpdateTrigger = InSecondsUntilDelayedUpdateTrigger;
+}
+
+void FAsyncWorkMonitor::Tick(float Detaltime)
+{
+	for (FAsyncWorkTypeInfo& Info : WorkTypeInfos)
+	{
+		if (Info.SecondsUntilDelayedUpdateTrigger > 0.0f)
+		{
+			Info.SecondsUntilDelayedUpdateTrigger -= Detaltime;
+
+			if (Info.SecondsUntilDelayedUpdateTrigger <= 0.0f)
+			{
+				Info.SecondsUntilDelayedUpdateTrigger = 0.0f;
+				Info.bUpdateTriggered = true;
+			}
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE

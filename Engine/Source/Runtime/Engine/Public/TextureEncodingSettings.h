@@ -40,109 +40,41 @@ enum class ETextureEncodeSpeedOverride : uint8
 	Fast = 2
 };
 
-// 
-// Encoding can either use the "Final" or "Fast" speeds, for supported encoders (e.g. Oodle)
-// These settings have no effect on encoders that don't support encode speed
 //
-UCLASS(config = Engine, defaultconfig, meta = (DisplayName = "Texture Encoding"))
-class ENGINE_API UTextureEncodingProjectSettings : public UDeveloperSettings
+// This is the public, thread safe class for accessing the encoding settings. They are
+// filled out as part of the engine class default object init loop during PreInit, and
+// are safe to access at any point during CDO construction as well.
+//
+struct FResolvedTextureEncodingSettings
 {
-	GENERATED_UCLASS_BODY()
+	// Properties mirrored from UTextureEncodingUserSettings - look there for 
+	// documentation
+	struct 
+	{
+		ETextureEncodeSpeedOverride ForceEncodeSpeed;
+	} User;
 
-	// If true, Final encode speed enables rate-distortion optimization on supported encoders to
-	// decrease *on disc* size of textures in compressed package files.
-	// This rate-distortion tradeoff is controlled via "Lambda". The "LossyCompressionAmount" parameter on
-	// textures is used to control it. Specific LossyCompressionAmount values correspond to
-	// to RDO lambdas of:
-	// 
-	//	None - Disable RDO for this texture.
-	//	Lowest - 1 (Least distortion)
-	//	Low - 10
-	//	Medium - 20
-	//	High - 30
-	//	Highest - 40
-	// 
-	// If set to Default, then the LossyCompressionAmount in the LODGroup for the texture is
-	// used. If that is also Default, then the RDOLambda in these settings is used.
-	//
-	// Note that any distortion introduced is on top of, and likely less than, any introduced by the format itself.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (ConfigRestartRequired = true))
-	uint32 bFinalUsesRDO : 1;
+	// Properties mirrored from UTextureEncodingProjectSettings - look there for 
+	// documentation
+	struct
+	{
+		uint32 bSharedLinearTextureEncoding : 1;
+		uint32 bFinalUsesRDO : 1;
+		uint32 bFastUsesRDO : 1;
+		int8 FinalRDOLambda;
+		int8 FastRDOLambda;
+		ETextureEncodeEffort FinalEffortLevel;
+		ETextureUniversalTiling FinalUniversalTiling;
+		ETextureEncodeEffort FastEffortLevel;
+		ETextureUniversalTiling FastUniversalTiling;
+		ETextureEncodeSpeed CookUsesSpeed;
+		ETextureEncodeSpeed EditorUsesSpeed;
+	} Project;
 
-	// Ignored if UsesRDO is false. This value is used if a given texture is using "Default" LossyCompressionAmount.
-	// Otherwise, the value of LossyCompressionAmount is translated in to a fixed lambda (see UsesRDO tooltip).
-	// 
-	// Low values (1) represent highest quality (least distortion) results.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (DisplayName = "Final RDO Lambda", UIMin = 1, UIMax = 100, ClampMin = 1, ClampMax = 100, EditCondition = bFinalUsesRDO, ConfigRestartRequired = true))
-	int8 FinalRDOLambda;
+	// The resolved EncodeSpeed to use for this instance, taking in to account overrides.
+	ETextureEncodeSpeed EncodeSpeed;
 
-	// Specifies how much time to take trying for better encoding results.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (ConfigRestartRequired = true))
-	ETextureEncodeEffort FinalEffortLevel;	
-
-	// Specifies how to assume textures are laid out on disc. This only applies to Oodle with RDO
-	// enabled. 256 KB is a good middle ground. Enabling this will decrease the on-disc
-	// sizes of textures for platforms with exposed texture tiling (i.e. consoles), but will slightly increase
-	// sizes of textures for platforms with opaque tiling (i.e. desktop).
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (ConfigRestartRequired = true))
-	ETextureUniversalTiling FinalUniversalTiling;
-
-	// If true, Final encode speed enables rate-distortion optimization on supported encoders to
-	// decrease *on disc* size of textures in compressed package files.
-	// This rate-distortion tradeoff is controlled via "Lambda". The "LossyCompressionAmount" parameter on
-	// textures is used to control it. Specific LossyCompressionAmount values correspond to
-	// to RDO lambdas of:
-	// 
-	//	None - Disable RDO for this texture.
-	//	Lowest - 1 (Least distortion)
-	//	Low - 10
-	//	Medium - 20
-	//	High - 30
-	//	Highest - 40
-	// 
-	// If set to Default, then the LossyCompressionAmount in the LODGroup for the texture is
-	// used. If that is also Default, then the RDOLambda in these settings is used.
-	//
-	// Note that any distortion introduced is on top of, and likely less than, any introduced by the format itself.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (ConfigRestartRequired = true))
-	uint32 bFastUsesRDO : 1;
-
-	// Ignored if UsesRDO is false. This value is used if a given texture is using "Default" LossyCompressionAmount.
-	// Otherwise, the value of LossyCompressionAmount is translated in to a fixed lambda (see UsesRDO tooltip).
-	// 
-	// Low values (1) represent highest quality (least distortion) results.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (DisplayName = "Fast RDO Lambda", UIMin = 1, UIMax = 100, ClampMin = 1, ClampMax = 100, EditCondition = bFastUsesRDO, ConfigRestartRequired = true))
-	int8 FastRDOLambda;
-
-	// Specifies how much time to take trying for better encode results.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (ConfigRestartRequired = true))
-	ETextureEncodeEffort FastEffortLevel;
-
-	// Specifies how to assume textures are laid out on disc. This only applies to Oodle with RDO
-	// enabled. 256 KB is a good middle ground. Enabling this will decrease the on-disc
-	// sizes of textures for platforms with exposed texture tiling (i.e. consoles), but will slightly increase
-	// sizes of textures for platforms with opaque tiling (i.e. desktop).
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeedSettings, meta = (ConfigRestartRequired = true))
-	ETextureUniversalTiling FastUniversalTiling;
-
-	// Which encode speed non interactive editor sessions will use (i.e. commandlets)
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeeds, meta = (ConfigRestartRequired = true))
-	ETextureEncodeSpeed CookUsesSpeed;
-
-	// Which encode speed everything else uses.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeeds, meta = (ConfigRestartRequired = true))
-	ETextureEncodeSpeed EditorUsesSpeed;
-};
-
-UCLASS(config = EditorPerProjectUserSettings, defaultconfig, meta = (DisplayName = "Texture Encoding"))
-class ENGINE_API UTextureEncodingUserSettings : public UDeveloperSettings
-{
-	GENERATED_UCLASS_BODY()
-
-	// Local machine/project setting to force an encode speed, if desired.
-	// See the Engine "Texture Encoding" section for details.
-	UPROPERTY(config, EditAnywhere, Category = EncodeSpeeds, meta = (ConfigRestartRequired = true))
-	ETextureEncodeSpeedOverride ForceEncodeSpeed;
+	static ENGINE_API FResolvedTextureEncodingSettings const& Get();
 };
 
 //

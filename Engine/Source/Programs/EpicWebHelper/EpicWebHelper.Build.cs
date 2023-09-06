@@ -7,15 +7,8 @@ public class EpicWebHelper : ModuleRules
 {
 	public EpicWebHelper(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add("Runtime/Launch/Public");
-
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				"Programs/EpicWebHelper/Private",
-				"Runtime/Launch/Private",					// for LaunchEngineLoop.cpp include
-			}
-		);
+		CppStandard = CppStandardVersion.Cpp17;
+		PublicIncludePathModuleNames.Add("Launch");
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]

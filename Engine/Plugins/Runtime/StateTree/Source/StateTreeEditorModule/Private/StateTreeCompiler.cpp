@@ -8,9 +8,151 @@
 #include "StateTreeEvaluatorBase.h"
 #include "StateTreeTaskBase.h"
 #include "StateTreeConditionBase.h"
+#include "Serialization/ArchiveUObject.h"
+#include "GameFramework/Actor.h"
+
 
 namespace UE::StateTree::Compiler
 {
+	// Helper archive that checks that the all instanced sub-objects have correct outer. 
+	class FCheckOutersArchive : public FArchiveUObject
+	{
+		using Super = FArchiveUObject;
+		const UStateTree& StateTree;
+		const UStateTreeEditorData& EditorData;
+		FStateTreeCompilerLog& Log;
+	public:
+
+		FCheckOutersArchive(const UStateTree& InStateTree, const UStateTreeEditorData& InEditorData, FStateTreeCompilerLog& InLog)
+			: StateTree(InStateTree)
+			, EditorData(InEditorData)
+			, Log(InLog)
+		{
+			Super::SetIsSaving(true);
+			Super::SetIsPersistent(true);
+		}
+
+		virtual bool ShouldSkipProperty(const FProperty* InProperty) const
+		{
+			// Skip editor data.
+			if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InProperty))
+			{
+				if (ObjectProperty->PropertyClass == UStateTreeEditorData::StaticClass())
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		virtual FArchive& operator<<(UObject*& Object) override
+		{
+			if (Object)
+			{
+				if (const FProperty* Property = GetSerializedProperty())
+				{
+					if (Property->HasAnyPropertyFlags(CPF_InstancedReference))
+					{
+						if (!Object->IsInOuter(&StateTree))
+						{
+							Log.Reportf(EMessageSeverity::Error, TEXT("Compiled StateTree contains instanced object %s (%s), which does not belong to the StateTree. This is due to error in the State Tree node implementation."),
+								*GetFullNameSafe(Object), *GetFullNameSafe(Object->GetClass()));
+						}
+
+						if (Object->IsInOuter(&EditorData))
+						{
+							Log.Reportf(EMessageSeverity::Error, TEXT("Compiled StateTree contains instanced object %s (%s), which still belongs to the Editor data. This is due to error in the State Tree node implementation."),
+								*GetFullNameSafe(Object), *GetFullNameSafe(Object->GetClass()));
+						}
+					}
+				}
+			}
+			return *this;
+		}
+	};
+
+	/** Scans Data for actors that are tied to some level and returns them. */
+	void ScanLevelActorReferences(FStateTreeDataView Data, TSet<const UObject*>& Visited, TArray<const AActor*>& OutActors)
+	{
+		if (!Data.IsValid())
+		{
+			return;
+		}
+		
+		for (TPropertyValueIterator<FProperty> It(Data.GetStruct(), Data.GetMemory()); It; ++It)
+		{
+			const FProperty* Property = It->Key;
+			const void* ValuePtr = It->Value;
+
+			if (!ValuePtr)
+			{
+				continue;
+			}
+			
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+			{
+				if (StructProperty->Struct == TBaseStructure<FInstancedStruct>::Get())
+				{
+					const FInstancedStruct& InstancedStruct = *static_cast<const FInstancedStruct*>(ValuePtr);
+					if (InstancedStruct.IsValid())
+					{
+						ScanLevelActorReferences(FStateTreeDataView(const_cast<FInstancedStruct&>(InstancedStruct)), Visited, OutActors);
+					}
+				}
+			}
+			else if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+			{
+				if (const UObject* Object = ObjectProperty->GetObjectPropertyValue(ValuePtr))
+				{
+					if (const AActor* Actor = Cast<AActor>(Object))
+					{
+						const ULevel* Level = Actor->GetLevel();
+						if (Level != nullptr)
+						{
+							OutActors.Add(Actor);
+						}
+					}
+					// Recurse into instanced object
+					if (Property->HasAnyPropertyFlags(CPF_InstancedReference))
+					{
+						if (!Visited.Contains(Object))
+						{
+							Visited.Add(Object);
+							ScanLevelActorReferences(FStateTreeDataView(const_cast<UObject*>(Object)), Visited, OutActors);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	bool ValidateNoLevelActorReferences(FStateTreeCompilerLog& Log, const FStateTreeBindableStructDesc& NodeDesc, FStateTreeDataView NodeView, FStateTreeDataView InstanceView)
+	{
+		TSet<const UObject*> Visited;
+		TArray<const AActor*> LevelActors;
+		UE::StateTree::Compiler::ScanLevelActorReferences(NodeView, Visited, LevelActors);
+		UE::StateTree::Compiler::ScanLevelActorReferences(InstanceView, Visited, LevelActors);
+		if (!LevelActors.IsEmpty())
+		{
+			FStringBuilderBase AllActorsString;
+			for (const AActor* Actor : LevelActors)
+			{
+				if (AllActorsString.Len() > 0)
+				{
+					AllActorsString += TEXT(", ");
+				}
+				AllActorsString += *GetNameSafe(Actor);
+			}
+			Log.Reportf(EMessageSeverity::Error, NodeDesc,
+				TEXT("Level Actor references were found: %s. Direct Actor references are not allowed."),
+					*AllActorsString);
+			return false;
+		}
+		
+		return true;
+	}
+
+
 	void FValidationResult::Log(FStateTreeCompilerLog& Log, const TCHAR* ContextText, const FStateTreeBindableStructDesc& ContextStruct) const
 	{
 		Log.Reportf(EMessageSeverity::Error, ContextStruct, TEXT("The StateTree is too complex. Compact index %s out of range %d/%d."), ContextText, Value, MaxValue);
@@ -90,12 +232,14 @@ bool FStateTreeCompiler::Compile(UStateTree& InStateTree)
 		return false;
 	}
 
+	EditorData->GetAllStructValues(IDToStructValue);
+
 	// Copy schema the EditorData
 	StateTree->Schema = DuplicateObject(EditorData->Schema, StateTree);
 
 	// Copy parameters from EditorData	
 	StateTree->Parameters = EditorData->RootParameters.Parameters;
-	
+
 	// Mark parameters as binding source
 	const FStateTreeBindableStructDesc ParametersDesc = {
 			TEXT("Parameters"),
@@ -111,7 +255,13 @@ bool FStateTreeCompiler::Compile(UStateTree& InStateTree)
 		return false;
 	}
 	StateTree->ParametersDataViewIndex = FStateTreeIndex8(ParametersDataViewIndex); 
-	
+
+	if (!UE::StateTree::Compiler::ValidateNoLevelActorReferences(Log, ParametersDesc, FStateTreeDataView(), FStateTreeDataView(EditorData->RootParameters.Parameters.GetMutableValue())))
+	{
+		StateTree->ResetCompiled();
+		return false;
+	}
+
 	// Mark all named external values as binding source
 	if (StateTree->Schema)
 	{
@@ -174,8 +324,30 @@ bool FStateTreeCompiler::Compile(UStateTree& InStateTree)
 	if (!StateTree->Link())
 	{
 		StateTree->ResetCompiled();
+		Log.Reportf(EMessageSeverity::Error, TEXT("Unexpected failure to link the StateTree asset. See log for more info."));
 		return false;
 	}
+
+	// Store mapping between node unique ID and their compiled index. Used for debugging purposes.
+	for (const TPair<FGuid, int32>& ToNode : IDToNode)
+	{
+		StateTree->IDToNodeMappings.Emplace(ToNode.Key, FStateTreeIndex16(ToNode.Value));
+	}
+
+	// Store mapping between state unique ID and state handle. Used for debugging purposes.
+	for (const TPair<FGuid, int32>& ToState : IDToState)
+	{
+		StateTree->IDToStateMappings.Emplace(ToState.Key, FStateTreeStateHandle(ToState.Value));
+	}
+
+	// Store mapping between state transition identifier and compact transition index. Used for debugging purposes.
+	for (const TPair<FGuid, int32>& ToTransition: IDToTransition)
+	{
+		StateTree->IDToTransitionMappings.Emplace(ToTransition.Key, FStateTreeIndex16(ToTransition.Value));
+	}
+
+	UE::StateTree::Compiler::FCheckOutersArchive CheckOuters(*StateTree, *EditorData, Log);
+	StateTree->Serialize(CheckOuters);
 	
 	return true;
 }
@@ -191,7 +363,7 @@ FStateTreeStateHandle FStateTreeCompiler::GetStateHandle(const FGuid& StateID) c
 	return FStateTreeStateHandle(uint16(*Idx));
 }
 
-UStateTreeState* FStateTreeCompiler::GetState(const FGuid& StateID)
+UStateTreeState* FStateTreeCompiler::GetState(const FGuid& StateID) const
 {
 	const int32* Idx = IDToState.Find(StateID);
 	if (Idx == nullptr)
@@ -212,7 +384,8 @@ bool FStateTreeCompiler::CreateStates()
 	// Create main tree (omit subtrees)
 	for (UStateTreeState* SubTree : EditorData->SubTrees)
 	{
-		if (SubTree != nullptr)
+		if (SubTree != nullptr
+			&& SubTree->Type != EStateTreeStateType::Subtree)
 		{
 			if (!CreateStateRecursive(*SubTree, FStateTreeStateHandle::Invalid))
 			{
@@ -255,8 +428,10 @@ bool FStateTreeCompiler::CreateStateRecursive(UStateTreeState& State, const FSta
 	FCompactStateTreeState& CompactState = StateTree->States[StateIdx];
 	CompactState.Name = State.Name;
 	CompactState.Parent = Parent;
+	CompactState.bEnabled = State.bEnabled;
 
-	CompactState.Type = State.Type; 
+	CompactState.Type = State.Type;
+	CompactState.SelectionBehavior = State.SelectionBehavior;
 	
 	SourceStates.Add(&State);
 	IDToState.Add(State.ID, StateIdx);
@@ -269,7 +444,7 @@ bool FStateTreeCompiler::CreateStateRecursive(UStateTreeState& State, const FSta
 		return false;
 	}
 	CompactState.ChildrenBegin = uint16(ChildrenBegin);
-	
+
 	for (UStateTreeState* Child : State.Children)
 	{
 		if (Child != nullptr && Child->Type != EStateTreeStateType::Subtree)
@@ -287,8 +462,8 @@ bool FStateTreeCompiler::CreateStateRecursive(UStateTreeState& State, const FSta
 		Validation.Log(Log, TEXT("ChildrenEnd"));
 		return false;
 	}
-	StateTree->States[StateIdx].ChildrenEnd = uint16(ChildrenEnd);
-
+	StateTree->States[StateIdx].ChildrenEnd = uint16(ChildrenEnd); // Not using CompactState here because the array may have changed.
+	
 	return true;
 }
 
@@ -303,7 +478,8 @@ bool FStateTreeCompiler::CreateConditions(UStateTreeState& State, TConstArrayVie
 		// First indent must be 0 to make the parentheses calculation match.
 		const int32 CurrIndent = bIsFirst ? 0 : FMath::Clamp((int32)CondNode.ConditionIndent, 0, UE::StateTree::MaxConditionIndent);
 		// Next indent, or terminate at zero.
-		const int32 NextIndent = Conditions.IsValidIndex(Index + 1) ? FMath::Clamp((int32)Conditions[Index].ConditionIndent, 0, UE::StateTree::MaxConditionIndent) : 0;
+		const int32 NextIndent = Conditions.IsValidIndex(Index + 1) ? FMath::Clamp((int32)Conditions[Index + 1].ConditionIndent, 0, UE::StateTree::MaxConditionIndent) : 0;
+		
 		const int32 DeltaIndent = NextIndent - CurrIndent;
 
 		if (!CreateCondition(State, CondNode, Operand, (int8)DeltaIndent))
@@ -363,10 +539,20 @@ bool FStateTreeCompiler::CreateGlobalTasks()
 	StateTree->bHasGlobalTransitionTasks = false;
 	for (FStateTreeEditorNode& TaskNode : EditorData->GlobalTasks)
 	{
-		if (!CreateTask(nullptr, TaskNode, StateTree->bHasGlobalTransitionTasks))
+		// Silently ignore empty nodes.
+		if (!TaskNode.Node.IsValid())
+		{
+			continue;
+		}
+
+		if (!CreateTask(nullptr, TaskNode))
 		{
 			return false;
 		}
+		
+		const FStateTreeTaskBase& LastAddedTask = Nodes.Last().Get<FStateTreeTaskBase>();
+		
+		StateTree->bHasGlobalTransitionTasks |= LastAddedTask.bShouldAffectTransitions;
 	}
 	
 	const int32 GlobalTasksNum = Nodes.Num() - GlobalTasksBegin;
@@ -424,6 +610,12 @@ bool FStateTreeCompiler::CreateStateTasksAndParameters()
 						EStateTreeBindableStructSource::State,
 						SourceState->Parameters.ID
 					};
+
+					if (!UE::StateTree::Compiler::ValidateNoLevelActorReferences(Log, SubtreeParamsDesc, FStateTreeDataView(), FStateTreeDataView(CompactParams.Parameters.GetMutableValue())))
+					{
+						return false;
+					}
+					
 					SourceStructIndex = BindingsCompiler.AddSourceStruct(SubtreeParamsDesc);
 					
 					if (const auto Validation = UE::StateTree::Compiler::IsValidIndex16(SourceStructIndex); Validation.DidFail())
@@ -449,9 +641,14 @@ bool FStateTreeCompiler::CreateStateTasksAndParameters()
 						SourceState->Parameters.ID
 					};
 
+					if (!UE::StateTree::Compiler::ValidateNoLevelActorReferences(Log, LinkedParamsDesc, FStateTreeDataView(), FStateTreeDataView(CompactParams.Parameters.GetMutableValue())))
+					{
+						return false;
+					}
+
 					// Check that the bindings for this struct are still all valid.
-					TArray<FStateTreeEditorPropertyBinding> Bindings;
-					if (!GetAndValidateBindings(LinkedParamsDesc, Bindings))
+					TArray<FStateTreePropertyPathBinding> Bindings;
+					if (!GetAndValidateBindings(LinkedParamsDesc, FStateTreeDataView(SourceState->Parameters.Parameters.GetMutableValue()), Bindings))
 					{
 						return false;
 					}
@@ -480,24 +677,55 @@ bool FStateTreeCompiler::CreateStateTasksAndParameters()
 			return false;
 		}
 		CompactState.TasksBegin = uint16(TasksBegin);
-		CompactState.bHasTransitionTasks = false;
 		
-		for (FStateTreeEditorNode& TaskNode : SourceState->Tasks)
+		int32 TaskInstanceStructNum = 0;
+		int32 TaskInstanceObjectNum = 0;
+
+		// Update instance data num for each state.
+		if (CompactState.Type == EStateTreeStateType::Linked)
 		{
-			bool bHasTransitionTasks = CompactState.bHasTransitionTasks; // bHasTransitionTasks is a bit flag.
-			if (!CreateTask(SourceState, TaskNode, bHasTransitionTasks))
+			// Linked state parameters.
+			TaskInstanceStructNum++;
+		}
+
+		TArrayView<FStateTreeEditorNode> Tasks;
+		if (SourceState->Tasks.Num())
+		{
+			Tasks = SourceState->Tasks;
+		}
+		else if (SourceState->SingleTask.Node.IsValid())
+		{
+			Tasks = TArrayView<FStateTreeEditorNode>(&SourceState->SingleTask, 1);
+		}
+		
+		bool bStateHasTransitionTasks = false;
+		for (FStateTreeEditorNode& TaskNode : Tasks)
+		{
+			// Silently ignore empty nodes.
+			if (!TaskNode.Node.IsValid())
+			{
+				continue;
+			}
+
+			if (!CreateTask(SourceState, TaskNode))
 			{
 				return false;
 			}
-			CompactState.bHasTransitionTasks = bHasTransitionTasks; 
+
+			const FStateTreeTaskBase& LastAddedTask = Nodes.Last().Get<FStateTreeTaskBase>();
+			if (LastAddedTask.bInstanceIsObject)
+			{
+				TaskInstanceObjectNum++;
+			}
+			else
+			{
+				TaskInstanceStructNum++;
+			}
+			
+			bStateHasTransitionTasks |= LastAddedTask.bShouldAffectTransitions;
 		}
 
-		bool bSingleStateHasTransitionTasks = CompactState.bHasTransitionTasks; // bHasTransitionTasks is a bit flag.
-		if (!CreateTask(SourceState, SourceState->SingleTask, bSingleStateHasTransitionTasks))
-		{
-			return false;
-		}
-		CompactState.bHasTransitionTasks = bSingleStateHasTransitionTasks;
+		CompactState.bHasTransitionTasks = bStateHasTransitionTasks;
 	
 		const int32 TasksNum = Nodes.Num() - TasksBegin;
 		if (const auto Validation = UE::StateTree::Compiler::IsValidCount8(TasksNum); Validation.DidFail())
@@ -505,7 +733,20 @@ bool FStateTreeCompiler::CreateStateTasksAndParameters()
 			Validation.Log(Log, TEXT("TasksNum"));
 			return false;
 		}
+		if (const auto Validation = UE::StateTree::Compiler::IsValidCount8(TaskInstanceObjectNum); Validation.DidFail())
+		{
+			Validation.Log(Log, TEXT("TaskInstanceObjectNum"));
+			return false;
+		}
+		if (const auto Validation = UE::StateTree::Compiler::IsValidCount8(TaskInstanceStructNum); Validation.DidFail())
+		{
+			Validation.Log(Log, TEXT("TaskInstanceStructNum"));
+			return false;
+		}
+
 		CompactState.TasksNum = uint8(TasksNum);
+		CompactState.TaskInstanceStructNum = uint8(TaskInstanceStructNum);
+		CompactState.TaskInstanceObjectNum = uint8(TaskInstanceObjectNum);
 	}
 	
 	return true;
@@ -609,13 +850,25 @@ bool FStateTreeCompiler::CreateStateTransitions()
 		
 		for (FStateTreeTransition& Transition : SourceState->Transitions)
 		{
+			IDToTransition.Add(Transition.ID, StateTree->Transitions.Num());
+
 			FCompactStateTransition& CompactTransition = StateTree->Transitions.AddDefaulted_GetRef();
 			CompactTransition.Trigger = Transition.Trigger;
 			CompactTransition.Priority = Transition.Priority;
 			CompactTransition.EventTag = Transition.EventTag;
+			CompactTransition.bTransitionEnabled = Transition.bTransitionEnabled;
+			
 			if (Transition.bDelayTransition)
 			{
 				CompactTransition.Delay.Set(Transition.DelayDuration, Transition.DelayRandomVariance);
+			}
+			
+			if (CompactState.SelectionBehavior == EStateTreeStateSelectionBehavior::TryFollowTransitions
+				&& Transition.bDelayTransition)
+			{
+				Log.Reportf(EMessageSeverity::Warning,
+					TEXT("Transition to '%s' with delay will be ignored during state selection."),
+					*Transition.State.Name.ToString());
 			}
 
 			if (EnumHasAnyFlags(Transition.Trigger, EStateTreeTransitionTrigger::OnStateCompleted))
@@ -684,6 +937,25 @@ bool FStateTreeCompiler::ResolveTransitionState(const UStateTreeState* SourceSta
 {
 	if (Link.LinkType == EStateTreeTransitionType::GotoState)
 	{
+		// Warn if goto state points to another subtree.
+		if (const UStateTreeState* TargetState = GetState(Link.ID))
+		{
+			if (TargetState->GetRootState() != SourceState->GetRootState())
+			{
+				Log.Reportf(EMessageSeverity::Warning,
+					TEXT("Target state '%s' is in different subtree. Verify that this is intentional."),
+					*Link.Name.ToString());
+			}
+
+			if (TargetState->SelectionBehavior == EStateTreeStateSelectionBehavior::None)
+			{
+				Log.Reportf(EMessageSeverity::Error,
+					TEXT("The target State '%s' is not selectable, it's selection behavior is set to None."),
+					*Link.Name.ToString());
+				return false;
+			}
+		}
+		
 		OutTransitionHandle = GetStateHandle(Link.ID);
 		if (!OutTransitionHandle.IsValid())
 		{
@@ -696,11 +968,11 @@ bool FStateTreeCompiler::ResolveTransitionState(const UStateTreeState* SourceSta
 	else if (Link.LinkType == EStateTreeTransitionType::NextState)
 	{
 		// Find next state.
-		const UStateTreeState* NextState = SourceState ? SourceState->GetNextSiblingState() : nullptr;
+		const UStateTreeState* NextState = SourceState ? SourceState->GetNextSelectableSiblingState() : nullptr;
 		if (NextState == nullptr)
 		{
 			Log.Reportf(EMessageSeverity::Error,
-				TEXT("Failed to resolve transition, there's no next state."));
+				TEXT("Failed to resolve transition, there's no selectable next state."));
 			return false;
 		}
 		OutTransitionHandle = GetStateHandle(NextState->ID);
@@ -753,17 +1025,23 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 	}
 
 	// Copy the condition
+	IDToNode.Add(CondNode.ID, Nodes.Num());
 	FInstancedStruct& Node = Nodes.Add_GetRef(CondNode.Node);
+	InstantiateStructSubobjects(Node);
+
 	FStateTreeConditionBase& Cond = Node.GetMutable<FStateTreeConditionBase>();
 
 	Cond.Operand = Operand;
 	Cond.DeltaIndent = DeltaIndent;
+
+	FStateTreeDataView InstanceDataView;
 	
 	if (CondNode.Instance.IsValid())
 	{
 		// Struct instance
 		const int32 InstanceIndex = SharedInstanceStructs.Add(CondNode.Instance);
-	
+		InstantiateStructSubobjects(SharedInstanceStructs[InstanceIndex]);
+
 		// Create binding source struct descriptor.
 		StructDesc.Struct = CondNode.Instance.GetScriptStruct();
 		StructDesc.Name = Cond.Name;
@@ -775,11 +1053,7 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 		}
 		Cond.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Cond.bInstanceIsObject = false;
-
-		if (!CompileAndValidateNode(&State, StructDesc, Node, FStateTreeDataView(SharedInstanceStructs[InstanceIndex])))
-		{
-			return false;
-		}
+		InstanceDataView = FStateTreeDataView(SharedInstanceStructs[InstanceIndex]);
 	}
 	else
 	{
@@ -800,19 +1074,20 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 		}
 		Cond.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Cond.bInstanceIsObject = true;
+		InstanceDataView = FStateTreeDataView(Instance);
+	}
 
-		if (!CompileAndValidateNode(&State, StructDesc, Node, FStateTreeDataView(Instance)))
-		{
-			return false;
-		}
+	if (!CompileAndValidateNode(&State, StructDesc, Node, InstanceDataView))
+	{
+		return false;
 	}
 
 	// Mark the struct as binding source.
 	const int32 SourceStructIndex = BindingsCompiler.AddSourceStruct(StructDesc);
 
 	// Check that the bindings for this struct are still all valid.
-	TArray<FStateTreeEditorPropertyBinding> Bindings;
-	if (!GetAndValidateBindings(StructDesc, Bindings))
+	TArray<FStateTreePropertyPathBinding> Bindings;
+	if (!GetAndValidateBindings(StructDesc, InstanceDataView, Bindings))
 	{
 		return false;
 	}
@@ -841,14 +1116,14 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 	return true;
 }
 
-bool FStateTreeCompiler::CompileAndValidateNode(const UStateTreeState* SourceState, const FStateTreeBindableStructDesc& NodeDesc, FStructView NodeView, const FStateTreeDataView InstanceData) const
+bool FStateTreeCompiler::CompileAndValidateNode(const UStateTreeState* SourceState, const FStateTreeBindableStructDesc& NodeDesc, FStructView NodeView, const FStateTreeDataView InstanceData)
 {
 	if (!NodeView.IsValid())
 	{
 		return false;
 	}
 	
-	FStateTreeNodeBase& Node = NodeView.GetMutable<FStateTreeNodeBase>();
+	FStateTreeNodeBase& Node = NodeView.Get<FStateTreeNodeBase>();
 	check(InstanceData.IsValid());
 
 	auto ValidateStateLinks = [this, SourceState](TPropertyValueIterator<FStructProperty> It)
@@ -874,7 +1149,7 @@ bool FStateTreeCompiler::CompileAndValidateNode(const UStateTreeState* SourceSta
 	{
 		return false;
 	}
-	if (!ValidateStateLinks(TPropertyValueIterator<FStructProperty>(NodeView.GetScriptStruct(), NodeView.GetMutableMemory())))
+	if (!ValidateStateLinks(TPropertyValueIterator<FStructProperty>(NodeView.GetScriptStruct(), NodeView.GetMemory())))
 	{
 		return false;
 	}
@@ -895,15 +1170,20 @@ bool FStateTreeCompiler::CompileAndValidateNode(const UStateTreeState* SourceSta
 		}
 	}
 
+	// Make sure there's no level actor references in the data.
+	if (!UE::StateTree::Compiler::ValidateNoLevelActorReferences(Log, NodeDesc, NodeView, InstanceData))
+	{
+		return false;
+	}
+	
 	return Result != EDataValidationResult::Invalid;
 }
 
-bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEditorNode& TaskNode, bool& bOutHasTransitionTasks)
+bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEditorNode& TaskNode)
 {
-	// Silently ignore empty nodes.
 	if (!TaskNode.Node.IsValid())
 	{
-		return true;
+		return false;
 	}
 	
 	// Create binding source struct descriptor.
@@ -921,13 +1201,18 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEdit
 	}
 
 	// Copy the task
+	IDToNode.Add(TaskNode.ID, Nodes.Num());
 	FInstancedStruct& Node = Nodes.Add_GetRef(TaskNode.Node);
+	InstantiateStructSubobjects(Node);
+	
 	FStateTreeTaskBase& Task = Node.GetMutable<FStateTreeTaskBase>();
+	FStateTreeDataView InstanceDataView;
 
 	if (TaskNode.Instance.IsValid())
 	{
 		// Struct Instance
 		const int32 InstanceIndex = InstanceStructs.Add(TaskNode.Instance);
+		InstantiateStructSubobjects(InstanceStructs[InstanceIndex]);
 
 		// Create binding source struct descriptor.
 		StructDesc.Struct = TaskNode.Instance.GetScriptStruct();
@@ -940,11 +1225,7 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEdit
 		}
 		Task.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Task.bInstanceIsObject = false;
-
-		if (!CompileAndValidateNode(State, StructDesc, Node,  FStateTreeDataView(InstanceStructs[InstanceIndex])))
-		{
-			return false;
-		}
+		InstanceDataView = FStateTreeDataView(InstanceStructs[InstanceIndex]);
 	}
 	else
 	{
@@ -965,19 +1246,20 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEdit
 		}
 		Task.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Task.bInstanceIsObject = true;
+		InstanceDataView = FStateTreeDataView(Instance);
+	}
 
-		if (!CompileAndValidateNode(State, StructDesc, Node,  FStateTreeDataView(Instance)))
-		{
-			return false;
-		}
+	if (!CompileAndValidateNode(State, StructDesc, Node,  InstanceDataView))
+	{
+		return false;
 	}
 
 	// Mark the instance as binding source.
 	const int32 SourceStructIndex = BindingsCompiler.AddSourceStruct(StructDesc);
-
+	
 	// Check that the bindings for this struct are still all valid.
-	TArray<FStateTreeEditorPropertyBinding> Bindings;
-	if (!GetAndValidateBindings(StructDesc, Bindings))
+	TArray<FStateTreePropertyPathBinding> Bindings;
+	if (!GetAndValidateBindings(StructDesc, InstanceDataView, Bindings))
 	{
 		return false;
 	}
@@ -1002,11 +1284,6 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEdit
 		return false;
 	}
 	Task.DataViewIndex = FStateTreeIndex16(SourceStructIndex);
-
-	if (Task.bShouldAffectTransitions)
-	{
-		bOutHasTransitionTasks = true;
-	}
 	
 	return true;
 }
@@ -1034,13 +1311,18 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
     }
 
 	// Copy the evaluator
+	IDToNode.Add(EvalNode.ID, Nodes.Num());
 	FInstancedStruct& Node = Nodes.Add_GetRef(EvalNode.Node);
+	InstantiateStructSubobjects(Node);
+	
 	FStateTreeEvaluatorBase& Eval = Node.GetMutable<FStateTreeEvaluatorBase>();
-
+	FStateTreeDataView InstanceDataView;
+	
 	if (EvalNode.Instance.IsValid())
 	{
 		// Struct Instance
 		const int32 InstanceIndex = InstanceStructs.Add(EvalNode.Instance);
+		InstantiateStructSubobjects(InstanceStructs[InstanceIndex]);
 
 		// Create binding source struct descriptor.
 		StructDesc.Struct = EvalNode.Instance.GetScriptStruct();
@@ -1053,11 +1335,7 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
 		}
 		Eval.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Eval.bInstanceIsObject = false;
-
-		if (!CompileAndValidateNode(nullptr, StructDesc, Node,  FStateTreeDataView(InstanceStructs[InstanceIndex])))
-		{
-			return false;
-		}
+		InstanceDataView = FStateTreeDataView(InstanceStructs[InstanceIndex]);
 	}
 	else
 	{
@@ -1078,19 +1356,20 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
 		}
 		Eval.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Eval.bInstanceIsObject = true;
-
-		if (!CompileAndValidateNode(nullptr, StructDesc, Node,  FStateTreeDataView(Instance)))
-		{
-			return false;
-		}
+		InstanceDataView = FStateTreeDataView(Instance);
 	}
-		
+
+	if (!CompileAndValidateNode(nullptr, StructDesc, Node,  InstanceDataView))
+	{
+		return false;
+	}
+
 	// Mark the instance as binding source.
 	const int32 SourceStructIndex = BindingsCompiler.AddSourceStruct(StructDesc);
 
 	// Check that the bindings for this struct are still all valid.
-	TArray<FStateTreeEditorPropertyBinding> Bindings;
-	if (!GetAndValidateBindings(StructDesc, Bindings))
+	TArray<FStateTreePropertyPathBinding> Bindings;
+	if (!GetAndValidateBindings(StructDesc, InstanceDataView, Bindings))
 	{
 		return false;
 	}
@@ -1119,16 +1398,17 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
 	return true;
 }
 
-bool FStateTreeCompiler::IsPropertyAnyEnum(const FStateTreeBindableStructDesc& Struct, FStateTreeEditorPropertyPath Path) const
+bool FStateTreeCompiler::IsPropertyAnyEnum(const FStateTreeBindableStructDesc& Struct, FStateTreePropertyPath Path) const
 {
 	bool bIsAnyEnum = false;
-	TArray<FStateTreePropertySegment> Segments;
-	const FProperty* LeafProperty = nullptr;
-	int32 LeafArrayIndex = INDEX_NONE;
-	const bool bResolved = FStateTreePropertyBindingCompiler::ResolvePropertyPath(Struct, Path, Segments, LeafProperty, LeafArrayIndex);
-	if (bResolved && LeafProperty)
+
+	TArray<FStateTreePropertyPathIndirection> Indirection;
+	const bool bResolved = Path.ResolveIndirections(Struct.Struct, Indirection);
+	
+	if (bResolved && Indirection.Num() > 0)
 	{
-		if (const FProperty* OwnerProperty = LeafProperty->GetOwnerProperty())
+		check(Indirection.Last().GetProperty());
+		if (const FProperty* OwnerProperty = Indirection.Last().GetProperty()->GetOwnerProperty())
 		{
 			if (const FStructProperty* OwnerStructProperty = CastField<FStructProperty>(OwnerProperty))
 			{
@@ -1139,18 +1419,18 @@ bool FStateTreeCompiler::IsPropertyAnyEnum(const FStateTreeBindableStructDesc& S
 	return bIsAnyEnum;
 }
 
-bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& SourceStruct, FStateTreeEditorPropertyPath SourcePath,
-											const FStateTreeBindableStructDesc& TargetStruct, FStateTreeEditorPropertyPath TargetPath) const
+bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& SourceStruct, FStateTreePropertyPath SourcePath,
+											const FStateTreeBindableStructDesc& TargetStruct, FStateTreePropertyPath TargetPath) const
 {
-	TArray<FStateTreePropertySegment> Segments;
-
-	const FProperty* TargetLeafProperty = nullptr;
-	int32 TargetLeafArrayIndex = INDEX_NONE;
-	if (FStateTreePropertyBindingCompiler::ResolvePropertyPath(TargetStruct, TargetPath, Segments, TargetLeafProperty, TargetLeafArrayIndex) == false)
+	FString ResolveError;
+	TArray<FStateTreePropertyPathIndirection> TargetIndirection;
+	if (!TargetPath.ResolveIndirections(TargetStruct.Struct, TargetIndirection, &ResolveError))
 	{
 		// This will later be reported by the bindings compiler.
-		return true;
+		Log.Reportf(EMessageSeverity::Error, TargetStruct, TEXT("Failed to resolve binding path in %s: %s"), *TargetStruct.ToString(), *ResolveError);
+		return false;
 	}
+	const FProperty* TargetLeafProperty = TargetIndirection.Num() > 0 ? TargetIndirection.Last().GetProperty() : nullptr;
 
 	// Early out if the target is not FStateTreeStructRef.
 	const FStructProperty* TargetStructProperty = CastField<FStructProperty>(TargetLeafProperty);
@@ -1164,18 +1444,19 @@ bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& S
 	if (TargetBaseStruct == nullptr)
 	{
 		Log.Reportf(EMessageSeverity::Error, TargetStruct,
-				TEXT("Could not find base struct '%s' for target '%s:%s'."),
-				*TargetBaseStructName, *TargetStruct.Name.ToString(), *TargetPath.ToString());
+				TEXT("Could not find base struct type '%s' for target %s'."),
+				*TargetBaseStructName, *UE::StateTree::GetDescAndPathAsString(TargetStruct, TargetPath));
 		return false;
 	}
-	
-	const FProperty* SourceLeafProperty = nullptr;
-	int32 SourceLeafArrayIndex = INDEX_NONE;
-	if (FStateTreePropertyBindingCompiler::ResolvePropertyPath(SourceStruct, SourcePath, Segments, SourceLeafProperty, SourceLeafArrayIndex) == false)
+
+	TArray<FStateTreePropertyPathIndirection> SourceIndirection;
+	if (!SourcePath.ResolveIndirections(SourceStruct.Struct, SourceIndirection, &ResolveError))
 	{
 		// This will later be reported by the bindings compiler.
-		return true;
+		Log.Reportf(EMessageSeverity::Error, SourceStruct, TEXT("Failed to resolve binding path in %s: %s"), *SourceStruct.ToString(), *ResolveError);
+		return false;
 	}
+	const FProperty* SourceLeafProperty = SourceIndirection.Num() > 0 ? SourceIndirection.Last().GetProperty() : nullptr;
 
 	// Exit if the source is not a struct property.
 	const FStructProperty* SourceStructProperty = CastField<FStructProperty>(SourceLeafProperty);
@@ -1192,17 +1473,17 @@ bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& S
 		if (SourceBaseStruct == nullptr)
 		{
 			Log.Reportf(EMessageSeverity::Error, TargetStruct,
-					TEXT("Could not find base struct '%s' for bidning source '%s:%s'."),
-					*SourceBaseStructName, *SourceStruct.Name.ToString(), *SourcePath.ToString());
+					TEXT("Could not find base struct '%s' for binding source %s."),
+					*SourceBaseStructName, *UE::StateTree::GetDescAndPathAsString(SourceStruct, SourcePath));
 			return false;
 		}
 
 		if (SourceBaseStruct->IsChildOf(TargetBaseStruct) == false)
 		{
 			Log.Reportf(EMessageSeverity::Error, TargetStruct,
-						TEXT("Type mismatch between source '%s:%s' and target '%s:%s' types, '%s' is not child of '%s'."),
-						*SourceStruct.Name.ToString(), *SourcePath.ToString(),
-						*TargetStruct.Name.ToString(), *TargetPath.ToString(),
+						TEXT("Type mismatch between source %s and target %s types, '%s' is not child of '%s'."),
+						*UE::StateTree::GetDescAndPathAsString(SourceStruct, SourcePath),
+						*UE::StateTree::GetDescAndPathAsString(TargetStruct, TargetPath),
 						*GetNameSafe(SourceBaseStruct), *GetNameSafe(TargetBaseStruct));
 			return false;
 		}
@@ -1212,9 +1493,9 @@ bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& S
 		if (!SourceStructProperty->Struct || SourceStructProperty->Struct->IsChildOf(TargetBaseStruct) == false)
 		{
 			Log.Reportf(EMessageSeverity::Error, TargetStruct,
-						TEXT("Type mismatch between source '%s:%s' and target '%s:%s' types, '%s' is not child of '%s'."),
-						*SourceStruct.Name.ToString(), *SourcePath.ToString(),
-						*TargetStruct.Name.ToString(), *TargetPath.ToString(),
+						TEXT("Type mismatch between source %s and target %s types, '%s' is not child of '%s'."),
+						*UE::StateTree::GetDescAndPathAsString(SourceStruct, SourcePath),
+						*UE::StateTree::GetDescAndPathAsString(TargetStruct, TargetPath),
 						*GetNameSafe(SourceStructProperty->Struct), *GetNameSafe(TargetBaseStruct));
 			return false;
 		}
@@ -1223,42 +1504,76 @@ bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& S
 	return true;
 }
 
-bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDesc& TargetStruct, TArray<FStateTreeEditorPropertyBinding>& OutBindings) const
+FStateTreeDataView FStateTreeCompiler::GetBindingSourceValue(const int32 SourceIndex)
+{
+	for (const FInstancedStruct& Node : Nodes)
+	{
+		if (const FStateTreeNodeBase* NodeBase = Node.GetPtr<FStateTreeNodeBase>())
+		{
+			if (NodeBase->DataViewIndex.Get() == SourceIndex)
+			{
+				if (NodeBase->bInstanceIsObject)
+				{
+					return FStateTreeDataView(InstanceObjects[NodeBase->InstanceIndex.Get()]);
+				}
+				else
+				{
+					return FStateTreeDataView(InstanceStructs[NodeBase->InstanceIndex.Get()]);
+				}
+			}
+		}
+	}
+
+	return {};
+}
+
+bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDesc& TargetStruct, FStateTreeDataView TargetValue, TArray<FStateTreePropertyPathBinding>& OutBindings) const
 {
 	check(EditorData);
 	
 	if (TargetStruct.Struct == nullptr)
 	{
 		Log.Reportf(EMessageSeverity::Error, TargetStruct,
-				TEXT("The type of binding target '%s' is invalid."),
-				*TargetStruct.Name.ToString());
+				TEXT("The type of binding target %s is invalid."),
+				*TargetStruct.ToString());
 		return false;
 	}
 	
 	OutBindings.Reset();
 	
-	for (const FStateTreeEditorPropertyBinding& Binding : EditorData->EditorBindings.GetBindings())
+	for (FStateTreePropertyPathBinding& Binding : EditorData->EditorBindings.GetMutableBindings())
 	{
-		if (Binding.TargetPath.StructID != TargetStruct.ID)
+		if (Binding.GetTargetPath().GetStructID() != TargetStruct.ID)
 		{
 			continue;
 		}
 
 		// Source must be one of the source structs we have discovered in the tree.
-		const FGuid SourceStructID = Binding.SourcePath.StructID;
+		const FGuid SourceStructID = Binding.GetSourcePath().GetStructID();
 		const int32 SourceStructIdx = BindingsCompiler.GetSourceStructIndexByID(SourceStructID);
 		if (SourceStructIdx == INDEX_NONE)
 		{
 			Log.Reportf(EMessageSeverity::Error, TargetStruct,
-						TEXT("Failed to find binding source property '%s' for target '%s:%s'."),
-						*Binding.SourcePath.ToString(), *TargetStruct.Name.ToString(), *Binding.TargetPath.ToString());
+						TEXT("Failed to find binding source property '%s' for target %s."),
+						*Binding.GetSourcePath().ToString(), *UE::StateTree::GetDescAndPathAsString(TargetStruct, Binding.GetTargetPath()));
 			return false;
 		}
 		const FStateTreeBindableStructDesc& SourceStruct = BindingsCompiler.GetSourceStructDesc(SourceStructIdx);
 
+		// Update path instance types from latest data. E.g. binding may have been created for instanced object of type FooB, and changed to FooA.
+ 		// @todo: not liking how this mutates the Binding.TargetPath, but currently we dont track well the instanced object changes.
+
+		if (!Binding.GetMutableTargetPath().UpdateSegmentsFromValue(TargetValue))
+		{
+			Log.Reportf(EMessageSeverity::Error, TargetStruct,
+						TEXT("Malformed target property path for binding source property '%s' for target %s."),
+						*Binding.GetSourcePath().ToString(), *UE::StateTree::GetDescAndPathAsString(TargetStruct, Binding.GetTargetPath()));
+			return false;
+		}
+		
 		// Source must be accessible by the target struct via all execution paths.
 		TArray<FStateTreeBindableStructDesc> AccessibleStructs;
-		EditorData->GetAccessibleStructs(Binding.TargetPath.StructID, AccessibleStructs);
+		EditorData->GetAccessibleStructs(Binding.GetTargetPath().GetStructID(), AccessibleStructs);
 
 		const bool bSourceAccessible = AccessibleStructs.ContainsByPredicate([SourceStructID](const FStateTreeBindableStructDesc& Structs)
 			{
@@ -1268,28 +1583,49 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 		if (!bSourceAccessible)
 		{
 			Log.Reportf(EMessageSeverity::Error, TargetStruct,
-						TEXT("Property '%s:%s' cannot be bound to '%s:%s', because the binding source '%s' is not updated before '%s' in the tree."),
-						*SourceStruct.Name.ToString(), *Binding.SourcePath.ToString(),
-						*TargetStruct.Name.ToString(), *Binding.TargetPath.ToString(),
-						*SourceStruct.Name.ToString(), *TargetStruct.Name.ToString());
+						TEXT("Property at %s cannot be bound to %s, because the binding source %s is not updated before %s in the tree."),
+						*UE::StateTree::GetDescAndPathAsString(SourceStruct, Binding.GetSourcePath()),
+						*UE::StateTree::GetDescAndPathAsString(TargetStruct, Binding.GetTargetPath()),
+						*SourceStruct.ToString(), *TargetStruct.ToString());
 			return false;
 		}
-		
+
+		if (!IDToStructValue.Contains(SourceStructID))
+		{
+			Log.Reportf(EMessageSeverity::Error, TargetStruct,
+				TEXT("Failed to find value for binding source property '%s' for target %s."),
+				*Binding.GetSourcePath().ToString(), *UE::StateTree::GetDescAndPathAsString(TargetStruct, Binding.GetTargetPath()));
+			return false;
+		}
+
+		// Update the source structs only if we have value for it. For some sources (e.g. context structs) we know only type, and in that case there are no instance structs.
+		const FStateTreeDataView SourceValue = IDToStructValue[SourceStructID];
+		if (SourceValue.IsValid())
+		{
+			if (!Binding.GetMutableSourcePath().UpdateSegmentsFromValue(SourceValue))
+			{
+				Log.Reportf(EMessageSeverity::Error, TargetStruct,
+					TEXT("Malformed target property path for binding source property '%s' for source %s."),
+					*Binding.GetSourcePath().ToString(), *UE::StateTree::GetDescAndPathAsString(TargetStruct, Binding.GetTargetPath()));
+				return false;
+			}
+		}
+
 		// Special case fo AnyEnum. StateTreeBindingExtension allows AnyEnums to bind to other enum types.
 		// The actual copy will be done via potential type promotion copy, into the value property inside the AnyEnum.
 		// We amend the paths here to point to the 'Value' property.
-		const bool bSourceIsAnyEnum = IsPropertyAnyEnum(SourceStruct, Binding.SourcePath);
-		const bool bTargetIsAnyEnum = IsPropertyAnyEnum(TargetStruct, Binding.TargetPath);
+		const bool bSourceIsAnyEnum = IsPropertyAnyEnum(SourceStruct, Binding.GetSourcePath());
+		const bool bTargetIsAnyEnum = IsPropertyAnyEnum(TargetStruct, Binding.GetTargetPath());
 		if (bSourceIsAnyEnum || bTargetIsAnyEnum)
 		{
-			FStateTreeEditorPropertyBinding ModifiedBinding(Binding);
+			FStateTreePropertyPathBinding ModifiedBinding(Binding);
 			if (bSourceIsAnyEnum)
 			{
-				ModifiedBinding.SourcePath.Path.Add(GET_MEMBER_NAME_STRING_CHECKED(FStateTreeAnyEnum, Value));
+				ModifiedBinding.GetMutableSourcePath().AddPathSegment(GET_MEMBER_NAME_STRING_CHECKED(FStateTreeAnyEnum, Value));
 			}
 			if (bTargetIsAnyEnum)
 			{
-				ModifiedBinding.TargetPath.Path.Add(GET_MEMBER_NAME_STRING_CHECKED(FStateTreeAnyEnum, Value));
+				ModifiedBinding.GetMutableTargetPath().AddPathSegment(GET_MEMBER_NAME_STRING_CHECKED(FStateTreeAnyEnum, Value));
 			}
 			OutBindings.Add(ModifiedBinding);
 		}
@@ -1299,20 +1635,20 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 		}
 
 		// Check if the bindings is for struct ref and validate the types.
-		if (!ValidateStructRef(SourceStruct, Binding.SourcePath, TargetStruct, Binding.TargetPath))
+		if (!ValidateStructRef(SourceStruct, Binding.GetSourcePath(), TargetStruct, Binding.GetTargetPath()))
 		{
 			return false;
 		}
 	}
 
 
-	auto IsPropertyBound = [&OutBindings](const FString& PropertyName)
+	auto IsPropertyBound = [&OutBindings](const FName& PropertyName)
 	{
-		return OutBindings.ContainsByPredicate([&PropertyName](const FStateTreeEditorPropertyBinding& Binding)
+		return OutBindings.ContainsByPredicate([&PropertyName](const FStateTreePropertyPathBinding& Binding)
 			{
 				// We're looping over just the first level of properties on the struct, so we assume that the path is just one item
 				// (or two in case of AnyEnum, because we expand the path to Property.Value, see code above).
-				return Binding.TargetPath.Path.Num() >= 1 && Binding.TargetPath.Path[0] == PropertyName;
+				return Binding.GetTargetPath().GetSegments().Num() >= 1 && Binding.GetTargetPath().GetSegments()[0].GetName() == PropertyName;
 			});
 	};
 
@@ -1323,7 +1659,7 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 	{
 		const FProperty* Property = *It;
 		check(Property);
-		const FString PropertyName = Property->GetName();
+		const FName PropertyName = Property->GetFName();
 		const EStateTreePropertyUsage Usage = UE::StateTree::Compiler::GetUsageFromMetaData(Property);
 		if (Usage == EStateTreePropertyUsage::Input)
 		{
@@ -1333,8 +1669,8 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 			if (bIsOptional == false && !IsPropertyBound(PropertyName))
 			{
 				Log.Reportf(EMessageSeverity::Error, TargetStruct,
-					TEXT("Input property '%s:%s' is expected to have a binding."),
-					*TargetStruct.Name.ToString(), *PropertyName);
+					TEXT("Input property '%s' on %s is expected to have a binding."),
+					*PropertyName.ToString(), *TargetStruct.ToString());
 				bResult = false;
 			}
 		}
@@ -1354,8 +1690,8 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 			if (ContextObjectType == nullptr)
 			{
 				Log.Reportf(EMessageSeverity::Error, TargetStruct,
-					TEXT("Context property '%s:%s' type is expected to be Object Reference or Struct."),
-					*TargetStruct.Name.ToString(), *PropertyName);
+					TEXT("The type of Context property '%s' on %s is expected to be Object Reference or Struct."),
+					*PropertyName.ToString(), *TargetStruct.ToString());
 				bResult = false;
 				continue;
 			}
@@ -1364,24 +1700,18 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 
 			if (!bIsBound)
 			{
-				const FStateTreeBindableStructDesc Desc = EditorData->FindContextData(ContextObjectType, PropertyName);
+				const FStateTreeBindableStructDesc Desc = EditorData->FindContextData(ContextObjectType, PropertyName.ToString());
 
 				if (Desc.IsValid())
 				{
 					// Add automatic binding to Context data.
-					FStateTreeEditorPropertyBinding Binding;
-					Binding.SourcePath.StructID = Desc.ID;
-
-					Binding.TargetPath.StructID = TargetStruct.ID;
-					Binding.TargetPath.Path.Add(PropertyName);
-
-					OutBindings.Add(Binding);
+					OutBindings.Emplace(FStateTreePropertyPath(Desc.ID), FStateTreePropertyPath(TargetStruct.ID, PropertyName));
 				}
 				else
 				{
 					Log.Reportf(EMessageSeverity::Error, TargetStruct,
-						TEXT("Cound not find matching Context object for Context property '%s:%s'. Property must have munual binding."),
-						*TargetStruct.Name.ToString(), *PropertyName);
+						TEXT("Cound not find matching Context object for Context property '%s' on %s. Property must have manual binding."),
+						*PropertyName.ToString(), *TargetStruct.ToString());
 					bResult = false;
 				}
 			}
@@ -1389,4 +1719,48 @@ bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDe
 	}
 
 	return bResult;
+}
+
+void FStateTreeCompiler::InstantiateStructSubobjects(FStructView Struct)
+{
+	check(StateTree);
+	check(EditorData);
+	
+	// Empty struct, nothing to do.
+	if (!Struct.IsValid())
+	{
+		return;
+	}
+
+	for (TPropertyValueIterator<FProperty> It(Struct.GetScriptStruct(), Struct.GetMemory()); It; ++It)
+	{
+		if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(It->Key))
+		{
+			// Duplicate instanced objects.
+			if (ObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
+			{
+				if (UObject* Object = ObjectProperty->GetObjectPropertyValue(It->Value))
+				{
+					UObject* OuterObject = Object->GetOuter();
+					// If the instanced object was created as Editor Data as outer,
+					// change the outer to State Tree to prevent references to editor only data.
+					if (Object->IsInOuter(EditorData))
+					{
+						OuterObject = StateTree;
+					}
+					UObject* DuplicatedObject = DuplicateObject(Object, OuterObject);
+					ObjectProperty->SetObjectPropertyValue(const_cast<void*>(It->Value), DuplicatedObject);
+				}
+			}
+		}
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(It->Key))
+		{
+			// If we encounter instanced struct, recursively handle it too.
+			if (StructProperty->Struct == TBaseStructure<FInstancedStruct>::Get())
+			{
+				FInstancedStruct& InstancedStruct = *static_cast<FInstancedStruct*>(const_cast<void*>(It->Value));
+				InstantiateStructSubobjects(InstancedStruct);
+			}
+		}
+	}
 }

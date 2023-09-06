@@ -74,6 +74,8 @@ FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMov
 	, InstanceHandle(InInstanceHandle)
 	, RootInstanceHandle(InInstanceHandle)
 {
+	UpdateFlags = ESequenceInstanceUpdateFlags::None;
+
 	// Root instances always start in a finished state in order to ensure that 'Start'
 	// is called correctly for the top level instance. This is subtly different from
 	// bHasEverUpdated since a sequence instance can be Finished and restarted multiple times
@@ -99,6 +101,8 @@ FSequenceInstance::FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMov
 	, ParentInstanceHandle(InParentInstanceHandle)
 	, RootInstanceHandle(InRootInstanceHandle)
 {
+	UpdateFlags = ESequenceInstanceUpdateFlags::None;
+
 	// Sub Sequence instances always start in a non-finished state because they will only ever
 	// be created if they are active, and the Start/Update/Finish loop does not apply to sub-instances
 	bFinished = false;
@@ -133,6 +137,8 @@ void FSequenceInstance::InitializeLegacyEvaluator(UMovieSceneEntitySystemLinker*
 
 	if (EnumHasAnyFlags(CompiledEntry.AccumulatedMask, EMovieSceneSequenceCompilerMask::EvaluationTemplate))
 	{
+		UpdateFlags |= ESequenceInstanceUpdateFlags::HasLegacyTemplates;
+
 		if (!LegacyEvaluator)
 		{
 			LegacyEvaluator = MakeUnique<FMovieSceneTrackEvaluator>(CompiledEntry.GetSequence(), RootTemplate.GetCompiledDataID(), CompiledDataManager);
@@ -142,6 +148,8 @@ void FSequenceInstance::InitializeLegacyEvaluator(UMovieSceneEntitySystemLinker*
 	{
 		LegacyEvaluator->Finish(*Player);
 		LegacyEvaluator = nullptr;
+
+		UpdateFlags &= ~ESequenceInstanceUpdateFlags::HasLegacyTemplates;
 	}
 }
 
@@ -151,6 +159,8 @@ void FSequenceInstance::InvalidateCachedData(UMovieSceneEntitySystemLinker* Link
 
 	IMovieScenePlayer* Player = GetPlayer();
 	check(Player);
+
+	UpdateFlags = ESequenceInstanceUpdateFlags::None;
 
 	FMovieSceneRootEvaluationTemplateInstance& RootTemplate        = Player->GetEvaluationTemplate();
 	UMovieSceneCompiledDataManager*            CompiledDataManager = RootTemplate.GetCompiledDataManager();
@@ -173,6 +183,7 @@ void FSequenceInstance::InvalidateCachedData(UMovieSceneEntitySystemLinker* Link
 		ISequenceUpdater::FactoryInstance(SequenceUpdater, CompiledDataManager, RootCompiledDataID);
 
 		SequenceUpdater->InvalidateCachedData(Linker);
+		SequenceUpdater->PopulateUpdateFlags(Linker, Player, UpdateFlags);
 
 		if (LegacyEvaluator)
 		{
@@ -187,14 +198,11 @@ void FSequenceInstance::InvalidateCachedData(UMovieSceneEntitySystemLinker* Link
 	}
 }
 
-void FSequenceInstance::DissectContext(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneContext& InContext, TArray<TRange<FFrameTime>>& OutDissections)
+void FSequenceInstance::ConditionalRecompile(UMovieSceneEntitySystemLinker* Linker)
 {
-	check(SequenceID == MovieSceneSequenceID::Root);
-
-	IMovieScenePlayer* Player = GetPlayer();
-
 	if (VolatilityManager)
 	{
+		IMovieScenePlayer*                         Player              = GetPlayer();
 		FMovieSceneRootEvaluationTemplateInstance& RootTemplate        = Player->GetEvaluationTemplate();
 		UMovieSceneCompiledDataManager*            CompiledDataManager = RootTemplate.GetCompiledDataManager();
 		FMovieSceneCompiledDataID                  RootCompiledDataID  = RootTemplate.GetCompiledDataID();
@@ -204,8 +212,15 @@ void FSequenceInstance::DissectContext(UMovieSceneEntitySystemLinker* Linker, co
 			InvalidateCachedData(Linker);
 		}
 	}
+}
 
-	SequenceUpdater->DissectContext(Linker, Player, InContext, OutDissections);
+void FSequenceInstance::DissectContext(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneContext& InContext, TArray<TRange<FFrameTime>>& OutDissections)
+{
+	if (EnumHasAnyFlags(UpdateFlags, ESequenceInstanceUpdateFlags::NeedsDissection))
+	{
+		check(SequenceID == MovieSceneSequenceID::Root);
+		SequenceUpdater->DissectContext(Linker, GetPlayer(), InContext, OutDissections);
+	}
 }
 
 void FSequenceInstance::Start(UMovieSceneEntitySystemLinker* Linker, const FMovieSceneContext& InContext)
@@ -296,6 +311,11 @@ void FSequenceInstance::Finish(UMovieSceneEntitySystemLinker* Linker)
 
 void FSequenceInstance::PreEvaluation(UMovieSceneEntitySystemLinker* Linker)
 {
+	if (!EnumHasAnyFlags(UpdateFlags, ESequenceInstanceUpdateFlags::NeedsPreEvaluation))
+	{
+		return;
+	}
+
 	if (IsRootSequence())
 	{
 		IMovieScenePlayer* Player = GetPlayer();
@@ -327,9 +347,7 @@ void FSequenceInstance::RunLegacyTrackTemplates()
 
 void FSequenceInstance::PostEvaluation(UMovieSceneEntitySystemLinker* Linker)
 {
-	Ledger.UnlinkOneShots(Linker);
-
-	if (IsRootSequence())
+	if (IsRootSequence() && EnumHasAnyFlags(UpdateFlags, ESequenceInstanceUpdateFlags::NeedsPostEvaluation))
 	{
 		IMovieScenePlayer* Player = GetPlayer();
 		if (ensure(Player))

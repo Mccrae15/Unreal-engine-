@@ -41,6 +41,8 @@ public:
 
 	void RemoveFileMount(const FName InFileMountPath);
 
+	bool HasFileMount(const FName InFileMountPath) const;
+
 	virtual void Tick(const float InDeltaTime);
 
 	virtual void CompileFilter(const FName InPath, const FContentBrowserDataFilter& InFilter, FContentBrowserDataCompiledFilter& OutCompiledFilter) override;
@@ -57,7 +59,7 @@ public:
 
 	virtual bool PrioritizeSearchPath(const FName InPath) override;
 
-	virtual bool IsFolderVisibleIfHidingEmpty(const FName InPath) override;
+	virtual bool IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags) override;
 
 	virtual bool DoesItemPassFilter(const FContentBrowserItemData& InItem, const FContentBrowserDataCompiledFilter& InFilter) override;
 

@@ -20,42 +20,42 @@ namespace Nanite { struct FPackedViewParams; }
 class FVirtualShadowMapCacheEntry
 {
 public:
-	// True if the cache has been (re)populated, set to false on init and set to true once the cache update process has happened.
-	// Also set to false whenever key data was not valid and all cached data is invalidated.
-	bool IsValid() { return PrevVirtualShadowMapId != INDEX_NONE; }
+	// Generic version used for local lights but also unreferenced lights
+	// Updates the VSM ID
+	void Update(
+		FVirtualShadowMapArray& VirtualShadowMapArray,
+		const FVirtualShadowMapPerLightCacheEntry &PerLightEntry,
+		int32 VirtualShadowMapId);
 
-	void UpdateLocal(int32 VirtualShadowMapId, const FVirtualShadowMapPerLightCacheEntry &PerLightEntry);
-
-	void UpdateClipmap(int32 VirtualShadowMapId,
-		const FMatrix &WorldToLight,
+	// Specific version of the above for clipmap levels, which have additional constraints
+	void UpdateClipmapLevel(
+		FVirtualShadowMapArray& VirtualShadowMapArray,
+		const FVirtualShadowMapPerLightCacheEntry& PerLightEntry,
+		int32 VirtualShadowMapId,
 		FInt64Point PageSpaceLocation,
-		FInt64Point ClipmapCornerOffset,
 		double LevelRadius,
 		double ViewCenterZ,
-		double ViewRadiusZ, 
-		const FVirtualShadowMapPerLightCacheEntry& PerLightEntry);
+		double ViewRadiusZ);
 
-	void Invalidate();
+	void SetHZBViewParams(Nanite::FPackedViewParams& OutParams);
 
 	// Previous frame data
-	FInt64Point PrevPageSpaceLocation = FInt64Point(0, 0);
-	int32 PrevVirtualShadowMapId = INDEX_NONE;
+	FVirtualShadowMapHZBMetadata PrevHZBMetadata;
 
 	// Current frame data
-	FInt64Point CurrentPageSpaceLocation = FInt64Point(0, 0);
 	int32 CurrentVirtualShadowMapId = INDEX_NONE;
+	FVirtualShadowMapHZBMetadata CurrentHZBMetadata;
 
+	// Stores the projection shader data. This is needed for cached entries that may be unreferenced on the current frame
+	// and also avoids recomputing it every frame.
+	FVirtualShadowMapProjectionShaderData ProjectionData;
+
+	// Clipmap-specific information for panning and tracking of cached z-ranges in a given level
 	struct FClipmapInfo
 	{
-		FMatrix	WorldToLight;
-		double ViewCenterZ;
-		double ViewRadiusZ;
-
-		// Previous frame data
-		FInt64Point PrevClipmapCornerOffset = FInt64Point(0, 0);
-
-		// Current frame data
-		FInt64Point CurrentClipmapCornerOffset = FInt64Point(0, 0);
+		FInt64Point PageSpaceLocation = FInt64Point(0, 0);
+		double ViewCenterZ = 0.0;
+		double ViewRadiusZ = 0.0;
 	};
 	FClipmapInfo Clipmap;
 };
@@ -63,39 +63,55 @@ public:
 class FVirtualShadowMapPerLightCacheEntry
 {
 public:
-	FVirtualShadowMapPerLightCacheEntry(int32 MaxPersistentScenePrimitiveIndex)
+	FVirtualShadowMapPerLightCacheEntry(int32 MaxPersistentScenePrimitiveIndex, uint32 NumShadowMaps)
 		: RenderedPrimitives(false, MaxPersistentScenePrimitiveIndex)
 		, CachedPrimitives(false, MaxPersistentScenePrimitiveIndex)
 	{
+		ShadowMapEntries.SetNum(NumShadowMaps);
 	}
-
-	TSharedPtr<FVirtualShadowMapCacheEntry> FindCreateShadowMapEntry(int32 Index);
 
 	void OnPrimitiveRendered(const FPrimitiveSceneInfo* PrimitiveSceneInfo);
 	/**
 	 * The (local) VSM is fully cached if the previous frame if was distant and is distant this frame also.
+	 * "Fully" implies that we know all pages are mapped as well as rendered to (ignoring potential CPU-side object culling).
 	 */
-	inline bool IsFullyCached() const { return bCurrentIsDistantLight && bPrevIsDistantLight && PrevRenderedFrameNumber >= 0; }
-	void MarkRendered(int32 FrameIndex) { CurrentRenderedFrameNumber = FrameIndex; }
-	int32 GetLastScheduledFrameNumber() const { return PrevScheduledFrameNumber; }
-	void UpdateClipmap();
+	inline bool IsFullyCached() const { return Current.bIsDistantLight && Prev.bIsDistantLight && Prev.RenderedFrameNumber >= 0; }
+
+	/**
+	 */
+	inline bool IsUncached() const { return Current.bIsUncached; }
+
+	void MarkRendered(int32 FrameIndex) { Current.RenderedFrameNumber = FrameIndex; }
+	int32 GetLastScheduledFrameNumber() const { return Prev.ScheduledFrameNumber; }
+	void UpdateClipmap(const FVector& LightDirection, int FirstLevelx);
 	/**
 	 * Returns true if the cache entry is valid (has previous state).
 	 */
-	bool UpdateLocal(const FProjectedShadowInitializer &InCacheKey, bool bIsDistantLight, bool bAllowInvalidation);
+	bool UpdateLocal(const FProjectedShadowInitializer &InCacheKey, bool bIsDistantLight, bool bCacheEnabled, bool bAllowInvalidation);
 
 	/**
 	 * Mark as invalid, i.e., needing rendering.
 	 */
 	void Invalidate();
 
-	bool bPrevIsDistantLight = false;
-	int32 PrevRenderedFrameNumber = -1;
-	int32 PrevScheduledFrameNumber = -1;
+	// TODO: We probably don't need the prev/next thing anymore
+	struct FFrameState
+	{
+		bool bIsUncached = false;
+		bool bIsDistantLight = false;
+		int32 RenderedFrameNumber = -1;
+		int32 ScheduledFrameNumber = -1;		
 
-	bool bCurrentIsDistantLight = false;
-	int32 CurrentRenderedFrameNumber = -1;
-	int32 CurrenScheduledFrameNumber = -1;
+	};
+	FFrameState Prev;
+	FFrameState Current;
+
+	// Tracks the last time we saw this light referenced.
+	// This allows us to keep entries alive even when they are temporarily not visible or similar, but age them out over time
+	// NOTE: This is not exactly a frame number since multiple "Render" calls may happen per frame, and we need to track
+	// them separately for the purposes of determining whether a given light is actually referenced in the current Render.
+	int64 ReferencedRenderSequenceNumber = -1;
+
 	// Primitives that have been rendered (not culled) the previous frame, when a primitive transitions from being culled to not it must be rendered into the VSM
 	// Key culling reasons are small size or distance cutoff.
 	TBitArray<> RenderedPrimitives;
@@ -104,7 +120,7 @@ public:
 	TBitArray<> CachedPrimitives;
 
 	// One entry represents the cached state of a given shadow map in the set of either a clipmap(N), one cube map(6) or a regular VSM (1)
-	TArray< TSharedPtr<FVirtualShadowMapCacheEntry> > ShadowMapEntries;
+	TArray<FVirtualShadowMapCacheEntry> ShadowMapEntries;
 
 	// TODO: refactor this to not ne stored in the cache entry when we move (some) invalidaitons to the end of frame rather than in the scene primitive updates.
 	struct FInstanceRange
@@ -118,6 +134,13 @@ public:
 
 private:
 	FProjectedShadowInitializer LocalCacheKey;
+	struct FClipmapCacheKey
+	{
+		FVector LightDirection;
+		int FirstLevel;
+		int LevelCount;
+	};
+	FClipmapCacheKey ClipmapCacheKey;
 };
 
 class FVirtualShadowMapFeedback
@@ -147,16 +170,20 @@ struct FVirtualShadowMapArrayFrameData
 {
 	TRefCountPtr<FRDGPooledBuffer>				PageTable;
 	TRefCountPtr<FRDGPooledBuffer>				PageFlags;
-
-	TRefCountPtr<FRDGPooledBuffer>				ProjectionData;
 	TRefCountPtr<FRDGPooledBuffer>				PageRectBounds;
-
-	TRefCountPtr<FRDGPooledBuffer>				PhysicalPageMetaData;
-
-	TRefCountPtr<IPooledRenderTarget>			HZBPhysical;
-	TMap<int32, FVirtualShadowMapHZBMetadata>	HZBMetadata;
+	TRefCountPtr<FRDGPooledBuffer>				ProjectionData;
+	TRefCountPtr<FRDGPooledBuffer>				PhysicalPageLists;
 
 	uint64 GetGPUSizeBytes(bool bLogSizes) const;
+};
+
+struct FPhysicalPageMetaData
+{	
+	uint32 Flags;
+	uint32 Age;
+	uint32 VirtualShadowMapId;
+	uint32 MipLevel;
+	FUintPoint PageAddress;
 };
 
 class FVirtualShadowMapArrayCacheManager
@@ -170,15 +197,32 @@ public:
 
 	// Called by VirtualShadowMapArray to potentially resize the physical pool
 	// If the requested size is not already the size, all cache data is dropped and the pool is resized.
-	TRefCountPtr<IPooledRenderTarget> SetPhysicalPoolSize(FRDGBuilder& GraphBuilder, FIntPoint RequestedSize, int RequestedArraySize);
+	void SetPhysicalPoolSize(FRDGBuilder& GraphBuilder, FIntPoint RequestedSize, int RequestedArraySize, uint32 MaxPhysicalPages);
 	void FreePhysicalPool();
+	TRefCountPtr<IPooledRenderTarget> GetPhysicalPagePool() const { return PhysicalPagePool; }
+	TRefCountPtr<FRDGPooledBuffer> GetPhysicalPageMetaData() const { return PhysicalPageMetaData; }
 
 	// Called by VirtualShadowMapArray to potentially resize the HZB physical pool
 	TRefCountPtr<IPooledRenderTarget> SetHZBPhysicalPoolSize(FRDGBuilder& GraphBuilder, FIntPoint RequestedSize, const EPixelFormat Format);
 	void FreeHZBPhysicalPool();
 
+	// Set the cache as valid (called after allocation/analysis/metadata update)
+	// NOTE: Could be called after rendering instead, but the distinction is not currently meaningful
+	void MarkCacheDataValid();
+	
 	// Invalidate the cache for all shadows, causing any pages to be rerendered
 	void Invalidate();
+
+	/**
+	 * Called before VSM builds page allocations to reallocate any lights that may not be visible this frame
+	 * but that may still have cached physical pages. We reallocate new VSM each frame for these to allow the associated
+	 * physical pages to live through short periods of being offscreen or otherwise culled. This function also removes
+	 * entries that are too old.
+	 */
+	void UpdateUnreferencedCacheEntries(FVirtualShadowMapArray& VirtualShadowMapArray);
+
+	// Must be called *after* calling UpdateUnreferencedCacheEntries - TODO: Perhaps merge the two to enforce
+	void UploadProjectionData(FRDGScatterUploadBuffer& Uploader) const;
 
 	/**
 	 * Call at end of frame to extract resouces from the virtual SM array to preserve to next frame.
@@ -192,12 +236,11 @@ public:
 	/**
 	 * Finds an existing cache entry and moves to the active set or creates a fresh one.
 	 */
-	TSharedPtr<FVirtualShadowMapPerLightCacheEntry> FindCreateLightCacheEntry(int32 LightSceneId, uint32 ViewUniqueID = 0U);
+	TSharedPtr<FVirtualShadowMapPerLightCacheEntry> FindCreateLightCacheEntry(int32 LightSceneId, uint32 ViewUniqueID, uint32 NumShadowMaps);
 
-	/*
-	 * Returns true if cached data is available.
-	 */
-	bool IsValid();
+	bool IsCacheEnabled();
+	bool IsCacheDataAvailable();
+	bool IsHZBDataAvailable();
 
 	bool IsAccumulatingStats();
 
@@ -210,6 +253,8 @@ public:
 	{
 	public:
 		FInvalidatingPrimitiveCollector(FVirtualShadowMapArrayCacheManager* InVirtualShadowMapArrayCacheManager);
+
+		void AddDynamicAndGPUPrimitives();
 
 		/**
 		 * All of these functions filters redundant primitive adds, and thus expects valid IDs (so can't be called for primitives that have not yet been added)
@@ -234,18 +279,14 @@ public:
 			AddInvalidation(PrimitiveSceneInfo, false);
 		}
 
-		bool IsEmpty() const { return LoadBalancer.IsEmpty(); }
+		void Finalize();
 
 		const TBitArray<SceneRenderingAllocator>& GetRemovedPrimitives() const
 		{
 			return RemovedPrimitives;
 		}
 
-		FInstanceGPULoadBalancer LoadBalancer;
-		int32 TotalInstanceCount = 0;
-#if VSM_LOG_INVALIDATIONS
-		FString RangesStr;
-#endif
+		FInstanceGPULoadBalancer Instances;
 
 	private:
 		void AddInvalidation(FPrimitiveSceneInfo* PrimitiveSceneInfo, bool bRemovedPrimitive);
@@ -254,16 +295,10 @@ public:
 		FGPUScene& GPUScene;
 		FVirtualShadowMapArrayCacheManager& Manager;
 
-		TBitArray<SceneRenderingAllocator> AlreadyAddedPrimitives;
 		TBitArray<SceneRenderingAllocator> RemovedPrimitives;
 	};
 
-	/**
-	 * This must to be executed before the instances are actually removed / updated, otherwise the wrong position will be used. 
-	 * In particular, it must be processed before the Scene primitive IDs are updated/compacted as part of the removal.
-	 * Invalidate pages that are touched by (the instances of) the removed primitives. 
-	 */
-	void ProcessRemovedOrUpdatedPrimitives(FRDGBuilder& GraphBuilder, const FGPUScene& GPUScene, FInvalidatingPrimitiveCollector& InvalidatingPrimitiveCollector);
+	void ProcessInvalidations(FRDGBuilder& GraphBuilder, FSceneUniformBuffer &SceneUniformBuffer, const FInvalidatingPrimitiveCollector& InvalidatingPrimitiveCollector);
 
 	/**
 	 * Allow the cache manager to track scene changes, in particular track resizing of primitive tracking data.
@@ -275,12 +310,8 @@ public:
 	 */
 	void OnLightRemoved(int32 LightId);
 
+	const FVirtualShadowMapUniformParameters& GetPreviousUniformParameters() const { return PrevUniformParameters; }
 	TRDGUniformBufferRef<FVirtualShadowMapUniformParameters> GetPreviousUniformBuffer(FRDGBuilder& GraphBuilder) const;
-
-	FVirtualShadowMapArrayFrameData PrevBuffers;
-	FVirtualShadowMapUniformParameters PrevUniformParameters;
-			
-	void SetHZBViewParams(int32 HZBKey, Nanite::FPackedViewParams& OutParams);
 
 #if WITH_MGPU
 	void UpdateGPUMask(FRHIGPUMask GPUMask);
@@ -288,16 +319,16 @@ public:
 
 	uint64 GetGPUSizeBytes(bool bLogSizes) const;
 
-	GPUMessage::FSocket StatusFeedbackSocket;
-#if !UE_BUILD_SHIPPING
-	// Socket for optional stats that are only sent back if enabled
-	GPUMessage::FSocket StatsFeedbackSocket;
-#endif 
+	const FVirtualShadowMapArrayFrameData& GetPrevBuffers() const { return PrevBuffers; }
 
-	FVirtualShadowMapFeedback StaticGPUInvalidationsFeedback;
+	uint32 GetStatusFeedbackMessageId() const { return StatusFeedbackSocket.GetMessageId().GetIndex(); }
+
+#if !UE_BUILD_SHIPPING
+	uint32 GetStatsFeedbackMessageId() const { return StatsFeedbackSocket.GetMessageId().IsValid() ? StatsFeedbackSocket.GetMessageId().GetIndex() : INDEX_NONE; }
+#endif
 
 private:
-	void ProcessInvalidations(FRDGBuilder& GraphBuilder, FInstanceGPULoadBalancer& Instances, int32 TotalInstanceCount, const FGPUScene& GPUScene);
+	void ProcessInvalidations(FRDGBuilder& GraphBuilder, FSceneUniformBuffer &SceneUniformBuffer, const FInstanceGPULoadBalancer& Instances) const;
 
 	void ExtractStats(FRDGBuilder& GraphBuilder, FVirtualShadowMapArray &VirtualShadowMapArray);
 
@@ -317,15 +348,24 @@ private:
 
 	// Remove old info used to track logging.
 	void TrimLoggingInfo();
+
+	FVirtualShadowMapArrayFrameData PrevBuffers;
+	FVirtualShadowMapUniformParameters PrevUniformParameters;
+
 	// The actual physical texture data is stored here rather than in VirtualShadowMapArray (which is recreated each frame)
 	// This allows us to (optionally) persist cached pages between frames. Regardless of whether caching is enabled,
 	// we store the physical pool here.
 	TRefCountPtr<IPooledRenderTarget> PhysicalPagePool;
 	TRefCountPtr<IPooledRenderTarget> HZBPhysicalPagePool;
+	ETextureCreateFlags PhysicalPagePoolCreateFlags = TexCreate_None;
+	TRefCountPtr<FRDGPooledBuffer> PhysicalPageMetaData;
 
 	// Index the Cache entries by the light ID
 	TMap< uint64, TSharedPtr<FVirtualShadowMapPerLightCacheEntry> > CacheEntries;
-	TMap< uint64, TSharedPtr<FVirtualShadowMapPerLightCacheEntry> > PrevCacheEntries;
+
+	// Marked after successfully allocating new physical pages
+	// Cleared if any global invalidation happens, in which case the next VSM update will not consider cached pages
+	bool bCacheDataValid = false;
 
 	// Tracks primitives (by persistent primitive index) that have been removed recently
 	// This allows us to ignore feedback from previous frames in the case of persistent primitive indices being
@@ -336,14 +376,25 @@ private:
 	int32 RecentlyRemovedReadIndex = 0;
 	int32 RecentlyRemovedFrameCounter = 0;
 
+	// Used for tracking which cache entries are referenced in a given render call
+	int64 RenderSequenceNumber = 0;
+
 	// Stores stats over frames when activated.
 	TRefCountPtr<FRDGPooledBuffer> AccumulatedStatsBuffer;
 	bool bAccumulatingStats = false;
 	FRHIGPUBufferReadback* GPUBufferReadback = nullptr;
+
+	FVirtualShadowMapFeedback StaticGPUInvalidationsFeedback;
+	GPUMessage::FSocket StatusFeedbackSocket;
+
+	// Debug stuff
 #if !UE_BUILD_SHIPPING
 	FDelegateHandle ScreenMessageDelegate;
 	float LastOverflowTime = -1.0f;
 	bool bLoggedPageOverflow = false;
+	
+	// Socket for optional stats that are only sent back if enabled
+	GPUMessage::FSocket StatsFeedbackSocket;
 
 	// Stores the last time (wall-clock seconds since app-start) that an non-nanite page area message was logged,
 	TArray<float> LastLoggedPageOverlapAppTime;
@@ -355,9 +406,11 @@ private:
 		float LastTimeSeen;
 	};
 	TMap<uint32, FLargePageAreaItem> LargePageAreaItems;
-#endif
+#endif // UE_BUILD_SHIPPING
+
 #if WITH_MGPU
 	FRHIGPUMask LastGPUMask;
 #endif
+
 	FScene* Scene;
 };

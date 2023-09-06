@@ -3,11 +3,14 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimNode_SaveCachedPose.h"
+#include "Animation/AnimStats.h"
 #include "Animation/BlendProfile.h"
 #include "Algo/MaxElement.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Logging/TokenizedMessage.h"
+#include "Animation/AnimCurveUtils.h"
+#include "Misc/UObjectToken.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_Inertialization)
 
@@ -29,6 +32,11 @@ static constexpr float INERTIALIZATION_TIME_EPSILON = 1.0e-7f;
 
 namespace UE { namespace Anim {
 
+void IInertializationRequester::RequestInertialization(const FInertializationRequest& InInertializationRequest)
+{
+	RequestInertialization(InInertializationRequest.Duration, InInertializationRequest.BlendProfile);
+}
+
 // Inertialization request event bound to a node
 class FInertializationRequester : public IInertializationRequester
 {
@@ -44,6 +52,12 @@ private:
 	virtual void RequestInertialization(float InRequestedDuration, const UBlendProfile* InBlendProfile) override
 	{ 
 		Node.RequestInertialization(InRequestedDuration, InBlendProfile); 
+	}
+
+	virtual void RequestInertialization(const FInertializationRequest& InInertializationRequest) override
+	{
+		// The Blend Mode parameters will be ignored as FAnimNode_Inertialization does not support them.
+		Node.RequestInertialization(InInertializationRequest);
 	}
 
 	virtual void AddDebugRecord(const FAnimInstanceProxy& InSourceProxy, int32 InSourceNodeId)
@@ -97,17 +111,32 @@ void FAnimNode_Inertialization::RequestInertialization(float Duration, const UBl
 	}
 }
 
+void FAnimNode_Inertialization::RequestInertialization(const FInertializationRequest& Request)
+{
+	if (Request.Duration >= 0.0f)
+	{
+		RequestQueue.AddUnique(Request);
+	}
+}
 
-/*static*/ void FAnimNode_Inertialization::LogRequestError(const FAnimationUpdateContext& Context, const FPoseLinkBase& RequesterPoseLink)
+/*static*/ void FAnimNode_Inertialization::LogRequestError(const FAnimationUpdateContext& Context, const int32 NodePropertyIndex)
 {
 #if WITH_EDITORONLY_DATA	
 	UAnimBlueprint* AnimBlueprint = Context.AnimInstanceProxy->GetAnimBlueprint();
 	UAnimBlueprintGeneratedClass* AnimClass = AnimBlueprint ? AnimBlueprint->GetAnimBlueprintGeneratedClass() : nullptr;
-	const UObject* RequesterNode = AnimClass ? AnimClass->GetVisualNodeFromNodePropertyIndex(RequesterPoseLink.SourceLinkID) : nullptr;
+	const UObject* RequesterNode = AnimClass ? AnimClass->GetVisualNodeFromNodePropertyIndex(NodePropertyIndex) : nullptr;
 
-	FText Message = FText::Format(LOCTEXT("InertializationRequestError", "No Inertialization node found for request from '{0}'. Add an Inertialization node after this request."),
-		FText::FromString(GetPathNameSafe(RequesterNode)));
-	Context.LogMessage(EMessageSeverity::Error, Message);
+	Context.LogMessage(FTokenizedMessage::Create(EMessageSeverity::Error)
+		->AddToken(FTextToken::Create(LOCTEXT("InertializationRequestError_1", "No Inertialization node found for request from ")))
+		->AddToken(FUObjectToken::Create(RequesterNode))
+		->AddToken(FTextToken::Create(LOCTEXT("InertializationRequestError_2", ". Add an Inertialization node after this request."))));
+#endif
+}
+
+/*static*/ void FAnimNode_Inertialization::LogRequestError(const FAnimationUpdateContext& Context, const FPoseLinkBase& RequesterPoseLink)
+{
+#if WITH_EDITORONLY_DATA	
+	LogRequestError(Context, RequesterPoseLink.SourceLinkID);
 #endif
 }
 
@@ -120,7 +149,7 @@ void FAnimNode_Inertialization::Initialize_AnyThread(const FAnimationInitializeC
 	Source.Initialize(Context);
 
 
-	const int32 NumSkeletonBones = UE::Anim::GetNumSkeletonBones(Context.AnimInstanceProxy->GetRequiredBones());
+	const int32 NumSkeletonBones = bPreallocateMemory ? Context.AnimInstanceProxy->GetSkeleton()->GetReferenceSkeleton().GetNum() : 0;
 
 	PoseSnapshots.Empty(INERTIALIZATION_MAX_POSE_SNAPSHOTS);
 	RequestQueue.Reserve(8);
@@ -132,20 +161,7 @@ void FAnimNode_Inertialization::Initialize_AnyThread(const FAnimationInitializeC
 
 	Deactivate();
 
-	InertializationPoseDiff.Reset();
-	CachedFilteredCurvesUIDs.Reset();
-
-	const USkeleton* Skeleton = Context.AnimInstanceProxy->GetSkeleton();
-	check(Skeleton);
-	for (const FName& CurveName : FilteredCurves)
-	{
-		SmartName::UID_Type NameUID = Skeleton->GetUIDByName(USkeleton::AnimCurveMappingName, CurveName);
-		if (NameUID != SmartName::MaxUID)
-		{
-			// Grab UIDs of filtered curves to avoid lookup later
-			CachedFilteredCurvesUIDs.Add(NameUID);
-		}
-	}
+	InertializationPoseDiff.Reset(NumSkeletonBones);
 }
 
 
@@ -187,7 +203,7 @@ void FAnimNode_Inertialization::Update_AnyThread(const FAnimationUpdateContext& 
 				{
 					for (const FInertializationRequest& Request : RequestQueue)
 					{
-						InMessage.RequestInertialization(Request.Duration, Request.BlendProfile);
+						InMessage.RequestInertialization(Request);
 					}
  					InMessage.AddDebugRecord(Proxy, NodeId);
 
@@ -207,6 +223,7 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 {
 	LLM_SCOPE_BYNAME(TEXT("Animation/Inertialization"));
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread);
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(Inertialization, !IsInGameThread());
 
 	Source.Evaluate(Output);
 
@@ -268,6 +285,11 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 
 		// Handle the first inertialization request in the queue
 		InertializationDuration = FMath::Max(RequestQueue[0].Duration - AppliedDeficit, 0.0f);
+#if ANIM_TRACE_ENABLED
+		InertializationRequestDescription = RequestQueue[0].Description;
+		InertializationRequestNodeId = RequestQueue[0].NodeId;
+		InertializationRequestAnimInstance = RequestQueue[0].AnimInstance;
+#endif
 		FillSkeletonBoneDurationsArray(InertializationDurationPerBone, InertializationDuration, RequestQueue[0].BlendProfile);
 
 		// Handle all subsequent inertialization requests (often there will be only a single request)
@@ -280,7 +302,16 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 				const float RequestDuration = FMath::Max(Request.Duration - AppliedDeficit, 0.0f);
 
 				// Merge this request in with the previous requests (using the minimum requested time per bone)
-				InertializationDuration = FMath::Min(InertializationDuration, RequestDuration);
+				if (RequestDuration < InertializationDuration)
+				{
+					InertializationDuration = RequestDuration;
+#if ANIM_TRACE_ENABLED
+					InertializationRequestDescription = Request.Description;
+					InertializationRequestNodeId = Request.NodeId;
+					InertializationRequestAnimInstance = Request.AnimInstance;
+#endif
+				}
+
 				if (Request.BlendProfile != nullptr)
 				{
 					FillSkeletonBoneDurationsArray(RequestDurationPerBone, RequestDuration, Request.BlendProfile);
@@ -409,10 +440,6 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 		for (int32 i = 0; i < INERTIALIZATION_MAX_POSE_SNAPSHOTS - 1; ++i)
 		{
 			Swap(PoseSnapshots[i], PoseSnapshots[i+1]);
-
-			// Verify the swap operation used move assignment to properly fix up curve LUT pointers
-			checkSlow(PoseSnapshots[i].Curves.BlendedCurve.UIDToArrayIndexLUT == &PoseSnapshots[i].Curves.CurveUIDToArrayIndexLUT);
-			checkSlow(PoseSnapshots[i+1].Curves.BlendedCurve.UIDToArrayIndexLUT == &PoseSnapshots[i+1].Curves.CurveUIDToArrayIndexLUT);
 		}
 
 		// Overwrite the (now irrelevant) pose in the last slot with the new post snapshot
@@ -425,11 +452,17 @@ void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 	DeltaTime = 0.0f;
 	TeleportType = ETeleportType::None;
 
+	const float NormalizedInertializationTime = InertializationDuration > UE_KINDA_SMALL_NUMBER ? (InertializationElapsedTime / InertializationDuration) : 0.0f;
+	const float InertializationWeight = InertializationState == EInertializationState::Active ? 1.0f - NormalizedInertializationTime : 0.0f;
+
 	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("State"), *UEnum::GetValueAsString(InertializationState));
 	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Elapsed Time"), InertializationElapsedTime);
 	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Duration"), InertializationDuration);
 	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Max Duration"), InertializationMaxDuration);
 	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Normalized Time"), InertializationDuration > UE_KINDA_SMALL_NUMBER ? (InertializationElapsedTime / InertializationDuration) : 0.0f);
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Inertialization Weight"), InertializationWeight);
+	TRACE_ANIM_NODE_VALUE_WITH_ID(Output, GetNodeIndex(), TEXT("Request Description"), *InertializationRequestDescription.ToString());
+	TRACE_ANIM_NODE_VALUE_WITH_ID_ANIM_NODE(Output, GetNodeIndex(), TEXT("Request Node"), InertializationRequestNodeId, InertializationRequestAnimInstance);
 }
 
 
@@ -489,7 +522,15 @@ void FAnimNode_Inertialization::StartInertialization(FPoseContext& Context, FIne
 		}
 	}
 
-	OutPoseDiff.InitFrom(Context.Pose, Context.Curve, Context.AnimInstanceProxy->GetComponentTransform(), AttachParentName, PreviousPose1, PreviousPose2, CachedFilteredCurvesUIDs);
+	// Initialize curve filter if required 
+	if(FilteredCurves.Num() != CurveFilter.Num())
+	{
+		CurveFilter.Empty();
+		CurveFilter.SetFilterMode(UE::Anim::ECurveFilterMode::DisallowFiltered);
+		CurveFilter.AppendNames(FilteredCurves);
+	}
+	
+	OutPoseDiff.InitFrom(Context.Pose, Context.Curve, Context.AnimInstanceProxy->GetComponentTransform(), AttachParentName, PreviousPose1, PreviousPose2, CurveFilter);
 }
 
 
@@ -501,10 +542,16 @@ void FAnimNode_Inertialization::ApplyInertialization(FPoseContext& Context, cons
 
 void FAnimNode_Inertialization::Deactivate()
 {
+	if (!bPreallocateMemory)
+	{
+		// InertializationPoseDiff::Reset actually empties and frees memory here
+		InertializationPoseDiff.Reset();
+		InertializationDurationPerBone.Empty();
+	}
+
 	InertializationState = EInertializationState::Inactive;
 	InertializationElapsedTime = 0.0f;
 	InertializationDuration = 0.0f;
-	InertializationDurationPerBone.Reset();
 	InertializationMaxDuration = 0.0f;
 	InertializationDeficit = 0.0f;
 }
@@ -544,7 +591,7 @@ void FInertializationPose::InitFrom(const FCompactPose& Pose, const FBlendedCurv
 // Prev2		the pose and curves from two frames before
 // DeltaTime	the time elapsed between Prev1 and Pose
 //
-void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlendedCurve& Curves, const FTransform& ComponentTransform, const FName& AttachParentName, const FInertializationPose& Prev1, const FInertializationPose& Prev2, const TSet<SmartName::UID_Type>& FilteredCurvesUIDs)
+void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlendedCurve& Curves, const FTransform& ComponentTransform, const FName& AttachParentName, const FInertializationPose& Prev1, const FInertializationPose& Prev2, const UE::Anim::FCurveFilter& CurveFilter)
 {
 	const FBoneContainer& BoneContainer = Pose.GetBoneContainer();
 
@@ -713,39 +760,32 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 	}
 
 	// Compute the curve differences
-	const int32 CurveNum = Curves.IsValid() ? Curves.UIDToArrayIndexLUT->Num() : 0;
-	CurveDiffs.Empty(CurveNum);
-	CurveDiffs.AddZeroed(CurveNum);
-	for (int32 CurveUID = 0; CurveUID != CurveNum; ++CurveUID)
+	// First copy in current values
+	CurveDiffs.CopyFrom(Curves);
+
+	// Compute differences
+	UE::Anim::FNamedValueArrayUtils::Union(CurveDiffs, Prev1.Curves.BlendedCurve,
+		[](FInertializationCurveDiffElement& OutResultElement, const UE::Anim::FCurveElement& InElement1, UE::Anim::ENamedValueUnionFlags InFlags)
+		{
+			OutResultElement.Delta = InElement1.Value - OutResultElement.Value;
+		});
+
+	// Compute derivatives
+	if(Prev1.DeltaTime > UE_KINDA_SMALL_NUMBER)
 	{
-		const int32 CurrIdx = Curves.GetArrayIndexByUID(CurveUID);
-		const int32 Prev1Idx = Prev1.Curves.BlendedCurve.GetArrayIndexByUID(CurveUID);
-		if (CurrIdx == INDEX_NONE || Prev1Idx == INDEX_NONE)
-		{
-			// CurveDiff is zeroed
-			continue;
-		}
+		UE::Anim::FNamedValueArrayUtils::Union(CurveDiffs, Prev2.Curves.BlendedCurve,
+			[DeltaTime = Prev1.DeltaTime](FInertializationCurveDiffElement& OutResultElement, const UE::Anim::FCurveElement& InElement1, UE::Anim::ENamedValueUnionFlags InFlags)
+			{
+				const float Prev1Weight = OutResultElement.Delta - OutResultElement.Value;
+				const float Prev2Weight = InElement1.Value;
+				OutResultElement.Derivative = (Prev1Weight - Prev2Weight) / DeltaTime;
+			});
+	}
 
-		// Check if the curve is in our filter set. Leave CurveDiff zeroed if it is.
-		if (FilteredCurvesUIDs.Contains((SmartName::UID_Type)CurveUID))
-		{
-			continue;
-		}
-
-		const float CurrWeight = Curves.CurveWeights[CurrIdx];
-		const float Prev1Weight = Prev1.Curves.BlendedCurve.CurveWeights[Prev1Idx];
-		FInertializationCurveDiff& CurveDiff = CurveDiffs[CurveUID];
-
-		// Note we intentionally ignore FBlendedCurve::ValidCurveWeights. We want to ease in/out when only one
-		// curve is valid, and we'll compute a zero delta and derivative when both are invalid.
-		CurveDiff.Delta = Prev1Weight - CurrWeight;
-
-		const int32 Prev2Idx = Prev2.Curves.BlendedCurve.GetArrayIndexByUID(CurveUID);
-		if (Prev2Idx != INDEX_NONE && Prev1.DeltaTime > UE_KINDA_SMALL_NUMBER)
-		{
-			const float Prev2Weight = Prev2.Curves.BlendedCurve.CurveWeights[Prev2Idx];
-			CurveDiff.Derivative = (Prev1Weight - Prev2Weight) / Prev1.DeltaTime;
-		}
+	// Apply filtering to diffs to remove anything we dont want to inertialize
+	if(CurveFilter.Num() > 0)
+	{
+		UE::Anim::FCurveUtils::Filter(CurveDiffs, CurveFilter);
 	}
 }
 
@@ -786,27 +826,12 @@ void FInertializationPoseDiff::ApplyTo(FCompactPose& Pose, FBlendedCurve& Curves
 	Pose.NormalizeRotations();
 
 	// Apply curve differences
-	if (Curves.IsValid())
-	{
-		// Note Curves.Elements is indexed indirectly via lookup table while CurveDiffs is indexed directly by curve ID
-		const int32 CurveNum = FMath::Min(Curves.UIDToArrayIndexLUT->Num(), CurveDiffs.Num());
-		for (int32 CurveUID = 0; CurveUID != CurveNum; ++CurveUID)
+	UE::Anim::FNamedValueArrayUtils::Union(Curves, CurveDiffs,
+		[&InertializationElapsedTime, &InertializationDuration](UE::Anim::FCurveElement& OutResultElement, const FInertializationCurveDiffElement& InParamElement, UE::Anim::ENamedValueUnionFlags InFlags)
 		{
-			const int32 CurrIdx = Curves.GetArrayIndexByUID(CurveUID);
-			if (CurrIdx == INDEX_NONE)
-			{
-				continue;
-			}
-
-			const FInertializationCurveDiff& CurveDiff = CurveDiffs[CurveUID];
-			const float C = CalcInertialFloat(CurveDiff.Delta, CurveDiff.Derivative, InertializationElapsedTime, InertializationDuration);
-			if (C != 0.0f)
-			{
-				Curves.CurveWeights[CurrIdx] += C;
-				Curves.ValidCurveWeights[CurrIdx] = true;
-			}
-		}
-	}
+			OutResultElement.Value += CalcInertialFloat(InParamElement.Delta, InParamElement.Derivative, InertializationElapsedTime, InertializationDuration);
+			OutResultElement.Flags |= InParamElement.Flags;
+		});
 }
 
 

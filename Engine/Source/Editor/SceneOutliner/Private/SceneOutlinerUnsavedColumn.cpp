@@ -118,17 +118,18 @@ SHeaderRow::FColumn::FArguments FSceneOutlinerActorUnsavedColumn::ConstructHeade
 
 const TSharedRef<SWidget> FSceneOutlinerActorUnsavedColumn::ConstructRowWidget(FSceneOutlinerTreeItemRef TreeItem, const STableRow<FSceneOutlinerTreeItemPtr>& Row)
 {
-	FString AssetPath =  USourceControlHelpers::PackageFilename(SceneOutliner::FSceneOutlinerHelpers::GetExternalPackageName(TreeItem.Get()));
+	const FString ExternalPackageName = SceneOutliner::FSceneOutlinerHelpers::GetExternalPackageName(TreeItem.Get());
+	const FString ExternalPackageFileName = !ExternalPackageName.IsEmpty() ? USourceControlHelpers::PackageFilename(ExternalPackageName) : FString();
 
-	if (AssetPath.IsEmpty())
+	if (ExternalPackageFileName.IsEmpty())
 	{
 		return SNullWidget::NullWidget;
 	}
 
-	TSharedRef<SUnsavedActorWidget> ActualWidget = SNew(SUnsavedActorWidget, AssetPath);
+	const TSharedRef<SUnsavedActorWidget> ActualWidget = SNew(SUnsavedActorWidget, ExternalPackageFileName);
 
 	// Store a reference to the widget for this asset so we can grab the unsaved status for sorting
-	UnsavedActorWidgets.Add(AssetPath, ActualWidget);
+	UnsavedActorWidgets.Add(ExternalPackageFileName, ActualWidget);
 	
 	return SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
@@ -146,10 +147,14 @@ void FSceneOutlinerActorUnsavedColumn::SortItems(TArray<FSceneOutlinerTreeItemPt
 		/** Sort by unsaved first */
 		.Primary([this](const ISceneOutlinerTreeItem& Item)
 		{
-			if (const TSharedRef<SUnsavedActorWidget>* FoundWidget = UnsavedActorWidgets.Find(USourceControlHelpers::PackageFilename(SceneOutliner::FSceneOutlinerHelpers::GetExternalPackageName(Item))))
+			FString LongPackageName = SceneOutliner::FSceneOutlinerHelpers::GetExternalPackageName(Item);
+			if (!LongPackageName.IsEmpty())
 			{
-				// return the inverse because we want items with Unsaved = TRUE to show up on top in ascending sort (default)
-				return !(*FoundWidget)->IsUnsaved();
+				if (const TSharedRef<SUnsavedActorWidget>* FoundWidget = UnsavedActorWidgets.Find(USourceControlHelpers::PackageFilename(LongPackageName)))
+				{
+					// return the inverse because we want items with Unsaved = TRUE to show up on top in ascending sort (default)
+					return !(*FoundWidget)->IsUnsaved();
+				}
 			}
 			return true;
 		}, SortMode)

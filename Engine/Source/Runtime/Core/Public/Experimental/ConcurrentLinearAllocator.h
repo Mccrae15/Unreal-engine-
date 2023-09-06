@@ -43,41 +43,36 @@ struct FOsAllocator
 {
 	static constexpr bool SupportsAlignment = false;
 
-	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
-	{
-		//LLM_SCOPED_PAUSE_TRACKING(ELLMAllocType::System);
-		void* Pointer = FMemory::Malloc(Size);
-		MemoryTrace_Alloc(uint64(Pointer), Size, Alignment);
-		MemoryTrace_MarkAllocAsHeap(uint64(Pointer), EMemoryTraceRootHeap::SystemMemory);
-		return Pointer;
-	}
+	// Indicates whether memory is acquired from the same source as used by FMalloc i.e. FMemory/FPlatformMemory::BaseAllocator().
+	// It's needed so that ConcurrentLinearAllocator could correctly account for this memory in the memory stats and tracking systems.
+	// It is 'true' by default, which is suitable for most implementations. However, if you create a custom allocator that
+	// acquires memory in a different way e.g. directly from the OS using FPlatformMemory::BinnedAllocFromOS, then you
+	// should set this variable to 'false'.
+	static constexpr bool UsesFMalloc = true;
 
-	FORCEINLINE static void Free(void* Pointer, SIZE_T Size)
-	{
-		MemoryTrace_Free(uint64(Pointer));
-		FMemory::Free(Pointer);
-	}
+	CORE_API static void* Malloc(SIZE_T Size, uint32 Alignment);
+	CORE_API static void Free(void* Pointer, SIZE_T Size);
 };
 
 #if PLATFORM_USES_ANSI_MALLOC
 struct FAlignedAllocatorInternal
 {
 	static constexpr bool SupportsAlignment = true;
+	static constexpr bool UsesFMalloc       = true;
 
 	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
 	{
-		//LLM_SCOPED_PAUSE_TRACKING(ELLMAllocType::FMalloc);
+		void* Pointer = AnsiMalloc(Size, Alignment);
 #if DO_CHECK
-		void* Ret = AnsiMalloc(Size, Alignment);
-		check(IsAligned(Ret, Alignment));
-		return Ret;
-#else
-		return AnsiMalloc(Size, Alignment);
+		check(IsAligned(Pointer, Alignment));
 #endif
+		MemoryTrace_Alloc(uint64(Pointer), Size, Alignment, EMemoryTraceRootHeap::SystemMemory);
+		return Pointer;
 	}
 
 	FORCEINLINE static void Free(void* Pointer, SIZE_T Size)
 	{
+		MemoryTrace_Free(uint64(Pointer), EMemoryTraceRootHeap::SystemMemory);
 		return AnsiFree(Pointer);
 	}
 };
@@ -113,6 +108,7 @@ class TBlockAllocationCache
 
 public:
 	static constexpr bool SupportsAlignment = Allocator::SupportsAlignment;
+	static constexpr bool UsesFMalloc       = Allocator::UsesFMalloc;
 
 	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
 	{
@@ -147,6 +143,7 @@ class TBlockAllocationLockFreeCache
 public:
 	static_assert(BlockSize == FPageAllocator::PageSize, "Only 64k pages are supported with this cache.");
 	static constexpr bool SupportsAlignment = Allocator::SupportsAlignment;
+	static constexpr bool UsesFMalloc       = Allocator::UsesFMalloc;
 
 	FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
 	{
@@ -199,6 +196,8 @@ class TConcurrentLinearAllocator
 		&& FMath::IsPowerOfTwo(BlockAllocationTag::BlockSize) //Aligndown only works with Pow2
 		&& !IS_ASAN_ENABLED && !BlockAllocationTag::RequiresAccurateSize // Only enabled when not using ASAN or when the Size of an allocation is not required 
 		&& BlockAllocationTag::Allocator::SupportsAlignment; //The allocator needs to align the BlockHeader by Blocksize to find the BlockHeader
+
+	LLM(static constexpr ELLMAllocType LLMAllocationType = BlockAllocationTag::Allocator::UsesFMalloc ? ELLMAllocType::FMalloc : ELLMAllocType::None;)
 
 	struct FBlockHeader;
 
@@ -274,7 +273,8 @@ class TConcurrentLinearAllocator
 					//if all allocations are already freed we can reuse the Block again
 					Header->~FBlockHeader();
 					ASAN_UNPOISON_MEMORY_REGION( Header, BlockAllocationTag::BlockSize );
-					BlockAllocationTag::Allocator::Free(Header, BlockAllocationTag::BlockSize);				
+					MemoryTrace_UnmarkAllocAsHeap(uint64(Header), EMemoryTraceRootHeap::SystemMemory);
+					BlockAllocationTag::Allocator::Free(Header, BlockAllocationTag::BlockSize);
 				}
 			}
 		}
@@ -286,7 +286,8 @@ class TConcurrentLinearAllocator
 		{
 			static_assert(BlockAllocationTag::BlockSize >= sizeof(FBlockHeader) + sizeof(FAllocationHeader));
 			Header = new (BlockAllocationTag::Allocator::Malloc(BlockAllocationTag::BlockSize, BlockAllocationTag::BlockSize)) FBlockHeader;
-			checkSlow(IsAligned(Header, alignof(FBlockHeader)));
+			MemoryTrace_MarkAllocAsHeap(uint64(Header), EMemoryTraceRootHeap::SystemMemory);
+			checkSlow(IsAligned(Header, BlockAllocationTag::BlockSize));
 			if constexpr (!SupportsFastPath)
 			{
 				ASAN_POISON_MEMORY_REGION( Header + 1, BlockAllocationTag::BlockSize - sizeof(FBlockHeader) );
@@ -314,7 +315,11 @@ public:
 		checkSlow(Alignment >= 1 && FMath::IsPowerOfTwo(Alignment));
 		if constexpr (!SupportsFastPath)
 		{
-			Alignment = (Alignment < alignof(FAllocationHeader)) ? alignof(FAllocationHeader) : Alignment;
+			Alignment = (Alignment < alignof(FAllocationHeader)) ? alignof(FAllocationHeader) : Alignment; 
+#if IS_ASAN_ENABLED
+			// Make sure FAllocationHeader is 8 bytes aligned so poison / unpoison doesnt end up as false positive
+			Alignment = Align(Alignment, 8);
+#endif
 		}
 
 		static thread_local FBlockHeader* Header;
@@ -325,7 +330,8 @@ public:
 			{
 				static_assert(BlockAllocationTag::BlockSize >= sizeof(FBlockHeader) + sizeof(FAllocationHeader));
 				Header = new (BlockAllocationTag::Allocator::Malloc(BlockAllocationTag::BlockSize, BlockAllocationTag::BlockSize)) FBlockHeader;
-				checkSlow(IsAligned(Header, alignof(FBlockHeader)));
+				MemoryTrace_MarkAllocAsHeap(uint64(Header), EMemoryTraceRootHeap::SystemMemory);
+				checkSlow(IsAligned(Header, BlockAllocationTag::BlockSize));
 				if constexpr (!SupportsFastPath)
 				{
 					ASAN_POISON_MEMORY_REGION( Header + 1, BlockAllocationTag::BlockSize - sizeof(FBlockHeader) );
@@ -344,7 +350,7 @@ public:
 				Header->Num++;
 
 				MemoryTrace_Alloc(uint64(AlignedOffset), Size, Alignment);
-				LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, reinterpret_cast<void*>(AlignedOffset), Size, ELLMTag::LinearAllocator) );
+				LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, reinterpret_cast<void*>(AlignedOffset), Size, ELLMTag::LinearAllocator, LLMAllocationType) );
 				return reinterpret_cast<void*>(AlignedOffset);
 			}
 
@@ -356,6 +362,7 @@ public:
 				if (HeaderSize + Size + Alignment > BlockAllocationTag::BlockSize)
 				{
 					FBlockHeader* LargeHeader = new (BlockAllocationTag::Allocator::Malloc(HeaderSize + Size + Alignment, BlockAllocationTag::BlockSize)) FBlockHeader;
+					MemoryTrace_MarkAllocAsHeap(uint64(LargeHeader), EMemoryTraceRootHeap::SystemMemory);
 					checkSlow(IsAligned(LargeHeader, alignof(FBlockHeader)));
 
 					uintptr_t LargeAlignedOffset = Align(LargeHeader->NextAllocationPtr, Alignment);
@@ -365,7 +372,7 @@ public:
 					checkSlow(LargeAlignedOffset + Size <= LargeHeader->NextAllocationPtr);
 
 					MemoryTrace_Alloc(uint64(LargeAlignedOffset), Size, Alignment);
-					LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, reinterpret_cast<void*>(LargeAlignedOffset), Size, ELLMTag::LinearAllocator) );
+					LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, reinterpret_cast<void*>(LargeAlignedOffset), Size, ELLMTag::LinearAllocator, LLMAllocationType) );
 					return reinterpret_cast<void*>(LargeAlignedOffset);
 				}
 			}
@@ -385,7 +392,7 @@ public:
 				ASAN_POISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) );
 
 				MemoryTrace_Alloc(uint64(AllocationHeader), Size + sizeof(FAllocationHeader), Alignment);
-				LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocationHeader, Size + sizeof(FAllocationHeader), ELLMTag::LinearAllocator) );
+				LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocationHeader, Size + sizeof(FAllocationHeader), ELLMTag::LinearAllocator, LLMAllocationType) );
 				return reinterpret_cast<void*>(AlignedOffset);
 			}
 
@@ -397,6 +404,7 @@ public:
 				if (HeaderSize + Size + Alignment > BlockAllocationTag::BlockSize)
 				{
 					FBlockHeader* LargeHeader = new (BlockAllocationTag::Allocator::Malloc(HeaderSize + Size + Alignment, BlockAllocationTag::BlockSize)) FBlockHeader;
+					MemoryTrace_MarkAllocAsHeap(uint64(LargeHeader), EMemoryTraceRootHeap::SystemMemory);
 					checkSlow(IsAligned(LargeHeader, alignof(FBlockHeader)));
 
 					uintptr_t LargeAlignedOffset = Align(LargeHeader->NextAllocationPtr, Alignment);
@@ -408,7 +416,7 @@ public:
 					ASAN_POISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) );
 
 					MemoryTrace_Alloc(uint64(AllocationHeader), Size + sizeof(FAllocationHeader), Alignment);
-					LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocationHeader, Size + sizeof(FAllocationHeader), ELLMTag::LinearAllocator) );
+					LLM_IF_ENABLED( FLowLevelMemTracker::Get().OnLowLevelAlloc(ELLMTracker::Default, AllocationHeader, Size + sizeof(FAllocationHeader), ELLMTag::LinearAllocator, LLMAllocationType) );
 					return reinterpret_cast<void*>(LargeAlignedOffset);
 				}
 			}
@@ -440,13 +448,14 @@ public:
 			if constexpr (SupportsFastPath)
 			{
 				MemoryTrace_Free(uint64(Pointer));
-				LLM_IF_ENABLED(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, Pointer));
+				LLM_IF_ENABLED(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, Pointer, LLMAllocationType));
 				FBlockHeader* Header = reinterpret_cast<FBlockHeader*>(AlignDown(Pointer, BlockAllocationTag::BlockSize));
 
 				// this deletes complete blocks when the last allocation is freed
 				if (Header->NumAllocations.fetch_sub(1, std::memory_order_acq_rel) == 1)
 				{
 					Header->~FBlockHeader();
+					MemoryTrace_UnmarkAllocAsHeap(uint64(Header), EMemoryTraceRootHeap::SystemMemory);
 					BlockAllocationTag::Allocator::Free(Header, Header->NextAllocationPtr - uintptr_t(Header));
 				}
 			}
@@ -455,7 +464,7 @@ public:
 				FAllocationHeader* AllocationHeader = GetAllocationHeader(Pointer);
 				ASAN_UNPOISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) );
 				MemoryTrace_Free(uint64(AllocationHeader));
-				LLM_IF_ENABLED(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, AllocationHeader));
+				LLM_IF_ENABLED(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default, AllocationHeader, LLMAllocationType));
 				FBlockHeader* Header = AllocationHeader->GetBlockHeader();
 				ASAN_POISON_MEMORY_REGION( AllocationHeader, sizeof(FAllocationHeader) + AllocationHeader->GetAllocationSize() );
 
@@ -464,6 +473,7 @@ public:
 				{
 					Header->~FBlockHeader();
 					ASAN_UNPOISON_MEMORY_REGION( Header, Header->NextAllocationPtr - uintptr_t(Header) );
+					MemoryTrace_UnmarkAllocAsHeap(uint64(Header), EMemoryTraceRootHeap::SystemMemory);
 					BlockAllocationTag::Allocator::Free(Header, Header->NextAllocationPtr - uintptr_t(Header));
 				}
 			}
@@ -553,6 +563,11 @@ public:
 	}
 };
 
+namespace UE::Core::Private
+{
+	[[noreturn]] CORE_API void OnInvalidConcurrentLinearArrayAllocatorNum(int32 NewNum, SIZE_T NumBytesPerElement);
+}
+
 template<typename BlockAllocationTag>
 class TConcurrentLinearArrayAllocator
 {
@@ -597,6 +612,14 @@ public:
 		}
 		void ResizeAllocation(SizeType PreviousNumElements, SizeType NumElements, SIZE_T NumBytesPerElement)
 		{
+			static_assert(sizeof(int32) <= sizeof(SIZE_T), "SIZE_T is expected to be larger than int32");
+
+			// Check for under/overflow
+			if (UNLIKELY(NumElements < 0 || NumBytesPerElement < 1 || NumBytesPerElement > (SIZE_T)MAX_int32))
+			{
+				UE::Core::Private::OnInvalidConcurrentLinearArrayAllocatorNum(NumElements, NumBytesPerElement);
+			}
+
 			Data = (ElementType*)TConcurrentLinearAllocator<BlockAllocationTag>::Realloc(Data, NumElements * NumBytesPerElement, alignof(ElementType));
 		}
 		SizeType CalculateSlackReserve(SizeType NumElements, SIZE_T NumBytesPerElement) const

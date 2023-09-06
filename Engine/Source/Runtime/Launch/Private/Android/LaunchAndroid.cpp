@@ -161,9 +161,10 @@ static FAutoConsoleVariableRef CVarEnableHWKeyboard(
 extern void AndroidThunkCpp_InitHMDs();
 extern void AndroidThunkCpp_ShowConsoleWindow();
 extern bool AndroidThunkCpp_VirtualInputIgnoreClick(int, int);
-extern bool AndroidThunkCpp_IsVirtuaKeyboardShown();
+extern bool AndroidThunkCpp_IsVirtualKeyboardShown();
 extern bool AndroidThunkCpp_IsWebViewShown();
 extern void AndroidThunkCpp_RestartApplication(const FString& IntentString);
+extern FString AndroidThunkCpp_GetIntentExtrasString(const FString& Key);
 
 // Base path for file accesses
 extern FString GFilePathBase;
@@ -280,60 +281,73 @@ static void InitCommandLine()
 	// initialize the command line to an empty string
 	FCommandLine::Set(TEXT(""));
 
-	AAssetManager* AssetMgr = AndroidThunkCpp_GetAssetManager();
-	AAsset* asset = AAssetManager_open(AssetMgr, TCHAR_TO_UTF8(TEXT("UECommandLine.txt")), AASSET_MODE_BUFFER);
-	if (nullptr != asset)
+#if !UE_BUILD_SHIPPING
+	FString CmdLine = AndroidThunkCpp_GetIntentExtrasString(TEXT("cmdline"));
+	if (!CmdLine.IsEmpty())
 	{
-		const void* FileContents = AAsset_getBuffer(asset);
-		int32 FileLength = AAsset_getLength(asset);
+		CmdLine.TrimEndInline();
+		FCommandLine::Append(*CmdLine);
 
-		char CommandLine[CMD_LINE_MAX];
-		FileLength = (FileLength < CMD_LINE_MAX - 1) ? FileLength : CMD_LINE_MAX - 1;
-		memcpy(CommandLine, FileContents, FileLength);
-		CommandLine[FileLength] = '\0';
-
-		AAsset_close(asset);
-
-		// chop off trailing spaces
-		while (*CommandLine && isspace(CommandLine[strlen(CommandLine) - 1]))
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("adb am start command line override: %s"), FCommandLine::Get());
+	}
+	else
+#endif
+	{
+		AAssetManager* AssetMgr = AndroidThunkCpp_GetAssetManager();
+		AAsset* asset = AAssetManager_open(AssetMgr, TCHAR_TO_UTF8(TEXT("UECommandLine.txt")), AASSET_MODE_BUFFER);
+		if (nullptr != asset)
 		{
-			CommandLine[strlen(CommandLine) - 1] = 0;
+			const void* FileContents = AAsset_getBuffer(asset);
+			int32 FileLength = AAsset_getLength(asset);
+
+			char CommandLine[CMD_LINE_MAX];
+			FileLength = (FileLength < CMD_LINE_MAX - 1) ? FileLength : CMD_LINE_MAX - 1;
+			memcpy(CommandLine, FileContents, FileLength);
+			CommandLine[FileLength] = '\0';
+
+			AAsset_close(asset);
+
+			// chop off trailing spaces
+			while (*CommandLine && isspace(CommandLine[strlen(CommandLine) - 1]))
+			{
+				CommandLine[strlen(CommandLine) - 1] = 0;
+			}
+
+			FCommandLine::Append(UTF8_TO_TCHAR(CommandLine));
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("APK Commandline: %s"), FCommandLine::Get());
 		}
 
-		FCommandLine::Append(UTF8_TO_TCHAR(CommandLine));
-		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("APK Commandline: %s"), FCommandLine::Get());
-	}
-
-	// read in the command line text file from the sdcard if it exists
-	FString CommandLineFilePath = GFilePathBase + FString("/UnrealGame/") + (!FApp::IsProjectNameEmpty() ? FApp::GetProjectName() : FPlatformProcess::ExecutableName()) + FString("/UECommandLine.txt");
-	FILE* CommandLineFile = fopen(TCHAR_TO_UTF8(*CommandLineFilePath), "r");
-	if(CommandLineFile == NULL)
-	{
-		// if that failed, try the lowercase version
-		CommandLineFilePath = CommandLineFilePath.Replace(TEXT("UECommandLine.txt"), TEXT("uecommandline.txt"));
-		CommandLineFile = fopen(TCHAR_TO_UTF8(*CommandLineFilePath), "r");
-	}
-
-	if(CommandLineFile)
-	{
-		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Using override commandline file: %s"), *CommandLineFilePath);
-
-		char CommandLine[CMD_LINE_MAX];
-		fgets(CommandLine, UE_ARRAY_COUNT(CommandLine) - 1, CommandLineFile);
-
-		fclose(CommandLineFile);
-
-		// chop off trailing spaces
-		while (*CommandLine && isspace(CommandLine[strlen(CommandLine) - 1]))
+		// read in the command line text file from the sdcard if it exists
+		FString CommandLineFilePath = GFilePathBase + FString("/UnrealGame/") + (!FApp::IsProjectNameEmpty() ? FApp::GetProjectName() : FPlatformProcess::ExecutableName()) + FString("/UECommandLine.txt");
+		FILE* CommandLineFile = fopen(TCHAR_TO_UTF8(*CommandLineFilePath), "r");
+		if (CommandLineFile == NULL)
 		{
-			CommandLine[strlen(CommandLine) - 1] = 0;
+			// if that failed, try the lowercase version
+			CommandLineFilePath = CommandLineFilePath.Replace(TEXT("UECommandLine.txt"), TEXT("uecommandline.txt"));
+			CommandLineFile = fopen(TCHAR_TO_UTF8(*CommandLineFilePath), "r");
 		}
 
-		// initialize the command line to an empty string
-		FCommandLine::Set(TEXT(""));
+		if (CommandLineFile)
+		{
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Using override commandline file: %s"), *CommandLineFilePath);
 
-		FCommandLine::Append(UTF8_TO_TCHAR(CommandLine));
-		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Override Commandline: %s"), FCommandLine::Get());
+			char CommandLine[CMD_LINE_MAX];
+			fgets(CommandLine, UE_ARRAY_COUNT(CommandLine) - 1, CommandLineFile);
+
+			fclose(CommandLineFile);
+
+			// chop off trailing spaces
+			while (*CommandLine && isspace(CommandLine[strlen(CommandLine) - 1]))
+			{
+				CommandLine[strlen(CommandLine) - 1] = 0;
+			}
+
+			// initialize the command line to an empty string
+			FCommandLine::Set(TEXT(""));
+
+			FCommandLine::Append(UTF8_TO_TCHAR(CommandLine));
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Override Commandline: %s"), FCommandLine::Get());
+		}
 	}
 
 #if !UE_BUILD_SHIPPING
@@ -351,6 +365,17 @@ static void InitCommandLine()
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("UE setprop appended: %s"), UTF8_TO_TCHAR(CommandLineSetpropAppend));
 	}
 #endif
+
+#ifdef UE_ANDROID_COMMAND_LINE_OVERRIDE
+	FCommandLine::Set(TEXT(UE_ANDROID_COMMAND_LINE_OVERRIDE));
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("UE_ANDROID_COMMAND_LINE_OVERRIDE: %s"), TEXT(UE_ANDROID_COMMAND_LINE_OVERRIDE));
+#endif
+
+#ifdef UE_ANDROID_COMMAND_LINE_APPEND
+	FCommandLine::Append(TEXT(UE_ANDROID_COMMAND_LINE_APPEND));
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("UE_ANDROID_COMMAND_LINE_APPEND: %s"), TEXT(UE_ANDROID_COMMAND_LINE_APPEND));
+#endif
+
 }
 
 extern void AndroidThunkCpp_DismissSplashScreen();
@@ -481,7 +506,7 @@ int32 AndroidMain(struct android_app* state)
 
 	// read the command line file
 	InitCommandLine();
-	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Final commandline: %s\n"), FCommandLine::Get());
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Final commandline: %s (len %i)\n"), FCommandLine::Get(), FCString::Strlen(FCommandLine::Get()));
 
 #if !(UE_BUILD_SHIPPING)
 	// If "-waitforattach" or "-WaitForDebugger" was specified, halt startup and wait for a debugger to attach before continuing
@@ -608,7 +633,7 @@ int32 AndroidMain(struct android_app* state)
 
 	UE_LOG(LogAndroid, Log, TEXT("Exiting is over"));
 
-	FPlatformMisc::RequestExit(1);
+	FPlatformMisc::RequestExit(true, TEXT("AndroidMain"));
 	return 0;
 }
 
@@ -1054,7 +1079,7 @@ static int32_t HandleInputCB(struct android_app* app, AInputEvent* event)
 			}
 			FPlatformRect ScreenRect = FAndroidWindow::GetScreenRect(true);
 
-			if (AndroidThunkCpp_IsVirtuaKeyboardShown() && (type == TouchBegan || type == TouchMoved))
+			if (AndroidThunkCpp_IsVirtualKeyboardShown() && (type == TouchBegan || type == TouchMoved))
 			{
 				//ignore key down events when the native input was clicked or when the keyboard animation is playing
 				if (TryIgnoreClick(event, actionPointer))
@@ -1157,7 +1182,6 @@ static int32_t HandleInputCB(struct android_app* app, AInputEvent* event)
 		//Trap codes handled as possible gamepad events
 		if (device >= 0 && ValidGamepadKeyCodes.Contains(keyCode))
 		{
-			
 			bool down = AKeyEvent_getAction(event) != AKEY_EVENT_ACTION_UP;
 			FAndroidInputInterface::JoystickButtonEvent(device, keyCode, down);
 			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Received gamepad button: %d"), keyCode);
@@ -1172,7 +1196,15 @@ static int32_t HandleInputCB(struct android_app* app, AInputEvent* event)
 				return 0;
 			}
 
-			if (bSoftKey || GAndroidEnableHardwareKeyboard || AlwaysAllowedKeyCodes.Contains(keyCode))
+			// forward key presses to UI if needed 
+			if (AndroidThunkCpp_IsVirtualKeyboardShown())
+			{
+				return 0;
+			}
+
+			if (bSoftKey ||
+				(GAndroidEnableHardwareKeyboard && !AndroidThunkCpp_IsVirtualKeyboardShown()) ||
+				AlwaysAllowedKeyCodes.Contains(keyCode))
 			{
 				FDeferredAndroidMessage Message;
 
@@ -1581,7 +1613,11 @@ static void OnAppCommandCB(struct android_app* app, int32_t cmd)
 		{
 			FGraphEventRef WillTerminateTask = FFunctionGraphTask::CreateAndDispatchWhenReady([]()
 			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				FCoreDelegates::ApplicationWillTerminateDelegate.Broadcast();
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+				FCoreDelegates::GetApplicationWillTerminateDelegate().Broadcast();
 			}, TStatId(), NULL, ENamedThreads::GameThread);
 			FTaskGraphInterface::Get().WaitUntilTaskCompletes(WillTerminateTask);
 			FAndroidMisc::NonReentrantRequestExit();
@@ -1628,13 +1664,11 @@ JNI_METHOD jboolean Java_com_epicgames_unreal_GameActivity_nativeSupportsNEON(JN
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeOnConfigurationChanged(boolean bPortrait);
-JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnConfigurationChanged(JNIEnv* jenv, jobject thiz, jboolean bPortrait)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnConfigurationChanged(JNIEnv* jenv, jobject thiz, jint orientation)
 {
-	bool bChangedToPortrait = bPortrait == JNI_TRUE;
-
 	// enqueue a window changed event if orientation changed, 
 	// note that the HW window handle does not necessarily change.
-	if (FAndroidWindow::OnWindowOrientationChanged(bChangedToPortrait))
+	if (FAndroidWindow::OnWindowOrientationChanged(orientation))
 	{	
 		// Enqueue an event to trigger gamethread to update the orientation:
 		FAppEventManager::GetInstance()->EnqueueAppEvent(APP_EVENT_STATE_WINDOW_CHANGED);

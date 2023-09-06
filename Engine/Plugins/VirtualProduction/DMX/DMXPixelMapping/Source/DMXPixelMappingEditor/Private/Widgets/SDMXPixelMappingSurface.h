@@ -45,11 +45,17 @@ public:
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 	// End of Swidget interface
 
+	/** Returns the view offset */
+	FVector2D GetViewOffset() const;
+
 	/** Gets the current zoom factor. */
 	float GetZoomAmount() const;
 
 	/** Returns the toolkit used with this surface */
-	FORCEINLINE TSharedPtr<FDMXPixelMappingToolkit> GetToolkit() { return ToolkitWeakPtr.Pin(); }
+	FORCEINLINE TSharedPtr<FDMXPixelMappingToolkit> GetToolkit() { return WeakToolkit.Pin(); }
+
+	/** Zooms to fit content */
+	void ZoomToFit(bool bInstantZoom);
 
 protected:
 	virtual void OnPaintBackground(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
@@ -64,12 +70,8 @@ protected:
 
 	bool ZoomToLocation(const FVector2D& CurrentSizeWithoutZoom, const FVector2D& DesiredSize, bool bDoneScrolling);
 
-	void ZoomToFit(bool bInstantZoom);
-
 	FText GetZoomText() const;
 	FSlateColor GetZoomTextColorAndOpacity() const;
-
-	FVector2D GetViewOffset() const;
 
 	FSlateRect ComputeSensibleBounds() const;
 
@@ -142,12 +144,12 @@ protected:
 	/** Does the user need to press Control in order to over-zoom. */
 	bool bRequireControlToOverZoom;
 
-	/** Initial bounds, useful to detect when the initial zoom to fit should occur */
-	FSlateRect InitialBounds;
+	/** If true, zooms to fit as soon as a texture is loaded */
+	bool bInitialZoomToFit = true;
 
 	/** Toolkit weak pointer */
-	TWeakPtr<FDMXPixelMappingToolkit> ToolkitWeakPtr;
-
+	TWeakPtr<FDMXPixelMappingToolkit> WeakToolkit;
+	
 private:
 	/** Active timer that handles deferred zooming until the target zoom is reached */
 	EActiveTimerReturnType HandleZoomToFit(double InCurrentTime, float InDeltaTime);
@@ -157,7 +159,4 @@ private:
 
 	// A flag noting if we have a pending zoom to extents operation to perform next tick.
 	bool bDeferredZoomToExtents;
-
-	/** Recenter the graph an first tick */
-	bool bRecenteredOnFirstTick;
 };

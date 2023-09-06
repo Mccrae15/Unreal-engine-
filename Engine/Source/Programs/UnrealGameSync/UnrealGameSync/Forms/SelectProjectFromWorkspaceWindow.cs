@@ -5,14 +5,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -74,7 +72,7 @@ namespace UnrealGameSync
 		[DllImport("Shell32.dll", EntryPoint = "ExtractIconExW", CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
 		private static extern int ExtractIconEx(string sFile, int iIndex, IntPtr piLargeVersion, out IntPtr piSmallVersion, int amountIcons);
 
-		List<string> _projectFiles;
+		readonly List<string> _projectFiles;
 		string _selectedProjectFile;
 
 		class ProjectNode
@@ -85,7 +83,7 @@ namespace UnrealGameSync
 
 			public ProjectNode(string fullName)
 			{
-				this.FullName = fullName;
+				FullName = fullName;
 
 				int slashIdx = fullName.LastIndexOf('/');
 				Folder = fullName.Substring(0, slashIdx);
@@ -96,9 +94,10 @@ namespace UnrealGameSync
 		public SelectProjectFromWorkspaceWindow(string workspaceName, List<string> projectFiles, string selectedProjectFile)
 		{
 			InitializeComponent();
-			
-			this._projectFiles = projectFiles;
-			this._selectedProjectFile = selectedProjectFile;
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+
+			_projectFiles = projectFiles;
+			_selectedProjectFile = selectedProjectFile;
 
 			// Make the image strip containing icons for nodes in the tree
 			IntPtr folderIconPtr;
@@ -169,7 +168,7 @@ namespace UnrealGameSync
 				TreeNode node = FindOrAddChildNode(projectParentNodes[idx], projectNodes[idx].Name, 1);
 				node.Tag = projectNodes[idx].FullName;
 
-				if(String.Compare(projectNodes[idx].FullName, _selectedProjectFile, StringComparison.InvariantCultureIgnoreCase) == 0)
+				if(String.Equals(projectNodes[idx].FullName, _selectedProjectFile, StringComparison.OrdinalIgnoreCase))
 				{
 					ProjectTreeView.SelectedNode = node;
 					for(TreeNode parentNode = node.Parent; parentNode != rootNode; parentNode = parentNode.Parent)
@@ -184,7 +183,7 @@ namespace UnrealGameSync
 		{
 			foreach(TreeNode? childNode in parentNode.Nodes)
 			{
-				if(childNode != null && String.Compare(childNode.Text, text, StringComparison.InvariantCultureIgnoreCase) == 0)
+				if(childNode != null && String.Equals(childNode.Text, text, StringComparison.OrdinalIgnoreCase))
 				{
 					return childNode;
 				}
@@ -210,7 +209,7 @@ namespace UnrealGameSync
 				return false;
 			}
 
-			SelectProjectFromWorkspaceWindow selectProjectWindow = new SelectProjectFromWorkspaceWindow(workspaceName, pathsTask.Result, workspacePath);
+			using SelectProjectFromWorkspaceWindow selectProjectWindow = new SelectProjectFromWorkspaceWindow(workspaceName, pathsTask.Result, workspacePath);
 			if(selectProjectWindow.ShowDialog() == DialogResult.OK && !String.IsNullOrEmpty(selectProjectWindow._selectedProjectFile))
 			{
 				newWorkspacePath = selectProjectWindow._selectedProjectFile;
@@ -225,7 +224,7 @@ namespace UnrealGameSync
 
 		private void ProjectTreeView_AfterSelect(object sender, TreeViewEventArgs e)
 		{
-			OkBtn.Enabled = (e.Node.Tag != null);
+			OkBtn.Enabled = (e.Node?.Tag != null);
 		}
 
 		private void OkBtn_Click(object sender, EventArgs e)

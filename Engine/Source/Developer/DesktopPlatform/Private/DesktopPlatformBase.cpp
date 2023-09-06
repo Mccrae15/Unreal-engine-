@@ -9,6 +9,7 @@
 #include "Misc/FeedbackContext.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/ScopeExit.h"
 #include "Serialization/JsonTypes.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -807,7 +808,12 @@ bool FDesktopPlatformBase::IsUnrealBuildToolRunning()
 
 bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FString& ProjectFileName, const FString& ProviderIdentifier, bool bUnattended, FFeedbackContext* Warn, FString& OutToken, FDateTime& OutTokenExpiresAt, bool& bOutWasInteractiveLogin)
 {
+	IFileManager::Get().MakeDirectory(*FPaths::ProjectIntermediateDir(), /*bTree*/ true);
 	FString ResultFilePath = FPaths::CreateTempFilename(*FPaths::ProjectIntermediateDir(), TEXT("oidcToken.json"));
+	ON_SCOPE_EXIT
+	{
+		IFileManager::Get().Delete(*ResultFilePath, false /* RequireExists */, true /* EvenIfReadOnly */, true /* Quiet */);
+	};
 
 	FString Arguments = TEXT(" ");
 	Arguments += FString::Printf(TEXT(" --Service=\"%s\""), *ProviderIdentifier);
@@ -840,7 +846,7 @@ bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FStr
 		}
 		else
 		{
-			UE_LOG(LogDesktopPlatform, Error, TEXT("Unable to allocate an access token. Unattended set so unable to request interactive login. Make sure you are logged in using UGS or using the UGS cli command 'login'. Provider used: '%s'. Ran OidcToken (project file is '%s', exe path is '%s')"), *ProviderIdentifier, *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
+			UE_LOG(LogDesktopPlatform, Warning, TEXT("Unable to allocate an access token. Unattended set so unable to request interactive login. Make sure you start the editor and login once or log in using UGS or using the UGS cli command 'login'. Provider used: '%s'. Ran OidcToken (project file is '%s', exe path is '%s')"), *ProviderIdentifier, *ProjectFileName, *GetOidcTokenExecutableFilename(RootDir));
 			return false;
 		}
 	}
@@ -886,6 +892,7 @@ bool FDesktopPlatformBase::GetOidcAccessToken(const FString& RootDir, const FStr
 
 bool FDesktopPlatformBase::GetOidcTokenStatus(const FString& RootDir, const FString& ProjectFileName, const FString& ProviderIdentifier, FFeedbackContext* Warn, int& OutStatus)
 {
+	IFileManager::Get().MakeDirectory(*FPaths::ProjectIntermediateDir(), /*bTree*/ true);
 	FString ResultFilePath = FPaths::CreateTempFilename(*FPaths::ProjectIntermediateDir(), TEXT("oidcToken-status.json"));
 
 	FString Arguments = TEXT(" ");
@@ -934,7 +941,7 @@ bool FDesktopPlatformBase::GetOidcTokenStatus(const FString& RootDir, const FStr
 bool FDesktopPlatformBase::GetOidcAccessTokenInteractive(const FString& RootDir,  const FString& Arguments, FFeedbackContext* Warn, int32& OutReturnCode)
 {
 	FText OidcInteractivePromptTitle = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunchPromptTitle", "Unreal Engine - Authentication Required");
-	FText OidcInteractiveLaunchPromptText = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunch", "Your team's preferred DDC (Distributed Data Cache) requires you to log in. Click OK to open the authentication page in your web browser.\n\nYou can cancel authentication and work with a different shared or local DDC instead. However, this may cause delays while the editor prepares the assets you need.");
+	FText OidcInteractiveLaunchPromptText = NSLOCTEXT("OidcToken", "OidcToken_InteractiveLaunch", "Your team's preferred DDC (Derived Data Cache) requires you to log in. Click OK to open the authentication page in your web browser.\n\nYou can cancel authentication and work with a different shared or local DDC instead. However, this may cause delays while the editor prepares the assets you need.");
 	EAppReturnType::Type userAcknowledgedResult = FPlatformMisc::MessageBoxExt(EAppMsgType::OkCancel, *OidcInteractiveLaunchPromptText.ToString(), *OidcInteractivePromptTitle.ToString());
 
 	if (userAcknowledgedResult != EAppReturnType::Ok)
@@ -1778,6 +1785,7 @@ bool FDesktopPlatformBase::ReadTargetInfo(const FString& FileName, TArray<FTarge
 	Targets.SetNum(TargetArray->Num());
 
 	// Parse the entries
+	FString BaseDir = FPaths::GetPath(FileName);
 	for (int Idx = 0; Idx < TargetArray->Num(); Idx++)
 	{
 		const FJsonValue& TargetValue = *(*TargetArray)[Idx].Get();
@@ -1801,6 +1809,11 @@ bool FDesktopPlatformBase::ReadTargetInfo(const FString& FileName, TArray<FTarge
 		{
 			return false;
 		}
+
+		FString Path = FPaths::ConvertRelativePathToFull(FPaths::Combine(BaseDir, Targets[Idx].Path));
+		FPaths::MakePlatformFilename(Path);
+
+		Targets[Idx].Path = Path;
 	}
 
 	return true;

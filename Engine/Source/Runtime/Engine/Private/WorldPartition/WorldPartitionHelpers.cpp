@@ -3,14 +3,47 @@
 #include "WorldPartition/WorldPartitionHelpers.h"
 
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionEditorHash.h"
-#include "Engine/World.h"
+#include "WorldPartition/WorldPartitionRuntimeCell.h"
 #include "Algo/AnyOf.h"
 
 #include "Commandlets/Commandlet.h"
 #include "WorldPartition/WorldPartitionLog.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionHelpers, Log, All);
+#if WITH_EDITOR
+#include "Misc/RedirectCollector.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
+#endif
+
+namespace FWorldPartitionHelpersPrivate
+{
+	UWorldPartition* GetWorldPartitionFromObject(const UObject* InObject)
+	{
+		for (const UObject* Object = InObject; IsValid(Object); Object = Object->GetOuter())
+		{
+			if (const AActor* Actor = Cast<const AActor>(Object))
+			{
+				return GetWorldPartition(Actor);
+			}
+			else if (const ULevel* Level = Cast<const ULevel>(Object))
+			{
+				return GetWorldPartition(Level);
+			}
+			else if (const UWorld* World = Cast<const UWorld>(Object))
+			{
+				return GetWorldPartition(World);
+			}
+			else if (const UWorldPartition* WorldPartition = Cast<const UWorldPartition>(Object))
+			{
+				return const_cast<UWorldPartition*>(WorldPartition);
+			}
+		}
+
+		return nullptr;
+	}
+}
 
 #if WITH_EDITOR
 
@@ -29,7 +62,7 @@ bool FWorldPartitionHelpers::IsActorDescClassCompatibleWith(const FWorldPartitio
 
 			if (!ActorBaseClass)
 			{
-				UE_LOG(LogWorldPartitionHelpers, Warning, TEXT("Failed to find actor base class: %s."), *ActorBasePath.ToString());
+				UE_LOG(LogWorldPartition, Warning, TEXT("Failed to find actor base class: %s."), *ActorBasePath.ToString());
 				ActorBaseClass = ActorNativeClass;
 			}
 		}
@@ -149,7 +182,7 @@ void FWorldPartitionHelpers::ForEachActorWithLoading(UWorldPartition* WorldParti
 					return false;
 				}
 
-				if (!Params.bKeepReferences && (Params.bGCPerActor || FWorldPartitionHelpers::HasExceededMaxMemory()))
+				if (!Params.bKeepReferences && (Params.bGCPerActor || FWorldPartitionHelpers::ShouldCollectGarbage()))
 				{
 					CallGarbageCollect();
 				}
@@ -204,21 +237,25 @@ bool FWorldPartitionHelpers::HasExceededMaxMemory()
 	const bool bHasExceededMaxUsedPhysical = MemStats.UsedPhysical >= MemoryMaxUsedPhysical;
 	const bool bHasExceededMaxMemory = bHasExceededMinFreePhysical || bHasExceededMaxUsedPhysical;
 
-	// Even if we're not exhausting memory, GC should be run at periodic intervals
-	return bHasExceededMaxMemory || (FPlatformTime::Seconds() - GetLastGCTime()) > 30;
-};
+	return bHasExceededMaxMemory;
+}
+
+bool FWorldPartitionHelpers::ShouldCollectGarbage()
+{
+	return HasExceededMaxMemory();
+}
 
 void FWorldPartitionHelpers::DoCollectGarbage()
 {
 	const FPlatformMemoryStats MemStatsBefore = FPlatformMemory::GetStats();
-	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
+	CollectGarbage(IsRunningCommandlet() ? RF_NoFlags : GARBAGE_COLLECTION_KEEPFLAGS, true);
 	const FPlatformMemoryStats MemStatsAfter = FPlatformMemory::GetStats();
 
 	UE_LOG(LogWorldPartition, Log, TEXT("GC Performed - Available Physical: %.2fGB, Available Virtual: %.2fGB"),
 		(int64)MemStatsAfter.AvailablePhysical / (1024.0 * 1024.0 * 1024.0),
 		(int64)MemStatsAfter.AvailableVirtual / (1024.0 * 1024.0 * 1024.0)
 	);
-};
+}
 
 void FWorldPartitionHelpers::FakeEngineTick(UWorld* InWorld)
 {
@@ -258,9 +295,99 @@ bool FWorldPartitionHelpers::ConvertRuntimePathToEditorPath(const FSoftObjectPat
 			}
 		}
 	}
+	else
+	{
+		OutPath = UWorld::RemovePIEPrefix(InPath.ToString());
+		return true;
+	}
 
 	return false;
 }
+
+bool FWorldPartitionHelpers::FixupRedirectedAssetPath(FSoftObjectPath& InOutSoftObjectPath)
+{
+	if (InOutSoftObjectPath.IsNull())
+	{
+		// Empty path, no redirect
+		return true;
+	}
+
+	// Check GRedirectCollector first for faster fixup
+	FSoftObjectPath FoundRedirection = GRedirectCollector.GetAssetPathRedirection(InOutSoftObjectPath.GetWithoutSubPath());
+	if (!FoundRedirection.IsNull())
+	{
+		InOutSoftObjectPath.SetPath(FoundRedirection.GetAssetPath(), InOutSoftObjectPath.GetSubPathString());
+		return true;
+	}
+
+	if (InOutSoftObjectPath.GetAssetName().IsEmpty())
+	{
+		// A package name. No need to ask the asset registry for assets, it wont find any
+		return true;
+	}
+
+	const FAssetData* AssetData;
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+	FTopLevelAssetPath AssetPath = InOutSoftObjectPath.GetAssetPath();
+
+	for (;;)
+	{
+		TArray<FAssetData> Assets;
+		AssetRegistry.ScanFilesSynchronous({ AssetPath.GetPackageName().ToString() }, /*bForceRescan*/false);
+		AssetRegistry.GetAssetsByPackageName(AssetPath.GetPackageName(), Assets, /*bIncludeOnlyOnDiskAssets*/true);
+
+		if (!Assets.Num())
+		{
+			UE_LOG(LogWorldPartition, Warning, TEXT("Failed to find assets for asset path '%s'"), *AssetPath.ToString());
+			return false;
+		}
+
+		AssetData = Assets.FindByPredicate([&AssetPath](const FAssetData& AssetData)
+		{
+			return (AssetData.ToSoftObjectPath().GetAssetPath() == AssetPath);
+		});
+
+		if (!AssetData)
+		{
+			UE_LOG(LogWorldPartition, Warning, TEXT("Failed to find asset for asset path '%s'"), *AssetPath.ToString());
+			return false;
+		}
+
+		if (!AssetData->IsRedirector())
+		{
+			break;
+		}
+
+		FString DestinationObjectPath;
+		if (!AssetData->GetTagValue(TEXT("DestinationObject"), DestinationObjectPath))
+		{
+			UE_LOG(LogWorldPartition, Warning, TEXT("Failed to follow redirector for '%s'"), *AssetPath.ToString());
+			return false;
+		}
+
+		// Update asset path
+		AssetPath = FTopLevelAssetPath(DestinationObjectPath);
+	}
+
+	InOutSoftObjectPath.SetPath(AssetPath, InOutSoftObjectPath.GetSubPathString());
+
+	return true;
+}
+
+bool FWorldPartitionHelpers::FixupRedirectedAssetPath(FName& InOutAssetPath)
+{
+	FSoftObjectPath SoftObjectPath(InOutAssetPath.ToString());
+	if (FixupRedirectedAssetPath(SoftObjectPath))
+	{
+		InOutAssetPath = FName(*SoftObjectPath.ToString());
+		return true;
+	}
+
+	return false;
+}
+
+#endif // #if WITH_EDITOR
 
 bool FWorldPartitionHelpers::ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath)
 {
@@ -281,5 +408,3 @@ bool FWorldPartitionHelpers::ConvertEditorPathToRuntimePath(const FSoftObjectPat
 
 	return false;
 }
-
-#endif // #if WITH_EDITOR

@@ -2,100 +2,118 @@
 
 #pragma once
 
-#include "UObject/Object.h"
-#include "SingleSelectionTool.h"
-#include "InteractiveToolBuilder.h"
-
+#include "BaseTools/SingleSelectionMeshEditingTool.h"
+#include "ModelingOperators.h"
+#include "Transforms/TransformGizmoDataBinder.h"
+#include "ChaosClothAsset/ClothEditorToolBuilder.h"
 #include "ClothTransferSkinWeightsTool.generated.h"
 
-class UChaosClothComponent;
+
 class UClothTransferSkinWeightsTool;
 class USkeletalMesh;
+class UClothEditorContextObject;
+class UTransformProxy;
+class UCombinedTransformGizmo;
+class UMeshOpPreviewWithBackgroundCompute;
+class AInternalToolFrameworkActor;
+class USkeletalMeshComponent;
+class FTransformGizmoDataBinder;
+struct FChaosClothAssetTransferSkinWeightsNode;
 
 UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsToolProperties : public UObject
+class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsToolProperties : public UInteractiveToolPropertySet
 {
 	GENERATED_BODY()
 public:
 
-	UPROPERTY(EditAnywhere, Category = Files)
+	UPROPERTY(EditAnywhere, Category = Source)
 	TObjectPtr<USkeletalMesh> SourceMesh;
-};
 
-UENUM()
-enum class EClothTransferSkinWeightsToolActions
-{
-	NoAction,
-	Transfer
-};
+	UPROPERTY(EditAnywhere, Category = "Transform", meta = (DisplayName = "Location", EditCondition = "SourceMesh != nullptr"))
+	FVector3d SourceMeshTranslation;
 
-UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsToolActionProperties : public UObject
-{
-	GENERATED_BODY()
-public:
+	UPROPERTY(EditAnywhere, Category = "Transform", meta = (DisplayName = "Rotation", EditCondition = "SourceMesh != nullptr"))
+	FVector3d SourceMeshRotation;
 
-	TWeakObjectPtr<UClothTransferSkinWeightsTool> ParentTool;
+	UPROPERTY(EditAnywhere, Category = "Transform", meta = (DisplayName = "Scale", AllowPreserveRatio, EditCondition = "SourceMesh != nullptr"))
+	FVector3d SourceMeshScale;
 
-	void Initialize(UClothTransferSkinWeightsTool* ParentToolIn) { ParentTool = ParentToolIn; }
-
-	void PostAction(EClothTransferSkinWeightsToolActions Action);
-
-	UFUNCTION(CallInEditor, Category = Actions, meta = (DisplayName = "Transfer weights", DisplayPriority = 1))
-	void TransferWeights()
-	{
-		PostAction(EClothTransferSkinWeightsToolActions::Transfer);
-	}
-
+	UPROPERTY(EditAnywhere, Category = Source)
+	bool bHideSourceMesh = false;
 };
 
 
 UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsToolBuilder : public UInteractiveToolWithToolTargetsBuilder
+class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsToolBuilder : public USingleSelectionMeshEditingToolBuilder, public IChaosClothAssetEditorToolBuilder
 {
 	GENERATED_BODY()
-
-protected:
-
-	virtual const FToolTargetTypeRequirements& GetTargetRequirements() const override;
-
-public:
-
-	virtual bool CanBuildTool(const FToolBuilderState& SceneState) const override;
-
-	virtual UInteractiveTool* BuildTool(const FToolBuilderState& SceneState) const override;
-};
-
-
-UCLASS()
-class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsTool : public USingleSelectionTool
-{
-	GENERATED_BODY()
-public:
-
-	// UInteractiveTool
-	virtual void Setup() override;
-	virtual void OnTick(float DeltaTime) override;
 
 private:
 
-	friend class UClothTransferSkinWeightsToolActionProperties;
+	virtual void GetSupportedViewModes(TArray<UE::Chaos::ClothAsset::EClothPatternVertexType>& Modes) const override;
+	virtual USingleSelectionMeshEditingTool* CreateNewTool(const FToolBuilderState& SceneState) const override;	
 
-	UPROPERTY()
+};
+
+UCLASS()
+class CHAOSCLOTHASSETEDITORTOOLS_API UClothTransferSkinWeightsTool : public USingleSelectionMeshEditingTool, public UE::Geometry::IDynamicMeshOperatorFactory
+{
+	GENERATED_BODY()
+
+private:
+
+	friend class UClothTransferSkinWeightsToolBuilder;
+
+	// UInteractiveTool
+	virtual void Setup() override;
+	virtual void Shutdown(EToolShutdownType ShutdownType) override;
+	virtual bool HasAccept() const override { return true; }
+	virtual bool HasCancel() const override { return true; }
+	virtual bool CanAccept() const override;
+	virtual void OnTick(float DeltaTime) override;
+
+	// IDynamicMeshOperatorFactory
+	virtual TUniquePtr<UE::Geometry::FDynamicMeshOperator> MakeNewOperator() override;
+	
+	void SetClothEditorContextObject(TObjectPtr<UClothEditorContextObject> InClothEditorContextObject);
+
+	FTransform TransformFromProperties() const;
+	void SetSRTPropertiesFromTransform(const FTransform& Transform) const;
+
+	void UpdateSourceMesh(TObjectPtr<USkeletalMesh> Mesh);
+
+	void OpFinishedCallback(const UE::Geometry::FDynamicMeshOperator* Op);
+
+	void PreviewMeshUpdatedCallback(UMeshOpPreviewWithBackgroundCompute* Preview);
+
+
+	UPROPERTY(Transient)
 	TObjectPtr<UClothTransferSkinWeightsToolProperties> ToolProperties;
 
-	UPROPERTY()
-	TObjectPtr<UClothTransferSkinWeightsToolActionProperties> ActionProperties;
+	UPROPERTY(Transient)
+	TObjectPtr<UClothEditorContextObject> ClothEditorContextObject;
 
-	EClothTransferSkinWeightsToolActions PendingAction = EClothTransferSkinWeightsToolActions::NoAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UMeshOpPreviewWithBackgroundCompute> TargetClothPreview;
 
-	UPROPERTY()
-	TObjectPtr<const UChaosClothComponent> ClothComponent;
+	UPROPERTY(Transient)
+	TObjectPtr<AInternalToolFrameworkActor> SourceMeshParentActor;
 
-	void RequestAction(EClothTransferSkinWeightsToolActions ActionType);
+	UPROPERTY(Transient)
+	TObjectPtr<USkeletalMeshComponent> SourceMeshComponent;
 
-	void TransferWeights();
+	// Source mesh transform gizmo support
+	UPROPERTY(Transient)
+	TObjectPtr<UTransformProxy> SourceMeshTransformProxy;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UCombinedTransformGizmo> SourceMeshTransformGizmo;
+
+	TSharedPtr<FTransformGizmoDataBinder> DataBinder;
+
+	FChaosClothAssetTransferSkinWeightsNode* TransferSkinWeightsNode = nullptr;
+
+	bool bHasOpFailedWarning = false;
 };
 
 

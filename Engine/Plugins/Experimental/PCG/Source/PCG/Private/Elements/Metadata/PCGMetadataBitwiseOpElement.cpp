@@ -2,6 +2,7 @@
 
 #include "Elements/Metadata/PCGMetadataBitwiseOpElement.h"
 
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataBitwiseOpElement)
 
@@ -72,7 +73,7 @@ bool UPCGMetadataBitwiseSettings::IsSupportedInputType(uint16 TypeId, uint32 Inp
 	return PCG::Private::IsOfTypes<int32, int64>(TypeId);
 }
 
-FPCGAttributePropertySelector UPCGMetadataBitwiseSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataBitwiseSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -81,7 +82,7 @@ FPCGAttributePropertySelector UPCGMetadataBitwiseSettings::GetInputSource(uint32
 	case 1:
 		return InputSource2;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
@@ -107,7 +108,23 @@ FText UPCGMetadataBitwiseSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataBitwiseSettings", "NodeTitle", "Attribute Bitwise Op");
 }
+
+TArray<FPCGPreConfiguredSettingsInfo> UPCGMetadataBitwiseSettings::GetPreconfiguredInfo() const
+{
+	return PCGMetadataElementCommon::FillPreconfiguredSettingsInfoFromEnum<EPCGMedadataBitwiseOperation>();
+}
 #endif // WITH_EDITOR
+
+void UPCGMetadataBitwiseSettings::ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfiguredInfo)
+{
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataBitwiseOperation>())
+	{
+		if (EnumPtr->IsValidEnumValue(PreconfiguredInfo.PreconfiguredIndex))
+		{
+			Operation = EPCGMedadataBitwiseOperation(PreconfiguredInfo.PreconfiguredIndex);
+		}
+	}
+}
 
 FPCGElementPtr UPCGMetadataBitwiseSettings::CreateElement() const
 {

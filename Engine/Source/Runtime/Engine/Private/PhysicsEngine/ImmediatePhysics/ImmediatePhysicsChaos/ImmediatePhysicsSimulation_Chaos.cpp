@@ -10,12 +10,13 @@
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "PhysicsEngine/BodyInstance.h"
 
-#include "Chaos/Collision/ParticlePairCollisionDetector.h"
+#include "Chaos/Collision/BasicCollisionDetector.h"
 #include "Chaos/DebugDrawQueue.h"
 #include "Chaos/Evolution/PBDMinEvolution.h"
 #include "Chaos/Joint/ChaosJointLog.h"
 #include "Chaos/MassConditioning.h"
 #include "Chaos/PBDJointConstraints.h"
+#include "ChaosVisualDebugger/ChaosVisualDebuggerTrace.h"
 #include "Stats/StatsTrace.h"
 
 
@@ -93,6 +94,7 @@ Chaos::FRealSingle ChaosImmediate_Joint_PositionTolerance = 0.025f;
 Chaos::FRealSingle ChaosImmediate_Joint_AngleTolerance = 0.001f;
 int32 ChaosImmediate_Joint_NumShockPropagationIterations = -1;
 int32 ChaosImmediate_Joint_SolvePositionLast = 1;
+int32 ChaosImmediate_Joint_UsePositionBasedDrives = 1;
 int32 ChaosImmediate_Joint_EnableTwistLimits = 1;
 int32 ChaosImmediate_Joint_EnableSwingLimits = 1;
 int32 ChaosImmediate_Joint_EnableDrives = 1;
@@ -116,6 +118,7 @@ FAutoConsoleVariableRef CVarChaosImmPhysJointPositionTolerance(TEXT("p.Chaos.Imm
 FAutoConsoleVariableRef CVarChaosImmPhysJointAngleTolerance(TEXT("p.Chaos.ImmPhys.Joint.AngleTolerance"), ChaosImmediate_Joint_AngleTolerance, TEXT("AngleTolerance."));
 FAutoConsoleVariableRef CVarChaosImmPhysJointNumShockPropagationIterations(TEXT("p.Chaos.ImmPhys.Joint.NumShockPropagationIterations"), ChaosImmediate_Joint_NumShockPropagationIterations, TEXT("How many iterations to run shock propagation for"));
 FAutoConsoleVariableRef CVarChaosImmPhysJointSolvePositionLast(TEXT("p.Chaos.ImmPhys.Joint.SolvePositionLast"), ChaosImmediate_Joint_SolvePositionLast, TEXT("Should we solve joints in position-then-rotation order (false) rotation-then-position order (true, default)"));
+FAutoConsoleVariableRef CVarChaosImmPhysJointUsePBDVelocityDrives(TEXT("p.Chaos.ImmPhys.Joint.UsePBDDrives"), ChaosImmediate_Joint_UsePositionBasedDrives, TEXT("Whether to solve drives in the position or velocity phase of the solver (default true)"));
 FAutoConsoleVariableRef CVarChaosImmPhysJointEnableTwistLimits(TEXT("p.Chaos.ImmPhys.Joint.EnableTwistLimits"), ChaosImmediate_Joint_EnableTwistLimits, TEXT("EnableTwistLimits."));
 FAutoConsoleVariableRef CVarChaosImmPhysJointEnableSwingLimits(TEXT("p.Chaos.ImmPhys.Joint.EnableSwingLimits"), ChaosImmediate_Joint_EnableSwingLimits, TEXT("EnableSwingLimits."));
 FAutoConsoleVariableRef CVarChaosImmPhysJointEnableDrives(TEXT("p.Chaos.ImmPhys.Joint.EnableDrives"), ChaosImmediate_Joint_EnableDrives, TEXT("EnableDrives."));
@@ -269,7 +272,7 @@ namespace ImmediatePhysics_Chaos
 		~FSimpleParticleUniqueIndices() = default;
 
 	private:
-		int32 NextUniqueIndex; // this includes all valid and freed indices
+		int32 NextUniqueIndex = 0; // this includes all valid and freed indices
 		TArray<int32> FreeIndices;
 	};
 
@@ -356,6 +359,10 @@ namespace ImmediatePhysics_Chaos
 
 		Implementation = MakeUnique<FImplementation>();
 
+#if CHAOS_DEBUG_NAME
+		DebugName = TEXT("RBAN");
+#endif
+
 		// RBAN collision customization
 		Implementation->Collisions.DisableHandles();
 
@@ -371,6 +378,10 @@ namespace ImmediatePhysics_Chaos
 	FSimulation::~FSimulation()
 	{
 		using namespace Chaos;
+
+		// We trace events like particles destruction, so we need to ensure there is a valid context
+		// during solver destruction so these events can be traced properly.
+		CVD_SCOPE_CONTEXT(CVDContextData)
 
 		// NOTE: Particles now hold a list of all the constraints that reference them, but when
 		// we delete a particle, we do not notify the constraints. When we destroy constarints
@@ -497,6 +508,13 @@ namespace ImmediatePhysics_Chaos
 	FJointHandle* FSimulation::CreateJoint(FConstraintInstance* ConstraintInstance, FActorHandle* Body1, FActorHandle* Body2)
 	{
 		FJointHandle* JointHandle = new FJointHandle(&Implementation->Joints, ConstraintInstance, Body1, Body2);
+		Implementation->JointHandles.Add(JointHandle);
+		return JointHandle;
+	}
+
+	FJointHandle* FSimulation::CreateJoint(const Chaos::FPBDJointSettings& ConstraintSettings, FActorHandle* const Body1, FActorHandle* const Body2)
+	{
+		FJointHandle* JointHandle = new FJointHandle(&Implementation->Joints, ConstraintSettings, Body1, Body2);
 		Implementation->JointHandles.Add(JointHandle);
 		return JointHandle;
 	}
@@ -791,6 +809,9 @@ namespace ImmediatePhysics_Chaos
 	void FSimulation::Simulate(FReal InDeltaTime, FReal MaxStepTime, int32 MaxSubSteps, const FVector& InGravity)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ImmediateSimulate_Chaos);
+		CVD_SCOPE_TRACE_SOLVER_FRAME(FSimulation, *this);
+		CVD_TRACE_SOLVER_SIMULATION_SPACE(Implementation->SimulationSpace.Transform);
+
 		using namespace Chaos;
 
 		// Reject DeltaTime outliers
@@ -821,6 +842,7 @@ namespace ImmediatePhysics_Chaos
 			JointsSettings.MinParentMassRatio = ChaosImmediate_Joint_MinParentMassRatio;
 			JointsSettings.MaxInertiaRatio = ChaosImmediate_Joint_MaxInertiaRatio;
 			JointsSettings.bSolvePositionLast = ChaosImmediate_Joint_SolvePositionLast != 0;
+			JointsSettings.bUsePositionBasedDrives = ChaosImmediate_Joint_UsePositionBasedDrives != 0;
 			JointsSettings.bEnableTwistLimits = ChaosImmediate_Joint_EnableTwistLimits != 0;
 			JointsSettings.bEnableSwingLimits = ChaosImmediate_Joint_EnableSwingLimits != 0;
 			JointsSettings.bEnableDrives = ChaosImmediate_Joint_EnableDrives != 0;
@@ -994,7 +1016,6 @@ namespace ImmediatePhysics_Chaos
 		INC_DWORD_STAT_BY(STAT_ImmediateSimulate_ChaosCounter_NumContacts, Implementation->Collisions.NumConstraints());
 		INC_DWORD_STAT_BY(STAT_ImmediateSimulate_ChaosCounter_NumJoints, Implementation->Joints.NumConstraints());
 	}
-
 	void FSimulation::DebugDrawStaticParticles()
 	{
 #if CHAOS_DEBUG_DRAW

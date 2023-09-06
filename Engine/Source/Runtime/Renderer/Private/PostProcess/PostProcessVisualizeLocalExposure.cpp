@@ -2,8 +2,10 @@
 
 #include "PostProcess/PostProcessVisualizeLocalExposure.h"
 #include "PostProcess/PostProcessTonemap.h"
+#include "PostProcess/PostProcessLocalExposure.h"
 #include "UnrealEngine.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "SceneRendering.h"
 
 TAutoConsoleVariable<int> CVarLocalExposureVisualizeDebugMode(
 	TEXT("r.LocalExposure.VisualizeDebugMode"),
@@ -11,7 +13,8 @@ TAutoConsoleVariable<int> CVarLocalExposureVisualizeDebugMode(
 	TEXT("When enabling Show->Visualize->Local Exposure is enabled, this flag controls which mode to use.\n")
 	TEXT("    0: Local Exposure\n")
 	TEXT("    1: Base Luminance\n")
-	TEXT("    2: Detail Luminance\n"),
+	TEXT("    2: Detail Luminance\n")
+	TEXT("    3: Valid Bilateral Grid Lookup\n"),
 	ECVF_RenderThreadSafe);
 
 class FVisualizeLocalExposurePS : public FGlobalShader
@@ -23,6 +26,7 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, EyeAdaptation)
+		SHADER_PARAMETER_STRUCT(FLocalExposureParameters, LocalExposure)
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Input)
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Output)
 
@@ -73,6 +77,7 @@ FScreenPassTexture AddVisualizeLocalExposurePass(FRDGBuilder& GraphBuilder, cons
 	PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 	PassParameters->View = View.ViewUniformBuffer;
 	PassParameters->EyeAdaptation = *Inputs.EyeAdaptationParameters;
+	PassParameters->LocalExposure = *Inputs.LocalExposureParameters;
 	PassParameters->Input = GetScreenPassTextureViewportParameters(InputViewport);
 	PassParameters->Output = GetScreenPassTextureViewportParameters(OutputViewport);
 	PassParameters->HDRSceneColorTexture = Inputs.HDRSceneColor.Texture;

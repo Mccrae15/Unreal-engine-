@@ -2,9 +2,7 @@
 
 using Microsoft.Win32;
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
@@ -51,7 +49,7 @@ namespace UnrealGameSync
 		public static void DeleteRegistryKey(RegistryKey key, string name)
 		{
 			string[] valueNames = key.GetValueNames();
-			if (valueNames.Any(x => String.Compare(x, name, StringComparison.OrdinalIgnoreCase) == 0))
+			if (valueNames.Any(x => String.Equals(x, name, StringComparison.OrdinalIgnoreCase)))
 			{
 				try
 				{
@@ -74,7 +72,7 @@ namespace UnrealGameSync
 
 					if (String.IsNullOrEmpty(serverAndPort))
 					{
-						try { key.DeleteValue("ServerAndPort"); } catch (Exception) { }
+						DeleteValueGuarded(key, "ServerAndPort");
 					}
 					else
 					{
@@ -83,14 +81,14 @@ namespace UnrealGameSync
 
 					if (String.IsNullOrEmpty(userName))
 					{
-						try { key.DeleteValue("UserName"); } catch (Exception) { }
+						DeleteValueGuarded(key, "UserName");
 					}
 					else
 					{
 						key.SetValue("UserName", userName);
 					}
 
-					if (String.IsNullOrEmpty(depotPath) || (DeploymentSettings.DefaultDepotPath != null && String.Equals(depotPath, DeploymentSettings.DefaultDepotPath, StringComparison.InvariantCultureIgnoreCase)))
+					if (String.IsNullOrEmpty(depotPath) || (DeploymentSettings.Instance.DefaultDepotPath != null && String.Equals(depotPath, DeploymentSettings.Instance.DefaultDepotPath, StringComparison.OrdinalIgnoreCase)))
 					{
 						DeleteRegistryKey(key, "DepotPath");
 					}
@@ -105,13 +103,24 @@ namespace UnrealGameSync
 					}
 					else
 					{
-						try { key.DeleteValue("Preview"); } catch (Exception) { }
+						DeleteValueGuarded(key, "Preview"); 
 					}
 				}
 			}
 			catch (Exception ex)
 			{
 				MessageBox.Show("Unable to save settings.\n\n" + ex.ToString());
+			}
+		}
+
+		static void DeleteValueGuarded(RegistryKey key, string name)
+		{
+			try
+			{
+				key.DeleteValue(name);
+			}
+			catch (Exception)
+			{
 			}
 		}
 	}

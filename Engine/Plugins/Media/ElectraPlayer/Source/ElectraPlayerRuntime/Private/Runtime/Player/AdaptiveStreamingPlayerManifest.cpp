@@ -7,6 +7,7 @@
 #include "Player/HLS/PlaylistReaderHLS.h"
 #include "Player/mp4/PlaylistReaderMP4.h"
 #include "Player/DASH/PlaylistReaderDASH.h"
+#include "Player/mkv/PlaylistReaderMKV.h"
 #include "Utilities/Utilities.h"
 #include "Utilities/StringHelpers.h"
 #include "Utilities/URLParser.h"
@@ -20,8 +21,12 @@ namespace Playlist
 {
 static const FString MIMETypeMP4(TEXT("video/mp4"));
 static const FString MIMETypeMP4A(TEXT("audio/mp4"));
+static const FString MIMETypeQuickTime(TEXT("video/quicktime"));
 static const FString MIMETypeHLS(TEXT("application/vnd.apple.mpegURL"));
 static const FString MIMETypeDASH(TEXT("application/dash+xml"));
+static const FString MIMETypeMKV(TEXT("video/x-matroska"));
+static const FString MIMETypeMKA(TEXT("audio/x-matroska"));
+
 
 
 /**
@@ -68,8 +73,12 @@ FString GetMIMETypeForURL(const FString& URL)
 		static const FString kTextMP4(TEXT("mp4"));
 		static const FString kTextMP4V(TEXT("m4v"));
 		static const FString kTextMP4A(TEXT("m4a"));
+		static const FString kTextMOV(TEXT("mov"));
 		static const FString kTextMPD(TEXT("mpd"));
 		static const FString kTextM3U8(TEXT("m3u8"));
+		static const FString kTextMKV(TEXT("mkv"));
+		static const FString kTextMKA(TEXT("mka"));
+		static const FString kTextWEBM(TEXT("webm"));
 		if (LowerCaseExtension == kTextMP4 || LowerCaseExtension == kTextMP4V)
 		{
 			MimeType = MIMETypeMP4;
@@ -78,6 +87,10 @@ FString GetMIMETypeForURL(const FString& URL)
 		{
 			MimeType = MIMETypeMP4A;
 		}
+		else if (LowerCaseExtension == kTextMOV)
+		{
+			MimeType = MIMETypeQuickTime;
+		}
 		else if (LowerCaseExtension == kTextMPD)
 		{
 			MimeType = MIMETypeDASH;
@@ -85,6 +98,14 @@ FString GetMIMETypeForURL(const FString& URL)
 		else if (LowerCaseExtension == kTextM3U8)
 		{
 			MimeType = MIMETypeHLS;
+		}
+		else if (LowerCaseExtension == kTextMKV || LowerCaseExtension == kTextWEBM)
+		{
+			MimeType = MIMETypeMKV;
+		}
+		else if (LowerCaseExtension == kTextMKA)
+		{
+			MimeType = MIMETypeMKA;
 		}
 	}
 
@@ -194,7 +215,7 @@ void FAdaptiveStreamingPlayer::InternalLoadManifest(const FString& InURL, const 
 				ManifestReader = IPlaylistReaderHLS::Create(this);
 				ManifestType = EMediaFormatType::HLS;
 			}
-			else if (mimeType == Playlist::MIMETypeMP4)
+			else if (mimeType == Playlist::MIMETypeMP4 || mimeType == Playlist::MIMETypeMP4A || mimeType == Playlist::MIMETypeQuickTime)
 			{
 				ManifestReader = IPlaylistReaderMP4::Create(this);
 				ManifestType = EMediaFormatType::ISOBMFF;
@@ -203,6 +224,11 @@ void FAdaptiveStreamingPlayer::InternalLoadManifest(const FString& InURL, const 
 			{
 				ManifestReader = IPlaylistReaderDASH::Create(this);
 				ManifestType = EMediaFormatType::DASH;
+			}
+			else if (mimeType == Playlist::MIMETypeMKV || mimeType == Playlist::MIMETypeMKA)
+			{
+				ManifestReader = IPlaylistReaderMKV::Create(this);
+				ManifestType = EMediaFormatType::MKV;
 			}
 			else
 			{
@@ -295,6 +321,9 @@ bool FAdaptiveStreamingPlayer::SelectManifest()
 			NewPresentation->GetTrackMetadata(SubtitleTrackMetadata, EStreamType::Subtitle);
 			PlaybackState.SetTrackMetadata(VideoTrackMetadata, AudioTrackMetadata, SubtitleTrackMetadata);
 			PlaybackState.SetHaveMetadata(true);
+			// Get the supported playback rates for thinned and unthinned playback.
+			PlaybackState.SetPlaybackRates(EPlaybackRateType::Unthinned, NewPresentation->GetPossiblePlaybackRates(IManifest::EPlayRateType::UnthinnedRate));
+			PlaybackState.SetPlaybackRates(EPlaybackRateType::Thinned, NewPresentation->GetPossiblePlaybackRates(IManifest::EPlayRateType::ThinnedRate));
 
 			Manifest = NewPresentation;
 
@@ -305,14 +334,20 @@ bool FAdaptiveStreamingPlayer::SelectManifest()
 			PlayerConfig.SeekBufferMinTimeAvailBeforePlayback    = Utils::Min(minBufTimeMPD, PlayerConfig.SeekBufferMinTimeAvailBeforePlayback);
 			PlayerConfig.RebufferMinTimeAvailBeforePlayback 	 = Utils::Min(minBufTimeMPD, PlayerConfig.RebufferMinTimeAvailBeforePlayback);
 
-			// For an mp4 stream we can now get rid of the manifest reader. It is no longer needed and we don't need to have it linger.
-			if (ManifestType == EMediaFormatType::ISOBMFF)
+			// For an mp4 or mkv stream we can now get rid of the manifest reader. It is no longer needed and we don't need to have it linger.
+			if (ManifestType == EMediaFormatType::ISOBMFF || ManifestType == EMediaFormatType::MKV)
 			{
 				InternalCloseManifestReader();
 			}
 
 			// Let the ABR know the format as well.
 			StreamSelector->SetFormatType(ManifestType);
+
+			// Live streams must not use any cache!
+			if (NewPresentation->GetPresentationType() == IManifest::EType::Live && HttpResponseCache.IsValid())
+			{
+				HttpResponseCache->Disable();
+			}
 
 			return true;
 		}

@@ -6,6 +6,8 @@
 
 class FDMXPixelMappingToolkit;
 class IDetailsView;
+class UObject;
+
 
 class SDMXPixelMappingDetailsView
 	: public SCompoundWidget
@@ -23,19 +25,16 @@ public:
 	 */
 	void Construct(const FArguments& InArgs, const TSharedPtr<FDMXPixelMappingToolkit>& InToolkit);
 
-	virtual ~SDMXPixelMappingDetailsView();
-
 private:
 	void OnSelectedComponentsChanged();
 
 	/** Registers the designer specific customizations */
 	void RegisterCustomizations();
 
-private:
-	TWeakPtr<FDMXPixelMappingToolkit> ToolkitWeakPtr;
+	TWeakPtr<FDMXPixelMappingToolkit> WeakToolkit;
 
-	/** Property viewing widget */
-	TSharedPtr<IDetailsView> PropertyView;
+	/** The details view that is displayed */
+	TSharedPtr<IDetailsView> DetailsView;
 
 	/** Selected objects for this detail view */
 	TArray<TWeakObjectPtr<UObject>> SelectedObjects;

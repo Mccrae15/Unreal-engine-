@@ -13,10 +13,23 @@ struct CHOOSER_API FFloatContextProperty :  public FChooserParameterFloatBase
 {
 	GENERATED_BODY()
 	
-	virtual bool GetValue(const UObject* ContextObject, float& OutResult) const override;
+	virtual bool GetValue(FChooserEvaluationContext& Context, double& OutResult) const override;
+	virtual bool SetValue(FChooserEvaluationContext& Context, double Value) const override;
 
 	UPROPERTY()
-	TArray<FName> PropertyBindingChain;
+	TArray<FName> PropertyBindingChain_DEPRECATED;
+	
+	UPROPERTY(EditAnywhere, Meta = (BindingType = "double", BindingAllowFunctions = "true", BindingColor = "FloatPinTypeColor"), Category = "Binding")
+	FChooserPropertyBinding Binding;
+
+	virtual void PostLoad() override
+	{
+		if (PropertyBindingChain_DEPRECATED.Num() > 0)
+		{
+			Binding.PropertyBindingChain = PropertyBindingChain_DEPRECATED;
+			PropertyBindingChain_DEPRECATED.SetNum(0);
+		}
+	}	
 
 #if WITH_EDITOR
 	static bool CanBind(const FProperty& Property)
@@ -29,14 +42,14 @@ struct CHOOSER_API FFloatContextProperty :  public FChooserParameterFloatBase
 	
 	void SetBinding(const TArray<FBindingChainElement>& InBindingChain)
 	{
-		UE::Chooser::CopyPropertyChain(InBindingChain, PropertyBindingChain);
+		UE::Chooser::CopyPropertyChain(InBindingChain, Binding);
 	}
 
 	virtual void GetDisplayName(FText& OutName) const override
 	{
-		if (!PropertyBindingChain.IsEmpty())
+		if (!Binding.PropertyBindingChain.IsEmpty())
 		{
-			OutName = FText::FromName(PropertyBindingChain.Last());
+			OutName = FText::FromName(Binding.PropertyBindingChain.Last());
 		}
 	}
 #endif
@@ -46,7 +59,7 @@ USTRUCT()
 struct FChooserFloatRangeRowData
 {
 	GENERATED_BODY()
-	
+
 	UPROPERTY(EditAnywhere, Category=Runtime)
 	float Min=0;
 	
@@ -62,15 +75,36 @@ struct CHOOSER_API FFloatRangeColumn : public FChooserColumnBase
 	public:
 	FFloatRangeColumn();
 		
-	UPROPERTY(EditAnywhere, Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserParameterFloatBase"), Category = "Hidden")
+	UPROPERTY(EditAnywhere, NoClear, Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserParameterFloatBase"), Category = "Data")
 	FInstancedStruct InputValue;
 	
-	UPROPERTY(EditAnywhere, Category=Runtime)
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, Category="Data")
+	FChooserFloatRangeRowData DefaultRowValue;
+#endif
+	
+	UPROPERTY(EditAnywhere, Category="Data")
 	// array of results (cells for this column for each row in the table)
 	// should match the length of the Results array 
 	TArray<FChooserFloatRangeRowData> RowValues;
 	
-	virtual void Filter(const UObject* ContextObject, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) const override;
+	virtual void Filter(FChooserEvaluationContext& Context, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) const override;
+
+#if WITH_EDITOR
+	mutable float TestValue;
+	virtual bool EditorTestFilter(int32 RowIndex) const override
+	{
+		return RowValues.IsValidIndex(RowIndex) && TestValue >= RowValues[RowIndex].Min && TestValue <= RowValues[RowIndex].Max;
+	}
+#endif
+	
+	virtual void PostLoad() override
+	{
+		if (InputValue.IsValid())
+		{
+			InputValue.GetMutable<FChooserParameterBase>().PostLoad();
+		}
+	}
 	
 	CHOOSER_COLUMN_BOILERPLATE(FChooserParameterFloatBase);
 
@@ -90,7 +124,7 @@ public:
 	{
 		OutInstancedStruct.InitializeAs(FFloatContextProperty::StaticStruct());
 		FFloatContextProperty& Property = OutInstancedStruct.GetMutable<FFloatContextProperty>();
-		Property.PropertyBindingChain = PropertyBindingChain;
+		Property.Binding.PropertyBindingChain = PropertyBindingChain;
 	}
 };
 

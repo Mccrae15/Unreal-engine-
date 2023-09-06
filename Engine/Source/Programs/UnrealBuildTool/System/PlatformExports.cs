@@ -3,9 +3,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.Versioning;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
@@ -44,7 +41,7 @@ namespace UnrealBuildTool
 		public static bool HasDefaultBuildConfig(FileReference ProjectFile, UnrealTargetPlatform Platform)
 		{
 			UEBuildPlatform.TryGetBuildPlatform(Platform, out UEBuildPlatform? BuildPlat);
-			return (BuildPlat == null)? true : BuildPlat.HasDefaultBuildConfig(Platform, ProjectFile.Directory);
+			return (BuildPlat == null) ? true : BuildPlat.HasDefaultBuildConfig(Platform, ProjectFile.Directory);
 		}
 
 		/// <summary>
@@ -107,9 +104,10 @@ namespace UnrealBuildTool
 		/// <param name="Platform">Platform to check</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if the platform supports the parallel executor in UAT</returns>
+		[Obsolete]
 		public static bool CanUseParallelExecutor(UnrealTargetPlatform Platform, ILogger Logger)
 		{
-			return UEBuildPlatform.IsPlatformAvailable(Platform) && UEBuildPlatform.GetBuildPlatform(Platform).CanUseParallelExecutor();
+			return true;
 		}
 
 		/// <summary>
@@ -148,15 +146,16 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Initialize UBT in the context of another host process (presumably UAT)
 		/// </summary>
+		/// <param name="CommandLineArgs">Command Line arguments that UBT may need access to for initializing platforms</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if initialization was successful</returns>
-		public static bool Initialize(ILogger Logger)
+		public static bool Initialize(string[] CommandLineArgs, ILogger Logger)
 		{
 			// Read the XML configuration files
-			XmlConfig.ReadConfigFiles(null, Logger);
+			XmlConfig.ReadConfigFiles(null, null, Logger);
 
 			// Register all the platform classes
-			UEBuildPlatform.RegisterPlatforms(false, false, Logger);
+			UEBuildPlatform.RegisterPlatforms(false, false, CommandLineArgs, Logger);
 			return true;
 		}
 	}

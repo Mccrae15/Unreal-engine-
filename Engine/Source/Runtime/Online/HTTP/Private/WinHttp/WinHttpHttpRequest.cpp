@@ -65,7 +65,7 @@ FString FWinHttpHttpRequest::GetContentType() const
 	return GetHeader(TEXT("Content-Type"));
 }
 
-int32 FWinHttpHttpRequest::GetContentLength() const
+uint64 FWinHttpHttpRequest::GetContentLength() const
 {
 	return RequestData.Payload.IsValid() ? RequestData.Payload->GetContentLength() : 0;
 }
@@ -166,6 +166,12 @@ bool FWinHttpHttpRequest::SetContentFromStream(TSharedRef<FArchive, ESPMode::Thr
 
 	RequestData.Payload = MakeShared<FRequestPayloadInFileStream, ESPMode::ThreadSafe>(Stream);
 	return true;
+}
+
+bool FWinHttpHttpRequest::SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream)
+{
+	UE_LOG(LogHttp, Warning, TEXT("FWinHttpHttpRequest::SetResponseBodyReceiveStream is not implemented"));
+	return false;
 }
 
 void FWinHttpHttpRequest::SetHeader(const FString& HeaderName, const FString& HeaderValue)
@@ -329,11 +335,6 @@ void FWinHttpHttpRequest::CancelRequest()
 	{
 		FinishRequest();
 	}
-}
-
-EHttpRequestStatus::Type FWinHttpHttpRequest::GetStatus() const
-{
-	return CompletionStatus;
 }
 
 const FHttpResponsePtr FWinHttpHttpRequest::GetResponse() const

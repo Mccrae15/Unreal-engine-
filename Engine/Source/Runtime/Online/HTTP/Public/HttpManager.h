@@ -14,10 +14,11 @@
 #include "HttpPackage.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Misc/EnumRange.h"
+#include "Misc/URLRequestFilter.h"
 #include "Templates/Function.h"
 #include "Templates/SharedPointer.h"
 
-class FHttpThread;
+class FHttpThreadBase;
 class FOutputDevice;
 class IHttpThreadedRequest;
 
@@ -51,7 +52,7 @@ DECLARE_DELEGATE_OneParam(FHttpManagerRequestCompletedDelegate, const FHttpReque
 /**
  * Manages Http request that are currently being processed
  */
-class HTTP_API FHttpManager
+class FHttpManager
 	: public FTSTickerObjectBase
 {
 public:
@@ -61,17 +62,22 @@ public:
 	/**
 	 * Constructor
 	 */
-	FHttpManager();
+	HTTP_API FHttpManager();
 
 	/**
 	 * Destructor
 	 */
-	virtual ~FHttpManager();
+	HTTP_API virtual ~FHttpManager();
 
 	/**
 	 * Initialize
 	 */
-	void Initialize();
+	HTTP_API void Initialize();
+
+	/**
+	 * Shutdown logic should be called before quiting
+	 */
+	HTTP_API void Shutdown();
 
 	/**
 	 * Adds an Http request instance to the manager for tracking/ticking
@@ -79,14 +85,10 @@ public:
 	 *
 	 * @param Request - the request object to add
 	 */
-	void AddRequest(const FHttpRequestRef& Request);
+	HTTP_API void AddRequest(const FHttpRequestRef& Request);
 
-	/** Delegate that will get called once request added */
-	UE_DEPRECATED(5.2, "Direct access to RequestAddedDelegate is deprecated. Please use SetRequestAddedDelegate")
-	FHttpManagerRequestAddedDelegate RequestAddedDelegate;
-
-	void SetRequestAddedDelegate(const FHttpManagerRequestAddedDelegate& Delegate);
-	void SetRequestCompletedDelegate(const FHttpManagerRequestCompletedDelegate& Delegate);
+	HTTP_API void SetRequestAddedDelegate(const FHttpManagerRequestAddedDelegate& Delegate);
+	HTTP_API void SetRequestCompletedDelegate(const FHttpManagerRequestCompletedDelegate& Delegate);
 
 	/**
 	 * Removes an Http request instance from the manager
@@ -94,7 +96,7 @@ public:
 	 *
 	 * @param Request - the request object to remove
 	 */
-	void RemoveRequest(const FHttpRequestRef& Request);
+	HTTP_API void RemoveRequest(const FHttpRequestRef& Request);
 
 	/**
 	* Find an Http request in the lists of current valid requests
@@ -103,22 +105,14 @@ public:
 	*
 	* @return true if the request is being tracked, false if not
 	*/
-	bool IsValidRequest(const IHttpRequest* RequestPtr) const;
-
-	/**
-	 * Block until all pending requests are finished processing
-	 *
-	 * @param bShutdown true if final flush during shutdown
-	 */
-	UE_DEPRECATED(5.0, "This method is deprecated. Please use Flush(EHttpFlushReason FlushReason) instead.")
-	void Flush(bool bShutdown);
+	HTTP_API bool IsValidRequest(const IHttpRequest* RequestPtr) const;
 
 	/**
 	 * Block until all pending requests are finished processing
 	 *
 	 * @param FlushReason the flush reason will influence times waited to cancel ongoing http requests
 	 */
-	void Flush(EHttpFlushReason FlushReason);
+	HTTP_API void Flush(EHttpFlushReason FlushReason);
 
 	/**
 	 * FTSTicker callback
@@ -127,42 +121,42 @@ public:
 	 *
 	 * @return false if no longer needs ticking
 	 */
-	bool Tick(float DeltaSeconds) override;
+	HTTP_API bool Tick(float DeltaSeconds) override;
 
 	/**
 	 * Tick called during Flush
 	 *
 	 * @param DeltaSeconds - time in seconds since the last tick
 	 */
-	virtual void FlushTick(float DeltaSeconds);
+	HTTP_API virtual void FlushTick(float DeltaSeconds);
 
 	/** 
 	 * Add a http request to be executed on the http thread
 	 *
 	 * @param Request - the request object to add
 	 */
-	void AddThreadedRequest(const TSharedRef<IHttpThreadedRequest, ESPMode::ThreadSafe>& Request);
+	HTTP_API void AddThreadedRequest(const TSharedRef<IHttpThreadedRequest, ESPMode::ThreadSafe>& Request);
 
 	/**
 	 * Mark a threaded http request as cancelled to be removed from the http thread
 	 *
 	 * @param Request - the request object to cancel
 	 */
-	void CancelThreadedRequest(const TSharedRef<IHttpThreadedRequest, ESPMode::ThreadSafe>& Request);
+	HTTP_API void CancelThreadedRequest(const TSharedRef<IHttpThreadedRequest, ESPMode::ThreadSafe>& Request);
 
 	/**
 	 * List all of the Http requests currently being processed
 	 *
 	 * @param Ar - output device to log with
 	 */
-	void DumpRequests(FOutputDevice& Ar) const;
+	HTTP_API void DumpRequests(FOutputDevice& Ar) const;
 
 	/**
 	 * Method to check dynamic proxy setting support.
 	 *
 	 * @returns Whether this http implementation supports dynamic proxy setting.
 	 */
-	virtual bool SupportsDynamicProxy() const;
+	HTTP_API virtual bool SupportsDynamicProxy() const;
 
 	/**
 	 * Set the method used to set a Correlation id on each request, if one is not already specified.
@@ -171,14 +165,14 @@ public:
 	 *
 	 * @param InCorrelationIdMethod The method to use when sending a request, if no Correlation id is already set
 	 */
-	void SetCorrelationIdMethod(TFunction<FString()> InCorrelationIdMethod);
+	HTTP_API void SetCorrelationIdMethod(TFunction<FString()> InCorrelationIdMethod);
 
 	/**
 	 * Create a new correlation id for a request
 	 *
 	 * @return The new correlationid string
 	 */
-	FString CreateCorrelationId() const;
+	HTTP_API FString CreateCorrelationId() const;
 
 	/**
 	 * Determine if the domain is allowed to be accessed
@@ -187,42 +181,56 @@ public:
 	 *
 	 * @return true if domain is allowed
 	 */
-	bool IsDomainAllowed(const FString& Url) const;
+	HTTP_API bool IsDomainAllowed(const FString& Url) const;
 
 	/**
 	 * Get the default method for creating new correlation ids for a request
 	 *
 	 * @return The default correlationid creation method
 	 */
-	static TFunction<FString()> GetDefaultCorrelationIdMethod();
+	static HTTP_API TFunction<FString()> GetDefaultCorrelationIdMethod();
 
 	/**
 	 * Inform that HTTP Manager that we are about to fork(). Will block to flush all outstanding http requests
 	 */
-	virtual void OnBeforeFork();
+	HTTP_API virtual void OnBeforeFork();
 
 	/**
 	 * Inform that HTTP Manager that we have completed a fork(). Must be called in both the client and parent process
 	 */
-	virtual void OnAfterFork();
+	HTTP_API virtual void OnAfterFork();
 
 	/**
 	 * Inform the HTTP Manager that we finished ticking right after forking. Only called on the forked process
 	 */
-	virtual void OnEndFramePostFork();
+	HTTP_API virtual void OnEndFramePostFork();
 
 
 	/**
 	 * Update configuration. Called when config has been updated and we need to apply any changes.
 	 */
-	virtual void UpdateConfigs();
+	HTTP_API virtual void UpdateConfigs();
 
 	/**
 	 * Add task to be ran on the game thread next tick
 	 *
 	 * @param Task The task to be ran next tick
 	 */
-	void AddGameThreadTask(TFunction<void()>&& Task);
+	HTTP_API void AddGameThreadTask(TFunction<void()>&& Task);
+
+	/**
+	 * Add task to be ran on the http thread next tick
+	 *
+	 * @param Task The task to be ran next tick
+	 */
+	HTTP_API void AddHttpThreadTask(TFunction<void()>&& Task);
+
+	/**
+	 * Set url request filter through code, instead of setting it through config.
+	 *
+	 * @param InURLRequestFilter The request filter to set
+	 */
+	void SetURLRequestFilter(const UE::Core::FURLRequestFilter& InURLRequestFilter) { URLRequestFilter = InURLRequestFilter; }
 
 protected:
 	/** 
@@ -230,15 +238,17 @@ protected:
 	 *
 	 * @return the HTTP thread object
 	 */
-	virtual FHttpThread* CreateHttpThread();
+	HTTP_API virtual FHttpThreadBase* CreateHttpThread();
 
-	void ReloadFlushTimeLimits();
+	HTTP_API void ReloadFlushTimeLimits();
+
+	HTTP_API bool HasAnyBoundDelegate() const;
 
 protected:
 	/** List of Http requests that are actively being processed */
 	TArray<FHttpRequestRef> Requests;
 
-	FHttpThread* Thread;
+	FHttpThreadBase* Thread;
 
 	/** This method will be called to generate a CorrelationId on all requests being sent if one is not already set */
 	TFunction<FString()> CorrelationIdMethod;
@@ -249,8 +259,14 @@ protected:
 	// This variable is set to true in Flush(EHttpFlushReason), and prevents new Http requests from being launched
 	bool bFlushing;
 
+	/** Delegate that will get called once request added */
+	FHttpManagerRequestAddedDelegate RequestAddedDelegate;
+
 	/** Delegate that will get called when a request completes */
 	FHttpManagerRequestCompletedDelegate RequestCompletedDelegate;
+
+	/** Url request filter, if specified in the config, it will launch http request only when the url is in the allowlist */
+	UE::Core::FURLRequestFilter URLRequestFilter;
 
 	struct FHttpFlushTimeLimit
 	{
@@ -287,5 +303,5 @@ PACKAGE_SCOPE:
 	 * Called automatically internally for threaded requests.
 	 * Called explicitly by non-threaded requests
 	 */
-	void BroadcastHttpRequestCompleted(const FHttpRequestRef& Request);
+	HTTP_API void BroadcastHttpRequestCompleted(const FHttpRequestRef& Request);
 };

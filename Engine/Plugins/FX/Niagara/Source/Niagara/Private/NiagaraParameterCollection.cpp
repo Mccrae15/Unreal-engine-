@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraParameterCollection.h"
+#include "AssetRegistry/AssetData.h"
 #include "Engine/World.h"
+#include "Modules/ModuleManager.h"
 #include "NiagaraDataInterface.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Misc/SecureHash.h"
 #if WITH_EDITORONLY_DATA
-	#include "IAssetTools.h"
 #endif
 #include "AssetRegistry/AssetRegistryModule.h"
 
@@ -212,6 +213,10 @@ void UNiagaraParameterCollectionInstance::SyncWithCollection()
 			{
 				ParameterStorage.SetDataInterface(OldStore.GetDataInterface(Offset), Param);
 			}
+			else if (Param.IsUObject())
+			{
+				ParameterStorage.SetUObject(OldStore.GetUObject(Offset), Param);
+			}
 			else
 			{
 				ParameterStorage.SetParameterData(OldStore.GetParameterData(Offset), ParameterStorageOffset, Param.GetSizeInBytes());
@@ -229,6 +234,10 @@ void UNiagaraParameterCollectionInstance::SyncWithCollection()
 			if (Param.IsDataInterface())
 			{
 				ParameterStorage.SetDataInterface(CastChecked<UNiagaraDataInterface>(StaticDuplicateObject(DefaultStore.GetDataInterface(Offset), this)), Param);
+			}
+			else if (Param.IsUObject())
+			{
+				ParameterStorage.SetUObject(DefaultStore.GetUObject(Offset), Param);
 			}
 			else
 			{
@@ -431,6 +440,14 @@ void UNiagaraParameterCollection::PostEditChangeProperty(struct FPropertyChanged
 		OnChangedDelegate.Broadcast();
 	}
 }
+
+void UNiagaraParameterCollection::PostDuplicate(EDuplicateMode::Type DuplicateMode)
+{
+	Super::PostDuplicate(DuplicateMode);
+
+	MakeNamespaceNameUnique();
+}
+
 #endif
 
 int32 UNiagaraParameterCollection::IndexOfParameter(const FNiagaraVariable& Var)
@@ -535,7 +552,8 @@ void UNiagaraParameterCollection::MakeNamespaceNameUnique()
 	TArray<FName> ExistingNames;
  	for (FAssetData& CollectionAsset : CollectionAssets)
  	{
-		if (CollectionAsset.GetFullName() != GetFullName())
+		// skip ourselves - note that ColelctionAsset.GetFullName() uses a fully qualified class name as a prefix in contrast to GetFullName()
+		if (CollectionAsset.GetObjectPathString() != GetPathName())
 		{
 			ExistingNames.Add(CollectionAsset.GetTagValueRef<FName>(GET_MEMBER_NAME_CHECKED(UNiagaraParameterCollection, Namespace)));
 		}

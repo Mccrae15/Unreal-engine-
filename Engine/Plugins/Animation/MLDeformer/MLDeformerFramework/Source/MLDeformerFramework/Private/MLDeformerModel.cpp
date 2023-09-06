@@ -11,28 +11,30 @@
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Animation/AnimSequence.h"
+#include "RHICommandList.h"
 #include "UObject/UObjectGlobals.h"
+#include "RHICommandList.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerModel)
 
 namespace UE::MLDeformer
 {
-	void FVertexMapBuffer::InitRHI()
+	void FVertexMapBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 	{
 		if (VertexMap.Num() > 0)
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("UMLDeformerModel::FVertexMapBuffer"));
 
-			VertexBufferRHI = RHICreateVertexBuffer(VertexMap.Num() * sizeof(uint32), BUF_Static | BUF_ShaderResource, CreateInfo);
-			uint32* Data = reinterpret_cast<uint32*>(RHILockBuffer(VertexBufferRHI, 0, VertexMap.Num() * sizeof(uint32), RLM_WriteOnly));
+			VertexBufferRHI = RHICmdList.CreateVertexBuffer(VertexMap.Num() * sizeof(uint32), BUF_Static | BUF_ShaderResource, CreateInfo);
+			uint32* Data = reinterpret_cast<uint32*>(RHICmdList.LockBuffer(VertexBufferRHI, 0, VertexMap.Num() * sizeof(uint32), RLM_WriteOnly));
 			for (int32 Index = 0; Index < VertexMap.Num(); ++Index)
 			{
 				Data[Index] = static_cast<uint32>(VertexMap[Index]);
 			}
-			RHIUnlockBuffer(VertexBufferRHI);
+			RHICmdList.UnlockBuffer(VertexBufferRHI);
 			VertexMap.Empty();
 
-			ShaderResourceViewRHI = RHICreateShaderResourceView(VertexBufferRHI, 4, PF_R32_UINT);
+			ShaderResourceViewRHI = RHICmdList.CreateShaderResourceView(VertexBufferRHI, 4, PF_R32_UINT);
 		}
 		else
 		{

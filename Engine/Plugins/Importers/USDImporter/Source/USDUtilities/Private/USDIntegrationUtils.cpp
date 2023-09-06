@@ -161,6 +161,11 @@ void UnrealToUsd::ConvertLiveLinkProperties( const UActorComponent* InComponent,
 
 	UE::FSdfChangeBlock ChangeBlock;
 
+	if (UsdUtils::NotifyIfInstanceProxy(InOutPrim))
+	{
+		return;
+	}
+
 	// Skeletal LiveLink case
 	if ( const USkeletalMeshComponent* SkeletalComponent = Cast<USkeletalMeshComponent>( InComponent ) )
 	{
@@ -171,14 +176,14 @@ void UnrealToUsd::ConvertLiveLinkProperties( const UActorComponent* InComponent,
 				: FString();
 
 			Attr.Set( UnrealToUsd::ConvertString( *AnimBPPath ).Get(), pxr::UsdTimeCode::Default() );
-			UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+			UsdUtils::NotifyIfOverriddenOpinion(Attr);
 		}
 
 		if ( pxr::UsdAttribute Attr = InOutPrim.CreateAttribute( UnrealIdentifiers::UnrealLiveLinkEnabled, pxr::SdfValueTypeNames->Bool ) )
 		{
 			const bool bEnabled = SkeletalComponent->GetAnimationMode() == EAnimationMode::AnimationBlueprint;
 			Attr.Set( bEnabled, pxr::UsdTimeCode::Default() );
-			UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+			UsdUtils::NotifyIfOverriddenOpinion(Attr);
 		}
 	}
 	// Non-skeletal LiveLink case
@@ -187,13 +192,13 @@ void UnrealToUsd::ConvertLiveLinkProperties( const UActorComponent* InComponent,
 		if ( pxr::UsdAttribute Attr = InOutPrim.CreateAttribute( UnrealIdentifiers::UnrealLiveLinkSubjectName, pxr::SdfValueTypeNames->String ) )
 		{
 			Attr.Set( UnrealToUsd::ConvertString( *InController->SubjectRepresentation.Subject.Name.ToString() ).Get(), pxr::UsdTimeCode::Default() );
-			UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+			UsdUtils::NotifyIfOverriddenOpinion(Attr);
 		}
 
 		if ( pxr::UsdAttribute Attr = InOutPrim.CreateAttribute( UnrealIdentifiers::UnrealLiveLinkEnabled, pxr::SdfValueTypeNames->Bool ) )
 		{
 			Attr.Set( InController->bEvaluateLiveLink, pxr::UsdTimeCode::Default() );
-			UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+			UsdUtils::NotifyIfOverriddenOpinion(Attr);
 		}
 	}
 #endif // WITH_EDITOR

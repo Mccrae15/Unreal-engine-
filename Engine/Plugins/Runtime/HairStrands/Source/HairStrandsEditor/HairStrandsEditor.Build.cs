@@ -23,6 +23,7 @@ namespace UnrealBuildTool.Rules
 					"ToolMenus",
 					"ContentBrowser",
 					"UnrealEd",
+					"AssetDefinition",
 					"AssetTools",
 					"EditorInteractiveToolsFramework",
 					"AdvancedPreviewScene",
@@ -37,8 +38,15 @@ namespace UnrealBuildTool.Rules
 					"HairCardGeneratorFramework",
 					"CommonMenuExtensions",
 				});
+
+			PrivateIncludePathModuleNames.AddRange(
+				new string[]
+				{
+					"Analytics"
+				});
+
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
-			 "FBX"
+				"FBX"
 			);
 		}
 	}

@@ -117,6 +117,10 @@ float URectLightComponent::ComputeLightBrightness() const
 	{
 		LightBrightness *= (100.f * 100.f / UE_PI); // Conversion from cm2 to m2 and PI from the cosine distribution
 	}
+	else if (IntensityUnits == ELightUnits::EV)
+	{
+		LightBrightness *= (100.f * 100.f) * EV100ToLuminance(LightBrightness);
+	}
 	else
 	{
 		LightBrightness *= 16; // Legacy scale of 16
@@ -135,6 +139,10 @@ void URectLightComponent::SetLightBrightness(float InBrightness)
 	else if (IntensityUnits == ELightUnits::Lumens)
 	{
 		Super::SetLightBrightness(InBrightness / (100.f * 100.f / UE_PI)); // Conversion from cm2 to m2 and PI from the cosine distribution
+	}
+	else if (IntensityUnits == ELightUnits::EV)
+	{
+		Super::SetLightBrightness(LuminanceToEV100(InBrightness / (100.f * 100.f)));
 	}
 	else
 	{
@@ -218,7 +226,7 @@ bool FRectLightSceneProxy::HasSourceTexture() const
 }
 
 /** Accesses parameters needed for rendering the light. */
-void FRectLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& LightParameters) const
+void FRectLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& LightParameters, uint32 Flags) const
 {
 	FLinearColor LightColor = GetColor();
 	LightColor /= 0.5f * SourceWidth * SourceHeight;
@@ -252,8 +260,8 @@ void FRectLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& Ligh
 		GetSceneInterface()->GetRectLightAtlasSlot(this, &LightParameters);
 	}
 	
-	// Render RectLight approximately as SpotLight on mobile
-	const bool bRenderAsSpotLight = (SceneInterface && IsMobilePlatform(SceneInterface->GetShaderPlatform()));
+	// Render RectLight approximately as SpotLight if the requester does not support rect light (e.g., translucent light grid or mobile)
+	const bool bRenderAsSpotLight = !!(Flags & ELightShaderParameterFlags::RectAsSpotLight) || (SceneInterface && IsMobilePlatform(SceneInterface->GetShaderPlatform()));
 	if (bRenderAsSpotLight)
 	{
 		float ClampedOuterConeAngle = FMath::DegreesToRadians(89.001f);
@@ -297,4 +305,3 @@ bool FRectLightSceneProxy::GetWholeSceneProjectedShadowInitializer(const FSceneV
 
 	return false;
 }
-

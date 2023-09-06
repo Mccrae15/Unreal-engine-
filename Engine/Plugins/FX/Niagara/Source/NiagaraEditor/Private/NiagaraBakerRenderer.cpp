@@ -9,6 +9,7 @@
 #include "NiagaraComputeExecutionContext.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraBatchedElements.h"
+#include "NiagaraEditorCommon.h"
 
 #include "NiagaraDataInterfaceGrid2DCollection.h"
 #include "NiagaraDataInterfaceRenderTarget2D.h"
@@ -249,7 +250,7 @@ void FNiagaraBakerOutputBindingHelper::GetParticleAttributeBindings(TArray<FNiag
 			const FNiagaraDataSetCompiledData& ParticleDataSet = AllEmitterCompiledData[EmitterIndex]->DataSetCompiledData;
 			for (int32 iVariable = 0; iVariable < ParticleDataSet.VariableLayouts.Num(); ++iVariable)
 			{
-				const FNiagaraVariable& Variable = ParticleDataSet.Variables[iVariable];
+				const FNiagaraVariableBase& Variable = ParticleDataSet.Variables[iVariable];
 				const FNiagaraVariableLayoutInfo& VariableLayout = ParticleDataSet.VariableLayouts[iVariable];
 				if (VariableLayout.GetNumFloatComponents() > 0)
 				{
@@ -562,10 +563,10 @@ void FNiagaraBakerRenderer::RenderParticleAttribute(UTextureRenderTarget2D* Rend
 		const FNiagaraVariableLayoutInfo& VariableInfo = ParticleDataSet.GetCompiledData().VariableLayouts[VariableIndex];
 	
 		float* FloatChannels[4];
-		FloatChannels[0] = (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.FloatComponentStart);
-		FloatChannels[1] = VariableInfo.GetNumFloatComponents() > 1 ? (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.FloatComponentStart + 1) : nullptr;
-		FloatChannels[2] = VariableInfo.GetNumFloatComponents() > 2 ? (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.FloatComponentStart + 2) : nullptr;
-		FloatChannels[3] = VariableInfo.GetNumFloatComponents() > 3 ? (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.FloatComponentStart + 3) : nullptr;
+		FloatChannels[0] = (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.GetFloatComponentStart());
+		FloatChannels[1] = VariableInfo.GetNumFloatComponents() > 1 ? (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.GetFloatComponentStart() + 1) : nullptr;
+		FloatChannels[2] = VariableInfo.GetNumFloatComponents() > 2 ? (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.GetFloatComponentStart() + 2) : nullptr;
+		FloatChannels[3] = VariableInfo.GetNumFloatComponents() > 3 ? (float*)ParticleDataBuffer->GetComponentPtrFloat(VariableInfo.GetFloatComponentStart() + 3) : nullptr;
 	
 		const FIntPoint RenderTargetSize(RenderTarget->GetSurfaceWidth(), RenderTarget->GetSurfaceHeight());
 		const int32 ParticleBufferStore = RenderTargetSize.X * RenderTargetSize.Y;
@@ -704,7 +705,7 @@ bool FNiagaraBakerRenderer::ExportImage(FStringView FilePath, FIntPoint ImageSiz
 	return FFileHelper::SaveArrayToFile(TempData, FilePath.GetData());
 }
 
-void FNiagaraBakerRenderer::CreatePreviewScene(UNiagaraSystem* NiagaraSystem, UNiagaraComponent*& OutComponent, TSharedPtr<FAdvancedPreviewScene>& OutPreviewScene)
+void FNiagaraBakerRenderer::CreatePreviewScene(UNiagaraSystem* NiagaraSystem, TObjectPtr<UNiagaraComponent>& OutComponent, TSharedPtr<FAdvancedPreviewScene>& OutPreviewScene)
 {
 	check(NiagaraSystem);
 	OutComponent = NewObject<UNiagaraComponent>(GetTransientPackage(), NAME_None, RF_Transient);
@@ -723,7 +724,7 @@ void FNiagaraBakerRenderer::CreatePreviewScene(UNiagaraSystem* NiagaraSystem, UN
 	OutPreviewScene->AddComponent(OutComponent, OutComponent->GetRelativeTransform());
 }
 
-void FNiagaraBakerRenderer::DestroyPreviewScene(UNiagaraComponent*& InOutComponent, TSharedPtr<FAdvancedPreviewScene>& InOutPreviewScene)
+void FNiagaraBakerRenderer::DestroyPreviewScene(TObjectPtr<UNiagaraComponent>& InOutComponent, TSharedPtr<FAdvancedPreviewScene>& InOutPreviewScene)
 {
 	if ( InOutPreviewScene && InOutComponent )
 	{
@@ -742,11 +743,9 @@ bool FNiagaraBakerRenderer::ExportVolume(FStringView FilePath, FIntVector ImageS
 	const FString FileExtension = FPaths::GetExtension(FilePath.GetData(), true);
 	if (FileExtension == TEXT(".vdb"))
 	{
-#if PLATFORM_WINDOWS
-		return OpenVDBTools::WriteImageDataToOpenVDBFile(FilePath, ImageSize, ImageData, false);
-#else
+		UE_LOG(LogNiagaraEditor, Warning, TEXT("Exporting vdb grids from the Niagara Baker is no longer supported."));
+
 		return false;
-#endif
 	}
 	else
 	{

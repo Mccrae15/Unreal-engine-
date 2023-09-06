@@ -1,13 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.IO;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -16,12 +9,13 @@ namespace UnrealGameSync
 {
 	partial class ModalTaskWindow : Form
 	{
-		Task _task;
-		CancellationTokenSource _cancellationSource;
+		readonly Task _task;
+		readonly CancellationTokenSource _cancellationSource;
 
 		public ModalTaskWindow(string inTitle, string inMessage, FormStartPosition inStartPosition, Task inTask, CancellationTokenSource inCancellationSource)//, Func<CancellationToken, Task> InTaskFunc)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
 			Text = inTitle;
 			MessageLabel.Text = inMessage;
@@ -39,7 +33,7 @@ namespace UnrealGameSync
 		private void ModalTaskWindow_Load(object sender, EventArgs e)
 		{
 			SynchronizationContext syncContext = SynchronizationContext.Current!;
-			_task.ContinueWith(x => syncContext.Post(y => Close(), null));
+			_task.ContinueWith(x => syncContext.Post(y => Close(), null), TaskScheduler.Default);
 		}
 
 		private void ModalTaskWindow_FormClosing(object sender, FormClosingEventArgs e)

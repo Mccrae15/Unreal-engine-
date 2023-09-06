@@ -6,11 +6,12 @@
 #include "CADKernel/Geo/GeoPoint.h"
 #include "CADKernel/Math/Point.h"
 #include "CADKernel/Mesh/MeshEnum.h"
+#include "CADKernel/Mesh/Structure/GridBase.h"
 #include "CADKernel/Mesh/Structure/ThinZone2D.h"
 #include "CADKernel/UI/Display.h"
 
 #ifdef CADKERNEL_DEV
-#include "CADKernel/Mesh/Meshers/IsoTriangulator/DefineForDebug.h"
+#include "CADKernel/UI/DefineForDebug.h"
 #endif
 
 
@@ -29,47 +30,6 @@ class FPoint2D;
 class FThinZone2DFinder;
 class FTopologicalFace;
 
-struct FGridChronos
-{
-	FDuration DefineCuttingParametersDuration;
-	FDuration GeneratePointCloudDuration;
-	FDuration ProcessPointCloudDuration;
-	FDuration FindInnerDomainPointsDuration;
-	FDuration Build2DLoopDuration;
-	FDuration RemovePointsClosedToLoopDuration;
-	FDuration FindPointsCloseToLoopDuration;
-	FDuration ScaleGridDuration;
-
-	FGridChronos()
-		: DefineCuttingParametersDuration(FChrono::Init())
-		, GeneratePointCloudDuration(FChrono::Init())
-		, ProcessPointCloudDuration(FChrono::Init())
-		, FindInnerDomainPointsDuration(FChrono::Init())
-		, Build2DLoopDuration(FChrono::Init())
-		, RemovePointsClosedToLoopDuration(FChrono::Init())
-		, FindPointsCloseToLoopDuration(FChrono::Init())
-		, ScaleGridDuration(FChrono::Init())
-	{}
-
-	void PrintTimeElapse() const
-	{
-		FDuration GridDuration = FChrono::Elapse(FChrono::Now());
-		GridDuration += DefineCuttingParametersDuration;
-		GridDuration += GeneratePointCloudDuration;
-		GridDuration += FindInnerDomainPointsDuration;
-		GridDuration += Build2DLoopDuration;
-		GridDuration += RemovePointsClosedToLoopDuration;
-		GridDuration += FindPointsCloseToLoopDuration;
-		FChrono::PrintClockElapse(Log, TEXT(""), TEXT("Grid"), GridDuration);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("DefineCuttingParameters"), DefineCuttingParametersDuration);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("GeneratePointCloud"), GeneratePointCloudDuration);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("GenerateDomainPoints"), ProcessPointCloudDuration);
-		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("FindInnerDomainPointsDuration"), FindInnerDomainPointsDuration);
-		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("FindPointsCloseToLoop"), FindPointsCloseToLoopDuration);
-		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("RemovePointsClosedToLoop"), RemovePointsClosedToLoopDuration);
-		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Build2DLoopDuration"), Build2DLoopDuration);
-	}
-};
 
 enum class ENodeMarker : uint8
 {
@@ -84,18 +44,25 @@ enum class ENodeMarker : uint8
 ENUM_CLASS_FLAGS(ENodeMarker);
 
 
-class FGrid : public FHaveStates
+class FGrid : public FGridBase
 {
 protected:
 
-	FTopologicalFace& Face;
+	/*
+	 * Cutting coordinates of the face respecting the meshing criteria
+	 */
+	const FCoordinateGrid& CoordinateGrid;
+
+	virtual const FCoordinateGrid& GetCoordinateGrid() const override
+	{
+		return CoordinateGrid;
+	}
+
 	const FSurfacicTolerance FaceTolerance;
-	const double Tolerance3D;
 	const double MinimumElementSize;
 
 	FModelMesh& MeshModel;
 
-	FThinZone2DFinder ThinZoneFinder;
 
 	/**
 	 * 2D Coordinate of Loop's nodes in each space
@@ -115,31 +82,9 @@ protected:
 	TArray<TArray<int32>> NodeIdsOfFaceLoops;
 
 	/**
-	 * grid point cloud size
-	 */
-	int32 CuttingCount[2] = { 0 , 0 };
-	int32 CuttingSize = 0;
-
-	/**
 	 * count of node inside the face i.e. node inside the external loop and outer the inner loops
 	 */
 	int32 CountOfInnerNodes = 0;
-
-	/*
-	 * Cutting coordinates of the face respecting the meshing criteria
-	 */
-	const FCoordinateGrid& CuttingCoordinates;
-	FCoordinateGrid UniformCuttingCoordinates;
-
-	/*
-	 * Maximum difference of coordinate along the specified axis of two successive cutting points
-	 */
-	FPoint2D MaxDeltaUV = { 0., 0. };
-
-	/**
-	 * Maximum 3d distance along each axis of two successive cutting points
-	 */
-	FPoint2D MaxElementSize = { 0., 0. };
 
 	double MinOfMaxElementSize = 0;
 
@@ -149,44 +94,25 @@ protected:
 	 */
 	TArray<ENodeMarker> NodeMarkers;
 
-	/**
-	 * 2D Coordinate of grid nodes in each space
-	 */
-	TArray<FPoint2D> Points2D[EGridSpace::EndGridSpace];
-
-	/**
-	 * 3D Coordinate of inner nodes
-	 */
-	TArray<FPoint> Points3D;
-
-	/**
-	 * Surface Normal at each inner nodes
-	 */
-	TArray<FVector3f> Normals;
-
 public:
+#ifdef CADKERNEL_DEV
 	FGridChronos Chronos;
+#endif
 
-public:
 	FGrid(FTopologicalFace& InFace, FModelMesh& InShellMesh);
 
-#ifndef CADKERNEL_DEV
-	virtual ~FGrid() = default;
-#else
+#ifdef CADKERNEL_DEBUG
 	virtual ~FGrid()
 	{
 		Close3DDebugSession(bDisplay);
 	}
+#else
+	virtual ~FGrid() = default;
 #endif
 
 	// ======================================================================================================================================================================================================================
 	// Meshing tools =========================================================================================================================================================================================================
 	// ======================================================================================================================================================================================================================
-
-	/**
-	 * Return true if the grid is not consistent to build a mesh as composed of only two border nodes.
-	 */
-	bool CheckIfDegenerated();
 
 	/**
 	 * Defines the cutting coordinate of the grid according to mesh criteria and the existing mesh of bordering edges (loop's edges)
@@ -209,21 +135,7 @@ public:
 	 */
 	void ProcessPointCloud();
 
-	/**
-	 * Convert an array of points of "DefaultParametric" space into a scaled parametric space
-	 * @see FThinZone2DFinder::BuildBoundarySegments()
-	 */
-	void TransformPoints(EGridSpace DestinationSpace, const TArray<FPoint2D>& InPointsToScale, TArray<FPoint2D>& OutScaledPoints) const;
-
 protected:
-
-	/**
-	 * Builds the scaled parametric spaces
-	 * @see Points2D
-	 * @see GeneratePointCloud (ended GeneratePointCloud process)
-	 * @return false if the scaled grid is degenerated
-	 */
-	bool ScaleGrid();
 
 	/**
 	 * Projects loop's points in the scaled parametric spaces
@@ -231,29 +143,6 @@ protected:
 	 * @see ProcessPointClound (called in ProcessPointClound)
 	 */
 	void ScaleLoops();
-
-	/**
-	 * Convert Coordinate of "DefaultParametric" space into a scaled parametric space
-	 * @see ScaleLoops
-	 */
-	void ComputeNewCoordinate(const TArray<FPoint2D>& NewGrid, int32 IndexU, int32 IndexV, const FPoint2D& InPoint, FPoint2D& OutNewScaledPoint) const
-	{
-		const FPoint2D& PointU0V0 = NewGrid[(IndexV + 0) * CuttingCount[EIso::IsoU] + (IndexU + 0)];
-		const FPoint2D& PointU1V0 = NewGrid[(IndexV + 0) * CuttingCount[EIso::IsoU] + (IndexU + 1)];
-		const FPoint2D& PointU0V1 = NewGrid[(IndexV + 1) * CuttingCount[EIso::IsoU] + (IndexU + 0)];
-		const FPoint2D& PointU1V1 = NewGrid[(IndexV + 1) * CuttingCount[EIso::IsoU] + (IndexU + 1)];
-
-		const double U1MinusU0 = CuttingCoordinates[EIso::IsoU][IndexU + 1] - CuttingCoordinates[EIso::IsoU][IndexU];
-		const double U0MinusU = CuttingCoordinates[EIso::IsoU][IndexU] - InPoint.U;
-		const double V1MinusV0 = CuttingCoordinates[EIso::IsoV][IndexV + 1] - CuttingCoordinates[EIso::IsoV][IndexV];
-		const double V0MinusV = CuttingCoordinates[EIso::IsoV][IndexV] - InPoint.V;
-
-		OutNewScaledPoint =
-			PointU0V0 +
-			(PointU0V0 - PointU1V0) * (U0MinusU / U1MinusU0) +
-			(PointU0V0 - PointU0V1) * (V0MinusV / V1MinusV0) +
-			(PointU0V0 - PointU0V1 + PointU1V1 - PointU1V0) * ((U0MinusU * V0MinusV) / (U1MinusU0 * V1MinusV0));		
-	};
 
 	/**
 	 * @see ProcessPointClound (called in ProcessPointClound)
@@ -289,26 +178,27 @@ protected:
 	 */
 	void GetPreferredUVCuttingParametersFromLoops(FCuttingGrid& CuttingFromLoops);
 
-	void ComputeMaxElementSize();
-	void ComputeMaxDeltaUV();
-
 	/**
 	 * @ return false if the mesh of the loop is degenerated
 	 */
 	bool GetMeshOfLoops();
 	void GetMeshOfLoop(const FTopologicalLoop& Loop);
+	void GetMeshOfThinZone(const FThinZone2D& ThinZone);
+
+	// Meshing tools =========================================================================================================================================================================================================
+	// ======================================================================================================================================================================================================================
+
+	/**
+	 * @return true if the grid is not consistent to build a mesh as composed of only two border nodes.
+	 */
+	bool CheckIfExternalLoopIsDegenerate() const;
+
+	/**
+	 * @return true if along an Iso, all (U(i+1) - U(i)) < FaceTolerance
+	 */
+	bool CheckIf2DGridIsDegenerate() const;
 
 public:
-
-	// ======================================================================================================================================================================================================================
-	// ThinZone properties for meshing scheduling optimisation ==============================================================================================================================================================
-	// ======================================================================================================================================================================================================================
-
-	void SearchThinZones();
-	const TArray<FThinZone2D>& GetThinZones() const
-	{
-		return ThinZoneFinder.GetThinZones();
-	}
 
 	// ======================================================================================================================================================================================================================
 	// GET Methodes =========================================================================================================================================================================================================
@@ -420,43 +310,9 @@ public:
 		NodeMarkers[Index] &= ~ENodeMarker::IsInside;
 	}
 
-	/**
-	 * @return the FPoint2D (parametric coordinates) of the point at the Index of the grid in the defined grid space
-	 * @see EGridSpace
-	 * @see Points2D
-	 */
-	const FPoint2D& GetInner2DPoint(EGridSpace Space, int32 Index) const
-	{
-		return Points2D[(int32)Space][Index];
-	}
-
 	void SetInner2DPoint(EGridSpace Space, int32 Index, const FPoint2D& NewCoordinate)
 	{
 		Points2D[(int32)Space][Index] = NewCoordinate;
-	}
-
-	/**
-	 * @return the FPoint2D (parametric coordinates) of the point at the Index of the grid in the defined grid space @see EGridSpace
-	 */
-	const FPoint2D& GetInner2DPoint(EGridSpace Space, int32 IndexU, int32 IndexV) const
-	{
-		return Points2D[(int32)Space][GobalIndex(IndexU, IndexV)];
-	}
-
-	/**
-	 * @return the FPoint (3D coordinates) of the point at the Index of the grid
-	 */
-	const FPoint& GetInner3DPoint(int32 Index) const
-	{
-		return Points3D[Index];
-	}
-
-	/**
-	 * @return the FPoint (3D coordinates) of the point at the Index of the grid
-	 */
-	const FPoint& GetInner3DPoint(int32 IndexU, int32 IndexV) const
-	{
-		return Points3D[GobalIndex(IndexU, IndexV)];
 	}
 
 	/**
@@ -475,48 +331,14 @@ public:
 		return Normals[Index];
 	}
 
-	constexpr const TArray<double>& GetCuttingCoordinatesAlongIso(EIso Iso) const
+	const TArray<double>& GetCuttingCoordinatesAlongIso(EIso Iso) const
 	{
-		return CuttingCoordinates[Iso];
+		return CoordinateGrid[Iso];
 	}
 
 	const FCoordinateGrid& GetCuttingCoordinates() const
 	{
-		return CuttingCoordinates;
-	}
-
-	constexpr const TArray<double>& GetUniformCuttingCoordinatesAlongIso(EIso Iso) const
-	{
-		return UniformCuttingCoordinates[Iso];
-	}
-
-	const FCoordinateGrid& GetUniformCuttingCoordinates() const
-	{
-		return UniformCuttingCoordinates;
-	}
-
-	/**
-	 * @return the array of 3d points of the grid
-	 */
-	TArray<FPoint>& GetInner3DPoints()
-	{
-		return Points3D;
-	}
-
-	/**
-	 * @return the array of 3d points of the grid
-	 */
-	const TArray<FPoint>& GetInner3DPoints() const
-	{
-		return Points3D;
-	}
-
-	/**
-	 * @return the array of 2d points of the grid in the defined space
-	 */
-	const TArray<FPoint2D>& GetInner2DPoints(EGridSpace Space) const
-	{
-		return Points2D[(int32)Space];
+		return CoordinateGrid;
 	}
 
 	/**
@@ -525,16 +347,6 @@ public:
 	TArray<FVector3f>& GetNormals()
 	{
 		return Normals;
-	}
-
-	const FTopologicalFace& GetFace() const
-	{
-		return Face;
-	}
-
-	FTopologicalFace& GetFace()
-	{
-		return Face;
 	}
 
 	const TArray<TArray<int32>>& GetNodeIdsOfFaceLoops() const
@@ -597,26 +409,10 @@ public:
 	/**
 	 * @return the Index of the position in the arrays of a point [IndexU, IndexV] of the grid
 	 */
-	int32 GobalIndex(int32 IndexU, int32 IndexV) const
-	{
-		return IndexV * CuttingCount[EIso::IsoU] + IndexU;
-	}
-
-	/**
-	 * @return the Index of the position in the arrays of a point [IndexU, IndexV] of the grid
-	 */
 	void UVIndexFromGlobalIndex(int32 GLobalIndex, int32& OutIndexU, int32& OutIndexV) const
 	{
 		OutIndexU = GLobalIndex % CuttingCount[EIso::IsoU];
 		OutIndexV = GLobalIndex / CuttingCount[EIso::IsoU];
-	}
-
-	/**
-	 * @return the maximum difference of coordinate along the specified axis of two two successive points
-	 */
-	double GetMaxDeltaU(EIso Iso) const
-	{
-		return MaxDeltaUV[Iso];
 	}
 
 	/**
@@ -631,11 +427,15 @@ public:
 	// Display Methodes   ================================================================================================================================================================================================
 	// ======================================================================================================================================================================================================================
 #ifdef CADKERNEL_DEV
-	bool bDisplay = false;
+	void PrintTimeElapse() const;
+#endif
+
+#ifdef CADKERNEL_DEBUG
 
 	void DisplayIsoNode(EGridSpace Space, const int32 PointIndex, FIdent Ident = 0, EVisuProperty Property = EVisuProperty::BluePoint) const;
 	void DisplayIsoNode(EGridSpace Space, const FIsoNode& Node, FIdent Ident = 0, EVisuProperty Property = EVisuProperty::BluePoint) const;
 	void DisplayIsoNodes(EGridSpace Space, const TArray<const FIsoNode*>& Nodes, EVisuProperty Property = EVisuProperty::BluePoint) const;
+
 	void DisplayIsoNodes(const FString& Message, EGridSpace Space, const TArray<const FIsoNode*>& Nodes, EVisuProperty Property = EVisuProperty::BluePoint) const
 	{
 		if (!bDisplay)
@@ -646,21 +446,38 @@ public:
 		DisplayIsoNodes(Space, Nodes, Property);
 	}
 
-	void DisplayIsoSegment(EGridSpace Space, const FIsoSegment& Segment, FIdent Ident = 0, EVisuProperty Property = EVisuProperty::BlueCurve, bool bDisplayOrientation = false) const;
-	void DisplayIsoSegment(EGridSpace Space, const FIsoNode& NodeA, const FIsoNode& NodeB, FIdent Ident = 0, EVisuProperty Property = EVisuProperty::BlueCurve) const;
-
-	void DisplayIsoSegments(EGridSpace Space, const TArray<FIsoSegment*>& Segments, bool bDisplayNode = false, bool bDisplayOrientation = false, EVisuProperty Property = EVisuProperty::BlueCurve) const;
-	void DisplayIsoSegments(const FString& Message, EGridSpace Space, const TArray<FIsoSegment*>& Segments, bool bDisplayNode = false, bool bDisplayOrientation = false, EVisuProperty Property = EVisuProperty::BlueCurve) const
+	void DisplayIsoPolyline(const FString& Message, EGridSpace Space, const TArray<const FIsoNode*>& Nodes, EVisuProperty Property = EVisuProperty::BluePoint) const
 	{
 		if (!bDisplay)
 		{
 			return;
 		}
 		F3DDebugSession _(Message);
-		DisplayIsoSegments(Space, Segments, bDisplayNode, bDisplayOrientation, Property);
+		const FIsoNode* LastNode = Nodes.Last();
+		for (const FIsoNode* Node : Nodes)
+		{
+			DisplayIsoSegment(Space, *LastNode, *Node, 0, (EVisuProperty)(Property + 1));
+			LastNode = Node;
+		}
+		DisplayIsoNodes(Space, Nodes, Property);
+	}
+
+	void DisplayIsoSegment(EGridSpace Space, const FIsoSegment& Segment, FIdent Ident = 0, EVisuProperty Property = EVisuProperty::BlueCurve, bool bDisplayOrientation = false) const;
+	void DisplayIsoSegment(EGridSpace Space, const FIsoNode& NodeA, const FIsoNode& NodeB, FIdent Ident = 0, EVisuProperty Property = EVisuProperty::BlueCurve) const;
+
+	void DisplayIsoSegments(EGridSpace Space, const TArray<FIsoSegment*>& Segments, bool bDisplayNode = false, bool bDisplayOrientation = false, bool bSplitBySegment = false, EVisuProperty Property = EVisuProperty::BlueCurve) const;
+	void DisplayIsoSegments(const FString& Message, EGridSpace Space, const TArray<FIsoSegment*>& Segments, bool bDisplayNode = false, bool bDisplayOrientation = false, bool bSplitBySegment = false, EVisuProperty Property = EVisuProperty::BlueCurve) const
+	{
+		if (!bDisplay)
+		{
+			return;
+		}
+		F3DDebugSession _(Message);
+		DisplayIsoSegments(Space, Segments, bDisplayNode, bDisplayOrientation, bSplitBySegment, Property);
 	}
 
 	void DisplayTriangle(EGridSpace Space, const FIsoNode& NodeA, const FIsoNode& NodeB, const FIsoNode& NodeC) const;
+	void DisplayTriangle3D(const FIsoNode& NodeA, const FIsoNode& NodeB, const FIsoNode& NodeC) const;
 
 	void DisplayGridPolyline(EGridSpace Space, const FLoopNode& StartNode, bool bDisplayNode, EVisuProperty Property = EVisuProperty::BlueCurve) const;
 	void DisplayGridPolyline(EGridSpace Space, const TArray<FIsoNode*>& Nodes, bool bDisplayNode, EVisuProperty Property = EVisuProperty::BlueCurve) const;
@@ -688,7 +505,7 @@ public:
 
 	void DisplayNodes(const TCHAR* Message, EGridSpace Space, const TArray<const FIsoNode*>& Nodes, EVisuProperty Property) const;
 
-	void DisplayGridPoints(EGridSpace DisplaySpace) const;
+	virtual void DisplayGridPoints(EGridSpace DisplaySpace) const override;
 	void DisplayInnerPoints(TCHAR* Message, EGridSpace DisplaySpace) const;
 
 	void DisplayGridNormal() const;
@@ -706,25 +523,60 @@ public:
 		{
 			if (IsNodeInsideAndCloseToLoop(Index))
 			{
-				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::OrangePoint, Index);
+				DisplayPoint2DWithScale(Points[Index], EVisuProperty::OrangePoint, Index);
 			}
 			else if (IsNodeInsideAndMeshable(Index))
 			{
-				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::BluePoint, Index);
+				DisplayPoint2DWithScale(Points[Index], EVisuProperty::BluePoint, Index);
 			}
 			else if (IsNodeTooCloseToLoop(Index))
 			{
-				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::RedPoint, Index);
+				DisplayPoint2DWithScale(Points[Index], EVisuProperty::RedPoint, Index);
 			}
 			else
 			{
-				DisplayPoint(Points[Index] * DisplayScale, IsNodeCloseToLoop(Index) ? EVisuProperty::YellowPoint : EVisuProperty::GreenPoint , Index);
+				DisplayPoint2DWithScale(Points[Index], IsNodeCloseToLoop(Index) ? EVisuProperty::YellowPoint : EVisuProperty::GreenPoint, Index);
 			}
 		}
 	}
 
 	template<typename TPoint>
-	void DisplayGridLoop(FString Message, const TArray<TArray<TPoint>>& Loops, bool bDisplayNodes, bool bMakeGroup) const
+	void DisplayGridLoop(FString Message, const TArray<TPoint>& Loop, bool bDisplayNodes, bool bMakeGroup, bool bDisplaySegments) const
+	{
+		if (!bDisplay)
+		{
+			return;
+		}
+
+		F3DDebugSession _(bMakeGroup, Message);
+
+		const TPoint* FirstSegmentPoint = &Loop[0];
+		if (bDisplayNodes)
+		{
+			F3DDebugSession Q(bDisplaySegments, FString::Printf(TEXT("FirstNode")));
+			DisplayPoint(*FirstSegmentPoint * DisplayScale, EVisuProperty::BluePoint, 0);
+		}
+
+		for (int32 Index = 1; Index < Loop.Num(); ++Index)
+		{
+			const TPoint* SecondSegmentPoint = &Loop[Index];
+			F3DDebugSession B(bDisplaySegments, FString::Printf(TEXT("Segment %d"), Index));
+			DisplaySegment<TPoint>(*FirstSegmentPoint * DisplayScale, *SecondSegmentPoint * DisplayScale);
+			if (bDisplayNodes)
+			{
+				DisplayPoint<TPoint>(*SecondSegmentPoint * DisplayScale, EVisuProperty::BluePoint, Index);
+			}
+			FirstSegmentPoint = SecondSegmentPoint;
+		}
+
+		{
+			F3DDebugSession C(bDisplaySegments, FString::Printf(TEXT("Segment %d"), Loop.Num()));
+			DisplaySegment(*FirstSegmentPoint * DisplayScale, *Loop.begin() * DisplayScale);
+		}
+	}
+
+	template<typename TPoint>
+	void DisplayGridLoops(FString Message, const TArray<TArray<TPoint>>& Loops, bool bDisplayNodes, bool bMakeGroup, bool bDisplaySegments) const
 	{
 		if (!bDisplay)
 		{
@@ -735,43 +587,17 @@ public:
 		int32 LoopIndex = 0;
 		for (const TArray<TPoint>& Loop : Loops)
 		{
-			if (bMakeGroup)
-			{
-				Open3DDebugSession(FString::Printf(TEXT("Loop %d"), LoopIndex++));
-			}
-
-			const TPoint* FirstSegmentPoint = &Loop[0];
-			if (bDisplayNodes)
-			{
-				DisplayPoint(*FirstSegmentPoint * DisplayScale, EVisuProperty::BluePoint, 0);
-			}
-
-			for (int32 Index = 1; Index < Loop.Num(); ++Index)
-			{
-				const TPoint* SecondSegmentPoint = &Loop[Index];
-				DisplaySegment(*FirstSegmentPoint * DisplayScale, *SecondSegmentPoint * DisplayScale);
-				if (bDisplayNodes)
-				{
-					DisplayPoint(*SecondSegmentPoint * DisplayScale, EVisuProperty::BluePoint, Index);
-				}
-				FirstSegmentPoint = SecondSegmentPoint;
-			}
-			DisplaySegment(*FirstSegmentPoint * DisplayScale, *Loop.begin() * DisplayScale);
-			if (bMakeGroup)
-			{
-				Close3DDebugSession();
-			}
+			FString LoopName = FString::Printf(TEXT("Loop %d"), LoopIndex++);
+			DisplayGridLoop(LoopName, Loop, bDisplayNodes, bMakeGroup, bDisplaySegments);
 		}
 	}
 
-	void DisplayGridLoops(FString Message, EGridSpace DisplaySpace, bool bDisplayNodes, bool bMakeGroup) const
+	void DisplayGridLoops(FString Message, EGridSpace DisplaySpace, bool bDisplayNodes, bool bMakeGroup, bool bDisplaySegments) const
 	{
-		DisplayGridLoop(Message, FaceLoops2D[DisplaySpace], bDisplayNodes, bMakeGroup);
+		DisplayGridLoops(Message, FaceLoops2D[DisplaySpace], bDisplayNodes, bMakeGroup, bDisplaySegments);
 	}
 
 #endif
-
-	void PrintTimeElapse() const;
 };
 
 }

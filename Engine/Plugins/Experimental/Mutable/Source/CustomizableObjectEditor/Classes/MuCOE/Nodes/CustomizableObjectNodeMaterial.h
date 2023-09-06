@@ -38,13 +38,11 @@ class UCustomizableObjectNodeMaterialRemapPinsByName : public UCustomizableObjec
 {
 	GENERATED_BODY()
 public:
-	class UCustomizableObjectNodeMaterial* Node = nullptr;
+	virtual bool Equal(const UCustomizableObjectNode& Node, const UEdGraphPin& OldPin, const UEdGraphPin& NewPin) const override;
 
-	virtual bool Equal(const UEdGraphPin& OldPin, const UEdGraphPin& NewPin) const override;
+	virtual void RemapPins(const UCustomizableObjectNode& Node, const TArray<UEdGraphPin*>& OldPins, const TArray<UEdGraphPin*>& NewPins, TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap, TArray<UEdGraphPin*>& PinsToOrphan) override;
 
-	virtual void RemapPins(const TArray<UEdGraphPin*>& OldPins, const TArray<UEdGraphPin*>& NewPins, TMap<UEdGraphPin*, UEdGraphPin*>& PinsToRemap, TArray<UEdGraphPin*>& PinsToOrphan) override;
-
-	bool HasSavedPinData(const UEdGraphPin &Pin) const;
+	bool HasSavedPinData(const UCustomizableObjectNode& Node, const UEdGraphPin &Pin) const;
 };
 
 
@@ -106,6 +104,11 @@ public:
 	/** Selects which Mesh component of the Instance this material belongs to */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = CustomizableObject, meta = (ClampMin = "0"))
 	int32 MeshComponentIndex = 0;
+
+	/** Reuse material between LODs when using the LODStrategy - Automatic from mesh. If the material is extended or edited by a CO using
+	* custom LODs (LODStrategy), on that given LOD, reuse materials will not be applied and the material and its textures will be unique. */
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bReuseMaterialBetweenLODs = false;
 	
 	// UObject interface.
 	virtual void Serialize(FArchive& Ar) override;
@@ -119,6 +122,7 @@ public:
 	TSharedPtr<SGraphNode> CreateVisualWidget() override;
 	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
 	virtual void PostPasteNode() override;
+	virtual bool CanConnect(const UEdGraphPin* InOwnedInputPin, const UEdGraphPin* InOutputPin, bool& bOutIsOtherNodeBlocklisted, bool& bOutArePinsCompatible) const override;
 
 	// UCustomizableObjectNode interface
 	virtual void BackwardsCompatibleFixup() override;
@@ -238,7 +242,8 @@ private:
 	UPROPERTY()
 	TMap<FGuid, FEdGraphPinReference> PinsParameter;
 
-	/** Relates an Image pin (key) to its Image Pin Mode (value). */
+	/** Relates an Image pin (key) to its Image Pin Mode (value). 
+		Represents the real mode of the pin. Required due to some node configurations can force the mode independently of what the user had previously selected */
 	UPROPERTY()
 	TMap<FGuid, EPinMode> PinsImagePinMode;
 	
@@ -266,7 +271,7 @@ private:
 
 	/** Returns the Image Pin Mode the pin should be at. It does not update its mode, to update it call UpdateImagePinMode. */
 	EPinMode GetImagePinMode(const UEdGraphPin& Pin) const;
-	
+
 	// Deprecated properties
 	/** Set all pins to Mutable mode. Even so, each pin can override its behaviour. */
 	UPROPERTY()

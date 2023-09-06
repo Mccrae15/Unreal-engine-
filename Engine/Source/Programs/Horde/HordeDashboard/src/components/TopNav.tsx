@@ -9,6 +9,7 @@ import { ProjectData } from "../backend/Api";
 import dashboard from '../backend/Dashboard';
 import { ProjectStore } from '../backend/ProjectStore';
 import { modeColors } from '../styles/Styles';
+import { PreviewChangesModal } from './PreviewChanges';
 import { VersionModal } from './VersionModal';
 
 const logoutURL = "/account";
@@ -338,6 +339,7 @@ export const TopNav: React.FC<{ suppressServer?: boolean }> = observer(({ suppre
 
    const [showMenu, setShowMenu] = useState(false);
    const [showVersion, setShowVersion] = useState(false);
+   const [showPreviewChanges, setShowPreviewChanges] = useState(false);
    const navigate = useNavigate();
    const { projectStore } = useBackend();
 
@@ -356,62 +358,84 @@ export const TopNav: React.FC<{ suppressServer?: boolean }> = observer(({ suppre
       // Resources
       const resourceItems: IContextualMenuItem[] = [];
 
-      resourceItems.push({
-         key: "admin_agents",
-         text: "Agents",
-         link: `/agents`
-      });
+      const features = dashboard.user?.dashboardFeatures;
 
-      resourceItems.push({
-         key: "admin_perforce_servers",
-         text: "Perforce Servers",
-         link: `/perforce/servers`
-      });
+      if (features?.showAgents !== false) {
+         resourceItems.push({
+            key: "admin_agents",
+            text: "Agents",
+            link: `/agents`
+         });
 
-      subItems.push({
-         itemType: ContextualMenuItemType.Section,
-         key: `admin_resources`,
-         sectionProps: {
-            title: "Resources",
-            items: resourceItems,
-            bottomDivider: true
-         }
-      });
+         resourceItems.push({
+            key: "admin_pools",
+            text: "Pools",
+            link: `/pools`
+         });
+      }
+
+      if (features?.showPerforceServers !== false) {
+         resourceItems.push({
+            key: "admin_perforce_servers",
+            text: "Perforce Servers",
+            link: `/perforce/servers`
+         });
+      }
+
+      if (resourceItems.length) {
+         subItems.push({
+            itemType: ContextualMenuItemType.Section,
+            key: `admin_resources`,
+            sectionProps: {
+               title: "Resources",
+               items: resourceItems,
+               bottomDivider: true
+            }
+         });
+      }
 
       // Automation
       const automatonItems: IContextualMenuItem[] = [];
 
-      automatonItems.push({
-         key: "admin_devices",
-         text: "Devices",
-         link: `/devices`
-      });
+      if (features?.showDeviceManager !== false) {
+         automatonItems.push({
+            key: "admin_devices",
+            text: "Devices",
+            link: `/devices`
+         });
+      }
 
-      automatonItems.push({
-         key: "admin_tests",
-         text: "Tests",
-         link: `/automation`
-      });
-
-      subItems.push({
-         itemType: ContextualMenuItemType.Section,
-         key: `admin_automation`,
-         sectionProps: {
-            title: "Automation",
-            items: automatonItems,
-            bottomDivider: true
-         }
-      });
+      if (features?.showTests !== false) {
+         automatonItems.push({
+            key: "admin_tests",
+            text: "Tests",
+            link: `/automation`
+         });
+      }
+      if (automatonItems.length) {
+         subItems.push({
+            itemType: ContextualMenuItemType.Section,
+            key: `admin_automation`,
+            sectionProps: {
+               title: "Automation",
+               items: automatonItems,
+               bottomDivider: true
+            }
+         });
+      }
 
       // Monitoring
       const monitoringItems: IContextualMenuItem[] = [];
-      monitoringItems.push({
-         key: "admin_utilization",
-         text: "Utilization",
-         link: `/reports/utilization`
-      });
+      if (features?.showAgents !== false) {
+         monitoringItems.push({
+            key: "admin_utilization",
+            text: "Utilization",
+            link: `/reports/utilization`
+         });
+      }
 
-      if (dashboard.hordeAdmin) {
+
+      if (features?.showNoticeEditor !== false) {
          monitoringItems.push({
             key: "admin_notices",
             text: "Notices",
@@ -419,12 +443,55 @@ export const TopNav: React.FC<{ suppressServer?: boolean }> = observer(({ suppre
          });
       }
 
+      if (monitoringItems.length) {
+         subItems.push({
+            itemType: ContextualMenuItemType.Section,
+            key: `admin_monitoring`,
+            sectionProps: {
+               title: "Monitoring",
+               items: monitoringItems,
+               bottomDivider: true
+            }
+         });   
+      }
+
+      const softwareItems: IContextualMenuItem[] = [];
+      softwareItems.push({
+         key: "software_tools",
+         text: "Tools",
+         link: `/tools`
+      });
+
       subItems.push({
          itemType: ContextualMenuItemType.Section,
-         key: `admin_monitoring`,
+         key: `server_software`,
          sectionProps: {
-            title: "Monitoring",
-            items: monitoringItems,
+            title: "Software",
+            items: softwareItems,
+            bottomDivider: true
+         }
+      });
+
+
+      const docsItems: IContextualMenuItem[] = [];
+      docsItems.push({
+         key: "server_docs",
+         text: "Documentation",
+         link: `/docs`
+      });
+
+      docsItems.push({
+         key: "server_docs_releasenotes",
+         text: "Release Notes",
+         link: `/docs/ReleaseNotes.md`
+      });
+
+      subItems.push({
+         itemType: ContextualMenuItemType.Section,
+         key: `server_docs_item`,
+         sectionProps: {
+            title: "Documentation",
+            items: docsItems,
             bottomDivider: true
          }
       });
@@ -439,7 +506,7 @@ export const TopNav: React.FC<{ suppressServer?: boolean }> = observer(({ suppre
 
       subItems.push({
          itemType: ContextualMenuItemType.Section,
-         key: `admin_config`,
+         key: `admin_version`,
          sectionProps: {
             title: "Version",
             items: versionItems,
@@ -448,6 +515,15 @@ export const TopNav: React.FC<{ suppressServer?: boolean }> = observer(({ suppre
       });
 
       const style = { ...menuStyles } as Partial<IContextualMenuStyles>;
+
+      if (dashboard.preview) {
+         const previewItem: ICommandBarItemProps = {
+            key: "preview_button",
+            text: "CHANGES",
+            onClick: () => { setShowPreviewChanges(true) }
+         };
+         cbProps.push(previewItem);
+      }
 
       const cbItem: ICommandBarItemProps = {
          key: "admin_button",
@@ -520,18 +596,25 @@ export const TopNav: React.FC<{ suppressServer?: boolean }> = observer(({ suppre
       showServer = false;
    }
 
+   let logoSrc = "/images/horde.svg";
+
+   if (dashboard.development) {
+      logoSrc = dashboard.darktheme ? "/images/horde_white.svg" : "/images/horde_black.svg";
+   }
+
    return (
       <div style={{ backgroundColor: modeColors.header }}>
          {showVersion && <VersionModal show={true} onClose={() => { setShowVersion(false) }} />}
-         <Stack tokens={{ maxWidth: 1800, childrenGap: 0 }} disableShrink={true} styles={{ root: { backgroundColor: modeColors.header, margin: "auto", width: "100%" } }}>
+         {showPreviewChanges && <PreviewChangesModal onClose={() => { setShowPreviewChanges(false) }} />}
+         <Stack tokens={{ maxWidth: 1464, childrenGap: 0 }} disableShrink={true} styles={{ root: { backgroundColor: modeColors.header, margin: "auto", width: "100%" } }}>
             <Stack horizontal verticalAlign='center' styles={{ root: { height: "60px" } }} >
 
                <Link to="/index"><Stack horizontal styles={{ root: { paddingLeft: 8, cursor: 'pointer' } }}>
                   <Stack styles={{ root: { paddingTop: 2, paddingRight: 6 } }}>
-                     <img style={{ width: 32 }} src="/images/horde.svg" alt="" />
+                     <img style={{ width: 32 }} src={logoSrc} alt="" />
                   </Stack>
                   <Stack styles={{ root: { paddingTop: 11 } }}>
-                     <Text styles={{ root: { fontFamily: "Horde Raleway Bold", color: dashboard.darktheme ? "#FFFFFFFF" : modeColors.text } }}>HORDE</Text>
+                     <Text styles={{ root: { fontFamily: "Horde Raleway Bold", color: dashboard.darktheme ? "#FFFFFFFF" : modeColors.text } }}>HORDE{dashboard.preview ? " PREVIEW" : ""}</Text>
                   </Stack>
                </Stack>
                </Link>

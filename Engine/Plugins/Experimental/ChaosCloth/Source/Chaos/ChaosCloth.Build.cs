@@ -6,9 +6,6 @@ public class ChaosCloth : ModuleRules
 {
     public ChaosCloth(ReadOnlyTargetRules Target) : base(Target)
 	{
-        PrivateIncludePaths.Add("Chaos/Private");
-        PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
         PublicDependencyModuleNames.AddRange(
             new string[] {
                 "Core",

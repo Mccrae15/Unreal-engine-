@@ -4,6 +4,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
 #include "PackedLevelActor/PackedLevelActorBuilder.h"
+#include "WorldPartition/PackedLevelActor/PackedLevelActorDesc.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstancePrivate.h"
 #include "UObject/Package.h"
@@ -13,8 +14,9 @@
 
 APackedLevelActor::APackedLevelActor()
 	: Super()
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 	, bChildChanged(false)
+	, bLoadForPacking(false)
 #endif
 {
 #if WITH_EDITORONLY_DATA
@@ -40,7 +42,7 @@ void APackedLevelActor::Serialize(FArchive& Ar)
 bool APackedLevelActor::IsLoadingEnabled() const
 {
 #if WITH_EDITOR
-	return HasChildEdit() || IsLoaded();
+	return HasChildEdit() || IsLoaded() || ShouldLoadForPacking();
 #else
 	return false;
 #endif
@@ -87,19 +89,89 @@ void APackedLevelActor::RerunConstructionScripts()
 	}
 }
 
+EWorldPartitionActorFilterType APackedLevelActor::GetDetailsFilterTypes() const
+{
+	if (IsEditing())
+	{
+		return Super::GetDetailsFilterTypes();
+	}
+
+	return IsRootBlueprintTemplate() ? EWorldPartitionActorFilterType::All : EWorldPartitionActorFilterType::None;
+}
+
+EWorldPartitionActorFilterType APackedLevelActor::GetLoadingFilterTypes() const
+{
+	if (IsEditing())
+	{
+		return Super::GetLoadingFilterTypes();
+	}
+
+	return ShouldLoadForPacking() ? EWorldPartitionActorFilterType::All : EWorldPartitionActorFilterType::None;
+}
+
+bool APackedLevelActor::IsRootBlueprintTemplate() const
+{
+	return IsTemplate() && IsRootBlueprint(GetClass());
+}
+
+bool APackedLevelActor::IsRootBlueprint(UClass* InClass)
+{
+	return InClass && InClass->ClassGeneratedBy != nullptr && InClass->GetSuperClass()->IsNative();
+}
+
+UBlueprint* APackedLevelActor::GetRootBlueprint() const
+{
+	UClass* Class = GetClass();
+	while (Class->GetSuperClass() && !Class->GetSuperClass()->IsNative())
+	{
+		Class = Class->GetSuperClass();
+	}
+
+	return Cast<UBlueprint>(Class->ClassGeneratedBy);
+}
+
+void APackedLevelActor::OnFilterChanged()
+{
+	Super::OnFilterChanged();
+
+	if (IsRootBlueprintTemplate())
+	{
+		// Reflect child changes
+		TSharedPtr<FPackedLevelActorBuilder> Builder = FPackedLevelActorBuilder::CreateDefaultBuilder();
+		Builder->UpdateBlueprint(GetRootBlueprint(), false);
+	}
+}
+
+bool APackedLevelActor::ShouldLoadForPacking() const
+{
+	if (bLoadForPacking)
+	{
+		return true;
+	}
+
+	bool bAncestorLoadForPacking = false;
+	if (ULevelInstanceSubsystem* LevelInstanceSubsystem = GetLevelInstanceSubsystem())
+	{
+		LevelInstanceSubsystem->ForEachLevelInstanceAncestors(this, [&bAncestorLoadForPacking](const ILevelInstanceInterface* LevelInstanceInterface)
+		{
+			if(const APackedLevelActor* PackedAncestor = Cast<APackedLevelActor>(LevelInstanceInterface))
+			{
+				if (PackedAncestor->bLoadForPacking)
+				{
+					bAncestorLoadForPacking = true;
+					return false;
+				}
+			}
+			return true;
+		});
+	}
+
+	return bAncestorLoadForPacking;
+}
+
 TUniquePtr<class FWorldPartitionActorDesc> APackedLevelActor::CreateClassActorDesc() const
 {
-	return AActor::CreateClassActorDesc();
-}
-
-bool APackedLevelActor::CreateOrUpdateBlueprint(ALevelInstance* InLevelInstance, TSoftObjectPtr<UBlueprint> InBlueprintAsset, bool bCheckoutAndSave, bool bPromptForSave)
-{
-	return FPackedLevelActorBuilder::CreateDefaultBuilder()->CreateOrUpdateBlueprint(InLevelInstance, InBlueprintAsset, bCheckoutAndSave, bPromptForSave);
-}
-
-bool APackedLevelActor::CreateOrUpdateBlueprint(TSoftObjectPtr<UWorld> InWorldAsset, TSoftObjectPtr<UBlueprint> InBlueprintAsset, bool bCheckoutAndSave, bool bPromptForSave)
-{
-	return FPackedLevelActorBuilder::CreateDefaultBuilder()->CreateOrUpdateBlueprint(InWorldAsset, InBlueprintAsset, bCheckoutAndSave, bPromptForSave);
+	return TUniquePtr<FWorldPartitionActorDesc>(new FPackedLevelActorDesc());
 }
 
 FName APackedLevelActor::GetPackedComponentTag()
@@ -112,7 +184,7 @@ void APackedLevelActor::UpdateLevelInstanceFromWorldAsset()
 {
 	Super::UpdateLevelInstanceFromWorldAsset();
 
-	if (!Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
+	if (!GetRootBlueprint())
 	{
 		if (IsWorldAssetValid())
 		{
@@ -152,9 +224,9 @@ void APackedLevelActor::OnCommitChild(bool bChanged)
 			// Reflect child changes
 			TSharedPtr<FPackedLevelActorBuilder> Builder = FPackedLevelActorBuilder::CreateDefaultBuilder();
 
-			if (UBlueprint* GeneratedBy = Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
+			if (UBlueprint* BlueprintToPack = GetRootBlueprint())
 			{
-				Builder->UpdateBlueprint(GeneratedBy);
+				Builder->UpdateBlueprint(BlueprintToPack);
 				return; // return here because Actor might have been reinstanced
 			}
 			else
@@ -179,10 +251,10 @@ void APackedLevelActor::OnCommit(bool bChanged)
 
 	if (bChanged)
 	{
-		if (UBlueprint* GeneratedBy = Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
+		if (UBlueprint* BlueprintToPack = GetRootBlueprint())
 		{
 			TSharedPtr<FPackedLevelActorBuilder> Builder = FPackedLevelActorBuilder::CreateDefaultBuilder();
-			Builder->UpdateBlueprint(GeneratedBy);
+			Builder->UpdateBlueprint(BlueprintToPack);
 			return; // return here because Actor might have been reinstanced
 		}
 	}
@@ -193,7 +265,7 @@ void APackedLevelActor::OnCommit(bool bChanged)
 
 bool APackedLevelActor::IsHiddenEd() const
 {
-	return Super::IsHiddenEd() || IsEditing() || HasChildEdit();
+	return Super::IsHiddenEd() || IsEditing() || HasChildEdit() || ShouldLoadForPacking();
 }
 
 bool APackedLevelActor::IsHLODRelevant() const

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNiagaraSystemViewportToolBar.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Styling/AppStyle.h"
 #include "NiagaraEditorCommands.h"
@@ -17,6 +18,8 @@
 
 void SNiagaraSystemViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class SNiagaraSystemViewport> InViewport)
 {
+	WeakViewport = InViewport;
+
 	// we don't want a realtime button here as we create a custom one by extending the left menu
 	SCommonEditorViewportToolbarBase::Construct(SCommonEditorViewportToolbarBase::FArguments().AddRealtimeButton(true).PreviewProfileController(MakeShared<FPreviewProfileController>()), InViewport);
 	Sequencer = InArgs._Sequencer;
@@ -33,17 +36,13 @@ TSharedRef<SWidget> SNiagaraSystemViewportToolBar::GenerateShowMenu() const
 	{
 		auto Commands = FNiagaraEditorCommands::Get();
 
-		//ShowMenuBuilder.AddMenuEntry(Commands.ToggleMaterialStats);
-		//ShowMenuBuilder.AddMenuEntry(Commands.ToggleMobileStats);
-
-		ShowMenuBuilder.AddMenuSeparator();
-
 		ShowMenuBuilder.AddMenuEntry(Commands.TogglePreviewGrid);
-		ShowMenuBuilder.AddMenuEntry(Commands.ToggleInstructionCounts);
-		ShowMenuBuilder.AddMenuEntry(Commands.ToggleParticleCounts);
+		ShowMenuBuilder.AddMenuSeparator();
 		ShowMenuBuilder.AddMenuEntry(Commands.ToggleEmitterExecutionOrder);
 		ShowMenuBuilder.AddMenuEntry(Commands.ToggleGpuTickInformation);
-		//ShowMenuBuilder.AddMenuEntry(Commands.TogglePreviewBackground);
+		ShowMenuBuilder.AddMenuEntry(Commands.ToggleInstructionCounts);
+		ShowMenuBuilder.AddMenuEntry(Commands.ToggleMemoryInfo);
+		ShowMenuBuilder.AddMenuEntry(Commands.ToggleParticleCounts);
 	}
 
 	return ShowMenuBuilder.MakeWidget();
@@ -93,6 +92,12 @@ void SNiagaraSystemViewportToolBar::ExtendOptionsMenu(FMenuBuilder& OptionsMenuB
 {
 	OptionsMenuBuilder.BeginSection("LevelViewportNavigationOptions", LOCTEXT("NavOptionsMenuHeader", "Navigation Options"));
 	OptionsMenuBuilder.AddMenuEntry(FNiagaraEditorCommands::Get().ToggleOrbit);
+	OptionsMenuBuilder.AddSubMenu(
+		LOCTEXT("MotionOptions", "Motion Options"),
+		LOCTEXT("MotionOptionsToolTip", "Set Motion Options For the Niagara Component"),
+		FNewMenuDelegate::CreateSP(this, &SNiagaraSystemViewportToolBar::MakeMotionMenu)
+	);
+
 	OptionsMenuBuilder.EndSection();
 }
 
@@ -116,6 +121,40 @@ void SNiagaraSystemViewportToolBar::ExtendLeftAlignedToolbarSlots(TSharedPtr<SHo
 			.ColorAndOpacity(FLinearColor::Black)
 		]
 	];
+}
+
+void SNiagaraSystemViewportToolBar::MakeMotionMenu(FMenuBuilder& MenuBuilder) const
+{
+	MenuBuilder.AddMenuEntry(FNiagaraEditorCommands::Get().ToggleMotion);
+
+	if (TSharedPtr<SNiagaraSystemViewport> ViewportSP = WeakViewport.Pin())
+	{
+		TSharedRef<SNiagaraSystemViewport> Viewport = ViewportSP.ToSharedRef();
+
+		MenuBuilder.AddWidget(
+			SNew(SSpinBox<float>)
+				.IsEnabled(Viewport, &SNiagaraSystemViewport::IsMotionEnabled)
+				.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
+				.MinSliderValue(0.0f)
+				.MaxSliderValue(360.0f)
+				.Value(Viewport, &SNiagaraSystemViewport::GetMotionRate)
+				.OnValueChanged(Viewport, &SNiagaraSystemViewport::SetMotionRate)
+			,
+			LOCTEXT("MotionSpeed", "Motion Speed")
+		);
+
+		MenuBuilder.AddWidget(
+			SNew(SSpinBox<float>)
+			.IsEnabled(Viewport, &SNiagaraSystemViewport::IsMotionEnabled)
+			.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
+			.MinSliderValue(0.0f)
+			.MaxSliderValue(1000.0f)
+			.Value(Viewport, &SNiagaraSystemViewport::GetMotionRadius)
+			.OnValueChanged(Viewport, &SNiagaraSystemViewport::SetMotionRadius)
+			,
+			LOCTEXT("MotionRadius", "Motion Radius")
+		);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

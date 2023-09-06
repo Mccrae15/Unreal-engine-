@@ -41,7 +41,7 @@ public:
 	bool bUseSourceNameForAsset = true;
 
 	/** If not empty, and there is only one asset and one source data, we will name the asset with this string. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Common")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Common", meta = (StandAlonePipelineProperty = "True", AlwaysResetToDefault = "True"))
 	FString AssetName;
 
 	/** Translation offset applied to meshes and animations. */
@@ -57,23 +57,23 @@ public:
 	float ImportOffsetUniformScale = 1.0f;
 
 	//////	COMMON_MESHES_CATEGORY Properties //////
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Common Meshes")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Instanced, Category = "Common Meshes")
 	TObjectPtr<UInterchangeGenericCommonMeshesProperties> CommonMeshesProperties;
 		
 	//////  COMMON_SKELETAL_ANIMATIONS_CATEGORY //////
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Common Skeletal Meshes and Animations")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Instanced, Category = "Common Skeletal Meshes and Animations")
 	TObjectPtr<UInterchangeGenericCommonSkeletalMeshesAndAnimationsProperties> CommonSkeletalMeshesAndAnimationsProperties;
 
 	//////	MESHES_CATEGORY Properties //////
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Meshes")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Instanced, Category = "Meshes")
 	TObjectPtr<UInterchangeGenericMeshPipeline> MeshPipeline;
 
 	//////	ANIMATIONS_CATEGORY Properties //////
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Animation")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Instanced, Category = "Animation")
 	TObjectPtr<UInterchangeGenericAnimationPipeline> AnimationPipeline;
 
 	//////	MATERIALS_CATEGORY Properties //////
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Materials")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Instanced, Category = "Materials")
 	TObjectPtr<UInterchangeGenericMaterialPipeline> MaterialPipeline;
 
 	virtual void PreDialogCleanup(const FName PipelineStackName) override;
@@ -82,6 +82,16 @@ public:
 
 
 	virtual void AdjustSettingsForContext(EInterchangePipelineContext ImportType, TObjectPtr<UObject> ReimportAsset) override;
+
+	virtual bool IsScripted() override
+	{
+		return false;
+	}
+
+#if WITH_EDITOR
+	virtual bool GetPropertyPossibleValues(const FName PropertyPath, TArray<FString>& PossibleValues) override;
+#endif
+
 protected:
 
 	virtual void ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas) override;
@@ -90,8 +100,10 @@ protected:
 
 	virtual bool CanExecuteOnAnyThread(EInterchangePipelineTask PipelineTask) override
 	{
-		//If a blueprint or python derived from this class, it will be execute on the game thread since we cannot currently execute script outside of the game thread, even if this function return true.
-		return true;
+		//We cannot run asynchronously because of the two following issues
+		// Post Translator Task: material pipeline is loading assets (Parent Material)
+		// Post Import Task: physics asset need to create a scene preview to be created
+		return false;
 	}
 
 	virtual void SetReimportSourceIndex(UClass* ReimportObjectClass, const int32 SourceFileIndex) override;

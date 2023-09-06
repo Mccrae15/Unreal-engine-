@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Online/OnlineIdEOSGS.h"
+#include "Online/AccountIdEOS.h"
 
 struct EOS_EpicAccountIdDetails;
 struct EOS_ProductUserIdDetails;
@@ -27,6 +28,7 @@ public:
 	virtual ~FOnlineAccountIdRegistryEOS() = default;
 
 	// Begin IOnlineAccountIdRegistry
+	virtual FString ToString(const FAccountId& AccountId) const override;
 	virtual FString ToLogString(const FAccountId& AccountId) const override;
 	virtual TArray<uint8> ToReplicationData(const FAccountId& AccountId) const override;
 	virtual FAccountId FromReplicationData(const TArray<uint8>& ReplicationString) override;
@@ -57,10 +59,5 @@ private:
 	TMap<EOS_EpicAccountId, FAccountId> EpicAccountIdToAccountId; // Map of EOS_EpicAccountId to the associated handle.
 	TMap<EOS_ProductUserId, FAccountId> ProductUserIdToAccountId; // Map of EOS_ProductUserId to the associated handle.
 };
-
-EOS_EpicAccountId GetEpicAccountId(const FAccountId& AccountId);
-EOS_EpicAccountId GetEpicAccountIdChecked(const FAccountId& AccountId);
-FAccountId FindAccountId(const EOS_EpicAccountId EpicAccountId);
-FAccountId FindAccountIdChecked(const EOS_EpicAccountId EpicAccountId);
 
 } /* namespace UE::Online */

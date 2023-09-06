@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Interfaces/IHttpResponse.h"
 #include "IHttpThreadedRequest.h"
@@ -54,6 +55,7 @@ namespace
 	*/
 	void* CurlMalloc(size_t Size)
 	{
+		LLM_SCOPE_BYNAME(TEXT("Networking/Curl"));
 		return FMemory::Malloc(Size);
 	}
 
@@ -64,6 +66,7 @@ namespace
 	*/
 	void CurlFree(void* Ptr)
 	{
+		LLM_SCOPE_BYNAME(TEXT("Networking/Curl"));
 		FMemory::Free(Ptr);
 	}
 
@@ -80,6 +83,7 @@ namespace
 
 		if (Size)
 		{
+			LLM_SCOPE_BYNAME(TEXT("Networking/Curl"));
 			Return = FMemory::Realloc(Ptr, Size);
 		}
 
@@ -98,6 +102,8 @@ namespace
 		check(ZeroTerminatedString);
 		if (ZeroTerminatedString)
 		{
+			LLM_SCOPE_BYNAME(TEXT("Networking/Curl"));
+
 			SIZE_T StrLen = FCStringAnsi::Strlen(ZeroTerminatedString);
 			Copy = reinterpret_cast<char*>(FMemory::Malloc(StrLen + 1));
 			if (Copy)
@@ -122,6 +128,8 @@ namespace
 		const size_t Size = NumElems * ElemSize;
 		if (Size)
 		{
+			LLM_SCOPE_BYNAME(TEXT("Networking/Curl"));
+
 			Return = FMemory::Malloc(Size);
 
 			if (Return)
@@ -150,7 +158,7 @@ public:
 	virtual FString GetHeader(const FString& HeaderName) const override;
 	virtual TArray<FString> GetAllHeaders() const override;
 	virtual FString GetContentType() const override;
-	virtual int32 GetContentLength() const override;
+	virtual uint64 GetContentLength() const override;
 	virtual const TArray<uint8>& GetContent() const override;
 	//~ End IHttpBase Interface
 
@@ -163,11 +171,11 @@ public:
 	virtual void SetContentAsString(const FString& ContentString) override;
 	virtual bool SetContentAsStreamedFile(const FString& Filename) override;
 	virtual bool SetContentFromStream(TSharedRef<FArchive, ESPMode::ThreadSafe> Stream) override;
+	virtual bool SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream) override;
 	virtual void SetHeader(const FString& HeaderName, const FString& HeaderValue) override;
 	virtual void AppendToHeader(const FString& HeaderName, const FString& AdditionalHeaderValue) override;
 	virtual bool ProcessRequest() override;
 	virtual void CancelRequest() override;
-	virtual EHttpRequestStatus::Type GetStatus() const override;
 	virtual const FHttpResponsePtr GetResponse() const override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual float GetElapsedTime() const override;
@@ -346,12 +354,6 @@ private:
 	bool SetupRequest();
 
 	/**
-	 * Process state for a finished request that no longer needs to be ticked
-	 * Calls the completion delegate
-	 */
-	void FinishedRequest();
-
-	/**
 	 * Trigger the request progress delegate if progress has changed
 	 */
 	void CheckProgressDelegate();
@@ -388,8 +390,8 @@ private:
 	TUniquePtr<FRequestPayload> RequestPayload;
 	/** Is the request payload seekable? */
 	bool bIsRequestPayloadSeekable = false;
-	/** Current status of request being processed */
-	EHttpRequestStatus::Type CompletionStatus;
+	/** The stream to receive response body */
+	TSharedPtr<FArchive> ResponseBodyReceiveStream;
 	/** Mapping of header section to values. */
 	TMap<FString, FString> Headers;
 	/** Total elapsed time in seconds since the start of the request */
@@ -399,13 +401,13 @@ private:
 	/** Have we had any HTTP activity with the host? Sending headers, SSL handshake, etc */
 	bool bAnyHttpActivity;
 	/** Number of bytes sent already */
-	FThreadSafeCounter BytesSent;
+	FThreadSafeCounter64 BytesSent;
 	/** Total number of bytes sent already (includes data re-sent by seek attempts) */
-	FThreadSafeCounter TotalBytesSent;
+	FThreadSafeCounter64 TotalBytesSent;
 	/** Last bytes read reported to progress delegate */
-	int32 LastReportedBytesRead;
+	uint64 LastReportedBytesRead;
 	/** Last bytes sent reported to progress delegate */
-	int32 LastReportedBytesSent;
+	uint64 LastReportedBytesSent;
 	/** Number of info channel messages to cache */
 	static const constexpr int32 NumberOfInfoMessagesToCache = 50;
 	/** Index of least recently cached message */
@@ -437,7 +439,7 @@ public:
 	virtual FString GetHeader(const FString& HeaderName) const override;
 	virtual TArray<FString> GetAllHeaders() const override;	
 	virtual FString GetContentType() const override;
-	virtual int32 GetContentLength() const override;
+	virtual uint64 GetContentLength() const override;
 	virtual const TArray<uint8>& GetContent() const override;
 	//~ End IHttpBase Interface
 
@@ -462,8 +464,10 @@ private:
 
 	/** BYTE array to fill in as the response is read via didReceiveData */
 	TArray<uint8> Payload;
+	/** The stream to receive response body */
+	TSharedPtr<FArchive> ResponseBodyReceiveStream;
 	/** Caches how many bytes of the response we've read so far */
-	FThreadSafeCounter TotalBytesRead;
+	FThreadSafeCounter64 TotalBytesRead;
 	/** Cached key/value header pairs. Parsed once request completes. Only accessible on the game thread. */
 	TMap<FString, FString> Headers;
 	/** Newly received headers we need to inform listeners about */
@@ -471,7 +475,7 @@ private:
 	/** Cached code from completed response */
 	int32 HttpCode;
 	/** Cached content length from completed response */
-	int32 ContentLength;
+	uint64 ContentLength;
 	/** True when the response has finished async processing */
 	int32 volatile bIsReady;
 	/** True if the response was successfully received/processed */

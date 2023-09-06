@@ -7,6 +7,8 @@
 #include "RenderResource.h"
 #include "SubsurfaceProfile.generated.h"
 
+#define MAX_SUBSURFACE_PROFILE_COUNT 256
+
 // struct with all the settings we want in USubsurfaceProfile, separate to make it easer to pass this data around in the engine.
 USTRUCT(BlueprintType)
 struct FSubsurfaceProfileStruct
@@ -80,7 +82,7 @@ struct FSubsurfaceProfileStruct
 	UPROPERTY(Category = "Burley Normalized", EditAnywhere, BlueprintReadOnly, meta = (HideAlphaChannel))
 	FLinearColor BoundaryColorBleed;
 
-	UPROPERTY(Category = "Transmission", EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.01", UIMax = "1.0", ClampMax = "1.0"))
+	UPROPERTY(Category = "Transmission", EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.01", UIMax = "100.0", ClampMax = "100.0", SliderExponent="24"))
 	float ExtinctionScale;
 	
 	UPROPERTY(Category = "Transmission", EditAnywhere, BlueprintReadOnly, meta = (ClampMin = "0.01", UIMax = "0.99", ClampMax = "1.0"))
@@ -215,7 +217,7 @@ public:
 	/**
 	* Release textures when device is lost/destroyed.
 	*/
-	virtual void ReleaseDynamicRHI() override;
+	virtual void ReleaseRHI() override;
 
 	// for debugging, can be removed
 	void Dump();

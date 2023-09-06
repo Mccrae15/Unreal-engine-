@@ -11,22 +11,26 @@ extern int32 GSkinCacheRecomputeTangents;
 FMorphTargetVertexInfoBuffers::FMorphTargetVertexInfoBuffers() = default;
 FMorphTargetVertexInfoBuffers::~FMorphTargetVertexInfoBuffers() = default;
 
-void FMorphTargetVertexInfoBuffers::InitRHI()
+void FMorphTargetVertexInfoBuffers::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	SCOPED_LOADTIMER(FFMorphTargetVertexInfoBuffers_InitRHI);
 
 	check(NumTotalBatches > 0);
 	check(!bRHIIntialized);
 
+	const static FLazyName ClassName(TEXT("FMorphTargetVertexInfoBuffers"));
+
 	const uint32 BufferSize = MorphData.Num() * sizeof(uint32);
 	FRHIResourceCreateInfo CreateInfo(TEXT("MorphData"));
-	MorphDataBuffer = RHICreateStructuredBuffer(sizeof(uint32), BufferSize, BUF_Static | BUF_ByteAddressBuffer | BUF_ShaderResource, ERHIAccess::SRVMask, CreateInfo);
+	CreateInfo.ClassName = ClassName;
+	CreateInfo.OwnerName = GetOwnerName();
+	MorphDataBuffer = RHICmdList.CreateStructuredBuffer(sizeof(uint32), BufferSize, BUF_Static | BUF_ByteAddressBuffer | BUF_ShaderResource, ERHIAccess::SRVMask, CreateInfo);
 	MorphDataBuffer->SetOwnerName(GetOwnerName());
 	
-	void* BufferPtr = RHILockBuffer(MorphDataBuffer, 0, BufferSize, RLM_WriteOnly);
+	void* BufferPtr = RHICmdList.LockBuffer(MorphDataBuffer, 0, BufferSize, RLM_WriteOnly);
 	FMemory::ParallelMemcpy(BufferPtr, MorphData.GetData(), BufferSize, EMemcpyCachePolicy::StoreUncached);
-	RHIUnlockBuffer(MorphDataBuffer);
-	MorphDataSRV = RHICreateShaderResourceView(MorphDataBuffer);
+	RHICmdList.UnlockBuffer(MorphDataBuffer);
+	MorphDataSRV = RHICmdList.CreateShaderResourceView(MorphDataBuffer);
 
 	if (bEmptyMorphCPUDataOnInitRHI)
 	{

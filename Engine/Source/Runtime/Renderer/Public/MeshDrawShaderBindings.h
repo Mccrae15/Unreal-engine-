@@ -116,8 +116,7 @@ public:
 
 		if (Parameter.IsBound())
 		{
-			checkf(Value.GetReference(), TEXT("Attempted to set null uniform buffer for type %s"), UniformBufferStructType::StaticStructMetadata.GetStructTypeName());
-			checkfSlow(Value.GetReference()->IsValid(), TEXT("Attempted to set already deleted uniform buffer for type %s"), UniformBufferStructType::StaticStructMetadata.GetStructTypeName());
+			checkf(Value.GetReference(), TEXT("Attempted to set null uniform buffer for type %s"), UniformBufferStructType::FTypeInfo::GetStructMetadata()->GetStructTypeName());
 			WriteBindingUniformBuffer(Value.GetReference(), Parameter.GetBaseIndex());
 		}
 	}
@@ -129,8 +128,7 @@ public:
 
 		if (Parameter.IsBound())
 		{
-			checkf(Value.GetUniformBufferRHI(), TEXT("Attempted to set null uniform buffer for type %s"), UniformBufferStructType::StaticStructMetadata.GetStructTypeName());
-			checkfSlow(Value.GetUniformBufferRHI()->IsValid(), TEXT("Attempted to set already deleted uniform buffer for type %s"), UniformBufferStructType::StaticStructMetadata.GetStructTypeName());
+			checkf(Value.GetUniformBufferRHI(), TEXT("Attempted to set null uniform buffer for type %s"), UniformBufferStructType::FTypeInfo::GetStructMetadata()->GetStructTypeName());
 			WriteBindingUniformBuffer(Value.GetUniformBufferRHI(), Parameter.GetBaseIndex());
 		}
 	}
@@ -142,7 +140,6 @@ public:
 		if (Parameter.IsBound())
 		{
 			checkf(Value, TEXT("Attempted to set null uniform buffer"));
-			checkfSlow(Value->IsValid(), TEXT("Attempted to set already deleted uniform buffer of type %s"), *Value->GetLayout().GetDebugName());
 			WriteBindingUniformBuffer(Value, Parameter.GetBaseIndex());
 		}
 	}
@@ -154,7 +151,6 @@ public:
 		if (Parameter.IsBound())
 		{
 			checkf(Value, TEXT("Attempted to set null SRV on slot %u"), Parameter.GetBaseIndex());
-			checkfSlow(Value->IsValid(), TEXT("Attempted to set already deleted SRV on slot %u"), Parameter.GetBaseIndex());
 			WriteBindingSRV(Value, Parameter.GetBaseIndex());
 		}
 	}
@@ -301,10 +297,10 @@ private:
 		if (FoundIndex >= 0)
 		{
 #if VALIDATE_UNIFORM_BUFFER_LIFETIME
-			if (GetUniformBufferStart()[FoundIndex])
+			if (const FRHIUniformBuffer* Previous = GetUniformBufferStart()[FoundIndex])
 			{
-				GetUniformBufferStart()[FoundIndex]->NumMeshCommandReferencesForDebugging--;
-				check(GetUniformBufferStart()[FoundIndex]->NumMeshCommandReferencesForDebugging >= 0);
+				const int32 NumMeshCommandReferencesForDebugging = --Previous->NumMeshCommandReferencesForDebugging;
+				check(NumMeshCommandReferencesForDebugging >= 0);
 			}
 			Value->NumMeshCommandReferencesForDebugging++;
 #endif

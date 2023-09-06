@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerCommonHelpers.h"
+
 #include "FrameNumberDetailsCustomization.h"
 #include "IDetailsView.h"
 #include "ISequencerSection.h"
@@ -16,11 +17,13 @@
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/ViewModels/VirtualTrackArea.h"
 #include "MVVM/Views/ITrackAreaHotspot.h"
+#include "MVVM/Selection/Selection.h"
 #include "Modules/ModuleManager.h"
 #include "MovieScene.h"
 #include "MovieSceneSectionDetailsCustomization.h"
 #include "MovieSceneSequence.h"
 #include "PropertyEditorModule.h"
+#include "PropertyPermissionList.h"
 #include "SSequencer.h"
 #include "Sequencer.h"
 #include "SequencerContextMenus.h"
@@ -168,6 +171,8 @@ bool IsSectionSelectedInNode(FSequencer& Sequencer, TSharedPtr<UE::Sequencer::FV
 {
 	using namespace UE::Sequencer;
 
+	const FTrackAreaSelection& Selection = Sequencer.GetViewModel()->GetSelection()->TrackArea;
+
 	if (ITrackAreaExtension* TrackArea = InModel->CastThis<ITrackAreaExtension>())
 	{
 		for (TSharedPtr<FViewModel> TrackAreaModel : TrackArea->GetTrackAreaModelList())
@@ -175,7 +180,7 @@ bool IsSectionSelectedInNode(FSequencer& Sequencer, TSharedPtr<UE::Sequencer::FV
 			constexpr bool bIncludeThis = true;
 			for (TSharedPtr<FSectionModel> Section : TParentFirstChildIterator<FSectionModel>(TrackAreaModel, bIncludeThis))
 			{
-				if (Sequencer.GetSelection().IsSelected(Section))
+				if (Selection.IsSelected(Section))
 				{
 					return true;
 				}
@@ -188,12 +193,17 @@ bool IsSectionSelectedInNode(FSequencer& Sequencer, TSharedPtr<UE::Sequencer::FV
 
 bool AreKeysSelectedInNode(FSequencer& Sequencer, TSharedPtr<UE::Sequencer::FViewModel> InModel)
 {
-	TSet<TSharedPtr<UE::Sequencer::FChannelModel>> Channels;
+	using namespace UE::Sequencer;
+
+	TSet<TSharedPtr<FChannelModel>> Channels;
 	SequencerHelpers::GetAllChannels(InModel, Channels);
 
-	for (const FSequencerSelectedKey& Key : Sequencer.GetSelection().GetSelectedKeys())
+	const FKeySelection& Selection = Sequencer.GetViewModel()->GetSelection()->KeySelection;
+
+	for (FKeyHandle Key : Selection)
 	{
-		if (Channels.Contains(Key.WeakChannel.Pin()))
+		TSharedPtr<FChannelModel> Channel = Selection.GetModelForKey(Key);
+		if (Channels.Contains(Channel))
 		{
 			return true;
 		}
@@ -209,7 +219,8 @@ void SequencerHelpers::PerformDefaultSelection(FSequencer& Sequencer, const FPoi
 
 	// @todo: selection in transactions
 	FHotspotSelectionManager SelectionManager(&MouseEvent, &Sequencer);
-	TSharedPtr<ITrackAreaHotspot> Hotspot = Sequencer.GetViewModel()->GetTrackArea()->GetHotspot();
+	TSharedPtr<FSequencerEditorViewModel> SequencerViewModel = Sequencer.GetViewModel()->CastThisShared<FSequencerEditorViewModel>();
+	TSharedPtr<ITrackAreaHotspot> Hotspot = SequencerViewModel->GetHotspot();
 	if (TSharedPtr<IMouseHandlerHotspot> MouseHandler = HotspotCast<IMouseHandlerHotspot>(Hotspot))
 	{
 		MouseHandler->HandleMouseSelection(SelectionManager);
@@ -243,7 +254,8 @@ TSharedPtr<SWidget> SequencerHelpers::SummonContextMenu(FSequencer& Sequencer, c
 
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, Sequencer.GetCommandBindings(), MenuExtender, false, &FCoreStyle::Get(), true, NAME_None, bInRecursivelySearchable);
 
-	TSharedPtr<ITrackAreaHotspot> Hotspot = Sequencer.GetViewModel()->GetTrackArea()->GetHotspot();
+	TSharedPtr<FSequencerEditorViewModel> SequencerViewModel = Sequencer.GetViewModel()->CastThisShared<FSequencerEditorViewModel>();
+	TSharedPtr<ITrackAreaHotspot> Hotspot = SequencerViewModel->GetHotspot();
 
 	if (Hotspot.IsValid() && Hotspot->PopulateContextMenu(MenuBuilder, MenuExtender, PasteAtTime))
 	{
@@ -323,6 +335,12 @@ void SequencerHelpers::AddPropertiesMenu(FSequencer& Sequencer, FMenuBuilder& Me
 		return MakeShared<FFrameNumberDetailsCustomization>(NumericTypeInterface); }));
 	DetailsView->RegisterInstancedCustomPropertyLayout(UMovieSceneSection::StaticClass(), FOnGetDetailCustomizationInstance::CreateLambda([=]() {
 		return MakeShared<FMovieSceneSectionDetailsCustomization>(NumericTypeInterface, CurrentScene); }));
+	
+	DetailsView->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateLambda([](const FPropertyAndParent& PropertyAndParent)
+		{			
+			return FPropertyEditorPermissionList::Get().DoesPropertyPassFilter(PropertyAndParent.Property.GetOwnerStruct(), PropertyAndParent.Property.GetFName());
+		})
+	);
 
 	// Let section interfaces further customize the properties details view.
 	TSharedRef<FSequencerNodeTree> SequencerNodeTree = Sequencer.GetNodeTree();

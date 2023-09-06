@@ -123,7 +123,7 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FImportParametersCommand& Imp
 	ImportParameters = ImportParametersCommand.ImportParameters;
 }
 
-uint64 DefineMaximumAllowedDuration(const CADLibrary::FFileDescriptor& FileDescriptor)
+uint64 DefineMaximumAllowedDuration(const CADLibrary::FFileDescriptor& FileDescriptor, bool& bEnableTimeControl)
 {
 	FFileStatData FileStatData = IFileManager::Get().GetStatData(*FileDescriptor.GetSourcePath());
 	double MaxTimePerMb = 5e-6;
@@ -132,6 +132,11 @@ uint64 DefineMaximumAllowedDuration(const CADLibrary::FFileDescriptor& FileDescr
 	CADLibrary::ECADFormat Format = FileDescriptor.GetFileFormat();
 	switch (Format)
 	{
+	case CADLibrary::ECADFormat::JT:
+	case CADLibrary::ECADFormat::INVENTOR:
+		MaxTimePerMb = 1.;
+		bEnableTimeControl = false;
+		break;
 	case CADLibrary::ECADFormat::SOLIDWORKS:
 	case CADLibrary::ECADFormat::CATIA_3DXML:
 		MaxTimePerMb = 1e-5;
@@ -155,18 +160,27 @@ uint64 DefineMaximumAllowedDuration(const CADLibrary::FFileDescriptor& FileDescr
 
 void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskCommand)
 {
-	CADLibrary::FFileDescriptor FileToProcess = RunTaskCommand.JobFileDescription;
+	using namespace CADLibrary;
+	FFileDescriptor FileToProcess = RunTaskCommand.JobFileDescription;
 	UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("Process %s %s"), *FileToProcess.GetFileName(), *FileToProcess.GetConfiguration());
 
 	FCompletedTaskCommand CompletedTask;
 
 	bProcessIsRunning = true;
-	int64 MaxDuration = DefineMaximumAllowedDuration(FileToProcess);
+
+	bool bEnableTimeControl = CADLibrary::FImportParameters::bGEnableTimeControl;
+	int64 MaxDuration = DefineMaximumAllowedDuration(FileToProcess, bEnableTimeControl);
+
 	TArray<UE::Tasks::FTask> Checkers;
-	Checkers.Emplace(UE::Tasks::Launch(TEXT("TimeChecker"), [&FileToProcess, &MaxDuration]() { CheckDuration(FileToProcess, MaxDuration); }));
+	if(bEnableTimeControl)
+	{
+		Checkers.Emplace(UE::Tasks::Launch(TEXT("TimeChecker"), [&FileToProcess, &MaxDuration]() { CheckDuration(FileToProcess, MaxDuration); }));
+	}
 	Checkers.Emplace(UE::Tasks::Launch(TEXT("MemoryChecker"), []() { CheckMemory(); }));
 
-	CADLibrary::FCADFileReader FileReader(ImportParameters, FileToProcess, EnginePluginsPath, CachePath);
+	FImportParameters FileImporParameters(ImportParameters, RunTaskCommand.Mesher);
+
+	FCADFileReader FileReader(FileImporParameters, FileToProcess, EnginePluginsPath, CachePath);
 	CompletedTask.ProcessResult = FileReader.ProcessFile();
 
 	bProcessIsRunning = false;
@@ -179,7 +193,7 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskComma
 			CompletedTask.ProcessResult = ETaskState::Unknown;
 		}
 			
-		const CADLibrary::FCADFileData& CADFileData = FileReader.GetCADFileData();
+		const FCADFileData& CADFileData = FileReader.GetCADFileData();
 		CompletedTask.ExternalReferences = CADFileData.GetExternalRefSet();
 		CompletedTask.SceneGraphFileName = CADFileData.GetSceneGraphFileName();
 		CompletedTask.GeomFileName = CADFileData.GetMeshFileName();
@@ -187,7 +201,7 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskComma
 
 		UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("=> Process %s %s saved into %s%s and %s%s."), *FileToProcess.GetFileName(), *FileToProcess.GetConfiguration(), *CompletedTask.SceneGraphFileName, TEXT(".sg"), *CompletedTask.GeomFileName, TEXT(".gm"));
 		UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("     It generates %d bodies"), CADFileData.GetBodyMeshes().Num());
-		for (const CADLibrary::FBodyMesh& BodyMesh : CADFileData.GetBodyMeshes())
+		for (const FBodyMesh& BodyMesh : CADFileData.GetBodyMeshes())
 		{
 			FString BodyFileName = FString::Printf(TEXT("UEx%08x"), BodyMesh.MeshActorUId);
 			UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("     - Body %s"), *BodyFileName);
@@ -213,11 +227,6 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskComma
 
 void FDatasmithCADWorkerImpl::CheckDuration(const CADLibrary::FFileDescriptor& FileToProcess, const int64 MaxDuration)
 {
-	if (!CADLibrary::FImportParameters::bGEnableTimeControl)
-	{
-		return;
-	}
-
 	const uint64 StartTime = FPlatformTime::Cycles64();
 	const uint64 MaxCycles = MaxDuration / FPlatformTime::GetSecondsPerCycle64() + StartTime;
 
@@ -242,12 +251,9 @@ void FDatasmithCADWorkerImpl::CheckMemory()
 	uint64 MaxMemoryUsed = FPlatformMemory::GetStats().UsedPhysical;
 	UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("    - Start Ram used %llu MB"), MaxMemoryUsed / OneMegaBit);
 
-	uint64 StartTime = FPlatformTime::Cycles64();
 	while (bProcessIsRunning)
 	{
 		FPlatformProcess::Sleep(0.1);
-		double Duration = (FPlatformTime::Cycles64() - StartTime) * FPlatformTime::GetSecondsPerCycle64();
-
 		const uint64 MemoryUsed = FPlatformMemory::GetStats().UsedPhysical;
 		if (MaxMemoryUsed < MemoryUsed)
 		{

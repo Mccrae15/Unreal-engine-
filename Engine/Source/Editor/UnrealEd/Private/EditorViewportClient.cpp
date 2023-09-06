@@ -69,11 +69,12 @@
 #include "IImageWrapperModule.h"
 #include "HDRHelper.h"
 #include "GlobalRenderResources.h"
+#include "Settings/EditorStyleSettings.h"
 
 #define LOCTEXT_NAMESPACE "EditorViewportClient"
 
 const EViewModeIndex FEditorViewportClient::DefaultPerspectiveViewMode = VMI_Lit;
-const EViewModeIndex FEditorViewportClient::DefaultOrthoViewMode = VMI_BrushWireframe;
+const EViewModeIndex FEditorViewportClient::DefaultOrthoViewMode = VMI_Lit;
 
 static TAutoConsoleVariable<int32> CVarAlignedOrthoZoom(
 	TEXT("r.Editor.AlignedOrthoZoom"),
@@ -227,6 +228,8 @@ FViewportClick::FViewportClick(const FSceneView* View, FEditorViewportClient* Vi
 	ShiftDown = ViewportClient->IsShiftPressed();
 	AltDown = ViewportClient->IsAltPressed();
 }
+
+static const FName InputChordName_CameraLockedToWidget = FName("InputChordName_CameraLockedToWidget");
 
 FViewportClick::~FViewportClick()
 {
@@ -468,6 +471,7 @@ FEditorViewportClient::FEditorViewportClient(FEditorModeTools* InModeTools, FPre
 	, bShouldInvalidateViewportWidget(false)
 	, DragStartView(nullptr)
 	, DragStartViewFamily(nullptr)
+	, bIsTrackingBeingStopped(false)
 {
 	InitViewOptionsArray();
 	if (!ModeTools)
@@ -514,6 +518,8 @@ FEditorViewportClient::FEditorViewportClient(FEditorModeTools* InModeTools, FPre
 	FCoreDelegates::StatEnabled.AddRaw(this, &FEditorViewportClient::HandleViewportStatEnabled);
 	FCoreDelegates::StatDisabled.AddRaw(this, &FEditorViewportClient::HandleViewportStatDisabled);
 	FCoreDelegates::StatDisableAll.AddRaw(this, &FEditorViewportClient::HandleViewportStatDisableAll);
+
+	RegisterPrioritizedInputChord(FPrioritizedInputChord(10, InputChordName_CameraLockedToWidget, EModifierKey::Shift));
 
 	RequestUpdateDPIScale();
 
@@ -1227,7 +1233,6 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 
 	// for ortho views to steal perspective view origin
 	ViewInitOptions.OverrideLODViewOrigin = FVector::ZeroVector;
-	ViewInitOptions.bUseFauxOrthoViewPos = true;
 
 	ViewInitOptions.FOV = ModifiedViewFOV;
 	if (bUseControllingActorViewInfo)
@@ -1304,6 +1309,12 @@ FSceneView* FEditorViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, c
 	View->ViewRotation = ModifiedViewRotation;
 
 	View->SubduedSelectionOutlineColor = GEngine->GetSubduedSelectionOutlineColor();
+	const UEditorStyleSettings* EditorStyle = GetDefault<UEditorStyleSettings>();
+	check(View->AdditionalSelectionOutlineColors.Num() <= UE_ARRAY_COUNT(EditorStyle->AdditionalSelectionColors))
+	for (int OutlineColorIndex = 0; OutlineColorIndex < View->AdditionalSelectionOutlineColors.Num(); ++OutlineColorIndex)
+	{
+		View->AdditionalSelectionOutlineColors[OutlineColorIndex] = EditorStyle->AdditionalSelectionColors[OutlineColorIndex];
+	}
 
 	int32 FamilyIndex = ViewFamily->Views.Add(View);
 	check(FamilyIndex == View->StereoViewIndex || View->StereoViewIndex == INDEX_NONE);
@@ -1371,6 +1382,8 @@ void FEditorViewportClient::LostFocus(FViewport* InViewport)
 
 void FEditorViewportClient::Tick(float DeltaTime)
 {
+	SCOPED_NAMED_EVENT(FEditorViewportClient_Tick, FColor::Red);
+	
 	ConditionalCheckHoveredHitProxy();
 
 	FViewportCameraTransform& ViewTransform = GetViewTransform();
@@ -1892,7 +1905,7 @@ void FEditorViewportClient::UpdateCameraMovement( float DeltaTime )
 		EditorMovementDeltaUpperBound = .15f;
 #endif
 		// Check whether the camera is being moved by the mouse or keyboard
-		bool bHasMovement = bIsTracking;
+		bool bHasMovement = GetDefault<ULevelEditorViewportSettings>()->bUseLegacyCameraMovementNotifications;
 
 		if ((*CameraUserImpulseData).RotateYawVelocityModifier != 0.0f ||
 			(*CameraUserImpulseData).RotatePitchVelocityModifier != 0.0f ||
@@ -1908,6 +1921,7 @@ void FEditorViewportClient::UpdateCameraMovement( float DeltaTime )
 		{
 			bHasMovement = true;
 		}
+		bHasMovement = bHasMovement && bIsTracking;
 
 		BeginCameraMovement(bHasMovement);
 
@@ -2548,7 +2562,7 @@ void FEditorViewportClient::MarkMouseMovedSinceClick()
 bool FEditorViewportClient::IsUsingAbsoluteTranslation(bool bAlsoCheckAbsoluteRotation) const
 {
 	bool bIsHotKeyAxisLocked = Viewport->KeyState(EKeys::LeftControl) || Viewport->KeyState(EKeys::RightControl);
-	bool bCameraLockedToWidget = !(Widget && Widget->GetCurrentAxis() & EAxisList::Screen) && (Viewport->KeyState(EKeys::LeftShift) || Viewport->KeyState(EKeys::RightShift));
+	bool bCameraLockedToWidget = !(Widget && Widget->GetCurrentAxis() & EAxisList::Screen) && IsPrioritizedInputChordPressed(InputChordName_CameraLockedToWidget);
 	// Screen-space movement must always use absolute translation
 	bool bScreenSpaceTransformation = Widget && (Widget->GetCurrentAxis() == EAxisList::Screen) && GetWidgetMode() != UE::Widget::WM_Rotate;
 	bool bAbsoluteMovementEnabled = GetDefault<ULevelEditorViewportSettings>()->bUseAbsoluteTranslation || bScreenSpaceTransformation;
@@ -2790,11 +2804,34 @@ bool FEditorViewportClient::SupportsPreviewResolutionFraction() const
 	return true;
 }
 
+EViewStatusForScreenPercentage FEditorViewportClient::GetViewStatusForScreenPercentage() const
+{
+	if (EngineShowFlags.PathTracing)
+	{
+		return EViewStatusForScreenPercentage::PathTracer;
+	}
+	else if (EngineShowFlags.StereoRendering || EngineShowFlags.VREditing)
+	{
+		return EViewStatusForScreenPercentage::VR;
+	}
+	else if (!bIsRealtime)
+	{
+		return EViewStatusForScreenPercentage::NonRealtime;
+	}
+	else if (GetWorld() && GetWorld()->GetFeatureLevel() == ERHIFeatureLevel::ES3_1)
+	{
+		return EViewStatusForScreenPercentage::Mobile;
+	}
+	else
+	{
+		return EViewStatusForScreenPercentage::Desktop;
+	}
+}
 
 float FEditorViewportClient::GetDefaultPrimaryResolutionFractionTarget() const
 {
-	FStaticResolutionFractionHeuristic StaticHeuristic(EngineShowFlags);
-	StaticHeuristic.Settings.PullEditorRenderingSettings(bIsRealtime, /* bIsPathTraced = */ EngineShowFlags.PathTracing);
+	FStaticResolutionFractionHeuristic StaticHeuristic;
+	StaticHeuristic.Settings.PullEditorRenderingSettings(GetViewStatusForScreenPercentage());
 
 	if (SupportsLowDPIPreview() && IsLowDPIPreview()) // TODO: && ViewFamily.SupportsScreenPercentage())
 	{
@@ -2804,6 +2841,16 @@ float FEditorViewportClient::GetDefaultPrimaryResolutionFractionTarget() const
 	StaticHeuristic.TotalDisplayedPixelCount = FMath::Max(Viewport->GetSizeXY().X * Viewport->GetSizeXY().Y, 1);
 	StaticHeuristic.DPIScale = GetDPIScale();
 	return StaticHeuristic.ResolveResolutionFraction();
+}
+
+bool FEditorViewportClient::IsPreviewingScreenPercentage() const
+{
+	return bIsPreviewingResolutionFraction;
+}
+
+void FEditorViewportClient::SetPreviewingScreenPercentage(bool bIsPreviewing)
+{
+	bIsPreviewingResolutionFraction = bIsPreviewing;
 }
 
 int32 FEditorViewportClient::GetPreviewScreenPercentage() const
@@ -2827,23 +2874,10 @@ int32 FEditorViewportClient::GetPreviewScreenPercentage() const
 
 void FEditorViewportClient::SetPreviewScreenPercentage(int32 PreviewScreenPercentage)
 {
-	float AutoResolutionFraction = GetDefaultPrimaryResolutionFractionTarget();
-	int32 AutoScreenPercentage = FMath::RoundToInt(FMath::Clamp(
-		AutoResolutionFraction,
+	PreviewResolutionFraction = FMath::Clamp(
+		PreviewScreenPercentage / 100.0f,
 		ISceneViewFamilyScreenPercentage::kMinTSRResolutionFraction,
-		ISceneViewFamilyScreenPercentage::kMaxTSRResolutionFraction) * 100.0f);
-
-	float NewResolutionFraction = PreviewScreenPercentage / 100.0f;
-	if (NewResolutionFraction >= ISceneViewFamilyScreenPercentage::kMinTSRResolutionFraction &&
-		NewResolutionFraction <= ISceneViewFamilyScreenPercentage::kMaxTSRResolutionFraction &&
-		PreviewScreenPercentage != AutoScreenPercentage)
-	{
-		PreviewResolutionFraction = NewResolutionFraction;
-	}
-	else
-	{
-		PreviewResolutionFraction.Reset();
-	}
+		ISceneViewFamilyScreenPercentage::kMaxTSRResolutionFraction);
 }
 
 bool FEditorViewportClient::SupportsLowDPIPreview() const
@@ -3062,8 +3096,10 @@ bool FEditorViewportClient::Internal_InputKey(const FInputKeyEventArgs& EventArg
 
 void FEditorViewportClient::StopTracking()
 {
-	if( bIsTracking )
+	if( bIsTracking && !bIsTrackingBeingStopped )
 	{
+		bIsTrackingBeingStopped = true;
+
 		DragStartView = nullptr;
 		if (DragStartViewFamily != nullptr)
 		{
@@ -3090,6 +3126,7 @@ void FEditorViewportClient::StopTracking()
   		CheckHoveredHitProxy(HitProxy);
 
 		bIsTracking = false;
+		bIsTrackingBeingStopped = false;
 	}
 
 	bHasMouseMovedSinceClick = false;
@@ -3142,6 +3179,7 @@ void FEditorViewportClient::StartTrackingDueToInput( const struct FInputEventSta
 		{
 			MouseDeltaTracker->EndTracking( this );
 			bIsTracking = false;
+			CheckHoveredHitProxy(Viewport->GetHitProxy(CachedMouseX, CachedMouseY));
 		}
 
 		bDraggingByHandle = (Widget && Widget->GetCurrentAxis() != EAxisList::None);
@@ -3153,7 +3191,7 @@ void FEditorViewportClient::StartTrackingDueToInput( const struct FInputEventSta
 		}
 
 		// Start new tracking. Potentially reset the widget so that StartTracking can pick a new axis.
-		if ( Widget && ( !bDraggingByHandle || InputState.IsCtrlButtonPressed() ) )
+		if ( Widget && ( !bDraggingByHandle && InputState.IsCtrlButtonPressed() ) )
 		{
 			bWidgetAxisControlledByDrag = false;
 			Widget->SetCurrentAxis( EAxisList::None );
@@ -3264,6 +3302,51 @@ bool FEditorViewportClient::IsCommandChordPressed(const TSharedPtr<FUICommandInf
 	return bIsChordPressed;
 }
 
+void FEditorViewportClient::RegisterPrioritizedInputChord(const FPrioritizedInputChord& InInputChord)
+{
+	const int32 PreceedingElementIndex = PrioritizedInputChords.FindLastByPredicate([InInputChord](const FPrioritizedInputChord& Element) { return Element.Priority < InInputChord.Priority; });
+	const int32 TargetElementIndex = (PreceedingElementIndex != INDEX_NONE) ? PreceedingElementIndex + 1 : 0;
+	PrioritizedInputChords.Insert(InInputChord, TargetElementIndex);
+}
+
+void FEditorViewportClient::UnregisterPrioritizedInputChord(const FName InInputChordName)
+{
+	PrioritizedInputChords.RemoveAll([InInputChordName](const FPrioritizedInputChord& Element) { return Element.Name == InInputChordName; });
+}
+
+bool FEditorViewportClient::IsPrioritizedInputChordPressed(const FName InInputChordName) const
+{	
+	EModifierKey::Type ConsumedModifiers = EModifierKey::None;
+	TArray<FKey> ConsumedKeys;
+
+	// Iterate over all chords preceding the argument to determine if any key presses should be consumed before the target chord is evaluated.
+	for (const FPrioritizedInputChord& PrioritizedInputChord : PrioritizedInputChords)
+	{
+		const FInputChord& Chord = PrioritizedInputChord.InputChord;
+
+		bool IsPressed = true;
+		IsPressed &= !Chord.Key.IsValid()	|| (!ConsumedKeys.Contains(Chord.Key) && Viewport->KeyState(Chord.Key));
+		IsPressed &= !Chord.NeedsControl()	|| (!(ConsumedModifiers & EModifierKey::Control) && IsCtrlPressed());
+		IsPressed &= !Chord.NeedsAlt()		|| (!(ConsumedModifiers & EModifierKey::Alt) && IsAltPressed());
+		IsPressed &= !Chord.NeedsShift()	|| (!(ConsumedModifiers & EModifierKey::Shift) && IsShiftPressed());
+		IsPressed &= !Chord.NeedsCommand()	|| (!(ConsumedModifiers & EModifierKey::Command) && IsCmdPressed());
+
+		if (IsPressed)
+		{
+			// Mark all of the keys required by this chord as used so that they cannot be considered by any other, lower priority chords.
+			if (Chord.Key.IsValid()) { ConsumedKeys.Add(Chord.Key); }
+			ConsumedModifiers |= EModifierKey::FromBools(Chord.NeedsControl(), Chord.NeedsAlt(), Chord.NeedsShift(), Chord.NeedsCommand());
+		}
+
+		if (PrioritizedInputChord.Name == InInputChordName)
+		{
+			return IsPressed;
+		}
+	}	
+
+	return false;
+}
+
 void FEditorViewportClient::ProcessDoubleClickInViewport( const struct FInputEventState& InputState, FSceneView& View )
 {
 	// Stop current tracking
@@ -3283,7 +3366,7 @@ void FEditorViewportClient::ProcessDoubleClickInViewport( const struct FInputEve
 	MouseDeltaTracker->StartTracking( this, HitX, HitY, InputState );
 	bIsTracking = true;
 	GEditor->MouseMovement = FVector::ZeroVector;
-	HHitProxy*	HitProxy = InputStateViewport->GetHitProxy(HitX,HitY);
+	TRefCountPtr<HHitProxy> HitProxy = InputStateViewport->GetHitProxy(HitX,HitY);
 	ProcessClick(View,HitProxy,Key,Event,HitX,HitY);
 	MouseDeltaTracker->EndTracking( this );
 	bIsTracking = false;
@@ -3460,7 +3543,7 @@ FString FEditorViewportClient::UnrealUnitsToSiUnits(float UnrealUnits)
 
 void FEditorViewportClient::DrawScaleUnits(FViewport* InViewport, FCanvas* Canvas, const FSceneView& InView)
 {
-	const float UnitsPerPixel = GetOrthoUnitsPerPixel(InViewport);
+	const float UnitsPerPixel = GetOrthoUnitsPerPixel(InViewport) * Canvas->GetDPIScale();
 
 	// Find the closest power of ten to our target width
 	static const int32 ApproxTargetMarkerWidthPx = 100;
@@ -4087,7 +4170,7 @@ void FEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 			if ((!bStereoRendering || bInVREditViewMode) && 
 				SupportsPreviewResolutionFraction() && ViewFamily.SupportsScreenPercentage())
 			{
-				if (PreviewResolutionFraction.IsSet())
+				if (PreviewResolutionFraction.IsSet() && bIsPreviewingResolutionFraction)
 				{
 					GlobalResolutionFraction = PreviewResolutionFraction.GetValue();
 				}
@@ -4239,12 +4322,6 @@ void FEditorViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 #endif
 	}
 
-	if(!IsRealtime())
-	{
-		// Wait for the rendering thread to finish drawing the view before returning.
-		// This reduces the apparent latency of dragging the viewport around.
-		FlushRenderingCommands();
-	}
 
 	Viewport = ViewportBackup;
 }
@@ -5582,13 +5659,6 @@ void FEditorViewportClient::Invalidate(bool bInvalidateChildViews, bool bInvalid
 			// Invalidate only display pixels.
 			Viewport->InvalidateDisplay();
 		}
-
-		// If this viewport is a view parent . . .
-		if ( bInvalidateChildViews &&
-			ViewState.GetReference()->IsViewParent() )
-		{
-			GEditor->InvalidateChildViewports( ViewState.GetReference(), bInvalidateHitProxies );
-		}
 	}
 }
 
@@ -5705,19 +5775,20 @@ void FEditorViewportClient::TakeScreenshot(FViewport* InViewport, bool bInValida
 
 	// Read the contents of the viewport into an array.
 	bool bHdrEnabled = InViewport->GetSceneHDREnabled();
+	const FIntRect CaptureRect = FIntRect(0, 0, InViewport->GetRenderTargetTextureSizeXY().X, InViewport->GetRenderTargetTextureSizeXY().Y);
 	
 	if (!bHdrEnabled)
 	{
 		TArray<FColor> RawPixels;
-		RawPixels.SetNum(InViewport->GetSizeXY().X * InViewport->GetSizeXY().Y);
-		if( !InViewport->ReadPixels(RawPixels) )
+		RawPixels.SetNum(CaptureRect.Area());
+		if(!InViewport->ReadPixels(RawPixels, FReadSurfaceDataFlags(RCM_UNorm, CubeFace_MAX), CaptureRect))
 		{
 			// Failed to read the image from the viewport
 			SaveMessagePtr->SetText(NSLOCTEXT( "UnrealEd", "ScreenshotFailedViewport", "Screenshot failed, unable to read image from viewport" ));
 			return;
 		}
 
-		TUniquePtr<TImagePixelData<FColor>> PixelData = MakeUnique<TImagePixelData<FColor>>(InViewport->GetSizeXY(), TArray64<FColor>(MoveTemp(RawPixels)));
+		TUniquePtr<TImagePixelData<FColor>> PixelData = MakeUnique<TImagePixelData<FColor>>(InViewport->GetRenderTargetTextureSizeXY(), TArray64<FColor>(MoveTemp(RawPixels)));
 
 		check(PixelData->IsDataWellFormed());
 		ImageTask->PixelData = MoveTemp(PixelData);
@@ -5728,8 +5799,8 @@ void FEditorViewportClient::TakeScreenshot(FViewport* InViewport, bool bInValida
 	else
 	{
 		TArray<FLinearColor> RawPixels;
-		RawPixels.SetNum(InViewport->GetSizeXY().X * InViewport->GetSizeXY().Y);
-		if (!InViewport->ReadLinearColorPixels(RawPixels))
+		RawPixels.SetNum(CaptureRect.Area());
+		if (!InViewport->ReadLinearColorPixels(RawPixels, FReadSurfaceDataFlags(RCM_UNorm, CubeFace_MAX), CaptureRect))
 		{
 			// Failed to read the image from the viewport
 			SaveMessagePtr->SetText(NSLOCTEXT("UnrealEd", "ScreenshotFailedViewport", "Screenshot failed, unable to read image from viewport"));
@@ -5738,7 +5809,7 @@ void FEditorViewportClient::TakeScreenshot(FViewport* InViewport, bool bInValida
 
 		ConvertPixelDataToSCRGB(RawPixels, InViewport->GetDisplayOutputFormat());
 
-		TUniquePtr<TImagePixelData<FLinearColor>> PixelData = MakeUnique<TImagePixelData<FLinearColor>>(InViewport->GetSizeXY(), TArray64<FLinearColor>(MoveTemp(RawPixels)));
+		TUniquePtr<TImagePixelData<FLinearColor>> PixelData = MakeUnique<TImagePixelData<FLinearColor>>(InViewport->GetRenderTargetTextureSizeXY(), TArray64<FLinearColor>(MoveTemp(RawPixels)));
 
 		check(PixelData->IsDataWellFormed());
 		ImageTask->PixelData = MoveTemp(PixelData);

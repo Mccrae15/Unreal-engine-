@@ -18,6 +18,7 @@
 
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/MemoryTrace.h"
+#include "RHICoreStats.h"
 
 int64 FD3D11GlobalStats::GDedicatedVideoMemory = 0;
 int64 FD3D11GlobalStats::GDedicatedSystemMemory = 0;
@@ -29,92 +30,31 @@ int64 FD3D11GlobalStats::GTotalGraphicsMemory = 0;
 	Texture allocator support.
 -----------------------------------------------------------------------------*/
 
-static bool ShouldCountAsTextureMemory(uint32 BindFlags)
-{
-	return (BindFlags & (D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS)) == 0;
-}
-
-// @param b3D true:3D, false:2D or cube map
-static TStatId GetD3D11StatEnum(uint32 BindFlags, bool bCubeMap, bool b3D)
-{
-#if STATS
-	if(ShouldCountAsTextureMemory(BindFlags))
-	{
-		// normal texture
-		if(bCubeMap)
-		{
-			return GET_STATID(STAT_TextureMemoryCube);
-		}
-		else if(b3D)
-		{
-			return GET_STATID(STAT_TextureMemory3D);
-		}
-		else
-		{
-			return GET_STATID(STAT_TextureMemory2D);
-		}
-	}
-	else
-	{
-		// render target
-		if(bCubeMap)
-		{
-			return GET_STATID(STAT_RenderTargetMemoryCube);
-		}
-		else if(b3D)
-		{
-			return GET_STATID(STAT_RenderTargetMemory3D);
-		}
-		else
-		{
-			return GET_STATID(STAT_RenderTargetMemory2D);
-		}
-	}
-#endif
-	return TStatId();
-}
-
 // Note: This function can be called from many different threads
 // @param TextureSize >0 to allocate, <0 to deallocate
 // @param b3D true:3D, false:2D or cube map
 void UpdateD3D11TextureStats(FD3D11Texture& Texture, bool bAllocating)
 {
-	uint32 BindFlags, MiscFlags;
-	bool b3D = Texture.IsTexture3D();
-	if (b3D)
+	const FRHITextureDesc& TextureDesc = Texture.GetDesc();
+
+	uint32 BindFlags;
+	if (TextureDesc.IsTexture3D())
 	{
 		D3D11_TEXTURE3D_DESC Desc;
 		Texture.GetD3D11Texture3D()->GetDesc(&Desc);
 		BindFlags = Desc.BindFlags;
-		MiscFlags = Desc.MiscFlags;
 	}
 	else
 	{
 		D3D11_TEXTURE2D_DESC Desc;
 		Texture.GetD3D11Texture2D()->GetDesc(&Desc);
 		BindFlags = Desc.BindFlags;
-		MiscFlags = Desc.MiscFlags;
 	}
 
-	int64 TextureSize = Texture.GetMemorySize();
-	if (!bAllocating)
-	{
-		TextureSize = -TextureSize;
-	}
+	const uint64 TextureSize = Texture.GetMemorySize();
 
-	int64 AlignedSize = (TextureSize > 0) ? Align(TextureSize, 1024) / 1024 : -(Align(-TextureSize, 1024) / 1024);
-	if(ShouldCountAsTextureMemory(BindFlags))
-	{
-		FPlatformAtomics::InterlockedAdd(&GCurrentTextureMemorySize, AlignedSize);
-	}
-	else
-	{
-		FPlatformAtomics::InterlockedAdd(&GCurrentRendertargetMemorySize, AlignedSize);
-	}
-
-	bool bCubeMap = (MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0;
-
-	INC_MEMORY_STAT_BY_FName(GetD3D11StatEnum(BindFlags, bCubeMap, b3D).GetName(), TextureSize);
+	const bool bOnlyStreamableTexturesInTexturePool = false;
+	UE::RHICore::UpdateGlobalTextureStats(TextureDesc, TextureSize, bOnlyStreamableTexturesInTexturePool, bAllocating);
 
 	if (bAllocating)
 	{
@@ -125,7 +65,6 @@ void UpdateD3D11TextureStats(FD3D11Texture& Texture, bool bAllocating)
 		INC_DWORD_STAT(STAT_D3D11TexturesReleased);
 	}
 
-#if PLATFORM_WINDOWS
 	// On Windows there is no way to hook into the low level d3d allocations and frees.
 	// This means that we must manually add the tracking here.
 	if (bAllocating)
@@ -143,7 +82,6 @@ void UpdateD3D11TextureStats(FD3D11Texture& Texture, bool bAllocating)
 		LLM(FLowLevelMemTracker::Get().OnLowLevelFree(ELLMTracker::Default , Texture.GetResource()));
 		MemoryTrace_Free((uint64)Texture.GetResource(), EMemoryTraceRootHeap::VideoMemory);
 	}
-#endif
 }
 
 FDynamicRHI::FRHICalcTextureSizeResult FD3D11DynamicRHI::RHICalcTexturePlatformSize(FRHITextureDesc const& Desc, uint32 FirstMipIndex)
@@ -161,15 +99,14 @@ FDynamicRHI::FRHICalcTextureSizeResult FD3D11DynamicRHI::RHICalcTexturePlatformS
  */
 void FD3D11DynamicRHI::RHIGetTextureMemoryStats(FTextureMemoryStats& OutStats)
 {
+	UE::RHICore::FillBaselineTextureMemoryStats(OutStats);
+
 	OutStats.DedicatedVideoMemory = FD3D11GlobalStats::GDedicatedVideoMemory;
     OutStats.DedicatedSystemMemory = FD3D11GlobalStats::GDedicatedSystemMemory;
     OutStats.SharedSystemMemory = FD3D11GlobalStats::GSharedSystemMemory;
 	OutStats.TotalGraphicsMemory = FD3D11GlobalStats::GTotalGraphicsMemory ? FD3D11GlobalStats::GTotalGraphicsMemory : -1;
 
-	OutStats.AllocatedMemorySize = int64(GCurrentTextureMemorySize) * 1024;
-	OutStats.LargestContiguousAllocation = OutStats.AllocatedMemorySize;
-	OutStats.TexturePoolSize = GTexturePoolSize;
-	OutStats.PendingMemoryAdjustment = 0;
+	OutStats.LargestContiguousAllocation = OutStats.StreamingMemorySize;
 }
 
 /**
@@ -187,86 +124,6 @@ bool FD3D11DynamicRHI::RHIGetTextureMemoryVisualizeData( FColor* /*TextureData*/
 {
 	// currently only implemented for console (Note: Keep this function for further extension. Talk to NiklasS for more info.)
 	return false;
-}
-
-/** Find an appropriate DXGI format for the input format and SRGB setting. */
-inline DXGI_FORMAT FindSharedResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
-{
-	if (bSRGB)
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
-		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
-		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
-		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
-		};
-	}
-	else
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM;
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
-		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
-		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
-		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
-		};
-	}
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_UINT;
-	case DXGI_FORMAT_R32G32B32_TYPELESS:    return DXGI_FORMAT_R32G32B32_UINT;
-	case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
-	case DXGI_FORMAT_R32G32_TYPELESS:       return DXGI_FORMAT_R32G32_UINT;
-	case DXGI_FORMAT_R10G10B10A2_TYPELESS:  return DXGI_FORMAT_R10G10B10A2_UNORM;
-	case DXGI_FORMAT_R16G16_TYPELESS:       return DXGI_FORMAT_R16G16_UNORM;
-	case DXGI_FORMAT_R8G8_TYPELESS:         return DXGI_FORMAT_R8G8_UNORM;
-	case DXGI_FORMAT_R8_TYPELESS:           return DXGI_FORMAT_R8_UNORM;
-
-	case DXGI_FORMAT_BC4_TYPELESS:         return DXGI_FORMAT_BC4_UNORM;
-	case DXGI_FORMAT_BC5_TYPELESS:         return DXGI_FORMAT_BC5_UNORM;
-
-
-
-	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	}
-	return InFormat;
-}
-
-inline DXGI_FORMAT FindDepthStencilResourceDXGIFormat(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R32_FLOAT: return DXGI_FORMAT_R32_TYPELESS;
-	case DXGI_FORMAT_R16_FLOAT: return DXGI_FORMAT_R16_TYPELESS;
-	}
-
-	return InFormat;
-}
-
-
-DXGI_FORMAT FD3D11DynamicRHI::GetPlatformTextureResourceFormat(DXGI_FORMAT InFormat, ETextureCreateFlags InFlags)
-{
-	// Find valid shared texture format
-	if (EnumHasAnyFlags(InFlags, TexCreate_Shared))
-	{
-		return FindSharedResourceDXGIFormat(InFormat, EnumHasAnyFlags(InFlags, TexCreate_SRGB));
-	}
-	if (EnumHasAnyFlags(InFlags, TexCreate_DepthStencilTargetable))
-	{
-		return FindDepthStencilResourceDXGIFormat(InFormat);
-	}
-	return InFormat;
 }
 
 // Work around an issue with the WARP device & BC7
@@ -290,12 +147,12 @@ void ApplyBC7SoftwareAdapterWorkaround(bool bSoftwareAdapter, D3D11_TEXTURE2D_DE
 }
 
 /** If true, guard texture creates with SEH to log more information about a driver crash we are seeing during texture streaming. */
-#define GUARDED_TEXTURE_CREATES (PLATFORM_WINDOWS && !(UE_BUILD_SHIPPING || UE_BUILD_TEST || PLATFORM_COMPILER_CLANG))
+#define GUARDED_TEXTURE_CREATES (!(UE_BUILD_SHIPPING || UE_BUILD_TEST || PLATFORM_COMPILER_CLANG))
 
 /**
  * Creates a 2D texture optionally guarded by a structured exception handler.
  */
-void SafeCreateTexture2D(ID3D11Device* Direct3DDevice, int32 UEFormat, const D3D11_TEXTURE2D_DESC* TextureDesc, const D3D11_SUBRESOURCE_DATA* SubResourceData, ID3D11Texture2D** OutTexture2D)
+static void SafeCreateTexture2D(ID3D11Device* Direct3DDevice, int32 UEFormat, const D3D11_TEXTURE2D_DESC* TextureDesc, const D3D11_SUBRESOURCE_DATA* SubResourceData, ID3D11Texture2D** OutTexture2D, const TCHAR* DebugName)
 {
 #if GUARDED_TEXTURE_CREATES
 	bool bDriverCrash = true;
@@ -319,7 +176,8 @@ void SafeCreateTexture2D(ID3D11Device* Direct3DDevice, int32 UEFormat, const D3D
 			SubResourceData ? SubResourceData->pSysMem : nullptr,
 			SubResourceData ? SubResourceData->SysMemPitch : 0,
 			SubResourceData ? SubResourceData->SysMemSlicePitch : 0,
-			Direct3DDevice
+			Direct3DDevice,
+			DebugName
 			);
 #if GUARDED_TEXTURE_CREATES
 		bDriverCrash = false;
@@ -333,7 +191,7 @@ void SafeCreateTexture2D(ID3D11Device* Direct3DDevice, int32 UEFormat, const D3D
 				TextureDesc->Width,
 				TextureDesc->Height,
 				TextureDesc->ArraySize,
-				GetD3D11TextureFormatString(TextureDesc->Format),
+				UE::DXGIUtilities::GetFormatString(TextureDesc->Format),
 				(uint32)TextureDesc->Format,
 				TextureDesc->MipLevels,
 				UEFormat
@@ -361,27 +219,27 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 
 	if (bCubeTexture)
 	{
-		checkf(SizeX <= GetMaxCubeTextureDimension(), TEXT("Requested cube texture size too large: %i, Max: %i"), SizeX, GetMaxCubeTextureDimension());
+		checkf(SizeX <= GetMaxCubeTextureDimension(), TEXT("Requested cube texture size too large: %i, Max: %i, DebugName: '%s'"), SizeX, GetMaxCubeTextureDimension(), CreateDesc.DebugName ? CreateDesc.DebugName : TEXT(""));
 		check(SizeX == SizeY);
 	}
 	else
 	{
-		checkf(SizeX <= GetMax2DTextureDimension(), TEXT("Requested texture2d x size too large: %i, Max: %i"), SizeX, GetMax2DTextureDimension());
-		checkf(SizeY <= GetMax2DTextureDimension(), TEXT("Requested texture2d y size too large: %i, Max: %i"), SizeY, GetMax2DTextureDimension());
+		checkf(SizeX <= GetMax2DTextureDimension(), TEXT("Requested texture2d x size too large: %i, Max: %i, DebugName: '%s'"), SizeX, GetMax2DTextureDimension(), CreateDesc.DebugName ? CreateDesc.DebugName : TEXT(""));
+		checkf(SizeY <= GetMax2DTextureDimension(), TEXT("Requested texture2d y size too large: %i, Max: %i, DebugName: '%s'"), SizeY, GetMax2DTextureDimension(), CreateDesc.DebugName ? CreateDesc.DebugName : TEXT(""));
 	}
 
 	if (bTextureArray)
 	{
-		checkf(SizeZ <= GetMaxTextureArrayLayers(), TEXT("Requested texture array size too large: %i, Max: %i"), SizeZ, GetMaxTextureArrayLayers());
+		checkf(SizeZ <= GetMaxTextureArrayLayers(), TEXT("Requested texture array size too large: %i, Max: %i, DebugName: '%s'"), SizeZ, GetMaxTextureArrayLayers(), CreateDesc.DebugName ? CreateDesc.DebugName : TEXT(""));
 	}
 
 	SCOPE_CYCLE_COUNTER(STAT_D3D11CreateTextureTime);
 
 	const bool bSRGB = EnumHasAnyFlags(Flags, TexCreate_SRGB);
 
-	const DXGI_FORMAT PlatformResourceFormat = FD3D11DynamicRHI::GetPlatformTextureResourceFormat((DXGI_FORMAT)GPixelFormats[Format].PlatformFormat, Flags);
-	const DXGI_FORMAT PlatformShaderResourceFormat = FindShaderResourceDXGIFormat(PlatformResourceFormat, bSRGB);
-	const DXGI_FORMAT PlatformRenderTargetFormat = FindShaderResourceDXGIFormat(PlatformResourceFormat, bSRGB);
+	const DXGI_FORMAT PlatformResourceFormat = UE::DXGIUtilities::GetPlatformTextureResourceFormat((DXGI_FORMAT)GPixelFormats[Format].PlatformFormat, Flags);
+	const DXGI_FORMAT PlatformShaderResourceFormat = UE::DXGIUtilities::FindShaderResourceFormat(PlatformResourceFormat, bSRGB);
+	const DXGI_FORMAT PlatformRenderTargetFormat = UE::DXGIUtilities::FindShaderResourceFormat(PlatformResourceFormat, bSRGB);
 	
 	uint32 CPUAccessFlags = 0;
 	D3D11_USAGE TextureUsage = D3D11_USAGE_DEFAULT;
@@ -564,7 +422,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 	else
 #endif
 	{
-		SafeCreateTexture2D(Direct3DDevice, Format, &TextureDesc, pSubresourceData, TextureResource.GetInitReference());
+		SafeCreateTexture2D(Direct3DDevice, Format, &TextureDesc, pSubresourceData, TextureResource.GetInitReference(), CreateDesc.DebugName);
 	}
 
 	if (bCreateRTV)
@@ -652,7 +510,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 		D3D11_DEPTH_STENCIL_VIEW_DESC DSVDesc;
 		FMemory::Memzero(DSVDesc);
 
-		DSVDesc.Format = FindDepthStencilDXGIFormat(PlatformResourceFormat);
+		DSVDesc.Format = UE::DXGIUtilities::FindDepthStencilFormat(PlatformResourceFormat);
 
 		if (bTextureArray || bCubeTexture)
 		{
@@ -690,7 +548,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 			// Read-only DSVs are not supported in Feature Level 10 so 
 			// a dummy DSV is created in order reduce logic complexity at a higher-level.
 			DSVDesc.Flags = (AccessType & FExclusiveDepthStencil::DepthRead_StencilWrite) ? D3D11_DSV_READ_ONLY_DEPTH : 0;
-			if(HasStencilBits(DSVDesc.Format))
+			if(UE::DXGIUtilities::HasStencilBits(DSVDesc.Format))
 			{
 				DSVDesc.Flags |= (AccessType & FExclusiveDepthStencil::DepthWrite_StencilRead) ? D3D11_DSV_READ_ONLY_STENCIL : 0;
 			}
@@ -793,8 +651,8 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture3D(FRHITextureCreateDesc cons
 	const bool bSRGB = EnumHasAnyFlags(Flags, TexCreate_SRGB);
 
 	const DXGI_FORMAT PlatformResourceFormat = (DXGI_FORMAT)GPixelFormats[Format].PlatformFormat;
-	const DXGI_FORMAT PlatformShaderResourceFormat = FindShaderResourceDXGIFormat(PlatformResourceFormat, bSRGB);
-	const DXGI_FORMAT PlatformRenderTargetFormat = FindShaderResourceDXGIFormat(PlatformResourceFormat, bSRGB);
+	const DXGI_FORMAT PlatformShaderResourceFormat = UE::DXGIUtilities::FindShaderResourceFormat(PlatformResourceFormat, bSRGB);
+	const DXGI_FORMAT PlatformRenderTargetFormat = UE::DXGIUtilities::FindShaderResourceFormat(PlatformResourceFormat, bSRGB);
 
 	// Describe the texture.
 	D3D11_TEXTURE3D_DESC TextureDesc;
@@ -840,6 +698,23 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture3D(FRHITextureCreateDesc cons
 		bCreateRTV = true;
 	}
 
+	bool bCreateShaderResource = true;
+
+	if (EnumHasAnyFlags(Flags, TexCreate_CPUReadback))
+	{
+		check(!EnumHasAnyFlags(Flags, TexCreate_RenderTargetable | TexCreate_DepthStencilTargetable | TexCreate_ShaderResource));
+
+		TextureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		TextureDesc.Usage = D3D11_USAGE_STAGING;
+		TextureDesc.BindFlags = 0;
+		bCreateShaderResource = false;
+	}
+
+	if (EnumHasAnyFlags(Flags, TexCreate_DisableSRVCreation))
+	{
+		bCreateShaderResource = false;
+	}
+
 	// Set up the texture bind flags.
 	check(!EnumHasAnyFlags(Flags, TexCreate_DepthStencilTargetable | TexCreate_ResolveTargetable));
 
@@ -878,11 +753,13 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture3D(FRHITextureCreateDesc cons
 		SubResData ? SubResData->pSysMem : nullptr,
 		SubResData ? SubResData->SysMemPitch : 0,
 		SubResData ? SubResData->SysMemSlicePitch : 0,
-		Direct3DDevice
+		Direct3DDevice,
+		CreateDesc.DebugName
 		);
 
 	// Create a shader resource view for the texture.
 	TRefCountPtr<ID3D11ShaderResourceView> ShaderResourceView;
+	if(bCreateShaderResource)
 	{
 		D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc;
 		SRVDesc.Format = PlatformShaderResourceFormat;
@@ -941,7 +818,7 @@ FTextureRHIRef FD3D11DynamicRHI::RHICreateTexture_RenderThread(class FRHICommand
 	return RHICreateTexture(CreateDesc);
 }
 
-FTextureRHIRef FD3D11DynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips)
+FTextureRHIRef FD3D11DynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips, FGraphEventRef& OutCompletionEvent)
 {
 	TArray<D3D11_SUBRESOURCE_DATA, TInlineAllocator<12>> SubresourceData;
 	SubresourceData.SetNumUninitialized(NumMips);
@@ -992,87 +869,9 @@ FTextureRHIRef FD3D11DynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32 Si
 		FMemory::Free(TempBuffer);
 	}
 
+	OutCompletionEvent = nullptr;
+
 	return Texture;
-}
-
-FShaderResourceViewRHIRef FD3D11DynamicRHI::RHICreateShaderResourceView(FRHITexture* TextureRHI, const FRHITextureSRVCreateInfo& CreateInfo)
-{
-	FD3D11Texture* Texture = ResourceCast(TextureRHI);
-
-	// Create a Shader Resource View
-	D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc;
-	DXGI_FORMAT BaseTextureFormat = DXGI_FORMAT_UNKNOWN;
-
-	if (TextureRHI->GetTexture3D() != NULL)
-	{
-		D3D11_TEXTURE3D_DESC TextureDesc;
-		Texture->GetD3D11Texture3D()->GetDesc(&TextureDesc);
-		BaseTextureFormat = TextureDesc.Format;
-
-		SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
-		SRVDesc.Texture3D.MostDetailedMip = CreateInfo.MipLevel;
-		SRVDesc.Texture3D.MipLevels = CreateInfo.NumMipLevels;
-	}
-	else if (TextureRHI->GetTexture2DArray() != NULL)
-	{
-		D3D11_TEXTURE2D_DESC TextureDesc;
-		Texture->GetD3D11Texture2D()->GetDesc(&TextureDesc);
-		BaseTextureFormat = TextureDesc.Format;
-
-		SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-		SRVDesc.Texture2DArray.MostDetailedMip = CreateInfo.MipLevel;
-		SRVDesc.Texture2DArray.MipLevels = CreateInfo.NumMipLevels;
-		SRVDesc.Texture2DArray.FirstArraySlice = CreateInfo.FirstArraySlice;
-		SRVDesc.Texture2DArray.ArraySize = (CreateInfo.NumArraySlices == 0 ? TextureDesc.ArraySize : CreateInfo.NumArraySlices);
-	}
-	else if (TextureRHI->GetTextureCube() != NULL)
-	{
-		D3D11_TEXTURE2D_DESC TextureDesc;
-		Texture->GetD3D11Texture2D()->GetDesc(&TextureDesc);
-		BaseTextureFormat = TextureDesc.Format;
-
-		SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-		SRVDesc.TextureCube.MostDetailedMip = CreateInfo.MipLevel;
-		SRVDesc.TextureCube.MipLevels = CreateInfo.NumMipLevels;
-	}
-	else
-	{
-		D3D11_TEXTURE2D_DESC TextureDesc;
-		Texture->GetD3D11Texture2D()->GetDesc(&TextureDesc);
-		BaseTextureFormat = TextureDesc.Format;
-
-		if (TextureDesc.SampleDesc.Count > 1)
-		{
-			///MS textures can't have mips apparently, so nothing else to set.
-			SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
-		}
-		else
-		{
-			SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-			SRVDesc.Texture2D.MostDetailedMip = CreateInfo.MipLevel;
-			SRVDesc.Texture2D.MipLevels = CreateInfo.NumMipLevels;
-		}
-	}
-
-	// Allow input CreateInfo to override SRGB and/or format
-	const bool bBaseSRGB = EnumHasAnyFlags(TextureRHI->GetFlags(), TexCreate_SRGB);
-	const bool bSRGB = CreateInfo.SRGBOverride != SRGBO_ForceDisable && bBaseSRGB;
-	if (CreateInfo.Format != PF_Unknown)
-	{
-		BaseTextureFormat = (DXGI_FORMAT)GPixelFormats[CreateInfo.Format].PlatformFormat;
-	}
-	SRVDesc.Format = FindShaderResourceDXGIFormat(BaseTextureFormat, bSRGB);
-
-	// Create a Shader Resource View
-	TRefCountPtr<ID3D11ShaderResourceView> ShaderResourceView;
-	VERIFYD3D11RESULT_EX(Direct3DDevice->CreateShaderResourceView(Texture->GetResource(), &SRVDesc, (ID3D11ShaderResourceView**)ShaderResourceView.GetInitReference()), Direct3DDevice);
-
-	return new FD3D11ShaderResourceView(ShaderResourceView, Texture, Texture);
-}
-
-FShaderResourceViewRHIRef FD3D11DynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo)
-{
-	return RHICreateShaderResourceView(Texture, CreateInfo);
 }
 
 /** Generates mip maps for the surface. */
@@ -1258,7 +1057,7 @@ ETextureReallocationStatus FD3D11DynamicRHI::CancelAsyncReallocateTexture2D_Rend
 	return RHICancelAsyncReallocateTexture2D(Texture2D, bBlockUntilCompleted);
 }
 
-void* FD3D11Texture::Lock(FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 ArrayIndex, EResourceLockMode LockMode, uint32& DestStride, bool bForceLockDeferred)
+void* FD3D11Texture::Lock(FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 ArrayIndex, EResourceLockMode LockMode, uint32& DestStride, bool bForceLockDeferred, uint64* OutLockedByteCount)
 {
 	check(!IsTexture3D()); // Only 2D texture locks are implemented
 
@@ -1276,6 +1075,11 @@ void* FD3D11Texture::Lock(FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 Arra
 	const uint32 NumBlocksX = (MipSizeX + BlockSizeX - 1) / BlockSizeX;
 	const uint32 NumBlocksY = (MipSizeY + BlockSizeY - 1) / BlockSizeY;
 	const uint32 MipBytes = NumBlocksX * NumBlocksY * BlockBytes;
+
+	if (OutLockedByteCount)
+	{
+		*OutLockedByteCount = MipBytes;
+	}
 
 	FD3D11LockedData LockedData;
 	if( LockMode == RLM_WriteOnly )
@@ -1329,7 +1133,8 @@ void* FD3D11Texture::Lock(FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 Arra
 			nullptr,
 			0,
 			0,
-			D3DRHI->GetDevice()
+			D3DRHI->GetDevice(),
+			*FString::Printf(TEXT("%s_Staging"), *GetName().ToString())
 			);
 		LockedData.StagingResource = StagingTexture;
 
@@ -1388,12 +1193,12 @@ void FD3D11Texture::Unlock(FD3D11DynamicRHI* D3DRHI, uint32 MipIndex, uint32 Arr
 	}
 }
 
-void* FD3D11DynamicRHI::RHILockTexture2D(FRHITexture2D* TextureRHI, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail)
+void* FD3D11DynamicRHI::RHILockTexture2D(FRHITexture2D* TextureRHI, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, uint64* OutLockedByteCount)
 {
 	check(TextureRHI);
 	FD3D11Texture* Texture = ResourceCast(TextureRHI);
 	ConditionalClearShaderResource(Texture, false);
-	return Texture->Lock(this, MipIndex, 0, LockMode, DestStride);
+	return Texture->Lock(this, MipIndex, 0, LockMode, DestStride, false /* bForceLockDeferred */, OutLockedByteCount);
 }
 
 void* FD3D11DynamicRHI::LockTexture2D_RenderThread(
@@ -1403,23 +1208,24 @@ void* FD3D11DynamicRHI::LockTexture2D_RenderThread(
 	EResourceLockMode LockMode,
 	uint32& DestStride,
 	bool bLockWithinMiptail,
-	bool bNeedsDefaultRHIFlush)
+	bool bNeedsDefaultRHIFlush,
+	uint64* OutLockedByteCount)
 {
 	void *LockedTexture = nullptr;
 
 	if (ShouldNotEnqueueRHICommand())
 	{
-		LockedTexture = RHILockTexture2D(Texture, MipIndex, LockMode, DestStride, bLockWithinMiptail);
+		LockedTexture = RHILockTexture2D(Texture, MipIndex, LockMode, DestStride, bLockWithinMiptail, OutLockedByteCount);
 	}
 	else if (LockMode == RLM_ReadOnly)
 	{
 		FRHICommandListExecutor::GetImmediateCommandList().ImmediateFlush(EImmediateFlushType::FlushRHIThread);
-		LockedTexture = RHILockTexture2D(Texture, MipIndex, LockMode, DestStride, bLockWithinMiptail);
+		LockedTexture = RHILockTexture2D(Texture, MipIndex, LockMode, DestStride, bLockWithinMiptail, OutLockedByteCount);
 	}
 	else
 	{
 		FD3D11Texture* TextureD3D11 = ResourceCast(Texture);
-		LockedTexture = TextureD3D11->Lock(this, MipIndex, 0, LockMode, DestStride, true);
+		LockedTexture = TextureD3D11->Lock(this, MipIndex, 0, LockMode, DestStride, true, OutLockedByteCount);
 	}
 	return LockedTexture;
 }
@@ -1618,14 +1424,6 @@ void FD3D11DynamicRHI::RHIBindDebugLabelName(FRHITexture* TextureRHI, const TCHA
 #endif
 }
 
-void FD3D11DynamicRHI::RHIVirtualTextureSetFirstMipInMemory(FRHITexture2D* TextureRHI, uint32 FirstMip)
-{
-}
-
-void FD3D11DynamicRHI::RHIVirtualTextureSetFirstMipVisible(FRHITexture2D* TextureRHI, uint32 FirstMip)
-{
-}
-
 FD3D11Texture* FD3D11DynamicRHI::CreateTextureFromResource(bool bTextureArray, bool bCubeTexture, EPixelFormat Format, ETextureCreateFlags TexCreateFlags, const FClearValueBinding& ClearValueBinding, ID3D11Texture2D* TextureResource)
 {
 	D3D11_TEXTURE2D_DESC TextureDesc;
@@ -1633,9 +1431,9 @@ FD3D11Texture* FD3D11DynamicRHI::CreateTextureFromResource(bool bTextureArray, b
 
 	const bool bSRGB = EnumHasAnyFlags(TexCreateFlags, TexCreate_SRGB);
 
-	const DXGI_FORMAT PlatformResourceFormat = FD3D11DynamicRHI::GetPlatformTextureResourceFormat((DXGI_FORMAT)GPixelFormats[Format].PlatformFormat, TexCreateFlags);
-	const DXGI_FORMAT PlatformShaderResourceFormat = FindShaderResourceDXGIFormat(PlatformResourceFormat, bSRGB);
-	const DXGI_FORMAT PlatformRenderTargetFormat = FindShaderResourceDXGIFormat(PlatformResourceFormat, bSRGB);
+	const DXGI_FORMAT PlatformResourceFormat = UE::DXGIUtilities::GetPlatformTextureResourceFormat((DXGI_FORMAT)GPixelFormats[Format].PlatformFormat, TexCreateFlags);
+	const DXGI_FORMAT PlatformShaderResourceFormat = UE::DXGIUtilities::FindShaderResourceFormat(PlatformResourceFormat, bSRGB);
+	const DXGI_FORMAT PlatformRenderTargetFormat = UE::DXGIUtilities::FindShaderResourceFormat(PlatformResourceFormat, bSRGB);
 
 	const bool bIsMultisampled = TextureDesc.SampleDesc.Count > 1;
 
@@ -1742,7 +1540,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateTextureFromResource(bool bTextureArray, b
 		D3D11_DEPTH_STENCIL_VIEW_DESC DSVDesc;
 		FMemory::Memzero(DSVDesc);
 
-		DSVDesc.Format = FindDepthStencilDXGIFormat(PlatformResourceFormat);
+		DSVDesc.Format = UE::DXGIUtilities::FindDepthStencilFormat(PlatformResourceFormat);
 
 		if (bTextureArray || bCubeTexture)
 		{
@@ -1780,7 +1578,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateTextureFromResource(bool bTextureArray, b
 			// Read-only DSVs are not supported in Feature Level 10 so 
 			// a dummy DSV is created in order reduce logic complexity at a higher-level.
 			DSVDesc.Flags = (AccessType & FExclusiveDepthStencil::DepthRead_StencilWrite) ? D3D11_DSV_READ_ONLY_DEPTH : 0;
-			if (HasStencilBits(DSVDesc.Format))
+			if (UE::DXGIUtilities::HasStencilBits(DSVDesc.Format))
 			{
 				DSVDesc.Flags |= (AccessType & FExclusiveDepthStencil::DepthWrite_StencilRead) ? D3D11_DSV_READ_ONLY_STENCIL : 0;
 			}

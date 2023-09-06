@@ -210,16 +210,13 @@ struct FMetalGraphicsPipelineKey
 		for (uint32 i = 0; i < NumActiveTargets; i++)
 		{
 			EPixelFormat TargetFormat = (EPixelFormat)Init.RenderTargetFormats[i];
-			if (TargetFormat == PF_Unknown) { continue; }
 
-			mtlpp::PixelFormat MetalFormat = (mtlpp::PixelFormat)GPixelFormats[TargetFormat].PlatformFormat;
-			ETextureCreateFlags Flags = (ETextureCreateFlags)Init.RenderTargetFlags[i];
-			if (EnumHasAnyFlags(Flags, TexCreate_SRGB))
-			{
-				MetalFormat = ToSRGBFormat(MetalFormat);
-			}
+			if (TargetFormat == PF_Unknown)
+				continue;
+
+			mtlpp::PixelFormat MetalFormat = UEToMetalFormat(TargetFormat, EnumHasAnyFlags(Init.RenderTargetFlags[i], TexCreate_SRGB));
 			
-			uint8 FormatKey = GetMetalPixelFormatKey(MetalFormat);;
+			uint8 FormatKey = GetMetalPixelFormatKey(MetalFormat);
 			Key.SetHashValue(RTBitOffsets[i], NumBits_RenderTargetFormat, FormatKey);
 			Key.SetHashValue(BlendBitOffsets[i], NumBits_BlendState, BlendState->RenderTargetStates[i].BlendStateKey);
 			
@@ -484,96 +481,193 @@ APPLE_PLATFORM_OBJECT_ALLOC_OVERRIDES(FMetalShaderPipeline)
 		}
 	}
 }
+
 - (void)initResourceMask:(EMetalShaderFrequency)Frequency
 {
-	NSArray<MTLArgument*>* Arguments = nil;
-	switch(Frequency)
-	{
-		case EMetalShaderVertex:
-		{
-			MTLRenderPipelineReflection* Reflection = RenderPipelineReflection;
-			check(Reflection);
-			
-			Arguments = Reflection.vertexArguments;
-			break;
-		}
-		case EMetalShaderFragment:
-		{
-			MTLRenderPipelineReflection* Reflection = RenderPipelineReflection;
-			check(Reflection);
-			
-			Arguments = Reflection.fragmentArguments;
-			break;
-		}
-		case EMetalShaderCompute:
-		{
-			MTLComputePipelineReflection* Reflection = ComputePipelineReflection;
-			check(Reflection);
-			
-			Arguments = Reflection.arguments;
-			break;
-		}
-		case EMetalShaderStream:
-		{
-			MTLRenderPipelineReflection* Reflection = StreamPipelineReflection;
-			check(Reflection);
-			
-			Arguments = Reflection.vertexArguments;
-			break;
-		}
-		default:
-			check(false);
-			break;
-	}
-	
-	for (uint32 i = 0; i < Arguments.count; i++)
-	{
-		MTLArgument* Arg = [Arguments objectAtIndex:i];
-		check(Arg);
-
-		if (!Arg.active)
-		{
-			continue;
-		}
-
-		switch(Arg.type)
-		{
-			case MTLArgumentTypeBuffer:
-			{
-				checkf(Arg.index < ML_MaxBuffers, TEXT("Metal buffer index exceeded!"));
-				if (FString(Arg.name) != TEXT("BufferSizes") && FString(Arg.name) != TEXT("spvBufferSizeConstants"))
-				{
-					ResourceMask[Frequency].BufferMask |= (1 << Arg.index);
-				
-					if(BufferDataSizes[Frequency].Num() < 31)
-						BufferDataSizes[Frequency].SetNumZeroed(31);
-				
-					BufferDataSizes[Frequency][Arg.index] = Arg.bufferDataSize;
-				}
-				break;
-			}
-			case MTLArgumentTypeThreadgroupMemory:
-			{
-				break;
-			}
-			case MTLArgumentTypeTexture:
-			{
-				checkf(Arg.index < ML_MaxTextures, TEXT("Metal texture index exceeded!"));
-				ResourceMask[Frequency].TextureMask |= (FMetalTextureMask(1) << Arg.index);
-				TextureTypes[Frequency].Add(Arg.index, (uint8)Arg.textureType);
-				break;
-			}
-			case MTLArgumentTypeSampler:
-			{
-				checkf(Arg.index < ML_MaxSamplers, TEXT("Metal sampler index exceeded!"));
-				ResourceMask[Frequency].SamplerMask |= (1 << Arg.index);
-				break;
-			}
-			default:
-				check(false);
-				break;
-		}
-	}
+    if (@available(macOS 13.0, iOS 16.0, *))
+    {
+        NSArray<id<MTLBinding>>* Bindings = nil;
+        switch(Frequency)
+        {
+            case EMetalShaderVertex:
+            {
+                MTLRenderPipelineReflection* Reflection = RenderPipelineReflection;
+                check(Reflection);
+                
+                Bindings = Reflection.vertexBindings;
+                break;
+            }
+            case EMetalShaderFragment:
+            {
+                MTLRenderPipelineReflection* Reflection = RenderPipelineReflection;
+                check(Reflection);
+                
+                Bindings = Reflection.fragmentBindings;
+                break;
+            }
+            case EMetalShaderCompute:
+            {
+                MTLComputePipelineReflection* Reflection = ComputePipelineReflection;
+                check(Reflection);
+                
+                Bindings = Reflection.bindings;
+                break;
+            }
+            case EMetalShaderStream:
+            {
+                MTLRenderPipelineReflection* Reflection = StreamPipelineReflection;
+                check(Reflection);
+                
+                Bindings = Reflection.vertexBindings;
+                break;
+            }
+            default:
+                check(false);
+                break;
+        }
+        
+        for (uint32 i = 0; i < Bindings.count; i++)
+        {
+            id<MTLBinding> Binding = [Bindings objectAtIndex:i];
+            check(Binding);
+            
+            if (!Binding.isUsed)
+            {
+                continue;
+            }
+            
+            switch(Binding.type)
+            {
+                case MTLBindingTypeBuffer:
+                {
+                    id<MTLBufferBinding> BufferBinding = (id<MTLBufferBinding>)[Bindings objectAtIndex:i];
+                    checkf(Binding.index < ML_MaxBuffers, TEXT("Metal buffer index exceeded!"));
+                    if (FString(Binding.name) != TEXT("BufferSizes") && FString(Binding.name) != TEXT("spvBufferSizeConstants"))
+                    {
+                        ResourceMask[Frequency].BufferMask |= (1 << Binding.index);
+                        
+                        if(BufferDataSizes[Frequency].Num() < 31)
+                            BufferDataSizes[Frequency].SetNumZeroed(31);
+                        
+                        BufferDataSizes[Frequency][Binding.index] = BufferBinding.bufferDataSize;
+                    }
+                    break;
+                }
+                case MTLBindingTypeThreadgroupMemory:
+                {
+                    break;
+                }
+                case MTLBindingTypeTexture:
+                {
+                    id<MTLTextureBinding> TextureBinding = (id<MTLTextureBinding>)[Bindings objectAtIndex:i];
+                    checkf(Binding.index < ML_MaxTextures, TEXT("Metal texture index exceeded!"));
+                    ResourceMask[Frequency].TextureMask |= (FMetalTextureMask(1) << Binding.index);
+                    TextureTypes[Frequency].Add(Binding.index, (uint8)TextureBinding.textureType);
+                    break;
+                }
+                case MTLBindingTypeSampler:
+                {
+                    checkf(Binding.index < ML_MaxSamplers, TEXT("Metal sampler index exceeded!"));
+                    ResourceMask[Frequency].SamplerMask |= (1 << Binding.index);
+                    break;
+                }
+                default:
+                    check(false);
+                    break;
+            }
+        }
+    }
+    else
+    {
+        NSArray<MTLArgument*>* Arguments = nil;
+        switch(Frequency)
+        {
+            case EMetalShaderVertex:
+            {
+                MTLRenderPipelineReflection* Reflection = RenderPipelineReflection;
+                check(Reflection);
+                
+                Arguments = Reflection.vertexArguments;
+                break;
+            }
+            case EMetalShaderFragment:
+            {
+                MTLRenderPipelineReflection* Reflection = RenderPipelineReflection;
+                check(Reflection);
+                
+                Arguments = Reflection.fragmentArguments;
+                break;
+            }
+            case EMetalShaderCompute:
+            {
+                MTLComputePipelineReflection* Reflection = ComputePipelineReflection;
+                check(Reflection);
+                
+                Arguments = Reflection.arguments;
+                break;
+            }
+            case EMetalShaderStream:
+            {
+                MTLRenderPipelineReflection* Reflection = StreamPipelineReflection;
+                check(Reflection);
+                
+                Arguments = Reflection.vertexArguments;
+                break;
+            }
+            default:
+                check(false);
+                break;
+        }
+        
+        for (uint32 i = 0; i < Arguments.count; i++)
+        {
+            MTLArgument* Arg = [Arguments objectAtIndex:i];
+            check(Arg);
+            
+            if (!Arg.active)
+            {
+                continue;
+            }
+            
+            switch(Arg.type)
+            {
+                case MTLArgumentTypeBuffer:
+                {
+                    checkf(Arg.index < ML_MaxBuffers, TEXT("Metal buffer index exceeded!"));
+                    if (FString(Arg.name) != TEXT("BufferSizes") && FString(Arg.name) != TEXT("spvBufferSizeConstants"))
+                    {
+                        ResourceMask[Frequency].BufferMask |= (1 << Arg.index);
+                        
+                        if(BufferDataSizes[Frequency].Num() < 31)
+                            BufferDataSizes[Frequency].SetNumZeroed(31);
+                        
+                        BufferDataSizes[Frequency][Arg.index] = Arg.bufferDataSize;
+                    }
+                    break;
+                }
+                case MTLArgumentTypeThreadgroupMemory:
+                {
+                    break;
+                }
+                case MTLArgumentTypeTexture:
+                {
+                    checkf(Arg.index < ML_MaxTextures, TEXT("Metal texture index exceeded!"));
+                    ResourceMask[Frequency].TextureMask |= (FMetalTextureMask(1) << Arg.index);
+                    TextureTypes[Frequency].Add(Arg.index, (uint8)Arg.textureType);
+                    break;
+                }
+                case MTLArgumentTypeSampler:
+                {
+                    checkf(Arg.index < ML_MaxSamplers, TEXT("Metal sampler index exceeded!"));
+                    ResourceMask[Frequency].SamplerMask |= (1 << Arg.index);
+                    break;
+                }
+                default:
+                    check(false);
+                    break;
+            }
+        }
+    }
 }
 @end
 
@@ -651,12 +745,7 @@ static bool ConfigureRenderPipelineDescriptor(mtlpp::RenderPipelineDescriptor& R
 		
 		TargetWidth += GPixelFormats[TargetFormat].BlockBytes;
 		
-		mtlpp::PixelFormat MetalFormat = (mtlpp::PixelFormat)GPixelFormats[TargetFormat].PlatformFormat;
-		ETextureCreateFlags Flags = (ETextureCreateFlags)Init.RenderTargetFlags[ActiveTargetIndex];
-		if (EnumHasAnyFlags(Flags, TexCreate_SRGB))
-		{
-			MetalFormat = ToSRGBFormat(MetalFormat);
-		}
+		mtlpp::PixelFormat MetalFormat = UEToMetalFormat(TargetFormat, EnumHasAnyFlags(Init.RenderTargetFlags[ActiveTargetIndex], TexCreate_SRGB));
 		
 		mtlpp::RenderPipelineColorAttachmentDescriptor Attachment = ColorAttachments[ActiveTargetIndex];
 		Attachment.SetPixelFormat(MetalFormat);

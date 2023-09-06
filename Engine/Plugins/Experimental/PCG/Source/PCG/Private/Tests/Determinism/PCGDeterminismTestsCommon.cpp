@@ -82,14 +82,19 @@ namespace PCGDeterminismTests
 		OutResult.DataTypesTested |= InputPCGData->GetDataType();
 
 		// Clone the actor and component
-		AActor* PCGActor = InPCGComponent->GetOwner();
+		const AActor* PCGActor = InPCGComponent->GetOwner();
 		check(PCGActor);
 
 		AActor* PCGActorCopy = DuplicateObject<AActor>(PCGActor, GetTransientPackage());
 		PCGActorCopy->SetFlags(RF_Transient);
 		UPCGComponent* PCGComponentCopy = PCGActorCopy->FindComponentByClass<UPCGComponent>();
 		check(PCGComponentCopy);
+		PCGComponentCopy->SetFlags(RF_Transient);
 		PCGComponentCopy->SetIsPartitioned(false);
+		if (PCGActor->GetWorld())
+		{
+			PCGComponentCopy->RegisterComponentWithWorld(PCGActor->GetWorld());
+		}
 
 		FPCGGraphExecutor Executor = FPCGGraphExecutor(PCGComponentCopy);
 
@@ -204,6 +209,10 @@ namespace PCGDeterminismTests
 
 		// Clean up anything generated
 		PCGComponentCopy->Cleanup();
+		if (PCGComponentCopy->IsRegistered())
+		{
+			PCGComponentCopy->UnregisterComponent();
+		}
 
 		// Finalize the results
 		UpdateTestResults(Defaults::GraphResultName, OutResult, HighestDeterminismLevel);

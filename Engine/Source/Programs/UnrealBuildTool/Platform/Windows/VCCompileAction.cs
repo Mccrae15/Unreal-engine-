@@ -3,8 +3,8 @@
 using System;
 using System.Collections.Generic;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -28,6 +28,11 @@ namespace UnrealBuildTool
 		/// The action type
 		/// </summary>
 		public ActionType ActionType { get; set; } = ActionType.Compile;
+
+		/// <summary>
+		/// Artifact support for this step
+		/// </summary>
+		public ArtifactMode ArtifactMode { get; set; } = ArtifactMode.None;
 
 		/// <summary>
 		/// Path to the compiler
@@ -55,9 +60,24 @@ namespace UnrealBuildTool
 		public FileItem? ObjectFile { get; set; }
 
 		/// <summary>
+		/// The assembly file to output
+		/// </summary>
+		public FileItem? AssemblyFile { get; set; }
+
+		/// <summary>
 		/// The output preprocessed file
 		/// </summary>
 		public FileItem? PreprocessedFile { get; set; }
+
+		/// <summary>
+		/// The output analyze warning and error log file
+		/// </summary>
+		public FileItem? AnalyzeLogFile { get; set; }
+
+		/// <summary>
+		/// The output experimental warning and error log file
+		/// </summary>
+		public FileItem? ExperimentalLogFile { get; set; }
 
 		/// <summary>
 		/// The dependency list file
@@ -144,6 +164,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		public UnrealArch Architecture { get; set; }
 
+		/// <summary>
+		/// Whether this compile is static code analysis (used for display)
+		/// </summary>
+		public bool bIsAnalyzing { get; set; }
+
 		#region Public IAction implementation
 
 		/// <summary>
@@ -158,15 +183,26 @@ namespace UnrealBuildTool
 		public bool bCanExecuteRemotelyWithSNDBS { get; set; }
 
 		/// <inheritdoc/>
+		public bool bCanExecuteRemotelyWithXGE { get; set; } = true;
+
+		/// <inheritdoc/>
+		public bool bCanExecuteInBox { get; set; } = true;
+
+		/// <inheritdoc/>
 		public bool bUseActionHistory => true;
 
+		/// <inheritdoc/>
+		public bool bIsHighPriority => CreatePchFile != null;
+
+		/// <inheritdoc/>
+		public double Weight { get; set; } = 1.0;
 		#endregion
 
 		#region Implementation of IAction
 
 		IEnumerable<FileItem> IExternalAction.DeleteItems => DeleteItems;
 		public DirectoryReference WorkingDirectory => Unreal.EngineSourceDirectory;
-		string IExternalAction.CommandDescription => $"Compile [{Architecture}]";
+		string IExternalAction.CommandDescription => $"{(bIsAnalyzing ? "Analyze" : "Compile")} [{Architecture}]";
 		bool IExternalAction.bIsGCCCompiler => false;
 		bool IExternalAction.bProducesImportLibrary => false;
 		string IExternalAction.StatusDescription => (SourceFile == null) ? "Compiling" : SourceFile.Location.GetFileName();
@@ -189,7 +225,7 @@ namespace UnrealBuildTool
 				{
 					yield return UsingPchFile;
 				}
-				foreach(FileItem AdditionalPrerequisiteItem in AdditionalPrerequisiteItems)
+				foreach (FileItem AdditionalPrerequisiteItem in AdditionalPrerequisiteItems)
 				{
 					yield return AdditionalPrerequisiteItem;
 				}
@@ -205,9 +241,21 @@ namespace UnrealBuildTool
 				{
 					yield return ObjectFile;
 				}
+				if (AssemblyFile != null)
+				{
+					yield return AssemblyFile;
+				}
 				if (PreprocessedFile != null)
 				{
 					yield return PreprocessedFile;
+				}
+				if (AnalyzeLogFile != null)
+				{
+					yield return AnalyzeLogFile;
+				}
+				if (ExperimentalLogFile != null)
+				{
+					yield return ExperimentalLogFile;
 				}
 				if (DependencyListFile != null)
 				{
@@ -266,14 +314,8 @@ namespace UnrealBuildTool
 		}
 
 		/// <inheritdoc/>
-		string IExternalAction.CommandVersion
-		{
-			get
-			{
-				return ToolChainVersion;
-			}
-		}
-		
+		string IExternalAction.CommandVersion => ToolChainVersion;
+
 		#endregion
 
 		/// <summary>
@@ -282,9 +324,9 @@ namespace UnrealBuildTool
 		/// <param name="Environment">Compiler executable</param>
 		public VCCompileAction(VCEnvironment Environment)
 		{
-			this.CompilerExe = FileItem.GetItemByFileReference(Environment.CompilerPath);
-			this.CompilerType = Environment.Compiler;
-			this.ToolChainVersion = Environment.ToolChainVersion.ToString();
+			CompilerExe = FileItem.GetItemByFileReference(Environment.CompilerPath);
+			CompilerType = Environment.Compiler;
+			ToolChainVersion = Environment.ToolChainVersion.ToString();
 		}
 
 		/// <summary>
@@ -293,12 +335,17 @@ namespace UnrealBuildTool
 		/// <param name="InAction">Action to copy from</param>
 		public VCCompileAction(VCCompileAction InAction)
 		{
+			ActionType = InAction.ActionType;
+			ArtifactMode = InAction.ArtifactMode;
 			CompilerExe = InAction.CompilerExe;
 			CompilerType = InAction.CompilerType;
 			ToolChainVersion = InAction.ToolChainVersion;
 			SourceFile = InAction.SourceFile;
 			ObjectFile = InAction.ObjectFile;
+			AssemblyFile = InAction.AssemblyFile;
 			PreprocessedFile = InAction.PreprocessedFile;
+			AnalyzeLogFile = InAction.AnalyzeLogFile;
+			ExperimentalLogFile = InAction.ExperimentalLogFile;
 			DependencyListFile = InAction.DependencyListFile;
 			CompiledModuleInterfaceFile = InAction.CompiledModuleInterfaceFile;
 			TimingFile = InAction.TimingFile;
@@ -314,7 +361,9 @@ namespace UnrealBuildTool
 			bShowIncludes = InAction.bShowIncludes;
 			bCanExecuteRemotely = InAction.bCanExecuteRemotely;
 			bCanExecuteRemotelyWithSNDBS = InAction.bCanExecuteRemotelyWithSNDBS;
+			bCanExecuteRemotelyWithXGE = InAction.bCanExecuteRemotelyWithXGE;
 			Architecture = InAction.Architecture;
+			Weight = InAction.Weight;
 
 			AdditionalPrerequisiteItems = new List<FileItem>(InAction.AdditionalPrerequisiteItems);
 			AdditionalProducedItems = new List<FileItem>(InAction.AdditionalProducedItems);
@@ -328,12 +377,16 @@ namespace UnrealBuildTool
 		public VCCompileAction(BinaryArchiveReader Reader)
 		{
 			ActionType = (ActionType)Reader.ReadInt();
+			ArtifactMode = (ArtifactMode)Reader.ReadByte();
 			CompilerExe = Reader.ReadFileItem()!;
 			CompilerType = (WindowsCompiler)Reader.ReadInt();
 			ToolChainVersion = Reader.ReadString()!;
 			SourceFile = Reader.ReadFileItem();
 			ObjectFile = Reader.ReadFileItem();
+			AssemblyFile = Reader.ReadFileItem();
 			PreprocessedFile = Reader.ReadFileItem();
+			AnalyzeLogFile = Reader.ReadFileItem();
+			ExperimentalLogFile = Reader.ReadFileItem();
 			DependencyListFile = Reader.ReadFileItem();
 			CompiledModuleInterfaceFile = Reader.ReadFileItem();
 			TimingFile = Reader.ReadFileItem();
@@ -341,14 +394,17 @@ namespace UnrealBuildTool
 			CreatePchFile = Reader.ReadFileItem();
 			UsingPchFile = Reader.ReadFileItem();
 			PchThroughHeaderFile = Reader.ReadFileItem();
-			IncludePaths = Reader.ReadList(() => Reader.ReadDirectoryReference())!;
-			SystemIncludePaths = Reader.ReadList(() => Reader.ReadDirectoryReference())!;
+			IncludePaths = Reader.ReadList(() => Reader.ReadCompactDirectoryReference())!;
+			SystemIncludePaths = Reader.ReadList(() => Reader.ReadCompactDirectoryReference())!;
 			Definitions = Reader.ReadList(() => Reader.ReadString())!;
 			ForceIncludeFiles = Reader.ReadList(() => Reader.ReadFileItem())!;
 			Arguments = Reader.ReadList(() => Reader.ReadString())!;
 			bShowIncludes = Reader.ReadBool();
 			bCanExecuteRemotely = Reader.ReadBool();
 			bCanExecuteRemotelyWithSNDBS = Reader.ReadBool();
+			bCanExecuteRemotelyWithXGE = Reader.ReadBool();
+			Architecture = UnrealArch.Parse(Reader.ReadString()!);
+			Weight = Reader.ReadDouble();
 
 			AdditionalPrerequisiteItems = Reader.ReadList(() => Reader.ReadFileItem())!;
 			AdditionalProducedItems = Reader.ReadList(() => Reader.ReadFileItem())!;
@@ -359,12 +415,16 @@ namespace UnrealBuildTool
 		public void Write(BinaryArchiveWriter Writer)
 		{
 			Writer.WriteInt((int)ActionType);
+			Writer.WriteByte((byte)ArtifactMode);
 			Writer.WriteFileItem(CompilerExe);
 			Writer.WriteInt((int)CompilerType);
 			Writer.WriteString(ToolChainVersion);
 			Writer.WriteFileItem(SourceFile);
 			Writer.WriteFileItem(ObjectFile);
+			Writer.WriteFileItem(AssemblyFile);
 			Writer.WriteFileItem(PreprocessedFile);
+			Writer.WriteFileItem(AnalyzeLogFile);
+			Writer.WriteFileItem(ExperimentalLogFile);
 			Writer.WriteFileItem(DependencyListFile);
 			Writer.WriteFileItem(CompiledModuleInterfaceFile);
 			Writer.WriteFileItem(TimingFile);
@@ -372,14 +432,17 @@ namespace UnrealBuildTool
 			Writer.WriteFileItem(CreatePchFile);
 			Writer.WriteFileItem(UsingPchFile);
 			Writer.WriteFileItem(PchThroughHeaderFile);
-			Writer.WriteList(IncludePaths, Item => Writer.WriteDirectoryReference(Item));
-			Writer.WriteList(SystemIncludePaths, Item => Writer.WriteDirectoryReference(Item));
+			Writer.WriteList(IncludePaths, Item => Writer.WriteCompactDirectoryReference(Item));
+			Writer.WriteList(SystemIncludePaths, Item => Writer.WriteCompactDirectoryReference(Item));
 			Writer.WriteList(Definitions, Item => Writer.WriteString(Item));
 			Writer.WriteList(ForceIncludeFiles, Item => Writer.WriteFileItem(Item));
 			Writer.WriteList(Arguments, Item => Writer.WriteString(Item));
 			Writer.WriteBool(bShowIncludes);
 			Writer.WriteBool(bCanExecuteRemotely);
 			Writer.WriteBool(bCanExecuteRemotelyWithSNDBS);
+			Writer.WriteBool(bCanExecuteRemotelyWithXGE);
+			Writer.WriteString(Architecture.ToString());
+			Writer.WriteDouble(Weight);
 
 			Writer.WriteList(AdditionalPrerequisiteItems, Item => Writer.WriteFileItem(Item));
 			Writer.WriteList(AdditionalProducedItems, Item => Writer.WriteFileItem(Item));
@@ -420,7 +483,7 @@ namespace UnrealBuildTool
 			foreach (string Definition in Definitions)
 			{
 				// Escape all quotation marks so that they get properly passed with the command line.
-				string DefinitionArgument = Definition.Contains("\"") ? Definition.Replace("\"", "\\\"") : Definition;
+				string DefinitionArgument = Definition.Contains('"') ? Definition.Replace("\"", "\\\"") : Definition;
 				VCToolChain.AddDefinition(Arguments, DefinitionArgument);
 			}
 
@@ -450,6 +513,21 @@ namespace UnrealBuildTool
 			if (ObjectFile != null)
 			{
 				VCToolChain.AddObjectFile(Arguments, ObjectFile);
+			}
+
+			if (AssemblyFile != null)
+			{
+				VCToolChain.AddAssemblyFile(Arguments, AssemblyFile);
+			}
+
+			if (AnalyzeLogFile != null)
+			{
+				VCToolChain.AddAnalyzeLogFile(Arguments, AnalyzeLogFile);
+			}
+
+			if (ExperimentalLogFile != null)
+			{
+				VCToolChain.AddExperimentalLogFile(Arguments, ExperimentalLogFile);
 			}
 
 			// A better way to express this? .json is used as output for /sourceDependencies), but .md.json is used as output for /sourceDependencies:directives)

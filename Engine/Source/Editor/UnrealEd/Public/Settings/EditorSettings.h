@@ -52,8 +52,8 @@ struct FRecentProjectFile
 };
 
 
-UCLASS(config=EditorSettings)
-class UNREALED_API UEditorSettings : public UObject
+UCLASS(config=EditorSettings, MinimalAPI)
+class UEditorSettings : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
@@ -121,10 +121,6 @@ class UNREALED_API UEditorSettings : public UObject
 	UPROPERTY()
 	bool bLoadTheMostRecentlyLoadedProjectAtStartup; // Note that this property is NOT config since it is not necessary to save the value to ini. It is determined at startup in UEditorEngine::InitEditor().
 
-	/** Can the editor report usage analytics (types of assets being spawned, etc...) back to Epic in order for us to improve the editor user experience?  Note: The editor must be restarted for changes to take effect. */
-	UPROPERTY()
-	bool bEditorAnalyticsEnabled_DEPRECATED;
-
 	// =====================================================================
 	// The following options are NOT exposed in the preferences Editor
 	// (usually because there is a different way to set them interactively!)
@@ -155,16 +151,16 @@ class UNREALED_API UEditorSettings : public UObject
 	Scalability::FQualityLevels EngineBenchmarkResult;
 
 	/** Load the engine scalability benchmark results. Performs a benchmark if not yet valid. */
-	void LoadScalabilityBenchmark();
+	UNREALED_API void LoadScalabilityBenchmark();
 
 	/** Auto detects and applies the scalability benchmark */
-	void AutoApplyScalabilityBenchmark();
+	UNREALED_API void AutoApplyScalabilityBenchmark();
 
 	/** @return true if the scalability benchmark is valid */
-	bool IsScalabilityBenchmarkValid() const;
+	UNREALED_API bool IsScalabilityBenchmarkValid() const;
 
 	//~ Begin UObject Interface
-	virtual bool CanEditChange(const FProperty* InProperty) const override;
-	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	UNREALED_API virtual bool CanEditChange(const FProperty* InProperty) const override;
+	UNREALED_API virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	//~ End UObject Interface
 };

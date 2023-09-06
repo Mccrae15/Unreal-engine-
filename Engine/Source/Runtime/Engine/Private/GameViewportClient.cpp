@@ -629,6 +629,32 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
 
 	RemapControllerInput(EventArgs);
 
+
+#if WITH_EDITOR
+	if (EventArgs.Key.IsGamepadKey())
+	{
+		/** For PIE, since this is gamepad, check if we want to route gamepad to second window.
+		 * Let the next PIE window handle the input (this allows people to use a controller for one window and kbm for the other).
+		 */
+		const FViewportClient* InViewportClient = InEventArgs.Viewport != nullptr ? InEventArgs.Viewport->GetClient() : nullptr;
+		if (InViewportClient == this)
+		{
+			const ULevelEditorPlaySettings* PlayInSettings = GetDefault<ULevelEditorPlaySettings>();
+			const bool CanRouteGamepadToSecondWindow = [&PlayInSettings] { bool RouteGamepadToSecondWindow(false); return (PlayInSettings->GetRouteGamepadToSecondWindow(RouteGamepadToSecondWindow) && RouteGamepadToSecondWindow); }();
+			const bool CanRunUnderOneProcess = [&PlayInSettings] { bool RunUnderOneProcess(false); return (PlayInSettings->GetRunUnderOneProcess(RunUnderOneProcess) && RunUnderOneProcess); }();
+			if (CanRouteGamepadToSecondWindow && CanRunUnderOneProcess && InEventArgs.Viewport->IsPlayInEditorViewport())
+			{
+				if (UGameViewportClient* NextViewport = GEngine->GetNextPIEViewport(this))
+				{
+					const bool bResult = NextViewport->InputKey(InEventArgs);
+					return false;
+				}
+			}
+		}	
+	}
+#endif
+	
+
 	if (IgnoreInput())
 	{
 		return ViewportConsole ? ViewportConsole->InputKey(EventArgs.InputDevice, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false;
@@ -698,6 +724,32 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId InputD
 	// Handle mapping controller id and key if needed
 	FInputKeyEventArgs EventArgs(InViewport, InputDevice, Key, IE_Axis);
 
+	RemapControllerInput(EventArgs);
+
+#if WITH_EDITOR
+	if (bGamepad && InViewport)
+	{
+		/** For PIE, since this is gamepad, check if we want to route gamepad to second window.
+		 * Let the next PIE window handle the input (this allows people to use a controller for one window and kbm for the other).
+		 */
+		const FViewportClient* InViewportClient = InViewport->GetClient();
+		if (InViewportClient == this)
+		{
+			const ULevelEditorPlaySettings* PlayInSettings = GetDefault<ULevelEditorPlaySettings>();
+			const bool CanRouteGamepadToSecondWindow = [&PlayInSettings] { bool RouteGamepadToSecondWindow(false); return (PlayInSettings->GetRouteGamepadToSecondWindow(RouteGamepadToSecondWindow) && RouteGamepadToSecondWindow); }();
+			const bool CanRunUnderOneProcess = [&PlayInSettings] { bool RunUnderOneProcess(false); return (PlayInSettings->GetRunUnderOneProcess(RunUnderOneProcess) && RunUnderOneProcess); }();
+			if (CanRouteGamepadToSecondWindow && CanRunUnderOneProcess && InViewport->IsPlayInEditorViewport())
+			{
+				if (UGameViewportClient* NextViewport = GEngine->GetNextPIEViewport(this))
+				{
+					const bool bResult = NextViewport->InputAxis(InViewport, InputDevice, Key, Delta, DeltaTime, NumSamples, bGamepad);
+					return false;
+				}
+			}
+		}
+	}
+#endif
+	
 	OnInputAxisEvent.Broadcast(InViewport, EventArgs.ControllerId, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 	
 	bool bResult = false;
@@ -705,33 +757,36 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId InputD
 	// Don't allow mouse/joystick input axes while in PIE and the console has forced the cursor to be visible.  It's
 	// just distracting when moving the mouse causes mouse look while you are trying to move the cursor over a button
 	// in the editor!
-	if( !( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() ) || ViewportConsole == nullptr || !ViewportConsole->ConsoleActive() )
+	if (InViewport)
 	{
-		// route to subsystems that care
-		if (ViewportConsole != nullptr)
+		if( !( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() ) || ViewportConsole == nullptr || !ViewportConsole->ConsoleActive() )
 		{
-			bResult = ViewportConsole->InputAxis(EventArgs.InputDevice, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
-		}
-		
-		// Try the override callback, this may modify event args
-		if (!bResult && OnOverrideInputAxisEvent.IsBound())
-		{
-			bResult = OnOverrideInputAxisEvent.Execute(EventArgs, Delta, DeltaTime, NumSamples);
-		}
-
-		if (!bResult)
-		{
-			ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromInputDevice(this, EventArgs.InputDevice);
-			if (TargetPlayer && TargetPlayer->PlayerController)
+			// route to subsystems that care
+			if (ViewportConsole != nullptr)
 			{
-				bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, (double)Delta, DeltaTime, NumSamples, EventArgs.IsGamepad(), EventArgs.InputDevice));
+				bResult = ViewportConsole->InputAxis(EventArgs.InputDevice, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 			}
-		}
+		
+			// Try the override callback, this may modify event args
+			if (!bResult && OnOverrideInputAxisEvent.IsBound())
+			{
+				bResult = OnOverrideInputAxisEvent.Execute(EventArgs, Delta, DeltaTime, NumSamples);
+			}
 
-		if( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() )
-		{
-			// Absorb all keys so game input events are not routed to the Slate editor frame
-			bResult = true;
+			if (!bResult)
+			{
+				ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromInputDevice(this, EventArgs.InputDevice);
+				if (TargetPlayer && TargetPlayer->PlayerController)
+				{
+					bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, (double)Delta, DeltaTime, NumSamples, EventArgs.IsGamepad(), EventArgs.InputDevice));
+				}
+			}
+
+			if( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() )
+			{
+				// Absorb all keys so game input events are not routed to the Slate editor frame
+				bResult = true;
+			}
 		}
 	}
 
@@ -1223,6 +1278,26 @@ static UCanvas* GetCanvasByName(FName CanvasName)
 	return *FoundCanvas;
 }
 
+EViewStatusForScreenPercentage UGameViewportClient::GetViewStatusForScreenPercentage() const
+{
+	if (EngineShowFlags.PathTracing)
+	{
+		return EViewStatusForScreenPercentage::PathTracer;
+	}
+	else if (EngineShowFlags.StereoRendering)
+	{
+		return EViewStatusForScreenPercentage::VR;
+	}
+	else if (World && World->GetFeatureLevel() == ERHIFeatureLevel::ES3_1)
+	{
+		return EViewStatusForScreenPercentage::Mobile;
+	}
+	else
+	{
+		return EViewStatusForScreenPercentage::Desktop;
+	}
+}
+
 void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 {
 	//Valid SceneCanvas is required.  Make this explicit.
@@ -1647,19 +1722,8 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 			if (ViewFamily.EngineShowFlags.ScreenPercentage && !bDisableWorldRendering && ViewFamily.Views.Num() > 0)
 			{
 				// Get global view fraction.
-				FStaticResolutionFractionHeuristic StaticHeuristic(ViewFamily.EngineShowFlags);
-
-#if WITH_EDITOR
-				if (FStaticResolutionFractionHeuristic::FUserSettings::EditorOverridePIESettings())
-				{
-					StaticHeuristic.Settings.PullEditorRenderingSettings(/* bIsRealTime = */ true, /* bIsPathTraced = */ ViewFamily.EngineShowFlags.PathTracing);
-				}
-				else
-#endif
-				{
-					StaticHeuristic.Settings.PullRunTimeRenderingSettings();
-				}
-
+				FStaticResolutionFractionHeuristic StaticHeuristic;
+				StaticHeuristic.Settings.PullRunTimeRenderingSettings(GetViewStatusForScreenPercentage());
 				StaticHeuristic.PullViewFamilyRenderingSettings(ViewFamily);
 				StaticHeuristic.DPIScale = GetDPIScale();
 
@@ -1693,14 +1757,7 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 	// Draw the player views.
 	if (!bDisableWorldRendering && PlayerViewMap.Num() > 0 && FSlateApplication::Get().GetPlatformApplication()->IsAllowedToRender()) //-V560
 	{
-		// Views 
-		for (auto ViewExt : ViewFamily.ViewExtensions)
-		{
-			for (FSceneView* View : Views)
-			{
-				ViewExt->SetupView(ViewFamily, *View);
-			}
-		}
+		// Scene view extension SetupView calls already done in LocalPlayer->CalcSceneView above.
 
 		GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
 	}
@@ -2002,7 +2059,7 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 
 		bool bScreenshotSuccessful = false;
 		bool bIsUI = false;
-		FIntVector Size(InViewport->GetSizeXY().X, InViewport->GetSizeXY().Y, 0);
+		FIntVector Size(InViewport->GetRenderTargetTextureSizeXY().X, InViewport->GetRenderTargetTextureSizeXY().Y, 0);
 
 		EDisplayOutputFormat ViewportOutputFormat = InViewport->GetDisplayOutputFormat();
 		bool bHdrEnabled = InViewport->GetSceneHDREnabled();
@@ -2025,12 +2082,12 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 		}
 		else if (bHdrEnabled)
 		{
-			bScreenshotSuccessful = GetViewportScreenShotHDR(InViewport, BitmapHDR);
+			bScreenshotSuccessful = GetViewportScreenShotHDR(InViewport, BitmapHDR, FIntRect(0, 0, Size.X, Size.Y));
 			ConvertPixelDataToSCRGB(BitmapHDR, ViewportOutputFormat);
 		}
 		else
 		{
-			bScreenshotSuccessful = GetViewportScreenShot(InViewport, Bitmap);
+			bScreenshotSuccessful = GetViewportScreenShot(InViewport, Bitmap, FIntRect(0, 0, Size.X, Size.Y));
 		}
 
 		if (bScreenshotSuccessful)
@@ -2892,6 +2949,22 @@ void UGameViewportClient::RemoveAllViewportWidgets()
 	}
 }
 
+void UGameViewportClient::AddGameLayerWidget(TSharedRef<SWidget> ViewportContent, const int32 ZOrder)
+{
+	if (const TSharedPtr<IGameLayerManager> GameLayerManager = GameLayerManagerPtr.Pin())
+	{
+		GameLayerManager->AddGameLayer(ViewportContent, ZOrder);
+	}
+}
+
+void UGameViewportClient::RemoveGameLayerWidget(TSharedRef<SWidget> ViewportContent)
+{
+	if (const TSharedPtr<IGameLayerManager> GameLayerManager = GameLayerManagerPtr.Pin())
+	{
+		GameLayerManager->RemoveGameLayer(ViewportContent);
+	}
+}
+
 void UGameViewportClient::VerifyPathRenderingComponents()
 {
 	const bool bShowPaths = !!EngineShowFlags.Navigation;
@@ -2941,6 +3014,11 @@ void UGameViewportClient::SetMouseLockMode(EMouseLockMode InMouseLockMode)
 	}
 }
 
+EMouseLockMode UGameViewportClient::GetMouseLockMode() const
+{
+	return MouseLockMode;
+}
+
 void UGameViewportClient::SetHideCursorDuringCapture(bool InHideCursorDuringCapture)
 {
 	if (bHideCursorDuringCapture != InHideCursorDuringCapture)
@@ -2954,7 +3032,33 @@ void UGameViewportClient::SetHideCursorDuringCapture(bool InHideCursorDuringCapt
 	}
 }
 
-bool UGameViewportClient::Exec( UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
+#if UE_ALLOW_EXEC_COMMANDS
+bool UGameViewportClient::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	if (FExec::Exec(InWorld, Cmd, Ar))
+	{
+		return true;
+	}
+	else if (ProcessConsoleExec(Cmd, Ar, NULL))
+	{
+		return true;
+	}
+	else if (GameInstance && (GameInstance->Exec(InWorld, Cmd, Ar) || GameInstance->ProcessConsoleExec(Cmd, Ar, nullptr)))
+	{
+		return true;
+	}
+	else if (GEngine->Exec(InWorld, Cmd, Ar))
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+#endif // UE_ALLOW_EXEC_COMMANDS
+
+bool UGameViewportClient::Exec_Runtime( UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 {
 	if ( FParse::Command(&Cmd,TEXT("FORCEFULLSCREEN")) )
 	{
@@ -3059,19 +3163,6 @@ bool UGameViewportClient::Exec( UWorld* InWorld, const TCHAR* Cmd,FOutputDevice&
 	else if (FParse::Command(&Cmd, TEXT("PAUSERENDERCLOCK")))
 	{
 		return HandlePauseRenderClockCommand( Cmd, Ar );
-	}
-
-	if(ProcessConsoleExec(Cmd,Ar,NULL))
-	{
-		return true;
-	}
-	else if ( GameInstance && (GameInstance->Exec(InWorld, Cmd, Ar) || GameInstance->ProcessConsoleExec(Cmd, Ar, nullptr)) )
-	{
-		return true;
-	}
-	else if( GEngine->Exec( InWorld, Cmd,Ar) )
-	{
-		return true;
 	}
 	else
 	{
@@ -3746,8 +3837,8 @@ bool UGameViewportClient::HandleScreenshotCommand( const TCHAR* Cmd, FOutputDevi
 
 		FScreenshotRequest::RequestScreenshot(FileName, bShowUI, bAddFilenameSuffix, Viewport->GetSceneHDREnabled());
 
-		GScreenshotResolutionX = Viewport->GetSizeXY().X;
-		GScreenshotResolutionY = Viewport->GetSizeXY().Y;
+		GScreenshotResolutionX = Viewport->GetRenderTargetTextureSizeXY().X;
+		GScreenshotResolutionY = Viewport->GetRenderTargetTextureSizeXY().Y;
 	}
 	return true;
 }

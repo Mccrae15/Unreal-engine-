@@ -6,7 +6,8 @@
 #include "RenderingThread.h"
 #include "RHIBufferTests.h"
 #include "RHITextureTests.h"
-
+#include "RHIDrawTests.h"
+#include "RHIReadbackTests.h"
 
 BEGIN_DEFINE_SPEC(FAutomationRHITest, "Rendering.RHI", EAutomationTestFlags::EngineFilter | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::NonNullRHI)
 END_DEFINE_SPEC(FAutomationRHITest)
@@ -84,12 +85,36 @@ void FAutomationRHITest::Define()
 		});
 	});
 
+	Describe("Test RHI Readback", [this]
+	{
+		It("Buffer Readback", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHIReadbackTests::Test_BufferReadback);
+			TestEqual("BufferReadback", bResult, 1);
+		});
+
+		It("Texture Readback", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHIReadbackTests::Test_TextureReadback);
+			TestEqual("TextureReadback", bResult, 1);
+		});
+	});
+
 	Describe("Test RHI Create Buffer Parallel", [this]
 	{
 		It("RHICreateBuffer_Parallel", [this]()
 		{
 			bool bResult = RunOnRenderThreadSynchronous(FRHIBufferTests::Test_RHICreateBuffer_Parallel);
 			TestEqual("RHICreateBuffer_Parallel", bResult, 1);
+		});
+	});
+
+	Describe("Test RHI Draw", [this]()
+	{
+		It("RHI MultiDrawIndirect", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHIDrawTests::Test_MultiDrawIndirect);
+			TestEqual("RHI MultiDrawIndirect", bResult, 1);
 		});
 	});
 }

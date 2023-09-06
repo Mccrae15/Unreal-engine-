@@ -343,9 +343,12 @@ void FWindowsPlatformProcess::LaunchURL( const TCHAR* URL, const TCHAR* Parms, F
 			*Error = TEXT("");
 		}
 
+		if (FCoreDelegates::LaunchCustomHandlerForURL.IsBound())
+		{
+			FCoreDelegates::LaunchCustomHandlerForURL.Execute(URL, Error);
+		}
 		// Use the default handler if we have a URI scheme name that doesn't look like a Windows path, and is not http: or https:
-		FString SchemeName;
-		if (FParse::SchemeNameFromURI(URL, SchemeName) && SchemeName.Len() > 1 && SchemeName != TEXT("http") && SchemeName != TEXT("https"))
+		else if (FString SchemeName; FParse::SchemeNameFromURI(URL, SchemeName) && SchemeName.Len() > 1 && SchemeName != TEXT("http") && SchemeName != TEXT("https"))
 		{
 			LaunchDefaultHandlerForURL(URL, Error);
 		}
@@ -510,15 +513,25 @@ void FWindowsPlatformProcess::CloseProc(FProcHandle & ProcessHandle)
 
 void FWindowsPlatformProcess::TerminateProc( FProcHandle & ProcessHandle, bool KillTree )
 {
-	TerminateProcTreeWithPredicate(ProcessHandle, [](uint32 ProcessId, const TCHAR* ApplicationName) { return true; });
+	if (KillTree)
+	{
+		TerminateProcTreeWithPredicate(ProcessHandle, [](uint32 ProcessId, const TCHAR* ApplicationName) { return true; });
+	}
+	else
+	{
+		TerminateProcess(ProcessHandle.Get(),0);
+	}
 }
 
-void FWindowsPlatformProcess::TerminateProcTreeWithPredicate(
-	FProcHandle& ProcessHandle,
-	TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate)
+static void TerminateProcTreeWithPredicateInternal(
+	HANDLE ProcessHandle,
+	TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate,
+	TSet<DWORD>& VisitedProcessIds)
 {
-	::DWORD ProcessId = ::GetProcessId(ProcessHandle.Get());
+	::DWORD ProcessId = ::GetProcessId(ProcessHandle);
 	FString ProcessName = FPlatformProcess::GetApplicationName(ProcessId);
+
+	VisitedProcessIds.Add(ProcessId);
 
 	if (!Predicate(ProcessId, *ProcessName))
 	{
@@ -543,16 +556,28 @@ void FWindowsPlatformProcess::TerminateProcTreeWithPredicate(
 
 					if (ChildProcHandle)
 					{
-						FProcHandle ChildHandle(ChildProcHandle);
-						TerminateProcTreeWithPredicate(ChildHandle, Predicate);
+						if (!VisitedProcessIds.Contains(Entry.th32ProcessID))
+						{
+							TerminateProcTreeWithPredicateInternal(ChildProcHandle, Predicate, VisitedProcessIds);
+						}
+						::CloseHandle(ChildProcHandle);
 					}
 				}
 			}
 			while(::Process32Next(SnapShot, &Entry));
 		}
 	}
+	::CloseHandle(SnapShot);
 
-	TerminateProcess(ProcessHandle.Get(),0);
+	TerminateProcess(ProcessHandle,0);
+}
+
+void FWindowsPlatformProcess::TerminateProcTreeWithPredicate(
+	FProcHandle& ProcessHandle,
+	TFunctionRef<bool(uint32 ProcessId, const TCHAR* ApplicationName)> Predicate)
+{
+	TSet<DWORD> VisitedProcessIds;
+	TerminateProcTreeWithPredicateInternal(ProcessHandle.Get(), Predicate, VisitedProcessIds);
 }
 
 uint32 FWindowsPlatformProcess::GetCurrentProcessId()
@@ -1181,6 +1206,64 @@ const TCHAR* FWindowsPlatformProcess::ApplicationSettingsDir()
 	return *WindowsApplicationSettingsDir;
 }
 
+FString FWindowsPlatformProcess::GetApplicationSettingsDir(const ApplicationSettingsContext& Settings)
+{
+	FString WindowsApplicationSettingsDir;
+	TCHAR* ApplicationSettingsPath;
+	switch (Settings.Location)
+	{
+		case ApplicationSettingsContext::Context::ApplicationSpecific:
+		{
+			const HRESULT Ret = SHGetKnownFolderPath(FOLDERID_ProgramData, 0, NULL, &ApplicationSettingsPath);
+			if (SUCCEEDED(Ret))
+			{
+				WindowsApplicationSettingsDir = FString(ApplicationSettingsPath);
+				break;
+			}
+			else
+			{
+				return "";
+			}
+		}
+		case ApplicationSettingsContext::Context::LocalUser:
+		{
+			const HRESULT Ret = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &ApplicationSettingsPath);
+			if (SUCCEEDED(Ret))
+			{
+				WindowsApplicationSettingsDir = FString(ApplicationSettingsPath);
+				break;
+			}
+			else
+			{
+				return "";
+			}
+		}
+		case ApplicationSettingsContext::Context::RoamingUser:
+		{
+			const HRESULT Ret = SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &ApplicationSettingsPath);
+			if (SUCCEEDED(Ret))
+			{
+				WindowsApplicationSettingsDir = FString(ApplicationSettingsPath);
+				break;
+			}
+			else
+			{
+				return "";
+			}
+		}
+		default:
+			checkf(false, TEXT("Attempting to call `ApplicationSettingsDir` with an invalid context!"));
+			return "";
+	}
+	WindowsApplicationSettingsDir = WindowsApplicationSettingsDir.Replace(TEXT("\\"), TEXT("/")) + TEXT("/");
+	CoTaskMemFree(ApplicationSettingsPath);
+	if (Settings.bIsEpic)
+	{
+		WindowsApplicationSettingsDir += TEXT("Epic/");
+	}
+	return WindowsApplicationSettingsDir;
+}
+
 const TCHAR* FWindowsPlatformProcess::ComputerName()
 {
 	static TCHAR Result[256] = {};
@@ -1621,19 +1704,17 @@ bool FWindowsPlatformProcess::ReadPipeToArray(void* ReadPipe, TArray<uint8> & Ou
 bool FWindowsPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FString* OutWritten)
 {
 	// If there is not a message or WritePipe is null
-	if (Message.Len() == 0 || WritePipe == nullptr)
+	int32 MessageLen = Message.Len();
+	if (MessageLen == 0 || WritePipe == nullptr)
 	{
 		return false;
 	}
 
 	// Convert input to UTF8CHAR
-	uint32 BytesAvailable = Message.Len();
-	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
-	for (uint32 i = 0; i < BytesAvailable; i++)
-	{
-		Buffer[i] = (UTF8CHAR)Message[i];
-	}
-	Buffer[BytesAvailable] = (UTF8CHAR)'\n';
+	const TCHAR* MessagePtr = *Message;
+	int32 BytesAvailable = FPlatformString::ConvertedLength<UTF8CHAR>(MessagePtr, MessageLen);
+	UTF8CHAR* Buffer = new UTF8CHAR[BytesAvailable + 2];
+	*FPlatformString::Convert(Buffer, BytesAvailable, MessagePtr, MessageLen) = (UTF8CHAR)'\n';
 
 	// Write to pipe
 	uint32 BytesWritten = 0;
@@ -1642,8 +1723,7 @@ bool FWindowsPlatformProcess::WritePipe(void* WritePipe, const FString& Message,
 	// Get written message
 	if (OutWritten)
 	{
-		Buffer[BytesWritten] = (UTF8CHAR)'\0';
-		*OutWritten = FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
+		*OutWritten = StringCast<TCHAR>(Buffer, BytesWritten).Get();
 	}
 
 	delete[] Buffer;

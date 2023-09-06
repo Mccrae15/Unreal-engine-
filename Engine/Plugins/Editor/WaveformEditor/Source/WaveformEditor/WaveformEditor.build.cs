@@ -13,19 +13,21 @@ namespace UnrealBuildTool.Rules
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
-					"AudioExtensions",
 					"AssetRegistry",
+					"AudioExtensions",
+					"AudioWidgets",
 					"Core", 
 					"CoreUObject",
+					"ContentBrowser",
 					"DeveloperSettings",
 					"EditorStyle",
 					"Engine",
 					"InputCore",
 					"SignalProcessing",
-					"UnrealEd", 
 					"Slate",
 					"SlateCore",
 					"ToolMenus",
+					"UnrealEd", 
 					"WaveformEditorWidgets",
 					"WaveformTransformationsWidgets"
 				}

@@ -13,6 +13,7 @@ namespace GeometryCollection::Facades
 	FCollectionMeshFacade::FCollectionMeshFacade(FManagedArrayCollection& InCollection)
 		: FCollectionUVFacade(InCollection)
 		, TransformToGeometryIndexAttribute(InCollection, "TransformToGeometryIndex", FGeometryCollection::TransformGroup)
+		, TransformIndexAttribute(InCollection, "TransformIndex", FGeometryCollection::GeometryGroup)
 		, VertexAttribute(InCollection, "Vertex", FGeometryCollection::VerticesGroup)
 		, TangentUAttribute(InCollection, "TangentU", FGeometryCollection::VerticesGroup)
 		, TangentVAttribute(InCollection, "TangentV", FGeometryCollection::VerticesGroup)
@@ -25,6 +26,7 @@ namespace GeometryCollection::Facades
 		, VisibleAttribute(InCollection, "Visible", FGeometryCollection::FacesGroup)
 		, MaterialIndexAttribute(InCollection, "MaterialIndex", FGeometryCollection::FacesGroup)
 		, MaterialIDAttribute(InCollection, "MaterialID", FGeometryCollection::FacesGroup)
+		, InternalAttribute(InCollection, "Internal", FGeometryCollection::FacesGroup)
 		, FaceStartAttribute(InCollection, "FaceStart", FGeometryCollection::GeometryGroup)
 		, FaceCountAttribute(InCollection, "FaceCount", FGeometryCollection::GeometryGroup)
 	{
@@ -33,6 +35,7 @@ namespace GeometryCollection::Facades
 	FCollectionMeshFacade::FCollectionMeshFacade(const FManagedArrayCollection& InCollection)
 		: FCollectionUVFacade(InCollection)
 		, TransformToGeometryIndexAttribute(InCollection, "TransformToGeometryIndex", FGeometryCollection::TransformGroup)
+		, TransformIndexAttribute(InCollection, "TransformIndex", FGeometryCollection::GeometryGroup)
 		, VertexAttribute(InCollection, "Vertex", FGeometryCollection::VerticesGroup)
 		, TangentUAttribute(InCollection, "TangentU", FGeometryCollection::VerticesGroup)
 		, TangentVAttribute(InCollection, "TangentV", FGeometryCollection::VerticesGroup)
@@ -45,6 +48,7 @@ namespace GeometryCollection::Facades
 		, VisibleAttribute(InCollection, "Visible", FGeometryCollection::FacesGroup)
 		, MaterialIndexAttribute(InCollection, "MaterialIndex", FGeometryCollection::FacesGroup)
 		, MaterialIDAttribute(InCollection, "MaterialID", FGeometryCollection::FacesGroup)
+		, InternalAttribute(InCollection, "Internal", FGeometryCollection::FacesGroup)
 		, FaceStartAttribute(InCollection, "FaceStart", FGeometryCollection::GeometryGroup)
 		, FaceCountAttribute(InCollection, "FaceCount", FGeometryCollection::GeometryGroup)
 	{
@@ -54,6 +58,7 @@ namespace GeometryCollection::Facades
 	{
 		return FCollectionUVFacade::IsValid()
 			&& TransformToGeometryIndexAttribute.IsValid()
+			&& TransformIndexAttribute.IsValid()
 			&& VertexAttribute.IsValid()
 			&& TangentUAttribute.IsValid()
 			&& TangentVAttribute.IsValid()
@@ -66,6 +71,7 @@ namespace GeometryCollection::Facades
 			&& VisibleAttribute.IsValid()
 			&& MaterialIndexAttribute.IsValid()
 			&& MaterialIDAttribute.IsValid()
+			&& InternalAttribute.IsValid()
 			&& FaceStartAttribute.IsValid()
 			&& FaceCountAttribute.IsValid()
 			;
@@ -75,6 +81,7 @@ namespace GeometryCollection::Facades
 	{
 		FCollectionUVFacade::DefineSchema();
 		TransformToGeometryIndexAttribute.Add();
+		TransformIndexAttribute.Add();
 		VertexAttribute.Add();
 		TangentUAttribute.Add();
 		TangentVAttribute.Add();
@@ -87,6 +94,7 @@ namespace GeometryCollection::Facades
 		VisibleAttribute.Add();
 		MaterialIndexAttribute.Add();
 		MaterialIDAttribute.Add();
+		InternalAttribute.Add();
 		FaceStartAttribute.Add();
 		FaceCountAttribute.Add();
 	}
@@ -133,34 +141,6 @@ namespace GeometryCollection::Facades
 		}
 
 		return FaceIndicies;
-	}
-
-	//
-	// This is a temporary solution to decide inside/outside faces based on MaterialIDs
-	// It has to be created and set in the geometry library during fracturing operations
-	//
-	void FCollectionMeshFacade::AddInternalAttribute(FGeometryCollection& InGeometryCollection, const TArray<int32>& InMaterialID)
-	{
-		if (!InGeometryCollection.HasAttribute("Internal", FGeometryCollection::FacesGroup))
-		{
-			InGeometryCollection.AddAttribute<bool>("Internal", FGeometryCollection::FacesGroup);
-
-			TManagedArray<bool>& Internals = InGeometryCollection.ModifyAttribute<bool>("Internal", FGeometryCollection::FacesGroup);
-			const TManagedArray<int32>& MaterialIDs = InGeometryCollection.GetAttribute<int32>("MaterialID", FGeometryCollection::FacesGroup);
-
-			int32 NumFaces = InGeometryCollection.NumElements(FGeometryCollection::FacesGroup);
-			for (int32 FaceIdx = 0; FaceIdx < NumFaces; ++FaceIdx)
-			{
-				if (MaterialIDs[FaceIdx] % 2 == 1)
-				{
-					Internals[FaceIdx] = true;
-				}
-				else
-				{
-					Internals[FaceIdx] = false;
-				}
-			}
-		}
 	}
 
 	void FCollectionMeshFacade::BakeTransform(int32 TransformIdx, const FTransform& InTransform)

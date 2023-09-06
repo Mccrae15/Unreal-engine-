@@ -16,11 +16,86 @@
 #include "MeshDescriptionToDynamicMesh.h"
 #include "DynamicMeshToMeshDescription.h"
 
+#include "Selection/DynamicMeshPolygroupTransformer.h"
+
 #include "RenderingThread.h"
+#include "UObject/Package.h"
 
 using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "FStaticMeshSelector"
+
+static TAutoConsoleVariable<bool> CVarEnableModelingSelectionStaticMeshLocking(
+	TEXT("modeling.Selection.EnableStaticMeshLocking"),
+	true,
+	TEXT("Control whether Selection Locking is enabled by default for Static Meshes"));
+
+namespace UEGlobal
+{
+	/**
+	 * Only Unlocked Mesh Assets can be edited. This is currently implemented as a global set based on UObject pointers.
+	 * Obviously not an ideal solution, however this is really only used to implement a UI gate, if we get a stale pointer
+	 * here that happens to still point to a valid UStaticMesh, it just means that asset will be unlocked for mesh selection
+	 * even if the user did not explicitly unlock it. This is not a disaster.
+	 */
+	TSet<UStaticMesh*> UnlockedStaticMeshes;
+}
+
+bool FStaticMeshSelector::IsLockable() const 
+{ 
+	return CVarEnableModelingSelectionStaticMeshLocking.GetValueOnGameThread();
+}
+
+
+bool FStaticMeshSelector::IsLocked() const
+{
+	if (CVarEnableModelingSelectionStaticMeshLocking.GetValueOnGameThread())
+	{
+		return StaticMesh != nullptr && (UEGlobal::UnlockedStaticMeshes.Contains(StaticMesh) == false);
+	}
+	else
+	{
+		return (StaticMesh == nullptr);
+	}
+}
+
+void FStaticMeshSelector::SetLockedState(bool bLocked)
+{
+	if (StaticMesh != nullptr)
+	{
+		if (bLocked)
+		{
+			UEGlobal::UnlockedStaticMeshes.Remove(StaticMesh);
+		}
+		else
+		{
+			UEGlobal::UnlockedStaticMeshes.Add(StaticMesh);
+
+			// if the mesh was locked, we were not updating it on changes, so we
+			// need to do an update now
+			if (IsLocked() == false)
+			{
+				CopyFromStaticMesh();
+				InvalidateOnMeshChange(FDynamicMeshChangeInfo());
+			}
+		}
+	}
+}
+
+
+void FStaticMeshSelector::SetAssetUnlockedOnCreation(UStaticMesh* StaticMesh)
+{
+	if (StaticMesh != nullptr)
+	{
+		UEGlobal::UnlockedStaticMeshes.Add(StaticMesh);
+	}
+}
+
+void FStaticMeshSelector::ResetUnlockedStaticMeshAssets()
+{
+	UEGlobal::UnlockedStaticMeshes.Reset();
+}
+
 
 
 bool FStaticMeshSelector::Initialize(
@@ -46,14 +121,20 @@ bool FStaticMeshSelector::Initialize(
 	// It is currently a very large hammer, though...
 	StaticMesh_OnMeshChangedHandle = StaticMesh->OnMeshChanged.AddLambda([this]()
 	{
-		CopyFromStaticMesh();
-		InvalidateOnMeshChange(FDynamicMeshChangeInfo());
+		if (IsLocked() == false)
+		{
+			CopyFromStaticMesh();
+			InvalidateOnMeshChange(FDynamicMeshChangeInfo());
+		}
 	});
 
 	// create new transient UDyanmicMesh that will be owned by this Selector
 	LocalTargetMesh.Reset( NewObject<UDynamicMesh>() );
 
-	CopyFromStaticMesh();
+	if (IsLocked() == false)
+	{
+		CopyFromStaticMesh();
+	}
 
 	FBaseDynamicMeshSelector::Initialize(SourceGeometryIdentifierIn, LocalTargetMesh.Get(), 
 		[this]() { return IsValid(this->StaticMeshComponent) ? (UE::Geometry::FTransformSRT3d)this->StaticMeshComponent->GetComponentTransform() : FTransformSRT3d::Identity(); });
@@ -76,7 +157,16 @@ IGeometrySelectionTransformer* FStaticMeshSelector::InitializeTransformation(con
 {
 	check(!ActiveTransformer);
 
-	ActiveTransformer = MakePimpl<FBasicDynamicMeshSelectionTransformer>();
+	if (Selection.TopologyType == EGeometryTopologyType::Polygroup)
+	{
+		ActiveTransformer = MakeShared<FDynamicMeshPolygroupTransformer>();
+	}
+	else
+	{
+		ActiveTransformer = MakeShared<FBasicDynamicMeshSelectionTransformer>();
+	}
+	ActiveTransformer->bEnableSelectionTransformDrawing = true;
+
 	ActiveTransformer->Initialize(this);
 	ActiveTransformer->OnEndTransformFunc = [this](IToolsContextTransactionsAPI*) 
 	{ 
@@ -88,6 +178,26 @@ IGeometrySelectionTransformer* FStaticMeshSelector::InitializeTransformation(con
 void FStaticMeshSelector::ShutdownTransformation(IGeometrySelectionTransformer* Transformer)
 {
 	ActiveTransformer.Reset();
+}
+
+
+void FStaticMeshSelector::UpdateAfterGeometryEdit(
+	IToolsContextTransactionsAPI* TransactionsAPI,
+	bool bInTransaction,
+	TUniquePtr<FDynamicMeshChange> DynamicMeshChange,
+	FText GeometryEditTransactionString)
+{
+	if (!bInTransaction)
+	{
+		TransactionsAPI->BeginUndoTransaction(GeometryEditTransactionString);
+	}
+
+	CommitMeshTransform();
+
+	if (!bInTransaction)
+	{
+		TransactionsAPI->EndUndoTransaction();
+	}
 }
 
 
@@ -151,8 +261,29 @@ bool FStaticMeshComponentSelectorFactory::CanBuildForTarget(FGeometryIdentifier 
 	if (TargetIdentifier.TargetType == FGeometryIdentifier::ETargetType::PrimitiveComponent)
 	{
 		UStaticMeshComponent* Component = TargetIdentifier.GetAsComponentType<UStaticMeshComponent>();
-		if (Component != nullptr)
+		if (Component != nullptr )
 		{
+			// Ensure that the Component is an SMComponent and not an ISMC or other subclass that might have other behaviors
+			// that we can't know if the Selector will properly support
+			if (ExactCast<UStaticMeshComponent>(Component) == nullptr)
+			{
+				return false;
+			}
+
+			// ensure that we have a static mesh and it's not a built-in Engine mesh
+			UStaticMesh* StaticMesh = Component->GetStaticMesh();
+			if (StaticMesh == nullptr ||
+				StaticMesh->GetPathName().StartsWith(TEXT("/Engine/")))
+			{
+				return false;
+			}
+
+			// ensure that this is not a cooked static mesh
+			if (StaticMesh->GetOutermost()->bIsCookedForEditor)
+			{
+				return false;
+			}
+
 			return true;
 		}
 	}

@@ -7,6 +7,7 @@
 #include "Online/OnlineServicesEOSGS.h"
 
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/Fork.h"
 #include "Misc/LazySingleton.h"
 #include "Modules/ModuleManager.h"
 
@@ -52,7 +53,11 @@ namespace UE::Online {
 
 FOnlineServicesEOSGSPlatformFactory::FOnlineServicesEOSGSPlatformFactory()
 {
-	DefaultEOSPlatformHandle = CreatePlatform();
+	// If a fork is requested, we need to wait for post-fork to create the default platform
+	if (!FForkProcessHelper::IsForkRequested() || FForkProcessHelper::IsForkedChildProcess())
+	{
+		GetDefaultPlatform();
+	}
 }
 
 FOnlineServicesEOSGSPlatformFactory& FOnlineServicesEOSGSPlatformFactory::Get()
@@ -75,12 +80,13 @@ IEOSPlatformHandlePtr FOnlineServicesEOSGSPlatformFactory::CreatePlatform()
 	IEOSSDKManager* const SDKManager = IEOSSDKManager::Get();
 	if (!SDKManager)
 	{
+		UE_LOG(LogOnlineServices, Error, TEXT("[FOnlineServicesEOSGS::Initialize] EOSSDK has not been loaded."));
 		return {};
 	}
 
-	EOS_EResult InitResult = SDKManager->Initialize();
-	if (InitResult != EOS_EResult::EOS_Success)
+	if (!SDKManager->IsInitialized())
 	{
+		UE_LOG(LogOnlineServices, Error, TEXT("[FOnlineServicesEOSGS::Initialize] EOSSDK has not been initialized."));
 		return {};
 	}
 
@@ -102,7 +108,7 @@ IEOSPlatformHandlePtr FOnlineServicesEOSGSPlatformFactory::CreatePlatform()
 	PlatformOptions.ApiVersion = 12;
 	UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_OPTIONS_API_LATEST, 12);
 	PlatformOptions.Reserved = nullptr;
-	PlatformOptions.bIsServer = EOS_FALSE;
+	PlatformOptions.bIsServer = IsRunningDedicatedServer() ? EOS_TRUE : EOS_FALSE;
 	PlatformOptions.OverrideCountryCode = nullptr;
 	PlatformOptions.OverrideLocaleCode = nullptr;
 	// Can't check GIsEditor here because it is too soon!
@@ -139,5 +145,14 @@ IEOSPlatformHandlePtr FOnlineServicesEOSGSPlatformFactory::CreatePlatform()
 	return EOSPlatformHandle;
 }
 
+IEOSPlatformHandlePtr FOnlineServicesEOSGSPlatformFactory::GetDefaultPlatform()
+{
+	if (!DefaultEOSPlatformHandle)
+	{
+		DefaultEOSPlatformHandle = CreatePlatform();
+	}
+
+	return DefaultEOSPlatformHandle;
+}
 
 /* UE::Online */ }

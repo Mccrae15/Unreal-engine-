@@ -15,65 +15,31 @@ public class UnrealEd : ModuleRules
 		PrivatePCHHeaderFile = "Private/UnrealEdPrivatePCH.h";
 		SharedPCHHeaderFile = "Public/UnrealEdSharedPCH.h";
 
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				"Editor/PackagesDialog/Public",
-				"Developer/TargetPlatform/Public",
-			}
-		);
-
 		PrivateIncludePathModuleNames.AddRange(
 			new string[]
 			{
-				"BSPUtils",
-				"BehaviorTreeEditor",
-				"ClassViewer",
 				"StructViewer",
-				"ContentBrowser",
-				"DerivedDataCache",
-				"DesktopPlatform",
-				"LauncherPlatform",
-				"GameProjectGeneration",
 				"MainFrame",
 				"TurnkeySupport",
-				"MaterialEditor",
-				"MergeActors",
-				"MeshUtilities",
 				"MessagingCommon",
 				"MovieSceneCapture",
-				"NaniteTools",
-				"RenderResourceViewer",
 				"PlacementMode",
 				"Settings",
 				"SettingsEditor",
-				"AudioEditor",
 				"ViewportSnapping",
 				"SourceCodeAccess",
 				"OutputLog",
-				"Landscape",
-				"LocalizationService",
-				"HierarchicalLODUtilities",
-				"MessagingRpc",
-				"PortalRpc",
 				"PortalServices",
-				"ViewportInteraction",
-				"VREditor",
-				"Persona",
 				"PhysicsAssetEditor",
-				"ClothingSystemEditorInterface",
-				"NavigationSystem",
 				"Media",
 				"VirtualTexturingEditor",
-				"TextureBuild",
-				"ToolWidgets",
-				"CSVtoSVG",
 				"HotReload",
 				"StaticMeshEditor",
 				"WorkspaceMenuStructure",
 				"LandscapeEditor",
 				"Blutility",
-				"SlateReflector"
+				"SlateReflector",
+				"PackagesDialog",
 			}
 		);
 
@@ -96,7 +62,6 @@ public class UnrealEd : ModuleRules
 				"SourceControl",
 				"UncontrolledChangelists",
 				"UnrealEdMessages",
-				"GameplayDebugger",
 				"BlueprintGraph",
 				"HTTP",
 				"FunctionalTesting",
@@ -123,7 +88,10 @@ public class UnrealEd : ModuleRules
 				"SubobjectEditor",
 				"PhysicsUtilities",
 				"ToolWidgets",
-				"AssetTools",
+				"AssetTools", 
+				"WidgetRegistration",
+				"GameplayTasks",
+				"TargetPlatform"
 			}
 		);
 
@@ -137,10 +105,9 @@ public class UnrealEd : ModuleRules
 				"LevelSequence",
 				"AnimGraph",
 				"AppFramework",
-				"BlueprintGraph",
 				"CinematicCamera",
+				"CookMetadata",
 				"CurveEditor",
-				"ContentBrowserData",
 				"DataLayerEditor",
 				"DerivedDataCache",
 				"Zen",
@@ -151,13 +118,11 @@ public class UnrealEd : ModuleRules
 				"ImageWrapper",
 				"ImageWriteQueue",
 				"InputCore",
-				"InputBindingEditor",
 				"LauncherServices",
 				"MaterialEditor",
 				"MessageLog",
 				"PakFile",
 				"PropertyEditor",
-				"Projects",
 				"RawMesh",
 				"MeshUtilitiesCommon",
 				"SkeletalMeshUtilitiesCommon",
@@ -165,7 +130,6 @@ public class UnrealEd : ModuleRules
 				"RenderCore",
 				"RHI",
 				"Sockets",
-				"SourceControlWindows",
 				"StatsViewer",
 				"SwarmInterface",
 				"TargetPlatform",
@@ -173,15 +137,12 @@ public class UnrealEd : ModuleRules
 				"EditorWidgets",
 				"GraphEditor",
 				"Kismet",
-				"InternationalizationSettings",
 				"JsonUtilities",
 				"Landscape",
 				"MeshPaint",
 				"Foliage",
 				"FoliageEdit",
-				"VectorVM",
 				"MaterialUtilities",
-				"Localization",
 				"LocalizationService",
 				"LevelEditor",
 				"AddContentDialog",
@@ -189,21 +150,17 @@ public class UnrealEd : ModuleRules
 				"HierarchicalLODUtilities",
 				"Analytics",
 				"AnalyticsET",
-				"PluginWarden",
 				"PixelInspectorModule",
 				"MovieScene",
 				"MovieSceneTracks",
-				"Sequencer",
 				"ViewportInteraction",
 				"VREditor",
 				"ClothingSystemEditor",
-                "ClothingSystemRuntimeInterface",
-                "ClothingSystemRuntimeCommon",
-                "ClothingSystemRuntimeNv",
+				"ClothingSystemRuntimeInterface",
+				"ClothingSystemRuntimeCommon",
 				"PIEPreviewDeviceProfileSelector",
 				"PakFileUtilities",
 				"TimeManagement",
-                "LandscapeEditorUtilities",
 				"ScriptDisassembler",
 				"ToolMenus",
 				"FreeImage",
@@ -214,13 +171,16 @@ public class UnrealEd : ModuleRules
 				"TraceAnalysis",
 				"TraceServices",
 				"DeveloperSettings",
-				"AnimationModifiers",
 				"AnimationBlueprintLibrary",
 				"MaterialBaking",
 				"CookOnTheFly",
 				"CookOnTheFlyNetServer",
 				"Zen",
 				"BuildSettings",
+				"SubobjectEditor",
+				"HeadMountedDisplay",
+				"FieldNotification",
+				"VirtualizationEditor",
 			}
 		);
 
@@ -251,11 +211,11 @@ public class UnrealEd : ModuleRules
 				"SettingsEditor",
 				"StringTableEditor",
 				"Blutility",
+				"ScriptableEditorWidgets",
 				"WorkspaceMenuStructure",
 				"PlacementMode",
 				"MeshUtilities",
 				"MergeActors",
-				"NaniteTools",
 				"RenderResourceViewer",
 				"ProjectSettingsViewer",
 				"BehaviorTreeEditor",
@@ -309,10 +269,8 @@ public class UnrealEd : ModuleRules
 				"MeshPaint",
 				"PropertyEditor",
 				"ToolMenusEditor",
-				"InputBindingEditor",
 				"ClothingSystemEditor",
-				"PluginWarden",
-				//"PIEPreviewDeviceProfileSelector",
+				"MaterialShaderQualitySettings",
 				"EditorInteractiveToolsFramework"
 			}
 		);
@@ -327,19 +285,11 @@ public class UnrealEd : ModuleRules
 				"AssetTagsEditor",
 				"CollectionManager",
 				"ContentBrowser",
-				"BlueprintGraph",
-				"AddContentDialog",
 				"MeshUtilities",
 				"KismetCompiler",
-				"NavigationSystem",
 				"GameplayTasks",
-				"AIModule",
-				"Engine",
-				"SourceControl",
-				"UncontrolledChangelists",
 				"PropertyEditor",
 				"ClassViewer",
-				"EditorSubsystem"
 			}
 		);
 
@@ -400,5 +350,5 @@ public class UnrealEd : ModuleRules
 		{
 			PrivateIncludePathModuleNames.Add("LiveCoding");
 		}
-    }
+	}
 }

@@ -10,6 +10,7 @@
 #include "SLevelViewport.h"
 #include "EditorModeManager.h"
 #include "FractureEditorMode.h"
+#include "Materials/MaterialInterface.h"
 #include "Modules/ModuleManager.h"
 
 #include "FractureToolContext.h"
@@ -26,6 +27,8 @@
 
 
 DEFINE_LOG_CATEGORY(LogFractureTool);
+
+#define LOCTEXT_NAMESPACE "FractureTool"
 
 void UFractureToolSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -158,7 +161,7 @@ void UFractureActionTool::AddAdditionalAttributesIfRequired(UGeometryCollection*
 	}
 }
 
-void UFractureActionTool::GetSelectedGeometryCollectionComponents(TSet<UGeometryCollectionComponent*>& GeomCompSelection)
+void UFractureActionTool::GetSelectedGeometryCollectionComponents(TSet<UGeometryCollectionComponent*>& GeomCompSelection, bool bFilterForUniqueRestCollections)
 {
 	USelection* SelectionSet = GEditor->GetSelectedActors();
 	TArray<AActor*> SelectedActors;
@@ -167,39 +170,109 @@ void UFractureActionTool::GetSelectedGeometryCollectionComponents(TSet<UGeometry
 
 	GeomCompSelection.Empty(SelectionSet->Num());
 
+	TSet<const UGeometryCollection*> AddedRestCollections;
+
 	for (AActor* Actor : SelectedActors)
 	{
 		TInlineComponentArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
 		Actor->GetComponents(GeometryCollectionComponents);
-		GeomCompSelection.Append(GeometryCollectionComponents);
+		if (bFilterForUniqueRestCollections)
+		{
+			for (UGeometryCollectionComponent* Component : GeometryCollectionComponents)
+			{
+				bool bWasInSet = false;
+				AddedRestCollections.FindOrAdd(Component->GetRestCollection(), &bWasInSet);
+				if (!bWasInSet)
+				{
+					GeomCompSelection.Add(Component);
+				}
+			}
+		}
+		else
+		{
+			GeomCompSelection.Append(GeometryCollectionComponents);
+		}
 	}
 }
 
-void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit, bool bClearSelection)
+TArray<FString> UFractureActionTool::GetSelectedComponentMaterialNames(bool bIncludeDefault, bool bUseFullNamesIfPossible)
 {
-	UGeometryCollectionComponent* GeometryCollectionComponent = Context.GetGeometryCollectionComponent();
-	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = Context.GetGeometryCollection();
-	
+	TArray<FString> MaterialNames;
+
+	if (bIncludeDefault)
+	{
+		MaterialNames.Add(LOCTEXT("AutomaticMaterialOption", "Automatic").ToString());
+	}
+	TSet<UGeometryCollectionComponent*> GeomCompSelection;
+	GetSelectedGeometryCollectionComponents(GeomCompSelection);
+	if (GeomCompSelection.Num() > 1 || !bUseFullNamesIfPossible)
+	{
+		int32 MinMaterials = -1;
+		for (UGeometryCollectionComponent* Component : GeomCompSelection)
+		{
+			int32 NumMaterials = Component->GetNumMaterials();
+			if (MinMaterials < 0 || NumMaterials < MinMaterials)
+			{
+				MinMaterials = NumMaterials;
+			}
+		}
+		for (int32 MatIdx = 0; MatIdx < MinMaterials; ++MatIdx)
+		{
+			MaterialNames.Add(FString::Printf(TEXT("[%d]"), MatIdx));
+		}
+	}
+	else if (GeomCompSelection.Num() == 1)
+	{
+		for (UGeometryCollectionComponent* Component : GeomCompSelection)
+		{
+			int32 NumMaterials = Component->GetNumMaterials();
+			for (int32 MatIdx = 0; MatIdx < NumMaterials; ++MatIdx)
+			{
+				if (MatIdx == Component->GetRestCollection()->GetBoneSelectedMaterialIndex())
+				{
+					continue;
+				}
+				UMaterialInterface* Material = Component->GetMaterial(MatIdx);
+				FString MaterialName = Material ? Material->GetName() : LOCTEXT("NoMaterialName", "None").ToString();
+				MaterialNames.Add(FString::Printf(TEXT("[%d] %s"), MatIdx, *MaterialName));
+			}
+		}
+	}
+
+	return MaterialNames;
+}
+
+void UFractureActionTool::Refresh(UGeometryCollectionComponent* GeometryCollectionComponent, FFractureEditorModeToolkit* Toolkit, const TArray<int32>& SetSelection, bool bClearSelection, bool bMustUpdateBoneColors)
+{
+	FGeometryCollectionEdit CollectionEdit = GeometryCollectionComponent->EditRestCollection(GeometryCollection::EEditUpdate::None);
+	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = CollectionEdit.GetRestCollection()->GetGeometryCollection();
+
 	FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollectionPtr.Get(), -1);
 
 	Toolkit->RegenerateOutliner();
 	Toolkit->RegenerateHistogram();
 
-	FScopedColorEdit EditBoneColor(GeometryCollectionComponent, true);
+	if (bMustUpdateBoneColors)
+	{
+		GeometryCollectionComponent->EditBoneSelection(true);
+	}
 
 	if (bClearSelection)
 	{
-		EditBoneColor.ResetBoneSelection();
 		FFractureSelectionTools::ClearSelectedBones(GeometryCollectionComponent);
 	}
 	else
 	{
-		EditBoneColor.SetSelectedBones(Context.GetSelection());
-		FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionComponent, Context.GetSelection(), true, false);
+		FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionComponent, SetSelection, true, true);
 	}
 
-	GeometryCollectionComponent->MarkRenderDynamicDataDirty();
-	GeometryCollectionComponent->MarkRenderStateDirty();
+	CollectionEdit.GetRestCollection()->RebuildRenderData();
+}
+
+void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit, bool bClearSelection)
+{
+	UGeometryCollectionComponent* GeometryCollectionComponent = Context.GetGeometryCollectionComponent();
+	Refresh(GeometryCollectionComponent, Toolkit, Context.GetSelection(), bClearSelection);
 }
 
 void UFractureActionTool::SetOutlinerComponents(TArray<FFractureToolContext>& InContexts, FFractureEditorModeToolkit* Toolkit)
@@ -316,6 +389,8 @@ void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 			
 			if (FirstNewGeometryIndex > INDEX_NONE)
 			{
+				PostFractureProcess(FractureContext, FirstNewGeometryIndex);
+
 				FractureContext.GenerateGuids(FirstNewGeometryIndex);
 
 				// Based on the first new geometry index, generate a list of new transforms generated by the fracture.
@@ -342,25 +417,6 @@ void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 					Selection.Empty();
 				}
 				FractureContext.Sanitize(false);
-			}
-			
-			Toolkit->RegenerateHistogram();
-
-			FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(FractureContext.GetGeometryCollection().Get(), -1);
-
-			// Update Nanite resource data to correctly reflect modified geometry collection data
-			{
-				FractureContext.GetFracturedGeometryCollection()->ReleaseResources();
-
-				if (FractureContext.GetFracturedGeometryCollection()->EnableNanite)
-				{
-					FractureContext.GetFracturedGeometryCollection()->NaniteData = UGeometryCollection::CreateNaniteData(FractureContext.GetGeometryCollection().Get());
-				}
-				else
-				{
-					FractureContext.GetFracturedGeometryCollection()->NaniteData = MakeUnique<FGeometryCollectionNaniteData>();
-				}
-				FractureContext.GetFracturedGeometryCollection()->InitResources();
 			}
 
 			Refresh(FractureContext, Toolkit);
@@ -420,3 +476,4 @@ FVector FVisualizationMappings::GetExplodedVector(int32 MappingIdx, const UGeome
 	return FVector::ZeroVector;
 }
 
+#undef LOCTEXT_NAMESPACE

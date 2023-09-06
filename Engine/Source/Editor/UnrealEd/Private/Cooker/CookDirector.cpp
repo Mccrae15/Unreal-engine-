@@ -10,6 +10,7 @@
 #include "CookWorkerServer.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "CoreGlobals.h"
+#include "GenericPlatform/GenericPlatformOutputDevices.h"
 #include "LoadBalanceCookBurden.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
@@ -17,6 +18,7 @@
 #include "Math/NumericLimits.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/PathViews.h"
 #include "PackageTracker.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/CompactBinaryWriter.h"
@@ -188,6 +190,8 @@ void FCookDirector::ParseConfig(int32 CookProcessCount, bool& bOutValid)
 		}
 	}
 
+	bAllowLocalCooks = !FParse::Param(CommandLine, TEXT("CookForceRemote"));
+
 	int32 MultiprocessId;
 	if (FParse::Value(CommandLine, TEXT("-MultiprocessId="), MultiprocessId))
 	{
@@ -290,7 +294,10 @@ void FCookDirector::AssignRequests(TArrayView<FPackageData*> Requests, TArray<FW
 	LocalRemoteWorkers = CopyRemoteWorkers();;
 
 	WorkerIds.Reserve(LocalRemoteWorkers.Num() + 1);
-	WorkerIds.Add(FWorkerId::Local());
+	if (bAllowLocalCooks)
+	{
+		WorkerIds.Add(FWorkerId::Local());
+	}
 	for (const TRefCountPtr<FCookWorkerServer>& RemoteWorker : LocalRemoteWorkers)
 	{
 		WorkerIds.Add(RemoteWorker->GetWorkerId());
@@ -315,7 +322,7 @@ void FCookDirector::AssignRequests(TArray<FWorkerId>&& InWorkers, TArray<TRefCou
 			FWorkerId WorkerIdConstraint = Request->GetWorkerAssignmentConstraint();
 			if (WorkerIdConstraint.IsValid() && WorkerIdConstraint != WorkerId)
 			{
-				UE_LOG(LogCook, Error, TEXT("Package %s can only be cooked by a now-disconnected CookWorker. The package can not be cooked."),
+				UE_LOG(LogCook, Warning, TEXT("Package %s can only be cooked by a now-disconnected CookWorker. The package can not be cooked."),
 					*Request->GetPackageName().ToString());
 				Assignment = FWorkerId::Invalid();
 				RemovedRequests.Add(Request);
@@ -380,15 +387,18 @@ void FCookDirector::AssignRequests(TArray<FWorkerId>&& InWorkers, TArray<TRefCou
 		FWorkerId WorkerIdConstraint = Requests[RequestIndex]->GetWorkerAssignmentConstraint();
 		if (WorkerIdConstraint.IsValid())
 		{
-			check(InWorkers.Contains(WorkerIdConstraint));
 			WorkerId = WorkerIdConstraint;
+		}
+		// Override the loadbalancer's assignment to force it local if the Package is urgent
+		else if (Requests[RequestIndex]->GetIsUrgent())
+		{
+			WorkerId = FWorkerId::Local();
 		}
 
 		if (!WorkerId.IsLocal())
 		{
 			uint8 RemoteIndex = WorkerId.GetRemoteIndex();
-			check(RemoteIndex < RemoteBatches.Num());
-			if (!RemoteIndexIsValid[RemoteIndex])
+			if (RemoteIndex >= RemoteBatches.Num() || !RemoteIndexIsValid[RemoteIndex])
 			{
 				UE_LOG(LogCook, Error, TEXT("Package %s can only be cooked by a now-disconnected CookWorker. The package can not be cooked."),
 					*Requests[RequestIndex]->GetPackageName().ToString());
@@ -462,12 +472,18 @@ void FCookDirector::TickFromSchedulerThread()
 		TickCommunication(ECookDirectorThread::SchedulerThread);
 	}
 
-	int32 BusiestNumAssignments = COTFS.NumMultiprocessLocalWorkerAssignments();
-	bool bLocalWorkerIdle = BusiestNumAssignments == 0;
+	int32 BusiestNumAssignments = 0;
+	bool bLocalWorkerIdle = true;
+	bool bAnyIdle = false;
 	float DeltaTime = static_cast<float>(CurrentTime - LastTickTimeSeconds);
-	bool bAnyIdle = bLocalWorkerIdle;
 	LastTickTimeSeconds = CurrentTime;
-	LocalWorkerProfileData->UpdateIdle(bLocalWorkerIdle, DeltaTime);
+	if (bAllowLocalCooks)
+	{
+		BusiestNumAssignments = COTFS.NumMultiprocessLocalWorkerAssignments();
+		bLocalWorkerIdle = BusiestNumAssignments == 0;
+		bAnyIdle = bLocalWorkerIdle;
+		LocalWorkerProfileData->UpdateIdle(bLocalWorkerIdle, DeltaTime);
+	}
 	
 	bool bSendHeartbeat;
 	int32 LocalHeartbeatNumber;
@@ -807,7 +823,7 @@ void FCookDirector::SetWorkersStalled(bool bInWorkersStalled)
 		const double CurrentTime = FPlatformTime::Seconds();
 		if (CurrentTime >= WorkersStalledWarnTimeSeconds)
 		{
-			UE_LOG(LogCook, Warning, TEXT("Cooker has been blocked with no results from remote CookWorkers for %.0f seconds."),
+			UE_LOG(LogCook, Display, TEXT("Cooker has been blocked with no results from remote CookWorkers for %.0f seconds."),
 				(float)(CurrentTime - WorkersStalledStartTimeSeconds));
 			WorkersStalledWarnTimeSeconds = CurrentTime + GCookProgressWarnBusyTime;
 		}
@@ -1198,6 +1214,14 @@ void FCookDirector::TickWorkerShutdowns(ECookDirectorThread TickThread)
 	CompletedWorkers.Empty();
 }
 
+FString FCookDirector::GetWorkerLogFileName(int32 ProfileId)
+{
+	FString DirectorLogFileName = FGenericPlatformOutputDevices::GetAbsoluteLogFilename();
+	FStringView BaseFileName = FPathViews::GetBaseFilenameWithPath(DirectorLogFileName);
+	FStringView Extension = FPathViews::GetExtension(DirectorLogFileName, true /* bIncludeDot */);
+	return FString::Printf(TEXT("%.*s_Worker%d%*s"), BaseFileName.Len(), BaseFileName.GetData(), ProfileId, Extension.Len(), Extension.GetData());
+}
+
 FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId)
 {
 	FString CommandLine = FCommandLine::Get();
@@ -1205,12 +1229,11 @@ FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId)
 	const TCHAR* ProjectName = FApp::GetProjectName();
 	checkf(ProjectName && ProjectName[0], TEXT("Expected UnrealEditor to be running with a non-empty project name"));
 	TArray<FString> Tokens;
-	UE::String::ParseTokensMultiple(CommandLine, { ' ', '\t', '\r', '\n' }, [&Tokens](FStringView Token)
+	UE::String::ParseTokensMultiple(CommandLine, { ' ', '\t', '\r', '\n' }, [&Tokens, ProfileId](FStringView Token)
 		{
 			if (Token.StartsWith(TEXT("-run=")) ||
 				Token == TEXT("-CookOnTheFly") ||
 				Token == TEXT("-CookWorker") ||
-				Token.StartsWith(TEXT("-TargetPlatform")) ||
 				Token.StartsWith(TEXT("-CookCultures")) ||
 				Token.StartsWith(TEXT("-CookDirectorHost=")) ||
 				Token.StartsWith(TEXT("-MultiprocessId=")) ||
@@ -1218,10 +1241,27 @@ FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId)
 				Token.StartsWith(TEXT("-ShowCookWorker")) ||
 				Token.StartsWith(TEXT("-CoreLimit")) ||
 				Token.StartsWith(TEXT("-PhysicalCoreLimit")) ||
-				Token.StartsWith(TEXT("-CookProcessCount="))
+				Token.StartsWith(TEXT("-CookProcessCount=")) ||
+				Token.StartsWith(TEXT("-abslog=")) ||
+				Token.StartsWith(TEXT("-unattended"))
 				)
 			{
 				return;
+			}
+			else if (Token.StartsWith(TEXT("-tracefile=")))
+			{
+				FString TraceFile;
+				FString TokenString(Token);
+				if (FParse::Value(*TokenString, TEXT("-tracefile="), TraceFile) && !TraceFile.IsEmpty())
+				{
+					FStringView BaseFilenameWithPath = FPathViews::GetBaseFilenameWithPath(TraceFile);
+					FStringView Extension = FPathViews::GetExtension(TraceFile, true /* bIncludeDot */);
+					Tokens.Add(FString::Printf(TEXT("-tracefile=\"%.*s_Worker%d%.*s\""),
+						BaseFilenameWithPath.Len(), BaseFilenameWithPath.GetData(),
+						ProfileId,
+						Extension.Len(), Extension.GetData()));
+					return;
+				}
 			}
 			Tokens.Add(FString(Token));
 		}, UE::String::EParseTokensOptions::SkipEmpty);
@@ -1231,10 +1271,12 @@ FString FCookDirector::GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId)
 	}
 	Tokens.Insert(TEXT("-run=cook"), 1);
 	Tokens.Insert(TEXT("-cookworker"), 2);
+	Tokens.Insert(FString::Printf(TEXT("-CookProfileId=%d"), ProfileId), 3);
+	Tokens.Insert(FString::Printf(TEXT("-MultiprocessId=%d"), WorkerId.GetRemoteIndex() + 1), 4);
 	check(!WorkerConnectAuthority.IsEmpty()); // This should have been constructed in TryCreateWorkerConnectSocket before any CookWorkerServers could exist to call GetWorkerCommandLine
 	Tokens.Add(FString::Printf(TEXT("-CookDirectorHost=%s"), *WorkerConnectAuthority));
-	Tokens.Add(FString::Printf(TEXT("-MultiprocessId=%d"), WorkerId.GetRemoteIndex() + 1));
-	Tokens.Add(FString::Printf(TEXT("-CookProfileId=%d"), ProfileId));
+	Tokens.Add(TEXT("-unattended"));
+	Tokens.Add(FString::Printf(TEXT("-abslog=%s"), *GetWorkerLogFileName(ProfileId)));
 	if (CoreLimit > 0)
 	{
 		Tokens.Add(FString::Printf(TEXT("-PhysicalCoreLimit=%d"), CoreLimit));
@@ -1433,6 +1475,7 @@ void FCookDirector::FRetractionHandler::Initialize()
 	TArray<FWorkerId> IdleWorkers;
 	int32 BusiestNumAssignments = 0;
 
+	if (Director.bAllowLocalCooks)
 	{
 		int32 NumAssignments = Director.COTFS.NumMultiprocessLocalWorkerAssignments();
 		BusiestWorker = FWorkerId::Local();
@@ -1447,7 +1490,7 @@ void FCookDirector::FRetractionHandler::Initialize()
 	for (const TRefCountPtr<FCookWorkerServer>& RemoteWorker : LocalRemoteWorkers)
 	{
 		int32 NumAssignments = RemoteWorker->NumAssignments();
-		if (NumAssignments > BusiestNumAssignments)
+		if (BusiestWorker.IsInvalid() || NumAssignments > BusiestNumAssignments)
 		{
 			BusiestWorker = RemoteWorker->GetWorkerId();
 			BusiestNumAssignments = NumAssignments;
@@ -1633,10 +1676,10 @@ void FCookDirector::FRetractionHandler::ReassignPackages(const FWorkerId& FromWo
 	if (WorkersToSplitOver.IsEmpty())
 	{
 		// Send the packages back to the Director for reassignment
-		FPackageDataSet& UnclusteredRequests = Director.COTFS.PackageDatas->GetRequestQueue().GetUnclusteredRequests();
+		FPackageDataSet& RestartedRequests = Director.COTFS.PackageDatas->GetRequestQueue().GetRestartedRequests();
 		for (FPackageData* PackageData : AssignmentPackages)
 		{
-			UnclusteredRequests.Add(PackageData);
+			RestartedRequests.Add(PackageData);
 		}
 		// MPCOOKTODO: Add a method to PumpRequests long enough to assign the packages
 		UE_LOG(LogCook, Display, TEXT("%d packages retracted from %s. No workers are currently idle so the packages were assigned evenly to all CookWorkers."),
@@ -1695,7 +1738,7 @@ TArray<FWorkerId> FCookDirector::FRetractionHandler::CalculateWorkersToSplitOver
 	TConstArrayView<TRefCountPtr<FCookWorkerServer>> LocalRemoteWorkers)
 {
 	TArray<TPair<FWorkerId, int32>> WorkerNumPackages;
-	if (FromWorker != FWorkerId::Local())
+	if (FromWorker != FWorkerId::Local() && Director.bAllowLocalCooks)
 	{
 		WorkerNumPackages.Emplace(FWorkerId::Local(), Director.COTFS.NumMultiprocessLocalWorkerAssignments());
 	}

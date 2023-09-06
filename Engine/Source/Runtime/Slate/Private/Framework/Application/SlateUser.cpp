@@ -582,6 +582,10 @@ void FSlateUser::SetUserNavigationConfig(TSharedPtr<FNavigationConfig> InNavigat
 	{
 		InNavigationConfig->OnRegister();
 	}
+
+#if WITH_SLATE_DEBUGGING
+	FSlateApplication::Get().TryDumpNavigationConfig(UserNavigationConfig);
+#endif // WITH_SLATE_DEBUGGING
 }
 
 bool FSlateUser::IsTouchPointerActive(int32 TouchPointerIndex) const
@@ -1191,7 +1195,7 @@ void FSlateUser::UpdateTooltip(const FMenuStack& MenuStack, bool bCanSpawnNewToo
 	SCOPE_CYCLE_COUNTER(STAT_SlateUpdateTooltip);
 
 	const double MotionLessDurationBeforeAllowingNewToolTip = 0.05;
-	bCanSpawnNewTooltip = bCanSpawnNewTooltip && (FPlatformTime::Seconds() - LastCursorSignificantMoveTime > MotionLessDurationBeforeAllowingNewToolTip);
+	bCanSpawnNewTooltip = bCanSpawnNewTooltip && bCanDrawCursor && (FPlatformTime::Seconds() - LastCursorSignificantMoveTime > MotionLessDurationBeforeAllowingNewToolTip);
 
 	float DPIScaleFactor = 1.0f; //todo: this value is never changed, we should investigate if it is necessary or not to handle it for the force field.
 	FWidgetPath WidgetsToQueryForTooltip;

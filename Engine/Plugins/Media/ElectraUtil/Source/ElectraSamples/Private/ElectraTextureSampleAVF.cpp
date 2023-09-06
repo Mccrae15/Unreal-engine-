@@ -153,9 +153,9 @@ public:
 } // namespace anonymous
 
 
-void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, CVImageBufferRef InImageBufferRef, bool bFullRange, EMediaTextureSampleFormat Format, const FMatrix44f& YUVMtx, const FMatrix44f& GamutToXYZMtx, UE::Color::EEncoding EncodingType)
+void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, CVImageBufferRef InImageBufferRef, bool bFullRange, EMediaTextureSampleFormat Format, const FMatrix44f& YUVMtx, const FMatrix44f& GamutToXYZMtx, UE::Color::EEncoding EncodingType, float NormalizationFactor)
 {
-	check(IsInRenderingThread());
+	FRHICommandListImmediate& RHICmdList = FRHICommandListImmediate::Get();
 
 	const int32 FrameHeight = CVPixelBufferGetHeight(InImageBufferRef);
 	const int32 FrameWidth = CVPixelBufferGetWidth(InImageBufferRef);
@@ -182,9 +182,6 @@ void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, 
 			// Planar data: YbCrCb 420 etc. (NV12 / P010)
 
 			bool bIs8Bit = (Format == EMediaTextureSampleFormat::CharNV12);
-
-			const FMatrix* ColorTransform = bFullRange ? &MediaShaders::YuvToRgbRec709Unscaled : &MediaShaders::YuvToRgbRec709Scaled;
-			FVector Off = bFullRange ? MediaShaders::YUVOffsetNoScale8bits : MediaShaders::YUVOffset8bits;
 
 			// Expecting BiPlanar kCVPixelFormatType_420YpCbCr8BiPlanar Full/Video
 			check(CVPixelBufferGetPlaneCount(InImageBufferRef) == 2);
@@ -220,8 +217,6 @@ void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, 
 			TRefCountPtr<FRHITexture> YTex = RHICreateTexture(YDesc);
 			TRefCountPtr<FRHITexture> UVTex = RHICreateTexture(UVDesc);
 
-			// render video frame into sink texture
-			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 			{
 				// configure media shaders
 				auto GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
@@ -238,20 +233,27 @@ void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, 
 					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GMediaVertexDeclaration.VertexDeclarationRHI;
 					GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 
+					// Setup conversion from Rec2020 to current working color space
+					const UE::Color::FColorSpace& Working = UE::Color::FColorSpace::GetWorking();
+					FMatrix44f ColorSpaceMtx = UE::Color::Transpose<float>(Working.GetXYZToRgb()) * GamutToXYZMtx;
+					ColorSpaceMtx = ColorSpaceMtx.ApplyScale(NormalizationFactor);
+
 					if (Format == EMediaTextureSampleFormat::CharNV12)
 					{
 						//
 						// NV12
-						// (this disrespects any "working color space")
 						//
 
 						TShaderMapRef<FMediaShadersVS> VertexShader(GlobalShaderMap);
-						TShaderMapRef<FYCbCrConvertPS> PixelShader(GlobalShaderMap);
-
-						PixelShader->SetParameters(RHICmdList, YTex, UVTex, *ColorTransform, Off, true);
-
+						TShaderMapRef<FNV12ConvertPS> PixelShader(GlobalShaderMap);
 						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+						FShaderResourceViewRHIRef Y_SRV = RHICmdList.CreateShaderResourceView(YTex, 0, 1, PF_G8);
+						FShaderResourceViewRHIRef UV_SRV = RHICmdList.CreateShaderResourceView(UVTex, 0, 1, PF_R8G8);
+
+						SetShaderParametersLegacyPS(RHICmdList, PixelShader, FIntPoint(YWidth, YHeight), Y_SRV, UV_SRV, FIntPoint(YWidth, YHeight), YUVMtx, EncodingType, ColorSpaceMtx, false);
 					}
 					else
 					{
@@ -259,27 +261,19 @@ void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, 
 						// P010
 						//
 
-						// Setup conversion from Rec2020 to current working color space
-						const UE::Color::FColorSpace& Working = UE::Color::FColorSpace::GetWorking();
-						FMatrix44f ColorSpaceMtx = UE::Color::Transpose<float>(Working.GetXYZToRgb()) * GamutToXYZMtx;
-						// Normalize output (e.g. 80 or 100 nits == 1.0)
-						ColorSpaceMtx = ColorSpaceMtx.ApplyScale(kMediaSample_HDR_NitsNormalizationFactor);
-
-						// Get shaders.
 						TShaderMapRef<FP010ConvertPS> PixelShader(GlobalShaderMap);
 						TShaderMapRef<FMediaShadersVS> VertexShader(GlobalShaderMap);
-
-						FShaderResourceViewRHIRef Y_SRV = RHICreateShaderResourceView(YTex, 0, 1, PF_G16);
-						FShaderResourceViewRHIRef UV_SRV = RHICreateShaderResourceView(UVTex, 0, 1, PF_G16R16);
-
-						// Update shader uniform parameters.
-						PixelShader->SetParameters(RHICmdList, { YWidth, YHeight }, Y_SRV, UV_SRV, { YWidth, YHeight }, YUVMtx, ColorSpaceMtx, EncodingType == UE::Color::EEncoding::ST2084);
-
 						GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 						GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+						SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+						FShaderResourceViewRHIRef Y_SRV = RHICmdList.CreateShaderResourceView(YTex, 0, 1, PF_G16);
+						FShaderResourceViewRHIRef UV_SRV = RHICmdList.CreateShaderResourceView(UVTex, 0, 1, PF_G16R16);
+						
+						// Update shader uniform parameters.
+						SetShaderParametersLegacyPS(RHICmdList, PixelShader, FIntPoint(YWidth, YHeight), Y_SRV, UV_SRV, FIntPoint(YWidth, YHeight), YUVMtx, ColorSpaceMtx, EncodingType);
 					}
 
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 					FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
 					RHICmdList.SetStreamSource(0, VertexBuffer, 0);
@@ -295,30 +289,61 @@ void FElectraMediaTexConvApple::ConvertTexture(FTexture2DRHIRef & InDstTexture, 
 		}
 		else
 		{
-			//
-			// sRGB
-			//
+			if (Format == EMediaTextureSampleFormat::Y416)
+			{
+				//
+				// YCbCrA, 16-bit (4:4:4:4)
+				//
 
-			//
-			// Grab data directly from image buffer reference
-			// (this will create the output texture here - but will always use the settings here, as data is not converted)
-			//
-			int32 Width = CVPixelBufferGetWidth(InImageBufferRef);
-			int32 Height = CVPixelBufferGetHeight(InImageBufferRef);
+				//
+				// Grab data directly from image buffer reference
+				// (this will create the output texture here - but will always use the settings here, as data is not converted)
+				//
+				int32 Width = CVPixelBufferGetWidth(InImageBufferRef);
+				int32 Height = CVPixelBufferGetHeight(InImageBufferRef);
 
-			CVMetalTextureRef TextureRef = nullptr;
-			CVReturn Result = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, MetalTextureCache, InImageBufferRef, nullptr, MTLPixelFormatBGRA8Unorm_sRGB, Width, Height, 0, &TextureRef);
-			check(Result == kCVReturnSuccess);
-			check(TextureRef);
+				CVMetalTextureRef TextureRef = nullptr;
+				CVReturn Result = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, MetalTextureCache, InImageBufferRef, nullptr, MTLPixelFormatRGBA16Unorm, Width, Height, 0, &TextureRef);
+				check(Result == kCVReturnSuccess);
+				check(TextureRef);
 
-			const FRHITextureCreateDesc Desc =
-				FRHITextureCreateDesc::Create2D(TEXT("DstTexture"), Width, Height, PF_B8G8R8A8)
-				.SetFlags(ETextureCreateFlags::SRGB | ETextureCreateFlags::Dynamic | ETextureCreateFlags::NoTiling | ETextureCreateFlags::ShaderResource)
-				.SetBulkData(new FTexConvTexResourceWrapper(TextureRef));
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("DstTexture"), Width, Height, PF_R16G16B16A16_UNORM)
+					.SetFlags(ETextureCreateFlags::Dynamic | ETextureCreateFlags::NoTiling | ETextureCreateFlags::ShaderResource)
+					.SetBulkData(new FTexConvTexResourceWrapper(TextureRef));
 
-			InDstTexture = RHICreateTexture(Desc);
+				InDstTexture = RHICreateTexture(Desc);
 
-			CFRelease(TextureRef);
+				CFRelease(TextureRef);
+
+			}
+			else
+			{
+				//
+				// sRGB
+				//
+
+				//
+				// Grab data directly from image buffer reference
+				// (this will create the output texture here - but will always use the settings here, as data is not converted)
+				//
+				int32 Width = CVPixelBufferGetWidth(InImageBufferRef);
+				int32 Height = CVPixelBufferGetHeight(InImageBufferRef);
+
+				CVMetalTextureRef TextureRef = nullptr;
+				CVReturn Result = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, MetalTextureCache, InImageBufferRef, nullptr, MTLPixelFormatBGRA8Unorm_sRGB, Width, Height, 0, &TextureRef);
+				check(Result == kCVReturnSuccess);
+				check(TextureRef);
+
+				const FRHITextureCreateDesc Desc =
+					FRHITextureCreateDesc::Create2D(TEXT("DstTexture"), Width, Height, PF_B8G8R8A8)
+					.SetFlags(ETextureCreateFlags::SRGB | ETextureCreateFlags::Dynamic | ETextureCreateFlags::NoTiling | ETextureCreateFlags::ShaderResource)
+					.SetBulkData(new FTexConvTexResourceWrapper(TextureRef));
+
+				InDstTexture = RHICreateTexture(Desc);
+
+				CFRelease(TextureRef);
+			}
 		}
 	}
 }
@@ -337,8 +362,55 @@ void FElectraTextureSample::Initialize(FVideoDecoderOutput* InVideoDecoderOutput
 
 EMediaTextureSampleFormat FElectraTextureSample::GetFormat() const
 {
-	OSType PixelFormat = CVPixelBufferGetPixelFormatType(VideoDecoderOutputApple->GetImageBuffer());
-	return ((PixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) || (PixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)) ? EMediaTextureSampleFormat::CharNV12 : EMediaTextureSampleFormat::P010;
+    if (VideoDecoderOutputApple->GetImageBuffer())
+    {
+        OSType PixelFormat = CVPixelBufferGetPixelFormatType(VideoDecoderOutputApple->GetImageBuffer());
+		switch(PixelFormat)
+		{
+			case kCVPixelFormatType_4444AYpCbCr16: return EMediaTextureSampleFormat::Y416;
+			case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+			case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange: return EMediaTextureSampleFormat::CharNV12;
+			default:
+				break;
+		}
+		return EMediaTextureSampleFormat::P010;
+    }
+    
+    switch(VideoDecoderOutputApple->GetFormat())
+    {
+        case    EPixelFormat::PF_DXT1:  return EMediaTextureSampleFormat::DXT1;
+        case    EPixelFormat::PF_DXT5:
+        {
+            switch(VideoDecoderOutputApple->GetFormatEncoding())
+            {
+                case EVideoDecoderPixelEncoding::YCoCg:         return EMediaTextureSampleFormat::YCoCg_DXT5;
+                case EVideoDecoderPixelEncoding::YCoCg_Alpha:   return EMediaTextureSampleFormat::YCoCg_DXT5_Alpha_BC4;
+                case EVideoDecoderPixelEncoding::Native:        return EMediaTextureSampleFormat::DXT5;
+                default:
+                {
+                    check(!"Unsupported pixel format encoding");
+                }
+            }
+            break;
+        }
+        case    EPixelFormat::PF_BC4:   return EMediaTextureSampleFormat::BC4;
+		case    EPixelFormat::PF_NV12:  return EMediaTextureSampleFormat::CharNV12;
+		default:
+        {
+            check(!"Unsupported pixel format");
+        }
+    }
+    
+    return EMediaTextureSampleFormat::DXT1;
+}
+
+const void* FElectraTextureSample::GetBuffer()
+{
+	if (VideoDecoderOutput)
+	{
+		return VideoDecoderOutputApple->GetBuffer().GetData();
+	}
+	return nullptr;
 }
 
 uint32 FElectraTextureSample::GetStride() const
@@ -348,6 +420,15 @@ uint32 FElectraTextureSample::GetStride() const
 		return VideoDecoderOutputApple->GetStride();
 	}
 	return 0;
+}
+
+IMediaTextureSampleConverter* FElectraTextureSample::GetMediaTextureSampleConverter()
+{
+	if (VideoDecoderOutputApple && VideoDecoderOutputApple->GetImageBuffer())
+	{
+		return this;
+	}
+	return nullptr;
 }
 
 uint32 FElectraTextureSample::GetConverterInfoFlags() const
@@ -365,7 +446,9 @@ bool FElectraTextureSample::Convert(FTexture2DRHIRef & InDstTexture, const FConv
 	{
 		if (TSharedPtr<FElectraMediaTexConvApple, ESPMode::ThreadSafe> PinnedTexConv = TexConv.Pin())
 		{
-			PinnedTexConv->ConvertTexture(InDstTexture, VideoDecoderOutputApple->GetImageBuffer(), VideoDecoderOutput->GetColorimetry()->GetMPEGDefinition()->VideoFullRangeFlag != 0, GetFormat(), GetSampleToRGBMatrix(), GetGamutToXYZMatrix(), GetEncodingType());
+			PinnedTexConv->ConvertTexture(InDstTexture, VideoDecoderOutputApple->GetImageBuffer(),
+				VideoDecoderOutput->GetColorimetry().IsValid() ? VideoDecoderOutput->GetColorimetry()->GetMPEGDefinition()->VideoFullRangeFlag != 0 : true,
+				GetFormat(), GetSampleToRGBMatrix(), GetGamutToXYZMatrix(), GetEncodingType(), GetHDRNitsNormalizationFactor());
 			return true;
 		}
 	}

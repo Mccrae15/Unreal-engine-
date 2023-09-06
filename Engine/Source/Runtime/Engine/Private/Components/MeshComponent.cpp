@@ -137,9 +137,10 @@ FMaterialRelevance UMeshComponent::GetMaterialRelevance(ERHIFeatureLevel::Type I
 		Result |= MaterialInterface->GetRelevance_Concurrent(InFeatureLevel);
 	}
 
-	if (OverlayMaterial != nullptr)
+	UMaterialInterface const* OverlayMaterialInterface = GetOverlayMaterial();
+	if (OverlayMaterialInterface != nullptr)
 	{
-		Result |= OverlayMaterial->GetRelevance_Concurrent(InFeatureLevel);
+		Result |= OverlayMaterialInterface->GetRelevance_Concurrent(InFeatureLevel);
 	}
 
 	return Result;
@@ -213,15 +214,23 @@ void UMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials,
 		}
 	}
 
-	if (OverlayMaterial != nullptr)
+	UMaterialInterface* OverlayMaterialInterface = GetOverlayMaterial();
+	if (OverlayMaterialInterface != nullptr)
 	{
-		OutMaterials.Add(OverlayMaterial);
+		OutMaterials.Add(OverlayMaterialInterface);
 	}
 }
 
 UMaterialInterface* UMeshComponent::GetOverlayMaterial() const
 {
-	return OverlayMaterial;
+	if (OverlayMaterial)
+	{ 
+		return OverlayMaterial;
+	}
+	else
+	{
+		return GetDefaultOverlayMaterial();
+	}
 }
 
 void UMeshComponent::SetOverlayMaterial(UMaterialInterface* NewOverlayMaterial)
@@ -229,7 +238,21 @@ void UMeshComponent::SetOverlayMaterial(UMaterialInterface* NewOverlayMaterial)
 	if (OverlayMaterial != NewOverlayMaterial)
 	{
 		OverlayMaterial = NewOverlayMaterial;
+		// Precache PSOs again
+		PrecachePSOs();
 		MarkRenderStateDirty();
+	}
+}
+
+float UMeshComponent::GetOverlayMaterialMaxDrawDistance() const
+{
+	if (OverlayMaterialMaxDrawDistance != 0.f)
+	{ 
+		return OverlayMaterialMaxDrawDistance;
+	}
+	else
+	{
+		return GetDefaultOverlayMaterialMaxDrawDistance();
 	}
 }
 
@@ -270,6 +293,12 @@ void UMeshComponent::RegisterLODStreamingCallback(FLODStreamingCallback&& Callba
 {
 	check(IsInGameThread());
 	Callback(this, nullptr, ELODStreamingCallbackResult::NotImplemented);
+}
+
+void UMeshComponent::RegisterLODStreamingCallback(FLODStreamingCallback&& CallbackStreamingStart, FLODStreamingCallback&& CallbackStreamingDone, float TimeoutStartSecs, float TimeoutDoneSecs)
+{
+	check(IsInGameThread());
+	CallbackStreamingDone(this, nullptr, ELODStreamingCallbackResult::NotImplemented);
 }
 
 void UMeshComponent::SetTextureForceResidentFlag( bool bForceMiplevelsToBeResident )
@@ -540,8 +569,8 @@ void UMeshComponent::LogMaterialsAndTextures(FOutputDevice& Ar, int32 Indent) co
 	}
 
 	// Backup the material overrides so we can access the mesh original materials.
-	TArray<class UMaterialInterface*> OverrideMaterialsBackup;
-	FMemory::Memswap(&OverrideMaterialsBackup, &const_cast<UMeshComponent*>(this)->OverrideMaterials, sizeof(OverrideMaterialsBackup));
+	TArray<TObjectPtr<class UMaterialInterface>> OverrideMaterialsBackup;
+	Swap(OverrideMaterialsBackup, const_cast<UMeshComponent*>(this)->OverrideMaterials);
 
 	TArray<UMaterialInterface*> MaterialInterfaces = GetMaterials();
 	for (int32 MaterialIndex = 0; MaterialIndex < MaterialInterfaces.Num(); ++MaterialIndex)
@@ -559,7 +588,7 @@ void UMeshComponent::LogMaterialsAndTextures(FOutputDevice& Ar, int32 Indent) co
 	}
 
 	// Restore the overrides.
-	FMemory::Memswap(&OverrideMaterialsBackup, &const_cast<UMeshComponent*>(this)->OverrideMaterials, sizeof(OverrideMaterialsBackup));
+	Swap(OverrideMaterialsBackup, const_cast<UMeshComponent*>(this)->OverrideMaterials);
 }
 
 #endif

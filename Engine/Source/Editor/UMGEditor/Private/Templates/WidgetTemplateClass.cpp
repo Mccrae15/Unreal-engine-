@@ -8,6 +8,8 @@
 #endif // WITH_EDITOR
 #include "Widgets/SToolTip.h"
 #include "IDocumentation.h"
+#include "UObject/CoreRedirects.h"
+#include "WidgetBlueprintEditorUtils.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Styling/SlateIconFinder.h"
@@ -54,7 +56,9 @@ FWidgetTemplateClass::FWidgetTemplateClass(const FAssetData& InWidgetAssetData, 
 			}
 			if (!ParentClassName.IsEmpty())
 			{
-				CachedParentClass = UClass::TryFindTypeSlow<UClass>(FPackageName::ExportTextPathToObjectPath(ParentClassName));
+				const FString RedirectedClassPath = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Class, FCoreRedirectObjectName(ParentClassName)).ToString();
+				CachedParentClass = UClass::TryFindTypeSlow<UClass>(FPackageName::ExportTextPathToObjectPath(RedirectedClassPath));
+				ensure(CachedParentClass == nullptr || CachedParentClass->IsChildOf(UWidget::StaticClass()));
 			}
 		}
 	}
@@ -69,17 +73,11 @@ FText FWidgetTemplateClass::GetCategory() const
 {
 	if (WidgetClass.Get())
 	{
-		auto DefaultWidget = WidgetClass->GetDefaultObject<UWidget>();
-		return DefaultWidget->GetPaletteCategory();
-	}
-	else if (CachedParentClass.IsValid() && CachedParentClass->IsChildOf(UWidget::StaticClass()) && !CachedParentClass->IsChildOf(UUserWidget::StaticClass()))
-	{
-		return CachedParentClass->GetDefaultObject<UWidget>()->GetPaletteCategory();
+		return FWidgetBlueprintEditorUtils::GetPaletteCategory(WidgetClass.Get());
 	}
 	else
 	{
-		auto DefaultWidget = UWidget::StaticClass()->GetDefaultObject<UWidget>();
-		return DefaultWidget->GetPaletteCategory();
+		return FWidgetBlueprintEditorUtils::GetPaletteCategory(WidgetAssetData, CachedParentClass.Get());
 	}
 }
 
@@ -162,6 +160,11 @@ void FWidgetTemplateClass::OnObjectsReplaced(const TMap<UObject*, UObject*>& Rep
 
 UWidget* FWidgetTemplateClass::CreateNamed(class UWidgetTree* Tree, FName NameOverride)
 {
+	if (Tree == nullptr || !WidgetClass.IsValid() || WidgetClass.Get()->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated))
+	{
+		return nullptr;
+	}
+
 	if (NameOverride != NAME_None)
 	{
 		UObject* ExistingObject = StaticFindObject(UObject::StaticClass(), Tree, *NameOverride.ToString());
@@ -169,11 +172,6 @@ UWidget* FWidgetTemplateClass::CreateNamed(class UWidgetTree* Tree, FName NameOv
 		{
 			NameOverride = MakeUniqueObjectName(Tree, WidgetClass.Get(), NameOverride);
 		}
-	}
-
-	if (WidgetClass.Get()->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated))
-	{
-		return nullptr;
 	}
 
 	UWidget* NewWidget = Tree->ConstructWidget<UWidget>(WidgetClass.Get(), NameOverride);

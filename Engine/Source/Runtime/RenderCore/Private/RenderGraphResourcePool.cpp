@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGraphResourcePool.h"
+#include "RHICommandList.h"
 #include "RenderGraphResources.h"
+#include "RHITransientResourceAllocator.h"
 #include "Trace/Trace.inl"
 #include "ProfilingDebugging/CountersTrace.h"
 
@@ -55,6 +57,8 @@ void FRDGBufferPool::DumpMemoryUsage(FOutputDevice& OutputDevice)
 
 TRefCountPtr<FRDGPooledBuffer> FRDGBufferPool::FindFreeBuffer(const FRDGBufferDesc& Desc, const TCHAR* InDebugName, ERDGPooledBufferAlignment Alignment)
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 	const uint64 BufferPageSize = 64 * 1024;
 
 	FRDGBufferDesc AlignedDesc = Desc;
@@ -67,6 +71,12 @@ TRefCountPtr<FRDGPooledBuffer> FRDGBufferPool::FindFreeBuffer(const FRDGBufferDe
 
 	case ERDGPooledBufferAlignment::Page:
 		AlignedDesc.NumElements = Align(AlignedDesc.BytesPerElement * AlignedDesc.NumElements, BufferPageSize) / AlignedDesc.BytesPerElement;
+	}
+
+	if (!ensureMsgf(AlignedDesc.NumElements >= Desc.NumElements, TEXT("Alignment caused buffer size overflow for buffer '%s' (AlignedDesc.NumElements: %d < Desc.NumElements: %d)"), InDebugName, AlignedDesc.NumElements, Desc.NumElements))
+	{
+		// Use the unaligned desc since we apparently overflowed when rounding up.
+		AlignedDesc = Desc;
 	}
 
 	const uint32 BufferHash = GetTypeHash(AlignedDesc);
@@ -119,13 +129,13 @@ TRefCountPtr<FRDGPooledBuffer> FRDGBufferPool::FindFreeBuffer(const FRDGBufferDe
 
 		const ERHIAccess InitialAccess = RHIGetDefaultResourceState(Desc.Usage, false);
 		FRHIResourceCreateInfo CreateInfo(InDebugName);
-		TRefCountPtr<FRHIBuffer> BufferRHI = RHICreateBuffer(NumBytes, Desc.Usage, Desc.BytesPerElement, InitialAccess, CreateInfo);
+		TRefCountPtr<FRHIBuffer> BufferRHI = RHICmdList.CreateBuffer(NumBytes, Desc.Usage, Desc.BytesPerElement, InitialAccess, CreateInfo);
 
 	#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		RHIBindDebugLabelName(BufferRHI, InDebugName);
 	#endif
 
-		TRefCountPtr<FRDGPooledBuffer> PooledBuffer = new FRDGPooledBuffer(MoveTemp(BufferRHI), Desc, AlignedDesc.NumElements, InDebugName);
+		TRefCountPtr<FRDGPooledBuffer> PooledBuffer = new FRDGPooledBuffer(RHICmdList, MoveTemp(BufferRHI), Desc, AlignedDesc.NumElements, InDebugName);
 		AllocatedBuffers.Add(PooledBuffer);
 		AllocatedBufferHashes.Add(BufferHash);
 		check(PooledBuffer->GetRefCount() == 2);
@@ -136,7 +146,7 @@ TRefCountPtr<FRDGPooledBuffer> FRDGBufferPool::FindFreeBuffer(const FRDGBufferDe
 	}
 }
 
-void FRDGBufferPool::ReleaseDynamicRHI()
+void FRDGBufferPool::ReleaseRHI()
 {
 	AllocatedBuffers.Empty();
 	AllocatedBufferHashes.Empty();
@@ -207,12 +217,12 @@ uint32 FRDGTransientRenderTarget::Release()
 	return Refs;
 }
 
-void FRDGTransientResourceAllocator::InitDynamicRHI()
+void FRDGTransientResourceAllocator::InitRHI(FRHICommandListBase&)
 {
 	Allocator = RHICreateTransientResourceAllocator();
 }
 
-void FRDGTransientResourceAllocator::ReleaseDynamicRHI()
+void FRDGTransientResourceAllocator::ReleaseRHI()
 {
 	if (Allocator)
 	{
@@ -257,10 +267,8 @@ TRefCountPtr<FRDGTransientRenderTarget> FRDGTransientResourceAllocator::Allocate
 	RenderTarget->Desc = Translate(Texture->CreateInfo);
 	RenderTarget->Desc.DebugName = Texture->GetName();
 	RenderTarget->LifetimeState = ERDGTransientResourceLifetimeState::Allocated;
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	RenderTarget->GetRenderTargetItem().TargetableTexture = Texture->GetRHI();
-	RenderTarget->GetRenderTargetItem().ShaderResourceTexture = Texture->GetRHI();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	RenderTarget->RenderTargetItem.TargetableTexture = Texture->GetRHI();
+	RenderTarget->RenderTargetItem.ShaderResourceTexture = Texture->GetRHI();
 	return RenderTarget;
 }
 
@@ -339,4 +347,4 @@ void FRDGTransientResourceAllocator::ReleasePendingDeallocations()
 	}
 }
 
-TGlobalResource<FRDGTransientResourceAllocator> GRDGTransientResourceAllocator;
+TGlobalResource<FRDGTransientResourceAllocator, FRenderResource::EInitPhase::Pre> GRDGTransientResourceAllocator;

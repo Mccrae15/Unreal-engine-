@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Rigs/RigHierarchyController.h"
+#include "AnimationCoreLibrary.h"
 #include "UObject/Package.h"
 
 #if WITH_EDITOR
@@ -41,7 +42,7 @@ void URigHierarchyController::SetHierarchy(URigHierarchy* InHierarchy)
 	// controlling a different hierarchy is no longer allowed
 	if (ensure(InHierarchy == GetOuter()))
 	{
-		// make sure making multiple valid SetHieararchy() calls won't lead to accumulated delegates
+		// make sure making multiple valid SetHierarchy() calls won't lead to accumulated delegates
 		// though it should not happen in the first place
 		if (Hierarchy.IsValid())
 		{
@@ -49,10 +50,11 @@ void URigHierarchyController::SetHierarchy(URigHierarchy* InHierarchy)
 			{
 				  Hierarchy->OnModified().RemoveAll(this);
 			}
+			Hierarchy = nullptr;
 		}
 		
 		URigHierarchy* OuterHierarchy = Cast<URigHierarchy>(GetOuter());
-		if (ensure(OuterHierarchy))
+		if (ensure(OuterHierarchy) && ::IsValid(OuterHierarchy))
 		{
 			Hierarchy = OuterHierarchy;
 			Hierarchy->OnModified().AddUObject(this, &URigHierarchyController::HandleHierarchyModified);
@@ -353,12 +355,17 @@ FRigElementKey URigHierarchyController::AddControl(
 		NewElement->Offset.Set(ERigTransformType::InitialLocal, InOffsetTransform);  
 		NewElement->Shape.Set(ERigTransformType::InitialLocal, InShapeTransform);  
 		Hierarchy->SetControlValue(NewElement, InValue, ERigControlValueType::Initial, false);
+		const FTransform LocalTransform = Hierarchy->GetTransform(NewElement, ERigTransformType::InitialLocal);
+
+		const FVector PreferredEulerAngles = AnimationCore::EulerFromQuat(LocalTransform.GetRotation(), NewElement->Settings.PreferredRotationOrder);
+		Hierarchy->SetControlPreferredEulerAngles(NewElement, PreferredEulerAngles, NewElement->Settings.PreferredRotationOrder, true);
 
 		NewElement->Offset.MarkDirty(ERigTransformType::InitialGlobal);
 		NewElement->Pose.MarkDirty(ERigTransformType::InitialGlobal);
 		NewElement->Shape.MarkDirty(ERigTransformType::InitialGlobal);
 		NewElement->Offset.Current = NewElement->Offset.Initial;
 		NewElement->Pose.Current = NewElement->Pose.Initial;
+		NewElement->PreferredEulerAngles.Current = NewElement->PreferredEulerAngles.Initial;
 		NewElement->Shape.Current = NewElement->Shape.Initial;
 	}
 
@@ -867,29 +874,24 @@ TArray<FRigElementKey> URigHierarchyController::ImportCurves(USkeleton* InSkelet
 		return Keys;
 	}
 
-	const FSmartNameMapping* SmartNameMapping = InSkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-
-	TArray<FName> NameArray;
-	SmartNameMapping->FillNameArray(NameArray);
-
-	for (int32 Index = 0; Index < NameArray.Num(); ++Index)
+	InSkeleton->ForEachCurveMetaData([this, InNameSpace, &Keys, bSetupUndo](const FName& InCurveName, const FCurveMetaData& InMetaData)
 	{
-		FName Name = NameArray[Index];
+		FName Name = InCurveName;
 		if (!InNameSpace.IsNone())
 		{
-			Name = *FString::Printf(TEXT("%s::%s"), *InNameSpace.ToString(), *Name.ToString());
+			Name = *FString::Printf(TEXT("%s::%s"), *InNameSpace.ToString(), *InCurveName.ToString());
 		}
 
 		const FRigElementKey ExpectedKey(Name, ERigElementType::Curve);
 		if(Hierarchy->Contains(ExpectedKey))
 		{
 			Keys.Add(ExpectedKey);
-			continue;
+			return;
 		}
 		
 		const FRigElementKey CurveKey = AddCurve(Name, 0.f, bSetupUndo);
 		Keys.Add(FRigElementKey(Name, ERigElementType::Curve));
-	}
+	});
 
 	if(bSelectCurves)
 	{
@@ -970,10 +972,10 @@ FString URigHierarchyController::ExportToText(TArray<FRigElementKey> InKeys) con
 
 		if(FRigTransformElement* TransformElement = Cast<FRigTransformElement>(Element))
 		{
-			PerElementData.Pose.Initial.Local.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::InitialLocal));
-			PerElementData.Pose.Initial.Global.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::InitialGlobal));
-			PerElementData.Pose.Current.Local.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::CurrentLocal));
-			PerElementData.Pose.Current.Global.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::CurrentGlobal));
+			PerElementData.Pose.Initial.Local.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::InitialLocal), PerElementData.Pose.Initial.bDirty[FRigLocalAndGlobalTransform::ELocal]);
+			PerElementData.Pose.Initial.Global.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::InitialGlobal), PerElementData.Pose.Initial.bDirty[FRigLocalAndGlobalTransform::EGlobal]);
+			PerElementData.Pose.Current.Local.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::CurrentLocal), PerElementData.Pose.Current.bDirty[FRigLocalAndGlobalTransform::ELocal]);
+			PerElementData.Pose.Current.Global.Set(Hierarchy->GetTransform(TransformElement, ERigTransformType::CurrentGlobal), PerElementData.Pose.Current.bDirty[FRigLocalAndGlobalTransform::EGlobal]);
 		}
 
 		switch (Key.Type)
@@ -1639,6 +1641,13 @@ void URigHierarchyController::HandleHierarchyModified(ERigHierarchyNotification 
 	ensure(IsValid());
 	ensure(InHierarchy == Hierarchy);
 	ModifiedEvent.Broadcast(InNotifType, InHierarchy, InElement);
+}
+
+bool URigHierarchyController::IsValid() const
+{
+	// If we're pending kill, it's fine for our Hierarchy to also be pending kill
+	const bool bPendingKillAcceptable = ::IsValid(this);
+	return Hierarchy.IsValid(bPendingKillAcceptable);
 }
 
 int32 URigHierarchyController::AddElement(FRigBaseElement* InElementToAdd, FRigBaseElement* InFirstParent, bool bMaintainGlobalTransform)

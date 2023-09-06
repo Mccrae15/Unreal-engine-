@@ -24,6 +24,7 @@ class FPCGGraphCompiler;
 class FPCGGraphExecutor;
 struct FPCGContext;
 struct FPCGDataCollection;
+struct FPCGStack;
 class UPCGSettings;
 
 class IPCGElement;
@@ -43,6 +44,9 @@ public:
 	friend UPCGActorAndComponentMapping;
 
 	UPCGSubsystem();
+
+	/** To be used when a PCG component can not have a world anymore, to unregister itself. */
+	static UPCGSubsystem* GetSubsystemForCurrentWorld();
 
 	//~ Begin USubsystem Interface.
 	virtual void Deinitialize() override;
@@ -72,6 +76,7 @@ public:
 	bool IsInitialized() const { return GraphExecutor != nullptr; }
 
 	APCGWorldActor* GetPCGWorldActor();
+	APCGWorldActor* FindPCGWorldActor();
 #if WITH_EDITOR
 	void DestroyPCGWorldActor();
 #endif
@@ -81,13 +86,13 @@ public:
 	UPCGLandscapeCache* GetLandscapeCache();
 
 	// Schedule graph (owner -> graph)
-	FPCGTaskId ScheduleComponent(UPCGComponent* PCGComponent, bool bSave, const TArray<FPCGTaskId>& Dependencies);
+	FPCGTaskId ScheduleComponent(UPCGComponent* PCGComponent, bool bSave, const TArray<FPCGTaskId>& InDependencies);
 
 	/** Schedule cleanup(owner->graph). Note that in non-partitioned mode, cleanup is immediate. */
 	FPCGTaskId ScheduleCleanup(UPCGComponent* PCGComponent, bool bRemoveComponents, bool bSave, const TArray<FPCGTaskId>& Dependencies);
 
 	// Schedule graph (used internally for dynamic subgraph execution)
-	FPCGTaskId ScheduleGraph(UPCGGraph* Graph, UPCGComponent* SourceComponent, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& Dependencies);
+	FPCGTaskId ScheduleGraph(UPCGGraph* Graph, UPCGComponent* SourceComponent, FPCGElementPtr PreGraphElement, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& Dependencies, const FPCGStack* InFromStack);
 
 	// Schedule graph (used internally for dynamic subgraph execution)
 	FPCGTaskId ScheduleGraph(UPCGComponent* SourceComponent, const TArray<FPCGTaskId>& Dependencies);
@@ -137,7 +142,7 @@ public:
 	/** Unregister a Partition actor, will be removed from the map and remove itself to all intersecting volumes. Thread safe */
 	void UnregisterPartitionActor(APCGPartitionActor* InActor) { ActorAndComponentMapping.UnregisterPartitionActor(InActor); }
 
-	TSet<TObjectPtr<UPCGComponent>> GetAllRegisteredPartitionedComponents() const { return ActorAndComponentMapping.GetAllRegisteredPartitionedComponents(); }
+	TSet<UPCGComponent*> GetAllRegisteredPartitionedComponents() const { return ActorAndComponentMapping.GetAllRegisteredPartitionedComponents(); }
 
 	/** Flushes the graph cache completely, use only for debugging */
 	void FlushCache();
@@ -145,13 +150,16 @@ public:
 	/* Call the InFunc function to all local component registered to the original component. Thread safe*/
 	void ForAllRegisteredLocalComponents(UPCGComponent* OriginalComponent, const TFunction<void(UPCGComponent*)>& InFunc) const;
 
+	/** Traverses the hierarchy associated with the given component and calls InFunc for each overlapping component. */
+	void ForAllOverlappingComponentsInHierarchy(UPCGComponent* InComponent, const TFunction<void(UPCGComponent*)>& InFunc) const;
+
 	/** True if graph cache debugging is enabled. */
 	bool IsGraphCacheDebuggingEnabled() const;
 
 #if WITH_EDITOR
 public:
 	/** Schedule refresh on the current or next frame */
-	FPCGTaskId ScheduleRefresh(UPCGComponent* SourceComponent);
+	FPCGTaskId ScheduleRefresh(UPCGComponent* SourceComponent, bool bForceRefresh);
 
 	/** Schedules an operation to cleanup the graph in the given bounds */
 	FPCGTaskId CleanupGraph(UPCGComponent* Component, const FBox& InBounds, bool bRemoveComponents, bool bSave);
@@ -165,6 +173,9 @@ public:
 
 	/** Propagate to the graph compiler graph changes */
 	void NotifyGraphChanged(UPCGGraph* InGraph);
+
+	/** Update the tracking on a given component. */
+	void UpdateComponentTracking(UPCGComponent* InComponent, bool bInShouldDirtyActors = false) { ActorAndComponentMapping.RegisterOrUpdateTracking(InComponent, bInShouldDirtyActors); }
 
 	/** Cleans up the graph cache on an element basis. InSettings is used for debugging and is optional. */
 	void CleanFromCache(const IPCGElement* InElement, const UPCGSettings* InSettings = nullptr);
@@ -200,7 +211,7 @@ private:
 	};
 
 	FPCGTaskId ProcessGraph(UPCGComponent* Component, const FBox& InPreviousBounds, const FBox& InNewBounds, EOperation InOperation, bool bSave);
-	void CreatePartitionActorsWithinBounds(const FBox& InBounds);
+	void CreatePartitionActorsWithinBounds(const FBox& InBounds, const PCGHiGenGrid::FSizeArray& InGridSizes);
 
 	FPCGNodeVisualLogs NodeVisualLogs;
 #endif // WITH_EDITOR

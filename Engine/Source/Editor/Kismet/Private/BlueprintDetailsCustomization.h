@@ -223,6 +223,10 @@ private:
 	EVisibility ShowReadOnlyCheckboxVisibilty() const;
 	ECheckBoxState OnReadyOnlyCheckboxState() const;
 	void OnReadyOnlyChanged(ECheckBoxState InNewState);
+	
+	ECheckBoxState OnFieldNotifyCheckboxState() const;
+	void OnFieldNotifyChanged(ECheckBoxState InNewState);
+	EVisibility GetFieldNotifyCheckboxListVisiblity() const;
 
 	ECheckBoxState OnCreateWidgetCheckboxState() const;
 	void OnCreateWidgetChanged(ECheckBoxState InNewState);
@@ -782,6 +786,11 @@ private:
 	bool IsUnsafeDuringActorConstructionVisible() const;
 	void OnIsUnsafeDuringActorConstructionModified(const ECheckBoxState NewCheckedState);
 	ECheckBoxState GetIsUnsafeDuringActorConstruction() const;
+
+	bool IsFieldNotifyCheckVisible() const;
+	bool GetIsFieldNotfyEnabled() const;
+	ECheckBoxState OnFieldNotifyCheckboxState() const;
+	void OnFieldNotifyChanged(ECheckBoxState InNewState);
 
 	/** Determines if the selected event is identified as editor callable */
 	ECheckBoxState GetIsEditorCallableEvent() const;

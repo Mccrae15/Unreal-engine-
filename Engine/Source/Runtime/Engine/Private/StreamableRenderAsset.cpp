@@ -52,12 +52,32 @@ void UStreamableRenderAsset::RegisterMipLevelChangeCallback(UPrimitiveComponent*
 			Callback(Component, this, ELODStreamingCallbackResult::Success);
 			return;
 		}
-		
+
 		new (MipChangeCallbacks) FLODStreamingCallbackPayload(Component, FApp::GetCurrentTime() + TimeoutSecs, ExpectedResidentMips, bOnStreamIn, MoveTemp(Callback));
 	}
 	else
 	{
 		Callback(Component, this, ELODStreamingCallbackResult::StreamingDisabled);
+	}
+}
+
+void UStreamableRenderAsset::RegisterMipLevelChangeCallback(UPrimitiveComponent* Component, float TimeoutStartSecs, FLODStreamingCallback&& CallbackStreamingStart, float TimeoutDoneSecs, FLODStreamingCallback&& CallbackStreamingDone)
+{
+	check(IsInGameThread());
+
+	if (StreamingIndex != INDEX_NONE)
+	{
+		if (CachedSRRState.NumRequestedLODs > CachedSRRState.NumNonStreamingLODs && CachedSRRState.NumResidentLODs >= CachedSRRState.NumRequestedLODs)
+		{
+			CallbackStreamingDone(Component, this, ELODStreamingCallbackResult::Success);
+			return;
+		}
+
+		new (MipChangeCallbacks) FLODStreamingCallbackPayload(Component, FApp::GetCurrentTime() + TimeoutStartSecs, MoveTemp(CallbackStreamingStart), FApp::GetCurrentTime() + TimeoutDoneSecs, MoveTemp(CallbackStreamingDone));
+	}
+	else
+	{
+		CallbackStreamingDone(Component, this, ELODStreamingCallbackResult::StreamingDisabled);
 	}
 }
 
@@ -69,7 +89,7 @@ void UStreamableRenderAsset::RemoveMipLevelChangeCallback(UPrimitiveComponent* C
 	{
 		if (MipChangeCallbacks[Idx].Component == Component)
 		{
-			MipChangeCallbacks[Idx].Callback(Component, this, ELODStreamingCallbackResult::ComponentRemoved);
+			MipChangeCallbacks[Idx].CallbackDone(Component, this, ELODStreamingCallbackResult::ComponentRemoved);
 			MipChangeCallbacks.RemoveAtSwap(Idx--);
 		}
 	}
@@ -80,7 +100,7 @@ void UStreamableRenderAsset::RemoveAllMipLevelChangeCallbacks()
 	for (int32 Idx = 0; Idx < MipChangeCallbacks.Num(); ++Idx)
 	{
 		const FLODStreamingCallbackPayload& Payload = MipChangeCallbacks[Idx];
-		Payload.Callback(Payload.Component, this, ELODStreamingCallbackResult::AssetRemoved);
+		Payload.CallbackDone(Payload.Component, this, ELODStreamingCallbackResult::AssetRemoved);
 	}
 	MipChangeCallbacks.Empty();
 }
@@ -100,18 +120,43 @@ void UStreamableRenderAsset::TickMipLevelChangeCallbacks(TArray<UStreamableRende
 
 		for (int32 Idx = 0; Idx < MipChangeCallbacks.Num(); ++Idx)
 		{
-			const FLODStreamingCallbackPayload& Payload = MipChangeCallbacks[Idx];
-
-			if (Payload.bOnStreamIn == (ResidentMips >= Payload.ExpectedResidentMips))
+			FLODStreamingCallbackPayload& Payload = MipChangeCallbacks[Idx];
+			if (PendingUpdate && Payload.CallbackStart)
 			{
-				Payload.Callback(Payload.Component, this, ELODStreamingCallbackResult::Success);
+				Payload.CallbackStart(Payload.Component, this, ELODStreamingCallbackResult::Success);
+				Payload.CallbackStart.Reset();
+			}
+			if (Payload.bIsExpectedResidentMipPayload)
+			{
+				if (Payload.bOnStreamIn == (ResidentMips >= Payload.ExpectedResidentMips))
+				{
+					Payload.CallbackDone(Payload.Component, this, ELODStreamingCallbackResult::Success);
+					MipChangeCallbacks.RemoveAt(Idx--);
+					continue;
+				}
+			}
+			else if (CachedSRRState.NumRequestedLODs != CachedSRRState.NumNonStreamingLODs && ResidentMips >= CachedSRRState.NumRequestedLODs)
+			{
+				/* this can happen if the streaming was started & done in the same frame. */
+				if (Payload.CallbackStart)
+				{
+					Payload.CallbackStart(Payload.Component, this, ELODStreamingCallbackResult::Success);
+				}
+				Payload.CallbackDone(Payload.Component, this, ELODStreamingCallbackResult::Success);
 				MipChangeCallbacks.RemoveAt(Idx--);
 				continue;
 			}
 
-			if (Now > Payload.Deadline)
+			if (Now > Payload.DeadlineStart && Payload.CallbackStart)
 			{
-				Payload.Callback(Payload.Component, this, ELODStreamingCallbackResult::TimedOut);
+				Payload.CallbackStart(Payload.Component, this, ELODStreamingCallbackResult::TimedOut);
+				MipChangeCallbacks.RemoveAt(Idx--);
+				continue;
+			}
+
+			if (Now > Payload.DeadlineDone)
+			{
+				Payload.CallbackDone(Payload.Component, this, ELODStreamingCallbackResult::TimedOut);
 				MipChangeCallbacks.RemoveAt(Idx--);
 			}
 		}
@@ -368,10 +413,14 @@ void UStreamableRenderAsset::WaitForPendingInitOrStreaming(bool bWaitForLODTrans
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStreamableRenderAsset::WaitForPendingInitOrStreaming);
 
+	// this can be called with IsAssetStreamingSuspended == true
+	//	because Interchange Tasks due to PostEditChange do Texture UpdateResource
+	//	those tasks can be retracted in the D3D RHI Wait which runs in the Viewport resize
+	//	which turns off streaming
+	// @todo : Viewport resize should not turn off streaming
+
 	while (HasPendingInitOrStreaming(bWaitForLODTransition))
 	{
-		ensure(!IsAssetStreamingSuspended());
-
 		// Advance the streaming state.
 		TickStreaming(bSendCompletionEvents);
 		// Make sure any render commands are executed, in particular things like InitRHI, or asset updates on the render thread.
@@ -380,6 +429,9 @@ void UStreamableRenderAsset::WaitForPendingInitOrStreaming(bool bWaitForLODTrans
 		// Most of the time, sleeping is not required, so avoid loosing a whole quantum (10ms on W10Pro) unless stricly necessary.
 		if (HasPendingInitOrStreaming(bWaitForLODTransition))
 		{
+			// try to make sure streaming is enabled before doing horrible busy wait
+			ensure(!IsAssetStreamingSuspended());
+
 			// Give some time increment so that LOD transition can complete, and also for the gamethread to give room for streaming async tasks.
 			FPlatformProcess::Sleep(RENDER_ASSET_STREAMING_SLEEP_DT);
 		}

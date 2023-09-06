@@ -6,6 +6,12 @@ public class LevelSequenceEditor : ModuleRules
 {
 	public LevelSequenceEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
+		PrivateIncludePaths.AddRange(
+			new string[] {
+                "../../../../Source/Editor/UnrealEd/Private", // TODO: Fix this, for now it's needed for the fbx exporter
+				}
+			);
+
         DynamicallyLoadedModuleNames.AddRange(
             new string[] {
 				"AssetTools",
@@ -41,6 +47,7 @@ public class LevelSequenceEditor : ModuleRules
                 "MovieSceneTools",
 				"MovieSceneTracks",
                 "PropertyEditor",
+                "SequencerCore",
 				"Sequencer",
                 "Slate",
                 "SlateCore",
@@ -57,23 +64,22 @@ public class LevelSequenceEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetTools",
-                "MovieSceneTools",
-				"SceneOutliner",
 				"PlacementMode",
                 "Settings",
                 "MovieSceneCaptureDialog",
+				"DesktopPlatform",
 			}
 		);
 
         PrivateIncludePaths.AddRange(
             new string[] {
-            	"LevelSequenceEditor/Public",
-				"LevelSequenceEditor/Private",
 				"LevelSequenceEditor/Private/AssetTools",
 				"LevelSequenceEditor/Private/Factories",
                 "LevelSequenceEditor/Private/Misc",
 				"LevelSequenceEditor/Private/Styles",
 			}
         );
+
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "FBX");
 	}
 }

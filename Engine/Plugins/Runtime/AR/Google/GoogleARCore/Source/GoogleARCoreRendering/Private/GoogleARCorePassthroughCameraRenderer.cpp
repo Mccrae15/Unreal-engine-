@@ -12,18 +12,17 @@
 #include "Engine/Engine.h"
 #include "SceneUtils.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "PostProcess/SceneFilterRendering.h"
-#include "PostProcess/PostProcessMaterial.h"
 #include "Materials/MaterialRenderProxy.h"
 #include "MaterialDomain.h"
 #include "MaterialShader.h"
 #include "MaterialShaderType.h"
-#include "GoogleARCoreAndroidHelper.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "CommonRenderResources.h"
 #include "ARUtilitiesFunctionLibrary.h"
 #include "HAL/IConsoleManager.h"
 #include "UObject/Package.h"
-
+#include "PostProcess/DrawRectangle.h"
+#include "RHIStaticStates.h"
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	#define ALLOWS_DEBUG_OVERLAY 1
@@ -59,6 +58,8 @@ FGoogleARCorePassthroughCameraRenderer::FGoogleARCorePassthroughCameraRenderer()
 
 void FGoogleARCorePassthroughCameraRenderer::InitializeRenderer_RenderThread(FSceneViewFamily& InViewFamily)
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 	if (!OverlayIndexBufferRHI)
 	{
 		// Initialize Index buffer;
@@ -71,7 +72,7 @@ void FGoogleARCorePassthroughCameraRenderer::InitializeRenderer_RenderThread(FSc
 
 		// Create index buffer. Fill buffer with initial data upon creation
 		FRHIResourceCreateInfo CreateInfo(TEXT("OverlayIndexBuffer"), &IndexBuffer);
-		OverlayIndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
+		OverlayIndexBufferRHI = RHICmdList.CreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
 	}
 	
 	if (!OverlayVertexBufferRHI)
@@ -94,15 +95,18 @@ void FGoogleARCorePassthroughCameraRenderer::InitializeRenderer_RenderThread(FSc
 
 		// Create vertex buffer. Fill buffer with initial data upon creation
 		FRHIResourceCreateInfo CreateInfo(TEXT("OverlayVertexBuffer"), &Vertices);
-		OverlayVertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
+		OverlayVertexBufferRHI = RHICmdList.CreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
 	}
 }
 
 class FPostProcessMaterialShader : public FMaterialShader
 {
 public:
-	using FParameters = FPostProcessMaterialParameters;
-	SHADER_USE_PARAMETER_STRUCT_WITH_LEGACY_BASE(FPostProcessMaterialShader, FMaterialShader);
+	FPostProcessMaterialShader() = default;
+	FPostProcessMaterialShader(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FMaterialShader(Initializer)
+	{
+	}
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
@@ -134,10 +138,10 @@ public:
 		: FPostProcessMaterialShader(Initializer)
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView View)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View)
 	{
-		FRHIVertexShader* ShaderRHI = RHICmdList.GetBoundVertexShader();
-		FMaterialShader::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
+		UE::Renderer::PostProcess::SetDrawRectangleParameters(BatchedParameters, this, View);
+		FMaterialShader::SetViewParameters(BatchedParameters, View, View.ViewUniformBuffer);
 	}
 };
 
@@ -160,17 +164,16 @@ public:
 		: FPostProcessMaterialShader(Initializer)
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView View, const FMaterialRenderProxy* MaterialProxy, const FMaterial& Material)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, const FMaterialRenderProxy* MaterialProxy, const FMaterial& Material)
 	{
-		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
-		FMaterialShader::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
-		FMaterialShader::SetParameters(RHICmdList, ShaderRHI, MaterialProxy, Material, View);
+		FMaterialShader::SetViewParameters(BatchedParameters, View, View.ViewUniformBuffer);
+		FMaterialShader::SetParameters(BatchedParameters, MaterialProxy, Material, View);
 	}
 };
 
 IMPLEMENT_GLOBAL_SHADER(FGoogleARCoreCameraOverlayPS, "/Engine/Private/PostProcessMaterialShaders.usf", "MainPS", SF_Pixel);
 
-void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHICommandListImmediate& RHICmdList, FSceneView& InView, UMaterialInstanceDynamic* OverlayMaterialToUse, bool bRenderingOcclusion)
+void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHICommandList& RHICmdList, FSceneView& InView, UMaterialInstanceDynamic* OverlayMaterialToUse, bool bRenderingOcclusion)
 {
 #if PLATFORM_ANDROID
 	if (FAndroidMisc::ShouldUseVulkan() && IsMobileHDR() && !RHICmdList.IsInsideRenderPass())
@@ -226,20 +229,8 @@ void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHI
 
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-		VertexShader->SetParameters(RHICmdList, InView);
-		PixelShader->SetParameters(RHICmdList, InView, MaterialProxy, CameraMaterial);
-
-		FIntPoint ViewSize = InView.UnscaledViewRect.Size();
-
-		FDrawRectangleParameters Parameters;
-		Parameters.PosScaleBias = FVector4f(ViewSize.X, ViewSize.Y, 0, 0);
-		Parameters.UVScaleBias = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
-
-		Parameters.InvTargetSizeAndTextureSize = FVector4f(
-			1.0f / ViewSize.X, 1.0f / ViewSize.Y,
-			1.0f, 1.0f);
-
-		SetUniformBufferParameterImmediate(RHICmdList, VertexShader.GetVertexShader(), VertexShader->GetUniformBufferParameter<FDrawRectangleParameters>(), Parameters);
+		SetShaderParametersLegacyVS(RHICmdList, VertexShader, InView);
+		SetShaderParametersLegacyPS(RHICmdList, PixelShader, InView, MaterialProxy, CameraMaterial);
 
 		if (OverlayVertexBufferRHI.IsValid() && OverlayIndexBufferRHI.IsValid())
 		{
@@ -258,7 +249,7 @@ void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHI
 #endif
 }
 
-void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlay_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
+void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlay_RenderThread(FRHICommandList& RHICmdList, FSceneView& InView)
 {
 	auto OverlayMaterialToUse = RegularOverlayMaterial;
 	

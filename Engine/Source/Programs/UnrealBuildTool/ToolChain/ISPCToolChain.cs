@@ -139,7 +139,7 @@ namespace UnrealBuildTool
 			}
 			else if (Platform == UnrealTargetPlatform.IOS)
 			{
-				ISPCArch += "aarch64"; 
+				ISPCArch += "aarch64";
 			}
 			else
 			{
@@ -411,9 +411,11 @@ namespace UnrealBuildTool
 				}
 			}
 
+			string ISPCArch = GetISPCArchTarget(CompileEnvironment.Platform, null);
+
 			// Build target triplet
 			GlobalArguments.Add($"--target-os={GetISPCOSTarget(CompileEnvironment.Platform)}");
-			GlobalArguments.Add($"--arch={GetISPCArchTarget(CompileEnvironment.Platform, null)}");
+			GlobalArguments.Add($"--arch={ISPCArch}");
 			GlobalArguments.Add($"--target={TargetString}");
 			GlobalArguments.Add($"--emit-{GetISPCObjectFileFormat(CompileEnvironment.Platform)}");
 
@@ -457,13 +459,19 @@ namespace UnrealBuildTool
 			foreach (FileItem ISPCFile in InputFiles)
 			{
 				Action CompileAction = Graph.CreateAction(ActionType.Compile);
-				CompileAction.CommandDescription = "Generate Header";
+				CompileAction.CommandDescription = $"Generate Header [{ISPCArch}]";
 				CompileAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 				CompileAction.CommandPath = new FileReference(GetISPCHostCompilerPath(BuildHostPlatform.Current.Platform));
 				CompileAction.StatusDescription = Path.GetFileName(ISPCFile.AbsolutePath);
+				CompileAction.ArtifactMode = ArtifactMode.Enabled;
+
+				CompileAction.bCanExecuteRemotely = true;
 
 				// Disable remote execution to workaround mismatched case on XGE
-				CompileAction.bCanExecuteRemotely = false;
+				CompileAction.bCanExecuteRemotelyWithXGE = false;
+
+				// TODO: Remove, might work
+				CompileAction.bCanExecuteRemotelyWithSNDBS = false;
 
 				List<string> Arguments = new List<string>();
 
@@ -491,7 +499,7 @@ namespace UnrealBuildTool
 
 				CompileAction.ProducedItems.Add(ISPCIncludeHeaderFile);
 
-				FileReference ResponseFileName = new FileReference(ISPCIncludeHeaderFile.AbsolutePath + ".response");
+				FileReference ResponseFileName = GetResponseFileName(CompileEnvironment, ISPCIncludeHeaderFile);
 				FileItem ResponseFileItem = Graph.CreateIntermediateTextFile(ResponseFileName, Arguments.Select(x => Utils.ExpandVariables(x)));
 				CompileAction.CommandArguments = $"@\"{NormalizeCommandLinePath(ResponseFileName)}\"";
 				CompileAction.PrerequisiteItems.Add(ResponseFileItem);
@@ -508,6 +516,7 @@ namespace UnrealBuildTool
 
 				// Fix interrupted build issue by copying header after generation completes
 				Action CopyAction = Graph.CreateCopyAction(ISPCIncludeHeaderFile, ISPCFinalHeaderFile);
+				CopyAction.CommandDescription = $"{CopyAction.CommandDescription} [{ISPCArch}]";
 				CopyAction.DeleteItems.Clear();
 				CopyAction.PrerequisiteItems.Add(ISPCFile);
 				CopyAction.bShouldOutputStatusDescription = false;
@@ -549,13 +558,14 @@ namespace UnrealBuildTool
 
 			// Build target triplet
 			string PlatformObjectFileFormat = GetISPCObjectFileFormat(CompileEnvironment.Platform);
+			string ISPCArch = GetISPCArchTarget(CompileEnvironment.Platform, null);
 
 			GlobalArguments.Add($"--target-os={GetISPCOSTarget(CompileEnvironment.Platform)}");
-			GlobalArguments.Add($"--arch={GetISPCArchTarget(CompileEnvironment.Platform, null)}");
+			GlobalArguments.Add($"--arch={ISPCArch}");
 			GlobalArguments.Add($"--target={TargetString}");
 			GlobalArguments.Add($"--emit-{PlatformObjectFileFormat}");
 
-			bool bByteCodeOutput = ( PlatformObjectFileFormat == "llvm" );
+			bool bByteCodeOutput = (PlatformObjectFileFormat == "llvm");
 
 			List<string> CommonArgs = new List<string>();
 			if (CompileEnvironment.Configuration == CppConfiguration.Debug)
@@ -613,13 +623,18 @@ namespace UnrealBuildTool
 			foreach (FileItem ISPCFile in InputFiles)
 			{
 				Action CompileAction = Graph.CreateAction(ActionType.Compile);
-				CompileAction.CommandDescription = "Compile";
+				CompileAction.CommandDescription = $"Compile [{ISPCArch}]";
 				CompileAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 				CompileAction.CommandPath = new FileReference(GetISPCHostCompilerPath(BuildHostPlatform.Current.Platform));
 				CompileAction.StatusDescription = Path.GetFileName(ISPCFile.AbsolutePath);
 
+				CompileAction.bCanExecuteRemotely = true;
+
 				// Disable remote execution to workaround mismatched case on XGE
-				CompileAction.bCanExecuteRemotely = false;
+				CompileAction.bCanExecuteRemotelyWithXGE = false;
+
+				// TODO: Remove, might work
+				CompileAction.bCanExecuteRemotelyWithSNDBS = false;
 
 				List<string> Arguments = new List<string>();
 
@@ -633,7 +648,7 @@ namespace UnrealBuildTool
 				{
 					string ObjTarget = Target;
 
-					if (Target.Contains("-"))
+					if (Target.Contains('-'))
 					{
 						// Remove lane width and gang size from obj file name
 						ObjTarget = Target.Split('-')[0];
@@ -697,7 +712,7 @@ namespace UnrealBuildTool
 
 				CompileAction.ProducedItems.UnionWith(CompiledISPCObjFiles);
 
-				FileReference ResponseFileName = new FileReference(CompiledISPCObjFileNoISA.AbsolutePath + ".response");
+				FileReference ResponseFileName = GetResponseFileName(CompileEnvironment, CompiledISPCObjFileNoISA);
 				FileItem ResponseFileItem = Graph.CreateIntermediateTextFile(ResponseFileName, Arguments.Select(x => Utils.ExpandVariables(x)));
 				CompileAction.CommandArguments = $"@\"{ResponseFileName}\"";
 				CompileAction.PrerequisiteItems.Add(ResponseFileItem);
@@ -732,14 +747,14 @@ namespace UnrealBuildTool
 							PostCompileArgs.Add($"-o \"{NormalizeCommandLinePath(FinalCompiledISPCObjFile)}\"");
 
 							// Write the args to a response file
-							FileReference PostCompileResponseFileName = new FileReference(FinalCompiledISPCObjFile.AbsolutePath + ".response");
+							FileReference PostCompileResponseFileName = GetResponseFileName(CompileEnvironment, FinalCompiledISPCObjFile);
 							FileItem PostCompileResponseFileItem = Graph.CreateIntermediateTextFile(PostCompileResponseFileName, PostCompileArgs.Select(x => Utils.ExpandVariables(x)));
 							PostCompileAction.CommandArguments = $"@\"{PostCompileResponseFileName}\"";
 							PostCompileAction.PrerequisiteItems.Add(PostCompileResponseFileItem);
 
 							PostCompileAction.PrerequisiteItems.Add(CompiledBytecodeObjFile);
 							PostCompileAction.ProducedItems.Add(FinalCompiledISPCObjFile);
-							PostCompileAction.CommandDescription = "CompileByteCode";
+							PostCompileAction.CommandDescription = $"CompileByteCode [{ISPCArch}]";
 							PostCompileAction.WorkingDirectory = Unreal.EngineSourceDirectory;
 							PostCompileAction.CommandPath = new FileReference(ByteCodeCompilerPath);
 							PostCompileAction.StatusDescription = Path.GetFileName(ISPCFile.AbsolutePath);

@@ -13,10 +13,10 @@ namespace Jupiter.Implementation
 {
     public interface IRefCleanup
     {
-        Task<int> Cleanup(NamespaceId ns, CancellationToken cancellationToken);
+        Task<int> Cleanup(CancellationToken cancellationToken);
     }
 
-    public class RefCleanup : IRefCleanup
+    public class RefLastAccessCleanup : IRefCleanup
     {
         private readonly IOptionsMonitor<GCSettings> _settings;
         private readonly IReferencesStore _referencesStore;
@@ -25,8 +25,8 @@ namespace Jupiter.Implementation
         private readonly Tracer _tracer;
         private readonly ILogger _logger;
 
-        public RefCleanup(IOptionsMonitor<GCSettings> settings, IReferencesStore referencesStore,
-            IReplicationLog replicationLog, INamespacePolicyResolver namespacePolicyResolver, Tracer tracer, ILogger<RefCleanup> logger)
+        public RefLastAccessCleanup(IOptionsMonitor<GCSettings> settings, IReferencesStore referencesStore,
+            IReplicationLog replicationLog, INamespacePolicyResolver namespacePolicyResolver, Tracer tracer, ILogger<RefLastAccessCleanup> logger)
         {
             _settings = settings;
             _referencesStore = referencesStore;
@@ -36,43 +36,59 @@ namespace Jupiter.Implementation
             _logger = logger;
         }
 
-        public Task<int> Cleanup(NamespaceId ns, CancellationToken cancellationToken)
+        private bool ShouldGCNamespace(NamespaceId ns)
         {
-            NamespacePolicy policies;
-            try
-            {
-                policies = _namespacePolicyResolver.GetPoliciesForNs(ns);
-            }
-            catch (UnknownNamespaceException)
-            {
-                _logger.LogWarning("Namespace {Namespace} does not configure any policy, not running ref cleanup on it.",
-                    ns);
-                return Task.FromResult(0);
-            }
-
             if (ns == INamespacePolicyResolver.JupiterInternalNamespace)
             {
                 // do not apply our cleanup policies to the internal namespace
-                return Task.FromResult(0);
+                return false;
             }
 
-            return CleanNamespace(ns, cancellationToken);
+            try
+            {
+                NamespacePolicy policy = _namespacePolicyResolver.GetPoliciesForNs(ns);
+
+                if (policy.GcMethod == NamespacePolicy.StoragePoolGCMethod.LastAccess)
+                {
+                    // only run for namespaces set to use last access tracking
+                    return true;
+                }
+
+                if (policy.GcMethod == NamespacePolicy.StoragePoolGCMethod.Always)
+                {
+                    // this is a old namespace that should be cleaned up
+                    return true;
+                }
+            }
+            catch (NamespaceNotFoundException)
+            {
+                _logger.LogWarning("Unknown namespace {Namespace} when attempting to GC References. To opt in to deleting the old namespace add a policy for it with the GcMethod set to always", ns);
+                return false;
+            }
+            
+            return false;
         }
 
-        private async Task<int> CleanNamespace(NamespaceId ns, CancellationToken cancellationToken)
+        public async Task<int> Cleanup(CancellationToken cancellationToken)
         {
             int countOfDeletedRecords = 0;
             DateTime cutoffTime = DateTime.Now.AddSeconds(-1 * _settings.CurrentValue.LastAccessCutoff.TotalSeconds);
             ulong consideredCount = 0;
             DateTime cleanupStart = DateTime.Now;
-            await Parallel.ForEachAsync(_referencesStore.GetRecords(ns),
+
+            await Parallel.ForEachAsync(_referencesStore.GetRecords(),
                 new ParallelOptions
                 {
                     MaxDegreeOfParallelism = _settings.CurrentValue.OrphanRefMaxParallelOperations,
                     CancellationToken = cancellationToken
                 }, async (tuple, token) =>
                 {
-                    (BucketId bucket, IoHashKey name, DateTime lastAccessTime) = tuple;
+                    (NamespaceId ns, BucketId bucket, IoHashKey name, DateTime lastAccessTime) = tuple;
+
+                    if (!ShouldGCNamespace(ns))
+                    {
+                        return;
+                    }
 
                     _logger.LogDebug(
                         "Considering object in {Namespace} {Bucket} {Name} for deletion, was last updated {LastAccessTime}",
@@ -97,7 +113,7 @@ namespace Jupiter.Implementation
                     try
                     {
                         storeDelete = await _referencesStore.Delete(ns, bucket, name);
-                        if (storeDelete)
+                        if (storeDelete && _settings.CurrentValue.WriteDeleteToReplicationLog)
                         {
                             // insert a delete event into the transaction log
                             await _replicationLog.InsertDeleteEvent(ns, bucket, name, null);
@@ -121,8 +137,7 @@ namespace Jupiter.Implementation
 
             TimeSpan cleanupDuration = DateTime.Now - cleanupStart;
             _logger.LogInformation(
-                "Finished cleaning {Namespace}. Refs considered: {ConsideredCount} Refs Deleted: {DeletedCount}. Cleanup took: {CleanupDuration}", ns,
-                consideredCount, countOfDeletedRecords, cleanupDuration);
+                "Finished cleaning refs. Refs considered: {ConsideredCount} Refs Deleted: {DeletedCount}. Cleanup took: {CleanupDuration}", consideredCount, countOfDeletedRecords, cleanupDuration);
 
             return countOfDeletedRecords;
         }

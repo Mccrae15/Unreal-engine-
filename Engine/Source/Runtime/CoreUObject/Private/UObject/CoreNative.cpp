@@ -72,9 +72,6 @@ UClass* Z_Construct_UClass_UObject()
 	{
 		Z_Registration_Info_UClass_UObject.OuterSingleton = UObject::StaticClass();
 		UObjectForceRegistration(Z_Registration_Info_UClass_UObject.OuterSingleton);
-#if WITH_EDITOR
-		static_assert(false, "Need to EmitBaseReferences here");
-#endif
 		Z_Registration_Info_UClass_UObject.OuterSingleton->StaticLink();
 	}
 	check(Z_Registration_Info_UClass_UObject.OuterSingleton->GetClass());
@@ -88,19 +85,24 @@ IMPLEMENT_CLASS(UObject, 0);
 -----------------------------------------------------------------------------*/
 
 FObjectInstancingGraph::FObjectInstancingGraph(bool bDisableInstancing)
+	: FObjectInstancingGraph(bDisableInstancing ? EObjectInstancingGraphOptions::DisableInstancing : EObjectInstancingGraphOptions::None)	
+{
+}
+
+FObjectInstancingGraph::FObjectInstancingGraph(EObjectInstancingGraphOptions InOptions)
 	: SourceRoot(nullptr)
 	, DestinationRoot(nullptr)
+	, InstancingOptions(InOptions)
 	, bCreatingArchetype(false)
-	, bEnableSubobjectInstancing(!bDisableInstancing)
 	, bLoadingObject(false)
 {
 }
 
-FObjectInstancingGraph::FObjectInstancingGraph( UObject* DestinationSubobjectRoot )
+FObjectInstancingGraph::FObjectInstancingGraph( UObject* DestinationSubobjectRoot, EObjectInstancingGraphOptions InOptions)
 	: SourceRoot(nullptr)
 	, DestinationRoot(nullptr)
+	, InstancingOptions(InOptions)
 	, bCreatingArchetype(false)
-	, bEnableSubobjectInstancing(true)
 	, bLoadingObject(false)
 {
 	SetDestinationRoot(DestinationSubobjectRoot);
@@ -218,7 +220,7 @@ UObject* FObjectInstancingGraph::GetInstancedSubobject( UObject* SourceSubobject
 								InstancedSubobject = StaticFindObjectFast(nullptr, SubobjectOuter, SubobjectName);
 							}
 
-							if (InstancedSubobject && IsCreatingArchetype())
+							if (InstancedSubobject && IsCreatingArchetype() && !InstancedSubobject->HasAnyFlags(RF_LoadCompleted))
 							{
 								// since we are updating an archetype, this needs to reconstruct as that is the mechanism used to copy properties
 								// it will destroy the existing object and overwrite it
@@ -277,11 +279,10 @@ UObject* FObjectInstancingGraph::InstancePropertyValue(UObject* SubObjectTemplat
 	bool bCausesInstancing   = !!(Flags & EInstancePropertyValueFlags::CausesInstancing);
 	bool bAllowSelfReference = !!(Flags & EInstancePropertyValueFlags::AllowSelfReference);
 
-	UObject* NewValue = CurrentValue;
+	checkf(CurrentValue, TEXT("Null object value encountered while trying to instance subobject of %s. Instanced object properties are never expected to be null (template: %s)."), 
+		*GetFullNameSafe(Owner), *GetNameSafe(SubObjectTemplate));
 
-	check(CurrentValue);
-
-	if (CurrentValue != nullptr && CurrentValue->GetClass()->HasAnyClassFlags(CLASS_DefaultToInstanced))
+	if (CurrentValue->GetClass()->HasAnyClassFlags(CLASS_DefaultToInstanced))
 	{
 		bCausesInstancing = true; // these are always instanced no matter what
 	}
@@ -290,13 +291,21 @@ UObject* FObjectInstancingGraph::InstancePropertyValue(UObject* SubObjectTemplat
 		(!bCausesInstancing && // or if this class isn't forced to be instanced and this var did not have the instance keyword
 		!bAllowSelfReference)) // and this isn't a delegate
 	{
-		return NewValue; // not instancing
+		return CurrentValue; // not instancing
 	}
+
+	if (!!(InstancingOptions & EObjectInstancingGraphOptions::InstanceTemplatesOnly) && // if we're allowed to instance templates only
+		!CurrentValue->IsTemplate()) // and the current value is not a template
+	{
+		return CurrentValue; // not instancing
+	}
+
+	UObject* NewValue = CurrentValue;
 
 	// if the object we're instancing the subobjects for (Owner) has the current subobject's outer in its archetype chain, and its archetype has a nullptr value
 	// for this subobject property it means that the archetype didn't instance its subobject, so we shouldn't either.
 
-	if (SubObjectTemplate == nullptr && (Owner != nullptr && CurrentValue != nullptr && Owner->IsBasedOnArchetype(CurrentValue->GetOuter())))
+	if (SubObjectTemplate == nullptr && (Owner != nullptr && Owner->IsBasedOnArchetype(CurrentValue->GetOuter())))
 	{
 		NewValue = nullptr;
 	}

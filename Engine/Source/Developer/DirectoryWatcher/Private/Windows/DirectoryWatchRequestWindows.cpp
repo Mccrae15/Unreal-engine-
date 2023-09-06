@@ -9,7 +9,8 @@ FDirectoryWatchRequestWindows::FDirectoryWatchRequestWindows(uint32 Flags)
 {
 	bPendingDelete = false;
 	bEndWatchRequestInvoked = false;
-	WatchStartedTimestamp = 0;
+	WatchStartedTimeStampHistory[0] = 0;
+	WatchStartedTimeStampHistory[1] = 0;
 
 	bWatchSubtree = (Flags & IDirectoryWatcher::WatchOptions::IgnoreChangesInSubtree) == 0;
 	bool bIncludeDirectoryEvents = (Flags & IDirectoryWatcher::WatchOptions::IncludeDirectoryChanges) != 0;
@@ -110,7 +111,8 @@ bool FDirectoryWatchRequestWindows::Init(const FString& InDirectory)
 		DirectoryHandle = INVALID_HANDLE_VALUE;
 		return false;
 	}
-	WatchStartedTimestamp = FDateTime::UtcNow().ToUnixTimestamp();
+	WatchStartedTimeStampHistory[0] = FDateTime::UtcNow().ToUnixTimestamp();
+	WatchStartedTimeStampHistory[1] = WatchStartedTimeStampHistory[0];
 	bBufferInUse = true;
 
 	return true;
@@ -196,17 +198,24 @@ void FDirectoryWatchRequestWindows::ProcessChange(uint32 Error, uint32 NumBytes)
 		bPendingDelete = true;
 	};
 
+	if (Error == 0 && NumBytes == 0)
+	{
+		DWORD UnusedNumberOfBytes;
+		GetOverlappedResult(DirectoryHandle, &Overlapped, &UnusedNumberOfBytes, 0);
+		Error = ::GetLastError();
+	}
+
 	if (Error == ERROR_OPERATION_ABORTED) 
 	{
 		// The operation was aborted, likely due to EndWatchRequest canceling it.
 		// Mark the request for delete so it can be cleaned up next tick.
 		bPendingDelete = true;
 		UE_CLOG(!IsEngineExitRequested(), LogDirectoryWatcher, Log, TEXT("A directory notification for '%s' was aborted."), *Directory);
-		return; 
+		return;
 	}
 	bool bValidNotification = Error != ERROR_IO_INCOMPLETE && NumBytes > 0;
 	bool bIsRescan = false;
-	int64 PreviousWatchStartedTimeStamp = 0;
+	int64 RescanReportTimestamp = 0;
 	if (bValidNotification)
 	{
 		// Swap the pointer to the backbuffer so we can start a new read as soon as possible
@@ -238,7 +247,7 @@ void FDirectoryWatchRequestWindows::ProcessChange(uint32 Error, uint32 NumBytes)
 	{
 		bValidNotification = true;
 		bIsRescan = true;
-		PreviousWatchStartedTimeStamp = WatchStartedTimestamp;
+		RescanReportTimestamp = WatchStartedTimeStampHistory[1];
 	}
 	else if (Error != ERROR_SUCCESS)
 	{
@@ -268,7 +277,8 @@ void FDirectoryWatchRequestWindows::ProcessChange(uint32 Error, uint32 NumBytes)
 		CloseHandleAndMarkForDelete();
 		return;
 	}
-	WatchStartedTimestamp = FDateTime::UtcNow().ToUnixTimestamp();
+	WatchStartedTimeStampHistory[1] = WatchStartedTimeStampHistory[0];
+	WatchStartedTimeStampHistory[0] = FDateTime::UtcNow().ToUnixTimestamp();
 	bBufferInUse = true;
 
 	// No need to process the change if we can not execute any delegates
@@ -333,7 +343,7 @@ void FDirectoryWatchRequestWindows::ProcessChange(uint32 Error, uint32 NumBytes)
 	else
 	{
 		FFileChangeData& ChangeData = FileChanges.Emplace_GetRef(Directory, FFileChangeData::FCA_RescanRequired);
-		ChangeData.TimeStamp = PreviousWatchStartedTimeStamp;
+		ChangeData.TimeStamp = RescanReportTimestamp;
 	}
 }
 

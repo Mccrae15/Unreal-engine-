@@ -4,6 +4,9 @@
 
 #include "CompGeom/ExactPredicates.h"
 #include "Spatial/ZOrderCurvePoints.h"
+#include "MathUtil.h"
+
+#include "Algo/RemoveIf.h"
 
 #include "Async/ParallelFor.h"
 
@@ -25,6 +28,7 @@ struct FDelaunay2Connectivity
 
 	void Empty(int32 ExpectedMaxVertices = 0)
 	{
+		bHasDuplicates = false;
 		EdgeToVert.Empty(ExpectedMaxVertices * 2 * 3);
 		DisableVertexAdjacency();
 	}
@@ -333,6 +337,51 @@ struct FDelaunay2Connectivity
 		return bWellDefinedResult;
 	}
 
+	template<typename RealType>
+	bool GetFilledTrianglesGeneralizedWinding(TArray<FIndex3i>& TrianglesOut, TArrayView<const TVector2<RealType>> Vertices, TArrayView<const FIndex2i> BoundaryEdges, FDelaunay2::EFillMode FillMode) const
+	{
+		if (FillMode == FDelaunay2::EFillMode::Solid)
+		{
+			UE_LOG(LogGeometry, Warning, TEXT("Generalized Winding-based fill does not support the Solid fill mode -- instead using the exact fill path."));
+			GetFilledTriangles(TrianglesOut, BoundaryEdges, FillMode);
+			return false;
+		}
+		
+		TrianglesOut = GetTriangles();
+		TArray<bool> FillTri;
+		FillTri.SetNumUninitialized(TrianglesOut.Num());
+		ParallelFor(TrianglesOut.Num(), [&](int32 TriIdx)
+			{
+				const FIndex3i Tri = TrianglesOut[TriIdx];
+				const TVector2<RealType> Centroid = (Vertices[Tri.A] + Vertices[Tri.B] + Vertices[Tri.C]) / (RealType)3;
+				RealType ApproxWinding = (RealType)0;
+				for (const FIndex2i& Edge : BoundaryEdges)
+				{
+					TVector2<RealType> A = Vertices[Edge.A] - Centroid;
+					TVector2<RealType> B = Vertices[Edge.B] - Centroid;
+					ApproxWinding += TMathUtil<RealType>::Atan2(A.X * B.Y - A.Y * B.X, A.X * B.X + A.Y * B.Y);
+				}
+				const int32 Winding = FMath::RoundToInt32(ApproxWinding * TMathUtil<RealType>::InvTwoPi);
+				FillTri[TriIdx] = (
+					(FillMode == FDelaunay2::EFillMode::NegativeWinding && Winding < 0) ||
+					(FillMode == FDelaunay2::EFillMode::NonZeroWinding && Winding != 0) ||
+					(FillMode == FDelaunay2::EFillMode::PositiveWinding && Winding > 0) ||
+					(FillMode == FDelaunay2::EFillMode::OddWinding && (Winding % 2) != 0)
+				);
+			});
+
+		for (int32 TriIdx = 0; TriIdx < TrianglesOut.Num(); ++TriIdx)
+		{
+			if (!FillTri[TriIdx])
+			{
+				FillTri.RemoveAtSwap(TriIdx, 1, false);
+				TrianglesOut.RemoveAtSwap(TriIdx, 1, false);
+				TriIdx--; // re-consider the index w/ the newly swapped element
+			}
+		}
+		return true;
+	}
+
 	bool GetFilledTriangles(TArray<FIndex3i>& TrianglesOut, TArrayView<const FIndex2i> BoundaryEdges, TArrayView<const FIndex2i> HoleEdges) const
 	{
 		TSet<FIndex2i> BoundarySet, HoleSet;
@@ -539,6 +588,18 @@ struct FDelaunay2Connectivity
 		return bTrackDuplicateVertices;
 	}
 
+	// called during triangulation when a duplicate vertex is found
+	void SetHasDuplicates()
+	{
+		bHasDuplicates = true;
+	}
+
+	// @return whether duplicate vertices were detected during triangulation
+	bool HasDuplicates() const
+	{
+		return bHasDuplicates;
+	}
+
 	void FixDuplicatesOnEdge(FIndex2i& Edge) const
 	{
 		const int32* OrigA = DuplicateVertices.Find(Edge.A);
@@ -551,6 +612,12 @@ struct FDelaunay2Connectivity
 		{
 			Edge.B = *OrigB;
 		}
+	}
+
+	int32 RemapIfDuplicate(int32 Index) const
+	{
+		const int32* Remap = DuplicateVertices.Find(Index);
+		return Remap ? *Remap : Index;
 	}
 
 	// Get any edge BC opposite vertex A, such that triangle ABC is in the mesh (or return InvalidIndex edge if no such edge is present)
@@ -640,6 +707,7 @@ protected:
 	TArray<int32> VertexAdjCache;
 	bool bUseAdjCache = false;
 
+	bool bHasDuplicates = false;
 	bool bTrackDuplicateVertices = false;
 	TMap<int32, int32> DuplicateVertices;
 
@@ -1389,12 +1457,17 @@ namespace DelaunayInternal
 			int32 DuplicateOf = -1;
 			constexpr bool bAssumeDelaunay = true; // initial construction, before constraint edges, so safe to assume Delaunay
 			FIndex3i ContainingTri = WalkToContainingTri<RealType>(Random, Connectivity, Vertices, SearchTri, Vertex, bAssumeDelaunay, DuplicateOf);
-			if (DuplicateOf >= 0 || ContainingTri[0] == FDelaunay2Connectivity::InvalidIndex)
+			if (DuplicateOf >= 0)
 			{
-				if (DuplicateOf >= 0 && Connectivity.HasDuplicateTracking())
+				Connectivity.SetHasDuplicates();
+				if (Connectivity.HasDuplicateTracking())
 				{
 					Connectivity.MarkDuplicateVertex(DuplicateOf, Vertex);
 				}
+				continue;
+			}
+			if (ContainingTri[0] == FDelaunay2Connectivity::InvalidIndex)
+			{
 				continue;
 			}
 			SearchTri = Insert<RealType>(Connectivity, Vertices, ContainingTri, Vertex);
@@ -1480,6 +1553,24 @@ bool FDelaunay2::GetFilledTriangles(TArray<FIndex3i>& TrianglesOut, TArrayView<c
 	return Connectivity->GetFilledTriangles(TrianglesOut, BoundaryEdges, HoleEdges);
 }
 
+bool FDelaunay2::GetFilledTrianglesGeneralizedWinding(TArray<FIndex3i>& TrianglesOut, TArrayView<const TVector2<double>> Vertices, TArrayView<const FIndex2i> Edges, EFillMode FillMode) const
+{
+	if (!ensure(Connectivity.IsValid()))
+	{
+		return false;
+	}
+	return Connectivity->GetFilledTrianglesGeneralizedWinding<double>(TrianglesOut, Vertices, Edges, FillMode);
+}
+
+bool FDelaunay2::GetFilledTrianglesGeneralizedWinding(TArray<FIndex3i>& TrianglesOut, TArrayView<const TVector2<float>> Vertices, TArrayView<const FIndex2i> Edges, EFillMode FillMode) const
+{
+	if (!ensure(Connectivity.IsValid()))
+	{
+		return false;
+	}
+	return Connectivity->GetFilledTrianglesGeneralizedWinding<float>(TrianglesOut, Vertices, Edges, FillMode);
+}
+
 bool FDelaunay2::IsDelaunay(TArrayView<const FVector2f> Vertices, TArrayView<const FIndex2i> SkipEdges) const
 {
 	if (ensure(Connectivity.IsValid()))
@@ -1555,6 +1646,17 @@ bool FDelaunay2::HasEdge(const FIndex2i& Edge, bool bRemapDuplicates)
 		return Connectivity->HasEdge(RemapEdge);
 	}
 	return Connectivity->HasEdge(Edge);
+}
+
+bool FDelaunay2::HasDuplicates() const
+{
+	return Connectivity->HasDuplicates();
+}
+
+int32 FDelaunay2::RemapIfDuplicate(int32 Index) const
+{
+	checkSlow(Connectivity->HasDuplicateTracking());
+	return Connectivity->RemapIfDuplicate(Index);
 }
 
 } // end namespace UE::Geometry

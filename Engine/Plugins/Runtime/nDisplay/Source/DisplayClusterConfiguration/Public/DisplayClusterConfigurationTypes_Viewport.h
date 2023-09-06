@@ -14,10 +14,15 @@
 #include "DisplayClusterConfigurationTypes_Postprocess.h"
 #include "DisplayClusterConfigurationTypes_ViewportRemap.h"
 
+#include "Containers/DisplayClusterShader_Enums.h"
+#include "Render/Viewport/Containers/DisplayClusterViewport_EnumsICVFX.h"
+
 #include "OpenColorIOColorSpace.h"
 #include "Engine/Scene.h"
 
 #include "DisplayClusterConfigurationTypes_Viewport.generated.h"
+
+struct FDisplayClusterConfigurationICVFX_StageSettings;
 
 USTRUCT(Blueprintable)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationViewport_Overscan
@@ -58,6 +63,13 @@ USTRUCT(BlueprintType)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationViewport_ICVFX
 {
 	GENERATED_BODY()
+
+public:
+	/** Get ligthcard render mode for this viewport. */
+	EDisplayClusterShaderParametersICVFX_LightCardRenderMode GetLightCardRenderMode(const FDisplayClusterConfigurationICVFX_StageSettings& InStageSettings) const;
+
+	/** Get ICVFX settings flags for viewport*/
+	EDisplayClusterViewportICVFXFlags GetViewportICVFXFlags(const FDisplayClusterConfigurationICVFX_StageSettings& InStageSettings) const;
 
 public:
 	/** Enable in-camera VFX for this Viewport (works only with supported Projection Policies) */
@@ -151,14 +163,19 @@ public:
 	UDisplayClusterConfigurationViewport();
 
 public:
+	//~ Begin UObject interface
+	virtual void PostLoad() override;
+
+#if WITH_EDITOR
+	virtual void PreEditChange(FEditPropertyChain& PropertyAboutToChange) override;
+	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
+#endif
+	//~ End UObject interfacef
+
+public:
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
 
 #if WITH_EDITOR
-	// UObject interface
-	virtual void PreEditChange(FEditPropertyChain& PropertyAboutToChange) override;
-	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
-	// End of UObject interface
-
 	/** Enable the preview texture. Only should be called by the object managing the preview texture state. */
 	void EnablePreviewTexture();
 	

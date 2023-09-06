@@ -40,7 +40,7 @@
 #include "Rendering/MotionVectorSimulation.h"
 #include "SceneViewExtension.h"
 #include "GenerateMips.h"
-#include "RectLightTextureManager.h"
+#include "RectLightTexture.h"
 #include "Materials/MaterialRenderProxy.h"
 
 #if WITH_EDITOR
@@ -179,7 +179,7 @@ void CopySceneCaptureComponentToTarget(
 	const FMinimalSceneTextures& SceneTextures,
 	FRDGTextureRef ViewFamilyTexture,
 	const FSceneViewFamily& ViewFamily,
-	const TArray<FViewInfo>& Views)
+	TConstArrayView<FViewInfo> Views)
 {
 	ESceneCaptureSource SceneCaptureSource = ViewFamily.SceneCaptureSource;
 
@@ -196,15 +196,18 @@ void CopySceneCaptureComponentToTarget(
 		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
 		GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
+		bool bIsCompositing = false;
 		if (SceneCaptureSource == SCS_SceneColorHDR && ViewFamily.SceneCaptureCompositeMode == SCCM_Composite)
 		{
 			// Blend with existing render target color. Scene capture color is already pre-multiplied by alpha.
 			GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_SourceAlpha, BO_Add, BF_Zero, BF_SourceAlpha>::GetRHI();
+			bIsCompositing = true;
 		}
 		else if (SceneCaptureSource == SCS_SceneColorHDR && ViewFamily.SceneCaptureCompositeMode == SCCM_Additive)
 		{
 			// Add to existing render target color. Scene capture color is already pre-multiplied by alpha.
 			GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_Zero, BF_SourceAlpha>::GetRHI();
+			bIsCompositing = true;
 		}
 		else
 		{
@@ -221,7 +224,7 @@ void CopySceneCaptureComponentToTarget(
 			FSceneCapturePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSceneCapturePS::FParameters>();
 			PassParameters->View = View.ViewUniformBuffer;
 			PassParameters->SceneTextures = SceneTextures.GetSceneTextureShaderParameters(ViewFamily.GetFeatureLevel());
-			PassParameters->RenderTargets[0] = FRenderTargetBinding(ViewFamilyTexture, ERenderTargetLoadAction::ENoAction);
+			PassParameters->RenderTargets[0] = FRenderTargetBinding(ViewFamilyTexture, bIsCompositing ? ERenderTargetLoadAction::ELoad : ERenderTargetLoadAction::ENoAction);
 
 			TShaderMapRef<FScreenVS> VertexShader(View.ShaderMap);
 			TShaderMapRef<FSceneCapturePS> PixelShader(View.ShaderMap, PixelPermutationVector);
@@ -257,6 +260,22 @@ void CopySceneCaptureComponentToTarget(
 			});
 		}
 	}
+}
+
+void CopySceneCaptureComponentToTarget(
+	FRDGBuilder& GraphBuilder,
+	FRDGTextureRef ViewFamilyTexture,
+	const FSceneViewFamily& ViewFamily,
+	TConstStridedView<FSceneView> Views)
+{
+	const FSceneView& View = Views[0];
+
+	check(View.bIsViewInfo);
+	const FMinimalSceneTextures& SceneTextures = static_cast<const FViewInfo&>(View).GetSceneTextures();
+
+	TConstArrayView<FViewInfo> ViewInfos = MakeArrayView(static_cast<const FViewInfo*>(&Views[0]), Views.Num());
+
+	CopySceneCaptureComponentToTarget(GraphBuilder, SceneTextures, ViewFamilyTexture, ViewFamily, ViewInfos);
 }
 
 static void UpdateSceneCaptureContentDeferred_RenderThread(
@@ -600,6 +619,7 @@ void SetupViewFamilyForSceneCapture(
 
 	// Initialize frame number
 	ViewFamily.FrameNumber = ViewFamily.Scene->GetFrameNumber();
+	ViewFamily.FrameCounter = GFrameCounter;
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ++ViewIndex)
 	{
@@ -609,11 +629,14 @@ void SetupViewFamilyForSceneCapture(
 		ViewInitOptions.SetViewRectangle(SceneCaptureViewInfo.ViewRect);
 		ViewInitOptions.ViewFamily = &ViewFamily;
 		ViewInitOptions.ViewActor = ViewActor;
-		ViewInitOptions.ViewOrigin = SceneCaptureViewInfo.ViewLocation;
+		ViewInitOptions.ViewLocation = SceneCaptureViewInfo.ViewLocation;
+		ViewInitOptions.ViewRotation = SceneCaptureViewInfo.ViewRotation;
+		ViewInitOptions.ViewOrigin = SceneCaptureViewInfo.ViewOrigin;
 		ViewInitOptions.ViewRotationMatrix = SceneCaptureViewInfo.ViewRotationMatrix;
 		ViewInitOptions.BackgroundColor = FLinearColor::Black;
 		ViewInitOptions.OverrideFarClippingPlaneDistance = MaxViewDistance;
 		ViewInitOptions.StereoPass = SceneCaptureViewInfo.StereoPass;
+		ViewInitOptions.StereoViewIndex = SceneCaptureViewInfo.StereoViewIndex;
 		ViewInitOptions.SceneViewStateInterface = SceneCaptureComponent->GetViewState(CubemapFaceIndex != INDEX_NONE ? CubemapFaceIndex : ViewIndex);
 		ViewInitOptions.ProjectionMatrix = SceneCaptureViewInfo.ProjectionMatrix;
 		ViewInitOptions.LODDistanceFactor = FMath::Clamp(SceneCaptureComponent->LODDistanceFactor, .01f, 100.0f);
@@ -706,7 +729,7 @@ void SetupViewFamilyForSceneCapture(
 
 		ViewFamily.Views.Add(View);
 
-		View->StartFinalPostprocessSettings(SceneCaptureViewInfo.ViewLocation);
+		View->StartFinalPostprocessSettings(SceneCaptureViewInfo.ViewOrigin);
 
 		// By default, Lumen is disabled in scene captures, but can be re-enabled with the post process settings in the component.
 		View->FinalPostProcessSettings.DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::None;
@@ -738,7 +761,7 @@ static FSceneRenderer* CreateSceneRendererForSceneCapture(
 {
 	FSceneCaptureViewInfo SceneCaptureViewInfo;
 	SceneCaptureViewInfo.ViewRotationMatrix = ViewRotationMatrix;
-	SceneCaptureViewInfo.ViewLocation = ViewLocation;
+	SceneCaptureViewInfo.ViewOrigin = ViewLocation;
 	SceneCaptureViewInfo.ProjectionMatrix = ProjectionMatrix;
 	SceneCaptureViewInfo.StereoPass = EStereoscopicPass::eSSP_FULL;
 	SceneCaptureViewInfo.StereoViewIndex = INDEX_NONE;
@@ -917,11 +940,11 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponent2D* CaptureCompone
 					--Index;
 				}
 			}
+		}
 
-			for (const TSharedRef<ISceneViewExtension, ESPMode::ThreadSafe>& Extension : SceneRenderer->ViewFamily.ViewExtensions)
-			{
-				Extension->SetupViewFamily(SceneRenderer->ViewFamily);
-			}
+		for (const FSceneViewExtensionRef& Extension : SceneRenderer->ViewFamily.ViewExtensions)
+		{
+			Extension->SetupViewFamily(SceneRenderer->ViewFamily);
 		}
 
 		{
@@ -999,6 +1022,11 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponent2D* CaptureCompone
 #else
 		void* CaptureMemorySize = nullptr;		// Dummy value for lambda capture argument list
 #endif
+
+		for (const FSceneViewExtensionRef& Extension : SceneRenderer->ViewFamily.ViewExtensions)
+		{
+			Extension->BeginRenderViewFamily(SceneRenderer->ViewFamily);
+		}
 
 		ENQUEUE_RENDER_COMMAND(CaptureCommand)(
 			[SceneRenderer, TextureRenderTargetResource, TexturePtrNotDeferenced, EventName, TargetName, bGenerateMips, GenerateMipsParams, GameViewportRT, bEnableOrthographicTiling, bIsCompositing, bOrthographicCamera, NumXTiles, NumYTiles, TileID, CaptureMemorySize](FRHICommandListImmediate& RHICmdList)
@@ -1149,6 +1177,16 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponentCube* CaptureCompo
 
 			SceneRenderer->ViewFamily.SceneCaptureSource = CaptureComponent->CaptureSource;
 
+			for (const FSceneViewExtensionRef& Extension : SceneRenderer->ViewFamily.ViewExtensions)
+			{
+				Extension->SetupViewFamily(SceneRenderer->ViewFamily);
+
+				for (FSceneView& View : SceneRenderer->Views)
+				{
+					Extension->SetupView(SceneRenderer->ViewFamily, View);
+				}
+			}
+
 			FTextureRenderTargetCubeResource* TextureRenderTarget = static_cast<FTextureRenderTargetCubeResource*>(TextureTarget->GameThread_GetRenderTargetResource());
 			FString EventName;
 			if (!CaptureComponent->ProfilingEventName.IsEmpty())
@@ -1159,6 +1197,12 @@ void FScene::UpdateSceneCaptureContents(USceneCaptureComponentCube* CaptureCompo
 			{
 				CaptureComponent->GetOwner()->GetFName().ToString(EventName);
 			}
+
+			for (const FSceneViewExtensionRef& Extension : SceneRenderer->ViewFamily.ViewExtensions)
+			{
+				Extension->BeginRenderViewFamily(SceneRenderer->ViewFamily);
+			}
+
 			ENQUEUE_RENDER_COMMAND(CaptureCommand)(
 				[SceneRenderer, TextureRenderTarget, EventName, TargetFace](FRHICommandListImmediate& RHICmdList)
 				{

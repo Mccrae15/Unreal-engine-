@@ -73,7 +73,7 @@ export const AutosubmitInfo: React.FC<{ jobDetails: JobDetailsV2 }> = observer((
    }
 
    if (jobData.autoSubmitMessage) {
-      return <Stack style={{ paddingTop: 24 }}><Text>{`Unable to submit change: ${jobData.autoSubmitMessage}`}</Text></Stack>;
+      return <Stack style={{ paddingTop: 24, whiteSpace:"pre" }}><Text>{`Unable to submit change: ${jobData.autoSubmitMessage}`}</Text></Stack>;
    }
 
    if (jobData.state !== JobState.Complete) {
@@ -202,7 +202,7 @@ export const SummaryPanel: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({ 
    let jobText = `Job created ${timeStr} by ${jobData.startedByUserInfo ? jobData.startedByUserInfo.name : "scheduler"} and `;
 
    if (jobDetails.aborted) {
-      jobText += "was aborted";
+      jobText += "was canceled";
       if (jobData.abortedByUserInfo) {
          jobText += ` by ${jobData.abortedByUserInfo.name}.`;
       }

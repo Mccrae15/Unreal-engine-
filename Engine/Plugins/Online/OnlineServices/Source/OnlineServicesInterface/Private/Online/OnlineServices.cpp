@@ -2,10 +2,13 @@
 
 #include "Online/OnlineServices.h"
 
+#include "Online/OnlineServicesLog.h"
 #include "Online/OnlineServicesRegistry.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
+
+DEFINE_LOG_CATEGORY(LogOnlineServices);
 
 namespace UE::Online {
 
@@ -25,7 +28,12 @@ int32 GetBuildUniqueId()
 	if (!bStaticCheck)
 	{
 		bStaticCheck = true;
-		if (FParse::Value(FCommandLine::Get(), TEXT("BuildIdOverride="), BuildIdOverride) && BuildIdOverride != 0)
+		FString BuildIdOverrideCommandLineString;
+		if (FParse::Value(FCommandLine::Get(), TEXT("BuildIdOverride="), BuildIdOverrideCommandLineString))
+		{
+			BuildIdOverride = FCString::Atoi(*BuildIdOverrideCommandLineString);
+		}
+		if (BuildIdOverride != 0)
 		{
 			bUseBuildIdOverride = true;
 		}
@@ -33,12 +41,12 @@ int32 GetBuildUniqueId()
 		{
 			if (!GConfig->GetBool(TEXT("OnlineServices"), TEXT("bUseBuildIdOverride"), bUseBuildIdOverride, GEngineIni))
 			{
-				UE_LOG(LogTemp, Warning, TEXT("Missing bUseBuildIdOverride= in [OnlineServices] of DefaultEngine.ini"));
+				UE_LOG(LogOnlineServices, Warning, TEXT("Missing bUseBuildIdOverride= in [OnlineServices] of DefaultEngine.ini"));
 			}
 
 			if (!GConfig->GetInt(TEXT("OnlineServices"), TEXT("BuildIdOverride"), BuildIdOverride, GEngineIni))
 			{
-				UE_LOG(LogTemp, Warning, TEXT("Missing BuildIdOverride= in [OnlineServices] of DefaultEngine.ini"));
+				UE_LOG(LogOnlineServices, Warning, TEXT("Missing BuildIdOverride= in [OnlineServices] of DefaultEngine.ini"));
 			}
 		}
 

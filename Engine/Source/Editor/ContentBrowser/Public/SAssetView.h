@@ -16,6 +16,7 @@
 #include "ContentBrowserDataLegacyBridge.h"
 #include "ContentBrowserDelegates.h"
 #include "ContentBrowserItem.h"
+#include "ContentBrowserTelemetry.h"
 #include "CoreMinimal.h"
 #include "Delegates/Delegate.h"
 #include "Framework/Views/ITypedTableView.h"
@@ -97,9 +98,9 @@ public:
 		: _InitialCategoryFilter(EContentBrowserItemCategoryFilter::IncludeAll)
 		, _ThumbnailLabel( EThumbnailLabel::ClassName )
 		, _AllowThumbnailHintLabel(true)
+		, _bShowPathViewFilters(false)
 		, _InitialViewType(EAssetViewType::Tile)
 		, _InitialThumbnailSize(EThumbnailSize::Medium)
-		, _InitialThumbnailPoolSize(1024)
 		, _ShowBottomToolbar(true)
 		, _ShowViewOptions(true)
 		, _AllowThumbnailEditMode(false)
@@ -110,6 +111,7 @@ public:
 		, _CanShowRealTimeThumbnails(false)
 		, _CanShowDevelopersFolder(false)
 		, _CanShowFavorites(false)
+		, _CanDockCollections(false)
 		, _SelectionMode( ESelectionMode::Multi )
 		, _AllowDragging(true)
 		, _AllowFocusOnSync(true)
@@ -121,6 +123,7 @@ public:
 		, _ForceShowEngineContent(false)
 		, _ForceShowPluginContent(false)
 		, _ForceHideScrollbar(false)
+		, _ShowDisallowedAssetClassAsUnsupportedItems(false)
 		{}
 
 		/** Called to check if an asset should be filtered out by external code */
@@ -195,9 +198,6 @@ public:
 		/** Initial thumbnail size */
 		SLATE_ARGUMENT( EThumbnailSize, InitialThumbnailSize )
 
-		/** Initial thumbnail pool size */
-		SLATE_ARGUMENT( uint32, InitialThumbnailPoolSize )
-
 		/** Should the toolbar indicating number of selected assets, mode switch buttons, etc... be shown? */
 		SLATE_ARGUMENT( bool, ShowBottomToolbar )
 
@@ -229,7 +229,7 @@ public:
 		SLATE_ARGUMENT(bool, CanShowFavorites)
 
 		/** Indicates if the 'Dock Collections' option should be enabled or disabled */
-		SLATE_ARGUMENT_DEPRECATED(bool, CanDockCollections, 5.2, "CanDockCollections is no longer supported (now defaults to true).")
+		SLATE_ARGUMENT(bool, CanDockCollections)
 
 		/** The selection mode the asset view should use */
 		SLATE_ARGUMENT( ESelectionMode::Type, SelectionMode )
@@ -263,6 +263,9 @@ public:
 
 		/** Should always hide scrollbar (Removes scrollbar) */
 		SLATE_ARGUMENT(bool, ForceHideScrollbar)
+
+		/** Allow the asset view to display the hidden asset class as unsupported items */
+		SLATE_ARGUMENT(bool, ShowDisallowedAssetClassAsUnsupportedItems)
 
 		/** Called to check if an asset tag should be display in details view. */
 		SLATE_EVENT( FOnShouldDisplayAssetTag, OnAssetTagWantsToBeDisplayed )
@@ -594,6 +597,15 @@ private:
 	/** @return true when we are showing favorites */
 	bool IsShowingFavorites() const;
 
+	/** Toggle whether the collections view should be docked under the paths view */
+	void ToggleDockCollections();
+
+	/** Whether or not it's possible to dock the collections view */
+	bool IsToggleDockCollectionsAllowed() const;
+
+	/** @return true when the collections view is docked */
+	bool HasDockedCollections() const;
+
 	/** Toggle whether C++ content should be shown or not */
 	void ToggleShowCppContent();
 
@@ -847,7 +859,7 @@ private:
 	/** Append the current effective backend filter (intersection of BackendFilter and SupportedFilter) to the given filter. */
 	void AppendBackendFilter(FARFilter& FilterToAppendTo) const;
 
-	FContentBrowserDataFilter CreateBackendDataFilter() const;
+	FContentBrowserDataFilter CreateBackendDataFilter(bool bInvalidateCache) const;
 
 	/** Handles updating the view when content items are changed */
 	void HandleItemDataUpdated(TArrayView<const FContentBrowserItemDataUpdate> InUpdatedItems);
@@ -1060,6 +1072,9 @@ private:
 	/** Indicates if the 'Show Favorites' option should be enabled or disabled */
 	bool bCanShowFavorites : 1;
 
+	/** Indicates if the 'Dock Collections' option should be enabled or disabled */
+	bool bCanDockCollections : 1;
+
 	/** If true, it will show path column in the asset view */
 	bool bShowPathInColumnView : 1;
 
@@ -1129,6 +1144,8 @@ private:
 	/** Initial set of item categories that this view should show - may be adjusted further by things like CanShowClasses or legacy delegate bindings */
 	EContentBrowserItemCategoryFilter InitialCategoryFilter;
 
+	bool bShowDisallowedAssetClassAsUnsupportedItems = false;
+
 	/** A struct to hold data for the deferred creation of a file or folder item */
 	struct FCreateDeferredItemData
 	{
@@ -1175,6 +1192,27 @@ private:
 	TArray<FString> HiddenColumnNames;
 
 	TArray<FAssetViewCustomColumn> CustomColumns;
+
+	/** An Id for the cache of the data sources for the filters compilation */
+	FContentBrowserDataFilterCacheIDOwner FilterCacheID;
+	
+	/*
+	 * Telemetry-related fields
+	 */ 
+	// Guid to correlate different telemetry events for this instance of an asset view over time 
+	FGuid ViewCorrelationGuid; 
+	// Guid to correlate different telemetry events for a 'session' of search/filtering, reset when new backend items are gathered for filtering
+	FGuid FilterSessionCorrelationGuid;
+	// In progress filter session telemetry - will be sent when filtering ends or user cancels or interacts with a partial filter set
+	UE::Telemetry::ContentBrowser::FFrontendFilterTelemetry CurrentFrontendFilterTelemetry;
+	
+	// If there is in-progress filter telemetry, mark it as complete and send pending data 
+	void OnCompleteFiltering(double InAmortizeDuration);
+	// If there is in-progress filter telemetry, mark it as incomplete and send pending data 
+	void OnInterruptFiltering();
+	// Update telemetry for user interaction during an incomplete filtering
+	void OnInteractDuringFiltering();
+
 public:
 	bool ShouldColumnGenerateWidget(const FString ColumnName) const;
 };

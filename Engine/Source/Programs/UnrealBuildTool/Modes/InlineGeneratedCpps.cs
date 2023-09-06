@@ -3,11 +3,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -54,7 +54,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -78,7 +78,7 @@ namespace UnrealBuildTool
 			UEBuildModuleCPP.bForceAddGeneratedCodeIncludePath = true;
 
 			// Parse all the target descriptors
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration, Logger);
 
 			// Generate the compile DB for each target
 			using (ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet())
@@ -88,7 +88,7 @@ namespace UnrealBuildTool
 				foreach (TargetDescriptor TargetDescriptor in TargetDescriptors)
 				{
 					// Create a makefile for the target
-					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, Logger);
+					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration, Logger);
 
 					// Create all the binaries and modules
 					CppCompileEnvironment GlobalCompileEnvironment = Target.CreateCompileEnvironmentForProjectFiles(Logger);
@@ -98,9 +98,9 @@ namespace UnrealBuildTool
 
 						foreach (UEBuildModuleCPP Module in Binary.Modules.OfType<UEBuildModuleCPP>())
 						{
-							UEBuildModuleCPP.InputFileCollection InputFileCollection = Module.FindInputFiles(Target.Platform, new Dictionary<DirectoryItem, FileItem[]>());
+							UEBuildModuleCPP.InputFileCollection InputFileCollection = Module.FindInputFiles(Target.Platform, new Dictionary<DirectoryItem, FileItem[]>(), Logger);
 
-							var FileList = new List<FileItem>();
+							List<FileItem> FileList = new List<FileItem>();
 							foreach (FileItem InputFile in InputFileCollection.CPPFiles)
 							{
 								if (FileFilter == null || FileFilter.Matches(InputFile.Location.MakeRelativeTo(Unreal.RootDirectory)))
@@ -113,7 +113,7 @@ namespace UnrealBuildTool
 							{
 								CppCompileEnvironment env = Module.CreateCompileEnvironmentForIntellisense(Target.Rules, BinaryCompileEnvironment, Logger);
 
-								foreach (var InputFile in FileList)
+								foreach (FileItem InputFile in FileList)
 								{
 									if (BinaryCompileEnvironment.MetadataCache.GetListOfInlinedGeneratedCppFiles(InputFile).Any())
 									{
@@ -128,7 +128,7 @@ namespace UnrealBuildTool
 									}
 									else
 									{
-										var HeaderText = FileReference.ReadAllText(FoundHeader.Location);
+										string HeaderText = FileReference.ReadAllText(FoundHeader.Location);
 										if (!IncludeGenHeaderRegex.IsMatch(HeaderText))
 										{
 											continue;
@@ -143,18 +143,18 @@ namespace UnrealBuildTool
 										}
 									}
 
-									var TextLines = System.IO.File.ReadAllLines(InputFile.Location.FullName).ToList();
+									List<string> TextLines = System.IO.File.ReadAllLines(InputFile.Location.FullName).ToList();
 									if (TextLines.Any(Text => InlineReflectionMarkupRegex.IsMatch(Text)))
 									{
 										continue;
 									}
 
-									var CleanTextLines = new List<string>(TextLines.Count);
+									List<string> CleanTextLines = new List<string>(TextLines.Count);
 
 									bool bInComment = false;
 									for (int i = 0; i < TextLines.Count; i++)
 									{
-										var Line = TextLines[i];
+										string Line = TextLines[i];
 
 										if (Line.Contains("//", StringComparison.InvariantCultureIgnoreCase))
 										{
@@ -190,7 +190,7 @@ namespace UnrealBuildTool
 									int LastLineOfInclude = -1;
 									for (int i = 0; i < CleanTextLines.Count; i++)
 									{
-										var Line = CleanTextLines[i];
+										string Line = CleanTextLines[i];
 
 										if (IfEndBlocks.Count == 0 && IncludeRegex.IsMatch(Line))
 										{
@@ -217,7 +217,7 @@ namespace UnrealBuildTool
 												LastLineOfInclude = TextLines.Count - 1;
 												TextLines.Add(String.Empty);
 											}
-											else if (LastLineOfInclude + 1 == TextLines.Count || TextLines[LastLineOfInclude + 1] != String.Empty)
+											else if (LastLineOfInclude + 1 == TextLines.Count || !String.IsNullOrEmpty(TextLines[LastLineOfInclude + 1]))
 											{
 												TextLines.Insert(LastLineOfInclude + 1, String.Empty);
 											}
@@ -256,7 +256,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			return 0;
+			return Task.FromResult(0);
 		}
 	}
 }

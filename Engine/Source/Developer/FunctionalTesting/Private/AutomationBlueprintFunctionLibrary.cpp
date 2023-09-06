@@ -249,10 +249,8 @@ FAutomationTestScreenshotEnvSetup::FAutomationTestScreenshotEnvSetup()
 	, TonemapperGamma(TEXT("r.TonemapperGamma"))
 	, TonemapperSharpen(TEXT("r.Tonemapper.Sharpen"))
 	, ScreenPercentage(TEXT("r.ScreenPercentage"))
-	, ScreenPercentageMode(TEXT("r.ScreenPercentage.Mode"))
 	, DynamicResTestScreenPercentage(TEXT("r.DynamicRes.TestScreenPercentage"))
 	, DynamicResOperationMode(TEXT("r.DynamicRes.OperationMode"))
-	, EditorViewportOverrideGameScreenPercentage(TEXT("r.Editor.Viewport.OverridePIEScreenPercentage"))
 	, SecondaryScreenPercentage(TEXT("r.SecondaryScreenPercentage.GameViewport"))
 {
 }
@@ -288,11 +286,6 @@ void FAutomationTestScreenshotEnvSetup::Setup(UWorld* InWorld, FAutomationScreen
 
 	// Forces ScreenPercentage=100
 	{
-		if (GIsEditor)
-		{
-			EditorViewportOverrideGameScreenPercentage.Set(0);
-		}
-
 		// Completly disable dynamic resolution
 		{
 			DynamicResTestScreenPercentage.Set(0);
@@ -302,7 +295,6 @@ void FAutomationTestScreenshotEnvSetup::Setup(UWorld* InWorld, FAutomationScreen
 			GEngine->EmitDynamicResolutionEvent(EDynamicResolutionStateEvent::EndFrame);
 			GEngine->EmitDynamicResolutionEvent(EDynamicResolutionStateEvent::BeginFrame);
 		}
-		ScreenPercentageMode.Set(0);
 		ScreenPercentage.Set(100.f);
 	}
 
@@ -315,7 +307,7 @@ void FAutomationTestScreenshotEnvSetup::Setup(UWorld* InWorld, FAutomationScreen
 	AutomationViewExtension = FSceneViewExtensions::NewExtension<FAutomationViewExtension>(InWorld, InOutOptions, InCurrentTimeToSimulate);
 
 	// TODO - I don't like needing to set this here.  Because the gameviewport uses a console variable, it wins.
-	if (UGameViewportClient* ViewportClient = GEngine->GameViewport)
+	if (UGameViewportClient* ViewportClient = AutomationCommon::GetAnyGameViewportClient())
 	{
 		static IConsoleVariable* ICVar = IConsoleManager::Get().FindConsoleVariable(FBufferVisualizationData::GetVisualizationTargetConsoleCommandName());
 		if (ICVar)
@@ -344,15 +336,13 @@ void FAutomationTestScreenshotEnvSetup::Restore()
 	TonemapperGamma.Restore();
 	//TonemapperSharpen.Restore();
 	ScreenPercentage.Restore();
-	ScreenPercentageMode.Restore();
 	DynamicResOperationMode.Restore();
 	DynamicResTestScreenPercentage.Restore();
-	EditorViewportOverrideGameScreenPercentage.Restore();
 	SecondaryScreenPercentage.Restore();
 
 	AutomationViewExtension.Reset();
 
-	if (UGameViewportClient* ViewportClient = GEngine->GameViewport)
+	if (UGameViewportClient* ViewportClient = AutomationCommon::GetAnyGameViewportClient())
 	{
 		static IConsoleVariable* ICVar = IConsoleManager::Get().FindConsoleVariable(FBufferVisualizationData::GetVisualizationTargetConsoleCommandName());
 		if (ICVar)
@@ -380,9 +370,10 @@ public:
 	{
 		EnvSetup.Setup(InWorld, Options);
 
+		UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
 		if (!FPlatformProperties::HasFixedResolution())
 		{
-			FSceneViewport* GameViewport = GEngine->GameViewport ? GEngine->GameViewport->GetGameViewport() : nullptr;
+			FSceneViewport* GameViewport = GameViewportClient ? GameViewportClient->GetGameViewport() : nullptr;
 			if (GameViewport)
 			{
 #if WITH_EDITOR
@@ -390,7 +381,7 @@ public:
 				UEditorEngine* EditorEngine = Cast<UEditorEngine>(GEngine);
 
 				const bool bIsPIEViewport = GameViewport->IsPlayInEditorViewport();
-				const bool bIsNewViewport = InWorld && EditorEngine && EditorEngine->WorldIsPIEInNewViewport(InWorld);
+				const bool bIsNewViewport = GameViewportClient->GetWorld() && EditorEngine && EditorEngine->WorldIsPIEInNewViewport(GameViewportClient->GetWorld());
 
 				if (!bIsPIEViewport || bIsNewViewport)
 #endif
@@ -405,7 +396,7 @@ public:
 
 		FlushRenderingCommands();
 
-		GEngine->GameViewport->OnScreenshotCaptured().AddRaw(this, &FAutomationScreenshotTaker::GrabScreenShot);
+		GameViewportClient->OnScreenshotCaptured().AddRaw(this, &FAutomationScreenshotTaker::GrabScreenShot);
 		FWorldDelegates::LevelRemovedFromWorld.AddRaw(this, &FAutomationScreenshotTaker::WorldDestroyed);
 		FScreenshotRequest::OnScreenshotRequestProcessed().AddRaw(this, &FAutomationScreenshotTaker::OnScreenshotProcessed);
 	}
@@ -415,19 +406,20 @@ public:
 		FAutomationTestFramework::Get().OnScreenshotCompared.RemoveAll(this);
 		FScreenshotRequest::OnScreenshotRequestProcessed().RemoveAll(this);
 
-		if (GEngine->GameViewport)
+		UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+		if (GameViewportClient)
 		{
 			// remove before we restore the viewport's size - a resize can trigger a redraw, which would trigger OnScreenshotCaptured() again (endless loop)
-			GEngine->GameViewport->OnScreenshotCaptured().RemoveAll(this);
+			GameViewportClient->OnScreenshotCaptured().RemoveAll(this);
 		}
 
 		FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
 
 		if (!FPlatformProperties::HasFixedResolution() && bNeedsViewportSizeRestore)
 		{
-			if (GEngine->GameViewport)
+			if (GameViewportClient)
 			{
-				FSceneViewport* GameViewport = GEngine->GameViewport->GetGameViewport();
+				FSceneViewport* GameViewport = GameViewportClient->GetGameViewport();
 				GameViewport->SetViewportSize(ViewportRestoreSize.X, ViewportRestoreSize.Y);
 			}
 		}
@@ -455,7 +447,7 @@ public:
 
 		if (World.IsValid())
 		{
-			FAutomationScreenshotData Data = UAutomationBlueprintFunctionLibrary::BuildScreenshotData(World->GetName(), ScreenShotName, InSizeX, InSizeY);
+			FAutomationScreenshotData Data = UAutomationBlueprintFunctionLibrary::BuildScreenshotData(World.Get(), ScreenShotName, InSizeX, InSizeY);
 
 			// Copy the relevant data into the metadata for the screenshot.
 			Data.bHasComparisonRules = true;
@@ -713,7 +705,11 @@ void UAutomationBlueprintFunctionLibrary::FinishLoadingBeforeScreenshot()
 	{
 		UMaterialInterface::SubmitRemainingJobsForWorld(CurrentWorld);
 		FAssetCompilingManager::Get().FinishAllCompilation();
-		FModuleManager::GetModuleChecked<IAutomationControllerModule>("AutomationController").GetAutomationController()->ResetAutomationTestTimeout(TEXT("shader compilation"));
+		IAutomationControllerModule* AutomationControllerModule = FModuleManager::GetModulePtr<IAutomationControllerModule>("AutomationController");
+		if (AutomationControllerModule != nullptr)
+		{
+			AutomationControllerModule->GetAutomationController()->ResetAutomationTestTimeout(TEXT("shader compilation"));
+		}
 	}
 
 	// Force all mip maps to load before taking the screenshot.
@@ -779,6 +775,11 @@ FAutomationScreenshotData UAutomationBlueprintFunctionLibrary::BuildScreenshotDa
 #endif
 }
 
+FAutomationScreenshotData UAutomationBlueprintFunctionLibrary::BuildScreenshotData(UWorld* InWorld, const FString& ScreenShotName, int32 Width, int32 Height)
+{
+	return BuildScreenshotData(AutomationCommon::GetWorldContext(InWorld), ScreenShotName, Width, Height);
+}
+
 bool UAutomationBlueprintFunctionLibrary::TakeAutomationScreenshotInternal(UObject* WorldContextObject, const FString& ScreenShotName, const FString& Notes, FAutomationScreenshotOptions Options)
 {
 	UAutomationBlueprintFunctionLibrary::FinishLoadingBeforeScreenshot();
@@ -818,8 +819,14 @@ void UAutomationBlueprintFunctionLibrary::TakeAutomationScreenshotAtCamera(UObje
 		return;
 	}
 
-	APlayerController* PlayerController = UGameplayStatics::GetPlayerController(WorldContextObject, 0);
+	UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient();
+	if (GameViewportClient == nullptr)
+	{
+		FMessageLog("PIE").Error(LOCTEXT("GameViewportRequired", "No game viewport found in World to TakeAutomationScreenshotAtCamera. Use a delay or change Net mode to Standalone."));
+		return;
+	}
 
+	APlayerController* PlayerController = UGameplayStatics::GetPlayerController(GameViewportClient->GetWorld(), 0);
 	if ( PlayerController == nullptr )
 	{
 		FMessageLog("PIE").Error(LOCTEXT("PlayerRequired", "A player controller is required to TakeAutomationScreenshotAtCamera"));
@@ -828,6 +835,7 @@ void UAutomationBlueprintFunctionLibrary::TakeAutomationScreenshotAtCamera(UObje
 
 	// Move the player, then queue up a screenshot.
 	// We need to delay before the screenshot so that the motion blur has time to stop.
+	PlayerController->bAutoManageActiveCameraTarget = false;
 	PlayerController->SetViewTarget(Camera, FViewTargetTransitionParams());
 	FString ScreenshotName = Camera->GetName();
 
@@ -891,7 +899,10 @@ bool UAutomationBlueprintFunctionLibrary::TakeAutomationScreenshotOfUI_Immediate
 					Data.MaximumLocalError = Options.MaximumLocalError;
 					Data.MaximumGlobalError = Options.MaximumGlobalError;
 
-					GEngine->GameViewport->OnScreenshotCaptured().Broadcast(OutSize.X, OutSize.Y, OutColorData);
+					if (UGameViewportClient* GameViewportClient = AutomationCommon::GetAnyGameViewportClient())
+					{
+						GameViewportClient->OnScreenshotCaptured().Broadcast(OutSize.X, OutSize.Y, OutColorData);
+					}
 #endif
 
 					return true; //-V773

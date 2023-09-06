@@ -65,6 +65,7 @@
 #include "HAL/FileManager.h"
 #include "LODUtilities.h"
 #include "ComponentReregisterContext.h"
+#include "Animation/Skeleton.h"
 
 #define LOCTEXT_NAMESPACE "FBXSceneImportFactory"
 
@@ -122,6 +123,8 @@ bool GetFbxSceneImportOptions(UnFbx::FFbxImporter* FbxImporter
 	GlobalImportSettings->bImportTextures = true;
 	//Make sure Material get imported
 	GlobalImportSettings->bImportMaterials = true;
+	//Make sure skeletal mesh sections with the same material are combined (and not kept separate)
+	GlobalImportSettings->bKeepSectionsSeparate = false;
 	//TODO support T0AsRefPose
 	GlobalImportSettings->bUseT0AsRefPose = false;
 
@@ -2061,6 +2064,12 @@ UObject* UFbxSceneImportFactory::ImportOneSkeletalMesh(void* VoidRootNodeToImpor
 void UFbxSceneImportFactory::ImportAllSkeletalMesh(void* VoidRootNodeToImport, void* VoidFbxImporter, EObjectFlags Flags, int32& NodeIndex, int32& InterestingNodeCount, TSharedPtr<FFbxSceneInfo> SceneInfo)
 {
 	UnFbx::FFbxImporter* FbxImporter = (UnFbx::FFbxImporter*)VoidFbxImporter;
+	
+	if (!FbxImporter->CanImportClass(USkeletalMesh::StaticClass()) || !FbxImporter->CanImportClass(USkeleton::StaticClass()))
+	{
+		return;
+	}
+
 	FbxNode *RootNodeToImport = (FbxNode *)VoidRootNodeToImport;
 	InterestingNodeCount = 1;
 	TArray< TArray<FbxNode*>* > SkelMeshArray;
@@ -2103,6 +2112,12 @@ void UFbxSceneImportFactory::ImportAllStaticMesh(void* VoidRootNodeToImport, voi
 	TRACE_CPUPROFILER_EVENT_SCOPE(UFbxSceneImportFactory::ImportAllStaticMesh);
 
 	UnFbx::FFbxImporter* FbxImporter = (UnFbx::FFbxImporter*)VoidFbxImporter;
+
+	if (!FbxImporter->CanImportClass(UStaticMesh::StaticClass()))
+	{
+		return;
+	}
+
 	FbxNode *RootNodeToImport = (FbxNode *)VoidRootNodeToImport;
 	
 	//Copy default options to StaticMeshImportData

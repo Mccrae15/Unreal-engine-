@@ -37,7 +37,7 @@ void SNiagaraSourceFilterCheckBox::Construct(const FArguments& Args, EScriptSour
 	ParentArgs
 	.Style(FAppStyle::Get(), "ContentBrowser.FilterButton")
 	.IsChecked(Args._IsChecked)
-	.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState NewState)
+	.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([this](ECheckBoxState NewState)
     {
         OnSourceStateChanged.ExecuteIfBound(Source, NewState == ECheckBoxState::Checked ? true : false);
     }));
@@ -147,7 +147,7 @@ void SNiagaraSourceFilterBox::Construct(const FArguments& Args)
     
                 return bChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
             })
-            .OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState NewState)
+            .OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([this, ScriptSourceEnum](ECheckBoxState NewState)
             {
             	bool bAnyChange = false;
             	// we always want to "Show all" so we always set the source filters to true
@@ -211,12 +211,12 @@ void SNiagaraSourceFilterBox::Construct(const FArguments& Args)
     			{
     				return SourceState[(EScriptSource)ScriptSourceEnum->GetValueByIndex(SourceIndex)] ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
     			})
-    			.OnSourceStateChanged_Lambda([=](EScriptSource Source, bool bState)
+    			.OnSourceStateChanged_Lambda([this](EScriptSource Source, bool bState)
     			{
     				SourceState.Add(Source, bState);
     				BroadcastFiltersChanged();
     			})
-    			.OnShiftClicked_Lambda([=](EScriptSource ChangedSource, bool bState)
+    			.OnShiftClicked_Lambda([this](EScriptSource ChangedSource, bool bState)
     			{
     				TArray<EScriptSource> Keys;
     				SourceState.GenerateKeyArray(Keys);
@@ -403,7 +403,7 @@ FText SNiagaraTemplateTabBox::DetermineControlLabel(ENiagaraScriptTemplateSpecif
 			case ENiagaraScriptTemplateSpecification::Template:
 				return LOCTEXT("EmitterTemplateTabLabel", "Templates");
 			case ENiagaraScriptTemplateSpecification::Behavior:
-				return LOCTEXT("EmitterBehaviorExampleTabLabel", "Behavior Examples");
+				return LOCTEXT("EmitterLearningExampleTabLabel", "Learning Examples");
 			default:
 				return FText::GetEmpty();
 			}
@@ -417,7 +417,7 @@ FText SNiagaraTemplateTabBox::DetermineControlLabel(ENiagaraScriptTemplateSpecif
 			case ENiagaraScriptTemplateSpecification::Template:
 				return LOCTEXT("SystemTemplateTabLabel", "Templates");
 			case ENiagaraScriptTemplateSpecification::Behavior:
-				return LOCTEXT("SystemBehaviorExampleTabLabel", "Behavior Examples");
+				return LOCTEXT("SystemLearningExampleTabLabel", "Learning Examples");
 			default:
 				return FText::GetEmpty();
 			}

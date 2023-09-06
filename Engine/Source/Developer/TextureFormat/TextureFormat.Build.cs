@@ -9,9 +9,13 @@ public class TextureFormat : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
-				"ImageCore"
 			}
-			);
+		);
+
+		PrivateIncludePathModuleNames.AddRange(new string[]
+		{
+			"TextureCompressor"
+		});
 
 		//AddEngineThirdPartyPrivateStaticDependencies(Target, "nvTextureTools");
 	}

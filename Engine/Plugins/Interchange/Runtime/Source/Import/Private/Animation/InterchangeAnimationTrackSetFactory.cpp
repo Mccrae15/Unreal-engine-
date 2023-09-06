@@ -2,11 +2,11 @@
 
 #include "Animation/InterchangeAnimationTrackSetFactory.h"
 
-#include "Animation/InterchangeAnimationPayload.h"
 #include "Animation/InterchangeAnimationPayloadInterface.h"
 #include "InterchangeAnimationTrackSetFactoryNode.h"
 #include "InterchangeAnimationTrackSetNode.h"
 #include "InterchangeAnimSequenceFactoryNode.h"
+#include "InterchangeImportCommon.h"
 #include "InterchangeImportLog.h"
 #include "InterchangeResult.h"
 #include "InterchangeSourceData.h"
@@ -40,6 +40,99 @@
 #if WITH_EDITOR
 namespace UE::Interchange::Private
 {
+	AActor* GetActor(const UInterchangeBaseNodeContainer* NodeContainer, const UInterchangeAnimationTrackNode* TrackNode)
+	{
+		AActor* Actor = nullptr;
+
+		FString ActorNodeUid;
+		if (TrackNode->GetCustomActorDependencyUid(ActorNodeUid))
+		{
+			const FString ActorFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(ActorNodeUid);
+			const UInterchangeFactoryBaseNode* ActorFactoryNode = Cast<UInterchangeFactoryBaseNode>(NodeContainer->GetNode(ActorFactoryNodeUid));
+
+			if (ActorFactoryNode)
+			{
+				FSoftObjectPath ReferenceObject;
+				ActorFactoryNode->GetCustomReferenceObject(ReferenceObject);
+				if (ReferenceObject.IsValid())
+				{
+					Actor = Cast<AActor>(ReferenceObject.TryLoad());
+				}
+			}
+		}
+
+		return Actor;
+	}
+
+	bool HasActorToUse(const UInterchangeBaseNodeContainer* NodeContainer, const UInterchangeAnimationTrackSetFactoryNode* FactoryNode)
+	{
+
+		TArray<FString> AnimationTrackUids;
+		FactoryNode->GetCustomAnimationTrackUids(AnimationTrackUids);
+
+		for (const FString& AnimationTrackUid : AnimationTrackUids)
+		{
+			if (const UInterchangeBaseNode* TranslatedNode = NodeContainer->GetNode(AnimationTrackUid))
+			{
+				if (const UInterchangeTransformAnimationTrackNode* TransformTrackNode = Cast<UInterchangeTransformAnimationTrackNode>(TranslatedNode))
+				{
+					AActor* Actor = GetActor(NodeContainer, TransformTrackNode);
+					if (Actor)
+					{
+						return true;
+					}
+				}
+				else if (const UInterchangeAnimationTrackSetInstanceNode* InstanceTrackNode = Cast<UInterchangeAnimationTrackSetInstanceNode>(TranslatedNode))
+				{
+					FString TrackSetNodeUid;
+					if (!InstanceTrackNode->GetCustomTrackSetDependencyUid(TrackSetNodeUid))
+					{
+						continue;
+					}
+
+					const FString TrackSetFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(TrackSetNodeUid);
+					const UInterchangeAnimationTrackSetFactoryNode* InstanceFactoryNode = Cast<UInterchangeAnimationTrackSetFactoryNode>(NodeContainer->GetNode(TrackSetFactoryNodeUid));
+
+					if (!InstanceFactoryNode)
+					{
+						continue;
+					}
+					FSoftObjectPath ReferenceObject;
+					InstanceFactoryNode->GetCustomReferenceObject(ReferenceObject);
+					if (!ReferenceObject.IsValid())
+					{
+						continue;
+					}
+
+					return true;
+				}
+				else if (const UInterchangeAnimationTrackNode* TrackNode = Cast<UInterchangeAnimationTrackNode>(TranslatedNode))
+				{
+					int32 TargetedProperty;
+					if (!TrackNode->GetCustomTargetedProperty(TargetedProperty))
+					{
+						continue;
+					}
+
+					// Only visibility is supported for the time being
+					if (TargetedProperty != (int32)EInterchangeAnimatedProperty::Visibility)
+					{
+						continue;
+					}
+
+					// Get targeted actor exists
+					AActor* Actor = GetActor(NodeContainer, TrackNode);
+					if (Actor)
+					{
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
 	class FAnimationTrackSetHelper
 	{
 	public:
@@ -165,15 +258,15 @@ namespace UE::Interchange::Private
 		}
 
 		// Get payload
-		FString PayloadKey;
+		FInterchangeAnimationPayLoadKey PayloadKey;
 		if (!TransformTrackNode.GetCustomAnimationPayloadKey(PayloadKey))
 		{
 			UE_LOG(LogInterchangeImport, Warning, TEXT("No payload key for animation track %s on actor %s"), *TransformTrackNode.GetDisplayLabel(), *Actor->GetActorLabel());
 			return;
 		}
 
-		TFuture<TOptional<UE::Interchange::FAnimationCurvePayloadData>> Result = PayloadInterface.GetAnimationCurvePayloadData(PayloadKey);
-		const TOptional<UE::Interchange::FAnimationCurvePayloadData>& PayloadData = Result.Get();
+		TFuture<TOptional<UE::Interchange::FAnimationPayloadData>> Result = PayloadInterface.GetAnimationPayloadData(PayloadKey);
+		const TOptional<UE::Interchange::FAnimationPayloadData>& PayloadData = Result.Get();
 		if (!PayloadData.IsSet() || PayloadData->Curves.Num() != 9)
 		{
 			UE_LOG(LogInterchangeImport, Warning, TEXT("No payload for animation track %s on actor %s"), *TransformTrackNode.GetDisplayLabel(), *Actor->GetActorLabel());
@@ -269,7 +362,7 @@ namespace UE::Interchange::Private
 			return;
 		}
 
-		const FString TrackSetFactoryNodeUid = TEXT("Factory_") + TrackSetNodeUid;
+		const FString TrackSetFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(TrackSetNodeUid);
 		const UInterchangeAnimationTrackSetFactoryNode* InstanceFactoryNode = Cast<UInterchangeAnimationTrackSetFactoryNode>(NodeContainer.GetNode(TrackSetFactoryNodeUid));
 		
 		FString InstanceNodeDisplayLabel = InstanceNode.GetDisplayLabel();
@@ -374,15 +467,15 @@ namespace UE::Interchange::Private
 		}
 
 		// Get payload
-		FString PayloadKey;
+		FInterchangeAnimationPayLoadKey PayloadKey;
 		if (!AnimationTrackNode.GetCustomAnimationPayloadKey(PayloadKey))
 		{
 			UE_LOG(LogInterchangeImport, Warning, TEXT("No payload key for animation track %s on actor %s"), *AnimationTrackNode.GetDisplayLabel(), *Actor->GetActorLabel());
 			return;
 		}
 
-		TFuture<TOptional<UE::Interchange::FAnimationStepCurvePayloadData>> Result = PayloadInterface.GetAnimationStepCurvePayloadData(PayloadKey);
-		const TOptional<UE::Interchange::FAnimationStepCurvePayloadData>& PayloadData = Result.Get();
+		TFuture<TOptional<UE::Interchange::FAnimationPayloadData>> Result = PayloadInterface.GetAnimationPayloadData(PayloadKey);
+		const TOptional<UE::Interchange::FAnimationPayloadData>& PayloadData = Result.Get();
 		if (!PayloadData.IsSet() || PayloadData->StepCurves.Num() != 1)
 		{
 			UE_LOG(LogInterchangeImport, Warning, TEXT("No payload for animation track %s on actor %s"), *AnimationTrackNode.GetDisplayLabel(), *Actor->GetActorLabel());
@@ -452,7 +545,7 @@ namespace UE::Interchange::Private
 		FString ActorNodeUid;
 		if (TrackNode.GetCustomActorDependencyUid(ActorNodeUid))
 		{
-			const FString ActorFactoryNodeUid = TEXT("Factory_") + ActorNodeUid;
+			const FString ActorFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(ActorNodeUid);
 			const UInterchangeFactoryBaseNode* ActorFactoryNode = Cast<UInterchangeFactoryBaseNode>(NodeContainer.GetNode(ActorFactoryNodeUid));
 
 			if (ActorFactoryNode)
@@ -545,7 +638,14 @@ namespace UE::Interchange::Private
 				SceneValue.Value = CurveKey.Value;
 			}
 
-			Channel->Set(FrameNumbers, MovieSceneDoubleValues);
+			if (!MovieSceneDoubleValues.IsEmpty())
+			{
+				Channel->Set(FrameNumbers, MovieSceneDoubleValues);
+			}
+			else
+			{
+				Channel->RemoveDefault();
+			}
 		};
 
 		CopyToChannel(Channels[IndexOffset + 0], Curves[IndexOffset + 0]);
@@ -560,59 +660,86 @@ UClass* UInterchangeAnimationTrackSetFactory::GetFactoryClass() const
 	return ULevelSequence::StaticClass();
 }
 
-UObject* UInterchangeAnimationTrackSetFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangeAnimationTrackSetFactory::BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
 #if !WITH_EDITOR || !WITH_EDITORONLY_DATA
 
 	UE_LOG(LogInterchangeImport, Error, TEXT("Cannot import levelsequence asset in runtime, this is an editor only feature."));
-	return nullptr;
+	return ImportAssetResult;
 #else
-	if (Arguments.ReimportObject)
+
+	auto CannotReimportMessage = [&Arguments, this]()
 	{
 		UInterchangeResultError_Generic* Message = AddMessage<UInterchangeResultError_Generic>();
 		Message->SourceAssetName = Arguments.SourceData->GetFilename();
 		Message->DestinationAssetName = Arguments.AssetName;
 		Message->AssetType = ULevelSequence::StaticClass();
 		Message->Text = LOCTEXT("CreateEmptyAssetUnsupportedReimport", "Re-import of ULevelSequence not supported yet.");
+		Arguments.AssetNode->SetSkipNodeImport();
+	};
 
-		return nullptr;
+	if (Arguments.ReimportObject)
+	{
+		CannotReimportMessage();
+		return ImportAssetResult;
 	}
 
 	ULevelSequence* LevelSequence = nullptr;
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	const UInterchangeAnimationTrackSetFactoryNode* FactoryNode = Cast<UInterchangeAnimationTrackSetFactoryNode>(Arguments.AssetNode);
+	UInterchangeAnimationTrackSetFactoryNode* FactoryNode = Cast<UInterchangeAnimationTrackSetFactoryNode>(Arguments.AssetNode);
 	if (FactoryNode == nullptr)
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+	if (!UE::Interchange::Private::HasActorToUse(Arguments.NodeContainer, FactoryNode))
+	{
+		UE_LOG(LogInterchangeImport, Warning, TEXT("Level sequence asset, %s, not imported, because all referenced actors are missing."), *FactoryNode->GetDisplayLabel());
+		return ImportAssetResult;
+	}
+
+	UObject* ExistingAsset = Arguments.ReimportObject;
+	if (!ExistingAsset)
+	{
+		FSoftObjectPath ReferenceObject;
+		if (FactoryNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ExistingAsset = ReferenceObject.TryLoad();
+		}
+	}
 
 	// create a new material or overwrite existing asset, if possible
 	if (!ExistingAsset)
 	{
 		LevelSequence = NewObject<ULevelSequence>(Arguments.Parent, *Arguments.AssetName, RF_Public | RF_Standalone);
 	}
-	else if (ExistingAsset->GetClass()->IsChildOf(ULevelSequence::StaticClass()))
+	else
 	{
-		// This is a reimport, we are just re-updating the source data
-		LevelSequence = Cast<ULevelSequence>(ExistingAsset);
+		// This is a reimport or an override, we are just re-updating the source data
+
+		//TODO: put back the Cast when the LevelSequence will support re-import
+		//LevelSequence = Cast<ULevelSequence>(ExistingAsset);
+		CannotReimportMessage();
+		return ImportAssetResult;
 	}
 
 	if (!LevelSequence)
 	{
 		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create LevelSequence asset %s"), *Arguments.AssetName);
-		return nullptr;
+		return ImportAssetResult;
 	}
+
+	FactoryNode->SetCustomReferenceObject(LevelSequence);
 
 	LevelSequence->PreEditChange(nullptr);
 
-	return ImportObjectSourceData(Arguments);
+	ImportAssetResult.ImportedObject = ImportObjectSourceData(Arguments);
+	return ImportAssetResult;
 #endif //else !WITH_EDITOR || !WITH_EDITORONLY_DATA
 }
 
@@ -658,33 +785,15 @@ UObject* UInterchangeAnimationTrackSetFactory::ImportObjectSourceData(const FImp
 		return nullptr;
 	}
 
-	const UClass* LevelSequenceClass = FactoryNode->GetObjectClass();
-	check(LevelSequenceClass && LevelSequenceClass->IsChildOf(GetFactoryClass()));
+	UObject* ExistingAsset = UE::Interchange::FFactoryCommon::AsyncFindObject(FactoryNode, GetFactoryClass(), Arguments.Parent, Arguments.AssetName);
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
-
-	ULevelSequence* LevelSequence = nullptr;
-	// create a new level sequence or overwrite existing asset, if possible
 	if (!ExistingAsset)
 	{
-		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
-		//The UObject should have been create by calling CreateEmptyAsset on the main thread.
-		if (IsInGameThread())
-		{
-			LevelSequence = NewObject<ULevelSequence>(Arguments.Parent, LevelSequenceClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		}
-		else
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create LevelSequence asset [%s] outside of the game thread"), *Arguments.AssetName);
-			return nullptr;
-		}
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not import the LevelSequence asset %s, because the asset do not exist."), *Arguments.AssetName);
+		return nullptr;
 	}
-	else if (ExistingAsset->GetClass()->IsChildOf(LevelSequenceClass))
-	{
-		//This is a reimport, we are just re-updating the source data
-		LevelSequence =  Cast<ULevelSequence>(ExistingAsset);
-	}
+
+	ULevelSequence* LevelSequence = Cast<ULevelSequence>(ExistingAsset);
 
 	if (!ensure(LevelSequence))
 	{
@@ -719,21 +828,6 @@ void UInterchangeAnimationTrackSetFactory::SetupObject_GameThread(const FSetupOb
 	Super::SetupObject_GameThread(Arguments);
 
 	// TODO: Talk with sequence team about adding AssetImportData to ULevelSequence for re-import 
-}
-
-void UInterchangeAnimationTrackSetFactory::FinalizeObject_GameThread(const FSetupObjectParams& Arguments)
-{
-	check(IsInGameThread());
-	if (ULevelSequence* LevelSequence = Cast<ULevelSequence>(Arguments.ImportedObject))
-	{
-		// Ugly temporary workaround to Sequencer's design which has an implicit deferring system which
-		// holds onto UMovieSceneSignedObject objects when PreEditChange is called on such object (i.e. ULevelSequence)
-		// Only a call to open the Sequencer, which calls UMovieSceneSignedObject::ResetImplicitScopedModifyDefer, will release the hold
-		// See FDeferredSignedObjectChangeHandler, FSequencer::Tick
-		// Note: Sequencer team is aware of the issue and will look their design in a future release
-		UMovieSceneSignedObject::ResetImplicitScopedModifyDefer();
-	}
-	Super::FinalizeObject_GameThread(Arguments);
 }
 
 #undef LOCTEXT_NAMESPACE

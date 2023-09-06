@@ -42,7 +42,7 @@ FString FNullHttpRequest::GetContentType() const
 	return GetHeader(TEXT("Content-Type"));
 }
 
-int32 FNullHttpRequest::GetContentLength() const
+uint64 FNullHttpRequest::GetContentLength() const
 {
 	return Payload.Num();
 }
@@ -94,6 +94,12 @@ bool FNullHttpRequest::SetContentFromStream(TSharedRef<FArchive, ESPMode::Thread
 {
 	// TODO: Not implemented.
 	UE_LOG(LogHttp, Warning, TEXT("FNullHttpRequest::SetContentFromStream is not implemented"));
+	return false;
+}
+
+bool FNullHttpRequest::SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream)
+{
+	UE_LOG(LogHttp, Warning, TEXT("FNullHttpRequest::SetResponseBodyReceiveStream is not implemented"));
 	return false;
 }
 
@@ -178,15 +184,20 @@ float FNullHttpRequest::GetElapsedTime() const
 void FNullHttpRequest::FinishedRequest()
 {
 	CompletionStatus = EHttpRequestStatus::Failed;
-	FHttpRequestRef Request = SharedThis(this);
-	FHttpManager& HttpManager = FHttpModule::Get().GetHttpManager();
-	HttpManager.BroadcastHttpRequestCompleted(Request);
-	HttpManager.RemoveRequest(Request);
 
 	UE_LOG(LogHttp, Log, TEXT("Finished request %p. no response %s url=%s elapsed=%.3f"),
 		this, *GetVerb(), *GetURL(), ElapsedTime);
 
-	OnProcessRequestComplete().ExecuteIfBound(Request, NULL, false);
+	OnProcessRequestComplete().ExecuteIfBound(SharedThis(this), NULL, false);
+}
+
+void FNullHttpRequest::SetDelegateThreadPolicy(EHttpRequestDelegateThreadPolicy InThreadPolicy)
+{
+}
+
+EHttpRequestDelegateThreadPolicy FNullHttpRequest::GetDelegateThreadPolicy() const
+{
+	return EHttpRequestDelegateThreadPolicy::CompleteOnGameThread;
 }
 
 // FNullHttpResponse
@@ -216,7 +227,7 @@ FString FNullHttpResponse::GetContentType() const
 	return FString();
 }
 
-int32 FNullHttpResponse::GetContentLength() const
+uint64 FNullHttpResponse::GetContentLength() const
 {
 	return 0;
 }

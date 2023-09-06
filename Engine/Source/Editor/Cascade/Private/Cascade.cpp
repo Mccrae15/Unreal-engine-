@@ -1629,7 +1629,7 @@ void FCascade::Tick(float DeltaTime)
 	// If a vector field module is selected, update the preview visualization.
 	if (SelectedModule && SelectedModule->IsA(UParticleModuleVectorFieldLocal::StaticClass()))
 	{
-		UParticleModuleVectorFieldLocal* VectorFieldModule = (UParticleModuleVectorFieldLocal*)SelectedModule;
+		UParticleModuleVectorFieldLocal* VectorFieldModule = (UParticleModuleVectorFieldLocal*)SelectedModule.Get();
 		LocalVectorFieldPreviewComponent->VectorField = VectorFieldModule->VectorField;
 		LocalVectorFieldPreviewComponent->SetRelativeLocation_Direct(VectorFieldModule->RelativeTranslation);
 		LocalVectorFieldPreviewComponent->SetRelativeRotation_Direct(VectorFieldModule->RelativeRotation);
@@ -2385,6 +2385,12 @@ void FCascade::BindCommands()
 		FExecuteAction::CreateSP(this, &FCascade::OnDetailMode, DM_High),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &FCascade::IsDetailModeChecked, DM_High));
+
+	ToolkitCommands->MapAction(
+		Commands.DetailMode_Epic,
+		FExecuteAction::CreateSP(this, &FCascade::OnDetailMode, DM_Epic),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FCascade::IsDetailModeChecked, DM_Epic));
 
 	ToolkitCommands->MapAction(
 		Commands.Significance_Critical,

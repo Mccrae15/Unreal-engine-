@@ -18,7 +18,6 @@
 #include "RHIStaticStates.h"
 
 #include "RenderingThread.h"
-
 #include "RenderResource.h"
 #include "CommonRenderResources.h"
 #include "PixelShaderUtils.h"
@@ -28,112 +27,102 @@
 #include "ShaderParameterUtils.h"
 
 #include "ScreenRendering.h"
-#include "RendererPrivate.h"
+#include "PostProcess/DrawRectangle.h"
 
 #include "RenderTargetPool.h"
 
-namespace UE
+namespace UE::TextureShare::ResourcesProxy
 {
-	namespace TextureShare
+	static bool IsSizeResampleRequired(FRHITexture* SrcTexture, FRHITexture* DstTexture, const FIntRect* SrcTextureRect, const FIntRect* DstTextureRect, FIntRect& OutSrcRect, FIntRect& OutDstRect)
 	{
-		namespace ResourcesProxy
+		FIntVector SrcSizeXYZ = SrcTexture->GetSizeXYZ();
+		FIntVector DstSizeXYZ = DstTexture->GetSizeXYZ();
+
+		FIntPoint SrcSize(SrcSizeXYZ.X, SrcSizeXYZ.Y);
+		FIntPoint DstSize(DstSizeXYZ.X, DstSizeXYZ.Y);
+
+		OutSrcRect = SrcTextureRect ? (*SrcTextureRect) : (FIntRect(FIntPoint(0, 0), SrcSize));
+		OutDstRect = DstTextureRect ? (*DstTextureRect) : (FIntRect(FIntPoint(0, 0), DstSize));
+
+		if (OutSrcRect.Size() != OutDstRect.Size())
 		{
-			static bool IsSizeResampleRequired(FRHITexture* SrcTexture, FRHITexture* DstTexture, const FIntRect* SrcTextureRect, const FIntRect* DstTextureRect, FIntRect& OutSrcRect, FIntRect& OutDstRect)
-			{
-				FIntVector SrcSizeXYZ = SrcTexture->GetSizeXYZ();
-				FIntVector DstSizeXYZ = DstTexture->GetSizeXYZ();
-
-				FIntPoint SrcSize(SrcSizeXYZ.X, SrcSizeXYZ.Y);
-				FIntPoint DstSize(DstSizeXYZ.X, DstSizeXYZ.Y);
-
-				OutSrcRect = SrcTextureRect ? (*SrcTextureRect) : (FIntRect(FIntPoint(0, 0), SrcSize));
-				OutDstRect = DstTextureRect ? (*DstTextureRect) : (FIntRect(FIntPoint(0, 0), DstSize));
-
-				if (OutSrcRect.Size() != OutDstRect.Size())
-				{
-					return true;
-				}
-
-				return false;
-			}
-
-			static void DirectCopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture, const FIntRect* SrcTextureRect, const FIntRect* DstTextureRect)
-			{
-				FIntRect SrcRect, DstRect;
-				IsSizeResampleRequired(SrcTexture, DstTexture, SrcTextureRect, DstTextureRect, SrcRect, DstRect);
-
-				const FIntPoint InRectSize = SrcRect.Size();
-				// Copy with resolved params
-				FRHICopyTextureInfo Params = {};
-				Params.Size = FIntVector(InRectSize.X, InRectSize.Y, 0);
-				Params.SourcePosition = FIntVector(SrcRect.Min.X, SrcRect.Min.Y, 0);
-				Params.DestPosition = FIntVector(DstRect.Min.X, DstRect.Min.Y, 0);
-
-				RHICmdList.CopyTexture(SrcTexture, DstTexture, Params);
-			}
-
-			static void ResampleCopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture, const FIntRect* SrcTextureRect, const FIntRect* DstTextureRect)
-			{
-				FIntRect SrcRect, DstRect;
-				IsSizeResampleRequired(SrcTexture, DstTexture, SrcTextureRect, DstTextureRect, SrcRect, DstRect);
-
-				// Texture format mismatch, use a shader to do the copy.
-				FRHIRenderPassInfo RPInfo(DstTexture, ERenderTargetActions::Load_Store);
-				RHICmdList.Transition(FRHITransitionInfo(DstTexture, ERHIAccess::Unknown, ERHIAccess::RTV));
-				RHICmdList.BeginRenderPass(RPInfo, TEXT("TextureShare_ResampleTexture"));
-				{
-					FIntVector SrcSizeXYZ = SrcTexture->GetSizeXYZ();
-					FIntVector DstSizeXYZ = DstTexture->GetSizeXYZ();
-
-					FIntPoint SrcSize(SrcSizeXYZ.X, SrcSizeXYZ.Y);
-					FIntPoint DstSize(DstSizeXYZ.X, DstSizeXYZ.Y);
-
-					RHICmdList.SetViewport(0.f, 0.f, 0.0f, DstSize.X, DstSize.Y, 1.0f);
-
-					FGraphicsPipelineStateInitializer GraphicsPSOInit;
-					RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-					GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-					GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-
-					FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-					TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
-					TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
-
-					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
-					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-
-					if (SrcRect.Size() != DstRect.Size())
-					{
-						PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), SrcTexture);
-					}
-					else
-					{
-						PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SrcTexture);
-					}
-
-					// Set up vertex uniform parameters for scaling and biasing the rectangle.
-					// Note: Use DrawRectangle in the vertex shader to calculate the correct vertex position and uv.
-					FDrawRectangleParameters Parameters;
-					{
-						Parameters.PosScaleBias = FVector4f(DstRect.Size().X, DstRect.Size().Y, DstRect.Min.X, DstRect.Min.Y);
-						Parameters.UVScaleBias = FVector4f(SrcRect.Size().X, SrcRect.Size().Y, SrcRect.Min.X, SrcRect.Min.Y);
-						Parameters.InvTargetSizeAndTextureSize = FVector4f(1.0f / DstSize.X, 1.0f / DstSize.Y, 1.0f / SrcSize.X, 1.0f / SrcSize.Y);
-
-						SetUniformBufferParameterImmediate(RHICmdList, VertexShader.GetVertexShader(), VertexShader->GetUniformBufferParameter<FDrawRectangleParameters>(), Parameters);
-					}
-
-					FPixelShaderUtils::DrawFullscreenQuad(RHICmdList, 1);
-				}
-				RHICmdList.EndRenderPass();
-			}
+			return true;
 		}
+
+		return false;
+	}
+
+	static void DirectCopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture, const FIntRect* SrcTextureRect, const FIntRect* DstTextureRect)
+	{
+		FIntRect SrcRect, DstRect;
+		IsSizeResampleRequired(SrcTexture, DstTexture, SrcTextureRect, DstTextureRect, SrcRect, DstRect);
+
+		const FIntPoint InRectSize = SrcRect.Size();
+		// Copy with resolved params
+		FRHICopyTextureInfo Params = {};
+		Params.Size = FIntVector(InRectSize.X, InRectSize.Y, 0);
+		Params.SourcePosition = FIntVector(SrcRect.Min.X, SrcRect.Min.Y, 0);
+		Params.DestPosition = FIntVector(DstRect.Min.X, DstRect.Min.Y, 0);
+
+		RHICmdList.CopyTexture(SrcTexture, DstTexture, Params);
+	}
+
+	static void ResampleCopyTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* SrcTexture, FRHITexture* DstTexture, const FIntRect* SrcTextureRect, const FIntRect* DstTextureRect)
+	{
+		FIntRect SrcRect, DstRect;
+		IsSizeResampleRequired(SrcTexture, DstTexture, SrcTextureRect, DstTextureRect, SrcRect, DstRect);
+
+		// Texture format mismatch, use a shader to do the copy.
+		FRHIRenderPassInfo RPInfo(DstTexture, ERenderTargetActions::Load_Store);
+		RHICmdList.Transition(FRHITransitionInfo(DstTexture, ERHIAccess::Unknown, ERHIAccess::RTV));
+		RHICmdList.BeginRenderPass(RPInfo, TEXT("TextureShare_ResampleTexture"));
+		{
+			FIntVector SrcSizeXYZ = SrcTexture->GetSizeXYZ();
+			FIntVector DstSizeXYZ = DstTexture->GetSizeXYZ();
+
+			FIntPoint SrcSize(SrcSizeXYZ.X, SrcSizeXYZ.Y);
+			FIntPoint DstSize(DstSizeXYZ.X, DstSizeXYZ.Y);
+
+			RHICmdList.SetViewport(0.f, 0.f, 0.0f, DstSize.X, DstSize.Y, 1.0f);
+
+			FGraphicsPipelineStateInitializer GraphicsPSOInit;
+			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+			GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
+			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+
+			FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+			TShaderMapRef<FScreenVS> VertexShader(ShaderMap);
+			TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
+
+			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
+			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+			const bool bSameSize = (SrcRect.Size() == DstRect.Size());
+			FRHISamplerState* PixelSampler = bSameSize ? TStaticSamplerState<SF_Point>::GetRHI() : TStaticSamplerState<SF_Bilinear>::GetRHI();
+
+			SetShaderParametersLegacyPS(RHICmdList, PixelShader, PixelSampler, SrcTexture);
+
+			// Set up vertex uniform parameters for scaling and biasing the rectangle.
+			// Note: Use DrawRectangle in the vertex shader to calculate the correct vertex position and uv.
+
+			UE::Renderer::PostProcess::DrawRectangle(
+				RHICmdList, VertexShader,
+				DstRect.Min.X, DstRect.Min.Y,
+				DstRect.Size().X, DstRect.Size().Y,
+				SrcRect.Min.X, SrcRect.Min.Y,
+				SrcRect.Size().X, SrcRect.Size().Y,
+				DstSize, SrcSize
+			);
+		}
+		RHICmdList.EndRenderPass();
 	}
 };
+
 using namespace UE::TextureShare::ResourcesProxy;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

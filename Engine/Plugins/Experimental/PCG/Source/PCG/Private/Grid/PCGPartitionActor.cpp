@@ -305,6 +305,7 @@ void APCGPartitionActor::AddGraphInstance(UPCGComponent* OriginalComponent)
 		// Update properties as needed and early out
 		LocalComponent->SetPropertiesFromOriginal(OriginalComponent);
 		LocalComponent->MarkAsLocalComponent();
+		LocalComponent->SetGenerationGridSize(PCGGridSize);
 		return;
 	}
 
@@ -312,15 +313,19 @@ void APCGPartitionActor::AddGraphInstance(UPCGComponent* OriginalComponent)
 
 	// Create a new local component
 	LocalComponent = NewObject<UPCGComponent>(this);
+	LocalComponent->MarkAsLocalComponent();
+	LocalComponent->SetGenerationGridSize(PCGGridSize);
+
+	// Note: we'll place the local component prior to the SetPropertiesFromOriginal so that any code that relies on the parent-child relationship works here
+	OriginalToLocal.Emplace(OriginalComponent, LocalComponent);
+	LocalToOriginal.Emplace(LocalComponent, OriginalComponent);
+
 	LocalComponent->SetPropertiesFromOriginal(OriginalComponent);
 
 	LocalComponent->RegisterComponent();
-	LocalComponent->MarkAsLocalComponent();
+
 	// TODO: check if we should use a non-instanced component?
 	AddInstanceComponent(LocalComponent);
-
-	OriginalToLocal.Emplace(OriginalComponent, LocalComponent);
-	LocalToOriginal.Emplace(LocalComponent, OriginalComponent);
 }
 
 void APCGPartitionActor::RemapGraphInstance(const UPCGComponent* OldOriginalComponent, UPCGComponent* NewOriginalComponent)
@@ -414,9 +419,10 @@ AActor* APCGPartitionActor::GetSceneOutlinerParent() const
 	}	
 }
 
-void APCGPartitionActor::PostCreation()
+void APCGPartitionActor::PostCreation(const FGuid& InGridGUID)
 {
-	PCGGridSize = GridSize;
+	PCGGridSize = Super::GetGridSize();
+	PCGGuid = InGridGUID;
 
 	// Put in cache if we use the 2D grid or not.
 	if (APCGWorldActor* PCGActor = PCGHelpers::GetPCGWorldActor(GetWorld()))

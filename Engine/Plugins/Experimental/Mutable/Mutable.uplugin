@@ -25,6 +25,11 @@
 			"LoadingPhase": "PreDefault"
 		},
 		{
+			"Name": "MutableValidation",
+			"Type": "Editor",
+			"LoadingPhase": "PreDefault"
+		},
+		{
 			"Name": "CustomizableObjectEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"
@@ -43,6 +48,14 @@
 	"Plugins": [
 		{
 			"Name": "SkeletalMerging",
+			"Enabled": true
+		},
+		{
+			"Name": "StructUtils",
+			"Enabled": true
+		},
+		{
+			"Name": "DataValidation",
 			"Enabled": true
 		}
 	],

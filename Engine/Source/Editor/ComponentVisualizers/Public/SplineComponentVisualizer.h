@@ -222,6 +222,7 @@ public:
 
 	//~ Begin FComponentVisualizer Interface
 	virtual void OnRegister() override;
+	virtual bool ShouldShowForSelectedSubcomponents(const UActorComponent* Component) override;
 	virtual void DrawVisualization(const UActorComponent* Component, const FSceneView* View, FPrimitiveDrawInterface* PDI) override;
 	virtual bool VisProxyHandleClick(FEditorViewportClient* InViewportClient, HComponentVisProxy* VisProxy, const FViewportClick& Click) override;
 	/** Draw HUD on viewport for the supplied component */
@@ -423,7 +424,7 @@ protected:
 	TSharedPtr<FUICommandList> SplineComponentVisualizerActions;
 
 	/** Current selection state */
-	USplineComponentVisualizerSelectionState* SelectionState;
+	TObjectPtr<USplineComponentVisualizerSelectionState> SelectionState;
 
 	/** Whether we currently allow duplication when dragging */
 	bool bAllowDuplication;

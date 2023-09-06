@@ -5,16 +5,15 @@
 #include "SDisplayClusterColorGradingDetailView.h"
 
 #include "DragAndDrop/DecoratedDragDropOp.h"
-#include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/MenuStack.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "IPropertyRowGenerator.h"
 #include "IDetailDragDropHandler.h"
 #include "IDetailTreeNode.h"
-#include "Modules/ModuleManager.h"
+#include "IPropertyRowGenerator.h"
 #include "Layout/WidgetPath.h"
-#include "PropertyEditor/Private/DetailTreeNode.h"
+#include "Modules/ModuleManager.h"
 #include "ScopedTransaction.h"
 #include "Styling/StyleColors.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -701,6 +700,12 @@ bool SDisplayClusterColorGradingDetailTreeRow::IsRowEnabled() const
 {
 	if (DetailTreeItem.IsValid())
 	{
+		// Categories are always enabled
+		if (DetailTreeItem.Pin()->IsCategory())
+		{
+			return true;
+		}
+
 		return DetailTreeItem.Pin()->IsPropertyEditingEnabled().Get(true) && 
 			WidgetRow.IsEnabledAttr.Get(true) && 
 			WidgetRow.EditConditionValue.Get(true);
@@ -934,14 +939,14 @@ bool SDisplayClusterColorGradingDetailTreeRow::IsValidDrop(const FDragDropEvent&
 		{
 			TSharedPtr<IPropertyHandle> SwappingPropertyHandle = ArrayRowDropOp->RowBeingDragged.Pin()->GetPropertyHandle();
 			TSharedPtr<IPropertyHandle> ThisPropertyHandle = GetPropertyHandle();
-			if (ThisPropertyHandle.IsValid() && SwappingPropertyHandle.IsValid() && SwappingPropertyHandle->GetPropertyNode() != ThisPropertyHandle->GetPropertyNode())
+			if (ThisPropertyHandle.IsValid() && SwappingPropertyHandle.IsValid() && !SwappingPropertyHandle->IsSamePropertyNode(ThisPropertyHandle))
 			{
 				const int32 OriginalIndex = SwappingPropertyHandle->GetIndexInArray();
 				const int32 NewIndex = GetDropNewIndex(OriginalIndex, ThisPropertyHandle->GetIndexInArray(), DropZone);
 
 				if (OriginalIndex != NewIndex)
 				{
-					if (SwappingPropertyHandle->GetParentHandle()->AsArray() && SwappingPropertyHandle->GetParentHandle()->GetPropertyNode() == ThisPropertyHandle->GetParentHandle()->GetPropertyNode())
+					if (SwappingPropertyHandle->GetParentHandle()->AsArray() && SwappingPropertyHandle->GetParentHandle()->IsSamePropertyNode(ThisPropertyHandle->GetParentHandle()))
 					{
 						return true;
 					}

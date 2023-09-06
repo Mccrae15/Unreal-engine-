@@ -170,18 +170,27 @@ public:
 	* @param Flags - Options for Init ; FStaticMeshVertexBufferFlags can be default constructed for default options
 	*/
 	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, const FStaticMeshVertexBufferFlags & InInitFlags );
-	
+	ENGINE_API void Init(const FConstMeshBuildVertexView& InVertices, const FStaticMeshVertexBufferFlags& InInitFlags);
+
 	/**
 	* Initializes the buffer with the given vertices.
 	* @param InVertices - The vertices to initialize the buffer with.
 	* @param InNumTexCoords - The number of texture coordinate to store in the buffer.
 	* @param bNeedsCPUAccess - Whether the vertex data needs to be accessed by the CPU after creation (default true)
 	*/
-	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess = true)
+	void Init(const FConstMeshBuildVertexView& InVertices, bool bNeedsCPUAccess = true)
 	{
 		FStaticMeshVertexBufferFlags Flags;
 		Flags.bNeedsCPUAccess = bNeedsCPUAccess;
-		Init(InVertices,InNumTexCoords,Flags);
+		Init(InVertices, Flags);
+	}
+
+	void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess = true)
+	{
+		FConstMeshBuildVertexView VertexView = MakeConstMeshBuildVertexView(InVertices);
+		FStaticMeshVertexBufferFlags Flags;
+		Flags.bNeedsCPUAccess = bNeedsCPUAccess;
+		Init(VertexView, Flags);
 	}
 
 	/**
@@ -206,7 +215,7 @@ public:
 	* @param	Ar				Archive to serialize with
 	* @param	bNeedsCPUAccess	Whether the elements need to be accessed by the CPU
 	*/
-	void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
+	ENGINE_API void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
 
 	void SerializeMetaData(FArchive& Ar);
 
@@ -433,17 +442,14 @@ public:
 	FBufferRHIRef CreateTexCoordRHIBuffer_RenderThread();
 	FBufferRHIRef CreateTexCoordRHIBuffer_Async();
 
-	/** Copy everything, keeping reference to the same RHI resources. */
-	void CopyRHIForStreaming(const FStaticMeshVertexBuffer& Other, bool InAllowCPUAccess);
-
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	void InitRHIForStreaming(FRHIBuffer* IntermediateTangentsBuffer, FRHIBuffer* IntermediateTexCoordBuffer, FRHIResourceUpdateBatcher& Batcher);
 	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher);
 
 	// FRenderResource interface.
-	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	ENGINE_API virtual void ReleaseRHI() override;
-	ENGINE_API virtual void InitResource() override;
+	ENGINE_API virtual void InitResource(FRHICommandListBase& RHICmdList) override;
 	ENGINE_API virtual void ReleaseResource() override;
 	virtual FString GetFriendlyName() const override { return TEXT("Static-mesh vertices"); }
 
@@ -458,9 +464,9 @@ public:
 	FORCEINLINE_DEBUGGABLE void* GetTexCoordData() { return TexcoordDataPtr; }
 	FORCEINLINE_DEBUGGABLE const void* GetTexCoordData() const { return TexcoordDataPtr; }
 
-	ENGINE_API int GetTangentSize();
+	ENGINE_API int GetTangentSize() const;
 
-	ENGINE_API int GetTexCoordSize();
+	ENGINE_API int GetTexCoordSize() const;
 
 	FORCEINLINE_DEBUGGABLE bool GetAllowCPUAccess() const
 	{
@@ -501,10 +507,10 @@ private:
 	uint8* TexcoordDataPtr;
 
 	/** The cached Tangent stride. */
-	uint32 TangentsStride;
+	mutable uint32 TangentsStride; // Mutable to allow updating through const getter
 
 	/** The cached Texcoord stride. */
-	uint32 TexcoordStride;
+	mutable uint32 TexcoordStride; // Mutable to allow updating through const getter
 
 	/** The number of texcoords/vertex in the buffer. */
 	uint32 NumTexCoords;

@@ -4,6 +4,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "BuildSettings.h"
@@ -58,11 +59,55 @@ const TCHAR* FApp::GetBuildVersion()
 	return BuildSettings::GetBuildVersion();
 }
 
+const TCHAR* FApp::GetBuildURL()
+{
+	if (FCoreDelegates::OnGetBuildURL.IsBound()) 
+	{
+		return FCoreDelegates::OnGetBuildURL.Execute();
+	}	
+	return BuildSettings::GetBuildURL();
+}	
+
 int32 FApp::GetEngineIsPromotedBuild()
 {
 	return BuildSettings::IsPromotedBuild()? 1 : 0;
 }
 
+bool FApp::GetIsWithDebugInfo()
+{
+	return BuildSettings::IsWithDebugInfo();
+}
+
+const TCHAR* FApp::GetExecutingJobURL()
+{
+	if (FCoreDelegates::OnGetExecutingJobURL.IsBound())
+	{
+		return FCoreDelegates::OnGetExecutingJobURL.Execute();
+	}
+
+	static const FString URL = []() -> FString {
+		FString HordeUrl = FPlatformMisc::GetEnvironmentVariable(TEXT("UE_HORDE_URL"));
+		if (HordeUrl.IsEmpty())
+		{
+			return FString();
+		}
+		FString HordeJobId = FPlatformMisc::GetEnvironmentVariable(TEXT("UE_HORDE_JOBID"));
+		if (HordeJobId.IsEmpty())
+		{
+			return FString();
+		}
+		FString HordeStepId = FPlatformMisc::GetEnvironmentVariable(TEXT("UE_HORDE_STEPID"));
+		if (HordeStepId.IsEmpty())
+		{
+			return FString::Printf(TEXT("%s/job/%s"), *HordeUrl, *HordeJobId);
+		}
+		else 
+		{
+			return FString::Printf(TEXT("%s/job/%s?step=%s"), *HordeUrl, *HordeJobId, *HordeStepId);
+		}
+	}();
+	return *URL;
+}
 
 FString FApp::GetEpicProductIdentifier()
 {
@@ -380,6 +425,11 @@ void FApp::PrintStartupLogMessages()
 	//UE_LOG(LogInit, Log, TEXT("Character set: %s"), sizeof(TCHAR)==1 ? TEXT("ANSI") : TEXT("Unicode") );
 	UE_LOG(LogInit, Log, TEXT("Allocator: %s"), GMalloc->GetDescriptiveName());
 	UE_LOG(LogInit, Log, TEXT("Installed Engine Build: %d"), FApp::IsEngineInstalled() ? 1 : 0);
+	UE_LOG(LogInit, Log, TEXT("This binary is optimized with LTO: %s, PGO: %s, instrumented for PGO data collection: %s"),
+		PLATFORM_COMPILER_OPTIMIZATION_LTCG ? TEXT("yes") : TEXT("no"),
+		FPlatformMisc::IsPGOEnabled() ? TEXT("yes") : TEXT("no"),
+		FPlatformMisc::IsPGICapableBinary() ? TEXT("yes") : TEXT("no")
+	);
 
 	FDevVersionRegistration::DumpVersionsToLog();
 }
@@ -396,8 +446,8 @@ FString FApp::GetZenStoreProjectId()
 	if (FPaths::IsProjectFilePathSet())
 	{
 		FString ProjectFilePath = FPaths::GetProjectFilePath();
-		FPaths::NormalizeFilename(ProjectFilePath);
 		FString AbsProjectFilePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ProjectFilePath);
+		AbsProjectFilePath = FPaths::FindCorrectCase(AbsProjectFilePath);
 		FTCHARToUTF8 AbsProjectFilePathUTF8(*AbsProjectFilePath);
 
 		FString HashString = FMD5::HashBytes((unsigned char*)AbsProjectFilePathUTF8.Get(), AbsProjectFilePathUTF8.Length()).Left(8);
@@ -408,4 +458,11 @@ FString FApp::GetZenStoreProjectId()
 	UE_LOG(LogInit, Fatal, TEXT("-ZenStoreProject command line argument is required to run from Zen"));
 #endif
 	return FString();
+}
+
+
+FGuid FApp::GetInstanceId()
+{
+	static FGuid InstanceId = FGuid::NewGuid();
+	return InstanceId;
 }

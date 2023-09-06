@@ -19,7 +19,7 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
 {
 	bEnableGameCenterSupport = true;
 	bEnableCloudKitSupport = false;
-    bRunAsCurrentUser = false;
+	bUserSwitching = false;
 	bSupportsPortraitOrientation = true;
 	bSupportsITunesFileSharing = false;
 	bSupportsFilesApp = false;
@@ -31,12 +31,14 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
 	bEnableDynamicMaxFPS = false;
 	bSupportsIPad = true;
 	bSupportsIPhone = true;
-	MinimumiOSVersion = EIOSVersion::IOS_15;
+	bEnableSplitView = false;
+	bEnableSimulatorSupport = false;
+	MinimumiOSVersion = EIOSVersion::IOS_Minimum;
     bBuildAsFramework = true;
 	bGeneratedSYMFile = false;
 	bGeneratedSYMBundle = false;
 	bGenerateXCArchive = false;
-	bShipForBitcode = true;
+	bSupportSecondaryMac = false;
 	bUseRSync = true;
 	bCustomLaunchscreenStoryboard = false;
 	AdditionalPlistData = TEXT("");
@@ -49,6 +51,7 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
     bEnableBackgroundFetch = false;
 	bSupportsMetal = true;
 	bSupportsMetalMRT = false;
+    bSupportHighRefreshRates = false;
 	bDisableHTTPS = false;
     bSupportsBackgroundAudio = false;
 }
@@ -127,9 +130,9 @@ void UIOSRuntimeSettings::PostInitProperties()
 		}
 	}
 
-	if (MinimumiOSVersion < EIOSVersion::IOS_15)
+	if ((MinimumiOSVersion < EIOSVersion::IOS_15) && (MinimumiOSVersion != EIOSVersion::IOS_Minimum))
 	{
-		MinimumiOSVersion = EIOSVersion::IOS_15;
+		MinimumiOSVersion = EIOSVersion::IOS_Minimum;
 		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, MinimumiOSVersion)), GetDefaultConfigFilename());
 	}
 	if (!bSupportsMetal && !bSupportsMetalMRT)

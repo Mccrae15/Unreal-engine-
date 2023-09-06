@@ -18,11 +18,11 @@
 #include "Modules/ModuleInterface.h"
 #include "RHIBreadcrumbs.h"
 #include "RHIResources.h"
+#include "RHIShaderParameters.h"
 
 class FRHIDepthRenderTargetView;
 class FRHIRenderTargetView;
 class FRHISetRenderTargetsInfo;
-struct FResolveParams;
 struct FViewportBounds;
 struct FRayTracingGeometryInstance;
 struct FRayTracingShaderBindings;
@@ -133,10 +133,28 @@ struct FTransferResourceFenceData
 	{}
 };
 
+struct FCrossGPUTransferFence
+{
+	uint32 SignalGPUIndex = 0;
+	uint32 WaitGPUIndex = 0;
+	void* SyncPoint = nullptr;
+
+	FCrossGPUTransferFence() = default;
+};
+
 FORCEINLINE FTransferResourceFenceData* RHICreateTransferResourceFenceData()
 {
 #if WITH_MGPU
 	return new FTransferResourceFenceData;
+#else
+	return nullptr;
+#endif
+}
+
+FORCEINLINE FCrossGPUTransferFence* RHICreateCrossGPUTransferFence()
+{
+#if WITH_MGPU
+	return new FCrossGPUTransferFence;
 #else
 	return nullptr;
 #endif
@@ -232,9 +250,6 @@ public:
 		return ERHIPipeline::AsyncCompute;
 	}
 
-	UE_DEPRECATED(5.1, "ComputePipelineStates should be used instead of direct ComputeShaders.")
-	RHI_API virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader);
-
 	virtual void RHISetComputePipelineState(FRHIComputePipelineState* ComputePipelineState) = 0;
 
 	virtual void RHIDispatchComputeShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ) = 0;
@@ -272,8 +287,8 @@ public:
 	virtual void RHIBeginUAVOverlap() {}
 	virtual void RHIEndUAVOverlap() {}
 
-	virtual void RHIBeginUAVOverlap(TArrayView<FRHIUnorderedAccessView* const> UAVs) {}
-	virtual void RHIEndUAVOverlap(TArrayView<FRHIUnorderedAccessView* const> UAVs) {}
+	virtual void RHIBeginUAVOverlap(TConstArrayView<FRHIUnorderedAccessView*> UAVs) {}
+	virtual void RHIEndUAVOverlap(TConstArrayView<FRHIUnorderedAccessView*> UAVs) {}
 
 	/** Set the shader resource view of a surface.  This is used for binding TextureMS parameter types that need a multi sampled view. */
 	virtual void RHISetShaderTexture(FRHIComputeShader* ComputeShader, uint32 TextureIndex, FRHITexture* NewTexture) = 0;
@@ -308,6 +323,20 @@ public:
 	virtual void RHISetShaderUniformBuffer(FRHIComputeShader* ComputeShader, uint32 BufferIndex, FRHIUniformBuffer* Buffer) = 0;
 
 	virtual void RHISetShaderParameters(FRHIComputeShader* ComputeShader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) = 0;
+
+	void RHISetBatchedShaderParameters(FRHIComputeShader* InShader, FRHIBatchedShaderParameters& InBatchedParameters)
+	{
+		RHISetShaderParameters(
+			InShader,
+			InBatchedParameters.ParametersData,
+			InBatchedParameters.Parameters,
+			InBatchedParameters.ResourceParameters,
+			InBatchedParameters.BindlessParameters);
+
+		InBatchedParameters.Reset();
+	}
+
+	virtual void RHISetShaderUnbinds(FRHIComputeShader* ComputeShader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds) = 0;
 
 	virtual void RHISetShaderParameter(FRHIComputeShader* ComputeShader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) = 0;
 
@@ -362,11 +391,12 @@ public:
 		return FRHIGPUMask::GPU0();
 	}
 
+#if WITH_MGPU
 	/**
 	 * Synchronizes the content of a resource between two GPUs using a copy operation.
 	 * @param Params - the parameters for each resource or texture region copied between GPUs.
 	 */
-	virtual void RHITransferResources(const TArrayView<const FTransferResourceParams> Params)
+	virtual void RHITransferResources(TConstArrayView<FTransferResourceParams> Params)
 	{
 		/* empty default implementation */
 	}
@@ -377,29 +407,55 @@ public:
 	 * GPU mask of the context (which specifies the destination GPUs), and the number of items in the "FenceDatas" array MUST match the
 	 * number of bits set in SrcGPUMask.
 	 */
-	virtual void RHITransferResourceSignal(const TArrayView<FTransferResourceFenceData* const> FenceDatas, FRHIGPUMask SrcGPUMask)
+	virtual void RHITransferResourceSignal(TConstArrayView<FTransferResourceFenceData*> FenceDatas, FRHIGPUMask SrcGPUMask)
 	{
 		/* default noop implementation */
-#if WITH_MGPU
 		for (FTransferResourceFenceData* FenceData : FenceDatas)
 		{
 			delete FenceData;
 		}
-#endif
 	}
 
-	virtual void RHITransferResourceWait(const TArrayView<FTransferResourceFenceData* const> FenceDatas)
+	virtual void RHITransferResourceWait(TConstArrayView<FTransferResourceFenceData*> FenceDatas)
 	{
 		/* default noop implementation */
-#if WITH_MGPU
 		for (FTransferResourceFenceData* FenceData : FenceDatas)
 		{
 			delete FenceData;
 		}
-#endif
 	}
 
-	virtual void RHIBuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> Params, const FRHIBufferRange& ScratchBufferRange)
+	/**
+	 * Synchronizes the content of a resource between two or more GPUs using a copy operation -- variation of above that includes separate arrays of fences.
+	 * @param Params - the parameters for each resource or texture region copied between GPUs.
+	 * @param PreTransfer - Fences to wait on before copying the relevant data (initialized with RHITransferResourceSignal before this function)
+	 * @param PostTransfer - Fences that can be waited on after copy (waited on by RHITransferResourceWait after this function)
+	 */
+	virtual void RHICrossGPUTransfer(TConstArrayView<FTransferResourceParams> Params, TConstArrayView<FCrossGPUTransferFence*> PreTransfer, TConstArrayView<FCrossGPUTransferFence*> PostTransfer)
+	{
+		/** empty default implementation. */
+	}
+
+	virtual void RHICrossGPUTransferSignal(TConstArrayView<FTransferResourceParams> Params, TConstArrayView<FCrossGPUTransferFence*> PreTransfer)
+	{
+		/* default noop implementation */
+		for (FCrossGPUTransferFence* SyncPoint : PreTransfer)
+		{
+			delete SyncPoint;
+		}
+	}
+
+	virtual void RHICrossGPUTransferWait(TConstArrayView<FCrossGPUTransferFence*> SyncPoints)
+	{
+		/* default noop implementation */
+		for (FCrossGPUTransferFence* SyncPoint : SyncPoints)
+		{
+			delete SyncPoint;
+		}
+	}
+#endif // WITH_MGPU
+
+	virtual void RHIBuildAccelerationStructures(TConstArrayView<FRayTracingGeometryBuildParams> Params, const FRHIBufferRange& ScratchBufferRange)
 	{
 		checkNoEntry();
 	}
@@ -470,6 +526,9 @@ public:
 	}
 };
 
+// Utility function to generate pre-transfer sync points to pass to CrossGPUTransferSignal and CrossGPUTransfer
+RHI_API void RHIGenerateCrossGPUPreTransferFences(TConstArrayView<FTransferResourceParams> Params, TArray<FCrossGPUTransferFence*>& OutPreTransfer);
+
 enum class EAccelerationStructureBuildMode
 {
 	// Perform a full acceleration structure build.
@@ -488,7 +547,7 @@ struct FRayTracingGeometryBuildParams
 
 	// Optional array of geometry segments that can be used to change per-segment vertex buffers.
 	// Only fields related to vertex buffer are used. If empty, then geometry vertex buffers are not changed.
-	TArrayView<const FRayTracingGeometrySegment> Segments;
+	TConstArrayView<FRayTracingGeometrySegment> Segments;
 };
 
 struct FRayTracingSceneBuildParams
@@ -539,15 +598,6 @@ public:
 	// @param Count >0
 	// @param Data must not be 0
 	virtual void RHISetMultipleViewports(uint32 Count, const FViewportBounds* Data) = 0;
-
-	/**
-	* Resolves from one texture to another.
-	* @param SourceTexture - texture to resolve from, 0 is silently ignored
-	* @param DestTexture - texture to resolve to, 0 is silently ignored
-	* @param ResolveParams - optional resolve params
-	* @param Fence - optional fence, will be set once copy is completed by GPU
-	*/
-	virtual void RHICopyToResolveTarget(FRHITexture* SourceTexture, FRHITexture* DestTexture, const FResolveParams& ResolveParams) = 0;
 
 	/**
 	* Rebuilds the depth target HTILE meta data (on supported platforms).
@@ -640,6 +690,8 @@ public:
 	using IRHIComputeContext::RHISetShaderResourceViewParameter;
 	using IRHIComputeContext::RHISetShaderUniformBuffer;
 	using IRHIComputeContext::RHISetShaderParameters;
+	using IRHIComputeContext::RHISetBatchedShaderParameters;
+	using IRHIComputeContext::RHISetShaderUnbinds;
 	using IRHIComputeContext::RHISetShaderParameter;
 
 	/** Set the shader resource view of a surface. */
@@ -668,6 +720,20 @@ public:
 
 	virtual void RHISetShaderParameters(FRHIGraphicsShader* Shader, TConstArrayView<uint8> InParametersData, TConstArrayView<FRHIShaderParameter> InParameters, TConstArrayView<FRHIShaderParameterResource> InResourceParameters, TConstArrayView<FRHIShaderParameterResource> InBindlessParameters) = 0;
 
+	void RHISetBatchedShaderParameters(FRHIGraphicsShader* InShader, FRHIBatchedShaderParameters& InBatchedParameters)
+	{
+		RHISetShaderParameters(
+			InShader,
+			InBatchedParameters.ParametersData,
+			InBatchedParameters.Parameters,
+			InBatchedParameters.ResourceParameters,
+			InBatchedParameters.BindlessParameters);
+
+		InBatchedParameters.Reset();
+	}
+
+	virtual void RHISetShaderUnbinds(FRHIGraphicsShader* Shader, TConstArrayView<FRHIShaderParameterUnbind> InUnbinds) = 0;
+
 	virtual void RHISetShaderParameter(FRHIGraphicsShader* Shader, uint32 BufferIndex, uint32 BaseIndex, uint32 NumBytes, const void* NewValue) = 0;
 
 	virtual void RHISetStencilRef(uint32 StencilRef) {}
@@ -684,6 +750,21 @@ public:
 	virtual void RHIDrawIndexedPrimitive(FRHIBuffer* IndexBuffer, int32 BaseVertexIndex, uint32 FirstInstance, uint32 NumVertices, uint32 StartIndex, uint32 NumPrimitives, uint32 NumInstances) = 0;
 
 	virtual void RHIDrawIndexedPrimitiveIndirect(FRHIBuffer* IndexBuffer, FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset) = 0;
+
+	/**
+	* Similar to RHIDrawIndexedPrimitiveIndirect, but allows many draw arguments to be provided at once.
+	* GRHIGlobals.SupportsDrawIndirect must be checked to detect support on the current machine.
+	* @ param IndexBuffer			Buffer containing primitive indices
+	* @ param ArgumentsBuffer		Buffer containing FRHIDrawIndexedIndirectParameters structures
+	* @ param ArgumentOffset		Offset in bytes of the first element in ArgumentsBuffer that will be used for drawing
+	* @ param CountBuffer			Buffer containing uint32 count of valid draw arguments that should be consumed (may be nullptr, indicating that only MaxDrawArguments value should be used)
+	* @ param CountBuffeOffset		Offset in bytes for the CountBuffer element that will be used to source the draw argument count
+	* @ param MaxDrawArguments		How many draw arguments should be processed at most, i.e. NumDrawArguments = min(MaxDrawArguments, ValueFromCountBuffer)
+	*/
+	virtual void RHIMultiDrawIndexedPrimitiveIndirect(FRHIBuffer* IndexBuffer, FRHIBuffer* ArgumentBuffer, uint32 ArgumentOffset, FRHIBuffer* CountBuffer, uint32 CountBuffeOffset, uint32 MaxDrawArguments)
+	{
+		checkNoEntry();
+	}
 
 	virtual void RHIDispatchMeshShader(uint32 ThreadGroupCountX, uint32 ThreadGroupCountY, uint32 ThreadGroupCountZ)
 	{
@@ -728,12 +809,12 @@ public:
 		checkNoEntry();
 	}
 
-	virtual void RHIBuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> Params, const FRHIBufferRange& ScratchBufferRange)
+	virtual void RHIBuildAccelerationStructures(TConstArrayView<FRayTracingGeometryBuildParams> Params, const FRHIBufferRange& ScratchBufferRange)
 	{
 		checkNoEntry();
 	}
 
-	void RHIBuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> Params)
+	void RHIBuildAccelerationStructures(TConstArrayView<FRayTracingGeometryBuildParams> Params)
 	{
 		checkNoEntry();
 	}
@@ -820,8 +901,7 @@ public:
 	virtual void RHISetRasterizerState(FRHIRasterizerState* NewState) = 0;
 	virtual void RHISetBlendState(FRHIBlendState* NewState, const FLinearColor& BlendFactor) = 0;
 	virtual void RHIEnableDepthBoundsTest(bool bEnable) = 0;
-	// TODO: uncomment when removed from IRHIComputeContext
-	//virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) = 0;
+	virtual void RHISetComputeShader(FRHIComputeShader* ComputeShader) = 0;
 
 	/**
 	* This will set most relevant pipeline state. Legacy APIs are expected to set corresponding disjoint state as well.
@@ -844,9 +924,7 @@ public:
 	{
 		if (FRHIComputePipelineStateFallback* FallbackState = static_cast<FRHIComputePipelineStateFallback*>(ComputePipelineState))
 		{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			RHISetComputeShader(FallbackState->GetComputeShader());
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 

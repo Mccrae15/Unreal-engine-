@@ -4,9 +4,11 @@
 #include "CoreMinimal.h"
 
 #include "Async/TaskGraphInterfaces.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "InterchangeEngineLogPrivate.h"
 #include "InterchangeFactoryBase.h"
+#include "InterchangeImportCommon.h"
 #include "InterchangeManager.h"
 #include "InterchangeSourceData.h"
 #include "InterchangeTranslatorBase.h"
@@ -37,6 +39,7 @@ void UE::Interchange::FTaskCreateSceneObjects::DoTask(ENamedThreads::Type Curren
 #if INTERCHANGE_TRACE_ASYNCHRONOUS_TASK_ENABLED
 	INTERCHANGE_TRACE_ASYNCHRONOUS_TASK(SpawnActor)
 #endif
+	using namespace UE::Interchange;
 
 	TOptional<FGCScopeGuard> GCScopeGuard;
 	if (!IsInGameThread())
@@ -44,7 +47,7 @@ void UE::Interchange::FTaskCreateSceneObjects::DoTask(ENamedThreads::Type Curren
 		GCScopeGuard.Emplace();
 	}
 
-	TSharedPtr<UE::Interchange::FImportAsyncHelper> AsyncHelper = WeakAsyncHelper.Pin();
+	TSharedPtr<FImportAsyncHelper> AsyncHelper = WeakAsyncHelper.Pin();
 	check(WeakAsyncHelper.IsValid());
 
 	//Verify if the task was canceled
@@ -53,14 +56,22 @@ void UE::Interchange::FTaskCreateSceneObjects::DoTask(ENamedThreads::Type Curren
 		return;
 	}
 
+	UObject* ReimportObject = AsyncHelper->TaskData.ReimportObject;
+	ULevel* CurrentLevel = GWorld->GetCurrentLevel();
+	const FString WorldPath = GWorld->GetOutermost()->GetPathName();
+	const FString WorldName = GWorld->GetName();
+	const FString NodePrefix = CurrentLevel->GetName() + TEXT(".");
+
 	for (UInterchangeFactoryBaseNode* FactoryNode : FactoryNodes)
 	{
+		if (!FactoryNode)
+		{
+			continue;
+		}
+
 		UInterchangeFactoryBase* Factory = NewObject<UInterchangeFactoryBase>(GetTransientPackage(), FactoryClass);
 		Factory->SetResultsContainer(AsyncHelper->AssetImportResult->GetResults());
-		{
-			FScopeLock Lock(&AsyncHelper->CreatedFactoriesLock);
-			AsyncHelper->CreatedFactories.Add(FactoryNode->GetUniqueID(), Factory);
-		}
+		AsyncHelper->AddCreatedFactory(FactoryNode->GetUniqueID(), Factory);
 
 		FString NodeDisplayName = FactoryNode->GetDisplayLabel();
 		SanitizeObjectName(NodeDisplayName);
@@ -68,7 +79,9 @@ void UE::Interchange::FTaskCreateSceneObjects::DoTask(ENamedThreads::Type Curren
 		UInterchangeFactoryBase::FImportSceneObjectsParams CreateSceneObjectsParams;
 		CreateSceneObjectsParams.ObjectName = NodeDisplayName;
 		CreateSceneObjectsParams.FactoryNode = FactoryNode;
-		CreateSceneObjectsParams.Level = GWorld->GetCurrentLevel();
+		CreateSceneObjectsParams.Level = CurrentLevel;
+		CreateSceneObjectsParams.ReimportObject = FFactoryCommon::GetObjectToReimport(ReimportObject, *FactoryNode, WorldPath, WorldName, NodePrefix + NodeDisplayName);
+		CreateSceneObjectsParams.ReimportFactoryNode = FFactoryCommon::GetFactoryNode(ReimportObject, WorldPath, WorldName, NodePrefix + NodeDisplayName);
 
 		if (AsyncHelper->BaseNodeContainers.IsValidIndex(SourceIndex))
 		{
@@ -78,16 +91,14 @@ void UE::Interchange::FTaskCreateSceneObjects::DoTask(ENamedThreads::Type Curren
 		UObject* SceneObject = Factory->ImportSceneObject_GameThread(CreateSceneObjectsParams);
 		if (SceneObject)
 		{
-			FScopeLock Lock(&AsyncHelper->ImportedSceneObjectsPerSourceIndexLock);
-			TArray<UE::Interchange::FImportAsyncHelper::FImportedObjectInfo>& ImportedInfos = AsyncHelper->ImportedSceneObjectsPerSourceIndex.FindOrAdd(SourceIndex);
-			UE::Interchange::FImportAsyncHelper::FImportedObjectInfo* ImportedInfoPtr = ImportedInfos.FindByPredicate([SceneObject](const UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& CurInfo)
+			const FImportAsyncHelper::FImportedObjectInfo* ImportedInfoPtr = AsyncHelper->FindImportedSceneObjects(SourceIndex, [SceneObject](const FImportAsyncHelper::FImportedObjectInfo& CurInfo)
 				{
 					return CurInfo.ImportedObject == SceneObject;
 				});
 
 			if (!ImportedInfoPtr)
 			{
-				UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& ObjectInfo = ImportedInfos.AddDefaulted_GetRef();
+				UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& ObjectInfo = AsyncHelper->AddDefaultImportedSceneObjectGetRef(SourceIndex);
 				ObjectInfo.ImportedObject = SceneObject;
 				ObjectInfo.Factory = Factory;
 				ObjectInfo.FactoryNode = FactoryNode;

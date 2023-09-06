@@ -1624,6 +1624,14 @@ void UGenerateStaticMeshLODProcess::WriteDerivedStaticMeshAsset()
 		GeneratedStaticMesh = Cast<UStaticMesh>(DupeAsset);
 	}
 
+	// DuplicateAsset can fail in the event of a dead package from an Asset Reload.
+	// This edge case is currently prevented by the GenerateStaticMeshLODAssetToolBuilder.
+	// [TODO] Handle a failed DuplicateAsset case by creating a new StaticMesh asset.
+	if (!ensure(GeneratedStaticMesh))
+	{
+		return;
+	}
+
 	// make sure transactional flag is on
 	GeneratedStaticMesh->SetFlags(RF_Transactional);
 	GeneratedStaticMesh->Modify();
@@ -1678,8 +1686,7 @@ void UGenerateStaticMeshLODProcess::WriteDerivedStaticMeshAsset()
 
 	// do we need to do a post edit change here??
 
-	// is this necessary? 
-	GeneratedStaticMesh->CreateNavCollision(/*bIsUpdate=*/true);
+	GeneratedStaticMesh->RecreateNavCollision();
 
 	GeneratedStaticMesh->GetOutermost()->GetMetaData()->SetValue(GeneratedStaticMesh, TEXT("StaticMeshLOD.IsGeneratedMesh"), TEXT("true"));
 	GeneratedStaticMesh->GetOutermost()->GetMetaData()->SetValue(GeneratedStaticMesh, TEXT("StaticMeshLOD.SourceAssetPath"), *GetSourceAssetPath());
@@ -1871,8 +1878,7 @@ void UGenerateStaticMeshLODProcess::UpdateSourceStaticMeshAsset(bool bSetNewHDSo
 
 	// do we need to do a post edit change here??
 
-	// is this necessary? 
-	SourceStaticMesh->CreateNavCollision(/*bIsUpdate=*/true);
+	SourceStaticMesh->RecreateNavCollision();
 
 	// save UUID used for generated Assets
 	SourceStaticMesh->GetOutermost()->GetMetaData()->SetValue(SourceStaticMesh, TEXT("StaticMeshLOD.GenerationGUID"), *DerivedAssetGUIDKey);

@@ -10,7 +10,6 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
-#include "ControlRigEditorStyle.h"
 #include "Styling/AppStyle.h"
 #include "SlateOptMacros.h"
 #include "HAL/ConsoleManager.h"
@@ -18,6 +17,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "ControlRigBlueprint.h"
 #include "UObject/UObjectIterator.h"
+#include "Rigs/RigHierarchyController.h"
 
 #define LOCTEXT_NAMESPACE "SControlRigValidationWidget"
 

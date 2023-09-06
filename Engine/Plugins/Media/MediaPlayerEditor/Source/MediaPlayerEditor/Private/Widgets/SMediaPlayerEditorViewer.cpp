@@ -33,7 +33,7 @@
 #include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Text/STextBlock.h"
 
-#include "MediaPlayerEditorSettings.h"
+#include "Shared/MediaPlayerEditorSettings.h"
 #include "SMediaPlayerEditorCache.h"
 #include "SMediaPlayerEditorViewport.h"
 
@@ -381,7 +381,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 													})
 													.OnMouseCaptureBegin_Lambda([this]()
 													{
-														ScrubValue = FTimespan::Ratio(MediaPlayer->GetTime(), MediaPlayer->GetDuration());
+														ScrubValue = static_cast<float>(FTimespan::Ratio(MediaPlayer->GetDisplayTime(), MediaPlayer->GetDuration()));
 
 														if (MediaPlayer->SupportsScrubbing())
 														{
@@ -416,7 +416,7 @@ void SMediaPlayerEditorViewer::Construct(const FArguments& InArgs, UMediaPlayer&
 														}
 
 														return (MediaPlayer->GetDuration() > FTimespan::Zero())
-															? FTimespan::Ratio(MediaPlayer->GetTime(), MediaPlayer->GetDuration())
+															? static_cast<float>(FTimespan::Ratio(MediaPlayer->GetDisplayTime(), MediaPlayer->GetDuration()))
 															: 0.0f;
 													})
 													.Visibility_Lambda([this]() -> EVisibility {
@@ -740,9 +740,9 @@ void SMediaPlayerEditorViewer::HandleDecoderMenuNewMenu(FMenuBuilder& MenuBuilde
 			FText::FromString(FString::Join(Factory->GetSupportedPlatforms(), TEXT(", "))),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateLambda([=] { SetDesiredPlayerName(PlayerName); }),
-				FCanExecuteAction::CreateLambda([=] { return SupportsRunningPlatform; }),
-				FIsActionChecked::CreateLambda([=] { return MediaPlayer->GetDesiredPlayerName() == PlayerName; })
+				FExecuteAction::CreateLambda([this, PlayerName] { SetDesiredPlayerName(PlayerName); }),
+				FCanExecuteAction::CreateLambda([SupportsRunningPlatform] { return SupportsRunningPlatform; }),
+				FIsActionChecked::CreateLambda([this, PlayerName] { return MediaPlayer->GetDesiredPlayerName() == PlayerName; })
 			),
 			NAME_None,
 			EUserInterfaceActionType::RadioButton
@@ -811,9 +811,9 @@ void SMediaPlayerEditorViewer::HandleFormatMenuNewMenu(FMenuBuilder& MenuBuilder
 				FText::GetEmpty(),
 				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateLambda([=] { MediaPlayer->SetTrackFormat(TrackType, SelectedTrack, FormatIndex); }),
+					FExecuteAction::CreateLambda([this, TrackType, SelectedTrack, FormatIndex] { MediaPlayer->SetTrackFormat(TrackType, SelectedTrack, FormatIndex); }),
 					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([=] { return (MediaPlayer->GetTrackFormat(TrackType, SelectedTrack) == FormatIndex); })
+					FIsActionChecked::CreateLambda([this, TrackType, SelectedTrack, FormatIndex] { return (MediaPlayer->GetTrackFormat(TrackType, SelectedTrack) == FormatIndex); })
 				),
 				NAME_None,
 				EUserInterfaceActionType::RadioButton
@@ -943,7 +943,7 @@ FText SMediaPlayerEditorViewer::HandleTimerTextBlockText() const
 		return FText::GetEmpty();
 	}
 
-	FTimespan Time = MediaPlayer->GetTime();
+	FTimespan Time = MediaPlayer->GetDisplayTime();
 
 	// empty string if time n/a
 	if (Time < FTimespan::Zero())
@@ -976,7 +976,7 @@ FText SMediaPlayerEditorViewer::HandleTimerTextBlockToolTipText() const
 	}
 
 	FTimespan Duration = MediaPlayer->GetDuration();
-	FTimespan Remaining = Duration - MediaPlayer->GetTime();
+	FTimespan Remaining = Duration - MediaPlayer->GetDisplayTime();
 	bool bInfiniteTimeRemaining = Duration == FTimespan::MaxValue();
 
 	if (Remaining <= FTimespan::Zero() && !bInfiniteTimeRemaining)
@@ -1004,9 +1004,9 @@ void SMediaPlayerEditorViewer::HandleTrackMenuNewMenu(FMenuBuilder& MenuBuilder,
 			FText::GetEmpty(),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateLambda([=] { MediaPlayer->SelectTrack(TrackType, INDEX_NONE); }),
+				FExecuteAction::CreateLambda([this, TrackType] { MediaPlayer->SelectTrack(TrackType, INDEX_NONE); }),
 				FCanExecuteAction(),
-				FIsActionChecked::CreateLambda([=] { return (MediaPlayer->GetSelectedTrack(TrackType) == INDEX_NONE); })
+				FIsActionChecked::CreateLambda([this, TrackType] { return (MediaPlayer->GetSelectedTrack(TrackType) == INDEX_NONE); })
 			),
 			NAME_None,
 			EUserInterfaceActionType::RadioButton
@@ -1032,9 +1032,9 @@ void SMediaPlayerEditorViewer::HandleTrackMenuNewMenu(FMenuBuilder& MenuBuilder,
 				TooltipText,
 				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateLambda([=] { MediaPlayer->SelectTrack(TrackType, TrackIndex); }),
+					FExecuteAction::CreateLambda([this, TrackType, TrackIndex] { MediaPlayer->SelectTrack(TrackType, TrackIndex); }),
 					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([=] { return (MediaPlayer->GetSelectedTrack(TrackType) == TrackIndex); })
+					FIsActionChecked::CreateLambda([this, TrackType, TrackIndex] { return (MediaPlayer->GetSelectedTrack(TrackType) == TrackIndex); })
 				),
 				NAME_None,
 				EUserInterfaceActionType::RadioButton

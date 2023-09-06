@@ -31,6 +31,7 @@
 #include "Serialization/JsonWriter.h"
 #include "String/LexFromString.h"
 #include "ZenVersion.h"
+#include "Serialization/CompactBinaryWriter.h"
 
 #if PLATFORM_WINDOWS
 #	include "Windows/AllowWindowsPlatformTypes.h"
@@ -42,6 +43,7 @@
 
 #if PLATFORM_UNIX || PLATFORM_MAC
 #	include <sys/file.h>
+#	include <sys/mman.h>
 #	include <sys/sem.h>
 #endif
 
@@ -51,6 +53,224 @@ namespace UE::Zen
 {
 
 DEFINE_LOG_CATEGORY_STATIC(LogZenServiceInstance, Log, All);
+
+class ZenServerState
+{
+public:
+	ZenServerState(bool ReadOnly = true);
+	~ZenServerState();
+
+	struct ZenServerEntry
+	{
+		// This matches the structure found in the Zen server
+		// https://github.com/EpicGames/zen/blob/main/zenutil/include/zenutil/zenserverprocess.h#L91
+		//
+		std::atomic<uint32> Pid;
+		std::atomic<uint16> DesiredListenPort;
+		std::atomic<uint16> Flags;
+		uint8				  SessionId[12];
+		std::atomic<uint32> SponsorPids[8];
+		std::atomic<uint16> EffectiveListenPort;
+		uint8				  Padding[10];
+
+		enum class FlagsEnum : uint16
+		{
+			kShutdownPlease = 1 << 0,
+			kIsReady = 1 << 1,
+		};
+
+		bool AddSponsorProcess(uint32_t PidToAdd);
+	};
+	static_assert(sizeof(ZenServerEntry) == 64);
+
+	ZenServerEntry* LookupByDesiredListenPort(int DesiredListenPort);
+	const ZenServerEntry* LookupByDesiredListenPort(int DesiredListenPort) const;
+	const ZenServerEntry* LookupByEffectiveListenPort(int DesiredListenPort) const;
+	const ZenServerEntry* LookupByPid(uint32 Pid) const;
+
+private:
+	void* m_hMapFile = nullptr;
+	ZenServerEntry* m_Data = nullptr;
+	int				m_MaxEntryCount = 65536 / sizeof(ZenServerEntry);
+	bool			m_IsReadOnly = true;
+};
+
+ZenServerState::ZenServerState(bool ReadOnly)
+	: m_hMapFile(nullptr)
+	, m_Data(nullptr)
+{
+	size_t MapSize = m_MaxEntryCount * sizeof(ZenServerEntry);
+
+#if PLATFORM_WINDOWS
+	DWORD DesiredAccess = ReadOnly ? FILE_MAP_READ : (FILE_MAP_READ | FILE_MAP_WRITE);
+	HANDLE hMap = OpenFileMapping(DesiredAccess, 0, L"Global\\ZenMap");
+	if (hMap == NULL)
+	{
+		hMap = OpenFileMapping(DesiredAccess, 0, L"Local\\ZenMap");
+	}
+
+	if (hMap == NULL)
+	{
+		return;
+	}
+
+	void* pBuf = MapViewOfFile(hMap,		   // handle to map object
+		DesiredAccess,  // read permission
+		0,			   // offset high
+		0,			   // offset low
+		MapSize);
+
+	if (pBuf == NULL)
+	{
+		CloseHandle(hMap);
+		return;
+	}
+#elif PLATFORM_UNIX || PLATFORM_MAC
+	int Fd = shm_open("/UnrealEngineZen", O_RDONLY | O_CLOEXEC, 0666);
+	if (Fd < 0)
+	{
+		return;
+	}
+	void* hMap = (void*)intptr_t(Fd);
+
+	int Prot = ReadOnly ? (PROT_WRITE | PROT_READ) : PROT_READ;
+	void* pBuf = mmap(nullptr, MapSize, Prot, MAP_PRIVATE, Fd, 0);
+	if (pBuf == MAP_FAILED)
+	{
+		close(Fd);
+		return;
+	}
+#endif
+
+#if PLATFORM_WINDOWS || PLATFORM_UNIX || PLATFORM_MAC
+	m_hMapFile = hMap;
+	m_Data = reinterpret_cast<ZenServerEntry*>(pBuf);
+#endif
+	m_IsReadOnly = ReadOnly;
+}
+
+ZenServerState::~ZenServerState()
+{
+#if PLATFORM_WINDOWS
+	if (m_Data)
+	{
+		UnmapViewOfFile(m_Data);
+	}
+
+	if (m_hMapFile)
+	{
+		CloseHandle(m_hMapFile);
+	}
+#elif PLATFORM_UNIX || PLATFORM_MAC
+	if (m_Data != nullptr)
+	{
+		munmap((void*)m_Data, m_MaxEntryCount * sizeof(ZenServerEntry));
+	}
+
+	int Fd = int(intptr_t(m_hMapFile));
+	close(Fd);
+#endif
+	m_hMapFile = nullptr;
+	m_Data = nullptr;
+}
+
+const ZenServerState::ZenServerEntry* ZenServerState::LookupByDesiredListenPort(int Port) const
+{
+	if (m_Data == nullptr)
+	{
+		return nullptr;
+	}
+
+	for (int i = 0; i < m_MaxEntryCount; ++i)
+	{
+		if (m_Data[i].DesiredListenPort == Port)
+		{
+			return &m_Data[i];
+		}
+	}
+
+	return nullptr;
+}
+
+ZenServerState::ZenServerEntry* ZenServerState::LookupByDesiredListenPort(int Port)
+{
+	check(!m_IsReadOnly);
+
+	if (m_Data == nullptr)
+	{
+		return nullptr;
+	}
+
+	for (int i = 0; i < m_MaxEntryCount; ++i)
+	{
+		if (m_Data[i].DesiredListenPort == Port)
+		{
+			return &m_Data[i];
+		}
+	}
+
+	return nullptr;
+}
+
+const ZenServerState::ZenServerEntry* ZenServerState::LookupByEffectiveListenPort(int Port) const
+{
+	if (m_Data == nullptr)
+	{
+		return nullptr;
+	}
+
+	for (int i = 0; i < m_MaxEntryCount; ++i)
+	{
+		if (m_Data[i].EffectiveListenPort == Port)
+		{
+			return &m_Data[i];
+		}
+	}
+
+	return nullptr;
+}
+
+const ZenServerState::ZenServerEntry* ZenServerState::LookupByPid(uint32 Pid) const
+{
+	if (m_Data == nullptr)
+	{
+		return nullptr;
+	}
+
+	for (int i = 0; i < m_MaxEntryCount; ++i)
+	{
+		if (m_Data[i].Pid == Pid)
+		{
+			return &m_Data[i];
+		}
+	}
+
+	return nullptr;
+}
+
+bool
+ZenServerState::ZenServerEntry::AddSponsorProcess(uint32_t PidToAdd)
+{
+	for (std::atomic<uint32_t>& PidEntry : SponsorPids)
+	{
+		if (PidEntry.load(std::memory_order_relaxed) == 0)
+		{
+			uint32_t Expected = 0;
+			if (PidEntry.compare_exchange_strong(Expected, PidToAdd))
+			{
+				// Success!
+				return true;
+			}
+		}
+		else if (PidEntry.load(std::memory_order_relaxed) == PidToAdd)
+		{
+			// Success, the because pid is already in the list
+			return true;
+		}
+	}
+
+	return false;
+}
 
 static FZenVersion
 GetZenVersion(const FString& UtilityPath, const FString& ServicePath, const FString& VersionCachePath)
@@ -72,10 +292,12 @@ GetZenVersion(const FString& UtilityPath, const FString& ServicePath, const FStr
 	};
 
 	FDateTime VersionCacheModificationTime = FileManager.GetTimeStamp(*VersionCachePath);
+	bool VersionCacheIsOlderThanUtilityExecutable = VersionCacheModificationTime < UtilityExecutableModificationTime;
+	bool VersionCacheIsOlderThanServerExecutable = VersionCacheModificationTime < ServiceExecutableModificationTime;
+	bool VersionCacheIsOutOfDate = VersionCacheIsOlderThanUtilityExecutable || VersionCacheIsOlderThanServerExecutable;
 	FString VersionFileContents;
 	FZenVersion ComparableVersion;
-	if ((VersionCacheModificationTime < UtilityExecutableModificationTime) ||
-		(VersionCacheModificationTime < ServiceExecutableModificationTime) ||
+	if (VersionCacheIsOutOfDate ||
 		!FFileHelper::LoadFileToString(VersionFileContents, *VersionCachePath) ||
 		!ComparableVersion.TryParse(*VersionFileContents))
 	{
@@ -120,22 +342,58 @@ GetZenVersion(const FString& UtilityPath, const FString& ServicePath, const FStr
 	return ComparableVersion;
 }
 
+static void
+PromptUserToSyncInTreeVersion(const FString& ServerFilePath)
+{
+	if (FApp::IsUnattended())
+	{
+		// Just log as there is no one to show a message
+		UE_LOG(LogZenServiceInstance, Display, TEXT("ZenServer can not verify installation. Please make sure your source installation in properly synced at '%s'"), *FPaths::GetPath(ServerFilePath));
+		return;
+	}
+
+	FText ZenSyncSourcePromptTitle = NSLOCTEXT("Zen", "Zen_SyncSourcePromptTitle", "Failed to launch");
+	FText ZenSyncSourcePromptText = FText::Format(NSLOCTEXT("Zen", "Zen_SyncSourcePromptText", "ZenServer can not verify installation. Please make sure your source installation in properly synced at '{0}'"), FText::FromString(FPaths::GetPath(ServerFilePath)));
+	FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenSyncSourcePromptText.ToString(), *ZenSyncSourcePromptTitle.ToString());
+}
+
 static bool
 IsInstallVersionOutOfDate(const FString& InTreeUtilityPath, const FString& InstallUtilityPath, const FString& InTreeServicePath, const FString& InstallServicePath, FString& OutInTreeVersionCache, FString& OutInstallVersionCache)
 {
-	OutInTreeVersionCache = FPaths::Combine(FPaths::EngineSavedDir(), TEXT("Zen") TEXT("zen.version"));
+	OutInTreeVersionCache = FPaths::Combine(FPaths::EngineSavedDir(), TEXT("Zen"), TEXT("zen.version"));
 	OutInstallVersionCache = FPaths::SetExtension(InstallUtilityPath, TEXT("version"));
 
 	IFileManager& FileManager = IFileManager::Get();
-	if (!FileManager.FileExists(*InstallUtilityPath) || !FileManager.FileExists(*InstallServicePath))
+	if (!FileManager.FileExists(*InTreeUtilityPath) || !FileManager.FileExists(*InTreeServicePath))
 	{
-		return true;
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("InTree version at '%s' is invalid"), *InTreeServicePath);
+		PromptUserToSyncInTreeVersion(InTreeServicePath);
+		return false;
 	}
 
+	// Always get the InTree utility path so cached version information is up to date
 	FZenVersion InTreeVersion = GetZenVersion(InTreeUtilityPath, InTreeServicePath, OutInTreeVersionCache);
-	FZenVersion InstallVersion = GetZenVersion(InstallUtilityPath, InstallServicePath, OutInstallVersionCache);
+	UE_LOG(LogZenServiceInstance, Log, TEXT("InTree version at '%s' is '%s'"), *InTreeServicePath, *InTreeVersion.ToString());
 
-	return InstallVersion < InTreeVersion;
+	if (!FileManager.FileExists(*InstallUtilityPath) || !FileManager.FileExists(*InstallServicePath))
+	{
+		UE_LOG(LogZenServiceInstance, Log, TEXT("No installation found at '%s'"), *InstallServicePath);
+		return true;
+	}
+	FZenVersion InstallVersion = GetZenVersion(InstallUtilityPath, InstallServicePath, OutInstallVersionCache);
+	UE_LOG(LogZenServiceInstance, Log, TEXT("Installed version at '%s' is '%s'"), *InstallServicePath, *InstallVersion.ToString());
+
+	if (InstallVersion < InTreeVersion)
+	{
+		UE_LOG(LogZenServiceInstance, Log, TEXT("Installed version at '%s' (%s) is older than '%s' (%s)"), *InstallServicePath, *InstallVersion.ToString(), *InTreeServicePath, *InTreeVersion.ToString());
+		return true;
+	}
+	if (FParse::Param(FCommandLine::Get(), TEXT("ForceZenInstall")))
+	{
+		UE_LOG(LogZenServiceInstance, Display, TEXT("Forcing install from '%s' (%s) over '%s' (%s)"), *InTreeServicePath, *InTreeVersion.ToString(), *InstallServicePath, *InstallVersion.ToString());
+		return true;
+	}
+	return false;
 }
 
 static bool
@@ -156,8 +414,12 @@ AttemptFileCopyWithRetries(const TCHAR* Dst, const TCHAR* Src, double RetryDurat
 		}
 		CopyResult = IFileManager::Get().Copy(Dst, Src, true, true, false);
 	}
-
-	return CopyResult == COPY_OK;
+	if (CopyResult == COPY_OK)
+	{
+		return true;
+	}
+	UE_LOG(LogZenServiceInstance, Warning, TEXT("copy from '%s' to '%s', '%s'"), Src, Dst, CopyResult == COPY_Fail ? TEXT("Failed to copy file") : TEXT("Cancelled file copy"));
+	return false;
 }
 
 static void
@@ -221,54 +483,91 @@ DetermineLocalDataCachePath(const TCHAR* ConfigSection, FString& DataPath)
 	}
 }
 
-static void
-DetermineDataPath(const TCHAR* ConfigSection, FString& DataPath)
+static bool
+DetermineDataPath(const TCHAR* ConfigSection, FString& DataPath, bool& HasInvalidPathConfigurations)
 {
-	auto NormalizeDataPath = [](const FString& InDataPath)
+	auto ValidateDataPath = [](const FString& InDataPath)
+{
+		if (InDataPath.IsEmpty())
 	{
+			return FString{};
+		}
+		IFileManager& FileManager = IFileManager::Get();
 		FString FinalPath = FPaths::ConvertRelativePathToFull(InDataPath);
 		FPaths::NormalizeDirectoryName(FinalPath);
+		FFileStatData StatData = FileManager.GetStatData(*InDataPath);
+		if (StatData.bIsValid && StatData.bIsDirectory)
+		{
+			FString TestFilePath = FinalPath / ".zen-startup-test-file";
+			FArchive* TestFile = FileManager.CreateFileWriter(*TestFilePath, FILEWRITE_Silent);
+			if (!TestFile)
+			{
+				return FString{};
+			}
+			TestFile->Close();
+			delete TestFile;
+			FileManager.Delete(*TestFilePath);
 		return FinalPath;
+		}
+		if (FileManager.MakeDirectory(*InDataPath, true))
+		{
+			return FinalPath;
+		}
+		return FString{};
 	};
 
 	// Zen commandline
 	FString CommandLineOverrideValue;
-	if (FParse::Value(FCommandLine::Get(), TEXT("ZenDataPath="), CommandLineOverrideValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("ZenDataPath="), CommandLineOverrideValue) && !CommandLineOverrideValue.IsEmpty())
 	{
-		DataPath = NormalizeDataPath(CommandLineOverrideValue);
+		if (FString Path = ValidateDataPath(CommandLineOverrideValue); !Path.IsEmpty())
+	{
+			DataPath = Path;
 		UE_LOG(LogZenServiceInstance, Log, TEXT("Found command line override ZenDataPath=%s"), *CommandLineOverrideValue);
-		return;
+			return true;
+		}
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Skipping command line override ZenDataPath=%s due to an invalid path"), *CommandLineOverrideValue);
+		HasInvalidPathConfigurations = true;
 	}
 
 	// Zen subprocess environment
-	FString SubprocessDataPathEnvOverrideValue;
-	SubprocessDataPathEnvOverrideValue = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-ZenSubprocessDataPath"));
-	if (!SubprocessDataPathEnvOverrideValue.IsEmpty())
+	if (FString SubprocessDataPathEnvOverrideValue = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-ZenSubprocessDataPath")); !SubprocessDataPathEnvOverrideValue.IsEmpty())
 	{
-		DataPath = NormalizeDataPath(SubprocessDataPathEnvOverrideValue);
+		if (FString Path = ValidateDataPath(SubprocessDataPathEnvOverrideValue); !Path.IsEmpty())
+	{
+			DataPath = Path;
 		UE_LOG(LogZenServiceInstance, Log, TEXT("Found subprocess environment variable UE-ZenSubprocessDataPath=%s"), *SubprocessDataPathEnvOverrideValue);
-		return;
+			return true;
+		}
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Skipping subprocess environment variable UE-ZenSubprocessDataPath=%s due to an invalid path"), *SubprocessDataPathEnvOverrideValue);
+		HasInvalidPathConfigurations = true;
 	}
 
 	// Zen registry/stored
 	FString DataPathEnvOverrideValue;
-	if (FPlatformMisc::GetStoredValue(TEXT("Epic Games"), TEXT("Zen"), TEXT("DataPath"), DataPathEnvOverrideValue))
+	if (FPlatformMisc::GetStoredValue(TEXT("Epic Games"), TEXT("Zen"), TEXT("DataPath"), DataPathEnvOverrideValue) && !DataPathEnvOverrideValue.IsEmpty())
 	{
-		if (!DataPathEnvOverrideValue.IsEmpty())
+		if (FString Path = ValidateDataPath(DataPathEnvOverrideValue); !Path.IsEmpty())
 		{
-			DataPath = NormalizeDataPath(DataPathEnvOverrideValue);
-			UE_LOG(LogZenServiceInstance, Log, TEXT("Found registry key Zen DataPath=%s"), *DataPath);
-			return;
+			DataPath = Path;
+			UE_LOG(LogZenServiceInstance, Log, TEXT("Found registry key Zen DataPath=%s"), *DataPathEnvOverrideValue);
+			return true;
 		}
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Skipping registry key Zen DataPath=%s due to an invalid path"), *DataPathEnvOverrideValue);
+		HasInvalidPathConfigurations = true;
 	}
 
 	// Zen environment
-	DataPathEnvOverrideValue = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-ZenDataPath"));
-	if (!DataPathEnvOverrideValue.IsEmpty())
+	if (FString ZenDataPathEnvOverrideValue = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-ZenDataPath")); !ZenDataPathEnvOverrideValue.IsEmpty())
 	{
-		DataPath = NormalizeDataPath(DataPathEnvOverrideValue);
-		UE_LOG(LogZenServiceInstance, Log, TEXT("Found environment variable UE-ZenDataPath=%s"), *DataPathEnvOverrideValue);
-		return;
+		if (FString Path = ValidateDataPath(ZenDataPathEnvOverrideValue); !Path.IsEmpty())
+	{
+			DataPath = Path;
+			UE_LOG(LogZenServiceInstance, Log, TEXT("Found environment variable UE-ZenDataPath=%s"), *ZenDataPathEnvOverrideValue);
+			return true;
+		}
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Skipping environment variable UE-ZenDataPath=%s due to an invalid path"), *ZenDataPathEnvOverrideValue);
+		HasInvalidPathConfigurations = true;
 	}
 
 	// Follow local DDC (if outside workspace)
@@ -276,15 +575,33 @@ DetermineDataPath(const TCHAR* ConfigSection, FString& DataPath)
 	DetermineLocalDataCachePath(ConfigSection, LocalDataCachePath);
 	if (!LocalDataCachePath.IsEmpty() && (LocalDataCachePath != TEXT("None")) && !FPaths::IsUnderDirectory(LocalDataCachePath, FPaths::RootDir()))
 	{
-		DataPath = NormalizeDataPath(FPaths::Combine(LocalDataCachePath, TEXT("Zen")));
-		return;
+		FString ZenLocalDataCachePath = FPaths::Combine(LocalDataCachePath, TEXT("Zen"));
+		if (FString Path = ValidateDataPath(ZenLocalDataCachePath); !Path.IsEmpty())
+		{
+			DataPath = Path;
+			UE_LOG(LogZenServiceInstance, Log, TEXT("Found local data cache path=%s"), *LocalDataCachePath);
+			return true;
+		}
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Skipping local data cache path=%s due to an invalid path"), *LocalDataCachePath);
+		HasInvalidPathConfigurations = true;
 	}
 
 	// Zen config default
-	GConfig->GetString(ConfigSection, TEXT("DataPath"), DataPath, GEngineIni);
-	DataPath = NormalizeDataPath(DataPath);
-
-	check(!DataPath.IsEmpty())
+	FString ConfigDefaultPath;
+	GConfig->GetString(ConfigSection, TEXT("DataPath"), ConfigDefaultPath, GEngineIni);
+	if (!ConfigDefaultPath.IsEmpty())
+	{
+		if (FString Path = ValidateDataPath(ConfigDefaultPath); !Path.IsEmpty())
+		{
+			DataPath = Path;
+			UE_LOG(LogZenServiceInstance, Log, TEXT("Found Zen config default=%s"), *ConfigDefaultPath);
+			return true;
+		}
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Skipping Zen config default=%s due to an invalid path"), *ConfigDefaultPath);
+		HasInvalidPathConfigurations = true;
+	}
+	UE_LOG(LogZenServiceInstance, Warning, TEXT("Unable to determine a valid Zen data path"));
+	return false;
 }
 
 static void
@@ -316,6 +633,47 @@ IsLocalHost(const FString& Host)
 	return false;
 }
 
+static void
+ApplyProcessLifetimeOverride(bool& bLimitProcessLifetime)
+{
+	FString LimitProcessLifetime = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-ZenLimitProcessLifetime"));
+	if (!LimitProcessLifetime.IsEmpty())
+	{
+		bLimitProcessLifetime = LimitProcessLifetime.ToBool();
+	}
+}
+
+static void
+PromptUserUnableToDetermineValidDataPath()
+{
+	if (FApp::IsUnattended())
+	{
+		// Just log as there is no one to show a message
+		UE_LOG(LogZenServiceInstance, Display, TEXT("ZenServer is unable to determine a valid data path"));
+		return;
+	}
+	FString LogDirPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectLogDir());
+	FText ZenInvalidDataPathPromptTitle = NSLOCTEXT("Zen", "Zen_InvalidDataPathPromptTitle", "No Valid Data Path Configuration");
+	FText ZenInvalidDataPathPromptText = FText::Format(NSLOCTEXT("Zen", "Zen_InvalidDataPathPromptText", "ZenServer can not determine a valid data path.\nPlease check the log in '{0}' for details.\nUpdate your configuration and restart."), FText::FromString(LogDirPath));
+	FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenInvalidDataPathPromptText.ToString(), *ZenInvalidDataPathPromptTitle.ToString());
+}
+
+static void
+PromptUserAboutInvalidValidDataPathConfiguration(const FString& UsedDataPath)
+{
+	if (FApp::IsUnattended())
+	{
+		// Just log as there is no one to show a message
+		UE_LOG(LogZenServiceInstance, Display, TEXT("ZenServer has detected invalid data path configuration. Falling back to '%s'"), *UsedDataPath);
+		return;
+	}
+
+	FString LogDirPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectLogDir());
+	FText ZenInvalidValidDataPathConfigurationPromptTitle = NSLOCTEXT("Zen", "Zen_InvalidValidDataPathConfigurationPromptTitle", "Invalid Data Paths");
+	FText ZenInvalidValidDataPathConfigurationPromptText = FText::Format(NSLOCTEXT("Zen", "Zen_InvalidValidDataPathConfigurationPromptText", "ZenServer has detected invalid data path configuration.\nPlease check the log in '{0}' for details.\n\nFalling back to using '{1}' as data path."), FText::FromString(LogDirPath), FText::FromString(UsedDataPath));
+	FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenInvalidValidDataPathConfigurationPromptText.ToString(), *ZenInvalidValidDataPathConfigurationPromptTitle.ToString());
+}
+
 void
 FServiceSettings::ReadFromConfig()
 {
@@ -333,12 +691,24 @@ FServiceSettings::ReadFromConfig()
 			SettingsVariant.Emplace<FServiceAutoLaunchSettings>();
 			FServiceAutoLaunchSettings& AutoLaunchSettings = SettingsVariant.Get<FServiceAutoLaunchSettings>();
 
-			DetermineDataPath(AutoLaunchConfigSection, AutoLaunchSettings.DataPath);
+			bool HasInvalidPathConfigurations = false;
+			if (!DetermineDataPath(AutoLaunchConfigSection, AutoLaunchSettings.DataPath, HasInvalidPathConfigurations))
+			{
+				PromptUserUnableToDetermineValidDataPath();
+				FPlatformMisc::RequestExit(true);
+				return;
+			}
+			else if (HasInvalidPathConfigurations)
+			{
+				PromptUserAboutInvalidValidDataPathConfiguration(AutoLaunchSettings.DataPath);
+			}
 			GConfig->GetString(AutoLaunchConfigSection, TEXT("ExtraArgs"), AutoLaunchSettings.ExtraArgs, GEngineIni);
 
 			ReadUInt16FromConfig(AutoLaunchConfigSection, TEXT("DesiredPort"), AutoLaunchSettings.DesiredPort, GEngineIni);
 			GConfig->GetBool(AutoLaunchConfigSection, TEXT("ShowConsole"), AutoLaunchSettings.bShowConsole, GEngineIni);
 			GConfig->GetBool(AutoLaunchConfigSection, TEXT("LimitProcessLifetime"), AutoLaunchSettings.bLimitProcessLifetime, GEngineIni);
+			ApplyProcessLifetimeOverride(AutoLaunchSettings.bLimitProcessLifetime);
+			GConfig->GetBool(TEXT("/Script/UnrealEd.CrashReportsPrivacySettings"), TEXT("bSendUnattendedBugReports"), AutoLaunchSettings.bSendUnattendedBugReports, GEditorSettingsIni);
 		}
 	}
 	else
@@ -354,43 +724,38 @@ FServiceSettings::ReadFromConfig()
 }
 
 void
-FServiceSettings::ReadFromJson(FJsonObject& JsonObject)
+FServiceSettings::ReadFromCompactBinary(FCbFieldView Field)
 {
-	if (TSharedPtr<FJsonValue> bAutoLaunchValue = JsonObject.Values.FindRef(TEXT("bAutoLaunch")))
+	if (bool bAutoLaunchValue = Field["bAutoLaunch"].AsBool())
 	{
-		if (bAutoLaunchValue->AsBool())
+		if (!TryApplyAutoLaunchOverride())
 		{
-			if (!TryApplyAutoLaunchOverride())
-			{
-				SettingsVariant.Emplace<FServiceAutoLaunchSettings>();
-				FServiceAutoLaunchSettings& AutoLaunchSettings = SettingsVariant.Get<FServiceAutoLaunchSettings>();
+			SettingsVariant.Emplace<FServiceAutoLaunchSettings>();
+			FServiceAutoLaunchSettings& AutoLaunchSettings = SettingsVariant.Get<FServiceAutoLaunchSettings>();
 
-				TSharedPtr<FJsonValue> AutoLaunchSettingsValue = JsonObject.Values.FindRef(TEXT("AutoLaunchSettings"));
-				if (AutoLaunchSettingsValue)
-				{
-					TSharedPtr<FJsonObject> AutoLaunchSettingsObject = AutoLaunchSettingsValue->AsObject();
-					AutoLaunchSettings.DataPath = AutoLaunchSettingsObject->Values.FindRef(TEXT("DataPath"))->AsString();
-					AutoLaunchSettings.ExtraArgs = AutoLaunchSettingsObject->Values.FindRef(TEXT("ExtraArgs"))->AsString();
-					AutoLaunchSettingsObject->Values.FindRef(TEXT("DesiredPort"))->TryGetNumber(AutoLaunchSettings.DesiredPort);
-					AutoLaunchSettingsObject->Values.FindRef(TEXT("ShowConsole"))->TryGetBool(AutoLaunchSettings.bShowConsole);
-					AutoLaunchSettingsObject->Values.FindRef(TEXT("LimitProcessLifetime"))->TryGetBool(AutoLaunchSettings.bLimitProcessLifetime);
-				}
+			if (FCbObjectView AutoLaunchSettingsObject = Field["AutoLaunchSettings"].AsObjectView())
+			{
+				AutoLaunchSettings.DataPath = FString(AutoLaunchSettingsObject["DataPath"].AsString());
+				AutoLaunchSettings.ExtraArgs = FString(AutoLaunchSettingsObject["ExtraArgs"].AsString());
+				AutoLaunchSettings.DesiredPort = AutoLaunchSettingsObject["DesiredPort"].AsInt16();
+				AutoLaunchSettings.bShowConsole = AutoLaunchSettingsObject["ShowConsole"].AsBool();
+				AutoLaunchSettings.bLimitProcessLifetime = AutoLaunchSettingsObject["LimitProcessLifetime"].AsBool();
+				ApplyProcessLifetimeOverride(AutoLaunchSettings.bLimitProcessLifetime);
+				AutoLaunchSettings.bSendUnattendedBugReports = AutoLaunchSettingsObject["SendUnattendedBugReports"].AsBool();
+				AutoLaunchSettings.bIsDefaultSharedRunContext = AutoLaunchSettingsObject["IsDefaultSharedRunContext"].AsBool(AutoLaunchSettings.bIsDefaultSharedRunContext);
 			}
 		}
-		else
+	}
+	else
+	{
+		SettingsVariant.Emplace<FServiceConnectSettings>();
+		FServiceConnectSettings& ConnectExistingSettings = SettingsVariant.Get<FServiceConnectSettings>();
+
+		if (FCbObjectView ConnectExistingSettingsObject = Field["ConnectExistingSettings"].AsObjectView())
 		{
-			SettingsVariant.Emplace<FServiceConnectSettings>();
-			FServiceConnectSettings& ConnectExistingSettings = SettingsVariant.Get<FServiceConnectSettings>();
-
-			TSharedPtr<FJsonValue> ConnectExistingSettingsValue = JsonObject.Values.FindRef(TEXT("ConnectExistingSettings"));
-			if (ConnectExistingSettingsValue)
-			{
-				TSharedPtr<FJsonObject> ConnectExistingSettingsObject = ConnectExistingSettingsValue->AsObject();
-				ConnectExistingSettings.HostName = ConnectExistingSettingsObject->Values.FindRef(TEXT("HostName"))->AsString();
-				ConnectExistingSettingsObject->Values.FindRef(TEXT("Port"))->TryGetNumber(ConnectExistingSettings.Port);
-			}
+			ConnectExistingSettings.HostName = FString(ConnectExistingSettingsObject["HostName"].AsString());
+			ConnectExistingSettings.Port = ConnectExistingSettingsObject["Port"].AsInt16();
 		}
-
 	}
 }
 
@@ -420,28 +785,30 @@ FServiceSettings::ReadFromURL(FStringView InstanceURL)
 }
 
 void
-FServiceSettings::WriteToJson(TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>& Writer) const
+FServiceSettings::WriteToCompactBinary(FCbWriter& Writer) const
 {
 	bool bAutoLaunch = IsAutoLaunch();
-	Writer.WriteValue(TEXT("bAutoLaunch"), bAutoLaunch);
+	Writer << "bAutoLaunch" << bAutoLaunch;
 	if (bAutoLaunch)
 	{
 		const FServiceAutoLaunchSettings& AutoLaunchSettings = SettingsVariant.Get<FServiceAutoLaunchSettings>();
-		Writer.WriteObjectStart(TEXT("AutoLaunchSettings"));
-		Writer.WriteValue(TEXT("DataPath"), AutoLaunchSettings.DataPath);
-		Writer.WriteValue(TEXT("ExtraArgs"), AutoLaunchSettings.ExtraArgs);
-		Writer.WriteValue(TEXT("DesiredPort"), AutoLaunchSettings.DesiredPort);
-		Writer.WriteValue(TEXT("ShowConsole"), AutoLaunchSettings.bShowConsole);
-		Writer.WriteValue(TEXT("LimitProcessLifetime"), AutoLaunchSettings.bLimitProcessLifetime);
-		Writer.WriteObjectEnd();
+		Writer.BeginObject("AutoLaunchSettings");
+		Writer << "DataPath" << AutoLaunchSettings.DataPath;
+		Writer << "ExtraArgs" <<AutoLaunchSettings.ExtraArgs;
+		Writer << "DesiredPort" << AutoLaunchSettings.DesiredPort;
+		Writer << "ShowConsole" << AutoLaunchSettings.bShowConsole;
+		Writer << "LimitProcessLifetime" << AutoLaunchSettings.bLimitProcessLifetime;
+		Writer << "SendUnattendedBugReports" << AutoLaunchSettings.bSendUnattendedBugReports;
+		Writer << "IsDefaultSharedRunContext" << AutoLaunchSettings.bIsDefaultSharedRunContext;
+		Writer.EndObject();
 	}
 	else
 	{
 		const FServiceConnectSettings& ConnectExistingSettings = SettingsVariant.Get<FServiceConnectSettings>();
-		Writer.WriteObjectStart(TEXT("ConnectExistingSettings"));
-		Writer.WriteValue(TEXT("HostName"), ConnectExistingSettings.HostName);
-		Writer.WriteValue(TEXT("Port"), ConnectExistingSettings.Port);
-		Writer.WriteObjectEnd();
+		Writer.BeginObject("ConnectExistingSettings");
+		Writer << "HostName" << ConnectExistingSettings.HostName;
+		Writer << "Port" << ConnectExistingSettings.Port;
+		Writer.EndObject();
 	}
 }
 
@@ -486,8 +853,34 @@ FServiceSettings::TryApplyAutoLaunchOverride()
 
 uint16 FZenServiceInstance::AutoLaunchedPort = 0;
 
-static bool
-ReadCbLockFile(FStringView FileName, FCbObject& OutLockObject)
+struct LockFileData
+{
+	uint32 ProcessId = 0;
+	FString DataDir;
+	uint16 EffectivePort = 0;
+	FCbObjectId SessionId;
+	bool IsReady = false;
+	bool IsValid = false;
+};
+
+static LockFileData ReadLockData(FUniqueBuffer&& FileBytes)
+{
+	if (ValidateCompactBinary(FileBytes, ECbValidateMode::Default) == ECbValidateError::None)
+	{
+		FCbObject LockObject(FileBytes.MoveToShared());
+		int32 ProcessId = LockObject["pid"].AsInt32();
+		FUtf8StringView DataDir = LockObject["data"].AsString();
+		int32 EffectivePort = LockObject["port"].AsInt32();
+		FCbObjectId SessionId = LockObject["session_id"].AsObjectId();
+		bool IsReady = LockObject["ready"].AsBool();
+		bool IsValid = ProcessId > 0 && EffectivePort > 0 && EffectivePort <= 0xffff;
+		return LockFileData{static_cast<uint32>(ProcessId), FString(DataDir), static_cast<uint16>(EffectivePort), SessionId, IsReady, IsValid};
+	}
+	return LockFileData{ 0, {}, 0, {}, false};
+}
+
+static LockFileData
+ReadCbLockFile(FStringView FileName)
 {
 #if PLATFORM_WINDOWS
 	// Windows specific lock reading path
@@ -523,22 +916,18 @@ ReadCbLockFile(FStringView FileName, FCbObject& OutLockObject)
 			DWORD ReadBytes = 0;
 			if (ReadFile(Handle, FileBytes.GetData(), FileSize32, &ReadBytes, NULL) && (ReadBytes == FileSize32))
 			{
-				if (ValidateCompactBinary(FileBytes, ECbValidateMode::Default) == ECbValidateError::None)
-				{
-					OutLockObject = FCbObject(FileBytes.MoveToShared());
-					return true;
-				}
+				return ReadLockData(std::move(FileBytes));
 			}
 		}
 	}
-	return false;
+	return {};
 #elif PLATFORM_UNIX || PLATFORM_MAC
 	TAnsiStringBuilder<256> LockFilePath;
 	LockFilePath << FileName;
 	int32 Fd = open(LockFilePath.ToString(), O_RDONLY);
 	if (Fd < 0)
 	{
-		return false;
+		return {};
 	}
 
 	// If we can claim the lock then it's an orphaned lock file and should be
@@ -550,31 +939,26 @@ ReadCbLockFile(FStringView FileName, FCbObject& OutLockObject)
 		unlink(LockFilePath.ToString());
 		flock(Fd, LOCK_UN);
 		close(Fd);
-		return false;
+		return {};
 	}
 
 	if (errno != EWOULDBLOCK && errno != EAGAIN)
 	{
-		return false;
+		return {};
 	}
 
 	struct stat Stat;
 	fstat(Fd, &Stat);
 	uint64 FileSize = uint64(Stat.st_size);
 
-	bool bSuccess = false;
 	FUniqueBuffer FileBytes = FUniqueBuffer::Alloc(FileSize);
 	if (read(Fd, FileBytes.GetData(), FileSize) == FileSize)
 	{
-		if (ValidateCompactBinary(FileBytes, ECbValidateMode::Default) == ECbValidateError::None)
-		{
-			OutLockObject = FCbObject(FileBytes.MoveToShared());
-			bSuccess = true;
-		}
+		return ReadLockData(std::move(FileBytes));
 	}
 
 	close(Fd);
-	return bSuccess;
+	return {};
 #endif
 }
 
@@ -614,59 +998,41 @@ IsLockFileLocked(const TCHAR* FileName, bool bAttemptCleanUp=false)
 #endif
 }
 
-static void
-RequestZenShutdownOnPort(uint16 Port)
+static bool
+IsZenProcessUsingEffectivePort(uint16 EffectiveListenPort)
 {
 #if PLATFORM_WINDOWS
-	HANDLE Handle = OpenEventW(EVENT_MODIFY_STATE, false, *WriteToWideString<64>(WIDETEXT("Zen_"), Port, WIDETEXT("_Shutdown")));
-	if (Handle != INVALID_HANDLE_VALUE)
+	HANDLE Handle = OpenEventW(READ_CONTROL, false, *WriteToWideString<64>(WIDETEXT("Zen_"), EffectiveListenPort, WIDETEXT("_Shutdown")));
+	if (Handle != NULL)
 	{
 		ON_SCOPE_EXIT{ CloseHandle(Handle); };
-		SetEvent(Handle);
+		return true;
 	}
+	return false;
 #elif PLATFORM_UNIX || PLATFORM_MAC
 	TAnsiStringBuilder<64> EventPath;
-	EventPath << "/tmp/Zen_" << Port << "_Shutdown";
+	EventPath << "/tmp/Zen_" << EffectiveListenPort << "_Shutdown";
 
 	key_t IpcKey = ftok(EventPath.ToString(), 1);
 	if (IpcKey < 0)
 	{
-		return;
+		return false;
 	}
 
-	int Semaphore = semget(IpcKey, 1, 0600);
+	int Semaphore = semget(IpcKey, 1, 0400);
 	if (Semaphore < 0)
 	{
-		return;
+		return false;
 	}
-
-	semctl(Semaphore, 0, SETVAL, 0);
-	semctl(Semaphore, 0, IPC_RMID);
+	return true;
 #else
 	static_assert(false, "Missing implementation for Zen named shutdown events");
+	return false;
 #endif
 }
 
 static bool
-WaitForZenShutdown(const TCHAR* LockFilePath, double MaximumWaitDurationSeconds)
-{
-	uint64 ZenShutdownWaitStartTime = FPlatformTime::Cycles64();
-	while (IsLockFileLocked(LockFilePath))
-	{
-		double ZenShutdownWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenShutdownWaitStartTime);
-		if (ZenShutdownWaitDuration < MaximumWaitDurationSeconds)
-		{
-			FPlatformProcess::Sleep(0.01f);
-		}
-		else
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
-static bool IsProcessActive(const TCHAR* ExecutablePath)
+IsZenProcessActive(const TCHAR* ExecutablePath, uint32* OutPid)
 {
 	FString NormalizedExecutablePath(ExecutablePath);
 	FPaths::NormalizeFilename(NormalizedExecutablePath);
@@ -678,10 +1044,181 @@ static bool IsProcessActive(const TCHAR* ExecutablePath)
 		FPaths::NormalizeFilename(Candidate);
 		if (Candidate == NormalizedExecutablePath)
 		{
+			if (OutPid)
+			{
+				*OutPid = ProcInfo.GetPID();
+			}
 			return true;
 		}
 	}
 	return false;
+}
+
+static bool
+IsZenProcessUsingDataDir(const TCHAR* LockFilePath, LockFileData* OutLockFileData)
+{
+	if (IsLockFileLocked(LockFilePath, true))
+	{
+		if (OutLockFileData)
+		{
+			// If an instance is running with this data path, check if we can use it and what port it is on
+			*OutLockFileData = ReadCbLockFile(LockFilePath);
+		}
+		return true;
+	}
+	return false;
+}
+
+static bool
+RequestZenShutdownOnEffectivePort(uint16 EffectiveListenPort)
+{
+#if PLATFORM_WINDOWS
+	HANDLE Handle = OpenEventW(EVENT_MODIFY_STATE, false, *WriteToWideString<64>(WIDETEXT("Zen_"), EffectiveListenPort, WIDETEXT("_Shutdown")));
+	if (Handle != NULL)
+	{
+		ON_SCOPE_EXIT{ CloseHandle(Handle); };
+		BOOL OK = SetEvent(Handle);
+		return OK;
+	}
+	return false;
+#elif PLATFORM_UNIX || PLATFORM_MAC
+	TAnsiStringBuilder<64> EventPath;
+	EventPath << "/tmp/Zen_" << EffectiveListenPort << "_Shutdown";
+
+	key_t IpcKey = ftok(EventPath.ToString(), 1);
+	if (IpcKey < 0)
+	{
+		return false;
+	}
+
+	int Semaphore = semget(IpcKey, 1, 0600);
+	if (Semaphore < 0)
+	{
+		return false;
+	}
+
+	semctl(Semaphore, 0, SETVAL, 0);
+	semctl(Semaphore, 0, IPC_RMID);
+	return true;
+#else
+	static_assert(false, "Missing implementation for Zen named shutdown events");
+	return false;
+#endif
+}
+
+static bool
+ShutdownRunningServiceUsingExecutablePath(const TCHAR* ExecutablePath, double MaximumWaitDurationSeconds = 5.0)
+{
+	uint32 ServicePid;
+	if (!IsZenProcessActive(ExecutablePath, &ServicePid))
+	{
+		UE_LOG(LogZenServiceInstance, Log, TEXT("No running service found for executable '%s'"), ExecutablePath);
+		return true;
+	}
+	UE_LOG(LogZenServiceInstance, Display, TEXT("Waiting for running instance using executable '%s' to shut down"), ExecutablePath);
+	FProcHandle ProcessHandle = FPlatformProcess::OpenProcess(ServicePid);
+	if (!ProcessHandle.IsValid() && IsZenProcessActive(ExecutablePath, nullptr))
+	{
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed to open handle for running service for executable '%s' (Pid: %u)"), ExecutablePath, ServicePid);
+		return false;
+	}
+	ON_SCOPE_EXIT{ FPlatformProcess::CloseProc(ProcessHandle); };
+
+	const ZenServerState ServerState;
+	const ZenServerState::ZenServerEntry* Entry = ServerState.LookupByPid(ServicePid);
+	if (!Entry)
+	{
+		if (FPlatformProcess::IsProcRunning(ProcessHandle))
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Can't find server state for running service for executable '%s' (Pid: %u)"), ExecutablePath, ServicePid);
+			return false;
+		}
+		return true;
+	}
+	uint16 EffectiveListenPort = Entry->EffectiveListenPort;
+	if (!RequestZenShutdownOnEffectivePort(EffectiveListenPort))
+	{
+		if (FPlatformProcess::IsProcRunning(ProcessHandle) || IsZenProcessActive(ExecutablePath, nullptr))
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed to request shutdown for running service for executable '%s' (Pid: %u, Port: %u)"), ExecutablePath, ServicePid, EffectiveListenPort);
+			return false;
+		}
+		return true;
+	}
+	uint64 ZenShutdownWaitStartTime = FPlatformTime::Cycles64();
+	while (FPlatformProcess::IsProcRunning(ProcessHandle) || IsZenProcessActive(ExecutablePath, nullptr))
+	{
+		double ZenShutdownWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenShutdownWaitStartTime);
+		if (ZenShutdownWaitDuration < MaximumWaitDurationSeconds)
+		{
+			FPlatformProcess::Sleep(0.01f);
+		}
+		else
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Timed out waiting for shutdown of running service for executable '%s' (Pid: %u, Port: %u)"), ExecutablePath, ServicePid, EffectiveListenPort);
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool
+ShutdownRunningServiceUsingEffectivePort(uint16 EffectiveListenPort, double MaximumWaitDurationSeconds = 5.0)
+{
+	if (!IsZenProcessUsingEffectivePort(EffectiveListenPort))
+	{
+		return true;
+	}
+	UE_LOG(LogZenServiceInstance, Display, TEXT("Waiting for running instance using port %u to shut down"), EffectiveListenPort);
+	const ZenServerState ServerState;
+	const ZenServerState::ZenServerEntry* Entry = ServerState.LookupByEffectiveListenPort(EffectiveListenPort);
+	if (!Entry)
+	{
+		if (IsZenProcessUsingEffectivePort(EffectiveListenPort))
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Can't find server state for running service using port %u"), EffectiveListenPort);
+			return false;
+		}
+		return true;
+	}
+
+	uint32 ServicePid = Entry->Pid;
+	FProcHandle ProcessHandle = FPlatformProcess::OpenProcess(ServicePid);
+	if (!ProcessHandle.IsValid())
+	{
+		if (IsZenProcessUsingEffectivePort(EffectiveListenPort))
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed to open handle for running service using port %u (Pid: %u)"), EffectiveListenPort, ServicePid);
+			return false;
+		}
+		return true;
+	}
+	ON_SCOPE_EXIT{ FPlatformProcess::CloseProc(ProcessHandle); };
+
+	if (!RequestZenShutdownOnEffectivePort(EffectiveListenPort))
+	{
+		if (FPlatformProcess::IsProcRunning(ProcessHandle) || IsZenProcessUsingEffectivePort(EffectiveListenPort))
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed to request shutdown for running service using port %u (Pid: %u)"), EffectiveListenPort, ServicePid);
+			return false;
+		}
+		return true;
+	}
+	uint64 ZenShutdownWaitStartTime = FPlatformTime::Cycles64();
+	while (FPlatformProcess::IsProcRunning(ProcessHandle) || IsZenProcessUsingEffectivePort(EffectiveListenPort))
+	{
+		double ZenShutdownWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenShutdownWaitStartTime);
+		if (ZenShutdownWaitDuration < MaximumWaitDurationSeconds)
+		{
+			FPlatformProcess::Sleep(0.01f);
+		}
+		else
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Timed out waiting for shutdown of running service using port %u (Pid: %u)"), EffectiveListenPort, ServicePid);
+			return false;
+		}
+	}
+	return true;
 }
 
 static FString
@@ -719,6 +1256,11 @@ DetermineCmdLineWithoutTransientComponents(const FServiceAutoLaunchSettings& InS
 			Parms.Appendf(TEXT(" --config \"%s\""),
 				*FPaths::ConvertRelativePathToFull(CfgCommandLineOverrideValue));
 		}
+	}
+
+	if (!InSettings.bSendUnattendedBugReports)
+	{
+		Parms.Append(TEXT(" --no-sentry"));
 	}
 
 	return Parms;
@@ -815,27 +1357,16 @@ FZenLocalServiceRunContext::WriteToJsonFile(const TCHAR* Filename) const
 }
 
 bool
-IsLocalServiceRunning(const TCHAR* DataPath, uint16* OutPort)
+IsLocalServiceRunning(const TCHAR* DataPath, uint16* OutEffectivePort)
 {
-	// TODO: Instead of using the lock file, this could use the shared memory system state named "Global\ZenMap" (see zenserverprocess.{h,cpp} in zen codebase)
 	const FString LockFilePath = FPaths::Combine(DataPath, TEXT(".lock"));
-	if (IsLockFileLocked(*LockFilePath, true))
+	LockFileData LockFileState;
+	if (IsZenProcessUsingDataDir(*LockFilePath, &LockFileState))
 	{
-		if (OutPort)
+		if (OutEffectivePort != nullptr && LockFileState.IsValid && LockFileState.IsReady)
 		{
-			// If an instance is running with this data path, check if we can use it and what port it is on
-			*OutPort = 0;
-			FCbObject LockObject;
-			if (ReadCbLockFile(LockFilePath, LockObject))
-			{
-				bool bIsReady = LockObject["ready"].AsBool();
-				if (bIsReady)
-				{
-					*OutPort = LockObject["port"].AsUInt16();
-				}
-			}
+			*OutEffectivePort = LockFileState.EffectivePort;
 		}
-
 		return true;
 	}
 	return false;
@@ -849,6 +1380,8 @@ StartLocalService(const FZenLocalServiceRunContext& Context, const TCHAR* Transi
 	{
 		Parms.Appendf(TEXT(" %s"), TransientArgs);
 	}
+
+	UE_LOG(LogZenServiceInstance, Display, TEXT("Launching executable '%s', working dir '%s', data dir '%s', args '%s'"), *Context.GetExecutable(), *Context.GetWorkingDirectory(), *Context.GetDataPath(), *Parms);
 
 	FProcHandle Proc;
 #if PLATFORM_WINDOWS
@@ -876,7 +1409,7 @@ StartLocalService(const FZenLocalServiceRunContext& Context, const TCHAR* Transi
 
 		FString CommandLine = FString::Printf(TEXT("\"%s\" %s"), *PlatformExecutable, *Parms);
 		PROCESS_INFORMATION ProcInfo;
-		if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), nullptr, nullptr, false, (::DWORD)(NORMAL_PRIORITY_CLASS | DETACHED_PROCESS), nullptr, PlatformWorkingDirectory.GetCharArray().GetData(), &StartupInfo, &ProcInfo))
+		if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), nullptr, nullptr, false, (::DWORD)(NORMAL_PRIORITY_CLASS | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB), nullptr, PlatformWorkingDirectory.GetCharArray().GetData(), &StartupInfo, &ProcInfo))
 		{
 			::CloseHandle(ProcInfo.hThread);
 			Proc = FProcHandle(ProcInfo.hProcess);
@@ -929,16 +1462,15 @@ StartLocalService(const FZenLocalServiceRunContext& Context, const TCHAR* Transi
 bool
 StopLocalService(const TCHAR* DataPath, double MaximumWaitDurationSeconds)
 {
-	uint16 CurrentPort = 0;
-	if (IsLocalServiceRunning(DataPath, &CurrentPort))
+	const FString LockFilePath = FPaths::Combine(DataPath, TEXT(".lock"));
+	LockFileData LockFileState;
+	if (IsZenProcessUsingDataDir(*LockFilePath, &LockFileState))
 	{
-		if (CurrentPort == 0)
+		if (LockFileState.IsValid)
 		{
-			return false;
+			return ShutdownRunningServiceUsingEffectivePort(LockFileState.EffectivePort, MaximumWaitDurationSeconds);
 		}
-
-		RequestZenShutdownOnPort(CurrentPort);
-		return WaitForZenShutdown(*FPaths::Combine(DataPath, TEXT(".lock")), MaximumWaitDurationSeconds);
+		return false;
 	}
 	return true;
 }
@@ -1077,7 +1609,7 @@ FZenServiceInstance::IsServiceReady()
 		
 		if (Result == Zen::FZenHttpRequest::Result::Success && Zen::IsSuccessCode(Request.GetResponseCode()))
 		{
-			UE_LOG(LogZenServiceInstance, Display, TEXT("ZenServer HTTP service status: %s."), *Request.GetResponseAsString());
+			UE_LOG(LogZenServiceInstance, Display, TEXT("ZenServer HTTP service at %s status: %s."), ZenDomain.ToString(), *Request.GetResponseAsString());
 			return true;
 		}
 		else
@@ -1115,7 +1647,10 @@ FZenServiceInstance::TryRecovery()
 			FZenLocalServiceRunContext RunContext;
 			if (TryGetLocalServiceRunContext(RunContext))
 			{
-				StopLocalService(*RunContext.GetDataPath());
+				if (!ShutdownRunningServiceUsingExecutablePath(*RunContext.GetExecutable()))
+				{
+					return false;
+				}
 				StartLocalService(RunContext);
 				UE_LOG(LogZenServiceInstance, Display, TEXT("Local ZenServer recovery finished."));
 			}
@@ -1165,11 +1700,15 @@ FZenServiceInstance::Initialize()
 {
 	if (Settings.IsAutoLaunch())
 	{
-		bHasLaunchedLocal = AutoLaunch(Settings.SettingsVariant.Get<FServiceAutoLaunchSettings>(), ConditionalUpdateLocalInstall(), HostName, Port);
-		if (bHasLaunchedLocal)
+		FString ExecutableInstallPath = ConditionalUpdateLocalInstall();
+		if (!ExecutableInstallPath.IsEmpty())
 		{
-			AutoLaunchedPort = Port;
-			bIsRunningLocally = true;
+			bHasLaunchedLocal = AutoLaunch(Settings.SettingsVariant.Get<FServiceAutoLaunchSettings>(), *ExecutableInstallPath, HostName, Port);
+			if (bHasLaunchedLocal)
+			{
+				AutoLaunchedPort = Port;
+				bIsRunningLocally = true;
+			}
 		}
 	}
 	else
@@ -1182,12 +1721,13 @@ FZenServiceInstance::Initialize()
 	URL = WriteToString<64>(TEXT("http://"), HostName, TEXT(":"), Port, TEXT("/"));
 }
 
-void
-FZenServiceInstance::PromptUserToStopRunningServerInstance(const FString& ServerFilePath)
+static void
+PromptUserToStopRunningServerInstanceForUpdate(const FString& ServerFilePath)
 {
 	if (FApp::IsUnattended())
 	{
-		// Do not ask if there is no one to show a message
+		// Just log as there is no one to show a message
+		UE_LOG(LogZenServiceInstance, Display, TEXT("ZenServer needs to be updated to a new version. Please shut down any tools that are using the ZenServer at '%s'"), *ServerFilePath);
 		return;
 	}
 
@@ -1195,6 +1735,38 @@ FZenServiceInstance::PromptUserToStopRunningServerInstance(const FString& Server
 	FText ZenUpdatePromptText = FText::Format(NSLOCTEXT("Zen", "Zen_UpdatePromptText", "ZenServer needs to be updated to a new version. Please shut down Unreal Editor and any tools that are using the ZenServer at '{0}'"), FText::FromString(ServerFilePath));
 	FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenUpdatePromptText.ToString(), *ZenUpdatePromptTitle.ToString());
 }
+
+static void
+PromptUserOfLockedDataFolder(const FString& DataPath)
+{
+	if (FApp::IsUnattended())
+	{
+		// Just log as there is no one to show a message
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("ZenServer Failed to auto launch, an unknown process is locking the data folder '%s'"), *DataPath);
+		return;
+	}
+
+	FText ZenLaunchFailurePromptTitle = NSLOCTEXT("Zen", "Zen_NonLocalProcessUsesDataDirPromptTitle", "Failed to launch");
+	FText ZenLaunchFailurePromptText = FText::Format(NSLOCTEXT("Zen", "Zen_NonLocalProcessUsesDataDirPromptText", "ZenServer Failed to auto launch, an unknown process is locking the data folder '{0}'"), FText::FromString(DataPath));
+	FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenLaunchFailurePromptText.ToString(), *ZenLaunchFailurePromptTitle.ToString());
+}
+
+static void
+PromptUserOfFailedShutDownOfExistingProcess(uint16 Port)
+{
+	if (FApp::IsUnattended())
+	{
+		// Just log as there is no one to show a message
+		UE_LOG(LogZenServiceInstance, Warning, TEXT("ZenServer Failed to auto launch, failed to shut down currently running service using port %u"), Port);
+		FPlatformMisc::RequestExit(true);
+		return;
+	}
+
+	FText ZenLaunchFailurePromptTitle = NSLOCTEXT("Zen", "Zen_ShutdownFailurePromptTitle", "Failed to launch");
+	FText ZenLaunchFailurePromptText = FText::Format(NSLOCTEXT("Zen", "Zen_ShutdownFailurePromptText", "ZenServer Failed to auto launch, failed to shut down currently running service using port '{0}'"), Port);
+	FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenLaunchFailurePromptText.ToString(), *ZenLaunchFailurePromptTitle.ToString());
+}
+
 
 FString
 FZenServiceInstance::ConditionalUpdateLocalInstall()
@@ -1211,30 +1783,29 @@ FZenServiceInstance::ConditionalUpdateLocalInstall()
 	FString InTreeVersionCache, InstallVersionCache;
 	if (IsInstallVersionOutOfDate(InTreeUtilityPath, InstallUtilityPath, InTreeServicePath, InstallServicePath, InTreeVersionCache, InstallVersionCache))
 	{
-		if (IsProcessActive(*InstallServicePath))
+		UE_LOG(LogZenServiceInstance, Display, TEXT("Installing service from '%s' to '%s'"), *InTreeServicePath, *InstallServicePath);
+		if (!ShutdownRunningServiceUsingExecutablePath(*InstallServicePath))
 		{
-			FString DataPath = Settings.SettingsVariant.Get<FServiceAutoLaunchSettings>().DataPath;
-			StopLocalService(*DataPath);
-
-			if (IsLocalServiceRunning(*DataPath))
-			{
-				PromptUserToStopRunningServerInstance(InstallServicePath);
-			}
+			PromptUserToStopRunningServerInstanceForUpdate(InstallServicePath);
+			return FString();
 		}
 
-		// Even after waiting for the lock file to be removed, the executable may have a period where it can't be overwritten as the process shuts down
-		// so any attempt to overwrite it should have some tolerance for retrying.
-		bool bServiceExecutableUpdated = AttemptFileCopyWithRetries(*InstallServicePath, *InTreeServicePath, 5.0);
-		checkf(bServiceExecutableUpdated, TEXT("Failed to copy zenserver to install location '%s'."), *InstallServicePath);
-
-		bool bUtilityExecutableUpdated = AttemptFileCopyWithRetries(*InstallUtilityPath, *InTreeUtilityPath, 5.0);
-		checkf(bUtilityExecutableUpdated, TEXT("Failed to copy zen to install location '%s'."), *InstallUtilityPath);
-
-		bMainExecutablesUpdated = (bServiceExecutableUpdated && bUtilityExecutableUpdated);
-		if (bMainExecutablesUpdated)
+		// Even after waiting for the process to shut down we have a tolerance for failure when overwriting the target files
+		if (!AttemptFileCopyWithRetries(*InstallServicePath, *InTreeServicePath, 5.0))
 		{
-			AttemptFileCopyWithRetries(*InstallVersionCache, *InTreeVersionCache, 1.0);
+			PromptUserToStopRunningServerInstanceForUpdate(InstallServicePath);
+			return FString();
 		}
+
+		if (!AttemptFileCopyWithRetries(*InstallUtilityPath, *InTreeUtilityPath, 5.0))
+		{
+			PromptUserToStopRunningServerInstanceForUpdate(InstallServicePath);
+			return FString();
+		}
+
+		AttemptFileCopyWithRetries(*InstallVersionCache, *InTreeVersionCache, 1.0);
+
+		bMainExecutablesUpdated = true;
 	}
 
 #if PLATFORM_WINDOWS
@@ -1261,64 +1832,99 @@ FZenServiceInstance::ConditionalUpdateLocalInstall()
 bool
 FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FString&& ExecutablePath, FString& OutHostName, uint16& OutPort)
 {
-	int16 DesiredPort = InSettings.DesiredPort;
 	IFileManager& FileManager = IFileManager::Get();
 	const FString LockFilePath = FPaths::Combine(InSettings.DataPath, TEXT(".lock"));
 	const FString ExecutionContextFilePath = FPaths::SetExtension(ExecutablePath, TEXT(".runcontext"));
 
 	FString WorkingDirectory = FPaths::GetPath(ExecutablePath);
 
-	bool bReUsingExistingInstance = false;
-
-	if (IsLockFileLocked(*LockFilePath, true))
+	LockFileData LockFileState;
+	uint64 ZenWaitForRunningProcessReadyStartTime = FPlatformTime::Cycles64();
+	while (IsZenProcessUsingDataDir(*LockFilePath, &LockFileState) && LockFileState.IsValid && !LockFileState.IsReady)
 	{
-		// If an instance is running with this data path, check if we can use it and what port it is on
-		uint16 CurrentPort = 0;
-		FCbObject LockObject;
-		if (ReadCbLockFile(LockFilePath, LockObject))
+		// Server is starting up, wait for it to get ready
+		double ZenWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenWaitForRunningProcessReadyStartTime);
+		if (ZenWaitDuration > 5.0)
 		{
-			bool bIsReady = LockObject["ready"].AsBool();
-			if (bIsReady)
-			{
-				CurrentPort = LockObject["port"].AsUInt16();
-			}
+			break;
+		}
+		FPlatformProcess::Sleep(0.1f);
+		LockFileState = LockFileData();
+	}
+
+	uint16 ShutdownEffectivePort = 0;
+	bool bLaunchNewInstance = true;
+
+	if (LockFileState.IsReady)
+	{
+		const ZenServerState State;
+		if (State.LookupByPid(LockFileState.ProcessId) == nullptr)
+		{
+			PromptUserOfLockedDataFolder(*InSettings.DataPath);
+			FPlatformMisc::RequestExit(true);
+			return false;
 		}
 
-		bool bCurrentInstanceUsable = false;
-
-		FZenLocalServiceRunContext DesiredRunContext;
-		DesiredRunContext.Executable = ExecutablePath;
-		DesiredRunContext.CommandlineArguments = DetermineCmdLineWithoutTransientComponents(InSettings, CurrentPort);
-		DesiredRunContext.WorkingDirectory = WorkingDirectory;
-		DesiredRunContext.DataPath = InSettings.DataPath;
-		DesiredRunContext.bShowConsole = InSettings.bShowConsole;
-
-		FZenLocalServiceRunContext CurrentRunContext;
-		if (CurrentRunContext.ReadFromJsonFile(*ExecutionContextFilePath) && (DesiredRunContext == CurrentRunContext))
+		if (InSettings.bIsDefaultSharedRunContext)
 		{
-			DesiredPort = CurrentPort;
-			bReUsingExistingInstance = true;
+			FZenLocalServiceRunContext DesiredRunContext;
+			DesiredRunContext.Executable = ExecutablePath;
+			DesiredRunContext.CommandlineArguments = DetermineCmdLineWithoutTransientComponents(InSettings, InSettings.DesiredPort);
+			DesiredRunContext.WorkingDirectory = WorkingDirectory;
+			DesiredRunContext.DataPath = InSettings.DataPath;
+			DesiredRunContext.bShowConsole = InSettings.bShowConsole;
+
+			FZenLocalServiceRunContext CurrentRunContext;
+			if (CurrentRunContext.ReadFromJsonFile(*ExecutionContextFilePath) && (DesiredRunContext == CurrentRunContext))
+			{
+				UE_LOG(LogZenServiceInstance, Log, TEXT("Found existing instance running on port %u matching our settings"), InSettings.DesiredPort);
+				bLaunchNewInstance = false;
+			}
+			else
+			{
+				UE_LOG(LogZenServiceInstance, Log, TEXT("Found existing instance running on port %u with different run context, will attempt shut down"), InSettings.DesiredPort);
+				ShutdownEffectivePort = LockFileState.EffectivePort;
+			}
 		}
 		else
 		{
-			RequestZenShutdownOnPort(CurrentPort);
-			WaitForZenShutdown(*LockFilePath, 5.0);
+			UE_LOG(LogZenServiceInstance, Log, TEXT("Found existing instance running on port %u when not using shared context, will use it"), InSettings.DesiredPort);
+		}
+	}
+	else
+	{
+		const ZenServerState State;
+		const ZenServerState::ZenServerEntry* RunningEntry = State.LookupByDesiredListenPort(InSettings.DesiredPort);
+		if (RunningEntry != nullptr)
+		{
+			ShutdownEffectivePort = RunningEntry->EffectiveListenPort;
+			UE_LOG(LogZenServiceInstance, Log, TEXT("Found existing instance running on port %u with different data directory, will attempt shut down"), ShutdownEffectivePort);
 		}
 	}
 
-	if (!bReUsingExistingInstance)
+	if (ShutdownEffectivePort != 0)
 	{
-		RequestZenShutdownOnPort(DesiredPort);
+		if (!ShutdownRunningServiceUsingEffectivePort(ShutdownEffectivePort))
+		{
+			PromptUserOfFailedShutDownOfExistingProcess(ShutdownEffectivePort);
+			FPlatformMisc::RequestExit(true);
+			return false;
+		}
+		checkf(!IsZenProcessUsingEffectivePort(ShutdownEffectivePort), TEXT("Service port is still in use %u"), ShutdownEffectivePort);
+
+		if (IsLockFileLocked(*LockFilePath))
+		{
+			PromptUserOfLockedDataFolder(*InSettings.DataPath);
+			FPlatformMisc::RequestExit(true);
+			return false;
+		}
 	}
-
-
-	bool bProcessIsLive = IsLockFileLocked(*LockFilePath);
 
 	// When limiting process lifetime, always re-launch to add sponsor process IDs.
 	// When not limiting process lifetime, only launch if the process is not already live.
-	if (InSettings.bLimitProcessLifetime || !bProcessIsLive)
+	if (bLaunchNewInstance)
 	{
-		FString ParmsWithoutTransients = DetermineCmdLineWithoutTransientComponents(InSettings, DesiredPort);
+		FString ParmsWithoutTransients = DetermineCmdLineWithoutTransientComponents(InSettings, InSettings.DesiredPort);
 		FString TransientParms;
 
 		if (InSettings.bLimitProcessLifetime)
@@ -1334,108 +1940,118 @@ FZenServiceInstance::AutoLaunch(const FServiceAutoLaunchSettings& InSettings, FS
 		EffectiveRunContext.bShowConsole = InSettings.bShowConsole;
 
 		FProcHandle Proc = StartLocalService(EffectiveRunContext, TransientParms.IsEmpty() ? nullptr : *TransientParms);
-		if (!bProcessIsLive)
+
+		// Only write run context if we're using the default shared run context
+		if (InSettings.bIsDefaultSharedRunContext)
 		{
 			EffectiveRunContext.WriteToJsonFile(*ExecutionContextFilePath);
 		}
 
-		bProcessIsLive = Proc.IsValid();
+		if (!Proc.IsValid())
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed launch service using executable '%s' on port %u"), *ExecutablePath, InSettings.DesiredPort);
+			return false;
+		}
 	}
-
+	else if (InSettings.bLimitProcessLifetime)
+	{
+		ZenServerState State(/*ReadOnly*/ false);
+		ZenServerState::ZenServerEntry* RunningEntry = State.LookupByDesiredListenPort(InSettings.DesiredPort);
+		if (RunningEntry == nullptr)
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed attach as sponsor process to executable '%s' on port %u, can't find entry in shared state"), *ExecutablePath, InSettings.DesiredPort);
+		}
+		else if (!RunningEntry->AddSponsorProcess(FPlatformProcess::GetCurrentProcessId()))
+		{
+			UE_LOG(LogZenServiceInstance, Warning, TEXT("Failed attach as sponsor process to executable '%s' on port %u, to many sponsored processes attached already"), *ExecutablePath, InSettings.DesiredPort);
+		}
+	}
 
 	OutHostName = TEXT("[::1]");
 	// Default to assuming that we get to run on the port we want
-	OutPort = DesiredPort;
+	OutPort = InSettings.DesiredPort;
 
-	if (bProcessIsLive)
+	FScopedSlowTask WaitForZenReadySlowTask(0, NSLOCTEXT("Zen", "Zen_WaitingForReady", "Waiting for ZenServer to be ready"));
+	uint64 ZenWaitStartTime = FPlatformTime::Cycles64();
+	enum class EWaitDurationPhase
 	{
-
-		FScopedSlowTask WaitForZenReadySlowTask(0, NSLOCTEXT("Zen", "Zen_WaitingForReady", "Waiting for ZenServer to be ready"));
-		uint64 ZenWaitStartTime = FPlatformTime::Cycles64();
-		enum class EWaitDurationPhase
+		Short,
+		Medium,
+		Long
+	} DurationPhase = EWaitDurationPhase::Short;
+	bool bIsReady = false;
+	while (!bIsReady)
+	{
+		LockFileData RunningLockFileState = ReadCbLockFile(LockFilePath);
+		if (RunningLockFileState.IsValid)
 		{
-			Short,
-			Medium,
-			Long
-		} DurationPhase = EWaitDurationPhase::Short;
-		bool bIsReady = false;
-		while (!bIsReady)
-		{
-			FCbObject LockObject;
-			if (ReadCbLockFile(LockFilePath, LockObject))
+			bIsReady = RunningLockFileState.IsReady;
+			if (bIsReady)
 			{
-				bIsReady = LockObject["ready"].AsBool();
-				if (bIsReady)
-				{
-					OutPort = LockObject["port"].AsUInt16(DesiredPort);
-					break;
-				}
+				OutPort = RunningLockFileState.EffectivePort;
+				break;
 			}
+		}
 
-			double ZenWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenWaitStartTime);
-			if (ZenWaitDuration < 10.0)
+		double ZenWaitDuration = FPlatformTime::ToSeconds64(FPlatformTime::Cycles64() - ZenWaitStartTime);
+		if (ZenWaitDuration < 10.0)
+		{
+			// Initial 10 second window of higher frequency checks
+			FPlatformProcess::Sleep(0.01f);
+		}
+		else
+		{
+			if (DurationPhase == EWaitDurationPhase::Short)
 			{
-				// Initial 10 second window of higher frequency checks
-				FPlatformProcess::Sleep(0.01f);
-			}
-			else
-			{
-				if (DurationPhase == EWaitDurationPhase::Short)
+				if (!IsLockFileLocked(*LockFilePath))
 				{
-					if (!IsLockFileLocked(*LockFilePath))
+					if (FApp::IsUnattended())
 					{
-						if (FApp::IsUnattended())
-						{
-							checkf(false, TEXT("ZenServer did not launch in the expected duration."));
-						}
-						else
-						{
-							FText ZenLaunchFailurePromptTitle = NSLOCTEXT("Zen", "Zen_LaunchFailurePromptTitle", "Failed to launch");
-
-							FFormatNamedArguments FormatArguments;
-							FString LogFilePath = FPaths::Combine(InSettings.DataPath, TEXT("logs"), TEXT("zenserver.log"));
-							FPaths::MakePlatformFilename(LogFilePath);
-							FormatArguments.Add(TEXT("LogFilePath"), FText::FromString(LogFilePath));
-							FText ZenLaunchFailurePromptText = FText::Format(NSLOCTEXT("Zen", "Zen_LaunchFailurePromptText", "ZenServer failed to launch. This process will now exit. Please check the ZenServer log file for details:\n{LogFilePath}"), FormatArguments);
-							FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenLaunchFailurePromptText.ToString(), *ZenLaunchFailurePromptTitle.ToString());
-							FPlatformMisc::RequestExit(true);
-							return false;
-						}
+						// Just log as there is no one to show a message
+						UE_LOG(LogZenServiceInstance, Warning, TEXT("ZenServer did not launch in the expected duration"));
+						return false;
 					}
-					// Note that the dialog may not show up when zenserver is needed early in the launch cycle, but this will at least ensure
-					// the splash screen is refreshed with the appropriate text status message.
-					WaitForZenReadySlowTask.MakeDialog(true, false);
-					UE_LOG(LogZenServiceInstance, Display, TEXT("Waiting for ZenServer to be ready..."));
-					DurationPhase = EWaitDurationPhase::Medium;
-				}
-				else if (!FApp::IsUnattended() && ZenWaitDuration > 20.0 && (DurationPhase == EWaitDurationPhase::Medium))
-				{
-					FText ZenLongWaitPromptTitle = NSLOCTEXT("Zen", "Zen_LongWaitPromptTitle", "Wait for ZenServer?");
-					FText ZenLongWaitPromptText = NSLOCTEXT("Zen", "Zen_LongWaitPromptText", "ZenServer is taking a long time to launch. It may be performing maintenance. Keep waiting?");
-					if (FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *ZenLongWaitPromptText.ToString(), *ZenLongWaitPromptTitle.ToString()) == EAppReturnType::No)
+					else
 					{
+						FText ZenLaunchFailurePromptTitle = NSLOCTEXT("Zen", "Zen_LaunchFailurePromptTitle", "Failed to launch");
+
+						FFormatNamedArguments FormatArguments;
+						FString LogFilePath = FPaths::Combine(InSettings.DataPath, TEXT("logs"), TEXT("zenserver.log"));
+						FPaths::MakePlatformFilename(LogFilePath);
+						FormatArguments.Add(TEXT("LogFilePath"), FText::FromString(LogFilePath));
+						FText ZenLaunchFailurePromptText = FText::Format(NSLOCTEXT("Zen", "Zen_LaunchFailurePromptText", "ZenServer failed to launch. This process will now exit. Please check the ZenServer log file for details:\n{LogFilePath}"), FormatArguments);
+						FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ZenLaunchFailurePromptText.ToString(), *ZenLaunchFailurePromptTitle.ToString());
 						FPlatformMisc::RequestExit(true);
 						return false;
 					}
-					DurationPhase = EWaitDurationPhase::Long;
 				}
-
-				if (WaitForZenReadySlowTask.ShouldCancel())
+				// Note that the dialog may not show up when zenserver is needed early in the launch cycle, but this will at least ensure
+				// the splash screen is refreshed with the appropriate text status message.
+				WaitForZenReadySlowTask.MakeDialog(true, false);
+				UE_LOG(LogZenServiceInstance, Display, TEXT("Waiting for ZenServer to be ready..."));
+				DurationPhase = EWaitDurationPhase::Medium;
+			}
+			else if (!FApp::IsUnattended() && ZenWaitDuration > 20.0 && (DurationPhase == EWaitDurationPhase::Medium))
+			{
+				FText ZenLongWaitPromptTitle = NSLOCTEXT("Zen", "Zen_LongWaitPromptTitle", "Wait for ZenServer?");
+				FText ZenLongWaitPromptText = NSLOCTEXT("Zen", "Zen_LongWaitPromptText", "ZenServer is taking a long time to launch. It may be performing maintenance. Keep waiting?");
+				if (FPlatformMisc::MessageBoxExt(EAppMsgType::YesNo, *ZenLongWaitPromptText.ToString(), *ZenLongWaitPromptTitle.ToString()) == EAppReturnType::No)
 				{
 					FPlatformMisc::RequestExit(true);
 					return false;
 				}
-				FPlatformProcess::Sleep(0.1f);
+				DurationPhase = EWaitDurationPhase::Long;
 			}
-		}
 
-		return bIsReady;
+			if (WaitForZenReadySlowTask.ShouldCancel())
+			{
+				FPlatformMisc::RequestExit(true);
+				return false;
+			}
+			FPlatformProcess::Sleep(0.1f);
+		}
 	}
-	else
-	{
-		return false;
-	}
-	return true;
+	return bIsReady;
 }
 
 bool 
@@ -1653,13 +2269,13 @@ FZenServiceInstance::RequestGC(const bool* OverrideCollectSmallObjects, const ui
 
 	if (OverrideCollectSmallObjects)
 	{
-		Query << Separators[SeparatorIndex] << LexToString(*OverrideCollectSmallObjects);
+		Query << Separators[SeparatorIndex] << TEXT("smallobjects=") << LexToString(*OverrideCollectSmallObjects);
 		SeparatorIndex = FMath::Min(SeparatorIndex + 1, (int32)UE_ARRAY_COUNT(Separators));
 	}
 
 	if (OverrideMaxCacheDuration)
 	{
-		Query << Separators[SeparatorIndex] << LexToString(*OverrideMaxCacheDuration);
+		Query << Separators[SeparatorIndex] << TEXT("maxcacheduration=") << LexToString(*OverrideMaxCacheDuration);
 		SeparatorIndex = FMath::Min(SeparatorIndex + 1, (int32)UE_ARRAY_COUNT(Separators));
 	}
 
@@ -1683,80 +2299,80 @@ FZenServiceInstance::GatherAnalytics(TArray<FAnalyticsEventAttribute>& Attribute
 	if (GetStats(ZenStats) == false)
 		return false;
 
-	const FString BaseName = TEXT("Zen");
+	const FString BaseName = TEXT("Zen_");
 
 	{
-		FString AttrName = BaseName + TEXT(".Enabled");
+		FString AttrName = BaseName + TEXT("Enabled");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.IsValid);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.HitRatio");
+		FString AttrName = BaseName + TEXT("Cache_HitRatio");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.HitRatio);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.Hits");
+		FString AttrName = BaseName + TEXT("Cache_Hits");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.Hits);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.Misses");
+		FString AttrName = BaseName + TEXT("Cache_Misses");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.Misses);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.Size.Disk");
+		FString AttrName = BaseName + TEXT("Cache_Size_Disk");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.Size.Disk);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.Size.Memory");
+		FString AttrName = BaseName + TEXT("Cache_Size_Memory");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.Size.Memory);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.UpstreamHits");
+		FString AttrName = BaseName + TEXT("Cache_UpstreamHits");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.UpstreamHits);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.UpstreamRatio");
+		FString AttrName = BaseName + TEXT("Cache_UpstreamRatio");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CacheStats.UpstreamRatio);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cache.TotalUploadedMB");
+		FString AttrName = BaseName + TEXT("Cache_TotalUploadedMB");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.UpstreamStats.TotalUploadedMB);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Upstream.TotalDownloadedMB");
+		FString AttrName = BaseName + TEXT("Upstream_TotalDownloadedMB");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.UpstreamStats.TotalDownloadedMB);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Upstream.TotalUploadedMB");
+		FString AttrName = BaseName + TEXT("Upstream_TotalUploadedMB");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.UpstreamStats.TotalUploadedMB);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cas.Size.Large");
+		FString AttrName = BaseName + TEXT("Cas_Size_Large");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CASStats.Size.Large);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cas.Size.Small");
+		FString AttrName = BaseName + TEXT("Cas_Size_Small");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CASStats.Size.Small);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cas.Size.Tiny");
+		FString AttrName = BaseName + TEXT("Cas_Size_Tiny");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CASStats.Size.Tiny);
 	}
 
 	{
-		FString AttrName = BaseName + TEXT(".Cas.Size.Total");
+		FString AttrName = BaseName + TEXT("Cas_Size_Total");
 		Attributes.Emplace(MoveTemp(AttrName), ZenStats.CASStats.Size.Total);
 	}
 

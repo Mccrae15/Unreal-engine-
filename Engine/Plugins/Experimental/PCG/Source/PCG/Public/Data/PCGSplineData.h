@@ -22,7 +22,7 @@ class PCG_API UPCGSplineData : public UPCGPolyLineData
 
 public:
 	void Initialize(USplineComponent* InSpline);
-	void Initialize(const TArray<FSplinePoint>& InSplinePoints, bool bInClosedLoop, AActor* InTargetActor, const FTransform& InTransform);
+	void Initialize(const TArray<FSplinePoint>& InSplinePoints, bool bInClosedLoop, const FTransform& InTransform);
 	void ApplyTo(USplineComponent* InSpline);
 
 	// ~Begin UPCGData interface
@@ -67,6 +67,10 @@ class PCG_API UPCGSplineProjectionData : public UPCGProjectionData
 	GENERATED_BODY()
 public:
 	void Initialize(const UPCGSplineData* InSourceSpline, const UPCGSpatialData* InTargetSurface, const FPCGProjectionParams& InParams);
+
+	// ~Begin UPCGData interface
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Spline; }
+	// ~End UPCGData interface
 
 	const UPCGSplineData* GetSpline() const;
 	const UPCGSpatialData* GetSurface() const;

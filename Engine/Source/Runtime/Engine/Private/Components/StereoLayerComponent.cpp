@@ -24,9 +24,9 @@ UStereoLayerComponent::UStereoLayerComponent(const FObjectInitializer& ObjectIni
 	, UVRect(FBox2D(FVector2D(0.0f, 0.0f), FVector2D(1.0f, 1.0f)))
 	, StereoLayerType(SLT_FaceLocked)
 	, Priority(0)
+	, LayerId(IStereoLayers::FLayerDesc::INVALID_LAYER_ID)
 	, bIsDirty(true)
 	, bTextureNeedsUpdate(false)
-	, LayerId(0)
 	, LastTransform(FTransform::Identity)
 	, bLastVisible(false)
 	, bNeedsPostLoadFixup(false)
@@ -37,15 +37,15 @@ UStereoLayerComponent::UStereoLayerComponent(const FObjectInitializer& ObjectIni
 	//Shape = ObjectInitializer.CreateDefaultSubobject<UStereoLayerShapeQuad>(this, TEXT("Shape"));
 }
 
-void UStereoLayerComponent::BeginDestroy()
+void UStereoLayerComponent::OnUnregister()
 {
-	Super::BeginDestroy();
+	Super::OnUnregister();
 
 	IStereoLayers* StereoLayers;
 	if (LayerId && GEngine->StereoRenderingDevice.IsValid() && (StereoLayers = GEngine->StereoRenderingDevice->GetStereoLayers()) != nullptr)
 	{
 		StereoLayers->DestroyLayer(LayerId);
-		LayerId = 0;
+		LayerId = IStereoLayers::FLayerDesc::INVALID_LAYER_ID;
 	}
 }
 
@@ -267,6 +267,7 @@ void UStereoLayerShapeEquirect::SetEquirectProps(FEquirectProps InEquirectProps)
 	RightScale = InEquirectProps.RightScale;
 	LeftBias = InEquirectProps.LeftBias;
 	RightBias = InEquirectProps.RightBias;
+	Radius = InEquirectProps.Radius;
 
 	MarkStereoLayerDirty();
 }
@@ -343,7 +344,7 @@ void UStereoLayerShapeCubemap::ApplyShape(IStereoLayers::FLayerDesc& LayerDesc)
 
 void UStereoLayerShapeEquirect::ApplyShape(IStereoLayers::FLayerDesc& LayerDesc)
 {
-	LayerDesc.SetShape<FEquirectLayer>(LeftUVRect, RightUVRect, LeftScale, RightScale, LeftBias, RightBias);
+	LayerDesc.SetShape<FEquirectLayer>(LeftUVRect, RightUVRect, LeftScale, RightScale, LeftBias, RightBias, Radius);
 }
 
 void UStereoLayerShapeQuad::ApplyShape(IStereoLayers::FLayerDesc& LayerDesc)
@@ -396,15 +397,25 @@ void UStereoLayerShapeCylinder::DrawShapeVisualization(const class FSceneView* V
 
 	PDI->DrawLine(RightVertex - HalfHeight, RightVertex + HalfHeight, YellowColor, 0);
 }
+
+void UStereoLayerShapeEquirect::DrawShapeVisualization(const class FSceneView* View, class FPrimitiveDrawInterface* PDI)
+{
+	FLinearColor YellowColor = FColor(231, 239, 0, 255);
+	check(GetOuter()->IsA<UStereoLayerComponent>());
+
+	auto StereoLayerComp = Cast<UStereoLayerComponent>(GetOuter());
+
+	DrawWireSphere(PDI, StereoLayerComp->GetComponentTransform().GetTranslation(), YellowColor, (double) Radius, 32, 0);
+}
 #endif
 
 
 bool FEquirectProps::operator==(const class UStereoLayerShapeEquirect& Other) const
 {
-	return (LeftUVRect == Other.LeftUVRect) && (RightUVRect == Other.RightUVRect) && (LeftScale == Other.LeftScale) && (RightScale == Other.RightScale) && (LeftBias == Other.LeftBias) && (RightBias == Other.RightBias);
+	return (LeftUVRect == Other.LeftUVRect) && (RightUVRect == Other.RightUVRect) && (LeftScale == Other.LeftScale) && (RightScale == Other.RightScale) && (LeftBias == Other.LeftBias) && (RightBias == Other.RightBias) && (Radius == Other.Radius);
 }
 
 bool FEquirectProps::operator==(const FEquirectProps& Other) const
 {
-	return (LeftUVRect == Other.LeftUVRect) && (RightUVRect == Other.RightUVRect) && (LeftScale == Other.LeftScale) && (RightScale == Other.RightScale) && (LeftBias == Other.LeftBias) && (RightBias == Other.RightBias);
+	return (LeftUVRect == Other.LeftUVRect) && (RightUVRect == Other.RightUVRect) && (LeftScale == Other.LeftScale) && (RightScale == Other.RightScale) && (LeftBias == Other.LeftBias) && (RightBias == Other.RightBias) && (Radius == Other.Radius);
 }

@@ -15,6 +15,7 @@
 #include "MovieSceneTranslator.h"
 #include "MovieSceneSpawnable.h"
 #include "MovieSceneCaptureSettings.h"
+#include "KeyParams.h"
 #include "SEnumCombo.h"
 #include "Animation/AnimSequence.h"
 #include "INodeAndChannelMappings.h"
@@ -28,6 +29,7 @@ class UMovieSceneTrack;
 struct FMovieSceneEvaluationTrack;
 class UMovieSceneUserImportFBXSettings;
 class UMovieSceneUserImportFBXControlRigSettings;
+class UMovieSceneUserExportFBXControlRigSettings;
 struct FMovieSceneDoubleValue;
 struct FMovieSceneFloatValue;
 class INodeNameAdapter;
@@ -39,6 +41,8 @@ class ACameraActor;
 struct FActorForWorldTransforms;
 class UMovieScene3DTransformSection;
 class UMovieSceneSubTrack;
+struct FBakingAnimationKeySettings;
+struct FKeyDataOptimizationParams;
 class UMovieSceneSubSection;
 enum class EMovieSceneTransformChannel : uint32;
 
@@ -104,7 +108,7 @@ public:
 	 * @param bTrimLeft Trim left or trim right
 	 * @param bDeleteKeys Delete keys outside the split ranges
 	 */
-	static void TrimSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bTrimLeft, bool bDeleteKeys);
+	static void TrimSection(const TSet<UMovieSceneSection*>& Sections, FQualifiedFrameTime Time, bool bTrimLeft, bool bDeleteKeys);
 
 	/**
 	 * Trim or extend section at the given time
@@ -124,7 +128,7 @@ public:
 	 * @param Time	The time at which to split
 	 * @param bDeleteKeys Delete keys outside the split ranges
 	 */
-	static void SplitSection(const TSet<TWeakObjectPtr<UMovieSceneSection>>& Sections, FQualifiedFrameTime Time, bool bDeleteKeys);
+	static void SplitSection(const TSet<UMovieSceneSection*>& Sections, FQualifiedFrameTime Time, bool bDeleteKeys);
 
 	/**
 	 * Parse a shot name into its components.
@@ -152,13 +156,18 @@ public:
 	static FString ComposeShotName(const FString& ShotPrefix, uint32 ShotNumber, uint32 TakeNumber, uint32 ShotNumberDigits, uint32 TakeNumberDigits);
 
 	/**
-	 * Generate a new shot package
+	 * Generate a new subsequence package
 	 *
-	 * @param SequenceMovieScene The sequence movie scene for the new shot
+	 * @param SequenceMovieScene The sequence movie scene for the new subsequence
+	 * @param SubsequenceDirectory The directory for the new subsequence
 	 * @param NewShotName The new shot name
-	 * @return The new shot path
+	 * @return The new subsequence path
 	 */
+	static FString GenerateNewSubsequencePath(UMovieScene* SequenceMovieScene, const FString& SubsequenceDirectory, FString& NewShotName);
+	
+	UE_DEPRECATED(5.3, "GenerateNewShotPath has been deprecated in favor of GenerateNewSubsequencePath that takes a given directory")
 	static FString GenerateNewShotPath(UMovieScene* SequenceMovieScene, FString& NewShotName);
+
 
 	/**
 	 * Generate a new shot name
@@ -167,6 +176,9 @@ public:
 	 * @param Time The time to generate the new shot name at
 	 * @return The new shot name
 	 */
+	static FString GenerateNewSubsequenceName(const TArray<UMovieSceneSection*>& AllSections, const FString& SubsequencePrefix, FFrameNumber Time);
+
+	UE_DEPRECATED(5.3, "GenerateNewShotName has been deprecated in favor of GenerateNewSubsequenceName that takes a given prefix")
 	static FString GenerateNewShotName(const TArray<UMovieSceneSection*>& AllSections, FFrameNumber Time);
 
 	/*
@@ -506,15 +518,26 @@ public:
 	static FString GetCameraName(fbxsdk::FbxCamera* InCamera);
 
 	/*
-	 * Import FBX into Channels With Dialog
+	 * Import FBX into Control Rig Channels With Dialog
 	 */
-	static bool ImportFBXIntoChannelsWithDialog(const TSharedRef<ISequencer>& InSequencer, TArray<FFBXNodeAndChannels>* NodeAndChannels);
+	static bool ImportFBXIntoControlRigChannelsWithDialog(const TSharedRef<ISequencer>& InSequencer, TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels);
 
 	/*
-	* Import FBX into Channels
+	** Export FBX from Control Rig Channels With Dialog
+	*/
+	static bool ExportFBXFromControlRigChannelsWithDialog(const TSharedRef<ISequencer>& InSequencer, UMovieSceneTrack* Track);
+
+	/*
+	* Import FBX into Control Rig Channels
 	*/	
 	static bool ImportFBXIntoControlRigChannels(UMovieScene* MovieScene, const FString& ImportFilename,  UMovieSceneUserImportFBXControlRigSettings *ControlRigSettings,
-		TArray<FFBXNodeAndChannels>* NodeAndChannels, const TArray<FName>& SelectedControlNames, FFrameRate FrameRate);
+		TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels, const TArray<FName>& SelectedControlNames, FFrameRate FrameRate);
+
+	/*
+	** Export FBX from Control Rig Channels
+	*/	
+	static bool ExportFBXFromControlRigChannels(const UMovieSceneSection* Section, const UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings,
+	                                            const TArray<FName>& SelectedControlNames, const FMovieSceneSequenceTransform& RootToLocalTransform);
 
 	/*
 	* Acquire first SkeletalMeshComponent from the Object
@@ -524,9 +547,36 @@ public:
 	static USkeletalMeshComponent* AcquireSkeletalMeshFromObject(UObject* BoundObject);
 	
 	/*
+	* Get an actors and possible component parents.
+	* @param InActorAndComponent Actor and possible component to find parents for
+	* @param OutParentActors Returns an array of parents
+	*/
+	static void GetActorParents(const FActorForWorldTransforms& Actor,
+		TArray<FActorForWorldTransforms>& OutParentActors);
+
+	/*
+	* Get an actors and possible component parents using sequencer to test for attachments.
+	* @param Sequencer Sequencer to evaluate
+	* @param InActorAndComponent Actor and possible component to find parents for
+	* @param OutParentActors Returns an array of parents
+	*/
+	static void GetActorParentsWithAttachments(ISequencer* Sequencer, const FActorForWorldTransforms& Actor, TArray<FActorForWorldTransforms>& OutParentActors);
+
+	/*
+	*  Get an actors and it's parent key frames
+	* @param Sequencer Sequencer to evaluate
+	* @param Actor The actor and possible component and socket that we want to get the frame for
+	* @param StartFrame The first frame to start looking for keys
+	* @param EndFrame The last frame to stop looking for keys
+	* @param OutFrameMap Sorted map of the frame times found
+	*/
+	static void GetActorsAndParentsKeyFrames(ISequencer* Sequencer, const FActorForWorldTransforms& Actor,
+		const FFrameNumber& StartFrame, const FFrameNumber& EndFrame, TSortedMap<FFrameNumber, FFrameNumber>& OutFrameMap);
+
+	/*
 	*  Get an actors word transforms at the specified times
 	* @param Sequencer Sequencer to evaluate
-    * @param ActorForWorldTransforms The actor and possible component and socket that we want to get the world transforms for.
+    * @param Actors The actor and possible component and socket that we want to get the world transforms for.
 	* @param Frames The times we want to get the world transforms
 	* @param OutWorldTransforms The calculated world transforms, one for each specified frame.
 	*/
@@ -536,15 +586,30 @@ public:
 	* @param ChannelData Channel to set or add
 	* @param Time Frame to add or set the value
 	* @param Value  Value to Set
+	* @param Interpolation Key type to set if added
 	*/
-	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& ChannelData, FFrameNumber Time, float Value);
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& ChannelData, FFrameNumber Time, float Value, const EMovieSceneKeyInterpolation Interpolation = EMovieSceneKeyInterpolation::Auto);
 
 	/* Set or add a key onto a double channel.
 	* @param ChannelData Channel to set or add
 	* @param Time Frame to add or set the value
 	* @param Value  Value to Set
+	* @param Interpolation Key type to set if added
 	*/
-	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value);
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value, const EMovieSceneKeyInterpolation Interpolation = EMovieSceneKeyInterpolation::Auto);
+
+
+	/*
+	* Set or add a key onto a float channel based on key value.
+	*/
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& Curve, FFrameNumber Time, const FMovieSceneFloatValue& Value);
+
+
+	/*
+	* Set or add a key onto a double channel based on key value.
+	*/
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, FMovieSceneDoubleValue Value);
+
 
 	/* 
 	* Set or add a key onto a float channel based on rich curve data.
@@ -578,11 +643,17 @@ public:
 	 */
 	static bool IsValidAsset(UMovieSceneSequence* Sequence, const FAssetData& InAssetData);
 
+	static bool CollapseSection(TSharedPtr<ISequencer>& SequencerPtr, UMovieSceneTrack* OwnerTrack, TArray<UMovieSceneSection*> Sections,
+		const FBakingAnimationKeySettings& InSettings);
+
+	static bool OptimizeSection(const FKeyDataOptimizationParams& InParams, UMovieSceneSection* InSection);
+
 	/** Returns the frame numbers between start and end. */
 	static void CalculateFramesBetween(
 		const UMovieScene* MovieScene,
 		FFrameNumber StartFrame,
 		FFrameNumber EndFrame,
+		int FrameIncrement,
 		TArray<FFrameNumber>& OutFrames);
 
 	/** Returns the transform section for that guid. */

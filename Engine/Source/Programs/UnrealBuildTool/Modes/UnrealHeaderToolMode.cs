@@ -1,17 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using EpicGames.UHT.Tables;
-using EpicGames.UHT.Tokenizer;
-using EpicGames.UHT.Types;
-using EpicGames.UHT.Utils;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
-using UnrealBuildBase;
+using System.Threading.Tasks;
+using EpicGames.Core;
+using EpicGames.UHT.Tables;
+using EpicGames.UHT.Tokenizer;
+using EpicGames.UHT.Types;
+using EpicGames.UHT.Utils;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool.Modes
 {
@@ -30,25 +31,25 @@ namespace UnrealBuildTool.Modes
 		private readonly IReadOnlyDictionary<StringView, StringView> _typeRedirectMap;
 
 		/// <summary>
-		/// Metadata that have been renamed, treat the old deprecated name as the new name for code generation
+		/// Meta data that have been renamed, treat the old deprecated name as the new name for code generation
 		/// </summary>
 		private readonly IReadOnlyDictionary<string, string> _metaDataRedirectMap;
 
 		/// <summary>
 		/// Supported units in the game
 		/// </summary>
-		private readonly ReadOnlyHashSet<StringView> _units;
+		private readonly IReadOnlySet<StringView> _units;
 
 		/// <summary>
 		/// Special parsed struct names that do not require a prefix
 		/// </summary>
 		[System.Diagnostics.CodeAnalysis.SuppressMessage("CodeQuality", "IDE0052:Remove unread private members", Justification = "<Pending>")]
-		private readonly ReadOnlyHashSet<StringView> _structsWithNoPrefix;
+		private readonly IReadOnlySet<StringView> _structsWithNoPrefix;
 
 		/// <summary>
 		/// Special parsed struct names that have a 'T' prefix
 		/// </summary>
-		private readonly ReadOnlyHashSet<StringView> _structsWithTPrefix;
+		private readonly IReadOnlySet<StringView> _structsWithTPrefix;
 
 		/// <summary>
 		/// Mapping from 'human-readable' macro substring to # of parameters for delegate declarations
@@ -99,7 +100,7 @@ namespace UnrealBuildTool.Modes
 		/// <summary>
 		/// If true, UObject properties are enabled in RigVM
 		/// </summary>
-		private readonly bool _areRigVMUObjectProeprtiesEnabled = false;
+		private readonly bool _areRigVMUObjectPropertiesEnabled = false;
 
 		/// <summary>
 		/// If true, UInterface properties are enabled in RigVM
@@ -126,54 +127,70 @@ namespace UnrealBuildTool.Modes
 		/// </summary>
 		private readonly UhtIssueBehavior _nonEngineEnumUnderlyingTypeNotSet = UhtIssueBehavior.AllowSilently;
 
+		/// <summary>
+		/// Collection of known documentation policies
+		/// </summary>
+		public Dictionary<string, UhtDocumentationPolicy> _documentationPolicies = new(StringComparer.OrdinalIgnoreCase);
+
+		/// <summary>
+		/// Default documentation policy (usually empty)
+		/// </summary>
+		private readonly string _defaultDocumentationPolicy = "";
+
 		#region IUhtConfig Implementation
 		/// <inheritdoc/>
-		public EGeneratedCodeVersion DefaultGeneratedCodeVersion => this._defaultGeneratedCodeVersion;
+		public EGeneratedCodeVersion DefaultGeneratedCodeVersion => _defaultGeneratedCodeVersion;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior EngineNativePointerMemberBehavior => this._engineNativePointerMemberBehavior;
+		public UhtIssueBehavior EngineNativePointerMemberBehavior => _engineNativePointerMemberBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior EngineObjectPtrMemberBehavior => this._engineObjectPtrMemberBehavior;
+		public UhtIssueBehavior EngineObjectPtrMemberBehavior => _engineObjectPtrMemberBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior EnginePluginNativePointerMemberBehavior => this._enginePluginNativePointerMemberBehavior;
+		public UhtIssueBehavior EnginePluginNativePointerMemberBehavior => _enginePluginNativePointerMemberBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior EnginePluginObjectPtrMemberBehavior => this._enginePluginObjectPtrMemberBehavior;
+		public UhtIssueBehavior EnginePluginObjectPtrMemberBehavior => _enginePluginObjectPtrMemberBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior NonEngineNativePointerMemberBehavior => this._nonEngineNativePointerMemberBehavior;
+		public UhtIssueBehavior NonEngineNativePointerMemberBehavior => _nonEngineNativePointerMemberBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior NonEngineObjectPtrMemberBehavior => this._nonEngineObjectPtrMemberBehavior;
+		public UhtIssueBehavior NonEngineObjectPtrMemberBehavior => _nonEngineObjectPtrMemberBehavior;
 
 		/// <summary>
 		/// If true, UObject properties are enabled in RigVM
 		/// </summary>
-		public bool AreRigVMUObjectProeprtiesEnabled => this._areRigVMUObjectProeprtiesEnabled;
+		public bool AreRigVMUObjectPropertiesEnabled => _areRigVMUObjectPropertiesEnabled;
 
 		/// <summary>
 		/// If true, UInterface properties are enabled in RigVM
 		/// </summary>
-		public bool AreRigVMUInterfaceProeprtiesEnabled => this._areRigVMUInterfaceProeprtiesEnabled;
+		public bool AreRigVMUInterfaceProeprtiesEnabled => _areRigVMUInterfaceProeprtiesEnabled;
 
 		/// <summary>
 		/// If true, deprecation warnings should be shown
 		/// </summary>
-		public bool ShowDeprecations => this._showDeprecations;
+		public bool ShowDeprecations => _showDeprecations;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior EngineMissingGeneratedHeaderIncludeBehavior => this._engineMissingGeneratedHeaderIncludeBehavior;
+		public UhtIssueBehavior EngineMissingGeneratedHeaderIncludeBehavior => _engineMissingGeneratedHeaderIncludeBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior NonEngineMissingGeneratedHeaderIncludeBehavior => this._nonEngineMissingGeneratedHeaderIncludeBehavior;
+		public UhtIssueBehavior NonEngineMissingGeneratedHeaderIncludeBehavior => _nonEngineMissingGeneratedHeaderIncludeBehavior;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior EngineEnumUnderlyingTypeNotSet => this._engineEnumUnderlyingTypeNotSet;
+		public UhtIssueBehavior EngineEnumUnderlyingTypeNotSet => _engineEnumUnderlyingTypeNotSet;
 
 		/// <inheritdoc/>
-		public UhtIssueBehavior NonEngineEnumUnderlyingTypeNotSet => this._nonEngineEnumUnderlyingTypeNotSet;
+		public UhtIssueBehavior NonEngineEnumUnderlyingTypeNotSet => _nonEngineEnumUnderlyingTypeNotSet;
+
+		/// <inheritdoc/>
+		public IReadOnlyDictionary<string, UhtDocumentationPolicy> DocumentationPolicies => _documentationPolicies;
+
+		/// <inheritdoc/>
+		public string DefaultDocumentationPolicy => _defaultDocumentationPolicy;
 
 		/// <inheritdoc/>
 		public void RedirectTypeIdentifier(ref UhtToken Token)
@@ -183,7 +200,7 @@ namespace UnrealBuildTool.Modes
 				throw new Exception("Attempt to redirect type identifier when the token isn't an identifier.");
 			}
 
-			if (this._typeRedirectMap.TryGetValue(Token.Value, out StringView Redirect))
+			if (_typeRedirectMap.TryGetValue(Token.Value, out StringView Redirect))
 			{
 				Token.Value = Redirect;
 			}
@@ -192,7 +209,7 @@ namespace UnrealBuildTool.Modes
 		/// <inheritdoc/>
 		public bool RedirectMetaDataKey(string Key, out string NewKey)
 		{
-			if (this._metaDataRedirectMap.TryGetValue(Key, out string? Redirect))
+			if (_metaDataRedirectMap.TryGetValue(Key, out string? Redirect))
 			{
 				NewKey = Redirect;
 				return Key != NewKey;
@@ -207,21 +224,21 @@ namespace UnrealBuildTool.Modes
 		/// <inheritdoc/>
 		public bool IsValidUnits(StringView Units)
 		{
-			return this._units.Contains(Units);
+			return _units.Contains(Units);
 		}
 
 		/// <inheritdoc/>
 		public bool IsStructWithTPrefix(StringView Name)
 		{
-			return this._structsWithTPrefix.Contains(Name);
+			return _structsWithTPrefix.Contains(Name);
 		}
 
 		/// <inheritdoc/>
 		public int FindDelegateParameterCount(StringView DelegateMacro)
 		{
-			for (int Index = 0, Count = this._delegateParameterCountStrings.Count; Index < Count; ++Index)
+			for (int Index = 0, Count = _delegateParameterCountStrings.Count; Index < Count; ++Index)
 			{
-				if (DelegateMacro.Span.Contains(this._delegateParameterCountStrings[Index].Span, StringComparison.Ordinal))
+				if (DelegateMacro.Span.Contains(_delegateParameterCountStrings[Index].Span, StringComparison.Ordinal))
 				{
 					return Index;
 				}
@@ -232,13 +249,13 @@ namespace UnrealBuildTool.Modes
 		/// <inheritdoc/>
 		public StringView GetDelegateParameterCountString(int Index)
 		{
-			return Index >= 0 ? this._delegateParameterCountStrings[Index] : "";
+			return Index >= 0 ? _delegateParameterCountStrings[Index] : "";
 		}
 
 		/// <inheritdoc/>
 		public bool IsExporterEnabled(string Name)
 		{
-			this._ini.GetBool("UnrealHeaderTool", Name, out bool Value);
+			_ini.GetBool("UnrealHeaderTool", Name, out bool Value);
 			return Value;
 		}
 		#endregion
@@ -250,46 +267,58 @@ namespace UnrealBuildTool.Modes
 		public UhtConfigImpl(CommandLineArguments Args)
 		{
 			DirectoryReference ConfigDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Programs", "UnrealHeaderTool");
-			this._ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ConfigDirectory, BuildHostPlatform.Current.Platform, "", Args.GetRawArray());
+			_ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ConfigDirectory, BuildHostPlatform.Current.Platform, "", Args.GetRawArray());
 
-			this._typeRedirectMap = GetRedirectsStringView("UnrealHeaderTool", "TypeRedirects", "OldType", "NewType");
-			this._metaDataRedirectMap = GetRedirectsString("CoreUObject.Metadata", "MetadataRedirects", "OldKey", "NewKey");
-			this._structsWithNoPrefix = GetHashSet("UnrealHeaderTool", "StructsWithNoPrefix", StringViewComparer.Ordinal);
-			this._structsWithTPrefix = GetHashSet("UnrealHeaderTool", "StructsWithTPrefix", StringViewComparer.Ordinal);
-			this._units = GetHashSet("UnrealHeaderTool", "Units", StringViewComparer.OrdinalIgnoreCase);
-			this._delegateParameterCountStrings = GetList("UnrealHeaderTool", "DelegateParameterCountStrings");
-			this._defaultGeneratedCodeVersion = GetGeneratedCodeVersion("UnrealHeaderTool", "DefaultGeneratedCodeVersion", EGeneratedCodeVersion.V1);
-			this._engineNativePointerMemberBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "EngineNativePointerMemberBehavior", UhtIssueBehavior.AllowSilently);
-			this._engineObjectPtrMemberBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "EngineObjectPtrMemberBehavior", UhtIssueBehavior.AllowSilently);
-			this._enginePluginNativePointerMemberBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "EnginePluginNativePointerMemberBehavior", UhtIssueBehavior.AllowSilently);
-			this._enginePluginObjectPtrMemberBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "EnginePluginObjectPtrMemberBehavior", UhtIssueBehavior.AllowSilently);
-			this._nonEngineNativePointerMemberBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "NonEngineNativePointerMemberBehavior", UhtIssueBehavior.AllowSilently);
-			this._nonEngineObjectPtrMemberBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "NonEngineObjectPtrMemberBehavior", UhtIssueBehavior.AllowSilently);
-			this._areRigVMUObjectProeprtiesEnabled = GetBoolean("UnrealHeaderTool", "AreRigVMUObjectProeprtiesEnabled", false);
-			this._areRigVMUInterfaceProeprtiesEnabled = GetBoolean("UnrealHeaderTool", "AreRigVMUInterfaceProeprtiesEnabled", false);
-			this._showDeprecations = GetBoolean("UnrealHeaderTool", "ShowDeprecations", true);
-			this._engineMissingGeneratedHeaderIncludeBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "EngineMissingGeneratedHeaderIncludeBehavior", UhtIssueBehavior.AllowSilently);
-			this._nonEngineMissingGeneratedHeaderIncludeBehavior = GetPointerMemberBehavior("UnrealHeaderTool", "NonEngineMissingGeneratedHeaderIncludeBehavior", UhtIssueBehavior.AllowSilently);
-			this._engineEnumUnderlyingTypeNotSet = GetPointerMemberBehavior("UnrealHeaderTool", "EngineEnumUnderlyingTypeNotSet", UhtIssueBehavior.AllowSilently);
-			this._nonEngineEnumUnderlyingTypeNotSet = GetPointerMemberBehavior("UnrealHeaderTool", "NonEngineEnumUnderlyingTypeNotSet", UhtIssueBehavior.AllowSilently);
+			_typeRedirectMap = GetRedirectsStringView("UnrealHeaderTool", "TypeRedirects", "OldType", "NewType");
+			_metaDataRedirectMap = GetRedirectsString("CoreUObject.Metadata", "MetadataRedirects", "OldKey", "NewKey");
+			_structsWithNoPrefix = GetHashSet("UnrealHeaderTool", "StructsWithNoPrefix", StringViewComparer.Ordinal);
+			_structsWithTPrefix = GetHashSet("UnrealHeaderTool", "StructsWithTPrefix", StringViewComparer.Ordinal);
+			_units = GetHashSet("UnrealHeaderTool", "Units", StringViewComparer.OrdinalIgnoreCase);
+			_delegateParameterCountStrings = GetList("UnrealHeaderTool", "DelegateParameterCountStrings");
+			_defaultGeneratedCodeVersion = GetGeneratedCodeVersion("UnrealHeaderTool", "DefaultGeneratedCodeVersion", EGeneratedCodeVersion.V1);
+			_engineNativePointerMemberBehavior = GetIssueBehavior("UnrealHeaderTool", "EngineNativePointerMemberBehavior", UhtIssueBehavior.AllowSilently);
+			_engineObjectPtrMemberBehavior = GetIssueBehavior("UnrealHeaderTool", "EngineObjectPtrMemberBehavior", UhtIssueBehavior.AllowSilently);
+			_enginePluginNativePointerMemberBehavior = GetIssueBehavior("UnrealHeaderTool", "EnginePluginNativePointerMemberBehavior", UhtIssueBehavior.AllowSilently);
+			_enginePluginObjectPtrMemberBehavior = GetIssueBehavior("UnrealHeaderTool", "EnginePluginObjectPtrMemberBehavior", UhtIssueBehavior.AllowSilently);
+			_nonEngineNativePointerMemberBehavior = GetIssueBehavior("UnrealHeaderTool", "NonEngineNativePointerMemberBehavior", UhtIssueBehavior.AllowSilently);
+			_nonEngineObjectPtrMemberBehavior = GetIssueBehavior("UnrealHeaderTool", "NonEngineObjectPtrMemberBehavior", UhtIssueBehavior.AllowSilently);
+			_areRigVMUObjectPropertiesEnabled = GetBoolean("UnrealHeaderTool", "AreRigVMUObjectPropertiesEnabled", false);
+			_areRigVMUInterfaceProeprtiesEnabled = GetBoolean("UnrealHeaderTool", "AreRigVMUInterfaceProeprtiesEnabled", false);
+			_showDeprecations = GetBoolean("UnrealHeaderTool", "ShowDeprecations", true);
+			_engineMissingGeneratedHeaderIncludeBehavior = GetIssueBehavior("UnrealHeaderTool", "EngineMissingGeneratedHeaderIncludeBehavior", UhtIssueBehavior.AllowSilently);
+			_nonEngineMissingGeneratedHeaderIncludeBehavior = GetIssueBehavior("UnrealHeaderTool", "NonEngineMissingGeneratedHeaderIncludeBehavior", UhtIssueBehavior.AllowSilently);
+			_engineEnumUnderlyingTypeNotSet = GetIssueBehavior("UnrealHeaderTool", "EngineEnumUnderlyingTypeNotSet", UhtIssueBehavior.AllowSilently);
+			_nonEngineEnumUnderlyingTypeNotSet = GetIssueBehavior("UnrealHeaderTool", "NonEngineEnumUnderlyingTypeNotSet", UhtIssueBehavior.AllowSilently);
+
+			GetDocumentationPolicies("UnrealHeaderTool", "DocumentationPolicies");
+			_defaultDocumentationPolicy = GetString("UnrealHeaderTool", "DefaultDocumentationPolicy", "");
 		}
 
 		private bool GetBoolean(string SectionName, string KeyName, bool bDefault)
 		{
-			if (this._ini.TryGetValue(SectionName, KeyName, out bool value))
+			if (_ini.TryGetValue(SectionName, KeyName, out bool value))
 			{
 				return value;
 			}
 			return bDefault;
 		}
 
-		private UhtIssueBehavior GetPointerMemberBehavior(string SectionName, string KeyName, UhtIssueBehavior Default)
+		private string GetString(string SectionName, string KeyName, string Default)
 		{
-			if (this._ini.TryGetValue(SectionName, KeyName, out string? BehaviorStr))
+			if (_ini.TryGetValue(SectionName, KeyName, out string? value))
+			{
+				return value;
+			}
+			return Default;
+		}
+
+		private UhtIssueBehavior GetIssueBehavior(string SectionName, string KeyName, UhtIssueBehavior Default)
+		{
+			if (_ini.TryGetValue(SectionName, KeyName, out string? BehaviorStr))
 			{
 				if (!Enum.TryParse(BehaviorStr, out UhtIssueBehavior Value))
 				{
-					throw new Exception(string.Format("Unrecognized native pointer member behavior '{0}'", BehaviorStr));
+					throw new Exception(String.Format("Unrecognized issue behavior '{0}'", BehaviorStr));
 				}
 				return Value;
 			}
@@ -298,11 +327,11 @@ namespace UnrealBuildTool.Modes
 
 		private EGeneratedCodeVersion GetGeneratedCodeVersion(string SectionName, string KeyName, EGeneratedCodeVersion Default)
 		{
-			if (this._ini.TryGetValue(SectionName, KeyName, out string? BehaviorStr))
+			if (_ini.TryGetValue(SectionName, KeyName, out string? BehaviorStr))
 			{
 				if (!Enum.TryParse(BehaviorStr, out EGeneratedCodeVersion Value))
 				{
-					throw new Exception(string.Format("Unrecognized generated code version '{0}'", BehaviorStr));
+					throw new Exception(String.Format("Unrecognized generated code version '{0}'", BehaviorStr));
 				}
 				return Value;
 			}
@@ -313,7 +342,7 @@ namespace UnrealBuildTool.Modes
 		{
 			Dictionary<StringView, StringView> Redirects = new();
 
-			if (this._ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
+			if (_ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
 			{
 				foreach (string Line in StringList)
 				{
@@ -321,11 +350,11 @@ namespace UnrealBuildTool.Modes
 					{
 						if (!Properties.TryGetValue(OldKeyName, out string? OldKey))
 						{
-							throw new Exception(string.Format("Unable to get the {0} from the {1} value", OldKeyName, Key));
+							throw new Exception(String.Format("Unable to get the {0} from the {1} value", OldKeyName, Key));
 						}
 						if (!Properties.TryGetValue(NewKeyName, out string? NewKey))
 						{
-							throw new Exception(string.Format("Unable to get the {0} from the {1} value", NewKeyName, Key));
+							throw new Exception(String.Format("Unable to get the {0} from the {1} value", NewKeyName, Key));
 						}
 						Redirects.Add(OldKey, NewKey);
 					}
@@ -338,7 +367,7 @@ namespace UnrealBuildTool.Modes
 		{
 			Dictionary<string, string> Redirects = new();
 
-			if (this._ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
+			if (_ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
 			{
 				foreach (string Line in StringList)
 				{
@@ -346,11 +375,11 @@ namespace UnrealBuildTool.Modes
 					{
 						if (!Properties.TryGetValue(OldKeyName, out string? OldKey))
 						{
-							throw new Exception(string.Format("Unable to get the {0} from the {1} value", OldKeyName, Key));
+							throw new Exception(String.Format("Unable to get the {0} from the {1} value", OldKeyName, Key));
 						}
 						if (!Properties.TryGetValue(NewKeyName, out string? NewKey))
 						{
-							throw new Exception(string.Format("Unable to get the {0} from the {1} value", NewKeyName, Key));
+							throw new Exception(String.Format("Unable to get the {0} from the {1} value", NewKeyName, Key));
 						}
 						Redirects.Add(OldKey, NewKey);
 					}
@@ -363,7 +392,7 @@ namespace UnrealBuildTool.Modes
 		{
 			List<StringView> List = new();
 
-			if (this._ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
+			if (_ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
 			{
 				foreach (string Value in StringList)
 				{
@@ -373,11 +402,11 @@ namespace UnrealBuildTool.Modes
 			return List;
 		}
 
-		private ReadOnlyHashSet<StringView> GetHashSet(string Section, string Key, StringViewComparer Comparer)
+		private IReadOnlySet<StringView> GetHashSet(string Section, string Key, StringViewComparer Comparer)
 		{
 			HashSet<StringView> Set = new(Comparer);
 
-			if (this._ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
+			if (_ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
 			{
 				foreach (string Value in StringList)
 				{
@@ -385,6 +414,50 @@ namespace UnrealBuildTool.Modes
 				}
 			}
 			return Set;
+		}
+
+		private void GetDocumentationPolicies(string Section, string Key)
+		{
+			_documentationPolicies["Strict"] = new()
+			{
+				ClassOrStructCommentRequired = true,
+				FunctionToolTipsRequired = true,
+				MemberToolTipsRequired = true,
+				ParameterToolTipsRequired = true,
+				FloatRangesRequired = true,
+			};
+
+			if (_ini.TryGetValues(Section, Key, out IReadOnlyList<string>? StringList))
+			{
+				foreach (string Value in StringList)
+				{
+					if (ConfigHierarchy.TryParse(Value, out Dictionary<string, string>? Properties))
+					{
+						if (Properties.TryGetValue("Name", out string? PolicyName))
+						{
+							UhtDocumentationPolicy? Policy = null;
+							if (!_documentationPolicies.TryGetValue(PolicyName, out Policy))
+							{
+								Policy = new UhtDocumentationPolicy();
+							}
+							Policy.ClassOrStructCommentRequired = GetPropertyBool(Properties, "ClassOrStructCommentRequired", Policy.ClassOrStructCommentRequired);
+							Policy.FunctionToolTipsRequired = GetPropertyBool(Properties, "FunctionToolTipsRequired", Policy.FunctionToolTipsRequired);
+							Policy.MemberToolTipsRequired = GetPropertyBool(Properties, "MemberToolTipsRequired", Policy.MemberToolTipsRequired);
+							Policy.ParameterToolTipsRequired = GetPropertyBool(Properties, "ParameterToolTipsRequired", Policy.ParameterToolTipsRequired);
+							Policy.FloatRangesRequired = GetPropertyBool(Properties, "FloatRangesRequired", Policy.FloatRangesRequired);
+						}
+					}
+				}
+			}
+		}
+
+		private static bool GetPropertyBool(Dictionary<string, string> Properties, string Key, bool DefaultValue)
+		{
+			if (Properties.TryGetValue(Key, out string? PropValueString) && ConfigHierarchy.TryParse(PropValueString, out bool PropValue))
+			{
+				return PropValue;
+			}
+			return DefaultValue;
 		}
 	}
 
@@ -494,26 +567,26 @@ namespace UnrealBuildTool.Modes
 		public UhtTestFileManager(string RootDirectory)
 		{
 			this.RootDirectory = RootDirectory;
-			this.InnerManager = new UhtStdFileManager();
+			InnerManager = new UhtStdFileManager();
 		}
 
 		/// <inheritdoc/>
 		public string GetFullFilePath(string FilePath)
 		{
-			if (this.RootDirectory == null)
+			if (RootDirectory == null)
 			{
 				return FilePath;
 			}
 			else
 			{
-				return Path.Combine(this.RootDirectory, FilePath);
+				return Path.Combine(RootDirectory, FilePath);
 			}
 		}
 
 		/// <inheritdoc/>
 		public bool ReadSource(string FilePath, out UhtSourceFragment Fragment)
 		{
-			if (this.SourceFragments.TryGetValue(FilePath, out Fragment))
+			if (SourceFragments.TryGetValue(FilePath, out Fragment))
 			{
 				return true;
 			}
@@ -522,17 +595,25 @@ namespace UnrealBuildTool.Modes
 		}
 
 		/// <inheritdoc/>
+		[Obsolete("Use the new ReadOutput with UhtPoolBuffer")]
 		public UhtBuffer? ReadOutput(string FilePath)
 		{
 			return null;
 		}
 
 		/// <inheritdoc/>
+		public bool ReadOutput(string FilePath, out UhtPoolBuffer<char> Output)
+		{
+			Output = default;
+			return false;
+		}
+
+		/// <inheritdoc/>
 		public bool WriteOutput(string FilePath, ReadOnlySpan<char> Contents)
 		{
-			lock (this.Outputs)
+			lock (Outputs)
 			{
-				this.Outputs.Add(FilePath, Contents.ToString());
+				Outputs.Add(FilePath, Contents.ToString());
 			}
 			return true;
 		}
@@ -540,12 +621,12 @@ namespace UnrealBuildTool.Modes
 		/// <inheritdoc/>
 		public bool RenameOutput(string OldFilePath, string NewFilePath)
 		{
-			lock (this.Outputs)
+			lock (Outputs)
 			{
-				if (this.Outputs.TryGetValue(OldFilePath, out string? Content))
+				if (Outputs.TryGetValue(OldFilePath, out string? Content))
 				{
-					this.Outputs.Remove(OldFilePath);
-					this.Outputs.Add(NewFilePath, Content);
+					Outputs.Remove(OldFilePath);
+					Outputs.Add(NewFilePath, Content);
 				}
 			}
 			return true;
@@ -561,7 +642,7 @@ namespace UnrealBuildTool.Modes
 		/// <param name="Data">The data associated with the path</param>
 		public void AddSourceFragment(UhtSourceFile SourceFile, string FilePath, int LineNumber, StringView Data)
 		{
-			this.SourceFragments.Add(FilePath, new UhtSourceFragment { SourceFile = SourceFile, FilePath = FilePath, LineNumber = LineNumber, Data = Data });
+			SourceFragments.Add(FilePath, new UhtSourceFragment { SourceFile = SourceFile, FilePath = FilePath, LineNumber = LineNumber, Data = Data });
 		}
 	}
 
@@ -595,9 +676,8 @@ namespace UnrealBuildTool.Modes
 			string OutPath = Path.Combine(TestOutputDirectory, Script);
 
 			UhtTestFileManager TestFileManager = new(TestDirectory);
-			UhtSession Session = new()
+			UhtSession Session = new(Logger)
 			{
-				Logger = Logger,
 				Tables = Tables,
 				Config = Config,
 				FileManager = TestFileManager,
@@ -673,7 +753,7 @@ namespace UnrealBuildTool.Modes
 					int BodyEndPos = BodyStartPos;
 					while (true)
 					{
-						using var SaveState = new UhtTokenSaveState(Reader);
+						using UhtTokenSaveState SaveState = new UhtTokenSaveState(Reader);
 						UhtToken Token = Reader.GetLine();
 						if (Token.TokenType == UhtTokenType.EndOfFile)
 						{
@@ -1034,7 +1114,7 @@ namespace UnrealBuildTool.Modes
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override async Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			try
 			{
@@ -1104,8 +1184,13 @@ namespace UnrealBuildTool.Modes
 
 				if (TargetArgumentIndex >= 0)
 				{
+					// Create the build configuration object, and read the settings
+					BuildConfiguration BuildConfiguration = new();
+					XmlConfig.ApplyTo(BuildConfiguration);
+					Arguments.ApplyTo(BuildConfiguration);
+
 					CommandLineArguments LocalArguments = new(new string[] { Arguments[TargetArgumentIndex] });
-					List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(LocalArguments, false, false, false, Logger);
+					List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(LocalArguments, BuildConfiguration, Logger);
 					if (TargetDescriptors.Count == 0)
 					{
 						Logger.LogError("No target descriptors found.");
@@ -1115,18 +1200,13 @@ namespace UnrealBuildTool.Modes
 					TargetDescriptor TargetDesc = TargetDescriptors[0];
 
 					// Create the target
-					UEBuildTarget Target = UEBuildTarget.Create(TargetDesc, false, false, false, Logger);
+					UEBuildTarget Target = UEBuildTarget.Create(TargetDesc, BuildConfiguration, Logger);
 
 					// Create the makefile for the target and export the module information
 					using ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet();
 
-					// Create the build configuration object, and read the settings
-					BuildConfiguration BuildConfiguration = new();
-					XmlConfig.ApplyTo(BuildConfiguration);
-					Arguments.ApplyTo(BuildConfiguration);
-
 					// Create the makefile
-					TargetMakefile Makefile = Target.Build(BuildConfiguration, WorkingSet, TargetDesc, Logger, true);
+					TargetMakefile Makefile = await Target.BuildAsync(BuildConfiguration, WorkingSet, TargetDesc, Logger, true);
 
 					FileReference ModuleInfoFileName = ExternalExecution.GetUHTModuleInfoFileName(Makefile, Target.TargetName);
 					FileReference DepsFileName = ExternalExecution.GetUHTDepsFileName(ModuleInfoFileName);
@@ -1146,15 +1226,14 @@ namespace UnrealBuildTool.Modes
 
 				string? ProjectPath = ProjectFile != null ? Path.GetDirectoryName(ProjectFile) : null;
 
-				UhtSession Session = new()
+				UhtSession Session = new(Logger)
 				{
-					Logger = Logger,
 					Tables = Tables,
 					Config = Config,
 					FileManager = new UhtStdFileManager(),
 					EngineDirectory = Unreal.EngineDirectory.FullName,
 					ProjectFile = ProjectFile,
-					ProjectDirectory = string.IsNullOrEmpty(ProjectPath) ? null : ProjectPath,
+					ProjectDirectory = String.IsNullOrEmpty(ProjectPath) ? null : ProjectPath,
 					ReferenceDirectory = FileReference.Combine(EngineProgramSavedDirectory, "UnrealHeaderTool", "Saved", "ReferenceExports").FullName,
 					VerifyDirectory = FileReference.Combine(EngineProgramSavedDirectory, "UnrealHeaderTool", "Saved", "VerifyExports").FullName,
 					WarningsAsErrors = Options.bWarningsAsErrors,
@@ -1174,7 +1253,7 @@ namespace UnrealBuildTool.Modes
 					Session.ReferenceMode = UhtReferenceMode.Verify;
 				}
 
-				foreach(UhtExporter Exporter in Session.ExporterTable)
+				foreach (UhtExporter Exporter in Session.ExporterTable)
 				{
 					if (Arguments.HasOption($"-{Exporter.Name}"))
 					{

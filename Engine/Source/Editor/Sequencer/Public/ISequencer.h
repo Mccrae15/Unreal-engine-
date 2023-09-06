@@ -8,7 +8,7 @@
 #include "Containers/UnrealString.h"
 #include "CoreMinimal.h"
 #include "Delegates/Delegate.h"
-#include "ITimeSlider.h"
+#include "ViewRangeInterpolation.h"
 #include "Evaluation/MovieSceneSequenceTransform.h"
 #include "HAL/Platform.h"
 #include "IMovieScenePlayer.h"
@@ -32,12 +32,15 @@
 #include "Widgets/Input/NumericTypeInterface.h"
 #include "Widgets/SWidget.h"
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "ITimeSlider.h"
+#endif
+
 #include "ISequencer.generated.h"
 
 class AActor;
 class ACameraActor;
 class FSequencerKeyCollection;
-class FSequencerSelection;
 class FSequencerSelectionPreview;
 class FUICommandList;
 class IDetailsView;
@@ -67,6 +70,7 @@ enum class EMapChangeType : uint8;
 class FCurveEditor;
 class FCurveModel;
 class IToolkitHost;
+struct FAnimatedRange;
 struct FMovieSceneChannelMetaData;
 struct FMovieSceneSequencePlaybackParams;
 
@@ -75,7 +79,7 @@ namespace UE
 namespace Sequencer
 {
 
-class FEditorViewModel;
+class FSequencerEditorViewModel;
 
 } // namespace Sequencer
 } // namespace UE
@@ -281,7 +285,7 @@ public:
 	/**
 	 * Retrieve the top level view model for this sequence
 	 */
-	virtual TSharedPtr<UE::Sequencer::FEditorViewModel> GetViewModel() const = 0;
+	virtual TSharedPtr<UE::Sequencer::FSequencerEditorViewModel> GetViewModel() const = 0;
 
 	/**
 	 * Suppresses automatic evaluation the specified sequence and signature are the only difference that would prompt a re-evaluation
@@ -376,7 +380,7 @@ public:
 	/** @return Returns whether sequencer will respond to changes and possibly create a key or track */
 	virtual bool IsAllowedToChange() const 
 	{
-		if (GetAllowEditsMode() == EAllowEditsMode::AllowLevelEditsOnly)
+		if (IsReadOnly() || GetAllowEditsMode() == EAllowEditsMode::AllowLevelEditsOnly)
 		{
 			return false;
 		}
@@ -423,6 +427,9 @@ public:
 	/** Play from the current time to the requested time */
 	virtual void PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams) = 0;
 
+	/*Modify the Sequencer time by any snap settings */
+	virtual void SnapSequencerTime(FFrameTime& InOutScrubTime) = 0;
+
 	/** Invalidate cached data so that it will be reevaluated on the next frame */
 	virtual void RequestInvalidateCachedData() = 0;
 
@@ -436,10 +443,7 @@ public:
 	virtual void ResetTimeController() = 0;
 
 	/** @return The current view range */
-	virtual FAnimatedRange GetViewRange() const
-	{
-		return FAnimatedRange();
-	}
+	virtual FAnimatedRange GetViewRange() const;
 
 	/**
 	 * Set the view range, growing the working range to accomodate, if necessary
@@ -596,12 +600,6 @@ public:
 	virtual void GetKeysFromSelection(TUniquePtr<FSequencerKeyCollection>& KeyCollection, float DuplicateThresoldTime) = 0;
 
 	virtual TArray<FMovieSceneMarkedFrame> GetMarkedFrames() const = 0;
-
-	virtual FSequencerSelection& GetSelection() = 0;
-	virtual FSequencerSelectionPreview& GetSelectionPreview() = 0;
-
-	virtual void SuspendSelectionBroadcast() = 0;
-	virtual void ResumeSelectionBroadcast() = 0;
 
 	/** Gets the currently selected tracks. */
 	virtual void GetSelectedTracks(TArray<UMovieSceneTrack*>& OutSelectedTracks) = 0;

@@ -7,9 +7,9 @@
 #include "DetailPropertyRow.h"
 #include "IDetailKeyframeHandler.h"
 #include "ObjectPropertyNode.h"
+#include "PropertyHandleImpl.h"
 #include "SConstrainedBox.h"
-#include "PropertyCustomizationHelpers.h"
-#include "PropertyEditorPermissionList.h"
+#include "PropertyPermissionList.h"
 #include "SDetailCategoryTableRow.h"
 #include "SDetailSingleItemRow.h"
 
@@ -60,7 +60,7 @@ void FDetailItemNode::Initialize()
 		SetExpansionState(bShouldExpand, bSaveState);
 	}
 
-	CachedItemVisibility = ComputeItemVisibility();
+	RefreshCachedVisibility();
 
 	const bool bUpdateFilteredNodes = false;
 	GenerateChildren( bUpdateFilteredNodes );
@@ -366,7 +366,7 @@ bool FDetailItemNode::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) const
 	return bResult;
 }
 
-void FDetailItemNode::GetChildren(FDetailNodeList& OutChildren)
+void FDetailItemNode::GetChildren(FDetailNodeList& OutChildren, const bool& bInIgnoreVisibility)
 {
 	OutChildren.Reserve(Children.Num());
 
@@ -378,12 +378,13 @@ void FDetailItemNode::GetChildren(FDetailNodeList& OutChildren)
 		// If we are visible due to filtering and so is a child, we only show that child.  
 		// If we are visible due to filtering and no child is visible, we show all children
 
-		if( ChildVisibility == ENodeVisibility::Visible ||
-			( !bShouldBeVisibleDueToChildFiltering && bShouldBeVisibleDueToFiltering && ChildVisibility != ENodeVisibility::ForcedHidden ) )
+		if( ChildVisibility == ENodeVisibility::Visible
+			|| bInIgnoreVisibility
+			|| ( !bShouldBeVisibleDueToChildFiltering && bShouldBeVisibleDueToFiltering && ChildVisibility != ENodeVisibility::ForcedHidden ) )
 		{
 			if( Child->ShouldShowOnlyChildren() )
 			{
-				Child->GetChildren( OutChildren );
+				Child->GetChildren( OutChildren, bInIgnoreVisibility );
 			}
 			else
 			{
@@ -717,16 +718,7 @@ void FDetailItemNode::Tick( float DeltaTime )
 			Customization.CustomBuilderRow->Tick( DeltaTime );
 		}
 
-		// Recache visibility
-		EVisibility NewVisibility = ComputeItemVisibility();
-	
-		if( CachedItemVisibility != NewVisibility )
-		{
-			// The visibility of a node in the tree has changed.  We must refresh the tree to remove the widget
-			CachedItemVisibility = NewVisibility;
-			const bool bRefilterCategory = true;
-			ParentCategory.Pin()->RefreshTree( bRefilterCategory );
-		}
+		RefreshCachedVisibility(true);
 	}
 }
 
@@ -791,6 +783,28 @@ EVisibility FDetailItemNode::ComputeItemVisibility() const
 	}
 
 	return NewVisibility;
+}
+
+void FDetailItemNode::RefreshVisibility()
+{
+	RefreshCachedVisibility();
+}
+
+void FDetailItemNode::RefreshCachedVisibility(bool bCallChangeDelegate)
+{
+	// Recache visibility
+	EVisibility NewVisibility = ComputeItemVisibility();
+	
+	if( CachedItemVisibility != NewVisibility )
+	{
+		// The visibility of a node in the tree has changed.  We must refresh the tree to remove the widget
+		CachedItemVisibility = NewVisibility;
+		if (bCallChangeDelegate)
+		{
+			const bool bRefilterCategory = true;
+			ParentCategory.Pin()->RefreshTree( bRefilterCategory );
+		}
+	}
 }
 
 bool FDetailItemNode::ShouldShowOnlyChildren() const
@@ -863,6 +877,29 @@ bool FDetailItemNode::IsPropertyEditingEnabledImpl() const
 TSharedPtr<FPropertyNode> FDetailItemNode::GetPropertyNode() const
 {
 	return Customization.GetPropertyNode();
+}
+
+void FDetailItemNode::GetAllPropertyNodes(TArray<TSharedRef<FPropertyNode>>& OutNodes) const
+{
+	TSet<TSharedRef<FPropertyNode>> SeenNodes; // make's sure there aren't duplicates
+	if (const TSharedPtr<FPropertyNode> Node = GetPropertyNode())
+	{
+		SeenNodes.Add(Node.ToSharedRef());
+		OutNodes.Add(Node.ToSharedRef());
+	}
+
+	for (const TSharedPtr<IPropertyHandle>& CurPropertyHandle : Customization.GetPropertyHandles())
+	{
+		const TSharedPtr<FPropertyHandleBase>& Handle = StaticCastSharedPtr<FPropertyHandleBase>(CurPropertyHandle);
+		if (const TSharedPtr<FPropertyNode> Node = Handle->GetPropertyNode())
+		{
+			if (!SeenNodes.Contains(Node.ToSharedRef()))
+			{
+				SeenNodes.Add(Node.ToSharedRef());
+				OutNodes.Add(Node.ToSharedRef());
+			}
+		}
+	}
 }
 
 TSharedPtr<IDetailPropertyRow> FDetailItemNode::GetRow() const

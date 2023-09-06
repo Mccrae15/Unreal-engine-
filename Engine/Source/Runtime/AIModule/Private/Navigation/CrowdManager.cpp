@@ -221,7 +221,9 @@ void UCrowdManager::BeginDestroy()
 	delete TickHelper;
 #endif
 
+#if WITH_RECAST
 	DestroyCrowdManager();
+#endif // WITH_RECAST
 	Super::BeginDestroy();
 }
 
@@ -835,7 +837,7 @@ void UCrowdManager::UpdateAgentPaths()
 
 				if (AnimInfo.t == 0)
 				{
-					const uint32 NavLinkId = RecastNavData->GetLinkUserId(AnimInfo.polyRef);
+					const FNavLinkId NavLinkId = RecastNavData->GetNavLinkUserId(AnimInfo.polyRef);
 					INavLinkCustomInterface* CustomLink = NavSys->GetCustomLink(NavLinkId);
 
 					if (CustomLink)

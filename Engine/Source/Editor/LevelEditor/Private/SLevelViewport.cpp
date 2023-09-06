@@ -136,7 +136,6 @@ SLevelViewport::SLevelViewport()
 	, ViewTransitionType( EViewTransition::None )
 	, bViewTransitionAnimPending( false )
 	, DeviceProfile("Default")
-	, PIEOverlaySlotIndex(0)
 	, bPIEHasFocus(false)
 	, bPIEContainsFocus(false)
 	, UserAllowThrottlingValue(0)
@@ -1112,7 +1111,7 @@ void SLevelViewport::Tick( const FGeometry& AllottedGeometry, const double InCur
 	{
 		if(ViewTransitionType == EViewTransition::StartingPlayInEditor)
 		{
-			if(PIEOverlaySlotIndex)
+			if (PIEOverlayBorder.IsValid())
 			{
 				PIEOverlayAnim = FCurveSequence(0.0f, SLevelViewportPIEAnimation::MouseControlLabelFadeout, ECurveEaseFunction::CubicInOut);
 				PIEOverlayAnim.Play(this->AsShared());
@@ -1211,6 +1210,11 @@ void SLevelViewport::OnMapChanged( UWorld* World, EMapChangeType MapChangeType )
 	{
 		if( MapChangeType == EMapChangeType::LoadMap )
 		{
+			if (FLevelEditorViewporEditorViews* PerUserEditorViews = GetMutableDefault<ULevelEditorViewportSettings>()->EditorViews.Find(World))
+			{
+				World->EditorViews = PerUserEditorViews->LevelViewportsInfo;
+			}
+
 			if (World->EditorViews[LevelViewportClient->ViewportType].CamOrthoZoom == 0.0f)
 			{
 				World->EditorViews[LevelViewportClient->ViewportType].CamOrthoZoom = DEFAULT_ORTHOZOOM;
@@ -1237,7 +1241,7 @@ void SLevelViewport::OnMapChanged( UWorld* World, EMapChangeType MapChangeType )
 				}
 			}
 		}
-		else if( MapChangeType == EMapChangeType::SaveMap )
+		else if( (MapChangeType == EMapChangeType::SaveMap) || (MapChangeType == EMapChangeType::TearDownWorld))
 		{
 			//@todo there could potentially be more than one of the same viewport type.  This effectively takes the last one of a specific type
 			World->EditorViews[LevelViewportClient->ViewportType] = 
@@ -1245,9 +1249,12 @@ void SLevelViewport::OnMapChanged( UWorld* World, EMapChangeType MapChangeType )
 					LevelViewportClient->GetViewLocation(),
 					LevelViewportClient->GetViewRotation(), 
 					LevelViewportClient->GetOrthoZoom() );
+
+			GetMutableDefault<ULevelEditorViewportSettings>()->EditorViews.FindOrAdd(World).LevelViewportsInfo = World->EditorViews;
+			GetMutableDefault<ULevelEditorViewportSettings>()->SaveConfig();
 		}
 		else if( MapChangeType == EMapChangeType::NewMap )
-		{
+		{		
 		
 			ResetNewLevelViewFlags();
 
@@ -1634,10 +1641,12 @@ void SLevelViewport::BindShowCommands( FUICommandList& OutCommandList )
 
 	// Show Stat Categories
 	{
+#if STATS
 		// Map 'Hide All' command
 		OutCommandList.MapAction(
 			LevelViewportCommands.HideAllStats,
 			FExecuteAction::CreateSP(this, &SLevelViewport::OnToggleAllStatCommands, false));
+#endif
 
 		for (auto StatCatIt = LevelViewportCommands.ShowStatCatCommands.CreateConstIterator(); StatCatIt; ++StatCatIt)
 		{
@@ -4146,13 +4155,11 @@ void SLevelViewport::ShowMouseCaptureLabel(ELabelAnchorMode AnchorMode)
 	EHorizontalAlignment HAlign = (EHorizontalAlignment)((AnchorMode%3)+1);
 	
 	{
-		SOverlay::FScopedWidgetSlotArguments ScopedSlotArgumnet = ViewportOverlay->AddSlot();
-		PIEOverlaySlotIndex = ScopedSlotArgumnet.GetSlot()->GetZOrder();
-
-		ScopedSlotArgumnet.HAlign(HAlign)
+		ViewportOverlay->AddSlot()
+		.HAlign(HAlign)
 		.VAlign(VAlign)
 		[
-			SNew( SBorder )
+			SAssignNew( PIEOverlayBorder, SBorder )
 			.BorderImage( FAppStyle::GetBrush("NoBorder") )
 			.Visibility(this, &SLevelViewport::GetMouseCaptureLabelVisibility)
 			.ColorAndOpacity( this, &SLevelViewport::GetMouseCaptureLabelColorAndOpacity )
@@ -4198,8 +4205,11 @@ void SLevelViewport::ShowMouseCaptureLabel(ELabelAnchorMode AnchorMode)
 
 void SLevelViewport::HideMouseCaptureLabel()
 {
-	ViewportOverlay->RemoveSlot(PIEOverlaySlotIndex);
-	PIEOverlaySlotIndex = 0;
+	if (PIEOverlayBorder.IsValid())
+	{
+		ViewportOverlay->RemoveSlot(PIEOverlayBorder.ToSharedRef());
+		PIEOverlayBorder.Reset();
+	}
 }
 
 void SLevelViewport::ResetNewLevelViewFlags()
@@ -4266,10 +4276,7 @@ void SLevelViewport::EndPlayInEditorSession()
 	// No longer need to store the content 
 	InactiveViewportWidgetEditorContent.Reset();
 
-	if(PIEOverlaySlotIndex)
-	{
-		HideMouseCaptureLabel();
-	}
+	HideMouseCaptureLabel();
 
 	// Kick off a quick transition effect (border graphics)
 	ViewTransitionType = EViewTransition::ReturningToEditor;
@@ -4297,10 +4304,7 @@ void SLevelViewport::SwapViewportsForSimulateInEditor()
 	check( IsPlayInEditorViewportActive() );
 	
 	// Remove the mouse control label - not relevant for SIE
-	if(PIEOverlaySlotIndex)
-	{
-		HideMouseCaptureLabel();
-	}
+	HideMouseCaptureLabel();
 
 	// Unregister the game viewport with slate which will release mouse capture and lock
 	FSlateApplication::Get().UnregisterGameViewport();

@@ -150,7 +150,7 @@ void UInterchangeDatasmithMaterialPipeline::PreImportMaterialNode(UInterchangeBa
 
 	for (const FString& InputName : Inputs)
 	{
-		FName InputValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(InputName);
+		FString InputValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(InputName);
 
 		switch (UInterchangeShaderPortsAPI::GetInputType(MaterialNode, InputName))
 		{
@@ -245,7 +245,7 @@ void UInterchangeDatasmithMaterialPipeline::PostImportMaterialInstanceFactoryNod
 
 	for (const FString& InputName : Inputs)
 	{
-		FName InputValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(InputName);
+		FString InputValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(InputName);
 
 		if (UInterchangeShaderPortsAPI::GetInputType(FactoryNode, InputName) == UE::Interchange::EAttributeTypes::String)
 		{
@@ -295,18 +295,7 @@ void UInterchangeDatasmithMaterialPipeline::UpdateMaterialFactoryNodes(const TAr
 			continue;
 		}
 
-		FString MaterialFunctionPath;
-		if (ShaderNode->GetStringAttribute(MaterialUtils::MaterialFunctionPathAttrName, MaterialFunctionPath))
-		{
-			static const FName MaterialFunctionMemberName = GET_MEMBER_NAME_CHECKED(UMaterialExpressionMaterialFunctionCall, MaterialFunction);
-
-			if (UInterchangeMaterialExpressionFactoryNode* ExpressionFactoryNode = Cast<UInterchangeMaterialExpressionFactoryNode>(FactoryNode))
-			{
-				ExpressionFactoryNode->AddStringAttribute(MaterialFunctionMemberName, MaterialFunctionPath);
-				ExpressionFactoryNode->AddApplyAndFillDelegates<FString>(MaterialFunctionMemberName, UMaterialExpressionMaterialFunctionCall::StaticClass(), MaterialFunctionMemberName);
-			}
-		}
-		else if (UInterchangeDatasmithPbrMaterialNode* PbrMaterialNode = Cast<UInterchangeDatasmithPbrMaterialNode>(ShaderNode))
+		if (UInterchangeDatasmithPbrMaterialNode* PbrMaterialNode = Cast<UInterchangeDatasmithPbrMaterialNode>(ShaderNode))
 		{
 			UInterchangeBaseMaterialFactoryNode* BaseMaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(FactoryNode);
 			ensure(BaseMaterialFactoryNode);

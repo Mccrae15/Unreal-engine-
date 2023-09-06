@@ -21,6 +21,31 @@ public:
 	virtual void ConvertToInstancedStruct(FInstancedStruct& OutInstancedStruct) const { }
 };
 
+#if WITH_EDITOR
+struct CHOOSER_API FChooserDebuggingInfo
+{
+	bool bCurrentDebugTarget = false;
+};
+#endif
+
+
+USTRUCT()
+struct CHOOSER_API FChooserEvaluationInputObject
+{
+	GENERATED_BODY()
+	TObjectPtr<UObject> Object;
+};
+
+USTRUCT(BlueprintType)
+struct CHOOSER_API FChooserEvaluationContext
+{
+	#if WITH_EDITOR
+    	FChooserDebuggingInfo DebuggingInfo;
+    #endif
+	
+	GENERATED_BODY()
+	TArray<FInstancedStruct, TInlineAllocator<4>> Params;
+};
 
 USTRUCT()
 struct CHOOSER_API FObjectChooserBase
@@ -30,18 +55,18 @@ struct CHOOSER_API FObjectChooserBase
 public:
 	virtual ~FObjectChooserBase() {}
 
-	virtual UObject* ChooseObject(const UObject* ContextObject) const { return nullptr; };
-
-	enum class EIteratorStatus { Continue,Stop };
+	enum class EIteratorStatus { Continue, ContinueWithOutputs, Stop };
 
 	DECLARE_DELEGATE_RetVal_OneParam( EIteratorStatus, FObjectChooserIteratorCallback, UObject*);
-	virtual EIteratorStatus ChooseMulti(const UObject* ContextObject, FObjectChooserIteratorCallback Callback) const
+
+	virtual UObject* ChooseObject(FChooserEvaluationContext& Context) const { return nullptr; };
+	virtual EIteratorStatus ChooseMulti(FChooserEvaluationContext& ContextData, FObjectChooserIteratorCallback Callback) const
 	{
 		// fallback implementation just calls the single version
-		if (UObject* Result = ChooseObject(ContextObject))
+		if (UObject* Result = ChooseObject(ContextData))
 		{
 			return Callback.Execute(Result);
 		}
 		return EIteratorStatus::Continue;
-	};
+	}
 };

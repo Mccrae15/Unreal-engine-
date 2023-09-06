@@ -136,10 +136,128 @@ enum class ENavDataGatheringModeConfig : uint8
 	Lazy
 };
 
+UENUM()
+enum class ENavigationSortPendingTilesMethod : uint8
+{
+	SortWithSeedLocations,
+	SortByPriority,
+	None
+};
+
 //
 // Used to gather per instance transforms in a specific area
 //
 DECLARE_DELEGATE_TwoParams(FNavDataPerInstanceTransformDelegate, const FBox&, TArray<FTransform>&);
+
+/*
+ * There should be one of these Ids generated and stored per Actor or Component that inherits from INavLinkCustomInterface. Primarily
+ * its a way of differentiating between Components that inherit from INavLinkCustomInterface as the ActorInstanceGuid
+ * alone can not do this.See UNavLinkCustomComponent as an example. For Level Instances these will be different for each component in an actor but repeated
+ * in repeated Level Instances.FNavLinkId::GenerateUniqueId() uses this to make the UniqueId
+ */
+USTRUCT()
+struct FNavLinkAuxiliaryId
+{
+	GENERATED_BODY()
+
+	FNavLinkAuxiliaryId() = default;
+
+	uint64 GetId() const
+	{
+		return Id;
+	}
+
+	bool operator==(const FNavLinkAuxiliaryId& Other) const { return Id == Other.Id; }
+	bool operator!=(const FNavLinkAuxiliaryId& Other) const { return !this->operator==(Other); }
+
+	/**
+	 * Helper function: returns unique Auxiliary ID for custom links.
+	 **/
+	static ENGINE_API FNavLinkAuxiliaryId GenerateUniqueAuxiliaryId();
+
+private:
+	FNavLinkAuxiliaryId(uint64 InId)
+		: Id(InId)
+	{}
+
+public:
+	static ENGINE_API const FNavLinkAuxiliaryId Invalid;
+
+private:
+	UPROPERTY()
+	uint64 Id = InvalidLinkId;
+
+	static constexpr uint64 InvalidLinkId = 0;
+};
+
+/**
+ * NavLink Id type. Legacy Ids were generated using the incremental ID system which has been deprecated but will be supported for quite some time. The new system uses CityHash using GenerateUniqueId()
+ * Only NavLinks generated this way should have the most significant bit of the id set to 1.
+ */
+USTRUCT()
+struct FNavLinkId
+{
+	GENERATED_BODY()
+
+	FNavLinkId() = default;
+
+	explicit FNavLinkId(uint64 InId)
+		: Id(InId)
+	{}
+
+	bool operator==(const FNavLinkId& Other) const
+	{
+		return Id == Other.Id;
+	}
+
+
+	bool operator!=(const FNavLinkId& Other) const
+	{
+		return !this->operator==(Other);
+	}
+	
+	uint64 GetId() const
+	{
+		return Id;
+	}
+
+	void SetId(uint64 InId)
+	{
+		Id = InId;
+	}
+
+	/**
+	 * New non Legacy NavLinkIds have the most significant bit set to 1. Only Id's formed from GenerateUniqueId() should have the most significant bit set to 1. We should only see extremely rare clashes
+	 * here anyway with 63 bits for the city hash in the sort of number of CustomLinks we are likely to have and there is a system in place to handle this for dynamic meshes at run time.
+	 * For static meshes the AuxiliaryId / ActorInstanceGuid will need to be generated again in the editor (probably easiest by deleting and readding the actor / component in the editor
+	 * at the moment).
+	 */
+	bool IsLegacyId() const
+	{
+		return (Id & NavLinkIdBitMask) == 0;
+	}
+
+	/**
+	 *  Helper function: returns unique ID number for custom links.
+	 */
+	static ENGINE_API FNavLinkId GenerateUniqueId(FNavLinkAuxiliaryId AuxiliaryId, FGuid ActorInstanceGuid);
+
+	friend inline uint32 GetTypeHash(FNavLinkId const& Value)
+	{
+		return GetTypeHash(Value.GetId());
+	}
+
+public:
+	static ENGINE_API const FNavLinkId Invalid;
+
+private:
+	UPROPERTY()
+	uint64 Id = InvalidLinkId;
+
+	static constexpr uint64 InvalidLinkId = 0;
+	static constexpr uint64 NavLinkIdBitMask = 1ULL << 63; // Newer non incremental 64 bit NavLinkIds will have a 1 in the most significant bit.
+};
+
 
 //////////////////////////////////////////////////////////////////////////
 // Path
@@ -198,25 +316,45 @@ struct FNavPathPoint : public FNavLocation
 	/** extra node flags */
 	uint32 Flags;
 
-	/** unique Id of custom navigation link starting at this point */
+	UE_DEPRECATED(5.3, "Use CustomNavLinkId instead. This id is no longer used in the engine.")
 	uint32 CustomLinkId;
 
-	FNavPathPoint() : Flags(0), CustomLinkId(0) {}
+	/** unique Id of custom navigation link starting at this point */
+	FNavLinkId CustomNavLinkId;
+
+	FNavPathPoint() : Flags(0)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		CustomLinkId = 0;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
 	FNavPathPoint(const FVector& InLocation, NavNodeRef InNodeRef = INVALID_NAVNODEREF, uint32 InFlags = 0) 
-		: FNavLocation(InLocation, InNodeRef), Flags(InFlags), CustomLinkId(0) {}
+		: FNavLocation(InLocation, InNodeRef), Flags(InFlags)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		CustomLinkId = 0;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FNavPathPoint(const FNavPathPoint&) = default;
+	FNavPathPoint(FNavPathPoint&& Other) = default;
+	FNavPathPoint& operator=(const FNavPathPoint& Other) = default;
+	FNavPathPoint& operator=(FNavPathPoint&& Other) = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	bool operator==(const FNavPathPoint& Other) const
 	{
-		return Flags == Other.Flags && CustomLinkId == Other.CustomLinkId && FNavLocation::operator==(Other);
+		return Flags == Other.Flags && CustomNavLinkId == Other.CustomNavLinkId && FNavLocation::operator==(Other);
 	}
 };
 
 /** path type data */
-struct ENGINE_API FNavPathType
+struct FNavPathType
 {
 	explicit FNavPathType(const FNavPathType* Parent = nullptr) : Id(++NextUniqueId), ParentType(Parent) {}
-	FNavPathType(const FNavPathType& Src) : Id(Src.Id), ParentType(Src.ParentType) {}
-	
+
 	bool operator==(const FNavPathType& Other) const
 	{
 		return Id == Other.Id || (ParentType != nullptr && *ParentType == Other);
@@ -228,7 +366,7 @@ struct ENGINE_API FNavPathType
 	}
 
 private:
-	static uint32 NextUniqueId;
+	static ENGINE_API uint32 NextUniqueId;
 	uint32 Id;
 	const FNavPathType* ParentType;
 };
@@ -317,12 +455,11 @@ struct FMovementProperties
 		, bCanFly(false)
 	{
 	}
-	FMovementProperties(const FMovementProperties& Other) = default;
 };
 
 /** Properties of representation of an 'agent' (or Pawn) used by AI navigation/pathfinding. */
 USTRUCT(BlueprintType)
-struct ENGINE_API FNavAgentProperties : public FMovementProperties
+struct FNavAgentProperties : public FMovementProperties
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -349,14 +486,16 @@ struct ENGINE_API FNavAgentProperties : public FMovementProperties
 	FNavAgentProperties(float Radius = -1.f, float Height = -1.f)
 		: AgentRadius(Radius), AgentHeight(Height), AgentStepHeight(-1), NavWalkingSearchHeightScale(0.5f)
 	{}
-	FNavAgentProperties(const FNavAgentProperties& Other);
 
-	void UpdateWithCollisionComponent(class UShapeComponent* CollisionComponent);
+	ENGINE_API FNavAgentProperties(const FNavAgentProperties& Other);
+	ENGINE_API FNavAgentProperties& operator=(const FNavAgentProperties& Other);
+
+	ENGINE_API void UpdateWithCollisionComponent(class UShapeComponent* CollisionComponent);
 
 	FORCEINLINE bool IsValid() const { return AgentRadius >= 0.f && AgentHeight >= 0.f; }
 	FORCEINLINE bool HasStepHeightOverride() const { return AgentStepHeight >= 0.0f; }
 
-	bool IsNavDataMatching(const FNavAgentProperties& Other) const;
+	ENGINE_API bool IsNavDataMatching(const FNavAgentProperties& Other) const;
 
 	FORCEINLINE bool IsEquivalent(const FNavAgentProperties& Other, float Precision = 5.f) const
 	{
@@ -380,9 +519,9 @@ struct ENGINE_API FNavAgentProperties : public FMovementProperties
 			: INVALID_NAVEXTENT;
 	}
 
-	void SetPreferredNavData(TSubclassOf<AActor> NavDataClass);
+	ENGINE_API void SetPreferredNavData(TSubclassOf<AActor> NavDataClass);
 
-	static const FNavAgentProperties DefaultProperties;
+	static ENGINE_API const FNavAgentProperties DefaultProperties;
 
 	friend inline uint32 GetTypeHash(const FNavAgentProperties& A)
 	{
@@ -392,7 +531,7 @@ struct ENGINE_API FNavAgentProperties : public FMovementProperties
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 USTRUCT(BlueprintType)
-struct ENGINE_API FNavDataConfig : public FNavAgentProperties
+struct FNavDataConfig : public FNavAgentProperties
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -408,40 +547,31 @@ struct ENGINE_API FNavDataConfig : public FNavAgentProperties
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Querying)
 	FVector DefaultQueryExtent;
 
-	UE_DEPRECATED(4.24, "FNavDataConfig.NavigationDataClass is deprecated and setting it directly has no effect. Please use setter and getter functions instead.")
-	UPROPERTY(Transient)
-	mutable TSubclassOf<AActor> NavigationDataClass;
-
-#if WITH_EDITOR
-	// used to be a UPROPERTY, but had to remove it so that it doesn't interfere
-	// with property redirects
-	UE_DEPRECATED(4.24, "FNavDataConfig.NavigationDataClassName is deprecated. Please use setter and getter functions instead.")
-	FSoftClassPath NavigationDataClassName;
-#endif // WITH_EDITOR
-
 protected:
 	/** Class to use when spawning navigation data instance */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Navigation, meta = (MetaClass = "/Script/NavigationSystem.NavigationData"))
 	TSoftClassPtr<AActor> NavDataClass;
 
 public:	
-	FNavDataConfig(float Radius = FNavigationSystem::FallbackAgentRadius, float Height = FNavigationSystem::FallbackAgentHeight);
-	FNavDataConfig(const FNavDataConfig& Other);
+	ENGINE_API FNavDataConfig(float Radius = FNavigationSystem::FallbackAgentRadius, float Height = FNavigationSystem::FallbackAgentHeight);
+
+	ENGINE_API FNavDataConfig(const FNavDataConfig& Other);
+	ENGINE_API FNavDataConfig& operator=(const FNavDataConfig& Other);
 
 	bool IsValid() const 
 	{
 		return FNavAgentProperties::IsValid() && NavDataClass.IsValid();
 	}
 
-	void Invalidate();
+	ENGINE_API void Invalidate();
 
-	void SetNavDataClass(UClass* InNavDataClass);
-	void SetNavDataClass(TSoftClassPtr<AActor> InNavDataClass);
+	ENGINE_API void SetNavDataClass(UClass* InNavDataClass);
+	ENGINE_API void SetNavDataClass(TSoftClassPtr<AActor> InNavDataClass);
 	
 	template<typename T>
 	TSubclassOf<T> GetNavDataClass() const { return TSubclassOf<T>(NavDataClass.Get()); }
 
-	FString GetDescription() const;
+	ENGINE_API FString GetDescription() const;
 
 #if WITH_EDITOR
 	static FName GetNavigationDataClassPropertyName()
@@ -618,14 +748,14 @@ public:
 //----------------------------------------------------------------------//
 // generic "landscape" support
 //----------------------------------------------------------------------//
-struct ENGINE_API FNavHeightfieldSamples
+struct FNavHeightfieldSamples
 {
 	TNavStatArray<int16> Heights;
 	TBitArray<> Holes;
 
-	FNavHeightfieldSamples();
-	void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
+	ENGINE_API FNavHeightfieldSamples();
+	ENGINE_API void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
 
-	void Empty();
+	ENGINE_API void Empty();
 	FORCEINLINE bool IsEmpty() const { return Heights.IsEmpty() && Holes.IsEmpty();  }
 };

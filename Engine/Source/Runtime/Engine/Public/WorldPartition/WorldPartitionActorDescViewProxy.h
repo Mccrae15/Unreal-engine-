@@ -10,7 +10,7 @@
 class FWorldPartitionActorViewProxy : public FWorldPartitionActorDescView
 {
 public:
-	FWorldPartitionActorViewProxy(const FWorldPartitionActorDesc* InActorDesc);
+	ENGINE_API FWorldPartitionActorViewProxy(const FWorldPartitionActorDesc* InActorDesc);
 
 private:
 	TUniquePtr<FWorldPartitionActorDesc> CachedActorDesc;

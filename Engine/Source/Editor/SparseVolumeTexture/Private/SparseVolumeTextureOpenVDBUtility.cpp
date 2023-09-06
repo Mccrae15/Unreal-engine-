@@ -5,27 +5,85 @@
 #include "SparseVolumeTextureOpenVDBUtility.h"
 #include "SparseVolumeTextureOpenVDB.h"
 #include "SparseVolumeTexture/SparseVolumeTexture.h"
+#include "SparseVolumeTexture/SparseVolumeTextureData.h"
 #include "OpenVDBGridAdapter.h"
+#include "OpenVDBImportOptions.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSparseVolumeTextureOpenVDBUtility, Log, All);
 
 #if OPENVDB_AVAILABLE
 
-// We are using this instead of GMaxVolumeTextureDimensions to be independent of the platform that
-// the asset is imported on. 2048 should be a safe value that should be supported by all our platforms.
-static constexpr int32 SVTMaxVolumeTextureDim = 2048;
-
 namespace
 {
-	// Utility class acting as adapter between TArray<uint8> and std::istream
+	// Utility class acting as adapter between TArray64<uint8> and std::istream.
+	// In order to work around a problem where a std::streambuf implementation is limited to
+	// 2GB buffers, we need to manually update the pointers whenever we are done processing a 2GB chunk.
 	class FArrayUint8StreamBuf : public std::streambuf
 	{
 	public:
-		explicit FArrayUint8StreamBuf(TArray<uint8>& Array)
+		explicit FArrayUint8StreamBuf(TArray64<uint8>& Array)
 		{
 			char* Data = (char*)Array.GetData();
-			setg(Data, Data, Data + Array.Num());
+			size_t Num = Array.Num();
+			FileBegin = Data;
+			FileEnd = Data + Num;
+			FileRead = Data;
 		}
+
+		// Calls setg() to with a set of pointers exposing a window into the input file.
+		// Returns true if there are any more bytes to be read.
+		bool UpdatePointers()
+		{
+			StreamBegin = FileRead;
+			StreamEnd = FMath::Min(FileEnd, StreamBegin + ChunkSize);
+			StreamRead = StreamBegin;
+			FileRead = StreamRead;
+			setg(StreamBegin, StreamRead, StreamEnd);
+			const bool bHasBytesToRead = StreamBegin < StreamEnd;
+			return bHasBytesToRead;
+		}
+
+		// This function is called by the parent class and is expected to be implemented by subclasses.
+		// It requests n bytes to be copied into s. 
+		std::streamsize xsgetn(char* s, std::streamsize n) override
+		{
+			for (std::streamsize ReadBytes = 0; ReadBytes < n;)
+			{
+				// We read all bytes of the input file. gptr() is the current read ptr and egptr() is the end ptr.
+				if (gptr() == egptr() && !UpdatePointers())
+				{
+					check(gptr() == FileEnd);
+					return ReadBytes;
+				}
+				// Try to read n bytes but make a smaller read if we would read past the current ptr window exposed to streambuf.
+				const std::streamsize Available = FMath::Min(n - ReadBytes, static_cast<std::streamsize>(egptr() - gptr()));
+				memcpy(s, gptr(), Available);
+				// Advance pointers and the ReadBytes counter
+				s += Available;
+				ReadBytes += Available;
+				StreamRead = gptr() + Available;
+				FileRead = StreamRead;
+				// Update the Next ptr in streambuf
+				setg(StreamBegin, StreamRead, StreamEnd);
+			}
+			return n;
+		}
+
+		// Get the current character but don't advance the position. This is called by uflow() in the parent class when it runs out of bytes.
+		// We use it to move the exposed window into the file data.
+		int_type underflow() override
+		{
+			return (gptr() == egptr() && !UpdatePointers()) ? traits_type::eof() : *gptr();
+		}
+
+	private:
+		static constexpr size_t ChunkSize = INT32_MAX;	// The size of the range to expose to std::streambuf with setg()
+		char* FileBegin = nullptr;						// Begin ptr of the file data
+		char* FileEnd = nullptr;						// One byte past the end of the file data
+		char* FileRead = nullptr;						// The position up to which the file data has been exposed to/processed by the streambuf.
+		char* StreamBegin = nullptr;					// The begin ptr of the currently exposed file chunk.
+		char* StreamEnd = nullptr;						// The end ptr of the currently exposed file chunk.
+		char* StreamRead = nullptr;						// The last value of the read/next ptr set with setg().
 	};
 }
 
@@ -42,9 +100,9 @@ static FOpenVDBGridInfo GetOpenVDBGridInfo(openvdb::GridBase::Ptr Grid, uint32 G
 	GridInfo.Index = GridIndex;
 	GridInfo.NumComponents = 0;
 	GridInfo.Type = EOpenVDBGridType::Unknown;
-	GridInfo.VolumeActiveAABBMin = FVector(VolumeActiveAABB.min().x(), VolumeActiveAABB.min().y(), VolumeActiveAABB.min().z());
-	GridInfo.VolumeActiveAABBMax = FVector(VolumeActiveAABB.max().x(), VolumeActiveAABB.max().y(), VolumeActiveAABB.max().z());
-	GridInfo.VolumeActiveDim = FVector(VolumeActiveDim.x(), VolumeActiveDim.y(), VolumeActiveDim.z());
+	GridInfo.VolumeActiveAABBMin = FIntVector3(VolumeActiveAABB.min().x(), VolumeActiveAABB.min().y(), VolumeActiveAABB.min().z());
+	GridInfo.VolumeActiveAABBMax = FIntVector3(VolumeActiveAABB.max().x() + 1, VolumeActiveAABB.max().y() + 1, VolumeActiveAABB.max().z() + 1); // +1 because CoordBBox::Max is inclusive, but we want exclusive
+	GridInfo.VolumeActiveDim = FIntVector3(VolumeActiveDim.x(), VolumeActiveDim.y(), VolumeActiveDim.z());
 	GridInfo.VolumeVoxelSize = FVector(VolumeVoxelSize.x(), VolumeVoxelSize.y(), VolumeVoxelSize.z());
 	GridInfo.bIsInWorldSpace = Grid->isInWorldSpace();
 	GridInfo.bHasUniformVoxels = Grid->hasUniformVoxels();
@@ -58,7 +116,27 @@ static FOpenVDBGridInfo GetOpenVDBGridInfo(openvdb::GridBase::Ptr Grid, uint32 G
 	}
 
 	// Figure out the type/format of the grid
-	if (Grid->isType<FOpenVDBFloat1Grid>())
+	if (Grid->isType<FOpenVDBHalf1Grid>())
+	{
+		GridInfo.NumComponents = 1;
+		GridInfo.Type = EOpenVDBGridType::Half;
+	}
+	else if (Grid->isType<FOpenVDBHalf2Grid>())
+	{
+		GridInfo.NumComponents = 2;
+		GridInfo.Type = EOpenVDBGridType::Half2;
+	}
+	else if (Grid->isType<FOpenVDBHalf3Grid>())
+	{
+		GridInfo.NumComponents = 3;
+		GridInfo.Type = EOpenVDBGridType::Half3;
+	}
+	else if (Grid->isType<FOpenVDBHalf4Grid>())
+	{
+		GridInfo.NumComponents = 4;
+		GridInfo.Type = EOpenVDBGridType::Half4;
+	}
+	else if (Grid->isType<FOpenVDBFloat1Grid>())
 	{
 		GridInfo.NumComponents = 1;
 		GridInfo.Type = EOpenVDBGridType::Float;
@@ -118,13 +196,6 @@ static FOpenVDBGridInfo GetOpenVDBGridInfo(openvdb::GridBase::Ptr Grid, uint32 G
 
 bool IsOpenVDBGridValid(const FOpenVDBGridInfo& GridInfo, const FString& Filename)
 {
-	if (GridInfo.VolumeActiveDim.X * GridInfo.VolumeActiveDim.Y * GridInfo.VolumeActiveDim.Z == 0)
-	{
-		// SVT_TODO we should gently handle that case
-		UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("OpenVDB grid is empty due to volume size being 0: %s"), *Filename);
-		return false;
-	}
-
 	if (!GridInfo.bHasUniformVoxels)
 	{
 		UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("OpenVDB importer cannot handle non uniform voxels: %s"), *Filename);
@@ -133,12 +204,21 @@ bool IsOpenVDBGridValid(const FOpenVDBGridInfo& GridInfo, const FString& Filenam
 	return true;
 }
 
-bool GetOpenVDBGridInfo(TArray<uint8>& SourceFile, bool bCreateStrings, TArray<FOpenVDBGridInfo>* OutGridInfo)
+bool GetOpenVDBGridInfo(TArray64<uint8>& SourceFile, bool bCreateStrings, TArray<FOpenVDBGridInfo>* OutGridInfo)
 {
 #if OPENVDB_AVAILABLE
 	FArrayUint8StreamBuf StreamBuf(SourceFile);
 	std::istream IStream(&StreamBuf);
-	openvdb::io::Stream Stream(IStream, false /*delayLoad*/);
+	openvdb::io::Stream Stream;
+	try
+	{
+		Stream = openvdb::io::Stream(IStream, false /*delayLoad*/);
+	}
+	catch (const openvdb::Exception& Exception)
+	{
+		UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Error, TEXT("Failed to read file due to exception: %s"), *FString(Exception.what()));
+		return false;
+	}
 
 	openvdb::GridPtrVecPtr Grids = Stream.getGrids();
 
@@ -157,11 +237,11 @@ bool GetOpenVDBGridInfo(TArray<uint8>& SourceFile, bool bCreateStrings, TArray<F
 	return false;
 }
 
-static EPixelFormat GetMultiComponentFormat(ESparseVolumePackedDataFormat Format, uint32 NumComponents)
+static EPixelFormat GetMultiComponentFormat(ESparseVolumeAttributesFormat Format, uint32 NumComponents)
 {
 	switch (Format)
 	{
-	case ESparseVolumePackedDataFormat::Unorm8:
+	case ESparseVolumeAttributesFormat::Unorm8:
 	{
 		switch (NumComponents)
 		{
@@ -172,7 +252,7 @@ static EPixelFormat GetMultiComponentFormat(ESparseVolumePackedDataFormat Format
 		}
 		break;
 	}
-	case ESparseVolumePackedDataFormat::Float16:
+	case ESparseVolumeAttributesFormat::Float16:
 	{
 		switch (NumComponents)
 		{
@@ -183,7 +263,7 @@ static EPixelFormat GetMultiComponentFormat(ESparseVolumePackedDataFormat Format
 		}
 		break;
 	}
-	case ESparseVolumePackedDataFormat::Float32:
+	case ESparseVolumeAttributesFormat::Float32:
 	{
 		switch (NumComponents)
 		{
@@ -198,411 +278,208 @@ static EPixelFormat GetMultiComponentFormat(ESparseVolumePackedDataFormat Format
 	return PF_Unknown;
 }
 
-static uint32 PackPageTableEntry(const FIntVector3& Coord)
-{
-	// A page encodes the physical tile coord as unsigned int of 11 11 10 bits
-	// This means a page coord cannot be larger than 2047 for x and y and 1023 for z
-	// which mean we cannot have more than 2048*2048*1024 = 4 Giga tiles of 16^3 tiles.
-	uint32 Result = (Coord.X & 0x7FF) | ((Coord.Y & 0x7FF) << 11) | ((Coord.Z & 0x3FF) << 22);
-	return Result;
-}
 
-static FIntVector3 UnpackPageTableEntry(uint32 Packed)
-{
-	FIntVector3 Result;
-	Result.X = Packed & 0x7FF;
-	Result.Y = (Packed >> 11) & 0x7FF;
-	Result.Z = (Packed >> 22) & 0x3FF;
-	return Result;
-}
-
-bool ConvertOpenVDBToSparseVolumeTexture(
-	TArray<uint8>& SourceFile,
-	FSparseVolumeRawSourcePackedData& PackedDataA,
-	FSparseVolumeRawSourcePackedData& PackedDataB,
-	FOpenVDBToSVTConversionResult* OutResult,
-	bool bOverrideActiveMinMax,
-	FVector ActiveMin,
-	FVector ActiveMax)
-{
 #if OPENVDB_AVAILABLE
 
-	constexpr uint32 NumPackedData = 2; // PackedDataA and PackedDataB, representing the two textures with voxel data
-	FSparseVolumeRawSourcePackedData* PackedData[NumPackedData] = { &PackedDataA, &PackedDataB };
+class FSparseVolumeTextureDataProviderOpenVDB : public UE::SVT::ITextureDataProvider
+{
+public:
 
-	// Compute some basic info about the number of components and which format to use
-	uint32 NumActualComponents[NumPackedData] = {};
-	EPixelFormat MultiCompFormat[NumPackedData] = {};
-	uint32 FormatSize[NumPackedData] = {};
-	uint32 SingleComponentFormatSize[NumPackedData] = {};
-	bool bNormalizedFormat[NumPackedData] = {};
-	bool bHasValidSourceGrids[NumPackedData] = {};
-	bool bAnySourceGridIndicesValid = false;
-
-	for (uint32 PackedDataIdx = 0; PackedDataIdx < NumPackedData; ++PackedDataIdx)
+	bool Initialize(TArray64<uint8>& SourceFile, const FOpenVDBImportOptions& ImportOptions, const FIntVector3& InVolumeBoundsMin)
 	{
-		uint32 NumRequiredComponents = 0;
-		for (uint32 ComponentIdx = 0; ComponentIdx < 4; ++ComponentIdx)
+		Attributes = ImportOptions.Attributes;
+		VolumeBoundsMin = InVolumeBoundsMin;
+
+		// Compute some basic info about the number of components and which format to use
+		EPixelFormat MultiCompFormat[NumAttributesDescs] = {};
+		bool bNormalizedFormat[NumAttributesDescs] = {};
+		bool bHasValidSourceGrids[NumAttributesDescs] = {};
+		bool bAnySourceGridIndicesValid = false;
+
+		for (int32 AttributesIdx = 0; AttributesIdx < NumAttributesDescs; ++AttributesIdx)
 		{
-			if (PackedData[PackedDataIdx]->SourceGridIndex[ComponentIdx] != INDEX_NONE)
+			int32 NumRequiredComponents = 0;
+			for (int32 ComponentIdx = 0; ComponentIdx < 4; ++ComponentIdx)
 			{
-				check(PackedData[PackedDataIdx]->SourceComponentIndex[ComponentIdx] != INDEX_NONE);
-				NumRequiredComponents = FMath::Max(ComponentIdx + 1, NumRequiredComponents);
-				bHasValidSourceGrids[PackedDataIdx] = true;
-				bAnySourceGridIndicesValid = true;
+				if (Attributes[AttributesIdx].Mappings[ComponentIdx].SourceGridIndex != INDEX_NONE)
+				{
+					check(Attributes[AttributesIdx].Mappings[ComponentIdx].SourceComponentIndex != INDEX_NONE);
+					NumRequiredComponents = FMath::Max(ComponentIdx + 1, NumRequiredComponents);
+					bHasValidSourceGrids[AttributesIdx] = true;
+					bAnySourceGridIndicesValid = true;
+				}
+			}
+
+			if (bHasValidSourceGrids[AttributesIdx])
+			{
+				NumComponents[AttributesIdx] = NumRequiredComponents == 3 ? 4 : NumRequiredComponents; // We don't support formats with only 3 components
+				bNormalizedFormat[AttributesIdx] = Attributes[AttributesIdx].Format == ESparseVolumeAttributesFormat::Unorm8;
+				MultiCompFormat[AttributesIdx] = GetMultiComponentFormat(Attributes[AttributesIdx].Format, NumComponents[AttributesIdx]);
+
+				if (MultiCompFormat[AttributesIdx] == PF_Unknown)
+				{
+					UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture is set to use an unsupported format: %i"), (int32)Attributes[AttributesIdx].Format);
+					return false;
+				}
 			}
 		}
 
-		if (bHasValidSourceGrids[PackedDataIdx])
+		// All source grid indices are INDEX_NONE, so nothing was selected for import
+		if (!bAnySourceGridIndicesValid)
 		{
-			NumActualComponents[PackedDataIdx] = NumRequiredComponents == 3 ? 4 : NumRequiredComponents; // We don't support formats with only 3 components
-			bNormalizedFormat[PackedDataIdx] = PackedData[PackedDataIdx]->Format == ESparseVolumePackedDataFormat::Unorm8;
-			MultiCompFormat[PackedDataIdx] = GetMultiComponentFormat(PackedData[PackedDataIdx]->Format, NumActualComponents[PackedDataIdx]);
-
-			if (MultiCompFormat[PackedDataIdx] == PF_Unknown)
-			{
-				UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture is set to use an unsupported format: %i"), (int32)PackedData[PackedDataIdx]->Format);
-				return false;
-			}
-
-			FormatSize[PackedDataIdx] = (uint32)GPixelFormats[(SIZE_T)MultiCompFormat[PackedDataIdx]].BlockBytes;
-			SingleComponentFormatSize[PackedDataIdx] = FormatSize[PackedDataIdx] / NumActualComponents[PackedDataIdx];
+			UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture has all components set to <None>, so there is nothing to import."));
+			return false;
 		}
-	}
 
-	// All source grid indices are INDEX_NONE, so nothing was selected for import
-	if (!bAnySourceGridIndicesValid)
-	{
-		UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture has all components set to <None>, so there is nothing to import."));
-		return false;
-	}
-
-	// Load file
-	FArrayUint8StreamBuf StreamBuf(SourceFile);
-	std::istream IStream(&StreamBuf);
-	openvdb::io::Stream Stream(IStream, false /*delayLoad*/);
-
-	// Check that the source grid indices are valid
-	openvdb::GridPtrVecPtr Grids = Stream.getGrids();
-	const size_t NumSourceGrids = Grids ? Grids->size() : 0;
-	for (uint32 PackedDataIdx = 0; PackedDataIdx < NumPackedData; ++PackedDataIdx)
-	{
-		for (uint32 CompIdx = 0; CompIdx < 4; ++CompIdx)
+		// Load file
+		FArrayUint8StreamBuf StreamBuf(SourceFile);
+		std::istream IStream(&StreamBuf);
+		openvdb::io::Stream Stream;
+		try
 		{
-			const uint32 SourceGridIndex = PackedData[PackedDataIdx]->SourceGridIndex[CompIdx];
-			if (SourceGridIndex != INDEX_NONE && SourceGridIndex >= NumSourceGrids)
+			Stream = openvdb::io::Stream(IStream, false /*delayLoad*/);
+		}
+		catch (const openvdb::Exception& Exception)
+		{
+			UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Error, TEXT("Failed to read file due to exception: %s"), *FString(Exception.what()));
+			return false;
+		}
+
+		// Check that the source grid indices are valid
+		openvdb::GridPtrVecPtr Grids = Stream.getGrids();
+		const size_t NumSourceGrids = Grids ? Grids->size() : 0;
+		for (const FOpenVDBSparseVolumeAttributesDesc& AttributesDesc : Attributes)
+		{
+			for (const FOpenVDBSparseVolumeComponentMapping& Mapping : AttributesDesc.Mappings)
 			{
-				UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture has invalid index into the array of grids in the source file: %i"), (int32)SourceGridIndex);
-				return false;
+				const int32 SourceGridIndex = Mapping.SourceGridIndex;
+				if (SourceGridIndex != INDEX_NONE && SourceGridIndex >= (int32)NumSourceGrids)
+				{
+					UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture has invalid index into the array of grids in the source file: %i"), SourceGridIndex);
+					return false;
+				}
 			}
 		}
+
+		SVTCreateInfo.AttributesFormats[0] = MultiCompFormat[0];
+		SVTCreateInfo.AttributesFormats[1] = MultiCompFormat[1];
+
+		FIntVector3 SmallestAABBMin = FIntVector3(INT32_MAX);
+		FIntVector3 LargestAABBMax = FIntVector3(INT32_MIN);
+
+		// Compute per source grid data of up to 4 different grids (one per component)
+		UniqueGridAdapters.SetNum((int32)NumSourceGrids);
+		GridToComponentMappings.SetNum((int32)NumSourceGrids);
+		for (int32 AttributesIdx = 0; AttributesIdx < NumAttributesDescs; ++AttributesIdx)
+		{
+			for (int32 CompIdx = 0; CompIdx < 4; ++CompIdx)
+			{
+				const uint32 SourceGridIndex = Attributes[AttributesIdx].Mappings[CompIdx].SourceGridIndex;
+				const uint32 SourceComponentIndex = Attributes[AttributesIdx].Mappings[CompIdx].SourceComponentIndex;
+				if (SourceGridIndex == INDEX_NONE)
+				{
+					continue;
+				}
+
+				openvdb::GridBase::Ptr GridBase = (*Grids)[SourceGridIndex];
+
+				// Try to reuse adapters. Internally they use caching to accelerate read accesses, 
+				// so using three different adapters to access the three components of a single grid would be wasteful.
+				if (UniqueGridAdapters[SourceGridIndex] == nullptr)
+				{
+					UniqueGridAdapters[SourceGridIndex] = CreateOpenVDBGridAdapter(GridBase);
+					if (!UniqueGridAdapters[SourceGridIndex])
+					{
+						return false;
+					}
+				}
+
+				FOpenVDBGridInfo GridInfo = GetOpenVDBGridInfo(GridBase, 0, false);
+				if (!IsOpenVDBGridValid(GridInfo, TEXT("")))
+				{
+					return false;
+				}
+
+				SmallestAABBMin.X = FMath::Min(SmallestAABBMin.X, GridInfo.VolumeActiveAABBMin.X);
+				SmallestAABBMin.Y = FMath::Min(SmallestAABBMin.Y, GridInfo.VolumeActiveAABBMin.Y);
+				SmallestAABBMin.Z = FMath::Min(SmallestAABBMin.Z, GridInfo.VolumeActiveAABBMin.Z);
+				LargestAABBMax.X = FMath::Max(LargestAABBMax.X, GridInfo.VolumeActiveAABBMax.X);
+				LargestAABBMax.Y = FMath::Max(LargestAABBMax.Y, GridInfo.VolumeActiveAABBMax.Y);
+				LargestAABBMax.Z = FMath::Max(LargestAABBMax.Z, GridInfo.VolumeActiveAABBMax.Z);
+
+				SVTCreateInfo.FallbackValues[AttributesIdx][CompIdx] = UniqueGridAdapters[SourceGridIndex]->GetBackgroundValue(SourceComponentIndex);
+
+				FSingleGridToComponentMapping Mapping{};
+				Mapping.AttributesIdx = (int32)AttributesIdx;
+				Mapping.ComponentIdx = (int32)CompIdx;
+				Mapping.GridComponentIdx = (int32)SourceComponentIndex;
+				GridToComponentMappings[SourceGridIndex].Add(Mapping);
+			}
+		}
+		const bool bEmptyBounds = SmallestAABBMin.X >= LargestAABBMax.X || SmallestAABBMin.Y >= LargestAABBMax.Y || SmallestAABBMin.Z >= LargestAABBMax.Z;
+		SVTCreateInfo.VirtualVolumeAABBMin = bEmptyBounds ? FIntVector3(INT32_MAX) : (SmallestAABBMin - VolumeBoundsMin);
+		SVTCreateInfo.VirtualVolumeAABBMax = bEmptyBounds ? FIntVector3(INT32_MIN) : (LargestAABBMax - VolumeBoundsMin);
+
+		return true;
 	}
 
-	FSparseVolumeAssetHeader& Header = *OutResult->Header;
-	Header.PackedDataAFormat = MultiCompFormat[0];
-	Header.PackedDataBFormat = MultiCompFormat[1];
-	Header.SourceVolumeResolution = FIntVector::ZeroValue;
-	
-	FIntVector SmallestAABBMin = FIntVector(INT32_MAX);
-
-	// Compute per source grid data of up to 4 different grids (one per component)
-	TArray<TSharedPtr<IOpenVDBGridAdapterBase>> UniqueGridAdapters;
-	UniqueGridAdapters.SetNum((int32)NumSourceGrids);
-	TSharedPtr<IOpenVDBGridAdapterBase> GridAdapters[NumPackedData][4]{};
-	float GridBackgroundValues[NumPackedData][4]{};
-	float NormalizeScale[NumPackedData][4]{};
-	float NormalizeBias[NumPackedData][4]{};
-	for (uint32 PackedDataIdx = 0; PackedDataIdx < NumPackedData; ++PackedDataIdx)
+	virtual UE::SVT::FTextureDataCreateInfo GetCreateInfo() const override
 	{
-		for (uint32 CompIdx = 0; CompIdx < 4; ++CompIdx)
+		return SVTCreateInfo;
+	}
+
+	void IteratePhysicalSource(TFunctionRef<void(const FIntVector3& Coord, int32 AttributesIdx, int32 ComponentIdx, float VoxelValue)> OnVisit) const override
+	{
+		for (int32 GridIdx = 0; GridIdx < UniqueGridAdapters.Num(); ++GridIdx)
 		{
-			NormalizeScale[PackedDataIdx][CompIdx] = 1.0f;
-			const uint32 SourceGridIndex = PackedData[PackedDataIdx]->SourceGridIndex[CompIdx];
-			const uint32 SourceComponentIndex = PackedData[PackedDataIdx]->SourceComponentIndex[CompIdx];
-			if (SourceGridIndex == INDEX_NONE)
+			if (!UniqueGridAdapters[GridIdx])
 			{
 				continue;
 			}
 
-			openvdb::GridBase::Ptr GridBase = (*Grids)[SourceGridIndex];
-
-			// Try to reuse adapters. Internally they use caching to accelerate read accesses, 
-			// so using three different adapters to access the three components of a single grid would be wasteful.
-			if (UniqueGridAdapters[SourceGridIndex] == nullptr)
-			{
-				UniqueGridAdapters[SourceGridIndex] = CreateOpenVDBGridAdapter(GridBase);
-				if (!UniqueGridAdapters[SourceGridIndex])
+			UniqueGridAdapters[GridIdx]->IteratePhysical(
+				[&](const FIntVector3& Coord, uint32 NumVoxelComponents, float* VoxelValues)
 				{
-					return false;
-				}
-			}
-
-			GridAdapters[PackedDataIdx][CompIdx] = UniqueGridAdapters[SourceGridIndex];
-
-			FOpenVDBGridInfo GridInfo = GetOpenVDBGridInfo(GridBase, 0, false);
-			if (!IsOpenVDBGridValid(GridInfo, TEXT("")))
-			{
-				return false;
-			}
-
-			if (bOverrideActiveMinMax)
-			{
-				GridInfo.VolumeActiveAABBMin = ActiveMin;
-				GridInfo.VolumeActiveAABBMax = ActiveMax;
-				GridInfo.VolumeActiveDim = ActiveMax + 1 - ActiveMin;
-			}
-
-			Header.SourceVolumeResolution.X = FMath::Max(Header.SourceVolumeResolution.X, GridInfo.VolumeActiveDim.X);
-			Header.SourceVolumeResolution.Y = FMath::Max(Header.SourceVolumeResolution.Y, GridInfo.VolumeActiveDim.Y);
-			Header.SourceVolumeResolution.Z = FMath::Max(Header.SourceVolumeResolution.Z, GridInfo.VolumeActiveDim.Z);
-			SmallestAABBMin.X = FMath::Min(SmallestAABBMin.X, GridInfo.VolumeActiveAABBMin.X);
-			SmallestAABBMin.Y = FMath::Min(SmallestAABBMin.Y, GridInfo.VolumeActiveAABBMin.Y);
-			SmallestAABBMin.Z = FMath::Min(SmallestAABBMin.Z, GridInfo.VolumeActiveAABBMin.Z);
-
-			GridBackgroundValues[PackedDataIdx][CompIdx] = GridAdapters[PackedDataIdx][CompIdx]->GetBackgroundValue(SourceComponentIndex);
-			if (bNormalizedFormat[PackedDataIdx] && PackedData[PackedDataIdx]->bRemapInputForUnorm)
-			{
-				float MinVal = 0.0f;
-				float MaxVal = 0.0f;
-				GridAdapters[PackedDataIdx][CompIdx]->GetMinMaxValue(SourceComponentIndex, &MinVal, &MaxVal);
-				const float Diff = MaxVal - MinVal;
-				NormalizeScale[PackedDataIdx][CompIdx] = MaxVal > SMALL_NUMBER ? (1.0f / Diff) : 1.0f;
-				NormalizeBias[PackedDataIdx][CompIdx] = -MinVal * NormalizeScale[PackedDataIdx][CompIdx];
-			}
+					for (const FSingleGridToComponentMapping& Mapping : GridToComponentMappings[GridIdx])
+					{
+						OnVisit(Coord - VolumeBoundsMin, Mapping.AttributesIdx, Mapping.ComponentIdx, VoxelValues[Mapping.GridComponentIdx]);
+					}
+				});
 		}
 	}
-	OutResult->Header->SourceVolumeAABBMin = SmallestAABBMin;
-	
-	FIntVector3 PageTableVolumeResolution = FIntVector3(
-		FMath::DivideAndRoundUp(Header.SourceVolumeResolution.X, SPARSE_VOLUME_TILE_RES),
-		FMath::DivideAndRoundUp(Header.SourceVolumeResolution.Y, SPARSE_VOLUME_TILE_RES),
-		FMath::DivideAndRoundUp(Header.SourceVolumeResolution.Z, SPARSE_VOLUME_TILE_RES));
-	if (PageTableVolumeResolution.X > SVTMaxVolumeTextureDim
-		|| PageTableVolumeResolution.Y > SVTMaxVolumeTextureDim
-		|| PageTableVolumeResolution.Z > SVTMaxVolumeTextureDim)
+
+private:
+
+	struct FSingleGridToComponentMapping
 	{
-		UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture page table texture dimensions exceed limit (%ix%ix%i): %ix%ix%i"), SVTMaxVolumeTextureDim, SVTMaxVolumeTextureDim, SVTMaxVolumeTextureDim, PageTableVolumeResolution.X, PageTableVolumeResolution.Y, PageTableVolumeResolution.Z);
+		int32 AttributesIdx;
+		int32 ComponentIdx;
+		int32 GridComponentIdx;
+	};
+
+	static constexpr int32 NumAttributesDescs = 2;
+	TArray<TSharedPtr<IOpenVDBGridAdapterBase>> UniqueGridAdapters;
+	TArray<TArray<FSingleGridToComponentMapping, TInlineAllocator<4>>> GridToComponentMappings;
+	TStaticArray<FOpenVDBSparseVolumeAttributesDesc, NumAttributesDescs> Attributes;
+	TStaticArray<uint32, NumAttributesDescs> NumComponents;
+	UE::SVT::FTextureDataCreateInfo SVTCreateInfo;
+	FIntVector3 VolumeBoundsMin;
+};
+
+#endif // OPENVDB_AVAILABLE
+
+bool ConvertOpenVDBToSparseVolumeTexture(TArray64<uint8>& SourceFile, const FOpenVDBImportOptions& ImportOptions, const FIntVector3& VolumeBoundsMin, UE::SVT::FTextureData& OutResult)
+{
+#if OPENVDB_AVAILABLE
+	FSparseVolumeTextureDataProviderOpenVDB DataProvider;
+	if (!DataProvider.Initialize(SourceFile, ImportOptions, VolumeBoundsMin))
+	{
 		return false;
 	}
-
-	Header.PageTableVolumeResolution = PageTableVolumeResolution;
-	Header.TileDataVolumeResolution = FIntVector::ZeroValue;	// unknown for now
-
-	// Tag all pages with valid data
-	TBitArray PagesWithData(false, Header.PageTableVolumeResolution.Z * Header.PageTableVolumeResolution.Y * Header.PageTableVolumeResolution.X);
-	for (uint32 GridIdx = 0; GridIdx < NumSourceGrids; ++GridIdx)
+	if (!OutResult.Create(DataProvider))
 	{
-		if (!UniqueGridAdapters[GridIdx])
-		{
-			continue;
-		}
-
-		UniqueGridAdapters[GridIdx]->IteratePhysical(
-			[&](const FIntVector3& Coord, uint32 NumComponents, float* VoxelValues)
-			{
-				// Check if the source grid component is used at all
-				bool bValueIsUsed = false;
-				for (uint32 PackedDataIdx = 0; PackedDataIdx < NumPackedData && !bValueIsUsed; ++PackedDataIdx)
-				{
-					for (uint32 DstCompIdx = 0; DstCompIdx < NumActualComponents[PackedDataIdx] && !bValueIsUsed; ++DstCompIdx)
-					{
-						for (uint32 SrcCompIdx = 0; SrcCompIdx < NumComponents && !bValueIsUsed; ++SrcCompIdx)
-						{
-							const bool bIsBackgroundValue = (VoxelValues[SrcCompIdx] == GridBackgroundValues[PackedDataIdx][DstCompIdx]);
-							bValueIsUsed |= !bIsBackgroundValue && (PackedData[PackedDataIdx]->SourceGridIndex[DstCompIdx] == GridIdx) && (PackedData[PackedDataIdx]->SourceComponentIndex[DstCompIdx] == SrcCompIdx);
-						}
-					}
-				}
-				if (!bValueIsUsed)
-				{
-					return;
-				}
-
-				const FIntVector3 GridCoord = Coord - SmallestAABBMin;
-				check(GridCoord.X >= 0 && GridCoord.Y >= 0 && GridCoord.Z >= 0);
-				check(GridCoord.X < Header.SourceVolumeResolution.X && GridCoord.Y < Header.SourceVolumeResolution.Y && GridCoord.Z < Header.SourceVolumeResolution.Z);
-				const FIntVector3 PageCoord = GridCoord / SPARSE_VOLUME_TILE_RES;
-				check(PageCoord.X >= 0 && PageCoord.Y >= 0 && PageCoord.Z >= 0);
-				check(PageCoord.X < Header.PageTableVolumeResolution.X && PageCoord.Y < Header.PageTableVolumeResolution.Y && PageCoord.Z < Header.PageTableVolumeResolution.Z);
-
-				const int32 PageIndex = PageCoord.Z * (Header.PageTableVolumeResolution.Y * Header.PageTableVolumeResolution.X) + PageCoord.Y * Header.PageTableVolumeResolution.X + PageCoord.X;
-				PagesWithData[PageIndex] = true;
-			});
-	}
-
-	// Allocate some memory for temp data (worst case)
-	TArray<FIntVector3> LinearAllocatedPages;
-	LinearAllocatedPages.SetNum(Header.PageTableVolumeResolution.X * Header.PageTableVolumeResolution.Y * Header.PageTableVolumeResolution.Z);
-
-	// Go over each potential page from the source data and push allocate it if it has any data.
-	// Otherwise point to the default empty page.
-	bool bAnyEmptyPageExists = false;
-	uint32 NumAllocatedPages = 0;
-	for (int32_t PageZ = 0; PageZ < Header.PageTableVolumeResolution.Z; ++PageZ)
-	{
-		for (int32_t PageY = 0; PageY < Header.PageTableVolumeResolution.Y; ++PageY)
-		{
-			for (int32_t PageX = 0; PageX < Header.PageTableVolumeResolution.X; ++PageX)
-			{
-				const int32 PageIndex = PageZ * (Header.PageTableVolumeResolution.Y * Header.PageTableVolumeResolution.X) + PageY * Header.PageTableVolumeResolution.X + PageX;
-				bool bHasAnyData = PagesWithData[PageIndex];
-				if (bHasAnyData)
-				{
-					LinearAllocatedPages[NumAllocatedPages] = FIntVector3(PageX, PageY, PageZ);
-					NumAllocatedPages++;
-				}
-				bAnyEmptyPageExists |= !bHasAnyData;
-			}
-		}
-	}
-
-	// Compute Page and Tile VolumeResolution from allocated pages
-	const uint32 EffectivelyAllocatedPageEntries = NumAllocatedPages + (bAnyEmptyPageExists ? 1 : 0);
-	uint32 TileVolumeResolutionCube = 1;
-	while (TileVolumeResolutionCube * TileVolumeResolutionCube * TileVolumeResolutionCube < EffectivelyAllocatedPageEntries)
-	{
-		TileVolumeResolutionCube++;				// We use a simple loop to compute the minimum resolution of a cube to store all the tile data
-	}
-	Header.TileDataVolumeResolution = FIntVector3(TileVolumeResolutionCube, TileVolumeResolutionCube, TileVolumeResolutionCube);
-	while (Header.TileDataVolumeResolution.X * Header.TileDataVolumeResolution.Y * (Header.TileDataVolumeResolution.Z - 1) > int32(EffectivelyAllocatedPageEntries))
-	{
-		Header.TileDataVolumeResolution.Z--;	// We then trim an edge to get back space.
-	}
-	const FIntVector3 TileCoordResolution = Header.TileDataVolumeResolution;
-	Header.TileDataVolumeResolution = Header.TileDataVolumeResolution * SPARSE_VOLUME_TILE_RES;
-	if (Header.TileDataVolumeResolution.X > SVTMaxVolumeTextureDim
-		|| Header.TileDataVolumeResolution.Y > SVTMaxVolumeTextureDim
-		|| Header.TileDataVolumeResolution.Z > SVTMaxVolumeTextureDim)
-	{
-		UE_LOG(LogSparseVolumeTextureOpenVDBUtility, Warning, TEXT("SparseVolumeTexture tile data texture dimensions exceed limit (%ix%ix%i): %ix%ix%i"), SVTMaxVolumeTextureDim, SVTMaxVolumeTextureDim, SVTMaxVolumeTextureDim, Header.TileDataVolumeResolution.X, Header.TileDataVolumeResolution.Y, Header.TileDataVolumeResolution.Z);
 		return false;
 	}
-
-	// Initialise the SparseVolumeTexture page and tile.
-	OutResult->PageTable->SetNumZeroed(Header.PageTableVolumeResolution.X * Header.PageTableVolumeResolution.Y * Header.PageTableVolumeResolution.Z);
-	OutResult->PhysicalTileDataA->SetNumZeroed(Header.TileDataVolumeResolution.X * Header.TileDataVolumeResolution.Y * Header.TileDataVolumeResolution.Z * FormatSize[0] * (bHasValidSourceGrids[0] ? 1 : 0));
-	OutResult->PhysicalTileDataB->SetNumZeroed(Header.TileDataVolumeResolution.X * Header.TileDataVolumeResolution.Y * Header.TileDataVolumeResolution.Z * FormatSize[1] * (bHasValidSourceGrids[1] ? 1 : 0));
-	uint32* PageTablePtr = OutResult->PageTable->GetData();
-	uint8* PhysicalTileDataPtrs[] = { OutResult->PhysicalTileDataA->GetData(), OutResult->PhysicalTileDataB->GetData() };
-
-	// Generate page table and tile volume data by splatting the data
-	{
-		FIntVector3 DstTileCoord = FIntVector3::ZeroValue;
-		auto GoToNextTileCoord = [&]()
-		{
-			DstTileCoord.X++;
-			if (DstTileCoord.X >= TileCoordResolution.X)
-			{
-				DstTileCoord.X = 0;
-				DstTileCoord.Y++;
-			}
-			if (DstTileCoord.Y >= TileCoordResolution.Y)
-			{
-				DstTileCoord.Y = 0;
-				DstTileCoord.Z++;
-			}
-		};
-
-		// Add an empty tile is needed, reserve slot at coord 0
-		if (bAnyEmptyPageExists)
-		{
-			// PageTable is all cleared to zero, simply skip a tile
-			GoToNextTileCoord();
-		}
-
-		for (uint32 i = 0; i < NumAllocatedPages; ++i)
-		{
-			FIntVector3 PageCoordToSplat = LinearAllocatedPages[i];
-			uint32 DestinationTileCoord32bit = PackPageTableEntry(DstTileCoord);
-
-			// Setup the page table entry
-			PageTablePtr
-				[
-					PageCoordToSplat.Z * Header.PageTableVolumeResolution.X * Header.PageTableVolumeResolution.Y +
-					PageCoordToSplat.Y * Header.PageTableVolumeResolution.X +
-				PageCoordToSplat.X
-				] = DestinationTileCoord32bit;
-
-			// Set the next tile to be written to
-			GoToNextTileCoord();
-		}
-	}
-
-	for (uint32 GridIdx = 0; GridIdx < NumSourceGrids; ++GridIdx)
-	{
-		if (!UniqueGridAdapters[GridIdx])
-		{
-			continue;
-		}
-
-		UniqueGridAdapters[GridIdx]->IteratePhysical(
-			[&](const FIntVector3& Coord, uint32 NumComponents, float* VoxelValues)
-			{
-				const FIntVector3 GridCoord = Coord - SmallestAABBMin;
-				check(GridCoord.X >= 0 && GridCoord.Y >= 0 && GridCoord.Z >= 0);
-				check(GridCoord.X < Header.SourceVolumeResolution.X&& GridCoord.Y < Header.SourceVolumeResolution.Y&& GridCoord.Z < Header.SourceVolumeResolution.Z);
-				const FIntVector3 PageCoord = GridCoord / SPARSE_VOLUME_TILE_RES;
-				check(PageCoord.X >= 0 && PageCoord.Y >= 0 && PageCoord.Z >= 0);
-				check(PageCoord.X < Header.PageTableVolumeResolution.X&& PageCoord.Y < Header.PageTableVolumeResolution.Y&& PageCoord.Z < Header.PageTableVolumeResolution.Z);
-
-				const int32 PageIndex = PageCoord.Z * (Header.PageTableVolumeResolution.Y * Header.PageTableVolumeResolution.X) + PageCoord.Y * Header.PageTableVolumeResolution.X + PageCoord.X;
-
-				if (!PagesWithData[PageIndex])
-				{
-					return;
-				}
-
-				const FIntVector3 DstTileCoord = UnpackPageTableEntry(PageTablePtr[PageIndex]);
-				const FIntVector3 TileLocalCoord = GridCoord % SPARSE_VOLUME_TILE_RES;
-
-				// Check all output components and splat VoxelValue if they map to this source grid/component
-				for (uint32 PackedDataIdx = 0; PackedDataIdx < NumPackedData; ++PackedDataIdx)
-				{
-					for (uint32 DstCompIdx = 0; DstCompIdx < NumActualComponents[PackedDataIdx]; ++DstCompIdx)
-					{
-						for (uint32 SrcCompIdx = 0; SrcCompIdx < NumComponents; ++SrcCompIdx)
-						{
-							if ((PackedData[PackedDataIdx]->SourceGridIndex[DstCompIdx] != GridIdx) || (PackedData[PackedDataIdx]->SourceComponentIndex[DstCompIdx] != SrcCompIdx))
-							{
-								continue;
-							}
-
-							const float VoxelValueNormalized = FMath::Clamp(VoxelValues[SrcCompIdx] * NormalizeScale[PackedDataIdx][DstCompIdx] + NormalizeBias[PackedDataIdx][DstCompIdx], 0.0f, 1.0f);
-
-							const size_t DstVoxelIndex =
-								(DstTileCoord.Z * SPARSE_VOLUME_TILE_RES + TileLocalCoord.Z) * Header.TileDataVolumeResolution.X * Header.TileDataVolumeResolution.Y +
-								(DstTileCoord.Y * SPARSE_VOLUME_TILE_RES + TileLocalCoord.Y) * Header.TileDataVolumeResolution.X +
-								(DstTileCoord.X * SPARSE_VOLUME_TILE_RES + TileLocalCoord.X);
-							const size_t DstCoord = DstVoxelIndex * FormatSize[PackedDataIdx] + DstCompIdx * SingleComponentFormatSize[PackedDataIdx];
-
-							switch (PackedData[PackedDataIdx]->Format)
-							{
-							case ESparseVolumePackedDataFormat::Unorm8:
-							{
-								PhysicalTileDataPtrs[PackedDataIdx][DstCoord] = uint8(VoxelValueNormalized * 255.0f);
-								break;
-							}
-							case ESparseVolumePackedDataFormat::Float16:
-							{
-								const uint16 VoxelValue16FEncoded = FFloat16(VoxelValues[SrcCompIdx]).Encoded;
-								*((uint16*)(&PhysicalTileDataPtrs[PackedDataIdx][DstCoord])) = VoxelValue16FEncoded;
-								break;
-							}
-							case ESparseVolumePackedDataFormat::Float32:
-							{
-								*((float*)(&PhysicalTileDataPtrs[PackedDataIdx][DstCoord])) = VoxelValues[SrcCompIdx];
-								break;
-							}
-							default:
-								checkNoEntry();
-								break;
-							}
-						}
-					}
-				}
-			});
-	}
-
 	return true;
 #else
 	return false;
@@ -613,6 +490,14 @@ const TCHAR* OpenVDBGridTypeToString(EOpenVDBGridType Type)
 {
 	switch (Type)
 	{
+	case EOpenVDBGridType::Half:
+		return TEXT("Half");
+	case EOpenVDBGridType::Half2:
+		return TEXT("Half2");
+	case EOpenVDBGridType::Half3:
+		return TEXT("Half3");
+	case EOpenVDBGridType::Half4:
+		return TEXT("Half4");
 	case EOpenVDBGridType::Float:
 		return TEXT("Float");
 	case EOpenVDBGridType::Float2:

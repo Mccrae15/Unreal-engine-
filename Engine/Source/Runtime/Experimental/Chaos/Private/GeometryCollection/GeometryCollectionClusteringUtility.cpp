@@ -10,7 +10,7 @@
 static int32 ChaosValidateResultsOfEditOperations = 0;
 static FAutoConsoleVariableRef CVarChaosStillCheckDistanceThreshold(TEXT("p.fracture.ValidateResultsOfEditOperations"), ChaosValidateResultsOfEditOperations, TEXT("When on this will enable result validation for fracture tool edit operations (can be slow for large geometry collection) [def:0]"));
 
-void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(FGeometryCollection* GeometryCollection, const int32 InsertAtIndex, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
+int32 FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(FGeometryCollection* GeometryCollection, const int32 InsertAtIndex, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
 {
 	check(GeometryCollection);
 
@@ -19,7 +19,7 @@ void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(FGeometryCol
 	return ClusterBonesUnderNewNodeWithParent(GeometryCollection, ParentIdx, SelectedBones, CalcNewLocalTransform, Validate);
 }
 
-void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNodeWithParent(FGeometryCollection* GeometryCollection, const int32 ParentOfNewNode, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
+int32 FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNodeWithParent(FGeometryCollection* GeometryCollection, const int32 ParentOfNewNode, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
 {
 	check(GeometryCollection);
 
@@ -59,6 +59,8 @@ void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNodeWithParent(FG
 	{
 		ValidateResults(GeometryCollection);
 	}
+
+	return NewBoneIndex;
 }
 
 void FGeometryCollectionClusteringUtility::ClusterAllBonesUnderNewRoot(FGeometryCollection* GeometryCollection)
@@ -337,7 +339,10 @@ void FGeometryCollectionClusteringUtility::CollapseHierarchyOneLevel(FGeometryCo
 
 	TArray<int32> Roots;
 	GetRootBones(GeometryCollection, Roots);
-	RecursivelyUpdateChildBoneNames(Roots[0], Children, BoneNames);
+	if (!Roots.IsEmpty())
+	{
+		RecursivelyUpdateChildBoneNames(Roots[0], Children, BoneNames);
+	}
 
 	ValidateResults(GeometryCollection);
 }
@@ -376,14 +381,13 @@ void FGeometryCollectionClusteringUtility::RenameBone(FGeometryCollection* Geome
 	}
 }
 
-int32 FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(const FGeometryCollection* GeometryCollection, const TArray<int32>& SourceElements)
+int32 FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(const FManagedArrayCollection* Collection, const TArray<int32>& SourceElements)
 {
-	if (!ensure(GeometryCollection->HasAttribute("Level", FGeometryCollection::TransformGroup)))
+	const Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(*Collection);
+	if (!HierarchyFacade.IsValid() || !HierarchyFacade.HasLevelAttribute())
 	{
 		return -1;
 	}
-	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
-	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 
 	// which of the source elements is the most significant, closest to the root that has children (is a cluster)
 	int32 ElementClosestToRoot = -1;
@@ -391,9 +395,11 @@ int32 FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(const FGeometr
 
 	for (int32 Element : SourceElements)
 	{
-		if (Children[Element].Num() > 0 && (Levels[Element] < LevelClosestToRoot || LevelClosestToRoot == -1))
+		const TSet<int32>* Children = HierarchyFacade.FindChildren(Element);
+		int32 Level = HierarchyFacade.GetInitialLevel(Element);
+		if (Children && !Children->IsEmpty() && (Level < LevelClosestToRoot || LevelClosestToRoot == -1))
 		{
-			LevelClosestToRoot = Levels[Element];
+			LevelClosestToRoot = Level;
 			ElementClosestToRoot = Element;
 		}
 	}
@@ -806,32 +812,37 @@ void FGeometryCollectionClusteringUtility::ValidateResults(FGeometryCollection* 
 	}
 }
 
-void FGeometryCollectionClusteringUtility::GetLeafBones(const FGeometryCollection* GeometryCollection, int BoneIndex, bool bOnlyRigids, TArray<int32>& LeafBonesOut)
+void FGeometryCollectionClusteringUtility::GetLeafBones(const FManagedArrayCollection* Collection, int BoneIndex, bool bOnlyRigids, TArray<int32>& LeafBonesOut)
 {
-	if (!ensure(BoneIndex >= 0))
+	if (!ensure(BoneIndex >= 0 && Collection != nullptr))
 	{
 		return;
 	}
 
-	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
-	const TManagedArray<int32>& SimulationType = GeometryCollection->SimulationType;
+	const TManagedArrayAccessor<TSet<int32>> ChildrenAttribute(*Collection, FGeometryCollection::ChildrenAttribute, FGeometryCollection::TransformGroup);
+	const TManagedArrayAccessor<int32> SimulationTypeAttribute(*Collection , FGeometryCollection::SimulationTypeAttribute, FGeometryCollection::TransformGroup);
 
-	if (!bOnlyRigids && Children[BoneIndex].Num() == 0)
+	if (ChildrenAttribute.IsValid() && SimulationTypeAttribute.IsValid())
 	{
-		LeafBonesOut.Push(BoneIndex);
-	}
-	else if (bOnlyRigids && GeometryCollection->IsRigid(BoneIndex))
-	{
-		LeafBonesOut.Push(BoneIndex);
-	}
-	else if (Children[BoneIndex].Num() > 0)
-	{
-		for (int32 ChildElement : Children[BoneIndex])
+		const TManagedArray<TSet<int32>>& Children = ChildrenAttribute.Get();
+		const TManagedArray<int32>& SimulationType = SimulationTypeAttribute.Get();
+
+		if (!bOnlyRigids && Children[BoneIndex].Num() == 0)
 		{
-			GetLeafBones(GeometryCollection, ChildElement, bOnlyRigids, LeafBonesOut);
+			LeafBonesOut.Push(BoneIndex);
+		}
+		else if (bOnlyRigids && SimulationType[BoneIndex] == FGeometryCollection::ESimulationTypes::FST_Rigid)
+		{
+			LeafBonesOut.Push(BoneIndex);
+		}
+		else if (Children[BoneIndex].Num() > 0)
+		{
+			for (int32 ChildElement : Children[BoneIndex])
+			{
+				GetLeafBones(Collection, ChildElement, bOnlyRigids, LeafBonesOut);
+			}
 		}
 	}
-
 }
 
 void FGeometryCollectionClusteringUtility::MoveUpOneHierarchyLevel(FGeometryCollection* GeometryCollection, const TArray<int32>& SelectedBones)
@@ -864,7 +875,7 @@ void FGeometryCollectionClusteringUtility::MoveUpOneHierarchyLevel(FGeometryColl
 }
 
 
-int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(FGeometryCollection* GeometryCollection, const TArray<int32>& SelectedBones)
+int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(const FManagedArrayCollection* Collection, const TArray<int32>& SelectedBones)
 {
 	const int32 SelectionCount = SelectedBones.Num();
 	if (SelectionCount == 0)
@@ -879,21 +890,25 @@ int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(FGeometryCo
 		{
 			return INDEX_NONE;
 		}
-		LCA = FindLowestCommonAncestor(GeometryCollection, LCA, SelectedBones[Index]);
+		LCA = FindLowestCommonAncestor(Collection, LCA, SelectedBones[Index]);
 	}
 	return LCA;
 }
 
-int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(FGeometryCollection* GeometryCollection, int32 N0, int32 N1)
+int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(const FManagedArrayCollection* Collection, int32 N0, int32 N1)
 {
-	const TManagedArray<int32>& Parent = GeometryCollection->GetAttribute<int32>("Parent", FGeometryCollection::TransformGroup);
+	const TManagedArray<int32>* Parent = Collection->FindAttribute<int32>("Parent", FGeometryCollection::TransformGroup);
+	if (!Parent)
+	{
+		return INDEX_NONE;
+	}
 
 	// Record the path to root from the first 
 	TArray<int32> PathToRoot0;
 	PathToRoot0.Add(N0);
 	while (PathToRoot0.Last() != INDEX_NONE)
 	{
-		PathToRoot0.Add(Parent[PathToRoot0.Last()]);
+		PathToRoot0.Add((*Parent)[PathToRoot0.Last()]);
 	}
 
 	// Traverse from the second node to root and return the first node found that is in the first path.
@@ -904,7 +919,7 @@ int32 FGeometryCollectionClusteringUtility::FindLowestCommonAncestor(FGeometryCo
 		{
 			return LCA;
 		}
-		LCA = Parent[LCA];
+		LCA = (*Parent)[LCA];
 	}
 
 	// No common ancestor

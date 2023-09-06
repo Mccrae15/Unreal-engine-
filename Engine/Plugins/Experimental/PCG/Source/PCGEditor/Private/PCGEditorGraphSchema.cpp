@@ -2,10 +2,13 @@
 
 #include "PCGEditorGraphSchema.h"
 
-#include "Blueprint/BlueprintSupport.h"
 #include "PCGEdge.h"
 #include "PCGGraph.h"
 #include "PCGPin.h"
+#include "Elements/PCGCollapseElement.h"
+#include "Elements/PCGExecuteBlueprint.h"
+#include "Elements/PCGFilterByType.h"
+#include "Elements/PCGMakeConcreteElement.h"
 #include "Elements/PCGUserParameterGet.h"
 
 #include "PCGEditorCommon.h"
@@ -17,6 +20,7 @@
 #include "PCGEditorUtils.h"
 
 #include "AssetRegistry/AssetData.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "Engine/Blueprint.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ScopedTransaction.h"
@@ -115,6 +119,20 @@ const FPinConnectionResponse UPCGEditorGraphSchema::CanCreateConnection(const UE
 		return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("ConnectionTypesIncompatible", "Pins are incompatible"));
 	}
 
+	const EPCGTypeConversion RequiredTypeConversion = InputPin->GetRequiredTypeConversion(OutputPin);
+	if (RequiredTypeConversion == EPCGTypeConversion::CollapseToPoint)
+	{
+		return FPinConnectionResponse(CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE, LOCTEXT("ConnectionConversionToPoint", "Convert to Point"));
+	}
+	else if (RequiredTypeConversion == EPCGTypeConversion::Filter)
+	{
+		return FPinConnectionResponse(CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE, LOCTEXT("ConnectionUsingFilter", "Filter data to match type"));
+	}
+	else if (RequiredTypeConversion == EPCGTypeConversion::MakeConcrete)
+	{
+		return FPinConnectionResponse(CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE, LOCTEXT("ConnectionUsingMakeConcrete", "Make data concrete"));
+	}
+
 	if (!InputPin->AllowMultipleConnections() && InputPin->EdgeCount() > 0)
 	{
 		return FPinConnectionResponse((A->Direction == EGPD_Output) ? CONNECT_RESPONSE_BREAK_OTHERS_B : CONNECT_RESPONSE_BREAK_OTHERS_A, LOCTEXT("ConnectionBreakExisting", "Break existing connection?"));
@@ -125,34 +143,144 @@ const FPinConnectionResponse UPCGEditorGraphSchema::CanCreateConnection(const UE
 
 bool UPCGEditorGraphSchema::TryCreateConnection(UEdGraphPin* InA, UEdGraphPin* InB) const
 {
-	// TODO: check if we need to verify connectivity first
-	const bool bModified = Super::TryCreateConnection(InA, InB);
+	return TryCreateConnectionInternal(InA, InB, /*bAddConversionNodeIfNeeded=*/true);
+}
 
-	if (bModified)
+bool UPCGEditorGraphSchema::TryCreateConnectionInternal(UEdGraphPin* InA, UEdGraphPin* InB, bool bAddConversionNodeIfNeeded) const
+{
+	check(InA && InB);
+	if (InA->Direction == InB->Direction)
 	{
-		check(InA && InB);
-		const UEdGraphPin* A = (InA->Direction == EGPD_Output) ? InA : InB;
-		const UEdGraphPin* B = (InA->Direction == EGPD_Input) ? InA : InB;
-		
-		check(A->Direction == EGPD_Output && B->Direction == EGPD_Input);
-
-		UEdGraphNode* NodeA = A->GetOwningNode();
-		UEdGraphNode* NodeB = B->GetOwningNode();
-
-		UPCGEditorGraphNodeBase* PCGGraphNodeA = CastChecked<UPCGEditorGraphNodeBase>(NodeA);
-		UPCGEditorGraphNodeBase* PCGGraphNodeB = CastChecked<UPCGEditorGraphNodeBase>(NodeB);
-
-		UPCGNode* PCGNodeA = PCGGraphNodeA->GetPCGNode();
-		UPCGNode* PCGNodeB = PCGGraphNodeB->GetPCGNode();
-		check(PCGNodeA && PCGNodeB);
-
-		UPCGGraph* PCGGraph = PCGNodeA->GetGraph();
-		check(PCGGraph);
-
-		PCGGraph->AddLabeledEdge(PCGNodeA, A->PinName, PCGNodeB, B->PinName);
+		// Don't connect same polarity
+		return false;
 	}
 
-	return bModified;
+	UEdGraphPin* A = (InA->Direction == EGPD_Output) ? InA : InB;
+	UEdGraphPin* B = (InA->Direction == EGPD_Input) ? InA : InB;
+	check(A->Direction == EGPD_Output && B->Direction == EGPD_Input);
+
+	UEdGraphNode* NodeA = A->GetOwningNode();
+	UEdGraphNode* NodeB = B->GetOwningNode();
+	check(NodeA && NodeB);
+
+	UPCGEditorGraphNodeBase* PCGEdGraphNodeA = CastChecked<UPCGEditorGraphNodeBase>(NodeA);
+	UPCGEditorGraphNodeBase* PCGEdGraphNodeB = CastChecked<UPCGEditorGraphNodeBase>(NodeB);
+
+	UPCGNode* PCGNodeA = PCGEdGraphNodeA->GetPCGNode();
+	UPCGNode* PCGNodeB = PCGEdGraphNodeB->GetPCGNode();
+	check(PCGNodeA && PCGNodeB);
+
+	const UPCGPin* PCGPinA = PCGNodeA->GetOutputPin(A->PinName);
+	const UPCGPin* PCGPinB = PCGNodeB->GetInputPin(B->PinName);
+	check(PCGPinA && PCGPinB);
+	if (!PCGPinA->IsCompatible(PCGPinB))
+	{
+		return false;
+	}
+
+	UPCGGraph* PCGGraph = PCGNodeA->GetGraph();
+	check(PCGGraph);
+
+	// Creates a connection via an intermediate conversion node.
+	auto ConnectViaIntermediate = [this, PCGGraph, NodeA, NodeB, A, B](UPCGNode* IntermediateNode)
+	{
+		UEdGraph* Graph = NodeA->GetGraph();
+		check(Graph);
+		Graph->Modify();
+
+		FGraphNodeCreator<UPCGEditorGraphNode> NodeCreator(*Graph);
+		UPCGEditorGraphNode* ConversionNode = NodeCreator.CreateUserInvokedNode(/*bSelectNewNode=*/false);
+		ConversionNode->Construct(IntermediateNode);
+
+		// Put the conversion node between A & B but make it stay within a radius of B to keep things tidy.
+		{
+			// Initially place at mid point
+			ConversionNode->NodePosX = (NodeA->NodePosX + NodeB->NodePosX) / 2;
+			ConversionNode->NodePosY = (NodeA->NodePosY + NodeB->NodePosY) / 2;
+
+			// A hand tweaked distance that keeps it reasonably close.
+			constexpr float MaxDistFromB = 200;
+			const FVector2D OffsetFromB(ConversionNode->NodePosX - NodeB->NodePosX, ConversionNode->NodePosY - NodeB->NodePosY);
+			const float Dist = OffsetFromB.Length();
+			if (Dist > MaxDistFromB)
+			{
+				const float Scale = MaxDistFromB / Dist;
+				ConversionNode->NodePosX = NodeB->NodePosX + Scale * OffsetFromB.X;
+				ConversionNode->NodePosY = NodeB->NodePosY + Scale * OffsetFromB.Y;
+			}
+		}
+
+		NodeCreator.Finalize();
+
+		IntermediateNode->PositionX = ConversionNode->NodePosX;
+		IntermediateNode->PositionY = ConversionNode->NodePosY;
+
+		bool bModifiedA = false, bModifiedB = false;
+
+		UEdGraphPin*const* ConversionInputPin = ConversionNode->GetAllPins().FindByPredicate([](const UEdGraphPin* InPin)
+		{
+			return InPin->Direction == EGPD_Input && InPin->GetFName() == PCGPinConstants::DefaultInputLabel;
+		});
+
+		if (ensure(ConversionInputPin && *ConversionInputPin))
+		{
+			// Last argument: don't allow recursively adding conversion nodes.
+			bModifiedA = TryCreateConnectionInternal(A, *ConversionInputPin, /*bAddConversionNodeIfNeeded=*/false);
+		}
+
+		// Call GetAllPins() a second time. It's important that we wire up the pins one at a time. Wiring a pin can change dynamic pin types
+		// which can refresh the node, so we must re-query the pins after each connection is made.
+		UEdGraphPin*const* ConversionOutputPin = ConversionNode->GetAllPins().FindByPredicate([](const UEdGraphPin* InPin)
+		{
+			return InPin->Direction == EGPD_Output && InPin->GetFName() == PCGPinConstants::DefaultOutputLabel;
+		});
+
+		if (ensure(ConversionOutputPin && *ConversionOutputPin))
+		{
+			// Last argument: don't allow recursively adding conversion nodes.
+			bModifiedB = TryCreateConnectionInternal(*ConversionOutputPin, B, /*bAddConversionNodeIfNeeded=*/false);
+		}
+
+		return bModifiedA || bModifiedB;
+	};
+
+	const EPCGTypeConversion Conversion = bAddConversionNodeIfNeeded ? PCGPinA->GetRequiredTypeConversion(PCGPinB) : EPCGTypeConversion::NoConversionRequired;
+	if (Conversion == EPCGTypeConversion::CollapseToPoint)
+	{
+		UPCGSettings* NodeSettings = nullptr;
+		UPCGNode* ConversionPCGNode = PCGGraph->AddNodeOfType(UPCGCollapseSettings::StaticClass(), NodeSettings);
+
+		return ConnectViaIntermediate(ConversionPCGNode);
+	}
+	else if (Conversion == EPCGTypeConversion::Filter)
+	{
+		UPCGSettings* NodeSettings = nullptr;
+		UPCGNode* ConversionPCGNode = PCGGraph->AddNodeOfType(UPCGFilterByTypeSettings::StaticClass(), NodeSettings);
+
+		// Setup the output pin based on the conversion target type, before new node is finalized.
+		UPCGFilterByTypeSettings* Settings = CastChecked<UPCGFilterByTypeSettings>(NodeSettings);
+		Settings->TargetType = PCGPinB->Properties.AllowedTypes;
+		ConversionPCGNode->UpdateAfterSettingsChangeDuringCreation();
+
+		return ConnectViaIntermediate(ConversionPCGNode);
+	}
+	else if (Conversion == EPCGTypeConversion::MakeConcrete)
+	{
+		UPCGSettings* NodeSettings = nullptr;
+		UPCGNode* ConversionPCGNode = PCGGraph->AddNodeOfType(UPCGMakeConcreteSettings::StaticClass(), NodeSettings);
+
+		return ConnectViaIntermediate(ConversionPCGNode);
+	}
+	else
+	{
+		const bool bModified = Super::TryCreateConnection(InA, InB);
+		if (bModified)
+		{
+			PCGGraph->AddLabeledEdge(PCGNodeA, A->PinName, PCGNodeB, B->PinName);
+		}
+
+		return bModified;
+	}
 }
 
 void UPCGEditorGraphSchema::BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNotification) const
@@ -225,9 +353,25 @@ void UPCGEditorGraphSchema::GetNativeElementActions(FGraphActionMenuBuilder& Act
 				const FText Category = StaticEnum<EPCGSettingsType>()->GetDisplayNameTextByValue(static_cast<__underlying_type(EPCGSettingsType)>(PCGSettings->GetType()));
 				const FText Description = PCGSettings->GetNodeTooltipText();
 
-				TSharedPtr<FPCGEditorGraphSchemaAction_NewNativeElement> NewAction(new FPCGEditorGraphSchemaAction_NewNativeElement(Category, MenuDesc, Description, 0));
-				NewAction->SettingsClass = SettingsClass;
-				ActionMenuBuilder.AddAction(NewAction);
+				TArray<FPCGPreConfiguredSettingsInfo> AllPreconfiguredInfo = PCGSettings->GetPreconfiguredInfo();
+
+				if (AllPreconfiguredInfo.IsEmpty() || !PCGSettings->OnlyExposePreconfiguredSettings())
+				{
+					TSharedPtr<FPCGEditorGraphSchemaAction_NewNativeElement> NewAction(new FPCGEditorGraphSchemaAction_NewNativeElement(Category, MenuDesc, Description, 0));
+					NewAction->SettingsClass = SettingsClass;
+					ActionMenuBuilder.AddAction(NewAction);
+				}
+
+				// Also add preconfigured settings
+				const FText NewCategory = FText::Format(LOCTEXT("PreconfiguredSettingsCategory", "{0}|{1}"), Category, MenuDesc);
+
+				for (FPCGPreConfiguredSettingsInfo PreconfiguredInfo : AllPreconfiguredInfo)
+				{
+					TSharedPtr<FPCGEditorGraphSchemaAction_NewNativeElement> NewPreconfiguredAction(new FPCGEditorGraphSchemaAction_NewNativeElement(NewCategory, PreconfiguredInfo.Label, PreconfiguredInfo.Tooltip.IsEmpty() ? Description : PreconfiguredInfo.Tooltip, 0));
+					NewPreconfiguredAction->SettingsClass = SettingsClass;
+					NewPreconfiguredAction->PreconfiguredInfo = std::move(PreconfiguredInfo);
+					ActionMenuBuilder.AddAction(NewPreconfiguredAction);
+				}
 			}
 		}
 	}
@@ -244,7 +388,7 @@ void UPCGEditorGraphSchema::GetNativeElementActions(FGraphActionMenuBuilder& Act
 
 					for (const FPropertyBagPropertyDesc& PropertyDesc : BagStruct->GetPropertyDescs())
 					{
-						const FText MenuDesc = FText::Format(FText::FromString(TEXT("Get {0}")), FText::FromName(PropertyDesc.Name));
+						const FText MenuDesc = FText::Format(LOCTEXT("GetterNodeName", "Get {0}"), FText::FromName(PropertyDesc.Name));
 						const FText Description = FText::Format(LOCTEXT("NodeTooltip", "Get the value from '{0}' parameter, can be overridden by the graph instance."), FText::FromName(PropertyDesc.Name));
 
 						TSharedPtr<FPCGEditorGraphSchemaAction_NewGetParameterElement> NewAction(new FPCGEditorGraphSchemaAction_NewGetParameterElement(Category, MenuDesc, Description, 0));
@@ -263,18 +407,44 @@ void UPCGEditorGraphSchema::GetBlueprintElementActions(FGraphActionMenuBuilder& 
 {
 	PCGEditorUtils::ForEachPCGBlueprintAssetData([&ActionMenuBuilder](const FAssetData& AssetData)
 	{
-		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(TEXT("bExposeToLibrary"));
+		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(GET_MEMBER_NAME_CHECKED(UPCGBlueprintElement, bExposeToLibrary));
+		const bool bOnlyExposePreconfiguredSettings = AssetData.GetTagValueRef<bool>(GET_MEMBER_NAME_CHECKED(UPCGBlueprintElement, bOnlyExposePreconfiguredSettings));
+
 		if (bExposeToLibrary)
 		{
-			const FText MenuDesc = FText::FromName(AssetData.AssetName);
-			const FText Category = AssetData.GetTagValueRef<FText>(TEXT("Category"));
-			const FText Description = AssetData.GetTagValueRef<FText>(TEXT("Description"));
+			const FText MenuDesc = FText::FromString(FName::NameToDisplayString(AssetData.AssetName.ToString(), false));
+			const FText Category = AssetData.GetTagValueRef<FText>(GET_MEMBER_NAME_CHECKED(UPCGBlueprintElement, Category));
+			const FText Description = AssetData.GetTagValueRef<FText>(GET_MEMBER_NAME_CHECKED(UPCGBlueprintElement, Description));
 
-			const FString GeneratedClass = AssetData.GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath);
+			const FSoftClassPath GeneratedClass = FSoftClassPath(AssetData.GetTagValueRef<FString>(FBlueprintTags::GeneratedClassPath));
 
-			TSharedPtr<FPCGEditorGraphSchemaAction_NewBlueprintElement> NewBlueprintAction(new FPCGEditorGraphSchemaAction_NewBlueprintElement(Category, MenuDesc, Description, 0));
-			NewBlueprintAction->BlueprintClassPath = FSoftClassPath(GeneratedClass);
-			ActionMenuBuilder.AddAction(NewBlueprintAction);
+			// Only load the class if we have enabled preconfigured settings.
+			TArray<FPCGPreConfiguredSettingsInfo> AllPreconfiguredInfo;
+			if (AssetData.GetTagValueRef<bool>(GET_MEMBER_NAME_CHECKED(UPCGBlueprintElement, bEnablePreconfiguredSettings)))
+			{
+				TSubclassOf<UPCGBlueprintElement> BlueprintClass = GeneratedClass.TryLoadClass<UPCGBlueprintElement>();
+				const UPCGBlueprintElement* BlueprintElement = BlueprintClass ? Cast<UPCGBlueprintElement>(BlueprintClass->GetDefaultObject()) : nullptr;
+
+				AllPreconfiguredInfo = BlueprintElement ? BlueprintElement->PreconfiguredInfo : TArray<FPCGPreConfiguredSettingsInfo>{};
+			}
+
+			if (AllPreconfiguredInfo.IsEmpty() || !bOnlyExposePreconfiguredSettings)
+			{
+				TSharedPtr<FPCGEditorGraphSchemaAction_NewBlueprintElement> NewBlueprintAction(new FPCGEditorGraphSchemaAction_NewBlueprintElement(Category, MenuDesc, Description, 0));
+				NewBlueprintAction->BlueprintClassPath = GeneratedClass;
+				ActionMenuBuilder.AddAction(NewBlueprintAction);
+			}
+
+			// Also add preconfigured settings
+			const FText NewCategory = FText::Format(LOCTEXT("PreconfiguredSettingsCategory", "{0}|{1}"), Category, MenuDesc);
+
+			for (FPCGPreConfiguredSettingsInfo PreconfiguredInfo : AllPreconfiguredInfo)
+			{
+				TSharedPtr<FPCGEditorGraphSchemaAction_NewBlueprintElement> NewPreconfiguredAction(new FPCGEditorGraphSchemaAction_NewBlueprintElement(NewCategory, PreconfiguredInfo.Label, PreconfiguredInfo.Tooltip.IsEmpty() ? Description : PreconfiguredInfo.Tooltip, 0));
+				NewPreconfiguredAction->BlueprintClassPath = GeneratedClass;
+				NewPreconfiguredAction->PreconfiguredInfo = std::move(PreconfiguredInfo);
+				ActionMenuBuilder.AddAction(NewPreconfiguredAction);
+			}
 		}
 
 		return true;
@@ -288,7 +458,7 @@ void UPCGEditorGraphSchema::GetSettingsElementActions(FGraphActionMenuBuilder& A
 		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(TEXT("bExposeToLibrary"));
 		if (bExposeToLibrary)
 		{
-			const FText MenuDesc = FText::FromName(AssetData.AssetName);
+			const FText MenuDesc = FText::FromString(FName::NameToDisplayString(AssetData.AssetName.ToString(), false));
 			const FText Category = AssetData.GetTagValueRef<FText>(TEXT("Category"));
 			const FText Description = AssetData.GetTagValueRef<FText>(TEXT("Description"));
 
@@ -325,7 +495,7 @@ void UPCGEditorGraphSchema::GetSubgraphElementActions(FGraphActionMenuBuilder& A
 		const bool bExposeToLibrary = AssetData.GetTagValueRef<bool>(TEXT("bExposeToLibrary"));
 		if (bExposeToLibrary)
 		{
-			const FText MenuDesc = FText::FromName(AssetData.AssetName);
+			const FText MenuDesc = FText::FromString(FName::NameToDisplayString(AssetData.AssetName.ToString(), false));
 			const FText Category = AssetData.GetTagValueRef<FText>(TEXT("Category"));
 			const FText Description = AssetData.GetTagValueRef<FText>(TEXT("Description"));
 
@@ -490,24 +660,28 @@ void FPCGEditorConnectionDrawingPolicy::DetermineWiringStyle(UEdGraphPin* Output
 		Params.WireColor = GetDefault<UPCGEditorSettings>()->GetPinColor(OutputPin->PinType);
 	}
 
-	// Desaturate and connection if the node is disabled and the data on this wire won't be used
+	// Desaturate connection if downstream node is disabled or if the data on this wire won't be used
 	if (InputPin && OutputPin)
 	{
 		const UPCGEditorGraphNodeBase* EditorNode = CastChecked<const UPCGEditorGraphNodeBase>(InputPin->GetOwningNode());
 		const UPCGNode* PCGNode = EditorNode ? EditorNode->GetPCGNode() : nullptr;
 		const UPCGPin* PCGPin = PCGNode ? PCGNode->GetInputPin(InputPin->GetFName()) : nullptr;
 		const UPCGEditorGraphNodeBase* UpstreamEditorNode = CastChecked<const UPCGEditorGraphNodeBase>(OutputPin->GetOwningNode());
+		const UPCGEditorGraphNodeBase* DownstreamEditorNode = CastChecked<const UPCGEditorGraphNodeBase>(InputPin->GetOwningNode());
 
-		if (PCGPin && UpstreamEditorNode)
+		if (PCGPin && UpstreamEditorNode && DownstreamEditorNode)
 		{
+			const bool bDownstreamNodeForceDisabled = DownstreamEditorNode->IsDisplayAsDisabledForced() && !DownstreamEditorNode->IsHighlighted();
+
 			// Look for the PCG edge that correlates with passed in (OutputPin, InputPin) edge
 			const TObjectPtr<UPCGEdge>* PCGEdge = PCGPin->Edges.FindByPredicate([UpstreamEditorNode, OutputPin](const UPCGEdge* ConnectedPCGEdge)
 			{
 				return UpstreamEditorNode->GetPCGNode() == ConnectedPCGEdge->InputPin->Node && ConnectedPCGEdge->InputPin->Properties.Label == OutputPin->GetFName();
 			});
+			const bool bDownstreamNodeDoesNotUseData = PCGEdge && !PCGNode->IsEdgeUsedByNodeExecution(*PCGEdge);
 
 			// If edge found and is not used, gray it out
-			if (PCGEdge && !PCGNode->IsEdgeUsedByNodeExecution(*PCGEdge))
+			if (bDownstreamNodeForceDisabled || bDownstreamNodeDoesNotUseData)
 			{
 				Params.WireColor = Params.WireColor.Desaturate(0.7f);
 			}

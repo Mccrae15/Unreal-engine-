@@ -2,13 +2,15 @@
 
 #include "Serialization/EditorBulkData.h"
 
+#include "Async/UniqueLock.h"
 #include "Compression/OodleDataCompression.h"
+#include "Experimental/Async/MultiUniqueLock.h"
 #include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/PackageSegment.h"
-#include "Misc/SecureHash.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/SecureHash.h"
 #include "ProfilingDebugging/CountersTrace.h"
 #include "Serialization/BulkData.h"
 #include "Serialization/BulkDataRegistry.h"
@@ -18,8 +20,8 @@
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/ObjectVersion.h"
 #include "UObject/PropertyPortFlags.h"
-#include "UObject/UObjectGlobals.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UObjectGlobals.h"
 #include "Virtualization/VirtualizationSystem.h"
 #include "Virtualization/VirtualizationTypes.h"
 
@@ -41,8 +43,8 @@
 	#define UE_CORRUPTED_DATA_SEVERITY Error
 #endif // VBD_CORRUPTED_PAYLOAD_IS_FATAL
 
-TRACE_DECLARE_INT_COUNTER(EditorBulkData_PayloadDataLoaded, TEXT("EditorBulkData/PayloadDataLoaded"));
-TRACE_DECLARE_INT_COUNTER(EditorBulkData_PayloadDataPulled, TEXT("EditorBulkData/PayloadDatPulled"));
+TRACE_DECLARE_ATOMIC_INT_COUNTER(EditorBulkData_PayloadDataLoaded, TEXT("EditorBulkData/PayloadDataLoaded"));
+TRACE_DECLARE_ATOMIC_INT_COUNTER(EditorBulkData_PayloadDataPulled, TEXT("EditorBulkData/PayloadDataPulled"));
 
 namespace UE::Serialization
 {
@@ -454,6 +456,17 @@ ECompressedBufferCompressionLevel FCompressionSettings::GetCompressionLevel()
 
 } // namespace Private
 
+FEditorBulkData::~FEditorBulkData()
+{
+	if (HasAttachedArchive())
+	{
+		AttachedAr->DetachBulkData(this, false);
+		AttachedAr = nullptr;
+	}
+
+	OnExitMemory();
+}
+
 FEditorBulkData::FEditorBulkData(FEditorBulkData&& Other)
 {
 	*this = MoveTemp(Other);
@@ -461,18 +474,31 @@ FEditorBulkData::FEditorBulkData(FEditorBulkData&& Other)
 
 FEditorBulkData& FEditorBulkData::operator=(FEditorBulkData&& Other)
 {
+	UE::TMultiUniqueLock<FRecursiveMutex> _({&Mutex, &Other.Mutex });
+
 	// The same as the default move constructor, except we need to handle registration and unregistration
 	Unregister();
 	Other.Unregister();
+
+	if (HasAttachedArchive())
+	{
+		AttachedAr->DetachBulkData(this, false);
+	}
 
 	BulkDataId = MoveTemp(Other.BulkDataId);
 	PayloadContentId = MoveTemp(Other.PayloadContentId);
 	Payload = MoveTemp(Other.Payload);
 	PayloadSize = MoveTemp(Other.PayloadSize);
+	AttachedAr = Other.AttachedAr;
 	OffsetInFile = MoveTemp(Other.OffsetInFile);
 	PackagePath = MoveTemp(Other.PackagePath);
 	Flags = MoveTemp(Other.Flags);
 	CompressionSettings = MoveTemp(Other.CompressionSettings);
+
+	if (HasAttachedArchive())
+	{
+		AttachedAr->AttachBulkData(this);
+	}
 
 	Other.Reset();
 
@@ -488,6 +514,8 @@ FEditorBulkData::FEditorBulkData(const FEditorBulkData& Other)
 
 FEditorBulkData& FEditorBulkData::operator=(const FEditorBulkData& Other)
 {
+	UE::TMultiUniqueLock<FRecursiveMutex> _({ &Mutex, &Other.Mutex });
+
 	// Torn-off BulkDatas remain torn-off even when being copied into from a non-torn-off BulkData
 	// Remaining torn-off is a work-around necessary for FTextureSource::CopyTornOff to avoid registering a new
 	// guid before setting the new BulkData to torn-off. The caller can call Reset to clear the torn-off flag.
@@ -512,6 +540,11 @@ FEditorBulkData& FEditorBulkData::operator=(const FEditorBulkData& Other)
 		}
 	}
 
+	if (HasAttachedArchive())
+	{
+		AttachedAr->DetachBulkData(this, false);
+	}
+
 	PayloadContentId = Other.PayloadContentId;
 	Payload = Other.Payload;
 	PayloadSize = Other.PayloadSize;
@@ -519,6 +552,11 @@ FEditorBulkData& FEditorBulkData::operator=(const FEditorBulkData& Other)
 	PackagePath = Other.PackagePath;
 	Flags = Other.Flags;
 	CompressionSettings = Other.CompressionSettings;
+
+	if (HasAttachedArchive())
+	{
+		AttachedAr->AttachBulkData(this);
+	}
 
 	EnumRemoveFlags(Flags, TransientFlags);
 
@@ -533,31 +571,26 @@ FEditorBulkData& FEditorBulkData::operator=(const FEditorBulkData& Other)
 	return *this;
 }
 
-FEditorBulkData::~FEditorBulkData()
-{
-	if (HasAttachedArchive())
-	{
-		AttachedAr->DetachBulkData(this, false);
-		AttachedAr = nullptr;
-	}
-
-	OnExitMemory();
-}
-
 FEditorBulkData::FEditorBulkData(const FEditorBulkData& Other, ETornOff)
 {
+	UE::TMultiUniqueLock<FRecursiveMutex> _({ &Mutex, &Other.Mutex });
+
 	EnumAddFlags(Flags, EFlags::IsTornOff);
 	*this = Other; // We rely on operator= preserving the torn-off flag
 }
 
 void FEditorBulkData::TearOff()
 {
+	UE::TUniqueLock _(Mutex);
+
 	Unregister();
 	EnumAddFlags(Flags, EFlags::IsTornOff);
 }
 
 void FEditorBulkData::UpdateRegistrationOwner(UObject* Owner)
 {
+	UE::TUniqueLock _(Mutex);
+
 	UpdateRegistrationData(Owner, TEXT("UpdateRegistrationOwner"), false /* bAllowUpdateId */);
 }
 
@@ -761,6 +794,8 @@ void FEditorBulkData::CreateFromBulkData(FBulkData& InBulkData, const FGuid& InG
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::CreateFromBulkData);
 
+	UE::TUniqueLock _(Mutex);
+
 	Reset();
 
 #if UE_ALLOW_LINKERLOADER_ATTACHMENT
@@ -811,6 +846,8 @@ void FEditorBulkData::CreateFromBulkData(FBulkData& InBulkData, const FGuid& InG
 
 void FEditorBulkData::CreateLegacyUniqueIdentifier(UObject* Owner)
 {
+	UE::TUniqueLock _(Mutex);
+
 	if (BulkDataId.IsValid())
 	{
 		Unregister();
@@ -825,6 +862,8 @@ void FEditorBulkData::CreateLegacyUniqueIdentifier(UObject* Owner)
 void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegister)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::Serialize);
+	
+	UE::TUniqueLock _(Mutex);
 
 	if (Ar.IsTransacting())
 	{
@@ -1177,6 +1216,8 @@ void FEditorBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegiste
 
 void FEditorBulkData::SerializeForRegistry(FArchive& Ar)
 {
+	UE::TUniqueLock _(Mutex);
+
 	if (Ar.IsSaving())
 	{
 		check(CanSaveForRegistry());
@@ -1217,6 +1258,8 @@ void FEditorBulkData::SerializeForRegistry(FArchive& Ar)
 
 bool FEditorBulkData::CanSaveForRegistry() const
 {
+	UE::TUniqueLock _(Mutex);
+
 	return BulkDataId.IsValid() && PayloadSize > 0 && !IsMemoryOnlyPayload()
 		&& EnumHasAnyFlags(Flags, EFlags::IsTornOff) && !EnumHasAnyFlags(Flags, EFlags::HasRegistered);
 }
@@ -1393,50 +1436,20 @@ FCompressedBuffer FEditorBulkData::LoadFromSidecarFileInternal(ErrorVerbosity Ve
 	FOpenPackageResult Result = IPackageResourceManager::Get().OpenReadPackage(PackagePath, EPackageSegment::PayloadSidecar);
 	if (Result.Archive.IsValid() && Result.Format == EPackageFormat::Binary)
 	{
-		uint32 Version = INDEX_NONE;
-		*Result.Archive << Version;
-
-		if (Version != FTocEntry::PayloadSidecarFileVersion)
+		FPackageTrailer Trailer;
+		if (!FPackageTrailer::TryLoadFromArchive(*Result.Archive, Trailer))
 		{
-			UE_CLOG(Verbosity > ErrorVerbosity::None, LogSerialization, Error, TEXT("Unknown payload sidecar version (%u) found in '%s'"), Version, *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
+			UE_CLOG(Verbosity > ErrorVerbosity::None, LogSerialization, Error, TEXT("Unable to parse FPackageTrailer in '%s'"), *PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
 			return FCompressedBuffer();
 		}
 
-		// First we load the table of contents so we can find the payload in the file
-		TArray<FTocEntry> TableOfContents;
-		*Result.Archive << TableOfContents;
+		FCompressedBuffer CompressedPayload = Trailer.LoadLocalPayload(PayloadContentId, *Result.Archive);
 
-		const FTocEntry* Entry = TableOfContents.FindByPredicate([&PayloadContentId = PayloadContentId](const FTocEntry& Entry)
-			{
-				return Entry.Identifier == PayloadContentId;
-			});
+		UE_CLOG(CompressedPayload.IsNull(), LogSerialization, Error, TEXT("Could not find the payload '%s' in '%s'"),
+			*LexToString(PayloadContentId),
+			*PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
 
-		if (Entry != nullptr)
-		{
-			if (Entry->OffsetInFile != INDEX_NONE)
-			{
-				// Move the correct location of the data in the file
-				Result.Archive->Seek(Entry->OffsetInFile);
-
-				// Now we can actually serialize it
-				FCompressedBuffer PayloadFromDisk;
-				SerializeData(*Result.Archive, PayloadFromDisk, EFlags::None);
-
-				return PayloadFromDisk;
-			}
-			else if(Verbosity > ErrorVerbosity::None)
-			{
-				UE_LOG(LogSerialization, Error, TEXT("Payload '%s' in '%s' has an invalid OffsetInFile!"), 
-					*LexToString(PayloadContentId), 
-					*PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
-			}
-		}
-		else if(Verbosity > ErrorVerbosity::None)
-		{
-			UE_LOG(LogSerialization, Error, TEXT("Unable to find payload '%s' in '%s'"), 
-				*LexToString(PayloadContentId), 
-				*PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar));
-		}
+		return CompressedPayload;
 	}
 	else if(Verbosity > ErrorVerbosity::None)
 	{
@@ -1625,11 +1638,14 @@ bool FEditorBulkData::CanLoadDataFromDisk() const
 
 bool FEditorBulkData::IsMemoryOnlyPayload() const
 {
+	UE::TUniqueLock _(Mutex);
 	return !Payload.IsNull() && !IsDataVirtualized() && PackagePath.IsEmpty();
 }
 
 void FEditorBulkData::Reset()
 {
+	UE::TUniqueLock _(Mutex);
+
 	// Unregister rather than allowing the Registry to keep our record, since we are changing the payload
 	Unregister();
 	// Note that we do not reset the BulkDataId
@@ -1651,6 +1667,8 @@ void FEditorBulkData::Reset()
 
 void FEditorBulkData::UnloadData()
 {
+	UE::TUniqueLock _(Mutex);
+
 	if (CanUnloadData())
 	{
 		Payload.Reset();
@@ -1660,6 +1678,8 @@ void FEditorBulkData::UnloadData()
 void FEditorBulkData::DetachFromDisk(FArchive* Ar, bool bEnsurePayloadIsLoaded)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::DetachFromDisk);
+
+	UE::TUniqueLock _(Mutex);
 
 	check(Ar != nullptr);
 	check(Ar == AttachedAr || HasAttachedArchive() == false || AttachedAr->IsProxyOf(Ar));
@@ -1705,8 +1725,17 @@ void FEditorBulkData::DetachFromDisk(FArchive* Ar, bool bEnsurePayloadIsLoaded)
 
 FGuid FEditorBulkData::GetIdentifier() const
 {
+	UE::TUniqueLock _(Mutex);
+
 	checkf(GetPayloadSize() == 0 || BulkDataId.IsValid(), TEXT("If bulkdata has a valid payload then it should have a valid BulkDataId"));
 	return BulkDataId;
+}
+
+const FIoHash& FEditorBulkData::GetPayloadId() const
+{
+	UE::TUniqueLock _(Mutex);
+
+	return PayloadContentId;
 }
 
 void FEditorBulkData::SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner)
@@ -1857,9 +1886,11 @@ void FEditorBulkData::SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompre
 	LinkerSave.PackageTrailerBuilder->AddPayload(PayloadContentId, MoveTemp(PayloadToSerialize), PayloadFilter, MoveTemp(OnPayloadWritten));
 }
 
-void FEditorBulkData::UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InPayloadID, UObject* Owner)
+void FEditorBulkData::UpdatePayloadImpl(FSharedBuffer&& InPayload, const FIoHash& InPayloadID, UObject* Owner)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::UpdatePayloadImpl);
+
+	UE::TUniqueLock _(Mutex);
 
 	// Unregister before calling DetachBulkData; DetachFromDisk calls OnExitMemory which is incorrect since
 	// we are changing data rather than leaving memory
@@ -1882,7 +1913,7 @@ void FEditorBulkData::UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InP
 	}
 
 	PayloadSize = (int64)Payload.GetSize();
-	PayloadContentId = MoveTemp(InPayloadID);
+	PayloadContentId = InPayloadID;
 
 	EnumRemoveFlags(Flags,	EFlags::IsVirtualized |
 							EFlags::ReferencesLegacyFile |
@@ -1944,8 +1975,16 @@ FCompressedBuffer FEditorBulkData::GetDataInternal() const
 	}
 }
 
+bool FEditorBulkData::DoesPayloadNeedLoading() const
+{
+	UE::TUniqueLock _(Mutex);
+	return Payload.IsNull() && PayloadSize > 0;
+}
+
 TFuture<FSharedBuffer> FEditorBulkData::GetPayload() const
 {
+	UE::TUniqueLock _(Mutex);
+
 	TPromise<FSharedBuffer> Promise;
 	
 	if (GetPayloadSize() == 0)
@@ -1971,6 +2010,8 @@ TFuture<FSharedBuffer> FEditorBulkData::GetPayload() const
 
 TFuture<FCompressedBuffer>FEditorBulkData::GetCompressedPayload() const
 {
+	UE::TUniqueLock _(Mutex);
+
 	TPromise<FCompressedBuffer> Promise;
 
 	FCompressedBuffer CompressedPayload = GetDataInternal();
@@ -1983,9 +2024,20 @@ TFuture<FCompressedBuffer>FEditorBulkData::GetCompressedPayload() const
 
 void FEditorBulkData::UpdatePayload(FSharedBuffer InPayload, UObject* Owner)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::UpdatePayload);
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::UpdatePayload (FSharedBuffer));
 	FIoHash NewPayloadId = HashPayload(InPayload);
-	UpdatePayloadImpl(MoveTemp(InPayload), MoveTemp(NewPayloadId), Owner);
+
+	UpdatePayloadImpl(MoveTemp(InPayload), NewPayloadId, Owner);
+}
+
+void FEditorBulkData::UpdatePayload(FCompressedBuffer InPayload, UObject* Owner)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEditorBulkData::UpdatePayload(FCompressedBuffer));
+
+	FIoHash NewPayloadId = InPayload.GetRawSize() > 0 ? InPayload.GetRawHash() : FIoHash();
+	FSharedBuffer NewPayload = InPayload.DecompressToComposite().ToShared();
+
+	UpdatePayloadImpl(MoveTemp(NewPayload), NewPayloadId, Owner);
 }
 
 FEditorBulkData::FSharedBufferWithID::FSharedBufferWithID(FSharedBuffer InPayload)
@@ -1996,11 +2048,13 @@ FEditorBulkData::FSharedBufferWithID::FSharedBufferWithID(FSharedBuffer InPayloa
 
 void FEditorBulkData::UpdatePayload(FSharedBufferWithID InPayload, UObject* Owner)
 {
-	UpdatePayloadImpl(MoveTemp(InPayload.Payload), MoveTemp(InPayload.PayloadId), Owner);
+	UpdatePayloadImpl(MoveTemp(InPayload.Payload), InPayload.PayloadId, Owner);
 }
 
 void FEditorBulkData::SetCompressionOptions(ECompressionOptions Option)
 {
+	UE::TUniqueLock _(Mutex);
+
 	switch (Option)
 	{
 	case ECompressionOptions::Disabled:
@@ -2025,6 +2079,8 @@ void FEditorBulkData::SetCompressionOptions(ECompressionOptions Option)
 
 void FEditorBulkData::SetCompressionOptions(ECompressedBufferCompressor Compressor, ECompressedBufferCompressionLevel CompressionLevel)
 {
+	UE::TUniqueLock _(Mutex);
+
 	CompressionSettings.Set(Compressor, CompressionLevel);
 
 	if (CompressionSettings.GetCompressionLevel() == ECompressedBufferCompressionLevel::None)
@@ -2049,24 +2105,31 @@ FCustomVersionContainer FEditorBulkData::GetCustomVersions(FArchive& InlineArchi
 void FEditorBulkData::GetBulkDataVersions(FArchive& InlineArchive, FPackageFileVersion& OutUEVersion,
 	int32& OutLicenseeUEVersion, FCustomVersionContainer& OutCustomVersions) const
 {
-	if (EnumHasAnyFlags(Flags, EFlags::ReferencesWorkspaceDomain))
+	TUniquePtr<FArchive> ExternalArchive;
+
 	{
-		// Read the version data out of the separate package file
-		TUniquePtr<FArchive> ExternalArchive = IPackageResourceManager::Get().OpenReadExternalResource(
-			EPackageExternalResource::WorkspaceDomainFile, PackagePath.GetPackageName());
-		if (ExternalArchive.IsValid())
+		UE::TUniqueLock _(Mutex);
+		if (EnumHasAnyFlags(Flags, EFlags::ReferencesWorkspaceDomain))
 		{
-			FPackageFileSummary PackageFileSummary;
-			*ExternalArchive << PackageFileSummary;
-			if (PackageFileSummary.Tag == PACKAGE_FILE_TAG && !ExternalArchive->IsError())
-			{
-				OutUEVersion = PackageFileSummary.GetFileVersionUE();
-				OutLicenseeUEVersion = PackageFileSummary.GetFileVersionLicenseeUE();
-				OutCustomVersions = PackageFileSummary.GetCustomVersionContainer();
-				return;
-			}
+			// Read the version data out of the separate package file
+			ExternalArchive = IPackageResourceManager::Get().OpenReadExternalResource(EPackageExternalResource::WorkspaceDomainFile, PackagePath.GetPackageName());
 		}
 	}
+
+	if (ExternalArchive.IsValid())
+	{
+		FPackageFileSummary PackageFileSummary;
+		*ExternalArchive << PackageFileSummary;
+		if (PackageFileSummary.Tag == PACKAGE_FILE_TAG && !ExternalArchive->IsError())
+		{
+			OutUEVersion = PackageFileSummary.GetFileVersionUE();
+			OutLicenseeUEVersion = PackageFileSummary.GetFileVersionLicenseeUE();
+			OutCustomVersions = PackageFileSummary.GetCustomVersionContainer();
+
+			return;
+		}
+	}
+	
 	OutUEVersion = InlineArchive.UEVer();
 	OutLicenseeUEVersion = InlineArchive.LicenseeUEVer();
 	OutCustomVersions = InlineArchive.GetCustomVersions();
@@ -2074,11 +2137,15 @@ void FEditorBulkData::GetBulkDataVersions(FArchive& InlineArchive, FPackageFileV
 
 void FEditorBulkData::UpdatePayloadId()
 {
+	UE::TUniqueLock _(Mutex);
+
 	UpdateKeyIfNeeded();
 }
 
 bool FEditorBulkData::LocationMatches(const FEditorBulkData& Other) const
 {
+	UE::TMultiUniqueLock<FRecursiveMutex> _({ &Mutex, &Other.Mutex });
+
 	if (GetIdentifier() != Other.GetIdentifier())
 	{
 		// Different identifiers return false, even if location is the same
@@ -2388,72 +2455,12 @@ bool FEditorBulkData::ShouldUseLegacySerialization(const FLinkerSave* LinkerSave
 		return true;
 	}
 
+	if (ShouldSaveToPackageSidecar())
+	{
+		return true;
+	}
+
 	return !LinkerSave->PackageTrailerBuilder.IsValid();
-}
-	
-FArchive& operator<<(FArchive& Ar, FTocEntry& Entry)
-{
-	Ar << Entry.Identifier;
-	Ar << Entry.OffsetInFile;
-	Ar << Entry.UncompressedSize;
-
-	return Ar;
-}
-
- void operator<<(FStructuredArchive::FSlot Slot, FTocEntry& Entry)
-{
-	FStructuredArchive::FRecord Record = Slot.EnterRecord();
-
-	Record << SA_VALUE(TEXT("Identifier"), Entry.Identifier);
-	Record << SA_VALUE(TEXT("OffsetInFile"), Entry.OffsetInFile);
-	Record << SA_VALUE(TEXT("UncompressedSize"), Entry.UncompressedSize);
-}
-
-void FPayloadToc::AddEntry(const FEditorBulkData& BulkData)
-{
-	if (!BulkData.GetPayloadId().IsZero())
-	{
-		Contents.Emplace(BulkData);
-	}
-}
-
-bool FPayloadToc::FindEntry(const FIoHash& Identifier, FTocEntry& OutEntry)
-{
-	for (const FTocEntry& Entry : Contents)
-	{
-		if (Entry.Identifier == Identifier)
-		{
-			OutEntry = Entry;
-			return true;
-		}
-	}
-
-	return false;
-}
-
-const TArray<FTocEntry>& FPayloadToc::GetContents() const
-{
-	return Contents;
-}
-
-FArchive& operator<<(FArchive& Ar, FPayloadToc& TableOfContents)
-{
-	FPayloadToc::EVersion Version = FPayloadToc::EVersion::AUTOMATIC_VERSION;
-	Ar << Version;
-
-	Ar << TableOfContents.Contents;
-
-	return Ar;
-}
-
-void operator<<(FStructuredArchive::FSlot Slot, FPayloadToc& TableOfContents)
-{
-	FStructuredArchive::FRecord Record = Slot.EnterRecord();
-
-	FPayloadToc::EVersion Version = FPayloadToc::EVersion::AUTOMATIC_VERSION;
-
-	Record << SA_VALUE(TEXT("Version"), Version);
-	Record << SA_VALUE(TEXT("Entries"), TableOfContents.Contents);
 }
 
 } // namespace UE::Serialization

@@ -14,6 +14,7 @@
 #include "ISourceControlLabel.h"
 #include "UObject/Linker.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 #include "Misc/PackageName.h"
 #include "Logging/MessageLog.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -25,7 +26,6 @@
 #include "PackageTools.h"
 #include "ObjectTools.h"
 #include "FileHelpers.h"
-#include "LevelEditorViewport.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "SourceControlHelpers"
@@ -912,10 +912,18 @@ bool USourceControlHelpers::RevertFile(const FString& InFile, bool bSilent)
 bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString>& InFilenames,	const TFunctionRef<bool(const TArray<FString>&)>& InOperation, bool bReloadWorld, bool bInteractive)
 {
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-	TArray<UPackage*> LoadedPackages;
+
 	TArray<FString> PackageNames;
 	TArray<FString> PackageFilenames;
 	TArray<FString> FilteredActorPackages;
+	TArray<FString> NotFoundPackages;
+	/** 
+	 * This is necessary to cover an edge case where the user reverts a deleted Level file.
+	 * In that case PackageFilename_Internal() will not be able to resolve to the correct extension
+	 * as the file is deleted and the package cannot be inspected
+	 */
+	TMap<FString, FString> MapPackageNamesToFilenames;
+
 	bool bSuccess = false;
 
 	auto DetachLinker = [](UPackage* Package)
@@ -935,6 +943,12 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 		
 		if (FPackageName::TryConvertFilenameToLongPackageName(Filename, Result))
 		{
+			FString Extension = FPaths::GetExtension(Filename);
+			if (Extension == TEXT("umap"))
+			{
+				MapPackageNamesToFilenames.Add(Result, Filename);
+			}
+
 			PackageNames.Add(MoveTemp(Result));
 		}
 		else
@@ -943,9 +957,10 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 		}
 	}
 
-	// Remove packages if they are loaded actors or world
-	bool bWorldFound = false;
-	PackageNames.RemoveAll([&FilteredActorPackages, &LoadedPackages, bReloadWorld, &DetachLinker, &bWorldFound](const FString& PackageName) -> bool
+	// If bReloadWorld=false, remove packages if they are loaded actors or world
+	// If bReloadWorld=true, include world packages to reload
+	TSet<UPackage*> UniqueLoadedPackages;
+	PackageNames.RemoveAll([&FilteredActorPackages, &UniqueLoadedPackages, &NotFoundPackages, bReloadWorld, &DetachLinker](const FString& PackageName) -> bool
 	{
 		UPackage* Package = FindPackage(NULL, *PackageName);
 		
@@ -958,21 +973,18 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 					FilteredActorPackages.Emplace(PackageName);
 					return true; // remove the package
 				}
-				else
-				{
-					bWorldFound = true;
-				}
 			}
 			else if (AActor* Actor = AActor::FindActorInPackage(Package))
 			{
 				if (bReloadWorld)
 				{
+					// detach linker on the actor
 					DetachLinker(Package);
 
-					if (!bWorldFound && Actor->GetWorld())
+					// but track its world for reloading - not the actor package itself
+					if (Actor->GetWorld() && Actor->GetWorld()->GetPackage())
 					{
-						bWorldFound = true;
-						LoadedPackages.Add(Actor->GetWorld()->GetPackage());
+						UniqueLoadedPackages.Add(Actor->GetWorld()->GetPackage());
 					}
 
 					return false;
@@ -981,10 +993,14 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 				{
 					FilteredActorPackages.Emplace(PackageName);
 					return true; // remove the package
-				}				
+				}
 			}
 
-			LoadedPackages.Add(Package);
+			UniqueLoadedPackages.Add(Package);
+		}
+		else
+		{
+			NotFoundPackages.Add(PackageName);
 		}
 
 		return false; // do not remove the package
@@ -1000,14 +1016,66 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 		return false;
 	}
 
+	// Reverting may reintroduce some packages, so we need to ensure they're picked up...
+	if (!NotFoundPackages.IsEmpty() && bReloadWorld)
+	{
+		const FString& ExternalActorsFolderName = FPackagePath::GetExternalActorsFolderName();
+
+		// Gather the ExternalActorPaths in which we're reintroducing packages...
+		TSet<FString> NotFoundExternalPaths;
+		for (const FString& PackageName : NotFoundPackages)
+		{
+			int32 Index = PackageName.Find(ExternalActorsFolderName);
+			if (Index != INDEX_NONE)
+			{
+				// Format: /<MountPoint>/__ExternalActors__/<Level>/0/AB/CDEFGHIJKLMNOPQRSTUVWX
+				// Result: /<MountPoint>/__ExternalActors__/<Level>
+
+				Index += ExternalActorsFolderName.Len();
+				Index += 1;
+
+				Index = PackageName.Find("/", ESearchCase::IgnoreCase, ESearchDir::FromStart, Index);
+				if (Index != INDEX_NONE)
+				{
+					NotFoundExternalPaths.Add(PackageName.Left(Index));
+				}
+			}
+		}
+
+		// See if any of the loaded levels stores their external actors in any of those paths...
+		for (TObjectIterator<ULevel> LevelIt; LevelIt; ++LevelIt)
+		{
+			ULevel* Level = (*LevelIt);
+			if (Level->IsUsingExternalActors())
+			{
+				const FString& ExternalActorPath = ULevel::GetExternalActorsPath(Level->GetPackage());
+				if (NotFoundExternalPaths.Contains(ExternalActorPath))
+				{
+					UniqueLoadedPackages.Add(Level->GetWorld()->GetPackage());
+				}
+			}
+		}
+	}
+
 	// Prepare the packages to be reverted...
+	TArray<UPackage*> LoadedPackages = UniqueLoadedPackages.Array();
 	for (UPackage* Package : LoadedPackages)
 	{
 		// Detach the linkers of any loaded packages so that SCC can overwrite the files...
 		DetachLinker(Package);
 	}
 
-	PackageFilenames = SourceControlHelpers::PackageFilenames(PackageNames);
+	for (int32 PackageIndex = 0; PackageIndex < PackageNames.Num(); PackageIndex++)
+	{
+		if (MapPackageNamesToFilenames.Contains(PackageNames[PackageIndex]))
+		{
+			PackageFilenames.Add(MapPackageNamesToFilenames[PackageNames[PackageIndex]]);
+		}
+		else
+		{
+			PackageFilenames.Add(PackageFilename(PackageNames[PackageIndex]));
+		}
+	}
 
 	// Apply Operation
 	bSuccess = InOperation(PackageFilenames);
@@ -1030,27 +1098,11 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 				{
 					ObjectsToDelete.Add(ObjectToDelete);
 				}
-			}			
+			}
 			return true; // remove package
 		}
 		return false; // keep package
 	});
-
-	struct FCameraView
-	{
-		FVector Location;
-		FRotator Rotation;
-	};
-	TMap<FLevelEditorViewportClient*, FCameraView> CameraViews;
-
-	if (bReloadWorld)
-	{
-		// As we're reloading the world, we retain the camera views so they can be restored after the reload.
-		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
-		{
-			CameraViews.Add(LevelVC, { LevelVC->GetViewLocation(), LevelVC->GetViewRotation() });
-		}
-	}
 
 	// Hot-reload the new packages...
 	FText OutReloadErrorMsg;
@@ -1060,40 +1112,14 @@ bool USourceControlHelpers::ApplyOperationAndReloadPackages(const TArray<FString
 		UE_LOG(LogSourceControl, Warning, TEXT("%s"), *OutReloadErrorMsg.ToString());
 	}
 
-	if (bReloadWorld)
-	{
-		// Restore the camera views after a world reload if necessary...
-		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
-		{
-			const FCameraView& CameraView = CameraViews.FindChecked(LevelVC);
-			LevelVC->SetViewLocation(CameraView.Location);
-			if (!LevelVC->IsOrtho())
-			{
-				LevelVC->SetViewRotation(CameraView.Rotation);
-			}
-			LevelVC->Invalidate();
-			FEditorDelegates::OnEditorCameraMoved.Broadcast(CameraView.Location, CameraView.Rotation, LevelVC->ViewportType, LevelVC->ViewIndex);
-		}
-	}
-
 	// Delete and Unload assets...
-	if(ObjectTools::DeleteObjectsUnchecked(ObjectsToDelete) != ObjectsToDelete.Num())
+	if (ObjectTools::DeleteObjectsUnchecked(ObjectsToDelete) != ObjectsToDelete.Num())
 	{ 
 		UE_LOG(LogSourceControl, Warning, TEXT("Failed to unload some assets."));
 	}
 	
 	// Re-cache the SCC state...
-	if (bReloadWorld)
-	{
-		auto UpdateCommand = ISourceControlOperation::Create<FUpdateStatus>();
-		UpdateCommand->SetCheckingAllFiles(true);
-		UpdateCommand->SetForceUpdate(true);
-		SourceControlProvider.Execute(UpdateCommand, EConcurrency::Asynchronous);
-	}
-	else
-	{
-		SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
-	}
+	SourceControlProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
 
 	return bSuccess;
 }
@@ -1102,6 +1128,27 @@ TArray<FString> USourceControlHelpers::GetSourceControlLocations(const bool bCon
 {
 	TArray<FString> SourceControlLocations;
 
+	if (ISourceControlModule::Get().UsesCustomProjectDir())
+	{
+		FString ProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
+
+		TArray<FString> RootPaths;
+		FPackageName::QueryRootContentPaths(RootPaths);
+		for (const FString& RootPath : RootPaths)
+		{
+			const FString RootPathOnDisk = FPackageName::LongPackageNameToFilename(RootPath);
+			if (FPaths::IsUnderDirectory(RootPathOnDisk, ProjectDir))
+			{
+				SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(RootPathOnDisk));
+			}
+		}
+
+		if (!bContentOnly)
+		{
+			SourceControlLocations.Add(ProjectDir);
+		}
+	}
+	else
 	{
 		TArray<FString> RootPaths;
 		FPackageName::QueryRootContentPaths(RootPaths);
@@ -1110,13 +1157,15 @@ TArray<FString> USourceControlHelpers::GetSourceControlLocations(const bool bCon
 			const FString RootPathOnDisk = FPackageName::LongPackageNameToFilename(RootPath);
 			SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(RootPathOnDisk));
 		}
+		
+		if (!bContentOnly)
+		{
+			SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectConfigDir()));
+			SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+		}
 	}
 
-	if (!bContentOnly)
-	{
-		SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::ProjectConfigDir()));
-		SourceControlLocations.Add(FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
-	}
+
 
 	return SourceControlLocations;
 }
@@ -1129,16 +1178,7 @@ bool USourceControlHelpers::ListRevertablePackages(TArray<FString>& OutRevertabl
 	}
 
 	// update status for all packages
-	TArray<FString> Filenames;
-	if (ISourceControlModule::Get().UsesCustomProjectDir())
-	{
-		FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
-		Filenames.Add(SourceControlProjectDir);
-	}
-	else
-	{
-		Filenames = GetSourceControlLocations();
-	}
+	TArray<FString> Filenames = GetSourceControlLocations();
 	
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 	FSourceControlOperationRef Operation = ISourceControlOperation::Create<FUpdateStatus>();
@@ -1150,6 +1190,43 @@ bool USourceControlHelpers::ListRevertablePackages(TArray<FString>& OutRevertabl
 	// Get a list of all the revertable packages	
 	TMap<FString, FSourceControlStatePtr> PackageStates;
 	FEditorFileUtils::FindAllSubmittablePackageFiles(PackageStates, true);
+
+	TArray<FString> PackageNames;
+	PackageStates.GetKeys(PackageNames);
+	TMap<FString, FString> FileNamesToPackageNames;
+
+	// Get a list of files pending delete
+	TArray<FSourceControlStateRef> PendingDeleteItems = SourceControlProvider.GetCachedStateByPredicate(
+		[&PackageNames, &FileNamesToPackageNames](const FSourceControlStateRef& State)
+		{
+			const FString& Filename = State->GetFilename();
+
+			FString PackageName;
+			FString FailureReason;
+			if (!FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageName, &FailureReason))
+			{
+				UE_LOG(LogSourceControl, Warning, TEXT("%s"), *FailureReason);
+				return false;
+			}
+
+			if (State->IsDeleted() && !PackageNames.Contains(PackageName))
+			{
+				FileNamesToPackageNames.Add(Filename, PackageName);
+				return true;
+			}
+			return false;
+		}
+	);
+
+	// And append them to the list
+	for (FSourceControlStateRef& Item : PendingDeleteItems)
+	{
+		const FString* PackageName = FileNamesToPackageNames.Find(Item->GetFilename());
+		if (PackageName)
+		{
+			PackageStates.Add(*PackageName, Item);
+		}
+	}
 
 	for (auto& PackageState : PackageStates)
 	{
@@ -1564,9 +1641,10 @@ bool USourceControlHelpers::GetFilesInDepotAtPath(const FString& PathToDirectory
 
 			TArray<FString> FileArray;
 			FileArray.Add(FullPath);
-
+			
 			TSharedRef<FGetFileList, ESPMode::ThreadSafe> Operation = ISourceControlOperation::Create<FGetFileList>();
 			Operation->SetIncludeDeleted(bIncludeDeleted);
+			Operation->SetSearchPattern(PathToDirectory);
 
 			ECommandResult::Type Result = SourceControlProvider.Execute(Operation, FileArray, EConcurrency::Synchronous);
 			bSuccess = (Result == ECommandResult::Succeeded);
@@ -1591,7 +1669,7 @@ static FString PackageFilename_Internal( const FString& InPackageName )
 	FString Filename = InPackageName;
 
 	// Get the filename by finding it on disk first
-	if ( !FPackageName::DoesPackageExist(InPackageName, &Filename) )
+	if ( !FPackageName::IsMemoryPackage(InPackageName) && !FPackageName::DoesPackageExist(InPackageName, &Filename) )
 	{
 		// The package does not exist on disk, see if we can find it in memory and predict the file extension
 		// Only do this if the supplied package name is valid
@@ -1621,10 +1699,11 @@ FString USourceControlHelpers::PackageFilename( const UPackage* InPackage )
 	if(InPackage != nullptr)
 	{
 		// Prefer using package loaded path to resolve file name as it properly resolves memory packages
-		if (!InPackage->GetLoadedPath().IsEmpty())
+		FString PackageLoadedPath = InPackage->GetLoadedPath().GetPackageName();
+		if (!InPackage->GetLoadedPath().IsEmpty() && FPackageName::IsMemoryPackage(PackageLoadedPath))
 		{
 			const FString PackageExtension = InPackage->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
-			Filename = FPaths::ConvertRelativePathToFull(FPackageName::LongPackageNameToFilename(InPackage->GetLoadedPath().GetPackageName(), PackageExtension));
+			Filename = FPaths::ConvertRelativePathToFull(FPackageName::LongPackageNameToFilename(PackageLoadedPath, PackageExtension));
 		}
 		else
 		{

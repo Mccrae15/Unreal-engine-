@@ -155,7 +155,7 @@ persistence:
 
   ## Persistent Volume size
   ##
-  size: 5Gi
+  size: 5242880 # 5 Gb specified in bytes so it can be used as a setting MaxSizeBytes
 
   ## Persistent Volume Storage Class
   ## If defined, storageClassName: <storageClass>
@@ -307,8 +307,42 @@ useDotnetMonitorSidecar : false
 ## this is typically faster then falling back to global blob store
 fetchBlobsFromPeerPods: false
 
-## Worker configuration
+## Nginx configuration
+nginx:
 
+  ## Enable this option to run a nginx proxy in the all pods that is able to serve content directly from the filesystem
+  enabled: false
+
+  ## Set this to add a header whenever X-Accel is used from nginx to send blobs
+  addXAccelDebugHeader: false
+
+  ## Set this to use Unix domain sockets rather then ports for inter process communication
+  useDomainSockets: false
+
+  ## Set to enable access log output, can be useful for debugging but will generate a lot of logs in prod
+  accessLogging: false
+
+  ## Control the number of worker connections used for nginx
+  workerConnections: 1024
+
+  ## Liveness and readiness probes, defaults to corresponding endpoints
+  ##
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 5
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 1
+    successThreshold: 1
+    failureThreshold: 5
+
+## Worker configuration
 worker:
 
   ## Set to enable seperate deployments for background workers

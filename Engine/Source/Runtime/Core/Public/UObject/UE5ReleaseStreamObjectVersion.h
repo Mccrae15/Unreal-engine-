@@ -6,7 +6,7 @@
 #include "UObject/DevObjectVersion.h"
 
 // Custom serialization version for changes made in //UE5/Release-* stream
-struct CORE_API FUE5ReleaseStreamObjectVersion
+struct FUE5ReleaseStreamObjectVersion
 {
 	enum Type
 	{
@@ -135,6 +135,24 @@ struct CORE_API FUE5ReleaseStreamObjectVersion
 
 		// Added member reference to linked anim graphs
 		LinkedAnimGraphMemberReference,
+
+		// Changed default tangent behavior for new dynamic mesh components
+		DynamicMeshComponentsDefaultUseExternalTangents,
+		
+		// Added resize methods to media capture
+		MediaCaptureNewResizeMethods,
+
+		// Function data stores a map from work to debug operands
+		RigVMSaveDebugMapInGraphFunctionData,
+
+		// Changed default Local Exposure Contrast Scale from 1.0 to 0.8
+		LocalExposureDefaultChangeFrom1,
+
+		// Serialize bActorIsListedInSceneOutliner in WorldPartitionActorDesc
+		WorldPartitionActorDescSerializeActorIsListedInSceneOutliner,
+
+		// Disabled opencolorio display configuration by default
+		OpenColorIODisabledDisplayConfigurationDefault,
 		
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -142,9 +160,9 @@ struct CORE_API FUE5ReleaseStreamObjectVersion
 	};
 
 	// The GUID for this custom version number
-	const static FGuid GUID;
+	CORE_API const static FGuid GUID;
 
-	static TMap<FGuid, FGuid> GetSystemGuids();
+	static CORE_API TMap<FGuid, FGuid> GetSystemGuids();
 
 	FUE5ReleaseStreamObjectVersion() = delete;
 };

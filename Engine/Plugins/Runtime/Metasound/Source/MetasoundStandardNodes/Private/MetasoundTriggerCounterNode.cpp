@@ -46,10 +46,13 @@ namespace Metasound
 				const FFloatReadRef& InStepSize,
 				const FInt32ReadRef& InAutoResetCount);
 
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 			virtual FDataReferenceCollection GetInputs() const override;
 			virtual FDataReferenceCollection GetOutputs() const override;
 
 			void Execute();
+			void Reset(const IOperator::FResetParams& InParams);
 
 		private:
 			FTriggerReadRef TriggerIn;
@@ -89,31 +92,43 @@ namespace Metasound
 		CurrentAutoResetCount = FMath::Max(0, *AutoResetCount);
 	}
 
-	FDataReferenceCollection FTriggerCounterOperator::GetInputs() const
+	void FTriggerCounterOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace TriggerCounterVertexNames;
 
 		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputInTrigger), TriggerIn);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputReset), TriggerReset);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputStartValue), StartValue);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputStepSize), StepSize);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAutoResetCount), AutoResetCount);
-
-		return InputDataReferences;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputInTrigger), TriggerIn);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputReset), TriggerReset);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputStartValue), StartValue);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputStepSize), StepSize);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAutoResetCount), AutoResetCount);
 	}
 
-	FDataReferenceCollection FTriggerCounterOperator::GetOutputs() const
+	void FTriggerCounterOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace TriggerCounterVertexNames;
 
 		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputOnTrigger), TriggerOut);
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputOnReset), TriggerOnReset);
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputCount), OutCount);
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputValue), OutValue);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputOnTrigger), TriggerOut);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputOnReset), TriggerOnReset);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputCount), OutCount);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputValue), OutValue);
+	}
 
-		return OutputDataReferences;
+	FDataReferenceCollection FTriggerCounterOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
+
+	FDataReferenceCollection FTriggerCounterOperator::GetOutputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	void FTriggerCounterOperator::Execute()
@@ -169,6 +184,19 @@ namespace Metasound
 			}
 		);
 
+	}
+
+	void FTriggerCounterOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		TriggerOut->Reset();
+		TriggerOnReset->Reset();
+		*OutValue = *StartValue;
+		*OutCount = 0;
+
+		CurrentAutoResetCount = FMath::Max(0, *AutoResetCount);
+		CurrentTriggerCount = 0;
+		CurrentValue = 0.0f;
+		bIsFirstTrigger = true;
 	}
 
 	TUniquePtr<IOperator> FTriggerCounterOperator::CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors)

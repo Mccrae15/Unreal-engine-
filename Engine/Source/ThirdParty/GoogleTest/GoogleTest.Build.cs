@@ -5,7 +5,7 @@ using System.IO;
 
 public class GoogleTest : ModuleRules
 {
-    public GoogleTest(ReadOnlyTargetRules Target) : base(Target)
+	public GoogleTest(ReadOnlyTargetRules Target) : base(Target)
 	{
 		Type = ModuleType.External;
 
@@ -30,6 +30,11 @@ public class GoogleTest : ModuleRules
             else 
             {
                 PartialLibraryPath += "/" + DefaultConfiguration;
+            }
+
+            if (!Target.Architecture.bIsX64)
+            {
+                PartialLibraryPath += "/ARM64";
             }
 
             //if (!Target.IsMonolithic)

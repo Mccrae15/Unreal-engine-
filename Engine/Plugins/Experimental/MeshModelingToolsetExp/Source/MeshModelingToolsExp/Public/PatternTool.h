@@ -42,6 +42,8 @@ public:
 	virtual UMultiSelectionMeshEditingTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
 
 	virtual void InitializeNewTool(UMultiSelectionMeshEditingTool* NewTool, const FToolBuilderState& SceneState) const override;
+
+	bool bEnableCreateISMCs = true;
 	
 protected:
 	virtual const FToolTargetTypeRequirements& GetTargetRequirements() const override;
@@ -123,6 +125,10 @@ public:
 	/** If false, all pattern elements will be positioned at the origin of the first pattern element */
 	UPROPERTY(EditAnywhere, Category = General)
 	bool bUseRelativeTransforms = true;
+
+	/** Whether to randomly pick which source mesh is scattered at each location, or to always use all source meshes */
+	UPROPERTY(EditAnywhere, Category = General)
+	bool bRandomlyPickElements = false;
 	
 	/** Shape of the underlying Pattern */
 	UPROPERTY(EditAnywhere, Category = Shape)
@@ -403,12 +409,16 @@ public:
 	bool bConvertToDynamic = false;
 
 	/** Create InstancedStaticMeshComponents instead multiple StaticMeshComponents, for StaticMesh pattern elements */
-	UPROPERTY(EditAnywhere, Category = Output, meta = (EditCondition = "bHaveStaticMeshes == true && bSeparateActors == false && bConvertToDynamic == false", HideEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = Output, meta = (EditCondition = "bHaveStaticMeshes == true && bSeparateActors == false && bConvertToDynamic == false && bEnableCreateISMCs == true", HideEditConditionToggle))
 	bool bCreateISMCs = false;
 
 	/** internal, used to control state of Instance settings */
 	UPROPERTY(meta = (TransientToolProperty))
 	bool bHaveStaticMeshes = false;
+
+	// internal, used to disable the creation of ISMCs
+	UPROPERTY(meta = (TransientToolProperty))
+	bool bEnableCreateISMCs = true;
 };
 
 
@@ -437,6 +447,8 @@ public:
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
 	virtual bool CanAccept() const override { return true; }
+
+	virtual void SetEnableCreateISMCs(bool bEnable);
 
 public:
 	UPROPERTY()
@@ -567,7 +579,8 @@ protected:
 	
 	bool bHaveNonUniformScaleElements = false;
 
-	
+	bool bEnableCreateISMCs = true;
+
 	struct FComponentSet
 	{
 		TArray<UPrimitiveComponent*> Components;
@@ -585,11 +598,11 @@ protected:
 
 	
 	TMap<int32, FComponentSet> StaticMeshPools;
-	UStaticMeshComponent* GetPreviewStaticMesh(FPatternElement& Element);
+	UStaticMeshComponent* GetPreviewStaticMesh(const FPatternElement& Element);
 	void ReturnStaticMeshes(FPatternElement& Element, FComponentSet& ComponentSet);
 
 	TMap<int32, FComponentSet> DynamicMeshPools;
-	UDynamicMeshComponent* GetPreviewDynamicMesh(FPatternElement& Element);
+	UDynamicMeshComponent* GetPreviewDynamicMesh(const FPatternElement& Element);
 	void ReturnDynamicMeshes(FPatternElement& Element, FComponentSet& ComponentSet);
 
 	void HideReturnedPreviewMeshes();

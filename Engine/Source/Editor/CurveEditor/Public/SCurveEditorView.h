@@ -149,6 +149,14 @@ public:
 	/** This should be called every tick by an owning widget, to see if the cache is valid, which will then recreate it and invalidate widget*/
 	virtual void CheckCacheAndInvalidateIfNeeded();
 
+	UE_DEPRECATED(5.3, "Use UpdateViewToTransformCurves(double InputMin, double InputMax) instead.")
+	virtual void UpdateViewToTransformCurves() {}
+
+	/** Function to make sure to update the view to the transform curves, we need to do this before we cache*/
+	virtual void UpdateViewToTransformCurves(double InputMin, double InputMax) {};
+
+	/** Frame the view vertially by the input and output bounds, peformaing any custom clipping as needed */
+	virtual void FrameVertical(double InOutputMin, double InOutputMax);
 public:
 
 	/**
@@ -211,7 +219,7 @@ public:
 protected:
 
 	/** Gets info about the curves being drawn. Converts actual curves into an abstract series of lines/points/handles/etc. */
-	void GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParams) const;
+	void GetCurveDrawParams(TArray<FCurveDrawParams>& OutDrawParams);
 
 	/** Get it for just one curve*/
 	void GetCurveDrawParam(TSharedPtr<FCurveEditor>& CurveEditor, const FCurveModelID& ModelID, FCurveModel* CurveModel,

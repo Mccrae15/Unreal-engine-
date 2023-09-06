@@ -8,6 +8,14 @@
 #include "InstancedStruct.h"
 #include "BoolColumn.generated.h"
 
+UENUM()
+enum class EBoolColumnCellValue
+{
+	MatchFalse = 0,
+	MatchTrue = 1,
+	MatchAny = 2,
+};
+
 USTRUCT(DisplayName = "Bool Property Binding")
 struct CHOOSER_API FBoolContextProperty :  public FChooserParameterBoolBase
 {
@@ -15,11 +23,26 @@ struct CHOOSER_API FBoolContextProperty :  public FChooserParameterBoolBase
 public:
 
 	UPROPERTY()
-	TArray<FName> PropertyBindingChain;
+	TArray<FName> PropertyBindingChain_DEPRECATED;
 	
-	virtual bool GetValue(const UObject* ContextObject, bool& OutResult) const override;
+	UPROPERTY(EditAnywhere, Meta = (BindingType = "bool", BindingAllowFunctions = "true", BindingColor = "BooleanPinTypeColor"), Category = "Binding")
+	FChooserPropertyBinding Binding;
+	
+	virtual bool GetValue(FChooserEvaluationContext& Context, bool& OutResult) const override;
+	virtual bool SetValue(FChooserEvaluationContext& Context, bool InValue) const override;
+
+	virtual void PostLoad() override
+	{
+		if (PropertyBindingChain_DEPRECATED.Num() > 0)
+		{
+			Binding.PropertyBindingChain = PropertyBindingChain_DEPRECATED;
+			PropertyBindingChain_DEPRECATED.SetNum(0);
+		}
+	}
+	
 
 #if WITH_EDITOR
+	
 	static bool CanBind(const FProperty& Property)
 	{
 		static FString BoolTypeName = "bool";
@@ -28,14 +51,14 @@ public:
 
 	void SetBinding(const TArray<FBindingChainElement>& InBindingChain)
 	{
-		UE::Chooser::CopyPropertyChain(InBindingChain, PropertyBindingChain);
+		UE::Chooser::CopyPropertyChain(InBindingChain, Binding);
 	}
 
 	virtual void GetDisplayName(FText& OutName) const override
 	{
-		if (!PropertyBindingChain.IsEmpty())
+		if (!Binding.PropertyBindingChain.IsEmpty())
 		{
-			OutName = FText::FromName(PropertyBindingChain.Last());
+			OutName = FText::FromName(Binding.PropertyBindingChain.Last());
 		}
 	}
 #endif
@@ -48,15 +71,52 @@ struct CHOOSER_API FBoolColumn : public FChooserColumnBase
 	public:
 	FBoolColumn();
 	
-	UPROPERTY(EditAnywhere, Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserParameterBoolBase"), Category = "Hidden")
+	UPROPERTY(EditAnywhere, NoClear, Meta = (ExcludeBaseStruct, BaseStruct = "/Script/Chooser.ChooserParameterBoolBase"), Category = "Data")
 	FInstancedStruct InputValue;
-	
-	UPROPERTY(EditAnywhere, Category=Runtime);
-	TArray<bool> RowValues; 
-	
-	virtual void Filter(const UObject* ContextObject, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) const override;
 
-	CHOOSER_COLUMN_BOILERPLATE(FChooserParameterBoolBase);
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TArray<bool> RowValues_DEPRECATED;
+
+	UPROPERTY(EditAnywhere, Category= "Data", DisplayName="DefaultRowValue");
+	EBoolColumnCellValue DefaultRowValue = EBoolColumnCellValue::MatchAny;
+#endif
+	
+	UPROPERTY(EditAnywhere, Category= "Data", DisplayName="RowValues");
+	TArray<EBoolColumnCellValue> RowValuesWithAny; 
+	
+	virtual void Filter(FChooserEvaluationContext& Context, const TArray<uint32>& IndexListIn, TArray<uint32>& IndexListOut) const override;
+
+#if WITH_EDITOR
+	mutable bool TestValue;
+	virtual bool EditorTestFilter(int32 RowIndex) const override
+	{
+		return RowValuesWithAny.IsValidIndex(RowIndex) && (RowValuesWithAny[RowIndex] == EBoolColumnCellValue::MatchAny || TestValue == static_cast<bool>(RowValuesWithAny[RowIndex]));
+	}
+#endif
+
+	virtual void PostLoad() override
+	{
+#if WITH_EDITORONLY_DATA
+		if (RowValues_DEPRECATED.Num() > 0)
+		{
+			RowValuesWithAny.SetNum(0,false);
+			RowValuesWithAny.Reserve(RowValues_DEPRECATED.Num());
+			for(bool Value : RowValues_DEPRECATED)
+			{
+				RowValuesWithAny.Add(Value ? EBoolColumnCellValue::MatchTrue : EBoolColumnCellValue::MatchFalse);
+			}
+			RowValues_DEPRECATED.SetNum(0);
+		}
+#endif
+		
+		if (InputValue.IsValid())
+		{
+			InputValue.GetMutable<FChooserParameterBase>().PostLoad();
+		}
+	}
+
+	CHOOSER_COLUMN_BOILERPLATE2(FChooserParameterBoolBase, RowValuesWithAny);
 };
 
 // deprecated class versions for converting old data
@@ -73,7 +133,7 @@ public:
 	{
 		OutInstancedStruct.InitializeAs(FBoolContextProperty::StaticStruct());
 		FBoolContextProperty& Property = OutInstancedStruct.GetMutable<FBoolContextProperty>();
-		Property.PropertyBindingChain = PropertyBindingChain;
+		Property.Binding.PropertyBindingChain = PropertyBindingChain;
 	}
 };
 
@@ -104,6 +164,12 @@ public:
 		{
 			InputValueInterface->ConvertToInstancedStruct(Column.InputValue);
 		}
-		Column.RowValues = RowValues;
+
+		Column.RowValuesWithAny.SetNum(0,false);
+		Column.RowValuesWithAny.Reserve(RowValues.Num());
+		for(bool Value : RowValues)
+		{
+			Column.RowValuesWithAny.Add(Value ? EBoolColumnCellValue::MatchTrue : EBoolColumnCellValue::MatchFalse);
+		}
 	}
 };

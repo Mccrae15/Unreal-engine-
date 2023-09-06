@@ -2,32 +2,37 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "MetasoundDataReference.h"
 #include "MetasoundDataReferenceCollection.h"
-#include "MetasoundOperatorInterface.h"
 #include "MetasoundExecutableOperator.h"
+#include "MetasoundOperatorInterface.h"
+#include "MetasoundVertexData.h"
+#include "Templates/UniquePtr.h"
 
 namespace Metasound
 {
-	class METASOUNDGRAPHCORE_API FGraphOperator : public IOperator
+	// Forward declare
+	namespace DirectedGraphAlgo
+	{
+		struct FGraphOperatorData;
+	}
+
+	class METASOUNDGRAPHCORE_API FGraphOperator : public TExecutableOperator<FGraphOperator>
 	{
 		public:
 			using FOperatorPtr = TUniquePtr<IOperator>;
 			using FExecuteFunction = IOperator::FExecuteFunction;
+			using FResetFunction = IOperator::FResetFunction;
+			using FResetParams = IOperator::FResetParams;
 
 			FGraphOperator() = default;
+			FGraphOperator(TUniquePtr<DirectedGraphAlgo::FGraphOperatorData>&& InOperatorData);
 
-			virtual ~FGraphOperator();
+			virtual ~FGraphOperator() = default;
 
 			// Add an operator to the end of the executation stack.
 			void AppendOperator(FOperatorPtr InOperator);
-
-			UE_DEPRECATED(5.1, "Use FGraphOperator::SetVertexInterfaceData instead.")
-			void SetInputs(const FDataReferenceCollection& InCollection);
-
-			UE_DEPRECATED(5.1, "Use FGraphOperator::SetVertexInterfaceData instead.")
-			void SetOutputs(const FDataReferenceCollection& InCollection);
 
 			// Set the vertex interface data. This data will be copied to output 
 			// during calls to Bind(InOutVertexData).
@@ -38,20 +43,53 @@ namespace Metasound
 			virtual FDataReferenceCollection GetOutputs() const override;
 
 			// Bind the graph's interface data references to FVertexInterfaceData.
-			virtual void Bind(FVertexInterfaceData& InOutVertexData) const override;
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 
-			virtual FExecuteFunction GetExecuteFunction() override;
+			virtual IOperator::FPostExecuteFunction GetPostExecuteFunction() override;
 
 			void Execute();
+			void PostExecute();
+			void Reset(const FResetParams& InParams);
 
 		private:
 			// Delete copy operator because underlying types cannot be copied. 
 			FGraphOperator& operator=(const FGraphOperator&) = delete;
 			FGraphOperator(const FGraphOperator&) = delete;
 
-			static void ExecuteFunction(IOperator* InOperator);
+			static void StaticPostExecute(IOperator* Operator);
 
-			TArray<FExecuter> OperatorStack;
+			struct FExecuteEntry
+			{
+				FExecuteEntry(IOperator& InOperator, FExecuteFunction InFunc);
+				void Execute();
+
+				IOperator* Operator;
+				FExecuteFunction Function;	
+			};
+
+			struct FPostExecuteEntry
+			{
+				FPostExecuteEntry(IOperator& InOperator, FPostExecuteFunction InFunc);
+				void PostExecute();
+
+				IOperator* Operator;
+				FPostExecuteFunction Function;	
+			};
+
+			struct FResetEntry
+			{
+				FResetEntry(IOperator& InOperator, FResetFunction InFunc);
+				void Reset(const FResetParams& InParams);
+
+				IOperator* Operator;
+				FResetFunction Function;	
+			};
+
+			TArray<FExecuteEntry> ExecuteStack;
+			TArray<FPostExecuteEntry> PostExecuteStack;
+			TArray<FResetEntry> ResetStack;
+			TArray<TUniquePtr<IOperator>> ActiveOperators;
 			FVertexInterfaceData VertexData;
 	};
 }

@@ -11,45 +11,40 @@ class UActorDescContainer;
 class AWorldDataLayers;
 struct FColor;
 
-UCLASS()
-class ENGINE_API UContentBundleDescriptor : public UObject
+UCLASS(MinimalAPI)
+class UContentBundleDescriptor : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
 public:
 	const FString& GetDisplayName() const { return DisplayName; }
 	const FColor& GetDebugColor() const { return DebugColor; }
-	const FString& GetPackageRoot() const { return PackageRoot; }
+	ENGINE_API FString GetPackageRoot() const;
 	const FGuid& GetGuid() const { return Guid; }
 
 #if WITH_EDITOR
-	void InitializeObject(const FString& InContentBundleName, const FString& InPackageRoot);
-	void SetDisplayName(const FString& InName) { DisplayName = InName; }
-	void SetPackageRoot(const FString& InPackageRoot) { PackageRoot = InPackageRoot; }
-	void SetDebugColor(const FColor& InDebugColor) { DebugColor = InDebugColor; }
+	ENGINE_API void InitializeObject(const FString& InContentBundleName);
 
 	//~ Begin UObject Interface
-	virtual void PostLoad() override;
+	ENGINE_API virtual void PostLoad() override;
+	ENGINE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	//~ End UObject Interface
 #endif
 
-	bool IsValid() const;
+	ENGINE_API bool IsValid() const;
 
 	// Helper method that returns a compact string for a given content bundle ID
-	static FString GetContentBundleCompactString(const FGuid& InContentBundleID);
+	static ENGINE_API FString GetContentBundleCompactString(const FGuid& InContentBundleID);
 
 private:
-	void InitDebugColor();
+	ENGINE_API void InitDebugColor();
 
 	UPROPERTY(EditAnywhere, Category = BaseInformation)
 	FString DisplayName;
 
-	UPROPERTY(EditAnywhere, Category = BaseInformation)
+	UPROPERTY(EditAnywhere, DuplicateTransient, Category = BaseInformation)
 	FColor DebugColor;
 
-	UPROPERTY(VisibleAnywhere, Category = BaseInformation, AdvancedDisplay)
+	UPROPERTY(VisibleAnywhere, DuplicateTransient, Category = BaseInformation, AdvancedDisplay)
 	FGuid Guid;
-
-	UPROPERTY(VisibleAnywhere, Category = BaseInformation, AdvancedDisplay)
-	FString PackageRoot;
 };

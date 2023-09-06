@@ -27,7 +27,8 @@ public:
 	EProximityMethod Method = EProximityMethod::Precise;
 
 	// If hull-based proximity detection is enabled, amount to expand hulls when searching for overlapping neighbors
-	UPROPERTY(EditAnywhere, Category = Automatic, meta = (ClampMin = "0", EditCondition = "Method == EProximityMethod::ConvexHull"))
+	UPROPERTY(EditAnywhere, Category = Automatic, meta = (ClampMin = "0", 
+		EditCondition = "Method == EProximityMethod::ConvexHull || ContactMethod == EProximityContactMethod::ConvexHullSharpContact || ContactMethod == EProximityContactMethod::ConvexHullAreaContact || ContactAreaMethod == EConnectionContactMethod::ConvexHullContactArea"))
 	double DistanceThreshold = 1;
 
 	// Method to use to determine the contact between two pieces, if the Contact Threshold is greater than 0
@@ -42,6 +43,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = Automatic)
 	bool bUseAsConnectionGraph = false;
 
+	// Method to use for determining contact areas that define the strength of connections for destruction simulation
+	UPROPERTY(EditAnywhere, Category = Automatic)
+	EConnectionContactMethod ContactAreaMethod = EConnectionContactMethod::None;
+
 	// Whether to display the proximity graph edges
 	UPROPERTY(EditAnywhere, Category = Visualization)
 	bool bShowProximity = true;
@@ -49,6 +54,22 @@ public:
 	// Whether to only show the proximity graph connections for selected bones
 	UPROPERTY(EditAnywhere, Category = Visualization, meta = (EditCondition = "bShowProximity"))
 	bool bOnlyShowForSelected = false;
+
+	// Line thickness for connections
+	UPROPERTY(EditAnywhere, Category = Visualization, meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float LineThickness = 0.5;
+
+	// Line color for connections
+	UPROPERTY(EditAnywhere, Category = Visualization)
+	FColor LineColor = FColor::Yellow;
+
+	// Point size for centers
+	UPROPERTY(EditAnywhere, Category = Visualization, meta = (ClampMin = "0.0", ClampMax = "20.0"))
+	float CenterSize = 8.f;
+
+	// Point color for centers
+	UPROPERTY(EditAnywhere, Category = Visualization)
+	FColor CenterColor = FColor::Blue;
 };
 
 
@@ -110,7 +131,7 @@ public:
 
 	virtual TArray<FFractureToolContext> GetFractureToolContexts() const override;
 
-	virtual void Setup() override;
+	virtual void Setup(TWeakPtr<FFractureEditorModeToolkit> InToolkit) override;
 
 	UPROPERTY(EditAnywhere, Category = Proximity)
 	TObjectPtr<UFractureProximitySettings> ProximitySettings;

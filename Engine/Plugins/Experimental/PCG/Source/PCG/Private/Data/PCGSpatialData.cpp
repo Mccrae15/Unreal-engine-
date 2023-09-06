@@ -102,19 +102,6 @@ float UPCGSpatialData::GetDensityAtPosition(const FVector& InPosition) const
 	}
 }
 
-FVector UPCGSpatialData::TransformPosition(const FVector& InPosition) const
-{
-	FPCGPoint TemporaryPoint;
-	if (SamplePoint(FTransform(InPosition), FBox::BuildAABB(FVector::ZeroVector, FVector::ZeroVector), TemporaryPoint, nullptr))
-	{
-		return TemporaryPoint.Transform.GetLocation();
-	}
-	else
-	{
-		return InPosition;
-	}
-}
-
 bool UPCGSpatialData::ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
 {
 	// Fallback implementation - calls SamplePoint because SamplePoint was being used for projection previously.
@@ -240,5 +227,49 @@ UPCGSpatialData* UPCGSpatialData::DuplicateData(const bool bInitializeMetadata) 
 		NewSpatialData->InitializeFromData(this);
 	}
 
+	if (bHasCachedLastSelector)
+	{
+		NewSpatialData->SetLastSelector(CachedLastSelector);
+	}
+
 	return NewSpatialData;
+}
+
+bool UPCGSpatialData::HasCachedLastSelector() const
+{
+	return bHasCachedLastSelector || (Metadata && Metadata->GetAttributeCount() > 0);
+}
+
+FPCGAttributePropertyInputSelector UPCGSpatialData::GetCachedLastSelector() const
+{
+	if (bHasCachedLastSelector)
+	{
+		return CachedLastSelector;
+	}
+
+	FPCGAttributePropertyInputSelector TempSelector{};
+
+	// If we have attribute and no last selector, create a cached last selector on the latest attribute, to catch "CreateAttribute" calls that didn't use accessors.
+	if (Metadata && Metadata->GetAttributeCount() > 0)
+	{
+		TempSelector.SetAttributeName(Metadata->GetLatestAttributeNameOrNone());
+	}
+
+	return TempSelector;
+}
+
+void UPCGSpatialData::SetLastSelector(const FPCGAttributePropertySelector& InSelector)
+{
+	// Check that it is not a Last or Source selector
+	if (InSelector.GetSelection() == EPCGAttributePropertySelection::Attribute &&
+		(InSelector.GetAttributeName() == PCGMetadataAttributeConstants::LastAttributeName
+			|| InSelector.GetAttributeName() == PCGMetadataAttributeConstants::LastCreatedAttributeName
+			|| InSelector.GetAttributeName() == PCGMetadataAttributeConstants::SourceAttributeName
+			|| InSelector.GetAttributeName() == PCGMetadataAttributeConstants::SourceNameAttributeName))
+	{
+		return;
+	}
+
+	bHasCachedLastSelector = true;
+	CachedLastSelector.ImportFromOtherSelector(InSelector);
 }

@@ -26,6 +26,7 @@
 #include "Misc/ScopeRWLock.h"
 #include "Algo/Accumulate.h"
 #include "Containers/VersePath.h"
+#include "Internationalization/TextLocalizationManager.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #if READ_TARGET_ENABLED_PLUGINS_FROM_RECEIPT
 #include "TargetReceipt.h"
@@ -66,7 +67,11 @@ TArray<FString> GetPluginPathsByEnv( const TCHAR* EnvVariable )
  */
 TArray<FString> GetAdditionalExternalPluginsByEnvVar()
 {
+#if WITH_EDITOR
 	return GetPluginPathsByEnv(TEXT("UE_ADDITIONAL_PLUGIN_PATHS"));
+#else
+	return {};
+#endif
 }
 
 }
@@ -340,6 +345,21 @@ namespace DiscoveredPluginMapUtils
 	}
 }
 
+namespace PluginLocalizationUtils
+{
+	void GetLocalizationPathsForPlugin(const IPlugin& Plugin, TArray<FString>& OutLocResPaths)
+	{
+		const FString PluginLocDir = Plugin.GetContentDir() / TEXT("Localization");
+		for (const FLocalizationTargetDescriptor& LocTargetDesc : Plugin.GetDescriptor().LocalizationTargets)
+		{
+			if (LocTargetDesc.ShouldLoadLocalizationTarget())
+			{
+				OutLocResPaths.Add(PluginLocDir / LocTargetDesc.Name);
+			}
+		}
+	}
+}
+
 FPlugin::FPlugin(const FString& InFileName, const FPluginDescriptor& InDescriptor, EPluginType InType)
 	: Name(FPaths::GetBaseFilename(InFileName))
 	, FileName(InFileName)
@@ -467,10 +487,43 @@ const FString& EnumToString(const EPluginType& InPluginType)
 	}
 }
 
+namespace
+{
+	enum class EConfigurePluginResultCode
+	{
+		PluginMissing,
+		PluginSealed,
+		DisallowedDependency,
+
+		Unset,
+	};
+}
+
+struct FPluginManager::FConfigurePluginResultInfo
+{
+	EConfigurePluginResultCode Code;
+	const FPluginReferenceDescriptor* PluginReference;
+
+	FConfigurePluginResultInfo()
+		: Code(EConfigurePluginResultCode::Unset)
+		, PluginReference(nullptr)
+	{
+	}
+
+	FConfigurePluginResultInfo(EConfigurePluginResultCode InCode, const FPluginReferenceDescriptor* InPluginReference)
+		: Code(InCode)
+		, PluginReference(InPluginReference)
+	{
+	}
+};
+
 FPluginManager::FPluginManager()
 {
 	SCOPED_BOOT_TIMING("DiscoverAllPlugins");
 	DiscoverAllPlugins();
+
+	// Register the callback that allows the text localization manager to load data for plugins
+	FCoreDelegates::GatherAdditionalLocResPathsCallback.AddRaw(this, &FPluginManager::GetLocalizationPathsForEnabledPlugins);
 }
 
 FPluginManager::~FPluginManager()
@@ -482,6 +535,8 @@ FPluginManager::~FPluginManager()
 	//  shutdown phases.  This will fix issues where modules that are loaded after game modules are shutdown AFTER many engine
 	//  systems are already killed (like GConfig.)  Currently the only workaround is to listen to global exit events, or to
 	//  explicitly unload your module somewhere.  We should be able to handle most cases automatically though!
+
+	FCoreDelegates::GatherAdditionalLocResPathsCallback.RemoveAll(this);
 }
 
 void FPluginManager::RefreshPluginsList()
@@ -908,7 +963,7 @@ void FPluginManager::ReadPluginsInDirectory(const FString& PluginsDirectory, con
 		TArray<FString> FileNames;
 		{
 			SlowTask_ReadPlugins.EnterProgressFrame();
-			FindPluginsInDirectory(PluginsDirectory, FileNames);
+			FindPluginsInDirectory(PluginsDirectory, FileNames, FPlatformFileManager::Get().GetPlatformFile());
 		}
 
 		struct FLoadContext
@@ -960,7 +1015,7 @@ void FPluginManager::ReadPluginsInDirectory(const FString& PluginsDirectory, con
 	}
 }
 
-void FPluginManager::FindPluginsInDirectory(const FString& PluginsDirectory, TArray<FString>& FileNames)
+void FPluginManager::FindPluginsInDirectory(const FString& PluginsDirectory, TArray<FString>& FileNames, IPlatformFile& PlatformFile)
 {
 	//
 	// Use our own custom file discovery method (over something like `IPlatformFile::IterateDirectoryRecursively()`)
@@ -1023,7 +1078,7 @@ void FPluginManager::FindPluginsInDirectory(const FString& PluginsDirectory, TAr
 			DirectoriesToVisitNext,
 			DirectoriesToVisit.Num(),
 			MinBatchSize,
-			[&FoundFilesLock, &FileNames, &DirectoriesToVisit](TArray<FString>& OutDirectoriesToVisitNext, int32 Index)
+			[&FoundFilesLock, &FileNames, &DirectoriesToVisit, &PlatformFile](TArray<FString>& OutDirectoriesToVisitNext, int32 Index)
 			{
 				// Track where we start pushing sub-directories to because we might want to discard them (if we end up finding a .uplugin).
 				// Because of how `ParallelForWithTaskContext()` works, this array may already be populated from another execution,
@@ -1031,7 +1086,7 @@ void FPluginManager::FindPluginsInDirectory(const FString& PluginsDirectory, TAr
 				const int32 StartingDirIndex = OutDirectoriesToVisitNext.Num();
 
 				FFindPluginsInDirectory_Visitor Visitor(OutDirectoriesToVisitNext); // This visitor writes directly to `OutDirectoriesToVisitNext`, which is why we have to manage its contents
-				FPlatformFileManager::Get().GetPlatformFile().IterateDirectory(*DirectoriesToVisit[Index], Visitor);
+				PlatformFile.IterateDirectory(*DirectoriesToVisit[Index], Visitor);
 				if (!Visitor.FoundPluginFile.IsEmpty())
 				{
 					// Since we found a .uplugin, ignore sub-directories (stop from iterating deeper) -- 
@@ -1111,21 +1166,21 @@ void FPluginManager::CreatePluginObject(const FString& FileName, const FPluginDe
 	// We allow for duplicates of plugins between engine and the project, favoring the project level plugin
 	else if ((*ExistingPlugin)->Type == EPluginType::Engine && Type == EPluginType::Project && !(*ExistingPlugin)->bEnabled)
 	{
-		UE_LOG(LogPluginManager, Verbose, TEXT("By default, prioritizing project plugin (%s) over the corresponding engine version (%s)."), *Plugin->FileName, *(*ExistingPlugin)->FileName);
+		UE_LOG(LogPluginManager, Display, TEXT("By default, prioritizing project plugin (%s) over the corresponding engine version (%s)."), *Plugin->FileName, *(*ExistingPlugin)->FileName);
 		DiscoveredPluginMapUtils::InsertPluginIntoMap(Plugins, Plugin->GetName(), Plugin, DiscoveredPluginMapUtils::EInsertionType::AsOfferedPlugin);
 	}
 	else if ((*ExistingPlugin)->FileName != Plugin->FileName)
 	{
 		if ((*ExistingPlugin)->bEnabled)
 		{
-			UE_LOG(LogPluginManager, Verbose, TEXT("A version of the '%s' plugin has already been enabled (%s); prioritizing that over the newly discovered version (%s)."), *Plugin->Name, *(*ExistingPlugin)->FileName, *Plugin->FileName);
+			UE_LOG(LogPluginManager, Display, TEXT("A version of the '%s' plugin has already been enabled (%s); prioritizing that over the newly discovered version (%s)."), *Plugin->Name, *(*ExistingPlugin)->FileName, *Plugin->FileName);
 			DiscoveredPluginMapUtils::InsertPluginIntoMap(Plugins, Plugin->GetName(), Plugin, DiscoveredPluginMapUtils::EInsertionType::AsSuppressedPlugin);
 		}
 		else if ((*ExistingPlugin)->Type == EPluginType::Project && Type == EPluginType::Engine)
 		{
 			// Project plugins are favored over engine plugins, so we don't want to warn in this case
 			// (instead we mimic the Verbose log from above, and just explain which plugin we're favoring)
-			UE_LOG(LogPluginManager, Verbose, TEXT("By default, prioritizing project plugin (%s) over the corresponding engine version (%s)."), *(*ExistingPlugin)->FileName, *Plugin->FileName);
+			UE_LOG(LogPluginManager, Display, TEXT("By default, prioritizing project plugin (%s) over the corresponding engine version (%s)."), *(*ExistingPlugin)->FileName, *Plugin->FileName);
 			DiscoveredPluginMapUtils::InsertPluginIntoMap(Plugins, Plugin->GetName(), Plugin, DiscoveredPluginMapUtils::EInsertionType::AsSuppressedPlugin);
 		}
 		else
@@ -1135,7 +1190,7 @@ void FPluginManager::CreatePluginObject(const FString& FileName, const FPluginDe
 			{
 				UE_LOG(
 					LogPluginManager,
-					Verbose,
+					Display,
 					TEXT("By default, prioritizing newer version (v%d) of '%s' plugin, over older version (v%d)."),
 					FMath::Max(ExistingVersion, Descriptor.Version),
 					*Plugin->GetName(),
@@ -1250,6 +1305,22 @@ bool FPluginManager::IntegratePluginsIntoConfig(FConfigCacheIni& ConfigSystem, c
 	return true;
 }
 
+void FPluginManager::SetBinariesRootDirectories(const FString& InEngineBinariesRootDir, const FString& InProjectBinariesRootDir)
+{
+	EngineBinariesRootDir = InEngineBinariesRootDir;
+	ProjectBinariesRootDir = InProjectBinariesRootDir;
+}
+
+void FPluginManager::SetPreloadBinaries()
+{
+	bPreloadedBinaries = true;
+}
+
+bool FPluginManager::GetPreloadBinaries()
+{
+	return bPreloadedBinaries;
+}
+
 bool FPluginManager::ConfigureEnabledPlugins()
 {
 #if (WITH_ENGINE && !IS_PROGRAM) || WITH_PLUGIN_SUPPORT
@@ -1264,6 +1335,9 @@ bool FPluginManager::ConfigureEnabledPlugins()
 
 		// Keep a set of all the plugin names that have been configured. We read configuration data from different places, but only configure a plugin from the first place that it's referenced.
 		TSet<FString> ConfiguredPluginNames;
+
+		// Keep the list of newly available localization targets
+		TArray<FString> AdditionalLocResPaths;
 
 		// Check which plugins have been enabled or excluded via the command line
 		{
@@ -1506,6 +1580,35 @@ bool FPluginManager::ConfigureEnabledPlugins()
 			// Mark all the plugins as enabled
 			SCOPED_BOOT_TIMING("MarkEnabledPlugins");
 
+
+#if !IS_MONOLITHIC
+			TMap<FString, FString> PluginToPhysicalFile;
+
+			// If EngineBinariesRootDir is set it means that we are loading binaries from somewhere else than our basedir.
+			// We need to search for all the plugins under binaries root dir in order to find dlls etc.
+			// TODO: Maybe plugin desc inside pak files should store original relative path?
+			if (!EngineBinariesRootDir.IsEmpty())
+			{
+				TArray<FString> PhysicalFileNames;
+
+				for (const FString& EnginePluginDir : FPaths::GetExtensionDirs(EngineBinariesRootDir, TEXT("Plugins")))
+				{
+					FindPluginsInDirectory(EnginePluginDir, PhysicalFileNames, IPlatformFile::GetPlatformPhysical());
+				}
+
+				for (const FString& ProjectPluginDir : FPaths::GetExtensionDirs(ProjectBinariesRootDir, TEXT("Plugins")))
+				{
+					FindPluginsInDirectory(ProjectPluginDir, PhysicalFileNames, IPlatformFile::GetPlatformPhysical());
+				}
+
+				for (const FString& FileName : PhysicalFileNames)
+				{
+					FString PluginName = FPaths::GetBaseFilename(FileName);
+					PluginToPhysicalFile.Add(PluginName, FileName);
+				}
+			}
+#endif
+
 			for (TPair<FString, FPlugin*>& Pair : EnabledPlugins)
 			{
 				FPlugin& Plugin = *Pair.Value;
@@ -1514,8 +1617,16 @@ bool FPluginManager::ConfigureEnabledPlugins()
 				// Mount the binaries directory, and check the modules are valid
 				if (Plugin.Descriptor.Modules.Num() > 0)
 				{
+					const TCHAR* PluginFile = *Plugin.FileName;
+
+					// If we have a overridden binary path, use that instead
+					if (FString* PhysicalFile = PluginToPhysicalFile.Find(Plugin.Name))
+					{
+						PluginFile = **PhysicalFile;
+					}
+
 					// Mount the binaries directory
-					const FString PluginBinariesPath = FPaths::Combine(*FPaths::GetPath(Plugin.FileName), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory());
+					const FString PluginBinariesPath = FPaths::Combine(FPaths::GetPath(PluginFile), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory());
 					FModuleManager::Get().AddBinariesDirectory(*PluginBinariesPath, Plugin.GetLoadedFrom() == EPluginLoadedFrom::Project);
 				}
 
@@ -1526,6 +1637,11 @@ bool FPluginManager::ConfigureEnabledPlugins()
 					continue;
 				}
 #endif
+				if (!Plugin.GetDescriptor().bExplicitlyLoaded && Plugin.GetDescriptor().LocalizationTargets.Num() > 0)
+				{
+					PluginLocalizationUtils::GetLocalizationPathsForPlugin(Plugin, AdditionalLocResPaths);
+				}
+				
 				Plugin.bEnabled = true;
 			}
 		}
@@ -1631,7 +1747,7 @@ bool FPluginManager::ConfigureEnabledPlugins()
 
 					FConfigFile& PluginConfig = GConfig->Add(PluginConfigFilename, FConfigFile());
 
-					FConfigContext Context = FConfigContext::ReadIntoPluginFile(PluginConfig, FPaths::GetPath(Plugin.FileName));
+					FConfigContext Context = FConfigContext::ReadIntoPluginFile(PluginConfig, FPaths::GetPath(Plugin.FileName), Plugin.GetExtensionBaseDirs());
 
 					if (PluginSystemDefs::IsCachingIniFilesForProcessing())
 					{
@@ -1677,7 +1793,7 @@ bool FPluginManager::ConfigureEnabledPlugins()
 								FText FailureMessage = FText::Format(LOCTEXT("PluginOverrideFailureFormat", "Plugin '{0}' cannot override config file: '{1}'"), FText::FromString(Plugin.GetName()), FText::FromString(BaseConfigFile));
 								FText DialogTitle = LOCTEXT("PluginConfigFileOverride", "Plugin config file override");
 								UE_LOG(LogPluginManager, Error, TEXT("%s"), *FailureMessage.ToString());
-								FMessageDialog::Open(EAppMsgType::Ok, FailureMessage, &DialogTitle);
+								FMessageDialog::Open(EAppMsgType::Ok, FailureMessage, DialogTitle);
 								continue;
 							}
 
@@ -1726,7 +1842,7 @@ bool FPluginManager::ConfigureEnabledPlugins()
 							}
 							else
 							{
-								UE_LOG(LogPluginManager, Warning, TEXT("PAK file (%s) could not be mounted because MountPak is not bound"), *PakPath)
+								UE_LOG(LogPluginManager, Warning, TEXT("PAK file (%s) could not be mounted because MountPak is not bound"), *PakPath);
 							}
 						}
 					}
@@ -1765,6 +1881,11 @@ bool FPluginManager::ConfigureEnabledPlugins()
 			}
 		}
 
+		if (AdditionalLocResPaths.Num() > 0)
+		{
+			FTextLocalizationManager::Get().HandleLocalizationTargetsMounted(AdditionalLocResPaths);
+		}
+
 		PluginsToConfigure.Empty();
 	}
 	else 
@@ -1779,19 +1900,19 @@ bool FPluginManager::ConfigureEnabledPlugins()
 
 bool FPluginManager::RequiresTempTargetForCodePlugin(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FText& OutReason)
 {
-	const FPluginReferenceDescriptor* MissingPlugin;
+	FConfigurePluginResultInfo ResultInfo;
 
 	TSet<FString> ProjectCodePlugins;
-	if (!GetCodePluginsForProject(ProjectDescriptor, Platform, Configuration, TargetType, AllPlugins, ProjectCodePlugins, MissingPlugin))
+	if (!GetCodePluginsForProject(ProjectDescriptor, Platform, Configuration, TargetType, AllPlugins, ProjectCodePlugins, ResultInfo))
 	{
-		OutReason = FText::Format(LOCTEXT("TempTarget_MissingPluginForTarget", "{0} plugin is referenced by target but not found"), FText::FromString(MissingPlugin->Name));
+		OutReason = FText::Format(LOCTEXT("TempTarget_MissingPluginForTarget", "{0} plugin is referenced by target but not found"), FText::FromString(ResultInfo.PluginReference->Name));
 		return true;
 	}
 
 	TSet<FString> DefaultCodePlugins;
-	if (!GetCodePluginsForProject(nullptr, Platform, Configuration, TargetType, AllPlugins, DefaultCodePlugins, MissingPlugin))
+	if (!GetCodePluginsForProject(nullptr, Platform, Configuration, TargetType, AllPlugins, DefaultCodePlugins, ResultInfo))
 	{
-		OutReason = FText::Format(LOCTEXT("TempTarget_MissingPluginForDefaultTarget", "{0} plugin is referenced by the default target but not found"), FText::FromString(MissingPlugin->Name));
+		OutReason = FText::Format(LOCTEXT("TempTarget_MissingPluginForDefaultTarget", "{0} plugin is referenced by the default target but not found"), FText::FromString(ResultInfo.PluginReference->Name));
 		return true;
 	}
 
@@ -1816,7 +1937,7 @@ bool FPluginManager::RequiresTempTargetForCodePlugin(const FProjectDescriptor* P
 	return false;
 }
 
-bool FPluginManager::GetCodePluginsForProject(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FDiscoveredPluginMap& AllPlugins, TSet<FString>& CodePluginNames, const FPluginReferenceDescriptor*& OutMissingPlugin)
+bool FPluginManager::GetCodePluginsForProject(const FProjectDescriptor* ProjectDescriptor, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, FDiscoveredPluginMap& AllPlugins, TSet<FString>& CodePluginNames, FConfigurePluginResultInfo& OutResultInfo)
 {
 	// Can only check the current project at the moment, since we won't have enumerated them otherwise
 	check(ProjectDescriptor == nullptr || ProjectDescriptor == IProjectManager::Get().GetCurrentProject());
@@ -1842,7 +1963,7 @@ bool FPluginManager::GetCodePluginsForProject(const FProjectDescriptor* ProjectD
 		{
 			if(!ConfiguredPluginNames.Contains(PluginReference.Name))
 			{
-				if (!ConfigureEnabledPluginForTarget(PluginReference, ProjectDescriptor, FString(), Platform, Configuration, TargetType, bLoadPluginsForTargetPlatforms, AllPlugins, EnabledPlugins, OutMissingPlugin))
+				if (!ConfigureEnabledPluginForTarget(PluginReference, ProjectDescriptor, FString(), Platform, Configuration, TargetType, bLoadPluginsForTargetPlatforms, AllPlugins, EnabledPlugins, OutResultInfo))
 				{
 					return false;
 				}
@@ -1856,7 +1977,7 @@ bool FPluginManager::GetCodePluginsForProject(const FProjectDescriptor* ProjectD
 	{
 		if (DiscoveredPluginMapUtils::ResolvePluginFromMapVal(PluginPair.Value)->IsEnabledByDefault(bAllowEnginePluginsEnabledByDefault) && !ConfiguredPluginNames.Contains(PluginPair.Key))
 		{
-			if (!ConfigureEnabledPluginForTarget(FPluginReferenceDescriptor(PluginPair.Key, true), ProjectDescriptor, FString(), Platform, Configuration, TargetType, bLoadPluginsForTargetPlatforms, AllPlugins, EnabledPlugins, OutMissingPlugin))
+			if (!ConfigureEnabledPluginForTarget(FPluginReferenceDescriptor(PluginPair.Key, true), ProjectDescriptor, FString(), Platform, Configuration, TargetType, bLoadPluginsForTargetPlatforms, AllPlugins, EnabledPlugins, OutResultInfo))
 			{
 				return false;
 			}
@@ -1886,40 +2007,89 @@ bool FPluginManager::ConfigureEnabledPluginForCurrentTarget(const FPluginReferen
 {
 	SCOPED_BOOT_TIMING("ConfigureEnabledPluginForCurrentTarget");
 
-	const FPluginReferenceDescriptor* MissingPlugin;
-	if (!ConfigureEnabledPluginForTarget(FirstReference, IProjectManager::Get().GetCurrentProject(), UE_APP_NAME, FPlatformMisc::GetUBTPlatform(), FApp::GetBuildConfiguration(), FApp::GetBuildTargetType(), (bool)LOAD_PLUGINS_FOR_TARGET_PLATFORMS, AllPlugins, EnabledPlugins, MissingPlugin))
+	FConfigurePluginResultInfo ResultInfo;
+
+	if (!ConfigureEnabledPluginForTarget(FirstReference, IProjectManager::Get().GetCurrentProject(), UE_APP_NAME, FPlatformMisc::GetUBTPlatform(), FApp::GetBuildConfiguration(), FApp::GetBuildTargetType(), (bool)LOAD_PLUGINS_FOR_TARGET_PLATFORMS, AllPlugins, EnabledPlugins, ResultInfo))
 	{
 		// If we're in unattended mode, don't open any windows and fatal out
 		if (FApp::IsUnattended())
 		{
-			UE_LOG(LogPluginManager, Fatal, TEXT("This project requires the '%s' plugin. Install it and try again, or remove it from the project's required plugin list."), *MissingPlugin->Name);
+			switch (ResultInfo.Code)
+			{
+			case EConfigurePluginResultCode::PluginMissing:
+				UE_LOG(LogPluginManager, Fatal, TEXT("This project requires the '%s' plugin. Install it and try again, or remove it from the project's required plugin list."), *ResultInfo.PluginReference->Name);
+				break;
+
+			case EConfigurePluginResultCode::PluginSealed:
+				UE_LOG(LogPluginManager, Fatal, TEXT("This project requires the '%s' plugin, which has an illegal dependency on the sealed plugin '%s'."), *FirstReference.Name, *ResultInfo.PluginReference->Name);
+				break;
+
+			case EConfigurePluginResultCode::DisallowedDependency:
+				UE_LOG(LogPluginManager, Fatal, TEXT("This project requires the '%s' plugin, which has a disallowed dependency on the plugin '%s'."), *FirstReference.Name, *ResultInfo.PluginReference->Name);
+				break;
+
+			default:
+				checkf(0, TEXT("Unimplemented EConfigurePluginResultCode switch case"));
+			}
 			return false;
 		}
 
 #if !IS_MONOLITHIC
-		// Try to download it from the marketplace
-		if (MissingPlugin->MarketplaceURL.Len() > 0 && PromptToDownloadPlugin(MissingPlugin->Name, MissingPlugin->MarketplaceURL))
+		switch (ResultInfo.Code)
 		{
-			UE_LOG(LogPluginManager, Display, TEXT("Downloading '%s' plugin from marketplace (%s)."), *MissingPlugin->Name, *MissingPlugin->MarketplaceURL);
-			return false;
-		}
+		case EConfigurePluginResultCode::PluginMissing:
+			{
+				// Try to download it from the marketplace
+				if (ResultInfo.PluginReference->MarketplaceURL.Len() > 0 && PromptToDownloadPlugin(ResultInfo.PluginReference->Name, ResultInfo.PluginReference->MarketplaceURL))
+				{
+					UE_LOG(LogPluginManager, Display, TEXT("Downloading '%s' plugin from marketplace (%s)."), *ResultInfo.PluginReference->Name, *ResultInfo.PluginReference->MarketplaceURL);
+					return false;
+				}
 
-		// Prompt to disable it in the project file, if possible
-		if (PromptToDisableMissingPlugin(FirstReference.Name, MissingPlugin->Name))
-		{
-			UE_LOG(LogPluginManager, Display, TEXT("Disabled plugin '%s', continuing."), *FirstReference.Name);
-			return true;
+				// Prompt to disable it in the project file, if possible
+				if (PromptToDisableMissingPlugin(FirstReference.Name, ResultInfo.PluginReference->Name))
+				{
+					UE_LOG(LogPluginManager, Display, TEXT("Disabled plugin '%s' due to missing plugin '%s', continuing."), *FirstReference.Name, *ResultInfo.PluginReference->Name);
+					return true;
+				}
+			}
+			break;
+
+		case EConfigurePluginResultCode::PluginSealed:
+			{
+				// Prompt to disable it in the project file, if possible
+				if (PromptToDisableSealedPlugin(FirstReference.Name, ResultInfo.PluginReference->Name))
+				{
+					UE_LOG(LogPluginManager, Display, TEXT("Disabled plugin '%s' due to sealed dependency on plugin '%s', continuing."), *FirstReference.Name, *ResultInfo.PluginReference->Name);
+					return true;
+				}
+			}
+			break;
+
+		case EConfigurePluginResultCode::DisallowedDependency:
+			{
+				// Prompt to disable it in the project file, if possible
+				if (PromptToDisableDisalowedPlugin(FirstReference.Name, ResultInfo.PluginReference->Name))
+				{
+					UE_LOG(LogPluginManager, Display, TEXT("Disabled plugin '%s' due to disallowed dependency on plugin '%s', continuing."), *FirstReference.Name, *ResultInfo.PluginReference->Name);
+					return true;
+				}
+			}
+			break;
+
+		default:
+			checkf(0, TEXT("Unimplemented EConfigurePluginResultCode switch case"));
 		}
 #endif
 
 		// Unable to continue
-		UE_LOG(LogPluginManager, Error, TEXT("Unable to load plugin '%s'. Aborting."), *MissingPlugin->Name);
+		UE_LOG(LogPluginManager, Error, TEXT("Unable to load plugin '%s'. Aborting."), *ResultInfo.PluginReference->Name);
 		return false;
 	}
 	return true;
 }
 
-bool FPluginManager::ConfigureEnabledPluginForTarget(const FPluginReferenceDescriptor& FirstReference, const FProjectDescriptor* ProjectDescriptor, const FString& TargetName, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, bool bLoadPluginsForTargetPlatforms, FDiscoveredPluginMap& AllPlugins, TMap<FString, FPlugin*>& EnabledPlugins, const FPluginReferenceDescriptor*& OutMissingPlugin)
+bool FPluginManager::ConfigureEnabledPluginForTarget(const FPluginReferenceDescriptor& FirstReference, const FProjectDescriptor* ProjectDescriptor, const FString& TargetName, const FString& Platform, EBuildConfiguration Configuration, EBuildTargetType TargetType, bool bLoadPluginsForTargetPlatforms, FDiscoveredPluginMap& AllPlugins, TMap<FString, FPlugin*>& EnabledPlugins, FConfigurePluginResultInfo& OutResultInfo)
 {
 	if (!EnabledPlugins.Contains(FirstReference.Name))
 	{
@@ -1998,7 +2168,7 @@ bool FPluginManager::ConfigureEnabledPluginForTarget(const FPluginReferenceDescr
 				}
 
 				// Add it to the missing list
-				OutMissingPlugin = &Reference;
+				OutResultInfo = FConfigurePluginResultInfo(EConfigurePluginResultCode::PluginMissing, &Reference);
 				return false;
 			}
 
@@ -2058,6 +2228,19 @@ bool FPluginManager::ConfigureEnabledPluginForTarget(const FPluginReferenceDescr
 			// Add references to all its dependencies
 			for (const FPluginReferenceDescriptor& NextReference : Plugin.Descriptor.Plugins)
 			{
+				const TSharedRef<FPlugin>* NextPluginPtr = DiscoveredPluginMapUtils::FindPluginInMap(AllPlugins, NextReference.Name);
+				if (NextPluginPtr != nullptr && NextPluginPtr->Get().Descriptor.bIsSealed)
+				{
+					OutResultInfo = FConfigurePluginResultInfo(EConfigurePluginResultCode::PluginSealed, &NextReference);
+					return false;
+				}
+
+				if (NextPluginPtr != nullptr && Plugin.Descriptor.DisallowedPlugins.Contains(NextPluginPtr->Get().Name))
+				{
+					OutResultInfo = FConfigurePluginResultInfo(EConfigurePluginResultCode::DisallowedDependency, &NextReference);
+					return false;
+				}
+
 				if (!EnabledPlugins.Contains(NextReference.Name) && !NewPluginNames.Contains(NextReference.Name))
 				{
 					NewPluginNames.Add(NextReference.Name);
@@ -2090,7 +2273,7 @@ bool FPluginManager::PromptToDownloadPlugin(const FString& PluginName, const FSt
 	{
 		FText Caption = FText::Format(LOCTEXT("DownloadPluginCaption", "Missing {0} Plugin"), FText::FromString(PluginName));
 		FText Message = FText::Format(LOCTEXT("DownloadPluginMessage", "This project requires the {0} plugin.\n\nWould you like to download it from the Unreal Engine Marketplace?"), FText::FromString(PluginName));
-		if(FMessageDialog::Open(EAppMsgType::YesNo, Message, &Caption) == EAppReturnType::Yes)
+		if(FMessageDialog::Open(EAppMsgType::YesNo, Message, Caption) == EAppReturnType::Yes)
 		{
 			FString Error;
 			FPlatformProcess::LaunchURL(*MarketplaceURL, nullptr, &Error);
@@ -2102,6 +2285,22 @@ bool FPluginManager::PromptToDownloadPlugin(const FString& PluginName, const FSt
 		}
 	}
 	return false;
+}
+
+bool FPluginManager::PromptToDisableSealedPlugin(const FString& PluginName, const FString& SealedPluginName)
+{
+	FText Message = FText::Format(LOCTEXT("DisablePluginMessage_IllegalDependency", "This project requires the '{0}' plugin, which has an illegal dependency on the sealed '{1}' plugin.\n\nWould you like to disable it?\n\nIf you do, you will no longer be able to open any assets created with it. If not, the application will close."), FText::FromString(PluginName), FText::FromString(SealedPluginName));
+	FText Caption(LOCTEXT("DisablePluginCaption_IllegalDependency", "Illegal Dependency"));
+
+	return PromptToDisablePlugin(Caption, Message, PluginName);
+}
+
+bool FPluginManager::PromptToDisableDisalowedPlugin(const FString& PluginName, const FString& DisallowedPluginName)
+{
+	FText Message = FText::Format(LOCTEXT("DisablePluginMessage_DisallowedDependency", "This project requires the '{0}' plugin, which has a disallowed dependency on the '{1}' plugin.\n\nWould you like to disable it?\n\nIf you do, you will no longer be able to open any assets created with it. If not, the application will close."), FText::FromString(PluginName), FText::FromString(DisallowedPluginName));
+	FText Caption(LOCTEXT("DisablePluginCaption_IllegalDependency", "Illegal Dependency"));
+
+	return PromptToDisablePlugin(Caption, Message, PluginName);
 }
 
 bool FPluginManager::PromptToDisableMissingPlugin(const FString& PluginName, const FString& MissingPluginName)
@@ -2141,7 +2340,7 @@ bool FPluginManager::PromptToDisablePlugin(const FText& Caption, const FText& Me
 	// Check we have a project file. If this is a missing engine/program plugin referenced by something, we can't disable it through this method.
 	if (IProjectManager::Get().GetCurrentProject() != nullptr)
 	{
-		if (FMessageDialog::Open(EAppMsgType::YesNo, Message, &Caption) == EAppReturnType::Yes)
+		if (FMessageDialog::Open(EAppMsgType::YesNo, Message, Caption) == EAppReturnType::Yes)
 		{
 			FText FailReason;
 			if (IProjectManager::Get().SetPluginEnabled(*PluginName, false, FailReason))
@@ -2180,7 +2379,7 @@ bool FPluginManager::PromptToLoadIncompatiblePlugin(const FPlugin& Plugin)
 	// Format the message dependning on whether the plugin is referenced directly, or as a dependency
 	FText Message = FText::Format(LOCTEXT("LoadIncompatiblePlugin", "The '{0}' plugin was designed for build {1}. Attempt to load it anyway?"), FText::FromString(Plugin.Name), FText::FromString(Plugin.Descriptor.EngineVersion));
 	FText Caption = FText::Format(LOCTEXT("IncompatiblePluginCaption", "'{0}' is Incompatible"), FText::FromString(Plugin.Name));
-	return FMessageDialog::Open(EAppMsgType::YesNo, Message, &Caption) == EAppReturnType::Yes;
+	return FMessageDialog::Open(EAppMsgType::YesNo, Message, Caption) == EAppReturnType::Yes;
 }
 
 TSharedPtr<FPlugin> FPluginManager::FindPluginInstance(const FString& Name)
@@ -2282,6 +2481,22 @@ bool FPluginManager::LoadModulesForEnabledPlugins( const ELoadingPhase::Type Loa
 				}
 			}
 		}
+
+		// This is a workaround for crashes when delaying the loading of binaries when using pak files/iostore. Should be removed
+		if (bPreloadedBinaries && LoadingPhase == ELoadingPhase::PostConfigInit)
+		{
+			UE_SCOPED_ENGINE_ACTIVITY("Preloading all plugin binaries");
+			for (const FDiscoveredPluginMap::ElementType& PluginPair : AllPlugins)
+			{
+				for (auto& ModuleName : DiscoveredPluginMapUtils::ResolvePluginFromMapVal(PluginPair.Value)->Descriptor.Modules)
+				{
+					if (ModuleName.IsCompiledInCurrentConfiguration())
+					{
+						FModuleManager::Get().LoadModuleBinaryOnly(ModuleName.Name);
+					}
+				}
+			}
+		}
 	}
 	// Some phases such as ELoadingPhase::PreEarlyLoadingScreen are potentially called multiple times,
 	// but we do not return to an earlier phase after calling LoadModulesForEnabledPlugins on a later phase
@@ -2307,11 +2522,8 @@ ELoadingPhase::Type FPluginManager::GetLastCompletedLoadingPhase() const
 
 void FPluginManager::GetLocalizationPathsForEnabledPlugins( TArray<FString>& OutLocResPaths )
 {
-	// Figure out which plugins are enabled
-	if (!ConfigureEnabledPlugins())
-	{
-		return;
-	}
+	// Note: We don't call ConfigureEnabledPlugins here as it can cause additional plugin modules to load from a worker thread
+	//       We expect that newly enabled plugins call HandleLocalizationTargetsMounted to load their localization target data
 
 	// Gather the paths from all plugins that have localization targets that are loaded based on the current runtime environment
 	for (const FDiscoveredPluginMap::ElementType& PluginPair : AllPlugins)
@@ -2322,14 +2534,7 @@ void FPluginManager::GetLocalizationPathsForEnabledPlugins( TArray<FString>& Out
 			continue;
 		}
 		
-		const FString PluginLocDir = Plugin->GetContentDir() / TEXT("Localization");
-		for (const FLocalizationTargetDescriptor& LocTargetDesc : Plugin->GetDescriptor().LocalizationTargets)
-		{
-			if (LocTargetDesc.ShouldLoadLocalizationTarget())
-			{
-				OutLocResPaths.Add(PluginLocDir / LocTargetDesc.Name);
-			}
-		}
+		PluginLocalizationUtils::GetLocalizationPathsForPlugin(*Plugin, OutLocResPaths);
 	}
 }
 
@@ -2419,6 +2624,24 @@ TSharedPtr<IPlugin> FPluginManager::FindPluginFromPath(const FString& PluginPath
 	}
 
 	return FindPlugin(PluginName);
+}
+
+void FPluginManager::FindPluginsUnderDirectory(const FString& Directory, TArray<FString>& OutPluginFilePaths)
+{
+	return FindPluginsInDirectory(Directory, OutPluginFilePaths, FPlatformFileManager::Get().GetPlatformFile());
+}
+
+TSharedPtr<IPlugin> FPluginManager::FindPluginFromDescriptor(const FPluginReferenceDescriptor& PluginDesc)
+{
+	const TSharedRef<FPlugin>* Instance = DiscoveredPluginMapUtils::FindPluginInMap_FromDescriptor(AllPlugins, PluginDesc);
+	if (Instance == nullptr)
+	{
+		return TSharedPtr<IPlugin>();
+	}
+	else
+	{
+		return TSharedPtr<IPlugin>(*Instance);
+	}
 }
 
 TArray<TSharedRef<IPlugin>> FPluginManager::GetEnabledPlugins()
@@ -2667,6 +2890,14 @@ void FPluginManager::MountPluginFromExternalSource(const TSharedRef<FPlugin>& Pl
 		}
 	}
 
+	// Notify that additional localization data should be loaded
+	if (Plugin->Descriptor.LocalizationTargets.Num() > 0)
+	{
+		TArray<FString> AdditionalLocResPaths;
+		PluginLocalizationUtils::GetLocalizationPathsForPlugin(*Plugin, AdditionalLocResPaths);
+		FTextLocalizationManager::Get().HandleLocalizationTargetsMounted(AdditionalLocResPaths);
+	}
+
 	// If it's a code module, also load the modules for it
 	if (Plugin->Descriptor.Modules.Num() > 0)
 	{
@@ -2698,6 +2929,39 @@ bool FPluginManager::UnmountExplicitlyLoadedPlugin(const FString& PluginName, FT
 	return UnmountPluginFromExternalSource(Plugin, OutReason);
 }
 
+bool FPluginManager::GetPluginDependencies(const FString& PluginName, TArray<FPluginReferenceDescriptor>& PluginDependencies)
+{
+	const TSharedPtr<FPlugin> Plugin = FindPluginInstance(PluginName);
+	if (Plugin.IsValid())
+	{
+		PluginDependencies = Plugin->Descriptor.Plugins;
+		return true;
+	}
+	return false;
+}
+
+bool FPluginManager::GetPluginDependencies_FromFileName(const FString& PluginFileName, TArray<FPluginReferenceDescriptor>& PluginDependencies)
+{
+	const TSharedRef<FPlugin>* DescribedPlugin = DiscoveredPluginMapUtils::FindPluginInMap_FromFileName(AllPlugins, PluginFileName);
+	if (DescribedPlugin)
+	{
+		PluginDependencies = (*DescribedPlugin)->Descriptor.Plugins;
+		return true;
+	}
+	return false;
+}
+
+bool FPluginManager::GetPluginDependencies_FromDescriptor(const FPluginReferenceDescriptor& PluginDescriptor, TArray<FPluginReferenceDescriptor>& PluginDependencies)
+{
+	const TSharedRef<FPlugin>* DescribedPlugin = DiscoveredPluginMapUtils::FindPluginInMap_FromDescriptor(AllPlugins, PluginDescriptor);
+	if (DescribedPlugin)
+	{
+		PluginDependencies = (*DescribedPlugin)->Descriptor.Plugins;
+		return true;
+	}
+	return false;
+}
+
 bool FPluginManager::UnmountPluginFromExternalSource(const TSharedPtr<FPlugin>& Plugin, FText* OutReason)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UnmountPluginFromExternalSource);
@@ -2723,6 +2987,14 @@ bool FPluginManager::UnmountPluginFromExternalSource(const TSharedPtr<FPlugin>& 
 			*OutReason = LOCTEXT("UnloadPluginContainedModules", "Plugin contains modules and may be unsafe to unload");
 		}
 		return false;
+	}
+
+	// Notify that additional localization data should be unloaded
+	if (Plugin->Descriptor.LocalizationTargets.Num() > 0 && !IsEngineExitRequested())
+	{
+		TArray<FString> AdditionalLocResPaths;
+		PluginLocalizationUtils::GetLocalizationPathsForPlugin(*Plugin, AdditionalLocResPaths);
+		FTextLocalizationManager::Get().HandleLocalizationTargetsUnmounted(AdditionalLocResPaths);
 	}
 
 	if ((Plugin->CanContainContent() || Plugin->CanContainVerse()) && ensure(UnRegisterMountPointDelegate.IsBound()))

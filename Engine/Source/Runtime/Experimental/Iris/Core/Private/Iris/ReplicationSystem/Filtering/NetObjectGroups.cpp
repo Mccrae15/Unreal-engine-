@@ -76,6 +76,7 @@ void FNetObjectGroups::Init(const FNetObjectGroupInitParams& Params)
 	Groups.Add(FNetObjectGroup());
 
 	GroupMemberships.SetNumZeroed(Params.MaxObjectCount);
+	GroupFilteredObjects.Init(Params.MaxObjectCount);
 }
 
 FNetObjectGroupHandle FNetObjectGroups::CreateGroup()
@@ -159,7 +160,7 @@ void FNetObjectGroups::ClearGroup(FNetObjectGroupHandle GroupHandle)
 	{
 		FNetObjectGroup& Group = Groups[GroupHandle];
 
-		for (uint32 InternalIndex : MakeArrayView(Group.Members))
+		for (FInternalNetRefIndex InternalIndex : Group.Members)
 		{
 			checkSlow(IsMemberOf(GroupMemberships[InternalIndex], GroupHandle));
 			RemoveGroupMembership(GroupMemberships[InternalIndex], GroupHandle);
@@ -201,6 +202,11 @@ void FNetObjectGroups::AddToGroup(FNetObjectGroupHandle GroupHandle, FInternalNe
 		if (AddGroupMembership(GroupMemberships[InternalIndex], GroupHandle))
 		{
 			Group->Members.AddUnique(InternalIndex);
+
+			if (IsFilterGroup(*Group))
+			{
+				GroupFilteredObjects.SetBit(InternalIndex);
+			}
 		}
 		else
 		{
@@ -214,11 +220,80 @@ void FNetObjectGroups::RemoveFromGroup(FNetObjectGroupHandle GroupHandle, FInter
 	FNetObjectGroup* Group = GetGroup(GroupHandle);
 	if (InternalIndex != FNetRefHandleManager::InvalidInternalIndex && Group)
 	{
-		checkSlow(IsMemberOf(GroupMemberships[InternalIndex], GroupHandle));
+		FNetObjectGroupMembership& GroupMembership = GroupMemberships[InternalIndex];
+		checkSlow(IsMemberOf(GroupMembership, GroupHandle));
 
-		RemoveGroupMembership(GroupMemberships[InternalIndex], GroupHandle);
+		RemoveGroupMembership(GroupMembership, GroupHandle);
 		Group->Members.RemoveSingle(InternalIndex);
+
+		// Check to see if the object is still part of a filter group
+		if (!IsInAnyFilterGroup(GroupMembership))
+		{
+			GroupFilteredObjects.ClearBit(InternalIndex);
+		}
 	}
+}
+
+void FNetObjectGroups::AddFilterTrait(FNetObjectGroupHandle GroupHandle)
+{
+	if (FNetObjectGroup* Group = GetGroup(GroupHandle))
+	{
+		if (!IsFilterGroup(*Group))
+		{
+			Group->Traits |= ENetObjectGroupTraits::IsFiltering;
+
+			// Flag all current members of this group that they are now filterable
+			for (FInternalNetRefIndex MemberIndex : Group->Members)
+			{
+				GroupFilteredObjects.SetBit(MemberIndex);
+			}
+		}
+	}
+}
+
+void FNetObjectGroups::RemoveFilterTrait(FNetObjectGroupHandle GroupHandle)
+{
+	if (FNetObjectGroup* Group = GetGroup(GroupHandle))
+	{
+		Group->Traits &= ~(ENetObjectGroupTraits::IsFiltering);
+
+		for (FInternalNetRefIndex MemberIndex : Group->Members)
+		{
+			// Check to see if the object is still part of a filter group
+			if (!IsInAnyFilterGroup(GroupMemberships[MemberIndex]))
+			{
+				GroupFilteredObjects.ClearBit(MemberIndex);
+			}
+		}
+	}
+}
+
+bool FNetObjectGroups::IsFilterGroup(FNetObjectGroupHandle GroupHandle) const
+{
+	if (const FNetObjectGroup* Group = GetGroup(GroupHandle))
+	{
+		return EnumHasAnyFlags(Group->Traits, ENetObjectGroupTraits::IsFiltering);
+	}
+
+	return false;
+}
+
+bool FNetObjectGroups::IsInAnyFilterGroup(const FNetObjectGroupMembership& GroupMembership) const
+{
+	for (FNetObjectGroupHandle AssignedGroup : GroupMembership.Groups)
+	{
+		if (AssignedGroup == InvalidNetObjectGroupHandle)
+		{
+			// Note: An invalid group means we found the end of the array
+			return false;
+		}
+		else if (IsFilterGroup(Groups[AssignedGroup]))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 uint32 FNetObjectGroups::GetNumGroupMemberships(FInternalNetRefIndex InternalIndex) const

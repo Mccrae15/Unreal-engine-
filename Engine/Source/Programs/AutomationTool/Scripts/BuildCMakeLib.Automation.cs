@@ -9,6 +9,7 @@ using System.Text;
 using EpicGames.Core;
 using UnrealBuildTool;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 // TODO Currently this only supports one lib and one platform at a time.
 // The reason for this is that the the library version and additional arguments (which are per platform) is passed on the command line.
@@ -31,6 +32,7 @@ using UnrealBuildBase;
 [Help("SkipSubmit", "Do not perform P4 submit of source or libs. If this argument is not supplied source and libs will be automatically submitted to Perforce. If SkipCreateChangelist is specified, this argument applies by default.")]
 [Help("RoboMerge", "Which RoboMerge action to apply to the submission. If we're skipping submit, this is not used.")]
 [RequireP4]
+[DoesNotNeedP4CL]
 public sealed class BuildCMakeLib : BuildCommand
 {
 	public class TargetLib
@@ -358,12 +360,12 @@ public sealed class BuildCMakeLib : BuildCommand
 
 		public virtual void SetupTargetLib(TargetLib TargetLib, string TargetConfiguration)
 		{
-			LogInformation("Building {0} for {1} ({2})...", TargetLib.Name, FriendlyName, TargetConfiguration ?? "");
+			Logger.LogInformation("Building {Arg0} for {FriendlyName} ({Arg2})...", TargetLib.Name, FriendlyName, TargetConfiguration ?? "");
 
 			DirectoryReference CMakeTargetDirectory = GetProjectsDirectory(TargetLib, TargetConfiguration);
 			MakeFreshDirectoryIfRequired(CMakeTargetDirectory);
 
-			LogInformation("Generating projects for {0} for {1}", TargetLib.Name, FriendlyName);
+			Logger.LogInformation("Generating projects for {Arg0} for {FriendlyName}", TargetLib.Name, FriendlyName);
 
 			string CMakeArgs = GetCMakeSetupArguments(TargetLib, TargetConfiguration);
 			if (Run(CMakeCommand, CMakeArgs).ExitCode != 0)
@@ -567,7 +569,7 @@ public sealed class BuildCMakeLib : BuildCommand
 			{
 				if (File.Exists(PathComponent + "/make.exe") || File.Exists(PathComponent + "make.exe") || File.Exists(PathComponent + "/cygwin1.dll"))
 				{
-					LogInformation("Removing {0} from PATH since it contains possibly colliding make.exe", PathComponent);
+					Logger.LogInformation("Removing {PathComponent} from PATH since it contains possibly colliding make.exe", PathComponent);
 					continue;
 				}
 			}
@@ -593,7 +595,7 @@ public sealed class BuildCMakeLib : BuildCommand
 			string PathWithoutCygwin = RemoveOtherMakeAndCygwinFromPath(PrevPath);
 			Environment.SetEnvironmentVariable("PATH", CMakePath + ";" + MakePath + ";" + PathWithoutCygwin);
 			Environment.SetEnvironmentVariable("PATH", CMakePath + ";" + MakePath + ";" + Environment.GetEnvironmentVariable("PATH"));
-			LogInformation("set {0}={1}", "PATH", Environment.GetEnvironmentVariable("PATH"));
+			Logger.LogInformation("set {Arg0}={Arg1}", "PATH", Environment.GetEnvironmentVariable("PATH"));
 		}
 	}
 
@@ -714,13 +716,13 @@ public sealed class BuildCMakeLib : BuildCommand
 			{
 				if (!P4.TryDeleteEmptyChange(P4ChangeList))
 				{
-					LogInformation("Submitting changelist " + P4ChangeList.ToString());
+					Logger.LogInformation("{Text}", "Submitting changelist " + P4ChangeList.ToString());
 					int SubmittedChangeList = InvalidChangeList;
 					P4.Submit(P4ChangeList, out SubmittedChangeList);
 				}
 				else
 				{
-					LogInformation("Nothing to submit!");
+					Logger.LogInformation("Nothing to submit!");
 				}
 			}
 		}
@@ -924,7 +926,7 @@ class MakefileTargetPlatform_IOS : BuildCMakeLib.MakefileTargetPlatform
 		return SysRoot;
 	}
 
-	private string GetSdkName() => Architecture == "x86_64" || Architecture == "i386" ? "iphonesimulator" : "iphoneos";
+	private string GetSdkName() => Architecture == "x86_64" || Architecture == "iossimulator" ? "iphonesimulator" : "iphoneos";
 }
 
 class XcodeTargetPlatform_TVOS : BuildCMakeLib.XcodeTargetPlatform

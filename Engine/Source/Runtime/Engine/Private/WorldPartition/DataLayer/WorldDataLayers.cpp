@@ -5,21 +5,24 @@
 =============================================================================*/
 
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
-#include "Engine/Level.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "WorldPartition/DataLayer/DataLayer.h"
 #include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
 #include "WorldPartition/DataLayer/DeprecatedDataLayerInstance.h"
 #include "WorldPartition/DataLayer/DataLayerUtils.h"
-#include "Net/UnrealNetwork.h"
+#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionLog.h"
+#include "WorldPartition/WorldPartitionRuntimeCellInterface.h"
+#include "Engine/Level.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Net/UnrealNetwork.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldDataLayers)
 
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionEditorPerProjectUserSettings.h"
 #include "WorldPartition/DataLayer/WorldDataLayersActorDesc.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
 #include "Algo/Find.h"
 #endif
 
@@ -73,11 +76,12 @@ void AWorldDataLayers::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// When running a Replay we want to reset our state to CDO (empty) and rely on the Replay/Replication.
+	// When running a Replay we want to reset our state to the initial state and rely on the Replay/Replication.
 	// Unfortunately this can't be tested in the PostLoad as the World doesn't have a demo driver yet.
 	if (GetWorld()->IsPlayingReplay())
 	{
 		ResetDataLayerRuntimeStates();
+		InitializeDataLayerRuntimeStates();
 	}
 }
 
@@ -85,16 +89,23 @@ void AWorldDataLayers::RewindForReplay()
 {
 	Super::RewindForReplay();
 
-	// Same as BeginPlay when rewinding we want to reset our state to CDO (empty) and rely on Replay/Replication.
+	// Same as BeginPlay when rewinding we want to reset our state to the initial state and rely on the Replay/Replication.
 	ResetDataLayerRuntimeStates();
+	InitializeDataLayerRuntimeStates();
 }
 
 void AWorldDataLayers::InitializeDataLayerRuntimeStates()
 {
 	check(ActiveDataLayerNames.IsEmpty() && LoadedDataLayerNames.IsEmpty());
 
-	if (GetWorld()->IsGameWorld() && IsRuntimeRelevant())
+	if (GetWorld()->IsGameWorld())
 	{
+#if WITH_EDITOR
+		if (!IsRuntimeRelevant())
+		{
+			return;
+		}
+#endif
 		ForEachDataLayer([this](class UDataLayerInstance* DataLayer)
 		{
 			if (DataLayer && DataLayer->IsRuntime())
@@ -216,8 +227,10 @@ void AWorldDataLayers::SetDataLayerRuntimeState(const UDataLayerInstance* InData
 
 void AWorldDataLayers::OnDataLayerRuntimeStateChanged_Implementation(const UDataLayerInstance* InDataLayer, EDataLayerRuntimeState InState)
 {
-	UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>();
-	DataLayerSubsystem->OnDataLayerRuntimeStateChanged.Broadcast(InDataLayer, InState);
+	if (UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(this))
+	{
+		DataLayerManager->BroadcastOnDataLayerInstanceRuntimeStateChanged(InDataLayer, InState);
+	}
 }
 
 void AWorldDataLayers::OnRep_ActiveDataLayerNames()
@@ -255,10 +268,6 @@ void AWorldDataLayers::OnRep_EffectiveActiveDataLayerNames()
 	++DataLayersStateEpoch;
 	EffectiveActiveDataLayerNames.Reset();
 	EffectiveActiveDataLayerNames.Append(RepEffectiveActiveDataLayerNames);
-	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
-	{
-		DataLayerSubsystem->OnEffectiveRuntimeDataLayerStatesChanged(this);
-	}
 }
 
 void AWorldDataLayers::OnRep_EffectiveLoadedDataLayerNames()
@@ -266,10 +275,6 @@ void AWorldDataLayers::OnRep_EffectiveLoadedDataLayerNames()
 	++DataLayersStateEpoch;
 	EffectiveLoadedDataLayerNames.Reset();
 	EffectiveLoadedDataLayerNames.Append(RepEffectiveLoadedDataLayerNames);
-	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
-	{
-		DataLayerSubsystem->OnEffectiveRuntimeDataLayerStatesChanged(this);
-	}
 }
 
 EDataLayerRuntimeState AWorldDataLayers::GetDataLayerEffectiveRuntimeStateByName(FName InDataLayerName) const
@@ -322,12 +327,6 @@ void AWorldDataLayers::ResolveEffectiveRuntimeState(const UDataLayerInstance* In
 		// Update Replicated Properties
 		RepEffectiveActiveDataLayerNames = EffectiveActiveDataLayerNames.Array();
 		RepEffectiveLoadedDataLayerNames = EffectiveLoadedDataLayerNames.Array();
-
-		if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
-		{
-			DataLayerSubsystem->OnEffectiveRuntimeDataLayerStatesChanged(this);
-		}
-
 		++DataLayersStateEpoch;
 
 		if (bInNotifyChange)
@@ -445,7 +444,6 @@ AWorldDataLayers* AWorldDataLayers::Create(UWorld* World, FName InWorldDataLayer
 
 AWorldDataLayers* AWorldDataLayers::Create(const FActorSpawnParameters& SpawnParameters)
 {
-	check(SpawnParameters.OverrideLevel != nullptr && SpawnParameters.OverrideLevel->IsPersistentLevel());
 	check(SpawnParameters.Name != NAME_None);
 	check(SpawnParameters.NameMode == FActorSpawnParameters::ESpawnActorNameMode::Required_Fatal);
 
@@ -579,7 +577,9 @@ bool AWorldDataLayers::IsInActorEditorContext(const UDataLayerInstance* InDataLa
 
 bool AWorldDataLayers::AddToActorEditorContext(UDataLayerInstance* InDataLayerInstance)
 {
-	check(DataLayerInstances.Contains(InDataLayerInstance));
+	check(InDataLayerInstance->CanBeInActorEditorContext());
+	check(ContainsDataLayer(InDataLayerInstance));
+
 	if (!CurrentDataLayers.DataLayerInstanceNames.Contains(InDataLayerInstance->GetDataLayerFName()))
 	{
 		Modify(/*bDirty*/false);
@@ -591,7 +591,9 @@ bool AWorldDataLayers::AddToActorEditorContext(UDataLayerInstance* InDataLayerIn
 
 bool AWorldDataLayers::RemoveFromActorEditorContext(UDataLayerInstance* InDataLayerInstance)
 {
-	check(DataLayerInstances.Contains(InDataLayerInstance));
+	check(InDataLayerInstance->CanBeInActorEditorContext());
+	check(ContainsDataLayer(InDataLayerInstance));
+
 	if (CurrentDataLayers.DataLayerInstanceNames.Contains(InDataLayerInstance->GetDataLayerFName()))
 	{
 		Modify(/*bDirty*/false);
@@ -694,16 +696,17 @@ const UDataLayerInstance* AWorldDataLayers::GetDataLayerInstanceFromAssetName(co
 
 const UDataLayerInstance* AWorldDataLayers::GetDataLayerInstance(const UDataLayerAsset* InDataLayerAsset) const
 {
+	if (InDataLayerAsset == nullptr)
+	{
+		return nullptr;
+	}
+
 #if WITH_EDITOR	
 	for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
 	{
-		static_assert(DATALAYER_TO_INSTANCE_RUNTIME_CONVERSION_ENABLED, "Remove unnecessary cast. All DataLayerInstance now have assets");
-		if (const UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance))
+		if (DataLayerInstance->GetAsset() == InDataLayerAsset)
 		{
-			if (DataLayerInstanceWithAsset->GetAsset() == InDataLayerAsset)
-			{
-				return DataLayerInstance;
-			}
+			return DataLayerInstance;
 		}
 	}
 #else
@@ -768,6 +771,8 @@ void AWorldDataLayers::PostLoad()
 	}
 
 #if WITH_EDITOR
+	bListedInSceneOutliner = true;
+
 	ConvertDataLayerToInstancces();
 
 	// Remove all Editor Data Layers when cooking or when in a game world
@@ -791,12 +796,11 @@ void AWorldDataLayers::PostLoad()
 		RemoveDataLayers(EditorDataLayers);
 	}
 
-	// Sub-WorldDataLayers are not supported at runtime, clear data layers
-	if (GetWorld()->IsGameWorld() && !IsRuntimeRelevant() && !IsEmpty())
+	// Empty Data Layers for non-runtime relevant AWorldDataLayers
+	if (GetWorld()->IsGameWorld() && !IsEmpty() && !IsRuntimeRelevant())
 	{
 		UE_LOG(LogWorldPartition, Warning, TEXT("WorldDataLayers %s is not runtime relevant, Data Layers of this level will be ignored."), *GetPathName());
-		TArray<UDataLayerInstance*> AllDataLayers = DataLayerInstances.Array();
-		RemoveDataLayers(AllDataLayers);
+		RemoveDataLayers(DataLayerInstances.Array());
 	}
 
 	// Setup defaults before overriding with user settings
@@ -823,8 +827,6 @@ void AWorldDataLayers::PostLoad()
 			DataLayerInstance->SetIsLoadedInEditor(true, /*bFromUserChange*/false);
 		}
 	}
-
-	bListedInSceneOutliner = true;
 #else
 	// Build acceleration tables
 	for (const UDataLayerInstance* DataLayerInstance : DataLayerInstances)
@@ -834,58 +836,64 @@ void AWorldDataLayers::PostLoad()
 		static_assert(DATALAYER_TO_INSTANCE_RUNTIME_CONVERSION_ENABLED, "Remove unnecessary cast. All DataLayerInstance now have assets");
 		if (const UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance))
 		{
+			if (!DataLayerInstanceWithAsset->GetAsset())
+			{
+				UE_LOG(LogWorldPartition, Warning, TEXT("DataLayerWithAsset %s has null asset."), *DataLayerInstanceWithAsset->GetPathName());
+				continue;
+			}
 			AssetNameToInstance.Add(DataLayerInstanceWithAsset->GetAsset()->GetFullName(), DataLayerInstance);
 		}
 	}
 #endif
 
 	InitializeDataLayerRuntimeStates();
-
-	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
-	{
-		DataLayerSubsystem->RegisterWorldDataLayer(this);
-	}
 }
 
-void AWorldDataLayers::PreRegisterAllComponents()
-{
-	Super::PreRegisterAllComponents();
-
-	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
-	{
-		DataLayerSubsystem->RegisterWorldDataLayer(this);
-	}
-}
-
-void AWorldDataLayers::PostUnregisterAllComponents()
-{
-	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
-	{
-		DataLayerSubsystem->UnregisterWorldDataLayer(this);
-	}
-
-	Super::PostUnregisterAllComponents();
-}
-
-bool AWorldDataLayers::IsRuntimeRelevant() const
-{
-	return !IsSubWorldDataLayers();
-}
-
+#if WITH_EDITOR
 bool AWorldDataLayers::IsSubWorldDataLayers() const
 {
 	UWorld* ActorWorld = GetWorld();
 	UWorld* OuterWorld = GetTypedOuter<UWorld>();
-	return ActorWorld != nullptr && OuterWorld != nullptr && OuterWorld->GetFName() != ActorWorld->GetFName();
+	return ActorWorld != nullptr && OuterWorld != nullptr && (OuterWorld->GetFName() != ActorWorld->GetFName());
 }
 
-bool AWorldDataLayers::IsTheMainWorldDataLayers() const
+bool AWorldDataLayers::IsReadOnly() const
 {
-	UWorld* OuterWorld = GetTypedOuter<UWorld>();
-	return OuterWorld && OuterWorld->GetWorldDataLayers() == this;
+	if (IsSubWorldDataLayers())
+	{
+		const UWorld* ActorWorld = GetWorld();
+		const ULevel* CurrentLevel = (ActorWorld && ActorWorld->GetCurrentLevel() && !ActorWorld->GetCurrentLevel()->IsPersistentLevel()) ? ActorWorld->GetCurrentLevel() : nullptr;
+		const bool bIsCurrentLevelWorldDataLayers = CurrentLevel && (CurrentLevel == GetLevel());
+		return !bIsCurrentLevelWorldDataLayers;
+	}
+	return false;
 }
 
-#if WITH_EDITOR
+bool AWorldDataLayers::IsRuntimeRelevant() const
+{
+	// This function is only meant to be called on Game worlds
+	check(GetWorld()->IsGameWorld());
+
+	// WorldDataLayers referenced by LevelInstances are not relevant at runtime
+	UWorld* OuterWorld = GetTypedOuter<UWorld>();
+	if (OuterWorld && (OuterWorld->GetWorldDataLayers() == this))
+	{
+		if (!UWorld::IsPartitionedWorld(GetWorld()))
+		{
+			return true;
+		}
+		else
+		{
+			check(OuterWorld->IsPartitionedWorld());
+			ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(GetWorld());
+			ILevelInstanceInterface* LevelInstance = LevelInstanceSubsystem ? LevelInstanceSubsystem->GetOwningLevelInstance(OuterWorld->PersistentLevel) : nullptr;
+			return (LevelInstance == nullptr);
+		}
+	}
+
+	// @todo_ow: revisit that logic for content bundle data layers
+	return false;
+}
 
 void AWorldDataLayers::ConvertDataLayerToInstancces()
 {
@@ -941,9 +949,11 @@ void AWorldDataLayers::UpdateContainsDeprecatedDataLayers()
 
 void AWorldDataLayers::ResolveActorDescContainers()
 {
-	if (UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>())
+	// Always use actor owning world to find DataLayerManager for resolving of data layers as partitioned 
+	// LevelInstance DataLayerManager can't resolve.
+	if (UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(GetWorld()))
 	{
-		DataLayerSubsystem->ResolveActorDescContainers();
+		DataLayerManager->ResolveActorDescContainersDataLayers();
 	}
 }
 
@@ -998,18 +1008,6 @@ bool AWorldDataLayers::RemoveDataLayer(const UDEPRECATED_DataLayer* InDataLayer)
 	return false;
 }
 
-FName AWorldDataLayers::GenerateUniqueDataLayerLabel(const FName& InDataLayerLabel) const
-{
-	int32 DataLayerIndex = 0;
-	const FName DataLayerLabelSanitized = FDataLayerUtils::GetSanitizedDataLayerLabel(InDataLayerLabel);
-	FName UniqueNewDataLayerLabel = DataLayerLabelSanitized;
-	while (GetDataLayerFromLabel(UniqueNewDataLayerLabel))
-	{
-		UniqueNewDataLayerLabel = FName(*FString::Printf(TEXT("%s%d"), *DataLayerLabelSanitized.ToString(), ++DataLayerIndex));
-	};
-	return UniqueNewDataLayerLabel;
-}
-
 #endif
 
 bool AWorldDataLayers::ContainsDataLayer(const UDEPRECATED_DataLayer* InDataLayer) const
@@ -1019,11 +1017,11 @@ bool AWorldDataLayers::ContainsDataLayer(const UDEPRECATED_DataLayer* InDataLaye
 
 const UDataLayerInstance* AWorldDataLayers::GetDataLayerFromLabel(const FName& InDataLayerLabel) const
 {
-	const FName DataLayerLabelSanitized = FDataLayerUtils::GetSanitizedDataLayerLabel(InDataLayerLabel);
+	const FString DataLayerLabelSanitized = *FDataLayerUtils::GetSanitizedDataLayerShortName(InDataLayerLabel.ToString());
 
 	for (const UDataLayerInstance* DataLayer : DataLayerInstances)
 	{
-		if (FName(DataLayer->GetDataLayerShortName()) == DataLayerLabelSanitized)
+		if (DataLayer->GetDataLayerShortName() == DataLayerLabelSanitized)
 		{
 			return DataLayer;
 		}

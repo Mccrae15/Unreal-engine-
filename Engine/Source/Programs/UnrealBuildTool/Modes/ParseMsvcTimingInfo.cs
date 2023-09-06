@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
@@ -19,7 +20,7 @@ namespace UnrealBuildTool
 	{
 		const string TimingDataRegex = @"^\t\t(?<Indent>\t*)(?<Name>[^\t]+):\s*(?<Duration>[0-9\.]+)s$";
 
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			FileReference InputFile = Arguments.GetFileReference("-TimingFile=");
 
@@ -28,7 +29,7 @@ namespace UnrealBuildTool
 			if (Arguments.HasOption("-Tracing"))
 			{
 				ParseTimingDataToTracingFiles(InputFile);
-				return 0;
+				return Task.FromResult(0);
 			}
 
 			// Break the input file into the various sections for processing.
@@ -39,7 +40,7 @@ namespace UnrealBuildTool
 			TimingDataType CurrentType = TimingDataType.None;
 			foreach (string Line in AllLines)
 			{
-				if (string.IsNullOrWhiteSpace(Line))
+				if (String.IsNullOrWhiteSpace(Line))
 				{
 					continue;
 				}
@@ -100,7 +101,7 @@ namespace UnrealBuildTool
 			}
 
 			// Build the summary.
-			TimingData Summary = new TimingData(InputFile.FullName.Replace(".timing.txt", string.Empty), TimingDataType.Summary);
+			TimingData Summary = new TimingData(InputFile.FullName.Replace(".timing.txt", String.Empty), TimingDataType.Summary);
 			Summary.AddChild(SummarizeParsedTimingData("IncludeTimings", TimingDataType.Include, Includes));
 			Summary.AddChild(SummarizeParsedTimingData("ClassTimings", TimingDataType.Class, Classes));
 			Summary.AddChild(SummarizeParsedTimingData("FunctionTimings", TimingDataType.Function, Functions));
@@ -111,10 +112,10 @@ namespace UnrealBuildTool
 				Writer.Write(Summary);
 			}
 
-			return 0;
+			return Task.FromResult(0);
 		}
 
-		TimingData SummarizeParsedTimingData(string SummaryName, TimingDataType TimingType,  IEnumerable<string> Lines)
+		TimingData SummarizeParsedTimingData(string SummaryName, TimingDataType TimingType, IEnumerable<string> Lines)
 		{
 			TimingData Summary = new TimingData(SummaryName, TimingDataType.Summary);
 			List<TimingData> ParsedTimingData = ParseTimingDataFromLines(TimingType, Lines);
@@ -164,7 +165,7 @@ namespace UnrealBuildTool
 					{
 						CurrentTimingData.Parent = LastTimingData!.Parent;
 						ParentData = LastTimingData.Parent;
-						
+
 					}
 					else if (LineDepth > LastDepth)
 					{
@@ -198,7 +199,7 @@ namespace UnrealBuildTool
 			LineDepth = TimingDataMatch.Groups["Indent"].Success ? TimingDataMatch.Groups["Indent"].Value.Count() : 0;
 
 			TimingData ParsedTimingData = new TimingData(TimingDataMatch.Groups["Name"].Value, TimingType);
-			ParsedTimingData.ExclusiveDuration = float.Parse(TimingDataMatch.Groups["Duration"].Value);
+			ParsedTimingData.ExclusiveDuration = Single.Parse(TimingDataMatch.Groups["Duration"].Value);
 
 			return ParsedTimingData;
 		}
@@ -256,7 +257,7 @@ namespace UnrealBuildTool
 
 					int Indent = Match.Groups[1].Length;
 					string FileName = Match.Groups[2].Value;
-					float Duration = float.Parse(Match.Groups[3].Value);
+					float Duration = Single.Parse(Match.Groups[3].Value);
 
 					while (Indent <= FinishTimesForIndent.Count - 1)
 					{
@@ -314,7 +315,7 @@ namespace UnrealBuildTool
 				float Time;
 				ClassNameToTime.TryGetValue(ClassName, out Time);
 
-				Time += float.Parse(Match.Groups[2].Value);
+				Time += Single.Parse(Match.Groups[2].Value);
 				ClassNameToTime[ClassName] = Time;
 			}
 

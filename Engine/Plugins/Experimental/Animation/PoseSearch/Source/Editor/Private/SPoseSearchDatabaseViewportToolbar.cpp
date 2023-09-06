@@ -55,7 +55,6 @@ namespace UE::PoseSearch
 
 				SubMenuBuilder.BeginSection("Animations", LOCTEXT("ShowMenu_AnimationsLabel", "Animations"));
 				{
-					SubMenuBuilder.AddMenuEntry(Commands.ShowAnimationNone);
 					SubMenuBuilder.AddMenuEntry(Commands.ShowAnimationOriginalOnly);
 					SubMenuBuilder.AddMenuEntry(Commands.ShowAnimationOriginalAndMirrored);
 				}
@@ -74,6 +73,8 @@ namespace UE::PoseSearch
 				SubMenuBuilder.BeginSection("Debug", LOCTEXT("ShowMenu_DebugLabel", "Debug"));
 				{
 					SubMenuBuilder.AddMenuEntry(Commands.ShowDisplayRootMotionSpeed);
+					SubMenuBuilder.AddMenuEntry(Commands.ShowQuantizeAnimationToPoseData);
+					SubMenuBuilder.AddMenuEntry(Commands.ShowBones);
 				}
 				SubMenuBuilder.EndSection();
 			})

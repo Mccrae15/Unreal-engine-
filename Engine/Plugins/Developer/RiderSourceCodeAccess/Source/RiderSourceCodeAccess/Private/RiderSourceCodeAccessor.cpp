@@ -4,9 +4,13 @@
 
 #include "RiderPathLocator/RiderPathLocator.h"
 
+#include "Modules/ModuleManager.h"
 #include "Misc/App.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 #include "Misc/UProjectInfo.h"
+#include "DesktopPlatformModule.h"
 #include "ISourceCodeAccessModule.h"
 #include "Interfaces/IProjectManager.h"
 #include "ProjectDescriptor.h"
@@ -22,7 +26,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogRiderAccessor, Log, All);
 
 namespace RSCA
 {
-
 TOptional<FString> ResolvePathToFile(const FString& FullPath)
 {
 	FString Path = FullPath;
@@ -59,49 +62,42 @@ struct FCommandLineInfo
 };
 
 #if PLATFORM_MAC
-static int ProcessIsTranslated()
-{
-	int Return = 0;
-
-	size_t Size = sizeof(Return);
-	if (sysctlbyname("sysctl.proc_translated", &Return, &Size, NULL, 0) == -1)
+int processIsTranslated() {
+	int ret = 0;
+	size_t size = sizeof(ret);
+	if (sysctlbyname("sysctl.proc_translated", &ret, &size, NULL, 0) == -1) 
 	{
 		if (errno == ENOENT)
-		{
 			return 0;
-		}
 		return -1;
 	}
-
-	return Return;
+	return ret;
 }
-#endif //PLATFORM_MAC
+#endif
 
 FCommandLineInfo GetPlatformAppAndArgs(const FString& App, const FString& Args)
 {
 	FCommandLineInfo info;
 	info.App = App;
     info.Args = Args;
-
 #if PLATFORM_MAC
-	if (ProcessIsTranslated() == 1)
+	if(processIsTranslated() == 1)
 	{
 		info.App = TEXT("/usr/bin/arch");
 		info.Args = FString::Printf(TEXT("-arm64 \"%s\" %s"), *App, *Args);
 	}
-#endif // PLATFORM_MAC
-
+#endif
 	return info;
 }
 
 bool CheckExecutable(const FString& App)
 {
-	if (FPaths::FileExists(App) || FPaths::DirectoryExists(App))
+	if(FPaths::FileExists(App) || FPaths::DirectoryExists(App))
 	{
 		return true;
 	}
 
-	FNotificationInfo Info(FText::Format(LOCTEXT("CodeAccessorAppDoesntExist", "{0} doesn't exist"), FText::FromString(App)));
+	FNotificationInfo Info( FText::Format(LOCTEXT("CodeAccessorAppDoesntExist", "{0} doesn't exist"), FText::FromString(App)) );
 	Info.bFireAndForget = true;
 
 	FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);
@@ -109,23 +105,21 @@ bool CheckExecutable(const FString& App)
 	return false;
 }
 
-bool OpenRider(FString const& ExecutablePath, FString const& Params, FString const& ErrorMessage)
-{
+bool OpenRider(const FString& ExecutablePath, const FString& Params, const FString& ErrorMessage)
+{	
 	const FCommandLineInfo PlatformAppAndArgs = GetPlatformAppAndArgs(ExecutablePath, Params);
-
-	if (!CheckExecutable(PlatformAppAndArgs.App))
+	if(!CheckExecutable(PlatformAppAndArgs.App))
 	{
 		return false;
 	}
-
-	FProcHandle Proc = FPlatformProcess::CreateProc(*PlatformAppAndArgs.App, *PlatformAppAndArgs.Args, true, true, false, nullptr, 0, nullptr, nullptr);
+	FProcHandle Proc = FPlatformProcess::CreateProc(*PlatformAppAndArgs.App, *PlatformAppAndArgs.Args, true, true, false, nullptr, 0,
+													nullptr, nullptr);
 	const bool bResult = Proc.IsValid();
 	if (!bResult)
 	{
 		UE_LOG(LogRiderAccessor, Warning, TEXT("%s"), *ErrorMessage);
 		FPlatformProcess::CloseProc(Proc);
 	}
-
 	return bResult;
 }
 
@@ -209,7 +203,7 @@ bool FRiderSourceCodeAccessor::OpenSolution()
 	const FString ErrorMessage = FString::Printf(TEXT("Opening solution (%s) failed."), *FullPath);
 
 	return HandleOpeningRider([this, &Params, &ErrorMessage]()->bool
-	{
+	{		
 		return RSCA::OpenRider(ExecutablePath, Params, ErrorMessage);
 	});
 }
@@ -218,11 +212,7 @@ bool FRiderSourceCodeAccessor::OpenSolutionAtPath(const FString& InSolutionPath)
 	if (!bHasRiderInstalled) return false;
 
 	FString CorrectSolutionPath = InSolutionPath;
-	if (Model == EProjectModel::Uproject && !CorrectSolutionPath.EndsWith(".uproject"))
-	{
-		CorrectSolutionPath += ".uproject";
-	}
-	else if (!CorrectSolutionPath.EndsWith(".sln"))
+	if (!CorrectSolutionPath.EndsWith(".sln"))
 	{
 		CorrectSolutionPath += ".sln";
 	}
@@ -230,7 +220,7 @@ bool FRiderSourceCodeAccessor::OpenSolutionAtPath(const FString& InSolutionPath)
 	const FString ErrorMessage = FString::Printf(TEXT("Opening the project file (%s) failed."), *CorrectSolutionPath);
 
 	return HandleOpeningRider([this, &Params, &ErrorMessage]()->bool
-	{
+	{		
 		return RSCA::OpenRider(ExecutablePath, Params, ErrorMessage);
 	});
 }
@@ -268,7 +258,7 @@ bool FRiderSourceCodeAccessor::OpenSourceFiles(const TArray<FString>& AbsoluteSo
 	const FString ErrorMessage = FString::Printf(TEXT("Opening files (%s) failed."), *FilePaths);
 
 	return HandleOpeningRider([this, &Params, &ErrorMessage]()->bool
-	{
+	{		
 		return RSCA::OpenRider(ExecutablePath, Params, ErrorMessage);
 	});
 }

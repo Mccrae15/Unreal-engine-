@@ -18,7 +18,9 @@ public class AssetTools : ModuleRules
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
+				"AssetDefinition",
 				"Merge",
+				"UnrealEd",
 			}
 		);
 
@@ -54,33 +56,14 @@ public class AssetTools : ModuleRules
 				"Analytics",
 				"ContentBrowser",
 				"CollectionManager",
-                "CurveAssetEditor",
 				"DesktopPlatform",
 				"EditorWidgets",
-				"GameProjectGeneration",
-                "PropertyEditor",
-                "ActorPickerMode",
-				"Kismet",
 				"MainFrame",
-				"MaterialEditor",
 				"MessageLog",
 				"PackagesDialog",
 				"Persona",
-				"FontEditor",
-                "AudioEditor",
-				"SourceControl",
-				"Landscape",
-                "SkeletonEditor",
-                "SkeletalMeshEditor",
                 "AnimationEditor",
-                "AnimationBlueprintEditor",
-                "AnimationModifiers",
-			    "TextureEditor",
-				"DataTableEditor",
 				"Cascade",
-				"PhysicsAssetEditor",
-				"CurveTableEditor",
-				"StaticMeshEditor",
 				"VirtualTexturingEditor"
 			}
 		);
@@ -109,5 +92,13 @@ public class AssetTools : ModuleRules
                 "VirtualTexturingEditor"
             }
 		);
+
+		CircularlyReferencedDependentModules.AddRange(
+			new string[] {
+				"UnrealEd",
+			}
+		);
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 	}
 }

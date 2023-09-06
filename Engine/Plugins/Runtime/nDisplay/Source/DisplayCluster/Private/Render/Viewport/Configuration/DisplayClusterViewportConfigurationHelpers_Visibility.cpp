@@ -52,43 +52,6 @@ static void ImplCollectVisibility(ADisplayClusterRootActor& RootActor, const FDi
 	}
 }
 
-bool FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(const FDisplayClusterConfigurationICVFX_VisibilityList& InVisibilityList)
-{
-	for (const FString& ComponentNameIt : InVisibilityList.RootActorComponentNames)
-	{
-		if (!ComponentNameIt.IsEmpty())
-		{
-			return true;
-		}
-	}
-
-	for (const TSoftObjectPtr<AActor>& ActorSOPtrIt : InVisibilityList.Actors)
-	{
-		if (ActorSOPtrIt.IsValid())
-		{
-			return true;
-		}
-	}
-
-	for (const FActorLayer& ActorLayerIt : InVisibilityList.ActorLayers)
-	{
-		if (!ActorLayerIt.Name.IsNone())
-		{
-			return true;
-		}
-	}
-
-	for (const TSoftObjectPtr<AActor>& AutoAddedActor : InVisibilityList.AutoAddedActors)
-	{
-		if (AutoAddedActor.IsValid())
-		{
-			return true;
-		}
-	}
-	
-	return false;
-}
-
 void FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateShowOnlyList(FDisplayClusterViewport& DstViewport, ADisplayClusterRootActor& RootActor, const FDisplayClusterConfigurationICVFX_VisibilityList& InVisibilityList)
 {
 	TSet<FPrimitiveComponentId> AdditionalComponentsList;
@@ -107,7 +70,7 @@ void FDisplayClusterViewportConfigurationHelpers_Visibility::AppendHideList_ICVF
 	DstViewport.VisibilitySettings.AppendHideList(ActorLayers, AdditionalComponentsList);
 }
 
-void FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateHideList_ICVFX(TArray<FDisplayClusterViewport*>& DstViewports, ADisplayClusterRootActor& InRootActor)
+void FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateHideList_ICVFX(TArray<TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>>& DstViewports, ADisplayClusterRootActor& InRootActor)
 {
 	if (DstViewports.Num() > 0)
 	{
@@ -129,8 +92,10 @@ void FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateHideList_ICVF
 		{
 			if (ICVFXCameraIt)
 			{
-				const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = ICVFXCameraIt->GetCameraSettingsICVFX();
-				ImplCollectVisibility(InRootActor, CameraSettings.Chromakey.ChromakeyRenderTexture.ShowOnlyList, ActorLayerNames, AdditionalComponentsList);
+				if (const FDisplayClusterConfigurationICVFX_ChromakeyRenderSettings* ChromakeyRenderSettings = ICVFXCameraIt->GetCameraSettingsICVFX().Chromakey.GetChromakeyRenderSettings(StageSettings))
+				{
+					ImplCollectVisibility(InRootActor, ChromakeyRenderSettings->ShowOnlyList, ActorLayerNames, AdditionalComponentsList);
+				}
 			}
 		}
 
@@ -139,9 +104,9 @@ void FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateHideList_ICVF
 		ImplCollectVisibility(InRootActor, StageSettings.OuterViewportHideList, OuterActorLayerNames, OuterAdditionalComponentsList);
 
 		// Update hide list for all desired viewports:
-		for (FDisplayClusterViewport* ViewportIt : DstViewports)
+		for (TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>& ViewportIt : DstViewports)
 		{
-			if (ViewportIt)
+			if (ViewportIt.IsValid())
 			{
 				ViewportIt->VisibilitySettings.UpdateConfiguration(EDisplayClusterViewport_VisibilityMode::Hide, ActorLayerNames, AdditionalComponentsList);
 

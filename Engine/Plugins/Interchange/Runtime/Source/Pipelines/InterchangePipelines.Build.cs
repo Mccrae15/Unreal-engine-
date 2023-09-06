@@ -24,6 +24,8 @@ namespace UnrealBuildTool.Rules
 				{
 					"CinematicCamera",
 					"InterchangeImport",
+					"DeveloperSettings",
+					"GLTFCore",
 				}
 			);
 
@@ -34,6 +36,7 @@ namespace UnrealBuildTool.Rules
 					{
 						"PhysicsUtilities",
 						"TextureUtilitiesCommon",
+						"UnrealEd",
 					}
 				);
 			}

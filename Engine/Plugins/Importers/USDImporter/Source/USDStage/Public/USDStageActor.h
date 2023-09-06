@@ -14,11 +14,13 @@
 #include "USDStageActor.generated.h"
 
 class FUsdInfoCache;
-class UUsdAssetCache2;
+class ISequencer;
 class ULevelSequence;
 class UUsdAssetCache;
+class UUsdAssetCache2;
 class UUsdPrimTwin;
 class UUsdTransactor;
+enum class EMovieSceneDataChangeType;
 struct FUsdSchemaTranslationContext;
 namespace UE
 {
@@ -98,6 +100,8 @@ public:
 	FOnStageActorEvent OnPreStageChanged;
 	FOnStageActorEvent OnStageChanged;
 	FOnStageActorEvent OnActorDestroyed;
+	FOnStageActorEvent OnStageLoaded;
+	FOnStageActorEvent OnStageUnloaded;
 
 	DECLARE_EVENT_TwoParams(AUsdStageActor, FOnPrimChanged, const FString&, bool);
 	FOnPrimChanged OnPrimChanged;
@@ -259,14 +263,16 @@ public:
 	USDSTAGE_API virtual void PostUnregisterAllComponents() override;
 	// End AActor interface
 
-	AUsdStageActor();
+	USDSTAGE_API AUsdStageActor();
 
 protected:
+	bool UnloadAssets(const UE::FSdfPath& PrimPath, bool bForEntireSubtree);
+
 	/** Loads the asset for a single prim */
-	void LoadAsset(FUsdSchemaTranslationContext& TranslationContext, const UE::FUsdPrim& Prim);
+	bool LoadAsset(FUsdSchemaTranslationContext& TranslationContext, const UE::FUsdPrim& Prim);
 
 	/** Loads the assets for all prims from StartPrim and its children */
-	void LoadAssets(FUsdSchemaTranslationContext& TranslationContext, const UE::FUsdPrim& StartPrim);
+	bool LoadAssets(FUsdSchemaTranslationContext& TranslationContext, const UE::FUsdPrim& StartPrim);
 
 	void Refresh() const;
 	void AnimatePrims();
@@ -274,7 +280,7 @@ protected:
 	UUsdPrimTwin* GetRootPrimTwin();
 	UUsdPrimTwin* GetOrCreatePrimTwin(const UE::FSdfPath& UsdPrimPath);
 
-	UUsdPrimTwin* ExpandPrim(const UE::FUsdPrim& Prim, FUsdSchemaTranslationContext& TranslationContext);
+	UUsdPrimTwin* ExpandPrim(const UE::FUsdPrim& Prim, bool bResync, FUsdSchemaTranslationContext& TranslationContext);
 	void UpdatePrim(const UE::FSdfPath& UsdPrimPath, bool bResync, FUsdSchemaTranslationContext& TranslationContext);
 
 	void OpenUsdStage();
@@ -283,11 +289,14 @@ protected:
 	void LoadUsdStage();
 	void UnloadUsdStage();
 
-	void EnsureAssetCache();
+	void SetupAssetCacheIfNeeded();
 
 	bool HasAuthorityOverStage() const;
 
 	void UpdateSpawnedObjectsTransientFlag(bool bTransient);
+
+	void OnActorAddedToSequencer(AActor* NewActor, const FGuid Guid, TWeakPtr<ISequencer> WeakSequencer);
+	void OnMovieSceneDataChanged(EMovieSceneDataChangeType ChangeType, TWeakPtr<ISequencer> WeakSequencer);
 
 #if WITH_EDITOR
 	void OnBeginPIE(bool bIsSimulating);
@@ -372,6 +381,7 @@ protected:
 	bool bIsUndoRedoing;
 
 	FDelegateHandle OnRedoHandle;
+	FDelegateHandle OnSequencerCreatedHandle;
 
 	FThreadSafeCounter IsBlockedFromUsdNotices;
 

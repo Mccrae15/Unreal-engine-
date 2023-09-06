@@ -2,22 +2,31 @@
 
 // Core includes.
 #include "Misc/Paths.h"
-#include "UObject/NameTypes.h"
-#include "Logging/LogMacros.h"
+
+#include "Containers/StringView.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFile.h"
-#include "Misc/Parse.h"
-#include "Misc/ScopeLock.h"
-#include "Misc/CommandLine.h"
-#include "Internationalization/Text.h"
 #include "Internationalization/Internationalization.h"
-#include "Misc/Guid.h"
-#include "Misc/ConfigCacheIni.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogMacros.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/Guid.h"
 #include "Misc/LazySingleton.h"
-#include "Containers/StringView.h"
+#include "Misc/Parse.h"
+#include "Misc/ScopeLock.h"
+#include "Misc/PathViews.h"
+#include "String/ParseTokens.h"
+#include "UObject/NameTypes.h"
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <fileapi.h>
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogPaths, Log, All);
 
@@ -765,6 +774,58 @@ void FPaths::SetProjectFilePath( const FString& NewGameProjectFilePath )
 	FPaths::NormalizeFilename(StaticData.GameProjectFilePath);
 }
 
+FString FPaths::FindCorrectCase(const FString& Path)
+{
+#if PLATFORM_WINDOWS
+	// GetFilenameOnDisk on Windows will resolve directory junctions and resolving those here has negative consequences
+	// for workflows that use a junction at their root (eg: p4 gets confused about paths and operations fail).
+	// There is a way to get a case-accurate path on Windows without resolving directory junctions, but it is slow.
+	// We can use it here for this one-off situation without causing all uses of GetFilenameOnDisk to be slower.
+	FString ProjectFilePath = FPaths::GetProjectFilePath();
+	TStringBuilder<MAX_PATH> Builder;
+	FPathViews::IterateComponents(
+		ProjectFilePath,
+		[&Builder](FStringView CurrentPathComponent)
+		{
+			if (Builder.Len() != 0)
+			{
+				Builder.AppendChar(TEXT('/'));
+			}
+
+			// Any volume name should be upper case
+			const bool bIsVolumeSegment = CurrentPathComponent.EndsWith(TEXT(':'));
+			if (bIsVolumeSegment)
+			{
+				Builder.Append(FString(CurrentPathComponent).ToUpper());
+				return;
+			}
+
+			int32 LenBeforeCurrentComponent = Builder.Len();
+			Builder.Append(CurrentPathComponent);
+
+			// Skip over all segments that are either empty or contain relative transforms, they should remain as-is
+			const bool bIsIgnoredSegment = CurrentPathComponent.IsEmpty() || CurrentPathComponent.Equals(TEXTVIEW(".")) || CurrentPathComponent.Equals(TEXTVIEW(".."));
+			if (bIsIgnoredSegment)
+			{
+				return;
+			}
+
+			WIN32_FIND_DATAW Data;
+			HANDLE Handle = FindFirstFileW(StringCast<WIDECHAR>(*Builder, Builder.Len() + 1).Get(), &Data);
+			if (Handle != INVALID_HANDLE_VALUE)
+			{
+				Builder.RemoveSuffix(Builder.Len() - LenBeforeCurrentComponent);
+				Builder.Append(Data.cFileName);
+				FindClose(Handle);
+			}
+		}
+	);
+	return Builder.ToString();
+#else
+	return IFileManager::Get().GetFilenameOnDisk(*Path);
+#endif
+}
+
 FString FPaths::GetExtension( const FString& InPath, bool bIncludeDot )
 {
 	const FString Filename = GetCleanFilename(InPath);
@@ -1295,10 +1356,14 @@ bool FPaths::MakePathRelativeTo( FString& InPath, const TCHAR* InRelativeTo )
 	Source.ReplaceInline(TEXT("\\"), TEXT("/"), ESearchCase::CaseSensitive);
 	Target.ReplaceInline(TEXT("\\"), TEXT("/"), ESearchCase::CaseSensitive);
 
-	TArray<FString> TargetArray;
-	Target.ParseIntoArray(TargetArray, TEXT("/"), true);
-	TArray<FString> SourceArray;
-	Source.ParseIntoArray(SourceArray, TEXT("/"), true);
+	const UE::String::EParseTokensOptions ParseOptions = UE::String::EParseTokensOptions::IgnoreCase |
+		UE::String::EParseTokensOptions::SkipEmpty;
+	TArray<FStringView, TInlineAllocator<16>> TargetArrayBuffer;
+	UE::String::ParseTokens(Target, TEXTVIEW("/"), TargetArrayBuffer, ParseOptions);
+	TArrayView<FStringView> TargetArray(TargetArrayBuffer);
+	TArray<FStringView, TInlineAllocator<16>> SourceArrayBuffer;
+	UE::String::ParseTokens(Source, TEXTVIEW("/"), SourceArrayBuffer, ParseOptions);
+	TArrayView<FStringView> SourceArray(SourceArrayBuffer);
 
 	if (TargetArray.Num() && SourceArray.Num())
 	{
@@ -1315,20 +1380,30 @@ bool FPaths::MakePathRelativeTo( FString& InPath, const TCHAR* InRelativeTo )
 
 	while (TargetArray.Num() && SourceArray.Num() && TargetArray[0] == SourceArray[0])
 	{
-		TargetArray.RemoveAt(0);
-		SourceArray.RemoveAt(0);
+		TargetArray.RightChopInline(1);
+		SourceArray.RightChopInline(1);
 	}
+
+	FStringView ParentDirSeparator = TEXTVIEW("../");
+	FStringView DirSeparator = TEXTVIEW("/");
+	int32 ResultsLen = SourceArray.Num() * ParentDirSeparator.Len() + (FMath::Max(TargetArray.Num(),1) - 1)*DirSeparator.Len();
+	for (const FStringView& TargetDir : TargetArray)
+	{
+		ResultsLen += TargetDir.Len();
+	}
+
 	FString Result;
+	Result.Reserve(ResultsLen);
 	for (int32 Index = 0; Index < SourceArray.Num(); Index++)
 	{
-		Result += TEXT("../");
+		Result += ParentDirSeparator;
 	}
 	for (int32 Index = 0; Index < TargetArray.Num(); Index++)
 	{
 		Result += TargetArray[Index];
 		if (Index + 1 < TargetArray.Num())
 		{
-			Result += TEXT("/");
+			Result += DirSeparator;
 		}
 	}
 	
@@ -1597,24 +1672,26 @@ const FString& FPaths::GetRelativePathToRoot()
 	return StaticData.RelativePathToRoot;
 }
 
-void FPaths::CombineInternal(FString& OutPath, const FStringView* Paths, int32 NumPaths)
+FString FPaths::CombineInternal(const FStringView* Paths, int32 NumPaths)
 {
-	check(Paths != NULL && NumPaths > 0);
+	check(Paths && NumPaths > 0);
 
-	int32 OutStringSize = 0;
-
+	int32 CombinedPathLen = 0;
 	for (int32 i=0; i < NumPaths; ++i)
 	{
-		OutStringSize += Paths[i].Len() + 1;
+		CombinedPathLen += Paths[i].Len() + 1;
 	}
 
-	OutPath.Empty(OutStringSize);
-	OutPath += Paths[0];
+	FString CombinedPath;
+	CombinedPath.Reserve(CombinedPathLen);
+	CombinedPath += Paths[0];
 	
 	for (int32 i=1; i < NumPaths; ++i)
 	{
-		OutPath /= Paths[i];
+		CombinedPath /= Paths[i];
 	}
+
+	return CombinedPath;
 }
 
 bool FPaths::IsSamePath(const FString& PathA, const FString& PathB)

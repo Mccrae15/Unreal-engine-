@@ -39,11 +39,13 @@
 #include "CameraController.h"
 #include "ContextObjectStore.h"
 #include "EdModeInteractiveToolsContext.h"
+#include "IPersonaToolkit.h"
 #include "Animation/MorphTarget.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "UnrealWidget.h"
 #include "Engine/PoseWatchRenderData.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "Animation/AnimCompositeBase.h"
 
 namespace {
 	static const float AnimationEditorViewport_RotateSpeed = 0.02f;
@@ -56,7 +58,7 @@ namespace {
 namespace EAnimationPlaybackSpeeds
 {
 	// Speed scales for animation playback, must match EAnimationPlaybackSpeeds::Type
-	float Values[EAnimationPlaybackSpeeds::NumPlaybackSpeeds] = { 0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f };
+	float Values[EAnimationPlaybackSpeeds::NumPlaybackSpeeds] = { 0.1f, 0.25f, 0.5f, 0.75f, 1.0f, 2.0f, 5.0f, 10.0f, 0.f };
 }
 
 #define LOCTEXT_NAMESPACE "FAnimationViewportClient"
@@ -150,11 +152,6 @@ FAnimationViewportClient::FAnimationViewportClient(const TSharedRef<IPersonaPrev
 FAnimationViewportClient::~FAnimationViewportClient()
 {
 	CameraController = CachedDefaultCameraController;
-
-	if (ModeTools.IsValid())
-	{
-		((FAssetEditorModeManager*)ModeTools.Get())->SetPreviewScene(nullptr);
-	}
 
 	// Unregistering the callbacks is mandatory, else we get random crashes
 	if (FAnimationEditorPreviewScene* AnimationEditorPreviewScene = GetAnimPreviewScenePtr().Get())
@@ -526,69 +523,77 @@ void FAnimationViewportClient::Draw(const FSceneView* View, FPrimitiveDrawInterf
 	TArray<UDebugSkelMeshComponent*> PreviewMeshComponents = GetPreviewScene()->GetAllPreviewMeshComponents();
 	for (UDebugSkelMeshComponent* PreviewMeshComponent : PreviewMeshComponents)
 	{
-		if (!(PreviewMeshComponent && PreviewMeshComponent->GetSkeletalMeshAsset() && !PreviewMeshComponent->GetSkeletalMeshAsset()->IsCompiling()))
-		{
-			continue;
-		}
+		const bool bValidComponent = PreviewMeshComponent != nullptr;
+		const bool bValidSkeletalMesh = bValidComponent && PreviewMeshComponent->GetSkeletalMeshAsset() != nullptr;
 
-		// Can't have both bones of interest and sockets of interest set
-		check( !(GetAnimPreviewScene()->GetSelectedBoneIndex() != INDEX_NONE && GetAnimPreviewScene()->GetSelectedSocket().IsValid() ) )
+		if (bValidComponent && bValidSkeletalMesh && !PreviewMeshComponent->GetSkeletalMeshAsset()->IsCompiling())
+		{
+			// Can't have both bones of interest and sockets of interest set
+			check( !(GetAnimPreviewScene()->GetSelectedBoneIndex() != INDEX_NONE && GetAnimPreviewScene()->GetSelectedSocket().IsValid() ) )
 
-		const FReferenceSkeleton& RefSkeleton = PreviewMeshComponent->GetReferenceSkeleton();
-		const TArray<FBoneIndexType>& DrawBoneIndices = PreviewMeshComponent->GetDrawBoneIndices();
+			const FReferenceSkeleton& RefSkeleton = PreviewMeshComponent->GetReferenceSkeleton();
+			const TArray<FBoneIndexType>& DrawBoneIndices = PreviewMeshComponent->GetDrawBoneIndices();
 
-		// if we have BonesOfInterest, draw sub set of the bones only
-		if (GetAnimPreviewScene()->GetSelectedBoneIndex() != INDEX_NONE)
-		{
-			DrawMeshSubsetBones(PreviewMeshComponent, PreviewMeshComponent->BonesOfInterest, PDI);
-		}
-		// otherwise, if we display bones, display
-		if ( GetBoneDrawMode() != EBoneDrawMode::None )
-		{
-			DrawMeshBones(PreviewMeshComponent, PDI);
-		}
-		if (PreviewMeshComponent->bDisplayRawAnimation )
-		{
-			DrawMeshBonesUncompressedAnimation(PreviewMeshComponent, PDI);
-		}
-		if (PreviewMeshComponent->NonRetargetedSpaceBases.Num() > 0 )
-		{
-			DrawMeshBonesNonRetargetedAnimation(PreviewMeshComponent, PDI);
-		}
-		if(PreviewMeshComponent->bDisplayAdditiveBasePose )
-		{
-			DrawMeshBonesAdditiveBasePose(PreviewMeshComponent, PDI);
-		}
-		if(PreviewMeshComponent->bDisplayBakedAnimation)
-		{
-			DrawMeshBonesBakedAnimation(PreviewMeshComponent, PDI);
-		}
-		if(PreviewMeshComponent->bDisplaySourceAnimation)
-		{
-			DrawMeshBonesSourceRawAnimation(PreviewMeshComponent, PDI);
-		}
-		
-		DrawWatchedPoses(PreviewMeshComponent, PDI);
-
-		PreviewMeshComponent->DebugDrawClothing(PDI);
-		
-		// Display socket hit points
-		if (PreviewMeshComponent->bDrawSockets )
-		{
-			if (PreviewMeshComponent->bSkeletonSocketsVisible && PreviewMeshComponent->GetSkeletalMeshAsset()->GetSkeleton() )
+			// if we have BonesOfInterest, draw sub set of the bones only
+			if (GetAnimPreviewScene()->GetSelectedBoneIndex() != INDEX_NONE)
 			{
-				DrawSockets(PreviewMeshComponent, PreviewMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->Sockets, GetAnimPreviewScene()->GetSelectedSocket(), PDI, true);
+				DrawMeshSubsetBones(PreviewMeshComponent, PreviewMeshComponent->BonesOfInterest, PDI);
+			}
+			// otherwise, if we display bones, display
+			if ( GetBoneDrawMode() != EBoneDrawMode::None )
+			{
+				DrawMeshBones(PreviewMeshComponent, PDI);
+			}
+			if (PreviewMeshComponent->bDisplayRawAnimation )
+			{
+				DrawMeshBonesUncompressedAnimation(PreviewMeshComponent, PDI);
+			}
+			if (PreviewMeshComponent->NonRetargetedSpaceBases.Num() > 0 )
+			{
+				DrawMeshBonesNonRetargetedAnimation(PreviewMeshComponent, PDI);
+			}
+			if(PreviewMeshComponent->bDisplayAdditiveBasePose )
+			{
+				DrawMeshBonesAdditiveBasePose(PreviewMeshComponent, PDI);
+			}
+			if(PreviewMeshComponent->bDisplayBakedAnimation)
+			{
+				DrawMeshBonesBakedAnimation(PreviewMeshComponent, PDI);
+			}
+			if(PreviewMeshComponent->bDisplaySourceAnimation)
+			{
+				DrawMeshBonesSourceRawAnimation(PreviewMeshComponent, PDI);
+			}
+			
+			DrawWatchedPoses(PreviewMeshComponent, PDI);
+
+			PreviewMeshComponent->DebugDrawClothing(PDI);
+			
+			// Display socket hit points
+			if (PreviewMeshComponent->bDrawSockets )
+			{
+				if (PreviewMeshComponent->bSkeletonSocketsVisible && PreviewMeshComponent->GetSkeletalMeshAsset()->GetSkeleton() )
+				{
+					DrawSockets(PreviewMeshComponent, MutableView(PreviewMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->Sockets), GetAnimPreviewScene()->GetSelectedSocket(), PDI, true);
+				}
+
+				if ( PreviewMeshComponent->bMeshSocketsVisible )
+				{
+					DrawSockets(PreviewMeshComponent, MutableView(PreviewMeshComponent->GetSkeletalMeshAsset()->GetMeshOnlySocketList()), GetAnimPreviewScene()->GetSelectedSocket(), PDI, false);
+				}
 			}
 
-			if ( PreviewMeshComponent->bMeshSocketsVisible )
+			if (PreviewMeshComponent->bDrawAttributes)
 			{
-				DrawSockets(PreviewMeshComponent, PreviewMeshComponent->GetSkeletalMeshAsset()->GetMeshOnlySocketList(), GetAnimPreviewScene()->GetSelectedSocket(), PDI, false);
+				DrawAttributes(PreviewMeshComponent, PDI);
 			}
 		}
-
-		if (PreviewMeshComponent->bDrawAttributes)
+		else if (bValidComponent && !bValidSkeletalMesh)
 		{
-			DrawAttributes(PreviewMeshComponent, PDI);
+			if (const USkeleton* Skeleton = GetPreviewScene()->GetPersonaToolkit()->GetSkeleton())
+			{
+				DrawBonesFromSkeleton(Skeleton, PreviewMeshComponent->BonesOfInterest, PDI);
+			}
 		}
 	}
 
@@ -1037,6 +1042,25 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 				TextValue = ConcatenateLine(TextValue, LOCTEXT("ApplyToCompressedDataWarning", "<AnimViewport.WarningText>Animation is being edited. To apply to compressed data (and recalculate baked additives), click \"Apply\"</>"));
 			}
 		}
+
+		UAnimCompositeBase* CompositeBase = Cast<UAnimCompositeBase>(PreviewInstance->GetCurrentAsset());
+		if (CompositeBase && !CompositeBase->GetCommonTargetFrameRate().IsValid())
+		{
+			FString AssetString;
+			TArray<UAnimationAsset*> Assets;
+			if(CompositeBase->GetAllAnimationSequencesReferred(Assets, false))
+			{
+				for (const UAnimationAsset* AnimAsset : Assets)
+				{
+					if (const UAnimSequenceBase* AnimSequenceBase = Cast<UAnimSequenceBase>(AnimAsset))
+					{
+						AssetString.Append(FString::Printf(TEXT("\n\t<AnimViewport.WarningText>%s - %s</>"), *AnimSequenceBase->GetName(), *AnimSequenceBase->GetSamplingFrameRate().ToPrettyText().ToString()));
+					}
+				}
+			}
+			
+			TextValue = ConcatenateLine(TextValue, FText::Format(LOCTEXT("IncompatibleFrameRatesCompositeWarning", "<AnimViewport.WarningText>{0} is composed of assets with incompatible framerates:</>{1}"), CompositeBase->GetClass()->GetDisplayNameText(), FText::FromString(AssetString)));
+		}
 	}
 
 	if (PreviewMeshComponent->IsUsingInGameBounds())
@@ -1265,7 +1289,7 @@ FText FAnimationViewportClient::GetDisplayInfo(bool bDisplayAllInfo) const
 
 	if (const UPoseAsset* PoseAsset = Cast<UPoseAsset>(GetAnimPreviewScene()->GetPreviewAnimationAsset()))
 	{
-		if (PoseAsset->GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::PoseAssetRawDataGUIDUpdate && PoseAsset->SourceAnimation && PoseAsset->SourceAnimation->GetDataModel()->GenerateGuid() != PoseAsset->SourceAnimationRawDataGUID)
+		if (PoseAsset->GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::PoseAssetRawDataGUIDUpdate && PoseAsset->SourceAnimation && PoseAsset->SourceAnimationRawDataGUID.IsValid() && PoseAsset->SourceAnimation->GetDataModel()->GenerateGuid() != PoseAsset->SourceAnimationRawDataGUID)
 		{
 			TextValue = ConcatenateLine(TextValue, LOCTEXT("PoseAssetOutOfDateWarning", "<AnimViewport.WarningText>Poses are out-of-sync with the source animation. To update them click \"Update Source\"</>"));
 		}
@@ -1643,6 +1667,62 @@ void FAnimationViewportClient::DrawMeshBonesBakedAnimation(UDebugSkelMeshCompone
 	}
 }
 
+void FAnimationViewportClient::DrawBonesFromSkeleton(const USkeleton* Skeleton, const TArray<int32>& InSelectedBones,FPrimitiveDrawInterface* PDI) const
+{
+	check(Skeleton);
+
+	// Draw from skeleton ref pose
+	const TArray<FTransform>& SkeletonRefPose = Skeleton->GetRefLocalPoses(NAME_None);
+	TArray<FTransform> WorldTransforms;
+	WorldTransforms.AddUninitialized(SkeletonRefPose.Num());
+
+	TArray<FLinearColor> BoneColours;
+	BoneColours.AddUninitialized(SkeletonRefPose.Num());
+
+	TArray<FBoneIndexType> RequiredBones;
+
+	const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+
+	const UPersonaOptions* PersonaOptions = GetDefault<UPersonaOptions>();
+	for (FBoneIndexType BoneIndex = 0; BoneIndex < SkeletonRefPose.Num(); ++BoneIndex)
+	{
+		const int32 ParentIndex = RefSkeleton.GetParentIndex(BoneIndex);
+
+		//add to the list
+		RequiredBones.AddUnique(BoneIndex);
+
+		if (ParentIndex >= 0)
+		{
+			WorldTransforms[BoneIndex] = SkeletonRefPose[BoneIndex] * WorldTransforms[ParentIndex];
+		}
+		else
+		{
+			WorldTransforms[BoneIndex] = SkeletonRefPose[BoneIndex];
+		}
+
+		BoneColours[BoneIndex] = PersonaOptions->DefaultBoneColor;
+	}
+
+	// color virtual bones
+	for (const int16 VirtualBoneIndex : RefSkeleton.GetRequiredVirtualBones())
+	{
+		BoneColours[VirtualBoneIndex] = PersonaOptions->VirtualBoneColor;
+	}
+
+	constexpr bool bForceDraw = false;
+	constexpr bool bAddHitProxy = true;
+	DrawBones(
+		FVector::ZeroVector,
+		RequiredBones,
+		RefSkeleton,
+		WorldTransforms,
+		InSelectedBones,
+		BoneColours,
+		PDI,
+		bForceDraw,
+		bAddHitProxy);
+}
+
 void FAnimationViewportClient::DrawMeshBones(UDebugSkelMeshComponent* MeshComponent, FPrimitiveDrawInterface* PDI) const
 {
 	if (!MeshComponent ||
@@ -1928,6 +2008,13 @@ FSphere FAnimationViewportClient::GetCameraTarget()
 		return DefaultSphere;
 	}
 
+	AActor* Actor = PreviewMeshComponent->GetOwner();
+	FBox LocalBox(ForceInit);
+	if (GetModeTools()->ComputeBoundingBoxForViewportFocus(Actor, PreviewMeshComponent, LocalBox))
+	{
+		return FBoxSphereBounds(LocalBox).GetSphere();
+	}
+	
 	FBoxSphereBounds Bounds = PreviewMeshComponent->CalcGameBounds(FTransform::Identity);
 	return Bounds.GetSphere();
 }
@@ -2267,13 +2354,27 @@ void FAnimationViewportClient::SetPlaybackSpeedMode(EAnimationPlaybackSpeeds::Ty
 
 	if (GetWorld())
 	{
-		GetWorld()->GetWorldSettings()->TimeDilation = EAnimationPlaybackSpeeds::Values[AnimationPlaybackSpeedMode];
+		const float AnimationSpeed = (InMode == EAnimationPlaybackSpeeds::Custom)
+			? GetCustomAnimationSpeed()
+			: EAnimationPlaybackSpeeds::Values[AnimationPlaybackSpeedMode];
+		GetWorld()->GetWorldSettings()->TimeDilation = AnimationSpeed;
 	}
 }
 
 EAnimationPlaybackSpeeds::Type FAnimationViewportClient::GetPlaybackSpeedMode() const
 {
 	return AnimationPlaybackSpeedMode;
+}
+
+void FAnimationViewportClient::SetCustomAnimationSpeed(const float InCustomAnimationSpeed)
+{
+	CustomAnimationSpeed = InCustomAnimationSpeed;
+	SetPlaybackSpeedMode(EAnimationPlaybackSpeeds::Custom);
+}
+
+float FAnimationViewportClient::GetCustomAnimationSpeed() const
+{
+	return CustomAnimationSpeed;
 }
 
 TSharedPtr<class FAnimationEditorPreviewScene> FAnimationViewportClient::GetAnimPreviewScenePtr() const

@@ -7,6 +7,8 @@
 #include "Templates/Casts.h"
 #include "Templates/RemoveReference.h"
 
+class FReferenceCollector;
+
 class FStructOnScope
 {
 protected:
@@ -72,6 +74,11 @@ public:
 		return ScriptStruct.Get();
 	}
 
+	TWeakObjectPtr<const UStruct>& GetStructPtr() 
+	{
+		return ScriptStruct;
+	}
+	
 	COREUOBJECT_API virtual UPackage* GetPackage() const;
 	COREUOBJECT_API virtual void SetPackage(UPackage* InPackage);
 
@@ -121,14 +128,16 @@ public:
 		ScriptStruct = InScriptStruct;
 		Initialize();
 	}
+	
+	// If the struct definition is still available and there is struct memory to read from,
+	// add any object references in the struct data to the collector
+	COREUOBJECT_API void AddReferencedObjects(FReferenceCollector& Collector);
 };
 
 /**
  * Typed FStructOnScope that exposes type-safe access to the wrapped struct
- * @note The second template argument is there to restrict to type that are actually USTRUCT.
- *		It will be replaced to a static_assert with a better compiler error with a "is ustruct" type trait
  */
-template<typename T, typename = decltype(TBaseStructure<T>::Get())>
+template<typename T>
 class TStructOnScope final : public FStructOnScope
 {
 public:

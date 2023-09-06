@@ -83,6 +83,14 @@ static FAutoConsoleVariableRef CVarShaderComplexityBaselineDeferredUnlitPS(
 	ECVF_Default
 );
 
+float GShaderComplexityMobileMaskedCostMultiplier = 1.5f;
+static FAutoConsoleVariableRef CVarShaderComplexityMobileMaskedCostMultiplier(
+	TEXT("r.ShaderComplexity.MobileMaskedCostMultiplier"),
+	GShaderComplexityMobileMaskedCostMultiplier,
+	TEXT("Extra cost of masked materials if we do not use masked in early Z optimization"),
+	ECVF_Default
+);
+
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FDebugViewModePS, TEXT("/Engine/Private/DebugViewModePixelShader.usf"), TEXT("Main"), SF_Pixel);
 
 int32 GetQuadOverdrawUAVIndex(EShaderPlatform Platform)
@@ -272,8 +280,7 @@ void FDebugViewModePS::ModifyCompilationEnvironment(const FMaterialShaderPermuta
 	TCHAR BufferRegister[] = { 'u', '0', 0 };
 	BufferRegister[1] += GetQuadOverdrawUAVIndex(Parameters.Platform);
 	OutEnvironment.SetDefine(TEXT("QUAD_BUFFER_REGISTER"), BufferRegister);
-	const bool bUsingMobileRenderer = FSceneInterface::GetShadingPath(GetMaxSupportedFeatureLevel(Parameters.Platform)) == EShadingPath::Mobile;
-	OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), !bUsingMobileRenderer);
+	OutEnvironment.SetDefine(TEXT("OUTPUT_QUAD_OVERDRAW"), !FDataDrivenShaderPlatformInfo::GetIsLanguageMetal(Parameters.Platform));
 
 
 	for (int i = 0; i < DVSM_MAX; ++i)
@@ -465,10 +472,16 @@ void FDebugViewModeMeshProcessor::UpdateInstructionCount(FDebugViewModeShaderEle
 		{
 			TShaderRef<TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>> MobileVS;
 			TShaderRef<TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> MobilePS;
-			if (MobileBasePass::GetShaders(LMP_NO_LIGHTMAP, 0, *InBatchMaterial, InVertexFactoryType, false, MobileVS, MobilePS))
+			if (MobileBasePass::GetShaders(LMP_NO_LIGHTMAP, EMobileLocalLightSetting::LOCAL_LIGHTS_DISABLED, *InBatchMaterial, InVertexFactoryType, false, MobileVS, MobilePS))
 			{
 				OutShaderElementData.NumVSInstructions = MobileVS.IsValid() ? MobileVS->GetNumInstructions() : 0;
 				OutShaderElementData.NumPSInstructions = MobilePS.IsValid() ? MobilePS->GetNumInstructions() : 0;
+			}
+
+			const EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(InBatchMaterial->GetFeatureLevel());
+			if (IsMaskedBlendMode(*InBatchMaterial) && !MaskedInEarlyPass(ShaderPlatform))
+			{
+				OutShaderElementData.NumPSInstructions *= GShaderComplexityMobileMaskedCostMultiplier;
 			}
 		}
 	}

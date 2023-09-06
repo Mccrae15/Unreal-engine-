@@ -96,6 +96,11 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 		return Compiler->Constant2(0.0f, 0.0f);
 	}
 
+	virtual int32 ParticleSpriteRotation() override
+	{
+		return Compiler->Constant2(0.0f, 0.0f);
+	}
+
 	virtual int32 CameraVector() override
 	{
 		// By returning vertex normal instead of a constant vector (like up), we ensure materials (with fresnel for example) are more correctly baked using custom mesh data.
@@ -387,7 +392,7 @@ public:
 
 			return Compiler->Constant(0.0f);
 		}
-		else if (Property == MP_WorldPositionOffset)
+		else if (Property == MP_WorldPositionOffset || Property == MP_Displacement)
 		{
 			//This property MUST return 0 as a default or during the process of rendering textures out for lightmass to use, pixels will be off by 1.
 			return Compiler->Constant(0.0f);

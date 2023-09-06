@@ -8,20 +8,17 @@ public class UMGEditor : ModuleRules
 	{
 		OverridePackageType = PackageOverrideType.EngineDeveloper;
 
-		PrivateIncludePathModuleNames.AddRange(
-			new string[] {
-				"AssetTools",
-				"UMG",
+		PublicDependencyModuleNames.AddRange(
+			new string[]
+			{
+				"FieldNotification",
+				"SequencerCore",
+				"Sequencer",
 			});
-
-        PublicDependencyModuleNames.AddRange(
-            new string[]
-            {
-                "Sequencer",
-            });
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"AssetDefinition",
 				"ClassViewer",
 				"Core",
 				"CoreUObject",

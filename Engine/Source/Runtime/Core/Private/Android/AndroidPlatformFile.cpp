@@ -86,6 +86,8 @@ int32 GAndroidPackageVersion = 0;
 int32 GAndroidPackagePatchVersion = 0;
 FString GAndroidAppType;
 
+#define ANDROID_MAX_OVERFLOW_FILES	32
+
 // External File Path base - setup during load
 FString GFilePathBase;
 // Obb File Path base - setup during load
@@ -368,6 +370,12 @@ public:
 				bSuccess = false;
 				break;
 			}
+#if LOG_ANDROID_FILE
+			FPlatformMisc::LowLevelOutputDebugStringf(
+				TEXT("(%d/%d) FFileHandleAndroid:Write => Path = %s, this size = %d, CurrentOffset = %d, Source = %p"),
+				FAndroidTLS::GetCurrentThreadId(), File->Handle,
+				*(File->Path), int32(ThisSize), CurrentOffset, Source);
+#endif
 			CurrentOffset += ThisSize;
 			Source += ThisSize;
 			BytesToWrite -= ThisSize;
@@ -375,7 +383,12 @@ public:
 		
 		// Update the cached file length
 		Length = FMath::Max(Length, CurrentOffset);
-
+#if LOG_ANDROID_FILE
+		FPlatformMisc::LowLevelOutputDebugStringf(
+			TEXT("(%d/%d) FFileHandleAndroid:Write => Path = %s, final size %d"),
+			FAndroidTLS::GetCurrentThreadId(), File->Handle,
+			*(File->Path), Length);
+#endif
 		return bSuccess;
 	}
 
@@ -883,7 +896,7 @@ public:
 
 	int64 GetEntryLength(const FString & Path)
 	{
-		TSharedPtr<FFileHandleAndroid> File = Entries[Path]->File;
+		TSharedPtr<FFileHandleAndroid>& File = Entries[Path]->File;
 		return File != nullptr ? File->Size() : 0;
 	}
 
@@ -1005,8 +1018,9 @@ public:
 	virtual IMappedFileRegion* MapRegion(int64 Offset = 0, int64 BytesToMap = MAX_int64, bool bPreloadHint = false) override
 	{
 		LLM_PLATFORM_SCOPE(ELLMTag::PlatformMMIO);
-		check(Offset < GetFileSize()); // don't map zero bytes and don't map off the end of the file
-		BytesToMap = FMath::Min<int64>(BytesToMap, GetFileSize() - Offset);
+		const int64 CurrentFileSize = GetCurrentFileSize();
+		check(Offset < CurrentFileSize); // don't map zero bytes and don't map off the end of the file
+		BytesToMap = FMath::Min<int64>(BytesToMap, CurrentFileSize - Offset);
 		check(BytesToMap > 0); // don't map zero bytes
 
 		const int64 AlignedOffset = AlignDown(Offset, FileMappingAlignment);
@@ -1048,7 +1062,8 @@ public:
 #if LOG_ANDROID_FILE
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Failed to unmap region from %s, errno=%s"), *Filename, UTF8_TO_TCHAR(strerror(errno)));
 #endif
-		checkf(Res == 0, TEXT("Failed to unmap, error is %d, errno is %d [params: %x, %d]"), Res, errno, MappedPtr, GetFileSize());
+		const int64 CurrentFileSize = GetCurrentFileSize();
+		checkf(Res == 0, TEXT("Failed to unmap, error is %d, errno is %d [params: %x, %d]"), Res, errno, MappedPtr, CurrentFileSize);
 	}
 
 private:
@@ -1056,6 +1071,22 @@ private:
 	FString Filename;
 	int32 NumOutstandingRegions;
 	int FileHandle;
+
+	int64 GetCurrentFileSize() const
+	{
+		struct stat FileInfo;
+		FileInfo.st_size = -1;
+		const int StatResult = fstat(FileHandle, &FileInfo);
+		if (StatResult == -1)
+		{
+			const int ErrNo = errno;
+#if LOG_ANDROID_FILE
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FAndroidPlatformFile::FAndroidMappedFileHandle fstat failed: ('%s') failed: errno=%d (%s)"), *Filename, ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
+#endif
+			return GetFileSize();
+		}
+		return FileInfo.st_size;
+	}
 };
 
 FAndroidMappedFileRegion::~FAndroidMappedFileRegion()
@@ -1218,46 +1249,47 @@ public:
 			// Only check for overflow files if we found a patch file
 			if (bHavePatch)
 			{
-				FString Overflow1OBBName = FString::Printf(TEXT("overflow1.%d.%s.obb"), GAndroidPackageVersion, *GPackageName);
-				FString Overflow2OBBName = FString::Printf(TEXT("overflow2.%d.%s.obb"), GAndroidPackageVersion, *GPackageName);
+				int32 OverflowIndex = 1;
 
 				if (!GOBBOverflow1FilePath.IsEmpty() && FileExists(*GOBBOverflow1FilePath, true))
 				{
+					OverflowIndex = 2;
 					MountOBB(*GOBBOverflow1FilePath);
 					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow1 OBB: %s"), *GOBBOverflow1FilePath);
 				}
-				else if (FileExists(*(OBBDir1 / Overflow1OBBName), true))
-				{
-					GOBBOverflow1FilePath = OBBDir1 / Overflow1OBBName;
-					MountOBB(*GOBBOverflow1FilePath);
-					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow1 OBB: %s"), *GOBBOverflow1FilePath);
-				}
-				else if (FileExists(*(OBBDir2 / Overflow1OBBName), true))
-				{
-					GOBBOverflow1FilePath = OBBDir2 / Overflow1OBBName;
-					MountOBB(*GOBBOverflow1FilePath);
-					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow1 OBB: %s"), *GOBBOverflow1FilePath);
-				}
-
 				if (!GOBBOverflow2FilePath.IsEmpty() && FileExists(*GOBBOverflow2FilePath, true))
 				{
+					OverflowIndex = 3;
 					MountOBB(*GOBBOverflow2FilePath);
 					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow2 OBB: %s"), *GOBBOverflow2FilePath);
 				}
-				else if (FileExists(*(OBBDir1 / Overflow2OBBName), true))
+
+				while (OverflowIndex <= ANDROID_MAX_OVERFLOW_FILES)
 				{
-					GOBBOverflow2FilePath = OBBDir1 / Overflow2OBBName;
-					MountOBB(*GOBBOverflow2FilePath);
-					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow2 OBB: %s"), *GOBBOverflow2FilePath);
-				}
-				else if (FileExists(*(OBBDir2 / Overflow2OBBName), true))
-				{
-					GOBBOverflow2FilePath = OBBDir2 / Overflow2OBBName;
-					MountOBB(*GOBBOverflow2FilePath);
-					FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow2 OBB: %s"), *GOBBOverflow2FilePath);
+					FString OverflowOBBName = FString::Printf(TEXT("overflow%d.%d.%s.obb"), OverflowIndex, GAndroidPackageVersion, *GPackageName);
+
+					if (FileExists(*(OBBDir1 / OverflowOBBName), true))
+					{
+						FString OBBOverflowFilePath = OBBDir1 / OverflowOBBName;
+						MountOBB(*OBBOverflowFilePath);
+						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow%d OBB: %s"), OverflowIndex, *OBBOverflowFilePath);
+					}
+					else if (FileExists(*(OBBDir2 / OverflowOBBName), true))
+					{
+						FString OBBOverflowFilePath = OBBDir2 / OverflowOBBName;
+						MountOBB(*OBBOverflowFilePath);
+						FPlatformMisc::LowLevelOutputDebugStringf(TEXT("Mounted overflow%d OBB: %s"), OverflowIndex, *OBBOverflowFilePath);
+					}
+					else
+					{
+						break;
+					}
+
+					OverflowIndex++;
 				}
 			}
 		}
+
 
 		// make sure the base path directory exists (UnrealGame and UnrealGame/ProjectName)
 		FString FileBaseDir = GFilePathBase + FString(FILEBASE_DIRECTORY);
@@ -1810,6 +1842,12 @@ public:
 			}
 			return FileHandleAndroid;
 		}
+#if LOG_ANDROID_FILE
+		else
+		{
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("FAndroidPlatformFile::OpenWrite('%s') - failed = %s"), Filename, UTF8_TO_TCHAR(strerror(errno)));
+		}
+#endif
 		return nullptr;
 	}
 
@@ -1886,8 +1924,13 @@ public:
 		FString LocalPath;
 		FString AssetPath;
 		PathToAndroidPaths(LocalPath, AssetPath, Directory, AllowLocal);
-
-		return (mkdir(TCHAR_TO_UTF8(*LocalPath), 0755) == 0) || (errno == EEXIST);
+		uint32 mkdirperms = 0755;
+#if !UE_BUILD_SHIPPING
+		// some devices prevent ADB (shell user) from modifying files.
+		// To allow adb shell to modify files we give group users all perms to the new dir.
+		mkdirperms = 0775;
+#endif
+		return (mkdir(TCHAR_TO_UTF8(*LocalPath), mkdirperms) == 0) || (errno == EEXIST);
 	}
 
 	// We assert that modifying dirs are in the local file-system.

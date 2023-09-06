@@ -1,19 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraModule.h"
+#include "GPUSortManager.h"
 #include "Misc/LazySingleton.h"
+#include "Materials/MaterialInterface.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraComponentSettings.h"
 #include "NiagaraCompileHashVisitor.h"
+#include "NiagaraEmitter.h"
 #include "NiagaraTypes.h"
-#include "NiagaraDebugVis.h"
+#include "NiagaraDebugVis.h" // IWYU pragma: keep
 #include "NiagaraEvents.h"
 #include "NiagaraSettings.h"
-#include "NiagaraDataInterfaceCurlNoise.h"
+#include "NiagaraDataChannelManager.h"
+#include "NiagaraSimCache.h"
+#include "NiagaraSimulationTaskPriority.h"
+#include "NiagaraUseOpenVDB.h"
+#include "NiagaraSystem.h"
 #include "UObject/Class.h"
 #include "UObject/ObjectRedirector.h"
 #include "UObject/Package.h"
 #include "NiagaraWorldManager.h"
+#include "UObject/UObjectIterator.h"
 #include "VectorVM.h"
 #include "NiagaraConstants.h"
 #include "NiagaraDecalRendererProperties.h"
@@ -22,8 +30,8 @@
 #include "NiagaraMeshRendererProperties.h"
 #include "NiagaraRibbonRendererProperties.h"
 #include "NiagaraComponentRendererProperties.h"
+#include "NiagaraVolumeRendererProperties.h"
 #include "NiagaraCustomVersion.h"
-#include "NiagaraRenderer.h"
 #include "NiagaraShaderModule.h"
 #include "UObject/CoreRedirects.h"
 #include "NiagaraGpuComputeDispatch.h"
@@ -36,9 +44,8 @@
 #include "DataInterface/NiagaraDataInterfaceDataChannelCommon.h"
 #include "DataInterface/NiagaraDataInterfaceDataChannelWrite.h"
 #include "DataInterface/NiagaraDataInterfaceDataChannelRead.h"
-#include "DataInterface/NiagaraDataInterfaceDataChannelSpawn.h"
 
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 #include "NiagaraOpenVDB.h"
 #endif
 
@@ -57,6 +64,8 @@ static FAutoConsoleVariableRef CVarLogCompileIdGeneration(
 
 float INiagaraModule::EngineGlobalSpawnCountScale = 1.0f;
 float INiagaraModule::EngineGlobalSystemCountScale = 1.0f;
+
+std::atomic<bool> INiagaraModule::bDataChannelRefreshRequested = false;
 
 int32 GEnableVerboseNiagaraChangeIdLogging = 0;
 static FAutoConsoleVariableRef CVarEnableVerboseNiagaraChangeIdLogging(
@@ -100,7 +109,7 @@ void INiagaraModule::OnUseGlobalFXBudgetChanged(IConsoleVariable* Variable)
 	}
 }
 
-bool INiagaraModule::bDataChannelsEnabled = false;
+bool INiagaraModule::bDataChannelsEnabled = true;
 
 static FAutoConsoleVariableRef CVarDataChannelEnabled(
 	TEXT("fx.Niagara.DataChannels.Enabled"),
@@ -117,7 +126,6 @@ void INiagaraModule::OnDataChannelsEnabledChanged(IConsoleVariable* Variable)
 		ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::AllowParameter;
 		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelWrite::StaticClass(), Flags);
 		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelRead::StaticClass(), Flags);
-		FNiagaraTypeRegistry::Register(UNiagaraDataInterfaceDataChannelSpawn::StaticClass(), Flags);
 
 		FNiagaraWorldManager::ForAllWorldManagers(
 			[](FNiagaraWorldManager& WorldMan)
@@ -190,6 +198,7 @@ FNiagaraVariable INiagaraModule::Engine_System_RandomSeed;
 FNiagaraVariable INiagaraModule::Engine_System_CurrentTimeStep;
 FNiagaraVariable INiagaraModule::Engine_System_NumTimeSteps;
 FNiagaraVariable INiagaraModule::Engine_System_TimeStepFraction;
+FNiagaraVariable INiagaraModule::Engine_System_NumParticles;
 
 FNiagaraVariable INiagaraModule::Engine_System_NumEmitters;
 FNiagaraVariable INiagaraModule::Engine_NumSystemInstances;
@@ -261,13 +270,15 @@ FNiagaraVariable INiagaraModule::Translator_CallID;
 void INiagaraModule::StartupModule()
 {
 	VectorVM::Init();
+	FNiagaraTypeHelper::InitStaticTypes();
+
 #if VECTORVM_SUPPORTS_EXPERIMENTAL
 	InitVectorVM();
 #endif
 	LLM_SCOPE(ELLMTag::Niagara);
 	FNiagaraTypeDefinition::Init();
 
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 	// Global registration of  the vdb types.
 	openvdb::initialize();
 	if (!Vec4SGrid::isRegistered())
@@ -282,6 +293,8 @@ void INiagaraModule::StartupModule()
 #endif
 
 	FNiagaraWorldManager::OnStartup();
+
+	NiagaraSimulationTaskPriority::Initialize();
 
 #if WITH_NIAGARA_DEBUGGER
 	DebuggerClient = MakePimpl<FNiagaraDebuggerClient>();
@@ -342,6 +355,7 @@ void INiagaraModule::StartupModule()
 	Engine_System_CurrentTimeStep = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.CurrentTimeStep"));
 	Engine_System_NumTimeSteps = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumTimeSteps"));
 	Engine_System_TimeStepFraction = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.System.TimeStepFraction"));
+	Engine_System_NumParticles = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumParticles"));
 
 	Engine_System_NumEmitters = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumEmitters"));
 	Engine_NumSystemInstances = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.NumSystemInstances"));
@@ -418,6 +432,7 @@ void INiagaraModule::StartupModule()
 	UNiagaraRibbonRendererProperties::InitCDOPropertiesAfterModuleStartup();
 	UNiagaraMeshRendererProperties::InitCDOPropertiesAfterModuleStartup();
 	UNiagaraComponentRendererProperties::InitCDOPropertiesAfterModuleStartup();
+	UNiagaraVolumeRendererProperties::InitCDOPropertiesAfterModuleStartup();
 
 	// Register the data interface CDO finder with the shader module..
 	INiagaraShaderModule& NiagaraShaderModule = FModuleManager::LoadModuleChecked<INiagaraShaderModule>("NiagaraShader");
@@ -469,7 +484,7 @@ void INiagaraModule::OnPostEngineInit()
 		}
 	);
 
-	FNiagaraComponentSettings::OnPostEngineInit();
+	FNiagaraComponentSettings::UpdateSettings();
 }
 
 void INiagaraModule::OnPreExit()
@@ -510,6 +525,8 @@ void INiagaraModule::OnWorldTickStart(UWorld* World, ELevelTick TickType, float 
 #if WITH_EDITOR
 	PollSystemCompilations();
 #endif
+
+	RefreshDataChannels();
 	
 #if NIAGARA_PERF_BASELINES
 	if (BaselineHandler.IsValid())
@@ -517,6 +534,19 @@ void INiagaraModule::OnWorldTickStart(UWorld* World, ELevelTick TickType, float 
 		BaselineHandler->Tick(World, DeltaSeconds);
 	}
 #endif
+}
+
+void INiagaraModule::RefreshDataChannels()
+{
+	if (bDataChannelRefreshRequested)
+	{
+		bDataChannelRefreshRequested = false;
+		FNiagaraWorldManager::ForAllWorldManagers(
+			[](FNiagaraWorldManager& WorldMan)
+			{
+				WorldMan.GetDataChannelManager().RefreshDataChannels();
+			});
+	}
 }
 
 void INiagaraModule::OnPostGarbageCollect()
@@ -620,10 +650,10 @@ int32 INiagaraModule::StartScriptCompileJob(const FNiagaraCompileRequestDataBase
 	return ScriptCompilerDelegate.Execute(InCompileData, InCompileDuplicateData, InCompileOptions);
 }
 
-TSharedPtr<FNiagaraVMExecutableData> INiagaraModule::GetCompileJobResult(int32 JobID, bool bWait)
+TSharedPtr<FNiagaraVMExecutableData> INiagaraModule::GetCompileJobResult(int32 JobID, bool bWait, FNiagaraScriptCompileMetrics& Metrics)
 {
 	checkf(ScriptCompilerDelegate.IsBound(), TEXT("Script compilation result delegate not bound."));
-	return CompilationResultDelegate.Execute(JobID, bWait);
+	return CompilationResultDelegate.Execute(JobID, bWait, Metrics);
 }
 
 FDelegateHandle INiagaraModule::RegisterScriptCompiler(FScriptCompiler ScriptCompiler)
@@ -723,7 +753,65 @@ void INiagaraModule::UnregisterGraphTraversalCacher(FDelegateHandle DelegateHand
 	GraphTraversalCacheDelegate.Unbind();
 }
 
+FNiagaraCompilationTaskHandle INiagaraModule::RequestCompileSystem(UNiagaraSystem* System, bool bForce)
+{
+	checkf(RequestCompileSystemDelegate.IsBound(), TEXT("RequestCompileSystemDelegate delegate not bound."));
+	return RequestCompileSystemDelegate.Execute(System, bForce);
+}
 
+FDelegateHandle INiagaraModule::RegisterRequestCompileSystem(FOnRequestCompileSystem RequestCompileSystemCallback)
+{
+	checkf(RequestCompileSystemDelegate.IsBound() == false, TEXT("Only one handler is allowed for the RequestCompileSystem delegate"));
+	RequestCompileSystemDelegate = RequestCompileSystemCallback;
+	return RequestCompileSystemDelegate.GetHandle();
+}
+
+void INiagaraModule::UnregisterRequestCompileSystem(FDelegateHandle DelegateHandle)
+{
+	checkf(RequestCompileSystemDelegate.IsBound(), TEXT("RequestCompileSystemDelegate is not registered"));
+	checkf(RequestCompileSystemDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the RequestCompileSystem delegate with the handle it was registered with."));
+	RequestCompileSystemDelegate.Unbind();
+}
+
+bool INiagaraModule::PollSystemCompile(FNiagaraCompilationTaskHandle TaskHandle, FNiagaraSystemAsyncCompileResults& Results, bool bWait, bool bPeek)
+{
+	checkf(PollSystemCompileDelegate.IsBound(), TEXT("PollSystemCompileDelegate delegate not bound."));
+	return PollSystemCompileDelegate.Execute(TaskHandle, Results, bWait, bPeek);
+}
+
+FDelegateHandle INiagaraModule::RegisterPollSystemCompile(FOnPollSystemCompile PollSystemCompileCallback)
+{
+	checkf(PollSystemCompileDelegate.IsBound() == false, TEXT("Only one handler is allowed for the PollSystemCompile delegate"));
+	PollSystemCompileDelegate = PollSystemCompileCallback;
+	return PollSystemCompileDelegate.GetHandle();
+}
+
+void INiagaraModule::UnregisterPollSystemCompile(FDelegateHandle DelegateHandle)
+{
+	checkf(PollSystemCompileDelegate.IsBound(), TEXT("PollSystemCompileDelegate is not registered"));
+	checkf(PollSystemCompileDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the PollSystemCompile delegate with the handle it was registered with."));
+	PollSystemCompileDelegate.Unbind();
+}
+
+void INiagaraModule::AbortSystemCompile(FNiagaraCompilationTaskHandle TaskHandle)
+{
+	checkf(AbortSystemCompileDelegate.IsBound(), TEXT("AbortSystemCompileDelegate delegate not bound."));
+	AbortSystemCompileDelegate.Execute(TaskHandle);
+}
+
+FDelegateHandle INiagaraModule::RegisterAbortSystemCompile(FOnAbortSystemCompile AbortSystemCompileCallback)
+{
+	checkf(AbortSystemCompileDelegate.IsBound() == false, TEXT("Only one handler is allowed for the AbortSystemCompile delegate"));
+	AbortSystemCompileDelegate = AbortSystemCompileCallback;
+	return AbortSystemCompileDelegate.GetHandle();
+}
+
+void INiagaraModule::UnregisterAbortSystemCompile(FDelegateHandle DelegateHandle)
+{
+	checkf(AbortSystemCompileDelegate.IsBound(), TEXT("AbortSystemCompileDelegate is not registered"));
+	checkf(AbortSystemCompileDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the AbortSystemCompile delegate with the handle it was registered with."));
+	AbortSystemCompileDelegate.Unbind();
+}
 
 void INiagaraModule::OnAssetLoaded(UObject* Asset)
 {
@@ -1033,6 +1121,12 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::ToStaticDef() const
 	return Def;
 }
 
+FNiagaraTypeDefinition FNiagaraTypeDefinition::RemoveStaticDef() const
+{
+	FNiagaraTypeDefinition Def(*this);
+	Def.Flags &= ~TF_Static;
+	return Def;
+}
 
 #if WITH_EDITORONLY_DATA
 bool FNiagaraTypeDefinition::IsInternalType() const
@@ -1054,9 +1148,9 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 
 	FNiagaraTypeRegistry::ClearUserDefinedRegistry();
 
-	ENiagaraTypeRegistryFlags VarFlags = ENiagaraTypeRegistryFlags::AllowAnyVariable;
-	ENiagaraTypeRegistryFlags ParamFlags = VarFlags | ENiagaraTypeRegistryFlags::AllowParameter;
-	ENiagaraTypeRegistryFlags PayloadFlags = VarFlags | ENiagaraTypeRegistryFlags::AllowPayload;
+	const ENiagaraTypeRegistryFlags VarFlags = ENiagaraTypeRegistryFlags::AllowAnyVariable;
+	const ENiagaraTypeRegistryFlags ParamFlags = VarFlags | ENiagaraTypeRegistryFlags::AllowParameter;
+	const ENiagaraTypeRegistryFlags PayloadFlags = VarFlags | ENiagaraTypeRegistryFlags::AllowPayload;
 
 	FNiagaraTypeRegistry::Register(CollisionEventDef, PayloadFlags);
 
@@ -1092,15 +1186,17 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 	UScriptStruct* SpawnInfoStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraSpawnInfo"));
 	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(SpawnInfoStruct), ParamFlags);
 
-	FNiagaraTypeRegistry::Register(UObjectDef, VarFlags);
-	FNiagaraTypeRegistry::Register(UMaterialDef, VarFlags);
-	FNiagaraTypeRegistry::Register(UTextureDef, VarFlags);
-	FNiagaraTypeRegistry::Register(UTextureRenderTargetDef, VarFlags);
-	FNiagaraTypeRegistry::Register(UStaticMeshDef, VarFlags);
-	FNiagaraTypeRegistry::Register(USimCacheClassDef, VarFlags);
+	FNiagaraTypeRegistry::Register(UObjectDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(UMaterialDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(UTextureDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(UTextureRenderTargetDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(UStaticMeshDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(USimCacheClassDef, ParamFlags);
 	FNiagaraTypeRegistry::Register(StaticEnum<ENiagaraLegacyTrailWidthMode>(), ParamFlags);
 
-	
+
+	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(StaticEnum<EPhysicalSurface>()), ParamFlags);
+
 	if (!IsRunningCommandlet())
 	{
 		TArray<FSoftObjectPath> DenyList;
@@ -1238,13 +1334,17 @@ bool FNiagaraTypeDefinition::TypesAreAssignable(const FNiagaraTypeDefinition& Ty
 		return false;
 	}
 
-	// Make sure that enums are not assignable to enums of different types or just plain ints
-	if (TypeInput.GetStruct() == TypeOutput.GetStruct() &&
-		TypeInput.GetEnum() != TypeOutput.GetEnum())
+	// Enums can only be assigned from enums of the same type.
+	if(TypeInput.IsEnum() && TypeInput.GetEnum() != TypeOutput.GetEnum())
 	{
 		return false;
 	}
 
+	//Enums can be assigned to enums of the same type or plain integers.
+	if(TypeOutput.IsEnum() && TypeInput.GetEnum() != TypeOutput.GetEnum() && TypeInput != FNiagaraTypeDefinition::GetIntDef())
+	{
+		return false;
+	}
 
 	// Static can go to static or static can go to nonstatic, but nonstatic can't go to static
 	if (((!TypeInput.IsStatic() && TypeOutput.IsStatic()) || (TypeInput.IsStatic() && TypeOutput.IsStatic())) && TypeInput.GetStruct() == TypeOutput.GetStruct() && TypeInput.GetEnum() == TypeOutput.GetEnum())
@@ -1296,7 +1396,7 @@ bool FNiagaraTypeDefinition::IsLossyConversion(const FNiagaraTypeDefinition& Fro
 		|| (FromType == Vec3Def && ToType == PositionDef);
 }
 
-FNiagaraTypeDefinition FNiagaraTypeDefinition::GetNumericOutputType(const TArray<FNiagaraTypeDefinition> TypeDefinintions, ENiagaraNumericOutputTypeSelectionMode SelectionMode)
+FNiagaraTypeDefinition FNiagaraTypeDefinition::GetNumericOutputType(TConstArrayView<FNiagaraTypeDefinition> TypeDefinintions, ENiagaraNumericOutputTypeSelectionMode SelectionMode)
 {
 	checkf(SelectionMode != ENiagaraNumericOutputTypeSelectionMode::None, TEXT("Can not get numeric output type with selection mode none."));
 	checkf(SelectionMode != ENiagaraNumericOutputTypeSelectionMode::Custom, TEXT("Can not get numeric output type with selection mode custom."));
@@ -1327,7 +1427,7 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::GetNumericOutputType(const TArray
 		return NumericDef;
 	}
 
-	TArray<FNiagaraTypeDefinition> SortedTypeDefinitions = TypeDefinintions;
+	TArray<FNiagaraTypeDefinition> SortedTypeDefinitions(TypeDefinintions);
 	SortedTypeDefinitions.Sort([&](const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB)
 		{
 			int32 AIndex = OrderedNumericTypes.IndexOfByKey(TypeA);
@@ -1665,7 +1765,6 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 {
 	static const FName NAME_NiagaraStructPadding0 = "Engine.System.PaddingInt32_0";
 	static const FName NAME_NiagaraStructPadding1 = "Engine.System.PaddingInt32_1";
-	static const FName NAME_NiagaraStructPadding2 = "Engine.System.PaddingInt32_2";
 
 	static const TArray<FNiagaraVariable> Variables =
 	{
@@ -1682,9 +1781,10 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 		SYS_PARAM_ENGINE_SYSTEM_CURRENT_TIME_STEP,
 		SYS_PARAM_ENGINE_SYSTEM_NUM_TIME_STEPS,
 		SYS_PARAM_ENGINE_SYSTEM_TIME_STEP_FRACTION,			
+		SYS_PARAM_ENGINE_SYSTEM_NUM_PARTICLES,
+
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding0),
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding1),
-		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding2),
 	};
 
 	return Variables;

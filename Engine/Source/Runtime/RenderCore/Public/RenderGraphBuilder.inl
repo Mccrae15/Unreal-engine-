@@ -150,9 +150,9 @@ FORCEINLINE ObjectType* FRDGBuilder::AllocObject(TArgs&&... Args)
 }
 
 template <typename ObjectType>
-FORCEINLINE TArray<ObjectType, FRDGArrayAllocator>& FRDGBuilder::AllocArray()
+FORCEINLINE TArray<ObjectType, SceneRenderingAllocator>& FRDGBuilder::AllocArray()
 {
-	return *Allocator.Alloc<TArray<ObjectType, FRDGArrayAllocator>>();
+	return *Allocator.Alloc<TArray<ObjectType, SceneRenderingAllocator>>();
 }
 
 template <typename ParameterStructType>
@@ -217,10 +217,15 @@ FORCEINLINE FRDGSubresourceState* FRDGBuilder::AllocSubresource(const FRDGSubres
 template <typename ParameterStructType>
 TRDGUniformBufferRef<ParameterStructType> FRDGBuilder::CreateUniformBuffer(const ParameterStructType* ParameterStruct)
 {
-	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUniformBuffer(ParameterStruct, &ParameterStructType::StaticStructMetadata));
-	auto* UniformBuffer = UniformBuffers.Allocate<TRDGUniformBuffer<ParameterStructType>>(Allocator, ParameterStruct, ParameterStructType::StaticStructMetadata.GetShaderVariableName());
+#if !USE_NULL_RHI
+	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUniformBuffer(ParameterStruct, ParameterStructType::FTypeInfo::GetStructMetadata()));
+	auto* UniformBuffer = UniformBuffers.Allocate<TRDGUniformBuffer<ParameterStructType>>(Allocator, ParameterStruct, ParameterStructType::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateCreateUniformBuffer(UniformBuffer));
 	return UniformBuffer;
+#else
+	checkNoEntry();
+	return nullptr;
+#endif // !USE_NULL_RHI
 }
 
 template <typename ExecuteLambdaType>
@@ -229,6 +234,7 @@ FRDGPassRef FRDGBuilder::AddPass(
 	ERDGPassFlags Flags,
 	ExecuteLambdaType&& ExecuteLambda)
 {
+#if !USE_NULL_RHI
 	using LambdaPassType = TRDGEmptyLambdaPass<ExecuteLambdaType>;
 
 	IF_RDG_ENABLE_DEBUG(UserValidation.ValidateAddPass(Name, Flags));
@@ -240,8 +246,13 @@ FRDGPassRef FRDGBuilder::AddPass(
 	LambdaPassType* Pass = Passes.Allocate<LambdaPassType>(Allocator, MoveTemp(Name), Flags, MoveTemp(ExecuteLambda));
 	SetupEmptyPass(Pass);
 	return Pass;
+#else
+	checkNoEntry();
+	return nullptr;
+#endif // !USE_NULL_RHI
 }
 
+#if !USE_NULL_RHI
 template <typename ParameterStructType, typename ExecuteLambdaType>
 FRDGPassRef FRDGBuilder::AddPassInternal(
 	FRDGEventName&& Name,
@@ -268,6 +279,7 @@ FRDGPassRef FRDGBuilder::AddPassInternal(
 	SetupParameterPass(Pass);
 	return Pass;
 }
+#endif // !USE_NULL_RHI
 
 template <typename ExecuteLambdaType>
 FRDGPassRef FRDGBuilder::AddPass(
@@ -277,7 +289,12 @@ FRDGPassRef FRDGBuilder::AddPass(
 	ERDGPassFlags Flags,
 	ExecuteLambdaType&& ExecuteLambda)
 {
+#if !USE_NULL_RHI
 	return AddPassInternal(Forward<FRDGEventName>(Name), ParametersMetadata, ParameterStruct, Flags, Forward<ExecuteLambdaType>(ExecuteLambda));
+#else
+	checkNoEntry();
+	return nullptr;
+#endif // !USE_NULL_RHI
 }
 
 template <typename ParameterStructType, typename ExecuteLambdaType>
@@ -287,7 +304,12 @@ FRDGPassRef FRDGBuilder::AddPass(
 	ERDGPassFlags Flags,
 	ExecuteLambdaType&& ExecuteLambda)
 {
+#if !USE_NULL_RHI
 	return AddPassInternal(Forward<FRDGEventName>(Name), ParameterStructType::FTypeInfo::GetStructMetadata(), ParameterStruct, Flags, Forward<ExecuteLambdaType>(ExecuteLambda));
+#else
+	checkNoEntry();
+	return nullptr;
+#endif // !USE_NULL_RHI
 }
 
 inline void FRDGBuilder::SetPassWorkload(FRDGPass* Pass, uint32 Workload)
@@ -406,51 +428,184 @@ inline void FRDGBuilder::AddDispatchHint()
 }
 
 template <typename TaskLambdaType>
-UE::Tasks::FTask FRDGBuilder::AddSetupTask(TaskLambdaType&& TaskLambda, bool bCondition)
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddSetupTask(TaskLambdaType&& TaskLambda, bool bCondition)
+{
+	return AddSetupTask(MoveTemp(TaskLambda), nullptr, TArray<UE::Tasks::FTask>{}, UE::Tasks::ETaskPriority::Normal, bCondition);
+}
+
+template <typename TaskLambdaType>
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddSetupTask(TaskLambdaType&& TaskLambda, UE::Tasks::ETaskPriority Priority, bool bCondition)
+{
+	return AddSetupTask(MoveTemp(TaskLambda), nullptr, TArray<UE::Tasks::FTask>{}, Priority, bCondition);
+}
+
+template <typename TaskLambdaType>
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddSetupTask(
+	TaskLambdaType&& TaskLambda,
+	UE::Tasks::FPipe* Pipe,
+	UE::Tasks::ETaskPriority Priority,
+	bool bCondition)
+{
+	return AddSetupTask(MoveTemp(TaskLambda), Pipe, TArray<UE::Tasks::FTask>{}, Priority, bCondition);
+}
+
+template <typename TaskLambdaType, typename PrerequisitesCollectionType>
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddSetupTask(
+	TaskLambdaType&& TaskLambda,
+	PrerequisitesCollectionType&& Prerequisites,
+	UE::Tasks::ETaskPriority Priority,
+	bool bCondition)
+{
+	return AddSetupTask(MoveTemp(TaskLambda), nullptr, Forward<PrerequisitesCollectionType&&>(Prerequisites), Priority, bCondition);
+}
+
+template <typename TaskLambdaType, typename PrerequisitesCollectionType>
+UE::Tasks::FTask FRDGBuilder::AddSetupTask(
+	TaskLambdaType&& TaskLambda,
+	UE::Tasks::FPipe* Pipe,
+	PrerequisitesCollectionType&& Prerequisites,
+	UE::Tasks::ETaskPriority Priority,
+	bool bCondition)
 {
 	UE::Tasks::FTask Task;
 
-	if (bParallelExecuteEnabled && bCondition)
-	{
-		Task = UE::Tasks::Launch(TEXT("FRDGBuilder::AddSetupTask"), [TaskLambda = MoveTemp(TaskLambda)] () mutable
-		{
-			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
-			TaskLambda();
-		});
+	bCondition &= bParallelSetupEnabled;
 
-		ParallelSetupEvents.Emplace(Task);
+	auto OuterLambda = [TaskLambda = MoveTemp(TaskLambda)]() mutable
+	{
+		FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+		TaskLambda();
+	};
+
+	const UE::Tasks::EExtendedTaskPriority ExtendedTaskPriority = bCondition ? UE::Tasks::EExtendedTaskPriority::None : UE::Tasks::EExtendedTaskPriority::Inline;
+
+	if (IsImmediateMode())
+	{
+		UE::Tasks::Wait(Prerequisites);
+		OuterLambda();
+	}
+	else if (Pipe)
+	{
+		Task = Pipe->Launch(TEXT("FRDGBuilder::AddSetupTask"), MoveTemp(OuterLambda), Forward<PrerequisitesCollectionType&&>(Prerequisites), Priority, ExtendedTaskPriority);
 	}
 	else
 	{
-		TaskLambda();
+		Task = UE::Tasks::Launch(TEXT("FRDGBuilder::AddSetupTask"), MoveTemp(OuterLambda), Forward<PrerequisitesCollectionType&&>(Prerequisites), Priority, ExtendedTaskPriority);
+	}
+
+	if (bCondition)
+	{
+		ParallelSetupEvents.Emplace(Task);
 	}
 
 	return Task;
 }
 
 template <typename TaskLambdaType>
-UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(TaskLambdaType&& TaskLambda, bool bCondition)
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(TaskLambdaType&& TaskLambda, bool bCondition)
+{
+	return AddCommandListSetupTask(MoveTemp(TaskLambda), nullptr, TArray<UE::Tasks::FTask>{}, UE::Tasks::ETaskPriority::Normal, bCondition);
+}
+
+template <typename TaskLambdaType>
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(TaskLambdaType&& TaskLambda, UE::Tasks::ETaskPriority TaskPriority, bool bCondition)
+{
+	return AddCommandListSetupTask(MoveTemp(TaskLambda), nullptr, TArray<UE::Tasks::FTask>{}, TaskPriority, bCondition);
+}
+
+template <typename TaskLambdaType>
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(
+	TaskLambdaType&& TaskLambda,
+	UE::Tasks::FPipe* Pipe,
+	UE::Tasks::ETaskPriority Priority,
+	bool bCondition)
+{
+	return AddCommandListSetupTask(MoveTemp(TaskLambda), Pipe, TArray<UE::Tasks::FTask>{}, Priority, bCondition);
+}
+
+template <typename TaskLambdaType, typename PrerequisitesCollectionType>
+FORCEINLINE UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(
+	TaskLambdaType&& TaskLambda,
+	PrerequisitesCollectionType&& Prerequisites,
+	UE::Tasks::ETaskPriority Priority,
+	bool bCondition)
+{
+	return AddCommandListSetupTask(MoveTemp(TaskLambda), nullptr, Forward<PrerequisitesCollectionType&&>(Prerequisites), Priority, bCondition);
+}
+
+template <typename TaskLambdaType, typename PrerequisitesCollectionType>
+UE::Tasks::FTask FRDGBuilder::AddCommandListSetupTask(
+	TaskLambdaType&& TaskLambda,
+	UE::Tasks::FPipe* Pipe,
+	PrerequisitesCollectionType&& Prerequisites,
+	UE::Tasks::ETaskPriority Priority,
+	bool bCondition)
 {
 	UE::Tasks::FTask Task;
 
-	if (bParallelExecuteEnabled && bCondition)
+	bCondition &= bParallelSetupEnabled;
+
+	FRHICommandList* RHICmdListTask = nullptr;
+
+	bool bUseSeparateCommandList = bCondition;
+
+	for (const UE::Tasks::FTask& Prerequisite : Prerequisites)
 	{
-		FRHICommandList* RHICmdListTask = new FRHICommandList(RHICmdList.GetGPUMask());
-
-		Task = UE::Tasks::Launch(TEXT("FRDGBuilder::AddCommandListSetupTask"), [TaskLambda = MoveTemp(TaskLambda), RHICmdListTask] () mutable
+		// Always create a command list when a prerequisite task is present, as the inline task can be scheduled on any thread.
+		if (!Prerequisite.IsCompleted())
 		{
-			FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
-			RHICmdListTask->SwitchPipeline(ERHIPipeline::Graphics);
-			TaskLambda(*RHICmdListTask);
-			RHICmdListTask->FinishRecording();
-		});
+			bUseSeparateCommandList = true;
+			break;
+		}
+	}
 
-		ParallelSetupEvents.Emplace(Task);
-		RHICmdList.QueueAsyncCommandListSubmit(RHICmdListTask);
+	// When using prerequisites we have to 
+	if (bUseSeparateCommandList)
+	{
+		RHICmdListTask = new FRHICommandList(RHICmdList.GetGPUMask());
 	}
 	else
 	{
-		TaskLambda(RHICmdList);
+		RHICmdListTask = &RHICmdList;
+	}
+
+	auto OuterLambda = [TaskLambda = MoveTemp(TaskLambda), RHICmdListTask]() mutable
+	{
+		FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+
+		if (!RHICmdListTask->IsImmediate())
+		{
+			RHICmdListTask->SwitchPipeline(ERHIPipeline::Graphics);
+		}
+
+		TaskLambda(*RHICmdListTask);
+
+		if (!RHICmdListTask->IsImmediate())
+		{
+			RHICmdListTask->FinishRecording();
+		}
+	};
+
+	const UE::Tasks::EExtendedTaskPriority ExtendedTaskPriority = bCondition ? UE::Tasks::EExtendedTaskPriority::None : UE::Tasks::EExtendedTaskPriority::Inline;
+
+	if (IsImmediateMode())
+	{
+		UE::Tasks::Wait(Prerequisites);
+		OuterLambda();
+	}
+	else if (Pipe)
+	{
+		Task = Pipe->Launch(TEXT("FRDGBuilder::AddCommandListSetupTask"), MoveTemp(OuterLambda), Forward<PrerequisitesCollectionType&&>(Prerequisites), Priority, ExtendedTaskPriority);
+	}
+	else
+	{
+		Task = UE::Tasks::Launch(TEXT("FRDGBuilder::AddCommandListSetupTask"), MoveTemp(OuterLambda), Forward<PrerequisitesCollectionType&&>(Prerequisites), Priority, ExtendedTaskPriority);
+	}
+
+	if (!RHICmdListTask->IsImmediate())
+	{
+		ParallelSetupEvents.Emplace(Task);
+		RHICmdList.QueueAsyncCommandListSubmit(RHICmdListTask);
 	}
 
 	return Task;

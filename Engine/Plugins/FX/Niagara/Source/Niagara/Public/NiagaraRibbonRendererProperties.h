@@ -91,7 +91,7 @@ enum class ENiagaraRibbonTessellationMode : uint8
 
 /** Specifies options for handling UVs at the leading and trailing edges of ribbons. */
 UENUM()
-enum class ENiagaraRibbonUVEdgeMode
+enum class ENiagaraRibbonUVEdgeMode : uint8
 {
 	/** The UV value at the edge will smoothly transition across the segment using normalized age.
 	This will result in	UV values which are outside of the standard 0-1 range and works best with
@@ -104,7 +104,7 @@ enum class ENiagaraRibbonUVEdgeMode
 
 /** Specifies options for distributing UV values across ribbon segments. */
 UENUM()
-enum class ENiagaraRibbonUVDistributionMode
+enum class ENiagaraRibbonUVDistributionMode : uint8
 {
 	/** Ribbon UVs will stretch the length of the ribbon, without repeating, but distributed by segment, so can be uneven with unequal length segments. */
 	ScaledUniformly UMETA(DisplayName = "Uniform Scale (By Segment)"),
@@ -139,6 +139,14 @@ struct FNiagaraRibbonUVSettings
 	UPROPERTY(EditAnywhere, Category = UVs, meta = (DisplayName="Trailing Edge Transition", EditCondition = "!bEnablePerParticleUOverride && DistributionMode != ENiagaraRibbonUVDistributionMode::TiledOverRibbonLength && DistributionMode != ENiagaraRibbonUVDistributionMode::TiledFromStartOverRibbonLength", EditConditionHides))
 	ENiagaraRibbonUVEdgeMode TrailingEdgeMode;
 
+	/** Enables overriding the U component with values read from the particles. When enabled, edge behavior and distribution are ignored. */
+	UPROPERTY(EditAnywhere, Category = UVs)
+	uint8 bEnablePerParticleUOverride : 1;
+
+	/** Enables overriding the range of the V component with values read from the particles. */
+	UPROPERTY(EditAnywhere, Category = UVs)
+	uint8 bEnablePerParticleVRangeOverride : 1;
+
 	/** Specifies the length in world units to use when tiling UVs across the ribbon when using one of the tiled distribution modes. */
 	UPROPERTY(EditAnywhere, Category = UVs, meta = (EditCondition="!bEnablePerParticleUOverride && DistributionMode == ENiagaraRibbonUVDistributionMode::TiledOverRibbonLength || DistributionMode == ENiagaraRibbonUVDistributionMode::TiledFromStartOverRibbonLength", EditConditionHides))
 	float TilingLength;
@@ -150,14 +158,6 @@ struct FNiagaraRibbonUVSettings
 	/** Specifies an additional scaler which is applied to the UV range. */
 	UPROPERTY(EditAnywhere, Category = UVs)
 	FVector2D Scale;
-
-	/** Enables overriding the U component with values read from the particles. When enabled, edge behavior and distribution are ignored. */
-	UPROPERTY(EditAnywhere, Category = UVs)
-	bool bEnablePerParticleUOverride;
-
-	/** Enables overriding the range of the V component with values read from the particles. */
-	UPROPERTY(EditAnywhere, Category = UVs)
-	bool bEnablePerParticleVRangeOverride;
 };
 
 namespace ENiagaraRibbonVFLayout
@@ -185,52 +185,56 @@ namespace ENiagaraRibbonVFLayout
 		PrevRibbonWidth,
 		PrevRibbonFacing,
 		PrevRibbonTwist,
-		LinkOrder,
 		Num,
 	};
 };
 
-UCLASS(editinlinenew, meta = (DisplayName = "Ribbon Renderer"))
-class NIAGARA_API UNiagaraRibbonRendererProperties : public UNiagaraRendererProperties
+UCLASS(editinlinenew, meta = (DisplayName = "Ribbon Renderer"), MinimalAPI)
+class UNiagaraRibbonRendererProperties : public UNiagaraRendererProperties
 {
 public:
 	GENERATED_BODY()
 
-	UNiagaraRibbonRendererProperties();
+	NIAGARA_API UNiagaraRibbonRendererProperties();
 
 	//UObject Interface
-	virtual void PostLoad() override;
-	virtual void PostInitProperties() override;
-	virtual void Serialize(FStructuredArchive::FRecord Record) override;
+	NIAGARA_API virtual void PostLoad() override;
+	NIAGARA_API virtual void PostInitProperties() override;
+	NIAGARA_API virtual void Serialize(FStructuredArchive::FRecord Record) override;
+	NIAGARA_API virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter) override;
-	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter) override;
+	NIAGARA_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARA_API virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter) override;
+	NIAGARA_API virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter) override;
 #endif
 	//UObject Interface END
 
-	static void InitCDOPropertiesAfterModuleStartup();
+	static NIAGARA_API void InitCDOPropertiesAfterModuleStartup();
 
 	//UNiagaraRendererProperties Interface
-	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
-	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
-	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
-	virtual const FVertexFactoryType* GetVertexFactoryType() const override;
-	virtual bool IsBackfaceCullingDisabled() const override;
+	NIAGARA_API virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
+	NIAGARA_API virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
+	NIAGARA_API virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
+	NIAGARA_API virtual const FVertexFactoryType* GetVertexFactoryType() const override;
+	NIAGARA_API virtual bool IsBackfaceCullingDisabled() const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
-	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) override;
+	NIAGARA_API virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) override;
+	NIAGARA_API virtual void CollectPSOPrecacheData(FPSOPrecacheParamsList& OutParams) override;
 
 #if WITH_EDITOR
-	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
-	virtual void GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const override;
-	virtual FNiagaraVariable GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const override;
-	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
-	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
-	virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const override;
+	NIAGARA_API virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
+	NIAGARA_API virtual void GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const override;
+	NIAGARA_API virtual FNiagaraVariable GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const override;
+	NIAGARA_API virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
+	NIAGARA_API virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
+	NIAGARA_API virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const override;
 
-	virtual TArray<FNiagaraVariable> GetBoundAttributes() const override; 
+	NIAGARA_API virtual TArray<FNiagaraVariable> GetBoundAttributes() const override; 
 #endif
-	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
+#if WITH_EDITORONLY_DATA
+	NIAGARA_API virtual bool IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const override;
+#endif
+	NIAGARA_API virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
 	//UNiagaraRendererProperties Interface END
 
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
@@ -245,14 +249,14 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
 	FNiagaraUserParameterBinding MaterialUserParamBinding;
 
-	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
-	ENiagaraRibbonFacingMode FacingMode;
-
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering", meta=(DisplayName="UV0 Settings"))
 	FNiagaraRibbonUVSettings UV0Settings;
 
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering", meta=(DisplayName="UV1 Settings"))
 	FNiagaraRibbonUVSettings UV1Settings;
+
+	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering", meta=(DisplayAfter="MaterialUserParamBinding"))
+	ENiagaraRibbonFacingMode FacingMode = ENiagaraRibbonFacingMode::Screen;
 
 #if WITH_EDITORONLY_DATA
 private:
@@ -286,17 +290,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")	
 	int32 MaxNumRibbons;
 	
-	/**
-	*	Whether we use the CPU or GPU to generate ribbon geometry for CPU systems.
-	*	GPU systems will always use a fully GPU initialization pipeline,
-	*	Will fall back to CPU init when GPU init isn't available.
-	*/ 
-	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")	
-	bool bUseGPUInit;
-
-
-	
-
 	/** If true, the particles are only sorted when using a translucent material. */
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
 	ENiagaraRibbonDrawDirection DrawDirection;
@@ -310,7 +303,30 @@ public:
 	  * 3D Ribbons will render like normal meshes with backface culling enabled.
 	  */
 	UPROPERTY(EditAnywhere, Category = "Ribbon Shape", meta = (EditCondition = "Shape != ENiagaraRibbonShapeMode::Plane", EditConditionHides))
-	bool bEnableAccurateGeometry;
+	uint8 bEnableAccurateGeometry : 1;
+
+	/** When enabled the ribbons renderer will not override how backface culling works depending on shape type, but instad use the material culling mode */
+	UPROPERTY(EditAnywhere, Category = "Ribbon Shape")
+	uint8 bUseMaterialBackfaceCulling : 1;
+
+	/**
+	*	Whether we use the CPU or GPU to generate ribbon geometry for CPU systems.
+	*	GPU systems will always use a fully GPU initialization pipeline,
+	*	Will fall back to CPU init when GPU init isn't available.
+	*/ 
+	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")	
+	uint8 bUseGPUInit : 1;
+
+	/** If checked, use the above constant factor. Otherwise, adaptively select the tessellation factor based on the below parameters. */
+	UPROPERTY(EditAnywhere, Category = "Ribbon Tessellation", meta = (EditCondition = "TessellationMode == ENiagaraRibbonTessellationMode::Custom", EditConditionHides, DisplayAfter="TessellationFactor"))
+	uint8 bUseConstantFactor : 1;
+
+	/** If checked, use the ribbon's screen space percentage to adaptively adjust the tessellation factor. */
+	UPROPERTY(EditAnywhere, Category = "Ribbon Tessellation", meta = (DisplayName = "Screen Space", EditCondition = "TessellationMode == ENiagaraRibbonTessellationMode::Custom && !bUseConstantFactor", EditConditionHides, DisplayAfter="TessellationAngle"))
+	uint8 bScreenSpaceTessellation : 1;
+
+	UPROPERTY()
+	uint8 bLinkOrderUseUniqueID : 1;
 
 	/** Tessellation factor to apply to the width of the ribbon.
 	* Ranges from 1 to 16. Greater values increase amount of tessellation.
@@ -346,20 +362,12 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Ribbon Tessellation", meta = (DisplayName = "Max Tessellation Factor", EditCondition = "TessellationMode == ENiagaraRibbonTessellationMode::Custom", EditConditionHides, ClampMin = "1", ClampMax = "16"))
 	int32 TessellationFactor;
 
-	/** If checked, use the above constant factor. Otherwise, adaptively select the tessellation factor based on the below parameters. */
-	UPROPERTY(EditAnywhere, Category = "Ribbon Tessellation", meta = (EditCondition = "TessellationMode == ENiagaraRibbonTessellationMode::Custom", EditConditionHides))
-	bool bUseConstantFactor;
-
 	/** Defines the angle in degrees at which tessellation occurs.
 	  * Ranges from 1 to 180. Smaller values increase amount of tessellation.
 	  * If set to 0, use the maximum tessellation set above.
 	  */
 	UPROPERTY(EditAnywhere, Category = "Ribbon Tessellation", meta = (EditCondition = "TessellationMode == ENiagaraRibbonTessellationMode::Custom && !bUseConstantFactor", ClampMin = "0", ClampMax = "180", UIMin = "1", UIMax = "180", EditConditionHides))
 	float TessellationAngle;
-
-	/** If checked, use the ribbon's screen space percentage to adaptively adjust the tessellation factor. */
-	UPROPERTY(EditAnywhere, Category = "Ribbon Tessellation", meta = (DisplayName = "Screen Space", EditCondition = "TessellationMode == ENiagaraRibbonTessellationMode::Custom && !bUseConstantFactor", EditConditionHides))
-	bool bScreenSpaceTessellation;
 
 	/** Which attribute should we use for position when generating ribbons?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
@@ -462,9 +470,11 @@ public:
 	UPROPERTY(Transient)
 	FNiagaraVariableAttributeBinding PrevRibbonTwistBinding;
 
+	UPROPERTY()
+	uint32 MaterialParamValidMask = 0;
 
-	bool								bSortKeyDataSetAccessorIsAge = false;
-	FNiagaraDataSetAccessor<float>		SortKeyDataSetAccessor;
+	FNiagaraDataSetAccessor<float>		RibbonLinkOrderFloatAccessor;
+	FNiagaraDataSetAccessor<int32>		RibbonLinkOrderInt32Accessor;
 	FNiagaraDataSetAccessor<FNiagaraPosition>	PositionDataSetAccessor;
 	FNiagaraDataSetAccessor<float>		NormalizedAgeAccessor;
 	FNiagaraDataSetAccessor<float>		SizeDataSetAccessor;
@@ -481,20 +491,18 @@ public:
 	FNiagaraDataSetAccessor<int32>		RibbonIdDataSetAccessor;
 	FNiagaraDataSetAccessor<FNiagaraID>	RibbonFullIDDataSetAccessor;
 	
-	FNiagaraDataSetAccessor<float>		RibbonLinkOrderDataSetAccessor;
+	bool								bGpuRibbonLinkIsFloat = false;
+	uint32								GpuRibbonLinkOrderOffset = INDEX_NONE;
 
-	uint32 MaterialParamValidMask = 0;
 	FNiagaraRendererLayout RendererLayout;
 
 protected:
-	void InitBindings();
-	void SetPreviousBindings(const FVersionedNiagaraEmitter& SrcEmitter);
+	NIAGARA_API void InitBindings();
+	NIAGARA_API void SetPreviousBindings(const FVersionedNiagaraEmitter& SrcEmitter);
 
-	void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit);
+	NIAGARA_API void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit);
 
-	void UpdateMICs();
+	NIAGARA_API void UpdateMICs();
 
 	virtual bool NeedsMIDsForMaterials() const { return MaterialParameters.HasAnyBindings(); }
-private: 
-	static TArray<TWeakObjectPtr<UNiagaraRibbonRendererProperties>> RibbonRendererPropertiesToDeferredInit;
 };

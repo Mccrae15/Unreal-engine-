@@ -34,17 +34,6 @@ void IAdaptiveStreamingPlayer::DebugHandle(void* pPlayer, void (*debugDrawPrintf
 	FAdaptiveStreamingPlayer::DebugHandle(pPlayer, debugDrawPrintf);
 }
 
-
-#if PLATFORM_ANDROID
-
-FParamDict& IAdaptiveStreamingPlayer::Android_Workarounds(FStreamCodecInformation::ECodec InForCodec)
-{
-	return FAdaptiveStreamingPlayer::Android_Workarounds(InForCodec);
-}
-
-#endif
-
-
 //---------------------------------------------------------------------------------------------------------------------------------
 //---------------------------------------------------------------------------------------------------------------------------------
 //---------------------------------------------------------------------------------------------------------------------------------
@@ -76,17 +65,20 @@ FAdaptiveStreamingPlayer::FAdaptiveStreamingPlayer(const IAdaptiveStreamingPlaye
 {
 	Electra::AddActivePlayerInstance();
 
+	if (InCreateParameters.VideoRenderer)
+	{
+		VideoRender.Renderer = CreateWrappedRenderer(InCreateParameters.VideoRenderer, EStreamType::Video);
+	}
+	if (InCreateParameters.AudioRenderer)
+	{
+		AudioRender.Renderer = CreateWrappedRenderer(InCreateParameters.AudioRenderer, EStreamType::Audio);
+	}
 	ExternalPlayerGUID		= InCreateParameters.ExternalPlayerGUID;
-
 	ManifestType			= EMediaFormatType::Unknown;
-
-	VideoRender.Renderer    = CreateWrappedRenderer(InCreateParameters.VideoRenderer, EStreamType::Video);
-	AudioRender.Renderer    = CreateWrappedRenderer(InCreateParameters.AudioRenderer, EStreamType::Audio);
 	CurrentState   		    = EPlayerState::eState_Idle;
 	PipelineState  		    = EPipelineState::ePipeline_Stopped;
 	DecoderState   		    = EDecoderState::eDecoder_Paused;
 	StreamState			    = EStreamState::eStream_Running;
-	PlaybackRate   		    = 0.0;
 	RenderRateScale			= 1.0;
 	StreamReaderHandler     = nullptr;
 	bStreamingHasStarted	= false;
@@ -314,6 +306,11 @@ void FAdaptiveStreamingPlayer::SetStaticResourceProviderCallback(const TSharedPt
 void FAdaptiveStreamingPlayer::SetVideoDecoderResourceDelegate(const TSharedPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>& InResourceDelegate)
 {
 	VideoDecoderResourceDelegate = InResourceDelegate;
+}
+
+void FAdaptiveStreamingPlayer::SetPlayerDataCache(const TSharedPtr<IElectraPlayerDataCache, ESPMode::ThreadSafe>& InPlayerDataCache)
+{
+	ExternalCache = InPlayerDataCache;
 }
 
 
@@ -579,6 +576,23 @@ void FAdaptiveStreamingPlayer::GetPlaybackRange(FPlaybackRange& OutPlaybackRange
 }
 
 
+TRangeSet<double> FAdaptiveStreamingPlayer::GetSupportedRates(EPlaybackRateType InForPlayRateType)
+{
+	return PlaybackState.GetPlaybackRates(InForPlayRateType);
+}
+
+void FAdaptiveStreamingPlayer::SetPlayRate(double InDesiredPlayRate, const FTrickplayParams& InParameters)
+{
+	PlaybackState.SetDesiredPlayRate(InDesiredPlayRate, InParameters);
+}
+
+double FAdaptiveStreamingPlayer::GetPlayRate() const
+{
+	// Return the *desired* play rate.
+	return PlaybackState.GetDesiredPlayRate();
+}
+
+
 //-----------------------------------------------------------------------------
 /**
  * Starts loading the manifest / main playlist.
@@ -628,6 +642,10 @@ void FAdaptiveStreamingPlayer::SeekTo(const FSeekParam& NewPosition)
 	FScopeLock lock(&SeekVars.Lock);
 	SeekVars.PendingRequest = NewPosition;
 	SeekVars.PlayrangeOnRequest = NewPlayRange;
+	if (!NewPosition.bIgnoreForSequenceIndex.Get(false))
+	{
+		++SeekVars.NumSeekToCallsSinceLastSeen;
+	}
 	WorkerThread.TriggerSharedWorkerThread();
 }
 
@@ -968,6 +986,11 @@ bool FAdaptiveStreamingPlayer::IsTrackDeselected(EStreamType StreamType)
 	}
 }
 
+void FAdaptiveStreamingPlayer::SuspendOrResumeDecoders(bool bSuspend, const FParamDict& InOptions)
+{
+	VideoDecoder.SuspendOrResume(bSuspend, InOptions);
+	AudioDecoder.SuspendOrResume(bSuspend, InOptions);
+}
 
 //-----------------------------------------------------------------------------
 /**
@@ -1021,11 +1044,17 @@ void FAdaptiveStreamingPlayer::StopRendering()
 int32 FAdaptiveStreamingPlayer::CreateRenderers()
 {
 	// Set the render clock with the renderes.
-	VideoRender.Renderer->SetRenderClock(RenderClock);
-	AudioRender.Renderer->SetRenderClock(RenderClock);
+	if (VideoRender.Renderer)
+	{
+		VideoRender.Renderer->SetRenderClock(RenderClock);
+	}
+	if (AudioRender.Renderer)
+	{
+		AudioRender.Renderer->SetRenderClock(RenderClock);
+	}
 
 	// Hold back all frames during preroll or emit the first frame for scrubbing?
-	if (PlayerOptions.HaveKey(OptionKeyDoNotHoldBackFirstVideoFrame))
+	if (VideoRender.Renderer && PlayerOptions.HaveKey(OptionKeyDoNotHoldBackFirstVideoFrame))
 	{
 		VideoRender.Renderer->DisableHoldbackOfFirstRenderableVideoFrame(PlayerOptions.GetValue(OptionKeyDoNotHoldBackFirstVideoFrame).SafeGetBool(false));
 	}
@@ -1091,6 +1120,11 @@ TSharedPtr<IAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe> FAdapt
 TSharedPtrTS<IElectraHttpManager> FAdaptiveStreamingPlayer::GetHTTPManager()
 {
 	return HttpManager;
+}
+
+TSharedPtrTS<IExternalDataReader> FAdaptiveStreamingPlayer::GetExternalDataReader()
+{
+	return GetStaticResourceProvider().IsValid() ? ExternalDataReader : nullptr;
 }
 
 TSharedPtrTS<IAdaptiveStreamSelector> FAdaptiveStreamingPlayer::GetStreamSelector()
@@ -1191,7 +1225,6 @@ bool FAdaptiveStreamingPlayer::OnFragmentAccessUnitReceived(FAccessUnit* InAcces
 		BufferConfig = &PlayerConfig.StreamBufferConfigText;
 	}
 	FAccessUnitBuffer::FExternalBufferInfo TotalUtilization;
-	TotalUtilization.DataSize = bufferInfo.CurrentMemInUse;
 	TotalUtilization.Duration = bufferInfo.PlayableDuration;
 
 	// Try to push the data into the receiving buffer
@@ -1660,9 +1693,16 @@ void FAdaptiveStreamingPlayer::HandleSeeking()
 
 		// Not playing on the Live edge. This may get set to true later on handling the start segment.
 		PlaybackState.SetShouldPlayOnLiveEdge(false);
-		// On a user-induced seek the sequence index is supposed to reset to 0.
-		// We need to reset this even when we would not actually issue the seek.
-		CurrentPlaybackSequenceState.SequenceIndex = 0;
+		// On a user-induced seek the sequence index is supposed to be increased.
+		// We need to do this even when we would not actually issue the seek.
+
+		if (!SeekVars.PendingRequest.GetValue().bIgnoreForSequenceIndex.Get(false))
+		{
+			CurrentPlaybackSequenceState.PrimaryIndex += SeekVars.NumSeekToCallsSinceLastSeen;
+			CurrentPlaybackSequenceState.SecondaryIndex = 0;
+			SeekVars.NumSeekToCallsSinceLastSeen = 0;
+		}
+
 		// And since it is a seek on purpose the loop counter is reset as well.
 		FInternalLoopState LoopStateNow;
 		PlaybackState.GetLoopState(LoopStateNow);
@@ -2060,7 +2100,7 @@ bool FAdaptiveStreamingPlayer::HaveEnoughBufferedDataToStartPlayback()
 	// When we are dealing with a single multiplexed stream and one buffer is blocked then essentially all buffers
 	// must be considered blocked since demuxing cannot continue.
 	// FIXME: do this more elegant somehow
-	if (ManifestType == EMediaFormatType::ISOBMFF)
+	if (ManifestType == EMediaFormatType::ISOBMFF || ManifestType == EMediaFormatType::MKV)
 	{
 		if (VideoBufferStats.StreamBuffer.bLastPushWasBlocked ||
 			AudioBufferStats.StreamBuffer.bLastPushWasBlocked ||
@@ -2332,7 +2372,6 @@ void FAdaptiveStreamingPlayer::HandleNewOutputData()
 				{
 					PipelineState = EPipelineState::ePipeline_Stopped;
 					CurrentState = EPlayerState::eState_Paused;
-					PlaybackRate = 0.0;
 					PrerollVars.Clear();
 					SeekVars.ClearWorkVars();
 					SeekVars.SetFinished();
@@ -2372,7 +2411,6 @@ void FAdaptiveStreamingPlayer::HandleNewOutputData()
 					PipelineState = EPipelineState::ePipeline_Stopped;
 					CurrentState = EPlayerState::eState_Paused;
 					DecoderState = EDecoderState::eDecoder_Running;
-					PlaybackRate = 0.0;
 					PrerollVars.Clear();
 					DispatchBufferingEvent(false, LastBufferingState);
 					DispatchEvent(FMetricEvent::ReportPrerollEnd());
@@ -2621,7 +2659,7 @@ void FAdaptiveStreamingPlayer::InternalHandlePendingStartRequest(const FTimeValu
 						if (BufferSourceInfoVid.IsValid())
 						{
 							SelectedStreamAttributesVid.UpdateWith(BufferSourceInfoVid->Kind, BufferSourceInfoVid->Language, BufferSourceInfoVid->Codec, BufferSourceInfoVid->HardIndex);
-							if (ManifestType != EMediaFormatType::ISOBMFF)
+							if (ManifestType != EMediaFormatType::ISOBMFF && ManifestType != EMediaFormatType::MKV)
 							{
 								StreamSelectionAttributesVid.UpdateIfOverrideSet(BufferSourceInfoVid->Kind, BufferSourceInfoVid->Language, BufferSourceInfoVid->Codec);
 							}
@@ -2629,7 +2667,7 @@ void FAdaptiveStreamingPlayer::InternalHandlePendingStartRequest(const FTimeValu
 						if (BufferSourceInfoAud.IsValid())
 						{
 							SelectedStreamAttributesAud.UpdateWith(BufferSourceInfoAud->Kind, BufferSourceInfoAud->Language, BufferSourceInfoAud->Codec, BufferSourceInfoAud->HardIndex);
-							if (ManifestType != EMediaFormatType::ISOBMFF)
+							if (ManifestType != EMediaFormatType::ISOBMFF && ManifestType != EMediaFormatType::MKV)
 							{
 								StreamSelectionAttributesAud.UpdateIfOverrideSet(BufferSourceInfoAud->Kind, BufferSourceInfoAud->Language, BufferSourceInfoAud->Codec);
 							}
@@ -2637,7 +2675,7 @@ void FAdaptiveStreamingPlayer::InternalHandlePendingStartRequest(const FTimeValu
 						if (BufferSourceInfoTxt.IsValid())
 						{
 							SelectedStreamAttributesTxt.UpdateWith(BufferSourceInfoTxt->Kind, BufferSourceInfoTxt->Language, BufferSourceInfoTxt->Codec, BufferSourceInfoTxt->HardIndex);
-							if (ManifestType != EMediaFormatType::ISOBMFF)
+							if (ManifestType != EMediaFormatType::ISOBMFF && ManifestType != EMediaFormatType::MKV)
 							{
 								StreamSelectionAttributesTxt.UpdateIfOverrideSet(BufferSourceInfoTxt->Kind, BufferSourceInfoTxt->Language, BufferSourceInfoTxt->Codec);
 							}
@@ -2679,7 +2717,7 @@ void FAdaptiveStreamingPlayer::InternalHandlePendingStartRequest(const FTimeValu
 							else
 							{
 								FPlayerSequenceState NextPlaybackState = CurrentPlaybackSequenceState;
-								++NextPlaybackState.SequenceIndex;
+								++NextPlaybackState.SecondaryIndex;
 								Result = InitialPlayPeriod->GetLoopingSegment(FirstSegmentRequest, NextPlaybackState, StartAt, PendingStartRequest->SearchType);
 								if (Result.GetType() == IManifest::FResult::EType::Found)
 								{
@@ -2822,9 +2860,9 @@ void FAdaptiveStreamingPlayer::InternalHandlePendingFirstSegmentRequest(const FT
 			NewReceiveBuffers->AudBuffer = MakeSharedTS<FMultiTrackAccessUnitBuffer>(EStreamType::Audio);
 			NewReceiveBuffers->TxtBuffer = MakeSharedTS<FMultiTrackAccessUnitBuffer>(EStreamType::Subtitle);
 
-			if (ManifestType == EMediaFormatType::ISOBMFF)
+			if (ManifestType == EMediaFormatType::ISOBMFF || ManifestType == EMediaFormatType::MKV)
 			{
-				// mp4 has multiple tracks in a single stream that provide data all at the same time.
+				// mp4 and mkv have multiple tracks in a single stream that provide data all at the same time.
 				NewReceiveBuffers->VidBuffer->SetParallelTrackMode();
 				NewReceiveBuffers->AudBuffer->SetParallelTrackMode();
 				NewReceiveBuffers->TxtBuffer->SetParallelTrackMode();
@@ -3251,7 +3289,7 @@ void FAdaptiveStreamingPlayer::HandlePendingMediaSegmentRequests()
 								case EStreamType::Video:
 								{
 									SelectedStreamAttributesVid.UpdateWith(BufferSourceInfo->Kind, BufferSourceInfo->Language, BufferSourceInfo->Codec, BufferSourceInfo->HardIndex);
-									if (ManifestType != EMediaFormatType::ISOBMFF)
+									if (ManifestType != EMediaFormatType::ISOBMFF && ManifestType != EMediaFormatType::MKV)
 									{
 										StreamSelectionAttributesVid.ClearOverrideIndex();
 									}
@@ -3260,7 +3298,7 @@ void FAdaptiveStreamingPlayer::HandlePendingMediaSegmentRequests()
 								case EStreamType::Audio:
 								{
 									SelectedStreamAttributesAud.UpdateWith(BufferSourceInfo->Kind, BufferSourceInfo->Language, BufferSourceInfo->Codec, BufferSourceInfo->HardIndex);
-									if (ManifestType != EMediaFormatType::ISOBMFF)
+									if (ManifestType != EMediaFormatType::ISOBMFF && ManifestType != EMediaFormatType::MKV)
 									{
 										StreamSelectionAttributesAud.ClearOverrideIndex();
 									}
@@ -3269,7 +3307,7 @@ void FAdaptiveStreamingPlayer::HandlePendingMediaSegmentRequests()
 								case EStreamType::Subtitle:
 								{
 									SelectedStreamAttributesTxt.UpdateWith(BufferSourceInfo->Kind, BufferSourceInfo->Language, BufferSourceInfo->Codec, BufferSourceInfo->HardIndex);
-									if (ManifestType != EMediaFormatType::ISOBMFF)
+									if (ManifestType != EMediaFormatType::ISOBMFF && ManifestType != EMediaFormatType::MKV)
 									{
 										StreamSelectionAttributesTxt.ClearOverrideIndex();
 									}
@@ -3526,7 +3564,7 @@ void FAdaptiveStreamingPlayer::InternalHandleSegmentTrackChanges(const FTimeValu
 {
 	bool bChangeMade = false;
 
-	if (ManifestType == EMediaFormatType::ISOBMFF)
+	if (ManifestType == EMediaFormatType::ISOBMFF || ManifestType == EMediaFormatType::MKV)
 	{
 		auto HandleISOBMFFTrackSelection = [&bChangeMade, this](FStreamSelectionAttributes& OutSelectionAttributes, FInternalStreamSelectionAttributes& InOutSelectedAttributes, EStreamType InType,
 																TSharedPtrTS<FStreamSelectionAttributes>& InPendingSelection, TSharedPtrTS<IManifest::IPlayPeriod> InCurrentPeriod) -> void
@@ -3927,7 +3965,6 @@ void FAdaptiveStreamingPlayer::UpdateDataAvailabilityState(Metrics::FDataAvailab
 void FAdaptiveStreamingPlayer::UpdateStreamResolutionLimit()
 {
 	StreamSelector->SetMaxVideoResolution(VideoResolutionLimitWidth, VideoResolutionLimitHeight);
-	VideoDecoder.bApplyNewLimits = true;
 }
 
 
@@ -4254,7 +4291,6 @@ void FAdaptiveStreamingPlayer::InternalPause()
 	// Pause playing.
 	if (CurrentState != EPlayerState::eState_Error)
 	{
-		PlaybackRate = 0.0;
 		CurrentState = EPlayerState::eState_Paused;
 		PlaybackState.SetPausedAndPlaying(true, false);
 		DispatchEvent(FMetricEvent::ReportPlaybackPaused());
@@ -4289,7 +4325,6 @@ void FAdaptiveStreamingPlayer::InternalResume()
 
 		// Resume playing.
 		CurrentState = EPlayerState::eState_Playing;
-		PlaybackRate = 1.0;
 		PlaybackState.SetPausedAndPlaying(false, true);
 		PostrollVars.Clear();
 		DispatchEvent(FMetricEvent::ReportPlaybackResumed());
@@ -4345,7 +4380,6 @@ void FAdaptiveStreamingPlayer::InternalStop(bool bHoldCurrentFrame)
 	NextLoopStates.Empty();
 	SeekVars.Reset();
 
-	PlaybackRate = 0.0;
 	CurrentState = EPlayerState::eState_Paused;
 	PlaybackState.SetPausedAndPlaying(false, false);
 	PlaybackState.SetPlaybackEndAtTime(FTimeValue::GetInvalid());
@@ -4390,8 +4424,14 @@ void FAdaptiveStreamingPlayer::InternalInitialize()
 	// Create an entity cache.
 	EntityCache = IPlayerEntityCache::Create(this, PlayerOptions);
 
-	// Create an HTTP response cache.
-	HttpResponseCache = IHTTPResponseCache::Create(this, PlayerOptions);
+	// Create an HTTP response cache. Hand over any externally set cache. We do not need it in here any further.
+	HttpResponseCache = IHTTPResponseCache::Create(this, PlayerOptions, MoveTemp(ExternalCache));
+
+	// If all read requests for this player are to be routed to an external reader we need to create a wrapper for it.
+	if (PlayerOptions.GetValue(OptionKeyUseExternalDataReader).SafeGetBool(false))
+	{
+		ExternalDataReader = MakeSharedTS<FExternalDataReader>(this);
+	}
 
 	// Create the ABR stream selector.
 	StreamSelector = IAdaptiveStreamSelector::Create(this, this);
@@ -4399,60 +4439,6 @@ void FAdaptiveStreamingPlayer::InternalInitialize()
 
 	// Create renderers.
 	CreateRenderers();
-
-	// Set up video decoder resolution limits. As the media playlists are parsed the video streams will be
-	// compared against these limits and those that exceed the limit will not be considered for playback.
-
-	// Maximum allowed vertical resolution specified?
-	if (PlayerOptions.HaveKey(TEXT("max_resoY")))
-	{
-		PlayerConfig.H264LimitUpto30fps.MaxResolution.Height = (int32)PlayerOptions.GetValue(TEXT("max_resoY")).GetInt64();
-		PlayerConfig.H264LimitAbove30fps.MaxResolution.Height = (int32)PlayerOptions.GetValue(TEXT("max_resoY")).GetInt64();
-	}
-	// A limit in vertical resolution for streams with more than 30fps?
-	if (PlayerOptions.HaveKey(TEXT("max_resoY_above_30fps")))
-	{
-		PlayerConfig.H264LimitAbove30fps.MaxResolution.Height = (int32)PlayerOptions.GetValue(TEXT("max_resoY_above_30fps")).GetInt64();
-	}
-	// Note: We could add additional limits here if need be.
-	//       Eventually these need to be differentiated based on codec as well.
-
-	// Get global video decoder capabilities and if supported, set the stream resolution limit accordingly.
-	IVideoDecoderH264::FStreamDecodeCapability Capability, StreamParam;
-	// Do a one-time global capability check with a default-empty stream param structure.
-	// This then gets used in the individual stream capability checks.
-	if (IVideoDecoderH264::GetStreamDecodeCapability(Capability, StreamParam))
-	{
-		if (Capability.Profile && Capability.Level)
-		{
-			PlayerConfig.H264LimitUpto30fps.MaxTierProfileLevel.Profile = Capability.Profile;
-			PlayerConfig.H264LimitUpto30fps.MaxTierProfileLevel.Level = Capability.Level;
-			PlayerConfig.H264LimitAbove30fps.MaxTierProfileLevel.Profile = Capability.Profile;
-			PlayerConfig.H264LimitAbove30fps.MaxTierProfileLevel.Level = Capability.Level;
-		}
-		if (Capability.Height)
-		{
-			PlayerConfig.H264LimitUpto30fps.MaxResolution.Height = Utils::Min(PlayerConfig.H264LimitUpto30fps.MaxResolution.Height, Capability.Height);
-			PlayerConfig.H264LimitAbove30fps.MaxResolution.Height = Utils::Min(PlayerConfig.H264LimitAbove30fps.MaxResolution.Height, Capability.Height);
-		}
-
-		// If this is software decoding only and there is limit for this in place on Windows, apply it.
-		if (PlayerOptions.HaveKey(TEXT("max_resoY_windows_software")) && Capability.DecoderSupportType == IVideoDecoderH264::FStreamDecodeCapability::ESupported::SoftwareOnly)
-		{
-			int32 MaxWinSWHeight = (int32)PlayerOptions.GetValue(TEXT("max_resoY_windows_software")).GetInt64();
-			PlayerConfig.H264LimitUpto30fps.MaxResolution.Height = Utils::Min(PlayerConfig.H264LimitUpto30fps.MaxResolution.Height, MaxWinSWHeight);
-			PlayerConfig.H264LimitAbove30fps.MaxResolution.Height = Utils::Min(PlayerConfig.H264LimitAbove30fps.MaxResolution.Height, MaxWinSWHeight);
-		}
-
-		// If the maximum fps is only up to 30 fps set the resolution for streams above 30fps so small
-		// that they will get rejected.
-		if (Capability.FPS > 0.0 && Capability.FPS <= 30.0)
-		{
-			PlayerConfig.H264LimitAbove30fps.MaxResolution.Height = 16;
-			PlayerConfig.H264LimitAbove30fps.MaxTierProfileLevel.Profile = 66;
-			PlayerConfig.H264LimitAbove30fps.MaxTierProfileLevel.Level = 10;
-		}
-	}
 
 	// Check for codecs that are not to be used as per the user's choice, even if the device supports them.
 	auto GetExcludedCodecPrefixes = [](TArray<FString>& OutList, const FParamDict& InOptions, const FString& InKey) -> void
@@ -4494,6 +4480,10 @@ void FAdaptiveStreamingPlayer::InternalInitialize()
 	{
 		PlayerOptions.Set(OptionKeyFrameAccurateSeek, FVariantValue(true));
 	}
+
+	// Initialize decoder limits.
+	// NOTE: This is to be deprecated as soon as possible.
+	Deprecate_InternalInitializeDecoderLimits();
 }
 
 
@@ -4524,10 +4514,10 @@ void FAdaptiveStreamingPlayer::InternalClose()
 	HttpManager.Reset();
 	EntityCache.Reset();
 	HttpResponseCache.Reset();
+	ExternalDataReader.Reset();
 
 	// Reset remaining internal state
 	CurrentState   	= EPlayerState::eState_Idle;
-	PlaybackRate   	= 0.0;
 	StreamState		= EStreamState::eStream_Running;
 	RebufferCause = ERebufferCause::None;
 	LastBufferingState = EPlayerState::eState_Buffering;
@@ -4821,53 +4811,6 @@ void FAdaptiveStreamingPlayer::ABRTriggerPlaylistRefresh()
 
 
 
-
-
-
-
-
-
-
-//-----------------------------------------------------------------------------
-/**
-*/
-#if PLATFORM_ANDROID
-void FAdaptiveStreamingPlayer::Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer>& Surface)
-{
-	if (VideoDecoder.Decoder)
-	{
-		VideoDecoder.Decoder->Android_UpdateSurface(Surface);
-	}
-}
-
-void FAdaptiveStreamingPlayer::Android_SuspendOrResumeDecoder(bool bSuspend)
-{
-	VideoDecoder.SuspendOrResume(bSuspend);
-	AudioDecoder.SuspendOrResume(bSuspend);
-}
-
-
-FParamDict& FAdaptiveStreamingPlayer::Android_Workarounds(FStreamCodecInformation::ECodec InForCodec)
-{
-	if (InForCodec == FStreamCodecInformation::ECodec::H264)
-	{
-		return IVideoDecoderH264::Android_Workarounds();
-	}
-#if ELECTRA_PLATFORM_HAS_H265_DECODER
-	else if (InForCodec == FStreamCodecInformation::ECodec::H265)
-	{
-		return IVideoDecoderH265::Android_Workarounds();
-	}
-#endif
-	else
-	{
-		static FParamDict Dummy;
-		return Dummy;
-	}
-}
-
-#endif
-
 //-----------------------------------------------------------------------------
 /**
  * Debug prints information to the screen
@@ -4882,21 +4825,21 @@ void FAdaptiveStreamingPlayer::DebugPrint(void* pPlayer, void (*pPrintFN)(void* 
 	if(1)
 	{
 		pD = &VideoBufferStats.StreamBuffer;
-		pPrintFN(pPlayer, "Video buffer  : EOT %d; EOS %d; %3u AUs; %8u/%8u bytes in; %#7.4fs", pD->bEndOfTrack, pD->bEndOfData, (uint32)pD->NumCurrentAccessUnits, (uint32)pD->CurrentMemInUse, (uint32)PlayerConfig.StreamBufferConfigVideo.MaxDataSize, pD->PlayableDuration.GetAsSeconds());
+		pPrintFN(pPlayer, "Video buffer  : EOT %d; EOS %d; %3u AUs; %8lld bytes in; %#7.4fs", pD->bEndOfTrack, pD->bEndOfData, (uint32)pD->NumCurrentAccessUnits, (long long int)pD->CurrentMemInUse, pD->PlayableDuration.GetAsSeconds());
 		pPrintFN(pPlayer, "Video decoder : %2u in decoder, %zu total; EOD in %d; EOD out %d; %s", (uint32)VideoBufferStats.DecoderOutputBuffer.NumElementsInDecoder, (uint32)VideoBufferStats.DecoderOutputBuffer.MaxDecodedElementsReady, VideoBufferStats.DecoderInputBuffer.bEODReached, VideoBufferStats.DecoderOutputBuffer.bEODreached, VideoBufferStats.DecoderOutputBuffer.bOutputStalled?"stalled":"not stalled");
 		pPrintFN(pPlayer, "Video renderer: %#7.4fs enqueued", VideoRender.Renderer.IsValid() ? VideoRender.Renderer->GetEnqueuedSampleDuration().GetAsSeconds() : 0.0);
 	}
 	if(1)
 	{
 		pD = &AudioBufferStats.StreamBuffer;
-		pPrintFN(pPlayer, "Audio buffer  : EOT %d; EOS %d; %3u AUs; %8u/%8u bytes in; %#7.4fs", pD->bEndOfTrack, pD->bEndOfData, (uint32)pD->NumCurrentAccessUnits, (uint32)pD->CurrentMemInUse, (uint32)PlayerConfig.StreamBufferConfigAudio.MaxDataSize, pD->PlayableDuration.GetAsSeconds());
+		pPrintFN(pPlayer, "Audio buffer  : EOT %d; EOS %d; %3u AUs; %8lld bytes in; %#7.4fs", pD->bEndOfTrack, pD->bEndOfData, (uint32)pD->NumCurrentAccessUnits, (long long int)pD->CurrentMemInUse, pD->PlayableDuration.GetAsSeconds());
 		pPrintFN(pPlayer, "Audio decoder : %2u in decoder, %2u total; EOD in %d; EOD out %d; %s", (uint32)AudioBufferStats.DecoderOutputBuffer.NumElementsInDecoder, (uint32)AudioBufferStats.DecoderOutputBuffer.MaxDecodedElementsReady, AudioBufferStats.DecoderInputBuffer.bEODReached, AudioBufferStats.DecoderOutputBuffer.bEODreached, AudioBufferStats.DecoderOutputBuffer.bOutputStalled?"stalled":"not stalled");
 		pPrintFN(pPlayer, "Audio renderer: %#7.4fs enqueued", AudioRender.Renderer.IsValid() ? AudioRender.Renderer->GetEnqueuedSampleDuration().GetAsSeconds() : 0.0);
 	}
 	if(1)
 	{
 		pD = &TextBufferStats.StreamBuffer;
-		pPrintFN(pPlayer, "Text buffer   : EOT %d; EOS %d; %3u AUs; %8u/%8u bytes in; %#7.4fs", pD->bEndOfTrack, pD->bEndOfData, (uint32)pD->NumCurrentAccessUnits, (uint32)pD->CurrentMemInUse, (uint32)PlayerConfig.StreamBufferConfigText.MaxDataSize, pD->PlayableDuration.GetAsSeconds());
+		pPrintFN(pPlayer, "Text buffer   : EOT %d; EOS %d; %3u AUs; %8lld bytes in; %#7.4fs", pD->bEndOfTrack, pD->bEndOfData, (uint32)pD->NumCurrentAccessUnits, (long long int)pD->CurrentMemInUse, pD->PlayableDuration.GetAsSeconds());
 	}
 	DiagnosticsCriticalSection.Unlock();
 

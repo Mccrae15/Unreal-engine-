@@ -4,14 +4,13 @@
 
 #include "Async/Async.h"
 #include "CanvasTypes.h"
-#include "ClearQuad.h"
 #include "EngineModule.h"
-#include "Engine/Canvas.h"
 #include "Engine/Engine.h"
-#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
+#include "EngineModule.h"
 #include "Materials/MaterialRenderProxy.h"
 #include "Misc/ScopeExit.h"
+#include "NiagaraGPUSortInfo.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
 #include "NiagaraAsyncGpuTraceHelper.h"
@@ -22,6 +21,7 @@
 #include "NiagaraGPUProfilerInterface.h"
 #include "NiagaraGpuReadbackManager.h"
 #include "NiagaraRenderer.h"
+#include "NiagaraScript.h"
 #include "NiagaraShader.h"
 #include "NiagaraShaderParticleID.h"
 #include "NiagaraSortingGPU.h"
@@ -31,10 +31,9 @@
 #include "PipelineStateCache.h"
 #include "RHI.h"
 #include "SceneInterface.h"
-#include "ScenePrivate.h"
-#include "SceneRendering.h"
-#include "ShaderParameterUtils.h"
+#include "SceneRenderTargetParameters.h"
 #include "TextureResource.h"
+#include "FXRenderingUtils.h"
 
 DECLARE_CYCLE_STAT(TEXT("GPU Dispatch Setup [RT]"), STAT_NiagaraGPUDispatchSetup_RT, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("GPU Emitter Dispatch [RT]"), STAT_NiagaraGPUSimTick_RT, STATGROUP_Niagara);
@@ -82,6 +81,16 @@ static FAutoConsoleVariableRef CVarNiagaraBatcherFreeBufferEarly(
 	TEXT("This will reduce memory pressure but can result in more allocations if you buffers ping pong from zero particles to many."),
 	ECVF_Default
 );
+
+#if WITH_MGPU
+int32 GNiagaraOptimizedCrossGPUTransferEnabled = 1;
+static FAutoConsoleVariableRef CVarNiagaraOptimizedCrossGPUTransferEnabled(
+	TEXT("fx.NiagaraOptimizeCrossGPUTransfer"),
+	GNiagaraOptimizedCrossGPUTransferEnabled,
+	TEXT("Optimizes fence waits for cross GPU transfers when rendering views on multiple GPUs via nDisplay.  (Default = 1)"),
+	ECVF_Default
+);
+#endif
 
 const FName FNiagaraGpuComputeDispatch::Name(TEXT("FNiagaraGpuComputeDispatch"));
 
@@ -194,9 +203,6 @@ FNiagaraGpuComputeDispatch::FNiagaraGpuComputeDispatch(ERHIFeatureLevel::Type In
 				[this](FRHICommandListImmediate& RHICmdList)
 				{
 					GPUInstanceCounterManager.UpdateDrawIndirectBuffers(this, RHICmdList, ENiagaraGPUCountUpdatePhase::PreOpaque);
-				#if WITH_MGPU
-					TransferMultiGPUBufers(RHICmdList, ENiagaraGpuComputeTickStage::PreInitViews);
-				#endif // WITH_MGPU
 				}
 			);
 
@@ -206,7 +212,7 @@ FNiagaraGpuComputeDispatch::FNiagaraGpuComputeDispatch(ERHIFeatureLevel::Type In
 				{
 					GPUInstanceCounterManager.UpdateDrawIndirectBuffers(this, RHICmdList, ENiagaraGPUCountUpdatePhase::PostOpaque);
 				#if WITH_MGPU
-					TransferMultiGPUBufers(RHICmdList, ENiagaraGpuComputeTickStage::PostOpaqueRender);
+					TransferMultiGPUBuffers(RHICmdList);
 				#endif // WITH_MGPU
 				}
 			);
@@ -295,7 +301,7 @@ void FNiagaraGpuComputeDispatch::Tick(UWorld* World, float DeltaTime)
 		[RT_NiagaraBatcher=this](FRHICommandListImmediate& RHICmdList)
 		{
 			RT_NiagaraBatcher->ProcessPendingTicksFlush(RHICmdList, false);
-			RT_NiagaraBatcher->GetGPUInstanceCounterManager().FlushIndirectArgsPool();
+			RT_NiagaraBatcher->GetGPUInstanceCounterManager().FlushIndirectArgsPool(RHICmdList);
 		}
 	);
 }
@@ -307,7 +313,7 @@ void FNiagaraGpuComputeDispatch::FlushPendingTicks_GameThread()
 		[RT_NiagaraBatcher=this](FRHICommandListImmediate& RHICmdList)
 		{
 			RT_NiagaraBatcher->ProcessPendingTicksFlush(RHICmdList, true);
-			RT_NiagaraBatcher->GetGPUInstanceCounterManager().FlushIndirectArgsPool();
+			RT_NiagaraBatcher->GetGPUInstanceCounterManager().FlushIndirectArgsPool(RHICmdList);
 		}
 	);
 }
@@ -319,7 +325,7 @@ void FNiagaraGpuComputeDispatch::FlushAndWait_GameThread()
 		[RT_NiagaraBatcher=this](FRHICommandListImmediate& RHICmdList)
 		{
 			RT_NiagaraBatcher->ProcessPendingTicksFlush(RHICmdList, true);
-			RT_NiagaraBatcher->GetGPUInstanceCounterManager().FlushIndirectArgsPool();
+			RT_NiagaraBatcher->GetGPUInstanceCounterManager().FlushIndirectArgsPool(RHICmdList);
 			RT_NiagaraBatcher->GetGpuReadbackManager()->WaitCompletion(RHICmdList);
 		}
 	);
@@ -397,8 +403,8 @@ void FNiagaraGpuComputeDispatch::ProcessPendingTicksFlush(FRHICommandListImmedia
 
 			// Make a temporary ViewInfo
 			//-TODO: We could gather some more information here perhaps?
-			FSceneViewFamily ViewFamily(
-				FSceneViewFamily::ConstructionValues(nullptr, nullptr, FEngineShowFlags(ESFIM_Game))
+			FSceneViewFamilyContext ViewFamily(
+				FSceneViewFamily::ConstructionValues(nullptr, GetSceneInterface(), FEngineShowFlags(ESFIM_Game))
 				.SetTime(CachedViewInitOptions.GameTime)
 				.SetGammaCorrection(CachedViewInitOptions.GammaCorrection)
 			);
@@ -410,17 +416,10 @@ void FNiagaraGpuComputeDispatch::ProcessPendingTicksFlush(FRHICommandListImmedia
 			ViewInitOptions.ViewRotationMatrix = CachedViewInitOptions.ViewRotationMatrix;
 			ViewInitOptions.ProjectionMatrix = CachedViewInitOptions.ProjectionMatrix;
 
-			FViewInfo DummyView(ViewInitOptions);
+			GetRendererModule().CreateAndInitSingleView(RHICmdList, &ViewFamily, &ViewInitOptions);
 
-			DummyView.ViewRect = DummyView.UnscaledViewRect;
-			DummyView.CachedViewUniformShaderParameters = MakeUnique<FViewUniformShaderParameters>();
-
-			FBox UnusedVolumeBounds[TVC_MAX];
-			DummyView.SetupUniformBufferParameters(UnusedVolumeBounds, TVC_MAX, *DummyView.CachedViewUniformShaderParameters);
-
-			DummyView.ViewUniformBuffer = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(*DummyView.CachedViewUniformShaderParameters, UniformBuffer_SingleFrame);
-
-			TConstArrayView<FViewInfo> DummyViews = MakeArrayView(&DummyView, 1);
+			// Only one element, don't need to fully stride this array
+			TConstStridedView<FSceneView> DummyViews = MakeStridedView<const FSceneView>(0, ViewFamily.Views[0], 1);
 			const bool bAllowGPUParticleUpdate = true;
 
 			// Notify that we are about to begin rendering the 'scene' this is required because some RHIs will ClearState
@@ -439,7 +438,7 @@ void FNiagaraGpuComputeDispatch::ProcessPendingTicksFlush(FRHICommandListImmedia
 			{
 				FRDGBuilder GraphBuilder(RHICmdList);
 				CreateSystemTextures(GraphBuilder);
-				PreInitViews(GraphBuilder, bAllowGPUParticleUpdate);
+				PreInitViews(GraphBuilder, bAllowGPUParticleUpdate, TArrayView<const FSceneViewFamily*>(), nullptr);
 				AddPass(GraphBuilder, RDG_EVENT_NAME("UpdateDrawIndirectBuffers - PreOpaque"),
 					[this](FRHICommandListImmediate& RHICmdList)
 					{
@@ -447,7 +446,8 @@ void FNiagaraGpuComputeDispatch::ProcessPendingTicksFlush(FRHICommandListImmedia
 					}
 				);
 				PostInitViews(GraphBuilder, DummyViews, bAllowGPUParticleUpdate);
-				PostRenderOpaque(GraphBuilder, DummyViews, bAllowGPUParticleUpdate);
+				FSceneUniformBuffer &SceneUB = UE::FXRenderingUtils::CreateSceneUniformBuffer(GraphBuilder, GetSceneInterface());
+				PostRenderOpaque(GraphBuilder, DummyViews, SceneUB, bAllowGPUParticleUpdate);
 				AddPass(GraphBuilder, RDG_EVENT_NAME("UpdateDrawIndirectBuffers - PostOpaque"),
 					[this](FRHICommandListImmediate& RHICmdList)
 					{
@@ -486,7 +486,7 @@ void FNiagaraGpuComputeDispatch::FinishDispatches()
 	{
 		for (FNiagaraSystemGpuComputeProxy* ComputeProxy : ProxiesPerStage[iTickStage])
 		{
-			ComputeProxy->ReleaseTicks(GPUInstanceCounterManager, MaxTicksToFlush);
+			ComputeProxy->ReleaseTicks(GPUInstanceCounterManager, MaxTicksToFlush, bIsLastViewFamily);
 		}
 	}
 
@@ -539,7 +539,7 @@ void FNiagaraGpuComputeDispatch::DumpDebugFrame()
 
 			if (DispatchGroup.TicksWithPerInstanceData.Num() > 0)
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("====== TicksWithPerInstanceData(%s)"), DispatchGroup.TicksWithPerInstanceData.Num());
+				UE_LOG(LogNiagara, Warning, TEXT("====== TicksWithPerInstanceData(%d)"), DispatchGroup.TicksWithPerInstanceData.Num());
 				for (FNiagaraGPUSystemTick* Tick : DispatchGroup.TicksWithPerInstanceData)
 				{
 					for (const auto& Pair : Tick->DIInstanceData->InterfaceProxiesToOffsets)
@@ -791,13 +791,7 @@ void FNiagaraGpuComputeDispatch::PrepareTicksForProxy(FRHICommandListImmediate& 
 					if (bRaisedWarningThisFrame == false)
 					{
 						bRaisedWarningThisFrame = true;
-						AsyncTask(
-							ENamedThreads::GameThread,
-							[MessageId=uint64(this), DebugSimName=ComputeContext->GetDebugSimFName()]()
-							{
-								GEngine->AddOnScreenDebugMessage(MessageId, 1.f, FColor::White, *FString::Printf(TEXT("GPU Simulation(%s) will not show in preview mode, as we may sample from wrong SceneTextures buffer."), *DebugSimName.ToString()));
-							}
-						);
+						GEngine->AddOnScreenDebugMessage(uint64(this), 1.f, FColor::White, *FString::Printf(TEXT("GPU Simulation(%s) will not show in preview mode, as we may sample from wrong SceneTextures buffer."), *ComputeContext->GetDebugSimFName().ToString()));
 					}
 					continue;
 				}
@@ -1020,19 +1014,56 @@ void FNiagaraGpuComputeDispatch::PrepareAllTicks(FRHICommandListImmediate& RHICm
 	}
 }
 
-void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, ENiagaraGpuComputeTickStage::Type TickStage)
+void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, ENiagaraGpuComputeTickStage::Type TickStage)
 {
 #if WITH_MGPU
-	if (StageToWaitForGPUTransfers == TickStage)
+	if (TickStage == ENiagaraGpuComputeTickStage::PostOpaqueRender)
 	{
- 		GraphBuilder.AddPass(
-			RDG_EVENT_NAME("Niagara::ExecuteTicksPre"),
-			ERDGPassFlags::None,
-			[this, TickStage, NumDispatchGroups=DispatchListPerStage[TickStage].DispatchGroups.Num()](FRHICommandListImmediate& RHICmdList)
-			{
-				WaitForMultiGPUBuffers(RHICmdList, TickStage);
-			}
-		);
+		// See if this view is rendering on a GPU that needs to wait on its cross GPU transfers
+		uint32 GPUIndex = Views[0].GPUMask.GetFirstIndex();
+		if (OptimizedCrossGPUTransferMask & (1u << GPUIndex))
+		{
+			// Track that we've waited on the buffers for this GPU
+			OptimizedCrossGPUTransferMask &= ~(1u << GPUIndex);
+
+			GraphBuilder.AddPass(
+				RDG_EVENT_NAME("Niagara::ExecuteTicksPre"),
+				ERDGPassFlags::None,
+				[this, TickStage, NumDispatchGroups = DispatchListPerStage[TickStage].DispatchGroups.Num(), GPUIndex](FRHICommandListImmediate& RHICmdList)
+				{
+					WaitForMultiGPUBuffers(RHICmdList, GPUIndex);
+				}
+			);
+		}
+
+		// Last view family when rendering multiple view families?
+		if (bIsLastViewFamily && !bIsFirstViewFamily)
+		{
+			GraphBuilder.AddPass(
+				RDG_EVENT_NAME("Niagara::MultiViewPreviousDataClear"),
+				ERDGPassFlags::None,
+				[this](FRHICommandListImmediate& RHICmdList)
+				{
+					// Handle bookkeeping for multi-view, clearing MultiViewPreviousDataToRender pointer and running a couple bits of cleanup logic,
+					// which we had to skip earlier to keep necessary values valid when generating render data for additional view families.
+					for (FNiagaraComputeExecutionContext* ComputeContext : NeedsMultiViewPreviousDataClear)
+					{
+						ComputeContext->SetMultiViewPreviousDataToRender(nullptr);
+
+						// Mark data as ready for anyone who picks up the buffer on the next frame (see FNiagaraGpuComputeDispatch::ExecuteTicks)
+						ComputeContext->GetDataToRender(false)->SetGPUDataReadyStage(ENiagaraGpuComputeTickStage::First);
+
+						// Clear instance count offsets (see FNiagaraSystemGpuComputeProxy::ReleaseTicks)
+						for (int i = 0; i < UE_ARRAY_COUNT(ComputeContext->DataBuffers_RT); ++i)
+						{
+							ComputeContext->DataBuffers_RT[i]->ClearGPUInstanceCount();
+						}
+					}
+
+					NeedsMultiViewPreviousDataClear.Reset();
+				}
+			);
+		}
 	}
 #endif
 
@@ -1050,26 +1081,15 @@ void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstA
 	RDG_RHI_EVENT_SCOPE(GraphBuilder, NiagaraGpuComputeDispatch);	//-TODO:RDG: Show TickStage
 
 	// Setup Parameters that can be read from data interfaces
-	SimulationViewInfos = Views;
+	SimulationSceneViews = Views;
 
+	if (FSceneInterface::GetShadingPath(FeatureLevel) == EShadingPath::Deferred)
 	{
-		const FSceneTextures* SceneTextures = Views.Num() > 0 ? GetViewFamilyInfo(Views).GetSceneTexturesChecked() : nullptr;
-		if (FSceneInterface::GetShadingPath(FeatureLevel) == EShadingPath::Deferred)
-		{
-			SceneTexturesUniformParams = SceneTextures ? SceneTextures->UniformBuffer : nullptr;
-			if (SceneTexturesUniformParams == nullptr)
-			{
-				SceneTexturesUniformParams = CreateSceneTextureUniformBuffer(GraphBuilder, nullptr, FeatureLevel, ESceneTextureSetupMode::SceneVelocity);
-			}
-		}
-		else if (FSceneInterface::GetShadingPath(FeatureLevel) == EShadingPath::Mobile)
-		{
-			MobileSceneTexturesUniformParams = SceneTextures ? SceneTextures->MobileUniformBuffer : nullptr;
-			if (MobileSceneTexturesUniformParams == nullptr)
-			{
-				MobileSceneTexturesUniformParams = CreateMobileSceneTextureUniformBuffer(GraphBuilder, SceneTextures, EMobileSceneTextureSetupMode::None);
-			}
-		}
+		SceneTexturesUniformParams = UE::FXRenderingUtils::GetOrCreateSceneTextureUniformBuffer(GraphBuilder, SimulationSceneViews, FeatureLevel, ESceneTextureSetupMode::SceneVelocity);
+	}
+	else if (FSceneInterface::GetShadingPath(FeatureLevel) == EShadingPath::Mobile)
+	{
+		MobileSceneTexturesUniformParams = UE::FXRenderingUtils::GetOrCreateMobileSceneTextureUniformBuffer(GraphBuilder, SimulationSceneViews, EMobileSceneTextureSetupMode::None);
 	}
 
 	StrataPublicGlobalUniformParams = ::Strata::GetPublicGlobalUniformBuffer(GraphBuilder, *GetScene());
@@ -1240,9 +1260,6 @@ void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstA
 				ComputeContext->MainDataSet->CurrentData = CurrentData;
 				CurrentData->SwapGPU(FinalSimStageDataBuffer);
 
-				// Mark data as ready for anyone who picks up the buffer on the next frame
-				CurrentData->SetGPUDataReadyStage(ENiagaraGpuComputeTickStage::First);
-                    
 				ComputeContext->SetTranslucentDataToRender(nullptr);
 				ComputeContext->SetDataToRender(CurrentData);
 
@@ -1254,6 +1271,24 @@ void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstA
 					AddCrossGPUTransfer(GraphBuilder.RHICmdList, CurrentData->GetGPUBufferInt().Buffer);
 				}
 #endif // WITH_MGPU
+
+				if (bIsLastViewFamily)
+				{
+					// Mark data as ready for anyone who picks up the buffer on the next frame
+					CurrentData->SetGPUDataReadyStage(ENiagaraGpuComputeTickStage::First);
+				}
+				else
+				{
+					// Track the previous data to render for multi-view, so additional view families can render using consistent data with
+					// the first view family, and add it to array marking that we need to clean it up on the last view family.
+					ComputeContext->SetMultiViewPreviousDataToRender(FinalSimStageDataBuffer);
+					NeedsMultiViewPreviousDataClear.Emplace(ComputeContext);
+
+					// Mark CurrentData as not to be used until PostOpaqueRender.  Render data generated before PostOpaqueRender should use
+					// previous frame data (MultiViewPreviousDataToRender, set above), instead of CurrentData.  Setting the ready stage back to
+					// ENiagaraGpuComputeTickStage::First for the next frame happens later in the Niagara::MultiViewPreviousDataClear Pass.
+					CurrentData->SetGPUDataReadyStage(ENiagaraGpuComputeTickStage::PostOpaqueRender);
+				}
 			}
 			// If this is not the final tick of the final stage we need set our temporary buffer for data interfaces, etc, that may snoop from CurrentData
 			else
@@ -1301,7 +1336,7 @@ void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstA
 							{
 								FreeIDListSizesBuffer.Release();
 							}
-							FreeIDListSizesBuffer.Initialize(TEXT("NiagaraFreeIDListSizes"), sizeof(uint32), NumAllocatedFreeIDListSizes, EPixelFormat::PF_R32_SINT, ERHIAccess::UAVCompute, BUF_Static);
+							FreeIDListSizesBuffer.Initialize(RHICmdList, TEXT("NiagaraFreeIDListSizes"), sizeof(uint32), NumAllocatedFreeIDListSizes, EPixelFormat::PF_R32_SINT, ERHIAccess::UAVCompute, BUF_Static);
 						}
 
 						SCOPED_DRAW_EVENT(RHICmdList, NiagaraGPUComputeClearFreeIDListSizes);
@@ -1348,7 +1383,7 @@ void FNiagaraGpuComputeDispatch::ExecuteTicks(FRDGBuilder& GraphBuilder, TConstA
 	);
 
 	// Tear down for tick pass
-	SimulationViewInfos = TConstArrayView<FViewInfo>();
+	SimulationSceneViews = TConstStridedView<FSceneView>();
 	SceneTexturesUniformParams = nullptr;
 	MobileSceneTexturesUniformParams = nullptr;
 	StrataPublicGlobalUniformParams = nullptr;
@@ -1455,7 +1490,7 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 					DispatchCount = SimStageData.DispatchArgs.ElementCount;
 					break;
 				default:
-					UE_LOG(LogNiagara, Fatal, TEXT("FNiagaraGpuComputeDispatch: Unknown DispatchType(%d)"), DispatchType);
+					UE_LOG(LogNiagara, Fatal, TEXT("FNiagaraGpuComputeDispatch: Unknown DispatchType(%d)"), int(DispatchType));
 					break;
 			}
 
@@ -1468,7 +1503,7 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 		}
 
 		default:
-			UE_LOG(LogNiagara, Fatal, TEXT("FNiagaraGpuComputeDispatch: Unknown IterationSouce(%d)"), SimStageData.StageMetaData->IterationSourceType);
+			UE_LOG(LogNiagara, Fatal, TEXT("FNiagaraGpuComputeDispatch: Unknown IterationSouce(%d)"), int(SimStageData.StageMetaData->IterationSourceType));
 			return;
 	}
 
@@ -1479,6 +1514,9 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 	}
 
 	checkf(DispatchNumThreads.X * DispatchNumThreads.Y * DispatchNumThreads.Z > 0, TEXT("DispatchNumThreads(%d, %d, %d) is invalid"), DispatchNumThreads.X, DispatchNumThreads.Y, DispatchNumThreads.Z);
+
+	// Setup our RDG UAV pool access
+	FNiagaraEmptyRDGUAVPoolScopedAccess RDGUAVPoolAccessScope(GetEmptyUAVPool());
 
 	// Set Parameters
 	const FNiagaraShaderScriptParametersMetadata& NiagaraShaderParametersMetadata = InstanceData.Context->GPUScript_RT->GetScriptParametersMetadata_RT();
@@ -1607,7 +1645,7 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 	// Set ViewUniformBuffer if it's required
 	if (ComputeShader->bNeedsViewUniformBuffer)
 	{
-		DispatchParameters->View = SimulationViewInfos[0].ViewUniformBuffer;
+		DispatchParameters->View = SimulationSceneViews[0].ViewUniformBuffer;
 	}
 	DispatchParameters->SceneTextures.SceneTextures			= SceneTexturesUniformParams;
 	DispatchParameters->SceneTextures.MobileSceneTextures	= MobileSceneTexturesUniformParams;
@@ -1637,14 +1675,16 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 				FRHIComputeShader* RHIComputeShader = ComputeShader.GetComputeShader();
 				SetComputePipelineState(RHICmdList, RHIComputeShader);
 
+				FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+
 				if (ComputeShader->ExternalConstantBufferParam[0].IsBound())
 				{
-					RHICmdList.SetShaderUniformBuffer(RHIComputeShader, ComputeShader->ExternalConstantBufferParam[0].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, false));
+					BatchedParameters.SetShaderUniformBuffer(ComputeShader->ExternalConstantBufferParam[0].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, false));
 				}
 				if (ComputeShader->ExternalConstantBufferParam[1].IsBound())
 				{
 					check(InstanceDataPtr->Context->HasInterpolationParameters);
-					RHICmdList.SetShaderUniformBuffer(RHIComputeShader, ComputeShader->ExternalConstantBufferParam[1].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, true));
+					BatchedParameters.SetShaderUniformBuffer(ComputeShader->ExternalConstantBufferParam[1].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, true));
 				}
 
 				FNiagaraEmptyUAVPoolScopedAccess UAVPoolAccessScope(GetEmptyUAVPool());
@@ -1652,7 +1692,10 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 				FNiagaraGpuProfileScope GpuProfileDispatchScope(RHICmdList, this, FNiagaraGpuProfileEvent(*InstanceDataPtr, *SimStageDataPtr, InstanceDataPtr == &TickPtr->GetInstances()[0]));
 
 				FComputeShaderUtils::ValidateIndirectArgsBuffer(SimStageDataPtr->DispatchArgs.IndirectBuffer->GetSize(), SimStageDataPtr->DispatchArgs.IndirectOffset);
-				SetShaderParameters<FRHICommandList, FNiagaraShader>(RHICmdList, ComputeShader, RHIComputeShader, ShaderParametersMetadata, *DispatchParameters);
+				SetShaderParameters(BatchedParameters, ComputeShader, ShaderParametersMetadata, *DispatchParameters);
+
+				RHICmdList.SetBatchedShaderParameters(RHIComputeShader, BatchedParameters);
+
 				RHICmdList.DispatchIndirectComputeShader(SimStageDataPtr->DispatchArgs.IndirectBuffer->GetIndirectRHICallBuffer(), SimStageDataPtr->DispatchArgs.IndirectOffset);
 				UnsetShaderUAVs<FRHICommandList, FNiagaraShader>(RHICmdList, ComputeShader, RHIComputeShader);
 			}
@@ -1725,21 +1768,26 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 				FRHIComputeShader* RHIComputeShader = ComputeShader.GetComputeShader();
 				SetComputePipelineState(RHICmdList, RHIComputeShader);
 
+				FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+
 				if (ComputeShader->ExternalConstantBufferParam[0].IsBound())
 				{
-					RHICmdList.SetShaderUniformBuffer(RHIComputeShader, ComputeShader->ExternalConstantBufferParam[0].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, false));
+					BatchedParameters.SetShaderUniformBuffer(ComputeShader->ExternalConstantBufferParam[0].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, false));
 				}
 				if (ComputeShader->ExternalConstantBufferParam[1].IsBound())
 				{
 					check(InstanceDataPtr->Context->HasInterpolationParameters);
-					RHICmdList.SetShaderUniformBuffer(RHIComputeShader, ComputeShader->ExternalConstantBufferParam[1].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, true));
+					BatchedParameters.SetShaderUniformBuffer(ComputeShader->ExternalConstantBufferParam[1].GetBaseIndex(), TickPtr->GetExternalUniformBuffer(*InstanceDataPtr, true));
 				}
 
 				FNiagaraEmptyUAVPoolScopedAccess UAVPoolAccessScope(GetEmptyUAVPool());
 
 				FNiagaraGpuProfileScope GpuProfileDispatchScope(RHICmdList, this, FNiagaraGpuProfileEvent(*InstanceDataPtr, *SimStageDataPtr, InstanceDataPtr == &TickPtr->GetInstances()[0]));
 
-				SetShaderParameters<FRHICommandList, FNiagaraShader>(RHICmdList, ComputeShader, RHIComputeShader, ShaderParametersMetadata, *DispatchParameters);
+				SetShaderParameters(BatchedParameters, ComputeShader, ShaderParametersMetadata, *DispatchParameters);
+
+				RHICmdList.SetBatchedShaderParameters(RHIComputeShader, BatchedParameters);
+
 				DispatchComputeShader(RHICmdList, ComputeShader, ThreadGroupCount.X, ThreadGroupCount.Y, ThreadGroupCount.Z);
 				UnsetShaderUAVs<FRHICommandList, FNiagaraShader>(RHICmdList, ComputeShader, RHIComputeShader);
 			}
@@ -1770,21 +1818,78 @@ void FNiagaraGpuComputeDispatch::DispatchStage(FRDGBuilder& GraphBuilder, const 
 	//}
 }
 
-void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate)
+void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate, const TArrayView<const FSceneViewFamily*>& ViewFamilies, const FSceneViewFamily* CurrentFamily)
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraGPUDispatchSetup_RT);
 	RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, Niagara);
+	LLM_SCOPE(ELLMTag::Niagara);
 
+	bIsFirstViewFamily = CurrentFamily ? CurrentFamily == ViewFamilies[0] : true;
+	bIsLastViewFamily = CurrentFamily ? CurrentFamily == ViewFamilies.Last() : true;
 	bRequiresReadback = false;
 #if WITH_EDITOR
 	bRaisedWarningThisFrame = false;
 #endif
 #if WITH_MGPU
 	bCrossGPUTransferEnabled = GNumExplicitGPUsForRendering > 1;
-	StageToTransferGPUBuffers = ENiagaraGpuComputeTickStage::Last;
-	StageToWaitForGPUTransfers = ENiagaraGpuComputeTickStage::First;
-#endif
 
+	// We want to optimize GPU transfers from the simulating GPU to other view rendering GPUs, meaning we want to defer fence waits on
+	// the other GPUs until the data is needed.  To keep things simple, we only do this optimization if all the families are single GPU,
+	// which will be true in practice for multiple families rendered via nDisplay.  Here we compute a mask defining which other GPUs we
+	// want to optimize transfers for (ones that render other views).  GPUs which don't do any view rendering in the current frame don't
+	// incur any performance cost waiting on the fences immediately (the default behavior of cross GPU transfers), so we don't need to
+	// delay the fence wait for those.
+	if (bIsFirstViewFamily)
+	{
+		OptimizedCrossGPUTransferMask = 0;
+	}
+
+	if ((ViewFamilies.Num() > 1) && bIsFirstViewFamily && GNiagaraOptimizedCrossGPUTransferEnabled)
+	{
+		bool bOptimizeTransfers = true;
+		FRHIGPUMask SimGPUMask = ViewFamilies[0]->Views[0]->GPUMask;
+		FRHIGPUMask AllViewGPUMask = SimGPUMask;
+
+		for (const FSceneViewFamily* Family : ViewFamilies)
+		{
+			FRHIGPUMask FamilyFirstViewMask = Family->Views[0]->GPUMask;
+			AllViewGPUMask |= FamilyFirstViewMask;
+
+			if (!FamilyFirstViewMask.HasSingleIndex())
+			{
+				bOptimizeTransfers = false;
+				break;
+			}
+			for (const FSceneView* View : Family->Views)
+			{
+				if (View->GPUMask != FamilyFirstViewMask)
+				{
+					bOptimizeTransfers = false;
+					break;
+				}
+			}
+			if (!bOptimizeTransfers)
+			{
+				break;
+			}
+		}
+
+		if (bOptimizeTransfers)
+		{
+			// Figure out what destination GPUs we should optimize transfers to
+			OptimizedCrossGPUTransferMask = AllViewGPUMask.GetNative() & ~SimGPUMask.GetNative();
+		}
+	}
+#endif
+	if ((ViewFamilies.Num() > 1) && bIsFirstViewFamily)
+	{
+		AddPass(GraphBuilder, RDG_EVENT_NAME("Niagara::CopyToMultiViewCountBuffer"), [this](FRHICommandListImmediate& RHICmdList)
+		{
+			GPUInstanceCounterManager.CopyToMultiViewCountBuffer(RHICmdList);
+		});
+	}
+
+	EmptyUAVPoolPtr->Tick();
 	GpuReadbackManagerPtr->Tick();
 #if NIAGARA_COMPUTEDEBUG_ENABLED
 	if ( FNiagaraGpuComputeDebug* GpuComputeDebug = GpuComputeDebugPtr.Get() )
@@ -1793,7 +1898,12 @@ void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bA
 	}
 #endif
 
-	LLM_SCOPE(ELLMTag::Niagara);
+	// If we during a scene render ensure remove the GDF cache data	to avoid holding onto GDF textures that could be reallocated
+	if (IsOutsideSceneRenderer() == false)
+	{
+		CachedGDFData = FCachedDistanceFieldData();
+	}
+	
 	TotalDispatchesThisFrame = 0;
 
 	// Add pass to begin the gpu profiler frame
@@ -1817,10 +1927,6 @@ void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bA
 
 			UpdateInstanceCountManager(GraphBuilder.RHICmdList);
 			PrepareAllTicks(GraphBuilder.RHICmdList);
-		
-		#if WITH_MGPU
-			CalculateCrossGPUTransferLocation();
-		#endif
 
 			AsyncGpuTraceHelper->BeginFrame(GraphBuilder.RHICmdList, this);
 
@@ -1829,7 +1935,7 @@ void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bA
 				DumpDebugFrame();
 			}
 
-			ExecuteTicks(GraphBuilder, TConstArrayView<FViewInfo>(), ENiagaraGpuComputeTickStage::PreInitViews);
+			ExecuteTicks(GraphBuilder, TConstStridedView<FSceneView>(), ENiagaraGpuComputeTickStage::PreInitViews);
 		}
 	}
 	else
@@ -1854,47 +1960,65 @@ void FNiagaraGpuComputeDispatch::PreInitViews(FRDGBuilder& GraphBuilder, bool bA
 			return false;
 		};
 
-	if (GPUInstanceCounterManager.HasEntriesPendingFree() || HasAnyWork())
+	if (bAllowGPUParticleUpdate && ((IsFirstViewFamily() && GPUInstanceCounterManager.HasEntriesPendingFree()) || HasAnyWork()))
 	{
 		MultiGPUResourceModified(GraphBuilder, GPUInstanceCounterManager.GetInstanceCountBuffer().Buffer, true, true);
 	}
 #endif
 }
 
-void FNiagaraGpuComputeDispatch::PostInitViews(FRDGBuilder& GraphBuilder, TArrayView<const class FViewInfo> Views, bool bAllowGPUParticleUpdate)
+void FNiagaraGpuComputeDispatch::PostInitViews(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, bool bAllowGPUParticleUpdate)
 {
 	LLM_SCOPE(ELLMTag::Niagara);
 
-	bAllowGPUParticleUpdate = bAllowGPUParticleUpdate && GetReferenceAllowGPUUpdate(Views);
+	bAllowGPUParticleUpdate = bAllowGPUParticleUpdate && Views.Num() > 0 && Views[0].AllowGPUParticleUpdate();
 
 	if (bAllowGPUParticleUpdate && FNiagaraUtilities::AllowGPUParticles(GetShaderPlatform()))
 	{
 		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, Niagara);
 
 		ExecuteTicks(GraphBuilder, Views, ENiagaraGpuComputeTickStage::PostInitViews);
-
-	#if WITH_MGPU
-		// Queue a transfer request
-		if (StageToTransferGPUBuffers == ENiagaraGpuComputeTickStage::PostInitViews)
-		{
-			AddPass(
-				GraphBuilder,
-				RDG_EVENT_NAME("Niagara::TransferMultiGPUBufers"),
-				[this](FRHICommandListImmediate& RHICmdList)
-				{
-					TransferMultiGPUBufers(RHICmdList, ENiagaraGpuComputeTickStage::PostInitViews);
-				}
-			);
-		}
-	#endif // WITH_MGPU
 	}
 }
 
-void FNiagaraGpuComputeDispatch::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate)
+BEGIN_SHADER_PARAMETER_STRUCT(FNiagaraGpuComputeDispatchParameters,)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
+END_SHADER_PARAMETER_STRUCT()
+
+static FNiagaraGpuComputeDispatchParameters *MakeParameters(FRDGBuilder& GraphBuilder, TRDGUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRDG)
+{
+	FNiagaraGpuComputeDispatchParameters *Parameters = GraphBuilder.AllocParameters<FNiagaraGpuComputeDispatchParameters>();
+	Parameters->Scene = SceneUniformBufferRDG;
+	return Parameters;
+}
+
+void FNiagaraGpuComputeDispatch::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, FSceneUniformBuffer &SceneUniformBuffer, bool bAllowGPUParticleUpdate)
 {
 	LLM_SCOPE(ELLMTag::Niagara);
 
-	bAllowGPUParticleUpdate = bAllowGPUParticleUpdate && GetReferenceAllowGPUUpdate(Views);
+	bAllowGPUParticleUpdate = bAllowGPUParticleUpdate && Views.Num() > 0 && Views[0].AllowGPUParticleUpdate();
+
+	// If we are during a scene render cache the GDF information for any potential tick flushing
+	// This fixes issues with distance field collisions (for example) where we may be scrubbing backwards and are force to flush to avoid TDRs / RDG pass limits
+	// The alternative to this would be to query the FSceneInterface but we currently do not have a clean way to do this as the GDF clipmaps are built transiently plus the ViewStates do not exist
+	if (IsOutsideSceneRenderer() == false)
+	{
+		if (const FGlobalDistanceFieldParameterData* SceneGDFData = UE::FXRenderingUtils::GetGlobalDistanceFieldParameterData(Views))
+		{
+			CachedGDFData.bCacheValid			= true;
+			CachedGDFData.PageAtlasTexture		= SceneGDFData->PageAtlasTexture;
+			CachedGDFData.CoverageAtlasTexture	= SceneGDFData->CoverageAtlasTexture;
+			CachedGDFData.PageObjectGridBuffer	= SceneGDFData->PageObjectGridBuffer;
+			CachedGDFData.PageTableTexture		= SceneGDFData->PageTableTexture;
+			CachedGDFData.MipTexture			= SceneGDFData->MipTexture;
+			CachedGDFData.GDFParameterData		= *SceneGDFData;
+		}
+		else
+		{
+			CachedGDFData						= FCachedDistanceFieldData();
+		}
+	}
+	TGuardValue<bool> GuardGDFValidForPass(CachedGDFData.bValidForPass, CachedGDFData.bCacheValid);
 
 	// Cache view information which will be used if we have to flush simulation commands in the future
 	if ( bAllowGPUParticleUpdate && Views.IsValidIndex(0) )
@@ -1905,51 +2029,58 @@ void FNiagaraGpuComputeDispatch::PostRenderOpaque(FRDGBuilder& GraphBuilder, TCo
 			CachedViewInitOptions.GammaCorrection	= ViewFamily->GammaCorrection;
 		}
 
-		CachedViewInitOptions.ViewRect				= Views[0].ViewRect;
+		CachedViewInitOptions.ViewRect				= UE::FXRenderingUtils::GetRawViewRectUnsafe(Views[0]);
 		CachedViewInitOptions.ViewOrigin			= Views[0].SceneViewInitOptions.ViewOrigin;
 		CachedViewInitOptions.ViewRotationMatrix	= Views[0].SceneViewInitOptions.ViewRotationMatrix;
 		CachedViewInitOptions.ProjectionMatrix		= Views[0].SceneViewInitOptions.ProjectionMatrix;
 	}
 
+	TRDGUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRDG = UE::FXRenderingUtils::GetSceneUniformBuffer(GraphBuilder, SceneUniformBuffer);
+
 	if (bAllowGPUParticleUpdate && FNiagaraUtilities::AllowGPUParticles(GetShaderPlatform()))
 	{
-		AddPass(
-			GraphBuilder,
+		auto PassParameters = MakeParameters(GraphBuilder, SceneUniformBufferRDG);
+		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("AsyncGpuTraceHelper::PostRenderOpaque"),
-			[this, Views](FRHICommandListImmediate& RHICmdList)
+			PassParameters,
+			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
+			[this, Views, PassParameters](FRHICommandListImmediate& RHICmdList)
 			{
-				AsyncGpuTraceHelper->PostRenderOpaque(RHICmdList, this, Views);
+				AsyncGpuTraceHelper->PostRenderOpaque(RHICmdList, this, Views, PassParameters->Scene->GetRHIRef());
 			}
 		);
 
 		ExecuteTicks(GraphBuilder, Views, ENiagaraGpuComputeTickStage::PostOpaqueRender);
 	}
-
-	AddPass(
-		GraphBuilder,
-		RDG_EVENT_NAME("Niagara::PostRenderFinish"),
-		[this, bExecuteReadback=bRequiresReadback, bAllowGPUParticleUpdate](FRHICommandListImmediate& RHICmdList)
-		{
-			if (bAllowGPUParticleUpdate)
+	{
+		auto PassParameters = MakeParameters(GraphBuilder, SceneUniformBufferRDG);
+		GraphBuilder.AddPass(
+			RDG_EVENT_NAME("Niagara::PostRenderFinish"),
+			PassParameters,
+			ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
+			[this, bExecuteReadback=bRequiresReadback, PassParameters, bAllowGPUParticleUpdate](FRHICommandListImmediate& RHICmdList)
 			{
-				FinishDispatches();
+				if (bAllowGPUParticleUpdate)
+				{
+					FinishDispatches();
 
-				AsyncGpuTraceHelper->EndFrame(RHICmdList, this);
+					AsyncGpuTraceHelper->EndFrame(RHICmdList, this, PassParameters->Scene->GetRHIRef());
+				}
+
+				ProcessDebugReadbacks(RHICmdList, false);
+
+				if (bExecuteReadback)
+				{
+					check(!GPUInstanceCounterManager.HasPendingGPUReadback());
+					GPUInstanceCounterManager.EnqueueGPUReadback(RHICmdList);
+				}
+
+			#if WITH_NIAGARA_GPU_PROFILER
+				GPUProfilerPtr->EndFrame(RHICmdList);
+			#endif
 			}
-
-			ProcessDebugReadbacks(RHICmdList, false);
-
-			if (bExecuteReadback)
-			{
-				check(!GPUInstanceCounterManager.HasPendingGPUReadback());
-				GPUInstanceCounterManager.EnqueueGPUReadback(RHICmdList);
-			}
-
-		#if WITH_NIAGARA_GPU_PROFILER
-			GPUProfilerPtr->EndFrame(RHICmdList);
-		#endif
-		}
-	);
+		);
+	}
 	bRequiresReadback = false;
 
 	if (FNiagaraGpuComputeDispatchLocal::CsvStatsEnabled())
@@ -2040,7 +2171,7 @@ bool FNiagaraGpuComputeDispatch::RequiresRayTracingScene() const
 	return NumProxiesThatRequireRayTracingScene > 0;
 }
 
-void FNiagaraGpuComputeDispatch::PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate)
+void FNiagaraGpuComputeDispatch::PreRender(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, FSceneUniformBuffer &SceneUniformBuffer, bool bAllowGPUParticleUpdate)
 {
 	if (!FNiagaraUtilities::AllowGPUParticles(GetShaderPlatform()))
 	{
@@ -2069,6 +2200,11 @@ bool FNiagaraGpuComputeDispatch::AddSortedGPUSimulation(FNiagaraGPUSortInfo& Sor
 	{
 		return false;
 	}
+}
+
+const FGlobalDistanceFieldParameterData* FNiagaraGpuComputeDispatch::GetGlobalDistanceFieldData() const
+{
+	return CachedGDFData.bValidForPass ? &CachedGDFData.GDFParameterData : nullptr;
 }
 
 void FNiagaraGpuComputeDispatch::GenerateSortKeys(FRHICommandListImmediate& RHICmdList, int32 BatchId, int32 NumElementsInBatch, EGPUSortFlags Flags, FRHIUnorderedAccessView* KeysUAV, FRHIUnorderedAccessView* ValuesUAV)
@@ -2335,7 +2471,7 @@ bool FNiagaraGpuComputeDispatch::ShouldDebugDraw_RenderThread() const
 	return false;
 }
 
-void FNiagaraGpuComputeDispatch::DrawDebug_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, const struct FScreenPassRenderTarget& Output)
+void FNiagaraGpuComputeDispatch::DrawDebug_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const struct FScreenPassRenderTarget& Output)
 {
 #if NIAGARA_COMPUTEDEBUG_ENABLED
 	if (FNiagaraGpuComputeDebug* GpuComputeDebug = GpuComputeDebugPtr.Get())
@@ -2345,7 +2481,7 @@ void FNiagaraGpuComputeDispatch::DrawDebug_RenderThread(class FRDGBuilder& Graph
 #endif
 }
 
-void FNiagaraGpuComputeDispatch::DrawSceneDebug_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth)
+void FNiagaraGpuComputeDispatch::DrawSceneDebug_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth)
 {
 #if NIAGARA_COMPUTEDEBUG_ENABLED
 	if (FNiagaraGpuComputeDebug* GpuComputeDebug = GpuComputeDebugPtr.Get())
@@ -2386,7 +2522,19 @@ void FNiagaraGpuComputeDispatch::MultiGPUResourceModified(FRHICommandList& RHICm
 		{
 			if (!GPUMask.Contains(GPUIndex))
 			{
-				const_cast<FNiagaraGpuComputeDispatch*>(this)->CrossGPUTransferBuffers.Emplace(Texture, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				if (OptimizedCrossGPUTransferMask & (1u << GPUIndex))
+				{
+					// Add a sync point for this destination GPU when we're adding the first transfer
+					if (OptimizedCrossGPUTransferBuffers[GPUIndex].Num() == 0)
+					{
+						OptimizedCrossGPUFences[GPUIndex] = RHICreateCrossGPUTransferFence();
+					}
+					OptimizedCrossGPUTransferBuffers[GPUIndex].Emplace(Texture, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				}
+				else
+				{
+					CrossGPUTransferBuffers.Emplace(Texture, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				}
 			}
 		}
 	}
@@ -2405,53 +2553,56 @@ void FNiagaraGpuComputeDispatch::AddCrossGPUTransfer(FRHICommandList& RHICmdList
 		{
 			if (!GPUMask.Contains(GPUIndex))
 			{
-				CrossGPUTransferBuffers.Emplace(Buffer, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				if (OptimizedCrossGPUTransferMask & (1u << GPUIndex))
+				{
+					// Add a sync point for this destination GPU when we're adding the first transfer
+					if (OptimizedCrossGPUTransferBuffers[GPUIndex].Num() == 0)
+					{
+						OptimizedCrossGPUFences[GPUIndex] = RHICreateCrossGPUTransferFence();
+					}
+					OptimizedCrossGPUTransferBuffers[GPUIndex].Emplace(Buffer, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				}
+				else
+				{
+					CrossGPUTransferBuffers.Emplace(Buffer, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				}
 			}
 		}
 	}
 }
 
-void FNiagaraGpuComputeDispatch::CalculateCrossGPUTransferLocation()
+void FNiagaraGpuComputeDispatch::TransferMultiGPUBuffers(FRHICommandList& RHICmdList)
 {
-	StageToTransferGPUBuffers = ENiagaraGpuComputeTickStage::Last;
-	while (StageToTransferGPUBuffers > ENiagaraGpuComputeTickStage::First && !DispatchListPerStage[static_cast<int32>(StageToTransferGPUBuffers)].HasWork())
-	{
-		StageToTransferGPUBuffers = static_cast<ENiagaraGpuComputeTickStage::Type>(static_cast<int32>(StageToTransferGPUBuffers) - 1);
-	}
-
-	StageToWaitForGPUTransfers = ENiagaraGpuComputeTickStage::First;
-	// If we're going to write to the instance count buffer after PreInitViews then
-	// that needs to be the wait stage, regardless of whether or not we're ticking
-	// anything in that stage.
-	if (!GPUInstanceCounterManager.HasEntriesPendingFree())
-	{
-		while (StageToWaitForGPUTransfers < StageToTransferGPUBuffers && !DispatchListPerStage[static_cast<int32>(StageToWaitForGPUTransfers)].HasWork())
-		{
-			StageToWaitForGPUTransfers = static_cast<ENiagaraGpuComputeTickStage::Type>(static_cast<int32>(StageToWaitForGPUTransfers) + 1);
-		}
-	}
-}
-
-void FNiagaraGpuComputeDispatch::TransferMultiGPUBufers(FRHICommandList& RHICmdList, ENiagaraGpuComputeTickStage::Type TickStage)
-{
-	if (StageToTransferGPUBuffers != TickStage)
-	{
-		return;
-	}
-
 	// Transfer buffers for cross GPU rendering
 	if (CrossGPUTransferBuffers.Num())
 	{
 		RHICmdList.TransferResources(CrossGPUTransferBuffers);
 		CrossGPUTransferBuffers.Reset();
 	}
+
+	// Optimized transfer of buffers for cross GPU rendering (deferred fence wait)
+	for (uint32 GPUIndex = 0; GPUIndex < GNumExplicitGPUsForRendering; GPUIndex++)
+	{
+		// Each destination GPU has a separate list of transfers, so we can wait for them on the GPU when it needs them
+		if (OptimizedCrossGPUTransferBuffers[GPUIndex].Num())
+		{
+			// Signal function transitions resources on destination GPU and signals when transition has finished
+			TArray<FCrossGPUTransferFence*> PreTransferSyncPoints;
+			RHIGenerateCrossGPUPreTransferFences(OptimizedCrossGPUTransferBuffers[GPUIndex], PreTransferSyncPoints);
+			RHICmdList.CrossGPUTransferSignal(OptimizedCrossGPUTransferBuffers[GPUIndex], PreTransferSyncPoints);
+
+			RHICmdList.CrossGPUTransfer(OptimizedCrossGPUTransferBuffers[GPUIndex], PreTransferSyncPoints, TArrayView<FCrossGPUTransferFence*>(&OptimizedCrossGPUFences[GPUIndex], 1));
+			OptimizedCrossGPUTransferBuffers[GPUIndex].Reset();
+		}
+	}
 }
 
-void FNiagaraGpuComputeDispatch::WaitForMultiGPUBuffers(FRHICommandList& RHICmdList, ENiagaraGpuComputeTickStage::Type TickStage)
+void FNiagaraGpuComputeDispatch::WaitForMultiGPUBuffers(FRHICommandList& RHICmdList, uint32 GPUIndex)
 {
-	if (StageToWaitForGPUTransfers == TickStage)
+	if (OptimizedCrossGPUFences[GPUIndex])
 	{
-		// TODO:  implement delayed fence wait here for cross GPU transfers issued above
+		RHICmdList.CrossGPUTransferWait(TArrayView<FCrossGPUTransferFence*>(&OptimizedCrossGPUFences[GPUIndex], 1));
+		OptimizedCrossGPUFences[GPUIndex] = nullptr;
 	}
 }
 #endif // WITH_MGPU

@@ -6,11 +6,11 @@ public class DerivedDataTool : ModuleRules
 {
 	public DerivedDataTool(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.Add("Runtime/Launch/Public");
-		PrivateIncludePaths.Add("Runtime/Launch/Private"); // LaunchEngineLoop.cpp
-
+		PublicIncludePathModuleNames.Add("Launch");
+		PrivateDependencyModuleNames.Add("ApplicationCore");
 		PrivateDependencyModuleNames.Add("Core");
-		PrivateDependencyModuleNames.Add("Projects");
 		PrivateDependencyModuleNames.Add("DerivedDataCache");
+		PrivateDependencyModuleNames.Add("DesktopPlatform");
+		PrivateDependencyModuleNames.Add("Projects");
 	}
 }

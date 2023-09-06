@@ -506,7 +506,7 @@ TRefCountPtr<FShadowMap2D> FShadowMap2D::AllocateShadowMap(
 }
 
 FShadowMap2D::FShadowMap2D() :
-	Texture(NULL),
+	Texture(nullptr),
 	CoordinateScale(FVector2D(0, 0)),
 	CoordinateBias(FVector2D(0, 0))
 {
@@ -517,7 +517,7 @@ FShadowMap2D::FShadowMap2D() :
 }
 
 FShadowMap2D::FShadowMap2D(const TMap<ULightComponent*,FShadowMapData2D*>& ShadowMapData) :
-	Texture(NULL),
+	Texture(nullptr),
 	CoordinateScale(FVector2D(0, 0)),
 	CoordinateBias(FVector2D(0, 0))
 {
@@ -718,14 +718,6 @@ TRefCountPtr<FShadowMap2D> FShadowMap2D::AllocateInstancedShadowMap(UObject* Lig
 
 #if WITH_EDITOR
 
-struct FCompareShadowMaps
-{
-	FORCEINLINE bool operator()(const FShadowMapAllocationGroup& A, const FShadowMapAllocationGroup& B) const
-	{
-		return A.TotalTexels > B.TotalTexels;
-	}
-};
-
 
 /**
  * Executes all pending shadow-map encoding requests.
@@ -744,7 +736,7 @@ void FShadowMap2D::EncodeTextures(UWorld* InWorld, ULevel* LightingScenario, boo
 		// Reset the pending shadow-map size.
 		PendingShadowMapSize = 0;
 
-		Sort(PendingShadowMaps.GetData(), PendingShadowMaps.Num(), FCompareShadowMaps());
+		Algo::SortBy(PendingShadowMaps, &FShadowMapAllocationGroup::TotalTexels, TGreater<>());
 
 		// Allocate texture space for each shadow-map.
 		TIndirectArray<FShadowMapPendingTexture> PendingTextures;

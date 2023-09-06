@@ -19,33 +19,26 @@ public class EnvironmentQueryEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 		   new string[] {
 				"AssetRegistry",
-				"AssetTools",
-				"PropertyEditor",
 				"DesktopPlatform",
-				"LevelEditor",
 		   });
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"AssetDefinition",
 				"Core", 
 				"CoreUObject", 
                 "InputCore",
 				"Engine", 
-                "RenderCore",
 				"Slate",
 				"SlateCore",
 				"EditorFramework",
 				"UnrealEd", 
-				"MessageLog", 
 				"GraphEditor",
 				"KismetWidgets",
                 "PropertyEditor",
-				"AnimGraph",
-				"BlueprintGraph",
                 "AIGraph",
                 "AIModule",
 				"ToolMenus",
-				"WorkspaceMenuStructure",
 			}
 		);
 	}

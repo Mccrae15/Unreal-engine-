@@ -87,6 +87,11 @@ TSharedPtr<INetworkReplayStreamer> FReplayHelper::Init(const FURL& URL)
 	FWorldDelegates::LevelRemovedFromWorld.AddRaw(this, &FReplayHelper::OnLevelRemovedFromWorld);
 	FWorldDelegates::LevelAddedToWorld.AddRaw(this, &FReplayHelper::OnLevelAddedToWorld);
 
+	if (DemoURL.HasOption(TEXT("CheckpointSaveMaxMSPerFrame")))
+	{
+		CheckpointSaveMaxMSPerFrame = FCString::Atof(DemoURL.GetOption(TEXT("CheckpointSaveMaxMSPerFrame="), nullptr));
+	}
+
 	return ReplayStreamer;
 }
 
@@ -173,6 +178,11 @@ void FReplayHelper::StartRecording(UNetConnection* Connection)
 	bIsWaitingForStream = true;
 
 	ActiveReplayName = DemoURL.Map;
+
+	if (bHasDeltaCheckpoints)
+	{
+		ResetDeltaCheckpointTracking(Connection);
+	}
 
 	FStartStreamingParameters Params;
 	Params.CustomName = DemoURL.Map;
@@ -1456,29 +1466,6 @@ void FReplayHelper::SaveExternalData(UNetConnection* Connection, FArchive& Ar)
 					}
 				}
 			}
-			else
-			{
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				TSharedPtr<FRepChangedPropertyTracker> PropertyTracker = Connection->Driver->FindRepChangedPropertyTracker(Object);
-				check(PropertyTracker.IsValid());
-
-				uint32 ExternalDataNumBits = PropertyTracker->ExternalDataNumBits;
-				if (ExternalDataNumBits > 0)
-				{
-					// Save payload size (in bits)
-					Ar.SerializeIntPacked(ExternalDataNumBits);
-
-					// Save GUID
-					Ar << Pair.Value;
-
-					// Save payload
-					Ar.Serialize(PropertyTracker->ExternalData.GetData(), PropertyTracker->ExternalData.Num());
-
-					PropertyTracker->ExternalData.Empty();
-					PropertyTracker->ExternalDataNumBits = 0;
-				}
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
-			}
 		}
 	}
 
@@ -1590,8 +1577,6 @@ bool FReplayHelper::ReplicateCheckpointActor(AActor* ToReplicate, UNetConnection
 			ActorChannel->ConditionalCleanUp(false, EChannelCloseReason::Dormancy);
 		}
 
-		UpdateExternalDataForObject(Connection, ToReplicate);
-
 		const double CheckpointTime = FPlatformTime::Seconds();
 
 		if (Params.CheckpointMaxUploadTimePerFrame > 0 && CheckpointTime - Params.StartCheckpointTime > Params.CheckpointMaxUploadTimePerFrame)
@@ -1637,41 +1622,6 @@ void FReplayHelper::LoadExternalData(FArchive& Ar, const float TimeSeconds)
 		ExternalDataArray.Add(new FReplayExternalData(MoveTemp(Reader), TimeSeconds));
 	}
 }
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-bool FReplayHelper::UpdateExternalDataForObject(UNetConnection* Connection, UObject* OwningObject)
-{
-	check(Connection && Connection->Driver);
-
-	TSharedPtr<FRepChangedPropertyTracker> PropertyTracker = Connection->Driver->FindRepChangedPropertyTracker(OwningObject);
-	if (!PropertyTracker.IsValid())
-	{
-		return false;
-	}
-
-	if (PropertyTracker->ExternalData.Num() == 0)
-	{
-		return false;
-	}
-
-	if (FNetworkGUID* NetworkGUID = Connection->Driver->GuidCache->NetGUIDLookup.Find(OwningObject))
-	{
-		ObjectsWithExternalDataMap.Add(OwningObject, *NetworkGUID);
-
-		return true;
-	}
-	else
-	{
-		UE_LOG(LogDemo, Warning, TEXT("UpdateExternalDataForObject: Discarding external data for object with no net guid: %s"), *GetNameSafe(OwningObject));
-
-		// Clear external data if the actor has never replicated yet (and doesn't have a net guid)
-		PropertyTracker->ExternalData.Reset();
-		PropertyTracker->ExternalDataNumBits = 0;
-
-		return false;
-	}
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 // only allow one chunk of data per object at a time (first wins), when recording ticks it will store/clear it
 bool FReplayHelper::SetExternalDataForObject(UNetConnection* Connection, UObject* OwningObject, const uint8* Src, const int32 NumBits)
@@ -2251,7 +2201,7 @@ void FReplayHelper::AddOrUpdateEvent(const FString& Name, const FString& Group, 
 		ReplayStreamer->AddOrUpdateEvent(Name, SavedTimeMS, Group, Meta, Data);
 	}
 
-	UE_LOG(LogDemo, Verbose, TEXT("AddOrUpdateEvent %s.%s. Total: %i, Time: %2.2f"), *Group, *Name, Data.Num(), SavedTimeMS);
+	UE_LOG(LogDemo, Verbose, TEXT("AddOrUpdateEvent %s.%s. Total: %i, Time: %2.2f"), *Group, *Name, Data.Num(), float(SavedTimeMS));
 }
 
 void FReplayHelper::ReadDeletedStartupActors(UNetConnection* Connection, FArchive& Ar, TSet<FString>& DeletedStartupActors)
@@ -2399,6 +2349,36 @@ void FReplayHelper::NotifyReplayError(UE::Net::TNetResult<EReplayResult>&& Resul
 	ResultManager.HandleNetResult(MoveTemp(Result));
 }
 
+void FReplayHelper::ResetDeltaCheckpointTracking(UNetConnection* Connection)
+{
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ReplayResetDeltaCheckpoint time"), STAT_ReplayResetDeltaCheckpoint, STATGROUP_Net);
+
+	if (Connection)
+	{
+		if (UNetDriver* Driver = Connection->GetDriver())
+		{
+			// reset object list
+			FNetworkObjectList& NetworkObjects = Driver->GetNetworkObjectList();
+			NetworkObjects.ResetReplayDirtyTracking();
+
+			// reset guid cache
+			if (FNetGUIDCache* GuidCache = Connection->Driver->GuidCache.Get())
+			{
+				GuidCache->ResetReplayDirtyTracking();
+			}
+
+			// reset object replicators
+			for (FObjectReplicator* Replicator : Driver->AllOwnedReplicators)
+			{
+				if (Replicator)
+				{
+					Replicator->ResetReplayDirtyTracking();
+				}
+			}
+		}
+	}
+}
+
 void FReplayResultHandler::InitResultHandler(FReplayHelper* InReplayHelper)
 {
 	ReplayHelper = InReplayHelper;
@@ -2431,4 +2411,3 @@ UE::Net::EHandleNetResult FReplayResultHandler::HandleNetResult(UE::Net::FNetRes
 
 	return EHandleNetResult::Handled;
 }
-

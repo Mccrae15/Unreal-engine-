@@ -9,8 +9,6 @@
 
 #include "EngineUtils.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
-#include "Engine/InheritableComponentHandler.h"
-#include "Engine/SCS_Node.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/MaterialInterface.h"
 
@@ -47,7 +45,7 @@ UPCGManagedISMComponent* UPCGActorHelpers::GetOrCreateManagedISMC(AActor* InTarg
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(UPCGActorHelpers::GetOrCreateManagedISMC::FindMatchingMISMC);
 		UPCGManagedISMComponent* MatchingResource = nullptr;
-		InSourceComponent->ForEachManagedResource([&MatchingResource, &InParams, SettingsUID](UPCGManagedResource* InResource)
+		InSourceComponent->ForEachManagedResource([&MatchingResource, &InParams, &InTargetActor, SettingsUID](UPCGManagedResource* InResource)
 		{
 			// Early out if already found a match
 			if (MatchingResource)
@@ -64,7 +62,9 @@ UPCGManagedISMComponent* UPCGActorHelpers::GetOrCreateManagedISMC(AActor* InTarg
 
 				if (UInstancedStaticMeshComponent* ISMC = Resource->GetComponent())
 				{
-					if (ISMC->NumCustomDataFloats == InParams.NumCustomDataFloats &&
+					if (IsValid(ISMC) &&
+						ISMC->GetOwner() == InTargetActor &&
+						ISMC->NumCustomDataFloats == InParams.NumCustomDataFloats &&
 						Resource->GetDescriptor() == InParams.Descriptor)
 					{
 						MatchingResource = Resource;
@@ -77,6 +77,7 @@ UPCGManagedISMComponent* UPCGActorHelpers::GetOrCreateManagedISMC(AActor* InTarg
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(UPCGActorHelpers::GetOrCreateManagedISMC::MarkAsUsed);
 			MatchingResource->MarkAsUsed();
+
 			return MatchingResource;
 		}
 	}
@@ -86,25 +87,40 @@ UPCGManagedISMComponent* UPCGActorHelpers::GetOrCreateManagedISMC(AActor* InTarg
 
 	// Done as in InstancedStaticMesh.cpp
 #if WITH_EDITOR
-	const bool bMeshHasNaniteData = StaticMesh->NaniteSettings.bEnabled;
+	const bool bMeshHasNaniteData = StaticMesh->IsNaniteEnabled();
 #else
-	const bool bMeshHasNaniteData = StaticMesh->GetRenderData()->NaniteResources.PageStreamingStates.Num() > 0;
+	const bool bMeshHasNaniteData = StaticMesh->GetRenderData()->HasValidNaniteData();
 #endif
 
 	FString ComponentName;
-	TSubclassOf<UInstancedStaticMeshComponent> ComponentClass;
-	if (bMeshHasNaniteData)
-	{
-		ComponentClass = UInstancedStaticMeshComponent::StaticClass();
-		ComponentName += TEXT("ISM");
-	}
-	else
+	TSubclassOf<UInstancedStaticMeshComponent> ComponentClass = InParams.Descriptor.ComponentClass;
+
+	// If the component class in invalid, default to HISM.
+	if (!ComponentClass)
 	{
 		ComponentClass = UHierarchicalInstancedStaticMeshComponent::StaticClass();
-		ComponentName += TEXT("HISM");
 	}
 
-	ComponentName += TEXT("_") + StaticMesh->GetName();
+	// It's potentially less efficient to put nanite meshes inside of HISMs so decay those to ISM in this case.
+	// Note the equality here, not a IsA because we do not want to change derived types either
+	if (ComponentClass == UHierarchicalInstancedStaticMeshComponent::StaticClass())
+	{
+		if (bMeshHasNaniteData)
+		{
+			ComponentClass = UInstancedStaticMeshComponent::StaticClass();
+		}
+		else
+		{
+			ComponentName = TEXT("HISM_");
+		}
+	}
+
+	if (ComponentClass == UInstancedStaticMeshComponent::StaticClass())
+	{
+		ComponentName = TEXT("ISM_");
+	}
+
+	ComponentName += StaticMesh->GetName();
 
 	UInstancedStaticMeshComponent* ISMC = NewObject<UInstancedStaticMeshComponent>(InTargetActor, ComponentClass, MakeUniqueObjectName(InTargetActor, ComponentClass, FName(ComponentName)));
 	InParams.Descriptor.InitComponent(ISMC);
@@ -121,6 +137,11 @@ UPCGManagedISMComponent* UPCGActorHelpers::GetOrCreateManagedISMC(AActor* InTarg
 	UPCGManagedISMComponent* Resource = NewObject<UPCGManagedISMComponent>(InSourceComponent);
 	Resource->SetComponent(ISMC);
 	Resource->SetDescriptor(InParams.Descriptor);
+	if (InTargetActor->GetRootComponent())
+	{
+		Resource->SetRootLocation(InTargetActor->GetRootComponent()->GetComponentLocation());
+	}
+	
 	Resource->SetSettingsUID(SettingsUID);
 	InSourceComponent->AddToManagedResources(Resource);
 
@@ -217,77 +238,14 @@ bool UPCGActorHelpers::DeleteActors(UWorld* World, const TArray<TSoftObjectPtr<A
 	return true;
 }
 
-// Note: this is copied verbatim from AIHelpers.h/.cpp
 void UPCGActorHelpers::GetActorClassDefaultComponents(const TSubclassOf<AActor>& ActorClass, TArray<UActorComponent*>& OutComponents, const TSubclassOf<UActorComponent>& InComponentClass)
 {
-	if (!ensure(ActorClass.Get()))
+	OutComponents.Reset();
+	AActor::ForEachComponentOfActorClassDefault(ActorClass, InComponentClass, [&OutComponents](const UActorComponent* TemplateComponent)
 	{
-		return;
-	}
-
-	UClass* ClassPtr = InComponentClass.Get();
-	TArray<UActorComponent*> ResultComponents;
-
-	// Get the components defined on the native class.
-	AActor* CDO = ActorClass->GetDefaultObject<AActor>();
-	check(CDO);
-	if (ClassPtr)
-	{
-		CDO->GetComponents(InComponentClass, ResultComponents);
-	}
-	else
-	{
-		CDO->GetComponents(ResultComponents);
-	}
-
-	// Try to get the components off the BP class.
-	UBlueprintGeneratedClass* BPClass = Cast<UBlueprintGeneratedClass>(*ActorClass);
-	if (BPClass)
-	{
-		// A BlueprintGeneratedClass has a USimpleConstructionScript member. This member has an array of RootNodes
-		// which contains the SCSNode for the root SceneComponent and non-SceneComponents. For the SceneComponent
-		// hierarchy, each SCSNode knows its children SCSNodes. Each SCSNode stores the component template that will
-		// be created when the Actor is spawned.
-		//
-		// WARNING: This may change in future engine versions!
-
-		TArray<UActorComponent*> Unfiltered;
-		// using this semantic to avoid duplicating following loops or adding a filtering check condition inside the loops
-		TArray<UActorComponent*>& TmpComponents = ClassPtr ? Unfiltered : ResultComponents;
-
-		// Check added components.
-		USimpleConstructionScript* ConstructionScript = BPClass->SimpleConstructionScript;
-		if (ConstructionScript)
-		{
-			for (const USCS_Node* Node : ConstructionScript->GetAllNodes())
-			{
-				TmpComponents.Add(Node->ComponentTemplate);
-			}
-		}
-		// Check modified inherited components.
-		UInheritableComponentHandler* InheritableComponentHandler = BPClass->InheritableComponentHandler;
-		if (InheritableComponentHandler)
-		{
-			for (TArray<FComponentOverrideRecord>::TIterator It = InheritableComponentHandler->CreateRecordIterator(); It; ++It)
-			{
-				TmpComponents.Add(It->ComponentTemplate);
-			}
-		}
-
-		// Filter to the ones matching the requested class.
-		if (ClassPtr)
-		{
-			for (UActorComponent* TemplateComponent : Unfiltered)
-			{
-				if (TemplateComponent->IsA(ClassPtr))
-				{
-					ResultComponents.Add(TemplateComponent);
-				}
-			}
-		}
-	}
-
-	OutComponents = MoveTemp(ResultComponents);
+		OutComponents.Add(const_cast<UActorComponent*>(TemplateComponent));
+		return true;
+	});
 }
 
 void UPCGActorHelpers::ForEachActorInLevel(ULevel* Level, TSubclassOf<AActor> ActorClass, TFunctionRef<bool(AActor*)> Callback)
@@ -336,8 +294,23 @@ AActor* UPCGActorHelpers::SpawnDefaultActor(UWorld* World, TSubclassOf<AActor> A
 	}
 
 	FActorSpawnParameters SpawnParams;
-	SpawnParams.Name = MakeUniqueObjectName(World, ActorClass, BaseName);
-	SpawnParams.Owner = Parent;
+	SpawnParams.Name = MakeUniqueObjectName(World->GetCurrentLevel(), ActorClass, BaseName);
+
+	if (PCGHelpers::IsRuntimeOrPIE())
+	{
+		SpawnParams.ObjectFlags |= RF_Transient;
+	}
+
+	return SpawnDefaultActor(World, ActorClass, Transform, SpawnParams, Parent);
+}
+
+AActor* UPCGActorHelpers::SpawnDefaultActor(UWorld* World, TSubclassOf<AActor> ActorClass, const FTransform& Transform, const FActorSpawnParameters& SpawnParams, AActor* Parent)
+{
+	if (!World || !ActorClass)
+	{
+		return nullptr;
+	}
+
 	AActor* NewActor = World->SpawnActor(*ActorClass, &Transform, SpawnParams);
 	
 	if (!NewActor)
@@ -345,8 +318,14 @@ AActor* UPCGActorHelpers::SpawnDefaultActor(UWorld* World, TSubclassOf<AActor> A
 		return nullptr;
 	}
 
+	// HACK: until UE-62747 is fixed, we have to force set the scale after spawning the actor
+	NewActor->SetActorRelativeScale3D(Transform.GetScale3D());
+
 #if WITH_EDITOR
-	NewActor->SetActorLabel(SpawnParams.Name.ToString());
+	if (SpawnParams.Name != NAME_None)
+	{
+		NewActor->SetActorLabel(SpawnParams.Name.ToString());
+	}
 #endif // WITH_EDITOR
 
 	USceneComponent* RootComponent = NewActor->GetRootComponent();

@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Framework/MultiBox/MultiBox.h"
+
+#include "SClippingVerticalBox.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
@@ -252,7 +254,7 @@ FMultiBox::FMultiBox(const EMultiBoxType InType, FMultiBoxCustomization InCustom
 	, bShouldCloseWindowAfterMenuSelection( bInShouldCloseWindowAfterMenuSelection )
 {
 
-	if (InType == EMultiBoxType::SlimHorizontalToolBar && FCoreStyle::IsStarshipStyle())
+	if ((InType == EMultiBoxType::SlimHorizontalToolBar ||  InType == EMultiBoxType::SlimHorizontalUniformToolBar) && FCoreStyle::IsStarshipStyle())
 	{
 		StyleName = "SlimToolBar";
 	}
@@ -669,7 +671,7 @@ void SMultiBoxWidget::AddBlockWidget(const FMultiBlock& Block, TSharedPtr<SHoriz
 	check( MultiBox.IsValid() );
 
 	// Skip Separators for Uniform Tool Bars
-	if ( Block.GetType() == EMultiBlockType::Separator  && MultiBox->GetType() == EMultiBoxType::UniformToolBar)
+	if ( Block.GetType() == EMultiBlockType::Separator  && (MultiBox->GetType() == EMultiBoxType::UniformToolBar || MultiBox->GetType() == EMultiBoxType::SlimHorizontalUniformToolBar))
 	{
 		return;
 	}
@@ -815,7 +817,6 @@ void SMultiBoxWidget::AddBlockWidget(const FMultiBlock& Block, TSharedPtr<SHoriz
 			{
 				VerticalBox->AddSlot()
 				.AutoHeight()
-				.Padding(0.0f, 1.0f, 0.0f, 1.0f)
 				[
 					FinalWidgetWithHook
 				];
@@ -823,6 +824,7 @@ void SMultiBoxWidget::AddBlockWidget(const FMultiBlock& Block, TSharedPtr<SHoriz
 		}
 		break;
 	case EMultiBoxType::UniformToolBar:
+	case EMultiBoxType::SlimHorizontalUniformToolBar:
 		{
 			UniformToolbarPanel->AddSlot()
 			[
@@ -894,6 +896,21 @@ void SMultiBoxWidget::CreateSearchTextWidget()
 /** Called when the SearchText changes */
 void SMultiBoxWidget::OnFilterTextChanged(const FText& InFilterText)
 {
+	// Activate the searchbox if it was empty and we are putting text in it for the first time.
+	// This is for IME keyboards only because they don't go through the OnKeyChar route.
+	if (bSearchable && SearchText.IsEmpty() 
+		&& !InFilterText.IsEmpty() 
+		&& !FSlateApplication::Get().HasUserFocusedDescendants(SearchTextWidget.ToSharedRef(), 0))
+	{
+		if (SearchTextWidget.IsValid() && SearchBlockWidget.IsValid())
+		{
+			// Make the search box visible and focused
+			SearchBlockWidget->SetVisibility(EVisibility::Visible);
+			FSlateApplication::Get().SetUserFocus(0, SearchTextWidget);
+
+		}
+	}
+
 	SearchText = InFilterText;
 
 	FilterMultiBoxEntries();
@@ -953,7 +970,6 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 
 	TSharedPtr< STileView< TSharedPtr<SWidget> > > TileView;
 
-
 	switch (MultiBox->GetType())
 	{
 	case EMultiBoxType::MenuBar:
@@ -971,7 +987,11 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 		break;
 	case EMultiBoxType::VerticalToolBar:
 		{
-			MainWidget = VerticalBox = SNew(SVerticalBox);
+			MainWidget = VerticalBox = ClippedVerticalBox = SNew(SClippingVerticalBox)
+				.OnWrapButtonClicked(FOnGetContent::CreateSP(this, &SMultiBoxWidget::OnWrapButtonClicked))
+				.IsFocusable(MultiBox->bIsFocusable)
+				.StyleSet(StyleSet)
+				.StyleName(StyleName);
 		}
 		break;
 	case EMultiBoxType::UniformToolBar:
@@ -989,6 +1009,28 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 				.MaxDesiredSlotWidth(50.f)
 				.MaxDesiredSlotHeight(43.f)
 				.SlotPadding(FMargin(2.f, 1.f))
+			];
+		}
+		break;
+		// @TODO: ~Move hardcodes into styling file
+	case EMultiBoxType::SlimHorizontalUniformToolBar:
+		{
+			const FToolBarStyle& Style = StyleSet->GetWidgetStyle<FToolBarStyle>(MultiBox->GetStyleName());
+			
+			MainWidget = VerticalBox = SNew (SVerticalBox)
+
+			+SVerticalBox::Slot()
+			.Padding(0.f)
+			.AutoHeight()
+			[
+				SAssignNew(UniformToolbarPanel, SUniformWrapPanel)
+				.HAlign(HAlign_Fill)
+				.MinDesiredSlotWidth(Style.UniformBlockWidth)
+				.MinDesiredSlotHeight(Style.UniformBlockHeight)
+				.MaxDesiredSlotWidth(Style.UniformBlockWidth)
+				.MaxDesiredSlotHeight(Style.UniformBlockHeight)
+				.NumColumnsOverride(Style.NumColumns)
+				.SlotPadding(0.f)	
 			];
 		}
 		break;
@@ -1182,6 +1224,11 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 	{
 		ClippedHorizontalBox->AddWrapButton();
 	}
+	
+	if (ClippedVerticalBox.IsValid())
+	{
+		ClippedVerticalBox->AddWrapButton();
+	}
 
 	FMargin BorderPadding(0);
 	const FSlateBrush* BorderBrush = FStyleDefaults::GetNoBrush();
@@ -1232,9 +1279,15 @@ void SMultiBoxWidget::BuildMultiBoxWidget()
 TSharedRef<SWidget> SMultiBoxWidget::OnWrapButtonClicked()
 {
 	FMenuBuilder MenuBuilder(true, MultiBox->GetLastCommandList(), TSharedPtr<FExtender>(), false, GetStyleSet());
-	{ 
+	{
+		if (ClippedVerticalBox)
+		{
+			MenuBuilder.SetCheckBoxStyle("ClippingVerticalBox.Check");
+		}
 		const TArray< TSharedRef< const FMultiBlock > >& Blocks = MultiBox->GetBlocks();
-		for (int32 BlockIdx = ClippedHorizontalBox->GetClippedIndex(); BlockIdx < Blocks.Num(); ++BlockIdx)
+
+		int32 BlockIdx = ClippedHorizontalBox ? ClippedHorizontalBox->GetClippedIndex() : ClippedVerticalBox->GetClippedIndex();
+		for (; BlockIdx < Blocks.Num(); ++BlockIdx)
 		{
 			Blocks[BlockIdx]->CreateMenuEntry(MenuBuilder);
 		}
@@ -1499,6 +1552,11 @@ FReply SMultiBoxWidget::OnFocusReceived( const FGeometry& MyGeometry, const FFoc
 	if (InFocusEvent.GetCause() != EFocusCause::Mouse)
 	{
 		ResetSearch();
+	}
+
+	if (SearchTextWidget.IsValid())
+	{
+		SearchTextWidget->EnableTextInputMethodContext();
 	}
 
 	if (InFocusEvent.GetCause() == EFocusCause::Navigation)

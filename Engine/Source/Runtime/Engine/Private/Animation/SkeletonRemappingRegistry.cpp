@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SkeletonRemappingRegistry.h"
+#include "Animation/SkeletonRemappingRegistry.h"
 #include "Misc/ScopeRWLock.h"
-#include "SkeletonRemapping.h"
+#include "Animation/SkeletonRemapping.h"
 #include "Animation/Skeleton.h"
 
 namespace UE::Anim
@@ -96,22 +96,6 @@ const FSkeletonRemapping& FSkeletonRemappingRegistry::GetRemapping(const USkelet
 		PerSkeletonMappings.Add(InTargetSkeleton, NewMapping);
 
 		return *NewMapping;
-	}
-}
-
-void FSkeletonRemappingRegistry::RefreshCurveMappings(USkeleton* InSkeleton)
-{
-	TArray<TSharedPtr<FSkeletonRemapping>> ExistingMappings;
-	{
-		FRWScopeLock ReadLock(MappingsLock, SLT_ReadOnly);
-		PerSkeletonMappings.MultiFind(InSkeleton, ExistingMappings);
-	}
-	{
-		FRWScopeLock WriteLock(MappingsLock, SLT_Write);
-		for(const TSharedPtr<FSkeletonRemapping>& ExistingMapping : ExistingMappings)
-		{
-			ExistingMapping->GenerateCurveMapping();
-		}
 	}
 }
 

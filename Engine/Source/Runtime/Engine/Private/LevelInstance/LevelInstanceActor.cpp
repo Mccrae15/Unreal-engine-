@@ -21,7 +21,7 @@ ALevelInstance::ALevelInstance()
 	: LevelInstanceActorGuid(this)
 	, LevelInstanceActorImpl(this)
 {
-	RootComponent = CreateDefaultSubobject<ULevelInstanceComponent>(TEXT("Root"));
+	RootComponent = LevelInstanceComponent = CreateDefaultSubobject<ULevelInstanceComponent>(TEXT("Root"));
 	RootComponent->Mobility = EComponentMobility::Static;
 
 #if WITH_EDITORONLY_DATA
@@ -67,10 +67,6 @@ void ALevelInstance::OnRep_LevelInstanceSpawnGuid()
 void ALevelInstance::PostRegisterAllComponents()
 {
 	Super::PostRegisterAllComponents();
-
-#if WITH_EDITOR
-	ResetUnsupportedWorldAsset();
-#endif
 
 	if (GetLocalRole() == ENetRole::ROLE_Authority && GetWorld()->IsGameWorld())
 	{
@@ -139,6 +135,11 @@ TSubclassOf<AActor> ALevelInstance::GetEditorPivotClass() const
 	return ALevelInstancePivot::StaticClass();
 }
 
+bool ALevelInstance::SupportsPartialEditorLoading() const
+{
+	return ILevelInstanceInterface::SupportsPartialEditorLoading() && LevelInstanceActorImpl.SupportsPartialEditorLoading();
+}
+
 TUniquePtr<FWorldPartitionActorDesc> ALevelInstance::CreateClassActorDesc() const
 {
 	return TUniquePtr<FWorldPartitionActorDesc>(new FLevelInstanceActorDesc());
@@ -150,8 +151,25 @@ void ALevelInstance::PostLoad()
 {
 	Super::PostLoad();
 
+	LevelInstanceComponent = Cast<ULevelInstanceComponent>(RootComponent);
 	OnLevelInstanceActorPostLoad.Broadcast(this);
+
+#if WITH_EDITORONLY_DATA
+	if (IsRunningCookCommandlet() && ShouldCookWorldAsset())
+	{
+		CookedWorldAsset = WorldAsset;
+	}
+#endif
 }
+
+#if WITH_EDITOR
+bool ALevelInstance::ShouldCookWorldAsset() const
+{
+	// If ALevelInstance actor gets loaded it means it needs to Cook its WorldAsset (World Partition Embedded Level Instances don't get loaded as they aren't runtime relevant)
+	// If ALevelInstnace is a template then we only need to Cook its WorldAsset if it's desired runtime behavior is to be Level Streamed
+	return !IsTemplate() || GetDesiredRuntimeBehavior() == ELevelInstanceRuntimeBehavior::LevelStreaming;
+}
+#endif
 
 void ALevelInstance::PreEditUndo()
 {
@@ -304,32 +322,6 @@ void ALevelInstance::PushLevelInstanceEditingStateToProxies(bool bInEditingState
 	Super::PushLevelInstanceEditingStateToProxies(bInEditingState);
 
 	LevelInstanceActorImpl.PushLevelInstanceEditingStateToProxies(bInEditingState);
-}
-
-void ALevelInstance::PreSave(FObjectPreSaveContext ObjectSaveContext)
-{
-	Super::PreSave(ObjectSaveContext);
-
-	if (IsRunningCookCommandlet())
-	{
-		ResetUnsupportedWorldAsset();
-
-#if WITH_EDITORONLY_DATA
-		if (IsLoadingEnabled())
-		{
-			CookedWorldAsset = WorldAsset;
-		}
-#endif
-	}
-}
-
-void ALevelInstance::ResetUnsupportedWorldAsset()
-{
-	if (!ULevelInstanceSubsystem::CanUsePackage(*WorldAsset.GetLongPackageName()))
-	{
-		UE_LOG(LogLevelInstance, Warning, TEXT("LevelInstance doesn't support partitioned world %s, make sure to flag world partition's 'Can be Used by Level Instance'."), *WorldAsset.GetLongPackageName());
-		WorldAsset.Reset();
-	}
 }
 
 #endif

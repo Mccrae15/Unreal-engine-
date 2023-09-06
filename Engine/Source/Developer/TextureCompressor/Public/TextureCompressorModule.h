@@ -236,6 +236,10 @@ struct FTextureBuildSettings
 	// this so we can segregate the derived data keys.
 	bool bAffectedBySharedLinearEncoding = false;
 
+	// If we have a child format, this is the base format (i.e. will have the platform prefix removed). Otherwise equal
+	// to TextureFormatName.
+	FName BaseTextureFormatName;
+	
 	static constexpr uint32 MaxTextureResolutionDefault = TNumericLimits<uint32>::Max();
 
 	/** Default settings. */
@@ -345,6 +349,9 @@ struct FTextureBuildSettings
 	*/
 	TEXTURECOMPRESSOR_API void GetEncodedTextureDescription(FEncodedTextureDescription* OutTextureDescription, const ITextureFormat* InTextureFormat, int32 InEncodedMip0SizeX, int32 InEncodedMip0SizeY, int32 InEncodedMip0NumSlices, int32 InMipCount, bool bInImageHasAlphaChannel) const;
 	TEXTURECOMPRESSOR_API void GetEncodedTextureDescriptionWithPixelFormat(FEncodedTextureDescription* OutTextureDescription, EPixelFormat InEncodedPixelFormat, int32 InEncodedMip0SizeX, int32 InEncodedMip0SizeY, int32 InEncodedMip0NumSlices, int32 InMipCount) const;
+
+	/* Obtain the OpenColorIO library version, primarily used for DDC invalidation. */
+	TEXTURECOMPRESSOR_API static uint32 GetOpenColorIOVersion();
 };
 
 /**
@@ -403,8 +410,16 @@ public:
 	 * @param OutMip - The output mip.
 	 * @param SrcImage - The source longlat image.
 	 */
+	UE_DEPRECATED(5.3, "GenerateBaseCubeMipFromLongitudeLatitude2D with FTextureBuildSettings should be used.")
 	TEXTURECOMPRESSOR_API static void GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const uint32 MaxCubemapTextureResolution, uint8 SourceEncodingOverride = 0);
 
+	/**
+	 * Generates the base cubemap mip from a longitude-latitude 2D image.
+	 * @param OutMip - The output mip.
+	 * @param SrcImage - The source longlat image.
+	 * @param InBuildSettings - Image build settings
+	 */
+	TEXTURECOMPRESSOR_API static void GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const FTextureBuildSettings& InBuildSettings);
 
 	/**
 	 * Generates angularly filtered mips.
@@ -416,9 +431,10 @@ public:
 
 	/**
 	* Returns the number of mips that the given texture will generate with the given build settings, as well as the size of the top mip.
+	* Used for physical textures - not virtual textures.
 	*/
-	virtual int32 GetMipCountForBuildSettings(
+	TEXTURECOMPRESSOR_API static int32 GetMipCountForBuildSettings(
 		int32 InMip0SizeX, int32 InMip0SizeY, int32 InMip0NumSlices, 
 		int32 InExistingMipCount, const FTextureBuildSettings& InBuildSettings, 
-		int32& OutMip0SizeX, int32& OutMip0SizeY, int32& OutMip0NumSlices) const =0;
+		int32& OutMip0SizeX, int32& OutMip0SizeY, int32& OutMip0NumSlices);
 };

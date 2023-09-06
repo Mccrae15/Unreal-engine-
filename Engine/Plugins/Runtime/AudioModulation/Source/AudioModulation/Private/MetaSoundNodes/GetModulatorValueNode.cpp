@@ -49,7 +49,7 @@ namespace AudioModulation
 					AudioModulation::PluginAuthor,
 					AudioModulation::PluginNodeMissingPrompt,
 					GetDefaultInterface(),
-					{ },
+					{ AudioModulation::PluginNodeCategory },
 					{ },
 					{ }
 				};
@@ -68,10 +68,18 @@ namespace AudioModulation
 			const FInputVertexInterface& InputInterface = InParams.Node.GetVertexInterface().GetInputInterface();
 			const FDataReferenceCollection& InputCollection = InParams.InputDataReferences;
 
-			FSoundModulatorAssetReadRef ModulatorReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulatorAsset>("Modulator");
-			FBoolReadRef NormalizedReadRef = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, "Normalized", InParams.OperatorSettings);
+			if (InParams.Environment.Contains<Audio::FDeviceId>(Metasound::Frontend::SourceInterface::Environment::DeviceID))
+			{
+				FSoundModulatorAssetReadRef ModulatorReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulatorAsset>("Modulator");
+				FBoolReadRef NormalizedReadRef = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, "Normalized", InParams.OperatorSettings);
 
-			return MakeUnique<FGetModulatorValueNodeOperator>(InParams, ModulatorReadRef, NormalizedReadRef);
+				return MakeUnique<FGetModulatorValueNodeOperator>(InParams, ModulatorReadRef, NormalizedReadRef);
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Cannot create GetModulatorValueNode when no audio device ID supplied. Expected metasound environment variable '%s'"), *Metasound::Frontend::SourceInterface::Environment::DeviceID.ToString());
+				return nullptr;
+			}
 		}
 
 		FGetModulatorValueNodeOperator(const Metasound::FCreateOperatorParams& InParams, const FSoundModulatorAssetReadRef& InModulator, const Metasound::FBoolReadRef& InNormalized)
@@ -85,25 +93,35 @@ namespace AudioModulation
 
 		virtual ~FGetModulatorValueNodeOperator() = default;
 
-		virtual Metasound::FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(Metasound::FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace Metasound;
+			
+			InOutVertexData.BindReadVertex("Modulator", Modulator);
+			InOutVertexData.BindReadVertex("Normalized", Normalized);
+		}
 
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference("Modulator", Modulator);
-			Inputs.AddDataReadReference("Normalized", Normalized);
+		virtual void BindOutputs(Metasound::FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace Metasound;
+			
+			InOutVertexData.BindReadVertex("Out", OutValue);
+		}
 
-			return Inputs;
+		virtual Metasound::FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual Metasound::FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace Metasound;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference("Out", FFloatReadRef(OutValue));
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
@@ -135,6 +153,27 @@ namespace AudioModulation
 			}
 
 			*OutValue = Value;
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			if (InParams.Environment.Contains<Audio::FDeviceId>(Metasound::Frontend::SourceInterface::Environment::DeviceID))
+			{
+				Audio::FDeviceId PriorDeviceId = DeviceId;
+				DeviceId = InParams.Environment.GetValue<Audio::FDeviceId>(Metasound::Frontend::SourceInterface::Environment::DeviceID);
+
+				if (PriorDeviceId != DeviceId)
+				{
+					// Reset mod handle if device ID is altered. Modulator handle IDs 
+					// are not unique across devices.
+					ModHandle = Audio::FModulatorHandle();
+				}
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Missing audio device ID environment variable (%s) required to properly configure node (Modulation.GetModulatorValue)"), *Metasound::Frontend::SourceInterface::Environment::DeviceID.ToString());
+			}
+			Execute();
 		}
 
 	private:

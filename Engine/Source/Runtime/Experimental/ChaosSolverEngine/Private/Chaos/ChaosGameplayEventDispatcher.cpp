@@ -18,36 +18,14 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ChaosGameplayEventDispatcher)
 
-FChaosBreakEvent::FChaosBreakEvent()
-	: Component(nullptr)
-	, Location(FVector::ZeroVector)
-	, Velocity(FVector::ZeroVector)
-	, AngularVelocity(FVector::ZeroVector)
-	, Extents(FVector::ZeroVector)
-	, Mass(0.0f)
-	, Index(INDEX_NONE)
-	, bFromCrumble(false)
-{
-}
 
-FChaosBreakEvent::FChaosBreakEvent(const Chaos::FBreakingData& BreakingData)
-	: Component(nullptr)
-	, Location(BreakingData.Location)
-	, Velocity(BreakingData.Velocity)
-	, AngularVelocity(BreakingData.AngularVelocity)
-	, Extents(BreakingData.BoundingBox.Extents())
-	, Mass(BreakingData.Mass)
-	, Index(BreakingData.TransformGroupIndex)
-	, bFromCrumble(BreakingData.bFromCrumble)
-{
-}
 
-FChaosRemovalEvent::FChaosRemovalEvent()
-	: Component(nullptr)
-	, Location(FVector::ZeroVector)
-	, Mass(0.0f)
+UChaosGameplayEventDispatcher::UChaosGameplayEventDispatcher()
 {
-
+	PrimaryComponentTick.bCanEverTick = false;
+	PrimaryComponentTick.bStartWithTickEnabled = false;
+	PrimaryComponentTick.bAllowTickOnDedicatedServer = false;
+	PrimaryComponentTick.SetTickFunctionEnable(false);
 }
 
 void UChaosGameplayEventDispatcher::OnRegister()
@@ -291,20 +269,6 @@ void UChaosGameplayEventDispatcher::UnRegisterForCrumblingEvents(UPrimitiveCompo
 	}
 }
 
-void UChaosGameplayEventDispatcher::DispatchPendingWakeNotifies()
-{
-	for (auto MapItr = PendingSleepNotifies.CreateIterator(); MapItr; ++MapItr)
-	{
-		FBodyInstance* BodyInstance = MapItr.Key();
-		if (UPrimitiveComponent* PrimitiveComponent = BodyInstance->OwnerComponent.Get())
-		{
-			PrimitiveComponent->DispatchWakeEvents(MapItr.Value(), BodyInstance->BodySetup->BoneName);
-		}
-	}
-
-	PendingSleepNotifies.Empty();
-}
-
 void UChaosGameplayEventDispatcher::RegisterChaosEvents()
 {
 	if (FPhysScene* Scene = GetWorld()->GetPhysicsScene())
@@ -312,11 +276,10 @@ void UChaosGameplayEventDispatcher::RegisterChaosEvents()
 		if (Chaos::FPhysicsSolver* Solver = Scene->GetSolver())
 		{
 			Chaos::FEventManager* EventManager = Solver->GetEventManager();
-			EventManager->RegisterHandler<Chaos::FCollisionEventData>(Chaos::EEventType::Collision, this, &UChaosGameplayEventDispatcher::HandleCollisionEvents);
-			EventManager->RegisterHandler<Chaos::FBreakingEventData>(Chaos::EEventType::Breaking, this, &UChaosGameplayEventDispatcher::HandleBreakingEvents);
-			EventManager->RegisterHandler<Chaos::FSleepingEventData>(Chaos::EEventType::Sleeping, this, &UChaosGameplayEventDispatcher::HandleSleepingEvents);
-			EventManager->RegisterHandler<Chaos::FRemovalEventData>(Chaos::EEventType::Removal, this, &UChaosGameplayEventDispatcher::HandleRemovalEvents);
-			EventManager->RegisterHandler<Chaos::FCrumblingEventData>(Chaos::EEventType::Crumbling, this, &UChaosGameplayEventDispatcher::HandleCrumblingEvents);
+			EventManager->RegisterHandler<Chaos::FCollisionEventData>(Chaos::EEventType::Collision, this, &UChaosGameplayEventDispatcher::HandleCollisionEvents, &UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForCollisionEvents);
+			EventManager->RegisterHandler<Chaos::FBreakingEventData>(Chaos::EEventType::Breaking, this, &UChaosGameplayEventDispatcher::HandleBreakingEvents, &UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForBreakingEvents);
+			EventManager->RegisterHandler<Chaos::FRemovalEventData>(Chaos::EEventType::Removal, this, &UChaosGameplayEventDispatcher::HandleRemovalEvents, &UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForRemovalEvents);
+			EventManager->RegisterHandler<Chaos::FCrumblingEventData>(Chaos::EEventType::Crumbling, this, &UChaosGameplayEventDispatcher::HandleCrumblingEvents, &UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForCrumblingEvents);
 		}
 	}
 }
@@ -339,6 +302,83 @@ void UChaosGameplayEventDispatcher::UnregisterChaosEvents()
 		}
 	}
 }
+
+template <typename EventIterator>
+void UChaosGameplayEventDispatcher::FillPhysicsProxy(FPhysScene_Chaos& Scene, TArray<UObject*>& Result, EventIterator& It)
+{
+	UPrimitiveComponent* const Comp0 = Cast<UPrimitiveComponent>(It.Key());
+	const TArray<IPhysicsProxyBase*>* PhysicsProxyArray = Scene.GetOwnedPhysicsProxies(Comp0);
+
+	if (PhysicsProxyArray)
+	{
+		for (IPhysicsProxyBase* PhysicsProxy0 : *PhysicsProxyArray)
+		{
+			Result.AddUnique(PhysicsProxy0->GetOwner());
+		}
+	}
+}
+
+
+TArray<UObject*> UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForCollisionEvents()
+{
+	TArray<UObject*> Result;
+	FPhysScene_Chaos& Scene = *(GetWorld()->GetPhysicsScene());
+		
+	// look through all the components that someone is interested in and get all the proxies
+	for (decltype(CollisionEventRegistrations)::TIterator It(CollisionEventRegistrations); It; ++It)
+	{
+		FillPhysicsProxy(Scene, Result, It);
+	}
+
+	return Result;
+}
+
+TArray<UObject*> UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForBreakingEvents()
+{
+	TArray<UObject*> Result;
+	FPhysScene_Chaos& Scene = *(GetWorld()->GetPhysicsScene());
+
+	// look through all the components that someone is interested in and get all the proxies
+	for (decltype(BreakEventRegistrations)::TIterator It(BreakEventRegistrations); It; ++It)
+	{
+		FillPhysicsProxy(Scene, Result, It);
+	}
+
+	return Result;
+}
+
+TArray<UObject*> UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForRemovalEvents()
+{
+	TArray<UObject*> Result;
+	FPhysScene_Chaos& Scene = *(GetWorld()->GetPhysicsScene());
+
+	// look through all the components that someone is interested in and get all the proxies
+	for (decltype(RemovalEventRegistrations)::TIterator It(RemovalEventRegistrations); It; ++It)
+	{
+		FillPhysicsProxy(Scene, Result, It);
+	}
+
+	return Result;
+}
+
+TArray<UObject*> UChaosGameplayEventDispatcher::GetInterestedProxyOwnersForCrumblingEvents()
+{
+	TArray<UObject*> Result;
+	FPhysScene_Chaos& Scene = *(GetWorld()->GetPhysicsScene());
+
+	// look through all the components that someone is interested in and get all the proxies
+	for (decltype(CrumblingEventRegistrations)::TIterator It(CrumblingEventRegistrations); It; ++It)
+	{
+		FillPhysicsProxy(Scene, Result, It);
+	}
+
+	return Result;
+}
+
+int32 GReducedCollisionDispatch = 0;
+float GReducedCollisionDispatchAmount = 0.1f;
+FAutoConsoleVariableRef CVar_ReducedCollisionDispatch(TEXT("p.chaos.gpdispatch.collisions.reduce"), GReducedCollisionDispatch, TEXT("Enable reduced dispatch of collision events where only a subset of total collisions are actually dispatched to outside systems [0 - off, 1- on]"));
+FAutoConsoleVariableRef CVar_ReducedCollisionDispatchAmount(TEXT("p.chaos.gpdispatch.collisions.reduceamount"), GReducedCollisionDispatchAmount, TEXT("Percentage of collisions to actually dispatch [0 - 1]"));
 
 void UChaosGameplayEventDispatcher::HandleCollisionEvents(const Chaos::FCollisionEventData& Event)
 {
@@ -374,8 +414,23 @@ void UChaosGameplayEventDispatcher::HandleCollisionEvents(const Chaos::FCollisio
 						TArray<int32> const* const CollisionIndices = PhysicsProxyToCollisionIndicesMap.Find(PhysicsProxy0);
 						if (CollisionIndices)
 						{
-							for (int32 EncodedCollisionIdx : *CollisionIndices)
+							const int32 NumCollisionIndices = CollisionIndices->Num();
+
+							if(NumCollisionIndices == 0)
 							{
+								continue;
+							}
+
+							const int32 NumToDispatch = GReducedCollisionDispatch == 1 ?
+								FMath::Max((int32)((float)NumCollisionIndices * FMath::Clamp(GReducedCollisionDispatchAmount, 0.0f, 1.0f)), 1) :
+								NumCollisionIndices;
+
+							const int32 Interval = NumCollisionIndices / NumToDispatch;
+
+							for(int32 Index = 0; Index < NumCollisionIndices; Index += Interval)
+							{
+								int32 EncodedCollisionIdx = (*CollisionIndices)[Index];
+
 								bool bSwapOrder;
 								int32 CollisionIdx = Chaos::FEventManager::DecodeCollisionIndex(EncodedCollisionIdx, bSwapOrder);
 
@@ -417,14 +472,12 @@ void UChaosGameplayEventDispatcher::HandleCollisionEvents(const Chaos::FCollisio
 										NewContact.ContactPenetration = CollisionDataItem.PenetrationDepth;
 										// NewContact.PhysMaterial[1] UPhysicalMaterial required here
 
-										if(bSwapOrder)
+										if (bSwapOrder)
 										{
 											NotifyInfo.RigidCollisionData.SwapContactOrders();
 										}
 									}
-
 								}
-
 
 								if (HandlerSet.ChaosHandlers.Num() > 0)
 								{
@@ -505,10 +558,10 @@ void UChaosGameplayEventDispatcher::HandleBreakingEvents(const Chaos::FBreakingE
 
 			for (const Chaos::FBreakingData& BreakingData : BreakingDataArray)
 			{	
-				if (BreakingData.Proxy)
+				if ((BreakingData.EmitterFlag & Chaos::EventEmitterFlag::OwnDispatcher) && BreakingData.Proxy)
 				{
 					UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(BreakingData.Proxy);
-					if (PrimComp && BreakEventRegistrations.Contains(PrimComp))
+					if (PrimComp)
 					{
 						// queue them up so we can release the physics data before trigging BP events
 						FChaosBreakEvent& BreakEvent = PendingBreakEvents.Emplace_GetRef(BreakingData);
@@ -531,25 +584,21 @@ void UChaosGameplayEventDispatcher::HandleSleepingEvents(const Chaos::FSleepingE
 
 	for (const Chaos::FSleepingData& SleepData : SleepingArray)
 	{
-		if (SleepData.Proxy!= nullptr && Scene.GetOwningComponent<UPrimitiveComponent>(SleepData.Proxy) != nullptr)
+		ESleepEvent WakeSleepEvent = SleepData.Sleeping ? ESleepEvent::SET_Sleep : ESleepEvent::SET_Wakeup;
+		if (UPrimitiveComponent* PrimitiveComponent = Scene.GetOwningComponent<UPrimitiveComponent>(SleepData.Proxy))
 		{
+			FName BoneName = NAME_None;
 			if (FBodyInstance* BodyInstance = Scene.GetBodyInstanceFromProxy(SleepData.Proxy))
 			{
-				if (BodyInstance->bGenerateWakeEvents)
-				{
-					ESleepEvent WakeSleepEvent = SleepData.Sleeping ? ESleepEvent::SET_Sleep : ESleepEvent::SET_Wakeup;
-					AddPendingSleepingNotify(BodyInstance, WakeSleepEvent);
-				}
+				BoneName = BodyInstance->BodySetup->BoneName;
+			}
+
+			if (PrimitiveComponent->ShouldDispatchWakeEvents(BoneName))
+			{
+				PrimitiveComponent->DispatchWakeEvents(WakeSleepEvent, BoneName);
 			}
 		}
 	}
-
-	DispatchPendingWakeNotifies();
-}
-
-void UChaosGameplayEventDispatcher::AddPendingSleepingNotify(FBodyInstance* BodyInstance, ESleepEvent SleepEventType)
-{
-	PendingSleepNotifies.FindOrAdd(BodyInstance) = SleepEventType;
 }
 
 void UChaosGameplayEventDispatcher::HandleRemovalEvents(const Chaos::FRemovalEventData& Event)
@@ -611,23 +660,20 @@ void UChaosGameplayEventDispatcher::HandleCrumblingEvents(const Chaos::FCrumblin
 		TArray<FChaosCrumblingEvent> PendingCrumblingEvent;
 		for (const Chaos::FCrumblingData& CrumblingDataItem : Event.CrumblingData.AllCrumblingsArray)
 		{	
-			if (CrumblingDataItem.Proxy)
+			if ((CrumblingDataItem.EmitterFlag & Chaos::EventEmitterFlag::OwnDispatcher) && CrumblingDataItem.Proxy)
 			{
 				if (UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(CrumblingDataItem.Proxy))
 				{
-					if (CrumblingEventRegistrations.Contains(PrimComp))
-					{
-						// queue them up so we can release the physics data before triggering BP events
-						FChaosCrumblingEvent& CrumblingEvent = PendingCrumblingEvent.AddZeroed_GetRef();
-						CrumblingEvent.Component = PrimComp;
-						CrumblingEvent.Location = CrumblingDataItem.Location;
-						CrumblingEvent.Orientation = CrumblingDataItem.Orientation;
-						CrumblingEvent.LinearVelocity = CrumblingDataItem.LinearVelocity;
-						CrumblingEvent.AngularVelocity = CrumblingDataItem.AngularVelocity;
-						CrumblingEvent.Mass = static_cast<float>(CrumblingDataItem.Mass);
-						CrumblingEvent.LocalBounds = FBox(CrumblingDataItem.LocalBounds.Min(), CrumblingDataItem.LocalBounds.Max());
-						CrumblingEvent.Children = CrumblingDataItem.Children;
-					}
+					// queue them up so we can release the physics data before triggering BP events
+					FChaosCrumblingEvent& CrumblingEvent = PendingCrumblingEvent.AddZeroed_GetRef();
+					CrumblingEvent.Component = PrimComp;
+					CrumblingEvent.Location = CrumblingDataItem.Location;
+					CrumblingEvent.Orientation = CrumblingDataItem.Orientation;
+					CrumblingEvent.LinearVelocity = CrumblingDataItem.LinearVelocity;
+					CrumblingEvent.AngularVelocity = CrumblingDataItem.AngularVelocity;
+					CrumblingEvent.Mass = static_cast<float>(CrumblingDataItem.Mass);
+					CrumblingEvent.LocalBounds = FBox(CrumblingDataItem.LocalBounds.Min(), CrumblingDataItem.LocalBounds.Max());
+					CrumblingEvent.Children = CrumblingDataItem.Children;
 				}
 			}
 		}

@@ -26,7 +26,7 @@ namespace PerfReportTool
     class Version
     {
 		// Format: Major.Minor.Bugfix
-        private static string VersionString = "4.100.0";
+        private static string VersionString = "4.106.0";
 
         public static string Get() { return VersionString; }
     };
@@ -165,9 +165,16 @@ namespace PerfReportTool
 			"  -summaryTableStatThreshold <n> : stat/metric columns in the summarytable will be filtered out if all values are\n" +
 			"     less than the threshold\n" +
 			"  -summaryTableXmlSubst <find1>=<replace1>,<find2>=<replace2>... : replace summarytable XML row and filter entries\n" +
-			"  -transposeTable : write the summary tables transposed\n"+
+			"  -summaryTableXmlAppend <list,of,stats> : append these stats to the summary table's filter list\n" +
+			"  -summaryTableXmlRowSortAppend <list,of,stats> : append these stats to the summary table's row sort list\n" +
+			"  -transposeTable : write the summary tables transposed\n" +
 			"  -transposeCollatedTable : write the collated summary table transposed (disables min/max columns)\n" +
-            "  -addDiffRows : adds diff rows after the first two rows\n" + 
+			"Diff rows\n" +
+			"  -addDiffRows : adds diff rows after the first two rows\n" +
+			"  -sortColumnsByDiff : sorts columns by the max of its diff scores (use with -addDiffRows).\n" +
+			"      Notes: Diff score corresponds to the value of a column's diff row; the sign is reversed if LowIsBad\n" +
+			"             Stats are sorted by prefixes first, e.g GPU/\n" +
+			"  -columnDiffDisplayThreshold <value> : if specified, hides columns with max diff value below this threshold\n"+
 			"\n" +
 			"Optional Column Filters\n" +
 			"  -debugShowFilteredColumns : grays out filtered columns instead of removing. Column tooltip will show filtered reason.\n" +
@@ -354,7 +361,15 @@ namespace PerfReportTool
 			}
 
 			// Load the report + graph XML data
-			reportXML = new ReportXML(GetArg("graphxml", false), GetArg("reportxml", false), GetArg("reportxmlbasedir", false), GetArg("summaryTableXml", false), GetArg("summaryTableXmlSubst", false));
+			reportXML = new ReportXML(
+				GetArg("graphxml", false), 
+				GetArg("reportxml", false), 
+				GetArg("reportxmlbasedir", false), 
+				GetArg("summaryTableXml", false), 
+				GetArg("summaryTableXmlSubst", false), 
+				GetArg("summaryTableXmlAppend", false),
+				GetArg("summaryTableXmlRowSortAppend", false)
+				);
 
 			if (GetBoolArg("listSummaryTables"))
 			{
@@ -810,10 +825,9 @@ namespace PerfReportTool
 				filteredTable.ApplyDisplayNameMapping(statDisplaynameMapping);
 				string VersionString = GetBoolArg("noWatermarks") ? "" : Version.Get();
 				string summaryTitle = GetArg("summaryTitle", null);
-
 				if (GetBoolArg("addDiffRows"))
 				{
-					filteredTable.AddDiffRows();
+					filteredTable.AddDiffRows(GetBoolArg("sortColumnsByDiff"), GetFloatArg("columnDiffDisplayThreshold", 0.0f));
 				}
 
 				// Run again to add format info for any new columns that were added (eg. count).

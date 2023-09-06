@@ -228,7 +228,7 @@ namespace Turnkey.Commands
 					}
 				}
 
-				// now check software verison of each device
+				// now check software version of each device
 				if (DevicesToCheck != null)
 				{
 					foreach (DeviceInfo Device in DevicesToCheck.Where(x => x.Platform == Platform))
@@ -240,6 +240,11 @@ namespace Turnkey.Commands
 
 						// get the min/max versions from PlatformSDK
 						SDKCollection SoftwareInfo = PlatformSDK.GetAllSoftwareInfo(Device.Type, Device.SoftwareVersion);
+						if (!SoftwareInfo.Sdks.Any())
+						{
+							// if we found no supported software versions for the specific device type, query for device type independent versions
+							SoftwareInfo = PlatformSDK.GetAllSoftwareInfo(null, Device.SoftwareVersion);
+						}
 
 						SdkUtils.LocalAvailability DeviceState = SdkUtils.LocalAvailability.None;
 						if (!bArePrerequisitesValid)
@@ -263,6 +268,14 @@ namespace Turnkey.Commands
 							DeviceState |= SdkUtils.LocalAvailability.Device_CannotConnect;
 						}
 
+						if (Device.AutoSoftwareUpdates == AutomationTool.DeviceInfo.AutoSoftwareUpdateMode.Disabled)
+						{
+							DeviceState |= SdkUtils.LocalAvailability.Device_AutoSoftwareUpdates_Disabled;
+						}
+						else if (Device.AutoSoftwareUpdates == AutomationTool.DeviceInfo.AutoSoftwareUpdateMode.Enabled)
+						{
+							DeviceState |= SdkUtils.LocalAvailability.Device_AutoSoftwareUpdates_Enabled;
+						}
 
 						List<string> DeviceProperties = new List<string>()
 							{

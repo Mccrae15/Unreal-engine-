@@ -220,6 +220,52 @@ namespace Metasound
 			, TriggerOnShuffle(FTriggerWriteRef::CreateNew(InParams.OperatorSettings))
 			, OutValue(TDataWriteReferenceFactory<ElementType>::CreateAny(InParams.OperatorSettings))
 		{
+			Reset(InParams);
+		}
+
+		virtual ~TArrayShuffleOperator() = default;
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace ArrayNodeShuffleVertexNames;
+
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTriggerNext), TriggerNext);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTriggerShuffle), TriggerShuffle);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTriggerReset), TriggerReset);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputShuffleArray), InputArray);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputShuffleSeed), SeedValue);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAutoShuffle), bAutoShuffle);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputShuffleEnableSharedState), bEnableSharedState);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace ArrayNodeShuffleVertexNames;
+
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTriggerOnNext), TriggerNext);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTriggerOnShuffle), TriggerOnShuffle);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTriggerOnResetSeed), TriggerReset);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputShuffledValue), OutValue);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
 			using namespace Frontend;
 
 			SharedStateUniqueId = INDEX_NONE;
@@ -235,37 +281,6 @@ namespace Metasound
 
 			TriggerOnShuffle->Reset();
 			*OutValue = TDataTypeFactory<ElementType>::CreateAny(InParams.OperatorSettings);
-		}
-
-		virtual ~TArrayShuffleOperator() = default;
-
-		virtual FDataReferenceCollection GetInputs() const override
-		{
-			using namespace ArrayNodeShuffleVertexNames;
-
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerNext), TriggerNext);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerShuffle), TriggerShuffle);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTriggerReset), TriggerReset);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputShuffleArray), InputArray);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputShuffleSeed), SeedValue);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAutoShuffle), bAutoShuffle);
-			Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputShuffleEnableSharedState), bEnableSharedState);
-
-			return Inputs;
-		}
-
-		virtual FDataReferenceCollection GetOutputs() const override
-		{
-			using namespace ArrayNodeShuffleVertexNames;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnNext), TriggerNext);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnShuffle), TriggerOnShuffle);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTriggerOnResetSeed), TriggerReset);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputShuffledValue), OutValue);
-
-			return Outputs;
 		}
 
 		void Execute()

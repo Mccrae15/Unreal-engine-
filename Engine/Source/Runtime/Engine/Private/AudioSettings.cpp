@@ -24,7 +24,6 @@ UAudioSettings::UAudioSettings(const FObjectInitializer& ObjectInitializer)
 
 	bAllowPlayWhenSilent = true;
 	bParameterInterfacesRegistered = false;
-	bIsAudioMixerEnabled = false;
 
 	GlobalMinPitchScale = 0.4F;
 	GlobalMaxPitchScale = 2.0F;
@@ -188,6 +187,11 @@ const FAudioQualitySettings& UAudioSettings::GetQualityLevelSettings(int32 Quali
 	return QualityLevels[FMath::Clamp(QualityLevel, 0, QualityLevels.Num() - 1)];
 }
 
+int32 UAudioSettings::GetDefaultCompressionQuality() const
+{
+	return FMath::Clamp(DefaultCompressionQuality,1,100);
+}
+
 int32 UAudioSettings::GetQualityLevelSettingsNum() const
 {
 	return QualityLevels.Num();
@@ -282,6 +286,8 @@ void UAudioSettings::RegisterParameterInterfaces()
 		Audio::IAudioParameterInterfaceRegistry& InterfaceRegistry = Audio::IAudioParameterInterfaceRegistry::Get();
 		InterfaceRegistry.RegisterInterface(Audio::AttenuationInterface::GetInterface());
 		InterfaceRegistry.RegisterInterface(Audio::SpatializationInterface::GetInterface());
+		InterfaceRegistry.RegisterInterface(Audio::SourceOrientationInterface::GetInterface());
+		InterfaceRegistry.RegisterInterface(Audio::ListenerOrientationInterface::GetInterface());
 	}
 }
 
@@ -300,16 +306,6 @@ USoundConcurrency* UAudioSettings::GetDefaultSoundConcurrency() const
 	return DefaultSoundConcurrency;
 }
 
-void UAudioSettings::SetAudioMixerEnabled(const bool bInAudioMixerEnabled)
-{
-	bIsAudioMixerEnabled = bInAudioMixerEnabled;
-}
-
-const bool UAudioSettings::IsAudioMixerEnabled() const
-{
-	return bIsAudioMixerEnabled;
-}
-
 int32 UAudioSettings::GetHighestMaxChannels() const
 {
 	check(QualityLevels.Num() > 0);
@@ -317,10 +313,7 @@ int32 UAudioSettings::GetHighestMaxChannels() const
 	int32 HighestMaxChannels = -1;
 	for (const FAudioQualitySettings& Settings : QualityLevels)
 	{
-		if (Settings.MaxChannels > HighestMaxChannels)
-		{
-			HighestMaxChannels = Settings.MaxChannels;
-		}
+		HighestMaxChannels = FMath::Max(Settings.MaxChannels, HighestMaxChannels);
 	}
 
 	return HighestMaxChannels;

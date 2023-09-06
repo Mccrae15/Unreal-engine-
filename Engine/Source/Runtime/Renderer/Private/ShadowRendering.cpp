@@ -203,11 +203,11 @@ class FDummyWholeSceneDirectionalShadowStencilVertexBuffer : public FVertexBuffe
 {
 public:
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyWholeSceneDirectionalShadowStencilVertexBuffer"));
-		VertexBufferRHI = RHICreateBuffer(sizeof(FVector4f) * 12, BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-		FVector4f* DummyContents = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 12, RLM_WriteOnly);
+		VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FVector4f) * 12, BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FVector4f* DummyContents = (FVector4f*)RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 12, RLM_WriteOnly);
 
 		// Far Plane
 		DummyContents[0] = FVector4f( 1,  1,  1 /* StencilFar */);
@@ -225,7 +225,7 @@ public:
 		DummyContents[10] = FVector4f( 1,  1, -1);
 		DummyContents[11] = FVector4f( 1, -1, -1);
 
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 	}
 };
 
@@ -302,33 +302,31 @@ void GetOnePassPointShadowProjectionParameters(FRDGBuilder& GraphBuilder, const 
 -----------------------------------------------------------------------------*/
 
 void FShadowVolumeBoundProjectionVS::SetParameters(
-	FRHICommandList& RHICmdList,
+	FRHIBatchedShaderParameters& BatchedParameters,
 	const FSceneView& View,
 	const FProjectedShadowInfo* ShadowInfo,
 	EShadowProjectionVertexShaderFlags Flags)
 {
-	FRHIVertexShader* ShaderRHI = RHICmdList.GetBoundVertexShader();
-
 	if(ShadowInfo->IsWholeScenePointLightShadow())
 	{
 		// Handle stenciling sphere for point light.
-		StencilingGeometryParameters.Set(RHICmdList, this, View, ShadowInfo->LightSceneInfo);
+		StencilingGeometryParameters.Set(BatchedParameters, View, ShadowInfo->LightSceneInfo);
 	}
 	else
 	{
-		StencilingGeometryParameters.Set(RHICmdList, this, FVector4f(0,0,0,1));
+		StencilingGeometryParameters.Set(BatchedParameters, FVector4f(0,0,0,1));
 	}
 
 	if ((Flags & EShadowProjectionVertexShaderFlags::DrawingFrustum) != EShadowProjectionVertexShaderFlags::None)
 	{
 		const FVector PreShadowToPreView(View.ViewMatrices.GetPreViewTranslation() - ShadowInfo->PreShadowTranslation);
-		SetShaderValue(RHICmdList, ShaderRHI, InvReceiverInnerMatrix, ShadowInfo->InvReceiverInnerMatrix);
-		SetShaderValue(RHICmdList, ShaderRHI, PreShadowToPreViewTranslation, FVector4f((FVector3f)PreShadowToPreView, 0));
+		SetShaderValue(BatchedParameters, InvReceiverInnerMatrix, ShadowInfo->InvReceiverInnerMatrix);
+		SetShaderValue(BatchedParameters, PreShadowToPreViewTranslation, FVector4f((FVector3f)PreShadowToPreView, 0));
 	}
 	else
 	{
-		SetShaderValue(RHICmdList, ShaderRHI, InvReceiverInnerMatrix, FMatrix44f::Identity);
-		SetShaderValue(RHICmdList, ShaderRHI, PreShadowToPreViewTranslation, FVector4f(0, 0, 0, 0));
+		SetShaderValue(BatchedParameters, InvReceiverInnerMatrix, FMatrix44f::Identity);
+		SetShaderValue(BatchedParameters, PreShadowToPreViewTranslation, FVector4f(0, 0, 0, 0));
 	}
 }
 
@@ -343,7 +341,7 @@ TModulatedShadowProjection<T>::TModulatedShadowProjection(const ShaderMetaType::
 TShadowProjectionPS<T, false, true>(Initializer)
 {
 	ModulatedShadowColorParameter.Bind(Initializer.ParameterMap, TEXT("ModulatedShadowColor"));
-	MobileBasePassUniformBuffer.Bind(Initializer.ParameterMap, FMobileBasePassUniformParameters::StaticStructMetadata.GetShaderVariableName());
+	MobileBasePassUniformBuffer.Bind(Initializer.ParameterMap, FMobileBasePassUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName());
 } 
 
 /**
@@ -463,21 +461,24 @@ static void BindShaderShaders(FRHICommandList& RHICmdList, FGraphicsPipelineStat
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, StencilRef);
 
-	VertexShader->SetParameters(RHICmdList, View, ShadowInfo, EShadowProjectionVertexShaderFlags::DrawingFrustum);
-	PixelShader->SetParameters(RHICmdList, ViewIndex, View, ShadowInfo);
+	SetShaderParametersLegacyVS(RHICmdList, VertexShader, View, ShadowInfo, EShadowProjectionVertexShaderFlags::DrawingFrustum);
+
+	FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+
+	PixelShader->SetParameters(BatchedParameters, ViewIndex, View, ShadowInfo);
 
 	if (Strata::IsStrataEnabled())
 	{
-		FRHIPixelShader* ShaderRHI = PixelShader.GetPixelShader();
 		TRDGUniformBufferRef<FStrataGlobalUniformParameters> StrataUniformBuffer = Strata::BindStrataGlobalUniformParameters(View);
-		PixelShader->FGlobalShader::template SetParameters<FStrataGlobalUniformParameters>(RHICmdList, ShaderRHI, StrataUniformBuffer->GetRHIRef());
+		PixelShader->FGlobalShader::template SetParameters<FStrataGlobalUniformParameters>(BatchedParameters, StrataUniformBuffer->GetRHIRef());
 	}
 
 	if (HairStrandsUniformBuffer)
 	{
-		FRHIPixelShader* ShaderRHI = PixelShader.GetPixelShader();
-		PixelShader->FGlobalShader::template SetParameters<FHairStrandsViewUniformParameters>(RHICmdList, ShaderRHI, HairStrandsUniformBuffer);
+		PixelShader->FGlobalShader::template SetParameters<FHairStrandsViewUniformParameters>(BatchedParameters, HairStrandsUniformBuffer);
 	}
+
+	RHICmdList.SetBatchedShaderParameters(PixelShader.GetPixelShader(), BatchedParameters);
 }
 
 
@@ -772,11 +773,11 @@ FRHIBlendState* FProjectedShadowInfo::GetBlendStateForProjection(bool bProjectin
 class FFrustumVertexBuffer : public FVertexBuffer
 {
 public:
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FProjectedShadowInfoStencilFrustum"));
-		VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector4f) * 8, BUF_Static, CreateInfo);
-		FVector4f* OutFrustumVertices = reinterpret_cast<FVector4f*>(RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 8, RLM_WriteOnly));
+		VertexBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(FVector4f) * 8, BUF_Static, CreateInfo);
+		FVector4f* OutFrustumVertices = reinterpret_cast<FVector4f*>(RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 8, RLM_WriteOnly));
 		
 		for(uint32 vZ = 0;vZ < 2;vZ++)
 		{
@@ -793,7 +794,7 @@ public:
 			}
 		}
 
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 	}
 };
 TGlobalResource<FFrustumVertexBuffer> GFrustumVertexBuffer;
@@ -1060,7 +1061,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMask(
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		// Set the projection vertex shader parameters
-		VertexShader->SetParameters(RHICmdList, *View, this, EShadowProjectionVertexShaderFlags::DrawingFrustum);
+		SetShaderParametersLegacyVS(RHICmdList, VertexShader, *View, this, EShadowProjectionVertexShaderFlags::DrawingFrustum);
 
 		RHICmdList.SetStreamSource(0, GFrustumVertexBuffer.VertexBufferRHI, 0);
 
@@ -1104,7 +1105,7 @@ void FProjectedShadowInfo::SetupProjectionStencilMaskForHair(FRHICommandList& RH
 	GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = nullptr;
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-	VertexShader->SetParameters(RHICmdList, *View, this, EShadowProjectionVertexShaderFlags::DrawingFrustum);
+	SetShaderParametersLegacyVS(RHICmdList, VertexShader, *View, this, EShadowProjectionVertexShaderFlags::DrawingFrustum);
 
 	RHICmdList.SetStreamSource(0, GFrustumVertexBuffer.VertexBufferRHI, 0);
 	RHICmdList.DrawIndexedPrimitive(GCubeIndexBuffer.IndexBufferRHI, 0, 0, 8, 0, 12, 1);
@@ -1129,7 +1130,6 @@ void FProjectedShadowInfo::RenderProjection(
 	const FLightSceneProxy* LightSceneProxy,
 	const FSceneRenderer* SceneRender,
 	bool bProjectingForForwardShading,
-	bool bMobileModulatedProjections,
 	bool bSubPixelShadow) const
 {
 	// Find the shadow's view relevance.
@@ -1254,9 +1254,9 @@ void FProjectedShadowInfo::RenderProjection(
 		RDG_EVENT_NAME("%s", *EventName),
 		PassParameters,
 		ERDGPassFlags::Raster | PassFlags,
-		[this, SceneRender, View, ViewIndex, LightSceneProxy, bProjectingForForwardShading, bMobileModulatedProjections, &InstanceCullingDrawParams, bSubPixelShadow, PassParameters](FRHICommandList& RHICmdList)
+		[this, SceneRender, View, ViewIndex, LightSceneProxy, bProjectingForForwardShading, &InstanceCullingDrawParams, bSubPixelShadow, PassParameters](FRHICommandList& RHICmdList)
 	{
-		RenderProjectionInternal(RHICmdList, ViewIndex, View, LightSceneProxy, SceneRender, bProjectingForForwardShading, bMobileModulatedProjections, InstanceCullingDrawParams, bSubPixelShadow && PassParameters->HairStrands ? PassParameters->HairStrands.GetUniformBuffer()->GetRHI() : nullptr);
+		RenderProjectionInternal(RHICmdList, ViewIndex, View, LightSceneProxy, SceneRender, bProjectingForForwardShading, false, InstanceCullingDrawParams, bSubPixelShadow && PassParameters->HairStrands ? PassParameters->HairStrands.GetUniformBuffer()->GetRHI() : nullptr);
 	});
 }
 
@@ -1434,7 +1434,7 @@ void FProjectedShadowInfo::RenderProjectionInternal(
 }
 
 void FProjectedShadowInfo::RenderMobileModulatedShadowProjection(
-	FRHICommandListImmediate& RHICmdList,
+	FRHICommandList& RHICmdList,
 	int32 ViewIndex,
 	const FViewInfo* View,
 	const FLightSceneProxy* LightSceneProxy,
@@ -1480,9 +1480,9 @@ static void SetPointLightShaderTempl(FRHICommandList& RHICmdList, FGraphicsPipel
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-	
-	VertexShader->SetParameters(RHICmdList, View, ShadowInfo, EShadowProjectionVertexShaderFlags::None);
-	PixelShader->SetParameters(RHICmdList, ViewIndex, View, ShadowInfo, HairStrandsUniformBuffer);
+
+	SetShaderParametersLegacyVS(RHICmdList, VertexShader, View, ShadowInfo, EShadowProjectionVertexShaderFlags::None);
+	SetShaderParametersLegacyPS(RHICmdList, PixelShader, ViewIndex, View, ShadowInfo, HairStrandsUniformBuffer);
 }
 
 void FProjectedShadowInfo::RenderOnePassPointLightProjection(
@@ -1712,11 +1712,7 @@ FMatrix FProjectedShadowInfo::GetScreenToShadowMatrix(const FSceneView& View, ui
 		// Z of the position being transformed is actually view space Z, 
 			// Transform it into post projection space by applying the projection matrix,
 			// Which is the required space before applying View.InvTranslatedViewProjectionMatrix
-		FMatrix(
-			FPlane(1,0,0,0),
-			FPlane(0,1,0,0),
-			FPlane(0,0,View.ViewMatrices.GetProjectionMatrix().M[2][2],1),
-			FPlane(0,0,View.ViewMatrices.GetProjectionMatrix().M[3][2],0)) *
+		View.ViewMatrices.GetScreenToClipMatrix() *
 		// Transform the post projection space position into translated world space
 		// Translated world space is normal world space translated to the view's origin, 
 		// Which prevents floating point imprecision far from the world origin.
@@ -2021,8 +2017,7 @@ void FSceneRenderer::RenderShadowProjections(
 	const FLightSceneProxy* LightSceneProxy,
 	TArrayView<const FProjectedShadowInfo* const> Shadows,
 	bool bSubPixelShadow,
-	bool bProjectingForForwardShading,
-	bool bMobileModulatedProjections)
+	bool bProjectingForForwardShading)
 {
 	CheckShadowDepthRenderCompleted();
 
@@ -2076,7 +2071,7 @@ void FSceneRenderer::RenderShadowProjections(
 					}
 					else
 					{
-						ProjectedShadowInfo->RenderProjection(GraphBuilder, CommonPassParameters, ViewIndex, &View, LightSceneProxy, this, bProjectingForForwardShading, bMobileModulatedProjections, bSubPixelShadow);
+						ProjectedShadowInfo->RenderProjection(GraphBuilder, CommonPassParameters, ViewIndex, &View, LightSceneProxy, this, bProjectingForForwardShading, bSubPixelShadow);
 					}
 				}
 			}
@@ -2105,11 +2100,6 @@ void FSceneRenderer::RenderShadowProjections(
 	for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.ShadowsToProject.Num(); ShadowIndex++)
 	{
 		FProjectedShadowInfo* ProjectedShadowInfo = VisibleLightInfo.ShadowsToProject[ShadowIndex];
-		if (!ProjectedShadowInfo->bIncludeInScreenSpaceShadowMask)
-		{
-			continue;
-		}
-
 		if (ProjectedShadowInfo->bRayTracedDistanceField)
 		{
 			DistanceFieldShadows.Add(ProjectedShadowInfo);
@@ -2132,7 +2122,6 @@ void FSceneRenderer::RenderShadowProjections(
 			GetLightNameForDrawEvent(LightSceneProxy, LightNameWithLevel);
 			RDG_EVENT_SCOPE(GraphBuilder, "%s", *LightNameWithLevel);
 
-			const bool bMobileModulatedProjections = false;
 			FSceneRenderer::RenderShadowProjections(
 				GraphBuilder,
 				OutputTexture,
@@ -2140,8 +2129,7 @@ void FSceneRenderer::RenderShadowProjections(
 				LightSceneProxy,
 				NormalShadows,
 				bSubPixel,
-				bProjectingForForwardShading,
-				bMobileModulatedProjections);
+				bProjectingForForwardShading);
 		};
 
 		{
@@ -2195,9 +2183,11 @@ void FSceneRenderer::RenderShadowProjections(
 	}
 }
 
-void FSceneRenderer::BeginAsyncDistanceFieldShadowProjections(FRDGBuilder& GraphBuilder, const FMinimalSceneTextures& SceneTextures) const
+void FSceneRenderer::BeginAsyncDistanceFieldShadowProjections(FRDGBuilder& GraphBuilder, const FMinimalSceneTextures& SceneTextures, const FDynamicShadowsTaskData* TaskData) const
 {
 	extern int32 GDFShadowAsyncCompute;
+
+	TConstArrayView<FProjectedShadowInfo*> ProjectedDistanceFieldShadows = GetProjectedDistanceFieldShadows(TaskData);
 
 	if (!!GDFShadowAsyncCompute && ViewFamily.EngineShowFlags.DynamicShadows && GetShadowQuality() > 0 && ProjectedDistanceFieldShadows.Num() > 0)
 	{
@@ -2212,8 +2202,6 @@ void FSceneRenderer::BeginAsyncDistanceFieldShadowProjections(FRDGBuilder& Graph
 			for (int32 DFShadowIndex = 0; DFShadowIndex < ProjectedDistanceFieldShadows.Num(); ++DFShadowIndex)
 			{
 				FProjectedShadowInfo* ProjectedShadowInfo = ProjectedDistanceFieldShadows[DFShadowIndex];
-
-				check(ProjectedShadowInfo->bIncludeInScreenSpaceShadowMask);
 
 				FIntRect ScissorRect;
 				if (ProjectedShadowInfo->bDirectionalLight || !ProjectedShadowInfo->GetLightSceneInfo().Proxy->GetScissorRect(ScissorRect, View, View.ViewRect))
@@ -2325,10 +2313,6 @@ void FDeferredShadingSceneRenderer::RenderDeferredShadowProjections(
 			for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.ShadowsToProject.Num(); ShadowIndex++)
 			{
 				FProjectedShadowInfo* ProjectedShadowInfo = VisibleLightInfo.ShadowsToProject[ShadowIndex];
-				if (!ProjectedShadowInfo->bIncludeInScreenSpaceShadowMask)
-				{
-					continue;
-				}
 				if (ProjectedShadowInfo->HasVirtualShadowMap())
 				{
 					bNeedHairShadowMaskPass = false;
@@ -2348,7 +2332,7 @@ void FDeferredShadingSceneRenderer::RenderDeferredShadowProjections(
 	}
 }
 
-void FMobileSceneRenderer::RenderModulatedShadowProjections(FRHICommandListImmediate& RHICmdList, int32 ViewIndex, const FViewInfo& View)
+void FMobileSceneRenderer::RenderModulatedShadowProjections(FRHICommandList& RHICmdList, int32 ViewIndex, const FViewInfo& View)
 {
 	if (!ViewFamily.EngineShowFlags.DynamicShadows || View.bIsPlanarReflection || bRequiresShadowProjections)
 	{
@@ -2411,8 +2395,7 @@ void InitMobileShadowProjectionOutputs(FRHICommandListImmediate& RHICmdList, con
 }
 
 void FMobileSceneRenderer::RenderMobileShadowProjections(
-	FRDGBuilder& GraphBuilder, 
-	FRDGTextureRef SceneDepthTexture)
+	FRDGBuilder& GraphBuilder)
 {
 	RDG_RHI_EVENT_SCOPE(GraphBuilder, RenderMobileShadowProjections);
 
@@ -2462,8 +2445,17 @@ void SetupTranslucentSelfShadowUniformParameters(const FProjectedShadowInfo* Sha
 
 		//@todo - support fading from both views
 		const float FadeAlpha = ShadowInfo->FadeAlphas[0];
+		FLinearColor LightColor;
+		if (LightProxy->IsUsedAsAtmosphereSunLight())
+		{
+			LightColor = LightProxy->GetSunIlluminanceAccountingForSkyAtmospherePerPixelTransmittance();
+		}
+		else
+		{
+			LightColor = LightProxy->GetColor();
+		}
 		// Incorporate the diffuse scale of 1 / PI into the light color
-		OutParameters.DirectionalLightColor = FVector4f(FVector3f(LightProxy->GetColor() * FadeAlpha / PI), FadeAlpha);
+		OutParameters.DirectionalLightColor = FVector4f(FVector3f(LightColor * FadeAlpha / PI), FadeAlpha);
 
 		OutParameters.Transmission0 = ShadowInfo->RenderTargets.ColorTargets[0]->GetRHI();
 		OutParameters.Transmission1 = ShadowInfo->RenderTargets.ColorTargets[1]->GetRHI();
@@ -2481,13 +2473,13 @@ void SetupTranslucentSelfShadowUniformParameters(const FProjectedShadowInfo* Sha
 	}
 }
 
-void FEmptyTranslucentSelfShadowUniformBuffer::InitDynamicRHI()
+void FEmptyTranslucentSelfShadowUniformBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FTranslucentSelfShadowUniformParameters Parameters;
 	SetupTranslucentSelfShadowUniformParameters(nullptr, Parameters);
 	SetContentsNoUpdate(Parameters);
 
-	Super::InitDynamicRHI();
+	Super::InitRHI(RHICmdList);
 }
 
 

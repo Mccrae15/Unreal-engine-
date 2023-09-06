@@ -2,11 +2,44 @@
 #include "InstancedStruct.h"
 #include "StructView.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
+#include "StructUtilsTypes.h"
+
+#if WITH_ENGINE
 #include "Engine/PackageMapClient.h"
 #include "Engine/NetConnection.h"
+#include "Engine/UserDefinedStruct.h"
 #include "Net/RepLayout.h"
+#include "Serialization/MemoryWriter.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/ArchiveUObject.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+#endif // WITH_ENGINE
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InstancedStruct)
+
+
+struct STRUCTUTILS_API FInstancedStructCustomVersion
+{
+	enum EType
+	{
+		// Before any version changes were made
+		CustomVersionAdded = 0,
+
+		// -----<new versions can be added above this line>-----
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	// The GUID for this custom version number
+	const FGuid GUID;
+	FCustomVersionRegistration Registration;
+
+	FInstancedStructCustomVersion()
+	: GUID{0xE21E1CAA, 0xAF47425E, 0x89BF6AD4, 0x4C44A8BB}
+	, Registration(GUID, FInstancedStructCustomVersion::LatestVersion, TEXT("InstancedStructCustomVersion"))
+	{}
+};
+static FInstancedStructCustomVersion GInstancedStructCustomVersion;
 
 namespace UE::StructUtils::Private
 {
@@ -20,7 +53,17 @@ void GatherForLocalization(const FString& PathToParent, const UScriptStruct* Str
 
 	if (const UScriptStruct* StructTypePtr = ThisInstance->GetScriptStruct())
 	{
-		PropertyLocalizationDataGatherer.GatherLocalizationDataFromStructWithCallbacks(PathToParent + TEXT(".StructInstance"), StructTypePtr, ThisInstance->GetMemory(), DefaultInstance ? DefaultInstance->GetMemory() : nullptr, GatherTextFlags);
+		const uint8* DefaultInstanceMemory = nullptr;
+		if (DefaultInstance)
+		{
+			// Types must match
+			if (StructTypePtr == DefaultInstance->GetScriptStruct())
+			{
+				DefaultInstanceMemory = DefaultInstance->GetMemory();
+			}
+		}
+		
+		PropertyLocalizationDataGatherer.GatherLocalizationDataFromStructWithCallbacks(PathToParent + TEXT(".StructInstance"), StructTypePtr, ThisInstance->GetMemory(), DefaultInstanceMemory, GatherTextFlags);
 	}
 }
 
@@ -110,57 +153,31 @@ void FInstancedStruct::Reset()
 
 bool FInstancedStruct::Serialize(FArchive& Ar)
 {
-	UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(GetScriptStruct());
+	Ar.UsingCustomVersion(GInstancedStructCustomVersion.GUID);
 
-	enum class EVersion : uint8
+	if (Ar.IsLoading())
 	{
-		InitialVersion = 0,
-		// -----<new versions can be added above this line>-----
-		VersionPlusOne,
-		LatestVersion = VersionPlusOne - 1
-	};
-
-	EVersion Version = EVersion::LatestVersion;
-
-	// Temporary code to introduce versioning and load old data
-	// The goal is to remove this  by bumping the version in a near future.
-	bool bUseVersioning = true;
-
-#if WITH_EDITOR
-	if (!Ar.IsCooking() && !Ar.IsFilterEditorOnly())
-	{
-		// Keep archive position to use legacy serialization if the header is not found
-		const int64 HeaderOffset = Ar.Tell();
-
-		// Some random pattern to differentiate old data
-		const uint32 NewVersionHeader = 0xABABABAB;
-		uint32 Header = NewVersionHeader;
-		Ar << Header;
-
-		if (Ar.IsLoading())
+		const int32 CustomVersion = Ar.CustomVer(GInstancedStructCustomVersion.GUID);
+		if (CustomVersion < FInstancedStructCustomVersion::CustomVersionAdded)
 		{
-			if (Header != NewVersionHeader)
+			// The old format had "header+version" in editor builds, and just "version" otherwise.
+			// If the first thing we read is the old header, consume it, if not go back and assume that we have just the version.
+			const int64 HeaderOffset = Ar.Tell();
+			uint32 Header = 0;
+			Ar << Header;
+
+			constexpr uint32 LegacyEditorHeader = 0xABABABAB;
+			if (Header != LegacyEditorHeader)
 			{
-				// Not a valid header so go back and process with legacy loading
 				Ar.Seek(HeaderOffset);
-				bUseVersioning = false;
-				UE_LOG(LogLoad, Verbose, TEXT("Loading FInstancedStruct using legacy serialization"));
 			}
+
+			uint8 Version = 0;
+			Ar << Version;
 		}
 	}
-#endif // WITH_EDITOR
 
-	if (bUseVersioning)
-	{
-		Ar << Version;
-	}
-
-	if (Version > EVersion::LatestVersion)
-	{
-		UE_LOG(LogCore, Error, TEXT("Invalid Version: %hhu"), Version);
-		Ar.SetError();
-		return false;
-	}
+	UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(GetScriptStruct());
 
 	if (Ar.IsLoading())
 	{
@@ -174,10 +191,7 @@ bool FInstancedStruct::Serialize(FArchive& Ar)
 
 		// Size of the serialized memory
 		int32 SerialSize = 0; 
-		if (bUseVersioning)
-		{
-			Ar << SerialSize;
-		}
+		Ar << SerialSize;
 
 		// Serialized memory
 		if (NonConstStruct == nullptr && SerialSize > 0)
@@ -197,7 +211,22 @@ bool FInstancedStruct::Serialize(FArchive& Ar)
 	else if (Ar.IsSaving())
 	{
 		// UScriptStruct type
-		Ar << NonConstStruct;
+#if WITH_ENGINE && WITH_EDITOR
+		const UUserDefinedStruct* UserDefinedStruct = Cast<UUserDefinedStruct>(NonConstStruct);
+		if (UserDefinedStruct
+			&& UserDefinedStruct->Status == EUserDefinedStructureStatus::UDSS_Duplicate
+			&& UserDefinedStruct->PrimaryStruct.IsValid())
+		{
+			// If saving a duplicated UDS, save the primary type instead, so that the data is loaded with the original struct.
+			// This is used as part of the user defined struct reinstancing logic.
+			UUserDefinedStruct* PrimaryUserDefinedStruct = UserDefinedStruct->PrimaryStruct.Get(); 
+			Ar << PrimaryUserDefinedStruct;
+		}
+		else
+#endif			
+		{
+			Ar << NonConstStruct;
+		}
 	
 		// Size of the serialized memory (reserve location)
 		const int64 SizeOffset = Ar.Tell(); // Position to write the actual size after struct serialization
@@ -359,6 +388,24 @@ void FInstancedStruct::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 	if (UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(GetScriptStruct()))
 	{
 		OutDeps.Add(NonConstStruct);
+
+		// Report direct dependencies of the instanced struct
+		if (UScriptStruct::ICppStructOps* CppStructOps = GetScriptStruct()->GetCppStructOps())
+		{
+			CppStructOps->GetPreloadDependencies(GetMutableMemory(), OutDeps);
+		}
+
+		// Report indirect dependencies of the instanced struct
+		// The iterator will recursively loop through all structs in structs/containers too
+		for (TPropertyValueIterator<FStructProperty> It(GetScriptStruct(), GetMutableMemory()); It; ++It)
+		{
+			const UScriptStruct* StructType = It.Key()->Struct;
+			if (UScriptStruct::ICppStructOps* CppStructOps = StructType->GetCppStructOps())
+			{
+				void* StructDataPtr = const_cast<void*>(It.Value());
+				CppStructOps->GetPreloadDependencies(StructDataPtr, OutDeps);
+			}
+		}
 	}
 }
 
@@ -378,8 +425,55 @@ bool FInstancedStruct::Identical(const FInstancedStruct* Other, uint32 PortFlags
 	return true;
 }
 
-void FInstancedStruct::AddStructReferencedObjects(class FReferenceCollector& Collector)
+void FInstancedStruct::AddStructReferencedObjects(FReferenceCollector& Collector)
 {
+#if WITH_ENGINE && WITH_EDITOR
+	// Reference collector is used to visit all instances of instanced structs and replace their contents.
+	if (const UUserDefinedStruct* StructureToReinstance = UE::StructUtils::Private::GetStructureToReinstance())
+	{
+		if (const UUserDefinedStruct* UserDefinedStruct = Cast<UUserDefinedStruct>(ScriptStruct))
+		{
+			if (StructureToReinstance->Status == EUserDefinedStructureStatus::UDSS_Duplicate)
+			{
+				// On the first pass we replace the UDS with a duplicate that represents the currently allocated struct.
+				// GStructureToReinstance is the duplicated struct, and StructureToReinstance->PrimaryStruct is the UDS that is being reinstanced.
+				
+				if (UserDefinedStruct == StructureToReinstance->PrimaryStruct)
+				{
+					ScriptStruct = StructureToReinstance;
+				}
+			}
+			else
+			{
+				// On the second pass we reinstantiate the data using serialization.
+				// When saving, the UDSs are written using the duplicate which represents current layout, but PrimaryStruct is serialized as the type.
+				// When reading, the data is initialized with the new type, and the serialization will take care of reading from the old data.
+
+				if (UserDefinedStruct->PrimaryStruct == StructureToReinstance)
+				{
+					if (UObject* Outer = UE::StructUtils::Private::GetCurrentReinstanceOuterObject())
+					{
+						if (!Outer->IsA<UClass>() && !Outer->HasAnyFlags(RF_ClassDefaultObject))
+						{
+							Outer->MarkPackageDirty();
+						}
+					}
+
+					TArray<uint8> Data;
+					
+					FMemoryWriter Writer(Data);
+					FObjectAndNameAsStringProxyArchive WriterProxy(Writer, /*bInLoadIfFindFails*/true);
+					Serialize(WriterProxy);
+
+					FMemoryReader Reader(Data);
+					FObjectAndNameAsStringProxyArchive ReaderProxy(Reader, /*bInLoadIfFindFails*/true);
+					Serialize(ReaderProxy);
+				}
+			}
+		}
+	}
+#endif
+	
 	if (ScriptStruct != nullptr)
 	{
 		Collector.AddReferencedObject(ScriptStruct);
@@ -387,8 +481,16 @@ void FInstancedStruct::AddStructReferencedObjects(class FReferenceCollector& Col
 	}
 }
 
+#if WITH_ENGINE && WITH_EDITOR
+void FInstancedStruct::ReplaceScriptStructInternal(const UScriptStruct* NewStruct)
+{
+	ScriptStruct = NewStruct;
+}
+#endif
+
 bool FInstancedStruct::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSuccess)
 {
+#if WITH_ENGINE
 	uint8 bValidData = Ar.IsSaving() ? IsValid() : 0;
 	Ar.SerializeBits(&bValidData, 1);
 
@@ -415,10 +517,8 @@ bool FInstancedStruct::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSu
 		}
 		else if (Ar.IsSaving())
 		{
-			UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(ScriptStruct);
-			check(::IsValid(NonConstStruct));
-			
-			Ar << NonConstStruct;
+			check(::IsValid(ScriptStruct));
+			Ar << ScriptStruct;
 		}
 
 		// Check ScriptStruct here, as loading might have failed. 
@@ -437,7 +537,7 @@ bool FInstancedStruct::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSu
 				check(::IsValid(NetConnection));
 				check(::IsValid(NetConnection->GetDriver()));
 
-				UScriptStruct* NonConstStruct = const_cast<UScriptStruct*>(ScriptStruct);
+				auto& NonConstStruct = ConstCast(ScriptStruct);
 				const TSharedPtr<FRepLayout> RepLayout = NetConnection->GetDriver()->GetStructRepLayout(NonConstStruct);
 				check(RepLayout.IsValid());
 
@@ -457,4 +557,31 @@ bool FInstancedStruct::NetSerialize(FArchive& Ar, UPackageMap* Map, bool& bOutSu
 	}
 
 	return true;
+
+#else // WITH_ENGINE
+
+	// The implementation above relies on types in the Engine module, so it can't be compiled without the engine.
+	return false;
+
+#endif // WITH_ENGINE
+}
+
+bool FInstancedStruct::FindInnerPropertyInstance(FName PropertyName, const FProperty*& OutProp, const void*& OutData) const
+{
+	if (!ScriptStruct || !StructMemory)
+	{
+		return false;
+	}
+	
+	for (const FProperty* Prop : TFieldRange<FProperty>(ScriptStruct))
+	{
+		if( Prop->GetFName() == PropertyName )
+		{
+			OutProp = Prop;
+			OutData = StructMemory;
+			return true;
+		}
+	}
+
+	return false;
 }

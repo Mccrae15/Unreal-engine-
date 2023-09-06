@@ -23,6 +23,7 @@
 #include "DesktopPlatformModule.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "HAL/PlatformMisc.h"
+#include "SPrimaryButton.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDialogs, Log, All);
 
@@ -38,24 +39,41 @@ class SChoiceDialog : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS( SChoiceDialog )	{}
-		SLATE_ATTRIBUTE(TSharedPtr<SWindow>, ParentWindow)
+		SLATE_ARGUMENT(TSharedPtr<SWindow>, ParentWindow)
 		SLATE_ATTRIBUTE(FText, Message)	
 		SLATE_ATTRIBUTE(float, WrapMessageAt)
-		SLATE_ATTRIBUTE(EAppMsgType::Type, MessageType)
+		SLATE_ARGUMENT(EAppMsgCategory, MessageCategory)
+		SLATE_ARGUMENT(EAppMsgType::Type, MessageType)
 	SLATE_END_ARGS()
 
 	BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 	void Construct( const FArguments& InArgs )
 	{
-		ParentWindow = InArgs._ParentWindow.Get();
+		ParentWindow = InArgs._ParentWindow;
 		ParentWindow->SetWidgetToFocusOnActivate(SharedThis(this));
 		Response = EAppReturnType::Cancel;
-		MessageType = InArgs._MessageType.Get();
+		MessageType = InArgs._MessageType;
 
 		FSlateFontInfo MessageFont( FAppStyle::GetFontStyle("StandardDialog.LargeFont"));
 		MyMessage = InArgs._Message;
 
 		TSharedPtr<SUniformGridPanel> ButtonBox;
+
+		const FSlateBrush* IconBrush = FAppStyle::Get().GetBrush("Icons.WarningWithColor.Large");
+		switch (InArgs._MessageCategory)
+		{
+		case EAppMsgCategory::Error:
+			IconBrush = FAppStyle::Get().GetBrush("Icons.ErrorWithColor.Large");
+			break;
+		case EAppMsgCategory::Success:
+			IconBrush = FAppStyle::Get().GetBrush("Icons.SuccessWithColor.Large");
+			break;
+		case EAppMsgCategory::Info:
+			IconBrush = FAppStyle::Get().GetBrush("Icons.InfoWithColor.Large");
+			break;
+		default:
+			break;
+		}
 
 		this->ChildSlot
 		[	
@@ -79,7 +97,7 @@ public:
 					[
 						SNew(SImage)
 						.DesiredSizeOverride(FVector2D(24.f, 24.f))
-						.Image(FAppStyle::Get().GetBrush("Icons.WarningWithColor.Large"))
+						.Image(IconBrush)
 					]
 
 					+SHorizontalBox::Slot()
@@ -355,7 +373,7 @@ private:
 };
 
 
-void CreateMsgDlgWindow(TSharedPtr<SWindow>& OutWindow, TSharedPtr<SChoiceDialog>& OutDialog, EAppMsgType::Type InMessageType,
+void CreateMsgDlgWindow(TSharedPtr<SWindow>& OutWindow, TSharedPtr<SChoiceDialog>& OutDialog, EAppMsgCategory InMessageCategory, EAppMsgType::Type InMessageType,
 						const FText& InMessage, const FText& InTitle, FOnMsgDlgResult ResultCallback=NULL)
 {
 	OutWindow = SNew(SWindow)
@@ -368,6 +386,7 @@ void CreateMsgDlgWindow(TSharedPtr<SWindow>& OutWindow, TSharedPtr<SChoiceDialog
 		.ParentWindow(OutWindow)
 		.Message(InMessage)
 		.WrapMessageAt(512.0f)
+		.MessageCategory(InMessageCategory)
 		.MessageType(InMessageType);
 
 	OutDialog->ResultCallback = ResultCallback;
@@ -375,7 +394,7 @@ void CreateMsgDlgWindow(TSharedPtr<SWindow>& OutWindow, TSharedPtr<SChoiceDialog
 	OutWindow->SetContent(OutDialog.ToSharedRef());
 }
 
-EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgType::Type InMessageType, EAppReturnType::Type InDefaultValue, const FText& InMessage, const FText& InTitle)
+EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgCategory InMessageCategory, EAppMsgType::Type InMessageType, EAppReturnType::Type InDefaultValue, const FText& InMessage, const FText& InTitle)
 {
 	EAppReturnType::Type Response = InDefaultValue;
 	if (FApp::IsUnattended() == true || GIsRunningUnattendedScript)
@@ -387,7 +406,7 @@ EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgType::Type InMessageType,
 		TSharedPtr<SWindow> MsgWindow = NULL;
 		TSharedPtr<SChoiceDialog> MsgDialog = NULL;
 
-		CreateMsgDlgWindow(MsgWindow, MsgDialog, InMessageType, InMessage, InTitle);
+		CreateMsgDlgWindow(MsgWindow, MsgDialog, InMessageCategory, InMessageType, InMessage, InTitle);
 
 		GEditor->EditorAddModalWindow(MsgWindow.ToSharedRef());
 
@@ -397,7 +416,7 @@ EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgType::Type InMessageType,
 	return Response;
 }
 
-EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgType::Type InMessageType, const FText& InMessage, const FText& InTitle)
+EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgCategory InMessageCategory, EAppMsgType::Type InMessageType, const FText& InMessage, const FText& InTitle)
 {
 	EAppReturnType::Type DefaultValue = EAppReturnType::Yes;
 	switch (InMessageType)
@@ -439,17 +458,17 @@ EAppReturnType::Type OpenMessageDialog_Internal(EAppMsgType::Type InMessageType,
 		}
 	}
 
-	return OpenMessageDialog_Internal(InMessageType, DefaultValue, InMessage, InTitle);
+	return OpenMessageDialog_Internal(InMessageCategory, InMessageType, DefaultValue, InMessage, InTitle);
 }
 
 EAppReturnType::Type OpenMsgDlgInt(EAppMsgType::Type InMessageType, const FText& InMessage, const FText& InTitle)
 {
-	return OpenMessageDialog_Internal(InMessageType, InMessage, InTitle);
+	return OpenMessageDialog_Internal(EAppMsgCategory::Warning, InMessageType, InMessage, InTitle);
 }
 
 EAppReturnType::Type OpenMsgDlgInt(EAppMsgType::Type InMessageType, EAppReturnType::Type InDefaultValue, const FText& InMessage, const FText& InTitle)
 {
-	return OpenMessageDialog_Internal(InMessageType, InDefaultValue, InMessage, InTitle);
+	return OpenMessageDialog_Internal(EAppMsgCategory::Warning, InMessageType, InDefaultValue, InMessage, InTitle);
 }
 
 TSharedRef<SWindow> OpenMsgDlgInt_NonModal(EAppMsgType::Type InMessageType, const FText& InMessage, const FText& InTitle,
@@ -458,7 +477,7 @@ TSharedRef<SWindow> OpenMsgDlgInt_NonModal(EAppMsgType::Type InMessageType, cons
 	TSharedPtr<SWindow> MsgWindow = NULL;
 	TSharedPtr<SChoiceDialog> MsgDialog = NULL;
 
-	CreateMsgDlgWindow(MsgWindow, MsgDialog, InMessageType, InMessage, InTitle, ResultCallback);
+	CreateMsgDlgWindow(MsgWindow, MsgDialog, EAppMsgCategory::Warning, InMessageType, InMessage, InTitle, ResultCallback);
 
 	FSlateApplication::Get().AddWindow(MsgWindow.ToSharedRef());
 
@@ -618,7 +637,7 @@ public:
 				.HAlign(HAlign_Fill)
 				.VAlign(VAlign_Fill)
 				.FillHeight(1.0f)
-				.Padding(0,5,0,5)
+				.Padding(0)
 				.MaxHeight(550)
 				[
 					SNew( SScrollBox )
@@ -630,6 +649,7 @@ public:
 						+SHorizontalBox::Slot()
 						.AutoWidth()
 						.VAlign(VAlign_Center)
+						.Padding(16) // currently hardcoded until we adjust StandardDialog.SlotPadding
 						[
 							SNew( SImage )
 							.Image(InArgs._Image)
@@ -639,7 +659,7 @@ public:
 						+SHorizontalBox::Slot()
 						.AutoWidth()
 						.VAlign(VAlign_Center)
-						.Padding(5,0,5,0)
+						.Padding(0)
 						[
 							SNew( STextBlock )
 							.WrapTextAt(512.0f)
@@ -669,13 +689,12 @@ public:
 	TSharedRef<SHorizontalBox> ConstructConditionalInternals( const FArguments& InArgs ) 
 	{
 		TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
-		TSharedPtr<SUniformGridPanel> UniformGridPanel;
 		
 		// checkbox with user specified text
 		HorizontalBox->AddSlot()
 		.HAlign(HAlign_Left)
-		.Padding(5,0,15,0)
-		.AutoWidth()
+		.Padding(16) // currently hardcoded until we adjust StandardDialog.SlotPadding
+		.FillWidth(1.0)
 		[
 			SNew(SCheckBox)
 			.IsChecked(InArgs._bDefaultCheckValue ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
@@ -689,35 +708,28 @@ public:
 		];
 		HorizontalBox->AddSlot()
 		.HAlign(HAlign_Right)
-		.Padding(2.f)
+		.Padding(16) // currently hardcoded until we adjust StandardDialog.SlotPadding
+		.AutoWidth()
 		[
-			SAssignNew(UniformGridPanel, SUniformGridPanel)
-			.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
+			SNew(SPrimaryButton)
+			.Text(InArgs._ConfirmText)
+			.OnClicked(this, &SModalDialogWithCheckbox::OnConfirmClicked)
+			
 		];
 
-		// yes/ok/confirm button
-		UniformGridPanel->AddSlot(0,0)
-		.HAlign(HAlign_Fill)
-		[
-			SNew( SButton )
-			.Text( InArgs._ConfirmText )
-			.OnClicked( this, &SModalDialogWithCheckbox::OnConfirmClicked )
-			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
-			.HAlign(HAlign_Center)
-		];
 
 		// Only add a cancel button if required
 		if (InArgs._bHasCancelButton)
 		{
 			// cancel/stop/abort button
-			UniformGridPanel->AddSlot(1,0)
-			.HAlign(HAlign_Fill)
+			HorizontalBox->AddSlot()
+			.HAlign(HAlign_Right)
+			.Padding(0, 16, 16, 16) // currently hardcoded until we adjust StandardDialog.SlotPadding
+			.AutoWidth()
 			[
 				SNew( SButton )
 				.Text( InArgs._CancelText )
 				.OnClicked( this, &SModalDialogWithCheckbox::OnCancelClicked )
-				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
-				.HAlign(HAlign_Center)
 			];
 		}
 	
@@ -827,7 +839,7 @@ FSuppressableWarningDialog::FSuppressableWarningDialog(const FSetupInfo& Info)
 		.SupportsMaximize(false) .SupportsMinimize(false);
 
 		// Cache a default image to be used as most cases will not provide their own.
-		static const FSlateBrush* DefaultImage = FAppStyle::GetBrush("NotificationList.DefaultMessage");
+		static const FSlateBrush* DefaultImage = FAppStyle::GetBrush("Icons.WarningWithColor.Large");
 
 		MessageBox = SNew(SModalDialogWithCheckbox)
 			.Message(Prompt)

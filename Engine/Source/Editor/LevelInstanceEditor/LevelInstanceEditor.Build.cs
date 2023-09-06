@@ -32,7 +32,9 @@ public class LevelInstanceEditor : ModuleRules
 				"MessageLog",
 				"EditorWidgets",
 				"DeveloperSettings",
-				"SceneOutliner"
+				"SceneOutliner",
+				"WorldPartitionEditor",
+				"Kismet"
 			}
 		);
 

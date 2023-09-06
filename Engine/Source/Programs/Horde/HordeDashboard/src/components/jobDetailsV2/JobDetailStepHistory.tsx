@@ -41,15 +41,25 @@ class StepHistoryDataView extends JobDataView {
          return;
       }
       
-      const jobData = details.jobData!;
-      const stepName = details.getStepName(this.stepId);
+      const stepName = details.getStepName(this.stepId, false);
 
+      if (stepName) {
+         this.loadHistory(stepName);
+      }
+
+   }
+
+   loadHistory(stepName: string) {
+      const jobData = this.details?.jobData;
+      if (!jobData) {
+         return;
+      }
       backend.getJobStepHistory(jobData.streamId, stepName, 1024, jobData.templateId!).then(response => {
          this.history = response;
          this.updateReady();
       }).finally(() => {
          this.initialize(this.history?.length ? [sideRail] : undefined);
-      })
+      })   
    }
 
    clear() {
@@ -59,7 +69,12 @@ class StepHistoryDataView extends JobDataView {
    }
 
    detailsUpdated() {
-
+      if (!this.initialized) {
+         const stepName = this.details?.getStepName(this.stepId, false);
+         if (stepName) {
+            this.loadHistory(stepName);
+         }
+      }       
    }
 
    history: GetJobStepRefResponse[] = [];
@@ -130,7 +145,7 @@ export const StepHistoryPanel: React.FC<{ jobDetails: JobDetailsV2; stepId: stri
       if (column.name === "Change") {
 
          const sindex = dataView.history.indexOf(ref); 
-         return <ChangeButton job={jobDetails.jobData!} stepRef={ref} hideAborted={true} rangeCL={ sindex < (dataView.history.length - 1) ? dataView.history[sindex + 1].change : undefined}/>;
+         return <ChangeButton job={jobDetails.jobData!} stepRef={ref} hideAborted={true} rangeCL={ sindex < (dataView.history.length - 1) ? (dataView.history[sindex + 1].change + 1) : undefined}/>;
 
       }
 

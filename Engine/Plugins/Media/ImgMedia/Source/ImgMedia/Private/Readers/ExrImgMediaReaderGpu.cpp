@@ -18,20 +18,21 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "GlobalShader.h"
 #include "CommonRenderResources.h"
-#include "ImgMediaLoader.h"
+#include "Loader/ImgMediaLoader.h"
+#include "PostProcess/DrawRectangle.h"
 #include "RHIStaticStates.h"
 #include "SceneUtils.h"
 #include "ShaderParameterUtils.h"
 #include "TextureResource.h"
 #include "ScreenPass.h"
 
-#include "ID3D12DynamicRHI.h"
-
 
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu, TEXT("ExrImgGpu"));
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_MipRender, TEXT("ExrImgGpu.MipRender"));
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_MipUpscale, TEXT("ExrImgGpu.MipRender.MipUpscale"));
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_CopyUploadBuffer, TEXT("ExrImgGpu.MipRender.UploadBufferCopy"));
+DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_AllocateBuffer, TEXT("ExrImgGpu.MipRender.AllocateBuffer"));
+
 
 static TAutoConsoleVariable<bool> CVarExrReaderUseUploadHeap(
 	TEXT("r.ExrReaderGPU.UseUploadHeap"),
@@ -62,13 +63,13 @@ namespace {
 
 		EDrawRectangleFlags DrawRectangleFlags = EDRF_UseTriangleOptimization;
 
-		DrawPostProcessPass(
+		UE::Renderer::PostProcess::DrawPostProcessPass(
 			RHICmdList,
+			PipelineState.VertexShader,
 			0, 0, OutputResolution.X, OutputResolution.Y,
 			Viewport.Min.X, Viewport.Min.Y, Viewport.Width(), Viewport.Height(),
 			OutputResolution,
 			OutputResolution,
-			PipelineState.VertexShader,
 			INDEX_NONE,
 			false,
 			DrawRectangleFlags);
@@ -95,53 +96,31 @@ FExrImgMediaReaderGpu::FExrImgMediaReaderGpu(const TSharedRef<FImgMediaLoader, E
 
 FExrImgMediaReaderGpu::~FExrImgMediaReaderGpu()
 {
-	// A signal that tells all buffers that are stored in shared references not to return to the pool
-	// but delete instead.
-	bIsShuttingDown = true;
+	FScopeLock ScopeLock(&AllocatorCriticalSecion);
 
-	// Making sure that all Used memory is processed first and returned into memory pool
-	TransferFromStagingBuffer();
-
-	// Unlock all buffers so that these will release.
-	volatile bool bUnlocked = false;
-	ENQUEUE_RENDER_COMMAND(DeletePooledBuffers)([this, &bUnlocked](FRHICommandListImmediate& RHICmdList)
+	// Copy memory pool array to be released on render thread.
+	ENQUEUE_RENDER_COMMAND(DeletePooledBuffers)([InMemoryPool = MemoryPool](FRHICommandListImmediate& RHICmdList)
 	{
-		FScopeLock ScopeLock(&AllocatorCriticalSecion);
 		SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_ReleaseMemoryPool);
 		TArray<uint32> KeysForIteration;
-		MemoryPool.GetKeys(KeysForIteration);
+		InMemoryPool.GetKeys(KeysForIteration);
 		for (uint32 Key : KeysForIteration)
 		{
 			TArray<FStructuredBufferPoolItem*> AllValues;
-			MemoryPool.MultiFind(Key, AllValues);
+			InMemoryPool.MultiFind(Key, AllValues);
 			for (FStructuredBufferPoolItem* MemoryPoolItem : AllValues)
 			{
-				// Check if fence has signaled.
-				check(!MemoryPoolItem->bWillBeSignaled || MemoryPoolItem->RenderFence->Poll());
-				{
-					MemoryPoolItem->RenderFence->Clear();
-					RHIUnlockBuffer(MemoryPoolItem->UploadBufferRef);
-					delete MemoryPoolItem;
-				}
+				delete MemoryPoolItem;
 			}
 		}
-		MemoryPool.Reset();
-		bUnlocked = true;
 	});
-
-	// Wait until unlocking is complete.
-	while (!bUnlocked)
-	{
-		FPlatformProcess::Sleep(0.01f);
-	}
 }
 
 FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 	( const int32 CurrentMipLevel
 	, const FImgMediaTileSelection& CurrentTileSelection
 	, TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> OutFrame
-	, TSharedPtr<FSampleConverterParameters> ConverterParams
-	, FExrMediaTextureSampleConverter* SampleConverter
+	, TSharedPtr<FExrMediaTextureSampleConverter, ESPMode::ThreadSafe> SampleConverter
 	, const FString& ImagePath
 	, bool bHasTiles)
 {
@@ -150,9 +129,9 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 
 	// Next mip level.
 	int MipLevelDiv = 1 << CurrentMipLevel;
-	FIntPoint CurrentMipDim = ConverterParams->FullResolution / MipLevelDiv;
+	FIntPoint CurrentMipDim = SampleConverter->ConverterParams->FullResolution / MipLevelDiv;
 
-	const SIZE_T BufferSize = GetBufferSize(CurrentMipDim, ConverterParams->FrameInfo.NumChannels, bHasTiles, OutFrame->Info.NumTiles / MipLevelDiv, ConverterParams->bCustomExr);
+	const SIZE_T BufferSize = GetBufferSize(CurrentMipDim, SampleConverter->ConverterParams->FrameInfo.NumChannels, bHasTiles, OutFrame->Info.NumTiles / MipLevelDiv, SampleConverter->ConverterParams->bCustomExr);
 	
 	SampleConverter->LockMipBuffers();
 	FStructuredBufferPoolItemSharedPtr BufferData = SampleConverter->GetMipLevelBuffer(CurrentMipLevel);
@@ -172,7 +151,7 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 	{
 		TArray<UE::Math::TIntPoint<int64>> BufferRegionsToCopy;
 		// read frame data
-		if (bHasTiles || ConverterParams->bCustomExr)
+		if (bHasTiles || SampleConverter->ConverterParams->bCustomExr)
 		{
 			TArray<FIntRect> TileRegionsToRead;
 			{
@@ -195,7 +174,7 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 			}
 			else
 			{
-				ReadResult = ReadTiles(MipDataPtr, BufferSize, ImagePath, ConverterParams->FrameId, TileRegionsToRead, ConverterParams, CurrentMipLevel, BufferRegionsToCopy);
+				ReadResult = ReadTiles(MipDataPtr, BufferSize, ImagePath, TileRegionsToRead, SampleConverter->ConverterParams, CurrentMipLevel, BufferRegionsToCopy);
 				
 				for (const FIntRect& Region : TileRegionsToRead)
 				{
@@ -205,16 +184,16 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 		}
 		else
 		{
-			ReadResult = ReadInChunks(MipDataPtr, ImagePath, ConverterParams->FrameId, CurrentMipDim, BufferSize);
+			ReadResult = ReadInChunks(MipDataPtr, ImagePath, SampleConverter->ConverterParams->FrameId, CurrentMipDim, BufferSize);
 			OutFrame->NumTilesRead++;
 		}
 
 		if (ReadResult == Success && bUseUploadHeap)
 		{
-			ENQUEUE_RENDER_COMMAND(CopyFromUploadBuffer)([SampleConverter, ConverterParams, BufferData, BufferRegionsToCopy](FRHICommandListImmediate& RHICmdList)
+			ENQUEUE_RENDER_COMMAND(CopyFromUploadBuffer)([SampleConverter, BufferData, BufferRegionsToCopy](FRHICommandListImmediate& RHICmdList)
 				{
 					SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_CopyBuffers);
-					TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.StartCopy %d"), ConverterParams->FrameId));
+					TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.StartCopy %d"), SampleConverter->ConverterParams->FrameId));
 					SCOPED_GPU_STAT(RHICmdList, ExrImgMediaReaderGpu_CopyUploadBuffer);
 
 					if (BufferRegionsToCopy.IsEmpty())
@@ -265,10 +244,11 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 		return false;
 	}
 
+	TSharedPtr<FExrMediaTextureSampleConverter, ESPMode::ThreadSafe> SampleConverterPtr = OutFrame->GetOrCreateSampleConverter<FExrMediaTextureSampleConverter>();
+
 	// Get tile info.
 	bool bHasTiles = OutFrame->Info.bHasTiles;
-
-	TSharedPtr<FSampleConverterParameters> ConverterParams = MakeShared<FSampleConverterParameters>();
+	TSharedPtr<FSampleConverterParameters> ConverterParams = SampleConverterPtr->ConverterParams;
 	ConverterParams->FullResolution = OutFrame->Info.Dim;
 	ConverterParams->FrameId = FrameId;
 
@@ -285,14 +265,6 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 	ConverterParams->NumMipLevels = Loader->GetNumMipLevels();
 	ConverterParams->bCustomExr = OutFrame->Info.FormatName == TEXT("EXR CUSTOM");
 	ConverterParams->bMipsInSeparateFiles = Loader->MipsInSeparateFiles();
-
-	FExrMediaTextureSampleConverter* SampleConverter;
-	if (!OutFrame->SampleConverter.IsValid())
-	{
-		OutFrame->SampleConverter = MakeShared<FExrMediaTextureSampleConverter>();
-	}
-	SampleConverter = static_cast<FExrMediaTextureSampleConverter*>(OutFrame->SampleConverter.Get());
-
 
 	{
 		// Force mip level to be upscaled to all higher quality mips.
@@ -329,7 +301,7 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 			// Get highest resolution mip level path.
 			FString ImagePath = Loader->GetImagePath(ConverterParams->FrameId, ConverterParams->bMipsInSeparateFiles ? CurrentMipLevel : 0);
 
-			EReadResult ReadResult = ReadMip(CurrentMipLevel, CurrentTileSelection, OutFrame, ConverterParams, SampleConverter, ImagePath, bHasTiles);
+			EReadResult ReadResult = ReadMip(CurrentMipLevel, CurrentTileSelection, OutFrame, SampleConverterPtr, ImagePath, bHasTiles);
 			switch (ReadResult)
 			{
 			case FExrImgMediaReader::Success:
@@ -358,9 +330,6 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 					// Fall back to CPU.
 					bFallBackToCPU = true;
 
-					// To make sure that Media Texture doesn't call the converter if this frame is invalid.
-					OutFrame->SampleConverter.Reset();
-
 					return FExrImgMediaReader::ReadFrame(ConverterParams->FrameId, InMipTiles, OutFrame);
 				}
 				break;
@@ -384,7 +353,7 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 			const int32 CurrentMipLevel = TilesPerMip.Key;
 
 			// Skip this viewport since we don't have anything to render.
-			if (!SampleConverter->GetMipLevelBuffer(CurrentMipLevel))
+			if (!SampleConverterPtr->GetMipLevelBuffer(CurrentMipLevel))
 			{
 				continue;
 			}
@@ -415,7 +384,7 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 	OutFrame->Stride = ConverterParams->FullResolution.X * ConverterParams->PixelSize;
 	
 	ConverterParams->Viewports.KeySort(TLess<int32>());
-	CreateSampleConverterCallback(SampleConverter, ConverterParams);
+	CreateSampleConverterCallback(SampleConverterPtr);
 
 	UE_LOG(LogImgMedia, Verbose, TEXT("Reader %p: Read Pixels Complete. %i"), this, FrameId);
 	return true;
@@ -423,22 +392,11 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 
 void FExrImgMediaReaderGpu::PreAllocateMemoryPool(int32 NumFrames, const FImgMediaFrameInfo& FrameInfo, const bool bCustomExr)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.PreAllocateMemoryPool")));
 	SIZE_T AllocSize = GetBufferSize(FrameInfo.Dim, FrameInfo.NumChannels, FrameInfo.bHasTiles, FrameInfo.NumTiles, bCustomExr);
 	for (int32 FrameCacheNum = 0; FrameCacheNum < NumFrames; FrameCacheNum++)
 	{
 		AllocateGpuBufferFromPool(AllocSize, FrameCacheNum == NumFrames - 1);
-	}
-}
-
-
-void FExrImgMediaReaderGpu::OnTick()
-{
-	// Only tick once per frame.
-	if (LastTickedFrameCounter != GFrameCounter)
-	{
-		LastTickedFrameCounter = GFrameCounter;
-
-		TransferFromStagingBuffer();
 	}
 }
 
@@ -529,20 +487,18 @@ SIZE_T FExrImgMediaReaderGpu::GetBufferSize(const FIntPoint& Dim, int32 NumChann
 
 }
 
-void FExrImgMediaReaderGpu::CreateSampleConverterCallback
-	( FExrMediaTextureSampleConverter* SampleConverter
-	, TSharedPtr<FSampleConverterParameters> ConverterParams)
+void FExrImgMediaReaderGpu::CreateSampleConverterCallback(TSharedPtr<FExrMediaTextureSampleConverter, ESPMode::ThreadSafe> SampleConverter)
 {
-	auto RenderThreadSwizzler = [ConverterParams] (FRHICommandListImmediate& RHICmdList, FTexture2DRHIRef RenderTargetTextureRHI, TMap<int32, FStructuredBufferPoolItemSharedPtr>& MipBuffers)->bool
+	auto RenderThreadSwizzler = [] (FRHICommandListImmediate& RHICmdList, FTexture2DRHIRef RenderTargetTextureRHI, TMap<int32, FStructuredBufferPoolItemSharedPtr>& MipBuffers, const FSampleConverterParameters& ConverterParams)->bool
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.Convert %d"), ConverterParams->FrameId));
+		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.Convert %d"), ConverterParams.FrameId));
 		SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_Convert);
 		SCOPED_GPU_STAT(RHICmdList, ExrImgMediaReaderGpu);
 
 		auto RenderMip = []
 			( FRHICommandListImmediate& RHICmdList
 			, FTexture2DRHIRef RenderTargetTextureRHI
-			, TSharedPtr<FSampleConverterParameters> ConverterParams
+			, const FSampleConverterParameters & ConverterParams
 			, int32 SampleMipLevel
 			, int32 TextureMipLevel
 			, FStructuredBufferPoolItemSharedPtr BufferData
@@ -556,36 +512,36 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("ExrTextureSwizzle"));
 
 			FExrSwizzlePS::FPermutationDomain PermutationVector;
-			PermutationVector.Set<FExrSwizzlePS::FRgbaSwizzle>(ConverterParams->FrameInfo.NumChannels - 1);
-			PermutationVector.Set<FExrSwizzlePS::FRenderTiles>(ConverterParams->FrameInfo.bHasTiles || ConverterParams->bCustomExr);
-			PermutationVector.Set<FExrSwizzlePS::FCustomExr>(ConverterParams->bCustomExr);
+			PermutationVector.Set<FExrSwizzlePS::FRgbaSwizzle>(ConverterParams.FrameInfo.NumChannels - 1);
+			PermutationVector.Set<FExrSwizzlePS::FRenderTiles>(ConverterParams.FrameInfo.bHasTiles || ConverterParams.bCustomExr);
+			PermutationVector.Set<FExrSwizzlePS::FCustomExr>(ConverterParams.bCustomExr);
 			PermutationVector.Set<FExrSwizzlePS::FPartialTiles>(false);
 
 			FExrSwizzlePS::FParameters Parameters = FExrSwizzlePS::FParameters();
 			Parameters.TextureSize = SampleSize;
-			Parameters.TileSize = ConverterParams->TileDimWithBorders;
-			Parameters.NumChannels = ConverterParams->FrameInfo.NumChannels;
-			if (ConverterParams->FrameInfo.bHasTiles)
+			Parameters.TileSize = ConverterParams.TileDimWithBorders;
+			Parameters.NumChannels = ConverterParams.FrameInfo.NumChannels;
+			if (ConverterParams.FrameInfo.bHasTiles)
 			{
-				Parameters.NumTiles = FIntPoint(FMath::CeilToInt(float(SampleSize.X) / ConverterParams->TileDimWithBorders.X), FMath::CeilToInt(float(SampleSize.Y) / ConverterParams->TileDimWithBorders.Y));
+				Parameters.NumTiles = FIntPoint(FMath::CeilToInt(float(SampleSize.X) / ConverterParams.TileDimWithBorders.X), FMath::CeilToInt(float(SampleSize.Y) / ConverterParams.TileDimWithBorders.Y));
 			}
 
-			if (ConverterParams->FrameInfo.bHasTiles &&
-				(ConverterParams->TileInfoPerMipLevel.Num() > SampleMipLevel && ConverterParams->TileInfoPerMipLevel[SampleMipLevel].Num() > 0))
+			if (ConverterParams.FrameInfo.bHasTiles &&
+				(ConverterParams.TileInfoPerMipLevel.Num() > SampleMipLevel && ConverterParams.TileInfoPerMipLevel[SampleMipLevel].Num() > 0))
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.TileDesc")));
 
 				FBufferRHIRef BufferRef;
 				FRHIResourceCreateInfo CreateInfo(TEXT("FExrImgMediaReaderGpu_TileDesc"));
 				const uint32 BytesPerElement = sizeof(FExrReader::FTileDesc);
-				const uint32 NumElements = ConverterParams->TileInfoPerMipLevel[SampleMipLevel].Num();
+				const uint32 NumElements = ConverterParams.TileInfoPerMipLevel[SampleMipLevel].Num();
 
 				// This buffer is allocated on already allocated block, therefore the risk of fragmentation is mitigated.
-				BufferRef = RHICreateStructuredBuffer(BytesPerElement, BytesPerElement * NumElements, BUF_ShaderResource | BUF_Dynamic | BUF_FastVRAM, CreateInfo);
-				void* MappedBuffer = RHILockBuffer(BufferRef, 0, NumElements, RLM_WriteOnly);
-				FMemory::Memcpy(MappedBuffer, &ConverterParams->TileInfoPerMipLevel[SampleMipLevel][0], sizeof(FExrReader::FTileDesc) * ConverterParams->TileInfoPerMipLevel[SampleMipLevel].Num());
-				RHIUnlockBuffer(BufferRef);
-				Parameters.TileDescBuffer = RHICreateShaderResourceView(BufferRef);
+				BufferRef = RHICmdList.CreateStructuredBuffer(BytesPerElement, BytesPerElement * NumElements, BUF_ShaderResource | BUF_Dynamic | BUF_FastVRAM, CreateInfo);
+				void* MappedBuffer = RHICmdList.LockBuffer(BufferRef, 0, NumElements, RLM_WriteOnly);
+				FMemory::Memcpy(MappedBuffer, &ConverterParams.TileInfoPerMipLevel[SampleMipLevel][0], sizeof(FExrReader::FTileDesc) * ConverterParams.TileInfoPerMipLevel[SampleMipLevel].Num());
+				RHICmdList.UnlockBuffer(BufferRef);
+				Parameters.TileDescBuffer = RHICmdList.CreateShaderResourceView(BufferRef);
 				PermutationVector.Set<FExrSwizzlePS::FPartialTiles>(true);
 			}
 
@@ -609,24 +565,15 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 
 			// Resolve render target.
 			RHICmdList.EndRenderPass();
-
-			if (!BufferData->bWillBeSignaled)
-			{
-				// This flag will indicate that we should wait for poll to complete.
-				BufferData->bWillBeSignaled = true;
-
-				// Mark this render command for this buffer as complete, so we can poll it and transfer later.
-				RHICmdList.WriteGPUFence(BufferData->RenderFence);
-			}
 		};
 
-		int32 MipToUpscale = ConverterParams->UpscaleMip;
+		int32 MipToUpscale = ConverterParams.UpscaleMip;
 
 		// Upscale to all mips below the mip to upscale.
 		for (int32 MipLevel = 0; MipLevel <= MipToUpscale; MipLevel++)
 		{
 			int MipLevelDiv = 1 << MipLevel;
-			FIntPoint Dim = ConverterParams->FullResolution / MipLevelDiv;
+			FIntPoint Dim = ConverterParams.FullResolution / MipLevelDiv;
 
 			{
 				SCOPED_GPU_STAT(RHICmdList, ExrImgMediaReaderGpu_MipUpscale);
@@ -634,17 +581,17 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 				// Sanity check.
 				if (!MipBuffers.Contains(MipToUpscale))
 				{
-					UE_LOG(LogImgMedia, Warning, TEXT("Requested mip could not be found %s"), MipToUpscale);
+					UE_LOG(LogImgMedia, Warning, TEXT("Requested mip could not be found %d"), MipToUpscale);
 				}
 
 				FStructuredBufferPoolItemSharedPtr BufferDataToUpscale = MipBuffers[MipToUpscale];
 				TArray<FIntRect> FakeViewport;
 				FakeViewport.Add(FIntRect(FIntPoint(0, 0), Dim));
-				RenderMip(RHICmdList, RenderTargetTextureRHI, ConverterParams, MipToUpscale, MipLevel, BufferDataToUpscale, (ConverterParams->FullResolution / (1 << MipToUpscale)), Dim, FakeViewport);
+				RenderMip(RHICmdList, RenderTargetTextureRHI, ConverterParams, MipToUpscale, MipLevel, BufferDataToUpscale, (ConverterParams.FullResolution / (1 << MipToUpscale)), Dim, FakeViewport);
 			}
 		}
 
-		for (const TPair<int32, TArray<FIntRect>>& MipLevelViewports : ConverterParams->Viewports)
+		for (const TPair<int32, TArray<FIntRect>>& MipLevelViewports : ConverterParams.Viewports)
 		{
 			int32 MipLevel = MipLevelViewports.Key;
 			
@@ -656,7 +603,7 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 
 			FStructuredBufferPoolItemSharedPtr BufferData = MipBuffers[MipLevel];
 			int MipLevelDiv = 1 << MipLevel;
-			FIntPoint Dim = ConverterParams->FullResolution / MipLevelDiv;
+			FIntPoint Dim = ConverterParams.FullResolution / MipLevelDiv;
 
 			if (BufferData.IsValid())
 			{
@@ -684,11 +631,24 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 
 FStructuredBufferPoolItemSharedPtr FExrImgMediaReaderGpu::AllocateGpuBufferFromPool(uint32 AllocSize, bool bWait)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.AllocBuffer")));
 	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.AllocBuffer %d"), AllocSize));
+	TWeakPtr<FExrImgMediaReaderGpu, ESPMode::ThreadSafe> WeakReaderPtr = AsShared();
 
 	// This function is attached to the shared pointer and is used to return any allocated memory to staging pool.
-	auto BufferDeleter = [AllocSize](FStructuredBufferPoolItem* ObjectToDelete) {
-		ReturnGpuBufferToStagingPool(AllocSize, ObjectToDelete);
+	auto BufferDeleter = [WeakReaderPtr, AllocSize](FStructuredBufferPoolItem* ObjectToDelete) {
+		TSharedPtr<FExrImgMediaReaderGpu, ESPMode::ThreadSafe> SharedReaderPtr = WeakReaderPtr.Pin();
+		if (SharedReaderPtr.IsValid())
+		{
+			SharedReaderPtr->ReturnGpuBufferToPool(AllocSize, ObjectToDelete);
+		}
+		else
+		{
+			ENQUEUE_RENDER_COMMAND(DeletePooledBuffers)([ObjectToDelete](FRHICommandListImmediate& RHICmdList)
+			{
+				delete ObjectToDelete;
+			});
+		}
 	};
 
 	// Buffer that ends up being returned out of this function.
@@ -706,107 +666,62 @@ FStructuredBufferPoolItemSharedPtr FExrImgMediaReaderGpu::AllocateGpuBufferFromP
 
 	if (!AllocatedBuffer)
 	{
-		// This boolean value is used to wait until render thread finishes buffer initialization.
-		volatile bool bInitDone = false;
+		FEvent* InitDoneEvent = nullptr;
+		if (bWait)
+		{
+			InitDoneEvent = FPlatformProcess::GetSynchEventFromPool();
+		}
+
 		{
 			AllocatedBuffer = MakeShareable(new FStructuredBufferPoolItem(), MoveTemp(BufferDeleter));
 			AllocatedBuffer->Reader = AsShared();
 
 			// Allocate and unlock the structured buffer on render thread.
-			ENQUEUE_RENDER_COMMAND(CreatePooledBuffer)([AllocatedBuffer, AllocSize, &bInitDone, this, bWait](FRHICommandListImmediate& RHICmdList)
+			ENQUEUE_RENDER_COMMAND(CreatePooledBuffer)([AllocatedBuffer, AllocSize, InitDoneEvent, this](FRHICommandListImmediate& RHICmdList)
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.AllocBuffer_RenderThread")));
+				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.AllocBuffer_RenderThread %d"), AllocSize));
 				FScopeLock ScopeLock(&AllocatorCriticalSecion);
+				SCOPED_GPU_STAT(RHICmdList, ExrImgMediaReaderGpu_AllocateBuffer);
 				SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_AllocateBuffer);
 				FRHIResourceCreateInfo CreateInfo(TEXT("FExrImgMediaReaderGpu"));
-				AllocatedBuffer->UploadBufferRef = RHICreateStructuredBuffer(sizeof(uint16) * 2., AllocSize, BUF_ShaderResource | BUF_Dynamic | BUF_FastVRAM, CreateInfo);
-				AllocatedBuffer->UploadBufferMapped = RHILockBuffer(AllocatedBuffer->UploadBufferRef, 0, AllocSize, RLM_WriteOnly);
+				AllocatedBuffer->UploadBufferRef = RHICmdList.CreateStructuredBuffer(sizeof(uint16) * 2., AllocSize, BUF_ShaderResource | BUF_Dynamic | BUF_FastVRAM, CreateInfo);
+				AllocatedBuffer->UploadBufferMapped = RHICmdList.LockBuffer(AllocatedBuffer->UploadBufferRef, 0, AllocSize, RLM_WriteOnly);
 
 				if (CVarExrReaderUseUploadHeap.GetValueOnAnyThread())
 				{
-					AllocatedBuffer->ShaderAccessBufferRef = RHICreateStructuredBuffer(sizeof(uint16) * 2., AllocSize, BUF_ShaderResource | BUF_FastVRAM, CreateInfo);
-					AllocatedBuffer->ShaderResourceView = RHICreateShaderResourceView(AllocatedBuffer->ShaderAccessBufferRef);
+					AllocatedBuffer->ShaderAccessBufferRef = RHICmdList.CreateStructuredBuffer(sizeof(uint16) * 2., AllocSize, BUF_ShaderResource | BUF_FastVRAM, CreateInfo);
+					AllocatedBuffer->ShaderResourceView = RHICmdList.CreateShaderResourceView(AllocatedBuffer->ShaderAccessBufferRef);
 				}
 				else
 				{
-					AllocatedBuffer->ShaderResourceView = RHICreateShaderResourceView(AllocatedBuffer->UploadBufferRef);
+					AllocatedBuffer->ShaderResourceView = RHICmdList.CreateShaderResourceView(AllocatedBuffer->UploadBufferRef);
 				}
 
-				AllocatedBuffer->RenderFence = RHICreateGPUFence(TEXT("Exr.BufferNoLongerInUseFence"));
-
-				if (bWait)
+				if (InitDoneEvent != nullptr)
 				{
-					bInitDone = true;
+					InitDoneEvent->Trigger();
 				}
 			});
 		}
 
 		/** Wait until buffer is initialized. */
-		while (!bInitDone && bWait)
+		if (InitDoneEvent != nullptr)
 		{
-			FPlatformProcess::Sleep(0.01f);
+			InitDoneEvent->Wait();
+			FPlatformProcess::ReturnSynchEventToPool(InitDoneEvent);
 		}
-
 	}
 
 	// This buffer will be automatically processed and returned to StagingMemoryPool once nothing keeps reference to it.
 	return AllocatedBuffer;
 }
 
-void FExrImgMediaReaderGpu::ReturnGpuBufferToStagingPool(uint32 AllocSize, FStructuredBufferPoolItem* Buffer)
+void FExrImgMediaReaderGpu::ReturnGpuBufferToPool(uint32 AllocSize, FStructuredBufferPoolItem* Buffer)
 {
-	TSharedPtr< FExrImgMediaReaderGpu, ESPMode::ThreadSafe> Reader = Buffer->Reader.Pin();
-
-	// If reader is being deleted, we don't need to return the memory into staging buffer and instead should delete it.
-	if ((Reader.IsValid() == false) || (Reader->bIsShuttingDown))
-	{
-		ENQUEUE_RENDER_COMMAND(DeletePooledBuffers)([Buffer](FRHICommandListImmediate& RHICmdList)
-		{
-			SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_ReleaseBuffer);
-			Buffer->RenderFence->Clear();
-			// By this point we don't need a lock because the destructor was already called and it 
-			// is guaranteed that this buffer is no longer used anywhere else.
-			RHIUnlockBuffer(Buffer->UploadBufferRef);
-			delete Buffer;
-		});
-	}
-	else
-	{
-		FScopeLock ScopeLock(&Reader->AllocatorCriticalSecion);
-
-		// We don't need to process this pooled buffer if the Reader is being destroyed.
-		Reader->StagingMemoryPool.Add(AllocSize, Buffer);
-	}
-
-}
-
-void FExrImgMediaReaderGpu::TransferFromStagingBuffer()
-{
-	ENQUEUE_RENDER_COMMAND(CreatePooledBuffer)([&, this](FRHICommandListImmediate& RHICmdList)
-	{
-		FScopeLock ScopeLock(&AllocatorCriticalSecion);
-		SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_TransferFromStagingBuffer);
-
-		TArray<uint32> KeysForIteration;
-		StagingMemoryPool.GetKeys(KeysForIteration);
-		for (uint32 Key : KeysForIteration)
-		{
-			TArray<FStructuredBufferPoolItem*> AllValues;
-			StagingMemoryPool.MultiFind(Key, AllValues);
-			for (FStructuredBufferPoolItem* MemoryPoolItem : AllValues)
-			{
-				// Check if fence has signaled. Or otherwise if we are waiting for signal to come through.
-				if (!MemoryPoolItem->bWillBeSignaled || MemoryPoolItem->RenderFence->Poll())
-				{
-					// If buffer was in use but the fence signaled we need to reset bWillBeSignaled flag.
-					MemoryPoolItem->bWillBeSignaled = false;
-					MemoryPoolItem->RenderFence->Clear();
-
-					StagingMemoryPool.Remove(Key, MemoryPoolItem);
-					MemoryPool.Add(Key, MemoryPoolItem);
-				}
-			}
-		}
-	});
+	FScopeLock ScopeLock(&AllocatorCriticalSecion);
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.ReturnPoolItem")));
+	MemoryPool.Add(AllocSize, Buffer);
 }
 
 
@@ -819,9 +734,16 @@ bool FExrMediaTextureSampleConverter::Convert(FTexture2DRHIRef& InDstTexture, co
 	bool bExecutionSuccessful = false;
 	if (ConvertExrBufferCallback.IsBound())
 	{
-		bExecutionSuccessful = ConvertExrBufferCallback.Execute(FRHICommandListExecutor::GetImmediateCommandList(), InDstTexture, MipBuffersRenderThread);
+		bExecutionSuccessful = ConvertExrBufferCallback.Execute(FRHICommandListExecutor::GetImmediateCommandList(), InDstTexture, MipBuffers, *ConverterParams.Get());
 	}
 	return bExecutionSuccessful;
+}
+
+FStructuredBufferPoolItem::~FStructuredBufferPoolItem()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.ReleasePoolItem")));
+	FRHICommandListImmediate::Get().UnlockBuffer(UploadBufferRef);
+	UploadBufferMapped = nullptr;
 }
 
 #endif //IMGMEDIA_EXR_SUPPORTED_PLATFORM && PLATFORM_WINDOWS

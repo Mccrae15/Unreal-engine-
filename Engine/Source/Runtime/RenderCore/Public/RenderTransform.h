@@ -25,9 +25,11 @@ struct FRenderTransform
 	FVector3f Origin;
 
 public:
-	FORCEINLINE FRenderTransform()
-	{
-	}
+	FRenderTransform() = default;
+	FRenderTransform(FRenderTransform&&) = default;
+	FRenderTransform(const FRenderTransform&) = default;
+	FRenderTransform& operator=(FRenderTransform&&) = default;
+	FRenderTransform& operator=(const FRenderTransform&) = default;
 
 	FORCEINLINE FRenderTransform(const FVector3f& InXAxis, const FVector3f& InYAxis, const FVector3f& InZAxis, const FVector3f& InOrigin)
 	{
@@ -52,15 +54,6 @@ public:
 		TransformRows[1] = FVector3f((float)M.M[1][0], (float)M.M[1][1], (float)M.M[1][2]);
 		TransformRows[2] = FVector3f((float)M.M[2][0], (float)M.M[2][1], (float)M.M[2][2]);
 		Origin = FVector3f((float)M.M[3][0], (float)M.M[3][1], (float)M.M[3][2]);
-	}
-
-	FORCEINLINE FRenderTransform& operator=(const FRenderTransform& From)
-	{
-		TransformRows[0] = From.TransformRows[0];
-		TransformRows[1] = From.TransformRows[1];
-		TransformRows[2] = From.TransformRows[2];
-		Origin = From.Origin;
-		return *this;
 	}
 
 	FORCEINLINE FRenderTransform& operator=(const FMatrix44f& From)

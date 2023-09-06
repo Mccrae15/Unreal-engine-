@@ -59,7 +59,6 @@ namespace mu
     CompilerOptions::CompilerOptions()
     {
         m_pD = new Private();
-        m_pD->m_log = false;
     }
 
 
@@ -80,63 +79,63 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    void CompilerOptions::SetLogEnabled( bool enabled )
+    void CompilerOptions::SetLogEnabled( bool bEnabled)
     {
-        m_pD->m_log = enabled;
+        m_pD->bLog = bEnabled;
     }
 
 
     //---------------------------------------------------------------------------------------------
-    void CompilerOptions::SetOptimisationEnabled( bool enabled )
+    void CompilerOptions::SetOptimisationEnabled( bool bEnabled)
     {
-        m_pD->m_optimisationOptions.m_enabled = enabled;
-        if (enabled)
+        m_pD->OptimisationOptions.bEnabled = bEnabled;
+        if (bEnabled)
         {
-            m_pD->m_optimisationOptions.m_constReduction = true;
+            m_pD->OptimisationOptions.bConstReduction = true;
         }
     }
 
 
     //---------------------------------------------------------------------------------------------
-    void CompilerOptions::SetConstReductionEnabled( bool constReduction )
+    void CompilerOptions::SetConstReductionEnabled( bool bConstReductionEnabled )
     {
-        m_pD->m_optimisationOptions.m_constReduction = constReduction;
+        m_pD->OptimisationOptions.bConstReduction = bConstReductionEnabled;
     }
 
 
     //---------------------------------------------------------------------------------------------
     void CompilerOptions::SetUseDiskCache( bool enabled )
     {
-        m_pD->m_optimisationOptions.m_useDiskCache = enabled;
+        m_pD->OptimisationOptions.bUseDiskCache = enabled;
     }
 
 
     //---------------------------------------------------------------------------------------------
     void CompilerOptions::SetOptimisationMaxIteration( int maxIterations )
     {
-        m_pD->m_optimisationOptions.m_maxOptimisationLoopCount = maxIterations;
+        m_pD->OptimisationOptions.MaxOptimisationLoopCount = maxIterations;
     }
 
 
     //---------------------------------------------------------------------------------------------
-    void CompilerOptions::SetIgnoreStates( bool ignore )
+    void CompilerOptions::SetIgnoreStates( bool bIgnore )
     {
-        m_pD->m_ignoreStates = ignore;
+        m_pD->bIgnoreStates = bIgnore;
     }
 
 
-    //---------------------------------------------------------------------------------------------
-    void CompilerOptions::SetTextureLayoutStrategy( TextureLayoutStrategy strategy )
-    {
-        m_pD->m_textureLayoutStrategy = strategy;
-    }
+	//---------------------------------------------------------------------------------------------
+	void CompilerOptions::SetImageCompressionQuality(int32 Quality)
+	{
+		m_pD->ImageCompressionQuality = Quality;
+	}
 
 
-    //---------------------------------------------------------------------------------------------
-    void CompilerOptions::SetImageCompressionQuality( int quality )
-    {
-        m_pD->m_imageCompressionQuality = quality;
-    }
+	//---------------------------------------------------------------------------------------------
+	void CompilerOptions::SetImageTiling(int32 Tiling)
+	{
+		m_pD->ImageTiling = Tiling;
+	}
 
 
 	//---------------------------------------------------------------------------------------------
@@ -150,7 +149,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	void CompilerOptions::SetEnableProgressiveImages(bool bEnabled)
 	{
-		m_pD->m_optimisationOptions.bEnableProgressiveImages = bEnabled;
+		m_pD->OptimisationOptions.bEnableProgressiveImages = bEnabled;
 	}
 
 
@@ -197,7 +196,6 @@ namespace mu
                 data.nodeState = s.first;
                 data.root = s.second;
                 data.state.m_name = s.first.m_name;
-                data.optimisationFlags = s.first.m_optimisation;
                 states.push_back( data );
             }
 
@@ -205,7 +203,7 @@ namespace mu
         }
 
         vector<Ptr<ASTOp>> roots;
-        for( const auto& s: states)
+        for( const STATE_COMPILATION_DATA& s: states)
         {
             roots.push_back(s.root);
         }
@@ -222,10 +220,18 @@ namespace mu
 
         // Link the program and generate state data.
 		TSharedPtr<Model> pResult = MakeShared<Model>();
-        auto& program = pResult->GetPrivate()->m_program;
-        for( auto& s: states )
+        FProgram& program = pResult->GetPrivate()->m_program;
+
+		// Preallocate ample memory
+		program.m_byteCode.Reserve(16 * 1024 * 1024);
+		program.m_opAddress.Reserve(1024 * 1024);
+
+		// Keep the link options outside the scope because it is also used to cache constant data that has already been 
+		// added and could be reused across states.
+		FLinkerOptions LinkerOptions;
+
+		for( STATE_COMPILATION_DATA& s: states )
         {
-			FLinkerOptions LinkerOptions;
 			LinkerOptions.MinTextureResidentMipCount = m_pD->m_options->GetPrivate()->MinTextureResidentMipCount;
 
             ASTOp::FullLink(s.root,program, &LinkerOptions);
@@ -239,13 +245,16 @@ namespace mu
             }
         }
 
+		program.m_byteCode.Shrink();
+		program.m_opAddress.Shrink();
+
         // Set the runtime parameter indices.
         for( STATE_COMPILATION_DATA& s: states )
         {
             for ( int32 p=0; p<s.nodeState.m_runtimeParams.Num(); ++p )
             {
-                int paramIndex = -1;
-                for ( size_t i=0; paramIndex<0 && i<program.m_parameters.Num(); ++i )
+                int32 paramIndex = -1;
+                for ( int32 i=0; paramIndex<0 && i<program.m_parameters.Num(); ++i )
                 {
                     if ( program.m_parameters[i].m_name
                          ==
@@ -265,8 +274,8 @@ namespace mu
 						"The state [%s] refers to a parameter [%s] "
 						"that has not been found in the model. This error can be "
 						"safely dismissed in case of partial compilation."), 
-						s.nodeState.m_name.c_str(),
-						s.nodeState.m_runtimeParams[p].c_str());
+						StringCast<TCHAR>(s.nodeState.m_name.c_str()).Get(),
+						StringCast<TCHAR>(s.nodeState.m_runtimeParams[p].c_str()).Get());
                     m_pD->m_pErrorLog->GetPrivate()->Add(Temp, ELMT_WARNING, pNode->GetBasePrivate()->m_errorContext );
                 }
             }
@@ -283,7 +292,7 @@ namespace mu
             // Generate the mask of dynamic resources
             for ( const auto& a: s.m_dynamicResources )
             {
-                uint64_t relevantMask = 0;
+                uint64 relevantMask = 0;
                 for ( const auto& b: a.Value )
                 {
                     // Find the index in the model parameter list
@@ -298,11 +307,11 @@ namespace mu
                     check(paramIndex>=0);
 
                     // Find the position in the state data vector.
-                    int32 it = s.state.m_runtimeParameters.Find( paramIndex );
+                    int32 IndexInRuntimeList = s.state.m_runtimeParameters.Find( paramIndex );
 
-                    if ( it!=INDEX_NONE )
+                    if (IndexInRuntimeList !=INDEX_NONE )
                     {
-                        relevantMask |= uint64_t(1) << it;
+                        relevantMask |= uint64(1) << IndexInRuntimeList;
                     }
                 }
 

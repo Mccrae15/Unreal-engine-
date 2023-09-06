@@ -42,12 +42,15 @@ public:
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override;
 	virtual FText GetDefaultNodeTitle() const override;
+	virtual TArray<FPCGPreConfiguredSettingsInfo> GetPreconfiguredInfo() const override;
+	virtual bool OnlyExposePreconfiguredSettings() const override { return true; }
 #endif
 	virtual FName AdditionalTaskName() const override;
+	virtual void ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfigureInfo) override;
 	//~End UPCGSettings interface
 
 	//~Begin UPCGMetadataSettingsBase interface
-	FPCGAttributePropertySelector GetInputSource(uint32 Index) const override;
+	FPCGAttributePropertyInputSelector GetInputSource(uint32 Index) const override;
 
 	virtual FName GetInputPinLabel(uint32 Index) const override;
 	virtual uint32 GetInputPinNum() const override;
@@ -68,13 +71,13 @@ public:
 	EPCGTransformLerpMode TransformLerpMode = EPCGTransformLerpMode::QuatInterp;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
-	FPCGAttributePropertySelector InputSource1;
+	FPCGAttributePropertyInputSelector InputSource1;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input, meta = (EditCondition = "Operation != EPCGMedadataTransformOperation::Invert", EditConditionHides))
-	FPCGAttributePropertySelector InputSource2;
+	FPCGAttributePropertyInputSelector InputSource2;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input, meta = (EditCondition = "Operation == EPCGMedadataTransformOperation::Lerp", EditConditionHides))
-	FPCGAttributePropertySelector InputSource3;
+	FPCGAttributePropertyInputSelector InputSource3;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()

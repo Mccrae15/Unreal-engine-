@@ -98,7 +98,7 @@ namespace Metasound
 	class METASOUNDSTANDARDNODES_API TOutputNode<FStereoAudioFormat> : public FNode
 	{
 		// FOutputOperator primarly used to report inputs and outputs. Has no execute function.
-		class FOutputOperator : public IOperator
+		class FOutputOperator : public FNoOpOperator
 		{
 		public:
 			FOutputOperator(const FVertexName& InOutputName, TDataReadReference<FAudioBuffer> InLeft, TDataReadReference<FAudioBuffer> InRight, TDataReadReference<FStereoAudioFormat> InStereo)
@@ -111,30 +111,34 @@ namespace Metasound
 
 			virtual ~FOutputOperator() {}
 
-			virtual FDataReferenceCollection GetInputs() const override
+
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 			{
 				using namespace StereoAudioFormatVertexKeys;
 
-				FDataReferenceCollection Inputs;
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(LeftChannelVertex), Left);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(RightChannelVertex), Right);
+			}
 
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(LeftChannelVertex), Left);
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(RightChannelVertex), Right);
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(OutputName, Stereo);
+			}
 
-				return Inputs;
+			virtual FDataReferenceCollection GetInputs() const override
+			{
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FDataReferenceCollection GetOutputs() const override
 			{
-				FDataReferenceCollection Outputs;
-
-				Outputs.AddDataReadReference(OutputName, Stereo);
-
-				return Outputs;
-			}
-
-			virtual FExecuteFunction GetExecuteFunction() override
-			{
-				return nullptr;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 		private:
@@ -242,7 +246,7 @@ namespace Metasound
 	class METASOUNDSTANDARDNODES_API TInputNode<FStereoAudioFormat> : public FNode
 	{
 		// Noop operator. Used to return inputs / outputs for debugging.
-		class FInputOperator : public IOperator
+		class FInputOperator : public FNoOpOperator
 		{
 		public:
 
@@ -256,30 +260,32 @@ namespace Metasound
 
 			virtual ~FInputOperator() {}
 
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(InputName, Stereo);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				using namespace StereoAudioFormatVertexKeys;
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(LeftChannelVertex), Left);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(RightChannelVertex), Right);
+			}
 
 			virtual FDataReferenceCollection GetInputs() const override
 			{
-				FDataReferenceCollection Inputs;
-
-				Inputs.AddDataReadReference(InputName, Stereo);
-
-				return Inputs;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FDataReferenceCollection GetOutputs() const override
 			{
-				FDataReferenceCollection Outputs;
-				using namespace StereoAudioFormatVertexKeys;
-
-				Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(LeftChannelVertex), Left);
-				Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(RightChannelVertex), Right);
-
-				return Outputs;
-			}
-
-			virtual FExecuteFunction GetExecuteFunction() override
-			{
-				return nullptr;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 		private:
@@ -386,7 +392,7 @@ namespace Metasound
 	template<>
 	class METASOUNDSTANDARDNODES_API TOutputNode<FMonoAudioFormat> : public FNode
 	{
-		class FOutputOperator : public IOperator
+		class FOutputOperator : public FNoOpOperator
 		{
 		public:
 			FOutputOperator(const FVertexName& InOutputName, TDataReadReference<FAudioBuffer> InCenter, TDataReadReference<FMonoAudioFormat> InMono)
@@ -398,25 +404,38 @@ namespace Metasound
 
 			virtual ~FOutputOperator() {}
 
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(OutputName, Center);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(OutputName, Mono);
+			}
+
 			virtual FDataReferenceCollection GetInputs() const override
 			{
-				FDataReferenceCollection Inputs;
-
-				Inputs.AddDataReadReference(OutputName, Center);
-
-				return Inputs;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FDataReferenceCollection GetOutputs() const override
 			{
-				FDataReferenceCollection Outputs;
-
-				Outputs.AddDataReadReference(OutputName, Mono);
-
-				return Outputs;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FExecuteFunction GetExecuteFunction() override
+			{
+				return nullptr;
+			}
+
+			virtual FResetFunction GetResetFunction() override
 			{
 				return nullptr;
 			}
@@ -518,7 +537,7 @@ namespace Metasound
 	template<>
 	class METASOUNDSTANDARDNODES_API TInputNode<FMonoAudioFormat> : public FNode
 	{
-		class FInputOperator : public IOperator
+		class FInputOperator : public FNoOpOperator
 		{
 		public:
 
@@ -531,26 +550,38 @@ namespace Metasound
 
 			virtual ~FInputOperator() {}
 
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(InputName, Mono);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				InOutVertexData.BindReadVertex(InputName, Center);
+			}
 
 			virtual FDataReferenceCollection GetInputs() const override
 			{
-				FDataReferenceCollection Inputs;
-
-				Inputs.AddDataReadReference(InputName, Mono);
-
-				return Inputs;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FDataReferenceCollection GetOutputs() const override
 			{
-				FDataReferenceCollection Outputs;
-
-				Outputs.AddDataReadReference(InputName, Center);
-
-				return Outputs;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FExecuteFunction GetExecuteFunction() override
+			{
+				return nullptr;
+			}
+
+			virtual FResetFunction GetResetFunction() override
 			{
 				return nullptr;
 			}

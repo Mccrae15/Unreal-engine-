@@ -24,9 +24,9 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/PackageName.h"
 #include "MuCO/CustomizableObjectInstance.h"
+#include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/CustomizableObjectMipDataProvider.h"
 #include "MuCO/UnrealBakeHelpers.h"
-#include "MuCOE/CustomizableObjectBakeHelpers.h"
 #include "MuCOE/CustomizableObjectPreviewScene.h"
 #include "MuCOE/CustomizableObjectWidget.h"
 #include "MuCOE/ICustomizableObjectInstanceEditor.h"
@@ -229,24 +229,17 @@ bool GizmoRTSProxy::ProjectorHasInitialValues(FCustomizableObjectProjector& Para
 
 FCustomizableObjectProjector GizmoRTSProxy::SetProjectorInitialValue(TArray<TWeakObjectPtr<UDebugSkelMeshComponent>>& SkeletalMeshComponents, float TotalLength)
 {
-	FCustomizableObjectProjector Result;
-	bool bFoundComponents = false;
-	FBoxSphereBounds Bounds;
-
+	FBoxSphereBounds::Builder BoundsBuilder;
 	for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 	{
-		if (!bFoundComponents)
-		{
-			Bounds = SkeletalMeshComponent->Bounds;
-		}
-		else
-		{
-			Bounds = Bounds + SkeletalMeshComponent->Bounds;
-		}
+		BoundsBuilder += SkeletalMeshComponent->Bounds;
 	}
 
-	if (bFoundComponents)
+	FCustomizableObjectProjector Result;
+
+	if (BoundsBuilder.IsValid())
 	{
+		FBoxSphereBounds Bounds(BoundsBuilder);
 		Result.Position = FVector3f(Bounds.Origin + FVector(0.0f, 1.0f, 0.0f) * TotalLength * 0.5f);	// LWC_TODO: Precision Loss
 		Result.Scale = FVector3f(40.0f, 40.0f, 40.0f);
 		Result.Up = FVector3f(0.0f, 0.0f, 1.0f);
@@ -527,7 +520,7 @@ FCustomizableObjectEditorViewportClient::FCustomizableObjectEditorViewportClient
 void FCustomizableObjectEditorViewportClient::UpdateCameraSetup()
 {
 	static FRotator CustomOrbitRotation(-33.75, -135, 0);
-	if ( (SkeletalMeshComponents.Num() && SkeletalMeshComponents[0].IsValid() && SkeletalMeshComponents[0]->GetSkinnedAsset())
+	if ( (SkeletalMeshComponents.Num() && SkeletalMeshComponents[0].IsValid() && UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponents[0]))
 		||
 		(StaticMeshComponent.IsValid() && StaticMeshComponent->GetStaticMesh()) )
 	{
@@ -743,11 +736,11 @@ void FCustomizableObjectEditorViewportClient::Draw(const FSceneView* View, FPrim
 
 		// Start Plane
 		DrawDirectionalArrow(PDI, PlaneMatrix, FColor::Red, MorphLength, MorphLength * 0.1f, 0, 0.1f);
-		DrawBox(PDI, PlaneMatrix, FVector(0.01f, PlaneRadius1, PlaneRadius1), Helper_GetMaterialProxy(ClipMorphMaterial), 0);
+		DrawBox(PDI, PlaneMatrix, FVector(0.01f, PlaneRadius1, PlaneRadius1), ClipMorphMaterial->GetRenderProxy(), 0);
 
 		// End Plane + Ellipse
 		PlaneMatrix.SetOrigin(ClipMorphOrigin + ClipMorphOffset + ClipMorphNormal * MorphLength);
-		DrawBox(PDI, PlaneMatrix, FVector(0.01f, PlaneRadius2, PlaneRadius2), Helper_GetMaterialProxy(ClipMorphMaterial), 0);
+		DrawBox(PDI, PlaneMatrix, FVector(0.01f, PlaneRadius2, PlaneRadius2), ClipMorphMaterial->GetRenderProxy(), 0);
 		DrawEllipse(PDI, ClipMorphOrigin + ClipMorphOffset + ClipMorphNormal * MorphLength, ClipMorphXAxis, ClipMorphYAxis, FColor::Red, Radius1, Radius2, 15, 1, 0.f, 0, false);
 	}
 
@@ -804,8 +797,8 @@ void FCustomizableObjectEditorViewportClient::Draw(const FSceneView* View, FPrim
 				FMatrix Mat1 = Mat;
 				Mat0.SetOrigin(Location0);
 				Mat1.SetOrigin(Location1);
-				DrawCylinderArc(PDI, Mat0, FVector(0.0f, 0.0f, 0.0f), FVector(0, 1, 0), FVector(0, 0, 1), FVector(1, 0, 0),  CylinderRadius, CylinderHalfHeight * 0.1f, 16, Helper_GetMaterialProxy(TransparentPlaneMaterialXY), SDPG_World, FColor(255, 85, 0, 192), GizmoProxy.Value.Angle);
-				DrawCylinderArc(PDI, Mat1, FVector(0.0f, 0.0f, 0.0f), FVector(0, 1, 0), FVector(0, 0, 1), FVector(1, 0, 0), CylinderRadius, CylinderHalfHeight * 0.1f, 16, Helper_GetMaterialProxy(TransparentPlaneMaterialXY), SDPG_World, FColor(255, 85, 0, 192), GizmoProxy.Value.Angle);
+				DrawCylinderArc(PDI, Mat0, FVector(0.0f, 0.0f, 0.0f), FVector(0, 1, 0), FVector(0, 0, 1), FVector(1, 0, 0),  CylinderRadius, CylinderHalfHeight * 0.1f, 16, TransparentPlaneMaterialXY->GetRenderProxy(), SDPG_World, FColor(255, 85, 0, 192), GizmoProxy.Value.Angle);
+				DrawCylinderArc(PDI, Mat1, FVector(0.0f, 0.0f, 0.0f), FVector(0, 1, 0), FVector(0, 0, 1), FVector(1, 0, 0), CylinderRadius, CylinderHalfHeight * 0.1f, 16, TransparentPlaneMaterialXY->GetRenderProxy(), SDPG_World, FColor(255, 85, 0, 192), GizmoProxy.Value.Angle);
 				break;
 			}
 			case ECustomizableObjectProjectorType::Wrapping:
@@ -845,7 +838,7 @@ void FCustomizableObjectEditorViewportClient::Draw(FViewport* InViewport, FCanva
 	// Defensive check to avoid unreal crashing inside render if the mesh is degenereated
 	for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 	{
-		if (SkeletalMeshComponent.IsValid() && SkeletalMeshComponent->GetSkinnedAsset() && Helper_GetLODInfoArray(SkeletalMeshComponent->GetSkinnedAsset()).Num() == 0)
+		if (SkeletalMeshComponent.IsValid() && UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent) && UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent)->GetLODInfoArray().Num() == 0)
 		{
 			SkeletalMeshComponent->SetSkeletalMesh(nullptr);
 		}
@@ -1078,7 +1071,7 @@ void FCustomizableObjectEditorViewportClient::DrawUVs(FViewport* InViewport, FCa
 
 		for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 		{
-			if (!SkeletalMeshComponent.IsValid() || !SkeletalMeshComponent->GetSkinnedAsset() || CurrentComponentIndex != ComponentIndex)
+			if (!SkeletalMeshComponent.IsValid() || !UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent) || CurrentComponentIndex != ComponentIndex)
 			{
 				CurrentComponentIndex++;
 				continue;
@@ -1086,7 +1079,7 @@ void FCustomizableObjectEditorViewportClient::DrawUVs(FViewport* InViewport, FCa
 
 			bool bFoundMaterial = false;
 
-			const FSkeletalMeshRenderData* MeshRes = SkeletalMeshComponent->GetSkinnedAsset()->GetResourceForRendering();
+			const FSkeletalMeshRenderData* MeshRes = UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent)->GetResourceForRendering();
 			if (UVChannel < (int32)MeshRes->LODRenderData[LODLevel].GetNumTexCoords())
 			{
 				// Find material index from name
@@ -1531,7 +1524,7 @@ void FCustomizableObjectEditorViewportClient::SetPreviewComponent(UStaticMeshCom
 }
 
 
-void FCustomizableObjectEditorViewportClient::SetPreviewComponents(TArray<UDebugSkelMeshComponent*>& InSkeletalMeshComponents)
+void FCustomizableObjectEditorViewportClient::SetPreviewComponents(const TArray<UDebugSkelMeshComponent*>& InSkeletalMeshComponents)
 {
 	SkeletalMeshComponents.Reset(InSkeletalMeshComponents.Num());
 	
@@ -1549,9 +1542,9 @@ void FCustomizableObjectEditorViewportClient::ResetCamera()
 	float MaxSphereRadius = 0.0f;
 	for (const TWeakObjectPtr<UDebugSkelMeshComponent>& SkeletalMeshComponent : SkeletalMeshComponents)
 	{
-		if (SkeletalMeshComponent->GetSkinnedAsset())
+		if (UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent))
 		{
-			MaxSphereRadius = FMath::Max(MaxSphereRadius, SkeletalMeshComponent->GetSkinnedAsset()->GetBounds().SphereRadius);
+			MaxSphereRadius = FMath::Max(MaxSphereRadius, UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent)->GetBounds().SphereRadius);
 		}
 	}
 	
@@ -2033,8 +2026,8 @@ void FCustomizableObjectEditorViewportClient::SetAnimation(UAnimationAsset* Anim
 	for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 	{
 		if (SkeletalMeshComponent.IsValid() && Animation != nullptr
-			&& SkeletalMeshComponent->GetSkinnedAsset() != nullptr
-			&& SkeletalMeshComponent->GetSkinnedAsset()->GetSkeleton()->IsCompatibleForEditor(Animation->GetSkeleton())
+			&& UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent) != nullptr
+			&& UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent)->GetSkeleton() == Animation->GetSkeleton()
 			)
 		{
 			SetRealtime(true);
@@ -2050,10 +2043,10 @@ void FCustomizableObjectEditorViewportClient::SetAnimation(UAnimationAsset* Anim
 				UAnimSingleNodeInstance* SingleNodeInstance = Cast<UAnimSingleNodeInstance>(SkeletalMeshComponent->GetAnimInstance());
 				if (SingleNodeInstance)
 				{
-					TArray<FSmartName> ArrayPoseSmartNames = PoseAsset->GetPoseNames();
-					for (int32 i = 0; i < ArrayPoseSmartNames.Num(); ++i)
+					TArray<FName> ArrayPoseNames = PoseAsset->GetPoseFNames();
+					for (int32 i = 0; i < ArrayPoseNames.Num(); ++i)
 					{
-						SingleNodeInstance->SetPreviewCurveOverride(ArrayPoseSmartNames[i].DisplayName, 1.0f, false);
+						SingleNodeInstance->SetPreviewCurveOverride(ArrayPoseNames[i], 1.0f, false);
 					}
 				}
 			}
@@ -2153,7 +2146,7 @@ void FCustomizableObjectEditorViewportClient::SetFloorOffset(float NewValue)
 {
 	for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 	{
-		USkeletalMesh* Mesh = SkeletalMeshComponent.IsValid() ? Cast<USkeletalMesh>(SkeletalMeshComponent->GetSkinnedAsset()) : nullptr;
+		USkeletalMesh* Mesh = SkeletalMeshComponent.IsValid() ? Cast<USkeletalMesh>(UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent)) : nullptr;
 
 		if (Mesh)
 		{
@@ -2236,6 +2229,12 @@ void RemoveRestrictedChars(FString& String)
 //-------------------------------------------------------------------------------------------------
 void FCustomizableObjectEditorViewportClient::BakeInstance()
 {
+	BakeInstance(nullptr);
+}
+
+//-------------------------------------------------------------------------------------------------
+void FCustomizableObjectEditorViewportClient::BakeInstance(UCustomizableObjectInstance* InInstance)
+{
 	if (!AssetRegistryLoaded)
 	{
 		FNotificationInfo Info(NSLOCTEXT("CustomizableObjectEditor", "CustomizableObjectCompileTryLater", "Please wait until asset registry loads all assets"));
@@ -2247,11 +2246,14 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 		return;
 	}
 
+	UCustomizableObjectInstance* Instance = InInstance ? InInstance : CustomizableObjectEditorPtr.Pin()->GetPreviewInstance();
+
 	bool bHasSkeletalMesh = false;
-	int32 NumComponents = SkeletalMeshComponents.Num();
+	int32 NumComponents = Instance->SkeletalMeshes.Num();
+
 	for (int32 ComponentIndex = 0; ComponentIndex < NumComponents; ++ComponentIndex)
 	{
-		if (SkeletalMeshComponents[ComponentIndex].IsValid() && SkeletalMeshComponents[ComponentIndex]->GetSkinnedAsset())
+		if (Instance->SkeletalMeshes.IsValidIndex(ComponentIndex) && Instance->SkeletalMeshes[ComponentIndex])
 		{
 			bHasSkeletalMesh = true;
 		}
@@ -2262,7 +2264,25 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 		return;
 	}
 
-	UCustomizableObjectInstance* Instance = CustomizableObjectEditorPtr.Pin()->GetPreviewInstance();
+	UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+	check(System);
+
+	if (System->IsProgressiveMipStreamingEnabled())
+	{
+		// The instance in the editor viewport does not have high quality mips in the platform data because streaming is enabled.
+		// Disable streaming and retry with a newly generated temp instance.
+		System->SetProgressiveMipStreamingEnabled(false);
+		// Disable requested LOD generation as it will prevent the new instance from having all the LODs
+		System->SetOnlyGenerateRequestedLODsEnabled(false);
+
+		BakeTempInstance = Instance->Clone();
+		BakeTempInstance->SkeletalMeshes.Empty();
+		BakeTempInstance->UpdatedNativeDelegate.AddSP(this, &FCustomizableObjectEditorViewportClient::BakeInstance);
+		BakeTempInstance->UpdateSkeletalMeshAsync(true, true);
+
+		return;
+	}
+
 	FString ObjectName = Instance->GetCustomizableObject()->GetName();
 	FText DefaultFileName = FText::Format(LOCTEXT("DefaultFileNameForBakeInstance", "{0}"), FText::AsCultureInvariant(ObjectName));
 	bool bExportAllResources = false;
@@ -2320,8 +2340,8 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 
 			for (int32 ComponentIndex = 0; ComponentIndex < NumComponents; ++ComponentIndex)
 			{
-				USkeletalMesh* Mesh = SkeletalMeshComponents.Num() && SkeletalMeshComponents[ComponentIndex].IsValid() ?
-					Cast<USkeletalMesh>(SkeletalMeshComponents[ComponentIndex]->GetSkinnedAsset()) : nullptr;
+				USkeletalMesh* Mesh = Instance->SkeletalMeshes.IsValidIndex(ComponentIndex) && Instance->SkeletalMeshes[ComponentIndex] ?
+					Cast<USkeletalMesh>(Instance->SkeletalMeshes[ComponentIndex]) : nullptr;
 				
 				if (!Mesh)
 				{
@@ -2410,7 +2430,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 
 										PackageName = FolderDlg->GetAssetPath() + FString("/") + ResourceName;
 										TMap<UObject*, UObject*> FakeReplacementMap;
-										UTexture2D* DupTex = BakeHelper_CreateAssetTexture(SrcTex, ResourceName, PackageName, OriginalTexture, true, FakeReplacementMap, BakingOverwritePermission);
+										UTexture2D* DupTex = FUnrealBakeHelpers::BakeHelper_CreateAssetTexture(SrcTex, ResourceName, PackageName, OriginalTexture, true, FakeReplacementMap, BakingOverwritePermission);
 										ArrayCachedElement.Add(ResourceName);
 										ArrayCachedObject.Add(DupTex);
 										PackagesToSave.Add(DupTex->GetPackage());
@@ -2457,7 +2477,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 
 										PackageName = FolderDlg->GetAssetPath() + FString("/") + ResourceName;
 										TMap<UObject*, UObject*> FakeReplacementMap;
-										DuplicatedObject = BakeHelper_DuplicateAsset(Texture, ResourceName, PackageName, true, FakeReplacementMap, BakingOverwritePermission);
+										DuplicatedObject = FUnrealBakeHelpers::BakeHelper_DuplicateAsset(Texture, ResourceName, PackageName, true, FakeReplacementMap, BakingOverwritePermission);
 										ArrayCachedElement.Add(ResourceName);
 										ArrayCachedObject.Add(DuplicatedObject);
 										PackagesToSave.Add(DuplicatedObject->GetPackage());
@@ -2494,7 +2514,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 
 							PackageName = FolderDlg->GetAssetPath() + FString("/") + ResourceName;
 							TMap<UObject*, UObject*> FakeReplacementMap;
-							DuplicatedObject = BakeHelper_DuplicateAsset(Material, ResourceName, PackageName, false, FakeReplacementMap, BakingOverwritePermission);
+							DuplicatedObject = FUnrealBakeHelpers::BakeHelper_DuplicateAsset(Material, ResourceName, PackageName, false, FakeReplacementMap, BakingOverwritePermission);
 							ArrayCachedElement.Add(ResourceName);
 							ArrayCachedObject.Add(DuplicatedObject);
 							ReplacementMap.Add(Interface, DuplicatedObject);
@@ -2590,7 +2610,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 						}
 
 						FString MatPkgName = FolderDlg->GetAssetPath() + FString("/") + MatObjName;
-						UObject* DupMat = BakeHelper_DuplicateAsset(Interface, MatObjName, MatPkgName, false, ReplacementMap, BakingOverwritePermission);
+						UObject* DupMat = FUnrealBakeHelpers::BakeHelper_DuplicateAsset(Interface, MatObjName, MatPkgName, false, ReplacementMap, BakingOverwritePermission);
 						ArrayCachedObject.Add(DupMat);
 						ArrayCachedElement.Add(MatObjName);
 						PackagesToSave.Add(DupMat->GetPackage());
@@ -2628,7 +2648,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 
 										FString TexPkgName = FolderDlg->GetAssetPath() + FString("/") + TexObjName;
 										TMap<UObject*, UObject*> FakeReplacementMap;
-										UTexture2D* DupTex = BakeHelper_CreateAssetTexture(SrcTex, TexObjName, TexPkgName, nullptr, false, FakeReplacementMap, BakingOverwritePermission);
+										UTexture2D* DupTex = FUnrealBakeHelpers::BakeHelper_CreateAssetTexture(SrcTex, TexObjName, TexPkgName, nullptr, false, FakeReplacementMap, BakingOverwritePermission);
 										ArrayCachedObject.Add(DupTex);
 										ArrayCachedElement.Add(TexObjName);
 										PackagesToSave.Add(DupTex->GetPackage());
@@ -2656,7 +2676,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 						}
 
 						FString SkeletonPkgName = FolderDlg->GetAssetPath() + FString("/") + SkeletonName;
-						UObject* DuplicatedSkeleton = BakeHelper_DuplicateAsset(Mesh->GetSkeleton(), SkeletonName, SkeletonPkgName, false, ReplacementMap, BakingOverwritePermission);
+						UObject* DuplicatedSkeleton = FUnrealBakeHelpers::BakeHelper_DuplicateAsset(Mesh->GetSkeleton(), SkeletonName, SkeletonPkgName, false, ReplacementMap, BakingOverwritePermission);
 
 						ArrayCachedObject.Add(DuplicatedSkeleton);
 						PackagesToSave.Add(DuplicatedSkeleton->GetPackage());
@@ -2664,7 +2684,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 					}
 				}
 
-				// Make sure source data is present in the mesh before we duplciate:
+				// Make sure source data is present in the mesh before we duplicate:
 				FUnrealBakeHelpers::BakeHelper_RegenerateImportedModel(Mesh);
 
 				// Skeletal Mesh
@@ -2674,7 +2694,7 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 				}
 
 				FString PkgName = FolderDlg->GetAssetPath() + FString("/") + ObjectName;
-				UObject* DupObject = BakeHelper_DuplicateAsset(Mesh, ObjectName, PkgName, false, ReplacementMap, BakingOverwritePermission);
+				UObject* DupObject = FUnrealBakeHelpers::BakeHelper_DuplicateAsset(Mesh, ObjectName, PkgName, false, ReplacementMap, BakingOverwritePermission);
 				ArrayCachedObject.Add(DupObject);
 				PackagesToSave.Add(DupObject->GetPackage());
 
@@ -2683,9 +2703,23 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 				USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(DupObject);
 				if (SkeletalMesh)
 				{
-					Helper_GetLODInfoArray(SkeletalMesh) = Helper_GetLODInfoArray(Mesh);
+					SkeletalMesh->GetLODInfoArray() = Mesh->GetLODInfoArray();
 
-					Helper_GetImportedModel(SkeletalMesh)->SkeletalMeshModelGUID = FGuid::NewGuid();
+					SkeletalMesh->GetImportedModel()->SkeletalMeshModelGUID = FGuid::NewGuid();
+
+					// Duplicate AssetUserData
+					{
+						const TArray<UAssetUserData*>* AssetUserDataArray = Mesh->GetAssetUserDataArray();
+						for (const UAssetUserData* AssetUserData : *AssetUserDataArray)
+						{
+							if (AssetUserData)
+							{
+								// Duplicate to change ownership
+								UAssetUserData* NewAssetUserData = Cast<UAssetUserData>(StaticDuplicateObject(AssetUserData, SkeletalMesh));
+								SkeletalMesh->AddAssetUserData(NewAssetUserData);
+							}
+						}
+					}
 
 					// Generate render data
 					SkeletalMesh->Build();
@@ -2703,6 +2737,14 @@ void FCustomizableObjectEditorViewportClient::BakeInstance()
 				FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, false, true);
 			}
 		}
+	}
+
+	if (InInstance)
+	{
+		// Reenable Mutable texture streaming and requested LOD generation as they had been disabled to bake the textures
+		System->SetProgressiveMipStreamingEnabled(true);
+		System->SetOnlyGenerateRequestedLODsEnabled(true);
+		BakeTempInstance = nullptr;
 	}
 }
 
@@ -2762,12 +2804,12 @@ bool FCustomizableObjectEditorViewportClient::ManageBakingAction(const FString& 
 			for (IAssetEditorInstance* ObjectEditorInstance : ObjectEditors)
 			{
 				// Close the editors that contains this asset
-				if (!ObjectEditorInstance->CloseWindow())
+				if (!ObjectEditorInstance->CloseWindow(EAssetEditorCloseReason::AssetEditorHostClosed))
 				{
 					FText Caption = LOCTEXT("OpenExisitngFile", "Open File");
 					FText Message = FText::Format(LOCTEXT("CantCloseAsset", "This Obejct \"{0}\" is open in an editor and can't be closed automatically. Please close the editor and try to bake it again"), FText::FromString(ObjName));
 
-					FMessageDialog::Open(EAppMsgType::Ok, Message, &Caption);
+					FMessageDialog::Open(EAppMsgType::Ok, Message, Caption);
 
 					return false;
 				}
@@ -2779,7 +2821,7 @@ bool FCustomizableObjectEditorViewportClient::ManageBakingAction(const FString& 
 			FText Caption = LOCTEXT("Already existing baked files", "Already existing baked files");
 			FText Message = FText::Format(LOCTEXT("OverwriteBakedInstance", "Instance baked files already exist in selected destination \"{0}\", this action will overwrite them."), FText::AsCultureInvariant(Path));
 			
-			if (FMessageDialog::Open(EAppMsgType::OkCancel, Message, &Caption) == EAppReturnType::Cancel)
+			if (FMessageDialog::Open(EAppMsgType::OkCancel, Message, Caption) == EAppReturnType::Cancel)
 			{
 				return false;
 			}
@@ -2870,9 +2912,9 @@ void FCustomizableObjectEditorViewportClient::ShowInstanceGeometryInformation(FC
 	// Show total number of triangles and vertices
 	for (TWeakObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent : SkeletalMeshComponents)
 	{
-		if (SkeletalMeshComponent.IsValid() && SkeletalMeshComponent->GetSkinnedAsset())
+		if (SkeletalMeshComponent.IsValid() && UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent))
 		{
-			const FSkeletalMeshRenderData* MeshRes = SkeletalMeshComponent->GetSkinnedAsset()->GetResourceForRendering();
+			const FSkeletalMeshRenderData* MeshRes = UE_MUTABLE_GETSKINNEDASSET(SkeletalMeshComponent)->GetResourceForRendering();
 			int32 NumTriangles;
 			int32 NumVertices;
 			int32 NumLODLevel = MeshRes->LODRenderData.Num();
@@ -3008,6 +3050,11 @@ void FCustomizableObjectEditorViewportClient::AddReferencedObjects(FReferenceCol
 	Collector.AddReferencedObject(ClipMorphMaterial);
 	Collector.AddReferencedObject(TransparentPlaneMaterialXY);
 	Collector.AddReferencedObject(AnimationBeingPlayed);
+
+	if (BakeTempInstance)
+	{
+		Collector.AddReferencedObject(BakeTempInstance);
+	}
 }
 
 
@@ -3365,7 +3412,7 @@ void SMutableSelectFolderDlg::Construct(const FArguments& InArgs)
 		.Padding(2)
 		[
 			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+			.BorderImage(UE_MUTABLE_GET_BRUSH("ToolPanel.GroupBorder"))
 		[
 			SNew(SVerticalBox)
 
@@ -3435,14 +3482,14 @@ void SMutableSelectFolderDlg::Construct(const FArguments& InArgs)
 		.Padding(5)
 		[
 			SNew(SUniformGridPanel)
-			.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
-		.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
-		.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
+			.SlotPadding(UE_MUTABLE_GET_MARGIN("StandardDialog.SlotPadding"))
+		.MinDesiredSlotWidth(UE_MUTABLE_GET_FLOAT("StandardDialog.MinDesiredSlotWidth"))
+		.MinDesiredSlotHeight(UE_MUTABLE_GET_FLOAT("StandardDialog.MinDesiredSlotHeight"))
 		+ SUniformGridPanel::Slot(0, 0)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
-		.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
+		.ContentPadding(UE_MUTABLE_GET_MARGIN("StandardDialog.ContentPadding"))
 		.Text(LOCTEXT("OK", "OK"))
 		.OnClicked(this, &SMutableSelectFolderDlg::OnButtonClick, EAppReturnType::Ok)
 		]
@@ -3450,7 +3497,7 @@ void SMutableSelectFolderDlg::Construct(const FArguments& InArgs)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
-		.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
+		.ContentPadding(UE_MUTABLE_GET_MARGIN("StandardDialog.ContentPadding"))
 		.Text(LOCTEXT("Cancel", "Cancel"))
 		.OnClicked(this, &SMutableSelectFolderDlg::OnButtonClick, EAppReturnType::Cancel)
 		]

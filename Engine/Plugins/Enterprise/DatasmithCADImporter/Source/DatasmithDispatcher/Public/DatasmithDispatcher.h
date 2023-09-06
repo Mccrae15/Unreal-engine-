@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "CADOptions.h"
 #include "DatasmithDispatcherTask.h"
 #include "DatasmithWorkerHandler.h"
 
@@ -16,9 +17,9 @@ namespace DatasmithDispatcher
 class DATASMITHDISPATCHER_API FDatasmithDispatcher
 {
 public:
-	FDatasmithDispatcher(const CADLibrary::FImportParameters& InImportParameters, const FString& InCacheDir, int32 InNumberOfWorkers, TMap<uint32, FString>& CADFileToUnrealFileMap, TMap<uint32, FString>& CADFileToUnrealGeomMap);
+	FDatasmithDispatcher(const CADLibrary::FImportParameters& InImportParameters, const FString& InCacheDir, TMap<uint32, FString>& CADFileToUnrealFileMap, TMap<uint32, FString>& CADFileToUnrealGeomMap);
 
-	void AddTask(const CADLibrary::FFileDescriptor & FileDescription);
+	void AddTask(const CADLibrary::FFileDescriptor & FileDescription, CADLibrary::EMesher Mesher);
 	TOptional<FTask> GetNextTask();
 	void SetTaskState(int32 TaskIndex, ETaskState TaskState);
 
@@ -28,6 +29,11 @@ public:
 	void LinkCTFileToUnrealCacheFile(const CADLibrary::FFileDescriptor& CTFileDescription, const FString& UnrealSceneGraphFile, const FString& UnrealGeomFile);
 
 	void LogMessages(const TArray<TPair<uint8, FString>>& Warnings) const;
+
+	void SetWorkerCount(const int32 InNumberOfWorkers)
+	{
+		CADLibrary::GMaxImportThreads = InNumberOfWorkers;
+	}
 
 private:
 	void SpawnHandlers();

@@ -219,7 +219,7 @@ static TAutoConsoleVariable<int32> CVarSkyAtmosphereEditorNotifications(
 
 static TAutoConsoleVariable<bool> CVarSkyAtmosphereASyncCompute(
 	TEXT("r.SkyAtmosphereASyncCompute"), false,
-	TEXT("SkyAtmosphere on async compute (default: false).\n"),
+	TEXT("SkyAtmosphere on async compute (default: false). When running on the async pipe, SkyAtmosphere lut generation will overlap with the occlusion pass.\n"),
 	ECVF_RenderThreadSafe);
 
 
@@ -286,7 +286,7 @@ ESkyAtmospherePassLocation GetSkyAtmospherePassLocation()
 {
 	if (CVarSkyAtmosphereASyncCompute.GetValueOnAnyThread())
 	{
-		// When SkyAtmLUT is running on async compute, try to kick it before occlusion pass to have better wave occupency
+		// When SkyAtmLUT is running on async compute, try to kick it before occlusion pass to have better wave occupancy
 		return ESkyAtmospherePassLocation::BeforeOcclusion;
 	}
 	// When SkyAtmLUT is running on graphics pipe, kickbefore BasePass to have a better overlap when DistanceFieldShadows is running async
@@ -642,6 +642,7 @@ class FRenderSkyAtmospherePS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_REF(FAtmosphereUniformShaderParameters, Atmosphere)
 		SHADER_PARAMETER_STRUCT_REF(FSkyAtmosphereInternalCommonParameters, SkyAtmosphere)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		RENDER_TARGET_BINDING_SLOTS()
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureShaderParameters, SceneTextures)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float3>, TransmittanceLutTexture)
@@ -1048,13 +1049,13 @@ public:
 		return FRenderDistantSkyLightLutCS::GroupSize;
 	}
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		const uint32 GroupSize = GetSampletCount();
 		const float GroupSizeInv = 1.0f / float(GroupSize);
 
-		UniformSphereSamplesBuffer.Initialize(TEXT("UniformSphereSamplesBuffer"), sizeof(FVector4f), GroupSize * GroupSize, EPixelFormat::PF_A32B32G32R32F, BUF_Static);
-		FVector4f* Dest = (FVector4f*)RHILockBuffer(UniformSphereSamplesBuffer.Buffer, 0, sizeof(FVector4f)*GroupSize*GroupSize, RLM_WriteOnly);
+		UniformSphereSamplesBuffer.Initialize(RHICmdList, TEXT("UniformSphereSamplesBuffer"), sizeof(FVector4f), GroupSize * GroupSize, EPixelFormat::PF_A32B32G32R32F, BUF_Static);
+		FVector4f* Dest = (FVector4f*)RHICmdList.LockBuffer(UniformSphereSamplesBuffer.Buffer, 0, sizeof(FVector4f)*GroupSize*GroupSize, RLM_WriteOnly);
 
 		FMath::SRandInit(0xDE4DC0DE);
 		for (uint32 i = 0; i < GroupSize; ++i)
@@ -1076,7 +1077,7 @@ public:
 			}
 		}
 
-		RHIUnlockBuffer(UniformSphereSamplesBuffer.Buffer);
+		RHICmdList.UnlockBuffer(UniformSphereSamplesBuffer.Buffer);
 	}
 
 	virtual void ReleaseRHI()
@@ -1112,20 +1113,11 @@ static EPixelFormat GetSkyLutTextureFormat(ERHIFeatureLevel::Type FeatureLevel)
 		// TODO: check if need this for Metal, Vulkan
 		TextureLUTFormat = PF_FloatRGBA;
 	}
-	
-	if (CVarSkyAtmosphereLUT32.GetValueOnAnyThread() != 0)
-	{
-		TextureLUTFormat = PF_A32B32G32R32F;
-	}
 
 	return TextureLUTFormat;
 }
 static EPixelFormat GetSkyLutSmallTextureFormat()
 {
-	if (CVarSkyAtmosphereLUT32.GetValueOnAnyThread() != 0)
-	{
-		return PF_A32B32G32R32F;
-	}
 	return PF_R8G8B8A8;
 }
 
@@ -1306,6 +1298,7 @@ void FSceneRenderer::RenderSkyAtmosphereLookUpTables(FRDGBuilder& GraphBuilder, 
 	RDG_EVENT_SCOPE(GraphBuilder, "SkyAtmosphereLUTs");
 	RDG_GPU_STAT_SCOPE(GraphBuilder, SkyAtmosphereLUTs);
 	RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, SkyAtmosphere);
+	SCOPED_NAMED_EVENT(RenderSkyAtmosphereLookUpTables, FColor::Emerald);
 
 	FSkyAtmosphereRenderSceneInfo& SkyInfo = *Scene->GetSkyAtmosphereSceneInfo();
 	const FSkyAtmosphereSceneProxy& SkyAtmosphereSceneProxy = SkyInfo.GetSkyAtmosphereSceneProxy();
@@ -1389,7 +1382,7 @@ void FSceneRenderer::RenderSkyAtmosphereLookUpTables(FRDGBuilder& GraphBuilder, 
 		FLightSceneInfo* Light1 = Scene->AtmosphereLights[1];
 		if (Light0)
 		{
-			PassParameters->AtmosphereLightDirection0 = FVector3f(-Light0->Proxy->GetDirection());
+			PassParameters->AtmosphereLightDirection0 = FVector3f(SkyAtmosphereSceneProxy.GetAtmosphereLightDirection(0, -Light0->Proxy->GetDirection()));
 			PassParameters->AtmosphereLightIlluminanceOuterSpace0 = Light0->Proxy->GetOuterSpaceIlluminance();
 		}
 		else
@@ -1399,7 +1392,7 @@ void FSceneRenderer::RenderSkyAtmosphereLookUpTables(FRDGBuilder& GraphBuilder, 
 		}
 		if (Light1)
 		{
-			PassParameters->AtmosphereLightDirection1 = FVector3f(-Light1->Proxy->GetDirection());
+			PassParameters->AtmosphereLightDirection1 = FVector3f(SkyAtmosphereSceneProxy.GetAtmosphereLightDirection(1, -Light1->Proxy->GetDirection()));
 			PassParameters->AtmosphereLightIlluminanceOuterSpace1 = Light1->Proxy->GetOuterSpaceIlluminance();
 		}
 		else
@@ -1780,6 +1773,7 @@ void FSceneRenderer::RenderSkyAtmosphereInternal(
 		PsPassParameters->Atmosphere = Scene->GetSkyAtmosphereSceneInfo()->GetAtmosphereUniformBuffer();
 		PsPassParameters->SkyAtmosphere = SkyInfo.GetInternalCommonParametersUniformBuffer();
 		PsPassParameters->ViewUniformBuffer = SkyRC.ViewUniformBuffer;
+		PsPassParameters->Scene = SkyRC.SceneUniformBuffer;
 		PsPassParameters->RenderTargets = SkyRC.RenderTargets;
 		PsPassParameters->SceneTextures = SceneTextures;
 		PsPassParameters->MSAADepthTexture = SkyRC.MSAADepthTexture;
@@ -1908,6 +1902,8 @@ void FSceneRenderer::RenderSkyAtmosphere(FRDGBuilder& GraphBuilder, const FMinim
 	FSkyAtmosphereRenderContext SkyRC;
 	SkyRC.ViewMatrices = nullptr;
 
+	SkyRC.SceneUniformBuffer = GetSceneUniforms().GetBuffer(GraphBuilder);
+
 	const FAtmosphereSetup& Atmosphere = SkyAtmosphereSceneProxy.GetAtmosphereSetup();
 	SkyRC.bFastSky = CVarSkyAtmosphereFastSkyLUT.GetValueOnRenderThread() > 0;
 	SkyRC.bFastAerialPerspective = CVarSkyAtmosphereAerialPerspectiveApplyOnOpaque.GetValueOnRenderThread() > 0;
@@ -1925,7 +1921,7 @@ void FSceneRenderer::RenderSkyAtmosphere(FRDGBuilder& GraphBuilder, const FMinim
 	SkyRC.MultiScatteredLuminanceLut = GraphBuilder.RegisterExternalTexture(SkyInfo.GetMultiScatteredLuminanceLutTexture());
 
 	SkyRC.RenderTargets[0] = FRenderTargetBinding(SceneTextures.Color.Target, ERenderTargetLoadAction::ELoad);
-	SkyRC.RenderTargets.DepthStencil = FDepthStencilBinding(SceneTextures.Depth.Target, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ENoAction, FExclusiveDepthStencil::DepthRead_StencilNop);
+	SkyRC.RenderTargets.DepthStencil = FDepthStencilBinding(SceneTextures.Depth.Target, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilRead);
 
 	SkyRC.MSAASampleCount = SceneTextures.Depth.Target->Desc.NumSamples;
 	SkyRC.MSAADepthTexture = SceneTextures.Depth.Target;

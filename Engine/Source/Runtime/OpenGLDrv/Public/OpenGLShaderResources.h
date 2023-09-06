@@ -81,6 +81,8 @@ struct FOpenGLShaderBindings
 	uint8	NumUAVs;
 	bool	bFlattenUB;
 
+	FSHAHash VaryingHash; // Not serialized, built during load to allow us to diff varying info but avoid the memory overhead.
+
 	FOpenGLShaderBindings() :
 		NumSamplers(0),
 		NumUniformBuffers(0),
@@ -103,6 +105,7 @@ struct FOpenGLShaderBindings
 		bEqual &= A.InputVaryings.Num() == B.InputVaryings.Num();
 		bEqual &= A.OutputVaryings.Num() == B.OutputVaryings.Num();
 		bEqual &= A.ShaderResourceTable == B.ShaderResourceTable;
+		bEqual &= A.VaryingHash == B.VaryingHash;
 
 		if ( !bEqual )
 		{
@@ -160,6 +163,9 @@ struct FOpenGLShaderBindings
 		{
 			Hash ^= GetTypeHash(Binding.OutputVaryings[Item]);
 		}
+
+		Hash ^= GetTypeHash(Binding.VaryingHash);
+
 		return Hash;
 	}
 };
@@ -176,6 +182,29 @@ inline FArchive& operator<<(FArchive& Ar, FOpenGLShaderBindings& Bindings)
 	Ar << Bindings.NumUniformBuffers;
 	Ar << Bindings.NumUAVs;
 	Ar << Bindings.bFlattenUB;
+
+	if (Ar.IsLoading())
+	{
+		// hash then strip out the Input/OutputVaryings at load time.
+		// The hash ensures varying diffs still affect operator== and GetTypeHash()
+		FSHA1 HashState;
+		auto HashVarying = [&](FSHA1& HashStateIN, const TArray<FOpenGLShaderVarying>& InputVaryings)
+		{
+			for (const FOpenGLShaderVarying& Varying : InputVaryings)
+			{
+				HashStateIN.Update((const uint8*)&Varying.Location, sizeof(Varying.Location));
+				HashStateIN.Update((const uint8*)Varying.Varying.GetData(), Varying.Varying.Num() * sizeof(ANSICHAR));
+			}
+		};
+		HashVarying(HashState, Bindings.InputVaryings);
+		HashVarying(HashState, Bindings.OutputVaryings);
+		HashState.Final();
+		HashState.GetHash(&Bindings.VaryingHash.Hash[0]);
+
+		Bindings.InputVaryings.Empty();
+		Bindings.OutputVaryings.Empty();
+	}
+
 	return Ar;
 }
 
@@ -221,88 +250,10 @@ inline FArchive& operator<<(FArchive& Ar, FOpenGLCodeHeader& Header)
 
 class FOpenGLLinkedProgram;
 
-/**
- * OpenGL shader resource.
- */
-template <typename RHIResourceType, GLenum GLTypeEnum, EShaderFrequency FrequencyT>
-class TOpenGLShader : public RHIResourceType
-{
-public:
-	enum
-	{
-		StaticFrequency = FrequencyT,
-		TypeEnum = GLTypeEnum,
-	};
-
-	/** The OpenGL resource ID. */
-	GLuint Resource;
-
-	/** External bindings for this shader. */
-	FOpenGLShaderBindings Bindings;
-
-	/** Static slots for each uniform buffer. */
-	TArray<FUniformBufferStaticSlot> StaticSlots;
-
-	// List of memory copies from RHIUniformBuffer to packed uniforms
-	TArray<CrossCompiler::FUniformBufferCopyInfo> UniformBuffersCopyInfo;
-
-#if DEBUG_GL_SHADERS
-	TArray<ANSICHAR> GlslCode;
-	const ANSICHAR*  GlslCodeString; // make it easier in VS to see shader code in debug mode; points to begin of GlslCode
-#endif
-
-	/** Constructor. */
-	TOpenGLShader()
-		: Resource(0)
-	{
-		FMemory::Memzero( &Bindings, sizeof(Bindings) );
-	}
-
-	/** Destructor. */
-	~TOpenGLShader()
-	{
-//		if (Resource)
-//		{
-//			glDeleteShader(Resource);
-//		}
-	}
-};
-
-
-typedef TOpenGLShader<FRefCountedObject, GL_VERTEX_SHADER, SF_Vertex> FOpenGLVertexShader;
-typedef TOpenGLShader<FRefCountedObject, GL_FRAGMENT_SHADER, SF_Pixel> FOpenGLPixelShader;
-typedef TOpenGLShader<FRefCountedObject, GL_GEOMETRY_SHADER, SF_Geometry> FOpenGLGeometryShader;
-
-
-class FOpenGLComputeShader : public TOpenGLShader<FRefCountedObject, GL_COMPUTE_SHADER, SF_Compute>
-{
-public:
-	FOpenGLComputeShader():
-		LinkedProgram(0)
-	{
-
-	}
-
-	bool NeedsTextureStage(int32 TextureStageIndex);
-	int32 MaxTextureStageUsed();
-	const TBitArray<>& GetTextureNeeds(int32& OutMaxTextureStageUsed);
-	const TBitArray<>& GetUAVNeeds(int32& OutMaxUAVUnitUsed) const;
-	bool NeedsUAVStage(int32 UAVStageIndex) const;
-
-	FOpenGLLinkedProgram* LinkedProgram;
-};
-
-
 class FOpenGLCompiledShaderKey
 {
 public:
-	FOpenGLCompiledShaderKey()
-		: TypeEnum(0)
-		, CodeSize(0)
-		, CodeCRC(0)
-	{
-	}
-
+	FOpenGLCompiledShaderKey() = default;
 	FOpenGLCompiledShaderKey(
 		GLenum InTypeEnum,
 		uint32 InCodeSize,
@@ -314,7 +265,7 @@ public:
 	{
 	}
 
-	friend bool operator ==(const FOpenGLCompiledShaderKey& A, const FOpenGLCompiledShaderKey& B)
+	friend bool operator == (const FOpenGLCompiledShaderKey& A, const FOpenGLCompiledShaderKey& B)
 	{
 		return A.TypeEnum == B.TypeEnum && A.CodeSize == B.CodeSize && A.CodeCRC == B.CodeCRC;
 	}
@@ -327,9 +278,128 @@ public:
 	uint32 GetCodeCRC() const { return CodeCRC; }
 
 private:
-	GLenum TypeEnum;
-	uint32 CodeSize;
-	uint32 CodeCRC;
+	GLenum TypeEnum = 0;
+	uint32 CodeSize = 0;
+	uint32 CodeCRC  = 0;
+};
+
+/**
+ * OpenGL shader resource.
+ */
+class FOpenGLShader
+{
+public:
+	/** The OpenGL resource ID. */
+	GLuint Resource = 0;
+
+	/** External bindings for this shader. */
+	FOpenGLShaderBindings Bindings;
+
+	/** Static slots for each uniform buffer. */
+	TArray<FUniformBufferStaticSlot> StaticSlots;
+
+	// List of memory copies from RHIUniformBuffer to packed uniforms
+	TArray<CrossCompiler::FUniformBufferCopyInfo> UniformBuffersCopyInfo;
+
+	FOpenGLCompiledShaderKey ShaderCodeKey;
+
+#if DEBUG_GL_SHADERS
+	TArray<ANSICHAR> GlslCode;
+	const ANSICHAR*  GlslCodeString; // make it easier in VS to see shader code in debug mode; points to begin of GlslCode
+#endif
+
+	FOpenGLShader(TArrayView<const uint8> Code, const FSHAHash& Hash, GLenum TypeEnum);
+
+	~FOpenGLShader()
+	{
+//		if (Resource)
+//		{
+//			glDeleteShader(Resource);
+//		}
+	}
+
+protected:
+	void Compile(GLenum TypeEnum);
+};
+
+class FOpenGLVertexShader : public FRHIVertexShader, public FOpenGLShader
+{
+public:
+	static constexpr EShaderFrequency Frequency = SF_Vertex;
+
+	FOpenGLVertexShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
+		: FOpenGLShader(Code, Hash, GL_VERTEX_SHADER)
+	{}
+
+	void ConditionalyCompile()
+	{
+		if (Resource == 0)
+		{
+			Compile(GL_VERTEX_SHADER);
+		}
+	}
+};
+
+class FOpenGLPixelShader : public FRHIPixelShader, public FOpenGLShader
+{
+public:
+	static constexpr EShaderFrequency Frequency = SF_Pixel;
+
+	FOpenGLPixelShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
+		: FOpenGLShader(Code, Hash, GL_FRAGMENT_SHADER)
+	{}
+
+	void ConditionalyCompile()
+	{
+		if (Resource == 0)
+		{
+			Compile(GL_FRAGMENT_SHADER);
+		}
+	}
+};
+
+class FOpenGLGeometryShader : public FRHIGeometryShader, public FOpenGLShader
+{
+public:
+	static constexpr EShaderFrequency Frequency = SF_Geometry;
+
+	FOpenGLGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
+		: FOpenGLShader(Code, Hash, GL_GEOMETRY_SHADER)
+	{}
+
+	void ConditionalyCompile()
+	{
+		if (Resource == 0)
+		{
+			Compile(GL_GEOMETRY_SHADER);
+		}
+	}
+};
+
+class FOpenGLComputeShader : public FRHIComputeShader, public FOpenGLShader
+{
+public:
+	static constexpr EShaderFrequency Frequency = SF_Compute;
+
+	FOpenGLComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
+		: FOpenGLShader(Code, Hash, GL_COMPUTE_SHADER)
+	{}
+
+	void ConditionalyCompile()
+	{
+		if (Resource == 0)
+		{
+			Compile(GL_COMPUTE_SHADER);
+		}
+	}
+
+	bool NeedsTextureStage(int32 TextureStageIndex);
+	int32 MaxTextureStageUsed();
+	const TBitArray<>& GetTextureNeeds(int32& OutMaxTextureStageUsed);
+	const TBitArray<>& GetUAVNeeds(int32& OutMaxUAVUnitUsed) const;
+	bool NeedsUAVStage(int32 UAVStageIndex) const;
+
+	FOpenGLLinkedProgram* LinkedProgram = nullptr;
 };
 
 /**
@@ -459,8 +529,8 @@ public:
 	{
 		FOpenGLShaderBindings Bindings;
 		GLuint Resource;
-
 		FOpenGLCompiledShaderKey ShaderKey; // This is the key to the shader within FOpenGLCompiledShader container
+		bool bValid; // To mark that stage is valid for this program, even when shader Resource could be zero
 	}
 	Shaders[CrossCompiler::NUM_SHADER_STAGES];
 	FOpenGLProgramKey ProgramKey;
@@ -470,6 +540,7 @@ public:
 		for (int32 Stage = 0; Stage < CrossCompiler::NUM_SHADER_STAGES; Stage++)
 		{
 			Shaders[Stage].Resource = 0;
+			Shaders[Stage].bValid = false;
 		}
 	}
 
@@ -479,6 +550,7 @@ public:
 		for (int32 Stage = 0; Stage < CrossCompiler::NUM_SHADER_STAGES && bEqual; Stage++)
 		{
 			bEqual &= A.Shaders[Stage].Resource == B.Shaders[Stage].Resource;
+			bEqual &= A.Shaders[Stage].bValid == B.Shaders[Stage].bValid;
 			bEqual &= A.Shaders[Stage].Bindings == B.Shaders[Stage].Bindings;
 		}
 		return bEqual;

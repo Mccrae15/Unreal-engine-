@@ -2,9 +2,10 @@
 
 #include "Tasks/GLTFDelayedAnimationTasks.h"
 #include "Builders/GLTFContainerBuilder.h"
-#include "Engine/Level.h"
 #include "Utilities/GLTFCoreUtilities.h"
 #include "Converters/GLTFBoneUtilities.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/Level.h"
 #include "LevelSequence.h"
 #include "LevelSequenceActor.h"
 #include "LevelSequencePlayer.h"
@@ -44,10 +45,10 @@ void FGLTFDelayedAnimSequenceTask::Process()
 	}
 
 	TArray<FBoneIndexType> BoneIndices;
-	FGLTFBoneUtilities::GetBoneIndices(AnimSequence->GetSkeleton(), BoneIndices);
+	FGLTFBoneUtilities::GetBoneIndices(SkeletalMesh->GetRefSkeleton(), BoneIndices);
 
 	TArray<TArray<FTransform>> FrameTransforms;
-	FGLTFBoneUtilities::GetBoneTransformsByFrame(AnimSequence, Timestamps, BoneIndices, FrameTransforms);
+	FGLTFBoneUtilities::GetBoneTransformsByFrame(SkeletalMesh, AnimSequence, BoneIndices, Timestamps, FrameTransforms);
 
 	for (const FBoneIndexType BoneIndex : BoneIndices)
 	{
@@ -166,7 +167,7 @@ void FGLTFDelayedLevelSequenceTask::Process()
 
 	for (int32 Frame = 0; Frame < FrameCount; ++Frame)
 	{
-		Timestamps[Frame] = DisplayRate.AsSeconds(Frame);
+		Timestamps[Frame] = static_cast<float>(DisplayRate.AsSeconds(Frame));
 		FrameTimes[Frame] = FFrameRate::TransformTime(FFrameTime(FrameOffset + Frame), DisplayRate, TickResolution);
 	}
 

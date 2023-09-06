@@ -149,10 +149,6 @@ enum class ERDGBufferFlags : uint8
 	 *  until the first pass it's used within the graph. Without this flag, the resource is split-transitioned at the start of the graph.
 	 */
 	ForceImmediateFirstBarrier = 1 << 2,
-
-	// Deprecated Enums
-	ReadOnly      UE_DEPRECATED(5.1, "ReadOnly is deprecated. Use SkipTracking instead.")                                            = 0,
-	ForceTracking UE_DEPRECATED(5.1, "ForceTracking is deprecated. Resources now opt-out of tracking explicitly with SkipTracking.") = 0
 };
 ENUM_CLASS_FLAGS(ERDGBufferFlags);
 
@@ -178,10 +174,6 @@ enum class ERDGTextureFlags : uint8
 
 	/** Prevents metadata decompression on this texture. */
 	MaintainCompression = 1 << 3,
-
-	// Deprecated Enums
-	ReadOnly      UE_DEPRECATED(5.1, "ReadOnly is deprecated. Use SkipTracking instead.")                                            = 0,
-	ForceTracking UE_DEPRECATED(5.1, "ForceTracking is deprecated. Resources now opt-out of tracking explicitly with SkipTracking.") = 0
 };
 ENUM_CLASS_FLAGS(ERDGTextureFlags);
 
@@ -202,9 +194,6 @@ enum class ERDGViewableResourceType : uint8
 	Buffer,
 	MAX
 };
-
-UE_DEPRECATED(5.1, "ERDGParentResourceType has been renamed to ERDGViewableResourceType.")
-typedef ERDGViewableResourceType ERDGParentResourceType;
 
 /** The set of concrete view types. */
 enum class ERDGViewType : uint8
@@ -285,12 +274,6 @@ inline ERDGViewableResourceType GetViewableResourceType(ERDGViewType ViewType)
 		checkNoEntry();
 		return ERDGViewableResourceType::MAX;
 	}
-}
-
-UE_DEPRECATED(5.1, "GetParentResourceType has been renamed to GetViewableResourceType.")
-inline ERDGViewableResourceType GetParentResourceType(ERDGViewType ViewType)
-{
-	return GetViewableResourceType(ViewType);
 }
 
 using ERDGTextureMetaDataAccess = ERHITextureMetaDataAccess;
@@ -716,12 +699,6 @@ class FRDGUserValidation;
 
 class FRDGViewableResource;
 
-UE_DEPRECATED(5.1, "FRDGParentResource has been renamed to FRDGViewableResource.")
-typedef FRDGViewableResource FRDGParentResource;
-
-UE_DEPRECATED(5.1, "FRDGParentResourceRef has been renamed to FRDGViewableResource*.")
-typedef FRDGViewableResource* FRDGParentResourceRef;
-
 using FRDGPassHandle = TRDGHandle<FRDGPass, uint16>;
 using FRDGPassRegistry = TRDGHandleRegistry<FRDGPassHandle>;
 using FRDGPassHandleArray = TArray<FRDGPassHandle, TInlineAllocator<4, FRDGArrayAllocator>>;
@@ -757,6 +734,6 @@ using FRDGBufferInitialDataCallback = TFunction<const void*()>;
 using FRDGBufferInitialDataSizeCallback = TFunction<uint64()>;
 template <typename ArrayType, 
 	typename ArrayTypeNoRef = std::remove_reference_t<ArrayType>,
-	typename = typename TEnableIf<TIsTArray<ArrayTypeNoRef>::Value>::Type> using TRDGBufferArrayCallback = TFunction<const ArrayType&()>;
+	typename = typename TEnableIf<TIsTArray_V<ArrayTypeNoRef>>::Type> using TRDGBufferArrayCallback = TFunction<const ArrayType&()>;
 using FRDGBufferInitialDataFreeCallback = TFunction<void(const void* InData)>;
 using FRDGDispatchGroupCountCallback = TFunction<FIntVector()>;

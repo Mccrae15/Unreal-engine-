@@ -32,6 +32,9 @@ struct FReplicationStateOperations
 	/** Dequantize a Replication state from internal buffer to already constructed ExternalBuffer */
 	static IRISCORE_API void Dequantize(FNetSerializationContext& Context, uint8* RESTRICT DstExternalBuffer, const uint8* RESTRICT SrcInternalBuffer, const FReplicationStateDescriptor* Descriptor);
 
+	/** Quantize a Replication state from ExternalBuffer to internal buffer, DstInternalBuffer does not need to be initialized */
+	static IRISCORE_API void QuantizeWithMask(FNetSerializationContext& Context, const FNetBitArrayView& ChangeMask, const uint32 ChangeMaskOffset, uint8* RESTRICT DstInternalBuffer, const uint8* RESTRICT SrcExternalBuffer, const FReplicationStateDescriptor* Descriptor);
+
 	/** Validate a ReplicationState in external format */
 	static IRISCORE_API bool Validate(FNetSerializationContext& Context, const uint8* RESTRICT SrcExternalBuffer, const FReplicationStateDescriptor* Descriptor);
 
@@ -78,11 +81,21 @@ struct FReplicationInstanceOperations
 	static IRISCORE_API bool PollAndRefreshCachedObjectReferences(const FReplicationInstanceProtocol* InstanceProtocol, EReplicationFragmentTraits RequiredTraits);
 
 	/**
-	 * Quantize the state for a replicated object with a given InstanceProtocol using the ReplicationProtocol. DstObjectStateBuffer needs to be cleared before calling this function.
+	 * Quantize the state for a replicated object with a given InstanceProtocol using the ReplicationProtocol. 
+	 * DstObjectStateBuffer needs to be in a valid state before calling this function.
 	 * Changemasks will be written to the ChangeMaskWriter. Dirtiness will not be reset.
 	 * @see ResetDirtiness
 	 */
 	static IRISCORE_API void CopyAndQuantize(FNetSerializationContext& Context, uint8* DstObjectStateBuffer, FNetBitStreamWriter* ChangeMaskWriter, const FReplicationInstanceProtocol* InstanceProtocol, const FReplicationProtocol* Protocol);
+
+	/**
+	 * Quantize the state for a replicated object with a given InstanceProtocol using the ReplicationProtocol.
+	 * DstObjectStateBuffer needs to be in a valid state before calling this function.
+	 * Changemasks will be written to the ChangeMaskWriter. Dirtiness will not be reset.
+	 * This variant will only Quantize States marked as dirty
+	 * @see ResetDirtiness
+	 */
+	static IRISCORE_API void CopyAndQuantizeIfDirty(FNetSerializationContext& Context, uint8* DstObjectStateBuffer, FNetBitStreamWriter* ChangeMaskWriter, const FReplicationInstanceProtocol* InstanceProtocol, const FReplicationProtocol* Protocol);
 
 	/** Resets dirty tracking stored with the protocol, such as changemasks and init state dirtiness. */
 	static IRISCORE_API void ResetDirtiness(const FReplicationInstanceProtocol* InstanceProtocol, const FReplicationProtocol* Protocol);

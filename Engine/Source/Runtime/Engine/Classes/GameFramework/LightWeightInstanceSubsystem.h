@@ -2,29 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
-#include "UObject/UObjectBaseUtility.h"
-#include "UObject/Object.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/EngineBaseTypes.h"
 #include "GameFramework/LightWeightInstanceManager.h"
 #include "Templates/SharedPointer.h"
 
 #include "Actor.h"
 
-//#include "LightWeightInstanceSubsystem.generated.h"
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogLightWeightInstance, Log, All);
 
-ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogLightWeightInstance, Log, Warning);
+class FAutoConsoleVariableRef;
 
-//DECLARE_DYNAMIC_DELEGATE_RetVal_OneParam(FActorInstanceHandle, FOnActorReady, FActorInstanceHandle, InHandle);
-
-struct ENGINE_API FLightWeightInstanceSubsystem
+struct FLightWeightInstanceSubsystem
 {
-	friend struct FActorInstanceHandle;
-	friend class ALightWeightInstanceManager;
-
-	static FCriticalSection GetFunctionCS;
+	static ENGINE_API FCriticalSection GetFunctionCS;
 
 	static FLightWeightInstanceSubsystem& Get()
 	{
@@ -39,42 +29,49 @@ struct ENGINE_API FLightWeightInstanceSubsystem
 		return *LWISubsystem;
 	}
 
-	FLightWeightInstanceSubsystem();
-	~FLightWeightInstanceSubsystem();
+	ENGINE_API FLightWeightInstanceSubsystem();
+	ENGINE_API ~FLightWeightInstanceSubsystem();
 
 	// Returns the instance manager that handles the given handle
-	ALightWeightInstanceManager* FindLightWeightInstanceManager(const FActorInstanceHandle& Handle) const;
+	ENGINE_API ALightWeightInstanceManager* FindLightWeightInstanceManager(const FActorInstanceHandle& Handle) const;
 
 	// Returns the instance manager that handles actors of type ActorClass in level Level
-	ALightWeightInstanceManager* FindLightWeightInstanceManager(UClass* ActorClass, const UDataLayerInstance* Layer) const;
+	UE_DEPRECATED(5.3, "Use the version that takes in a position.")
+	ENGINE_API ALightWeightInstanceManager* FindLightWeightInstanceManager(UClass* ActorClass, const UDataLayerInstance* Layer, UWorld* World) const;
 
 	// Returns the instance manager that handles instances of type Class that live in Level
-	UFUNCTION(Server, Unreliable)
-	ALightWeightInstanceManager* FindOrAddLightWeightInstanceManager(UClass* ActorClass, const UDataLayerInstance* Layer, UWorld* World);
+	UE_DEPRECATED(5.3, "Use the version that takes in a position.")
+	ENGINE_API ALightWeightInstanceManager* FindOrAddLightWeightInstanceManager(UClass* ActorClass, const UDataLayerInstance* DataLayer, UWorld* World);
+
+	// Returns the instance manager that handles actors of type ActorClass in level Level
+	ENGINE_API ALightWeightInstanceManager* FindLightWeightInstanceManager(UClass& ActorClass, UWorld& World, const FVector& InPos, const UDataLayerInstance* DataLayer = nullptr) const;
+
+	// Returns the instance manager that handles instances of type Class that live in Level
+	ENGINE_API ALightWeightInstanceManager* FindOrAddLightWeightInstanceManager(UClass& ActorClass, UWorld& World, const FVector& InPos, const UDataLayerInstance* DataLayer = nullptr);
 
 	// Returns the actor specified by Handle. This may require loading and creating the actor object.
-	AActor* FetchActor(const FActorInstanceHandle& Handle);
+	ENGINE_API AActor* FetchActor(const FActorInstanceHandle& Handle);
 
 	// Returns the actor specified by Handle if it exists. Returns nullptr if it doesn't
-	AActor* GetActor_NoCreate(const FActorInstanceHandle& Handle) const;
+	ENGINE_API AActor* GetActor_NoCreate(const FActorInstanceHandle& Handle) const;
 
 	// Returns the class of the actor specified by Handle.
-	UClass* GetActorClass(const FActorInstanceHandle& Handle);
+	ENGINE_API UClass* GetActorClass(const FActorInstanceHandle& Handle);
 
-	FVector GetLocation(const FActorInstanceHandle& Handle);
+	ENGINE_API FVector GetLocation(const FActorInstanceHandle& Handle);
 
-	FString GetName(const FActorInstanceHandle& Handle);
+	ENGINE_API FString GetName(const FActorInstanceHandle& Handle);
 
-	ULevel* GetLevel(const FActorInstanceHandle& Handle);
+	ENGINE_API ULevel* GetLevel(const FActorInstanceHandle& Handle);
 
 	// Returns true if the object represented by Handle is in InLevel
-	bool IsInLevel(const FActorInstanceHandle& Handle, const ULevel* InLevel);
+	ENGINE_API bool IsInLevel(const FActorInstanceHandle& Handle, const ULevel* InLevel);
 
 	// Returns a handle to a new light weight instance that represents an object of type ActorClass
-	FActorInstanceHandle CreateNewLightWeightInstance(UClass* ActorClass, FLWIData* InitData, UDataLayerInstance* Layer, UWorld* World);
+	ENGINE_API FActorInstanceHandle CreateNewLightWeightInstance(UClass* ActorClass, FLWIData* InitData, UDataLayerInstance* Layer, UWorld* World);
 
 	// deletes the instance identified by Handle
-	void DeleteInstance(const FActorInstanceHandle& Handle);
+	ENGINE_API void DeleteInstance(const FActorInstanceHandle& Handle);
 
 	// Returns true if the handle can return an object that implements the interface U
 	template<typename U>
@@ -100,23 +97,35 @@ struct ENGINE_API FLightWeightInstanceSubsystem
 		return nullptr;
 	}
 
+	// Helper that converts a position (world space) into a coordinate for the LWI grid.
+	UE_DEPRECATED(5.3, "Use LWI Managers version of ConvertPositionToCoord()")
+	static ENGINE_API FInt32Vector3 ConvertPositionToCoord(const FVector& InPosition);
+
+	// Add a manager to the subsystem, thread safe.
+	ENGINE_API bool AddManager(ALightWeightInstanceManager* Manager);
+
+	// Remove a manager from the subsystem, thread safe.
+	ENGINE_API bool RemoveManager(ALightWeightInstanceManager* Manager);
+
 protected:
 	// Returns the class of the instance manager best suited to support instances of type ActorClass
-	UClass* FindBestInstanceManagerClass(const UClass* ActorClass);
+	ENGINE_API UClass* FindBestInstanceManagerClass(const UClass* ActorClass);
 
 	// Returns the index associated with Manager
-	int32 GetManagerIndex(const ALightWeightInstanceManager* Manager) const;
+	ENGINE_API int32 GetManagerIndex(const ALightWeightInstanceManager* Manager) const;
 
 	// Returns the light weight instance manager at index Index
-	const ALightWeightInstanceManager* GetManagerAt(int32 Index) const;
+	ENGINE_API const ALightWeightInstanceManager* GetManagerAt(int32 Index) const;
 
 private:
 	/** Application singleton */
-	static TSharedPtr<FLightWeightInstanceSubsystem, ESPMode::ThreadSafe> LWISubsystem;
+	static ENGINE_API TSharedPtr<FLightWeightInstanceSubsystem, ESPMode::ThreadSafe> LWISubsystem;
 
 	// TODO: preallocate the size of this based on a config variable
-	UPROPERTY()
 	TArray<ALightWeightInstanceManager*> LWInstanceManagers;
+
+	// Mutex to make sure we don't change the LWInstanceManagers array while reading/writing it.
+	mutable FRWLock LWIManagersRWLock;
 
 #ifdef WITH_EDITOR
 private:

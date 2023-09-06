@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.Core;
 using Gauntlet;
 using System;
 using System.IO;
 using System.Linq;
 using UnrealBuildBase;
 using UnrealBuildTool;
+
+using Log = Gauntlet.Log;
 
 namespace LowLevelTests
 {
@@ -21,6 +24,9 @@ namespace LowLevelTests
 		private TestResult LowLevelTestResult;
 
 		public LowLevelTestsSession LowLevelTestsApp { get; private set; }
+
+		private int LastStdoutSeekPos = 0;
+		private string[] CurrentProcessedLines;
 
 		public LowLevelTests(LowLevelTestContext InContext)
 		{
@@ -37,11 +43,14 @@ namespace LowLevelTests
 
 		public override float MaxDuration { protected set; get; }
 
+		private DateTime InactivityStart = DateTime.MinValue;
+		private TimeSpan InactivityPeriod = TimeSpan.Zero;
+
 		public override bool IsReadyToStart()
 		{
 			if (LowLevelTestsApp == null)
 			{
-				LowLevelTestsApp = new LowLevelTestsSession(Context.BuildInfo, Context.Options.Tags, Context.Options.Sleep, Context.Options.AttachToDebugger, Context.Options.ReportType);
+				LowLevelTestsApp = new LowLevelTestsSession(Context.BuildInfo, Context.Options.Tags, Context.Options.Sleep, Context.Options.AttachToDebugger, Context.Options.ReportType, Context.Options.Timeout);
 			}
 
 			return LowLevelTestsApp.TryReserveDevices();
@@ -60,6 +69,14 @@ namespace LowLevelTests
 		public override void SetTestResult(TestResult testResult)
 		{
 			LowLevelTestResult = testResult;
+		}
+
+		public override void AddTestEvent(UnrealTestEvent InEvent)
+		{
+			if (InEvent.Summary.Equals("Insufficient devices found"))
+			{
+				Log.Error(KnownLogEvents.Gauntlet_TestEvent, "Test didn't run due to insufficient devices.");
+			}
 		}
 
 		public override bool StartTest(int Pass, int NumPasses)
@@ -95,13 +112,57 @@ namespace LowLevelTests
 
 		public override void TickTest()
 		{
-			if (TestInstance != null && TestInstance.HasExited)
+			if (TestInstance != null)
 			{
-				if (TestInstance.WasKilled)
+				if (TestInstance.HasExited)
 				{
-					LowLevelTestResult = TestResult.Failed;
+					if (TestInstance.WasKilled)
+					{
+						LowLevelTestResult = TestResult.Failed;
+					}
+					MarkTestComplete();
 				}
-				MarkTestComplete();
+				else
+				{
+					ParseLowLevelTestsLog();
+
+					// Print stdout when -captureoutput, certain platforms don't always redirect stdout
+					if (CurrentProcessedLines != null && Context.Options.CaptureOutput)
+					{
+						foreach (string OutputLine in CurrentProcessedLines)
+						{
+							Console.WriteLine(OutputLine);
+						}
+					}
+
+					if (CheckForTimeout())
+					{
+						Log.Error("Timeout detected from application logged events, stopping.");
+						MarkTestComplete();
+						LowLevelTestResult = TestResult.TimedOut;
+					}
+					else if (CurrentProcessedLines != null && CurrentProcessedLines.Length > 0)
+					{
+						InactivityStart = DateTime.MinValue;
+					}
+					else if ((CurrentProcessedLines == null || CurrentProcessedLines.Length == 0) && InactivityStart == DateTime.MinValue)
+					{
+						InactivityStart = DateTime.Now;
+					}
+					else if (InactivityStart != DateTime.MinValue)
+					{
+						InactivityPeriod = DateTime.Now - InactivityStart;
+					}
+
+					if (Context.Options.Timeout != 0 && InactivityPeriod.TotalMinutes > Context.Options.Timeout + 0.5)
+					{
+						Log.Error($"Test application didn't log any test events after timeout period of {Context.Options.Timeout} minutes, stopping.");
+						MarkTestComplete();
+						LowLevelTestResult = TestResult.TimedOut;
+					}
+
+					CurrentProcessedLines = null;
+				}
 			}
 		}
 
@@ -139,30 +200,39 @@ namespace LowLevelTests
 				{
 					ClientOutputWriter.Write(StdOut);
 				}
-				File.Copy(ClientOutputLog, Path.Combine(LogDir, ClientLogFile));
+
+				string DestClientLogFile = Path.Combine(LogDir, ClientLogFile);
+				if (DestClientLogFile != ClientOutputLog)
+				{
+					File.Copy(ClientOutputLog, DestClientLogFile, true);
+				}
 			}
 
-			ILowLevelTestsReporting LowLevelTestsReporting = Gauntlet.Utils.InterfaceHelpers.FindImplementations<ILowLevelTestsReporting>(true)
-				.Where(B => B.CanSupportPlatform(Context.Options.Platform))
-				.First();
-
+			bool? ReportCopied = null;
 			string ReportPath = null;
-			bool ReportCopied = false;
-			try
+			if (!string.IsNullOrEmpty(Context.Options.ReportType))
 			{
-				ReportPath = LowLevelTestsReporting.CopyDeviceReportTo(LowLevelTestsApp.Install, Context.Options.Platform, Context.Options.TestApp, Context.Options.Build, LogDir);
-				ReportCopied = true;
-			}
-			catch (Exception ex)
-			{
-				Log.Error("Failed to copy report: {0}", ex.ToString());
+				ILowLevelTestsReporting LowLevelTestsReporting = Gauntlet.Utils.InterfaceHelpers.FindImplementations<ILowLevelTestsReporting>(true)
+					.Where(B => B.CanSupportPlatform(Context.Options.Platform))
+					.First();
+
+				try
+				{
+					ReportPath = LowLevelTestsReporting.CopyDeviceReportTo(LowLevelTestsApp.Install, Context.Options.Platform, Context.Options.TestApp, Context.Options.Build, LogDir);
+					ReportCopied = true;
+				}
+				catch (Exception ex)
+				{
+					ReportCopied = false;
+					Log.Error("Failed to copy report: {0}", ex.ToString());
+				}
 			}
 
 
 			string ExitReason = "";
 			if (TestInstance.WasKilled)
 			{
-				if (InReason == StopReason.MaxDuration)
+				if (InReason == StopReason.MaxDuration || LowLevelTestResult == TestResult.TimedOut)
 				{
 					LowLevelTestResult = TestResult.TimedOut;
 					ExitReason = "Timed Out";
@@ -170,7 +240,7 @@ namespace LowLevelTests
 				else
 				{
 					LowLevelTestResult = TestResult.Failed;
-					ExitReason = "Process was killed by Gauntlet.";
+					ExitReason = $"Process was killed by Gauntlet with reason {InReason.ToString()}.";
 				}
 			}
 			else if (TestInstance.ExitCode != 0)
@@ -178,15 +248,18 @@ namespace LowLevelTests
 				LowLevelTestResult = TestResult.Failed;
 				ExitReason = $"Process exited with exit code {TestInstance.ExitCode}";
 			}
-			else if (!ReportCopied)
+			else if (ReportCopied.HasValue && !ReportCopied.Value)
 			{
 				LowLevelTestResult = TestResult.Failed;
 				ExitReason = "Uabled to read test report";
 			}
-			else
+			else if (ReportPath != null)
 			{
 				string ReportContents = File.ReadAllText(ReportPath);
-				Log.Info(ReportContents);
+				if (Context.Options.LogReportContents) // Some tests prefer to log report contents
+				{
+					Log.Info(ReportContents);
+				}
 				string ReportType = Context.Options.ReportType.ToLower();
 				if (ReportType == "console")
 				{
@@ -201,7 +274,8 @@ namespace LowLevelTests
 						LowLevelTestResult = TestResult.Failed;
 						ExitReason = "Tests failed";
 					}
-				} else if (ReportType == "xml")
+				}
+				else if (ReportType == "xml")
 				{
 					LowLevelTestsReportParser LowLevelTestsReportParser = new LowLevelTestsReportParser(ReportContents);
 					if (LowLevelTestsReportParser.HasPassed())
@@ -216,6 +290,19 @@ namespace LowLevelTests
 					}
 				}
 			}
+			else // ReportPath == null
+			{
+				if (TestInstance.ExitCode != 0)
+				{
+					LowLevelTestResult = TestResult.Failed;
+					ExitReason = "Tests failed (no report to parse)";
+				}
+				else
+				{
+					LowLevelTestResult = TestResult.Passed;
+					ExitReason = "Tests passed (no report to parse)";
+				}
+			}
 			Log.Info($"Low level test exited with code {TestInstance.ExitCode} and reason: {ExitReason}");
 		}
 
@@ -226,6 +313,36 @@ namespace LowLevelTests
 				LowLevelTestsApp.Dispose();
 				LowLevelTestsApp = null;
 			}
+		}
+
+		private void ParseLowLevelTestsLog()
+		{
+			// Parse new lines from Stdout, if any
+			if (LastStdoutSeekPos < TestInstance.StdOut.Length)
+			{
+				CurrentProcessedLines = TestInstance.StdOut
+					.Substring(LastStdoutSeekPos)
+					.Split("\n")
+					.Where(Line => Line.Contains("LogLowLevelTests"))
+					.ToArray();
+				LastStdoutSeekPos = TestInstance.StdOut.Length - 1;
+			}
+		}
+
+		private bool CheckForTimeout()
+		{
+			if (CurrentProcessedLines == null || CurrentProcessedLines.Length == 0)
+			{
+				return false;
+			}
+			foreach (string Line in CurrentProcessedLines)
+			{
+				if (Line.Contains("Timeout detected"))
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 	}
 }

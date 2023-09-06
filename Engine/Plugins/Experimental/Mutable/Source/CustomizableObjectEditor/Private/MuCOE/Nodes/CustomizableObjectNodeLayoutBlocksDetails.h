@@ -5,11 +5,13 @@
 
 #include "IDetailCustomization.h"
 
+enum class ECheckBoxState : uint8;
 namespace ESelectInfo { enum Type : int; }
 
 class FString;
 class IDetailLayoutBuilder;
-
+class STextBlock;
+class SWidget;
 
 class FCustomizableObjectNodeLayoutBlocksDetails : public IDetailCustomization
 {
@@ -28,10 +30,16 @@ private:
 	// Layout block editor widget
 	TSharedPtr<class SCustomizableObjectNodeLayoutBlocksEditor> LayoutBlocksEditor;
 
+	// Widget to select at which LOD layout vertex warnings will start to be ignored
+	TSharedPtr<SWidget> LODSelectorWidget;
+	TSharedPtr<STextBlock> LODSelectorTextWidget;
+
 	TArray< TSharedPtr<FString> > GridComboOptions;
 
 	void OnGridComboBoxSelectionChanged(TSharedPtr<FString> Selection, ESelectInfo::Type SelectInfo);
 	void OnBlockChanged( int BlockIndex, FIntRect Block );
+	void OnIgnoreErrorsCheckStateChanged(ECheckBoxState State);
+	void OnLODBoxValueChanged(int32 Value);
 
 	FIntPoint GetGridSize() const;
 	TArray<FIntRect> GetBlocks() const;

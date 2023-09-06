@@ -5,22 +5,8 @@
 #include "HAL/IConsoleManager.h"
 #include "Math/VectorRegister.h"
 
-namespace UE
+namespace UE::Net::Private
 {
-namespace Net
-{
-namespace Private
-{
-
-// Storing poll frame period as uint8
-const int MaxPollFramePeriod = 256;
-float PollFrequencyMultiplier = 1.0f;
-
-static FAutoConsoleVariableRef CVarPollFrequencyMultiplier(
-		TEXT("net.Iris.PollFrequencyMultiplier"),
-		PollFrequencyMultiplier,
-		TEXT("Multiplied with the NetUpdateFrequency to decide how often PreReplication is called on an Actor. Default factor is 1.0.")
-		);
 
 FObjectPollFrequencyLimiter::FObjectPollFrequencyLimiter()
 {
@@ -42,7 +28,7 @@ void FObjectPollFrequencyLimiter::Deinit()
 	FrameCounters.Empty();
 }
 
-void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& ScopableObjects, const FNetBitArrayView& DirtyObjects, FNetBitArrayView& OutObjectsToPoll)
+void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& RelevantObjects, const FNetBitArrayView& DirtyObjects, FNetBitArrayView& OutObjectsToPoll)
 {
 	IRIS_PROFILER_SCOPE(ObjectPollFrequencyLimiter_Update);
 
@@ -59,7 +45,7 @@ void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& ScopableObjects
 	uint8* CountersData = FrameCounters.GetData();
 	const uint8* FramesBetweenUpdatesData = FramesBetweenUpdates.GetData();
 
-	const WordType* ScopableObjectsData = ScopableObjects.GetData();
+	const WordType* RelevantObjectsData = RelevantObjects.GetData();
 	const WordType* DirtyObjectsData = DirtyObjects.GetData();
 	WordType* ObjectsToPollData = OutObjectsToPoll.GetData();
 
@@ -75,10 +61,10 @@ void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& ScopableObjects
 
 		for (uint32 ObjectIndex = 0, ObjectEndIndex = MaxInternalHandle;
 			ObjectIndex <= ObjectEndIndex; 
-			ObjectIndex += WordBitCount, CountersData += WordBitCount, FramesBetweenUpdatesData += WordBitCount, ++ScopableObjectsData, ++DirtyObjectsData, ++ObjectsToPollData)
+			ObjectIndex += WordBitCount, CountersData += WordBitCount, FramesBetweenUpdatesData += WordBitCount, ++RelevantObjectsData, ++DirtyObjectsData, ++ObjectsToPollData)
 		{
 			// Skip ranges with no scopable objects.
-			const WordType ObjectsInScopeWord = *ScopableObjectsData;
+			const WordType ObjectsInScopeWord = *RelevantObjectsData;
 			if (!ObjectsInScopeWord)
 			{
 				continue;
@@ -115,19 +101,20 @@ void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& ScopableObjects
 	{
 		for (uint32 ObjectIndex = 0, ObjectEndIndex = MaxInternalHandle;
 			ObjectIndex <= ObjectEndIndex;
-			ObjectIndex += WordBitCount, CountersData += WordBitCount, FramesBetweenUpdatesData += WordBitCount, ++ScopableObjectsData, ++DirtyObjectsData, ++ObjectsToPollData)
+			ObjectIndex += WordBitCount, CountersData += WordBitCount, FramesBetweenUpdatesData += WordBitCount, ++RelevantObjectsData, ++DirtyObjectsData, ++ObjectsToPollData)
 		{
 			// Skip ranges with no scopable objects.
-			WordType ObjectsInScopeWord = *ScopableObjectsData;
+			WordType ObjectsInScopeWord = *RelevantObjectsData;
 			if (!ObjectsInScopeWord)
 			{
 				continue;
 			}
 
 			WordType ObjectsToPoll = 0;
-			for (SIZE_T It = 0, IndexOffset = 0; It < 8; ++It, IndexOffset += 4U, ObjectsInScopeWord >>= 4U)
+			WordType ObjectsInScopeMask = ObjectsInScopeWord;
+			for (SIZE_T It = 0, IndexOffset = 0; It < 8; ++It, IndexOffset += 4U, ObjectsInScopeMask >>= 4U)
 			{
-				if (!(ObjectsInScopeWord & 15U))
+				if (!(ObjectsInScopeMask & 15U))
 				{
 					continue;
 				}
@@ -148,16 +135,16 @@ void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& ScopableObjects
 				--Counter3;
 
 				const uint32 Mask0 = Counter0 == 255 ? 1 : 0;
-				const uint32 Mask1 = Counter1 == 255 ? 1 : 0;
-				const uint32 Mask2 = Counter2 == 255 ? 1 : 0;
-				const uint32 Mask3 = Counter3 == 255 ? 1 : 0;
+				const uint32 Mask1 = Counter1 == 255 ? 2 : 0;
+				const uint32 Mask2 = Counter2 == 255 ? 4 : 0;
+				const uint32 Mask3 = Counter3 == 255 ? 8 : 0;
 
 				Counter0 = Mask0 ? FramesBetweenUpdates0 : Counter0;
 				Counter1 = Mask1 ? FramesBetweenUpdates1 : Counter1;
 				Counter2 = Mask2 ? FramesBetweenUpdates2 : Counter2;
 				Counter3 = Mask3 ? FramesBetweenUpdates3 : Counter3;
 
-				const uint32 Mask = (Mask3 << 3U) | (Mask2 << 2U) | (Mask1 << 1U) | Mask0;
+				const uint32 Mask = Mask3 | Mask2 | Mask1 | Mask0;
 				ObjectsToPoll |= (Mask << IndexOffset);
 
 				CountersData[IndexOffset + 0] = Counter0;
@@ -173,6 +160,4 @@ void FObjectPollFrequencyLimiter::Update(const FNetBitArrayView& ScopableObjects
 #endif
 }
 
-}
-}
 }

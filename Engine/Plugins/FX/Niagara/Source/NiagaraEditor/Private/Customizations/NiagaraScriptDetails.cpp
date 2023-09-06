@@ -11,10 +11,12 @@
 #include "NiagaraEditorStyle.h"
 #include "NiagaraMetaDataCustomNodeBuilder.h"
 #include "NiagaraParameterCollectionCustomNodeBuilder.h"
-#include "NiagaraParameterCollectionViewModel.h"
-#include "NiagaraParameterViewModel.h"
+#include "ViewModels/NiagaraParameterCollectionViewModel.h"
+#include "ViewModels/NiagaraScriptInputCollectionViewModel.h"
+#include "ViewModels/NiagaraScriptOutputCollectionViewModel.h"
+#include "ViewModels/NiagaraParameterViewModel.h"
 #include "NiagaraScript.h"
-#include "NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "PropertyCustomizationHelpers.h"
 #include "ScopedTransaction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -189,6 +191,7 @@ void FNiagaraScriptDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder
 		if (FVersionedNiagaraScriptData* Data = StandaloneScript.Script->GetScriptData(StandaloneScript.Version))
 		{
 			TSharedPtr<FStructOnScope> StructData = MakeShareable(new FStructOnScope(FVersionedNiagaraScriptData::StaticStruct(), (uint8*)Data));
+			StructData->SetPackage(StandaloneScript.Script.GetPackage());
 			TArray<TSharedPtr<IPropertyHandle>> NewHandles = CategoryBuilder.AddAllExternalStructureProperties(StructData.ToSharedRef());
 
 			for(TSharedPtr<IPropertyHandle> NewHandle : NewHandles)

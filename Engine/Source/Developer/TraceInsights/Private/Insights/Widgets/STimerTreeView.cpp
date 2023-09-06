@@ -539,7 +539,7 @@ void STimerTreeView::TreeView_OnGetChildren(FTimerNodePtr InParent, TArray<FTime
 void STimerTreeView::TreeView_OnMouseButtonDoubleClick(FTimerNodePtr TimerNodePtr)
 {
 	//if (TimerNodePtr->IsGroup())
-	if (TimerNodePtr->GetChildren().Num() > 0)
+	if (TimerNodePtr->GetChildrenCount() > 0)
 	{
 		const bool bIsGroupExpanded = TreeView->IsItemExpanded(TimerNodePtr);
 		TreeView->SetItemExpansion(TimerNodePtr, !bIsGroupExpanded);
@@ -686,19 +686,13 @@ void STimerTreeView::SortTreeNodes()
 
 void STimerTreeView::SortTreeNodesRec(FTimerNode& Node, const Insights::ITableCellValueSorter& Sorter)
 {
-	if (ColumnSortMode == EColumnSortMode::Type::Descending)
-	{
-		Node.SortChildrenDescending(Sorter);
-	}
-	else // if (ColumnSortMode == EColumnSortMode::Type::Ascending)
-	{
-		Node.SortChildrenAscending(Sorter);
-	}
+	Insights::ESortMode SortMode = (ColumnSortMode == EColumnSortMode::Type::Descending) ? Insights::ESortMode::Descending : Insights::ESortMode::Ascending;
+	Node.SortChildren(Sorter, SortMode);
 
 	for (Insights::FBaseTreeNodePtr ChildPtr : Node.GetChildren())
 	{
 		//if (ChildPtr->IsGroup())
-		if (ChildPtr->GetChildren().Num() > 0)
+		if (ChildPtr->GetChildrenCount() > 0)
 		{
 			SortTreeNodesRec(*StaticCastSharedPtr<FTimerNode>(ChildPtr), Sorter);
 		}
@@ -1050,7 +1044,7 @@ FTimerNodePtr STimerTreeView::CreateTimerNodeRec(const TraceServices::FTimingPro
 			FTimerNodePtr ChildTimerNodePtr = CreateTimerNodeRec(*ChildNodePtr);
 			if (ChildTimerNodePtr)
 			{
-				TimerNodePtr->AddChildAndSetGroupPtr(ChildTimerNodePtr);
+				TimerNodePtr->AddChildAndSetParent(ChildTimerNodePtr);
 			}
 		}
 	}

@@ -25,6 +25,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Blueprint/GameViewportSubsystem.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Blueprint/WidgetChild.h"
 #include "UObject/EditorObjectVersion.h"
 #include "UMGPrivate.h"
 #include "UObject/ObjectSaveContext.h"
@@ -423,7 +424,7 @@ UUMGSequencePlayer* UUserWidget::GetSequencePlayer(const UWidgetAnimation* InAni
 	TObjectPtr<UUMGSequencePlayer> const* FoundPlayer = ActiveSequencePlayers.FindByPredicate(
 		[&](const UUMGSequencePlayer* Player)
 	{
-		return Player->GetAnimation() == InAnimation;
+		return Player->GetAnimation() == InAnimation && !Player->IsStopping();
 	});
 
 	return FoundPlayer ? *FoundPlayer : nullptr;
@@ -471,6 +472,29 @@ UUMGSequencePlayer* UUserWidget::GetOrAddSequencePlayer(UWidgetAnimation* InAnim
 	}
 
 	return nullptr;
+}
+
+void UUserWidget::ConditionalTearDownAnimations()
+{
+	for (auto It = ActiveSequencePlayers.CreateIterator(); It; ++It)
+	{
+		UUMGSequencePlayer* Player = *It;
+		if (!Player)
+		{
+			It.RemoveCurrent();
+		}
+		else if (!Player->IsStopping())
+		{
+			Player->TearDown();
+			It.RemoveCurrent();
+		}
+	}
+
+	for (UUMGSequencePlayer* Player : StoppedSequencePlayers)
+	{
+		Player->TearDown();
+	}
+	StoppedSequencePlayers.Empty();
 }
 
 void UUserWidget::TearDownAnimations()
@@ -767,6 +791,39 @@ void UUserWidget::PlaySound(USoundBase* SoundToPlay)
 		NewSound.SetResourceObject(SoundToPlay);
 		FSlateApplication::Get().PlaySound(NewSound);
 	}
+}
+
+bool UUserWidget::SetDesiredFocusWidget(FName WidgetName)
+{
+	DesiredFocusWidget = FWidgetChild(this, WidgetName);
+	return DesiredFocusWidget.GetWidget() != nullptr;
+}
+
+bool UUserWidget::SetDesiredFocusWidget(UWidget* Widget)
+{
+	if (Widget && WidgetTree)
+	{
+		TArray<UWidget*> AllWidgets;
+		WidgetTree->GetAllWidgets(AllWidgets);
+
+		if (AllWidgets.Contains(Widget))
+		{
+			DesiredFocusWidget = FWidgetChild(this, Widget->GetFName());
+			return DesiredFocusWidget.GetWidget() != nullptr;
+		}
+	}
+	return false;
+}
+
+
+FName UUserWidget::GetDesiredFocusWidgetName() const
+{
+	return DesiredFocusWidget.GetFName();
+}
+
+UWidget* UUserWidget::GetDesiredFocusWidget() const
+{
+	return DesiredFocusWidget.GetWidget();
 }
 
 UWidget* UUserWidget::GetWidgetHandle(TSharedRef<SWidget> InWidget)
@@ -1253,6 +1310,21 @@ void UUserWidget::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
+	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
+
+	static FName DesiredFocusWidgetPropertyName(GET_MEMBER_NAME_CHECKED(UUserWidget, DesiredFocusWidget));
+	if (PropertyName == DesiredFocusWidgetPropertyName)
+	{
+		if (UWidgetBlueprintGeneratedClass* BGClass = GetWidgetTreeOwningClass())
+		{
+			if (UUserWidget* UserWidgetCDO = BGClass->GetDefaultObject<UUserWidget>())
+			{
+				// We cannot use the Widget Ptr as we need to find the widget with the same name in the CDO
+				UserWidgetCDO->SetDesiredFocusWidget(DesiredFocusWidget.GetFName());
+			}
+		}
+	}
+
 	if ( PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive )
 	{
 		TSharedPtr<SWidget> SafeWidget = GetCachedWidget();
@@ -1407,6 +1479,8 @@ void UUserWidget::NativePreConstruct()
 				Extension->PreConstruct(this, bIsDesignTime);
 			});
 	}
+
+	DesiredFocusWidget.Resolve(WidgetTree);
 
 	PreConstruct(bIsDesignTime);
 }
@@ -1793,7 +1867,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FReply UUserWidget::NativeOnFocusReceived( const FGeometry& InGeometry, const FFocusEvent& InFocusEvent )
 {
-	return OnFocusReceived( InGeometry, InFocusEvent ).NativeReply;
+	FReply Reply = OnFocusReceived( InGeometry, InFocusEvent ).NativeReply;
+
+	// Forward focus if Desired Focus is set
+	if (UWidget * WidgetToFocus = DesiredFocusWidget.Resolve(WidgetTree))
+	{
+		return FReply::Handled().SetUserFocus(WidgetToFocus->GetCachedWidget().ToSharedRef());
+	}
+	return Reply;
 }
 
 void UUserWidget::NativeOnFocusLost( const FFocusEvent& InFocusEvent )

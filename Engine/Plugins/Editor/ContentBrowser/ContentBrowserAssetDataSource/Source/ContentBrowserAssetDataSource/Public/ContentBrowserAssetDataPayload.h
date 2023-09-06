@@ -111,10 +111,10 @@ public:
 
 private:
 	/** The class to use when creating the asset */
-	UClass* AssetClass = nullptr;
+	TObjectPtr<UClass> AssetClass = nullptr;
 
 	/** The factory to use when creating the asset. */
-	UFactory* Factory = nullptr;
+	TObjectPtr<UFactory> Factory = nullptr;
 };
 
 class CONTENTBROWSERASSETDATASOURCE_API FContentBrowserAssetFileItemDataPayload_Duplication : public FContentBrowserAssetFileItemDataPayload
@@ -130,6 +130,32 @@ public:
 private:
 	/** The context to use when creating the asset. Used when initializing an asset with another related asset. */
 	TWeakObjectPtr<UObject> SourceObject;
+};
+
+class CONTENTBROWSERASSETDATASOURCE_API FContentBrowserUnsupportedAssetFileItemDataPayload : public IContentBrowserItemDataPayload
+{
+public:
+	// Unsupported asset file but it does have an asset data
+	explicit FContentBrowserUnsupportedAssetFileItemDataPayload(FAssetData&& InAssetData);
+	explicit FContentBrowserUnsupportedAssetFileItemDataPayload(const FAssetData& InAssetData);
+
+	const FAssetData* GetAssetDataIfAvailable() const;
+
+	const FString& GetFilename() const;
+
+	UPackage* GetPackage() const;
+
+private:
+	void FlushCaches() const;
+
+
+	TUniquePtr<FAssetData> OptionalAssetData;
+
+	mutable bool bHasCachedPackagePtr = false;
+	mutable TWeakObjectPtr<UPackage> CachedPackagePtr;
+
+	mutable bool bHasCachedFilename = false;
+	mutable FString CachedFilename;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

@@ -86,12 +86,17 @@
 #include "Components/PointLightComponent.h"
 #include "Particles/Collision/ParticleModuleCollisionGPU.h"
 #include "DerivedDataCacheInterface.h"
+#include "StaticMeshResources.h"
+
+static TAutoConsoleVariable<bool> CVarFxCascadeUseVelocityForMotionBlur(
+	TEXT("fx.Cascade.UseVelocityForMotionBlur"),
+	true,
+	TEXT("When enabled velocity will be used to approximate velocity for vertex factories that support this.")
+);
 
 /*-----------------------------------------------------------------------------
 	Abstract base modules used for categorization.
 -----------------------------------------------------------------------------*/
-
-
 
 /*-----------------------------------------------------------------------------
 	Helper functions.
@@ -1308,6 +1313,15 @@ void UParticleModuleRequired::CacheDerivedData()
 		COOK_STAT(Timer.AddMiss(Data.Num()));
 	}
 #endif
+}
+
+bool UParticleModuleRequired::ShouldUseVelocityForMotionBlur() const
+{
+	if ( bOverrideUseVelocityForMotionBlur )
+	{
+		return bUseVelocityForMotionBlur;
+	}
+	return CVarFxCascadeUseVelocityForMotionBlur.GetValueOnAnyThread();
 }
 
 void UParticleModuleRequired::InitBoundingGeometryBuffer()
@@ -3407,6 +3421,32 @@ const FVertexFactoryType* UParticleModuleTypeDataMesh::GetVertexFactoryType() co
 	return &FMeshParticleVertexFactory::StaticType;
 }
 
+extern void InitMeshParticleVertexFactoryComponents(FMeshParticleVertexFactory* InVertexFactory, const FStaticMeshLODResources& LODResources, FMeshParticleVertexFactory::FDataType& Data);
+
+void UParticleModuleTypeDataMesh::CollectPSOPrecacheData(const UParticleEmitter* Emitter, FPSOPrecacheParams& OutParams)
+{
+	if (Mesh != nullptr)
+	{
+		FStaticMeshRenderData* RenderData = Mesh->GetRenderData();
+		// Assuming here that all LOD use same vertex decl
+		int32 MeshLODIdx = Mesh->GetMinLODIdx();
+		if (RenderData->LODResources.IsValidIndex(MeshLODIdx))
+		{
+			bool bUsesDynamicParameter = (Emitter->DynamicParameterDataOffset > 0);
+			int32 DynamicVertexStride = sizeof(FMeshParticleInstanceVertex);
+			int32 DynamicParameterVertexStride = bUsesDynamicParameter ? sizeof(FMeshParticleInstanceVertexDynamicParameter) : 0;
+						
+			FVertexDeclarationElementList Elements;
+			FMeshParticleVertexFactory::FDataType Data;
+			InitMeshParticleVertexFactoryComponents(nullptr, RenderData->LODResources[MeshLODIdx], Data);
+			FMeshParticleVertexFactory::GetVertexElements(GMaxRHIFeatureLevel, DynamicVertexStride, DynamicParameterVertexStride, Data, Elements);
+			const FVertexFactoryType* VFType = &FMeshParticleVertexFactory::StaticType;
+			OutParams.PrimitiveType = GetPrimitiveType();
+			OutParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(VFType, Elements));
+		}
+	}
+}
+
 void UParticleModuleTypeDataMesh::SetToSensibleDefaults(UParticleEmitter* Owner)
 {
 	if ((Mesh == NULL) && GIsEditor )
@@ -4847,6 +4887,9 @@ void UParticleModuleTypeDataGpu::Build( FParticleEmitterBuildInfo& EmitterBuildI
 		// Compute the maximum number of particles allowed for this emitter.
 		EmitterInfo.MaxParticleCount = FMath::Max<int32>( 1, EmitterBuildInfo.EstimatedMaxActiveParticleCount );
 
+		EmitterInfo.bUseVelocityForMotionBlur = EmitterBuildInfo.RequiredModule->ShouldUseVelocityForMotionBlur();
+		ResourceData.bUseVelocityForMotionBlur = EmitterBuildInfo.RequiredModule->ShouldUseVelocityForMotionBlur();
+
 		// Store screen alignment for particles.
 		EmitterInfo.ScreenAlignment = EmitterBuildInfo.RequiredModule->ScreenAlignment;
 		ResourceData.ScreenAlignment = EmitterBuildInfo.RequiredModule->ScreenAlignment;
@@ -4920,6 +4963,12 @@ FParticleEmitterInstance* UParticleModuleTypeDataGpu::CreateInstance(UParticleEm
 const FVertexFactoryType* UParticleModuleTypeDataGpu::GetVertexFactoryType() const
 {
 	return &FGPUSpriteVertexFactory::StaticType;
+}
+
+void UParticleModuleTypeDataGpu::CollectPSOPrecacheData(const UParticleEmitter* Emitter, FPSOPrecacheParams& OutParams)
+{
+	OutParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(GetVertexFactoryType()));
+	OutParams.PrimitiveType = GetPrimitiveType();
 }
 
 /*-----------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 #include "Math/RandomStream.h"
 #include "ConversationInstance.generated.h"
 
+class UConversationChoiceNode;
 class UConversationInstance;
 class UConversationNodeWithLinks;
 class UConversationParticipantComponent;
@@ -37,7 +38,9 @@ public:
 	virtual UWorld* GetWorld() const override;
 	
 #if WITH_SERVER_CODE
-	void ServerRemoveParticipant(FGameplayTag ParticipantID);
+	/** Should be called with a copy of the conversation participants before any removals happen, that way clients can properly respond to the end of their respective conversations
+	  * with an accurate account of who was in that conversation. */
+	void ServerRemoveParticipant(FGameplayTag ParticipantID, const FConversationParticipants& PreservedParticipants);
 
 	void ServerAssignParticipant(FGameplayTag ParticipantID, AActor* ParticipantActor);
 
@@ -98,6 +101,7 @@ protected:
 	void ReturnToCurrentClientChoice(const FConversationContext& Context);
 	void ReturnToStart(const FConversationContext& Context);
 	virtual void PauseConversationAndSendClientChoices(const FConversationContext& Context, const FClientConversationMessage& ClientMessage);
+	virtual void OnChoiceNodePickedByUser(const FConversationContext& Context, const UConversationChoiceNode* ChoiceNode, const TArray<FConversationBranchPoint>& ValidDestinations) {};
 #endif
 
 private:

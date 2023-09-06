@@ -8,7 +8,6 @@ namespace UnrealBuildTool.Rules
 		{
 			PrivateIncludePaths.AddRange(
 				new string[] {
-					System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 				}
 				);
 
@@ -22,7 +21,8 @@ namespace UnrealBuildTool.Rules
 					"RHI",
 					"RenderCore",
 					"Renderer",
-					"HeadMountedDisplay"
+					"HeadMountedDisplay",
+					"XRBase"
 				}
 				);
 		}

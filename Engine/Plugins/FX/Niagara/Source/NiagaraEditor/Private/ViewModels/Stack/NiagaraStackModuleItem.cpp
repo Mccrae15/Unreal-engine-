@@ -860,7 +860,7 @@ UNiagaraStackEntry::FStackIssueFixDelegate UNiagaraStackModuleItem::GetUpgradeVe
 	{
 		return FStackIssueFixDelegate();
 	}
-	return FStackIssueFixDelegate::CreateLambda([=]()
+	return FStackIssueFixDelegate::CreateLambda([this]()
     {
         FScopedTransaction ScopedTransaction(LOCTEXT("UpgradeVersionFix", "Change module version"));
         FNiagaraScriptVersionUpgradeContext UpgradeContext;
@@ -889,13 +889,32 @@ UNiagaraStackEntry::FStackIssueFixDelegate UNiagaraStackModuleItem::GetUpgradeVe
 
 void UNiagaraStackModuleItem::RefreshIssues(TArray<FStackIssue>& NewIssues)
 {
-	if (!GetIsEnabled() || GetSystemViewModel()->GetIsForDataProcessingOnly())
+	if (GetSystemViewModel()->GetIsForDataProcessingOnly())
 	{
 		NewIssues.Empty();
 		return;
 	}
 
 	if (FunctionCallNode == nullptr)
+	{
+		return;
+	}
+
+	if (FunctionCallNode->FunctionScript != nullptr)
+	{
+		const UNiagaraEditorSettings* EditorSettings = GetDefault<UNiagaraEditorSettings>();
+		if (EditorSettings->IsAllowedAssetObjectByClassUsage(*FunctionCallNode->FunctionScript) == false)
+		{
+			NewIssues.Add(FStackIssue(
+				EStackIssueSeverity::Error,
+				LOCTEXT("UnsupportedModuleScriptShort", "Unsupported Module Script"),
+				LOCTEXT("UnsupportedModuleScriptLong", "This module uses a script which uses types which are unsupported in this editor context.  This module must either be deleted, or the referenced script must be fixed."),
+				GetStackEditorDataKey(),
+				false));
+		}
+	}
+
+	if (!GetIsEnabled())
 	{
 		return;
 	}
@@ -1376,11 +1395,12 @@ void UNiagaraStackModuleItem::ReassignModuleScript(UNiagaraScript* ModuleScript)
 
 		const FString OldName = FunctionCallNode->GetFunctionName();
 		UNiagaraScript* OldScript = FunctionCallNode->FunctionScript;
+		FVersionedNiagaraScriptData* OldScriptData = FunctionCallNode->GetScriptData();
 
 		FunctionCallNode->Modify();
 		UNiagaraClipboardContent* OldClipboardContent = nullptr;
-		FVersionedNiagaraScriptData* ScriptData = ModuleScript->GetLatestScriptData();
-		if (ScriptData->ConversionUtility != nullptr)
+		FVersionedNiagaraScriptData* NewScriptData = ModuleScript->GetLatestScriptData();
+		if (NewScriptData->ConversionUtility || OldScriptData->bUsePythonScriptConversion)
 		{
 			OldClipboardContent = UNiagaraClipboardContent::Create();
 			Copy(OldClipboardContent);
@@ -1398,21 +1418,22 @@ void UNiagaraStackModuleItem::ReassignModuleScript(UNiagaraScript* ModuleScript)
 			UNiagaraSystem& System = GetSystemViewModel()->GetSystem();
 			FVersionedNiagaraEmitter Emitter = GetEmitterViewModel().IsValid() ? GetEmitterViewModel()->GetEmitter() : FVersionedNiagaraEmitter();
 			FNiagaraStackGraphUtilities::RenameReferencingParameters(&System, Emitter, *FunctionCallNode, OldName, NewName);
-			FunctionCallNode->RefreshFromExternalChanges();
-			FunctionCallNode->MarkNodeRequiresSynchronization(TEXT("Module script reassigned."), true);
-			RefreshChildren();
 		}
+		// we need to refresh the node here to update static switch inputs, as they are set on the pins
+		FunctionCallNode->RefreshFromExternalChanges();
+		FunctionCallNode->MarkNodeRequiresSynchronization(TEXT("Module script reassigned."), true);
+		RefreshChildren();
 		
-		if (ScriptData->ConversionUtility != nullptr && OldClipboardContent != nullptr)
+		if (NewScriptData->ConversionUtility != nullptr && OldClipboardContent != nullptr)
 		{
-			UNiagaraConvertInPlaceUtilityBase* ConversionUtility = NewObject< UNiagaraConvertInPlaceUtilityBase>(GetTransientPackage(), ScriptData->ConversionUtility);
-			FText ConvertMessage;
+			UNiagaraConvertInPlaceUtilityBase* ConversionUtility = NewObject< UNiagaraConvertInPlaceUtilityBase>(GetTransientPackage(), NewScriptData->ConversionUtility);
 
 			UNiagaraClipboardContent* NewClipboardContent = UNiagaraClipboardContent::Create();
 			Copy(NewClipboardContent);
 
 			if (ConversionUtility )
 			{
+				FText ConvertMessage;
 				bool bConverted = ConversionUtility->Convert(OldScript, OldClipboardContent, ModuleScript, InputCollection, NewClipboardContent, FunctionCallNode, ConvertMessage);
 				if (!ConvertMessage.IsEmptyOrWhitespace())
 				{
@@ -1424,6 +1445,65 @@ void UNiagaraStackModuleItem::ReassignModuleScript(UNiagaraScript* ModuleScript)
 					FSlateNotificationManager::Get().AddNotification(Msg);
 				}
 			}
+		}
+		else if (NewScriptData && OldScriptData && OldScriptData->bUsePythonScriptConversion && OldClipboardContent != nullptr)
+		{
+			UNiagaraClipboardContent* NewClipboardContent = UNiagaraClipboardContent::Create();
+			Copy(NewClipboardContent);
+			if (OldClipboardContent->Functions.Num() > 0)
+			{
+				OldClipboardContent->FunctionInputs = OldClipboardContent->Functions[0]->Inputs;
+				OldClipboardContent->Functions.Empty();
+			}
+			if (NewClipboardContent->Functions.Num() > 0)
+			{
+				NewClipboardContent->FunctionInputs = NewClipboardContent->Functions[0]->Inputs;
+				NewClipboardContent->Functions.Empty();
+			}
+
+			// There can be hidden inputs due to static switches, so we need to add all of them to the clipboard for the python script to see them.
+			TArray<FNiagaraVariable> StaticSwitchInputs = FunctionCallNode->GetCalledGraph()->FindStaticSwitchInputs();
+			TArray<FNiagaraVariable> InputVariables;
+			TSet<FNiagaraVariable> HiddenInputVariables;
+			FCompileConstantResolver Resolver = GetEmitterViewModel().IsValid() ?
+			FCompileConstantResolver(GetEmitterViewModel()->GetEmitter(), FNiagaraStackGraphUtilities::GetOutputNodeUsage(*FunctionCallNode)) :
+			FCompileConstantResolver(&GetSystemViewModel()->GetSystem(), FNiagaraStackGraphUtilities::GetOutputNodeUsage(*FunctionCallNode));
+			GetStackFunctionInputs(*FunctionCallNode, InputVariables, HiddenInputVariables, Resolver, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
+
+			TSet<FNiagaraVariableBase> SeenVars;
+			for (const UNiagaraClipboardFunctionInput* Input : NewClipboardContent->FunctionInputs)
+			{
+				SeenVars.Add(FNiagaraVariable(Input->GetTypeDef(), Input->InputName));
+			}
+			for (const FNiagaraVariableBase& StaticVar : StaticSwitchInputs)
+			{
+				if (!SeenVars.Contains(StaticVar))
+				{
+					NewClipboardContent->FunctionInputs.Add(UNiagaraClipboardFunctionInput::CreateDefaultInputValue(NewClipboardContent, StaticVar.GetName(), StaticVar.GetType()));
+					SeenVars.Add(StaticVar);
+				}
+			}
+			for (const FNiagaraVariableBase& InputVar : InputVariables)
+			{
+				FString InputName = InputVar.GetName().ToString();
+				InputName.RemoveFromStart(PARAM_MAP_MODULE_STR);
+				FNiagaraVariableBase NewVar(InputVar.GetType(), FName(InputName));
+				if (!SeenVars.Contains(NewVar))
+				{
+					NewClipboardContent->FunctionInputs.Add(UNiagaraClipboardFunctionInput::CreateDefaultInputValue(NewClipboardContent, NewVar.GetName(), NewVar.GetType()));
+					SeenVars.Add(NewVar);
+				}
+			}
+			
+			FunctionCallNode->PythonUpgradeScriptWarnings.Empty();
+			FText Warnings;
+			if (UNiagaraClipboardContent* NewInputs = FNiagaraEditorUtilities::RunPythonConversionScript(*NewScriptData, NewClipboardContent, *OldScriptData, OldClipboardContent, Warnings))
+			{
+				Paste(NewInputs, Warnings);
+				if (!Warnings.IsEmpty()) {
+					FunctionCallNode->PythonUpgradeScriptWarnings = Warnings.ToString();
+				}
+			}			
 		}
 	}
 }
@@ -1530,7 +1610,7 @@ void UNiagaraStackModuleItem::Copy(UNiagaraClipboardContent* ClipboardContent) c
 
 	ClipboardFunction->DisplayName = GetAlternateDisplayName().Get(FText::GetEmpty());
 
-	InputCollection->ToClipboardFunctionInputs(ClipboardFunction, ClipboardFunction->Inputs);
+	InputCollection->ToClipboardFunctionInputs(ClipboardFunction, MutableView(ClipboardFunction->Inputs));
 	ClipboardContent->Functions.Add(ClipboardFunction);
 }
 
@@ -1638,6 +1718,13 @@ FText UNiagaraStackModuleItem::GetInheritanceMessage() const
 	return LOCTEXT("ModuleItemInheritanceMessage", "This module is inherited from a parent emitter.  Inherited modules\ncan only be moved, deleted, and versioned while editing the parent emitter.");
 }
 
+FNiagaraHierarchyIdentity UNiagaraStackModuleItem::DetermineSummaryIdentity() const
+{
+	FNiagaraHierarchyIdentity Identity;
+	Identity.Guids.Add(GetModuleNode().NodeGuid);
+	return Identity;
+}
+
 bool UNiagaraStackModuleItem::IsScratchModule() const
 {
 	if (bIsScratchModuleCache.IsSet() == false)
@@ -1717,4 +1804,3 @@ bool UNiagaraStackModuleItem::OpenSourceAsset() const
 }
 
 #undef LOCTEXT_NAMESPACE
-

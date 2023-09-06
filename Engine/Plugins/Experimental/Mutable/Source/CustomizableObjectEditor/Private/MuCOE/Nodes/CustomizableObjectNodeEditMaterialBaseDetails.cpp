@@ -6,6 +6,7 @@
 #include "IDetailsView.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeEditMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Widgets/Input/STextComboBox.h"
 
@@ -26,6 +27,7 @@ void FCustomizableObjectNodeEditMaterialBaseDetails::CustomizeDetails(IDetailLay
 {
 	FCustomizableObjectNodeParentedMaterialDetails::CustomizeDetails(DetailBuilder);
 
+	DetailBuilderPtr = &DetailBuilder;
 	NodeEditMaterialBase = nullptr;
 
 	const TArray<TWeakObjectPtr<UObject>>& SelectedObjects = DetailBuilder.GetDetailsView()->GetSelectedObjects();
@@ -41,7 +43,7 @@ void FCustomizableObjectNodeEditMaterialBaseDetails::CustomizeDetails(IDetailLay
 		// Add all the materials to the combobox
 		TSharedPtr<FString> LayoutToSelect = GenerateLayoutComboboxOptions();
 
-		TSharedRef<IPropertyHandle> LayoutProperty = DetailBuilder.GetProperty("ParentLayoutIndex");
+		TSharedRef<IPropertyHandle> LayoutProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UCustomizableObjectNodeEditMaterialBase, ParentLayoutIndex));
 
 		BlocksCategory.AddCustomRow(LOCTEXT("BlocksRow", "Blocks"))
 		[
@@ -61,7 +63,7 @@ void FCustomizableObjectNodeEditMaterialBaseDetails::CustomizeDetails(IDetailLay
 				.CustomWidget()
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("NoBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 					.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f))
 					[
 						SAssignNew(LayoutComboBox, STextComboBox)
@@ -91,7 +93,7 @@ TSharedPtr<FString> FCustomizableObjectNodeEditMaterialBaseDetails::GenerateLayo
 
 	TSharedPtr<FString> ItemToSelect = nullptr;
 
-	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = NodeEditMaterialBase->GetParentMaterialNode();
+	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = NodeEditMaterialBase->GetParentMaterialNodeIfPath();
 
 	if (ParentMaterialNode && ParentMaterialNode->GetLayouts().Num())
 	{
@@ -119,7 +121,8 @@ void FCustomizableObjectNodeEditMaterialBaseDetails::OnLayoutComboBoxSelectionCh
 	{
 		if (LayoutOptionNames[OptionIndex] == Selection)
 		{
-			LayoutProperty->SetValue(LayoutOptionReferences[OptionIndex]);
+			NodeEditMaterialBase->SetLayoutIndex(LayoutOptionReferences[OptionIndex]);
+			DetailBuilderPtr->ForceRefreshDetails();
 			break;	
 		}
 	}
@@ -133,6 +136,5 @@ void FCustomizableObjectNodeEditMaterialBaseDetails::OnParentComboBoxSelectionCh
 	const TSharedPtr<FString> LayoutToSelect = GenerateLayoutComboboxOptions();
 	LayoutComboBox->SetSelectedItem(LayoutToSelect);
 }
-
 
 #undef LOCTEXT_NAMESPACE

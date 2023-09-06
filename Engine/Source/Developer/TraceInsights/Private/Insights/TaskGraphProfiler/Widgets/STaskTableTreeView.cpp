@@ -165,7 +165,7 @@ void STaskTableTreeView::RebuildTree(bool bResync)
 		return;
 	}
 
-	if (NewQueryStartTime != QueryStartTime || NewQueryEndTime != QueryEndTime)
+	if (bResync || NewQueryStartTime != QueryStartTime || NewQueryEndTime != QueryEndTime)
 	{
 		StopAllTableDataTasks();
 
@@ -174,7 +174,7 @@ void STaskTableTreeView::RebuildTree(bool bResync)
 		TSharedPtr<FTaskTable> TaskTable = GetTaskTable();
 		TArray<FTaskEntry>& Tasks = TaskTable->GetTaskEntries();
 		Tasks.Empty();
-		TableTreeNodes.Empty();
+		TableRowNodes.Empty();
 
 		if (QueryStartTime < QueryEndTime && Session.IsValid())
 		{
@@ -186,17 +186,17 @@ void STaskTableTreeView::RebuildTree(bool bResync)
 			{
 				FName BaseNodeName(TEXT("task"));
 
-				TArray<FTableTreeNodePtr>* Nodes = &TableTreeNodes;
+				TArray<FTableTreeNodePtr>* Nodes = &TableRowNodes;
 
-				TasksProvider->EnumerateTasks(QueryStartTime, QueryEndTime, [&Tasks, &TaskTable, &BaseNodeName, Nodes](const TraceServices::FTaskInfo& TaskInfo)
-					{
-						Tasks.Emplace(TaskInfo);
-						uint32 Index = Tasks.Num() - 1;
-						FName NodeName(BaseNodeName, static_cast<int32>(TaskInfo.Id + 1));
-						FTaskNodePtr NodePtr = MakeShared<FTaskNode>(NodeName, TaskTable, Index);
-						Nodes->Add(NodePtr);
-						return TraceServices::ETaskEnumerationResult::Continue;
-					});
+				TasksProvider->EnumerateTasks(QueryStartTime, QueryEndTime, SelectedTasksSelectionOption, [&Tasks, &TaskTable, &BaseNodeName, Nodes](const TraceServices::FTaskInfo& TaskInfo)
+				{
+					Tasks.Emplace(TaskInfo);
+					uint32 Index = Tasks.Num() - 1;
+					FName NodeName(BaseNodeName, static_cast<int32>(TaskInfo.Id + 1));
+					FTaskNodePtr NodePtr = MakeShared<FTaskNode>(NodeName, TaskTable, Index);
+					Nodes->Add(NodePtr);
+					return TraceServices::ETaskEnumerationResult::Continue;
+				});
 			}
 		}
 
@@ -229,36 +229,119 @@ FText STaskTableTreeView::GetCurrentOperationName() const
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-TSharedPtr<SWidget> STaskTableTreeView::ConstructToolbar()
+void STaskTableTreeView::ConstructHeaderArea(TSharedRef<SVerticalBox> InWidgetContent)
 {
-	return SNew(SHorizontalBox)
+	InWidgetContent->AddSlot()
+	.VAlign(VAlign_Center)
+	.AutoHeight()
+	.Padding(2.0f)
+	[
+		SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.VAlign(VAlign_Center)
+		[
+			ConstructSearchBox()
+		]
+
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
+		.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		[
+			ConstructFilterConfiguratorButton()
+		]
+	];
+
+	InWidgetContent->AddSlot()
+	.VAlign(VAlign_Center)
+	.AutoHeight()
+	.Padding(2.0f)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Left)
 		.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 		.VAlign(VAlign_Center)
 		[
 			SNew(STextBlock)
-			.Text(LOCTEXT("Timestamps", "Timestamps"))
+			.Text(LOCTEXT("Tasks", "Tasks"))
 		]
-		
+
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
-		.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+		.HAlign(HAlign_Left)
+		.Padding(4.0f, 0.0f, 10.0f, 0.0f)
 		[
 			SNew(SBox)
 			.MinDesiredWidth(160.0f)
 			[
-				SNew(SComboBox<TSharedPtr<ETimestampOptions>>)
-				.OptionsSource(GetAvailableTimestampOptions())
-				.OnSelectionChanged(this, &STaskTableTreeView::TimestampOptions_OnSelectionChanged)
-				.OnGenerateWidget(this, &STaskTableTreeView::TimestampOptions_OnGenerateWidget)
-				.IsEnabled(this, &STaskTableTreeView::TimestampOptions_IsEnabled)
+				SNew(SComboBox<TSharedPtr<ETaskEnumerationOption>>)
+				.OptionsSource(GetAvailableTasksSelectionOptions())
+				.OnSelectionChanged(this, &STaskTableTreeView::TasksSelectionOptions_OnSelectionChanged)
+				.OnGenerateWidget(this, &STaskTableTreeView::TasksSelectionOptions_OnGenerateWidget)
+				.IsEnabled(this, &STaskTableTreeView::TasksSelectionOptions_IsEnabled)
 				[
 					SNew(STextBlock)
-					.Text(this, &STaskTableTreeView::TimestampOptions_GetSelectionText)
+					.Text(this, &STaskTableTreeView::TasksSelectionOptions_GetSelectionText)
 				]
 			]
-		];
+		]
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Right)
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("Timestamps", "Timestamps"))
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(HAlign_Right)
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SBox)
+				.MinDesiredWidth(160.0f)
+				[
+					SNew(SComboBox<TSharedPtr<ETimestampOptions>>)
+					.OptionsSource(GetAvailableTimestampOptions())
+					.OnSelectionChanged(this, &STaskTableTreeView::TimestampOptions_OnSelectionChanged)
+					.OnGenerateWidget(this, &STaskTableTreeView::TimestampOptions_OnGenerateWidget)
+					.IsEnabled(this, &STaskTableTreeView::TimestampOptions_IsEnabled)
+					[
+						SNew(STextBlock)
+						.Text(this, &STaskTableTreeView::TimestampOptions_GetSelectionText)
+					]
+				]
+			]
+		]
+	];
+
+	InWidgetContent->AddSlot()
+	.VAlign(VAlign_Center)
+	.AutoHeight()
+	.Padding(2.0f)
+	[
+		SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.VAlign(VAlign_Center)
+		[
+			ConstructHierarchyBreadcrumbTrail()
+		]
+	];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -305,6 +388,64 @@ TSharedRef<SWidget> STaskTableTreeView::TimestampOptions_OnGenerateWidget(TShare
 
 	return Widget;
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedRef<SWidget> STaskTableTreeView::TasksSelectionOptions_OnGenerateWidget(TSharedPtr<ETaskEnumerationOption> InOption)
+{
+	auto GetTooltipText = [](ETaskEnumerationOption InOption)
+	{
+		switch (InOption)
+		{
+		case ETaskEnumerationOption::Alive:
+		{
+			return LOCTEXT("AliveTooltip", "Tasks that were created before the selection and destroyed after.");
+		}
+		case ETaskEnumerationOption::Launched:
+		{
+			return LOCTEXT("LaunchedTooltip", "Tasks that were launched during the selection.");
+		}
+		case ETaskEnumerationOption::Active:
+		{
+			return LOCTEXT("ActiveTooltip", "Tasks that were active (being executed) at any moment of the selection.");
+		}
+		case ETaskEnumerationOption::WaitingForPrerequisites:
+		{
+			return LOCTEXT("WaitingForPrerequisitesTooltip", "Tasks that are blocked by prerequisites for the entire duration of the selection.");
+		}
+		case ETaskEnumerationOption::Queued:
+		{
+			return LOCTEXT("QueuedTooltip", "Tasks that for the entire duration of the selection are waiting in the scheduler queue.");
+		}
+		case ETaskEnumerationOption::Executing:
+		{
+			return LOCTEXT("ExecutingTooltip", "Tasks that for the entire duration of the selection have been executed.");
+		}
+		case ETaskEnumerationOption::WaitingForNested:
+		{
+			return LOCTEXT("WaitingForNestedTooltip", "Tasks that for the entire duration of the selection have been waiting for nested tasks.");
+		}
+		case ETaskEnumerationOption::Completed:
+		{
+			return LOCTEXT("CompletedTooltip", "Tasks that for the entire duration of the selection have been already completed but not destroyed.");
+		}
+		}
+
+		return FText();
+	};
+
+	TSharedRef<SHorizontalBox> Widget = SNew(SHorizontalBox);
+	Widget->AddSlot()
+		.AutoWidth()
+		[
+			SNew(STextBlock)
+			.Text(TasksSelectionOptions_GetText(*InOption))
+			.ToolTipText(GetTooltipText(*InOption))
+			.Margin(2.0f)
+		];
+
+	return Widget;
+}
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -326,6 +467,25 @@ const TArray<TSharedPtr<STaskTableTreeView::ETimestampOptions>>* STaskTableTreeV
 	}
 
 	return &AvailableTimestampOptions;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const TArray<TSharedPtr<ETaskEnumerationOption>>* STaskTableTreeView::GetAvailableTasksSelectionOptions()
+{
+	if (AvailableTasksSelectionOptions.Num() == 0)
+	{
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::Alive));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::Launched));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::Active));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::WaitingForPrerequisites));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::Queued));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::Executing));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::WaitingForNested));
+		AvailableTasksSelectionOptions.Add(MakeShared<ETaskEnumerationOption>(ETaskEnumerationOption::Completed));
+	}
+
+	return &AvailableTasksSelectionOptions;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -365,6 +525,21 @@ void STaskTableTreeView::TimestampOptions_OnSelectionChanged(ETimestampOptions I
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void STaskTableTreeView::TasksSelectionOptions_OnSelectionChanged(TSharedPtr<ETaskEnumerationOption> InOption, ESelectInfo::Type SelectInfo)
+{
+	TasksSelectionOptions_OnSelectionChanged(*InOption);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STaskTableTreeView::TasksSelectionOptions_OnSelectionChanged(ETaskEnumerationOption InOption)
+{
+	SelectedTasksSelectionOption = InOption;
+	RebuildTree(true);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 FText STaskTableTreeView::TimestampOptions_GetSelectionText() const
 {
 	return TimestampOptions_GetText(SelectedTimestampOption);
@@ -395,7 +570,64 @@ FText STaskTableTreeView::TimestampOptions_GetText(ETimestampOptions InOption) c
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+FText STaskTableTreeView::TasksSelectionOptions_GetSelectionText() const
+{
+	return TasksSelectionOptions_GetText(SelectedTasksSelectionOption);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText STaskTableTreeView::TasksSelectionOptions_GetText(ETaskEnumerationOption InOption) const
+{
+	switch (InOption)
+	{
+	case ETaskEnumerationOption::Alive:
+	{
+		return LOCTEXT("Alive", "Alive");
+	}
+	case ETaskEnumerationOption::Launched:
+	{
+		return LOCTEXT("Launched", "Launched");
+	}
+	case ETaskEnumerationOption::Active:
+	{
+		return LOCTEXT("Active", "Active");
+	}
+	case ETaskEnumerationOption::WaitingForPrerequisites:
+	{
+		return LOCTEXT("WaitingForPrerequisites", "Waiting for prerequisites");
+	}
+	case ETaskEnumerationOption::Queued:
+	{
+		return LOCTEXT("Queued", "Queued");
+	}
+	case ETaskEnumerationOption::Executing:
+	{
+		return LOCTEXT("Executing", "Executing");
+	}
+	case ETaskEnumerationOption::WaitingForNested:
+	{
+		return LOCTEXT("WaitingForNested", "Waiting for nested");
+	}
+	case ETaskEnumerationOption::Completed:
+	{
+		return LOCTEXT("Completed", "Completed");
+	}
+	}
+
+	return FText();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 bool STaskTableTreeView::TimestampOptions_IsEnabled() const
+{
+	return !bIsUpdateRunning;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool STaskTableTreeView::TasksSelectionOptions_IsEnabled() const
 {
 	return !bIsUpdateRunning;
 }

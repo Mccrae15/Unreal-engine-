@@ -57,6 +57,17 @@ static ESewOption GetFromOptions(bool bGStitchingForceSew, bool bGStitchingRemov
 
 }
 
+namespace TopomakerTools
+{
+
+/**
+ * Merge Border Vertices with other vertices.
+ * @param Vertices: the initial array of active vertices to process, this array is updated at the end of the process
+ */
+void MergeCoincidentVertices(TArray<FTopologicalVertex*>& VerticesToMerge, double Tolerance);
+
+}
+
 struct FTopomakerOptions
 {
 	ESewOption SewOptions;
@@ -89,7 +100,7 @@ public:
 
 	FTopomaker(FSession& InSession, const FTopomakerOptions& InOptions);
 	FTopomaker(FSession& InSession, const TArray<TSharedPtr<FShell>>& Shells, const FTopomakerOptions& InOptions);
-	FTopomaker(FSession& InSession, const TArray<TSharedPtr<FTopologicalFace>>& Surfaces, const FTopomakerOptions& InOptions);
+	FTopomaker(FSession& InSession, const TArray<TSharedPtr<FTopologicalFace>>& Faces, const FTopomakerOptions& InOptions);
 
 	void SetTolerance(const FTopomakerOptions Options)
 	{
@@ -110,15 +121,10 @@ public:
 		SewToleranceToForceJoin = Tolerance * ForceJoinFactor;
 		LargeEdgeLengthTolerance = SewToleranceToForceJoin * 2.;
 
-		ThinFaceWidth = Tolerance * ForceJoinFactor;
+		ThinFaceWidth = Tolerance * ForceJoinFactor * 0.5;
 	}
 
 	void Sew();
-
-	/**
-	 * Check topology of each body
-	 */
-	void CheckTopology();
 
 	/**
 	 * Split into connected shell and put each shell into the appropriate body
@@ -132,7 +138,18 @@ public:
 	 */
 	void UnlinkNonManifoldVertex();
 
-	void RemoveThinFaces(TArray<FTopologicalEdge*>& NewBorderEdges);
+	/**
+	 * Mandatory: UnlinkNonManifoldVertex has to be call before
+	 */
+	void UnlinkFromOther();
+
+	void RemoveThinFaces();
+
+	/**
+	 * Mandatory: 
+	 * UnlinkNonManifoldVertex has to be call after
+	 */
+	void DeleteNonmanifoldLink();
 
 #ifdef CADKERNEL_DEV
 	void PrintSewReport()
@@ -156,8 +173,6 @@ private:
 
 	void EmptyShells();
 
-	void RemoveFacesFromShell();
-
 	void RemoveEmptyShells();
 
 	void RemoveDuplicatedFaces();
@@ -165,17 +180,17 @@ private:
 	/**
 	 * Return an array of active vertices.
 	 */
-	void GetVertices(TArray<TSharedPtr<FTopologicalVertex>>& Vertices);
+	void GetVertices(TArray<FTopologicalVertex*>& Vertices);
 
 	/**
 	 * Return an array of active border vertices.
 	 */
-	void GetBorderVertices(TArray<TSharedPtr<FTopologicalVertex>>& BorderVertices);
+	void GetBorderVertices(TArray<FTopologicalVertex*>& BorderVertices);
 
-	void CheckSelfConnectedEdge(double MaxLengthOfDegeneratedEdge, TArray<TSharedPtr<FTopologicalVertex>>& OutBorderVertices);
+	void CheckSelfConnectedEdge(double MaxLengthOfDegeneratedEdge, TArray<FTopologicalVertex*>& OutBorderVertices);
 	void RemoveIsolatedEdges(); // Useful ???
 
-	void SetSelfConnectedEdgeDegenerated(TArray<TSharedPtr<FTopologicalVertex>>& Vertices);
+	void SetSelfConnectedEdgeDegenerated(TArray<FTopologicalVertex*>& Vertices);
 
 	/**
 	 * For each loop of each surface, check if successive edges are unconnected and if their common vertices are connected only to them (UV vs CV: vertex connected to many faces ).
@@ -195,6 +210,11 @@ private:
 	 *              /                                                                   |
 	 */
 	void MergeUnconnectedSuccessiveEdges();
+
+	void SetToProcessMarkerOfFaces();
+	void ResetMarkersOfFaces();
+
+private:
 
 	ESewOption SewOptions;
 

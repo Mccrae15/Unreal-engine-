@@ -93,6 +93,43 @@ FRayMarchingContext CreateRayMarchingContext(
 	return Context;
 }
 
+float CalcStepSize(float3 LocalRayDirection, float LocalStepSize, float LocalStepFactor)
+{
+	if (LocalStepSize <= 0.0f)
+	{
+		// Intersect aligned voxel to determine candidate t-values and use the minimum distance
+		float3 VoxelSize = GetLocalBoundsExtent() / float3(GetVolumeResolution());
+		float3 tValues = abs(VoxelSize / LocalRayDirection);
+		float VoxelStepSize = min(tValues.x, min(tValues.y, tValues.z));
+		LocalStepSize = VoxelStepSize * LocalStepFactor;
+	}
+	return max(LocalStepSize, 0.01f);
+}
+
+float CalcStepSize(float3 LocalRayDirection)
+{
+	float LocalStepSize = GetStepSize();
+	float LocalStepFactor = GetStepFactor();
+	return CalcStepSize(LocalRayDirection, LocalStepSize, LocalStepFactor);
+}
+
+float CalcShadowStepSize(float3 LocalRayDirection)
+{
+	float LocalStepSize = GetShadowStepSize();
+	float LocalStepFactor = GetShadowStepFactor();
+	return CalcStepSize(LocalRayDirection, LocalStepSize, LocalStepFactor);
+}
+
+float CalcShadowBias()
+{
+	float3 VolumeBounds = 2.0f * GetLocalBoundsExtent();
+	float3 VoxelSize = VolumeBounds / float3(GetLightingCacheResolution());
+	float3 WorldVoxelSize = mul(float4(VoxelSize, 0), GetLocalToWorld()).xyz;
+	float VoxelDiagonal = length(WorldVoxelSize);
+	float WorldShadowBias = VoxelDiagonal * GetLightingCacheVoxelBias();
+	return WorldShadowBias;
+}
+
 float RecalculateStepSize(inout FRayMarchingContext Context)
 {
 	// Recalculate step-size if the bounding-box diagonal is greater than the maximum step-count
@@ -239,7 +276,7 @@ float3 ComputeTransmittance(
 	LocalRayDirection /= LocalRayTMax;
 
 	float ShadowBias = 0.5;
-	float ShadowStepSize = GetShadowStepSize();
+	float ShadowStepSize = CalcShadowStepSize(LocalRayDirection);
 	int bApplyEmissionAndTransmittance = 0;
 	int bApplyDirectLighting = 0;
 	int bApplyShadowTransmittance = 0;
@@ -271,6 +308,7 @@ float3 ComputeInscattering(
 	FDeferredLightData LightData,
 	uint LightType,
 	uint MaxStepCount,
+	float WorldShadowBias,
 	bool bApplyShadowTransmittance
 )
 {
@@ -311,7 +349,8 @@ float3 ComputeInscattering(
 	Inscattering = LightData.Color * LightAttenuation * HardSurfaceShadowFactor;
 	if (any(Inscattering > 0.0) && bApplyShadowTransmittance)
 	{
-		Inscattering *= ComputeTransmittance(WorldPosition, ToLight, MaxStepCount);
+		float3 BiasedWorldPosition = WorldPosition + L * WorldShadowBias;
+		Inscattering *= ComputeTransmittance(BiasedWorldPosition, ToLight, MaxStepCount);
 	}
 #endif // DIM_USE_INSCATTERING_VOLUME
 
@@ -351,6 +390,8 @@ void RayMarchSingleScattering(
 	inout float3 Transmittance
 )
 {
+	float WorldShadowBias = CalcShadowBias();
+
 	for (uint StepIndex = 0; StepIndex < StepCount; ++StepIndex)
 	{
 		float LocalHitT = RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex);
@@ -388,7 +429,7 @@ void RayMarchSingleScattering(
 			float3 Albedo = SampleAlbedo(SampleContext);
 			if (any(Albedo > 0.0))
 			{
-				float3 Inscattering = ComputeInscattering(WorldPosition, LightData, LightType, RayMarchingContext.MaxStepCount, RayMarchingContext.bApplyShadowTransmittance);
+				float3 Inscattering = ComputeInscattering(WorldPosition, LightData, LightType, RayMarchingContext.MaxStepCount, WorldShadowBias, RayMarchingContext.bApplyShadowTransmittance);
 
 				float3 ScatteringCoefficient = Albedo * Extinction;
 				float IsotropicPhase = 1.0 / (4.0 * PI);

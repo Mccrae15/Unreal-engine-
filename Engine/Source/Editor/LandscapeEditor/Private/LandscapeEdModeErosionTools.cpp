@@ -17,9 +17,11 @@
 //
 class FLandscapeToolStrokeErosionBase : public FLandscapeToolStrokeBase
 {
+	using Super = FLandscapeToolStrokeBase;
+
 public:
 	FLandscapeToolStrokeErosionBase(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 		, HeightCache(InTarget)
 		, LayerHeightDataCache(InTarget, this->HeightCache)
 		, WeightCache(InTarget)
@@ -37,9 +39,11 @@ protected:
 template<class TStrokeClass>
 class FLandscapeToolErosionBase : public FLandscapeToolBase<TStrokeClass>
 {
+	using Super = FLandscapeToolBase<TStrokeClass>;
+
 public:
 	FLandscapeToolErosionBase(FEdModeLandscape* InEdMode)
-		: FLandscapeToolBase<TStrokeClass>(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 
@@ -55,14 +59,24 @@ public:
 
 class FLandscapeToolStrokeErosion : public FLandscapeToolStrokeErosionBase
 {
+	using Super = FLandscapeToolStrokeErosionBase;
+
 public:
 	FLandscapeToolStrokeErosion(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeErosionBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 	{
+	}
+
+	virtual void SetEditLayer(const FGuid& EditLayerGUID) override
+	{
+		LayerHeightDataCache.SetCacheEditingLayer(EditLayerGUID);
+		WeightCache.DataAccess.SetEditLayer(EditLayerGUID);
 	}
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeErosion_Apply);
+
 		if (!this->LandscapeInfo)
 		{
 			return;
@@ -104,7 +118,7 @@ public:
 		WeightCache.GetCachedData(X1, Y1, X2, Y2, WeightDatas, LayerNum);
 
 		// Apply the brush	
-		uint16 Thresh = UISettings->ErodeThresh;
+		uint16 Thresh = static_cast<uint16>(UISettings->ErodeThresh);
 		int32 WeightMoveThresh = FMath::Min<int32>(FMath::Max<int32>(Thickness >> 2, Thresh), Thickness >> 1);
 
 		TArray<float> CenterWeights;
@@ -183,7 +197,7 @@ public:
 											float WeightDiff = Softness * UISettings->GetCurrentToolStrength() * Pressure * ((float)Slope / SlopeTotal) * BrushValue;
 											//uint16 HeightDiff = (uint16)((SlopeMax - Thresh) * WeightDiff);
 											float HeightDiff = (SlopeMax - Thresh) * WeightDiff;
-											HeightData[Neighbor[Idx]] += HeightDiff;
+											HeightData[Neighbor[Idx]] += static_cast<uint16>(HeightDiff);
 											TotalHeightDiff += HeightDiff;
 
 											if (bWeightApplied)
@@ -205,7 +219,7 @@ public:
 									}
 								}
 
-								HeightData[Center] -= TotalHeightDiff;
+								HeightData[Center] -= static_cast<uint16>(TotalHeightDiff);
 
 								if (bWeightApplied)
 								{
@@ -256,7 +270,7 @@ public:
 				{
 					FNoiseParameter NoiseParam(0, UISettings->ErosionNoiseScale, BrushValue * Thresh * UISettings->GetCurrentToolStrength() * BrushSizeAdjust);
 					float PaintAmount = NoiseModeConversion((ELandscapeToolNoiseMode)UISettings->ErosionNoiseMode, NoiseParam.NoiseAmount, NoiseParam.Sample(X, Y));
-					HeightData[(X - X1) + (Y - Y1)*(1 + X2 - X1)] = FLandscapeHeightCache::ClampValue(HeightData[(X - X1) + (Y - Y1)*(1 + X2 - X1)] + PaintAmount);
+					HeightData[(X - X1) + (Y - Y1)*(1 + X2 - X1)] = FLandscapeHeightCache::ClampValue(static_cast<int32>(HeightData[(X - X1) + (Y - Y1)*(1 + X2 - X1)] + PaintAmount));
 				}
 			}
 		}
@@ -272,9 +286,11 @@ public:
 
 class FLandscapeToolErosion : public FLandscapeToolErosionBase<FLandscapeToolStrokeErosion>
 {
+	using Super = FLandscapeToolErosionBase<FLandscapeToolStrokeErosion>;
+
 public:
 	FLandscapeToolErosion(FEdModeLandscape* InEdMode)
-		: FLandscapeToolErosionBase(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 
@@ -290,14 +306,24 @@ public:
 
 class FLandscapeToolStrokeHydraErosion : public FLandscapeToolStrokeErosionBase
 {
+	using Super = FLandscapeToolStrokeErosionBase;
+
 public:
 	FLandscapeToolStrokeHydraErosion(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
-		: FLandscapeToolStrokeErosionBase(InEdMode, InViewportClient, InTarget)
+		: Super(InEdMode, InViewportClient, InTarget)
 	{
+	}
+
+	virtual void SetEditLayer(const FGuid& EditLayerGUID) override
+	{
+		LayerHeightDataCache.SetCacheEditingLayer(EditLayerGUID);
+		WeightCache.DataAccess.SetEditLayer(EditLayerGUID);
 	}
 
 	void Apply(FEditorViewportClient* ViewportClient, FLandscapeBrush* Brush, const ULandscapeEditorObject* UISettings, const TArray<FLandscapeToolInteractorPosition>& InteractorPositions)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeToolStrokeHydraErosion_Apply);
+
 		if (!this->LandscapeInfo)
 		{
 			return;
@@ -325,13 +351,11 @@ public:
 		X2 += 1;
 		Y2 += 1;
 
-		const int32 LayerNum = this->LandscapeInfo->Layers.Num();
-
 		const int32 Iteration = UISettings->HErodeIterationNum;
-		const uint16 RainAmount = UISettings->RainAmount;
-		const float DissolvingRatio = 0.07 * UISettings->GetCurrentToolStrength() * Pressure;  //0.01;
-		const float EvaporateRatio = 0.5;
-		const float SedimentCapacity = 0.10 * UISettings->SedimentCapacity; //DissolvingRatio; //0.01;
+		const uint16 RainAmount = static_cast<uint16>(UISettings->RainAmount);
+		const float DissolvingRatio = 0.07f * UISettings->GetCurrentToolStrength() * Pressure;  //0.01;
+		const float EvaporateRatio = 0.5f;
+		const float SedimentCapacity = 0.10f * UISettings->SedimentCapacity; //DissolvingRatio; //0.01;
 
 		TArray<uint16> HeightData;
 		LayerHeightDataCache.Initialize(this->LandscapeInfo, bCombinedLayerOperation);
@@ -360,7 +384,7 @@ public:
 				{
 					float PaintAmount = NoiseModeConversion((ELandscapeToolNoiseMode)UISettings->RainDistMode, NoiseParam.NoiseAmount, NoiseParam.Sample(X, Y));
 					if (PaintAmount > 0) // Raining only for positive region...
-						WaterDataScanline[X] += PaintAmount;
+						WaterDataScanline[X] += static_cast<uint16>(PaintAmount);
 				}
 			}
 		}
@@ -395,8 +419,8 @@ public:
 						float DissolvedAmount = DissolvingRatio * WaterData[Center] * BrushValue;
 						if (DissolvedAmount > 0 && HeightData[Center] >= DissolvedAmount)
 						{
-							HeightData[Center] -= DissolvedAmount;
-							SedimentData[Center] += DissolvedAmount;
+							HeightData[Center] -= static_cast<uint16>(DissolvedAmount);
+							SedimentData[Center] += static_cast<uint16>(DissolvedAmount);
 						}
 
 						uint32 TotalHeightDiff = 0;
@@ -435,27 +459,27 @@ public:
 							// This is not mathematically correct, but makes good result
 							if (TotalHeightDiff)
 							{
-								AverageAltitude *= (1.0f - 0.1 * UISettings->GetCurrentToolStrength() * Pressure);
+								AverageAltitude *= static_cast<float>(1.0f - 0.1 * UISettings->GetCurrentToolStrength() * Pressure);
 								//AverageAltitude -= 4000.0f * UISettings->ToolStrength;
 							}
 
-							uint32 WaterTransfer = FMath::Min<uint32>(WaterData[Center], Altitude - (uint32)AverageAltitude) * BrushValue;
+							uint32 WaterTransfer = static_cast<uint32>(FMath::Min<uint32>(WaterData[Center], Altitude - (uint32)AverageAltitude) * BrushValue);
 
 							for (int32 Idx = 0; Idx < NeighborNum; Idx++)
 							{
 								if (AltitudeDiff[Idx] > 0)
 								{
 									uint32 WaterDiff = (uint32)(WaterTransfer * (float)AltitudeDiff[Idx] / TotalAltitudeDiff);
-									WaterData[Neighbor[Idx]] += WaterDiff;
+									WaterData[Neighbor[Idx]] += static_cast<uint16>(WaterDiff);
 									TotalWaterDiff += WaterDiff;
 									uint32 SedimentDiff = (uint32)(SedimentData[Center] * (float)WaterDiff / WaterData[Center]);
-									SedimentData[Neighbor[Idx]] += SedimentDiff;
+									SedimentData[Neighbor[Idx]] += static_cast<uint16>(SedimentDiff);
 									TotalSedimentDiff += SedimentDiff;
 								}
 							}
 
-							WaterData[Center] -= TotalWaterDiff;
-							SedimentData[Center] -= TotalSedimentDiff;
+							WaterData[Center] -= static_cast<uint16>(TotalWaterDiff);
+							SedimentData[Center] -= static_cast<uint16>(TotalSedimentDiff);
 						}
 
 						// evaporation
@@ -467,8 +491,8 @@ public:
 							float SedimentDiff = SedimentData[Center] - SedimentCap;
 							if (SedimentDiff > 0)
 							{
-								SedimentData[Center] -= SedimentDiff;
-								HeightData[Center] = FMath::Clamp<uint16>(HeightData[Center] + SedimentDiff, 0, 65535);
+								SedimentData[Center] -= static_cast<uint16>(SedimentDiff);
+								HeightData[Center] = FMath::Clamp<uint16>(static_cast<uint16>(HeightData[Center] + SedimentDiff), 0, LandscapeDataAccess::MaxValue);
 							}
 						}
 					}
@@ -493,9 +517,11 @@ public:
 
 class FLandscapeToolHydraErosion : public FLandscapeToolErosionBase<FLandscapeToolStrokeHydraErosion>
 {
+	using Super = FLandscapeToolErosionBase<FLandscapeToolStrokeHydraErosion>;
+
 public:
 	FLandscapeToolHydraErosion(FEdModeLandscape* InEdMode)
-		: FLandscapeToolErosionBase(InEdMode)
+		: Super(InEdMode)
 	{
 	}
 

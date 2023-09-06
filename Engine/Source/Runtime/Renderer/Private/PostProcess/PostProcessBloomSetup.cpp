@@ -5,8 +5,10 @@
 #include "PostProcess/PostProcessFFTBloom.h"
 #include "PostProcess/PostProcessWeightedSampleSum.h"
 #include "PostProcess/PostProcessEyeAdaptation.h"
+#include "PostProcess/PostProcessLocalExposure.h"
 #include "PixelShaderUtils.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "SceneRendering.h"
 
 namespace
 {
@@ -32,6 +34,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FBloomSetupParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, LumBilateralGridSampler)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, BlurredLogLum)
 	SHADER_PARAMETER_SAMPLER(SamplerState, BlurredLogLumSampler)
+	SHADER_PARAMETER_STRUCT(FLocalExposureParameters, LocalExposure)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 	SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, EyeAdaptation)
 	SHADER_PARAMETER(float, BloomThreshold)
@@ -52,6 +55,7 @@ FBloomSetupParameters GetBloomSetupParameters(
 	Parameters.LumBilateralGridSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	Parameters.BlurredLogLum = Inputs.BlurredLogLuminanceTexture;
 	Parameters.BlurredLogLumSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	Parameters.LocalExposure = *Inputs.LocalExposureParameters;
 	Parameters.EyeAdaptationBuffer = GraphBuilder.CreateSRV(Inputs.EyeAdaptationBuffer);
 	Parameters.EyeAdaptation = *Inputs.EyeAdaptationParameters;
 	Parameters.BloomThreshold = Inputs.Threshold;
@@ -118,6 +122,7 @@ FScreenPassTexture AddBloomSetupPass(FRDGBuilder& GraphBuilder, const FViewInfo&
 	check(Inputs.Threshold > -1.0f || Inputs.EyeAdaptationParameters != nullptr);
 
 	const bool bIsComputePass = View.bUseComputePasses;
+	const bool bLocalExposureEnabled = Inputs.LocalExposureTexture != nullptr;
 
 	FRDGTextureDesc OutputDesc = Inputs.SceneColor.Texture->Desc;
 	OutputDesc.Reset();
@@ -133,7 +138,7 @@ FScreenPassTexture AddBloomSetupPass(FRDGBuilder& GraphBuilder, const FViewInfo&
 		PassParameters->RWOutputTexture = GraphBuilder.CreateUAV(Output.Texture);
 
 		FBloomSetupCS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FBloomSetupCS::FLocalExposureDim>(Inputs.LocalExposureTexture != nullptr);
+		PermutationVector.Set<FBloomSetupCS::FLocalExposureDim>(bLocalExposureEnabled);
 
 		auto ComputeShader = View.ShaderMap->GetShader<FBloomSetupCS>(PermutationVector);
 
@@ -154,7 +159,7 @@ FScreenPassTexture AddBloomSetupPass(FRDGBuilder& GraphBuilder, const FViewInfo&
 		PassParameters->RenderTargets[0] = Output.GetRenderTargetBinding();
 
 		FBloomSetupPS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FBloomSetupPS::FLocalExposureDim>(Inputs.LocalExposureTexture != nullptr);
+		PermutationVector.Set<FBloomSetupPS::FLocalExposureDim>(bLocalExposureEnabled);
 
 		auto PixelShader = View.ShaderMap->GetShader<FBloomSetupPS>(PermutationVector);
 

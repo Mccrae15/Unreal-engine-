@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SAnimSequenceCurveEditor.h"
+#include "AnimatedRange.h"
 #include "CurveEditor.h"
 #include "RichCurveEditorModel.h"
 #include "Animation/AnimSequenceBase.h"
@@ -22,13 +23,19 @@
 
 #define LOCTEXT_NAMESPACE "SAnimSequenceCurveEditor"
 
-FRichCurveEditorModelNamed::FRichCurveEditorModelNamed(const FSmartName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, UAnimSequenceBase* InAnimSequence, FCurveEditorTreeItemID InTreeId /*= FCurveEditorTreeItemID()*/) : FRichCurveEditorModel(InAnimSequence)
-, Name(InName)
+FRichCurveEditorModelNamed::FRichCurveEditorModelNamed(const FSmartName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, UAnimSequenceBase* InAnimSequence, FCurveEditorTreeItemID InTreeId /*= FCurveEditorTreeItemID()*/)
+	: FRichCurveEditorModelNamed(InName.DisplayName, InType, InCurveIndex, InAnimSequence, InTreeId)
+{
+}
+
+FRichCurveEditorModelNamed::FRichCurveEditorModelNamed(const FName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, UAnimSequenceBase* InAnimSequence, FCurveEditorTreeItemID InTreeId /*= FCurveEditorTreeItemID()*/)
+: FRichCurveEditorModel(InAnimSequence)
+, CurveName(InName)
 , AnimSequence(InAnimSequence)
 , CurveIndex(InCurveIndex)
 , Type(InType)
 , TreeId(InTreeId)
-, CurveId(FAnimationCurveIdentifier(Name, Type))
+, CurveId(FAnimationCurveIdentifier(InName, Type))
 , bCurveRemoved(false)
 {
 	CurveModifiedDelegate.AddRaw(this, &FRichCurveEditorModelNamed::CurveHasChanged);
@@ -43,6 +50,7 @@ FRichCurveEditorModelNamed::FRichCurveEditorModelNamed(const FSmartName& InName,
 	UpdateCachedCurve();
 }
 
+
 FRichCurveEditorModelNamed::~FRichCurveEditorModelNamed()
 {
 	AnimSequence->GetDataModel()->GetModifiedEvent().RemoveAll(this);
@@ -50,7 +58,7 @@ FRichCurveEditorModelNamed::~FRichCurveEditorModelNamed()
 
 bool FRichCurveEditorModelNamed::IsValid() const
 {
-	return AnimSequence->GetDataModel()->FindCurve(FAnimationCurveIdentifier(Name, Type)) != nullptr;
+	return AnimSequence->GetDataModel()->FindCurve(FAnimationCurveIdentifier(CurveName, Type)) != nullptr;
 }
 
 FRichCurve& FRichCurveEditorModelNamed::GetRichCurve()
@@ -142,7 +150,7 @@ void FRichCurveEditorModelNamed::OnModelHasChanged(const EAnimDataModelNotifyTyp
 		case EAnimDataModelNotifyType::CurveScaled:
 		{
 			const FCurvePayload& TypedPayload = Payload.GetPayload<FCurvePayload>();
-			if (TypedPayload.Identifier.InternalName == Name)
+			if (TypedPayload.Identifier.CurveName == CurveName)
 			{
 				if (NotifyCollector.IsNotWithinBracket())
 				{
@@ -165,7 +173,7 @@ void FRichCurveEditorModelNamed::OnModelHasChanged(const EAnimDataModelNotifyTyp
 		{
 			// Curve was removed
 			const FCurveRemovedPayload& TypedPayload = Payload.GetPayload<FCurveRemovedPayload>();
-			if (TypedPayload.Identifier.InternalName == Name)
+			if (TypedPayload.Identifier.CurveName == CurveName)
 			{
 				bCurveRemoved = true;
 			}
@@ -177,7 +185,7 @@ void FRichCurveEditorModelNamed::OnModelHasChanged(const EAnimDataModelNotifyTyp
 			const FCurveRenamedPayload& TypedPayload = Payload.GetPayload<FCurveRenamedPayload>();
 			if (TypedPayload.Identifier == CurveId)
 			{
-				Name = TypedPayload.NewIdentifier.InternalName;
+				CurveName = TypedPayload.NewIdentifier.CurveName;
 				CurveId = TypedPayload.NewIdentifier;
 
 				if (NotifyCollector.IsNotWithinBracket())
@@ -266,7 +274,7 @@ void FRichCurveEditorModelNamed::UpdateCachedCurve()
 class FAnimSequenceCurveEditorItem : public ICurveEditorTreeItem
 {
 public:
-	FAnimSequenceCurveEditorItem(const FSmartName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, UAnimSequenceBase* InAnimSequence, const FText& InCurveDisplayName, const FLinearColor& InCurveColor, FSimpleDelegate InOnCurveModified, FCurveEditorTreeItemID InTreeId)
+	FAnimSequenceCurveEditorItem(const FName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, UAnimSequenceBase* InAnimSequence, const FText& InCurveDisplayName, const FLinearColor& InCurveColor, FSimpleDelegate InOnCurveModified, FCurveEditorTreeItemID InTreeId)
 		: Name(InName)
 		, Type(InType)
 		, CurveIndex(InCurveIndex)
@@ -339,7 +347,7 @@ public:
 		return false;
 	}
 
-	FSmartName Name;
+	FName Name;
 	ERawCurveTrackTypes Type;
 	int32 CurveIndex;
 	TWeakObjectPtr<UAnimSequenceBase> AnimSequence;
@@ -447,14 +455,14 @@ void SAnimSequenceCurveEditor::Construct(const FArguments& InArgs, const TShared
 
 void SAnimSequenceCurveEditor::OnModelHasChanged(const EAnimDataModelNotifyType& NotifyType, IAnimationDataModel* Model, const FAnimDataModelNotifPayload& Payload)
 {
-	auto StopEditingCurve = [this, NotifyType, &Payload, Model]()
+	auto StopEditingCurve = [this, &Payload, Model]()
 	{
 		const FCurvePayload& TypedPayload = Payload.GetPayload<FCurvePayload>();
 		const FAnimationCurveIdentifier& CurveId = TypedPayload.Identifier;
 		const int32 ChannelIndices = CurveId.CurveType == ERawCurveTrackTypes::RCT_Transform ? 9 : 1;
 		for (int32 ChannelIndex = 0; ChannelIndex < ChannelIndices; ++ChannelIndex)
 		{
-			RemoveCurve(CurveId.InternalName, CurveId.CurveType, ChannelIndex);
+			RemoveCurve(CurveId.CurveName, CurveId.CurveType, ChannelIndex);
 		}
 	};
 	
@@ -538,13 +546,13 @@ void SAnimSequenceCurveEditor::ResetCurves()
 	CurveEditor->RemoveAllCurves();
 }
 
-void SAnimSequenceCurveEditor::AddCurve(const FText& InCurveDisplayName, const FLinearColor& InCurveColor, const FSmartName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, FSimpleDelegate InOnCurveModified)
+void SAnimSequenceCurveEditor::AddCurve(const FText& InCurveDisplayName, const FLinearColor& InCurveColor, const FName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex, FSimpleDelegate InOnCurveModified)
 {
 	// Ensure that curve is not already being edited
-	for (const TPair<FCurveModelID, TUniquePtr<FCurveModel>>& CurvePair : CurveEditor->GetCurves())
+	for (const TPair<FCurveEditorTreeItemID, FCurveEditorTreeItem>& ItemPair : CurveEditor->GetTree()->GetAllItems())
 	{
-		const FRichCurveEditorModelNamed* Model = static_cast<FRichCurveEditorModelNamed*>(CurvePair.Value.Get());
-		if(Model->Name == InName && Model->Type == InType && Model->CurveIndex == InCurveIndex)
+		TSharedPtr<FAnimSequenceCurveEditorItem> Item = StaticCastSharedPtr<FAnimSequenceCurveEditorItem>(ItemPair.Value.GetItem());
+		if (Item->Name == InName && Item->Type == InType && Item->CurveIndex == InCurveIndex)
 		{
 			return;
 		}
@@ -567,7 +575,7 @@ void SAnimSequenceCurveEditor::AddCurve(const FText& InCurveDisplayName, const F
 	CurveEditor->SetTreeSelection(MoveTemp(NewSelection));
 }
 
-void SAnimSequenceCurveEditor::RemoveCurve(const FSmartName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex)
+void SAnimSequenceCurveEditor::RemoveCurve(const FName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex)
 {
 	for(const FCurveEditorTreeItemID& TreeItemID : CurveEditor->GetRootTreeItems())
 	{
@@ -583,7 +591,7 @@ void SAnimSequenceCurveEditor::RemoveCurve(const FSmartName& InName, ERawCurveTr
 	for(const auto& CurvePair : CurveEditor->GetCurves())
 	{
 		FRichCurveEditorModelNamed* Model = static_cast<FRichCurveEditorModelNamed*>(CurvePair.Value.Get());
-		if(Model->Name == InName && Model->Type == InType && Model->CurveIndex == InCurveIndex)
+		if(Model->CurveName == InName && Model->Type == InType && Model->CurveIndex == InCurveIndex)
 		{
 			// Cache ID to prevent use after release
 			CurveEditor->RemoveCurve(CurvePair.Key);

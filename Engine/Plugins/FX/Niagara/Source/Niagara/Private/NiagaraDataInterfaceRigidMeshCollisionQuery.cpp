@@ -4,32 +4,31 @@
 #include "Algo/Accumulate.h"
 #include "Algo/ForEach.h"
 #include "Algo/RemoveIf.h"
-#include "Animation/SkeletalMeshActor.h"
-#include "AnimationRuntime.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "DistanceFieldLightingShared.h"
+#include "Containers/StridedView.h"
+#include "FXRenderingUtils.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
+#include "Engine/SkeletalMesh.h"
 #include "EngineUtils.h"
-#include "SkeletalRenderPublic.h"
 
-#include "NiagaraComponent.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "NiagaraDataInterfaceUtilities.h"
-#include "NiagaraDistanceFieldHelper.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraFunctionLibrary.h"
-#include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraRenderer.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSimStageData.h"
 #include "NiagaraSystemImpl.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraSystemSimulation.h"
 #include "PhysicsEngine/PhysicsAsset.h"
-#include "ScenePrivate.h"
-#include "ShaderParameterUtils.h"
+#include "PrimitiveSceneInfo.h"
+#include "SceneInterface.h"
+#include "SceneView.h"
+#include "RenderGraphBuilder.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRigidMeshCollisionQuery)
 
@@ -135,26 +134,26 @@ bool IsMeshDistanceFieldEnabled()
 //------------------------------------------------------------------------------------------------------------
 
 template<typename BufferType, EPixelFormat PixelFormat>
-void CreateInternalBuffer(FReadBuffer& OutputBuffer, uint32 ElementCount)
+void CreateInternalBuffer(FRHICommandListBase& RHICmdList, FReadBuffer& OutputBuffer, uint32 ElementCount)
 {
 	if (ElementCount > 0)
 	{
-		OutputBuffer.Initialize(TEXT("FNDIRigidMeshCollisionBuffer"), sizeof(BufferType), ElementCount, PixelFormat, BUF_Static);
+		OutputBuffer.Initialize(RHICmdList, TEXT("FNDIRigidMeshCollisionBuffer"), sizeof(BufferType), ElementCount, PixelFormat, BUF_Static);
 	}
 }
 
 template<typename BufferType, EPixelFormat PixelFormat>
-void UpdateInternalBuffer(const TArray<BufferType>& InputData, FReadBuffer& OutputBuffer)
+void UpdateInternalBuffer(FRHICommandListBase& RHICmdList, const TArray<BufferType>& InputData, FReadBuffer& OutputBuffer)
 {
 	uint32 ElementCount = InputData.Num();
 	if (ElementCount > 0 && OutputBuffer.Buffer.IsValid())
 	{
 		const uint32 BufferBytes = sizeof(BufferType) * ElementCount;
 
-		void* OutputData = RHILockBuffer(OutputBuffer.Buffer, 0, BufferBytes, RLM_WriteOnly);
+		void* OutputData = RHICmdList.LockBuffer(OutputBuffer.Buffer, 0, BufferBytes, RLM_WriteOnly);
 
 		FMemory::Memcpy(OutputData, InputData.GetData(), BufferBytes);
-		RHIUnlockBuffer(OutputBuffer.Buffer);
+		RHICmdList.UnlockBuffer(OutputBuffer.Buffer);
 	}
 }
 
@@ -661,17 +660,17 @@ bool WeakActorPtrLess(const TWeakObjectPtr<AActor>& Lhs, const TWeakObjectPtr<AA
 
 //------------------------------------------------------------------------------------------------------------
 
-void FNDIRigidMeshCollisionBuffer::InitRHI()
+void FNDIRigidMeshCollisionBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	using namespace NDIRigidMeshCollisionLocal;
 
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(WorldTransformBuffer, 3 * MaxNumTransforms);
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(InverseTransformBuffer, 3 * MaxNumTransforms);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, WorldTransformBuffer, 3 * MaxNumTransforms);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, InverseTransformBuffer, 3 * MaxNumTransforms);
 
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ElementExtentBuffer, MaxNumPrimitives);
-	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(MeshScaleBuffer, MaxNumPrimitives);
-	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(PhysicsTypeBuffer, MaxNumPrimitives);
-	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(DFIndexBuffer, MaxNumPrimitives);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, ElementExtentBuffer, MaxNumPrimitives);
+	CreateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, MeshScaleBuffer, MaxNumPrimitives);
+	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(RHICmdList, PhysicsTypeBuffer, MaxNumPrimitives);
+	CreateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(RHICmdList, DFIndexBuffer, MaxNumPrimitives);
 }
 
 void FNDIRigidMeshCollisionBuffer::ReleaseRHI()
@@ -922,35 +921,33 @@ struct FNDIRigidMeshCollisionProxy : public FNiagaraDataInterfaceProxy
 		{
 			if (Context.GetSimStageData().bFirstStage)
 			{
+				FRHICommandListBase& RHICmdList = Context.GetGraphBuilder().RHICmdList;
+
 				//-OPT: We may be able to avoid updating the buffers all the time
-				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->WorldTransform, ProxyData->AssetBuffer->WorldTransformBuffer);
-				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->InverseTransform, ProxyData->AssetBuffer->InverseTransformBuffer);
-				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->ElementExtent, ProxyData->AssetBuffer->ElementExtentBuffer);
-				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(ProxyData->MeshScale, ProxyData->AssetBuffer->MeshScaleBuffer);
-				UpdateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(ProxyData->PhysicsType, ProxyData->AssetBuffer->PhysicsTypeBuffer);
+				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, ProxyData->WorldTransform, ProxyData->AssetBuffer->WorldTransformBuffer);
+				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, ProxyData->InverseTransform, ProxyData->AssetBuffer->InverseTransformBuffer);
+				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, ProxyData->ElementExtent, ProxyData->AssetBuffer->ElementExtentBuffer);
+				UpdateInternalBuffer<FVector4f, EPixelFormat::PF_A32B32G32R32F>(RHICmdList, ProxyData->MeshScale, ProxyData->AssetBuffer->MeshScaleBuffer);
+				UpdateInternalBuffer<uint32, EPixelFormat::PF_R32_UINT>(RHICmdList, ProxyData->PhysicsType, ProxyData->AssetBuffer->PhysicsTypeBuffer);
 
 				// the distance field indexing needs to be generated using the scene
 				if (!ProxyData->ComponentIdIndex.IsEmpty() && ProxyData->AssetBuffer->DFIndexBuffer.Buffer.IsValid())
 				{
 					const int32 ElementCount = ProxyData->ComponentIdIndex.Num();
 					const uint32 BufferBytes = sizeof(uint32) * ElementCount;
-					void* BufferData = RHILockBuffer(ProxyData->AssetBuffer->DFIndexBuffer.Buffer, 0, BufferBytes, RLM_WriteOnly);
+					void* BufferData = RHICmdList.LockBuffer(ProxyData->AssetBuffer->DFIndexBuffer.Buffer, 0, BufferBytes, RLM_WriteOnly);
 
-					const FScene* Scene = Context.GetComputeDispatchInterface().GetScene();
+					const FSceneInterface* Scene = Context.GetComputeDispatchInterface().GetSceneInterface();
 					if (Scene && !ProxyData->UniqueComponentIds.IsEmpty())
 					{
 						TArray<uint32> UniqueDistanceFieldIndices;
 						UniqueDistanceFieldIndices.Reserve(ProxyData->UniqueComponentIds.Num());
 
-						for (const FPrimitiveComponentId& ComponentId : ProxyData->UniqueComponentIds)
+						for (const FPrimitiveComponentId ComponentId : ProxyData->UniqueComponentIds)
 						{
-							uint32& DistanceFieldIndex = UniqueDistanceFieldIndices.Add_GetRef(INDEX_NONE);
-							const int32 PrimitiveSceneIndex = Scene->PrimitiveComponentIds.Find(ComponentId);
-							if (PrimitiveSceneIndex != INDEX_NONE)
-							{
-								const TArray<int32, TInlineAllocator<1>>& DFIndices = Scene->Primitives[PrimitiveSceneIndex]->DistanceFieldInstanceIndices;
-								DistanceFieldIndex = DFIndices.IsEmpty() ? INDEX_NONE : DFIndices[0];
-							}
+							const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene->GetPrimitiveSceneInfo(ComponentId);
+							const uint32 DistanceFieldIndex = PrimitiveSceneInfo && PrimitiveSceneInfo->DistanceFieldInstanceIndices.Num() > 0 ? PrimitiveSceneInfo->DistanceFieldInstanceIndices[0] : INDEX_NONE;
+							UniqueDistanceFieldIndices.Emplace(DistanceFieldIndex);
 						}
 
 						TArrayView<uint32> BufferView(reinterpret_cast<uint32*>(BufferData), ElementCount);
@@ -964,7 +961,7 @@ struct FNDIRigidMeshCollisionProxy : public FNiagaraDataInterfaceProxy
 					{
 						FMemory::Memset(BufferData, 0xFF, BufferBytes);
 					}
-					RHIUnlockBuffer(ProxyData->AssetBuffer->DFIndexBuffer.Buffer);
+					RHICmdList.UnlockBuffer(ProxyData->AssetBuffer->DFIndexBuffer.Buffer);
 				}
 			}
 		}
@@ -984,9 +981,9 @@ UNiagaraDataInterfaceRigidMeshCollisionQuery::UNiagaraDataInterfaceRigidMeshColl
 
 #if WITH_NIAGARA_DEBUGGER
 
-void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const
+void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(FNDIDrawDebugHudContext& DebugHudContext) const
 {
-	FNDIRigidMeshCollisionData* InstanceData_GT = SystemInstance->FindTypedDataInterfaceInstanceData<FNDIRigidMeshCollisionData>(this);
+	const FNDIRigidMeshCollisionData* InstanceData_GT = DebugHudContext.GetSystemInstance()->FindTypedDataInterfaceInstanceData<FNDIRigidMeshCollisionData>(this);
 	if (InstanceData_GT == nullptr || !InstanceData_GT->AssetArrays.IsValid())
 	{
 		return;
@@ -998,7 +995,7 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(UCanvas* Canvas,
 	const uint32 SphereCount = ElementOffsets.CapsuleOffset - ElementOffsets.SphereOffset;
 	const uint32 CapsuleCount = ElementOffsets.NumElements - ElementOffsets.CapsuleOffset;
 
-	VariableDataString = FString::Printf(TEXT("Boxes(%d) Spheres(%d) Capsules(%d)"), BoxCount, SphereCount, CapsuleCount);
+	DebugHudContext.GetOutputString().Appendf(TEXT("Boxes(%d) Spheres(%d) Capsules(%d)"), BoxCount, SphereCount, CapsuleCount);
 
 	auto GetCurrentTransform = [&](int32 ElementIndex)
 	{
@@ -1019,8 +1016,10 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(UCanvas* Canvas,
 		return ElementMatrix.GetTransposed();
 	};
 
-	if (bVerbose)
+	if (DebugHudContext.IsVerbose())
 	{
+		UCanvas* Canvas = DebugHudContext.GetCanvas();
+
 		// the DrawDebugCanvas* functions don't reasoanbly handle the near clip plane (both in terms of clipping and in terms of
 		// objects being behind the camera); so we introduce this culling behavior to work around it
 		auto ShouldClip = [&](UCanvas* Canvas, const FMatrix& Transform, const FBoxSphereBounds& Bounds)
@@ -1069,7 +1068,7 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(UCanvas* Canvas,
 			const UFont* Font = GEngine->GetMediumFont();
 			Canvas->SetDrawColor(FColor::White);
 
-			auto DrawDebugActor = [&](TWeakObjectPtr<AActor>& InWeakActor, const TCHAR* ActorSourceString)
+			auto DrawDebugActor = [&](const TWeakObjectPtr<AActor>& InWeakActor, const TCHAR* ActorSourceString)
 			{
 				if (AActor* Actor = InWeakActor.Get())
 				{
@@ -1097,12 +1096,12 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::DrawDebugHud(UCanvas* Canvas,
 				}
 			};
 
-			for (TWeakObjectPtr<AActor>& ExplicitActor : InstanceData_GT->ExplicitActors)
+			for (const TWeakObjectPtr<AActor>& ExplicitActor : InstanceData_GT->ExplicitActors)
 			{
 				DrawDebugActor(ExplicitActor, TEXT("Explicit"));
 			}
 
-			for (TWeakObjectPtr<AActor>& FoundActor : InstanceData_GT->FoundActors)
+			for (const TWeakObjectPtr<AActor>& FoundActor : InstanceData_GT->FoundActors)
 			{
 				DrawDebugActor(FoundActor, TEXT("Found"));
 			}
@@ -1647,8 +1646,8 @@ bool UNiagaraDataInterfaceRigidMeshCollisionQuery::AppendCompileHash(FNiagaraCom
 void UNiagaraDataInterfaceRigidMeshCollisionQuery::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
 {
 	ShaderParametersBuilder.AddNestedStruct<NDIRigidMeshCollisionLocal::FShaderParameters>();
-	ShaderParametersBuilder.AddIncludedStruct<FDistanceFieldObjectBufferParameters>();
-	ShaderParametersBuilder.AddIncludedStruct<FDistanceFieldAtlasParameters>();
+	ShaderParametersBuilder.AddIncludedStruct(UE::FXRenderingUtils::DistanceFields::GetObjectBufferParametersMetadata());
+	ShaderParametersBuilder.AddIncludedStruct(UE::FXRenderingUtils::DistanceFields::GetAtlasParametersMetadata());
 }
 
 void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
@@ -1658,11 +1657,18 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNi
 	const FNDIRigidMeshCollisionProxy::FRenderThreadData* ProxyData = InterfaceProxy.SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID());
 
 	NDIRigidMeshCollisionLocal::FShaderParameters* ShaderParameters = Context.GetParameterNestedStruct<NDIRigidMeshCollisionLocal::FShaderParameters>();
-	FDistanceFieldObjectBufferParameters* ShaderDistanceFieldObjectParameters = Context.GetParameterIncludedStruct<FDistanceFieldObjectBufferParameters>();
-	FDistanceFieldAtlasParameters* ShaderDistanceFieldAtlasParameters = Context.GetParameterIncludedStruct<FDistanceFieldAtlasParameters>();
 
-	const bool bDistanceFieldDataBound = Context.IsStructBound<FDistanceFieldObjectBufferParameters>(ShaderDistanceFieldObjectParameters) || Context.IsStructBound<FDistanceFieldAtlasParameters>(ShaderDistanceFieldAtlasParameters);
-	const FDistanceFieldSceneData* DistanceFieldSceneData = nullptr;
+	const FShaderParametersMetadata* ObjectBufferParametersMetadata = UE::FXRenderingUtils::DistanceFields::GetObjectBufferParametersMetadata();
+	const FShaderParametersMetadata* AtlasParametersMetadata = UE::FXRenderingUtils::DistanceFields::GetAtlasParametersMetadata();
+
+	uint8* ShaderDistanceFieldObjectParameters = Context.GetParameterIncludedStruct(ObjectBufferParametersMetadata);
+	uint8* ShaderDistanceFieldAtlasParameters = Context.GetParameterIncludedStruct(AtlasParametersMetadata);
+
+	const bool bDistanceFieldDataBound =
+		Context.IsStructBound(ShaderDistanceFieldObjectParameters, ObjectBufferParametersMetadata) ||
+		Context.IsStructBound(ShaderDistanceFieldAtlasParameters, AtlasParametersMetadata);
+
+	bool bBindDistanceFieldData = false;
 
 	if (ProxyData != nullptr && ProxyData->AssetBuffer != nullptr && ProxyData->AssetBuffer->IsInitialized())
 	{
@@ -1684,14 +1690,7 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNi
 		ShaderParameters->ElementOffsets.Z = ProxyData->ElementOffsets.CapsuleOffset;
 		ShaderParameters->ElementOffsets.W = ProxyData->ElementOffsets.NumElements;
 
-		if (bDistanceFieldDataBound)
-		{
-			TConstArrayView<FViewInfo> SimulationViewInfos = Context.GetComputeDispatchInterface().GetSimulationViewInfos();
-			if (SimulationViewInfos.Num() > 0 && SimulationViewInfos[0].Family && SimulationViewInfos[0].Family->Scene && SimulationViewInfos[0].Family->Scene->GetRenderScene())
-			{
-				DistanceFieldSceneData = &SimulationViewInfos[0].Family->Scene->GetRenderScene()->DistanceFieldSceneData;
-			}
-		}
+		bBindDistanceFieldData = true;
 	}
 	else
 	{
@@ -1710,7 +1709,11 @@ void UNiagaraDataInterfaceRigidMeshCollisionQuery::SetShaderParameters(const FNi
 
 	if (bDistanceFieldDataBound)
 	{
-		FNiagaraDistanceFieldHelper::SetMeshDistanceFieldParameters(Context.GetGraphBuilder(), DistanceFieldSceneData, *ShaderDistanceFieldObjectParameters, *ShaderDistanceFieldAtlasParameters, FNiagaraRenderer::GetDummyFloat4Buffer());
+		TConstStridedView<FSceneView> SimulationSceneViews = Context.GetComputeDispatchInterface().GetSimulationSceneViews();
+		const FSceneView* PrimaryView = bBindDistanceFieldData && SimulationSceneViews.Num() > 0 ? &SimulationSceneViews[0] : nullptr;
+
+		UE::FXRenderingUtils::DistanceFields::SetupObjectBufferParameters(Context.GetGraphBuilder(), ShaderDistanceFieldObjectParameters, PrimaryView);
+		UE::FXRenderingUtils::DistanceFields::SetupAtlasParameters(Context.GetGraphBuilder(), ShaderDistanceFieldAtlasParameters, PrimaryView);
 	}
 
 	ShaderParameters->SystemLWCTile = Context.GetSystemLWCTile();

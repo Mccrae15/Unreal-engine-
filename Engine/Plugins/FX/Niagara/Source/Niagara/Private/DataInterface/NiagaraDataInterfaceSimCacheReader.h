@@ -6,12 +6,14 @@
 #include "NiagaraDataInterface.h"
 #include "NiagaraDataInterfaceSimCacheReader.generated.h"
 
+struct FNiagaraDataInterfaceGeneratedFunction;
+
 class UNiagaraSimCache;
 
 /**
 Data interface to read properties from a Niagara Simulation Cache
 */
-UCLASS(EditInlineNew, Category = "DataInterface", meta=(DisplayName="SimCache Reader", Experimental))
+UCLASS(EditInlineNew, Category = "DataInterface", CollapseCategories, meta=(DisplayName="SimCache Reader", Experimental))
 class UNiagaraDataInterfaceSimCacheReader : public UNiagaraDataInterface
 {
 	GENERATED_UCLASS_BODY()

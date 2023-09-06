@@ -12,6 +12,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "PlatformInfo.h"
+#include "OutputLogModule.h"
 #include "OutputLogStyle.h"
 #include "SSimpleComboButton.h"
 
@@ -91,6 +92,7 @@ void SDeviceOutputLog::Construct( const FArguments& InArgs )
 				.VAlign(VAlign_Center)
 				[
 					SNew(SConsoleInputBox)
+					.Visibility(MakeAttributeLambda([]() { return FOutputLogModule::Get().ShouldHideConsole() ? EVisibility::Collapsed : EVisibility::Visible; }))
 					.ConsoleCommandCustomExec(this, &SDeviceOutputLog::ExecuteConsoleCommand)
 					.OnConsoleCommandExecuted(this, &SDeviceOutputLog::OnConsoleCommandExecuted)
 					// Always place suggestions above the input line for the output log widget
@@ -168,7 +170,7 @@ void SDeviceOutputLog::Tick(const FGeometry& AllottedGeometry, const double InCu
 	{
 		for (const FBufferedLine& Line : BufferedLines)
 		{
-			MessagesTextMarshaller->AppendPendingMessage(Line.Data, Line.Verbosity, Line.Category);
+			MessagesTextMarshaller->AppendPendingMessage(Line.Data.Get(), Line.Verbosity, Line.Category);
 		}
 		BufferedLines.Empty(32);
 	}

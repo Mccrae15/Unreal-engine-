@@ -567,9 +567,9 @@ bool FOpenGLDynamicRHI::RHIGetRenderQueryResult(FRHIRenderQuery* QueryRHI, uint6
 				if (IsRunningRHIInDedicatedThread())
 				{
 					// send a command that will wait, so if the RHIT runs out of work, it just blocks and waits for the GPU
-					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([=]() {GetRenderQueryResult_OnThisThread(ResourceCast(QueryRHI), true); });
+					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([this, QueryRHI]() {GetRenderQueryResult_OnThisThread(ResourceCast(QueryRHI), true); });
 					FGraphEventRef Done = RHICmdList.RHIThreadFence(false);
-					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([=]() {GBatcher.Flush(*this, QueryRHI); });
+					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([this, QueryRHI]() {GBatcher.Flush(*this, QueryRHI); });
 					RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 					while (!Done->IsComplete())
 					{
@@ -587,9 +587,9 @@ bool FOpenGLDynamicRHI::RHIGetRenderQueryResult(FRHIRenderQuery* QueryRHI, uint6
 				}
 				else
 				{
-					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([=]() {GetRenderQueryResult_OnThisThread(ResourceCast(QueryRHI), true); });
+					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([this, QueryRHI]() {GetRenderQueryResult_OnThisThread(ResourceCast(QueryRHI), true); });
 					FGraphEventRef Done = RHICmdList.RHIThreadFence(false);
-					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([=]() {GBatcher.Flush(*this, QueryRHI); });
+					ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([this, QueryRHI]() {GBatcher.Flush(*this, QueryRHI); });
 					RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 					FRHICommandListExecutor::WaitOnRHIThreadFence(Done);
 				}
@@ -597,7 +597,7 @@ bool FOpenGLDynamicRHI::RHIGetRenderQueryResult(FRHIRenderQuery* QueryRHI, uint6
 			}
 			else
 			{
-				ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([=]() {GetRenderQueryResult_OnThisThread(ResourceCast(QueryRHI), false); GBatcher.Flush(*this, QueryRHI);  });
+				ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([this, QueryRHI]() {GetRenderQueryResult_OnThisThread(ResourceCast(QueryRHI), false); GBatcher.Flush(*this, QueryRHI);  });
 			}
 		}	
 	}
@@ -637,43 +637,22 @@ FOpenGLRenderQuery::FOpenGLRenderQuery(ERenderQueryType InQueryType)
 	, bInvalidResource(true)
 	, QueryType(InQueryType)
 {
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-
-	const bool bCanRunOnThisThread = RHICmdList.Bypass() || (!IsRunningRHIInSeparateThread() && IsInRenderingThread()) || IsInRHIThread();
-
-	if (bCanRunOnThisThread)
-	{
-		AcquireResource();
-	}
-	else
-	{
-		CreationFence.Reset();
-		ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([=]() {AcquireResource(); CreationFence.WriteAssertFence(); });
-		CreationFence.SetRHIThreadFence();
-	}
+	check(IsInRenderingThread());
+	FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda(
+		[this](FRHICommandListImmediate&) { AcquireResource(); }
+	);
 }
 
 
 FOpenGLRenderQuery::~FOpenGLRenderQuery()
 {
-
+	VERIFY_GL_SCOPE();
 	OnQueryDeletion( this );
 
-	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-
-	const bool bCanRunOnThisThread = RHICmdList.Bypass() || (!IsRunningRHIInSeparateThread() && IsInRenderingThread()) || IsInRHIThread();
 	if (Resource && !bInvalidResource)
 	{
 		bInvalidResource = true;
-		if (bCanRunOnThisThread)
-		{
-			ReleaseResource(Resource, ResourceContext);
-		}
-		else
-		{
-			CreationFence.WaitFenceRenderThreadOnly();
-			ALLOC_COMMAND_CL(RHICmdList, FRHICommandGLCommand)([Resource = Resource, ResourceContext = ResourceContext]() {VERIFY_GL_SCOPE(); ReleaseResource(Resource, ResourceContext); });
-		}
+		ReleaseResource(Resource, ResourceContext);
 	}
 }
 
@@ -805,8 +784,6 @@ static FOpenGLRenderQuery* GetTimeQuery()
 
 void FOpenGLBufferedGPUTiming::InitResources()
 {
-	VERIFY_GL_SCOPE();
-
 	StaticInitialize(OpenGLRHI, PlatformStaticInitialize);
 
 	CurrentTimestamp = 0;
@@ -1121,10 +1098,11 @@ bool FOpenGLDisjointTimeStampQuery::GetResult( uint64* OutResult/*=NULL*/ )
 
 void FOpenGLDisjointTimeStampQuery::InitResources()
 {
-	VERIFY_GL_SCOPE();
-	if ( IsSupported() )
+	if (IsSupported())
 	{
-		PlatformGetNewRenderQuery(&DisjointQuery, &Context);
+		FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([this](FRHICommandListImmediate&) { 
+				PlatformGetNewRenderQuery(&DisjointQuery, &Context); 
+		});
 	}
 }
 

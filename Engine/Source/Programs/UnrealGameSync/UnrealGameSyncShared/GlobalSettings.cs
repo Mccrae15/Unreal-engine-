@@ -5,18 +5,14 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
 	public class FilterSettings
 	{
-		public List<Guid> IncludeCategories { get; set; } = new List<Guid>();
-		public List<Guid> ExcludeCategories { get; set; } = new List<Guid>();
-		public List<string> View { get; set; } = new List<string>();
+		public List<Guid> IncludeCategories { get; init; } = new List<Guid>();
+		public List<Guid> ExcludeCategories { get; init; } = new List<Guid>();
+		public List<string> View { get; init; } = new List<string>();
 		public bool? AllProjects { get; set; }
 		public bool? AllProjectsInSln { get; set; }
 
@@ -31,8 +27,11 @@ namespace UnrealGameSync
 
 		public void SetCategories(Dictionary<Guid, bool> categories)
 		{
-			IncludeCategories = categories.Where(x => x.Value).Select(x => x.Key).ToList();
-			ExcludeCategories = categories.Where(x => !x.Value).Select(x => x.Key).ToList();
+			IncludeCategories.Clear();
+			IncludeCategories.AddRange(categories.Where(x => x.Value).Select(x => x.Key));
+
+			ExcludeCategories.Clear();
+			ExcludeCategories.AddRange(categories.Where(x => !x.Value).Select(x => x.Key));
 		}
 
 		public Dictionary<Guid, bool> GetCategories()
@@ -52,7 +51,11 @@ namespace UnrealGameSync
 
 	public class GlobalSettings
 	{
+		public string? LatestVersion { get; set; }
+		public DateTime LastVersionCheck { get; set; }
+		public PerforceSyncOptions Perforce { get; set; } = new PerforceSyncOptions();
 		public FilterSettings Filter { get; set; } = new FilterSettings();
+		public bool AutoResolveConflicts { get; set; } = true;
 	}
 
 	public class GlobalSettingsFile
@@ -92,14 +95,14 @@ namespace UnrealGameSync
 		{
 		}
 
-		protected virtual void ImportWorkspaceState(DirectoryReference rootDir, string clientName, string branchPath, UserWorkspaceState workspaceState)
+		protected virtual void ImportWorkspaceState(DirectoryReference rootDir, string clientName, string branchPath, WorkspaceState workspaceState)
 		{
 		}
 
 		public GlobalSettingsFile(FileReference file, GlobalSettings global)
 		{
-			this.File = file;
-			this.Global = global;
+			File = file;
+			Global = global;
 		}
 
 		public static GlobalSettingsFile Create(FileReference file)
@@ -126,33 +129,26 @@ namespace UnrealGameSync
 			}
 		}
 
-		public UserWorkspaceState FindOrAddWorkspaceState(UserWorkspaceSettings settings, ILogger logger)
+		public WorkspaceStateWrapper FindOrAddWorkspaceState(UserWorkspaceSettings settings)
 		{
-			return FindOrAddWorkspaceState(settings.RootDir, settings.ClientName, settings.BranchPath, logger);
+			return FindOrAddWorkspaceState(settings.RootDir, settings.ClientName, settings.BranchPath);
 		}
 
-		public UserWorkspaceState FindOrAddWorkspaceState(DirectoryReference rootDir, string clientName, string branchPath, ILogger logger)
+		public WorkspaceStateWrapper FindOrAddWorkspaceState(DirectoryReference rootDir, string clientName, string branchPath)
 		{
-			UserWorkspaceState? state;
-			if (!UserWorkspaceState.TryLoad(rootDir, out state))
+			return new WorkspaceStateWrapper(rootDir, () =>
 			{
-				state = new UserWorkspaceState();
-				state.RootDir = rootDir;
+				WorkspaceState state = new WorkspaceState();
 				ImportWorkspaceState(rootDir, clientName, branchPath, state);
-				state.Save(logger);
-			}
-			return state;
+				return state;
+			});
 		}
 
-		public UserWorkspaceState FindOrAddWorkspaceState(ProjectInfo projectInfo, UserWorkspaceSettings settings, ILogger logger)
+		public WorkspaceStateWrapper FindOrAddWorkspaceState(ProjectInfo projectInfo, UserWorkspaceSettings settings)
 		{
-			UserWorkspaceState state = FindOrAddWorkspaceState(projectInfo.LocalRootPath, projectInfo.ClientName, projectInfo.BranchPath, logger);
-			if (!state.IsValid(projectInfo))
-			{
-				state = new UserWorkspaceState();
-			}
-			state.UpdateCachedProjectInfo(projectInfo, settings.LastModifiedTimeUtc);
-			return state;
+			WorkspaceStateWrapper wrapper = FindOrAddWorkspaceState(projectInfo.LocalRootPath, projectInfo.ClientName, projectInfo.BranchPath);
+			wrapper.Modify(x => x.UpdateCachedProjectInfo(projectInfo, settings.LastModifiedTimeUtc));
+			return wrapper;
 		}
 
 		public UserWorkspaceSettings FindOrAddWorkspaceSettings(DirectoryReference rootDir, string? serverAndPort, string? userName, string clientName, string branchPath, string projectPath, ILogger logger)
@@ -174,10 +170,10 @@ namespace UnrealGameSync
 			return settings;
 		}
 
-		public static string[] GetCombinedSyncFilter(Dictionary<Guid, WorkspaceSyncCategory> uniqueIdToFilter, FilterSettings globalFilter, FilterSettings workspaceFilter)
+		public static string[] GetCombinedSyncFilter(Dictionary<Guid, WorkspaceSyncCategory> uniqueIdToFilter, FilterSettings globalFilter, FilterSettings workspaceFilter, ConfigSection? perforceSection)
 		{
 			List<string> lines = new List<string>();
-			foreach (string viewLine in Enumerable.Concat(globalFilter.View, workspaceFilter.View).Select(x => x.Trim()).Where(x => x.Length > 0 && !x.StartsWith(";")))
+			foreach (string viewLine in Enumerable.Concat(globalFilter.View, workspaceFilter.View).Select(x => x.Trim()).Where(x => x.Length > 0 && !x.StartsWith(";", StringComparison.Ordinal)))
 			{
 				lines.Add(viewLine);
 			}
@@ -214,6 +210,14 @@ namespace UnrealGameSync
 				{
 					lines.AddRange(filter.Paths.Select(x => "-" + x.Trim()));
 				}
+			}
+
+			// If there are no filtering lines then we can assume that AdditionalPathsToSync is covered and we do not
+			// need to add them manually.
+			if (lines.Count > 0 && perforceSection != null)
+			{
+				IEnumerable<string> additionalPaths = perforceSection.GetValues("AdditionalPathsToSync", Array.Empty<string>());
+				lines = lines.Concat(additionalPaths).ToList();
 			}
 
 			return lines.ToArray();

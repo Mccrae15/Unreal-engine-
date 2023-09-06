@@ -1,107 +1,91 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SDMXPixelMappingSourceTextureViewport.h"
-#include "TextureResource.h"
-#include "Viewports/DMXPixelMappingSourceTextureViewportClient.h"
-#include "Toolkits/DMXPixelMappingToolkit.h"
-#include "Components/DMXPixelMappingRendererComponent.h"
-#include "Viewports/DMXPixelMappingSceneViewport.h"
 
+#include "Components/DMXPixelMappingRendererComponent.h"
 #include "Engine/Texture.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/SViewport.h"
+#include "Toolkits/DMXPixelMappingToolkit.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SViewport.h"
+#include "Viewports/DMXPixelMappingSceneViewport.h"
+#include "Viewports/DMXPixelMappingSourceTextureViewportClient.h"
+#include "Views/SDMXPixelMappingDesignerView.h"
+
 
 void SDMXPixelMappingSourceTextureViewport::Construct(const FArguments& InArgs, const TSharedPtr<FDMXPixelMappingToolkit>& InToolkit)
 {
-	bIsRenderingEnabled = true;
-	ToolkitWeakPtr = InToolkit;
+	WeakToolkit = InToolkit;
 
 	TSharedPtr<SHorizontalBox> HorizontalBox;
 
 	ChildSlot
-	[
-		SNew(SBox)
-		.WidthOverride(this, &SDMXPixelMappingSourceTextureViewport::GetPreviewAreaWidth)
-		.HeightOverride(this, &SDMXPixelMappingSourceTextureViewport::GetPreviewAreaHeight)
+		[
+			SNew(SBox)
+			.Padding(this, &SDMXPixelMappingSourceTextureViewport::GetPaddingGraphSpace)
+			.WidthOverride(this, &SDMXPixelMappingSourceTextureViewport::GetWidthGraphSpace)
+			.HeightOverride(this, &SDMXPixelMappingSourceTextureViewport::GetHeightGraphSpace)
 			[
 				SAssignNew(ViewportWidget, SViewport)
-					.EnableGammaCorrection(false)
-					.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
-					.ShowEffectWhenDisabled(false)
-					.EnableBlending(true)
+				.EnableGammaCorrection(false)
+				.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
+				.ShowEffectWhenDisabled(false)
+				.EnableBlending(true)
 			]
-	];
+		];
 
 	ViewportClient = MakeShared<FDMXPixelMappingSourceTextureViewportClient>(InToolkit, SharedThis(this));
-
 	Viewport = MakeShared<FDMXPixelMappingSceneViewport>(ViewportClient.Get(), ViewportWidget);
 
-	// The viewport widget needs an interface so it knows what should render
 	ViewportWidget->SetViewportInterface(Viewport.ToSharedRef());
 }
 
-void SDMXPixelMappingSourceTextureViewport::EnableRendering()
+FOptionalSize SDMXPixelMappingSourceTextureViewport::GetWidthGraphSpace() const
 {
-	bIsRenderingEnabled = true;
+	if (ViewportClient->IsDrawingVisibleRectOnly())
+	{
+		return ViewportClient->GetVisibleTextureBoxGraphSpace().Max.X;
+	}
+	else if (UTexture* InputTexture = GetInputTexture())
+	{
+		return InputTexture->GetSurfaceWidth();
+	}
+	return FOptionalSize();
 }
 
-void SDMXPixelMappingSourceTextureViewport::DisableRendering()
+FOptionalSize SDMXPixelMappingSourceTextureViewport::GetHeightGraphSpace() const
 {
-	bIsRenderingEnabled = false;
+	if (ViewportClient->IsDrawingVisibleRectOnly())
+	{
+		return ViewportClient->GetVisibleTextureBoxGraphSpace().Max.Y;
+	}
+	else if (UTexture* InputTexture = GetInputTexture())
+	{
+		return InputTexture->GetSurfaceHeight();
+	}
+	return FOptionalSize();
 }
 
 void SDMXPixelMappingSourceTextureViewport::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	if (bIsRenderingEnabled)
-	{
-		Viewport->Invalidate();
-	}
+	Viewport->Invalidate();
 }
 
-FOptionalSize SDMXPixelMappingSourceTextureViewport::GetPreviewAreaWidth() const
+FMargin SDMXPixelMappingSourceTextureViewport::GetPaddingGraphSpace() const
 {
-	float Size = 1.f;
-
-	if (const FTextureResource* Resource = GetInputTextureResource())
+	if (ViewportClient->IsDrawingVisibleRectOnly())
 	{
-		Size = Resource->GetSizeX();
+		return FMargin(ViewportClient->GetVisibleTextureBoxGraphSpace().Min.X, ViewportClient->GetVisibleTextureBoxGraphSpace().Min.Y, 0.0, 0.0);
 	}
-
-	return Size;
-}
-
-FOptionalSize SDMXPixelMappingSourceTextureViewport::GetPreviewAreaHeight() const
-{
-	float Size = 1.f;
-
-	if (const FTextureResource* Resource = GetInputTextureResource())
+	else
 	{
-		Size = Resource->GetSizeY();
+		return 0.0;
 	}
-
-	return Size;
 }
 
 UTexture* SDMXPixelMappingSourceTextureViewport::GetInputTexture() const
 {
-	if (TSharedPtr<FDMXPixelMappingToolkit> Toolkit = ToolkitWeakPtr.Pin())
-	{
-		if (UDMXPixelMappingRendererComponent* RendererComponent = Toolkit->GetActiveRendererComponent())
-		{
-			return RendererComponent->GetRendererInputTexture();
-		}
-	}
+	UDMXPixelMappingRendererComponent* RendererComponent = WeakToolkit.IsValid() ? WeakToolkit.Pin()->GetActiveRendererComponent() : nullptr;
 
-	return nullptr;
-}
-
-const FTextureResource* SDMXPixelMappingSourceTextureViewport::GetInputTextureResource() const
-{
-	if (const UTexture* Texture = GetInputTexture())
-	{
-		return Texture->GetResource();
-	}
-
-	return nullptr;
+	return RendererComponent ? RendererComponent->GetRenderedInputTexture() : nullptr;
 }

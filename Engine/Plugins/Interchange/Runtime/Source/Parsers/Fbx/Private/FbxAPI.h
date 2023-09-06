@@ -51,6 +51,9 @@ namespace UE
 				/* Extract the fbx data from the sdk into our node container */
 				bool FetchPayloadData(const FString& PayloadKey, const FString& PayloadFilepath);
 
+				/* Extract the fbx mesh data from the sdk into our node container */
+				bool FetchMeshPayloadData(const FString& PayloadKey, const FTransform& MeshGlobalTransform, const FString& PayloadFilepath);
+
 				/* Extract the fbx data from the sdk into our node container */
 				bool FetchAnimationBakeTransformPayload(const FString& PayloadKey, const double BakeFrequency, const double RangeStartTime, const double RangeEndTime, const FString& PayloadFilepath);
 				/**
@@ -73,6 +76,10 @@ namespace UE
 					Item->SourceAssetName = SourceFilename;
 				}
 
+				FbxScene* GetSDKScene() { return SDKScene; }
+
+				double GetFrameRate() { return FrameRate; }
+
 				/**
 				 * Critical section to avoid getting multiple payload in same time.
 				 * The FBX evaluator use a cache mechanism for evaluating global transform that is not thread safe.
@@ -91,6 +98,9 @@ namespace UE
 				FString SourceFilename;
 				TMap<FString, TSharedPtr<FPayloadContextBase>> PayloadContexts;
 				TSharedPtr<FFbxHelper> FbxHelper;
+
+				//For PivotReset and Animation Conversion:
+				double FrameRate = 30.0;
 			};
 		}//ns Private
 	}//ns Interchange

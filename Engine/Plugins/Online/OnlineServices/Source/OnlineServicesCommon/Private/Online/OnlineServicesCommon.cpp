@@ -6,9 +6,20 @@
 #include "Online/OnlineAsyncOpCache_Meta.inl"
 #include "Online/OnlineExecHandler.h"
 
-DEFINE_LOG_CATEGORY(LogOnlineServices);
-
 namespace UE::Online {
+
+struct FOnlineServicesCommonConfig
+{
+	int32 MaxConcurrentOperations = 16;
+};
+
+namespace Meta {
+
+BEGIN_ONLINE_STRUCT_META(FOnlineServicesCommonConfig)
+	ONLINE_STRUCT_FIELD(FOnlineServicesCommonConfig, MaxConcurrentOperations)
+END_ONLINE_STRUCT_META()
+
+}
 
 uint32 FOnlineServicesCommon::NextInstanceIndex = 0;
 
@@ -21,6 +32,8 @@ FOnlineServicesCommon::FOnlineServicesCommon(const FString& InConfigName, FName 
 	, SerialQueue(ParallelQueue)
 {
 }
+
+FOnlineServicesCommon::~FOnlineServicesCommon() = default;
 
 void FOnlineServicesCommon::Init()
 {
@@ -127,6 +140,11 @@ FName FOnlineServicesCommon::GetInstanceName() const
 	return InstanceName;
 }
 
+void FOnlineServicesCommon::AssignBaseInterfaceSharedPtr(const FOnlineTypeName& TypeName, void* OutBaseInterfaceSP)
+{
+	Components.AssignBaseSharedPtr(TypeName, OutBaseInterfaceSP);
+}
+
 void FOnlineServicesCommon::RegisterComponents()
 {
 }
@@ -139,11 +157,15 @@ void FOnlineServicesCommon::Initialize()
 void FOnlineServicesCommon::PostInitialize()
 {
 	Components.Visit(&IOnlineComponent::PostInitialize);
+
+	LoadCommonConfig();
 }
 
 void FOnlineServicesCommon::UpdateConfig()
 {
 	Components.Visit(&IOnlineComponent::UpdateConfig);
+
+	LoadCommonConfig();
 }
 
 bool FOnlineServicesCommon::Tick(float DeltaSeconds)
@@ -191,6 +213,7 @@ void FOnlineServicesCommon::RegisterExecHandler(const FString& Name, TUniquePtr<
 	ExecCommands.Emplace(Name, MoveTemp(Handler));
 }
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool FOnlineServicesCommon::Exec(UWorld* World, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 	if (FParse::Command(&Cmd, TEXT("OnlineServices")))
@@ -215,6 +238,15 @@ bool FOnlineServicesCommon::Exec(UWorld* World, const TCHAR* Cmd, FOutputDevice&
 		}
 	}
 	return false;
+}
+#endif // UE_ALLOW_EXEC_COMMANDS
+
+void FOnlineServicesCommon::LoadCommonConfig()
+{
+	FOnlineServicesCommonConfig Config;
+	LoadConfig(Config);
+
+	ParallelQueue.SetMaxConcurrentOperations(Config.MaxConcurrentOperations);
 }
 
 /* UE::Online */ }

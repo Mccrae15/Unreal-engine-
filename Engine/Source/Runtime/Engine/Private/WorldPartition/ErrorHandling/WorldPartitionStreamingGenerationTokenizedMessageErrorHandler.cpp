@@ -179,6 +179,10 @@ void ITokenizedMessageErrorHandler::OnLevelInstanceInvalidWorldAsset(const FWorl
 		MessageSeverity = EMessageSeverity::Error;
 		ReasonText = LOCTEXT("TokenMessage_WorldPartition_WorldAssetHasInvalidContainer", "has an invalid container");
 		break;
+	case ELevelInstanceInvalidReason::CirculalReference:
+		MessageSeverity = EMessageSeverity::Error;
+		ReasonText = LOCTEXT("TokenMessage_WorldPartition_WorldAssetHasCircularReference", "has a circular reference");
+		break;
 	};
 
 	const FString WorldAssetStr = WorldAsset.ToString();
@@ -190,6 +194,18 @@ void ITokenizedMessageErrorHandler::OnLevelInstanceInvalidWorldAsset(const FWorl
 		->AddToken(FTextToken::Create(ReasonText))
 		->AddToken(FAssetNameToken::Create(WorldAssetPath))
 		->AddToken(FMapErrorToken::Create(TEXT("WorldPartition_LevelInstanceInvalidWorldAsset_CheckForErrors")));
+
+	HandleTokenizedMessage(MoveTemp(Message));
+}
+
+void ITokenizedMessageErrorHandler::OnInvalidActorFilterReference(const FWorldPartitionActorDescView& ActorDescView, const FWorldPartitionActorDescView& ReferenceActorDescView)
+{
+	TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(EMessageSeverity::Error);
+	Message->AddToken(FTextToken::Create(LOCTEXT("TokenMessage_WorldPartition_Actor", "Actor")))
+		->AddToken(FActorToken::Create(ReferenceActorDescView.GetActorSoftPath().ToString(), ReferenceActorDescView.GetGuid(), FText::FromString(GetActorName(ReferenceActorDescView))))
+		->AddToken(FTextToken::Create(LOCTEXT("TokenMessage_WorldPartition_ActorFilterFailed", "will not be filtered out because it is referenced by actor")))
+		->AddToken(FActorToken::Create(ActorDescView.GetActorSoftPath().ToString(), ActorDescView.GetGuid(), FText::FromString(GetActorName(ActorDescView))))
+		->AddToken(FMapErrorToken::Create(TEXT("WorldPartition_MissingActorReference_CheckForErrors")));
 
 	HandleTokenizedMessage(MoveTemp(Message));
 }

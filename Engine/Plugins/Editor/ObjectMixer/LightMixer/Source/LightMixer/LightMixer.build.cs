@@ -9,8 +9,6 @@ public class LightMixer : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 		
-		PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "Public"));
-
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -34,7 +32,6 @@ public class LightMixer : ModuleRules
 				"EditorWidgets",
 				"InputCore",
 				"Kismet",
-				"ObjectMixerEditor",
 				"Projects",
 				"Slate",
 				"SlateCore",

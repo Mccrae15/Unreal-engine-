@@ -49,14 +49,14 @@ FAutoConsoleVariableRef CVarLumenSceneLightingStats(
 	TEXT("r.LumenScene.Lighting.Stats"),
 	GLumenLightingStats,
 	TEXT("GPU print out Lumen lighting update stats."),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
 static TAutoConsoleVariable<int32> CVarLumenSceneLightingAsyncCompute(
 	TEXT("r.LumenScene.Lighting.AsyncCompute"),
 	1,
 	TEXT("Whether to run LumenSceneLighting on the compute pipe if possible."),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
 namespace LumenSceneLighting
@@ -76,7 +76,7 @@ namespace LumenCardUpdateContext
 {
 	// Must match LumenSceneLighting.usf
 	constexpr uint32 CARD_UPDATE_CONTEXT_MAX = 2;
-	constexpr uint32 PRIORITY_HISTOGRAM_SIZE = 128;
+	constexpr uint32 PRIORITY_HISTOGRAM_SIZE = 16;
 	constexpr uint32 MAX_UPDATE_BUCKET_STRIDE = 2;
 	constexpr uint32 CARD_PAGE_TILE_ALLOCATOR_STRIDE = 2;
 };
@@ -201,7 +201,8 @@ DECLARE_GPU_STAT(LumenSceneLighting);
 
 void FDeferredShadingSceneRenderer::RenderLumenSceneLighting(
 	FRDGBuilder& GraphBuilder,
-	const FLumenSceneFrameTemporaries& FrameTemporaries)
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
+	const FLumenDirectLightingTaskData* DirectLightingTaskData)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 	TRACE_CPUPROFILER_EVENT_SCOPE(FDeferredShadingSceneRenderer::RenderLumenSceneLighting);
@@ -213,8 +214,7 @@ void FDeferredShadingSceneRenderer::RenderLumenSceneLighting(
 	for (const FViewInfo& View : Views)
 	{
 		const FPerViewPipelineState& ViewPipelineState = GetViewPipelineState(View);
-		bAnyLumenActive = bAnyLumenActive || 
-			(ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen || ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen);
+		bAnyLumenActive = bAnyLumenActive || ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
 	}
 
 	if (bAnyLumenActive)
@@ -252,6 +252,7 @@ void FDeferredShadingSceneRenderer::RenderLumenSceneLighting(
 			RenderDirectLightingForLumenScene(
 				GraphBuilder,
 				FrameTemporaries,
+				DirectLightingTaskData,
 				DirectLightingCardUpdateContext,
 				ComputePassFlags);
 
@@ -315,7 +316,7 @@ class FBuildPageUpdatePriorityHistogramCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, CardPageNum)
 		SHADER_PARAMETER(float, FirstClipmapWorldExtentRcp)
 		SHADER_PARAMETER(uint32, NumCameraOrigins)
-		SHADER_PARAMETER_ARRAY(FVector4f, WorldCameraOrigins, [MaxLumenViews])
+		SHADER_PARAMETER_ARRAY(FVector4f, WorldCameraOrigins, [Lumen::MaxViews])
 		SHADER_PARAMETER(float, DirectLightingUpdateFactor)
 		SHADER_PARAMETER(float, IndirectLightingUpdateFactor)
 	END_SHADER_PARAMETER_STRUCT()
@@ -396,7 +397,7 @@ class FBuildCardsUpdateListCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, CardPageNum)
 		SHADER_PARAMETER(float, FirstClipmapWorldExtentRcp)
 		SHADER_PARAMETER(uint32, NumCameraOrigins)
-		SHADER_PARAMETER_ARRAY(FVector4f, WorldCameraOrigins, [MaxLumenViews])
+		SHADER_PARAMETER_ARRAY(FVector4f, WorldCameraOrigins, [Lumen::MaxViews])
 		SHADER_PARAMETER(uint32, MaxDirectLightingTilesToUpdate)
 		SHADER_PARAMETER(uint32, MaxIndirectLightingTilesToUpdate)
 		SHADER_PARAMETER(float, DirectLightingUpdateFactor)

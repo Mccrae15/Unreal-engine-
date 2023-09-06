@@ -4,7 +4,6 @@
 
 #include "PlayerCore.h"
 
-
 namespace Electra
 {
 	/**
@@ -23,10 +22,22 @@ namespace Electra
 			Deallocate();
 		}
 
+		void SetExternalBuffer(uint8* InExternalBuffer, uint64 InExternalBufferSize)
+		{
+			FScopeLock Lock(&AccessLock);
+			Deallocate();
+			ExternalBuffer = InExternalBuffer;
+			DataSize = InExternalBufferSize;
+		}
+
 		// Allocates buffer of the specified capacity, destroying any previous buffer.
 		bool Reserve(int64 InNumBytes)
 		{
 			FScopeLock Lock(&AccessLock);
+			if (ExternalBuffer)
+			{
+				return false;
+			}
 			Deallocate();
 			if (Allocate(InNumBytes))
 			{
@@ -40,6 +51,10 @@ namespace Electra
 		bool EnlargeTo(int64 InNewNumBytes)
 		{
 			FScopeLock Lock(&AccessLock);
+			if (ExternalBuffer)
+			{
+				return InNewNumBytes <= Capacity();
+			}
 			// Do we need a bigger capacity?
 			if (InNewNumBytes > Capacity())
 			{
@@ -151,6 +166,7 @@ namespace Electra
 		{
 			FScopeLock Lock(&AccessLock);
 			check(!bEOD);
+
 			// Zero elements can always be pushed...
 			if (NumElements == 0)
 			{
@@ -158,7 +174,10 @@ namespace Electra
 			}
 			if (Avail() >= NumElements)
 			{
-				CopyData(Data + WritePos, InData, NumElements);
+				if (InData)
+				{
+					CopyData(GetBufferBase() + WritePos, InData, NumElements);
+				}
 				WritePos += NumElements;
 				if (WritePos >= WaitingForSize)
 				{
@@ -194,7 +213,7 @@ namespace Electra
 			// Copy out or skip over?
 			if (OutData)
 			{
-				CopyData(OutData, Data + ReadPos, MaxElementsWanted);
+				CopyData(OutData, GetBufferBase() + ReadPos, MaxElementsWanted);
 			}
 			ReadPos += MaxElementsWanted;
 			return MaxElementsWanted;
@@ -219,11 +238,11 @@ namespace Electra
 		// Must control Lock()/Unlock() externally!
 		const uint8* GetLinearReadData() const
 		{
-			return Data + ReadPos;
+			return GetBufferBase() ? GetBufferBase() + ReadPos : nullptr;
 		}
 		uint8* GetLinearReadData()
 		{
-			return Data + ReadPos;
+			return GetBufferBase() ? GetBufferBase() + ReadPos : nullptr;
 		}
 
 		uint8* GetLinearWriteData(int64 InNumBytesToAppend)
@@ -235,7 +254,7 @@ namespace Electra
 				bool bOk = IsEmpty() ? Allocate(InNumBytesToAppend) : InternalGrowTo(DataSize + InNumBytesToAppend - Av);
 				check(bOk); (void)bOk;
 			}
-			return Data + WritePos;
+			return GetBufferBase() ? GetBufferBase() + WritePos : nullptr;
 		}
 		void AppendedNewData(int64 InNumAppended)
 		{
@@ -244,6 +263,22 @@ namespace Electra
 			if (InNumAppended > 0)
 			{
 				WritePos += InNumAppended;
+				if (WritePos >= WaitingForSize)
+				{
+					SizeAvailableSignal.Signal();
+				}
+			}
+		}
+
+		void SetExternalData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> InExternalBuffer)
+		{
+			FScopeLock Lock(&AccessLock);
+			Deallocate();
+			Buffer = MoveTemp(InExternalBuffer);
+			if (Buffer.IsValid())
+			{
+				DataSize = Buffer->Num();
+				WritePos += DataSize;
 				if (WritePos >= WaitingForSize)
 				{
 					SizeAvailableSignal.Signal();
@@ -264,41 +299,46 @@ namespace Electra
 		}
 
 	protected:
+		uint8* GetBufferBase() const
+		{
+			return Buffer.IsValid() ? Buffer->GetData() : ExternalBuffer ? ExternalBuffer : nullptr;
+		}
+
 		bool Allocate(int64 InSize)
 		{
+			if (ExternalBuffer)
+			{
+				return false;
+			}
 			if (InSize)
 			{
 				DataSize = InSize;
-				Data = (uint8*)FMemory::Malloc(InSize);
+				Buffer.Reset();
+				Buffer = MakeShared<TArray<uint8>, ESPMode::ThreadSafe>();
+				Buffer->AddUninitialized(InSize);
 				WritePos = 0;
 				ReadPos = 0;
-				return Data != nullptr;
 			}
 			return true;
 		}
 
 		void Deallocate()
 		{
-			FMemory::Free(Data);
-			Data = nullptr;
+			Buffer.Reset();
 			DataSize = 0;
 			WritePos = 0;
 			ReadPos = 0;
+			ExternalBuffer = nullptr;
 		}
 
 		bool InternalGrowTo(int64 InNewNumBytes)
 		{
 			// Note: The access mutex must already be held here!
-			check(Data && InNewNumBytes);
+			check(Buffer.IsValid() && InNewNumBytes);
 			// Resize the buffer
-			uint8* NewData = (uint8*)FMemory::Realloc(Data, InNewNumBytes);
-			if (NewData)
-			{
-				DataSize = InNewNumBytes;
-				Data = NewData;
-				return true;
-			}
-			return false;
+			Buffer->Reserve(InNewNumBytes);
+			DataSize = InNewNumBytes;
+			return true;
 		}
 
 		void CopyData(uint8* CopyTo, const uint8* CopyFrom, int64 NumElements)
@@ -311,21 +351,23 @@ namespace Electra
 
 		mutable FCriticalSection AccessLock;
 		// Signal which gets set when at least `WaitingForSize` amount of data is present
-		FMediaEvent					SizeAvailableSignal;
-		// Buffer address
-		uint8*						Data = nullptr;
+		FMediaEvent SizeAvailableSignal;
+		// The buffer
+		TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> Buffer;
 		// Allocated buffer size
-		uint64						DataSize = 0;
+		uint64 DataSize = 0;
 		// Offset into buffer where to add new data
-		uint64						WritePos = 0;
+		uint64 WritePos = 0;
 		// Offset into buffer from where to read the next data.
-		uint64						ReadPos = 0;
+		uint64 ReadPos = 0;
 		// Amount of data necessary to be present for `SizeAvailableSignal` to get set.
-		uint64						WaitingForSize = 0;
+		uint64 WaitingForSize = 0;
+		// If set a buffer is provided externally to read into directly.
+		uint8* ExternalBuffer = nullptr;
 		// Flag indicating that no additional data will be added to the buffer.
-		volatile bool				bEOD = false;	
+		volatile bool bEOD = false;	
 		// Flag indicating that reading into the buffer has been aborted.
-		volatile bool				bWasAborted = false;
+		volatile bool bWasAborted = false;
 	};
 
 } // namespace Electra

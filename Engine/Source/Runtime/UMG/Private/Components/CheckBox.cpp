@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/CheckBox.h"
+#include "Binding/States/WidgetStateBitfield.h"
+#include "Binding/States/WidgetStateRegistration.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Slate/SlateBrushAsset.h"
+#include "Styling/DefaultStyleCache.h"
 #include "Styling/UMGCoreStyle.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CheckBox)
@@ -14,38 +17,16 @@
 /////////////////////////////////////////////////////
 // UCheckBox
 
-static FCheckBoxStyle* DefaultCheckboxStyle = nullptr;
-
-#if WITH_EDITOR
-static FCheckBoxStyle* EditorCheckboxStyle = nullptr;
-#endif 
-
 UCheckBox::UCheckBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	if (DefaultCheckboxStyle == nullptr)
-	{
-		DefaultCheckboxStyle = new FCheckBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("Checkbox"));
-
-		// Unlink UMG default colors.
-		DefaultCheckboxStyle->UnlinkColors();
-	}
-
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	WidgetStyle = *DefaultCheckboxStyle;
-
+	WidgetStyle = UE::Slate::Private::FDefaultStyleCache::GetRuntime().GetCheckboxStyle();
+	
 #if WITH_EDITOR 
-	if (EditorCheckboxStyle == nullptr)
-	{
-		EditorCheckboxStyle = new FCheckBoxStyle(FCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("Checkbox"));
-
-		// Unlink UMG Editor colors from the editor settings colors.
-		EditorCheckboxStyle->UnlinkColors();
-	}
-
 	if (IsEditorWidget())
 	{
-		WidgetStyle = *EditorCheckboxStyle;
+		WidgetStyle = UE::Slate::Private::FDefaultStyleCache::GetEditor().GetCheckboxStyle();
 
 		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
 		PostEditChange();
@@ -209,9 +190,12 @@ ECheckBoxState UCheckBox::GetCheckedState() const
 
 void UCheckBox::SetIsChecked(bool InIsChecked)
 {
+	bool bValueChanged = false;
+
 	ECheckBoxState NewState = InIsChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 	if (NewState != CheckedState)
 	{
+		bValueChanged = true;
 		CheckedState = NewState;
 		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::CheckedState);
 	}
@@ -220,12 +204,20 @@ void UCheckBox::SetIsChecked(bool InIsChecked)
 	{
 		MyCheckbox->SetIsChecked(PROPERTY_BINDING(ECheckBoxState, CheckedState));
 	}
+
+	if (bValueChanged)
+	{
+		BroadcastEnumPostStateChange(InIsChecked ? UWidgetCheckedStateRegistration::Checked : UWidgetCheckedStateRegistration::Unchecked);
+	}
 }
 
 void UCheckBox::SetCheckedState(ECheckBoxState InCheckedState)
 {
+	bool bValueChanged = false;
+
 	if (CheckedState != InCheckedState)
 	{
+		bValueChanged = true;
 		CheckedState = InCheckedState;
 		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::CheckedState);
 	}
@@ -233,6 +225,11 @@ void UCheckBox::SetCheckedState(ECheckBoxState InCheckedState)
 	if ( MyCheckbox.IsValid() )
 	{
 		MyCheckbox->SetIsChecked(PROPERTY_BINDING(ECheckBoxState, CheckedState));
+	}
+
+	if (bValueChanged)
+	{
+		BroadcastEnumPostStateChange(UWidgetCheckedStateRegistration::GetBitfieldFromValue((uint8)CheckedState));
 	}
 }
 
@@ -300,7 +297,43 @@ const FText UCheckBox::GetPaletteCategory()
 
 #endif
 
+FName UWidgetCheckedStateRegistration::GetStateName() const
+{
+	return StateName;
+};
+
+uint8 UWidgetCheckedStateRegistration::GetRegisteredWidgetState(const UWidget* InWidget) const
+{
+	if (const UCheckBox* CheckBox = Cast<UCheckBox>(InWidget))
+	{
+		return (uint8)CheckBox->GetCheckedState();
+	}
+
+	return 0;
+}
+
+const FWidgetStateBitfield& UWidgetCheckedStateRegistration::GetBitfieldFromValue(uint8 InValue)
+{
+	switch ((ECheckBoxState)InValue)
+	{
+	case ECheckBoxState::Unchecked:
+		return UWidgetCheckedStateRegistration::Unchecked;
+	case ECheckBoxState::Checked:
+		return UWidgetCheckedStateRegistration::Checked;
+	case ECheckBoxState::Undetermined:
+		return UWidgetCheckedStateRegistration::Undetermined;
+	default:
+		return UWidgetCheckedStateRegistration::Undetermined;
+	}
+}
+
+void UWidgetCheckedStateRegistration::InitializeStaticBitfields() const
+{
+	Unchecked = FWidgetStateBitfield(GetStateName(), (uint8)ECheckBoxState::Unchecked);
+	Checked = FWidgetStateBitfield(GetStateName(), (uint8)ECheckBoxState::Checked);
+	Undetermined = FWidgetStateBitfield(GetStateName(), (uint8)ECheckBoxState::Undetermined);
+}
+
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
-

@@ -55,13 +55,6 @@ struct FIcmpEchoResult
 		, ReplyFrom()
 		, Time(-1)
 	{}
-
-	FIcmpEchoResult(const FIcmpEchoResult& Other)
-		: Status(Other.Status)
-		, ResolvedAddress(Other.ResolvedAddress)
-		, ReplyFrom(Other.ReplyFrom)
-		, Time(Other.Time)
-	{}
 };
 
 typedef TFunction<void(FIcmpEchoResult)> FIcmpEchoResultCallback;
@@ -119,7 +112,7 @@ DECLARE_DELEGATE_OneParam(FIcmpEchoManyCompleteDelegate, FIcmpEchoManyCompleteRe
 
 
 // Simple ping interface that sends an ICMP packet to the given address and returns timing info for the reply if reachable
-class ICMP_API FIcmp
+class FIcmp
 {
 	public:
 
@@ -137,7 +130,7 @@ class ICMP_API FIcmp
 	 * @param Timeout max time to wait for a reply
 	 * @param HandleResult a callback function that will be called when the result is ready
 	 */
-	static void IcmpEcho(const FString& TargetAddress, float Timeout, FIcmpEchoResultCallback HandleResult);
+	static ICMP_API void IcmpEcho(const FString& TargetAddress, float Timeout, FIcmpEchoResultCallback HandleResult);
 
 	/** Send an ICMP echo packet and wait for a reply.
 	 *
@@ -157,7 +150,7 @@ class ICMP_API FIcmp
 };
 
 // Simple ping interface that sends an ICMP packet over UDP to the given address and returns timing info for the reply if reachable
-class ICMP_API FUDPPing
+class FUDPPing
 {
 public:
 
@@ -175,7 +168,7 @@ public:
 	 * @param Timeout max time to wait for a reply
 	 * @param HandleResult a callback function that will be called when the result is ready
 	 */
-	static void UDPEcho(const FString& TargetAddress, float Timeout, FIcmpEchoResultCallback HandleResult);
+	static ICMP_API void UDPEcho(const FString& TargetAddress, float Timeout, FIcmpEchoResultCallback HandleResult);
 
 	/** Send an ICMP echo packet and wait for a reply.
 	 *
@@ -209,7 +202,7 @@ public:
 	 * @param Timeout max time to wait for a replies
 	 * @param CompletionCallback callback function that is invoked when the final results are ready
 	 */
-	static void UDPEchoMany(const TArray<FIcmpTarget>& Targets, float Timeout, FIcmpEchoManyCompleteCallback CompletionCallback);
+	static ICMP_API void UDPEchoMany(const TArray<FIcmpTarget>& Targets, float Timeout, FIcmpEchoManyCompleteCallback CompletionCallback);
 
 	/** Send multiple ICMP echo packets and wait for replies.
 	 *
@@ -227,7 +220,7 @@ public:
 	 * @param Timeout max time to wait for a replies
 	 * @param CompletionDelegate delegate that is invoked when the final results are ready
 	 */
-	static void UDPEchoMany(const TArray<FIcmpTarget>& Targets, float Timeout, FIcmpEchoManyCompleteDelegate CompletionDelegate);
+	static ICMP_API void UDPEchoMany(const TArray<FIcmpTarget>& Targets, float Timeout, FIcmpEchoManyCompleteDelegate CompletionDelegate);
 };
 
 

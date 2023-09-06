@@ -6,12 +6,9 @@
 
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Math/MatrixH.h"
+#include "CADOptions.h"
 
 #include "TechSoftInterface.h"
-
-#ifdef CADKERNEL_DEV
-#include "CADFileReport.h"
-#endif
 
 namespace UE::CADKernel
 {
@@ -169,10 +166,6 @@ private:
 
 	UE::CADKernel::FSession& Session;
 	UE::CADKernel::FModel& Model;
-#ifdef CADKERNEL_DEV
-	UE::CADKernel::FCADFileReport* Report;
-#endif
-
 
 	const double GeometricTolerance;
 	const double EdgeLengthTolerance;
@@ -183,20 +176,21 @@ private:
 	TMap<UE::CADKernel::FBody*, const A3DEntity*> CADKernelToTechSoft;
 	TMap<const A3DTopoCoEdge*, TSharedPtr<UE::CADKernel::FTopologicalEdge>> A3DEdgeToEdge;
 
+	EFailureReason FailureReason = EFailureReason::None;
+	bool bConvertionFailed = false;
+
 	double BodyScale = 1;
 
 public:
 	FTechSoftBridge(FTechSoftFileParser& InParser, UE::CADKernel::FSession& InSession);
-	UE::CADKernel::FBody* AddBody(A3DRiBrepModel* A3DBRepModel, TMap<FString, FString> MetaData, const double InBodyScale);
+	UE::CADKernel::FBody* AddBody(A3DRiBrepModel* A3DBRepModel, FArchiveCADObject& ArchiveBody);
 	UE::CADKernel::FBody* GetBody(A3DRiBrepModel* A3DBRepModel);
 	const A3DRiBrepModel* GetA3DBody(UE::CADKernel::FBody* BRepModel);
 
-#ifdef CADKERNEL_DEV
-	void SetReport(UE::CADKernel::FCADFileReport& InReport)
+	EFailureReason GetFailureReason()
 	{
-		Report = &InReport;
+		return FailureReason;
 	}
-#endif
 
 private:
 
@@ -256,7 +250,7 @@ private:
 
 	TSharedPtr<UE::CADKernel::FCurve> AddCurveAsNurbs(const A3DCrvBase* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization);
 
-	void AddMetadata(FArchiveCADObject& EntityData, UE::CADKernel::FTopologicalShapeEntity& Entity);
+	void AddMetaData(FArchiveCADObject& EntityData, UE::CADKernel::FTopologicalShapeEntity& Entity);
 };
 }
 

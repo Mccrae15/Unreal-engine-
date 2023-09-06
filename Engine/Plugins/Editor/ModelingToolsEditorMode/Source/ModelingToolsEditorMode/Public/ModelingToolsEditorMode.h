@@ -21,6 +21,7 @@ class UModelingSceneSnappingManager;
 class UModelingSelectionInteraction;
 class UGeometrySelectionManager;
 class UInteractiveCommand;
+class UBlueprint;
 
 UCLASS(Transient)
 class UModelingToolsEditorMode : public UBaseLegacyWidgetEdMode, public ILegacyEdModeSelectInterface
@@ -87,11 +88,13 @@ public:
 	}
 
 	UPROPERTY()
-	bool bEnableVolumeElementSelection = false;
+	bool bEnableVolumeElementSelection = true;
 
 	UPROPERTY()
-	bool bEnableStaticMeshElementSelection = false;
+	bool bEnableStaticMeshElementSelection = true;
 
+	bool GetMeshElementSelectionSystemEnabled() const;
+	void NotifySelectionSystemEnabledStateModified();
 
 protected:
 	virtual void BindCommands() override;
@@ -106,9 +109,14 @@ protected:
 
 	FDelegateHandle MeshCreatedEventHandle;
 	FDelegateHandle TextureCreatedEventHandle;
+	FDelegateHandle MaterialCreatedEventHandle;
 	FDelegateHandle SelectionModifiedEventHandle;
 
-	TUniquePtr<FStylusStateTracker> StylusStateTracker;
+	FDelegateHandle EditorClosedEventHandle;
+	void OnEditorClosed();
+
+	// Stylus support is currently disabled; this is left in for reference if/when it is brought back
+	//TUniquePtr<FStylusStateTracker> StylusStateTracker;
 
 	TSharedPtr<FLevelObjectsObserver> LevelObjectsObserver;
 
@@ -126,6 +134,9 @@ protected:
 	bool GetGeometrySelectionChangesAllowed() const;
 	bool TestForEditorGizmoHit(const FInputDeviceRay&) const;
 
+
+	bool bSelectionSystemEnabled = false;
+
 	void UpdateSelectionManagerOnEditorSelectionChange(bool bEnteringMode = false);
 
 	void OnToolsContextRender(IToolsContextRenderAPI* RenderAPI);
@@ -139,6 +150,9 @@ protected:
 
 	void ConfigureRealTimeViewportsOverride(bool bEnable);
 
+	FDelegateHandle BlueprintPreCompileHandle;
+	void OnBlueprintPreCompile(UBlueprint* Blueprint);
+
 
 	// UInteractiveCommand support. Currently implemented by creating instances of
 	// commands on mode startup and holding onto them. This perhaps should be revisited,
@@ -151,6 +165,9 @@ protected:
 	// analytics tracking
 	static FDateTime LastModeStartTimestamp;
 	static FDateTime LastToolStartTimestamp;
+
+	// tracking of unlocked stuff
+	static FDelegateHandle GlobalModelingWorldTeardownEventHandle;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

@@ -2,15 +2,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 #nullable enable
@@ -23,13 +20,13 @@ namespace UnrealGameSync
 		{
 			public string Category { get; }
 			public string Description { get; }
-			public string? Install;
-			public string? Browse;
+			public string? Install { get; set; }
+			public string? Browse { get; set; }
 
 			public SdkItem(string category, string description)
 			{
-				this.Category = category;
-				this.Description = description;
+				Category = category;
+				Description = description;
 			}
 		}
 
@@ -37,24 +34,25 @@ namespace UnrealGameSync
 		{
 			public string UniqueId { get; }
 			public string Label { get; }
-			public Rectangle Rectangle;
-			public Action? OnClick;
+			public Rectangle Rectangle { get; set; }
+			public Action? OnClick { get; set; }
 
 			public BadgeInfo(string uniqueId, string label)
 			{
-				this.UniqueId = uniqueId;
-				this.Label = label;
+				UniqueId = uniqueId;
+				Label = label;
 			}
 		}
 
-		Font _badgeFont;
+		readonly Font _badgeFont;
 		string? _hoverBadgeUniqueId;
 
 		public SdkInfoWindow(string[] sdkInfoEntries, Dictionary<string, string> variables, Font badgeFont)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._badgeFont = badgeFont;
+			_badgeFont = badgeFont;
 
 			Dictionary<string, ConfigObject> uniqueIdToObject = new Dictionary<string, ConfigObject>(StringComparer.InvariantCultureIgnoreCase);
 			foreach(string sdkInfoEntry in sdkInfoEntries)
@@ -82,13 +80,13 @@ namespace UnrealGameSync
 				SdkItem item = new SdkItem(category, description);
 
 				item.Install = Utility.ExpandVariables(obj.GetValue("Install", ""), variables);
-				if(item.Install.Contains("$("))
+				if(item.Install.Contains("$(", StringComparison.Ordinal))
 				{
 					item.Install = null;
 				}
 
 				item.Browse = Utility.ExpandVariables(obj.GetValue("Browse", ""), variables);
-				if(item.Browse.Contains("$("))
+				if(item.Browse.Contains("$(", StringComparison.Ordinal))
 				{
 					item.Browse = null;
 				}
@@ -127,7 +125,7 @@ namespace UnrealGameSync
 
 			if(SdkListView.Items.Count > 0)
 			{
-				int itemsHeight = SdkListView.Items[SdkListView.Items.Count - 1].Bounds.Bottom + 20;
+				int itemsHeight = SdkListView.Items[^1].Bounds.Bottom + 20;
 				Height = SdkListView.Top + itemsHeight + (Height - SdkListView.Bottom);
 			}
 		}
@@ -145,7 +143,11 @@ namespace UnrealGameSync
 
 		private void SdkListView_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
 		{
-			if(e.ColumnIndex != columnHeader3.Index)
+			if (e.Item == null || e.SubItem == null)
+			{
+				e.DrawDefault = true;
+			}
+			else if(e.ColumnIndex != columnHeader3.Index)
 			{
 				TextRenderer.DrawText(e.Graphics, e.SubItem.Text, SdkListView.Font, e.Bounds, SdkListView.ForeColor, TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
 			}
@@ -243,7 +245,7 @@ namespace UnrealGameSync
 			return badges;
 		}
 
-		private void Browse(string directoryName)
+		private static void Browse(string directoryName)
 		{
 			try
 			{
@@ -255,7 +257,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		private void Install(string fileName)
+		private static void Install(string fileName)
 		{
 			try
 			{

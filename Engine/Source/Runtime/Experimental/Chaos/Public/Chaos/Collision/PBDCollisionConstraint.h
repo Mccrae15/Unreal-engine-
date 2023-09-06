@@ -15,6 +15,8 @@
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/Vector.h"
 
+class FChaosVDDataWrapperUtils;
+
 namespace Chaos
 {
 	namespace Private
@@ -27,10 +29,11 @@ namespace Chaos
 	class FParticlePairMidPhase;
 	class FPBDCollisionConstraint;
 	class FPBDCollisionConstraints;
+	class FPerShapeData;
+	class FShapeInstance;
 	class FSingleShapePairCollisionDetector;
 	class FSolverBody;
 	class FSolverBodyContainer;
-	class FPerShapeData;
 
 	UE_DEPRECATED(4.27, "Use FPBDCollisionConstraint instead")
 	typedef FPBDCollisionConstraint FRigidBodyPointContactConstraint;
@@ -40,11 +43,12 @@ namespace Chaos
 	/*
 	 * @brief Material properties for a collision constraint
 	*/
-	class CHAOS_API FPBDCollisionConstraintMaterial
+	class FPBDCollisionConstraintMaterial
 	{
 	public:
 		FPBDCollisionConstraintMaterial()
-			: MaterialDynamicFriction(0)
+			: FaceIndex(INDEX_NONE)
+			, MaterialDynamicFriction(0)
 			, MaterialStaticFriction(0)
 			, MaterialRestitution(0)
 			, DynamicFriction(0)
@@ -58,7 +62,11 @@ namespace Chaos
 		{
 		}
 
+		// The face index that the material was extracted from
+		int32 FaceIndex;
+
 		// Material properties pulled from the materials of the two shapes involved in the contact
+		// @todo(chaos): we can remove these now and just recollect the material data when a modifier was applied
 		FRealSingle MaterialDynamicFriction;
 		FRealSingle MaterialStaticFriction;
 		FRealSingle MaterialRestitution;
@@ -157,13 +165,14 @@ namespace Chaos
 	 * They use intrusive handles to reduce unnecessary indirection.
 	 * 
 	*/
-	class CHAOS_API FPBDCollisionConstraint final : public FPBDCollisionConstraintHandle
+	class FPBDCollisionConstraint final : public FPBDCollisionConstraintHandle
 	{
 		friend class Private::FCollisionConstraintAllocator;
 		friend class Private::FCollisionContextAllocator;
-		friend class FMultiShapePairCollisionDetector;
+		friend class FGenericParticlePairMidPhase;
 		friend class FParticlePairMidPhase;
 		friend class FPBDCollisionConstraints;
+		friend class FShapePairParticlePairMidPhase;
 		friend class FSingleShapePairCollisionDetector;
 
 		friend CHAOS_API bool ContactConstraintSortPredicate(const FPBDCollisionConstraint& L, const FPBDCollisionConstraint& R);
@@ -180,7 +189,7 @@ namespace Chaos
 		 * Initializes a constraint stored inline in an object. Only intended to be called once right after construction.
 		 * Does not reinitialize all data so not intended to reset a constraint for reuse with different particles etc.
 		*/
-		static void Make(
+		static CHAOS_API void Make(
 			FGeometryParticleHandle* Particle0,
 			const FImplicitObject* Implicit0,
 			const FPerShapeData* Shape0,
@@ -200,23 +209,23 @@ namespace Chaos
 		 * @brief For use by the tri mesh and heighfield collision detection as a temporary measure
 		 * @see FHeightField::ContactManifoldImp, FTriangleMeshImplicitObject::ContactManifoldImp
 		*/
-		static FPBDCollisionConstraint MakeTriangle(const FImplicitObject* Implicit0);
+		static CHAOS_API FPBDCollisionConstraint MakeTriangle(const FImplicitObject* Implicit0);
 
 		/**
 		 * @brief Return a constraint copied from the Source constraint, for use in the Resim Cache or other system
 		 * @note Unlike the other factory method, this version returns a constraint by value for emplacing into an array (ther others are by pointer)
 		*/
-		static FPBDCollisionConstraint MakeCopy(const FPBDCollisionConstraint& Source);
+		static CHAOS_API FPBDCollisionConstraint MakeCopy(const FPBDCollisionConstraint& Source);
 
 		/**
 		 * Restore the properties of a collision from the properties of another. Used by the rewind/resim system when restoring
 		 * a collision constraint that was saved (and called MakeCopy).
 		 * This takes care not to overwrite any data maintained for the use of other systems (the ContainerCookie, Graph data, etc)
 		 */
-		void RestoreFrom(const FPBDCollisionConstraint& Source);
+		CHAOS_API void RestoreFrom(const FPBDCollisionConstraint& Source);
 
 		FPBDCollisionConstraint();
-		virtual ~FPBDCollisionConstraint();
+		CHAOS_API virtual ~FPBDCollisionConstraint();
 
 		/**
 		 * Whether CCD is enabled for this collision.
@@ -282,9 +291,9 @@ namespace Chaos
 		const FImplicitObject* GetImplicit1() const { return Implicit[1]; }
 		const FImplicitObject* GetImplicit(const int32 ParticleIndex) const { check((ParticleIndex >= 0) && (ParticleIndex < 2)); return Implicit[ParticleIndex]; }
 
-		const FPerShapeData* GetShape0() const { return Shape[0]; }
-		const FPerShapeData* GetShape1() const { return Shape[1]; }
-		const FPerShapeData* GetShape(const int32 ParticleIndex) const { check((ParticleIndex >= 0) && (ParticleIndex < 2)); return Shape[ParticleIndex]; }
+		const FShapeInstance* GetShape0() const { return Shape[0]; }
+		const FShapeInstance* GetShape1() const { return Shape[1]; }
+		const FShapeInstance* GetShape(const int32 ParticleIndex) const { check((ParticleIndex >= 0) && (ParticleIndex < 2)); return Shape[ParticleIndex]; }
 
 		const FBVHParticles* GetCollisionParticles0() const { return Simplicial[0]; }
 		const FBVHParticles* GetCollisionParticles1() const { return Simplicial[1]; }
@@ -302,13 +311,13 @@ namespace Chaos
 		/** 
 		 * Called each frame when the constraint is active after primary collision detection (but not per incremental collision detection call if enabled) 
 		 */
-		void Activate();
+		CHAOS_API void Activate();
 
 		UE_DEPRECATED(5.2, "Removed parameter")
 		void Activate(const FReal Dt) { Activate(); }
 
 		// When a particle is moved under user control, we need to update some cached state to prevent friction from undoing the move
-		void UpdateParticleTransform(FGeometryParticleHandle* InParticle);
+		CHAOS_API void UpdateParticleTransform(FGeometryParticleHandle* InParticle);
 
 		// @todo(chaos): half of this API is wrong for the new multi-point manifold constraints. Remove it
 
@@ -322,16 +331,16 @@ namespace Chaos
 		bool GetIsProbe() const { return Flags.bIsProbe; }
 
 		virtual bool SupportsSleeping() const override final { return true; }
-		virtual bool IsSleeping() const override final;
-		virtual void SetIsSleeping(const bool bInIsSleeping) override final;
+		CHAOS_API virtual bool IsSleeping() const override final;
+		CHAOS_API virtual void SetIsSleeping(const bool bInIsSleeping) override final;
 
 		// Get the world-space normal of the closest manifold point
 		// @todo(chaos): remove (used by legacy RBAN collision solver)
-		FVec3 CalculateWorldContactNormal() const;
+		CHAOS_API FVec3 CalculateWorldContactNormal() const;
 
 		// Get the world-space contact location of the closest manifold point
 		// @todo(chaos): remove (used by legacy RBAN collision solver)
-		FVec3 CalculateWorldContactLocation() const;
+		CHAOS_API FVec3 CalculateWorldContactLocation() const;
 
 		// Called to force the contact to recollect its material properties (e.g., when materials are modified)
 		void ClearMaterialProperties()
@@ -383,7 +392,7 @@ namespace Chaos
 
 		EContactShapesType GetShapesType() const { return ShapesType; }
 
-		FString ToString() const;
+		CHAOS_API FString ToString() const;
 
 		FReal GetCullDistance() const { return CullDistance; }
 		void SetCullDistance(FReal InCullDistance) { CullDistance = FRealSingle(InCullDistance); }
@@ -417,7 +426,7 @@ namespace Chaos
 		/**
 		 * @brief Clear the current and previous manifolds
 		*/
-		void ResetManifold();
+		CHAOS_API void ResetManifold();
 
 		// @todo(chaos): remove array view and provide per-point accessor
 		TArrayView<FManifoldPoint> GetManifoldPoints() { return MakeArrayView(ManifoldPoints.begin(), ManifoldPoints.Num()); }
@@ -427,6 +436,7 @@ namespace Chaos
 		FManifoldPoint& GetManifoldPoint(const int32 PointIndex) { return ManifoldPoints[PointIndex]; }
 		const FManifoldPoint& GetManifoldPoint(const int32 PointIndex) const { return ManifoldPoints[PointIndex]; }
 		const FManifoldPoint* GetClosestManifoldPoint() const { return (ClosestManifoldPointIndex != INDEX_NONE) ? &ManifoldPoints[ClosestManifoldPointIndex] : nullptr; }
+		bool IsManifoldPointActive(const int32 PointIndex) const { return IsEnabled() && (PointIndex < NumManifoldPoints()) && !ManifoldPoints[PointIndex].Flags.bDisabled; }
 
 		const FManifoldPointResult& GetManifoldPointResult(const int32 PointIndex) const
 		{
@@ -468,7 +478,7 @@ namespace Chaos
 			}
 		}
 
-		void AddIncrementalManifoldContact(const FContactPoint& ContactPoint);
+		CHAOS_API void AddIncrementalManifoldContact(const FContactPoint& ContactPoint);
 
 		// @todo(chaos): remove this and use SetOneShotManifoldContacts
 		inline void AddOneshotManifoldContact(const FContactPoint& ContactPoint)
@@ -508,9 +518,21 @@ namespace Chaos
 					}
 				}
 			}
+
+			// If we have a new face we may need to change the material
+			// @todo(chaos): support per-manifold point materials?
+			if (NumManifoldPoints() > 0)
+			{
+				if (ManifoldPoints[0].ContactPoint.FaceIndex != Material.FaceIndex)
+				{
+					Material.FaceIndex = ManifoldPoints[0].ContactPoint.FaceIndex;
+					Flags.bMaterialSet = false;
+				}
+			}
+
 		}
 
-		void UpdateManifoldContacts();
+		CHAOS_API void UpdateManifoldContacts();
 
 		// Particle-relative transform of each collision shape in the constraint
 		const FRigidTransform3& GetShapeRelativeTransform0() const { return ImplicitTransform[0]; }
@@ -526,16 +548,20 @@ namespace Chaos
 			ShapeWorldTransforms[1] = InShapeWorldTransform1;
 		}
 
+		// Set the transforms when we last ran collision detection. This also sets the bCanRestoreManifold flag which
+		// allows the use of UpdateAndTryRestoreManifold on the next tick.
 		void SetLastShapeWorldTransforms(const FRigidTransform3& InShapeWorldTransform0, const FRigidTransform3& InShapeWorldTransform1)
 		{
 			LastShapeWorldPositionDelta = InShapeWorldTransform0.GetTranslation() - InShapeWorldTransform1.GetTranslation();
 			LastShapeWorldRotationDelta = InShapeWorldTransform0.GetRotation().Inverse() * InShapeWorldTransform1.GetRotation();
+			Flags.bCanRestoreManifold = true;
 		}
 
-		bool UpdateAndTryRestoreManifold();
-		void ResetActiveManifoldContacts();
-		bool TryAddManifoldContact(const FContactPoint& ContactPoint);
-		bool TryInsertManifoldContact(const FContactPoint& ContactPoint);
+		bool GetCanRestoreManifold() const { return Flags.bCanRestoreManifold; }
+		CHAOS_API bool TryRestoreManifold();
+		CHAOS_API void ResetActiveManifoldContacts();
+		CHAOS_API bool TryAddManifoldContact(const FContactPoint& ContactPoint);
+		CHAOS_API bool TryInsertManifoldContact(const FContactPoint& ContactPoint);
 
 		//@ todo(chaos): These are for the collision forwarding system - this should use the collision modifier system (which should be extended to support adding collisions)
 		void SetManifoldPoints(const TArray<FManifoldPoint>& InManifoldPoints)
@@ -568,7 +594,7 @@ namespace Chaos
 		 * Determine the constraint direction based on Normal and Phi.
 		 * This function assumes that the constraint is update-to-date.
 		 */
-		ECollisionConstraintDirection GetConstraintDirection(const FReal Dt) const;
+		CHAOS_API ECollisionConstraintDirection GetConstraintDirection(const FReal Dt) const;
 
 		/**
 		 * @brief Clear the saved manifold points. This effectively resets friction anchors.
@@ -677,6 +703,10 @@ namespace Chaos
 		const FPBDCollisionConstraintHandle* GetConstraintHandle() const { return this; }
 		FPBDCollisionConstraintHandle* GetConstraintHandle() { return this; }
 
+
+		UE_DEPRECATED(5.3, "Use TryRestoreManifold")
+		bool UpdateAndTryRestoreManifold() { return TryRestoreManifold(); }
+
 	protected:
 
 		FPBDCollisionConstraint(
@@ -690,7 +720,7 @@ namespace Chaos
 			const FBVHParticles* Simplicial1);
 
 		// Set all the data not initialized in the constructor
-		void Setup(
+		CHAOS_API void Setup(
 			const ECollisionCCDType InCCDType,
 			const EContactShapesType InShapesType,
 			const FRigidTransform3& InImplicitTransform0,
@@ -702,11 +732,11 @@ namespace Chaos
 		const FPBDCollisionConstraintContainerCookie& GetContainerCookie() const { return ContainerCookie; }
 		FPBDCollisionConstraintContainerCookie& GetContainerCookie() { return ContainerCookie; }
 
-		bool AreMatchingContactPoints(const FContactPoint& A, const FContactPoint& B, FReal& OutScore) const;
-		int32 FindManifoldPoint(const FContactPoint& ContactPoint) const;
+		CHAOS_API bool AreMatchingContactPoints(const FContactPoint& A, const FContactPoint& B, FReal& OutScore) const;
+		CHAOS_API int32 FindManifoldPoint(const FContactPoint& ContactPoint) const;
 
-		int32 FindSavedManifoldPoint(const int32 ManifoldPointIndex, TCArray<int32, MaxManifoldPoints>& InOutAllowedSavedPointIndices) const;
-		void AssignSavedManifoldPoints();
+		CHAOS_API int32 FindSavedManifoldPoint(const int32 ManifoldPointIndex, TCArray<int32, MaxManifoldPoints>& InOutAllowedSavedPointIndices) const;
+		CHAOS_API void AssignSavedManifoldPoints();
 
 		inline void InitManifoldPoint(const int32 ManifoldPointIndex, const FContactPoint& ContactPoint)
 		{
@@ -729,34 +759,35 @@ namespace Chaos
 
 		// Update the store Phi for the manifold point based on current world-space shape transforms
 		// @todo(chaos): Only intended for use by the legacy solvers - remove it
-		void UpdateManifoldPointPhi(const int32 ManifoldPointIndex);
+		CHAOS_API void UpdateManifoldPointPhi(const int32 ManifoldPointIndex);
 
-		void InitMarginsAndTolerances(const EImplicitObjectType ImplicitType0, const EImplicitObjectType ImplicitType1, const FRealSingle Margin0, const FRealSingle Margin1);
+		CHAOS_API void InitMarginsAndTolerances(const EImplicitObjectType ImplicitType0, const EImplicitObjectType ImplicitType1, const FRealSingle Margin0, const FRealSingle Margin1);
 
-		void InitCCDThreshold();
+		CHAOS_API void InitCCDThreshold();
 
-		void UpdateMaterialPropertiesImpl();
+		CHAOS_API void UpdateMaterialPropertiesImpl();
 
 	private:
-		FReal CalculateSavedManifoldPointScore(const FSavedManifoldPoint& SavedManifoldPoint, const FManifoldPoint& ManifoldPoint, const FReal DistanceToleranceSq) const;
+		CHAOS_API FReal CalculateSavedManifoldPointScore(const FSavedManifoldPoint& SavedManifoldPoint, const FManifoldPoint& ManifoldPoint, const FReal DistanceToleranceSq) const;
 
 		union FFlags
 		{
 			FFlags() : Bits(0) {}
 			struct
 			{
-				uint32 bDisabled : 1;
-				uint32 bUseManifold : 1;
-				uint32 bUseIncrementalManifold : 1;
-				uint32 bWasManifoldRestored : 1;
-				uint32 bIsQuadratic0 : 1;
-				uint32 bIsQuadratic1 : 1;
-				uint32 bIsProbeUnmodified : 1;  // Is this constraint a probe pre-contact-modification
-				uint32 bIsProbe : 1;            // Is this constraint currently a probe
-				uint32 bCCDEnabled : 1;			// Is CCD enabled for the current tick
-				uint32 bCCDSweepEnabled: 1;		// If this is a CCD constraint, do we want to enable the sweep/rewind phase?
-				uint32 bModifierApplied : 1;	// Was a constraint modifier applied this tick
-				uint32 bMaterialSet : 1;		// Has the material been set (or does it need to be reset)
+				uint32 bDisabled : 1;					// Is this contact disabled (by the user or because cull distance is exceeded)
+				uint32 bUseManifold : 1;				// Should we use contact manifolds or single points (faster but poor behaviour)
+				uint32 bUseIncrementalManifold : 1;		// Do we need to run incremental collision detection (only LavelSets now)
+				uint32 bCanRestoreManifold : 1;			// Can we try to restore the manifold this frame (set folowing narrowphase, cleared when reset for some reason)
+				uint32 bWasManifoldRestored : 1;		// Did we restore the manifold this frame
+				uint32 bIsQuadratic0 : 1;				// Is the first shape a sphere or capsule
+				uint32 bIsQuadratic1 : 1;				// Is the second shape a sphere or capsule
+				uint32 bIsProbeUnmodified : 1;			// Is this constraint a probe pre-contact-modification
+				uint32 bIsProbe : 1;					// Is this constraint currently a probe
+				uint32 bCCDEnabled : 1;					// Is CCD enabled for the current tick
+				uint32 bCCDSweepEnabled: 1;				// If this is a CCD constraint, do we want to enable the sweep/rewind phase?
+				uint32 bModifierApplied : 1;			// Was a constraint modifier applied this tick
+				uint32 bMaterialSet : 1;				// Has the material been set (or does it need to be reset)
 			};
 			uint32 Bits;
 		};
@@ -767,7 +798,7 @@ namespace Chaos
 		
 		FGeometryParticleHandle* Particle[2];
 		const FImplicitObject* Implicit[2];
-		const FPerShapeData* Shape[2];
+		const FShapeInstance* Shape[2];
 		const FBVHParticles* Simplicial[2];
 
 	public:
@@ -828,6 +859,8 @@ namespace Chaos
 		// The penetration we leave behind when rolling back to a CCD time of impact. Should be less than or equal to CCDEnablePenetration.
 		// Calculated from particle pair properties when constraint is created.
 		FRealSingle CCDTargetPenetration;
+
+		friend class ::FChaosVDDataWrapperUtils;
 	};
 
 

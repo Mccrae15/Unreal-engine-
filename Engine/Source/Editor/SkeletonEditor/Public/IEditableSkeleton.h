@@ -63,23 +63,23 @@ public:
 	/** Function to tell you if a socket name already exists. SocketParentType determines where we will look to see if the socket exists, i.e. mesh or skeleton */
 	virtual bool DoesSocketAlreadyExist(const class USkeletalMeshSocket* InSocket, const FText& InSocketName, ESocketParentType SocketParentType, USkeletalMesh* InSkeletalMesh) const = 0;
 
-	/** Add a new smart name. @return true if name was succesfully added */
-	virtual bool AddSmartname(const FName& InContainerName, const FName& InNewName, FSmartName& OutSmartName) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::AddCurveMetaData.")
+	virtual bool AddSmartname(const FName& InContainerName, const FName& InNewName, FSmartName& OutSmartName) { return false; }
 
-	/** Rename the specified smart name */
-	virtual void RenameSmartname(const FName InContainerName, SmartName::UID_Type InNameUid, const FName InNewName) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::RenameCurveMetaData.")
+	virtual void RenameSmartname(const FName InContainerName, SmartName::UID_Type InNameUid, const FName InNewName) {}
 
-	/** Remove all the specified smart names and fixup animations that use them */
-	virtual void RemoveSmartnamesAndFixupAnimations(const FName& InContainerName, const TArray<FName>& InNames) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::RemoveCurveMetaData.")
+	virtual void RemoveSmartnamesAndFixupAnimations(const FName& InContainerName, const TArray<FName>& InNames) {}
 
-	/** Sets Material Meta Data for the curve */
-	virtual void SetCurveMetaDataMaterial(const FSmartName& CurveName, bool bOverrideMaterial) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::SetCurveMetaDataMaterial.")
+	virtual void SetCurveMetaDataMaterial(const FSmartName& CurveName, bool bOverrideMaterial) {}
 
-	/** Sets Morph Target Meta Data for the curve */
-	virtual void SetCurveMetaDataMorphTarget(const FSmartName& CurveName, bool bOverrideMorphTarget) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::SetCurveMetaDataMorphTarget.")
+	virtual void SetCurveMetaDataMorphTarget(const FSmartName& CurveName, bool bOverrideMorphTarget) {}
 
-	/** Sets Bone Links per curve */
-	virtual void SetCurveMetaBoneLinks(const FSmartName& CurveName, const TArray<FBoneReference>& BoneLinks, uint8 InMaxLOD) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::SetCurveMetaDataBoneLinks.")
+	virtual void SetCurveMetaBoneLinks(const FSmartName& CurveName, const TArray<FBoneReference>& BoneLinks, uint8 InMaxLOD) {}
 
 	/**
 	 * Makes sure all attached objects are valid and removes any that aren't.
@@ -103,12 +103,13 @@ public:
 	 * Delete anim notifies by name
 	 * @return the number of animations modified
 	 */	
-	virtual int32 DeleteAnimNotifies(const TArray<FName>& InotifyNames) = 0;
+	virtual int32 DeleteAnimNotifies(const TArray<FName>& InotifyNames, bool bDeleteFromAnimations = true) = 0;
 
 	/**
 	 * Delete sync markers from the skeleton cache by name
+	 * @return the number of animations modified
 	 */
-	virtual void DeleteSyncMarkers(const TArray<FName>& ISyncMarkerNames) = 0;
+	virtual int32 DeleteSyncMarkers(const TArray<FName>& ISyncMarkerNames, bool bDeleteFromAnimations = true) = 0;
 
 	/**
 	* Add a notify
@@ -119,13 +120,19 @@ public:
 	 * Rename a notify
 	 * @return the number of animations modified
 	 */	
-	virtual int32 RenameNotify(const FName NewName, const FName OldName) = 0;
+	virtual int32 RenameNotify(const FName NewName, const FName OldName, bool bRenameInAnimations = true) = 0;
 
 	/**
 	* Add a sync marker
 	*/
 	virtual void AddSyncMarker(FName NewName) = 0;
 
+	/**
+	* Rename a sync marker
+	 * @return the number of animations modified
+	*/
+	virtual int32 RenameSyncMarker(FName NewName, const FName OldName, bool bRenameInAnimations = true) = 0;
+	
 	/** Inform the system that something about a notify changed */	
 	virtual void BroadcastNotifyChanged() = 0;
 
@@ -159,6 +166,7 @@ public:
 	/** Remove a compatible skeleton */
 	virtual void RemoveCompatibleSkeleton(const USkeleton* InCompatibleSkeleton) = 0;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Refreshes the rig config, validating the mappings */
 	virtual void RefreshRigConfig() = 0;
 
@@ -170,6 +178,7 @@ public:
 
 	/** Set multiple bone mappings */
 	virtual void SetRigBoneMappings(const TMap<FName, FName>& InMappings) = 0;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Remove any bones that are not used by any skeletal meshes */
 	virtual void RemoveUnusedBones() = 0;
@@ -195,11 +204,11 @@ public:
 	/** Rename a slot name */
 	virtual void RenameSlotName(const FName InOldSlotName, const FName InNewSlotName) = 0;
 
-	/** Register a delegate to be called when a set of smart names are removed */
-	virtual FDelegateHandle RegisterOnSmartNameChanged(const FOnSmartNameChanged::FDelegate& InOnSmartNameChanged) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::RegisterOnCurveMetaDataChanged.")
+	virtual FDelegateHandle RegisterOnSmartNameChanged(const FOnSmartNameChanged::FDelegate& InOnSmartNameChanged) { return FDelegateHandle(); }
 
-	/** Register a delegate to be called when a set of smart names are removed */
-	virtual void UnregisterOnSmartNameChanged(FDelegateHandle InHandle) = 0;
+	UE_DEPRECATED(5.3, "Please use IInterface_AnimCurveMetaData::UnegisterOnCurveMetaDataChanged.")
+	virtual void UnregisterOnSmartNameChanged(FDelegateHandle InHandle) {}
 
 	/** Register a delegate to be called when this skeletons notifies are changed */
 	virtual void RegisterOnNotifiesChanged(const FSimpleMulticastDelegate::FDelegate& InDelegate) = 0;

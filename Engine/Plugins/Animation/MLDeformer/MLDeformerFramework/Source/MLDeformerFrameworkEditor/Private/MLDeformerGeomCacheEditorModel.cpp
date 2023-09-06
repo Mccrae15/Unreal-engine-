@@ -54,29 +54,6 @@ namespace UE::MLDeformer
 		return static_cast<FMLDeformerGeomCacheActor*>(FindEditorActor(ID));
 	}
 
-	double FMLDeformerGeomCacheEditorModel::GetTrainingTimeAtFrame(int32 FrameNumber) const
-	{
-		// Try to get the frame from the geometry cache.
-		const FMLDeformerGeomCacheActor* EditorActor = static_cast<FMLDeformerGeomCacheActor*>(FindEditorActor(ActorID_Train_GroundTruth));
-		if (EditorActor && EditorActor->GetGeometryCacheComponent() && EditorActor->GetGeometryCacheComponent()->GeometryCache.Get())
-		{
-			return EditorActor->GetGeometryCacheComponent()->GetTimeAtFrame(FrameNumber);
-		}
-
-		return FMLDeformerEditorModel::GetTrainingTimeAtFrame(FrameNumber);
-	}
-
-	int32 FMLDeformerGeomCacheEditorModel::GetTrainingFrameAtTime(double TimeInSeconds) const
-	{
-		const FMLDeformerGeomCacheActor* EditorActor = static_cast<FMLDeformerGeomCacheActor*>(FindEditorActor(ActorID_Train_GroundTruth));
-		if (EditorActor && EditorActor->GetGeometryCacheComponent() && EditorActor->GetGeometryCacheComponent()->GeometryCache.Get())
-		{
-			return EditorActor->GetGeometryCacheComponent()->GetFrameAtTime(TimeInSeconds);
-		}
-
-		return FMLDeformerEditorModel::GetTrainingFrameAtTime(TimeInSeconds);
-	}
-
 	double FMLDeformerGeomCacheEditorModel::GetTestTimeAtFrame(int32 FrameNumber) const
 	{
 		// Try to get the frame from the geometry cache.
@@ -253,24 +230,50 @@ namespace UE::MLDeformer
 		UAnimSequence* TestAnimSequence = VizSettings->GetTestAnimSequence();
 
 		// Update the training geometry cache.
-		UGeometryCacheComponent* GeometryCacheComponent = FindGeomCacheEditorActor(ActorID_Train_GroundTruth)->GetGeometryCacheComponent();
-		check(GeometryCacheComponent);
-		GeometryCacheComponent->SetGeometryCache(GetGeomCacheModel()->GetGeometryCache());
-		GeometryCacheComponent->SetLooping(false);
-		GeometryCacheComponent->SetManualTick(true);
-		GeometryCacheComponent->SetPlaybackSpeed(TestAnimSpeed);
-		GeometryCacheComponent->Play();
+		const FMLDeformerGeomCacheActor* TrainGroundTruthActor = FindGeomCacheEditorActor(ActorID_Train_GroundTruth);
+		UGeometryCacheComponent* GeometryCacheComponent = TrainGroundTruthActor ? TrainGroundTruthActor->GetGeometryCacheComponent() : nullptr;
+		if (GeometryCacheComponent)
+		{
+			GeometryCacheComponent->SetGeometryCache(GetGeomCacheModel()->GetGeometryCache());
+			GeometryCacheComponent->SetLooping(false);
+			GeometryCacheComponent->SetManualTick(true);
+			GeometryCacheComponent->SetPlaybackSpeed(TestAnimSpeed);
+			GeometryCacheComponent->Play();
+		}
 
 		// Update the test geometry cache (ground truth) component.
-		GeometryCacheComponent = FindGeomCacheEditorActor(ActorID_Test_GroundTruth)->GetGeometryCacheComponent();
-		check(GeometryCacheComponent);
-		GeometryCacheComponent->SetGeometryCache(VizSettings->GetTestGroundTruth());
-		GeometryCacheComponent->SetLooping(true);
-		GeometryCacheComponent->SetManualTick(true);
-		GeometryCacheComponent->SetPlaybackSpeed(TestAnimSpeed);
-		GeometryCacheComponent->Play();
+		const FMLDeformerGeomCacheActor* TestGroundTruthActor = FindGeomCacheEditorActor(ActorID_Test_GroundTruth);
+		GeometryCacheComponent = TestGroundTruthActor ? TestGroundTruthActor->GetGeometryCacheComponent() : nullptr;
+		if (GeometryCacheComponent)
+		{
+			GeometryCacheComponent->SetGeometryCache(VizSettings->GetTestGroundTruth());
+			GeometryCacheComponent->SetLooping(true);
+			GeometryCacheComponent->SetManualTick(true);
+			GeometryCacheComponent->SetPlaybackSpeed(TestAnimSpeed);
+			GeometryCacheComponent->Play();
+		}
 
 		GetGeomCacheModel()->GetGeomCacheMeshMappings().Reset();
+	}
+
+	void FMLDeformerGeomCacheEditorModel::OnObjectModified(UObject* Object)
+	{
+		// Handle changes for the skeletal mesh and anim sequence.
+		FMLDeformerEditorModel::OnObjectModified(Object);
+
+		// Check if the object is our training geometry cache.
+		if (GetGeomCacheModel()->GetGeometryCache() == Object)
+		{
+			UE_LOG(LogMLDeformer, Display, TEXT("Detected a modification in training geometry cache %s, reinitializing inputs."), *Object->GetName());
+			bNeedsAssetReinit = true;
+		}
+
+		// Check if it is the ground truth test geom cache.
+		if (GetGeomCacheModel()->GetGeomCacheVizSettings()->GetTestGroundTruth() == Object)
+		{
+			UE_LOG(LogMLDeformer, Display, TEXT("Detected a modification in test ground truth geometry cache %s, reinitializing inputs."), *Object->GetName());
+			bNeedsAssetReinit = true;
+		}
 	}
 }	// namespace UE::MLDeformer
 

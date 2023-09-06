@@ -41,14 +41,7 @@
 			]
 		},
 		{
-			"Name": "DatasmithIFCImporter",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64"
-			]
-		},
-		{
-			"Name": "DatasmithGLTFImporter",
+			"Name": "InterchangeEditor",
 			"Enabled": true
 		},
 		{

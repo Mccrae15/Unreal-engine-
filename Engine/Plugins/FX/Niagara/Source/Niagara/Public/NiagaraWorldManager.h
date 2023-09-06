@@ -21,15 +21,17 @@
 #include "NiagaraScalabilityManager.h"
 #include "NiagaraDebuggerCommon.h"
 #include "NiagaraDeferredMethodQueue.h"
-#include "NiagaraDataChannelManager.h"
 
 #include "NiagaraWorldManager.generated.h"
 
+class FNiagaraDataChannelManager;
+class FNiagaraSimpleObjectPool;
 class UWorld;
 class UNiagaraParameterCollection;
 class UNiagaraParameterCollectionInstance;
 class UNiagaraComponentPool;
 struct FNiagaraScalabilityState;
+class UNiagaraDataChannelHandler;
 
 USTRUCT()
 struct FNiagaraWorldManagerTickFunction : public FTickFunction
@@ -102,9 +104,13 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override;
 	//~ GCObject Interface
-	
+
+private:
+	void TickParameterCollections();
+public:
 	UNiagaraParameterCollectionInstance* GetParameterCollection(UNiagaraParameterCollection* Collection);
 	void CleanupParameterCollections();
+
 	FNiagaraSystemSimulationRef GetSystemSimulation(ETickingGroup TickGroup, UNiagaraSystem* System);
 	void DestroySystemSimulation(UNiagaraSystem* System);
 	void DestroySystemInstance(FNiagaraSystemInstancePtr& InPtr);	
@@ -116,7 +122,12 @@ public:
 	void MarkSimulationForPostActorWork(FNiagaraSystemSimulation* SystemSimulation);
 	void MarkSimulationsForEndOfFrameWait(FNiagaraSystemSimulation* SystemSimulation);
 
+	/** Called at the very beginning of world ticking. */
+	void TickStart(float DeltaSeconds);
+
 	void Tick(ETickingGroup TickGroup, float DeltaSeconds, ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent);
+
+	void PreActorTick(ELevelTick InLevelTick, float InDeltaSeconds);
 
 	/** Called after all actor tick groups are complete. */
 	void PostActorTick(float DeltaSeconds);
@@ -152,7 +163,10 @@ public:
 		return static_cast<T&>(**ExistingValue);
 	}
 
-	NIAGARA_API TArrayView<const FNiagaraCachedViewInfo> GetCachedViewInfo() const { return MakeArrayView(CachedViewInfo); }
+	TArrayView<const FNiagaraCachedViewInfo> GetCachedViewInfo() const { return MakeArrayView(CachedViewInfo); }
+
+	//Returns the distance to the nearest viewpoint to the give location. Used for a distance on which to base LODs.
+	NIAGARA_API FVector::FReal GetLODDistance(FVector Location)const;
 
 	UNiagaraComponentPool* GetComponentPool() { return ComponentPool; }
 
@@ -195,9 +209,12 @@ public:
 	void PrimePoolForAllSystems();
 	void PrimePool(UNiagaraSystem* System);
 
+	static void RequestInvalidateCachedSystemScalabilityDataForAllWorlds();
+private:
 	static void InvalidateCachedSystemScalabilityDataForAllWorlds();
 	void InvalidateCachedSystemScalabilityData();
 
+public:
 	void SetDebugPlaybackMode(ENiagaraDebugPlaybackMode Mode) { RequestedDebugPlaybackMode = Mode; }
 	ENiagaraDebugPlaybackMode GetDebugPlaybackMode() const { return DebugPlaybackMode; }
 
@@ -210,15 +227,51 @@ public:
 
 	class FNiagaraDeferredMethodQueue& GetDeferredMethodQueue() { return DeferredMethods; }
 
+	/**
+	* Will create a new object or return one from the pool.
+	* Existing objects will not be unregistered / reset / sanitized, they come out exactly as they were put into the pool.
+	* You must hold a valid reference to the object or it will be GCed.
+	* New objects are outered to the world managers world.
+	* EXPERIMENTAL: This API is intended for internal use currently, it is subject to change
+	*/
+	NIAGARA_API UObject* ObjectPoolGetOrCreate(UClass* Class, bool& bIsExistingObject);
+	NIAGARA_API UObject* ObjectPoolGetOrCreate(UClass* Class);
+	
+	/**
+	* Returns an object to the pool
+	* You are expected to do any unregistering of the component and ensuring no references are held.
+	* EXPERIMENTAL: This API is intended for internal use currently, it is subject to change
+	*/
+	NIAGARA_API void ObjectPoolReturn(UObject* Obj);
+
+	template<class T>
+	T* ObjectPoolGetOrCreate() { return CastChecked<T>(ObjectPoolGetOrCreate(T::StaticClass())); }
+	template<class T>
+	T* ObjectPoolGetOrCreate(bool& bIsExistingObject) { return CastChecked<T>(ObjectPoolGetOrCreate(T::StaticClass(), bIsExistingObject)); }
+
+	/**
+	* Objects added here will have a strong reference held.
+	* EXPERIMENTAL: This API is intended for internal use currently, it is subject to change
+	*/
+	void AddReferencedObject(UObject* InObject) { check(!ReferencedObjects.Contains(InObject)); ReferencedObjects.Add(InObject); }
+	/**
+	* Removes an object from the WM references.
+	* EXPERIMENTAL: This API is intended for internal use currently, it is subject to change
+	*/
+	void RemoveReferencedObject(UObject* InObject) { check(ReferencedObjects.Contains(InObject)); ReferencedObjects.RemoveSwap(InObject); }
+
 	/** Is this component in anyway linked to the local player. */
 	static bool IsComponentLocalPlayerLinked(const USceneComponent* Component);
 
 	static void OnRefreshOwnerAllowsScalability();
 
 	NIAGARA_API static void SetScalabilityCullingMode(ENiagaraScalabilityCullingMode NewMode);
-	NIAGARA_API static ENiagaraScalabilityCullingMode GetScalabilityCullingMode() { return ScalabilityCullingMode; }
+	static ENiagaraScalabilityCullingMode GetScalabilityCullingMode() { return ScalabilityCullingMode; }
 
-	FNiagaraDataChannelManager& GetDataChannelManager(){ return DataChannelManager; }
+	FNiagaraDataChannelManager& GetDataChannelManager(){ return *DataChannelManager; }
+	NIAGARA_API void InitDataChannel(const UNiagaraDataChannel* Channel, bool bForce);
+	NIAGARA_API void RemoveDataChannel(const UNiagaraDataChannel* Channel);
+	NIAGARA_API UNiagaraDataChannelHandler* FindDataChannelHandler(const UNiagaraDataChannel* Channel);
 
 	/** Waits for all currently in flight async work to be completed. */
 	void WaitForAsyncWork();
@@ -238,6 +291,11 @@ private:
 
 	// Called when the world begins to be torn down for example by level streaming.
 	static void OnWorldBeginTearDown(UWorld* World);
+
+	static void OnWorldPreActorTick(UWorld* InWorld, ELevelTick InLevelTick, float InDeltaSeconds);
+
+	// Callback for when a world is ticked.
+	static void TickWorldStart(UWorld* World, ELevelTick TickType, float DeltaSeconds);
 
 	// Callback for when a world is ticked.
 	static void TickWorld(UWorld* World, ELevelTick TickType, float DeltaSeconds);
@@ -276,7 +334,9 @@ private:
 	static FDelegateHandle OnPostWorldCleanupHandle;
 	static FDelegateHandle OnPreWorldFinishDestroyHandle;
 	static FDelegateHandle OnWorldBeginTearDownHandle;
+	static FDelegateHandle TickWorldStartHandle;
 	static FDelegateHandle TickWorldHandle;
+	static FDelegateHandle OnWorldPreActorTickHandle;
 	static FDelegateHandle OnWorldPreSendAllEndOfFrameUpdatesHandle;
 	static FDelegateHandle PreGCHandle;
 	static FDelegateHandle PostReachabilityAnalysisHandle;
@@ -284,7 +344,9 @@ private:
 	static FDelegateHandle PreGCBeginDestroyHandle;
 	static FDelegateHandle ViewTargetChangedHandle;
 
-	static TMap<class UWorld*, class FNiagaraWorldManager*> WorldManagers;
+	static std::atomic<bool> bInvalidateCachedSystemScalabilityData;
+
+	static NIAGARA_API TMap<class UWorld*, class FNiagaraWorldManager*> WorldManagers;
 
 	UWorld* World = nullptr;
 
@@ -292,7 +354,7 @@ private:
 
 	FNiagaraWorldManagerTickFunction TickFunctions[NiagaraNumTickGroups];
 
-	TMap<UNiagaraParameterCollection*, UNiagaraParameterCollectionInstance*> ParameterCollections;
+	TMap<TObjectPtr<UNiagaraParameterCollection>, TObjectPtr<UNiagaraParameterCollectionInstance>> ParameterCollections;
 
 	TMap<UNiagaraSystem*, FNiagaraSystemSimulationRef> SystemSimulations[NiagaraNumTickGroups];
 
@@ -302,7 +364,7 @@ private:
 
 	TArray<FNiagaraCachedViewInfo, TInlineAllocator<8> > CachedViewInfo;
 
-	UNiagaraComponentPool* ComponentPool;
+	TObjectPtr<UNiagaraComponentPool> ComponentPool;
 	bool bPoolIsPrimed = false;
 
 	TMap<FNDI_GeneratedData::TypeHash, TUniquePtr<FNDI_GeneratedData>> DIGeneratedData;
@@ -311,7 +373,7 @@ private:
 	TArray<FNiagaraSystemInstancePtr> DeferredDeletionQueue;
 
 	UPROPERTY(transient)
-	TMap<UNiagaraEffectType*, FNiagaraScalabilityManager> ScalabilityManagers;
+	TMap<TObjectPtr<UNiagaraEffectType>, FNiagaraScalabilityManager> ScalabilityManagers;
 
 	FNiagaraDeferredMethodQueue DeferredMethods;
 
@@ -330,12 +392,15 @@ private:
 	TUniquePtr<class FNiagaraDebugHud> NiagaraDebugHud;
 #endif
 
-	TMap<UNiagaraSystem*, UNiagaraCullProxyComponent*> CullProxyMap;
+	TMap<TObjectPtr<UNiagaraSystem>, TObjectPtr<UNiagaraCullProxyComponent>> CullProxyMap;
+	TArray<TObjectPtr<UObject>> ReferencedObjects;
 
 	/** A global flag for all scalability culling */
 	static ENiagaraScalabilityCullingMode ScalabilityCullingMode;
 
-	FNiagaraDataChannelManager DataChannelManager;
+	TUniquePtr<FNiagaraDataChannelManager> DataChannelManager;
+
+	TUniquePtr<FNiagaraSimpleObjectPool> ObjectPool;
 };
 
 

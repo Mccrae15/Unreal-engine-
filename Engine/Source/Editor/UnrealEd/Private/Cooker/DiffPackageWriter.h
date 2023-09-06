@@ -3,7 +3,7 @@
 #pragma once
 
 #include "AssetRegistry/AssetRegistryState.h"
-#include "Serialization/ArchiveStackTrace.h"
+#include "Cooker/DiffWriterArchive.h"
 #include "Serialization/PackageWriter.h"
 
 /** A CookedPackageWriter that diffs output from the current cook with the file that was saved in the previous cook. */
@@ -45,8 +45,8 @@ public:
 	{
 		return Inner->GetExportsFooterSize();
 	}
-	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset) override;
-	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerExportsArchive(FName PackageName, UObject* Asset) override;
+	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex) override;
+	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerExportsArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex) override;
 	virtual bool IsPreSaveCompleted() const override
 	{
 		return bDiffCallstack;
@@ -95,10 +95,11 @@ public:
 	{
 		Inner->MarkPackagesUpToDate(UpToDatePackages);
 	}
-	virtual void UpdateSaveArguments(FSavePackageArgs& SaveArgs) override
+	virtual EPackageWriterResult BeginCacheForCookedPlatformData(FBeginCacheForCookedPlatformDataInfo& Info) override
 	{
-		Inner->UpdateSaveArguments(SaveArgs);
+		return Inner->BeginCacheForCookedPlatformData(Info);
 	}
+	virtual void UpdateSaveArguments(FSavePackageArgs& SaveArgs) override;
 	virtual bool IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs) override;
 	virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override
 	{
@@ -120,16 +121,21 @@ private:
 	bool FilterPackageName(const FString& InWildcard);
 	void ConditionallyDumpObjList();
 	void ConditionallyDumpObjects();
+	UE::DiffWriterArchive::FMessageCallback GetDiffWriterMessageCallback();
+	virtual void OnDiffWriterMessage(ELogVerbosity::Type Verbosity, FStringView Message);
 
-	FArchiveDiffMap DiffMap;
-	TUniquePtr<FArchiveCallstacks> ExportsCallstacks;
+	FDiffWriterDiffMap DiffMap[2];
+	TUniquePtr<FDiffWriterCallstacks> ExportsCallstacks;
 	FBeginPackageInfo BeginInfo;
 	TUniquePtr<ICookedPackageWriter> Inner;
+	const TCHAR* Indent = nullptr;
+	const TCHAR* NewLine = nullptr;
 	FString DumpObjListParams;
 	FString PackageFilter;
-	int64 ExportsDiffMapOffset = 0;
+	int64 ExportsDiffMapOffset[2] = {0, 0};
 	int32 MaxDiffsToLog = 5;
 	bool bSaveForDiff = false;
+	bool bDiffOptional = false;
 	bool bIgnoreHeaderDiffs = false;
 	bool bIsDifferent = false;
 	bool bDiffCallstack = false;
@@ -182,9 +188,9 @@ public:
 	{
 		return Inner->GetExportsFooterSize();
 	}
-	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset) override
+	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset, uint16 MultiOutputIndex) override
 	{
-		return Inner->CreateLinkerArchive(PackageName, Asset);
+		return Inner->CreateLinkerArchive(PackageName, Asset, MultiOutputIndex);
 	}
 	virtual bool IsPreSaveCompleted() const override
 	{
@@ -233,6 +239,10 @@ public:
 	virtual void MarkPackagesUpToDate(TArrayView<const FName> UpToDatePackages) override
 	{
 		Inner->MarkPackagesUpToDate(UpToDatePackages);
+	}
+	virtual EPackageWriterResult BeginCacheForCookedPlatformData(FBeginCacheForCookedPlatformDataInfo& Info) override
+	{
+		return Inner->BeginCacheForCookedPlatformData(Info);
 	}
 	virtual void UpdateSaveArguments(FSavePackageArgs& SaveArgs) override;
 	virtual bool IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs) override;

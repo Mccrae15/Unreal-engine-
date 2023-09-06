@@ -2,6 +2,7 @@
 
 #include "AnimNode_WheelController.h"
 #include "AnimationRuntime.h"
+#include "Animation/AnimStats.h"
 #include "WheeledVehiclePawn.h"
 #include "ChaosVehicleMovementComponent.h"
 
@@ -45,6 +46,8 @@ void FAnimNode_WheelController::EvaluateSkeletalControl_AnyThread(FComponentSpac
 {
 	check(OutBoneTransforms.Num() == 0);
 
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(WheelController, !IsInGameThread());
+
 	const TArray<FWheelAnimationData>& WheelAnimData = AnimInstanceProxy->GetWheelAnimData();
 
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
@@ -52,34 +55,41 @@ void FAnimNode_WheelController::EvaluateSkeletalControl_AnyThread(FComponentSpac
 	{
 		if (Wheel.BoneReference.IsValidToEvaluate(BoneContainer))
 		{
-			FCompactPoseBoneIndex WheelSimBoneIndex = Wheel.BoneReference.GetCompactPoseIndex(BoneContainer);
+			if (Wheel.WheelIndex < WheelAnimData.Num())
+			{
+				FCompactPoseBoneIndex WheelSimBoneIndex = Wheel.BoneReference.GetCompactPoseIndex(BoneContainer);
 
-			// the way we apply transform is same as FMatrix or FTransform
-			// we apply scale first, and rotation, and translation
-			// if you'd like to translate first, you'll need two nodes that first node does translate and second nodes to rotate. 
-			FTransform NewBoneTM = Output.Pose.GetComponentSpaceTransform(WheelSimBoneIndex);
+				// the way we apply transform is same as FMatrix or FTransform
+				// we apply scale first, and rotation, and translation
+				// if you'd like to translate first, you'll need two nodes that first node does translate and second nodes to rotate. 
+				FTransform NewBoneTM = Output.Pose.GetComponentSpaceTransform(WheelSimBoneIndex);
 
-			FAnimationRuntime::ConvertCSTransformToBoneSpace(Output.AnimInstanceProxy->GetComponentTransform(), Output.Pose, NewBoneTM, WheelSimBoneIndex, BCS_ComponentSpace);
+				FAnimationRuntime::ConvertCSTransformToBoneSpace(Output.AnimInstanceProxy->GetComponentTransform(), Output.Pose, NewBoneTM, WheelSimBoneIndex, BCS_ComponentSpace);
 
-			// Apply rotation offset
-			const FQuat BoneQuat(WheelAnimData[Wheel.WheelIndex].RotOffset);
-			NewBoneTM.SetRotation(BoneQuat * NewBoneTM.GetRotation());
+				// Apply rotation offset
+				const FQuat BoneQuat(WheelAnimData[Wheel.WheelIndex].RotOffset);
+				NewBoneTM.SetRotation(BoneQuat * NewBoneTM.GetRotation());
 
-			// Apply loc offset
-			NewBoneTM.AddToTranslation(WheelAnimData[Wheel.WheelIndex].LocOffset);
+				// Apply loc offset
+				NewBoneTM.AddToTranslation(WheelAnimData[Wheel.WheelIndex].LocOffset);
 
-			// Convert back to Component Space.
-			FAnimationRuntime::ConvertBoneSpaceTransformToCS(Output.AnimInstanceProxy->GetComponentTransform(), Output.Pose, NewBoneTM, WheelSimBoneIndex, BCS_ComponentSpace);
+				// Convert back to Component Space.
+				FAnimationRuntime::ConvertBoneSpaceTransformToCS(Output.AnimInstanceProxy->GetComponentTransform(), Output.Pose, NewBoneTM, WheelSimBoneIndex, BCS_ComponentSpace);
 
-			// add back to it
-			OutBoneTransforms.Add(FBoneTransform(WheelSimBoneIndex, NewBoneTM));
+				// add back to it
+				OutBoneTransforms.Add(FBoneTransform(WheelSimBoneIndex, NewBoneTM));
+			}
+			else
+			{
+				UE_LOG(LogChaos, Error, TEXT("Invalid condition Wheel.WheelIndex (%d) >= WheelAnimData.Num (%d)"), Wheel.WheelIndex, WheelAnimData.Num());
+			}
 		}
 	}
 
 #if ANIM_TRACE_ENABLED
 	for (const FWheelLookupData& Wheel : Wheels)
 	{
-		if (Wheel.BoneReference.BoneIndex != INDEX_NONE)
+		if ((Wheel.BoneReference.BoneIndex != INDEX_NONE) && (Wheel.WheelIndex < WheelAnimData.Num()))
 		{
 			TRACE_ANIM_NODE_VALUE(Output, *FString::Printf(TEXT("Wheel %d Name"), Wheel.WheelIndex), *Wheel.BoneReference.BoneName.ToString());
 			TRACE_ANIM_NODE_VALUE(Output, *FString::Printf(TEXT("Wheel %d Rotation Offset"), Wheel.WheelIndex), WheelAnimData[Wheel.WheelIndex].RotOffset);

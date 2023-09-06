@@ -67,7 +67,7 @@ SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float
 	// Water do nto read the classification data to avoid running it a second time when water is enabled.
 	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(SvPosition.xy, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
 	FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
-	if (StrataPixelHeader.BSDFCount > 0 && IsSingleLayerWater(StrataPixelHeader))
+	if (StrataPixelHeader.BSDFCount > 0 && StrataPixelHeader.IsSingleLayerWater())
 	{
 		float DeviceZ = SampleDeviceZFromSceneTextures(BufferUV);
 		float SceneDepth = ConvertFromDeviceZ(DeviceZ);
@@ -295,7 +295,7 @@ bool DoesPixelContainWater(uint2 PixelPos)
 #if STRATA_ENABLED
 	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
 	FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
-	return (StrataPixelHeader.BSDFCount > 0 && IsSingleLayerWater(StrataPixelHeader));
+	return (StrataPixelHeader.BSDFCount > 0 && StrataPixelHeader.IsSingleLayerWater());
 #else
 	float2 BufferUV = (PixelPos + 0.5f) * View.BufferSizeAndInvSize.zw;
 	FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
@@ -328,7 +328,7 @@ void WaterTileCatergorisationMarkCS(uint3 ThreadId : SV_DispatchThreadID, uint3 
 			uint WriteToIndex;
 			InterlockedAdd(DrawIndirectDataUAV[1], 1, WriteToIndex);
 			InterlockedAdd(DispatchIndirectDataUAV[0], 1);
-			WaterTileListDataUAV[WriteToIndex] = GroupId.x | (GroupId.y << 16); // assumes 16bit is enought to represent a tiled resolution up to 65,535 :)
+			WaterTileListDataUAV[WriteToIndex] = PackTileCoord16bits(GroupId.xy);
 		}
 	}
 
@@ -509,8 +509,13 @@ void WaterTileVS(
 	in uint VertexId : SV_VertexID,
 	out float4 Position : SV_POSITION) 
 {
-	uint TileData = TileListData[InstanceId.x];
-	uint2 TileOrigin = uint2((TileData & 0x0000FFFF) * SLW_TILE_SIZE_XY, (TileData >> 16) * SLW_TILE_SIZE_XY);
+	const uint PackedTile = TileListData[InstanceId.x];
+#if PERMUTATION_TILE_ENCODING == 0 		// 16bits coord
+	const uint2 TileCoord = UnpackTileCoord16bits(PackedTile);
+#elif PERMUTATION_TILE_ENCODING == 1 	// 12bits coord
+	const uint2 TileCoord = UnpackTileCoord12bits(PackedTile);
+#endif
+	const uint2 TileOrigin = TileCoord * SLW_TILE_SIZE_XY;
 
 	uint2 TileVertex = TileOrigin;
 	TileVertex.x += VertexId == 1 || VertexId == 2 || VertexId == 4 ? SLW_TILE_SIZE_XY : 0;
@@ -529,6 +534,8 @@ void SingleLayerWaterCompositePS(
 	in float4 SvPosition : SV_Position,
 	out float4 OutColor : SV_Target0)
 {
+	ResolvedView = ResolveView();
+
 	float2 BufferUV = SvPositionToBufferUV(SvPosition);
 	float2 ScreenPosition = SvPositionToScreenPosition(SvPosition).xy;
 

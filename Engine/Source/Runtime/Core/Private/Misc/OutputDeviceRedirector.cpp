@@ -2,11 +2,10 @@
 
 #include "Misc/OutputDeviceRedirector.h"
 
+#include "Async/EventCount.h"
 #include "Containers/BitArray.h"
-#include "Containers/DepletableMpmcQueue.h"
 #include "Containers/ConsumeAllMpmcQueue.h"
 #include "Experimental/ConcurrentLinearAllocator.h"
-#include "HAL/Event.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformTLS.h"
@@ -29,13 +28,8 @@ FBufferedLine::FBufferedLine(const TCHAR* InData, const FName& InCategory, ELogV
 	, Verbosity(InVerbosity)
 {
 	int32 NumChars = FCString::Strlen(InData) + 1;
-	void* Dest = FMemory::Malloc(sizeof(TCHAR) * NumChars);
-	Data = (TCHAR*)FMemory::Memcpy(Dest, InData, sizeof(TCHAR) * NumChars);
-}
-
-FBufferedLine::~FBufferedLine()
-{
-	FMemory::Free(const_cast<TCHAR*>(Data));
+	Data = MakeUniqueForOverwrite<TCHAR[]>(sizeof(TCHAR) * NumChars);
+	FMemory::Memcpy(Data.Get(), InData, sizeof(TCHAR) * NumChars);
 }
 
 namespace UE::Private
@@ -43,22 +37,9 @@ namespace UE::Private
 
 struct FOutputDeviceBlockAllocationTag : FDefaultBlockAllocationTag
 {
-	static constexpr const TCHAR* TagName = TEXT("OutputDeviceLinear");
+	static constexpr const char* TagName = "OutputDeviceLinear";
 
-	struct Allocator
-	{
-		static constexpr bool SupportsAlignment = false;
-
-		FORCEINLINE static void* Malloc(SIZE_T Size, uint32 Alignment)
-		{
-			return FMemory::Malloc(Size, DEFAULT_ALIGNMENT);
-		}
-
-		FORCEINLINE static void Free(void* Pointer, SIZE_T Size)
-		{
-			return FMemory::Free(Pointer);
-		}
-	};
+	using Allocator = FOsAllocator;
 };
 
 struct FOutputDeviceLinearAllocator
@@ -134,7 +115,7 @@ struct FOutputDeviceRedirectorState
 	uint8 OutputDevicesLockPadding[CalculateRedirectorCacheLinePadding(sizeof(OutputDevicesLock) + sizeof(OutputDevicesLockState))]{};
 
 	/** A queue of items logged by non-primary threads. */
-	TDepletableMpmcQueue<FOutputDeviceItem, FOutputDeviceLinearAllocator> BufferedItems;
+	TConsumeAllMpmcQueue<FOutputDeviceItem, FOutputDeviceLinearAllocator> BufferedItems;
 
 	/** Array of output devices to redirect to from the primary thread. */
 	TArray<FOutputDevice*> BufferedOutputDevices;
@@ -152,11 +133,11 @@ struct FOutputDeviceRedirectorState
 	/** A lock to synchronize access to the thread. */
 	FRWLock ThreadLock;
 
-	/** A queue of events to trigger when the dedicated primary thread is idle. */
-	TConsumeAllMpmcQueue<FEvent*, FOutputDeviceLinearAllocator> ThreadIdleEvents;
+	/** An event that is notified when the dedicated primary thread is idle. */
+	FEventCount ThreadIdleEvent;
 
 	/** An event to wake the dedicated primary thread to process buffered items. */
-	std::atomic<FEvent*> ThreadWakeEvent = nullptr;
+	FEventCount ThreadWakeEvent;
 
 	/** The ID of the thread holding the primary lock. */
 	std::atomic<uint32> LockedThreadId = MAX_uint32;
@@ -166,6 +147,9 @@ struct FOutputDeviceRedirectorState
 
 	/** The ID of the panic thread, which is only set by Panic(). */
 	std::atomic<uint32> PanicThreadId = MAX_uint32;
+
+	/** Whether a dedicated primary thread has been started. */
+	std::atomic<bool> bThreadStarted = false;
 
 	/** Whether the backlog is enabled. */
 	bool bEnableBacklog = false;
@@ -421,11 +405,8 @@ void FOutputDeviceRedirectorState::RemoveOutputDevice(FOutputDevice* OutputDevic
 
 bool FOutputDeviceRedirectorState::TryStartThread()
 {
-	if (FWriteScopeLock ThreadScopeLock(ThreadLock); !ThreadWakeEvent.load(std::memory_order_relaxed))
+	if (FWriteScopeLock ThreadScopeLock(ThreadLock); !bThreadStarted.exchange(true, std::memory_order_relaxed))
 	{
-		FEvent* WakeEvent = FPlatformProcess::GetSynchEventFromPool();
-		WakeEvent->Trigger();
-		ThreadWakeEvent.store(WakeEvent, std::memory_order_release);
 		Thread = FThread(TEXT("OutputDeviceRedirector"), [this] { ThreadLoop(); });
 	}
 	return true;
@@ -433,12 +414,10 @@ bool FOutputDeviceRedirectorState::TryStartThread()
 
 bool FOutputDeviceRedirectorState::TryStopThread()
 {
-	if (FWriteScopeLock ThreadScopeLock(ThreadLock); FEvent* WakeEvent = ThreadWakeEvent.exchange(nullptr, std::memory_order_acquire))
+	if (FWriteScopeLock ThreadScopeLock(ThreadLock); bThreadStarted.exchange(false, std::memory_order_relaxed))
 	{
-		WakeEvent->Trigger();
+		ThreadWakeEvent.Notify();
 		Thread.Join();
-		FOutputDevicesWriteScopeLock Lock(*this);
-		FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
 	}
 	return true;
 }
@@ -452,9 +431,13 @@ void FOutputDeviceRedirectorState::ThreadLoop()
 		PrimaryThreadId.store(ThreadId, std::memory_order_relaxed);
 	}
 
-	while (FEvent* WakeEvent = ThreadWakeEvent.load(std::memory_order_acquire))
+	for (;;)
 	{
-		WakeEvent->Wait();
+		FEventCountToken Token = ThreadWakeEvent.PrepareWait();
+		if (!bThreadStarted.load(std::memory_order_relaxed))
+		{
+			break;
+		}
 		while (!BufferedItems.IsEmpty() && IsPrimaryThread(ThreadId))
 		{
 			if (FOutputDevicesPrimaryScopeLock Lock(*this); Lock.IsLocked())
@@ -462,7 +445,8 @@ void FOutputDeviceRedirectorState::ThreadLoop()
 				FlushBufferedItems();
 			}
 		}
-		ThreadIdleEvents.ConsumeAllLifo([](FEvent* Event) { Event->Trigger(); });
+		ThreadIdleEvent.Notify();
+		ThreadWakeEvent.Wait(Token);
 	}
 }
 
@@ -479,25 +463,36 @@ void FOutputDeviceRedirectorState::FlushBufferedItems()
 	TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDeviceRedirector::FlushBufferedItems);
 
 	const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
-	BufferedItems.Deplete([this, ThreadId](FOutputDeviceItem&& Item)
+	bool bIsPanicThread = this->IsPanicThread(ThreadId);
+	BufferedItems.ConsumeAllFifo([this, ThreadId, bIsPanicThread](FOutputDeviceItem&& Item)
 	{
-		Visit([this, ThreadId](auto&& Value)
+		if (!bIsPanicThread && HasPanicThread())
 		{
-			using ValueType = std::decay_t<decltype(Value)>;
-			if constexpr (std::is_same_v<ValueType, FOutputDeviceLine>)
+			// Enqueuing during Deplete is okay because the items passed to the Deplete consumer
+			// are a moved list that is no longer associated with the queue; Deplete will return
+			// even though new items are in the queue.
+			BufferedItems.ProduceItem(MoveTemp(Item));
+		}
+		else
+		{
+			Visit([this, ThreadId](auto&& Value)
 			{
-				const FOutputDeviceLine& Line = Value;
-				BroadcastTo(ThreadId, BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread,
-					UE_PROJECTION_MEMBER(FOutputDevice, Serialize),
-					Line.Data, Line.Verbosity, Line.Category, Line.Time);
-			}
-			else if constexpr (std::is_same_v<ValueType, FLogRecord>)
-			{
-				const FLogRecord& Record = Value;
-				BroadcastTo(ThreadId, BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread,
-					UE_PROJECTION_MEMBER(FOutputDevice, SerializeRecord), Record);
-			}
-		}, Item.Value);
+				using ValueType = std::decay_t<decltype(Value)>;
+				if constexpr (std::is_same_v<ValueType, FOutputDeviceLine>)
+				{
+					const FOutputDeviceLine& Line = Value;
+					BroadcastTo(ThreadId, BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread,
+						UE_PROJECTION_MEMBER(FOutputDevice, Serialize),
+						Line.Data, Line.Verbosity, Line.Category, Line.Time);
+				}
+				else if constexpr (std::is_same_v<ValueType, FLogRecord>)
+				{
+					const FLogRecord& Record = Value;
+					BroadcastTo(ThreadId, BufferedOutputDevices, BufferedOutputDevicesCanBeUsedOnPanicThread,
+						UE_PROJECTION_MEMBER(FOutputDevice, SerializeRecord), Record);
+				}
+			}, Item.Value);
+		}
 	});
 }
 
@@ -555,17 +550,14 @@ bool FOutputDeviceRedirector::IsRedirectingTo(FOutputDevice* OutputDevice)
 
 void FOutputDeviceRedirector::FlushThreadedLogs(EOutputDeviceRedirectorFlushOptions Options)
 {
-	if (FReadScopeLock ThreadLock(State->ThreadLock); FEvent* WakeEvent = State->ThreadWakeEvent.load(std::memory_order_acquire))
+	if (FReadScopeLock ThreadLock(State->ThreadLock); State->bThreadStarted.load(std::memory_order_relaxed))
 	{
 		if (!EnumHasAnyFlags(Options, EOutputDeviceRedirectorFlushOptions::Async))
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(FOutputDeviceRedirector::FlushThreadedLogs);
-			FEventRef IdleEvent(EEventMode::ManualReset);
-			if (State->ThreadIdleEvents.ProduceItem(IdleEvent.Get()) == UE::EConsumeAllMpmcQueueResult::WasEmpty)
-			{
-				WakeEvent->Trigger();
-			}
-			IdleEvent->Wait();
+			UE::FEventCountToken Token = State->ThreadIdleEvent.PrepareWait();
+			State->ThreadWakeEvent.Notify();
+			State->ThreadIdleEvent.Wait(Token);
 		}
 		return;
 	}
@@ -581,7 +573,7 @@ void FOutputDeviceRedirector::SerializeBacklog(FOutputDevice* OutputDevice)
 	FReadScopeLock ScopeLock(State->BacklogLock);
 	for (const FBufferedLine& BacklogLine : State->BacklogLines)
 	{
-		OutputDevice->Serialize(BacklogLine.Data, BacklogLine.Verbosity, BacklogLine.Category, BacklogLine.Time);
+		OutputDevice->Serialize(BacklogLine.Data.Get(), BacklogLine.Verbosity, BacklogLine.Category, BacklogLine.Time);
 	}
 }
 
@@ -656,12 +648,9 @@ void FOutputDeviceRedirector::SerializeRecord(const UE::FLogRecord& Record)
 	}
 
 	// Queue the record to serialize to buffered output devices from the primary thread.
-	if (State->BufferedItems.EnqueueAndReturnWasEmpty(Record))
+	if (State->BufferedItems.ProduceItem(Record) == UE::EConsumeAllMpmcQueueResult::WasEmpty)
 	{
-		if (FEvent* WakeEvent = State->ThreadWakeEvent.load(std::memory_order_acquire))
-		{
-			WakeEvent->Trigger();
-		}
+		State->ThreadWakeEvent.Notify();
 	}
 }
 
@@ -720,12 +709,9 @@ void FOutputDeviceRedirector::Serialize(const TCHAR* const Data, const ELogVerbo
 	}
 
 	// Queue the line to serialize to buffered output devices from the primary thread.
-	if (State->BufferedItems.EnqueueAndReturnWasEmpty(Data, Category, Verbosity, RealTime))
+	if (State->BufferedItems.ProduceItem(Data, Category, Verbosity, RealTime) == UE::EConsumeAllMpmcQueueResult::WasEmpty)
 	{
-		if (FEvent* WakeEvent = State->ThreadWakeEvent.load(std::memory_order_acquire))
-		{
-			WakeEvent->Trigger();
-		}
+		State->ThreadWakeEvent.Notify();
 	}
 }
 

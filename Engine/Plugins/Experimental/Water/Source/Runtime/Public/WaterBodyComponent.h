@@ -7,6 +7,7 @@
 #include "WaterBodyWeightmapSettings.h"
 #include "WaterBodyHeightmapSettings.h"
 #include "WaterCurveSettings.h"
+#include "WaterBodyStaticMeshSettings.h"
 #include "WaterSplineMetadata.h"
 #include "WaterBodyTypes.h"
 
@@ -32,6 +33,8 @@ struct FPostProcessVolumeProperties;
 
 class UWaterSplineComponent;
 struct FOnWaterSplineDataChangedParams;
+class UWaterBodyStaticMeshComponent;
+class UWaterBodyInfoMeshComponent;
 class AWaterBodyIsland;
 class AWaterBodyExclusionVolume;
 class AWaterZone;
@@ -39,7 +42,6 @@ class ALandscapeProxy;
 class UMaterialInstanceDynamic;
 class FTokenizedMessage;
 namespace UE::Geometry { class FDynamicMesh3; }
-struct FDynamicMeshVertex;
 struct FMeshDescription;
 
 // ----------------------------------------------------------------------------------
@@ -93,25 +95,6 @@ enum class EWaterBodyStatus : uint8
 
 // ----------------------------------------------------------------------------------
 
-struct FWaterBodyMeshSection
-{
-public:
-	FWaterBodyMeshSection();
-	~FWaterBodyMeshSection();
-
-	bool IsValid() const { return (bool)SectionBounds.bIsValid; }
-
-	uint32 GetAllocatedSize() const;
-
-	TArray<FDynamicMeshVertex> Vertices;
-	TArray<uint32> Indices;
-
-	FBox2D SectionBounds;
-};
-
-
-// ----------------------------------------------------------------------------------
-
 struct FOnWaterBodyChangedParams
 {
 	FOnWaterBodyChangedParams(const FPropertyChangedEvent& InPropertyChangedEvent = FPropertyChangedEvent(/*InProperty = */nullptr))
@@ -141,14 +124,13 @@ class WATER_API UWaterBodyComponent : public UPrimitiveComponent
 
 	friend class AWaterBody;
 	friend class FWaterBodySceneProxy;
+	friend class FWaterBodyMeshBuilder;
 public:
 	virtual bool AffectsLandscape() const;
 	virtual bool AffectsWaterMesh() const;
 	virtual bool AffectsWaterInfo() const;
 	virtual bool CanEverAffectWaterMesh() const { return true; }
 
-	UE_DEPRECATED(5.1, "Use the version of this function taking FOnWaterBodyChangedParams in parameter")
-	void UpdateAll(bool bShapeOrPositionChanged) {}
 	void UpdateAll(const FOnWaterBodyChangedParams& InParams);
 
 #if WITH_EDITOR
@@ -164,6 +146,10 @@ public:
 	virtual FMeshDescription GetHLODMeshDescription() const;
 	virtual UMaterialInterface* GetHLODMaterial() const;
 	virtual void SetHLODMaterial(UMaterialInterface* InMaterial);
+
+	void UpdateWaterBodyRenderData();
+
+	void SetWaterBodyStaticMeshEnabled(bool bEnabled);
 #endif //WITH_EDITOR
 
 	/** Returns whether the body supports waves */
@@ -181,7 +167,7 @@ public:
 
 	/** Retrieves the list of primitive components that this water body uses when not being rendered by the water mesh (e.g. the static mesh component used when WaterMeshOverride is specified) */
 	UFUNCTION(BlueprintCallable, Category = Rendering)
-	virtual TArray<UPrimitiveComponent*> GetStandardRenderableComponents() const { return TArray<UPrimitiveComponent*>(); }
+	virtual TArray<UPrimitiveComponent*> GetStandardRenderableComponents() const { return {}; }
 
 	/** Returns the body's collision component bounds */
 	virtual FBox GetCollisionComponentBounds() const;
@@ -199,7 +185,7 @@ public:
 	virtual float GetHeightOffset() const { return 0.f; }
 
 	/** Sets a static mesh to use as a replacement for the water mesh (for water bodies that are being rendered by the water mesh) */
-	void SetWaterMeshOverride(UStaticMesh* InMesh) { WaterMeshOverride = InMesh; }
+	void SetWaterMeshOverride(UStaticMesh* InMesh);
 
 	/** Returns River to lake transition material instance (For internal use. Please use AWaterBodyRiver instead.) */
 	UFUNCTION(BlueprintCallable, Category = Rendering)
@@ -230,19 +216,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Rendering)
 	UMaterialInterface* GetWaterMaterial() const { return WaterMaterial; }
 
-	/** Returns material used to render the water LOD mesh sections */
-	UMaterialInterface* GetWaterLODMaterial() const { return WaterLODMaterial; }
+	/** Returns material used to render the water as a static mesh */
+	UMaterialInterface* GetWaterStaticMeshMaterial() const { return WaterStaticMeshMaterial; }
 
 	/** Sets water material */
 	void SetWaterMaterial(UMaterialInterface* InMaterial);
+
+	/** Sets water static mesh material */
+	void SetWaterStaticMeshMaterial(UMaterialInterface* InMaterial);
 
 	/** Returns water MID */
 	UFUNCTION(BlueprintCallable, Category = Rendering)
 	UMaterialInstanceDynamic* GetWaterMaterialInstance();
 
-	/** Returns water LOD MID */
+	/** Returns water static mesh MID */
 	UFUNCTION(BlueprintCallable, Category = Rendering)
-	UMaterialInstanceDynamic* GetWaterLODMaterialInstance();
+	UMaterialInstanceDynamic* GetWaterStaticMeshMaterialInstance();
+
+	/** Returns water LOD MID */
+	UE_DEPRECATED(5.3, "GetWaterLODMaterialInstance has been renamed to GetWaterStaticMeshMaterialInstance.")
+	UFUNCTION(BlueprintCallable, Category = Rendering, meta=(DeprecationMessage="GetWaterLODMaterialInstance has been renamed to GetWaterStaticMeshMaterialInstance"))
+	UMaterialInstanceDynamic* GetWaterLODMaterialInstance() { return GetWaterStaticMeshMaterialInstance(); };
 
 	/** Returns under water post process MID */
 	UFUNCTION(BlueprintCallable, Category = Rendering)
@@ -331,10 +325,6 @@ public:
 	virtual void OnUnregister() override;
 	virtual void PostDuplicate(bool bDuplicateForPie) override;
 
-	UE_DEPRECATED(5.2, "Use version which takes FOnWaterBodyChangedParams")
-	UFUNCTION(BlueprintCallable, Category=Water, meta=(Deprecated = "5.2"))
-	void OnWaterBodyChanged(bool bShapeOrPositionChanged, bool bWeightmapSettingsChanged = false);
-
 	void OnWaterBodyChanged(const FOnWaterBodyChangedParams& InParams);
 
 	/** Fills wave-related information at the given world position and for this water depth.
@@ -362,9 +352,9 @@ public:
 	bool IsWorldLocationInExclusionVolume(const FVector& InWorldLocation) const;
 
 	/** Updates the bVisible/bHiddenInGame flags on the component and eventually the child renderable components (e.g. custom water body)
-	 - bAllowWaterMeshRebuild : if true, the function will request a rebuild of the water mesh (expensive), which is necessary to take into account visibility changes
+	 - bAllowWaterZoneRebuild : if true, the function will request a rebuild of the water zone (expensive), which is necessary to take into account visibility changes
 	*/
-	virtual void UpdateComponentVisibility(bool bAllowWaterMeshRebuild);
+	virtual void UpdateComponentVisibility(bool bAllowWaterZoneRebuild);
 
 	/** Creates/Destroys/Updates necessary MIDS */
 	virtual void UpdateMaterialInstances();
@@ -394,23 +384,43 @@ public:
 	/** Gets the water zone to which this component belongs */
 	AWaterZone* GetWaterZone() const;
 
-	/** Registers or this water body with corresponding overlapping water zones and unregisters it from any old zones if they are no longer overlapping. */
-	void UpdateWaterZones();
+	/** Override the default behavior of water bodies finding their water zone based on bounds and set a specific water zone to which this water body should register. */
+	UFUNCTION(BlueprintCallable, Category=Water)
+	void SetWaterZoneOverride(const TSoftObjectPtr<AWaterZone>& InWaterZoneOverride);
 
-	void UpdateWaterBodyRenderData();
-	void UpdateNonTessellatedMeshSections();
+	/** 
+	 * Registers or this water body with corresponding overlapping water zones and unregisters it from any old zones if they are no longer overlapping.
+	 *
+	 * @param bAllowChangesDuringCook When disabled, this function will not make any changes during cook and just trust that the serialized pointer is correct. 
+	 */
+	void UpdateWaterZones(bool bAllowChangesDuringCook = false);
 
-	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
-	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const override;
-
-	void PushTessellatedWaterMeshBoundsToProxy(const FBox2D& TessellatedWaterMeshBounds);
-	
 	/** Set the navigation area class */
 	void SetNavAreaClass(TSubclassOf<UNavAreaBase> NewWaterNavAreaClass) { WaterNavAreaClass = NewWaterNavAreaClass; }
 
+	/* Generates the mesh representation of the water body */
+	virtual bool GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3& OutMesh, UE::Geometry::FDynamicMesh3* OutDilatedMesh = nullptr) const;
+
+	UWaterBodyInfoMeshComponent* GetWaterInfoMeshComponent() const;
+	UWaterBodyInfoMeshComponent* GetDilatedWaterInfoMeshComponent() const;
+
+	const FWaterBodyStaticMeshSettings& GetWaterBodyStaticMeshSettings() const { return StaticMeshSettings; }
 	
 	UE_DEPRECATED(5.1, "Renamed to CanEverAffectWaterMesh")
 	virtual bool CanAffectWaterMesh() const { return true; }
+
+	UE_DEPRECATED(5.1, "Use the version of this function taking FOnWaterBodyChangedParams in parameter")
+	void UpdateAll(bool bShapeOrPositionChanged) {}
+
+	UE_DEPRECATED(5.2, "Use version which takes FOnWaterBodyChangedParams")
+	UFUNCTION(BlueprintCallable, Category=Water, meta=(Deprecated = "5.2"))
+	void OnWaterBodyChanged(bool bShapeOrPositionChanged, bool bWeightmapSettingsChanged = false);
+
+	UE_DEPRECATED(5.3, "Renamed to GetWaterStaticMeshMaterial")
+	UMaterialInterface* GetWaterLODMaterial() const { return GetWaterStaticMeshMaterial(); }
+
+	UE_DEPRECATED(5.3, "Renamed to SetWaterStaticMeshMaterial")
+	void SetWaterLODMaterial(UMaterialInterface* InMaterial) { SetWaterStaticMeshMaterial(InMaterial); }
 
 protected:
 	//~ Begin UActorComponent interface.
@@ -442,8 +452,8 @@ protected:
 
 	virtual void OnUpdateBody(bool bWithExclusionVolumes) {}
 
-	/* Generates the meshes used to render the Water Info texture */
-	virtual bool GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3& OutMesh, UE::Geometry::FDynamicMesh3* OutDilatedMesh = nullptr) const { checkf(!AffectsWaterInfo(), TEXT("WaterBodyComponent affects water info but does not implement GenerateWaterBodyMesh!")); return false; }
+	/** Called when the WaterBodyActor has had all its components registered. */
+	virtual void OnPostRegisterAllComponents();
 
 	/** Returns navigation area class */
 	TSubclassOf<UNavAreaBase> GetNavAreaClass() const { return WaterNavAreaClass; }
@@ -463,6 +473,9 @@ protected:
 	/** Computes the attenuation factor to apply to the raw wave perturbation. Attenuates : normal/wave height/max wave height. */
 	virtual float GetWaveAttenuationFactor(const FVector& InPosition, float InWaterDepth) const;
 
+	/** Called by the owning actor when it receives a PostActorCreated callback */
+	virtual void OnPostActorCreated() {}
+
 #if WITH_EDITOR
 	/** Called by UWaterBodyComponent::PostEditChangeProperty. */
 	UE_DEPRECATED(5.1, "Use the version of the function taking FOnWaterBodyChangedParams")
@@ -472,13 +485,15 @@ protected:
 	/** Validates this component's data */
 	virtual void CheckForErrors() override;
 
-	virtual TArray<TSharedRef<FTokenizedMessage>> CheckWaterBodyStatus() const;
+	virtual TArray<TSharedRef<FTokenizedMessage>> CheckWaterBodyStatus();
 
 	virtual const TCHAR* GetWaterSpriteTextureName() const { return TEXT("/Water/Icons/WaterSprite"); }
 
 	virtual bool IsIconVisible() const { return true; }
 
 	virtual FVector GetWaterSpriteLocation() const { return GetComponentLocation(); }
+
+	virtual void OnWaterBodyRenderDataUpdated();
 #endif // WITH_EDITOR
 
 	EWaterBodyQueryFlags CheckAndAjustQueryFlags(EWaterBodyQueryFlags InQueryFlags) const;
@@ -486,7 +501,7 @@ protected:
 	void UpdateExclusionVolumes();
 	bool UpdateWaterHeight();
 	virtual void CreateOrUpdateWaterMID();
-	void CreateOrUpdateWaterLODMID();
+	void CreateOrUpdateWaterStaticMeshMID();
 	void CreateOrUpdateUnderwaterPostProcessMID();
 	void CreateOrUpdateWaterInfoMID();
 	void PrepareCurrentPostProcessSettings();
@@ -495,9 +510,6 @@ protected:
 	void RequestGPUWaveDataUpdate();
 	EObjectFlags GetTransientMIDFlags() const; 
 	void DeprecateData();
-	void RebuildWaterBodyInfoMesh();
-	void RebuildWaterBodyLODSections();
-	void OnTessellatedWaterMeshBoundsChanged();
 
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
@@ -521,6 +533,9 @@ protected:
 	void RegisterOnChangeWaterSplineData(bool bRegister);
 
 	void CreateWaterSpriteComponent();
+
+	void UpdateWaterInfoMeshComponents();
+	void UpdateWaterBodyStaticMeshComponents();
 
 	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const override;
 #endif // WITH_EDITOR
@@ -573,8 +588,8 @@ public:
 	UPROPERTY(Category = HLOD, EditAnywhere, BlueprintReadOnly, meta = (DisplayName = "Water HLOD Material"))
 	TObjectPtr<UMaterialInterface> WaterHLODMaterial;
 
-	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadOnly, meta = (DisplayName = "Water LOD Material"))
-	TObjectPtr<UMaterialInterface> WaterLODMaterial;
+	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadOnly)
+	TObjectPtr<UMaterialInterface> WaterStaticMeshMaterial;
 
 	/** Post process material to apply when the camera goes underwater (only available when bGenerateCollisions is true because collisions are needed to detect if it's under water). */
 	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadOnly, meta = (EditCondition = "bGenerateCollisions", DisplayAfter = "WaterMaterial"))
@@ -602,13 +617,16 @@ public:
 	UPROPERTY(Category = Terrain, EditAnywhere, BlueprintReadWrite)
 	bool bAffectsLandscape;
 
+	UPROPERTY(Category = Water, EditAnywhere)
+	FWaterBodyStaticMeshSettings StaticMeshSettings;
+
 protected:
 
 	/** Unique Id for accessing (wave, ... ) data in GPU buffers */
 	UPROPERTY(Transient, DuplicateTransient, NonTransactional, VisibleAnywhere, BlueprintReadOnly, Category = Water)
 	int32 WaterBodyIndex = INDEX_NONE;
 
-	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadOnly)
+	UPROPERTY(Category = Rendering, EditAnywhere, BlueprintReadWrite, Getter, Setter)
 	TObjectPtr<UStaticMesh> WaterMeshOverride;
 
 	/** 
@@ -628,8 +646,8 @@ protected:
 	UPROPERTY(Category = Debug, VisibleInstanceOnly, Transient, NonPIEDuplicateTransient, TextExportTransient, meta = (DisplayAfter = "WaterMaterial"))
 	TObjectPtr<UMaterialInstanceDynamic> WaterMID;
 
-	UPROPERTY(Category = Debug, VisibleInstanceOnly, Transient, NonPIEDuplicateTransient, TextExportTransient, meta = (DisplayAfter = "WaterLODMaterial"))
-	TObjectPtr<UMaterialInstanceDynamic> WaterLODMID;
+	UPROPERTY(Category = Debug, VisibleInstanceOnly, Transient, NonPIEDuplicateTransient, TextExportTransient, meta = (DisplayAfter = "WaterStaticMeshMaterial"))
+	TObjectPtr<UMaterialInstanceDynamic> WaterStaticMeshMID;
 
 	UPROPERTY(Category = Debug, VisibleInstanceOnly, Transient, NonPIEDuplicateTransient, TextExportTransient, meta = (DisplayAfter = "UnderwaterPostProcessMaterial"))
 	TObjectPtr<UMaterialInstanceDynamic> UnderwaterPostProcessMID;
@@ -647,7 +665,7 @@ protected:
 	UPROPERTY(Transient)
 	mutable TWeakObjectPtr<ALandscapeProxy> Landscape;
 
-	UPROPERTY(Category = Water, VisibleAnywhere, AdvancedDisplay)
+	UPROPERTY(Category = Water, VisibleInstanceOnly, AdvancedDisplay, TextExportTransient)
 	TSoftObjectPtr<AWaterZone> OwningWaterZone;
 
 	UPROPERTY(Category = Water, EditAnywhere, BlueprintReadOnly, AdvancedDisplay)
@@ -660,15 +678,6 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Navigation, meta = (EditCondition = "bCanAffectNavigation && bGenerateCollisions"))
 	TSubclassOf<UNavAreaBase> WaterNavAreaClass;
 
-	// #todo_water [roey]: serialize and don't rebuild on load.
-	TArray<FWaterBodyMeshSection> WaterBodyMeshSections;
-
-	TArray<FDynamicMeshVertex> WaterBodyMeshVertices;
-	TArray<uint32> WaterBodyMeshIndices;
-
-	TArray<FDynamicMeshVertex> DilatedWaterBodyMeshVertices;
-	TArray<uint32> DilatedWaterBodyMeshIndices;
-
 	/** If the Water Material assigned to this component has Fixed Depth enabled, this is the depth that is passed. */
 	UPROPERTY(Category = Water, EditAnywhere, AdvancedDisplay)
 	double FixedWaterDepth = 512.0;
@@ -678,6 +687,9 @@ protected:
 	TArray<TLazyObjectPtr<AWaterBodyIsland>> Islands_DEPRECATED;
 	UPROPERTY()
 	TArray<TLazyObjectPtr<AWaterBodyExclusionVolume>> ExclusionVolumes_DEPRECATED;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> WaterLODMaterial_DEPRECATED;
 
 	UPROPERTY()
 	bool bFillCollisionUnderWaterBodiesForNavmesh_DEPRECATED;

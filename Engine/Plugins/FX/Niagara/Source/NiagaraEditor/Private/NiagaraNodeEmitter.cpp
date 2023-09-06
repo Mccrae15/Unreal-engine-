@@ -347,7 +347,7 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 
 			// Build up a new parameter map history with all the child graph nodes..
 			FNiagaraParameterMapHistoryBuilder ChildBuilder;
-			ChildBuilder.ConstantResolver = OutHistory.ConstantResolver;
+			*ChildBuilder.ConstantResolver = *OutHistory.ConstantResolver;
 			ChildBuilder.RegisterEncounterableVariables(OutHistory.GetEncounterableVariables());
 			ChildBuilder.EnableScriptAllowList(true, GetUsage());
 
@@ -390,9 +390,7 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 						OutHistory.Histories[ParamMapIdx].PerVariableConstantValue[ExistingIdx].AddUnique(ConstantStr);	
 					}
 				}
-				OutHistory.Histories[ParamMapIdx].ParameterCollections.Append(History.ParameterCollections);
-				OutHistory.Histories[ParamMapIdx].ParameterCollectionNamespaces.Append(History.ParameterCollectionNamespaces);
-				OutHistory.Histories[ParamMapIdx].ParameterCollectionVariables.Append(History.ParameterCollectionVariables);
+				OutHistory.Histories[ParamMapIdx].EncounteredParameterCollections.Append(History.EncounteredParameterCollections);
 				OutHistory.Histories[ParamMapIdx].PinToConstantValues.Append(History.PinToConstantValues);
 			}
 
@@ -440,7 +438,7 @@ void UNiagaraNodeEmitter::BuildParameterMapHistory(FNiagaraParameterMapHistoryBu
 	}
 }
 
-void UNiagaraNodeEmitter::Compile(FHlslNiagaraTranslator *Translator, TArray<int32>& Outputs)
+void UNiagaraNodeEmitter::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {
 	NIAGARA_SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_Module_NiagaraNodeEmitter_Compile);
 	FPinCollectorArray InputPins;
@@ -448,7 +446,7 @@ void UNiagaraNodeEmitter::Compile(FHlslNiagaraTranslator *Translator, TArray<int
 	InputPins.RemoveAll([](UEdGraphPin* InputPin) { return (InputPin->PinType.PinCategory != UEdGraphSchema_Niagara::PinCategoryType) && (InputPin->PinType.PinCategory != UEdGraphSchema_Niagara::PinCategoryEnum); });
 
 	FPinCollectorArray OutputPins;
-	GetOutputPins(OutputPins);
+	GetCompilationOutputPins(OutputPins);
 
 	check(Outputs.Num() == 0);
 
@@ -474,7 +472,7 @@ void UNiagaraNodeEmitter::Compile(FHlslNiagaraTranslator *Translator, TArray<int
 		return;
 	}
 
-	int32 InputPinCompiled = Translator->CompilePin(InputPins[0]);
+	int32 InputPinCompiled = Translator->CompileInputPin(InputPins[0]);
 	if (!IsNodeEnabled())
 	{
 		// Do the minimal amount of work necessary if we are disabled.

@@ -11,6 +11,7 @@
 
 struct FPerInstanceRenderData;
 class UStaticMeshComponent;
+class UWorld;
 enum ECollisionTraceFlag : int;
 enum EMaterialDomain : int;
 struct FStaticMeshVertexFactories;
@@ -26,28 +27,56 @@ struct FMaterialAuditEntry
 	FName MaterialSlotName;
 	int32 MaterialIndex = INDEX_NONE;
 
-	uint8 bHasAnyError				: 1;
-	uint8 bHasNullMaterial			: 1;
-	uint8 bHasWorldPositionOffset	: 1;
-	uint8 bHasUnsupportedBlendMode	: 1;
-	uint8 bHasPixelDepthOffset		: 1;
-	uint8 bHasVertexInterpolator	: 1;
-	uint8 bHasPerInstanceRandomID	: 1;
-	uint8 bHasPerInstanceCustomData	: 1;
-	uint8 bHasInvalidUsage			: 1;
+	uint8 bHasAnyError					: 1;
+	uint8 bHasNullMaterial				: 1;
+	uint8 bHasWorldPositionOffset		: 1;
+	uint8 bHasUnsupportedBlendMode		: 1;
+	uint8 bHasUnsupportedShadingModel	: 1;
+	uint8 bHasPixelDepthOffset			: 1;
+	uint8 bHasDynamicDisplacement		: 1;
+	uint8 bHasVertexInterpolator		: 1;
+	uint8 bHasPerInstanceRandomID		: 1;
+	uint8 bHasPerInstanceCustomData		: 1;
+	uint8 bHasInvalidUsage				: 1;
 };
 
 struct FMaterialAudit
 {
 	FString AssetName;
 	TArray<FMaterialAuditEntry, TInlineAllocator<4>> Entries;
+	UMaterialInterface* FallbackMaterial;
 	uint8 bHasAnyError : 1;
+	uint8 bHasMasked : 1;
+	uint8 bHasSky : 1;
+
+	FMaterialAudit()
+		: FallbackMaterial(nullptr)
+		, bHasAnyError(false)
+		, bHasMasked(false)
+		, bHasSky(false)
+	{}
+
+	FORCEINLINE bool IsValid(bool bAllowMasked) const
+	{
+		return !bHasAnyError && !bHasSky && (bAllowMasked || !bHasMasked);
+	}
 
 	FORCEINLINE UMaterialInterface* GetMaterial(int32 MaterialIndex) const
 	{
 		if (Entries.IsValidIndex(MaterialIndex))
 		{
 			return Entries[MaterialIndex].Material;
+		}
+
+		return nullptr;
+	}
+
+	FORCEINLINE UMaterialInterface* GetSafeMaterial(int32 MaterialIndex) const
+	{
+		if (Entries.IsValidIndex(MaterialIndex))
+		{
+			const FMaterialAuditEntry& AuditEntry = Entries[MaterialIndex];
+			return AuditEntry.bHasAnyError ? FallbackMaterial : AuditEntry.Material;
 		}
 
 		return nullptr;
@@ -75,13 +104,14 @@ struct FMaterialAudit
 };
 
 ENGINE_API void AuditMaterials(const UStaticMeshComponent* Component, FMaterialAudit& Audit);
-ENGINE_API void FixupMaterials(FMaterialAudit& Audit);
 ENGINE_API bool IsSupportedBlendMode(EBlendMode Mode);
 ENGINE_API bool IsSupportedBlendMode(const FMaterial& In);
 ENGINE_API bool IsSupportedBlendMode(const FMaterialShaderParameters& In);
 ENGINE_API bool IsSupportedBlendMode(const UMaterialInterface& In);
 ENGINE_API bool IsSupportedMaterialDomain(EMaterialDomain Domain);
-ENGINE_API bool IsWorldPositionOffsetSupported();
+ENGINE_API bool IsSupportedShadingModel(FMaterialShadingModelField ShadingModelField);
+
+ENGINE_API bool IsMaskingAllowed(UWorld* World, bool bForceNaniteForMasked);
 
 struct FResourceMeshInfo
 {
@@ -93,6 +123,8 @@ struct FResourceMeshInfo
 	uint32 NumTriangles = 0;
 	uint32 NumMaterials = 0;
 	uint32 NumSegments = 0;
+
+	uint32 NumResidentClusters = 0;
 
 	FDebugName DebugName;
 };
@@ -130,28 +162,46 @@ public:
 		HHitProxy* HitProxy = nullptr;
 	#endif
 		int32 MaterialIndex = INDEX_NONE;
-		float MaxWPODisplacement = 0.0f;
+		float MaxWPOExtent = 0.0f;
+
+		FDisplacementScaling DisplacementScaling;
 
 		FMaterialRelevance MaterialRelevance;
 
 		uint8 bHasPerInstanceRandomID : 1;
 		uint8 bHasPerInstanceCustomData : 1;
 		uint8 bHidden : 1;
+		uint8 bAlwaysEvaluateWPO : 1;
 	#if WITH_EDITORONLY_DATA
 		uint8 bSelected : 1;
 	#endif
+
+		ENGINE_API void ResetToDefaultMaterial(bool bShading = true, bool bRaster = true);
+
+		inline bool IsProgrammableRaster(bool bEvaluateWPO) const
+		{
+			// NOTE: MaterialRelevance.bTwoSided does not go into bHasProgrammableRaster
+			// because we want only want this flag to control culling, not a full raster bin
+			return (bEvaluateWPO && MaterialRelevance.bUsesWorldPositionOffset) ||
+				MaterialRelevance.bUsesPixelDepthOffset ||
+				MaterialRelevance.bMasked ||
+				MaterialRelevance.bUsesDisplacement;
+		}
 	};
 
 public:
-	ENGINE_API FSceneProxyBase(UPrimitiveComponent* Component)
+	FSceneProxyBase(UPrimitiveComponent* Component)
 	: FPrimitiveSceneProxy(Component)
 	{
 		bIsNaniteMesh  = true;
 		bHasProgrammableRaster = false;
 		bReverseCulling = false;
+	#if WITH_EDITOR
+		bHasSelectedInstances = false;
+	#endif
 	}
 
-	ENGINE_API virtual ~FSceneProxyBase() = default;
+	virtual ~FSceneProxyBase() = default;
 
 #if WITH_EDITOR
 	ENGINE_API virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy>>& OutHitProxies) override;
@@ -211,6 +261,11 @@ public:
 	{
 		return HitProxyMode;
 	}
+
+	inline bool HasSelectedInstances() const
+	{
+		return bHasSelectedInstances;
+	}
 #endif
 
 	void UpdateMaterialDynamicDataUsage()
@@ -236,10 +291,11 @@ public:
 
 protected:
 	ENGINE_API void DrawStaticElementsInternal(FStaticPrimitiveDrawInterface* PDI, const FLightCacheInterface* LCI);
-	ENGINE_API void CalculateMaxWPODisplacement();
+	ENGINE_API void OnMaterialsUpdated();
 
 protected:
 	TArray<FMaterialSection> MaterialSections;
+	FMaterialRelevance CombinedMaterialRelevance;
 
 #if RHI_RAYTRACING
 	TArray<TArray<FMaterialRenderProxy*>> RayTracingMaterialProxiesPerLOD;
@@ -254,6 +310,9 @@ protected:
 	EFilterFlags FilterFlags = EFilterFlags::None;
 	uint8 bHasProgrammableRaster : 1;
 	uint8 bReverseCulling : 1;
+#if WITH_EDITOR
+	uint8 bHasSelectedInstances : 1;
+#endif
 
 private:
 
@@ -261,32 +320,32 @@ private:
 	uint32 RayTracingDataOffset = INDEX_NONE;
 };
 
-class ENGINE_API FSceneProxy : public FSceneProxyBase
+class FSceneProxy : public FSceneProxyBase
 {
 public:
 	using Super = FSceneProxyBase;
 
-	FSceneProxy(UStaticMeshComponent* Component);
-	FSceneProxy(UInstancedStaticMeshComponent* Component);
-	FSceneProxy(UHierarchicalInstancedStaticMeshComponent* Component);
+	ENGINE_API FSceneProxy(const FMaterialAudit& MaterialAudit, UStaticMeshComponent* Component);
+	ENGINE_API FSceneProxy(const FMaterialAudit& MaterialAudit, UInstancedStaticMeshComponent* Component);
+	ENGINE_API FSceneProxy(const FMaterialAudit& MaterialAudit, UHierarchicalInstancedStaticMeshComponent* Component);
 
-	virtual ~FSceneProxy();
+	ENGINE_API virtual ~FSceneProxy();
 
 public:
 	// FPrimitiveSceneProxy interface.
-	virtual SIZE_T GetTypeHash() const override;
-	virtual FPrimitiveViewRelevance	GetViewRelevance(const FSceneView* View) const override;
-	virtual void GetLightRelevance(const FLightSceneProxy* LightSceneProxy, bool& bDynamic, bool& bRelevant, bool& bLightMapped, bool& bShadowMapped) const override;
+	ENGINE_API virtual SIZE_T GetTypeHash() const override;
+	ENGINE_API virtual FPrimitiveViewRelevance	GetViewRelevance(const FSceneView* View) const override;
+	ENGINE_API virtual void GetLightRelevance(const FLightSceneProxy* LightSceneProxy, bool& bDynamic, bool& bRelevant, bool& bLightMapped, bool& bShadowMapped) const override;
 
 #if WITH_EDITOR
-	virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy>>& OutHitProxies) override;
+	ENGINE_API virtual HHitProxy* CreateHitProxies(UPrimitiveComponent* Component, TArray<TRefCountPtr<HHitProxy>>& OutHitProxies) override;
 #endif
-	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
-	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
+	ENGINE_API virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
+	ENGINE_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 #if NANITE_ENABLE_DEBUG_RENDERING
 	/** Sets up a collision FMeshBatch for a specific LOD and element. */
-	virtual bool GetCollisionMeshElement(
+	ENGINE_API virtual bool GetCollisionMeshElement(
 		int32 LODIndex,
 		int32 BatchIndex,
 		int32 ElementIndex,
@@ -296,15 +355,15 @@ public:
 #endif
 
 #if RHI_RAYTRACING
-	virtual bool HasRayTracingRepresentation() const override;
+	ENGINE_API virtual bool HasRayTracingRepresentation() const override;
 	virtual bool IsRayTracingRelevant() const { return true; }
 	virtual bool IsRayTracingStaticRelevant() const { return true; }
-	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) override;
-	virtual ERayTracingPrimitiveFlags GetCachedRayTracingInstance(FRayTracingInstance& RayTracingInstance) override;
+	ENGINE_API virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<struct FRayTracingInstance>& OutRayTracingInstances) override;
+	ENGINE_API virtual ERayTracingPrimitiveFlags GetCachedRayTracingInstance(FRayTracingInstance& RayTracingInstance) override;
 	virtual Nanite::CoarseMeshStreamingHandle GetCoarseMeshStreamingHandle() const override { return CoarseMeshStreamingHandle; }
 #endif
 
-	virtual uint32 GetMemoryFootprint() const override;
+	ENGINE_API virtual uint32 GetMemoryFootprint() const override;
 
 	virtual void GetLCIs(FLCIArray& LCIs) override
 	{
@@ -312,15 +371,15 @@ public:
 		LCIs.Add(LCI);
 	}
 
-	virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
-	virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
-	virtual bool HasDistanceFieldRepresentation() const override;
+	ENGINE_API virtual void GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const override;
+	ENGINE_API virtual void GetDistanceFieldInstanceData(TArray<FRenderTransform>& InstanceLocalToPrimitiveTransforms) const override;
+	ENGINE_API virtual bool HasDistanceFieldRepresentation() const override;
 
-	virtual const FCardRepresentationData* GetMeshCardRepresentation() const override;
+	ENGINE_API virtual const FCardRepresentationData* GetMeshCardRepresentation() const override;
 
-	virtual int32 GetLightMapCoordinateIndex() const override;
+	ENGINE_API virtual int32 GetLightMapCoordinateIndex() const override;
 
-	virtual void OnTransformChanged() override;
+	ENGINE_API virtual void OnTransformChanged() override;
 
 	virtual void GetNaniteResourceInfo(uint32& OutResourceID, uint32& OutHierarchyOffset, uint32& OutImposterIndex) const override
 	{
@@ -334,10 +393,12 @@ public:
 		OutMaterialMask = NaniteMaterialMask;
 	}
 
-	virtual FResourceMeshInfo GetResourceMeshInfo() const override;
+	ENGINE_API virtual FResourceMeshInfo GetResourceMeshInfo() const override;
 
-	virtual bool GetInstanceDrawDistanceMinMax(FVector2f& OutCullRange) const override;
-	virtual bool GetInstanceWorldPositionOffsetDisableDistance(float& OutWPODisableDistance) const override;
+	ENGINE_API virtual bool GetInstanceDrawDistanceMinMax(FVector2f& OutCullRange) const override;
+	ENGINE_API virtual bool GetInstanceWorldPositionOffsetDisableDistance(float& OutWPODisableDistance) const override;
+
+	ENGINE_API virtual void SetWorldPositionOffsetDisableDistance_GameThread(int32 NewValue) override;
 
 	const UStaticMesh* GetStaticMesh() const
 	{
@@ -345,9 +406,9 @@ public:
 	}
 
 protected:
-	virtual void CreateRenderThreadResources() override;
+	ENGINE_API virtual void CreateRenderThreadResources() override;
 
-	virtual void OnEvaluateWorldPositionOffsetChanged_RenderThread() override;
+	ENGINE_API virtual void OnEvaluateWorldPositionOffsetChanged_RenderThread() override;
 
 	class FMeshInfo : public FLightCacheInterface
 	{
@@ -361,16 +422,16 @@ protected:
 		TArray<FGuid> IrrelevantLights;
 	};
 
-	bool IsCollisionView(const FEngineShowFlags& EngineShowFlags, bool& bDrawSimpleCollision, bool& bDrawComplexCollision) const;
+	ENGINE_API bool IsCollisionView(const FEngineShowFlags& EngineShowFlags, bool& bDrawSimpleCollision, bool& bDrawComplexCollision) const;
 
 #if RHI_RAYTRACING
-	int32 GetFirstValidRaytracingGeometryLODIndex() const;
-	void SetupRayTracingMaterials(int32 LODIndex, TArray<FMeshBatch>& Materials, bool bUseNaniteVertexFactory) const;
+	ENGINE_API int32 GetFirstValidRaytracingGeometryLODIndex() const;
+	ENGINE_API void SetupRayTracingMaterials(int32 LODIndex, TArray<FMeshBatch>& Materials, bool bUseNaniteVertexFactory) const;
 #endif // RHI_RAYTRACING
 
 #if NANITE_ENABLE_DEBUG_RENDERING
 	/** Configures mesh batch vertex / index state. Returns the number of primitives used in the element. */
-	uint32 SetMeshElementGeometrySource(
+	ENGINE_API uint32 SetMeshElementGeometrySource(
 		int32 LODIndex,
 		int32 ElementIndex,
 		bool bWireframe,
@@ -378,7 +439,7 @@ protected:
 		const ::FVertexFactory* VertexFactory,
 		FMeshBatch& OutMeshElement) const;
 
-	bool IsReversedCullingNeeded(bool bUseReversedIndices) const;
+	ENGINE_API bool IsReversedCullingNeeded(bool bUseReversedIndices) const;
 #endif
 
 protected:
@@ -392,8 +453,6 @@ protected:
 
 	FUint32Vector2 NaniteMaterialMask = FUint32Vector2(~uint32(0), ~uint32(0));
 
-	FMaterialRelevance CombinedMaterialRelevance;
-
 	uint32 bHasMaterialErrors : 1;
 
 	const UStaticMesh* StaticMesh = nullptr;
@@ -402,13 +461,6 @@ protected:
 	TSharedPtr<FPerInstanceRenderData, ESPMode::ThreadSafe> PerInstanceRenderData;
 
 	uint32 EndCullDistance = 0;
-
-#if WITH_EDITOR
-	/* If we we have any selected instances */
-	bool bHasSelectedInstances;
-#else
-	static const bool bHasSelectedInstances = false;
-#endif
 
 #if RHI_RAYTRACING
 	bool bHasRayTracingInstances = false;

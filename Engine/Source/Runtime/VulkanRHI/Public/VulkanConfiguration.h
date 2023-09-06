@@ -15,7 +15,7 @@ struct VkAllocationCallbacks;
 
 // API version we want to target.
 #ifndef UE_VK_API_VERSION
-	#define UE_VK_API_VERSION									VK_API_VERSION_1_0
+	#define UE_VK_API_VERSION									VK_API_VERSION_1_1
 #endif
 
 // by default, we enable debugging in Development builds, unless the platform says not to
@@ -108,11 +108,7 @@ struct VkAllocationCallbacks;
 #endif
 
 #ifndef VULKAN_SUPPORTS_DEDICATED_ALLOCATION
-	#ifdef VK_KHR_dedicated_allocation
-		#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION			1
-	#else
-		#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION			0
-	#endif
+	#define VULKAN_SUPPORTS_DEDICATED_ALLOCATION				1
 #endif
 
 #ifndef VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING
@@ -166,60 +162,24 @@ struct VkAllocationCallbacks;
 #endif
 
 #ifndef VULKAN_SUPPORTS_DEBUG_UTILS
-	#ifdef VK_EXT_debug_utils
-		#define VULKAN_SUPPORTS_DEBUG_UTILS						1
-	#else
-		#define VULKAN_SUPPORTS_DEBUG_UTILS						0
-	#endif
+	#define VULKAN_SUPPORTS_DEBUG_UTILS							1
 #endif
 
 #ifndef VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT
-	#ifdef VK_EXT_scalar_block_layout
-		#define VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT				1
-	#else
-		#define VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT				0
-	#endif
+	#define VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT					1
 #endif
 
 
 #ifndef VULKAN_SUPPORTS_MEMORY_BUDGET
-	#ifdef VK_EXT_memory_budget
-		#define VULKAN_SUPPORTS_MEMORY_BUDGET					1
-	#else
-		#define VULKAN_SUPPORTS_MEMORY_BUDGET					0
-	#endif
+	#define VULKAN_SUPPORTS_MEMORY_BUDGET						1
 #endif
 
 #ifndef VULKAN_SUPPORTS_MEMORY_PRIORITY
-	#ifdef VK_EXT_memory_priority
-		#define VULKAN_SUPPORTS_MEMORY_PRIORITY					1
-	#else
-		#define VULKAN_SUPPORTS_MEMORY_PRIORITY					0
-	#endif
-#endif
-
-#ifndef VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
-	#ifdef VK_KHR_get_physical_device_properties2
-		#define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2		1
-	#else
-		#define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2		0
-	#endif
-#endif
-
-#ifndef VULKAN_SUPPORTS_EXTERNAL_MEMORY
-	#ifdef VK_KHR_external_memory_capabilities
-		#define VULKAN_SUPPORTS_EXTERNAL_MEMORY					(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
-	#else
-		#define VULKAN_SUPPORTS_EXTERNAL_MEMORY					0
-	#endif
+	#define VULKAN_SUPPORTS_MEMORY_PRIORITY						1
 #endif
 
 #ifndef VULKAN_SUPPORTS_DRIVER_PROPERTIES
-	#ifdef VK_KHR_driver_properties
-		#define VULKAN_SUPPORTS_DRIVER_PROPERTIES				1
-	#else
-		#define VULKAN_SUPPORTS_DRIVER_PROPERTIES				0
-	#endif
+	#define VULKAN_SUPPORTS_DRIVER_PROPERTIES					1
 #endif
 
 #ifndef VULKAN_SUPPORTS_QCOM_RENDERPASS_TRANSFORM
@@ -242,30 +202,6 @@ struct VkAllocationCallbacks;
 #endif
 #endif
 
-#ifndef VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
-	#ifdef VK_EXT_fragment_density_map
-		#define VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP			1
-	#else
-		#define VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP			0
-	#endif
-#endif
-
-#ifndef VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
-	#ifdef VK_EXT_fragment_density_map2
-		#define VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2			1
-	#else
-		#define VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2			0
-	#endif
-#endif
-
-#ifndef VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	#ifdef VK_KHR_fragment_shading_rate
-		#define VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE 1
-	#else
-		#define VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE 0
-	#endif
-#endif
-
 #ifndef VULKAN_SUPPORTS_RENDERPASS2
 	#ifdef VK_KHR_create_renderpass2
 		#define VULKAN_SUPPORTS_RENDERPASS2 1
@@ -284,22 +220,10 @@ struct VkAllocationCallbacks;
 
 #ifndef VULKAN_SUPPORTS_ASTC_DECODE_MODE
 	#ifdef VK_EXT_astc_decode_mode
-		#define VULKAN_SUPPORTS_ASTC_DECODE_MODE				(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
+		#define VULKAN_SUPPORTS_ASTC_DECODE_MODE				1
 	#else
 		#define VULKAN_SUPPORTS_ASTC_DECODE_MODE				0
 	#endif
-#endif
-
-#ifdef VK_KHR_shader_atomic_int64
-	#define VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS	(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
-#else
-	#define VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS	0
-#endif
-
-#ifdef VK_EXT_shader_image_atomic_int64
-	#define VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS		(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
-#else
-	#define VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS		0
 #endif
 
 #ifdef VK_EXT_shader_viewport_index_layer
@@ -310,7 +234,7 @@ struct VkAllocationCallbacks;
 
 #ifndef VULKAN_SUPPORTS_DESCRIPTOR_INDEXING
 	#ifdef VK_EXT_descriptor_indexing
-		#define VULKAN_SUPPORTS_DESCRIPTOR_INDEXING	(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)	// Requirement
+		#define VULKAN_SUPPORTS_DESCRIPTOR_INDEXING	1
 	#else
 		#define VULKAN_SUPPORTS_DESCRIPTOR_INDEXING	0
 	#endif

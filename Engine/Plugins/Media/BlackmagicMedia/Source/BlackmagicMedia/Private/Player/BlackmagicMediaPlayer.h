@@ -4,6 +4,8 @@
 
 #include "MediaIOCorePlayerBase.h"
 
+#include "BlackmagicMediaPrivate.h"
+
 #include "BlackmagicMediaSource.h"
 #include "HAL/CriticalSection.h"
 #include "MediaIOCoreAudioSampleBase.h"
@@ -24,7 +26,40 @@ namespace BlackmagicMediaPlayerHelpers
 class FBlackmagicMediaTextureSample : public FMediaIOCoreTextureSampleBase
 {
 public:
-	virtual const FMatrix& GetYUVToRGBMatrix() const override { return MediaShaders::YuvToRgbRec709Scaled; }
+	virtual const FMatrix& GetYUVToRGBMatrix() const override
+	{
+		return MediaShaders::YuvToRgbRec709Scaled;
+	}
+
+	//~ Begin IMediaPoolable interface
+public:
+	virtual void ShutdownPoolable() override
+	{
+		// Normally it should be explicitly released after GPU transfer. Just a bit of safety.
+		ReleaseBlackmagicInternalBuffer();
+
+		FMediaIOCoreTextureSampleBase::ShutdownPoolable();
+	}
+	//~ End IMediaPoolable interface
+
+public:
+
+	/** Returns buffer guard so it can be initialized outside (for performance reason) */
+	TSharedPtr<BlackmagicDesign::IInputEventCallback::FFrameBufferHolder>& GetBlackmagicInternalBufferLocker()
+	{
+		return VideoBufferGuard;
+	}
+
+	/** Unlock internal buffer referenced by this sample */
+	void ReleaseBlackmagicInternalBuffer()
+	{
+		VideoBufferGuard.Reset();
+	}
+
+private:
+
+	/** Buffer guard instance */
+	TSharedPtr<BlackmagicDesign::IInputEventCallback::FFrameBufferHolder> VideoBufferGuard;
 };
 
 class FBlackmagicMediaAudioSamplePool : public TMediaObjectPool<FMediaIOCoreAudioSampleBase> { };
@@ -87,32 +122,34 @@ public:
 	virtual bool IsHardwareReady() const override;
 
 protected:
-	/** Setup our different channels with the current set of settings */
+	//~ Begin FMediaIOCorePlayerBase interface
 	virtual void SetupSampleChannels() override;
-
 	virtual uint32 GetNumVideoFrameBuffers() const override 
 	{
 		return MaxNumVideoFrameBuffer;
 	}
-
 	virtual EMediaIOCoreColorFormat GetColorFormat() const override
 	{
 		return BlackmagicColorFormat == EBlackmagicMediaSourceColorFormat::YUV8 ? EMediaIOCoreColorFormat::YUV8 : EMediaIOCoreColorFormat::YUV10;
 	}
-
-	virtual void AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample) override;
+	virtual void AddVideoSampleAfterGPUTransfer_RenderThread(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample) override;
+	virtual TSharedPtr<FMediaIOCoreTextureSampleBase> AcquireTextureSample_AnyThread() const override
+	{
+		return TextureSamplePool->AcquireShared();
+	}
+	//~ End FMediaIOCorePlayerBase interface
 
 private:
 
 	friend BlackmagicMediaPlayerHelpers::FBlackmagicMediaPlayerEventCallback;
-	BlackmagicMediaPlayerHelpers::FBlackmagicMediaPlayerEventCallback* EventCallback;
+	BlackmagicMediaPlayerHelpers::FBlackmagicMediaPlayerEventCallback* EventCallback = nullptr;
 
 	/** Audio, MetaData, Texture  sample object pool. */
 	TUniquePtr<FBlackmagicMediaAudioSamplePool> AudioSamplePool;
 	TUniquePtr<FBlackmagicMediaTextureSamplePool> TextureSamplePool;
 
 	/** Log warning about the amount of audio/video frame can't could not be cached . */
-	bool bVerifyFrameDropCount;
+	bool bVerifyFrameDropCount = false;
 
 	/** Max sample count our different buffer can hold. Taken from MediaSource */
 	int32 MaxNumAudioFrameBuffer = 0;
@@ -122,4 +159,16 @@ private:
 	EMediaIOSampleType SupportedSampleTypes;
 
 	EBlackmagicMediaSourceColorFormat BlackmagicColorFormat = EBlackmagicMediaSourceColorFormat::YUV8;
+
+	/** Whether to override the source encoding or to use the metadata embedded in the ancillary data of the signal. */
+	bool bOverrideSourceEncoding = true;
+
+	/** Encoding of the source texture. */
+	ETextureSourceEncoding OverrideSourceEncoding = ETextureSourceEncoding::TSE_Linear;
+
+	/** Whether to override the source color space or to use the metadata embedded in the ancillary data of the signal. */
+	bool bOverrideSourceColorSpace = true;
+
+	/** Color space of the source texture. */
+	ETextureColorSpace OverrideSourceColorSpace = ETextureColorSpace::TCS_None;
 };

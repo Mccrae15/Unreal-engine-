@@ -12,6 +12,7 @@
 #include "Misc/ScopeRWLock.h"
 #include "Async/MappedFileHandle.h"
 #include "Async/Future.h"
+#include "Containers/IntrusiveDoubleLinkedList.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVFC, Log, All);
 
@@ -112,6 +113,8 @@ struct IFileTableReader
 	virtual TIoStatusOr<uint64> GetSizeForChunk(const VFCKey& Id) const = 0;
 	virtual bool DoesChunkExist(const VFCKey& Id) const = 0;
 	virtual double CurrentFragmentation() const = 0;
+	virtual int64 GetUsedSize() const = 0;
+	virtual int64 GetTotalSize() const = 0;
 };
 
 struct FFileTable : IFileTableReader
@@ -179,6 +182,8 @@ public:
 	virtual TIoStatusOr<uint64> GetSizeForChunk(const VFCKey& Id) const override;
 	virtual bool DoesChunkExist(const VFCKey& Id) const override;
 	virtual double CurrentFragmentation() const override;
+	virtual int64 GetUsedSize() const override;
+	virtual int64 GetTotalSize() const override;
 	// \IFileTableReader
 
 	friend FArchive& operator<<(FArchive& Ar, FFileTable& FileTable);
@@ -219,12 +224,52 @@ struct FRWOp
 	VFCKey Target;
 
 	// Write
-	TArray<uint8> DataToWrite;
+	TSharedPtr<TArray<uint8>> DataToWrite;
 
 	// Read
 	TOptional<TPromise<TArray<uint8>>> ReadResult;
 	int64 ReadOffset = 0;
 	int64 ReadSize = 0;
+};
+
+
+struct FLruCacheNode : public TIntrusiveDoubleLinkedListNode<FLruCacheNode>
+{
+	// For reverse lookups
+	VFCKey Key;
+	TSharedPtr<TArray<uint8>> Data;
+	// Store the size here to ensure that the CurrentSize of the LruCache can rely on the Data size value changing.
+	uint64 RecordedSize;
+};
+
+
+class FLruCache
+{
+	void EvictToBelowMaxSize();
+	void EvictOne();
+	bool FreeSpaceFor(int64 SizeToAdd);
+
+public:
+	~FLruCache()
+	{
+		LruList.Reset();
+	}
+	FLruCacheNode* Find(VFCKey Key);
+	const FLruCacheNode* Find(VFCKey Key) const;
+	TSharedPtr<TArray<uint8>> ReadLockAndFindData(VFCKey Key) const;
+	void Insert(VFCKey Key, TSharedPtr<TArray<uint8>> Data);
+	void Remove(VFCKey Key);
+	bool IsEnabled() const;
+	void SetMaxSize(int64 NewMaxSize);
+
+public:
+	mutable FRWLock Lock;
+
+private:
+	TMap<VFCKey, TUniquePtr<FLruCacheNode>> NodeMap;
+	TIntrusiveDoubleLinkedList<FLruCacheNode> LruList;
+	int64 CurrentSize = 0;
+	int64 MaxSize = 0;
 };
 
 struct FVirtualFileCache;
@@ -324,16 +369,20 @@ public:
 	TSharedPtr<FRWOp> GetNextOp();
 	void DoOneOp(FRWOp* Op);
 
-
 	void Touch(FDataReference& Id);
-
 	void EraseTableFile();
 
+	void SetInMemoryCacheSize(int64 MaxSize);
+
+	uint64 GetTotalMemCacheHits() const;
+	uint64 GetTotalMemCacheMisses() const;
 
 public:
 	FVirtualFileCache* Parent;
 	FRunnableThread* Thread;
 	FEvent* Event;
+
+	FLruCache MemCache;
 
 	FRWLock OperationQueueLock;
 	TArray<TSharedPtr<FRWOp>> OperationQueue;
@@ -345,6 +394,8 @@ public:
 private:
 	mutable FRWLock FileTableLock;
 	FFileTable FileTableStorage;
+	uint64 TotalMemCacheHits = 0;
+	uint64 TotalMemCacheMisses = 0;
 };
 
 struct FVirtualFileCache final : IVirtualFileCache
@@ -370,6 +421,10 @@ public:
 	virtual TIoStatusOr<uint64> GetSizeForChunk(const VFCKey& Id) const override;
 	virtual double CurrentFragmentation() const override;
 	virtual void Defragment() override;
+	virtual int64 GetTotalSize() const override;
+	virtual int64 GetUsedSize() const override;
+	virtual uint64 GetTotalMemCacheHits() const override;
+	virtual uint64 GetTotalMemCacheMisses() const override;
 
 	FString GetTableFilename() const { return Thread.GetTableFilename(); }
 

@@ -91,16 +91,51 @@ struct FFrame;
 	return false;
 
 
+/*
+ * This macro force the addition of the Fill and Apply delegates on 'this'
+ * if the designated attribute has been set on the source node
+ * Copying the arrays of delegates from the source node to 'this' is not sufficient
+ * because the delegates of the source node have a reference on the source node not 'this'.
+ * Consequently a call to those delegates would always use the source node.
+ */
+#define COPY_NODE_DELEGATES(SourceNode, AttributeName, AttributeType, AssetType)															\
+{																																			\
+	const UE::Interchange::FAttributeKey& AttributeKey = Macro_Custom##AttributeName##Key;													\
+	FString OperationName = GetTypeName() + TEXT(".Get" #AttributeName);																	\
+	AttributeType AttributeValue;																											\
+	if(InterchangePrivateNodeBase::GetCustomAttribute<AttributeType>(*SourceNode->Attributes, AttributeKey, OperationName, AttributeValue)) \
+	{																																		\
+		FName PropertyName = TEXT(""#AttributeName);																						\
+		AddApplyAndFillDelegates<AttributeType>(AttributeKey.Key, AssetType::StaticClass(), PropertyName);									\
+	}																																		\
+}
+
+#define COPY_NODE_DELEGATES_WITH_CUSTOM_DELEGATE(SourceNode, NodeClassName, AttributeName, AttributeType, AssetClass)							\
+{																																				\
+	const UE::Interchange::FAttributeKey& AttributeKey = Macro_Custom##AttributeName##Key;														\
+	FString OperationName = GetTypeName() + TEXT(".Get" #AttributeName);																		\
+	AttributeType AttributeValue;																												\
+	if(InterchangePrivateNodeBase::GetCustomAttribute<AttributeType>(*SourceNode->Attributes, AttributeKey, OperationName, AttributeValue))		\
+	{																																			\
+		TArray<UE::Interchange::FApplyAttributeToAsset>& Delegates = ApplyCustomAttributeDelegates.FindOrAdd(AssetClass);						\
+		Delegates.Add(UE::Interchange::FApplyAttributeToAsset::CreateUObject(this, &NodeClassName::ApplyCustom##AttributeName##ToAsset));		\
+		TArray<UE::Interchange::FFillAttributeToAsset>& FillDelegates = FillCustomAttributeDelegates.FindOrAdd(AssetClass);						\
+		FillDelegates.Add(UE::Interchange::FFillAttributeToAsset::CreateUObject(this, &NodeClassName::FillCustom##AttributeName##FromAsset));	\
+	}																																			\
+}
+
 namespace UE::Interchange
 {
 
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FApplyAttributeToAsset, UObject*);
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FFillAttributeToAsset, UObject*);
 
-	struct INTERCHANGECORE_API FFactoryBaseNodeStaticData : public FBaseNodeStaticData
+	struct FFactoryBaseNodeStaticData : public FBaseNodeStaticData
 	{
-		static const FString& FactoryDependenciesBaseKey();
-		static const FAttributeKey& ReimportStrategyFlagsKey();
+		static INTERCHANGECORE_API const FString& FactoryDependenciesBaseKey();
+		static INTERCHANGECORE_API const FAttributeKey& ReimportStrategyFlagsKey();
+		static INTERCHANGECORE_API const FAttributeKey& SkipNodeImportKey();
+		static INTERCHANGECORE_API const FAttributeKey& ForceNodeReimportKey();
 	};
 
 } // namespace UE::Interchange
@@ -121,91 +156,113 @@ enum class EReimportStrategyFlags : uint8
  * See UE::Interchange::EAttributeTypes to know the supported template types
  * This is an abstract class. This is the base class of the interchange node graph format, all class in this format should derive from this class
  */
-UCLASS(BlueprintType)
-class INTERCHANGECORE_API UInterchangeFactoryBaseNode : public UInterchangeBaseNode
+UCLASS(BlueprintType, MinimalAPI)
+class UInterchangeFactoryBaseNode : public UInterchangeBaseNode
 {
 	GENERATED_BODY()
 
 public:
-	UInterchangeFactoryBaseNode();
+	INTERCHANGECORE_API UInterchangeFactoryBaseNode();
 
-	virtual FString GetKeyDisplayName(const UE::Interchange::FAttributeKey& NodeAttributeKey) const override;
-	virtual FString GetAttributeCategory(const UE::Interchange::FAttributeKey& NodeAttributeKey) const override;
+	INTERCHANGECORE_API virtual FString GetKeyDisplayName(const UE::Interchange::FAttributeKey& NodeAttributeKey) const override;
+	INTERCHANGECORE_API virtual FString GetAttributeCategory(const UE::Interchange::FAttributeKey& NodeAttributeKey) const override;
 
 	/**
 	 * Return the reimport strategy flags.
 	 *
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	EReimportStrategyFlags GetReimportStrategyFlags() const;
+	INTERCHANGECORE_API EReimportStrategyFlags GetReimportStrategyFlags() const;
 
 	/**
 	 * Change the reimport strategy flags.
 	 *
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool SetReimportStrategyFlags(const EReimportStrategyFlags& ReimportStrategyFlags);
+	INTERCHANGECORE_API bool SetReimportStrategyFlags(const EReimportStrategyFlags& ReimportStrategyFlags);
+
+	/**
+	 * Return true if this node should skip the factory import process, false otherwise.
+	 * Node can be in a situation where we have to skip the import process because we cannot import the associated asset for multiple reason.
+	 * - An asset can already exist and is representing a different type (UClass)
+	 * - An asset can already exist and is being compiled
+	 * - An asset can already exist and is being imported by another concurrent import task (user importing multiple file in same time in the same content folder)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
+	INTERCHANGECORE_API bool ShouldSkipNodeImport() const;
+
+	/**
+	 * Add the skip node attribute. Use this function to cancel the creation of the unreal asset, see ShouldSkipNodeImport for more documentation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
+	INTERCHANGECORE_API bool SetSkipNodeImport();
+
+	/**
+	 * Remove the skip node attribute. See ShouldSkipNodeImport for more documentation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
+	INTERCHANGECORE_API bool UnsetSkipNodeImport();
 
 	/**
 	 * Return the UClass of the object we represent so we can find factory/writer
 	 */
-	virtual class UClass* GetObjectClass() const;
+	INTERCHANGECORE_API virtual class UClass* GetObjectClass() const;
 
 	/**
 	 * Return the custom sub-path under PackageBasePath, where the assets will be created.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool GetCustomSubPath(FString& AttributeValue) const;
+	INTERCHANGECORE_API bool GetCustomSubPath(FString& AttributeValue) const;
 
 	/**
 	 * Set the custom sub-path under PackageBasePath where the assets will be created.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool SetCustomSubPath(const FString& AttributeValue);
+	INTERCHANGECORE_API bool SetCustomSubPath(const FString& AttributeValue);
 
 	/**
 	 * This function allow to retrieve the number of factory dependencies for this object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	int32 GetFactoryDependenciesCount() const;
+	INTERCHANGECORE_API int32 GetFactoryDependenciesCount() const;
 
 	/**
 	 * This function allow to retrieve the dependency for this object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	void GetFactoryDependencies(TArray<FString>& OutDependencies ) const;
+	INTERCHANGECORE_API void GetFactoryDependencies(TArray<FString>& OutDependencies ) const;
 
 	/**
 	 * This function allow to retrieve one dependency for this object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	void GetFactoryDependency(const int32 Index, FString& OutDependency) const;
+	INTERCHANGECORE_API void GetFactoryDependency(const int32 Index, FString& OutDependency) const;
 
 	/**
 	 * Add one dependency to this object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool AddFactoryDependencyUid(const FString& DependencyUid);
+	INTERCHANGECORE_API bool AddFactoryDependencyUid(const FString& DependencyUid);
 
 	/**
 	 * Remove one dependency from this object.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool RemoveFactoryDependencyUid(const FString& DependencyUid);
+	INTERCHANGECORE_API bool RemoveFactoryDependencyUid(const FString& DependencyUid);
 
 	/**
 	 * Return the custom ReferenceObject. The UObject this factory node has created.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool GetCustomReferenceObject(FSoftObjectPath& AttributeValue) const;
+	INTERCHANGECORE_API bool GetCustomReferenceObject(FSoftObjectPath& AttributeValue) const;
 
 	/**
 	 * Set the custom ReferenceObject. The UObject this factory node has created.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
-	bool SetCustomReferenceObject(const FSoftObjectPath& AttributeValue);
+	INTERCHANGECORE_API bool SetCustomReferenceObject(const FSoftObjectPath& AttributeValue);
 
-	static FString BuildFactoryNodeUid(const FString& TranslatedNodeUid);
+	static INTERCHANGECORE_API FString BuildFactoryNodeUid(const FString& TranslatedNodeUid);
 
 	/**
 	 * Adds the delegates that will read and write the attribute value to a UObject.
@@ -214,7 +271,7 @@ public:
 	 * @param PropertyName		The name of the property of the ObjectClass that we will read and write to.
 	 */
 	template<typename AttributeType>
-	inline void AddApplyAndFillDelegates(const FName& NodeAttributeKey, UClass* ObjectClass, const FName PropertyName);
+	inline void AddApplyAndFillDelegates(const FString& NodeAttributeKey, UClass* ObjectClass, const FName PropertyName);
 
 	/**
 	 * Writes an attribute value to a UObject.
@@ -224,7 +281,7 @@ public:
 	 * @result					True if we succeeded.
 	 */
 	template<typename AttributeType>
-	inline bool ApplyAttributeToObject(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName) const;
+	inline bool ApplyAttributeToObject(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName) const;
 
 	/**
 	 * Reads an attribute value from a UObject.
@@ -234,16 +291,54 @@ public:
 	 * @result					True if we succeeded.
 	 */
 	template<typename AttributeType>
-	inline bool FillAttributeFromObject(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName);
+	inline bool FillAttributeFromObject(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName);
+
+	/**
+	 * Copies all the attributes from SourceNode to this node.
+	 * @param SourceNode		The source factory node to copy from.
+	 * @param Object			The object to build delegates on custom attributes from, if applicable.
+	 */
+	virtual void CopyWithObject(const UInterchangeFactoryBaseNode* SourceNode, UObject* Object)
+	{
+		// Just copy the attributes storage. Child classes will use Object in their override
+		UInterchangeBaseNode::CopyStorage(SourceNode, this);
+	}
 
 	/**
 	 * Each Attribute that was set and have a delegate set for the specified UObject->UClass will
 	 * get the delegate execute so it apply the attribute to the UObject property.
 	 * See the macros IMPLEMENT_NODE_ATTRIBUTE_SETTER at the top of the file to know how delegates are setup for property.
 	 */
-	void ApplyAllCustomAttributeToObject(UObject* Object) const;
+	INTERCHANGECORE_API void ApplyAllCustomAttributeToObject(UObject* Object) const;
 
-	void FillAllCustomAttributeFromObject(UObject* Object) const;
+	INTERCHANGECORE_API void FillAllCustomAttributeFromObject(UObject* Object) const;
+
+	/**
+	 * Copies all the custom attributes from SourceNode to this node and
+	 * gets the appropriate values from Object.
+	 * @param SourceNode		The source factory node to copy from.
+	 * @param Object			The object to fill custom attributes' values from, if applicable.
+	 */
+	static INTERCHANGECORE_API UInterchangeFactoryBaseNode* DuplicateWithObject(const UInterchangeFactoryBaseNode* SourceNode, UObject* Object);
+
+	/**
+	 * Return whether or not an object should be created even if it has been deleted in the editor.
+	 * Return false by default
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
+	INTERCHANGECORE_API bool ShouldForceNodeReimport() const;
+
+	/**
+	 * Allow the creation of the unreal object even if it has been previously deleted in the editor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
+	INTERCHANGECORE_API bool SetForceNodeReimport();
+
+	/**
+	 * Disallow the creation of the unreal object if it has been previously deleted in the editor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node")
+	INTERCHANGECORE_API bool UnsetForceNodeReimport();
 
 protected:
 	/**
@@ -265,7 +360,7 @@ private:
 };
 
 template<typename AttributeType>
-inline void UInterchangeFactoryBaseNode::AddApplyAndFillDelegates(const FName& NodeAttributeKey, UClass* ObjectClass, const FName PropertyName)
+inline void UInterchangeFactoryBaseNode::AddApplyAndFillDelegates(const FString& NodeAttributeKey, UClass* ObjectClass, const FName PropertyName)
 {
 	TArray<UE::Interchange::FApplyAttributeToAsset>& ApplyDelegates = ApplyCustomAttributeDelegates.FindOrAdd(ObjectClass);
 	ApplyDelegates.Add(
@@ -287,7 +382,7 @@ inline void UInterchangeFactoryBaseNode::AddApplyAndFillDelegates(const FName& N
 }
 
 template<typename AttributeType>
-inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName) const
+inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName) const
 {
 	if (!Object)
 	{
@@ -323,7 +418,7 @@ inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject(const FName& Nod
  * If the target property is a FObjectPropertyBase, treat the string as an object path.
  */
 template<>
-inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject<FString>(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName) const
+inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject<FString>(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName) const
 {
 	if (!Object)
 	{
@@ -366,7 +461,7 @@ inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject<FString>(const F
  * If the target property is a FBoolProperty, treat the propertyg as a bitfield.
  */
 template<>
-inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject<bool>(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName) const
+inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject<bool>(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName) const
 {
 	if (!Object)
 	{
@@ -406,7 +501,7 @@ inline bool UInterchangeFactoryBaseNode::ApplyAttributeToObject<bool>(const FNam
 }
 
 template<typename AttributeType>
-inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName)
+inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName)
 {
 	TVariant<UObject*, uint8*> Container;
 	Container.Set<UObject*>(Object);
@@ -442,7 +537,7 @@ inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject(const FName& No
  * If the target property is a FObjectPropertyBase, treat the string as an object path.
  */
 template<>
-inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject<FString>(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName)
+inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject<FString>(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName)
 {
 	TVariant<UObject*, uint8*> Container;
 	Container.Set<UObject*>(Object);
@@ -477,7 +572,7 @@ inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject<FString>(const 
  * If the target property is a FBoolProperty, treat the property as a bitfield.
  */
 template<>
-inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject<bool>(const FName& NodeAttributeKey, UObject* Object, const FName PropertyName)
+inline bool UInterchangeFactoryBaseNode::FillAttributeFromObject<bool>(const FString& NodeAttributeKey, UObject* Object, const FName PropertyName)
 {
 	TVariant<UObject*, uint8*> Container;
 	Container.Set<UObject*>(Object);

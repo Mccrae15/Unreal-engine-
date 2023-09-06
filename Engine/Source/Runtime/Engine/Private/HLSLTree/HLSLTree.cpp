@@ -67,6 +67,7 @@ class FExpressionFunctionCall final : public FExpression
 public:
 	FExpressionFunctionCall(FFunction* InFunction, int32 InOutputIndex) : Function(InFunction), OutputIndex(InOutputIndex) {}
 
+	virtual void ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const override;
 	virtual bool PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const override;
 	virtual void EmitValueShader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValueShaderResult& OutResult) const override;
 	virtual void EmitValuePreshader(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FEmitValuePreshaderResult& OutResult) const override;
@@ -486,6 +487,13 @@ void FExpressionLocalPHI::EmitValuePreshader(FEmitContext& Context, FEmitScope& 
 		Context.PreshaderStackPosition++;
 		OutResult.Preshader.WriteOpcode(Shader::EPreshaderOpcode::PushValue).Write((uint16)PreshaderStackOffset);
 	}
+}
+
+void FExpressionFunctionCall::ComputeAnalyticDerivatives(FTree& Tree, FExpressionDerivatives& OutResult) const
+{
+	check(Function->OutputExpressions.IsValidIndex(OutputIndex));
+
+	Function->OutputExpressions[OutputIndex]->ComputeAnalyticDerivatives(Tree, OutResult);
 }
 
 bool FExpressionFunctionCall::PrepareValue(FEmitContext& Context, FEmitScope& Scope, const FRequestedType& RequestedType, FPrepareValueResult& OutResult) const
@@ -1573,7 +1581,17 @@ FExpressionDerivatives FTree::GetAnalyticDerivatives(const FExpression* InExpres
 	if (InExpression)
 	{
 		//FOwnerScope OwnerScope(*this, InExpression->GetOwner()); // Associate any newly created nodes with the same owner as the input expression
-		InExpression->ComputeAnalyticDerivatives(*this, Derivatives);
+		
+		FExpressionDerivatives* Found = ExpressionDerivativesMap.Find(InExpression);
+		if (Found)
+		{
+			Derivatives = *Found;
+		}
+		else
+		{
+			InExpression->ComputeAnalyticDerivatives(*this, Derivatives);
+			ExpressionDerivativesMap.Add(InExpression, Derivatives);
+		}
 	}
 	return Derivatives;
 }
@@ -1584,7 +1602,23 @@ const FExpression* FTree::GetPreviousFrame(const FExpression* InExpression, cons
 	if (Result && !RequestedType.IsVoid())
 	{
 		//FOwnerScope OwnerScope(*this, InExpression->GetOwner()); // Associate any newly created nodes with the same owner as the input expression
-		const FExpression* PrevFrameExpression = InExpression->ComputePreviousFrame(*this, RequestedType);
+		FHasher Hasher;
+		Hasher.AppendData(&InExpression, sizeof(InExpression));
+		AppendHash(Hasher, RequestedType);
+		const FXxHash64 KeyHash = Hasher.Finalize();
+		const FExpression** Found = PreviousFrameExpressionMap.Find(KeyHash);
+
+		const FExpression* PrevFrameExpression;
+		if (Found)
+		{
+			PrevFrameExpression = *Found;
+		}
+		else
+		{
+			PrevFrameExpression = InExpression->ComputePreviousFrame(*this, RequestedType);
+			PreviousFrameExpressionMap.Add(KeyHash, PrevFrameExpression);
+		}
+
 		if (PrevFrameExpression)
 		{
 			Result = PrevFrameExpression;

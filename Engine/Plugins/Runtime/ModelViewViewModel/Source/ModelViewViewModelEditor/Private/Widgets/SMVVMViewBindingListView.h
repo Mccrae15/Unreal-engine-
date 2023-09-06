@@ -29,8 +29,13 @@ public:
 
 	void Refresh();
 
+	void OnFilterTextChanged(const FText& InFilterText);
+	void ClearFilterText();
+
 	/** Constructs context menu used for right click and dropdown button */
 	TSharedPtr<SWidget> OnSourceConstructContextMenu();
+
+	void RequestNavigateToBinding(FGuid BindingId);
 
 private:
 	TSharedRef<ITableRow> GenerateEntryRow(TSharedPtr<FBindingEntry> Entry, const TSharedRef<STableViewBase>& OwnerTable) const;
@@ -43,9 +48,10 @@ private:
 private:
 	TWeakPtr<SBindingsPanel> BindingPanel;
 	TSharedPtr<STreeView<TSharedPtr<FBindingEntry>>> TreeView;
-	TArray<TSharedPtr<FBindingEntry>> RootWidgets;
+	TArray<TSharedPtr<FBindingEntry>> RootGroups;
 	TWeakObjectPtr<UMVVMWidgetBlueprintExtension_View> MVVMExtension;
 	mutable bool bSelectionChangedGuard = false;
+	FText FilterText;
 };
 
 } // namespace UE::MVVM

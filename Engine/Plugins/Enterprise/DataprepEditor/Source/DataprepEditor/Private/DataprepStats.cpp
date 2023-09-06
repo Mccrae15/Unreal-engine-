@@ -16,6 +16,7 @@
 #include "LandscapeProxy.h"
 #include "Materials/MaterialInterface.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/NaniteResources.h"
 #include "ReferencedAssetsUtils.h"
 #include "UObject/UObjectIterator.h"
 
@@ -144,7 +145,7 @@ private:
 
 				// Now copy the array
 				Referencer->AssetList = BspMats;
-				ReferenceGraph.Add(World->GetModel(), BspMats);
+				ReferenceGraph.Add(World->GetModel(), ObjectPtrWrap(BspMats));
 			}
 		}
 
@@ -161,7 +162,7 @@ private:
 		for (FThreadSafeObjectIterator It; It; ++It)
 		{
 			// Skip the level, world, and any packages that should be ignored
-			if ( ShouldSearchForAssets(*It, IgnoreClasses, IgnorePackages, false) )
+			if ( ShouldSearchForAssets(*It, ObjectPtrDecay(IgnoreClasses), ObjectPtrDecay(IgnorePackages), false) )
 			{
 				It->Mark(OBJECTMARK_TagExp);
 			}
@@ -285,9 +286,9 @@ private:
 						Stats.AddCount(FDataprepStats::StatNameVertices, RenderData->LODResources[0].GetNumVertices());
 					}
 
-					if (StaticMesh->NaniteSettings.bEnabled && StaticMesh->HasValidNaniteData())
+					if (StaticMesh->IsNaniteEnabled() && StaticMesh->HasValidNaniteData())
 					{
-						const Nanite::FResources& Resources = StaticMesh->GetRenderData()->NaniteResources;
+						const Nanite::FResources& Resources = *StaticMesh->GetRenderData()->NaniteResourcesPtr.Get();
 						if (Resources.RootData.Num() > 0)
 						{
 							Stats.AddCount(FDataprepStats::StatNameNaniteTriangles, Resources.NumInputTriangles);

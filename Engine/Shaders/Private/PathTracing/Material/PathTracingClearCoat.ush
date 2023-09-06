@@ -11,19 +11,10 @@
 
 #define GREY_INNER_LAYER 0
 
-#define CLEAR_COAT_F0	0.04 // From hard-coded value in ShadingModels.ush
-
 #include "PathTracingMaterialCommon.ush"
 #include "PathTracingGlossy.ush"
 #include "PathTracingFresnel.ush"
 #include "PathTracingEnergyConservation.ush"
-
-
-float ClearCoatFresnel(float VoH) {
-	// from hardcoded logic in ClearCoatBxDF
-	return CLEAR_COAT_F0 + (1.0 - CLEAR_COAT_F0) * Pow5(1 - VoH);
-}
-
 
 struct FClearCoatData
 {
@@ -148,7 +139,7 @@ FMaterialEval ClearCoat_EvalMaterial(
 	Result.AddLobeWithMIS(SpecWeight * DiffuseSpecularScale.y, SpecPdf, Data.LobePdf.y);
 	Result.AddLobeWithMIS(DiffWeight * DiffuseSpecularScale.x, DiffPdf, Data.LobePdf.z);
 
-	Result.Weight *= Payload.GetBSDFOpacity();
+	Result.Weight *= Payload.BSDFOpacity;
 	
 	return Result;
 }
@@ -181,7 +172,7 @@ FMaterialSample ClearCoat_SampleMaterial(
 			RandSample.x = RescaleRandomNumber(RandSample.x, Data.LobeCdf.x, Data.LobeCdf.y);
 		}
 		const float3 V = bSampledCoat ? Data.CoatV : Data.BaseV;
-		const float3 H = ImportanceSampleVisibleGGX_aniso(UniformSampleDisk(RandSample.xy), bSampledCoat ? Data.CoatAlpha : Data.BaseAlpha, V).xyz;
+		const float3 H = ImportanceSampleVisibleGGX(RandSample.xy, bSampledCoat ? Data.CoatAlpha : Data.BaseAlpha, V).xyz;
 		const float3 L = reflect(-V, H);
 		if (L.z <= 0)
 		{
@@ -256,7 +247,7 @@ FMaterialSample ClearCoat_SampleMaterial(
 	}
 
 
-	Result.Weight *= Payload.GetBSDFOpacity();
+	Result.Weight *= Payload.BSDFOpacity;
 	Result.PositionBiasSign = 1.0;
 
 	return Result;

@@ -2,7 +2,11 @@
 
 #include "BaseTreeNode.h"
 
+#include "Styling/SlateBrush.h"
+#include "Styling/StyleColors.h"
+
 // Insights
+#include "Insights/InsightsStyle.h"
 #include "Insights/Table/ViewModels/TableCellValueSorter.h"
 
 #define LOCTEXT_NAMESPACE "Insights::FBaseTreeNode"
@@ -27,8 +31,8 @@ const FText FBaseTreeNode::GetExtraDisplayName() const
 {
 	if (IsGroup())
 	{
-		const int32 NumChildren = GroupData->Children.Num();
-		const int32 NumFilteredChildren = GroupData->FilteredChildren.Num();
+		const int32 NumChildren = GetChildrenCount();
+		const int32 NumFilteredChildren = GetFilteredChildrenCount();
 
 		if (NumFilteredChildren == NumChildren)
 		{
@@ -52,16 +56,44 @@ bool FBaseTreeNode::HasExtraDisplayName() const
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FBaseTreeNode::SortChildrenAscending(const ITableCellValueSorter& Sorter)
+const FSlateBrush* FBaseTreeNode::GetDefaultIcon(bool bIsGroupNode)
 {
-	Sorter.Sort(GroupData->Children, ESortMode::Ascending);
+	if (bIsGroupNode)
+	{
+		return FInsightsStyle::GetBrush("Icons.Group.TreeItem");
+	}
+	else
+	{
+		return FInsightsStyle::GetBrush("Icons.Leaf.TreeItem");
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FBaseTreeNode::SortChildrenDescending(const ITableCellValueSorter& Sorter)
+FLinearColor FBaseTreeNode::GetDefaultColor(bool bIsGroupNode)
 {
-	Sorter.Sort(GroupData->Children, ESortMode::Descending);
+	if (bIsGroupNode)
+	{
+		return FLinearColor(1.0f, 0.9f, 0.6f, 1.0f);
+	}
+	else
+	{
+		return FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FBaseTreeNode::SortChildren(const ITableCellValueSorter& Sorter, ESortMode SortMode)
+{
+	Sorter.Sort(GroupData->Children, SortMode);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FBaseTreeNode::SortFilteredChildren(const ITableCellValueSorter& Sorter, ESortMode SortMode)
+{
+	Sorter.Sort(*GroupData->FilteredChildrenPtr, SortMode);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

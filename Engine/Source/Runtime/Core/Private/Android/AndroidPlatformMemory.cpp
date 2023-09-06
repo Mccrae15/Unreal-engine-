@@ -19,6 +19,88 @@
 
 #define JNI_CURRENT_VERSION JNI_VERSION_1_6
 extern JavaVM* GJavaVM;
+extern jobject GGameActivityThis;
+
+#if HAS_ANDROID_MEMORY_ADVICE
+#include "Containers/Ticker.h"
+#include "memory_advice/memory_advice.h"
+
+static int GAndroidUseMemoryAdvisor = 0;
+static bool GMemoryAdvisorInitialized = false;
+static MemoryAdvice_MemoryState GMemoryAdvisorState = MEMORYADVICE_STATE_OK;
+static std::atomic<MemoryAdvice_MemoryState> GMemoryAdvisorStateThreaded(MEMORYADVICE_STATE_OK);
+static FAutoConsoleVariableRef CVarAndroidUseMemoryAdvisor(
+	TEXT("android.UseMemoryAdvisor"),
+	GAndroidUseMemoryAdvisor,
+	TEXT("Enables Android Memory Advice library from AGDK when set to non zero. Disabled by default"),
+	ECVF_Default
+);
+
+static const TCHAR* MemStateToString(MemoryAdvice_MemoryState State)
+{
+	switch (State)
+	{
+	case MEMORYADVICE_STATE_OK:
+		return TEXT("OK");
+	case MEMORYADVICE_STATE_APPROACHING_LIMIT:
+		return TEXT("Approaching Limit");
+	case MEMORYADVICE_STATE_CRITICAL:
+		return TEXT("Critical");
+	default:
+	case MEMORYADVICE_STATE_UNKNOWN:
+		return TEXT("Unknown");
+	}
+}
+
+static bool MemoryAdvisorTick(float dt)
+{
+	const MemoryAdvice_MemoryState State = GMemoryAdvisorStateThreaded.load(std::memory_order_acquire);
+	if (State != GMemoryAdvisorState)
+	{
+		//SetGameData is not thread safe, so we have to set it in GT only, that's why we update the value via GMemoryAdvisorStateThreaded
+		const TCHAR* StringState = MemStateToString(State);
+		UE_LOG(LogAndroid, Log, TEXT("MemAdvice new state : %s"), StringState);
+		FGenericCrashContext::SetGameData(TEXT("UE.Android.GoogleMemAdvice"), StringState);
+		GMemoryAdvisorState = State;
+	}
+
+	if (FTaskGraphInterface::IsRunning())
+	{
+		// Run it on a worker thread as this call is pretty expensive and we don't want it to impact the game thread
+		AsyncTask(ENamedThreads::AnyThread, []()
+			{
+				const MemoryAdvice_MemoryState State = MemoryAdvice_getMemoryState();
+				GMemoryAdvisorStateThreaded.store(State, std::memory_order_release);
+			});
+	}
+
+	return true;
+}
+
+static void OnCVarAndroidUseMemoryAdvisorChanged(IConsoleVariable* Var)
+{
+	if (GAndroidUseMemoryAdvisor && !GMemoryAdvisorInitialized)
+	{
+		JNIEnv* Env = NULL;
+		GJavaVM->GetEnv((void**)&Env, JNI_CURRENT_VERSION);
+		const MemoryAdvice_ErrorCode Result = MemoryAdvice_init(Env, GGameActivityThis);
+		GMemoryAdvisorInitialized = Result == MEMORYADVICE_ERROR_OK;
+		if (GMemoryAdvisorInitialized)
+		{
+			FTSTicker& Ticker = FTSTicker::GetCoreTicker();
+			Ticker.AddTicker(FTickerDelegate::CreateStatic(&MemoryAdvisorTick), 1.0f);
+		}
+		else
+		{
+			UE_LOG(LogInit, Warning, TEXT("Cannot initialize memory advice API, error code %d"), Result);
+		}
+	}
+	else if (GMemoryAdvisorInitialized && !GAndroidUseMemoryAdvisor)
+	{
+		UE_LOG(LogInit, Warning, TEXT("Cannot disable memory advisor once it has been initialized."));
+	}
+}
+#endif
 
 static int32 GAndroidAddSwapToTotalPhysical = 1;
 static FAutoConsoleVariableRef CVarAddSwapToTotalPhysical(
@@ -72,6 +154,10 @@ void FAndroidPlatformMemory::Init()
 		float((double)MemoryStats.AvailablePhysical/1024.0/1024.0),
 		float((double)MemoryConstants.PageSize/1024.0)
 		);
+
+#if HAS_ANDROID_MEMORY_ADVICE
+	CVarAndroidUseMemoryAdvisor->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&OnCVarAndroidUseMemoryAdvisorChanged));
+#endif
 }
 
 extern void (*GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context);
@@ -296,6 +382,24 @@ FPlatformMemoryStats FAndroidPlatformMemory::GetStats()
 
 FGenericPlatformMemoryStats::EMemoryPressureStatus FPlatformMemoryStats::GetMemoryPressureStatus() const
 {
+#if HAS_ANDROID_MEMORY_ADVICE
+	if (GMemoryAdvisorInitialized)
+	{
+		switch (GMemoryAdvisorState)
+		{
+		case MEMORYADVICE_STATE_OK:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Nominal;
+		case MEMORYADVICE_STATE_APPROACHING_LIMIT:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Warning;
+		case MEMORYADVICE_STATE_CRITICAL:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Critical;
+		default:
+		case MEMORYADVICE_STATE_UNKNOWN:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Unknown;
+		}
+	}
+#endif
+
 	// convert Android's TRIM status to FGenericPlatformMemoryStats::EMemoryPressureStatus.
 	auto AndroidTRIMToMemPressureStatus = [](FAndroidPlatformMemory::ETrimValues LastTrimMemoryState)
 	{
@@ -306,10 +410,11 @@ FGenericPlatformMemoryStats::EMemoryPressureStatus FPlatformMemoryStats::GetMemo
 		case FAndroidPlatformMemory::ETrimValues::Unknown:
 			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Unknown;
 		case FAndroidPlatformMemory::ETrimValues::Complete:
+		case FAndroidPlatformMemory::ETrimValues::Running_Low:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Warning;
 		case FAndroidPlatformMemory::ETrimValues::Moderate:
 		case FAndroidPlatformMemory::ETrimValues::Background:
 		case FAndroidPlatformMemory::ETrimValues::UI_Hidden:
-		case FAndroidPlatformMemory::ETrimValues::Running_Low:
 		case FAndroidPlatformMemory::ETrimValues::Running_Moderate:
 		default:
 			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Nominal;
@@ -430,14 +535,20 @@ EPlatformMemorySizeBucket FAndroidPlatformMemory::GetMemorySizeBucket()
 
 FMalloc* FAndroidPlatformMemory::BaseAllocator()
 {
+	static FMalloc* Instance = nullptr;
+	if (Instance != nullptr)
+	{
+		return Instance;
+	}
+
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
 	// make sure LLM is using UsedPhysical for program size, instead of Available-Free
 	FPlatformMemoryStats Stats = FAndroidPlatformMemory::GetStats();
 	FLowLevelMemTracker::Get().SetProgramSize(Stats.UsedPhysical);
 #endif
 
-#if RUNNING_WITH_ASAN
-	return new FMallocAnsi();
+#if FORCE_ANSI_ALLOCATOR
+	return (Instance = new FMallocAnsi());
 #endif
 
 	const bool bHeapProfilingSupported = AndroidHeapProfiling::Init();
@@ -445,15 +556,15 @@ FMalloc* FAndroidPlatformMemory::BaseAllocator()
 #if USE_MALLOC_BINNED3 && PLATFORM_ANDROID_ARM64
 	if (bHeapProfilingSupported)
 	{
-		return new FMallocProfilingProxy<FMallocBinned3>();
+		return (Instance = new FMallocProfilingProxy<FMallocBinned3>());
 	}
-	return new FMallocBinned3();
+	return (Instance = new FMallocBinned3());
 #elif USE_MALLOC_BINNED2
 	if (bHeapProfilingSupported)
 	{
-		return new FMallocProfilingProxy<FMallocBinned2>();
+		return (Instance = new FMallocProfilingProxy<FMallocBinned2>());
 	}
-	return new FMallocBinned2();
+	return (Instance = new FMallocBinned2());
 #else
 	const FPlatformMemoryConstants& MemoryConstants = FPlatformMemory::GetConstants();
 	// 1 << FMath::CeilLogTwo(MemoryConstants.TotalPhysical) should really be FMath::RoundUpToPowerOfTwo,
@@ -463,7 +574,7 @@ FMalloc* FAndroidPlatformMemory::BaseAllocator()
 
 	// todo: Verify MallocBinned2 on 32bit
 	// [RCL] 2017-03-06 FIXME: perhaps BinnedPageSize should be used here, but leaving this change to the Android platform owner.
-	return new FMallocBinned(MemoryConstants.PageSize, MemoryLimit);
+	return (Instance = new FMallocBinned(MemoryConstants.PageSize, MemoryLimit));
 #endif
 }
 

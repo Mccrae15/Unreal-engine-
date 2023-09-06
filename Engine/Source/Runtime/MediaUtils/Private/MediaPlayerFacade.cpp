@@ -1,5 +1,4 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MediaPlayerFacade.h"
 #include "MediaUtilsPrivate.h"
@@ -76,6 +75,10 @@ DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("MediaPlayerFacade TotalPurgedVideoSamples")
 DECLARE_DWORD_COUNTER_STAT(TEXT("MediaPlayerFacade NumPurgedSubtitleSamples"), STAT_MediaUtils_FacadeNumPurgedSubtitleSamples, STATGROUP_Media);
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("MediaPlayerFacade TotalPurgedSubtitleSamples"), STAT_MediaUtils_FacadeTotalPurgedSubtitleSamples, STATGROUP_Media);
 
+/** Number of purged caption samples */
+DECLARE_DWORD_COUNTER_STAT(TEXT("MediaPlayerFacade NumPurgedCaptionSamples"), STAT_MediaUtils_FacadeNumPurgedCaptionSamples, STATGROUP_Media);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("MediaPlayerFacade TotalPurgedCaptionSamples"), STAT_MediaUtils_FacadeTotalPurgedCaptionSamples, STATGROUP_Media);
+
 /* Some constants
 *****************************************************************************/
 
@@ -86,6 +89,7 @@ static const double kOutdatedSubtitleSamplesTolerance = 0.050;	// seconds subtit
 static const double kOutdatedSamplePurgeRange = 1.0;			// milliseconds for pseudo DT timespan used with async purging of outdated video samples
 static const int32	kMinFramesInVideoQueueToPurge = 3;			// we only consider purging any old frames from the video queue if more than these are present (to not kill a slow playback entirely)
 static const int32	kMinFramesInSubtitleQueueToPurge = 3;		// we only consider purging any old frames from the subtitle queue if more than these are present (to not kill a slow playback entirely)
+static const int32	kMinFramesInCaptionQueueToPurge = 3;		// we only consider purging any old frames from the caption queue if more than these are present (to not kill a slow playback entirely)
 
 /* Local helpers
 *****************************************************************************/
@@ -104,7 +108,7 @@ static FTimespan WrappedModulo(FTimespan Time, FTimespan Duration)
 /* FMediaPlayerFacade structors
 *****************************************************************************/
 
-FMediaPlayerFacade::FMediaPlayerFacade()
+FMediaPlayerFacade::FMediaPlayerFacade(TWeakObjectPtr<UMediaPlayer> InMediaPlayer)
 	: TimeDelay(FTimespan::Zero())
 	, BlockOnRange(this)
 	, Cache(new FMediaSampleCache)
@@ -115,16 +119,23 @@ FMediaPlayerFacade::FMediaPlayerFacade()
 	, AudioSampleAvailability(-1)
 	, bIsSinkFlushPending(false)
 	, bAreEventsSafeForAnyThread(false)
+	, MediaPlayer(InMediaPlayer)
 {
 	BlockOnRangeDisabled = false;
 
 	MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media");
 	bDidRecentPlayerHaveError = false;
+
+	ResetTracks();
 }
 
 
 FMediaPlayerFacade::~FMediaPlayerFacade()
 {
+	FMediaSampleSinkEventData Data;
+	Data.Detached.MediaPlayer = MediaPlayer.Get();
+	SendSinkEvent(EMediaSampleSinkEvent::Detached, Data);
+
 	if (Player.IsValid())
 	{
 		{
@@ -267,6 +278,7 @@ void FMediaPlayerFacade::Close()
 	Cache->Empty();
 	CurrentUrl.Empty();
 	LastRate = 0.0f;
+	CurrentRate = 0.0f;
 
 	bHaveActiveAudio = false;
 	VideoSampleAvailability = -1;
@@ -349,6 +361,17 @@ FText FMediaPlayerFacade::GetMediaName() const
 }
 
 
+TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaMetadataItem>>>, ESPMode::ThreadSafe> FMediaPlayerFacade::GetMediaMetadata() const
+{
+	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Player);
+	if (!CurrentPlayer.IsValid())
+	{
+		return nullptr;
+	}
+	return CurrentPlayer->GetMediaMetadata();
+}
+
+
 int32 FMediaPlayerFacade::GetNumTracks(EMediaTrackType TrackType) const
 {
 	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Player);
@@ -393,17 +416,6 @@ float FMediaPlayerFacade::GetRate() const
 }
 
 
-int32 FMediaPlayerFacade::GetSelectedTrack(EMediaTrackType TrackType) const
-{
-	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Player);
-	if (!CurrentPlayer.IsValid())
-	{
-		return INDEX_NONE;
-	}
-	return CurrentPlayer->GetTracks().GetSelectedTrack((EMediaTrackType)TrackType);
-}
-
-
 FString FMediaPlayerFacade::GetStats() const
 {
 	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Player);
@@ -430,13 +442,13 @@ TRangeSet<float> FMediaPlayerFacade::GetSupportedRates(bool Unthinned) const
 
 bool FMediaPlayerFacade::HaveVideoPlayback() const
 {
-	return VideoSampleSinks.Num() && GetSelectedTrack(EMediaTrackType::Video) != INDEX_NONE;
+	return VideoSampleSinks.Num() && (GetSelectedTrack(EMediaTrackType::Video) != INDEX_NONE);
 }
 
 
 bool FMediaPlayerFacade::HaveAudioPlayback() const
 {
-	return PrimaryAudioSink.IsValid() && GetSelectedTrack(EMediaTrackType::Audio) != INDEX_NONE;
+	return PrimaryAudioSink.IsValid() && (GetSelectedTrack(EMediaTrackType::Audio) != INDEX_NONE);
 }
 
 
@@ -473,6 +485,17 @@ FTimespan FMediaPlayerFacade::GetTime() const
 
 FMediaTimeStamp FMediaPlayerFacade::GetTimeStamp() const
 {
+	return GetTimeStampInternal(false);
+}
+
+
+FMediaTimeStamp FMediaPlayerFacade::GetDisplayTimeStamp() const
+{
+	return GetTimeStampInternal(true);
+}
+
+FMediaTimeStamp FMediaPlayerFacade::GetTimeStampInternal(bool bForDisplay) const
+{
 	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Player);
 	if (!CurrentPlayer.IsValid())
 	{
@@ -487,6 +510,12 @@ FMediaTimeStamp FMediaPlayerFacade::GetTimeStamp() const
 		return FMediaTimeStamp(GetTime());
 	}
 
+	// Check if the value is for display purposes. If so: do we seek right now?
+	if (bForDisplay && SeekTargetTime.IsValid())
+	{
+		return SeekTargetTime;
+	}
+
 	// Check if there are video samples present or presence is unknown.
 	// Only when we know for sure that there are none because the existing video stream has ended do we set this to false.
 	bool bHaveVideoSamples = VideoSampleAvailability != 0;
@@ -496,7 +525,7 @@ FMediaTimeStamp FMediaPlayerFacade::GetTimeStamp() const
 		/*
 			Returning the precise time of the sample returned during TickFetch()
 		*/
-		return CurrentFrameVideoTimeStamp;
+		return bForDisplay ? CurrentFrameVideoDisplayTimeStamp : CurrentFrameVideoTimeStamp;
 	}
 	else if (HaveAudioPlayback())
 	{
@@ -1080,14 +1109,19 @@ bool FMediaPlayerFacade::ContinueOpen(IMediaPlayerLifecycleManagerDelegate::ICon
 		FScopeLock Lock(&LastTimeValuesCS);
 
 		BlockOnRangeDisabled = false;
-		BlockOnRange.Flush();
+		BlockOnRange.OnFlush();
 		LastVideoSampleProcessedTimeRange = TRange<FMediaTimeStamp>::Empty();
 		LastAudioSampleProcessedTime.Invalidate();
 		CurrentFrameVideoTimeStamp.Invalidate();
+		CurrentFrameVideoDisplayTimeStamp.Invalidate();
 		CurrentFrameAudioTimeStamp.Invalidate();
 
 		NextEstVideoTimeAtFrameStart.Invalidate();
+		SeekTargetTime.Invalidate();
+		SeekIndex = 0;
 	}
+
+	ResetTracks();
 
 	if (bCreateNewPlayer)
 	{
@@ -1126,33 +1160,57 @@ void FMediaPlayerFacade::QueryCacheState(EMediaTrackType TrackType, EMediaCacheS
 }
 
 
-bool FMediaPlayerFacade::Seek(const FTimespan& Time)
+bool FMediaPlayerFacade::Seek(const FTimespan& InTime)
 {
-	if (!Player.IsValid() || !Player->GetControls().Seek(Time))
+	auto CurrentPlayer = Player;
+
+	if (!CurrentPlayer.IsValid())
 	{
 		return false;
 	}
 
-	if (Player.IsValid() && Player->FlushOnSeekStarted())
-	{
-		Flush(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::PlayerUsesInternalFlushOnSeek));
-	}
-
-	return true;
-}
-
-
-bool FMediaPlayerFacade::SelectTrack(EMediaTrackType TrackType, int32 TrackIndex)
-{
-	if (!Player.IsValid() || !Player->GetTracks().SelectTrack((EMediaTrackType)TrackType, TrackIndex))
+	FTimespan Duration = CurrentPlayer->GetControls().GetDuration();
+	if (Duration == FTimespan::Zero())
 	{
 		return false;
 	}
 
-	if (!Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::IsTrackSwitchSeamless))
+	FTimespan Time;
+	if (CurrentPlayer->GetControls().IsLooping())
 	{
-		Flush();
+		Time = WrappedModulo(InTime, Duration);
 	}
+	else
+	{
+		Time = FTimespan(FMath::Clamp(InTime.GetTicks(), (int64)0L, Duration.GetTicks()));
+	}
+
+	if (!CurrentPlayer->GetControls().Seek(Time))
+	{
+		return false;
+	}
+
+	FScopeLock Lock(&CriticalSection);
+
+	// V2 timing player?
+	if (CurrentPlayer->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
+	{
+		// Yes. Flush only the facade side of the system as needed for seeks
+		// (the player is expected to flush its internal queues as needed itself)
+		check(CurrentPlayer->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::PlayerUsesInternalFlushOnSeek));
+		Flush(true, true);
+	}
+	else
+	{
+		// No. Flush as requested...
+		if (CurrentPlayer->FlushOnSeekStarted())
+		{
+			Flush(CurrentPlayer->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::PlayerUsesInternalFlushOnSeek), false);
+		}
+	}
+
+	SeekTargetTime = FMediaTimeStamp(Time, FMediaTimeStamp::MakeSequenceIndex(SeekIndex, 0));
+
 	return true;
 }
 
@@ -1189,17 +1247,30 @@ void FMediaPlayerFacade::SetBlockOnTimeRange(const TRange<FTimespan>& TimeRange)
 }
 
 
-void FMediaPlayerFacade::FBlockOnRange::Flush()
+void FMediaPlayerFacade::FBlockOnRange::OnFlush()
 {
-	LastBlockOnRange = TRange<FTimespan>::Empty();
-	OnBlockSeqIndex = 0;
+	LastTimeRange = TRange<FTimespan>::Empty();
+	OnBlockPrimaryIndex = 0;
+}
+
+
+void FMediaPlayerFacade::FBlockOnRange::OnSeek(int32 PrimaryIndex)
+{
+	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Facade->Player);
+	check(CurrentPlayer.IsValid());
+
+	LastTimeRange = TRange<FTimespan>::Empty();
+	OnBlockPrimaryIndex = PrimaryIndex;
 }
 
 
 void FMediaPlayerFacade::FBlockOnRange::SetRange(const TRange<FTimespan>& NewRange)
 {
-	CurrentTimeRange = NewRange;
-	RangeIsDirty = true;
+	if (CurrentTimeRange != NewRange)
+	{
+		CurrentTimeRange = NewRange;
+		RangeIsDirty = true;
+	}
 }
 
 
@@ -1226,9 +1297,10 @@ const TRange<FMediaTimeStamp>& FMediaPlayerFacade::FBlockOnRange::GetRange() con
 		return BlockOnRange;
 	}
 
+	// If the range is empty or the player can't support blocked playback: reset everything & return empty block range...
 	if (CurrentTimeRange.IsEmpty() || !CurrentPlayer->GetControls().CanControl(EMediaControl::BlockOnFetch))
 	{
-		LastBlockOnRange = TRange<FTimespan>::Empty();
+		LastTimeRange = TRange<FTimespan>::Empty();
 		BlockOnRange = TRange<FMediaTimeStamp>::Empty();
 		CurrentPlayer->GetControls().SetBlockingPlaybackHint(false);
 		return BlockOnRange;
@@ -1249,10 +1321,20 @@ const TRange<FMediaTimeStamp>& FMediaPlayerFacade::FBlockOnRange::GetRange() con
 
 	auto SetBlockOnRange = BlockOnRange;
 
+	/*
+	* On the synthesized sequence and loop index values:
+	* - We track seeks and hence can insert the proper seek index easily, although the user does not provide it / does not need to track it
+	* - The loop index gets somewhat of a special treatment:
+	*  -- With tools like Sequencer a blocked range my speed along the timeline quite quickly and if the player is configured as looping it would be expected that the video loops while this is done
+	*  -- We hence could loop multiple times within a single update interval
+	*  -- Still we treat any loop (aka: a jump "backwards" without an explicit seek) as a single loop iteration
+	*     (this is easier for any player to work with and provides the same visual results)
+	*/
+
 	if (!CurrentPlayer->GetControls().IsLooping())
 	{
-		// We pass in the time range as is on seq-index zero at all times - players have to reject sample output / blocking logic will detect begin outside media range
-		BlockOnRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(Start, 0), FMediaTimeStamp(End, 0));
+		int64 SequenceIndex = FMediaTimeStamp::MakeSequenceIndex(OnBlockPrimaryIndex, 0);
+		BlockOnRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(Start, SequenceIndex), FMediaTimeStamp(End, SequenceIndex));
 	}
 	else
 	{
@@ -1279,43 +1361,15 @@ const TRange<FMediaTimeStamp>& FMediaPlayerFacade::FBlockOnRange::GetRange() con
 		Start = WrappedModulo(Start, Duration);
 		End = WrappedModulo(End, Duration);
 
+		int64 LoopIdxS = FMath::FloorToInt(CurrentTimeRange.GetLowerBoundValue().GetTotalSeconds() / Duration.GetTotalSeconds());
+		int64 LoopIdxE = FMath::FloorToInt(CurrentTimeRange.GetUpperBoundValue().GetTotalSeconds() / Duration.GetTotalSeconds());
 
-		// Detect any non-monotonic movement of the range...
-		if (!LastBlockOnRange.IsEmpty())
-		{
-			if (Rate >= 0.0f)
-			{
-				FTimespan LastStart = WrappedModulo(LastBlockOnRange.GetLowerBoundValue(), Duration);
-				if ((LastStart > Start) || ((LastStart == Start) && (LastBlockOnRange.GetLowerBoundValue() < CurrentTimeRange.GetLowerBoundValue())))
-				{
-					++OnBlockSeqIndex;
-				}
-			}
-			else
-			{
-				FTimespan LastEnd = WrappedModulo(LastBlockOnRange.GetUpperBoundValue(), Duration);
-				if ((LastEnd < End) || ((LastEnd == End) && (LastBlockOnRange.GetUpperBoundValue() > CurrentTimeRange.GetUpperBoundValue())))
-				{
-					--OnBlockSeqIndex;
-				}
-			}
-		}
-
-		// Check if our range crosses the loop point (sequence boundary)
-		int64 StartIndex, EndIndex;
-		if (Rate >= 0.0)
-		{
-			StartIndex = OnBlockSeqIndex;
-			EndIndex = (Start <= End) ? OnBlockSeqIndex : (OnBlockSeqIndex + 1);
-		}
-		else
-		{
-			StartIndex = (Start <= End) ? OnBlockSeqIndex : (OnBlockSeqIndex - 1);
-			EndIndex = OnBlockSeqIndex;
-		}
+		int32 EndLoopIndex = LoopIdxE - LoopIdxS;
 
 		// Assemble final blocking range
-		BlockOnRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(Start, StartIndex), FMediaTimeStamp(End, EndIndex));
+		auto SeqIndexStart = FMediaTimeStamp::MakeSequenceIndex(OnBlockPrimaryIndex, 0);
+		auto SeqIndexEnd = FMediaTimeStamp::MakeSequenceIndex(OnBlockPrimaryIndex, EndLoopIndex);
+		BlockOnRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(Start, SeqIndexStart), FMediaTimeStamp(End, SeqIndexEnd));
 		check(!BlockOnRange.IsEmpty());
 	}
 
@@ -1336,7 +1390,7 @@ const TRange<FMediaTimeStamp>& FMediaPlayerFacade::FBlockOnRange::GetRange() con
 
 	CurrentPlayer->GetControls().SetBlockingPlaybackHint(!BlockOnRange.IsEmpty());
 
-	LastBlockOnRange = CurrentTimeRange;
+	LastTimeRange = CurrentTimeRange;
 	RangeIsDirty = false;
 
 	return BlockOnRange;
@@ -1371,23 +1425,39 @@ bool FMediaPlayerFacade::SetRate(float Rate)
 	// Enter CS as we change the rate which we read on the tickable thread
 	FScopeLock Lock(&CriticalSection);
 
-	// Can we set the rate at all?
-	if (!Player.IsValid() || !Player->GetControls().SetRate(Rate))
+	if (!Player.IsValid())
 	{
 		return false;
 	}
 
 	// Is this new rate supported?
+	bool bRateOk = true;
 	if (Rate != 0.0f && !(Player->GetControls().GetSupportedRates(EMediaRateThinning::Thinned).Contains(Rate) || Player->GetControls().GetSupportedRates(EMediaRateThinning::Unthinned).Contains(Rate)))
+	{
+		// Pause player instead...
+		// (some players may do this as a reaction to the illegal rate anyways - but we need to track the state properly!)
+		Rate = 0.0f;
+		bRateOk = false;
+	}
+
+	// Attempt to set the rate...
+	if (!Player->GetControls().SetRate(Rate))
 	{
 		return false;
 	}
 
+
+	// Any change?
 	if (CurrentRate == Rate)
 	{
 		// no change - just return with ok status
-		return true;
+		return bRateOk;
 	}
+
+	// Notify sinks of rate change
+	FMediaSampleSinkEventData Data;
+	Data.PlaybackRateChanged.PlaybackRate = Rate;
+	SendSinkEvent(EMediaSampleSinkEvent::PlaybackRateChanged, Data);
 
 	if ((LastRate * Rate) < 0.0f)
 	{
@@ -1405,13 +1475,14 @@ bool FMediaPlayerFacade::SetRate(float Rate)
 		}
 	}
 
+	// Track last "unpaused" rate we set
 	if (Rate != 0.0)
 	{
 		LastRate = Rate;
 	}
 	CurrentRate = Rate;
 
-	return true;
+	return bRateOk;
 }
 
 
@@ -1481,7 +1552,7 @@ bool FMediaPlayerFacade::BlockOnFetch() const
 {
 	check(Player.IsValid());
 
-	const TRange<FMediaTimeStamp>& BR = BlockOnRange.GetRange();
+	const TRange<FMediaTimeStamp> BR(GetAdjustedBlockOnRange());
 
 	if (BR.IsEmpty() || !Player->GetControls().CanControl(EMediaControl::BlockOnFetch) || BlockOnRangeDisabled || bHaveActiveAudio)
 	{
@@ -1494,56 +1565,8 @@ bool FMediaPlayerFacade::BlockOnFetch() const
 		// V2 blocking logic
 		//
 
-		float Rate = GetUnpausedRate();
-
-		// If the current sample "out there" is actually overlapping with the current block, we might be good with no new sample
-		if (LastVideoSampleProcessedTimeRange.Overlaps(BR))
-		{
-			// We have no new data (else we would not even call this method), but the last sample we returned is still inside the current range -> good, but...
-			//
-			// If the next sample would already cover more of the range than the older one we would like to use that instead -> but it may well be we do not have any data about the sample yet (and would indeed LIKE to block!)
-			// So, we assume that the next sample will follow with no gap and have the same duration (a pretty good, general assumption) and check against that data to see if it would be better...
-
-			// Get last sample's time range
-			TRange<FMediaTimeStamp> LastSampleTimeRange(LastVideoSampleProcessedTimeRange);
-
-			// Compute the "theoretical" next sample range...
-			TRange<FMediaTimeStamp> NextSampleTimeRange = (Rate >= 0.0f) ? TRange<FMediaTimeStamp>(LastVideoSampleProcessedTimeRange.GetUpperBoundValue(), LastVideoSampleProcessedTimeRange.GetUpperBoundValue() + LastVideoSampleProcessedTimeRange.Size<FMediaTimeStamp>().Time)
-				: TRange<FMediaTimeStamp>(LastVideoSampleProcessedTimeRange.GetLowerBoundValue() - LastVideoSampleProcessedTimeRange.Size<FMediaTimeStamp>().Time, LastVideoSampleProcessedTimeRange.GetLowerBoundValue());
-
-			FTimespan Duration = Player->GetControls().GetDuration();
-
-			if (!Player->GetControls().IsLooping())
-			{
-				// If we are not looping we need to clamp against the media's duration
-				// (we assume it starts at zero here!)
-				check(NextSampleTimeRange.GetLowerBoundValue().SequenceIndex == 0);
-				NextSampleTimeRange = TRange<FMediaTimeStamp>::Intersection(NextSampleTimeRange, TRange<FMediaTimeStamp>(FMediaTimeStamp(0, 0), FMediaTimeStamp(Duration, 0)));
-			}
-			else
-			{
-				if (NextSampleTimeRange.GetLowerBoundValue().Time >= Duration)
-				{
-					check(Rate >= 0.0f);
-					NextSampleTimeRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(NextSampleTimeRange.GetLowerBoundValue().Time - Duration, NextSampleTimeRange.GetLowerBoundValue().SequenceIndex + 1), FMediaTimeStamp(NextSampleTimeRange.GetUpperBoundValue().Time - Duration, NextSampleTimeRange.GetUpperBoundValue().SequenceIndex + 1));
-				}
-				else if (NextSampleTimeRange.GetLowerBoundValue().Time < FTimespan::Zero())
-				{
-					check(Rate < 0.0f);
-					NextSampleTimeRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(NextSampleTimeRange.GetLowerBoundValue().Time + Duration, NextSampleTimeRange.GetLowerBoundValue().SequenceIndex - 1), FMediaTimeStamp(NextSampleTimeRange.GetUpperBoundValue().Time + Duration, NextSampleTimeRange.GetUpperBoundValue().SequenceIndex - 1));
-				}
-			}
-
-			// Compute which one is larger inside the current range...
-			int64 LastSampleCoverage = TRange<FMediaTimeStamp>::Intersection(BR, LastSampleTimeRange).Size<FMediaTimeStamp>().Time.GetTicks();
-			int64 NextSampleCoverage = TRange<FMediaTimeStamp>::Intersection(BR, NextSampleTimeRange).Size<FMediaTimeStamp>().Time.GetTicks();
-
-			if (LastSampleCoverage > NextSampleCoverage)
-			{
-				// Last one we returned is still good. No blocking needed...
-				return false;
-			}
-		}
+		// note: with V2 timing we only get here if any current sample is no longer considered "valid" and we didn't so far get a new one that would be
+		//  -->  we do not need to check the actual range here; we only check for exceptions, where we can proceed although we don't have the sample...
 
 		// The next checks make only sense if the player is done preparing...
 		if (!IsPreparing())
@@ -1553,8 +1576,24 @@ bool FMediaPlayerFacade::BlockOnFetch() const
 			{
 				// Yes. Is the sample outside the media's range?
 				// (note: this assumes the media starts at time ZERO - this will not be the case at all times (e.g. life playback) -- for now we assume a player will flagged blocked playback as invalid in that case!)
-				if (BR.GetUpperBoundValue() < FMediaTimeStamp(0) || Player->GetControls().GetDuration() <= BR.GetLowerBoundValue().Time)
+				if (BR.GetUpperBoundValue() < FMediaTimeStamp(FTimespan::Zero(), BR.GetUpperBoundValue().SequenceIndex) || Player->GetControls().GetDuration() <= BR.GetLowerBoundValue().Time)
 				{
+					return false;
+				}
+			}
+			// Paused?
+			if (CurrentRate == 0.0f)
+			{
+				// Yes. If we get here the current sample did not satisfy the set range. So only a incoming seek could resolved this...
+				if (!SeekTargetTime.IsValid())
+				{
+					// No, so don't block. This range is impossible to satisfy...
+					return false;
+				}
+				// Would the seek target probably fit the range?
+				if (!BR.Overlaps(TRange<FMediaTimeStamp>(SeekTargetTime, SeekTargetTime + BR.Size<FMediaTimeStamp>().Time)))
+				{
+					// No, so don't block. This range is impossible to satisfy...
 					return false;
 				}
 			}
@@ -1585,7 +1624,7 @@ bool FMediaPlayerFacade::BlockOnFetch() const
 			return false; // block only in forward play
 		}
 
-		const bool VideoReady = (VideoSampleSinks.Num() == 0) || (BR.GetUpperBoundValue() < NextVideoSampleTime);
+		const bool VideoReady = (VideoSampleSinks.Num() == 0) || (BR.GetUpperBoundValue().Time < NextVideoSampleTime);
 
 		if (VideoReady)
 		{
@@ -1598,30 +1637,62 @@ bool FMediaPlayerFacade::BlockOnFetch() const
 }
 
 
-void FMediaPlayerFacade::Flush(bool bExcludePlayer)
+void FMediaPlayerFacade::Flush(bool bExcludePlayer, bool bOnSeek)
 {
 	UE_LOG(LogMediaUtils, Verbose, TEXT("PlayerFacade %p: Flushing sinks"), this);
 
 	FScopeLock Lock(&CriticalSection);
 
-	AudioSampleSinks.Flush();
-	CaptionSampleSinks.Flush();
-	MetadataSampleSinks.Flush();
-	SubtitleSampleSinks.Flush();
-	VideoSampleSinks.Flush();
+	auto RawMediaPlayer = MediaPlayer.Get();
+	AudioSampleSinks.Flush(RawMediaPlayer);
+	CaptionSampleSinks.Flush(RawMediaPlayer);
+	MetadataSampleSinks.Flush(RawMediaPlayer);
+	SubtitleSampleSinks.Flush(RawMediaPlayer);
+	VideoSampleSinks.Flush(RawMediaPlayer);
 
 	if (Player.IsValid() && !bExcludePlayer)
 	{
 		Player->GetSamples().FlushSamples();
 	}
 
-	NextVideoSampleTime = FTimespan::MinValue();
-
 	LastAudioRenderedSampleTime.Invalidate();
-	LastVideoSampleProcessedTimeRange = TRange<FMediaTimeStamp>::Empty();
-	BlockOnRange.Flush();
+	if (bOnSeek)
+	{
+		SeekIndex += (GetUnpausedRate() < 0.0f) ? -1 : 1;
+		BlockOnRange.OnSeek(SeekIndex);
+	}
+	else
+	{
+		BlockOnRange.OnFlush();
+		SeekIndex = 0;
+	}
 
+	// Logically we have no old sample anymore
+	// (as in: we will start asking for a new one until we get one - even with a rate of zero, if we had a non-zero one ever before)
+	LastVideoSampleProcessedTimeRange = TRange<FMediaTimeStamp>::Empty();
+
+	// Invalidate next video time to fetch (none-audio case)
 	NextEstVideoTimeAtFrameStart.Invalidate();
+	// ...and seek target
+	SeekTargetTime.Invalidate();
+
+	// V1 only
+	NextVideoSampleTime = FTimespan::MinValue();
+}
+
+
+void FMediaPlayerFacade::SendSinkEvent(EMediaSampleSinkEvent Event, const FMediaSampleSinkEventData& Data)
+{
+	{
+	FScopeLock Lock(&CriticalSection);
+
+	AudioSampleSinks.ReceiveEvent(Event, Data);
+	MetadataSampleSinks.ReceiveEvent(Event, Data);
+	}
+
+	CaptionSampleSinks.ReceiveEvent(Event, Data);
+	SubtitleSampleSinks.ReceiveEvent(Event, Data);
+	VideoSampleSinks.ReceiveEvent(Event, Data);
 }
 
 
@@ -1772,11 +1843,7 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowe
 {
 	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeProcessEvent);
 
-	if (Event == EMediaEvent::TracksChanged)
-	{
-		SelectDefaultTracks();
-	}
-	else if ((Event == EMediaEvent::MediaOpened) || (Event == EMediaEvent::MediaOpenFailed))
+	if ((Event == EMediaEvent::MediaOpened) || (Event == EMediaEvent::MediaOpenFailed))
 	{
 		if (Event == EMediaEvent::MediaOpenFailed)
 		{
@@ -1794,17 +1861,26 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowe
 			UE_LOG(LogMediaUtils, Verbose, TEXT("PlayerFacade %p: Media Info:\n%s"), this, *MediaInfo);
 		}
 	}
-
-	if ((Event == EMediaEvent::PlaybackEndReached) ||
-		(Event == EMediaEvent::TracksChanged))
+	else if (Event == EMediaEvent::TracksChanged)
 	{
-		Flush();
+		SelectDefaultTracks();
+
+		if (Player.IsValid() && !Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
+		{
+			// Execute flush for older players only
+			Flush();
+		}
 	}
 	else if (Event == EMediaEvent::SeekCompleted)
 	{
-		if (!Player.IsValid() || Player->FlushOnSeekCompleted())
+		// We only consider flushing on seek completion if there is a V1 timing player...
+		if (Player.IsValid() && !Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
 		{
-			Flush(!Player.IsValid() || Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::PlayerUsesInternalFlushOnSeek));
+			// Does the player want this?
+			if (Player->FlushOnSeekCompleted())
+			{
+				Flush(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::PlayerUsesInternalFlushOnSeek), true);
+			}
 		}
 	}
 	else if (Event == EMediaEvent::MediaClosed)
@@ -1813,6 +1889,8 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowe
 		if (CurrentUrl.IsEmpty())
 		{
 			// Yes, this also means: if we still have a player, it's still the one this event originated from
+			FMediaSampleSinkEventData Data;
+			SendSinkEvent(EMediaSampleSinkEvent::MediaClosed, Data);
 
 			// If player allows: close it down all the way right now
 			if (Player.IsValid() && Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::AllowShutdownOnClose))
@@ -1824,6 +1902,16 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowe
 			// Stop issuing audio thread ticks until we open the player again
 			MediaModule->GetTicker().RemoveTickable(AsShared());
 		}
+	}
+	else if (Event == EMediaEvent::PlaybackEndReached)
+	{
+		if (Player.IsValid() && !Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
+		{
+			// Execute flush for older players only
+			Flush();
+		}
+		FMediaSampleSinkEventData Data;
+		SendSinkEvent(EMediaSampleSinkEvent::PlaybackEndReached, Data);
 	}
 
 	if (bIsBroadcastAllowed)
@@ -1837,26 +1925,110 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowe
 }
 
 
+void FMediaPlayerFacade::ResetTracks()
+{
+	for (int32 Idx = 0; Idx < (int32)EMediaTrackType::Num; ++Idx)
+	{
+		TrackSelection.UserSelection[Idx] = -1;
+		TrackSelection.PlayerSelection[Idx] = -1;
+	}
+}
+
+
 void FMediaPlayerFacade::SelectDefaultTracks()
 {
-	if (!Player.IsValid())
-	{
-		return;
-	}
-
-	IMediaTracks& Tracks = Player->GetTracks();
-
 	FMediaPlayerTrackOptions TrackOptions;
 	if (ActivePlayerOptions.IsSet())
 	{
 		TrackOptions = ActivePlayerOptions.GetValue().Tracks;
 	}
 
-	Tracks.SelectTrack(EMediaTrackType::Audio, TrackOptions.Audio);
-	Tracks.SelectTrack(EMediaTrackType::Caption, TrackOptions.Caption);
-	Tracks.SelectTrack(EMediaTrackType::Metadata, TrackOptions.Metadata);
-	Tracks.SelectTrack(EMediaTrackType::Subtitle, TrackOptions.Subtitle);
-	Tracks.SelectTrack(EMediaTrackType::Video, TrackOptions.Video);
+	TrackSelection.UserSelection[(int32)EMediaTrackType::Audio] = TrackOptions.Audio;
+	TrackSelection.UserSelection[(int32)EMediaTrackType::Caption] = TrackOptions.Caption;
+	TrackSelection.UserSelection[(int32)EMediaTrackType::Metadata] = TrackOptions.Metadata;
+	TrackSelection.UserSelection[(int32)EMediaTrackType::Subtitle] = TrackOptions.Subtitle;
+	TrackSelection.UserSelection[(int32)EMediaTrackType::Video] = TrackOptions.Video;
+}
+
+
+bool FMediaPlayerFacade::SelectTrack(EMediaTrackType TrackType, int32 TrackIndex)
+{
+	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer(Player);
+	if (CurrentPlayer.IsValid())
+	{
+		IMediaTracks& Tracks = CurrentPlayer->GetTracks();
+
+		if (Tracks.GetNumTracks(TrackType) > TrackIndex)
+		{
+			TrackSelection.UserSelection[(int32)TrackType] = TrackIndex;
+			return true;
+		}
+	}
+	return false;
+}
+
+
+int32 FMediaPlayerFacade::GetSelectedTrack(EMediaTrackType TrackType) const
+{
+	return TrackSelection.UserSelection[(int32)TrackType];
+}
+
+
+void FMediaPlayerFacade::UpdateTrackSelectionWithPlayer()
+{
+	check(Player.IsValid());
+
+	bool bChanges = false;
+
+	IMediaTracks& Tracks = Player->GetTracks();
+	for (int32 Idx = 0; Idx < (int32)EMediaTrackType::Num; ++Idx)
+	{
+		// Player and user selection are different?
+		if (TrackSelection.PlayerSelection[Idx] != TrackSelection.UserSelection[Idx])
+		{
+			// Yes...
+			int32 UserSelection = TrackSelection.UserSelection[Idx];
+
+			// Filter selection against the configured sinks...
+			if (UserSelection != -1)
+			{
+				if ((Idx == (int)EMediaTrackType::Audio && !PrimaryAudioSink.IsValid()) ||
+					(Idx == (int)EMediaTrackType::Video && VideoSampleSinks.IsEmpty()) ||
+					(Idx == (int)EMediaTrackType::Caption && CaptionSampleSinks.IsEmpty()) ||
+					(Idx == (int)EMediaTrackType::Subtitle && SubtitleSampleSinks.IsEmpty()) ||
+					(Idx == (int)EMediaTrackType::Metadata && MetadataSampleSinks.IsEmpty()))
+				{
+					UserSelection = -1;
+				}
+			}
+
+			// After filtering the user's selection, do we still have to change things?
+			if (TrackSelection.PlayerSelection[Idx] != UserSelection)
+			{
+				// Yes!
+				if (Tracks.SelectTrack((EMediaTrackType)Idx, UserSelection))
+				{
+					// Recall what is now selected with the player...
+					TrackSelection.PlayerSelection[Idx] = UserSelection;
+
+					bChanges = true;
+				}
+				else
+				{
+					// Track selection failed. Patch the user selection to be what we know of the player's, so we do not reattempt this over and over...
+					TrackSelection.UserSelection[Idx] = TrackSelection.PlayerSelection[Idx];
+				}
+			}
+		}
+	}
+
+	if (bChanges)
+	{
+		if (!Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::IsTrackSwitchSeamless))
+		{
+			Flush();
+		}
+	}
 }
 
 
@@ -1875,9 +2047,8 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 
 	if (Player.IsValid())
 	{
-		// Update flag reflecting presence of audio in the current stream
-		// (doing it just once per gameloop is enough)
-		bHaveActiveAudio = HaveAudioPlayback();
+		UpdateTrackSelectionWithPlayer();
+		MonitorAudioEnablement();
 
 		Player->TickInput(DeltaTime, Timecode);
 
@@ -1942,10 +2113,11 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 
 				if (ProcessVideoSamples(Samples, TimeRange))
 				{
+					// We either got a new sample or a current one is still the best choice...
 					break;
 				}
 
-				// No sample. Should we block for one?
+				// The current one is outdated and no new one was delivered. Should we block for one?
 				if (!BlockOnFetch())
 				{
 					// No... continue...
@@ -1954,6 +2126,9 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 
 				// Issue tick call with dummy timing as some players advance some state in the tick, which we wait for
 				Player->TickInput(FTimespan::Zero(), FTimespan::MinValue());
+
+				// Monitor / update seek status
+				UpdateSeekStatus();
 
 				// Process deferred events & check for events that break the block
 				bool bEventCancelsBlock = false;
@@ -2086,8 +2261,8 @@ void FMediaPlayerFacade::TickFetch(FTimespan DeltaTime, FTimespan Timecode)
 
 		while (true)
 		{
-			ProcessCaptionSamples(Samples, TimeRange);
-			ProcessSubtitleSamples(Samples, TimeRange);
+			ProcessCaptionSamplesV1(Samples, TimeRange);
+			ProcessSubtitleSamplesV1(Samples, TimeRange);
 			ProcessVideoSamplesV1(Samples, TimeRange);
 
 			if (!BlockOnFetch())
@@ -2163,42 +2338,154 @@ void FMediaPlayerFacade::TickTickable()
 	Player->TickAudio();
 
 	// determine range of valid samples
-	TRange<FTimespan> AudioTimeRange;
-	TRange<FTimespan> MetadataTimeRange;
-
-	const FTimespan Time = GetTime();
-
-	bool bUseV2Timing = Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2);
-
-	if (Rate > 0.0f)
-	{
-		if (!bUseV2Timing) // we leave range open - sends all the player has
-		{
-			AudioTimeRange = TRange<FTimespan>::Inclusive(FTimespan::MinValue(), Time + MediaPlayerFacade::AudioPreroll);
-		}
-		MetadataTimeRange = TRange<FTimespan>::Inclusive(FTimespan::MinValue(), Time + MediaPlayerFacade::MetadataPreroll);
-	}
-	else
-	{
-		if (!bUseV2Timing) // we leave range open - sends all the player has
-		{
-			AudioTimeRange = TRange<FTimespan>::Inclusive(Time - MediaPlayerFacade::AudioPreroll, FTimespan::MaxValue());
-		}
-		MetadataTimeRange = TRange<FTimespan>::Inclusive(Time - MediaPlayerFacade::MetadataPreroll, FTimespan::MaxValue());
-	}
 
 	// process samples in range
 	IMediaSamples& Samples = Player->GetSamples();
 
-	ProcessAudioSamples(Samples, AudioTimeRange);
-	ProcessMetadataSamples(Samples, MetadataTimeRange);
-	if (bUseV2Timing)
+	if (Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
 	{
-		ProcessCaptionSamples(Samples, MetadataTimeRange);
-		ProcessSubtitleSamples(Samples, MetadataTimeRange);
+		const FMediaTimeStamp Time = GetTimeStamp();
+
+		auto TimeRange = TRange<FMediaTimeStamp>::Inclusive(FMediaTimeStamp(FTimespan::MinValue(), MIN_int32), Time + MediaPlayerFacade::MetadataPreroll);
+
+		ProcessAudioSamples(Samples, TRange<FMediaTimeStamp>());
+		ProcessMetadataSamples(Samples, TimeRange);
+	}
+	else
+	{
+		TRange<FTimespan> AudioTimeRange;
+		TRange<FTimespan> MetadataTimeRange;
+
+		const FTimespan Time = GetTime();
+
+		if (Rate >= 0.0f)
+		{
+			AudioTimeRange = TRange<FTimespan>::Inclusive(FTimespan::MinValue(), Time + MediaPlayerFacade::AudioPreroll);
+			MetadataTimeRange = TRange<FTimespan>::Inclusive(FTimespan::MinValue(), Time + MediaPlayerFacade::MetadataPreroll);
+		}
+		else
+		{
+			AudioTimeRange = TRange<FTimespan>::Inclusive(Time - MediaPlayerFacade::AudioPreroll, FTimespan::MaxValue());
+			MetadataTimeRange = TRange<FTimespan>::Inclusive(Time - MediaPlayerFacade::MetadataPreroll, FTimespan::MaxValue());
+		}
+
+		ProcessAudioSamplesV1(Samples, AudioTimeRange);
+		ProcessMetadataSamplesV1(Samples, MetadataTimeRange);
 	}
 
 	SET_DWORD_STAT(STAT_MediaUtils_FacadeNumAudioSamples, Samples.NumAudio());
+}
+
+
+void FMediaPlayerFacade::UpdateSeekStatus(const FMediaTimeStamp* pCheckTimeStamp)
+{
+	check(Player.IsValid());
+
+	FScopeLock Lock(&CriticalSection);
+
+	if (HaveVideoPlayback())
+	{
+		if (SeekTargetTime.IsValid())
+		{
+			// Either peek for the newest available sample or take a given timestamp to check against
+			FMediaTimeStamp VideoTimeStamp;
+			if (pCheckTimeStamp)
+			{
+				VideoTimeStamp = *pCheckTimeStamp;
+			}
+			else
+			{
+				Player->GetSamples().PeekVideoSampleTime(VideoTimeStamp);
+			}
+
+			if (VideoTimeStamp.IsValid())
+			{
+				bool bRunningNonAudioClock = bHaveActiveAudio && !BlockOnRange.IsSet();
+
+				if (GetUnpausedRate() >= 0.0f)
+				{
+					// See if we already are looking at a sample from the target sequence index...
+					// (we are not checking for the precise location as some players might not able to deliver it)
+					if (FMediaTimeStamp::GetPrimaryIndex(VideoTimeStamp.SequenceIndex) < FMediaTimeStamp::GetPrimaryIndex(SeekTargetTime.SequenceIndex))
+					{
+						// No. Make sure we drop the sample & possible more up to the seek target (we use the fetch code to avoid any races with a old-sample-purge logic operating async)
+						Player->GetSamples().DiscardVideoSamples(TRange<FMediaTimeStamp>(VideoTimeStamp, SeekTargetTime), false);
+					}
+					else
+					{
+						// We have reached the sequence of the seek target, reset everything to normal operation...
+						// (we do not care if we reached the precise location beyond the index as we do not know if we even can)
+						if (bRunningNonAudioClock)
+						{
+							NextEstVideoTimeAtFrameStart = FMediaTimeStampSample(VideoTimeStamp, FPlatformTime::Seconds());
+						}
+
+						FScopeLock LockLT(&LastTimeValuesCS);
+
+						// Update the display version of then "current frame time" right now (to avoid any glitches as it can take a little while for the frame to actually change)
+						CurrentFrameVideoDisplayTimeStamp = SeekTargetTime;
+
+						// Seeking done
+						SeekTargetTime.Invalidate();
+
+					}
+				}
+				else
+				{
+					// See if we already are looking at a sample from the target sequence index...
+					// (we are not checking for the precise location as some players might not able to deliver it)
+					if (FMediaTimeStamp::GetPrimaryIndex(VideoTimeStamp.SequenceIndex) > FMediaTimeStamp::GetPrimaryIndex(SeekTargetTime.SequenceIndex))
+					{
+						// No. Make sure we drop the sample & possible more up to the seek target (we use the fetch code to avoid any races with a old-sample-purge logic operating async)
+						Player->GetSamples().DiscardVideoSamples(TRange<FMediaTimeStamp>(VideoTimeStamp, SeekTargetTime), true);
+					}
+					else
+					{
+						// We have reached the sequence of the seek target, reset everything to normal operation...
+						// (we do not care if we reached the precise location beyond the index as we do not know if we even can)
+						if (bRunningNonAudioClock)
+						{
+							NextEstVideoTimeAtFrameStart = FMediaTimeStampSample(VideoTimeStamp, FPlatformTime::Seconds());
+						}
+
+						FScopeLock LockLT(&LastTimeValuesCS);
+						SeekTargetTime.Invalidate();
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		if (bHaveActiveAudio)
+		{
+			FScopeLock LockLT(&LastTimeValuesCS);
+			if (CurrentFrameAudioTimeStamp >= SeekTargetTime)
+			{
+				SeekTargetTime.Invalidate();
+			}
+		}
+		else
+		{
+			// Neither audio nor video are presently active. We just assume we reached the seek target and continue...
+			// (we currently have no other source of a current sample timestamp)
+			SeekTargetTime.Invalidate();
+		}
+	}
+}
+
+
+void FMediaPlayerFacade::MonitorAudioEnablement()
+{
+	// Update flag reflecting presence of audio in the current stream
+	// (doing it just once per gameloop is enough)
+	bool bHadActiveAudio = bHaveActiveAudio;
+	bHaveActiveAudio = HaveAudioPlayback();
+	if (bHadActiveAudio && !bHaveActiveAudio)
+	{
+		// Reset state for dt-based playback so we grab a new PTS value immediately
+		NextEstVideoTimeAtFrameStart.Invalidate();
+	}
 }
 
 
@@ -2206,21 +2493,20 @@ void FMediaPlayerFacade::PreSampleProcessingTimeHandling()
 {
 	check(Player.IsValid());
 
-	// No Audio clock?
-	if (!bHaveActiveAudio)
+	FScopeLock Lock(&CriticalSection);
+
+	UpdateSeekStatus();
+
+	// No seeking?
+	if (!SeekTargetTime.IsValid())
 	{
-		// No external clock? (blocking)
-		if (!BlockOnRange.IsSet())
+		// No seek pending & not paused. Can we / Do we need to prime a non-audio clock?
+		if (!bHaveActiveAudio && !BlockOnRange.IsSet() && !NextEstVideoTimeAtFrameStart.IsValid())
 		{
-			// Do we have a current timestamp estimation?
-			if (!NextEstVideoTimeAtFrameStart.IsValid())
+			FMediaTimeStamp VideoTimeStamp;
+			if (Player->GetSamples().PeekVideoSampleTime(VideoTimeStamp))
 			{
-				// Not, yet. We need to attempt to get the next video sample's timestamp to get going...
-				FMediaTimeStamp VideoTimeStamp;
-				if (Player->GetSamples().PeekVideoSampleTime(VideoTimeStamp))
-				{
-					NextEstVideoTimeAtFrameStart = FMediaTimeStampSample(VideoTimeStamp, FPlatformTime::Seconds());
-				}
+				NextEstVideoTimeAtFrameStart = FMediaTimeStampSample(VideoTimeStamp, FPlatformTime::Seconds());
 			}
 		}
 	}
@@ -2241,7 +2527,7 @@ void FMediaPlayerFacade::PostSampleProcessingTimeHandling(FTimespan DeltaTime)
 		{
 			// Move video frame start estimate forward
 			// (the initial NextEstVideoTimeAtFrameStart will never be valid if no video is present)
-			if (!bHaveActiveAudio && NextEstVideoTimeAtFrameStart.IsValid())
+			if (NextEstVideoTimeAtFrameStart.IsValid())
 			{
 				if (Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UseRealtimeWithVideoOnly))
 				{
@@ -2262,18 +2548,18 @@ void FMediaPlayerFacade::PostSampleProcessingTimeHandling(FTimespan DeltaTime)
 				{
 					if (Rate >= 0.0f)
 					{
-						if (NextEstVideoTimeAtFrameStart.TimeStamp.Time >= Duration)
+						while (NextEstVideoTimeAtFrameStart.TimeStamp.Time >= Duration)
 						{
 							NextEstVideoTimeAtFrameStart.TimeStamp.Time -= Duration;
-							++NextEstVideoTimeAtFrameStart.TimeStamp.SequenceIndex;
+							NextEstVideoTimeAtFrameStart.TimeStamp.SequenceIndex = FMediaTimeStamp::AdjustSecondaryIndex(NextEstVideoTimeAtFrameStart.TimeStamp.SequenceIndex, 1);
 						}
 					}
 					else
 					{
-						if (NextEstVideoTimeAtFrameStart.TimeStamp.Time < FTimespan::Zero())
+						while (NextEstVideoTimeAtFrameStart.TimeStamp.Time < FTimespan::Zero())
 						{
 							NextEstVideoTimeAtFrameStart.TimeStamp.Time += Duration;
-							--NextEstVideoTimeAtFrameStart.TimeStamp.SequenceIndex;
+							NextEstVideoTimeAtFrameStart.TimeStamp.SequenceIndex = FMediaTimeStamp::AdjustSecondaryIndex(NextEstVideoTimeAtFrameStart.TimeStamp.SequenceIndex, -1);
 						}
 					}
 				}
@@ -2300,8 +2586,12 @@ void FMediaPlayerFacade::PostSampleProcessingTimeHandling(FTimespan DeltaTime)
 }
 
 
-bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& TimeRange, float Rate, FTimespan DeltaTime, bool bDoNotUseFrameStartReference) const
+bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& TimeRange, float Rate, FTimespan DeltaTime, bool bPurgeSampleRelated) const
 {
+	/*
+	* Note: while a seek operation is still in progress (no sample from target location has been processed) this will
+	* return on an empty time range.
+	*/
 	check(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
 
 	TSharedPtr<FMediaAudioSampleSink, ESPMode::ThreadSafe> AudioSink = PrimaryAudioSink.Pin();
@@ -2315,7 +2605,26 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 		FMediaTimeStampSample AudioTime = AudioSink->GetAudioTime();
 		if (!AudioTime.IsValid())
 		{
-			// No timing info available, no timerange available, no samples to process
+			if (!bPurgeSampleRelated)
+			{
+				// If paused and not seeking, make sure we get one sample nonetheless...
+				if (Rate == 0.0f && !SeekTargetTime.IsValid())
+				{
+					// Do this once after open / seek...
+					if (LastVideoSampleProcessedTimeRange.IsEmpty())
+					{
+						// Use the video sample timestamp for simplicity (although we otherwise sync with audio timestamps)
+						FMediaTimeStamp TimeStamp;
+						if (Player->GetSamples().PeekVideoSampleTime(TimeStamp))
+						{
+							TimeRange = TRange<FMediaTimeStamp>(TimeStamp, TimeStamp + DeltaTime);
+							return !TimeRange.IsEmpty();
+						}
+					}
+				}
+			}
+
+			// No timing info available, no time range available, no samples to process
 			return false;
 		}
 
@@ -2323,7 +2632,7 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 
 		double Now = FPlatformTime::Seconds();
 
-		if (!bDoNotUseFrameStartReference)
+		if (!bPurgeSampleRelated)
 		{
 			// Normal estimation relative to current frame start...
 			// (on gamethread operation)
@@ -2363,8 +2672,7 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 			}
 		}
 
-		TimeRange = (Rate >= 0.0f) ? TRange<FMediaTimeStamp>(EstAudioTimeAtFrameStart, EstAudioTimeAtFrameStart + DeltaTime * Rate)
-			: TRange<FMediaTimeStamp>(EstAudioTimeAtFrameStart + DeltaTime * (1.0f + Rate), EstAudioTimeAtFrameStart + DeltaTime);
+		TimeRange = TRange<FMediaTimeStamp>(EstAudioTimeAtFrameStart, EstAudioTimeAtFrameStart + DeltaTime * FGenericPlatformMath::Abs(Rate));
 	}
 	else
 	{
@@ -2380,7 +2688,7 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 			// Do we now have a current timestamp estimation?
 			if (!NextEstVideoTimeAtFrameStart.IsValid())
 			{
-				// No timing info available, no timerange available, no samples to process
+				// No timing info available, no time range available, no samples to process
 				return false;
 			}
 			else
@@ -2398,28 +2706,7 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 					}
 				}
 
-				TimeRange = (Rate >= 0.0f) ? TRange<FMediaTimeStamp>(NextEstVideoTimeAtFrameStart.TimeStamp, NextEstVideoTimeAtFrameStart.TimeStamp + DeltaTime * Rate)
-					: TRange<FMediaTimeStamp>(NextEstVideoTimeAtFrameStart.TimeStamp + DeltaTime * (1.0f + Rate), NextEstVideoTimeAtFrameStart.TimeStamp + DeltaTime);
-
-				// If we are looping we check to prepare proper ranges should we wrap around either end of the media...
-				// (we do not clamp in the non-looping case as the rest of the code should deal with that fine)
-				if (Player->GetControls().IsLooping())
-				{
-					const FTimespan Duration = Player->GetControls().GetDuration();
-					FTimespan WrappedStart = WrappedModulo(TimeRange.GetLowerBoundValue().Time, Duration);
-					FTimespan WrappedEnd = WrappedModulo(TimeRange.GetUpperBoundValue().Time, Duration);
-					if (WrappedStart > WrappedEnd)
-					{
-						if (Rate >= 0.0)
-						{
-							TimeRange.SetUpperBoundValue(FMediaTimeStamp(WrappedEnd, TimeRange.GetUpperBoundValue().SequenceIndex + 1));
-						}
-						else
-						{
-							TimeRange.SetLowerBoundValue(FMediaTimeStamp(WrappedStart, TimeRange.GetLowerBoundValue().SequenceIndex - 1));
-						}
-					}
-				}
+				TimeRange = TRange<FMediaTimeStamp>(NextEstVideoTimeAtFrameStart.TimeStamp, NextEstVideoTimeAtFrameStart.TimeStamp + DeltaTime * FGenericPlatformMath::Abs(Rate));
 			}
 		}
 		else
@@ -2428,7 +2715,36 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 			// External clock delivers time-range
 			// (for now we just use the blocking time range as this clock type is solely used in that case)
 			//
-			TimeRange = BlockOnRange.GetRange();
+			TimeRange = GetAdjustedBlockOnRange();
+		}
+	}
+
+	if (TimeRange.IsEmpty())
+	{
+		return false;
+	}
+
+	// If we are looping we check to prepare proper ranges should we wrap around either end of the media...
+	// (we do not clamp in the non-looping case as the rest of the code should deal with that fine)
+	if (Player->GetControls().IsLooping())
+	{
+		// Can the player already hand out a duration? (we might get here very early on)
+		const FTimespan Duration = Player->GetControls().GetDuration();
+		if (Duration != FTimespan::Zero())
+		{
+			FTimespan WrappedStart = WrappedModulo(TimeRange.GetLowerBoundValue().Time, Duration);
+			FTimespan WrappedEnd = WrappedModulo(TimeRange.GetUpperBoundValue().Time, Duration);
+			if (WrappedStart > WrappedEnd)
+			{
+				if (WrappedStart != TimeRange.GetLowerBoundValue().Time)
+				{
+					TimeRange.SetLowerBoundValue(FMediaTimeStamp(WrappedStart, FMediaTimeStamp::AdjustSecondaryIndex(TimeRange.GetLowerBoundValue().SequenceIndex, -1)));
+				}
+				if (WrappedEnd != TimeRange.GetUpperBoundValue().Time)
+				{
+					TimeRange.SetUpperBoundValue(FMediaTimeStamp(WrappedEnd, FMediaTimeStamp::AdjustSecondaryIndex(TimeRange.GetUpperBoundValue().SequenceIndex, 1)));
+				}
+			}
 		}
 	}
 
@@ -2436,196 +2752,174 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 }
 
 
-/* FMediaPlayerFacade implementation
-*****************************************************************************/
-
-void FMediaPlayerFacade::ProcessAudioSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
+TRange<FMediaTimeStamp> FMediaPlayerFacade::GetAdjustedBlockOnRange() const
 {
-	TSharedPtr<IMediaAudioSample, ESPMode::ThreadSafe> Sample;
+	TRange<FMediaTimeStamp> TimeRange = BlockOnRange.GetRange();
 
-	if (Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
+	// The blocking range returned will base any secondary index values on zero. We need to patch in the secondary index value as last returned by the player plugin
+	if (!LastVideoSampleProcessedTimeRange.IsEmpty())
 	{
-		// For V2 we basically expect to get no timerange at all: totally open
-		// (we just have it around to be compatible / use older code that expects it)
-		check(TimeRange.GetLowerBound().IsOpen() && TimeRange.GetUpperBound().IsOpen());
+		int32 BaseLoopIndex = FMediaTimeStamp::GetSecondaryIndex(LastVideoSampleProcessedTimeRange.GetLowerBoundValue().SequenceIndex);
 
-		//
-		// "Modern" 1-Audio-Sink-Only case (aka: we only feed the primary sink)
-		//
-		if (TSharedPtr< FMediaAudioSampleSink, ESPMode::ThreadSafe> PinnedPrimaryAudioSink = PrimaryAudioSink.Pin())
+		// We still might have a time that is before the current one, in which case we need to push the loop index up (or down)...
+		if (GetUnpausedRate() >= 0.0f)
 		{
-			while (PinnedPrimaryAudioSink->CanAcceptSamples(1))
+			if (LastVideoSampleProcessedTimeRange.GetLowerBoundValue() > FMediaTimeStamp(TimeRange.GetLowerBoundValue().Time, FMediaTimeStamp::AdjustSecondaryIndex(TimeRange.GetLowerBoundValue().SequenceIndex, BaseLoopIndex)))
 			{
-				if (!Samples.FetchAudio(TimeRange, Sample))
-					break;
-
-				if (!Sample.IsValid())
-				{
-					continue;
-				}
-
-				{
-					FScopeLock Lock(&LastTimeValuesCS);
-					LastAudioSampleProcessedTime.TimeStamp = FMediaTimeStamp(Sample->GetTime());
-					LastAudioSampleProcessedTime.SampledAtTime = FPlatformTime::Seconds();
-				}
-
-				PinnedPrimaryAudioSink->Enqueue(Sample.ToSharedRef());
+				++BaseLoopIndex;
 			}
 		}
 		else
 		{
-			// Do we have video playback?
-			if (HaveVideoPlayback())
+			if (LastVideoSampleProcessedTimeRange.GetLowerBoundValue() < FMediaTimeStamp(TimeRange.GetLowerBoundValue().Time, FMediaTimeStamp::AdjustSecondaryIndex(TimeRange.GetLowerBoundValue().SequenceIndex, BaseLoopIndex)))
 			{
-				TRange<FMediaTimeStamp> TempRange;
-				// We got video and audio, but no audio sink - throw away anything up to video playback time...
-				// (rough estimate, as this is off-gamethread; but better than throwing things out with no throttling at all)
-				{
-					bool bReverse = (CurrentRate < 0.0f);
-					FScopeLock Lock(&LastTimeValuesCS);
-					if (!bReverse)
-					{
-						TempRange.SetUpperBound(CurrentFrameVideoTimeStamp);
-					}
-					else
-					{
-						TempRange.SetLowerBound(CurrentFrameVideoTimeStamp);
-					}
-
-				}
-				while (Samples.FetchAudio(TempRange, Sample))
-					;
-			}
-			else
-			{
-				// No Video and no primary audio sink: we throw all away (sub-optimal as it will keep audio decoding busy; but this should be an edge case)
-				while (Samples.FetchAudio(TimeRange, Sample))
-					;
+				--BaseLoopIndex;
 			}
 		}
+
+		TimeRange.SetLowerBoundValue(FMediaTimeStamp(TimeRange.GetLowerBoundValue().Time, FMediaTimeStamp::AdjustSecondaryIndex(TimeRange.GetLowerBoundValue().SequenceIndex, BaseLoopIndex)));
+		TimeRange.SetUpperBoundValue(FMediaTimeStamp(TimeRange.GetUpperBoundValue().Time, FMediaTimeStamp::AdjustSecondaryIndex(TimeRange.GetUpperBoundValue().SequenceIndex, BaseLoopIndex)));
 	}
-	else
+
+	return TimeRange;
+}
+
+
+/* FMediaPlayerFacade implementation
+*****************************************************************************/
+
+void FMediaPlayerFacade::ProcessAudioSamples(IMediaSamples& Samples, const TRange<FMediaTimeStamp>& TimeRange)
+{
+	TSharedPtr<IMediaAudioSample, ESPMode::ThreadSafe> Sample;
+
+	check(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
+
+	// For V2 we basically expect to get no timerange at all: totally open
+	// (we just have it around to be compatible / use older code that expects it)
+	check(TimeRange.GetLowerBound().IsOpen() && TimeRange.GetUpperBound().IsOpen());
+
+	// Seek in progress?
+	if (SeekTargetTime.IsValid())
 	{
-		//
-		// >1 Audio Sinks: we must drop samples that cause on overrun as SOME sinks will get it, some don't...
-		// (mainly here to cover the "backwards compatibility" cases -> in the future we will probably only allow ONE AudioSink)
-		//
-		while (Samples.FetchAudio(TimeRange, Sample))
+		// Yes. Fetch (and discard) all samples up to the seek target time...
+		// (we only throw out samples from prior sequence indices to make sure we do not swallow any audio from overlapping samples)
+		auto DiscardRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(0), FMediaTimeStamp((CurrentRate >= 0.0f) ? FTimespan::Zero() : FTimespan::MaxValue(), SeekTargetTime.SequenceIndex));
+		Samples.DiscardAudioSamples(DiscardRange, GetUnpausedRate() < 0.0f);
+	}
+
+	//
+	// "Modern" 1-Audio-Sink-Only case (aka: we only feed the primary sink)
+	//
+	if (TSharedPtr< FMediaAudioSampleSink, ESPMode::ThreadSafe> PinnedPrimaryAudioSink = PrimaryAudioSink.Pin())
+	{
+		while (PinnedPrimaryAudioSink->CanAcceptSamples(1))
 		{
+			if (!Samples.FetchAudio(TimeRange, Sample))
+				break;
+
 			if (!Sample.IsValid())
 			{
 				continue;
 			}
 
-			if (!AudioSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxAudioSinkDepth))
-			{
-#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
-				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Audio sample sink overflow"), this);
-#endif
-			}
-			else
 			{
 				FScopeLock Lock(&LastTimeValuesCS);
 				LastAudioSampleProcessedTime.TimeStamp = FMediaTimeStamp(Sample->GetTime());
 				LastAudioSampleProcessedTime.SampledAtTime = FPlatformTime::Seconds();
 			}
+
+			PinnedPrimaryAudioSink->Enqueue(Sample.ToSharedRef());
 		}
 	}
-}
-
-
-void FMediaPlayerFacade::ProcessCaptionSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
-{
-	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
-
-	while (Samples.FetchCaption(TimeRange, Sample))
+	else
 	{
-		if (Sample.IsValid() && !CaptionSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxCaptionSinkDepth))
+		// Do we have video playback?
+		if (HaveVideoPlayback())
 		{
-#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
-			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Caption sample sink overflow"), this);
-#endif
-		}
-	}
-}
-
-
-void FMediaPlayerFacade::ProcessMetadataSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
-{
-	TSharedPtr<IMediaBinarySample, ESPMode::ThreadSafe> Sample;
-
-	while (Samples.FetchMetadata(TimeRange, Sample))
-	{
-		if (Sample.IsValid() && !MetadataSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxMetadataSinkDepth))
-		{
-#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
-			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Metadata sample sink overflow"), this);
-#endif
-		}
-	}
-}
-
-
-void FMediaPlayerFacade::ProcessSubtitleSamples(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
-{
-	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
-
-	while (Samples.FetchSubtitle(TimeRange, Sample))
-	{
-		//UE_LOG(LogMediaUtils, Display, TEXT("Subtitle @%.3f: %s"), Sample->GetTime().Time.GetTotalSeconds(), *Sample->GetText().ToString());
-		if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxSubtitleSinkDepth))
-		{
-#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
-			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Subtitle sample sink overflow"), this);
-#endif
-		}
-	}
-}
-
-
-void FMediaPlayerFacade::ProcessVideoSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
-{
-	// Let the player do some processing if needed.
-	if (Player.IsValid())
-	{
-		Player->ProcessVideoSamples();
-	}
-
-	// This is not to be used with V2 timing
-	check(!Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
-
-	TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
-
-	while (Samples.FetchVideo(TimeRange, Sample))
-	{
-		if (!Sample.IsValid())
-		{
-			continue;
-		}
-
-		{
-			FScopeLock Lock(&LastTimeValuesCS);
-			CurrentFrameVideoTimeStamp = Sample->GetTime();
-		}
-
-		UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Fetched video sample %s"), this, *Sample->GetTime().Time.ToString(TEXT("%h:%m:%s.%t")));
-
-		if (VideoSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxVideoSinkDepth))
-		{
-			if (CurrentRate >= 0.0f)
+			TRange<FMediaTimeStamp> TempRange;
+			// We got video and audio, but no audio sink - throw away anything up to video playback time...
+			// (rough estimate, as this is off-gamethread; but better than throwing things out with no throttling at all)
 			{
-				NextVideoSampleTime = Sample->GetTime().Time + Sample->GetDuration();
-				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Next video sample time %s"), this, *NextVideoSampleTime.ToString(TEXT("%h:%m:%s.%t")));
+				bool bReverse = (CurrentRate < 0.0f);
+				FScopeLock Lock(&LastTimeValuesCS);
+				if (!bReverse)
+				{
+					TempRange.SetUpperBound(CurrentFrameVideoTimeStamp);
+				}
+				else
+				{
+					TempRange.SetLowerBound(CurrentFrameVideoTimeStamp);
+				}
+
 			}
+			while (Samples.FetchAudio(TempRange, Sample))
+				;
 		}
 		else
 		{
-#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
-			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Video sample sink overflow"), this);
-#endif
+			// No Video and no primary audio sink: we throw all away (sub-optimal as it will keep audio decoding busy; but this should be an edge case)
+			while (Samples.FetchAudio(TimeRange, Sample))
+				;
 		}
 	}
+}
+
+
+bool FMediaPlayerFacade::IsVideoSampleStillGood(const TRange<FMediaTimeStamp>& LastSampleTimeRange, const TRange<FMediaTimeStamp>& TimeRange, bool bReverse) const
+{
+	// If we have no valid time range or a seek is in progress we assume the current frame can be considered "done" in any case
+	if (!TimeRange.IsEmpty() && !SeekTargetTime.IsValid())
+	{
+		// This is not the case: check more detailed!
+		TRange<FMediaTimeStamp> LastSampleTimeRange0(FMediaTimeStamp(LastSampleTimeRange.GetLowerBoundValue().Time, 0), FMediaTimeStamp(LastSampleTimeRange.GetUpperBoundValue().Time, 0));
+		TRange<FMediaTimeStamp> TimeRange0(FMediaTimeStamp(TimeRange.GetLowerBoundValue().Time, 0), FMediaTimeStamp(TimeRange.GetUpperBoundValue().Time, 0));
+
+		// Is the sample time range at all still valid?
+		if (LastSampleTimeRange0.Overlaps(TimeRange0))
+		{
+			// Yes. Assuming we could get more samples (of the same type) from the player, would the next one "better"?
+			// (this does not say which "next one" is actually current (e.g. if the rendering FPS is real bad), just that "another one" would be better)
+
+			// Compute the "theoretical" next sample range...
+			TRange<FMediaTimeStamp> NextSampleTimeRange = !bReverse ? TRange<FMediaTimeStamp>(LastSampleTimeRange0.GetUpperBoundValue(), LastSampleTimeRange0.GetUpperBoundValue() + LastSampleTimeRange0.Size<FMediaTimeStamp>().Time)
+				: TRange<FMediaTimeStamp>(LastSampleTimeRange0.GetLowerBoundValue() - LastSampleTimeRange0.Size<FMediaTimeStamp>().Time, LastSampleTimeRange0.GetLowerBoundValue());
+
+			FTimespan Duration = Player->GetControls().GetDuration();
+
+			if (!Player->GetControls().IsLooping())
+			{
+				// If we are not looping we need to clamp against the media's duration
+				// (we assume it starts at zero here!)
+				NextSampleTimeRange = TRange<FMediaTimeStamp>::Intersection(NextSampleTimeRange, TRange<FMediaTimeStamp>(FMediaTimeStamp(0, NextSampleTimeRange.GetLowerBoundValue().SequenceIndex), FMediaTimeStamp(Duration, NextSampleTimeRange.GetLowerBoundValue().SequenceIndex)));
+			}
+			else
+			{
+				if (NextSampleTimeRange.GetLowerBoundValue().Time >= Duration)
+				{
+					check(!bReverse);
+					NextSampleTimeRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(NextSampleTimeRange.GetLowerBoundValue().Time - Duration, FMediaTimeStamp::AdjustPrimaryIndex(NextSampleTimeRange.GetLowerBoundValue().SequenceIndex, 1)),
+						FMediaTimeStamp(NextSampleTimeRange.GetUpperBoundValue().Time - Duration, FMediaTimeStamp::AdjustPrimaryIndex(NextSampleTimeRange.GetUpperBoundValue().SequenceIndex, 1)));
+				}
+				else if (NextSampleTimeRange.GetLowerBoundValue().Time < FTimespan::Zero())
+				{
+					check(bReverse);
+					NextSampleTimeRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(NextSampleTimeRange.GetLowerBoundValue().Time + Duration, FMediaTimeStamp::AdjustPrimaryIndex(NextSampleTimeRange.GetLowerBoundValue().SequenceIndex, -1)),
+						FMediaTimeStamp(NextSampleTimeRange.GetUpperBoundValue().Time + Duration, FMediaTimeStamp::AdjustPrimaryIndex(NextSampleTimeRange.GetUpperBoundValue().SequenceIndex, -1)));
+				}
+			}
+
+			// Compute which one is larger inside the current range...
+			int64 LastSampleCoverage = TRange<FMediaTimeStamp>::Intersection(TimeRange0, LastSampleTimeRange0).Size<FMediaTimeStamp>().Time.GetTicks();
+			int64 NextSampleCoverage = TRange<FMediaTimeStamp>::Intersection(TimeRange0, NextSampleTimeRange).Size<FMediaTimeStamp>().Time.GetTicks();
+
+			if (LastSampleCoverage > NextSampleCoverage)
+			{
+				// Last one we returned is still good. No new one needed...
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 
@@ -2651,6 +2945,12 @@ bool FMediaPlayerFacade::ProcessVideoSamples(IMediaSamples& Samples, const TRang
 		// Normal playback with timing control provided by MediaFramework
 		//
 		const bool bReverse = (GetUnpausedRate() < 0.0f);
+
+		if (IsVideoSampleStillGood(LastVideoSampleProcessedTimeRange, TimeRange, bReverse))
+		{
+			// We got all the samples we need. Processing was successful...
+			return true;
+		}
 
 		switch (Samples.FetchBestVideoSampleForTimeRange(TimeRange, Sample, bReverse))
 		{
@@ -2707,34 +3007,191 @@ bool FMediaPlayerFacade::ProcessVideoSamples(IMediaSamples& Samples, const TRang
 
 		TRange<FMediaTimeStamp> SampleTimeRange(Sample->GetTime(), Sample->GetTime() + Sample->GetDuration());
 
-		// Is it what we want?
-		const TRange<FMediaTimeStamp>& BR = BlockOnRange.GetRange();
-		if (BR.IsEmpty() || BR.Overlaps(SampleTimeRange))
+		// Enqueue the sample to render
+		// (we use a queue to stay compatible with existing structure and older sinks - new sinks will read this single entry right away on the gamethread
+		//  and pass it along to rendering outside the queue)
+		bool bOk = VideoSampleSinks.Enqueue(Sample.ToSharedRef());
+		check(bOk);
+
 		{
-			// Enqueue the sample to render
-			// (we use a queue to stay compatible with existing structure and older sinks - new sinks will read this single entry right away on the gamethread
-			//  and pass it along to rendering outside the queue)
-			bool bOk = VideoSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxVideoSinkDepth);
-			check(bOk);
-
 			FScopeLock Lock(&LastTimeValuesCS);
-			CurrentFrameVideoTimeStamp = SampleTimeRange.GetLowerBoundValue();
+			CurrentFrameVideoDisplayTimeStamp = CurrentFrameVideoTimeStamp = SampleTimeRange.GetLowerBoundValue();
 			LastVideoSampleProcessedTimeRange = SampleTimeRange;
-
-			return true;
 		}
+
+		UpdateSeekStatus(&CurrentFrameVideoTimeStamp);
+		return true;
 	}
 	return false;
 }
 
 
-void FMediaPlayerFacade::ProcessCaptionSamples(IMediaSamples& Samples, TRange<FMediaTimeStamp> TimeRange)
+void FMediaPlayerFacade::ProcessCaptionSamples(IMediaSamples& Samples, const TRange<FMediaTimeStamp>& TimeRange)
+{
+	check(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
+
+	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
+
+	// Seek in progress?
+	if (SeekTargetTime.IsValid())
+	{
+		// Yes. Fetch (and discard) all samples up to the seek target time...
+		// (we only throw out samples from prior sequence indices to make sure we do not swallow any audio from overlapping samples)
+		auto DiscardRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(0), FMediaTimeStamp((CurrentRate >= 0.0f) ? FTimespan::Zero() : FTimespan::MaxValue(), SeekTargetTime.SequenceIndex));
+		Samples.DiscardCaptionSamples(DiscardRange, GetUnpausedRate() < 0.0f);
+	}
+	else
+	{
+		while (Samples.FetchCaption(TimeRange, Sample))
+		{
+			if (Sample.IsValid() && !CaptionSampleSinks.Enqueue(Sample.ToSharedRef()))
+			{
+#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
+				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Caption sample sink overflow"), this);
+#endif
+			}
+		}
+	}
+}
+
+
+void FMediaPlayerFacade::ProcessSubtitleSamples(IMediaSamples& Samples, const TRange<FMediaTimeStamp>& TimeRange)
+{
+	check(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
+
+	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
+
+	// Seek in progress?
+	if (SeekTargetTime.IsValid())
+	{
+		// Yes. Fetch (and discard) all samples up to the seek target time...
+		// (we only throw out samples from prior sequence indices to make sure we do not swallow any audio from overlapping samples)
+		auto DiscardRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(0), FMediaTimeStamp((CurrentRate >= 0.0f) ? FTimespan::Zero() : FTimespan::MaxValue(), SeekTargetTime.SequenceIndex));
+		Samples.DiscardSubtitleSamples(DiscardRange, GetUnpausedRate() < 0.0f);
+	}
+	else
+	{
+		while (Samples.FetchSubtitle(TimeRange, Sample))
+		{
+			//UE_LOG(LogMediaUtils, Display, TEXT("Subtitle @%.3f: %s"), Sample->GetTime().Time.GetTotalSeconds(), *Sample->GetText().ToString());
+			if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef()))
+			{
+#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
+				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Subtitle sample sink overflow"), this);
+#endif
+			}
+		}
+	}
+}
+
+
+void FMediaPlayerFacade::ProcessMetadataSamples(IMediaSamples& Samples, const TRange<FMediaTimeStamp>& TimeRange)
+{
+	check(Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
+
+	TSharedPtr<IMediaBinarySample, ESPMode::ThreadSafe> Sample;
+
+	// Seek in progress?
+	if (SeekTargetTime.IsValid())
+	{
+		// Yes. Fetch (and discard) all samples up to the seek target time...
+		// (we only throw out samples from prior sequence indices to make sure we do not swallow any audio from overlapping samples)
+		auto DiscardRange = TRange<FMediaTimeStamp>(FMediaTimeStamp(0), FMediaTimeStamp((CurrentRate >= 0.0f) ? FTimespan::Zero() : FTimespan::MaxValue(), SeekTargetTime.SequenceIndex));
+		Samples.DiscardMetadataSamples(DiscardRange, GetUnpausedRate() < 0.0f);
+	}
+	else
+	{
+		while (Samples.FetchMetadata(TimeRange, Sample))
+		{
+			if (Sample.IsValid() && !MetadataSampleSinks.Enqueue(Sample.ToSharedRef()))
+			{
+#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
+				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Metadata sample sink overflow"), this);
+#endif
+			}
+		}
+	}
+}
+
+
+void FMediaPlayerFacade::ProcessAudioSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
+{
+	TSharedPtr<IMediaAudioSample, ESPMode::ThreadSafe> Sample;
+
+	while (Samples.FetchAudio(TimeRange, Sample))
+	{
+		if (!Sample.IsValid())
+		{
+			continue;
+		}
+
+		if (!AudioSampleSinks.Enqueue(Sample.ToSharedRef()))
+		{
+#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
+			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Audio sample sink overflow"), this);
+#endif
+		}
+		else
+		{
+			FScopeLock Lock(&LastTimeValuesCS);
+			LastAudioSampleProcessedTime.TimeStamp = Sample->GetTime();
+			LastAudioSampleProcessedTime.SampledAtTime = FPlatformTime::Seconds();
+		}
+	}
+}
+
+
+void FMediaPlayerFacade::ProcessVideoSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
+{
+	// Let the player do some processing if needed.
+	if (Player.IsValid())
+	{
+		Player->ProcessVideoSamples();
+	}
+
+	// This is not to be used with V2 timing
+	check(!Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2));
+
+	TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample;
+
+	while (Samples.FetchVideo(TimeRange, Sample))
+	{
+		if (!Sample.IsValid())
+		{
+			continue;
+		}
+
+		{
+			FScopeLock Lock(&LastTimeValuesCS);
+			CurrentFrameVideoDisplayTimeStamp = CurrentFrameVideoTimeStamp = Sample->GetTime();
+		}
+
+		UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Fetched video sample %s"), this, *Sample->GetTime().Time.ToString(TEXT("%h:%m:%s.%t")));
+
+		if (VideoSampleSinks.Enqueue(Sample.ToSharedRef()))
+		{
+			if (CurrentRate >= 0.0f)
+			{
+				NextVideoSampleTime = Sample->GetTime().Time + Sample->GetDuration();
+				UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Next video sample time %s"), this, *NextVideoSampleTime.ToString(TEXT("%h:%m:%s.%t")));
+			}
+		}
+		else
+		{
+#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
+			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Video sample sink overflow"), this);
+#endif
+		}
+	}
+}
+
+void FMediaPlayerFacade::ProcessCaptionSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
 {
 	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
 
 	while (Samples.FetchCaption(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !CaptionSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxCaptionSinkDepth))
+		if (Sample.IsValid() && !CaptionSampleSinks.Enqueue(Sample.ToSharedRef()))
 		{
 #if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Caption sample sink overflow"), this);
@@ -2744,34 +3201,35 @@ void FMediaPlayerFacade::ProcessCaptionSamples(IMediaSamples& Samples, TRange<FM
 }
 
 
-void FMediaPlayerFacade::ProcessSubtitleSamples(IMediaSamples& Samples, TRange<FMediaTimeStamp> TimeRange)
+void FMediaPlayerFacade::ProcessSubtitleSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
 {
 	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
 
-	// There might be samples in the subtitle sample queue that have may lie before the specified time range.
-	// Since these have no way of being displayed they must be removed from the sample queue.
-	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer = Player;
-	if (CurrentPlayer.IsValid() && CurrentPlayer->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
-	{
-		uint32 NumPurged = 0;
-		if (CurrentPlayer->GetSamples().NumSubtitleSamples() >= kMinFramesInSubtitleQueueToPurge)
-		{
-			bool bReverse = CurrentRate < 0.0f;
-			NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedSubtitleSamples(TimeRange.GetLowerBoundValue() + FTimespan::FromSeconds((bReverse ? kOutdatedSubtitleSamplesTolerance : -kOutdatedSubtitleSamplesTolerance)), bReverse);
-		}
-		SET_DWORD_STAT(STAT_MediaUtils_FacadeNumPurgedSubtitleSamples, NumPurged);
-		INC_DWORD_STAT_BY(STAT_MediaUtils_FacadeTotalPurgedSubtitleSamples, NumPurged);
-	}
-
 	while (Samples.FetchSubtitle(TimeRange, Sample))
 	{
-		if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxSubtitleSinkDepth))
+		if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef()))
 		{
 			FString Caption = Sample->GetText().ToString();
 			UE_LOG(LogMediaUtils, Log, TEXT("New caption @%.3f: %s"), Sample->GetTime().Time.GetTotalSeconds(), *Caption);
 
 #if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Subtitle sample sink overflow"), this);
+#endif
+		}
+	}
+}
+
+
+void FMediaPlayerFacade::ProcessMetadataSamplesV1(IMediaSamples& Samples, TRange<FTimespan> TimeRange)
+{
+	TSharedPtr<IMediaBinarySample, ESPMode::ThreadSafe> Sample;
+
+	while (Samples.FetchMetadata(TimeRange, Sample))
+	{
+		if (Sample.IsValid() && !MetadataSampleSinks.Enqueue(Sample.ToSharedRef()))
+		{
+#if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
+			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Metadata sample sink overflow"), this);
 #endif
 		}
 	}
@@ -2830,16 +3288,37 @@ void FMediaPlayerFacade::ReceiveMediaEvent(EMediaEvent Event)
 				return;
 			}
 
-			uint32 NumPurged = 0;
+			bool bReverse = (Rate < 0.0f);
+			const float RateFactor = (Rate != 0.0f) ? (1.0f / Rate) : 1.0f;
+
 			// Don't purge frames if the queue is small (to avoid purging if players deliver frames late persistently)
+			uint32 NumPurged = 0;
 			if (CurrentPlayer->GetSamples().NumVideoSamples() >= kMinFramesInVideoQueueToPurge)
 			{
-				bool bReverse = (Rate < 0.0f);
-				NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedVideoSamples(TimeRange.GetLowerBoundValue() + FTimespan::FromSeconds(bReverse ? kOutdatedVideoSamplesTolerance : -kOutdatedVideoSamplesTolerance), bReverse);
+				NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedVideoSamples(TimeRange.GetLowerBoundValue(), bReverse, FTimespan::FromSeconds(kOutdatedVideoSamplesTolerance * RateFactor));
 			}
-
 			SET_DWORD_STAT(STAT_MediaUtils_FacadeNumPurgedVideoSamples, NumPurged);
 			INC_DWORD_STAT_BY(STAT_MediaUtils_FacadeTotalPurgedVideoSamples, NumPurged);
+
+			// Take the opportunity to also purge any samples related to video samples directly (and evaluated on the game thread)
+
+			// Captions...
+			NumPurged = 0;
+			if (CurrentPlayer->GetSamples().NumVideoSamples() >= kMinFramesInCaptionQueueToPurge)
+			{
+				NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedCaptionSamples(TimeRange.GetLowerBoundValue(), bReverse, FTimespan::FromSeconds(kOutdatedVideoSamplesTolerance * RateFactor));
+			}
+			SET_DWORD_STAT(STAT_MediaUtils_FacadeNumPurgedSubtitleSamples, NumPurged);
+			INC_DWORD_STAT_BY(STAT_MediaUtils_FacadeTotalPurgedSubtitleSamples, NumPurged);
+
+			// Subtitles...
+			NumPurged = 0;
+			if (CurrentPlayer->GetSamples().NumVideoSamples() >= kMinFramesInSubtitleQueueToPurge)
+			{
+				NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedSubtitleSamples(TimeRange.GetLowerBoundValue(), bReverse, FTimespan::FromSeconds(kOutdatedVideoSamplesTolerance * RateFactor));
+			}
+			SET_DWORD_STAT(STAT_MediaUtils_FacadeNumPurgedCaptionSamples, NumPurged);
+			INC_DWORD_STAT_BY(STAT_MediaUtils_FacadeTotalPurgedCaptionSamples, NumPurged);
 
 			break;
 		}

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "PoseSearch/PoseSearchContext.h"
+#include "PoseSearch/PoseSearchTrajectoryTypes.h"
 
 UE_TRACE_CHANNEL_EXTERN(PoseSearchChannel, POSESEARCH_API);
 
@@ -64,20 +65,24 @@ POSESEARCH_API FArchive& operator<<(FArchive& Ar, FTraceMotionMatchingStateDatab
  */
 struct POSESEARCH_API FTraceMotionMatchingState
 {
-	/** ObjectId of active searchable asset */
-	uint64 SearchableAssetId = 0;
-	
 	/** Amount of time since the last pose switch */
-	float ElapsedPoseJumpTime = 0.0f;
+	float ElapsedPoseSearchTime = 0.f;
 
-	float AssetPlayerTime = 0.0f;
-	float DeltaTime = 0.0f;
-	float SimLinearVelocity = 0.0f;
-	float SimAngularVelocity = 0.0f;
-	float AnimLinearVelocity = 0.0f;
-	float AnimAngularVelocity = 0.0f;
+	float AssetPlayerTime = 0.f;
+	float DeltaTime = 0.f;
+	float SimLinearVelocity = 0.f;
+	float SimAngularVelocity = 0.f;
+	float AnimLinearVelocity = 0.f;
+	float AnimAngularVelocity = 0.f;
 	
+	float RecordingTime = 0.f;
+	float SearchBestCost = 0.f;
+	float SearchBruteForceCost = 0.f;
+	int32 SearchBestPosePos = 0;
+
 	TArray<FTraceMotionMatchingStateDatabaseEntry> DatabaseEntries;
+
+	FPoseSearchQueryTrajectory Trajectory;
 
 	/** Index of the current database in DatabaseEntries */
 	int32 CurrentDbEntryIdx = INDEX_NONE;
@@ -86,7 +91,7 @@ struct POSESEARCH_API FTraceMotionMatchingState
 	int32 CurrentPoseEntryIdx = INDEX_NONE;
 
 	/** Output the current state info to the logger */
-	void Output(const FAnimationBaseContext& InContext);
+	void Output(const UObject* AnimInstance, int32 NodeId);
 
 	const UPoseSearchDatabase* GetCurrentDatabase() const;
 	int32 GetCurrentDatabasePoseIndex() const;

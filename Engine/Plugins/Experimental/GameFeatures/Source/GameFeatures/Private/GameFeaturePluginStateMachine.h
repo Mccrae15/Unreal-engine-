@@ -39,6 +39,12 @@ Transition states are expected to transition the machine to another state after 
         |           ^                      ^        |               |          |
         |           |                      |        +-------+-------+          |
         |           |                      |                |                  |
+        |    +------+-------+              |                |                  |
+        |    |      *       |              |                |                  |
+        |    | Uninstalled  +--------------~--------------->|                  |
+        |    |              |              |                |                  |
+        |    +------^-------+              |                |                  |
+        |           |                      |                |                  |
         |    +------+-------+    *---------+---------+      |                  |
         |    |              |    |         !         |      |                  |
         |    | Uninstalling <----> ErrorUninstalling |      |                  |
@@ -185,7 +191,7 @@ struct FGameFeaturePluginStateRange
 
 	bool operator==(const FGameFeaturePluginStateRange& Other) const { return MinState == Other.MinState && MaxState == Other.MaxState; }
 	bool operator<(const FGameFeaturePluginStateRange& Other) const { return MaxState < Other.MinState; }
-	bool operator>(const FGameFeaturePluginStateRange& Other) const { return MinState < Other.MaxState; }
+	bool operator>(const FGameFeaturePluginStateRange& Other) const { return MinState > Other.MaxState; }
 };
 
 inline bool operator<(EGameFeaturePluginState State, const FGameFeaturePluginStateRange& StateRange)
@@ -352,6 +358,9 @@ struct FGameFeaturePluginState
 
 	void UpdateProgress(float Progress) const;
 
+
+	void MarkPluginAsGarbage(bool bMarkGameFeatureDataAsGarbage);
+
 protected:
 	/** Builds an end FResult with some minimal error information with overrides for common types we 
 		need to generate errors from */
@@ -363,6 +372,8 @@ protected:
 	/** Returns true if this state should transition to the Uninstalled state. 
 	    returns False if it should just go directly to the Terminal state instead. */
 	bool ShouldVisitUninstallStateBeforeTerminal() const;
+
+	bool AllowIniLoading() const;
 
 private:
 	void CleanupDeferredUpdateCallbacks() const;

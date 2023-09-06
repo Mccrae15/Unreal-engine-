@@ -49,7 +49,7 @@ template<typename... InArgTypes>
 A3DStatus GetSurfaceAsNurbs(const A3DSurfBase* A3DSurface, A3DSurfNurbsData* DataPtr, InArgTypes&&... Args)
 {
 	return TechSoftInterface::GetSurfaceAsNurbs(A3DSurface, DataPtr, Forward<InArgTypes>(Args)...);
-}; 
+};
 
 UE::CADKernel::FMatrixH CreateCoordinateSystem(const A3DMiscCartesianTransformationData& Transformation, double UnitScale = 1.0)
 {
@@ -151,7 +151,7 @@ UE::CADKernel::FSurfacicBoundary GetSurfacicBoundary(A3DDomainData& Domain, cons
 	UE::CADKernel::FPoint2D Min(Domain.m_sMin.m_dX, Domain.m_sMin.m_dY);
 	UE::CADKernel::FPoint2D Max(Domain.m_sMax.m_dX, Domain.m_sMax.m_dY);
 
-	if(UVReparameterization.GetNeedApply())
+	if (UVReparameterization.GetNeedApply())
 	{
 		UVReparameterization.Apply(Min);
 		UVReparameterization.Apply(Max);
@@ -200,7 +200,7 @@ const A3DRiBrepModel* FTechSoftBridge::GetA3DBody(UE::CADKernel::FBody* BRepMode
 	const A3DEntity** BodyPtr = CADKernelToTechSoft.Find(BRepModel);
 	if (BodyPtr)
 	{
-		return (A3DRiBrepModel*) *BodyPtr;
+		return (A3DRiBrepModel*)*BodyPtr;
 	}
 	return nullptr;
 }
@@ -208,37 +208,40 @@ const A3DRiBrepModel* FTechSoftBridge::GetA3DBody(UE::CADKernel::FBody* BRepMode
 UE::CADKernel::FBody* FTechSoftBridge::GetBody(A3DRiBrepModel* A3DBRepModel)
 {
 	TSharedPtr<UE::CADKernel::FBody>* BodyPtr = TechSoftToCADKernel.Find(A3DBRepModel);
-	if (BodyPtr &&!(*BodyPtr)->IsDeleted())
+	if (BodyPtr && !(*BodyPtr)->IsDeleted())
 	{
 		return (*BodyPtr).Get();
 	}
 	return nullptr;
 }
 
-UE::CADKernel::FBody* FTechSoftBridge::AddBody(A3DRiBrepModel* A3DBRepModel, TMap<FString, FString> MetaData, const double InBodyScale)
+UE::CADKernel::FBody* FTechSoftBridge::AddBody(A3DRiBrepModel* A3DBRepModel, FArchiveCADObject& ArchiveBody)
 {
 #ifdef CADKERNEL_DEV
-	Report->BodyCount++;
+	UE::CADKernel::FCADFileReport::Get().BodyCount++;
 #endif
 
 	//UE::CADKernel working unit is mm
-	BodyScale = InBodyScale * 10.;
+	BodyScale = ArchiveBody.Unit * 10.;
 
 	FArchiveCADObject BRepMetaData;
 	Parser.ExtractMetaData(A3DBRepModel, BRepMetaData);
-	FString* Name = MetaData.Find(TEXT("Name"));
-	if(Name != nullptr)
+
+	FString* Name = ArchiveBody.MetaData.Find(TEXT("Name"));
+	if (Name != nullptr)
 	{
 		BRepMetaData.MetaData.FindOrAdd(TEXT("Name")) = *Name;
 	}
-	
+
 	if (TSharedPtr<UE::CADKernel::FBody>* BodyPtr = TechSoftToCADKernel.Find(A3DBRepModel))
 	{
 		return (*BodyPtr)->IsDeleted() ? nullptr : (*BodyPtr).Get();
 	}
 
 	TSharedRef<UE::CADKernel::FBody> Body = UE::CADKernel::FEntity::MakeShared<UE::CADKernel::FBody>();
-	AddMetadata(BRepMetaData, *Body);
+	AddMetaData(BRepMetaData, *Body);
+
+	Body->SetDisplayData(ArchiveBody.ColorUId, ArchiveBody.MaterialUId);
 
 	TUniqueTSObj<A3DRiBrepModelData> BRepModelData(A3DBRepModel);
 	if (BRepModelData.IsValid())
@@ -246,7 +249,7 @@ UE::CADKernel::FBody* FTechSoftBridge::AddBody(A3DRiBrepModel* A3DBRepModel, TMa
 		TraverseBrepData(BRepModelData->m_pBrepData, Body);
 	}
 
-	if(Body->FaceCount() == 0)
+	if (Body->FaceCount() == 0 || bConvertionFailed)
 	{
 		Body->Delete();
 		return nullptr;
@@ -288,6 +291,10 @@ void FTechSoftBridge::TraverseBrepData(const A3DTopoBrepData* A3DBrepData, TShar
 		for (A3DUns32 Index = 0; Index < TopoBrepData->m_uiConnexSize; ++Index)
 		{
 			TraverseConnex(TopoBrepData->m_ppConnexes[Index], Body);
+			if (bConvertionFailed)
+			{
+				return;
+			}
 		}
 	}
 }
@@ -303,6 +310,10 @@ void FTechSoftBridge::TraverseConnex(const A3DTopoConnex* A3DTopoConnex, TShared
 		for (A3DUns32 Index = 0; Index < TopoConnexData->m_uiShellSize; ++Index)
 		{
 			TraverseShell(TopoConnexData->m_ppShells[Index], Body);
+			if (bConvertionFailed)
+			{
+				return;
+			}
 		}
 	}
 }
@@ -315,9 +326,11 @@ void FTechSoftBridge::TraverseShell(const A3DTopoShell* A3DShell, TSharedRef<UE:
 	TSharedRef<UE::CADKernel::FShell> Shell = UE::CADKernel::FEntity::MakeShared<UE::CADKernel::FShell>();
 	Body->AddShell(Shell);
 #ifdef CADKERNEL_DEV
-	Report->ShellCount++;
+	UE::CADKernel::FCADFileReport::Get().ShellCount++;
 #endif
-	AddMetadata(MetaData, *Shell);
+
+	Shell->SetDisplayData(*Body);
+	AddMetaData(MetaData, *Shell);
 
 	TUniqueTSObj<A3DTopoShellData> ShellData(A3DShell);
 
@@ -327,6 +340,10 @@ void FTechSoftBridge::TraverseShell(const A3DTopoShell* A3DShell, TSharedRef<UE:
 		for (A3DUns32 Index = 0; Index < ShellData->m_uiFaceSize; ++Index)
 		{
 			AddFace(ShellData->m_ppFaces[Index], ShellData->m_pucOrientationWithShell[Index] == 1 ? UE::CADKernel::Front : UE::CADKernel::Back, Shell, Index);
+			if (bConvertionFailed)
+			{
+				return;
+			}
 		}
 	}
 }
@@ -340,7 +357,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurve(const A3DCrvBase* A3
 	if (Ret == A3D_SUCCESS)
 	{
 #ifdef CADKERNEL_DEV
-		Report->CurveCount++;
+		UE::CADKernel::FCADFileReport::Get().CurveCount++;
 #endif
 		switch (eType)
 		{
@@ -385,7 +402,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurve(const A3DCrvBase* A3
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveLine(const A3DCrvLine* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveLineCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveLineCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -408,7 +425,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveLine(const A3DCrvLine
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveCircle(const A3DCrvCircle* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveCircleCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveCircleCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -430,7 +447,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveCircle(const A3DCrvCi
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveEllipse(const A3DCrvEllipse* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveEllipseCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveEllipseCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -452,7 +469,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveEllipse(const A3DCrvE
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveParabola(const A3DCrvParabola* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveParabolaCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveParabolaCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -474,7 +491,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveParabola(const A3DCrv
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveHyperbola(const A3DCrvHyperbola* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveHyperbolaCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveHyperbolaCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -496,7 +513,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveHyperbola(const A3DCr
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveHelix(const A3DCrvHelix* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveHelixCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveHelixCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -518,7 +535,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveHelix(const A3DCrvHel
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurvePolyLine(const A3DCrvPolyLine* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurvePolyLineCount++;
+	UE::CADKernel::FCADFileReport::Get().CurvePolyLineCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -540,7 +557,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurvePolyLine(const A3DCrv
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveComposite(const A3DCrvComposite* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveCompositeCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveCompositeCount++;
 #endif
 
 	if (bUseCurveAsNurbs)
@@ -567,7 +584,7 @@ TSharedPtr<UE::CADKernel::FCurve> AddCurveNurbsFromData(A3DCrvNurbsData& A3DNurb
 	Nurbs.Degree = A3DNurbs.m_uiDegree;
 
 	TechSoftUtils::FillPointArray(A3DNurbs.m_uiCtrlSize, A3DNurbs.m_pCtrlPts, Nurbs.Poles);
-	if(Nurbs.Dimension == 2)
+	if (Nurbs.Dimension == 2)
 	{
 		UVReparameterization.Process(Nurbs.Poles);
 	}
@@ -586,7 +603,7 @@ TSharedPtr<UE::CADKernel::FCurve> AddCurveNurbsFromData(A3DCrvNurbsData& A3DNurb
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveNurbs(const A3DCrvNurbs* A3DNurbs, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveLineCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveLineCount++;
 #endif
 
 	TUniqueTSObj<A3DCrvNurbsData> CrvNurbsData(A3DNurbs);
@@ -601,7 +618,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveNurbs(const A3DCrvNur
 TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveAsNurbs(const A3DCrvBase* A3DCurve, const TechSoftUtils::FUVReparameterization& UVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CurveAsNurbsCount++;
+	UE::CADKernel::FCADFileReport::Get().CurveAsNurbsCount++;
 #endif
 
 	TUniqueTSObj<A3DCrvNurbsData> NurbsData;
@@ -621,7 +638,7 @@ TSharedPtr<UE::CADKernel::FCurve> FTechSoftBridge::AddCurveAsNurbs(const A3DCrvB
 TSharedPtr<UE::CADKernel::FTopologicalEdge> FTechSoftBridge::AddEdge(const A3DTopoCoEdge* A3DCoedge, const TSharedRef<UE::CADKernel::FSurface>& Surface, const TechSoftUtils::FUVReparameterization& UVReparameterization, UE::CADKernel::EOrientation& OutOrientation)
 {
 #ifdef CADKERNEL_DEV
-	Report->EdgeCount++;
+	UE::CADKernel::FCADFileReport::Get().EdgeCount++;
 #endif
 
 	TUniqueTSObj<A3DTopoCoEdgeData> CoEdgeData(A3DCoedge);
@@ -632,6 +649,8 @@ TSharedPtr<UE::CADKernel::FTopologicalEdge> FTechSoftBridge::AddEdge(const A3DTo
 
 	if (CoEdgeData->m_pUVCurve == nullptr)
 	{
+		bConvertionFailed = true;
+		FailureReason = EFailureReason::Curve3D;
 		return TSharedPtr<UE::CADKernel::FTopologicalEdge>();
 	}
 
@@ -659,7 +678,7 @@ TSharedPtr<UE::CADKernel::FTopologicalEdge> FTechSoftBridge::AddEdge(const A3DTo
 TSharedPtr<UE::CADKernel::FTopologicalLoop> FTechSoftBridge::AddLoop(const A3DTopoLoop* A3DLoop, const TSharedRef<UE::CADKernel::FSurface>& Surface, const TechSoftUtils::FUVReparameterization& UVReparameterization, const bool bIsExternalLoop)
 {
 #ifdef CADKERNEL_DEV
-	Report->LoopCount++;
+	UE::CADKernel::FCADFileReport::Get().LoopCount++;
 #endif
 
 	TArray<TSharedPtr<UE::CADKernel::FTopologicalEdge>> Edges;
@@ -669,7 +688,7 @@ TSharedPtr<UE::CADKernel::FTopologicalLoop> FTechSoftBridge::AddLoop(const A3DTo
 	if (!TopoLoopData.IsValid())
 	{
 #ifdef CADKERNEL_DEV
-		Report->DegeneratedLoopCount++;
+		UE::CADKernel::FCADFileReport::Get().DegeneratedLoopCount++;
 #endif
 		return TSharedPtr<UE::CADKernel::FTopologicalLoop>();
 	}
@@ -682,7 +701,7 @@ TSharedPtr<UE::CADKernel::FTopologicalLoop> FTechSoftBridge::AddLoop(const A3DTo
 		if (!Edge.IsValid())
 		{
 #ifdef CADKERNEL_DEV
-			Report->DegeneratedEdgeCount++;
+			UE::CADKernel::FCADFileReport::Get().DegeneratedEdgeCount++;
 #endif
 			continue;
 		}
@@ -694,7 +713,7 @@ TSharedPtr<UE::CADKernel::FTopologicalLoop> FTechSoftBridge::AddLoop(const A3DTo
 	if (Edges.Num() == 0)
 	{
 #ifdef CADKERNEL_DEV
-		Report->DegeneratedLoopCount++;
+		UE::CADKernel::FCADFileReport::Get().DegeneratedLoopCount++;
 #endif
 		return TSharedPtr<UE::CADKernel::FTopologicalLoop>();
 	}
@@ -741,7 +760,7 @@ TSharedPtr<UE::CADKernel::FTopologicalLoop> FTechSoftBridge::AddLoop(const A3DTo
 			}
 		}
 	}
-	 
+
 	return Loop;
 }
 
@@ -750,7 +769,7 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 	using namespace UE::CADKernel;
 
 #ifdef CADKERNEL_DEV
-	Report->FaceCount++;
+	FCADFileReport::Get().FaceCount++;
 #endif
 
 	FArchiveCADObject MetaData;
@@ -760,7 +779,7 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 	if (!TopoFaceData.IsValid())
 	{
 #ifdef CADKERNEL_DEV
-		Report->FailedFaceCount++;
+		FCADFileReport::Get().FailedFaceCount++;
 #endif
 		return;
 	}
@@ -771,8 +790,8 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 	if (!SurfacePtr.IsValid())
 	{
 #ifdef CADKERNEL_DEV
-		Report->DegeneratedSurfaceCount++;
-		Report->FailedFaceCount++; 
+		FCADFileReport::Get().DegeneratedSurfaceCount++;
+		FCADFileReport::Get().FailedFaceCount++;
 #endif
 		return;
 	}
@@ -834,7 +853,7 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 			Loops.Add(Loop);
 		}
 
-		if(Loops.Num() > 1)
+		if (Loops.Num() > 1)
 		{
 			// Check external loop
 			TSharedPtr<FTopologicalLoop> ExternalLoop;
@@ -843,7 +862,7 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 			for (const TSharedPtr<FTopologicalLoop>& Loop : Loops)
 			{
 				// fast but not accurate test to check if the loop is inside an other loop based of the bounding box 
-				switch(Loop->Boundary.IsInside(ExternalBoundary, Surface->GetIsoTolerances()))
+				switch (Loop->Boundary.IsInside(ExternalBoundary, Surface->GetIsoTolerances()))
 				{
 				case ESituation::Undefined:
 				{
@@ -868,16 +887,16 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 				}
 			}
 
-			if(!ExternalLoop->IsExternal())
+			if (!ExternalLoop->IsExternal())
 			{
 #ifdef CADKERNEL_DEV
-				Report->WrongExternalLoopCount++;
+				FCADFileReport::Get().WrongExternalLoopCount++;
 				FMessage::Printf(Log, TEXT("ERROR: Face %d had wrong external loop\n"), Face->GetId());
 #endif
-	
+
 				for (TSharedPtr<FTopologicalLoop>& Loop : Loops)
 				{
-					if(Loop->IsExternal())
+					if (Loop->IsExternal())
 					{
 						Loop->SetInternal();
 						break;
@@ -890,7 +909,7 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 		if (Loops.Num() == 0)
 		{
 #ifdef CADKERNEL_DEV
-			Report->FailedFaceCount++;
+			FCADFileReport::Get().FailedFaceCount++;
 #endif
 			Face->SetAsDegenerated();
 			Face->Delete();
@@ -901,12 +920,25 @@ void FTechSoftBridge::AddFace(const A3DTopoFace* A3DFace, UE::CADKernel::EOrient
 			int32 DoubtfulLoopOrientationCount = 0;
 			Face->AddLoops(Loops, DoubtfulLoopOrientationCount);
 #ifdef CADKERNEL_DEV
-			Report->DoubtfulLoopOrientationCount += DoubtfulLoopOrientationCount;
+			FCADFileReport::Get().DoubtfulLoopOrientationCount += DoubtfulLoopOrientationCount;
 #endif
 		}
 	}
 
-	AddMetadata(MetaData, *Face);
+	if (Face->GetLoops().Num() == 0)
+	{
+#ifdef CADKERNEL_DEV
+		FMessage::Printf(EVerboseLevel::Log, TEXT("A Face is degenerate, this face is ignored\n"));
+		FCADFileReport::Get().FailedFaceCount++;
+#endif
+		Face->SetAsDegenerated();
+		Face->Delete();
+		return;
+	}
+
+	AddMetaData(MetaData, *Face);
+	Face->CompleteMetaData();
+
 	Face->SetHostId(ShellIndex);
 	Shell->Add(Face, Orientation);
 }
@@ -916,7 +948,7 @@ static bool bUseSurfaceAsNurbs = true;
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurface(const A3DSurfBase* A3DSurface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->SurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().SurfaceCount++;
 #endif
 
 	FArchiveCADObject MetaData;
@@ -930,7 +962,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurface(const A3DSurfBas
 		{
 		case kA3DTypeSurfBlend01:
 			return AddBlend01Surface(A3DSurface, OutUVReparameterization);
-			
+
 		case kA3DTypeSurfBlend02:
 			return AddBlend02Surface(A3DSurface, OutUVReparameterization);
 
@@ -993,7 +1025,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurface(const A3DSurfBas
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddConeSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->ConeSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().ConeSurfaceCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfConeData> A3DConeData(Surface);
@@ -1017,7 +1049,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddConeSurface(const A3DSur
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddCylinderSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CylinderSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().CylinderSurfaceCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfCylinderData> A3DCylinderData(Surface);
@@ -1037,7 +1069,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddCylinderSurface(const A3
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddLinearTransfoSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->LinearTransfoSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().LinearTransfoSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1051,7 +1083,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddLinearTransfoSurface(con
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddNurbsSurface(const A3DSurfNurbs* Nurbs, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->NurbsSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().NurbsSurfaceCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfNurbsData> A3DNurbsData(Nurbs);
@@ -1066,7 +1098,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddNurbsSurface(const A3DSu
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddOffsetSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->OffsetSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().OffsetSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1080,7 +1112,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddOffsetSurface(const A3DS
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddPlaneSurface(const A3DSurfPlane* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->PlaneSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().PlaneSurfaceCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfPlaneData> A3DPlaneData(Surface);
@@ -1091,7 +1123,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddPlaneSurface(const A3DSu
 
 	OutUVReparameterization.AddUVTransform(A3DPlaneData->m_sParam);
 	OutUVReparameterization.ScaleUVTransform(BodyScale, BodyScale);
-	
+
 	UE::CADKernel::FMatrixH CoordinateSystem = TechSoftUtils::CreateCoordinateSystem(A3DPlaneData->m_sTrsf, BodyScale);
 	UE::CADKernel::FSurfacicBoundary Boundary = TechSoftUtils::GetSurfacicBoundary(A3DPlaneData->m_sParam.m_sUVDomain, OutUVReparameterization);
 	return UE::CADKernel::FSurface::MakePlaneSurface(GeometricTolerance, CoordinateSystem, Boundary);
@@ -1100,7 +1132,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddPlaneSurface(const A3DSu
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddRevolutionSurface(const A3DSurfRevolution* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->RevolutionSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().RevolutionSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1120,7 +1152,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddRevolutionSurface(const 
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddRuledSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->RuledSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().RuledSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1140,7 +1172,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddRuledSurface(const A3DSu
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSphereSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->SphereSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().SphereSurfaceCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfSphereData> A3DSphereData(Surface);
@@ -1159,7 +1191,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSphereSurface(const A3DS
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddTorusSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->TorusSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().TorusSurfaceCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfTorusData> A3DTorusData(Surface);
@@ -1177,7 +1209,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddTorusSurface(const A3DSu
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddBlend01Surface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->Blend01SurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().Blend01SurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1197,7 +1229,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddBlend01Surface(const A3D
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddBlend02Surface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->Blend02SurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().Blend02SurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1217,7 +1249,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddBlend02Surface(const A3D
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddBlend03Surface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->Blend03SurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().Blend03SurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1231,7 +1263,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddBlend03Surface(const A3D
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddCylindricalSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->CylindricalSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().CylindricalSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1251,7 +1283,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddCylindricalSurface(const
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddPipeSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->PipeSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().PipeSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1271,7 +1303,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddPipeSurface(const A3DSur
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddExtrusionSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->ExtrusionSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().ExtrusionSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1291,7 +1323,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddExtrusionSurface(const A
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurfaceFromCurves(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->SurfaceFromCurvesCount++;
+	UE::CADKernel::FCADFileReport::Get().SurfaceFromCurvesCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1311,7 +1343,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurfaceFromCurves(const 
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddTransformSurface(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->TransformSurfaceCount++;
+	UE::CADKernel::FCADFileReport::Get().TransformSurfaceCount++;
 #endif
 
 	if (bUseSurfaceAsNurbs)
@@ -1365,7 +1397,7 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurfaceNurbs(const A3DSu
 TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurfaceAsNurbs(const A3DSurfBase* Surface, TechSoftUtils::FUVReparameterization& OutUVReparameterization)
 {
 #ifdef CADKERNEL_DEV
-	Report->SurfaceAsNurbsCount++;
+	UE::CADKernel::FCADFileReport::Get().SurfaceAsNurbsCount++;
 #endif
 
 	TUniqueTSObj<A3DSurfNurbsData> A3DNurbsData;
@@ -1383,15 +1415,14 @@ TSharedPtr<UE::CADKernel::FSurface> FTechSoftBridge::AddSurfaceAsNurbs(const A3D
 
 }
 
-void FTechSoftBridge::AddMetadata(FArchiveCADObject& MetaData, UE::CADKernel::FTopologicalShapeEntity& Entity)
+void FTechSoftBridge::AddMetaData(FArchiveCADObject& MetaData, UE::CADKernel::FTopologicalShapeEntity& Entity)
 {
 	FString* Name = MetaData.MetaData.Find(TEXT("Name"));
-	if(Name != nullptr)
+	if (Name != nullptr)
 	{
 		Entity.SetName(*Name);
 	}
-	Entity.SetColorId(MetaData.ColorUId);
-	Entity.SetMaterialId(MetaData.MaterialUId);
+	Entity.SetDisplayData(MetaData.ColorUId, MetaData.MaterialUId);
 }
 
 }

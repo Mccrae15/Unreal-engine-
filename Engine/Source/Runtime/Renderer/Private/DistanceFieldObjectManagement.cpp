@@ -214,7 +214,7 @@ void AddModifiedBounds(FScene* Scene, FGlobalDFCacheType CacheType, const FBox& 
 	DistanceFieldData.PrimitiveModifiedBounds[CacheType].Add(Bounds);
 }
 
-void UpdateGlobalDistanceFieldObjectRemoves(FScene* Scene, TArray<FSetElementId>& DistanceFieldAssetRemoves)
+void ProcessDistanceFieldObjectRemoves(FScene* Scene, TArray<FSetElementId>& DistanceFieldAssetRemoves)
 {
 	FDistanceFieldSceneData& DistanceFieldSceneData = Scene->DistanceFieldSceneData;
 
@@ -246,8 +246,11 @@ void UpdateGlobalDistanceFieldObjectRemoves(FScene* Scene, TArray<FSetElementId>
 				// InstanceIndex will be -1 with zero scale meshes
 				if (InstanceIndex >= 0)
 				{
+					// Mark region covered by instance in global distance field as modified
 					FGlobalDFCacheType CacheType = PrimitiveRemoveInfo.bOftenMoving ? GDF_Full : GDF_MostlyStatic;
 					AddModifiedBounds(Scene, CacheType, DistanceFieldSceneData.PrimitiveInstanceMapping[InstanceIndex].WorldBounds);
+
+					// Add individual instances to temporary array for processing in the next pass
 					PendingRemoveOperations.Add(InstanceIndex);
 				}
 			}
@@ -303,7 +306,7 @@ void LogDistanceFieldUpdate(FPrimitiveSceneInfo const* PrimitiveSceneInfo, float
 }
 
 /** Gathers the information needed to represent a single object's distance field and appends it to the upload buffers. */
-bool ProcessPrimitiveUpdate(
+void ProcessPrimitiveUpdate(
 	bool bIsAddOperation,
 	FScene* Scene,
 	FPrimitiveSceneInfo* PrimitiveSceneInfo,
@@ -360,74 +363,81 @@ bool ProcessPrimitiveUpdate(
 
 			for (int32 TransformIndex = 0; TransformIndex < InstanceLocalToPrimitiveTransforms.Num(); TransformIndex++)
 			{
+				const bool bInstanceCountOverflow = bIsAddOperation && (DistanceFieldSceneData.NumObjectsInBuffer + 1 > MAX_INSTANCE_ID);
+
+				static bool bWarnOnce = true;
+				if (bInstanceCountOverflow && bWarnOnce)
+				{
+					bWarnOnce = false;
+					UE_LOG(LogDistanceField, Warning, TEXT("Max instance count in Distance Field Scene reached. New instances might not be represented."));
+				}
+
 				const FMatrix LocalToWorld = InstanceLocalToPrimitiveTransforms[TransformIndex].ToMatrix() * Proxy->GetLocalToWorld();
 
 				const FMatrix::FReal MaxScale = LocalToWorld.GetMaximumAxisScale();
 
-				// Skip degenerate primitives
-				if (MaxScale > 0)
+				if (bIsAddOperation && (MaxScale <= 0 || bInstanceCountOverflow))
 				{
-					uint32 UploadIndex;
+					// Skip degenerate instances or when instance count limit is reached
+					PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex] = -1;
+					continue;
+				}
 
-					if (bIsAddOperation)
+				uint32 UploadIndex;
+
+				if (bIsAddOperation)
+				{
+					UploadIndex = DistanceFieldSceneData.NumObjectsInBuffer;
+					++DistanceFieldSceneData.NumObjectsInBuffer;
+				}
+				else
+				{
+					UploadIndex = PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex];
+				}
+
+				IndicesToUpdateInObjectBuffers.Add(UploadIndex);
+
+				const FBox WorldBounds = DistanceFieldData->LocalSpaceMeshBounds.TransformBy(LocalToWorld);
+
+				if (bIsAddOperation)
+				{
+					const int32 AddIndex = UploadIndex;
+					const int32 MappingIndex = DistanceFieldSceneData.PrimitiveInstanceMapping.Add(FPrimitiveAndInstance(LocalToWorld, WorldBounds, PrimitiveSceneInfo, TransformIndex));
+					PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex] = AddIndex;
+
+					AddModifiedBounds(Scene, CacheType, WorldBounds);
+					LogDistanceFieldUpdate(PrimitiveSceneInfo, BoundingRadius, bIsAddOperation);
+				}
+				else 
+				{
+					// InstanceIndex will be -1 with zero scale meshes
+					const int32 InstanceIndex = PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex];
+					if (InstanceIndex >= 0)
 					{
-						UploadIndex = DistanceFieldSceneData.NumObjectsInBuffer;
-						++DistanceFieldSceneData.NumObjectsInBuffer;
-					}
-					else
-					{
-						UploadIndex = PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex];
-					}
+						FPrimitiveAndInstance& Mapping = DistanceFieldSceneData.PrimitiveInstanceMapping[InstanceIndex];
 
-					IndicesToUpdateInObjectBuffers.Add(UploadIndex);
-
-					const FBox WorldBounds = DistanceFieldData->LocalSpaceMeshBounds.TransformBy(LocalToWorld);
-
-					if (bIsAddOperation)
-					{
-						const int32 AddIndex = UploadIndex;
-						const int32 MappingIndex = DistanceFieldSceneData.PrimitiveInstanceMapping.Add(FPrimitiveAndInstance(LocalToWorld, WorldBounds, PrimitiveSceneInfo, TransformIndex));
-						PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex] = AddIndex;
-
-						AddModifiedBounds(Scene, CacheType, WorldBounds);
-						LogDistanceFieldUpdate(PrimitiveSceneInfo, BoundingRadius, bIsAddOperation);
-					}
-					else 
-					{
-						// InstanceIndex will be -1 with zero scale meshes
-						const int32 InstanceIndex = PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex];
-						if (InstanceIndex >= 0)
+						// Filter out global distance field updates which were too small
+						if (!Mapping.WorldBounds.GetExtent().Equals(WorldBounds.GetExtent(), 0.01f)
+							|| !Mapping.LocalToWorld.Equals(LocalToWorld, 0.01f))
 						{
-							FPrimitiveAndInstance& Mapping = DistanceFieldSceneData.PrimitiveInstanceMapping[InstanceIndex];
-
-							// Filter out global distance field updates which were too small
-							if (!Mapping.WorldBounds.GetExtent().Equals(WorldBounds.GetExtent(), 0.01f)
-								|| !Mapping.LocalToWorld.Equals(LocalToWorld, 0.01f))
+							// decide if we want to make a single global distance field update or two updates for large movement (teleport) case
+							const FBox MergedBounds = Mapping.WorldBounds + WorldBounds;
+							const FVector MergedExtentIncrease = MergedBounds.GetExtent() - Mapping.WorldBounds.GetExtent() - WorldBounds.GetExtent();
+							if (MergedExtentIncrease.GetMax() < 100.0f)
 							{
-								// decide if we want to make a single global distance field update or two updates for large movement (teleport) case
-								const FBox MergedBounds = Mapping.WorldBounds + WorldBounds;
-								const FVector MergedExtentIncrease = MergedBounds.GetExtent() - Mapping.WorldBounds.GetExtent() - WorldBounds.GetExtent();
-								if (MergedExtentIncrease.GetMax() < 100.0f)
-								{
-									AddModifiedBounds(Scene, CacheType, MergedBounds);
-								}
-								else
-								{
-									AddModifiedBounds(Scene, CacheType, Mapping.WorldBounds);
-									AddModifiedBounds(Scene, CacheType, WorldBounds);
-								}
-								LogDistanceFieldUpdate(PrimitiveSceneInfo, BoundingRadius, bIsAddOperation);
-
-								Mapping.LocalToWorld = LocalToWorld;
-								Mapping.WorldBounds = WorldBounds;
+								AddModifiedBounds(Scene, CacheType, MergedBounds);
 							}
+							else
+							{
+								AddModifiedBounds(Scene, CacheType, Mapping.WorldBounds);
+								AddModifiedBounds(Scene, CacheType, WorldBounds);
+							}
+							LogDistanceFieldUpdate(PrimitiveSceneInfo, BoundingRadius, bIsAddOperation);
+
+							Mapping.LocalToWorld = LocalToWorld;
+							Mapping.WorldBounds = WorldBounds;
 						}
 					}
-				}
-				else if (bIsAddOperation)
-				{
-					// Set to -1 for zero scale meshes
-					PrimitiveSceneInfo->DistanceFieldInstanceIndices[TransformIndex] = -1;
 				}
 			}
 		}
@@ -436,7 +446,6 @@ bool ProcessPrimitiveUpdate(
 			UE_LOG(LogDistanceField,Verbose,TEXT("Primitive %s %s excluded due to huge bounding radius %f"), *Proxy->GetOwnerName().ToString(), *Proxy->GetResourceName().ToString(), BoundingRadius);
 		}
 	}
-	return true;
 }
 
 bool bVerifySceneIntegrity = false;
@@ -453,7 +462,7 @@ void FDistanceFieldSceneData::UpdateDistanceFieldObjectBuffers(
 
 	const bool bExecuteInParallel = GDFParallelUpdate != 0 && FApp::ShouldUseThreadingForPerformance();
 
-	if (HasPendingOperations() || PendingThrottledOperations.Num() > 0)
+	if (HasPendingOperations() || HasPendingUploads())
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_UpdateDistanceFieldObjectBuffers);
 		RDG_EVENT_SCOPE(GraphBuilder, "UpdateDistanceFieldObjectBuffers");
@@ -463,17 +472,9 @@ void FDistanceFieldSceneData::UpdateDistanceFieldObjectBuffers(
 			ObjectBuffers = new FDistanceFieldObjectBuffers();
 		}
 
-		if (PendingAddOperations.Num() > 0)
-		{
-			PendingThrottledOperations.Reserve(PendingThrottledOperations.Num() + PendingAddOperations.Num());
-		}
-
-		PendingAddOperations.Append(PendingThrottledOperations);
-		PendingThrottledOperations.Reset();
-
 		// Process removes before adds, as the adds will overwrite primitive allocation info
 		// This also prevents re-uploading distance fields on render state recreation
-		UpdateGlobalDistanceFieldObjectRemoves(Scene, DistanceFieldAssetRemoves);
+		ProcessDistanceFieldObjectRemoves(Scene, DistanceFieldAssetRemoves);
 
 		if ((PendingAddOperations.Num() > 0 || PendingUpdateOperations.Num() > 0) && GDFReverseAtlasAllocationOrder == GDFPreviousReverseAtlasAllocationOrder)
 		{
@@ -482,17 +483,14 @@ void FDistanceFieldSceneData::UpdateDistanceFieldObjectBuffers(
 			int32 OriginalNumObjects = NumObjectsInBuffer;
 			for (FPrimitiveSceneInfo* PrimitiveSceneInfo : PendingAddOperations)
 			{
-				if (!ProcessPrimitiveUpdate(
+				ProcessPrimitiveUpdate(
 					true,
 					Scene,
 					PrimitiveSceneInfo,
 					InstanceLocalToPrimitiveTransforms,
 					IndicesToUpdateInObjectBuffers,
 					DistanceFieldAssetAdds,
-					DistanceFieldAssetRemoves))
-				{
-					PendingThrottledOperations.Add(PrimitiveSceneInfo);
-				}
+					DistanceFieldAssetRemoves);
 			}
 
 			for (FPrimitiveSceneInfo* PrimitiveSceneInfo : PendingUpdateOperations)
@@ -509,182 +507,193 @@ void FDistanceFieldSceneData::UpdateDistanceFieldObjectBuffers(
 
 			PendingAddOperations.Reset();
 			PendingUpdateOperations.Reset();
-			if (PendingThrottledOperations.Num() == 0)
-			{
-				PendingThrottledOperations.Reset();
-			}
 		}
 
 		GDFPreviousReverseAtlasAllocationOrder = GDFReverseAtlasAllocationOrder;
 
 		// Upload buffer changes
-		if (IndicesToUpdateInObjectBuffers.Num() > 0)
+		if (HasPendingUploads())
 		{
-			QUICK_SCOPE_CYCLE_COUNTER(UpdateDFObjectBuffers);
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_UploadDistanceFieldObjectDataAndBounds);
 
 			// Upload DF object data and bounds
+			check(NumObjectsInBuffer <= MAX_INSTANCE_ID);
+
+			const uint32 NumDFObjectsRoundedUp = FMath::RoundUpToPowerOfTwo(NumObjectsInBuffer);
+
+			const uint32 DFObjectDataNumBytes = NumDFObjectsRoundedUp * GDistanceFieldObjectDataStride * sizeof(FVector4f);
+			FRDGBuffer* DFObjectDataBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, ObjectBuffers->Data, DFObjectDataNumBytes, TEXT("DistanceFields.DFObjectData"));
+
+			const uint32 DFObjectBoundsNumBytes = NumDFObjectsRoundedUp * GDistanceFieldObjectBoundsStride * sizeof(FVector4f);
+			FRDGBuffer* DFObjectBoundsBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, ObjectBuffers->Bounds, DFObjectBoundsNumBytes, TEXT("DistanceFields.DFObjectBounds"));
+
+			// Limit number of distance field object uploads per frame to 2M
+			// The bottleneck is GetMaxUploadBufferElements() used by FRDGScatterUploadBuffer
+			// This is not expected to be hit during gameplay.
+			static const int32 MAX_NUM_DISTANCE_FIELD_OBJECT_UPLOADS = (2 << 20);
+
+			const int32 NumDFObjectUploads = FMath::Min(IndicesToUpdateInObjectBuffers.Num(), MAX_NUM_DISTANCE_FIELD_OBJECT_UPLOADS);
+
+			static FCriticalSection DFUpdateCS;
+
+			if (NumDFObjectUploads > 0)
 			{
-				const uint32 NumDFObjects = NumObjectsInBuffer;
+				UploadDistanceFieldDataBuffer.Init(GraphBuilder, NumDFObjectUploads, GDistanceFieldObjectDataStride * sizeof(FVector4f), true, TEXT("DistanceFields.DFObjectDataUploadBuffer"));
+				UploadDistanceFieldBoundsBuffer.Init(GraphBuilder, NumDFObjectUploads, GDistanceFieldObjectBoundsStride * sizeof(FVector4f), true, TEXT("DistanceFields.DFObjectBoundsUploadBuffer"));
 
-				const uint32 DFObjectDataNumFloat4s = FMath::RoundUpToPowerOfTwo(NumDFObjects * GDistanceFieldObjectDataStride);
-				const uint32 DFObjectDataNumBytes = DFObjectDataNumFloat4s * sizeof(FVector4f);
-				FRDGBuffer* DFObjectDataBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, ObjectBuffers->Data, DFObjectDataNumBytes, TEXT("DistanceFields.DFObjectData"));
+				const TScenePrimitiveArray<FPrimitiveBounds>& PrimitiveBounds = Scene->PrimitiveBounds;
 
-				const uint32 DFObjectBoundsNumFloat4s = FMath::RoundUpToPowerOfTwo(NumDFObjects * GDistanceFieldObjectBoundsStride);
-				const uint32 DFObjectBoundsNumBytes = DFObjectBoundsNumFloat4s * sizeof(FVector4f);
-				FRDGBuffer* DFObjectBoundsBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, ObjectBuffers->Bounds, DFObjectBoundsNumBytes, TEXT("DistanceFields.DFObjectBounds"));
+				FParallelUpdateRangesDFO ParallelRanges;
 
-				const int32 NumDFObjectUploads = IndicesToUpdateInObjectBuffers.Num();
+				int32 RangeCount = PartitionUpdateRangesDFO(ParallelRanges, NumDFObjectUploads, bExecuteInParallel);
 
-				static FCriticalSection DFUpdateCS;
-
-				if (NumDFObjectUploads > 0)
-				{
-					UploadDistanceFieldDataBuffer.Init(GraphBuilder, NumDFObjectUploads, GDistanceFieldObjectDataStride * sizeof(FVector4f), true, TEXT("DistanceFields.DFObjectDataUploadBuffer"));
-					UploadDistanceFieldBoundsBuffer.Init(GraphBuilder, NumDFObjectUploads, GDistanceFieldObjectBoundsStride * sizeof(FVector4f), true, TEXT("DistanceFields.DFObjectBoundsUploadBuffer"));
-
-					const TArray<FPrimitiveBounds>& PrimitiveBounds = Scene->PrimitiveBounds;
-
-					FParallelUpdateRangesDFO ParallelRanges;
-
-					int32 RangeCount = PartitionUpdateRangesDFO(ParallelRanges, IndicesToUpdateInObjectBuffers.Num(), bExecuteInParallel);
-
-					ParallelFor(RangeCount,
-						[this, &ParallelRanges, &PrimitiveBounds, RangeCount](int32 RangeIndex)
+				ParallelFor(RangeCount,
+					[this, &ParallelRanges, &PrimitiveBounds, RangeCount](int32 RangeIndex)
+					{
+						for (int32 ItemIndex = ParallelRanges.Range[RangeIndex].ItemStart; ItemIndex < ParallelRanges.Range[RangeIndex].ItemStart + ParallelRanges.Range[RangeIndex].ItemCount; ++ItemIndex)
 						{
-							for (int32 ItemIndex = ParallelRanges.Range[RangeIndex].ItemStart; ItemIndex < ParallelRanges.Range[RangeIndex].ItemStart + ParallelRanges.Range[RangeIndex].ItemCount; ++ItemIndex)
+							const int32 Index = IndicesToUpdateInObjectBuffers[ItemIndex];
+							if (Index >= 0 && Index < PrimitiveInstanceMapping.Num())
 							{
-								const int32 Index = IndicesToUpdateInObjectBuffers[ItemIndex];
-								if (Index >= 0 && Index < PrimitiveInstanceMapping.Num())
+								const FPrimitiveAndInstance& PrimAndInst = PrimitiveInstanceMapping[Index];
+								const FPrimitiveSceneProxy* PrimitiveSceneProxy = PrimAndInst.Primitive->Proxy;
+
+								if (RangeCount > 1)
 								{
-									const FPrimitiveAndInstance& PrimAndInst = PrimitiveInstanceMapping[Index];
-									const FPrimitiveSceneProxy* PrimitiveSceneProxy = PrimAndInst.Primitive->Proxy;
-
-									if (RangeCount > 1)
-									{
-										DFUpdateCS.Lock();
-									}
-
-									FVector4f* UploadObjectData = (FVector4f*)UploadDistanceFieldDataBuffer.Add_GetRef(Index);
-									FVector4f* UploadObjectBounds = (FVector4f*)UploadDistanceFieldBoundsBuffer.Add_GetRef(Index);
-
-									if (RangeCount > 1)
-									{
-										DFUpdateCS.Unlock();
-									}
-
-									const FDistanceFieldVolumeData* DistanceFieldData = nullptr;
-									float SelfShadowBias;
-									PrimitiveSceneProxy->GetDistanceFieldAtlasData(DistanceFieldData, SelfShadowBias);
-
-									const FBox LocalSpaceMeshBounds = DistanceFieldData->LocalSpaceMeshBounds;
-			
-									const FMatrix LocalToWorld = PrimAndInst.LocalToWorld;
-
-									{
-										const FBox WorldSpaceMeshBounds = LocalSpaceMeshBounds.TransformBy(LocalToWorld);
-
-										const FLargeWorldRenderPosition AbsoluteWorldPosition(WorldSpaceMeshBounds.GetCenter());
-
-										const FVector4f ObjectBoundingSphere(AbsoluteWorldPosition.GetOffset(), WorldSpaceMeshBounds.GetExtent().Size());
-
-										UploadObjectBounds[0] = AbsoluteWorldPosition.GetTile();
-										UploadObjectBounds[1] = ObjectBoundingSphere;
-
-										const FGlobalDFCacheType CacheType = PrimitiveSceneProxy->IsOftenMoving() ? GDF_Full : GDF_MostlyStatic;
-										const bool bOftenMoving = CacheType == GDF_Full;
-										const bool bCastShadow = PrimitiveSceneProxy->CastsDynamicShadow();
-										const bool bIsNaniteMesh = PrimitiveSceneProxy->IsNaniteMesh();
-										const bool bEmissiveLightSource = PrimitiveSceneProxy->IsEmissiveLightSource();
-										const bool bVisible = PrimitiveSceneProxy->IsDrawnInGame(); // Distance field object can be invisible in main view, but cast shadows
-										const bool bAffectIndirectLightingWhileHidden = PrimitiveSceneProxy->AffectsIndirectLightingWhileHidden();
-
-										uint32 Flags = 0;
-										Flags |= bOftenMoving ? 1u : 0;
-										Flags |= bCastShadow ? 2u : 0;
-										Flags |= bIsNaniteMesh ? 4u : 0;
-										Flags |= bEmissiveLightSource ? 8u : 0;
-										Flags |= bVisible ? 16u : 0;
-										Flags |= bAffectIndirectLightingWhileHidden ? 32u : 0;
-
-										FVector4f ObjectWorldExtentAndFlags((FVector3f)WorldSpaceMeshBounds.GetExtent(), 0.0f);
-										ObjectWorldExtentAndFlags.W = *(const float*)&Flags;
-										UploadObjectBounds[2] = ObjectWorldExtentAndFlags;
-									}
-
-									// Uniformly scale our Volume space to lie within [-1, 1] at the max extent
-									// This is mirrored in the SDF encoding
-									const FBox::FReal LocalToVolumeScale = 1.0f / LocalSpaceMeshBounds.GetExtent().GetMax();
-
-									const FMatrix VolumeToWorld = FScaleMatrix(1.0f / LocalToVolumeScale) * FTranslationMatrix(LocalSpaceMeshBounds.GetCenter()) * LocalToWorld;
-
-									const FLargeWorldRenderPosition WorldPosition(VolumeToWorld.GetOrigin());
-									const FVector TilePositionOffset = WorldPosition.GetTileOffset();
-
-									// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
-									FMatrix LocalToRelativeWorld = FLargeWorldRenderScalar::MakeToRelativeWorldMatrixDouble(TilePositionOffset, VolumeToWorld);
-
-									// TilePosition
-									UploadObjectData[0] = WorldPosition.GetTile();
-
-									const FMatrix44f WorldToVolumeT = FMatrix44f(LocalToRelativeWorld.Inverse().GetTransposed());
-									// WorldToVolumeT
-									UploadObjectData[1] = (*(FVector4f*)&WorldToVolumeT.M[0]);
-									UploadObjectData[2] = (*(FVector4f*)&WorldToVolumeT.M[1]);
-									UploadObjectData[3] = (*(FVector4f*)&WorldToVolumeT.M[2]);
-
-									const FVector VolumePositionExtent = LocalSpaceMeshBounds.GetExtent() * LocalToVolumeScale;
-
-									// Minimal surface bias which increases chance that ray hit will a surface located between two texels
-									float ExpandSurfaceDistance = (GMeshSDFSurfaceBiasExpand * VolumePositionExtent / FVector(DistanceFieldData->Mips[0].IndirectionDimensions * DistanceField::UniqueDataBrickSize)).Size();
-
-									const float WSign = DistanceFieldData->bMostlyTwoSided ? -1 : 1;
-									UploadObjectData[4] = FVector4f((FVector3f)VolumePositionExtent, WSign * ExpandSurfaceDistance);
-
-									const int32 PrimIdx = PrimAndInst.Primitive->GetIndex();
-									const FPrimitiveBounds& PrimBounds = PrimitiveBounds[PrimIdx];
-									float MinDrawDist2 = FMath::Square(PrimBounds.MinDrawDistance);
-									// For IEEE compatible machines, float operations goes to inf if overflow
-									// In this case, it will effectively disable max draw distance culling
-									float MaxDrawDist = FMath::Max(PrimBounds.MaxCullDistance, 0.f) * GetCachedScalabilityCVars().ViewDistanceScale;
-
-									const uint32 GPUSceneInstanceIndex = PrimitiveSceneProxy->SupportsInstanceDataBuffer() ? 
-										PrimAndInst.Primitive->GetInstanceSceneDataOffset() + PrimAndInst.InstanceIndex :
-										PrimAndInst.Primitive->GetInstanceSceneDataOffset();
-
-									// Bypass NaN checks in FVector4f ctor
-									FVector4f Vector4;
-									Vector4.X = MinDrawDist2;
-									Vector4.Y = MaxDrawDist * MaxDrawDist;
-									Vector4.Z = SelfShadowBias;
-									Vector4.W = *(const float*)&GPUSceneInstanceIndex;
-									UploadObjectData[5] = Vector4;
-
-									const FMatrix44f VolumeToWorldT = FMatrix44f(LocalToRelativeWorld.GetTransposed());
-									UploadObjectData[6] = *(FVector4f*)&VolumeToWorldT.M[0];
-									UploadObjectData[7] = *(FVector4f*)&VolumeToWorldT.M[1];
-									UploadObjectData[8] = *(FVector4f*)&VolumeToWorldT.M[2];
-
-									FVector4f FloatVector8(FVector3f(VolumeToWorld.GetScaleVector()), 0.0f);
-
-									// Bypass NaN checks in FVector4f ctor
-									FSetElementId AssetStateSetId = AssetStateArray.FindId(DistanceFieldData);
-									check(AssetStateSetId.IsValidId());
-									const int32 AssetStateInt = AssetStateSetId.AsInteger();
-									FloatVector8.W = *(const float*)&AssetStateInt;
-									
-									UploadObjectData[9] = FloatVector8;
+									DFUpdateCS.Lock();
 								}
+
+								FVector4f* UploadObjectData = (FVector4f*)UploadDistanceFieldDataBuffer.Add_GetRef(Index);
+								FVector4f* UploadObjectBounds = (FVector4f*)UploadDistanceFieldBoundsBuffer.Add_GetRef(Index);
+
+								if (RangeCount > 1)
+								{
+									DFUpdateCS.Unlock();
+								}
+
+								const FDistanceFieldVolumeData* DistanceFieldData = nullptr;
+								float SelfShadowBias;
+								PrimitiveSceneProxy->GetDistanceFieldAtlasData(DistanceFieldData, SelfShadowBias);
+
+								const FBox LocalSpaceMeshBounds = DistanceFieldData->LocalSpaceMeshBounds;
+			
+								const FMatrix LocalToWorld = PrimAndInst.LocalToWorld;
+
+								{
+									const FBox WorldSpaceMeshBounds = LocalSpaceMeshBounds.TransformBy(LocalToWorld);
+
+									const FLargeWorldRenderPosition AbsoluteWorldPosition(WorldSpaceMeshBounds.GetCenter());
+
+									const FVector4f ObjectBoundingSphere(AbsoluteWorldPosition.GetOffset(), WorldSpaceMeshBounds.GetExtent().Size());
+
+									UploadObjectBounds[0] = AbsoluteWorldPosition.GetTile();
+									UploadObjectBounds[1] = ObjectBoundingSphere;
+
+									const FGlobalDFCacheType CacheType = PrimitiveSceneProxy->IsOftenMoving() ? GDF_Full : GDF_MostlyStatic;
+									const bool bOftenMoving = CacheType == GDF_Full;
+									const bool bCastShadow = PrimitiveSceneProxy->CastsDynamicShadow();
+									const bool bIsNaniteMesh = PrimitiveSceneProxy->IsNaniteMesh();
+									const bool bEmissiveLightSource = PrimitiveSceneProxy->IsEmissiveLightSource();
+									const bool bVisible = PrimitiveSceneProxy->IsDrawnInGame(); // Distance field object can be invisible in main view, but cast shadows
+									const bool bAffectIndirectLightingWhileHidden = PrimitiveSceneProxy->AffectsIndirectLightingWhileHidden();
+
+									uint32 Flags = 0;
+									Flags |= bOftenMoving ? 1u : 0;
+									Flags |= bCastShadow ? 2u : 0;
+									Flags |= bIsNaniteMesh ? 4u : 0;
+									Flags |= bEmissiveLightSource ? 8u : 0;
+									Flags |= bVisible ? 16u : 0;
+									Flags |= bAffectIndirectLightingWhileHidden ? 32u : 0;
+
+									FVector4f ObjectWorldExtentAndFlags((FVector3f)WorldSpaceMeshBounds.GetExtent(), 0.0f);
+									ObjectWorldExtentAndFlags.W = *(const float*)&Flags;
+									UploadObjectBounds[2] = ObjectWorldExtentAndFlags;
+								}
+
+								// Uniformly scale our Volume space to lie within [-1, 1] at the max extent
+								// This is mirrored in the SDF encoding
+								const FBox::FReal LocalToVolumeScale = 1.0f / LocalSpaceMeshBounds.GetExtent().GetMax();
+
+								const FMatrix VolumeToWorld = FScaleMatrix(1.0f / LocalToVolumeScale) * FTranslationMatrix(LocalSpaceMeshBounds.GetCenter()) * LocalToWorld;
+
+								const FLargeWorldRenderPosition WorldPosition(VolumeToWorld.GetOrigin());
+								const FVector TilePositionOffset = WorldPosition.GetTileOffset();
+
+								// Inverse on FMatrix44f can generate NaNs if the source matrix contains large scaling, so do it in double precision.
+								FMatrix LocalToRelativeWorld = FLargeWorldRenderScalar::MakeToRelativeWorldMatrixDouble(TilePositionOffset, VolumeToWorld);
+
+								// TilePosition
+								UploadObjectData[0] = WorldPosition.GetTile();
+
+								const FMatrix44f WorldToVolumeT = FMatrix44f(LocalToRelativeWorld.Inverse().GetTransposed());
+								// WorldToVolumeT
+								UploadObjectData[1] = (*(FVector4f*)&WorldToVolumeT.M[0]);
+								UploadObjectData[2] = (*(FVector4f*)&WorldToVolumeT.M[1]);
+								UploadObjectData[3] = (*(FVector4f*)&WorldToVolumeT.M[2]);
+
+								const FVector VolumePositionExtent = LocalSpaceMeshBounds.GetExtent() * LocalToVolumeScale;
+
+								// Minimal surface bias which increases chance that ray hit will a surface located between two texels
+								float ExpandSurfaceDistance = (GMeshSDFSurfaceBiasExpand * VolumePositionExtent / FVector(DistanceFieldData->Mips[0].IndirectionDimensions * DistanceField::UniqueDataBrickSize)).Size();
+
+								const float WSign = DistanceFieldData->bMostlyTwoSided ? -1 : 1;
+								UploadObjectData[4] = FVector4f((FVector3f)VolumePositionExtent, WSign * ExpandSurfaceDistance);
+
+								const int32 PrimIdx = PrimAndInst.Primitive->GetIndex();
+								const FPrimitiveBounds& PrimBounds = PrimitiveBounds[PrimIdx];
+								float MinDrawDist2 = FMath::Square(PrimBounds.MinDrawDistance);
+								// For IEEE compatible machines, float operations goes to inf if overflow
+								// In this case, it will effectively disable max draw distance culling
+								float MaxDrawDist = FMath::Max(PrimBounds.MaxCullDistance, 0.f) * GetCachedScalabilityCVars().ViewDistanceScale;
+
+								const uint32 GPUSceneInstanceIndex = PrimitiveSceneProxy->SupportsInstanceDataBuffer() ? 
+									PrimAndInst.Primitive->GetInstanceSceneDataOffset() + PrimAndInst.InstanceIndex :
+									PrimAndInst.Primitive->GetInstanceSceneDataOffset();
+
+								// Bypass NaN checks in FVector4f ctor
+								FVector4f Vector4;
+								Vector4.X = MinDrawDist2;
+								Vector4.Y = MaxDrawDist * MaxDrawDist;
+								Vector4.Z = SelfShadowBias;
+								Vector4.W = *(const float*)&GPUSceneInstanceIndex;
+								UploadObjectData[5] = Vector4;
+
+								const FMatrix44f VolumeToWorldT = FMatrix44f(LocalToRelativeWorld.GetTransposed());
+								UploadObjectData[6] = *(FVector4f*)&VolumeToWorldT.M[0];
+								UploadObjectData[7] = *(FVector4f*)&VolumeToWorldT.M[1];
+								UploadObjectData[8] = *(FVector4f*)&VolumeToWorldT.M[2];
+
+								FVector4f FloatVector8(FVector3f(VolumeToWorld.GetScaleVector()), 0.0f);
+
+								// Bypass NaN checks in FVector4f ctor
+								FSetElementId AssetStateSetId = AssetStateArray.FindId(DistanceFieldData);
+								check(AssetStateSetId.IsValidId());
+								const int32 AssetStateInt = AssetStateSetId.AsInteger();
+								FloatVector8.W = *(const float*)&AssetStateInt;
+									
+								UploadObjectData[9] = FloatVector8;
 							}
-						},
-						RangeCount == 1
-					);
+						}
+					},
+					RangeCount == 1
+				);
 
-					UploadDistanceFieldDataBuffer.ResourceUploadTo(GraphBuilder, DFObjectDataBuffer);
-					UploadDistanceFieldBoundsBuffer.ResourceUploadTo(GraphBuilder, DFObjectBoundsBuffer);
+				UploadDistanceFieldDataBuffer.ResourceUploadTo(GraphBuilder, DFObjectDataBuffer);
+				UploadDistanceFieldBoundsBuffer.ResourceUploadTo(GraphBuilder, DFObjectBoundsBuffer);
 
-					ExternalAccessQueue.Add(DFObjectDataBuffer, ERHIAccess::SRVMask, ERHIPipeline::All);
-					ExternalAccessQueue.Add(DFObjectBoundsBuffer, ERHIAccess::SRVMask, ERHIPipeline::All);
+				ExternalAccessQueue.Add(DFObjectDataBuffer, ERHIAccess::SRVMask, ERHIPipeline::All);
+				ExternalAccessQueue.Add(DFObjectBoundsBuffer, ERHIAccess::SRVMask, ERHIPipeline::All);
+
+				if (IndicesToUpdateInObjectBuffers.Num() > NumDFObjectUploads)
+				{
+					// this is not expected to happen frequently since we can perform up to MAX_NUM_DISTANCE_FIELD_OBJECT_UPLOADS per frame
+					// RemoveAtSwap would be more efficient but could potentially result in starvation
+					const bool bAllowShrinking = true; // allow array to shrink since getting into this code path means array is very large
+					IndicesToUpdateInObjectBuffers.RemoveAt(0, NumDFObjectUploads, bAllowShrinking);
+				}
+				else
+				{
+					IndicesToUpdateInObjectBuffers.Reset();
 				}
 			}
 		}
@@ -697,8 +706,6 @@ void FDistanceFieldSceneData::UpdateDistanceFieldObjectBuffers(
 			VerifyIntegrity();
 		}
 	}
-
-	IndicesToUpdateInObjectBuffers.Reset();
 }
 
 void FSceneRenderer::UpdateGlobalHeightFieldObjectBuffers(FRDGBuilder& GraphBuilder, const TArray<uint32>& IndicesToUpdateInHeightFieldObjectBuffers)
@@ -764,10 +771,9 @@ void FSceneRenderer::UpdateGlobalHeightFieldObjectBuffers(FRDGBuilder& GraphBuil
 			FVector4f* UploadObjectBounds = (FVector4f*)DistanceFieldSceneData.UploadHeightFieldBoundsBuffer.Add_GetRef(PrimitiveIndex);
 
 			UTexture2D* HeightNormalTexture;
-			UTexture2D* DiffuseColorTexture;
 			UTexture2D* VisibilityTexture;
 			FHeightfieldComponentDescription HeightFieldCompDesc(Primitive->Proxy->GetLocalToWorld(), Primitive->GetInstanceSceneDataOffset());
-			Primitive->Proxy->GetHeightfieldRepresentation(HeightNormalTexture, DiffuseColorTexture, VisibilityTexture, HeightFieldCompDesc);
+			Primitive->Proxy->GetHeightfieldRepresentation(HeightNormalTexture, VisibilityTexture, HeightFieldCompDesc);
 
 			const bool bInAtlas = HeightNormalTexture && (GHeightFieldTextureAtlas.GetAllocationHandle(HeightNormalTexture) != INDEX_NONE);
 
@@ -849,7 +855,7 @@ void FSceneRenderer::UpdateGlobalHeightFieldObjectBuffers(FRDGBuilder& GraphBuil
 	}
 }
 
-void FSceneRenderer::PrepareDistanceFieldScene(FRDGBuilder& GraphBuilder, FRDGExternalAccessQueue& ExternalAccessQueue, bool bSplitDispatch)
+void FSceneRenderer::PrepareDistanceFieldScene(FRDGBuilder& GraphBuilder, FRDGExternalAccessQueue& ExternalAccessQueue)
 {
 	RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, PrepareDistanceFieldScene);
 	TRACE_CPUPROFILER_EVENT_SCOPE(FSceneRenderer::PrepareDistanceFieldScene);
@@ -900,11 +906,6 @@ void FSceneRenderer::PrepareDistanceFieldScene(FRDGBuilder& GraphBuilder, FRDGEx
 
 		DistanceFieldSceneData.UpdateDistanceFieldAtlas(GraphBuilder, ExternalAccessQueue, Views[0], Scene, IsLumenEnabled(Views[0]), Views[0].ShaderMap, DistanceFieldAssetAdds, DistanceFieldAssetRemoves);
 
-		if (bSplitDispatch)
-		{
-			GraphBuilder.AddDispatchHint();
-		}
-
 		if (ShouldPrepareGlobalDistanceField())
 		{
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
@@ -923,10 +924,6 @@ void FSceneRenderer::PrepareDistanceFieldScene(FRDGBuilder& GraphBuilder, FRDGEx
 
 				UpdateGlobalDistanceFieldVolume(GraphBuilder, ExternalAccessQueue, View, Scene, OcclusionMaxDistance, IsLumenEnabled(View), View.GlobalDistanceFieldInfo);
 			}
-		}
-		if (!bSplitDispatch)
-		{
-			GraphBuilder.AddDispatchHint();
 		}
 	}
 }

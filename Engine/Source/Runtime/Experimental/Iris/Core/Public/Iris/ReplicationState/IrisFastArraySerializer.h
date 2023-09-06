@@ -21,8 +21,8 @@ struct FIrisFastArraySerializerPrivateAccessor;
 USTRUCT()
 struct FIrisFastArraySerializer : public FFastArraySerializer
 {
-	// At the moment as we have no way to specify this we reserve 31 bits that can be used, the first bit is used for the array itself
-	enum { IrisFastArrayChangeMaskBits = 31U };
+	// At the moment as we have no way to specify this per derived type, currently we reserve a fixed range of bits used for the changemask, the first bit is used for the array itself
+	enum { IrisFastArrayChangeMaskBits = 63U };
 	enum { IrisFastArrayChangeMaskBitOffset = 1U };
 	enum { IrisFastArrayPropertyBitIndex = 0U };	
 
@@ -44,7 +44,7 @@ struct FIrisFastArraySerializer : public FFastArraySerializer
 	IRISCORE_API FIrisFastArraySerializer& operator=(FIrisFastArraySerializer&& Other);
 	
 	/** Override MarkItemDirty in order to mark object as dirty in the DirtyNetObjectTracker */
-	IRISCORE_API void MarkItemDirty(FFastArraySerializerItem & Item)
+	void MarkItemDirty(FFastArraySerializerItem & Item)
 	{ 
 		FFastArraySerializer::MarkItemDirty(Item);
 		if (ReplicationStateHeader.IsBound())
@@ -55,7 +55,7 @@ struct FIrisFastArraySerializer : public FFastArraySerializer
 	}
 	
 	/** Override MarkArrayDirty in order to mark object as dirty in the DirtyNetObjectTracker */
-	IRISCORE_API void MarkArrayDirty()
+	void MarkArrayDirty()
 	{
 		FFastArraySerializer::MarkArrayDirty();
 		if (ReplicationStateHeader.IsBound())
@@ -68,17 +68,23 @@ struct FIrisFastArraySerializer : public FFastArraySerializer
 	friend UE::Net::Private::FIrisFastArraySerializerPrivateAccessor;
 
 private:
+	enum : unsigned
+	{
+		MemberChangeMaskStorageIndex = 0U,
+		ConditionalChangeMaskStorageIndex = 2U,
+	};
+
 	// Mark item at index as changed, and set the array as dirty
-	void InitChangeMask();
-	void InternalMarkItemChanged(int32 ItemIdx);
-	void InternalMarkAllItemsChanged();
-	void InternalMarkArrayAsDirty();
+	IRISCORE_API void InitChangeMask();
+	IRISCORE_API void InternalMarkItemChanged(int32 ItemIdx);
+	IRISCORE_API void InternalMarkAllItemsChanged();
+	IRISCORE_API void InternalMarkArrayAsDirty();
+
+	// Header for dirty state tracking needs to be just before ChangeMaskStorage. See GetReplicationStateHeader for more info.
+	UE::Net::FReplicationStateHeader ReplicationStateHeader;
 
 	// Storage for changemask, this is currently hardcoded
 	UPROPERTY(Transient, NotReplicated)
-	uint32 ChangeMaskStorage[2];
-
-	// Header for dirty state tracking
-	UE::Net::FReplicationStateHeader ReplicationStateHeader;
+	uint32 ChangeMaskStorage[4];
 };
 

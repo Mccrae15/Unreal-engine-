@@ -5,7 +5,9 @@
 =============================================================================*/
 
 #include "FXSystemSet.h"
+#include "FXRenderingUtils.h"
 #include "GPUSortManager.h"
+#include "Containers/StridedView.h"
 
 FFXSystemSet::FFXSystemSet(FGPUSortManager* InGPUSortManager)
 	: GPUSortManager(InGPUSortManager)
@@ -79,7 +81,7 @@ bool FFXSystemSet::ShouldDebugDraw_RenderThread() const
 	return false;
 }
 
-void FFXSystemSet::DrawDebug_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, const struct FScreenPassRenderTarget& Output)
+void FFXSystemSet::DrawDebug_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const struct FScreenPassRenderTarget& Output)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
@@ -88,7 +90,7 @@ void FFXSystemSet::DrawDebug_RenderThread(class FRDGBuilder& GraphBuilder, const
 	}
 }
 
-void FFXSystemSet::DrawSceneDebug_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth)
+void FFXSystemSet::DrawSceneDebug_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
@@ -124,16 +126,16 @@ void FFXSystemSet::UpdateVectorField(UVectorFieldComponent* VectorFieldComponent
 	}
 }
 
-void FFXSystemSet::PreInitViews(class FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate)
+void FFXSystemSet::PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate, const TArrayView<const FSceneViewFamily*>& ViewFamilies, const FSceneViewFamily* CurrentFamily)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PreInitViews(GraphBuilder, bAllowGPUParticleUpdate);
+		FXSystem->PreInitViews(GraphBuilder, bAllowGPUParticleUpdate, ViewFamilies, CurrentFamily);
 	}
 }
 
-void FFXSystemSet::PostInitViews(class FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate)
+void FFXSystemSet::PostInitViews(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, bool bAllowGPUParticleUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
@@ -194,12 +196,12 @@ bool FFXSystemSet::RequiresRayTracingScene() const
 	return false;
 }
 
-void FFXSystemSet::PreRender(class FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleSceneUpdate)
+void FFXSystemSet::PreRender(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, FSceneUniformBuffer &SceneUniformBuffer, bool bAllowGPUParticleSceneUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PreRender(GraphBuilder, Views, bAllowGPUParticleSceneUpdate);
+		FXSystem->PreRender(GraphBuilder, Views, SceneUniformBuffer, bAllowGPUParticleSceneUpdate);
 	}
 }
 
@@ -212,12 +214,12 @@ void FFXSystemSet::SetSceneTexturesUniformBuffer(const TUniformBufferRef<FSceneT
 	}
 }
 
-void FFXSystemSet::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<const class FViewInfo> Views, bool bAllowGPUParticleSceneUpdate)
+void FFXSystemSet::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, FSceneUniformBuffer &SceneUniformBuffer, bool bAllowGPUParticleSceneUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PostRenderOpaque(GraphBuilder, Views, bAllowGPUParticleSceneUpdate);
+		FXSystem->PostRenderOpaque(GraphBuilder, Views, SceneUniformBuffer, bAllowGPUParticleSceneUpdate);
 	}
 }
 

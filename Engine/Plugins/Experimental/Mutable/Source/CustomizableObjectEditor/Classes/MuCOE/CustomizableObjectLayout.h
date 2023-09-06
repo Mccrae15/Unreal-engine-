@@ -14,12 +14,22 @@ enum class ECustomizableObjectTextureLayoutPackingStrategy : uint8
 	Fixed = 1 UMETA(DisplayName = "Fixed Layout")
 };
 
+// Fixed Layout reduction methods
+UENUM()
+enum class ECustomizableObjectLayoutBlockReductionMethod : uint8
+{
+	// Layout blocks will be reduced by halves
+	Halve = 0 UMETA(DisplayName = "Reduce by Half"),
+	// LAyout blocks will be reduced by a grid unit
+	Unitary = 1 UMETA(DisplayName = "Reduce by Unit")
+};
+
 USTRUCT()
 struct CUSTOMIZABLEOBJECTEDITOR_API FCustomizableObjectLayoutBlock
 {
 	GENERATED_USTRUCT_BODY()
 
-		FCustomizableObjectLayoutBlock()
+	FCustomizableObjectLayoutBlock()
 	{
 		Min = FIntPoint(0, 0);
 		Max = FIntPoint(1, 1);
@@ -27,17 +37,20 @@ struct CUSTOMIZABLEOBJECTEDITOR_API FCustomizableObjectLayoutBlock
 	}
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-		FIntPoint Min;
+	FIntPoint Min;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-		FIntPoint Max;
+	FIntPoint Max;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-		uint32 Priority;
+	uint32 Priority;
 
 	//! Unique unchangeable id used to reference this block from other nodes.
 	UPROPERTY()
-		FGuid Id;
+	FGuid Id;
+
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bUseSymmetry = false;
 };
 
 UCLASS()
@@ -49,11 +62,16 @@ public:
 
 	UCustomizableObjectLayout();
 
+	// Sets the layout parameters
 	void SetLayout(UObject* InMesh, int32 LODIndex, int32 MatIndex, int32 UVIndex);
 	void SetPackingStrategy(ECustomizableObjectTextureLayoutPackingStrategy Strategy);
 	void SetGridSize(FIntPoint Size);
 	void SetMaxGridSize(FIntPoint Size);
 	void SetLayoutName(FString Name);
+	void SetIgnoreVertexLayoutWarnings(bool bValue);
+	void SetIgnoreWarningsLOD(int32 LODValue);
+	void SetBlockReductionMethod(ECustomizableObjectLayoutBlockReductionMethod Method);
+
 
 	int32 GetLOD() const { return LOD; }
 	int32 GetMaterial() const { return Material; }
@@ -63,6 +81,9 @@ public:
 	FIntPoint GetGridSize() const { return GridSize; }
 	FIntPoint GetMaxGridSize() const { return MaxGridSize; }
 	ECustomizableObjectTextureLayoutPackingStrategy GetPackingStrategy() const { return PackingStrategy; }
+	bool GetIgnoreVertexLayoutWarnings() const { return bIgnoreUnassignedVertexWarning; };
+	int32 GetFirstLODToIgnoreWarnings() { return FirstLODToIgnore; };
+	ECustomizableObjectLayoutBlockReductionMethod GetBlockReductionMethod()const { return BlockReductionMethod; }
 
 	void GetUVChannel(TArray<FVector2f>& UVs, int32 UVChannelIndex = 0) const;
 
@@ -102,5 +123,16 @@ private:
 
 	UPROPERTY()
 	FString LayoutName;
+
+	/* If true, vertex warning messages will be ignored */
+	UPROPERTY()
+	bool bIgnoreUnassignedVertexWarning = false;
+
+	/* First LOD from which unassigned vertices warning will be ignored */
+	UPROPERTY()
+	int32 FirstLODToIgnore = 0;
+
+	UPROPERTY()
+	ECustomizableObjectLayoutBlockReductionMethod BlockReductionMethod = ECustomizableObjectLayoutBlockReductionMethod::Halve;
 
 };

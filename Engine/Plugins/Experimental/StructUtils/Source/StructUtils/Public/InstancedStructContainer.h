@@ -6,6 +6,7 @@
 #include "InstancedStructContainer.generated.h"
 
 struct FInstancedStruct;
+class FReferenceCollector;
 
 /**
  * Array of heterogeneous structs. Can be used as a property, supports serialization,
@@ -53,7 +54,7 @@ private:
 			return Offset + GetStructureSize();
 		}
 
-		const UScriptStruct* ScriptStruct = nullptr;
+		TObjectPtr<const UScriptStruct> ScriptStruct = nullptr;
 		int32 Offset = 0;
 	};
 
@@ -71,6 +72,7 @@ public:
 	FInstancedStructContainer& operator=(const FInstancedStructContainer& InOther);
 	FInstancedStructContainer& operator=(FInstancedStructContainer&& InOther);
 	FInstancedStructContainer& operator=(TConstArrayView<FInstancedStruct> InItems);
+	FInstancedStructContainer& operator=(TConstArrayView<FStructView> InItems);
 	FInstancedStructContainer& operator=(TConstArrayView<FConstStructView> InItems);
 
 	/** Appends items to the array. */
@@ -81,6 +83,7 @@ public:
 	/** Insert new items at specified location. */
 	void InsertAt(const int32 InsertAtIndex, const FInstancedStructContainer& Other);
 	void InsertAt(const int32 InsertAtIndex, TConstArrayView<FInstancedStruct> ValuesToInsert);
+	void InsertAt(const int32 InsertAtIndex, TConstArrayView<FStructView> ValuesToInsert);
 	void InsertAt(const int32 InsertAtIndex, TConstArrayView<FConstStructView> ValuesToInsert);
 
 	/** Remove items at specific location. Does not change memory allocation. */
@@ -220,7 +223,7 @@ public:
 	FConstIterator end() const { return FConstIterator(*this, NumItems); }
 
 	/** Type traits */
-	void AddStructReferencedObjects(class FReferenceCollector& Collector) const;
+	void AddStructReferencedObjects(FReferenceCollector& Collector);
 	bool Identical(const FInstancedStructContainer* Other, uint32 PortFlags) const;
 	bool Serialize(FArchive& Ar);
 	void GetPreloadDependencies(TArray<UObject*>& OutDeps) const;

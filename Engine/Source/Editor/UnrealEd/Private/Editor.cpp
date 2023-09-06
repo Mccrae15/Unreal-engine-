@@ -119,8 +119,6 @@ FSimpleMulticastDelegate								FEditorDelegates::CancelPIE;
 FEditorDelegates::FOnStandaloneLocalPlayEvent			FEditorDelegates::BeginStandaloneLocalPlay;
 FSimpleMulticastDelegate								FEditorDelegates::PropertySelectionChange;
 FSimpleMulticastDelegate								FEditorDelegates::PostLandscapeLayerUpdated;
-FEditorDelegates::FOnPreSaveWorld						FEditorDelegates::PreSaveWorld;
-FEditorDelegates::FOnPostSaveWorld						FEditorDelegates::PostSaveWorld;
 FEditorDelegates::FOnPreSaveWorldWithContext			FEditorDelegates::PreSaveWorldWithContext;
 FEditorDelegates::FOnPostSaveWorldWithContext			FEditorDelegates::PostSaveWorldWithContext;
 FEditorDelegates::FOnPreSaveExternalActors				FEditorDelegates::PreSaveExternalActors;
@@ -143,6 +141,7 @@ FSimpleMulticastDelegate								FEditorDelegates::OnLightingBuildFailed;
 FSimpleMulticastDelegate								FEditorDelegates::OnLightingBuildSucceeded;
 FEditorDelegates::FOnApplyObjectToActor					FEditorDelegates::OnApplyObjectToActor;
 FEditorDelegates::FOnFocusViewportOnActors				FEditorDelegates::OnFocusViewportOnActors;
+FEditorDelegates::FOnMapLoad							FEditorDelegates::OnMapLoad;
 FEditorDelegates::FOnMapOpened							FEditorDelegates::OnMapOpened;
 FEditorDelegates::FOnEditorCameraMoved					FEditorDelegates::OnEditorCameraMoved;
 FEditorDelegates::FOnDollyPerspectiveCamera				FEditorDelegates::OnDollyPerspectiveCamera;
@@ -170,6 +169,9 @@ FEditorDelegates::FOnOpenReferenceViewer				FEditorDelegates::OnOpenReferenceVie
 FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnOpenSizeMap;
 FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnOpenAssetAudit;
 FEditorDelegates::FOnViewAssetIdentifiers				FEditorDelegates::OnEditAssetIdentifiers;
+FEditorDelegates::FOnRestartRequested					FEditorDelegates::OnRestartRequested;
+FEditorDelegates::FOnEditorBoot							FEditorDelegates::OnEditorBoot;
+FEditorDelegates::FOnEditorInitialized					FEditorDelegates::OnEditorInitialized;
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -413,18 +415,36 @@ UE::Interchange::FAssetImportResultRef FReimportManager::ReimportAsync(UObject* 
 			{
 				if (bUseInterchangeFramework && CanReimportHandler->IsInterchangeFactory())
 				{
-					int32 RealSourceFileIndex = SourceFileIndex == INDEX_NONE ? 0 : SourceFileIndex;
-					int32 RealValidSourceFileIndex = SourceFilenames.IsValidIndex(RealSourceFileIndex) ? RealSourceFileIndex : 0;
-					UE::Interchange::FScopedSourceData ScopedSourceData(SourceFilenames[RealValidSourceFileIndex]);
-					CanReimportHandler->SetReimportSourceIndex(Obj, SourceFileIndex);
-					if (InterchangeManager.CanTranslateSourceData(ScopedSourceData.GetSourceData()))
+					// Make sure SourceFilenames reflects the source filenames in Obj
+					SourceFilenames.Empty();
+					if ( CanReimportHandler->CanReimport(Obj, SourceFilenames) )
 					{
-						FImportAssetParameters ImportAssetParameters;
-						ImportAssetParameters.bIsAutomated = GIsAutomationTesting || FApp::IsUnattended() || IsRunningCommandlet() || GIsRunningUnattendedScript;
-						ImportAssetParameters.ReimportAsset = Obj;
-						ImportAssetParameters.ReimportSourceIndex = SourceFileIndex;
-						UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(FString(), ScopedSourceData.GetSourceData(), ImportAssetParameters);
-						return ImportResult;
+						check( SourceFilenames.Num() > 0 );
+
+						int32 RealSourceFileIndex = SourceFileIndex == INDEX_NONE ? 0 : SourceFileIndex;
+						int32 RealValidSourceFileIndex = SourceFilenames.IsValidIndex(RealSourceFileIndex) ? RealSourceFileIndex : 0;
+						UE::Interchange::FScopedSourceData ScopedSourceData(SourceFilenames[RealValidSourceFileIndex]);
+						CanReimportHandler->SetReimportSourceIndex(Obj, SourceFileIndex);
+						if (InterchangeManager.CanTranslateSourceData(ScopedSourceData.GetSourceData()))
+						{
+							FImportAssetParameters ImportAssetParameters;
+							ImportAssetParameters.bIsAutomated = GIsAutomationTesting || FApp::IsUnattended() || IsRunningCommandlet() || GIsRunningUnattendedScript;
+							ImportAssetParameters.ReimportAsset = Obj;
+							ImportAssetParameters.ReimportSourceIndex = SourceFileIndex;
+							UE::Interchange::FAssetImportResultRef ImportResult = InterchangeManager.ImportAssetAsync(FString(), ScopedSourceData.GetSourceData(), ImportAssetParameters);
+
+							TFunction<void(UE::Interchange::FImportResult&)> AppendAndBroadcastImportResultIfNeeded =
+								[](UE::Interchange::FImportResult& Result)
+							{
+								UInterchangeManager& InterchangeManager = UInterchangeManager::GetInterchangeManager();
+								TStrongObjectPtr<UInterchangeResultsContainer> ResultsContainer(Result.GetResults());
+								InterchangeManager.OnBatchImportComplete.Broadcast(ResultsContainer);
+							};
+
+							ImportResult->OnDone(AppendAndBroadcastImportResultIfNeeded);
+
+							return ImportResult;
+						}
 					}
 				}
 
@@ -435,7 +455,9 @@ UE::Interchange::FAssetImportResultRef FReimportManager::ReimportAsync(UObject* 
 				CanReimportHandler->SetAutomatedReimport(bAutomated);
 				EReimportResult::Type Result = CanReimportHandler->Reimport( Obj, SourceFileIndex );
 				CanReimportHandler->SetAutomatedReimport(bOriginalAutomated);
-				if( Result == EReimportResult::Succeeded )
+				// Even if the reimport has been successful, check that the originating object is still valid
+				// The reimport might be a reimport to level which triggered the deletion of the object
+				if( Result == EReimportResult::Succeeded && IsValid(Obj))
 				{
 					Obj->PostEditChange();
 					GEditor->BroadcastObjectReimported(Obj);
@@ -606,7 +628,7 @@ void FReimportManager::ValidateAllSourceFileAndReimport(TArray<UObject*> &ToImpo
 			FText DialogText = FText::Format(LOCTEXT("ReimportMissingFileChoiceDialogMessage", "There is {MissingNumber} assets with missing source file path. Do you want to specify a new source file path for each asset?\n \"No\" will skip the reimport of all asset with a missing source file path.\n \"Cancel\" will cancel the whole reimport.\n{AssetToFileList}"), Arguments);
 			const FText Title = LOCTEXT("ReimportMissingFileChoiceDialogMessageTitle", "Reimport missing files");
 
-			UserChoice = FMessageDialog::Open(EAppMsgType::YesNoCancel, DialogText, &Title);
+			UserChoice = FMessageDialog::Open(EAppMsgType::YesNoCancel, DialogText, Title);
 		}
 
 		//Ask missing file locations
@@ -656,10 +678,10 @@ void FReimportManager::AddReferencedObjects( FReferenceCollector& Collector )
 {
 	for(FReimportHandler* Handler : Handlers)
 	{
-		const UObject* Obj = Handler->GetFactoryObject();
-		if(Obj)
+		TObjectPtr<UObject>* Obj = Handler->GetFactoryObject();
+		if(Obj && *Obj)
 		{
-			Collector.AddReferencedObject(Obj);
+			Collector.AddReferencedObject(*Obj);
 		}
 	}
 }
@@ -758,30 +780,8 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 		InOutFilenames[RealSourceFileIndex].Empty();
 	}
 
-	// Get the list of valid factories
-	for( TObjectIterator<UClass> It ; It ; ++It )
-	{
-		UClass* CurrentClass = (*It);
-
-		if( CurrentClass->IsChildOf(UFactory::StaticClass()) && !(CurrentClass->HasAnyClassFlags(CLASS_Abstract)) )
-		{
-			UFactory* Factory = Cast<UFactory>( CurrentClass->GetDefaultObject() );
-			if( Factory->bEditorImport && Factory->DoesSupportClass(Obj->GetClass()) )
-			{
-				Factories.Add( Factory );
-			}
-		}
-	}
-
-	if ( Factories.Num() <= 0 )
-	{
-		// No matching factories for this asset, fail
-		return;
-	}
-
+	// Append the Interchange supported translator formats for this object
 	TMultiMap<uint32, UFactory*> DummyFilterIndexToFactory;
-
-	//Append the interchange supported translator formats for this object
 	if (UInterchangeManager::IsInterchangeImportEnabled())
 	{
 		//Get the extension interchange can translate for this object
@@ -789,14 +789,33 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 		ObjectTools::AppendFormatsFileExtensions(TranslatorFormats, FileTypes, AllExtensions, DummyFilterIndexToFactory);
 	}
 
-	//If this object was not import with interchange add the legacy formats
-	if(AllExtensions.IsEmpty())
+	// Interchange is either disabled or do not support the given object, check with the legacy factories
+	if (AllExtensions.IsEmpty())
 	{
+		// Get the list of valid factories
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* CurrentClass = (*It);
+
+			if (CurrentClass->IsChildOf(UFactory::StaticClass()) && !(CurrentClass->HasAnyClassFlags(CLASS_Abstract)))
+			{
+				UFactory* Factory = Cast<UFactory>(CurrentClass->GetDefaultObject());
+				if (Factory->bEditorImport && Factory->DoesSupportClass(Obj->GetClass()))
+				{
+					Factories.Add(Factory);
+				}
+			}
+		}
+
+		if (Factories.Num() <= 0)
+		{
+			// No matching factories for this asset, fail
+			return;
+		}
+
 		// Generate the file types and extensions represented by the selected factories
 		ObjectTools::GenerateFactoryFileExtensions(Factories, FileTypes, AllExtensions, DummyFilterIndexToFactory);
 	}
-
-	
 
 	FString DefaultFolder;
 	FString DefaultFile;
@@ -842,17 +861,29 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 			FAssetData AssetData(Obj);
 			const UAssetDefinition* AssetDefinition = UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(AssetData);
 
-			TArray<FAssetImportInfo::FSourceFile> OutSourceAssets;
-			AssetDefinition->GetSourceFiles(AssetData, [&OutSourceAssets](const FAssetImportInfo& ImportInfo)
+			FAssetSourceFilesArgs GetSourceFilesArgs;
+			GetSourceFilesArgs.Assets = TConstArrayView<FAssetData>(&AssetData, 1);
+			GetSourceFilesArgs.FilePathFormat = EPathUse::Display;
+
+			int32 SourceFileCount = 0;
+			FString SourceDisplayLabel;
+			AssetDefinition->GetSourceFiles(GetSourceFilesArgs, [&SourceFileCount, &SourceDisplayLabel, SourceFileIndex](const FAssetSourceFilesResult& AssetImportInfo)
 			{
-				OutSourceAssets.Append(ImportInfo.SourceFiles);
+				++SourceFileCount;
+				if (SourceFileIndex < SourceFileCount)
+				{
+					SourceDisplayLabel = AssetImportInfo.FilePath;
+					return false;
+				}
+
+				return true;
 			});
 			
-			if (OutSourceAssets.IsValidIndex(SourceFileIndex))
+			if (SourceFileIndex >= 0 && SourceFileIndex < SourceFileCount)
 			{
 				Title = FString::Printf(TEXT("%s %s %s: %s"),
 					*NSLOCTEXT("ReimportManager", "ImportDialogTitleLabelPart1", "Select").ToString(),
-					*OutSourceAssets[SourceFileIndex].DisplayLabelName,
+					*SourceDisplayLabel,
 					*NSLOCTEXT("ReimportManager", "ImportDialogTitleLabelPart2", "Source File For").ToString(),
 					*Obj->GetName());
 			}

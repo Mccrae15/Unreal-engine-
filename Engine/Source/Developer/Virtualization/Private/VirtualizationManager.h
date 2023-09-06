@@ -4,10 +4,9 @@
 
 #include "Compression/CompressedBuffer.h"
 #include "HAL/CriticalSection.h"
+#include "IVirtualizationBackend.h"
 #include "Logging/LogMacros.h"
 #include "Templates/UniquePtr.h"
-
-
 #include "Virtualization/VirtualizationSystem.h"
 
 class IConsoleObject;
@@ -49,21 +48,27 @@ struct FAnalyticsEventAttribute;
 /**
  * Filtering
  * 
- * When pushing a payload it can be filtered based on the path of the package it belongs to. The filtering options 
- * are set up via the config files. 
- * Note that this only affects pushing a payload, if the filtering for a project is changed to exclude a package that
- * is already virtualized it will still be able to pull it's payloads as needed but will store them locally in the 
- * package the next time that it is saved.
+ * By default all packages in a project can be virtualized once the system has been enabled. The can be
+ * overridden by the filtering system, either by excluding specific packages/directories, or by changing
+ * the default so that no package will be virtualized except packages/directories that have been 
+ * specifically marked as to be virtualized.
+ * 
+ * Note that the filtering is applied when a package is saved and stored as meta data in the FPackageTrailer.
+ * This means that you can scan your package files and reason about the behavior of the payloads but also
+ * means that if you change your project filtering rules that packages have to be re-saved in order for the
+ * filtering to be applied.
+ * 
  * @see ShouldVirtualizePackage or ShouldVirtualize for implementation details.
  * 
  * Basic Setup:
  * 
- * [Core.ContentVirtualization]
- * FilterMode=OptIn/OptOut					When 'OptIn' payloads will be virtualized by default, when 'OptOut' they will not be virtualized by default
- * FilterEngineContent=True/False			When true any payload from a package under Engine/Content/.. will be excluded from virtualization
- * FilterEnginePluginContent=True/False		When true any payload from a package under Engine/Plugins/../Content/.. will be excluded from virtualization
- * FilterMapContent=True/False				When true any payload stored in a .umap or _BuildData.uasset file will be excluded from virtualization
- * LazyInitConnections=True/False			When true the backends will not try to make their connections until first used.
+ * [Core.VirtualizationModule]
+ * FilterMode=OptIn/OptOut					The general mode to be applied to all packages. With 'OptIn' packages will
+ *											not be virtualized unless their path is included via VirtualizationFilterSettings.
+ *											With 'OptOut' all packages will be virtualized unless excluded via 
+ *											VirtualizationFilterSettings [Default=OptOut]
+ * FilterMapContent=True/False				When true any payload stored in a .umap or _BuildData.uasset file will be
+ *											excluded from virtualization [Default=true]
  * 
  * PackagePath Setup:
  * 
@@ -81,10 +86,51 @@ struct FAnalyticsEventAttribute;
  * +IncludePackagePaths="/MountPoint/PathTo/ThePackageToInclude"	Includes the specific package '/MountPoint/PathTo/ThePackageToInclude' in the virtualization process
  */
 
+/*
+ * FVirtualizationManager
+ * 
+ * Ini file setup:
+ * 
+ * EnablePayloadVirtualization [bool]:			When true the virtualization process will be enabled (usually when a package is submitted
+												to revision control. [Default=true]
+ * EnableCacheOnPull [bool]:					When true payloads will be pushed to cached storage after being pulled from persistent
+ *												storage. [Default=true]
+ * EnableCacheOnPush [bool]:					When true payloads will be pushed to cached storage right before being pushed to persistent
+ *												storage. [Default=true]
+ * MinPayloadLength  [int64]:					The minimum length (in bytes) that a payload must reach before it can be considered for
+ *												virtualization. Use this to strike a balance between disk space and the number of smaller
+												payloads in your project being virtualized. [Default=0]
+ * BackendGraph [string]:						The name of the backend graph to use. The default graph has no backends and effectively
+												disables the system. It is expected that a project will define the graph that it wants
+												and then set this option [Default=ContentVirtualizationBackendGraph_None]
+ * VirtualizationProcessTag [string]:			The tag to be applied to any set of packages that have had  the virtualization process run
+ *												on them. Typically this means appending the tag to the description of a changelist of 
+ *												packages. This value can be set to an empty string. [Default="#virtualized"]
+ * AllowSubmitIfVirtualizationFailed [bool]:	Revision control submits that trigger the virtualization system can either allow or block
+ *												the submit if the virtualization process fails based on this value. True will allow a
+ *												submit with an error to continue and false will block the submit. Note that by error we mean
+ *												that the packages were not virtualized, not that bad data was produced. [Default=false]
+ * LazyInitConnections [bool]:					When true, backends will not attempt to connect to their services until actually required.
+ *												This can remove lengthy connection steps from the process init phase and then only connect
+ *												if we actually need that service. Note that if this is true then the connection can come from
+ *												any thread, so custom backend code will need to take that into account. [Default=false]
+ * UseLegacyErrorHandling [bool]:				Controls how we deal with errors encountered when pulling payloads. When true a failed payload 
+ *												pull will return an error and allow the process to carry on (the original error handling logic)
+ *												and when false a dialog will be displayed to the user warning them about the failed pull and 
+ *												prompting them to retry the pull or to quit the process. [Default=true]
+ * PullErrorAdditionalMsg [string]				An additional message that will be added to the error dialog presented on payload pull failure.
+ *												This allows you to add custom information, such as links to internal help docs without editing
+ *												code. Note that this additional message only works with the error dialog and will do nothing
+ *												if 'UseLegacyErrorHandling' is true. [Default=""]
+ * ForceCachingOnPull [bool]:					When true backends will be told to always upload the payload when a caching as a result of 
+ *												a payload pull as in this scenario we already know that the backend failed to pull the payload
+ *												before it was pulled from a backend later in the hierarchy. Can be used to try and skip
+ *												expensive existence checks, or if a backend is in a bad state where it believes it has the payload
+ *												but is unable to actually return the data. [Default=false]
+ */
+
 namespace UE::Virtualization
 {
-class IVirtualizationBackend;
-class IVirtualizationBackendFactory;
 class FPullRequestCollection;
 
 /** The default mode of filtering to use with package paths that do not match entries in UVirtualizationFilterSettings */
@@ -169,15 +215,27 @@ private:
 
 	void AddBackend(TUniquePtr<IVirtualizationBackend> Backend, FBackendArray& PushArray);
 
+	bool IsPersistentBackend(IVirtualizationBackend& Backend);
+
 	void EnsureBackendConnections();
 
-	void CachePayloads(TArrayView<FPushRequest> Requests, const IVirtualizationBackend* BackendSource);
+	void CachePayloads(TArrayView<FPushRequest> Requests, const IVirtualizationBackend* BackendSource, IVirtualizationBackend::EPushFlags Flags);
 
-	bool TryCacheDataToBackend(IVirtualizationBackend& Backend, TArrayView<FPushRequest> Requests);
+	bool TryCacheDataToBackend(IVirtualizationBackend& Backend, TArrayView<FPushRequest> Requests, IVirtualizationBackend::EPushFlags Flags);
 	bool TryPushDataToBackend(IVirtualizationBackend& Backend, TArrayView<FPushRequest> Requests);
 
 	void PullDataFromAllBackends(TArrayView<FPullRequest> Requests);
-	void PullDataFromBackend(IVirtualizationBackend& Backend, TArrayView<FPullRequest> Requests);
+	void PullDataFromBackend(IVirtualizationBackend& Backend, TArrayView<FPullRequest> Requests, FText& OutErrors);
+
+	enum class ErrorHandlingResult
+	{
+		/** We should try to pull the failed payloads again */
+		Retry = 0,
+		/** We should accept that some of the payloads failed and leave it to the calling system to handle */
+		AcceptFailedPayloads
+	};
+
+	ErrorHandlingResult OnPayloadPullError(FStringView BackendErrors);
 	
 	bool ShouldVirtualizeAsset(const UObject* Owner) const;
 
@@ -216,8 +274,22 @@ private:
 	/** Are packages allowed to be virtualized when submitted to source control. Defaults to true. */
 	bool bAllowPackageVirtualization;
 
-	/** Should payloads be cached locally after being pulled from persistent storage? Defaults to true. */
-	bool bEnableCacheAfterPull;
+	enum ECachingPolicy
+	{
+		/** Never push payloads to cached storage */
+		None = 0,
+		/** Cache payloads after they have been pulled from persistent storage */
+		CacheOnPull = 1 << 0,
+		/** Cache payloads right before they are pushed to persistent storage */
+		CacheOnPush = 1 << 1,
+
+		AlwaysCache = CacheOnPull | CacheOnPush
+	};
+
+	FRIEND_ENUM_CLASS_FLAGS(ECachingPolicy);
+
+	/** A bitfield describing when we push payloads to cached storage. */
+	ECachingPolicy CachingPolicy;
 
 	/** The minimum length for a payload to be considered for virtualization. Defaults to 0 bytes. */
 	int64 MinPayloadLength;
@@ -231,12 +303,6 @@ private:
 	/** The default filtering mode to apply if a payload is not matched with an option in UVirtualizationFilterSettings */
 	EPackageFilterMode FilteringMode;
 
-	/** Should payloads in engine content packages be filtered out and never virtualized */
-	bool bFilterEngineContent;
-	
-	/** Should payloads in engine plugin content packages be filtered out and never virtualized */
-	bool bFilterEnginePluginContent;
-
 	/** Should payloads in .umap files (or associated _BuildData files) be filtered out and never virtualized */
 	bool bFilterMapContent;
 
@@ -246,6 +312,17 @@ private:
 	/** Should backends defer connecting to their services until first use */
 	bool bLazyInitConnections;
 
+	/** When true we do not display an error dialog on failed payload pulling and rely on the caller handling it */
+	bool bUseLegacyErrorHandling;
+
+	/** When true IVirtualizationBackend::EPushFlags::Force will be passed to backends that need to cache payloads when pulling */
+	bool bForceCachingOnPull;
+
+	/** An additional error message to display when pulling payloads fails */
+	FString PullErrorAdditionalMsg;
+
+	/** Optional url used to augment connection failure error messages */
+	static FString ConnectionHelpUrl;
 private:
 
 	/** The name of the current project */
@@ -310,6 +387,13 @@ private:
 		/** The number of upcoming payload pulls that should be failed */
 		std::atomic<int32> MissCount = 0;
 	} DebugValues;
+
+public:
+	/**
+	 * Temp accessor for backends until we add a better system for connection failure notification. Note that
+	 * this is not exposed outside of the module so that we can change/remove this easily in the future.
+	 */
+	static FString GetConnectionHelpUrl();
 };
 
 } // namespace UE::Virtualization

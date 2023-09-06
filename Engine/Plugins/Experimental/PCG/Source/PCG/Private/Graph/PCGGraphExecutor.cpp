@@ -2,6 +2,7 @@
 
 #include "PCGGraphExecutor.h"
 
+#include "PCGCommon.h"
 #include "PCGComponent.h"
 #include "PCGContext.h"
 #include "PCGCrc.h"
@@ -12,9 +13,13 @@
 #include "PCGParamData.h"
 #include "PCGPin.h"
 #include "PCGSubsystem.h"
+#include "PCGWorldActor.h"
 #include "Graph/PCGGraphCache.h"
+#include "Graph/PCGStackContext.h"
+#include "Grid/PCGPartitionActor.h"
 #include "Helpers/PCGHelpers.h"
 #include "Metadata/PCGMetadata.h"
+#include "Utils/PCGGraphExecutionLogging.h"
 
 #include "Algo/AnyOf.h"
 #include "Async/Async.h"
@@ -84,23 +89,24 @@ void FPCGGraphExecutor::Compile(UPCGGraph* Graph)
 	GraphCompiler->Compile(Graph);
 }
 
-FPCGTaskId FPCGGraphExecutor::Schedule(UPCGComponent* Component, const TArray<FPCGTaskId>& ExternalDependencies)
+FPCGTaskId FPCGGraphExecutor::Schedule(UPCGComponent* Component, const TArray<FPCGTaskId>& ExternalDependencies, const FPCGStack* InFromStack)
 {
 	check(Component);
 	UPCGGraph* Graph = Component->GetGraph();
 
-	return Schedule(Graph, Component, GetFetchInputElement(), ExternalDependencies);
+	return Schedule(Graph, Component, FPCGElementPtr(), GetFetchInputElement(), ExternalDependencies, InFromStack);
 }
 
-FPCGTaskId FPCGGraphExecutor::Schedule(UPCGGraph* Graph, UPCGComponent* SourceComponent, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& ExternalDependencies)
+FPCGTaskId FPCGGraphExecutor::Schedule(UPCGGraph* Graph, UPCGComponent* SourceComponent, FPCGElementPtr PreGraphElement, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& ExternalDependencies, const FPCGStack* InFromStack)
 {
 	if (SourceComponent && IsGraphCacheDebuggingEnabled())
 	{
 		UE_LOG(LogPCG, Log, TEXT("[%s] --- SCHEDULE GRAPH ---"), *SourceComponent->GetOwner()->GetName());
 	}
 
+	UPCGSubsystem* Subsystem = SourceComponent ? UPCGSubsystem::GetInstance(SourceComponent->GetWorld()) : nullptr;
 #if WITH_EDITOR
-	if (UPCGSubsystem* Subsystem = SourceComponent ? UPCGSubsystem::GetInstance(SourceComponent->GetWorld()) : nullptr)
+	if (Subsystem)
 	{
 		for (const UPCGNode* Node : Graph->GetNodes())
 		{
@@ -113,12 +119,52 @@ FPCGTaskId FPCGGraphExecutor::Schedule(UPCGGraph* Graph, UPCGComponent* SourceCo
 	FPCGTaskId ScheduledId = InvalidPCGTaskId;
 
 	// Get compiled tasks from compiler
-	TArray<FPCGGraphTask> CompiledTasks = GraphCompiler->GetCompiledTasks(Graph);
+	TSharedPtr<FPCGStackContext> StackContextPtr = MakeShared<FPCGStackContext>();
+	TArray<FPCGGraphTask> CompiledTasks = GraphCompiler->GetCompiledTasks(Graph, *StackContextPtr);
+
+	// Create the final stack context by including the current stack frames
+	if (InFromStack)
+	{
+		StackContextPtr->PrependParentStack(InFromStack);
+	}
 
 	// Assign this component to the tasks
 	for (FPCGGraphTask& Task : CompiledTasks)
 	{
 		Task.SourceComponent = SourceComponent;
+		Task.StackContext = StackContextPtr;
+	}
+
+	// Finalize grid sizes on tasks if graph has hierarchical generation enabled. Some tasks do not have a concrete grid size
+	// assigned at compile time, such as nodes outside of any authored grid size range. Also if we are generating on a non-partitioned
+	// component, knock out the grid sizes.
+	if (SourceComponent && SourceComponent->GetGraph() && SourceComponent->GetGraph()->IsHierarchicalGenerationEnabled())
+	{
+		const bool bNonPartitionedComponent = !SourceComponent->IsLocalComponent() && !SourceComponent->IsPartitioned();
+		const EPCGHiGenGrid Grid = SourceComponent->GetGenerationGrid();
+		const EPCGHiGenGrid DefaultGrid = PCGHiGenGrid::GridSizeToGrid(SourceComponent->GetGraph()->GetDefaultGridSize());
+
+		for (FPCGGraphTask& Task : CompiledTasks)
+		{
+			// Make a copy of this because many things can be scheduled over many frames
+			Task.GenerationGrid = Grid;
+
+			// Set graph generation grid size for this task
+			if (bNonPartitionedComponent)
+			{
+				// Non-partitioned component - throw away grid from all tasks which will force them all to run
+				Task.GraphGenerationGrid = EPCGHiGenGrid::Uninitialized;
+			}
+			else if (!!(Task.GraphGenerationGrid & EPCGHiGenGrid::GenerationDefault))
+			{
+				// Remove the generation default flag (but leave any other grid sizes that might have been set - linkage tasks
+				// will store the To grid size in the lower bits).
+				Task.GraphGenerationGrid &= ~EPCGHiGenGrid::GenerationDefault;
+
+				// Add default grid size
+				Task.GraphGenerationGrid |= DefaultGrid;
+			}
+		}
 	}
 
 	// Prepare scheduled task that will be promoted in the next Execute call.
@@ -143,10 +189,17 @@ FPCGTaskId FPCGGraphExecutor::Schedule(UPCGGraph* Graph, UPCGComponent* SourceCo
 		// Push task (not data) dependencies on the pre-execute task
 		// Note must be done after the offset ids, otherwise we'll break the dependencies
 		check(ScheduledTask.Tasks.Num() >= 2 && ScheduledTask.Tasks[ScheduledTask.Tasks.Num() - 2].Node == nullptr);
+		FPCGGraphTask& PreGraphTask = ScheduledTask.Tasks[ScheduledTask.Tasks.Num() - 2];
+
+		if(PreGraphElement.IsValid())
+		{
+			PreGraphTask.Element = PreGraphElement;
+		}
+
 		for (FPCGTaskId ExternalDependency : ExternalDependencies)
 		{
 			// For the pre-task, we don't consume any input
-			ScheduledTask.Tasks[ScheduledTask.Tasks.Num() - 2].Inputs.Emplace(ExternalDependency, nullptr, nullptr, /*bConsumeData=*/false);
+			PreGraphTask.Inputs.Emplace(ExternalDependency, nullptr, nullptr, /*bConsumeData=*/false);
 		}
 
 		ScheduledTask.FirstTaskIndex = ScheduledTask.Tasks.Num() - 2;
@@ -255,11 +308,6 @@ TSet<UPCGComponent*> FPCGGraphExecutor::Cancel(TFunctionRef<bool(TWeakObjectPtr<
 			}
 		}
 
-		auto RemoveScheduledTasks = [this, &bStableCancellationSet, &CancelledComponents, &CancelledScheduledTasks](FPCGTaskId EndTaskId)
-		{
-
-		};
-
 		// WARNING: variable upper bound
 		for (int32 CancelledTaskIdIndex = 0; CancelledTaskIdIndex < CancelledScheduledTasks.Num(); ++CancelledTaskIdIndex)
 		{
@@ -304,7 +352,7 @@ TSet<UPCGComponent*> FPCGGraphExecutor::Cancel(TFunctionRef<bool(TWeakObjectPtr<
 		for (int32 ActiveTaskIndex = ActiveTasks.Num() - 1; ActiveTaskIndex >= 0; --ActiveTaskIndex)
 		{
 			FPCGGraphActiveTask& Task = ActiveTasks[ActiveTaskIndex];
-			if(Task.Context && CancelledComponents.Contains(Task.Context->SourceComponent.Get()))
+			if (Task.Context && CancelledComponents.Contains(Task.Context->SourceComponent.Get()))
 			{
 				FPCGTaskId CancelledTaskId = Task.NodeId;
 				Task.bWasCancelled = true;
@@ -316,10 +364,10 @@ TSet<UPCGComponent*> FPCGGraphExecutor::Cancel(TFunctionRef<bool(TWeakObjectPtr<
 		for (int32 SleepingTaskIndex = SleepingTasks.Num() - 1; SleepingTaskIndex >= 0; --SleepingTaskIndex)
 		{
 			FPCGGraphActiveTask& Task = SleepingTasks[SleepingTaskIndex];
-			if(Task.Context && CancelledComponents.Contains(Task.Context->SourceComponent.Get()))
+			if (Task.Context && CancelledComponents.Contains(Task.Context->SourceComponent.Get()))
 			{
 				FPCGTaskId CancelledTaskId = Task.NodeId;
-				SleepingTasks.RemoveAtSwap(CancelledTaskId);
+				SleepingTasks.RemoveAtSwap(SleepingTaskIndex);
 				bStableCancellationSet &= !CancelNextTasks(CancelledTaskId, CancelledComponents);
 			}
 		}
@@ -365,6 +413,7 @@ FPCGTaskId FPCGGraphExecutor::ScheduleGenericWithContext(TFunction<bool(FPCGCont
 	FPCGGraphTask Task;
 	for (FPCGTaskId TaskDependency : TaskDependencies)
 	{
+		ensure(TaskDependency != InvalidPCGTaskId);
 		Task.Inputs.Emplace(TaskDependency, nullptr, nullptr, bConsumeInputData);
 	}
 
@@ -584,40 +633,61 @@ void FPCGGraphExecutor::Execute()
 					continue;
 				}
 
-				// If a task is cacheable and has been cached, then we don't need to create an active task for it unless
-				// there is an execution mode that would prevent us from doing so.
-				const UPCGSettingsInterface* TaskSettingsInterface = TaskInput.GetSettingsInterface(Task.Node ? Task.Node->GetSettingsInterface() : nullptr);
-				const UPCGSettings* TaskSettings = TaskSettingsInterface ? TaskSettingsInterface->GetSettings() : nullptr;
-				const bool bCacheable = Task.Element->IsCacheableInstance(TaskSettingsInterface);
+				bool bNeedsToCreateActiveTask = true;
+				if (Task.GraphGenerationGrid != EPCGHiGenGrid::Uninitialized)
+				{
+					// Graph generation sizes should be resolved by now
+					ensure(PCGHiGenGrid::IsValidGrid(Task.GraphGenerationGrid & ~EPCGHiGenGrid::Unbounded) || Task.GraphGenerationGrid == EPCGHiGenGrid::Unbounded);
 
-				// Calculate Crc of dependencies (input data Crcs, settings) and use this as the key in the cache lookup
+					bNeedsToCreateActiveTask = !!(Task.GenerationGrid & Task.GraphGenerationGrid);
+
+					if (bGraphCacheDebuggingEnabled && !bNeedsToCreateActiveTask && Task.SourceComponent.Get() && Task.SourceComponent->GetOwner() && Task.Node)
+					{
+						UE_LOG(LogPCG, Warning, TEXT("[%s] %s\t\tGRID SIZE %d SKIPPED"), *Task.SourceComponent->GetOwner()->GetName(), *Task.Node->GetNodeTitle().ToString(), PCGHiGenGrid::GridToGridSize(Task.GraphGenerationGrid));
+					}
+				}
+
 				FPCGCrc DependenciesCrc;
-				if (TaskSettings && bCacheable)
-				{
-					Task.Element->GetDependenciesCrc(TaskInput, TaskSettings, Task.SourceComponent.Get(), DependenciesCrc);
-				}
-
-				if (bGraphCacheDebuggingEnabled && !bCacheable && Task.SourceComponent.Get() && Task.Node)
-				{
-					UE_LOG(LogPCG, Warning, TEXT("[%s] %s\t\tCACHING DISABLED"), *Task.SourceComponent->GetOwner()->GetName(), *Task.Node->GetNodeTitle().ToString());
-				}
-
 				FPCGDataCollection CachedOutput;
-				const bool bResultAlreadyInCache = bCacheable && DependenciesCrc.IsValid() && GraphCache.GetFromCache(Task.Node, Task.Element.Get(), DependenciesCrc, TaskInput, TaskSettings, Task.SourceComponent.Get(), CachedOutput);
+				bool bResultAlreadyInCache = false;
+				if (bNeedsToCreateActiveTask)
+				{
+					// If a task is cacheable and has been cached, then we don't need to create an active task for it unless
+					// there is an execution mode that would prevent us from doing so.
+					const UPCGSettingsInterface* TaskSettingsInterface = TaskInput.GetSettingsInterface(Task.Node ? Task.Node->GetSettingsInterface() : nullptr);
+					const UPCGSettings* TaskSettings = TaskSettingsInterface ? TaskSettingsInterface->GetSettings() : nullptr;
+					const bool bCacheable = Task.Element->IsCacheableInstance(TaskSettingsInterface);
+
+					// Calculate Crc of dependencies (input data Crcs, settings) and use this as the key in the cache lookup
+					if (TaskSettings && bCacheable)
+					{
+						Task.Element->GetDependenciesCrc(TaskInput, TaskSettings, Task.SourceComponent.Get(), DependenciesCrc);
+					}
+
+					if (bGraphCacheDebuggingEnabled && !bCacheable && Task.SourceComponent.Get() && Task.Node)
+					{
+						UE_LOG(LogPCG, Warning, TEXT("[%s] %s\t\tCACHING DISABLED"), *Task.SourceComponent->GetOwner()->GetName(), *Task.Node->GetNodeTitle().ToString());
+					}
+
+					bResultAlreadyInCache = bCacheable && DependenciesCrc.IsValid() && GraphCache.GetFromCache(Task.Node, Task.Element.Get(), DependenciesCrc, TaskInput, TaskSettings, Task.SourceComponent.Get(), CachedOutput);
 #if WITH_EDITOR
-				const bool bNeedsToCreateActiveTask = !bResultAlreadyInCache || TaskSettingsInterface->bDebug;
+					bNeedsToCreateActiveTask = !bResultAlreadyInCache || TaskSettingsInterface->bDebug;
 #else
-				const bool bNeedsToCreateActiveTask = !bResultAlreadyInCache;
+					bNeedsToCreateActiveTask = !bResultAlreadyInCache;
 #endif
+				}
 
 				if (!bNeedsToCreateActiveTask)
 				{
 #if WITH_EDITOR
 					// doing this now since we're about to modify ReadyTasks potentially reallocating while Task is a reference. 
-					UPCGComponent* SourceComponent = Task.SourceComponent.Get();
-					if (SourceComponent && SourceComponent->IsInspecting())
+					if (UPCGComponent* SourceComponent = Task.SourceComponent.Get())
 					{
-						SourceComponent->StoreInspectionData(Task.Node, CachedOutput);
+						if (Task.StackIndex != INDEX_NONE)
+						{
+							const FPCGStack* Stack = Task.StackContext->GetStack(Task.StackIndex);
+							SourceComponent->StoreInspectionData(Stack, Task.Node, TaskInput, CachedOutput);
+						}
 					}
 #endif
 
@@ -641,6 +711,8 @@ void FPCGGraphExecutor::Execute()
 					Task.Context->CompiledTaskId = Task.CompiledTaskId;
 					Task.Context->InputData.Crc = TaskInput.Crc;
 					Task.Context->DependenciesCrc = DependenciesCrc;
+					Task.Context->GenerationGrid = Task.GenerationGrid;
+					Task.Context->Stack = (Task.StackContext && Task.StackIndex != INDEX_NONE) ? Task.StackContext->GetStack(Task.StackIndex) : nullptr;
 				}
 
 				// Validate that we can start this task now
@@ -652,6 +724,8 @@ void FPCGGraphExecutor::Execute()
 					ActiveTask.Element = Task.Element;
 					ActiveTask.NodeId = Task.NodeId;
 					ActiveTask.Context = TUniquePtr<FPCGContext>(Task.Context);
+					ActiveTask.StackIndex = Task.StackIndex;
+					ActiveTask.StackContext = Task.StackContext;
 
 #if WITH_EDITOR
 					if (bResultAlreadyInCache)
@@ -768,10 +842,13 @@ void FPCGGraphExecutor::Execute()
 			// Additional note: this needs to be executed before the StoreResults since debugging might cancel further tasks
 			ActiveTask.Element->DebugDisplay(ActiveTask.Context.Get());
 
-			UPCGComponent* SourceComponent = ActiveTask.Context->SourceComponent.Get();
-			if (SourceComponent && SourceComponent->IsInspecting())
+			if (UPCGComponent* SourceComponent = ActiveTask.Context->SourceComponent.Get())
 			{
-				SourceComponent->StoreInspectionData(ActiveTask.Context->Node, ActiveTask.Context->OutputData);
+				if (ActiveTask.StackIndex != INDEX_NONE)
+				{
+					const FPCGStack* Stack = ActiveTask.StackContext->GetStack(ActiveTask.StackIndex);
+					SourceComponent->StoreInspectionData(Stack, ActiveTask.Context->Node, ActiveTask.Context->InputData, ActiveTask.Context->OutputData);
+				}
 			}
 #endif
 
@@ -958,17 +1035,23 @@ void FPCGGraphExecutor::QueueNextTasks(FPCGTaskId FinishedTask)
 		for (FPCGTaskId Successor : *Successors)
 		{
 			bool bAllPrerequisitesMet = true;
-			FPCGGraphTask& SuccessorTask = Tasks[Successor];
+			FPCGGraphTask* SuccessorTaskPtr = Tasks.Find(Successor);
 
-			for (const FPCGGraphTaskInput& Input : SuccessorTask.Inputs)
+			// This should never be null, but later recovery should be able to cleanup this properly
+			if (ensure(SuccessorTaskPtr))
 			{
-				bAllPrerequisitesMet &= OutputData.Contains(Input.TaskId);
-			}
+				FPCGGraphTask& SuccessorTask = *SuccessorTaskPtr;
 
-			if (bAllPrerequisitesMet)
-			{
-				ReadyTasks.Emplace(MoveTemp(SuccessorTask));
-				Tasks.Remove(Successor);
+				for (const FPCGGraphTaskInput& Input : SuccessorTask.Inputs)
+				{
+					bAllPrerequisitesMet &= OutputData.Contains(Input.TaskId);
+				}
+
+				if (bAllPrerequisitesMet)
+				{
+					ReadyTasks.Emplace(MoveTemp(SuccessorTask));
+					Tasks.Remove(Successor);
+				}
 			}
 		}
 
@@ -1008,6 +1091,15 @@ void FPCGGraphExecutor::BuildTaskInput(const FPCGGraphTask& Task, FPCGDataCollec
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGGraphExecutor::BuildTaskInput);
 
+	auto LogDiscardedData = [&Task](const UPCGPin* InPin)
+	{
+		// Log only - currently context has not yet been allocated when this is called
+		UE_LOG(LogPCG, Warning, TEXT("[%s] %s - BuildTaskInput - too many data items arriving on single data pin '%s', only first data item will be used"),
+			(Task.SourceComponent.Get() && Task.SourceComponent->GetOwner()) ? *Task.SourceComponent->GetOwner()->GetName() : TEXT("MissingComponent"),
+			Task.Node ? *Task.Node->GetNodeTitle().ToString() : TEXT("MissingNode"),
+			InPin ? *InPin->Properties.Label.ToString() : TEXT("MissingPin"));
+	};
+
 	// Initialize a Crc onto which each input Crc will be combined.
 	FPCGCrc Crc(Task.Inputs.Num());
 
@@ -1021,6 +1113,15 @@ void FPCGGraphExecutor::BuildTaskInput(const FPCGGraphTask& Task, FPCGDataCollec
 			continue;
 		}
 
+		const bool bAllowMultipleData = Input.OutPin ? Input.OutPin->Properties.bAllowMultipleData : true;
+
+		// Enforce single data - if already have input for this pin, don't add more. Early check before other side effects below.
+		if (Input.OutPin && !bAllowMultipleData && TaskInput.GetInputCountByPin(Input.OutPin->Properties.Label) > 0)
+		{
+			LogDiscardedData(Input.OutPin);
+			continue;
+		}
+
 		const FPCGDataCollection& InputCollection = OutputData[Input.TaskId];
 
 		TaskInput.bCancelExecution |= InputCollection.bCancelExecution;
@@ -1029,7 +1130,17 @@ void FPCGGraphExecutor::BuildTaskInput(const FPCGGraphTask& Task, FPCGDataCollec
 		const int32 TaggedDataOffset = TaskInput.TaggedData.Num();
 		if (Input.InPin)
 		{
-			TaskInput.TaggedData.Append(InputCollection.GetInputsByPin(Input.InPin->Properties.Label));
+			// Proceed carefully when adding data items - if pin is single-data, only add first item.
+			TArray<FPCGTaggedData> InputsOnPin = InputCollection.GetInputsByPin(Input.InPin->Properties.Label);
+			if (InputsOnPin.Num() > 1 && !bAllowMultipleData)
+			{
+				LogDiscardedData(Input.OutPin);
+				TaskInput.TaggedData.Add(InputsOnPin[0]);
+			}
+			else
+			{
+				TaskInput.TaggedData.Append(InputsOnPin);
+			}
 
 			// Write input pin name Crc to uniquely identify inputs per-pin.
 			Crc.Combine(GetTypeHash(Input.OutPin ? Input.OutPin->Properties.Label : FName(TEXT("MissingLabel"))));
@@ -1160,7 +1271,9 @@ FPCGElementPtr FPCGGraphExecutor::GetFetchInputElement()
 FPCGTaskId FPCGGraphExecutor::ScheduleDebugWithTaskCallback(UPCGComponent* InComponent, TFunction<void(FPCGTaskId/* TaskId*/, const UPCGNode*/* Node*/, const FPCGDataCollection&/* TaskOutput*/)> TaskCompleteCallback)
 {
 	FPCGTaskId FinalTaskID = Schedule(InComponent, {});
-	TArray<FPCGGraphTask> CompiledTasks = GraphCompiler->GetCompiledTasks(InComponent->GetGraph(), /*bIsTopGraph=*/true);
+
+	FPCGStackContext DummyStackContext;
+	TArray<FPCGGraphTask> CompiledTasks = GraphCompiler->GetCompiledTasks(InComponent->GetGraph(), DummyStackContext, /*bIsTopGraph=*/true);
 	CompiledTasks.Pop(); // Remove the final task
 
 	// Set up all final dependencies for the entire execution
@@ -1291,6 +1404,10 @@ bool FPCGFetchInputElement::ExecuteInternal(FPCGContext* Context) const
 		return true;
 	}
 
+#if WITH_EDITOR
+	Component->StartGenerationInProgress();
+#endif
+
 	check(Context->Node);
 
 	if (Context->Node->IsOutputPinConnected(PCGPinConstants::DefaultInputLabel))
@@ -1356,13 +1473,199 @@ bool FPCGFetchInputElement::ExecuteInternal(FPCGContext* Context) const
 	return true;
 }
 
-FPCGGenericElement::FPCGGenericElement(TFunction<bool(FPCGContext*)> InOperation)
+FPCGGenericElement::FPCGGenericElement(TFunction<bool(FPCGContext*)> InOperation, const FContextAllocator& InContextAllocator)
 	: Operation(InOperation)
+	, ContextAllocator(InContextAllocator)
 {
+}
+
+FPCGContext* FPCGGenericElement::Initialize(const FPCGDataCollection& InputData, TWeakObjectPtr<UPCGComponent> SourceComponent, const UPCGNode* Node)
+{
+	check(ContextAllocator);
+	FPCGContext* Context = ContextAllocator(InputData, SourceComponent, Node);
+	Context->InputData = InputData;
+	Context->SourceComponent = SourceComponent;
+	Context->Node = Node;
+
+	return Context;
 }
 
 bool FPCGGenericElement::ExecuteInternal(FPCGContext* Context) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGGenericElement::Execute);
 	return Operation(Context);
+}
+
+namespace PCGGraphExecutor
+{
+	bool ExecuteGridLinkage(EPCGHiGenGrid InFromGrid, EPCGHiGenGrid InToGrid, const FString& InResourceKey, const FName& InOutputPinLabel, const UPCGNode* InDownstreamNode, FPCGGridLinkageContext* InContext)
+	{
+		// Non-hierarchical generation - no linkage required - data should just pass through.
+		if (!InContext->SourceComponent->GetGraph()->IsHierarchicalGenerationEnabled())
+		{
+			InContext->OutputData = InContext->InputData;
+			return true;
+		}
+
+		EPCGHiGenGrid FromGrid = InFromGrid;
+		// If grid was not determined, apply default generation grid size.
+		if (!PCGHiGenGrid::IsValidGrid(FromGrid) && ensure(FromGrid == EPCGHiGenGrid::GenerationDefault))
+		{
+			FromGrid = InContext->SourceComponent->GetGraph()->GetDefaultGrid();
+		}
+
+		const uint32 FromGridSize = PCGHiGenGrid::IsValidGrid(FromGrid) ? PCGHiGenGrid::GridToGridSize(FromGrid) : PCGHiGenGrid::UnboundedGridSize();
+		const uint32 ToGridSize = PCGHiGenGrid::IsValidGrid(InToGrid) ? PCGHiGenGrid::GridToGridSize(InToGrid) : PCGHiGenGrid::UnboundedGridSize();
+
+		// Never allow a large grid to read data from small grid - this violates hierarchy.
+		if (FromGridSize < ToGridSize)
+		{
+#if WITH_EDITOR
+			if (UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(InContext->SourceComponent->GetWorld()))
+			{
+				// Using the low level logging call because we have only a node pointer for the downstream node. Note that InContext
+				// is the context for the linkage element/task, which is not represented on the graph and cannot receive graph warnings/errors.
+				if (ToGridSize == PCGHiGenGrid::UnboundedGridSize())
+				{
+					Subsystem->GetNodeVisualLogsMutable().Log(
+						InDownstreamNode,
+						InContext->SourceComponent,
+						ELogVerbosity::Error,
+						FText::Format(
+							NSLOCTEXT("PCGGraphCompiler", "InvalidLinkageToUnbounded", "Could not read data across grid levels - cannot read from grid size {0} to Unbounded domain."),
+							FromGridSize,
+							ToGridSize));
+				}
+				else
+				{
+					Subsystem->GetNodeVisualLogsMutable().Log(
+						InDownstreamNode,
+						InContext->SourceComponent,
+						ELogVerbosity::Error,
+						FText::Format(
+							NSLOCTEXT("PCGGraphCompiler", "InvalidLinkageInvalidGridSizes", "Could not read data across grid levels - origin grid size {0} must be greater than destination grid size {1}. Graph default grid size may need increasing."),
+							FromGridSize,
+							ToGridSize));
+				}
+			}
+#endif
+
+			return true;
+		}
+
+		if (!!(FromGrid & InContext->GenerationGrid) && FromGridSize != ToGridSize)
+		{
+			PCGGraphExecutionLogging::LogGridLinkageTaskExecuteStore(InContext, FromGridSize, ToGridSize, InResourceKey);
+
+			FPCGDataCollection Data;
+			Data.TaggedData = InContext->InputData.GetInputsByPin(InOutputPinLabel);
+			InContext->SourceComponent->StoreOutputDataForPin(InResourceKey, Data);
+		}
+		else if (InToGrid == InContext->GenerationGrid && FromGridSize != ToGridSize)
+		{
+			PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieve(InContext, FromGridSize, ToGridSize, InResourceKey);
+
+			UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(InContext->SourceComponent->GetWorld());
+			if (!ensure(Subsystem))
+			{
+				return false;
+			}
+
+			UPCGComponent* ComponentWithData = nullptr;
+			bool bComponentWithDataIsOriginalComponent = false;
+			if (FromGridSize == PCGHiGenGrid::UnboundedGridSize())
+			{
+				ComponentWithData = InContext->SourceComponent->GetOriginalComponent();
+				bComponentWithDataIsOriginalComponent = true;
+			}
+			else
+			{
+				Subsystem->ForAllOverlappingComponentsInHierarchy(InContext->SourceComponent.Get(), [FromGridSize, &ComponentWithData](UPCGComponent* InLocalComponent)
+				{
+					if (InLocalComponent->GetGenerationGridSize() == FromGridSize)
+					{
+						ComponentWithData = InLocalComponent;
+					}
+				});
+			}
+
+			if (!ComponentWithData)
+			{
+				// Nothing we can do currently if PCG component not present. One idea is to schedule an artifact-less execution but that
+				// comes with complications - artifacts/side effects are an integral part of execution. Most likely we'll do a cleanup
+				// pass of any unwanted artifacts/local-components later.
+				PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieveNoLocalComponent(InContext, InResourceKey);
+				return true;
+			}
+
+			// Once we've found our component, try to retrieve the data.
+			if (const FPCGDataCollection* Data = ComponentWithData->RetrieveOutputDataForPin(InResourceKey))
+			{
+				PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieveSuccess(InContext, ComponentWithData, InResourceKey, Data->TaggedData.Num());
+				InContext->OutputData = *Data;
+
+				return true;
+			}
+
+			// At this point we could not get to the data, so we'll try executing the graph if we did not do that already.
+
+			auto WakeUpLambda = [InContext, ComponentWithData]()
+			{
+				PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieveWakeUp(InContext, ComponentWithData);
+				InContext->bIsPaused = false;
+				return true;
+			};
+
+			// If we need data from a local component but the local component is still generating, then we'll wait for it. On the other hand
+			// if we need data from the original component we assume the generation has already happened because it is always scheduled before
+			// the local components.
+			const bool bWaitForGeneration = bComponentWithDataIsOriginalComponent ? false : ComponentWithData->IsGenerating();
+			if (bWaitForGeneration)
+			{
+				PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieveWaitOnScheduledGraph(InContext, ComponentWithData, InResourceKey);
+
+				// The component was already generating, but we were not asleep. Not really clear what's happening here,
+				// but in any case go to sleep and wake up when it's done.
+				InContext->bIsPaused = true;
+
+				// Wake up this task after graph has generated.
+				FPCGTaskId GenerationTask = ComponentWithData->GetGenerationTaskId();
+				if (ensure(GenerationTask != InvalidPCGTaskId))
+				{
+					Subsystem->ScheduleGeneric(WakeUpLambda, InContext->SourceComponent.Get(), { ComponentWithData->GetGenerationTaskId() });
+				}
+
+				return false;
+			}
+
+			// Graph is not currently generating. If we have not already tried generating, try it once now.
+			// But don't do this for the original component as this will always be scheduled before the local components.
+			if (!InContext->bScheduledGraph && !bComponentWithDataIsOriginalComponent)
+			{
+				PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieveScheduleGraph(InContext, ComponentWithData, InResourceKey);
+
+				// Wake up this task after graph has generated.
+				const FPCGTaskId GraphTaskId = ComponentWithData->GenerateLocalGetTaskId(/*bForce=*/true);
+				Subsystem->ScheduleGeneric(WakeUpLambda, InContext->SourceComponent.Get(), { GraphTaskId });
+
+				// Update state and go to sleep.
+				InContext->bScheduledGraph = true;
+				InContext->bIsPaused = true;
+				return false;
+			}
+			else
+			{
+				// We tried generating but no luck, at this point give up.
+				PCGGraphExecutionLogging::LogGridLinkageTaskExecuteRetrieveNoData(InContext, ComponentWithData, InResourceKey);
+				return true;
+			}
+		}
+		else
+		{
+			// Graceful no op - no linkage required.
+			InContext->OutputData = InContext->InputData;
+		}
+
+		return true;
+	}
 }

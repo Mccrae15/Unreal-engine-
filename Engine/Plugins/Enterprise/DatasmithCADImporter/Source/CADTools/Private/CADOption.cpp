@@ -16,11 +16,13 @@ Default is MaxImportThreads = 0\n\
    -if EnableCADCache is false, the scene is read all at once\n"),
 	ECVF_Default);
 
-bool FImportParameters::bGDisableCADKernelTessellation = true;
+bool FImportParameters::bGDisableCADKernelTessellation = false;
 FAutoConsoleVariableRef GCADTranslatorDisableCADKernelTessellation(
 	TEXT("ds.CADTranslator.DisableCADKernelTessellation"),
 	FImportParameters::bGDisableCADKernelTessellation,
-	TEXT("Disable to use CAD import library tessellator.\n"),
+	TEXT("\
+Disable to use CAD import library tessellator.\n\
+Default is enable\n"),
 	ECVF_Default);
 
 bool FImportParameters::bGEnableCADCache = true;
@@ -81,15 +83,14 @@ Only available with CADKernel.\n\
 Default value of ForceFactor is 5.\n"),
 ECVF_Default);
 
-bool FImportParameters::bGStitchingRemoveThinFaces = false;
-/*FAutoConsoleVariableRef GCADTranslatorStitchingRemoveThinFaces(
+bool FImportParameters::bGStitchingRemoveThinFaces = true;
+FAutoConsoleVariableRef GCADTranslatorStitchingRemoveThinFaces(
 	TEXT("ds.CADTranslator.Stitching.RemoveThinFaces"),
 	FImportParameters::bGStitchingRemoveThinFaces,
 	TEXT("During the welding process, Thin faces are removed before the stiching process. The width of the thin faces is equal to the force sew tolerance.\n\
 Only available with CADKernel.\n\
 Default value of RemoveThinFaces is true\n"),
 ECVF_Default);
-*/
 
 bool FImportParameters::bGStitchingRemoveDuplicatedFaces = true;
 FAutoConsoleVariableRef GCADTranslatorStitchingRemoveDuplicatedFaces(
@@ -100,6 +101,15 @@ Only available with CADKernel.\n\
 Default value of RemoveDuplicatedFaces is true\n"),
 ECVF_Default);
 
+bool FImportParameters::bGActivateThinZoneMeshing = true;
+FAutoConsoleVariableRef GActivateThinZoneMeshing(
+	TEXT("ds.CADTranslator.Meshing.ActivateThinZoneMeshing"),
+	FImportParameters::bGActivateThinZoneMeshing,
+	TEXT("During the meshing process, faces with thin zones are meshed with a specific process for the thin zones. \n\
+Only available with CADKernel.\n\
+Default value of ActivateThinZoneMeshing is true\n"),
+ECVF_Default);
+
 float FImportParameters::GUnitScale = 1.f;
 FAutoConsoleVariableRef GCADTranslatorUnitScale(
 	TEXT("ds.CADTranslator.UnitScale"),
@@ -108,13 +118,13 @@ FAutoConsoleVariableRef GCADTranslatorUnitScale(
 Default value of UnitScale is 1 i.e. unit = cm\n"),
 ECVF_Default);
 
-bool FImportParameters::bGSewMeshIfNeeded = true;
+bool FImportParameters::bGSewMeshIfNeeded = false;
 FAutoConsoleVariableRef GCADTranslatorSewMeshIfNeeded(
 	TEXT("ds.CADTranslator.SewMeshIfNeeded"),
 	FImportParameters::bGSewMeshIfNeeded,
 	TEXT("Perform a welding of the mesh to try to stitch mesh cracks\n\
 This welding is performed respecting the ds.CADTranslator.StitchingTolerance\n\
-Default value is true\n"),
+Default value is false\n"),
 ECVF_Default);
 
 bool FImportParameters::bGRemoveDuplicatedTriangle = false;
@@ -145,6 +155,7 @@ FAutoConsoleVariableRef GCADTranslatorMaxMaterialCountPerMesh(
 Default value is 256\n"),
 ECVF_Default);
 
+bool FImportParameters::bValidationProcess = false;
 
 uint32 GetTypeHash(const FImportParameters& ImportParameters)
 {

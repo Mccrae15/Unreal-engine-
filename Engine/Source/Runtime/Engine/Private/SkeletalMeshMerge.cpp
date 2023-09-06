@@ -803,9 +803,6 @@ bool FSkeletalMeshMerge::ProcessMergeMesh()
 	
 	// copy settings and bone info from src meshes
 	bool bNeedsInit=true;
-	
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	MergeMesh->GetSkelMirrorTable().Empty();
 
 	for( int32 MeshIdx=0; MeshIdx < SrcMeshList.Num(); MeshIdx++ )
 	{
@@ -816,10 +813,6 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			{
 				// initialize the merged mesh with the first src mesh entry used
 				MergeMesh->SetImportedBounds(SrcMesh->GetImportedBounds());
-
-				MergeMesh->SetSkelMirrorAxis(SrcMesh->GetSkelMirrorAxis());
-				MergeMesh->SetSkelMirrorFlipAxis(SrcMesh->GetSkelMirrorFlipAxis());
-
 				// only initialize once
 				bNeedsInit = false;
 			}
@@ -830,7 +823,6 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			}
 		}
 	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// Rebuild inverse ref pose matrices.
 	MergeMesh->GetRefBasesInvMatrix().Empty();
 	MergeMesh->CalculateInvRefMatrices();
@@ -994,7 +986,7 @@ void FSkeletalMeshMerge::ReleaseResources(int32 Slack)
 
 bool FSkeletalMeshMerge::AddSocket(const USkeletalMeshSocket* NewSocket, bool bIsSkeletonSocket)
 {
-	TArray<USkeletalMeshSocket*>& MergeMeshSockets = MergeMesh->GetMeshOnlySocketList();
+	TArray<TObjectPtr<USkeletalMeshSocket>>& MergeMeshSockets = MergeMesh->GetMeshOnlySocketList();
 
 	// Verify the socket doesn't already exist in the current Mesh list.
 	for (USkeletalMeshSocket const * const ExistingSocket : MergeMeshSockets)
@@ -1033,7 +1025,7 @@ void FSkeletalMeshMerge::AddSockets(const TArray<USkeletalMeshSocket*>& NewSocke
 
 void FSkeletalMeshMerge::BuildSockets(const TArray<USkeletalMesh*>& SourceMeshList)
 {
-	TArray<USkeletalMeshSocket*>& MeshSocketList = MergeMesh->GetMeshOnlySocketList();
+	TArray<TObjectPtr<USkeletalMeshSocket>>& MeshSocketList = MergeMesh->GetMeshOnlySocketList();
 	MeshSocketList.Empty();
 
 	// Iterate through the all the source MESH sockets, only adding the new sockets.
@@ -1063,7 +1055,7 @@ void FSkeletalMeshMerge::BuildSockets(const TArray<USkeletalMesh*>& SourceMeshLi
 
 void FSkeletalMeshMerge::OverrideSocket(const USkeletalMeshSocket* SourceSocket)
 {
-	TArray<USkeletalMeshSocket*>& SocketList = MergeMesh->GetMeshOnlySocketList();
+	TArray<TObjectPtr<USkeletalMeshSocket>>& SocketList = MergeMesh->GetMeshOnlySocketList();
 
 	for (int32 i = 0, SocketCount = SocketList.Num(); i < SocketCount; ++i)
 	{

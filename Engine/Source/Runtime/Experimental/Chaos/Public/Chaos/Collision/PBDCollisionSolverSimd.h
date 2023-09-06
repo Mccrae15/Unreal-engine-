@@ -5,469 +5,326 @@
 #include "Chaos/Collision/ContactPoint.h"
 #include "Chaos/Defines.h"
 #include "Chaos/Evolution/SolverBody.h"
+#include "Chaos/Simd4.h"
 
-// Set to 0 to use a linearized error calculation, and set to 1 to use a non-linear error calculation in collision detection. 
-// In principle nonlinear is more accurate when large rotation corrections occur, but this is not too important for collisions because 
-// when the bodies settle the corrections are small. The linearized version is significantly faster than the non-linear version because 
-// the non-linear version requires a quaternion multiply and renormalization whereas the linear version is just a cross product.
-#define CHAOS_NONLINEAR_COLLISIONS_ENABLED 0
+// Set to 1 to use a dummy solver body instead of a nullptr in unused lanes, and an aligned Simd gather operation
+// Currently this is slower, but once the object sizes are reduced may be better
+#ifndef CHAOS_SIMDCOLLISIONSOLVER_USEDUMMYSOLVERBODY
+#define CHAOS_SIMDCOLLISIONSOLVER_USEDUMMYSOLVERBODY 0
+#endif
 
 namespace Chaos
 {
 	class FManifoldPoint;
 	class FPBDCollisionConstraint;
 
-	namespace Private
-	{
-		class FPBDCollisionSolverSimd;
-	}
-
 	namespace CVars
 	{
-		extern bool bChaos_PBDCollisionSolver_Velocity_AveragePointEnabled;
-		extern bool bChaos_PBDCollisionSolver_Velocity_FrictionEnabled;
-		extern float Chaos_PBDCollisionSolver_Position_StaticFrictionStiffness;
-		extern float Chaos_PBDCollisionSolver_JacobiStiffness;
-		extern float Chaos_PBDCollisionSolver_JacobiPositionTolerance;
-		extern float Chaos_PBDCollisionSolver_JacobiRotationTolerance;
+		extern float Chaos_PBDCollisionSolver_Position_MinInvMassScale;
+		extern float Chaos_PBDCollisionSolver_Velocity_MinInvMassScale;
 	}
 
 	namespace Private
 	{
-		/**
-		 * @brief A single contact point in a FPBDCollisionSolverSimd
-		 * @note Internal Chaos class subject to API changes, renaming or removal
-		*/
-		class FPBDCollisionSolverManifoldPointSimd
+		template<int TNumLanes>
+		class TPBDCollisionSolverSimd;
+
+		template<int TNumLanes>
+		using TSolverBodyPtrSimd = TSimdValue<FSolverBody*, TNumLanes>;
+
+		inline void GatherBodyPositionCorrections(
+			const TSolverBodyPtrSimd<4>& Body0,
+			const TSolverBodyPtrSimd<4>& Body1,
+			TSimdVec3f<4>& DP0,
+			TSimdVec3f<4>& DQ0,
+			TSimdVec3f<4>& DP1,
+			TSimdVec3f<4>& DQ1)
 		{
-		public:
-			/**
-			 * @brief Initialize the geometric data for the contact
-			*/
-			void InitContact(
-				const FSolverReal Dt,
-				const FConstraintSolverBody& Body0,
-				const FConstraintSolverBody& Body1);
-
-			/**
-			 * @brief Initialize the material related properties of the contact
-			*/
-			//void InitMaterial(
-			//	const FConstraintSolverBody& Body0,
-			//	const FConstraintSolverBody& Body1,
-			//	const FSolverReal InRestitution,
-			//	const FSolverReal InRestitutionVelocityThreshold);
-
-			/**
-			 * @brief Update the cached mass properties based on the current body transforms
-			*/
-			void UpdateMass(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1);
-
-			/**
-			 * @brief Update the contact mass for the normal correction
-			 * This is used by shock propagation.
-			*/
-			void UpdateMassNormal(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1);
-
-			/**
-			 * @brief Calculate the position error at the current transforms
-			 * @param MaxPushOut a limit on the position error for this iteration to prevent initial-penetration explosion (a common PBD problem)
-			*/
-			void CalculateContactPositionErrorNormal(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, const FSolverReal MaxPushOut, FSolverReal& OutContactDeltaNormal) const;
-			void CalculateContactPositionErrorTangential(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, FSolverReal& OutContactDeltaTanget0, FSolverReal& OutContactDeltaTangent1) const;
-
-			/**
-			 * @brief Calculate the velocity error at the current transforms
-			*/
-			void CalculateContactVelocityErrorNormal(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, FSolverReal& OutContactVelocityDeltaNormal) const;
-			void CalculateContactVelocityError(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, const FSolverReal DynamicFriction, const FSolverReal Dt, FSolverReal& OutContactVelocityDeltaNormal, FSolverReal& OutContactVelocityDeltaTangent0, FSolverReal& OutContactVelocityDeltaTangent1) const;
-
-
-			FORCEINLINE_DEBUGGABLE void CalculatePositionCorrectionNormal(
-				const FSolverReal Stiffness,
-				const FSolverReal ContactDeltaNormal,
-				FSolverReal& OutPushOutNormal)
+#if !CHAOS_SIMDCOLLISIONSOLVER_USEDUMMYSOLVERBODY
+			// Non-SIMD gather
+			for (int32 LaneIndex = 0; LaneIndex < 4; ++LaneIndex)
 			{
-				const FSolverReal PushOutNormal = -Stiffness * ContactDeltaNormal * ContactMassNormal;
-
-				// The total pushout so far this sub-step
-				// Unilateral constraint: Net-negative impulses not allowed (negative incremental impulses are allowed as long as the net is positive)
-				if ((NetPushOutNormal + PushOutNormal) > FSolverReal(0))
+				const FSolverBody* LaneBody0 = Body0.GetValue(LaneIndex);
+				const FSolverBody* LaneBody1 = Body1.GetValue(LaneIndex);
+				if (LaneBody0 != nullptr)
 				{
-					OutPushOutNormal = PushOutNormal;
+					DP0.SetValue(LaneIndex, LaneBody0->DP());
+					DQ0.SetValue(LaneIndex, LaneBody0->DQ());
 				}
-				else
+				if (LaneBody1 != nullptr)
 				{
-					OutPushOutNormal = -NetPushOutNormal;
+					DP1.SetValue(LaneIndex, LaneBody1->DP());
+					DQ1.SetValue(LaneIndex, LaneBody1->DQ());
 				}
 			}
+#else
+			// SIMD gather (valid ptrs to dummy object for unused lanes)
+			const FSolverBody* Body00 = Body0.GetValue(0);
+			const FSolverBody* Body01 = Body0.GetValue(1);
+			const FSolverBody* Body02 = Body0.GetValue(2);
+			const FSolverBody* Body03 = Body0.GetValue(3);
+			DP0 = SimdGatherAligned(
+				Body00->DP(),
+				Body01->DP(),
+				Body02->DP(),
+				Body03->DP());
+			DQ0 = SimdGatherAligned(
+				Body00->DQ(),
+				Body01->DQ(),
+				Body02->DQ(),
+				Body03->DQ());
 
-			FORCEINLINE_DEBUGGABLE void CalculatePositionCorrectionTangents(
-				const FSolverReal Stiffness,
-				const FSolverReal ContactDeltaTangentU,
-				const FSolverReal ContactDeltaTangentV,
-				FSolverReal& OutPushOutTangentU,
-				FSolverReal& OutPushOutTangentV)
+			const FSolverBody* Body10 = Body1.GetValue(0);
+			const FSolverBody* Body11 = Body1.GetValue(1);
+			const FSolverBody* Body12 = Body1.GetValue(2);
+			const FSolverBody* Body13 = Body1.GetValue(3);
+			DP1 = SimdGatherAligned(
+				Body10->DP(),
+				Body11->DP(),
+				Body12->DP(),
+				Body13->DP());
+			DQ1 = SimdGatherAligned(
+				Body10->DQ(),
+				Body11->DQ(),
+				Body12->DQ(),
+				Body13->DQ());
+#endif
+		}
+
+		inline void ScatterBodyPositionCorrections(
+			const TSimdVec3f<4>& DP0,
+			const TSimdVec3f<4>& DQ0,
+			const TSimdVec3f<4>& DP1,
+			const TSimdVec3f<4>& DQ1,
+			const TSolverBodyPtrSimd<4>& Body0,
+			const TSolverBodyPtrSimd<4>& Body1)
+		{
+			for (int32 LaneIndex = 0; LaneIndex < 4; ++LaneIndex)
 			{
-				// Bilateral constraint - negative values allowed (unlike the normal correction)
-				OutPushOutTangentU = -Stiffness * ContactMassTangentU * ContactDeltaTangentU;
-				OutPushOutTangentV = -Stiffness * ContactMassTangentV * ContactDeltaTangentV;
-			}
-
-
-			FORCEINLINE_DEBUGGABLE void ApplyFrictionCone(
-				const FSolverReal StaticFriction,
-				const FSolverReal DynamicFriction,
-				const FSolverReal MaxFrictionPushOut,
-				FSolverReal& InOutPushOutTangentU,
-				FSolverReal& InOutPushOutTangentV)
-			{
-				// Assume we stay in the friction cone...
-				StaticFrictionRatio = FSolverReal(1);
-
-				if (MaxFrictionPushOut < FSolverReal(UE_KINDA_SMALL_NUMBER))
+				FSolverBody* LaneBody0 = Body0.GetValue(LaneIndex);
+				FSolverBody* LaneBody1 = Body1.GetValue(LaneIndex);
+				if (LaneBody0 != nullptr)
 				{
-					// Note: we have already added the current iteration's PushOut to the NetPushOut but it has not been applied to the body
-					// so we must subtract it again to calculate the actual pushout we want to undo (i.e., the net pushout that has been applied 
-					// to the body so far from previous iterations)
-					InOutPushOutTangentU = -(NetPushOutTangentU - InOutPushOutTangentU);
-					InOutPushOutTangentV = -(NetPushOutTangentV - InOutPushOutTangentV);
-					NetPushOutTangentU = FSolverReal(0);
-					NetPushOutTangentV = FSolverReal(0);
-					StaticFrictionRatio = FSolverReal(0);
+					LaneBody0->SetDP(DP0.GetValue(LaneIndex));
+					LaneBody0->SetDQ(DQ0.GetValue(LaneIndex));
 				}
-				else
+				if (LaneBody1 != nullptr)
 				{
-					// If we exceed the static friction cone, clip to the dynamic friction cone
-					const FSolverReal MaxStaticPushOutTangentSq = FMath::Square(StaticFriction * MaxFrictionPushOut);
-					const FSolverReal NetPushOutTangentSq = FMath::Square(NetPushOutTangentU) + FMath::Square(NetPushOutTangentV);
-					if (NetPushOutTangentSq > MaxStaticPushOutTangentSq)
-					{
-						const FSolverReal MaxDynamicPushOutTangent = DynamicFriction * MaxFrictionPushOut;
-						const FSolverReal FrictionMultiplier = MaxDynamicPushOutTangent * FMath::InvSqrt(NetPushOutTangentSq);
-						const FSolverReal NewNetPushOutTangentU = FrictionMultiplier * NetPushOutTangentU;
-						const FSolverReal NewNetPushOutTangentV = FrictionMultiplier * NetPushOutTangentV;
-						InOutPushOutTangentU = NewNetPushOutTangentU - (NetPushOutTangentU - InOutPushOutTangentU);
-						InOutPushOutTangentV = NewNetPushOutTangentV - (NetPushOutTangentV - InOutPushOutTangentV);
-						NetPushOutTangentU = NewNetPushOutTangentU;
-						NetPushOutTangentV = NewNetPushOutTangentV;
-						StaticFrictionRatio = FrictionMultiplier;
-					}
-				}
-			}
-
-			FORCEINLINE_DEBUGGABLE void ApplyPositionCorrectionTangential(
-				const FSolverReal Stiffness,
-				const FSolverReal StaticFriction,
-				const FSolverReal DynamicFriction,
-				const FSolverReal MaxFrictionPushOut,
-				const FSolverReal ContactDeltaTangentU,
-				const FSolverReal ContactDeltaTangentV,
-				FConstraintSolverBody& Body0,
-				FConstraintSolverBody& Body1)
-			{
-				FSolverReal PushOutTangentU = FSolverReal(0);
-				FSolverReal PushOutTangentV = FSolverReal(0);
-
-				CalculatePositionCorrectionTangents(
-					Stiffness,
-					ContactDeltaTangentU,
-					ContactDeltaTangentV,
-					PushOutTangentU,					// Out
-					PushOutTangentV);					// Out
-
-				NetPushOutTangentU += PushOutTangentU;
-				NetPushOutTangentV += PushOutTangentV;
-
-				ApplyFrictionCone(
-					StaticFriction,
-					DynamicFriction,
-					MaxFrictionPushOut,
-					PushOutTangentU,					// InOut
-					PushOutTangentV);					// InOut
-
-				// Update the particle state based on the pushout
-				const FVec3 PushOut = PushOutTangentU * WorldContact.ContactTangentU + PushOutTangentV * WorldContact.ContactTangentV;
-				if (Body0.IsDynamic())
-				{
-					const FSolverVec3 DX0 = Body0.InvM() * PushOut;
-					const FSolverVec3 DR0 = WorldContactTangentUAngular0 * PushOutTangentU + WorldContactTangentVAngular0 * PushOutTangentV;
-					Body0.ApplyPositionDelta(DX0);
-					Body0.ApplyRotationDelta(DR0);
-				}
-				if (Body1.IsDynamic())
-				{
-					const FSolverVec3 DX1 = -Body1.InvM() * PushOut;
-					const FSolverVec3 DR1 = WorldContactTangentUAngular1 * -PushOutTangentU + WorldContactTangentVAngular1 * -PushOutTangentV;
-					Body1.ApplyPositionDelta(DX1);
-					Body1.ApplyRotationDelta(DR1);
+					LaneBody1->SetDP(DP1.GetValue(LaneIndex));
+					LaneBody1->SetDQ(DQ1.GetValue(LaneIndex));
 				}
 			}
+		}
 
-			FORCEINLINE_DEBUGGABLE void ApplyPositionCorrectionNormal(
-				const FSolverReal Stiffness,
-				const FSolverReal ContactDeltaNormal,
-				FConstraintSolverBody& Body0,
-				FConstraintSolverBody& Body1)
+
+		inline void GatherBodyVelocities(
+			const TSolverBodyPtrSimd<4>& Body0,
+			const TSolverBodyPtrSimd<4>& Body1,
+			TSimdVec3f<4>& V0,
+			TSimdVec3f<4>& W0,
+			TSimdVec3f<4>& V1,
+			TSimdVec3f<4>& W1)
+		{
+			for (int32 LaneIndex = 0; LaneIndex < 4; ++LaneIndex)
 			{
-				FSolverReal PushOutNormal = FSolverReal(0);
-
-				CalculatePositionCorrectionNormal(
-					Stiffness,
-					ContactDeltaNormal,
-					PushOutNormal);						// Out
-
-				NetPushOutNormal += PushOutNormal;
-
-				// Update the particle state based on the pushout
-				if (Body0.IsDynamic())
+				const FSolverBody* LaneBody0 = Body0.GetValue(LaneIndex);
+				const FSolverBody* LaneBody1 = Body1.GetValue(LaneIndex);
+				if (LaneBody0 != nullptr)
 				{
-					const FSolverVec3 DX0 = (Body0.InvM() * PushOutNormal) * WorldContact.ContactNormal;
-					const FSolverVec3 DR0 = WorldContactNormalAngular0 * PushOutNormal;
-					Body0.ApplyPositionDelta(DX0);
-					Body0.ApplyRotationDelta(DR0);
+					V0.SetValue(LaneIndex, LaneBody0->V());
+					W0.SetValue(LaneIndex, LaneBody0->W());
 				}
-				if (Body1.IsDynamic())
+				if (LaneBody1 != nullptr)
 				{
-					const FSolverVec3 DX1 = (Body1.InvM() * -PushOutNormal) * WorldContact.ContactNormal;
-					const FSolverVec3 DR1 = WorldContactNormalAngular1 * -PushOutNormal;
-					Body1.ApplyPositionDelta(DX1);
-					Body1.ApplyRotationDelta(DR1);
+					V1.SetValue(LaneIndex, LaneBody1->V());
+					W1.SetValue(LaneIndex, LaneBody1->W());
 				}
 			}
+		}
 
-
-			FORCEINLINE_DEBUGGABLE void ApplyVelocityCorrection(
-				const FSolverReal Stiffness,
-				const FSolverReal Dt,
-				const FSolverReal DynamicFriction,
-				const FSolverReal ContactVelocityDeltaNormal,
-				const FSolverReal ContactVelocityDeltaTangent0,
-				const FSolverReal ContactVelocityDeltaTangent1,
-				const FSolverReal MinImpulseNormal,
-				FConstraintSolverBody& Body0,
-				FConstraintSolverBody& Body1)
+		inline void ScatterBodyVelocities(
+			const TSimdVec3f<4>& V0,
+			const TSimdVec3f<4>& W0,
+			const TSimdVec3f<4>& V1,
+			const TSimdVec3f<4>& W1,
+			const TSolverBodyPtrSimd<4>& Body0,
+			const TSolverBodyPtrSimd<4>& Body1)
+		{
+			for (int32 LaneIndex = 0; LaneIndex < 4; ++LaneIndex)
 			{
-				FSolverReal ImpulseNormal = -Stiffness * ContactMassNormal * ContactVelocityDeltaNormal;
-				FSolverReal ImpulseTangentU = -Stiffness * ContactMassTangentU * ContactVelocityDeltaTangent0;
-				FSolverReal ImpulseTangentV = -Stiffness * ContactMassTangentV * ContactVelocityDeltaTangent1;
-
-				// Clamp the total impulse to be positive along the normal. We can apply a net negative impulse, 
-				// but only to correct the velocity that was added by pushout (in which case MinImpulseNormal will be negative).
-				if ((NetImpulseNormal + ImpulseNormal) < MinImpulseNormal)
+				FSolverBody* LaneBody0 = Body0.GetValue(LaneIndex);
+				FSolverBody* LaneBody1 = Body1.GetValue(LaneIndex);
+				if (LaneBody0 != nullptr)
 				{
-					// We are trying to apply a net negative impulse larger than one to counteract the effective pushout impulse
-					// so clamp the net impulse to be equal to minus the pushout impulse along the normal.
-					ImpulseNormal = MinImpulseNormal - NetImpulseNormal;
+					LaneBody0->SetV(V0.GetValue(LaneIndex));
+					LaneBody0->SetW(W0.GetValue(LaneIndex));
 				}
-
-				// Clamp the tangential impulses to the friction cone
-				if ((DynamicFriction > 0) && (Dt > 0))
+				if (LaneBody0 != nullptr)
 				{
-					const FSolverReal MaxImpulseTangent = FMath::Max(FSolverReal(0), DynamicFriction * (NetImpulseNormal + ImpulseNormal + NetPushOutNormal / Dt));
-					const FSolverReal MaxImpulseTangentSq = FMath::Square(MaxImpulseTangent);
-					const FSolverReal ImpulseTangentSq = FMath::Square(ImpulseTangentU) + FMath::Square(ImpulseTangentV);
-					if (ImpulseTangentSq > (MaxImpulseTangentSq + UE_SMALL_NUMBER))
-					{
-						const FSolverReal ImpulseTangentScale = MaxImpulseTangent * FMath::InvSqrt(ImpulseTangentSq);
-						ImpulseTangentU *= ImpulseTangentScale;
-						ImpulseTangentV *= ImpulseTangentScale;
-					}
-				}
-
-				NetImpulseNormal += ImpulseNormal;
-				NetImpulseTangentU += ImpulseTangentU;
-				NetImpulseTangentV += ImpulseTangentV;
-
-				// Apply the velocity deltas from the impulse
-				const FSolverVec3 Impulse = ImpulseNormal * WorldContact.ContactNormal + ImpulseTangentU * WorldContact.ContactTangentU + ImpulseTangentV * WorldContact.ContactTangentV;
-				if (Body0.IsDynamic())
-				{
-					const FSolverVec3 DV0 = Body0.InvM() * Impulse;
-					const FSolverVec3 DW0 = WorldContactNormalAngular0 * ImpulseNormal + WorldContactTangentUAngular0 * ImpulseTangentU + WorldContactTangentVAngular0 * ImpulseTangentV;
-					Body0.ApplyVelocityDelta(DV0, DW0);
-				}
-				if (Body1.IsDynamic())
-				{
-					const FSolverVec3 DV1 = -Body1.InvM() * Impulse;
-					const FSolverVec3 DW1 = WorldContactNormalAngular1 * -ImpulseNormal + WorldContactTangentUAngular1 * -ImpulseTangentU + WorldContactTangentVAngular1 * -ImpulseTangentV;
-					Body1.ApplyVelocityDelta(DV1, DW1);
+					LaneBody1->SetV(V1.GetValue(LaneIndex));
+					LaneBody1->SetW(W1.GetValue(LaneIndex));
 				}
 			}
+		}
 
-			FORCEINLINE_DEBUGGABLE void ApplyVelocityCorrectionNormal(
-				const FSolverReal Stiffness,
-				const FSolverReal ContactVelocityDeltaNormal,
-				const FSolverReal MinImpulseNormal,
-				FConstraintSolverBody& Body0,
-				FConstraintSolverBody& Body1)
-			{
-				FSolverReal ImpulseNormal = -(Stiffness * ContactMassNormal) * ContactVelocityDeltaNormal;
-
-				// See comments in ApplyVelocityCorrection
-				if (NetImpulseNormal + ImpulseNormal < MinImpulseNormal)
-				{
-					ImpulseNormal = MinImpulseNormal - NetImpulseNormal;
-				}
-
-				NetImpulseNormal += ImpulseNormal;
-
-				// Calculate the velocity deltas from the impulse
-				FSolverVec3 Impulse = ImpulseNormal * WorldContact.ContactNormal;
-				if (Body0.IsDynamic())
-				{
-					const FSolverVec3 DV0 = Body0.InvM() * Impulse;
-					const FSolverVec3 DW0 = WorldContactNormalAngular0 * ImpulseNormal;
-					Body0.ApplyVelocityDelta(DV0, DW0);
-				}
-				if (Body1.IsDynamic())
-				{
-					const FSolverVec3 DV1 = -Body1.InvM() * Impulse;
-					const FSolverVec3 DW1 = WorldContactNormalAngular1 * -ImpulseNormal;
-					Body1.ApplyVelocityDelta(DV1, DW1);
-				}
-			}
-
-			// @todo(chaos): make private
-		public:
-			friend class FPBDCollisionSolverSimd;
-
-			/**
-			 * @brief Whether we need to solve velocity for this manifold point (only if we were penetrating or applied a pushout)
-			*/
-			bool ShouldSolveVelocity() const;
-
-			// World-space contact data
-			FWorldContactPoint WorldContact;
-
-			// I^-1.(R x A) for each body where A is each axis (Normal, TangentU, TangentV)
-			FSolverVec3 WorldContactNormalAngular0;
-			FSolverVec3 WorldContactTangentUAngular0;
-			FSolverVec3 WorldContactTangentVAngular0;
-			FSolverVec3 WorldContactNormalAngular1;
-			FSolverVec3 WorldContactTangentUAngular1;
-			FSolverVec3 WorldContactTangentVAngular1;
-
-			// Contact mass (for non-friction)
-			FSolverReal ContactMassNormal;
-			FSolverReal ContactMassTangentU;
-			FSolverReal ContactMassTangentV;
-
-			// Solver outputs
-			FSolverReal NetPushOutNormal;
-			FSolverReal NetPushOutTangentU;
-			FSolverReal NetPushOutTangentV;
-			FSolverReal NetImpulseNormal;
-			FSolverReal NetImpulseTangentU;
-			FSolverReal NetImpulseTangentV;
-
-			// A measure of how much we exceeded the static friction threshold.
-			// Equal to (NormalPushOut / TangentialPushOut) before clamping to the friction cone.
-			// Used to move the static friction anchors to the edge of the cone in Scatter.
-			FSolverReal StaticFrictionRatio;
+		template<int TNumLanes>
+		struct TSolverBodyPtrPairSimd
+		{
+			TSolverBodyPtrSimd<TNumLanes> Body0;
+			TSolverBodyPtrSimd<TNumLanes> Body1;
 		};
 
 		/**
-		 * @brief
-		 * @todo(chaos): Make this solver operate on a single contact point rather than all points in a manifold.
-		 * This would be beneficial if we have many contacts with less than 4 points in the manifold. However this
-		 * is dificult to do while we are still supporting non-manifold collisions.
+		 * @brief A SIMD row of contact points from a set of FPBDCollisionSolverSimd
 		*/
-		class FPBDCollisionSolverSimd
+		template<int TNumLanes>
+		class TPBDCollisionSolverManifoldPointsSimd
 		{
 		public:
+			using FSimdVec3f = TSimdVec3f<TNumLanes>;
+			using FSimdRealf = TSimdRealf<TNumLanes>;
+			using FSimdInt32 = TSimdInt32<TNumLanes>;
+			using FSimdSelector = TSimdSelector<TNumLanes>;
+			using FSimdSolverBodyPtr = TSolverBodyPtrSimd<TNumLanes>;
+
+			// Whether the manifold point in each lane is set up for solving
+			FSimdSelector IsValid;
+
+			// World-space contact point relative to each particle's center of mass
+			FSimdVec3f SimdRelativeContactPoint0;
+			FSimdVec3f SimdRelativeContactPoint1;
+
+			// Normal PushOut
+			FSimdVec3f SimdContactNormal;
+			FSimdRealf SimdContactDeltaNormal;
+			FSimdRealf SimdNetPushOutNormal;
+			FSimdRealf SimdContactMassNormal;
+			FSimdVec3f SimdContactNormalAngular0;
+			FSimdVec3f SimdContactNormalAngular1;
+
+			// Tangential PushOut
+			FSimdVec3f SimdContactTangentU;
+			FSimdVec3f SimdContactTangentV;
+			FSimdRealf SimdContactDeltaTangentU;
+			FSimdRealf SimdContactDeltaTangentV;
+			FSimdRealf SimdNetPushOutTangentU;
+			FSimdRealf SimdNetPushOutTangentV;
+			FSimdRealf SimdStaticFrictionRatio;
+			FSimdRealf SimdContactMassTangentU;
+			FSimdRealf SimdContactMassTangentV;
+			FSimdVec3f SimdContactTangentUAngular0;
+			FSimdVec3f SimdContactTangentVAngular0;
+			FSimdVec3f SimdContactTangentUAngular1;
+			FSimdVec3f SimdContactTangentVAngular1;
+
+			// Normal Impulse
+			FSimdRealf SimdContactTargetVelocityNormal;
+			FSimdRealf SimdNetImpulseNormal;
+			FSimdRealf SimdNetImpulseTangentU;
+			FSimdRealf SimdNetImpulseTangentV;
+		};
+
+		/**
+		* Holds the solver
+		*/
+		template<int TNumLanes>
+		class TPBDCollisionSolverSimd
+		{
+		public:
+			using FSimdVec3f = TSimdVec3f<TNumLanes>;
+			using FSimdRealf = TSimdRealf<TNumLanes>;
+			using FSimdInt32 = TSimdInt32<TNumLanes>;
+			using FSimdSelector = TSimdSelector<TNumLanes>;
+			using FSimdSolverBodyPtr = TSolverBodyPtrSimd<TNumLanes>;
+			using FSimdManifoldPoint = TPBDCollisionSolverManifoldPointsSimd<TNumLanes>;
+
 			static const int32 MaxConstrainedBodies = 2;
 			static const int32 MaxPointsPerConstraint = 4;
 
 			// Create a solver that is initialized to safe defaults
-			static FPBDCollisionSolverSimd MakeInitialized()
+			static TPBDCollisionSolverSimd<TNumLanes> MakeInitialized()
 			{
-				FPBDCollisionSolverSimd Solver;
-				Solver.State.Init();
+				TPBDCollisionSolverSimd<TNumLanes> Solver;
+				Solver.Init();
 				return Solver;
 			}
 
 			// Create a solver with no initialization
-			static FPBDCollisionSolverSimd MakeUninitialized()
+			static TPBDCollisionSolverSimd<TNumLanes> MakeUninitialized()
 			{
-				return FPBDCollisionSolverSimd();
+				return TPBDCollisionSolverSimd<TNumLanes>();
 			}
 
 			// NOTE: Does not initialize any properties. See MakeInitialized
-			FPBDCollisionSolverSimd() {}
+			TPBDCollisionSolverSimd() {}
+
+			FSimdInt32 NumManifoldPoints() const
+			{
+				return SimdNumManifoldPoints;
+			}
+
+			void SetNumManifoldPoints(const FSimdInt32& InNum)
+			{
+				SimdNumManifoldPoints = InNum;
+			}
+
+			void SetManifoldPointsBuffer(const int32 InBeginIndex, const int32 InMax)
+			{
+				ManifoldPointBeginIndex = InBeginIndex;
+				MaxManifoldPoints = InMax;
+				SimdNumManifoldPoints = FSimdInt32::Zero();
+			}
+
+			int32 GetMaxManifoldPoints() const
+			{
+				return MaxManifoldPoints;
+			}
+
+			const FSimdManifoldPoint& GetManifoldPoint(
+				const int32 ManifoldPointIndex,
+				const TArrayView<const FSimdManifoldPoint>& ManifoldPointsBuffer) const
+			{
+				return ManifoldPointsBuffer[GetBufferIndex(ManifoldPointIndex)];
+			}
 
 			/** Reset the state of the collision solver */
 			void Reset()
 			{
-				State.SolverBodies[0].Reset();
-				State.SolverBodies[1].Reset();
-				State.ManifoldPoints = nullptr;
-				State.NumManifoldPoints = 0;
-				State.MaxManifoldPoints = 0;
+				ManifoldPointBeginIndex = 0;
+				MaxManifoldPoints = 0;
+				SimdNumManifoldPoints = FSimdInt32::Zero();
 			}
 
 			void ResetManifold()
 			{
-				State.NumManifoldPoints = 0;
+				SimdNumManifoldPoints = FSimdInt32::Zero();
 			}
 
-			FSolverReal StaticFriction() const { return State.StaticFriction; }
-			FSolverReal DynamicFriction() const { return State.DynamicFriction; }
-			FSolverReal VelocityFriction() const { return State.VelocityFriction; }
-
-			void SetFriction(const FSolverReal InStaticFriction, const FSolverReal InDynamicFriction, const FSolverReal InVelocityFriction)
+			void SetFriction(const FSimdRealf InStaticFriction, const FSimdRealf InDynamicFriction, const FSimdRealf InVelocityFriction)
 			{
-				State.StaticFriction = InStaticFriction;
-				State.DynamicFriction = InDynamicFriction;
-				State.VelocityFriction = InVelocityFriction;
+				SimdStaticFriction = InStaticFriction;
+				SimdDynamicFriction = InDynamicFriction;
+				SimdVelocityFriction = InVelocityFriction;
 			}
 
-			void SetStiffness(const FSolverReal InStiffness)
+			void SetStiffness(const FSimdRealf InStiffness)
 			{
-				State.Stiffness = InStiffness;
+				SimdStiffness = InStiffness;
 			}
 
-			void SetSolverBodies(FSolverBody& SolverBody0, FSolverBody& SolverBody1)
+			void InitManifoldPoints(const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer)
 			{
-				State.SolverBodies[0].SetSolverBody(SolverBody0);
-				State.SolverBodies[1].SetSolverBody(SolverBody1);
-			}
-
-			int32 NumManifoldPoints() const
-			{
-				return State.NumManifoldPoints;
-			}
-
-			int32 AddManifoldPoint()
-			{
-				check(State.NumManifoldPoints < State.MaxManifoldPoints);
-				return State.NumManifoldPoints++;
-			}
-
-			void SetManifoldPointsBuffer(FPBDCollisionSolverManifoldPointSimd* InManifoldPoints, const int32 InMaxManifoldPoints)
-			{
-				State.ManifoldPoints = InManifoldPoints;
-				State.MaxManifoldPoints = InMaxManifoldPoints;
-				State.NumManifoldPoints = 0;
-			}
-
-			const FPBDCollisionSolverManifoldPointSimd& GetManifoldPoint(const int32 ManifoldPointIndex) const
-			{
-				check(ManifoldPointIndex < NumManifoldPoints());
-				return State.ManifoldPoints[ManifoldPointIndex];
-			}
-
-			FWorldContactPoint& GetWorldContactPoint(const int32 ManifoldPointIndex)
-			{
-				return State.ManifoldPoints[ManifoldPointIndex].WorldContact;
+				// Not required as long as we are zeroing the full points array on resize
+				// Otherwise we need to reset all outputs and some properties here as not all lanes will be used by all points
 			}
 
 			/**
-			 * Set up a manifold point (also calls FinalizeManifoldPoint)
+			 * Set up a manifold point ready for solving
 			*/
 			void SetManifoldPoint(
-				const int32 ManifoldPoiontIndex,
-				const FSolverReal Dt,
+				const int32 ManifoldPointIndex,
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
 				const FSolverVec3& InRelativeContactPosition0,
 				const FSolverVec3& InRelativeContactPosition1,
 				const FSolverVec3& InWorldContactNormal,
@@ -476,110 +333,749 @@ namespace Chaos
 				const FSolverReal InWorldContactDeltaNormal,
 				const FSolverReal InWorldContactDeltaTangentU,
 				const FSolverReal InWorldContactDeltaTangentV,
-				const FSolverReal InWorldContactVelocityTargetNormal);
-
-			/** 
-			 * Finish manifold point setup.
-			 * NOTE: Can only be called after the WorldContact has been set up (e.g., see SetManifoldPoint)
-			*/
-			void FinalizeManifoldPoint(const int32 ManifoldPoiontIndex, const FSolverReal Dt);
-
-			/**
-			 * @brief Get the first (decorated) solver body
-			 * The decorator add a possible mass scale
-			*/
-			FConstraintSolverBody& SolverBody0() { return State.SolverBodies[0]; }
-			const FConstraintSolverBody& SolverBody0() const { return State.SolverBodies[0]; }
-
-			/**
-			 * @brief Get the second (decorated) solver body
-			 * The decorator add a possible mass scale
-			*/
-			FConstraintSolverBody& SolverBody1() { return State.SolverBodies[1]; }
-			const FConstraintSolverBody& SolverBody1() const { return State.SolverBodies[1]; }
-
-			/**
-			 * @brief Set up the mass scaling for shock propagation, using the position-phase mass scale
-			*/
-			void EnablePositionShockPropagation();
-
-			/**
-			 * @brief Set up the mass scaling for shock propagation, using the velocity-phase mass scale
-			*/
-			void EnableVelocityShockPropagation();
-
-			/**
-			 * @brief Disable mass scaling
-			*/
-			void DisableShockPropagation();
-
-			/**
-			 * @brief Calculate and apply the position correction for this iteration
-			 * @return true if we need to run more iterations, false if we did not apply any correction
-			*/
-			bool SolvePositionWithFriction(const FSolverReal Dt, const FSolverReal MaxPushOut);
-			bool SolvePositionNoFriction(const FSolverReal Dt, const FSolverReal MaxPushOut);
-
-			/**
-			 * @brief Calculate and apply the velocity correction for this iteration
-			 * @return true if we need to run more iterations, false if we did not apply any correction
-			*/
-			bool SolveVelocity(const FSolverReal Dt, const bool bApplyDynamicFriction);
-
-		private:
-			/**
-			 * @brief Apply the inverse mass scale the body with the lower level
-			 * @param InvMassScale
-			*/
-			void SetShockPropagationInvMassScale(const FSolverReal InvMassScale);
-
-			/**
-			 * @brief Run a velocity solve on the average point from all the points that received a position impulse
-			 * This is used to enforce Restitution constraints without introducing rotation artefacts without
-			 * adding more velocity iterations.
-			 * This will only perform work if there is more than one active contact.
-			*/
-			void SolveVelocityAverage(const FSolverReal Dt);
-
-			struct FState
+				const FSolverReal InWorldContactVelocityTargetNormal,
+				const FSolverBody& Body0,
+				const FSolverBody& Body1,
+				const FSolverReal InvMScale0,
+				const FSolverReal InvIScale0,
+				const FSolverReal InvMScale1,
+				const FSolverReal InvIScale1)
 			{
-				FState()
+				const int32 BufferIndex = GetBufferIndex(ManifoldPointIndex);
+				FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[BufferIndex];
+
+				ManifoldPoint.IsValid.SetValue(LaneIndex, true);
+
+				ManifoldPoint.SimdRelativeContactPoint0.SetValue(LaneIndex, InRelativeContactPosition0);
+				ManifoldPoint.SimdRelativeContactPoint1.SetValue(LaneIndex, InRelativeContactPosition1);
+				ManifoldPoint.SimdContactNormal.SetValue(LaneIndex, InWorldContactNormal);
+				ManifoldPoint.SimdContactTangentU.SetValue(LaneIndex, InWorldContactTangentU);
+				ManifoldPoint.SimdContactTangentV.SetValue(LaneIndex, InWorldContactTangentV);
+				ManifoldPoint.SimdContactDeltaNormal.SetValue(LaneIndex, InWorldContactDeltaNormal);
+				ManifoldPoint.SimdContactDeltaTangentU.SetValue(LaneIndex, InWorldContactDeltaTangentU);
+				ManifoldPoint.SimdContactDeltaTangentV.SetValue(LaneIndex, InWorldContactDeltaTangentV);
+				ManifoldPoint.SimdContactTargetVelocityNormal.SetValue(LaneIndex, InWorldContactVelocityTargetNormal);
+
+				UpdateManifoldPointMass(
+					ManifoldPointIndex, 
+					LaneIndex, 
+					ManifoldPointsBuffer, 
+					Body0, 
+					Body1,
+					InvMScale0,
+					InvIScale0,
+					InvMScale1,
+					InvIScale1);
+			}
+
+			/**
+			 * @brief Update the cached mass properties based on the current body transforms
+			*/
+			void UpdateManifoldPointMass(
+				const int32 ManifoldPointIndex,
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSolverBody& Body0,
+				const FSolverBody& Body1,
+				const FSolverReal InvMScale0,
+				const FSolverReal InvIScale0,
+				const FSolverReal InvMScale1,
+				const FSolverReal InvIScale1)
+			{
+				const int32 BufferIndex = GetBufferIndex(ManifoldPointIndex);
+				FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[BufferIndex];
+
+				if (!ManifoldPoint.IsValid.GetValue(LaneIndex))
 				{
+					return;
 				}
 
-				void Init()
+				FSolverReal ContactMassInvNormal = FSolverReal(0);
+				FSolverReal ContactMassInvTangentU = FSolverReal(0);
+				FSolverReal ContactMassInvTangentV = FSolverReal(0);
+
+				SimdInvM0.SetValue(LaneIndex, 0);
+				SimdInvM1.SetValue(LaneIndex, 0);
+				ManifoldPoint.SimdContactNormalAngular0.SetValue(LaneIndex, FVec3f(0));
+				ManifoldPoint.SimdContactTangentUAngular0.SetValue(LaneIndex, FVec3f(0));
+				ManifoldPoint.SimdContactTangentVAngular0.SetValue(LaneIndex, FVec3f(0));
+				ManifoldPoint.SimdContactNormalAngular1.SetValue(LaneIndex, FVec3f(0));
+				ManifoldPoint.SimdContactTangentUAngular1.SetValue(LaneIndex, FVec3f(0));
+				ManifoldPoint.SimdContactTangentVAngular1.SetValue(LaneIndex, FVec3f(0));
+
+				const FVec3f ContactNormal = ManifoldPoint.SimdContactNormal.GetValue(LaneIndex);
+				const FVec3f ContactTangentU = ManifoldPoint.SimdContactTangentU.GetValue(LaneIndex);
+				const FVec3f ContactTangentV = ManifoldPoint.SimdContactTangentV.GetValue(LaneIndex);
+
+				const FSolverReal InvM0 = InvMScale0 * Body0.InvM();
+				const FSolverReal InvM1 = InvMScale1 * Body1.InvM();
+				if (InvM0 > 0)
 				{
-					SolverBodies[0].Init();
-					SolverBodies[1].Init();
-					StaticFriction = 0;
-					DynamicFriction = 0;
-					VelocityFriction = 0;
-					Stiffness = 1;
-					ManifoldPoints = nullptr;
-					NumManifoldPoints = 0;
-					MaxManifoldPoints = 0;
+					const FSolverMatrix33 InvI0 = InvIScale0 * Body0.InvI();
+
+					const FVec3f RelativeContactPoint0 = ManifoldPoint.SimdRelativeContactPoint0.GetValue(LaneIndex);
+					const FSolverVec3 R0xN = FSolverVec3::CrossProduct(RelativeContactPoint0, ContactNormal);
+					const FSolverVec3 R0xU = FSolverVec3::CrossProduct(RelativeContactPoint0, ContactTangentU);
+					const FSolverVec3 R0xV = FSolverVec3::CrossProduct(RelativeContactPoint0, ContactTangentV);
+					const FSolverVec3 IR0xN = InvI0 * R0xN;
+					const FSolverVec3 IR0xU = InvI0 * R0xU;
+					const FSolverVec3 IR0xV = InvI0 * R0xV;
+
+					SimdInvM0.SetValue(LaneIndex, InvM0);
+
+					ManifoldPoint.SimdContactNormalAngular0.SetValue(LaneIndex, IR0xN);
+					ManifoldPoint.SimdContactTangentUAngular0.SetValue(LaneIndex, IR0xU);
+					ManifoldPoint.SimdContactTangentVAngular0.SetValue(LaneIndex, IR0xV);
+
+					ContactMassInvNormal += FSolverVec3::DotProduct(R0xN, IR0xN) + InvM0;
+					ContactMassInvTangentU += FSolverVec3::DotProduct(R0xU, IR0xU) + InvM0;
+					ContactMassInvTangentV += FSolverVec3::DotProduct(R0xV, IR0xV) + InvM0;
+				}
+				if (InvM1 > 0)
+				{
+					const FSolverMatrix33 InvI1 = InvIScale1 * Body1.InvI();
+
+					const FVec3f RelativeContactPoint1 = ManifoldPoint.SimdRelativeContactPoint1.GetValue(LaneIndex);
+					const FSolverVec3 R1xN = FSolverVec3::CrossProduct(RelativeContactPoint1, ContactNormal);
+					const FSolverVec3 R1xU = FSolverVec3::CrossProduct(RelativeContactPoint1, ContactTangentU);
+					const FSolverVec3 R1xV = FSolverVec3::CrossProduct(RelativeContactPoint1, ContactTangentV);
+					const FSolverVec3 IR1xN = InvI1 * R1xN;
+					const FSolverVec3 IR1xU = InvI1 * R1xU;
+					const FSolverVec3 IR1xV = InvI1 * R1xV;
+
+					SimdInvM1.SetValue(LaneIndex, InvM1);
+
+					ManifoldPoint.SimdContactNormalAngular1.SetValue(LaneIndex, IR1xN);
+					ManifoldPoint.SimdContactTangentUAngular1.SetValue(LaneIndex, IR1xU);
+					ManifoldPoint.SimdContactTangentVAngular1.SetValue(LaneIndex, IR1xV);
+
+					ContactMassInvNormal += FSolverVec3::DotProduct(R1xN, IR1xN) + InvM1;
+					ContactMassInvTangentU += FSolverVec3::DotProduct(R1xU, IR1xU) + InvM1;
+					ContactMassInvTangentV += FSolverVec3::DotProduct(R1xV, IR1xV) + InvM1;
 				}
 
-				// Static Friction in the position-solve phase
-				FSolverReal StaticFriction;
+				ManifoldPoint.SimdContactMassNormal.SetValue(LaneIndex, (ContactMassInvNormal > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvNormal : FSolverReal(0));
+				ManifoldPoint.SimdContactMassTangentU.SetValue(LaneIndex, (ContactMassInvTangentU > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvTangentU : FSolverReal(0));
+				ManifoldPoint.SimdContactMassTangentV.SetValue(LaneIndex, (ContactMassInvTangentV > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvTangentV : FSolverReal(0));
+			}
 
-				// Dynamic Friction in the position-solve phase
-				FSolverReal DynamicFriction;
+			void UpdateManifoldPointMassNormal(
+				const int32 ManifoldPointIndex,
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSolverBody& Body0,
+				const FSolverBody& Body1,
+				const FSolverReal InvMScale0,
+				const FSolverReal InvIScale0,
+				const FSolverReal InvMScale1,
+				const FSolverReal InvIScale1)
+			{
+				const int32 BufferIndex = GetBufferIndex(ManifoldPointIndex);
+				FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[BufferIndex];
 
-				// Dynamic Friction in the velocity-solve phase
-				FSolverReal VelocityFriction;
+				if (!ManifoldPoint.IsValid.GetValue(LaneIndex))
+				{
+					return;
+				}
 
-				// Solver stiffness (scales all pushout and impulses)
-				FSolverReal Stiffness;
+				FSolverReal ContactMassInvNormal = FSolverReal(0);
 
-				// Bodies and contacts
-				FConstraintSolverBody SolverBodies[MaxConstrainedBodies];
-				FPBDCollisionSolverManifoldPointSimd* ManifoldPoints;
-				int32 NumManifoldPoints;
-				int32 MaxManifoldPoints;
-			};
+				SimdInvM0.SetValue(LaneIndex, 0);
+				SimdInvM1.SetValue(LaneIndex, 0);
+				ManifoldPoint.SimdContactNormalAngular0.SetValue(LaneIndex, FVec3f(0));
+				ManifoldPoint.SimdContactNormalAngular1.SetValue(LaneIndex, FVec3f(0));
 
-			FState State;
+				const FVec3f ContactNormal = ManifoldPoint.SimdContactNormal.GetValue(LaneIndex);
+
+				const FSolverReal InvM0 = InvMScale0 * Body0.InvM();
+				const FSolverReal InvM1 = InvMScale1 * Body1.InvM();
+				if (InvM0 > 0)
+				{
+					const FSolverMatrix33 InvI0 = InvIScale0 * Body0.InvI();
+
+					const FVec3f RelativeContactPoint0 = ManifoldPoint.SimdRelativeContactPoint0.GetValue(LaneIndex);
+					const FSolverVec3 R0xN = FSolverVec3::CrossProduct(RelativeContactPoint0, ContactNormal);
+					const FSolverVec3 IR0xN = InvI0 * R0xN;
+
+					SimdInvM0.SetValue(LaneIndex, InvM0);
+
+					ManifoldPoint.SimdContactNormalAngular0.SetValue(LaneIndex, IR0xN);
+
+					ContactMassInvNormal += FSolverVec3::DotProduct(R0xN, IR0xN) + InvM0;
+				}
+				if (InvM1 > 0)
+				{
+					const FSolverMatrix33 InvI1 = InvIScale1 * Body1.InvI();
+
+					const FVec3f RelativeContactPoint1 = ManifoldPoint.SimdRelativeContactPoint1.GetValue(LaneIndex);
+					const FSolverVec3 R1xN = FSolverVec3::CrossProduct(RelativeContactPoint1, ContactNormal);
+					const FSolverVec3 IR1xN = InvI1 * R1xN;
+
+					SimdInvM1.SetValue(LaneIndex, InvM1);
+
+					ManifoldPoint.SimdContactNormalAngular1.SetValue(LaneIndex, IR1xN);
+
+					ContactMassInvNormal += FSolverVec3::DotProduct(R1xN, IR1xN) + InvM1;
+				}
+
+				const FSolverReal ContactMassNormal = (ContactMassInvNormal > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvNormal : FSolverReal(0);
+				ManifoldPoint.SimdContactMassNormal.SetValue(LaneIndex, ContactMassNormal);
+			}
+
+			void UpdateMassNormal(
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSolverBody& Body0,
+				const FSolverBody& Body1,
+				const FSolverReal InvMScale0,
+				const FSolverReal InvIScale0,
+				const FSolverReal InvMScale1,
+				const FSolverReal InvIScale1)
+			{
+				const int32 NumManifoldPoints = SimdNumManifoldPoints.GetValue(LaneIndex);
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < NumManifoldPoints; ++ManifoldPointIndex)
+				{
+					UpdateManifoldPointMassNormal(
+						ManifoldPointIndex,
+						LaneIndex,
+						ManifoldPointsBuffer,
+						Body0,
+						Body1,
+						InvMScale0,
+						InvIScale0,
+						InvMScale1,
+						InvIScale1);
+				}
+			}
+
+			void SolvePositionNoFriction(
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSimdSolverBodyPtr& Body0,
+				const FSimdSolverBodyPtr& Body1,
+				const FSimdRealf& MaxPushOut)
+			{
+				// Get the current corrections for each body. 
+				// NOTE: This is a gather operation
+				FSimdVec3f DP0, DQ0, DP1, DQ1;
+				GatherBodyPositionCorrections(Body0, Body1, DP0, DQ0, DP1, DQ1);
+
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < MaxManifoldPoints; ++ManifoldPointIndex)
+				{
+					FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[GetBufferIndex(ManifoldPointIndex)];
+
+					// Which lanes require this point be simulated?
+					//if (!SimdAnyTrue(ManifoldPoint.IsValid))
+					//{
+					//	continue;
+					//}
+
+					// Calculate the contact error
+					const FSimdVec3f DQ0xR0 = SimdCrossProduct(DQ0, ManifoldPoint.SimdRelativeContactPoint0);
+					const FSimdVec3f DQ1xR1 = SimdCrossProduct(DQ1, ManifoldPoint.SimdRelativeContactPoint1);
+					const FSimdVec3f ContactDelta0 = SimdAdd(DP0, DQ0xR0);
+					const FSimdVec3f ContactDelta1 = SimdAdd(DP1, DQ1xR1);
+					const FSimdVec3f ContactDelta = SimdSubtract(ContactDelta0, ContactDelta1);
+					FSimdRealf ContactErrorNormal = SimdAdd(ManifoldPoint.SimdContactDeltaNormal, SimdDotProduct(ContactDelta, ManifoldPoint.SimdContactNormal));
+
+					// Apply MaxPushOut clamping if required
+					//if ((MaxPushOut > 0) && (ContactErrorNormal < -MaxPushOut)) { ContactErrorNormal = -MaxPushOut; }
+					const FSimdRealf NegMaxPushOut = SimdNegate(MaxPushOut);
+					const FSimdSelector ShouldClampError = SimdAnd(SimdLess(NegMaxPushOut, FSimdRealf::Zero()), SimdLess(ContactErrorNormal, NegMaxPushOut));
+					ContactErrorNormal = SimdSelect(ShouldClampError, NegMaxPushOut, ContactErrorNormal);
+
+					// Determine which lanes to process: only those with an overlap or that applied a pushout on a prior iteration
+					const FSimdSelector IsErrorNegative = SimdLess(ContactErrorNormal, FSimdRealf::Zero());
+					const FSimdSelector IsNetPushOutPositive = SimdGreater(ManifoldPoint.SimdNetPushOutNormal, FSimdRealf::Zero());
+					const FSimdSelector ShouldProcess = SimdAnd(ManifoldPoint.IsValid, SimdOr(IsErrorNegative, IsNetPushOutPositive));
+
+					// If all lanes are to be skipped, early-out
+					//if (!SimdAnyTrue(ShouldProcess))
+					//{
+					//	continue;
+					//}
+
+					// Zero out the error for points we should not process so we don't apply a correction for them
+					ContactErrorNormal = SimdSelect(ShouldProcess, ContactErrorNormal, FSimdRealf::Zero());
+
+					FSimdRealf PushOutNormal = SimdNegate(SimdMultiply(ContactErrorNormal, SimdMultiply(SimdStiffness, ManifoldPoint.SimdContactMassNormal)));
+
+					// Unilateral constraint: Net-negative pushout is not allowed, but
+					// PushOutNormal may be negative on any iteration as long as the net is positive
+					// If the net goes negative, apply a pushout to make it zero
+					const FSimdSelector IsPositive = SimdGreater(SimdAdd(ManifoldPoint.SimdNetPushOutNormal, PushOutNormal), FSimdRealf::Zero());
+					PushOutNormal = SimdSelect(IsPositive, PushOutNormal, SimdNegate(ManifoldPoint.SimdNetPushOutNormal));
+
+					// New net pushout
+					ManifoldPoint.SimdNetPushOutNormal = SimdAdd(PushOutNormal, ManifoldPoint.SimdNetPushOutNormal);
+
+					// Convert the positional impulse into position and rotation corrections for each body
+					// NOTE: order of operations matches FPBDCollisionSolver::ApplyPositionCorrectionNormal so we can AB test
+					const FSimdVec3f DDP0 = SimdMultiply(ManifoldPoint.SimdContactNormal, SimdMultiply(SimdInvM0, PushOutNormal));
+					const FSimdVec3f DDQ0 = SimdMultiply(ManifoldPoint.SimdContactNormalAngular0, PushOutNormal);
+					const FSimdVec3f DDP1 = SimdMultiply(ManifoldPoint.SimdContactNormal, SimdMultiply(SimdInvM1, PushOutNormal));
+					const FSimdVec3f DDQ1 = SimdMultiply(ManifoldPoint.SimdContactNormalAngular1, PushOutNormal);
+					DP0 = SimdAdd(DP0, DDP0);
+					DQ0 = SimdAdd(DQ0, DDQ0);
+					DP1 = SimdSubtract(DP1, DDP1);
+					DQ1 = SimdSubtract(DQ1, DDQ1);
+				}
+
+				// Update the corrections on the bodies. 
+				// NOTE: This is a scatter operation
+				ScatterBodyPositionCorrections(DP0, DQ0, DP1, DQ1, Body0, Body1);
+			}
+
+			void SolvePositionWithFriction(
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSimdSolverBodyPtr& Body0,
+				const FSimdSolverBodyPtr& Body1,
+				const FSimd4Realf& MaxPushOut,
+				const FSimd4Realf& FrictionStiffnessScale)
+			{
+				// Get the current corrections for each body. 
+				// NOTE: This is a gather operation
+				FSimdVec3f DP0, DQ0, DP1, DQ1;
+				GatherBodyPositionCorrections(Body0, Body1, DP0, DQ0, DP1, DQ1);
+
+				const FSimdRealf Zero = FSimdRealf::Zero();
+				const FSimdRealf One = FSimdRealf::One();
+
+				FSimdRealf NumFrictionPoints = Zero;
+				FSimdRealf MaxFrictionPushOut = Zero;
+
+				// @todo(chaos): can these be zero (and make non-simd version match)?
+				const FSimdRealf PushOutNormalTolerance = FSimdRealf::Make(UE_SMALL_NUMBER);
+				const FSimdRealf MaxFrictionPushOutTolerance = FSimdRealf::Make(UE_KINDA_SMALL_NUMBER);
+
+				// Apply the normal pushout and calculate the net normal pushout for the friction limit
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < MaxManifoldPoints; ++ManifoldPointIndex)
+				{
+					FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[GetBufferIndex(ManifoldPointIndex)];
+
+					// Which lanes require this point be simulated?
+					//if (!SimdAnyTrue(ManifoldPoint.IsValid))
+					//{
+					//	continue;
+					//}
+
+					// Calculate the contact error
+					const FSimdVec3f DQ0xR0 = SimdCrossProduct(DQ0, ManifoldPoint.SimdRelativeContactPoint0);
+					const FSimdVec3f DQ1xR1 = SimdCrossProduct(DQ1, ManifoldPoint.SimdRelativeContactPoint1);
+					const FSimdVec3f ContactDelta0 = SimdAdd(DP0, DQ0xR0);
+					const FSimdVec3f ContactDelta1 = SimdAdd(DP1, DQ1xR1);
+					const FSimdVec3f ContactDelta = SimdSubtract(ContactDelta0, ContactDelta1);
+					FSimdRealf ContactErrorNormal = SimdAdd(ManifoldPoint.SimdContactDeltaNormal, SimdDotProduct(ContactDelta, ManifoldPoint.SimdContactNormal));
+
+					// Apply MaxPushOut clamping if required
+					//if ((MaxPushOut > 0) && (ContactErrorNormal < -MaxPushOut)) { ContactErrorNormal = -MaxPushOut; }
+					const FSimdRealf NegMaxPushOut = SimdNegate(MaxPushOut);
+					const FSimdSelector ShouldClampError = SimdAnd(SimdLess(NegMaxPushOut, Zero), SimdLess(ContactErrorNormal, NegMaxPushOut));
+					ContactErrorNormal = SimdSelect(ShouldClampError, NegMaxPushOut, ContactErrorNormal);
+
+					// Determine which lanes to process: only those with an overlap or that applied a pushout on a prior iteration
+					const FSimdSelector IsErrorNegative = SimdLess(ContactErrorNormal, Zero);
+					const FSimdSelector IsNetPushOutPositive = SimdGreater(ManifoldPoint.SimdNetPushOutNormal, PushOutNormalTolerance);
+					const FSimdSelector ProcessManifoldPoint = SimdAnd(ManifoldPoint.IsValid, SimdOr(IsErrorNegative, IsNetPushOutPositive));
+
+					// If all lanes are to be skipped, early-out
+					//if (!SimdAnyTrue(ProcessManifoldPoint))
+					//{
+					//	continue;
+					//}
+
+					// Zero out the error for points we should not process so we don't apply a correction for them
+					ContactErrorNormal = SimdSelect(ProcessManifoldPoint, ContactErrorNormal, Zero);
+
+					FSimdRealf PushOutNormal = SimdNegate(SimdMultiply(ContactErrorNormal, SimdMultiply(SimdStiffness, ManifoldPoint.SimdContactMassNormal)));
+
+					// Unilateral constraint: Net-negative pushout is not allowed, but
+					// PushOutNormal may be negative on any iteration as long as the net is positive
+					// If the net goes negative, apply a pushout to make it zero
+					const FSimdSelector IsPositive = SimdGreater(SimdAdd(ManifoldPoint.SimdNetPushOutNormal, PushOutNormal), Zero);
+					PushOutNormal = SimdSelect(IsPositive, PushOutNormal, SimdNegate(ManifoldPoint.SimdNetPushOutNormal));
+
+					// New net pushout
+					ManifoldPoint.SimdNetPushOutNormal = SimdAdd(PushOutNormal, ManifoldPoint.SimdNetPushOutNormal);
+
+					// Convert the positional impulse into position and rotation corrections for each body
+					// NOTE: order of operations matches FPBDCollisionSolver::ApplyPositionCorrectionNormal so we can AB test
+					const FSimdVec3f DDP0 = SimdMultiply(ManifoldPoint.SimdContactNormal, SimdMultiply(SimdInvM0, PushOutNormal));
+					const FSimdVec3f DDQ0 = SimdMultiply(ManifoldPoint.SimdContactNormalAngular0, PushOutNormal);
+					const FSimdVec3f DDP1 = SimdMultiply(ManifoldPoint.SimdContactNormal, SimdMultiply(SimdInvM1, PushOutNormal));
+					const FSimdVec3f DDQ1 = SimdMultiply(ManifoldPoint.SimdContactNormalAngular1, PushOutNormal);
+					DP0 = SimdAdd(DP0, DDP0);
+					DQ0 = SimdAdd(DQ0, DDQ0);
+					DP1 = SimdSubtract(DP1, DDP1);
+					DQ1 = SimdSubtract(DQ1, DDQ1);
+
+					MaxFrictionPushOut = SimdSelect(IsPositive, SimdAdd(MaxFrictionPushOut, ManifoldPoint.SimdNetPushOutNormal), MaxFrictionPushOut);
+					NumFrictionPoints = SimdSelect(IsPositive, SimdAdd(NumFrictionPoints, One), NumFrictionPoints);
+				}
+
+				MaxFrictionPushOut = SimdSelect(SimdGreater(NumFrictionPoints, Zero), SimdDivide(MaxFrictionPushOut, NumFrictionPoints), Zero);
+
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < MaxManifoldPoints; ++ManifoldPointIndex)
+				{
+					FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[GetBufferIndex(ManifoldPointIndex)];
+
+					// Which lanes require this point be simulated?
+					//if (!SimdAnyTrue(ManifoldPoint.IsValid))
+					//{
+					//	continue;
+					//}
+
+					// Calculate the contact error
+					const FSimdVec3f DQ0xR0 = SimdCrossProduct(DQ0, ManifoldPoint.SimdRelativeContactPoint0);
+					const FSimdVec3f DQ1xR1 = SimdCrossProduct(DQ1, ManifoldPoint.SimdRelativeContactPoint1);
+					const FSimdVec3f ContactDelta0 = SimdAdd(DP0, DQ0xR0);
+					const FSimdVec3f ContactDelta1 = SimdAdd(DP1, DQ1xR1);
+					const FSimdVec3f ContactDelta = SimdSubtract(ContactDelta0, ContactDelta1);
+
+					// Should we apply tangential corrections for friction? 
+					// bUpdateFriction = ((TotalPushOutNormal > 0) || (NetPushOutTangentU != 0) || (NetPushOutTangentV != 0))
+					const FSimdSelector HasFriction = SimdGreater(SimdStaticFriction, Zero);
+					const FSimdSelector HasNormalPushout = SimdGreater(ManifoldPoint.SimdNetPushOutNormal, Zero);
+					const FSimdSelector HasTangentUPushout = SimdNotEqual(ManifoldPoint.SimdNetPushOutTangentU, Zero);
+					const FSimdSelector HasTangentVPushout = SimdNotEqual(ManifoldPoint.SimdNetPushOutTangentV, Zero);
+					const FSimdSelector ApplyPointFriction = SimdAnd(HasFriction, SimdOr(HasNormalPushout, SimdOr(HasTangentUPushout, HasTangentVPushout)));
+					//if (SimdAnyTrue(ApplyPointFriction))
+					{
+						// Calculate tangential errors
+						const FSimdRealf ContactErrorTangentU = SimdAdd(ManifoldPoint.SimdContactDeltaTangentU, SimdDotProduct(ContactDelta, ManifoldPoint.SimdContactTangentU));
+						const FSimdRealf ContactErrorTangentV = SimdAdd(ManifoldPoint.SimdContactDeltaTangentV, SimdDotProduct(ContactDelta, ManifoldPoint.SimdContactTangentV));
+
+						// A stiffness multiplier on the impulses
+						const FSimdRealf FrictionStiffness = SimdMultiply(FrictionStiffnessScale, SimdStiffness);
+
+						// Calculate tangential correction
+						FSimdRealf PushOutTangentU = SimdNegate(SimdMultiply(FrictionStiffness, SimdMultiply(ContactErrorTangentU, ManifoldPoint.SimdContactMassTangentU)));
+						FSimdRealf PushOutTangentV = SimdNegate(SimdMultiply(FrictionStiffness, SimdMultiply(ContactErrorTangentV, ManifoldPoint.SimdContactMassTangentV)));
+
+						// New net tangential pushouts
+						FSimdRealf NetPushOutTangentU = SimdAdd(ManifoldPoint.SimdNetPushOutTangentU, PushOutTangentU);
+						FSimdRealf NetPushOutTangentV = SimdAdd(ManifoldPoint.SimdNetPushOutTangentV, PushOutTangentV);
+						FSimdRealf StaticFrictionRatio = One;
+
+						// Should we clamp to the friction cone or reset the friction?
+						const FSimdSelector ApplyFrictionCone = SimdGreaterEqual(MaxFrictionPushOut, MaxFrictionPushOutTolerance);
+
+						// Apply cone limits to tangential pushouts on lanes that exceed the limit
+						// NOTE: if HasNormalPushout is false in any lane, we have already zeroed the net pushout and don't need to do anything here
+						//if (SimdAnyTrue(ApplyFrictionCone))
+						{
+							const FSimdRealf MaxStaticPushOutTangentSq = SimdSquare(SimdMultiply(SimdStaticFriction, MaxFrictionPushOut));
+							const FSimdRealf NetPushOutTangentSq = SimdAdd(SimdSquare(NetPushOutTangentU), SimdSquare(NetPushOutTangentV));
+							const FSimdSelector ExceededFrictionCone = SimdAnd(ApplyFrictionCone, SimdGreater(NetPushOutTangentSq, MaxStaticPushOutTangentSq));
+							//if (SimdAnyTrue(ExceededFrictionCone))
+							{
+								const FSimdRealf MaxDynamicPushOutTangent = SimdMultiply(SimdDynamicFriction, MaxFrictionPushOut);
+								const FSimdRealf FrictionMultiplier = SimdMultiply(MaxDynamicPushOutTangent, SimdInvSqrt(NetPushOutTangentSq));
+								const FSimdRealf ClampedNetPushOutTangentU = SimdMultiply(FrictionMultiplier, NetPushOutTangentU);
+								const FSimdRealf ClampedNetPushOutTangentV = SimdMultiply(FrictionMultiplier, NetPushOutTangentV);
+								const FSimdRealf ClampedPushOutTangentU = SimdSubtract(ClampedNetPushOutTangentU, ManifoldPoint.SimdNetPushOutTangentU);
+								const FSimdRealf ClampedPushOutTangentV = SimdSubtract(ClampedNetPushOutTangentV, ManifoldPoint.SimdNetPushOutTangentV);
+
+								PushOutTangentU = SimdSelect(ExceededFrictionCone, ClampedPushOutTangentU, PushOutTangentU);
+								PushOutTangentV = SimdSelect(ExceededFrictionCone, ClampedPushOutTangentV, PushOutTangentV);
+								NetPushOutTangentU = SimdSelect(ExceededFrictionCone, ClampedNetPushOutTangentU, NetPushOutTangentU);
+								NetPushOutTangentV = SimdSelect(ExceededFrictionCone, ClampedNetPushOutTangentV, NetPushOutTangentV);
+								StaticFrictionRatio = SimdSelect(ExceededFrictionCone, FrictionMultiplier, StaticFrictionRatio);
+							}
+						}
+
+						// If we did not apply the friction cone because we have no normal impulse, apply a pushout to cancel previously applied friction
+						//if (!SimdAllTrue(ApplyFrictionCone))
+						{
+							PushOutTangentU = SimdSelect(ApplyFrictionCone, PushOutTangentU, SimdNegate(ManifoldPoint.SimdNetPushOutTangentU));
+							PushOutTangentV = SimdSelect(ApplyFrictionCone, PushOutTangentV, SimdNegate(ManifoldPoint.SimdNetPushOutTangentV));
+							NetPushOutTangentU = SimdSelect(ApplyFrictionCone, NetPushOutTangentU, Zero);
+							NetPushOutTangentV = SimdSelect(ApplyFrictionCone, NetPushOutTangentV, Zero);
+							StaticFrictionRatio = SimdSelect(ApplyFrictionCone, StaticFrictionRatio, Zero);
+						}
+
+						// Undo all our good work for lanes that should not apply friction at all
+						//if (!SimdAllTrue(ApplyPointFriction))
+						{
+							PushOutTangentU = SimdSelect(ApplyPointFriction, PushOutTangentU, Zero);
+							PushOutTangentV = SimdSelect(ApplyPointFriction, PushOutTangentV, Zero);
+							NetPushOutTangentU = SimdSelect(ApplyPointFriction, NetPushOutTangentU, ManifoldPoint.SimdNetPushOutTangentU);
+							NetPushOutTangentV = SimdSelect(ApplyPointFriction, NetPushOutTangentV, ManifoldPoint.SimdNetPushOutTangentV);
+							StaticFrictionRatio = SimdSelect(ApplyPointFriction, StaticFrictionRatio, One);
+						}
+
+						ManifoldPoint.SimdNetPushOutTangentU = NetPushOutTangentU;
+						ManifoldPoint.SimdNetPushOutTangentV = NetPushOutTangentV;
+						ManifoldPoint.SimdStaticFrictionRatio = StaticFrictionRatio;
+
+						// Add the tangential corrections to the applied correction
+						// NOTE: The order of operations here matches FPBDCollisionSolver::ApplyPositionCorrectionTangential
+						// so that we can do an AB test of the SIMD solver versus the standard solver
+						const FSimdVec3f PushOut = SimdAdd(SimdMultiply(PushOutTangentU, ManifoldPoint.SimdContactTangentU), SimdMultiply(PushOutTangentV, ManifoldPoint.SimdContactTangentV));
+						const FSimdVec3f DDP0 = SimdMultiply(SimdInvM0, PushOut);
+						const FSimdVec3f DDP1 = SimdMultiply(SimdInvM1, PushOut);
+						const FSimdVec3f DDQ0 = SimdAdd(SimdMultiply(ManifoldPoint.SimdContactTangentUAngular0, PushOutTangentU), SimdMultiply(ManifoldPoint.SimdContactTangentVAngular0, PushOutTangentV));
+						const FSimdVec3f DDQ1 = SimdAdd(SimdMultiply(ManifoldPoint.SimdContactTangentUAngular1, PushOutTangentU), SimdMultiply(ManifoldPoint.SimdContactTangentVAngular1, PushOutTangentV));
+						DP0 = SimdAdd(DP0, DDP0);
+						DQ0 = SimdAdd(DQ0, DDQ0);
+						DP1 = SimdSubtract(DP1, DDP1);
+						DQ1 = SimdSubtract(DQ1, DDQ1);
+					}
+				}
+
+				// Update the corrections on the bodies. 
+				// NOTE: This is a scatter operation
+				ScatterBodyPositionCorrections(DP0, DQ0, DP1, DQ1, Body0, Body1);
+			}
+
+			void SolveVelocityNoFriction(
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSimdSolverBodyPtr& Body0,
+				const FSimdSolverBodyPtr& Body1,
+				const FSimdRealf& Dt)
+			{
+				// Gather the body data we need
+				FSimdVec3f V0, W0, V1, W1;
+				GatherBodyVelocities(Body0, Body1, V0, W0, V1, W1);
+
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < MaxManifoldPoints; ++ManifoldPointIndex)
+				{
+					FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[GetBufferIndex(ManifoldPointIndex)];
+
+					// Which lanes require this point be simulated?
+					//if (!SimdAnyTrue(ManifoldPoint.IsValid))
+					//{
+					//	continue;
+					//}
+
+					// Only lanes that applied a position correction or that started with an overlap require a velocity correction
+					FSimdSelector ShouldSolveVelocity = SimdOr(SimdGreater(ManifoldPoint.SimdNetPushOutNormal, FSimdRealf::Zero()), SimdLess(ManifoldPoint.SimdContactDeltaNormal, FSimdRealf::Zero()));
+					ShouldSolveVelocity = SimdAnd(ManifoldPoint.IsValid, ShouldSolveVelocity);
+					//if (!SimdAnyTrue(ShouldSolveVelocity))
+					//{
+					//	continue;
+					//}
+
+					// Calculate the velocity error we need to correct
+					const FSimdVec3f ContactVelocity0 = SimdAdd(V0, SimdCrossProduct(W0, ManifoldPoint.SimdRelativeContactPoint0));
+					const FSimdVec3f ContactVelocity1 = SimdAdd(V1, SimdCrossProduct(W1, ManifoldPoint.SimdRelativeContactPoint1));
+					const FSimdVec3f ContactVelocity = SimdSubtract(ContactVelocity0, ContactVelocity1);
+					const FSimdRealf ContactVelocityNormal = SimdDotProduct(ContactVelocity, ManifoldPoint.SimdContactNormal);
+					FSimdRealf ContactVelocityErrorNormal = SimdSubtract(ContactVelocityNormal, ManifoldPoint.SimdContactTargetVelocityNormal);
+
+					// Calculate the velocity correction for the error
+					FSimdRealf ImpulseNormal = SimdNegate(SimdMultiply(SimdMultiply(SimdStiffness, ManifoldPoint.SimdContactMassNormal), ContactVelocityErrorNormal));
+
+					// The minimum normal impulse we can apply. We are allowed to apply a negative impulse 
+					// up to an amount that would conteract the implciit velocity applied by the pushout
+					// MinImpulseNormal = FMath::Min(0, -NetPushOutNormal / Dt)
+					// if (NetImpulseNormal + ImpulseNormal < MinImpulseNormal) {...}
+					const FSimdRealf MinImpulseNormal = SimdMin(SimdDivide(SimdNegate(ManifoldPoint.SimdNetPushOutNormal), Dt), FSimdRealf::Zero());
+					const FSimdSelector ShouldClampImpulse = SimdLess(SimdAdd(ManifoldPoint.SimdNetImpulseNormal, ImpulseNormal), MinImpulseNormal);
+					const FSimdRealf ClampedImpulseNormal = SimdSubtract(MinImpulseNormal, ManifoldPoint.SimdNetImpulseNormal);
+					ImpulseNormal = SimdSelect(ShouldClampImpulse, ClampedImpulseNormal, ImpulseNormal);
+
+					// Clear the impulse for lanes that should not be solving for velocity
+					ImpulseNormal = SimdSelect(ShouldSolveVelocity, ImpulseNormal, FSimdRealf::Zero());
+
+					ManifoldPoint.SimdNetImpulseNormal = SimdAdd(ManifoldPoint.SimdNetImpulseNormal, ImpulseNormal);
+
+					// NOTE: order of operations matches FPBDCollisionSolver::ApplyVelocityCorrectionNormal for AB Testing
+					const FSimdVec3f Impulse = SimdMultiply(ImpulseNormal, ManifoldPoint.SimdContactNormal);
+					const FSimdVec3f DV0 = SimdMultiply(Impulse, SimdInvM0);
+					const FSimdVec3f DV1 = SimdMultiply(Impulse, SimdInvM1);
+					const FSimdVec3f DW0 = SimdMultiply(ImpulseNormal, ManifoldPoint.SimdContactNormalAngular0);
+					const FSimdVec3f DW1 = SimdMultiply(ImpulseNormal, ManifoldPoint.SimdContactNormalAngular1);
+					V0 = SimdAdd(V0, DV0);
+					W0 = SimdAdd(W0, DW0);
+					V1 = SimdSubtract(V1, DV1);
+					W1 = SimdSubtract(W1, DW1);
+				}
+
+				ScatterBodyVelocities(V0, W0, V1, W1, Body0, Body1);
+			}
+
+			void SolveVelocityWithFrictionImpl(
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSimdSolverBodyPtr& Body0,
+				const FSimdSolverBodyPtr& Body1,
+				const FSimdRealf& Dt,
+				const FSimd4Realf& FrictionStiffnessScale)
+			{
+				// Gather the body data we need
+				FSimdVec3f V0, W0, V1, W1;
+				GatherBodyVelocities(Body0, Body1, V0, W0, V1, W1);
+
+				for (int32 ManifoldPointIndex = 0; ManifoldPointIndex < MaxManifoldPoints; ++ManifoldPointIndex)
+				{
+					FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[GetBufferIndex(ManifoldPointIndex)];
+
+					// Which lanes require this point be simulated?
+					//if (!SimdAnyTrue(ManifoldPoint.IsValid))
+					//{
+					//	continue;
+					//}
+
+					// Only lanes that applied a position correction or that started with an overlap require a velocity correction
+					FSimdSelector ShouldSolveVelocity = SimdOr(SimdGreater(ManifoldPoint.SimdNetPushOutNormal, FSimdRealf::Zero()), SimdLess(ManifoldPoint.SimdContactDeltaNormal, FSimdRealf::Zero()));
+					ShouldSolveVelocity = SimdAnd(ManifoldPoint.IsValid, ShouldSolveVelocity);
+					//if (!SimdAnyTrue(ShouldSolveVelocity))
+					//{
+					//	continue;
+					//}
+
+					// Calculate the velocity error we need to correct
+					const FSimdVec3f ContactVelocity0 = SimdAdd(V0, SimdCrossProduct(W0, ManifoldPoint.SimdRelativeContactPoint0));
+					const FSimdVec3f ContactVelocity1 = SimdAdd(V1, SimdCrossProduct(W1, ManifoldPoint.SimdRelativeContactPoint1));
+					const FSimdVec3f ContactVelocity = SimdSubtract(ContactVelocity0, ContactVelocity1);
+					FSimdRealf ContactVelocityErrorNormal = SimdSubtract(SimdDotProduct(ContactVelocity, ManifoldPoint.SimdContactNormal), ManifoldPoint.SimdContactTargetVelocityNormal);
+					FSimdRealf ContactVelocityErrorTangentU = SimdDotProduct(ContactVelocity, ManifoldPoint.SimdContactTangentU);
+					FSimdRealf ContactVelocityErrorTangentV = SimdDotProduct(ContactVelocity, ManifoldPoint.SimdContactTangentV);
+
+					// A stiffness multiplier on the impulses (zeroed if we have no friction in a lane)
+					const FSimdRealf FrictionStiffness = SimdMultiply(FrictionStiffnessScale, SimdStiffness);
+
+					// Calculate the impulses
+					FSimdRealf ImpulseNormal = SimdNegate(SimdMultiply(SimdMultiply(SimdStiffness, ManifoldPoint.SimdContactMassNormal), ContactVelocityErrorNormal));
+					FSimdRealf ImpulseTangentU = SimdNegate(SimdMultiply(SimdMultiply(FrictionStiffness, ManifoldPoint.SimdContactMassTangentU), ContactVelocityErrorTangentU));
+					FSimdRealf ImpulseTangentV = SimdNegate(SimdMultiply(SimdMultiply(FrictionStiffness, ManifoldPoint.SimdContactMassTangentV), ContactVelocityErrorTangentV));
+
+					// Zero out friction for lanes with no friction
+					const FSimdSelector HasFriction = SimdAnd(ShouldSolveVelocity, SimdGreater(SimdVelocityFriction, FSimdRealf::Zero()));
+					ImpulseTangentU = SimdSelect(HasFriction, ImpulseTangentU, FSimdRealf::Zero());
+					ImpulseTangentV = SimdSelect(HasFriction, ImpulseTangentV, FSimdRealf::Zero());
+
+					// The minimum normal impulse we can apply. We are allowed to apply a negative impulse 
+					// up to an amount that would conteract the implciit velocity applied by the pushout
+					// MinImpulseNormal = FMath::Min(0, -NetPushOutNormal / Dt)
+					// if (NetImpulseNormal + ImpulseNormal < MinImpulseNormal) {...}
+					const FSimdRealf MinImpulseNormal = SimdMin(SimdNegate(SimdDivide(ManifoldPoint.SimdNetPushOutNormal, Dt)), FSimdRealf::Zero());
+					const FSimdSelector ShouldClampImpulse = SimdLess(SimdAdd(ManifoldPoint.SimdNetImpulseNormal, ImpulseNormal), MinImpulseNormal);
+					const FSimdRealf ClampedImpulseNormal = SimdSubtract(MinImpulseNormal, ManifoldPoint.SimdNetImpulseNormal);
+					ImpulseNormal = SimdSelect(ShouldClampImpulse, ClampedImpulseNormal, ImpulseNormal);
+
+					// Calculate the impulse multipler if clamped to the dynamic friction cone
+					const FSimdRealf MaxNetImpulseAndPushOutTangent = SimdAdd(ManifoldPoint.SimdNetImpulseNormal, SimdAdd(ImpulseNormal, SimdDivide(ManifoldPoint.SimdNetPushOutNormal, Dt)));
+					const FSimdRealf MaxImpulseTangent = SimdMax(FSimdRealf::Zero(), SimdMultiply(SimdVelocityFriction, MaxNetImpulseAndPushOutTangent));
+					const FSimdRealf MaxImpulseTangentSq = SimdSquare(MaxImpulseTangent);
+					const FSimdRealf ImpulseTangentSq = SimdAdd(SimdSquare(ImpulseTangentU), SimdSquare(ImpulseTangentV));
+					const FSimdRealf ImpulseTangentScale = SimdMultiply(MaxImpulseTangent, SimdInvSqrt(ImpulseTangentSq));
+
+					// Apply the multiplier to lanes that exceeded the friction limit
+					const FSimdSelector ExceededFrictionCone = SimdGreater(ImpulseTangentSq, SimdAdd(MaxImpulseTangentSq, FSimdRealf::Make(UE_SMALL_NUMBER)));
+					ImpulseTangentU = SimdSelect(ExceededFrictionCone, SimdMultiply(ImpulseTangentScale, ImpulseTangentU), ImpulseTangentU);
+					ImpulseTangentV = SimdSelect(ExceededFrictionCone, SimdMultiply(ImpulseTangentScale, ImpulseTangentV), ImpulseTangentV);
+
+					// Clear the impulse for lanes that should not be solving for velocity
+					ImpulseNormal = SimdSelect(ShouldSolveVelocity, ImpulseNormal, FSimdRealf::Zero());
+					ImpulseTangentU = SimdSelect(ShouldSolveVelocity, ImpulseTangentU, FSimdRealf::Zero());
+					ImpulseTangentV = SimdSelect(ShouldSolveVelocity, ImpulseTangentV, FSimdRealf::Zero());
+
+					ManifoldPoint.SimdNetImpulseNormal = SimdAdd(ManifoldPoint.SimdNetImpulseNormal, ImpulseNormal);
+					ManifoldPoint.SimdNetImpulseTangentU = SimdAdd(ManifoldPoint.SimdNetImpulseTangentU, ImpulseTangentU);
+					ManifoldPoint.SimdNetImpulseTangentV = SimdAdd(ManifoldPoint.SimdNetImpulseTangentU, ImpulseTangentV);
+
+					// NOTE: order of operations matches FPBDCollisionSolver::ApplyVelocityCorrection for AB Testing
+					const FSimdVec3f Impulse = SimdAdd(SimdMultiply(ImpulseNormal, ManifoldPoint.SimdContactNormal), SimdAdd(SimdMultiply(ImpulseTangentU, ManifoldPoint.SimdContactTangentU), SimdMultiply(ImpulseTangentV, ManifoldPoint.SimdContactTangentV)));
+					const FSimdVec3f DV0 = SimdMultiply(Impulse, SimdInvM0);
+					const FSimdVec3f DV1 = SimdMultiply(Impulse, SimdInvM1);
+					const FSimdVec3f DW0 = SimdAdd(SimdMultiply(ImpulseNormal, ManifoldPoint.SimdContactNormalAngular0), SimdAdd(SimdMultiply(ImpulseTangentU, ManifoldPoint.SimdContactTangentUAngular0), SimdMultiply(ImpulseTangentV, ManifoldPoint.SimdContactTangentVAngular0)));
+					const FSimdVec3f DW1 = SimdAdd(SimdMultiply(ImpulseNormal, ManifoldPoint.SimdContactNormalAngular1), SimdAdd(SimdMultiply(ImpulseTangentU, ManifoldPoint.SimdContactTangentUAngular1), SimdMultiply(ImpulseTangentV, ManifoldPoint.SimdContactTangentVAngular1)));
+					V0 = SimdAdd(V0, DV0);
+					W0 = SimdAdd(W0, DW0);
+					V1 = SimdSubtract(V1, DV1);
+					W1 = SimdSubtract(W1, DW1);
+				}
+
+				ScatterBodyVelocities(V0, W0, V1, W1, Body0, Body1);
+			}
+
+			void SolveVelocityWithFriction(
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer,
+				const FSimdSolverBodyPtr& Body0,
+				const FSimdSolverBodyPtr& Body1,
+				const FSimdRealf& Dt,
+				const FSimd4Realf& FrictionStiffnessScale)
+			{
+				// If all the lanes have zero velocity friction, run the zero-friction path
+				// (only spheres and capsules use the velocity-based dynamic friction path)
+				const FSimdSelector HasNonZeroFriction = SimdGreater(SimdVelocityFriction, FSimdRealf::Zero());
+				if (!SimdAnyTrue(HasNonZeroFriction))
+				{
+					SolveVelocityNoFriction(ManifoldPointsBuffer, Body0, Body1, Dt);
+					return;
+				}
+
+				SolveVelocityWithFrictionImpl(ManifoldPointsBuffer, Body0, Body1, Dt, FrictionStiffnessScale);
+			}
+
+			FSolverVec3 GetNetPushOut(
+				const int32 ManifoldPointIndex,
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer) const
+			{
+				const int32 BufferIndex = GetBufferIndex(ManifoldPointIndex);
+				const FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[BufferIndex];
+
+				return ManifoldPoint.SimdNetPushOutNormal.GetValue(LaneIndex) * ManifoldPoint.SimdContactNormal.GetValue(LaneIndex) +
+					ManifoldPoint.SimdNetPushOutTangentU.GetValue(LaneIndex) * ManifoldPoint.SimdContactTangentU.GetValue(LaneIndex) +
+					ManifoldPoint.SimdNetPushOutTangentV.GetValue(LaneIndex) * ManifoldPoint.SimdContactTangentV.GetValue(LaneIndex);
+			}
+
+			FSolverVec3 GetNetImpulse(
+				const int32 ManifoldPointIndex,
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer) const
+			{
+				const int32 BufferIndex = GetBufferIndex(ManifoldPointIndex);
+				const FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[BufferIndex];
+
+				return ManifoldPoint.SimdNetImpulseNormal.GetValue(LaneIndex) * ManifoldPoint.SimdContactNormal.GetValue(LaneIndex) +
+					ManifoldPoint.SimdNetImpulseTangentU.GetValue(LaneIndex) * ManifoldPoint.SimdContactTangentU.GetValue(LaneIndex) +
+					ManifoldPoint.SimdNetImpulseTangentV.GetValue(LaneIndex) * ManifoldPoint.SimdContactTangentV.GetValue(LaneIndex);
+			}
+
+			FSolverReal GetStaticFrictionRatio(
+				const int32 ManifoldPointIndex,
+				const int32 LaneIndex,
+				const TArrayView<FSimdManifoldPoint>& ManifoldPointsBuffer) const
+			{
+				const int32 BufferIndex = GetBufferIndex(ManifoldPointIndex);
+				const FSimdManifoldPoint& ManifoldPoint = ManifoldPointsBuffer[BufferIndex];
+
+				return ManifoldPoint.SimdStaticFrictionRatio.GetValue(LaneIndex);
+			}
+
+		public:
+			int32 GetBufferIndex(const int32 ManifoldPointIndex) const
+			{
+				return ManifoldPointBeginIndex + ManifoldPointIndex;
+			}
+
+			void Init()
+			{
+				MaxManifoldPoints = 0;
+				ManifoldPointBeginIndex = INDEX_NONE;
+				SimdNumManifoldPoints.SetValues(0);
+				SimdStaticFriction.SetValues(0);
+				SimdDynamicFriction.SetValues(0);
+				SimdVelocityFriction.SetValues(0);
+				SimdStiffness.SetValues(1);
+				SimdInvM0.SetValues(0);
+				SimdInvM1.SetValues(0);
+			}
+
+			// Each lane has space for MaxManifoldPoints, but not all will be used
+			// Unused manifold points may be in the middle of the list (if disabled for example)
+			int32 MaxManifoldPoints;
+			int32 ManifoldPointBeginIndex;
+			FSimdInt32 SimdNumManifoldPoints;
+
+			FSimdRealf SimdStaticFriction;
+			FSimdRealf SimdDynamicFriction;
+			FSimdRealf SimdVelocityFriction;
+			FSimdRealf SimdStiffness;
+			FSimdRealf SimdInvM0;
+			FSimdRealf SimdInvM1;
 		};
 
 		//////////////////////////////////////////////////////////////////////////////////////////////////
@@ -587,374 +1083,76 @@ namespace Chaos
 		//////////////////////////////////////////////////////////////////////////////////////////////////
 		//////////////////////////////////////////////////////////////////////////////////////////////////
 
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::InitContact(
-			const FSolverReal Dt,
-			const FConstraintSolverBody& Body0,
-			const FConstraintSolverBody& Body1)
-		{
-			NetPushOutNormal = FSolverReal(0);
-			NetPushOutTangentU = FSolverReal(0);
-			NetPushOutTangentV = FSolverReal(0);
-			NetImpulseNormal = FSolverReal(0);
-			NetImpulseTangentU = FSolverReal(0);
-			NetImpulseTangentV = FSolverReal(0);
-			StaticFrictionRatio = FSolverReal(0);
-
-			UpdateMass(Body0, Body1);
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::UpdateMass(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1)
-		{
-			FSolverReal ContactMassInvNormal = FSolverReal(0);
-			FSolverReal ContactMassInvTangentU = FSolverReal(0);
-			FSolverReal ContactMassInvTangentV = FSolverReal(0);
-
-			// These are not used if not initialized below so no need to clear
-			//WorldContactNormalAngular0 = FSolverVec3(0);
-			//WorldContactTangentUAngular0 = FSolverVec3(0);
-			//WorldContactTangentVAngular0 = FSolverVec3(0);
-			//WorldContactNormalAngular1 = FSolverVec3(0);
-			//WorldContactTangentUAngular1 = FSolverVec3(0);
-			//WorldContactTangentVAngular1 = FSolverVec3(0);
-
-			if (Body0.IsDynamic())
-			{
-				const FSolverVec3 R0xN = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[0], WorldContact.ContactNormal);
-				const FSolverVec3 R0xU = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[0], WorldContact.ContactTangentU);
-				const FSolverVec3 R0xV = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[0], WorldContact.ContactTangentV);
-
-				const FSolverMatrix33 InvI0 = Body0.InvI();
-
-				WorldContactNormalAngular0 = InvI0 * R0xN;
-				WorldContactTangentUAngular0 = InvI0 * R0xU;
-				WorldContactTangentVAngular0 = InvI0 * R0xV;
-
-				ContactMassInvNormal += FSolverVec3::DotProduct(R0xN, WorldContactNormalAngular0) + Body0.InvM();
-				ContactMassInvTangentU += FSolverVec3::DotProduct(R0xU, WorldContactTangentUAngular0) + Body0.InvM();
-				ContactMassInvTangentV += FSolverVec3::DotProduct(R0xV, WorldContactTangentVAngular0) + Body0.InvM();
-			}
-			if (Body1.IsDynamic())
-			{
-				const FSolverVec3 R1xN = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[1], WorldContact.ContactNormal);
-				const FSolverVec3 R1xU = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[1], WorldContact.ContactTangentU);
-				const FSolverVec3 R1xV = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[1], WorldContact.ContactTangentV);
-
-				const FSolverMatrix33 InvI1 = Body1.InvI();
-
-				WorldContactNormalAngular1 = InvI1 * R1xN;
-				WorldContactTangentUAngular1 = InvI1 * R1xU;
-				WorldContactTangentVAngular1 = InvI1 * R1xV;
-
-				ContactMassInvNormal += FSolverVec3::DotProduct(R1xN, WorldContactNormalAngular1) + Body1.InvM();
-				ContactMassInvTangentU += FSolverVec3::DotProduct(R1xU, WorldContactTangentUAngular1) + Body1.InvM();
-				ContactMassInvTangentV += FSolverVec3::DotProduct(R1xV, WorldContactTangentVAngular1) + Body1.InvM();
-			}
-
-			ContactMassNormal = (ContactMassInvNormal > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvNormal : FSolverReal(0);
-			ContactMassTangentU = (ContactMassInvTangentU > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvTangentU : FSolverReal(0);
-			ContactMassTangentV = (ContactMassInvTangentV > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvTangentV : FSolverReal(0);
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::UpdateMassNormal(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1)
-		{
-			FSolverReal ContactMassInvNormal = FSolverReal(0);
-			if (Body0.IsDynamic())
-			{
-				const FSolverVec3 R0xN = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[0], WorldContact.ContactNormal);
-				const FSolverMatrix33 InvI0 = Body0.InvI();
-				WorldContactNormalAngular0 = InvI0 * R0xN;
-				ContactMassInvNormal += FSolverVec3::DotProduct(R0xN, WorldContactNormalAngular0) + Body0.InvM();
-			}
-			if (Body1.IsDynamic())
-			{
-				const FSolverVec3 R1xN = FSolverVec3::CrossProduct(WorldContact.RelativeContactPoints[1], WorldContact.ContactNormal);
-				const FSolverMatrix33 InvI1 = Body1.InvI();
-				WorldContactNormalAngular1 = InvI1 * R1xN;
-				ContactMassInvNormal += FSolverVec3::DotProduct(R1xN, WorldContactNormalAngular1) + Body1.InvM();
-			}
-			ContactMassNormal = (ContactMassInvNormal > FSolverReal(UE_SMALL_NUMBER)) ? FSolverReal(1) / ContactMassInvNormal : FSolverReal(0);
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::CalculateContactPositionErrorNormal(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, const FSolverReal MaxPushOut, FSolverReal& OutContactDeltaNormal) const
-		{
-			// Linear version: calculate the contact delta assuming linear motion after applying a positional impulse at the contact point. There will be an error that depends on the size of the rotation.
-			const FSolverVec3 ContactDelta0 = Body0.DP() + FSolverVec3::CrossProduct(Body0.DQ(), WorldContact.RelativeContactPoints[0]);
-			const FSolverVec3 ContactDelta1 = Body1.DP() + FSolverVec3::CrossProduct(Body1.DQ(), WorldContact.RelativeContactPoints[1]);
-			const FSolverVec3 ContactDelta = ContactDelta0 - ContactDelta1;
-			OutContactDeltaNormal = WorldContact.ContactDeltaNormal + FSolverVec3::DotProduct(ContactDelta, WorldContact.ContactNormal);
-
-			// NOTE: OutContactDeltaNormal is negative for penetration
-			// NOTE: MaxPushOut == 0 disables the pushout limits
-			if ((MaxPushOut > 0) && (OutContactDeltaNormal < -MaxPushOut))
-			{
-				OutContactDeltaNormal = -MaxPushOut;
-			}
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::CalculateContactPositionErrorTangential(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, FSolverReal& OutContactDeltaTangentU, FSolverReal& OutContactDeltaTangentV) const
-		{
-			// Linear version: calculate the contact delta assuming linear motion after applying a positional impulse at the contact point. There will be an error that depends on the size of the rotation.
-			const FSolverVec3 ContactDelta0 = Body0.DP() + FSolverVec3::CrossProduct(Body0.DQ(), WorldContact.RelativeContactPoints[0]);
-			const FSolverVec3 ContactDelta1 = Body1.DP() + FSolverVec3::CrossProduct(Body1.DQ(), WorldContact.RelativeContactPoints[1]);
-			const FSolverVec3 ContactDelta = ContactDelta0 - ContactDelta1;
-			OutContactDeltaTangentU = WorldContact.ContactDeltaTangentU + FSolverVec3::DotProduct(ContactDelta, WorldContact.ContactTangentU);
-			OutContactDeltaTangentV = WorldContact.ContactDeltaTangentV + FSolverVec3::DotProduct(ContactDelta, WorldContact.ContactTangentV);
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::CalculateContactVelocityError(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, const FSolverReal DynamicFriction, const FSolverReal Dt, FSolverReal& OutContactVelocityDeltaNormal, FSolverReal& OutContactVelocityDeltaTangent0, FSolverReal& OutContactVelocityDeltaTangent1) const
-		{
-			const FSolverVec3 ContactVelocity0 = Body0.V() + FSolverVec3::CrossProduct(Body0.W(), WorldContact.RelativeContactPoints[0]);
-			const FSolverVec3 ContactVelocity1 = Body1.V() + FSolverVec3::CrossProduct(Body1.W(), WorldContact.RelativeContactPoints[1]);
-			const FSolverVec3 ContactVelocity = ContactVelocity0 - ContactVelocity1;
-			const FSolverReal ContactVelocityNormal = FSolverVec3::DotProduct(ContactVelocity, WorldContact.ContactNormal);
-			const FSolverReal ContactVelocityTangent0 = FSolverVec3::DotProduct(ContactVelocity, WorldContact.ContactTangentU);
-			const FSolverReal ContactVelocityTangent1 = FSolverVec3::DotProduct(ContactVelocity, WorldContact.ContactTangentV);
-
-			OutContactVelocityDeltaNormal = (ContactVelocityNormal - WorldContact.ContactTargetVelocityNormal);
-			OutContactVelocityDeltaTangent0 = ContactVelocityTangent0;
-			OutContactVelocityDeltaTangent1 = ContactVelocityTangent1;
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverManifoldPointSimd::CalculateContactVelocityErrorNormal(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, FSolverReal& OutContactVelocityDeltaNormal) const
-		{
-			const FSolverVec3 ContactVelocity0 = Body0.V() + FSolverVec3::CrossProduct(Body0.W(), WorldContact.RelativeContactPoints[0]);
-			const FSolverVec3 ContactVelocity1 = Body1.V() + FSolverVec3::CrossProduct(Body1.W(), WorldContact.RelativeContactPoints[1]);
-			const FSolverVec3 ContactVelocity = ContactVelocity0 - ContactVelocity1;
-			const FSolverReal ContactVelocityNormal = FSolverVec3::DotProduct(ContactVelocity, WorldContact.ContactNormal);
-
-			// Add up the errors in the velocity (current velocity - desired velocity)
-			OutContactVelocityDeltaNormal = (ContactVelocityNormal - WorldContact.ContactTargetVelocityNormal);
-		}
-
-		FORCEINLINE_DEBUGGABLE bool FPBDCollisionSolverManifoldPointSimd::ShouldSolveVelocity() const
-		{
-			// We ensure positive separating velocity for close contacts even if they didn't receive a pushout
-			return (NetPushOutNormal > FSolverReal(0)) || (WorldContact.ContactDeltaNormal < FSolverReal(0));
-		}
-
-		//////////////////////////////////////////////////////////////////////////////////////////////////
-		//////////////////////////////////////////////////////////////////////////////////////////////////
-		//////////////////////////////////////////////////////////////////////////////////////////////////
-		//////////////////////////////////////////////////////////////////////////////////////////////////
-
-		FORCEINLINE_DEBUGGABLE  void FPBDCollisionSolverSimd::FinalizeManifoldPoint(const int32 ManifoldPoiontIndex, const FSolverReal Dt)
-		{
-			State.ManifoldPoints[ManifoldPoiontIndex].InitContact(
-				FSolverReal(Dt),
-				State.SolverBodies[0],
-				State.SolverBodies[1]);
-		}
-
-		FORCEINLINE_DEBUGGABLE void FPBDCollisionSolverSimd::SetManifoldPoint(
-			const int32 ManifoldPoiontIndex,
-			const FSolverReal Dt,
-			const FSolverVec3& InRelativeContactPosition0,
-			const FSolverVec3& InRelativeContactPosition1,
-			const FSolverVec3& InWorldContactNormal,
-			const FSolverVec3& InWorldContactTangentU,
-			const FSolverVec3& InWorldContactTangentV,
-			const FSolverReal InWorldContactDeltaNormal,
-			const FSolverReal InWorldContactDeltaTangentU,
-			const FSolverReal InWorldContactDeltaTangentV,
-			const FSolverReal InWorldContactVelocityTargetNormal)
-		{
-			FWorldContactPoint& WorldContactPoint = State.ManifoldPoints[ManifoldPoiontIndex].WorldContact;
-			WorldContactPoint.RelativeContactPoints[0] = InRelativeContactPosition0;
-			WorldContactPoint.RelativeContactPoints[1] = InRelativeContactPosition1;
-			WorldContactPoint.ContactNormal = InWorldContactNormal;
-			WorldContactPoint.ContactTangentU = InWorldContactTangentU;
-			WorldContactPoint.ContactTangentV = InWorldContactTangentV;
-			WorldContactPoint.ContactDeltaNormal = InWorldContactDeltaNormal;
-			WorldContactPoint.ContactDeltaTangentU = InWorldContactDeltaTangentU;
-			WorldContactPoint.ContactDeltaTangentV = InWorldContactDeltaTangentV;
-			WorldContactPoint.ContactTargetVelocityNormal = InWorldContactVelocityTargetNormal;
-
-			State.ManifoldPoints[ManifoldPoiontIndex].InitContact(
-				FSolverReal(Dt),
-				State.SolverBodies[0],
-				State.SolverBodies[1]);
-		}
-
-		FORCEINLINE_DEBUGGABLE bool FPBDCollisionSolverSimd::SolvePositionWithFriction(const FSolverReal Dt, const FSolverReal MaxPushOut)
-		{
-			// SolverBody decorator used to add mass scaling
-			FConstraintSolverBody& Body0 = SolverBody0();
-			FConstraintSolverBody& Body1 = SolverBody1();
-
-			// Accumulate net pushout for friction limits below
-			bool bApplyFriction[MaxPointsPerConstraint] = { false, };
-			int32 NumFrictionContacts = 0;
-			FSolverReal TotalPushOutNormal = FSolverReal(0);
-
-			// Apply the position correction along the normal and determine if we want to run friction on each point
-			for (int32 PointIndex = 0; PointIndex < NumManifoldPoints(); ++PointIndex)
-			{
-				FPBDCollisionSolverManifoldPointSimd& SolverManifoldPoint = State.ManifoldPoints[PointIndex];
-
-				FSolverReal ContactDeltaNormal;
-				SolverManifoldPoint.CalculateContactPositionErrorNormal(Body0.SolverBody(), Body1.SolverBody(), MaxPushOut, ContactDeltaNormal);
-
-				// Apply a normal correction if we still have penetration or if we are now separated but have previously applied a correction that we may want to undo
-				const bool bProcessManifoldPoint = (ContactDeltaNormal < FSolverReal(0)) || (SolverManifoldPoint.NetPushOutNormal > FSolverReal(UE_SMALL_NUMBER));
-				if (bProcessManifoldPoint)
-				{
-					SolverManifoldPoint.ApplyPositionCorrectionNormal(
-						State.Stiffness,
-						ContactDeltaNormal,
-						Body0,
-						Body1);
-
-					TotalPushOutNormal += SolverManifoldPoint.NetPushOutNormal;
-				}
-
-				// Friction gets updated for any point with a net normal correction or where we have previously had a normal correction and 
-				// already applied friction (in which case we may need to zero it)
-				if ((SolverManifoldPoint.NetPushOutNormal != 0) || (SolverManifoldPoint.NetPushOutTangentU != 0) || (SolverManifoldPoint.NetPushOutTangentV != 0))
-				{
-					bApplyFriction[PointIndex] = true;
-					++NumFrictionContacts;
-				}
-			}
-
-			// Apply the tangential position correction if required
-			if (NumFrictionContacts > 0)
-			{
-				// We clip the tangential correction at each contact to the friction cone, but we use to average impulse
-				// among all contacts as the clipping limit. This is not really correct but it is much more stable to 
-				// differences in contacts from tick to tick
-				// @todo(chaos): try a decaying maximum per contact point rather than an average (again - we had that once!)
-				const FSolverReal FrictionMaxPushOut = TotalPushOutNormal / FSolverReal(NumFrictionContacts);
-				const FSolverReal FrictionStiffness = State.Stiffness * CVars::Chaos_PBDCollisionSolver_Position_StaticFrictionStiffness;
-
-				for (int32 PointIndex = 0; PointIndex < NumManifoldPoints(); ++PointIndex)
-				{
-					if (bApplyFriction[PointIndex])
-					{
-						FPBDCollisionSolverManifoldPointSimd& SolverManifoldPoint = State.ManifoldPoints[PointIndex];
-
-						FSolverReal ContactDeltaTangentU, ContactDeltaTangentV;
-						SolverManifoldPoint.CalculateContactPositionErrorTangential(Body0.SolverBody(), Body1.SolverBody(), ContactDeltaTangentU, ContactDeltaTangentV);
-
-						SolverManifoldPoint.ApplyPositionCorrectionTangential(
-							FrictionStiffness,
-							State.StaticFriction,
-							State.DynamicFriction,
-							FrictionMaxPushOut,
-							ContactDeltaTangentU,
-							ContactDeltaTangentV,
-							Body0,
-							Body1);
-					}
-				}
-			}
-
-			return false;
-		}
-
-		FORCEINLINE_DEBUGGABLE bool FPBDCollisionSolverSimd::SolvePositionNoFriction(const FSolverReal Dt, const FSolverReal MaxPushOut)
-		{
-			// SolverBody decorator used to add mass scaling
-			FConstraintSolverBody& Body0 = SolverBody0();
-			FConstraintSolverBody& Body1 = SolverBody1();
-
-			// Apply the position correction so that all contacts have zero separation
-			for (int32 PointIndex = 0; PointIndex < NumManifoldPoints(); ++PointIndex)
-			{
-				FPBDCollisionSolverManifoldPointSimd& SolverManifoldPoint = State.ManifoldPoints[PointIndex];
-
-				FSolverReal ContactDeltaNormal;
-				SolverManifoldPoint.CalculateContactPositionErrorNormal(Body0.SolverBody(), Body1.SolverBody(), MaxPushOut, ContactDeltaNormal);
-
-				const bool bProcessManifoldPoint = (ContactDeltaNormal < FSolverReal(0)) || (SolverManifoldPoint.NetPushOutNormal > FSolverReal(UE_SMALL_NUMBER));
-				if (bProcessManifoldPoint)
-				{
-					SolverManifoldPoint.ApplyPositionCorrectionNormal(
-						State.Stiffness,
-						ContactDeltaNormal,
-						Body0,
-						Body1);
-				}
-			}
-
-			return false;
-		}
-
-		FORCEINLINE_DEBUGGABLE bool FPBDCollisionSolverSimd::SolveVelocity(const FSolverReal Dt, const bool bApplyDynamicFriction)
-		{
-			// Apply restitution at the average contact point
-			// This means we don't need to run as many iterations to get stable bouncing
-			// It also helps with zero restitution to counter any velocioty added by the PBD solve
-			const bool bSolveAverageContact = (NumManifoldPoints() > 1) && CVars::bChaos_PBDCollisionSolver_Velocity_AveragePointEnabled;
-			if (bSolveAverageContact)
-			{
-				SolveVelocityAverage(Dt);
-			}
-
-			FConstraintSolverBody& Body0 = SolverBody0();
-			FConstraintSolverBody& Body1 = SolverBody1();
-
-			// NOTE: this dynamic friction implementation is iteration-count sensitive
-			// @todo(chaos): fix iteration count dependence of dynamic friction
-			const FSolverReal DynamicFriction = (bApplyDynamicFriction && (Dt > 0) && CVars::bChaos_PBDCollisionSolver_Velocity_FrictionEnabled) ? State.VelocityFriction : FSolverReal(0);
-
-			for (int32 PointIndex = 0; PointIndex < NumManifoldPoints(); ++PointIndex)
-			{
-				FPBDCollisionSolverManifoldPointSimd& SolverManifoldPoint = State.ManifoldPoints[PointIndex];
-
-				if (SolverManifoldPoint.ShouldSolveVelocity())
-				{
-					const FSolverReal MinImpulseNormal = FMath::Min(FSolverReal(0), -SolverManifoldPoint.NetPushOutNormal / Dt);
-
-					if (DynamicFriction > 0)
-					{
-						FSolverReal ContactVelocityDeltaNormal, ContactVelocityDeltaTangentU, ContactVelocityDeltaTangentV;
-						SolverManifoldPoint.CalculateContactVelocityError(Body0, Body1, DynamicFriction, Dt, ContactVelocityDeltaNormal, ContactVelocityDeltaTangentU, ContactVelocityDeltaTangentV);
-
-						SolverManifoldPoint.ApplyVelocityCorrection(
-							State.Stiffness,
-							Dt,
-							DynamicFriction,
-							ContactVelocityDeltaNormal,
-							ContactVelocityDeltaTangentU,
-							ContactVelocityDeltaTangentV,
-							MinImpulseNormal,
-							Body0,
-							Body1);
-					}
-					else
-					{
-						FSolverReal ContactVelocityDeltaNormal;
-						SolverManifoldPoint.CalculateContactVelocityErrorNormal(Body0, Body1, ContactVelocityDeltaNormal);
-
-						SolverManifoldPoint.ApplyVelocityCorrectionNormal(
-							State.Stiffness,
-							ContactVelocityDeltaNormal,
-							MinImpulseNormal,
-							Body0,
-							Body1);
-					}
-				}
-			}
-
-			// Early-out support for the velocity solve is not currently very important because we
-			// only run one iteration in the velocity solve phase.
-			// @todo(chaos): support early-out in velocity solve if necessary
-			return true;
-		}
-
 
 		/**
-		 * A helper for solving arrays of constraints
+		 * A helper for solving arrays of constraints.
+		 * @note Only works with 4 SIMD lanes for now.
 		 */
 		class FPBDCollisionSolverHelperSimd
 		{
 		public:
-			static void SolvePositionNoFriction(const TArrayView<FPBDCollisionSolverSimd>& CollisionSolvers, const FSolverReal Dt, const FSolverReal MaxPushOut);
-			static void SolvePositionWithFriction(const TArrayView<FPBDCollisionSolverSimd>& CollisionSolvers, const FSolverReal Dt, const FSolverReal MaxPushOut);
-			static void SolveVelocity(const TArrayView<FPBDCollisionSolverSimd>& CollisionSolvers, const FSolverReal Dt, const bool bApplyDynamicFriction);
+			template<int TNumLanes>
+			static void SolvePositionNoFriction(
+				const TArrayView<TPBDCollisionSolverSimd<TNumLanes>>& Solvers,
+				const TArrayView<TPBDCollisionSolverManifoldPointsSimd<TNumLanes>>& ManifoldPoints,
+				const TArrayView<TSolverBodyPtrPairSimd<TNumLanes>>& SolverBodies,
+				const FSolverReal Dt,
+				const FSolverReal MaxPushOut);
 
-			static void CheckISPC();
+			template<int TNumLanes>
+			static void SolvePositionWithFriction(
+				const TArrayView<TPBDCollisionSolverSimd<TNumLanes>>& Solvers,
+				const TArrayView<TPBDCollisionSolverManifoldPointsSimd<TNumLanes>>& ManifoldPoints,
+				const TArrayView<TSolverBodyPtrPairSimd<TNumLanes>>& SolverBodies,
+				const FSolverReal Dt,
+				const FSolverReal MaxPushOut);
+
+			template<int TNumLanes>
+			static void SolveVelocityNoFriction(
+				const TArrayView<TPBDCollisionSolverSimd<TNumLanes>>& Solvers,
+				const TArrayView<TPBDCollisionSolverManifoldPointsSimd<TNumLanes>>& ManifoldPoints,
+				const TArrayView<TSolverBodyPtrPairSimd<TNumLanes>>& SolverBodies,
+				const FSolverReal Dt);
+
+			template<int TNumLanes>
+			static void SolveVelocityWithFriction(
+				const TArrayView<TPBDCollisionSolverSimd<TNumLanes>>& Solvers,
+				const TArrayView<TPBDCollisionSolverManifoldPointsSimd<TNumLanes>>& ManifoldPoints,
+				const TArrayView<TSolverBodyPtrPairSimd<TNumLanes>>& SolverBodies,
+				const FSolverReal Dt);
+
+			static CHAOS_API void CheckISPC();
 		};
+
+		template<> 
+		void FPBDCollisionSolverHelperSimd::SolvePositionNoFriction(
+			const TArrayView<TPBDCollisionSolverSimd<4>>& Solvers,
+			const TArrayView<TPBDCollisionSolverManifoldPointsSimd<4>>& ManifoldPoints,
+			const TArrayView<TSolverBodyPtrPairSimd<4>>& SolverBodies,
+			const FSolverReal Dt,
+			const FSolverReal MaxPushOut);
+
+		template<>
+		void FPBDCollisionSolverHelperSimd::SolvePositionWithFriction(
+			const TArrayView<TPBDCollisionSolverSimd<4>>& Solvers,
+			const TArrayView<TPBDCollisionSolverManifoldPointsSimd<4>>& ManifoldPoints,
+			const TArrayView<TSolverBodyPtrPairSimd<4>>& SolverBodies,
+			const FSolverReal Dt,
+			const FSolverReal MaxPushOut);
+
+		template<>
+		void FPBDCollisionSolverHelperSimd::SolveVelocityNoFriction(
+			const TArrayView<TPBDCollisionSolverSimd<4>>& Solvers,
+			const TArrayView<TPBDCollisionSolverManifoldPointsSimd<4>>& ManifoldPoints,
+			const TArrayView<TSolverBodyPtrPairSimd<4>>& SolverBodies,
+			const FSolverReal Dt);
+
+		template<>
+		void FPBDCollisionSolverHelperSimd::SolveVelocityWithFriction(
+			const TArrayView<TPBDCollisionSolverSimd<4>>& Solvers,
+			const TArrayView<TPBDCollisionSolverManifoldPointsSimd<4>>& ManifoldPoints,
+			const TArrayView<TSolverBodyPtrPairSimd<4>>& SolverBodies,
+			const FSolverReal Dt);
 
 	}	// namespace Private
 }	// namespace Chaos

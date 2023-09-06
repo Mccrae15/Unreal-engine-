@@ -3,7 +3,10 @@
 #pragma once
 
 #include "Animation/Skeleton.h"
+#include "Animation/AnimInstance.h"
 #include "Engine/SkeletalMesh.h"
+#include "MuCO/CustomizableObject.h"
+#include "MuCOE/ExtensionDataCompilerInterface.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeObject.h"
 #include "MuR/MutableMemory.h"
@@ -111,7 +114,7 @@ class FGeneratedKey
 	friend uint32 GetTypeHash(const FGeneratedKey& Key);
 
 public:
-	FGeneratedKey(void* InFunctionAddress, const UEdGraphPin& InPin, const UCustomizableObjectNode& Node, FMutableGraphGenerationContext& GenerationContext, const bool UseMesh = false);
+	FGeneratedKey(void* InFunctionAddress, const UEdGraphPin& InPin, const UCustomizableObjectNode& Node, FMutableGraphGenerationContext& GenerationContext, const bool UseMesh = false, bool bOnlyConnectedLOD = false);
 	
 	bool operator==(const FGeneratedKey& Other) const;
 
@@ -128,6 +131,9 @@ private:
 
 	/** Active morphs at the time of mesh generation. */
 	TArray<FMorphNodeData> MeshMorphStack;
+
+	/** When caching a generated mesh, true if we force to generate the connected LOD when using Automatic LODs From Mesh. */
+	bool bOnlyConnectedLOD = false;
 };
 
 
@@ -261,7 +267,7 @@ struct FTextureUnrealToMutableTask
 
 struct FPoseBoneData
 {
-	TArray<FString> ArrayBoneName;
+	TArray<FName> ArrayBoneName;
 	TArray<FTransform> ArrayTransform;
 };
 
@@ -365,51 +371,23 @@ inline uint32 GetTypeHash(const FMeshData& Key)
 /** Struct used to store info specific to each component during compilation */
 struct FMutableComponentInfo
 {
-	FMutableComponentInfo(USkeletalMesh* InRefSkeletalMesh)
-	{
-		if(!InRefSkeletalMesh || !InRefSkeletalMesh->GetSkeleton())
-		{
-			return;
-		}
-		
-		RefSkeletalMesh = InRefSkeletalMesh;
-		RefSkeleton = RefSkeletalMesh->GetSkeleton();
-			
-		const int32 NumBones = RefSkeleton->GetReferenceSkeleton().GetRawBoneNum();
-		BoneNamesToPathHash.Reserve(NumBones);
+	FMutableComponentInfo(USkeletalMesh* InRefSkeletalMesh);
 
-		const TArray<FMeshBoneInfo>& Bones = RefSkeleton->GetReferenceSkeleton().GetRawRefBoneInfo();
-
-		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
-		{
-			const FMeshBoneInfo& Bone = Bones[BoneIndex];
-
-			// Retrieve parent bone name and respective hash, root-bone is assumed to have a parent hash of 0
-			const FName ParentName = Bone.ParentIndex != INDEX_NONE ? Bones[Bone.ParentIndex].Name : NAME_None;
-			const uint32 ParentHash = Bone.ParentIndex != INDEX_NONE ? GetTypeHash(ParentName) : 0;
-
-			// Look-up the path-hash from root to the parent bone
-			const uint32* ParentPath = BoneNamesToPathHash.Find(ParentName);
-			const uint32 ParentPathHash = ParentPath ? *ParentPath : 0;
-
-			// Append parent hash to path to give full path hash to current bone
-			const uint32 BonePathHash = HashCombine(ParentPathHash, ParentHash);
-
-			// Add path hash to current bone
-			BoneNamesToPathHash.Add(Bone.Name, BonePathHash);
-		}
-	}
+	void AccumulateBonesToRemovePerLOD(const FComponentSettings& ComponentSettings, int32 NumLODs);
 
 	// Each component must have a reference SkeletalMesh with a valid Skeleton
 	USkeletalMesh* RefSkeletalMesh = nullptr;
 	USkeleton* RefSkeleton = nullptr;
 
 	// Map to check skeleton compatibility
-	TMap<USkeleton*, bool> SkeletonCompatibility;
+	TMap<const USkeleton*, bool> SkeletonCompatibility;
 	
 	// Hierarchy hash from parent-bone to root bone, used to check if additional skeletons are compatible with
 	// the RefSkeleton
 	TMap<FName, uint32> BoneNamesToPathHash;
+
+	// Bones to remove on each LOD, include bones on previous LODs. FName (BoneToRemove) - bool (bOnlyRemoveChildren)
+	TArray<TMap<FName, bool>> BonesToRemovePerLOD;
 };
 
 
@@ -480,7 +458,7 @@ struct FGraphCycleKey
 {
 	friend uint32 GetTypeHash(const FGraphCycleKey& Key);
 
-	FGraphCycleKey(const UEdGraphPin& Pin, uint32 Id);
+	FGraphCycleKey(const UEdGraphPin& Pin, const FString& Id);
 
 	bool operator==(const FGraphCycleKey& Other) const;
 	
@@ -488,7 +466,7 @@ struct FGraphCycleKey
 	const UEdGraphPin& Pin;
 
 	/** Unique id. */
-	uint32 Id;
+	FString Id;
 };
 
 /** Graph Cycle scope.
@@ -514,7 +492,7 @@ private:
 
 /** Return the default value if there is a cycle. */
 #define RETURN_ON_CYCLE(Pin, GenerationContext) \
-	FGraphCycle GraphCycle(FGraphCycleKey(Pin, __COUNTER__), GenerationContext); \
+	FGraphCycle GraphCycle(FGraphCycleKey(Pin, TEXT(__FILE__ PREPROCESSOR_TO_STRING(__LINE__))), GenerationContext); \
 	if (GraphCycle.FoundCycle()) \
 	{ \
 		return {}; \
@@ -546,6 +524,9 @@ struct FMutableGraphGenerationContext
 	// level cache
 	TMap<FGeneratedImageKey, mu::NodeImageConstantPtr> GeneratedImages;
 
+	// Cache of pass-through images and their IDs used in the core to indentify them
+	TMap<TSoftObjectPtr<UTexture>, uint32> PassThroughTextureToIndexMap;
+
     // Global morph selection overrides.
     TArray<FRealTimeMorphSelectionOverride> RealTimeMorphTargetsOverrides;
 
@@ -556,7 +537,8 @@ struct FMutableGraphGenerationContext
 		{
 			/** Source mesh data. */
 			const UObject* Mesh = nullptr;
-			int32 LOD = 0;
+			int32 LOD = 0; // Mesh Data LOD (i.e., LOD where we are getting the vertices from)
+			int32 CurrentLOD = 0; // Derived data LOD (i.e., LOD where we are generating the non-Core Data like morphs)
 			int32 MaterialIndex = 0;
 
 			/** Flag used to generate this mesh. Bit mask of EMutableMeshConversionFlags */
@@ -568,10 +550,16 @@ struct FMutableGraphGenerationContext
 			*/
 			FString Tags;
 
+			/**
+			* SkeletalMeshNode is needed to disambiguate realtime morph selection from diferent nodes.
+			* TODO: Consider using the actual selection.
+			*/
+			const UCustomizableObjectNode* SkeletalMeshNode = nullptr;
+
 			bool operator==( const FKey& OtherKey ) const
 			{
-				return Mesh == OtherKey.Mesh && LOD == OtherKey.LOD && MaterialIndex == OtherKey.MaterialIndex
-					&& Flags == OtherKey.Flags && Tags == OtherKey.Tags;
+				return Mesh == OtherKey.Mesh && LOD == OtherKey.LOD && CurrentLOD == OtherKey.CurrentLOD && MaterialIndex == OtherKey.MaterialIndex
+					&& Flags == OtherKey.Flags && Tags == OtherKey.Tags && SkeletalMeshNode == OtherKey.SkeletalMeshNode;
 			}
 		};
 
@@ -625,6 +613,9 @@ struct FMutableGraphGenerationContext
 
 	TArray<const USkeleton*> ReferencedSkeletons;
 
+	// Array of unique BoneNames. All bones from mu::Skeletons will point to the names of it.
+	TArray<FName> BoneNames;
+
 	// Used to aviod Nodes with duplicated ids
 	TMap<FGuid, TArray<const UCustomizableObjectNode*>> NodeIdsMap;
 	TMultiMap<const UCustomizableObject*, FGroupNodeIdsTempData> DuplicatedGroupNodeIds;
@@ -649,6 +640,8 @@ struct FMutableGraphGenerationContext
 
 	// Data used for SkinWeightProfiles reconstruction
 	TArray<FMutableSkinWeightProfileInfo> SkinWeightProfilesInfo;
+
+	TArray<FAnimBpOverridePhysicsAssetsInfo> AnimBpOverridePhysicsAssetsInfo;
 
 	// Hierarchy of current ComponentNew nodes, each stored for every LOD
 	struct ObjectParent
@@ -682,9 +675,6 @@ struct FMutableGraphGenerationContext
 	 * It acts like stack, pushing pins when recursively exploring a new pin an popping it when exiting the recursion. */
 	TMap<FGraphCycleKey, const UCustomizableObject*> VisitedPins;
 	const UCustomizableObject* CustomizableObjectWithCycle = nullptr;
-
-	// Texture management flag, captured from the real object root node
-	bool bDisableTextureLayoutManagementFlag = false;
 
 	// Set of all the guids of all the child CustomizableObjects in the compilation
 	TSet<FGuid> CustomizableObjectGuidsInCompilation;
@@ -737,19 +727,29 @@ struct FMutableGraphGenerationContext
 	// Stores the parameters generated in the node tables
 	TMap<const class UCustomizableObjectNodeTable*, TArray<FGuid>> GeneratedParametersInTables;
 
-	struct FMeshWithBoneRemovalApplied
+	struct FSharedSurfaces
 	{
-		TObjectPtr<class USkeletalMesh> Mesh;
-		
-		// Key is LOD index
-		//
-		// This is a cache. Entries are added on demand. A processed LOD with no bones removed will have an empty entry.
-		TMap<int32, TMap<int32, int32>> RemovedBonesActiveParentIndicesPerLOD;
+		FSharedSurfaces(int32 InSurfaceId, mu::NodeSurfaceNewPtr InNodeSurface)
+		{
+			check(InSurfaceId != INDEX_NONE);
+			check(InNodeSurface);
+			SharedSurfaceId = InSurfaceId;
+			NodeSurface = InNodeSurface;
+		}
 
-		bool bHasBonesToRemove = false;
+		int32 SharedSurfaceId = INDEX_NONE;
+
+		// NodeSurface of the current LOD 
+		mu::NodeSurfaceNewPtr NodeSurface;
 	};
 
-	TMap<TObjectPtr<class USkeletalMesh>, FMeshWithBoneRemovalApplied> MeshesWithBoneRemovalApplied;
+	// UCustomizableObjectNodeMaterial material to SharedSurfaceId
+	TMap<UCustomizableObjectNodeMaterial*, FSharedSurfaces> SharedSurfaceIds;
+
+	/** Extension Data constants are collected here */
+	FExtensionDataCompilerInterface ExtensionDataCompilerInterface;
+	TArray<FCustomizableObjectExtensionData> AlwaysLoadedExtensionData;
+	TArray<UCustomizableObjectExtensionDataContainer*> StreamedExtensionData;
 };
 
 /** Pin Data scope wrapper. Pops the pin data on scope exit. */
@@ -782,7 +782,7 @@ void CheckNumOutputs(const UEdGraphPin& Pin, const FMutableGraphGenerationContex
 UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext);
 
 
-mu::NodeMeshApplyPosePtr CreateNodeMeshApplyPose(mu::NodeMeshPtr InputMeshNode, UCustomizableObject * CustomizableObject, TArray<FString> ArrayBoneName, TArray<FTransform> ArrayTransform);
+mu::NodeMeshApplyPosePtr CreateNodeMeshApplyPose(FMutableGraphGenerationContext& GenerationContext, mu::NodeMeshPtr InputMeshNode, const TArray<FName>& ArrayBoneName, const TArray<FTransform>& ArrayTransform);
 
 
 /** Adds Tag to MutableMesh uniquely, returns the index were the tag has been inserted or the index where an intance of the tag has been found */
@@ -791,7 +791,7 @@ int32 AddTagToMutableMeshUnique(mu::Mesh& MutableMesh, const FString& Tag);
 void AddSocketTagsToMesh(const USkeletalMesh* SourceMesh, mu::MeshPtr MutableMesh, FMutableGraphGenerationContext& GenerationContext);
 
 // Generates the tag for an animation instance
-FString GenerateAnimationInstanceTag(const FString& AnimInstance, int32 SlotIndex);
+FString GenerateAnimationInstanceTag(const FString& AnimInstance, const FName& SlotIndex);
 
 
 FString GenerateGameplayTag(const FString& GameplayTag);

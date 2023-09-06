@@ -26,10 +26,10 @@ void FGameFeatureDataAssetDependencyGatherer::GatherDependencies(const FAssetDat
 		FName MountPoint = FPackageName::GetPackageMountPoint(AssetData.PackagePath.ToString());
 		for (const FGuid& ContentBundleGuid : ContentBundleGuids)
 		{
-			FString ContentBundleRootPath;
-			if (ContentBundlePaths::BuildContentBundleRootPath(MountPoint.ToString(), ContentBundleGuid, ContentBundleRootPath))
+			FString ContentBundleExternalActorPath;
+			if (ContentBundlePaths::BuildContentBundleExternalActorPath(MountPoint.ToString(), ContentBundleGuid, ContentBundleExternalActorPath))
 			{
-				const FString ExternalActorsPath = ULevel::GetExternalActorsPath(ContentBundleRootPath);
+				const FString ExternalActorsPath = ULevel::GetExternalActorsPath(ContentBundleExternalActorPath);
 
 				OutDependencyDirectories.Add(ExternalActorsPath);
 				Filter.PackagePaths.Add(*ExternalActorsPath);
@@ -43,7 +43,8 @@ void FGameFeatureDataAssetDependencyGatherer::GatherDependencies(const FAssetDat
 
 			for (const FAssetData& FilteredAsset : FilteredAssets)
 			{
-				OutDependencies.Emplace(IAssetDependencyGatherer::FGathereredDependency{ FilteredAsset.PackageName, UE::AssetRegistry::EDependencyProperty::Game });
+				OutDependencies.Emplace(IAssetDependencyGatherer::FGathereredDependency{ FilteredAsset.PackageName,
+					UE::AssetRegistry::EDependencyProperty::Game | UE::AssetRegistry::EDependencyProperty::Build });
 			}
 		}
 	}

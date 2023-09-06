@@ -95,7 +95,7 @@ void ASTOpImageCompose::ForEachChild(const TFunctionRef<void(ASTChild&)> f )
 
 
 //-------------------------------------------------------------------------------------------------
-void ASTOpImageCompose::Link( FProgram& program, const FLinkerOptions*)
+void ASTOpImageCompose::Link( FProgram& program, FLinkerOptions*)
 {
     // Already linked?
     if (!linkedAddress)
@@ -216,7 +216,7 @@ void ASTOpImageCompose::GetLayoutBlockSize(int* pBlockX, int* pBlockY)
 }
 
 
-mu::Ptr<ASTOp> ASTOpImageCompose::OptimiseSemantic(const FModelOptimizationOptions& options) const
+mu::Ptr<ASTOp> ASTOpImageCompose::OptimiseSemantic(const FModelOptimizationOptions& options, int32 Pass) const
 {
 	mu::Ptr<ASTOp> at;
 
@@ -237,7 +237,7 @@ mu::Ptr<ASTOp> ASTOpImageCompose::OptimiseSemantic(const FModelOptimizationOptio
 		// Constant single-block full layout?
 		if (pLayout->GetBlockCount() == 1
 			&&
-			pLayout->m_blocks[0].m_min == vec2<uint16>(0, 0)
+			pLayout->m_blocks[0].m_min == UE::Math::TIntVector2<uint16>(0, 0)
 			&&
 			pLayout->m_blocks[0].m_size == pLayout->m_size
 			&&

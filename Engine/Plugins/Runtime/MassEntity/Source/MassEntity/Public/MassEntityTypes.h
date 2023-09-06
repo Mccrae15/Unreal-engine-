@@ -7,6 +7,7 @@
 #include "StructArrayView.h"
 #include "Subsystems/Subsystem.h"
 #include "MassExternalSubsystemTraits.h"
+#include "SharedStruct.h"
 #include "MassEntityTypes.generated.h"
 
 
@@ -166,6 +167,7 @@ struct FMassArchetypeCompositionDescriptor
 		Fragments.Reset();
 		Tags.Reset();
 		ChunkFragments.Reset();
+		SharedFragments.Reset();
 	}
 
 	bool IsEquivalent(const FMassArchetypeCompositionDescriptor& OtherDescriptor) const
@@ -248,6 +250,11 @@ struct MASSENTITY_API FMassArchetypeSharedFragmentValues
 	FORCEINLINE bool HasExactFragmentTypesMatch(const FMassSharedFragmentBitSet& InSharedFragmentBitSet) const
 	{
 		return SharedFragmentBitSet == InSharedFragmentBitSet;
+	}
+
+	FORCEINLINE bool HasAllRequiredFragmentTypes(const FMassSharedFragmentBitSet& InSharedFragmentBitSet) const
+	{
+		return SharedFragmentBitSet.HasAll(InSharedFragmentBitSet);
 	}
 
 	FORCEINLINE bool IsEquivalent(const FMassArchetypeSharedFragmentValues& OtherSharedFragmentValues) const
@@ -400,7 +407,7 @@ struct FMassGenericPayloadViewSlice
 
 	FStructArrayView operator[](const int32 Index) const
 	{
-		return FStructArrayView(Source.Content[Index], StartIndex, Count);
+		return Source.Content[Index].Slice(StartIndex, Count);
 	}
 
 	/** @return the number of "layers" (i.e. number of original arrays) this payload has been built from */
@@ -430,7 +437,7 @@ namespace UE::Mass
 	struct TMultiTypeList : TMultiTypeList<TOthers...>
 	{
 		using Super = TMultiTypeList<TOthers...>;
-		using FType = typename TRemoveConst<typename TRemoveReference<T>::Type>::Type;
+		using FType = std::remove_const_t<typename TRemoveReference<T>::Type>;
 		enum
 		{
 			Ordinal = Super::Ordinal + 1
@@ -448,7 +455,7 @@ namespace UE::Mass
 	template<typename T>
 	struct TMultiTypeList<T>
 	{
-		using FType = typename TRemoveConst<typename TRemoveReference<T>::Type>::Type;
+		using FType = std::remove_const_t<typename TRemoveReference<T>::Type>;
 		enum
 		{
 			Ordinal = 0
@@ -469,7 +476,7 @@ namespace UE::Mass
 	template<typename T, typename... TOthers>
 	struct TMultiArray : TMultiArray<TOthers...>
 	{
-		using FType = typename TRemoveConst<typename TRemoveReference<T>::Type>::Type;
+		using FType = std::remove_const_t<typename TRemoveReference<T>::Type>;
 		using Super = TMultiArray<TOthers...>;
 
 		enum
@@ -502,6 +509,12 @@ namespace UE::Mass
 			OutBitSet += FMassFragmentBitSet::GetTypeBitSet<FType>();
 		}
 
+		void Reset()
+		{
+			Super::Reset();
+			FragmentInstances.Reset();
+		}
+
 		TArray<FType> FragmentInstances;
 	};
 
@@ -509,7 +522,7 @@ namespace UE::Mass
 	template<typename T>
 	struct TMultiArray<T>
 	{
-		using FType = typename TRemoveConst<typename TRemoveReference<T>::Type>::Type;
+		using FType = std::remove_const_t<typename TRemoveReference<T>::Type>;
 		enum { Ordinal = 0 };
 
 		SIZE_T GetAllocatedSize() const
@@ -529,6 +542,11 @@ namespace UE::Mass
 		void GetheredAffectedFragments(FMassFragmentBitSet& OutBitSet) const
 		{
 			OutBitSet += FMassFragmentBitSet::GetTypeBitSet<FType>();
+		}
+
+		void Reset()
+		{
+			FragmentInstances.Reset();
 		}
 
 		TArray<FType> FragmentInstances;

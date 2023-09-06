@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGraphAllocator.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "RenderCore.h"
 #include "RenderGraphPrivate.h"
 
 FRDGAllocator& FRDGAllocator::Get()
@@ -17,15 +19,15 @@ FRDGAllocator::~FRDGAllocator()
 
 void FRDGAllocator::FContext::ReleaseAll()
 {
-	for (int32 Index = TrackedAllocs.Num() - 1; Index >= 0; --Index)
+	for (int32 Index = Objects.Num() - 1; Index >= 0; --Index)
 	{
 #if RDG_USE_MALLOC
-		delete TrackedAllocs[Index];
+		delete Objects[Index];
 #else
-		TrackedAllocs[Index]->~FTrackedAlloc();
+		Objects[Index]->~FObject();
 #endif
 	}
-	TrackedAllocs.Reset();
+	Objects.Reset();
 
 #if RDG_USE_MALLOC
 	for (void* RawAlloc : RawAllocs)
@@ -63,4 +65,10 @@ FRDGAllocatorScope::~FRDGAllocatorScope()
 	{
 		Allocator.ReleaseAll();
 	}
+}
+
+FORCENOINLINE void UE::RenderCore::Private::OnInvalidRDGAllocatorNum(int32 NewNum, SIZE_T NumBytesPerElement)
+{
+	UE_LOG(LogRendererCore, Fatal, TEXT("Trying to resize TRDGArrayAllocator to an invalid size of %d with element size %" SIZE_T_FMT), NewNum, NumBytesPerElement);
+	for (;;);
 }

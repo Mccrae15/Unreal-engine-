@@ -101,8 +101,8 @@ struct FInterchangePipelinePropertyStates
 	FInterchangePipelinePropertyStatePerContext ReimportStates;
 };
 
-UCLASS(BlueprintType, Blueprintable, editinlinenew, Abstract)
-class INTERCHANGECORE_API UInterchangePipelineBase : public UObject
+UCLASS(BlueprintType, Blueprintable, editinlinenew, Abstract, MinimalAPI)
+class UInterchangePipelineBase : public UObject
 {
 	GENERATED_BODY()
 
@@ -110,7 +110,7 @@ public:
 
 	UE_DEPRECATED(5.2, "This function is replace by ScriptedExecutePipeline.")
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interchange | Pipeline")
-	void ScriptedExecutePreImportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas);
+	INTERCHANGECORE_API void ScriptedExecutePreImportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas);
 
 	UE_DEPRECATED(5.2, "This internal public function is deprecated and not replace by any.")
 	void ScriptedExecutePreImportPipeline_Implementation(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas)
@@ -128,7 +128,7 @@ public:
 	 * @note - the FTaskPipeline is calling this function not the virtual one that is call by the default implementation.
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interchange | Pipeline")
-	void ScriptedExecutePipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas);
+	INTERCHANGECORE_API void ScriptedExecutePipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas);
 	/** The default implementation (call if the blueprint do not have any implementation) will call the virtual ExecutePipeline */
 	void ScriptedExecutePipeline_Implementation(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas)
 	{
@@ -141,7 +141,7 @@ public:
 	 * @note - the FTaskPreCompletion task is calling this function not the virtual one that is call by the default implementation.
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interchange | Pipeline")
-	void ScriptedExecutePostFactoryPipeline(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& FactoryNodeKey, UObject* CreatedAsset, bool bIsAReimport);
+	INTERCHANGECORE_API void ScriptedExecutePostFactoryPipeline(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& FactoryNodeKey, UObject* CreatedAsset, bool bIsAReimport);
 	/** The default implementation (call if the blueprint do not have any implementation) will call the virtual ExecutePostFactoryPipeline */
 	void ScriptedExecutePostFactoryPipeline_Implementation(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& FactoryNodeKey, UObject* CreatedAsset, bool bIsAReimport)
 	{
@@ -155,7 +155,7 @@ public:
 	 * @note - the FTaskPipelinePostImport is calling this function not the virtual one that is call by the default implementation.
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interchange | Pipeline")
-	void ScriptedExecutePostImportPipeline(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& FactoryNodeKey, UObject* CreatedAsset, bool bIsAReimport);
+	INTERCHANGECORE_API void ScriptedExecutePostImportPipeline(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& FactoryNodeKey, UObject* CreatedAsset, bool bIsAReimport);
 	/** The default implementation (call if the blueprint do not have any implementation) will call the virtual ExecutePostImportPipeline */
 	void ScriptedExecutePostImportPipeline_Implementation(const UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& FactoryNodeKey, UObject* CreatedAsset, bool bIsAReimport)
 	{
@@ -168,7 +168,7 @@ public:
 	 * the Interchange manager is calling this function not the virtual one that is call by the default implementation.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Interchange | Pipeline")
-	void ScriptedExecuteExportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer);
+	INTERCHANGECORE_API void ScriptedExecuteExportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer);
 
 	/** The default implementation (call if the blueprint do not have any implementation) will call the virtual ExecuteExportPipeline */
 	void ScriptedExecuteExportPipeline_Implementation(UInterchangeBaseNodeContainer* BaseNodeContainer)
@@ -181,7 +181,7 @@ public:
 	 * the Interchange manager is calling this function not the virtual one that is call by the default implementation.
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interchange | Pipeline")
-	bool ScriptedCanExecuteOnAnyThread(EInterchangePipelineTask PipelineTask);
+	INTERCHANGECORE_API bool ScriptedCanExecuteOnAnyThread(EInterchangePipelineTask PipelineTask);
 
 	/** The default implementation (call if the blueprint do not have any implementation) will call the virtual CanExecuteAsync */
 	bool ScriptedCanExecuteOnAnyThread_Implementation(EInterchangePipelineTask PipelineTask)
@@ -194,7 +194,7 @@ public:
 	 * the Interchange framework is calling this function not the virtual one that is called by the default implementation.
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Interchange | Pipeline")
-	void ScriptedSetReimportSourceIndex(UClass* ReimportObjectClass, const int32 SourceFileIndex);
+	INTERCHANGECORE_API void ScriptedSetReimportSourceIndex(UClass* ReimportObjectClass, const int32 SourceFileIndex);
 
 	/** The default implementation (call if the blueprint do not have any implementation) will call the virtual SetReimportContentFromSourceIndex */
 	void ScriptedSetReimportSourceIndex_Implementation(UClass* ReimportObjectClass, const int32 SourceFileIndex)
@@ -214,9 +214,9 @@ public:
 		return true;
 	}
 
-	void LoadSettings(const FName PipelineStackName);
+	INTERCHANGECORE_API void LoadSettings(const FName PipelineStackName);
 
-	void SaveSettings(const FName PipelineStackName);
+	INTERCHANGECORE_API void SaveSettings(const FName PipelineStackName);
 
 	/**
 	 * This function is called before showing the import dialog it is not called doing a re-import.
@@ -240,11 +240,11 @@ public:
 	 * @Param ReimportType - Tell pipeline what re-import type the user want to achieve.
 	 * @Param ReimportAsset - This is an optional parameter which is set when re-importing an asset.
 	 */
-	virtual void AdjustSettingsForContext(EInterchangePipelineContext ReimportType, TObjectPtr<UObject> ReimportAsset);
-	virtual void AdjustSettingsFromCache();
+	INTERCHANGECORE_API virtual void AdjustSettingsForContext(EInterchangePipelineContext ReimportType, TObjectPtr<UObject> ReimportAsset);
+	INTERCHANGECORE_API virtual void AdjustSettingsFromCache();
 
 	/** Transfer the source pipeline adjust settings to this pipeline. */
-	void TransferAdjustSettings(UInterchangePipelineBase* SourcePipeline);
+	INTERCHANGECORE_API void TransferAdjustSettings(UInterchangePipelineBase* SourcePipeline);
 
 	/**
 	 * This function is used to add the given message object directly into the results for this operation.
@@ -271,34 +271,74 @@ public:
 	/**
 	 * Return a const property states pointer. Return nullptr if the property do not exist
 	 */
-	const FInterchangePipelinePropertyStates* GetPropertyStates(const FName PropertyPath) const;
+	INTERCHANGECORE_API const FInterchangePipelinePropertyStates* GetPropertyStates(const FName PropertyPath) const;
 
 	/**
 	 * Return a mutable property states pointer. Return nullptr if the property do not exist
 	 */
-	FInterchangePipelinePropertyStates* GetMutablePropertyStates(const FName PropertyPath);
+	INTERCHANGECORE_API FInterchangePipelinePropertyStates* GetMutablePropertyStates(const FName PropertyPath);
 
 	/**
 	 * Return true if the property has valid states, false if no states was set for the property
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Pipeline")
-	bool DoesPropertyStatesExist(const FName PropertyPath) const;
+	INTERCHANGECORE_API bool DoesPropertyStatesExist(const FName PropertyPath) const;
 
 	/**
 	 * Return a mutable property states Reference. Add the property states if it doesnt exist.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Pipeline")
-	FInterchangePipelinePropertyStates& FindOrAddPropertyStates(const FName PropertyPath);
+	INTERCHANGECORE_API FInterchangePipelinePropertyStates& FindOrAddPropertyStates(const FName PropertyPath);
 
 	/**
 	 * Return the property name of the properties states map
 	 */
-	static FName GetPropertiesStatesPropertyName();
+	static INTERCHANGECORE_API FName GetPropertiesStatesPropertyName();
 
-	static FName GetResultsPropertyName();
+	static INTERCHANGECORE_API FName GetResultsPropertyName();
 
 	bool CanEditPropertiesStates() { return bAllowPropertyStatesEdition; }
 	bool IsReimportContext() { return bIsReimportContext; }
+
+#if WITH_EDITOR
+	/*
+	 * FName or FString properties can have a dynamic set of possible values. When displaying 
+	 * a pipeline property in the property editor, this function will be call for all FString and FName
+	 * properties and will generate a combo box with the PossibleValues if the function return true.
+	 */
+	virtual bool GetPropertyPossibleValues(const FName PropertyPath, TArray<FString>& PossibleValues)
+	{
+		return false;
+	}
+#endif //WITH_EDITOR
+
+	/*
+	 * Return true if the pipeline is not a sub pipeline. Stand Alone Pipeline can have some extra properties.
+	 * The customize detail of the pipeline will call this function to show or hide those property.
+	 * The pipeline itself can call the function to know if a property must be use or not.
+	 * Example: the override asset name property
+	 */
+	bool IsStandAlonePipeline()
+	{
+		return this == GetMostPipelineOuter();
+	};
+
+	/*
+	* Update/Re-set the TWeakObjectPtrs to point to their original TObjectPtr
+	* Works based on Variable naming.
+	*/
+	INTERCHANGECORE_API void UpdateWeakObjectPtrs();
+
+	/** Begin UObject overrides*/
+	INTERCHANGECORE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
+	/** End UObject overrides */
+
+	/*
+	 * If it return true it mean we want to save this pipeline in the asset import data.
+	 * We will reuse this pipeline when re-importing the asset.
+	 * If false its probably a debug helper pipeline we do not want to save into assets
+	 */
+	INTERCHANGECORE_API virtual bool SupportReimport() const { return true; }
 
 protected:
 
@@ -354,15 +394,15 @@ protected:
 	{
 	}
 
-	void LoadSettingsInternal(const FName PipelineStackName, const FString& ConfigFilename, TMap<FName, FInterchangePipelinePropertyStates>& ParentPropertiesStates);
+	INTERCHANGECORE_API void LoadSettingsInternal(const FName PipelineStackName, const FString& ConfigFilename, TMap<FName, FInterchangePipelinePropertyStates>& ParentPropertiesStates);
 
-	void SaveSettingsInternal(const FName PipelineStackName, const FString& ConfigFilename);
+	INTERCHANGECORE_API void SaveSettingsInternal(const FName PipelineStackName, const FString& ConfigFilename);
 
-	UInterchangePipelineBase* GetMostPipelineOuter() const;
+	INTERCHANGECORE_API UInterchangePipelineBase* GetMostPipelineOuter() const;
 
-	static void InternalToggleVisibilityPropertiesOfMetaDataValue(UInterchangePipelineBase* OuterMostPipeline, UInterchangePipelineBase* Pipeline, bool bDoTransientSubPipeline, const FString& MetaDataKey, const FString& MetaDataValue, const bool bVisibilityState);
-	static void HidePropertiesOfCategory(UInterchangePipelineBase* OuterMostPipeline, UInterchangePipelineBase* Pipeline, const FString& HideCategoryName, bool bDoTransientSubPipeline = false);
-	static void HidePropertiesOfSubCategory(UInterchangePipelineBase* OuterMostPipeline, UInterchangePipelineBase* Pipeline, const FString& HideSubCategoryName, bool bDoTransientSubPipeline = false);
+	static INTERCHANGECORE_API void InternalToggleVisibilityPropertiesOfMetaDataValue(UInterchangePipelineBase* OuterMostPipeline, UInterchangePipelineBase* Pipeline, bool bDoTransientSubPipeline, const FString& MetaDataKey, const FString& MetaDataValue, const bool bVisibilityState);
+	static INTERCHANGECORE_API void HidePropertiesOfCategory(UInterchangePipelineBase* OuterMostPipeline, UInterchangePipelineBase* Pipeline, const FString& HideCategoryName, bool bDoTransientSubPipeline = false);
+	static INTERCHANGECORE_API void HidePropertiesOfSubCategory(UInterchangePipelineBase* OuterMostPipeline, UInterchangePipelineBase* Pipeline, const FString& HideSubCategoryName, bool bDoTransientSubPipeline = false);
 	
 	/**
 	 * If true, the property editor for this pipeline instance will allow properties states edition.

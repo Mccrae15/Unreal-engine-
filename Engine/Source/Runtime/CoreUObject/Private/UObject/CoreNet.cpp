@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "UObject/CoreNet.h"
+#include "UObject/PropertyOptional.h"
 #include "UObject/UnrealType.h"
 #include "Misc/EngineNetworkCustomVersion.h"
 
@@ -27,19 +28,19 @@ void FClassNetCacheMgr::SortProperties( TArray< FProperty* >& Properties ) const
 	// Sort NetProperties so that their ClassReps are sorted by memory offset
 	struct FCompareUFieldOffsets
 	{
-		FORCEINLINE bool operator()( FProperty & A, FProperty & B ) const
+		FORCEINLINE bool operator()(FProperty* A, FProperty* B) const
 		{
 			// Ensure stable sort
-			if ( A.GetOffset_ForGC() == B.GetOffset_ForGC() )
+			if (A->GetOffset_ForGC() == B->GetOffset_ForGC())
 			{
-				return A.GetName() < B.GetName();
+				return A->GetName() < B->GetName();
 			}
 
-			return A.GetOffset_ForGC() < B.GetOffset_ForGC();
+			return A->GetOffset_ForGC() < B->GetOffset_ForGC();
 		}
 	};
 
-	Sort( Properties.GetData(), Properties.Num(), FCompareUFieldOffsets() );
+	Algo::Sort(Properties, FCompareUFieldOffsets());
 }
 
 uint32 FClassNetCacheMgr::SortedStructFieldsChecksum( const UStruct* Struct, uint32 Checksum ) const
@@ -108,6 +109,12 @@ uint32 FClassNetCacheMgr::GetPropertyChecksum( const FProperty* Property, uint32
 			Checksum = SortedStructFieldsChecksum( StructProperty->Struct, Checksum );
 
 			const_cast< FClassNetCacheMgr* >( this )->DebugChecksumIndent--;
+		}
+
+		// Evolve checksum on optional inner
+		if (const FOptionalProperty* OptionalProperty = CastField<FOptionalProperty>(Property))
+		{
+			return GetPropertyChecksum(OptionalProperty->GetValueProperty(), Checksum, bIncludeChildren);
 		}
 	}
 
@@ -498,7 +505,7 @@ void FNetBitWriter::CountMemory(FArchive& Ar) const
 // ----------------------------------------------------------------
 //	FNetBitReader
 // ----------------------------------------------------------------
-FNetBitReader::FNetBitReader(UPackageMap* InPackageMap, uint8* Src, int64 CountBits)
+FNetBitReader::FNetBitReader(UPackageMap* InPackageMap, const uint8* Src, int64 CountBits)
 	: FBitReader(Src, CountBits)
 	, PackageMap( InPackageMap )
 {

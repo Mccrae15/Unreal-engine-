@@ -206,16 +206,8 @@ inline void FEntityFactories::DefineChildComponent(TComponentTypeID<ParentCompon
 	ChildInitializers.Add(FInitializer(InParentType, InChildType, Forward<InitializerCallback>(InInitializer)));
 }
 
-template<typename... ComponentTypes>
-inline void FEntityFactories::DefineComplexInclusiveComponents(const FComplexInclusivityFilter& InFilter, ComponentTypes... InComponents)
-{
-	FComponentMask ComponentsToInclude { InComponents... };
-	FComplexInclusivity NewComplexInclusivity { InFilter, ComponentsToInclude };
-	DefineComplexInclusiveComponents(NewComplexInclusivity);
-}
-
 template<typename T>
-TComponentTypeID<T> FComponentRegistry::NewComponentType(const TCHAR* const DebugName, EComponentTypeFlags Flags)
+FComponentTypeInfo FComponentRegistry::MakeComponentTypeInfoWithoutComponentOps(const TCHAR* const DebugName, const FNewComponentTypeParams& Params)
 {
 	static const uint32 ComponentTypeSize = sizeof(T);
 	static_assert(ComponentTypeSize < TNumericLimits<decltype(FComponentTypeInfo::Sizeof)>::Max(), "Type too large to be used as component data");
@@ -225,24 +217,38 @@ TComponentTypeID<T> FComponentRegistry::NewComponentType(const TCHAR* const Debu
 
 	FComponentTypeInfo NewTypeInfo;
 
-	NewTypeInfo.Sizeof                     = ComponentTypeSize;
-	NewTypeInfo.Alignment                  = Alignment;
-	NewTypeInfo.bIsZeroConstructType       = TIsZeroConstructType<T>::Value;
-	NewTypeInfo.bIsTriviallyDestructable   = TIsTriviallyDestructible<T>::Value;
+	NewTypeInfo.Sizeof = ComponentTypeSize;
+	NewTypeInfo.Alignment = Alignment;
+	NewTypeInfo.bIsZeroConstructType = TIsZeroConstructType<T>::Value;
+	NewTypeInfo.bIsTriviallyDestructable = TIsTriviallyDestructible<T>::Value;
 	NewTypeInfo.bIsTriviallyCopyAssignable = TIsTriviallyCopyAssignable<T>::Value;
-	NewTypeInfo.bIsPreserved               = EnumHasAnyFlags(Flags, EComponentTypeFlags::Preserved);
-	NewTypeInfo.bIsCopiedToOutput          = EnumHasAnyFlags(Flags, EComponentTypeFlags::CopyToOutput);
-	NewTypeInfo.bIsMigratedToOutput        = EnumHasAnyFlags(Flags, EComponentTypeFlags::MigrateToOutput);
-	NewTypeInfo.bHasReferencedObjects      = THasAddReferencedObjectForComponent<T>::Value;
+	NewTypeInfo.bIsPreserved = EnumHasAnyFlags(Params.Flags, EComponentTypeFlags::Preserved);
+	NewTypeInfo.bIsCopiedToOutput = EnumHasAnyFlags(Params.Flags, EComponentTypeFlags::CopyToOutput);
+	NewTypeInfo.bIsMigratedToOutput = EnumHasAnyFlags(Params.Flags, EComponentTypeFlags::MigrateToOutput);
+	NewTypeInfo.bHasReferencedObjects = false;
 
 #if UE_MOVIESCENE_ENTITY_DEBUG
-	NewTypeInfo.DebugInfo                = MakeUnique<FComponentTypeDebugInfo>();
-	NewTypeInfo.DebugInfo->DebugName     = DebugName;
+	NewTypeInfo.DebugInfo = MakeUnique<FComponentTypeDebugInfo>();
+	NewTypeInfo.DebugInfo->DebugName = DebugName;
 	NewTypeInfo.DebugInfo->DebugTypeName = GetGeneratedTypeName<T>();
-	NewTypeInfo.DebugInfo->Type          = TComponentDebugType<T>::Type;
+	NewTypeInfo.DebugInfo->Type = TComponentDebugType<T>::Type;
 #endif
 
-	if (!NewTypeInfo.bIsZeroConstructType || !NewTypeInfo.bIsTriviallyDestructable || !NewTypeInfo.bIsTriviallyCopyAssignable || NewTypeInfo.bHasReferencedObjects)
+	return NewTypeInfo;
+}
+
+template<typename T>
+TComponentTypeID<T> FComponentRegistry::NewComponentType(const TCHAR* const DebugName, const FNewComponentTypeParams& Params)
+{
+	FComponentTypeInfo NewTypeInfo = FComponentRegistry::MakeComponentTypeInfoWithoutComponentOps<T>(DebugName, Params);
+
+	NewTypeInfo.bHasReferencedObjects = Params.ReferenceCollectionCallback != nullptr || THasAddReferencedObjectForComponent<T>::Value;
+
+	if (Params.ReferenceCollectionCallback)
+	{
+		NewTypeInfo.MakeComplexComponentOps<T>(Params.ReferenceCollectionCallback);
+	}
+	else if (!NewTypeInfo.bIsZeroConstructType || !NewTypeInfo.bIsTriviallyDestructable || !NewTypeInfo.bIsTriviallyCopyAssignable || NewTypeInfo.bHasReferencedObjects)
 	{
 		NewTypeInfo.MakeComplexComponentOps<T>();
 	}
@@ -250,7 +256,29 @@ TComponentTypeID<T> FComponentRegistry::NewComponentType(const TCHAR* const Debu
 	FComponentTypeID    NewTypeID = NewComponentTypeInternal(MoveTemp(NewTypeInfo));
 	TComponentTypeID<T> TypedTypeID = NewTypeID.ReinterpretCast<T>();
 
-	if (EnumHasAnyFlags(Flags, EComponentTypeFlags::CopyToChildren))
+	if (EnumHasAnyFlags(Params.Flags, EComponentTypeFlags::CopyToChildren))
+	{
+		Factories.DefineChildComponent(TDuplicateChildEntityInitializer<T>(TypedTypeID));
+	}
+
+	return TypedTypeID;
+}
+
+template<typename T>
+TComponentTypeID<T> FComponentRegistry::NewComponentTypeNoAddReferencedObjects(const TCHAR* const DebugName, const FNewComponentTypeParams& Params)
+{
+	FComponentTypeInfo NewTypeInfo = FComponentRegistry::MakeComponentTypeInfoWithoutComponentOps<T>(DebugName, Params);
+
+	NewTypeInfo.bHasReferencedObjects = false;
+	if (!NewTypeInfo.bIsZeroConstructType || !NewTypeInfo.bIsTriviallyDestructable || !NewTypeInfo.bIsTriviallyCopyAssignable)
+	{
+		NewTypeInfo.MakeComplexComponentOpsNoAddReferencedObjects<T>();
+	}
+
+	FComponentTypeID    NewTypeID = NewComponentTypeInternal(MoveTemp(NewTypeInfo));
+	TComponentTypeID<T> TypedTypeID = NewTypeID.ReinterpretCast<T>();
+
+	if (EnumHasAnyFlags(Params.Flags, EComponentTypeFlags::CopyToChildren))
 	{
 		Factories.DefineChildComponent(TDuplicateChildEntityInitializer<T>(TypedTypeID));
 	}

@@ -4,6 +4,7 @@
 	UCContentCommandlets.cpp: Various commmandlets.
 =============================================================================*/
 
+#include "Algo/RemoveIf.h"
 #include "AssetCompilingManager.h"
 #include "AssetRegistry/AssetData.h"
 #include "CollectionManagerModule.h"
@@ -289,7 +290,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 	}
 
 	// ... if not, load in all packages
-	if( !bExplicitPackages || Switches.Contains("SaveAll"))
+	if( !bExplicitPackages || Switches.Contains(TEXT("SaveAll")))
 	{
 		UE_LOG( LogContentCommandlet, Display, TEXT( "No maps found to save when building HLODs, checking Project Settings for Directory or Asset Path(s)" ) );
 
@@ -328,6 +329,12 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 			return 1;
 		}
 	}
+
+	// Filtering out external actors/objects here avoids any issues that could happen with loading and saving them individually. They are instead handled within the context of their owning level in UResavePackagesCommandlet::PerformAdditionalOperations. For specifically resaving a World Partition map and its actors, see WorldPartitionResaveActorsBuilder.
+	PackageNames.SetNum(Algo::RemoveIf(PackageNames, [](const FString& PackageName)
+	{
+		return PackageName.Contains(FPackagePath::GetExternalActorsFolderName()) || PackageName.Contains(FPackagePath::GetExternalObjectsFolderName());
+	}));
 
 	// Check for a max package limit
 	MaxPackagesToResave = -1;
@@ -1172,13 +1179,13 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	{
 		FString HLODOptions;
 		FParse::Value(*Params, TEXT("BuildOptions="), HLODOptions);
-		bGenerateClusters = HLODOptions.Contains("Clusters");
-		bGenerateMeshProxies = HLODOptions.Contains("Proxies");
-		bForceClusterGeneration = HLODOptions.Contains("ForceClusters");
-		bForceProxyGeneration = HLODOptions.Contains("ForceProxies");
-		bForceSingleClusterForLevel = HLODOptions.Contains("ForceSingleCluster");
-		bSkipSubLevels = HLODOptions.Contains("SkipSubLevels");
-		bHLODMapCleanup = HLODOptions.Contains("MapCleanup");
+		bGenerateClusters = HLODOptions.Contains(TEXT("Clusters"));
+		bGenerateMeshProxies = HLODOptions.Contains(TEXT("Proxies"));
+		bForceClusterGeneration = HLODOptions.Contains(TEXT("ForceClusters"));
+		bForceProxyGeneration = HLODOptions.Contains(TEXT("ForceProxies"));
+		bForceSingleClusterForLevel = HLODOptions.Contains(TEXT("ForceSingleCluster"));
+		bSkipSubLevels = HLODOptions.Contains(TEXT("SkipSubLevels"));
+		bHLODMapCleanup = HLODOptions.Contains(TEXT("MapCleanup"));
 
 		ForceHLODSetupAsset = FString();
 		FParse::Value(*Params, TEXT("ForceHLODSetupAsset="), ForceHLODSetupAsset);
@@ -1381,6 +1388,13 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 	AssetRegistry.Tick(-1.0f);
 
+	int32 DeleteMinimumAgeDays = 0;
+	if (FParse::Value(*Params, TEXT("DeleteMinimumAgeDays="), DeleteMinimumAgeDays))
+	{
+		DeleteMinimumAgeDays = FMath::Max(DeleteMinimumAgeDays, 0);
+	}
+	FDateTime Now = FDateTime::Now();
+
 	// Delete unreferenced redirector packages
 	for (int32 PackageIndex = 0; PackageIndex < RedirectorsToFixup.Num(); PackageIndex++)
 	{
@@ -1393,19 +1407,37 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 
 		AssetRegistry.GetReferencers(PackageName, Referencers);
 
-		if (Referencers.Num() == 0)
+		if (Referencers.Num() > 0)
 		{
 			if (Verbosity != ONLY_ERRORS)
 			{
-				UE_LOG(LogContentCommandlet, Display, TEXT("Deleting unreferenced redirector [%s]"), *Filename);
+				UE_LOG(LogContentCommandlet, Display, TEXT("Can't delete redirector [%s], unsaved packages reference it"), *Filename);
 			}
+			continue;
+		}
 
-			DeleteOnePackage(Filename);
-		}
-		else if (Verbosity != ONLY_ERRORS)
+		if (DeleteMinimumAgeDays > 0)
 		{
-			UE_LOG(LogContentCommandlet, Display, TEXT("Can't delete redirector [%s], unsaved packages reference it"), *Filename);
+			FDateTime FileModificationTime = IFileManager::Get().GetTimeStamp(*Filename);
+			int32 DaysSinceModification = (Now - FileModificationTime).GetDays();
+			if (DaysSinceModification < DeleteMinimumAgeDays)
+			{
+				if (Verbosity != ONLY_ERRORS)
+				{
+					UE_LOG(LogContentCommandlet, Display,
+						TEXT("Not deleting unreferenced redirector [%s] (age threshold set to %d days, redirector was modified %d days ago)"),
+						*Filename, DeleteMinimumAgeDays, DaysSinceModification);
+				}
+				continue;
+			}
 		}
+
+		if (Verbosity != ONLY_ERRORS)
+		{
+			UE_LOG(LogContentCommandlet, Display, TEXT("Deleting unreferenced redirector [%s]"), *Filename);
+		}
+
+		DeleteOnePackage(Filename);
 	}
 
 	// Submit the results to source control
@@ -1853,10 +1885,14 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 	UWorldPartition* WorldPartition = World->GetWorldPartition();
 	const bool bResaveWorldPartitionExternalActors = !!WorldPartition;
+	const int32 DefaultExternalActorGCFreq = 2048;
 
 	// Load and Save Level's external packages
  	if (!bResaveWorldPartitionExternalActors)
 	{
+		// Use a default GC frequency for external actors if GarbageCollectionFrequency is 0.
+		TGuardValue<int32> ScopedGCFreq(GarbageCollectionFrequency, GarbageCollectionFrequency ? GarbageCollectionFrequency : DefaultExternalActorGCFreq);
+
 		World->AddToRoot();
 		for (UPackage* Package : World->PersistentLevel->GetPackage()->GetExternalPackages())
 		{
@@ -1887,6 +1923,9 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 	// Load and Save world partition actor packages
 	if (bResaveWorldPartitionExternalActors && !bShouldBuildNavigationData)
 	{
+		// Use a default GC frequency for external actors if GarbageCollectionFrequency is 0.
+		TGuardValue<int32> ScopedGCFreq(GarbageCollectionFrequency, GarbageCollectionFrequency ? GarbageCollectionFrequency : DefaultExternalActorGCFreq);
+
 		FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, [this, WorldPartition](const FWorldPartitionActorDesc* ActorDesc)
 		{
 			++TotalPackagesForResave;
@@ -2086,7 +2125,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					Builder.BuildMeshesForLODActors(bForceProxyGeneration);
 				}
 
-				FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
+				FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>(FName("HierarchicalLODUtilities"));
 				FHierarchicalLODProxyProcessor* Processor = Module.GetProxyProcessor();
 
 				while (Processor->IsProxyGenerationRunning())

@@ -24,6 +24,18 @@ class UCustomizableObjectNodePinData : public UObject
 
 public:
 	UCustomizableObjectNodePinData();
+
+	/** False if inherited types are different. */
+	bool operator==(const UCustomizableObjectNodePinData& Other) const;
+	
+	virtual bool operator!=(const UCustomizableObjectNodePinData& Other) const;
+
+	/** Virtual function used to copy pin data when remapping pins. */
+	virtual void Copy(const UCustomizableObjectNodePinData& Other) {}
+
+protected:
+	/** Virtual function used to perform comparision between different UCustomizableObjectNodePinData inherited types. */
+	virtual bool Equals(const UCustomizableObjectNodePinData& Other) const;
 };
 
 /** Encapsulation of parameters for the FPostEditChangePropertyDelegate delegate function.
@@ -101,7 +113,15 @@ public:
 	/** Virtual implementation of RemovePin. Allows to do work before removing a pin.
 	 * Use this function instead of RemovePin. RemovePin does not removes possible attached PinData. */
 	virtual bool CustomRemovePin(UEdGraphPin& Pin);
-	
+
+	/**
+	 * Subclasses should override this to return true and set OutCategory if this node should be
+	 * auto-added to the right-click context menu in the graph editor.
+	 * 
+	 * Some nodes are added manually in the graph editor code and don't need to do this.
+	 */
+	virtual bool ShouldAddToContextMenu(FText& OutCategory) const;
+
 	void GetInputPins(TArray<class UEdGraphPin*>& OutInputPins) const;
 	void GetOutputPins(TArray<class UEdGraphPin*>& OutOutputPins) const;
 	UEdGraphPin* GetOutputPin(int32 OutputIndex) const;
@@ -171,10 +191,6 @@ public:
 	virtual void BreakExistingConnectionsPostConnection(UEdGraphPin* InputPin, UEdGraphPin* OutputPin) {};
 
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-
-
-	// Use this function to reconstruct the graph in the next tick
-	void MarkForReconstruct();
 
 	/** Custom post duplicate function. Called at the beginning of duplication, before the nodes have their Guid updated. */
 	virtual void BeginPostDuplicate(bool bDuplicateForPIE) {};

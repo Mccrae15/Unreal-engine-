@@ -235,6 +235,11 @@ namespace Metasound
 				return Info;
 			}
 
+			void Reset(const IOperator::FResetParams& InParams)
+			{
+				TMathOpClass::Calculate(InstanceData, PrimaryOperandRef, AdditionalOperandRefs, ValueRef);
+			}
+
 			void Execute()
 			{
 				TMathOpClass::Calculate(InstanceData, PrimaryOperandRef, AdditionalOperandRefs, ValueRef);
@@ -264,36 +269,46 @@ namespace Metasound
 				TOperandDataClassReadRef Op1 = InParams.InputDataReferences.GetDataReadReferenceOrConstruct<TOperandDataClass>(OpName, TMathOpClass::GetDefaultOp(InParams.OperatorSettings, DefaultValue));
 				TArray<TOperandDataClassReadRef> AdditionalOperandRefs = { Op1 };
 
-				return MakeUnique<TMathOperator>(InParams.OperatorSettings, PrimaryOperand, AdditionalOperandRefs);
+				return MakeUnique<TMathOperator>(InParams, PrimaryOperand, AdditionalOperandRefs);
 			}
 
-			TMathOperator(const FOperatorSettings& InSettings, const TDataClassReadRef& InPrimaryOperand, const TArray<TOperandDataClassReadRef>& InAdditionalOperands)
+			TMathOperator(const FCreateOperatorParams& InParams, const TDataClassReadRef& InPrimaryOperand, const TArray<TOperandDataClassReadRef>& InAdditionalOperands)
 				: PrimaryOperandRef(InPrimaryOperand)
 				, AdditionalOperandRefs(InAdditionalOperands)
-				, ValueRef(TDataWriteReferenceFactory<TDataClass>::CreateAny(InSettings))
+				, ValueRef(TDataWriteReferenceFactory<TDataClass>::CreateAny(InParams.OperatorSettings))
 			{
-				// Set initial value.
-				TMathOpClass::Calculate(InstanceData, PrimaryOperandRef, AdditionalOperandRefs, ValueRef);
+				Reset(InParams);
+			}
+
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+			{
+				using namespace MathOpNames;
+
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(PrimaryOperand), PrimaryOperandRef);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(AdditionalOperands), AdditionalOperandRefs[0]);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+			{
+				using namespace MathOpNames;
+
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutMath), TDataClassReadRef(ValueRef));
 			}
 
 			virtual FDataReferenceCollection GetInputs() const override
 			{
-				using namespace MathOpNames; 
-
-				FDataReferenceCollection InputDataReferences;
-				InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(PrimaryOperand), PrimaryOperandRef);
-				InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(AdditionalOperands), AdditionalOperandRefs[0]);
-				return InputDataReferences;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FDataReferenceCollection GetOutputs() const override
 			{
-				using namespace MathOpNames;
-				
-				FDataReferenceCollection OutputDataReferences;
-				OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutMath), TDataClassReadRef(ValueRef));
-
-				return OutputDataReferences;
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
 			}
 		};
 

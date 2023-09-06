@@ -60,6 +60,10 @@ void SPropertyValueWidget::Construct( const FArguments& InArgs, TSharedPtr<FProp
 {
 	MinDesiredWidth = 0.0f;
 	MaxDesiredWidth = 0.0f;
+	if(InArgs._InWidgetRow.IsSet())
+	{
+		WidgetRow = InArgs._InWidgetRow;
+	}
 
 	SetEnabled( TAttribute<bool>( PropertyEditor.ToSharedRef(), &FPropertyEditor::IsPropertyEditingEnabled ) );
 
@@ -173,9 +177,11 @@ TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TShared
 		}
 		else if ( SPropertyEditorAsset::Supports( PropertyEditorRef ) )
 		{
+			// SPropertyEditorAsset has its own copy & paste that need to be bound to the widget row's
 			TSharedRef<SPropertyEditorAsset> AssetWidget = 
 				SAssignNew( PropertyWidget, SPropertyEditorAsset, PropertyEditorRef )
-				.ThumbnailPool( InPropertyUtilities.IsValid() ? InPropertyUtilities->GetThumbnailPool() : nullptr );
+				.ThumbnailPool( InPropertyUtilities.IsValid() ? InPropertyUtilities->GetThumbnailPool() : nullptr )
+				.InWidgetRow(WidgetRow);
 			
 			AssetWidget->GetDesiredWidth( MinDesiredWidth, MaxDesiredWidth );
 		}
@@ -620,9 +626,14 @@ namespace PropertyEditorHelpers
 		{
 			PropertyHandle = MakeShareable(new FPropertyHandleFieldPath(PropertyNode, NotifyHook, PropertyUtilities));
 		}
+		// struct should be checked last as there are several specializations of it above
+		else if (FPropertyHandleStruct::Supports(PropertyNode))
+		{
+			PropertyHandle = MakeShareable(new FPropertyHandleStruct(PropertyNode, NotifyHook, PropertyUtilities));
+		}
 		else
 		{
-			// Untyped or doesn't support getting the property directly but the property is still valid(probably struct property)
+			// Untyped or doesn't support getting the property directly but the property is still valid
 			PropertyHandle = MakeShareable( new FPropertyHandleBase( PropertyNode, NotifyHook, PropertyUtilities ) ); 
 		}
 
@@ -822,6 +833,7 @@ namespace PropertyEditorHelpers
 
 	TSharedRef<SWidget> MakePropertyReorderHandle(TSharedPtr<SDetailSingleItemRow> InParentRow, TAttribute<bool> InEnabledAttr)
 	{
+		const TWeakPtr<SDetailSingleItemRow> RowPtr = InParentRow.ToWeakPtr();
 		TSharedRef<SArrayRowHandle> Handle = SNew(SArrayRowHandle)
 			.Content()
 			[
@@ -838,7 +850,14 @@ namespace PropertyEditorHelpers
 		.ParentRow(InParentRow)
 		.Cursor(EMouseCursor::GrabHand)
 		.IsEnabled(InEnabledAttr)
-		.Visibility_Lambda([InParentRow]() { return InParentRow->IsHovered() ? EVisibility::Visible : EVisibility::Hidden; });
+		.Visibility_Lambda([RowPtr]()
+		{
+			if( const TSharedPtr<SDetailSingleItemRow> Row = RowPtr.Pin())
+			{
+				return Row->IsHovered() ? EVisibility::Visible : EVisibility::Hidden;
+			}
+			return EVisibility::Hidden;
+		});
 		return Handle;
 	}
 
@@ -1113,6 +1132,32 @@ namespace PropertyEditorHelpers
 		}
 
 		return InvalidEnumValues;
+	}
+
+	TMap<FName, FText> GetEnumValueDisplayNamesFromPropertyOverride(const FProperty* Property, const UEnum* InEnum)
+	{
+		TMap<FName, FText> DisplayNameOverrides;
+
+		static const FName NAME_EnumValueDisplayNameOverrides = "EnumValueDisplayNameOverrides";
+
+		const FString& DisplayNameOverridesStr = Property->GetMetaData(NAME_EnumValueDisplayNameOverrides);
+		if (DisplayNameOverridesStr.Len() > 0)
+		{
+			TArray<FString> DisplayNameOverridePairs;
+			DisplayNameOverridesStr.ParseIntoArray(DisplayNameOverridePairs, TEXT(";"));
+
+			for (const FString& DisplayNameOverridePair : DisplayNameOverridePairs)
+			{
+				FString DisplayNameKey;
+				FString DisplayNameValue;
+				if (DisplayNameOverridePair.Split(TEXT("="), &DisplayNameKey, &DisplayNameValue))
+				{
+					DisplayNameOverrides.Add(*InEnum->GenerateFullEnumName(*DisplayNameKey), FTextStringHelper::CreateFromBuffer(*DisplayNameValue));
+				}
+			}
+		}
+
+		return DisplayNameOverrides;
 	}
 
 	bool IsCategoryHiddenByClass(const TSharedPtr<FComplexPropertyNode>& InRootNode, FName CategoryName)

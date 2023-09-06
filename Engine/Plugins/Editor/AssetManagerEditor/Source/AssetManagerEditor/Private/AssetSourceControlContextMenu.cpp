@@ -12,6 +12,7 @@
 #include "ContentBrowserDataMenuContexts.h"
 #include "ContentBrowserMenuContexts.h"
 #include "FileHelpers.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
 #include "IAssetTools.h"
@@ -154,6 +155,8 @@ private:
 	bool CanExecuteSCCSync() const;
 	bool CanExecuteSCCDiffAgainstDepot() const;
 	bool CanExecuteDiffSelected() const;
+
+	bool AllowExecuteSCCRevertUnsaved() const;
 
 	/** Helper function to gather the package names of all selected assets */
 	void GetSelectedPackageNames(TArray<FString>& OutPackageNames) const;
@@ -344,7 +347,7 @@ bool FAssetSourceControlContextMenuState::AddSourceControlMenuOptions(FToolMenuS
 	{
 		InSection.AddMenuEntry(
 			"SCCConnectToSourceControl",
-			LOCTEXT("SCCConnectToSourceControl", "Connect To Revision Control..."),
+			LOCTEXT("SCCConnectToSourceControl", "Connect to Revision Control..."),
 			LOCTEXT("SCCConnectToSourceControlTooltip", "Connect to a revision control system for tracking changes to your content and levels."),
 			FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Icon"),
 			FUIAction(
@@ -383,6 +386,7 @@ void FAssetSourceControlContextMenuState::FillSourceControlSubMenu(UToolMenu* Me
 	const bool bUsesFileRevisions = SourceControlProvider.UsesFileRevisions();
 	const bool bUsesSnapshots = SourceControlProvider.UsesSnapshots();
 	const bool bUsesReadOnly = SourceControlProvider.UsesLocalReadOnlyState();
+	const bool bUsesDiffAgainstDepot = SourceControlProvider.AllowsDiffAgainstDepot();
 
 	if (bUsesFileRevisions)
 	{
@@ -504,17 +508,20 @@ void FAssetSourceControlContextMenuState::FillSourceControlSubMenu(UToolMenu* Me
 		FIsAsyncProcessingActive::CreateLambda([this]() { return IsStillScanning(CanExecuteSCCHistory()); })
 	);
 
-	AddAsyncMenuEntry(Section,
-		"SCCDiffAgainstDepot",
-		LOCTEXT("SCCDiffAgainstDepot", "Diff Against Depot"),
-		LOCTEXT("SCCDiffAgainstDepotTooltip", "Look at differences between the local and remote version of the selected assets."),
-		FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.Diff"),
-		FUIAction(
-			FExecuteAction::CreateSP(this, &FAssetSourceControlContextMenuState::ExecuteSCCDiffAgainstDepot),
-			FCanExecuteAction::CreateLambda([this]() { return IsActionEnabled(CanExecuteSCCDiffAgainstDepot()); })
-		),
-		FIsAsyncProcessingActive::CreateLambda([this]() { return IsStillScanning(CanExecuteSCCDiffAgainstDepot()); })
-	);
+	if (bUsesDiffAgainstDepot)
+	{
+		AddAsyncMenuEntry(Section,
+			"SCCDiffAgainstDepot",
+			LOCTEXT("SCCDiffAgainstDepot", "Diff Against Depot"),
+			LOCTEXT("SCCDiffAgainstDepotTooltip", "Look at differences between the local and remote version of the selected assets."),
+			FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.Diff"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &FAssetSourceControlContextMenuState::ExecuteSCCDiffAgainstDepot),
+				FCanExecuteAction::CreateLambda([this]() { return IsActionEnabled(CanExecuteSCCDiffAgainstDepot()); })
+			),
+			FIsAsyncProcessingActive::CreateLambda([this]() { return IsStillScanning(CanExecuteSCCDiffAgainstDepot()); })
+		);
+	}
 
 	AddAsyncMenuEntry(Section,
 		"SCCRevert",
@@ -579,7 +586,7 @@ FExecuteAction FAssetSourceControlContextMenuState::ExecutionCheck(FExecuteActio
 			{
 				FText Message = FText::Format(LOCTEXT("SCCLargeOperationWarningMessage", "You are about to perform this operation on a large amount of files ({0}), are you sure you want to continue?\n\nUnreal Editor may become unresponsive."), SelectedAssets.Num());
 				FText Title = LOCTEXT("SCCLargeOperationWarningTitle", "Continue Operation?");
-				EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title);
+				EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, Message, Title);
 
 				if (Result != EAppReturnType::Yes)
 				{
@@ -960,6 +967,18 @@ bool FAssetSourceControlContextMenuState::CanExecuteDiffSelected() const
 	return bCanDiffSelected;
 }
 
+bool FAssetSourceControlContextMenuState::AllowExecuteSCCRevertUnsaved() const
+{
+	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("SourceControl.RevertUnsaved.Enable")))
+	{
+		return CVar->GetBool();
+	}
+	else
+	{
+		return false;
+	}
+}
+
 bool FAssetSourceControlContextMenuState::IsActionEnabled(bool bEnabled) const
 {
 	return bEnabled && !IsStillScanning(bEnabled);
@@ -1044,6 +1063,25 @@ void FAssetSourceControlContextMenuState::TryCacheCanExecuteVars(const TArray<FS
 
 	const bool bUsesCheckout = SourceControlProvider.UsesCheckout();
 	const bool bUsesFileRevisions = SourceControlProvider.UsesFileRevisions();
+
+	// If a package is dirty, allow a revert of the in-memory changes that have not yet been saved to disk.
+	if (AllowExecuteSCCRevertUnsaved())
+	{
+		for (const FString& SelectedPath : InSelectedPaths)
+		{
+			FString PackageName;
+			if (FPackageName::TryConvertFilenameToLongPackageName(SelectedPath, PackageName))
+			{
+				if (UPackage* Package = FindPackage(NULL, *PackageName))
+				{
+					if (Package->IsDirty())
+					{
+						bCanExecuteSCCRevert = true;
+					}
+				}
+			}
+		}
+	}
 
 	// Check the SCC state for each package in the selected paths
 	TArray<FSourceControlStateRef> SelectedStates;

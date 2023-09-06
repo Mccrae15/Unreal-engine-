@@ -34,7 +34,7 @@ namespace mu
 	//-------------------------------------------------------------------------------------------------
 	bool ASTOpConstantResource::IsEqual(const ASTOp& otherUntyped) const
 	{
-		if (auto other = dynamic_cast<const ASTOpConstantResource*>(&otherUntyped))
+		if (const ASTOpConstantResource* other = dynamic_cast<const ASTOpConstantResource*>(&otherUntyped))
 		{
 			return type == other->type && hash == other->hash &&
 				loadedValue == other->loadedValue && proxy == other->proxy;
@@ -65,54 +65,46 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpConstantResource::Link(FProgram& program, const FLinkerOptions* Options)
+	void ASTOpConstantResource::Link(FProgram& program, FLinkerOptions* Options)
 	{
+		MUTABLE_CPUPROFILER_SCOPE(ASTOpConstantResource_Link);
+
 		if (!linkedAddress && !bLinkedAndNull)
 		{
 			if (type == OP_TYPE::ME_CONSTANT)
 			{
 				OP::MeshConstantArgs args;
-				memset(&args, 0, sizeof(args));
+				FMemory::Memset(&args, 0, sizeof(args));
 
-				Ptr<Mesh> pTyped = static_cast<const Mesh*>(GetValue().get())->Clone();
-				check(pTyped);
+				Ptr<Mesh> MeshData = static_cast<const Mesh*>(GetValue().get())->Clone();
+				check(MeshData);
 
 				args.skeleton = -1;
-				if (Ptr<const Skeleton> pSkeleton = pTyped->GetSkeleton())
+				if (Ptr<const Skeleton> pSkeleton = MeshData->GetSkeleton())
 				{
-					// See if it can be merged into another skeleton
-	//                for (const auto& pOtherSkeleton : program.m_constantSkeletons)
-	//                {
-	//                    if (true)
-	//                    //if (AreSkeletonsRelated(pOtherSkeleton, pSkeleton))
-	//                    {
-	//                        // \todo : ugly const hack
-	//                        ExtendSkeleton( const_cast<Skeleton*>(pOtherSkeleton.get()),
-	//                                        pSkeleton.get() );
-	//                        pSkeleton = pOtherSkeleton;
-
-	//                        Ptr<Mesh> pRemapped = MeshRemapSkeleton( pTyped.get(),
-	//                                                                 pOtherSkeleton.get() );
-	//                        if (pRemapped)
-	//                        {
-	//                            pTyped = pRemapped;
-	//                        }
-	//                        break;
-	//                    }
-	//                }
-
 					args.skeleton = program.AddConstant(pSkeleton.get());
-					pTyped->SetSkeleton(nullptr);
+					MeshData->SetSkeleton(nullptr);
 				}
 
 				args.physicsBody = -1;
-				if (Ptr<const PhysicsBody> pPhysicsBody = pTyped->GetPhysicsBody())
+				if (Ptr<const PhysicsBody> pPhysicsBody = MeshData->GetPhysicsBody())
 				{
 					args.physicsBody = program.AddConstant(pPhysicsBody.get());
-					pTyped->SetPhysicsBody(nullptr);
+					MeshData->SetPhysicsBody(nullptr);
 				}
 
-				args.value = program.AddConstant(pTyped.get());
+				// Use a map-based deduplication
+				mu::Ptr<const mu::Mesh> Key = MeshData;
+				const int32* IndexPtr = Options->MeshConstantMap.Find(Key);
+				if (!IndexPtr)
+				{
+					args.value = program.AddConstant(MeshData.get());
+					Options->MeshConstantMap.Add(MeshData, int32(args.value));
+				}
+				else
+				{
+					args.value = *IndexPtr;
+				}
 
 				linkedAddress = (OP::ADDRESS)program.m_opAddress.Num();
 				program.m_opAddress.Add((uint32_t)program.m_byteCode.Num());
@@ -122,7 +114,7 @@ namespace mu
 			else
 			{
 				OP::ResourceConstantArgs args;
-				memset(&args, 0, sizeof(args));
+				FMemory::Memset(&args, 0, sizeof(args));
 
 				bool bValidData = true;
 
@@ -140,7 +132,6 @@ namespace mu
 					}
 					else
 					{
-						// TODO: Compilation options?
 						int32 MinTextureResidentMipCount = Options->MinTextureResidentMipCount;
 						args.value = program.AddConstant(pTyped, MinTextureResidentMipCount);
 					}

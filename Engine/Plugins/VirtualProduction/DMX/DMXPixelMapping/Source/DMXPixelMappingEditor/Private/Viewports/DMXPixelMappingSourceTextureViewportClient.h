@@ -4,22 +4,33 @@
 
 #include "ViewportClient.h"
 
+
 class SDMXPixelMappingSourceTextureViewport;
 class FDMXPixelMappingToolkit;
 
 class FDMXPixelMappingSourceTextureViewportClient
-	: public FViewportClient
+	: public FCommonViewportClient
 {
 public:
 	/** Constructor */
 	FDMXPixelMappingSourceTextureViewportClient(const TSharedPtr<FDMXPixelMappingToolkit>& Toolkit, TWeakPtr<SDMXPixelMappingSourceTextureViewport> InViewport);
 	
+	/** If true, the widget draws the visible rect of the source texture */
+	bool IsDrawingVisibleRectOnly() const;
+
+	/** Returns the visible texture size in graph space */
+	FBox2D GetVisibleTextureBoxGraphSpace() const;
+
+protected:
 	//~ Begin FViewportClient Interface
 	virtual void Draw(FViewport* Viewport, FCanvas* Canvas) override;
 	//~ End FViewportClient Interface
 
-private:
-	TWeakPtr<FDMXPixelMappingToolkit> ToolkitWeakPtr;
+	//~ Begin FViewport Interface
+	virtual float UpdateViewportClientWindowDPIScale() const override;
+	//~ End FViewport Interface
 
-	TWeakPtr<SDMXPixelMappingSourceTextureViewport> WeakViewport;
+private:
+	TWeakPtr<FDMXPixelMappingToolkit> WeakToolkit;
+	TWeakPtr<SDMXPixelMappingSourceTextureViewport> WeakSourceTextureViewport;
 };

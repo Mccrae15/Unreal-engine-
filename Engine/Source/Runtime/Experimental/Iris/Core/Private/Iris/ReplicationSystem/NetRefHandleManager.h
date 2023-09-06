@@ -11,6 +11,7 @@
 #include "Iris/ReplicationState/ReplicationStateDescriptor.h"
 #include "Iris/ReplicationSystem/NetRefHandle.h"
 #include "Iris/ReplicationSystem/NetDependencyData.h"
+#include "UObject/ObjectPtr.h"
 
 class FReferenceCollector;
 namespace UE::Net
@@ -96,8 +97,8 @@ public:
 				uint32 bIsDependentObject : 1U;
 				uint32 bHasDependentObjects : 1U;
 				uint32 bAllowDestroyInstanceFromRemote : 1U;
-				// Padding. Adjust when adding or removing flags.
-				uint32 Padding : 26U;
+				uint32 bNeedsFullCopyAndQuantize : 1U;
+				uint32 bWantsFullPoll : 1U;
 			};
 		};
 	
@@ -120,8 +121,8 @@ public:
 	// Return true if this is a scopable index
 	bool IsScopableIndex(FInternalNetRefIndex InternalIndex) const { return ScopableInternalIndices.GetBit(InternalIndex); }
 
-	static FNetRefHandle MakeNetRefHandle(uint32 Id, uint32 ReplicationSystemId);
-	static FNetRefHandle MakeNetRefHandleFromId(uint32 Id);
+	static FNetRefHandle MakeNetRefHandle(uint64 Id, uint32 ReplicationSystemId);
+	static FNetRefHandle MakeNetRefHandleFromId(uint64 Id);
 
 	// Returns a valid handle if the wanted handle can be allocated
 	FNetRefHandle AllocateNetRefHandle(bool bIsStatic);
@@ -182,18 +183,29 @@ public:
 	// Get internal index from NetHandle
 	inline FInternalNetRefIndex GetInternalIndexFromNetHandle(FNetHandle Handle) const;
 
-	// Get bitarray for all currently scopable internal indices
+	/** Get bitarray for all currently scopable internal indices */
 	const FNetBitArray& GetScopableInternalIndices() const { return ScopableInternalIndices; }
+	const FNetBitArrayView GetScopableInternalIndicesView() const { return MakeNetBitArrayView(ScopableInternalIndices); }
 
 	// Get bitarray for all internal indices that was scopable last update
 	const FNetBitArray& GetPrevFrameScopableInternalIndices() const { return PrevFrameScopableInternalIndices; }
 	void SetPrevFrameScopableInternalIndicesToCurrent() { PrevFrameScopableInternalIndices = ScopableInternalIndices; }
 
+	/** List of objects that are always relevant or currently relevant to at least one connection. */
+	FNetBitArrayView GetRelevantObjectsInternalIndices() const { return MakeNetBitArrayView(RelevantObjectsInternalIndices); }
+
+	/** List of objects that we polled this frame */
+	FNetBitArrayView GetPolledObjectsInternalIndices() const { return MakeNetBitArrayView(PolledObjectsInternalIndices); }
+
+	/** List of objects that need to copy their state data */
+	FNetBitArrayView GetDirtyObjectsToCopy() const { return MakeNetBitArrayView(DirtyObjectsToCopy); }
+
 	// Get bitarray for all internal indices that currently are assigned
 	const FNetBitArray& GetAssignedInternalIndices() const { return AssignedInternalIndices; }
 
 	// SubObjects
-	const FNetBitArray& GetSubObjectInternalIndices() const { return SubObjectInternalIndices; }	
+	const FNetBitArray& GetSubObjectInternalIndices() const { return SubObjectInternalIndices; }
+	const FNetBitArrayView GetSubObjectInternalIndicesView() const { return MakeNetBitArrayView(SubObjectInternalIndices); }
 
 	bool AddSubObject(FNetRefHandle OwnerHandle, FNetRefHandle SubObjectHandle, FNetRefHandle RelativeOtherSubObjectHandle, EAddSubObjectFlags Flags = EAddSubObjectFlags::Default);
 	bool AddSubObject(FNetRefHandle OwnerHandle, FNetRefHandle SubObjectHandle, EAddSubObjectFlags Flags = EAddSubObjectFlags::Default);
@@ -239,6 +251,9 @@ public:
 
 	const FRefHandleMap& GetReplicatedHandles() const { return RefHandleToInternalIndex; }
 
+	// Get the replicated object represented by a given internal index.
+	UObject* GetReplicatedObjectInstance(FInternalNetRefIndex ObjectIndex) const { return ReplicatedInstances[ObjectIndex]; }
+
 	const TArray<UObject*>& GetReplicatedInstances() const { return ReplicatedInstances; }
 
 	void AddReferencedObjects(FReferenceCollector& Collector);
@@ -270,8 +285,8 @@ private:
 	FInternalNetRefIndex InternalCreateNetObject(const FNetRefHandle NetRefHandle, const FNetHandle GlobalHandle, const FReplicationProtocol* ReplicationProtocol);
 	void InternalDestroyNetObject(FInternalNetRefIndex InternalIndex);
 
-	static uint32 MakeNetRefHandleId(uint32 Seed, bool bIsStatic);
-	uint32 GetNextNetRefHandleId(uint32 HandleIndex) const;
+	static uint64 MakeNetRefHandleId(uint64 Seed, bool bIsStatic);
+	uint64 GetNextNetRefHandleId(uint64 HandleIndex) const;
 
 	// Get the next free internal index, returns InvalidInternalIndex if a free one cannot be found
 	FInternalNetRefIndex GetNextFreeInternalIndex() const;
@@ -300,6 +315,15 @@ private:
 
 	// Which internal indices were used last net frame. This can be used to find out which ones are new and deleted this frame. 
 	FNetBitArray PrevFrameScopableInternalIndices;
+
+	/** This contains the ScopableInternalIndices list minus filtered objects that are not relevant to any connection this frame. */
+	FNetBitArray RelevantObjectsInternalIndices;
+
+	/** List of objects that we polled this frame */
+	FNetBitArray PolledObjectsInternalIndices;
+
+	/** List of the objects that are considered dirty and for whom we will copy their state data */
+	FNetBitArray DirtyObjectsToCopy;
 
 	// Bitset containing all internal indices that are assigned
 	FNetBitArray AssignedInternalIndices;
@@ -341,11 +365,11 @@ private:
 	TArray<uint16> ReplicatedObjectRefCount;
 
 	// Raw pointers to all bound instances
-	TArray<UObject*> ReplicatedInstances;
+	TArray<TObjectPtr<UObject>> ReplicatedInstances;
 
 	// Assign handles
-	uint32 NextStaticHandleIndex;
-	uint32 NextDynamicHandleIndex;
+	uint64 NextStaticHandleIndex;
+	uint64 NextDynamicHandleIndex;
 
 	FNetDependencyData SubObjects;
 

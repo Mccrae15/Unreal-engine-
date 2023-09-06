@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearchFeatureChannel_FilterCrashingLegs.h"
-#include "DrawDebugHelpers.h"
 #include "PoseSearch/PoseSearchAssetIndexer.h"
 #include "PoseSearch/PoseSearchAssetSampler.h"
 #include "PoseSearch/PoseSearchContext.h"
 #include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearch/PoseSearchSchema.h"
+#include "PoseSearchFeatureChannel_Position.h"
 
 static void ComputeThighsSideAndForward(const FVector& RightThighPos, const FVector& LeftThighPos, FVector& ThighsSide, FVector& ThighsForward)
 {
@@ -30,7 +30,7 @@ static float ComputeCrashingLegsValue(const FVector& RightThighPos, const FVecto
 void UPoseSearchFeatureChannel_FilterCrashingLegs::Finalize(UPoseSearchSchema* Schema)
 {
 	ChannelDataOffset = Schema->SchemaCardinality;
-	ChannelCardinality = UE::PoseSearch::FFeatureVectorHelper::EncodeFloatCardinality;
+	ChannelCardinality = 1;
 	Schema->SchemaCardinality += ChannelCardinality;
 
 	LeftThighIdx = Schema->AddBoneReference(LeftThigh);
@@ -39,81 +39,59 @@ void UPoseSearchFeatureChannel_FilterCrashingLegs::Finalize(UPoseSearchSchema* S
 	RightFootIdx = Schema->AddBoneReference(RightFoot);
 }
 
-void UPoseSearchFeatureChannel_FilterCrashingLegs::FillWeights(TArray<float>& Weights) const
+void UPoseSearchFeatureChannel_FilterCrashingLegs::AddDependentChannels(UPoseSearchSchema* Schema) const
 {
-	check(ChannelCardinality == UE::PoseSearch::FFeatureVectorHelper::EncodeFloatCardinality);
-	Weights[ChannelDataOffset] = Weight;
-}
-
-void UPoseSearchFeatureChannel_FilterCrashingLegs::IndexAsset(UE::PoseSearch::IAssetIndexer& Indexer, TArrayView<float> FeatureVectorTable) const
-{
-	using namespace UE::PoseSearch;
-
-	const FAssetIndexingContext& IndexingContext = Indexer.GetIndexingContext();
-
-	for (int32 SampleIdx = IndexingContext.BeginSampleIdx; SampleIdx != IndexingContext.EndSampleIdx; ++SampleIdx)
+	if (Schema->bInjectAdditionalDebugChannels)
 	{
-		const float SubsampleTime = SampleIdx * IndexingContext.Schema->GetSamplingInterval();
-
-		bool bUnused;
-		const FTransform RightThighTransform = Indexer.GetTransformAndCacheResults(SubsampleTime, SubsampleTime, RightThighIdx, bUnused);
-		const FTransform LeftThighTransform = Indexer.GetTransformAndCacheResults(SubsampleTime, SubsampleTime, LeftThighIdx, bUnused);
-		const FTransform RightFootTransform = Indexer.GetTransformAndCacheResults(SubsampleTime, SubsampleTime, RightFootIdx, bUnused);
-		const FTransform LeftFootTransform = Indexer.GetTransformAndCacheResults(SubsampleTime, SubsampleTime, LeftFootIdx, bUnused);
-
-		const float CrashingLegsValue = ComputeCrashingLegsValue(RightThighTransform.GetTranslation(), LeftThighTransform.GetTranslation(), RightFootTransform.GetTranslation(), LeftFootTransform.GetTranslation());
-
-		int32 DataOffset = ChannelDataOffset;
-		const int32 VectorIdx = SampleIdx - IndexingContext.BeginSampleIdx;
-		FFeatureVectorHelper::EncodeFloat(IndexingContext.GetPoseVector(VectorIdx, FeatureVectorTable), DataOffset, CrashingLegsValue);
+		UPoseSearchFeatureChannel_Position::FindOrAddToSchema(Schema, 0.f, LeftThigh.BoneName);
+		UPoseSearchFeatureChannel_Position::FindOrAddToSchema(Schema, 0.f, RightThigh.BoneName);
+		UPoseSearchFeatureChannel_Position::FindOrAddToSchema(Schema, 0.f, LeftFoot.BoneName);
+		UPoseSearchFeatureChannel_Position::FindOrAddToSchema(Schema, 0.f, RightFoot.BoneName);
 	}
 }
-
-void UPoseSearchFeatureChannel_FilterCrashingLegs::BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, FPoseSearchFeatureVectorBuilder& InOutQuery) const
+void UPoseSearchFeatureChannel_FilterCrashingLegs::BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, UE::PoseSearch::FFeatureVectorBuilder& InOutQuery) const
 {
 	using namespace UE::PoseSearch;
 
-	const bool bIsCurrentResultValid = SearchContext.CurrentResult.IsValid();
-	const bool bSkip = InputQueryPose != EInputQueryPose::UseCharacterPose && bIsCurrentResultValid && SearchContext.CurrentResult.Database->Schema == InOutQuery.GetSchema();
+	const bool bIsCurrentResultValid = SearchContext.GetCurrentResult().IsValid() && SearchContext.GetCurrentResult().Database->Schema == InOutQuery.GetSchema();
+	const bool bSkip = InputQueryPose != EInputQueryPose::UseCharacterPose && bIsCurrentResultValid;
 	
-	int32 DataOffset = ChannelDataOffset;
-	if (bSkip || !SearchContext.History)
+	if (bSkip || !SearchContext.IsHistoryValid())
 	{
 		if (bIsCurrentResultValid)
 		{
-			const float LerpValue = InputQueryPose == EInputQueryPose::UseInterpolatedContinuingPose ? SearchContext.CurrentResult.LerpValue : 0.f;
-			FFeatureVectorHelper::EncodeFloat(InOutQuery.EditValues(), DataOffset, SearchContext.GetCurrentResultPrevPoseVector(), SearchContext.GetCurrentResultPoseVector(), SearchContext.GetCurrentResultNextPoseVector(), LerpValue);
+			FFeatureVectorHelper::Copy(InOutQuery.EditValues(), ChannelDataOffset, ChannelCardinality, SearchContext.GetCurrentResultPoseVector());
 		}
-		// else leave the InOutQuery set to zero since the SearchContext.History is invalid and it'll fail if we continue
+		else
+		{
+			// we leave the InOutQuery set to zero since the SearchContext.History is invalid and it'll fail if we continue
+			UE_LOG(LogPoseSearch, Error, TEXT("UPoseSearchFeatureChannel_FilterCrashingLegs::BuildQuery - Failed because Pose History Node is missing."));
+		}
 	}
 	else
 	{
-		const float SampleTime = 0.f;
-		const FTransform LeftThighTransform = SearchContext.TryGetTransformAndCacheResults(SampleTime, InOutQuery.GetSchema(), LeftThighIdx);
-		const FTransform RightThighTransform = SearchContext.TryGetTransformAndCacheResults(SampleTime, InOutQuery.GetSchema(), RightThighIdx);
-		const FTransform LeftFootTransform = SearchContext.TryGetTransformAndCacheResults(SampleTime, InOutQuery.GetSchema(), LeftFootIdx);
-		const FTransform RightFootTransform = SearchContext.TryGetTransformAndCacheResults(SampleTime, InOutQuery.GetSchema(), RightFootIdx);
+		const FVector RightThighPosition = SearchContext.GetSamplePosition(0.f, InOutQuery.GetSchema(), RightThighIdx);
+		const FVector LeftThighPosition = SearchContext.GetSamplePosition(0.f, InOutQuery.GetSchema(), LeftThighIdx);
+		const FVector RightFootPosition = SearchContext.GetSamplePosition(0.f, InOutQuery.GetSchema(), RightFootIdx);
+		const FVector LeftFootPosition = SearchContext.GetSamplePosition(0.f, InOutQuery.GetSchema(), LeftFootIdx);
 
-		const float CrashingLegsValue = ComputeCrashingLegsValue(RightThighTransform.GetTranslation(), LeftThighTransform.GetTranslation(), RightFootTransform.GetTranslation(), LeftFootTransform.GetTranslation());
-		FFeatureVectorHelper::EncodeFloat(InOutQuery.EditValues(), DataOffset, CrashingLegsValue);
+		const float CrashingLegsValue = ComputeCrashingLegsValue(RightThighPosition, LeftThighPosition, RightFootPosition, LeftFootPosition);
+
+		FFeatureVectorHelper::EncodeFloat(InOutQuery.EditValues(), ChannelDataOffset, CrashingLegsValue);
 	}
 }
 
+#if ENABLE_DRAW_DEBUG
 void UPoseSearchFeatureChannel_FilterCrashingLegs::DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const
 {
-#if ENABLE_DRAW_DEBUG
 	using namespace UE::PoseSearch;
 
-	const float CrashingLegsValue = FFeatureVectorHelper::DecodeFloatAtOffset(PoseVector, ChannelDataOffset);
+	const float CrashingLegsValue = FFeatureVectorHelper::DecodeFloat(PoseVector, ChannelDataOffset);
 
-	const float LifeTime = DrawParams.DefaultLifeTime;
-	const uint8 DepthPriority = ESceneDepthPriorityGroup::SDPG_Foreground + 2;
-	const bool bPersistent = EnumHasAnyFlags(DrawParams.Flags, EDebugDrawFlags::Persistent);
-
-	const FVector LeftThighPosition = DrawParams.GetCachedPosition(0.f, LeftThighIdx);
-	const FVector RightThighPosition = DrawParams.GetCachedPosition(0.f, RightThighIdx);
-	const FVector LeftFootPosition = DrawParams.GetCachedPosition(0.f, LeftFootIdx);
-	const FVector RightFootPosition = DrawParams.GetCachedPosition(0.f, RightFootIdx);
+	const FVector LeftThighPosition = DrawParams.ExtractPosition(PoseVector, 0.f, LeftThighIdx);
+	const FVector RightThighPosition = DrawParams.ExtractPosition(PoseVector, 0.f, RightThighIdx);
+	const FVector LeftFootPosition = DrawParams.ExtractPosition(PoseVector, 0.f, LeftFootIdx);
+	const FVector RightFootPosition = DrawParams.ExtractPosition(PoseVector, 0.f, RightFootIdx);
 
 	const float FeetDistance = (RightFootPosition - LeftFootPosition).Length();
 
@@ -133,27 +111,25 @@ void UPoseSearchFeatureChannel_FilterCrashingLegs::DebugDraw(const UE::PoseSearc
 
 	// when CrossingLegsValue is greater than .5 or lesser than -.5 we draw in Red or Orange
 	const float LerpValue = FMath::Min(CrashingLegsValue * 2.f, 1.f);
-	const FColor Color = LerpValue >= 0.f ?
-		LerpColor(FColor::Green, FColor::Red, LerpValue) :
-		LerpColor(FColor::Green, FColor::Orange, -LerpValue);
+	const FColor Color = LerpValue >= 0.f ? LerpColor(FColor::Green, FColor::Red, LerpValue) : LerpColor(FColor::Green, FColor::Orange, -LerpValue);
 
-	DrawDebugLine(DrawParams.World, LeftFootPosition, LeftFootPosition + CrossingLegsVector, Color, bPersistent, LifeTime, DepthPriority);
-	DrawDebugLine(DrawParams.World, RightFootPosition, RightFootPosition - CrossingLegsVector, Color, bPersistent, LifeTime, DepthPriority);
-#endif // ENABLE_DRAW_DEBUG
+	DrawParams.DrawLine(LeftFootPosition, LeftFootPosition + CrossingLegsVector, Color);
+	DrawParams.DrawLine(RightFootPosition, RightFootPosition - CrossingLegsVector, Color);
 }
+#endif // ENABLE_DRAW_DEBUG
 
-// IPoseFilter interface
-bool UPoseSearchFeatureChannel_FilterCrashingLegs::IsPoseFilterActive() const
+// IPoseSearchFilter interface
+bool UPoseSearchFeatureChannel_FilterCrashingLegs::IsFilterActive() const
 {
 	return true;
 }
 
-bool UPoseSearchFeatureChannel_FilterCrashingLegs::IsPoseValid(TConstArrayView<float> PoseValues, TConstArrayView<float> QueryValues, int32 PoseIdx, const FPoseSearchPoseMetadata& Metadata) const
+bool UPoseSearchFeatureChannel_FilterCrashingLegs::IsFilterValid(TConstArrayView<float> PoseValues, TConstArrayView<float> QueryValues, int32 PoseIdx, const UE::PoseSearch::FPoseMetadata& Metadata) const
 {
 	using namespace UE::PoseSearch;
 
-	const float PoseValue = FFeatureVectorHelper::DecodeFloatAtOffset(PoseValues, ChannelDataOffset);
-	const float QueryValue = FFeatureVectorHelper::DecodeFloatAtOffset(QueryValues, ChannelDataOffset);
+	const float PoseValue = FFeatureVectorHelper::DecodeFloat(PoseValues, ChannelDataOffset);
+	const float QueryValue = FFeatureVectorHelper::DecodeFloat(QueryValues, ChannelDataOffset);
 
 	bool bIsPoseValid = true;
 	if (FMath::Abs(QueryValue - PoseValue) > AllowedTolerance)
@@ -165,6 +141,31 @@ bool UPoseSearchFeatureChannel_FilterCrashingLegs::IsPoseValid(TConstArrayView<f
 }
 
 #if WITH_EDITOR
+void UPoseSearchFeatureChannel_FilterCrashingLegs::FillWeights(TArrayView<float> Weights) const
+{
+	for (int32 i = 0; i < ChannelCardinality; ++i)
+	{
+		Weights[ChannelDataOffset + i] = Weight;
+	}
+}
+
+void UPoseSearchFeatureChannel_FilterCrashingLegs::IndexAsset(UE::PoseSearch::FAssetIndexer& Indexer) const
+{
+	using namespace UE::PoseSearch;
+
+	for (int32 SampleIdx = Indexer.GetBeginSampleIdx(); SampleIdx != Indexer.GetEndSampleIdx(); ++SampleIdx)
+	{
+		const FVector RightThighPosition = Indexer.GetSamplePosition(0.f, SampleIdx, RightThighIdx);
+		const FVector LeftThighPosition = Indexer.GetSamplePosition(0.f, SampleIdx, LeftThighIdx);
+		const FVector RightFootPosition = Indexer.GetSamplePosition(0.f, SampleIdx, RightFootIdx);
+		const FVector LeftFootPosition = Indexer.GetSamplePosition(0.f, SampleIdx, LeftFootIdx);
+
+		const float CrashingLegsValue = ComputeCrashingLegsValue(RightThighPosition, LeftThighPosition, RightFootPosition, LeftFootPosition);
+
+		FFeatureVectorHelper::EncodeFloat(Indexer.GetPoseVector(SampleIdx), ChannelDataOffset, CrashingLegsValue);
+	}
+}
+
 FString UPoseSearchFeatureChannel_FilterCrashingLegs::GetLabel() const
 {
 	return Super::GetLabel();

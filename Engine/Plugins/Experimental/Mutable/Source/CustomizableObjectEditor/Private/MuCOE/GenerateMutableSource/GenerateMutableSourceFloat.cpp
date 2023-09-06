@@ -74,6 +74,8 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 		return static_cast<mu::NodeScalar*>(Generated->Node.get());
 	}
 
+	bool bDoNotAddToGeneratedCache = false;
+
 	mu::NodeScalarPtr Result;
 	
 	if (const UCustomizableObjectNodeFloatConstant* FloatConstantNode = Cast<UCustomizableObjectNodeFloatConstant>(Node))
@@ -91,26 +93,9 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 
 		GenerationContext.AddParameterNameUnique(Node, FloatParameterNode->ParameterName);
 
-		ScalarNode->SetName(TCHAR_TO_ANSI(*FloatParameterNode->ParameterName));
-		ScalarNode->SetUid(TCHAR_TO_ANSI(*GenerationContext.GetNodeIdUnique(Node).ToString()));
+		ScalarNode->SetName(StringCast<ANSICHAR>(*FloatParameterNode->ParameterName).Get());
+		ScalarNode->SetUid(StringCast<ANSICHAR>(*GenerationContext.GetNodeIdUnique(Node).ToString()).Get());
 		ScalarNode->SetDefaultValue(FloatParameterNode->DefaultValue);
-
-		const int32 NumDescriptionImage = FloatParameterNode->GetNumDescriptionImage();
-		ScalarNode->SetDescImageCount(NumDescriptionImage);
-
-		for (int d = 0; d < NumDescriptionImage; ++d)
-		{
-			const UEdGraphPin* DescriptionImagePin = FloatParameterNode->GetDescriptionImagePin(d);
-			if (!DescriptionImagePin)
-			{
-				GenerationContext.Compiler->CompilerLog(LOCTEXT("WrongFloatParameterDescriptionImagePin", "Float parameter in inconsistent state, please refresh the node."), FloatParameterNode);
-			}
-			else if (const UEdGraphPin* ConnectedPin = FollowInputPin(*DescriptionImagePin))
-			{
-				mu::NodeImagePtr TextureNode = GenerateMutableSourceImage(ConnectedPin, GenerationContext, 0.f);
-				ScalarNode->SetDescImage(d, TextureNode);
-			}
-		}
 
 		GenerationContext.ParameterUIDataMap.Add(FloatParameterNode->ParameterName, FParameterUIData(
 			FloatParameterNode->ParameterName,
@@ -128,8 +113,8 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 
 		GenerationContext.AddParameterNameUnique(Node, EnumParamNode->ParameterName);
 
-		EnumParameterNode->SetName(TCHAR_TO_ANSI(*EnumParamNode->ParameterName));
-		EnumParameterNode->SetUid(TCHAR_TO_ANSI(*GenerationContext.GetNodeIdUnique(Node).ToString()));
+		EnumParameterNode->SetName(StringCast<ANSICHAR>(*EnumParamNode->ParameterName).Get());
+		EnumParameterNode->SetUid(StringCast<ANSICHAR>(*GenerationContext.GetNodeIdUnique(Node).ToString()).Get());
 		EnumParameterNode->SetValueCount(NumSelectors);
 		EnumParameterNode->SetDefaultValueIndex(DefaultValue);
 
@@ -138,7 +123,7 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 
 		for (int SelectorIndex = 0; SelectorIndex < NumSelectors; ++SelectorIndex)
 		{
-			EnumParameterNode->SetValue(SelectorIndex, (float)SelectorIndex, TCHAR_TO_ANSI(*EnumParamNode->Values[SelectorIndex].Name));
+			EnumParameterNode->SetValue(SelectorIndex, (float)SelectorIndex, StringCast<ANSICHAR>(*EnumParamNode->Values[SelectorIndex].Name).Get());
 
 			ParameterUIData.ArrayIntegerParameterOption.Add(FIntegerParameterUIData(
 				EnumParamNode->Values[SelectorIndex].Name,
@@ -301,7 +286,7 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 			UEdGraphPin* VariationPin = TypedNodeFloatVar->VariationPin(VariationIndex);
 			if (!VariationPin) continue;
 
-			FloatNode->SetVariationTag(VariationIndex, TCHAR_TO_ANSI(*TypedNodeFloatVar->Variations[VariationIndex].Tag));
+			FloatNode->SetVariationTag(VariationIndex, StringCast<ANSICHAR>(*TypedNodeFloatVar->Variations[VariationIndex].Tag).Get());
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*VariationPin))
 			{
 				mu::NodeScalarPtr ChildNode = GenerateMutableSourceFloat(ConnectedPin, GenerationContext);
@@ -312,47 +297,83 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 
 	else if (const UCustomizableObjectNodeTable* TypedNodeTable = Cast<UCustomizableObjectNodeTable>(Node))
 	{
-		mu::NodeScalarTablePtr ScalarTableNode = new mu::NodeScalarTable();
-		Result = ScalarTableNode;
+		//This node will add a default value in case of error
+		mu::NodeScalarConstantPtr ConstantValue = new mu::NodeScalarConstant();
+		ConstantValue->SetValue(1.0f);
 
-		mu::TablePtr Table;
+		Result = ConstantValue;
+
+		if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+		{
+			// Material pins have to skip the cache of nodes or they will return always the same column node
+			bDoNotAddToGeneratedCache = true;
+		}
+
+		bool bSuccess = true;
+
 		if (TypedNodeTable->Table)
 		{
 			FString ColumnName = Pin->PinFriendlyName.ToString();
+			FProperty* Property = TypedNodeTable->Table->FindTableProperty(FName(*ColumnName));
 
-			if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+			if (!Property)
 			{
-				ColumnName = GenerationContext.CurrentMaterialTableParameterId;
-			}
-			
-			// Generating a new data table if not exists
-			Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
-
-			// Generating a new Float column if not exists
-			if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
-			{
-				GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
-			}
-			
-			ScalarTableNode->SetTable(Table);
-			ScalarTableNode->SetColumn(TCHAR_TO_ANSI(*ColumnName));
-			ScalarTableNode->SetParameterName(TCHAR_TO_ANSI(*TypedNodeTable->ParameterName));
-
-			GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
-			
-			if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
-			{
-				Table = new mu::Table();
-
-				FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *ColumnName);
+				FString Msg = FString::Printf(TEXT("Couldn't find the column [%s] in the data table's struct."), *ColumnName);
 				GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+
+				bSuccess = false;
+			}
+
+			if (bSuccess)
+			{
+				// Generating a new data table if not exists
+				mu::TablePtr Table;
+				Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
+
+				if (Table)
+				{
+					mu::NodeScalarTablePtr ScalarTableNode = new mu::NodeScalarTable();
+
+					if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
+					{
+						// Materials use the parameter id as column names
+						ColumnName = GenerationContext.CurrentMaterialTableParameterId;
+					}
+
+					// Generating a new Float column if not exists
+					if (Table->FindColumn(StringCast<ANSICHAR>(*ColumnName).Get()) == INDEX_NONE)
+					{
+						int32 Dummy = -1; // TODO MTBL-1512
+						bool Dummy2 = false;
+						bSuccess = GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, Property, Dummy, Dummy, GenerationContext.CurrentLOD, Dummy, Dummy2, GenerationContext);
+
+						if (!bSuccess)
+						{
+							FString Msg = FString::Printf(TEXT("Failed to generate the mutable table column [%s]"), *ColumnName);
+							GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+						}
+					}
+
+					if (bSuccess)
+					{
+						Result = ScalarTableNode;
+
+						ScalarTableNode->SetTable(Table);
+						ScalarTableNode->SetColumn(StringCast<ANSICHAR>(*ColumnName).Get());
+						ScalarTableNode->SetParameterName(StringCast<ANSICHAR>(*TypedNodeTable->ParameterName).Get());
+
+						GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
+					}
+				}
+				else
+				{
+					FString Msg = FString::Printf(TEXT("Couldn't generate a mutable table."), *ColumnName);
+					GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);
+				}
 			}
 		}
 		else
 		{
-			Table = new mu::Table();
-			ScalarTableNode->SetTable(Table);
-
 			GenerationContext.Compiler->CompilerLog(LOCTEXT("ScalarTableError", "Couldn't find the data table of the node."), Node);
 		}
 	}
@@ -362,8 +383,11 @@ mu::NodeScalarPtr GenerateMutableSourceFloat(const UEdGraphPin* Pin, FMutableGra
 		GenerationContext.Compiler->CompilerLog(LOCTEXT("UnimplementedNode", "Node type not implemented yet."), Node);
 	}
 
-	GenerationContext.Generated.Add(Key, FGeneratedData(Node, Result));
-	GenerationContext.GeneratedNodes.Add(Node);
+	if (!bDoNotAddToGeneratedCache)
+	{
+		GenerationContext.Generated.Add(Key, FGeneratedData(Node, Result));
+		GenerationContext.GeneratedNodes.Add(Node);
+	}
 
 	if (Result)
 	{

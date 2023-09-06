@@ -88,7 +88,17 @@ TArray<FName>& UMLDeformerInputInfo::GetBoneNames()
 	return BoneNames;
 }
 
+const TArray<FName>& UMLDeformerInputInfo::GetBoneNames() const
+{ 
+	return BoneNames;
+}
+
 TArray<FName>& UMLDeformerInputInfo::GetCurveNames()
+{ 
+	return CurveNames;
+}
+
+const TArray<FName>& UMLDeformerInputInfo::GetCurveNames() const
 { 
 	return CurveNames;
 }
@@ -120,12 +130,17 @@ void UMLDeformerInputInfo::SetNumTargetVertices(int32 NumVerts)
 
 bool UMLDeformerInputInfo::IsCompatible(USkeletalMesh* InSkeletalMesh) const
 {
+	if (SkeletalMesh.IsNull())
+	{
+		return true;
+	}
+
 	if (InSkeletalMesh == nullptr)
 	{
 		return false;
 	}
 
-	if (FSoftObjectPath(InSkeletalMesh) != SkeletalMesh)
+	if ((SkeletalMesh.IsValid() && !SkeletalMesh.IsNull()) && FSoftObjectPath(InSkeletalMesh) != SkeletalMesh)
 	{
 		return false;
 	}
@@ -143,15 +158,11 @@ bool UMLDeformerInputInfo::IsCompatible(USkeletalMesh* InSkeletalMesh) const
 
 	// Verify that all required curves are there.
 	USkeleton* Skeleton = InSkeletalMesh->GetSkeleton();
-	const FSmartNameMapping* SmartNameMapping = Skeleton ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr;
-	if (SmartNameMapping)
+	for (const FName CurveName : CurveNames)
 	{
-		for (const FName CurveName : CurveNames)
+		if (Skeleton->GetCurveMetaData(CurveName) == nullptr)
 		{
-			if (!SmartNameMapping->Exists(CurveName))
-			{
-				return false;
-			}
+			return false;
 		}
 	}
 
@@ -179,15 +190,11 @@ FString UMLDeformerInputInfo::GenerateCompatibilityErrorString(USkeletalMesh* In
 
 	// Verify that all required curves are there.
 	USkeleton* Skeleton = InSkeletalMesh->GetSkeleton();
-	const FSmartNameMapping* SmartNameMapping = Skeleton ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr;
-	if (SmartNameMapping)
+	for (const FName CurveName : CurveNames)
 	{
-		for (const FName CurveName : CurveNames)
+		if (Skeleton->GetCurveMetaData(CurveName) == nullptr)
 		{
-			if (!SmartNameMapping->Exists(CurveName))
-			{
-				ErrorString += FString::Format(TEXT("Required curve '{0}' is missing.\n"), {*CurveName.ToString()});
-			}
+			ErrorString += FString::Format(TEXT("Required curve '{0}' is missing.\n"), {*CurveName.ToString()});
 		}
 	}
 

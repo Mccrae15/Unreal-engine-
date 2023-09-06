@@ -5,17 +5,10 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using UnrealGameSync;
 
 namespace UnrealGameSync
 {
@@ -35,21 +28,21 @@ namespace UnrealGameSync
 			}
 		}
 
-		string _originalExecutableFileName;
-		IPerforceSettings _defaultPerforceSettings;
-		UserSettings _settings;
-		ILogger _logger;
+		readonly string _originalExecutableFileName;
+		readonly IPerforceSettings _defaultPerforceSettings;
+		readonly UserSettings _settings;
+		readonly ILogger _logger;
 
-		string? _initialServerAndPort;
-		string? _initialUserName;
-		string? _initialDepotPath;
-		bool _initialPreview;
-		int _initialAutomationPortNumber;
-		ProtocolHandlerState _initialProtocolHandlerState;
+		readonly string? _initialServerAndPort;
+		readonly string? _initialUserName;
+		readonly string? _initialDepotPath;
+		readonly bool _initialPreview;
+		readonly int _initialAutomationPortNumber;
+		readonly ProtocolHandlerState _initialProtocolHandlerState;
 
 		bool? _restartPreview;
 
-		ToolUpdateMonitor _toolUpdateMonitor;
+		readonly ToolUpdateMonitor _toolUpdateMonitor;
 
 		class ToolItem
 		{
@@ -57,7 +50,7 @@ namespace UnrealGameSync
 
 			public ToolItem(ToolDefinition definition)
 			{
-				this.Definition = definition;
+				Definition = definition;
 			}
 
 			public override string ToString()
@@ -69,12 +62,13 @@ namespace UnrealGameSync
 		private ApplicationSettingsWindow(IPerforceSettings defaultPerforceSettings, bool preview, string originalExecutableFileName, UserSettings settings, ToolUpdateMonitor toolUpdateMonitor, ILogger<ApplicationSettingsWindow> logger)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._originalExecutableFileName = originalExecutableFileName;
-			this._defaultPerforceSettings = defaultPerforceSettings;
-			this._settings = settings;
-			this._toolUpdateMonitor = toolUpdateMonitor;
-			this._logger = logger;
+			_originalExecutableFileName = originalExecutableFileName;
+			_defaultPerforceSettings = defaultPerforceSettings;
+			_settings = settings;
+			_toolUpdateMonitor = toolUpdateMonitor;
+			_logger = logger;
 
 			GlobalPerforceSettings.ReadGlobalPerforceSettings(ref _initialServerAndPort, ref _initialUserName, ref _initialDepotPath, ref preview);
 			_initialPreview = preview;
@@ -82,62 +76,62 @@ namespace UnrealGameSync
 			_initialAutomationPortNumber = AutomationServer.GetPortNumber();
 			_initialProtocolHandlerState = ProtocolHandlerUtils.GetState();
 
-			this.AutomaticallyRunAtStartupCheckBox.Checked = IsAutomaticallyRunAtStartup();
-			this.KeepInTrayCheckBox.Checked = settings.KeepInTray;
-						
-			this.ServerTextBox.Text = _initialServerAndPort;
-			this.ServerTextBox.Select(ServerTextBox.TextLength, 0);
-			this.ServerTextBox.CueBanner = $"Default ({defaultPerforceSettings.ServerAndPort})";
+			AutomaticallyRunAtStartupCheckBox.Checked = IsAutomaticallyRunAtStartup();
+			KeepInTrayCheckBox.Checked = settings.KeepInTray;
+					
+			ServerTextBox.Text = _initialServerAndPort;
+			ServerTextBox.Select(ServerTextBox.TextLength, 0);
+			ServerTextBox.CueBanner = $"Default ({defaultPerforceSettings.ServerAndPort})";
 
-			this.UserNameTextBox.Text = _initialUserName;
-			this.UserNameTextBox.Select(UserNameTextBox.TextLength, 0);
-			this.UserNameTextBox.CueBanner = $"Default ({defaultPerforceSettings.UserName})";
+			UserNameTextBox.Text = _initialUserName;
+			UserNameTextBox.Select(UserNameTextBox.TextLength, 0);
+			UserNameTextBox.CueBanner = $"Default ({defaultPerforceSettings.UserName})";
 
-			this.ParallelSyncThreadsSpinner.Value = Math.Max(Math.Min(settings.SyncOptions.NumThreads, ParallelSyncThreadsSpinner.Maximum), ParallelSyncThreadsSpinner.Minimum);
+			ParallelSyncThreadsSpinner.Value = Math.Max(Math.Min(settings.SyncOptions.NumThreads ?? PerforceSyncOptions.DefaultNumThreads, ParallelSyncThreadsSpinner.Maximum), ParallelSyncThreadsSpinner.Minimum);
 
-			this.DepotPathTextBox.Text = _initialDepotPath;
-			this.DepotPathTextBox.Select(DepotPathTextBox.TextLength, 0);
-			this.DepotPathTextBox.CueBanner = DeploymentSettings.DefaultDepotPath ?? String.Empty;
+			DepotPathTextBox.Text = _initialDepotPath;
+			DepotPathTextBox.Select(DepotPathTextBox.TextLength, 0);
+			DepotPathTextBox.CueBanner = DeploymentSettings.Instance.DefaultDepotPath ?? String.Empty;
 
-			this.UsePreviewBuildCheckBox.Checked = preview;
+			UsePreviewBuildCheckBox.Checked = preview;
 
 			if(_initialAutomationPortNumber > 0)
 			{
-				this.EnableAutomationCheckBox.Checked = true;
-				this.AutomationPortTextBox.Enabled = true;
-				this.AutomationPortTextBox.Text = _initialAutomationPortNumber.ToString();
+				EnableAutomationCheckBox.Checked = true;
+				AutomationPortTextBox.Enabled = true;
+				AutomationPortTextBox.Text = _initialAutomationPortNumber.ToString();
 			}
 			else
 			{
-				this.EnableAutomationCheckBox.Checked = false;
-				this.AutomationPortTextBox.Enabled = false;
-				this.AutomationPortTextBox.Text = AutomationServer.DefaultPortNumber.ToString();
+				EnableAutomationCheckBox.Checked = false;
+				AutomationPortTextBox.Enabled = false;
+				AutomationPortTextBox.Text = AutomationServer.DefaultPortNumber.ToString();
 			}
 
 			if(_initialProtocolHandlerState == ProtocolHandlerState.Installed)
 			{
-				this.EnableProtocolHandlerCheckBox.CheckState = CheckState.Checked;
+				EnableProtocolHandlerCheckBox.CheckState = CheckState.Checked;
 			}
 			else if (_initialProtocolHandlerState == ProtocolHandlerState.NotInstalled)
 			{
-				this.EnableProtocolHandlerCheckBox.CheckState = CheckState.Unchecked;
+				EnableProtocolHandlerCheckBox.CheckState = CheckState.Unchecked;
 			}
 			else
 			{
-				this.EnableProtocolHandlerCheckBox.CheckState = CheckState.Indeterminate;
+				EnableProtocolHandlerCheckBox.CheckState = CheckState.Indeterminate;
 			}
 
 			List<ToolDefinition> tools = toolUpdateMonitor.Tools;
 			foreach (ToolDefinition tool in tools)
 			{
-				this.CustomToolsListBox.Items.Add(new ToolItem(tool), settings.EnabledTools.Contains(tool.Id));
+				CustomToolsListBox.Items.Add(new ToolItem(tool), settings.EnabledTools.Contains(tool.Id));
 			}
 		}
 
 		public static bool? ShowModal(IWin32Window owner, IPerforceSettings defaultPerforceSettings, bool preview, string originalExecutableFileName, UserSettings settings, ToolUpdateMonitor toolUpdateMonitor, ILogger<ApplicationSettingsWindow> logger)
 		{
-			ApplicationSettingsWindow applicationSettings = new ApplicationSettingsWindow(defaultPerforceSettings, preview, originalExecutableFileName, settings, toolUpdateMonitor, logger);
-			if(applicationSettings.ShowDialog() == DialogResult.OK)
+			using ApplicationSettingsWindow applicationSettings = new ApplicationSettingsWindow(defaultPerforceSettings, preview, originalExecutableFileName, settings, toolUpdateMonitor, logger);
+			if(applicationSettings.ShowDialog(owner) == DialogResult.OK)
 			{
 				return applicationSettings._restartPreview;
 			}
@@ -147,7 +141,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		private bool IsAutomaticallyRunAtStartup()
+		private static bool IsAutomaticallyRunAtStartup()
 		{
 			RegistryKey? key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
 			return (key?.GetValue("UnrealGameSync") != null);
@@ -169,16 +163,15 @@ namespace UnrealGameSync
 			}
 
 			string? depotPath = DepotPathTextBox.Text.Trim();
-			if(depotPath.Length == 0 || depotPath == DeploymentSettings.DefaultDepotPath)
+			if(depotPath.Length == 0 || depotPath == DeploymentSettings.Instance.DefaultDepotPath)
 			{
 				depotPath = null;
 			}
 
 			bool preview = UsePreviewBuildCheckBox.Checked;
 
-
 			int automationPortNumber;
-			if(!EnableAutomationCheckBox.Checked || !int.TryParse(AutomationPortTextBox.Text, out automationPortNumber))
+			if(!EnableAutomationCheckBox.Checked || !Int32.TryParse(AutomationPortTextBox.Text, out automationPortNumber))
 			{
 				automationPortNumber = -1;
 			}
@@ -190,7 +183,7 @@ namespace UnrealGameSync
 				{
 					PerforceSettings settings = Utility.OverridePerforceSettings(_defaultPerforceSettings, serverAndPort, userName);
 
-					string? testDepotPath = depotPath ?? DeploymentSettings.DefaultDepotPath;
+					string? testDepotPath = depotPath ?? DeploymentSettings.Instance.DefaultDepotPath;
 					if (testDepotPath != null)
 					{
 						ModalTask? task = PerforceModalTask.Execute(this, "Checking connection", "Checking connection, please wait...", settings, (p, c) => PerforceTestConnectionTask.RunAsync(p, testDepotPath, c), _logger);
@@ -223,7 +216,8 @@ namespace UnrealGameSync
 
 			if (_settings.KeepInTray != KeepInTrayCheckBox.Checked || _settings.SyncOptions.NumThreads != ParallelSyncThreadsSpinner.Value)
 			{
-				_settings.SyncOptions.NumThreads = (int)ParallelSyncThreadsSpinner.Value;
+				int numThreads = (int)ParallelSyncThreadsSpinner.Value;
+				_settings.SyncOptions.NumThreads = (numThreads != PerforceSyncOptions.DefaultNumThreads)? (int?)numThreads : null;
 				_settings.KeepInTray = KeepInTrayCheckBox.Checked;
 				_settings.Save(_logger);
 			}
@@ -238,7 +232,8 @@ namespace UnrealGameSync
 			}
 			if (!newEnabledTools.SequenceEqual(_settings.EnabledTools))
 			{
-				_settings.EnabledTools = newEnabledTools.ToArray();
+				_settings.EnabledTools.Clear();
+				_settings.EnabledTools.UnionWith(newEnabledTools);
 				_settings.Save(_logger);
 				_toolUpdateMonitor.UpdateNow();
 			}
@@ -275,7 +270,7 @@ namespace UnrealGameSync
 
 		private void AdvancedBtn_Click(object sender, EventArgs e)
 		{
-			PerforceSyncSettingsWindow window = new PerforceSyncSettingsWindow(_settings, _logger);
+			using PerforceSyncSettingsWindow window = new PerforceSyncSettingsWindow(_settings, _logger);
 			window.ShowDialog();
 		}
 	}

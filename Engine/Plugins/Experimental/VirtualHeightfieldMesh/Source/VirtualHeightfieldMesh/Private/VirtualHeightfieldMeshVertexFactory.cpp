@@ -12,7 +12,7 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FVirtualHeightfieldMeshVertexFactoryPar
 namespace
 {
 	template< typename T >
-	FBufferRHIRef CreateIndexBuffer(uint32 NumQuadsPerSide)
+	FBufferRHIRef CreateIndexBuffer(FRHICommandListBase& RHICmdList, uint32 NumQuadsPerSide)
 	{
 		TResourceArray<T, INDEXBUFFER_ALIGNMENT> Indices;
 
@@ -68,20 +68,20 @@ namespace
 
 		// Create index buffer. Fill buffer with initial data upon creation
 		FRHIResourceCreateInfo CreateInfo(TEXT("FVirtualHeightfieldMeshIndexBuffer"), &Indices);
-		return RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
+		return RHICmdList.CreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 	}
 }
 
-void FVirtualHeightfieldMeshIndexBuffer::InitRHI()
+void FVirtualHeightfieldMeshIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	NumIndices = NumQuadsPerSide * NumQuadsPerSide * 6;
 	if (NumQuadsPerSide < 256)
 	{
-		IndexBufferRHI = CreateIndexBuffer<uint16>(NumQuadsPerSide);
+		IndexBufferRHI = CreateIndexBuffer<uint16>(RHICmdList, NumQuadsPerSide);
 	}
 	else
 	{
-		IndexBufferRHI = CreateIndexBuffer<uint32>(NumQuadsPerSide);
+		IndexBufferRHI = CreateIndexBuffer<uint32>(RHICmdList, NumQuadsPerSide);
 	}
 }
 
@@ -145,11 +145,11 @@ FVirtualHeightfieldMeshVertexFactory::~FVirtualHeightfieldMeshVertexFactory()
 	delete IndexBuffer;
 }
 
-void FVirtualHeightfieldMeshVertexFactory::InitRHI()
+void FVirtualHeightfieldMeshVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	UniformBuffer = FVirtualHeightfieldMeshVertexFactoryBufferRef::CreateUniformBufferImmediate(Params, UniformBuffer_MultiFrame);
 
-	IndexBuffer->InitResource();
+	IndexBuffer->InitResource(RHICmdList);
 
 	FVertexStream NullVertexStream;
 	NullVertexStream.VertexBuffer = nullptr;
@@ -221,7 +221,7 @@ void FVirtualHeightfieldMeshVertexFactory::ValidateCompiledResult(const FVertexF
 #if 0
 	if (Type->SupportsPrimitiveIdStream()
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform))
-		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
+		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 	{
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}

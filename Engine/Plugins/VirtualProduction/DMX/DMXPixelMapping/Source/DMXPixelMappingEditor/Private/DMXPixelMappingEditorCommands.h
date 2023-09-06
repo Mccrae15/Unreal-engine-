@@ -18,7 +18,6 @@ public:
 	TSharedPtr<FUICommandInfo> AddMapping;
 	TSharedPtr<FUICommandInfo> PlayDMX;
 	TSharedPtr<FUICommandInfo> StopPlayingDMX;
-	TSharedPtr<FUICommandInfo> TogglePlayDMXAll;
 
 	// Layout related
 	TSharedPtr<FUICommandInfo> SizeComponentToTexture;
@@ -26,6 +25,7 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleScaleChildrenWithParent;
 	TSharedPtr<FUICommandInfo> ToggleAlwaysSelectGroup;
 	TSharedPtr<FUICommandInfo> ToggleApplyLayoutScriptWhenLoaded;
+	TSharedPtr<FUICommandInfo> ToggleShowMatrixCells;
 	TSharedPtr<FUICommandInfo> ToggleShowComponentNames;
 	TSharedPtr<FUICommandInfo> ToggleShowPatchInfo;
 	TSharedPtr<FUICommandInfo> ToggleShowCellIDs;

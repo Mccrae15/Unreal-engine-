@@ -76,14 +76,6 @@ FAnimationBaseContext::FAnimationBaseContext(FAnimInstanceProxy* InAnimInstanceP
 {
 }
 
-FAnimationBaseContext::FAnimationBaseContext(const FAnimationBaseContext& InContext)
-	: AnimInstanceProxy(InContext.AnimInstanceProxy)
-	, SharedContext(InContext.SharedContext)
-	, CurrentNodeId(InContext.CurrentNodeId)
-	, PreviousNodeId(InContext.PreviousNodeId)
-{
-}
-
 IAnimClassInterface* FAnimationBaseContext::GetAnimClass() const
 {
 	return AnimInstanceProxy ? AnimInstanceProxy->GetAnimClassInterface() : nullptr;
@@ -101,9 +93,9 @@ UAnimBlueprint* FAnimationBaseContext::GetAnimBlueprint() const
 }
 #endif //WITH_EDITORONLY_DATA
 
-void FAnimationBaseContext::LogMessageInternal(FName InLogType, EMessageSeverity::Type InSeverity, FText InMessage) const
+void FAnimationBaseContext::LogMessageInternal(FName InLogType, const TSharedRef<FTokenizedMessage>& InMessage) const
 {
-	AnimInstanceProxy->LogMessage(InLogType, InSeverity, InMessage);
+	AnimInstanceProxy->LogMessage(InLogType, InMessage);
 }
 /////////////////////////////////////////////////////
 // FPoseContext
@@ -412,7 +404,7 @@ void FPoseLink::Evaluate(FPoseContext& Output)
 					}
 				}
 			}
-			if(Output.Curve.NumValid() > 0)
+			if(Output.Curve.Num() > 0)
 			{
 				Output.AnimInstanceProxy->RecordNodeAttribute(*Output.AnimInstanceProxy, SourceID, LinkID, UE::Anim::FAttributes::Curves);
 			}
@@ -424,7 +416,7 @@ void FPoseLink::Evaluate(FPoseContext& Output)
 #endif
 
 #if WITH_EDITOR
-		Output.AnimInstanceProxy->RegisterWatchedPose(Output.Pose, LinkID);
+		Output.AnimInstanceProxy->RegisterWatchedPose(Output.Pose, Output.Curve, LinkID);
 #endif
 	}
 	else
@@ -484,7 +476,7 @@ void FComponentSpacePoseLink::EvaluateComponentSpace(FComponentSpacePoseContext&
 					}
 				}
 			}
-			if(Output.Curve.NumValid() > 0)
+			if(Output.Curve.Num() > 0)
 			{
 				Output.AnimInstanceProxy->RecordNodeAttribute(*Output.AnimInstanceProxy, SourceID, LinkID, UE::Anim::FAttributes::Curves);
 			}
@@ -492,7 +484,7 @@ void FComponentSpacePoseLink::EvaluateComponentSpace(FComponentSpacePoseContext&
 #endif
 
 #if WITH_EDITOR
-		Output.AnimInstanceProxy->RegisterWatchedPose(Output.Pose, LinkID);
+		Output.AnimInstanceProxy->RegisterWatchedPose(Output.Pose, Output.Curve, LinkID);
 #endif
 	}
 	else

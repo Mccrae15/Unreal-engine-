@@ -59,6 +59,16 @@ public class ScyllaSettings : IValidatableObject
     public bool UseSSL { get; set; } = true;
 
     /// <summary>
+    /// Toggle to enable reading objects from the object_last_access_time_v2 table
+    /// </summary>
+    public bool ListObjectsFromLastAccessTable { get; set; } = true;
+
+    /// <summary>
+    /// Set to update the last access field in the object table, this is legacy and causes extra compaction work on the database
+    /// </summary>
+    public bool UpdateLegacyLastAccessField { get; set; } = false;
+
+    /// <summary>
     /// Read timeout in milliseconds
     /// Set to -1 to get the default timeout, set to 0 to disable timeouts
     /// </summary>
@@ -80,6 +90,16 @@ public class ScyllaSettings : IValidatableObject
     /// </summary>
     [Range(1, 64)]
     public uint CountOfNodes { get; set; } = 1;
+
+    /// <summary>
+    /// Enable to migrate data from blob_index table to blob_index_v2 table
+    /// </summary>
+    public bool MigrateFromOldBlobIndex { get; set; } = false;
+
+    /// <summary>
+    /// Enable to use list namespaces from the old table, this can set for a period while migration from old to new table happens
+    /// </summary>
+    public bool ListObjectsFromOldNamespaceTable { get; set; } = false;
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

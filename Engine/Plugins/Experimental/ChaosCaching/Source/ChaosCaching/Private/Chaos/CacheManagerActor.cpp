@@ -59,14 +59,14 @@ void FObservedComponent::PostSerialize(const FArchive& Ar)
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
-UPrimitiveComponent* FObservedComponent::GetComponent()
+UPrimitiveComponent* FObservedComponent::GetComponent(AActor* OwningActor)
 {
-	return Cast<UPrimitiveComponent>(SoftComponentRef.GetComponent(nullptr));
+	return Cast<UPrimitiveComponent>(SoftComponentRef.GetComponent(OwningActor));
 }
 
-UPrimitiveComponent* FObservedComponent::GetComponent() const
+UPrimitiveComponent* FObservedComponent::GetComponent(AActor* OwningActor) const
 {
-	return Cast<UPrimitiveComponent>(SoftComponentRef.GetComponent(nullptr));
+	return Cast<UPrimitiveComponent>(SoftComponentRef.GetComponent(OwningActor));
 }
 
 AChaosCacheManager::AChaosCacheManager(const FObjectInitializer& ObjectInitializer /*= FObjectInitializer::Get()*/)
@@ -75,6 +75,7 @@ AChaosCacheManager::AChaosCacheManager(const FObjectInitializer& ObjectInitializ
 	, StartMode(EStartMode::Timed)
 	, bCanRecord(true)
 	, bIsSimulating(false)
+	, StartTimeAtBeginPlay(0)
 {
 	// This actor will tick, just not normally. There needs to be a tick-like event both before physics simulation
 	// and after physics simulation, we bind to some physics scene events in BeginPlay to handle this.
@@ -167,9 +168,16 @@ void AChaosCacheManager::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	for(FObservedComponent& ObervedComponent : ObservedComponents)
+	for(FObservedComponent& ObservedComponent : ObservedComponents)
 	{
-		ObervedComponent.PostSerialize(Ar);
+		ObservedComponent.PostSerialize(Ar);
+		if (Ar.IsLoading() && ObservedComponent.SoftComponentRef.OtherActor == this)
+		{
+			// Clear OtherActor in order to use OwningActor(this) in when using GetComponent.
+			// This is relevant when this CacheManager is spawnable by sequencer so the
+			// SoftComponentedRef will point to the actual spawned CacheManager instance and not the spawnable template.
+			ObservedComponent.SoftComponentRef.OtherActor = nullptr;
+		}
 	}
 }
 
@@ -188,7 +196,7 @@ void AChaosCacheManager::ResetAllComponentTransforms()
 
 	for(FObservedComponent& Observed : ObservedComponents)
 	{
-		if(UPrimitiveComponent* Comp = Observed.GetComponent())
+		if(UPrimitiveComponent* Comp = Observed.GetComponent(this))
 		{
 			if(UChaosCache* Cache = CacheCollection->FindCache(Observed.CacheName))
 			{
@@ -207,7 +215,7 @@ void AChaosCacheManager::ResetSingleTransform(int32 InIndex)
 
 	FObservedComponent& Observed = ObservedComponents[InIndex];
 
-	if(UPrimitiveComponent* Comp = Observed.GetComponent())
+	if(UPrimitiveComponent* Comp = Observed.GetComponent(this))
 	{
 		if(UChaosCache* Cache = CacheCollection->FindCache(Observed.CacheName))
 		{
@@ -226,7 +234,7 @@ void AChaosCacheManager::SelectComponent(int32 InIndex)
 
 	FObservedComponent& Observed = ObservedComponents[InIndex];
 
-	if(UPrimitiveComponent* Comp = Observed.GetComponent())
+	if(UPrimitiveComponent* Comp = Observed.GetComponent(this))
 	{
 		GEditor->SelectNone(true, true);
 		GEditor->SelectActor(Comp->GetOwner(), true, true);
@@ -242,11 +250,14 @@ void AChaosCacheManager::BeginPlay()
 
 	Super::BeginPlay();
 
+	StartTimeAtBeginPlay = StartTime;
 	BeginEvaluate();
 }
 
 void AChaosCacheManager::BeginEvaluate()
 {
+	EndEvaluate();
+
 	using namespace Chaos;
 	bIsSimulating = !(CacheMode == ECacheMode::None);
 	
@@ -271,7 +282,7 @@ void AChaosCacheManager::BeginEvaluate()
 	{
 		Adapter->Initialize();
 	}
-	ActiveAdapters.Reset();
+	check(ActiveAdapters.IsEmpty()); // Should be empty from calling EndEvaluate
 
 	int32       NumFailedPlaybackEntries = 0;
 	const int32 NumComponents            = ObservedComponents.Num();
@@ -282,7 +293,7 @@ void AChaosCacheManager::BeginEvaluate()
 		auto ByPriority = [](const FComponentCacheAdapter* A, const FComponentCacheAdapter* B) {
 			return A->GetPriority() < B->GetPriority();
 		};
-		UPrimitiveComponent* Comp = Observed.GetComponent();
+		UPrimitiveComponent* Comp = Observed.GetComponent(this);
 		
 		if(!Comp)
 		{
@@ -442,6 +453,13 @@ void AChaosCacheManager::BeginEvaluate()
 		FSlateNotificationManager::Get().AddNotification(Info);
 #endif
 	}
+	else
+	{
+		if (CacheMode != ECacheMode::Record)
+		{
+			OnStartFrameChanged(StartTime);
+		}
+	}
 }
 
 void AChaosCacheManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -449,6 +467,11 @@ void AChaosCacheManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 
 	EndEvaluate();
+
+	if (StartTimeAtBeginPlay != StartTime)
+	{
+		SetStartTime(StartTimeAtBeginPlay);
+	}
 }
 
 void AChaosCacheManager::EndEvaluate()
@@ -457,6 +480,8 @@ void AChaosCacheManager::EndEvaluate()
 	
 	FChaosSolversModule* Module = FChaosSolversModule::GetModule();
 	check(Module);
+
+	WaitForObservedComponentSolverTasks();
 
 	for(TPair<Chaos::FPhysicsSolverEvents*, FPerSolverData> PerSolver : PerSolverData)
 	{
@@ -508,7 +533,7 @@ void AChaosCacheManager::HandlePreSolve(Chaos::FReal InDt, Chaos::FPhysicsSolver
 	}
 
 	TickObservedComponents(Data->PlaybackIndices, InDt, [this, Data](UChaosCache* InCache, FObservedComponent& Observed, Chaos::FComponentCacheAdapter* InAdapter) {
-		UPrimitiveComponent* Comp = Observed.GetComponent();
+		UPrimitiveComponent* Comp = Observed.GetComponent(this);
 		if(ensure(Comp))
 		{
 			InAdapter->Playback_PreSolve(Comp, InCache, Observed.TimeSinceTrigger, Observed.TickRecord, Data->PendingKinematicUpdates);
@@ -557,8 +582,8 @@ void AChaosCacheManager::HandlePostSolve(Chaos::FReal InDt, Chaos::FPhysicsSolve
 		return;
 	}
 
-	TickObservedComponents(Data->RecordIndices, InDt, [](UChaosCache* InCache, FObservedComponent& Observed, Chaos::FComponentCacheAdapter* InAdapter) {
-		UPrimitiveComponent* Comp = Observed.GetComponent();
+	TickObservedComponents(Data->RecordIndices, InDt, [this](UChaosCache* InCache, FObservedComponent& Observed, Chaos::FComponentCacheAdapter* InAdapter) {
+		UPrimitiveComponent* Comp = Observed.GetComponent(this);
 		if (ensure(Comp && InCache))
 		{
 			
@@ -595,7 +620,7 @@ void AChaosCacheManager::OnStartFrameChanged(Chaos::FReal InTime)
 	for (int32 ObservedIdx = 0; ObservedIdx < ObservedComponents.Num(); ++ObservedIdx)
 	{
 		FObservedComponent& Observed = ObservedComponents[ObservedIdx];
-		if (UPrimitiveComponent* Comp = Observed.GetComponent())
+		if (UPrimitiveComponent* Comp = Observed.GetComponent(this))
 		{
 			if (!Observed.BestFitAdapter)
 			{
@@ -626,11 +651,26 @@ void AChaosCacheManager::OnStartFrameChanged(Chaos::FReal InTime)
 	}
 }
 
+void AChaosCacheManager::SetCacheCollection(UChaosCacheCollection* InCacheCollection)
+{
+	// check if we have any observed component already triggered
+	for (FObservedComponent& Observed : ObservedComponents)
+	{
+		if (Observed.bTriggered)
+		{
+			UE_LOG(LogChaosCache, Warning, TEXT("Trying to change the cache collection while some observed component are already been triggered ( %s )"), *GetName());
+			return;
+		}
+	}
+
+	CacheCollection = InCacheCollection;
+}
+
 void AChaosCacheManager::TriggerComponent(UPrimitiveComponent* InComponent)
 {
 	// #BGTODO Maybe not totally thread-safe, probably safer with an atomic or condition var rather than the bTriggered flag
 	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [this, InComponent](const FObservedComponent& Test) {
-		return Test.GetComponent() == InComponent && Test.IsEnabled(CacheMode);
+		return Test.GetComponent(this) == InComponent && Test.IsEnabled(CacheMode);
 	});
 
 	if (Found && StartMode == EStartMode::Triggered)
@@ -642,7 +682,7 @@ void AChaosCacheManager::TriggerComponent(UPrimitiveComponent* InComponent)
 void AChaosCacheManager::TriggerComponentByCache(FName InCacheName)
 {
 	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [this, InCacheName](const FObservedComponent& Test) {
-		return Test.CacheName == InCacheName && Test.GetComponent() && Test.IsEnabled(CacheMode);
+		return Test.CacheName == InCacheName && Test.GetComponent(this) && Test.IsEnabled(CacheMode);
 	});
 
 	if (Found && StartMode == EStartMode::Triggered)
@@ -655,17 +695,38 @@ void AChaosCacheManager::TriggerAll()
 {
 	for(FObservedComponent& Observed : ObservedComponents)
 	{
-		if (StartMode == EStartMode::Triggered && Observed.GetComponent() && Observed.IsEnabled(CacheMode))
+		if (StartMode == EStartMode::Triggered && Observed.GetComponent(this) && Observed.IsEnabled(CacheMode))
 		{
 			Observed.bTriggered = true;
 		}
 	}
 }
 
+void AChaosCacheManager::EnablePlaybackByCache(FName InCacheName, bool bEnable)
+{
+	FObservedComponent* Found = Algo::FindByPredicate(ObservedComponents, [this, InCacheName](const FObservedComponent& Test) {
+		return Test.CacheName == InCacheName;
+		});
+
+	if (Found)
+	{
+		Found->bPlaybackEnabled = bEnable;
+	}
+}
+
+
+void AChaosCacheManager::EnablePlayback(int32 Index, bool bEnable)
+{
+	if (ObservedComponents.IsValidIndex(Index))
+	{
+		ObservedComponents[Index].bPlaybackEnabled = bEnable;
+	}
+}
+
 FObservedComponent* AChaosCacheManager::FindObservedComponent(UPrimitiveComponent* InComponent)
 {
-	return Algo::FindByPredicate(ObservedComponents, [ToTest = InComponent](const FObservedComponent& Item) {
-		return Item.GetComponent() == ToTest;
+	return Algo::FindByPredicate(ObservedComponents, [this, ToTest = InComponent](const FObservedComponent& Item) {
+		return Item.GetComponent(this) == ToTest;
 	});
 }
 
@@ -675,8 +736,9 @@ FObservedComponent& AChaosCacheManager::AddNewObservedComponent(UPrimitiveCompon
 	ObservedComponents.AddDefaulted();
 	FObservedComponent& NewEntry = ObservedComponents.Last();
 
-	NewEntry.SoftComponentRef.PathToComponent = InComponent->GetPathName(InComponent->GetOwner());
-	NewEntry.SoftComponentRef.OtherActor      = InComponent->GetOwner();
+	AActor* const ComponentOwner = InComponent->GetOwner();
+	NewEntry.SoftComponentRef.PathToComponent = InComponent->GetPathName(ComponentOwner);
+	NewEntry.SoftComponentRef.OtherActor      = ComponentOwner == this ? nullptr : ComponentOwner;
 
 	FName CacheName = NAME_None;
 #if WITH_EDITOR
@@ -706,7 +768,7 @@ void AChaosCacheManager::ClearObservedComponents()
 {
 	for (FObservedComponent& ObservedComponent : ObservedComponents)
 	{
-		UPrimitiveComponent* Comp = ObservedComponent.GetComponent();
+		UPrimitiveComponent* Comp = ObservedComponent.GetComponent(this);
 		Comp->DestroyComponent();
 	}
 	ObservedComponents.Empty();
@@ -745,12 +807,26 @@ void AChaosCacheManager::TickObservedComponents(const TArray<int32>& InIndices, 
 	}
 }
 
+void AChaosCacheManager::WaitForObservedComponentSolverTasks()
+{
+	check(ActiveAdapters.IsEmpty() || ObservedComponents.Num() == ActiveAdapters.Num());
+
+	for (int32 CompIndex = 0; CompIndex < ActiveAdapters.Num(); ++CompIndex)
+	{
+		if(const Chaos::FComponentCacheAdapter* Adapter = ActiveAdapters[CompIndex])
+		{
+			FObservedComponent& Observed = ObservedComponents[CompIndex];
+			Adapter->WaitForSolverTasks(Observed.GetComponent(this));
+		}
+	}
+}
+
 #if WITH_EDITOR
 void AChaosCacheManager::SetObservedComponentProperties(const ECacheMode& NewCacheMode)
 {
 	for (FObservedComponent& ObservedComponent : ObservedComponents)
 	{
-		if (UPrimitiveComponent* PrimComp = ObservedComponent.GetComponent())
+		if (UPrimitiveComponent* PrimComp = ObservedComponent.GetComponent(this))
 		{
 			if (NewCacheMode == ECacheMode::Record)
 			{

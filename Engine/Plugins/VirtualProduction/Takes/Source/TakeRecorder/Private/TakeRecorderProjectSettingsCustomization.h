@@ -2,15 +2,25 @@
 
 #pragma once
 
+#include "IDetailChildrenBuilder.h"
 #include "IDetailCustomization.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
+#include "DetailWidgetRow.h"
+#include "Modules/ModuleManager.h"
 #include "TakeRecorderSettings.h"
+#include "TakeRecorderSourceProperty.h"
+#include "Widgets/TakeRecorderAudioSettingsCustomization.h"
 
 class FTakeRecorderProjectSettingsCustomization : public IDetailCustomization
 {
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailLayout) override
 	{
+		FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+		// Register audio device details customization for the project settings window
+		PropertyEditorModule.RegisterCustomPropertyTypeLayout(FName(TEXT("AudioInputDeviceProperty")), FOnGetPropertyTypeCustomizationInstance::CreateLambda(&MakeShared<FAudioInputDevicePropertyCustomization>));
+
 		// Pop the take recorder category to the top
 		DetailLayout.EditCategory("Take Recorder");
 

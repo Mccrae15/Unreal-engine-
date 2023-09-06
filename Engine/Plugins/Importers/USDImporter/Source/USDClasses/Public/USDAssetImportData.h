@@ -5,14 +5,17 @@
 #include "CoreMinimal.h"
 #include "EditorFramework/AssetImportData.h"
 
+#include "USDAssetUserData.h"
+
 #include "USDAssetImportData.generated.h"
 
-UCLASS(AutoExpandCategories = (Options), MinimalAPI)
-class UUsdAssetImportData : public UAssetImportData
+UCLASS()
+class USDCLASSES_API UUsdAssetImportData : public UAssetImportData
 {
 	GENERATED_BODY()
 
 public:
+	UE_DEPRECATED(5.3, "Use USD AssetUserData instead of AssetImportData for USD-specific info")
 	UPROPERTY()
 	FString PrimPath;
 
@@ -22,8 +25,9 @@ public:
 	TObjectPtr<class UObject> ImportOptions;
 };
 
-UCLASS(AutoExpandCategories = (Options), MinimalAPI)
-class UUsdAnimSequenceAssetImportData : public UUsdAssetImportData
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UCLASS()
+class UE_DEPRECATED(5.3, "Use USD AssetUserData instead of AssetImportData for USD-specific info") USDCLASSES_API UUsdAnimSequenceAssetImportData : public UUsdAssetImportData
 {
 	GENERATED_BODY()
 
@@ -39,19 +43,9 @@ public:
 	float LayerStartOffsetSeconds = 0.0f;
 };
 
-/** Simple wrapper because we're not allowed to have TMap properties with TArray<FString> as values */
-USTRUCT()
-struct FUsdPrimPathList
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	TArray<FString> PrimPaths;
-};
-
 /** We assign these to UStaticMeshes or USkeletalMeshes generated from USD */
-UCLASS( AutoExpandCategories = ( Options ), MinimalAPI )
-class UUsdMeshAssetImportData : public UUsdAssetImportData
+UCLASS()
+class UE_DEPRECATED(5.3, "Use USD AssetUserData instead of AssetImportData for USD-specific info") USDCLASSES_API UUsdMeshAssetImportData : public UUsdAssetImportData
 {
 	GENERATED_BODY()
 
@@ -64,3 +58,4 @@ public:
 	UPROPERTY()
 	TMap< int32, FUsdPrimPathList > MaterialSlotToPrimPaths;
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

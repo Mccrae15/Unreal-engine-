@@ -5,6 +5,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Misc/HierarchicalLogArchive.h"
+#include "Math/MathFwd.h"
 #include "GameFramework/Info.h"
 
 #include "WorldPartition.h"
@@ -16,6 +17,15 @@
 
 typedef UE::Math::TIntVector3<int64> FGridCellCoord;
 typedef UE::Math::TIntVector2<int64> FGridCellCoord2;
+class FWorldPartitionDraw2DContext;
+
+UENUM()
+enum class EWorldPartitionCVarProjectDefaultOverride : uint8
+{
+	ProjectDefault,
+	Disabled,
+	Enabled,
+};
 
 USTRUCT()
 struct FSpatialHashStreamingGridLayerCell
@@ -79,12 +89,12 @@ struct FSquare2DGridHelper;
  * Represents a PIE/Game streaming grid
  */
 USTRUCT()
-struct ENGINE_API FSpatialHashStreamingGrid
+struct FSpatialHashStreamingGrid
 {
 	GENERATED_USTRUCT_BODY()
 
-	FSpatialHashStreamingGrid();
-	~FSpatialHashStreamingGrid();
+	ENGINE_API FSpatialHashStreamingGrid();
+	ENGINE_API ~FSpatialHashStreamingGrid();
 
 	// Move constructor.
 	FSpatialHashStreamingGrid(const FSpatialHashStreamingGrid& Other) = delete;
@@ -135,26 +145,28 @@ struct ENGINE_API FSpatialHashStreamingGrid
 		return LoadingRange;
 	}
 
-	void InjectExternalStreamingObjectGrid(const FSpatialHashStreamingGrid& InExternalObjectStreamingGrid) const;
-	void RemoveExternalStreamingObjectGrid(const FSpatialHashStreamingGrid& InExternalObjectStreamingGrid) const;
+	ENGINE_API void InjectExternalStreamingObjectGrid(const FSpatialHashStreamingGrid& InExternalObjectStreamingGrid) const;
+	ENGINE_API void RemoveExternalStreamingObjectGrid(const FSpatialHashStreamingGrid& InExternalObjectStreamingGrid) const;
+
+	ENGINE_API bool InsertGridCell(UWorldPartitionRuntimeCell* InGridCell, const FGridCellCoord& InGridCellCoords);
 
 	// Used by PIE/Game
-	int64 GetCellSize(int32 Level) const;
-	void GetCells(const FWorldPartitionStreamingQuerySource& QuerySource, TSet<const UWorldPartitionRuntimeCell*>& OutCells, bool bEnableZCulling, FWorldPartitionQueryCache* QueryCache = nullptr) const;
-	void GetCells(const TArray<FWorldPartitionStreamingSource>& Sources, const class UDataLayerSubsystem* DataLayerSubsystem, UWorldPartitionRuntimeHash::FStreamingSourceCells& OutActivateCells, UWorldPartitionRuntimeHash::FStreamingSourceCells& OutLoadCells, bool bEnableZCulling) const;
-	void GetNonSpatiallyLoadedCells(const UDataLayerSubsystem* DataLayerSubsystem, TSet<const UWorldPartitionRuntimeCell*>& OutActivateCells, TSet<const UWorldPartitionRuntimeCell*>& OutLoadCells) const;
-	void Draw2D(UCanvas* Canvas, UWorld* World, const TArray<FWorldPartitionStreamingSource>& Sources, const FBox& Region, const FBox2D& GridScreenBounds, TFunctionRef<FVector2D(const FVector2D&)> WorldToScreen) const;
-	void Draw3D(UWorld* World, const TArray<FWorldPartitionStreamingSource>& Sources, const FTransform& Transform) const;
-	void ForEachRuntimeCell(TFunctionRef<bool(const UWorldPartitionRuntimeCell*)> Func) const;
-	const FSquare2DGridHelper& GetGridHelper() const;
+	ENGINE_API int64 GetCellSize(int32 Level) const;
+	ENGINE_API void GetCells(const FWorldPartitionStreamingQuerySource& QuerySource, TSet<const UWorldPartitionRuntimeCell*>& OutCells, bool bEnableZCulling, FWorldPartitionQueryCache* QueryCache = nullptr) const;
+	ENGINE_API void GetCells(const TArray<FWorldPartitionStreamingSource>& Sources, UWorldPartitionRuntimeHash::FStreamingSourceCells& OutActivateCells, UWorldPartitionRuntimeHash::FStreamingSourceCells& OutLoadCells, bool bEnableZCulling) const;
+	ENGINE_API void GetNonSpatiallyLoadedCells(TSet<const UWorldPartitionRuntimeCell*>& OutActivateCells, TSet<const UWorldPartitionRuntimeCell*>& OutLoadCells) const;
+	ENGINE_API void Draw2D(const class UWorldPartitionRuntimeSpatialHash* Owner, const FBox2D& Region2D, const FBox2D& GridScreenBounds, TFunctionRef<FVector2D(const FVector2D&, bool)> WorldToScreen, FWorldPartitionDraw2DContext& DrawContext) const;
+	ENGINE_API void Draw3D(const class UWorldPartitionRuntimeSpatialHash* Owner, const TArray<FWorldPartitionStreamingSource>& Sources, const FTransform& Transform) const;
+	ENGINE_API void ForEachRuntimeCell(TFunctionRef<bool(const UWorldPartitionRuntimeCell*)> Func) const;
+	ENGINE_API const FSquare2DGridHelper& GetGridHelper() const;
 
 private:
-	void ForEachRuntimeCell(const FGridCellCoord& Coords, TFunctionRef<void(const UWorldPartitionRuntimeCell*)> Func) const;
-	void ForEachLayerCell(const FGridCellCoord& Coords, TFunctionRef<void(const FSpatialHashStreamingGridLayerCell*)> Func) const;
-	void DrawStreamingSource2D(UCanvas* Canvas, const FSphericalSector& Shape, TFunctionRef<FVector2D(const FVector2D&)> WorldToScreen, const FColor& Color) const;
-	void DrawStreamingSource3D(UWorld* World, const FSphericalSector& Shape, const FTransform& Transform, const FColor& Color) const;
-	void GetFilteredCellsForDebugDraw(const FSpatialHashStreamingGridLayerCell* LayerCell, const UDataLayerSubsystem* DataLayerSubsystem, TArray<const UWorldPartitionRuntimeCell*>& FilteredCells) const;
-	EWorldPartitionRuntimeCellVisualizeMode GetStreamingCellVisualizeMode() const;
+	ENGINE_API void ForEachRuntimeCell(const FGridCellCoord& Coords, TFunctionRef<void(const UWorldPartitionRuntimeCell*)> Func) const;
+	ENGINE_API void ForEachLayerCell(const FGridCellCoord& Coords, TFunctionRef<void(const FSpatialHashStreamingGridLayerCell*)> Func) const;
+	ENGINE_API void DrawStreamingSource2D(const FBox2D& GridScreenBounds, const FSphericalSector& Shape, TFunctionRef<FVector2D(const FVector2D&)> WorldToScreen, const FColor& Color, FWorldPartitionDraw2DContext& DrawContext) const;
+	ENGINE_API void DrawStreamingSource3D(UWorld* World, const FSphericalSector& Shape, const FTransform& Transform, const FColor& Color) const;
+	ENGINE_API void GetFilteredCellsForDebugDraw(const FSpatialHashStreamingGridLayerCell* LayerCell, TArray<const UWorldPartitionRuntimeCell*>& FilteredCells) const;
+	ENGINE_API EWorldPartitionRuntimeCellVisualizeMode GetStreamingCellVisualizeMode() const;
 	mutable FSquare2DGridHelper* GridHelper;
 
 	// Contains cells injected at runtime from content bundles
@@ -177,6 +189,7 @@ struct FSpatialHashRuntimeGrid
 		: CellSize(12800)
 		, LoadingRange(25600)
 		, bBlockOnSlowStreaming(false)
+		, Origin(FVector2D::ZeroVector)
 		, Priority(0)
 		, DebugColor(FLinearColor::MakeRandomColor())
 		, bClientOnlyVisible(false)
@@ -195,8 +208,11 @@ struct FSpatialHashRuntimeGrid
 	float LoadingRange;
 
 	/** Should streaming block in situations where cells aren't getting loaded fast enough. */
-	UPROPERTY(EditAnywhere, Category = Settings)
+	UPROPERTY(EditAnywhere, Category=Settings)
 	bool bBlockOnSlowStreaming;
+
+	UPROPERTY(EditAnywhere, Category=Settings)
+	FVector2D Origin;
 
 	UPROPERTY(EditAnywhere, Category=Settings)
 	int32 Priority;
@@ -228,92 +244,84 @@ public:
 	FSpatialHashRuntimeGrid	GridSettings;
 };
 
-UCLASS()
+UCLASS(MinimalAPI)
 class URuntimeSpatialHashExternalStreamingObject : public URuntimeHashExternalStreamingObjectBase
 {
 	GENERATED_BODY()
 
 public:
-	//~ Begin URuntimeHashExternalStreamingObjectBase Interface
-	virtual void OnStreamingObjectLoaded() override;
-
-#if WITH_EDITOR
-	virtual void PopulateGeneratorPackageForCook() override;
-#endif
-	//~ End URuntimeHashExternalStreamingObjectBase Interface
-
 	UPROPERTY();
 	TArray<FSpatialHashStreamingGrid> StreamingGrids;
-
-private:
-	UPROPERTY();
-	TMap<FName, FName> CellToLevelStreamingPackage;
 };
 
-UCLASS()
-class ENGINE_API UWorldPartitionRuntimeSpatialHash : public UWorldPartitionRuntimeHash
+UCLASS(MinimalAPI)
+class UWorldPartitionRuntimeSpatialHash : public UWorldPartitionRuntimeHash
 {
 	GENERATED_UCLASS_BODY()
 
 public:
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
 	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ENGINE_API virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	ENGINE_API PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 
+	ENGINE_API virtual void Serialize(FArchive& Ar) override;
+
+	ENGINE_API void ApplyCVars();
+
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 
-	virtual void SetDefaultValues() override;
+	ENGINE_API virtual void SetDefaultValues() override;
 	virtual bool SupportsHLODs() const override { return true; }
-	virtual bool PrepareGeneratorPackageForCook(TArray<UPackage*>& OutModifiedPackages) override;
-	virtual bool PopulateGeneratorPackageForCook(const TArray<FWorldPartitionCookPackage*>& PackagesToCook, TArray<UPackage*>& OutModifiedPackage) override;
-	virtual bool PopulateGeneratedPackageForCook(const FWorldPartitionCookPackage& PackageToCook, TArray<UPackage*>& OutModifiedPackages) override;
-	virtual UWorldPartitionRuntimeCell* GetCellForPackage(const FWorldPartitionCookPackage& PackageToCook) const override;
-	virtual void FlushStreaming() override;
-	virtual bool GenerateHLOD(ISourceControlHelper* SourceControlHelper, const IStreamingGenerationContext* StreamingGenerationContext, bool bCreateActorsOnly) override;
-	virtual bool IsValidGrid(FName GridName) const override;
-	virtual void DrawPreview() const override;
+	ENGINE_API virtual void FlushStreaming() override;
+	ENGINE_API virtual bool GenerateHLOD(ISourceControlHelper* SourceControlHelper, const IStreamingGenerationContext* StreamingGenerationContext, bool bCreateActorsOnly) const override;
+	ENGINE_API virtual bool IsValidGrid(FName GridName) const override;
+	ENGINE_API virtual void DrawPreview() const override;
 
-	virtual URuntimeHashExternalStreamingObjectBase* StoreToExternalStreamingObject(UObject* StreamingObjectOuter, FName StreamingObjectName) override;
+	ENGINE_API virtual URuntimeHashExternalStreamingObjectBase* StoreToExternalStreamingObject(UObject* StreamingObjectOuter, FName StreamingObjectName) override;
 
-	static FString GetCellNameString(FName InWorldPackageName, FName InGridName, const FGridCellCoord& InCellGlobalCoord, const FDataLayersID& InDataLayerID, const FGuid& InContentBundleID);
-	static FGuid GetCellGuid(FName InGridName, const FGridCellCoord& InCellGlobalCoord, const FDataLayersID& InDataLayerID, const FGuid& InContentBundleID);
+	static ENGINE_API FString GetCellNameString(UWorld* InOuterWorld, FName InGridName, const FGridCellCoord& InCellGlobalCoord, const FDataLayersID& InDataLayerID, const FGuid& InContentBundleID, FString* OutInstanceSuffix = nullptr);
+	static ENGINE_API FGuid GetCellGuid(FName InGridName, int32 InCellSize, const FGridCellCoord& InCellGlobalCoord, const FDataLayersID& InDataLayerID, const FGuid& InContentBundleID);
 
-	bool GetPreviewGrids() const;
-	void SetPreviewGrids(bool bInPreviewGrids);
+	ENGINE_API bool GetPreviewGrids() const;
+	ENGINE_API void SetPreviewGrids(bool bInPreviewGrids);
+
+	ENGINE_API int32 GetPreviewGridLevel() const;
+	ENGINE_API void SetPreviewGridLevel(int32 InPreviewGridLevel);
 #endif
 
 	// streaming interface
-	virtual void ForEachStreamingCells(TFunctionRef<bool(const UWorldPartitionRuntimeCell*)> Func) const override;
-	virtual void ForEachStreamingCellsQuery(const FWorldPartitionStreamingQuerySource& QuerySource, TFunctionRef<bool(const UWorldPartitionRuntimeCell*)> Func, FWorldPartitionQueryCache* QueryCache = nullptr) const override;
-	virtual void ForEachStreamingCellsSources(const TArray<FWorldPartitionStreamingSource>& Sources, TFunctionRef<bool(const UWorldPartitionRuntimeCell*, EStreamingSourceTargetState)> Func) const override;
+	ENGINE_API virtual void ForEachStreamingCells(TFunctionRef<bool(const UWorldPartitionRuntimeCell*)> Func) const override;
+	ENGINE_API virtual void ForEachStreamingCellsQuery(const FWorldPartitionStreamingQuerySource& QuerySource, TFunctionRef<bool(const UWorldPartitionRuntimeCell*)> Func, FWorldPartitionQueryCache* QueryCache = nullptr) const override;
+	ENGINE_API virtual void ForEachStreamingCellsSources(const TArray<FWorldPartitionStreamingSource>& Sources, TFunctionRef<bool(const UWorldPartitionRuntimeCell*, EStreamingSourceTargetState)> Func) const override;
+	ENGINE_API virtual uint32 ComputeUpdateStreamingHash() const override;
 
-	virtual bool InjectExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject) override;
-	virtual bool RemoveExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject) override;
+	ENGINE_API virtual bool InjectExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject) override;
+	ENGINE_API virtual bool RemoveExternalStreamingObject(URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject) override;
 
-	uint32 GetNumGrids() const;
+	ENGINE_API uint32 GetNumGrids() const;
 
-	static FString GetCellCoordString(const FGridCellCoord& InCellGlobalCoord);
+	static ENGINE_API FString GetCellCoordString(const FGridCellCoord& InCellGlobalCoord);
 
-	void ForEachStreamingGrid(TFunctionRef<void(const FSpatialHashStreamingGrid&)> Func) const;
+	ENGINE_API void ForEachStreamingGrid(TFunctionRef<void(const FSpatialHashStreamingGrid&)> Func) const;
 
 protected:
-	const FSpatialHashStreamingGrid* GetStreamingGridByName(FName InGridName) const;
-	void ForEachStreamingGrid(TFunctionRef<void(FSpatialHashStreamingGrid&)> Func);
-	void ForEachStreamingGridBreakable(TFunctionRef<bool(const FSpatialHashStreamingGrid&)> Func) const;
+	ENGINE_API const FSpatialHashStreamingGrid* GetStreamingGridByName(FName InGridName) const;
+	ENGINE_API void ForEachStreamingGrid(TFunctionRef<void(FSpatialHashStreamingGrid&)> Func);
+	ENGINE_API void ForEachStreamingGridBreakable(TFunctionRef<bool(const FSpatialHashStreamingGrid&)> Func) const;
 
-	virtual EWorldPartitionStreamingPerformance GetStreamingPerformanceForCell(const UWorldPartitionRuntimeCell* Cell) const override;
+	ENGINE_API virtual EWorldPartitionStreamingPerformance GetStreamingPerformanceForCell(const UWorldPartitionRuntimeCell* Cell) const override;
 
 #if WITH_EDITOR
-	virtual bool GenerateStreaming(class UWorldPartitionStreamingPolicy* StreamingPolicy, const IStreamingGenerationContext* StreamingGenerationContext, TArray<FString>* OutPackagesToGenerate = nullptr) override;
-	virtual void DumpStateLog(FHierarchicalLogArchive& Ar) override;
+	ENGINE_API virtual bool GenerateStreaming(class UWorldPartitionStreamingPolicy* StreamingPolicy, const IStreamingGenerationContext* StreamingGenerationContext, TArray<FString>* OutPackagesToGenerate = nullptr) override;
+	ENGINE_API virtual void DumpStateLog(FHierarchicalLogArchive& Ar) const override;
 #endif
 
 private:
 	/** Console command used to change loading range for a given streaming grid */
-	static class FAutoConsoleCommand OverrideLoadingRangeCommand;
+	static ENGINE_API class FAutoConsoleCommand OverrideLoadingRangeCommand;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(EditAnywhere, Config, Category = RuntimeSettings)
@@ -324,10 +332,27 @@ private:
 	bool bPreviewGrids;
 
 	UPROPERTY(Transient)
-	mutable FWorldPartitionRuntimeSpatialHashGridPreviewer GridPreviewer;
+	int32 PreviewGridLevel;
 
-	TMap<FString, UWorldPartitionRuntimeCell*> PackagesToGenerateForCook;
+	UPROPERTY(Transient)
+	mutable FWorldPartitionRuntimeSpatialHashGridPreviewer GridPreviewer;
 #endif
+
+	/** Disable to help break the pattern caused by world partition promotion of actors to upper grid levels that are always aligned on child levels. */
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = RuntimeSettings)
+	EWorldPartitionCVarProjectDefaultOverride UseAlignedGridLevels;
+
+	/** Disable to avoid snapping higher levels cells to child cells. Only used when bUseAlignedGridLevels is false. */
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = RuntimeSettings)
+	EWorldPartitionCVarProjectDefaultOverride SnapNonAlignedGridLevelsToLowerLevels;
+
+	/** Enable to place actors smaller than a cell size into their corresponding cell using their location instead of their bounding box. */
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = RuntimeSettings)
+	EWorldPartitionCVarProjectDefaultOverride PlaceSmallActorsUsingLocation;
+
+	/** Enable to place partitioned actors into their corresponding cell using their location instead of their bounding box. */
+	UPROPERTY(EditAnywhere, Config, AdvancedDisplay, Category = RuntimeSettings)
+	EWorldPartitionCVarProjectDefaultOverride PlacePartitionActorsUsingLocation;
 
 	/** Whether this hash enables Z culling. */
 	UPROPERTY(EditAnywhere, Config, Category = RuntimeSettings)
@@ -343,22 +368,17 @@ protected:
 	mutable bool bIsNameToGridMappingDirty;
 
 private:
-	UPROPERTY(Transient)
-	TArray<TWeakObjectPtr<URuntimeSpatialHashExternalStreamingObject>> ExternalStreamingObjects;
-	
-	virtual bool Draw2D(class UCanvas* Canvas, const TArray<FWorldPartitionStreamingSource>& Sources, const FVector2D& PartitionCanvasSize, const FVector2D& Offset, FVector2D& OutUsedCanvasSize) const override;
-	virtual void Draw3D(const TArray<FWorldPartitionStreamingSource>& Sources) const override;
-	virtual bool ContainsRuntimeHash(const FString& Name) const override;
-	virtual bool IsStreaming3D() const override;
+	ENGINE_API virtual bool Draw2D(FWorldPartitionDraw2DContext& DrawContext) const override;
+	ENGINE_API virtual void Draw3D(const TArray<FWorldPartitionStreamingSource>& Sources) const override;
+	ENGINE_API virtual bool ContainsRuntimeHash(const FString& Name) const override;
+	ENGINE_API virtual bool IsStreaming3D() const override;
 
-	void GetAlwaysLoadedStreamingCells(const FSpatialHashStreamingGrid& StreamingGrid, TSet<const UWorldPartitionRuntimeCell*>& Cells) const;
-	void GetStreamingCells(const FVector& Position, const FSpatialHashStreamingGrid& StreamingGrid, TSet<const UWorldPartitionRuntimeCell*>& Cells) const;
-	const TMap<FName, const FSpatialHashStreamingGrid*>& GetNameToGridMapping() const;
+	ENGINE_API void GetAlwaysLoadedStreamingCells(const FSpatialHashStreamingGrid& StreamingGrid, TSet<const UWorldPartitionRuntimeCell*>& Cells) const;
+	ENGINE_API const TMap<FName, const FSpatialHashStreamingGrid*>& GetNameToGridMapping() const;
 #if WITH_EDITOR
-	TArray<UWorldPartitionRuntimeCell*> GetAlwaysLoadedCells() const;
-	bool CreateStreamingGrid(const FSpatialHashRuntimeGrid& RuntimeGrid, const FSquare2DGridHelper& PartionedActors, UWorldPartitionStreamingPolicy* StreamingPolicy, TArray<FString>* OutPackagesToGenerate = nullptr);
+	ENGINE_API bool CreateStreamingGrid(const FSpatialHashRuntimeGrid& RuntimeGrid, const FSquare2DGridHelper& PartionedActors, UWorldPartitionStreamingPolicy* StreamingPolicy, TArray<FString>* OutPackagesToGenerate = nullptr);
 #endif
-	TArray<const FSpatialHashStreamingGrid*> GetFilteredStreamingGrids() const;
+	ENGINE_API TArray<const FSpatialHashStreamingGrid*> GetFilteredStreamingGrids() const;
 
 	friend class UWorldPartitionSubsystem;
 };

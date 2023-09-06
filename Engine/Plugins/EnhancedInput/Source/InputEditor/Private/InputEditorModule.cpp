@@ -4,19 +4,15 @@
 
 #include "AssetBlueprintGraphActions.h"
 #include "BlueprintEditorModule.h"
-#include "BlueprintGraphModule.h"
 #include "BlueprintNodeTemplateCache.h"
 #include "Brushes/SlateImageBrush.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Engine/Blueprint.h"
 #include "InputMappingContext.h"
 #include "Misc/PackageName.h"
 #include "PlayerMappableInputConfig.h"
 #include "InputCustomizations.h"
 #include "ISettingsModule.h"
 #include "ToolMenuSection.h"
-#include "K2Node_EnhancedInputAction.h"
-#include "K2Node_GetInputActionValue.h"
 #include "PropertyEditorModule.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -30,7 +26,6 @@
 #include "IContentBrowserSingleton.h"
 #include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
-#include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "GameFramework/InputSettings.h"
 #include "EnhancedInputComponent.h"
@@ -38,7 +33,9 @@
 #include "Interfaces/IMainFrameModule.h"
 #include "SourceControlHelpers.h"
 #include "HAL/FileManager.h"
-#include "Kismet2/KismetEditorUtilities.h"
+#include "PlayerMappableKeySettings.h"
+#include "IAssetTools.h"
+#include "IAssetTypeActions.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InputEditorModule)
 
@@ -218,6 +215,7 @@ UObject* UInputAction_Factory::FactoryCreateNew(UClass* Class, UObject* InParent
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 // UPlayerMappableInputConfig_Factory
 UPlayerMappableInputConfig_Factory::UPlayerMappableInputConfig_Factory(const class FObjectInitializer& OBJ)
 	: Super(OBJ)
@@ -232,6 +230,7 @@ UObject* UPlayerMappableInputConfig_Factory::FactoryCreateNew(UClass* Class, UOb
 	check(Class->IsChildOf(UPlayerMappableInputConfig::StaticClass()));
 	return NewObject<UPlayerMappableInputConfig>(InParent, Class, Name, Flags | RF_Transactional, Context);
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 // Asset type actions
 
@@ -312,64 +311,17 @@ void FAssetTypeActions_InputAction::GetCreateContextFromActionsMenu(TArray<TWeak
 	}
 }
 
-class FAssetTypeActions_PlayerMappableInputConfig : public FAssetTypeActions_DataAsset
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+class UE_DEPRECATED(5.3, "PlayerMappableInputConfig has been deprecated, please use UEnhancedInputUserSettings instead") FAssetTypeActions_PlayerMappableInputConfig : public FAssetTypeActions_DataAsset
 {
 public:
-	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_PlayerMappableInputConfig", "Player Mappable Input Config"); }
+	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_PlayerMappableInputConfig", "Player Mappable Input Config (Deprecated)"); }
 	virtual uint32 GetCategories() override { return FInputEditorModule::GetInputAssetsCategory(); }
 	virtual FColor GetTypeColor() const override { return FColor(127, 255, 255); }
 	virtual FText GetAssetDescription(const FAssetData& AssetData) const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_PlayerBindableInputConfigDesc", "Represents one set of Player Mappable controller/keymappings"); }
 	virtual UClass* GetSupportedClass() const override { return UPlayerMappableInputConfig::StaticClass(); }
 };
-
-struct FInputActionGraphActions : public FAssetBlueprintGraphActions
-{
-	virtual FText GetGraphHoverMessage(const FAssetData& AssetData, const UEdGraph* HoverGraph) const override;
-	virtual bool TryCreatingAssetNode(const FAssetData& AssetData, UEdGraph* ParentGraph, const FVector2D Location, EK2NewNodeFlags Options) const override;
-};
-
-FText FInputActionGraphActions::GetGraphHoverMessage(const FAssetData& AssetData, const UEdGraph* HoverGraph) const
-{
-	return FText::Format(LOCTEXT("InputActionHoverMessage", "{0}"), FText::FromName(AssetData.AssetName));
-}
-
-bool FInputActionGraphActions::TryCreatingAssetNode(const FAssetData& AssetData, UEdGraph* ParentGraph, const FVector2D Location, EK2NewNodeFlags Options) const
-{
-	if (AssetData.IsValid())
-	{
-		if (const UInputAction* Action = Cast<const UInputAction>(AssetData.GetAsset()))
-		{
-			for (TObjectPtr<UEdGraphNode> Node : ParentGraph->Nodes)
-			{
-				if(const UK2Node_EnhancedInputAction* InputActionNode = Cast<UK2Node_EnhancedInputAction>(Node))
-				{
-					if (InputActionNode->InputAction.GetFName() == AssetData.AssetName)
-					{
-						if (const TSharedPtr<IBlueprintEditor> BlueprintEditor = FKismetEditorUtilities::GetIBlueprintEditorForObject(ParentGraph, false))
-						{
-							BlueprintEditor.Get()->JumpToPin(InputActionNode->GetPinAt(0));
-						}
-						
-						return false;
-					}
-				}
-			}
-
-			UK2Node_EnhancedInputAction* NewNode = FEdGraphSchemaAction_K2NewNode::SpawnNode<UK2Node_EnhancedInputAction>(
-				ParentGraph,
-				Location,
-				Options,
-				[Action](UK2Node_EnhancedInputAction* NewInstance)
-				{
-					NewInstance->InputAction = Action;
-				}
-
-			);
-			return true;
-		}
-	}
-	return false;
-}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** Custom style set for Enhanced Input */
 class FEnhancedInputSlateStyle final : public FSlateStyleSet
@@ -409,6 +361,7 @@ void FInputEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout("InputMappingContext", FOnGetDetailCustomizationInstance::CreateStatic(&FInputContextDetails::MakeInstance));
 	PropertyModule.RegisterCustomPropertyTypeLayout("EnhancedActionKeyMapping", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FEnhancedActionMappingCustomization::MakeInstance));
 	PropertyModule.RegisterCustomClassLayout(UEnhancedInputDeveloperSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FEnhancedInputDeveloperSettingsCustomization::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout(UPlayerMappableKeySettings::StaticClass()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FPlayerMappableKeyChildSettingsCustomization::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// Register input assets
@@ -417,16 +370,9 @@ void FInputEditorModule::StartupModule()
 	{
 		RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputAction));
 		RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputContext));
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_PlayerMappableInputConfig));
-		// TODO: Build these off a button on the InputContext Trigger/Mapping pickers? Would be good to have both.
-		//RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputTrigger));
-		//RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputModifier));
-	}
-
-	// Register graph actions:
-	FBlueprintGraphModule& GraphModule = FModuleManager::LoadModuleChecked<FBlueprintGraphModule>("BlueprintGraph");
-	{
-		GraphModule.RegisterGraphAction(UInputAction::StaticClass(), MakeUnique<FInputActionGraphActions>());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	// Make a new style set for Enhanced Input, which will register any custom icons for the types in this plugin
@@ -462,6 +408,7 @@ void FInputEditorModule::ShutdownModule()
 	PropertyModule.UnregisterCustomClassLayout("InputContext");
 	PropertyModule.UnregisterCustomPropertyTypeLayout("EnhancedActionKeyMapping");
 	PropertyModule.UnregisterCustomClassLayout("EnhancedInputDeveloperSettings");
+	PropertyModule.UnregisterCustomPropertyTypeLayout("PlayerMappableKeySettings");
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// Unregister slate stylings
@@ -475,6 +422,11 @@ void FInputEditorModule::ShutdownModule()
 	{
 		IMainFrameModule::Get().OnMainFrameCreationFinished().RemoveAll(this);
 	}
+}
+
+EAssetTypeCategories::Type FInputEditorModule::GetInputAssetsCategory()
+{
+	return InputAssetsCategory;
 }
 
 void FInputEditorModule::OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog)
@@ -552,63 +504,31 @@ void FInputEditorModule::AutoUpgradeDefaultInputClasses()
 	}
 }
 
-void FInputEditorModule::Tick(float DeltaTime)
+const UPlayerMappableKeySettings* FInputEditorModule::FindMappingByName(const FName InName)
 {
-	// Update any blueprints that are referencing an input action with a modified value type
-	if (UInputAction::ActionsWithModifiedValueTypes.Num() || UInputAction::ActionsWithModifiedTriggers.Num())
+	// Instanced objects that have been deleted will have an outer of the transient package, and we don't want to include them
+	for (TObjectIterator<UPlayerMappableKeySettings> Itr(RF_ClassDefaultObject | RF_Transient, true, EInternalObjectFlags::Garbage | EInternalObjectFlags::Unreachable); Itr; ++Itr)
 	{
-		TSet<UBlueprint*> BPsModifiedFromValueTypeChange;
-		TSet<UBlueprint*> BPsModifiedFromTriggerChange;
-		
-		for (TObjectIterator<UK2Node_EnhancedInputAction> NodeIt; NodeIt; ++NodeIt)
+		const UPlayerMappableKeySettings* Settings = *Itr;
+		if (Settings && Settings->GetOuter() != GetTransientPackage() && Settings->Name == InName)
 		{
-			if (!FBlueprintNodeTemplateCache::IsTemplateOuter(NodeIt->GetGraph()))
-			{
-				if (UInputAction::ActionsWithModifiedValueTypes.Contains(NodeIt->InputAction))
-				{
-					NodeIt->ReconstructNode();
-					BPsModifiedFromValueTypeChange.Emplace(NodeIt->GetBlueprint());
-				}
-				if (UInputAction::ActionsWithModifiedTriggers.Contains(NodeIt->InputAction))
-				{
-					NodeIt->ReconstructNode();
-					BPsModifiedFromTriggerChange.Emplace(NodeIt->GetBlueprint());
-				}
-			}
+			// What if we had just removed a mapping of this name?
+			return Settings;
 		}
-		for (TObjectIterator<UK2Node_GetInputActionValue> NodeIt; NodeIt; ++NodeIt)
-		{
-			if (!FBlueprintNodeTemplateCache::IsTemplateOuter(NodeIt->GetGraph()))
-			{
-				if (UInputAction::ActionsWithModifiedValueTypes.Contains(NodeIt->InputAction))
-				{
-					NodeIt->ReconstructNode();
-					BPsModifiedFromValueTypeChange.Emplace(NodeIt->GetBlueprint());
-				}
-				if (UInputAction::ActionsWithModifiedTriggers.Contains(NodeIt->InputAction))
-				{
-					NodeIt->ReconstructNode();
-					BPsModifiedFromTriggerChange.Emplace(NodeIt->GetBlueprint());
-				}
-			}
-		}
-
-		if (BPsModifiedFromValueTypeChange.Num())
-		{
-			FNotificationInfo Info(FText::Format(LOCTEXT("ActionValueTypeChange", "Changing action value type affected {0} blueprint(s)!"), BPsModifiedFromValueTypeChange.Num()));
-			Info.ExpireDuration = 5.0f;
-			FSlateNotificationManager::Get().AddNotification(Info);
-		}
-		if (BPsModifiedFromTriggerChange.Num())
-		{
-			FNotificationInfo Info(FText::Format(LOCTEXT("ActionTriggerChange", "Changing action triggers affected {0} blueprint(s)!"), BPsModifiedFromTriggerChange.Num()));
-			Info.ExpireDuration = 5.0f;
-			FSlateNotificationManager::Get().AddNotification(Info);
-		}
-
-		UInputAction::ActionsWithModifiedValueTypes.Reset();
-		UInputAction::ActionsWithModifiedTriggers.Reset();
 	}
+	return nullptr;
+}
+
+bool FInputEditorModule::IsMappingNameInUse(const FName InName)
+{
+	// If a mapping with this name exists, then it is in use
+	return FindMappingByName(InName) != nullptr;
+}
+
+void FInputEditorModule::RegisterAssetTypeActions(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action)
+{
+	AssetTools.RegisterAssetTypeActions(Action);
+	CreatedAssetTypeActions.Add(Action);
 }
 
 #undef LOCTEXT_NAMESPACE

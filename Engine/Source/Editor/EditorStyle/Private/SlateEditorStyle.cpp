@@ -2312,6 +2312,7 @@ void FSlateEditorStyle::FStyle::SetupSequencerStyles()
 	// Sequencer
 	if (IncludeEditorSpecificStyles())
 	{
+		Set("Sequencer.IconKeySmartAuto", new IMAGE_BRUSH("Sequencer/IconKeySmartAuto", Icon12x12));
 		Set("Sequencer.IconKeyAuto", new IMAGE_BRUSH("Sequencer/IconKeyAuto", Icon12x12));
 		Set("Sequencer.IconKeyBreak", new IMAGE_BRUSH("Sequencer/IconKeyBreak", Icon12x12));
 		Set("Sequencer.IconKeyConstant", new IMAGE_BRUSH("Sequencer/IconKeyConstant", Icon12x12));
@@ -2383,12 +2384,6 @@ void FSlateEditorStyle::FStyle::SetupSequencerStyles()
 		Set("Sequencer.Save.Small", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_Save_48x", Icon24x24));
 		Set("Sequencer.SaveAsterisk", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_SaveAsterisk_48x", Icon48x48));
 		Set("Sequencer.SaveAsterisk.Small", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_SaveAsterisk_48x", Icon24x24));
-		Set("Sequencer.SaveAs", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_SaveAs_48x", Icon48x48));
-		Set("Sequencer.SaveAs.Small", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_SaveAs_48x", Icon24x24));
-		Set("Sequencer.ImportFBX", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_ImportFBX_48x", Icon48x48));
-		Set("Sequencer.ImportFBX.Small", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_ImportFBX_48x", Icon24x24));
-		Set("Sequencer.ExportFBX", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_ExportFBX_48x", Icon48x48));
-		Set("Sequencer.ExportFBX.Small", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_ExportFBX_48x", Icon24x24));
 		Set("Sequencer.DiscardChanges", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_Revert_24x", Icon48x48));
 		Set("Sequencer.DiscardChanges.Small", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_Revert_24x", Icon24x24));
 		Set("Sequencer.RestoreAnimatedState", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_RestoreAnimatedState_24x", Icon48x48));
@@ -2497,6 +2492,8 @@ void FSlateEditorStyle::FStyle::SetupSequencerStyles()
 		Set("Sequencer.SpawnableIconOverlay", new IMAGE_BRUSH(TEXT("Sequencer/SpawnableIconOverlay"), FVector2D(13, 13)));
 		Set("Sequencer.InvalidSpawnableIcon", new IMAGE_BRUSH(TEXT("Sequencer/InvalidSpawnableIcon"), Icon16x16));
 		Set("Sequencer.MultipleIconOverlay", new IMAGE_BRUSH(TEXT("Sequencer/MultipleIconOverlay"), FVector2D(13, 13)));
+		Set("Sequencer.DynamicBindingIconOverlay", new IMAGE_BRUSH(TEXT("Sequencer/DynamicBindingIconOverlay"), Icon16x16));
+		Set("Sequencer.SpawnableDynamicBindingIconOverlay", new IMAGE_BRUSH(TEXT("Sequencer/SpawnableDynamicBindingIconOverlay"), Icon16x16));
 		Set("Sequencer.LockSequence", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_Locked_16x", Icon16x16));
 		Set("Sequencer.UnlockSequence", new IMAGE_BRUSH("Sequencer/Main_Icons/Icon_Sequencer_Unlocked_16x", Icon16x16));
 
@@ -2653,6 +2650,7 @@ void FSlateEditorStyle::FStyle::SetupSequencerStyles()
 	Set( "Sequencer.ToolBar.RadioButton", 				FCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToolBar.RadioButton"));
 	Set( "Sequencer.ToolBar.ToggleButton", 				FCoreStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToolBar.ToggleButton"));
 	Set( "Sequencer.ToolBar.Button", 					FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("ToolBar.Button"));
+
 	Set( "ToolBar.Button.Normal", 						new FSlateNoResource() );
 	Set( "ToolBar.Button.Pressed", 						new CORE_BOX_BRUSH( "Common/RoundedSelection_16x", 4.0f/16.0f, SelectionColor_Pressed ) );
 	Set( "ToolBar.Button.Hovered", 						new CORE_BOX_BRUSH( "Common/RoundedSelection_16x", 4.0f/16.0f, SelectionColor ) );
@@ -4407,6 +4405,12 @@ void FSlateEditorStyle::FStyle::SetupGraphEditorStyles()
 				.SetShadowOffset( FVector2D::ZeroVector )
 			);
 
+			Set("Graph.WarningText", FTextBlockStyle(NormalText)
+				.SetFont(DEFAULT_FONT("BoldCondensed", 20))
+				.SetColorAndOpacity(FLinearColor(0.8, 0.5f, 0.07f, 1.0f))
+				.SetShadowOffset(FVector2D(1, 1))
+			);
+
 			Set( "Graph.SimulatingText", FTextBlockStyle(NormalText)
 				.SetFont( DEFAULT_FONT( "BoldCondensed", 48 ) )
 				.SetColorAndOpacity( FLinearColor(0.8, 0.8f, 0.0f, 0.2f) )
@@ -5277,6 +5281,8 @@ void FSlateEditorStyle::FStyle::SetupLevelEditorStyle()
 		Set("MeshPaint.CycleToNextLOD.Small",     new IMAGE_BRUSH(TEXT("Icons/GeneralTools/Next_40x"), Icon20x20));
 		Set("MeshPaint.SwitchForeAndBackgroundColor",       new IMAGE_BRUSH("Icons/Paint/Paint_SwapColors_40x", Icon20x20));
 		Set("MeshPaint.SwitchForeAndBackgroundColor.Small", new IMAGE_BRUSH("Icons/Paint/Paint_SwapColors_40x", Icon20x20));
+		Set("MeshPaint.TextureFill", new IMAGE_BRUSH("/Icons/GeneralTools/PaintBucket_40x", Icon20x20));
+		Set("MeshPaint.TextureFill.Small", new IMAGE_BRUSH("/Icons/GeneralTools/PaintBucket_40x", Icon20x20));
 	}
 
 	// News Feed
@@ -6486,6 +6492,7 @@ void FSlateEditorStyle::FStyle::SetupClassIconsAndThumbnails()
 			TEXT("SlateBrushAsset"),
 			TEXT("SlateWidgetStyleAsset"),
 			TEXT("StringTable"),
+			TEXT("SpecularProfile"),
 			TEXT("SphereReflectionCapture"),
 			TEXT("SpotLight"),
 			TEXT("SpotLightMovable"),
@@ -6923,6 +6930,8 @@ void FSlateEditorStyle::FStyle::SetupLandscapeEditorStyle()
 		Set("LandscapeEditor.Brush.AffectsHeight.Disabled", new IMAGE_BRUSH("Icons/icon_Landscape_Affects_Height_Disabled_16x", Icon16x16));
 		Set("LandscapeEditor.Brush.AffectsWeight.Enabled", new IMAGE_BRUSH("Icons/icon_Landscape_Affects_Weight_Enabled_16x", Icon16x16));
 		Set("LandscapeEditor.Brush.AffectsWeight.Disabled", new IMAGE_BRUSH("Icons/icon_Landscape_Affects_Weight_Disabled_16x", Icon16x16));
+		Set("LandscapeEditor.Brush.AffectsVisibilityLayer.Enabled", new IMAGE_BRUSH("Icons/icon_Landscape_Affects_VisibilityLayer_Enabled_16x", Icon16x16));
+		Set("LandscapeEditor.Brush.AffectsVisibilityLayer.Disabled", new IMAGE_BRUSH("Icons/icon_Landscape_Affects_VisibilityLayer_Disabled_16x", Icon16x16));
 
 		// Target List
 		Set("LandscapeEditor.TargetList.RowBackground",        new FSlateNoResource());
@@ -7407,6 +7416,8 @@ void FSlateEditorStyle::FStyle::SetupToolkitStyles()
 		Set("GenericCurveEditor.ToggleOutputSnapping.Small", new IMAGE_BRUSH("GenericCurveEditor/Icons/AdjustKeySnapValue_48x", Icon24x24));
 
 		// Tangent Types
+		Set("GenericCurveEditor.InterpolationCubicSmartAuto", new IMAGE_BRUSH("GenericCurveEditor/Icons/CubicTangentSmartAuto_48x", Icon48x48));
+		Set("GenericCurveEditor.InterpolationCubicSmartAuto.Small", new IMAGE_BRUSH("GenericCurveEditor/Icons/CubicTangentSmartAuto_48x", Icon24x24));
 		Set("GenericCurveEditor.InterpolationCubicAuto", new IMAGE_BRUSH("GenericCurveEditor/Icons/CubicTangentAuto_48x", Icon48x48));
 		Set("GenericCurveEditor.InterpolationCubicAuto.Small", new IMAGE_BRUSH("GenericCurveEditor/Icons/CubicTangentAuto_48x", Icon24x24));
 		Set("GenericCurveEditor.InterpolationCubicUser", new IMAGE_BRUSH("GenericCurveEditor/Icons/TangentsCubic_48x", Icon48x48));

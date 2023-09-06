@@ -14,6 +14,7 @@
 #include "UObject/GCObject.h"
 #include "CollectionManagerTypes.h"
 
+class FNamePermissionList;
 class FTextureRenderTargetResource;
 class SWindow;
 class UExporter;
@@ -172,7 +173,7 @@ namespace ObjectTools
 	UNREALED_API UObject* DuplicateSingleObject(UObject* Object, const FPackageGroupName& PGN, TSet<UPackage*>& InOutPackagesUserRefusedToFullyLoad, bool bPromptToOverwrite = true, TMap<TSoftObjectPtr<UObject>, TSoftObjectPtr<UObject>>* DuplicatedObjects = nullptr);
 
 	/** Helper struct to detail the results of a consolidation operation */
-	struct UNREALED_API FConsolidationResults : public FGCObject
+	struct FConsolidationResults : public FGCObject
 	{
 		/** FGCObject interface; Serialize any object references */
 		virtual void AddReferencedObjects( FReferenceCollector& Collector ) override
@@ -187,13 +188,13 @@ namespace ObjectTools
 		}
 
 		/** Packages dirtied by a consolidation operation */
-		TArray<UPackage*>	DirtiedPackages;
+		TArray<TObjectPtr<UPackage>>	DirtiedPackages;
 
 		/** Objects which were not valid for consolidation */
-		TArray<UObject*>	InvalidConsolidationObjs;
+		TArray<TObjectPtr<UObject>>	InvalidConsolidationObjs;
 
 		/** Objects which failed consolidation (partially consolidated) */
-		TArray<UObject*>	FailedConsolidationObjs;
+		TArray<TObjectPtr<UObject>>	FailedConsolidationObjs;
 	};
 
 	/** Helper struct for batch replacements where Old references get replaced with New */
@@ -488,8 +489,12 @@ namespace ObjectTools
 	 * @param	InFactory		Factory whose supported file types and extensions should be retrieved
 	 * @param	out_Filetypes	File types supported by the provided factory, concatenated into a string
 	 * @param	out_Extensions	Extensions supported by the provided factory, concatenated into a string
+	 * @param   SupportedExtensions			If not null only extension in the list can be added
 	 */
-	UNREALED_API void GenerateFactoryFileExtensions( const UFactory* InFactory, FString& out_Filetypes, FString& out_Extensions, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory );
+	UNREALED_API void GenerateFactoryFileExtensions( const UFactory* InFactory
+		, FString& out_Filetypes
+		, FString& out_Extensions
+		, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory);
 
 	/**
 	 * Populates two strings with all of the file types and extensions the provided factories support.
@@ -497,13 +502,20 @@ namespace ObjectTools
 	 * @param	InFactories		Factories whose supported file types and extensions should be retrieved
 	 * @param	out_Filetypes	File types supported by the provided factory, concatenated into a string
 	 * @param	out_Extensions	Extensions supported by the provided factory, concatenated into a string
+	 * @param   SupportedExtensions			If not null only extension in the list can be added
 	 */
-	UNREALED_API void GenerateFactoryFileExtensions( const TArray<UFactory*>& InFactories, FString& out_Filetypes, FString& out_Extensions, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory );
+	UNREALED_API void GenerateFactoryFileExtensions( const TArray<UFactory*>& InFactories
+		, FString& out_Filetypes
+		, FString& out_Extensions
+		, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory);
 
 	/**
 	 * Generates a list of file types for a given class.
+	 * @param   SupportedExtensions			If not null only extension in the list can be added
 	 */
-	UNREALED_API void AppendFactoryFileExtensions( UFactory* InFactory, FString& out_Filetypes, FString& out_Extensions );
+	UNREALED_API void AppendFactoryFileExtensions( UFactory* InFactory
+		, FString& out_Filetypes
+		, FString& out_Extensions);
 
 	/**
 	 * Populates two strings with all of the file types and extensions the format list provides.
@@ -511,8 +523,11 @@ namespace ObjectTools
 	 * @param	InFormats		Array of supported file types. Each entry needs to be of the form "ext;Description" where ext is the file extension. 
 	 * @param	out_FileTypes	File types supported by the provided array of formats, concatenated into a string
 	 * @param	out_Extensions	Extensions supported by the provided array of formats, concatenated into a string
+	 * @param   SupportedExtensions			If not null only extension in the list can be added
 	 */
-	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats, FString& out_FileTypes, FString& out_Extensions);
+	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats
+		, FString& out_FileTypes
+		, FString& out_Extensions);
 
 	/**
 	 * Populates two strings with all of the file types and extensions the format list provides.
@@ -521,8 +536,12 @@ namespace ObjectTools
 	 * @param	out_FileTypes	File types supported by the provided array of formats, concatenated into a string
 	 * @param	out_Extensions	Extensions supported by the provided array of formats, concatenated into a string
 	 * @param	out_FilterIndexToFactory	Add INDEX_NONE entry for all provided Formats
+	 * @param   SupportedExtensions			If not null only extension in the list can be added
 	 */
-	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats, FString& out_FileTypes, FString& out_Extensions, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory);
+	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats
+		, FString& out_FileTypes
+		, FString& out_Extensions
+		, TMultiMap<uint32, UFactory*>& out_FilterIndexToFactory);
 
 	/**
 	 * Iterates over all classes and assembles a list of non-abstract UExport-derived type instances.
@@ -631,6 +650,30 @@ namespace ObjectTools
 	* @param OutObjectsAndSubobjects	The complete list of objects and any subobjects that should have references replaced
 	*/
 	UNREALED_API void GatherSubObjectsForReferenceReplacement(TSet<UObject*>& InObjects, TSet<UObject*>& ObjectsToExclude, TSet<UObject*>& OutObjectsAndSubObjects);
+
+	/**
+	 * Given a SourceObject and ObjectToSearchFor will attempt to find the ObjectToSearchFor on the given object.
+	 * If the ObjectToSearchFor is found this will report back properties needed to traverse to find this pointer.
+	 * This is useful to find out where a reference is being pulled in from.
+	 * 
+	 * Uses the CVar ObjectTools.MaxTimesToCheckSameObject to configure how many times the same object should be checked and traversed. This is to help avoid circular dependencies.
+	 * 
+	 * @param SourceObject - which object we will scan the properties on to attempt to find the given ObjectToSearchFor
+	 * @param ObjectToSearchFor - which object we will look for on each property of the SourceObject
+	 * @param OutFoundPropertyChains - an array of strings for which properties to traverse to find the ObjectToSearchFor
+	 * @return true when the ObjectToSearchFor is found, otherwise false.
+	 */
+	UNREALED_API bool GatherPropertyChainsToObject(const UObject* SourceObject, const UObject* ObjectToSearchFor, TArray<FString>& OutFoundPropertyChains);
+
+
+	/**
+	 * Batch version of UObject::GetArchetypeInstances.  Can be considerably faster in large worlds when querying multiple objects with the
+	 * same UClass, as it only traverses the world once per UClass.  Null pointers are allowed for InObjects, returning an empty output.
+	 *
+	 * @param	InObjects		list of objects to query for archetype instances
+	 * @param	OutInstances	per InObjects array element, receives the list of objects which have the given object in its archetype chain
+	 */
+	UNREALED_API void BatchGetArchetypeInstances(TArrayView<UObject*> InObjects, TArray<TArray<UObject*>>& OutInstances);
 }
 
 
@@ -693,7 +736,10 @@ namespace ThumbnailTools
 	/** Returns the thumbnail for the specified object or NULL if one doesn't exist yet */
 	UNREALED_API FObjectThumbnail* GetThumbnailForObject( UObject* InObject );
 
-	/** Loads thumbnails from the specified package file name */
+	/** Loads the thumbnail of an asset from the specified package file name (or from the external thumbnail cache file if it exists) */
+	UNREALED_API bool LoadThumbnailFromPackage(const FAssetData& AssetData, FObjectThumbnail& OutThumbnail);
+
+	/** Loads thumbnails from the specified package file name (or from the external thumbnail cache file if it exists) */
 	UNREALED_API bool LoadThumbnailsFromPackage( const FString& InPackageFileName, const TSet<FName>& InObjectFullNames, FThumbnailMap& InOutThumbnails );
 
 	/** Loads thumbnails from a package unless they're already cached in that package's thumbnail map */
@@ -701,6 +747,7 @@ namespace ThumbnailTools
 
 	/** Loads thumbnails for the specified objects (or copies them from a cache, if they're already loaded.) */
 	UNREALED_API bool ConditionallyLoadThumbnailsForObjects( const TArray< FName >& InObjectFullNames, FThumbnailMap& InOutThumbnails );
+
 	/** Standard thumbnail height setting used by generation */
 	inline const int32 DefaultThumbnailSize=256;
 

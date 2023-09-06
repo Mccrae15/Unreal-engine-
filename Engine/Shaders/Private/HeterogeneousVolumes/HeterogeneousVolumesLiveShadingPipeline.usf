@@ -16,6 +16,7 @@
 #include "HeterogeneousVolumesTracingUtils.ush"
 #include "HeterogeneousVolumesLightingUtils.ush"
 
+
 #if VIRTUAL_SHADOW_MAP
 #include "../VirtualShadowMaps/VirtualShadowMapProjectionCommon.ush"
 #endif
@@ -39,6 +40,9 @@ float3 LocalBoundsOrigin;
 float3 LocalBoundsExtent;
 int PrimitiveId;
 
+// Volume data
+int3 VoxelResolution;
+
 // Lighting
 int bApplyEmissionAndTransmittance;
 int bApplyDirectLighting;
@@ -49,11 +53,13 @@ float VolumetricScatteringIntensity;
 // Shadowing
 uint VirtualShadowMapId;
 float ShadowStepSize;
+float ShadowStepFactor;
 
 // Ray data
 float MaxTraceDistance;
 float MaxShadowTraceDistance;
 float StepSize;
+float StepFactor;
 int MaxStepCount;
 int bJitter;
 
@@ -117,6 +123,11 @@ float3 GetLocalBoundsExtent()
 	return LocalBoundsExtent;
 }
 
+int3 GetVolumeResolution()
+{
+	return VoxelResolution;
+}
+
 float GetStepSize()
 {
 	return StepSize;
@@ -125,6 +136,16 @@ float GetStepSize()
 float GetShadowStepSize()
 {
 	return ShadowStepSize;
+}
+
+float GetStepFactor()
+{
+	return StepFactor;
+}
+
+float GetShadowStepFactor()
+{
+	return ShadowStepFactor;
 }
 
 float GetMaxTraceDistance()
@@ -245,7 +266,7 @@ void RenderLightingCacheWithLiveShadingCS(
 	RWLightingCacheTexture[VoxelIndex] = Transmittance;
 
 #elif DIM_LIGHTING_CACHE_MODE == LIGHTING_CACHE_INSCATTERING
-	float3 Inscattering = ComputeInscattering(WorldRayOrigin, LightData, LightType, MaxStepCount, bApplyShadowTransmittance);
+	float3 Inscattering = ComputeInscattering(WorldRayOrigin, LightData, LightType, MaxStepCount, CalcShadowBias(), bApplyShadowTransmittance);
 	RWLightingCacheTexture[VoxelIndex] += Inscattering * View.PreExposure;
 #endif // DIM_LIGHTING_CACHE_MODE
 }
@@ -256,8 +277,6 @@ void RenderSingleScatteringWithLiveShadingCS(
 	uint2 DispatchThreadId : SV_DispatchThreadID
 )
 {
-	float3 Radiance = 0.0;
-	float3 Transmittance = 1.0;
 	FDebugOutput DebugOutput = (FDebugOutput)0;
 
 	// Create screen ray
@@ -267,6 +286,9 @@ void RenderSingleScatteringWithLiveShadingCS(
 	}
 	uint LinearIndex = DispatchThreadId.y * GroupCount.x * THREADGROUP_SIZE_2D + DispatchThreadId.x;
 	uint2 PixelCoord = DispatchThreadId.xy + View.ViewRectMin.xy;
+
+	float3 Radiance = 0.0;
+	float3 Transmittance = 1.0 - RWLightingTexture[PixelCoord].a;
 
 	// Extract depth
 	float DeviceZ = SceneDepthTexture.Load(int3(PixelCoord, 0)).r;
@@ -283,7 +305,7 @@ void RenderSingleScatteringWithLiveShadingCS(
 	// Intersect ray with bounding volume
 	// TODO: LWC integration..
 	float3 WorldRayOrigin = LWCHackToFloat(LWCSubtract(View.TranslatedWorldCameraOrigin, PrimaryView.PreViewTranslation));
-	float3 WorldRayEnd = LWCHackToFloat(SvPositionToWorld(float4(PixelCoord + 0.5, DeviceZ, 1)));
+	float3 WorldRayEnd = LWCHackToFloat(SvPositionToWorld(float4(PixelCoord + View.TemporalAAJitter.xy, DeviceZ, 1)));
 	float3 WorldRayDirection = WorldRayEnd - WorldRayOrigin;
 	float WorldRayLength = length(WorldRayDirection);
 	WorldRayDirection /= WorldRayLength;
@@ -297,7 +319,7 @@ void RenderSingleScatteringWithLiveShadingCS(
 	float3 LocalBoundsMin = LocalBoundsOrigin - LocalBoundsExtent;
 	float3 LocalBoundsMax = LocalBoundsOrigin + LocalBoundsExtent;
 
-	// Test bounding volume
+	// Intersect bounding volume
 	float2 HitT = IntersectAABB(LocalRayOrigin, LocalRayDirection, 0.0, LocalRayLength, LocalBoundsMin, LocalBoundsMax);
 	float HitSpan = HitT.y - HitT.x;
 	if (HitSpan > 0.0)
@@ -314,7 +336,7 @@ void RenderSingleScatteringWithLiveShadingCS(
 			WorldRayDirection,
 			// Ray-step attributes
 			Jitter,
-			StepSize,
+			CalcStepSize(LocalRayDirection),
 			MaxStepCount,
 			bApplyEmissionAndTransmittance,
 			bApplyDirectLighting,
@@ -335,7 +357,8 @@ void RenderSingleScatteringWithLiveShadingCS(
 
 		// Output..
 		float3 Opacity = bApplyEmissionAndTransmittance ? 1.0 - Transmittance : 0.0;
-		RWLightingTexture[PixelCoord] += float4(Radiance * View.PreExposure, Luminance(Opacity));
+		RWLightingTexture[PixelCoord].rgb += Radiance * View.PreExposure;
+		RWLightingTexture[PixelCoord].a = Luminance(Opacity);
 
 		// Debug output
 		//RWDebugOutputBuffer[LinearIndex] = DebugOutput;

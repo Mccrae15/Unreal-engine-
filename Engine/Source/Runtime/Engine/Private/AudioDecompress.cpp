@@ -3,11 +3,13 @@
 
 #include "AudioDecompress.h"
 #include "AudioDevice.h"
+#include "Engine/Engine.h"
 #include "Interfaces/IAudioFormat.h"
 #include "ADPCMAudioInfo.h"
 #include "Misc/CoreStats.h"
 #include "Misc/ScopeRWLock.h"
 #include "Stats/StatsTrace.h"
+#include "Sound/StreamedAudioChunkSeekTable.h"
 
 IStreamedCompressedInfo::IStreamedCompressedInfo()
 	: bIsStreaming(false)
@@ -117,6 +119,37 @@ bool IStreamedCompressedInfo::ReadCompressedData(uint8* Destination, bool bLoopi
 	return bFinished;
 }
 
+void IStreamedCompressedInfo::SeekToTime(const float InSeekTimeSeconds)
+{
+	if (StreamingSoundWave.IsValid())
+	{
+		const FSoundWavePtr WaveData = StreamingSoundWave->GetSoundWaveData();
+		if (WaveData.IsValid())
+		{
+			// Negative time will seek to start.
+			int64 SeekTimeAudioFrames = 0;
+			if (InSeekTimeSeconds > 0)
+			{
+				SeekTimeAudioFrames = FMath::FloorToInt64(WaveData->GetSampleRate() * InSeekTimeSeconds);
+				if (!IntFitsIn<uint32>(SeekTimeAudioFrames))
+				{
+					UE_LOG(LogAudio, Warning, TEXT("Seek too large (%.2f seconds), ignoring..."), InSeekTimeSeconds);
+					return;
+				}
+			}
+
+			// If we have a chunk setup to contain a seek-table it will return a value other than INDEX_NONE here.
+			const int32 ChunkIndexToSeekTo = WaveData->FindChunkIndexForSeeking(IntCastChecked<uint32>(SeekTimeAudioFrames));
+			if (ChunkIndexToSeekTo >= 0)
+			{
+				StreamSeekBlockIndex = ChunkIndexToSeekTo;
+				StreamSeekBlockOffset = 0;								// We don't know this until the seek-table is loaded, so we leave it 0 for now.
+				StreamSeekToAudioFrames = SeekTimeAudioFrames;			// Store the time in samples so when we load the chunks table loads we can find the offset.
+			}
+		}
+	}
+}
+
 void IStreamedCompressedInfo::ExpandFile(uint8* DstBuffer, struct FSoundQualityInfo* QualityInfo)
 {
 	check(DstBuffer);
@@ -156,6 +189,18 @@ bool IStreamedCompressedInfo::StreamCompressedInfoInternal(const FSoundWaveProxy
 	uint32 ChunkSize = 0;
 	const uint8* FirstChunk = GetLoadedChunk(StreamingSoundWave, CurrentChunkIndex, ChunkSize);
 
+	// If there is a seek-table present in the chunk, we'll need to parse that first.
+	if (InWaveProxy->GetSoundWaveData()->HasChunkSeekTable(CurrentChunkIndex))
+	{
+		uint32 SeekTableEnd = 0;
+		if (ensureMsgf(FStreamedAudioChunkSeekTable::Parse(FirstChunk, ChunkSize, SeekTableEnd, GetCurrentSeekTable()),
+			TEXT("Failed to parse seektable in '%s' chunk=%d"), *StreamingSoundWave->GetFName().ToString(), CurrentChunkIndex))
+		{
+			ChunkSize -= SeekTableEnd;
+			FirstChunk += SeekTableEnd;
+		}
+	}
+	
 	bIsStreaming = true;
 	if (FirstChunk)
 	{
@@ -185,7 +230,6 @@ bool IStreamedCompressedInfo::StreamCompressedData(uint8* Destination, bool bLoo
 
 	SCOPE_CYCLE_COUNTER(STAT_AudioStreamedDecompressTime);
 
-
 	UE_LOG(LogAudio, Log, TEXT("Streaming compressed data from SoundWave'%s' - Chunk=%d\tNumChunks=%d\tOffset=%d\tChunkSize=%d\tLooping=%s\tLastPCMOffset=%d\tContainsEOF=%s" ), 
 		*StreamingSoundWave->GetFName().ToString(), 	
 		CurrentChunkIndex, 
@@ -204,19 +248,63 @@ bool IStreamedCompressedInfo::StreamCompressedData(uint8* Destination, bool bLoo
 	if (StreamSeekBlockIndex != INDEX_NONE)
 	{
 		uint32 ChunkSize = 0;
-		SrcBufferData = GetLoadedChunk(StreamingSoundWave, StreamSeekBlockIndex, ChunkSize);
+		const uint8* NewlySeekedChunk = GetLoadedChunk(StreamingSoundWave, StreamSeekBlockIndex, ChunkSize);
 		UE_LOG(LogAudio, Log, TEXT("Seek block request: %d / %d (%s)"), StreamSeekBlockIndex.load(), StreamSeekBlockOffset, SrcBufferData == nullptr ? TEXT("present") : TEXT("missing"));
-		if (SrcBufferData == nullptr)
+		if (NewlySeekedChunk == nullptr)
 		{
 			// After a seek we're likely to need to wait a bit for the chunk to get in to memory.
 			ZeroBuffer(Destination + RawPCMOffset, BufferSize - RawPCMOffset);
 			return false;
+		}	
+
+		if (StreamSeekToAudioFrames == INDEX_NONE)
+		{
+			// Non-streaming-seek tables.
+			// Commit the new chunk as the current.
+			SrcBufferData = NewlySeekedChunk;
+			CurrentChunkIndex = StreamSeekBlockIndex;
+			SrcBufferDataSize = ChunkSize;
+			SrcBufferOffset = StreamSeekBlockOffset;
+		}
+		else
+		{
+			// If we are using a chunked seek-table, we need to parse the table first.
+			if (StreamingSoundWave->GetSoundWaveData()->HasChunkSeekTable(CurrentChunkIndex))
+			{
+				uint32 TableOffset = 0;
+				if (ensureMsgf(FStreamedAudioChunkSeekTable::Parse(NewlySeekedChunk, ChunkSize, TableOffset, GetCurrentSeekTable()),
+					TEXT("Failed to parse seektable in '%s', chunk=%d"), *StreamingSoundWave->GetFName().ToString(), CurrentChunkIndex))
+				{
+					if (StreamSeekToAudioFrames != INDEX_NONE)
+					{
+						const FStreamedAudioChunk& Chunk = StreamingSoundWave->GetSoundWaveData()->GetChunk(CurrentChunkIndex);
+						int32 SeekOffsetInChunkSpace = StreamSeekToAudioFrames - Chunk.SeekOffsetInAudioFrames;
+						uint32 Offset = GetCurrentSeekTable().FindOffset(StreamSeekToAudioFrames);
+						if (Offset != INDEX_NONE)
+						{
+							// All looks good, commit this as our current chunk.
+							CurrentChunkIndex = StreamSeekBlockIndex;
+							SrcBufferDataSize = ChunkSize;
+							SrcBufferData = NewlySeekedChunk;
+
+							// Set our offset from the table.
+							SrcBufferOffset = Offset + TableOffset;
+							SrcBufferOffset += CurrentChunkIndex == 0 ? AudioDataOffset : 0;							
+						}
+						else // Seek failed (off the end of the chunk).
+						{
+							const float TimeInSeconds = (float)StreamSeekToAudioFrames / StreamingSoundWave->GetSampleRate();
+							UE_LOG(LogAudio, Log, TEXT("Failed seeking to %2.2f seconds as it's off the end of the stream. Wave=%s"), TimeInSeconds, *StreamingSoundWave->GetFName().ToString());
+						}
+					}
+				}
+			}
 		}
 
-		CurrentChunkIndex = StreamSeekBlockIndex;
-		SrcBufferDataSize = ChunkSize;
-		SrcBufferOffset = StreamSeekBlockOffset;
+		// Seeking logic over, turn off seeking state
 		StreamSeekBlockIndex = INDEX_NONE;
+		StreamSeekToAudioFrames = INDEX_NONE;
+		StreamSeekBlockOffset = INDEX_NONE;
 	}
 
 	// If next chunk wasn't loaded when last one finished reading, try to get it again now
@@ -229,6 +317,13 @@ bool IStreamedCompressedInfo::StreamCompressedData(uint8* Destination, bool bLoo
 			bPrintChunkFailMessage = true;
 			SrcBufferDataSize = ChunkSize;
 			SrcBufferOffset = CurrentChunkIndex == 0 ? AudioDataOffset : 0;
+
+			// If we are using a chunked seek-table, we need to parse the table first.
+			if (StreamingSoundWave->GetSoundWaveData()->HasChunkSeekTable(CurrentChunkIndex))
+			{
+				ensureMsgf(FStreamedAudioChunkSeekTable::Parse(SrcBufferData, SrcBufferDataSize, SrcBufferOffset, GetCurrentSeekTable()), 
+					TEXT("Failed to parse seektable in '%s' chunk=%d"), *StreamingSoundWave->GetFName().ToString(), CurrentChunkIndex );
+			}
 		}
 		else
 		{
@@ -314,6 +409,12 @@ bool IStreamedCompressedInfo::StreamCompressedData(uint8* Destination, bool bLoo
 				SrcBufferData = GetLoadedChunk(StreamingSoundWave, CurrentChunkIndex, SrcBufferDataSize);
 				if (SrcBufferData)
 				{
+					// If we are using a chunked seek-table, we need to parse the table first.
+					if (StreamingSoundWave->GetSoundWaveData()->HasChunkSeekTable(CurrentChunkIndex))
+					{
+						ensureMsgf(FStreamedAudioChunkSeekTable::Parse(SrcBufferData, SrcBufferDataSize, SrcBufferOffset, GetCurrentSeekTable()), 
+							TEXT("Failed to parse seektable in '%s' chunk=%d"), *StreamingSoundWave->GetFName().ToString(), CurrentChunkIndex);
+					}
 					UE_CLOG(PreviousChunkIndex != CurrentChunkIndex, LogAudio, Log, TEXT("Changed current chunk '%s' from %d to %d, Offset %d"), *StreamingSoundWave->GetFName().ToString(), PreviousChunkIndex, CurrentChunkIndex, SrcBufferOffset);
 				}
 				else
@@ -342,11 +443,17 @@ int32 IStreamedCompressedInfo::DecompressToPCMBuffer(uint16 /*Unused*/ )
 	int32 FrameSize = GetFrameSize();
 	if (FrameSize <= 0)
 	{
+		UE_LOG(LogAudio, Warning, TEXT("Decoder error: Frame size negative. (indicates packet error).: Wave='%s', FrameSize=%d, SrcBufferOffset=%u, SrcBufferDataSize=%u"),
+			*GetStreamingSoundWave()->GetSoundWaveData()->GetFName().ToString(), FrameSize, SrcBufferOffset, SrcBufferDataSize);
+
 		// Error.
 		return -1;
 	}
 	if (SrcBufferOffset + FrameSize > SrcBufferDataSize)
 	{
+		UE_LOG(LogAudio, Warning, TEXT("Decoder error: Frame size too large (decoding it will take us out of bounds).: Wave='%s', FrameSize=%d, SrcBufferOffset=%u, SrcBufferDataSize=%u, Overby=%d"), 
+			*GetStreamingSoundWave()->GetSoundWaveData()->GetFName().ToString(), FrameSize, SrcBufferOffset, SrcBufferDataSize, (int32)SrcBufferOffset+FrameSize-SrcBufferDataSize );
+		
 		// if frame size is too large, something has gone wrong
 		return -1;
 	}
@@ -438,6 +545,20 @@ const uint8* IStreamedCompressedInfo::GetLoadedChunk(const FSoundWaveProxyPtr& I
 		OutChunkSize = CurCompressedChunkHandle.Num();
 		return CurCompressedChunkHandle.GetData();
 	}
+}
+
+FStreamedAudioChunkSeekTable& IStreamedCompressedInfo::GetCurrentSeekTable()
+{
+	if (!CurrentChunkSeekTable.IsValid())
+	{
+		CurrentChunkSeekTable = MakePimpl<FStreamedAudioChunkSeekTable>();
+	}
+	return *CurrentChunkSeekTable;
+}
+
+const FStreamedAudioChunkSeekTable& IStreamedCompressedInfo::GetCurrentSeekTable() const
+{
+	return const_cast<IStreamedCompressedInfo*>(this)->GetCurrentSeekTable();
 }
 
 //////////////////////////////////////////////////////////////////////////

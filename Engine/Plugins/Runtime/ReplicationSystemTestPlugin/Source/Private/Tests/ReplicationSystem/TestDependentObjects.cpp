@@ -188,8 +188,9 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestDependentObje
 
 	// Spawn second object on server that later will be added as a dependent object
 	// With high PollFramePeriod so that it will not replicate in a while unless it is a dependent
-	UTestReplicatedIrisObject* ServerDependentObject = Server->CreateObject(0, 0);
-	Server->ReplicationBridge->SetPollFramePeriod(ServerDependentObject, 255U);
+	UObjectReplicationBridge::FCreateNetRefHandleParams Params = Server->GetReplicationBridge()->DefaultCreateNetRefHandleParams;
+	Params.PollFrequency = Server->ConvertPollPeriodIntoFrequency(255U);
+	UTestReplicatedIrisObject* ServerDependentObject = Server->CreateObject(Params);
 
 	// Send and deliver packet
 	Server->PreSendUpdate();
@@ -206,23 +207,35 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestDependentObje
 	UE_NET_ASSERT_EQ(ClientDependentObject->IntA, ServerDependentObject->IntA);
 
 	// Trigger replication
-	ServerObject->IntA = 1;
-	ServerDependentObject->IntA = 1;
 
-	// Send and deliver packet
-	Server->PreSendUpdate();
-	Server->SendAndDeliverTo(Client, true);
-	Server->PostSendUpdate();
+	constexpr uint32 MaxIterationCount = 256;
+	uint32 It = 0;
+	for (const uint32 EndIt = MaxIterationCount; It < EndIt; ++It)
+	{
+		ServerObject->IntA += 1;
+		ServerDependentObject->IntA += 1;
 
-	// Verify that only the server object has been updated
-	UE_NET_ASSERT_EQ(ClientObject->IntA, ServerObject->IntA);
-	UE_NET_ASSERT_NE(ClientDependentObject->IntA, ServerDependentObject->IntA);
+		// Send and deliver packet
+		Server->PreSendUpdate();
+		Server->SendAndDeliverTo(Client, true);
+		Server->PostSendUpdate();
+
+		UE_NET_ASSERT_EQ(ServerObject->IntA, ClientObject->IntA);
+
+		// Verify that only the server object has been updated
+		if (ClientDependentObject->IntA != ServerDependentObject->IntA)
+		{
+			break;
+		}
+	}
+	// At some point the object is expected not to be polled
+	UE_NET_ASSERT_LT(It, MaxIterationCount);
 
 	// Add dependency
 	Server->ReplicationBridge->AddDependentObject(ServerObject->NetRefHandle, ServerDependentObject->NetRefHandle);
 
 	// Change a value on owner
-	ServerObject->IntA = 2;
+	ServerObject->IntA += 1;
 
 	// Send and deliver packet
 	Server->PreSendUpdate();
@@ -242,16 +255,20 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestDependentObje
 	FReplicationSystemTestClient* Client = CreateClient();
 
 	// Spawn object on server
-	UTestReplicatedIrisObject* ServerObject0 = Server->CreateObject(0, 0);
-	UTestReplicatedIrisObject* ServerObject1 = Server->CreateObject(0, 0);
+	UObjectReplicationBridge::FCreateNetRefHandleParams Params = Server->GetReplicationBridge()->DefaultCreateNetRefHandleParams;
+
+	// Setup different poll frequencies for the objects
+	Params.PollFrequency = Server->ConvertPollPeriodIntoFrequency(10U);
+	UTestReplicatedIrisObject* ServerObject0 = Server->CreateObject(Params);
+
+	Params.PollFrequency = Server->ConvertPollPeriodIntoFrequency(20U);
+	UTestReplicatedIrisObject* ServerObject1 = Server->CreateObject(Params);
 
 	// Spawn second object on server that later will be added as a dependent object
-	UTestReplicatedIrisObject* ServerDependentObject = Server->CreateObject(0, 0);
+	Params.PollFrequency = Server->ConvertPollPeriodIntoFrequency(40U);
+	UTestReplicatedIrisObject* ServerDependentObject = Server->CreateObject(Params);
 
-	// Setup different pollframeperiods for the objects
-	Server->ReplicationBridge->SetPollFramePeriod(ServerObject0, 10);
-	Server->ReplicationBridge->SetPollFramePeriod(ServerObject1, 20);
-	Server->ReplicationBridge->SetPollFramePeriod(ServerDependentObject, 40U);
+
 
 	// Add dependent object to both server objects
 	Server->ReplicationBridge->AddDependentObject(ServerObject0->NetRefHandle, ServerDependentObject->NetRefHandle);
@@ -317,12 +334,13 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestDependentObje
 	FReplicationSystemTestClient* Client = CreateClient();
 
 	// Spawn object on server
-	UTestReplicatedIrisObject* ServerObject = Server->CreateObject(0, 0);
-	Server->ReplicationBridge->SetPollFramePeriod(ServerObject, 4U);
+	UObjectReplicationBridge::FCreateNetRefHandleParams Params = Server->GetReplicationBridge()->DefaultCreateNetRefHandleParams;
+	Params.PollFrequency = Server->ConvertPollPeriodIntoFrequency(14U);
+	UTestReplicatedIrisObject* ServerObject = Server->CreateObject(Params);
 
 	// Spawn second object add it as a dependency and bump poll period
-	UTestReplicatedIrisObject* ServerDependentObject = Server->CreateObject(0, 0);
-	Server->ReplicationBridge->SetPollFramePeriod(ServerDependentObject, 10U);
+	Params.PollFrequency = Server->ConvertPollPeriodIntoFrequency(30U);
+	UTestReplicatedIrisObject* ServerDependentObject = Server->CreateObject(Params);
 	Server->ReplicationBridge->AddDependentObject(ServerObject->NetRefHandle, ServerDependentObject->NetRefHandle);
 
 	// Send and deliver packet
@@ -334,39 +352,48 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestDependentObje
 	UTestReplicatedIrisObject* ClientObject = Cast<UTestReplicatedIrisObject>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 	UTestReplicatedIrisObject* ClientDependentObject = Cast<UTestReplicatedIrisObject>(Client->GetReplicationBridge()->GetReplicatedObject(ServerDependentObject->NetRefHandle));
 
-	// Modify data
-	ServerObject->IntA = 1;
-	ServerDependentObject->IntA = 1;
+	// Modify data until none of the objects are replicated, due to the set polling frequencies.
+	constexpr uint32 MaxIterationCount = 32;
+	uint32 It = 0;
+	for (const uint32 EndIt = MaxIterationCount; It < EndIt; ++It)
+	{
+		ServerObject->IntA += 1;
+		ServerDependentObject->IntA += 1;
 
-	// Send and deliver packet, we expect nothing to replicate
-	Server->PreSendUpdate();
-	Server->SendAndDeliverTo(Client, true);
-	Server->PostSendUpdate();
+		// Send and deliver packet
+		Server->PreSendUpdate();
+		Server->SendAndDeliverTo(Client, true);
+		Server->PostSendUpdate();
 
-	// Verify that nothing replicated
-	UE_NET_ASSERT_NE(ClientObject->IntA, ServerObject->IntA);
-	UE_NET_ASSERT_NE(ClientDependentObject->IntA, ServerDependentObject->IntA);
+		// Verify that nothing replicated
+		if (ClientObject->IntA != ServerObject->IntA && ClientDependentObject->IntA != ServerDependentObject->IntA)
+		{
+			break;
+		}
+	}
+	// If we hit this assert then it's likely the poll frequency limiter is broken.
+	UE_NET_ASSERT_LT(It, MaxIterationCount);
 
 	// Mark dependent dirty
-	ReplicationSystem->MarkDirty(ServerDependentObject->NetRefHandle);
+	ReplicationSystem->ForceNetUpdate(ServerDependentObject->NetRefHandle);
 
 	// Send and deliver packet, we expect dependent object to have replicated 
 	Server->PreSendUpdate();
 	Server->SendAndDeliverTo(Client, true);
 	Server->PostSendUpdate();
 
+	UE_NET_EXPECT_NE(ClientObject->IntA, ServerObject->IntA);
 	// Verify that dependent object has replicated
-	UE_NET_ASSERT_NE(ClientObject->IntA, ServerObject->IntA);
 	UE_NET_ASSERT_EQ(ClientDependentObject->IntA, ServerDependentObject->IntA);
 
 	// Modify data
-	ServerObject->IntA = 2;
-	ServerDependentObject->IntA = 2;
+	ServerObject->IntA += 2;
+	ServerDependentObject->IntA += 2;
 
 	// Mark parent dirty
-	ReplicationSystem->MarkDirty(ServerObject->NetRefHandle);
+	ReplicationSystem->ForceNetUpdate(ServerObject->NetRefHandle);
 
-	// Send and deliver packet, we expect both objects to have replicated
+	// Send and deliver packet
 	Server->PreSendUpdate();
 	Server->SendAndDeliverTo(Client, true);
 	Server->PostSendUpdate();

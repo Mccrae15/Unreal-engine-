@@ -19,6 +19,7 @@ public:
 
 	virtual void PauseRequest() override;
     virtual void ResumeRequest() override;
+	virtual void CancelRequest() override;
     
 	FString ToJSon() const;
 
@@ -41,6 +42,7 @@ private:
 	static const FString RequestPriorityKey;
 	static const FString GroupIDKey;
 	static const FString bHasCompletedKey;
+	static const FString bIsPausedKey;
 
 private:
 	volatile int32 bIsPaused;

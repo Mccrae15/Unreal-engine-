@@ -53,8 +53,6 @@ namespace UE
 
 			CotanTriangleData() = default;
 
-			CotanTriangleData(const CotanTriangleData& Other);
-
 			CotanTriangleData(const FDynamicMesh3& DynamicMesh, int32 TriId)
 			{
 				Initialize(DynamicMesh, TriId);
@@ -155,8 +153,6 @@ namespace UE
 
 		public:
 
-			MeanValueTriangleData(const MeanValueTriangleData& Other);
-
 			void Initialize(const FDynamicMesh3& DynamicMesh, int32 SrcTriId);
 
 			// return Tan(angle / 2) for the corner indicated by this vert id.
@@ -210,21 +206,26 @@ namespace UE
 			const int32 NumTris = TriangleLinearization.NumTris();
 			TriangleDataArray.SetNumUninitialized(NumTris);
 
-			const auto& ToTriIdx = TriangleLinearization.ToIndex();
+			const auto& ToTriId = TriangleLinearization.ToId();
 
 			for (int32 i = 0; i < NumTris; ++i)
 			{
 				// Current triangle
 
-				const int32 TriIdx = ToTriIdx[i];
+				const int32 TriId = ToTriId[i];
 
 				// Compute all the geometric data needed for this triangle.
 
-				TriangleDataArray[i].Initialize(DynamicMesh, TriIdx);
+				TriangleDataArray[i].Initialize(DynamicMesh, TriId);
 			}
 		}
 
 
-
+	  	/**
+		 * @return Edge cotanget weights.
+		 * @todo Add an option to return the weights computed on an intrinsic mesh.
+		 */
+		void DYNAMICMESH_API ConstructEdgeCotanWeightsDataArray(const FDynamicMesh3& Mesh, TArray<double>& EdgeWeightsDataArray, double ClampMin = -1.e5, double ClampMax = 1.e5);
+		
 	}
 }

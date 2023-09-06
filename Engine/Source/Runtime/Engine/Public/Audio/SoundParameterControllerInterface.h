@@ -13,37 +13,37 @@ class FAudioDevice;
 class USoundBase;
 struct FActiveSound;
 
-UINTERFACE(BlueprintType, meta = (CannotImplementInterfaceInBlueprint))
-class ENGINE_API USoundParameterControllerInterface : public UAudioParameterControllerInterface
+UINTERFACE(BlueprintType, meta = (CannotImplementInterfaceInBlueprint), MinimalAPI)
+class USoundParameterControllerInterface : public UAudioParameterControllerInterface
 {
 	GENERATED_UINTERFACE_BODY()
 };
 
 // UObject interface for all object types that are controlling parameter values sent
 // to sound instances (i.e. sources)
-class ENGINE_API ISoundParameterControllerInterface : public IAudioParameterControllerInterface
+class ISoundParameterControllerInterface : public IAudioParameterControllerInterface
 {
 	GENERATED_IINTERFACE_BODY()
 
 public:
 	// IAudioParameterControllerInterface
-	void ResetParameters() override;
+	ENGINE_API void ResetParameters() override;
 
-	void SetTriggerParameter(FName InName) override;
-	void SetBoolParameter(FName InName, bool InBool) override;
-	void SetBoolArrayParameter(FName InName, const TArray<bool>& InValue) override;
-	void SetIntParameter(FName InName, int32 InInt) override;
-	void SetIntArrayParameter(FName InName, const TArray<int32>& InValue) override;
-	void SetFloatParameter(FName InName, float InFloat) override;
-	void SetFloatArrayParameter(FName InName, const TArray<float>& InValue) override;
-	void SetStringParameter(FName InName, const FString& InValue) override;
-	void SetStringArrayParameter(FName InName, const TArray<FString>& InValue) override;
-	void SetObjectParameter(FName InName, UObject* InValue) override;
-	void SetObjectArrayParameter(FName InName, const TArray<UObject*>& InValue) override;
+	ENGINE_API void SetTriggerParameter(FName InName) override;
+	ENGINE_API void SetBoolParameter(FName InName, bool InBool) override;
+	ENGINE_API void SetBoolArrayParameter(FName InName, const TArray<bool>& InValue) override;
+	ENGINE_API void SetIntParameter(FName InName, int32 InInt) override;
+	ENGINE_API void SetIntArrayParameter(FName InName, const TArray<int32>& InValue) override;
+	ENGINE_API void SetFloatParameter(FName InName, float InFloat) override;
+	ENGINE_API void SetFloatArrayParameter(FName InName, const TArray<float>& InValue) override;
+	ENGINE_API void SetStringParameter(FName InName, const FString& InValue) override;
+	ENGINE_API void SetStringArrayParameter(FName InName, const TArray<FString>& InValue) override;
+	ENGINE_API void SetObjectParameter(FName InName, UObject* InValue) override;
+	ENGINE_API void SetObjectArrayParameter(FName InName, const TArray<UObject*>& InValue) override;
 
-	void SetParameter(FAudioParameter&& InValue) override;
-	void SetParameters(TArray<FAudioParameter>&& InValues) override;
-	void SetParameters_Blueprint(const TArray<FAudioParameter>& InValues) override;
+	ENGINE_API void SetParameter(FAudioParameter&& InValue) override;
+	ENGINE_API void SetParameters(TArray<FAudioParameter>&& InValues) override;
+	ENGINE_API void SetParameters_Blueprint(const TArray<FAudioParameter>& InValues) override;
 
 	/** Returns the active audio device to use for this component based on whether or not the component is playing in a world. */
 	virtual FAudioDevice* GetAudioDevice() const = 0;
@@ -62,8 +62,8 @@ public:
 	virtual bool GetDisableParameterUpdatesWhilePlaying() const = 0;
 };
 
-UCLASS()
-class ENGINE_API UAudioParameterConversionStatics : public UBlueprintFunctionLibrary
+UCLASS(MinimalAPI)
+class UAudioParameterConversionStatics : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 

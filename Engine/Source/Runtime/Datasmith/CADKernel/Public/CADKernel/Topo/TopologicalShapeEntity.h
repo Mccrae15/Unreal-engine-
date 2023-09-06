@@ -12,11 +12,20 @@ class FTopologyReport;
 
 class CADKERNEL_API FTopologicalShapeEntity : public FTopologicalEntity
 {
+	friend class FBody;
+	friend class FModel;
+	friend class FShell;
+
 private:
 	FTopologicalShapeEntity* HostedBy = nullptr;
 	FMetadataDictionary Dictionary;
 
 public:
+
+	virtual ~FTopologicalShapeEntity() override 
+	{
+		FTopologicalShapeEntity::Empty();
+	}
 
 	virtual void Serialize(FCADKernelArchive& Ar) override
 	{
@@ -31,7 +40,7 @@ public:
 		FTopologicalEntity::Empty();
 	}
 
-	const FMetadataDictionary& GetMetadataDictionary() const
+	const FMetadataDictionary& GetMetaDataDictionary() const
 	{
 		return Dictionary;
 	}
@@ -41,16 +50,17 @@ public:
 		Dictionary.ExtractMetaData(OutMetaData);
 	}
 
-	void CompleteMetadata();
+	virtual void CompleteMetaData() = 0;
+	void CompleteMetaDataWithHostMetaData();
 
 	virtual int32 FaceCount() const = 0;
 	virtual void GetFaces(TArray<FTopologicalFace*>& OutFaces) = 0;
 
 	/**
 	 * Each face of model is set by its orientation. This allow to make oriented mesh and to keep the face orientation in topological function.
-	 * Marker2 of spread face is set. It must be reset after the process
+	 * Marker2 of propagate face is set. It must be reset after the process
 	 */
-	virtual void SpreadBodyOrientation() = 0;
+	virtual void PropagateBodyOrientation() = 0;
 
 #ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const = 0;
@@ -61,15 +71,21 @@ public:
 		return HostedBy;
 	}
 
+	const FTopologicalShapeEntity* GetHost() const
+	{
+		return HostedBy;
+	}
+
 	void SetHost(FTopologicalShapeEntity* Body)
 	{
+		if (HostedBy)
+		{
+			HostedBy->Remove(this);
+		}
 		HostedBy = Body;
 	}
 
-	void ResetHost()
-	{
-		HostedBy = nullptr;
-	}
+	virtual void Remove(const FTopologicalShapeEntity*) = 0;
 
 	void SetHostId(const int32 InHostId)
 	{
@@ -121,6 +137,23 @@ public:
 		return Dictionary.GetMaterialId();
 	}
 
+	void SetDisplayData(const uint32& InColorId, const uint32& InMaterialId)
+	{
+		if (InColorId)
+		{
+			Dictionary.SetColorId(InColorId);
+		}
+		if(InMaterialId)
+		{
+			Dictionary.SetMaterialId(InMaterialId);
+		}
+	}
+
+	void SetDisplayData(const FTopologicalShapeEntity& DisplayData)
+	{
+		SetDisplayData(DisplayData.GetColorId(), DisplayData.GetMaterialId());
+	}
+
 	void SetPatchId(int32 InPatchId)
 	{
 		Dictionary.SetPatchId(InPatchId);
@@ -131,20 +164,18 @@ public:
 		return Dictionary.GetPatchId();
 	}
 
-	void RemoveOfHost()
-	{
-		if (FTopologicalShapeEntity* Host = GetHost())
-		{
-			Host->Remove(this);
-			ResetHost();
-		}
-	}
-
-	virtual void Remove(const FTopologicalShapeEntity*) = 0;
-
 #ifdef CADKERNEL_DEV
 	virtual FInfoEntity& GetInfo(FInfoEntity&) const override;
 #endif
+
+protected:
+	/**
+	 * Mandatory: The host must have remove this from his array
+	 */
+	void ResetHost()
+	{
+		HostedBy = nullptr;
+	}
 
 };
 

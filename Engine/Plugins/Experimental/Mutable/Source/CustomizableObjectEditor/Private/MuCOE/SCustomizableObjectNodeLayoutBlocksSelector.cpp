@@ -12,6 +12,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/SCustomizableObjectLayoutGrid.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -70,32 +71,39 @@ void SCustomizableObjectNodeLayoutBlocksSelector::SetSelectedNode(UCustomizableO
 {
 	CurrentNode = Node;
 
-	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = Node ? Node->GetParentMaterialNode() : nullptr;
+	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = Node ? Node->GetParentMaterialNodeIfPath() : nullptr;
 
 	// Try to locate the source mesh
 	TArray<FVector2f> UVs;
-	if (CurrentNode && ParentMaterialNode)
+	if (CurrentNode)
 	{
-		const UEdGraphPin* SourceMeshPin = FindMeshBaseSource(*ParentMaterialNode->OutputPin(), false);
-		if (SourceMeshPin)
+		if (ParentMaterialNode)
 		{
-			const UCustomizableObjectNodeSkeletalMesh* MeshNode = Cast<UCustomizableObjectNodeSkeletalMesh>(SourceMeshPin->GetOwningNode());
-			if (MeshNode)
+			const UEdGraphPin* SourceMeshPin = FindMeshBaseSource(*ParentMaterialNode->OutputPin(), false);
+			if (SourceMeshPin)
 			{
-				if (ParentMaterialNode->GetLayouts().Num() > 0 && ParentMaterialNode->GetLayouts().IsValidIndex(CurrentNode->ParentLayoutIndex))
+				const UCustomizableObjectNodeSkeletalMesh* MeshNode = Cast<UCustomizableObjectNodeSkeletalMesh>(SourceMeshPin->GetOwningNode());
+				if (MeshNode)
 				{
-					MeshNode->GetUVChannelForPin(SourceMeshPin, UVs, CurrentNode->ParentLayoutIndex);
+					if (ParentMaterialNode->GetLayouts().Num() > 0 && ParentMaterialNode->GetLayouts().IsValidIndex(CurrentNode->ParentLayoutIndex))
+					{
+						MeshNode->GetUVChannelForPin(SourceMeshPin, UVs, CurrentNode->ParentLayoutIndex);
+					}
 				}
-			}
 
-			const UCustomizableObjectNodeTable* TableNode = Cast<UCustomizableObjectNodeTable>(SourceMeshPin->GetOwningNode());
-			if (TableNode)
-			{
-				if (ParentMaterialNode->GetLayouts().Num() > 0 && ParentMaterialNode->GetLayouts().IsValidIndex(CurrentNode->ParentLayoutIndex))
+				const UCustomizableObjectNodeTable* TableNode = Cast<UCustomizableObjectNodeTable>(SourceMeshPin->GetOwningNode());
+				if (TableNode)
 				{
-					TableNode->GetUVChannelForPin(SourceMeshPin, UVs, CurrentNode->ParentLayoutIndex);
+					if (ParentMaterialNode->GetLayouts().Num() > 0 && ParentMaterialNode->GetLayouts().IsValidIndex(CurrentNode->ParentLayoutIndex))
+					{
+						TableNode->GetUVChannelForPin(SourceMeshPin, UVs, CurrentNode->ParentLayoutIndex);
+					}
 				}
 			}
+		}
+		else
+		{
+			CurrentNode->BlockIds.Empty();
 		}
 	}
 
@@ -178,7 +186,7 @@ TSharedRef<SWidget> SCustomizableObjectNodeLayoutBlocksSelector::BuildLayoutTool
 		[
 			SNew(SBorder)
 			.Padding(0)
-			.BorderImage(FAppStyle::GetBrush("NoBorder"))
+			.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 			.IsEnabled( FSlateApplication::Get().GetNormalExecutionAttribute() )
 			[
 				LayoutToolbarBuilder.MakeWidget()
@@ -190,7 +198,7 @@ TSharedRef<SWidget> SCustomizableObjectNodeLayoutBlocksSelector::BuildLayoutTool
 
 void SCustomizableObjectNodeLayoutBlocksSelector::OnSelectAll()
 {
-	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = CurrentNode ? CurrentNode->GetParentMaterialNode() : nullptr;
+	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = CurrentNode ? CurrentNode->GetParentMaterialNodeIfPath() : nullptr;
 
 	if ( CurrentNode && ParentMaterialNode)
 	{
@@ -202,7 +210,7 @@ void SCustomizableObjectNodeLayoutBlocksSelector::OnSelectAll()
 
 			for( const FCustomizableObjectLayoutBlock& Block : Layout->Blocks )
 			{
-				CurrentNode->BlockIds.Add(Block.Id);
+				CurrentNode->BlockIds.AddUnique(Block.Id);
 			}
 
 			BlocksLabel->SetText(FText::FromString(FString::Printf(TEXT("%d blocks selected"), CurrentNode->BlockIds.Num())));
@@ -231,9 +239,9 @@ void SCustomizableObjectNodeLayoutBlocksSelector::OnSelectNone()
 FIntPoint SCustomizableObjectNodeLayoutBlocksSelector::GetGridSize() const
 {
 	FIntPoint Result(1, 1);
-	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = CurrentNode ? CurrentNode->GetParentMaterialNode() : nullptr;
+	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = CurrentNode ? CurrentNode->GetParentMaterialNodeIfPath() : nullptr;
 
-	if ( CurrentNode && ParentMaterialNode)
+	if (ParentMaterialNode)
 	{
 		TArray<UCustomizableObjectLayout*> Layouts = ParentMaterialNode->GetLayouts();
 
@@ -265,7 +273,7 @@ TArray<FCustomizableObjectLayoutBlock> SCustomizableObjectNodeLayoutBlocksSelect
 {
 	TArray<FCustomizableObjectLayoutBlock> Blocks;
 
-	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = CurrentNode ? CurrentNode->GetParentMaterialNode() : nullptr;
+	UCustomizableObjectNodeMaterialBase* ParentMaterialNode = CurrentNode ? CurrentNode->GetParentMaterialNodeIfPath() : nullptr;
 
 	if (ParentMaterialNode)
 	{

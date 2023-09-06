@@ -2,6 +2,7 @@
 
 #include "ControlRigAnimInstance.h"
 
+#include "Animation/AnimCurveUtils.h"
 #include "Animation/AnimNodeBase.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigAnimInstance)
@@ -23,10 +24,15 @@ bool FControlRigAnimInstanceProxy::Evaluate(FPoseContext& Output)
 	CSContext.Pose.InitPose(Output.Pose);
 
 	TArray<FCompactPoseBoneIndex> ModifiedBones;
-	for (TPair<int32, FTransform>& StoredTransform : StoredTransforms)
+	
+	const FBoneContainer& BoneContainer = Output.Pose.GetBoneContainer();
+	
+	for (TPair<FMeshPoseBoneIndex, FTransform>& StoredTransform : StoredTransforms)
 	{
-		const int32 BoneIndexToModify = StoredTransform.Key;
-		FCompactPoseBoneIndex CompactIndex = Output.Pose.GetBoneContainer().GetCompactPoseIndexFromSkeletonIndex(BoneIndexToModify);
+		const FMeshPoseBoneIndex& MeshPoseBoneIndexToModify = StoredTransform.Key;
+		FSkeletonPoseBoneIndex SkeletonPoseBoneIndex = BoneContainer.GetSkeletonPoseIndexFromMeshPoseIndex(MeshPoseBoneIndexToModify);
+		FCompactPoseBoneIndex CompactIndex = BoneContainer.GetCompactPoseIndexFromSkeletonPoseIndex(SkeletonPoseBoneIndex);
+		
 		if (CompactIndex.GetInt() != INDEX_NONE)
 		{
 			CSContext.Pose.SetComponentSpaceTransform(CompactIndex, StoredTransform.Value);
@@ -45,10 +51,9 @@ bool FControlRigAnimInstanceProxy::Evaluate(FPoseContext& Output)
 		Output.Pose[ModifiedBone] = CompactPose[ModifiedBone];
 	}
 
-	for (TPair<SmartName::UID_Type, float> Pair : StoredCurves)
-	{
-		Output.Curve.Set(Pair.Key, Pair.Value);
-	}
+	FBlendedCurve Curve;
+	UE::Anim::FCurveUtils::BuildUnsorted(Curve, StoredCurves);
+	Output.Curve.Combine(Curve);
 
 	return true;
 }

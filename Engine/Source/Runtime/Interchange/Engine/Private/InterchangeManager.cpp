@@ -5,11 +5,16 @@
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetDataTagMap.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#if WITH_EDITOR
+#include "AssetToolsModule.h"
+#endif
 #include "Async/Async.h"
 #include "CoreGlobals.h"
 #include "CoreMinimal.h"
 #include "Engine/Blueprint.h"
+#include "Engine/World.h"
 #include "EngineAnalytics.h"
+#include "EngineUtils.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "InterchangeAssetImportData.h"
 #include "InterchangeBlueprintPipelineBase.h"
@@ -26,6 +31,7 @@
 #include "Misc/AsyncTaskNotification.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Misc/DateTime.h"
 #include "Nodes/InterchangeBaseNodeContainer.h"
 #include "PackageUtils/PackageUtils.h"
 #include "Tasks/InterchangeTaskParsing.h"
@@ -43,7 +49,7 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeManager)
 
-static bool GInterchangeImportEnable = true;
+static bool GInterchangeImportEnable = false;
 static FAutoConsoleVariableRef CCvarInterchangeImportEnable(
 	TEXT("Interchange.FeatureFlags.Import.Enable"),
 	GInterchangeImportEnable,
@@ -59,11 +65,6 @@ namespace UE::Interchange::Private
 #else
 		return &LogInterchangeEngine;
 #endif
-	}
-
-	FInterchangeImportSettings& GetMutableImportSettings(UInterchangeProjectSettings& InterchangeProjectSettings, EImportType ImportType)
-	{
-		return const_cast<FInterchangeImportSettings&>(FInterchangeProjectSettingsUtils::GetImportSettings(InterchangeProjectSettings, ImportType == EImportType::ImportType_Scene));
 	}
 
 	void FillPipelineAnalyticData(UInterchangePipelineBase* Pipeline, const int32 UniqueId, const FString& ParentPipeline)
@@ -208,6 +209,174 @@ void UE::Interchange::FImportAsyncHelper::AddReferencedObjects(FReferenceCollect
 	Collector.AddReferencedObjects(CreatedFactories);
 }
 
+/*
+* // Created factories map, Key is factory node UID
+			mutable FCriticalSection CreatedFactoriesLock;
+			TMap<FString, UInterchangeFactoryBase*> CreatedFactories;
+*/
+
+//Create package map, Key is package name. We cannot create package asynchronously so we have to create a game thread task to do this
+UPackage* UE::Interchange::FImportAsyncHelper::GetCreatedPackage(const FString& PackageName) const
+{
+	FScopeLock Lock(&CreatedPackagesLock);
+	if (UPackage* const* PkgPtr = CreatedPackages.Find(PackageName))
+	{
+		return *PkgPtr;
+	}
+	return nullptr;
+}
+
+void UE::Interchange::FImportAsyncHelper::AddCreatedPackage(const FString& PackageName, UPackage* Package)
+{
+	FScopeLock Lock(&CreatedPackagesLock);
+	if (ensure(!CreatedPackages.Contains(PackageName)))
+	{
+		CreatedPackages.Add(PackageName, Package);
+	}
+}
+
+UInterchangeFactoryBase* UE::Interchange::FImportAsyncHelper::GetCreatedFactory(const FString& FactoryNodeUniqueId) const
+{
+	FScopeLock Lock(&CreatedFactoriesLock);
+	if (TObjectPtr<UInterchangeFactoryBase>const* FactoryPtr = CreatedFactories.Find(FactoryNodeUniqueId))
+	{
+		return *FactoryPtr;
+	}
+	return nullptr;
+}
+
+void UE::Interchange::FImportAsyncHelper::AddCreatedFactory(const FString& FactoryNodeUniqueId, UInterchangeFactoryBase* Factory)
+{
+	FScopeLock Lock(&CreatedFactoriesLock);
+	if (ensure(!CreatedFactories.Contains(FactoryNodeUniqueId)))
+	{
+		CreatedFactories.Add(FactoryNodeUniqueId, Factory);
+	}
+}
+
+UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& UE::Interchange::FImportAsyncHelper::AddDefaultImportedAssetGetRef(int32 SourceIndex)
+{
+	FScopeLock Lock(&ImportedAssetsPerSourceIndexLock);
+	return ImportedAssetsPerSourceIndex.FindOrAdd(SourceIndex).AddDefaulted_GetRef();
+}
+
+const UE::Interchange::FImportAsyncHelper::FImportedObjectInfo* UE::Interchange::FImportAsyncHelper::FindImportedAssets(int32 SourceIndex, TFunction< bool(const UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& ImportedObject) > Predicate) const
+{
+	FScopeLock Lock(&ImportedAssetsPerSourceIndexLock);
+	if (!ImportedAssetsPerSourceIndex.Contains(SourceIndex))
+	{
+		return nullptr;
+	}
+	const TArray<FImportedObjectInfo>& ImportedObjectInfos = ImportedAssetsPerSourceIndex.FindChecked(SourceIndex);
+	for (const FImportedObjectInfo& ImportObjectInfo : ImportedObjectInfos)
+	{
+		if (Predicate(ImportObjectInfo))
+		{
+			return &ImportObjectInfo;
+		}
+	}
+	return nullptr;
+}
+
+void UE::Interchange::FImportAsyncHelper::IterateImportedAssets(int32 SourceIndex, TFunction< void(const TArray<UE::Interchange::FImportAsyncHelper::FImportedObjectInfo>& ImportedObjects) > Callback) const
+{
+	FScopeLock Lock(&ImportedAssetsPerSourceIndexLock);
+	
+	if (!ImportedAssetsPerSourceIndex.Contains(SourceIndex))
+	{
+		return;
+	}
+
+	Callback(ImportedAssetsPerSourceIndex.FindChecked(SourceIndex));
+}
+
+void UE::Interchange::FImportAsyncHelper::IterateImportedAssetsPerSourceIndex(TFunction< void(int32 SourceIndex, const TArray<UE::Interchange::FImportAsyncHelper::FImportedObjectInfo>& ImportedObjects) > Callback) const
+{
+	FScopeLock Lock(&ImportedAssetsPerSourceIndexLock);
+	for (const TPair<int32, TArray<FImportedObjectInfo>>& SourceIndexAndImportedAssets : ImportedAssetsPerSourceIndex)
+	{
+		Callback(SourceIndexAndImportedAssets.Key, SourceIndexAndImportedAssets.Value);
+	}
+}
+
+UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& UE::Interchange::FImportAsyncHelper::AddDefaultImportedSceneObjectGetRef(int32 SourceIndex)
+{
+	FScopeLock Lock(&ImportedSceneObjectsPerSourceIndexLock);
+	return ImportedSceneObjectsPerSourceIndex.FindOrAdd(SourceIndex).AddDefaulted_GetRef();
+}
+
+const UE::Interchange::FImportAsyncHelper::FImportedObjectInfo* UE::Interchange::FImportAsyncHelper::FindImportedSceneObjects(int32 SourceIndex, TFunction< bool(const UE::Interchange::FImportAsyncHelper::FImportedObjectInfo& ImportedObject) > Predicate) const
+{
+	FScopeLock Lock(&ImportedSceneObjectsPerSourceIndexLock);
+	if (!ImportedSceneObjectsPerSourceIndex.Contains(SourceIndex))
+	{
+		return nullptr;
+	}
+	const TArray<FImportedObjectInfo>& ImportedObjectInfos = ImportedSceneObjectsPerSourceIndex.FindChecked(SourceIndex);
+	for (const FImportedObjectInfo& ImportObjectInfo : ImportedObjectInfos)
+	{
+		if (Predicate(ImportObjectInfo))
+		{
+			return &ImportObjectInfo;
+		}
+	}
+	return nullptr;
+}
+
+void UE::Interchange::FImportAsyncHelper::IterateImportedSceneObjects(int32 SourceIndex, TFunction< void(const TArray<UE::Interchange::FImportAsyncHelper::FImportedObjectInfo>& ImportedObjects) > Callback) const
+{
+	FScopeLock Lock(&ImportedSceneObjectsPerSourceIndexLock);
+
+	if (!ImportedSceneObjectsPerSourceIndex.Contains(SourceIndex))
+	{
+		return;
+	}
+
+	Callback(ImportedSceneObjectsPerSourceIndex.FindChecked(SourceIndex));
+}
+
+void UE::Interchange::FImportAsyncHelper::IterateImportedSceneObjectsPerSourceIndex(TFunction< void(int32 SourceIndex, const TArray<UE::Interchange::FImportAsyncHelper::FImportedObjectInfo>& ImportedObjects) > Callback) const
+{
+	FScopeLock Lock(&ImportedSceneObjectsPerSourceIndexLock);
+	for (const TPair<int32, TArray<FImportedObjectInfo>>& SourceIndexAndImportedSceneObjects : ImportedSceneObjectsPerSourceIndex)
+	{
+		Callback(SourceIndexAndImportedSceneObjects.Key, SourceIndexAndImportedSceneObjects.Value);
+	}
+}
+
+bool UE::Interchange::FImportAsyncHelper::IsImportingObject(UObject* Object) const
+{
+	if (!Object)
+	{
+		return false;
+	}
+
+	bool bFoundAsset = false;
+	auto IsImportingAsset = [&bFoundAsset, Object](int32 SourceIndex, const TArray<FImportedObjectInfo>& ImportedObjects)
+	{
+		if (bFoundAsset)
+		{
+			return;
+		}
+		for (const FImportedObjectInfo& ImportedObjectInfo : ImportedObjects)
+		{
+			if (ImportedObjectInfo.ImportedObject == Object)
+			{
+				bFoundAsset = true;
+				break;
+			}
+		}
+	};
+	//Asset import
+	IterateImportedAssetsPerSourceIndex(IsImportingAsset);
+	if (!bFoundAsset)
+	{
+		IterateImportedSceneObjectsPerSourceIndex(IsImportingAsset);
+	}
+
+	return bFoundAsset;
+}
+
 void UE::Interchange::FImportAsyncHelper::SendAnalyticImportEndData()
 {
 	if (!FEngineAnalytics::IsAvailable())
@@ -310,8 +479,9 @@ FGraphEventArray UE::Interchange::FImportAsyncHelper::GetCompletionTaskGraphEven
 	FTaskGraphInterface::Get().WaitUntilTasksComplete(TasksToComplete, ENamedThreads::GameThread);
 	TasksToComplete.Reset();
 
-	TasksToComplete.Append(CreatePackageTasks);
-	TasksToComplete.Append(CreateAssetTasks);
+	TasksToComplete.Append(BeginImportObjectTasks);
+	TasksToComplete.Append(ImportObjectTasks);
+	TasksToComplete.Append(FinalizeImportObjectTasks);
 	TasksToComplete.Append(SceneTasks);
 	TasksToComplete.Append(PipelinePostImportTasks);
 
@@ -375,7 +545,7 @@ void UE::Interchange::FImportAsyncHelper::CleanUp()
 	}
 	Pipelines.Empty();
 
-	for (const TPair<FString, UInterchangeFactoryBase*>& FactoryKeyAndValue : CreatedFactories)
+	for (const auto& FactoryKeyAndValue : CreatedFactories)
 	{
 		if (FactoryKeyAndValue.Value)
 		{
@@ -384,6 +554,24 @@ void UE::Interchange::FImportAsyncHelper::CleanUp()
 		}
 	}
 	CreatedFactories.Empty();
+
+
+	for (TObjectIterator<UInterchangePipelineBase> PipelinesItr;PipelinesItr;++PipelinesItr)
+	{
+		const FString PackageName = PipelinesItr->GetPackage()->GetName();
+		if (PipelineInstancesPackageName == PackageName)
+		{
+			PipelinesItr->RemoveFromRoot();
+			PipelinesItr->MarkAsGarbage();
+		}
+	}
+
+	if (UPackage* PipelineInstancesPackage = FindPackage(nullptr, *PipelineInstancesPackageName))
+	{
+		PipelineInstancesPackage->ClearFlags(RF_Public| RF_Standalone| RF_Transactional);
+		PipelineInstancesPackage->SetFlags(RF_Transient);
+		PipelineInstancesPackage->MarkAsGarbage();
+	}
 }
 
 UE::Interchange::FImportResult::FImportResult()
@@ -474,7 +662,7 @@ void UE::Interchange::FImportResult::WaitUntilDone()
 const TArray< UObject* >& UE::Interchange::FImportResult::GetImportedObjects() const
 {
 	FReadScopeLock ReadScopeLock(ImportedObjectsRWLock);
-	return ImportedObjects;
+	return ObjectPtrDecay(ImportedObjects);
 }
 
 UObject* UE::Interchange::FImportResult::GetFirstAssetOfClass(UClass* InClass) const
@@ -534,7 +722,8 @@ void UE::Interchange::FImportResult::AddReferencedObjects(FReferenceCollector& C
 
 void UE::Interchange::SanitizeObjectPath(FString& ObjectPath)
 {
-	const TCHAR* InvalidChar = INVALID_OBJECTPATH_CHARACTERS;
+	const TCHAR* InvalidChar = INVALID_OBJECTPATH_CHARACTERS INVALID_LONGPACKAGE_CHARACTERS;
+
 	while (*InvalidChar)
 	{
 		ObjectPath.ReplaceCharInline(*InvalidChar, TCHAR('_'), ESearchCase::CaseSensitive);
@@ -552,8 +741,19 @@ void UE::Interchange::SanitizeObjectName(FString& ObjectName)
 	}
 }
 
-UInterchangePipelineBase* UE::Interchange::GeneratePipelineInstance(const FSoftObjectPath& PipelineInstance)
+UInterchangePipelineBase* UE::Interchange::GeneratePipelineInstanceInSourceAssetPackage(const FSoftObjectPath& SourcePipeline)
 {
+	FString PackageName = FPackageUtils::ExtractPackageName(SourcePipeline.ToString());
+	UPackage* TargetPackage = FindPackage(nullptr, *PackageName);
+	return GeneratePipelineInstance(SourcePipeline, TargetPackage);
+}
+
+UInterchangePipelineBase* UE::Interchange::GeneratePipelineInstance(const FSoftObjectPath& PipelineInstance, UPackage* PipelineInstancePackage /*= nullptr*/)
+{
+	if (!PipelineInstancePackage)
+	{
+		PipelineInstancePackage = GetTransientPackage();
+	}
 	UObject* ReferenceInstance = PipelineInstance.TryLoad();
 	if (!ReferenceInstance)
 	{
@@ -564,7 +764,7 @@ UInterchangePipelineBase* UE::Interchange::GeneratePipelineInstance(const FSoftO
 	{
 		if (BlueprintPipeline->GeneratedClass.Get())
 		{
-			GeneratedPipeline = NewObject<UInterchangePipelineBase>(GetTransientPackage(), BlueprintPipeline->GeneratedClass);
+			GeneratedPipeline = NewObject<UInterchangePipelineBase>(PipelineInstancePackage, BlueprintPipeline->GeneratedClass);
 		}
 		else
 		{
@@ -576,7 +776,7 @@ UInterchangePipelineBase* UE::Interchange::GeneratePipelineInstance(const FSoftO
 	{
 		if (PythonPipeline->GeneratedPipeline)
 		{
-			GeneratedPipeline = DuplicateObject<UInterchangePipelineBase>(PythonPipeline->GeneratedPipeline.Get(), GetTransientPackage());
+			GeneratedPipeline = DuplicateObject<UInterchangePipelineBase>(PythonPipeline->GeneratedPipeline.Get(), PipelineInstancePackage);
 		}
 		else
 		{
@@ -586,17 +786,35 @@ UInterchangePipelineBase* UE::Interchange::GeneratePipelineInstance(const FSoftO
 	}
 	else if (const UInterchangePipelineBase* DefaultPipeline = Cast<UInterchangePipelineBase>(ReferenceInstance))
 	{
-		GeneratedPipeline = DuplicateObject<UInterchangePipelineBase>(DefaultPipeline, GetTransientPackage());
+		GeneratedPipeline = DuplicateObject<UInterchangePipelineBase>(DefaultPipeline, PipelineInstancePackage);
 	}
 	else
 	{
 		UE_LOG(LogInterchangeEngine, Error, TEXT("Cannot generate a pipeline instance because the pipeline asset %s type is unknown."), *PipelineInstance.GetWithoutSubPath().ToString());
 	}
 
-	// Make sure that the instance does not carry over standalone and public flags as they are not actual assets to be persisted
-	GeneratedPipeline->ClearFlags(EObjectFlags::RF_Standalone|EObjectFlags::RF_Public);
+	if(GeneratedPipeline)
+	{
+		// Make sure that the instance does not carry over standalone and public flags as they are not actual assets to be persisted
+		GeneratedPipeline->ClearFlags(EObjectFlags::RF_Standalone|EObjectFlags::RF_Public);
+	}
 
 	return GeneratedPipeline;
+}
+
+void UInterchangePipelineStackOverride::AddPythonPipeline(UInterchangePythonPipelineBase* PipelineBase)
+{
+	OverridePipelines.Add(PipelineBase);
+}
+
+void UInterchangePipelineStackOverride::AddBlueprintPipeline(UInterchangeBlueprintPipelineBase* PipelineBase)
+{
+	OverridePipelines.Add(PipelineBase);
+}
+
+void UInterchangePipelineStackOverride::AddPipeline(UInterchangePipelineBase* PipelineBase)
+{
+	OverridePipelines.Add(PipelineBase);
 }
 
 UInterchangeManager& UInterchangeManager::GetInterchangeManager()
@@ -634,16 +852,40 @@ UInterchangeManager& UInterchangeManager::GetInterchangeManager()
 		check(IsInGameThread() && GetTransientPackage());
 
 		InterchangeManager = TStrongObjectPtr<UInterchangeManager>(NewObject<UInterchangeManager>(GetTransientPackage(), NAME_None, EObjectFlags::RF_NoFlags));
-		
+
+		InterchangeManager->GCEndDelegate = FCoreUObjectDelegates::GetPostGarbageCollect().AddLambda([]()
+			{
+				if (IsInterchangeImportEnabled())
+				{
+					InterchangeManager->StartQueuedTasks(InterchangeManager->bGCEndDelegateCancellAllTask);
+				}
+			});
+
 		//We cancel any running task when we pre exit the engine
 		FCoreDelegates::OnEnginePreExit.AddLambda([]()
 		{
-			//If a user run a editor commandlet, we want to finish the import before the editor close.
-			//In editor mode, the user cannot close the editor if an import task is running, so we should not endup here.
-			const bool bCancel = !GIsEditor;
-			//Synchronously wait all task to finish
-			InterchangeManager->WaitUntilAllTasksDone(bCancel);
+			//InterchangeManager should be valid at this point since this lambda is where the strong reference pointer get reset.
+			if (!ensure(InterchangeManager.IsValid()))
+			{
+				InterchangeManagerScopeOfLifeEnded = true;
+				return;
+			}
 
+			if (IsInterchangeImportEnabled())
+			{
+				//If a user run a editor commandlet, we want to finish the import before the editor close.
+				//In editor mode, the user cannot close the editor if an import task is running, so we should not endup here.
+				const bool bCancel = !GIsEditor;
+				//Synchronously wait all task to finish
+				InterchangeManager->WaitUntilAllTasksDone(bCancel);
+			}
+
+			//Remove any delegate
+			if (InterchangeManager->GCEndDelegate.IsValid())
+			{
+				FCoreUObjectDelegates::GetPostGarbageCollect().Remove(InterchangeManager->GCEndDelegate);
+				InterchangeManager->GCEndDelegate.Reset();
+			}
 			//Task should have been cancel in the Engine pre exit callback
 			ensure(InterchangeManager->ImportTasks.Num() == 0);
 			InterchangeManager->OnPreDestroyInterchangeManager.Broadcast();
@@ -807,6 +1049,14 @@ bool UInterchangeManager::CanTranslateSourceData(const UInterchangeSourceData* S
 	{
 		return false;
 	}
+#if WITH_EDITOR
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
+	const FString Extension = FPaths::GetExtension(SourceData->GetFilename());
+	if (!AssetTools.IsImportExtensionAllowed(Extension))
+	{
+		return false;
+	}
+#endif
 
 	return GetTranslatorForSourceData(SourceData) != nullptr;
 }
@@ -846,7 +1096,7 @@ bool UInterchangeManager::CanReimport(const UObject* Object, TArray<FString>& Ou
 
 void UInterchangeManager::StartQueuedTasks(bool bCancelAllTasks /*= false*/)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE("UInterchangeManager::StartQueuedTasks")
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("UInterchangeManager::StartQueuedTasks")
 	ensure(IsInterchangeImportEnabled());
 	if (!ensure(IsInGameThread()))
 	{
@@ -854,8 +1104,29 @@ void UInterchangeManager::StartQueuedTasks(bool bCancelAllTasks /*= false*/)
 		return;
 	}
 
-	auto UpdateNotification = [this]()
+	//Garbage collect can stall and tick the task graph (if accessing a compiling asset locked UProperty )
+	//We must avoid starting an import task in this case, import cannot be done when GC runs.
+	//A delegate is implemented and call StartQueuedTasks when the GC is finish
+	if(IsGarbageCollecting())
 	{
+		if (bCancelAllTasks)
+		{
+			bGCEndDelegateCancellAllTask = bCancelAllTasks;
+		}
+		return;
+	}
+
+	bGCEndDelegateCancellAllTask = false;
+
+	uint64 LastNotificationFrame = 0;
+	auto UpdateNotification = [this, &LastNotificationFrame]()
+	{
+		if (LastNotificationFrame == GFrameCounter)
+		{
+			return;
+		}
+		LastNotificationFrame = GFrameCounter;
+
 		if (Notification.IsValid())
 		{
 			int32 ImportTaskNumber = ImportTasks.Num() + QueueTaskCount;
@@ -886,11 +1157,11 @@ void UInterchangeManager::StartQueuedTasks(bool bCancelAllTasks /*= false*/)
 				FText TitleText = NSLOCTEXT("Interchange", "Asynchronous_import_start", "Importing");
 				FAsyncTaskNotificationConfig NotificationConfig;
 				NotificationConfig.bIsHeadless = false;
-				NotificationConfig.bKeepOpenOnFailure = true;
 				NotificationConfig.TitleText = TitleText;
 				NotificationConfig.LogCategory = UE::Interchange::Private::GetLogInterchangePtr();
 				NotificationConfig.bCanCancel.Set(true);
-				NotificationConfig.bKeepOpenOnFailure.Set(true);
+				NotificationConfig.bKeepOpenOnSuccess.Set(false);
+				NotificationConfig.bKeepOpenOnFailure.Set(false);
 
 				Notification = MakeShared<FAsyncTaskNotification>(NotificationConfig);
 				Notification->SetNotificationState(FAsyncNotificationStateData(TitleText, FText::GetEmpty(), EAsyncTaskNotificationState::Pending));
@@ -899,8 +1170,10 @@ void UInterchangeManager::StartQueuedTasks(bool bCancelAllTasks /*= false*/)
 	};
 
 
-	//Hack, import the jobs one by one
-	const int32 MaxNumWorker = 1;
+	//We need to leave some free task in the pool to avoid deadlock.
+	//Each import can use 2 tasks in same time if the build of the asset ddc use the same task pool (i.e. staticmesh, skeletalmesh, texture...)
+	const int32 PoolWorkerThreadCount = FTaskGraphInterface::Get().GetNumWorkerThreads() / 2;
+	const int32 MaxNumWorker = FMath::Max(PoolWorkerThreadCount, 1);
 	while (!QueuedTasks.IsEmpty() && (ImportTasks.Num() < MaxNumWorker || bCancelAllTasks))
 	{
 		FQueuedTaskData QueuedTaskData;
@@ -984,6 +1257,7 @@ UE::Interchange::FAssetImportResultRef UInterchangeManager::ImportAssetAsync(con
 bool UInterchangeManager::ImportScene(const FString& ContentPath, const UInterchangeSourceData* SourceData, const FImportAssetParameters& ImportAssetParameters)
 {
 	using namespace UE::Interchange;
+
 	TTuple<FAssetImportResultRef, FSceneImportResultRef> ImportResults = ImportInternal(ContentPath, SourceData, ImportAssetParameters, UE::Interchange::EImportType::ImportType_Scene);
 	
 	ImportResults.Get<0>()->WaitUntilDone();
@@ -1049,17 +1323,26 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 		return EarlyExit();
 	}
 	
+	{
+		const UInterchangeTranslatorBase* Translator = GetTranslatorForSourceData(SourceData);
+		if(!Translator)
+		{
+			UE_LOG(LogInterchangeEngine, Error, TEXT("Cannot import file, the source data is not supported. See if you can enable for interchange the extension [%s]"), *FPaths::GetExtension(SourceData->GetFilename()));
+			return EarlyExit();
+		}
+	}
+
 	if (FEngineAnalytics::IsAvailable())
 	{
 		Attribs.Add(FAnalyticsEventAttribute(TEXT("SourceExtension"), FPaths::GetExtension(SourceData->GetFilename())));
 	}
 
-	const bool bImportScene = ImportType == UE::Interchange::EImportType::ImportType_Scene;
+	bool bImportScene = ImportType == UE::Interchange::EImportType::ImportType_Scene;
 	const FInterchangeImportSettings& InterchangeImportSettings = FInterchangeProjectSettingsUtils::GetDefaultImportSettings(bImportScene);
 	
 	if (InterchangeImportSettings.PipelineStacks.Num() == 0)
 	{
-		UE_LOG(LogInterchangeEngine, Error, TEXT("Cannot import file, there is no pipeline stack define for %s import type. File path %s"), bImportScene ? TEXT("scene") : TEXT("content"));
+		UE_LOG(LogInterchangeEngine, Error, TEXT("Cannot import file, there is no pipeline stack define for %s import type"), bImportScene ? TEXT("scene") : TEXT("content"));
 		return EarlyExit();
 	}
 	
@@ -1073,33 +1356,28 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 		MutableInterchangeImportSettings.DefaultPipelineStack = Keys[0];
 	}
 
-	UInterchangeAssetImportData* OriginalAssetImportData = nullptr;
+	UInterchangeAssetImportData* OriginalAssetImportData = UInterchangeAssetImportData::GetFromObject(ImportAssetParameters.ReimportAsset);
 	FString PackageBasePath = ContentPath;
-	if(!ImportAssetParameters.ReimportAsset)
+	if (!ImportAssetParameters.ReimportAsset)
 	{
 		UE::Interchange::SanitizeObjectPath(PackageBasePath);
 	}
 	else
 	{
 		PackageBasePath = FPaths::GetPath(ImportAssetParameters.ReimportAsset->GetPathName());
-		TArray<UObject*> SubObjects;
-		GetObjectsWithOuter(ImportAssetParameters.ReimportAsset, SubObjects);
-		for (UObject* SubObject : SubObjects)
-		{
-			OriginalAssetImportData = Cast<UInterchangeAssetImportData>(SubObject);
-			if(OriginalAssetImportData)
-			{
-				break;
-			}
-		}
 	}
+
+	const bool bIsReimport = OriginalAssetImportData && OriginalAssetImportData->GetPipelines().Num() > 0;
+
 	bool bImportAborted = false; // True when we're unable to go through with the import process
 
 	//Create a task for every source data
 	UE::Interchange::FImportAsyncHelperData TaskData;
 	TaskData.bIsAutomated = ImportAssetParameters.bIsAutomated;
+	TaskData.bFollowRedirectors = ImportAssetParameters.bFollowRedirectors;
 	TaskData.ImportType = ImportType;
 	TaskData.ReimportObject = ImportAssetParameters.ReimportAsset;
+
 	TSharedRef<UE::Interchange::FImportAsyncHelper, ESPMode::ThreadSafe> AsyncHelper = CreateAsyncHelper(TaskData, ImportAssetParameters);
 	AsyncHelper->UniqueId = UniqueId;
 
@@ -1137,23 +1415,32 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 		}
 	}
 #endif
-
-	const bool bIsReimport = OriginalAssetImportData && OriginalAssetImportData->Pipelines.Num() > 0;
-	auto AdjustPipelineSettingForContext = [bImportScene, bIsReimport, ImportAssetParameters](UInterchangePipelineBase* Pipeline)
+	
+	auto AdjustPipelineSettingForContext = [bIsReimport, bImportScene, &TaskData](UInterchangePipelineBase* Pipeline)
 	{
 		EInterchangePipelineContext Context;
-		UObject* ReimportObject = nullptr;
 		if (bIsReimport)
 		{
 			Context = bImportScene ? EInterchangePipelineContext::SceneReimport : EInterchangePipelineContext::AssetReimport;
-			ReimportObject = ImportAssetParameters.ReimportAsset;
 		}
 		else
 		{
 			Context = bImportScene ? EInterchangePipelineContext::SceneImport : EInterchangePipelineContext::AssetImport;
 		}
-		Pipeline->AdjustSettingsForContext(Context, ReimportObject);
+
+		Pipeline->AdjustSettingsForContext(Context, TaskData.ReimportObject);
 	};
+
+	// Use counter to guarantee uniqueness of packages on each call to ImportInternal
+	static uint64 ImportCounter = 0;
+	static FString TransientPackageBasePath = GetTransientPackage()->GetPathName();
+
+	const FString PackageName = FString::Printf(TEXT("InterchangePipelinePackage-%llu"), ++ImportCounter);
+	AsyncHelper->PipelineInstancesPackageName = TransientPackageBasePath / PackageName;
+
+	UPackage* PipelineInstancesPackage = CreatePackage(*AsyncHelper->PipelineInstancesPackageName);
+	PipelineInstancesPackage->ClearFlags(RF_Public | RF_Standalone);
+	PipelineInstancesPackage->SetPackageFlags(PKG_NewlyCreated);
 
 	if ( ImportAssetParameters.OverridePipelines.Num() == 0 )
 	{
@@ -1185,43 +1472,72 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 		{
 			FInterchangeStackInfo& StackInfo = PipelineStacks.AddDefaulted_GetRef();
 			StackInfo.StackName = ReimportPipelineName;
-			for (int32 PipelineIndex = 0; PipelineIndex < OriginalAssetImportData->Pipelines.Num(); ++PipelineIndex)
+
+			TArray<UObject*> Pipelines = OriginalAssetImportData->GetPipelines();
+			for (UObject* CurrentPipeline : Pipelines)
 			{
-				UInterchangePipelineBase* SourcePipeline = Cast<UInterchangePipelineBase>(OriginalAssetImportData->Pipelines[PipelineIndex]);
+				UInterchangePipelineBase* SourcePipeline = Cast<UInterchangePipelineBase>(CurrentPipeline);
 				if (!SourcePipeline)
 				{
-					if (UInterchangePythonPipelineAsset* PythonPipelineAsset = Cast<UInterchangePythonPipelineAsset>(OriginalAssetImportData->Pipelines[PipelineIndex]))
+					if (UInterchangePythonPipelineAsset* PythonPipelineAsset = Cast<UInterchangePythonPipelineAsset>(CurrentPipeline))
 					{
 						SourcePipeline = PythonPipelineAsset->GeneratedPipeline;
 					}
 				}
-				if (SourcePipeline) //Its possible a pipeline doesnt exist anymore so it wont load into memory when we loading the outer asset
+				if (SourcePipeline && SourcePipeline->SupportReimport()) //Its possible a pipeline doesnt exist anymore so it wont load into memory when we loading the outer asset
 				{
 					//Duplicate the pipeline saved in the asset import data
-					UInterchangePipelineBase* GeneratedPipeline = Cast<UInterchangePipelineBase>(StaticDuplicateObject(SourcePipeline, GetTransientPackage()));
+					UInterchangePipelineBase* GeneratedPipeline = Cast<UInterchangePipelineBase>(StaticDuplicateObject(SourcePipeline, PipelineInstancesPackage));
 					// Make sure that the instance does not carry over standalone and public flags as they are not actual assets to be persisted
 					GeneratedPipeline->ClearFlags(EObjectFlags::RF_Standalone | EObjectFlags::RF_Public);
 					AdjustPipelineSettingForContext(GeneratedPipeline);
 					StackInfo.Pipelines.Add(GeneratedPipeline);
 				}
-				else
+				else if(!SourcePipeline)
 				{
 					//A pipeline was not loaded
 					UE_LOG(LogInterchangeEngine, Warning, TEXT("Interchange Reimport: Missing import pipeline from the reimpoting asset. The reimport might fail."));
 				}
 			}
 		}
-		for (const TPair<FName, FInterchangePipelineStack>& PipelineStackInfo : DefaultPipelineStacks)
+
 		{
-			FName StackName = PipelineStackInfo.Key;
-			FInterchangeStackInfo& StackInfo = PipelineStacks.AddDefaulted_GetRef();
-			StackInfo.StackName = StackName;
-			for (int32 PipelineIndex = 0; PipelineIndex < PipelineStackInfo.Value.Pipelines.Num(); ++PipelineIndex)
+			UE::Interchange::FScopedTranslator ScopedTranslator(SourceData);
+			const UInterchangeTranslatorBase* Translator = ScopedTranslator.GetTranslator();
+
+			for (const TPair<FName, FInterchangePipelineStack>& PipelineStackInfo : DefaultPipelineStacks)
 			{
-				if (UInterchangePipelineBase* GeneratedPipeline = UE::Interchange::GeneratePipelineInstance(PipelineStackInfo.Value.Pipelines[PipelineIndex]))
+				FName StackName = PipelineStackInfo.Key;
+				FInterchangeStackInfo& StackInfo = PipelineStacks.AddDefaulted_GetRef();
+				StackInfo.StackName = StackName;
+
+				const FInterchangePipelineStack& PipelineStack = PipelineStackInfo.Value;
+				const TArray<FSoftObjectPath>* Pipelines = &PipelineStack.Pipelines;
+
+				// If applicable, check to see if a specific pipeline stack is associated with this translator
+				for (const FInterchangeTranslatorPipelines& TranslatorPipelines : PipelineStack.PerTranslatorPipelines)
 				{
-					AdjustPipelineSettingForContext(GeneratedPipeline);
-					StackInfo.Pipelines.Add(GeneratedPipeline);
+					const UClass* TranslatorClass = TranslatorPipelines.Translator.LoadSynchronous();
+					if (Translator->IsA(TranslatorClass))
+					{
+						Pipelines = &TranslatorPipelines.Pipelines;
+						break;
+					}
+				}
+
+				for (int32 PipelineIndex = 0; PipelineIndex < Pipelines->Num(); ++PipelineIndex)
+				{
+					if (UInterchangePipelineBase* GeneratedPipeline = UE::Interchange::GeneratePipelineInstance((*Pipelines)[PipelineIndex], PipelineInstancesPackage))
+					{
+						if (bShowPipelineStacksConfigurationDialog)
+						{
+							FString CurrentName = GeneratedPipeline->GetName();
+							FString NewName = FString::Printf(TEXT("%s_%s"), *StackName.ToString(), *CurrentName);
+							ensure(GeneratedPipeline->Rename(*NewName, nullptr, REN_DoNotDirty | REN_NonTransactional));
+						}
+						AdjustPipelineSettingForContext(GeneratedPipeline);
+						StackInfo.Pipelines.Add(GeneratedPipeline);
+					}
 				}
 			}
 		}
@@ -1282,6 +1598,14 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 				{
 					//When we do not show the UI we use the original stack
 					OutPipelines = StackInfoPtr->Pipelines;
+					if (bImportAllWithDefault)
+					{
+						//When the user want to use the same settings for all source data we just need to load the settings save by the initial dialog
+						for (UInterchangePipelineBase* Pipeline : OutPipelines)
+						{
+							Pipeline->LoadSettings(DefaultStackName);
+						}
+					}
 				}
 				else if (PipelineStacks.Num() > 0)
 				{
@@ -1327,8 +1651,8 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 	{
 		for (int32 GraphPipelineIndex = 0; GraphPipelineIndex < ImportAssetParameters.OverridePipelines.Num(); ++GraphPipelineIndex)
 		{
-			UInterchangePipelineBase* OverridePipeline = ImportAssetParameters.OverridePipelines[GraphPipelineIndex];
-			if (!OverridePipeline)
+			UInterchangePipelineBase* GeneratedPipeline = UE::Interchange::GeneratePipelineInstance(ImportAssetParameters.OverridePipelines[GraphPipelineIndex], PipelineInstancesPackage);
+			if (!GeneratedPipeline)
 			{
 				UE_LOG(LogInterchangeEngine, Error, TEXT("Interchange import: Override pipeline array contains a NULL pipeline. Script or code need to be fix to avoid this. "));
 				continue;
@@ -1336,7 +1660,6 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 			else
 			{
 				// Duplicate the override pipelines to protect the scripted users form making race conditions
-				UInterchangePipelineBase* GeneratedPipeline = DuplicateObject<UInterchangePipelineBase>(OverridePipeline, GetTransientPackage());
 				AdjustPipelineSettingForContext(GeneratedPipeline);
 				AsyncHelper->Pipelines.Add(GeneratedPipeline);
 				AsyncHelper->OriginalPipelines.Add(GeneratedPipeline);
@@ -1370,9 +1693,32 @@ UInterchangeManager::ImportInternal(const FString& ContentPath, const UInterchan
 	return TTuple<UE::Interchange::FAssetImportResultRef, UE::Interchange::FSceneImportResultRef>{ AsyncHelper->AssetImportResult, AsyncHelper->SceneImportResult };
 }
 
+bool UInterchangeManager::IsObjectBeingImported(UObject* Object) const
+{
+	if (!ensure(IsInGameThread()))
+	{
+		return false;
+	}
+
+	for (const TSharedPtr < UE::Interchange::FImportAsyncHelper, ESPMode::ThreadSafe>& AsyncHelper : ImportTasks)
+	{
+		if (AsyncHelper->IsImportingObject(Object))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool UInterchangeManager::IsInterchangeImportEnabled()
 {
 	return CCvarInterchangeImportEnable->GetBool();
+}
+
+void UInterchangeManager::SetInterchangeImportEnabled(bool bEnabled)
+{
+	CCvarInterchangeImportEnable->Set(bEnabled);
 }
 
 bool UInterchangeManager::ExportAsset(const UObject* Asset, bool bIsAutomated)
@@ -1388,7 +1734,7 @@ bool UInterchangeManager::ExportScene(const UObject* World, bool bIsAutomated)
 UInterchangeSourceData* UInterchangeManager::CreateSourceData(const FString& InFileName)
 {
 	UInterchangeSourceData* SourceDataAsset = NewObject<UInterchangeSourceData>(GetTransientPackage(), NAME_None);
-	if(!InFileName.IsEmpty())
+	if(!InFileName.IsEmpty() && SourceDataAsset)
 	{
 		SourceDataAsset->SetFilename(InFileName);
 	}
@@ -1442,7 +1788,7 @@ void UInterchangeManager::ReleaseAsyncHelper(TWeakPtr<UE::Interchange::FImportAs
 
 	check(AsyncHelper.IsValid());
 	
-	constexpr bool bLogWarningsAndErrors = true;
+	constexpr bool bLogWarningsAndErrors = false;
 
 	bool bSucceeded = false;
 	{

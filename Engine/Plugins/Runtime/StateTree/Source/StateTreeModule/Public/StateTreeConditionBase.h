@@ -3,11 +3,10 @@
 #pragma once
 
 #include "StateTreeNodeBase.h"
+#include "StateTreeExecutionTypes.h"
 #include "StateTreeConditionBase.generated.h"
 
-struct FStateTreeEditorPropertyPath;
 struct FStateTreeExecutionContext;
-struct IStateTreeBindingLookup;
 
 enum class EStateTreeCompare : uint8
 {
@@ -22,18 +21,6 @@ USTRUCT(meta = (Hidden))
 struct STATETREEMODULE_API FStateTreeConditionBase : public FStateTreeNodeBase
 {
 	GENERATED_BODY()
-
-#if WITH_EDITOR
-	/**
-	 * Called when binding of any of the properties in the condition changes.
-	 * @param ID ID of the item, can be used make property paths to this item.
-	 * @param InstanceData view to the instance data, can be struct or class. 
-	 * @param SourcePath Source path of the new binding.
-	 * @param TargetPath Target path of the new binding (the property in the condition).
-	 * @param BindingLookup Reference to binding lookup which can be used to reason about property paths.
-	 */
-	virtual void OnBindingChanged(const FGuid& ID, FStateTreeDataView InstanceData, const FStateTreeEditorPropertyPath& SourcePath, const FStateTreeEditorPropertyPath& TargetPath, const IStateTreeBindingLookup& BindingLookup) {}
-#endif
 	
 	/** @return True if the condition passes. */
 	virtual bool TestCondition(FStateTreeExecutionContext& Context) const { return false; }
@@ -43,6 +30,9 @@ struct STATETREEMODULE_API FStateTreeConditionBase : public FStateTreeNodeBase
 
 	UPROPERTY()
 	int8 DeltaIndent = 0;
+
+	UPROPERTY()
+	EStateTreeConditionEvaluationMode EvaluationMode = EStateTreeConditionEvaluationMode::Evaluated;
 };
 
 /**

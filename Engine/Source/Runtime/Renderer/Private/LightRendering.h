@@ -35,17 +35,15 @@ extern uint32 GetShadowQuality();
 
 extern float GetLightFadeFactor(const FSceneView& View, const FLightSceneProxy* Proxy);
 
-extern FDeferredLightUniformStruct GetDeferredLightParameters(const FSceneView& View, const FLightSceneInfo& LightSceneInfo);
+extern FDeferredLightUniformStruct GetDeferredLightParameters(const FSceneView& View, const FLightSceneInfo& LightSceneInfo, uint32 LightFlags=0);
 
-template<typename ShaderRHIParamRef>
-void SetDeferredLightParameters(
-	FRHICommandList& RHICmdList, 
-	const ShaderRHIParamRef ShaderRHI, 
+inline void SetDeferredLightParameters(
+	FRHIBatchedShaderParameters& BatchedParameters,
 	const TShaderUniformBufferParameter<FDeferredLightUniformStruct>& DeferredLightUniformBufferParameter, 
 	const FLightSceneInfo* LightSceneInfo,
 	const FSceneView& View)
 {
-	SetUniformBufferParameterImmediate(RHICmdList, ShaderRHI, DeferredLightUniformBufferParameter, GetDeferredLightParameters(View, *LightSceneInfo));
+	SetUniformBufferParameterImmediate(BatchedParameters, DeferredLightUniformBufferParameter, GetDeferredLightParameters(View, *LightSceneInfo));
 }
 
 extern FDeferredLightUniformStruct GetSimpleDeferredLightParameters(
@@ -53,17 +51,15 @@ extern FDeferredLightUniformStruct GetSimpleDeferredLightParameters(
 	const FSimpleLightEntry& SimpleLight,
 	const FSimpleLightPerViewEntry &SimpleLightPerViewData);
 
-template<typename ShaderRHIParamRef>
-void SetSimpleDeferredLightParameters(
-	FRHICommandList& RHICmdList, 
-	const ShaderRHIParamRef ShaderRHI, 
+inline void SetSimpleDeferredLightParameters(
+	FRHIBatchedShaderParameters& BatchedParameters,
 	const TShaderUniformBufferParameter<FDeferredLightUniformStruct>& DeferredLightUniformBufferParameter, 
 	const FSimpleLightEntry& SimpleLight,
 	const FSimpleLightPerViewEntry &SimpleLightPerViewData,
 	const FSceneView& View)
 {
 	FDeferredLightUniformStruct DeferredLightUniformsValue = GetSimpleDeferredLightParameters(View, SimpleLight, SimpleLightPerViewData);
-	SetUniformBufferParameterImmediate(RHICmdList, ShaderRHI, DeferredLightUniformBufferParameter, DeferredLightUniformsValue);
+	SetUniformBufferParameterImmediate(BatchedParameters, DeferredLightUniformBufferParameter, DeferredLightUniformsValue);
 }
 
 /** Shader parameters needed to render a light function. */
@@ -75,14 +71,9 @@ public:
 
 	static FVector4f GetLightFunctionSharedParameters(const FLightSceneInfo* LightSceneInfo, float ShadowFadeFraction);
 
-	template<typename ShaderRHIParamRef>
-	void Set(FRHICommandList& RHICmdList, const ShaderRHIParamRef ShaderRHI, const FLightSceneInfo* LightSceneInfo, float ShadowFadeFraction) const
+	void Set(FRHIBatchedShaderParameters& BatchedParameters, const FLightSceneInfo* LightSceneInfo, float ShadowFadeFraction) const
 	{
-		SetShaderValue( 
-			RHICmdList, 
-			ShaderRHI, 
-			LightFunctionParameters, 
-			GetLightFunctionSharedParameters(LightSceneInfo, ShadowFadeFraction));
+		SetShaderValue(BatchedParameters, LightFunctionParameters, GetLightFunctionSharedParameters(LightSceneInfo, ShadowFadeFraction));
 	}
 
 	/** Serializer. */ 
@@ -126,7 +117,7 @@ namespace StencilingGeometry
 		/** 
 		* Initialize the RHI for this rendering resource 
 		*/
-		void InitRHI() override
+		void InitRHI(FRHICommandListBase& RHICmdList) override
 		{
 			const int32 NumSides = NumSphereSides;
 			const int32 NumRings = NumSphereRings;
@@ -165,7 +156,7 @@ namespace StencilingGeometry
 
 			// Create vertex buffer. Fill buffer with initial data upon creation
 			FRHIResourceCreateInfo CreateInfo(TEXT("TStencilSphereVertexBuffer"), &Verts);
-			VertexBufferRHI = RHICreateVertexBuffer(Size,BUF_Static,CreateInfo);
+			VertexBufferRHI = RHICmdList.CreateVertexBuffer(Size,BUF_Static,CreateInfo);
 		}
 
 		int32 GetVertexCount() const { return NumSphereVerts; }
@@ -208,7 +199,7 @@ namespace StencilingGeometry
 		/** 
 		* Initialize the RHI for this rendering resource 
 		*/
-		void InitRHI() override
+		void InitRHI(FRHICommandListBase& RHICmdList) override
 		{
 			const int32 NumSides = NumSphereSides;
 			const int32 NumRings = NumSphereRings;
@@ -237,7 +228,7 @@ namespace StencilingGeometry
 
 			// Create index buffer. Fill buffer with initial data upon creation
 			FRHIResourceCreateInfo CreateInfo(TEXT("TStencilSphereIndexBuffer"), &Indices);
-			IndexBufferRHI = RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
+			IndexBufferRHI = RHICmdList.CreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 		}
 
 		int32 GetIndexCount() const { return NumIndices; }; 
@@ -270,8 +261,8 @@ public:
 	END_SHADER_PARAMETER_STRUCT()
 
 	void Bind(const FShaderParameterMap& ParameterMap);
-	void Set(FRHICommandList& RHICmdList, FShader* Shader, const FVector4f& InStencilingGeometryPosAndScale) const;
-	void Set(FRHICommandList& RHICmdList, FShader* Shader, const FSceneView& View, const FLightSceneInfo* LightSceneInfo) const;
+	void Set(FRHIBatchedShaderParameters& BatchedParameters, const FVector4f& InStencilingGeometryPosAndScale) const;
+	void Set(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, const FLightSceneInfo* LightSceneInfo) const;
 
 	static FParameters GetParameters(const FVector4f& InStencilingGeometryPosAndScale);
 	static FParameters GetParameters(const FSceneView& View, const FLightSceneInfo* LightSceneInfo);

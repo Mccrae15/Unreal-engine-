@@ -1,16 +1,18 @@
-import { mergeStyleSets, Pivot, PivotItem, ScrollablePane, ScrollbarVisibility, Stack } from "@fluentui/react";
+import { mergeStyleSets, Pivot, PivotItem, Stack } from "@fluentui/react";
 import { observer } from "mobx-react-lite";
-import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { GetJobsTabResponse } from "../../backend/Api";
 import { useWindowSize } from "../../base/utilities/hooks";
 import { hordeClasses, modeColors } from "../../styles/Styles";
 import { BreadcrumbItem, Breadcrumbs } from "../Breadcrumbs";
+import ErrorHandler from "../ErrorHandler";
 import { useQuery } from "../JobDetailCommon";
 import { TopNav } from "../TopNav";
 import { HealthPanel } from "./JobDetailHealthV2";
 import { StepTrendsPanel } from "./JobDetailStepTrends";
 import { JobDataView, JobDetailsV2 } from "./JobDetailsViewCommon";
+import { TimelinePanel } from "./JobDetailTimeline";
 import { StepsPanelV2 } from "./JobDetailViewSteps";
 import { SummaryPanel } from "./JobDetailViewSummary";
 import { JobOperations } from "./JobOperationsBar";
@@ -47,10 +49,20 @@ const JobBreadCrumbs: React.FC<{ jobDetails: JobDetailsV2 }> = observer(({ jobDe
 
    const jobData = jobDetails.jobData;
    if (!jobData) {
-      return <Breadcrumbs items={[{ text: "Loading Job" }]} title={"Loading Job"} spinner={true} />
+      if (!jobDetails.jobError) {
+         return <Breadcrumbs items={[{ text: "Loading Job" }]} title={"Loading Job"} spinner={true} />
+      }
+      else {
+         ErrorHandler.set({
+            reason: `Error loading job data`,
+            title: `Unable to Load Job`,
+            message: `Job ${jobDetails.jobId} could not be loaded.\n\nPlease check that you are on the network and the job stream exists.`
+         }, true);
+      }
 
-      // return <Stack horizontal horizontalAlign="center" tokens={{childrenGap: 18}}> <Text variant="mediumPlus">Loading Job</Text><Spinner size={SpinnerSize.large} /></Stack>;
+      return null;
    }
+
    const crumbItems: BreadcrumbItem[] = [];
 
    const stream = jobDetails.stream;
@@ -296,25 +308,50 @@ const DetailsViewOverview: React.FC<{ jobDetails: JobDetailsV2 }> = ({ jobDetail
       <SummaryPanel jobDetails={details} />
       <StepsPanelV2 jobDetails={details} />
       <HealthPanel jobDetails={details} />
-      <StepTrendsPanel jobDetails={details} />
+      <TimelinePanel jobDetails={details} />
+      { false &&<StepTrendsPanel jobDetails={details} /> }
+
    </Stack>
 };
 
-const rootWidth = 1776;
+const rootWidth = 1440;
+
+const ScrollRestore: React.FC<{ jobDetails: JobDetailsV2, scrollRef: React.RefObject<HTMLDivElement> }> = ({ jobDetails, scrollRef }) => {
+
+   const location = useLocation();
+
+   if (!scrollRef?.current) {
+      return null;
+   }
+
+   try {
+      if (!location.hash) {
+         scrollRef.current.scrollTop = 0;
+      }
+   } catch (message) {
+      console.error(message);
+   }
+
+   return null;
+}
+
 
 const DetailsView: React.FC<{ jobDetails: JobDetailsV2 }> = ({ jobDetails }) => {
 
    const windowSize = useWindowSize();
+   const scrollRef = useRef<HTMLDivElement>(null);
 
    const vw = Math.max(document.documentElement.clientWidth, window.innerWidth || 0);
 
    const details = jobDetails;
 
-   const centerAlign = vw / 2 - 890;
-   const key = `windowsize_jobdetail_view_${windowSize.width}_${windowSize.height}`;   
+
+   const centerAlign = vw / 2 - 720 /*890*/;
+   const key = `windowsize_jobdetail_view_${windowSize.width}_${windowSize.height}`;
 
    return <Stack id="rail_job_overview">
       <JobBreadCrumbs jobDetails={details} />
+      <ScrollRestore jobDetails={details} scrollRef={scrollRef} />
       <Stack horizontal styles={{ root: { backgroundColor: modeColors.background } }}>
          <Stack styles={{ root: { width: "100%" } }}>
             <Stack horizontal>
@@ -332,15 +369,15 @@ const DetailsView: React.FC<{ jobDetails: JobDetailsV2 }> = ({ jobDetails }) => 
             <Stack style={{ width: "100%", backgroundColor: modeColors.background }}>
                <Stack horizontal>
                   <Stack /*className={classNames.pointerSuppress} */ style={{ position: "relative", width: "100%", height: 'calc(100vh - 228px)' }}>
-                     <ScrollablePane id="hordeContentArea" scrollbarVisibility={ScrollbarVisibility.always}>
-                        <Stack horizontal>
+                     <div id="hordeContentArea" ref={scrollRef} style={{ overflowX: "auto", overflowY: "visible" }}>
+                        <Stack horizontal style={{paddingBottom: 48}}>
                            <Stack key={`${key}_2`} style={{ paddingLeft: centerAlign }} />
                            <Stack style={{ width: rootWidth }}>
                               <DetailsViewOverview jobDetails={details} />
                               <DetailsViewStep jobDetails={details} />
                            </Stack>
                         </Stack>
-                     </ScrollablePane>
+                     </div>
                   </Stack>
                </Stack>
             </Stack>

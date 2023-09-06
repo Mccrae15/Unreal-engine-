@@ -10,19 +10,16 @@
 
 #include "CoreMinimal.h"
 
-using FOpenVDBFloat1Grid = openvdb::FloatGrid;
-using FOpenVDBFloat2Grid = openvdb::Grid<openvdb::tree::Tree4<openvdb::Vec2f, 5, 4, 3>::Type>;
-using FOpenVDBFloat3Grid = openvdb::Vec3SGrid;
-using FOpenVDBFloat4Grid = openvdb::Grid<openvdb::tree::Tree4<openvdb::Vec4f, 5, 4, 3>::Type>;
-using FOpenVDBDouble1Grid = openvdb::DoubleGrid;
-using FOpenVDBDouble2Grid = openvdb::Grid<openvdb::tree::Tree4<openvdb::Vec2d, 5, 4, 3>::Type>;
-using FOpenVDBDouble3Grid = openvdb::Vec3DGrid;
-using FOpenVDBDouble4Grid = openvdb::Grid<openvdb::tree::Tree4<openvdb::Vec4d, 5, 4, 3>::Type>;
-
 template<typename ValueType>
 constexpr uint32 GetOpenVDBValueNumComponents()
 {
 	return (uint32)ValueType::size;
+}
+
+template<>
+constexpr uint32 GetOpenVDBValueNumComponents<FOpenVDBHalf>()
+{
+	return 1;
 }
 
 template<>
@@ -44,6 +41,12 @@ float GetOpenVDBValueComponent(const ValueType& Value, uint32 ComponentIndex)
 }
 
 template<>
+float GetOpenVDBValueComponent<FOpenVDBHalf>(const FOpenVDBHalf& Value, uint32 ComponentIndex)
+{
+	return (float)Value;
+}
+
+template<>
 float GetOpenVDBValueComponent<float>(const float& Value, uint32 ComponentIndex)
 {
 	return Value;
@@ -62,6 +65,12 @@ ValueType GetOpenVDBMaxComponent(const ValueType& ValueA, const ValueType& Value
 }
 
 template<>
+FOpenVDBHalf GetOpenVDBMaxComponent<FOpenVDBHalf>(const FOpenVDBHalf& ValueA, const FOpenVDBHalf& ValueB)
+{
+	return FOpenVDBHalf(FMath::Max((float)ValueA, (float)ValueB));
+}
+
+template<>
 float GetOpenVDBMaxComponent<float>(const float& ValueA, const float& ValueB)
 {
 	return FMath::Max(ValueA, ValueB);
@@ -77,6 +86,12 @@ template<typename ValueType>
 ValueType GetOpenVDBMinComponent(const ValueType& ValueA, const ValueType& ValueB)
 {
 	return openvdb::math::minComponent(ValueA, ValueB);
+}
+
+template<>
+FOpenVDBHalf GetOpenVDBMinComponent<FOpenVDBHalf>(const FOpenVDBHalf& ValueA, const FOpenVDBHalf& ValueB)
+{
+	return FOpenVDBHalf(FMath::Min((float)ValueA, (float)ValueB));
 }
 
 template<>
@@ -116,20 +131,46 @@ public:
 	{
 		constexpr uint32 NumComponents = GetOpenVDBValueNumComponents<ValueType>();
 		static_assert(NumComponents <= 4);
-		for (auto LeafIt = Grid->constTree().cbeginLeaf(); LeafIt; ++LeafIt)
-		{
-			for (auto ValueIt = LeafIt->cbeginValueOn(); ValueIt; ++ValueIt)
-			{
-				const ValueType VoxelValue = ValueIt.getValue();
-				float VoxelValueComponents[4]{};
-				for (uint32 ComponentIdx = 0; ComponentIdx < NumComponents; ++ComponentIdx)
-				{
-					VoxelValueComponents[ComponentIdx] = GetOpenVDBValueComponent(VoxelValue, ComponentIdx);
-				}
 
-				const openvdb::Coord CoordVDB = ValueIt.getCoord();
-				const FIntVector3 Coord(CoordVDB[0], CoordVDB[1], CoordVDB[2]);
+		// Iterate over both voxels and tiles.
+		for (auto ValueIt = Grid->cbeginValueOn(); ValueIt; ++ValueIt)
+		{
+			const ValueType VoxelValue = ValueIt.getValue();
+			const openvdb::Coord CoordVDB = ValueIt.getCoord();
+			
+			float VoxelValueComponents[4]{};
+			for (uint32 ComponentIdx = 0; ComponentIdx < NumComponents; ++ComponentIdx)
+			{
+				VoxelValueComponents[ComponentIdx] = GetOpenVDBValueComponent(VoxelValue, ComponentIdx);
+			}
+			const FIntVector3 Coord(CoordVDB[0], CoordVDB[1], CoordVDB[2]);
+
+			if (ValueIt.isVoxelValue())
+			{
+				// A single voxel
 				OnVisit(Coord, NumComponents, VoxelValueComponents);
+			}
+			else
+			{
+				// Tile, a higher level node specifying a single value for all finer level nodes/children without actually allocating memory for them.
+				openvdb::CoordBBox TileAABB;
+				ValueIt.getBoundingBox(TileAABB);
+				check(TileAABB.min().x() == Coord.X && TileAABB.min().y() == Coord.Y && TileAABB.min().z() == Coord.Z);
+				const openvdb::Coord AABBDimVDB = TileAABB.dim();
+				const FIntVector3 AABBDim = FIntVector3(AABBDimVDB.x(), AABBDimVDB.y(), AABBDimVDB.z());
+				
+				// Iterate over tile AABB and invoke callback for every (virtual) voxel.
+				for (int32 Z = 0; Z < AABBDim.Z; ++Z)
+				{
+					for (int32 Y = 0; Y < AABBDim.Y; ++Y)
+					{
+						for (int32 X = 0; X < AABBDim.X; ++X)
+						{
+							const FIntVector3 TileLocalCoord(Coord.X + X, Coord.Y + Y, Coord.Z + Z);
+							OnVisit(TileLocalCoord, NumComponents, VoxelValueComponents);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -181,7 +222,23 @@ TSharedPtr<IOpenVDBGridAdapterBase> CreateOpenVDBGridAdapterInternal(openvdb::Gr
 // Creates an adapter suitable for the type of the given grid or nullptr if the type is not supported.
 TSharedPtr<IOpenVDBGridAdapterBase> CreateOpenVDBGridAdapter(openvdb::GridBase::Ptr Grid)
 {
-	if (Grid->isType<FOpenVDBFloat1Grid>())
+	if (Grid->isType<FOpenVDBHalf1Grid>())
+	{
+		return CreateOpenVDBGridAdapterInternal<FOpenVDBHalf1Grid>(Grid);
+	}
+	else if (Grid->isType<FOpenVDBHalf2Grid>())
+	{
+		return CreateOpenVDBGridAdapterInternal<FOpenVDBHalf2Grid>(Grid);
+	}
+	else if (Grid->isType<FOpenVDBHalf3Grid>())
+	{
+		return CreateOpenVDBGridAdapterInternal<FOpenVDBHalf3Grid>(Grid);
+	}
+	else if (Grid->isType<FOpenVDBHalf4Grid>())
+	{
+		return CreateOpenVDBGridAdapterInternal<FOpenVDBHalf4Grid>(Grid);
+	}
+	else if (Grid->isType<FOpenVDBFloat1Grid>())
 	{
 		return CreateOpenVDBGridAdapterInternal<FOpenVDBFloat1Grid>(Grid);
 	}

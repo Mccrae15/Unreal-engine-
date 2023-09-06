@@ -244,9 +244,20 @@ public:
 		ReportManager.SetFilter( InFilter );
 	}
 
+	UE_DEPRECATED(5.3, "Use GetFilteredReports or GetEnabledReports instead.")
 	virtual TArray <TSharedPtr <IAutomationReport> >& GetReports() override
 	{
+		return GetFilteredReports();
+	}
+
+	virtual TArray <TSharedPtr <IAutomationReport> >& GetFilteredReports() override
+	{
 		return ReportManager.GetFilteredReports();
+	}
+
+	virtual TArray <TSharedPtr <IAutomationReport> > GetEnabledReports() override
+	{
+		return ReportManager.GetEnabledTestReports();
 	}
 
 	virtual int32 GetNumDeviceClusters() const override
@@ -269,9 +280,14 @@ public:
 		return DeviceClusterManager.GetClusterDeviceType(ClusterIndex);
 	}
 
-	virtual FString GetGameInstanceName(const int32 ClusterIndex, const int32 DeviceIndex) const override
+	virtual FString GetDeviceName(const int32 ClusterIndex, const int32 DeviceIndex) const override
 	{
 		return DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
+	}
+
+	virtual FString GetGameInstanceName(const int32 ClusterIndex, const int32 DeviceIndex) const override
+	{
+		return DeviceClusterManager.GetClusterGameInstance(ClusterIndex, DeviceIndex);
 	}
 
 	virtual void SetVisibleTestsEnabled(const bool bEnabled) override

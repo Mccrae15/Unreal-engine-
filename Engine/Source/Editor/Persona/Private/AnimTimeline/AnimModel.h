@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "AnimatedRange.h"
 #include "Templates/SharedPointer.h"
 #include "ITimeSlider.h"
 #include "PersonaDelegates.h"
@@ -163,7 +164,7 @@ public:
 	virtual void OnSetEditableTime(int32 TimeIndex, double Time, bool bIsDragging) {}
 
 	/** Get the framerate specified by the anim sequence */
-	double GetFrameRate() const;
+	FFrameRate GetFrameRate() const;
 
 	/** Get the tick resolution we are displaying at */
 	int32 GetTickResolution() const;

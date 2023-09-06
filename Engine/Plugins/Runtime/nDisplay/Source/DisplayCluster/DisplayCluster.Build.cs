@@ -7,8 +7,6 @@ public class DisplayCluster : ModuleRules
 {
 	public DisplayCluster(ReadOnlyTargetRules ROTargetRules) : base(ROTargetRules)
 	{
-		PublicDefinitions.Add("WITH_OCIO=0");
-
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"), //required for FPostProcessMaterialInputs
@@ -23,6 +21,7 @@ public class DisplayCluster : ModuleRules
 				"DisplayClusterLightCardEditorShaders",
 				"DisplayClusterLightCardExtender",
 				"Engine",
+				"EngineSettings",
 				"EnhancedInput",
 			});
 
@@ -32,6 +31,8 @@ public class DisplayCluster : ModuleRules
 				"InputCore",
 				"Json",
 				"JsonUtilities",
+				"MediaAssets",
+				"MediaIOCore",
 				"Networking",
 				"OpenColorIO",
 				"OpenCV",
@@ -40,6 +41,7 @@ public class DisplayCluster : ModuleRules
 				"Renderer",
 				"RenderCore",
 				"RHI",
+				"SharedMemoryMedia",
 				"Slate",
 				"SlateCore",
 				"Sockets",
@@ -51,6 +53,7 @@ public class DisplayCluster : ModuleRules
 			PublicIncludePathModuleNames.Add("DisplayClusterConfigurator");
 
 			PrivateDependencyModuleNames.Add("UnrealEd");
+			PrivateDependencyModuleNames.Add("EditorWidgets");
 			PrivateDependencyModuleNames.Add("LevelEditor");
 		}
 

@@ -5,10 +5,10 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
-#include "GameplayTargetingSystem/TargetingSystem/TargetingPreset.h"
-#include "GameplayTargetingSystem/TargetingSystem/TargetingSubsystem.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemLogs.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemTypes.h"
+#include "TargetingSystem/TargetingPreset.h"
+#include "TargetingSystem/TargetingSubsystem.h"
+#include "Types/TargetingSystemLogs.h"
+#include "Types/TargetingSystemTypes.h"
 
 
 UAsyncAction_PerformTargeting::UAsyncAction_PerformTargeting(const FObjectInitializer& ObjectInitializer)
@@ -73,15 +73,15 @@ void UAsyncAction_PerformTargeting::Activate()
 
 			TARGETING_LOG(Verbose, TEXT("Source Actor: %s"), *GetNameSafe(SourceContext.SourceActor));
 
-			FTargetingRequestHandle TargetingHandle = UTargetingSubsystem::MakeTargetRequestHandle(TargetingPreset, SourceContext);
+			TargetingHandle = UTargetingSubsystem::MakeTargetRequestHandle(TargetingPreset, SourceContext);
 
-			SetupInitialTargetsForRequest(TargetingHandle);
+			SetupInitialTargetsForRequest();
 
-			FTargetingRequestDelegate Delegate = FTargetingRequestDelegate::CreateWeakLambda(this, [this](FTargetingRequestHandle TargetingHandle)
+			FTargetingRequestDelegate Delegate = FTargetingRequestDelegate::CreateWeakLambda(this, [this](FTargetingRequestHandle InTargetingHandle)
 				{
 					TARGETING_LOG(Verbose, TEXT("Entering request lambda"));
 
-					Targeted.Broadcast(TargetingHandle);
+					Targeted.Broadcast(InTargetingHandle);
 				});
 
 			if (bUseAsyncTargeting)
@@ -112,7 +112,7 @@ void UAsyncAction_PerformTargeting::Activate()
 	}
 }
 
-void UAsyncAction_PerformTargeting::SetupInitialTargetsForRequest(const FTargetingRequestHandle& TargetingHandle) const
+void UAsyncAction_PerformTargeting::SetupInitialTargetsForRequest() const
 {
 	if (TargetingHandle.IsValid() && InitialTargets.Num() > 0)
 	{

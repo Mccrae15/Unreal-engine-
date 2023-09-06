@@ -90,6 +90,8 @@ struct KISMET_API FFindInBlueprintSearchTags
 	static const FText FiB_Macros;
 	/** Sub graph tag, for any sub-graphs in a Blueprint */
 	static const FText FiB_SubGraphs;
+	/** Blueprint extension tag. */
+	static const FText FiB_Extensions;
 
 	/** Name tag */
 	static const FText FiB_Name;
@@ -867,6 +869,9 @@ private:
 
 	/** Disable the use of search result templates. Setting this to TRUE will slightly decrease overall memory usage, but will also increase global search times */
 	bool bDisableSearchResultTemplates;
+
+	/** Defers the cost to extract metadata for each discovered asset during the initial asset registry scan into a single pass over the full asset registry once the scan is complete. */
+	bool bDisableImmediateAssetDiscovery;
 };
 
 struct KISMET_API FDisableGatheringDataOnScope

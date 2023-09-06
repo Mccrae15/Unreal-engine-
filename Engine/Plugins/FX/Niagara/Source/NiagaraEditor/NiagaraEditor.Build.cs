@@ -7,26 +7,13 @@ public class NiagaraEditor : ModuleRules
 {
 	public NiagaraEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.AddRange(new string[] {
-			"NiagaraEditor/Private",
-			"NiagaraEditor/Private/Toolkits",
-			"NiagaraEditor/Private/Widgets",
-			"NiagaraEditor/Private/Sequencer/NiagaraSequence",
-			"NiagaraEditor/Private/ViewModels",
-			"NiagaraEditor/Private/TypeEditorUtilities",
-			Path.Combine(GetModuleDirectory("GraphEditor"), "Private"),
-			Path.Combine(GetModuleDirectory("Niagara"), "Private"),
-			Path.Combine(GetModuleDirectory("PropertyEditor"), "Private"),
-			Path.Combine(GetModuleDirectory("Renderer"), "Private"),
-		});
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"Engine",
                 "RHI",
                 "Core", 
 				"CoreUObject", 
 				"CurveEditor",
+				"DerivedDataCache",
 				"ApplicationCore",
                 "InputCore",
 				"RenderCore",
@@ -35,11 +22,7 @@ public class NiagaraEditor : ModuleRules
 				"SlateNullRenderer",
 				"Kismet",
                 "EditorStyle",
-				"UnrealEd", 
 				"VectorVM",
-                "NiagaraCore",
-                "Niagara",
-                "NiagaraShader",
                 "MovieScene",
 				"Sequencer",
 				"TimeManagement",
@@ -64,7 +47,8 @@ public class NiagaraEditor : ModuleRules
 				"AssetDefinition",
 				"ContentBrowser",
 				"ToolWidgets",
-				"AssetTools"
+				"AssetTools",
+				"LevelSequence",
 			}
 		);
 
@@ -80,11 +64,8 @@ public class NiagaraEditor : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"Engine",
 				"MessageLog",
 				"Messaging",
-				"ContentBrowser",
-                "DerivedDataCache",
                 "LevelEditor",
 				"WorkspaceMenuStructure"
 			}

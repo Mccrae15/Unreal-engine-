@@ -210,7 +210,17 @@ namespace UnsyncUI
 	public sealed class ProjectModel : TabModel
 	{
 		private bool firstRefresh = true;
-		private Action<IEnumerable<(string DstPath, string[] Exclusions, BuildPlatformModel Model)>> onBuildsSelected;
+		private Action<IEnumerable<(SyncStartConfig Config, BuildPlatformModel Model)>> onBuildsSelected;
+
+		private string statusString = null;
+		public string StatusString
+		{
+			get => statusString;
+			set
+			{
+				SetProperty(ref statusString, value);
+			}
+		}
 
 		public Config.Project Definition { get; }
 		public string Name => Definition.Name;
@@ -219,8 +229,10 @@ namespace UnsyncUI
 		public Command OnStopRefreshBuildsClicked { get; }
 		public Command<IList> OnStartSync { get; }
 		public Command CopyBuildCLClicked { get; }
+		public Command CopyBuildNameClicked { get; }
 		public Command OpenBuildLocationClicked { get; }
 		public Command ResetDestinationClicked { get; }
+		public Command OpenDestinationClicked { get; }
 
 		public ObservableCollection<BuildModel> Builds { get; } = new ObservableCollection<BuildModel>();
 		public ICollectionView BuildsView { get; }
@@ -249,6 +261,8 @@ namespace UnsyncUI
 			set
 			{
 				SetProperty(ref selectedBuild, value);
+
+				UpdateFinalDstPath();
 
 				if (selectedBuild != null)
 				{
@@ -284,13 +298,56 @@ namespace UnsyncUI
 			set
 			{
 				SetProperty(ref dstPath, value);
-				App.Current.UserConfig.ProjectDestinationMap[Name] = value;
 
-				ResetDestinationClicked.Enabled = CanResetDestinationToDefault;
+				UpdateFinalDstPath();
+
+				App.Current.UserConfig.ProjectDestinationMap[Name] = DstPath;
 			}
 		}
 
-		public ProjectModel(Config.Project definition, Action<IEnumerable<(string DstPath, string[] Exclusions, BuildPlatformModel Model)>> onBuildsSelected)
+		void UpdateFinalDstPath()
+		{
+			string finalPath = dstPath;
+			if (AppendBuildName && (selectedBuild != null))
+			{
+				string buildFolderName = new DirectoryInfo(selectedBuild.Path).Name;
+				finalPath = Path.Combine(DstPath, buildFolderName);
+			}
+
+			finalPath = Path.TrimEndingDirectorySeparator(finalPath);
+			if (FinalDstPath != finalPath)
+			{
+				FinalDstPath = finalPath;
+			}
+
+			ResetDestinationClicked.Enabled = CanResetDestinationToDefault;
+		}
+
+		private string finalDstPath = null;
+		public string FinalDstPath
+		{
+			get => finalDstPath;
+			set
+			{
+				SetProperty(ref finalDstPath, value);
+			}
+		}
+
+		private bool appendBuildName = true;
+		public bool AppendBuildName
+		{
+			get => appendBuildName;
+			set
+			{
+				SetProperty(ref appendBuildName, value);
+
+				App.Current.UserConfig.AppendBuildName = value;
+
+				UpdateFinalDstPath();
+			}
+		}
+
+		public ProjectModel(Config.Project definition, Action<IEnumerable<(SyncStartConfig Config, BuildPlatformModel Model)>> onBuildsSelected)
 		{
 			this.Definition = definition;
 			this.onBuildsSelected = onBuildsSelected;
@@ -298,7 +355,9 @@ namespace UnsyncUI
 			OnStopRefreshBuildsClicked = new Command(StopRefreshBuilds) { Enabled = false };
 			OnStartSync = new Command<IList>(l => StartSync(l.OfType<BuildPlatformModel>())) { Enabled = true };
 			CopyBuildCLClicked = new Command(CopyBuildCL) { Enabled = true };
+			CopyBuildNameClicked = new Command(CopyBuildName) { Enabled = true };
 			OpenBuildLocationClicked = new Command(OpenBuildLocation) { Enabled = true };
+			OpenDestinationClicked = new Command(OpenDestinationLocation) { Enabled = true };
 
 			BuildsView = CollectionViewSource.GetDefaultView(Builds);
 			BuildsView.Filter = BuildsViewFilter;
@@ -332,6 +391,10 @@ namespace UnsyncUI
 				defaultDstPath = "";
 			}
 
+			appendBuildName = App.Current.UserConfig.AppendBuildName;
+
+			ResetDestinationClicked = new Command(ResetDestinationToDefault) { Enabled = CanResetDestinationToDefault };
+
 			string userDstPath = null;
 
 			if (App.Current.UserConfig.ProjectDestinationMap.TryGetValue(Name, out userDstPath))
@@ -342,14 +405,14 @@ namespace UnsyncUI
 			{
 				dstPath = defaultDstPath;
 			}
-
-			ResetDestinationClicked = new Command(ResetDestinationToDefault) { Enabled = CanResetDestinationToDefault };
+			UpdateFinalDstPath();
 		}
-		private bool CanResetDestinationToDefault => dstPath != defaultDstPath && defaultDstPath.Length != 0;
+		private bool CanResetDestinationToDefault => finalDstPath != defaultDstPath && defaultDstPath.Length != 0;
 
 		private void ResetDestinationToDefault()
 		{
 			DstPath = defaultDstPath;
+			AppendBuildName = false;
 		}
 
 		private void StopRefreshBuilds()
@@ -370,12 +433,13 @@ namespace UnsyncUI
 
 			Builds.Clear();
 			SelectedBuild = null;
+			StatusString = null;
 
 			try
 			{
 				var timer = new Stopwatch();
 				timer.Start();
-				var buildsPipe = Definition.EnumerateBuilds(cts.Token);
+				var (task, buildsPipe) = Definition.EnumerateBuilds(cts.Token);
 
 				while (await buildsPipe.OutputAvailableAsync(cts.Token))
 				{
@@ -383,14 +447,23 @@ namespace UnsyncUI
 				}
 
 				timer.Stop();
-				Debug.WriteLine($"Search took {timer.Elapsed.TotalSeconds} seconds.");
-			}
-			catch (IOException)
-			{
-				// @todo show an error message
+
+				if (task.IsFaulted)
+				{
+					throw task.Exception.InnerException;
+				}
+				else
+				{
+					Debug.WriteLine($"Search took {timer.Elapsed.TotalSeconds} seconds.");
+				}
 			}
 			catch (OperationCanceledException)
 			{ }
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"Directory enumeration failed with exception: {ex}");
+				StatusString = ex.Message;
+			}
 			finally
 			{
 				OnRefreshBuildsClicked.Enabled = true;
@@ -400,7 +473,16 @@ namespace UnsyncUI
 
 		public void StartSync(IEnumerable<BuildPlatformModel> selectedBuilds)
 		{
-			onBuildsSelected?.Invoke(selectedBuilds.Select(s => (Path.Combine(dstPath, s.DestPathRelative), Definition.Exclusions?.ToArray(), s)).ToList());
+			onBuildsSelected?.Invoke(selectedBuilds.Select(s => {
+				var Config = new SyncStartConfig();
+				Config.DstPath = Path.Combine(finalDstPath, s.DestPathRelative);
+				Config.Exclusions = Definition.Exclusions?.ToArray();
+				if (App.Current.UserConfig.AppendBuildName)
+				{
+					Config.ScavengePath = DstPath;
+				}
+				return (Config, s);
+			}).ToList());
 		}
 
 		public override void OnSelected()
@@ -412,33 +494,47 @@ namespace UnsyncUI
 			}
 		}
 
+		private void CopyStringToClipboard(string str)
+		{
+			// Clipboard can be locked if timing is just right(wrong), retry a few times on failure.
+			int retryDelay = 0;
+			const int attempts = 7;
+			for (int attempt = 0; attempt < attempts; attempt++)
+			{
+				if (retryDelay > 0)
+				{
+					System.Threading.Thread.Sleep(retryDelay);
+					retryDelay *= 2;
+				}
+				else
+				{
+					retryDelay = 5;
+				}
+				try
+				{
+					Clipboard.SetText(str, TextDataFormat.Text);
+					break;
+				}
+				catch (System.Runtime.InteropServices.COMException)
+				{
+				}
+			}
+		}
+
 		private void CopyBuildCL()
 		{
 			if (selectedBuild != null)
 			{
-				// Clipboard can be locked if timing is just right(wrong), retry a few times on failure.
-                int retryDelay = 0;
-				const int attempts = 7;
-				for (int attempt = 0; attempt < attempts; attempt++)
-				{
-					if (retryDelay > 0)
-					{
-                        System.Threading.Thread.Sleep(retryDelay);
-                        retryDelay *= 2;
-                    }
-					else
-					{
-						retryDelay = 5;
-                    }
-                    try
-                    {
-                        Clipboard.SetText(selectedBuild.CL, TextDataFormat.Text);
-						break;
-                    }
-                    catch (System.Runtime.InteropServices.COMException)
-                    {
-	                }
-                }
+				CopyStringToClipboard(selectedBuild.CL);
+			}
+		}
+
+		private void CopyBuildName()
+		{
+			if (selectedBuild != null)
+			{
+				string buildFolderName = new DirectoryInfo(selectedBuild.Path).Name;
+				CopyStringToClipboard(buildFolderName);
 			}
 		}
 
@@ -448,6 +544,21 @@ namespace UnsyncUI
 			{
 				Shell.LaunchExplorer(selectedBuild.Path);
 			}
+		}
+
+		private void OpenDestinationLocation()
+		{
+			if (!Directory.Exists(FinalDstPath))
+			{
+				try
+				{
+					Directory.CreateDirectory(FinalDstPath);
+				}
+				catch (Exception)
+				{
+				}
+			}
+			Shell.LaunchExplorer(FinalDstPath);
 		}
 	}
 }

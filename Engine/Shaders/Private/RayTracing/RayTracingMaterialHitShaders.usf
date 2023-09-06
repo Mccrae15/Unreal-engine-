@@ -21,6 +21,7 @@
 #include "/Engine/Private/Common.ush"
 #include "RayTracingCommon.ush"
 #include "RayTracingHitGroupCommon.ush"
+#include "RayTracingShaderUtils.ush"
 
 #include "/Engine/Generated/Material.ush"   
 #include "/Engine/Generated/VertexFactory.ush"
@@ -52,6 +53,10 @@ void GetSkyLighting(
 {
 	OutDiffuseLighting = float3(0,0,0);
 	OutSubsurfaceLighting = float3(0,0,0);
+
+	// TODO:
+	// Should apply Lumen Dynamic GI + shadowed Skylight based on IsLumenTranslucencyGIEnabled() here
+	// however we are not binding the unnecessary shader parameters in hitgroups at the moment
 
 #if ENABLE_SKY_LIGHT
 
@@ -184,7 +189,7 @@ void GetPrecomputedIndirectLightingAndSkyLight(
 	// Low quality texture lightmaps
 	#elif LQ_TEXTURE_LIGHTMAP
 
-		GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, bEvaluateBackface, OutDiffuseLighting, OutSubsurfaceLighting, OutIndirectIrradiance);
+		GetLightMapColorLQ(LightmapVTPageTableResult, LightmapUV0, LightmapUV1, LightmapDataIndex, DiffuseDir, bEvaluateBackface, OutDiffuseLighting, OutSubsurfaceLighting);
 
 	#endif
 
@@ -216,7 +221,7 @@ void GetPrecomputedIndirectLightingAndSkyLight(
 	#endif
 }
 
-void GetMaterialPayload(
+void GetMaterialPayload( 
 	FPixelMaterialInputs PixelMaterialInputs,
 	FMaterialPixelParameters MaterialParameters,
 	FVertexFactoryInterpolantsVSToPS Interpolants,
@@ -230,25 +235,21 @@ void GetMaterialPayload(
 	float TotalCoverage = 1.f;
 	bool bStrataSubsurfaceEnable = false;
 	const float3 WorldBentNormal0 = GetWorldBentNormalZero(MaterialParameters);
-	FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
 
   #if STRATA_OPTIMIZED_UNLIT
 	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
-	SanitizeStrataUnlit(UnlitBSDF);
+	UnlitBSDF.StrataSanitizeBSDF();
 	EmissiveLuminance = BSDF_GETEMISSIVE(UnlitBSDF);
 	#if !STRATA_OPAQUE_MATERIAL
 	TotalCoverage = UnlitBSDF.Coverage;
 	#endif
   #else // STRATA_OPTIMIZED_UNLIT
 	// Initialise a Strata header with normal in registers
-	FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
-	StrataPixelHeader.StrataTree = MaterialParameters.StrataTree;
-	StrataPixelHeader.BSDFCount = MaterialParameters.StrataTree.BSDFCount;
-	StrataPixelHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
-	StrataPixelHeader.IrradianceAO = InitIrradianceAndOcclusion();
+	FStrataData StrataData = PixelMaterialInputs.GetFrontStrataData();
+	FStrataPixelHeader StrataPixelHeader = MaterialParameters.GetFrontStrataHeader();
 	StrataPixelHeader.IrradianceAO.MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
-	SetCastContactShadow(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW);
-	SetDynamicIndirectShadowCasterRepresentation(StrataPixelHeader, GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION);
+	StrataPixelHeader.SetCastContactShadow(GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW);
+	StrataPixelHeader.SetDynamicIndirectShadowCasterRepresentation(GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAPSULE_REPRESENTATION);
 
 	FStrataSubsurfaceData SSSData = (FStrataSubsurfaceData)0;
 	FStrataTopLayerData TopLayerData = (FStrataTopLayerData)0;
@@ -501,6 +502,8 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(MaterialCHS,
 		return;
 	}
 
+	CurrentPayloadInputFlags = PackedPayload.GetFlags();
+
 	FPixelMaterialInputs PixelMaterialInputs;
 
 	{
@@ -547,12 +550,12 @@ RAY_TRACING_ENTRY_CLOSEST_HIT(MaterialCHS,
 		Payload.SetFrontFace();
 	}
 
-#if TWO_SIDED_MATERIAL
+#if MATERIAL_TWOSIDED
 	Payload.SetTwoSided();
 #endif
 
 	// Fill payload with material data
-	GetMaterialPayload(PixelMaterialInputs, MaterialParameters, Interpolants, PackedPayload.IsEnableSkyLightContribution(), Payload);
+	GetMaterialPayload(PixelMaterialInputs, MaterialParameters, Interpolants, PackedPayload.IsEnableSkyLightContribution(), Payload); 
 
 	PackedPayload = PackRayTracingPayload(Payload, PropagatedCone);
 
@@ -620,6 +623,9 @@ RAY_TRACING_ENTRY_ANY_HIT(MaterialAHS,
 #else
 	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants, SvPosition);
 #endif
+
+	CurrentPayloadInputFlags = PackedPayload.GetFlags();
+
 	FPixelMaterialInputs PixelMaterialInputs;
 
 	{

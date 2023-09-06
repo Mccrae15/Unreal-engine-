@@ -27,6 +27,7 @@
 #include "AnimBlueprintCompiler.h"
 #include "Animation/AnimAttributes.h"
 #include "AnimGraphAttributes.h"
+#include "Animation/AnimInstance.h"
 #include "Animation/AnimSync.h"
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimRootMotionProvider.h"
@@ -56,6 +57,8 @@ void FAnimGraphModule::StartupModule()
 	{
 		return MakeShared<FAnimBlueprintCompilerContext>(CastChecked<UAnimBlueprint>(InBlueprint), InMessageLog, InCompileOptions);
 	});
+	IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
+	KismetCompilerModule.OverrideBPTypeForClass(UAnimInstance::StaticClass(), UAnimBlueprint::StaticClass());
 
 	IModularFeatures::Get().RegisterModularFeature("PropertyAccessBlueprintBinding", &PropertyAccessAnimBlueprintBinding);
 

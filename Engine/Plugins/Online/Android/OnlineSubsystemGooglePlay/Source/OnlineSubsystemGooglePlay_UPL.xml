@@ -15,14 +15,14 @@
 	<buildGradleAdditions>
 		<insert>
 			dependencies {
-			implementation 'com.android.billingclient:billing:5.0.0'
+			implementation 'com.android.billingclient:billing:6.0.0'
 			}
 		</insert>
 	</buildGradleAdditions>
 
 	<gameActivityAndroidThunkJavaIapBeginPurchase>
 		<insert>
-public boolean AndroidThunkJava_IapBeginPurchase(String ProductId, String AccountId)
+public boolean AndroidThunkJava_IapBeginPurchase(String[] ProductIds, String AccountId)
 {
 	Log.debug("[JAVA] - AndroidThunkJava_IapBeginPurchase");
 	boolean bTriggeredPurchase = false;
@@ -50,7 +50,7 @@ public boolean AndroidThunkJava_IapBeginPurchase(String ProductId, String Accoun
 			{
 			}
 		}
-		bTriggeredPurchase = IapStoreHelper.BeginPurchase(ProductId, ObfuscatedAccountId);
+		bTriggeredPurchase = IapStoreHelper.BeginPurchase(ProductIds, ObfuscatedAccountId);
 	}
 	else
 	{

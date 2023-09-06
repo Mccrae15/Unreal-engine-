@@ -301,9 +301,13 @@ void UTickableTransformConstraint::PostEditChangeProperty(FPropertyChangedEvent&
 
 	if (const FProperty* MemberProperty = PropertyChangedEvent.MemberProperty)
 	{
-		static const FString OffsetStr("Offset");
-		if (MemberProperty->GetFName().ToString().Contains(OffsetStr) )
+		const FName MemberPropertyName = MemberProperty->GetFName();
+		if (MemberPropertyName == GET_MEMBER_NAME_CHECKED(UTickableTranslationConstraint, OffsetTranslation) ||
+			MemberPropertyName == GET_MEMBER_NAME_CHECKED(UTickableRotationConstraint, OffsetRotation) ||
+			MemberPropertyName == GET_MEMBER_NAME_CHECKED(UTickableScaleConstraint, OffsetScale) ||
+			MemberPropertyName == GET_MEMBER_NAME_CHECKED(UTickableParentConstraint, OffsetTransform))
 		{
+			OnConstraintChanged.Broadcast(this, PropertyChangedEvent);
 			Evaluate();
 		}
 	}
@@ -441,7 +445,7 @@ uint32 UTickableTransformConstraint::GetTargetHash() const
 
 bool UTickableTransformConstraint::ReferencesObject(TWeakObjectPtr<UObject> InObject) const
 {
-	const TWeakObjectPtr<UObject> ChildTarget = (ChildTRSHandle  && ChildTRSHandle->IsValid())? ChildTRSHandle->GetTarget() : nullptr;
+	const TWeakObjectPtr<UObject> ChildTarget = (ChildTRSHandle && ChildTRSHandle->IsValid())? ChildTRSHandle->GetTarget() : nullptr;
 	if (ChildTarget == InObject)
 	{
 		return true;
@@ -564,6 +568,16 @@ void UTickableTransformConstraint::OnHandleModified(UTransformableHandle* InHand
 			SetupDependencies();
 			return;
 		}
+	}
+
+	// update the constraint if the parent's transform has been modified 
+	if (InHandle == ParentTRSHandle && InNotification == EHandleEvent::GlobalTransformUpdated)
+	{
+		if (IsFullyActive() && ConstraintTick.IsTickFunctionRegistered() && ConstraintTick.IsTickFunctionEnabled())
+		{
+			Evaluate();
+		}
+		return;
 	}
 }
 
@@ -1417,7 +1431,7 @@ UTickableTransformConstraint* FTransformConstraintUtils::CreateFromType(
 	const UEnum* ETransformConstraintTypeEnum = StaticEnum<ETransformConstraintType>();
 	if (!ETransformConstraintTypeEnum->IsValidEnumValue(static_cast<int64>(InType)))
 	{
-		UE_LOG(LogTemp, Error, TEXT("Constraint Type %d not recognized"), InType);
+		UE_LOG(LogTemp, Error, TEXT("Constraint Type %d not recognized"), int(InType));
 		return nullptr;
 	}
 

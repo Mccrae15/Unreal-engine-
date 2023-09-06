@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 import templateCache from '../backend/TemplateCache';
-import { AgentData, AgentQuery, ArtifactData, AuditLogEntry, AuditLogQuery, BatchUpdatePoolRequest, ChangeSummaryData, CreateDeviceRequest, CreateDeviceResponse, CreateExternalIssueRequest, CreateExternalIssueResponse, CreateJobRequest, CreateJobResponse, CreateNoticeRequest, CreatePoolRequest, CreateSoftwareResponse, CreateSubscriptionRequest, CreateSubscriptionResponse, DashboardPreference, DevicePoolTelemetryQuery, DeviceTelemetryQuery, EventData, FindIssueResponse, FindJobTimingsResponse, GetAgentSoftwareChannelResponse, GetArtifactZipRequest, GetDashboardConfigResponse, GetDevicePlatformResponse, GetDevicePoolResponse, GetDevicePoolTelemetryResponse, GetDeviceReservationResponse, GetDeviceResponse, GetDeviceTelemetryResponse, GetExternalIssueProjectResponse, GetExternalIssueResponse, GetGraphResponse, GetIssueStreamResponse, GetJobsTabResponse, GetJobStepRefResponse, GetJobStepTraceResponse, GetJobTimingResponse, GetLogEventResponse, GetNoticeResponse, GetNotificationResponse, GetPerforceServerStatusResponse, GetPoolResponse, GetServerInfoResponse, GetServerSettingsResponse, GetSoftwareResponse, GetSubscriptionResponse, GetTestDataDetailsResponse, GetTestDataRefResponse, GetTestMetaResponse, GetTestResponse, GetTestsRequest, GetTestStreamResponse, GetUserResponse, GetUtilizationTelemetryResponse, GlobalConfig, IssueData, IssueQuery, IssueQueryV2, JobData, JobQuery, JobsTabColumnType, JobStepOutcome, JobStreamQuery, JobTimingsQuery, LeaseData, LogData, LogLineData, PoolData, ProjectData, ScheduleData, ScheduleQuery, SearchLogFileResponse, ServerUpdateResponse, SessionData, StreamData, TabType, TestData, UpdateAgentRequest, UpdateDeviceRequest, UpdateGlobalConfigRequest, UpdateIssueRequest, UpdateJobRequest, UpdateLeaseRequest, UpdateNoticeRequest, UpdateNotificationsRequest, UpdatePoolRequest, UpdateServerSettingsRequest, UpdateStepRequest, UpdateStepResponse, UpdateTemplateRefRequest, UpdateUserRequest, UsersQuery } from './Api';
+import { AgentData, AgentQuery, ArtifactData, AuditLogEntry, AuditLogQuery, BatchUpdatePoolRequest, ChangeSummaryData, CreateDeviceRequest, CreateDeviceResponse, CreateExternalIssueRequest, CreateExternalIssueResponse, CreateJobRequest, CreateJobResponse, CreateNoticeRequest, CreatePoolRequest, CreateSoftwareResponse, CreateSubscriptionRequest, CreateSubscriptionResponse, CreateZipRequest, DashboardPreference, DevicePoolTelemetryQuery, DeviceTelemetryQuery, EventData, FindArtifactsResponse, FindIssueResponse, FindJobTimingsResponse, GetAgentSoftwareChannelResponse, GetArtifactDirectoryResponse, GetArtifactZipRequest, GetDashboardConfigResponse, GetDevicePlatformResponse, GetDevicePoolResponse, GetDevicePoolTelemetryResponse, GetDeviceReservationResponse, GetDeviceResponse, GetDeviceTelemetryResponse, GetExternalIssueProjectResponse, GetExternalIssueResponse, GetGraphResponse, GetIssueStreamResponse, GetJobsTabResponse, GetJobStepRefResponse, GetJobStepTraceResponse, GetJobTimingResponse, GetLogEventResponse, GetNoticeResponse, GetNotificationResponse, GetPerforceServerStatusResponse, GetPoolResponse, GetServerInfoResponse, GetServerSettingsResponse, GetSoftwareResponse, GetSubscriptionResponse, GetTestDataDetailsResponse, GetTestDataRefResponse, GetTestMetaResponse, GetTestResponse, GetTestsRequest, GetTestStreamResponse, GetToolSummaryResponse, GetUserResponse, GetUtilizationTelemetryResponse, GlobalConfig, IssueData, IssueQuery, IssueQueryV2, JobData, JobQuery, JobsTabColumnType, JobStepOutcome, JobStreamQuery, JobTimingsQuery, LeaseData, LogData, LogLineData, PoolData, ProjectData, ScheduleData, ScheduleQuery, SearchLogFileResponse, ServerUpdateResponse, SessionData, StreamData, TabType, TestData, UpdateAgentRequest, UpdateDeviceRequest, UpdateGlobalConfigRequest, UpdateIssueRequest, UpdateJobRequest, UpdateLeaseRequest, UpdateNoticeRequest, UpdateNotificationsRequest, UpdatePoolRequest, UpdateServerSettingsRequest, UpdateStepRequest, UpdateStepResponse, UpdateTemplateRefRequest, UpdateUserRequest, UsersQuery } from './Api';
 import dashboard from './Dashboard';
 import { ChallengeStatus, Fetch } from './Fetch';
 import graphCache, { GraphQuery } from './GraphCache';
@@ -9,7 +9,7 @@ import { projectStore } from './ProjectStore';
 
 
 // Update interval for relatively static global data such as projects, schedules, templates
-const updateInterval = 120 * 1000;
+const updateInterval = 900 * 1000;
 
 export class Backend {
 
@@ -173,9 +173,9 @@ export class Backend {
                         lease.finishTime = new Date(Date.parse(lease.finishTime as string));
                     }
                     if (lease.details) {
-                        lease.batchId = lease.details.BatchId;
-                        lease.jobId = lease.details.JobId;
-                        lease.type = lease.details.Type;
+                        lease.batchId = lease.details.batchId;
+                        lease.jobId = lease.details.jobId;
+                        lease.type = lease.details.type;
                     }
                 });
 
@@ -251,7 +251,7 @@ export class Backend {
 
     }
 
-    getJob(id: string, query?: JobQuery): Promise<JobData> {
+    getJob(id: string, query?: JobQuery, includeGraph = true): Promise<JobData> {
 
         return new Promise<JobData>((resolve, reject) => {
 
@@ -260,11 +260,16 @@ export class Backend {
             }).then((value) => {
 
                 const response = value.data as JobData;
-                if (!response.graphHash) {
+                if (includeGraph && !response.graphHash) {
                     return reject(`Job ${id} has undefined graph hash`);
                 }
 
-                graphCache.get({ graphHash: response.graphHash, jobId: id }).then(graph => {
+                if (!includeGraph) {
+                    resolve(response); 
+                    return;
+                }
+
+                graphCache.get({ graphHash: response.graphHash!, jobId: id }).then(graph => {
                     response.graphRef = graph;
                     resolve(response);
                 }).catch(reason => {
@@ -526,6 +531,35 @@ export class Backend {
         });
     }
 
+    getJobArtifactsV2(ids?: string[], keys?: string[]): Promise<FindArtifactsResponse> {
+
+        const uniqueIds = Array.from(new Set(ids ?? []));
+        const uniqueKeys = Array.from(new Set(keys ?? []));
+
+        if (!uniqueIds.length && !uniqueKeys.length) {
+            throw new Error(`Must provide at least 1 id or key`);
+        }
+
+        return new Promise<FindArtifactsResponse>((resolve, reject) => {
+
+            this.backend.get(`/api/v2/artifacts`, { params: { id: uniqueIds, key: uniqueKeys } })
+                .then(response => { resolve(response.data); })
+                .catch(reason => reject(reason));
+        })
+    }
+
+
+    getBrowseArtifacts(id: string, path?: string): Promise<GetArtifactDirectoryResponse> {
+
+        return new Promise<GetArtifactDirectoryResponse>((resolve, reject) => {
+
+            this.backend.get(`/api/v2/artifacts/${id}/browse`, { params: { path: path } })
+                .then(response => { resolve(response.data); })
+                .catch(reason => reject(reason));
+        })
+    }
+
+
     getJobArtifacts(jobId: string, stepId?: string): Promise<ArtifactData[]> {
 
         const params: any = {
@@ -548,6 +582,46 @@ export class Backend {
             });
         });
     }
+
+    downloadArtifactV2(artifactId: string, path: string, filename: string): Promise<boolean> {
+
+        return new Promise<any>((resolve, reject) => {
+            this.backend.get(`/api/v2/artifacts/${artifactId}/file`, { params: { path: path }, responseBlob: true }).then(response => {
+                const url = window.URL.createObjectURL(response.data);
+                const link = document.createElement('a');
+                link.href = url;
+                link.setAttribute('download', filename);
+                link.click();
+                setTimeout(() => {
+                    window.URL.revokeObjectURL(url);
+                }, 100);
+                resolve(true);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    downloadArtifactZipV2(artifactId: string, request: CreateZipRequest, filename: string): Promise<boolean> {
+
+        return new Promise<any>((resolve, reject) => {
+            this.backend.post(`/api/v2/artifacts/${artifactId}/zip`, request, { responseBlob: true }).then(response => {
+                const url = window.URL.createObjectURL(response.data);
+                const link = document.createElement('a');
+                link.href = url;
+                link.setAttribute('download', filename);
+                link.click();
+                setTimeout(() => {
+                    window.URL.revokeObjectURL(url);
+                }, 100);
+                resolve(true);
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+
+    }
+
 
     downloadJobArtifacts(request: GetArtifactZipRequest): Promise<boolean> {
         return new Promise<any>((resolve, reject) => {
@@ -617,6 +691,19 @@ export class Backend {
         });
 
     }
+
+    testException(): Promise<void> {
+
+        return new Promise<void>((resolve, reject) => {
+
+            this.backend.get("/api/v1/debug/exception").then(() => {
+                resolve();
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
 
     createJob(request: CreateJobRequest): Promise<CreateJobResponse> {
 
@@ -874,7 +961,7 @@ export class Backend {
 
         return new Promise<GetUserResponse>((resolve, reject) => {
 
-            this.backend.get("/api/v1/users/current", { suppress404: true }).then((response) => {
+            this.backend.get("/api/v1/user", { suppress404: true }).then((response) => {
 
                 let data = response.data as GetUserResponse;
 
@@ -1122,7 +1209,7 @@ export class Backend {
     }
 
     getTests(testIds: string[]): Promise<GetTestResponse[]> {
-        const request: GetTestsRequest = { testIds: testIds };        
+        const request: GetTestsRequest = { testIds: testIds };
         return new Promise<GetTestResponse[]>((resolve, reject) => {
             this.backend.post(`/api/v2/testdata/tests`, request).then((value) => {
                 resolve(value.data as GetTestResponse[]);
@@ -1528,6 +1615,17 @@ export class Backend {
                     notice.finishTime = notice.finishTime ? new Date(notice.finishTime as string) : undefined;
                     return notice;
                 }));
+            }).catch(reason => {
+                reject(reason);
+            });
+        });
+    }
+
+    // get tools
+    getTools(): Promise<GetToolSummaryResponse[]> {
+        return new Promise<GetToolSummaryResponse[]>((resolve, reject) => {
+            this.backend.get(`/api/v1/tools`).then((value) => {
+                resolve(value.data?.tools as GetToolSummaryResponse[]);
             }).catch(reason => {
                 reject(reason);
             });

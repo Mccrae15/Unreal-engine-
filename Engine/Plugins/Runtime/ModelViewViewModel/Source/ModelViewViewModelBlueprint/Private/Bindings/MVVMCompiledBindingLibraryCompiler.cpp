@@ -3,7 +3,10 @@
 #include "Bindings/MVVMCompiledBindingLibraryCompiler.h"
 
 #include "Bindings/MVVMBindingHelper.h"
+#include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "MVVMDeveloperProjectSettings.h"
 #include "MVVMSubsystem.h"
 #include "Misc/TVariantMeta.h"
 #include <limits> // IWYU pragma: keep
@@ -19,7 +22,7 @@ static const FName NAME_BlueprintGetter = "BlueprintGetter";
 /** */
 struct FRawFieldId
 {
-	UClass* NotifyFieldValueChangedClass;
+	const UClass* NotifyFieldValueChangedClass;
 	UE::FieldNotification::FFieldId FieldId;
 
 	int32 LoadedFieldIdIndex = INDEX_NONE;
@@ -65,17 +68,19 @@ public:
 /** */
 struct FRawBinding
 {
-	TArray<FCompiledBindingLibraryCompiler::FFieldPathHandle> SourcePathHandles;
+	FCompiledBindingLibraryCompiler::FFieldPathHandle SourcePathHandle;
 	FCompiledBindingLibraryCompiler::FFieldPathHandle DestinationPathHandle;
 	FCompiledBindingLibraryCompiler::FFieldPathHandle ConversionFunctionPathHandle;
 
 	FCompiledBindingLibraryCompiler::FBindingHandle BindingHandle;
 	FMVVMVCompiledBinding CompiledBinding;
+	int32 BindingCount = 1;
+	bool bIsConversionFunctionComplex = false;
 
 public:
 	bool IsSameBinding(const FRawBinding& Binding) const
 	{
-		return Binding.SourcePathHandles == SourcePathHandles
+		return Binding.SourcePathHandle == SourcePathHandle
 			&& Binding.DestinationPathHandle == DestinationPathHandle
 			&& Binding.ConversionFunctionPathHandle == ConversionFunctionPathHandle;
 	}
@@ -114,6 +119,67 @@ public:
 	}
 };
 
+/** */
+//FMVVMConstFieldVariant GetMostUpToDate(FMVVMConstFieldVariant Field)
+//{
+//	if (Field.IsValid())
+//	{
+//		UClass* Class = Cast<UClass>(Field.GetOwner());
+//		if (!Class)
+//		{
+//			return Field;
+//		}
+//		if (Field.IsProperty())
+//		{
+//			return FMVVMConstFieldVariant(FBlueprintEditorUtils::GetMostUpToDateProperty(Field.GetProperty()));
+//		}
+//		else if (Field.IsFunction())
+//		{
+//			return FMVVMConstFieldVariant(FBlueprintEditorUtils::GetMostUpToDateFunction(Field.GetFunction()));
+//		}
+//	}
+//	return Field;
+//}
+
+
+/** */
+const UStruct* GetSavedGeneratedStruct(FMVVMConstFieldVariant Field)
+{
+	const UStruct* Result = Field.GetOwner();
+	const UClass* Class = Cast<UClass>(Result);
+	if (!Class || Class->HasAnyClassFlags(CLASS_Native) || Class->bCooked || !Field.IsValid())
+	{
+		return Result;
+	}
+
+	const UBlueprint* Blueprint = Cast<const UBlueprint>(Class->ClassGeneratedBy);
+	if (!Blueprint)
+	{
+		return Result;
+	}
+
+	ensure(Blueprint->GeneratedClass);
+	return Blueprint->GeneratedClass;
+}
+
+/** */
+const UClass* GetSavedGeneratedStruct(const UClass* Class)
+{
+	if (!Class || Class->HasAnyClassFlags(CLASS_Native) || Class->bCooked)
+	{
+		return Class;
+	}
+
+	UBlueprint* Blueprint = Cast<UBlueprint>(Class->ClassGeneratedBy);
+	if (!Blueprint)
+	{
+		return Class;
+	}
+
+	ensure(Blueprint->GeneratedClass);
+	return Blueprint->GeneratedClass;
+}
+
 } //namespace
 
 
@@ -136,13 +202,15 @@ FCompiledBindingLibraryCompiler::FCompiledBindingLibraryCompiler()
 
 }
 
-TValueOrError<FCompiledBindingLibraryCompiler::FFieldIdHandle, FText> FCompiledBindingLibraryCompiler::AddFieldId(TSubclassOf<UObject> SourceClass, FName FieldId)
+TValueOrError<FCompiledBindingLibraryCompiler::FFieldIdHandle, FText> FCompiledBindingLibraryCompiler::AddFieldId(const UClass* InSourceClass, FName FieldId)
 {
 	Impl->bCompiled = false;
 
+	const UClass* SourceClass = FBlueprintEditorUtils::GetMostUpToDateClass(InSourceClass);
+
 	if (FieldId.IsNone())
 	{
-		return MakeError(LOCTEXT("FieldNotDefined", "The Field/Property is not defined."));
+		return MakeError(LOCTEXT("FieldNotDefined", "The Field does not have the specifier FieldNotify and cannot be used as a binding source. You may want to use the 'One Time' binding mode."));
 	}
 
 	if (!SourceClass->ImplementsInterface(UNotifyFieldValueChanged::StaticClass()))
@@ -157,19 +225,19 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldIdHandle, FText> FCompiledB
 		UE::FieldNotification::FFieldId FoundFieldId = ScriptObject->GetFieldNotificationDescriptor().GetField(SourceClass, FieldId);
 		if (!FoundFieldId.IsValid())
 		{
-			return MakeError(FText::Format(LOCTEXT("FieldNotifyNotSupported", "The FieldNotify '{0}' is not supported by '{0}'.")
+			return MakeError(FText::Format(LOCTEXT("FieldNotifyNotSupported", "The FieldNotify '{0}' is not supported by '{1}'.")
 				, FText::FromName(FieldId)
 				, SourceClass->GetDisplayNameText()));
 		}
 
 		int32 FoundFieldIdIndex = Impl->FieldIds.IndexOfByPredicate([FoundFieldId, SourceClass](const Private::FRawFieldId& Other)
 			{
-				return Other.FieldId == FoundFieldId && Other.NotifyFieldValueChangedClass == SourceClass.Get();
+				return Other.FieldId == FoundFieldId && Other.NotifyFieldValueChangedClass == SourceClass;
 			});
 		if (FoundFieldIdIndex == INDEX_NONE)
 		{
 			Private::FRawFieldId RawFieldId;
-			RawFieldId.NotifyFieldValueChangedClass = SourceClass.Get();
+			RawFieldId.NotifyFieldValueChangedClass = SourceClass;
 			RawFieldId.FieldId = FoundFieldId;
 			RawFieldId.IdHandle = FFieldIdHandle::MakeHandle();
 			FoundFieldIdIndex = Impl->FieldIds.Add(MoveTemp(RawFieldId));
@@ -235,7 +303,13 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 
 	for (int32 Index = 0; Index < InFieldPath.Num(); ++Index)
 	{
+		// Make sure the FieldVariant is not from a skeletalclass
 		FMVVMConstFieldVariant FieldVariant = InFieldPath[Index];
+		if (!FieldVariant.IsValid())
+		{
+			return MakeError(FText::Format(LOCTEXT("FieldDoesNotHaveValidOwner", "The field {0} doesn't have a valid owner."), FText::FromName(InFieldPath[Index].GetName())));
+		}
+
 		const bool bIsLast = Index == InFieldPath.Num() - 1;
 		if (FieldVariant.IsProperty())
 		{
@@ -258,6 +332,11 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 				return MakeError(ValidatedStr);
 			}
 
+			if (!GetDefault<UMVVMDeveloperProjectSettings>()->IsPropertyAllowed(FieldVariant.GetProperty()))
+			{
+				return MakeError(LOCTEXT("PropertyNotAllow", "A property is not allowed."));
+			}
+
 			RawFieldIndexes.Add(Impl->AddUniqueField(FieldVariant));
 		}
 		else if (FieldVariant.IsFunction())
@@ -272,6 +351,11 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 			else if (!BindingHelper::IsValidForSourceBinding(FieldVariant.GetFunction()))
 			{
 				return MakeError(FText::Format(LOCTEXT("FunctionNotReadableAtRuntime", "Function '{0}' is not readable at runtime."), FieldVariant.GetFunction()->GetDisplayNameText()));
+			}
+
+			if (!GetDefault<UMVVMDeveloperProjectSettings>()->IsFunctionAllowed(FieldVariant.GetFunction()))
+			{
+				return MakeError(LOCTEXT("FunctionNotAllow", "A function is not allowed."));
 			}
 
 			if (bIsLast && !bInRead)
@@ -326,14 +410,16 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 		return MakeError(FText::Format(LOCTEXT("FieldDoesNotReturnType", "The field does not return a '{0}'."), ExpectedType->GetDisplayNameText()));
 	}
 
+	UE::MVVM::FMVVMConstFieldVariant Last = FieldPath.Last();
+
 	const FObjectPropertyBase* ObjectPropertyBase = nullptr;
-	if (FieldPath.Last().IsProperty())
+	if (Last.IsProperty())
 	{
-		ObjectPropertyBase = CastField<const FObjectPropertyBase>(FieldPath.Last().GetProperty());
+		ObjectPropertyBase = CastField<const FObjectPropertyBase>(Last.GetProperty());
 	}
-	else if (FieldPath.Last().IsFunction())
+	else if (Last.IsFunction())
 	{
-		ObjectPropertyBase = CastField<const FObjectPropertyBase>(BindingHelper::GetReturnProperty(FieldPath.Last().GetFunction()));
+		ObjectPropertyBase = CastField<const FObjectPropertyBase>(BindingHelper::GetReturnProperty(Last.GetFunction()));
 	}
 
 	if (ObjectPropertyBase == nullptr)
@@ -349,9 +435,20 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 }
 
 
-TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompiledBindingLibraryCompiler::AddConversionFunctionFieldPath(TSubclassOf<UObject> SourceClass, const UFunction* Function)
+TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompiledBindingLibraryCompiler::AddConversionFunctionFieldPath(const UClass* InSourceClass, const UFunction* InFunction)
 {
 	Impl->bCompiled = false;
+
+	const UClass* SourceClass = FBlueprintEditorUtils::GetMostUpToDateClass(InSourceClass);
+	const UFunction* Function = FBlueprintEditorUtils::GetMostUpToDateFunction(InFunction);
+
+	// Transient Conversion function are only added to generated class and not to the skeletal class.
+	bool bTransientConversionFunction = false;
+	if (Function == nullptr && InFunction && InFunction->GetTypedOuter<UClass>() == InSourceClass)
+	{
+		Function = InFunction;
+		bTransientConversionFunction = true;
+	}
 
 	if (SourceClass == nullptr)
 	{
@@ -371,7 +468,7 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 
 	if (!Function->HasAllFunctionFlags(FUNC_Static))
 	{
-		if (!SourceClass->IsChildOf(Function->GetOuterUClass()))
+		if (!SourceClass->IsChildOf(Function->GetOuterUClass()) && !bTransientConversionFunction)
 		{
 			return MakeError(FText::Format(LOCTEXT("FunctionHasInvalidSelf", "Function {0} is going to be executed with an invalid self."), Function->GetDisplayNameText()));
 		}
@@ -401,29 +498,34 @@ TValueOrError<FCompiledBindingLibraryCompiler::FFieldPathHandle, FText> FCompile
 
 TValueOrError<FCompiledBindingLibraryCompiler::FBindingHandle, FText> FCompiledBindingLibraryCompiler::AddBinding(FFieldPathHandle InSourceHandle, FFieldPathHandle InDestinationHandle)
 {
-	return AddBinding(InSourceHandle, InDestinationHandle, FFieldPathHandle());
+	return AddBindingImpl(InSourceHandle, InDestinationHandle, FFieldPathHandle(), false);
 }
 
 
 TValueOrError<FCompiledBindingLibraryCompiler::FBindingHandle, FText> FCompiledBindingLibraryCompiler::AddBinding(FFieldPathHandle InSourceHandle, FFieldPathHandle InDestinationHandle, FFieldPathHandle InConversionFunctionHandle)
 {
-	return AddBinding(MakeArrayView(&InSourceHandle, 1), InDestinationHandle, InConversionFunctionHandle);
+	return AddBindingImpl(InSourceHandle, InDestinationHandle, InConversionFunctionHandle, false);
 }
 
 
-TValueOrError<FCompiledBindingLibraryCompiler::FBindingHandle, FText> FCompiledBindingLibraryCompiler::AddBinding(TArrayView<const FFieldPathHandle> InSourceHandles, FFieldPathHandle InDestinationHandle, FFieldPathHandle InConversionFunctionHandle)
+TValueOrError<FCompiledBindingLibraryCompiler::FBindingHandle, FText> FCompiledBindingLibraryCompiler::AddComplexBinding(FFieldPathHandle InDestinationHandle, FFieldPathHandle InConversionFunctionHandle)
+{
+	return AddBindingImpl(FFieldPathHandle(), InDestinationHandle, InConversionFunctionHandle, true);
+}
+
+
+TValueOrError<FCompiledBindingLibraryCompiler::FBindingHandle, FText> FCompiledBindingLibraryCompiler::AddBindingImpl(FFieldPathHandle InSourceHandle, FFieldPathHandle InDestinationHandle, FFieldPathHandle InConversionFunctionHandle, bool bInIsComplexBinding)
 {
 	Impl->bCompiled = false;
 
 	UMVVMSubsystem::FConstDirectionalBindingArgs DirectionBindingArgs;
 
-	ensureMsgf(InSourceHandles.Num() == 1, TEXT("Conversion function with more than one arguements is not yet supported."));
-
+	// Complex Conversion function do not have input arguments.
+	if (!bInIsComplexBinding)
 	{
-		FFieldPathHandle FirstSourceHandle = InSourceHandles[0];
-		const int32 FoundSourceFieldPath = Impl->FieldPaths.IndexOfByPredicate([FirstSourceHandle](const Private::FRawFieldPath& Other)
+		const int32 FoundSourceFieldPath = Impl->FieldPaths.IndexOfByPredicate([InSourceHandle](const Private::FRawFieldPath& Other)
 			{
-				return Other.PathHandle == FirstSourceHandle;
+				return Other.PathHandle == InSourceHandle;
 			});
 		if (FoundSourceFieldPath == INDEX_NONE)
 		{
@@ -511,17 +613,26 @@ TValueOrError<FCompiledBindingLibraryCompiler::FBindingHandle, FText> FCompiledB
 	}
 
 	Private::FRawBinding NewBinding;
-	NewBinding.SourcePathHandles = InSourceHandles;
+	NewBinding.SourcePathHandle = InSourceHandle;
 	NewBinding.DestinationPathHandle = InDestinationHandle;
 	NewBinding.ConversionFunctionPathHandle = InConversionFunctionHandle;
-	const int32 FoundIndex = Impl->Bindings.IndexOfByPredicate([&NewBinding](const Private::FRawBinding& Binding)
+	NewBinding.bIsConversionFunctionComplex = bInIsComplexBinding;
+	const int32 FoundSameBindingIndex = Impl->Bindings.IndexOfByPredicate([&NewBinding](const Private::FRawBinding& Binding)
 		{
 			return NewBinding.IsSameBinding(Binding);
 		});
 
-	if (FoundIndex != INDEX_NONE)
+	if (FoundSameBindingIndex != INDEX_NONE)
 	{
-		return MakeValue(Impl->Bindings[FoundIndex].BindingHandle);
+		if (!bInIsComplexBinding)
+		{
+			return MakeError(LOCTEXT("BindingAlreadyAdded", "The binding already exist."));
+		}
+		else
+		{
+			++Impl->Bindings[FoundSameBindingIndex].BindingCount;
+			return MakeValue(Impl->Bindings[FoundSameBindingIndex].BindingHandle);
+		}
 	}
 	else
 	{
@@ -543,7 +654,7 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 		TArray<int32> RawFieldIdIndex;
 	};
 
-	// create the list of UClass
+	// create the list of UClass. Uses the Generated class, not the SkeletalClass.
 	TMap<const UStruct*, FCompiledClassInfo> MapOfFieldInClass;
 	{
 		for (int32 Index = 0; Index < Impl->Fields.Num(); ++Index)
@@ -551,11 +662,11 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 			const Private::FRawField& RawField = Impl->Fields[Index];
 			check(!RawField.Field.IsEmpty());
 
-			const UStruct* Owner = RawField.Field.IsProperty() ? RawField.Field.GetProperty()->GetOwnerStruct() : RawField.Field.GetFunction()->GetOwnerClass();
-			check(Owner);
-			FCompiledClassInfo& ClassInfo = MapOfFieldInClass.FindOrAdd(Owner);
+			const UStruct* FinalOwner = Private::GetSavedGeneratedStruct(RawField.Field);
+			check(FinalOwner);
+			FCompiledClassInfo& ClassInfo = MapOfFieldInClass.FindOrAdd(FinalOwner);
 
-			// Test if the Field is not there more than one
+			// Test if the Field is there more than one
 			{
 				FMVVMConstFieldVariant FieldToTest = RawField.Field;
 				const TArray<Private::FRawField>& ListOfFields = Impl->Fields;
@@ -576,7 +687,7 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 			check(RawFieldId.FieldId.IsValid());
 			check(RawFieldId.NotifyFieldValueChangedClass);
 
-			FCompiledClassInfo& ClassInfo = MapOfFieldInClass.FindOrAdd(RawFieldId.NotifyFieldValueChangedClass);
+			FCompiledClassInfo& ClassInfo = MapOfFieldInClass.FindOrAdd(Private::GetSavedGeneratedStruct(RawFieldId.NotifyFieldValueChangedClass));
 
 			// Test if the Field is not there more than one
 			{
@@ -593,9 +704,11 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 		}
 	}
 
-
 	// Todo optimize that list to group common type. ie UWidget::ToolTip == UProgressBar::ToolTip. We can merge UWidget in UProgressBar.
-	//The difficulty is with type that may be not loaded at runtime and would create runtime issue with type that would be loaded otherwise.
+	//Algo: for each class entry
+		// if: a class is child of another class in the list (ProgressBar is child of Widget all property inside Widget are also in ProgressBar)
+		// then: merge the 2 and restart the algo
+
 
 	FCompileResult Result;
 
@@ -606,7 +719,7 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 	for (TPair<const UStruct*, FCompiledClassInfo>& StructCompiledFields : MapOfFieldInClass)
 	{
 		FMVVMVCompiledFields CompiledFields;
-		CompiledFields.ClassOrScriptStruct = StructCompiledFields.Key;
+		CompiledFields.ClassOrScriptStruct = StructCompiledFields.Key; // The generated class not the skeletal class
 		check(StructCompiledFields.Key);
 
 		TArray<FName> PropertyNames;
@@ -620,6 +733,7 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 
 			if (Field.IsProperty())
 			{
+				// N.B. no need to translate from skeletal to generated, we only use the the name or the index.
 				Result.Library.LoadedProperties.Add(const_cast<FProperty*>(Field.GetProperty()));
 				PropertyNames.Add(Field.GetName());
 				RawField.LoadedPropertyOrFunctionIndex = TotalNumberOfProperties;
@@ -628,6 +742,7 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 			else
 			{
 				check(Field.IsFunction());
+				// N.B. no need to translate from skeletal to generated, we only use the the name or the index.
 				Result.Library.LoadedFunctions.Add(const_cast<UFunction*>(Field.GetFunction()));
 				FunctionNames.Add(Field.GetName());
 				RawField.LoadedPropertyOrFunctionIndex = TotalNumberOfFunctions;
@@ -753,13 +868,18 @@ TValueOrError<FCompiledBindingLibraryCompiler::FCompileResult, FText> FCompiledB
 		Binding.CompiledBinding.CompiledBindingLibraryId = Result.Library.CompiledBindingLibraryId;
 		check(Binding.CompiledBinding.CompiledBindingLibraryId.IsValid());
 
-		Binding.CompiledBinding.SourceFieldPath = GetCompiledFieldPath(Binding.SourcePathHandles[0]);
-		check(Binding.CompiledBinding.SourceFieldPath.IsValid());
+		Binding.CompiledBinding.SourceFieldPath = GetCompiledFieldPath(Binding.SourcePathHandle);
+		check(Binding.bIsConversionFunctionComplex || Binding.CompiledBinding.SourceFieldPath.IsValid());
 
 		Binding.CompiledBinding.DestinationFieldPath = GetCompiledFieldPath(Binding.DestinationPathHandle);
 		check(Binding.CompiledBinding.DestinationFieldPath.IsValid());
 
 		Binding.CompiledBinding.ConversionFunctionFieldPath = GetCompiledFieldPath(Binding.ConversionFunctionPathHandle);
+
+		Binding.CompiledBinding.Flags = 0;
+		Binding.CompiledBinding.Flags |= (Binding.ConversionFunctionPathHandle.IsValid()) ? (uint8)FMVVMVCompiledBinding::EFlags::HasConversionFunction : 0;
+		Binding.CompiledBinding.Flags |= (Binding.bIsConversionFunctionComplex) ? (uint8)FMVVMVCompiledBinding::EFlags::IsConversionFunctionComplex : 0;
+		Binding.CompiledBinding.Flags |= Binding.BindingCount > 1 ? (uint8)FMVVMVCompiledBinding::EFlags::IsShared : 0;
 
 		Result.Bindings.Add(Binding.BindingHandle, Binding.CompiledBinding);
 	}

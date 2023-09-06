@@ -2,11 +2,7 @@
 
 #pragma once
 
-#include "DMXPixelMappingRuntimeCommon.h"
-
-#include "Tickable.h"
 #include "UObject/Object.h"
-#include "Stats/Stats.h"
 
 #include "DMXPixelMappingBaseComponent.generated.h"
 
@@ -15,6 +11,8 @@ DECLARE_STATS_GROUP(TEXT("DMXPixelMapping"), STATGROUP_DMXPIXELMAPPING, STATCAT_
 
 class FDMXPixelMappingComponentTemplate;
 class UDMXPixelMappingRendererComponent;
+class UDMXPixelMapping;
+class UDMXPixelMappingRootComponent;
 
 
 /**
@@ -23,25 +21,26 @@ class UDMXPixelMappingRendererComponent;
 UCLASS(BlueprintType, NotBlueprintable, Abstract)
 class DMXPIXELMAPPINGRUNTIME_API UDMXPixelMappingBaseComponent
 	: public UObject
-	, public FTickableGameObject
 {
 	GENERATED_BODY()
 
+	using TComponentPredicate = TFunctionRef<void(UDMXPixelMappingBaseComponent*)>;
+
+	template <typename Type>
+	using TComponentPredicateType = TFunctionRef<void(Type*)>;
+
 	DECLARE_EVENT_TwoParams(UDMXPixelMappingBaseComponent, FDMXPixelMappingOnComponentAdded, UDMXPixelMapping* /** PixelMapping */, UDMXPixelMappingBaseComponent* /** AddedComponent */);
 	DECLARE_EVENT_TwoParams(UDMXPixelMappingBaseComponent, FDMXPixelMappingOnComponentRemoved, UDMXPixelMapping* /** PixelMapping */, UDMXPixelMappingBaseComponent* /** RemovedComponent */);
-	DECLARE_EVENT_FourParams(UDMXPixelMappingBaseComponent, FDMXPixelMappingOnComponentRenamed, UDMXPixelMapping* /** PixelMapping */, UDMXPixelMappingBaseComponent* /** RenamedComponent */, UObject* /** OldOuter */, const FName /** OldName */);
+	DECLARE_EVENT_OneParam(UDMXPixelMappingBaseComponent, FDMXPixelMappingOnComponentRenamed, UDMXPixelMappingBaseComponent* /** RenamedComponent */);
 
 public:
-	/** Public constructor */
-	UDMXPixelMappingBaseComponent();
-
 	/** Gets an Event broadcast when a component was added */
 	static FDMXPixelMappingOnComponentAdded& GetOnComponentAdded();
 
 	/** Gets an Event broadcast when a component was added */
 	static FDMXPixelMappingOnComponentRemoved& GetOnComponentRemoved();
 
-	/** Gets an Event broadcast when a component was renamed */
+	/** Gets an Event broadcast this uobject was renamed. Note this is only raised after UObject::Rename, not after SetUserName.*/
 	static FDMXPixelMappingOnComponentRenamed& GetOnComponentRenamed();
 	
 	//~ Begin UObject interface
@@ -65,14 +64,6 @@ public:
 	* Helper function for generating UObject name, the child should implement their own logic for Prefix name generation.
 	*/
 	virtual const FName& GetNamePrefix();
-
-	// ~Begin FTickableGameObject interface
-	virtual void Tick(float DeltaTime) override {}
-	virtual TStatId GetStatId() const override;
-	virtual bool IsTickableInEditor() const override { return true; }
-	virtual bool IsTickableWhenPaused() const override { return true; }
-	virtual bool IsTickable() const override { return false; }
-	// ~End FTickableGameObject interface
 
 	/*------------------------------------------
 		UDMXPixelMappingBaseComponent interface
@@ -109,15 +100,22 @@ public:
 		return false;
 	}
 
-	/** Returns the name of the component used across all widgets that draw it */
+	/** DEPRECATED 5.3 */
+	UE_DEPRECATED(5.3, "Renamed GetUserName to be more explicit aobout the intent. The user name is displayed if set, otherwise the object name.")
 	virtual FString GetUserFriendlyName() const;
+
+	/** Returns the name of the component. If user name is set returns the custom user name (see SetUserName) */
+	virtual FString GetUserName() const;
+
+	/** Sets the custom user name. If set, GetUserName returns this name. */
+	virtual void SetUserName(const FString& NewName);
 
 	/** 
 	 * Loop through all child by given Predicate 
 	 *
 	 * @param bIsRecursive		Should it loop recursively
 	 */
-	void ForEachChild(TComponentPredicate Predicate, bool bIsRecursive);
+	void ForEachChild(TFunctionRef<void(UDMXPixelMappingBaseComponent*)> Predicate, bool bIsRecursive);
 
 	/**
 	 * Looking for the first child by given Class
@@ -203,6 +201,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "DMX|PixelMapping")
 	virtual void RenderAndSendDMX() {};
 
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	bool bExpanded = true;
+#endif
+
 public:
 	/*----------------------------------------------------------
 		Public static functions
@@ -259,6 +262,10 @@ protected:
 
 	/** Called when the component was added to a parent */
 	virtual void NotifyRemovedFromParent();
+
+	/** Custom user name for the component. Should be used if set. */
+	UPROPERTY()
+	FString UserName;
 
 private:
 	/** Parent component */

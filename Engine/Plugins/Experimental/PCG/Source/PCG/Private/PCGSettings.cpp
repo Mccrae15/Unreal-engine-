@@ -9,6 +9,7 @@
 #include "PCGGraph.h"
 #include "PCGModule.h"
 #include "PCGPin.h"
+#include "PCGSubgraph.h"
 #include "PCGSubsystem.h"
 #include "Helpers/PCGHelpers.h"
 #include "Helpers/PCGSettingsHelpers.h"
@@ -60,6 +61,86 @@ public:
 #endif // WITH_EDITOR
 };
 
+FString FPCGSettingsOverridableParam::GetPropertyPath() const
+{
+	return FString::JoinBy(Properties, TEXT("/"), [](const FProperty* InProperty) { return InProperty ? InProperty->GetName() : FString(); });
+}
+
+TArray<FName> FPCGSettingsOverridableParam::GenerateAllPossibleAliases() const
+{
+	if (Properties.IsEmpty() || !HasAliases())
+	{
+		return TArray<FName>{};
+	}
+
+	auto ConcatenateNames = [](const FName& Name1, const FName& Name2) -> FName
+	{
+		return FName(FString::Printf(TEXT("%s/%s"), *Name1.ToString(), *Name2.ToString()));
+	};
+
+	// If we have multiple properties, we'll generate all possible aliases, which is a combination of each aliases for each property in the path.
+	TArray<FName> Result;
+	for (int32 i = 0; i < Properties.Num(); ++i)
+	{
+		const FPCGPropertyAliases* It = MapOfAliases.Find(i);
+		const TArray<FName>* CurrentAliases = It ? &It->Aliases : nullptr;
+		const FProperty* CurrentProperty = Properties[i];
+		const FName PropertyName = CurrentProperty ? CurrentProperty->GetFName() : NAME_None;
+
+		// If no alias at this level, just concatenate the property name to all existing aliases
+		if (!CurrentAliases || CurrentAliases->IsEmpty())
+		{
+			if (Result.IsEmpty())
+			{
+				Result.Add(PropertyName);
+			}
+			else
+			{
+				for (FName& Alias : Result)
+				{
+					Alias = ConcatenateNames(Alias, PropertyName);
+				}
+			}
+		}
+		else if (Result.IsEmpty())
+		{
+			if (CurrentAliases)
+			{
+				Result = *CurrentAliases;
+			}
+
+			// Also need to add the property name
+			Result.Add(PropertyName);
+		}
+		else
+		{
+			TArray<FName> Temp;
+			Temp.Reserve(Result.Num() * CurrentAliases->Num());
+			for (const FName& Alias : Result)
+			{
+				for (const FName& OtherAlias : *CurrentAliases)
+				{
+					Temp.Add(ConcatenateNames(Alias, OtherAlias));
+				}
+
+				// Also need to add the property name
+				Temp.Add(ConcatenateNames(Alias, PropertyName));
+			}
+
+			Result = std::move(Temp);
+		}
+	}
+
+	return Result;
+}
+
+#if WITH_EDITOR
+FString FPCGSettingsOverridableParam::GetDisplayPropertyPath() const
+{
+	return FString::JoinBy(Properties, TEXT("/"), [](const FProperty* InProperty) { return InProperty ? InProperty->GetDisplayNameText().ToString() : FString(); });
+}
+#endif // WITH_EDITOR
+
 bool UPCGSettingsInterface::IsInstance() const
 {
 	return this != GetSettings();
@@ -80,6 +161,11 @@ void UPCGSettingsInterface::SetEnabled(bool bInEnabled)
 	}
 }
 
+uint32 UPCGSettings::GetTypeNameHash() const
+{
+	return GetTypeHash(GetClass()->GetFName());
+}
+
 bool UPCGSettings::operator==(const UPCGSettings& Other) const
 {
 	if (this == &Other)
@@ -98,6 +184,41 @@ bool UPCGSettings::operator==(const UPCGSettings& Other) const
 #if WITH_EDITOR
 void UPCGSettings::ApplyDeprecation(UPCGNode* InOutNode)
 {
+	// For versions older than the update of input selector, look for any Input Selector in the properties, and if we find one that is default,
+	// we force to @LastCreated to keep the old behavior.
+	if (DataVersion < FPCGCustomVersion::UpdateAttributePropertyInputSelector)
+	{
+		auto Recurse = [this](UStruct* InStructClass, void* InContainer)
+		{
+			auto RecurseImpl = [this](UStruct* InStructClass, void* InContainer, auto Callback) -> void
+			{
+				for (TFieldIterator<FStructProperty> It(InStructClass, EFieldIterationFlags::IncludeSuper); It; ++It)
+				{
+					const FStructProperty* Property = CastField<FStructProperty>(*It);
+					if (!Property)
+					{
+						continue;
+					}
+
+					// If it is an Input Selector, apply deprecation
+					if (Property->Struct == FPCGAttributePropertyInputSelector::StaticStruct())
+					{
+						Property->ContainerPtrToValuePtr<FPCGAttributePropertyInputSelector>(InContainer)->ApplyDeprecation(DataVersion);
+					}
+					else
+					{
+						// Otherwise, go deeper.
+						Callback(Property->Struct.Get(), Property->ContainerPtrToValuePtr<void>(InContainer), Callback);
+					}
+				}
+			};
+
+			RecurseImpl(InStructClass, InContainer, RecurseImpl);
+		};
+
+		Recurse(GetClass(), this);
+	}
+
 	DataVersion = FPCGCustomVersion::LatestVersion;
 }
 
@@ -143,17 +264,20 @@ void UPCGSettings::PostInitProperties()
 	InitializeCachedOverridableParams();
 #endif //WITH_EDITOR
 
+	// For new objects, use type hash as a seed so we don't get multiple nodes doing randomness in an identical way (we had a case where
+	// a Point Subset followed by a Density Noise produced uniform densities because the random seeds/streams were correllated).
+	// It is still possible to chain nodes of the same type (Point Subset -> Point Subset) and see correllated behaviour, in which
+	// case the random seed on one of them should be changed in the node settings.
+	if (PCGHelpers::IsNewObjectAndNotDefault(this, /*bCheckHierarchy=*/true))
+	{
+		Seed = GetTypeNameHash();
+	}
+
 	CacheCrc();
 }
 
 void UPCGSettings::Serialize(FArchive& Ar)
 {
-	// Don't serialize overridable params in non-cooked builds
-	if (Ar.IsSaving() && !Ar.IsCooking())
-	{
-		CachedOverridableParams.Empty();
-	}
-
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FPCGCustomVersion::GUID);
@@ -184,12 +308,6 @@ void UPCGSettings::Serialize(FArchive& Ar)
 			UserDataVersion = Ar.CustomVer(UserDataGuid);
 		}
 #endif // WITH_EDITOR
-	}
-
-	// Reconstruct it at the end
-	if (Ar.IsSaving() && !Ar.IsCooking())
-	{
-		InitializeCachedOverridableParams(/*bReset=*/true);
 	}
 }
 
@@ -290,10 +408,10 @@ void UPCGSettings::FillOverridableParamsPins(TArray<FPCGPinProperties>& OutPins)
 	{
 		if (InputPinsLabelsAndTypes.Contains(OverridableParam.Label))
 		{
-			const FString ParamsName = OverridableParam.Label.ToString();
-			UE_LOG(LogPCG, Warning, TEXT("[%s-%s] While automatically adding override pins, an existing pin was found with conflicting name '%s'. "
-				"Rename or remove this pin to allow the automatic override pin to be added. Automatic override pin '%s' skipped."),
-				*GraphName, *NodeName, *ParamsName, *ParamsName);
+			//const FString ParamsName = OverridableParam.Label.ToString();
+			//UE_LOG(LogPCG, Warning, TEXT("[%s-%s] While automatically adding override pins, an existing pin was found with conflicting name '%s'. "
+			//	"Rename or remove this pin to allow the automatic override pin to be added. Automatic override pin '%s' skipped."),
+			//	*GraphName, *NodeName, *ParamsName, *ParamsName);
 			continue;
 		}
 
@@ -302,19 +420,23 @@ void UPCGSettings::FillOverridableParamsPins(TArray<FPCGPinProperties>& OutPins)
 		FPCGPinProperties& ParamPin = OutPins.Emplace_GetRef(OverridableParam.Label, EPCGDataType::Param, /*bInAllowMultipleConnections=*/ false, /*bAllowMultipleData=*/ false);
 		ParamPin.bAdvancedPin = true;
 #if WITH_EDITOR
-		const FProperty* Property = OverridableParam.Properties.Last();
-		check(Property);
-		static FName TooltipMetadata("Tooltip");
-		FString Tooltip;
-		if (const FString* TooltipPtr = Property->FindMetaData(TooltipMetadata))
-		{
-			Tooltip = *TooltipPtr + TEXT("\n");
-		}
 
-		ParamPin.Tooltip = FText::Format(LOCTEXT("OverridableParamPinTooltip", "{0}Attribute type is \"{1}\" and its exact name is \"{2}\""),
-			FText::FromString(Tooltip),
-			FText::FromString(Property->GetCPPType()),
-			FText::FromName(Property->GetFName()));
+		if (!OverridableParam.Properties.IsEmpty())
+		{
+			const FProperty* Property = OverridableParam.Properties.Last();
+			check(Property);
+			static FName TooltipMetadata("Tooltip");
+			FString Tooltip;
+			if (const FString* TooltipPtr = Property->FindMetaData(TooltipMetadata))
+			{
+				Tooltip = *TooltipPtr + TEXT("\n");
+			}
+
+			ParamPin.Tooltip = FText::Format(LOCTEXT("OverridableParamPinTooltip", "{0}Attribute type is \"{1}\" and its exact name is \"{2}\""),
+				FText::FromString(Tooltip),
+				FText::FromString(Property->GetCPPType()),
+				FText::FromString(OverridableParam.GetPropertyPath()));
+		}
 #endif // WITH_EDITOR
 	}
 }
@@ -339,7 +461,7 @@ EPCGDataType UPCGSettings::GetTypeUnionOfIncidentEdges(const FName& PinLabel) co
 			const UPCGPin* OtherOutputPin = Edge ? Edge->GetOtherPin(Pin) : nullptr;
 			if (OtherOutputPin)
 			{
-				Result |= OtherOutputPin->Properties.AllowedTypes;
+				Result |= OtherOutputPin->GetCurrentTypes();
 			}
 		}
 	}
@@ -432,19 +554,33 @@ void UPCGSettings::DirtyCache()
 	}
 }
 
-bool UPCGSettings::CanEditChange(const FProperty* InProperty) const
+bool UPCGSettings::CanEditChange(const FEditPropertyChain& InPropertyChain) const
 {
-	if (!InProperty || !Super::CanEditChange(InProperty))
+	// Property is the actual property currently checked
+	FProperty* Property = InPropertyChain.GetActiveNode() ? InPropertyChain.GetActiveNode()->GetValue() : nullptr;
+	// Member property is the same as Property if it is not in a struct/array, otherwise it is the struct/array.
+	FProperty* MemberProperty = InPropertyChain.GetActiveMemberNode() ? InPropertyChain.GetActiveMemberNode()->GetValue() : nullptr;
+
+	// No property/member property, or if the property is marked edit const (in metadata), it is not editable.
+	if (!Property || !MemberProperty || !Super::CanEditChange(InPropertyChain))
 	{
 		return false;
 	}
 
-	if (!InProperty->HasMetaData(PCGObjectMetadata::Overridable))
+	// If it is not marked edit const, properties that are not marked overridable or child properties explicitly marked non overridable are always editable.
+	if (!MemberProperty->HasMetaData(PCGObjectMetadata::Overridable) || Property->HasMetaData(PCGObjectMetadata::NotOverridable))
 	{
 		return true;
 	}
 
-	return !IsPropertyOverriddenByPin(InProperty);
+	// If the property can be overridden, mark it as EditConst if it is actually overridden 
+	// (ie. the override pin associated with this property is connected)
+	return !IsPropertyOverriddenByPin(Property);
+}
+
+bool UPCGSettings::CanEditChange(const FProperty* InProperty) const
+{
+	return Super::CanEditChange(InProperty);
 }
 
 bool UPCGSettings::IsPropertyOverriddenByPin(const FProperty* InProperty) const
@@ -455,7 +591,7 @@ bool UPCGSettings::IsPropertyOverriddenByPin(const FProperty* InProperty) const
 		{
 			// In OverridableParam, the array of properties is the chain of properties from the Settings class to the wanted param.
 			// Therefore the property we are editing would match the latest property of the array.
-			return ParamToCheck.Properties.Last() == InProperty;
+			return !ParamToCheck.Properties.IsEmpty() && ParamToCheck.Properties.Last() == InProperty;
 		});
 
 		if (Param)
@@ -470,6 +606,13 @@ bool UPCGSettings::IsPropertyOverriddenByPin(const FProperty* InProperty) const
 	return false;
 }
 
+void UPCGSettings::PostPaste()
+{
+	// Params are not properly built when importing from pasted text (because param
+	// Properties are transient/unserialized), so we should reinitialize in post
+	InitializeCachedOverridableParams(/*bReset=*/true);
+}
+
 void UPCGSettings::ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins)
 {
 	check(InOutNode);
@@ -478,15 +621,27 @@ void UPCGSettings::ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<
 	{
 		PCGSettingsHelpers::DeprecationBreakOutParamsToNewPin(InOutNode, InputPins, OutputPins);
 	}
+
+	if (DataVersion < FPCGCustomVersion::RenameDefaultParamsToOverride)
+	{
+		InOutNode->RenameInputPin(PCGPinConstants::Private::OldDefaultParamsLabel, PCGPinConstants::DefaultParamsLabel);
+	}
 }
 #endif // WITH_EDITOR
+
+EPCGDataType UPCGSettings::GetCurrentPinTypes(const UPCGPin* InPin) const
+{
+	check(InPin);
+	return InPin->Properties.AllowedTypes;
+}
 
 #if WITH_EDITOR
 TArray<FPCGSettingsOverridableParam> UPCGSettings::GatherOverridableParams() const
 {
 	PCGSettingsHelpers::FPCGGetAllOverridableParamsConfig Config;
 	Config.bUseSeed = bUseSeed;
-	Config.MetadataValues.Add(PCGObjectMetadata::Overridable);
+	Config.IncludeMetadataValues.Add(PCGObjectMetadata::Overridable);
+	Config.ExcludeMetadataValues.Add(PCGObjectMetadata::NotOverridable);
 
 	return PCGSettingsHelpers::GetAllOverridableParams(GetClass(), Config);
 }
@@ -535,22 +690,25 @@ void UPCGSettings::InitializeCachedOverridableParams(bool bReset)
 
 		Param.Properties.Reset(Param.PropertiesNames.Num());
 
-		// Some properties might not be available at runtime. Ignore them.
+		// Some properties might not be available at runtime. Remove them from the list, since they won't be overridable anymore.
 		const FProperty* CurrentProperty = Param.PropertyClass->FindPropertyByName(Param.PropertiesNames[0]);
-		if (CurrentProperty)
+		if (!CurrentProperty)
 		{
-			Param.Properties.Add(CurrentProperty);
+			CachedOverridableParams.RemoveAt(i--);
+			continue;
+		}
 
-			for (int32 j = 1; j < Param.PropertiesNames.Num(); ++j)
+		Param.Properties.Add(CurrentProperty);
+
+		for (int32 j = 1; j < Param.PropertiesNames.Num(); ++j)
+		{
+			// If we have multiple depth properties, it should be Struct properties by construction
+			const FStructProperty* StructProperty = CastField<FStructProperty>(CurrentProperty);
+			if (ensure(StructProperty))
 			{
-				// If we have multiple depth properties, it should be Struct properties by construction
-				const FStructProperty* StructProperty = CastField<FStructProperty>(CurrentProperty);
-				if (ensure(StructProperty))
-				{
-					CurrentProperty = StructProperty->Struct->FindPropertyByName(Param.PropertiesNames[j]);
-					check(CurrentProperty);
-					Param.Properties.Add(CurrentProperty);
-				}
+				CurrentProperty = StructProperty->Struct->FindPropertyByName(Param.PropertiesNames[j]);
+				check(CurrentProperty);
+				Param.Properties.Add(CurrentProperty);
 			}
 		}
 	}

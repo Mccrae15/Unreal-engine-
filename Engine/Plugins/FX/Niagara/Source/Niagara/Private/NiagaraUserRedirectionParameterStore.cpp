@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraUserRedirectionParameterStore.h"
-#include "NiagaraSystemInstance.h"
+
+#include "NiagaraConstants.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraUserRedirectionParameterStore)
 
@@ -93,7 +94,11 @@ bool FNiagaraUserRedirectionParameterStore::AddParameter(const FNiagaraVariable&
 	}
 	else
 	{
-		AddParam = FNiagaraVariable(Param.GetType(), *(TEXT("User.") + Param.GetName().ToString()));
+		FNameBuilder NameBuilder;
+		FNiagaraConstants::UserNamespace.AppendString(NameBuilder);
+		NameBuilder << TEXT(".");
+		Param.GetName().AppendString(NameBuilder);
+		AddParam = FNiagaraVariable(Param.GetType(), FName(NameBuilder.ToView()));
 	}
 
 	UserParameterRedirects.Add(GetUserRedirection(AddParam), AddParam);

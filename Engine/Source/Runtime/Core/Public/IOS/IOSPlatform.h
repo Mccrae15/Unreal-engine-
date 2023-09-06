@@ -57,8 +57,6 @@ typedef FIOSPlatformTypes FPlatformTypes;
 #define PLATFORM_USE_FULL_TASK_GRAPH					0 // @todo platplug: not platplug, but should investigate soon anyway
 #define PLATFORM_IS_ANSI_MALLOC_THREADSAFE				1
 
-// on iOS we now perform offline symbolication as it's significantly faster. Requires bGenerateCrashReportSymbols=true in the ini file.
-#define	PLATFORM_RUNTIME_MALLOCPROFILER_SYMBOLICATION	0	
 #define PLATFORM_NUM_AUDIODECOMPRESSION_PRECACHE_BUFFERS		0
 #if PLATFORM_TVOS
 #define PLATFORM_USES_GLES								0
@@ -92,8 +90,6 @@ typedef FIOSPlatformTypes FPlatformTypes;
 
 //mallocpoison not safe with aligned ansi allocator.  returns the larger unaligned size during Free() which causes writes off the end of the allocation.
 #define UE_USE_MALLOC_FILL_BYTES 0 
-
-#define PLATFORM_RHITHREAD_DEFAULT_BYPASS				1
 
 // Function type macros.
 #define VARARGS															/* Functions with variable arguments */

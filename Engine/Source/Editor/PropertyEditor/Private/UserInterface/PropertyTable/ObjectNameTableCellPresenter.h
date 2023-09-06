@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IPropertyTable.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Layout/Margin.h"
@@ -12,6 +13,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SToolTip.h"
 #include "Styling/AppStyle.h"
+#include "Styling/StyleColors.h"
 #include "IPropertyTableCell.h"
 #include "Widgets/Layout/SBox.h"
 #include "IPropertyTableCellPresenter.h"
@@ -35,7 +37,7 @@ public:
 	{
 		return SNew( SBox )
 			.VAlign( VAlign_Center)
-			.Padding( FMargin( 2, 0, 2, 0 ) )
+			.Padding( FMargin( 4, 0, 2, 0 ) )
 			[
 				ConstructNameWidget( PropertyTableConstants::NormalFontStyle )
 			]
@@ -95,6 +97,7 @@ private:
 					SNew( STextBlock )
 					.Font( FAppStyle::GetFontStyle( TextFontStyle ) )
 					.Text( FText::FromString(DisplayNamePieces[ Index ]) )
+					.ColorAndOpacity(this, &FObjectNameTableCellPresenter::GetTextForegroundColor)
 				];
 
 			if ( Index < DisplayNamePieces.Num() - 1 )
@@ -114,6 +117,15 @@ private:
 		return NameBox;
 	}
 
+	FSlateColor GetTextForegroundColor() const
+	{
+		if(Cell->GetTable()->GetSelectedCells().Contains( Cell ))
+		{
+			return FStyleColors::White;
+		}
+
+		return FSlateColor::UseForeground();
+	}
 
 private:
 

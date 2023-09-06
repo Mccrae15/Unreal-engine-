@@ -8,7 +8,6 @@
 #include "Editor.h"
 #include "Editor/Transactor.h"
 #include "EditorScriptingHelpers.h"
-#include "Experimental/Async/LazyEvent.h"
 #include "FileHelpers.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
@@ -668,7 +667,7 @@ bool UEditorAssetSubsystem::ConsolidateAssets(UObject* AssetToConsolidateTo, con
 	if (ConsResults.DirtiedPackages.Num() > 0 && ConsResults.FailedConsolidationObjs.Num() == 0)
 	{
 		const bool bOnlyIfIsDirty = false;
-		UEditorLoadingAndSavingUtils::SavePackages(ConsResults.DirtiedPackages, bOnlyIfIsDirty);
+		UEditorLoadingAndSavingUtils::SavePackages(ObjectPtrDecay(ConsResults.DirtiedPackages), bOnlyIfIsDirty);
 	}
 	// If the consolidation resulted in failed (partially consolidated) objects, do not save, and inform the user no save attempt was made
 	else if (ConsResults.FailedConsolidationObjs.Num() > 0)
@@ -1435,7 +1434,7 @@ TArray<FString> UEditorAssetSubsystem::ListAssets(const FString& DirectoryPath, 
 
 	if (AssetDatas.Num() > 0)
 	{
-		AssetDatas.Reserve(AssetDatas.Num());
+		AssetPaths.Reserve(AssetDatas.Num());
 		for (const FAssetData& AssetData : AssetDatas)
 		{
 			AssetPaths.Add(AssetData.GetObjectPathString());

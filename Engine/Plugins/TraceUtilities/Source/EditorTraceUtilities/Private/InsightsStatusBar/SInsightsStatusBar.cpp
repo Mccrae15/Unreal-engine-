@@ -60,7 +60,7 @@ public:
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
-		FUnrealInsightsLauncher::Get()->TryOpenTraceFromDestination(FTraceAuxiliary::GetTraceDestination());
+		FUnrealInsightsLauncher::Get()->TryOpenTraceFromDestination(FTraceAuxiliary::GetTraceDestinationString());
 	}
 };
 
@@ -131,7 +131,7 @@ void SInsightsStatusBarWidget::Construct(const FArguments& InArgs)
 			SNew(SComboButton)
 			.ContentPadding(FMargin(6.0f, 0.0f))
 			.MenuPlacement(MenuPlacement_AboveAnchor)
-			.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("StatusBar.StatusBarComboButton"))
+			.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
 			.OnGetMenuContent(this, &SInsightsStatusBarWidget::MakeTraceMenu)
 			.HasDownArrow(true)
 			.ToolTipText(this, &SInsightsStatusBarWidget::GetTitleToolTipText)
@@ -343,7 +343,6 @@ TSharedRef<SWidget> SInsightsStatusBarWidget::MakeTraceMenu()
 
 	MenuBuilder.BeginSection("Options", LOCTEXT("TraceMenu_Section_Options", "Options"));
 	{
-#if PLATFORM_WINDOWS
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("OpenLiveSesssionOnTraceStart", "Open Live Session on Trace Start"),
 			LOCTEXT("OpenLiveSesssionOnTraceStartDesc", "When set, the live session will be automatically opened in Unreal Insights when tracing is started.\nThis option will only apply when tracing to the trace store."),
@@ -365,7 +364,6 @@ TSharedRef<SWidget> SInsightsStatusBarWidget::MakeTraceMenu()
 			NAME_None,
 			EUserInterfaceActionType::ToggleButton
 		);
-#endif
 
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("ShowInExplorerAfterTrace", "Show in Explorer after Trace"),
@@ -413,7 +411,6 @@ TSharedRef<SWidget> SInsightsStatusBarWidget::MakeTraceMenu()
 			EUserInterfaceActionType::Button
 		);
 
-#if PLATFORM_WINDOWS
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("OpenLiveSessionLabel", "Open Live Session"),
 			LOCTEXT("OpenLiveSessionTooltip", "Opening the live session is possible only while tracing to the trace store."),
@@ -423,7 +420,6 @@ TSharedRef<SWidget> SInsightsStatusBarWidget::MakeTraceMenu()
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
-#endif
 
 		MenuBuilder.AddSubMenu
 		(
@@ -494,7 +490,7 @@ FText SInsightsStatusBarWidget::GetTitleToolTipText() const
 {
 	FTextBuilder DescBuilder;
 
-	const TCHAR* Dest = FTraceAuxiliary::GetTraceDestination();
+	const FString Dest = FTraceAuxiliary::GetTraceDestinationString();
 	
 	if (*Dest != 0)
 	{
@@ -571,12 +567,12 @@ void SInsightsStatusBarWidget::LaunchUnrealInsights_OnClicked()
 
 void SInsightsStatusBarWidget::OpenLiveSession_OnClicked()
 {
-	OpenLiveSession();
+	OpenLiveSession(FTraceAuxiliary::GetTraceDestinationString());
 }
 
-void SInsightsStatusBarWidget::OpenLiveSession()
+void SInsightsStatusBarWidget::OpenLiveSession(const FString& InTraceDestination)
 {
-	FUnrealInsightsLauncher::Get()->TryOpenTraceFromDestination(FTraceAuxiliary::GetTraceDestination());
+	FUnrealInsightsLauncher::Get()->TryOpenTraceFromDestination(InTraceDestination);
 }
 
 void SInsightsStatusBarWidget::OpenProfilingDirectory_OnClicked()
@@ -587,6 +583,12 @@ void SInsightsStatusBarWidget::OpenProfilingDirectory_OnClicked()
 void SInsightsStatusBarWidget::OpenProfilingDirectory()
 {
 	FString FullPath(FPaths::ConvertRelativePathToFull(FPaths::ProfilingDir()));
+
+	if (!IFileManager::Get().DirectoryExists(*FullPath))
+	{
+		IFileManager::Get().MakeDirectory(*FullPath);
+	}
+
 	FPlatformProcess::ExploreFolder(*FullPath);
 }
 
@@ -736,7 +738,7 @@ void SInsightsStatusBarWidget::ToggleTracing_OnClicked()
 		bool bResult = StartTracing();
 		if (bResult)
 		{
-			FString TraceDestinationStr = FTraceAuxiliary::GetTraceDestination();
+			FString TraceDestinationStr = FTraceAuxiliary::GetTraceDestinationString();
 			if (TraceDestinationStr.IsEmpty())
 			{
 				TraceDestinationStr = TEXT("External Target");
@@ -811,7 +813,7 @@ void SInsightsStatusBarWidget::OnTraceStopped(FTraceAuxiliary::EConnectionType I
 {
 	if (GetBooleanSettingValue(OpenInsightsAfterTraceSettingName))
 	{
-		OpenLiveSession();
+		OpenLiveSession(InTraceDestination);
 	}
 	if (GetBooleanSettingValue(ShowInExplorerAfterTraceSettingName))
 	{
@@ -857,7 +859,6 @@ void SInsightsStatusBarWidget::CacheTraceStorePath()
 {
 	if (TraceStorePath.IsEmpty())
 	{
-#if PLATFORM_WINDOWS
 		UE::Trace::FStoreClient* StoreClient = UE::Trace::FStoreClient::Connect(TEXT("localhost"));
 
 		if (!StoreClient)
@@ -874,9 +875,6 @@ void SInsightsStatusBarWidget::CacheTraceStorePath()
 		}
 
 		TraceStorePath = FString(Status->GetStoreDir());
-#else
-		TraceStorePath = FPaths::Combine(FPaths::EngineDir(), TEXT("/Programs/UnrealInsights/Saved/TraceSessions/"));
-#endif
 	}
 }
 
@@ -1025,7 +1023,7 @@ void SInsightsStatusBarWidget::OpenTrace(int32 Index)
 				
 				if (TraceId)
 				{
-					FUnrealInsightsLauncher::Get()->OpenRemoteTrace(TEXT("localhost"), LiveSessionTracker->GetStorePort(), *TraceId);
+					FUnrealInsightsLauncher::Get()->OpenRemoteTrace(TEXT("localhost"), uint16(LiveSessionTracker->GetStorePort()), *TraceId);
 					return;
 				}
 			}

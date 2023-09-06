@@ -18,7 +18,7 @@ public class Vorbis : ModuleRules
 		PublicSystemIncludePaths.Add(VorbisIncPath);
 		PublicDefinitions.Add("WITH_OGGVORBIS=1");
 
-		if (Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
 			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "win64", "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), "libvorbis_64.lib"));
 			PublicDelayLoadDLLs.Add("libvorbis_64.dll");
@@ -46,9 +46,10 @@ public class Vorbis : ModuleRules
         }
 		else if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "IOS", "libvorbis.a"));
-			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "IOS", "libvorbisenc.a"));
-			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "IOS", "libvorbisfile.a"));
+			string LibExt = (Target.Architecture == UnrealArch.IOSSimulator) ? ".sim.a" : ".a";
+			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "IOS", "libvorbis" + LibExt));
+			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "IOS", "libvorbisenc" + LibExt));
+			PublicAdditionalLibraries.Add(Path.Combine(VorbisLibPath, "IOS", "libvorbisfile" + LibExt));
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{

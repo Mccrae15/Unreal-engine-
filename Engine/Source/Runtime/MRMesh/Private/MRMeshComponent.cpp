@@ -27,18 +27,9 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
-#include "PhysicsEngine/Experimental/ChaosDerivedData.h"
 #include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MRMeshComponent)
-
-// See ISpatialAcceleration.h, the header is not included to avoid having a dependency on Chaos
-#ifndef CHAOS_SERIALIZE_OUT
-#define CHAOS_SERIALIZE_OUT WITH_EDITOR
-#endif
-
-// When using the Chaos code path, we're using a private class FChaosDerivedDataCooker which is not exported
-#define SUPPORTS_PHYSICS_COOKING (CHAOS_SERIALIZE_OUT && IS_MONOLITHIC)
 
 DECLARE_CYCLE_STAT(TEXT("MrMesh SetCollisionProfileName"), STAT_MrMesh_SetCollisionProfileName, STATGROUP_Physics);
 DECLARE_CYCLE_STAT(TEXT("Update Collision"), STAT_UpdateCollision, STATGROUP_MRMESH);
@@ -86,7 +77,7 @@ class FMRMeshVertexBuffer : public FVertexBuffer
 {
 public:
 	int32 NumVerts = 0;
-	void InitRHIWith( const TArray<DataType>& PerVertexData )
+	void InitRHIWith(FRHICommandListBase& RHICmdList, const TArray<DataType>& PerVertexData )
 	{
 		NumVerts = PerVertexData.Num();
 
@@ -94,7 +85,7 @@ public:
 
 		FMRMeshVertexResourceArray ResourceArray(PerVertexData.GetData(), SizeInBytes);
 		FRHIResourceCreateInfo CreateInfo(TEXT("FMRMeshVertexBuffer"), &ResourceArray);
-		VertexBufferRHI = RHICreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
+		VertexBufferRHI = RHICmdList.CreateVertexBuffer(SizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 	}
 
 };
@@ -103,34 +94,34 @@ class FMRMeshIndexBuffer : public FIndexBuffer
 {
 public:
 	int32 NumIndices = 0;
-	void InitRHIWith( const TArray<uint32>& Indices )
+	void InitRHIWith(FRHICommandListBase& RHICmdList, const TArray<uint32>& Indices )
 	{
 		NumIndices = Indices.Num();
 
 		const uint32 Size = Indices.Num() * sizeof(uint32);
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FMRMeshIndexBuffer"));
-		IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint32), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		IndexBufferRHI = RHICmdList.CreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint32), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 		// Write the indices to the index buffer.
-		void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+		void* Buffer = RHICmdList.LockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, Indices.GetData(), Size);
-		RHIUnlockBuffer(IndexBufferRHI);
+		RHICmdList.UnlockBuffer(IndexBufferRHI);
 	}
 
-	void InitRHIWith(const TArray<uint16>& Indices)
+	void InitRHIWith(FRHICommandListBase& RHICmdList, const TArray<uint16>& Indices)
 	{
 		NumIndices = Indices.Num();
 
 		const uint32 Size = Indices.Num() * sizeof(uint16);
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FMRMeshIndexBuffer"));
-		IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		IndexBufferRHI = RHICmdList.CreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 		// Write the indices to the index buffer.
-		void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+		void* Buffer = RHICmdList.LockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, Indices.GetData(), Size);
-		RHIUnlockBuffer(IndexBufferRHI);
+		RHICmdList.UnlockBuffer(IndexBufferRHI);
 	}
 };
 
@@ -217,7 +208,7 @@ static void InitVertexFactory(FLocalVertexFactory* VertexFactory, const FMRMeshP
 		}
 
 		VertexFactory->SetData(NewData);
-		VertexFactory->InitResource();
+		VertexFactory->InitResource(RHICmdList);
 	});
 }
 
@@ -255,6 +246,7 @@ public:
 	void RenderThread_UploadNewSection(IMRMesh::FSendBrickDataArgs Args)
 	{
 		check(IsInRenderingThread() || IsInRHIThread());
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 		FMRMeshProxySection* NewSection = new FMRMeshProxySection(Args.BrickId, FeatureLevel);
 		ProxySections.Add(NewSection);
@@ -267,49 +259,49 @@ public:
 
 		// POSITION BUFFER
 		{
-			NewSection->PositionBuffer.InitResource();
-			NewSection->PositionBuffer.InitRHIWith(Args.PositionData);
-			NewSection->PositionBufferSRV = RHICreateShaderResourceView(NewSection->PositionBuffer.VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
+			NewSection->PositionBuffer.InitResource(RHICmdList);
+			NewSection->PositionBuffer.InitRHIWith(RHICmdList, Args.PositionData);
+			NewSection->PositionBufferSRV = RHICmdList.CreateShaderResourceView(NewSection->PositionBuffer.VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
 		}
 
 		// TEXTURE COORDS BUFFER
 		{
-			NewSection->UVBuffer.InitResource();
+			NewSection->UVBuffer.InitResource(RHICmdList);
 			if (Args.UVData.Num())
 			{
-				NewSection->UVBuffer.InitRHIWith(Args.UVData);
-				NewSection->UVBufferSRV = RHICreateShaderResourceView(NewSection->UVBuffer.VertexBufferRHI, 8, PF_G32R32F);
+				NewSection->UVBuffer.InitRHIWith(RHICmdList, Args.UVData);
+				NewSection->UVBufferSRV = RHICmdList.CreateShaderResourceView(NewSection->UVBuffer.VertexBufferRHI, 8, PF_G32R32F);
 			}
 		}
 
 		// TANGENTS BUFFER
 		{
-			NewSection->TangentXZBuffer.InitResource();
+			NewSection->TangentXZBuffer.InitResource(RHICmdList);
 			if (Args.TangentXZData.Num())
 			{
-				NewSection->TangentXZBuffer.InitRHIWith(Args.TangentXZData);
+				NewSection->TangentXZBuffer.InitRHIWith(RHICmdList, Args.TangentXZData);
 			}
 
 			if (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
 			{
-				NewSection->TangentXZBufferSRV = RHICreateShaderResourceView(NewSection->TangentXZBuffer.VertexBufferRHI, 4, PF_R8G8B8A8_SNORM);
+				NewSection->TangentXZBufferSRV = RHICmdList.CreateShaderResourceView(NewSection->TangentXZBuffer.VertexBufferRHI, 4, PF_R8G8B8A8_SNORM);
 			}
 		}
 
 		// COLOR
 		{
-			NewSection->ColorBuffer.InitResource();
+			NewSection->ColorBuffer.InitResource(RHICmdList);
 			if (Args.ColorData.Num())
 			{
-				NewSection->ColorBuffer.InitRHIWith(Args.ColorData);
-				NewSection->ColorBufferSRV = RHICreateShaderResourceView(NewSection->ColorBuffer.VertexBufferRHI, 4, PF_R8G8B8A8);
+				NewSection->ColorBuffer.InitRHIWith(RHICmdList, Args.ColorData);
+				NewSection->ColorBufferSRV = RHICmdList.CreateShaderResourceView(NewSection->ColorBuffer.VertexBufferRHI, 4, PF_R8G8B8A8);
 			}
 		}
 
 		// INDEX BUFFER
 		{
-			NewSection->IndexBuffer.InitResource();
-			NewSection->IndexBuffer.InitRHIWith(Args.Indices);
+			NewSection->IndexBuffer.InitResource(RHICmdList);
+			NewSection->IndexBuffer.InitRHIWith(RHICmdList, Args.Indices);
 		}
 
 		// VERTEX FACTORY
@@ -482,7 +474,7 @@ private:
 						const auto& BrickBounds = BrickVisibility.Value.Key;
 						FColor BoundsColor(BrickVisibility.Value.Value ? FColor::Green : ColorGray);
 						FPrimitiveDrawInterface *PDI = Collector.GetPDI(ViewIndex);
-						DrawWireBox(PDI, BrickBounds, BoundsColor, GetDepthPriorityGroup(Views[ViewIndex]));
+						DrawWireBox(PDI, BrickBounds, BoundsColor, (uint8)GetDepthPriorityGroup(Views[ViewIndex]));
 					}
 				}
 			}
@@ -513,7 +505,7 @@ private:
 
 	uint32 GetAllocatedSize(void) const
 	{
-		return(FPrimitiveSceneProxy::GetAllocatedSize());
+		return((uint32)FPrimitiveSceneProxy::GetAllocatedSize());
 	}
 
 private:

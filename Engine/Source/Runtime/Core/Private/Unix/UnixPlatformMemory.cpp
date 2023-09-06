@@ -132,13 +132,19 @@ bool FUnixPlatformMemory::HasForkPageProtectorEnabled()
 
 class FMalloc* FUnixPlatformMemory::BaseAllocator()
 {
+	static FMalloc* Allocator = nullptr;
+	if (Allocator != nullptr)
+	{
+		return Allocator;
+	}
+
 #if UE4_DO_ROOT_PRIVILEGE_CHECK && !IS_PROGRAM
 	// This function gets executed very early, way before main() (because global constructors will allocate memory).
 	// This makes it ideal, if unobvious, place for a root privilege check.
 	if (geteuid() == 0)
 	{
 		fprintf(stderr, "Refusing to run with the root privileges.\n");
-		FPlatformMisc::RequestExit(true);
+		FPlatformMisc::RequestExit(true, TEXT("FUnixPlatformMemory.BaseAllocator"));
 		// unreachable
 		return nullptr;
 	}
@@ -304,8 +310,6 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
 
-	FMalloc * Allocator = NULL;
-
 	switch (AllocatorToUse)
 	{
 	case EMemoryAllocatorToUse::Ansi:
@@ -424,6 +428,15 @@ struct FOSAllocationDescriptor
 
 void* FUnixPlatformMemory::BinnedAllocFromOS(SIZE_T Size)
 {
+#if UE_CHECK_LARGE_ALLOCATIONS
+	if (UE::Memory::Private::GEnableLargeAllocationChecks)
+	{
+		// catch possibly erroneous large allocations
+		ensureMsgf(Size <= UE::Memory::Private::GLargeAllocationThreshold,
+			TEXT("Single allocation exceeded large allocation threshold"));
+	}
+#endif
+
 	static SIZE_T OSPageSize = FPlatformMemory::GetConstants().PageSize;
 	// guard against someone not passing size in whole pages
 	SIZE_T SizeInWholePages = (Size % OSPageSize) ? (Size + OSPageSize - (Size % OSPageSize)) : Size;
@@ -782,6 +795,38 @@ static uint32 ReadProcFields(const char *FileName, FProcField *ProcFields, uint3
 	return NumFieldsFound;
 }
 
+static float ReadOvercommitRatio()
+{
+	float OutVal = 0.0f;
+	int Fd = open("/proc/sys/vm/overcommit_ratio", O_RDONLY);
+
+	if (Fd < 0)
+	{
+		static bool bLogOnceFileNotFound = false;
+		if (!bLogOnceFileNotFound)
+		{
+			fprintf(stderr, "Warning: ReadOvercommitRatio failed to open /proc/sys/vm/overcommit_ratio (Err %d).\n", errno);
+			fflush(stderr);
+			bLogOnceFileNotFound = true;
+		}
+	}
+	else
+	{
+		// The overcommit_ratio file always contains a number from 0 to 100 and nothing else
+		char Buffer[512] = { 0 };
+		ssize_t ReadBytes = read(Fd, Buffer, sizeof(Buffer) - 1);
+		if (ReadBytes > 0)
+		{
+			OutVal = FCStringAnsi::Atof(Buffer) / 100.0f;
+		}
+
+		close(Fd);
+	}
+
+	return OutVal;
+
+}
+
 // struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 //   uint64 AvailablePhysical; /** The amount of physical memory currently available, in bytes. */			MemAvailable (or MemFree + Cached)
 //   uint64 AvailableVirtual;  /** The amount of virtual memory currently available, in bytes. */			SwapFree
@@ -793,16 +838,20 @@ FPlatformMemoryStats FUnixPlatformMemory::GetStats()
 {
 	uint64 MemFree = 0;
 	uint64 Cached = 0;
+	uint64 MemTotal = 0;
+	uint64 SwapTotal = 0;
+	uint64 CommittedAS = 0;
 	FPlatformMemoryStats MemoryStats;
 
 	FProcField SMapsFields[] =
 	{
 		// An estimate of how much memory is available for starting new applications, without swapping.
 		{ "MemAvailable:", &MemoryStats.AvailablePhysical },
-		// Amount of swap space that is currently unused.
-		{ "SwapFree:",     &MemoryStats.AvailableVirtual },
 		{ "MemFree:",      &MemFree },
 		{ "Cached:",       &Cached },
+		{ "MemTotal:",     &MemTotal },
+		{ "SwapTotal:",    &SwapTotal },
+		{ "Committed_AS:", &CommittedAS },
 	};
 	if (ReadProcFields("/proc/meminfo", SMapsFields, UE_ARRAY_COUNT(SMapsFields)))
 	{
@@ -811,6 +860,13 @@ FPlatformMemoryStats FUnixPlatformMemory::GetStats()
 		{
 			MemoryStats.AvailablePhysical = FMath::Min(MemFree + Cached, MemoryStats.TotalPhysical);
 		}
+
+		// OS alloted percentage of physical RAM (used here as a ratio) to overcommit
+		// https://www.kernel.org/doc/Documentation/vm/overcommit-accounting
+		float OvercommitRatio = ReadOvercommitRatio();
+
+		// Total memory * commit percentage (which can be greater than 100%) - committed memory
+		MemoryStats.AvailableVirtual = static_cast<uint64>(static_cast<float>(MemTotal + SwapTotal)	* (1.0f + OvercommitRatio)) - CommittedAS;
 	}
 
 	FProcField SMapsFields2[] =

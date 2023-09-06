@@ -16,24 +16,32 @@ UClass* UInterchangePhysicsAssetFactory::GetFactoryClass() const
 	return UPhysicsAsset::StaticClass();
 }
 
-UObject* UInterchangePhysicsAssetFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangePhysicsAssetFactory::BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
 	UObject* PhysicsAsset = nullptr;
 
 #if WITH_EDITORONLY_DATA
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	UInterchangePhysicsAssetFactoryNode* PhysicsAssetNode = Cast<UInterchangePhysicsAssetFactoryNode>(Arguments.AssetNode);
 	if (PhysicsAssetNode == nullptr)
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
+	UObject* ExistingAsset = Arguments.ReimportObject;
+	if (!ExistingAsset)
+	{
+		FSoftObjectPath ReferenceObject;
+		if (PhysicsAssetNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ExistingAsset = ReferenceObject.TryLoad();
+		}
+	}
 
 	// create a new PhysicsAsset or overwrite existing asset, if possible
 	if (!ExistingAsset)
@@ -49,97 +57,65 @@ UObject* UInterchangePhysicsAssetFactory::ImportAssetObject_GameThread(const FIm
 	if (!PhysicsAsset)
 	{
 		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create PhysicsAsset asset %s"), *Arguments.AssetName);
-		return nullptr;
+		return ImportAssetResult;
 	}
 	PhysicsAssetNode->SetCustomReferenceObject(FSoftObjectPath(PhysicsAsset));
 
 	PhysicsAsset->PreEditChange(nullptr);
 #endif //WITH_EDITORONLY_DATA
-	return PhysicsAsset;
+
+	ImportAssetResult.ImportedObject = PhysicsAsset;
+	return ImportAssetResult;
 }
 
-UObject* UInterchangePhysicsAssetFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
+UInterchangeFactoryBase::FImportAssetResult UInterchangePhysicsAssetFactory::ImportAsset_Async(const FImportAssetObjectParams& Arguments)
 {
+	FImportAssetResult ImportAssetResult;
 #if !WITH_EDITORONLY_DATA
 
 	UE_LOG(LogInterchangeImport, Error, TEXT("Cannot import PhysicsAsset asset in runtime, this is an editor only feature."));
-	return nullptr;
+	return ImportAssetResult;
 
 #else
 
 	if (!Arguments.AssetNode || !Arguments.AssetNode->GetObjectClass()->IsChildOf(GetFactoryClass()))
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
 	UInterchangePhysicsAssetFactoryNode* PhysicsAssetNode = Cast<UInterchangePhysicsAssetFactoryNode>(Arguments.AssetNode);
 	if (PhysicsAssetNode == nullptr)
 	{
-		return nullptr;
+		return ImportAssetResult;
 	}
 
-	const UClass* PhysicsAssetClass = PhysicsAssetNode->GetObjectClass();
-	check(PhysicsAssetClass && PhysicsAssetClass->IsChildOf(GetFactoryClass()));
-
-	// create an asset if it doesn't exist
-	UObject* ExistingAsset = StaticFindObject(nullptr, Arguments.Parent, *Arguments.AssetName);
-
-	UObject* PhysicsAssetObject = nullptr;
-	// create a new PhysicsAsset or overwrite existing asset, if possible
-	if (!ExistingAsset)
-	{
-		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
-		//The UObject should have been create by calling ImportAssetObject_GameThread on the main thread.
-		if (IsInGameThread())
-		{
-			PhysicsAssetObject = NewObject<UObject>(Arguments.Parent, PhysicsAssetClass, *Arguments.AssetName, RF_Public | RF_Standalone);
-		}
-		else
-		{
-			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Physics asset [%s] outside of the game thread"), *Arguments.AssetName);
-			return nullptr;
-		}
-	}
-	else if(ExistingAsset->GetClass()->IsChildOf(PhysicsAssetClass))
-	{
-		//This is a reimport, we are just re-updating the source data
-		PhysicsAssetObject = ExistingAsset;
-	}
+	UObject* PhysicsAssetObject = UE::Interchange::FFactoryCommon::AsyncFindObject(PhysicsAssetNode, GetFactoryClass(), Arguments.Parent, Arguments.AssetName);
 
 	if (!PhysicsAssetObject)
 	{
-		UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create PhysicsAsset asset %s"), *Arguments.AssetName);
-		return nullptr;
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not import the PhysicsAsset asset %s, because the asset do not exist."), *Arguments.AssetName);
+		return ImportAssetResult;
 	}
 
-	if (PhysicsAssetObject)
+	UPhysicsAsset* PhysicsAsset = Cast<UPhysicsAsset>(PhysicsAssetObject);
+	if (!ensure(PhysicsAsset))
 	{
-		//Currently PhysicsAsset re-import will not touch the PhysicsAsset at all
-		//TODO design a re-import process for the PhysicsAsset
-		if(!Arguments.ReimportObject)
-		{
-			UPhysicsAsset* PhysicsAsset = Cast<UPhysicsAsset>(PhysicsAssetObject);
-			if (!ensure(PhysicsAsset))
-			{
-				UE_LOG(LogInterchangeImport, Warning, TEXT("Could not create PhysicsAsset asset %s"), *Arguments.AssetName);
-				return nullptr;
-			}
-			
-			PhysicsAssetNode->SetCustomReferenceObject(FSoftObjectPath(PhysicsAsset));
-		}
+		UE_LOG(LogInterchangeImport, Error, TEXT("Could not cast to PhysicsAsset asset %s"), *Arguments.AssetName);
+		return ImportAssetResult;
+	}
+
+	//Currently PhysicsAsset re-import will not touch the PhysicsAsset at all
+	//TODO design a re-import process for the PhysicsAsset
+	if(!Arguments.ReimportObject)
+	{
+		PhysicsAssetNode->SetCustomReferenceObject(FSoftObjectPath(PhysicsAsset));
+	}
 		
-		//Getting the file Hash will cache it into the source data
-		Arguments.SourceData->GetFileContentHash();
+	//Getting the file Hash will cache it into the source data
+	Arguments.SourceData->GetFileContentHash();
 
-		//The interchange completion task (call in the GameThread after the factories pass), will call PostEditChange.
-	}
-	else
-	{
-		//The PhysicsAsset is not a UPhysicsAsset
-		PhysicsAssetObject->RemoveFromRoot();
-		PhysicsAssetObject->MarkAsGarbage();
-	}
-	return PhysicsAssetObject;
+	ImportAssetResult.ImportedObject = PhysicsAssetObject;
+	return ImportAssetResult;
 #endif
 }
 

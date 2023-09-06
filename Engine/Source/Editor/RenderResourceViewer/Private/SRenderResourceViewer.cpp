@@ -5,7 +5,11 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "RHI.h"
+#include "ContentBrowserModule.h"
+#include "IContentBrowserSingleton.h"
 
 #define LOCTEXT_NAMESPACE "SRenderResourceView"
 
@@ -81,6 +85,25 @@ namespace RenderResourceViewerInternal
 			return SNullWidget::NullWidget;
 		}
 	};
+
+	class FContextMenuCommands : public TCommands<FContextMenuCommands>
+	{
+	public:
+		FContextMenuCommands()
+			: TCommands<FContextMenuCommands>(TEXT("RenderResourceViewer"), NSLOCTEXT("Contexts", "RenderResourceViewer", "Render Resource Viewer"), NAME_None, FAppStyle::GetAppStyleSetName())
+		{}
+
+		virtual void RegisterCommands() override
+		{
+			UI_COMMAND(Command_FindInContentBrowser,
+				"Browse to Asset", 
+				"Browses to the associated asset and selects it in the most recently used Content Browser (summoning one if necessary)", 
+				EUserInterfaceActionType::Button, 
+				FInputChord(EModifierKey::Control, EKeys::B));
+		}
+
+		TSharedPtr<FUICommandInfo> Command_FindInContentBrowser;
+	};
 }
 
 #define RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bIsChecked, DisplayText, Tooltip, OnCheckStateChangedFunc) \
@@ -97,6 +120,7 @@ namespace RenderResourceViewerInternal
 		.Padding(FMargin(0.0f, 0.0f, 10.0f, 0.0f)) \
 		[ \
 			SNew(SCheckBox) \
+			.ToolTipText(Tooltip) \
 			.IsChecked(bIsChecked) \
 			.OnCheckStateChanged(this, &OnCheckStateChangedFunc) \
 		]
@@ -138,13 +162,13 @@ void SRenderResourceViewerWidget::Construct(const FArguments& InArgs, const TSha
 					]
 
 					// A row of checkboxes to filter resource list by flags
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowTransient, LOCTEXT("TransientText", "Transient"), LOCTEXT("TransientTooltip", "Transient"), SRenderResourceViewerWidget::OnTransientCheckboxChanged)
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowStreaming, LOCTEXT("StreamingText", "Streaming"), LOCTEXT("StreamingTooltip", "Streaming"), SRenderResourceViewerWidget::OnStreamingCheckboxChanged)
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowRT, LOCTEXT("RTText", "RT"), LOCTEXT("RTTooltip", "Render Target"), SRenderResourceViewerWidget::OnRTCheckboxChanged)
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowDS, LOCTEXT("DSText", "DS"), LOCTEXT("DSTooltip", "Depth Stencil"), SRenderResourceViewerWidget::OnDSCheckboxChanged)
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowUAV, LOCTEXT("UAVText", "UAV"), LOCTEXT("UAVTooltip", "Unordered Access View"), SRenderResourceViewerWidget::OnUAVCheckboxChanged)
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowRTAS, LOCTEXT("RTASText", "RTAS"), LOCTEXT("RTASTooltip", "Ray Tracing Acceleration Structure"), SRenderResourceViewerWidget::OnRTASCheckboxChanged)
-					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowNone, LOCTEXT("NoneText", "None"), LOCTEXT("NoneTooltip", "Resource with no flags set"), SRenderResourceViewerWidget::OnNoneCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowResident, LOCTEXT("ResidentText", "Resident"), LOCTEXT("ResidentTooltip", "Resource is accessible by GPU, and not evicted (unused)"), SRenderResourceViewerWidget::OnResidentCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowTransient, LOCTEXT("TransientText", "Transient"), LOCTEXT("TransientTooltip", "Resource is only allocated during the duration of the render passes where it's active and will share underlying memory with other resources in the frame"), SRenderResourceViewerWidget::OnTransientCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowStreaming, LOCTEXT("StreamingText", "Streaming"), LOCTEXT("StreamingTooltip", "Resource is a streamable texture"), SRenderResourceViewerWidget::OnStreamingCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowRT, LOCTEXT("RTText", "RT"), LOCTEXT("RTTooltip", "Resource can be written to as a Render Target buffer by GPU"), SRenderResourceViewerWidget::OnRTCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowDS, LOCTEXT("DSText", "DS"), LOCTEXT("DSTooltip", "Resource can be written to as a Depth Stencil buffer by GPU"), SRenderResourceViewerWidget::OnDSCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowUAV, LOCTEXT("UAVText", "UAV"), LOCTEXT("UAVTooltip", "Resource supports Unordered Access View which allows temporally unordered read/write access from multiple GPU threads without generating memory conflicts"), SRenderResourceViewerWidget::OnUAVCheckboxChanged)
+					RENDER_RESOURCE_VIEWER_ADD_CHECKBOX(bShowRTAS, LOCTEXT("RTASText", "RTAS"), LOCTEXT("RTASTooltip", "Resource is a Ray Tracing Acceleration Structure"), SRenderResourceViewerWidget::OnRTASCheckboxChanged)
 
 					// Refresh button to update the resource list
 					+ SHorizontalBox::Slot()
@@ -213,9 +237,11 @@ void SRenderResourceViewerWidget::Construct(const FArguments& InArgs, const TSha
 					SAssignNew(ResourceListView, SListView<TSharedPtr<FRHIResourceStats>>)
 					.ScrollbarVisibility(EVisibility::Visible)
 					.ItemHeight(24.0f)
+					.ToolTipText(LOCTEXT("ResourceListViewToolTip", "CTRL+B or use right click menu to find the asset in Content Browser"))
 					.ListItemsSource(&ResourceInfos)
 					.SelectionMode(ESelectionMode::SingleToggle)
 					.OnGenerateRow(this, &SRenderResourceViewerWidget::HandleResourceGenerateRow)
+					.OnContextMenuOpening(FOnContextMenuOpening::CreateSP(this, &SRenderResourceViewerWidget::OpenContextMenu))
 					.HeaderRow
 					(
 						SNew(SHeaderRow)
@@ -230,6 +256,8 @@ void SRenderResourceViewerWidget::Construct(const FArguments& InArgs, const TSha
 			]
 		]
 	];
+
+	InitCommandList();
 
 	RefreshNodes(true);
 }
@@ -252,11 +280,23 @@ void SRenderResourceViewerWidget::RefreshNodes(bool bUpdateRHIResources)
 	TotalResourceSize = 0;
 	for (const TSharedPtr<FRHIResourceStats>& Info : RHIResources)
 	{
+		ensure(Info->bHasFlags);
+
 		bool bContainsFilterText = FilterText.IsEmpty() || Info->Name.ToString().Contains(FilterText.ToString()) || Info->OwnerName.ToString().Contains(FilterText.ToString());
-		// Note bMarkedForDelete resources are excluded from display
-		bool bContainsFilterFlags = (bShowTransient && Info->bTransient) || (bShowStreaming && Info->bStreaming)
-									|| (bShowRT && Info->bRenderTarget) || (bShowDS && Info->bDepthStencil) || (bShowUAV && Info->bUnorderedAccessView) || (bShowRTAS && Info->bRayTracingAccelerationStructure)
-									|| (bShowNone && !Info->bHasFlags);
+		bool bContainsFilterFlags = true;
+		// If the resource has a flag set and its matching check box is un-ticked, exclude from display.
+		// bMarkedForDelete resources are excluded from display
+		if ((!bShowResident && Info->bResident) ||
+			(!bShowTransient && Info->bTransient) ||
+			(!bShowStreaming && Info->bStreaming) ||
+			(!bShowRT && Info->bRenderTarget) ||
+			(!bShowDS && Info->bDepthStencil) ||
+			(!bShowUAV && Info->bUnorderedAccessView) ||
+			(!bShowRTAS && Info->bRayTracingAccelerationStructure) ||
+			Info->bMarkedForDelete)
+		{
+			bContainsFilterFlags = false;
+		}
 		if (bContainsFilterText && bContainsFilterFlags)
 		{
 			ResourceInfos.Add(Info);
@@ -328,6 +368,67 @@ void SRenderResourceViewerWidget::OnColumnSortModeChanged(const EColumnSortPrior
 FText SRenderResourceViewerWidget::GetResourceSizeText() const
 {
 	return FText::FromString(RenderResourceViewerInternal::GetFormatedSize(TotalResourceSize));
+}
+
+FReply SRenderResourceViewerWidget::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	return CommandList->ProcessCommandBindings(InKeyEvent) == true ? FReply::Handled() : FReply::Unhandled();
+}
+
+void SRenderResourceViewerWidget::InitCommandList()
+{
+	RenderResourceViewerInternal::FContextMenuCommands::Register();
+	CommandList = MakeShared<FUICommandList>();
+
+	CommandList->MapAction(RenderResourceViewerInternal::FContextMenuCommands::Get().Command_FindInContentBrowser,
+		FExecuteAction::CreateSP(this, &SRenderResourceViewerWidget::ContextMenu_FindInContentBrowser),
+		FCanExecuteAction::CreateSP(this, &SRenderResourceViewerWidget::ContextMenu_FindInContentBrowser_CanExecute));
+}
+
+TSharedPtr<SWidget> SRenderResourceViewerWidget::OpenContextMenu()
+{
+	FMenuBuilder MenuBuilder(true, CommandList.ToSharedRef());
+	MenuBuilder.AddMenuEntry
+	(
+		RenderResourceViewerInternal::FContextMenuCommands::Get().Command_FindInContentBrowser,
+		NAME_None,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SystemWideCommands.FindInContentBrowser.Small")
+	);
+
+	return MenuBuilder.MakeWidget();
+}
+
+void SRenderResourceViewerWidget::ContextMenu_FindInContentBrowser()
+{
+	UObject* SelectedAsset = nullptr;
+	const TArray<TSharedPtr<FRHIResourceStats>>& SelectedNodes = ResourceListView->GetSelectedItems();
+	if (SelectedNodes.Num() > 0)
+	{
+		// Find the UObject asset from the owner name path
+		FString ObjectPathString = SelectedNodes[0]->OwnerName.ToString();
+		int32 LODIdx = ObjectPathString.Find(TEXT(" [LOD"));
+		if (LODIdx > -1)
+		{
+			ObjectPathString = ObjectPathString.Left(LODIdx);
+		}
+
+		SelectedAsset = FSoftObjectPath(ObjectPathString).ResolveObject();
+	}
+
+	if (SelectedAsset)
+	{
+		// Highlight the asset in content browser
+		const TArray<UObject*>& Assets = { SelectedAsset };
+		const FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+		ContentBrowserModule.Get().SyncBrowserToAssets(Assets);
+	}
+}
+
+bool SRenderResourceViewerWidget::ContextMenu_FindInContentBrowser_CanExecute() const
+{
+	return ResourceListView->GetSelectedItems().Num() > 0;
 }
 
 #undef LOCTEXT_NAMESPACE

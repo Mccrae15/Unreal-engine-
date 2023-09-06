@@ -1,11 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreTypes.h"
-#include "Misc/Guid.h"
+#include "DevObjectVersion.h"
+#include "Containers/Map.h"
 
 // Custom serialization version for changes made in the //Fortnite/Main stream
-struct CORE_API FFortniteReleaseBranchCustomObjectVersion
+struct FFortniteReleaseBranchCustomObjectVersion
 {
 	enum Type
 	{
@@ -30,13 +30,30 @@ struct CORE_API FFortniteReleaseBranchCustomObjectVersion
 		// Remove any cooked collision data from nanite landscape / editor spline meshes since collisions are not needed there :
 		RemoveUselessLandscapeMeshesCookedCollisionData,
 
+		// Serialize out UAnimCurveCompressionCodec::InstanceGUID to maintain deterministic DDC key generation in cooked-editor
+		SerializeAnimCurveCompressionCodecGuidOnCook,
+		
+		// Fix the Nanite landscape mesh being reused because of a bad name
+		FixNaniteLandscapeMeshNames,
+
+		// Fixup and synchronize shared properties modified before the synchronicity enforcement
+		LandscapeSharedPropertiesEnforcement,
+
+		// Include the cell size when computing the cell guid
+		WorldPartitionRuntimeCellGuidWithCellSize,
+
+		// Enable SkipOnlyEditorOnly style cooking of NaniteOverrideMaterial
+		NaniteMaterialOverrideUsesEditorOnly,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1
 	};
 
 	// The GUID for this custom version number
-	const static FGuid GUID;
+	CORE_API const static FGuid GUID;
+
+	static CORE_API TMap<FGuid, FGuid> GetSystemGuids();
 
 private:
 	FFortniteReleaseBranchCustomObjectVersion() {}

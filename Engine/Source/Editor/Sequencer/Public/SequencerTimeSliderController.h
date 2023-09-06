@@ -8,6 +8,7 @@
 #include "Widgets/SWidget.h"
 #include "ITimeSlider.h"
 #include "ISequencerModule.h"
+#include "TimeSliderArgs.h"
 
 class FSlateWindowElementList;
 struct FContextMenuSuppressor;
@@ -70,7 +71,13 @@ public:
 	virtual FFrameTime GetScrubPosition() const override { return TimeSliderArgs.ScrubPosition.Get(FFrameTime()); }
 
 	/** Get the current time for the Scrub handle which indicates what range is being evaluated. */
-	virtual void SetScrubPosition(FFrameTime InTime, bool bEvaluate) override { CommitScrubPosition(InTime, false, bEvaluate); }
+	virtual void SetScrubPosition(FFrameTime InTime, bool bEvaluate) override { CommitScrubPosition(InTime, GetPlaybackStatus() == ETimeSliderPlaybackStatus::Scrubbing, bEvaluate); }
+
+	/** Set the playback status for the controller*/
+	virtual void SetPlaybackStatus(ETimeSliderPlaybackStatus InStatus) override;
+
+	/** Get the playback status for the controller, by default it is ETimeSliderPlaybackStatus::Stopped */
+	virtual ETimeSliderPlaybackStatus GetPlaybackStatus() const override;
 
 	/**
 	 * Clamp the given range to the clamp range 

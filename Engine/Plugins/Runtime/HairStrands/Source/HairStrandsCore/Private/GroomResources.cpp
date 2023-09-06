@@ -12,6 +12,7 @@
 #include "HairStrandsVertexFactory.h"
 #include "Misc/Paths.h"
 #include "RHIStaticStates.h"
+#include "RHIUtilities.h"
 #include "Serialization/LargeMemoryReader.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "Serialization/MemoryReader.h"
@@ -26,7 +27,14 @@
 #include "RenderGraph.h"
 #include "RenderGraphUtils.h"
 #include "RenderTargetPool.h"
+#include "RHIUtilities.h"
 #include "GroomBindingBuilder.h"
+#include "GroomRBFDeformer.h"
+#if WITH_EDITORONLY_DATA
+#include "Containers/StringView.h"
+#include "DerivedDataCache.h"
+#include "DerivedDataRequestOwner.h"
+#endif
 
 static int32 GHairStrandsBulkData_ReleaseAfterUse = 0;
 static FAutoConsoleVariableRef CVarHairStrandsBulkData_ReleaseAfterUse(TEXT("r.HairStrands.Strands.BulkData.ReleaseAfterUse"), GHairStrandsBulkData_ReleaseAfterUse, TEXT("Release CPU bulk data once hair groom/groom binding asset GPU resources are created. This saves memory"));
@@ -44,6 +52,25 @@ static float GHairStrandsDebugVoxel_WorldSize = 0.3f;
 static int32 GHairStrandsDebugVoxel_MaxSegmentPerVoxel = 2048;
 static FAutoConsoleVariableRef CVarHairStrandsDebugVoxel_WorldSize(TEXT("r.HairStrands.DebugData.VoxelSize"), GHairStrandsDebugVoxel_WorldSize, TEXT("Voxel size use for creating debug data."));
 static FAutoConsoleVariableRef CVarHairStrandsDebugVoxel_MaxSegmentPerVoxel(TEXT("r.HairStrands.DebugData.MaxSegmentPerVoxel"), GHairStrandsDebugVoxel_MaxSegmentPerVoxel, TEXT("Max number of segments per Voxel size when creating debug data."));
+
+bool ValidateHairBulkData()
+{
+	return GHairStrandsBulkData_Validation > 0;
+}
+
+static void ConvertToExternalBufferWithViews(FRDGBuilder& GraphBuilder, FRDGBufferRef& InBuffer, FRDGExternalBuffer& OutBuffer, EPixelFormat Format = PF_Unknown)
+{
+	OutBuffer.Buffer = GraphBuilder.ConvertToExternalBuffer(InBuffer);
+	if (EnumHasAnyFlags(InBuffer->Desc.Usage, BUF_ShaderResource))
+	{
+		OutBuffer.SRV = OutBuffer.Buffer->GetOrCreateSRV(GraphBuilder.RHICmdList, FRDGBufferSRVDesc(InBuffer, Format));
+	}
+	if (EnumHasAnyFlags(InBuffer->Desc.Usage, BUF_UnorderedAccess))
+	{
+		OutBuffer.UAV = OutBuffer.Buffer->GetOrCreateUAV(GraphBuilder.RHICmdList, FRDGBufferUAVDesc(InBuffer, Format));
+	}
+	OutBuffer.Format = Format;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////
 
@@ -92,51 +119,38 @@ const TCHAR* ToHairResourceDebugName(const TCHAR* In, FHairResourceName& InDebug
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // FRWBuffer utils 
-void UploadDataToBuffer(FReadBuffer& OutBuffer, uint32 DataSizeInBytes, const void* InCpuData)
-{
-	void* BufferData = RHILockBuffer(OutBuffer.Buffer, 0, DataSizeInBytes, RLM_WriteOnly);
-	FMemory::Memcpy(BufferData, InCpuData, DataSizeInBytes);
-	RHIUnlockBuffer(OutBuffer.Buffer);
-}
-
-void UploadDataToBuffer(FRWBufferStructured& OutBuffer, uint32 DataSizeInBytes, const void* InCpuData)
-{
-	void* BufferData = RHILockBuffer(OutBuffer.Buffer, 0, DataSizeInBytes, RLM_WriteOnly);
-	FMemory::Memcpy(BufferData, InCpuData, DataSizeInBytes);
-	RHIUnlockBuffer(OutBuffer.Buffer);
-}
 
 template<typename FormatType>
-void CreateBuffer(const TArray<typename FormatType::Type>& InData, FRWBuffer& OutBuffer, const TCHAR* DebugName, ERHIAccess InitialAccess = ERHIAccess::SRVMask)
+void CreateBuffer(FRHICommandListBase& RHICmdList, const TArray<typename FormatType::Type>& InData, FRWBuffer& OutBuffer, const TCHAR* DebugName, ERHIAccess InitialAccess = ERHIAccess::SRVMask)
 {
 	const uint32 DataCount = InData.Num();
 	const uint32 DataSizeInBytes = FormatType::SizeInByte*DataCount;
 
 	if (DataSizeInBytes == 0) return;
 
-	OutBuffer.Initialize(FormatType::SizeInByte, DataCount, FormatType::Format, InitialAccess, BUF_Static, DebugName);
-	void* BufferData = RHILockBuffer(OutBuffer.Buffer, 0, DataSizeInBytes, RLM_WriteOnly);
+	OutBuffer.Initialize(RHICmdList, FormatType::SizeInByte, DataCount, FormatType::Format, InitialAccess, BUF_Static, DebugName);
+	void* BufferData = RHICmdList.LockBuffer(OutBuffer.Buffer, 0, DataSizeInBytes, RLM_WriteOnly);
 
 	FMemory::Memcpy(BufferData, InData.GetData(), DataSizeInBytes);
-	RHIUnlockBuffer(OutBuffer.Buffer);
+	RHICmdList.UnlockBuffer(OutBuffer.Buffer);
 }
 
 template<typename FormatType>
-void CreateBuffer(uint32 InVertexCount, FRWBuffer& OutBuffer, const TCHAR* DebugName)
+void CreateBuffer(FRHICommandListBase& RHICmdList, uint32 InVertexCount, FRWBuffer& OutBuffer, const TCHAR* DebugName)
 {
 	const uint32 DataCount = InVertexCount;
 	const uint32 DataSizeInBytes = FormatType::SizeInByte*DataCount;
 
 	if (DataSizeInBytes == 0) return;
 
-	OutBuffer.Initialize(FormatType::SizeInByte, DataCount, FormatType::Format, ERHIAccess::UAVCompute, BUF_Static, DebugName);
-	void* BufferData = RHILockBuffer(OutBuffer.Buffer, 0, DataSizeInBytes, RLM_WriteOnly);
+	OutBuffer.Initialize(RHICmdList, FormatType::SizeInByte, DataCount, FormatType::Format, ERHIAccess::UAVCompute, BUF_Static, DebugName);
+	void* BufferData = RHICmdList.LockBuffer(OutBuffer.Buffer, 0, DataSizeInBytes, RLM_WriteOnly);
 	FMemory::Memset(BufferData, 0, DataSizeInBytes);
-	RHIUnlockBuffer(OutBuffer.Buffer);
+	RHICmdList.UnlockBuffer(OutBuffer.Buffer);
 }
 
 template<typename FormatType>
-void CreateBuffer(const TArray<typename FormatType::Type>& InData, FHairCardsVertexBuffer& OutBuffer, const TCHAR* DebugName, const FName& OwnerName, ERHIAccess InitialAccess = ERHIAccess::SRVMask)
+void CreateBuffer(FRHICommandListBase& RHICmdList, const TArray<typename FormatType::Type>& InData, FHairCardsVertexBuffer& OutBuffer, const TCHAR* DebugName, const FName& OwnerName, ERHIAccess InitialAccess = ERHIAccess::SRVMask)
 {
 	const uint32 DataCount = InData.Num();
 	const uint32 DataSizeInBytes = FormatType::SizeInByte * DataCount;
@@ -146,17 +160,244 @@ void CreateBuffer(const TArray<typename FormatType::Type>& InData, FHairCardsVer
 	FRHIResourceCreateInfo CreateInfo(DebugName);
 	CreateInfo.ResourceArray = nullptr;
 
-	OutBuffer.VertexBufferRHI = RHICreateVertexBuffer(DataSizeInBytes, BUF_Static | BUF_ShaderResource, InitialAccess, CreateInfo);
+	OutBuffer.VertexBufferRHI = RHICmdList.CreateVertexBuffer(DataSizeInBytes, BUF_Static | BUF_ShaderResource, InitialAccess, CreateInfo);
 	OutBuffer.VertexBufferRHI->SetOwnerName(OwnerName);
 
-	void* BufferData = RHILockBuffer(OutBuffer.VertexBufferRHI, 0, DataSizeInBytes, RLM_WriteOnly);
+	void* BufferData = RHICmdList.LockBuffer(OutBuffer.VertexBufferRHI, 0, DataSizeInBytes, RLM_WriteOnly);
 	FMemory::Memcpy(BufferData, InData.GetData(), DataSizeInBytes);
-	RHIUnlockBuffer(OutBuffer.VertexBufferRHI);
-	OutBuffer.ShaderResourceViewRHI = RHICreateShaderResourceView(OutBuffer.VertexBufferRHI, FormatType::SizeInByte, FormatType::Format);
+	RHICmdList.UnlockBuffer(OutBuffer.VertexBufferRHI);
+	OutBuffer.ShaderResourceViewRHI = RHICmdList.CreateShaderResourceView(OutBuffer.VertexBufferRHI, FormatType::SizeInByte, FormatType::Format);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
 // RDG buffers utils 
+
+static FRDGBufferDesc ApplyUsage(FRDGBufferDesc In, EHairResourceUsageType InUsage)
+{
+	if (InUsage != EHairResourceUsageType::Dynamic)
+	{
+		In.Usage = In.Usage & (~BUF_UnorderedAccess);
+	}
+	return In;
+}
+
+inline bool ReleaseAfterUse() { return GHairStrandsBulkData_ReleaseAfterUse > 0; }
+
+inline void InternalSetBulkDataFlags(FByteBulkData& In)
+{
+	// Unloading of the bulk data is only supported on cooked build, as we can reload the data from the file/archieve
+#if !WITH_EDITORONLY_DATA
+	const bool bReleaseCPUData = ReleaseAfterUse();
+	if (bReleaseCPUData)
+	{
+		In.SetBulkDataFlags(BULKDATA_SingleUse);
+	}
+#endif
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Regular loading from BulkData
+
+FRDGBufferRef InternalCreateBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, FRDGExternalBuffer& Out, const EPixelFormat OutFormat, const FRDGBufferDesc Desc, const TCHAR* DebugName, const FName& OwnerName)
+{
+	InternalSetBulkDataFlags(InBulkData);
+
+	const uint32 DataSizeInBytes = Desc.GetSize();
+	check(InBulkData.GetBulkDataSize() >= DataSizeInBytes);
+	if (DataSizeInBytes == 0)
+	{
+		Out.Buffer = nullptr;
+		return nullptr;
+	}
+
+	const uint8* Data = (const uint8*)InBulkData.Lock(LOCK_READ_ONLY);
+	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
+	Buffer->SetOwnerName(OwnerName);
+	if (Data && DataSizeInBytes)
+	{
+		#if !WITH_EDITORONLY_DATA
+		if (ReleaseAfterUse())
+		{
+			GraphBuilder.QueueBufferUpload(Buffer, Data, DataSizeInBytes, [&InBulkData](const void* Ptr) { InBulkData.Unlock(); });
+		}
+		else
+		#endif
+		{
+			GraphBuilder.QueueBufferUpload(Buffer, Data, DataSizeInBytes, ERDGInitialDataFlags::None);  // Copy data internally
+			InBulkData.Unlock();
+		}
+	}
+	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, OutFormat);
+	return Buffer;
+}
+
+template<typename FormatType>
+FRDGBufferRef InternalCreateVertexBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InDataCount), UsageType);
+	return InternalCreateBufferRDG_FromBulkData(GraphBuilder, InBulkData, Out, FormatType::Format, Desc, DebugName, OwnerName);
+}
+
+template<typename FormatType>
+FRDGBufferRef InternalCreateStructuredBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateStructuredDesc(FormatType::SizeInByte, InDataCount), UsageType);
+	return InternalCreateBufferRDG_FromBulkData(GraphBuilder, InBulkData, Out, PF_Unknown, Desc, DebugName, OwnerName);
+}
+
+FRDGBufferRef InternalCreateByteAddressBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateByteAddressDesc(InBulkData.GetBulkDataSize()), UsageType);
+	return InternalCreateBufferRDG_FromBulkData(GraphBuilder, InBulkData, Out, PF_Unknown, Desc, DebugName, OwnerName);
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// HairBulkData loading
+
+static FRDGBufferRef InternalCreateBufferRDG_FromHairBulkData(FRDGBuilder& GraphBuilder, FHairBulkContainer& InData, const FRDGBufferRef& In, const FRDGBufferDesc& BufferDesc, const FRDGBufferDesc& UploadDesc, const TCHAR* DebugName, const FName& OwnerName)
+{
+	check(InData.ChunkRequest);
+	FHairStreamingRequest::FChunk& InChunk = *InData.ChunkRequest;
+
+	const bool bDeallocate  = In != nullptr && InData.ChunkRequest->Status == FHairStreamingRequest::FChunk::EStatus::Unloading;
+	const bool bCreate 		= In == nullptr || BufferDesc.GetSize() == UploadDesc.GetSize();
+	const bool bCopy 		= In != nullptr && InChunk.Size > 0;
+	const bool bReallocate 	= In != nullptr && In->Desc.GetSize() < InChunk.TotalSize;
+
+	check(InChunk.Size > 0);
+	// Either create a new buffer or append new data to existing buffer
+	if (bDeallocate)
+	{
+		// 1. Create new (smaller) buffer 
+		FRDGBufferDesc NewBufferDesc = BufferDesc;
+		NewBufferDesc.Usage |= EBufferUsageFlags::UnorderedAccess;
+		FRDGBufferRef Out = GraphBuilder.CreateBuffer(NewBufferDesc, DebugName, ERDGBufferFlags::MultiFrame);
+
+		// 2. Copy existing data from the old buffer to the new buffer
+		check (Out->Desc.GetSize() <= In->Desc.GetSize());
+		AddCopyBufferPass(GraphBuilder, Out, 0, In, 0, Out->Desc.GetSize());
+		return Out;
+	}
+	else if (bCreate)
+	{	
+		check(BufferDesc.GetSize() >= UploadDesc.GetSize());
+
+		FRDGBufferRef Out = GraphBuilder.CreateBuffer(BufferDesc, DebugName, ERDGBufferFlags::MultiFrame);
+		GraphBuilder.QueueBufferUpload(Out, InChunk.GetData(), InChunk.Size, ERDGInitialDataFlags::None);
+		InChunk.Release();
+		return Out;
+	}
+	else if (bCopy)
+	{
+		// 1. If the current buffer is too small for storing the new data, reallocate it
+		FRDGBufferRef Out = In;
+		if (bReallocate)
+		{
+			// 1.1 Create new buffer
+			FRDGBufferDesc NewBufferDesc = BufferDesc;
+			NewBufferDesc.Usage |= EBufferUsageFlags::UnorderedAccess;
+			Out = GraphBuilder.CreateBuffer(NewBufferDesc, DebugName, ERDGBufferFlags::MultiFrame);
+	
+			// 1.2 Copy existing data from the old buffer to the new buffer
+			AddCopyBufferPass(GraphBuilder, Out, 0, In, 0, In->Desc.GetSize());
+		}
+
+		// 2. Upload missing data
+		FRDGBufferRef UploadBuffer = GraphBuilder.CreateBuffer(UploadDesc, DebugName, ERDGBufferFlags::MultiFrame);
+		GraphBuilder.QueueBufferUpload(UploadBuffer, InChunk.GetData(), InChunk.Size, ERDGInitialDataFlags::None);
+		InChunk.Release();
+
+		// 4. Append new data to the new/existing buffer
+		AddCopyBufferPass(GraphBuilder, Out, InChunk.Offset, UploadBuffer, 0, InChunk.Size);
+
+		// Return the new buffer if it needs to be extracted
+		return Out;
+		//return bReallocate ? Out : nullptr;
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
+template<typename FormatType>
+FRDGBufferRef InternalCreateVertexBufferRDG_FromHairBulkData(FRDGBuilder& GraphBuilder, FHairBulkContainer& InChunk, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	// Fallback for non-streamble resources (e.g. guides)
+	if (InChunk.ChunkRequest == nullptr)
+	{
+		return InternalCreateVertexBufferRDG_FromBulkData<FormatType>(GraphBuilder, InChunk.Data, InDataCount, Out, DebugName, OwnerName, UsageType);
+	}
+
+	const FRDGBufferRef In = Out.Buffer ? Register(GraphBuilder, Out, ERDGImportedBufferFlags::None).Buffer : nullptr;
+	const FRDGBufferDesc BufferDesc = ApplyUsage(FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, FMath::DivideAndRoundUp(InChunk.ChunkRequest->TotalSize, FormatType::SizeInByte)), UsageType);
+	const FRDGBufferDesc UploadDesc = ApplyUsage(FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, FMath::DivideAndRoundUp(InChunk.ChunkRequest->Size, FormatType::SizeInByte)), UsageType);
+	if (BufferDesc.GetSize() == 0) 	{ Out.Buffer = nullptr; return nullptr; }
+	if (UploadDesc.GetSize()==0) 	{ return nullptr; }
+	if (FRDGBufferRef Buffer = InternalCreateBufferRDG_FromHairBulkData(GraphBuilder, InChunk, In, BufferDesc, UploadDesc, DebugName, OwnerName))
+	{
+		ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, FormatType::Format);
+		return Buffer;
+	}
+	return nullptr;
+}
+
+template<typename FormatType>
+FRDGBufferRef InternalCreateStructuredBufferRDG_FromHairBulkData(FRDGBuilder& GraphBuilder, FHairBulkContainer& InChunk, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	// Fallback for non-streamble resources (e.g. guides)
+	if (InChunk.ChunkRequest == nullptr)
+	{
+		return InternalCreateStructuredBufferRDG_FromBulkData<FormatType>(GraphBuilder, InChunk.Data, InDataCount, Out, DebugName, OwnerName, UsageType);
+	}
+
+	const FRDGBufferRef In = Out.Buffer ? Register(GraphBuilder, Out, ERDGImportedBufferFlags::None).Buffer : nullptr;
+	const FRDGBufferDesc BufferDesc = ApplyUsage(FRDGBufferDesc::CreateStructuredDesc(FormatType::SizeInByte, FMath::DivideAndRoundUp(InChunk.ChunkRequest->TotalSize, FormatType::SizeInByte)), UsageType);
+	const FRDGBufferDesc UploadDesc = ApplyUsage(FRDGBufferDesc::CreateStructuredDesc(FormatType::SizeInByte, FMath::DivideAndRoundUp(InChunk.ChunkRequest->Size, FormatType::SizeInByte)), UsageType);
+	if (BufferDesc.GetSize() == 0) 	{ Out.Buffer = nullptr; return nullptr; }
+	if (UploadDesc.GetSize()==0) 	{ return nullptr; }
+	if (FRDGBufferRef Buffer = InternalCreateBufferRDG_FromHairBulkData(GraphBuilder, InChunk, In, BufferDesc, UploadDesc, DebugName, OwnerName))
+	{
+		ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out);
+		return Buffer;
+	}
+	return nullptr;
+}
+
+FRDGBufferRef InternalCreateByteAddressBufferRDG_FromHairBulkData(FRDGBuilder& GraphBuilder, FHairBulkContainer& InChunk, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	// Fallback for non-streamble resources (e.g. guides)
+	if (InChunk.ChunkRequest == nullptr)
+	{
+		return InternalCreateByteAddressBufferRDG_FromBulkData(GraphBuilder, InChunk.Data, Out, DebugName, OwnerName, UsageType);
+	}
+
+	const FRDGBufferRef In = Out.Buffer ? Register(GraphBuilder, Out, ERDGImportedBufferFlags::None).Buffer : nullptr;
+	const FRDGBufferDesc BufferDesc = ApplyUsage(FRDGBufferDesc::CreateByteAddressDesc(InChunk.ChunkRequest->TotalSize), UsageType);
+	const FRDGBufferDesc UploadDesc = ApplyUsage(FRDGBufferDesc::CreateByteAddressDesc(InChunk.ChunkRequest->Size), UsageType);
+	if (BufferDesc.GetSize() == 0) 	{ Out.Buffer = nullptr; return nullptr; }
+	if (UploadDesc.GetSize()==0) 	{ return nullptr; }
+	if (FRDGBufferRef Buffer = InternalCreateBufferRDG_FromHairBulkData(GraphBuilder, InChunk, In, BufferDesc, UploadDesc, DebugName, OwnerName))
+	{
+		ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out);
+		return Buffer;
+	}
+	return nullptr;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Regular data loading
+
+static void InternalCreateIndirectBufferRDG(FRDGBuilder& GraphBuilder, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName)
+{
+	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(4, 4);
+	Desc.Usage |= BUF_DrawIndirect;
+	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::None);
+	Buffer->SetOwnerName(OwnerName);
+	AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Buffer, PF_R32_UINT), 0u);
+	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, PF_R32_UINT);
+}
 
 static FRDGBufferRef InternalCreateVertexBuffer(
 	FRDGBuilder& GraphBuilder,
@@ -165,13 +406,9 @@ static FRDGBufferRef InternalCreateVertexBuffer(
 	const void* InitialData,
 	uint64 InitialDataSize,
 	ERDGInitialDataFlags InitialDataFlags,
-	const FName& OwnerName,
-	bool bIsByteAddressBuffer = false)
+	const FName& OwnerName)
 {
-	if (!bIsByteAddressBuffer)
-	{
-		checkf(EnumHasAnyFlags(Desc.Usage, EBufferUsageFlags::VertexBuffer), TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), Name);
-	}
+	checkf(EnumHasAnyFlags(Desc.Usage, EBufferUsageFlags::VertexBuffer), TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), Name);
 	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, Name, ERDGBufferFlags::MultiFrame);
 	Buffer->SetOwnerName(OwnerName);
 	if (InitialData && InitialDataSize)
@@ -182,138 +419,17 @@ static FRDGBufferRef InternalCreateVertexBuffer(
 }
 
 template<typename FormatType>
-void InternalCreateVertexBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+FRDGBufferRef InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const typename FormatType::Type* InData, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType, ERDGInitialDataFlags InitialDataFlags)
 {
-	const uint32 InDataCount_Check = InBulkData.GetBulkDataSize() / sizeof(typename FormatType::BulkType);
-	check(InDataCount_Check == InDataCount);
-
 	const uint32 DataSizeInBytes = FormatType::SizeInByte * InDataCount;
 	if (DataSizeInBytes == 0)
 	{
 		Out.Buffer = nullptr;
-		return;
+		return nullptr;
 	}
 
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InDataCount);
-	if (UsageType != EHairResourceUsageType::Dynamic)
-	{
-		Desc.Usage = Desc.Usage & (~BUF_UnorderedAccess);
-	}
-
-	// Unloading of the bulk data is only supported on cooked build, as we can reload the data from the file/archieve
-	#if !WITH_EDITORONLY_DATA
-	const bool bReleaseCPUData = GHairStrandsBulkData_ReleaseAfterUse > 0;
-	if (bReleaseCPUData)
-	{
-		InBulkData.SetBulkDataFlags(BULKDATA_SingleUse);
-	}
-	#endif
-
-	const typename FormatType::BulkType* BulkData = (const typename FormatType::BulkType*)InBulkData.Lock(LOCK_READ_ONLY);
-	FRDGBufferRef Buffer = nullptr;
-	#if !WITH_EDITORONLY_DATA
-	if (bReleaseCPUData)
-	{
-		checkf(EnumHasAnyFlags(Desc.Usage, EBufferUsageFlags::VertexBuffer), TEXT("CreateVertexBuffer called with an FRDGBufferDesc underlying type that is not 'VertexBuffer'. Buffer: %s"), DebugName);
-		Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
-		Buffer->SetOwnerName(OwnerName);
-		if (BulkData && DataSizeInBytes)
-		{
-			GraphBuilder.QueueBufferUpload(Buffer, BulkData, DataSizeInBytes, [&InBulkData](const void* Ptr) { InBulkData.Unlock(); });
-		}
-	}
-	else
-	#endif
-	{
-		Buffer = InternalCreateVertexBuffer(
-			GraphBuilder,
-			DebugName,
-			Desc,
-			BulkData,
-			DataSizeInBytes,
-			ERDGInitialDataFlags::None, // Copy data internally
-			OwnerName);
-		InBulkData.Unlock();
-	}
-
-	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, FormatType::Format);
-}
-
-void InternalCreateByteAddressBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
-{
-	const uint32 DataSizeInBytes = InBulkData.GetBulkDataSize();
-	if (DataSizeInBytes == 0)
-	{
-		Out.Buffer = nullptr;
-		return;
-	}
-
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateByteAddressDesc(DataSizeInBytes);
-	if (UsageType != EHairResourceUsageType::Dynamic)
-	{
-		Desc.Usage = Desc.Usage & (~BUF_UnorderedAccess);
-	}
-
-	// Unloading of the bulk data is only supported on cooked build, as we can reload the data from the file/archieve
-#if !WITH_EDITORONLY_DATA
-	const bool bReleaseCPUData = GHairStrandsBulkData_ReleaseAfterUse > 0;
-	if (bReleaseCPUData)
-	{
-		InBulkData.SetBulkDataFlags(BULKDATA_SingleUse);
-	}
-#endif
-
-	const uint8* BulkData = (const uint8*)InBulkData.Lock(LOCK_READ_ONLY);
-	FRDGBufferRef Buffer = nullptr;
-#if !WITH_EDITORONLY_DATA
-	if (bReleaseCPUData)
-	{		
-		Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
-		Buffer->SetOwnerName(OwnerName);
-		if (BulkData && DataSizeInBytes)
-		{
-			GraphBuilder.QueueBufferUpload(Buffer, BulkData, DataSizeInBytes, [&InBulkData](const void* Ptr) { InBulkData.Unlock(); });
-		}
-	}
-	else
-#endif
-	{
-		Buffer = InternalCreateVertexBuffer(
-			GraphBuilder,
-			DebugName,
-			Desc,
-			BulkData,
-			DataSizeInBytes,
-			ERDGInitialDataFlags::None, 
-			OwnerName,
-			true /*bIsByteAddressBuffer*/); // Copy data internally
-		InBulkData.Unlock();
-	}
-
-	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, PF_Unknown);
-}
-
-
-
-
-template<typename FormatType>
-void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const typename FormatType::Type* InData, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType, ERDGInitialDataFlags InitialDataFlags)
-{
-	FRDGBufferRef Buffer = nullptr;
-
-	const uint32 DataSizeInBytes = FormatType::SizeInByte * InDataCount;
-	if (DataSizeInBytes == 0)
-	{
-		Out.Buffer = nullptr;
-		return;
-	}
-
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InDataCount);
-	if (UsageType != EHairResourceUsageType::Dynamic)
-	{
-		Desc.Usage = Desc.Usage & (~BUF_UnorderedAccess);
-	}
-	Buffer = InternalCreateVertexBuffer(
+	const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InDataCount), UsageType);
+	FRDGBufferRef Buffer = InternalCreateVertexBuffer(
 		GraphBuilder,
 		DebugName,
 		Desc,
@@ -323,27 +439,22 @@ void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const typename For
 		OwnerName);
 
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, FormatType::Format);
+	return Buffer;
 }
 
 template<typename FormatType>
-void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const TArray<typename FormatType::Type>& InData, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType, ERDGInitialDataFlags InitialDataFlags= ERDGInitialDataFlags::NoCopy)
+FRDGBufferRef InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const TArray<typename FormatType::Type>& InData, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType, ERDGInitialDataFlags InitialDataFlags=ERDGInitialDataFlags::NoCopy)
 {
-	FRDGBufferRef Buffer = nullptr;
-
 	const uint32 DataCount = InData.Num();
 	const uint32 DataSizeInBytes = FormatType::SizeInByte * DataCount;
 	if (DataSizeInBytes == 0)
 	{
 		Out.Buffer = nullptr;
-		return;
+		return nullptr;
 	}
 
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InData.Num());
-	if (UsageType != EHairResourceUsageType::Dynamic)
-	{
-		Desc.Usage = Desc.Usage & (~BUF_UnorderedAccess);
-	}
-	Buffer = InternalCreateVertexBuffer(
+	const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InData.Num()), UsageType);
+	FRDGBufferRef Buffer = InternalCreateVertexBuffer(
 		GraphBuilder,
 		DebugName,
 		Desc,
@@ -353,40 +464,37 @@ void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const TArray<typen
 		OwnerName);
 
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, FormatType::Format);
+	return Buffer;
 }
 
 template<typename DataType>
-void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const TArray<DataType>& InData, EPixelFormat Format, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+FRDGBufferRef InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, const TArray<DataType>& InData, EPixelFormat Format, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType, ERDGInitialDataFlags InitialDataFlags=ERDGInitialDataFlags::NoCopy)
 {
-	FRDGBufferRef Buffer = nullptr;
-
 	const uint32 DataCount = InData.Num();
 	const uint32 DataSizeInBytes = sizeof(DataType) * DataCount;
 	if (DataSizeInBytes == 0)
 	{
 		Out.Buffer = nullptr;
-		return;
+		return nullptr;
 	}
 
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(sizeof(DataType), InData.Num());
-	if (UsageType != EHairResourceUsageType::Dynamic)
-	{
-		Desc.Usage = Desc.Usage & (~BUF_UnorderedAccess);
-	}
-	Buffer = InternalCreateVertexBuffer(
+	const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateBufferDesc(sizeof(DataType), InData.Num()), UsageType);
+
+	FRDGBufferRef Buffer = InternalCreateVertexBuffer(
 		GraphBuilder,
 		DebugName,
 		Desc,
 		InData.GetData(),
 		DataSizeInBytes,
-		ERDGInitialDataFlags::NoCopy,
+		InitialDataFlags,
 		OwnerName);
 
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, Format);
+	return Buffer;
 }
 
 template<typename FormatType>
-void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 InVertexCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType Usage)
+FRDGBufferRef InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 InVertexCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType Usage)
 {
 	// Sanity check
 	check(Usage == EHairResourceUsageType::Dynamic);
@@ -396,7 +504,7 @@ void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 InVertexCou
 	if (DataSizeInBytes == 0)
 	{
 		Out.Buffer = nullptr;
-		return;
+		return nullptr;
 	}
 
 	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(FormatType::SizeInByte, InVertexCount);
@@ -413,10 +521,11 @@ void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 InVertexCou
 	}
 	
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, FormatType::Format);
+	return Buffer;
 }
 
 template<typename FormatType>
-void InternalCreateStructuredBufferRDG(FRDGBuilder& GraphBuilder, uint32 DataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType Usage)
+FRDGBufferRef InternalCreateStructuredBufferRDG(FRDGBuilder& GraphBuilder, uint32 DataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType Usage)
 {
 	// Sanity check
 	check(Usage == EHairResourceUsageType::Dynamic);
@@ -425,66 +534,52 @@ void InternalCreateStructuredBufferRDG(FRDGBuilder& GraphBuilder, uint32 DataCou
 	if (DataSizeInBytes == 0)
 	{
 		Out.Buffer = nullptr;
-		return;
+		return nullptr;
 	}
 
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateStructuredDesc(FormatType::SizeInByte, DataCount);
+	FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateStructuredDesc(FormatType::SizeInByte, DataCount), Usage);
 	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
 	Buffer->SetOwnerName(OwnerName);
 	AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Buffer, FormatType::Format), 0u);
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, FormatType::Format);
+	return Buffer;
 }
 
-
-template<typename FormatType>
-void InternalCreateStructuredBufferRDG_FromBulkData(FRDGBuilder& GraphBuilder, FByteBulkData& InBulkData, uint32 InDataCount, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+template<typename DataType>
+FRDGBufferRef InternalCreateByteAddressBufferRDG(FRDGBuilder& GraphBuilder, const TArray<DataType>& InData, EPixelFormat Format, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
 {
-	const uint32 InSizeInByte = sizeof(typename FormatType::Type);
-	const uint32 DataSizeInBytes = InSizeInByte * InDataCount;
-	check(InBulkData.GetBulkDataSize() == DataSizeInBytes);
-
-	if (DataSizeInBytes == 0)
+	const uint32 DataCount = InData.Num();
+	const uint32 DataSizeInBytes = sizeof(DataType) * DataCount;
+	Out.Buffer = nullptr;
+	if (DataSizeInBytes != 0)
 	{
-		Out.Buffer = nullptr;
-		return;
-	}
-
-	FRDGBufferDesc Desc = FRDGBufferDesc::CreateStructuredDesc(InSizeInByte, InDataCount);
-	if (UsageType != EHairResourceUsageType::Dynamic)
-	{
-		Desc.Usage = Desc.Usage & (~BUF_UnorderedAccess);
-	}
-
-	// Unloading of the bulk data is only supported on cooked build, as we can reload the data from the file/archieve
-	#if !WITH_EDITORONLY_DATA
-	const bool bReleaseCPUData = GHairStrandsBulkData_ReleaseAfterUse > 0;
-	if (bReleaseCPUData)
-	{
-		InBulkData.SetBulkDataFlags(BULKDATA_SingleUse);
-	}
-	#endif
-
-	const typename FormatType::Type* Data = (const typename FormatType::Type*)InBulkData.Lock(LOCK_READ_ONLY);
-	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
-	Buffer->SetOwnerName(OwnerName);
-	if (Data && DataSizeInBytes)
-	{
-		#if !WITH_EDITORONLY_DATA
-		if (bReleaseCPUData)
+		const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateByteAddressDesc(DataSizeInBytes), UsageType);
+		FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
+		Buffer->SetOwnerName(OwnerName);
+		if (InData.GetData() && DataSizeInBytes)
 		{
-			GraphBuilder.QueueBufferUpload(Buffer, Data, DataSizeInBytes, [&InBulkData](const void* Ptr) { InBulkData.Unlock(); });
+			GraphBuilder.QueueBufferUpload(Buffer, InData.GetData(), DataSizeInBytes, ERDGInitialDataFlags::None);
 		}
-		else
-		#endif
-		{
-			GraphBuilder.QueueBufferUpload(Buffer, Data, DataSizeInBytes, ERDGInitialDataFlags::None);  // Copy data internally
-			InBulkData.Unlock();
-		}
+		
+		ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, Format);
+		return Buffer;
 	}
-
-	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out);
+	return nullptr;
 }
 
+FRDGBufferRef InternalCreateByteAddressBufferRDG(FRDGBuilder& GraphBuilder, uint64 DataSizeInBytes, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, EHairResourceUsageType UsageType)
+{
+	Out.Buffer = nullptr;
+	if (DataSizeInBytes != 0)
+	{
+		const FRDGBufferDesc Desc = ApplyUsage(FRDGBufferDesc::CreateByteAddressDesc(DataSizeInBytes), UsageType);
+		FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
+		Buffer->SetOwnerName(OwnerName);
+		ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, PF_Unknown);
+		return Buffer;
+	}
+	return nullptr;
+}
 /////////////////////////////////////////////////////////////////////////////////////////
 
 static UTexture2D* CreateCardTexture(FIntPoint Resolution)
@@ -507,10 +602,8 @@ static UTexture2D* CreateCardTexture(FIntPoint Resolution)
 		const uint32 MipResolutionY = Resolution.Y >> MipIt;
 		const uint32 SizeInBytes = sizeof(float) * MipResolutionX * MipResolutionY;
 
-		FTexture2DMipMap* MipMap = new FTexture2DMipMap();
+		FTexture2DMipMap* MipMap = new FTexture2DMipMap(MipResolutionX, MipResolutionY);
 		Out->GetPlatformData()->Mips.Add(MipMap);
-		MipMap->SizeX = MipResolutionX;
-		MipMap->SizeY = MipResolutionY;
 		MipMap->BulkData.Lock(LOCK_READ_WRITE);
 		float* MipMemory = (float*)MipMap->BulkData.Realloc(SizeInBytes);
 		for (uint32 Y = 0; Y < MipResolutionY; Y++)
@@ -550,17 +643,30 @@ OwnerName(InOwnerName)
 {
 }
 
-void FHairCommonResource::InitRHI()
+void FHairCommonResource::InitRHI(FRHICommandListBase&)
 {
-	if (bIsInitialized || AllocationType == EHairStrandsAllocationType::Deferred || GUsingNullRHI) { return; }
+	// 1. If the resource is Updated (ReleaseRHI, IniRHI), reset its loaded data counter
+	if (!bIsInitialized)
+	{
+		InternalResetLoadedSize();
+	}
 
-	check(InternalIsDataLoaded());
+	// 2. If the resouce creation is deferred, skip the initialization
+	if (bIsInitialized || AllocationType == EHairStrandsAllocationType::Deferred || GUsingNullRHI) 
+	{ 
+		return; 
+	}
 
+	// 3. Loaded the data
+	const int32 DummyLODIndex = -1;
+	check(InternalGetOrRequestData(HAIR_MAX_NUM_CURVE_PER_GROUP, HAIR_MAX_NUM_POINT_PER_GROUP, DummyLODIndex));
+
+	// 4. Allocate the resource, and update the data
 	if (bUseRenderGraph)
 	{
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 		FRDGBuilder GraphBuilder(RHICmdList);
-		InternalAllocate(GraphBuilder);
+		InternalAllocate(GraphBuilder, HAIR_MAX_NUM_CURVE_PER_GROUP, HAIR_MAX_NUM_POINT_PER_GROUP, DummyLODIndex);
 		GraphBuilder.Execute();
 	}
 	else
@@ -576,50 +682,124 @@ void FHairCommonResource::ReleaseRHI()
 	bIsInitialized = false;
 }
 
+bool FHairCommonResource::InternalGetOrRequestData(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex) 
+{ 
+	// Initialize the streaming request so that resource which actually don't emit streaming request get correct #curve/#point/LODIndx
+	// request when allocating its resources
+	StreamingRequest.CurveCount = InRequestedCurveCount; 
+	StreamingRequest.PointCount = InRequestedPointCount;  
+	StreamingRequest.LODIndex   = InLODIndex;
+	return true; 
+}
+
 void FHairCommonResource::Allocate(FRDGBuilder& GraphBuilder, EHairResourceLoadingType LoadingType)
 {
-	EHairResourceStatus Status = EHairResourceStatus::None;
-	Allocate(GraphBuilder, LoadingType, Status);
+	EHairResourceStatus Status;
+	Status.Status = EHairResourceStatus::EStatus::None;
+	Status.AvailableCurveCount = HAIR_MAX_NUM_CURVE_PER_GROUP;
+	Allocate(GraphBuilder, LoadingType, Status, HAIR_MAX_NUM_CURVE_PER_GROUP, HAIR_MAX_NUM_POINT_PER_GROUP, -1/*LODIndex*/);
 }
 
-void FHairCommonResource::Allocate(FRDGBuilder& GraphBuilder, EHairResourceLoadingType LoadingType, EHairResourceStatus& Status)
+void FHairCommonResource::Allocate(FRDGBuilder& GraphBuilder, EHairResourceLoadingType LoadingType, EHairResourceStatus& Status, int32 InLODIndex)
 {
-	if (bIsInitialized) { Status |= EHairResourceStatus::Valid; return; }
-
-	if (LoadingType == EHairResourceLoadingType::Async && !InternalIsDataLoaded()) { Status |= EHairResourceStatus::Loading; return; }
-
-	check(AllocationType == EHairStrandsAllocationType::Deferred);
-	FRenderResource::InitResource(); // Call RenderResource InitResource() so that the resources is marked as initialized
-	InternalAllocate(GraphBuilder);
-	bIsInitialized = true;
-	Status |= EHairResourceStatus::Valid;
+	Allocate(GraphBuilder, LoadingType, Status, HAIR_MAX_NUM_CURVE_PER_GROUP, HAIR_MAX_NUM_POINT_PER_GROUP, InLODIndex);
 }
 
-void FHairCommonResource::AllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex, EHairResourceLoadingType LoadingType, EHairResourceStatus& Status)
+bool NeedDeallocation(uint32 InRequest, uint32 InAvailable);
+void FHairCommonResource::Allocate(FRDGBuilder& GraphBuilder, EHairResourceLoadingType LoadingType, EHairResourceStatus& Status, uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex)
 {
-	// When using a async loading, sub-resources allocation requires the common/main resource to be already initialized.
-	if (LoadingType == EHairResourceLoadingType::Async && (!InternalIsLODDataLoaded(LODIndex) || !bIsInitialized)) { Status |= EHairResourceStatus::Loading; return; }
-
-	// Sanity check. 
 	check(AllocationType == EHairStrandsAllocationType::Deferred);
 
-	InternalAllocateLOD(GraphBuilder, LODIndex);
-	Status |= EHairResourceStatus::Valid;
-}
+	// Check if there is already a request in flight	
 
-void FHairCommonResource::StreamInData()
-{
-	if (!bIsInitialized)
+	if (LoadingType == EHairResourceLoadingType::Sync)
 	{
-		InternalIsDataLoaded();
+		if (!bIsInitialized)
+		{
+			FRenderResource::InitResource(GraphBuilder.RHICmdList); // Call RenderResource InitResource() so that the resources is marked as initialized
+		}
+		if (!bIsInitialized || !InternalIsLODDataLoaded(InRequestedCurveCount, InRequestedPointCount, InLODIndex))
+		{
+			InternalAllocate(GraphBuilder, InRequestedCurveCount, InRequestedPointCount, InLODIndex);
+		}
+		bIsInitialized = true;
+
+		// Update the max curve count available
+		MaxAvailableCurveCount = InRequestedCurveCount;
+
+		Status |= EHairResourceStatus::EStatus::Valid;
 	}
+	else if (LoadingType == EHairResourceLoadingType::Async)
+	{
+		// 1. If all requested curve are already loaded, nothing to do
+		if (bIsInitialized && MaxAvailableCurveCount >= InRequestedCurveCount && InternalIsLODDataLoaded(InRequestedCurveCount, InRequestedPointCount, InLODIndex)) 
+		{ 
+			// Trim/Un-stream data if needed (ensure no streaming request is in-flight)
+			if (NeedDeallocation(InRequestedCurveCount, MaxAvailableCurveCount) && StreamingRequest.IsNone())
+			{
+				StreamingRequest.CurveCount = InRequestedCurveCount;
+				StreamingRequest.PointCount = InRequestedPointCount;
+				StreamingRequest.LODIndex = InLODIndex;
+				if (FHairStrandsBulkCommon* Bulk = InternalGetBulkData())
+				{
+					Bulk->Unload(&StreamingRequest);
+				}
+				InternalAllocate(GraphBuilder, InRequestedCurveCount, InRequestedPointCount, StreamingRequest.LODIndex); // Do we need to pass something else for the deallocation
+
+				// Update the max curve count available
+				MaxAvailableCurveCount = StreamingRequest.CurveCount;
+
+				// Reset streaming request. When the request is delete, the DDC request becomes cancelled. 
+				StreamingRequest = FHairStreamingRequest();
+			}
+
+			Status |= EHairResourceStatus::EStatus::Valid; 
+		}
+		// 2. If more curves are requested, issue a streaming request
+		else if (InternalGetOrRequestData(InRequestedCurveCount, InRequestedPointCount, InLODIndex))
+		{ 
+			// 2.1 Curve data are availble, and update GPU resources
+			if (!bIsInitialized)
+			{
+				FRenderResource::InitResource(GraphBuilder.RHICmdList); // Call RenderResource InitResource() so that the resources is marked as initialized
+			}
+			InternalAllocate(GraphBuilder, StreamingRequest.CurveCount, StreamingRequest.PointCount, StreamingRequest.LODIndex);
+			bIsInitialized = true;
+
+			// Update the max curve count available
+			MaxAvailableCurveCount = StreamingRequest.CurveCount;
+
+			// Reset streaming request. When the request is delete, the DDC request becomes cancelled. 
+			StreamingRequest = FHairStreamingRequest();
+
+			// Validate the resource the resource again, as the LODIndex at request time (StreamingRequest.LODIndex) 
+			// and the current LODIndex (InLODIndex) might not match.
+			// If they don't match a new streaming request will be emitted next frame
+			if (InternalIsLODDataLoaded(InRequestedCurveCount, InRequestedPointCount, InLODIndex))
+			{
+				Status |= EHairResourceStatus::EStatus::Valid;
+			}
+			else
+			{
+				Status |= EHairResourceStatus::EStatus::Loading;
+			}
+		}
+		else
+		{
+			// 2.2 Curve data are not availble yet, postpone (new) resources creation
+			Status |= EHairResourceStatus::EStatus::Loading; 
+		}
+	}
+
+	Status.AddAvailableCurve(MaxAvailableCurveCount);
 }
 
-void FHairCommonResource::StreamInLODData(int32 LODIndex)
+void FHairCommonResource::StreamInData(int32 InLODIndex)
 {
 	if (!bIsInitialized)
 	{
-		InternalIsLODDataLoaded(LODIndex);
+		// TODO
+		// InternalGetOrRequestData(HAIR_MAX_NUM_CURVE_PER_GROUP, HAIR_MAX_NUM_POINT_PER_GROUP, InLODIndex);
 	}
 }
 
@@ -631,15 +811,15 @@ FHairCardIndexBuffer::FHairCardIndexBuffer(const TArray<FHairCardsIndexFormat::T
 	SetOwnerName(InOwnerName); 
 }
 
-void FHairCardIndexBuffer::InitRHI()
+void FHairCardIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	const uint32 DataSizeInBytes = FHairCardsIndexFormat::SizeInByte * Indices.Num();
 
 	FRHIResourceCreateInfo CreateInfo(TEXT("FHairCardIndexBuffer"));
-	IndexBufferRHI = RHICreateBuffer(DataSizeInBytes, BUF_Static | BUF_IndexBuffer, FHairCardsIndexFormat::SizeInByte, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-	void* Buffer = RHILockBuffer(IndexBufferRHI, 0, DataSizeInBytes, RLM_WriteOnly);
+	IndexBufferRHI = RHICmdList.CreateBuffer(DataSizeInBytes, BUF_Static | BUF_IndexBuffer, FHairCardsIndexFormat::SizeInByte, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	void* Buffer = RHICmdList.LockBuffer(IndexBufferRHI, 0, DataSizeInBytes, RLM_WriteOnly);
 	FMemory::Memcpy(Buffer, Indices.GetData(), DataSizeInBytes);
-	RHIUnlockBuffer(IndexBufferRHI);
+	RHICmdList.UnlockBuffer(IndexBufferRHI);
 	IndexBufferRHI->SetOwnerName(GetOwnerName());
 }
 
@@ -657,11 +837,13 @@ FHairCardsRestResource::FHairCardsRestResource(const FHairCardsBulkData& InBulkD
 
 void FHairCardsRestResource::InternalAllocate()
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 	// These resources are kept as regular (i.e., non-RDG resources) as they need to be bound at the input assembly stage by the Vertex declaraction which requires FVertexBuffer type
-	CreateBuffer<FHairCardsPositionFormat>(BulkData.Positions, RestPositionBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_PositionBuffer"), ResourceName), OwnerName);
-	CreateBuffer<FHairCardsNormalFormat>(BulkData.Normals, NormalsBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_NormalBuffer"), ResourceName), OwnerName);
-	CreateBuffer<FHairCardsUVFormat>(BulkData.UVs, UVsBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_UVBuffer"), ResourceName), OwnerName);
-	CreateBuffer<FHairCardsMaterialFormat>(BulkData.Materials, MaterialsBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_MaterialBuffer"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsPositionFormat>(RHICmdList, BulkData.Positions, RestPositionBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_PositionBuffer"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsNormalFormat>(RHICmdList, BulkData.Normals, NormalsBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_NormalBuffer"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsUVFormat>(RHICmdList, BulkData.UVs, UVsBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_UVBuffer"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsMaterialFormat>(RHICmdList, BulkData.Materials, MaterialsBuffer, ToHairResourceDebugName(TEXT("Hair.CardsRest_MaterialBuffer"), ResourceName), OwnerName);
 
 	FSamplerStateRHIRef DefaultSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	DepthSampler = DefaultSampler;
@@ -675,14 +857,14 @@ void FHairCardsRestResource::InternalRelease()
 {
 }
 
-void FHairCardsRestResource::InitResource()
+void FHairCardsRestResource::InitResource(FRHICommandListBase& RHICmdList)
 {
-	FRenderResource::InitResource();
-	RestIndexBuffer.InitResource();
-	RestPositionBuffer.InitResource();
-	NormalsBuffer.InitResource();
-	UVsBuffer.InitResource();
-	MaterialsBuffer.InitResource();
+	FRenderResource::InitResource(RHICmdList);
+	RestIndexBuffer.InitResource(RHICmdList);
+	RestPositionBuffer.InitResource(RHICmdList);
+	NormalsBuffer.InitResource(RHICmdList);
+	UVsBuffer.InitResource(RHICmdList);
+	MaterialsBuffer.InitResource(RHICmdList);
 }
 
 void FHairCardsRestResource::ReleaseResource()
@@ -801,10 +983,12 @@ FHairMeshesRestResource::FHairMeshesRestResource(const FHairMeshesBulkData& InBu
 
 void FHairMeshesRestResource::InternalAllocate()
 {
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 	// These resources are kept as regular (i.e., non-RDG resources) as they need to be bound at the input assembly stage by the Vertex declaraction which requires FVertexBuffer type
-	CreateBuffer<FHairCardsPositionFormat>(BulkData.Positions, RestPositionBuffer, ToHairResourceDebugName(TEXT("Hair.MeshesRest_Positions"), ResourceName), OwnerName);
-	CreateBuffer<FHairCardsNormalFormat>(BulkData.Normals, NormalsBuffer, ToHairResourceDebugName(TEXT("Hair.MeshesRest_Normals"), ResourceName), OwnerName);
-	CreateBuffer<FHairCardsUVFormat>(BulkData.UVs, UVsBuffer, ToHairResourceDebugName(TEXT("Hair.MeshesRest_UVs"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsPositionFormat>(RHICmdList, BulkData.Positions, RestPositionBuffer, ToHairResourceDebugName(TEXT("Hair.MeshesRest_Positions"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsNormalFormat>(RHICmdList, BulkData.Normals, NormalsBuffer, ToHairResourceDebugName(TEXT("Hair.MeshesRest_Normals"), ResourceName), OwnerName);
+	CreateBuffer<FHairCardsUVFormat>(RHICmdList, BulkData.UVs, UVsBuffer, ToHairResourceDebugName(TEXT("Hair.MeshesRest_UVs"), ResourceName), OwnerName);
 }
 
 void FHairMeshesRestResource::InternalRelease()
@@ -812,13 +996,13 @@ void FHairMeshesRestResource::InternalRelease()
 
 }
 
-void FHairMeshesRestResource::InitResource()
+void FHairMeshesRestResource::InitResource(FRHICommandListBase& RHICmdList)
 {
-	FRenderResource::InitResource();
-	IndexBuffer.InitResource();
-	RestPositionBuffer.InitResource();
-	NormalsBuffer.InitResource();
-	UVsBuffer.InitResource();
+	FRenderResource::InitResource(RHICmdList);
+	IndexBuffer.InitResource(RHICmdList);
+	RestPositionBuffer.InitResource(RHICmdList);
+	NormalsBuffer.InitResource(RHICmdList);
+	UVsBuffer.InitResource(RHICmdList);
 }
 
 void FHairMeshesRestResource::ReleaseResource()
@@ -862,79 +1046,106 @@ void FHairMeshesDeformedResource::InternalRelease()
 
 FHairStrandsRestResource::FHairStrandsRestResource(FHairStrandsBulkData& InBulkData, EHairStrandsResourcesType InCurveType, const FHairResourceName& InResourceName, const FName& InOwnerName) :
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, InResourceName, InOwnerName),
-	PositionBuffer(), AttributeBuffer(), VertexToCurveBuffer(), BulkData(InBulkData), CurveType(InCurveType)
+	PositionBuffer(), PointAttributeBuffer(), CurveAttributeBuffer(), PointToCurveBuffer(), BulkData(InBulkData), CurveType(InCurveType)
 {
+	MaxAvailableCurveCount = 0;
+
 	// Sanity check
-	check(!!(BulkData.Flags & FHairStrandsBulkData::DataFlags_HasData));
+	check(!!(BulkData.Header.Flags & FHairStrandsBulkData::DataFlags_HasData));
 }
 
-bool FHairStrandsRestResource::InternalIsDataLoaded()
+bool FHairStrandsRestResource::InternalGetOrRequestData(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex)
 {
-	if (BulkDataRequest.IsNone())
+	if (StreamingRequest.IsNone())
 	{
-		FBulkDataBatchRequest::FBatchBuilder Batch = FBulkDataBatchRequest::NewBatch(5);
-		Batch.Read(BulkData.Positions);
-		Batch.Read(BulkData.Attributes);
-		Batch.Read(BulkData.VertexToCurve);
-		Batch.Read(BulkData.Curves);
-
-		Batch.Issue(BulkDataRequest);
+		StreamingRequest.Request(InRequestedCurveCount, InRequestedPointCount, InLODIndex, BulkData, false, false, false, OwnerName);
 	}
-	
-	return BulkDataRequest.IsCompleted();
+	return StreamingRequest.IsCompleted();
 }
 
 void FHairStrandsRestResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
-	BulkDataRequest = FBulkDataBatchRequest();
+	// If we enter this function, the request need to be completed
+	check(StreamingRequest.IsCompleted());
 
-	const uint32 PointCount = BulkData.PointCount;
-	const uint32 CurveCount = BulkData.CurveCount;
+	const uint32 PointCount = BulkData.GetNumPoints();
+	const uint32 CurveCount = BulkData.GetNumCurves();
 
 	// 1. Lock data, which force the loading data from files (on non-editor build/cooked data). These data are then uploaded to the GPU
 	// 2. A local copy is done by the buffer uploader. This copy is discarded once the uploading is done.
-	InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsPositionFormat>(GraphBuilder, BulkData.Positions, PointCount, PositionBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PositionBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	InternalCreateByteAddressBufferRDG_FromBulkData(GraphBuilder, BulkData.Attributes, AttributeBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_AttributeBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsCurveFormat>(GraphBuilder, BulkData.Curves, CurveCount, CurveBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_CurveBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	if (!!(BulkData.Flags & BulkData.DataFlags_Has16bitsCurveIndex))
+	InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsPositionFormat>(GraphBuilder, BulkData.Data.Positions, PointCount, PositionBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PositionBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	InternalCreateByteAddressBufferRDG_FromHairBulkData(GraphBuilder, BulkData.Data.CurveAttributes, CurveAttributeBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_CurveAttributeBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	if (!!(BulkData.Header.Flags & FHairStrandsBulkData::DataFlags_HasPointAttribute))
 	{
-		InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsVertexToCurveFormat16>(GraphBuilder, BulkData.VertexToCurve, PointCount, VertexToCurveBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_VertexToCurveBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+		InternalCreateByteAddressBufferRDG_FromHairBulkData(GraphBuilder, BulkData.Data.PointAttributes, PointAttributeBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PointAttributeBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	}
+	else if (PointAttributeBuffer.Buffer == nullptr)
+	{
+		TArray<uint32> DummyAttribute;
+		DummyAttribute.Add(0u);
+		InternalCreateByteAddressBufferRDG(GraphBuilder, DummyAttribute, EPixelFormat::PF_R32_UINT, PointAttributeBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PointAttributeBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+		GraphBuilder.UseExternalAccessMode(Register(GraphBuilder, PointAttributeBuffer, ERDGImportedBufferFlags::CreateSRV).Buffer, ERHIAccess::SRVMask);
+	}
+	InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsCurveFormat>(GraphBuilder, BulkData.Data.Curves, CurveCount, CurveBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_CurveBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	if (!!(BulkData.Header.Flags & FHairStrandsBulkData::DataFlags_Has16bitsCurveIndex))
+	{
+		InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsPointToCurveFormat16>(GraphBuilder, BulkData.Data.PointToCurve, PointCount, PointToCurveBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PointToCurveBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
 	}
 	else
 	{
-		InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsVertexToCurveFormat32>(GraphBuilder, BulkData.VertexToCurve, PointCount, VertexToCurveBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_VertexToCurveBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+		InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsPointToCurveFormat32>(GraphBuilder, BulkData.Data.PointToCurve, PointCount, PointToCurveBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PointToCurveBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
 	}
 
-	TArray<FVector4f> RestOffset;
-	RestOffset.Add((FVector3f)BulkData.GetPositionOffset());// LWC_TODO: precision loss
-	InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, RestOffset, PositionOffsetBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PositionOffsetBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static, ERDGInitialDataFlags::None);
-	GraphBuilder.UseExternalAccessMode(Register(GraphBuilder, PositionOffsetBuffer, ERDGImportedBufferFlags::CreateSRV).Buffer, ERHIAccess::SRVMask);
+	// If the buffer is not null, it means it was been lazily allocated once. In such a case, The tangent buffer is recreated the new required size
+	const bool bStaticTangentNeeded = TangentBuffer.Buffer != nullptr;
+	if (bStaticTangentNeeded)
+	{
+		InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder, PointCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRest_TangentBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+		CachedTangentPointCount = 0; // Force recaching
+	}
+
+	if (PositionOffsetBuffer.Buffer == nullptr)
+	{	
+		TArray<FVector4f> RestOffset;
+		RestOffset.Add((FVector3f)BulkData.GetPositionOffset());// LWC_TODO: precision loss
+		InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, RestOffset, PositionOffsetBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRest_PositionOffsetBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static, ERDGInitialDataFlags::None);
+		GraphBuilder.UseExternalAccessMode(Register(GraphBuilder, PositionOffsetBuffer, ERDGImportedBufferFlags::CreateSRV).Buffer, ERHIAccess::SRVMask);
+	}
 }
 
 void AddHairTangentPass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
-	uint32 VertexStart,
-	uint32 VertexCount,
+	uint32 PointCount,
 	FHairGroupPublicData* HairGroupPublicData,
 	FRDGBufferSRVRef PositionBuffer,
 	FRDGImportedBuffer OutTangentBuffer);
 
-FRDGExternalBuffer FHairStrandsRestResource::GetTangentBuffer(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap)
+FRDGExternalBuffer FHairStrandsRestResource::GetTangentBuffer(FRDGBuilder& GraphBuilder, FGlobalShaderMap* ShaderMap, uint32 ActivePointCount, uint32 ActiveCurveCount)
 {
-	// Lazy allocation and update
-	if (TangentBuffer.Buffer == nullptr)
-	{
-		InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder, BulkData.PointCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRest_TangentBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	const uint32 AllocatedPoint = TangentBuffer.Buffer ? TangentBuffer.Buffer->Desc.NumElements / FHairStrandsTangentFormat::ComponentCount : 0u;
+	const uint32 RequestedPoint = ActivePointCount;
 
+	// Lazy allocation
+	const bool bReallocateTangentBuffer = TangentBuffer.Buffer == nullptr || ActivePointCount > AllocatedPoint;
+	if (bReallocateTangentBuffer)
+	{
+		InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder, ActivePointCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRest_TangentBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	}
+
+	// Lazy update tangent
+	const bool bRecomputeTangent = bReallocateTangentBuffer || ((AllocatedPoint >= RequestedPoint) && (ActivePointCount > CachedTangentPointCount));
+	if (bRecomputeTangent)
+	{
 		AddHairTangentPass(
 			GraphBuilder,
 			ShaderMap,
-			0,
-			BulkData.PointCount,
+			ActivePointCount,
 			nullptr,
 			RegisterAsSRV(GraphBuilder, PositionBuffer),
 			Register(GraphBuilder, TangentBuffer, ERDGImportedBufferFlags::CreateUAV));
+
+		CachedTangentPointCount = ActivePointCount;
 	}
 
 	return TangentBuffer;
@@ -944,10 +1155,18 @@ void FHairStrandsRestResource::InternalRelease()
 {
 	PositionBuffer.Release();
 	PositionOffsetBuffer.Release();
-	AttributeBuffer.Release();
-	VertexToCurveBuffer.Release();
+	CurveAttributeBuffer.Release();
+	PointAttributeBuffer.Release();
+	PointToCurveBuffer.Release();
 	TangentBuffer.Release();
 	CurveBuffer.Release();
+	MaxAvailableCurveCount = 0;
+	CachedTangentPointCount = 0;
+}
+
+void FHairStrandsRestResource::InternalResetLoadedSize()
+{
+	BulkData.ResetLoadedSize();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -960,19 +1179,32 @@ FHairStrandsDeformedResource::FHairStrandsDeformedResource(FHairStrandsBulkData&
 	GetPositionOffset(FHairStrandsDeformedResource::EFrameType::Previous) = BulkData.GetPositionOffset();
 }
 
-void FHairStrandsDeformedResource::InternalAllocate(FRDGBuilder& GraphBuilder)
+void FHairStrandsDeformedResource::InternalAllocate(FRDGBuilder& GraphBuilder, uint32 InCurveCount, uint32 InPointCount, int32 InLODIndex)
 {
-	const uint32 PointCount = BulkData.PointCount;
+	// Need to update these to by dynamic based on the active number of point
+	const uint32 PointCount = FMath::Min(InPointCount, BulkData.GetNumPoints());
 
-	InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, BulkData.PointCount, DeformedPositionBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedPositionBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-	InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, BulkData.PointCount, DeformedPositionBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedPositionBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-	InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder, BulkData.PointCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_TangentBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	FRDGBufferRef Prev0 = Register(GraphBuilder, DeformedPositionBuffer[0], ERDGImportedBufferFlags::None).Buffer;
+	FRDGBufferRef Prev1 = Register(GraphBuilder, DeformedPositionBuffer[1], ERDGImportedBufferFlags::None).Buffer;
 
-	TArray<FVector4f> DefaultOffsets;
-	DefaultOffsets.Add((FVector3f)BulkData.GetPositionOffset()); // LWC_TODO: precision loss
-	InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, DefaultOffsets, DeformedOffsetBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedOffsetBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic, ERDGInitialDataFlags::None);
-	InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, DefaultOffsets, DeformedOffsetBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedOffsetBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic, ERDGInitialDataFlags::None);
+	FRDGBufferRef Deformed0 = InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, PointCount, DeformedPositionBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedPositionBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	FRDGBufferRef Deformed1 = InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, PointCount, DeformedPositionBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedPositionBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	InternalCreateVertexBufferRDG<FHairStrandsTangentFormat>(GraphBuilder,  PointCount * FHairStrandsTangentFormat::ComponentCount, TangentBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_TangentBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
 
+	if (Prev0 != nullptr)
+	{
+		const uint32 SizeInBytes = FMath::Min(Prev0->Desc.GetSize(), Deformed0->Desc.GetSize());
+		AddCopyBufferPass(GraphBuilder, Deformed0, 0, Prev0, 0, SizeInBytes);
+		AddCopyBufferPass(GraphBuilder, Deformed1, 0, Prev1, 0, SizeInBytes);
+	}
+	 
+	if (DeformedOffsetBuffer[0].Buffer == nullptr)
+	{
+		TArray<FVector4f> DefaultOffsets;
+		DefaultOffsets.Add((FVector3f)BulkData.GetPositionOffset()); // LWC_TODO: precision loss
+		InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, DefaultOffsets, DeformedOffsetBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedOffsetBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic, ERDGInitialDataFlags::None);
+		InternalCreateVertexBufferRDG<FHairStrandsPositionOffsetFormat>(GraphBuilder, DefaultOffsets, DeformedOffsetBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformedOffsetBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic, ERDGInitialDataFlags::None);
+	}
 	// Note: DeformerBuffer is optionally/lazily allocated by a mesh-deformer graph
 }
 
@@ -981,9 +1213,33 @@ FRDGExternalBuffer& FHairStrandsDeformedResource::GetDeformerBuffer(FRDGBuilder&
 	// Lazy allocation and update
 	if (DeformerBuffer.Buffer == nullptr)
 	{
-		InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, BulkData.PointCount, DeformerBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformerBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+		InternalCreateVertexBufferRDG<FHairStrandsPositionFormat>(GraphBuilder, BulkData.GetNumPoints(), DeformerBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformerBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
 	}
 	return DeformerBuffer;
+}
+
+FRDGExternalBuffer& FHairStrandsDeformedResource::GetDeformerCurveAttributeBuffer(FRDGBuilder& GraphBuilder)
+{
+	// Deformer curve attributes
+	if (DeformerCurveAttributeBuffer.Buffer == nullptr)
+	{
+		const uint32 AllocSize = BulkData.GetCurveAttributeSizeInBytes();
+		check(AllocSize > 0);
+		InternalCreateByteAddressBufferRDG(GraphBuilder, AllocSize, DeformerCurveAttributeBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformed_DeformerCurveAttributeBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	}
+	return DeformerCurveAttributeBuffer;
+}
+
+FRDGExternalBuffer& FHairStrandsDeformedResource::GetDeformerPointAttributeBuffer(FRDGBuilder& GraphBuilder)
+{
+	// Deformer point attributes
+	if (DeformerPointAttributeBuffer.Buffer == nullptr && (BulkData.Header.Flags & FHairStrandsBulkData::DataFlags_HasPointAttribute) && BulkData.Data.PointAttributes.Data.GetBulkDataSize() > 0)
+	{
+		const uint32 AllocSize = BulkData.GetPointAttributeSizeInBytes();
+		check(AllocSize > 0);
+		InternalCreateByteAddressBufferRDG(GraphBuilder, AllocSize, DeformerPointAttributeBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsDeformedt_DeformerPointAttributeBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+	}
+	return DeformerPointAttributeBuffer;
 }
 
 void FHairStrandsDeformedResource::InternalRelease()
@@ -992,171 +1248,136 @@ void FHairStrandsDeformedResource::InternalRelease()
 	DeformedPositionBuffer[1].Release();
 	TangentBuffer.Release();
 	DeformerBuffer.Release();
+	DeformerPointAttributeBuffer.Release();
+	DeformerCurveAttributeBuffer.Release();
 
 	DeformedOffsetBuffer[0].Release();
 	DeformedOffsetBuffer[1].Release();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
-// Cluster culling data
-
-FHairStrandsClusterCullingData::FHairStrandsClusterCullingData()
-{
-
-}
-
-void FHairStrandsClusterCullingData::Reset()
-{
-	*this = FHairStrandsClusterCullingData();
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
-// Cluster culling bulk data
-FHairStrandsClusterCullingBulkData::FHairStrandsClusterCullingBulkData()
-{
-
-}
-
-void FHairStrandsClusterCullingBulkData::Reset()
-{
-	ClusterCount = 0;
-	ClusterLODCount = 0;
-	VertexCount = 0;
-	VertexLODCount = 0;
-
-	LODVisibility.Empty();;
-	CPULODScreenSize.Empty();
-
-	ClusterLODInfos.RemoveBulkData();
-	VertexToClusterIds.RemoveBulkData();
-	ClusterVertexIds.RemoveBulkData();
-	PackedClusterInfos.RemoveBulkData();
-
-	// Reset the bulk byte buffer to ensure the (serialize) data size is reset to 0
-	ClusterLODInfos 	= FByteBulkData();
-	VertexToClusterIds 	= FByteBulkData();
-	ClusterVertexIds 	= FByteBulkData();
-	PackedClusterInfos 	= FByteBulkData();
-}
-
-void FHairStrandsClusterCullingBulkData::Serialize(FArchive& Ar, UObject* Owner)
-{
-	Ar << ClusterCount;
-	Ar << ClusterLODCount;
-	Ar << VertexCount;
-	Ar << VertexLODCount;
-	Ar << LODVisibility;
-	Ar << CPULODScreenSize;
-
-	const int32 ChunkIndex = 0;
-	bool bAttemptFileMapping = false;
-
-	if (Ar.IsSaving())
-	{
-		const uint32 BulkFlags = BULKDATA_Force_NOT_InlinePayload;
-		ClusterLODInfos.SetBulkDataFlags(BulkFlags);
-		VertexToClusterIds.SetBulkDataFlags(BulkFlags);
-		ClusterVertexIds.SetBulkDataFlags(BulkFlags);
-		PackedClusterInfos.SetBulkDataFlags(BulkFlags);
-	}
-
-	if (ClusterLODCount)
-	{
-		ClusterLODInfos.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	}
-
-	if (VertexCount)
-	{
-		VertexToClusterIds.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	}
-
-	if (VertexLODCount)
-	{
-		ClusterVertexIds.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	}
-
-	if (ClusterCount)
-	{
-		PackedClusterInfos.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	}
-
-	if (GHairStrandsBulkData_Validation > 0 && Ar.IsSaving())
-	{
-		Validate(true);
-	}
-}
-
-void FHairStrandsClusterCullingBulkData::Validate(bool bIsSaving)
-{
-	if (ClusterCount == 0)
-		return;
-
-	const FHairClusterInfo::Packed* Datas = (const FHairClusterInfo::Packed*)PackedClusterInfos.Lock(LOCK_READ_ONLY);
-	
-	// Simple heuristic to check if the data are valid
-	const uint32 MaxCount = FMath::Min(ClusterCount, 128u);
-	bool bIsValid = true;
-	for (uint32 It = 0; It < MaxCount; ++It)
-	{
-		bIsValid = bIsValid && Datas[It].LODCount <= 8;
-		if (!bIsValid) break;
-	}
-	if (!bIsValid)
-	{
-		FString Name = ClusterLODInfos.GetDebugName();
-		UE_LOG(LogHairStrands, Error, TEXT("[Groom/DDC] Strands - Invalid ClusterCullingBulkData when %s bulk data - %s"), bIsSaving ? TEXT("Saving") : TEXT("Loading"), *Name);
-	}
-
-	PackedClusterInfos.Unlock();
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
 // Cluster culling resources
-FHairStrandsClusterCullingResource::FHairStrandsClusterCullingResource(FHairStrandsClusterCullingBulkData& InBulkData, const FHairResourceName& InResourceName, const FName& InOwnerName):
+FHairStrandsClusterResource::FHairStrandsClusterResource(FHairStrandsClusterBulkData& InBulkData, const FHairResourceName& InResourceName, const FName& InOwnerName):
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, InResourceName, InOwnerName),
 	BulkData(InBulkData)
 {
-
+	MaxAvailableCurveCount = 0;
 }
 
-bool FHairStrandsClusterCullingResource::InternalIsDataLoaded()
+bool FHairStrandsClusterResource::InternalGetOrRequestData(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex)
 {
-	if (BulkDataRequest.IsNone())
+	if (StreamingRequest.IsNone())
 	{
-		FBulkDataBatchRequest::NewBatch(4)
-			.Read(BulkData.PackedClusterInfos)
-			.Read(BulkData.ClusterLODInfos)
-			.Read(BulkData.VertexToClusterIds)
-			.Read(BulkData.ClusterVertexIds)
-			.Issue(BulkDataRequest);
+		StreamingRequest.Request(InRequestedCurveCount, InRequestedPointCount, InLODIndex, BulkData, false, false, false, OwnerName);
 	}
-
-	return BulkDataRequest.IsCompleted();
+	return StreamingRequest.IsCompleted();
 }
 
-void FHairStrandsClusterCullingResource::InternalAllocate(FRDGBuilder& GraphBuilder)
+void FHairStrandsClusterResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
-	BulkDataRequest = FBulkDataBatchRequest();
+	check(StreamingRequest.IsCompleted());
 
-	if (GHairStrandsBulkData_Validation > 0)
+	const uint32 EntryCount = FMath::DivideAndRoundUp(BulkData.Header.PointCount, HAIR_POINT_LOD_COUNT_PER_UINT);
+
+	// Allocated once with all the cluster data (i.e., no streaming)
+	if (ClusterInfoBuffer.Buffer == nullptr)
 	{
-		BulkData.Validate(false);
+		InternalCreateStructuredBufferRDG_FromHairBulkData<FHairClusterInfoFormat>(GraphBuilder, BulkData.Data.PackedClusterInfos, BulkData.Header.ClusterCount, ClusterInfoBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsCluster_ClusterInfoBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
 	}
-
-	InternalCreateStructuredBufferRDG_FromBulkData<FHairClusterInfoFormat>(GraphBuilder, BulkData.PackedClusterInfos, BulkData.ClusterCount, ClusterInfoBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsClusterCulling_ClusterInfoBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	InternalCreateStructuredBufferRDG_FromBulkData<FHairClusterLODInfoFormat>(GraphBuilder, BulkData.ClusterLODInfos, BulkData.ClusterLODCount, ClusterLODInfoBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsClusterCulling_ClusterLODInfoBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
-
-	InternalCreateVertexBufferRDG_FromBulkData<FHairClusterIndexFormat>(GraphBuilder, BulkData.VertexToClusterIds, BulkData.VertexCount, VertexToClusterIdBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsClusterCulling_VertexToClusterIds"), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	InternalCreateVertexBufferRDG_FromBulkData<FHairClusterIndexFormat>(GraphBuilder, BulkData.ClusterVertexIds, BulkData.VertexLODCount, ClusterVertexIdBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsClusterCulling_ClusterVertexIds"), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	InternalCreateVertexBufferRDG_FromHairBulkData<FHairClusterIndexFormat>(GraphBuilder, BulkData.Data.CurveToClusterIds, BulkData.Header.CurveCount, CurveToClusterIdBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsCluster_CurveToClusterIds"), ResourceName), OwnerName, EHairResourceUsageType::Static);	
+	InternalCreateVertexBufferRDG_FromHairBulkData<FHairClusterIndexFormat>(GraphBuilder, BulkData.Data.PointLODs, EntryCount, PointLODBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsCluster_PointLOD"), ResourceName), OwnerName, EHairResourceUsageType::Static);
 }
 
-void FHairStrandsClusterCullingResource::InternalRelease()
+void FHairStrandsClusterResource::InternalRelease()
 {
 	ClusterInfoBuffer.Release();
-	ClusterLODInfoBuffer.Release();
-	ClusterVertexIdBuffer.Release();
-	VertexToClusterIdBuffer.Release();
-	BulkDataRequest = FBulkDataBatchRequest();
+	CurveToClusterIdBuffer.Release();
+	PointLODBuffer.Release();
+	MaxAvailableCurveCount = 0;
+}
+
+void FHairStrandsClusterResource::InternalResetLoadedSize()
+{
+	BulkData.ResetLoadedSize();
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+// Cluster culling resources
+
+struct FHairStrandsSintFormat
+{
+	typedef int32 Type;
+	typedef int32 BulkType;
+	static const uint32 ComponentCount = 1;
+	static const uint32 SizeInByte = sizeof(Type);
+	static const EVertexElementType VertexElementType = VET_UInt;
+	static const EPixelFormat Format = PF_R32_SINT;
+};
+
+struct FHairStrandsUintFormat
+{
+	typedef uint32 Type;
+	typedef uint32 BulkType;
+	static const uint32 ComponentCount = 1;
+	static const uint32 SizeInByte = sizeof(Type);
+	static const EVertexElementType VertexElementType = VET_UInt;
+	static const EPixelFormat Format = PF_R32_UINT;
+};
+
+struct FHairStrandsFloatFormat
+{
+	typedef float Type;
+	typedef float BulkType;
+	static const uint32 ComponentCount = 1;
+	static const uint32 SizeInByte = sizeof(Type);
+	static const EVertexElementType VertexElementType = VET_UInt;
+	static const EPixelFormat Format = PF_R32_FLOAT;
+};
+
+FHairStrandsCullingResource::FHairStrandsCullingResource(uint32 InPointCount, uint32 InCurveCount, uint32 InClusterCount, const FHairResourceName& InResourceName, const FName& InOwnerName):
+FHairCommonResource(EHairStrandsAllocationType::Deferred, InResourceName, InOwnerName)
+{
+	MaxPointCount = InPointCount;
+	MaxCurveCount = InCurveCount;
+	ClusterCount = InClusterCount;
+	MaxAvailableCurveCount = 0;
+}
+
+void FHairStrandsCullingResource::InternalAllocate(FRDGBuilder& GraphBuilder, uint32 InCurveCount, uint32 InPointCount, int32 InLODIndex)
+{
+	if (ClusterCount > 0)
+	{	
+		const uint32 PointCount = FMath::Min(InPointCount, MaxPointCount);
+		const uint32 CurveCount = FMath::Min(InCurveCount, MaxCurveCount);
+
+		InternalCreateVertexBufferRDG<FHairStrandsUintFormat>(GraphBuilder, CurveCount, Resources.CulledCurveBuffer, TEXT("Hair.Cluster_CulledCurveBuffer"), GetOwnerName(), EHairResourceUsageType::Dynamic);
+		InternalCreateVertexBufferRDG<FHairStrandsUintFormat>(GraphBuilder, PointCount, Resources.CulledVertexIdBuffer, TEXT("Hair.Cluster_CulledVertexIdBuffer"), GetOwnerName(), EHairResourceUsageType::Dynamic);
+		InternalCreateVertexBufferRDG<FHairStrandsFloatFormat>(GraphBuilder, PointCount, Resources.CulledVertexRadiusScaleBuffer, TEXT("Hair.Cluster_CulledVertexRadiusScaleBuffer"), GetOwnerName(), EHairResourceUsageType::Dynamic);
+		AddClearUAVFloatPass(GraphBuilder, RegisterAsUAV(GraphBuilder, Resources.CulledVertexRadiusScaleBuffer), 0.f);
+	
+		// Only allocated once, as cluster count does not change
+		if (Resources.DrawIndirectBuffer.Buffer == nullptr)
+		{
+			InternalCreateVertexBufferRDG<FHairStrandsSintFormat>(GraphBuilder, ClusterCount * 6, Resources.ClusterAABBBuffer, TEXT("Hair.Cluster_ClusterAABBBuffer"), GetOwnerName(), EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsSintFormat>(GraphBuilder, 6, Resources.GroupAABBBuffer, TEXT("Hair.Cluster_GroupAABBBuffer"), GetOwnerName(), EHairResourceUsageType::Dynamic);
+			InternalCreateIndirectBufferRDG(GraphBuilder, Resources.DrawIndirectBuffer, TEXT("Hair.Cluster_DrawIndirectBuffer"), GetOwnerName());
+			InternalCreateIndirectBufferRDG(GraphBuilder, Resources.DrawIndirectRasterComputeBuffer, TEXT("Hair.Cluster_DrawIndirectRasterComputeBuffer"), GetOwnerName());
+			GraphBuilder.SetBufferAccessFinal(Register(GraphBuilder, Resources.DrawIndirectBuffer, ERDGImportedBufferFlags::None).Buffer, ERHIAccess::IndirectArgs);
+		}
+	}
+}
+
+void FHairStrandsCullingResource::InternalRelease()
+{
+	Resources.DrawIndirectBuffer.Release();
+	Resources.DrawIndirectRasterComputeBuffer.Release();
+	Resources.ClusterAABBBuffer.Release();
+	Resources.GroupAABBBuffer.Release();
+	Resources.CulledCurveBuffer.Release();
+	Resources.CulledVertexIdBuffer.Release();
+	Resources.CulledVertexRadiusScaleBuffer.Release();
+	MaxAvailableCurveCount = 0;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1165,74 +1386,49 @@ FHairStrandsRestRootResource::FHairStrandsRestRootResource(FHairStrandsRootBulkD
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, InResourceName, InOwnerName),
 	BulkData(InBulkData), CurveType(InCurveType)
 {
+	// MaxAvailableCurveCount is not set to 0, as we need to track the loaded curve data *per LOD*. 
+	// This is done through callback to InternalIsLODDataLoaded()
+	// MaxAvailableCurveCount = 0;
+
 	PopulateFromRootData();
 }
 
 void FHairStrandsRestRootResource::PopulateFromRootData()
 {
-	uint32 LODIndex = 0;
-	LODs.Reserve(BulkData.MeshProjectionLODs.Num());
-	for (const FHairStrandsRootBulkData::FMeshProjectionLOD& MeshProjectionLOD : BulkData.MeshProjectionLODs)
+	LODs.Reserve(BulkData.Header.LODs.Num());
+	for (const FHairStrandsRootBulkData::FHeader::FLOD& InLOD : BulkData.Header.LODs)
 	{
-		FLOD& LOD = LODs.AddDefaulted_GetRef();
+		FLOD& OutLOD = LODs.AddDefaulted_GetRef();
 
-		LOD.LODIndex = MeshProjectionLOD.LODIndex;
-		LOD.Status = FLOD::EStatus::Invalid;
-		LOD.SampleCount = MeshProjectionLOD.SampleCount;
+		OutLOD.LODIndex 	= InLOD.LODIndex;
+		OutLOD.Status 		= FLOD::EStatus::Invalid;
+		OutLOD.SampleCount 	= InLOD.SampleCount;
 	}
-	LODRequests.SetNum(BulkData.MeshProjectionLODs.Num());
 }
 
-bool FHairStrandsRestRootResource::InternalIsDataLoaded()
-{	
+bool FHairStrandsRestRootResource::InternalIsLODDataLoaded(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex) const
+{
+	if (InLODIndex >= 0 && InLODIndex < LODs.Num())
+	{
+		// Clamp request to the max supported
+		InRequestedCurveCount = FMath::Min(InRequestedCurveCount, BulkData.Header.RootCount);
+
+		const FLOD& GPUData = LODs[InLODIndex];
+		return (GPUData.Status == FLOD::EStatus::Completed || GPUData.Status == FLOD::EStatus::Initialized) && InRequestedCurveCount <= GPUData.AvailableCurveCount;
+	}
 	return true;
 }
 
-bool FHairStrandsRestRootResource::InternalIsLODDataLoaded(int32 LODIndex)
+bool FHairStrandsRestRootResource::InternalGetOrRequestData(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex)
 {
-	bool bIsLoading = false;
-	
-	check(LODs.Num() == BulkData.MeshProjectionLODs.Num());
-	if (LODIndex >= 0 && LODIndex < LODs.Num())
+	if (StreamingRequest.IsNone() && InLODIndex >= 0)
 	{
-		FBulkDataBatchRequest& LODRequest = LODRequests[LODIndex];
-		if (LODRequest.IsNone())
-		{
-			FBulkDataBatchRequest::FBatchBuilder Batch = FBulkDataBatchRequest::NewBatch(9);
-			FHairStrandsRootBulkData::FMeshProjectionLOD& CPUData = BulkData.MeshProjectionLODs[LODIndex];
-			const bool bHasValidCPUData = CPUData.RootBarycentricBuffer.GetBulkDataSize() > 0;
-			if (bHasValidCPUData)
-			{
-				Batch.Read(CPUData.RootBarycentricBuffer);
-				Batch.Read(CPUData.RootToUniqueTriangleIndexBuffer);
-				Batch.Read(CPUData.UniqueTriangleIndexBuffer);
-
-				Batch.Read(CPUData.RestUniqueTrianglePosition0Buffer);
-				Batch.Read(CPUData.RestUniqueTrianglePosition1Buffer);
-				Batch.Read(CPUData.RestUniqueTrianglePosition2Buffer);
-			}
-			
-			const bool bHasValidCPUWeights = CPUData.MeshSampleIndicesBuffer.GetBulkDataSize() > 0;
-			if (bHasValidCPUWeights)
-			{
-				Batch.Read(CPUData.MeshInterpolationWeightsBuffer);
-				Batch.Read(CPUData.MeshSampleIndicesBuffer);
-				Batch.Read(CPUData.RestSamplePositionsBuffer);
-			}
-			
-			if (bHasValidCPUData || bHasValidCPUWeights)
-			{
-				Batch.Issue(LODRequest);
-			}
-		}
-
-		bIsLoading = LODRequest.IsCompleted() == false;
+		StreamingRequest.Request(InRequestedCurveCount, InRequestedPointCount, InLODIndex, BulkData, false, false, false, OwnerName);
 	}
-
-	return !bIsLoading;
+	return InLODIndex >= 0 && StreamingRequest.IsCompleted();
 }
 
-void FHairStrandsRestRootResource::InternalAllocate(FRDGBuilder& GraphBuilder)
+void FHairStrandsRestRootResource::InternalAllocate(FRDGBuilder& GraphBuilder, uint32 InCurveCount, uint32 InPointCount, int32 InLODIndex)
 {
 	// Once empty, the MeshProjectionLODsneeds to be repopulate as it might be re-initialized. 
 	// E.g., when a resource is updated, it is first released, then re-init. 
@@ -1240,69 +1436,45 @@ void FHairStrandsRestRootResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 	{
 		PopulateFromRootData();
 	}
-}
 
-void FHairStrandsRestRootResource::InternalAllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex)
-{
-	// Sanity check ti insure that the 'common' part of FHairStrandsRestRootResource is already initialized
-	check(bIsInitialized);
-	check(BulkData.PointCount > 0);
-	check(LODs.Num() == BulkData.MeshProjectionLODs.Num());
-	if (LODIndex >= 0 && LODIndex < LODs.Num())
+	check(BulkData.Header.PointCount > 0);
+	check(LODs.Num() == BulkData.Header.LODs.Num());
+	if (InLODIndex >= 0 && InLODIndex < LODs.Num())
 	{
-		FLOD& GPUData = LODs[LODIndex];
-		const bool bIsLODInitialized = GPUData.Status == FLOD::EStatus::Completed || GPUData.Status == FLOD::EStatus::Initialized;
+		// Clamp to the max supported
+		InCurveCount = FMath::Min(InCurveCount, BulkData.Header.RootCount);
+
+		FLOD& GPUData = LODs[InLODIndex];
+		const bool bIsLODInitialized = (GPUData.Status == FLOD::EStatus::Completed || GPUData.Status == FLOD::EStatus::Initialized) && InCurveCount <= GPUData.AvailableCurveCount;
 		if (bIsLODInitialized)
 		{
 			return;
 		}
-		
-		LODRequests[LODIndex] = FBulkDataBatchRequest();
 
-		FHairStrandsRootBulkData::FMeshProjectionLOD& CPUData = BulkData.MeshProjectionLODs[LODIndex];
-		const bool bHasValidCPUData = CPUData.RootBarycentricBuffer.GetBulkDataSize() > 0;
-		if (bHasValidCPUData)
+		const FHairStrandsRootBulkData::FHeader::FLOD& LODHeader = BulkData.Header.LODs[InLODIndex];
+		FHairStrandsRootBulkData::FData::FLOD& CPUData = BulkData.Data.LODs[InLODIndex];
 		{
-			GPUData.Status = FLOD::EStatus::Completed;
-			
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsRootBarycentricFormat>(GraphBuilder, CPUData.RootBarycentricBuffer, BulkData.RootCount, GPUData.RootBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleBarycentricBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(GraphBuilder, CPUData.RootToUniqueTriangleIndexBuffer, BulkData.RootCount, GPUData.RootToUniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootToUniqueTriangleIndexBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsUniqueTriangleIndexFormat>(GraphBuilder, CPUData.UniqueTriangleIndexBuffer, CPUData.UniqueTriangleCount, GPUData.UniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_UniqueTriangleIndexBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePosition0Buffer, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition0Buffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePosition1Buffer, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition1Buffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePosition2Buffer, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition2Buffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-		}
-		else
-		{
-			GPUData.Status = FLOD::EStatus::Initialized;
-			
-			InternalCreateVertexBufferRDG<FHairStrandsRootBarycentricFormat>(GraphBuilder, BulkData.RootCount, GPUData.RootBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootBarycentricBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsRootToUniqueTriangleIndexFormat>(GraphBuilder, BulkData.RootCount, GPUData.RootToUniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootToUniqueTriangleIndexBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsUniqueTriangleIndexFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.UniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_UniqueTriangleIndexBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			
-			// Create buffers. Initialization will be done by render passes
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition0Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition0Buffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition1Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition1Buffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.UniqueTriangleCount, GPUData.RestUniqueTrianglePosition2Buffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition2Buffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsRootBarycentricFormat>(GraphBuilder, CPUData.RootBarycentricBuffer, BulkData.Header.RootCount, GPUData.RootBarycentricBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootTriangleBarycentricBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsRootToUniqueTriangleIndexFormat>(GraphBuilder, CPUData.RootToUniqueTriangleIndexBuffer, BulkData.Header.RootCount, GPUData.RootToUniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RootToUniqueTriangleIndexBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsUniqueTriangleIndexFormat>(GraphBuilder, CPUData.UniqueTriangleIndexBuffer, LODHeader.UniqueTriangleCount, GPUData.UniqueTriangleIndexBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_UniqueTriangleIndexBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestUniqueTrianglePositionBuffer, LODHeader.UniqueTriangleCount * 3, GPUData.RestUniqueTrianglePositionBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestUniqueTrianglePosition0Buffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
 		}
 
-		GPUData.SampleCount = CPUData.SampleCount;
-		const bool bHasValidCPUWeights = CPUData.MeshSampleIndicesBuffer.GetBulkDataSize() > 0;
-		if (bHasValidCPUWeights)
+		// Allocate only once
+		if (LODHeader.SampleCount > 0 && GPUData.MeshInterpolationWeightsBuffer.Buffer == nullptr)
 		{
 			const uint32 InteroplationWeightCount = CPUData.MeshInterpolationWeightsBuffer.GetBulkDataSize() / sizeof(FHairStrandsWeightFormat::Type);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsWeightFormat>(GraphBuilder, CPUData.MeshInterpolationWeightsBuffer, InteroplationWeightCount, GPUData.MeshInterpolationWeightsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_MeshInterpolationWeightsBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsIndexFormat>(GraphBuilder, CPUData.MeshSampleIndicesBuffer, CPUData.SampleCount, GPUData.MeshSampleIndicesBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_MeshSampleIndicesBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
-			InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestSamplePositionsBuffer, CPUData.SampleCount, GPUData.RestSamplePositionsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestSamplePositionsBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+			const uint32 WeightCount = FGroomRBFDeformer::GetWeightCount(LODHeader.SampleCount);
+			check(WeightCount == InteroplationWeightCount); // Sanity check
+
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsWeightFormat>(GraphBuilder, CPUData.MeshInterpolationWeightsBuffer, InteroplationWeightCount, GPUData.MeshInterpolationWeightsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_MeshInterpolationWeightsBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsIndexFormat>(GraphBuilder, CPUData.MeshSampleIndicesBuffer, LODHeader.SampleCount, GPUData.MeshSampleIndicesBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_MeshSampleIndicesBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
+			InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.RestSamplePositionsBuffer, LODHeader.SampleCount, GPUData.RestSamplePositionsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestSamplePositionsBuffer), ResourceName), OwnerName, EHairResourceUsageType::Static);
 		}
-		else
-		{
-			// TODO: do not allocate these resources, since they won't be used
-			InternalCreateVertexBufferRDG<FHairStrandsWeightFormat>(GraphBuilder, (CPUData.SampleCount+4) * (CPUData.SampleCount+4), GPUData.MeshInterpolationWeightsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_MeshInterpolationWeightsBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsIndexFormat>(GraphBuilder, CPUData.SampleCount, GPUData.MeshSampleIndicesBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_MeshSampleIndicesBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, CPUData.SampleCount, GPUData.RestSamplePositionsBuffer, ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRestRoot_RestSamplePositionsBuffer), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-		}
+
+		GPUData.Status = FLOD::EStatus::Completed;
+		GPUData.AvailableCurveCount = InCurveCount;
+		GPUData.SampleCount = LODHeader.SampleCount;
 	}
 }
 
@@ -1314,16 +1486,19 @@ void FHairStrandsRestRootResource::InternalRelease()
 		GPUData.RootBarycentricBuffer.Release();
 		GPUData.RootToUniqueTriangleIndexBuffer.Release();
 		GPUData.UniqueTriangleIndexBuffer.Release();
-		GPUData.RestUniqueTrianglePosition0Buffer.Release();
-		GPUData.RestUniqueTrianglePosition1Buffer.Release();
-		GPUData.RestUniqueTrianglePosition2Buffer.Release();
+		GPUData.RestUniqueTrianglePositionBuffer.Release();
 		GPUData.SampleCount = 0;
 		GPUData.MeshInterpolationWeightsBuffer.Release();
 		GPUData.MeshSampleIndicesBuffer.Release();
 		GPUData.RestSamplePositionsBuffer.Release();
+		GPUData.AvailableCurveCount = 0;
 	}
 	LODs.Empty();
-	LODRequests.Empty();
+}
+
+void FHairStrandsRestRootResource::InternalResetLoadedSize()
+{
+	BulkData.ResetLoadedSize();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -1340,8 +1515,7 @@ FHairStrandsDeformedRootResource::FHairStrandsDeformedRootResource(const FHairSt
 	CurveType(InCurveType)
 {
 	check(InRestResources);
-	uint32 LODIndex = 0;
-	RootCount = InRestResources->BulkData.RootCount;
+	RootCount = InRestResources->BulkData.Header.RootCount;
 	LODs.Reserve(InRestResources->LODs.Num());
 	for (const FHairStrandsRestRootResource::FLOD& InLOD : InRestResources->LODs)
 	{
@@ -1353,37 +1527,49 @@ FHairStrandsDeformedRootResource::FHairStrandsDeformedRootResource(const FHairSt
 	}
 }
 
-void FHairStrandsDeformedRootResource::InternalAllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex)
+bool FHairStrandsDeformedRootResource::InternalIsLODDataLoaded(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex) const
 {
-	if (RootCount > 0 && LODIndex >= 0 && LODIndex < LODs.Num())
+	if (InLODIndex >= 0 && InLODIndex < LODs.Num())
 	{
-		FLOD& LOD = LODs[LODIndex];
+		// Clamp request to the max supported
+		InRequestedCurveCount = FMath::Min(InRequestedCurveCount, RootCount);
+
+		const FLOD& GPUData = LODs[InLODIndex];
+		return (GPUData.Status == FLOD::EStatus::Completed || GPUData.Status == FLOD::EStatus::Initialized) && InRequestedCurveCount <= GPUData.AvailableCurveCount;
+	}
+	return true;
+}
+
+void FHairStrandsDeformedRootResource::InternalAllocate(FRDGBuilder& GraphBuilder, uint32 InCurveCount, uint32 InPointCount, int32 InLODIndex)
+{
+	if (RootCount > 0 && InLODIndex >= 0 && InLODIndex < LODs.Num())
+	{
+		FLOD& LOD = LODs[InLODIndex];
 		if (LOD.Status == FLOD::EStatus::Invalid)
 		{		
 			LOD.Status = FLOD::EStatus::Initialized;
+			LOD.AvailableCurveCount = FMath::Min(InCurveCount, RootCount);
 			if (LOD.SampleCount > 0)
 			{
+				const uint32 RBFEntryCount = FGroomRBFDeformer::GetEntryCount(LOD.SampleCount);
+
 				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount, LOD.DeformedSamplePositionsBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedSamplePositionsBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount + 4, LOD.MeshSampleWeightsBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RBFEntryCount, LOD.MeshSampleWeightsBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
 
 				// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
 				if (IsHairStrandContinuousDecimationReorderingEnabled())
 				{
 					InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount, LOD.DeformedSamplePositionsBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedSamplePositionsBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-					InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, LOD.SampleCount + 4, LOD.MeshSampleWeightsBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+					InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RBFEntryCount, LOD.MeshSampleWeightsBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_MeshSampleWeightsBuffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
 				}
 			}
 
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition0Buffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition0Buffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition1Buffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition1Buffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition2Buffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition2Buffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+			InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount * 3, LOD.DeformedUniqueTrianglePositionBuffer[0], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition0Buffer0), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
 
 			// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
 			if (IsHairStrandContinuousDecimationReorderingEnabled())
 			{
-				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition0Buffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition0Buffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition1Buffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition1Buffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount, LOD.DeformedUniqueTrianglePosition2Buffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition2Buffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+				InternalCreateVertexBufferRDG<FHairStrandsMeshTrianglePositionFormat>(GraphBuilder, RootCount * 3, LOD.DeformedUniqueTrianglePositionBuffer[1], ToHairResourceDebugName(HAIRSTRANDS_RESOUCE_NAME(CurveType, Hair.StrandsRootDeformed_DeformedUniqueTrianglePosition0Buffer1), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
 			}
 		}
 	}
@@ -1394,18 +1580,15 @@ void FHairStrandsDeformedRootResource::InternalRelease()
 	for (FLOD& GPUData : LODs)
 	{
 		GPUData.Status = FLOD::EStatus::Invalid;
-		GPUData.DeformedUniqueTrianglePosition0Buffer[0].Release();
-		GPUData.DeformedUniqueTrianglePosition1Buffer[0].Release();
-		GPUData.DeformedUniqueTrianglePosition2Buffer[0].Release();
+		GPUData.AvailableCurveCount = 0;
+		GPUData.DeformedUniqueTrianglePositionBuffer[0].Release();
 		GPUData.DeformedSamplePositionsBuffer[0].Release();
 		GPUData.MeshSampleWeightsBuffer[0].Release();
 	
 		// Double buffering is disabled by default unless the read-only cvar r.HairStrands.ContinuousDecimationReordering is set
 		if (IsHairStrandContinuousDecimationReorderingEnabled())
 		{
-			GPUData.DeformedUniqueTrianglePosition0Buffer[1].Release();
-			GPUData.DeformedUniqueTrianglePosition1Buffer[1].Release();
-			GPUData.DeformedUniqueTrianglePosition2Buffer[1].Release();
+			GPUData.DeformedUniqueTrianglePositionBuffer[1].Release();
 			GPUData.DeformedSamplePositionsBuffer[1].Release();
 			GPUData.MeshSampleWeightsBuffer[1].Release();
 		}
@@ -1414,240 +1597,48 @@ void FHairStrandsDeformedRootResource::InternalRelease()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
-// Root bulk data
-FHairStrandsRootBulkData::FHairStrandsRootBulkData()
-{
-
-}
-
-bool FHairStrandsRootBulkData::HasProjectionData() const
-{
-	bool bIsValid = MeshProjectionLODs.Num() > 0;
-	bIsValid = RootCount > 0;
-	for (const FMeshProjectionLOD& LOD : MeshProjectionLODs)
-	{
-		bIsValid = bIsValid && LOD.LODIndex > 0;
-		if (!bIsValid) break;
-	}
-	return bIsValid;
-}
-
-const TArray<uint32>& FHairStrandsRootBulkData::GetValidSectionIndices(int32 LODIndex) const
-{
-	check(LODIndex >= 0 && LODIndex < MeshProjectionLODs.Num());
-	return MeshProjectionLODs[LODIndex].UniqueSectionIndices;
-}
-
-static void InternalSerialize(FArchive& Ar, UObject* Owner, FHairStrandsRootBulkData::FMeshProjectionLOD& LOD)
-{
-	const int32 ChunkIndex = 0;
-	bool bAttemptFileMapping = false;
-
-	if (Ar.IsSaving())
-	{
-		const uint32 BulkFlags = BULKDATA_Force_NOT_InlinePayload;
-		LOD.RootBarycentricBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.RootToUniqueTriangleIndexBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.UniqueTriangleIndexBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestUniqueTrianglePosition0Buffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestUniqueTrianglePosition1Buffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestUniqueTrianglePosition2Buffer.SetBulkDataFlags(BulkFlags);
-
-		LOD.MeshInterpolationWeightsBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.MeshSampleIndicesBuffer.SetBulkDataFlags(BulkFlags);
-		LOD.RestSamplePositionsBuffer.SetBulkDataFlags(BulkFlags);
-	}
-
-	Ar << LOD.LODIndex;
-	Ar << LOD.UniqueTriangleCount;
-	LOD.RootBarycentricBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RootToUniqueTriangleIndexBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.UniqueTriangleIndexBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RestUniqueTrianglePosition0Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RestUniqueTrianglePosition1Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	LOD.RestUniqueTrianglePosition2Buffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-
-	Ar << LOD.SampleCount;
-	if (LOD.SampleCount)
-	{
-		LOD.MeshInterpolationWeightsBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-		LOD.MeshSampleIndicesBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-		LOD.RestSamplePositionsBuffer.Serialize(Ar, Owner, ChunkIndex, bAttemptFileMapping);
-	}
-		LOD.UniqueSectionIndices.BulkSerialize(Ar);
-}
-
-static void InternalSerialize(FArchive& Ar, UObject* Owner, TArray<FHairStrandsRootBulkData::FMeshProjectionLOD>& LODs)
-{
-	uint32 LODCount = LODs.Num();
-	Ar << LODCount;
-	if (Ar.IsLoading())
-	{
-		LODs.SetNum(LODCount);
-	}
-	for (uint32 LODIt = 0; LODIt < LODCount; ++LODIt)
-	{
-		InternalSerialize(Ar, Owner, LODs[LODIt]);
-	}
-}
-
-void FHairStrandsRootBulkData::Serialize(FArchive& Ar, UObject* Owner)
-{
-	const int32 ChunkIndex = 0;
-	bool bAttemptFileMapping = false;
-
-	if (!Ar.IsObjectReferenceCollector())
-	{
-		Ar << RootCount;
-		Ar << PointCount;
-		InternalSerialize(Ar, Owner, MeshProjectionLODs);
-	}
-}
-
-void FHairStrandsRootBulkData::Reset()
-{
-	RootCount = 0;
-	for (FMeshProjectionLOD& LOD : MeshProjectionLODs)
-	{
-		LOD.RootBarycentricBuffer.RemoveBulkData();
-		LOD.RootToUniqueTriangleIndexBuffer.RemoveBulkData();
-		LOD.UniqueTriangleIndexBuffer.RemoveBulkData();
-		LOD.RestUniqueTrianglePosition0Buffer.RemoveBulkData();
-		LOD.RestUniqueTrianglePosition1Buffer.RemoveBulkData();
-		LOD.RestUniqueTrianglePosition2Buffer.RemoveBulkData();
-		LOD.MeshInterpolationWeightsBuffer.RemoveBulkData();
-		LOD.MeshSampleIndicesBuffer.RemoveBulkData();
-		LOD.RestSamplePositionsBuffer.RemoveBulkData();
-
-		// Reset the bulk byte buffer to ensure the (serialize) data size is reset to 0
-		LOD.RootBarycentricBuffer 			 = FByteBulkData();
-		LOD.RootToUniqueTriangleIndexBuffer  = FByteBulkData();
-		LOD.UniqueTriangleIndexBuffer		 = FByteBulkData();
-		LOD.RestUniqueTrianglePosition0Buffer= FByteBulkData();
-		LOD.RestUniqueTrianglePosition1Buffer= FByteBulkData();
-		LOD.RestUniqueTrianglePosition2Buffer= FByteBulkData();
-		LOD.MeshInterpolationWeightsBuffer 	 = FByteBulkData();
-		LOD.MeshSampleIndicesBuffer 		 = FByteBulkData();
-		LOD.RestSamplePositionsBuffer 		 = FByteBulkData();
-
-		LOD.UniqueSectionIndices.Empty();
-	}
-	MeshProjectionLODs.Empty();
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
-// Root data
-FHairStrandsRootData::FHairStrandsRootData()
-{
-
-}
-
-bool FHairStrandsRootData::HasProjectionData() const
-{
-	bool bIsValid = MeshProjectionLODs.Num() > 0;
-	for (const FMeshProjectionLOD& LOD : MeshProjectionLODs)
-	{
-		const bool bHasValidCPUData = LOD.RootBarycentricBuffer.Num() > 0;
-		if (bHasValidCPUData)
-		{
-			bIsValid = bIsValid && LOD.RootBarycentricBuffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RootToUniqueTriangleIndexBuffer.Num() > 0;
-			bIsValid = bIsValid && LOD.UniqueTriangleIndexBuffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RestUniqueTrianglePosition0Buffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RestUniqueTrianglePosition1Buffer.Num() > 0;
-			bIsValid = bIsValid && LOD.RestUniqueTrianglePosition2Buffer.Num() > 0;
-
-			if (!bIsValid) break;
-		}
-	}
-
-	return bIsValid;
-}
-
-void FHairStrandsRootData::Reset()
-{
-	RootCount = 0;
-	MeshProjectionLODs.Empty();
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
 
 FHairStrandsInterpolationResource::FHairStrandsInterpolationResource(FHairStrandsInterpolationBulkData& InBulkData, const FHairResourceName& InResourceName, const FName& InOwnerName) :
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, InResourceName, InOwnerName),
-	InterpolationBuffer(), Interpolation0Buffer(), Interpolation1Buffer(), BulkData(InBulkData)
+	InterpolationBuffer(), BulkData(InBulkData)
 {
+	MaxAvailableCurveCount = 0;
+
 	// Sanity check
-	check(!!(BulkData.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasData));
+	check(!!(BulkData.Header.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasData));
 }
 
-bool FHairStrandsInterpolationResource::InternalIsDataLoaded()
+bool FHairStrandsInterpolationResource::InternalGetOrRequestData(uint32 InRequestedCurveCount, uint32 InRequestedPointCount, int32 InLODIndex)
 {
-	if (BulkDataRequest.IsNone())
+	if (StreamingRequest.IsNone())
 	{
-		FBulkDataBatchRequest::FBatchBuilder Batch = FBulkDataBatchRequest::NewBatch(4);
-		const bool bUseSingleGuide = !!(BulkData.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasSingleGuideData);
-		if (bUseSingleGuide)
-		{
-			Batch.Read(BulkData.Interpolation);
-		}
-		else
-		{
-			Batch.Read(BulkData.Interpolation0);
-			Batch.Read(BulkData.Interpolation1);
-		}
-		Batch.Read(BulkData.SimRootPointIndex);
-
-		Batch.Issue(BulkDataRequest);
+		StreamingRequest.Request(InRequestedCurveCount, InRequestedPointCount, InLODIndex, BulkData, false, false, false, OwnerName);
 	}
-
-	return BulkDataRequest.IsCompleted();
+	return StreamingRequest.IsCompleted();
 }
 
 void FHairStrandsInterpolationResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
-	BulkDataRequest = FBulkDataBatchRequest();
+	// If we enter this function, the request need to be completed
+	check(StreamingRequest.IsCompleted());
 
-	const bool bUseSingleGuide = !!(BulkData.Flags & FHairStrandsInterpolationBulkData::DataFlags_HasSingleGuideData);
-	if (bUseSingleGuide)
-	{
-		InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsInterpolationFormat>(GraphBuilder, BulkData.Interpolation, BulkData.PointCount, InterpolationBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsInterpolation_InterpolationBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	}
-	else
-	{
-		InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsInterpolation0Format>(GraphBuilder, BulkData.Interpolation0, BulkData.PointCount, Interpolation0Buffer, ToHairResourceDebugName(TEXT("Hair.StrandsInterpolation_Interpolation0Buffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
-		InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsInterpolation1Format>(GraphBuilder, BulkData.Interpolation1, BulkData.PointCount, Interpolation1Buffer, ToHairResourceDebugName(TEXT("Hair.StrandsInterpolation_Interpolation1Buffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
-	}
-	InternalCreateVertexBufferRDG_FromBulkData<FHairStrandsRootIndexFormat>(GraphBuilder, BulkData.SimRootPointIndex, BulkData.SimPointCount, SimRootPointIndexBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsInterpolation_SimRootPointIndex"), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	InternalCreateByteAddressBufferRDG_FromHairBulkData(GraphBuilder, BulkData.Data.Interpolation, InterpolationBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsInterpolation_InterpolationBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	InternalCreateVertexBufferRDG_FromHairBulkData<FHairStrandsRootIndexFormat>(GraphBuilder, BulkData.Data.SimRootPointIndex, BulkData.Header.SimPointCount, SimRootPointIndexBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsInterpolation_SimRootPointIndex"), ResourceName), OwnerName, EHairResourceUsageType::Static);
 }
 
 void FHairStrandsInterpolationResource::InternalRelease()
 {
 	InterpolationBuffer.Release();
-	Interpolation0Buffer.Release();
-	Interpolation1Buffer.Release();
 	SimRootPointIndexBuffer.Release();
-	BulkDataRequest = FBulkDataBatchRequest();
+	MaxAvailableCurveCount = 0;
+}
+
+void FHairStrandsInterpolationResource::InternalResetLoadedSize()
+{
+	BulkData.ResetLoadedSize();
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
-void FHairCardsInterpolationDatas::SetNum(const uint32 NumPoints)
-{
-	PointsSimCurvesIndex.SetNum(NumPoints);
-	PointsSimCurvesVertexIndex.SetNum(NumPoints);
-	PointsSimCurvesVertexLerp.SetNum(NumPoints);
-}
-
-void FHairCardsInterpolationDatas::Reset()
-{
-	PointsSimCurvesIndex.Empty();
-	PointsSimCurvesVertexIndex.Empty();
-	PointsSimCurvesVertexLerp.Empty();
-}
-
-void FHairCardsInterpolationBulkData::Serialize(FArchive& Ar)
-{
-	Ar << Interpolation;
-}
 
 FHairCardsInterpolationResource::FHairCardsInterpolationResource(FHairCardsInterpolationBulkData& InBulkData, const FHairResourceName& InResourceName, const FName& InOwnerName) :
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, InResourceName, InOwnerName),
@@ -1657,7 +1648,7 @@ FHairCardsInterpolationResource::FHairCardsInterpolationResource(FHairCardsInter
 
 void FHairCardsInterpolationResource::InternalAllocate(FRDGBuilder& GraphBuilder)
 {
-	InternalCreateVertexBufferRDG<FHairCardsInterpolationFormat>(GraphBuilder, BulkData.Interpolation, InterpolationBuffer, ToHairResourceDebugName(TEXT("Hair.CardsInterpolation_InterpolationBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
+	InternalCreateByteAddressBufferRDG(GraphBuilder, BulkData.Interpolation, FHairCardsInterpolationFormat::Format, InterpolationBuffer, ToHairResourceDebugName(TEXT("Hair.CardsInterpolation_InterpolationBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Static);
 }
 
 void FHairCardsInterpolationResource::InternalRelease()
@@ -1668,6 +1659,22 @@ void FHairCardsInterpolationResource::InternalRelease()
 /////////////////////////////////////////////////////////////////////////////////////////
 
 #if RHI_RAYTRACING
+bool GetSupportHairStrandsProceduralPrimitive(EShaderPlatform InShaderPlatform);
+
+static void ConvertPointToRaytracingVertexCount(bool bProceduralPrimitive, uint32 InPointCount, uint32& OutVertexCount, uint32& OutIndexCount)
+{
+	if (bProceduralPrimitive)
+	{
+		// only allocate space for primitive AABBs
+		OutVertexCount = InPointCount * 2 * STRANDS_PROCEDURAL_INTERSECTOR_MAX_SPLITS;
+	}
+	else
+	{
+		OutVertexCount = InPointCount * 4;
+		OutIndexCount  = InPointCount * 8 * 3;
+	}
+}
+
 // RT geometry for strands is built as a 4 sided cylinder
 //   each vertex of the curve becomes 4 points
 //   each curve segment turns into 2*4=8 triangles (3 indices for each)
@@ -1677,39 +1684,37 @@ void FHairCardsInterpolationResource::InternalRelease()
 // which used 6*float4 = 48 bytes per vertex
 // NOTE: the vertex buffer is a float4 because it is registered as a UAV for the compute shader to work
 // TODO: use a plain float vertex buffer with 3x the entries instead to save memory? (float3 UAVs are not allowed)
-bool GetSupportHairStrandsProceduralPrimitive(EShaderPlatform InShaderPlatform);
 FHairStrandsRaytracingResource::FHairStrandsRaytracingResource(const FHairStrandsBulkData& InData, const FHairResourceName& ResourceName, const FName& InOwnerName) :
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, ResourceName, InOwnerName), bOwnBuffers(true)
 {
+	MaxVertexCount = 0;
+	MaxIndexCount = 0;
+	MaxAvailableCurveCount = 0;
 	bProceduralPrimitive = GetSupportHairStrandsProceduralPrimitive(GMaxRHIShaderPlatform);
-	if (bProceduralPrimitive)
-	{
-		// only allocate space for primitive AABBs
-		VertexCount = InData.GetNumPoints() * 2 * STRANDS_PROCEDURAL_INTERSECTOR_MAX_SPLITS;
-	}
-	else
-	{
-		VertexCount = InData.GetNumPoints() * 4;
-		IndexCount = InData.GetNumPoints() * 8 * 3;
-	}
 }
 
 FHairStrandsRaytracingResource::FHairStrandsRaytracingResource(const FHairCardsBulkData& InData, const FHairResourceName& ResourceName, const FName& InOwnerName) :
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, ResourceName, InOwnerName),
-	VertexCount(InData.GetNumVertices()), bOwnBuffers(false)
+	MaxVertexCount(InData.GetNumVertices()), bOwnBuffers(false)
 {}
 
 FHairStrandsRaytracingResource::FHairStrandsRaytracingResource(const FHairMeshesBulkData& InData, const FHairResourceName& ResourceName, const FName& InOwnerName) :
 	FHairCommonResource(EHairStrandsAllocationType::Deferred, ResourceName, InOwnerName),
-	VertexCount(InData.GetNumVertices()), bOwnBuffers(false)
+	MaxVertexCount(InData.GetNumVertices()), bOwnBuffers(false)
 {}
 
-void FHairStrandsRaytracingResource::InternalAllocate(FRDGBuilder& GraphBuilder)
+void FHairStrandsRaytracingResource::InternalAllocate(FRDGBuilder& GraphBuilder, uint32 InCurveCount, uint32 InPointCount, int32 InLODIndex)
 {
 	if (bOwnBuffers)
 	{
-		InternalCreateVertexBufferRDG<FHairStrandsRaytracingFormat>(GraphBuilder, VertexCount, PositionBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRaytracing_PositionBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
-		InternalCreateStructuredBufferRDG<FHairStrandsIndexFormat>(GraphBuilder, IndexCount, IndexBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRaytracing_IndexBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+		ConvertPointToRaytracingVertexCount(bProceduralPrimitive, InPointCount, MaxVertexCount, MaxIndexCount);
+
+		InternalCreateVertexBufferRDG<FHairStrandsRaytracingFormat>(GraphBuilder, MaxVertexCount, PositionBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRaytracing_PositionBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+		InternalCreateStructuredBufferRDG<FHairStrandsIndexFormat>(GraphBuilder, MaxIndexCount, IndexBuffer, ToHairResourceDebugName(TEXT("Hair.StrandsRaytracing_IndexBuffer"), ResourceName), OwnerName, EHairResourceUsageType::Dynamic);
+
+		// Force reallocating and rebuilding the RT geometry
+		RayTracingGeometry.ReleaseResource();
+		bIsRTGeometryInitialized = false;
 	}
 }
 

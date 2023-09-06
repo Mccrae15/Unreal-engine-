@@ -47,12 +47,9 @@ namespace TopomakerTools
  * Merge Border Vertices with other vertices.
  * @param Vertices: the initial array of active vertices to process, this array is updated at the end of the process
  */
-void MergeCoincidentVertices(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToMerge, double Tolerance)
+void MergeCoincidentVertices(TArray<FTopologicalVertex*>& VerticesToMerge, double Tolerance)
 {
-	double SquareTolerance = FMath::Square(Tolerance);
-
-	FTimePoint StartTime = FChrono::Now();
-
+	const double SquareTolerance = FMath::Square(Tolerance);
 	const double WeigthTolerance = 3 * Tolerance;
 
 	int32 VertexNum = (int32)VerticesToMerge.Num();
@@ -63,7 +60,16 @@ void MergeCoincidentVertices(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToM
 	TArray<int32> SortedVertexIndices;
 	SortedVertexIndices.Reserve(VertexNum);
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : VerticesToMerge)
+#ifdef DEBUG_MERGE_COINCIDENT_VERTICES
+	F3DDebugSession _(TEXT("Merge Coincident Vertices"));
+	for (const FTopologicalVertex* Vertex : VerticesToMerge)
+	{
+		F3DDebugSession A(*FString::Printf(TEXT("Vertex %d"), Vertex->GetId()));
+		Display(*Vertex);
+	}
+#endif
+
+	for (FTopologicalVertex* Vertex : VerticesToMerge)
 	{
 		VerticesWeight.Add(Vertex->GetCoordinates().DiagonalAxisCoordinate());
 	}
@@ -76,7 +82,7 @@ void MergeCoincidentVertices(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToM
 
 	for (int32 IndexI = 0; IndexI < VertexNum; ++IndexI)
 	{
-		TSharedPtr<FTopologicalVertex>& Vertex = VerticesToMerge[SortedVertexIndices[IndexI]];
+		FTopologicalVertex* Vertex = VerticesToMerge[SortedVertexIndices[IndexI]];
 		if (Vertex->HasMarker1())
 		{
 			continue;
@@ -91,7 +97,7 @@ void MergeCoincidentVertices(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToM
 
 		for (int32 IndexJ = IndexI + 1; IndexJ < VertexNum; ++IndexJ)
 		{
-			TSharedPtr<FTopologicalVertex>& OtherVertex = VerticesToMerge[SortedVertexIndices[IndexJ]];
+			FTopologicalVertex* OtherVertex = VerticesToMerge[SortedVertexIndices[IndexJ]];
 			if (OtherVertex->HasMarker1())
 			{
 				continue;
@@ -113,38 +119,34 @@ void MergeCoincidentVertices(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToM
 		}
 	}
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : VerticesToMerge)
+	for (FTopologicalVertex* Vertex : VerticesToMerge)
 	{
 		Vertex->ResetMarker1();
 	}
 
-	TArray<TSharedPtr<FTopologicalVertex>> ActiveVertices;
+	TArray<FTopologicalVertex*> ActiveVertices;
 	ActiveVertices.Reserve(VertexNum);
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : VerticesToMerge)
+	for (FTopologicalVertex* Vertex : VerticesToMerge)
 	{
-		TSharedPtr<FTopologicalVertex> ActiveVertex = Vertex->GetLinkActiveEntity();
-		if (ActiveVertex->HasMarker1())
+		FTopologicalVertex& ActiveVertex = *Vertex->GetLinkActiveEntity();
+		if (ActiveVertex.HasMarker1())
 		{
 			continue;
 		}
-		ActiveVertex->SetMarker1();
-		ActiveVertices.Add(ActiveVertex);
+		ActiveVertex.SetMarker1();
+		ActiveVertices.Add(&ActiveVertex);
 	}
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : ActiveVertices)
+	for (FTopologicalVertex* Vertex : ActiveVertices)
 	{
 		Vertex->ResetMarker1();
 	}
 
 	Swap(ActiveVertices, VerticesToMerge);
-
-	FDuration StepDuration = FChrono::Elapse(StartTime);
-	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT("    "), TEXT("Merge Coincident vertices"), StepDuration);
-
 }
 
-TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTopologicalEdge& EdgeToLink, FTopologicalEdge& EdgeToSplit, double SquareSewTolerance, double SquareMinEdgeLength)
+FTopologicalVertex* SplitAndLink(FTopologicalVertex& StartVertex, FTopologicalEdge& EdgeToLink, FTopologicalEdge& EdgeToSplit, double SquareSewTolerance, double SquareMinEdgeLength)
 {
 	FTopologicalVertex* VertexToLink = EdgeToLink.GetOtherVertex(StartVertex);
 	FTopologicalVertex* EndVertex = EdgeToSplit.GetOtherVertex(StartVertex);
@@ -154,7 +156,7 @@ TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTo
 	{
 		VertexToLink->Link(*EndVertex);
 		EdgeToLink.Link(EdgeToSplit);
-		return VertexToLink->GetLinkActiveEntity();
+		return &VertexToLink->GetLinkActiveEntity().Get();
 	}
 
 	double SquareDistanceToStartVertex = StartVertex.SquareDistanceBetweenBarycenters(*VertexToLink);
@@ -162,7 +164,7 @@ TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTo
 	{
 		VertexToLink->Link(StartVertex);
 		EdgeToLink.SetAsDegenerated();
-		return VertexToLink->GetLinkActiveEntity();
+		return &VertexToLink->GetLinkActiveEntity().Get();
 	}
 
 	FPoint ProjectedPoint;
@@ -171,7 +173,7 @@ TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTo
 	double SquareDistanceToProjectedPoint = ProjectedPoint.SquareDistance(VertexToLink->GetBarycenter());
 	if (SquareDistanceToProjectedPoint > SquareSewTolerance)
 	{
-		return TSharedPtr<FTopologicalVertex>();
+		return nullptr;
 	}
 
 	double SquareDistanceToOtherPoint = ProjectedPoint.SquareDistance(EndVertex->GetBarycenter());
@@ -180,7 +182,7 @@ TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTo
 		// the new point is closed to the extremity, a degenerated edge will be created, so the edges are joined
 		VertexToLink->Link(*EndVertex);
 		EdgeToLink.Link(EdgeToSplit);
-		return VertexToLink->GetLinkActiveEntity();
+		return &VertexToLink->GetLinkActiveEntity().Get();
 	}
 
 	SquareDistanceToProjectedPoint = ProjectedPoint.SquareDistance(StartVertex.GetBarycenter());
@@ -188,7 +190,25 @@ TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTo
 	{
 		VertexToLink->Link(StartVertex);
 		EdgeToLink.SetAsDegenerated();
-		return VertexToLink->GetLinkActiveEntity();
+		return &VertexToLink->GetLinkActiveEntity().Get();
+	}
+
+	TArray<FTopologicalVertex*> NewTwinVertices;
+	if (EdgeToSplit.GetTwinEntityCount() > 1)
+	{
+		TArray<FTopologicalEdge*> TwinEdges = EdgeToSplit.GetTwinEntities();
+		EdgeToSplit.UnlinkTwinEntities();
+		for (FTopologicalEdge* TwinEdge : TwinEdges)
+		{
+			if (TwinEdge != &EdgeToSplit)
+			{
+				FTopologicalVertex* NewVertex = SplitAndLink(StartVertex, EdgeToLink, *TwinEdge, SquareSewTolerance, SquareMinEdgeLength);
+				if (NewVertex)
+				{
+					NewTwinVertices.Add(NewVertex);
+				}
+			}
+		}
 	}
 
 	// JoinParallelEdges process all edges connected to startVertex (ConnectedEdges).
@@ -197,18 +217,185 @@ TSharedPtr<FTopologicalVertex> SplitAndLink(FTopologicalVertex& StartVertex, FTo
 	bool bKeepStartVertexConnectivity = (StartVertex.GetLink() == EdgeToSplit.GetStartVertex()->GetLink());
 
 	TSharedPtr<FTopologicalEdge> NewEdge;
-	TSharedPtr<FTopologicalVertex> NewVertex = EdgeToSplit.SplitAt(UProjectedPoint, ProjectedPoint, bKeepStartVertexConnectivity, NewEdge);
-	if (!NewVertex.IsValid())
+	FTopologicalVertex* NewVertex = EdgeToSplit.SplitAt(UProjectedPoint, ProjectedPoint, bKeepStartVertexConnectivity, NewEdge);
+	if (!NewVertex)
 	{
-		return TSharedPtr<FTopologicalVertex>();
+		return nullptr;
 	}
 
 	VertexToLink->Link(*NewVertex);
 	EdgeToLink.Link(EdgeToSplit);
+
+	if (NewTwinVertices.Num() > 0)
+	{
+		for (FTopologicalVertex* Vertex : NewTwinVertices)
+		{
+			NewVertex->Link(*Vertex);
+		}
+	}
+
 	return NewVertex;
 }
 
-void StitchParallelEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProcess, double SewTolerance, double MinEdgeLength)
+FTopologicalVertex* StitchParallelEdgesFrom(FTopologicalVertex* Vertex, double SewTolerance, double MinEdgeLength, bool bProhibitSewingEdgesOfSameFace)
+{
+	double SquareTolerance = FMath::Square(SewTolerance);
+	double SquareMinEdgeLength = FMath::Square(MinEdgeLength);
+
+	TArray<FTopologicalEdge*> ConnectedEdges;
+	Vertex->GetConnectedEdges(ConnectedEdges);
+	const int32 ConnectedEdgeCount = ConnectedEdges.Num();
+	if (ConnectedEdgeCount == 1)
+	{
+		return nullptr;
+	}
+
+#ifdef DEBUG_STITCH_PARALLEL_EDGES_FROM
+	{
+		F3DDebugSession B(*FString::Printf(TEXT("Vertex %d"), Vertex->GetId()));
+		{
+			F3DDebugSession A(*FString::Printf(TEXT("Vertex %d"), Vertex->GetId()));
+			Display(*Vertex);
+		}
+		for (const FTopologicalEdge* Edge : ConnectedEdges)
+		{
+			F3DDebugSession A(*FString::Printf(TEXT("Edge %d"), Edge->GetId()));
+			int32 TwinCount = Edge->GetTwinEntityCount();
+			EVisuProperty Property = EVisuProperty::RedCurve;
+			switch (TwinCount)
+			{
+			case 1:
+				Property = EVisuProperty::BorderEdge;
+				break;
+			case 2:
+				Property = EVisuProperty::BlueCurve;
+				break;
+			default:
+				break;
+			}
+			Display(*Edge, Property);
+		}
+		Wait();
+	}
+#endif
+
+	for (int32 EdgeI = 0; EdgeI < ConnectedEdgeCount - 1; ++EdgeI)
+	{
+		FTopologicalEdge* Edge = ConnectedEdges[EdgeI];
+		ensureCADKernel(Edge->GetLoop() != nullptr);
+
+		if (Edge->IsDegenerated())
+		{
+			continue;
+		}
+
+		if (!Edge->IsActiveEntity())
+		{
+			continue;
+		}
+		bool bFirstEdgeBorder = Edge->IsBorder();
+
+		for (int32 EdgeJ = EdgeI + 1; EdgeJ < ConnectedEdgeCount; ++EdgeJ)
+		{
+			FTopologicalEdge* SecondEdge = ConnectedEdges[EdgeJ];
+			if (SecondEdge->IsDegenerated())
+			{
+				continue;
+			}
+			if (!SecondEdge->IsActiveEntity())
+			{
+				continue;
+			}
+			bool bSecondEdgeBorder = SecondEdge->IsBorder();
+
+			// Process only if at least one edge is Border
+			if (!bFirstEdgeBorder && !bSecondEdgeBorder)
+			{
+				continue;
+			}
+
+			if(bProhibitSewingEdgesOfSameFace)
+			{
+				bool bVoidSelection = false;
+				for (FTopologicalEdge* FirstEdgeTwin : Edge->GetTwinEntities())
+				{
+					FTopologicalFace* FirstEdgeFace = FirstEdgeTwin->GetFace();
+					for (FTopologicalEdge* SecondEdgeTwin : SecondEdge->GetTwinEntities())
+					{
+						if (FirstEdgeFace == SecondEdgeTwin->GetFace())
+						{
+							bVoidSelection = true;
+							break;
+						}
+					}
+				}
+				if (bVoidSelection)
+				{
+					continue;
+				}
+			}
+
+			FPoint StartTangentEdge = Edge->GetTangentAt(*Vertex);
+			FPoint StartTangentOtherEdge = SecondEdge->GetTangentAt(*Vertex);
+
+			double CosAngle = StartTangentEdge.ComputeCosinus(StartTangentOtherEdge);
+			if (CosAngle < UE_DOUBLE_HALF_SQRT_3) // cos(30 deg)
+			{
+				continue;
+			}
+
+#ifdef DEBUG_STITCH_PARALLEL_EDGES_FROM
+			{
+				F3DDebugSession B(*FString::Printf(TEXT("StitchParallelEdges")));
+				{
+					F3DDebugSession A(*FString::Printf(TEXT("Edge %d"), Edge->GetId()));
+					Display(*Edge);
+				}
+				{
+					F3DDebugSession A(*FString::Printf(TEXT("SecondEdge %d"), SecondEdge->GetId()));
+					Display(*SecondEdge, EVisuProperty::RedCurve);
+				}
+				Wait();
+			}
+#endif
+
+			FTopologicalVertex& EndVertex = *Edge->GetOtherVertex(*Vertex)->GetLinkActiveEntity();
+			FTopologicalVertex& SecondEdgeEndVertex = *SecondEdge->GetOtherVertex(*Vertex)->GetLinkActiveEntity();
+
+			if (&EndVertex == &SecondEdgeEndVertex && Edge->IsLinkableTo(*SecondEdge, MinEdgeLength))
+			{
+				// should not happen but, just in case
+				Edge->Link(*SecondEdge);
+			}
+			else
+			{
+				double EdgeLength = Edge->Length();
+				double SecondEdgeLength = SecondEdge->Length();
+
+				FTopologicalVertex* OtherVertex = nullptr;
+				FTopologicalVertex* NewVertex = nullptr;
+				if (EdgeLength < SecondEdgeLength)
+				{
+					OtherVertex = &SecondEdgeEndVertex;
+					NewVertex = SplitAndLink(*Vertex, *Edge, *SecondEdge, SquareTolerance, SquareMinEdgeLength);
+				}
+				else
+				{
+					OtherVertex = &EndVertex;
+					NewVertex = SplitAndLink(*Vertex, *SecondEdge, *Edge, SquareTolerance, SquareMinEdgeLength);
+				}
+
+				if (NewVertex && !Vertex->IsLinkedTo(*NewVertex) && !OtherVertex->IsLinkedTo(*NewVertex))
+				{
+					return NewVertex;
+				}
+			}
+		}
+	}
+	return nullptr;
+}
+
+void StitchParallelEdges(TArray<FTopologicalVertex*>& VerticesToProcess, double SewTolerance, double MinEdgeLength, bool bProhibitSewingEdgesOfSameFace)
 {
 	double SquareTolerance = FMath::Square(SewTolerance);
 	double SquareMinEdgeLength = FMath::Square(MinEdgeLength);
@@ -217,102 +404,16 @@ void StitchParallelEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProce
 
 	for (int32 VertexI = 0; VertexI < VerticesToProcess.Num(); ++VertexI)
 	{
-		TSharedPtr<FTopologicalVertex> Vertex = VerticesToProcess[VertexI];
+		FTopologicalVertex* Vertex = VerticesToProcess[VertexI];
 
-		if (!Vertex.IsValid() || Vertex->IsDeleted() || !Vertex->IsBorderVertex())
+		if (!Vertex || Vertex->IsDeleted() || !Vertex->IsBorderVertex())
 		{
 			continue;
 		}
 
-		TArray<FTopologicalEdge*> ConnectedEdges;
-		Vertex->GetConnectedEdges(ConnectedEdges);
-		const int32 ConnectedEdgeCount = ConnectedEdges.Num();
-		if (ConnectedEdgeCount == 1)
+		while (Vertex)
 		{
-			continue;
-		}
-
-		for (int32 EdgeI = 0; EdgeI < ConnectedEdgeCount - 1; ++EdgeI)
-		{
-			FTopologicalEdge* Edge = ConnectedEdges[EdgeI];
-			ensureCADKernel(Edge->GetLoop() != nullptr);
-
-			if (Edge->IsDegenerated())
-			{
-				continue;
-			}
-
-			if (!Edge->IsActiveEntity())
-			{
-				continue;
-			}
-			bool bFirstEdgeBorder = Edge->IsBorder();
-
-			for (int32 EdgeJ = EdgeI + 1; EdgeJ < ConnectedEdgeCount; ++EdgeJ)
-			{
-				FTopologicalEdge* SecondEdge = ConnectedEdges[EdgeJ];
-				if (SecondEdge->IsDegenerated())
-				{
-					continue;
-				}
-				if (!SecondEdge->IsActiveEntity())
-				{
-					continue;
-				}
-				bool bSecondEdgeBorder = SecondEdge->IsBorder();
-
-				// Process only if at least one edge is Border
-				if (!bFirstEdgeBorder && !bSecondEdgeBorder)
-				{
-					continue;
-				}
-
-				FPoint StartTangentEdge = Edge->GetTangentAt(*Vertex);
-				FPoint StartTangentOtherEdge = SecondEdge->GetTangentAt(*Vertex);
-
-				double CosAngle = StartTangentEdge.ComputeCosinus(StartTangentOtherEdge);
-				if (CosAngle < UE_DOUBLE_HALF_SQRT_3) // cos(30 deg)
-				{
-					continue;
-				}
-
-				FTopologicalVertex& EndVertex = *Edge->GetOtherVertex(*Vertex)->GetLinkActiveEntity();
-				FTopologicalVertex& SecondEdgeEndVertex = *SecondEdge->GetOtherVertex(*Vertex)->GetLinkActiveEntity();
-
-				if (&EndVertex == &SecondEdgeEndVertex && Edge->IsLinkableTo(*SecondEdge, MinEdgeLength))
-				{
-					// should not happen but, just in case
-					Edge->Link(*SecondEdge);
-				}
-				else
-				{
-					double EdgeLength = Edge->Length();
-					double SecondEdgeLength = SecondEdge->Length();
-
-					FTopologicalVertex* OtherVertex = nullptr;
-					TSharedPtr<FTopologicalVertex> NewVertex;
-					if (EdgeLength < SecondEdgeLength)
-					{
-						OtherVertex = &SecondEdgeEndVertex;
-						NewVertex = SplitAndLink(*Vertex, *Edge, *SecondEdge, SquareTolerance, SquareMinEdgeLength);
-					}
-					else
-					{
-						OtherVertex = &EndVertex;
-						NewVertex = SplitAndLink(*Vertex, *SecondEdge, *Edge, SquareTolerance, SquareMinEdgeLength);
-					}
-
-					if (NewVertex.IsValid() && !Vertex->IsLinkedTo(*NewVertex) && !OtherVertex->IsLinkedTo(*NewVertex))
-					{
-						VerticesToProcess.Add(NewVertex);
-					}
-				}
-
-				if (!Vertex.IsValid() || Vertex->IsDeleted() || !Vertex->IsBorderVertex())
-				{
-					break;
-				}
-			}
+			Vertex = StitchParallelEdgesFrom(Vertex, SewTolerance, MinEdgeLength, bProhibitSewingEdgesOfSameFace);
 		}
 	}
 
@@ -327,6 +428,20 @@ void MergeCoincidentEdges(FTopologicalEdge* Edge, double MinEdgeLength)
 {
 	const FTopologicalVertex& StartVertex = *Edge->GetStartVertex()->GetLinkActiveEntity();
 	const FTopologicalVertex& EndVertex = *Edge->GetEndVertex()->GetLinkActiveEntity();
+	if (&StartVertex == &EndVertex && Edge->Length() < MinEdgeLength)
+	{
+		if (Edge->GetTwinEntityCount() > 1)
+		{
+			FMessage::Printf(Debug, TEXT("Face %d Edge %d was self connected\n"), Edge->GetFace()->GetId(), Edge->GetId());
+			Edge->GetStartVertex()->UnlinkTo(*Edge->GetEndVertex());
+		}
+		else
+		{
+			Edge->SetAsDegenerated();
+			FMessage::Printf(Debug, TEXT("Face %d Edge %d is set as degenerated\n"), Edge->GetFace()->GetId(), Edge->GetId());
+		}
+		return;
+	}
 
 	TArray<FTopologicalEdge*> ConnectedEdges;
 	StartVertex.GetConnectedEdges(EndVertex, ConnectedEdges);
@@ -362,8 +477,6 @@ void MergeCoincidentEdges(FTopologicalEdge* Edge, double MinEdgeLength)
 
 void MergeCoincidentEdges(TArray<FTopologicalEdge*>& EdgesToProcess, double MinEdgeLength)
 {
-	FTimePoint StartTime = FChrono::Now();
-
 	for (FTopologicalEdge* Edge : EdgesToProcess)
 	{
 		if (Edge->IsDegenerated() || !Edge->IsBorder())
@@ -372,16 +485,13 @@ void MergeCoincidentEdges(TArray<FTopologicalEdge*>& EdgesToProcess, double MinE
 		}
 		MergeCoincidentEdges(Edge, MinEdgeLength);
 	}
-
-	FDuration StepDuration = FChrono::Elapse(StartTime);
-	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT("    "), TEXT("Merge coincident edges"), StepDuration);
 }
 
-void MergeCoincidentEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProcess, double MinEdgeLength)
+void MergeCoincidentEdges(TArray<FTopologicalVertex*>& VerticesToProcess, double MinEdgeLength)
 {
 	FTimePoint StartTime = FChrono::Now();
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : VerticesToProcess)
+	for (FTopologicalVertex* Vertex : VerticesToProcess)
 	{
 		if (Vertex->IsDeleted() || !Vertex->IsActiveEntity() || Vertex->HasMarker1())
 		{
@@ -409,13 +519,53 @@ void MergeCoincidentEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProc
 		}
 	}
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : VerticesToProcess)
+	for (FTopologicalVertex* Vertex : VerticesToProcess)
 	{
 		Vertex->ResetMarker1();
 	}
 
 	FDuration StepDuration = FChrono::Elapse(StartTime);
 	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT("    "), TEXT("Merge coincident edges"), StepDuration);
+}
+
+void GetVertices(const TArray<FTopologicalEdge*>& InEdges, TArray<FTopologicalVertex*>& OutVertices)
+{
+	OutVertices.Reset(InEdges.Num());
+
+	for (const FTopologicalEdge* Edge : InEdges)
+	{
+		if (!Edge || Edge->IsDeleted())
+		{
+			continue;
+		}
+
+		Edge->GetStartVertex()->GetLinkActiveEntity()->ResetMarker1();
+		Edge->GetEndVertex()->GetLinkActiveEntity()->ResetMarker1();
+	}
+
+	for (const FTopologicalEdge* Edge : InEdges)
+	{
+		if (!Edge || Edge->IsDeleted())
+		{
+			continue;
+		}
+
+		if (!Edge->GetStartVertex()->GetLinkActiveEntity()->HasMarker1())
+		{
+			Edge->GetStartVertex()->GetLinkActiveEntity()->SetMarker1();
+			OutVertices.Add(&*Edge->GetStartVertex()->GetLinkActiveEntity());
+		}
+		if (!Edge->GetEndVertex()->GetLinkActiveEntity()->HasMarker1())
+		{
+			Edge->GetEndVertex()->GetLinkActiveEntity()->SetMarker1();
+			OutVertices.Add(&*Edge->GetEndVertex()->GetLinkActiveEntity());
+		}
+	}
+
+	for (FTopologicalVertex* Vertex : OutVertices)
+	{
+		Vertex->ResetMarker1();
+	}
 }
 
 } // namespace TopomakerTools
@@ -434,20 +584,15 @@ FTopomaker::FTopomaker(FSession& InSession, const FTopomakerOptions& InOptions)
 
 	for (const TSharedPtr<FBody>& Body : Session.GetModel().GetBodies())
 	{
+		Body->CompleteMetaData();
 		for (const TSharedPtr<FShell>& Shell : Body->GetShells())
 		{
+			Shell->PropagateBodyOrientation();
 			Shells.Add(Shell.Get());
 		}
 	}
 
 	InitFaces();
-}
-
-FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FTopologicalFace>>& InFaces, const FTopomakerOptions& InOptions)
-	: Session(InSession)
-	, Faces(InFaces)
-{
-	SetTolerance(InOptions);
 }
 
 FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FShell>>& InShells, const FTopomakerOptions& InOptions)
@@ -458,9 +603,22 @@ FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FShell>>& In
 	Shells.Reserve(InShells.Num());
 	for (const TSharedPtr<FShell>& Shell : InShells)
 	{
+		Shell->PropagateBodyOrientation();
 		Shells.Add(Shell.Get());
 	}
 	InitFaces();
+}
+
+FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FTopologicalFace>>& InFaces, const FTopomakerOptions& InOptions)
+	: Session(InSession)
+{
+	SetTolerance(InOptions);
+
+	Faces.Reserve(InFaces.Num());
+	for (const TSharedPtr<FTopologicalFace>& Face : InFaces)
+	{
+		Faces.Add(Face);
+	}
 }
 
 void FTopomaker::InitFaces()
@@ -468,64 +626,21 @@ void FTopomaker::InitFaces()
 	int32 FaceCount = 0;
 	for (FShell* Shell : Shells)
 	{
-		Shell->CompleteMetadata();
 		FaceCount += Shell->FaceCount();
 	}
 	Faces.Reserve(FaceCount);
 
 	for (FShell* Shell : Shells)
 	{
-		Shell->SpreadBodyOrientation();
 		for (const FOrientedFace& Face : Shell->GetFaces())
 		{
 			Faces.Add(Face.Entity);
 		}
-		for (const FOrientedFace& Face : Shell->GetFaces())
-		{
-			Face.Entity->CompleteMetadata();
-		}
 	}
 
 	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
 	{
-		Face->ResetMarker2();
-	}
-}
-
-void FTopomaker::RemoveFacesFromShell()
-{
-	// remove faces from their shells
-	TSet<FShell*> ShellSet;
-	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
-	{
-		if (Face->GetHost() != nullptr)
-		{
-			ShellSet.Add((FShell*)Face->GetHost());
-			Face->ResetHost();
-		}
-	}
-
-	for (FShell* Shell : ShellSet)
-	{
-		bool bIsOutter = Shell->IsOutter();
-
-		TArray<FOrientedFace> ShellFace;
-		ShellFace.Reserve(Shell->FaceCount());
-		for (const FOrientedFace& Face : Shell->GetFaces())
-		{
-			if (!Face.Entity->GetHost())
-			{
-				if (bIsOutter != (Face.Direction == EOrientation::Front))
-				{
-					Face.Entity->SetBackOriented();
-				}
-			}
-			else
-			{
-				ShellFace.Emplace(Face);
-			}
-		}
-		Shell->ReplaceFaces(ShellFace);
+		Face->ResetMarkers();
 	}
 }
 
@@ -541,7 +656,7 @@ void FTopomaker::Sew()
 {
 	FTimePoint StartJoinTime = FChrono::Now();
 
-	TArray<TSharedPtr<FTopologicalVertex>> BorderVertices;
+	TArray<FTopologicalVertex*> BorderVertices;
 	GetBorderVertices(BorderVertices);
 	TopomakerTools::MergeCoincidentVertices(BorderVertices, SewTolerance);
 
@@ -550,35 +665,51 @@ void FTopomaker::Sew()
 	// basic case: merge pair of edges connected together at both extremities i.e. pair of edges with same extremity active vertices.
 	TopomakerTools::MergeCoincidentEdges(BorderVertices, EdgeLengthTolerance);
 
-	if (SewOption::IsRemoveThinFaces(SewOptions))
-	{
-		TArray<FTopologicalEdge*> NewBorderEdges;
-		RemoveThinFaces(NewBorderEdges);
-	}
-
 	MergeUnconnectedSuccessiveEdges();
 
-	if (SewOption::IsForceJoining(SewOptions))
+	// advance case: two partially coincident edges connected at one extremity i.e. coincident along the shortest edge
+	BorderVertices.Reset();
+	GetBorderVertices(BorderVertices);
+	TopomakerTools::StitchParallelEdges(BorderVertices, SewTolerance, EdgeLengthTolerance, /*bProhibitSewingEdgesOfSameFace*/ false);
+
+	const bool bForceJoining = SewOption::IsForceJoining(SewOptions);
+	if (bForceJoining)
 	{
 		BorderVertices.Empty(BorderVertices.Num());
 		GetBorderVertices(BorderVertices);
 		TopomakerTools::MergeCoincidentVertices(BorderVertices, SewToleranceToForceJoin);
 
-		CheckSelfConnectedEdge(LargeEdgeLengthTolerance, BorderVertices);
+		CheckSelfConnectedEdge(EdgeLengthTolerance, BorderVertices);
+
+		// re process with new edges from MergeUnconnectedSuccessiveEdges and new merged vertices (if bForceJoining)
+		BorderVertices.Reset();
+		GetBorderVertices(BorderVertices);
+		TopomakerTools::MergeCoincidentEdges(BorderVertices, LargeEdgeLengthTolerance);
+
+		// advance case: two partially coincident edges connected at one extremity i.e. coincident along the shortest edge
+		BorderVertices.Reset();
+		GetBorderVertices(BorderVertices);
+		TopomakerTools::StitchParallelEdges(BorderVertices, SewToleranceToForceJoin, LargeEdgeLengthTolerance, /*bProhibitSewingEdgesOfSameFace*/ true);
 	}
-
-	const bool bForceJoining = SewOption::IsForceJoining(SewOptions);
-
-	// re process with new edges from MergeUnconnectedSuccessiveEdges and new merged vertices (if bForceJoining)
-	TopomakerTools::MergeCoincidentEdges(BorderVertices, bForceJoining ? LargeEdgeLengthTolerance : EdgeLengthTolerance);
-
-	// advance case: two partially coincident edges connected at one extremity i.e. coincident along the shortest edge
-	TopomakerTools::StitchParallelEdges(BorderVertices, bForceJoining ? SewToleranceToForceJoin : SewTolerance, bForceJoining ? LargeEdgeLengthTolerance : EdgeLengthTolerance);
 
 	if (SewOption::IsRemoveDuplicatedFaces(SewOptions))
 	{
 		RemoveDuplicatedFaces();
 	}
+
+	if (SewOption::IsRemoveThinFaces(SewOptions))
+	{
+		RemoveThinFaces();
+		// advance case: two partially coincident edges connected at one extremity i.e. coincident along the shortest edge
+		BorderVertices.Reset();
+		GetBorderVertices(BorderVertices);
+
+		TopomakerTools::MergeCoincidentEdges(BorderVertices, bForceJoining ? LargeEdgeLengthTolerance : EdgeLengthTolerance);
+		
+		TopomakerTools::StitchParallelEdges(BorderVertices, bForceJoining ? SewToleranceToForceJoin : SewTolerance, bForceJoining ? LargeEdgeLengthTolerance : EdgeLengthTolerance, /*bProhibitSewingEdgesOfSameFace*/ true);
+	}
+
+	ResetMarkersOfFaces();
 
 #ifdef CADKERNEL_DEV
 	Report.SewDuration = FChrono::Elapse(StartJoinTime);
@@ -586,13 +717,13 @@ void FTopomaker::Sew()
 #endif
 }
 
-void FTopomaker::GetVertices(TArray<TSharedPtr<FTopologicalVertex>>& Vertices)
+void FTopomaker::GetVertices(TArray<FTopologicalVertex*>& Vertices)
 {
 	Vertices.Empty(10 * Faces.Num());
 
 	for (TSharedPtr<FTopologicalFace> Face : Faces)
 	{
-		if (Face->IsDeleted())
+		if (Face->IsDeletedOrDegenerated())
 		{
 			continue;
 		}
@@ -602,33 +733,34 @@ void FTopomaker::GetVertices(TArray<TSharedPtr<FTopologicalVertex>>& Vertices)
 			for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
 			{
 				const TSharedPtr<FTopologicalEdge>& Edge = OrientedEdge.Entity;
+
 				if (!Edge->GetStartVertex()->GetLinkActiveEntity()->HasMarker1())
 				{
 					Edge->GetStartVertex()->GetLinkActiveEntity()->SetMarker1();
-					Vertices.Add(Edge->GetStartVertex()->GetLinkActiveEntity());
+					Vertices.Add(&*Edge->GetStartVertex()->GetLinkActiveEntity());
 				}
 				if (!Edge->GetEndVertex()->GetLinkActiveEntity()->HasMarker1())
 				{
 					Edge->GetEndVertex()->GetLinkActiveEntity()->SetMarker1();
-					Vertices.Add(Edge->GetEndVertex()->GetLinkActiveEntity());
+					Vertices.Add(&*Edge->GetEndVertex()->GetLinkActiveEntity());
 				}
 			}
 		}
 	}
-	for (TSharedPtr<FTopologicalVertex>& Vertex : Vertices)
+	for (FTopologicalVertex* Vertex : Vertices)
 	{
 		Vertex->ResetMarker1();
 	}
 }
 
-void FTopomaker::GetBorderVertices(TArray<TSharedPtr<FTopologicalVertex>>& BorderVertices)
+void FTopomaker::GetBorderVertices(TArray<FTopologicalVertex*>& BorderVertices)
 {
-	TArray<TSharedPtr<FTopologicalVertex>> Vertices;
+	TArray<FTopologicalVertex*> Vertices;
 	GetVertices(Vertices);
 
 	BorderVertices.Empty(Vertices.Num());
 
-	for (TSharedPtr<FTopologicalVertex>& Vertex : Vertices)
+	for (FTopologicalVertex* Vertex : Vertices)
 	{
 		if (Vertex->IsBorderVertex())
 		{
@@ -728,7 +860,7 @@ void FTopomaker::MergeUnconnectedSuccessiveEdges()
 			{
 				TSharedRef<FTopologicalVertex> StartVertex = Candidates[0].Direction == EOrientation::Front ? Candidates[0].Entity->GetStartVertex() : Candidates[0].Entity->GetEndVertex();
 				TSharedRef<FTopologicalVertex> EndVertex = Candidates.Last().Direction == EOrientation::Front ? Candidates.Last().Entity->GetEndVertex() : Candidates.Last().Entity->GetStartVertex();
-				FTopologicalEdge::CreateEdgeByMergingEdges(Candidates, StartVertex, EndVertex);
+				FTopologicalEdge::CreateEdgeByMergingEdges(LargeEdgeLengthTolerance, Candidates, StartVertex, EndVertex);
 			}
 		}
 	}
@@ -744,10 +876,10 @@ void FTopomaker::RemoveIsolatedEdges()
 
 	TArray<FTopologicalEdge*> IsolatedEdges;
 
-	TArray<TSharedPtr<FTopologicalVertex>> Vertices;
+	TArray<FTopologicalVertex*> Vertices;
 	GetVertices(Vertices);
 
-	for (const TSharedPtr<FTopologicalVertex>& Vertex : Vertices)
+	for (const FTopologicalVertex* Vertex : Vertices)
 	{
 		for (const FTopologicalVertex* TwinVertex : Vertex->GetTwinEntities())
 		{
@@ -768,60 +900,97 @@ void FTopomaker::RemoveIsolatedEdges()
 	FMessage::Printf(EVerboseLevel::Log, TEXT("\n\nIsolatedEdges count %d\n\n\n"), IsolatedEdges.Num());
 }
 
+void SplitVertexLinkByShell(FTopologicalVertex* InVertex)
+{
+	TMap<const FShell*, TArray<FTopologicalVertex*>> ShellToVertices;
+
+	const TArray<FTopologicalVertex*>& Twins = InVertex->GetTwinEntities();
+	ShellToVertices.Reserve(Twins.Num());
+
+	for (FTopologicalVertex* TwinVertex : Twins)
+	{
+		const FShell* OtherShell = (const FShell*)TwinVertex->GetDirectConnectedEdges()[0]->GetFace()->GetHost();
+		TArray<FTopologicalVertex*>& Vertices = ShellToVertices.FindOrAdd(OtherShell);
+		Vertices.Add(TwinVertex);
+	}
+
+#ifdef DEBUG_Split_Vertex_Link_By_Shell
+	{
+		F3DDebugSession B(*FString::Printf(TEXT("Shells")));
+		for (TPair<const FShell*, TArray<FTopologicalVertex*>>& Pair : ShellToVertices)
+		{
+			F3DDebugSession B(*FString::Printf(TEXT("Shell to vertex")));
+			{
+				F3DDebugSession B(*FString::Printf(TEXT("Shell")));
+				Display(*Pair.Key);
+			}
+			TArray<FTopologicalVertex*>& Vertices = Pair.Value;
+			for (const FTopologicalVertex* Vertex : Vertices)
+			{
+				{
+					F3DDebugSession A(*FString::Printf(TEXT("Vertex %d"), Vertex->GetId()));
+					Display(*Vertex);
+					Display(*Vertex->GetDirectConnectedEdges()[0], EVisuProperty::RedPoint);
+					Display(*Vertex->GetFace());
+				}
+			}
+		}
+		Wait();
+	}
+#endif
+
+	InVertex->UnlinkTwinEntities();
+
+	for (TPair<const FShell*, TArray<FTopologicalVertex*>>& Pair : ShellToVertices)
+	{
+		TArray<FTopologicalVertex*>& Vertices = Pair.Value;
+		if (Vertices.Num() > 1)
+		{
+			FTopologicalVertex* FirstVertex = Vertices[0];
+			for (FTopologicalVertex* TwinVertex : Vertices)
+			{
+				FirstVertex->Link(*TwinVertex);
+			}
+		}
+	}
+}
+
 void FTopomaker::UnlinkNonManifoldVertex()
 {
-	TArray<TSharedPtr<FTopologicalVertex>> Vertices;
+	TArray<FTopologicalVertex*> Vertices;
 	GetVertices(Vertices);
 
-	TMap<FShell*, int32> ShellToVertexCount;
-	for (const TSharedPtr<FTopologicalVertex>& Vertex : Vertices)
+	TArray<FTopologicalVertex*> VerticesToSplit;
+	VerticesToSplit.Reserve(Vertices.Num());
+
+	for (FTopologicalVertex* Vertex : Vertices)
 	{
-		ShellToVertexCount.Empty(Vertex->GetTwinEntityCount());
-		for (const FTopologicalVertex* TwinVertex : Vertex->GetTwinEntities())
+		const TArray<FTopologicalVertex*>& Twins = Vertex->GetTwinEntities();
+		const FShell* Shell = (const FShell*) Twins[0]->GetFace()->GetHost();
+
+		for (const FTopologicalVertex* TwinVertex : Twins)
 		{
-			ensureCADKernel(!TwinVertex->GetDirectConnectedEdges().IsEmpty());
-			FTopologicalEdge* Edge = TwinVertex->GetDirectConnectedEdges()[0];
-			FShell* Shell = (FShell*)Edge->GetLoop()->GetFace()->GetHost();
-			if (Shell != nullptr)
+			const FShell* OtherShell = (const FShell*)TwinVertex->GetDirectConnectedEdges()[0]->GetFace()->GetHost();
+			if (OtherShell != Shell)
 			{
-				ShellToVertexCount.FindOrAdd(Shell)++;
-			}
-		}
-
-		if (ShellToVertexCount.Num() > 1)
-		{
-			TMap<FShell*, TArray<FTopologicalVertex*>> ShellToVertices;
-			ShellToVertices.Reserve(ShellToVertexCount.Num());
-			for (TPair<FShell*, int32> Pair : ShellToVertexCount)
-			{
-				ShellToVertices.FindOrAdd(Pair.Key).Reserve(Pair.Value);
-			}
-
-			for (FTopologicalVertex* TwinVertex : Vertex->GetTwinEntities())
-			{
-				ensureCADKernel(!TwinVertex->GetDirectConnectedEdges().IsEmpty());
-				FTopologicalEdge* Edge = TwinVertex->GetDirectConnectedEdges()[0];
-				FShell* Shell = (FShell*)Edge->GetLoop()->GetFace()->GetHost();
-				if (Shell != nullptr)
+				TSharedPtr<FTopologicalVertex> ActiveVertex = Vertex->GetLinkActiveEntity();
+				if(!ActiveVertex->IsProcessed())
 				{
-					ShellToVertices.FindOrAdd(Shell).Add(TwinVertex);
-				}
-			}
-
-			Vertex->UnlinkTwinEntities();
-			for (TPair<FShell*, TArray<FTopologicalVertex*>> ShellVertices : ShellToVertices)
-			{
-				if (ShellVertices.Value.Num() > 1)
-				{
-					TArray<FTopologicalVertex*>& Twins = ShellVertices.Value;
-					FTopologicalVertex* FirstVertex = Twins[0];
-					for (FTopologicalVertex* TwinVertex : Twins)
-					{
-						FirstVertex->Link(*TwinVertex);
-					}
+					VerticesToSplit.Add(ActiveVertex.Get());
+					ActiveVertex->SetProcessedMarker();
 				}
 			}
 		}
+	}
+
+	for (const FTopologicalVertex* Vertex : VerticesToSplit)
+	{
+		Vertex->ResetProcessedMarker();
+	}
+
+	for (FTopologicalVertex* Vertex : VerticesToSplit)
+	{
+		SplitVertexLinkByShell(Vertex);
 	}
 }
 
@@ -854,9 +1023,7 @@ void FindBorderVertex(const TArray<FTopologicalEdge*>& Edges, TArray<FTopologica
 
 }
 
-
-//#define DEBUG_THIN_FACE
-void FTopomaker::RemoveThinFaces(TArray<FTopologicalEdge*>& NewBorderEdges)
+void FTopomaker::RemoveThinFaces()
 {
 	FTimePoint StartTime = FChrono::Now();
 
@@ -864,43 +1031,42 @@ void FTopomaker::RemoveThinFaces(TArray<FTopologicalEdge*>& NewBorderEdges)
 	F3DDebugSession _(TEXT("RemoveThinFaces"));
 #endif
 
-	TArray<FTopologicalFace*> DeletedFaces;
+	TArray<FTopologicalEdge*> BorderEdges;
+	TArray<FTopologicalVertex*> BorderVertices;
 
 	// Find thin faces
 	for (TSharedPtr<FTopologicalFace> Face : Faces)
 	{
+		if (Face->GetLoops().Num() == 0)
+		{
+			Face->SetDeletedMarker();
+			continue;
+		}
+
 		FFaceAnalyzer Analyer(*Face, ThinFaceWidth);
 		double GapSize = 0;
 		if (Analyer.IsThinFace(GapSize))
 		{
-			Face->Remove(&NewBorderEdges);
-			DeletedFaces.Add(Face.Get());
+#ifdef DEBUG_THIN_FACE
+			{
+				F3DDebugSession _(TEXT("Thin Face"));
+				Display(*Face);
+				Wait();
+			}
+#endif
+			Face->Remove(&BorderEdges);
+			Face->SetDeletedMarker();
+
+			TopomakerTools::GetVertices(BorderEdges, BorderVertices);
+			TopomakerTools::MergeCoincidentVertices(BorderVertices, GapSize * 1.2);
+			TopomakerTools::MergeCoincidentEdges(BorderEdges, GapSize * 1.2);
+
+			BorderEdges.Reset();
+
 #ifdef CADKERNEL_DEV
 			Report.AddThinFace();
 #endif
 		}
-	}
-
-#ifdef DEBUG_THIN_FACE
-	for (const FTopologicalFace* Face : DeletedFaces)
-	{
-		F3DDebugSession _(TEXT("Face"));
-		Display(*Face);
-	}
-#endif
-
-	// Remove deleted edges of NewBorderEdges
-	{
-		int32 NewIndex = 0;
-		for (int32 Index = 0; Index < NewBorderEdges.Num(); ++Index)
-		{
-			if (!NewBorderEdges[Index]->HasMarker1())
-			{
-				NewBorderEdges[NewIndex] = NewBorderEdges[Index];
-				NewIndex++;
-			}
-		}
-		NewBorderEdges.SetNum(NewIndex);
 	}
 
 #ifdef CADKERNEL_DEV
@@ -909,9 +1075,9 @@ void FTopomaker::RemoveThinFaces(TArray<FTopologicalEdge*>& NewBorderEdges)
 #endif
 }
 
-void FTopomaker::SetSelfConnectedEdgeDegenerated(TArray<TSharedPtr<FTopologicalVertex>>& Vertices)
+void FTopomaker::SetSelfConnectedEdgeDegenerated(TArray<FTopologicalVertex*>& Vertices)
 {
-	for (const TSharedPtr<FTopologicalVertex>& Vertex : Vertices)
+	for (const FTopologicalVertex* Vertex : Vertices)
 	{
 		for (const FTopologicalVertex* TwinVertex : Vertex->GetTwinEntities())
 		{
@@ -929,16 +1095,16 @@ void FTopomaker::SetSelfConnectedEdgeDegenerated(TArray<TSharedPtr<FTopologicalV
 	}
 }
 
-void FTopomaker::CheckSelfConnectedEdge(double MaxLengthOfDegeneratedEdge, TArray<TSharedPtr<FTopologicalVertex>>& OutBorderVertices)
+void FTopomaker::CheckSelfConnectedEdge(double MaxLengthOfDegeneratedEdge, TArray<FTopologicalVertex*>& OutBorderVertices)
 {
 	FTimePoint StartTime = FChrono::Now();
 
 	TFunction<void(FTopologicalVertex&)> AddVertexIfBorder = [&](FTopologicalVertex& Vertex)
 	{
-		TSharedPtr<FTopologicalVertex> ActiveVertex = Vertex.GetLinkActiveEntity();
+		TSharedRef<FTopologicalVertex> ActiveVertex = Vertex.GetLinkActiveEntity();
 		if (ActiveVertex->IsBorderVertex())
 		{
-			OutBorderVertices.Add(ActiveVertex);
+			OutBorderVertices.Add(&*ActiveVertex);
 		}
 	};
 
@@ -978,6 +1144,8 @@ void FTopomaker::SplitIntoConnectedShells()
 {
 	FTimePoint StartTime = FChrono::Now();
 
+	DeleteNonmanifoldLink();
+
 	// Processed1 : Surfaces added in CandidateSurfacesForMesh
 
 	int32 TopologicalFaceCount = Faces.Num();
@@ -996,11 +1164,6 @@ void FTopomaker::SplitIntoConnectedShells()
 			for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
 			{
 				const TSharedPtr<FTopologicalEdge>& Edge = OrientedEdge.Entity;
-				if (Edge->HasMarker1())
-				{
-					continue;
-				}
-				Edge->SetMarker1();
 
 				if (Edge->GetTwinEntityCount() == 1)
 				{
@@ -1018,26 +1181,19 @@ void FTopomaker::SplitIntoConnectedShells()
 
 				for (FTopologicalEdge* NextEdge : Edge->GetTwinEntities())
 				{
-					if (NextEdge->HasMarker1())
-					{
-						continue;
-					}
-					NextEdge->SetMarker1();
-
 					FTopologicalFace* NextFace = NextEdge->GetFace();
-					if ((NextFace == nullptr) || NextFace->HasMarker1())
+					if ((NextFace == nullptr) || NextFace->IsNotToOrAlreadyProcess())
 					{
 						continue;
 					}
-
-					NextFace->SetMarker1();
+					NextFace->SetProcessedMarker();
 					Front.Add(NextFace);
 				}
 			}
 		}
 	};
 
-	TFunction<void(FFaceSubset&)> SpreadFront = [&](FFaceSubset& Shell)
+	TFunction<void(FFaceSubset&)> PropagateFront = [&](FFaceSubset& Shell)
 	{
 		while (Front.Num())
 		{
@@ -1052,18 +1208,11 @@ void FTopomaker::SplitIntoConnectedShells()
 		}
 	};
 
-	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
-	{
-		if (Face->IsDeleted() || Face->IsDegenerated())
-		{
-			Face->SetMarker1();
-			continue;
-		}
-	}
+	SetToProcessMarkerOfFaces();	
 		
 	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
 	{
-		if (Face->HasMarker1())
+		if (Face->IsProcessedDeletedOrDegenerated())
 		{
 			continue;
 		}
@@ -1072,9 +1221,9 @@ void FTopomaker::SplitIntoConnectedShells()
 		Shell.Faces.Reserve(TopologicalFaceCount - ProcessFaceCount);
 		Front.Empty(TopologicalFaceCount);
 
-		Face->SetMarker1();
+		Face->SetProcessedMarker();
 		Front.Add(Face.Get());
-		SpreadFront(Shell);
+		PropagateFront(Shell);
 		ProcessFaceCount += Shell.Faces.Num();
 
 		if (ProcessFaceCount == TopologicalFaceCount)
@@ -1083,18 +1232,7 @@ void FTopomaker::SplitIntoConnectedShells()
 		}
 	}
 
-	// reset Marker
-	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
-	{
-		Face->ResetMarkers();
-		for (const TSharedPtr<FTopologicalLoop>& Loop : Face->GetLoops())
-		{
-			for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
-			{
-				OrientedEdge.Entity->ResetMarkers();
-			}
-		}
-	}
+	ResetMarkersOfFaces();
 
 	// for each FaceSubset, find the main shell
 	for (FFaceSubset& FaceSubset : SubShells)
@@ -1121,14 +1259,7 @@ void FTopomaker::SplitIntoConnectedShells()
 		FaceSubset.SetMainColor(ColorToFaceCount);
 	}
 
-	if (Shells.Num())
-	{
-		EmptyShells();
-	}
-	else
-	{
-		RemoveFacesFromShell();
-	}
+	EmptyShells();
 
 	// for each FaceSubset, process the Shell
 	for (FFaceSubset FaceSubset : SubShells)
@@ -1136,6 +1267,9 @@ void FTopomaker::SplitIntoConnectedShells()
 		if (FaceSubset.MainShell != nullptr)
 		{
 			FShell* Shell = (FShell*)FaceSubset.MainShell;
+#ifdef CADKERNEL_DEBUG
+			ensure(Shell->GetFaces().Num() == 0);
+#endif
 			Shell->Add(FaceSubset.Faces);
 		}
 		else
@@ -1166,9 +1300,11 @@ void FTopomaker::SplitIntoConnectedShells()
 		}
 	}
 
+	UnlinkFromOther();
 	UnlinkNonManifoldVertex();
 
 	RemoveEmptyShells();
+	Session.GetModel().RemoveEmptyBodies();
 
 	FDuration StepDuration = FChrono::Elapse(StartTime);
 	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT(""), TEXT("Split"), StepDuration);
@@ -1176,6 +1312,16 @@ void FTopomaker::SplitIntoConnectedShells()
 
 void FTopomaker::RemoveEmptyShells()
 {
+#ifdef CADKERNEL_DEV
+	{
+		FModel& Model = Session.GetModel();
+		for (const TSharedPtr<FBody>& Body : Model.GetBodies())
+		{
+			ensureCADKernel(!Body->HasMarker1());
+		}
+	}
+#endif
+
 	TArray<FBody*> Bodies;
 	Bodies.Reserve(Shells.Num());
 
@@ -1191,7 +1337,7 @@ void FTopomaker::RemoveEmptyShells()
 				Body->SetMarker1();
 				Bodies.Add(Body);
 			}
-			Shell->Delete();
+			Shell->SetDeletedMarker();
 		}
 		else
 		{
@@ -1200,10 +1346,9 @@ void FTopomaker::RemoveEmptyShells()
 	}
 	Swap(Shells, NewShells);
 
-	FModel& Model = Session.GetModel();
 	for (FBody* Body : Bodies)
 	{
-		Body->RemoveEmptyShell(Model);
+		Body->RemoveEmptyShell();
 		Body->ResetMarkers();
 	}
 }
@@ -1332,6 +1477,80 @@ void FTopomaker::RemoveDuplicatedFaces()
 	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT(""), TEXT("RemoveDuplicatedFaces"), Report.RemoveDuplicatedFacesDuration);
 #endif
 
+}
+
+void FTopomaker::SetToProcessMarkerOfFaces()
+{
+	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
+	{
+		if (!Face->IsDeletedOrDegenerated())
+		{
+			Face->SetToProcessMarker();
+		}
+	}
+}
+
+void FTopomaker::ResetMarkersOfFaces()
+{
+	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
+	{
+		Face->ResetMarkers();
+	}
+}
+
+void FTopomaker::DeleteNonmanifoldLink()
+{
+	for (const TSharedPtr<FTopologicalFace>& Face : Faces)
+	{
+		Face->DeleteNonmanifoldLink();
+	}
+}
+
+void FTopomaker::UnlinkFromOther()
+{
+	TFunction<void(TArray<FTopologicalVertex*>&)> MergeCoincidents = [&Tolerance = Tolerance](TArray<FTopologicalVertex*>& Vertices)
+	{
+		TArray<FTopologicalVertex*> ActiveVerticesToLink;
+		ActiveVerticesToLink.Reserve(Vertices.Num());
+		for (FTopologicalVertex* Vertex : Vertices)
+		{
+			if (!Vertex->IsProcessed())
+			{
+				ActiveVerticesToLink.Add(&Vertex->GetLinkActiveEntity().Get());
+				Vertex->SetProcessedMarker();
+			}
+		}
+		for (FTopologicalVertex* Vertex : Vertices)
+		{
+			Vertex->ResetProcessedMarker();
+		}
+
+		TopomakerTools::MergeCoincidentVertices(ActiveVerticesToLink, Tolerance);
+	};
+
+	TArray<FTopologicalVertex*> VerticesToLink;
+	for (FShell* Shell : Shells)
+	{
+		VerticesToLink.Reset();
+		Shell->UnlinkFromOther(VerticesToLink);
+		MergeCoincidents(VerticesToLink);
+	}
+
+	if(Shells.IsEmpty())
+	{
+		VerticesToLink.Reset();
+		TArray<FTopologicalFace*> FacePtrs;
+		for (TSharedPtr<FTopologicalFace> Face : Faces)
+		{
+			if (!Face->IsDeleted())
+			{
+				FacePtrs.Add(Face.Get());
+			}
+		}
+
+		ShellTools::UnlinkFromOther(FacePtrs, VerticesToLink);
+		MergeCoincidents(VerticesToLink);
+	}
 }
 
 }

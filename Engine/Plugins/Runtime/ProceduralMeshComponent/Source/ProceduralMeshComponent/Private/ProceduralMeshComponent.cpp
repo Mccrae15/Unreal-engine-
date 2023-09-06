@@ -188,7 +188,7 @@ public:
 						Initializer.bAllowUpdate = false;
 
 						NewSection->RayTracingGeometry.SetInitializer(Initializer);
-						NewSection->RayTracingGeometry.InitResource();
+						NewSection->RayTracingGeometry.InitResource(RHICmdList);
 
 						NewSection->RayTracingGeometry.Initializer.IndexBuffer = NewSection->IndexBuffer.IndexBufferRHI;
 						NewSection->RayTracingGeometry.Initializer.TotalPrimitiveCount = NewSection->IndexBuffer.Indices.Num() / 3;
@@ -201,7 +201,7 @@ public:
 
 						//#dxr_todo: add support for segments?
 						
-						NewSection->RayTracingGeometry.UpdateRHI();
+						NewSection->RayTracingGeometry.UpdateRHI(RHICmdList);
 					});
 				}
 #endif
@@ -234,11 +234,9 @@ public:
 	}
 
 	/** Called on render thread to assign new dynamic data */
-	void UpdateSection_RenderThread(FProcMeshSectionUpdateData* SectionData)
+	void UpdateSection_RenderThread(FRHICommandListBase& RHICmdList, FProcMeshSectionUpdateData* SectionData)
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ProcMesh_UpdateSectionRT);
-
-		check(IsInRenderingThread());
 
 		// Check we have data 
 		if(	SectionData != nullptr) 			
@@ -270,30 +268,30 @@ public:
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.PositionVertexBuffer;
-					void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-					RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
+					RHICmdList.UnlockBuffer(VertexBuffer.VertexBufferRHI);
 				}
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.ColorVertexBuffer;
-					void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-					RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
+					RHICmdList.UnlockBuffer(VertexBuffer.VertexBufferRHI);
 				}
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.StaticMeshVertexBuffer;
-					void* VertexBufferData = RHILockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
+					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTangentData(), VertexBuffer.GetTangentSize());
-					RHIUnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
+					RHICmdList.UnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
 				}
 
 				{
 					auto& VertexBuffer = Section->VertexBuffers.StaticMeshVertexBuffer;
-					void* VertexBufferData = RHILockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
+					void* VertexBufferData = RHICmdList.LockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
 					FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTexCoordData(), VertexBuffer.GetTexCoordSize());
-					RHIUnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
+					RHICmdList.UnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
 				}
 
 #if RHI_RAYTRACING
@@ -309,7 +307,7 @@ public:
 					Initializer.bAllowUpdate = false;
 
 					Section->RayTracingGeometry.SetInitializer(Initializer);
-					Section->RayTracingGeometry.InitResource();
+					Section->RayTracingGeometry.InitResource(RHICmdList);
 
 					FRayTracingGeometrySegment Segment;
 					Segment.VertexBuffer = Section->VertexBuffers.PositionVertexBuffer.VertexBufferRHI;
@@ -317,7 +315,7 @@ public:
 					Segment.MaxVertices = Section->VertexBuffers.PositionVertexBuffer.GetNumVertices();
 					Section->RayTracingGeometry.Initializer.Segments.Add(Segment);
 
-					Section->RayTracingGeometry.UpdateRHI();
+					Section->RayTracingGeometry.UpdateRHI(RHICmdList);
 				}
 #endif
 			}
@@ -689,7 +687,7 @@ void UProceduralMeshComponent::UpdateMeshSection(int32 SectionIndex, const TArra
 		// Update bounds, if we are getting new position data
 		if (bSameVertexCount)
 		{
-			Section.SectionLocalBox = FBox(Vertices);
+			Section.SectionLocalBox = Vertices.Num() ? FBox(Vertices) : FBox(EForceInit::ForceInit);
 
 			// Iterate through vertex data, copying in new info
 			for (int32 VertIdx = 0; VertIdx < NumVerts; VertIdx++)
@@ -775,7 +773,7 @@ void UProceduralMeshComponent::UpdateMeshSection(int32 SectionIndex, const TArra
 				// Enqueue command to send to render thread
 				FProceduralMeshSceneProxy* ProcMeshSceneProxy = (FProceduralMeshSceneProxy*)SceneProxy;
 				ENQUEUE_RENDER_COMMAND(FProcMeshSectionUpdate)
-				([ProcMeshSceneProxy, SectionData](FRHICommandListImmediate& RHICmdList) { ProcMeshSceneProxy->UpdateSection_RenderThread(SectionData); });
+				([ProcMeshSceneProxy, SectionData](FRHICommandListImmediate& RHICmdList) { ProcMeshSceneProxy->UpdateSection_RenderThread(RHICmdList, SectionData); });
 			}
 
 			UpdateLocalBounds();		 // Update overall bounds

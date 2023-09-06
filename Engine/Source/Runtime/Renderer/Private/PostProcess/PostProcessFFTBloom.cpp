@@ -24,8 +24,16 @@ TAutoConsoleVariable<int32> CVarBloomCacheKernel(
 	ECVF_RenderThreadSafe);
 
 TAutoConsoleVariable<int32> CVarAsynComputeFFTBloom(
-	TEXT("r.Bloom.AsyncCompute"), 0,
+	TEXT("r.Bloom.AsyncCompute"), 1,
 	TEXT("Whether to run FFT bloom on async compute.\n"),
+	ECVF_RenderThreadSafe);
+
+TAutoConsoleVariable<int32> CVarBloomWarnKernelResolution(
+	TEXT("r.Bloom.WarnKernelResolution"), 1,
+	TEXT("Whether to emit a warning when the resolution of the kernel is unecessary to high.\n")
+	TEXT(" 0: Disabled;\n")
+	TEXT(" 1: Emit the warning on consoles (default);\n")
+	TEXT(" 2: Emit the warning on all platforms;\n"),
 	ECVF_RenderThreadSafe);
 
 static bool DoesPlatformSupportFFTBloom(EShaderPlatform Platform)
@@ -151,6 +159,20 @@ public:
 	END_SHADER_PARAMETER_STRUCT()
 };
 
+class FBloomDownsampleKernelCS : public FFFTBloomShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FBloomDownsampleKernelCS);
+	SHADER_USE_PARAMETER_STRUCT(FBloomDownsampleKernelCS, FFFTBloomShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(FIntPoint, KernelSpatialTextureSize)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, KernelSpatialTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, KernelSpatialSampler)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DownsampleKernelSpatialOutput)
+	END_SHADER_PARAMETER_STRUCT()
+};
+
 class FBloomResizeKernelCS : public FFFTBloomShader
 {
 public:
@@ -194,6 +216,7 @@ IMPLEMENT_GLOBAL_SHADER(FBloomReduceKernelSurveyCS,         "/Engine/Private/Blo
 IMPLEMENT_GLOBAL_SHADER(FBloomSumScatterDispersionEnergyCS, "/Engine/Private/Bloom/BloomSumScatterDispersionEnergy.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FBloomPackKernelConstantsCS,        "/Engine/Private/Bloom/BloomPackKernelConstants.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FBloomClampKernelCS,                "/Engine/Private/Bloom/BloomClampKernel.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FBloomDownsampleKernelCS,           "/Engine/Private/Bloom/BloomDownsampleKernel.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FBloomResizeKernelCS,               "/Engine/Private/Bloom/BloomResizeKernel.usf", "MainCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FBloomFinalizeApplyConstantsCS,     "/Engine/Private/Bloom/BloomFinalizeApplyConstants.usf", "MainCS", SF_Compute);
 
@@ -575,6 +598,55 @@ void InitDomainAndGetKernel(
 				FComputeShaderUtils::GetGroupCount(SpatialKernelTexture->Desc.Extent, 8));
 		}
 
+		// Downscale the clamped kernel succesively to have nice anti-aliased
+		{
+			int32 MajorAxisPixelCount = FMath::Max(Intermediates.ImageSize.X, Intermediates.ImageSize.Y);
+			float KernelSizeInDstPixels = FMath::Max(float(MajorAxisPixelCount) * Intermediates.KernelSupportScale, 1.f);
+			float DownscaleFactor = float(SpatialKernelTexture->Desc.Extent.X) / KernelSizeInDstPixels;
+			int32 RecommendedKernelDownsscale = 1;
+
+			for (float RemainingDownscaleFactor = DownscaleFactor; RemainingDownscaleFactor > 2.0f; RemainingDownscaleFactor *= 0.5f)
+			{
+				FRDGTextureRef NewClampedKernelTexture;
+				{
+					FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
+						ClampedKernelTexture->Desc.Extent / 2,
+						PF_FloatRGBA,
+						FClearValueBinding::None,
+						TexCreate_ShaderResource | TexCreate_UAV);
+
+					NewClampedKernelTexture = GraphBuilder.CreateTexture(Desc, TEXT("Bloom.FFT.DownsampleKernel"));
+				}
+
+				FBloomDownsampleKernelCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FBloomDownsampleKernelCS::FParameters>();
+				PassParameters->KernelSpatialTextureSize = ClampedKernelTexture->Desc.Extent;
+				PassParameters->KernelSpatialTexture = ClampedKernelTexture;
+				PassParameters->KernelSpatialSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+				PassParameters->DownsampleKernelSpatialOutput = GraphBuilder.CreateUAV(NewClampedKernelTexture);
+
+				TShaderMapRef<FBloomDownsampleKernelCS> ComputeShader(View.ShaderMap);
+				FComputeShaderUtils::AddPass(
+					GraphBuilder,
+					RDG_EVENT_NAME("FFTBloom DownsampleKernel %dx%d -> %dx%d",
+						ClampedKernelTexture->Desc.Extent.X,
+						ClampedKernelTexture->Desc.Extent.Y,
+						NewClampedKernelTexture->Desc.Extent.X,
+						NewClampedKernelTexture->Desc.Extent.Y),
+					Intermediates.ComputePassFlags,
+					ComputeShader,
+					PassParameters,
+					FComputeShaderUtils::GetGroupCount(NewClampedKernelTexture->Desc.Extent, 8));
+
+				ClampedKernelTexture = NewClampedKernelTexture;
+				RecommendedKernelDownsscale *= 2;
+			}
+
+			if (RecommendedKernelDownsscale > 1 && (CVarBloomWarnKernelResolution.GetValueOnRenderThread() > 1 || (CVarBloomWarnKernelResolution.GetValueOnRenderThread() == 1 && FDataDrivenShaderPlatformInfo::GetIsConsole(View.GetShaderPlatform()))))
+			{
+				UE_LOG(LogRenderer, Warning, TEXT("The FPostProcessSettings::BloomConvolutionTexture could have it's resolution lowered by a factor of %d to save memory."), RecommendedKernelDownsscale);
+			}
+		}
+
 		// Final resize the kernel for Fourier transformation
 		{
 			ResizedKernel = GraphBuilder.CreateTexture(TransformDesc, TEXT("Bloom.FFT.ResizedKernel"));
@@ -640,6 +712,7 @@ FFFTBloomOutput AddFFTBloomPass(
 	float InputResolutionFraction,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	FRDGBufferRef EyeAdaptationBuffer,
+	const FLocalExposureParameters& LocalExposureParameters,
 	FRDGTextureRef LocalExposureTexture,
 	FRDGTextureRef BlurredLogLuminanceTexture)
 {
@@ -750,7 +823,17 @@ FFFTBloomOutput AddFFTBloomPass(
 
 		FFTInputSceneColor.Texture = GraphBuilder.CreateTexture(Desc, TEXT("Bloom.FFT.Input"));
 
-		AddApplyLocalExposurePass(GraphBuilder, View, EyeAdaptationParameters, EyeAdaptationBuffer, LocalExposureTexture, BlurredLogLuminanceTexture, Temp, FFTInputSceneColor, Intermediates.ComputePassFlags);
+		AddApplyLocalExposurePass(
+			GraphBuilder,
+			View,
+			EyeAdaptationParameters,
+			EyeAdaptationBuffer,
+			LocalExposureParameters,
+			LocalExposureTexture,
+			BlurredLogLuminanceTexture,
+			Temp,
+			FFTInputSceneColor,
+			Intermediates.ComputePassFlags);
 	}
 
 	// Init the domain data update the cached kernel if needed.
@@ -795,7 +878,7 @@ FFFTBloomOutput AddFFTBloomPass(
 		FFTInputSceneColor.Texture->Desc.Extent,
 		FFTInputSceneColor.Texture->Desc.Format,
 		FClearValueBinding::None,
-		TexCreate_ShaderResource | TexCreate_UAV);
+		TexCreate_ShaderResource | TexCreate_UAV | GFastVRamConfig.Bloom);
 		
 	BloomOutput.BloomTexture.Texture = GraphBuilder.CreateTexture(OutputSceneColorDesc, TEXT("Bloom.FFT.ScatterDispersion"));
 	BloomOutput.BloomTexture.ViewRect = FFTInputSceneColor.ViewRect;
@@ -810,7 +893,8 @@ FFFTBloomOutput AddFFTBloomPass(
 		FFTInputSceneColor.Texture, FFTInputSceneColor.ViewRect,
 		BloomOutput.BloomTexture.Texture, BloomOutput.BloomTexture.ViewRect,
 		Intermediates.PreFilter,
-		FFTMulitplyParameters);
+		FFTMulitplyParameters,
+		GFastVRamConfig.Bloom);
 
 	return BloomOutput;
 }

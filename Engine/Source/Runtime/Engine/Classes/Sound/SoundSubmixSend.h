@@ -30,7 +30,7 @@ enum class EAudioSpectrumBandPresetType: uint8
 };
 
 USTRUCT(BlueprintType)
-struct ENGINE_API FSoundSubmixSpectralAnalysisBandSettings
+struct FSoundSubmixSpectralAnalysisBandSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -90,11 +90,11 @@ enum class ESubmixSendStage : uint8
 
 // Class used to send audio to submixes from USoundBase
 USTRUCT(BlueprintType)
-struct ENGINE_API FSoundSubmixSendInfo
+struct FSoundSubmixSendInfo
 {
 	GENERATED_USTRUCT_BODY()
 
-	FSoundSubmixSendInfo();
+	ENGINE_API FSoundSubmixSendInfo();
 
 	/*
 		Manual: Use Send Level only
@@ -113,7 +113,7 @@ struct ENGINE_API FSoundSubmixSendInfo
 	TObjectPtr<USoundSubmixBase> SoundSubmix;
 
 	// The amount of audio to send
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixSend)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixSend, meta = (DisplayName = "Manual Send Level"))
 	float SendLevel;
 
 	// Whether to disable the 0-1 clamp for manual SendLevel control

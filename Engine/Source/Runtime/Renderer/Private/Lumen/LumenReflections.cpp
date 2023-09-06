@@ -113,12 +113,20 @@ FAutoConsoleVariableRef CVarLumenReflectionTemporalMaxFramesAccumulated(
 	ECVF_RenderThreadSafe
 	);
 
+float GLumenReflectionNeighborhoodClampExpandWithResolveVariance = .1f;
+FAutoConsoleVariableRef CVarLumenReflectionNeighborhoodClampExpandWithResolveVariance(
+	TEXT("r.Lumen.Reflections.Temporal.NeighborhoodClampExpandWithResolveVariance"),
+	GLumenReflectionNeighborhoodClampExpandWithResolveVariance,
+	TEXT("Fraction of the resolve variance to use to expand the neighborhood variance.  This allows some ghosting in noisy areas to avoid flickering when the camera is still.  Only works when the bilateral filter is enabled."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 float GLumenReflectionHistoryDistanceThreshold = .03f;
 FAutoConsoleVariableRef CVarLumenReflectionHistoryDistanceThreshold(
 	TEXT("r.Lumen.Reflections.Temporal.DistanceThreshold"),
 	GLumenReflectionHistoryDistanceThreshold,
 	TEXT("World space distance threshold needed to discard last frame's lighting results.  Lower values reduce ghosting from characters when near a wall but increase flickering artifacts."),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability | ECVF_RenderThreadSafe
 	);
 
 float GLumenReflectionMaxRayIntensity = 100;
@@ -168,6 +176,14 @@ FAutoConsoleVariableRef CVarLumenReflectionScreenSpaceReconstructionRoughnessSca
 	TEXT("Values higher than 1 allow neighbor traces to be blurred together more aggressively, but is not physically correct."),
 	ECVF_RenderThreadSafe
 	);
+
+float GLumenReflectionSpatialResolveTonemapStrength = 0.0f;
+FAutoConsoleVariableRef CVarLumenReflectionSpatialResolveTonemapStrength(
+	TEXT("r.Lumen.Reflections.ScreenSpaceReconstruction.TonemapStrength"),
+	GLumenReflectionSpatialResolveTonemapStrength,
+	TEXT("Whether to tonemap reflection radiance values when they are averaged together during the spatial resolve.  This reduces noise but also removes bright interesting features in reflections."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
 
 int32 GLumenReflectionBilateralFilter = 1;
 FAutoConsoleVariableRef CVarLumenReflectionBilateralFilter(
@@ -250,14 +266,14 @@ float GLumenReflectionsSpecularScale = 1.f;
 FAutoConsoleVariableRef GVarLumenReflectionsSpecularScale(
 	TEXT("r.Lumen.Reflections.SpecularScale"),
 	GLumenReflectionsSpecularScale,
-	TEXT("Scale Lumen specular reflection."),
+	TEXT("Non-physically correct Lumen specular reflection scale. Recommended to keep at 1."),
 	ECVF_RenderThreadSafe);
 
 float GLumenReflectionsContrast = 1.f;
 FAutoConsoleVariableRef GVarLumenReflectionsContrast(
 	TEXT("r.Lumen.Reflections.Contrast"),
 	GLumenReflectionsContrast,
-	TEXT("Scale Lumen reflection contrast."),
+	TEXT("Non-physically correct Lumen reflection contrast. Recommended to keep at 1."),
 	ECVF_RenderThreadSafe);
 
 float GetLumenReflectionSpecularScale()
@@ -342,7 +358,6 @@ class FReflectionTileClassificationMarkCS : public FGlobalShader
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenFrontLayerTranslucencyGBufferParameters, FrontLayerTranslucencyGBufferParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
 		RDG_BUFFER_ACCESS(TileIndirectBuffer, ERHIAccess::IndirectArgs)
@@ -423,7 +438,6 @@ class FReflectionGenerateRaysCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWDownsampledDepth)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RWRayTraceDistance)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
 		SHADER_PARAMETER(float, MaxTraceDistance)
 		SHADER_PARAMETER(float, RadianceCacheAngleThresholdScale)
 		SHADER_PARAMETER(float, GGXSamplingBias)
@@ -462,10 +476,10 @@ class FReflectionResolveCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWSpecularIndirect)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWSpecularIndirectDepth)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWResolveVariance)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
 		SHADER_PARAMETER(uint32, NumSpatialReconstructionSamples)
 		SHADER_PARAMETER(float, SpatialReconstructionKernelRadius)
 		SHADER_PARAMETER(float, SpatialReconstructionRoughnessScale)
+		SHADER_PARAMETER(float, SpatialResolveTonemapStrength)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTileParameters, ReflectionTileParameters)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
@@ -510,6 +524,7 @@ class FReflectionTemporalReprojectionCS : public FGlobalShader
 		SHADER_PARAMETER(float,HistoryDistanceThreshold)
 		SHADER_PARAMETER(float,PrevInvPreExposure)
 		SHADER_PARAMETER(float,MaxFramesAccumulated)
+		SHADER_PARAMETER(float, NeighborhoodClampExpandWithResolveVariance)
 		SHADER_PARAMETER(FVector4f, EffectiveResolution)
 		SHADER_PARAMETER(FVector4f, HistoryEffectiveResolution)
 		SHADER_PARAMETER(FVector4f,HistoryScreenPositionScaleBias)
@@ -521,8 +536,8 @@ class FReflectionTemporalReprojectionCS : public FGlobalShader
 		SHADER_PARAMETER_SAMPLER(SamplerState, VelocityTextureSampler)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ResolvedReflections)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ResolvedReflectionsDepth)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTracingParameters, ReflectionTracingParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenReflectionTileParameters, ReflectionTileParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenFrontLayerTranslucencyGBufferParameters, FrontLayerTranslucencyGBufferParameters)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -553,7 +568,6 @@ class FReflectionBilateralFilterCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWSpecularIndirect)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float3>, SpecularIndirect)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ResolveVariance)
-		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
 		SHADER_PARAMETER(float, BilateralFilterSpatialKernelRadius)
 		SHADER_PARAMETER(uint32, BilateralFilterNumSamples)
 		SHADER_PARAMETER(float, BilateralFilterDepthWeightScale)
@@ -613,17 +627,18 @@ class FReflectionPassthroughCopyCS : public FGlobalShader
 IMPLEMENT_GLOBAL_SHADER(FReflectionPassthroughCopyCS, "/Engine/Private/Lumen/LumenReflections.usf", "ReflectionPassthroughCopyCS", SF_Compute);
 
 
-bool ShouldRenderLumenReflections(const FViewInfo& View, bool bSkipTracingDataCheck, bool bSkipProjectCheck)
+bool ShouldRenderLumenReflections(const FViewInfo& View, bool bSkipTracingDataCheck, bool bSkipProjectCheck, bool bIncludeStandalone)
 {
 	const FScene* Scene = (const FScene*)View.Family->Scene;
 	if (Scene)
 	{
-		//@todo - support standalone Lumen Reflections
-		return ShouldRenderLumenDiffuseGI(Scene, View, bSkipTracingDataCheck, bSkipProjectCheck)
-			&& Lumen::IsLumenFeatureAllowedForView(Scene, View, bSkipTracingDataCheck, bSkipProjectCheck) 
+		return Lumen::IsLumenFeatureAllowedForView(Scene, View, bSkipTracingDataCheck, bSkipProjectCheck) 
 			&& View.FinalPostProcessSettings.ReflectionMethod == EReflectionMethod::Lumen
 			&& View.Family->EngineShowFlags.LumenReflections 
 			&& CVarLumenAllowReflections.GetValueOnAnyThread()
+			&& (ShouldRenderLumenDiffuseGI(Scene, View, bSkipTracingDataCheck, bSkipProjectCheck)
+				// GRHISupportsRayTracingShaders is required for standalone Lumen Reflections because Lumen::GetHardwareRayTracingLightingMode forces hit lighting
+				|| (bIncludeStandalone && Lumen::UseHardwareRayTracedReflections(*View.Family) && GRHISupportsRayTracingShaders))
 			&& (bSkipTracingDataCheck || Lumen::UseHardwareRayTracedReflections(*View.Family) || Lumen::IsSoftwareRayTracingSupported());
 	}
 	
@@ -635,7 +650,6 @@ FLumenReflectionTileParameters ReflectionTileClassification(
 	const FViewInfo& View,
 	const FMinimalSceneTextures& SceneTextures,
 	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
-	const LumenReflections::FCompositeParameters& ReflectionsCompositeParameters,
 	const FLumenFrontLayerTranslucencyGBufferParameters* FrontLayerReflectionGBuffer,
 	ERDGPassFlags ComputePassFlags)
 {
@@ -693,7 +707,6 @@ FLumenReflectionTileParameters ReflectionTileClassification(
 				PassParameters->FrontLayerTranslucencyGBufferParameters = *FrontLayerReflectionGBuffer;
 			}
 		
-			PassParameters->ReflectionsCompositeParameters = ReflectionsCompositeParameters;
 			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 			PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 
@@ -826,6 +839,7 @@ void UpdateHistoryReflections(
 	const FViewInfo& View, 
 	const FSceneTextures& SceneTextures,
 	const FLumenReflectionTileParameters& ReflectionTileParameters,
+	const FLumenReflectionTracingParameters& ReflectionTracingParameters,
 	bool bUseBilaterialFilter,
 	FRDGTextureRef ResolvedReflections,
 	FRDGTextureRef ResolvedReflectionsDepth,
@@ -922,6 +936,7 @@ void UpdateHistoryReflections(
 				(HistoryViewRect->Max.X - 0.5f) * InvBufferSize.X,
 				(HistoryViewRect->Max.Y - 0.5f) * InvBufferSize.Y);
 			PassParameters->MaxFramesAccumulated = GLumenReflectionTemporalMaxFramesAccumulated;
+			PassParameters->NeighborhoodClampExpandWithResolveVariance = GLumenReflectionNeighborhoodClampExpandWithResolveVariance;
 
 			PassParameters->VelocityTexture = VelocityTexture;
 			PassParameters->VelocityTextureSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
@@ -930,7 +945,7 @@ void UpdateHistoryReflections(
 			PassParameters->ResolveVariance = ResolveVariance;
 			PassParameters->ResolveVarianceHistory = ResolveVarianceHistory;
 			PassParameters->ReflectionTileParameters = ReflectionTileParameters;
-			LumenReflections::SetupCompositeParameters(PassParameters->ReflectionsCompositeParameters);
+			PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 
 			FReflectionTemporalReprojectionCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set< FReflectionTemporalReprojectionCS::FBilateralFilter >(bUseBilaterialFilter);
@@ -1019,6 +1034,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 	const bool bDenoise = ReflectionPass == ELumenReflectionPass::Opaque || ReflectionPass == ELumenReflectionPass::FrontLayerTranslucency;
 	const bool bFrontLayer = ReflectionPass == ELumenReflectionPass::FrontLayerTranslucency;
 	const bool bSingleLayerWater = ReflectionPass == ELumenReflectionPass::SingleLayerWater;
+	const bool bLumenGIEnabled = GetViewPipelineState(View).DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
 
 	check(ShouldRenderLumenReflections(View));
 	check(ReflectionPass != ELumenReflectionPass::FrontLayerTranslucency 
@@ -1032,6 +1048,9 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 	RDG_GPU_STAT_SCOPE(GraphBuilder, LumenReflections);
 
 	FLumenReflectionTracingParameters ReflectionTracingParameters;
+	LumenReflections::SetupCompositeParameters(ReflectionTracingParameters.ReflectionsCompositeParameters);
+	ReflectionTracingParameters.PreIntegratedGF = GSystemTextures.PreintegratedGF->GetRHI();
+	ReflectionTracingParameters.PreIntegratedGFSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	FRDGBufferRef VisualizeTracesData = nullptr;
 	
@@ -1039,7 +1058,6 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 	{
 		VisualizeTracesData = SetupVisualizeReflectionTraces(GraphBuilder, ReflectionTracingParameters.VisualizeTracesParameters);
 	}
-
 
 	// Compute effective reflection downsampling factor. 
 	// STRATA_TODO: add support for downsampling factor with multi-layer. For now force it to 1.
@@ -1053,6 +1071,9 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 		BufferSize = Strata::GetStrataTextureResolution(View, BufferSize);
 	}
 
+	const bool bUseFarField = LumenReflections::UseFarField(*View.Family);
+	const float NearFieldMaxTraceDistance = Lumen::GetMaxTraceDistance(View);
+
 	ReflectionTracingParameters.ReflectionTracingViewSize = ViewSize;
 	ReflectionTracingParameters.ReflectionTracingBufferSize = BufferSize;
 	ReflectionTracingParameters.MaxRayIntensity = GLumenReflectionMaxRayIntensity;
@@ -1060,6 +1081,11 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 	ReflectionTracingParameters.ReflectionPass = (uint32)ReflectionPass;
 	ReflectionTracingParameters.UseJitter = bDenoise && GLumenReflectionTemporalFilter ? 1 : 0;
 	ReflectionTracingParameters.UseHighResSurface = CVarLumenReflectionsHiResSurface.GetValueOnRenderThread() != 0 ? 1 : 0;
+	ReflectionTracingParameters.MaxReflectionBounces = LumenReflections::GetMaxReflectionBounces(View);
+	ReflectionTracingParameters.NearFieldMaxTraceDistance = NearFieldMaxTraceDistance;
+	ReflectionTracingParameters.FarFieldMaxTraceDistance = bUseFarField ? Lumen::GetFarFieldMaxTraceDistance() : NearFieldMaxTraceDistance;
+	ReflectionTracingParameters.NearFieldMaxTraceDistanceDitherScale = Lumen::GetNearFieldMaxTraceDistanceDitherScale(bUseFarField);
+	ReflectionTracingParameters.NearFieldSceneRadius = Lumen::GetNearFieldSceneRadius(View, bUseFarField);
 
 	FRDGTextureDesc RayBufferDesc(FRDGTextureDesc::Create2D(ReflectionTracingParameters.ReflectionTracingBufferSize, PF_FloatRGBA, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
 	ReflectionTracingParameters.RayBuffer = GraphBuilder.CreateTexture(RayBufferDesc, TEXT("Lumen.Reflections.ReflectionRayBuffer"));
@@ -1072,9 +1098,6 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 
 	FBlueNoise BlueNoise = GetBlueNoiseGlobalParameters();
 	ReflectionTracingParameters.BlueNoise = CreateUniformBufferImmediate(BlueNoise, EUniformBufferUsage::UniformBuffer_SingleDraw);
-
-	LumenReflections::FCompositeParameters ReflectionsCompositeParameters;
-	LumenReflections::SetupCompositeParameters(ReflectionsCompositeParameters);
 
 	FLumenReflectionTileParameters ReflectionTileParameters;
 	
@@ -1093,7 +1116,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 	}
 	else
 	{
-		ReflectionTileParameters = ReflectionTileClassification(GraphBuilder, View, SceneTextures, ReflectionTracingParameters, ReflectionsCompositeParameters, FrontLayerReflectionGBuffer, ComputePassFlags);
+		ReflectionTileParameters = ReflectionTileClassification(GraphBuilder, View, SceneTextures, ReflectionTracingParameters, FrontLayerReflectionGBuffer, ComputePassFlags);
 	}
 
 	const bool bUseRadianceCache = GLumenReflectionsUseRadianceCache != 0 && RadianceCacheParameters.RadianceProbeIndirectionTexture != nullptr;
@@ -1104,7 +1127,6 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 		PassParameters->RWDownsampledDepth = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ReflectionTracingParameters.DownsampledDepth));
 		PassParameters->RWRayTraceDistance = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ReflectionTracingParameters.RayTraceDistance));
 		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->ReflectionsCompositeParameters = ReflectionsCompositeParameters;
 		PassParameters->MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
 		PassParameters->RadianceCacheAngleThresholdScale = FMath::Clamp<float>(GLumenReflectionRadianceCacheAngleThresholdScale, .05f, 4.0f);
 		PassParameters->GGXSamplingBias = GLumenReflectionGGXSamplingBias;
@@ -1136,12 +1158,24 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 	}
 
 	FRDGTextureDesc TraceRadianceDesc(FRDGTextureDesc::Create2D(ReflectionTracingParameters.ReflectionTracingBufferSize, PF_FloatRGB, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
-	ReflectionTracingParameters.TraceRadiance = GraphBuilder.CreateTexture(TraceRadianceDesc, TEXT("Lumen.Reflections.ReflectionTraceRadiance"));
+	ReflectionTracingParameters.TraceRadiance = GraphBuilder.CreateTexture(TraceRadianceDesc, TEXT("Lumen.Reflections.TraceRadiance"));
 	ReflectionTracingParameters.RWTraceRadiance = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ReflectionTracingParameters.TraceRadiance));
 
 	FRDGTextureDesc TraceHitDesc(FRDGTextureDesc::Create2D(ReflectionTracingParameters.ReflectionTracingBufferSize, PF_R16F, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
-	ReflectionTracingParameters.TraceHit = GraphBuilder.CreateTexture(TraceHitDesc, TEXT("Lumen.Reflections.ReflectionTraceHit"));
+	ReflectionTracingParameters.TraceHit = GraphBuilder.CreateTexture(TraceHitDesc, TEXT("Lumen.Reflections.TraceHit"));
 	ReflectionTracingParameters.RWTraceHit = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ReflectionTracingParameters.TraceHit));
+
+	// Hit lighting requires a few optional buffers
+	if (LumenReflections::UseHitLighting(View, bLumenGIEnabled))
+	{
+		FRDGTextureDesc TraceMaterialIdDesc(FRDGTextureDesc::Create2D(ReflectionTracingParameters.ReflectionTracingBufferSize, PF_R16_UINT, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
+		ReflectionTracingParameters.TraceMaterialId = GraphBuilder.CreateTexture(TraceMaterialIdDesc, TEXT("Lumen.Reflections.TraceMaterialId"));
+		ReflectionTracingParameters.RWTraceMaterialId = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ReflectionTracingParameters.TraceMaterialId));
+
+		FRDGTextureDesc TraceBookmarkDesc(FRDGTextureDesc::Create2D(ReflectionTracingParameters.ReflectionTracingBufferSize, PF_R32G32_UINT, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_UAV));
+		ReflectionTracingParameters.TraceBookmark = GraphBuilder.CreateTexture(TraceBookmarkDesc, TEXT("Lumen.Reflections.TraceBookmark"));
+		ReflectionTracingParameters.RWTraceBookmark = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ReflectionTracingParameters.TraceBookmark));
+	}
 
 	const bool bTraceMeshObjects = GLumenReflectionTraceMeshSDFs != 0 
 		&& Lumen::UseMeshSDFTracing(ViewFamily)
@@ -1159,6 +1193,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 		ReflectionTileParameters,
 		MeshSDFGridParameters,
 		bUseRadianceCache,
+		bLumenGIEnabled,
 		RadianceCacheParameters,
 		ComputePassFlags);
 	
@@ -1189,10 +1224,10 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 		PassParameters->RWSpecularIndirect = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ResolvedSpecularIndirect));
 		PassParameters->RWSpecularIndirectDepth = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ResolvedSpecularIndirectDepth));
 		PassParameters->RWResolveVariance = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ResolveVariance));
-		PassParameters->ReflectionsCompositeParameters = ReflectionsCompositeParameters;
 		PassParameters->NumSpatialReconstructionSamples = NumReconstructionSamples;
 		PassParameters->SpatialReconstructionKernelRadius = GLumenReflectionScreenSpaceReconstructionKernelRadius;
 		PassParameters->SpatialReconstructionRoughnessScale = GLumenReflectionScreenSpaceReconstructionRoughnessScale;
+		PassParameters->SpatialResolveTonemapStrength = GLumenReflectionSpatialResolveTonemapStrength;
 		PassParameters->ReflectionTracingParameters = ReflectionTracingParameters;
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
@@ -1243,6 +1278,7 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 			View,
 			SceneTextures,
 			ReflectionTileParameters,
+			ReflectionTracingParameters,
 			bUseBilaterialFilter,
 			ResolvedSpecularIndirect,
 			ResolvedSpecularIndirectDepth,
@@ -1259,7 +1295,6 @@ FRDGTextureRef FDeferredShadingSceneRenderer::RenderLumenReflections(
 			PassParameters->RWSpecularIndirect = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(ResolvedSpecularIndirect));
 			PassParameters->SpecularIndirect = SpecularIndirect;
 			PassParameters->ResolveVariance = AccumulatedResolveVariance;
-			PassParameters->ReflectionsCompositeParameters = ReflectionsCompositeParameters;
 			PassParameters->BilateralFilterSpatialKernelRadius = GLumenReflectionBilateralFilterSpatialKernelRadius;
 			PassParameters->BilateralFilterNumSamples = GLumenReflectionBilateralFilterNumSamples;
 			PassParameters->BilateralFilterDepthWeightScale = GLumenReflectionBilateralFilterDepthWeightScale;

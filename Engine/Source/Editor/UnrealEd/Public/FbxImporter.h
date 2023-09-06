@@ -175,6 +175,7 @@ struct FBXImportOptions
 	bool bReorderMaterialToFbxOrder;
 	// Skeletal Mesh options
 	bool bImportMorph;
+	bool bImportVertexAttributes;
 	bool bImportAnimations;
 	bool bUpdateSkeletonReferencePose;
 	bool bResample;
@@ -183,6 +184,7 @@ struct FBXImportOptions
 	bool bImportRigidMesh;
 	bool bUseT0AsRefPose;
 	bool bPreserveSmoothingGroups;
+	bool bKeepSectionsSeparate;
 	FOverlappingThresholds OverlappingThresholds;
 	bool bImportMeshesInBoneHierarchy;
 	bool bCreatePhysicsAsset;
@@ -200,6 +202,7 @@ struct FBXImportOptions
 	bool	bDeleteExistingNonCurveCustomAttributes;
 	bool	bImportBoneTracks;
 	bool	bSetMaterialDriveParameterOnCustomAttribute;
+	bool	bAddCurveMetadataToSkeleton;
 	bool	bRemoveRedundantKeys;
 	bool	bDoNotImportCurveWithZero;
 	bool	bResetToFbxOnMaterialConflict;
@@ -267,18 +270,6 @@ public:
 		AnimationTimeSecond = 0.0f;
 		AnimCurve = nullptr;
 		CurveType = NotTransform;
-	}
-
-	FFbxAnimCurveHandle(const FFbxAnimCurveHandle &CurveHandle)
-	{
-		UniqueId = CurveHandle.UniqueId;
-		Name = CurveHandle.Name;
-		ChannelIndex = CurveHandle.ChannelIndex;
-		CompositeIndex = CurveHandle.CompositeIndex;
-		KeyNumber = CurveHandle.KeyNumber;
-		AnimationTimeSecond = CurveHandle.AnimationTimeSecond;
-		AnimCurve = CurveHandle.AnimCurve;
-		CurveType = CurveHandle.CurveType;
 	}
 
 	//Identity Data
@@ -386,6 +377,8 @@ public:
 
 	UNREALED_API void GetBakeCurveData(const FFbxAnimCurveHandle &CurveHandle, TArray<float>& CurveData, float PeriodTime, float StartTime = 0.0f, float StopTime = -1.0f, bool bNegative = false, float Scale = 1.0f) const;
 
+	UNREALED_API void GetConvertedNonTransformCurveData(const FString& NodeName, bool bUseSequencerCurve, float UniformScale, TMap<FName, FRichCurve>& OutCurves);
+	
 	//Conversion API
 	UE_DEPRECATED(4.21, "Please use FRichCurve version instead to get tangent weight support")
 	UNREALED_API void GetConvertedTransformCurveData(const FString& NodeName, FInterpCurveFloat& TranslationX, FInterpCurveFloat& TranslationY, FInterpCurveFloat& TranslationZ,
@@ -480,7 +473,7 @@ struct FbxSceneInfo
 /**
 * FBX basic data conversion class.
 */
-class UNREALED_API FFbxDataConverter
+class FFbxDataConverter
 {
 public:
 	static void SetJointPostConversionMatrix(FbxAMatrix ConversionMatrix) { JointPostConversionMatrix = ConversionMatrix; }
@@ -490,35 +483,35 @@ public:
 	static const FbxAMatrix &GetAxisConversionMatrix() { return AxisConversionMatrix; }
 	static const FbxAMatrix &GetAxisConversionMatrixInv() { return AxisConversionMatrixInv; }
 
-	static FVector ConvertPos(FbxVector4 Vector);
-	static FVector ConvertDir(FbxVector4 Vector);
-	static FRotator ConvertEuler(FbxDouble3 Euler);
-	static FVector ConvertScale(FbxDouble3 Vector);
-	static FVector ConvertScale(FbxVector4 Vector);
-	static FRotator ConvertRotation(FbxQuaternion Quaternion);
-	static FVector ConvertRotationToFVect(FbxQuaternion Quaternion, bool bInvertRot);
-	static FQuat ConvertRotToQuat(FbxQuaternion Quaternion);
-	static float ConvertDist(FbxDouble Distance);
-	static bool ConvertPropertyValue(FbxProperty& FbxProperty, FProperty& UnrealProperty, union UPropertyValue& OutUnrealPropertyValue);
-	static FTransform ConvertTransform(FbxAMatrix Matrix);
-	static FMatrix ConvertMatrix(const FbxAMatrix& Matrix);
-	static FbxAMatrix ConvertMatrix(const FMatrix& Matrix);
+	static UNREALED_API FVector ConvertPos(FbxVector4 Vector);
+	static UNREALED_API FVector ConvertDir(FbxVector4 Vector);
+	static UNREALED_API FRotator ConvertEuler(FbxDouble3 Euler);
+	static UNREALED_API FVector ConvertScale(FbxDouble3 Vector);
+	static UNREALED_API FVector ConvertScale(FbxVector4 Vector);
+	static UNREALED_API FRotator ConvertRotation(FbxQuaternion Quaternion);
+	static UNREALED_API FVector ConvertRotationToFVect(FbxQuaternion Quaternion, bool bInvertRot);
+	static UNREALED_API FQuat ConvertRotToQuat(FbxQuaternion Quaternion);
+	static UNREALED_API float ConvertDist(FbxDouble Distance);
+	static UNREALED_API bool ConvertPropertyValue(FbxProperty& FbxProperty, FProperty& UnrealProperty, union UPropertyValue& OutUnrealPropertyValue);
+	static UNREALED_API FTransform ConvertTransform(FbxAMatrix Matrix);
+	static UNREALED_API FMatrix ConvertMatrix(const FbxAMatrix& Matrix);
+	static UNREALED_API FbxAMatrix ConvertMatrix(const FMatrix& Matrix);
 
 	/*
 	 * Convert fbx linear space color to sRGB FColor
 	 */
-	static FColor ConvertColor(FbxDouble3 Color);
+	static UNREALED_API FColor ConvertColor(FbxDouble3 Color);
 
-	static FbxVector4 ConvertToFbxPos(FVector Vector);
-	static FbxVector4 ConvertToFbxRot(FVector Vector);
-	static FbxVector4 ConvertToFbxScale(FVector Vector);
+	static UNREALED_API FbxVector4 ConvertToFbxPos(FVector Vector);
+	static UNREALED_API FbxVector4 ConvertToFbxRot(FVector Vector);
+	static UNREALED_API FbxVector4 ConvertToFbxScale(FVector Vector);
 	
 	/*
 	* Convert sRGB FColor to fbx linear space color
 	*/
-	static FbxDouble3   ConvertToFbxColor(FColor Color);
-	static FbxString	ConvertToFbxString(FName Name);
-	static FbxString	ConvertToFbxString(const FString& String);
+	static UNREALED_API FbxDouble3   ConvertToFbxColor(FColor Color);
+	static UNREALED_API FbxString	ConvertToFbxString(FName Name);
+	static UNREALED_API FbxString	ConvertToFbxString(const FString& String);
 
 	// FbxCamera with no rotation faces X with Y-up while ours faces X with Z-up so add a -90 degrees roll to compensate
 	static FRotator GetCameraRotation() { return FRotator(0.f, 0.f, -90.f); }
@@ -527,9 +520,9 @@ public:
 	static FRotator GetLightRotation() { return FRotator(0.f, 90.f, 0.f); }
 
 private:
-	static FbxAMatrix JointPostConversionMatrix;
-	static FbxAMatrix AxisConversionMatrix;
-	static FbxAMatrix AxisConversionMatrixInv;
+	static UNREALED_API FbxAMatrix JointPostConversionMatrix;
+	static UNREALED_API FbxAMatrix AxisConversionMatrix;
+	static UNREALED_API FbxAMatrix AxisConversionMatrixInv;
 };
 
 FBXImportOptions* GetImportOptions( class FFbxImporter* FbxImporter, UFbxImportUI* ImportUI, bool bShowOptionDialog, bool bIsAutomated, const FString& FullPath, bool& OutOperationCanceled, bool& OutImportAll, bool bIsObjFormat, const FString& InFilename, bool bForceImportType = false, EFBXImportType ImportType = FBXIT_StaticMesh);
@@ -628,6 +621,16 @@ public:
 		//read a new fbx file
 		TransformSettingsToFbxApply.Reset();
 	}
+
+	/**
+	 * The asset tool have a filter mecanism for ImportAsset, return true if the asset can be imported, false otherwise
+	 */
+	bool CanImportClass(UClass* Class) const;
+
+	/**
+	 * The asset tool have a filter mecanism for CreateAsset, return true if the asset can be created, false otherwise
+	 */
+	bool CanCreateClass(UClass* Class) const;
 
 	/**
 	 * Detect if the FBX file has skeletal mesh model. If there is deformer definition, then there is skeletal mesh.
@@ -1865,10 +1868,10 @@ private:
 
 
 /** message Logger for FBX. Saves all the messages and prints when it's destroyed */
-class UNREALED_API FFbxLogger
+class FFbxLogger
 {
-	FFbxLogger();
-	~FFbxLogger();
+	UNREALED_API FFbxLogger();
+	UNREALED_API ~FFbxLogger();
 
 	/** Error messages **/
 	TArray<TSharedRef<FTokenizedMessage>> TokenizedErrorMessages;
@@ -1885,7 +1888,7 @@ class UNREALED_API FFbxLogger
 * We add this only top level of functions where it needs to be handled
 * if the importer already has logger set, it won't set anymore
 */
-class UNREALED_API FFbxLoggerSetter
+class FFbxLoggerSetter
 {
 	class FFbxLogger Logger;
 	FFbxImporter * Importer;

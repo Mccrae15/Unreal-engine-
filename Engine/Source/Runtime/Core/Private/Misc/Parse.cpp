@@ -10,6 +10,7 @@
 #include "Containers/Set.h"
 #include "Internationalization/Text.h"
 #include "Misc/AsciiSet.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Guid.h"
 #include "Misc/OutputDeviceNull.h"
 #include "Misc/StringBuilder.h"
@@ -233,59 +234,74 @@ bool FParse::Value(
 	const TCHAR*	Match,
 	TCHAR*			Value,
 	int32			MaxLen,
-	bool			bShouldStopOnSeparator
+	bool			bShouldStopOnSeparator,
+	const TCHAR**	OptStreamGotTo
 )
 {
+	if (MaxLen == 0)
+	{
+		return false;
+	}
+	check(Value && MaxLen > 0);
+
 	bool bSuccess = false;
 	int32 MatchLen = FCString::Strlen(Match);
 
-	for (const TCHAR* Found = FCString::Strifind(Stream, Match, true); Found != nullptr; Found = FCString::Strifind(Found + MatchLen, Match, true))
+	if (OptStreamGotTo)
 	{
-		const TCHAR* Start = Found + MatchLen;
-
-		// Check for quoted arguments' string with spaces
-		// -Option="Value1 Value2"
-		//         ^~~~Start
-		bool bArgumentsQuoted = *Start == '"';
-
-		if (bArgumentsQuoted)
-		{
-			// Skip quote character if only params were quoted.
-			int32 QuoteCharactersToSkip = 1;
-			FCString::Strncpy(Value, Start + QuoteCharactersToSkip, MaxLen);
-
-			Value[MaxLen - 1] = TCHAR('\0');
-			TCHAR* Temp = FCString::Strstr( Value, TEXT("\x22") );
-			if (Temp != nullptr)
-			{
-				*Temp = TCHAR('\0');
-			}
-		}
-		else
-		{
-			// Skip initial whitespace
-			Start += FCString::Strspn(Start, TEXT(" \r\n\t"));
-
-			// Non-quoted string without spaces.
-			FCString::Strncpy( Value, Start, MaxLen );
-			Value[MaxLen - 1]= TCHAR('\0');
-			TCHAR* Temp;
-			Temp = FCString::Strstr( Value, TEXT(" ")  ); if( Temp ) *Temp = TCHAR('\0');
-			Temp = FCString::Strstr( Value, TEXT("\r") ); if( Temp ) *Temp = TCHAR('\0');
-			Temp = FCString::Strstr( Value, TEXT("\n") ); if( Temp ) *Temp = TCHAR('\0');
-			Temp = FCString::Strstr( Value, TEXT("\t") ); if( Temp ) *Temp = TCHAR('\0');
-			if (bShouldStopOnSeparator)
-			{
-				Temp = FCString::Strstr( Value, TEXT(",")  ); if( Temp ) *Temp = TCHAR('\0');
-				Temp = FCString::Strstr( Value, TEXT(")")  ); if( Temp ) *Temp = TCHAR('\0');
-			}
-		}
-
-		bSuccess = true;
-		break;
+		*OptStreamGotTo = nullptr;
 	}
 
-	return bSuccess;
+	const TCHAR* FoundInStream = FCString::Strifind(Stream, Match, true);
+	if (FoundInStream == nullptr)
+	{
+		Value[0] = TCHAR('\0');
+		return false;
+	}
+
+	const TCHAR* ValueStartInStream = FoundInStream + MatchLen;
+	const TCHAR* ValueEndInStream;
+
+	// Check for quoted arguments' string with spaces
+	// -Option="Value1 Value2"
+	//         ^~~~Start
+	const bool bArgumentsQuoted = *ValueStartInStream == '"';
+
+	if (bArgumentsQuoted)
+	{
+		// Skip quote character if only params were quoted.
+		ValueStartInStream += 1;
+		ValueEndInStream = FCString::Strstr(ValueStartInStream, TEXT("\x22"));
+
+		if (ValueEndInStream == nullptr)
+		{
+			// this should probably log a warning if bArgumentsQuoted is true, as we started with a '"' and didn't find the terminating one.
+			ValueEndInStream = FoundInStream + FCString::Strlen(FoundInStream);
+		}
+	}
+	else
+	{
+		// Skip initial whitespace
+		const TCHAR* WhiteSpaceChars = TEXT(" \r\n\t");
+		ValueStartInStream += FCString::Strspn(ValueStartInStream, WhiteSpaceChars);
+
+		// Non-quoted string without spaces.
+		const TCHAR* TerminatingChars = bShouldStopOnSeparator ? TEXT(",) \r\n\t") : WhiteSpaceChars;
+		ValueEndInStream = ValueStartInStream + FCString::Strcspn(ValueStartInStream, TerminatingChars);
+	}
+
+	int32 ValueLength = FMath::Min<int32>(MaxLen - 1, UE_PTRDIFF_TO_INT32(ValueEndInStream - ValueStartInStream));
+	// It is possible for ValueLength to be 0.
+	// FCString::Strncpy asserts that its copying at least 1 char, memcpy has no such constraint.
+	FMemory::Memcpy(Value, ValueStartInStream, sizeof(Value[0]) * ValueLength);
+	Value[ValueLength] = TCHAR('\0');
+
+	if (OptStreamGotTo)
+	{
+		*OptStreamGotTo = ValueEndInStream;
+	}
+
+	return true;
 }
 
 //
@@ -317,7 +333,7 @@ bool FParse::Param( const TCHAR* Stream, const TCHAR* Param )
 // 
 // Parse a string.
 //
-bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, FString& Value, bool bShouldStopOnSeparator )
+bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, FString& Value, bool bShouldStopOnSeparator, const TCHAR** OptStreamGotTo)
 {
 	if (!Stream)
 	{
@@ -331,7 +347,7 @@ bool FParse::Value( const TCHAR* Stream, const TCHAR* Match, FString& Value, boo
 		ValueCharArray.AddUninitialized(StreamLen + 1);
 		ValueCharArray[0] = TCHAR('\0');
 
-		if( FParse::Value(Stream, Match, ValueCharArray.GetData(), ValueCharArray.Num(), bShouldStopOnSeparator) )
+		if( FParse::Value(Stream, Match, ValueCharArray.GetData(), ValueCharArray.Num(), bShouldStopOnSeparator, OptStreamGotTo) )
 		{
 			Value = FString(ValueCharArray.GetData());
 			return true;
@@ -737,6 +753,8 @@ bool FParse::Command( const TCHAR** Stream, const TCHAR* Match, bool bParseMight
 			{
 				(*Stream)++;
 			}
+
+			FCoreDelegates::OnNamedCommandParsed.Broadcast(Match);
 
 			return true; // Success.
 		}
@@ -1329,3 +1347,263 @@ bool FParseLineExtendedTest::RunTest(const FString& Parameters)
 }
 
 #endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+
+
+namespace 
+{
+struct FGrammarBasedParser 
+{
+	TFunctionRef<void(FStringView, FStringView)> OnCmd;
+	const TCHAR* Cursor;
+	FParse::EGrammarBasedParseFlags BehaviourFlags;
+
+	FParse::FGrammarBasedParseResult Result;
+
+	FGrammarBasedParser(TFunctionRef<void(FStringView, FStringView)> InOnCmd, const TCHAR* InCursor, FParse::EGrammarBasedParseFlags InBehaviourFlags) : OnCmd{ MoveTemp(InOnCmd) }, Cursor{ InCursor }, BehaviourFlags{ InBehaviourFlags }, Result{} {}
+	
+	const TCHAR* SkipWhitespace() 
+	{
+		while (FChar::IsWhitespace(*Cursor))
+		{
+			++Cursor;
+		}
+		return Cursor;
+	}
+
+	bool MatchChar(TCHAR Char)
+	{
+		if (*Cursor == Char)
+		{
+			++Cursor;
+			return true;
+		}
+		return false;
+	}
+
+	bool MatchBetween(TCHAR Min, TCHAR Max)
+	{
+		if (Min <= *Cursor && *Cursor <= Max)
+		{
+			++Cursor;
+			return true;
+		}
+		return false;
+	}
+
+	bool MatchValueChar()
+	{
+		if (!FChar::IsWhitespace(*Cursor)
+			&& (*Cursor != TCHAR('"')))
+		{
+			++Cursor;
+			return true;
+		}
+		return false;
+	}
+
+	bool IsAt(TCHAR Char) const
+	{
+		return *Cursor == Char;
+	}
+
+	bool IsEnd() const
+	{
+		return *Cursor == TCHAR('\0');
+	}
+
+	void SetError(FParse::EGrammarBasedParseErrorCode Code, const TCHAR* At)
+	{
+		Result.At = At;
+		Result.ErrorCode = Code;
+	}
+
+	void SetError(FParse::EGrammarBasedParseErrorCode Code)
+	{
+		SetError(Code, Cursor);
+	}
+
+	bool HasError() const
+	{
+		return Result.ErrorCode > FParse::EGrammarBasedParseErrorCode::NotRun;
+	}
+
+	template<typename OperationType>
+	void ZeroOrMore(OperationType&& ParseExpression)
+	{
+		for (;;) 
+		{
+			if (HasError() || IsEnd())
+			{
+				break;
+			}
+
+			if (!ParseExpression()) 
+			{
+				break;
+			}
+		}
+	}
+
+	FStringView ParseLine()
+	{
+		const TCHAR* Start = SkipWhitespace();
+		ZeroOrMore([this]() 
+		{
+			FStringView ResultCmd = ParseCmd();
+			return ResultCmd.Len() != 0;
+		});
+
+		if (!HasError())
+		{
+			SetError(FParse::EGrammarBasedParseErrorCode::Succeeded);
+			return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+		}
+
+		return {};
+	}
+
+	FStringView ParseCmd()
+	{
+		const TCHAR* Start = Cursor;
+
+		if (MatchChar(TCHAR('"')))
+		{
+			const TCHAR* QuoteAt = Start;
+
+			if (!(BehaviourFlags & FParse::EGrammarBasedParseFlags::AllowQuotedCommands))
+			{
+				SetError(FParse::EGrammarBasedParseErrorCode::DisallowedQuotedCommand, QuoteAt);
+				return {};
+			}
+			
+			Start = Cursor;
+			ZeroOrMore([this]()
+			{
+				SkipWhitespace();
+				if (IsAt(TCHAR('"')))
+				{
+					return false;
+				}
+				FStringView ResultCmd = ParseCmd();
+				return ResultCmd.Len() != 0;
+			});
+
+			if (!MatchChar(TCHAR('"')))
+			{
+				SetError(FParse::EGrammarBasedParseErrorCode::UnBalancedQuote, QuoteAt);
+				return {};
+			}
+			return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+		}
+
+		FStringView Item = ParseKey();
+		if (HasError())
+		{
+			return {};
+		}
+		SkipWhitespace();
+		if (MatchChar(TCHAR('=')))
+		{
+			FStringView ItemValue = ParseValue();
+			if (HasError())
+			{
+				return {};
+			}
+			OnCmd(Item, ItemValue);
+		}
+		else
+		{
+			if (Item.Len())
+			{
+				OnCmd(Item, FStringView{});
+			}
+			else
+			{
+				// If there is no Key then we will try consuming a value, if we can parse one
+				FStringView ItemValue = ParseValue();
+				if (HasError())
+				{
+					return {};
+				}
+				OnCmd(FStringView{}, ItemValue);
+			}
+		}
+		return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+	}
+
+	FStringView ParseKey()
+	{
+		const TCHAR* Start = SkipWhitespace();
+		if (!MatchChar(TCHAR('/')))
+		{
+			MatchChar(TCHAR('-'));
+			MatchChar(TCHAR('-'));
+		}
+		ParseIdent();
+		return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+	}
+
+	FStringView ParseValue()
+	{
+		const TCHAR* Start = SkipWhitespace();
+
+		// String literal
+		if (MatchChar(TCHAR('"')))
+		{
+			while (*Cursor && (TCHAR('"') != *Cursor))
+			{
+				++Cursor;
+			}
+
+			if (!MatchChar(TCHAR('"')))
+			{
+				SetError(FParse::EGrammarBasedParseErrorCode::UnBalancedQuote, Start);
+				return {};
+			}
+			return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+		}
+
+		// Some other word like value
+		// or maybe a file path
+		ZeroOrMore([this]()
+		{
+			return MatchValueChar();
+		});
+		return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+	}
+
+	
+
+	FStringView ParseIdent()
+	{
+		const TCHAR* Start = Cursor;
+		// [_a-zA-Z]
+		if (FChar::IsAlpha(*Cursor) || (*Cursor == TCHAR('_')))
+		{
+			// [_a-zA-Z0-9.]*
+			ZeroOrMore([this]()
+			{
+				++Cursor;
+				return FChar::IsAlnum(*Cursor) || IsAt(TCHAR('_')) || IsAt(TCHAR('.'));
+			});
+		}
+		return FStringView{ Start,  UE_PTRDIFF_TO_INT32(Cursor - Start) };
+	}
+
+public:
+	static FParse::FGrammarBasedParseResult DoParse(const TCHAR* Stream, TFunctionRef<void(FStringView, FStringView)> OnCommandCallback, FParse::EGrammarBasedParseFlags Flags)
+	{
+		// NOTE: if you modify this parser, please update the Grammar in the header.
+		FGrammarBasedParser Parser{ OnCommandCallback, Stream, Flags };
+		Parser.ParseLine();
+		return MoveTemp(Parser.Result);
+	}
+};
+
+}
+
+FParse::FGrammarBasedParseResult FParse::GrammarBasedCLIParse(const TCHAR* Stream, TFunctionRef<void(FStringView, FStringView)> OnCommandCallback, EGrammarBasedParseFlags Flags)
+{
+	return FGrammarBasedParser::DoParse(Stream, MoveTemp(OnCommandCallback), Flags);
+}

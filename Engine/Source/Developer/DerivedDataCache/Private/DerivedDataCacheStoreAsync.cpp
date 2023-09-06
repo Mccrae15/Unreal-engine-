@@ -22,10 +22,11 @@ namespace UE::DerivedData
  *
  * Puts can be stored in a memory cache while they are in flight.
  */
-class FCacheStoreAsync : public ILegacyCacheStore
+class FCacheStoreAsync final : public ILegacyCacheStore
 {
 public:
-	FCacheStoreAsync(ILegacyCacheStore* InnerCache, ECacheStoreFlags InnerFlags, IMemoryCacheStore* MemoryCache);
+	FCacheStoreAsync(ILegacyCacheStore* InnerCache, IMemoryCacheStore* MemoryCache, bool bDeleteInnerCache);
+	~FCacheStoreAsync() final;
 
 	virtual void Put(
 		TConstArrayView<FCachePutRequest> Requests,
@@ -114,27 +115,31 @@ private:
 	ILegacyCacheStore* InnerCache;
 	IMemoryCacheStore* MemoryCache;
 	FDerivedDataCacheUsageStats UsageStats;
-	ECacheStoreFlags InnerFlags;
+	bool bDeleteInnerCache;
 };
 
-FCacheStoreAsync::FCacheStoreAsync(ILegacyCacheStore* InInnerCache, ECacheStoreFlags InInnerFlags, IMemoryCacheStore* InMemoryCache)
+FCacheStoreAsync::FCacheStoreAsync(ILegacyCacheStore* InInnerCache, IMemoryCacheStore* InMemoryCache, bool bInDeleteInnerCache)
 	: InnerCache(InInnerCache)
 	, MemoryCache(InMemoryCache)
-	, InnerFlags(InInnerFlags)
+	, bDeleteInnerCache(bInDeleteInnerCache)
 {
 	check(InnerCache);
 }
 
+FCacheStoreAsync::~FCacheStoreAsync()
+{
+	if (bDeleteInnerCache)
+	{
+		delete InnerCache;
+	}
+}
+
 void FCacheStoreAsync::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 {
-	OutNode = {TEXT("Async"), TEXT(""), EnumHasAnyFlags(InnerFlags, ECacheStoreFlags::Local)};
+	OutNode = {TEXT("Async"), TEXT(""), /*bIsLocal*/ true};
 	OutNode.UsageStats.Add(TEXT(""), UsageStats);
 
 	InnerCache->LegacyStats(OutNode.Children.Add_GetRef(MakeShared<FDerivedDataCacheStatsNode>()).Get());
-	if (MemoryCache)
-	{
-		MemoryCache->LegacyStats(OutNode.Children.Add_GetRef(MakeShared<FDerivedDataCacheStatsNode>()).Get());
-	}
 }
 
 template <typename RequestType, typename OnCompleteType, typename OnExecuteType>
@@ -183,9 +188,9 @@ void FCacheStoreAsync::Execute(
 		});
 }
 
-ILegacyCacheStore* CreateCacheStoreAsync(ILegacyCacheStore* InnerCache, ECacheStoreFlags InnerFlags, IMemoryCacheStore* MemoryCache)
+ILegacyCacheStore* CreateCacheStoreAsync(ILegacyCacheStore* InnerCache, IMemoryCacheStore* MemoryCache, bool bDeleteInnerCache)
 {
-	return new FCacheStoreAsync(InnerCache, InnerFlags, MemoryCache);
+	return new FCacheStoreAsync(InnerCache, MemoryCache, bDeleteInnerCache);
 }
 
 } // UE::DerivedData

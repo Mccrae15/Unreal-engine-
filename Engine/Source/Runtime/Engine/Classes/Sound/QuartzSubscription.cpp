@@ -2,6 +2,16 @@
 
 #include "Sound/QuartzSubscription.h"
 #include "Quartz/QuartzSubsystem.h"
+#include "HAL/IConsoleManager.h"
+
+
+static int32 DecrementSlotIndexOnStartedCvar = 1;
+FAutoConsoleVariableRef CVarDecrementSlotIndexOnStarted(
+	TEXT("au.Quartz.DecrementSlotIndexOnStarted"),
+	DecrementSlotIndexOnStartedCvar,
+	TEXT("Defaults to 1 to enable the delegate leak fix.  Set to 0 to revert to pre-fix behavior.\n")
+	TEXT("1: New Behavior, 0: Old Behavior"),
+	ECVF_Default);
 
 namespace Audio
 {
@@ -12,13 +22,13 @@ namespace Audio
 	}
 } // namespace Audio
 
+FQuartzTickableObject::FQuartzTickableObject()
+{}
+
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FQuartzTickableObject::~FQuartzTickableObject()
 {
-	if(const TSharedPtr<FQuartzTickableObjectsManager> ObjManagerPtr = TickableObjectManagerPtr.Pin())
-	{
-		ObjManagerPtr->UnsubscribeFromQuartzTick(this);
-	}
+	QuartzUnsubscribe();
 }
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
@@ -38,17 +48,14 @@ FQuartzTickableObject* FQuartzTickableObject::Init(UWorld* InWorldPtr)
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	UQuartzSubsystem* QuartzSubsystemPtr = UQuartzSubsystem::Get(InWorldPtr);
-	if(ensure(QuartzSubsystemPtr))
-	{
-		TickableObjectManagerPtr = QuartzSubsystemPtr->GetTickableObjectManager();
-
-		if(TSharedPtr<FQuartzTickableObjectsManager> ObjManagerPtr = TickableObjectManagerPtr.Pin())
-		{
-			ObjManagerPtr->SubscribeToQuartzTick(this);
-		}
-	}
+	QuartzSubscriptionToken.Subscribe(this, QuartzSubsystemPtr);
 
 	return this;
+}
+
+void FQuartzTickableObject::QuartzUnsubscribe()
+{
+	QuartzSubscriptionToken.Unsubscribe();
 }
 
 int32 FQuartzTickableObject::AddCommandDelegate(const FOnQuartzCommandEventBP& InDelegate)
@@ -80,8 +87,8 @@ UQuartzSubsystem* FQuartzTickableObject::GetQuartzSubsystem() const
 void FQuartzTickableObject::ExecCommand(const Audio::FQuartzQuantizedCommandDelegateData& Data)
 {
 	checkSlow(Data.DelegateSubType < EQuartzCommandDelegateSubType::Count);
-
-	if(const TSharedPtr<FQuartzTickableObjectsManager> ObjManagerPtr = TickableObjectManagerPtr.Pin())
+	
+	if(const TSharedPtr<FQuartzTickableObjectsManager> ObjManagerPtr = QuartzSubscriptionToken.GetTickableObjectManager())
 	{
 		ObjManagerPtr->PushLatencyTrackerResult(Data.RequestRecieved());
 	}
@@ -105,13 +112,14 @@ void FQuartzTickableObject::ExecCommand(const Audio::FQuartzQuantizedCommandDele
 		}
 
 		// (end of a command)
-		if (Data.DelegateSubType == EQuartzCommandDelegateSubType::CommandOnCanceled)
+		bool bShouldDecrement = Data.DelegateSubType == EQuartzCommandDelegateSubType::CommandOnCanceled;
+		bShouldDecrement |= (DecrementSlotIndexOnStartedCvar && Data.DelegateSubType == EQuartzCommandDelegateSubType::CommandOnStarted);
+			
+		// are all the commands for this delegate done?
+		if (bShouldDecrement && (GameThreadEntry.RefCount.Decrement() == 0))
 		{
-			// are all the commands done?
-			if (GameThreadEntry.RefCount.Decrement() == 0)
-			{
-				GameThreadEntry.MulticastDelegate.Clear();
-			}
+			// free up the slot for new subscriptions on this clock handle
+			GameThreadEntry.MulticastDelegate.Clear();
 		}
 	}
 
@@ -121,7 +129,7 @@ void FQuartzTickableObject::ExecCommand(const Audio::FQuartzQuantizedCommandDele
 
 void FQuartzTickableObject::ExecCommand(const Audio::FQuartzMetronomeDelegateData& Data)
 {
-	if(const TSharedPtr<FQuartzTickableObjectsManager> ObjManagerPtr = TickableObjectManagerPtr.Pin())
+	if(const TSharedPtr<FQuartzTickableObjectsManager> ObjManagerPtr = QuartzSubscriptionToken.GetTickableObjectManager())
 	{
 		ObjManagerPtr->PushLatencyTrackerResult(Data.RequestRecieved());
 	}

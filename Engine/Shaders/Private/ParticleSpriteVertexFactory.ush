@@ -13,6 +13,7 @@
 #define USE_PARTICLE_VELOCITY (NEEDS_PARTICLE_VELOCITY)
 #define USE_PARTICLE_TIME (NEEDS_PARTICLE_TIME)
 #define USE_PARTICLE_SIZE (NEEDS_PARTICLE_SIZE)
+#define USE_PARTICLE_SPRITE_ROTATION (NEEDS_PARTICLE_SPRITE_ROTATION)
 
 // We don't compute a tangent basis in ES3.1 to save shader instructions.
 #define NEEDS_TANGENT_BASIS (FEATURE_LEVEL >= FEATURE_LEVEL_SM4)
@@ -85,6 +86,10 @@ struct FVertexFactoryInterpolantsVSToPS
 	float2 ParticleSize : PARTICLE_SIZE;
 #endif
 
+#if USE_PARTICLE_SPRITE_ROTATION
+	float ParticleSpriteRotation : PARTICLE_SPRITE_ROTATION;
+#endif
+
 #if INSTANCED_STEREO
 	nointerpolation uint EyeIndex : PACKED_EYE_INDEX;
 #endif
@@ -115,6 +120,8 @@ struct FVertexFactoryIntermediates
 	float3 TangentRight;
 	/** The color of the sprite. */
 	float4 Color;
+	/** The delta between previous and current particle locations. */
+	float3 ParticlePrevToCurrDelta;
 	/** The velocity of the particle, XYZ: direction, W: speed. */
 	float4 ParticleVelocity;
 	/** Dynamic parameter. */
@@ -127,6 +134,9 @@ struct FVertexFactoryIntermediates
 	float3x3 TangentToLocal;
 	/** Size of the particle */
 	float2 ParticleSize;
+#if USE_PARTICLE_SPRITE_ROTATION
+	float ParticleSpriteRotation : PARTICLE_SPRITE_ROTATION;
+#endif
 	/** Cached primitive and instance data */
 	FSceneDataIntermediates SceneData;
 };
@@ -241,6 +251,10 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 	Result.Particle.Size = Interpolants.ParticleSize;
 #endif
 
+#if USE_PARTICLE_SPRITE_ROTATION
+	Result.Particle.SpriteRotation = Interpolants.ParticleSpriteRotation;
+#endif
+
 	Result.TwoSidedSign = 1;
 	return Result;
 }
@@ -248,7 +262,7 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 /** Converts from vertex factory specific input to a FMaterialVertexParameters, which is used by vertex shader material inputs. */
 FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float3 WorldPosition, float3x3 TangentToLocal)
 {
-	FMaterialVertexParameters Result = (FMaterialVertexParameters)0;
+	FMaterialVertexParameters Result = MakeInitializedMaterialVertexParameters();
 	Result.SceneData = Intermediates.SceneData;
 	Result.WorldPosition = WorldPosition;
 	Result.VertexColor = Input.Color;
@@ -302,6 +316,11 @@ FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input,
 #if USE_PARTICLE_SIZE
 	Result.Particle.Size = Intermediates.ParticleSize;
 #endif
+
+#if USE_PARTICLE_SPRITE_ROTATION
+	Result.Particle.SpriteRotation = Intermediates.ParticleSpriteRotation;
+#endif
+
 	return Result;
 }
 
@@ -310,7 +329,7 @@ float3 SafeNormalize(float3 V)
 	return V * rsqrt(max(dot(V,V),0.00000001));
 }
 
-void GetTangents(FVertexFactoryInput Input, FLWCVector3 WorldPosition, FLWCVector3 OldWorldPosition, out float3 OutRight, out float3 OutUp)
+void GetTangents(FLWCVector3 WorldPosition, FLWCVector3 OldWorldPosition, float SpriteRotation, out float3 OutRight, out float3 OutUp)
 {
 	// Select camera up/right vectors.
 	float3 ResolvedViewRight = lerp(ResolvedView.ViewRight, ResolvedView.HMDViewNoRollRight, SpriteVF.RemoveHMDRoll);
@@ -367,9 +386,6 @@ void GetTangents(FVertexFactoryInput Input, FLWCVector3 WorldPosition, FLWCVecto
 	// Determine the angle of rotation.
 	float SinRotation; // = 0
 	float CosRotation; // = 1
-	const float RotationScale = SpriteVF.RotationScale;
-	const float RotationBias = SpriteVF.RotationBias;
-	const float SpriteRotation = Input.SizeRotSubImage.z * RotationScale + RotationBias;
 	sincos(SpriteRotation, SinRotation, CosRotation);
 
 	// Rotate the sprite to determine final tangents.
@@ -478,9 +494,11 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	FLWCVector3 ParticleOldWorldPosition = LWCAdd(LWCMultiply(Input.OldPosition.xyz, GetPrimitiveDataFromUniformBuffer().LocalToWorld), LWCTileOffset);
 	Intermediates.ParticleWorldPosition = ParticleWorldPosition;
 
+	const float SpriteRotation = Input.SizeRotSubImage.z * SpriteVF.RotationScale + SpriteVF.RotationBias;
+
 	// Tangents.
 	float3 Right,Up;
-	GetTangents(Input, ParticleWorldPosition, ParticleOldWorldPosition, Right, Up);
+	GetTangents(ParticleWorldPosition, ParticleOldWorldPosition, SpriteRotation, Right, Up);
 	Intermediates.TangentUp = Up;
 	Intermediates.TangentRight = Right;
 
@@ -533,11 +551,17 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 #endif
 #endif
 
-#if USE_PARTICLE_VELOCITY
-	float3 ParticleVelocity = LWCToFloat(LWCSubtract(ParticleWorldPosition, ParticleOldWorldPosition)) * SpriteVF.InvDeltaSeconds;
-	Intermediates.ParticleVelocity.xyz = normalize(ParticleVelocity);
-	Intermediates.ParticleVelocity.w = length(ParticleVelocity);
+#if !USE_PARTICLE_VELOCITY
+	if (SpriteVF.UseVelocityForMotionBlur > 0.0f)
 #endif
+	{
+		Intermediates.ParticlePrevToCurrDelta = LWCToFloat(LWCSubtract(ParticleWorldPosition, ParticleOldWorldPosition));
+	#if USE_PARTICLE_VELOCITY
+		float3 ParticleVelocity = Intermediates.ParticlePrevToCurrDelta * SpriteVF.InvDeltaSeconds;
+		Intermediates.ParticleVelocity.xyz = normalize(ParticleVelocity);
+		Intermediates.ParticleVelocity.w = length(ParticleVelocity);
+	#endif
+	}
 
 #if USE_PARTICLE_TIME
 	Intermediates.RelativeTime = Input.Position.w;
@@ -553,6 +577,10 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 
 #if USE_PARTICLE_SIZE
 	Intermediates.ParticleSize = Size;
+#endif
+
+#if USE_PARTICLE_SPRITE_ROTATION
+	Intermediates.ParticleSpriteRotation = SpriteRotation;
 #endif
 
 	return Intermediates;
@@ -660,6 +688,10 @@ FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFacto
 	Interpolants.ParticleSize = Intermediates.ParticleSize;
 #endif
 
+#if USE_PARTICLE_SPRITE_ROTATION
+	Interpolants.ParticleSpriteRotation = Intermediates.ParticleSpriteRotation;
+#endif
+
 #if INSTANCED_STEREO
 	Interpolants.EyeIndex = 0;
 #endif
@@ -669,7 +701,9 @@ FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFacto
 
 float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
-	return VertexFactoryGetWorldPosition(Input, Intermediates);
+	float4 Position = VertexFactoryGetWorldPosition(Input, Intermediates);
+	Position.xyz -= Intermediates.ParticlePrevToCurrDelta * SpriteVF.UseVelocityForMotionBlur;
+	return Position;
 }
 
 /**

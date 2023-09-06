@@ -136,39 +136,6 @@ FString FPartyInvitationRecipient::ToDebugString() const
 	return FString::Printf(TEXT("Id=[%s], PlatformData=[%s]"), *Id->ToDebugString(), *PlatformData);
 }
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-FDelegateHandle IOnlinePartySystem::AddOnPartyInviteReceivedDelegate_Handle(const FOnPartyInviteReceivedDelegate& Delegate)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	auto DeprecationHelperLambda = [Delegate](const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& Invitation)
-	{
-		Delegate.ExecuteIfBound(LocalUserId, *Invitation.GetPartyId(), *Invitation.GetSourceUserId());
-	};
-	return OnPartyInviteReceivedExDelegates.Add(FOnPartyInviteReceivedExDelegate::CreateLambda(DeprecationHelperLambda));
-}
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-FDelegateHandle IOnlinePartySystem::AddOnPartyInviteRemovedDelegate_Handle(const FOnPartyInviteRemovedDelegate& Delegate)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	auto DeprecationHelperLambda = [Delegate](const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& Invitation, EPartyInvitationRemovedReason Reason)
-	{
-		Delegate.ExecuteIfBound(LocalUserId, *Invitation.GetPartyId(), *Invitation.GetSourceUserId(), Reason);
-	};
-	return OnPartyInviteRemovedExDelegates.Add(FOnPartyInviteRemovedExDelegate::CreateLambda(DeprecationHelperLambda));
-}
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-void IOnlinePartySystem::QueryPartyJoinability(const FUniqueNetId& LocalUserId, const IOnlinePartyJoinInfo& OnlinePartyJoinInfo, const FOnQueryPartyJoinabilityComplete& Delegate)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	// Default implementation will call the ex version.
-	QueryPartyJoinability(LocalUserId, OnlinePartyJoinInfo, FOnQueryPartyJoinabilityCompleteEx::CreateLambda([Delegate](const FUniqueNetId& LambdaLocalUserId, const FOnlinePartyId& LambdaPartyId, const FQueryPartyJoinabilityResult& QueryPartyJoinabilityResult)
-	{
-		Delegate.ExecuteIfBound(LambdaLocalUserId, LambdaPartyId, QueryPartyJoinabilityResult.EnumResult, QueryPartyJoinabilityResult.SubCode);
-	}));
-}
-
 bool FPartyConfiguration::operator==(const FPartyConfiguration& Other) const
 {
 	return JoinRequestAction == Other.JoinRequestAction &&
@@ -251,6 +218,23 @@ EPartyState EPartyStateFromString(const TCHAR* Value)
 		return EPartyState::CleanUp;
 	}
 	return EPartyState::None;
+}
+
+const TCHAR* ToString(const EMemberConnectionStatus Value)
+{
+	switch (Value)
+	{
+	case EMemberConnectionStatus::Uninitialized:
+		return TEXT("Uninitialized");
+	case EMemberConnectionStatus::Disconnected:
+		return TEXT("Disconnected");
+	case EMemberConnectionStatus::Initializing:
+		return TEXT("Initializing");
+	case EMemberConnectionStatus::Connected:
+		return TEXT("Connected");
+	}
+	checkNoEntry();
+	return TEXT("Uninitialized");
 }
 
 const TCHAR* ToString(const EMemberExitedReason Value)

@@ -3,7 +3,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "IO/IoHash.h"
 #include "ImageCore.h"
 #include "Interfaces/ITextureFormat.h"
 
@@ -51,7 +50,7 @@ struct TEXTUREBUILDUTILITIES_API FTextureBuildMetadata
 	
 	// Digests of the data at various processing stages so we can track down determinism issues
 	// that arise.
-	FIoHash PreEncodeMipsHash;
+	uint64 PreEncodeMipsHash = 0;
 
 	FCbObject ToCompactBinaryWithDefaults() const;
 	FTextureBuildMetadata(FCbObject InCbObject);
@@ -65,12 +64,17 @@ TEXTUREBUILDUTILITIES_API bool TextureFormatIsHdr(FName const& InName);
 // i.e. PLAT_BLAH_AutoDXT returns AutoDXT and writes BLAH_ to OutPrefix.
 TEXTUREBUILDUTILITIES_API const FName TextureFormatRemovePrefixFromName(FName const& InName, FName& OutPrefix);
 
+// removes platform prefix but leaves other custom prefixes :
+TEXTUREBUILDUTILITIES_API const FName TextureFormatRemovePlatformPrefixFromName(FName const& InName);
+
 FORCEINLINE const FName TextureFormatRemovePrefixFromName(FName const& InName)
 {
 	FName OutPrefix;
 	return TextureFormatRemovePrefixFromName(InName,OutPrefix);
 }
 
+// Get the format to use for output of the VT Intermediate stage, cutting into tiles and processing
+//	  the next step will then encode from this format to the desired output format
 TEXTUREBUILDUTILITIES_API ERawImageFormat::Type GetVirtualTextureBuildIntermediateFormat(const FTextureBuildSettings& BuildSettings);
 
 } // namespace TextureBuildUtilities

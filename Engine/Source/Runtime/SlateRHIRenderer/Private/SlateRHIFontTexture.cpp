@@ -12,7 +12,7 @@ FSlateFontTextureRHIResource::FSlateFontTextureRHIResource(uint32 InWidth, uint3
 {
 }
 
-void FSlateFontTextureRHIResource::InitDynamicRHI()
+void FSlateFontTextureRHIResource::InitRHI(FRHICommandListBase&)
 {
 	check( IsInRenderingThread() );
 
@@ -23,9 +23,11 @@ void FSlateFontTextureRHIResource::InitDynamicRHI()
 
 		check( !IsValidRef( ShaderResource) );
 
+		const static FLazyName ClassName(TEXT("FSlateFontTextureRHIResource"));
 		FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("FSlateFontTextureRHIResource"), Width, Height, PixelFormat)
-			.SetFlags(ETextureCreateFlags::Dynamic);
+			.SetFlags(ETextureCreateFlags::Dynamic)
+			.SetClassName(ClassName);
 
 		if (!bIsGrayscale)
 		{
@@ -71,7 +73,7 @@ void FSlateFontTextureRHIResource::InitDynamicRHI()
 	}
 }
 
-void FSlateFontTextureRHIResource::ReleaseDynamicRHI()
+void FSlateFontTextureRHIResource::ReleaseRHI()
 {
 	check( IsInRenderingThread() );
 
@@ -116,7 +118,7 @@ void FSlateFontAtlasRHI::ConditionalUpdateTexture()
 	{
 		if (IsInRenderingThread())
 		{
-			FontTexture->InitResource();
+			FontTexture->InitResource(FRHICommandListImmediate::Get());
 
 			uint32 DestStride;
 			uint8* TempData = (uint8*)RHILockTexture2D( FontTexture->GetTypedResource(), 0, RLM_WriteOnly, /*out*/ DestStride, false );
@@ -151,7 +153,7 @@ FSlateFontTextureRHI::FSlateFontTextureRHI(const uint32 InWidth, const uint32 In
 {
 	if (IsInRenderingThread())
 	{
-		FontTexture->InitResource();
+		FontTexture->InitResource(FRHICommandListImmediate::Get());
 		UpdateTextureFromSource(InWidth, InHeight, InRawData);
 	}
 	else

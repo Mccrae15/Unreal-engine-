@@ -90,6 +90,11 @@ void UControlRigComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 		ValidateMappingData();
 	}
 }
+
+void UControlRigComponent::PostLoad()
+{
+	Super::PostLoad();
+}
 #endif
 
 void UControlRigComponent::BeginDestroy()
@@ -170,7 +175,8 @@ void UControlRigComponent::OnUnregister()
 			{
 				if (Pair.Key->IsValidLowLevel() &&
 					!Pair.Key->HasAnyFlags(RF_BeginDestroyed) &&
-					IsValid(Pair.Key))
+					IsValid(Pair.Key) &&
+					!Pair.Key->IsUnreachable())
 				{
 					Pair.Value.Apply(Pair.Key);
 				}
@@ -253,14 +259,14 @@ FBoxSphereBounds UControlRigComponent::CalcBounds(const FTransform& LocalToWorld
 		const FTransform Transform = GetComponentToWorld();
 
 		// Get bounding box for bones
-		URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
-		check(Hierarchy);
-
-		Hierarchy->ForEach<FRigTransformElement>([&BBox, Transform, Hierarchy](FRigTransformElement* TransformElement) -> bool
+		if (URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
 		{
-			BBox += Transform.TransformPosition(Hierarchy->GetTransform(TransformElement, ERigTransformType::CurrentGlobal).GetLocation());
-			return true;
-        });
+			Hierarchy->ForEach<FRigTransformElement>([&BBox, Transform, Hierarchy](FRigTransformElement* TransformElement) -> bool
+			{
+				BBox += Transform.TransformPosition(Hierarchy->GetTransform(TransformElement, ERigTransformType::CurrentGlobal).GetLocation());
+				return true;
+			});
+		}
 	}
 
 	if (BBox.IsValid)
@@ -643,9 +649,9 @@ void UControlRigComponent::AddMappedSkeletalMesh(USkeletalMeshComponent* Skeleta
 		{
 			if (const USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 			{
-				CR->GetHierarchy()->ForEach<FRigBoneElement>([Skeleton, &BonesToMap](FRigBoneElement* BoneElement) -> bool
+				CR->GetHierarchy()->ForEach<FRigBoneElement>([SkeletalMeshComponent, &BonesToMap](FRigBoneElement* BoneElement) -> bool
 				{
-					if (Skeleton->GetReferenceSkeleton().FindBoneIndex(BoneElement->GetName()) != INDEX_NONE)
+					if (SkeletalMeshComponent->GetBoneIndex(BoneElement->GetName()) != INDEX_NONE)
 					{
 						FControlRigComponentMappedBone BoneToMap;
 						BoneToMap.Source = BoneElement->GetName();
@@ -671,18 +677,10 @@ void UControlRigComponent::AddMappedSkeletalMesh(USkeletalMeshComponent* Skeleta
 			{
 				CR->GetHierarchy()->ForEach<FRigCurveElement>([Skeleton, &CurvesToMap](FRigCurveElement* CurveElement) -> bool
                 {
-                    const FSmartNameMapping* CurveNameMapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-					if (CurveNameMapping)
-					{
-						FSmartName SmartName;
-						if (CurveNameMapping->FindSmartName(CurveElement->GetName(), SmartName))
-						{
-							FControlRigComponentMappedCurve CurveToMap;
-							CurveToMap.Source = CurveElement->GetName();
-							CurveToMap.Target = CurveElement->GetName();
-							CurvesToMap.Add(CurveToMap);
-						}
-					}
+					FControlRigComponentMappedCurve CurveToMap;
+					CurveToMap.Source = CurveElement->GetName();
+					CurveToMap.Target = CurveElement->GetName();
+					CurvesToMap.Add(CurveToMap);
 					return true;
 				});
 			}
@@ -1309,7 +1307,7 @@ void UControlRigComponent::ValidateMappingData()
 			// try again with the path to the component
 			if (MappedElement.SceneComponent == nullptr)
 			{
-				FComponentReference TempReference;
+				FSoftComponentReference TempReference;
 				TempReference.PathToComponent = MappedElement.ComponentReference.ComponentProperty.ToString();
 				if (USceneComponent* TempSceneComponent = Cast<USceneComponent>(TempReference.GetComponent(MappedOwner)))
 				{
@@ -1352,21 +1350,10 @@ void UControlRigComponent::ValidateMappingData()
 					{
 						if (USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
 						{
-							if (MappedElement.ElementType == ERigElementType::Curve)
+							if (MappedElement.ElementType != ERigElementType::Curve)
 							{
-								const FSmartNameMapping* CurveNameMapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-								if (CurveNameMapping)
-								{
-									FSmartName SmartName;
-									if (CurveNameMapping->FindSmartName(MappedElement.TransformName, SmartName))
-									{
-										MappedElement.SubIndex = (int32)SmartName.UID;
-									}
-								}
-							}
-							else
-							{
-								MappedElement.SubIndex = Skeleton->GetReferenceSkeleton().FindBoneIndex(MappedElement.TransformName);
+								// this is really getting the FMeshPoseBoneIndex
+								MappedElement.SubIndex = SkeletalMeshComponent->GetBoneIndex(MappedElement.TransformName);
 							}
 						}
 						else
@@ -1572,7 +1559,7 @@ void UControlRigComponent::TransferOutputs()
 						{
 							Transform = Transform.GetRelativeTransform(MappedElement.SceneComponent->GetComponentToWorld());
 						}
-						Proxy->StoredTransforms.FindOrAdd(MappedElement.SubIndex) = Transform;
+						Proxy->StoredTransforms.FindOrAdd(FMeshPoseBoneIndex(MappedElement.SubIndex)) = Transform;
 					}
 					else if (UInstancedStaticMeshComponent* InstancingComponent = Cast<UInstancedStaticMeshComponent>(MappedElement.SceneComponent))
 					{
@@ -1613,7 +1600,7 @@ void UControlRigComponent::TransferOutputs()
 
 					if (Proxy)
 					{
-						Proxy->StoredCurves.FindOrAdd((SmartName::UID_Type)MappedElement.SubIndex) = ControlRig->GetHierarchy()->GetCurveValue(MappedElement.ElementIndex);
+						Proxy->StoredCurves.FindOrAdd(MappedElement.TransformName) = ControlRig->GetHierarchy()->GetCurveValue(MappedElement.ElementIndex);
 					}
 				}
 			}

@@ -2,6 +2,7 @@
 
 #include "Elements/PCGSplineSampler.h"
 
+#include "PCGComponent.h"
 #include "PCGContext.h"
 #include "PCGCustomVersion.h"
 #include "Data/PCGIntersectionData.h"
@@ -532,6 +533,7 @@ namespace PCGSplineSampler
 			FPCGPoint OutPoint;
 			OutPoint.Density = 1.0f;
 			OutPoint.SetLocalBounds(InResult.Box);
+			OutPoint.Steepness = Params.PointSteepness;
 
 			if (ProjectionTargetData)
 			{
@@ -544,6 +546,7 @@ namespace PCGSplineSampler
 				OutPoint.Transform = Transform;
 			}
 
+			// Only add valid points within bounds
 			FPCGPoint BoundsTestPoint;
 			if (bValid && (!BoundingShapeData || BoundingShapeData->SamplePoint(Transform, InResult.Box, BoundsTestPoint, nullptr)))
 			{
@@ -644,7 +647,7 @@ namespace PCGSplineSampler
 						OutPoint.Transform = ProjPoint.Transform;
 					}
 
-					// Test point against bounds.
+					// Prune points outside of bounds
 					FPCGPoint BoundsTestPoint;
 					if (BoundingShapeData && !BoundingShapeData->SamplePoint(OutPoint.Transform, OutPoint.GetLocalBounds(), BoundsTestPoint, nullptr))
 					{
@@ -652,6 +655,7 @@ namespace PCGSplineSampler
 					}
 
 					SetSeed(OutPoint, TentativeLocationLS, Params);
+					OutPoint.Steepness = Params.PointSteepness;
 					SetMetadata(InResult, OutPoint, OutPointData->Metadata);
 					OutPointData->GetMutablePoints().Add(OutPoint);
 				}
@@ -669,6 +673,18 @@ namespace PCGSplineSampler
 	void SampleLineData(const UPCGPolyLineData* LineData, const UPCGSpatialData* InBoundingShapeData, const UPCGSpatialData* InProjectionTarget, const FPCGProjectionParams& InProjectionParams, const FPCGSplineSamplerParams& Params, UPCGPointData* OutPointData)
 	{
 		check(LineData && OutPointData);
+
+		bool bIsClosedSpline = false;
+
+		if (const UPCGSplineData* SplineData = Cast<UPCGSplineData>(LineData))
+		{
+			const FPCGSplineStruct* Spline = &SplineData->SplineStruct;
+
+			if (Spline && Spline->IsClosedLoop())
+			{
+				bIsClosedSpline = true;
+			}
+		}
 
 		FSubdivisionStepSampler SubdivisionSampler(LineData, Params);
 		FDistanceStepSampler DistanceSampler(LineData, Params);
@@ -690,6 +706,8 @@ namespace PCGSplineSampler
 			Sampler->Step(*PreviousResult);
 			bHasPreviousPoint = true;
 		}
+
+		const FSamplerResult FirstResult = *PreviousResult;
 		
 		while(!Sampler->IsDone())
 		{
@@ -713,6 +731,15 @@ namespace PCGSplineSampler
 		
 		if (bHasPreviousPoint)
 		{
+			// Get the DeltaAngle between last and first points if we are operating on a closed spline
+			if (bIsClosedSpline)
+			{
+				// Get unsigned angle difference between the two points
+				const FVector::FReal DeltaSinAngle = ((FirstResult.LocalTransform.GetUnitAxis(EAxis::X) ^ PreviousResult->LocalTransform.GetUnitAxis(EAxis::X)) | PreviousResult->LocalTransform.GetUnitAxis(EAxis::Z));
+				// Normalize value to be between -1 and 1
+				PreviousResult->NextDeltaAngle = FMath::Asin(DeltaSinAngle) / UE_HALF_PI;
+			}
+
 			ExtentsSampler->Sample(*PreviousResult, OutPointData);
 		}
 	}
@@ -891,6 +918,7 @@ namespace PCGSplineSampler
 		InteriorSplinePointData.SetNum(NumDispatch);
 
 		const FTransform LineDataTransform = LineData->GetTransform();
+		bool bAnyRowFailedToSample = false;
 
 		ParallelFor(NumDispatch, [&](int32 DispatchIndex)
 		{
@@ -915,7 +943,7 @@ namespace PCGSplineSampler
 
 				if (Intersections.Num() % 2 != 0)
 				{
-					PCGE_LOG_C(Error, GraphAndLog, Context, LOCTEXT("IntersectionTestFailed", "Intersection test failed, skipping samples for this row"));
+					bAnyRowFailedToSample = true;
 					continue;
 				}
 
@@ -1047,14 +1075,39 @@ namespace PCGSplineSampler
 								continue;
 							}
 
-							TransformWS.SetLocation(ProjectedPoint.Transform.GetLocation());
+							if (InProjectionParams.bProjectPositions)
+							{
+								TransformWS.SetLocation(ProjectedPoint.Transform.GetLocation());
+							}
+
+							if (InProjectionParams.bProjectRotations)
+							{
+								TransformWS.SetRotation(ProjectedPoint.Transform.GetRotation());
+							}
+
+							if (InProjectionParams.bProjectScales)
+							{
+								TransformWS.SetScale3D(ProjectedPoint.Transform.GetScale3D());
+							}
 						}
 
+						// Prune points outside of bounds
+						FPCGPoint BoundsTestPoint;
+						if (InBoundingShape && !InBoundingShape->SamplePoint(TransformWS, SplineLocalBounds.GetBox(), BoundsTestPoint, nullptr))
+						{
+							continue;
+						}
+						
 						InteriorSplinePointData[DispatchIndex].Emplace(TransformWS, PointLocationLS, Density);
 					}
 				}
 			}
 		});
+
+		if (bAnyRowFailedToSample)
+		{
+			PCGE_LOG_C(Error, GraphAndLog, Context, LOCTEXT("IntersectionTestFailed", "One or more rows of the spline interior failed to sample (intersection test failed). Ensure the spline points are not overlapping."));
+		}
 
 		// Finally, gather the data and push to the points
 		int32 PointCount = 0;
@@ -1075,6 +1128,7 @@ namespace PCGSplineSampler
 				Point.Density = InteriorPoint.Get<2>();
 				Point.BoundsMin = BoundsMin;
 				Point.BoundsMax = BoundsMax;
+				Point.Steepness = Params.PointSteepness;
 			}
 		}
 	}
@@ -1144,16 +1198,28 @@ bool FPCGSplineSamplerElement::ExecuteInternal(FPCGContext* Context) const
 	TArray<FPCGTaggedData> SplineInputs = Context->InputData.GetInputsByPin(PCGSplineSamplerConstants::SplineLabel);
 	TArray<FPCGTaggedData> BoundingShapeInputs = Context->InputData.GetInputsByPin(PCGSplineSamplerConstants::BoundingShapeLabel);
 
-	// Grab the Bounding Shape input if there is one.
-	// TODO: Once we support time-slicing, put this in the context and root (see FPCGSurfaceSamplerContext)
-	bool bUnionCreated = false;
-	const UPCGSpatialData* BoundingShape = Context->InputData.GetSpatialUnionOfInputsByPin(PCGSplineSamplerConstants::BoundingShapeLabel, bUnionCreated);
-	if (!BoundingShape && BoundingShapeInputs.Num() > 0)
-	{
-		PCGE_LOG(Warning, GraphAndLog, LOCTEXT("BoundingShapeMissing", "Bounding Shape input is missing or of unsupported type and will not be used"));
-	}
-
 	const FPCGSplineSamplerParams& SamplerParams = Settings->SamplerParams;
+
+	const UPCGSpatialData* BoundingShape = nullptr;
+
+	// If unbounded, specific samplers will not be constrained by a nullptr BoundingShape
+	if(!SamplerParams.bUnbounded)
+	{
+		// TODO: Once we support time-slicing, put this in the context and root (see FPCGSurfaceSamplerContext)
+		bool bUnionCreated = false;
+		// Grab the Bounding Shape input if there is one.
+		BoundingShape = Context->InputData.GetSpatialUnionOfInputsByPin(PCGSplineSamplerConstants::BoundingShapeLabel, bUnionCreated);
+
+		// Fallback to getting bounds from actor
+		if (!BoundingShape && Context->SourceComponent.IsValid())
+		{
+			BoundingShape = Cast<UPCGSpatialData>(Context->SourceComponent->GetActorPCGData());
+		}
+	}
+	else if (BoundingShapeInputs.Num() > 0)
+	{
+		PCGE_LOG(Verbose, LogOnly, LOCTEXT("BoundsIgnored", "The bounds of the Bounding Shape input pin will be ignored because the Unbounded option is enabled."));
+	}
 
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
@@ -1201,6 +1267,19 @@ bool FPCGSplineSamplerElement::ExecuteInternal(FPCGContext* Context) const
 }
 
 #if WITH_EDITOR
+void UPCGSplineSamplerSettings::ApplyDeprecation(UPCGNode* InOutNode)
+{
+	check(InOutNode);
+	
+	if (DataVersion < FPCGCustomVersion::SplineSamplerBoundedByDefault)
+	{
+		UE_LOG(LogPCG, Log, TEXT("Spline Sampler node migrated from an older version. Defaulting to 'Unbounded' to match previous behavior."));
+		SamplerParams.bUnbounded = true;
+	}
+	
+	Super::ApplyDeprecation(InOutNode);
+}
+
 void UPCGSplineSamplerSettings::ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins)
 {
 	if (DataVersion < FPCGCustomVersion::SplineSamplerUpdatedNodeInputs && ensure(InOutNode))

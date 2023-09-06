@@ -33,7 +33,7 @@ void FLocalLightSceneProxy::UpdateRadius_GameThread(float ComponentRadius)
 }
 
 /** Accesses parameters needed for rendering the light. */
-void FPointLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& LightParameters) const
+void FPointLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& LightParameters, uint32 Flags) const
 {
 	LightParameters.WorldPosition = GetOrigin();
 	LightParameters.InvRadius = InvRadius;
@@ -207,6 +207,10 @@ float UPointLightComponent::ComputeLightBrightness() const
 		{
 			LightBrightness *= (100.f * 100.f / 4 / UE_PI); // Conversion from cm2 to m2 and 4PI from the sphere area in the 1/r2 attenuation
 		}
+		else if (IntensityUnits == ELightUnits::EV)
+		{
+			LightBrightness = EV100ToLuminance(LightBrightness) * (100.f * 100.f);
+		}
 		else
 		{
 			LightBrightness *= 16; // Legacy scale of 16
@@ -227,6 +231,10 @@ void UPointLightComponent::SetLightBrightness(float InBrightness)
 		else if (IntensityUnits == ELightUnits::Lumens)
 		{
 			Super::SetLightBrightness(InBrightness / (100.f * 100.f / 4 / UE_PI)); // Conversion from cm2 to m2 and 4PI from the sphere area in the 1/r2 attenuation
+		}
+		else if (IntensityUnits == ELightUnits::EV)
+		{
+			Super::SetLightBrightness(LuminanceToEV100(InBrightness / (100.f * 100.f)));
 		}
 		else
 		{
@@ -324,19 +332,4 @@ void UPointLightComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 #endif // WITH_EDITOR
-
-void UPointLightComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	static FName LightFalloffExponentName(TEXT("LightFalloffExponent"));
-	FName PropertyName = PropertyThatChanged->GetFName();
-
-	if (PropertyName == LightFalloffExponentName)
-	{
-		MarkRenderStateDirty();
-	}
-	else
-	{
-		Super::PostInterpChange(PropertyThatChanged);
-	}
-}
 

@@ -10,6 +10,7 @@
 #include "Modules/ModuleManager.h"
 #include "SlateOptMacros.h"
 #include "Styling/AppStyle.h"
+#include "Styling/StyleColors.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/SToolTip.h"
@@ -43,6 +44,7 @@
 #include "Insights/Table/ViewModels/TableColumn.h"
 #include "Insights/TimingProfilerCommon.h"
 #include "Insights/ViewModels/FilterConfigurator.h"
+#include "Insights/ViewModels/Filters.h"
 
 #include <limits>
 #include <memory>
@@ -52,8 +54,8 @@
 namespace Insights
 {
 
-const int SMemAllocTableTreeView::FullCallStackIndex = 0x0000FFFFF;
-const int SMemAllocTableTreeView::LLMFilterIndex = 0x0000FFFFE;
+const int32 SMemAllocTableTreeView::FullCallStackIndex = 0x0000FFFFF;
+const int32 SMemAllocTableTreeView::LLMFilterIndex = 0x0000FFFFE;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -113,10 +115,10 @@ void SMemAllocTableTreeView::RebuildTree(bool bResync)
 
 	if (bResync)
 	{
-		TableTreeNodes.Empty();
+		TableRowNodes.Empty();
 	}
 
-	const int32 PreviousNodeCount = TableTreeNodes.Num();
+	const int32 PreviousNodeCount = TableRowNodes.Num();
 
 	TSharedPtr<Insights::FMemAllocTable> MemAllocTable = GetMemAllocTable();
 
@@ -131,44 +133,44 @@ void SMemAllocTableTreeView::RebuildTree(bool bResync)
 			TArray<FMemoryAlloc>& Allocs = MemAllocTable->GetAllocs();
 
 			const int32 TotalAllocCount = Allocs.Num();
-			if (TotalAllocCount != TableTreeNodes.Num())
+			if (TotalAllocCount != TableRowNodes.Num())
 			{
-				UE_LOG(MemoryProfiler, Log, TEXT("[MemAlloc] Creating nodes (%d nodes --> %d allocs)..."), TableTreeNodes.Num(), TotalAllocCount);
+				UE_LOG(MemoryProfiler, Log, TEXT("[MemAlloc] Creating nodes (%d nodes --> %d allocs)..."), TableRowNodes.Num(), TotalAllocCount);
 
-				if (TableTreeNodes.Num() > TotalAllocCount)
+				if (TableRowNodes.Num() > TotalAllocCount)
 				{
-					TableTreeNodes.Empty();
+					TableRowNodes.Empty();
 				}
-				TableTreeNodes.Reserve(TotalAllocCount);
+				TableRowNodes.Reserve(TotalAllocCount);
 
-				uint32 HeapAllocCount(0);
+				uint32 HeapAllocCount = 0;
 				const FName BaseNodeName(TEXT("alloc"));
 				const FName BaseHeapName(TEXT("heap"));
-				for (int32 AllocIndex = TableTreeNodes.Num(); AllocIndex < TotalAllocCount; ++AllocIndex)
+				for (int32 AllocIndex = TableRowNodes.Num(); AllocIndex < TotalAllocCount; ++AllocIndex)
 				{
 					const FMemoryAlloc* Alloc = MemAllocTable->GetMemAlloc(AllocIndex);
 
-					// Until we have an UX story around heap allocations
-					// remove them from the list
-					if (Alloc->bIsBlock)
+					if (Alloc->bIsHeap)
 					{
 						++HeapAllocCount;
-						continue;
+						if (!bIncludeHeapAllocs)
+						{
+							continue;
+						}
 					}
 
-					FName NodeName(Alloc->bIsBlock ? BaseHeapName : BaseNodeName, static_cast<int32>(Alloc->GetStartEventIndex() + 1));
+					FName NodeName(Alloc->bIsHeap ? BaseHeapName : BaseNodeName, static_cast<int32>(Alloc->GetStartEventIndex() + 1));
 					FMemAllocNodePtr NodePtr = MakeShared<FMemAllocNode>(NodeName, MemAllocTable, AllocIndex);
-					TableTreeNodes.Add(NodePtr);
+					TableRowNodes.Add(NodePtr);
 				}
-				ensure(TableTreeNodes.Num() == TotalAllocCount - HeapAllocCount);
-				UpdateQueryInfo();
+				ensure(TableRowNodes.Num() == (bIncludeHeapAllocs ? TotalAllocCount : TotalAllocCount - HeapAllocCount));
 			}
 		}
 	}
 
 	SyncStopwatch.Stop();
 
-	if (bResync || TableTreeNodes.Num() != PreviousNodeCount)
+	if (bResync || TableRowNodes.Num() != PreviousNodeCount)
 	{
 		// Save selection.
 		TArray<FTableTreeNodePtr> SelectedItems;
@@ -201,7 +203,7 @@ void SMemAllocTableTreeView::RebuildTree(bool bResync)
 	{
 		const double SyncTime = SyncStopwatch.GetAccumulatedTime();
 		UE_LOG(MemoryProfiler, Log, TEXT("[MemAlloc] Tree view rebuilt in %.4fs (sync: %.4fs + update: %.4fs) --> %d nodes (%d added)"),
-			TotalTime, SyncTime, TotalTime - SyncTime, TableTreeNodes.Num(), TableTreeNodes.Num() - PreviousNodeCount);
+			TotalTime, SyncTime, TotalTime - SyncTime, TableRowNodes.Num(), TableRowNodes.Num() - PreviousNodeCount);
 	}
 }
 
@@ -219,13 +221,15 @@ void SMemAllocTableTreeView::OnQueryInvalidated()
 	{
 		ResetAndStartQuery();
 	}
+
+	UpdateQueryInfo();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void SMemAllocTableTreeView::ResetAndStartQuery()
 {
-	TableTreeNodes.Reset();
+	TableRowNodes.Reset();
 
 	TSharedPtr<Insights::FMemAllocTable> MemAllocTable = GetMemAllocTable();
 	if (MemAllocTable)
@@ -233,8 +237,6 @@ void SMemAllocTableTreeView::ResetAndStartQuery()
 		TArray<FMemoryAlloc>& Allocs = MemAllocTable->GetAllocs();
 		Allocs.Reset(10 * 1024 * 1024);
 	}
-
-	UpdateQueryInfo();
 
 	StartQuery();
 
@@ -405,6 +407,8 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 
 					Alloc.Asset = nullptr;
 					Alloc.ClassName = nullptr;
+					Alloc.Package = nullptr;
+
 					const uint32 MetadataId = Allocation->GetMetadataId();
 					if (MetadataId != TraceServices::IMetadataProvider::InvalidMetadataId && MetadataProvider && DefinitionProvider)
 					{
@@ -414,7 +418,7 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 							{
 								if (Type == AssetMetadataType)
 								{
-									TraceServices::IDefinitionProvider::FReadScopeLock DefinitionProviderReadLock(*DefinitionProvider);
+									TraceServices::FProviderReadScopeLock DefinitionProviderReadLock(*DefinitionProvider);
 									const auto Reader = Schema->Reader();
 									const auto AssetNameRef = Reader.GetValueAs<UE::Trace::FEventRef32>((uint8*)Data, 0);
 									const auto AssetName = DefinitionProvider->Get<TraceServices::FStringDefinition>(*AssetNameRef);
@@ -428,11 +432,20 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 									{
 										Alloc.ClassName = ClassName->Display;
 									}
+									const auto PackageNameRef = Reader.GetValueAs<UE::Trace::FEventRef32>((uint8*)Data, 2);
+									const auto PackageName = DefinitionProvider->Get<TraceServices::FStringDefinition>(*PackageNameRef);
+									if (PackageName)
+									{
+										Alloc.Package = PackageName->Display;
+									}
 									return false;
 								}
 								return true;
 							});
 					}
+
+					Alloc.CallstackId = Allocation->GetCallstackId();
+					Alloc.FreeCallstackId = Allocation->GetFreeCallstackId();
 
 					if (CallstacksProvider)
 					{
@@ -449,7 +462,7 @@ void SMemAllocTableTreeView::UpdateQuery(TraceServices::IAllocationsProvider::EQ
 					}
 
 					Alloc.RootHeap = Allocation->GetRootHeap();
-					Alloc.bIsBlock = Allocation->IsHeap();
+					Alloc.bIsHeap = Allocation->IsHeap();
 
 					Alloc.bIsDecline = false;
 					if (Rule->GetValue() == TraceServices::IAllocationsProvider::EQueryRule::aAfaBf)
@@ -1090,8 +1103,9 @@ TSharedPtr<SWidget> SMemAllocTableTreeView::ConstructFooter()
 		SNew(SHorizontalBox)
 
 		+ SHorizontalBox::Slot()
+		.AutoWidth()
 		.HAlign(HAlign_Left)
-		.Padding(2.0f)
+		.Padding(2.0f, 2.0f, 0.0f, 2.0f)
 		[
 			SNew(STextBlock)
 			.Text(this, &SMemAllocTableTreeView::GetQueryInfo)
@@ -1099,8 +1113,37 @@ TSharedPtr<SWidget> SMemAllocTableTreeView::ConstructFooter()
 		]
 
 		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Left)
+		.Padding(0.0f, 2.0f, 0.0f, 2.0f)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("FooterSeparator", " : "))
+			.ColorAndOpacity(FSlateColor(EStyleColor::White25))
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.HAlign(HAlign_Left)
+		.Padding(0.0f, 2.0f, 8.0f, 2.0f)
+		[
+			SNew(STextBlock)
+			.Text(this, &SMemAllocTableTreeView::GetFooterLeftText)
+		]
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.HAlign(HAlign_Center)
+		.Padding(2.0f, 2.0f, 2.0f, 2.0f)
+		[
+			SNew(STextBlock)
+			.Text(this, &SMemAllocTableTreeView::GetFooterCenterText)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
 		.HAlign(HAlign_Right)
-		.Padding(2.0f)
+		.Padding(8.0f, 2.0f, 2.0f, 2.0f)
 		[
 			SNew(STextBlock)
 			.Text(this, &SMemAllocTableTreeView::GetSymbolResolutionStatus)
@@ -1162,7 +1205,80 @@ FText SMemAllocTableTreeView::GetQueryInfo() const
 
 FText SMemAllocTableTreeView::GetQueryInfoTooltip() const
 {
-	return QueryInfoTooltip;
+	return Rule.IsValid() ? Rule->GetDescription() : FText::GetEmpty();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SMemAllocTableTreeView::GetFooterLeftText() const
+{
+	if (!Rule.IsValid())
+	{
+		return FText::GetEmpty();
+	}
+
+	if (Query != 0)
+	{
+		return LOCTEXT("FooterLeftTextRunningQuery", "running query...");
+	}
+
+	if (FilteredNodesPtr->Num() == TableRowNodes.Num())
+	{
+		return FText::Format(LOCTEXT("FooterLeftTextFmt1", "{0} {0}|plural(one=alloc,other=allocs)"), FText::AsNumber(TableRowNodes.Num()));
+	}
+	else
+	{
+		return FText::Format(LOCTEXT("FooterLeftTextFmt2", "{0} / {1} {1}|plural(one=alloc,other=allocs)"), FilteredNodesPtr->Num(), FText::AsNumber(TableRowNodes.Num()));
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FText SMemAllocTableTreeView::GetFooterCenterText() const
+{
+	return SelectionStatsText;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void SMemAllocTableTreeView::TreeView_OnSelectionChanged(FTableTreeNodePtr SelectedItem, ESelectInfo::Type SelectInfo)
+{
+	TArray<FTableTreeNodePtr> SelectedNodes;
+	const int32 NumSelectedNodes = TreeView->GetSelectedItems(SelectedNodes);
+
+	if (NumSelectedNodes > 0)
+	{
+		int64 TotalAllocCount = 0;
+		int64 TotalAllocSize = 0;
+
+		TSharedRef<FTableColumn> CountColumn = Table->FindColumnChecked(FMemAllocTableColumns::CountColumnId);
+		TSharedRef<FTableColumn> SizeColumn = Table->FindColumnChecked(FMemAllocTableColumns::SizeColumnId);
+
+		for (const Insights::FTableTreeNodePtr& Node : SelectedNodes)
+		{
+			TOptional<FTableCellValue> CountValue = CountColumn->GetValue(*Node.Get());
+			if (CountValue.IsSet())
+			{
+				TotalAllocCount += CountValue.GetValue().AsInt64();
+			}
+
+			TOptional<FTableCellValue> SizeValue = SizeColumn->GetValue(*Node.Get());
+			if (SizeValue.IsSet())
+			{
+				TotalAllocSize += SizeValue.GetValue().AsInt64();
+			}
+		}
+
+		FNumberFormattingOptions FormattingOptionsMem;
+		FormattingOptionsMem.MaximumFractionalDigits = 2;
+
+		SelectionStatsText = FText::Format(LOCTEXT("SelectionStatsFmt", "{0} selected {0}|plural(one=item,other=items) ({1} {1}|plural(one=alloc,other=allocs), {2})"),
+			FText::AsNumber(NumSelectedNodes), FText::AsNumber(TotalAllocCount), FText::AsMemory(TotalAllocSize, &FormattingOptionsMem));
+	}
+	else
+	{
+		SelectionStatsText = FText::GetEmpty();
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1244,48 +1360,62 @@ void SMemAllocTableTreeView::UpdateQueryInfo()
 			check(false);
 		}
 
-		QueryInfo = FText::Format(LOCTEXT("QueryInfoFmt", "{0} ({1}) : {2} allocs"), Rule->GetVerboseName(), TimeMarkersText, FText::AsNumber(TableTreeNodes.Num()));
-		QueryInfoTooltip = Rule->GetDescription();
+		QueryInfo = FText::Format(LOCTEXT("QueryInfoFmt", "{0} ({1})"), Rule->GetVerboseName(), TimeMarkersText);
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool SMemAllocTableTreeView::ApplyCustomAdvancedFilters(const FTableTreeNodePtr& NodePtr)
+void SMemAllocTableTreeView::UpdateFilterContext(const FFilterConfigurator& InFilterConfigurator, const FTableTreeNode& InNode) const
 {
-	// Super heavy to compute, validate that the filter has a use for this key before computing it
-	if (FilterConfigurator && FilterConfigurator->IsKeyUsed(FullCallStackIndex))
-	{
-		FMemAllocNodePtr MemNodePtr = StaticCastSharedPtr<FMemAllocNode>(NodePtr);
-		Context.SetFilterData<FString>(FullCallStackIndex, MemNodePtr->GetFullCallstack().ToString());
-	}
+	STableTreeView::UpdateFilterContext(InFilterConfigurator, InNode);
 
-	if (FilterConfigurator && FilterConfigurator->IsKeyUsed(LLMFilterIndex))
+	if (InNode.Is<FMemAllocNode>())
 	{
-		FMemAllocNodePtr MemNodePtr = StaticCastSharedPtr<FMemAllocNode>(NodePtr);
-		Context.SetFilterData<FString>(LLMFilterIndex, MemNodePtr->GetMemAlloc()->GetTag());
-	}
+		const FMemAllocNode& MemNode = InNode.As<FMemAllocNode>();
 
-	return true;
+		// GetFullCallstack is super heavy to compute. Validate that the filter has a use for this key before computing it.
+		if (InFilterConfigurator.IsKeyUsed(FullCallStackIndex))
+		{
+			FilterContext.SetFilterData<FString>(FullCallStackIndex, MemNode.GetFullCallstack().ToString());
+		}
+
+		if (InFilterConfigurator.IsKeyUsed(LLMFilterIndex))
+		{
+			FilterContext.SetFilterData<FString>(LLMFilterIndex, MemNode.GetMemAlloc()->GetTag());
+		}
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void SMemAllocTableTreeView::AddCustomAdvancedFilters()
+void SMemAllocTableTreeView::InitFilterConfigurator(FFilterConfigurator& InOutFilterConfigurator)
 {
-	TSharedPtr<TArray<TSharedPtr<struct FFilter>>>& AvailableFilters = FilterConfigurator->GetAvailableFilters();
+	STableTreeView::InitFilterConfigurator(InOutFilterConfigurator);
 
-	AvailableFilters->Add(MakeShared<FFilter>(FullCallStackIndex, LOCTEXT("FullCallstack", "Full Callstack"), LOCTEXT("SearchFullCallstack", "Search in all the callstack frames"), EFilterDataType::String, FFilterService::Get()->GetStringOperators()));
-	Context.AddFilterData<FString>(FullCallStackIndex, FString());
+	TSharedRef<FFilter> FullCallStackFilter = MakeShared<FFilter>(
+		FullCallStackIndex,
+		LOCTEXT("FullCallstack", "Full Callstack"),
+		LOCTEXT("SearchFullCallstack", "Search in all the callstack frames"),
+		EFilterDataType::String,
+		nullptr,
+		FFilterService::Get()->GetStringOperators());
+	FilterContext.AddFilterData<FString>(FullCallStackIndex, FString());
+	InOutFilterConfigurator.Add(FullCallStackFilter);
 
-	TSharedPtr<FFilterWithSuggestions> LLMCategoryFilter = MakeShared<FFilterWithSuggestions>(static_cast<int32>(LLMFilterIndex), LOCTEXT("LLMTag", "LLM Tag"), LOCTEXT("LLMTag", "LLM Tag"), EFilterDataType::String, FFilterService::Get()->GetStringOperators());
-	Context.AddFilterData<FString>(LLMFilterIndex, FString());
-	LLMCategoryFilter->Callback = [this](const FString& Text, TArray<FString>& OutSuggestions)
+	TSharedRef<FFilterWithSuggestions> LLMTagFilter = MakeShared<FFilterWithSuggestions>(
+		LLMFilterIndex,
+		LOCTEXT("LLMTag", "LLM Tag"),
+		LOCTEXT("LLMTag", "LLM Tag"),
+		EFilterDataType::String,
+		nullptr,
+		FFilterService::Get()->GetStringOperators());
+	FilterContext.AddFilterData<FString>(LLMFilterIndex, FString());
+	LLMTagFilter->SetCallback([this](const FString& Text, TArray<FString>& OutSuggestions)
 	{
 		this->PopulateLLMTagSuggestionList(Text, OutSuggestions);
-	};
-
-	AvailableFilters->Add(LLMCategoryFilter);
+	});
+	InOutFilterConfigurator.Add(LLMTagFilter);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1298,19 +1428,21 @@ void SMemAllocTableTreeView::PopulateLLMTagSuggestionList(const FString& Text, T
 		return;
 	}
 
-	TraceServices::FProviderReadScopeLock _(*AllocationsProvider);
-
 	// Use a Set to avoid duplicate tag names.
 	TSet<FString> Suggestions;
-	AllocationsProvider->EnumerateTags([&Suggestions, &Text](const TCHAR* Display, const TCHAR* FullPath, TraceServices::TagIdType CurrentTag, TraceServices::TagIdType ParentTag)
-	{
-		if (Text.IsEmpty() || FCString::Stristr(FullPath, *Text))
-		{
-			Suggestions.Add(FullPath);
-		}
 
-		return true;
-	});
+	{
+		TraceServices::FProviderReadScopeLock _(*AllocationsProvider);
+		AllocationsProvider->EnumerateTags([&Suggestions, &Text](const TCHAR* Display, const TCHAR* FullPath, TraceServices::TagIdType CurrentTag, TraceServices::TagIdType ParentTag)
+		{
+			if (Text.IsEmpty() || FCString::Stristr(FullPath, *Text))
+			{
+				Suggestions.Add(FullPath);
+			}
+
+			return true;
+		});
+	}
 
 	OutSuggestions = Suggestions.Array();
 	OutSuggestions.Sort();
@@ -1477,13 +1609,13 @@ void SMemAllocTableTreeView::ExtendMenu(FMenuBuilder& MenuBuilder)
 	}
 
 	{
-		const FText ItemLabel = LOCTEXT("ContextMenu_Export_SubMenu", "Export snaphot");
-		const FText ItemToolTip = LOCTEXT("ContextMenu_Export_Desc_SubMenu", "Export memory snaphot to construct diff later");
+		const FText ItemLabel = LOCTEXT("ContextMenu_Export_SubMenu", "Export Snapshot...");
+		const FText ItemToolTip = LOCTEXT("ContextMenu_Export_Desc_SubMenu", "Export memory snapshot to construct diff later.");
 
 		FUIAction Action_ExportSnapshot
 		(
 			FExecuteAction::CreateSP(this, &SMemAllocTableTreeView::ExportMemorySnapshot),
-			FCanExecuteAction::CreateSP(this, &SMemAllocTableTreeView::IsExportMemorySnaphotAvailable)
+			FCanExecuteAction::CreateSP(this, &SMemAllocTableTreeView::IsExportMemorySnapshotAvailable)
 		);
 		MenuBuilder.AddMenuEntry(
 			ItemLabel,
@@ -1716,10 +1848,10 @@ void SMemAllocTableTreeView::ExportMemorySnapshot() const
 		ReportMessageLog.Notify();
 		return;
 	}
-	
+
 	UTF16CHAR BOM = UNICODE_BOM;
 	ExportFileHandle->Write((uint8*)&BOM, sizeof(UTF16CHAR));
-	
+
 	static constexpr TCHAR LineEnd = TEXT('\n');
 	static constexpr TCHAR QuotationMarkBegin = TEXT('\"');
 	static constexpr TCHAR QuotationMarkEnd = TEXT('\"');
@@ -1776,7 +1908,7 @@ void SMemAllocTableTreeView::ExportMemorySnapshot() const
 					OutData << QuotationMarkEnd;
 					return;
 				}
-				
+
 				const uint32 NumCallstackFrames = Alloc->Callstack->Num();
 				check(NumCallstackFrames <= 256);
 				OutData << QuotationMarkBegin;
@@ -1810,7 +1942,7 @@ void SMemAllocTableTreeView::ExportMemorySnapshot() const
 
 	// 2. Iterate over TreeNodes
 	TStringBuilder<2048> Buffer;
-	for (const TSharedPtr<FTableTreeNode>& Node : TableTreeNodes)
+	for (const TSharedPtr<FTableTreeNode>& Node : TableRowNodes)
 	{
 		// Export only leaves
 		if (Node->IsGroup()) continue;
@@ -1865,36 +1997,39 @@ void SMemAllocTableTreeView::ExportMemorySnapshot() const
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool SMemAllocTableTreeView::IsExportMemorySnaphotAvailable() const
+bool SMemAllocTableTreeView::IsExportMemorySnapshotAvailable() const
 {
-	return !TableTreeNodes.IsEmpty();
+	return !TableRowNodes.IsEmpty();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 bool SMemAllocTableTreeView::CanOpenCallstackFrameSourceFileInIDE() const
 {
-	if (TreeView->GetNumItemsSelected() != 1)
+	if (TreeView->GetNumItemsSelected() == 1)
 	{
-		return false;
+		FTableTreeNodePtr TreeNode = TreeView->GetSelectedItems()[0];
+		if (TreeNode.IsValid() && TreeNode->Is<FCallstackFrameGroupNode>())
+		{
+			const FCallstackFrameGroupNode& CallstackFrameNode = TreeNode->As<FCallstackFrameGroupNode>();
+			return CallstackFrameNode.GetStackFrame() != nullptr;
+		}
 	}
-
-	FTableTreeNodePtr TreeNode = TreeView->GetSelectedItems()[0];
-	return TreeNode.IsValid() && TreeNode->IsGroup() && TreeNode->GetContext();
+	return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void SMemAllocTableTreeView::OpenCallstackFrameSourceFileInIDE()
 {
-	if (TreeView->GetNumItemsSelected() > 0)
+	if (TreeView->GetNumItemsSelected() == 1)
 	{
 		FTableTreeNodePtr TreeNode = TreeView->GetSelectedItems()[0];
-		if (TreeNode.IsValid() && TreeNode->IsGroup() && TreeNode->GetContext())
+		if (TreeNode.IsValid() && TreeNode->Is<FCallstackFrameGroupNode>())
 		{
-			const TraceServices::FStackFrame* Frame = (const TraceServices::FStackFrame*)TreeNode->GetContext();
-
-			if (Frame->Symbol && Frame->Symbol->File)
+			const FCallstackFrameGroupNode& CallstackFrameNode = TreeNode->As<FCallstackFrameGroupNode>();
+			const TraceServices::FStackFrame* Frame = CallstackFrameNode.GetStackFrame();
+			if (Frame && Frame->Symbol && Frame->Symbol->File)
 			{
 				OpenSourceFileInIDE(Frame->Symbol->File, Frame->Symbol->Line);
 			}
@@ -1906,13 +2041,14 @@ void SMemAllocTableTreeView::OpenCallstackFrameSourceFileInIDE()
 
 FText SMemAllocTableTreeView::GetSelectedCallstackFrameFileName() const
 {
-	if (TreeView->GetNumItemsSelected() > 0)
+	if (TreeView->GetNumItemsSelected() == 1)
 	{
 		FTableTreeNodePtr TreeNode = TreeView->GetSelectedItems()[0];
-		if (TreeNode.IsValid() && TreeNode->IsGroup() && TreeNode->GetContext())
+		if (TreeNode.IsValid() && TreeNode->Is<FCallstackFrameGroupNode>())
 		{
-			const TraceServices::FStackFrame* Frame = (const TraceServices::FStackFrame*)TreeNode->GetContext();
-			if (Frame->Symbol && Frame->Symbol->File)
+			const FCallstackFrameGroupNode& CallstackFrameNode = TreeNode->As<FCallstackFrameGroupNode>();
+			const TraceServices::FStackFrame* Frame = CallstackFrameNode.GetStackFrame();
+			if (Frame && Frame->Symbol && Frame->Symbol->File)
 			{
 				FString SourceFileAndLine = FString::Printf(TEXT("%s(%d)"), Frame->Symbol->File, Frame->Symbol->Line);
 				return FText::FromString(SourceFileAndLine);

@@ -7,6 +7,8 @@
 
 namespace Audio
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 	// If < C++17, constexpr requires storage for linkage on Clang.
 	constexpr FFcc FFormatDescriptorSection::kSectionName;
 	constexpr FFcc FHeaderSection::kName;
@@ -14,7 +16,7 @@ namespace Audio
 	
 	// Encoder INPUT object. (simple for now).
 	template<typename TSampleType>
-	struct TEncoderInputObject : public IEncoderInput
+	struct UE_DEPRECATED(5.3, "Please use IAudioFormat/IStreamedCompressedInfo instead") TEncoderInputObject : public IEncoderInput
 	{
 		using FSampleType = TSampleType;
 		TSampleBuffer<FSampleType> Samples;
@@ -60,7 +62,7 @@ namespace Audio
 		return MakeUnique<TEncoderInputObject<int16>>(In16bitInterleave, InFmt);	
 	}
 		
-	struct FEncoderOutputBase : public IEncoderOutput
+	struct UE_DEPRECATED(5.3, "Please use IAudioFormat/IStreamedCompressedInfo instead") FEncoderOutputBase : public IEncoderOutput
 	{
 		TUniquePtr<FArchive> Archive;
 		TUniquePtr<FNestedSection> HeaderSection;
@@ -165,17 +167,14 @@ namespace Audio
 	IEncoderOutput::Create(
 		TArray<uint8>& OutExternalBuffer)
 	{
-		return MakeUnique<FEncoderOutputBase>(MakeUnique<FMemoryWriter>(OutExternalBuffer));
+		checkNoEntry();
+		return {};
 	}
 
 	Audio::IEncoderOutput::FPtr IEncoderOutput::Create()
 	{
-		struct FArrayOutputObject : public FEncoderOutputBase
-		{
-			TArray<uint8> Buffer;
-			FArrayOutputObject() : FEncoderOutputBase(MakeUnique<FMemoryWriter>(Buffer)) {}
-		};
-		return MakeUnique<FArrayOutputObject>();
+		checkNoEntry();
+		return {};
 	}
 
 	TUniquePtr<IDecoderInput> IDecoderInput::Create(
@@ -277,37 +276,15 @@ namespace Audio
 	TArrayView<const uint8> FDecoderInputBase::PeekNextPacket(
 		int32 InMaxPacketLength) const
 	{		
-		// TODO.
-		check(false);
+		checkNoEntry();
 		return MakeArrayView(static_cast<const uint8*>(0), 0);
 	}
 
 	TArrayView<const uint8> FDecoderInputBase::PopNextPacket(
 		int32 InPacketSize)
 	{	
-		if (PopBuffer.Num() < InPacketSize)
-		{
-			PopBuffer.SetNumZeroed(InPacketSize);
-		}		
-		if (!bSampleSection )
-		{
-			// To start serving packets, we must be in the sample section.
-			if( !audio_ensure(BeginSampleData()))
-			{
-				// Fail.
-				return MakeArrayView(static_cast<const uint8*>(0), 0);
-			}
-		}
-		if (!audio_ensure(!Archive->IsError()))
-		{
-			return MakeArrayView(static_cast<const uint8*>(0), 0);
-		}
-		Archive->Serialize(PopBuffer.GetData(), InPacketSize);
-		if (!audio_ensure(!Archive->IsError()))
-		{
-			return MakeArrayView(static_cast<const uint8*>(0), 0);
-		}
-		return MakeArrayView(PopBuffer.GetData(),InPacketSize);
+		checkNoEntry();
+		return {};
 	}
 	
 	bool FDecoderInputBase::BeginSampleData() 
@@ -425,15 +402,13 @@ namespace Audio
 	{
 		if (Requirements.DownstreamFormat == EBitRepresentation::Float32_Interleaved)
 		{
-			return MakeUnique<TCircularOutputBuffer<float>>(Requirements);
-			//return MakeUnique<TDecoderOutputOwnBuffer<float>>(Requirements);
+			return MakeUnique<TCircularOutputBuffer<float>>(Requirements);			
 		}
 		else if (Requirements.DownstreamFormat == EBitRepresentation::Int16_Interleaved)
 		{
 			return MakeUnique<TCircularOutputBuffer<int16>>(Requirements);
-			//return MakeUnique<TDecoderOutputOwnBuffer<int16>>(Requirements);
 		}
-		checkNoEntry(); //-V779
+		checkNoEntry(); 
 		return nullptr;
 	}
 
@@ -453,7 +428,7 @@ namespace Audio
 			Output->SetArrayViewBytes(InExternalMemory);
 			return Output;
 		}
-		checkNoEntry(); //-V779
+		checkNoEntry(); 
 		return nullptr;
 	}
 
@@ -468,5 +443,7 @@ namespace Audio
 		}
 		return false;
 	}
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 

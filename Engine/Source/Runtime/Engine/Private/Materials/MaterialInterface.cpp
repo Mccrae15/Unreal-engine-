@@ -22,6 +22,7 @@
 #include "Engine/World.h"
 #include "ObjectCacheEventSink.h"
 #include "Engine/SubsurfaceProfile.h"
+#include "Engine/SpecularProfile.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Components/PrimitiveComponent.h"
 #include "ContentStreaming.h"
@@ -36,6 +37,8 @@
 #include "ObjectCacheContext.h"
 #include "MaterialCachedData.h"
 #include "Components/DecalComponent.h"
+#include "UObject/ArchiveCookContext.h"
+#include "UObject/Package.h"
 
 #if WITH_EDITOR
 #include "ObjectCacheEventSink.h"
@@ -62,12 +65,6 @@ static TAutoConsoleVariable<int32> CVarMaterialEnableNewHLSLGenerator(
 	TEXT("0 - Don't allow\n")
 	TEXT("1 - Allow if enabled by material\n")
 	TEXT("2 - Force all materials to use new generator\n"),
-	ECVF_RenderThreadSafe | ECVF_ReadOnly);
-
-static TAutoConsoleVariable<int32> CVarMaterialEnableControlFlow(
-	TEXT("r.MaterialEnableControlFlow"),
-	0,
-	TEXT("Allows experemental control flow to be used in the material editor.\n"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 //////////////////////////////////////////////////////////////////////////
@@ -106,6 +103,22 @@ static EMaterialGetParameterValueFlags MakeParameterValueFlags(bool bOveriddenOn
 	return Result;
 }
 
+#if WITH_EDITORONLY_DATA
+
+/** Deletes any invalid EditorOnlyData object with specified name that isn't the one assigned to specified interface. */
+static void DisposeInvalidEditorOnlyData(UMaterialInterface* MaterialInterface, const FString& EditorOnlyDataName)
+{
+	UObject* EditorOnlyExisting = StaticFindObject(/*Class=*/ nullptr, MaterialInterface, *EditorOnlyDataName, true);
+	if (EditorOnlyExisting && EditorOnlyExisting != MaterialInterface->GetEditorOnlyData())
+	{
+		FName UniqueDummyName = MakeUniqueObjectName(GetTransientPackage(), UMaterialInterfaceEditorOnlyData::StaticClass());
+		EditorOnlyExisting->Rename(*UniqueDummyName.ToString(), GetTransientPackage(), REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+		EditorOnlyExisting->MarkAsGarbage();
+	}
+}
+
+#endif
+
 //////////////////////////////////////////////////////////////////////////
 
 /** Copies the material's relevance flags to a primitive's view relevance flags. */
@@ -115,6 +128,18 @@ void FMaterialRelevance::SetPrimitiveViewRelevance(FPrimitiveViewRelevance& OutV
 }
 
 //////////////////////////////////////////////////////////////////////////
+
+#if WITH_EDITORONLY_DATA
+
+namespace MaterialInterface
+{
+	FString GetEditorOnlyDataName(const TCHAR* InMaterialName)
+	{
+		return FString::Printf(TEXT("%sEditorOnlyData"), InMaterialName);
+	}
+}
+
+#endif // WITH_EDITORONLY_DATA
 
 UMaterialInterface::UMaterialInterface() = default;
 
@@ -154,6 +179,13 @@ void UMaterialInterface::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
+	if (Ar.IsCooking())
+	{
+		// Mark whether this material is part of the base game. This provides information on whether it is safe to be
+		// used as a parent safely in child modules.
+		bIncludedInBaseGame = Ar.GetCookContext()->GetCookingDLC() == FArchiveCookContext::ECookingDLCNo;
+	}
+
 	Super::Serialize(Ar);
 
 	bool bSavedCachedExpressionData = false;
@@ -191,6 +223,13 @@ void UMaterialInterface::Serialize(FArchive& Ar)
 #if WITH_EDITOR
 		FObjectCacheEventSink::NotifyReferencedTextureChanged_Concurrent(this);
 #endif
+	}
+    // we don't consider bLoadedCachedExpressionData here because in editor we call UpdateCachedExpressionData which can
+    // create CachedExpressionData if it wasn't serialized
+	else if (Ar.IsObjectReferenceCollector() && CachedExpressionData)
+	{
+ 		UScriptStruct* Struct = FMaterialCachedExpressionData::StaticStruct();
+ 		Struct->SerializeTaggedProperties(Ar, (uint8*)CachedExpressionData.Get(), Struct, nullptr);
 	}
 }
 
@@ -442,6 +481,7 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 		const uint8 StrataBSDFCount = FMath::Max(MaterialResource->MaterialGetStrataBSDFCount_GameThread(), uint8(1u));
 		const uint8 StrataBSDFCountMask = 1u << uint8(FMath::Min(StrataBSDFCount - 1, 8));
 		const uint8 StrataUintPerPixel = FMath::Max(MaterialResource->MaterialGetStrataUintPerPixel_GameThread(), uint8(1u));
+		const uint8 bUsesComplexSpecialRenderPath = MaterialResource->MaterialGetStrataUsesComplexSpecialRenderPath_GameThread();
 
 		MaterialRelevance.bOpaque = !bIsTranslucent;
 		MaterialRelevance.bMasked = IsMasked();
@@ -457,6 +497,7 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 		MaterialRelevance.bOutputsTranslucentVelocity = Material->IsTranslucencyWritingVelocity();
 		MaterialRelevance.bUsesGlobalDistanceField = MaterialResource->UsesGlobalDistanceField_GameThread();
 		MaterialRelevance.bUsesWorldPositionOffset = MaterialResource->MaterialUsesWorldPositionOffset_GameThread();
+		MaterialRelevance.bUsesDisplacement = MaterialResource->MaterialUsesDisplacement_GameThread();
 		MaterialRelevance.bUsesPixelDepthOffset = MaterialResource->MaterialUsesPixelDepthOffset_GameThread();
 		ETranslucencyLightingMode TranslucencyLightingMode = MaterialResource->GetTranslucencyLightingMode();
 		MaterialRelevance.bTranslucentSurfaceLighting = bIsTranslucent && (TranslucencyLightingMode == TLM_SurfacePerPixelLighting || TranslucencyLightingMode == TLM_Surface);
@@ -468,6 +509,8 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 		MaterialRelevance.bUsesAnisotropy = bUsesAnisotropy;
 		MaterialRelevance.StrataBSDFCountMask = StrataBSDFCountMask;
 		MaterialRelevance.StrataUintPerPixel = StrataUintPerPixel;
+		MaterialRelevance.bUsesComplexSpecialRenderPath = bUsesComplexSpecialRenderPath;
+
 		return MaterialRelevance;
 	}
 	else
@@ -685,6 +728,17 @@ void UMaterialInterface::PostDuplicate(bool bDuplicateForPIE)
 	Super::PostDuplicate(bDuplicateForPIE);
 
 	SetLightingGuid();
+
+#if WITH_EDITORONLY_DATA
+	// Duplication will create a new editor only data but this MI already links a populated data. This makes sure that the
+	// duplicate instance EOD has the correct name (necessary for running the editor on cooked data).
+	FString EditorOnlyDataName = MaterialInterface::GetEditorOnlyDataName(*GetName());
+	DisposeInvalidEditorOnlyData(this, EditorOnlyDataName);
+	if (GetEditorOnlyData())
+	{
+		GetEditorOnlyData()->Rename(*EditorOnlyDataName, nullptr, REN_NonTransactional | REN_DontCreateRedirectors);
+	}
+#endif // WITH_EDITORONLY_DATA
 }
 
 #if WITH_EDITOR
@@ -737,6 +791,26 @@ void UMaterialInterface::GetLightingGuidChain(bool bIncludeTextures, TArray<FGui
 	OutGuids.Add(LightingGuid);
 #endif // WITH_EDITORONLY_DATA
 }
+
+#if WITH_EDITOR
+uint32 UMaterialInterface::ComputeAllStateCRC() const
+{
+	uint32 CRC = 0xffffffff;
+
+	const FMaterialCachedExpressionData& CachedData = GetCachedExpressionData();
+
+	// use the precalculated CRC for the function info state ids (faster, as there can be thousands of these)
+	CRC = FCrc::TypeCrc32(CachedData.FunctionInfosStateCRC, CRC);
+
+	// mix in the parameter collection info state ids
+	for (const FMaterialParameterCollectionInfo& CollectionInfo : CachedData.ParameterCollectionInfos)
+	{
+		CRC = FCrc::TypeCrc32(CollectionInfo.StateId, CRC);
+	}
+
+	return CRC;
+}
+#endif // WITH_EDITOR
 
 bool UMaterialInterface::GetVectorParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue, bool bOveriddenOnly) const
 {
@@ -898,7 +972,7 @@ bool UMaterialInterface::GetTextureParameterChannelNames(const FHashedMaterialPa
 bool UMaterialInterface::GetFontParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage, bool bOveriddenOnly) const
 {
 	FMaterialParameterMetadata Result;
-	if (GetParameterValue(EMaterialParameterType::RuntimeVirtualTexture, ParameterInfo, Result, MakeParameterValueFlags(bOveriddenOnly)))
+	if (GetParameterValue(EMaterialParameterType::Font, ParameterInfo, Result, MakeParameterValueFlags(bOveriddenOnly)))
 	{
 		OutFontValue = Result.Value.Font.Value;
 		OutFontPage = Result.Value.Font.Page;
@@ -1201,16 +1275,32 @@ bool UMaterialInterface::IsMasked() const
 	return false;
 }
 
+FDisplacementScaling UMaterialInterface::GetDisplacementScaling() const
+{
+	return FDisplacementScaling();
+}
+
 float UMaterialInterface::GetMaxWorldPositionOffsetDisplacement() const
 {
 	return 0.0f;
+}
+
+bool UMaterialInterface::ShouldAlwaysEvaluateWorldPositionOffset() const
+{
+	return false;
 }
 
 bool UMaterialInterface::IsDeferredDecal() const
 {
 	return false;
 }
+
 bool UMaterialInterface::GetCastDynamicShadowAsMasked() const
+{
+	return false;
+}
+
+bool UMaterialInterface::WritesToRuntimeVirtualTexture() const
 {
 	return false;
 }
@@ -1228,6 +1318,16 @@ bool UMaterialInterface::IsShadingModelFromMaterialExpression() const
 USubsurfaceProfile* UMaterialInterface::GetSubsurfaceProfile_Internal() const
 {
 	return NULL;
+}
+
+USpecularProfile* UMaterialInterface::GetSpecularProfile_Internal(uint32 Index) const
+{
+	return nullptr;
+}
+
+uint32 UMaterialInterface::NumSpecularProfile_Internal() const
+{
+	return 0u;
 }
 
 bool UMaterialInterface::CastsRayTracedShadows() const
@@ -1290,15 +1390,56 @@ void UMaterialInterface::UpdateMaterialRenderProxy(FMaterialRenderProxy& Proxy)
 
 		FMaterialRenderProxy* InProxy = &Proxy;
 		ENQUEUE_RENDER_COMMAND(UpdateMaterialRenderProxySubsurface)(
-			[Settings, LocalSubsurfaceProfile, InProxy](FRHICommandListImmediate& RHICmdList)
+		[Settings, LocalSubsurfaceProfile, InProxy](FRHICommandListImmediate& RHICmdList)
+		{
+			if (LocalSubsurfaceProfile)
 			{
-				if (LocalSubsurfaceProfile)
+				const uint32 AllocationId = GSubsurfaceProfileTextureObject.AddOrUpdateProfile(Settings, LocalSubsurfaceProfile);
+				check(AllocationId >= 0 && AllocationId < MAX_SUBSURFACE_PROFILE_COUNT);
+			}
+			InProxy->SetSubsurfaceProfileRT(LocalSubsurfaceProfile/*, ParameterName */); // how to have a unique identifier?
+		});
+	}
+
+	if (Strata::IsStrataEnabled())
+	{
+		struct FEntry
+		{
+			USpecularProfile* Profile = nullptr;
+			FSpecularProfileStruct Settings;
+			const FTextureReference* Texture = nullptr;
+			FGuid Guid;
+		};
+		TArray<FEntry> Entries;
+		for (int32 It = 0, Count = NumSpecularProfile_Internal(); It<Count; ++It)
+		{
+			FEntry& Entry = Entries.AddDefaulted_GetRef();
+			Entry.Profile = GetSpecularProfile_Internal(It);
+			if (Entry.Profile)
+			{
+				Entry.Settings 	= Entry.Profile->Settings;
+				Entry.Guid 		= Entry.Profile->Guid;	
+				if (!Entry.Settings.IsProcedural())
 				{
-					const uint32 AllocationId = GSubsurfaceProfileTextureObject.AddOrUpdateProfile(Settings, LocalSubsurfaceProfile);
-					check(AllocationId >= 0 && AllocationId <= 255);
+					Entry.Texture = &Entry.Profile->Settings.Texture->TextureReference;
 				}
-				InProxy->SetSubsurfaceProfileRT(LocalSubsurfaceProfile);
-			});
+			}
+		}
+
+		FMaterialRenderProxy* InProxy = &Proxy;
+		ENQUEUE_RENDER_COMMAND(UpdateMaterialRenderProxySpecular)(
+		[InProxy, Entries](FRHICommandListImmediate& RHICmdList)
+		{
+			for (const FEntry& Entry : Entries)
+			{
+				if (Entry.Profile)
+				{
+					const uint32 AllocationId = SpecularProfileAtlas::AddOrUpdateProfile(Entry.Profile, Entry.Guid, Entry.Settings, Entry.Texture);
+					check(AllocationId >= 0 && AllocationId < MAX_SPECULAR_PROFILE_COUNT);
+				}
+				InProxy->AddSpecularProfileRT(Entry.Profile);
+			}
+		});
 	}
 }
 
@@ -1475,6 +1616,23 @@ void UMaterialInterface::PreSave(FObjectPreSaveContext ObjectSaveContext)
 	{
 		SortTextureStreamingData(true, true);
 	}
+
+#if WITH_EDITORONLY_DATA
+	// Make sure the EditorOnlyData is named correctly. Some MI assets have a differently named editor only data that can cause problems in
+	// the editor running on cooked data.
+	UMaterialInterfaceEditorOnlyData* EditorOnly = GetEditorOnlyData();
+	FString EditorOnlyDataName = MaterialInterface::GetEditorOnlyDataName(*GetName());
+	if (!ObjectSaveContext.IsCooking() && EditorOnly && EditorOnly->GetName() != EditorOnlyDataName)
+	{
+		UE_LOG(LogMaterial, Display, TEXT("MaterialInterface %s has a incorrectly name EditorOnlyData '%s'. This may cause issues when running the editor on cooked data. Trying to rename it to the correct name '%s'."), *GetName(), *EditorOnly->GetName(), *EditorOnlyDataName);
+		DisposeInvalidEditorOnlyData(this, EditorOnlyDataName);
+		if (EditorOnly)
+		{
+			EditorOnly->Rename(*EditorOnlyDataName, nullptr, REN_NonTransactional | REN_DontCreateRedirectors);
+		}
+	}
+#endif // WITH_EDITORONLY_DATA
+
 }
 
 void UMaterialInterface::AddAssetUserData(UAssetUserData* InUserData)
@@ -1568,13 +1726,6 @@ void UMaterialInterface::FilterOutPlatformShadingModels(const EShaderPlatform In
 
 #if WITH_EDITORONLY_DATA
 
-namespace MaterialInterface
-{
-	FString GetEditorOnlyDataName(const TCHAR* InMaterialName)
-	{
-		return FString::Printf(TEXT("%sEditorOnlyData"), InMaterialName);
-	}
-}
 
 const UClass* UMaterialInterface::GetEditorOnlyDataClass() const
 {
@@ -1602,6 +1753,7 @@ bool UMaterialInterface::Rename(const TCHAR* NewName, UObject* NewOuter, ERename
 	if (bRenamed && NewName && EditorOnlyData)
 	{
 		FString EditorOnlyDataName = MaterialInterface::GetEditorOnlyDataName(NewName);
+		DisposeInvalidEditorOnlyData(this, EditorOnlyDataName);
 		bRenamed = EditorOnlyData->Rename(*EditorOnlyDataName, nullptr, Flags);
 	}
 #endif

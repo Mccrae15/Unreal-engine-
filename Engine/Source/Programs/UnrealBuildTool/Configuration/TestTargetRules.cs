@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
+using EpicGames.Core;
 using UnrealBuildBase;
 
 namespace UnrealBuildTool
@@ -17,27 +17,27 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Keeps track if low level tests executable must build with the Editor.
 		/// </summary>
-		internal static bool bTestsRequireEditor = false;
+		internal bool bTestsRequireEditor = false;
 
 		/// <summary>
 		/// Keeps track if low level tests executable must build with the Engine.
 		/// </summary>
-		internal static bool bTestsRequireEngine = false;
+		internal bool bTestsRequireEngine = false;
 
 		/// <summary>
 		/// Keeps track if low level tests executable must build with the ApplicationCore.
 		/// </summary>
-		internal static bool bTestsRequireApplicationCore = false;
+		internal bool bTestsRequireApplicationCore = false;
 
 		/// <summary>
 		/// Keeps track if low level tests executable must build with the CoreUObject.
 		/// </summary>
-		internal static bool bTestsRequireCoreUObject = false;
+		internal bool bTestsRequireCoreUObject = false;
 
 		/// <summary>
 		/// Keep track of low level test runner module instance.
 		/// </summary>
-		internal static ModuleRules? LowLevelTestsRunnerModule;
+		internal ModuleRules? LowLevelTestsRunnerModule;
 
 		/// <summary>
 		/// Associated tested target of this test target, if defined.
@@ -46,75 +46,158 @@ namespace UnrealBuildTool
 
 		/// <summary>
 		/// Test target override for bCompileAgainstApplicationCore.
-		/// It is set to true if there is any reference to ApplicationCore in the reference chain.
+		/// It is set to true if there is any reference to ApplicationCore in the dependency graph.
 		/// </summary>
 		public override bool bCompileAgainstApplicationCore
 		{
-			get { return bTestsRequireApplicationCore; }
-			set { bTestsRequireApplicationCore = value; }
+			get => bTestsRequireApplicationCore;
+			set => bTestsRequireApplicationCore = value;
 		}
+
+		/// <summary>
+		/// If set to true, it will not compile against ApplicationCore even if "ApplicationCore" is in the dependency graph.
+		/// </summary>
+		public static bool bNeverCompileAgainstApplicationCore = false;
 
 		/// <summary>
 		/// Test target override for bCompileAgainstCoreUObject.
-		/// It is set to true if there is any reference to CoreUObject in the reference chain.
+		/// It is set to true if there is any reference to CoreUObject in the dependency graph.
 		/// </summary>
 		public override bool bCompileAgainstCoreUObject
 		{
-			get { return bTestsRequireCoreUObject; }
-			set { bTestsRequireCoreUObject = value; }
+			get => bTestsRequireCoreUObject;
+			set => bTestsRequireCoreUObject = value;
 		}
+
+		/// <summary>
+		/// If set to true, it will not compile against CoreUObject even if "CoreUObject" is in the dependency graph.
+		/// </summary>
+		public static bool bNeverCompileAgainstCoreUObject = false;
 
 		/// <summary>
 		/// Test target override for bCompileAgainstEngine.
-		/// It is set to true if there is any reference to Engine in the reference chain.
+		/// It is set to true if there is any reference to Engine in the dependency graph.
 		/// </summary>
 		public override bool bCompileAgainstEngine
 		{
-			get { return bTestsRequireEngine; }
-			set { bTestsRequireEngine = value; }
+			get => bTestsRequireEngine;
+			set => bTestsRequireEngine = value;
 		}
+
+		/// <summary>
+		/// If set to true, it will not compile against engine even if "Engine" is in the dependency graph.
+		/// </summary>
+		public static bool bNeverCompileAgainstEngine = false;
 
 		/// <summary>
 		/// Test target override for bCompileAgainstEditor.
-		/// It is set to true if there is any reference to UnrealEd in the reference chain.
+		/// It is set to true if there is any reference to UnrealEd in the dependency graph.
 		/// </summary>
 		public override bool bCompileAgainstEditor
 		{
-			get { return bTestsRequireEditor; }
-			set { bTestsRequireEditor = value; }
+			get => bTestsRequireEditor;
+			set => bTestsRequireEditor = value;
 		}
 
 		/// <summary>
-		/// Constructor for TestTargetRules as own target.
+		/// If set to true, it will not compile against editor even if "UnrealEd" is in the dependency graph.
+		/// </summary>
+		public static bool bNeverCompileAgainstEditor = false;
+
+		/// <summary>
+		/// Whether to stub the platform file.
+		/// </summary>
+		public bool bUsePlatformFileStub
+		{
+			get => bUsePlatformFileStubPrivate;
+			set
+			{
+				bUsePlatformFileStubPrivate = value;
+				GlobalDefinitions.Remove("UE_LLT_USE_PLATFORM_FILE_STUB=0");
+				GlobalDefinitions.Remove("UE_LLT_USE_PLATFORM_FILE_STUB=1");
+				GlobalDefinitions.Add($"UE_LLT_USE_PLATFORM_FILE_STUB={Convert.ToInt32(bUsePlatformFileStubPrivate)}");
+			}
+		}
+		private bool bUsePlatformFileStubPrivate = false;
+
+		/// <summary>
+		/// Whether to mock engine default instances for materials, AI controller etc.
+		/// </summary>
+		public bool bMockEngineDefaults
+		{
+			get => bMockEngineDefaultsPrivate;
+			set
+			{
+				bMockEngineDefaultsPrivate = value;
+				GlobalDefinitions.Remove("UE_LLT_WITH_MOCK_ENGINE_DEFAULTS=0");
+				GlobalDefinitions.Remove("UE_LLT_WITH_MOCK_ENGINE_DEFAULTS=1");
+				GlobalDefinitions.Add($"UE_LLT_WITH_MOCK_ENGINE_DEFAULTS={Convert.ToInt32(bMockEngineDefaultsPrivate)}");
+			}
+		}
+		private bool bMockEngineDefaultsPrivate = false;
+
+		/// <summary>
+		/// Constructor that explicit targets can inherit from.
 		/// </summary>
 		/// <param name="Target"></param>
 		public TestTargetRules(TargetInfo Target) : base(Target)
 		{
 			SetupCommonProperties(Target);
 
-			bExplicitTestsTargetOverride = this.GetType() != typeof(TestTargetRules);
+			ExeBinariesSubFolder = LaunchModuleName = Name + (ExplicitTestsTarget ? String.Empty : "Tests");
 
-			ExeBinariesSubFolder = LaunchModuleName = Name + (bExplicitTestsTargetOverride ? string.Empty : "Tests");
-			IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
-
-			if (bExplicitTestsTargetOverride)
+			if (ExplicitTestsTarget)
 			{
 				bBuildInSolutionByDefault = true;
-				SolutionDirectory = "Programs/LowLevelTests";
+				if (ProjectFile != null)
+				{
+					DirectoryReference SamplesDirectory = DirectoryReference.Combine(Unreal.RootDirectory, "Samples");
+					if (!ProjectFile.IsUnderDirectory(Unreal.EngineDirectory))
+					{
+						if (ProjectFile.IsUnderDirectory(SamplesDirectory))
+						{
+							SolutionDirectory = Path.Combine("Samples", ProjectFile.Directory.GetDirectoryName(), "LowLevelTests");
+						}
+						else
+						{
+							SolutionDirectory = Path.Combine("Games", ProjectFile.Directory.GetDirectoryName(), "LowLevelTests");
+						}
+					}
+					else
+					{
+						SolutionDirectory = "Programs/LowLevelTests";
+					}
+				}
+				else
+				{
+					SolutionDirectory = "Programs/LowLevelTests";
+				}
+
+				// Default to true for explicit targets to reduce compilation times.
+				// Selective module compilation will automatically detect if Engine is required based on Engine include files in tests.
+				bNeverCompileAgainstEngine = true;
 			}
 
 			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				string OutputName = "$(TargetName)";
-				if(Target.Configuration != UndecoratedConfiguration)
+				if (Target.Configuration != UndecoratedConfiguration)
 				{
 					OutputName = OutputName + "-" + Target.Platform + "-" + Target.Configuration;
 				}
 				if (File != null)
 				{
-					string OutputDirectory = UEBuildTarget.GetOutputDirectoryForExecutable(Unreal.EngineDirectory, File).FullName;
-					string OutputFileName = $"{OutputDirectory}\\Binaries\\{Target.Platform}\\{ExeBinariesSubFolder}\\{OutputName}.exe.is_unreal_test";
-					PostBuildSteps.Add("echo > " + OutputFileName);
+					DirectoryReference OutputDirectory;
+					if (ProjectFile != null && File.IsUnderDirectory(ProjectFile.Directory))
+					{
+						OutputDirectory = UEBuildTarget.GetOutputDirectoryForExecutable(ProjectFile.Directory, File);
+					}
+					else
+					{
+						OutputDirectory = UEBuildTarget.GetOutputDirectoryForExecutable(Unreal.EngineDirectory, File);
+					}
+					FileReference OutputTestFile = FileReference.Combine(OutputDirectory, "Binaries", Target.Platform.ToString(), ExeBinariesSubFolder, $"{OutputName}.exe.is_unreal_test");
+					PostBuildSteps.Add("echo > " + OutputTestFile.FullName);
 				}
 			}
 		}
@@ -162,6 +245,8 @@ namespace UnrealBuildTool
 
 			this.TestedTarget = TestedTarget;
 
+			TargetFiles = TestedTarget.TargetFiles;
+
 			ExeBinariesSubFolder = Name = TestedTarget.Name + "Tests";
 			TargetSourceFile = File = TestedTarget.File;
 			if (TestedTarget.LaunchModuleName != null)
@@ -178,6 +263,8 @@ namespace UnrealBuildTool
 
 		private void SetupCommonProperties(TargetInfo Target)
 		{
+			IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+
 			bIsTestTargetOverride = true;
 
 			VSTestRunSettingsFile = FileReference.Combine(Unreal.EngineDirectory, "Source", "Programs", "LowLevelTests", "vstest.runsettings");
@@ -203,21 +290,27 @@ namespace UnrealBuildTool
 			// No need for shaders by default
 			bForceBuildShaderFormats = false;
 
-			// Do not link against the engine, no Chromium Embedded Framework etc.
+			// Do not compile against the engine, editor etc
 			bCompileAgainstEngine = false;
-			bCompileCEF3 = false;
+			bCompileAgainstEditor = false;
 			bCompileAgainstCoreUObject = false;
 			bCompileAgainstApplicationCore = false;
+			bCompileCEF3 = false;
+
+			// No mixing with Functional Test framework
+			bForceDisableAutomationTests = true;
+
+			bDebugBuildsActuallyUseDebugCRT = true;
+
+			// Allow logging in shipping
 			bUseLoggingInShipping = true;
 
 			// Allow exception handling
 			bForceEnableExceptions = true;
 
-			bool bDebugOrDevelopment = Target.Configuration == UnrealTargetConfiguration.Debug || Target.Configuration == UnrealTargetConfiguration.Development;
-			bBuildWithEditorOnlyData = Target.Platform.IsInGroup(UnrealPlatformGroup.Desktop) && bDebugOrDevelopment;
-
-			// Disable malloc profiling in tests
-			bUseMallocProfiler = false;
+			bBuildWithEditorOnlyData = false;
+			bBuildRequiresCookedData = true;
+			bBuildDeveloperTools = false;
 
 			// Useful for debugging test failures
 			if (Target.Configuration == UnrealTargetConfiguration.Debug)
@@ -225,8 +318,17 @@ namespace UnrealBuildTool
 				bDebugBuildsActuallyUseDebugCRT = true;
 			}
 
+			if (!ExplicitTestsTarget && TestedTarget != null)
+			{
+				GlobalDefinitions.AddRange(TestedTarget.GlobalDefinitions);
+			}
+
 			GlobalDefinitions.Add("STATS=0");
 			GlobalDefinitions.Add("TEST_FOR_VALID_FILE_SYSTEM_MEMORY=0");
+
+			// LLT Globals
+			GlobalDefinitions.Add("UE_LLT_USE_PLATFORM_FILE_STUB=0");
+			GlobalDefinitions.Add("UE_LLT_WITH_MOCK_ENGINE_DEFAULTS=0");
 
 			// Platform specific setup
 			if (Target.Platform == UnrealTargetPlatform.Android)
@@ -238,14 +340,9 @@ namespace UnrealBuildTool
 				GlobalDefinitions.Add("USE_ANDROID_LAUNCH=0");
 				GlobalDefinitions.Add("USE_ANDROID_JNI=0");
 			}
-			else if (Target.Platform == UnrealTargetPlatform.IOS) // TODO: this doesn't compile
+			else if (Target.Platform == UnrealTargetPlatform.IOS)
 			{
-				GlobalDefinitions.Add("HAS_METAL=0");
-
 				bIsBuildingConsoleApplication = false;
-				// Required for IOS, but needs to fix compilation errors
-				bCompileAgainstApplicationCore = true;
-
 			}
 		}
 	}

@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#if WITH_EDITOR
-
 #include "Engine/PoseWatchRenderData.h"
+
+#if WITH_EDITORONLY_DATA
+
 #include "Animation/BlendProfile.h"
 #include "Engine/PoseWatch.h"
 
@@ -15,6 +16,11 @@ FAnimNodePoseWatch::FAnimNodePoseWatch()
 	WorldTransform = FTransform::Identity;
 	BoneColor = FLinearColor::White;
 	ViewportOffset = FVector::ZeroVector;
+}
+
+void FAnimNodePoseWatch::SetCurves(const FBlendedCurve& InCurves)
+{
+	Curves.CopyFrom(InCurves);
 }
 
 void FAnimNodePoseWatch::SetWorldTransform(const FTransform& InWorldTransform)
@@ -63,6 +69,11 @@ const TArray<FTransform>& FAnimNodePoseWatch::GetBoneTransforms() const
 	return BoneTransforms;
 }
 
+const FBlendedHeapCurve& FAnimNodePoseWatch::GetCurves() const
+{
+	return Curves;
+}
+
 const FTransform& FAnimNodePoseWatch::GetWorldTransform() const
 {
 	return WorldTransform;
@@ -93,4 +104,4 @@ const TArray<int32>& FAnimNodePoseWatch::GetParentIndices() const
 	return ParentIndices; 
 }
 
-#endif // WITH_EDITOR
+#endif // WITH_EDITORONLY_DATA

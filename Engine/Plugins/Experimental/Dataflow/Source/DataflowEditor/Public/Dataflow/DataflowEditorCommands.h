@@ -15,6 +15,7 @@ class UDataflow;
 class UDataflowEdNode;
 struct FDataflowNode;
 class UEdGraphNode;
+class SDataflowGraphEditor;
 
 typedef TSet<class UObject*> FGraphPanelSelectionSet;
 
@@ -43,6 +44,9 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleObjectSelection;
 	TSharedPtr<FUICommandInfo> ToggleFaceSelection;
 	TSharedPtr<FUICommandInfo> ToggleVertexSelection;
+	TSharedPtr< FUICommandInfo > AddOptionPin;
+	TSharedPtr< FUICommandInfo > RemoveOptionPin;
+	TSharedPtr< FUICommandInfo > ZoomToFitGraph;
 
 	TMap< FName, TSharedPtr<FUICommandInfo> > CreateNodesMap;
 };
@@ -93,6 +97,7 @@ public:
 	*  OnPropertyValueChanged
 	*/
 	static void OnPropertyValueChanged(UDataflow* Graph, TSharedPtr<Dataflow::FEngineContext>& Context, Dataflow::FTimestamp& OutLastNodeTimestamp, const FPropertyChangedEvent& PropertyChangedEvent, const TSet<UObject*>& SelectedNodes = TSet<UObject*>());
+	static void OnAssetPropertyValueChanged(UDataflow* Graph, TSharedPtr<Dataflow::FEngineContext>& Context, Dataflow::FTimestamp& OutLastNodeTimestamp, const FPropertyChangedEvent& PropertyChangedEvent);
 
 	/*
 	*  OnSelectedNodesChanged
@@ -103,6 +108,11 @@ public:
 	*  ToggleEnabledState
 	*/
 	static void ToggleEnabledState(UDataflow* Graph);
+
+	/*
+	*  DuplicateNodes
+	*/
+	static void DuplicateNodes(UDataflow* Graph, const TSharedPtr<SDataflowGraphEditor>& DataflowGraphEditor, const FGraphPanelSelectionSet& SelectedNodes);
 
 
 

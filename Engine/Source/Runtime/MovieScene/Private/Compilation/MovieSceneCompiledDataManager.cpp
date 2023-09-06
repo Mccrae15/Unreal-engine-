@@ -142,6 +142,7 @@ struct FGatherParameters
 		, LocalClampRange(RootClampRange)
 		, Flags(ESectionEvaluationFlags::None)
 		, HierarchicalBias(0)
+		, AccumulatedFlags(EMovieSceneSubSectionFlags::None)
 	{}
 
 	FGatherParameters CreateForSubData(const FMovieSceneSubSequenceData& SubData, FMovieSceneSequenceID InSubSequenceID) const
@@ -155,6 +156,7 @@ struct FGatherParameters
 
 		SubParams.RootToSequenceTransform   = SubData.RootToSequenceTransform;
 		SubParams.HierarchicalBias          = SubData.HierarchicalBias;
+		SubParams.AccumulatedFlags          = SubData.AccumulatedFlags;
 		SubParams.SequenceID                = InSubSequenceID;
 		SubParams.RootToSequenceWarpCounter = WarpCounter;
 
@@ -194,6 +196,9 @@ struct FGatherParameters
 
 	/** Current accumulated hierarchical bias */
 	int16 HierarchicalBias;
+
+	/** Current accumulated sub-section flags */
+	EMovieSceneSubSectionFlags AccumulatedFlags;
 
 	EMovieSceneServerClientMask NetworkMask;
 };
@@ -1338,6 +1343,15 @@ void UMovieSceneCompiledDataManager::GatherTrack(const FMovieSceneBinding* Objec
 
 				ESectionEvaluationFlags Flags = Params.Flags == ESectionEvaluationFlags::None ? Entry.Flags : Params.Flags;
 
+				if (EnumHasAnyFlags(Params.AccumulatedFlags, EMovieSceneSubSectionFlags::OverrideRestoreState))
+				{
+					Flags |= ESectionEvaluationFlags::ForceRestoreState;
+				}
+				else if (EnumHasAnyFlags(Params.AccumulatedFlags, EMovieSceneSubSectionFlags::OverrideKeepState))
+				{
+					Flags |= ESectionEvaluationFlags::ForceKeepState;
+				}
+
 				CompileData.ChildPriority = Entry.LegacySortOrder;
 				CompileData.Child         = FMovieSceneFieldEntry_ChildTemplate((uint16)ChildTemplateIndex, Flags, Entry.ForcedTime);
 				CompileData.bRequiresInit = EvaluationTrack->GetChildTemplate(ChildTemplateIndex).RequiresInitialization();
@@ -1458,6 +1472,7 @@ bool UMovieSceneCompiledDataManager::GenerateSubSequenceData(UMovieSceneSubTrack
 		NewSubData.PlayRange               = TRange<FFrameNumber>::Intersection(InnerClampRange, NewSubData.PlayRange.Value);
 		NewSubData.RootToSequenceTransform = NewSubData.RootToSequenceTransform * Params.RootToSequenceTransform;
 		NewSubData.HierarchicalBias        = Params.HierarchicalBias + NewSubData.HierarchicalBias;
+		NewSubData.AccumulatedFlags        = UE::MovieScene::AccumulateChildSubSectionFlags(Params.AccumulatedFlags, NewSubData.AccumulatedFlags);
 
 		// Add the sub data to the root hierarchy
 		InOutHierarchy->Add(NewSubData, InnerSequenceID, ParentSequenceID);

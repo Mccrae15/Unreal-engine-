@@ -11,15 +11,21 @@
 	"MarketplaceURL": "",
 	"SupportURL": "",
 	"EnabledByDefault": true,
-	"CanContainContent": false,
+	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"Installed": false,
 	"IsExperimentalVersion": true,
 	"Modules": [
 		{
-			"Name": "PresetAsset",
+			"Name": "ToolPresetAsset",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "ToolPresetEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
 		}
+
 	]
 }

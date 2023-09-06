@@ -36,7 +36,8 @@ enum class EAutomationCommand : uint8
 	RunCommandLineTests,	//Run only tests that are listed on the commandline
 	RunAll,					//Run all the tests that are supported
 	RunFilter,              //Run only tests that are tagged with this filter
-	Quit					//quit the app when tests are done
+	Quit,					//quit the app when tests are done, uses forced exit
+	SoftQuit				//quit the app when tests are done without forced exit
 };
 
 
@@ -266,7 +267,7 @@ public:
 		// want to make sure it's called while we're waiting for a response
 		if (AutomationController->GetNumDeviceClusters() == 0 || AutomationTestState != EAutomationTestState::RequestTests)
 		{
-			UE_LOG(LogAutomationCommandLine, Log, TEXT("Ignoring refresh from ControllerManager. NumDeviceClusters=%d, CurrentState=%d"), AutomationController->GetNumDeviceClusters(), AutomationTestState);
+			UE_LOG(LogAutomationCommandLine, Log, TEXT("Ignoring refresh from ControllerManager. NumDeviceClusters=%d, CurrentState=%d"), AutomationController->GetNumDeviceClusters(), int(AutomationTestState));
 			return;
 		}
 
@@ -420,12 +421,12 @@ public:
 				{
 					AutomationCommand = AutomationCommandQueue[0];
 					AutomationCommandQueue.RemoveAt(0);
-					if (AutomationCommand == EAutomationCommand::Quit)
+					if (AutomationCommand == EAutomationCommand::Quit || AutomationCommand == EAutomationCommand::SoftQuit)
 					{
-						if (AutomationCommandQueue.IsValidIndex(0))
+						if (AutomationCommandQueue.IsValidIndex(0) && !IsQuitQueued())
 						{
-							// Add Quit back to the end of the array.
-							AutomationCommandQueue.Add(EAutomationCommand::Quit);
+							// Add Quit and SoftQuit commands back to the end of the array.
+							AutomationCommandQueue.Add(AutomationCommand);
 							break;
 						}
 					}
@@ -433,7 +434,7 @@ public:
 				}
 
 				// Only quit if Quit is the actual last element in the array.
-				if (AutomationCommand == EAutomationCommand::Quit)
+				if (AutomationCommand == EAutomationCommand::Quit || AutomationCommand == EAutomationCommand::SoftQuit)
 				{
 					if (!GIsCriticalError)
 					{
@@ -446,9 +447,16 @@ public:
 					UE_LOG(LogAutomationCommandLine, Log, TEXT("Shutting down. GIsCriticalError=%d"), GIsCriticalError);
 					// some tools parse this.
 					UE_LOG(LogAutomationCommandLine, Display, TEXT("**** TEST COMPLETE. EXIT CODE: %d ****"), GIsCriticalError ? -1 : 0);
-					FPlatformMisc::RequestExitWithStatus(true, GIsCriticalError ? -1 : 0);
+					FPlatformMisc::RequestExitWithStatus(AutomationCommand == EAutomationCommand::SoftQuit ? false : true, GIsCriticalError ? -1 : 0);
 					// We have finished the testing, and results are available
 					AutomationTestState = EAutomationTestState::Complete;
+				}
+				else if (!IsAboutToRunTest())
+				{
+					// Register for the callback that tells us there are tests available
+					if (!TestsRefreshedHandle.IsValid()) {
+						TestsRefreshedHandle = AutomationController->OnTestsRefreshed().AddRaw(this, &FAutomationExecCmd::HandleRefreshTestCallback);
+					}
 				}
 				break;
 			}
@@ -477,6 +485,27 @@ public:
 
 		return false;
 	}
+
+	bool IsAboutToRunTest()
+	{
+		return (AutomationCommand == EAutomationCommand::RunCommandLineTests
+			|| AutomationCommand == EAutomationCommand::RunAll
+			|| AutomationCommand == EAutomationCommand::RunFilter);
+	}
+
+	bool IsQuitQueued()
+	{
+		for (auto Command : AutomationCommandQueue)
+		{
+			if (Command == EAutomationCommand::Quit
+				|| Command == EAutomationCommand::SoftQuit)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
 	
 protected:
 	/** Console commands, see embeded usage statement **/
@@ -489,11 +518,6 @@ protected:
 		// figure out if we are handling this request
 		if (FParse::Command(&Cmd, TEXT("Automation")))
 		{
-			if (AutomationTestState != EAutomationTestState::Idle)
-			{
-				Ar.Logf(TEXT("Automation: Skipping this request because already executing tests!"));
-				return false;
-			}
 
 			TArray<FString> CommandList;
 			FString(Cmd).ParseIntoArray(CommandList, TEXT(";"), true);
@@ -520,18 +544,23 @@ protected:
 				{
 					AutomationCommandQueue.Add(EAutomationCommand::ListAllTests);
 				}
+				else if (FParse::Command(&TempCmd, TEXT("Now")))
+				{
+					DelayTimer = 0.0f;
+				}
 				else if (FParse::Command(&TempCmd, TEXT("RunTests")) || FParse::Command(&TempCmd, TEXT("RunTest")))
 				{
+					if (FParse::Command(&TempCmd, TEXT("Now")))
+					{
+						DelayTimer = 0.0f;
+						continue;
+					}
+
 					//only one of these should be used
 					if (IsRunTestQueued())
 					{
 						Ar.Logf(TEXT("Automation: A test run is already Queued: %s. Only one run is supported at a time."), *StringCommand);
 						continue;
-					}
-
-					if ( FParse::Command(&TempCmd, TEXT("Now")) )
-					{
-						DelayTimer = 0.0f;
 					}
 
 					StringCommand = TempCmd;
@@ -636,8 +665,23 @@ protected:
 				}
 				else if (FParse::Command(&TempCmd, TEXT("Quit")))
 				{
+					if (IsQuitQueued())
+					{
+						Ar.Log(TEXT("Automation: Quit command is already Queued."));
+						continue;
+					}
 					AutomationCommandQueue.Add(EAutomationCommand::Quit);
 					Ar.Logf(TEXT("Automation: Quit Command Queued."));
+				}
+				else if (FParse::Command(&TempCmd, TEXT("SoftQuit")))
+				{
+					if (IsQuitQueued())
+					{
+						Ar.Log(TEXT("Automation: Quit command is already Queued."));
+						continue;
+					}
+					AutomationCommandQueue.Add(EAutomationCommand::SoftQuit);
+					Ar.Logf(TEXT("Automation: SoftQuit Command Queued."));
 				}
 				else if (FParse::Command(&TempCmd, TEXT("IgnoreLogEvents")))
 				{
@@ -658,7 +702,9 @@ protected:
 					Ar.Logf(TEXT("\tAutomation SetFilter <filter name>"));
 					Ar.Logf(TEXT("\tAutomation SetMinimumPriority <minimum priority>"));
 					Ar.Logf(TEXT("\tAutomation SetPriority <priority>"));
+					Ar.Logf(TEXT("\tAutomation Now"));
 					Ar.Logf(TEXT("\tAutomation Quit"));
+					Ar.Logf(TEXT("\tAutomation SoftQuit"));
 					bHandled = false;
 				}
 			}

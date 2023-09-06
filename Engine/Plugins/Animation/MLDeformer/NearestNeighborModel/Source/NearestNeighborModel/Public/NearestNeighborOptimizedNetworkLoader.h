@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "NearestNeighborOptimizedNetworkLoader.generated.h"
 
 class UNearestNeighborOptimizedNetwork;
@@ -19,9 +19,6 @@ class NEARESTNEIGHBORMODEL_API UNearestNeighborOptimizedNetworkLoader
 public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Nearest Neighbor Model")
 	bool LoadOptimizedNetwork(const FString& OnnxPath);
-
-	UFUNCTION(BlueprintImplementableEvent, Category = "Nearest Neighbor Model")
-	bool DoesMeetPrerequisites() const;
 
 	void SetOptimizedNetwork(UNearestNeighborOptimizedNetwork* InNetwork);
 

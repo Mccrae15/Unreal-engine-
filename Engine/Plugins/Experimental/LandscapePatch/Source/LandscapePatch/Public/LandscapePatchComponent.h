@@ -4,6 +4,8 @@
 
 
 #include "Components/SceneComponent.h"
+#include "LandscapeBlueprintBrushBase.h"
+#include "LandscapeEditTypes.h"
 
 #include "LandscapePatchComponent.generated.h"
 
@@ -31,11 +33,13 @@ public:
 	virtual void Initialize_Native(const FTransform& InLandscapeTransform,
 		const FIntPoint& InLandscapeSize,
 		const FIntPoint& InLandscapeRenderTargetSize) {}
-	virtual UTextureRenderTarget2D* Render_Native(bool InIsHeightmap,
-		UTextureRenderTarget2D* InCombinedResult,
-		const FName& InWeightmapLayerName) { return InCombinedResult; }
 
+	virtual UTextureRenderTarget2D* RenderLayer_Native(const FLandscapeBrushParameters& InParameters) { return InParameters.CombinedResult; }
+
+	UE_DEPRECATED(5.3, "Use AffectsWeightmapLayer")
 	virtual bool IsAffectingWeightmapLayer(const FName& InLayerName) const { return false; }
+	virtual bool AffectsWeightmapLayer(const FName& InLayerName) const { return false; }
+	virtual bool AffectsVisibilityLayer() const { return false; }
 
 	UFUNCTION(BlueprintCallable, Category = "LandscapePatch")
 	void RequestLandscapeUpdate(bool bInUserTriggeredUpdate = false);

@@ -11,11 +11,9 @@ public class EditorFramework : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"InputCore",
-				"RenderCore",
 				"Slate",
 				"SlateCore",
-				"WorkspaceMenuStructure"
+				"ToolMenus"
 			}
 		);
 

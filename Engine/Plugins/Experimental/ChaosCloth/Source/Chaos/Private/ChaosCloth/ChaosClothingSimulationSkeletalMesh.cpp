@@ -59,6 +59,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return IsValidLODIndex(LODIndex) ? Asset->LodData[LODIndex].PhysicalMeshData.Vertices.Num() : 0;
 	}
 
+	int32 FClothingSimulationSkeletalMesh::GetNumPatternPoints(int32 LODIndex) const
+	{
+		return 0;
+	}
+
 	TConstArrayView<FVector3f> FClothingSimulationSkeletalMesh::GetPositions(int32 LODIndex) const
 	{
 		if (IsValidLODIndex(LODIndex))
@@ -68,6 +73,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			return ClothPhysicalMeshData.Vertices;
 		}
 		return TConstArrayView<FVector3f>();
+	}
+
+	TConstArrayView<FVector2f> FClothingSimulationSkeletalMesh::GetPatternPositions(int32 LODIndex) const
+	{
+		return TConstArrayView<FVector2f>();
 	}
 
 	TConstArrayView<FVector3f> FClothingSimulationSkeletalMesh::GetNormals(int32 LODIndex) const
@@ -88,26 +98,62 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			TConstArrayView<uint32>();
 	}
 
+	TConstArrayView<uint32> FClothingSimulationSkeletalMesh::GetPatternIndices(int32 LODIndex) const
+	{
+		return TConstArrayView<uint32>();
+	}
+
+	TConstArrayView<uint32> FClothingSimulationSkeletalMesh::GetPatternToWeldedIndices(int32 LODIndex) const
+	{
+		return TConstArrayView<uint32>();
+	}
+
+	TArray<FName> FClothingSimulationSkeletalMesh::GetWeightMapNames(int32 LODIndex) const
+	{
+		TArray<FName> WeightMapNames;
+		if (IsValidLODIndex(LODIndex))
+		{
+			// This must match the order of GetWeightMaps
+			const FClothLODDataCommon& ClothLODData = Asset->LodData[LODIndex];
+			const FClothPhysicalMeshData& ClothPhysicalMeshData = ClothLODData.PhysicalMeshData;
+			WeightMapNames.Reserve(ClothPhysicalMeshData.WeightMaps.Num());
+
+			const UEnum* const ChaosWeightMapTargetEnum = StaticEnum<EChaosWeightMapTarget>();
+			for (const TPair<uint32, FPointWeightMap>& TargetIDAndMap : ClothPhysicalMeshData.WeightMaps)
+			{
+				WeightMapNames.Add(FName(ChaosWeightMapTargetEnum->GetNameStringByValue(TargetIDAndMap.Get<0>())));
+			}
+		}
+
+		return WeightMapNames;
+	}
+
+	TMap<FString, int32> FClothingSimulationSkeletalMesh::GetWeightMapIndices(int32 LODIndex) const
+	{
+		TMap<FString, int32> WeightMapIndices;
+		const TArray<FName> WeightMapNames = GetWeightMapNames(LODIndex);
+		WeightMapIndices.Reserve(WeightMapNames.Num());
+		for (int32 WeightMapIndex = 0; WeightMapIndex < WeightMapNames.Num(); ++WeightMapIndex)
+		{
+			const FName& WeightMapName = WeightMapNames[WeightMapIndex];
+			WeightMapIndices.Emplace(WeightMapName.ToString(), WeightMapIndex);
+		}
+		return WeightMapIndices;
+	}
+
 	TArray<TConstArrayView<FRealSingle>> FClothingSimulationSkeletalMesh::GetWeightMaps(int32 LODIndex) const
 	{
 		TArray<TConstArrayView<FRealSingle>> WeightMaps;
 		if (IsValidLODIndex(LODIndex))
 		{
+			// This must match the order of GetWeightMapNames
 			const FClothLODDataCommon& ClothLODData = Asset->LodData[LODIndex];
 			const FClothPhysicalMeshData& ClothPhysicalMeshData = ClothLODData.PhysicalMeshData;
 
-			const UEnum* const ChaosWeightMapTargetEnum = StaticEnum<EChaosWeightMapTarget>();
-			const int32 NumWeightMaps = (int32)ChaosWeightMapTargetEnum->GetMaxEnumValue() + 1;
-
-			WeightMaps.SetNum(NumWeightMaps);
-
-			for (int32 EnumIndex = 0; EnumIndex < ChaosWeightMapTargetEnum->NumEnums(); ++EnumIndex)
+			WeightMaps.Reserve(ClothPhysicalMeshData.WeightMaps.Num());
+			for (const TPair<uint32, FPointWeightMap>& TargetIDAndMap : ClothPhysicalMeshData.WeightMaps)
 			{
-				const int32 TargetIndex = (int32)ChaosWeightMapTargetEnum->GetValueByIndex(EnumIndex);
-				if (const FPointWeightMap* const WeightMap = ClothPhysicalMeshData.FindWeightMap(TargetIndex))
-				{
-					WeightMaps[TargetIndex] = WeightMap->Values;
-				}
+				WeightMaps.Add(TargetIDAndMap.Get<1>().Values);
 			}
 		}
 		return WeightMaps;

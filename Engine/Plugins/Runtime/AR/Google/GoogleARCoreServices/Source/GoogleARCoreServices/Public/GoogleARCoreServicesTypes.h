@@ -8,6 +8,19 @@
 
 DEFINE_LOG_CATEGORY_STATIC(LogGoogleARCoreServices, Log, All);
 
+
+#if PLATFORM_IOS
+#define ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC 1
+#else
+#define ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC 0
+#endif
+
+#if !ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
+typedef struct ArFuture_ ArFuture;
+typedef struct ArHostCloudAnchorFuture_ ArHostCloudAnchorFuture;
+typedef struct ArResolveCloudAnchorFuture_ ArResolveCloudAnchorFuture;
+#endif
+
 /// @defgroup GoogleARCoreServices Google ARCore Services
 /// The module for GoogleARCoreServices plugin
 
@@ -85,7 +98,12 @@ enum class ECloudARPinCloudState : uint8
 	// A hosting/resolving task for the CloudARPin has been scheduled.
 	// Once the task completes in the background, the CloudARPin will get
 	// a new cloud state in the next frame.
+	// NOTE: this does not correspond to an ArCloudAnchorState, this value results with the ArFuture is pending.
 	InProgress,
+
+	// A hosting/resolving task has been cancelled.  This CloudARPin would not be cloud hosted.
+	// NOTE: this does not correspond to an ArCloudAnchorState, this value results with the ArFuture is canccelled.
+	Cancelled,
 
 	// A hosting/resolving task for this CloudARPin completed successfully.
 	Success,
@@ -135,6 +153,43 @@ enum class ECloudARPinCloudState : uint8
 	ErrorSDKVersionTooNew
 };
 
+#if ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
+#else
+enum class ECloudAnchorFutureType : uint8
+{
+	Unknown,
+	Host,
+	Resolve
+};
+
+// An raii holder for ArFutures of the types we use, to ensure they are released.
+typedef TSharedPtr<struct FGoogleARFutureHolder> GoogleARFutureHolderPtr;
+struct FGoogleARFutureHolder
+{
+	static GoogleARFutureHolderPtr MakeHostFuture();
+	static GoogleARFutureHolderPtr MakeResolveFuture();
+
+	FGoogleARFutureHolder(ECloudAnchorFutureType InFutureType);
+	~FGoogleARFutureHolder();
+
+	ArHostCloudAnchorFuture** GetHostFuturePtr();
+	ArResolveCloudAnchorFuture** GetResolveFuturePtr();
+	ECloudAnchorFutureType GetFutureType() const;
+	ArFuture* const AsFuture() const;
+	ArHostCloudAnchorFuture* const AsHostFuture() const;
+	ArResolveCloudAnchorFuture* const AsResolveFuture() const;
+
+private:
+	const ECloudAnchorFutureType FutureType;
+	union
+	{
+		ArFuture* Future;
+		ArHostCloudAnchorFuture* HostFuture;
+		ArResolveCloudAnchorFuture* ResolveFuture;
+	};
+};
+#endif // !ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
+
 /**
  * A CloudARPin will be created when you host an existing ARPin, or resolved a
  * previous hosted CloudARPin. It is a subclass of UARPin so all functions on 
@@ -164,11 +219,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "GoogleARCoreServices|CloudARPin")
 	ECloudARPinCloudState GetARPinCloudState();
 
+#if ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
 	void UpdateCloudState(ECloudARPinCloudState NewCloudState, FString NewCloudID);
+#else
+	void SetFuture(GoogleARFutureHolderPtr FutureHolder);
+	GoogleARFutureHolderPtr GetFuture() const;
+	bool IsPending() const;
+	void ReleaseFuture();
+
+	void UpdateCloudState(ECloudARPinCloudState NewCloudState);
+
+	void SetCloudID(FString NewCloudID);
+	#endif
 
 private:
-
 	ECloudARPinCloudState CloudState;
 	FString CloudID;
-	void* NativeResource;
+#if ARCORE_USE_OLD_CLOUD_ANCHOR_ASYNC
+#else
+	GoogleARFutureHolderPtr Future;
+#endif
 };

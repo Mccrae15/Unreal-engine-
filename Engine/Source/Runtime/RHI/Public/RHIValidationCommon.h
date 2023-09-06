@@ -20,13 +20,20 @@ const bool GRHIValidationEnabled = false;
 
 #if ENABLE_RHI_VALIDATION
 
+class FRHIShader;
+class FRHIShaderResourceView;
 class FRHIUniformBuffer;
+class FRHIViewableResource;
+class FRHIUnorderedAccessView;
+
 class FValidationComputeContext;
 class FValidationContext;
 class FValidationRHI;
 
 struct FRHITextureCreateDesc;
 struct FRHITransitionInfo;
+struct FRHIViewDesc;
+
 
 namespace RHIValidation
 {
@@ -222,6 +229,13 @@ namespace RHIValidation
 		}
 	};
 
+	struct FViewIdentity : public FResourceIdentity
+	{
+		uint32 Stride = 0;
+
+		RHI_API FViewIdentity(FRHIViewableResource* Resource, FRHIViewDesc const& ViewDesc);
+	};
+
 	struct FTransientState
 	{
 		FTransientState() = default;
@@ -382,7 +396,7 @@ namespace RHIValidation
 	public:
 	};
 
-	class RHI_API FTextureResource
+	class FTextureResource
 	{
 	private:
 		// Don't use inheritance here. Because FRHITextureReferences exist, we have to
@@ -391,13 +405,13 @@ namespace RHIValidation
 
 	public:
 		FTextureResource() = default;
-		FTextureResource(FRHITextureCreateDesc const& CreateDesc);
+		RHI_API FTextureResource(FRHITextureCreateDesc const& CreateDesc);
 
 		virtual ~FTextureResource() {}
 
 		virtual FResource* GetTrackerResource() { return &PRIVATE_TrackerResource; }
 
-		void InitBarrierTracking(FRHITextureCreateDesc const& CreateDesc);
+		RHI_API void InitBarrierTracking(FRHITextureCreateDesc const& CreateDesc);
 
 		inline bool IsBarrierTrackingInitialized() const
 		{
@@ -406,10 +420,10 @@ namespace RHIValidation
 			return const_cast<FTextureResource*>(this)->GetTrackerResource()->IsBarrierTrackingInitialized();
 		}
 
-		void InitBarrierTracking(int32 InNumMips, int32 InNumArraySlices, EPixelFormat PixelFormat, ETextureCreateFlags Flags, ERHIAccess InResourceState, const TCHAR* InDebugName);
+		RHI_API void InitBarrierTracking(int32 InNumMips, int32 InNumArraySlices, EPixelFormat PixelFormat, ETextureCreateFlags Flags, ERHIAccess InResourceState, const TCHAR* InDebugName);
 
-		FResourceIdentity GetViewIdentity(uint32 InMipIndex, uint32 InNumMips, uint32 InArraySlice, uint32 InNumArraySlices, uint32 InPlaneIndex, uint32 InNumPlanes);
-		FResourceIdentity GetTransitionIdentity(const FRHITransitionInfo& Info);
+		RHI_API FResourceIdentity GetViewIdentity(uint32 InMipIndex, uint32 InNumMips, uint32 InArraySlice, uint32 InNumArraySlices, uint32 InPlaneIndex, uint32 InNumPlanes);
+		RHI_API FResourceIdentity GetTransitionIdentity(const FRHITransitionInfo& Info);
 
 		inline FResourceIdentity GetWholeResourceIdentity()
 		{
@@ -427,28 +441,6 @@ namespace RHIValidation
 			return Identity;
 		}
 	};
-
-	struct FView
-	{
-		FView()
-		{
-			ResetViewIdentity();
-		}
-
-		void ResetViewIdentity()
-		{
-			ViewIdentity.Resource = nullptr;
-			ViewIdentity.SubresourceRange = FSubresourceRange(0, 0, 0, 0, 0, 0);
-		}
-
-		FResourceIdentity ViewIdentity;
-	};
-
-	struct FShaderResourceView : public FView
-	{};
-
-	struct FUnorderedAccessView : public FView
-	{};
 
 	struct FFence
 	{
@@ -823,7 +815,7 @@ namespace RHIValidation
 		struct FUAVTracker
 		{
 		private:
-			TArray<FUnorderedAccessView*> UAVs;
+			TArray<FRHIUnorderedAccessView*> UAVs;
 
 		public:
 			FUAVTracker()
@@ -831,7 +823,7 @@ namespace RHIValidation
 				UAVs.Reserve(MaxSimultaneousUAVs);
 			}
 
-			inline FUnorderedAccessView*& operator[](int32 Slot)
+			inline FRHIUnorderedAccessView*& operator[](int32 Slot)
 			{
 				if (Slot >= UAVs.Num())
 				{
@@ -845,38 +837,7 @@ namespace RHIValidation
 				UAVs.SetNum(0, false);
 			}
 
-			inline void DrawOrDispatch(FTracker* BarrierTracker, const FState& RequiredState)
-			{
-				// The barrier tracking expects us to call Assert() only once per unique resource.
-				// However, multiple UAVs may be bound, all referencing the same resource.
-				// Find the unique resources to ensure we only do the tracking once per resource.
-				uint32 NumUniqueIdentities = 0;
-				FResourceIdentity UniqueIdentities[MaxSimultaneousUAVs];
-
-				for (int32 UAVIndex = 0; UAVIndex < UAVs.Num(); ++UAVIndex)
-				{
-					if (UAVs[UAVIndex])
-					{
-						const FResourceIdentity& Identity = UAVs[UAVIndex]->ViewIdentity;
-
-						// Check if we've already seen this resource.
-						bool bFound = false;
-						for (uint32 Index = 0; !bFound && Index < NumUniqueIdentities; ++Index)
-						{
-							bFound = UniqueIdentities[Index] == Identity;
-						}
-
-						if (!bFound)
-						{
-							check(NumUniqueIdentities < UE_ARRAY_COUNT(UniqueIdentities));
-							UniqueIdentities[NumUniqueIdentities++] = Identity;
-
-							// Assert unique resources have the required state.
-							BarrierTracker->AddOp(FOperation::Assert(Identity, RequiredState));
-						}
-					}
-				}
-			}
+			void DrawOrDispatch(FTracker* BarrierTracker, const FState& RequiredState);
 		};
 
 	public:
@@ -928,13 +889,13 @@ namespace RHIValidation
 			AddOp(FOperation::Assert(Identity, FState(RequiredAccess, Pipeline)));
 		}
 
-		inline void AssertUAV(FUnorderedAccessView* UAV, EUAVMode Mode, int32 Slot)
+		inline void AssertUAV(FRHIUnorderedAccessView* UAV, EUAVMode Mode, int32 Slot)
 		{
 			checkSlow(Mode == EUAVMode::Compute || Pipeline == ERHIPipeline::Graphics);
 			UAVTrackers[int32(Mode)][Slot] = UAV;
 		}
 
-		inline void AssertUAV(FUnorderedAccessView* UAV, ERHIAccess Access, int32 Slot)
+		inline void AssertUAV(FRHIUnorderedAccessView* UAV, ERHIAccess Access, int32 Slot)
 		{
 			checkSlow(!(Access & ~ERHIAccess::UAVMask));
 			AssertUAV(UAV, Access == ERHIAccess::UAVGraphics ? EUAVMode::Graphics : EUAVMode::Compute, Slot);
@@ -1016,6 +977,10 @@ namespace RHIValidation
 	};
 
 	extern RHI_API void* CaptureBacktrace();
+
+	/** Validates that the SRV is conform to what the shader expects */
+	extern RHI_API void ValidateShaderResourceView(const FRHIShader* RHIShaderBase, uint32 BindIndex, FRHIShaderResourceView* SRV);
+
 }
 
 #endif // ENABLE_RHI_VALIDATION

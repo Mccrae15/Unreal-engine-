@@ -21,8 +21,9 @@ namespace mu
 	class OutputArchive;
 
 
-	//! Node that outputs a constant image.
-	//! \ingroup model
+	/** Node that outputs a constant image.
+	* This node also supports "image references".
+	*/
 	class MUTABLETOOLS_API NodeImageConstant : public NodeImage
 	{
 	public:
@@ -41,8 +42,6 @@ namespace mu
 		//-----------------------------------------------------------------------------------------
 		// Node Interface
 		//-----------------------------------------------------------------------------------------
-
-        
 
         const NODE_TYPE* GetType() const override;
 		static const NODE_TYPE* GetStaticType();

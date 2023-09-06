@@ -17,7 +17,7 @@
 		{
 			"Name": "MediaIOCore",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "PostConfigInit"
 		},
 		{
 			"Name": "MediaIOEditor",
@@ -28,6 +28,12 @@
 			"Name": "GPUTextureTransfer",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "OpenColorIO",
+			"Enabled": true
 		}
 	],
 	"DocsURL": "",

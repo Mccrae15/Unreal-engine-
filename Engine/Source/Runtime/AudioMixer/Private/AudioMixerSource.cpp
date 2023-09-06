@@ -17,6 +17,7 @@
 #include "Misc/ScopeRWLock.h"
 #include "Templates/Function.h"
 #include "Trace/Trace.h"
+#include "Engine/Engine.h"
 
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
@@ -1036,6 +1037,8 @@ namespace Audio
 		UpdateChannelMaps();
 
 #if ENABLE_AUDIO_DEBUG
+		UpdateCPUCoreUtilization();
+
 		Audio::FAudioDebugger::DrawDebugInfo(*this);
 #endif // ENABLE_AUDIO_DEBUG
 	}
@@ -1114,22 +1117,26 @@ namespace Audio
 
 		// Active sound instance ID is the audio component ID of active sound.
 		uint64 InstanceID = 0;
+		uint32 PlayOrder = 0;
 		bool bActiveSoundIsPreviewSound = false;
 		TArray<FAudioParameter> DefaultParameters;
 		FActiveSound* ActiveSound = WaveInstance->ActiveSound;
 		if (ActiveSound)
 		{
 			InstanceID = ActiveSound->GetAudioComponentID();
+			PlayOrder = ActiveSound->GetPlayOrder();
 			bActiveSoundIsPreviewSound = ActiveSound->bIsPreviewSound;
 			if (Audio::IParameterTransmitter* Transmitter = ActiveSound->GetTransmitter())
 			{
 				DefaultParameters = Transmitter->GetParameters();
+				SoundWave.InitParameters(DefaultParameters);
 			}
 		}
 
 		FMixerSourceBufferInitArgs BufferInitArgs;
 		BufferInitArgs.AudioDeviceID = AudioDevice->DeviceID;
-		BufferInitArgs.InstanceID = InstanceID;
+		BufferInitArgs.AudioComponentID = InstanceID;
+		BufferInitArgs.InstanceID = GetTransmitterID(InstanceID, WaveInstance->WaveInstanceHash, PlayOrder);
 		BufferInitArgs.SampleRate = AudioDevice->GetSampleRate();
 		BufferInitArgs.AudioMixerNumOutputFrames = MixerDevice->GetNumOutputFrames();
 		BufferInitArgs.Buffer = MixerBuffer;
@@ -1830,16 +1837,18 @@ namespace Audio
 
 		SetupBusData();
 
-		if (!bSendingAudioToBuses)
+		FActiveSound* ActiveSound = WaveInstance->ActiveSound;
+		check(ActiveSound);
+
+		// Check if the user actively called a function that alters bus sends since the last update
+		bool bHasNewBusSends = ActiveSound->HasNewBusSends();
+
+		if (!bSendingAudioToBuses && !bHasNewBusSends && !DynamicBusSendInfos.Num())
 		{
 			return;
 		}
 
-		//If the user actively called a function that alters bus sends since the last update
-		FActiveSound* ActiveSound = WaveInstance->ActiveSound;
-		check(ActiveSound);
-
-		if (ActiveSound->HasNewBusSends())
+		if (bHasNewBusSends)
 		{
 			TArray<TTuple<EBusSendType, FSoundSourceBusSendInfo>> NewBusSends = ActiveSound->GetNewBusSends();
 			for (TTuple<EBusSendType, FSoundSourceBusSendInfo>& NewSend : NewBusSends)
@@ -1847,11 +1856,13 @@ namespace Audio
 				if (NewSend.Value.SoundSourceBus)
 				{
 					MixerSourceVoice->SetAudioBusSendInfo(NewSend.Key, NewSend.Value.SoundSourceBus->GetUniqueID(), NewSend.Value.SendLevel);
+					bSendingAudioToBuses = true;
 				}
 
 				if (NewSend.Value.AudioBus)
 				{
 					MixerSourceVoice->SetAudioBusSendInfo(NewSend.Key, NewSend.Value.AudioBus->GetUniqueID(), NewSend.Value.SendLevel);
+					bSendingAudioToBuses = true;
 				}
 			}
 
@@ -1925,6 +1936,20 @@ namespace Audio
 		bPrevAllowedSpatializationSetting = IsSpatializationCVarEnabled();
 	}
 
+#if ENABLE_AUDIO_DEBUG
+	void FMixerSource::UpdateCPUCoreUtilization()
+	{
+		if (MixerSourceVoice)
+		{
+			if (DebugInfo.IsValid())
+			{
+				FScopeLock DebugInfoLock(&DebugInfo->CS);
+				DebugInfo->CPUCoreUtilization = MixerSourceVoice->GetCPUCoreUtilization();
+			}
+		}
+	}
+#endif // if ENABLE_AUDIO_DEBUG
+
 	bool FMixerSource::ComputeMonoChannelMap(Audio::FAlignedFloatBuffer& OutChannelMap)
 	{
 		if (IsUsingObjectBasedSpatialization())
@@ -1943,7 +1968,10 @@ namespace Audio
 			// Don't need to compute the source channel map if the absolute azimuth hasn't changed much
 			PreviousAzimuth = WaveInstance->AbsoluteAzimuth;
 			OutChannelMap.Reset();
-			MixerDevice->Get3DChannelMap(MixerDevice->GetNumDeviceChannels(), WaveInstance, WaveInstance->AbsoluteAzimuth, SpatializationParams.NormalizedOmniRadius, OutChannelMap);
+
+			int32 NumDeviceChannels = MixerDevice->GetNumDeviceChannels();
+			float DefaultOmniAmount = 1.0f / NumDeviceChannels;
+			MixerDevice->Get3DChannelMap(NumDeviceChannels, WaveInstance, WaveInstance->AbsoluteAzimuth, SpatializationParams.NonSpatializedAmount, nullptr, DefaultOmniAmount, OutChannelMap);
 			return true;
 		}
 		else if (!OutChannelMap.Num() || (IsSpatializationCVarEnabled() != bPrevAllowedSpatializationSetting))
@@ -1999,10 +2027,97 @@ namespace Audio
 				// Reset the channel map, the stereo spatialization channel mapping calls below will append their mappings
 				OutChannelMap.Reset();
 
-				const int32 NumOutputChannels = MixerDevice->GetNumDeviceChannels();
+				int32 NumOutputChannels = MixerDevice->GetNumDeviceChannels();
 
-				MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, LeftAzimuth, SpatializationParams.NormalizedOmniRadius, OutChannelMap);
-				MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, RightAzimuth, SpatializationParams.NormalizedOmniRadius, OutChannelMap);
+				if (WaveInstance->NonSpatializedRadiusMode == ENonSpatializedRadiusSpeakerMapMode::OmniDirectional)
+				{
+					float DefaultOmniAmount = 1.0f / NumOutputChannels;
+					MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, LeftAzimuth, SpatializationParams.NonSpatializedAmount, nullptr, DefaultOmniAmount, OutChannelMap);
+					MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, RightAzimuth, SpatializationParams.NonSpatializedAmount, nullptr, DefaultOmniAmount, OutChannelMap);
+				}
+				else if (WaveInstance->NonSpatializedRadiusMode == ENonSpatializedRadiusSpeakerMapMode::Direct2D)
+				{
+					// Create some omni maps for left and right channels
+					auto CreateLeftOmniMap = []() -> TMap<EAudioMixerChannel::Type, float>
+					{
+						TMap<EAudioMixerChannel::Type, float> LeftOmniMap;
+						LeftOmniMap.Add(EAudioMixerChannel::FrontLeft, 1.0f);
+						return LeftOmniMap;
+					};
+
+					auto CreateRightOmniMap = []() -> TMap<EAudioMixerChannel::Type, float>
+					{
+						TMap<EAudioMixerChannel::Type, float> RightOmniMap;
+						RightOmniMap.Add(EAudioMixerChannel::FrontRight, 1.0f);
+						return RightOmniMap;
+					};
+
+					static const TMap<EAudioMixerChannel::Type, float> LeftOmniMap = CreateLeftOmniMap();
+					static const TMap<EAudioMixerChannel::Type, float> RightOmniMap = CreateRightOmniMap();
+
+					MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, LeftAzimuth, SpatializationParams.NonSpatializedAmount, &LeftOmniMap, 0.0f, OutChannelMap);
+					MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, RightAzimuth, SpatializationParams.NonSpatializedAmount, &RightOmniMap, 0.0f, OutChannelMap);
+				}
+				else
+				{
+					// If we are in 5.1, we need to use the side-channel speakers
+					if (NumOutputChannels == 6)
+					{
+						// Create some omni maps for left and right channels
+						auto CreateLeftOmniMap = []() -> TMap<EAudioMixerChannel::Type, float>
+						{
+							TMap<EAudioMixerChannel::Type, float> LeftOmniMap;
+							LeftOmniMap.Add(EAudioMixerChannel::FrontLeft, 1.0f);
+							LeftOmniMap.Add(EAudioMixerChannel::SideLeft, 1.0f);
+
+							return LeftOmniMap;
+						};
+
+						auto CreateRightOmniMap = []() -> TMap<EAudioMixerChannel::Type, float>
+						{
+							TMap<EAudioMixerChannel::Type, float> RightOmniMap;
+							RightOmniMap.Add(EAudioMixerChannel::FrontRight, 1.0f);
+							RightOmniMap.Add(EAudioMixerChannel::SideRight, 1.0f);
+
+							return RightOmniMap;
+						};
+
+						static const TMap<EAudioMixerChannel::Type, float> LeftOmniMap = CreateLeftOmniMap();
+						static const TMap<EAudioMixerChannel::Type, float> RightOmniMap = CreateRightOmniMap();
+
+						MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, LeftAzimuth, SpatializationParams.NonSpatializedAmount, &LeftOmniMap, 0.0f, OutChannelMap);
+						MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, RightAzimuth, SpatializationParams.NonSpatializedAmount, &RightOmniMap, 0.0f, OutChannelMap);
+
+					}
+					// If we are in 7.1 we need to use the back-channel speakers
+					else if (NumOutputChannels == 8)
+					{
+						// Create some omni maps for left and right channels
+						auto CreateLeftOmniMap = []() -> TMap<EAudioMixerChannel::Type, float>
+						{
+							TMap<EAudioMixerChannel::Type, float> LeftOmniMap;
+							LeftOmniMap.Add(EAudioMixerChannel::FrontLeft, 1.0f);
+							LeftOmniMap.Add(EAudioMixerChannel::BackLeft, 1.0f);
+
+							return LeftOmniMap;
+						};
+
+						auto CreateRightOmniMap = []() -> TMap<EAudioMixerChannel::Type, float>
+						{
+							TMap<EAudioMixerChannel::Type, float> RightOmniMap;
+							RightOmniMap.Add(EAudioMixerChannel::FrontRight, 1.0f);
+							RightOmniMap.Add(EAudioMixerChannel::BackRight, 1.0f);
+
+							return RightOmniMap;
+						};
+
+						static const TMap<EAudioMixerChannel::Type, float> LeftOmniMap = CreateLeftOmniMap();
+						static const TMap<EAudioMixerChannel::Type, float> RightOmniMap = CreateRightOmniMap();
+
+						MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, LeftAzimuth, SpatializationParams.NonSpatializedAmount, &LeftOmniMap, 0.0f, OutChannelMap);
+						MixerDevice->Get3DChannelMap(NumOutputChannels, WaveInstance, RightAzimuth, SpatializationParams.NonSpatializedAmount, &RightOmniMap, 0.0f, OutChannelMap);
+					}
+				}		
 
 				return true;
 			}

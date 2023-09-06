@@ -94,17 +94,20 @@
 #include "ViewportWorldInteraction.h"
 #include "Subsystems/BrushEditingSubsystem.h"
 #include "Engine/VolumeTexture.h"
+#include "Engine/TextureCube.h"
 #include "Materials/MaterialExpressionDivide.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionTransformPosition.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialExpressionReflectionVectorWS.h"
 #include "LevelEditorDragDropHandler.h"
 #include "UnrealWidget.h"
 #include "EdModeInteractiveToolsContext.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Rendering/StaticLightingSystemInterface.h"
 #include "TextureResource.h"
+#include "Subsystems/PlacementSubsystem.h"
 
 DEFINE_LOG_CATEGORY(LogEditorViewport);
 
@@ -473,6 +476,18 @@ static bool TryAndCreateMaterialInput( UMaterial* UnrealMaterial, EMaterialKind 
 		WorldPosExpression->WorldPositionShaderOffset = WPT_Default;
 		WorldPosExpression->MaterialExpressionEditorX = EditorPosX;
 		WorldPosExpression->MaterialExpressionEditorY = EditorPosY;
+	}
+	else if (UnrealTexture->IsA<UTextureCube>())
+	{
+		// If it's a cube texture, add a reflection vector expression to the UVW input to satisfy the expression input requirement
+		UMaterialExpressionReflectionVectorWS* ReflectionVectorExpression = NewObject<UMaterialExpressionReflectionVectorWS>(UnrealMaterial);
+
+		UnrealMaterial->GetExpressionCollection().AddExpression(ReflectionVectorExpression);
+
+		ReflectionVectorExpression->MaterialExpressionEditorX = UnrealTextureExpression->MaterialExpressionEditorX - 250; // Place node to the left to avoid overlap
+		ReflectionVectorExpression->MaterialExpressionEditorY = UnrealTextureExpression->MaterialExpressionEditorY;
+
+		UnrealTextureExpression->Coordinates.Expression = ReflectionVectorExpression;
 	}
 
 	// If we know for a fact this is a normal map, it can only legally be placed in the normal map slot.
@@ -1428,8 +1443,10 @@ FDropQuery FLevelEditorViewportClient::CanDropObjectsAtCoordinates(int32 MouseX,
 	UObject* AssetObj = AssetData.GetAsset();
 	UClass* ClassObj = Cast<UClass>(AssetObj);
 
+	UPlacementSubsystem* PlacementSubsystem = GEditor->GetEditorSubsystem<UPlacementSubsystem>();
 	// Check if the asset has an actor factory
-	bool bHasActorFactory = FActorFactoryAssetProxy::GetFactoryForAsset(AssetData) != nullptr;
+	bool bHasActorFactory = PlacementSubsystem && PlacementSubsystem->FindAssetFactoryFromAssetData(AssetData) != nullptr;
+	bHasActorFactory = bHasActorFactory || FActorFactoryAssetProxy::GetFactoryForAsset(AssetData) != nullptr;
 
 	if (ClassObj)
 	{
@@ -1529,7 +1546,7 @@ bool FLevelEditorViewportClient::DropObjectsAtCoordinates(int32 MouseX, int32 Mo
 			{
 				HActor* TargetProxy = static_cast<HActor*>(HitProxy);
 				TargetActor = TargetProxy->Actor;
-				TargetComponent = const_cast<UPrimitiveComponent*>(TargetProxy->PrimComponent);
+				TargetComponent = ConstCast(TargetProxy->PrimComponent);
 				TargetMaterialSlot = TargetProxy->MaterialIndex;
 			}
 			else if (HitProxy->IsA(HBSPBrushVert::StaticGetType()))
@@ -1801,6 +1818,18 @@ void FTrackingTransaction::Cancel()
 	{
 		ScopedTransaction->Cancel();
 	}
+
+	// If the transaction is cancelled, reset the package dirty states to reflect their original state
+	for (const TTuple<UPackage*, bool>& InitialPackageDirtyState : InitialPackageDirtyStates)
+	{
+		UPackage* Package = InitialPackageDirtyState.Key;
+		const bool bInitialDirtyState = InitialPackageDirtyState.Value;
+		if (!bInitialDirtyState && Package->IsDirty())
+		{
+			Package->SetDirtyFlag(false);
+		}
+	}
+
 	End();
 }
 
@@ -2146,6 +2175,7 @@ bool FLevelEditorViewportClient::ShouldLockPitch() const
 
 void FLevelEditorViewportClient::BeginCameraMovement(bool bHasMovement)
 {
+	const bool bIsUsingLegacyMovementNotify = GetDefault<ULevelEditorViewportSettings>()->bUseLegacyCameraMovementNotifications;
 	// If there's new movement broadcast it
 	if (bHasMovement)
 	{
@@ -2167,10 +2197,15 @@ void FLevelEditorViewportClient::BeginCameraMovement(bool bHasMovement)
 					FCoreUObjectDelegates::OnPreObjectPropertyChanged.Broadcast(ActorLock, PropertyChain);
 				}
 			}
+
+			if (!bIsUsingLegacyMovementNotify)
+			{
+				TrackingTransaction.Cancel();
+			}
 			bIsCameraMoving = true;
 		}
 	}
-	else
+	else if (bIsUsingLegacyMovementNotify || !bIsTracking)
 	{
 		bIsCameraMoving = false;
 	}
@@ -2478,8 +2513,8 @@ void FLevelEditorViewportClient::Tick(float DeltaTime)
 	// Update the preview mesh for the preview mesh mode. 
 	GEditor->UpdatePreviewMesh();
 
-	// Copy perspective views to the global if this viewport is a view parent or has streaming volume previs enabled
-	if ( ViewState.GetReference()->IsViewParent() || (IsPerspective() && GetDefault<ULevelEditorViewportSettings>()->bLevelStreamingVolumePrevis && Viewport->GetSizeXY().X > 0) )
+	// Copy perspective views to the global if this viewport has streaming volume previs enabled
+	if ( (IsPerspective() && GetDefault<ULevelEditorViewportSettings>()->bLevelStreamingVolumePrevis && Viewport->GetSizeXY().X > 0) )
 	{
 		GPerspFrustumAngle=ViewFOV;
 		GPerspFrustumAspectRatio=AspectRatio;
@@ -3489,6 +3524,21 @@ bool FLevelEditorViewportClient::InputAxis(FViewport* InViewport, FInputDeviceId
 		return true;
 	}
 
+	// Forward input axis events to the Editor World extension collection and give extensions an opportunity to consume input.
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId UserId = DeviceMapper.GetUserForInputDevice(DeviceId);
+
+	int32 ControllerId;
+	if (DeviceMapper.RemapUserAndDeviceToControllerId(UserId, ControllerId, DeviceId))
+	{
+		UEditorWorldExtensionCollection& ExtensionCollection = *GEditor->GetEditorWorldExtensionsManager()->GetEditorWorldExtensions(GetWorld());
+		
+		if (ExtensionCollection.InputAxis(this, InViewport, ControllerId, Key, Delta, DeltaTime))
+		{
+			return true;
+		}
+	}
+
 	// @todo Slate: GCurrentLevelEditingViewportClient is switched multiple times per frame and since we draw the border in slate this effectively causes border to always draw on the last viewport
 
 	FScopedSetCurrentViewportClient( this );
@@ -4363,35 +4413,25 @@ void FLevelEditorViewportClient::Draw(const FSceneView* View,FPrimitiveDrawInter
 		DrawTextureStreamingBounds(View, PDI);
 	}
 
-	// Determine if a view frustum should be rendered in the viewport.
-	// The frustum should definitely be rendered if the viewport has a view parent.
-	bool bRenderViewFrustum = ViewState.GetReference()->HasViewParent();
-
-	// If the viewport doesn't have a view parent, a frustum still should be drawn anyway if the viewport is ortho and level streaming
-	// volume previs is enabled in some viewport
-	if ( !bRenderViewFrustum && IsOrtho() )
+	// A frustum should be drawn if the viewport is ortho and level streaming volume previs is enabled in some viewport
+	if ( IsOrtho() )
 	{
 		for (FLevelEditorViewportClient* CurViewportClient : GEditor->GetLevelViewportClients())
 		{
 			if ( CurViewportClient && IsPerspective() && GetDefault<ULevelEditorViewportSettings>()->bLevelStreamingVolumePrevis )
 			{
-				bRenderViewFrustum = true;
+				// Draw the view frustum of the level streaming volume previs viewport.
+				RenderViewFrustum(PDI, FLinearColor(1.0, 0.0, 1.0, 1.0),
+					GPerspFrustumAngle,
+					GPerspFrustumAspectRatio,
+					GPerspFrustumStartDist,
+					GPerspFrustumEndDist,
+					GPerspViewMatrix);
+
 				break;
 			}
 		}
 	}
-
-	// Draw the view frustum of the view parent or level streaming volume previs viewport, if necessary
-	if ( bRenderViewFrustum )
-	{
-		RenderViewFrustum( PDI, FLinearColor(1.0,0.0,1.0,1.0),
-			GPerspFrustumAngle,
-			GPerspFrustumAspectRatio,
-			GPerspFrustumStartDist,
-			GPerspFrustumEndDist,
-			GPerspViewMatrix);
-	}
-
 
 	if (IsPerspective())
 	{
@@ -5160,7 +5200,7 @@ bool FLevelEditorViewportClient::GetPivotForOrbit(FVector& Pivot) const
 			{
 				UPrimitiveComponent* PrimitiveComponent = PrimitiveComponents[ComponentIndex];
 
-				if (PrimitiveComponent->IsRegistered() && !PrimitiveComponent->IgnoreBoundsForEditorFocus())
+				if (PrimitiveComponent->IsRegistered() && !PrimitiveComponent->GetIgnoreBoundsForEditorFocus())
 				{
 					TSharedPtr<FComponentVisualizer> Visualizer = GUnrealEd->FindComponentVisualizer(PrimitiveComponent->GetClass());
 					FBox FocusOnSelectionBBox;

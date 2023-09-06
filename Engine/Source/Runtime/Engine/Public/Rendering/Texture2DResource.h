@@ -30,9 +30,9 @@ public:
 	virtual ~FTexture2DResource();
 
 	// Dynamic cast methods.
-	ENGINE_API virtual FTexture2DResource* GetTexture2DResource() { return this; }
+	virtual FTexture2DResource* GetTexture2DResource() { return this; }
 	// Dynamic cast methods (const).
-	ENGINE_API virtual const FTexture2DResource* GetTexture2DResource() const { return this; }
+	virtual const FTexture2DResource* GetTexture2DResource() const { return this; }
 
 	/** Set the value of Filter, AddressU, AddressV, AddressW and MipBias from FStreamableTextureResource on the gamethread. */
 	void CacheSamplerStateInitializer(const UTexture2D* InOwner);
@@ -40,7 +40,7 @@ public:
 	/** Returns the platform mip size for the given mip count. */
 	virtual uint64 GetPlatformMipsSize(uint32 NumMips) const override;
 
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual bool IsProxy() const override { return ProxiedResource != nullptr; }
 	
 	// returns mip size in bytes; fills OutPitch
@@ -73,6 +73,7 @@ private:
 
 	/** Local copy/ cache of mip data between creation and first call to InitRHI.							*/
 	TArray<void*, TInlineAllocator<MAX_TEXTURE_MIP_COUNT> > MipData;
+	TArray<int64, TInlineAllocator<MAX_TEXTURE_MIP_COUNT> > MipDataSize;
 
 	/**
 	 * Writes the data for a single mip-level into a destination buffer.
@@ -80,5 +81,5 @@ private:
 	 * @param Dest		The address of the destination buffer to receive the mip-level's data.
 	 * @param DestPitch	Number of bytes per row
 	 */
-	void GetData( uint32 MipIndex,void* Dest,uint32 DestPitch );
+	void GetData( uint32 MipIndex,void* Dest,uint32 DestPitch, uint64 DestSize );
 };

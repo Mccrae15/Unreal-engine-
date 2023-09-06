@@ -5,7 +5,6 @@
 UVCamOutputComposure::UVCamOutputComposure()
 {
 	DisplayType = EVPWidgetDisplayType::Composure;
-	InitViewTargetPolicyInSubclass();
 }
 
 void UVCamOutputComposure::CreateUMG()
@@ -15,13 +14,13 @@ void UVCamOutputComposure::CreateUMG()
 
 	if (GetUMGWidget())
 	{
-		GetUMGWidget()->PostProcessDisplayType.ComposureLayerTargets.Empty();
+		GetUMGWidget()->GetComposureDisplayTypeSettings().ComposureLayerTargets.Empty();
 
 		for (TSoftObjectPtr<ACompositingElement> Layer : LayerTargets)
 		{
 			if (Layer.IsValid())
 			{
-				GetUMGWidget()->PostProcessDisplayType.ComposureLayerTargets.Emplace(Layer.Get());
+				GetUMGWidget()->GetComposureDisplayTypeSettings().ComposureLayerTargets.Emplace(Layer.Get());
 			}
 		}
 	}

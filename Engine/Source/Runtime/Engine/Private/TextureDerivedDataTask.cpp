@@ -53,14 +53,8 @@ static TAutoConsoleVariable<int32> CVarVTValidateCompressionOnSave(
 static TAutoConsoleVariable<int32> CVarForceRetileTextures(
 	TEXT("r.ForceRetileTextures"),
 	0,
-	TEXT("If r.SharedLinearTextureEncoding is enabled, this will force the tiling build step to rebuild,")
+	TEXT("If Shared Linear Texture Encoding is enabled in project settings, this will force the tiling build step to rebuild,")
 	TEXT("however the linear texture is allowed to fetch from cache.")
-);
-
-static TAutoConsoleVariable<int32> CVarSharedLinearTextureEncoding(
-	TEXT("r.SharedLinearTextureEncoding"),
-	0,
-	TEXT("If set to 1, textures for platforms that tile will reuse a host linear texture instead of reencoding.")
 );
 
 
@@ -181,6 +175,8 @@ static bool ValidateTexture2DPlatformData(const FTexturePlatformData& TextureDat
 
 void FTextureSourceData::Init(UTexture& InTexture, TextureMipGenSettings InMipGenSettings, bool bInCubeMap, bool bInTextureArray, bool bInVolumeTexture, bool bAllowAsyncLoading)
 {
+	check( bValid == false ); // we set to true at the end, acts as our return value
+
 	const int32 NumBlocks = InTexture.Source.GetNumBlocks();
 	const int32 NumLayers = InTexture.Source.GetNumLayers();
 	if (NumBlocks < 1 || NumLayers < 1)
@@ -236,11 +232,13 @@ void FTextureSourceData::Init(UTexture& InTexture, TextureMipGenSettings InMipGe
 
 	for (FTextureSourceBlockData& Block : Blocks)
 	{
+		// for the common case of NumBlocks == 1, BlockSizeX == Block.SizeX, MipBiasX/Y will both be zero
 		const int32 MipBiasX = FMath::CeilLogTwo(BlockSizeX / Block.SizeX);
 		const int32 MipBiasY = FMath::CeilLogTwo(BlockSizeY / Block.SizeY);
 		if (MipBiasX != MipBiasY)
 		{
-			UE_LOG(LogTexture, Warning, TEXT("Texture has blocks with mismatched aspect ratios"), *InTexture.GetPathName());
+			// @todo Oodle: this is failing even if "pad to pow2 square" is set, can we allow it through in that case?
+			UE_LOG(LogTexture, Warning, TEXT("VT has blocks with mismatched aspect ratios, cannot build."), *InTexture.GetPathName());  // <- should be an Error, not a Warning
 			return;
 		}
 
@@ -275,41 +273,44 @@ void FTextureSourceData::GetSourceMips(FTextureSource& Source, IImageWrapperModu
 
 		const FTextureSource::FMipData ScopedMipData = Source.GetMipData(InImageWrapper);
 
-		for (int32 BlockIndex = 0; BlockIndex < Blocks.Num(); ++BlockIndex)
 		{
-			FTextureSourceBlock SourceBlock;
-			Source.GetBlock(BlockIndex, SourceBlock);
-
-			FTextureSourceBlockData& BlockData = Blocks[BlockIndex];
-			for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
+			TRACE_CPUPROFILER_EVENT_SCOPE(FTextureSourceData::GetSourceMips_CopyMips);
+			for (int32 BlockIndex = 0; BlockIndex < Blocks.Num(); ++BlockIndex)
 			{
-				const FTextureSourceLayerData& LayerData = Layers[LayerIndex];
-				if (!BlockData.MipsPerLayer[LayerIndex].Num()) // If we already got valid data, nothing to do.
+				FTextureSourceBlock SourceBlock;
+				Source.GetBlock(BlockIndex, SourceBlock);
+
+				FTextureSourceBlockData& BlockData = Blocks[BlockIndex];
+				for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
 				{
-					int32 MipSizeX = SourceBlock.SizeX;
-					int32 MipSizeY = SourceBlock.SizeY;
-					int32 MipSizeZ = SourceBlock.NumSlices;
-					for (int32 MipIndex = 0; MipIndex < BlockData.NumMips; ++MipIndex)
+					const FTextureSourceLayerData& LayerData = Layers[LayerIndex];
+					if (!BlockData.MipsPerLayer[LayerIndex].Num()) // If we already got valid data, nothing to do.
 					{
-						FImage* SourceMip = new(BlockData.MipsPerLayer[LayerIndex]) FImage(
-							MipSizeX, MipSizeY, MipSizeZ,
-							LayerData.ImageFormat,
-							LayerData.SourceGammaSpace
-						);
-
-						if (!ScopedMipData.GetMipData(SourceMip->RawData, BlockIndex, LayerIndex, MipIndex))
+						int32 MipSizeX = SourceBlock.SizeX;
+						int32 MipSizeY = SourceBlock.SizeY;
+						int32 MipSizeZ = SourceBlock.NumSlices;
+						for (int32 MipIndex = 0; MipIndex < BlockData.NumMips; ++MipIndex)
 						{
-							UE_LOG(LogTexture, Warning, TEXT("Cannot retrieve source data for mip %d of %s"), MipIndex, *TextureFullName);
-							ReleaseMemory();
-							bValid = false;
-							break;
-						}
+							FImage* SourceMip = new(BlockData.MipsPerLayer[LayerIndex]) FImage(
+								MipSizeX, MipSizeY, MipSizeZ,
+								LayerData.ImageFormat,
+								LayerData.SourceGammaSpace
+							);
 
-						MipSizeX = FMath::Max(MipSizeX / 2, 1);
-						MipSizeY = FMath::Max(MipSizeY / 2, 1);
-						if ( Source.IsVolume() )
-						{
-							MipSizeZ = FMath::Max(MipSizeZ / 2, 1);
+							if (!ScopedMipData.GetMipData(SourceMip->RawData, BlockIndex, LayerIndex, MipIndex))
+							{
+								UE_LOG(LogTexture, Warning, TEXT("Cannot retrieve source data for mip %d of %s"), MipIndex, *TextureFullName);
+								ReleaseMemory();
+								bValid = false;
+								break;
+							}
+
+							MipSizeX = FMath::Max(MipSizeX / 2, 1);
+							MipSizeY = FMath::Max(MipSizeY / 2, 1);
+							if ( Source.IsVolume() )
+							{
+								MipSizeZ = FMath::Max(MipSizeZ / 2, 1);
+							}
 						}
 					}
 				}
@@ -482,7 +483,7 @@ public:
 		{
 			const FCompressedBuffer& Buffer = Key == UTF8TEXTVIEW("Source")
 				? FindSource(SourceBuffer, Texture.Source, BulkDataId)
-				: FindSource(CompositeSourceBuffer, Texture.CompositeTexture->Source, BulkDataId);
+				: FindSource(CompositeSourceBuffer, Texture.GetCompositeTexture()->Source, BulkDataId);
 			if (Buffer)
 			{
 				Inputs.Add({Key, Buffer.GetRawHash(), Buffer.GetRawSize()});
@@ -509,7 +510,7 @@ public:
 			{
 				const FCompressedBuffer& Buffer = Key == UTF8TEXTVIEW("Source")
 					? FindSource(SourceBuffer, Texture.Source, BulkDataId)
-					: FindSource(CompositeSourceBuffer, Texture.CompositeTexture->Source, BulkDataId);
+					: FindSource(CompositeSourceBuffer, Texture.GetCompositeTexture()->Source, BulkDataId);
 				if (Buffer)
 				{
 					Inputs.Add({Key, Buffer});
@@ -536,6 +537,8 @@ static void DDC1_StoreClassicTextureInDerivedData(
 	uint32 ExtData, bool bReplaceExistingDDC, const FString& TexturePathName, const FString& KeySuffix, int64& BytesCached
 	)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.DDC1_StoreClassicTextureInDerivedData);
+
 	const int32 MipCount = CompressedMips.Num();
 
 	// VT can be bigger than (1<<(MAX_TEXTURE_MIP_COUNT-1)) , but doesn't actually make all those mips
@@ -545,21 +548,27 @@ static void DDC1_StoreClassicTextureInDerivedData(
 	for (int32 MipIndex = 0; MipIndex < MipCount; ++MipIndex)
 	{
 		const FCompressedImage2D& CompressedImage = CompressedMips[MipIndex];
-		FTexture2DMipMap* NewMip = new FTexture2DMipMap();
+		FTexture2DMipMap* NewMip = new FTexture2DMipMap(CompressedImage.SizeX, CompressedImage.SizeY, CompressedImage.SizeZ);
 		DerivedData->Mips.Add(NewMip);
-		NewMip->SizeX = CompressedImage.SizeX;
-		NewMip->SizeY = CompressedImage.SizeY;
-		NewMip->SizeZ = CompressedImage.SizeZ;
 		NewMip->FileRegionType = FFileRegion::SelectType(EPixelFormat(CompressedImage.PixelFormat));
 		check(NewMip->SizeZ == 1 || bVolume || bTextureArray); // Only volume & arrays can have SizeZ != 1
 
 		check(CompressedImage.RawData.GetTypeSize() == 1);
 		int64 CompressedDataSize = CompressedImage.RawData.Num();
 
-		// CompressedImage sizes were padded up to multiple of 4 for d3d, no longer
-		UE_LOG(LogTextureUpload, Verbose, TEXT("Compressed Mip %d PF=%d : %dx%dx%d : %d ; up4 %dx%d=%d"),
+		// CompressedDataSize can exceed int32 ; eg. 16k x 16k x RGBA16F == 2 GB
+		// DDC1 should be 64-bit safe now
+
+		// CompressedImage sizes were padded up to multiple of 4 for d3d, no longer ; log the align-up-to-4 sizes for debugging?
+
+		// log what the TextureFormat built :
+		//	(todo: change to "LogTexture" instead of "LogTextureUpload" and remove the align-up-to-4 debug logs)
+		UE_LOG(LogTextureUpload, Verbose, TEXT("Built texture: %s Compressed Mip %d PF=%d=%s : %dx%dx%d : %lld ; up4 %dx%d=%d"),
+			*TexturePathName,
 			MipIndex, (int)CompressedImage.PixelFormat,
-			CompressedImage.SizeX, CompressedImage.SizeY, CompressedImage.SizeZ, (int)CompressedDataSize,
+			GetPixelFormatString((EPixelFormat)CompressedImage.PixelFormat),
+			CompressedImage.SizeX, CompressedImage.SizeY, CompressedImage.SizeZ, 
+			CompressedDataSize,
 			(CompressedImage.SizeX + 3) & (~3),
 			(CompressedImage.SizeY + 3) & (~3),
 			((CompressedImage.SizeX + 3) & (~3)) * ((CompressedImage.SizeY + 3) & (~3)));
@@ -624,13 +633,15 @@ static void DDC1_BuildTexture(
 
 	FTexturePlatformData* DerivedData,
 	int64& BytesCached,
-	bool& bSucceeded	// currently completely ignored in the main build path, but used in the synchronous path
+	bool& bSucceeded
 	)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCacheDerivedDataWorker::BuildTexture);
 
 	const bool bHasValidMip0 = TextureData.Blocks.Num() && TextureData.Blocks[0].MipsPerLayer.Num() && TextureData.Blocks[0].MipsPerLayer[0].Num();
 	const bool bForVirtualTextureStreamingBuild = EnumHasAnyFlags(CacheFlags, ETextureCacheFlags::ForVirtualTextureStreamingBuild);
+
+	check( bSucceeded == false ); // we set it to true if we succeed
 
 	if (!ensure(Compressor))
 	{
@@ -643,6 +654,7 @@ static void DDC1_BuildTexture(
 		return;
 	}
 
+	// this logs the "Building textures: " message :
 	FTextureStatusMessageContext StatusMessage(
 		ComposeTextureBuildText(TexturePathName, TextureData, InBuildSettingsPerLayer[0], (ETextureEncodeSpeed)InBuildSettingsPerLayer[0].RepresentsEncodeSpeedNoSend, RequiredMemoryEstimate, bForVirtualTextureStreamingBuild)
 		);
@@ -655,10 +667,24 @@ static void DDC1_BuildTexture(
 		}
 		
 		FVirtualTextureBuilderDerivedInfo PredictedInfo;
-		PredictedInfo.InitializeFromBuildSettings(TextureData, InBuildSettingsPerLayer.GetData());
+		if ( ! PredictedInfo.InitializeFromBuildSettings(TextureData, InBuildSettingsPerLayer.GetData()) )
+		{
+			UE_LOG(LogTexture, Warning, TEXT("VT InitializeFromBuildSettings failed: %s"), *TexturePathName);
+			delete DerivedData->VTData;
+			DerivedData->VTData = nullptr;
+			bSucceeded = false;
+			return;		
+		}
 
 		FVirtualTextureDataBuilder Builder(*DerivedData->VTData, TexturePathName, Compressor, ImageWrapper);
-		Builder.Build(TextureData, CompositeTextureData, &InBuildSettingsPerLayer[0], true);
+		if ( ! Builder.Build(TextureData, CompositeTextureData, &InBuildSettingsPerLayer[0], true) )
+		{
+			UE_LOG(LogTexture, Warning, TEXT("VT Build failed: %s"), *TexturePathName);
+			delete DerivedData->VTData;
+			DerivedData->VTData = nullptr;
+			bSucceeded = false;
+			return;		
+		}
 
 		// TextureData was freed by Build (FTextureSourceData.ReleaseMemory), don't use it from here down
 
@@ -731,7 +757,7 @@ static void DDC1_BuildTexture(
 		// Compress the texture by calling texture compressor directly.
 		TArray<FCompressedImage2D> CompressedMips;
 		if (Compressor->BuildTexture(TextureData.Blocks[0].MipsPerLayer[0],
-			((bool)Texture.CompositeTexture && CompositeTextureData.Blocks.Num() && CompositeTextureData.Blocks[0].MipsPerLayer.Num()) ? CompositeTextureData.Blocks[0].MipsPerLayer[0] : TArray<FImage>(),
+			((bool)Texture.GetCompositeTexture() && CompositeTextureData.Blocks.Num() && CompositeTextureData.Blocks[0].MipsPerLayer.Num()) ? CompositeTextureData.Blocks[0].MipsPerLayer[0] : TArray<FImage>(),
 			InBuildSettingsPerLayer[0],
 			TexturePathName,
 			CompressedMips,
@@ -765,6 +791,7 @@ static void DDC1_BuildTexture(
 			// will log below
 			check( DerivedData->Mips.Num() == 0 );
 			DerivedData->Mips.Empty();
+			bSucceeded = false;
 
 			UE_LOG(LogTexture, Warning, TEXT("BuildTexture failed to build %s derived data for %s"), *InBuildSettingsPerLayer[0].TextureFormatName.GetPlainNameString(), *TexturePathName);
 		}
@@ -877,12 +904,11 @@ static int64 GetBuildRequiredMemoryEstimate(UTexture* InTexture,
 		// for each layer/block :
 		//    generate mips (requires F32 copy)
 		//    output to intermediate format
-		// (at this point source could be freed; currently it is not)
-		// intermediate format copy is then used to make tiles
-		// for each tile :
-		//    make padded tile in intermediate format
-		//    encode to output format
-		//    discard padded tile in intermediate format
+		//    intermediate format copy is then used to make tiles
+		//    for each tile :
+		//       make padded tile in intermediate format
+		//       encode to output format
+		//       discard padded tile in intermediate format
 		// all output tiles are then aggregated
 
 		// Compute the memory it should take to uncompress the bulkdata in memory
@@ -931,7 +957,8 @@ static int64 GetBuildRequiredMemoryEstimate(UTexture* InTexture,
 
 		int64 NumOutputPixelsPerLayer = NumTilesPerLayer * TilePixels;
 
-		int64 VTIntermediateSizeBytes = 0;
+		// intermediate is created just once per block, use max size estimate
+		int64 VTIntermediateSizeBytes = IntermediateFloatColorBytes;
 		int64 OutputSizeBytes = 0;
 	
 		int64 MaxPerPixelEncoderMemUse = 0;
@@ -944,9 +971,7 @@ static int64 GetBuildRequiredMemoryEstimate(UTexture* InTexture,
 			
 			ERawImageFormat::Type IntermediateImageFormat = UE::TextureBuildUtilities::GetVirtualTextureBuildIntermediateFormat(BuildSettings);
 
-			int IntermediateBytesPerPixel = ERawImageFormat::GetBytesPerPixel(IntermediateImageFormat);
-
-			VTIntermediateSizeBytes += TotalPixelsPerLayer * IntermediateBytesPerPixel;
+			int64 IntermediateBytesPerPixel = ERawImageFormat::GetBytesPerPixel(IntermediateImageFormat);
 
 			// + output bytes? (but can overlap with IntermediateFloatColorBytes)
 			//	almost always less than IntermediateFloatColorBytes
@@ -1153,6 +1178,11 @@ static int64 GetBuildRequiredMemoryEstimate(UTexture* InTexture,
 				MemoryEstimate += FMath::Max(RDOPhase1MemUse,RDOPhase2MemUse);
 			}
 		}
+		else if (IsASTCBlockCompressedTextureFormat(PixelFormat))
+		{
+			// ASTCenc does an entermediate copy to RGBA16F for HDR formats and RGBA8 for LDR
+			MemoryEstimate += (IsHDR(PixelFormat) ? 8 : 4) * TotalNumPixels;
+		}
 		else
 		{
 			// note: memory ues of non-Oodle encoders is not estimated
@@ -1262,9 +1292,9 @@ FTextureCacheDerivedDataWorker::FTextureCacheDerivedDataWorker(
 	// All of these settings are fixed across build settings and are derived directly from the texture.
 	// So we can just use layer 0 of whatever we have.
 	TextureData.Init(Texture, (TextureMipGenSettings)BuildSettingsPerLayerFetchOrBuild[0].MipGenSettings, BuildSettingsPerLayerFetchOrBuild[0].bCubemap, BuildSettingsPerLayerFetchOrBuild[0].bTextureArray, BuildSettingsPerLayerFetchOrBuild[0].bVolume, bAllowAsyncLoading);
-	if (Texture.CompositeTexture && Texture.CompositeTextureMode != CTM_Disabled)
+	if (Texture.GetCompositeTexture() && Texture.CompositeTextureMode != CTM_Disabled && Texture.GetCompositeTexture()->Source.IsValid())
 	{
-		bool bMatchingBlocks = Texture.CompositeTexture->Source.GetNumBlocks() == Texture.Source.GetNumBlocks();
+		bool bMatchingBlocks = Texture.GetCompositeTexture()->Source.GetNumBlocks() == Texture.Source.GetNumBlocks();
 		
 		if (!bMatchingBlocks)
 		{
@@ -1274,7 +1304,7 @@ FTextureCacheDerivedDataWorker::FTextureCacheDerivedDataWorker(
 
 		if ( bMatchingBlocks )
 		{
-			CompositeTextureData.Init(*Texture.CompositeTexture, (TextureMipGenSettings)BuildSettingsPerLayerFetchOrBuild[0].MipGenSettings, BuildSettingsPerLayerFetchOrBuild[0].bCubemap, BuildSettingsPerLayerFetchOrBuild[0].bTextureArray, BuildSettingsPerLayerFetchOrBuild[0].bVolume, bAllowAsyncLoading);
+			CompositeTextureData.Init(*Texture.GetCompositeTexture(), (TextureMipGenSettings)BuildSettingsPerLayerFetchOrBuild[0].MipGenSettings, BuildSettingsPerLayerFetchOrBuild[0].bCubemap, BuildSettingsPerLayerFetchOrBuild[0].bTextureArray, BuildSettingsPerLayerFetchOrBuild[0].bVolume, bAllowAsyncLoading);
 		}
 	}
 }
@@ -1348,6 +1378,8 @@ static void DDC1_FetchAndFillDerivedData(
 {
 	using namespace UE;
 	using namespace UE::DerivedData;
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.DDC1_FetchAndFillDerivedData);
 
 	bool bForceRebuild = EnumHasAnyFlags(CacheFlags, ETextureCacheFlags::ForceRebuild);
 	bool bForVirtualTextureStreamingBuild = EnumHasAnyFlags(CacheFlags, ETextureCacheFlags::ForVirtualTextureStreamingBuild);
@@ -1618,17 +1650,22 @@ static bool DDC1_LoadAndValidateTextureData(
 	bool bAllowAsyncLoading
 )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.DDC1_LoadAndValidateTextureData);
+
 	bool bHasTextureSourceMips = false;
 	if (TextureData.IsValid() && Texture.Source.IsBulkDataLoaded())
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(GetSourceMips);
 		TextureData.GetSourceMips(Texture.Source, ImageWrapper);
 		bHasTextureSourceMips = true;
 	}
 
 	bool bHasCompositeTextureSourceMips = false;
-	if (CompositeTextureData.IsValid() && Texture.CompositeTexture && Texture.CompositeTexture->Source.IsBulkDataLoaded())
+	if (CompositeTextureData.IsValid() && Texture.GetCompositeTexture() && Texture.GetCompositeTexture()->Source.IsBulkDataLoaded())
 	{
-		CompositeTextureData.GetSourceMips(Texture.CompositeTexture->Source, ImageWrapper);
+		TRACE_CPUPROFILER_EVENT_SCOPE(GetCompositeSourceMips);
+		check( Texture.GetCompositeTexture()->Source.IsValid() );
+		CompositeTextureData.GetSourceMips(Texture.GetCompositeTexture()->Source, ImageWrapper);
 		bHasCompositeTextureSourceMips = true;
 	}
 
@@ -1636,12 +1673,14 @@ static bool DDC1_LoadAndValidateTextureData(
 	{
 		if (!bHasTextureSourceMips)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(GetAsyncSourceMips);
 			TextureData.GetAsyncSourceMips(ImageWrapper);
 			TextureData.AsyncSource.RemoveBulkData();
 		}
 
 		if (!bHasCompositeTextureSourceMips)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(GetAsyncCompositeSourceMips);
 			CompositeTextureData.GetAsyncSourceMips(ImageWrapper);
 			CompositeTextureData.AsyncSource.RemoveBulkData();
 		}
@@ -1670,6 +1709,8 @@ bool DDC1_BuildTiledClassicTexture(
 	int64& BytesCached
 )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCacheDerivedDataWorker::BuildTiledClassicTexture);
+
 	// we know we are a child format if we have a tiler.
 	const ITextureTiler* Tiler = BuildSettingsPerLayerFetchOrBuild[0].Tiler;
 	const FChildTextureFormat* ChildFormat = GetTextureFormatManager()->FindTextureFormat(BuildSettingsPerLayerFetchOrBuild[0].TextureFormatName)->GetChildFormat();
@@ -1736,6 +1777,8 @@ bool DDC1_BuildTiledClassicTexture(
 		return false;
 	}
 
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCacheDerivedDataWorker::TileTexture);
+
 	check(LinearDerivedData.GetNumMipsInTail() == 0);
 
 	UE::TextureBuildUtilities::FTextureBuildMetadata BuildMetadata;
@@ -1781,7 +1824,7 @@ bool DDC1_BuildTiledClassicTexture(
 			check(LinearMipSizes[MipIndex] == TextureDescription.GetMipSizeInBytes(MipIndex));
 		}
 
-		TextureExtendedData = Tiler->GetExtendedDataForTexture(TextureDescription);
+		TextureExtendedData = Tiler->GetExtendedDataForTexture(TextureDescription, LinearSettingsPerLayerFetchOrBuild[0].LODBias);
 		OutputTextureNumStreamingMips = TextureDescription.GetNumStreamingMips(&TextureExtendedData, GenerateTextureEngineParameters());
 
 		for (int32 MipIndex = 0; MipIndex < TextureDescription.NumMips; MipIndex++)
@@ -1901,6 +1944,8 @@ void FTextureCacheDerivedDataWorker::DoWork()
 		}
 	}
 
+	check( ! bTriedAndFailed );
+
 	if (!bSucceeded && bAllowAsyncBuild)
 	{
 		if (DDC1_LoadAndValidateTextureData(Texture, TextureData, CompositeTextureData, ImageWrapper, bAllowAsyncLoading))
@@ -1930,20 +1975,31 @@ void FTextureCacheDerivedDataWorker::DoWork()
 				}
 			}
 
-			// this always ignores whether the build failed?
-			bSucceeded = true;
+			if ( ! bSucceeded )
+			{
+				bTriedAndFailed = true;
+			}
 		}
 		else
 		{
 			bSucceeded = false;
+
+			// bTriedAndFailed = true; // no retry in Finalize ?  @todo ?
 		}
 	}
 
-	if (bSucceeded)
+	// there are actually 3 states to bSucceeded
+	//	tried & succeeded, tried & failed, not tried yet
+	// we may try the build again in Finalize (eg. if !bAllowAsyncBuild)
+
+	if (bSucceeded || bTriedAndFailed)
 	{
 		TextureData.ReleaseMemory();
 		CompositeTextureData.ReleaseMemory();
+	}
 
+	if ( bSucceeded )
+	{
 		// Populate the VT DDC Cache now if we're asynchronously loading to avoid too many high prio/synchronous request on the render thread
 		if (!IsInGameThread() && DerivedData->VTData && !DerivedData->VTData->Chunks.Last().DerivedDataKey.IsEmpty())
 		{
@@ -1960,6 +2016,13 @@ void FTextureCacheDerivedDataWorker::Finalize()
 	//		in the editor and is missing for some reason.
 	// --	always with a lighting build, as the async light/shadowmap tasks will disallow async builds. 
 	// --	if the texture compiler cvar disallows async texture compilation
+
+	if ( bTriedAndFailed )
+	{
+		UE_LOG(LogTexture, Warning, TEXT("Texture build failed for %s.  Will not retry in Finalize."), *TexturePathName);
+		return;
+	}
+
 	if (!bSucceeded)
 	{
 		if (!TextureData.HasPayload() && !Texture.Source.HasPayloadData())
@@ -1969,9 +2032,9 @@ void FTextureCacheDerivedDataWorker::Finalize()
 		}
 
 		TextureData.GetSourceMips(Texture.Source, ImageWrapper);
-		if (Texture.CompositeTexture)
+		if (Texture.GetCompositeTexture() && Texture.GetCompositeTexture()->Source.IsValid())
 		{
-			CompositeTextureData.GetSourceMips(Texture.CompositeTexture->Source, ImageWrapper);
+			CompositeTextureData.GetSourceMips(Texture.GetCompositeTexture()->Source, ImageWrapper);
 		}
 
 		if (DDC1_IsTextureDataValid(TextureData, CompositeTextureData) == false)
@@ -2004,6 +2067,11 @@ void FTextureCacheDerivedDataWorker::Finalize()
 				DDC1_BuildTexture(Compressor, ImageWrapper, Texture, TexturePathName, CacheFlags,
 					TextureData, CompositeTextureData, BuildSettingsPerLayerFetchOrBuild, KeySuffix, false /* currently corrupt vt data is not routed out of DoWork() */,
 					RequiredMemoryEstimate, DerivedData, BytesCached, bSucceeded);
+			}
+
+			if ( ! bSucceeded )
+			{
+				bTriedAndFailed = true;
 			}
 		}
 	}
@@ -2111,14 +2179,11 @@ static bool UnpackPlatformDataFromBuild(FTexturePlatformData& OutPlatformData, U
 	uint64 CurrentMipTailOffset = 0;
 	for (int32 MipIndex = 0; MipIndex < EncodedTextureDescription.NumMips; MipIndex++)
 	{
-		FTexture2DMipMap* NewMip = new FTexture2DMipMap();
+		const FIntVector3 MipDims = EncodedTextureDescription.GetMipDimensions(MipIndex);
+		FTexture2DMipMap* NewMip = new FTexture2DMipMap(MipDims.X, MipDims.Y, MipDims.Z);
 		OutPlatformData.Mips.Add(NewMip);
 
 		NewMip->FileRegionType = FileRegion;
-		FIntVector3 MipDims = EncodedTextureDescription.GetMipDimensions(MipIndex);
-		NewMip->SizeX = MipDims.X;
-		NewMip->SizeY = MipDims.Y;
-		NewMip->SizeZ = MipDims.Z;
 		if (EncodedTextureDescription.bTextureArray)
 		{
 			// FTexture2DMipMap expects SizeZ to be the array count, potentially with cubemap slices.
@@ -2406,7 +2471,7 @@ public:
 		EPriority OwnerPriority = EnumHasAnyFlags(Flags, ETextureCacheFlags::Async) ? ConvertFromQueuedWorkPriority(Priority) : EPriority::Blocking;
 		Owner.Emplace(OwnerPriority);
 
-		bool bUseCompositeTexture;
+		bool bUseCompositeTexture = false;
 		if (!IsTextureValidForBuilding(Texture, Flags, bUseCompositeTexture))
 		{
 			return;
@@ -2601,9 +2666,9 @@ public:
 		DefinitionBuilder.AddConstant(UTF8TEXTVIEW("EngineParameters"), UE::TextureBuildUtilities::TextureEngineParameters::ToCompactBinaryWithDefaults(GenerateTextureEngineParameters()));
 		DefinitionBuilder.AddConstant(UTF8TEXTVIEW("Settings"), SaveTextureBuildSettings(Texture, Settings, 0, bUseCompositeTexture, RequiredMemoryEstimate));
 		DefinitionBuilder.AddInputBulkData(UTF8TEXTVIEW("Source"), Texture.Source.GetPersistentId());
-		if (Texture.CompositeTexture && bUseCompositeTexture)
+		if (Texture.GetCompositeTexture() && bUseCompositeTexture)
 		{
-			DefinitionBuilder.AddInputBulkData(UTF8TEXTVIEW("CompositeSource"), Texture.CompositeTexture->Source.GetPersistentId());
+			DefinitionBuilder.AddInputBulkData(UTF8TEXTVIEW("CompositeSource"), Texture.GetCompositeTexture()->Source.GetPersistentId());
 		}
 		return DefinitionBuilder.Build();
 	}
@@ -2711,6 +2776,8 @@ public:
 
 	static bool IsTextureValidForBuilding(UTexture& Texture, ETextureCacheFlags Flags, bool& bOutUseCompositeTexture)
 	{
+		bOutUseCompositeTexture = false;
+
 		const int32 NumBlocks = Texture.Source.GetNumBlocks();
 		const int32 NumLayers = Texture.Source.GetNumLayers();
 		if (NumBlocks < 1 || NumLayers < 1)
@@ -2761,8 +2828,8 @@ public:
 			}
 		}
 		
-		const bool bCompositeTextureViable = Texture.CompositeTexture && Texture.CompositeTextureMode != CTM_Disabled;
-		bool bMatchingBlocks = bCompositeTextureViable && (Texture.CompositeTexture->Source.GetNumBlocks() == Texture.Source.GetNumBlocks());
+		const bool bCompositeTextureViable = Texture.GetCompositeTexture() && Texture.CompositeTextureMode != CTM_Disabled && Texture.GetCompositeTexture()->Source.IsValid();
+		bool bMatchingBlocks = bCompositeTextureViable && (Texture.GetCompositeTexture()->Source.GetNumBlocks() == Texture.Source.GetNumBlocks());
 		
 		if (bCompositeTextureViable)
 		{
@@ -2806,9 +2873,9 @@ public:
 		}
 		Key.BuildDefinitionKey = BuildDefinition.GetKey().Hash;
 		Key.SourceGuid = Texture.Source.GetId();
-		if (bUseCompositeTexture && Texture.CompositeTexture)
+		if (bUseCompositeTexture && Texture.GetCompositeTexture())
 		{
-			Key.CompositeSourceGuid = Texture.CompositeTexture->Source.GetId();
+			Key.CompositeSourceGuid = Texture.GetCompositeTexture()->Source.GetId();
 		}
 		return Key;
 	}
@@ -2847,7 +2914,14 @@ public:
 		{
 			// old style
 			DefinitionBuilder.AddInputBuild(UTF8TEXTVIEW("EncodedTextureDescriptionInput"), { InParentBuildKey, UE::DerivedData::FValueId::FromName(UTF8TEXTVIEW("EncodedTextureDescription")) });			
-			// The tiling build can generate the extended data.
+
+			// The tiling build can generate the extended data - however it needs the LODBias to do so.
+			FCbWriter Writer;
+			Writer.BeginObject();
+			Writer.AddInteger("LODBias", InBuildSettings.LODBias);
+			Writer.EndObject();
+
+			DefinitionBuilder.AddConstant(UTF8TEXTVIEW("LODBias"), Writer.Save().AsObject());
 		}
 		else
 		{
@@ -2915,15 +2989,37 @@ FTextureAsyncCacheDerivedDataTask* CreateTextureBuildTask(
 	ETextureCacheFlags Flags)
 {
 	using namespace UE::DerivedData;
+
+	// If we are tiling, we need to alter the build settings to act as though it's 
+	// for the linear base format for the build function - the tiling itself will be
+	// a separate build function that will consume the output of that.
+	// We have to do this here because if we do it where build settings are created, then
+	// the DDC key that is externally visible won't know anything about the tiling and
+	// the de-dupe code in BeginCacheForCookedPlatformData will delete the tiling build.
+	TOptional<FTextureBuildSettings> BaseSettingsFetch;
+	TOptional<FTextureBuildSettings> BaseSettingsFetchOrBuild;
 	FUtf8SharedString TilingFunctionName;
+	const FTextureBuildSettings* UseSettingsFetch = SettingsFetch;
+	const FTextureBuildSettings* UseSettingsFetchOrBuild = &SettingsFetchOrBuild;
 	if (SettingsFetchOrBuild.Tiler)
 	{
 		TilingFunctionName = SettingsFetchOrBuild.Tiler->GetBuildFunctionName();
-	}
 
-	if (FUtf8SharedString FunctionName = FindTextureBuildFunction(SettingsFetchOrBuild.TextureFormatName); !FunctionName.IsEmpty())
+		if (SettingsFetch)
+		{
+			BaseSettingsFetch = *SettingsFetch;
+			BaseSettingsFetch->TextureFormatName = BaseSettingsFetch->BaseTextureFormatName;
+			BaseSettingsFetch->Tiler = nullptr;
+			UseSettingsFetch = BaseSettingsFetch.GetPtrOrNull();
+		}
+		BaseSettingsFetchOrBuild = SettingsFetchOrBuild;
+		BaseSettingsFetchOrBuild->TextureFormatName = BaseSettingsFetchOrBuild->BaseTextureFormatName;
+		UseSettingsFetchOrBuild = BaseSettingsFetchOrBuild.GetPtrOrNull();
+	}
+	
+	if (FUtf8SharedString FunctionName = FindTextureBuildFunction(UseSettingsFetchOrBuild->TextureFormatName); !FunctionName.IsEmpty())
 	{
-		return new FTextureBuildTask(Texture, DerivedData, FunctionName, TilingFunctionName, SettingsFetch, SettingsFetchOrBuild, FetchMetadata, FetchOrBuildMetadata, Priority, Flags);
+		return new FTextureBuildTask(Texture, DerivedData, FunctionName, TilingFunctionName, UseSettingsFetch, *UseSettingsFetchOrBuild, FetchMetadata, FetchOrBuildMetadata, Priority, Flags);
 
 	}
 	return nullptr;
@@ -2941,7 +3037,7 @@ FTexturePlatformData::FStructuredDerivedDataKey CreateTextureDerivedDataKey(
 	{
 		TilingFunctionName = Settings.Tiler->GetBuildFunctionName();
 	}
-	if (FUtf8SharedString FunctionName = FindTextureBuildFunction(Settings.TextureFormatName); !FunctionName.IsEmpty())
+	if (FUtf8SharedString FunctionName = FindTextureBuildFunction(Settings.BaseTextureFormatName); !FunctionName.IsEmpty())
 	{
 		IBuild& Build = GetBuild();
 

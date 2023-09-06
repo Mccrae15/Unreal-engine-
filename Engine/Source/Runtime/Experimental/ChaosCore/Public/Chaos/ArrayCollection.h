@@ -22,6 +22,17 @@ public:
 		}
 	}
 
+	void ShrinkArrays(const float MaxSlackFraction, const int32 MinSlack)
+	{
+		for (int32 Index = 0; Index < MArrays.Num(); Index++)
+		{
+			if (MArrays[Index] != nullptr)
+			{
+				MArrays[Index]->ApplyShrinkPolicy(MaxSlackFraction, MinSlack);
+			}
+		}
+	}
+
 	int32 AddArray(TArrayCollectionArrayBase* Array)
 	{
 		int32 Index = MArrays.Find(nullptr);

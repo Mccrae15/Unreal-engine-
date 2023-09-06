@@ -1,29 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearchFeatureChannel_Heading.h"
-#include "Animation/MotionTrajectoryTypes.h"
-#include "DrawDebugHelpers.h"
 #include "PoseSearch/PoseSearchAssetIndexer.h"
 #include "PoseSearch/PoseSearchAssetSampler.h"
 #include "PoseSearch/PoseSearchContext.h"
 #include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearch/PoseSearchSchema.h"
+#include "PoseSearchFeatureChannel_Position.h"
 
 void UPoseSearchFeatureChannel_Heading::Finalize(UPoseSearchSchema* Schema)
 {
 	ChannelDataOffset = Schema->SchemaCardinality;
-	ChannelCardinality = UE::PoseSearch::FFeatureVectorHelper::EncodeVectorCardinality;
+	ChannelCardinality = UE::PoseSearch::FFeatureVectorHelper::GetVectorCardinality(ComponentStripping);
 	Schema->SchemaCardinality += ChannelCardinality;
 	SchemaBoneIdx = Schema->AddBoneReference(Bone);
 }
 
-void UPoseSearchFeatureChannel_Heading::FillWeights(TArray<float>& Weights) const
+void UPoseSearchFeatureChannel_Heading::AddDependentChannels(UPoseSearchSchema* Schema) const
 {
-	using namespace UE::PoseSearch;
-
-	for (int32 i = 0; i != FFeatureVectorHelper::EncodeVectorCardinality; ++i)
+	if (Schema->bInjectAdditionalDebugChannels)
 	{
-		Weights[ChannelDataOffset + i] = Weight;
+		UPoseSearchFeatureChannel_Position::FindOrAddToSchema(Schema, SampleTimeOffset, Bone.BoneName);
 	}
 }
 
@@ -40,101 +37,70 @@ FVector UPoseSearchFeatureChannel_Heading::GetAxis(const FQuat& Rotation) const
 	}
 
 	checkNoEntry();
-	return FVector(1.f, 0.f, 0.f);
+	return FVector::XAxisVector;
 }
 
-void UPoseSearchFeatureChannel_Heading::IndexAsset(UE::PoseSearch::IAssetIndexer& Indexer, TArrayView<float> FeatureVectorTable) const
+void UPoseSearchFeatureChannel_Heading::BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, UE::PoseSearch::FFeatureVectorBuilder& InOutQuery) const
 {
 	using namespace UE::PoseSearch;
 
-	const FAssetIndexingContext& IndexingContext = Indexer.GetIndexingContext();
-
-	for (int32 SampleIdx = IndexingContext.BeginSampleIdx; SampleIdx != IndexingContext.EndSampleIdx; ++SampleIdx)
-	{
-		const int32 VectorIdx = SampleIdx - IndexingContext.BeginSampleIdx;
-
-		const float OriginSampleTime = FMath::Min(SampleIdx * IndexingContext.Schema->GetSamplingInterval(), IndexingContext.AssetSampler->GetPlayLength());
-		const float SubsampleTime = OriginSampleTime + SampleTimeOffset;
-
-		bool ClampedPresent;
-		const FTransform BoneTransformsPresent = Indexer.GetTransformAndCacheResults(SubsampleTime, OriginSampleTime, SchemaBoneIdx, ClampedPresent);
-		int32 DataOffset = ChannelDataOffset;
-		const FVector Heading = GetAxis(BoneTransformsPresent.GetRotation());
-		FFeatureVectorHelper::EncodeVector(IndexingContext.GetPoseVector(VectorIdx, FeatureVectorTable), DataOffset, Heading);
-	}
-}
-
-void UPoseSearchFeatureChannel_Heading::BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, FPoseSearchFeatureVectorBuilder& InOutQuery) const
-{
-	using namespace UE::PoseSearch;
-
-	const bool bIsCurrentResultValid = SearchContext.CurrentResult.IsValid();
-	const bool bSkip = InputQueryPose != EInputQueryPose::UseCharacterPose && bIsCurrentResultValid && SearchContext.CurrentResult.Database->Schema == InOutQuery.GetSchema();
-	if (bSkip || !SearchContext.History)
+	const bool bIsCurrentResultValid = SearchContext.GetCurrentResult().IsValid() && SearchContext.GetCurrentResult().Database->Schema == InOutQuery.GetSchema();
+	const bool bSkip = InputQueryPose != EInputQueryPose::UseCharacterPose && bIsCurrentResultValid;
+	const bool bIsRootBone = InOutQuery.GetSchema()->IsRootBone(SchemaBoneIdx);
+	if (bSkip || (!SearchContext.IsHistoryValid() && !bIsRootBone))
 	{
 		if (bIsCurrentResultValid)
 		{
-			const float LerpValue = InputQueryPose == EInputQueryPose::UseInterpolatedContinuingPose ? SearchContext.CurrentResult.LerpValue : 0.f;
-			int32 DataOffset = ChannelDataOffset;
-			FFeatureVectorHelper::EncodeVector(InOutQuery.EditValues(), DataOffset, SearchContext.GetCurrentResultPrevPoseVector(), SearchContext.GetCurrentResultPoseVector(), SearchContext.GetCurrentResultNextPoseVector(), LerpValue, true);
-		}
-		// else leave the InOutQuery set to zero since the SearchContext.History is invalid and it'll fail if we continue
-	}
-	else
-	{
-		FTransform Transform;
-		if (InOutQuery.GetSchema()->BoneReferences[SchemaBoneIdx].HasValidSetup())
-		{
-			// calculating the Transform in component space for the bone indexed by SchemaBoneIdx
-			Transform = SearchContext.TryGetTransformAndCacheResults(SampleTimeOffset, InOutQuery.GetSchema(), SchemaBoneIdx);
-
-			// if the SampleTimeOffset is not zero we calculate the delta root bone between the root at current time (zero) and the root at SampleTimeOffset (in the past)
-			// so we can offset the Transform by this amount
-			if (!FMath::IsNearlyZero(SampleTimeOffset, UE_KINDA_SMALL_NUMBER))
-			{
-				const FTransform RootTransform = SearchContext.TryGetTransformAndCacheResults(0.f, InOutQuery.GetSchema(), FSearchContext::SchemaRootBoneIdx);
-				const FTransform RootTransformPrev = SearchContext.TryGetTransformAndCacheResults(SampleTimeOffset, InOutQuery.GetSchema(), FSearchContext::SchemaRootBoneIdx);
-				Transform = Transform * (RootTransformPrev * RootTransform.Inverse());
-			}
+			FFeatureVectorHelper::Copy(InOutQuery.EditValues(), ChannelDataOffset, ChannelCardinality, SearchContext.GetCurrentResultPoseVector());
 		}
 		else
 		{
-			check(SearchContext.Trajectory);
-			// @todo: make this call consistent with Transform = SearchContext.TryGetTransformAndCacheResults(SampleTimeOffset, InOutQuery.GetSchema(), FSearchContext::SchemaRootBoneIdx);
-			const FTrajectorySample TrajectorySample = SearchContext.Trajectory->GetSampleAtTime(SampleTimeOffset);
-			Transform = TrajectorySample.Transform;
+			// we leave the InOutQuery set to zero since the SearchContext.History is invalid and it'll fail if we continue
+			UE_LOG(LogPoseSearch, Error, TEXT("UPoseSearchFeatureChannel_Heading::BuildQuery - Failed because Pose History Node is missing."));
 		}
-
-		int32 DataOffset = ChannelDataOffset;
-		FFeatureVectorHelper::EncodeVector(InOutQuery.EditValues(), DataOffset, GetAxis(Transform.GetRotation()));
-	}
-}
-
-void UPoseSearchFeatureChannel_Heading::DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const
-{
-#if ENABLE_DRAW_DEBUG
-	using namespace UE::PoseSearch;
-
-	const float LifeTime = DrawParams.DefaultLifeTime;
-	const uint8 DepthPriority = ESceneDepthPriorityGroup::SDPG_Foreground + 2;
-	const bool bPersistent = EnumHasAnyFlags(DrawParams.Flags, EDebugDrawFlags::Persistent);
-	const FColor Color = DrawParams.GetColor(ColorPresetIndex);
-	const FVector BoneHeading = DrawParams.RootTransform.GetRotation().RotateVector(FFeatureVectorHelper::DecodeVectorAtOffset(PoseVector, ChannelDataOffset));
-	const FVector BonePos = DrawParams.GetCachedPosition(SampleTimeOffset, SchemaBoneIdx);
-
-	if (EnumHasAnyFlags(DrawParams.Flags, EDebugDrawFlags::DrawSearchIndex))
-	{
-		DrawDebugLine(DrawParams.World, BonePos, BonePos + BoneHeading * 15.f, Color, bPersistent, LifeTime, DepthPriority);
 	}
 	else
 	{
-		const float AdjustedThickness = EnumHasAnyFlags(DrawParams.Flags, EDebugDrawFlags::DrawFast) ? 0.0f : 1.f;
-		DrawDebugLine(DrawParams.World, BonePos, BonePos + BoneHeading * 15.f, Color, bPersistent, LifeTime, DepthPriority, AdjustedThickness);
+		// calculating the BoneRotation in component space for the bone indexed by SchemaBoneIdx
+		const FQuat BoneRotation = SearchContext.GetSampleRotation(SampleTimeOffset, InOutQuery.GetSchema(), SchemaBoneIdx, RootSchemaBoneIdx, !bIsRootBone);
+		FFeatureVectorHelper::EncodeVector(InOutQuery.EditValues(), ChannelDataOffset, GetAxis(BoneRotation), ComponentStripping);
 	}
-#endif // ENABLE_DRAW_DEBUG
 }
 
+#if ENABLE_DRAW_DEBUG
+void UPoseSearchFeatureChannel_Heading::DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const
+{
+	using namespace UE::PoseSearch;
+
+	const FColor Color = DebugColor.ToFColor(true);
+	const FVector BoneHeading = DrawParams.GetRootTransform().GetRotation().RotateVector(FFeatureVectorHelper::DecodeVector(PoseVector, ChannelDataOffset, ComponentStripping));
+	const FVector BonePos = DrawParams.ExtractPosition(PoseVector, SampleTimeOffset, SchemaBoneIdx);
+
+	DrawParams.DrawPoint(BonePos, Color, 3.f);
+	DrawParams.DrawLine(BonePos + BoneHeading * 4.f, BonePos + BoneHeading * 15.f, Color);
+}
+#endif // ENABLE_DRAW_DEBUG
+
 #if WITH_EDITOR
+void UPoseSearchFeatureChannel_Heading::FillWeights(TArrayView<float> Weights) const
+{
+	for (int32 i = 0; i < ChannelCardinality; ++i)
+	{
+		Weights[ChannelDataOffset + i] = Weight;
+	}
+}
+
+void UPoseSearchFeatureChannel_Heading::IndexAsset(UE::PoseSearch::FAssetIndexer& Indexer) const
+{
+	using namespace UE::PoseSearch;
+
+	for (int32 SampleIdx = Indexer.GetBeginSampleIdx(); SampleIdx != Indexer.GetEndSampleIdx(); ++SampleIdx)
+	{
+		const FVector Heading = GetAxis(Indexer.GetSampleRotation(SampleTimeOffset, SampleIdx, SchemaBoneIdx));
+		FFeatureVectorHelper::EncodeVector(Indexer.GetPoseVector(SampleIdx), ChannelDataOffset, Heading, ComponentStripping);
+	}
+}
+
 FString UPoseSearchFeatureChannel_Heading::GetLabel() const
 {
 	TStringBuilder<256> Label;
@@ -158,14 +124,24 @@ FString UPoseSearchFeatureChannel_Heading::GetLabel() const
 		break;
 	}
 
-	const FBoneReference& BoneReference = GetSchema()->BoneReferences[SchemaBoneIdx];
-	if (BoneReference.HasValidSetup())
+	if (ComponentStripping == EComponentStrippingVector::StripXY)
 	{
-		Label.Append(TEXT("_"));
-		Label.Append(BoneReference.BoneName.ToString());
+		Label.Append(TEXT("_z"));
+	}
+	else if (ComponentStripping == EComponentStrippingVector::StripZ)
+	{
+		Label.Append(TEXT("_xy"));
 	}
 
-	Label.Appendf(TEXT(" %.1f"), SampleTimeOffset);
+	const UPoseSearchSchema* Schema = GetSchema();
+	check(Schema);
+	if (!Schema->IsRootBone(SchemaBoneIdx))
+	{
+		Label.Append(TEXT("_"));
+		Label.Append(Schema->BoneReferences[SchemaBoneIdx].BoneName.ToString());
+	}
+
+	Label.Appendf(TEXT(" %.2f"), SampleTimeOffset);
 	return Label.ToString();
 }
 #endif

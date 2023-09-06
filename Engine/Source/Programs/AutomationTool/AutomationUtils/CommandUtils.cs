@@ -24,6 +24,8 @@ using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
 using System.Runtime.Versioning;
 
+using static AutomationTool.CommandUtils;
+
 namespace AutomationTool
 {
 	/// <summary>
@@ -103,7 +105,7 @@ namespace AutomationTool
 		/// <summary>
 		/// Provides access to the structured logging interface
 		/// </summary>
-		public ILogger Logger => Log.Logger;
+		public static ILogger Logger => Log.Logger;
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Console).
@@ -111,6 +113,7 @@ namespace AutomationTool
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Parameters</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogInformation with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogInformation(string Format, params object[] Args)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Console, Format, Args);
@@ -120,6 +123,7 @@ namespace AutomationTool
 		/// Writes formatted text to log (with LogEventType.Console).
 		/// </summary>
 		/// <param name="Message">Text</param>
+		[Obsolete("Use Logger.LogInformation with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogInformation(string Message)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Console, Message);
@@ -131,6 +135,7 @@ namespace AutomationTool
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Parameters</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogError with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogError(string Format, params object[] Args)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Error, Format, Args);
@@ -140,6 +145,7 @@ namespace AutomationTool
 		/// Writes formatted text to log (with LogEventType.Error).
 		/// </summary>
 		/// <param name="Message">Text</param>
+		[Obsolete("Use Logger.LogError with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogError(string Message)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Error, Message);
@@ -151,6 +157,7 @@ namespace AutomationTool
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Parameters</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogWarning with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogWarning(string Format, params object[] Args)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Warning, Format, Args);
@@ -160,6 +167,7 @@ namespace AutomationTool
 		/// Writes a message to log (with LogEventType.Warning).
 		/// </summary>
 		/// <param name="Message">Text</param>
+		[Obsolete("Use Logger.LogWarning with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogWarning(string Message)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Warning, Message);
@@ -171,6 +179,7 @@ namespace AutomationTool
 		/// <param name="Foramt">Format string</param>
 		/// <param name="Args">Arguments</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogDebug with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogVerbose(string Format, params object[] Args)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Verbose, Format, Args);
@@ -180,6 +189,7 @@ namespace AutomationTool
 		/// Writes formatted text to log (with LogEventType.Verbose).
 		/// </summary>
 		/// <param name="Message">Text</param>
+		[Obsolete("Use Logger.LogDebug with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogVerbose(string Message)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Verbose, Message);
@@ -188,9 +198,10 @@ namespace AutomationTool
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.VeryVerbose).
 		/// </summary>
-		/// <param name="Foramt">Format string</param>
+		/// <param name="Format">Format string</param>
 		/// <param name="Args">Arguments</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogTrace with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogVeryVerbose(string Format, params object[] Args)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.VeryVerbose, Format, Args);
@@ -200,6 +211,7 @@ namespace AutomationTool
 		/// Writes formatted text to log (with LogEventType.VeryVerbose).
 		/// </summary>
 		/// <param name="Message">Text</param>
+		[Obsolete("Use Logger.LogTrace with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogVeryVerbose(string Message)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.VeryVerbose, Message);
@@ -208,9 +220,10 @@ namespace AutomationTool
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Log).
 		/// </summary>
-		/// <param name="Foramt">Format string</param>
+		/// <param name="Format">Format string</param>
 		/// <param name="Args">Arguments</param>
 		[StringFormatMethod("Format")]
+		[Obsolete("Use Logger.LogDebug with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogLog(string Format, params object[] Args)
 		{
 			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Log, Format, Args);
@@ -220,6 +233,7 @@ namespace AutomationTool
 		/// Writes formatted text to log (with LogEventType.Log).
 		/// </summary>
 		/// <param name="Message">Text</param>
+		[Obsolete("Use Logger.LogDebug with a message template instead; see https://tinyurl.com/bp96bk2r.", false)]
 		public static void LogLog(string Message)
 		{
 			EpicGames.Core.Log.WriteLine(LogEventType.Log, Message);
@@ -261,7 +275,7 @@ namespace AutomationTool
 		{
 			if(bShowProgress)
 			{
-				LogInformation("[@progress push {0}/{1} skipline]", Numerator, Denominator);
+				Logger.LogInformation("[@progress push {Numerator}/{Denominator} skipline]", Numerator, Denominator);
 			}
 		}
 
@@ -269,7 +283,7 @@ namespace AutomationTool
 		{
 			if(bShowProgress)
 			{
-				LogInformation("[@progress pop skipline]");
+				Logger.LogInformation("[@progress pop skipline]");
 			}
 		}
 
@@ -277,7 +291,7 @@ namespace AutomationTool
 		{
 			if(bShowProgress)
 			{
-				LogInformation("[@progress increment {0}/{1} skipline]", Numerator, Denominator);
+				Logger.LogInformation("[@progress increment {Numerator}/{Denominator} skipline]", Numerator, Denominator);
 			}
 		}
 
@@ -286,7 +300,7 @@ namespace AutomationTool
 		{
 			if(bShowProgress)
 			{
-				LogInformation("[@progress '{0}' skipline]", String.Format(Format, Args));
+				Logger.LogInformation("[@progress '{Message}' skipline]", String.Format(Format, Args));
 			}
 		}
 
@@ -295,7 +309,7 @@ namespace AutomationTool
 		{
 			if(bShowProgress)
 			{
-				LogInformation("[@progress {0}/{1} '{2}' skipline]", Numerator, Denominator, String.Format(Format, Args));
+				Logger.LogInformation("[@progress {Numerator}/{Denominator} '{Arg2}' skipline]", Numerator, Denominator, String.Format(Format, Args));
 			}
 		}
 
@@ -486,7 +500,7 @@ namespace AutomationTool
 			var NormalizedFilename = ConvertSeparators(PathSeparator.Default, FileName);
 			if (!InternalUtils.SafeDeleteFile(NormalizedFilename))
 			{
-				LogWarning("Failed to delete file '{0}'", NormalizedFilename);
+				Logger.LogWarning("Failed to delete file '{NormalizedFilename}'", NormalizedFilename);
 				Result = false;
 			}
 			return Result;
@@ -559,7 +573,7 @@ namespace AutomationTool
             {
                 if (!InternalUtils.SafeDeleteDirectory(NormalizedDirectory, bQuiet))
                 {
-                    LogWarning("Failed to delete directory '{0}'", NormalizedDirectory);
+					Logger.LogWarning("Failed to delete directory '{NormalizedDirectory}'", NormalizedDirectory);
                     Result = false;
                 }
             }
@@ -567,8 +581,8 @@ namespace AutomationTool
             {
 				if (!bQuiet)
 				{
-					LogWarning("Failed to delete directory, exception '{0}'", NormalizedDirectory);
-					LogWarning(Ex.Message);
+					Logger.LogWarning("Failed to delete directory, exception '{NormalizedDirectory}'", NormalizedDirectory);
+					Logger.LogWarning(Ex, "{Text}", Ex.Message);
 				}
                 Result = false;
             }
@@ -595,7 +609,7 @@ namespace AutomationTool
 		/// <param name="DirectoryName"></param>
 		public static void DeleteDirectoryContents(string DirectoryName)
 		{
-			LogVerbose("DeleteDirectoryContents({0})", DirectoryName);
+			Logger.LogDebug("DeleteDirectoryContents({DirectoryName})", DirectoryName);
 			const bool bQuiet = true;
 			var Files = CommandUtils.FindFiles_NoExceptions(bQuiet, "*", false, DirectoryName);
 			foreach (var Filename in Files)
@@ -645,8 +659,8 @@ namespace AutomationTool
 			}
 			catch (Exception Ex)
 			{
-				LogWarning("Unable to check if directory exists: {0}", NormalizedDirectory);
-				LogWarning(Ex.Message);
+				Logger.LogWarning("Unable to check if directory exists: {NormalizedDirectory}", NormalizedDirectory);
+				Logger.LogWarning(Ex, "{Text}", Ex.Message);
 				return false;
 			}
 		}
@@ -657,11 +671,11 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="OldName">Old name</param>
 		/// <param name="NewName">new name</param>
-		public static void RenameDirectory(string OldName, string NewName, bool bQuiet = false)
+		public static void RenameDirectory(string OldName, string NewName, bool bQuiet = false, bool bRetry = true)
 		{
 			var OldNormalized = ConvertSeparators(PathSeparator.Default, OldName);
 			var NewNormalized = ConvertSeparators(PathSeparator.Default, NewName);
-			InternalUtils.SafeRenameDirectory(OldNormalized, NewNormalized, bQuiet);
+			InternalUtils.SafeRenameDirectory(OldNormalized, NewNormalized, bQuiet, bRetry, /*bThrow*/true);
 		}
 
 		/// <summary>
@@ -670,18 +684,11 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="OldName">Old name</param>
 		/// <param name="NewName">new name</param>
-		public static bool RenameDirectory_NoExceptions(string OldName, string NewName)
+		public static bool RenameDirectory_NoExceptions(string OldName, string NewName, bool bQuiet = false, bool bRetry = true)
 		{
-			try
-			{
-				RenameDirectory(OldName, NewName);
-			}
-			catch (Exception)
-			{
-				LogWarning("Failed to rename/move file '{0}' to '{1}'", OldName, NewName);
-				return false;
-			}
-			return true;
+			var OldNormalized = ConvertSeparators(PathSeparator.Default, OldName);
+			var NewNormalized = ConvertSeparators(PathSeparator.Default, NewName);
+			return InternalUtils.SafeRenameDirectory(OldNormalized, NewNormalized, bQuiet, bRetry, /*bThrow*/false);
 		}
 
 		/// <summary>
@@ -740,7 +747,7 @@ namespace AutomationTool
 			var Result = InternalUtils.SafeRenameFile(OldNormalized, NewNormalized);
 			if (!Result)
 			{
-				LogWarning("Failed to rename/move file '{0}' to '{1}'", OldName, NewName);
+				Logger.LogWarning("Failed to rename/move file '{OldName}' to '{NewName}'", OldName, NewName);
 			}
 			return Result;
 		}
@@ -751,11 +758,12 @@ namespace AutomationTool
 		/// <param name="Filenames">Filename.</param>
 		/// <returns>True if the file exists, false otherwise.</returns>
 		public static bool FileExists(string FileName)
-		{
-			var NormalizedFilename = ConvertSeparators(PathSeparator.Default, FileName);
+        {
+			// need to remove the quotes before checking to see if it exists
+			var NormalizedFilename = ConvertSeparators(PathSeparator.Default, FileName).Replace("\"", "");
 			return InternalUtils.SafeFileExists(NormalizedFilename);
-		}
-
+        }
+		
 		/// <summary>
 		/// Checks if a file(s) exists.
 		/// </summary>
@@ -775,7 +783,8 @@ namespace AutomationTool
         /// <returns>True if the file exists, false otherwise.</returns>
         public static bool FileExists(bool bQuiet, string FileName)
         {
-			var NormalizedFilename = ConvertSeparators(PathSeparator.Default, FileName);
+			// need to remove the quotes before checking to see if it exists
+			var NormalizedFilename = ConvertSeparators(PathSeparator.Default, FileName).Replace("\"", "");
 			return InternalUtils.SafeFileExists(NormalizedFilename, bQuiet);
         }
 
@@ -829,7 +838,7 @@ namespace AutomationTool
 			}
 			catch
 			{
-				LogWarning("Unable to change current directory to {0}", WorkingDirectory);
+				Logger.LogWarning("Unable to change current directory to {WorkingDirectory}", WorkingDirectory);
 				Result = false;
 			}
 			return Result;
@@ -862,7 +871,7 @@ namespace AutomationTool
 			}
 			else
 			{
-				LogWarning("Unable to PopDir. WorkingDirectoryStack is empty.");
+				Logger.LogWarning("Unable to PopDir. WorkingDirectoryStack is empty.");
 				Result = false;
 			}
 			return Result;
@@ -910,7 +919,7 @@ namespace AutomationTool
 			}
 			catch
 			{
-				LogWarning("Unable to change current directory to {0}", WorkingDirectory);
+				Logger.LogWarning("Unable to change current directory to {WorkingDirectory}", WorkingDirectory);
 				Result = false;
 			}
 			return Result;
@@ -988,7 +997,7 @@ namespace AutomationTool
 			Filename = ConvertSeparators(PathSeparator.Default, Filename);
 			if (!File.Exists(Filename))
 			{
-				LogWarning("Unable to set attributes for a non-exisiting file ({0})", Filename);
+				Logger.LogWarning("Unable to set attributes for a non-exisiting file ({Filename})", Filename);
 				return false;
 			}
 
@@ -1001,8 +1010,8 @@ namespace AutomationTool
 			}
 			catch (Exception Ex)
 			{
-				LogWarning("Error trying to set file attributes for: {0}", Filename);
-				LogWarning(Ex.Message);
+				Logger.LogWarning("Error trying to set file attributes for: {Filename}", Filename);
+				Logger.LogWarning(Ex, "{Text}", Ex.Message);
 				Result = false;
 			}
 			return Result;
@@ -1302,7 +1311,7 @@ namespace AutomationTool
 				}
 			}
 
-			for (int AttemptsRemaining = 5; AttemptsRemaining > 0; --AttemptsRemaining)
+			for (int AttemptsRemaining = 5; AttemptsRemaining >= 0; --AttemptsRemaining)
 			{
 				if (InternalUtils.SafeFileExists(Dest, true))
 				{
@@ -1312,7 +1321,7 @@ namespace AutomationTool
 				{
 					if (bRetry && AttemptsRemaining > 0)
 					{
-						Log.TraceLog("Failed to delete {0} for copy, retrying..", Dest);
+						Logger.LogDebug("Failed to delete {Dest} for copy, retrying..", Dest);
 						Thread.Sleep(1000);
 						continue;
 					}
@@ -1322,7 +1331,7 @@ namespace AutomationTool
 				{
 					if (bRetry && AttemptsRemaining > 0)
 					{
-						Log.TraceLog("Failed to copy {0} to {1}, retrying..", Source, Dest);
+						Logger.LogDebug("Failed to copy {Source} to {Dest}, retrying..", Source, Dest);
 						Thread.Sleep(1000);
 						continue;
 					}
@@ -1393,13 +1402,13 @@ namespace AutomationTool
 			{
 				if (bAllowDifferingTimestamps == true)
 				{
-					LogVerbose("CopyFileIncremental Skipping {0}, already exists", Dest);
+					Logger.LogDebug("CopyFileIncremental Skipping {Dest}, already exists", Dest);
 					return;
 				}
 				TimeSpan Diff = File.GetLastWriteTimeUtc(Dest.FullName) - File.GetLastWriteTimeUtc(Source.FullName);
 				if (Diff.TotalSeconds > -1 && Diff.TotalSeconds < 1)
 				{
-					LogVerbose("CopyFileIncremental Skipping {0}, up to date.", Dest);
+					Logger.LogDebug("CopyFileIncremental Skipping {Dest}, up to date.", Dest);
 					return;
 				}
 				InternalUtils.SafeDeleteFile(Dest.FullName);
@@ -1773,7 +1782,7 @@ namespace AutomationTool
 		{
 			if(!bQuiet)
 			{
-				LogInformation("Copying {0} file(s) using max {1} thread(s)", Source.Count, MaxThreads);
+				Logger.LogInformation("Copying {NumFiles} file(s) using max {MaxThreads} thread(s)", Source.Count, MaxThreads);
 			}
 
             if (Source.Count != Dest.Count)
@@ -1816,7 +1825,7 @@ namespace AutomationTool
 		public static List<string> ThreadedCopyFiles(string SourceDir, string TargetDir, FileFilter Filter, bool bIgnoreSymlinks, int MaxThreads = 64, bool bRetry = false)
 		{
 			// Filter all the relative paths
-			LogInformation("Applying filter to {0}...", SourceDir);
+			Logger.LogInformation("Applying filter to {SourceDir}...", SourceDir);
 			DirectoryReference SourceDirRef = new DirectoryReference(SourceDir);
 			var RelativePaths = Filter.ApplyToDirectory(SourceDirRef, bIgnoreSymlinks).Select(x => x.MakeRelativeTo(SourceDirRef)).ToList();
 			return ThreadedCopyFiles(SourceDir, TargetDir, RelativePaths, MaxThreads, bRetry: bRetry);
@@ -1888,6 +1897,104 @@ namespace AutomationTool
 			}
 		}
 
+		public enum SymlinkMode
+		{
+			Ignore,
+			Follow,
+			Retain,
+		}
+
+		// detemine how the OS wants to handle Symlinks when archiving, by default
+		public static SymlinkMode DefaultSymlinkMode
+		{
+			get
+			{
+				return OperatingSystem.IsMacOS() ? SymlinkMode.Retain :
+				(OperatingSystem.IsLinux() ? SymlinkMode.Ignore :
+				SymlinkMode.Follow);
+			}
+		}
+
+		/// <summary>
+		/// Assumes directory has already been checked to exist, and that it is not a symlink itself
+		/// The SymlinkMode here refers to directory links, as the file symlinks will be dealt with during the copy
+		/// </summary>
+		public static void FindFilesAndSymlinks(string RootPath, string Wildcard, bool bRecursive, SymlinkMode DirSymlinkMode, List<string> FoundFiles)
+		{
+			// default behaviour can just do standard findfiles
+			if (DirSymlinkMode == SymlinkMode.Follow)
+			{
+				FoundFiles.AddRange(Directory.GetFiles(RootPath, Wildcard, bRecursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly));
+			}
+			else if (DirSymlinkMode == SymlinkMode.Retain || DirSymlinkMode == SymlinkMode.Ignore)
+			{
+				DirectoryInfo DirInfo = new DirectoryInfo(RootPath);
+
+				// get all files in this dir
+				FoundFiles.AddRange(Directory.GetFiles(RootPath, Wildcard, SearchOption.TopDirectoryOnly));
+
+				// now walk over the directories, and recurse into true directories, and process the symlinks
+				foreach (DirectoryInfo Dir in DirInfo.EnumerateDirectories(Wildcard, SearchOption.TopDirectoryOnly))
+				{
+					if (Dir.Attributes.HasFlag(FileAttributes.ReparsePoint))
+					{
+						// if mode is Ingore, then do nothing with it
+						if (DirSymlinkMode == SymlinkMode.Retain)
+						{
+							// add the direcetory as a file since we are going to treat it as a file later
+							FoundFiles.Add(Dir.FullName);
+						}
+					}
+					else
+					{
+						FindFilesAndSymlinks(Dir.FullName, Wildcard, bRecursive, DirSymlinkMode, FoundFiles);
+					}
+				}
+			}
+		}
+
+		public static void FindFilesAndSymlinks(string RootPath, string Wildcard, bool bRecursive, List<string> FoundFiles)
+		{
+			FindFilesAndSymlinks(RootPath, Wildcard, bRecursive, DefaultSymlinkMode, FoundFiles);
+		}
+
+		public static void CopyFileOrSymlink(FileReference Source, FileReference Dest, SymlinkMode SymlinkMode)
+		{
+			if (SymlinkMode == SymlinkMode.Retain || SymlinkMode == SymlinkMode.Ignore)
+			{
+				if (File.GetAttributes(Source.FullName).HasFlag(FileAttributes.ReparsePoint))
+				{
+					if (SymlinkMode == SymlinkMode.Retain)
+					{
+						if (OperatingSystem.IsWindows())
+						{
+							throw new AutomationException("Windows ReparsePoint copying is not supported at this time");
+						}
+						else
+						{
+							Logger.LogInformation("Retaining symlink {0} as {1}", Source, Dest);
+							DirectoryReference.CreateDirectory(Dest.Directory);
+							Utils.RunLocalProcessAndReturnStdOut("/usr/bin/env", $"cp -a \"{Source}\" \"{Dest}\"", null);
+						}
+					}
+					else
+					{
+						Logger.LogInformation("Ignoring symlink {0}", Source);
+					}
+					return;
+				}
+			}
+
+			// if we didn't handle a symlink above, just copy it normally
+			InternalUtils.SafeCopyFile(Source.FullName, Dest.FullName, bSafeCreateDirectory: true);
+		}
+
+		public static void CopyFileOrSymlink(FileReference Source, FileReference Dest)
+		{
+			CopyFileOrSymlink(Source, Dest, DefaultSymlinkMode);
+		}
+
+
 		/// <summary>
 		/// Gets environment variable value.
 		/// </summary>
@@ -1919,7 +2026,7 @@ namespace AutomationTool
 		{
 			try
 			{
-				LogLog("SetEnvVar {0}={1}", Name, Value);
+				Logger.LogDebug("SetEnvVar {Name}={Value}", Name, Value);
 				Environment.SetEnvironmentVariable(Name, Value.ToString());
 			}
 			catch (Exception Ex)
@@ -2126,7 +2233,7 @@ namespace AutomationTool
         {
             if (!DirectoryExists_NoExceptions(Dir))
             {
-				LogLog("Directory {0} does not exist", Dir);
+				Logger.LogDebug("Directory {Dir} does not exist", Dir);
 				return false;
 			}
 
@@ -2141,7 +2248,7 @@ namespace AutomationTool
 				if(File.Exists(NativeFilename))
 				{
 		            DeleteFile_NoExceptions(Filename, true);
-		            LogLog("Directory {0} is writable", Dir);
+					Logger.LogDebug("Directory {Dir} is writable", Dir);
 					return true;
 				}
 			}
@@ -2149,7 +2256,7 @@ namespace AutomationTool
 			{
 			}
 
-			LogLog("Directory {0} is not writable", Dir);
+			Logger.LogDebug("Directory {Dir} is not writable", Dir);
 			return false;
 		}
 
@@ -2162,25 +2269,25 @@ namespace AutomationTool
             try
             {
                 DirectoryInfo DirInfo = new DirectoryInfo(ParentDir);
-				LogInformation("Looking for directories to delete in {0}", ParentDir);
+				Logger.LogInformation("Looking for directories to delete in {ParentDir}", ParentDir);
                 foreach (DirectoryInfo ThisDirInfo in DirInfo.EnumerateDirectories(SearchPattern))
                 {
 					double AgeDays = (DateTime.UtcNow - ThisDirInfo.CreationTimeUtc).TotalDays;
 					if (AgeDays > MaximumDaysToKeepTempStorage)
                     {
-                        LogInformation("Deleting formal build directory {0}, because it is {1} days old (maximum {2}).", ThisDirInfo.FullName, (int)AgeDays, MaximumDaysToKeepTempStorage);
+						Logger.LogInformation("Deleting formal build directory {Directory}, because it is {Age} days old (maximum {MaximumDaysToKeepTempStorage}).", ThisDirInfo.FullName, (int)AgeDays, MaximumDaysToKeepTempStorage);
                         DeleteDirectory_NoExceptions(true, ThisDirInfo.FullName);
                     }
                     else
                     {
-						LogVerbose("Not deleting formal build directory {0}, because it is {1} days old (maximum {2}).", ThisDirInfo.FullName, (int)AgeDays, MaximumDaysToKeepTempStorage);
+						Logger.LogDebug("Not deleting formal build directory {Directory}, because it is {Age} days old (maximum {MaximumDaysToKeepTempStorage}).", ThisDirInfo.FullName, (int)AgeDays, MaximumDaysToKeepTempStorage);
                     }
                 }
             }
             catch (Exception Ex)
             {
-                LogWarning("Unable to clean formal builds from directory: {0}", ParentDir);
-                LogWarning(" Exception was {0}", LogUtils.FormatException(Ex));
+				Logger.LogWarning("Unable to clean formal builds from directory: {ParentDir}", ParentDir);
+				Logger.LogWarning(Ex, " Exception was {Exception}", LogUtils.FormatException(Ex));
             }
         }
 
@@ -2220,10 +2327,11 @@ namespace AutomationTool
 		/// <summary>
 		/// Creates a zip file containing the given input files
 		/// </summary>
-		/// <param name="ZipFile">Filename for the zip</param>
+		/// <param name="OutputFile">Filename for the zip</param>
 		/// <param name="BaseDirectory">Base directory to store relative paths in the zip file to</param>
 		/// <param name="Files">Files to include in the archive</param>
-		public static void ZipFiles(FileReference OutputFile, DirectoryReference BaseDirectory, IEnumerable<FileReference> Files)
+		/// <param name="ExecutableFiles">Files to flag with the executable attribute</param>
+		public static void ZipFiles(FileReference OutputFile, DirectoryReference BaseDirectory, IEnumerable<FileReference> Files, HashSet<FileReference> ExecutableFiles = null)
 		{
 			if (!DirectoryReference.Exists(OutputFile.Directory))
 			{
@@ -2244,7 +2352,19 @@ namespace AutomationTool
 					{
 						Name = Name.Replace(Path.DirectorySeparatorChar, '/');
 					}
-					ZipArchive.CreateEntryFromFile_CrossPlatform(File.FullName, Name, CompressionLevel.Fastest);
+
+					ZipArchiveEntry entry = ZipArchive.CreateEntryFromFile_CrossPlatform(File.FullName, Name, CompressionLevel.Fastest);
+					if (ExecutableFiles != null)
+					{
+						if (ExecutableFiles.Contains(File))
+						{
+							entry.ExternalAttributes |= 0b_111_111_101 << 16; // rwx rwx r-x
+						}
+						else
+						{
+							entry.ExternalAttributes |= 0b_110_110_100 << 16; // rw- rw- r--
+						}
+					}
 				}
 			}
 		}
@@ -2265,8 +2385,9 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="ZipFileName">Name of the zip file</param>
 		/// <param name="BaseDirectory">Output directory</param>
+		/// <param name="OverwriteFiles">Whether or not to overwrite files during unzip.</param>
 		/// <returns>List of files written</returns>
-		public static IEnumerable<FileReference> UnzipFiles(FileReference ZipFileName, DirectoryReference BaseDirectory)
+		public static IEnumerable<FileReference> UnzipFiles(FileReference ZipFileName, DirectoryReference BaseDirectory, bool OverwriteFiles = true)
 		{
 			List<FileReference> OutputFiles = new List<FileReference>();
 
@@ -2285,8 +2406,11 @@ namespace AutomationTool
 						continue;
 					}
 					FileReference OutputFile = FileReference.Combine(BaseDirectory, Entry.FullName);
-					DirectoryReference.CreateDirectory(OutputFile.Directory);
-					Entry.ExtractToFile_CrossPlatform(OutputFile.FullName, true);
+					if (OverwriteFiles || File.Exists(OutputFile.FullName) == false)
+					{
+						DirectoryReference.CreateDirectory(OutputFile.Directory);
+						Entry.ExtractToFile_CrossPlatform(OutputFile.FullName, OverwriteFiles);
+					}
 					OutputFiles.Add(OutputFile);
 				}
 			}
@@ -2298,23 +2422,28 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="ZipFileName">Name of the zip file</param>
 		/// <param name="BaseDirectory">Output directory</param>
+		/// <param name="OverwriteFiles">Whether or not to overwrite files during unzip.</param>
 		/// <returns>List of files written</returns>
-		public static IEnumerable<string> LegacyUnzipFiles(string ZipFileName, string BaseDirectory)
+		public static IEnumerable<string> LegacyUnzipFiles(string ZipFileName, string BaseDirectory, bool OverwriteFiles = true)
 		{
 			List<string> OutputFileNames = new List<string>();
 			if (!RuntimePlatform.IsWindows)
 			{
 				CommandUtils.CreateDirectory(BaseDirectory);
 
+				// -u  update files, create if necessary
+				// -o  overwrite files WITHOUT prompting
+				// -n  never overwrite existing files
+				string OverwriteFileUnzipArg = (OverwriteFiles) ? "-u -o" : "-n";
 				// Use system unzip tool as there have been instances of Ionic not being able to open zips created with Mac zip tool
-				string Output = CommandUtils.RunAndLog("unzip", "\"" + ZipFileName + "\" -d \"" + BaseDirectory + "\"", Options: ERunOptions.Default | ERunOptions.SpewIsVerbose);
+				string Output = CommandUtils.RunAndLog("unzip", OverwriteFileUnzipArg + " \"" + ZipFileName + "\" -d \"" + BaseDirectory + "\"", Options: ERunOptions.Default | ERunOptions.SpewIsVerbose);
 
 				// Split log output into lines
 				string[] Lines = Output.Split(new char[] { '\n', '\r' });
 
 				foreach (string LogLine in Lines)
 				{
-					CommandUtils.LogInformation(LogLine);
+					Logger.LogInformation("{Text}", LogLine);
 
 					// Split each line into two by whitespace
 					string[] SplitLine = LogLine.Split(new char[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
@@ -2322,7 +2451,7 @@ namespace AutomationTool
 					{
 						// Second part of line should be a path
 						string FilePath = SplitLine[1].Trim();
-						CommandUtils.LogInformation(FilePath);
+						Logger.LogInformation("{Text}", FilePath);
 						if (File.Exists(FilePath) && !OutputFileNames.Contains(FilePath) && FilePath != ZipFileName)
 						{
 							if (CommandUtils.IsProbablyAMacOrIOSExe(FilePath) || CommandUtils.IsProbablyALinuxExe(FilePath))
@@ -2335,7 +2464,7 @@ namespace AutomationTool
 				}
 				if (OutputFileNames.Count == 0)
 				{
-					CommandUtils.LogWarning("Unable to parse unzipped files from {0}", ZipFileName);
+					Logger.LogWarning("Unable to parse unzipped files from {ZipFileName}", ZipFileName);
 				}
 			}
 			else
@@ -2344,14 +2473,17 @@ namespace AutomationTool
 				// but that problem is now fixed. Leaving this code as is as we need to return the list of created files anyway.
 				using (Ionic.Zip.ZipFile Zip = new Ionic.Zip.ZipFile(ZipFileName))
 				{
-
+					FileMode OutputFileMode = (OverwriteFiles) ? FileMode.Create : FileMode.CreateNew;
 					foreach (Ionic.Zip.ZipEntry Entry in Zip.Entries.Where(x => !x.IsDirectory))
 					{
 						string OutputFileName = Path.Combine(BaseDirectory, Entry.FileName);
-						Directory.CreateDirectory(Path.GetDirectoryName(OutputFileName));
-						using (FileStream OutputStream = new FileStream(OutputFileName, FileMode.Create, FileAccess.Write))
+						if (OverwriteFiles || File.Exists(OutputFileName) == false)
 						{
-							Entry.Extract(OutputStream);
+							Directory.CreateDirectory(Path.GetDirectoryName(OutputFileName));
+							using (FileStream OutputStream = new FileStream(OutputFileName, OutputFileMode, FileAccess.Write))
+							{
+								Entry.Extract(OutputStream);
+							}
 						}
 						OutputFileNames.Add(OutputFileName);
 					}
@@ -2473,11 +2605,11 @@ namespace AutomationTool
 
 					if (Iterations == 0)
 					{
-						LogInformation("Waiting for lock file '{0}' to be removed...", LockFilePath);
+						Logger.LogInformation("Waiting for lock file '{LockFilePath}' to be removed...", LockFilePath);
 					}
 					else if ((Iterations % 30) == 0)
 					{
-						LogInformation("Still waiting for lock file '{0}' after {1} seconds.", LockFilePath, CurrentTime.Subtract(StartTime).TotalSeconds);
+						Logger.LogInformation("Still waiting for lock file '{LockFilePath}' after {Seconds} seconds.", LockFilePath, CurrentTime.Subtract(StartTime).TotalSeconds);
 					}
 
 					// Wait for a while before retrying.
@@ -2604,7 +2736,7 @@ namespace AutomationTool
 		{
 			Samples.RemoveAll(x => x.Name == Name);
 			Samples.Add(new TelemetrySample() { Name = Name, Value = Value, Units = Units });
-			Log.TraceLog("Added telemetry value: {0} = {1} ({2})", Name, Value, Units);
+			Logger.LogDebug("Added telemetry value: {Name} = {Value} ({Units})", Name, Value, Units);
 		}
 
 		/// <summary>
@@ -2667,7 +2799,7 @@ namespace AutomationTool
 		/// <param name="FileName"></param>
 		public void Write(string FileName)
 		{
-			Log.TraceLog("Writing telemetry to {0}...", FileName);
+			Logger.LogDebug("Writing telemetry to {FileName}...", FileName);
 			using (JsonWriter Writer = new JsonWriter(FileName))
 			{
 				Writer.WriteObjectStart();
@@ -2723,7 +2855,7 @@ namespace AutomationTool
                 }
 
                 var OutputStr = String.Format("UAT,{0},{1},{2}" + Environment.NewLine, Name, StartTime, DateTime.Now);
-                CommandUtils.LogVerbose(OutputStr);
+                Logger.LogDebug("{Text}", OutputStr);
                 if (CommandUtils.IsBuildMachine && !String.IsNullOrEmpty(CommandUtils.CmdEnv.CSVFile) && CommandUtils.CmdEnv.CSVFile != "nul")
                 {
                     try
@@ -2732,7 +2864,7 @@ namespace AutomationTool
                     }
                     catch (Exception Ex)
                     {
-                        CommandUtils.LogWarning("Could not append to csv file ({0}) : {1}", CommandUtils.CmdEnv.CSVFile, Ex.ToString());
+                        Logger.LogWarning("Could not append to csv file ({Arg0}) : {Arg1}", CommandUtils.CmdEnv.CSVFile, Ex.ToString());
                     }
                 }
             }
@@ -2924,7 +3056,7 @@ namespace AutomationTool
 					{
 						if (Result.ExitCode == 2)
 						{
-							CommandUtils.LogError(String.Format("Signtool returned a warning."));
+							Logger.LogError("{Text}", String.Format("Signtool returned a warning."));
 						}
 						// Success!
 						FileIdx = NextFileIdx;
@@ -2987,7 +3119,7 @@ namespace AutomationTool
 		{
             if (!OperatingSystem.IsWindows())
             {
-                CommandUtils.LogLog(String.Format("Can't sign '{0}' on non-Windows platform.", Filename));
+                Logger.LogDebug("{Text}", String.Format("Can't sign '{0}' on non-Windows platform.", Filename));
                 return;
             }
             if (!CommandUtils.FileExists(Filename))
@@ -3014,7 +3146,7 @@ namespace AutomationTool
 			}
 			if (!IsExecutable)
 			{
-				CommandUtils.LogLog(String.Format("Won't sign '{0}', not an executable.", TargetFileInfo.FullName));
+				Logger.LogDebug("{Text}", String.Format("Won't sign '{0}', not an executable.", TargetFileInfo.FullName));
 				return;
 			}
 
@@ -3089,7 +3221,7 @@ namespace AutomationTool
 			{
 				if (!bIsDirectory)
 				{
-					CommandUtils.LogLog(String.Format("Won't sign '{0}', not an executable.", InPath));
+					Logger.LogDebug("{Text}", String.Format("Won't sign '{0}', not an executable.", InPath));
 				}
 				return;
 			}
@@ -3149,7 +3281,7 @@ namespace AutomationTool
 		{
 			if (!Command.ParseParam("NoSign"))
 			{
-				CommandUtils.LogInformation("Signing up to {0} files...", Files.Count());
+				Logger.LogInformation("Signing up to {Arg0} files...", Files.Count());
 				UnrealBuildTool.UnrealTargetPlatform TargetPlatform = UnrealBuildTool.BuildHostPlatform.Current.Platform;
 				if (TargetPlatform == UnrealBuildTool.UnrealTargetPlatform.Mac)
 				{
@@ -3170,7 +3302,7 @@ namespace AutomationTool
 			}
 			else
 			{
-				CommandUtils.LogLog("Skipping signing {0} files due to -nosign.", Files.Count());
+				Logger.LogDebug("Skipping signing {Arg0} files due to -nosign.", Files.Count());
 			}
 		}
 
@@ -3178,7 +3310,7 @@ namespace AutomationTool
 		{
 			if (!OperatingSystem.IsWindows())
 			{
-				CommandUtils.LogLog(String.Format("Can't sign on non-Windows platform."));
+				Logger.LogDebug("{Text}", String.Format("Can't sign on non-Windows platform."));
 				return;
 			}
 			List<FileReference> FinalFiles = new List<FileReference>();

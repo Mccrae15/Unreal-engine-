@@ -14,6 +14,9 @@ using UnrealBuildBase;
 using System.Runtime.Versioning;
 using System.Threading.Tasks;
 using System.Reflection.PortableExecutable;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 public class Win64Platform : Platform
 {
@@ -70,6 +73,12 @@ public class Win64Platform : Platform
 
 	public override bool IsSupported { get { return true; } }
 
+	public virtual UnrealTargetPlatform? BootstrapExePlatform
+	{
+		get { return null; }
+	}
+
+
 	public override void GetFilesToDeployOrStage(ProjectParams Params, DeploymentContext SC)
 	{
 		// Engine non-ufs (binaries)
@@ -105,7 +114,7 @@ public class Win64Platform : Platform
 		}
 		else
 		{
-			CommandUtils.LogLog("Can't find cloud directory {0}", ProjectCloudPath.FullName);
+			Logger.LogDebug("Can't find cloud directory {Arg0}", ProjectCloudPath.FullName);
 		}
 
 		// Stage the bootstrap executable
@@ -179,7 +188,8 @@ public class Win64Platform : Platform
 
 	void StageBootstrapExecutable(DeploymentContext SC, string ExeName, FileReference TargetFile, StagedFileReference StagedRelativeTargetPath, string StagedArguments)
 	{
-		FileReference InputFile = FileReference.Combine(SC.LocalRoot, "Engine", "Binaries", SC.PlatformDir, String.Format("BootstrapPackagedGame-{0}-Shipping.exe", SC.PlatformDir));
+		UnrealTargetPlatform BootstrapPlatform = (BootstrapExePlatform ?? SC.StageTargetPlatform.PlatformType);
+		FileReference InputFile = FileReference.Combine(SC.LocalRoot, "Engine", "Binaries", BootstrapPlatform.ToString(), String.Format("BootstrapPackagedGame-{0}-Shipping.exe", BootstrapPlatform));
 		if(FileReference.Exists(InputFile))
 		{
 			// Create the new bootstrap program
@@ -193,6 +203,8 @@ public class Win64Platform : Platform
 			// currently the icon updating doesn't run under mono
 			if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 			{
+				Logger.LogInformation("Patching bootstrap executable; {Arg0}", IntermediateFile.FullName);
+
 				// Get the icon from the build directory if possible
 				GroupIconResource GroupIcon = null;
 				if(FileReference.Exists(FileReference.Combine(SC.ProjectRoot, "Build/Windows/Application.ico")))
@@ -216,6 +228,10 @@ public class Win64Platform : Platform
 					const int ExecArgsResourceId = 202;
 					Update.SetData(ExecArgsResourceId, ResourceType.RawData, Encoding.Unicode.GetBytes(StagedArguments + "\0"));
 				}
+			}
+			else
+			{
+				Logger.LogInformation("Skipping patching of bootstrap executable (unsupported host platform)");
 			}
 
 			// Copy it to the staging directory
@@ -270,7 +286,7 @@ public class Win64Platform : Platform
 			FileReference IconFile = FileReference.Combine(Params.RawProjectPath.Directory, "Build", "Windows", "Application.ico");
 			if(FileReference.Exists(IconFile))
 			{
-				CommandUtils.LogInformation("Updating executable with custom icon from {0}", IconFile);
+				Logger.LogInformation("Updating executable with custom icon from {IconFile}", IconFile);
 
 				GroupIconResource GroupIcon = GroupIconResource.FromIco(IconFile.FullName);
 
@@ -345,7 +361,7 @@ public class Win64Platform : Platform
 			}
 			else
 			{
-				LogWarning("Unable to deploy AppLocalDirectory dependencies. No such path: {0}", BaseAppLocalDependenciesPath);
+				Logger.LogWarning("Unable to deploy AppLocalDirectory dependencies. No such path: {BaseAppLocalDependenciesPath}", BaseAppLocalDependenciesPath);
 			}
 		}
 	}
@@ -357,7 +373,7 @@ public class Win64Platform : Platform
 		List<StagedFileReference> FilesInTargetDir = SC.FilesToStage.NonUFSFiles.Keys.Where(x => x.IsUnderDirectory(StagedBinariesDir) && (x.HasExtension(".exe") || x.HasExtension(".dll"))).ToList();
 		if(FilesInTargetDir.Count > 0)
 		{
-			LogInformation("Copying AppLocal dependencies from {0} to {1}", BaseAppLocalDependenciesPath, StagedBinariesDir);
+			Logger.LogInformation("Copying AppLocal dependencies from {BaseAppLocalDependenciesPath} to {StagedBinariesDir}", BaseAppLocalDependenciesPath, StagedBinariesDir);
 
 			// Stage files in subdirs
 			foreach (DirectoryReference DependencyDirectory in DirectoryReference.EnumerateDirectories(BaseAppLocalDependenciesPath))
@@ -466,7 +482,7 @@ public class Win64Platform : Platform
 			bool bIndexSources, List<FileReference> SourceFiles,
 			string Product, string Branch, int Change, string BuildVersion = null)
     {
-		LogInformation($"Publishing symbols to \"{SymbolStoreDirectory}\" (source indexing: {bIndexSources})");
+		Logger.LogInformation("Publishing symbols to \"{SymbolStoreDirectory}\" (source indexing: {bIndexSources})", SymbolStoreDirectory, bIndexSources);
 
 		// Get the SYMSTORE.EXE path, using the latest SDK version we can find.
 		FileReference SymStoreExe = GetSymStoreExe();
@@ -521,7 +537,7 @@ public class Win64Platform : Platform
 				CommandUtils.DeleteDirectory(TempSymStoreIndexedDir);
 			}
 			DateTime CompressDone = DateTime.Now;
-			LogInformation("Took {0}s to compress the symbol files to temp path {1}", (CompressDone - Start).TotalSeconds, TempSymStoreDir);
+			Logger.LogInformation("Took {Arg0}s to compress the symbol files to temp path {TempSymStoreDir}", (CompressDone - Start).TotalSeconds, TempSymStoreDir);
 
 			int CopiedCount = 0;
 
@@ -543,14 +559,14 @@ public class Win64Platform : Platform
 					}
 					catch (Exception Ex)
 					{
-						LogWarning("Failed to write the version file, reason {0}", Ex.ToString());
+						Logger.LogWarning("Failed to write the version file, reason {Arg0}", Ex.ToString());
 					}
 				}
 
 				// Don't bother copying the temp file if the destination file is there already.
 				if (FileReference.Exists(ActualDestinationFile))
 				{
-					LogInformation("Destination file {0} already exists, skipping", ActualDestinationFile.FullName);
+					Logger.LogInformation("Destination file {Arg0} already exists, skipping", ActualDestinationFile.FullName);
 					continue;
 				}
 
@@ -576,13 +592,13 @@ public class Win64Platform : Platform
 					// Either way, it's fine to just continue on.
 					if (FileReference.Exists(ActualDestinationFile))
 					{
-						LogInformation("Destination file {0} already exists or was in use, skipping.", ActualDestinationFile.FullName);
+						Logger.LogInformation("Destination file {Arg0} already exists or was in use, skipping.", ActualDestinationFile.FullName);
 						continue;
 					}
 					// If it doesn't exist, we actually failed to copy it entirely.
 					else
 					{
-						LogWarning("Couldn't move temp file {0} to the symbol store at location {1}! Reason: {2}", TempDestinationFile.FullName, ActualDestinationFile.FullName, Ex.ToString());
+						Logger.LogWarning("Couldn't move temp file {Arg0} to the symbol store at location {Arg1}! Reason: {Arg2}", TempDestinationFile.FullName, ActualDestinationFile.FullName, Ex.ToString());
 					}
 				}
 				// Delete the temp one no matter what, don't want them hanging around in the symstore
@@ -591,12 +607,12 @@ public class Win64Platform : Platform
 					FileReference.Delete(TempDestinationFile);
 				}
 			}
-			LogInformation("Took {0}s to copy {1} symbol files to the store at {2}", (DateTime.Now - CompressDone).TotalSeconds, CopiedCount, SymbolStoreDirectory);
+			Logger.LogInformation("Took {Arg0}s to copy {CopiedCount} symbol files to the store at {SymbolStoreDirectory}", (DateTime.Now - CompressDone).TotalSeconds, CopiedCount, SymbolStoreDirectory);
 
 			FileReference PingmeFile = FileReference.Combine(SymbolStoreDirectory, "pingme.txt");
 			if (!FileReference.Exists(PingmeFile))
 			{
-				LogInformation("Creating {0} to mark path as three-tiered symbol location", PingmeFile);
+				Logger.LogInformation("Creating {PingmeFile} to mark path as three-tiered symbol location", PingmeFile);
 				File.WriteAllText(PingmeFile.FullName, "Exists to mark this as a three-tiered symbol location");
 			}
 		}
@@ -664,7 +680,7 @@ public class Win64Platform : Platform
 	[SupportedOSPlatform("windows")]
 	public void AddSourceIndexToSymbols(IEnumerable<FileReference> PdbFiles, IEnumerable<FileReference> SourceFiles, string Branch, int Change)
 	{
-		LogInformation("Adding source control information to PDB files...");
+		Logger.LogInformation("Adding source control information to PDB files...");
 
 		// Get the PDBSTR.EXE path, using the latest SDK version we can find.
 		FileReference PdbStrExe = GetPdbStrExe();
@@ -719,7 +735,7 @@ public class Win64Platform : Platform
 		{
 			lock (State)
 			{
-				CommandUtils.LogInformation("Skipping indexing of {0} because it would make the file larger than 4GB (not supported by pdbstr.exe tool).", PdbFile.GetFileName());
+				Logger.LogInformation("Skipping indexing of {Arg0} because it would make the file larger than 4GB (not supported by pdbstr.exe tool).", PdbFile.GetFileName());
 			}
 
 			return;
@@ -755,7 +771,7 @@ public class Win64Platform : Platform
 			{
 				foreach (string Message in Messages)
 				{
-					CommandUtils.LogInformation(Message);
+					Logger.LogInformation("{Text}", Message);
 				}
 			}
 		}

@@ -23,6 +23,7 @@ public class ChaosClothAssetEditorTools : ModuleRules
 			{
 				"CoreUObject",
 				"Engine",
+				"RenderCore",
 				"Slate",
 				"SlateCore",
 				"Projects",
@@ -53,7 +54,12 @@ public class ChaosClothAssetEditorTools : ModuleRules
 				"MeshConversion",
 				"MeshDescription",
 				"SkeletalMeshDescription",
-				"ChaosClothAsset"
+				"ChaosClothAsset",
+				"ChaosClothAssetDataflowNodes",
+				"DataflowCore",
+				"DataflowEngine",
+				"DataflowEditor",
+				"Chaos"				// FManagedArrayCollection::StaticType
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

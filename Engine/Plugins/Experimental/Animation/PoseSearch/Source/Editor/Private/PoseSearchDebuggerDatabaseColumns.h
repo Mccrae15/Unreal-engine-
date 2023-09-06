@@ -3,13 +3,14 @@
 #pragma once
 
 #include "AnimPreviewInstance.h"
+#include "Animation/DebugSkelMeshComponent.h"
 #include "Editor.h"
 #include "IAnimationEditor.h"
 #include "IPersonaToolkit.h"
 #include "PoseSearchDatabaseEditor.h"
 #include "PoseSearchDatabaseViewModel.h"
 #include "PoseSearchDebuggerDatabaseRowData.h"
-#include "Animation/DebugSkelMeshComponent.h"
+#include "PoseSearchDebuggerViewModel.h"
 #include "Preferences/PersonaOptions.h"
 #include "Styling/AppStyle.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -43,7 +44,8 @@ struct IColumn : TSharedFromThis<IColumn>
 	bool bEnabled = false;
 
 	virtual FText GetLabel() const = 0;
-
+	virtual FText GetLabelTooltip() const { return GetLabel(); }
+	
 	using FRowDataRef = TSharedRef<FDebuggerDatabaseRowData>;
 	using FSortPredicate = TFunction<bool(const FRowDataRef&, const FRowDataRef&)>;
 
@@ -69,12 +71,17 @@ struct ITextColumn : IColumn
 		return SNew(STextBlock)
             .Font(RowFont)
 			.Text_Lambda([this, RowData]() -> FText { return GetRowText(RowData); })
+			.ToolTipText_Lambda([this, RowData]() -> FText { return GetRowToolTipText(RowData); })
             .Justification(ETextJustify::Center)
 			.ColorAndOpacity_Lambda([this, RowData] { return GetColorAndOpacity(RowData); });
 	}
 
 protected:
 	virtual FText GetRowText(const FRowDataRef& Row) const = 0;
+	virtual FText GetRowToolTipText(const FRowDataRef& Row) const
+	{
+		return FText::GetEmpty();
+	}
 	virtual FSlateColor GetColorAndOpacity(const FRowDataRef& Row) const
 	{
 		return FSlateColor(FLinearColor::White);
@@ -85,7 +92,15 @@ struct FPoseIdx : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelPoseIndex", "Index"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelPoseIndex", "PoseIndex");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipPoseIndex", "Index of the Pose in the Database");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -98,67 +113,109 @@ struct FPoseIdx : ITextColumn
 	}
 };
 
-struct FDatabaseName : IColumn
+struct FAssetIdx : ITextColumn
 {
-	using IColumn::IColumn;
+	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelDatabaseName", "Database"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelAssetIndex", "AssetIndex");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipAssetIndex", "Index of the Asset in the Database");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
-		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->DatabaseName < Row1->DatabaseName; };
+		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->DbAssetIdx < Row1->DbAssetIdx; };
+	}
+
+	virtual FText GetRowText(const FRowDataRef& Row) const override
+	{
+		return FText::AsNumber(Row->DbAssetIdx, &FNumberFormattingOptions::DefaultNoGrouping());
+	}
+};
+
+
+struct FDatabaseName : IColumn
+{
+	TSharedPtr<FDebuggerViewModel> DebuggerViewModel;
+
+	FDatabaseName(int32 InSortIndex, TSharedPtr<FDebuggerViewModel> InDebuggerViewModel)
+	: IColumn(InSortIndex)
+	, DebuggerViewModel(InDebuggerViewModel)
+	{
+	}
+
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelDatabaseName", "Database");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipDatabaseName", "Database Name");
+	}
+
+	virtual FSortPredicate GetSortPredicate() const override
+	{
+		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->SharedData->DatabaseName < Row1->SharedData->DatabaseName; };
 	}
 
 	virtual TSharedRef<SWidget> GenerateWidget(const FRowDataRef& RowData) const override
 	{
 		return SNew(SHyperlink)
-			.Text_Lambda([RowData]() -> FText { return FText::FromString(RowData->DatabaseName); })
-			.TextStyle(&FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("SmallText"))
-			.ToolTipText_Lambda([RowData]() -> FText
+		.Text_Lambda([RowData]() -> FText
+		{
+			return FText::FromString(RowData->SharedData->DatabaseName);
+		})
+		.TextStyle(&FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("SmallText"))
+		.ToolTipText_Lambda([RowData]() -> FText
+		{
+			return FText::Format(
+				LOCTEXT("DatabaseHyperlinkTooltipFormat", "Open database '{0}'"),
+				FText::FromString(RowData->SharedData->DatabasePath));
+		})
+		.OnNavigate_Lambda([this, RowData]()
+		{
+			UObject* Asset = nullptr;
+
+			// Load asset
+			if (UPackage* Package = LoadPackage(NULL, *RowData->SharedData->DatabasePath, LOAD_NoRedirects))
+			{
+				Package->FullyLoad();
+
+				const FString AssetName = FPaths::GetBaseFilename(RowData->SharedData->DatabasePath);
+				Asset = FindObject<UObject>(Package, *AssetName);
+			}
+			else
+			{
+				// Fallback for unsaved assets
+				Asset = FindObject<UObject>(nullptr, *RowData->SharedData->DatabasePath);
+			}
+
+			// Open editor
+			if (Asset != nullptr)
+			{
+				if (UAssetEditorSubsystem* AssetEditorSS = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
 				{
-					return FText::Format(
-						LOCTEXT("DatabaseHyperlinkTooltipFormat", "Open database '{0}'"),
-						FText::FromString(RowData->DatabasePath));
-				})
-			.OnNavigate_Lambda([RowData]()
-				{
-					UObject* Asset = nullptr;
-
-					// Load asset
-					if (UPackage* Package = LoadPackage(NULL, *RowData->DatabasePath, LOAD_NoRedirects))
-					{
-						Package->FullyLoad();
-
-						const FString AssetName = FPaths::GetBaseFilename(RowData->DatabasePath);
-						Asset = FindObject<UObject>(Package, *AssetName);
-					}
-					else
-					{
-						// Fallback for unsaved assets
-						Asset = FindObject<UObject>(nullptr, *RowData->DatabasePath);
-					}
-
-					// Open editor
-					if (Asset != nullptr)
-					{
-						if (UAssetEditorSubsystem* AssetEditorSS = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
-						{
-							AssetEditorSS->OpenEditorForAsset(Asset);
+					AssetEditorSS->OpenEditorForAsset(Asset);
 								
-							if (IAssetEditorInstance* Editor = AssetEditorSS->FindEditorForAsset(Asset, true))
-							{
-								if (Editor->GetEditorName() == FName("PoseSearchDatabaseEditor"))
-								{
-									FDatabaseEditor* DatabaseEditor = static_cast<FDatabaseEditor*>(Editor);
+					if (IAssetEditorInstance* Editor = AssetEditorSS->FindEditorForAsset(Asset, true))
+					{
+						if (Editor->GetEditorName() == FName("PoseSearchDatabaseEditor"))
+						{
+							FDatabaseEditor* DatabaseEditor = static_cast<FDatabaseEditor*>(Editor);
 									
-									// Open asset paused and at specific time as seen on the pose search debugger.
-									DatabaseEditor->SetSelectedAsset(RowData->DbAssetIdx);
-									DatabaseEditor->GetViewModel()->SetPlayTime(RowData->AssetTime, false);
-								}
-							}
+							// Open asset paused and at specific time as seen on the pose search debugger.
+							DatabaseEditor->SetSelectedPoseIdx(RowData->PoseIdx, DebuggerViewModel->GetDrawQuery(), RowData->SharedData->QueryVector);
 						}
 					}
-				});
+				}
+			}
+		});
 	}
 };
 
@@ -166,8 +223,16 @@ struct FAssetName : IColumn
 {
 	using IColumn::IColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelAssetName", "Asset"); }
-		
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelAssetName", "Asset");
+	}
+	
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipAssetName", "Animation Asset Name");
+	}
+
 	virtual FSortPredicate GetSortPredicate() const override
 	{
 		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->AssetName < Row1->AssetName; };
@@ -232,8 +297,41 @@ struct FFrame : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelFrame", "Frame"); }
-		
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelFrame", "Frame");
+	}
+	
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipFrame", "Frame number from the start of the Animation Asset");
+	}
+
+	virtual FSortPredicate GetSortPredicate() const override
+	{
+		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->AnimFrame < Row1->AnimFrame; };
+	}
+
+	virtual FText GetRowText(const FRowDataRef& Row) const override
+	{
+		return FText::AsNumber(Row->AnimFrame, &FNumberFormattingOptions::DefaultNoGrouping());
+	}
+};
+
+struct FTime : ITextColumn
+{
+	using ITextColumn::ITextColumn;
+
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelTime", "Time");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipTime", "Time in seconds from the start of the Animation Asset");
+	}
+
 	virtual FSortPredicate GetSortPredicate() const override
 	{
 		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->AssetTime < Row1->AssetTime; };
@@ -241,43 +339,32 @@ struct FFrame : ITextColumn
 
 	virtual FText GetRowText(const FRowDataRef& Row) const override
 	{
-		FNumberFormattingOptions TimeFormattingOptions = FNumberFormattingOptions()
-			.SetUseGrouping(false)
-			.SetMaximumFractionalDigits(2);
+		return FText::AsNumber(Row->AssetTime, &FNumberFormattingOptions().SetUseGrouping(false).SetMaximumFractionalDigits(2));
+	}
+};
 
-		FNumberFormattingOptions PercentageFormattingOptions = FNumberFormattingOptions()
-			.SetMaximumFractionalDigits(2);
+struct FPercentage : ITextColumn
+{
+	using ITextColumn::ITextColumn;
 
-		if (Row->AssetType == ESearchIndexAssetType::Sequence ||
-			Row->AssetType == ESearchIndexAssetType::AnimComposite)
-		{
-			if (GetDefault<UPersonaOptions>()->bTimelineDisplayPercentage)
-			{
-				return FText::Format(
-					FText::FromString("{0} ({1}) ({2})"),
-					FText::AsNumber(Row->AnimFrame, &FNumberFormattingOptions::DefaultNoGrouping()),
-					FText::AsNumber(Row->AssetTime, &TimeFormattingOptions),
-					FText::AsPercent(Row->AnimPercentage, &PercentageFormattingOptions));
-			}
-			else
-			{
-				return FText::Format(
-					FText::FromString("{0} ({1})"),
-					FText::AsNumber(Row->AnimFrame, &FNumberFormattingOptions::DefaultNoGrouping()),
-					FText::AsNumber(Row->AssetTime, &TimeFormattingOptions));
-			}
-		}
-		else if (Row->AssetType == ESearchIndexAssetType::BlendSpace)
-		{
-			// There is no frame index associated with a blendspace
-			return FText::Format(
-				FText::FromString("({0})"),
-				FText::AsNumber(Row->AssetTime, &TimeFormattingOptions));
-		}
-		else
-		{
-			return FText::FromString(TEXT("-"));
-		}
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelPercentage", "Percentage");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipPercentage", "Time in percentage from the start of the Animation Asset");
+	}
+
+	virtual FSortPredicate GetSortPredicate() const override
+	{
+		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->AnimPercentage < Row1->AnimPercentage; };
+	}
+
+	virtual FText GetRowText(const FRowDataRef& Row) const override
+	{
+		return FText::AsPercent(Row->AnimPercentage, &FNumberFormattingOptions().SetMaximumFractionalDigits(2));
 	}
 };
 
@@ -285,8 +372,16 @@ struct FCost : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelCost", "Cost"); }
-		
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelCost", "Cost");
+	}
+	
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipCost", "Total Cost of the associated Pose");
+	}
+
 	virtual FSortPredicate GetSortPredicate() const override
 	{
 		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->PoseCost < Row1->PoseCost; };
@@ -310,6 +405,36 @@ struct FCost : ITextColumn
 	}
 };
 
+struct FPCACost : ITextColumn
+{
+	using ITextColumn::ITextColumn;
+
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelPCACost", "PCA Cost");
+	}
+	
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipPCACost", "Total PCA Cost of the associated Pose");
+	}
+
+	virtual FSortPredicate GetSortPredicate() const override
+	{
+		return [](const FRowDataRef& Row0, const FRowDataRef& Row1) -> bool { return Row0->PosePCACost < Row1->PosePCACost; };
+	}
+		
+	virtual FText GetRowText(const FRowDataRef& Row) const override
+	{
+		return FText::AsNumber(Row->PosePCACost);
+    }
+
+	virtual FSlateColor GetColorAndOpacity(const FRowDataRef& Row) const override
+	{
+		return Row->PCACostColor;
+	}
+};
+
 struct FChannelBreakdownCostColumn : ITextColumn
 {
 	FChannelBreakdownCostColumn(int32 SortIndex, int32 InBreakdownCostIndex, const FText& InLabel)
@@ -319,7 +444,15 @@ struct FChannelBreakdownCostColumn : ITextColumn
 	{
 	}
 
-	virtual FText GetLabel() const override { return Label; }
+	virtual FText GetLabel() const override
+	{
+		return Label;
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return FText::Format(LOCTEXT("ColumnLabelTooltipChannelBreakdownCost", "Breakdown Cost for the Channel '{0}'"), Label);
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -348,12 +481,19 @@ struct FChannelBreakdownCostColumn : ITextColumn
 	int32 BreakdownCostIndex = INDEX_NONE;
 };
 
-#if WITH_EDITORONLY_DATA
 struct FCostModifier : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelCostModifier", "Bias"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelCostModifier", "Bias");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipCostModifier", "Total Cost for all the Bias contributions");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -365,13 +505,20 @@ struct FCostModifier : ITextColumn
 		return FText::AsNumber(Row->PoseCost.GetCostAddend());
 	}
 };
-#endif // WITH_EDITORONLY_DATA
 
 struct FMirrored : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelMirrored", "Mirror"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelMirrored", "Mirror");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipMirrored", "Mirror state of the associated Pose");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -388,7 +535,15 @@ struct FLooping : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelLooping", "Loop"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelLooping", "Loop");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipLooping", "Loop state of the associated Pose");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -405,7 +560,15 @@ struct FBlendParameters : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelBlendParams", "Blend Params"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelBlendParams", "Blend Params");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelBlendTooltipParams", "Blend Params used to sample the associated BlendSpace asset");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -419,17 +582,7 @@ struct FBlendParameters : ITextColumn
 
 	virtual FText GetRowText(const FRowDataRef& Row) const override
 	{
-		if (Row->AssetType == ESearchIndexAssetType::BlendSpace)
-		{
-			return FText::Format(
-				LOCTEXT("Blend Parameters", "({0}, {1})"),
-				FText::AsNumber(Row->BlendParameters[0]),
-				FText::AsNumber(Row->BlendParameters[1]));
-		}
-		else
-		{
-			return FText::FromString(TEXT("-"));
-		}
+		return FText::Format(LOCTEXT("Blend Parameters", "{0}, {1}"), FText::AsNumber(Row->BlendParameters[0]), FText::AsNumber(Row->BlendParameters[1]));
 	}
 };
 
@@ -437,7 +590,15 @@ struct FPoseCandidateFlags : ITextColumn
 {
 	using ITextColumn::ITextColumn;
 
-	virtual FText GetLabel() const override { return LOCTEXT("ColumnLabelPoseCandidateFlags", "Flags"); }
+	virtual FText GetLabel() const override
+	{
+		return LOCTEXT("ColumnLabelPoseCandidateFlags", "Flags");
+	}
+
+	virtual FText GetLabelTooltip() const override
+	{
+		return LOCTEXT("ColumnLabelTooltipPoseCandidateFlags", "Flags indicating why a Pose has been discarded");
+	}
 
 	virtual FSortPredicate GetSortPredicate() const override
 	{
@@ -448,40 +609,69 @@ struct FPoseCandidateFlags : ITextColumn
 	{
 		if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::AnyDiscardedMask))
 		{
-			auto AddDelimiter = [](FTextBuilder& TextBuilder, bool& bNeedDelimiter)
-			{
-				if (bNeedDelimiter)
-				{
-					TextBuilder.AppendLine(LOCTEXT("DiscardedBy_Delimiter", " | "));
-				}
-				bNeedDelimiter = true;
-			};
+			FString Sring;
 
-			bool bNeedDelimiter = false;
-
-			FTextBuilder TextBuilder;
 			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_PoseJumpThresholdTime))
 			{
-				AddDelimiter(TextBuilder, bNeedDelimiter);
-				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_PoseJumpThresholdTime", "PoseJumpThresholdTime"));
+				Sring.Append("J ");
 			}
-				
+
 			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_PoseReselectHistory))
 			{
-				AddDelimiter(TextBuilder, bNeedDelimiter);
-				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_PoseReselectHistory", "PoseReselectHistory"));
+				Sring.Append("H ");
+			}
+			
+			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_BlockTransition))
+			{
+				Sring.Append("B ");
+			}
+			
+			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_PoseFilter))
+			{
+				Sring.Append("F ");
+			}
+
+			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_Search))
+			{
+				Sring.Append("S ");
+			}
+
+			return FText::FromString(Sring);
+		}
+
+		return FText::GetEmpty();
+	}
+
+	virtual FText GetRowToolTipText(const FRowDataRef& Row) const override
+	{
+		if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::AnyDiscardedMask))
+		{
+			FTextBuilder TextBuilder;
+			TextBuilder.AppendLine(LOCTEXT("DiscardedBy_Reason_Tooltip", "Pose discarded because of:"));
+
+			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_PoseJumpThresholdTime))
+			{
+				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_PoseJumpThresholdTime_Tooltip", "(J) Pose Jump Threshold Time"));
+			}
+
+			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_PoseReselectHistory))
+			{
+				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_PoseReselectHistory_Tooltip", "(H) Pose Reselect History"));
 			}
 
 			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_BlockTransition))
 			{
-				AddDelimiter(TextBuilder, bNeedDelimiter);
-				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_BlockTransition", "BlockTransition"));
+				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_BlockTransition_Tooltip", "(B) Block Transition"));
 			}
 
 			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_PoseFilter))
 			{
-				AddDelimiter(TextBuilder, bNeedDelimiter);
-				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_PoseFilter", "PoseFilter"));
+				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_PoseFilter_Tooltip", "(F) Filter"));
+			}
+
+			if (EnumHasAnyFlags(Row->PoseCandidateFlags, EPoseCandidateFlags::DiscardedBy_Search))
+			{
+				TextBuilder.AppendLine(LOCTEXT("DiscardedBy_Search_Tooltip", "(S) Search"));
 			}
 
 			return TextBuilder.ToText();

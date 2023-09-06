@@ -13,6 +13,7 @@ class SOutputLog;
 class SDockTab;
 class FSpawnTabArgs;
 struct FOutputLogCreationParams;
+struct FOutputLogFilter;
 
 /** Style of the debug console */
 namespace EDebugConsoleStyle
@@ -42,6 +43,9 @@ public:
 
 	static OUTPUTLOG_API FOutputLogModule& Get();
 
+	/** Returns whether debug console widgets should be hidden */
+	virtual bool ShouldHideConsole() const;
+
 	/** Generates a console input box widget.  Remember, this widget will become invalid if the
 		output log DLL is unloaded on the fly. */
 	virtual TSharedRef<SWidget> MakeConsoleInputBox(TSharedPtr<SMultiLineEditableTextBox>& OutExposedEditableTextBox, const FSimpleDelegate& OnCloseConsole, const FSimpleDelegate& OnConsoleCommandExecuted) const;
@@ -67,8 +71,18 @@ public:
 
 	const TSharedPtr<SDockTab> GetOutputLogTab() const { return OutputLogTab.Pin(); }
 
+	struct FOutputFilterParams
+	{
+		TOptional<bool> bShowErrors;
+		TOptional<bool> bShowWarnings;
+		TOptional<bool> bShowLogs;
+		TOptional<TSet<ELogVerbosity::Type>> IgnoreFilterVerbosities;
+	};
+
 	/** Change the output log's filter. If CategoriesToShow is empty, all categories will be shown. */
 	void OUTPUTLOG_API UpdateOutputLogFilter(const TArray<FName>& CategoriesToShow, TOptional<bool> bShowErrors = TOptional<bool>(), TOptional<bool> bShowWarnings = TOptional<bool>(), TOptional<bool> bShowLogs = TOptional<bool>());
+	void OUTPUTLOG_API UpdateOutputLogFilter(const TArray<FName>& CategoriesToShow, const FOutputFilterParams& InParams);
+
 	/** Opens the output log tab, or brings it to front if it's already open */
 	void OUTPUTLOG_API OpenOutputLog() const;
 
@@ -78,11 +92,16 @@ public:
 
 private:
 	TSharedRef<SDockTab> SpawnOutputLogTab(const FSpawnTabArgs& Args);
+	void OnOutputLogTabClosed(TSharedRef<SDockTab> Tab);
+
 	TSharedRef<SDockTab> SpawnDeviceOutputLogTab(const FSpawnTabArgs& Args);
 
 private:
 	/** Our global output log app spawner */
 	TSharedPtr<FOutputLogHistory> OutputLogHistory;
+
+	/** Caches the user selected Filters as the OutputLog tab can be closed and remade multiple times */
+	TUniquePtr<FOutputLogFilter> OutputLogFilterCache;
 
 	/** Our global active output log that belongs to a tab */
 	TWeakPtr<SOutputLog> OutputLog;

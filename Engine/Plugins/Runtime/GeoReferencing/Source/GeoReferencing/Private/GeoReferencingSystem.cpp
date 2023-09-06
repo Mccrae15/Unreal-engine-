@@ -10,12 +10,22 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Engine/Engine.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "GeographicCoordinates.h"
 #include "MathUtil.h"
+#include "Components/BillboardComponent.h"
  
+#if WITH_EDITOR
+
+#include "UObject/ConstructorHelpers.h"
+#include "Engine/Texture2D.h"
+
+#endif
 
 #include "Misc/Paths.h"
 #include "UFSProjSupport.h"
+#include "proj.h"
 
 THIRD_PARTY_INCLUDES_START
 THIRD_PARTY_INCLUDES_END
@@ -26,6 +36,37 @@ THIRD_PARTY_INCLUDES_END
 #define GEOREF_DOUBLE_SMALL_NUMBER			(1.e-50)
 
 
+
+AGeoReferencingSystem::AGeoReferencingSystem(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+#if WITH_EDITORONLY_DATA
+	if (!IsRunningCommandlet())
+	{
+		// Structure to hold one-time initialization
+		struct FConstructorStatics
+		{
+			ConstructorHelpers::FObjectFinderOptional<UTexture2D> GeoReferencingTextureObject;
+			FName ID_GeoReferencing;
+			FText NAME_GeoReferencing;
+			FConstructorStatics()
+				: GeoReferencingTextureObject(TEXT("/GeoReferencing/UI/Icons/S_GeoReferencing"))
+				, ID_GeoReferencing(TEXT("GeoReferencing"))
+				, NAME_GeoReferencing(NSLOCTEXT("SpriteCategory", "GeoReferencing", "GeoReferencing"))
+			{
+			}
+		};
+		static FConstructorStatics ConstructorStatics;
+
+		if (GetSpriteComponent())
+		{
+			GetSpriteComponent()->Sprite = ConstructorStatics.GeoReferencingTextureObject.Get();
+			GetSpriteComponent()->SpriteInfo.Category = ConstructorStatics.ID_GeoReferencing;
+			GetSpriteComponent()->SpriteInfo.DisplayName = ConstructorStatics.NAME_GeoReferencing;
+		}
+	}
+#endif // WITH_EDITORONLY_DATA
+}
 
 
 AGeoReferencingSystem* AGeoReferencingSystem::GetGeoReferencingSystem(UObject* WorldContextObject)
@@ -246,15 +287,8 @@ void AGeoReferencingSystem::EngineToProjected(const FVector& EngineCoordinates, 
 	default:
 	{
 		// in FlatPlanet, the transform is simply a translation
-		// Before any conversion, consider the internal UE rebasing
-		FIntVector UERebasingOffset = GetWorld()->OriginLocation;
-		FVector UERebasedCoordinates(
-			EngineCoordinates.X + UERebasingOffset.X,
-			EngineCoordinates.Y + UERebasingOffset.Y,
-			EngineCoordinates.Z + UERebasingOffset.Z);
-
 		// Convert UE units to meters, invert the Y coordinate because of left-handed UE Frame
-		FVector UEWorldCoordinates = UERebasedCoordinates * FVector(0.01, -0.01, 0.01);
+		FVector UEWorldCoordinates = EngineCoordinates * FVector(0.01, -0.01, 0.01);
 
 		// Add the defined origin offset
 		ProjectedCoordinates = UEWorldCoordinates + Impl->WorldOriginLocationProjected;
@@ -284,11 +318,7 @@ void AGeoReferencingSystem::ProjectedToEngine(const FVector& ProjectedCoordinate
 		FVector UEWorldCoordinates = (ProjectedCoordinates - Impl->WorldOriginLocationProjected);
 
 		// Convert UE units to meters, invert the Y coordinate because of left-handed UE Frame
-		FVector UERebasedCoordinates = UEWorldCoordinates * FVector(100.0, -100.0, 100.0);
-
-		// Consider the UE internal rebasing
-		FIntVector UERebasingOffset = GetWorld()->OriginLocation;
-		EngineCoordinates = UERebasedCoordinates - FVector(UERebasingOffset.X, UERebasingOffset.Y, UERebasingOffset.Z);
+		EngineCoordinates = UEWorldCoordinates * FVector(100.0, -100.0, 100.0);
 	}
 	break;
 	}
@@ -300,19 +330,12 @@ void AGeoReferencingSystem::EngineToECEF(const FVector& EngineCoordinates, FVect
 	{
 	case EPlanetShape::RoundPlanet:
 	{
-		// Before any conversion, consider the internal UE rebasing
-		FIntVector UERebasingOffset = GetWorld()->OriginLocation;
-		FVector UERebasedCoordinates(
-			EngineCoordinates.X + UERebasingOffset.X,
-			EngineCoordinates.Y + UERebasingOffset.Y,
-			EngineCoordinates.Z + UERebasingOffset.Z);
-
 		// Convert UE units to meters, invert the Y coordinate because of left-handed UE Frame
-		FVector UEWorldCoordinates = UERebasedCoordinates * FVector(0.01, -0.01, 0.01);
+		FVector UEWorldCoordinates = EngineCoordinates * FVector(0.01, -0.01, 0.01);
 
 		if (bOriginAtPlanetCenter)
 		{
-			// Easy case, UE is ECEF... And we did the rebasing, so return the Global coordinates
+			// Easy case, UE is ECEF... return the Global coordinates
 			ECEFCoordinates = UEWorldCoordinates; // TOCHECK Types
 		}
 		else
@@ -352,11 +375,7 @@ void AGeoReferencingSystem::ECEFToEngine(const FVector& ECEFCoordinates, FVector
 		}
 
 		// Convert UE units to meters, invert the Y coordinate because of left-handed UE Frame
-		FVector UERebasedCoordinates = UEWorldCoordinates * FVector(100.0, -100.0, 100.0);
-
-		// Consider the UE internal rebasing
-		FIntVector UERebasingOffset = GetWorld()->OriginLocation;
-		EngineCoordinates = UERebasedCoordinates - FVector(UERebasingOffset.X, UERebasingOffset.Y, UERebasingOffset.Z);
+		EngineCoordinates = UEWorldCoordinates * FVector(100.0, -100.0, 100.0);
 	}
 	break;
 
@@ -637,12 +656,7 @@ FTransform AGeoReferencingSystem::GetPlanetCenterTransform()
 
 			// Get Origin, and convert UE units to meters, invert the Y coordinate because of left-handed UE Frame
 			FVector UEOrigin = TransformMatrix.GetOrigin() * FVector(100.0, -100.0, 100.0);
-			
-			// Consider the UE internal rebasing to compute Origin
-			FIntVector UERebasingOffset = GetWorld()->OriginLocation;
-			FVector UERebasedCoordinates = UEOrigin - FVector(UERebasingOffset.X, UERebasingOffset.Y, UERebasingOffset.Z);
-			FVector Origin = FVector(UERebasedCoordinates.X, UERebasedCoordinates.Y, UERebasedCoordinates.Z);
-			TransformMatrix.SetOrigin(Origin);
+			TransformMatrix.SetOrigin(UEOrigin);
 
 			return FTransform(TransformMatrix);
 		}
@@ -891,6 +905,10 @@ void AGeoReferencingSystem::FGeoReferencingSystemInternals::InitPROJLibrary()
 	// Calculate and register the search path to the PROJ data
 	FString PluginBaseDir = IPluginManager::Get().FindPlugin("GeoReferencing")->GetBaseDir();
 	FString ProjDataPath = FPaths::Combine(*PluginBaseDir, TEXT("Resources/PROJ"));
+
+	UE_LOG(LogGeoReferencing, Display, TEXT("Setting search path in %s "), *ProjDataPath);
+
+
 	FTCHARToUTF8 Utf8ProjDataPath(*ProjDataPath);
 	const char* ProjSearchPaths[] =
 	{
@@ -898,7 +916,36 @@ void AGeoReferencingSystem::FGeoReferencingSystemInternals::InitPROJLibrary()
 	};
 	proj_context_set_search_paths(ProjContext, sizeof(ProjSearchPaths)/sizeof(ProjSearchPaths[0]), ProjSearchPaths);
 
+	// With PROJ 9.1.1 this function does nothing
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	proj_context_set_autoclose_database(ProjContext, true);
+	FString ProjDBFilePath = FPaths::Combine(*ProjDataPath, TEXT("proj.db"));
+	PlatformFile.SetReadOnly(*ProjDBFilePath, true); // Set it read only so that with PROJ 9.1.1 SQLite doesn't open the file with a write lock
+	
+	// Special case for Dedicated Server or client
+	// When running in a sandboxed environment, the PROJ data files are not staged in that environment by the Cooking process. 
+	// And our SQLite accessor will always want to find these files in the sandboxed location, never in the original one. 
+	// And we don't want to have to build the PAK files when iterating on the code
+	// Let's manually populate the sandbox environment. 
+	if (PlatformFile.IsSandboxEnabled())
+	{
+		// Ask the system for the expected location of the proj.db file, using ConvertToAbsolutePathForExternalAppForWrite (not ***Read, that falls back on the original location)
+		FString ProjDBFileSandboxPath = PlatformFile.ConvertToAbsolutePathForExternalAppForWrite(*ProjDBFilePath);
+		UE_LOG(LogGeoReferencing, Warning, TEXT("Running in Sandboxed mode with Proj.db expected in %s "), *ProjDBFileSandboxPath);
+
+		// Check if the file is missing there
+		if (!IFileManager::Get().FileExists(*ProjDBFileSandboxPath))
+		{
+			UE_LOG(LogGeoReferencing, Warning, TEXT("Missing PROJ data files in then Sandbox environment --> Copy them!"));
+
+			// Create the target dir, and deploy the content. 
+			FString TargetFolder = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*ProjDataPath); // Use **Write for the actual Sandboxed path. 
+			PlatformFile.GetLowerLevel()->CreateDirectoryTree(*TargetFolder); // Use lower level Platformfile (otherwise the sandbox path is added twice)
+			PlatformFile.GetLowerLevel()->CopyDirectoryTree(*TargetFolder, *ProjDataPath, false);
+
+			PlatformFile.SetReadOnly(*ProjDBFileSandboxPath, true); // Set it read only so that with PROJ 9.1.1 SQLite doesn't open the file with a write lock
+		}
+	}
 	// Non-editor builds use UFS extensions to read PROJ data from UFS/Pak
 	if (!GIsEditor)
 	{

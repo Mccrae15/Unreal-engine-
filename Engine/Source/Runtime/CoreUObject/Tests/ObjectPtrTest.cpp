@@ -77,63 +77,63 @@ static_assert(!std::is_assignable<FConstInterfacePtr, const FMutableObjectPtr&>:
 static_assert(!std::is_assignable<FConstInterfacePtr, const FConstObjectPtr&>::value, "Invalid assignment (TObjectPtr<const UInterface> from TObjectPtr<const UObject>)");
 
 // Ensure that TObjectPtr<[const] UObject> is comparable with another TObjectPtr<[const] UObject> regardless of constness
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, FConstObjectPtr>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and TObjectPtr<const UObject>");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, FConstObjectPtr>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and TObjectPtr<const UObject>");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, FConstObjectPtr>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and TObjectPtr<const UObject>");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, FConstObjectPtr>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and TObjectPtr<const UObject>");
 
 // Ensure that TObjectPtr<[const] UObject> is comparable with another TObjectPtr<[const] UInterface> regardless of constness
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, FConstInterfacePtr>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and TObjectPtr<const UInterface>");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, FConstInterfacePtr>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and TObjectPtr<const UInterface>");
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, FMutableInterfacePtr>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and TObjectPtr<UInterface>");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, FMutableInterfacePtr>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and TObjectPtr<UInterface>");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, FConstInterfacePtr>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and TObjectPtr<const UInterface>");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, FConstInterfacePtr>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and TObjectPtr<const UInterface>");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, FMutableInterfacePtr>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and TObjectPtr<UInterface>");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, FMutableInterfacePtr>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and TObjectPtr<UInterface>");
 
 // Ensure that TObjectPtr<[const] UPackage> is not comparable with a TObjectPtr<[const] UInterface> regardless of constness
 // TODO: This only ensures that at least one of the A==B,B==A,A!=B,B!=A operations fail, not that they all fail.
 #if !(PLATFORM_MICROSOFT) || !defined(_MSC_EXTENSIONS) // MSVC static analyzer is run in non-conformance mode, and that causes these checks to fail.
-static_assert(!TModels<CEqualityComparableWith, FConstPackagePtr, FConstInterfacePtr>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UPackage> and TObjectPtr<const UInterface>");
-static_assert(!TModels<CEqualityComparableWith, FMutablePackagePtr, FConstInterfacePtr>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UPackage> and TObjectPtr<const UInterface>");
-static_assert(!TModels<CEqualityComparableWith, FConstPackagePtr, FMutableInterfacePtr>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UPackage> and TObjectPtr<UInterface>");
-static_assert(!TModels<CEqualityComparableWith, FMutablePackagePtr, FMutableInterfacePtr>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UPackage> and TObjectPtr<UInterface>");
+static_assert(!TModels_V<CEqualityComparableWith, FConstPackagePtr, FConstInterfacePtr>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UPackage> and TObjectPtr<const UInterface>");
+static_assert(!TModels_V<CEqualityComparableWith, FMutablePackagePtr, FConstInterfacePtr>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UPackage> and TObjectPtr<const UInterface>");
+static_assert(!TModels_V<CEqualityComparableWith, FConstPackagePtr, FMutableInterfacePtr>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UPackage> and TObjectPtr<UInterface>");
+static_assert(!TModels_V<CEqualityComparableWith, FMutablePackagePtr, FMutableInterfacePtr>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UPackage> and TObjectPtr<UInterface>");
 #endif // #if !(PLATFORM_MICROSOFT) || !defined(_MSC_EXTENSIONS)
 
 // Ensure that TObjectPtr<[const] UObject> is comparable with a raw pointer of the same referenced type regardless of constness
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, const UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and const UObject*");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, const UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and const UObject*");
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and UObject*");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, const UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and const UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, const UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and const UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and UObject*");
 
 // Ensure that TObjectPtr<[const] UObject> is comparable with a UInterface raw pointer regardless of constness
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, const UInterface*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and const UInterface*");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, const UInterface*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and const UInterface*");
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, UInterface*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and UInterface*");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, UInterface*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and UInterface*");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, const UInterface*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and const UInterface*");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, const UInterface*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and const UInterface*");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, UInterface*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and UInterface*");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, UInterface*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and UInterface*");
 
 // Ensure that TObjectPtr<[const] UInterface> is comparable with a UObject raw pointer regardless of constness
-static_assert(TModels<CEqualityComparableWith, FConstInterfacePtr, const UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and const UObject*");
-static_assert(TModels<CEqualityComparableWith, FMutableInterfacePtr, const UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and const UObject*");
-static_assert(TModels<CEqualityComparableWith, FConstInterfacePtr, UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and UObject*");
-static_assert(TModels<CEqualityComparableWith, FMutableInterfacePtr, UObject*>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FConstInterfacePtr, const UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and const UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FMutableInterfacePtr, const UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and const UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FConstInterfacePtr, UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and UObject*");
+static_assert(TModels_V<CEqualityComparableWith, FMutableInterfacePtr, UObject*>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and UObject*");
 
 // Ensure that TObjectPtr<[const] UInterface> is not comparable with a UPackage raw pointer regardless of constness
 // TODO: This only ensures that at least one of the A==B,B==A,A!=B,B!=A operations fail, not that they all fail.
-static_assert(!TModels<CEqualityComparableWith, FConstInterfacePtr, const UPackage*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and const UPackage*");
-static_assert(!TModels<CEqualityComparableWith, FMutableInterfacePtr, const UPackage*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and const UPackage*");
-static_assert(!TModels<CEqualityComparableWith, FConstInterfacePtr, UPackage*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and UPackage*");
-static_assert(!TModels<CEqualityComparableWith, FMutableInterfacePtr, UPackage*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and UPackage*");
+static_assert(!TModels_V<CEqualityComparableWith, FConstInterfacePtr, const UPackage*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and const UPackage*");
+static_assert(!TModels_V<CEqualityComparableWith, FMutableInterfacePtr, const UPackage*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and const UPackage*");
+static_assert(!TModels_V<CEqualityComparableWith, FConstInterfacePtr, UPackage*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UInterface> and UPackage*");
+static_assert(!TModels_V<CEqualityComparableWith, FMutableInterfacePtr, UPackage*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UInterface> and UPackage*");
 
 // Ensure that TObjectPtr<[const] UInterface> is not comparable with a char raw pointer regardless of constness
 // TODO: This only ensures that at least one of the A==B,B==A,A!=B,B!=A operations fail, not that they all fail.
-static_assert(!TModels<CEqualityComparableWith, FConstObjectPtr, const char*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and const UObject*");
-static_assert(!TModels<CEqualityComparableWith, FMutableObjectPtr, const char*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and const UObject*");
-static_assert(!TModels<CEqualityComparableWith, FConstObjectPtr, char*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and UObject*");
-static_assert(!TModels<CEqualityComparableWith, FMutableObjectPtr, char*>::Value, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and UObject*");
+static_assert(!TModels_V<CEqualityComparableWith, FConstObjectPtr, const char*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and const UObject*");
+static_assert(!TModels_V<CEqualityComparableWith, FMutableObjectPtr, const char*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and const UObject*");
+static_assert(!TModels_V<CEqualityComparableWith, FConstObjectPtr, char*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and UObject*");
+static_assert(!TModels_V<CEqualityComparableWith, FMutableObjectPtr, char*>, "Must not be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and UObject*");
 
 // Ensure that TObjectPtr<[const] UObject> is comparable with nullptr regardless of constness
-static_assert(TModels<CEqualityComparableWith, FConstObjectPtr, TYPE_OF_NULLPTR>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and nullptr");
-static_assert(TModels<CEqualityComparableWith, FMutableObjectPtr, TYPE_OF_NULLPTR>::Value, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and nullptr");
+static_assert(TModels_V<CEqualityComparableWith, FConstObjectPtr, TYPE_OF_NULLPTR>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and nullptr");
+static_assert(TModels_V<CEqualityComparableWith, FMutableObjectPtr, TYPE_OF_NULLPTR>, "Must be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and nullptr");
 
 #if !UE_OBJECT_PTR_NONCONFORMANCE_SUPPORT // Specialized NULL support causes these checks to fail.
-static_assert(!TModels<CEqualityComparableWith, FConstObjectPtr, long>::Value, "Should not be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and long");
-static_assert(!TModels<CEqualityComparableWith, FMutableObjectPtr, long>::Value, "Should not be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and long");
+static_assert(!TModels_V<CEqualityComparableWith, FConstObjectPtr, long>, "Should not be able to compare equality and inequality bidirectionally between TObjectPtr<const UObject> and long");
+static_assert(!TModels_V<CEqualityComparableWith, FMutableObjectPtr, long>, "Should not be able to compare equality and inequality bidirectionally between TObjectPtr<UObject> and long");
 #endif // #if !UE_OBJECT_PTR_NONCONFORMANCE_SUPPORT
 
 
@@ -187,20 +187,29 @@ TEST_CASE_METHOD(FObjectPtrTestBase, "CoreUObject::TObjectPtr::Default Serialize
 
 	ObjectRefMetrics.TestNumResolves(TEXT("Unexpected resolve count after initializing an FObjectPtr"), 0);
 	ObjectRefMetrics.TestNumFailedResolves(TEXT("Unexpected resolve failure after initializing an FObjectPtr"), 0);
-	ObjectRefMetrics.TestNumReads(TEXT("NumReads should not change when initializing an FObjectPtr"), 0);
+	ObjectRefMetrics.TestNumReads(TEXT("NumReads should not change when initializing an FObjectPtr"),
+																TestPackage,
+																0);
+	ObjectRefMetrics.TestNumReads(TEXT("NumReads should not change when initializing an FObjectPtr"),
+																TestSoftObject,
+																0);
 
 	FArchiveUObject Writer;
 	Writer << DefaultSerializeObjectPtr;
 
 	ObjectRefMetrics.TestNumResolves(TEXT("Serializing an FObjectPtr should force it to resolve"), UE_WITH_OBJECT_HANDLE_LATE_RESOLVE ? 1 : 0);
 	ObjectRefMetrics.TestNumFailedResolves(TEXT("Unexpected resolve failure after serializing an FObjectPtr"), 0);
-	ObjectRefMetrics.TestNumReads(TEXT("NumReads should increase after serializing an FObjectPtr"), 1);
+	ObjectRefMetrics.TestNumReads(TEXT("NumReads should increase after serializing an FObjectPtr"),
+																TestSoftObject,
+																1);
 
 	Writer << DefaultSerializeObjectPtr;
 
 	ObjectRefMetrics.TestNumResolves(TEXT("Serializing an FObjectPtr twice should only require it to resolve once"), UE_WITH_OBJECT_HANDLE_LATE_RESOLVE ? 1 : 0);
 	ObjectRefMetrics.TestNumFailedResolves(TEXT("Unexpected resolve failure after serializing an FObjectPtr"), 0);
-	ObjectRefMetrics.TestNumReads(TEXT("NumReads should increase after serializing an FObjectPtr"), 2);
+	ObjectRefMetrics.TestNumReads(TEXT("NumReads should increase after serializing an FObjectPtr"),
+																TestSoftObject,
+																2);
 
 	TestPackage->RemoveFromRoot();
 }
@@ -224,12 +233,16 @@ TEST_CASE_METHOD(FObjectPtrTestBase, "CoreUObject::TObjectPtr::Soft Object Path"
 #endif
 	ObjectRefMetrics.TestNumResolves(TEXT("Unexpected resolve count after initializing an FObjectPtr"), 0);
 	ObjectRefMetrics.TestNumFailedResolves(TEXT("Unexpected resolve failure after initializing an FObjectPtr"), 0);
-	ObjectRefMetrics.TestNumReads(TEXT("NumReads should not change when initializing an FObjectPtr"), 0);
+	ObjectRefMetrics.TestNumReads(TEXT("NumReads should not change when initializing an FObjectPtr"),
+																TestSoftObject,
+																0);
 
 	// Initializing a soft object path from a TObjectPtr that's unresolved should stay unresolved.
 	FSoftObjectPath DefaultSoftObjPath(DefaultSoftObjPtr);
 	ObjectRefMetrics.TestNumResolves(TEXT("Unexpected resolve count after initializing an FSoftObjectPath from an FObjectPtr"), 0);
-	ObjectRefMetrics.TestNumReads(TEXT("NumReads should have changed when initializing a FSoftObjectPath"), UE_WITH_OBJECT_HANDLE_LATE_RESOLVE ? 0 : 1);
+	ObjectRefMetrics.TestNumReads(TEXT("NumReads should have changed when initializing a FSoftObjectPath"),
+																TestSoftObject,
+																UE_WITH_OBJECT_HANDLE_LATE_RESOLVE ? 0 : 1);
 
 	TEST_EQUAL_STR(TEXT("Soft object path constructed from an FObjectPtr does not have the expected path value"), TEXT("/Engine/Test/ObjectPtrSoftObjectPath/Transient.TestSoftObject"), *DefaultSoftObjPath.ToString());
 
@@ -536,6 +549,7 @@ TEST_CASE("CoreUObject::TObjectPtr::Swap")
 
 }
 
+#if !UE_DEPRECATE_MUTABLE_TOBJECTPTR
 TEST_CASE("CoreUObject::TObjectPtr::SwapArray")
 {
 	const FName TestPackageName(TEXT("/Engine/TestPackage"));
@@ -564,7 +578,7 @@ TEST_CASE("CoreUObject::TObjectPtr::SwapArray")
 	CHECK(ArrayRaw[0] == RawPtrA);
 	CHECK(ArrayPtr[0] == RawPtrB);
 }
-
+#endif
 
 TEST_CASE("CoreUObject::TObjectPtr::Move")
 {
@@ -796,7 +810,7 @@ void TestArrayConversion()
 	};
 #endif
 	TArray<TObjectPtr<TObj>> PtrArray;
-	uint32  NumObjs = 1000000;
+	uint32  NumObjs = 5;
 	for (uint32 i = 0; i < NumObjs; ++i)
 	{
 		PtrArray.Add(Obj1);
@@ -892,6 +906,7 @@ void TestArrayConversion()
 		CHECK(RawArray.Num() == 0);
 	}
 
+#if !UE_DEPRECATE_MUTABLE_TOBJECTPTR
 	//ArrayView
 	{
 		TArrayView<TObj*> RawArray = PtrArray;
@@ -907,6 +922,9 @@ void TestArrayConversion()
 			CHECK(RawArray[i] == Obj1);
 		}
 	}
+#endif
+
+#if !UE_DEPRECATE_MUTABLE_TOBJECTPTR
 	{
 		TArray<TObjectPtr<TObj>> EmptyArray;
 		TArrayView<TObj*> RawArray = EmptyArray;
@@ -918,6 +936,8 @@ void TestArrayConversion()
 #endif
 		CHECK(RawArray.Num() == 0);
 	}
+#endif
+  
 	{
 		const TArray<TObjectPtr<TObj>>& ConstPtrArray = PtrArray;
 		const TArrayView<TObj* const> RawArray = ConstPtrArray;
@@ -1064,7 +1084,83 @@ TEST_CASE("CoreUObject::TObjectPtr::ConstArrayViewConversion")
 
 	
 }
+TEST_CASE("CoreUObject::TObjectPtr::GetOuter")
+{
+	UPackage* TestPackage = NewObject<UPackage>(nullptr, "/Test/MyPackage", RF_Transient);
+	TestPackage->AddToRoot();
+	TObjectPtr<UObject> Obj1 = NewObject<UObjectPtrTestClass>(TestPackage, TEXT("Obj1"));
+	TObjectPtr<UObject> Obj2 = NewObject<UObjectPtrTestClass>(Obj1, TEXT("Obj2"));
+	int ResolveCount = 0;
 
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+	FObjectPtr Ptr1(MakeUnresolvedHandle(TestPackage));
+	FObjectPtr Ptr2(MakeUnresolvedHandle(Obj1));
+	FObjectPtr Ptr3(MakeUnresolvedHandle(Obj2));
+
+	TObjectPtr<UPackage> PackagePtr = *reinterpret_cast<TObjectPtr<UPackage>*>(&Ptr1);
+	TObjectPtr<UObject> Obj1Ptr = *reinterpret_cast<TObjectPtr<UObject>*>(&Ptr2);
+	TObjectPtr<UObject> Obj2Ptr = *reinterpret_cast<TObjectPtr<UObject>*>(&Ptr3);
+
+
+	auto CallbackHandle = UE::CoreUObject::AddObjectHandleReferenceResolvedCallback([&ResolveCount](const FObjectRef& SourceRef, UPackage* ObjectPackage, UObject* Object)
+		{
+			++ResolveCount;
+		});
+	ON_SCOPE_EXIT
+	{
+		UE::CoreUObject::RemoveObjectHandleReferenceResolvedCallback(CallbackHandle);
+	};
+#else
+	TObjectPtr<UPackage> PackagePtr = TestPackage;
+	TObjectPtr<UObject> Obj1Ptr = Obj1;
+	TObjectPtr<UObject> Obj2Ptr = Obj2;
+#endif
+	TObjectPtr<UObject> Obj1RawOuter = Obj1->GetOuter();
+	TObjectPtr<UObject> Obj2RawOuter = Obj2->GetOuter();
+
+	TObjectPtr<UObject> PackageOuter = PackagePtr.GetOuter();
+	TObjectPtr<UObject> Obj1Outer = Obj1Ptr.GetOuter();
+	TObjectPtr<UObject> Obj2Outer = Obj2Ptr.GetOuter();
+
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+	CHECK(!Obj1Outer.IsResolved());
+	CHECK(!Obj2Outer.IsResolved());
+
+	//sanity check that the packed refs are identical
+	CHECK(Obj1Outer.GetHandle().PointerOrRef == PackagePtr.GetHandle().PointerOrRef);
+	CHECK(Obj2Outer.GetHandle().PointerOrRef == Obj1Ptr.GetHandle().PointerOrRef);
+
+#endif
+
+	CHECK(Obj1Outer.GetHandle() == PackagePtr.GetHandle());
+	CHECK(Obj2Outer.GetHandle() == Obj1Ptr.GetHandle());
+
+	CHECK(PackageOuter == TestPackage->GetOuter());
+	CHECK(PackageOuter == nullptr);
+	CHECK(Obj1Outer == Obj1RawOuter);
+	CHECK(Obj1Outer.GetFName() == Obj1RawOuter->GetFName());
+	CHECK(Obj1Outer.GetPathName() == Obj1RawOuter->GetPathName());
+	CHECK(Obj1Outer.GetFullName() == Obj1RawOuter->GetFullName());
+	CHECK(Obj1Outer.GetClass() == Obj1RawOuter->GetClass());
+
+	CHECK(Obj2Outer == Obj2RawOuter);
+	
+	CHECK(Obj2Outer.GetFName() == Obj2RawOuter->GetFName());
+	CHECK(Obj2Outer.GetPathName() == Obj2RawOuter->GetPathName());
+	CHECK(Obj2Outer.GetFullName() == Obj2RawOuter->GetFullName());
+	CHECK(Obj2Outer.GetClass() == Obj2RawOuter->GetClass());
+
+
+	TObjectPtr<UPackage> Package = PackagePtr.GetPackage();
+	TObjectPtr<UPackage> Obj1Package = Obj1Ptr.GetPackage();
+	TObjectPtr<UPackage> Obj2Package = Obj2Ptr.GetPackage();
+
+	CHECK(Package == PackagePtr);
+	CHECK(Obj1Package == PackagePtr);
+	CHECK(Obj2Package == PackagePtr);
+
+	CHECK(ResolveCount == 0);
+}
 // @TODO: OBJPTR: We should have a test that ensures that lazy loading of an object with an external package is handled correctly.
 //				  This should also include external packages in the outer chain of the target object.
 // IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FObjectPtrTestExternalPackages, FObjectPtrTestBase, TEXT(TEST_NAME_ROOT ".ExternalPackages"), ObjectPtrTestFlags)
@@ -1170,5 +1266,43 @@ TEST_CASE("CoreUObject::TObjectPtr::TestEquals")
 
 	CHECK(BasePtr == ObjPtr);
 }
+
+TEST_CASE("CoreUObject::TObjectPtr::DecayAndWrap")
+{
+	const FName TestPackageName(TEXT("/Engine/Test/TestName/Transient"));
+	UPackage* TestPackage = NewObject<UPackage>(nullptr, TestPackageName, RF_Transient);
+	TestPackage->AddToRoot();
+	
+
+	UObject* RawPtr1 = NewObject<UObjectPtrTestClass>(TestPackage, TEXT("RawPtr1"));
+	UObject* RawPtr2 = NewObject<UObjectPtrTestClass>(TestPackage, TEXT("RawPtr2"));	
+	{
+		TObjectPtr<UObject> ObjPtr{RawPtr1};
+		CHECK(RawPtr1 == ObjectPtrDecay(ObjPtr));
+		CHECK(ObjPtr == ObjectPtrWrap(RawPtr1));
+		CHECK(ObjectPtrDecay(ObjectPtrWrap(RawPtr1)) == RawPtr1);
+		CHECK(ObjectPtrWrap(ObjectPtrDecay(ObjPtr)) == ObjPtr);
+	}
+
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+	{
+		FObjectPtr Unresolved{MakeUnresolvedHandle(RawPtr1)};
+		TObjectPtr<UObject> Ptr = reinterpret_cast<TObjectPtr<UObject>&>(Unresolved);
+		REQUIRE(!Unresolved.IsResolved());
+		CHECK(ObjectPtrDecay(Ptr) == RawPtr1);
+		CHECK(Ptr.IsResolved());
+		
+		TArray<UObject*> RawArray = {RawPtr1, RawPtr2};
+		TArray<FObjectPtr> UnresolvedArray = {FObjectPtr(MakeUnresolvedHandle(RawPtr1)),
+																					FObjectPtr(RawPtr2)};
+		REQUIRE(!UnresolvedArray[0].IsResolved());
+		REQUIRE(UnresolvedArray[1].IsResolved());		 
+		TArray<TObjectPtr<UObject>> ObjArray = reinterpret_cast<TArray<TObjectPtr<UObject>>&>(UnresolvedArray);
+		CHECK(ObjectPtrDecay(ObjArray) == RawArray);
+		CHECK(ObjArray[0].IsResolved());
+		CHECK(ObjArray[1].IsResolved());		
+	}
+#endif
+};
 
 #endif

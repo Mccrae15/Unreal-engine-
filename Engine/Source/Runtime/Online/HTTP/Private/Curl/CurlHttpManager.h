@@ -12,7 +12,12 @@ class FHttpThread;
 #if !WITH_CURL_XCURL
 typedef void CURLSH;
 #endif
+
+#if defined(CURL_NO_OLDIES)
+typedef struct Curl_multi CURLM;
+#else
 typedef void CURLM;
+#endif
 
 class FCurlHttpManager : public FHttpManager
 {
@@ -70,7 +75,7 @@ public:
 public:
 	virtual bool SupportsDynamicProxy() const override;
 protected:
-	virtual FHttpThread* CreateHttpThread() override;
+	virtual FHttpThreadBase* CreateHttpThread() override;
 	//~ End HttpManager Interface
 };
 

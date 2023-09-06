@@ -19,6 +19,7 @@
 
 #if WITH_EDITOR
 #include "DerivedDataCacheInterface.h"
+#include "DerivedDataCacheKey.h"
 #include "StaticMeshCompiler.h"
 #endif
 
@@ -106,6 +107,7 @@ FString BuildCardRepresentationDerivedDataKey(const FString& InMeshKey, int32 Ma
 	const float NormalTreshold = MeshCardRepresentation::GetNormalTreshold();
 	const bool bDebugMode = MeshCardRepresentation::IsDebugMode();
 
+	static UE::DerivedData::FCacheBucket LegacyBucket(TEXTVIEW("LegacyCARD"), TEXTVIEW("CardRepresentation"));
 	return FDerivedDataCacheInterface::BuildCacheKey(
 		TEXT("CARD"),
 		*FString::Printf(TEXT("%s_%s%s%.3f_%.3f_%d"), *InMeshKey, CARDREPRESENTATION_DERIVEDDATA_VER, bDebugMode ? TEXT("_DEBUG_") : TEXT(""),
@@ -204,7 +206,7 @@ void FCardRepresentationData::CacheDerivedData(const FString& InDDCKey, const IT
 		{
 			NewTask->SourceMeshData = *OptionalSourceMeshData;
 		}
-		else if (Mesh->NaniteSettings.bEnabled)
+		else if (Mesh->IsNaniteEnabled())
 		{
 			IMeshBuilderModule& MeshBuilderModule = IMeshBuilderModule::GetForPlatform(TargetPlatform);
 			if (!MeshBuilderModule.BuildMeshVertexPositions(Mesh, NewTask->SourceMeshData.TriangleIndices, NewTask->SourceMeshData.VertexPositions))
@@ -387,7 +389,8 @@ void FCardRepresentationAsyncQueue::StartBackgroundTask(FAsyncCardRepresentation
 {
 	check(Task->AsyncTask == nullptr);
 	Task->AsyncTask = MakeUnique<FAsyncTask<FAsyncCardRepresentationTaskWorker>>(*Task);
-	Task->AsyncTask->StartBackgroundTask(ThreadPool.Get(), EQueuedWorkPriority::Lowest);
+	int64 RequiredMemory = -1; // @todo RequiredMemory
+	Task->AsyncTask->StartBackgroundTask(ThreadPool.Get(), EQueuedWorkPriority::Lowest, EQueuedWorkFlags::DoNotRunInsideBusyWait, RequiredMemory, TEXT("Card"));
 }
 
 void FCardRepresentationAsyncQueue::ProcessPendingTasks()

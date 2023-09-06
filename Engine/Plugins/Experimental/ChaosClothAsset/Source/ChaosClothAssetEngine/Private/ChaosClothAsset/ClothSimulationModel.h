@@ -6,14 +6,13 @@
 #include "Math/MathFwd.h"
 #include "Templates/SharedPointer.h"
 #include "ClothVertBoneData.h"
-
+#include "ClothTetherData.h"
+#include "SkeletalMeshTypes.h"
 #include "ClothSimulationModel.generated.h"
 
 struct FReferenceSkeleton;
-namespace UE::Chaos::ClothAsset
-{
-	class FClothCollection;
-}
+struct FManagedArrayCollection;
+struct FChaosClothAssetLodTransitionDataCache;
 
 /**
  * Cloth simulation LOD model.
@@ -40,8 +39,40 @@ struct FChaosClothSimulationLodModel
 	UPROPERTY()
 	TArray<FClothVertBoneData> BoneData;
 
+	/** LOD Transition mesh to mesh skinning weights. */
+	TArray<FMeshToMeshVertData> LODTransitionUpData;
+	TArray<FMeshToMeshVertData> LODTransitionDownData;
+
+	/** 2d pattern positions. */
 	UPROPERTY()
-	TArray<float> MaxDistance;
+	TArray<FVector2f> PatternPositions;
+
+	/** Pattern triangle indices. Indexing into PatternPositions. */
+	UPROPERTY()
+	TArray<uint32> PatternIndices;
+
+	/** Map from PatternsPositions indices to Positions indices. */
+	UPROPERTY()
+	TArray<uint32> PatternToWeldedIndices;
+
+	/** Weight maps for storing painted attributes modifiers on constraint properties. */
+	TMap<FName, TArray<float>> WeightMaps;
+
+	/** Tether data*/
+	UPROPERTY()
+	FClothTetherData TetherData;
+
+	// Custom serialize for weight maps
+	bool Serialize(FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FChaosClothSimulationLodModel> : public TStructOpsTypeTraitsBase2<FChaosClothSimulationLodModel>
+{
+	enum
+	{
+		WithSerializer = true,
+	};
 };
 
 /**
@@ -70,7 +101,7 @@ struct FChaosClothSimulationModel
 	int32 ReferenceBoneIndex = INDEX_NONE;
 
 	FChaosClothSimulationModel() = default;
-	FChaosClothSimulationModel(const TSharedPtr<const UE::Chaos::ClothAsset::FClothCollection>& ClothCollection, const FReferenceSkeleton& ReferenceSkeleton);
+	FChaosClothSimulationModel(const TArray<TSharedRef<const FManagedArrayCollection>>& ClothCollections, const FReferenceSkeleton& ReferenceSkeleton, TArray<FChaosClothAssetLodTransitionDataCache>* InOutTransitionCache = nullptr);
 
 	int32 GetNumLods() const { return ClothSimulationLodModels.Num(); }
 
@@ -79,7 +110,14 @@ struct FChaosClothSimulationModel
 	int32 GetNumVertices(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].Positions.Num() : 0; }
 
 	TConstArrayView<FVector3f> GetPositions(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].Positions : TConstArrayView<FVector3f>(); }
+	TConstArrayView<FVector2f> GetPatternPositions(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].PatternPositions : TConstArrayView<FVector2f>(); }
 	TConstArrayView<FVector3f> GetNormals(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].Normals : TConstArrayView<FVector3f>(); }
 	TConstArrayView<uint32> GetIndices(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].Indices : TConstArrayView<uint32>(); }
+	TConstArrayView<uint32> GetPatternIndices(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].PatternIndices : TConstArrayView<uint32>(); }
+	TConstArrayView<uint32> GetPatternToWeldedIndices(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].PatternToWeldedIndices : TConstArrayView<uint32>(); }
 	TConstArrayView<FClothVertBoneData> GetBoneData(int32 LodIndex) const { return IsValidLodIndex(LodIndex) ? ClothSimulationLodModels[LodIndex].BoneData : TConstArrayView<FClothVertBoneData>(); }
+	TArray<TConstArrayView<TTuple<int32, int32, float>>> GetTethers(int32 LodIndex) const;
+
+
+	void CalculateLODTransitionUpDownData(TArray<FChaosClothAssetLodTransitionDataCache>* InOutTransitionCache = nullptr);
 };

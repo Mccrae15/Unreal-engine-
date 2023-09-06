@@ -6,6 +6,7 @@
 #include "AutomationBlueprintFunctionLibrary.h"
 #include "Camera/CameraComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
@@ -13,6 +14,7 @@
 #include "Widgets/SViewport.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Slate/SceneViewport.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Slate/WidgetRenderer.h"
 #include "TextureResource.h"
 #include "RenderingThread.h"
@@ -109,6 +111,14 @@ void AFunctionalUIScreenshotTest::PrepareTest()
 
 		SpawnedWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 	}
+	NumTickPassed = 0;
+	if (IConsoleVariable* CVarFixedDeltaTime = IConsoleManager::Get().FindConsoleVariable(TEXT("Slate.UseFixedDeltaTime")))
+	{
+		bWasPreviouslyUsingFixedDeltaTime = CVarFixedDeltaTime->GetBool();
+		PreviousFixedDeltaTime = FSlateApplication::GetFixedDeltaTime();
+		FSlateApplication::SetFixedDeltaTime(TestFixedDeltaTime);
+		CVarFixedDeltaTime->SetWithCurrentPriority(true);
+	}
 
 	UAutomationBlueprintFunctionLibrary::FinishLoadingBeforeScreenshot();
 }
@@ -147,6 +157,13 @@ void AFunctionalUIScreenshotTest::EndPlay(const EEndPlayReason::Type EndPlayReas
 			PreviousDebugCanvasVisible.Reset();
 		}
 	}
+
+	if (IConsoleVariable* CVarFixedDeltaTime = IConsoleManager::Get().FindConsoleVariable(TEXT("Slate.UseFixedDeltaTime")))
+	{
+		CVarFixedDeltaTime->SetWithCurrentPriority(bWasPreviouslyUsingFixedDeltaTime);
+		FSlateApplication::SetFixedDeltaTime(PreviousFixedDeltaTime);
+	}
+	NumTickPassed = 0;
 }
 
 /**
@@ -187,6 +204,21 @@ void ReadPixelsFromRT(UTextureRenderTarget2D* InRT, TArray<FColor>* OutPixels)
 			FReadSurfaceDataFlags());
 	});
 	FlushRenderingCommands();
+}
+
+bool  AFunctionalUIScreenshotTest::IsReady_Implementation()
+{
+	if (NumTickPassed * FSlateApplication::GetFixedDeltaTime() >= ScreenshotOptions.Delay)
+	{
+		return NumTickPassed > ScreenshotOptions.FrameDelay;
+	}
+	return false;
+}
+
+void  AFunctionalUIScreenshotTest::Tick(float DeltaSeconds)
+{
+	NumTickPassed += 1;
+	Super::Tick(DeltaSeconds);
 }
 
 void AFunctionalUIScreenshotTest::RequestScreenshot()

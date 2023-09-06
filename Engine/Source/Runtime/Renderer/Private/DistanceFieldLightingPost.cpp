@@ -12,6 +12,7 @@
 #include "CompositionLighting/PostProcessAmbientOcclusion.h"
 #include "PipelineStateCache.h"
 #include "ScenePrivate.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 int32 GAOUseHistory = 1;
 FAutoConsoleVariableRef CVarAOUseHistory(
@@ -65,6 +66,11 @@ bool UseAOHistoryStabilityPass()
 {
 	extern int32 GDistanceFieldAOQuality;
 	return GAOHistoryStabilityPass && GDistanceFieldAOQuality >= 2;
+}
+
+bool ShouldCompileDFLightingPostShaders(EShaderPlatform ShaderPlatform)
+{
+	return ShouldCompileDistanceFieldShaders(ShaderPlatform) && !IsMobilePlatform(ShaderPlatform);
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FGeometryAwareUpsampleParameters, )
@@ -137,7 +143,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFLightingPostShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -170,7 +176,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFLightingPostShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -196,7 +202,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFLightingPostShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -323,7 +329,6 @@ void UpdateHistory(
 		if (*BentNormalHistoryState 
 			&& !View.bCameraCut 
 			&& !View.bPrevTransformsReset
-			&& View.Family->bRealtimeUpdate
 			&& !GAOClearHistory
 			// If the scene render targets reallocate, toss the history so we don't read uninitialized data
 			&& (*BentNormalHistoryState)->GetDesc().Extent == BufferSize)
@@ -546,7 +551,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFLightingPostShaders(Parameters.Platform);
 	}
 };
 

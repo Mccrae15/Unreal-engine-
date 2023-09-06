@@ -339,7 +339,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append(EnableDeprecationWarnings).Append("\r\n");
 
 				{
-					using UhtBorrowBuffer borrowBuffer = new(builder);
+					using UhtRentedPoolBuffer<char> borrowBuffer = builder.RentPoolBuffer();
 					string cppFilePath = factory.MakePath(HeaderFile, ".gen.cpp");
 					StringView generatedBody = new(borrowBuffer.Buffer.Memory);
 					if (SaveExportedHeaders)
@@ -482,8 +482,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append("\t\t").AppendUTF8LiteralString(enumObj.SourceName).Append(",\r\n");
 				builder.Append("\t\t").AppendUTF8LiteralString(enumObj.CppType).Append(",\r\n");
 				builder.Append("\t\t").Append(staticsName).Append("::Enumerators,\r\n");
-				builder.Append("\t\tUE_ARRAY_COUNT(").Append(staticsName).Append("::Enumerators),\r\n");
 				builder.Append("\t\t").Append(ObjectFlags).Append(",\r\n");
+				builder.Append("\t\tUE_ARRAY_COUNT(").Append(staticsName).Append("::Enumerators),\r\n");
 				builder.Append("\t\t").Append(enumObj.EnumFlags.HasAnyFlags(EEnumFlags.Flags) ? "EEnumFlags::Flags" : "EEnumFlags::None").Append(",\r\n");
 				builder.Append("\t\t(uint8)UEnum::ECppForm::").Append(enumObj.CppForm.ToString()).Append(",\r\n");
 				builder.Append("\t\t").AppendMetaDataParams(enumObj, staticsName, MetaDataParamsName).Append("\r\n");
@@ -500,7 +500,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append("\t}\r\n");
 
 				{
-					using UhtBorrowBuffer borrowBuffer = new(builder, hashCodeBlockStart, builder.Length - hashCodeBlockStart);
+					using UhtRentedPoolBuffer<char> borrowBuffer = builder.RentPoolBuffer(hashCodeBlockStart, builder.Length - hashCodeBlockStart);
 					ObjectInfos[enumObj.ObjectTypeIndex].Hash = UhtHash.GenenerateTextHash(borrowBuffer.Buffer.Memory.Span);
 				}
 			}
@@ -555,32 +555,67 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				{
 					foreach (UhtRigVMMethodInfo methodInfo in scriptStruct.RigVMStructInfo.Methods)
 					{
-						builder.Append("\t\tTArray<FRigVMFunctionArgument> ").AppendArgumentsName(scriptStruct, methodInfo).Append(";\r\n");
-						foreach (UhtRigVMParameter parameter in scriptStruct.RigVMStructInfo.Members)
+						if (methodInfo.IsPredicate)
 						{
+							builder.Append("\t\tTArray<FRigVMFunctionArgument> ").AppendArgumentsName(scriptStruct, methodInfo).Append(";\r\n");
+							foreach (UhtRigVMParameter parameter in methodInfo.Parameters)
+							{
+								builder
+									.Append("\t\t")
+									.AppendArgumentsName(scriptStruct, methodInfo)
+									.Append(".Emplace(TEXT(\"")
+									.Append(parameter.NameOriginal())
+									.Append("\"), TEXT(\"")
+									.Append(parameter.TypeOriginal())
+									.Append("\"));\r\n");
+							}
 							builder
 								.Append("\t\t")
 								.AppendArgumentsName(scriptStruct, methodInfo)
-								.Append(".Emplace(TEXT(\"")
-								.Append(parameter.NameOriginal())
-								.Append("\"), TEXT(\"")
-								.Append(parameter.TypeOriginal())
-								.Append("\"));\r\n");
+								.Append(".Emplace(TEXT(\"Return\"), TEXT(\"")
+								.Append(methodInfo.ReturnType)
+								.Append("\"), ERigVMFunctionArgumentDirection::Output);\r\n");
+							
+							builder
+								.Append("\t\tFRigVMRegistry::Get().RegisterPredicate(")
+								.Append(registrationName)
+								.Append(".OuterSingleton, ")
+								.Append("TEXT(\"")
+								.Append(methodInfo.Name)
+								.Append("\"), ")
+								.AppendArgumentsName(scriptStruct, methodInfo)
+								.Append(");\r\n");
 						}
-						builder
-							.Append("\t\tFRigVMRegistry::Get().Register(TEXT(\"")
-							.Append(scriptStruct.SourceName)
-							.Append("::")
-							.Append(methodInfo.Name)
-							.Append("\"), &")
-							.Append(scriptStruct.SourceName)
-							.Append("::RigVM")
-							.Append(methodInfo.Name)
-							.Append(", ")
-							.Append(registrationName)
-							.Append(".OuterSingleton, ")
-							.AppendArgumentsName(scriptStruct, methodInfo)
-							.Append(");\r\n");
+						else
+						{
+							builder.Append("\t\tTArray<FRigVMFunctionArgument> ").AppendArgumentsName(scriptStruct, methodInfo).Append(";\r\n");
+							foreach (UhtRigVMParameter parameter in scriptStruct.RigVMStructInfo.Members)
+							{
+								builder
+									.Append("\t\t")
+									.AppendArgumentsName(scriptStruct, methodInfo)
+									.Append(".Emplace(TEXT(\"")
+									.Append(parameter.NameOriginal())
+									.Append("\"), TEXT(\"")
+									.Append(parameter.TypeOriginal())
+									.Append("\"));\r\n");
+							}
+							
+							builder
+								.Append("\t\tFRigVMRegistry::Get().Register(TEXT(\"")
+								.Append(scriptStruct.SourceName)
+								.Append("::")
+								.Append(methodInfo.Name)
+								.Append("\"), &")
+								.Append(scriptStruct.SourceName)
+								.Append("::RigVM")
+								.Append(methodInfo.Name)
+								.Append(", ")
+								.Append(registrationName)
+								.Append(".OuterSingleton, ")
+								.AppendArgumentsName(scriptStruct, methodInfo)
+								.Append(");\r\n");
+						}
 					}
 				}
 
@@ -618,6 +653,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				foreach (UhtScriptStruct noExportStruct in noExportStructs)
 				{
 					AppendMirrorsForNoexportStruct(builder, noExportStruct, 2);
+					builder.Append("\t\tstatic_assert(sizeof(").Append(noExportStruct.SourceName).Append(") < MAX_uint16);\r\n");
+					builder.Append("\t\tstatic_assert(alignof(").Append(noExportStruct.SourceName).Append(") < MAX_uint8);\r\n");
 				}
 
 				// Meta data
@@ -661,13 +698,15 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					builder.Append("\t\tnullptr,\r\n");
 				}
 				builder.Append("\t\t").AppendUTF8LiteralString(scriptStruct.EngineName).Append(",\r\n");
+				builder.AppendPropertiesParams(scriptStruct, staticsName, 2, "\r\n");
 				builder.Append("\t\tsizeof(").Append(scriptStruct.SourceName).Append("),\r\n");
 				builder.Append("\t\talignof(").Append(scriptStruct.SourceName).Append("),\r\n");
-				builder.AppendPropertiesParams(scriptStruct, staticsName, 2, "\r\n");
 				builder.Append("\t\tRF_Public|RF_Transient|RF_MarkAsNative,\r\n");
 				builder.Append($"\t\tEStructFlags(0x{(uint)(scriptStruct.ScriptStructFlags & ~EStructFlags.ComputedFlags):X8}),\r\n");
 				builder.Append("\t\t").AppendMetaDataParams(scriptStruct, staticsName, MetaDataParamsName).Append("\r\n");
 				builder.Append("\t};\r\n");
+
+				builder.AppendPropertiesParamsCountStaticAssert(scriptStruct, staticsName);
 			}
 
 			// Generate the registration function
@@ -692,7 +731,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append("\t}\r\n");
 			}
 
-			using (UhtBorrowBuffer borrowBuffer = new(builder, hashCodeBlockStart, builder.Length - hashCodeBlockStart))
+			using (UhtRentedPoolBuffer<char> borrowBuffer = builder.RentPoolBuffer(hashCodeBlockStart, builder.Length - hashCodeBlockStart))
 			{
 				ObjectInfos[scriptStruct.ObjectTypeIndex].Hash = UhtHash.GenenerateTextHash(borrowBuffer.Buffer.Memory.Span);
 			}
@@ -703,13 +742,18 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			if (scriptStruct.RigVMStructInfo != null)
 			{
 				string constPrefix = "";
-				if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+				if (String.IsNullOrEmpty(scriptStruct.RigVMStructInfo.ExecuteContextMember))
 				{
 					constPrefix = "const ";
 				}
 				
 				foreach (UhtRigVMMethodInfo methodInfo in scriptStruct.RigVMStructInfo.Methods)
 				{
+					if (methodInfo.IsPredicate)
+					{
+						continue;
+					}
+					
 					builder.Append("\r\n");
 
 					builder
@@ -720,13 +764,13 @@ namespace EpicGames.UHT.Exporters.CodeGen
 						.Append(methodInfo.Name)
 						.Append("()\r\n");
 					builder.Append("{\r\n");
-					if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+					if (String.IsNullOrEmpty(scriptStruct.RigVMStructInfo.ExecuteContextMember))
 					{
-						builder.Append("\t").Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append(" TemporaryExecuteContext;\r\n");
+						builder.Append('\t').Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append(" TemporaryExecuteContext;\r\n");
 					}
 					else
 					{
-						builder.Append("\t").Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append("& TemporaryExecuteContext = ").Append(scriptStruct.RigVMStructInfo.ExecuteContextMember).Append(";\r\n");
+						builder.Append('\t').Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append("& TemporaryExecuteContext = ").Append(scriptStruct.RigVMStructInfo.ExecuteContextMember).Append(";\r\n");
 					}
 
 					builder.Append("\tTemporaryExecuteContext.Initialize();\r\n");
@@ -767,11 +811,28 @@ namespace EpicGames.UHT.Exporters.CodeGen
 						//COMPATIBILITY-TODO - Remove the tab
 						builder.Append("\t\r\n");
 					}
+					
+					foreach (UhtRigVMMethodInfo predicateInfo in scriptStruct.RigVMStructInfo.Methods)
+					{
+						if (predicateInfo.IsPredicate)
+						{
+							builder.Append("\t").Append(predicateInfo.Name).Append("Struct ").Append(predicateInfo.Name).Append("Predicate; \r\n");
+						}
+					}
 
 					//COMPATIBILITY-TODO - Replace spaces with \t
 					builder.Append('\t').Append(methodInfo.ReturnPrefix()).Append("Static").Append(methodInfo.Name).Append("(\r\n");
 					builder.Append("\t\tInExecuteContext");
 					builder.AppendParameterNames(scriptStruct.RigVMStructInfo.Members, true, ",\r\n\t\t", true);
+					
+					foreach (UhtRigVMMethodInfo predicateInfo in scriptStruct.RigVMStructInfo.Methods)
+					{
+						if (predicateInfo.IsPredicate)
+						{
+							builder.Append(", \r\n\t\t").Append(predicateInfo.Name).Append("Predicate");
+						}
+					}
+					
 					builder.Append("\r\n");
 					builder.Append("\t);\r\n");
 					builder.Append("}\r\n");
@@ -860,6 +921,9 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					.AppendUTF8LiteralString(function.FunctionType == UhtFunctionType.SparseDelegate, function.SparseOwningClassName).Append(", ")
 					.AppendUTF8LiteralString(function.FunctionType == UhtFunctionType.SparseDelegate, function.SparseDelegateName).Append(", ");
 
+				builder.AppendPropertiesParams(function, staticsName, 0, " ");
+
+				string sizeOfStatic = "";
 				if (function.Children.Count > 0)
 				{
 					UhtFunction tempFunction = function;
@@ -870,12 +934,14 @@ namespace EpicGames.UHT.Exporters.CodeGen
 
 					if (paramsInStatic)
 					{
-						builder.Append("sizeof(").Append(staticsName).Append("::").Append(GetEventStructParametersName(tempFunction.Outer, tempFunction.StrippedFunctionName)).Append(')');
+						sizeOfStatic = "sizeof(" + staticsName + "::" + GetEventStructParametersName(tempFunction.Outer, tempFunction.StrippedFunctionName) + ")";
 					}
 					else
 					{
-						builder.Append("sizeof(").Append(GetEventStructParametersName(tempFunction.Outer, tempFunction.StrippedFunctionName)).Append(')');
+						sizeOfStatic = "sizeof(" + GetEventStructParametersName(tempFunction.Outer, tempFunction.StrippedFunctionName) + ")";
 					}
+
+					builder.Append(sizeOfStatic);
 				}
 				else
 				{
@@ -884,13 +950,19 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append(", ");
 
 				builder
-					.AppendPropertiesParams(function, staticsName, 0, " ")
 					.Append("RF_Public|RF_Transient|RF_MarkAsNative, ")
 					.Append($"(EFunctionFlags)0x{(uint)function.FunctionFlags:X8}, ")
 					.Append(isNet ? function.RPCId : 0).Append(", ")
 					.Append(isNet ? function.RPCResponseId : 0).Append(", ")
 					.AppendMetaDataParams(function, staticsName, MetaDataParamsName)
 					.Append(" };\r\n");
+
+				builder.AppendPropertiesParamsCountStaticAssert(function, staticsName);
+
+				if (!String.IsNullOrEmpty(sizeOfStatic))
+				{
+					builder.Append("\tstatic_assert(").Append(sizeOfStatic).Append(" < MAX_uint16);\r\n");
+				}
 			}
 
 			// Registration function
@@ -908,7 +980,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 
 			builder.AppendEndEditorOnlyGuard(function.FunctionFlags.HasAnyFlags(EFunctionFlags.EditorOnly));
 
-			using (UhtBorrowBuffer borrowBuffer = new(builder, hashCodeBlockStart, builder.Length - hashCodeBlockStart))
+			using (UhtRentedPoolBuffer<char> borrowBuffer = builder.RentPoolBuffer(hashCodeBlockStart, builder.Length - hashCodeBlockStart))
 			{
 				ObjectInfos[function.ObjectTypeIndex].Hash = UhtHash.GenenerateTextHash(borrowBuffer.Buffer.Memory.Span);
 			}
@@ -1061,6 +1133,9 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				AppendRpcFunctions(builder, classObj, reversedFunctions, true);
 				builder.AppendEndEditorOnlyGuard();
 			}
+			
+			// Add the auto getters/setters
+			AppendAutoGettersSetters(builder, classObj);
 
 			// Add the accessors
 			AppendPropertyAccessors(builder, classObj);
@@ -1073,7 +1148,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			callbackFunctions.Sort((x, y) => StringComparerUE.OrdinalIgnoreCase.Compare(x.EngineName, y.EngineName));
 
 			// Generate the callback parameter structures
-			AppendCallbackParametersDecls(builder, classObj, callbackFunctions);
+			AppendCallbackParametersDecls(builder, callbackFunctions);
 
 			// VM -> C++ proxies (events and delegates).
 			if (!classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.NoExport))
@@ -1166,6 +1241,71 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			{
 				builder.Append("#endif // WITH_EDITORONLY_DATA\r\n");
 			}
+			return builder;
+		}
+
+		private static StringBuilder AppendAutoGettersSetters(StringBuilder builder, UhtClass classObj)
+		{
+			if (!NeedAutoGetterSetterCodeGen(classObj))
+			{
+				return builder;
+			}
+			
+			// Scan the children to see what we have
+			GetAutoGetterSetterStats(classObj, out bool hasProperties, out bool hasEditorFields, out bool allEditorFields);
+			
+			// If we only have editor fields or no editor fields, then we only emit one block
+			if (hasEditorFields)
+			{
+				builder.Append("#if WITH_EDITORONLY_DATA\r\n");
+				AppendAutoGettersSetters(builder, classObj, hasProperties, hasEditorFields, allEditorFields, true);
+				builder.Append("#else //WITH_EDITORONLY_DATA\r\n");
+				AppendAutoGettersSetters(builder, classObj, hasProperties, hasEditorFields, allEditorFields, false);
+				builder.Append("#endif // WITH_EDITORONLY_DATA\r\n");
+			}
+			else
+			{
+				AppendAutoGettersSetters(builder, classObj, hasProperties, hasEditorFields, allEditorFields, false);
+			}
+			return builder;
+		}
+		
+		private static StringBuilder AppendAutoGettersSetters(StringBuilder builder, UhtClass classObj,
+			bool hasProperties, bool hasEditorFields, bool allEditorFields,
+			bool includeEditorOnlyFields)
+		{
+			AppendAutoGettersSetters(builder, classObj, UhtPropertyExportFlags.GetterSpecifiedAuto, hasProperties, hasEditorFields, allEditorFields,
+				includeEditorOnlyFields, false, (StringBuilder parentBuilder, UhtClass classObj, UhtProperty property) =>
+				{
+					using BorrowStringBuilder borrower = new(StringBuilderCache.Small);
+					StringBuilder propertyStringBuilder = borrower.StringBuilder;
+					propertyStringBuilder.AppendPropertyText(property, UhtPropertyTextType.GetterRetVal);
+					string getterRetText = propertyStringBuilder.ToString();
+					string getterCallText = property.Getter ?? "Get" + property.SourceName;
+					parentBuilder.Append('\t').Append(getterRetText).Append(classObj.SourceName).Append("::").Append(getterCallText).Append("() const\r\n");
+					parentBuilder.Append("\t{\r\n");
+					parentBuilder.Append('\t', 2).Append("return ").Append(property.SourceName).Append(";\r\n");
+					parentBuilder.Append("\t}\r\n");
+				});
+			
+			AppendAutoGettersSetters(builder, classObj, UhtPropertyExportFlags.SetterSpecifiedAuto, hasProperties, hasEditorFields, allEditorFields,
+				includeEditorOnlyFields, false, (StringBuilder parentBuilder, UhtClass classObj, UhtProperty property) =>
+				{
+					using BorrowStringBuilder borrower = new(StringBuilderCache.Small);
+					StringBuilder propertyStringBuilder = borrower.StringBuilder;
+					propertyStringBuilder.AppendPropertyText(property, UhtPropertyTextType.SetterParameterArgType);
+					string setterArgText = propertyStringBuilder + "InValue";
+					string setterCallText = property.Setter ?? "Set" + property.SourceName;
+					parentBuilder.Append("\tvoid ").Append(classObj.SourceName).Append("::").Append(setterCallText).Append('(').Append(setterArgText).Append(")\r\n");
+					parentBuilder.Append("\t{\r\n");
+					
+					// @todo: setter defn
+					
+					parentBuilder.Append("\t}\r\n");
+					
+					
+				});
+
 			return builder;
 		}
 
@@ -1281,26 +1421,11 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			return builder;
 		}
 
-		private StringBuilder AppendSparseAccessors(StringBuilder builder, UhtClass classObj)
+		private static StringBuilder AppendSparseAccessors(StringBuilder builder, UhtClass classObj)
 		{
-			string[]? sparseDataTypes = classObj.MetaData.GetStringArray(UhtNames.SparseClassDataTypes);
-			if (sparseDataTypes == null)
+			foreach (UhtScriptStruct sparseScriptStruct in GetSparseDataStructsToExport(classObj))
 			{
-				return builder;
-			}
-
-			string[]? baseSparseDataTypes = classObj.SuperClass?.MetaData.GetStringArray(UhtNames.SparseClassDataTypes);
-			if (baseSparseDataTypes != null && Enumerable.SequenceEqual(sparseDataTypes, baseSparseDataTypes))
-			{
-				return builder;
-			}
-
-			foreach (string sparseDataType in sparseDataTypes)
-			{
-				builder.Append('F').Append(sparseDataType).Append("* ").Append(classObj.SourceName).Append("::Get").Append(sparseDataType).Append("() \r\n");
-				builder.Append("{ \r\n");
-				builder.Append("\treturn static_cast<F").Append(sparseDataType).Append("*>(GetClass()->GetOrCreateSparseClassData()); \r\n");
-				builder.Append("} \r\n");
+				string sparseDataType = sparseScriptStruct.EngineName;
 
 				builder.Append('F').Append(sparseDataType).Append("* ").Append(classObj.SourceName).Append("::Get").Append(sparseDataType).Append("() const \r\n");
 				builder.Append("{ \r\n");
@@ -1337,9 +1462,12 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append("\t\tUFunction* const Func = O->FindFunction(NAME_").Append(function.Outer?.SourceName).Append('_').Append(function.SourceName).Append(");\r\n");
 				builder.Append("\t\tif (Func)\r\n");
 				builder.Append("\t\t{\r\n");
-				foreach (UhtProperty property in function.ParameterProperties.Span)
+				foreach (UhtType parameter in function.ParameterProperties.Span)
 				{
-					builder.Append("\t\t\tParms.").Append(property.SourceName).Append('=').Append(property.SourceName).Append(";\r\n");
+					if (parameter is UhtProperty property)
+					{
+						builder.Append("\t\t\tParms.").Append(property.SourceName).Append('=').Append(property.SourceName).Append(";\r\n");
+					}
 				}
 				builder
 					.Append("\t\t\t")
@@ -1347,11 +1475,14 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					.Append("->ProcessEvent(Func, ")
 					.Append(function.Children.Count > 0 ? "&Parms" : "NULL")
 					.Append(");\r\n");
-				foreach (UhtProperty property in function.ParameterProperties.Span)
+				foreach (UhtType parameter in function.ParameterProperties.Span)
 				{
-					if (property.PropertyFlags.HasExactFlags(EPropertyFlags.OutParm | EPropertyFlags.ConstParm, EPropertyFlags.OutParm))
+					if (parameter is UhtProperty property)
 					{
-						builder.Append("\t\t\t").Append(property.SourceName).Append("=Parms.").Append(property.SourceName).Append(";\r\n");
+						if (property.PropertyFlags.HasExactFlags(EPropertyFlags.OutParm | EPropertyFlags.ConstParm, EPropertyFlags.OutParm))
+						{
+							builder.Append("\t\t\t").Append(property.SourceName).Append("=Parms.").Append(property.SourceName).Append(";\r\n");
+						}
 					}
 				}
 				builder.Append("\t\t}\r\n");
@@ -1375,14 +1506,17 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					builder.Append("I->").Append(function.SourceName).Append("_Implementation(");
 
 					bool first = true;
-					foreach (UhtProperty property in function.ParameterProperties.Span)
+					foreach (UhtType parameter in function.ParameterProperties.Span)
 					{
-						if (!first)
+						if (parameter is UhtProperty property)
 						{
-							builder.Append(',');
+							if (!first)
+							{
+								builder.Append(',');
+							}
+							first = false;
+							builder.Append(property.SourceName);
 						}
-						first = false;
-						builder.Append(property.SourceName);
 					}
 					builder.Append(");\r\n");
 					builder.Append("\t\t}\r\n");
@@ -1500,6 +1634,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append("\t\t(UObject* (*)())").Append(GetSingletonName(Package, true)).Append(",\r\n");
 				builder.Append("\t};\r\n");
 
+				builder.Append("\tstatic_assert(UE_ARRAY_COUNT(").Append(staticsName).Append("::DependentSingletons) < 16);\r\n");
+
 				if (sortedFunctions.Count > 0)
 				{
 					builder.AppendBeginEditorOnlyGuard(allEditorOnlyFunctions);
@@ -1521,6 +1657,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					}
 
 					builder.Append("\t};\r\n");
+					builder.Append("\tstatic_assert(UE_ARRAY_COUNT(").Append(staticsName).Append("::FuncInfo) < 2048);\r\n");
 					builder.AppendEndEditorOnlyGuard(allEditorOnlyFunctions);
 				}
 
@@ -1553,6 +1690,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					}
 
 					builder.Append("\t\t};\r\n");
+
+					builder.Append("\tstatic_assert(UE_ARRAY_COUNT(").Append(staticsName).Append("::InterfaceParams) < 64);\r\n");
 				}
 
 				builder.Append("\tconst FCppClassTypeInfoStatic ").Append(staticsName).Append("::StaticCppClassTypeInfo = {\r\n");
@@ -1612,6 +1751,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				builder.Append($"\t\t0x{(uint)classFlags:X8}u,\r\n");
 				builder.Append("\t\t").AppendMetaDataParams(classObj, staticsName, MetaDataParamsName).Append("\r\n");
 				builder.Append("\t};\r\n");
+
+				builder.AppendPropertiesParamsCountStaticAssert(classObj, staticsName);
 			}
 
 			// Class registration
@@ -1679,7 +1820,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 
 				if (Session.IncludeDebugOutput)
 				{
-					using UhtBorrowBuffer borrowBuffer = new(hashBuilder, saveLength, hashBuilder.Length - saveLength);
+					using UhtRentedPoolBuffer<char> borrowBuffer = hashBuilder.RentPoolBuffer(saveLength, hashBuilder.Length - saveLength);
 					builder.Append("#if 0\r\n");
 					builder.Append(borrowBuffer.Buffer.Memory);
 					builder.Append("#endif\r\n");
@@ -1687,7 +1828,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 
 				// Calculate generated class initialization code hash so that we know when it changes after hot-reload
 				{
-					using UhtBorrowBuffer borrowBuffer = new(hashBuilder);
+					using UhtRentedPoolBuffer<char> borrowBuffer = hashBuilder.RentPoolBuffer();
 					ObjectInfos[classObj.ObjectTypeIndex].Hash = UhtHash.GenenerateTextHash(borrowBuffer.Buffer.Memory.Span);
 				}
 			}
@@ -1784,7 +1925,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			return builder;
 		}
 
-		private StringBuilder AppendCallbackParametersDecls(StringBuilder builder, UhtClass classObj, List<UhtFunction> callbackFunctions)
+		private static StringBuilder AppendCallbackParametersDecls(StringBuilder builder, List<UhtFunction> callbackFunctions)
 		{
 			foreach (UhtFunction function in callbackFunctions)
 			{
@@ -1792,6 +1933,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			}
 			return builder;
 		}
+
 		private StringBuilder AppendCallbackFunctions(StringBuilder builder, UhtClass classObj, List<UhtFunction> callbackFunctions)
 		{
 			if (callbackFunctions.Count > 0)
@@ -1881,9 +2023,12 @@ namespace EpicGames.UHT.Exporters.CodeGen
 		private static StringBuilder AppendFunctionThunk(StringBuilder builder, UhtFunction function)
 		{
 			// Export the GET macro for the parameters
-			foreach (UhtProperty parameter in function.ParameterProperties.Span)
+			foreach (UhtType parameter in function.ParameterProperties.Span)
 			{
-				builder.Append("\t\t").AppendFunctionThunkParameterGet(parameter).Append(";\r\n");
+				if (parameter is UhtProperty property)
+				{
+					builder.Append("\t\t").AppendFunctionThunkParameterGet(property).Append(";\r\n");
+				}
 			}
 
 			builder.Append("\t\tP_FINISH;\r\n");
@@ -2012,14 +2157,17 @@ namespace EpicGames.UHT.Exporters.CodeGen
 		public static StringBuilder AppendFunctionThunkParameterNames(this StringBuilder builder, UhtFunction function)
 		{
 			bool first = true;
-			foreach (UhtProperty parameter in function.ParameterProperties.Span)
+			foreach (UhtType parameter in function.ParameterProperties.Span)
 			{
-				if (!first)
+				if (parameter is UhtProperty property)
 				{
-					builder.Append(',');
+					if (!first)
+					{
+						builder.Append(',');
+					}
+					builder.AppendFunctionThunkParameterArg(property);
+					first = false;
 				}
-				builder.AppendFunctionThunkParameterArg(parameter);
-				first = false;
 			}
 			return builder;
 		}
@@ -2086,6 +2234,32 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			else
 			{
 				builder.AppendTabs(tabs).Append("IF_WITH_EDITORONLY_DATA(UE_ARRAY_COUNT(").Append(staticsName).Append("::PropPointers), 0),").Append(endl);
+			}
+			return builder;
+		}
+
+		/// <summary>
+		/// Append static_assert to check that properties params count fit within struct
+		/// </summary>
+		/// <param name="builder">Destination builder</param>
+		/// <param name="structObj">Structure in question</param>
+		/// <param name="staticsName">Name of the statics section for this structure</param>
+		/// <returns>Destination builder</returns>
+		public static StringBuilder AppendPropertiesParamsCountStaticAssert(this StringBuilder builder, UhtStruct structObj, string staticsName)
+		{
+			if (!structObj.Children.Any(x => x is UhtProperty))
+			{
+				// do nothing here
+			}
+			else if (structObj.Properties.Any(x => !x.IsEditorOnlyProperty))
+			{
+				builder.Append("\tstatic_assert(UE_ARRAY_COUNT(").Append(staticsName).Append("::PropPointers) < 2048);\r\n");
+			}
+			else
+			{
+				builder.Append("#if WITH_EDITORONLY_DATA\r\n")
+					   .Append("\tstatic_assert(UE_ARRAY_COUNT(").Append(staticsName).Append("::PropPointers) < 2048);\r\n")
+					   .Append("#endif\r\n");
 			}
 			return builder;
 		}

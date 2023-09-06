@@ -37,6 +37,7 @@ void FAnimationAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_AnimNodeValueString, "Animation", "AnimNodeValueString");
 	Builder.RouteEvent(RouteId_AnimNodeValueObject, "Animation", "AnimNodeValueObject");
 	Builder.RouteEvent(RouteId_AnimNodeValueClass, "Animation", "AnimNodeValueClass");
+	Builder.RouteEvent(RouteId_AnimNodeValueAnimNode, "Animation", "AnimNodeValueAnimNode");
 	Builder.RouteEvent(RouteId_AnimSequencePlayer, "Animation", "AnimSequencePlayer");
 	Builder.RouteEvent(RouteId_BlendSpacePlayer, "Animation", "BlendSpacePlayer");
 	Builder.RouteEvent(RouteId_StateMachineState, "Animation", "StateMachineState");
@@ -49,6 +50,7 @@ void FAnimationAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_Montage2, "Animation", "Montage2");
 	Builder.RouteEvent(RouteId_Sync, "Animation", "Sync");
 	Builder.RouteEvent(RouteId_PoseWatch, "Animation", "PoseWatch");
+	Builder.RouteEvent(RouteId_PoseWatch2, "Animation", "PoseWatch2");
 }
 
 bool FAnimationAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
@@ -206,12 +208,13 @@ bool FAnimationAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		uint64 AnimInstanceId = EventData.GetValue<uint64>("AnimInstanceId");
 		int32 NodeId = EventData.GetValue<int32>("NodeId");
 		int32 PreviousNodeId = EventData.GetValue<int32>("PreviousNodeId");
+		FString NodeName = FTraceAnalyzerUtils::LegacyAttachmentString<TCHAR>("Name", Context);
 		float Weight = EventData.GetValue<float>("Weight");
 		float RootMotionWeight = EventData.GetValue<float>("RootMotionWeight");
 		uint16 FrameCounter = EventData.GetValue<uint16>("FrameCounter");
 		uint8 Phase = EventData.GetValue<uint8>("Phase");
-		FString TargetNodeName = FTraceAnalyzerUtils::LegacyAttachmentString<TCHAR>("DisplayName", Context);
-		AnimationProvider.AppendAnimNodeStart(AnimInstanceId, Context.EventTime.AsSeconds(StartCycle), FrameCounter, NodeId, PreviousNodeId, Weight, RootMotionWeight, *TargetNodeName, Phase);
+		FString NodeDisplayName = FTraceAnalyzerUtils::LegacyAttachmentString<TCHAR>("DisplayName", Context);
+		AnimationProvider.AppendAnimNodeStart(AnimInstanceId, Context.EventTime.AsSeconds(StartCycle), FrameCounter, NodeId, PreviousNodeId, *NodeName, Weight, RootMotionWeight, *NodeDisplayName, Phase);
 		break;
 	}
 	case RouteId_AnimNodeAttribute:
@@ -233,8 +236,11 @@ bool FAnimationAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 	case RouteId_AnimNodeValueString:
 	case RouteId_AnimNodeValueObject:
 	case RouteId_AnimNodeValueClass:
+	case RouteId_AnimNodeValueAnimNode:
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		double RecordingTime = EventData.GetValue<double>("RecordingTime");
+
 		uint64 AnimInstanceId = EventData.GetValue<uint64>("AnimInstanceId");
 		int32 NodeId = EventData.GetValue<int32>("NodeId");
 		uint16 FrameCounter = EventData.GetValue<uint16>("FrameCounter");
@@ -245,31 +251,31 @@ bool FAnimationAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		case RouteId_AnimNodeValueBool:
 		{
 			bool Value = EventData.GetValue<bool>("Value");
-			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
 			break;
 		}
 		case RouteId_AnimNodeValueInt:
 		{
 			int32 Value = EventData.GetValue<int32>("Value");
-			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
 			break;
 		}
 		case RouteId_AnimNodeValueFloat:
 		{
 			float Value = EventData.GetValue<float>("Value");
-			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
 			break;
 		}
 		case RouteId_AnimNodeValueVector2D:
 		{
 			FVector2D Value(EventData.GetValue<float>("ValueX"), EventData.GetValue<float>("ValueY"));
-			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
 			break;
 		}
 		case RouteId_AnimNodeValueVector:
 		{
 			FVector Value(EventData.GetValue<float>("ValueX"), EventData.GetValue<float>("ValueY"), EventData.GetValue<float>("ValueZ"));
-			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
 			break;
 		}
 		case RouteId_AnimNodeValueString:
@@ -280,19 +286,26 @@ bool FAnimationAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 				int32 KeyLength = EventData.GetValue<uint32>("KeyLength");
 				Value = reinterpret_cast<const TCHAR*>(EventData.GetAttachment()) + KeyLength;
 			}
-			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, *Value);
+			AnimationProvider.AppendAnimNodeValue(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, *Value);
 			break;
 		}
 		case RouteId_AnimNodeValueObject:
 		{
 			uint64 Value = EventData.GetValue<uint64>("Value");
-			AnimationProvider.AppendAnimNodeValueObject(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValueObject(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
 			break;
 		}
 		case RouteId_AnimNodeValueClass:
 		{
 			uint64 Value = EventData.GetValue<uint64>("Value");
-			AnimationProvider.AppendAnimNodeValueClass(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), FrameCounter, NodeId, *Key, Value);
+			AnimationProvider.AppendAnimNodeValueClass(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value);
+			break;
+		}
+		case RouteId_AnimNodeValueAnimNode:
+		{
+			int32 Value = EventData.GetValue<int32>("Value");
+			uint64 ValueAnimInstanceId = EventData.GetValue<uint64>("ValueAnimInstanceId");
+			AnimationProvider.AppendAnimNodeValueAnimNode(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, FrameCounter, NodeId, *Key, Value, ValueAnimInstanceId);
 			break;
 		}
 		}
@@ -425,6 +438,26 @@ bool FAnimationAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCon
 		TArrayView<const uint16> RequiredBonesIntArray = EventData.GetArrayView<uint16>("RequiredBones");
 		TArrayView<const float> BoneTransformsFloatArray = EventData.GetArrayView<float>("BoneTransforms");
 		AnimationProvider.AppendPoseWatch(AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, PoseWatchId, BoneTransformsFloatArray, RequiredBonesIntArray, WorldTransformFloatArray, bIsEnabled);
+		break;
+	}
+	case RouteId_PoseWatch2:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		double RecordingTime = EventData.GetValue<double>("RecordingTime");
+		uint64 AnimInstanceId = EventData.GetValue<uint64>("AnimInstanceId");
+		uint64 ComponentId = EventData.GetValue<uint64>("ComponentId");
+		uint64 PoseWatchId = EventData.GetValue<uint64>("PoseWatchId");
+		uint32 NameId = EventData.GetValue<uint32>("NameId");
+		uint32 Color = EventData.GetValue<uint32>("Color");
+		bool bIsEnabled = EventData.GetValue<bool>("bIsEnabled");
+		TArrayView<const float> WorldTransformFloatArray = EventData.GetArrayView<float>("WorldTransform");
+		TArrayView<const uint16> RequiredBonesIntArray = EventData.GetArrayView<uint16>("RequiredBones");
+		TArrayView<const float> BoneTransformsFloatArray = EventData.GetArrayView<float>("BoneTransforms");
+		TArrayView<const uint32> CurveIds = EventData.GetArrayView<uint32>("CurveIds");
+		TArrayView<const float> CurveValues = EventData.GetArrayView<float>("CurveValues");
+		check(CurveIds.Num() == CurveValues.Num());
+
+		AnimationProvider.AppendPoseWatch(ComponentId, AnimInstanceId, Context.EventTime.AsSeconds(Cycle), RecordingTime, PoseWatchId, NameId, FColor(Color), BoneTransformsFloatArray, CurveIds, CurveValues, RequiredBonesIntArray, WorldTransformFloatArray, bIsEnabled);
 		break;
 	}
 	}

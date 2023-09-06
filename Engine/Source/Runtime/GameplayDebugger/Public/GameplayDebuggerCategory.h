@@ -45,33 +45,33 @@ struct FDebugDrawDelegateHelper;
 /**
  * Single category of visual debugger tool
  */
-class GAMEPLAYDEBUGGER_API FGameplayDebuggerCategory : public FGameplayDebuggerAddonBase
+class FGameplayDebuggerCategory : public FGameplayDebuggerAddonBase
 {
 public:
 
-	FGameplayDebuggerCategory();
-	virtual ~FGameplayDebuggerCategory();
+	GAMEPLAYDEBUGGER_API FGameplayDebuggerCategory();
+	GAMEPLAYDEBUGGER_API virtual ~FGameplayDebuggerCategory();
 
 	/** [AUTH] gather data for replication */
-	virtual void CollectData(APlayerController* OwnerPC, AActor* DebugActor);
+	GAMEPLAYDEBUGGER_API virtual void CollectData(APlayerController* OwnerPC, AActor* DebugActor);
 
 	/** [LOCAL] draw collected data */
-	virtual void DrawData(APlayerController* OwnerPC, FGameplayDebuggerCanvasContext& CanvasContext);
+	GAMEPLAYDEBUGGER_API virtual void DrawData(APlayerController* OwnerPC, FGameplayDebuggerCanvasContext& CanvasContext);
 
 	/** [LOCAL] creates a scene proxy for more advanced debug rendering */
-	virtual FDebugRenderSceneProxy* CreateDebugSceneProxy(const UPrimitiveComponent* InComponent, FDebugDrawDelegateHelper*& OutDelegateHelper);
+	GAMEPLAYDEBUGGER_API virtual FDebugRenderSceneProxy* CreateDebugSceneProxy(const UPrimitiveComponent* InComponent, FDebugDrawDelegateHelper*& OutDelegateHelper);
 
 	/** [LOCAL] called after successful replication of entire data pack to client */
-	virtual void OnDataPackReplicated(int32 DataPackId);
+	GAMEPLAYDEBUGGER_API virtual void OnDataPackReplicated(int32 DataPackId);
 
 	/** [AUTH] adds line of text tagged with {color} to replicated data */
-	void AddTextLine(const FString& TextLine);
+	GAMEPLAYDEBUGGER_API void AddTextLine(const FString& TextLine);
 
 	/** [AUTH] adds shape to replicated data */
-	void AddShape(const FGameplayDebuggerShape& Shape);
+	GAMEPLAYDEBUGGER_API void AddShape(const FGameplayDebuggerShape& Shape);
 
 	/** [LOCAL] draw category */
-	void DrawCategory(APlayerController* OwnerPC, FGameplayDebuggerCanvasContext& CanvasContext);
+	GAMEPLAYDEBUGGER_API void DrawCategory(APlayerController* OwnerPC, FGameplayDebuggerCanvasContext& CanvasContext);
 
 	/** [LOCAL] check if category should be drawn */
 	bool ShouldDrawCategory(bool bHasDebugActor) const { return IsCategoryEnabled() && (!bShowOnlyWithDebugActor || bHasDebugActor); }
@@ -94,6 +94,9 @@ public:
 	/** [ALL] check if category has authority (collects data) */
 	bool IsCategoryAuth() const { return bHasAuthority; }
 
+	/** [LOCAL] */
+	bool ShouldCollectDataOnClient() const { return bAllowLocalDataCollection; }
+
 	int32 GetNumDataPacks() const { return ReplicatedDataPacks.Num(); }
 	float GetDataPackProgress(int32 DataPackId) const { return ReplicatedDataPacks.IsValidIndex(DataPackId) ? ReplicatedDataPacks[DataPackId].GetProgress() : 0.0f; }
 	bool IsDataPackReplicating(int32 DataPackId) const { return ReplicatedDataPacks.IsValidIndex(DataPackId) && ReplicatedDataPacks[DataPackId].IsInProgress(); }
@@ -112,22 +115,22 @@ protected:
 	 * @note Method is expected to always return valid outputs if valid controller is provided. Otherwise it
 	 * depends if the view information has been replicated before the methods gets called.
 	 */
-	bool GetViewPoint(const APlayerController* OwnerPC, FVector& OutViewLocation, FVector& OutViewDirection) const;
+	GAMEPLAYDEBUGGER_API bool GetViewPoint(const APlayerController* OwnerPC, FVector& OutViewLocation, FVector& OutViewDirection) const;
 
 	/**
 	 * Indicates if a given location is within a vision cone built from provided view location and direction based
 	 * on MaxViewDistance and MaxViewAngle from GameplayDebuggerUserSettings
 	 */
-	static bool IsLocationInViewCone(const FVector& ViewLocation, const FVector& ViewDirection, const FVector& TargetLocation);
+	static GAMEPLAYDEBUGGER_API bool IsLocationInViewCone(const FVector& ViewLocation, const FVector& ViewDirection, const FVector& TargetLocation);
 
 	/** [AUTH] marks data pack as needing replication */
-	void MarkDataPackDirty(int32 DataPackId);
+	GAMEPLAYDEBUGGER_API void MarkDataPackDirty(int32 DataPackId);
 
 	/** [LOCAL] requests new scene proxy */
-	void MarkRenderStateDirty();
+	GAMEPLAYDEBUGGER_API void MarkRenderStateDirty();
 
 	/** [LOCAL] preferred view flag for creating scene proxy */
-	FString GetSceneProxyViewFlag() const;
+	GAMEPLAYDEBUGGER_API FString GetSceneProxyViewFlag() const;
 
 	/** [ALL] sets up DataPack replication, needs address of property holding data, DataPack's struct must define Serialize(FArchive& Ar) function
 	 *  returns DataPackId
@@ -148,6 +151,9 @@ protected:
 	/** [AUTH] force data collection on next update */
 	void ForceImmediateCollect() { LastCollectDataTime = -MAX_dbl; }
 
+	/** [ALL] Clears out accumulated replicated data. */
+	GAMEPLAYDEBUGGER_API void ResetReplicatedData();
+
 	/** update interval, 0 = each tick */
 	float CollectDataInterval;
 
@@ -162,6 +168,14 @@ protected:
 
 	/** draw category only when DebugActor is present */
 	uint32 bShowOnlyWithDebugActor : 1;
+
+	/** 
+	  * False by default. If set to True will make data collection functions work on Local categories as well.
+	  * Note that in client-server setting the data is still being replicated over from the server as well,
+	  * and data collection on the client can also be used to annotate the incoming data. If this is undesired
+	  * you need to call ResetReplicatedData before gathering the client-side data. 
+	  */
+	uint32 bAllowLocalDataCollection : 1;
 
 private:
 

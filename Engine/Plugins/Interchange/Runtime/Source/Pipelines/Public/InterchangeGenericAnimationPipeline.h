@@ -41,6 +41,10 @@ public:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UInterchangeGenericCommonSkeletalMeshesAndAnimationsProperties> CommonSkeletalMeshesAndAnimationsProperties;
 
+	//Common Meshes Properties Settings Pointer
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UInterchangeGenericCommonMeshesProperties> CommonMeshesProperties;
+
 	//////	ANIMATION_CATEGORY Properties //////
 	/** If enable, import all animation assets find in the sources. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animations")
@@ -73,6 +77,10 @@ public:
 	/** If true, import node attributes as either Animation Curves or Animation Attributes */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animations", meta = (DisplayName = "Import Attributes as Curves or Animation Attributes"))
 	bool bImportCustomAttribute = true;
+
+	/** Whether to automatically add curve metadata to an animation's skeleton. If this is disabled, curve metadata will be added to skeletal meshes for morph targets, but no metadata entry will be created for general curves. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animations", meta = (EditCondition = "bImportCustomAttribute"))
+	bool bAddCurveMetadataToSkeleton = true;
 
 	/** Set Material Curve Type for all custom attributes that exists */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animations", meta = (EditCondition = "bImportCustomAttribute", DisplayName = "Set Material Curve Type"))
@@ -122,6 +130,10 @@ private:
 	void CreateAnimationTrackSetFactoryNode(UInterchangeAnimationTrackSetNode& Node);
 
 	void CreateAnimSequenceFactoryNode(UInterchangeSkeletalAnimationTrackNode& Node);
+
+	// Set as a property to carry this value over during a duplicate
+	UPROPERTY()
+	bool bSceneImport = false;
 
 	UInterchangeBaseNodeContainer* BaseNodeContainer = nullptr;
 	TArray<const UInterchangeSourceData*> SourceDatas;

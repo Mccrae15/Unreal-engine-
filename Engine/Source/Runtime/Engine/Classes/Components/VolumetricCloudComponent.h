@@ -186,7 +186,6 @@ protected:
 public:
 
 	//~ Begin UObject Interface. 
-	virtual void PostInterpChange(FProperty* PropertyThatChanged) override;
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -229,7 +228,7 @@ private:
 	TObjectPtr<class UVolumetricCloudComponent> VolumetricCloudComponent;
 
 #if WITH_EDITOR
-	virtual bool ActorTypeSupportsDataLayer() const override { return true; }
+	virtual bool IsDataLayerTypeSupported(TSubclassOf<UDataLayerInstance> DataLayerType) const override { return true; }
 #endif
 
 };

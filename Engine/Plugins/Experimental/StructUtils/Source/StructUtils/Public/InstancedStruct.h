@@ -8,8 +8,11 @@
 
 struct FConstStructView;
 struct FConstSharedStruct;
+class UUserDefinedStruct;
+
 /**
  * FInstancedStruct works similarly as instanced UObject* property but is USTRUCTs.
+ * 
  * Example:
  *
  *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "/Script/ModuleName.TestStructBase"))
@@ -18,7 +21,7 @@ struct FConstSharedStruct;
  *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "/Script/ModuleName.TestStructBase"))
  *	TArray<FInstancedStruct> TestArray;
  */
-USTRUCT(BlueprintType, meta = (HasNativeMake = "/Script/StructUtils.StructUtilsFunctionLibrary.MakeInstancedStruct"))
+USTRUCT(BlueprintType, meta = (HasNativeMake = "/Script/StructUtilsEngine.StructUtilsFunctionLibrary.MakeInstancedStruct"))
 struct STRUCTUTILS_API FInstancedStruct
 {
 	GENERATED_BODY()
@@ -150,6 +153,7 @@ public:
 	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
 	void GetPreloadDependencies(TArray<UObject*>& OutDeps);
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+	bool FindInnerPropertyInstance(FName PropertyName, const FProperty*& OutProp, const void*& OutData) const;
 
 	/** Returns struct type. */
 	const UScriptStruct* GetScriptStruct() const
@@ -170,25 +174,14 @@ public:
 	template<typename T>
 	const T& Get() const
 	{
-		const uint8* Memory = GetMemory();
-		const UScriptStruct* Struct = GetScriptStruct();
-		check(Memory != nullptr);
-		check(Struct != nullptr);
-		check(Struct->IsChildOf(TBaseStructure<T>::Get()));
-		return *((T*)Memory);
+		return UE::StructUtils::GetStructRef<T>(ScriptStruct, StructMemory);
 	}
 
 	/** Returns const pointer to the struct, or nullptr if cast is not valid. */
 	template<typename T>
 	const T* GetPtr() const
 	{
-		const uint8* Memory = GetMemory();
-		const UScriptStruct* Struct = GetScriptStruct();
-		if (Memory != nullptr && Struct && Struct->IsChildOf(TBaseStructure<T>::Get()))
-		{
-			return ((T*)Memory);
-		}
-		return nullptr;
+		return UE::StructUtils::GetStructPtr<T>(ScriptStruct, StructMemory);
 	}
 
 	/** Returns a mutable pointer to struct memory. */
@@ -239,6 +232,11 @@ public:
 		return !Identical(&Other, PPF_None);
 	}
 
+#if WITH_ENGINE && WITH_EDITOR
+	/** Internal method used to replace the script struct during user defined struct instantiation. */
+	void ReplaceScriptStructInternal(const UScriptStruct* NewStruct);
+#endif
+	
 protected:
 
 	FInstancedStruct(const UScriptStruct* InScriptStruct, uint8* InStructMemory)
@@ -256,7 +254,7 @@ protected:
 		StructMemory = InStructMemory;
 	}
 
-	const UScriptStruct* ScriptStruct = nullptr;
+	TObjectPtr<const UScriptStruct> ScriptStruct = nullptr;
 	uint8* StructMemory = nullptr;
 };
 
@@ -273,7 +271,187 @@ struct TStructOpsTypeTraits<FInstancedStruct> : public TStructOpsTypeTraitsBase2
 		WithStructuredSerializeFromMismatchedTag = true,
 		WithGetPreloadDependencies = true,
 		WithNetSerializer = true,
+		WithFindInnerPropertyInstance = true,
 	};
+};
+
+/**
+ * TInstancedStruct is a type-safe FInstancedStruct wrapper against the given BaseStruct type.
+ * @note When used as a property, this automatically defines the BaseStruct property meta-data.
+ * 
+ * Example:
+ *
+ *	UPROPERTY(EditAnywhere, Category = Foo)
+ *	TInstancedStruct<FTestStructBase> Test;
+ *
+ *	UPROPERTY(EditAnywhere, Category = Foo)
+ *	TArray<TInstancedStruct<FTestStructBase>> TestArray;
+ */
+template<typename BaseStructT>
+struct TInstancedStruct
+{
+public:
+	TInstancedStruct() = default;
+
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	TInstancedStruct(const TInstancedStruct<T>& InOther)
+		: InstancedStruct(InOther.InstancedStruct)
+	{
+	}
+
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	TInstancedStruct(TInstancedStruct<T>&& InOther)
+		: InstancedStruct(MoveTemp(InOther.InstancedStruct))
+	{
+	}
+
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	TInstancedStruct& operator=(const TInstancedStruct<T>& InOther)
+	{
+		if (this != &InOther)
+		{
+			InstancedStruct = InOther.InstancedStruct;
+		}
+		return *this;
+	}
+
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	TInstancedStruct& operator=(TInstancedStruct<T>&& InOther)
+	{
+		if (this != &InOther)
+		{
+			InstancedStruct = MoveTemp(InOther.InstancedStruct);
+		}
+		return *this;
+	}
+
+	/** Initializes from a raw struct type and optional data. */
+	void InitializeAsScriptStruct(const UScriptStruct* InScriptStruct, const uint8* InStructMemory = nullptr)
+	{
+		checkf(InScriptStruct->IsChildOf(TBaseStructure<BaseStructT>::Get()), TEXT("ScriptStruct must be a child of BaseStruct!"));
+		InstancedStruct.InitializeAs(InScriptStruct, InStructMemory);
+	}
+
+	/** Initializes from struct type and emplace construct. */
+	template<typename T = BaseStructT, typename... TArgs, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	void InitializeAs(TArgs&&... InArgs)
+	{
+		InstancedStruct.InitializeAs<T>(Forward<TArgs>(InArgs)...);
+	}
+
+	/** Creates a new TInstancedStruct from templated struct type. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	static TInstancedStruct Make()
+	{
+		TInstancedStruct This;
+		This.InstancedStruct.InitializeAs(TBaseStructure<T>::Get(), nullptr);
+		return This;
+	}
+
+	/** Creates a new TInstancedStruct from templated struct. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	static TInstancedStruct Make(const T& Struct)
+	{
+		TInstancedStruct This;
+		This.InstancedStruct.InitializeAs(TBaseStructure<T>::Get(), reinterpret_cast<const uint8*>(&Struct));
+		return This;
+	}
+
+	/** Creates a new TInstancedStruct from the templated type and forward all arguments to constructor. */
+	template<typename T = BaseStructT, typename... TArgs, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	static TInstancedStruct Make(TArgs&&... InArgs)
+	{
+		TInstancedStruct This;
+		This.InstancedStruct.template InitializeAs<T>(Forward<TArgs>(InArgs)...);
+		return This;
+	}
+
+	/** Returns struct type. */
+	const UScriptStruct* GetScriptStruct() const
+	{
+		return InstancedStruct.GetScriptStruct();
+	}
+
+	/** Returns const pointer to raw struct memory. */
+	const uint8* GetMemory() const
+	{
+		return InstancedStruct.GetMemory();
+	}
+
+	/** Reset to empty. */
+	void Reset()
+	{
+		InstancedStruct.Reset();
+	}
+
+	/** Returns const reference to the struct, this getter assumes that all data is valid. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	const T& Get() const
+	{
+		return InstancedStruct.Get<T>();
+	}
+
+	/** Returns const pointer to the struct, or nullptr if cast is not valid. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	const T* GetPtr() const
+	{
+		return InstancedStruct.GetPtr<T>();
+	}
+
+	/** Returns a mutable pointer to raw struct memory. */
+	uint8* GetMutableMemory()
+	{
+		return InstancedStruct.GetMutableMemory();
+	}
+
+	/** Returns mutable reference to the struct, this getter assumes that all data is valid. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	T& GetMutable()
+	{
+		return InstancedStruct.GetMutable<T>();
+	}
+
+	/** Returns mutable pointer to the struct, or nullptr if cast is not valid. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	T* GetMutablePtr()
+	{
+		return InstancedStruct.GetMutablePtr<T>();
+	}
+
+	/** Returns True if the struct is valid.*/
+	bool IsValid() const
+	{
+		return InstancedStruct.IsValid();
+	}
+
+	/** Comparison operators. Deep compares the struct instance when identical. */
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	bool operator==(const TInstancedStruct<T>& Other) const
+	{
+		return InstancedStruct == Other.InstancedStruct;
+	}
+
+	template<typename T = BaseStructT, typename = std::enable_if_t<std::is_base_of_v<BaseStructT, std::decay_t<T>>>>
+	bool operator!=(const TInstancedStruct<T>& Other) const
+	{
+		return InstancedStruct != Other.InstancedStruct;
+	}
+
+	void AddReferencedObjects(class FReferenceCollector& Collector)
+	{
+		InstancedStruct.AddStructReferencedObjects(Collector);
+	}
+
+private:
+	/**
+	 * Note:
+	 *   TInstancedStruct is a wrapper for a FInstancedStruct (rather than inheriting) so that it can provide a locked-down type-safe 
+	 *   API for use in C++, without being able to accidentally take a reference to the untyped API to workaround the restrictions.
+	 * 
+	 *   TInstancedStruct MUST be the same size as FInstancedStruct, as the reflection layer treats a TInstancedStruct as a FInstancedStruct.
+	 *   This means that any reflected APIs (like ExportText) that accept an FInstancedStruct pointer can also accept a TInstancedStruct pointer.
+	 */
+	FInstancedStruct InstancedStruct;
 };
 
 #if WITH_EDITORONLY_DATA

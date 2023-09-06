@@ -66,7 +66,9 @@
 #include "LevelUtils.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "Physics/AsyncPhysicsInputComponent.h"
+#include "Physics/NetworkPhysicsComponent.h"
 #include "PBDRigidsSolver.h"
+#include "PhysicsEngine/PhysicsSettings.h"
 
 #if UE_WITH_IRIS
 #include "Iris/ReplicationSystem/ReplicationSystem.h"
@@ -110,10 +112,9 @@ namespace NetworkPhysicsCvars
 #endif
 	FAutoConsoleVariableRef CVarEnableDebugRPC(TEXT("np2.EnableDebugRPC"), EnableDebugRPC, TEXT("Sends extra debug information to clients about server side input buffering"));
 
-	int32 EnableNetworkPhysicsPrediction = 0;
-	FAutoConsoleVariableRef CVarEnableNetworkPhysicsPrediction(TEXT("np2.EnableNetworkPhysicsPrediction"), EnableNetworkPhysicsPrediction, TEXT("Enables network physics prediction"));
+	int32 NetworkPhysicsPredictionFrameOffset = 4;
+	FAutoConsoleVariableRef CVarNetworkPhysicsPredictionFrameOffset(TEXT("np2.NetworkPhysicsPredictionFrameOffset"), NetworkPhysicsPredictionFrameOffset, TEXT("Additional frame offset to be added to the local to server offset used by network prediction"));
 }
-
 
 const float RetryClientRestartThrottleTime = 0.5f;
 const float RetryServerAcknowledgeThrottleTime = 0.25f;
@@ -196,10 +197,13 @@ APlayerController::APlayerController(const FObjectInitializer& ObjectInitializer
 		RootComponent->SetUsingAbsoluteRotation(true);
 	}
 
-	if(NetworkPhysicsCvars::EnableNetworkPhysicsPrediction == 1)
+	if (UPhysicsSettings::Get()->PhysicsPrediction.bEnablePhysicsPrediction)
 	{
 		bAsyncPhysicsTickEnabled = true;
 	}
+#if UE_ENABLE_DEBUG_DRAWING
+	CurrentInputModeDebugString = TEXT("Default");
+#endif	// UE_ENABLE_DEBUG_DRAWING
 }
 
 float APlayerController::GetNetPriority(const FVector& ViewPos, const FVector& ViewDir, AActor* Viewer, AActor* ViewTarget, UActorChannel* InChannel, float Time, bool bLowBandwidth)
@@ -666,31 +670,9 @@ void APlayerController::ForceSingleNetUpdateFor(AActor* Target)
 	{
 		UE_LOG(LogPlayerController, Warning, TEXT("PlayerController::ForceSingleNetUpdateFor(): No Target specified"));
 	}
-	else if (GetNetMode() == NM_Client)
-	{
-		UE_LOG(LogPlayerController, Warning, TEXT("PlayerController::ForceSingleNetUpdateFor(): Only valid on server"));
-	}
 	else
 	{
-		if (UNetConnection* Conn = Cast<UNetConnection>(Player))
-		{
-			if (Conn->GetUChildConnection() != NULL)
-			{
-				Conn = ((UChildConnection*)Conn)->Parent;
-				checkSlow(Conn != NULL);
-			}
-
-			if (UActorChannel* Channel = Conn->FindActorChannelRef(Target))
-			{
-				if (UNetDriver* NetDriver = Conn->GetDriver())
-				{
-					if (FNetworkObjectInfo* NetActor = NetDriver->FindOrAddNetworkObjectInfo(Target))
-					{
-						NetActor->bPendingNetUpdate = true; // will cause some other clients to do lesser checks too, but that's unavoidable with the current functionality
-					}
-				}
-			}
-		}
+		Target->ForceNetUpdate();
 	}
 }
 
@@ -886,6 +868,11 @@ void APlayerController::ReceivedPlayer()
 		{
 			BeginSpectatingState();
 		}
+	}
+
+	if (Player)
+	{
+		Player->ReceivedPlayerController(this);
 	}
 }
 
@@ -1679,7 +1666,7 @@ void APlayerController::ClientSetCameraFade_Implementation(bool bEnableFading, F
 
 void APlayerController::SendClientAdjustment()
 {
-	if(!NetworkPhysicsCvars::EnableNetworkPhysicsPrediction)
+	if(!UPhysicsSettings::Get()->PhysicsPrediction.bEnablePhysicsPrediction)
 	{
 		if (ServerFrameInfo.LastProcessedInputFrame != INDEX_NONE && ServerFrameInfo.LastProcessedInputFrame != ServerFrameInfo.LastSentLocalFrame)
 		{
@@ -1909,11 +1896,6 @@ void APlayerController::ClientReturnToMainMenuWithTextReason_Implementation(cons
 	}
 }
 
-void APlayerController::ClientReturnToMainMenu_Implementation(const FString& ReturnReason)
-{
-	ClientReturnToMainMenuWithTextReason_Implementation(FText::FromString(ReturnReason));
-}
-
 bool APlayerController::SetPause( bool bPause, FCanUnpause CanUnpauseDelegate)
 {
 	bool bResult = false;
@@ -1928,9 +1910,10 @@ bool APlayerController::SetPause( bool bPause, FCanUnpause CanUnpauseDelegate)
 				// Pause gamepad rumbling too if needed
 				bResult = GameMode->SetPause(this, CanUnpauseDelegate);
 
-				// Force an update, otherwise since the game time is not updating, the net driver
-				// might not see that it is time for the world settings actor to replicate
-				ForceSingleNetUpdateFor(GetWorldSettings());
+				if (AWorldSettings* WorldSettings = GetWorldSettings())
+				{
+					WorldSettings->ForceNetUpdate();
+				}
 			}
 			else if (!bPause && bCurrentPauseState)
 			{
@@ -3665,6 +3648,7 @@ bool APlayerController::GetStreamingSourcesInternal(TArray<FWorldPartitionStream
 	StreamingSource.bBlockOnSlowLoading = StreamingSourceShouldBlockOnSlowStreaming();
 	StreamingSource.DebugColor = StreamingSourceDebugColor;
 	StreamingSource.Priority = GetStreamingSourcePriority();
+	StreamingSource.bRemote = !IsLocalController();
 	GetStreamingSourceShapes(StreamingSource.Shapes);
 	return true;
 }
@@ -3763,6 +3747,11 @@ void APlayerController::ClientMutePlayer_Implementation(FUniqueNetIdRepl PlayerI
 	ULocalPlayer* LP = Cast<ULocalPlayer>(Player);
 	UWorld* World = GetWorld();
 
+	// @todo: As of now we don't have a proper way to inform the client of the specific voice block reason
+	// without changing the function signatures, therefore all server reasons are funneled into the client
+	// as "muted" for the time being.
+	MuteList.AddVoiceBlockReason(PlayerId.GetUniqueNetId(), EVoiceBlockReasons::Muted);
+
 	if (LP != NULL && World)
 	{
 		// Have the voice subsystem mute this player
@@ -3775,6 +3764,8 @@ void APlayerController::ClientUnmutePlayer_Implementation(FUniqueNetIdRepl Playe
 	// Use the local player to determine the controller id
 	ULocalPlayer* LP = Cast<ULocalPlayer>(Player);
 	UWorld* World = GetWorld();
+
+	MuteList.RemoveVoiceBlockReason(PlayerId.GetUniqueNetId(), EVoiceBlockReasons::Muted);
 
 	if (LP != NULL && World)
 	{
@@ -4808,6 +4799,8 @@ void APlayerController::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > &
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
+	DISABLE_REPLICATED_PROPERTY(APlayerController, AsyncPhysicsDataComponent_DEPRECARED);
+
 	// These used to only replicate if PlayerCameraManager->GetViewTargetPawn() != GetPawn()
 	// But, since they also don't update unless that condition is true, these values won't change, thus won't send
 	// This is a little less efficient, but fits into the new condition system well, and shouldn't really add much overhead
@@ -4815,26 +4808,14 @@ void APlayerController::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > &
 
 	// Replicate SpawnLocation for remote spectators
 	DOREPLIFETIME_CONDITION(APlayerController, SpawnLocation, COND_OwnerOnly);
-
-	DOREPLIFETIME_CONDITION(APlayerController, AsyncPhysicsDataComponent, COND_OwnerOnly);
 }
 
 void APlayerController::OnRep_AsyncPhysicsDataComponent()
-{
-	AsyncPhysicsDataComponent->SetDataClass(AsyncPhysicsDataClass);
-}
+{}
 
 void APlayerController::SetPlayer( UPlayer* InPlayer )
 {
 	FMoviePlayerProxyBlock MoviePlayerBlock;
-	if(AsyncPhysicsDataClass && GetLocalRole() == ROLE_Authority)
-	{
-		static const FName AsyncPhysicsDataComponentName(TEXT("PC_AsyncPhysicsDataComponent"));
-		AsyncPhysicsDataComponent = NewObject<UAsyncPhysicsInputComponent>(this, AsyncPhysicsDataComponentName);
-		AsyncPhysicsDataComponent->SetDataClass(AsyncPhysicsDataClass);
-		AsyncPhysicsDataComponent->RegisterComponent();
-	}
-
 	check(InPlayer!=NULL);
 
 	const bool bIsSameLevel = InPlayer->PlayerController && (InPlayer->PlayerController->GetLevel() == GetLevel());
@@ -5044,7 +5025,9 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 						if (ServerData->bTriggeringForcedUpdates)
 						{
 							const float PawnTimeSinceForcingUpdates = (WorldTimeStamp - ServerData->ServerTimeBeginningForcedUpdates) * GetPawn()->CustomTimeDilation;
-							if (PawnTimeSinceForcingUpdates > ForcedUpdateMaxDuration * GetPawn()->GetActorTimeDilation())
+							const float PawnTimeForcedUpdateMaxDuration = ForcedUpdateMaxDuration * GetPawn()->GetActorTimeDilation();
+							
+							if (PawnTimeSinceForcingUpdates > PawnTimeForcedUpdateMaxDuration)
 							{
 								if (ServerData->ServerTimeStamp > ServerData->ServerTimeLastForcedUpdate)
 								{
@@ -5074,7 +5057,10 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 						LastMovementUpdateTime = CurrentRealTime;
 
 						// Trigger forced update if allowed
-						if (!bRecentHitch && ForcedUpdateInterval > 0.f && PawnTimeSinceUpdate > FMath::Max<float>(DeltaSeconds+0.06f, ForcedUpdateInterval * GetPawn()->GetActorTimeDilation()))
+						const float PawnTimeMinForcedUpdateInterval = (DeltaSeconds + 0.06f) * GetPawn()->CustomTimeDilation;
+						const float PawnTimeForcedUpdateInterval = FMath::Max<float>(PawnTimeMinForcedUpdateInterval, ForcedUpdateInterval * GetPawn()->GetActorTimeDilation());
+
+						if (!bRecentHitch && ForcedUpdateInterval > 0.f && (PawnTimeSinceUpdate > PawnTimeForcedUpdateInterval))
 						{
 							//UE_LOG(LogPlayerController, Warning, TEXT("ForcedMovementTick. PawnTimeSinceUpdate: %f, DeltaSeconds: %f, DeltaSeconds+: %f"), PawnTimeSinceUpdate, DeltaSeconds, DeltaSeconds+0.06f);
 							const USkeletalMeshComponent* PawnMesh = GetPawn()->FindComponentByClass<USkeletalMeshComponent>();
@@ -5177,7 +5163,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 	// Clear old axis inputs since we are done with them. 
 	RotationInput = FRotator::ZeroRotator;
 
-	if(!!NetworkPhysicsCvars::EnableNetworkPhysicsPrediction && GetLocalRole() == ROLE_AutonomousProxy && bIsClient)
+	if(UPhysicsSettings::Get()->PhysicsPrediction.bEnablePhysicsPrediction && GetLocalRole() == ROLE_AutonomousProxy && bIsClient)
 	{
 		UpdateServerAsyncPhysicsTickOffset();
 	}
@@ -5707,7 +5693,7 @@ void APlayerController::GetInputAnalogStickState(EControllerAnalogStick::Type Wh
 void APlayerController::GetInputAnalogStickState(EControllerAnalogStick::Type WhichStick, double& StickX, double& StickY) const
 {
 	float DX, DY;
-	GetInputMouseDelta(DX, DY);
+	GetInputAnalogStickState(WhichStick, DX, DY);
 	StickX = DX;
 	StickY = DY;
 }
@@ -5789,6 +5775,14 @@ void FInputModeDataBase::SetFocusAndLocking(FReply& SlateOperations, TSharedPtr<
 	}
 }
 
+#if UE_ENABLE_DEBUG_DRAWING
+const FString& FInputModeDataBase::GetDebugDisplayName() const
+{
+	static const FString DisplayName = TEXT("Base");
+	return DisplayName;
+}
+#endif	// UE_ENABLE_DEBUG_DRAWING
+
 FInputModeUIOnly& FInputModeUIOnly::SetWidgetToFocus(TSharedPtr<SWidget> InWidgetToFocus)
 {
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -5806,6 +5800,14 @@ FInputModeUIOnly& FInputModeUIOnly::SetLockMouseToViewportBehavior(EMouseLockMod
 	MouseLockMode = InMouseLockMode;
 	return *this;
 }
+
+#if UE_ENABLE_DEBUG_DRAWING
+const FString& FInputModeUIOnly::GetDebugDisplayName() const
+{
+	static const FString DebugName = TEXT("UI Only (Input will only be consumed by the UI, not the player!)");
+	return DebugName;
+}
+#endif	// UE_ENABLE_DEBUG_DRAWING
 
 void FInputModeUIOnly::ApplyInputMode(FReply& SlateOperations, class UGameViewportClient& GameViewportClient) const
 {
@@ -5842,6 +5844,22 @@ void FInputModeGameAndUI::ApplyInputMode(FReply& SlateOperations, class UGameVie
 	}
 }
 
+#if UE_ENABLE_DEBUG_DRAWING
+const FString& FInputModeGameAndUI::GetDebugDisplayName() const
+{
+	static const FString DisplayName = TEXT("Game and UI");
+	return DisplayName;
+}
+#endif	// UE_ENABLE_DEBUG_DRAWING
+
+#if UE_ENABLE_DEBUG_DRAWING
+const FString& FInputModeGameOnly::GetDebugDisplayName() const
+{
+	static const FString DisplayName = TEXT("Game Only (Input will only be consumed by the player, not UI)");
+	return DisplayName;
+}
+#endif	// UE_ENABLE_DEBUG_DRAWING
+
 void FInputModeGameOnly::ApplyInputMode(FReply& SlateOperations, class UGameViewportClient& GameViewportClient) const
 {
 	TSharedPtr<SViewport> ViewportWidget = GameViewportClient.GetGameViewportWidget();
@@ -5865,8 +5883,20 @@ void APlayerController::SetInputMode(const FInputModeDataBase& InData)
 	{
 		InData.ApplyInputMode( LocalPlayer->GetSlateOperations(), *GameViewportClient );
 		bShouldFlushInputWhenViewportFocusChanges = InData.ShouldFlushInputOnViewportFocus();
+
+		// Keep track of the name of this input mode for debug purposes
+#if UE_ENABLE_DEBUG_DRAWING
+		CurrentInputModeDebugString = InData.GetDebugDisplayName();
+#endif
 	}
 }
+
+#if UE_ENABLE_DEBUG_DRAWING
+const FString& APlayerController::GetCurrentInputModeDebugString() const
+{
+	return CurrentInputModeDebugString;
+}
+#endif // #if UE_ENABLE_DEBUG_DRAWING
 
 void APlayerController::UpdateCameraManager(float DeltaSeconds)
 {
@@ -6027,22 +6057,22 @@ void APlayerController::BeginReplication()
 
 UAsyncPhysicsData* APlayerController::GetAsyncPhysicsDataToWrite() const
 {
-	return AsyncPhysicsDataComponent ? AsyncPhysicsDataComponent->GetDataToWrite() : nullptr;
+	return nullptr;
 }
 
 const UAsyncPhysicsData* APlayerController::GetAsyncPhysicsDataToConsume() const
 {
-	return AsyncPhysicsDataComponent ? AsyncPhysicsDataComponent->GetDataToConsume() : nullptr;
+	return nullptr;  
 }
 
-void APlayerController::ExecuteAsyncPhysicsCommand(const FAsyncPhysicsTimestamp& AsyncPhysicsTimestamp, UObject* OwningObject, const TFunction<void()>& Command)
+void APlayerController::ExecuteAsyncPhysicsCommand(const FAsyncPhysicsTimestamp& AsyncPhysicsTimestamp, UObject* OwningObject, const TFunction<void()>& Command, const bool bEnableResim)
 {
 	if(UWorld* World = GetWorld())
 	{
 		if(FPhysScene* PhysScene = World->GetPhysicsScene())
 		{
 			const int32 PhysicsStep = IsLocalController() ? AsyncPhysicsTimestamp.LocalFrame : AsyncPhysicsTimestamp.ServerFrame;
-			PhysScene->EnqueueAsyncPhysicsCommand(PhysicsStep, OwningObject, Command);
+			PhysScene->EnqueueAsyncPhysicsCommand(PhysicsStep, OwningObject, Command, bEnableResim);
 		}
 	}
 }
@@ -6062,17 +6092,7 @@ FAsyncPhysicsTimestamp APlayerController::GetAsyncPhysicsTimestamp(float DeltaSe
 				const FReal DeltaTime = Solver->GetAsyncDeltaTime();
 				const int32 PendingSteps = (DeltaTime > 0.0) ? DeltaSeconds / DeltaTime : 0;
 
-				int32 LocalPhysicsStep;
-				if(Solver->IsGameThreadFrozen())
-				{
-					//We are calling inside the async tick, so use the current frame
-					LocalPhysicsStep = Solver->GetCurrentFrame();
-				}
-				else
-				{
-					//We are on the GT so give the upcoming async tick
-					LocalPhysicsStep = Solver->GetMarshallingManager().GetExternalTimestamp_External();
-				}
+				int32 LocalPhysicsStep = Solver->GetCurrentFrame();
 				
 				LocalPhysicsStep += PendingSteps;	//Add any pending steps user wants to wait on
 				Timestamp.ServerFrame = LocalPhysicsStep;
@@ -6092,6 +6112,16 @@ FAsyncPhysicsTimestamp APlayerController::GetAsyncPhysicsTimestamp(float DeltaSe
 
 void APlayerController::UpdateServerAsyncPhysicsTickOffset()
 {
+	if (UWorld* World = GetWorld())
+	{
+		if (FPhysScene* PhysScene = World->GetPhysicsScene())
+		{
+			if(PhysScene->GetSolver()->GetEvolution()->IsResimming())
+			{
+				return;
+			}
+		}
+	}
 	FAsyncPhysicsTimestamp Timestamp = GetAsyncPhysicsTimestamp();
 	if(ClientLatestAsyncPhysicsStepSent == Timestamp.LocalFrame)
 	{
@@ -6133,8 +6163,23 @@ void APlayerController::ClientCorrectionAsyncPhysicsTimestamp_Implementation(FAs
 		return;
 	}
 
-	const int32 NewOffset = Timestamp.ServerFrame - Timestamp.LocalFrame; //The new offset as reported by the server
-	ensureMsgf(NewOffset >= LocalToServerAsyncPhysicsTickOffset, TEXT("The offset between client and server can only ever increase"));
+	if (UWorld* World = GetWorld())
+	{
+		if (FPhysScene* PhysScene = World->GetPhysicsScene())
+		{
+			if (PhysScene->GetSolver()->GetEvolution()->IsResimming())
+			{
+				return;
+			}
+		}
+	}
+	FAsyncPhysicsTimestamp CurrentTimestamp = GetAsyncPhysicsTimestamp();
+	// We need to avoid changing this offset as much as possible since it will invalidate histories and will trigger resim
+	// To deal with that we compute a safe margin based on a user cvar + half the RTT
+	// This margin will only be applied the first time we will compute the offset 
+	const int32 FrameOffset = LocalToServerAsyncPhysicsTickOffset == 0 ? (NetworkPhysicsCvars::NetworkPhysicsPredictionFrameOffset + (CurrentTimestamp.LocalFrame - Timestamp.LocalFrame) / 2) : 0;
+
+	const int32 NewOffset = FMath::Max(LocalToServerAsyncPhysicsTickOffset,Timestamp.ServerFrame - Timestamp.LocalFrame + FrameOffset); //The new offset as reported by the server
 	LocalToServerAsyncPhysicsTickOffset = NewOffset;
 }
 
@@ -6158,7 +6203,7 @@ void APlayerController::AsyncPhysicsTickActor(float DeltaTime, float SimTime)
 {
 	Super::AsyncPhysicsTickActor(DeltaTime, SimTime);
 
-	if(NetworkPhysicsCvars::EnableNetworkPhysicsPrediction)
+	if(UPhysicsSettings::Get()->PhysicsPrediction.bEnablePhysicsPrediction)
 	{
 		//TODO: only kick this off if server and using this feature
 		if (IsLocalController()) { return; }
@@ -6171,19 +6216,9 @@ void APlayerController::AsyncPhysicsTickActor(float DeltaTime, float SimTime)
 
 		const FAsyncPhysicsTimestamp ActualTimestamp = GetAsyncPhysicsTimestamp();
 
-		//If the pending timestamp is bigger than the server frame we simple wait, otherwise make sure they aren't too early
-		if (ServerPendingTimestamps[0].ServerFrame <= ActualTimestamp.ServerFrame)
-		{
-			if (ServerPendingTimestamps[0].ServerFrame < ActualTimestamp.ServerFrame)
-			{
-				//The earliest pending client timestamp is too early, so their offset must be bigger than they thought
-				ServerLatestTimestampToCorrect.ServerFrame = ActualTimestamp.ServerFrame;
-				ServerLatestTimestampToCorrect.LocalFrame = ServerPendingTimestamps[0].LocalFrame;	//The client's local frame stays the same there's just a mismatch on the server frame
-			}
-
-			ServerPendingTimestamps.RemoveAt(0);	//We've updated the client if needed, so can discard
-			//NOTE: we purposely don't fixup any future pending client timestamps. This is because the RPC is unreliable so it's best to send the error correction redundantly over multiple frames if needed
-		}
+		ServerLatestTimestampToCorrect.ServerFrame = ActualTimestamp.ServerFrame;
+		ServerLatestTimestampToCorrect.LocalFrame = ServerPendingTimestamps[0].LocalFrame;
+		ServerPendingTimestamps.Reset();
 	}
 }
 

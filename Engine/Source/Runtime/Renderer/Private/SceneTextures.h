@@ -16,10 +16,10 @@ class FViewFamilyInfo;
 extern RENDERER_API void InitializeSceneTexturesConfig(FSceneTexturesConfig& Config, const FSceneViewFamily& ViewFamily);
 
 /** RDG struct containing the minimal set of scene textures common across all rendering configurations. */
-struct RENDERER_API FMinimalSceneTextures
+struct FMinimalSceneTextures
 {
 	// Initializes the minimal scene textures structure in the FViewFamilyInfo
-	static void InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamilyInfo& ViewFamily);
+	static RENDERER_API void InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamilyInfo& ViewFamily);
 
 	// Immutable copy of the config used to create scene textures.
 	FSceneTexturesConfig Config;
@@ -41,28 +41,31 @@ struct RENDERER_API FMinimalSceneTextures
 	// Texture containing a stencil view of the resolved (if MSAA) scene depth. 
 	FRDGTextureSRVRef Stencil{};
 
+	// Textures containing primary depth buffer copied before other meshes are rendered in the secondary depth pass.
+	FRDGTextureMSAA PartialDepth{};
+
 	// Textures containing depth / stencil information from the custom depth pass.
 	FCustomDepthTextures CustomDepth{};
 
-	FSceneTextureShaderParameters GetSceneTextureShaderParameters(ERHIFeatureLevel::Type FeatureLevel) const;
+	RENDERER_API FSceneTextureShaderParameters GetSceneTextureShaderParameters(ERHIFeatureLevel::Type FeatureLevel) const;
 };
 
 /** RDG struct containing the complete set of scene textures for the deferred or mobile renderers. */
-struct RENDERER_API FSceneTextures : public FMinimalSceneTextures
+struct FSceneTextures : public FMinimalSceneTextures
 {
 	// Initializes the scene textures structure in the FViewFamilyInfo
-	static void InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamilyInfo& ViewFamily);
+	static RENDERER_API void InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamilyInfo& ViewFamily);
+	static RENDERER_API EPixelFormat GetGBufferFFormatAndCreateFlags(ETextureCreateFlags& OutCreateFlags);
 
 	// Configures an array of render targets for the GBuffer pass.
-	uint32 GetGBufferRenderTargets(
-		TStaticArray<FTextureRenderTargetBinding,
-		MaxSimultaneousRenderTargets>& RenderTargets,
+	RENDERER_API uint32 GetGBufferRenderTargets(
+		TArrayView<FTextureRenderTargetBinding> RenderTargets,
 		EGBufferLayout Layout = GBL_Default) const;
-	uint32 GetGBufferRenderTargets(
+	RENDERER_API uint32 GetGBufferRenderTargets(
 		ERenderTargetLoadAction LoadAction,
 		FRenderTargetBindingSlots& RenderTargets,
 		EGBufferLayout Layout = GBL_Default) const;
-
+	
 	// (Deferred) Texture containing conservative downsampled depth for occlusion.
 	FRDGTextureRef SmallDepth{};
 
@@ -79,6 +82,10 @@ struct RENDERER_API FSceneTextures : public FMinimalSceneTextures
 
 	// Texture containing dynamic motion vectors. Can be bound by the base pass or its own velocity pass.
 	FRDGTextureRef Velocity{};
+	
+	// (Mobile Local Light Prepass) Textures containing LocalLight Direction and Color
+	FRDGTextureRef MobileLocalLightTextureA {};
+	FRDGTextureRef MobileLocalLightTextureB {};
 
 	// Texture containing the screen space ambient occlusion result.
 	FRDGTextureRef ScreenSpaceAO{};
@@ -98,35 +105,3 @@ struct RENDERER_API FSceneTextures : public FMinimalSceneTextures
 
 /** Extracts scene textures into the global extraction instance. */
 void QueueSceneTextureExtractions(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
-
-/** Utility functions for accessing common global scene texture configuration state. Reads a bit less awkwardly than the singleton access. */
-
-UE_DEPRECATED(5.1, "Single pass multiple view family rendering makes this obsolete.  Use ViewFamily.SceneTexturesConfig.NumSamples instead.")
-inline uint32 GetSceneTextureNumSamples()
-{
-	return FSceneTexturesConfig::Get().NumSamples;
-}
-
-UE_DEPRECATED(5.1, "Single pass multiple view family rendering makes this obsolete.  Use ViewFamily.SceneTexturesConfig.EditorPrimitiveNumSamples instead.")
-inline uint32 GetEditorPrimitiveNumSamples()
-{
-	return FSceneTexturesConfig::Get().EditorPrimitiveNumSamples;
-}
-
-UE_DEPRECATED(5.1, "Single pass multiple view family rendering makes this obsolete.  Use ViewFamily.SceneTexturesConfig.DepthClearValue instead.")
-inline FClearValueBinding GetSceneDepthClearValue()
-{
-	return FSceneTexturesConfig::Get().DepthClearValue;
-}
-
-UE_DEPRECATED(5.1, "Single pass multiple view family rendering makes this obsolete.  Use ViewFamily.SceneTexturesConfig.ColorClearValue instead.")
-inline FClearValueBinding GetSceneColorClearValue()
-{
-	return FSceneTexturesConfig::Get().ColorClearValue;
-}
-
-UE_DEPRECATED(5.1, "Single pass multiple view family rendering makes this obsolete.  Use ViewFamily.SceneTexturesConfig.ColorFormat instead.")
-inline EPixelFormat GetSceneColorFormat()
-{
-	return FSceneTexturesConfig::Get().ColorFormat;
-}

@@ -32,9 +32,6 @@ static const bool GD3D12SkipStateCaching = false;
 extern int32 GGlobalResourceDescriptorHeapSize;
 extern int32 GGlobalSamplerDescriptorHeapSize;
 
-extern int32 GBindlessResourceDescriptorHeapSize;
-extern int32 GBindlessSamplerDescriptorHeapSize;
-
 extern int32 GGlobalSamplerHeapSize;
 extern int32 GOnlineDescriptorHeapSize;
 extern int32 GOnlineDescriptorHeapBlockSize;
@@ -200,12 +197,12 @@ struct FD3D12ShaderResourceViewCache : public FD3D12ResourceCache<SRVSlotMask>
 		{
 			for (int32 SRVIdx = 0; SRVIdx < MAX_SRVS; ++SRVIdx)
 			{
-				Views[FrequencyIdx][SRVIdx].SafeRelease();
+				Views[FrequencyIdx][SRVIdx] = nullptr;
 			}
 		}
 	}
 
-	TRefCountPtr<FD3D12ShaderResourceView> Views[SF_NumStandardFrequencies][MAX_SRVS];
+	FD3D12ShaderResourceView* Views[SF_NumStandardFrequencies][MAX_SRVS];
 	FD3D12ResidencyHandle* ResidencyHandles[SF_NumStandardFrequencies][MAX_SRVS];
 
 	SRVSlotMask BoundMask[SF_NumStandardFrequencies];
@@ -289,7 +286,6 @@ protected:
 
 	bool bNeedSetVB = true;
 	bool bNeedSetRTs = true;
-	bool bNeedSetSOs = true;
 	bool bNeedSetViewports = true;
 	bool bNeedSetScissorRects = true;
 	bool bNeedSetPrimitiveTopology = true;
@@ -331,11 +327,6 @@ protected:
 
 			// Vertex Buffer State
 			FD3D12VertexBufferCache VBCache = {};
-
-			// SO
-			uint32			CurrentNumberOfStreamOutTargets = 0;
-			FD3D12Resource* CurrentStreamOutTargets[D3D12_SO_STREAM_COUNT] = {};
-			uint32			CurrentSOOffsets       [D3D12_SO_STREAM_COUNT] = {};
 
 			// Index Buffer State
 			FD3D12IndexBufferCache IBCache = {};

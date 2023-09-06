@@ -18,6 +18,8 @@
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
 
+#include "GPUSkinPublicDefs.h"
+
 
 namespace mu
 {
@@ -535,25 +537,39 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	MeshPtr MeshFormat
+	void MeshFormat
 	(
+		Mesh* Result, 
 		const Mesh* pPureSource,
 		const Mesh* pFormat,
 		bool keepSystemBuffers,
 		bool formatVertices,
 		bool formatIndices,
 		bool formatFaces,
-		bool ignoreMissingChannels
+		bool ignoreMissingChannels,
+		bool& bOutSuccess
 	)
 	{
 		MUTABLE_CPUPROFILER_SCOPE(MeshFormat);
+		bOutSuccess = true;
 
-		if (!pPureSource) { return nullptr; }
-		if (!pFormat) { return pPureSource->Clone(); }
+		if (!pPureSource) 
+		{
+			check(false);
+			bOutSuccess = false;	
+			return;
+		}
 
-		MeshPtrConst pSource = pPureSource;
+		if (!pFormat)
+		{
+			check(false);
+			bOutSuccess = false;
+			return;
+		}
 
-		MeshPtr pResult = pFormat->Clone();
+		Ptr<const Mesh> pSource = pPureSource;
+
+		Result->CopyFrom(*pFormat);
 
 		// Make sure that the bone indices will fit in this format, or extend it.
 		if (formatVertices)
@@ -572,7 +588,7 @@ namespace mu
 					{
 						int resultBuf = 0;
 						int resultChan = 0;
-						FMeshBufferSet& formBuffs = pResult->GetVertexBuffers();
+						FMeshBufferSet& formBuffs = Result->GetVertexBuffers();
 						formBuffs.FindChannel(MBS_BONEINDICES, Channel.m_semanticIndex, &resultBuf, &resultChan);
 						if (resultBuf >= 0)
 						{
@@ -580,7 +596,9 @@ namespace mu
 							int32_t maxBoneIndex = 0;
 							for (int v = 0; v < VertexBuffers.GetElementCount(); ++v)
 							{
-								vec<int32_t, 8> va = it.GetAsVec8i();
+								// If MAX_TOTAL_INFLUENCES ever changed, the next line would no longer work or compile and 
+								// GetAsVec12i would need to be changed accordingly
+								vec<int32_t, MAX_TOTAL_INFLUENCES> va = it.GetAsVec12i();
 								for (int c = 0; c < it.GetComponents(); ++c)
 								{
 									maxBoneIndex = FMath::Max(maxBoneIndex, va[c]);
@@ -622,60 +640,61 @@ namespace mu
 		if (formatVertices)
 		{
 
-			FormatBufferSet(pSource->GetVertexBuffers(), pResult->GetVertexBuffers(),
+			FormatBufferSet(pSource->GetVertexBuffers(), Result->GetVertexBuffers(),
 				keepSystemBuffers, ignoreMissingChannels, true);
 		}
 		else
 		{
-			pResult->m_VertexBuffers = pSource->GetVertexBuffers();
+			Result->m_VertexBuffers = pSource->GetVertexBuffers();
 		}
 
 		if (formatIndices)
 		{
-			FormatBufferSet(pSource->GetIndexBuffers(), pResult->GetIndexBuffers(), keepSystemBuffers,
+			FormatBufferSet(pSource->GetIndexBuffers(), Result->GetIndexBuffers(), keepSystemBuffers,
 				ignoreMissingChannels, false);
 		}
 		else
 		{
-			pResult->m_IndexBuffers = pSource->GetIndexBuffers();
+			Result->m_IndexBuffers = pSource->GetIndexBuffers();
 		}
 
 		if (formatFaces)
 		{
 			FormatBufferSet(pSource->GetFaceBuffers(),
-				pResult->GetFaceBuffers(),
+				Result->GetFaceBuffers(),
 				keepSystemBuffers,
 				ignoreMissingChannels,
 				false);
 		}
 		else
 		{
-			pResult->m_FaceBuffers = pSource->GetFaceBuffers();
+			Result->m_FaceBuffers = pSource->GetFaceBuffers();
 		}
 
 		// Copy the rest of the data
-		pResult->SetSkeleton(pSource->GetSkeleton());
-		pResult->SetPhysicsBody(pSource->GetPhysicsBody());
+		Result->SetSkeleton(pSource->GetSkeleton());
+		Result->SetPhysicsBody(pSource->GetPhysicsBody());
 
-		pResult->m_layouts.Empty();
+		Result->m_layouts.Empty();
 		for (const Ptr<const Layout>& Layout : pSource->m_layouts)
 		{
-			pResult->m_layouts.Add(Layout->Clone());
+			Result->m_layouts.Add(Layout->Clone());
 		}
 
-		pResult->ResetStaticFormatFlags();
-		pResult->EnsureSurfaceData();
+		Result->m_tags = pSource->m_tags;
 
-		pResult->m_tags = pSource->m_tags;
+		Result->m_AdditionalBuffers = pSource->m_AdditionalBuffers;
 
-		pResult->m_AdditionalBuffers = pSource->m_AdditionalBuffers;
+		Result->BonePoses = pSource->BonePoses;
+		Result->BoneMap = pSource->BoneMap;
 
-		pResult->BonePoses = pSource->BonePoses;
+		Result->SkeletonIDs = pSource->SkeletonIDs;
 
-		pResult->SkeletonIDs = pSource->SkeletonIDs;
+		// A shallow copy is done here, it should not be a problem.
+		Result->AdditionalPhysicsBodies = pSource->AdditionalPhysicsBodies;
 
-		return pResult;
-
+		Result->ResetStaticFormatFlags();
+		Result->EnsureSurfaceData();
 	}
 
 }

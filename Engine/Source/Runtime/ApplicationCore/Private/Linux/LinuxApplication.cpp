@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Linux/LinuxApplication.h"
-
+#include "Null/NullApplication.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/StringUtility.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/App.h"
 #include "Features/IModularFeatures.h"
 #include "Linux/LinuxPlatformApplicationMisc.h"
+#include "Null/NullPlatformApplicationMisc.h"
 #include "IInputDeviceModule.h"
 #include "IHapticDevice.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
@@ -793,10 +794,27 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 
 				case SDL_WINDOWEVENT_MOVED:
 					{
-						// Mask away the higher bits, as SDL uses those as flags
+						// Mask away the higher bits (but preserve negative flags), as SDL uses those as flags
 						// See: SDL_WINDOWPOS_UNDEFINED_MASK & SDL_WINDOWPOS_CENTERED_MASK for context
-						int32 ClientScreenX = windowEvent.data1 & 0xFFFF;
-						int32 ClientScreenY = windowEvent.data2 & 0xFFFF;
+						int32 ClientScreenX;
+						int32 ClientScreenY;
+
+						if (windowEvent.data1 < 0)
+						{
+							ClientScreenX = -(-windowEvent.data1 & 0xFFFF);
+						}
+						else
+						{
+							ClientScreenX = windowEvent.data1 & 0xFFFF;
+						}
+						if (windowEvent.data2 < 0)
+						{
+							ClientScreenY = -(-windowEvent.data2 & 0xFFFF);
+						}
+						else
+						{
+							ClientScreenY = windowEvent.data2 & 0xFFFF;
+						}
 
 						int32 BorderSizeX, BorderSizeY;
 						CurrentEventWindow->GetNativeBordersSize(BorderSizeX, BorderSizeY);
@@ -814,6 +832,10 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 								RaiseNotificationWindows(CurrentEventWindow);
 							}
 						}
+
+						// Mouse dragging is the likely cause of this window move, so invalidate the cached cursor position
+						FLinuxCursor *LinuxCursor = static_cast<FLinuxCursor*>(Cursor.Get());
+						LinuxCursor->InvalidateCaches();
 					}
 					break;
 
@@ -1496,7 +1518,7 @@ void FLinuxApplication::SetHighPrecisionMouseMode( const bool Enable, const TSha
 void FLinuxApplication::RefreshDisplayCache()
 {
 	const double kCacheLifetime = 5.0;	// ask once in 5 seconds
-	
+
 	double CurrentTime = FPlatformTime::Seconds();
 	if (CurrentTime - LastTimeCachedDisplays > kCacheLifetime)
 	{
@@ -1506,10 +1528,10 @@ void FLinuxApplication::RefreshDisplayCache()
 
 		for (int DisplayIdx = 0; DisplayIdx < NumDisplays; ++DisplayIdx)
 		{
-			SDL_Rect DisplayBounds;
-			SDL_GetDisplayBounds(DisplayIdx, &DisplayBounds);
-			
-			CachedDisplays.Add(DisplayBounds);
+			SDL_Rect UsableBounds;
+			SDL_GetDisplayUsableBounds(DisplayIdx, &UsableBounds);
+
+			CachedDisplays.Add(UsableBounds);
 		}
 
 		LastTimeCachedDisplays = CurrentTime;
@@ -1556,104 +1578,111 @@ FPlatformRect FLinuxApplication::GetWorkArea( const FPlatformRect& CurrentWindow
 
 void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 {
-	int NumDisplays = 0;
-
-	if (LIKELY(FApp::CanEverRender()))
+	if (FNullPlatformApplicationMisc::IsUsingNullApplication())
 	{
-		if (FLinuxPlatformApplicationMisc::InitSDL()) //	will not initialize more than once
-		{
-			NumDisplays = SDL_GetNumVideoDisplays();
-		}
-		else
-		{
-			UE_LOG(LogInit, Warning, TEXT("FDisplayMetrics::GetDisplayMetrics: InitSDL() failed, cannot get display metrics"));
-		}
+		FNullPlatformDisplayMetrics::RebuildDisplayMetrics(OutDisplayMetrics);
 	}
-
-	OutDisplayMetrics.MonitorInfo.Empty();
-
-	if (NumDisplays <= 0)
+	else
 	{
-		if (IsRunningDedicatedServer())
-		{
-			// dedicated servers has always been exiting early
-			OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FPlatformRect(0, 0, 0, 0);
-			OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
-			OutDisplayMetrics.PrimaryDisplayWidth = 0;
-			OutDisplayMetrics.PrimaryDisplayHeight = 0;
+		int NumDisplays = 0;
 
-			return;
+		if (LIKELY(FApp::CanEverRender()))
+		{
+			if (FLinuxPlatformApplicationMisc::InitSDL()) //	will not initialize more than once
+			{
+				NumDisplays = SDL_GetNumVideoDisplays();
+			}
+			else
+			{
+				UE_LOG(LogInit, Warning, TEXT("FDisplayMetrics::GetDisplayMetrics: InitSDL() failed, cannot get display metrics"));
+			}
 		}
-		else
-		{
-			// headless clients need some plausible values because high level logic depends on viewport sizes not being 0 (see e.g. UnrealClient.cpp)
-			int32 Width = 1920;
-			int32 Height = 1080;
 
+		OutDisplayMetrics.MonitorInfo.Empty();
+
+		if (NumDisplays <= 0)
+		{
+			if (IsRunningDedicatedServer())
+			{
+				// dedicated servers has always been exiting early
+				OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FPlatformRect(0, 0, 0, 0);
+				OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
+				OutDisplayMetrics.PrimaryDisplayWidth = 0;
+				OutDisplayMetrics.PrimaryDisplayHeight = 0;
+
+				return;
+			}
+			else
+			{
+				// headless clients need some plausible values because high level logic depends on viewport sizes not being 0 (see e.g. UnrealClient.cpp)
+				int32 Width = 1920;
+				int32 Height = 1080;
+
+				FMonitorInfo Display;
+				Display.bIsPrimary = true;
+				if (FPlatformApplicationMisc::IsHighDPIAwarenessEnabled())
+				{
+					Display.DPI = 96;
+				}
+				Display.ID = TEXT("fakedisplay");
+				Display.NativeWidth = Width;
+				Display.NativeHeight = Height;
+				Display.MaxResolution = FIntPoint(Width, Height);
+				Display.DisplayRect = FPlatformRect(0, 0, Width, Height);
+				Display.WorkArea = FPlatformRect(0, 0, Width, Height);
+
+				OutDisplayMetrics.PrimaryDisplayWorkAreaRect = Display.WorkArea;
+				OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
+				OutDisplayMetrics.PrimaryDisplayWidth = Display.NativeWidth;
+				OutDisplayMetrics.PrimaryDisplayHeight = Display.NativeHeight;
+				OutDisplayMetrics.MonitorInfo.Add(Display);
+			}
+		}
+
+		for (int32 DisplayIdx = 0; DisplayIdx < NumDisplays; ++DisplayIdx)
+		{
+			SDL_Rect DisplayBounds, UsableBounds;
 			FMonitorInfo Display;
-			Display.bIsPrimary = true;
+			SDL_GetDisplayBounds(DisplayIdx, &DisplayBounds);
+			SDL_GetDisplayUsableBounds(DisplayIdx, &UsableBounds);
+
+			Display.Name = UTF8_TO_TCHAR(SDL_GetDisplayName(DisplayIdx));
+			Display.ID = FString::Printf(TEXT("display%d"), DisplayIdx);
+			Display.NativeWidth = DisplayBounds.w;
+			Display.NativeHeight = DisplayBounds.h;
+			Display.MaxResolution = FIntPoint(DisplayBounds.w, DisplayBounds.h);
+			Display.DisplayRect = FPlatformRect(DisplayBounds.x, DisplayBounds.y, DisplayBounds.x + DisplayBounds.w, DisplayBounds.y + DisplayBounds.h);
+			Display.WorkArea = FPlatformRect(UsableBounds.x, UsableBounds.y, UsableBounds.x + UsableBounds.w, UsableBounds.y + UsableBounds.h);
+			Display.bIsPrimary = DisplayIdx == 0;
+
 			if (FPlatformApplicationMisc::IsHighDPIAwarenessEnabled())
 			{
-				Display.DPI = 96;
+				float HorzDPI = 0.0f, VertDPI = 0.0f;
+				if (SDL_GetDisplayDPI(DisplayIdx, nullptr, &HorzDPI, &VertDPI) == 0)
+				{
+					Display.DPI = FMath::FloorToInt((HorzDPI + VertDPI) / 2.0f);
+				}
 			}
-			Display.ID = TEXT("fakedisplay");
-			Display.NativeWidth = Width;
-			Display.NativeHeight = Height;
-			Display.MaxResolution = FIntPoint(Width, Height);
-			Display.DisplayRect = FPlatformRect(0, 0, Width, Height);
-			Display.WorkArea = FPlatformRect(0, 0, Width, Height);
 
-			OutDisplayMetrics.PrimaryDisplayWorkAreaRect = Display.WorkArea;
-			OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
-			OutDisplayMetrics.PrimaryDisplayWidth = Display.NativeWidth;
-			OutDisplayMetrics.PrimaryDisplayHeight = Display.NativeHeight;
 			OutDisplayMetrics.MonitorInfo.Add(Display);
-		}
-	}
 
-	for (int32 DisplayIdx = 0; DisplayIdx < NumDisplays; ++DisplayIdx)
-	{
-		SDL_Rect DisplayBounds, UsableBounds;
-		FMonitorInfo Display;
-		SDL_GetDisplayBounds(DisplayIdx, &DisplayBounds);
-		SDL_GetDisplayUsableBounds(DisplayIdx, &UsableBounds);
-
-		Display.Name = UTF8_TO_TCHAR(SDL_GetDisplayName(DisplayIdx));
-		Display.ID = FString::Printf(TEXT("display%d"), DisplayIdx);
-		Display.NativeWidth = DisplayBounds.w;
-		Display.NativeHeight = DisplayBounds.h;
-		Display.MaxResolution = FIntPoint(DisplayBounds.w, DisplayBounds.h);
-		Display.DisplayRect = FPlatformRect(DisplayBounds.x, DisplayBounds.y, DisplayBounds.x + DisplayBounds.w, DisplayBounds.y + DisplayBounds.h);
-		Display.WorkArea = FPlatformRect(UsableBounds.x, UsableBounds.y, UsableBounds.x + UsableBounds.w, UsableBounds.y + UsableBounds.h);
-		Display.bIsPrimary = DisplayIdx == 0;
-
-		if (FPlatformApplicationMisc::IsHighDPIAwarenessEnabled())
-		{
-			float HorzDPI = 0.0f, VertDPI = 0.0f;
-			if (SDL_GetDisplayDPI(DisplayIdx, nullptr, &HorzDPI, &VertDPI) == 0)
+			if (Display.bIsPrimary)
 			{
-				Display.DPI = FMath::FloorToInt((HorzDPI + VertDPI) / 2.0f);
+				OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FPlatformRect(UsableBounds.x, UsableBounds.y, UsableBounds.x + UsableBounds.w, UsableBounds.y + UsableBounds.h);
+
+				OutDisplayMetrics.PrimaryDisplayWidth = DisplayBounds.w;
+				OutDisplayMetrics.PrimaryDisplayHeight = DisplayBounds.h;
+
+				OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
 			}
-		}
-
-		OutDisplayMetrics.MonitorInfo.Add(Display);
-
-		if (Display.bIsPrimary)
-		{
-			OutDisplayMetrics.PrimaryDisplayWorkAreaRect = FPlatformRect(UsableBounds.x, UsableBounds.y, UsableBounds.x + UsableBounds.w, UsableBounds.y + UsableBounds.h);
-
-			OutDisplayMetrics.PrimaryDisplayWidth = DisplayBounds.w;
-			OutDisplayMetrics.PrimaryDisplayHeight = DisplayBounds.h;
-
-			OutDisplayMetrics.VirtualDisplayRect = OutDisplayMetrics.PrimaryDisplayWorkAreaRect;
-		}
-		else
-		{
-			// accumulate the total bound rect
-			OutDisplayMetrics.VirtualDisplayRect.Left = FMath::Min(DisplayBounds.x, OutDisplayMetrics.VirtualDisplayRect.Left);
-			OutDisplayMetrics.VirtualDisplayRect.Right = FMath::Max(OutDisplayMetrics.VirtualDisplayRect.Right, DisplayBounds.x + DisplayBounds.w);
-			OutDisplayMetrics.VirtualDisplayRect.Top = FMath::Min(DisplayBounds.y, OutDisplayMetrics.VirtualDisplayRect.Top);
-			OutDisplayMetrics.VirtualDisplayRect.Bottom = FMath::Max(OutDisplayMetrics.VirtualDisplayRect.Bottom, DisplayBounds.y + DisplayBounds.h);
+			else
+			{
+				// accumulate the total bound rect
+				OutDisplayMetrics.VirtualDisplayRect.Left = FMath::Min(DisplayBounds.x, OutDisplayMetrics.VirtualDisplayRect.Left);
+				OutDisplayMetrics.VirtualDisplayRect.Right = FMath::Max(OutDisplayMetrics.VirtualDisplayRect.Right, DisplayBounds.x + DisplayBounds.w);
+				OutDisplayMetrics.VirtualDisplayRect.Top = FMath::Min(DisplayBounds.y, OutDisplayMetrics.VirtualDisplayRect.Top);
+				OutDisplayMetrics.VirtualDisplayRect.Bottom = FMath::Max(OutDisplayMetrics.VirtualDisplayRect.Bottom, DisplayBounds.y + DisplayBounds.h);
+			}
 		}
 	}
 
@@ -2021,8 +2050,6 @@ void FLinuxApplication::SetForceFeedbackChannelValues(int32 ControllerId, const 
 	// send vibration to externally-implemented devices
 	for (auto DeviceIt = ExternalInputDevices.CreateIterator(); DeviceIt; ++DeviceIt)
 	{
-		// *N.B 06/20/2016*: Ideally, we would want to use GetHapticDevice instead
-		// but they're not implemented for SteamController and SteamVRController
 		if ((*DeviceIt)->IsGamepadAttached())
 		{
 			(*DeviceIt)->SetChannelValues(ControllerId, Values);

@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraMessages.h"
+#include "NiagaraMessageStore.h"
 #include "NiagaraNodeWithDynamicPins.h"
 #include "NiagaraNodeInput.h"
 #include "UpgradeNiagaraScriptResults.h"
@@ -105,7 +106,7 @@ public:
 	//End UObject interface
 
 	//~ Begin UNiagaraNode Interface
-	virtual void Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs) override;
+	virtual void Compile(FTranslator* Translator, TArray<int32>& Outputs) const override;
 	virtual UObject* GetReferencedAsset() const override;
 	virtual void OpenReferencedAsset() const override;
 	virtual bool RefreshFromExternalChanges() override;
@@ -114,6 +115,7 @@ public:
 	virtual void GatherExternalDependencyData(ENiagaraScriptUsage InUsage, const FGuid& InUsageId, TArray<FNiagaraCompileHash>& InReferencedCompileHashes, TArray<FString>& InReferencedObjs) const override;
 	virtual void UpdateCompileHashForNode(FSHA1& HashState) const override;
 	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
+	virtual TSharedRef<SWidget> CreateTitleRightWidget() override;
 	//End UNiagaraNode interface
 
 	virtual void UpdateReferencedStaticsHashForNode(FSHA1& HashState) const;
@@ -129,10 +131,14 @@ public:
 	virtual bool IsDeprecated() const override;
 	//~ End EdGraphNode Interface
 
+	//~ Begin UNiagaraNodeWithDynamicPins Interface
+	virtual void CollectAddPinActions(FNiagaraMenuActionCollector& Collector, UEdGraphPin* AddPin) const override;
+	//~ End UNiagaraNodeWithDynamicPins Interface
+
 	/** When overriding an input value, this updates which variable guid was bound to which input name, so it can be reassigned when the input is renamed.*/
 	void UpdateInputNameBinding(const FGuid& BoundVariableGuid, const FName& BoundName);
 
-	bool FindAutoBoundInput(UNiagaraNodeInput* InputNode, UEdGraphPin* PinToAutoBind, FNiagaraVariable& OutFoundVar, ENiagaraInputNodeUsage& OutNodeUsage);
+	bool FindAutoBoundInput(const UNiagaraNodeInput* InputNode, const UEdGraphPin* PinToAutoBind, FNiagaraVariable& OutFoundVar, ENiagaraInputNodeUsage& OutNodeUsage) const;
 
 	virtual void BuildParameterMapHistory(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive = true, bool bFilterForCompilation = true) const override;
 
@@ -172,16 +178,13 @@ public:
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
 
 	// Messages API
-	NIAGARAEDITOR_API const auto& GetMessages() const { return MessageKeyToMessageMap; };
-	NIAGARAEDITOR_API void AddMessage(const FGuid& MessageKey, UNiagaraMessageData* NewMessage) { MessageKeyToMessageMap.Add(MessageKey, NewMessage); };
-	NIAGARAEDITOR_API void RemoveMessage(const FGuid& MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
-	void RemoveMessageDelegateable(const FGuid MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
+	FNiagaraMessageStore& GetMessageStore() { return MessageStore; }
 
 	// Custom Notes API
-	NIAGARAEDITOR_API const TArray<FNiagaraStackMessage>& GetCustomNotes() const { return StackMessages; };
+	const TArray<FNiagaraStackMessage>& GetCustomNotes() const { return StackMessages; };
 	NIAGARAEDITOR_API void AddCustomNote(const FNiagaraStackMessage& StackMessage);
 	NIAGARAEDITOR_API void RemoveCustomNote(const FGuid& MessageKey);
-	NIAGARAEDITOR_API FSimpleDelegate& OnCustomNotesChanged() { return OnCustomNotesChangedDelegate; }
+	FSimpleDelegate& OnCustomNotesChanged() { return OnCustomNotesChangedDelegate; }
 	void RemoveCustomNoteViaDelegate(const FGuid MessageKey);
 	TArray<FGuid> GetBoundPinGuidsByName(FName InputName) const;
 
@@ -189,11 +192,11 @@ public:
 		orphaned. This allows a previously available static switch value to be retained on the node even if the the switch is no longer exposed. */
 	void AddOrphanedStaticSwitchPinForDataRetention(FNiagaraVariableBase StaticSwitchVariable, const FString& StaticSwitchPinDefault);
 
+	virtual bool GetValidateDataInterfaces() const { return true; };
+
 	void RemoveAllDynamicPins();
 protected:
 	UEdGraphPin* AddStaticSwitchInputPin(FNiagaraVariable Input);
-
-	virtual bool GetValidateDataInterfaces() const { return true; };
 
 	virtual bool AllowDynamicPins() const override { return Signature.VariadicInput() || Signature.VariadicOutput(); }
 	virtual bool CanModifyPin(const UEdGraphPin* Pin) const override;
@@ -239,7 +242,10 @@ protected:
 	/* Marking those properties explicitly as editoronly_data will make localization not pick these up. */
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(meta = (SkipForCompileHash="true"))
-	TMap<FGuid, TObjectPtr<UNiagaraMessageData>> MessageKeyToMessageMap;
+	TMap<FGuid, TObjectPtr<UNiagaraMessageData>> MessageKeyToMessageMap_DEPRECATED;
+
+	UPROPERTY(meta = (SkipForCompileHash="true"))
+	FNiagaraMessageStore MessageStore;
 	
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	TArray<FNiagaraStackMessage> StackMessages;

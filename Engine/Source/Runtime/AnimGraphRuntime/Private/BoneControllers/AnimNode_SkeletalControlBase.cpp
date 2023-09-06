@@ -3,6 +3,7 @@
 #include "BoneControllers/AnimNode_SkeletalControlBase.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "Engine/SkeletalMeshSocket.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SkeletalControlBase)
@@ -119,6 +120,7 @@ void FAnimNode_SkeletalControlBase::EvaluateComponentSpaceInternal(FComponentSpa
 void FAnimNode_SkeletalControlBase::EvaluateComponentSpace_AnyThread(FComponentSpacePoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateComponentSpace_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(SkeletalControlBase, !IsInGameThread());
 
 	// Cache the incoming node IDs in a base context
 	FAnimationBaseContext CachedContext(Output);

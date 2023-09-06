@@ -23,6 +23,7 @@ class USkeleton;
 DECLARE_DELEGATE( FOnPreAnimUpdate )
 DECLARE_DELEGATE( FOnPostAnimUpdate )
 DECLARE_DELEGATE_OneParam( FOnAnimSegmentNodeClicked, int32 )
+DECLARE_DELEGATE_OneParam( FOnAnimSegmentNodeDoubleClicked, int32)
 DECLARE_DELEGATE_OneParam( FOnAnimSegmentRemoved, int32 )
 DECLARE_DELEGATE_FourParams( FOnAnimReplaceMapping, FName, int32, UAnimSequenceBase*, UAnimSequenceBase*)
 DECLARE_DELEGATE_RetVal_ThreeParams(bool, FOnDiffFromParentAsset, FName, int32, const FAnimSegment& )
@@ -73,11 +74,13 @@ public:
 	SLATE_ATTRIBUTE(int32, TrackNumDiscreteValues)
 
 	SLATE_EVENT(FOnAnimSegmentNodeClicked, OnAnimSegmentNodeClicked)
+	SLATE_EVENT(FOnAnimSegmentNodeDoubleClicked, OnAnimSegmentNodeDoubleClicked)
 	SLATE_EVENT(FOnPreAnimUpdate, OnPreAnimUpdate)
 	SLATE_EVENT(FOnPostAnimUpdate, OnPostAnimUpdate)
 	SLATE_EVENT(FOnAnimSegmentRemoved, OnAnimSegmentRemoved)
 	SLATE_EVENT(FOnAnimReplaceMapping, OnAnimReplaceMapping)
 	SLATE_EVENT(FOnDiffFromParentAsset, OnDiffFromParentAsset)
+	SLATE_EVENT(FIsAnimAssetValid, OnIsAnimAssetValid)
 
 	SLATE_EVENT( FOnBarDrag,				OnBarDrag)
 	SLATE_EVENT( FOnBarDrop,				OnBarDrop)
@@ -98,13 +101,14 @@ public:
 
 private:
 
-	FOnPreAnimUpdate			OnPreAnimUpdateDelegate;
-	FOnPostAnimUpdate			OnPostAnimUpdateDelegate;
-	FOnAnimSegmentNodeClicked	OnAnimSegmentNodeClickedDelegate;
-	FOnAnimSegmentRemoved		OnAnimSegmentRemovedDelegate;
-	FOnAnimReplaceMapping		OnAnimReplaceMapping;
-	FOnDiffFromParentAsset		OnDiffFromParentAsset;
-	FOnGetNodeColor				OnGetNodeColor;
+	FOnPreAnimUpdate				OnPreAnimUpdateDelegate;
+	FOnPostAnimUpdate				OnPostAnimUpdateDelegate;
+	FOnAnimSegmentNodeClicked		OnAnimSegmentNodeClickedDelegate;
+	FOnAnimSegmentNodeDoubleClicked OnAnimSegmentNodeDoubleClickedDelegate;
+	FOnAnimSegmentRemoved			OnAnimSegmentRemovedDelegate;
+	FOnAnimReplaceMapping			OnAnimReplaceMapping;
+	FOnDiffFromParentAsset			OnDiffFromParentAsset;
+	FOnGetNodeColor					OnGetNodeColor;
 
 	enum ETrackViewStyle
 	{
@@ -128,9 +132,11 @@ private:
 	void				SummonSegmentNodeContextMenu( FMenuBuilder& MenuBuilder, int32 AnimSegmentIndex );
 
 	void				AddAnimSegment(UAnimSequenceBase *NewSequenceBase, float NewStartPos );
-	bool				IsValidToAdd(UAnimSequenceBase* NewSequenceBase) const;
+	bool				IsValidToAdd(UAnimSequenceBase* NewSequenceBase, FText* OutReason = nullptr) const;
 	void				OnTrackDragDrop( TSharedPtr<FDragDropOperation> DragDropOp, float DataPos );
+	bool				OnAssetDragDrop(TSharedPtr<FAssetDragDropOp> AssetDragDropOp);
 	void				OnAnimSegmentNodeClicked(int32 SegmentIdx);
+	void				OnAnimSegmentNodeDoubleClicked(int32 SegmentIdx);
 
 	// child anim montage
 	void				ReplaceAnimSegment(UAnimSequenceBase* NewSequenceBase, float NewStartPos);
@@ -170,6 +176,7 @@ private:
 
 	TAttribute<FLinearColor> DefaultNodeColor;
 
+	FIsAnimAssetValid OnIsAnimAssetValid;
  	/* 
 	 * Child Anim Montage: Child Anim Montage only can replace name of animations, and no other meaningful edits 
 	 * as it will derive every data from Parent. There might be some other data that will allow to be replaced, but for now, it is

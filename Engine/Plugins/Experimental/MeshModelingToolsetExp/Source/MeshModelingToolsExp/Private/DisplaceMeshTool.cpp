@@ -21,6 +21,7 @@
 #include "Operations/UniformTessellate.h"
 #include "Operations/SelectiveTessellate.h"
 #include "Materials/MaterialInterface.h"
+#include "Properties/MeshStatisticsProperties.h"
 
 // needed to disable normals recalculation on the underlying asset
 #include "AssetUtils/MeshDescriptionUtil.h"
@@ -1062,6 +1063,10 @@ void UDisplaceMeshTool::Setup()
 
 	Subdivider = MakeUnique<FSubdivideMeshOpFactory>(OriginalMesh, SubParameters, CommonProperties->SubdivisionType);
 
+	MeshStatistics = NewObject<UMeshStatisticsProperties>(this);
+	MeshStatistics->Update(OriginalMesh);
+	AddToolPropertySource(MeshStatistics);
+
 	StartComputation();
 
 	SetToolDisplayName(LOCTEXT("ToolName", "Displace"));
@@ -1420,6 +1425,8 @@ void UDisplaceMeshTool::AdvanceComputation()
 		SubdividedMesh = TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe>(SubOp->ExtractResult().Release());
 		VerticesToDisplace = TSharedPtr<TArray<int>, ESPMode::ThreadSafe>(SubOpDownCast->ExtractVerticesToDisplace().Release());
 
+		MeshStatistics->Update(*SubdividedMesh);
+
 		delete SubdivideTask;
 		SubdivideTask = nullptr;
 	}
@@ -1437,6 +1444,8 @@ void UDisplaceMeshTool::AdvanceComputation()
 	if (DisplaceTask && DisplaceTask->IsDone())
 	{
 		TUniquePtr<FDynamicMesh3> DisplacedMesh = DisplaceTask->GetTask().ExtractOperator()->ExtractResult();
+		MeshStatistics->Update(*SubdividedMesh);
+
 		delete DisplaceTask;
 		DisplaceTask = nullptr;
 		DynamicMeshComponent->ClearOverrideRenderMaterial();
@@ -1458,12 +1467,22 @@ void UDisplaceMeshTool::UpdateActiveWeightMap()
 	{
 		TSharedPtr<FIndexedWeightMap, ESPMode::ThreadSafe> NewWeightMap = MakeShared<FIndexedWeightMap, ESPMode::ThreadSafe>();
 		const FMeshDescription* MeshDescription = UE::ToolTarget::GetMeshDescription(Target);
-		UE::WeightMaps::GetVertexWeightMap(MeshDescription, CommonProperties->WeightMap, *NewWeightMap, 1.0f);
+		bool bFound = UE::WeightMaps::GetVertexWeightMap(MeshDescription, CommonProperties->WeightMap, *NewWeightMap, 1.0f);
 		if (CommonProperties->bInvertWeightMap)
 		{
 			NewWeightMap->InvertWeightMap();
 		}
-		ActiveWeightMap = NewWeightMap;
+		// We'll check for invalid weightmaps here and reset to None if they aren't valid. This helps in cases where values are set externally,
+		// for example from preset loading, where the weightmap values incoming might not have any relation to the current target mesh.
+		if (bFound)
+		{
+			ActiveWeightMap = NewWeightMap;
+		}
+		else
+		{
+			CommonProperties->WeightMap = FName(CommonProperties->WeightMapsList[0]);
+			ActiveWeightMap = nullptr;
+		}
 	}
 }
 

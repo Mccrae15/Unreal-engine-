@@ -11,6 +11,9 @@ using System.Xml;
 using EpicGames.Core;
 using UnrealBuildTool;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool.Tasks
 {
@@ -48,6 +51,12 @@ namespace AutomationTool.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.TagList)]
 		public string Tag;
+
+		/// <summary>
+		/// Whether or not to throw an error if no files were found to copy
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public bool ErrorIfNotFound = false;
 	}
 
 	/// <summary>
@@ -98,12 +107,19 @@ namespace AutomationTool.Tasks
 			// Check we got some files
 			if(TargetFileToSourceFile.Count == 0)
 			{
-				CommandUtils.LogInformation("No files found matching '{0}'", SourcePattern);
+				if (Parameters.ErrorIfNotFound)
+				{
+					Logger.LogError("No files found matching '{SourcePattern}'", SourcePattern);
+				}
+				else
+				{
+					Logger.LogInformation("No files found matching '{SourcePattern}'", SourcePattern);
+				}
 				return Task.CompletedTask;
 			}
 
 			// Copy them all
-			CommandUtils.LogInformation("Moving {0} file{1} from {2} to {3}...", TargetFileToSourceFile.Count, (TargetFileToSourceFile.Count == 1)? "" : "s", SourcePattern.BaseDirectory, TargetPattern.BaseDirectory);
+			Logger.LogInformation("Moving {Arg0} file{Arg1} from {Arg2} to {Arg3}...", TargetFileToSourceFile.Count, (TargetFileToSourceFile.Count == 1)? "" : "s", SourcePattern.BaseDirectory, TargetPattern.BaseDirectory);
 			CommandUtils.ParallelMoveFiles(TargetFileToSourceFile.Select(x => new KeyValuePair<FileReference, FileReference>(x.Value, x.Key)), Parameters.Overwrite);
 
 			// Update the list of build products

@@ -906,6 +906,11 @@ IAdaptiveStreamSelector::ESegmentAction FABRLiveStream::EvaluateForError(TArray<
 
 			if (!Stats.bWasSuccessful)
 			{
+				if (Stats.bWaitingForRemoteRetryElement)
+				{
+					return IAdaptiveStreamSelector::ESegmentAction::Retry;
+				}
+
 				// If this is the first failure for this segment (not being retried yet) increase
 				// the number of consecutively failed segments.
 				if (Stats.RetryNumber == 0)
@@ -1412,7 +1417,7 @@ IAdaptiveStreamSelector::ESegmentAction FABRLiveStream::PerformSelection(const T
 				}
 			}
 
-			CurrentPlayPeriod->SelectStream(Candidate->AdaptationSetUniqueID, Candidate->RepresentationUniqueID);
+			CurrentPlayPeriod->SelectStream(Candidate->AdaptationSetUniqueID, Candidate->RepresentationUniqueID, Candidate->QualityIndex, Info->GetStreamInformations(StreamType).Num()-1);
 			if (bRetryIfPossible)
 			{
 				return IAdaptiveStreamSelector::ESegmentAction::Retry;

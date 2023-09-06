@@ -3,11 +3,11 @@
 #pragma once
 
 #include "ModelingOperators.h"
+#include "ReferenceSkeleton.h"
 #include "SkeletalMeshAttributes.h"
 
 
 struct FReferenceSkeleton;
-
 
 namespace UE::Geometry
 {
@@ -38,7 +38,7 @@ public:
 	// The transform hierarchy to bind to. Listed in the same order as the bones in the
 	// reference skeleton that this skeletal mesh is tied to.
 	TSharedPtr<FDynamicMesh3, ESPMode::ThreadSafe> OriginalMesh;
-	TArray<TPair<FTransform, int32>> TransformHierarchy;
+	TArray<TPair<FTransform, FMeshBoneInfo>> TransformHierarchy;
 
 	FName ProfileName = FSkeletalMeshAttributes::DefaultSkinWeightProfileName;
 	

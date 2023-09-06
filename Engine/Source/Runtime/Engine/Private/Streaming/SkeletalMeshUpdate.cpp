@@ -15,13 +15,6 @@ SkeletalMeshUpdate.cpp: Helpers to stream in and out skeletal mesh LODs.
 #include "Streaming/RenderAssetUpdate.inl"
 #include "RHIResourceUpdates.h"
 
-int32 GStreamingSkeletalMeshIOPriority = (int32)AIOP_Low;
-static FAutoConsoleVariableRef CVarStreamingSkeletalMeshIOPriority(
-	TEXT("r.Streaming.SkeletalMeshIOPriority"),
-	GStreamingSkeletalMeshIOPriority,
-	TEXT("Base I/O priority for loading skeletal mesh LODs"),
-	ECVF_Default);
-
 extern int32 GStreamingMaxReferenceChecks;
 
 template class TRenderAssetUpdate<FSkelMeshUpdateContext>;
@@ -152,6 +145,7 @@ void FSkeletalMeshStreamIn::CreateBuffers_Internal(const FContext& Context)
 		for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
 		{
 			FSkeletalMeshLODRenderData& LODResource = *Context.LODResourcesView[LODIndex];
+
 			if (bRenderThread)
 			{
 				IntermediateBuffersArray[LODIndex].CreateFromCPUData_RenderThread(LODResource);
@@ -210,6 +204,8 @@ void FSkeletalMeshStreamIn::DoFinishUpdate(const FContext& Context)
 		}
 
 #if RHI_RAYTRACING
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 		// Must happen after the batched updates have been flushed
 		if (IsRayTracingAllowed())
 		{
@@ -221,7 +217,7 @@ void FSkeletalMeshStreamIn::DoFinishUpdate(const FContext& Context)
 					if (RenderData->LODRenderData[LODIndex].bReferencedByStaticSkeletalMeshObjects_RenderThread)
 					{
 						ensure(!RenderData->LODRenderData[LODIndex].StaticRayTracingGeometry.IsInitialized());
-						RenderData->LODRenderData[LODIndex].StaticRayTracingGeometry.InitResource();
+						RenderData->LODRenderData[LODIndex].StaticRayTracingGeometry.InitResource(RHICmdList);
 					}
 				}
 			}
@@ -446,7 +442,23 @@ void FSkeletalMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 		TaskSynchronization.Increment();
 
-		const EAsyncIOPriorityAndFlags Priority = (EAsyncIOPriorityAndFlags)FMath::Clamp<int32>(GStreamingSkeletalMeshIOPriority + (bHighPrioIORequest ? 1 : 0), AIOP_Low, AIOP_High);
+		EAsyncIOPriorityAndFlags Priority = AIOP_Low;
+		if (bHighPrioIORequest)
+		{
+			static IConsoleVariable* CVarAsyncLoadingPrecachePriority = IConsoleManager::Get().FindConsoleVariable(TEXT("s.AsyncLoadingPrecachePriority"));
+			const bool bLoadBeforeAsyncPrecache = CVarStreamingLowResHandlingMode.GetValueOnAnyThread() == (int32)FRenderAssetStreamingSettings::LRHM_LoadBeforeAsyncPrecache;
+
+			if (CVarAsyncLoadingPrecachePriority && bLoadBeforeAsyncPrecache)
+			{
+				const int32 AsyncIOPriority = CVarAsyncLoadingPrecachePriority->GetInt();
+				// Higher priority than regular requests but don't go over max
+				Priority = (EAsyncIOPriorityAndFlags)FMath::Clamp<int32>(AsyncIOPriority + 1, AIOP_BelowNormal, AIOP_MAX);
+			}
+			else
+			{
+				Priority = AIOP_BelowNormal;
+			}
+		}
 
 		Batch.Issue(BulkData, Priority, [this](FBulkDataRequest::EStatus Status)
 		{
@@ -528,6 +540,33 @@ void FSkeletalMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 			const bool bNeedsCPUAccess = FSkeletalMeshLODRenderData::ShouldKeepCPUResources(Mesh, LODIndex + Context.AssetLODBias, bForceKeepCPUResources);
 			constexpr uint8 DummyStripFlags = 0;
 			LODResource.SerializeStreamedData(Ar, const_cast<USkeletalMesh*>(Mesh), LODIndex + Context.AssetLODBias, DummyStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
+
+			// Attempt to recover from possibly corrupted data
+			if (Ar.IsError())
+			{
+				UE_LOG(LogContentStreaming, Error,
+					TEXT("[%s] SkeletalMesh stream in failed due to possibly corrupted data. LOD %d %d-%d. BulkData %#x offset %lld size %lld flags %#x. bForceKeepCPUResources %d. bNeedsCPUAccess %d."),
+					*Mesh->GetPathName(),
+					LODIndex,
+					PendingFirstLODIdx,
+					CurrentFirstLODIdx - 1,
+					LODResource.StreamingBulkData.GetIoFilenameHash(),
+					LODResource.StreamingBulkData.GetBulkDataOffsetInFile(),
+					LODResource.StreamingBulkData.GetBulkDataSize(),
+					LODResource.StreamingBulkData.GetBulkDataFlags(),
+					bForceKeepCPUResources,
+					bNeedsCPUAccess);
+
+#if STREAMING_RETRY_ON_DESERIALIZATION_ERROR
+				bFailedOnIOError = true;
+				MarkAsCancelled();
+				break;
+#else
+				GLog->FlushThreadedLogs();
+				GLog->Flush();
+				UE_LOG(LogContentStreaming, Fatal, TEXT("Possibly corrupted skeletal mesh LOD data detected."));
+#endif
+			}
 		}
 
 		BulkData = FIoBuffer();

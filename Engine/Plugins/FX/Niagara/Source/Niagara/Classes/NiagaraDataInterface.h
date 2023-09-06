@@ -8,7 +8,7 @@
 #include "VectorVM.h"
 #include "NiagaraDataInterface.generated.h"
 
-class RENDERCORE_API FRDGBuilder;
+class FRDGBuilder;
 class FRDGExternalAccessQueue;
 
 class INiagaraCompiler;
@@ -49,6 +49,10 @@ struct FNDITransformHandler
 	FORCEINLINE void TransformRotation(FQuat4f& Q1, const FQuat4f& Q2) const { Q1 = Q2 * Q1; }
 	FORCEINLINE void TransformRotation(FQuat4d& Q1, const FQuat4d& Q2) const { Q1 = Q2 * Q1; }
 };
+
+// FNiagaraDataInterfaceProxy should always outlive any ticks, etc, that are on the rendering thread.
+// Enabling this will incur cost but will validate that this contract is not broken
+#define NIAGARA_VALIDATE_NDIPROXY_REFS	0//!UE_BUILD_SHIPPING
 
 //////////////////////////////////////////////////////////////////////////
 // Some helper classes allowing neat, init time binding of templated vm external functions.
@@ -245,7 +249,35 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
-struct NIAGARA_API FNDIGpuComputeContext
+#if WITH_NIAGARA_DEBUGGER
+struct FNDIDrawDebugHudContext
+{
+	FNDIDrawDebugHudContext(bool bInVerbose, UWorld* InWorld, UCanvas* InCanvas, FNiagaraSystemInstance* InSystemInstance)
+		: bVerbose(bInVerbose)
+		, World(InWorld)
+		, Canvas(InCanvas)
+		, SystemInstance(InSystemInstance)
+	{
+	}
+
+	bool IsVerbose() const { return bVerbose; }
+	UWorld* GetWorld() const { return World; }
+	UCanvas* GetCanvas() const { return Canvas; }
+	const FNiagaraSystemInstance* GetSystemInstance() const { return SystemInstance; }
+	FString& GetOutputString() { return OutputString; }
+
+protected:
+	bool					bVerbose;
+	UWorld*					World;
+	UCanvas*				Canvas;
+	FNiagaraSystemInstance*	SystemInstance;
+	FString					OutputString;
+};
+#endif //WITH_NIAGARA_DEBUGGER
+
+//////////////////////////////////////////////////////////////////////////
+
+struct FNDIGpuComputeContext
 {
 	FNDIGpuComputeContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface)
 		: GraphBuilder(InGraphBuilder)
@@ -254,7 +286,7 @@ struct NIAGARA_API FNDIGpuComputeContext
 	}
 
 	FRDGBuilder& GetGraphBuilder() const { return GraphBuilder; }
-	FRDGExternalAccessQueue& GetRDGExternalAccessQueue() const;
+	NIAGARA_API FRDGExternalAccessQueue& GetRDGExternalAccessQueue() const;
 
 	const FNiagaraGpuComputeDispatchInterface& GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
 
@@ -263,7 +295,7 @@ protected:
 	const FNiagaraGpuComputeDispatchInterface& ComputeDispatchInterface;
 };
 
-struct NIAGARA_API FNDIGpuComputeResetContext : public FNDIGpuComputeContext
+struct FNDIGpuComputeResetContext : public FNDIGpuComputeContext
 {
 	FNDIGpuComputeResetContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, FNiagaraSystemInstanceID InSystemInstanceID)
 		: FNDIGpuComputeContext(InGraphBuilder, InComputeDispatchInterface)
@@ -277,7 +309,7 @@ protected:
 	FNiagaraSystemInstanceID SystemInstanceID = FNiagaraSystemInstanceID();
 };
 
-struct NIAGARA_API FNDIGpuComputePrePostStageContext : public FNDIGpuComputeContext
+struct FNDIGpuComputePrePostStageContext : public FNDIGpuComputeContext
 {
 	FNDIGpuComputePrePostStageContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, const FNiagaraGPUSystemTick& InSystemTick, const FNiagaraComputeInstanceData& InComputeInstanceData, const FNiagaraSimStageData& InSimStageData)
 		: FNDIGpuComputeContext(InGraphBuilder, InComputeDispatchInterface)
@@ -290,11 +322,11 @@ struct NIAGARA_API FNDIGpuComputePrePostStageContext : public FNDIGpuComputeCont
 	const FNiagaraComputeInstanceData& GetComputeInstanceData() const { return ComputeInstanceData; }
 	const FNiagaraSimStageData& GetSimStageData() const { return SimStageData; }
 
-	FNiagaraSystemInstanceID GetSystemInstanceID() const;
-	FVector3f GetSystemLWCTile() const;
-	bool IsOutputStage() const;
-	bool IsInputStage() const;
-	bool IsIterationStage() const;
+	NIAGARA_API FNiagaraSystemInstanceID GetSystemInstanceID() const;
+	NIAGARA_API FVector3f GetSystemLWCTile() const;
+	NIAGARA_API bool IsOutputStage() const;
+	NIAGARA_API bool IsInputStage() const;
+	NIAGARA_API bool IsIterationStage() const;
 
 	void SetDataInterfaceProxy(FNiagaraDataInterfaceProxy* InDataInterfaceProxy) { DataInterfaceProxy = InDataInterfaceProxy; }
 
@@ -308,7 +340,7 @@ protected:
 using FNDIGpuComputePreStageContext = FNDIGpuComputePrePostStageContext;
 using FNDIGpuComputePostStageContext = FNDIGpuComputePrePostStageContext;
 
-struct NIAGARA_API FNDIGpuComputePostSimulateContext : public FNDIGpuComputeContext
+struct FNDIGpuComputePostSimulateContext : public FNDIGpuComputeContext
 {
 	FNDIGpuComputePostSimulateContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, FNiagaraSystemInstanceID InSystemInstanceID, bool InFinalPostSimulate)
 		: FNDIGpuComputeContext(InGraphBuilder, InComputeDispatchInterface)
@@ -330,7 +362,12 @@ protected:
 struct FNiagaraDataInterfaceProxy
 {
 	FNiagaraDataInterfaceProxy() {}
-	virtual ~FNiagaraDataInterfaceProxy() {/*check(IsInRenderingThread());*/}
+	virtual ~FNiagaraDataInterfaceProxy()
+	{
+#if NIAGARA_VALIDATE_NDIPROXY_REFS
+		checkf(ProxyTickRefs == 0, TEXT("NiagaraDataInterfaceProxy(%p) is still referenced but being destroyed."));
+#endif
+	}
 
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const = 0;
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) { check(false); }
@@ -351,11 +388,15 @@ struct FNiagaraDataInterfaceProxy
 	virtual void FinalizePostStage(FRDGBuilder& GraphBuilder, const FNiagaraGpuComputeDispatchInterface& ComputeDispatchInterface) {}
 
 	virtual FNiagaraDataInterfaceProxyRW* AsIterationProxy() { return nullptr; }
+
+#if NIAGARA_VALIDATE_NDIPROXY_REFS
+	std::atomic<int32> ProxyTickRefs;
+#endif
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-struct NIAGARA_API FNiagaraDataInterfaceSetShaderParametersContext
+struct FNiagaraDataInterfaceSetShaderParametersContext
 {
 	FNiagaraDataInterfaceSetShaderParametersContext(FRDGBuilder& InGraphBuilder, const FNiagaraGpuComputeDispatchInterface& InComputeDispatchInterface, const FNiagaraGPUSystemTick& InSystemTick, const FNiagaraComputeInstanceData& InComputeInstanceData, const FNiagaraSimStageData& InSimStageData, const FNiagaraShaderRef& InShaderRef, const FNiagaraShaderScriptParametersMetadata& InShaderParametersMetadata, uint8* InBaseParameters)
 		: GraphBuilder(InGraphBuilder)
@@ -370,7 +411,7 @@ struct NIAGARA_API FNiagaraDataInterfaceSetShaderParametersContext
 	}
 
 	FRDGBuilder& GetGraphBuilder() const { return GraphBuilder; }
-	FRDGExternalAccessQueue& GetRDGExternalAccessQueue() const;
+	NIAGARA_API FRDGExternalAccessQueue& GetRDGExternalAccessQueue() const;
 
 	template<typename T> T& GetProxy() const { check(DataInterfaceProxy); return static_cast<T&>(*DataInterfaceProxy); }
 	const FNiagaraGpuComputeDispatchInterface& GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
@@ -378,13 +419,22 @@ struct NIAGARA_API FNiagaraDataInterfaceSetShaderParametersContext
 	const FNiagaraComputeInstanceData& GetComputeInstanceData() const { return ComputeInstanceData; }
 	const FNiagaraSimStageData& GetSimStageData() const { return SimStageData; }
 
-	FNiagaraSystemInstanceID GetSystemInstanceID() const;
-	FVector3f GetSystemLWCTile() const;
-	bool IsResourceBound(const void* ResourceAddress) const;
-	bool IsParameterBound(const void* ParameterAddress) const;
-	template<typename T> bool IsStructBound(const T* StructAddress) const { return IsStructBoundInternal(StructAddress, sizeof(T)); }
-	bool IsOutputStage() const;
-	bool IsIterationStage() const;
+	NIAGARA_API FNiagaraSystemInstanceID GetSystemInstanceID() const;
+	NIAGARA_API FVector3f GetSystemLWCTile() const;
+	NIAGARA_API bool IsResourceBound(const void* ResourceAddress) const;
+	NIAGARA_API bool IsParameterBound(const void* ParameterAddress) const;
+	NIAGARA_API bool IsOutputStage() const;
+	NIAGARA_API bool IsIterationStage() const;
+
+	template<typename T> bool IsStructBound(const T* StructAddress) const
+	{
+		return IsStructBoundInternal(StructAddress, sizeof(T));
+	}
+
+	bool IsStructBound(const uint8* StructAddress, const FShaderParametersMetadata* StructMetadata) const
+	{
+		return IsStructBoundInternal(StructAddress, StructMetadata->GetSize());
+	}
 
 	template<typename T> T* GetParameterNestedStruct() const
 	{
@@ -393,10 +443,14 @@ struct NIAGARA_API FNiagaraDataInterfaceSetShaderParametersContext
 
 		return reinterpret_cast<T*>(BaseParameters + StructOffset);
 	}
+	inline uint8* GetParameterIncludedStruct(const FShaderParametersMetadata* StructMetadata) const
+	{
+		const uint16 StructOffset = GetParameterIncludedStructInternal(StructMetadata);
+		return BaseParameters + StructOffset;
+	}
 	template<typename T> T* GetParameterIncludedStruct() const
 	{
-		const uint16 StructOffset = GetParameterIncludedStructInternal(TShaderParameterStructTypeInfo<T>::GetStructMetadata());
-		return reinterpret_cast<T*>(BaseParameters + StructOffset);
+		return reinterpret_cast<T*>(GetParameterIncludedStruct(TShaderParameterStructTypeInfo<T>::GetStructMetadata()));
 	}
 	template<typename T> TArrayView<T> GetParameterLooseArray(int32 NumElements) const
 	{
@@ -418,9 +472,14 @@ struct NIAGARA_API FNiagaraDataInterfaceSetShaderParametersContext
 		ShaderStorage = InShaderStorage;
 	}
 
+#if WITH_NIAGARA_DEBUG_EMITTER_NAME
+	/** Formats a string with the simulation & stage name */
+	NIAGARA_API FString GetDebugString() const;
+#endif
+
 private:
-	bool IsStructBoundInternal(const void* StructAddress, uint32 StructSize) const;
-	uint16 GetParameterIncludedStructInternal(const FShaderParametersMetadata* StructMetadata) const;
+	NIAGARA_API bool IsStructBoundInternal(const void* StructAddress, uint32 StructSize) const;
+	NIAGARA_API uint16 GetParameterIncludedStructInternal(const FShaderParametersMetadata* StructMetadata) const;
 
 private:
 	FRDGBuilder& GraphBuilder;
@@ -439,19 +498,54 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
+/** Context for pre and post stage ticks for DIs on the CPU. A similar tick flow also occurs for stages on the GPU via the proxy and dispatcher. */
+struct FNDICpuPrePostStageContext
+{
+	FNiagaraSystemInstance* SystemInstance = nullptr;
+	void* PerInstanceData = nullptr;
+	float DeltaSeconds = 0.0f;
+	ENiagaraScriptUsage Usage;
+
+	template<typename T>
+	T* GetPerInstanceData(){ return reinterpret_cast<T*>(PerInstanceData); }
+};
+
+using FNDICpuPreStageContext = FNDICpuPrePostStageContext;
+using FNDICpuPostStageContext = FNDICpuPrePostStageContext;
+
+/** A utility class to store a tick list for DIs in a system instance. Allows easy pre & post stage ticking for DIs at the various script executions. */
+struct FNDIStageTickHandler
+{
+	/** Indices into the DIInstanceData info pair array the require this tick. */
+	TArray<int32> PreStageTickList;
+	TArray<int32> PostStageTickList;
+	ENiagaraScriptUsage Usage;
+
+	void Init(UNiagaraScript* Script, FNiagaraSystemInstance* Instance);
+	void PreStageTick(FNiagaraSystemInstance* Instance, float DeltaSeconds);
+	void PostStageTick(FNiagaraSystemInstance* Instance, float DeltaSeconds);
+	void Empty()
+	{
+		PreStageTickList.Empty();
+		PostStageTickList.Empty();
+	}
+};
+
+//////////////////////////////////////////////////////////////////////////
+
 /** Base class for all Niagara data interfaces. */
-UCLASS(abstract, EditInlineNew)
-class NIAGARA_API UNiagaraDataInterface : public UNiagaraDataInterfaceBase
+UCLASS(abstract, EditInlineNew, MinimalAPI)
+class UNiagaraDataInterface : public UNiagaraDataInterfaceBase
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	virtual ~UNiagaraDataInterface() override;
+	NIAGARA_API virtual ~UNiagaraDataInterface() override;
 
 	// UObject Interface
-	virtual void PostLoad() override;
+	NIAGARA_API virtual void PostLoad() override;
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+	NIAGARA_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	// UObject Interface END
 
 	/** Does this data interface need setup and teardown for each stage when working a sim stage sim source? */
@@ -475,7 +569,7 @@ public:
 #endif
 
 	/** Allows data interfaces to cache any static data that may be shared between instances */
-	virtual void CacheStaticBuffers(struct FNiagaraSystemStaticBuffers& StaticBuffers, const struct FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo, bool bUsedByCPU, bool bUsedByGPU) {}
+	virtual void CacheStaticBuffers(struct FNiagaraSystemStaticBuffers& StaticBuffers, const FNiagaraVariable& ResolvedVariable, bool bUsedByCPU, bool bUsedByGPU) {}
 
 	virtual bool NeedsGPUContextInit() const { return false; }
 	virtual bool GPUContextInit(const FNiagaraScriptDataInterfaceCompileInfo& InInfo, void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) const { return false; }
@@ -489,15 +583,21 @@ public:
 	/** Ticks the per instance data for this interface, if it has any. */
 	virtual bool PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) { return false; }
 	virtual bool PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) { return false; }
+
+	/** Called per instance for each DI before each execution state in which it is used. */
+	virtual void PreStageTick(FNDICpuPreStageContext& Context){}
+
+	/** Called per instance for each DI after each execution state in which it is used. */
+	virtual void PostStageTick(FNDICpuPostStageContext& Context){}
 	
 #if WITH_EDITORONLY_DATA
 	/** Allows the generic class defaults version of this class to specify any dependencies/version/etc that might invalidate the compile. It should never depend on the value of specific properties.*/
-	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
+	NIAGARA_API virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const;
 #endif
 
 #if WITH_EDITOR
 	/** Allows data interfaces to influence the compilation of GPU shaders and is only called on the CDO object not the instance. */
-	virtual void ModifyCompilationEnvironment(EShaderPlatform ShaderPlatform, struct FShaderCompilerEnvironment& OutEnvironment) const;
+	NIAGARA_API virtual void ModifyCompilationEnvironment(EShaderPlatform ShaderPlatform, struct FShaderCompilerEnvironment& OutEnvironment) const;
 
 	/** Allows data interfaces to prevent compilation of GPU shaders and is only called on the CDO object not the instance. */
 	virtual bool ShouldCompile(EShaderPlatform ShaderPlatform) const { return true; };
@@ -546,15 +646,17 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) { };
 	
 	/** Copies the contents of this DataInterface to another.*/
-	bool CopyTo(UNiagaraDataInterface* Destination) const;
+	NIAGARA_API bool CopyTo(UNiagaraDataInterface* Destination) const;
 
 	/** Determines if this DataInterface is the same as another.*/
-	virtual bool Equals(const UNiagaraDataInterface* Other) const;
+	NIAGARA_API virtual bool Equals(const UNiagaraDataInterface* Other) const;
 
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target)const { return false; }
 
 	virtual bool HasPreSimulateTick() const { return false; }
 	virtual bool HasPostSimulateTick() const { return false; }
+	virtual bool HasPreStageTick(ENiagaraScriptUsage Usage) const { return false; }
+	virtual bool HasPostStageTick(ENiagaraScriptUsage Usage) const { return false; }
 
 	/** Called after system compilation completes. Useful for caching any constant, compile dependent data. */
 	virtual void PostCompile() { }
@@ -565,6 +667,12 @@ public:
 	*/
 	virtual bool PostSimulateCanOverlapFrames() const { return true; }
 
+	/**
+	When set to true simulation may not complete in the same tick group it started.
+	You must override and set to false if you require the data interface post stage tick to complete before the tick group ends.
+	*/
+	virtual bool PostStageCanOverlapTickGroups() const { return true; }
+
 	virtual bool RequiresDistanceFieldData() const { return false; }
 	virtual bool RequiresDepthBuffer() const { return false; }
 	virtual bool RequiresEarlyViewData() const { return false; }
@@ -573,14 +681,8 @@ public:
 	virtual bool HasTickGroupPrereqs() const { return false; }
 	virtual ETickingGroup CalculateTickGroup(const void* PerInstanceData) const { return NiagaraFirstTickGroup; }
 
-	/** Used to determine if we need to create CPU resources for the emitter. */
-	bool IsUsedWithCPUEmitter() const;
-
-	/** Used to determine if we need to create GPU resources for the emitter. */
-	bool IsUsedWithGPUEmitter() const;
-
 	/** Determines if this type definition matches to a known data interface type.*/
-	static bool IsDataInterfaceType(const FNiagaraTypeDefinition& TypeDef);
+	static NIAGARA_API bool IsDataInterfaceType(const FNiagaraTypeDefinition& TypeDef);
 
 #if WITH_EDITORONLY_DATA
 	/** Allows data interfaces to provide common functionality that will be shared across interfaces on that type. */
@@ -588,9 +690,9 @@ public:
 	{
 	}
 	
-	virtual void GetParameterDefinitionHLSL(FNiagaraDataInterfaceHlslGenerationContext& HlslGenContext, FString& OutHLSL);
+	NIAGARA_API virtual void GetParameterDefinitionHLSL(FNiagaraDataInterfaceHlslGenerationContext& HlslGenContext, FString& OutHLSL);
 
-	virtual bool GetFunctionHLSL(FNiagaraDataInterfaceHlslGenerationContext& HlslGenContext, FString& OutHLSL);
+	NIAGARA_API virtual bool GetFunctionHLSL(FNiagaraDataInterfaceHlslGenerationContext& HlslGenContext, FString& OutHLSL);
 
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 	{
@@ -611,7 +713,7 @@ public:
 	}
 
 	/** Formats and appends a template file onto the output HLSL */
-	void AppendTemplateHLSL(FString& OutHLSL, const TCHAR* TemplateShaderFile, const TMap<FString, FStringFormatArg>& TemplateArgs) const;
+	NIAGARA_API void AppendTemplateHLSL(FString& OutHLSL, const TCHAR* TemplateShaderFile, const TMap<FString, FStringFormatArg>& TemplateArgs) const;
 #endif
 
 #if WITH_NIAGARA_DEBUGGER
@@ -621,7 +723,16 @@ public:
 	should be kept light to avoid polluting the display.
 	You can also use the Canvas to draw additional information based on verbosity
 	*/
-	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const {};
+	virtual void DrawDebugHud(FNDIDrawDebugHudContext& DebugHudContext) const
+	{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		DrawDebugHud(DebugHudContext.GetCanvas(), const_cast<FNiagaraSystemInstance*>(DebugHudContext.GetSystemInstance()), DebugHudContext.GetOutputString(), DebugHudContext.IsVerbose());
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	// Deprecated method will be removed in a future version
+	UE_DEPRECATED(5.3, "Please update to the context based DrawDebugHud as this will be removed in a future version.")
+	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const {}
 #endif
 
 #if WITH_EDITOR	
@@ -634,22 +745,22 @@ public:
 		Also, InAsset or InComponent may be null values, as the UI for DataInterfaces is displayed in a variety of locations. 
 		In these cases, only provide information that is relevant to that context.
 	*/
-	virtual void GetFeedback(UNiagaraSystem* InAsset, UNiagaraComponent* InComponent, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo);
+	NIAGARA_API virtual void GetFeedback(UNiagaraSystem* InAsset, UNiagaraComponent* InComponent, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo);
 
-	static void GetFeedback(UNiagaraDataInterface* DataInterface, TArray<FNiagaraDataInterfaceError>& Errors, TArray<FNiagaraDataInterfaceFeedback>& Warnings,
+	static NIAGARA_API void GetFeedback(UNiagaraDataInterface* DataInterface, TArray<FNiagaraDataInterfaceError>& Errors, TArray<FNiagaraDataInterfaceFeedback>& Warnings,
 		TArray<FNiagaraDataInterfaceFeedback>& Info);
 
 	/** Validates a function being compiled and allows interface classes to post custom compile errors when their API changes. */
-	virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors);
+	NIAGARA_API virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors);
 
-	void RefreshErrors();
+	NIAGARA_API void RefreshErrors();
 
-	FSimpleMulticastDelegate& OnErrorsRefreshed();
+	NIAGARA_API FSimpleMulticastDelegate& OnErrorsRefreshed();
 
 #endif
 
     /** Method to add asset tags that are specific to this data interface. By default we add in how many instances of this class exist in the list.*/
-	virtual void GetAssetTagsForContext(const UObject* InAsset, FGuid AssetVersion, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const;
+	NIAGARA_API virtual void GetAssetTagsForContext(const UObject* InAsset, FGuid AssetVersion, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const;
 	virtual bool CanExposeVariables() const { return false; }
 	virtual void GetExposedVariables(TArray<FNiagaraVariableBase>& OutVariables) const {}
 	virtual bool GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const { return false; }
@@ -669,7 +780,16 @@ public:
 	*/
 	virtual void GetEmitterDependencies(UNiagaraSystem* Asset, TArray<FVersionedNiagaraEmitter>& Dependencies) const {}
 
-	virtual bool ReadsEmitterParticleData(const FString& EmitterName) const { return false; }
+	UE_DEPRECATED(5.4, "Implement GetEmitterReferencesByName() instead as this will be removed in a future version.")
+	virtual bool ReadsEmitterParticleData(const FString& EmitterName) const
+	{
+		TArray<FString> EmitterReferences;
+		GetEmitterReferencesByName(EmitterReferences);
+
+		return EmitterReferences.Contains(EmitterName);
+	}
+
+	virtual void GetEmitterReferencesByName(TArray<FString>& EmitterReferences) const {};
 
 	/**
 	Set the shader parameters will only be called if the data interface provided shader parameters.
@@ -683,7 +803,7 @@ protected:
 public:
 	void PushToRenderThread()
 	{
-		if (bUsedByGPUEmitter && bRenderDataDirty)
+		if (bUsedWithGPUScript && bRenderDataDirty)
 		{
 			PushToRenderThreadImpl();
 			bRenderDataDirty = false;
@@ -696,21 +816,32 @@ public:
 		PushToRenderThread();
 	}
 
-	void SetUsedByCPUEmitter(bool bUsed = true)
+	void SetUsedWithCPUScript(bool bUsed = true)
 	{
 		check(IsInGameThread());
-		bUsedByCPUEmitter = bUsed;
+		bUsedWithCPUScript = bUsed;
 	}
 
-	void SetUsedByGPUEmitter(bool bUsed = true)
+	void SetUsedWithGPUScript(bool bUsed = true)
 	{
 		check(IsInGameThread());
-		bUsedByGPUEmitter = bUsed;
+		bUsedWithGPUScript = bUsed;
 		PushToRenderThread();
 	}
 
-	bool IsUsedByCPUEmitter() const { return bUsedByCPUEmitter; }
-	bool IsUsedByGPUEmitter() const { return bUsedByGPUEmitter; }
+	UE_DEPRECATED(5.3, "Please update your code to use IsUsedWithCPUScript")
+	bool IsUsedByCPUEmitter() const { return bUsedWithCPUScript; }
+	UE_DEPRECATED(5.3, "Please update your code to use IsUsedWithGPUScript")
+	bool IsUsedByGPUEmitter() const { return bUsedWithGPUScript; }
+	UE_DEPRECATED(5.3, "Please update your code to use IsUsedWithCPUScript")
+	NIAGARA_API bool IsUsedWithCPUEmitter() const { return bUsedWithCPUScript; }
+	UE_DEPRECATED(5.3, "Please update your code to use IsUsedWithGPUScript")
+	NIAGARA_API bool IsUsedWithGPUEmitter() const { return bUsedWithGPUScript; }
+
+	/** Used to determine if we need to create CPU resources for the emitter. */
+	bool IsUsedWithCPUScript() const { return bUsedWithCPUScript; }
+	/** Used to determine if we need to create GPU resources for the emitter. */
+	bool IsUsedWithGPUScript() const { return bUsedWithGPUScript; }
 
 protected:
 	template<typename T>
@@ -729,13 +860,13 @@ protected:
 		return TypedProxy;
 	}
 
-	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const;
+	NIAGARA_API virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const;
 
 	TUniquePtr<FNiagaraDataInterfaceProxy> Proxy;
 
 	uint32 bRenderDataDirty : 1;
-	uint32 bUsedByCPUEmitter : 1;
-	uint32 bUsedByGPUEmitter : 1;
+	uint32 bUsedWithCPUScript : 1;
+	uint32 bUsedWithGPUScript : 1;
 
 private:
 #if WITH_EDITOR
@@ -962,12 +1093,15 @@ template<typename T>
 struct FNDIInputParam
 {
 	static_assert(sizeof(T) == sizeof(float), "Generic template assumes 4 bytes per element");
-	VectorVM::FExternalFuncInputHandler<T> Data;
+	VectorVM::FExternalFuncInputHandler<T> Data;	
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : Data(Context) {}
+	FORCEINLINE FNDIInputParam(){ }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context){ new(this)FNDIInputParam<T>(Context); }
 	FORCEINLINE T GetAndAdvance() { return Data.GetAndAdvance(); }
 	FORCEINLINE T Get() { return Data.Get(); }
-	FORCEINLINE void Advance() { return Data.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { return Data.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return Data.IsConstant(); }
+	FORCEINLINE void Reset() { Data.Reset(); }
 };
 
 template<>
@@ -975,10 +1109,13 @@ struct FNDIInputParam<FFloat16>
 {
 	VectorVM::FExternalFuncInputHandler<FFloat16> Data;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : Data(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FFloat16>(Context); }
 	FORCEINLINE FFloat16 GetAndAdvance() { return Data.GetAndAdvance(); }
 	FORCEINLINE FFloat16 Get() { return Data.Get(); }
-	FORCEINLINE void Advance() { return Data.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { return Data.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return Data.IsConstant(); }
+	FORCEINLINE void Reset() { Data.Reset(); }
 };
 
 template<>
@@ -986,10 +1123,13 @@ struct FNDIInputParam<FNiagaraBool>
 {
 	VectorVM::FExternalFuncInputHandler<FNiagaraBool> Data;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : Data(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FNiagaraBool>(Context); }
 	FORCEINLINE bool GetAndAdvance() { return Data.GetAndAdvance().GetValue(); }
 	FORCEINLINE bool Get() { return Data.Get().GetValue(); }
-	FORCEINLINE void Advance() { return Data.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { return Data.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return Data.IsConstant(); }
+	FORCEINLINE void Reset() { Data.Reset(); }
 };
 
 template<>
@@ -997,10 +1137,13 @@ struct FNDIInputParam<bool>
 {
 	VectorVM::FExternalFuncInputHandler<FNiagaraBool> Data;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : Data(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<bool>(Context); }
 	FORCEINLINE bool GetAndAdvance() { return Data.GetAndAdvance().GetValue(); }
 	FORCEINLINE bool Get() { return Data.Get().GetValue(); }
-	FORCEINLINE void Advance() { return Data.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { return Data.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return Data.IsConstant(); }
+	FORCEINLINE void Reset() { Data.Reset(); }
 };
 
 template<>
@@ -1009,10 +1152,13 @@ struct FNDIInputParam<FVector2f>
 	VectorVM::FExternalFuncInputHandler<float> X;
 	VectorVM::FExternalFuncInputHandler<float> Y;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : X(Context), Y(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FVector2f>(Context); }
 	FORCEINLINE FVector2f GetAndAdvance() { return FVector2f(X.GetAndAdvance(), Y.GetAndAdvance()); }
 	FORCEINLINE FVector2f Get() { return FVector2f(X.Get(), Y.Get()); }
-	FORCEINLINE void Advance() { X.Advance(), Y.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { X.Advance(Count), Y.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return X.IsConstant() && Y.IsConstant(); }
+	FORCEINLINE void Reset() { X.Reset(); Y.Reset(); }
 };
 
 template<>
@@ -1022,10 +1168,13 @@ struct FNDIInputParam<FVector3f>
 	VectorVM::FExternalFuncInputHandler<float> Y;
 	VectorVM::FExternalFuncInputHandler<float> Z;
 	FNDIInputParam(FVectorVMExternalFunctionContext& Context) : X(Context), Y(Context), Z(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FVector3f>(Context); }
 	FORCEINLINE FVector3f GetAndAdvance() { return FVector3f(X.GetAndAdvance(), Y.GetAndAdvance(), Z.GetAndAdvance()); }
 	FORCEINLINE FVector3f Get() { return FVector3f(X.Get(), Y.Get(), Z.Get()); }
-	FORCEINLINE void Advance() { X.Advance(); Y.Advance(); Z.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { X.Advance(Count); Y.Advance(Count); Z.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return X.IsConstant() && Y.IsConstant() && Z.IsConstant(); }
+	FORCEINLINE void Reset() { X.Reset(); Y.Reset(); Z.Reset(); }
 };
 
 template<>
@@ -1035,9 +1184,12 @@ struct FNDIInputParam<FNiagaraPosition>
 	VectorVM::FExternalFuncInputHandler<float> Y;
 	VectorVM::FExternalFuncInputHandler<float> Z;
 	FNDIInputParam(FVectorVMExternalFunctionContext& Context) : X(Context), Y(Context), Z(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FNiagaraPosition>(Context); }
 	FORCEINLINE FNiagaraPosition GetAndAdvance() { return FNiagaraPosition(X.GetAndAdvance(), Y.GetAndAdvance(), Z.GetAndAdvance()); }
 	FORCEINLINE FNiagaraPosition Get() { return FNiagaraPosition(X.Get(), Y.Get(), Z.Get()); }
-	FORCEINLINE void Advance() { X.Advance(); Y.Advance(); Z.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { X.Advance(Count); Y.Advance(Count); Z.Advance(Count); }
+	FORCEINLINE void Reset() { X.Reset(); Y.Reset(); Z.Reset(); }
 };
 template<>
 struct FNDIInputParam<FVector4f>
@@ -1047,10 +1199,13 @@ struct FNDIInputParam<FVector4f>
 	VectorVM::FExternalFuncInputHandler<float> Z;
 	VectorVM::FExternalFuncInputHandler<float> W;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : X(Context), Y(Context), Z(Context), W(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FVector4f>(Context); }
 	FORCEINLINE FVector4f GetAndAdvance() { return FVector4f(X.GetAndAdvance(), Y.GetAndAdvance(), Z.GetAndAdvance(), W.GetAndAdvance()); }
 	FORCEINLINE FVector4f Get() { return FVector4f(X.Get(), Y.Get(), Z.Get(), W.Get()); }
-	FORCEINLINE void Advance() { return X.Advance(); Y.Advance(); Z.Advance(); W.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { return X.Advance(Count); Y.Advance(Count); Z.Advance(Count); W.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return X.IsConstant() && Y.IsConstant() && Z.IsConstant() && W.IsConstant(); }
+	FORCEINLINE void Reset() { X.Reset(); Y.Reset(); Z.Reset(); W.Reset(); }
 };
 
 template<>
@@ -1061,10 +1216,70 @@ struct FNDIInputParam<FQuat4f>
 	VectorVM::FExternalFuncInputHandler<float> Z;
 	VectorVM::FExternalFuncInputHandler<float> W;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : X(Context), Y(Context), Z(Context), W(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FQuat4f>(Context); }
 	FORCEINLINE FQuat4f GetAndAdvance() { return FQuat4f(X.GetAndAdvance(), Y.GetAndAdvance(), Z.GetAndAdvance(), W.GetAndAdvance()); }
 	FORCEINLINE FQuat4f Get() { return FQuat4f(X.Get(), Y.Get(), Z.Get(), W.Get()); }
-	FORCEINLINE void Advance() { X.Advance(); Y.Advance(); Z.Advance(); W.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { X.Advance(Count); Y.Advance(Count); Z.Advance(Count); W.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return X.IsConstant() && Y.IsConstant() && Z.IsConstant() && W.IsConstant(); }
+	FORCEINLINE void Reset() { X.Reset(); Y.Reset(); Z.Reset(); W.Reset(); }
+};
+
+template<>
+struct FNDIInputParam<FMatrix44f>
+{
+	VectorVM::FExternalFuncInputHandler<float> M[16];
+
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) { Init(Context); }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context)
+	{
+		for (int32 i=0; i < 16; ++i)
+		{
+			M[i].Init(Context);
+		}
+	}
+	FORCEINLINE FMatrix44f GetAndAdvance()
+	{
+		FMatrix44f Matrix;
+		for (int32 i=0; i < 16; ++i)
+		{
+			Matrix.M[i/4][i%4] = M[i].GetAndAdvance();
+		}
+		return Matrix;
+	}
+	FORCEINLINE FMatrix44f Get()
+	{
+		FMatrix44f Matrix;
+		for (int32 i = 0; i < 16; ++i)
+		{
+			Matrix.M[i / 4][i % 4] = M[i].Get();
+		}
+		return Matrix;
+	}
+	FORCEINLINE void Advance(int32 Count = 1)
+	{
+		for (int32 i = 0; i < 16; ++i)
+		{
+			M[i].Advance(Count);
+		}
+	}
+	FORCEINLINE bool IsConstant() const
+	{
+		bool bConstant = true;
+		for (int32 i = 0; i < 16; ++i)
+		{
+			bConstant &= M[i].IsConstant();
+		}
+		return bConstant;
+	}
+	FORCEINLINE void Reset()
+	{
+		for (int32 i = 0; i < 16; ++i)
+		{
+			M[i].Reset();
+		}
+	}
 };
 
 template<>
@@ -1075,10 +1290,13 @@ struct FNDIInputParam<FLinearColor>
 	VectorVM::FExternalFuncInputHandler<float> B;
 	VectorVM::FExternalFuncInputHandler<float> A;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : R(Context), G(Context), B(Context), A(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FLinearColor>(Context); }
 	FORCEINLINE FLinearColor GetAndAdvance() { return FLinearColor(R.GetAndAdvance(), G.GetAndAdvance(), B.GetAndAdvance(), A.GetAndAdvance()); }
 	FORCEINLINE FLinearColor Get() { return FLinearColor(R.Get(), G.Get(), B.Get(), A.Get()); }
-	FORCEINLINE void Advance() { R.Advance(); G.Advance(); B.Advance(); A.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { R.Advance(Count); G.Advance(Count); B.Advance(Count); A.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return R.IsConstant() && G.IsConstant() && B.IsConstant() && A.IsConstant(); }
+	FORCEINLINE void Reset() { R.Reset(); G.Reset(); B.Reset(); A.Reset(); }
 };
 
 template<>
@@ -1087,10 +1305,30 @@ struct FNDIInputParam<FNiagaraID>
 	VectorVM::FExternalFuncInputHandler<int32> Index;
 	VectorVM::FExternalFuncInputHandler<int32> AcquireTag;
 	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : Index(Context), AcquireTag(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FNiagaraID>(Context); }
 	FORCEINLINE FNiagaraID GetAndAdvance() { return FNiagaraID(Index.GetAndAdvance(), AcquireTag.GetAndAdvance()); }
 	FORCEINLINE FNiagaraID Get() { return FNiagaraID(Index.Get(), AcquireTag.Get()); }
-	FORCEINLINE void Advance() { return Index.Advance(); AcquireTag.Advance(); }
+	FORCEINLINE void Advance(int32 Count=1) { return Index.Advance(Count); AcquireTag.Advance(Count); }
 	FORCEINLINE bool IsConstant() const { return Index.IsConstant() && AcquireTag.IsConstant(); }
+	FORCEINLINE void Reset() { Index.Reset(); AcquireTag.Reset(); }
+};
+
+template<>
+struct FNDIInputParam<FNiagaraSpawnInfo>
+{
+	VectorVM::FExternalFuncInputHandler<int32> Count;
+	VectorVM::FExternalFuncInputHandler<float> InterpStartDt;
+	VectorVM::FExternalFuncInputHandler<float> IntervalDt;
+	VectorVM::FExternalFuncInputHandler<int32> SpawnGroup;
+	FORCEINLINE FNDIInputParam(FVectorVMExternalFunctionContext& Context) : Count(Context), InterpStartDt(Context), IntervalDt(Context), SpawnGroup(Context) {}
+	FORCEINLINE FNDIInputParam() { }
+	FORCEINLINE void Init(FVectorVMExternalFunctionContext& Context) { new(this)FNDIInputParam<FNiagaraSpawnInfo>(Context); }
+	FORCEINLINE FNiagaraSpawnInfo GetAndAdvance() { return FNiagaraSpawnInfo(Count.GetAndAdvance(), InterpStartDt.GetAndAdvance(),IntervalDt.GetAndAdvance(),SpawnGroup.GetAndAdvance()); }
+	FORCEINLINE FNiagaraSpawnInfo Get() { return FNiagaraSpawnInfo(Count.Get(), InterpStartDt.Get(),IntervalDt.Get(),SpawnGroup.Get()); }
+	FORCEINLINE void Advance(int32 InCount=1) { return Count.Advance(InCount); InterpStartDt.Advance(InCount);  IntervalDt.Advance(InCount);  SpawnGroup.Advance(InCount); }
+	FORCEINLINE bool IsConstant() const { return Count.IsConstant() && InterpStartDt.IsConstant() && IntervalDt.IsConstant() && SpawnGroup.IsConstant(); }
+	FORCEINLINE void Reset() { Count.Reset(); InterpStartDt.Reset();  IntervalDt.Reset(); SpawnGroup.Reset();}
 };
 
 //Helper to deal with types with potentially several output registers.

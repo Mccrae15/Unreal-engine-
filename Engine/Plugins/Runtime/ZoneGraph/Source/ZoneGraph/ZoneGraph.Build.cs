@@ -8,12 +8,7 @@ namespace UnrealBuildTool.Rules
 		{
 			PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-			PublicIncludePaths.AddRange(
-				new string[] {
-					"Runtime/AIModule/Public",
-					ModuleDirectory + "/Public",
-				}
-			);
+			PublicIncludePathModuleNames.Add("AIModule");
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {

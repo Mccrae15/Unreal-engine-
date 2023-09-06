@@ -286,7 +286,7 @@ public:
 		int32 InputWeightIndexSize = 0;
 		FShaderResourceViewRHIRef InputWeightStream;
 		// Frame number of the bone data that is last updated
-		uint32 UpdatedFrameNumber = 0;
+		uint64 UpdatedFrameNumber = 0;
 
 	private:
 		// double buffered bone positions+orientations to support normal rendering and velocity (new-old position) rendering
@@ -391,6 +391,7 @@ public:
 	/** Morph vertex factory functions */
 	virtual void UpdateMorphVertexStream(const class FMorphVertexBuffer* MorphVertexBuffer) {}
 	virtual const class FMorphVertexBuffer* GetMorphVertexBuffer(bool bPrevious) const { return nullptr; }
+	virtual uint32 GetMorphVertexBufferUpdatedFrameNumber() const { return 0; }
 	/** Cloth vertex factory access. */
 	virtual class FGPUBaseSkinAPEXClothVertexFactory* GetClothVertexFactory() { return nullptr; }
 	virtual class FGPUBaseSkinAPEXClothVertexFactory const* GetClothVertexFactory() const { return nullptr; }
@@ -442,7 +443,7 @@ private:
 
 /** Vertex factory with vertex stream components for GPU skinned vertices */
 template<GPUSkinBoneInfluenceType BoneInfluenceType>
-class ENGINE_API TGPUSkinVertexFactory : public FGPUBaseSkinVertexFactory
+class TGPUSkinVertexFactory : public FGPUBaseSkinVertexFactory
 {
 	DECLARE_VERTEX_FACTORY_TYPE(TGPUSkinVertexFactory<BoneInfluenceType>);
 
@@ -468,12 +469,11 @@ public:
 	/** FGPUBaseSkinVertexFactory overrides */
 	virtual void UpdateMorphVertexStream(const class FMorphVertexBuffer* MorphVertexBuffer) override;
 	virtual const class FMorphVertexBuffer* GetMorphVertexBuffer(bool bPrevious) const override;
-
+	virtual uint32 GetMorphVertexBufferUpdatedFrameNumber() const override;
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
-	virtual void InitDynamicRHI() override;
-	virtual void ReleaseDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	virtual void ReleaseRHI() override;
 
 protected:
 	/**
@@ -674,6 +674,17 @@ public:
 		, TGPUSkinVertexFactory<BoneInfluenceType>(InFeatureLevel, InNumVertices)
 	{}
 
+	/**
+	 * Destructor takes care of the Data pointer. Since FGPUBaseSkinVertexFactory does not know the real type of the Data,
+	 * delete the data here instead.
+	 */
+	virtual ~TGPUSkinAPEXClothVertexFactory() override
+	{
+		checkf(!ClothDataPtr->ClothBuffer.IsValid(), TEXT("ClothBuffer RHI resource should have been released in ReleaseRHI"));
+		delete ClothDataPtr;
+		(void)this->Data.Release();
+	}
+
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 
@@ -710,8 +721,8 @@ public:
 	* Creates declarations for each of the vertex stream components and
 	* initializes the device resource
 	*/
-	virtual void InitRHI() override;
-	virtual void ReleaseDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	virtual void ReleaseRHI() override;
 
 protected:
 	/** Alias pointer to TUniquePtr<FGPUSkinDataType> Data of FGPUBaseSkinVertexFactory. Note memory isn't managed through this pointer. */
@@ -802,7 +813,7 @@ private:
 	void OverrideSRVs(FGPUBaseSkinVertexFactory const* InSourceVertexFactory);
 	void BuildStreamIndices();
 	void CreateUniformBuffer();
-	void CreateLooseUniformBuffer(FGPUBaseSkinVertexFactory const* InSourceVertexFactory, uint32 InFrameNumber);
+	void CreateLooseUniformBuffer(FRHICommandListBase& RHICmdList, FGPUBaseSkinVertexFactory const* InSourceVertexFactory, uint32 InFrameNumber);
 
 	uint32 VertexAttributeMask;
 	TStaticArray<int32, EVertexAtttribute::NumAttributes> StreamIndices;

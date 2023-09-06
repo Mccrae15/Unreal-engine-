@@ -14,11 +14,12 @@
 /**
  * Column that stores the path of a package.
  */
-USTRUCT()
-struct FTypedElementPackagePathColumn : public FTypedElementDataStorageColumn
+USTRUCT(meta = (DisplayName = "Package path"))
+struct FTypedElementPackagePathColumn final : public FTypedElementDataStorageColumn
 {
 	GENERATED_BODY()
 
+	UPROPERTY()
 	FString Path;
 };
 
@@ -30,8 +31,8 @@ inline uint32 GetTypeHash(const FTypedElementPackagePathColumn& InStruct)
 /**
  * Column that stores the full loading path to a package.
  */
-USTRUCT()
-struct FTypedElementPackageLoadedPathColumn : public FTypedElementDataStorageColumn
+USTRUCT(meta = (DisplayName = "Package loaded path"))
+struct FTypedElementPackageLoadedPathColumn final : public FTypedElementDataStorageColumn
 {
 	GENERATED_BODY()
 

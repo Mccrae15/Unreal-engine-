@@ -16,6 +16,7 @@
 #include "SkeletalDebugRendering.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "BoneContainer.h"
+#include "AnimSequencerInstanceProxy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSkeletalAnimationTrack)
 
@@ -44,6 +45,7 @@ UMovieSceneSkeletalAnimationTrack::UMovieSceneSkeletalAnimationTrack(const FObje
 	SupportedBlendTypes.Add(EMovieSceneBlendType::Absolute);
 
 	EvalOptions.bEvaluateNearestSection_DEPRECATED = EvalOptions.bCanEvaluateNearestSection = true;
+	SwapRootBone = ESwapRootBone::SwapRootBone_None;
 }
 
 
@@ -95,6 +97,8 @@ TArray<UMovieSceneSection*> UMovieSceneSkeletalAnimationTrack::GetAnimSectionsAt
 void UMovieSceneSkeletalAnimationTrack::PostLoad()
 {
 	// UMovieSceneTrack::PostLoad removes null sections. However, RemoveAtSection requires SetupRootMotions, which accesses AnimationSections, so remove null sections here before anything else 
+	TOptional<ESwapRootBone> SectionsSwapRootBone;
+	bool bAllSectionsSameSwapRootBone = false;
 	for (int32 SectionIndex = 0; SectionIndex < AnimationSections.Num(); )
 	{
 		UMovieSceneSection* Section = AnimationSections[SectionIndex];
@@ -116,7 +120,27 @@ void UMovieSceneSkeletalAnimationTrack::PostLoad()
 		else
 		{
 			++SectionIndex;
+			if (UMovieSceneSkeletalAnimationSection* AnimSection = Cast<UMovieSceneSkeletalAnimationSection>(Section))
+			{
+				if (SectionsSwapRootBone.IsSet())
+				{
+					if (SectionsSwapRootBone.GetValue() != AnimSection->Params.SwapRootBone)
+					{
+						bAllSectionsSameSwapRootBone = false;
+					}
+				}
+				else
+				{
+					SectionsSwapRootBone = AnimSection->Params.SwapRootBone;
+					bAllSectionsSameSwapRootBone = true;
+				}
+			}
 		}
+	}
+	//if we have all sections with the same swap root bone, set that, probably from a previous version
+	if (bAllSectionsSameSwapRootBone && SectionsSwapRootBone.IsSet())
+	{
+		SwapRootBone = SectionsSwapRootBone.GetValue();
 	}
 
 	Super::PostLoad();
@@ -126,6 +150,26 @@ void UMovieSceneSkeletalAnimationTrack::PostLoad()
 		bUseLegacySectionIndexBlend = true;
 	}
 }
+
+void UMovieSceneSkeletalAnimationTrack::SetSwapRootBone(ESwapRootBone InValue)
+{
+	SwapRootBone = InValue;
+	for (UMovieSceneSection* Section : AnimationSections)
+	{
+		UMovieSceneSkeletalAnimationSection* AnimSection = Cast<UMovieSceneSkeletalAnimationSection>(Section);
+		if (AnimSection)
+		{
+			AnimSection->Params.SwapRootBone = SwapRootBone;
+		}
+	}
+	RootMotionParams.bRootMotionsDirty = true;
+}
+
+ESwapRootBone UMovieSceneSkeletalAnimationTrack::GetSwapRootBone() const
+{
+	return SwapRootBone;
+}
+
 #if WITH_EDITOR
 void UMovieSceneSkeletalAnimationTrack::PostEditImport()
 {
@@ -186,6 +230,7 @@ void UMovieSceneSkeletalAnimationTrack::AddSection(UMovieSceneSection& Section)
 	UMovieSceneSkeletalAnimationSection* AnimSection = Cast< UMovieSceneSkeletalAnimationSection>(&Section);
 	if (AnimSection)
 	{
+		AnimSection->Params.SwapRootBone = SwapRootBone;
 		SetUpRootMotions(true);
 	}
 }
@@ -467,14 +512,13 @@ TOptional<FTransform>  UMovieSceneSkeletalAnimationTrack::GetRootMotion(FFrameTi
 				FMemMark Mark(FMemStack::Get());
 				FCompactPose OutPose;
 				TArray<FBoneIndexType> RequiredBoneIndexArray;
-				const FCurveEvaluationOption CurveEvalOption;
 				RequiredBoneIndexArray.AddUninitialized(ValidAnimSequence->GetSkeleton()->GetReferenceSkeleton().GetNum());
 				for (int32 BoneIndex = 0; BoneIndex < RequiredBoneIndexArray.Num(); ++BoneIndex)
 				{
 					RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 				}
 
-				FBoneContainer BoneContainer(RequiredBoneIndexArray, CurveEvalOption, *ValidAnimSequence->GetSkeleton());
+				FBoneContainer BoneContainer(RequiredBoneIndexArray, UE::Anim::FCurveFilterSettings(UE::Anim::ECurveFilterMode::None), *ValidAnimSequence->GetSkeleton());
 				OutPose.ResetToRefPose(BoneContainer);
 				FBlendedCurve OutCurve;
 				OutCurve.InitFrom(BoneContainer);
@@ -574,14 +618,13 @@ void UMovieSceneSkeletalAnimationTrack::SetUpRootMotions(bool bForce)
 							FMemMark Mark(FMemStack::Get());
 							FCompactPose OutPose;
 							TArray<FBoneIndexType> RequiredBoneIndexArray;
-							const FCurveEvaluationOption CurveEvalOption;
 							RequiredBoneIndexArray.AddUninitialized(PrevAnimSequence->GetSkeleton()->GetReferenceSkeleton().GetNum());
 							for (int32 BoneIndex = 0; BoneIndex < RequiredBoneIndexArray.Num(); ++BoneIndex)
 							{
 								RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 							}
 
-							FBoneContainer BoneContainer(RequiredBoneIndexArray, CurveEvalOption, *PrevAnimSequence->GetSkeleton());
+							FBoneContainer BoneContainer(RequiredBoneIndexArray, UE::Anim::FCurveFilterSettings(UE::Anim::ECurveFilterMode::None), *PrevAnimSequence->GetSkeleton());
 							OutPose.ResetToRefPose(BoneContainer);
 							FBlendedCurve OutCurve;
 							OutCurve.InitFrom(BoneContainer);
@@ -625,7 +668,8 @@ void UMovieSceneSkeletalAnimationTrack::SetUpRootMotions(bool bForce)
 			}
 		}
 
-		if (bAnySectionsHaveOffset == false)
+		//if we are swapping root bone turn on root motion matching anyway
+		if (bAnySectionsHaveOffset == false && SwapRootBone == ESwapRootBone::SwapRootBone_None)
 		{
 #if WITH_EDITORONLY_DATA
 			RootMotionParams.RootTransforms.SetNum(0);
@@ -651,14 +695,14 @@ void UMovieSceneSkeletalAnimationTrack::SetUpRootMotions(bool bForce)
 		if (ValidAnimSequence)
 		{
 			TArray<FBoneIndexType> RequiredBoneIndexArray;
-			const FCurveEvaluationOption CurveEvalOption;
+			const UE::Anim::FCurveFilterSettings CurveFilterSettings;
 			RequiredBoneIndexArray.AddUninitialized(ValidAnimSequence->GetSkeleton()->GetReferenceSkeleton().GetNum());
 			for (int32 BoneIndex = 0; BoneIndex < RequiredBoneIndexArray.Num(); ++BoneIndex)
 			{
 				RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 			}
 
-			FBoneContainer BoneContainer(RequiredBoneIndexArray, CurveEvalOption, *ValidAnimSequence->GetSkeleton());
+			FBoneContainer BoneContainer(RequiredBoneIndexArray, CurveFilterSettings, *ValidAnimSequence->GetSkeleton());
 			OutPose.ResetToRefPose(BoneContainer);
 			FBlendedCurve OutCurve;
 			OutCurve.InitFrom(BoneContainer);
@@ -741,14 +785,14 @@ static FTransform GetTransformForBoneRelativeToIndex(UAnimSequence* AnimSequence
 	FMemMark Mark(FMemStack::Get());
 	FCompactPose OutPose;
 	TArray<FBoneIndexType> RequiredBoneIndexArray;
-	const FCurveEvaluationOption CurveEvalOption;
+	const UE::Anim::FCurveFilterSettings CurveFilterSettings;
 	RequiredBoneIndexArray.AddUninitialized(AnimSequence->GetSkeleton()->GetReferenceSkeleton().GetNum());
 	for (int32 BoneIndex = 0; BoneIndex < RequiredBoneIndexArray.Num(); ++BoneIndex)
 	{
 		RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 	}
 
-	FBoneContainer BoneContainer(RequiredBoneIndexArray, CurveEvalOption, *AnimSequence->GetSkeleton());
+	FBoneContainer BoneContainer(RequiredBoneIndexArray, CurveFilterSettings, *AnimSequence->GetSkeleton());
 	OutPose.ResetToRefPose(BoneContainer);
 	FBlendedCurve OutCurve;
 	OutCurve.InitFrom(BoneContainer);

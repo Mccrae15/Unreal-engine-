@@ -35,6 +35,7 @@ private:
 	struct FPendingEvent
 	{
 		uint64 Cycle;
+		double Time;
 		uint32 TimerId;
 	};
 
@@ -56,7 +57,7 @@ private:
 	FThreadState& GetThreadState(uint32 ThreadId);
 	uint64 ProcessBuffer(const FEventTime& EventTime, FThreadState& ThreadState, const uint8* BufferPtr, uint32 BufferSize);
 	uint64 ProcessBufferV2(const FEventTime& EventTime, FThreadState& ThreadState, const uint8* BufferPtr, uint32 BufferSize);
-	void DispatchPendingEvents(uint64& LastCycle, uint64 CurrentCycle, const FEventTime& EventTime, FThreadState& ThreadState, const FPendingEvent*& PendingCursor, int32& RemainingPending);
+	void DispatchPendingEvents(uint64& LastCycle, uint64 CurrentCycle, FThreadState& ThreadState, const FPendingEvent*& PendingCursor, int32& RemainingPending);
 
 	enum : uint16
 	{
@@ -76,7 +77,7 @@ private:
 	IEditableThreadProvider& EditableThreadProvider;
 	TMap<uint32, FThreadState*> ThreadStatesMap;
 	TMap<uint32, uint32> SpecIdToTimerIdMap;
-	TMap<const TCHAR*, uint32> ScopeNameToTimerIdMap;
+	TMap<const TCHAR*, uint32, FDefaultSetAllocator, TStringPointerMapKeyFuncs_DEPRECATED<const TCHAR*, uint32>> ScopeNameToTimerIdMap;
 	uint32 CoroutineTimerId = ~0;
 	uint32 CoroutineUnknownTimerId = ~0;
 	uint64 TotalEventSize = 0;

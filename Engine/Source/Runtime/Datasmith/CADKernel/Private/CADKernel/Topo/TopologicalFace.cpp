@@ -2,7 +2,6 @@
 
 #include "CADKernel/Topo/TopologicalFace.h"
 
-#include "CADKernel/Core/KernelParameters.h"
 #include "CADKernel/Core/System.h"
 #include "CADKernel/Geo/Curves/RestrictionCurve.h"
 #include "CADKernel/Geo/Curves/SegmentCurve.h"
@@ -192,21 +191,20 @@ void FTopologicalFace::ApplyNaturalLoops(const FSurfacicBoundary& Boundaries)
 
 	// Build 4 bounding edges of the surface
 	StartPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Min);
-	EndPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Max);
-	BuildEdge(StartPoint, EndPoint);
-
-	StartPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Max);
-	EndPoint.Set(Boundaries[EIso::IsoU].Max, Boundaries[EIso::IsoV].Max);
-	BuildEdge(StartPoint, EndPoint);
-
-	StartPoint.Set(Boundaries[EIso::IsoU].Max, Boundaries[EIso::IsoV].Max);
 	EndPoint.Set(Boundaries[EIso::IsoU].Max, Boundaries[EIso::IsoV].Min);
 	BuildEdge(StartPoint, EndPoint);
 
 	StartPoint.Set(Boundaries[EIso::IsoU].Max, Boundaries[EIso::IsoV].Min);
-	EndPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Min);
+	EndPoint.Set(Boundaries[EIso::IsoU].Max, Boundaries[EIso::IsoV].Max);
 	BuildEdge(StartPoint, EndPoint);
 
+	StartPoint.Set(Boundaries[EIso::IsoU].Max, Boundaries[EIso::IsoV].Max);
+	EndPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Max);
+	BuildEdge(StartPoint, EndPoint);
+
+	StartPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Max);
+	EndPoint.Set(Boundaries[EIso::IsoU].Min, Boundaries[EIso::IsoV].Min);
+	BuildEdge(StartPoint, EndPoint);
 	if (Edges.IsEmpty())
 	{
 		return;
@@ -279,15 +277,13 @@ void FTopologicalFace::Disjoin(TArray<FTopologicalEdge*>* NewBorderEdges)
 			const TArray<FTopologicalEdge*> Twins = Edge->GetTwinEntities();
 			for (FTopologicalEdge* TwinEdge : Twins)
 			{
-				if (NewBorderEdges && TwinEdge != Edge)
+				if (NewBorderEdges && TwinEdge != Edge && TwinEdge->GetFace() != this)
 				{
 					NewBorderEdges->Add(TwinEdge);
 				}
 			}
-			Edge->RemoveFromLink();
+			Edge->Disjoin();
 			Edge->SetMarker1();
-			Edge->GetStartVertex()->RemoveFromLink();
-			Edge->GetEndVertex()->RemoveFromLink();
 		}
 	}
 }
@@ -359,6 +355,20 @@ bool FTopologicalFace::IsANonManifoldFace() const
 		}
 	}
 	return false;
+}
+
+void FTopologicalFace::DeleteNonmanifoldLink()
+{
+	for (const TSharedPtr<FTopologicalLoop>& Loop : GetLoops())
+	{
+		for (const FOrientedEdge& Edge : Loop->GetEdges())
+		{
+			if (Edge.Entity->GetTwinEntityCount() > 2)
+			{
+				Edge.Entity->UnlinkTwinEntities();
+			}
+		}
+	}
 }
 
 bool FTopologicalFace::IsABorderFace() const
@@ -433,11 +443,6 @@ void FTopologicalFace::GetEdgeIndex(const FTopologicalEdge& Edge, int32& OutBoun
 	OutBoundaryIndex = INDEX_NONE;
 }
 
-void FTopologicalFace::EvaluateGrid(FGrid& Grid) const
-{
-	CarrierSurface->EvaluateGrid(Grid);
-}
-
 const void FTopologicalFace::Get2DLoopSampling(TArray<TArray<FPoint2D>>& LoopSamplings) const
 {
 	LoopSamplings.Empty(GetLoops().Num());
@@ -464,25 +469,13 @@ void FTopologicalFace::SpawnIdent(FDatabase& Database)
 	}
 }
 
-#ifdef CADKERNEL_DEV
-FInfoEntity& FTopologicalFace::GetInfo(FInfoEntity& Info) const
-{
-	return FTopologicalShapeEntity::GetInfo(Info)
-		.Add(TEXT("Carrier Surface"), CarrierSurface)
-		.Add(TEXT("Boundary"), (FSurfacicBoundary&) Boundary)
-		.Add(TEXT("Loops"), Loops)
-		.Add(TEXT("QuadCriteria"), QuadCriteria)
-		.Add(TEXT("Mesh"), Mesh);
-}
-#endif
-
-TSharedRef<FFaceMesh> FTopologicalFace::GetOrCreateMesh(FModelMesh& MeshModel)
+FFaceMesh& FTopologicalFace::GetOrCreateMesh(FModelMesh& MeshModel)
 {
 	if (!Mesh.IsValid())
 	{
 		Mesh = FEntity::MakeShared<FFaceMesh>(MeshModel, *this);
 	}
-	return Mesh.ToSharedRef();
+	return *Mesh;
 }
 
 // Meshing parameters ==============================================================================================================================================================================================================================
@@ -527,14 +520,13 @@ void FTopologicalFace::ApplyCriteria(const TArray<TSharedPtr<FCriterion>>& Crite
 	{
 		if (CoordNextMinusCoord < DOUBLE_SMALL_NUMBER)
 		{
-			return Length;
+			return;
 		}
 		const double ElemLength = Length * DeltaMax / CoordNextMinusCoord;
 		if (ElementLengthMin > ElemLength)
 		{
 			ElementLengthMin = ElemLength;
 		}
-		return ElemLength;
 	};
 
 	for (int32 IndexV = 0; IndexV < CrossingCoordinates[EIso::IsoV].Num() - 1; ++IndexV)

@@ -2,7 +2,8 @@
 
 using UnrealBuildTool;
 
-[SupportedPlatforms("Win64", "Linux", "Android", "LinuxArm64")]
+[SupportedPlatforms("Linux", "Android", "LinuxArm64")]
+[SupportedPlatformGroups("Windows")]
 public class OpenGLDrv : ModuleRules
 {
 	public OpenGLDrv(ReadOnlyTargetRules Target) : base(Target)
@@ -37,9 +38,10 @@ public class OpenGLDrv : ModuleRules
 		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
 			PrivateDependencyModuleNames.Add("detex");
+			PrivateDependencyModuleNames.Add("ArmlibGPUInfo");
 		}
 
-        if (Target.Platform == UnrealTargetPlatform.Android)
+		if (Target.Platform == UnrealTargetPlatform.Android)
         {
             // for Swappy
             PublicDefinitions.Add("USE_ANDROID_OPENGL_SWAPPY=1");
@@ -48,7 +50,7 @@ public class OpenGLDrv : ModuleRules
 			PrivateIncludePathModuleNames.Add("Launch");
 		}
 
-        if (Target.Platform != UnrealTargetPlatform.Win64
+        if (!Target.IsInPlatformGroup(UnrealPlatformGroup.Windows)
 			&& Target.Platform != UnrealTargetPlatform.IOS && Target.Platform != UnrealTargetPlatform.Android
 			&& !Target.IsInPlatformGroup(UnrealPlatformGroup.Linux)
 			&& Target.Platform != UnrealTargetPlatform.TVOS)

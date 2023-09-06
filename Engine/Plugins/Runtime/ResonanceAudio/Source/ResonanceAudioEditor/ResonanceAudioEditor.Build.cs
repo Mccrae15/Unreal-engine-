@@ -2,6 +2,8 @@
 // Copyright (C) Google Inc. 2017. All rights reserved.
 //
 
+using System.IO;
+
 namespace UnrealBuildTool.Rules
 {
     public class ResonanceAudioEditor : ModuleRules
@@ -10,18 +12,11 @@ namespace UnrealBuildTool.Rules
         {
             PrivateIncludePaths.AddRange(
                 new string[] {
-                    "ResonanceAudioEditor/Private",
-                    "ResonanceAudio/Private",
-                    "ResonanceAudio/Private/ResonanceAudioLibrary/resonance_audio",
-                    "ResonanceAudio/Private/ResonanceAudioLibrary"
+					Path.Combine(GetModuleDirectory("ResonanceAudio"), "Private"),
+					Path.Combine(GetModuleDirectory("ResonanceAudio"), "Private", "ResonanceAudioLibrary"),
+					Path.Combine(GetModuleDirectory("ResonanceAudio"), "Private", "ResonanceAudioLibrary", "resonance_audio"),
                 }
             );
-
-            PublicIncludePaths.AddRange(
-                new string[] {
-                }
-            );
-
 
             PublicDependencyModuleNames.AddRange(
                 new string[] {
@@ -43,7 +38,6 @@ namespace UnrealBuildTool.Rules
             PrivateIncludePathModuleNames.AddRange(
                 new string[] {
                     "AssetTools",
-                    "Landscape"
             });
 
             PrivateDependencyModuleNames.AddRange(
@@ -51,18 +45,10 @@ namespace UnrealBuildTool.Rules
                     "Slate",
                     "SlateCore",
 					"EditorFramework",
-                    "UnrealEd",
-                    "AudioEditor",
-                    "LevelEditor",
                     "Landscape",
-                    "Core",
-                    "CoreUObject",
-                    "Engine",
-                    "InputCore",
                     "PropertyEditor",
                     "Projects",
                     
-                    "ResonanceAudio",
 					"Eigen"
                  }
             );

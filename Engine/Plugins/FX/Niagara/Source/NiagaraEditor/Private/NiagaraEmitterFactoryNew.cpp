@@ -12,6 +12,7 @@
 #include "AssetRegistry/AssetData.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraConstants.h"
+#include "NiagaraEmitterEditorData.h"
 #include "NiagaraNodeAssignment.h"
 #include "SNewEmitterDialog.h"
 #include "Misc/MessageDialog.h"
@@ -55,10 +56,9 @@ bool UNiagaraEmitterFactoryNew::ConfigureProperties()
 		bUseInheritance = NewEmitterDialog->GetUseInheritance();
 		if (EmitterToCopy == nullptr)
 		{
-			FText Title = LOCTEXT("FailedToLoadTitle", "Create Default?");
 			EAppReturnType::Type DialogResult = FMessageDialog::Open(EAppMsgType::OkCancel, EAppReturnType::Cancel,
 				LOCTEXT("FailedToLoadMessage", "The selected emitter failed to load\nWould you like to create a default emitter?"),
-				&Title);
+				LOCTEXT("FailedToLoadTitle", "Create Default?"));
 			if (DialogResult == EAppReturnType::Cancel)
 			{
 				return false;
@@ -144,6 +144,13 @@ UObject* UNiagaraEmitterFactoryNew::FactoryCreateNew(UClass* Class, UObject* InP
 		NewEmitter = NewObject<UNiagaraEmitter>(InParent, Class, Name, Flags | RF_Transactional);
 		InitializeEmitter(NewEmitter, bAddDefaultModulesAndRenderersToEmptyEmitter);
 	}
+	
+	NewEmitter->ForEachVersionData([](FVersionedNiagaraEmitterData& EmitterVersionData)
+	{
+		UNiagaraEmitterEditorData* EmitterEditorData = CastChecked<UNiagaraEmitterEditorData>(EmitterVersionData.GetEditorData());
+		EmitterEditorData->SetShowSummaryView(EmitterVersionData.AddEmitterDefaultViewState == ENiagaraEmitterDefaultSummaryState::Summary ? true : false);
+	});
+	
 	return NewEmitter;
 }
 
@@ -179,7 +186,7 @@ void UNiagaraEmitterFactoryNew::InitializeEmitter(UNiagaraEmitter* NewEmitter, b
 		{
 			NewEmitter->AddRenderer(NewObject<UNiagaraSpriteRendererProperties>(NewEmitter, "Renderer"), EmitterData->Version.VersionGuid);
 
-			AddModuleFromAssetPath(TEXT("/Niagara/Modules/Emitter/EmitterLifeCycle.EmitterLifeCycle"), *EmitterUpdateOutputNode);
+			AddModuleFromAssetPath(TEXT("/Niagara/Modules/Emitter/EmitterState.EmitterState"), *EmitterUpdateOutputNode);
 			
 			UNiagaraNodeFunctionCall* SpawnRateNode = AddModuleFromAssetPath(TEXT("/Niagara/Modules/Emitter/SpawnRate.SpawnRate"), *EmitterUpdateOutputNode);
 			if (SpawnRateNode != nullptr)

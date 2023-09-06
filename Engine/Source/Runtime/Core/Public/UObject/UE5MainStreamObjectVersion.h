@@ -6,7 +6,7 @@
 #include "UObject/DevObjectVersion.h"
 
 // Custom serialization version for changes made in //UE5/Main stream
-struct CORE_API FUE5MainStreamObjectVersion
+struct FUE5MainStreamObjectVersion
 {
 	enum Type
 	{
@@ -328,15 +328,57 @@ struct CORE_API FUE5MainStreamObjectVersion
 		// RigVM generated class refactor
 		RigVMGeneratedClass,
 
+		// In certain cases, Blueprint pins with a PC_Object category would serialize a null PinSubCategoryObject
+		NullPinSubCategoryObjectFix,
+
+		// Allow custom event nodes to use access specifiers
+		AccessSpecifiersForCustomEvents,
+
+		// Explicit override of Groom's hair width
+		GroomAssetWidthOverride,
+
+		// Smart names removed from animation systems
+		AnimationRemoveSmartNames,
+
+		// Change the default for facing & alignment to be automatic
+		NiagaraSpriteRendererFacingAlignmentAutoDefault,
+		
+		// Change the default for facing & alignment to be automatic
+		GroomAssetRemoveInAssetSerialization,
+
+		// Changed the material property connected bitmasks from 32bit to 64bit
+		IncreaseMaterialAttributesInputMask,
+
+		// Combines proprties into a new binding so users can select constant or binding
+		NiagaraSimStageNumIterationsBindings,
+
+		// Skeletal vertex attributes
+		SkeletalVertexAttributes,
+		
+		// Store the RigVM execute context struct the VM uses in the archive
+		RigVMExternalExecuteContextStruct,
+
+		// serialization inputs and outputs as two different sections
+		DataflowSeparateInputOutputSerialization,
+
+		// Cloth collection tether initialization
+		ClothCollectionTetherInitialization,
+
+		// OpenColorIO transforms now serialize their generated texture(s) and shader code normally into the uasset.
+		OpenColorIOAssetCacheSerialization,
+
+		// Cloth collection single lod schema
+		ClothCollectionSingleLodSchema,
+		
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1
 	};
 
 	// The GUID for this custom version number
-	const static FGuid GUID;
+	CORE_API const static FGuid GUID;
 
-	static TMap<FGuid, FGuid> GetSystemGuids();
+	static CORE_API TMap<FGuid, FGuid> GetSystemGuids();
 
 	FUE5MainStreamObjectVersion() = delete;
 };

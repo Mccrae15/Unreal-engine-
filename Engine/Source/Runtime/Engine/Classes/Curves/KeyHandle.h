@@ -78,6 +78,7 @@ public:
 	void Add( const FKeyHandle& InHandle, int32 InIndex );
 	void Empty(int32 ExpectedNumElements = 0);
 	void Remove( const FKeyHandle& InHandle );
+	void Reserve(int32 NumElements);
 	const int32* Find(const FKeyHandle& InHandle) const { return KeyHandlesToIndices.Find(InHandle); }
 	const FKeyHandle* FindKey( int32 KeyIndex ) const;
 	int32 Num() const { return KeyHandlesToIndices.Num(); }
@@ -120,6 +121,7 @@ struct TStructOpsTypeTraits<FKeyHandleMap>
 		WithCopy = false,
 		WithIdenticalViaEquality = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
 /**
@@ -206,4 +208,5 @@ struct TStructOpsTypeTraits<FKeyHandleLookupTable>
 	{
 		WithSerializer = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };

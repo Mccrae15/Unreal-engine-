@@ -89,7 +89,7 @@ float3 SampleExtinctionCoefficients(in FPixelMaterialInputs PixelMaterialInputs)
 	float3 Extinction = 0.0f;
 #if STRATA_ENABLED
 	FStrataBSDF BSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
-	Extinction = VOLUMETRICFOGCLOUD_EXTINCTION(BSDF).r;
+	Extinction = VOLUMETRICFOGCLOUD_EXTINCTION(BSDF).rgb;
 #else
 	#if !MATERIAL_SHADINGMODEL_UNLIT
 	Extinction = GetMaterialSubsurfaceDataRaw(PixelMaterialInputs).rgb;
@@ -103,9 +103,9 @@ float3 SampleEmissive(in FPixelMaterialInputs PixelMaterialInputs)
 	float3 EmissiveColor = 0.0f;
 #if STRATA_ENABLED
 	FStrataBSDF BSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
-	EmissiveColor = BSDF_GETEMISSIVE(BSDF);
+	EmissiveColor = BSDF_GETEMISSIVE(BSDF).rgb;
 #else
-	EmissiveColor = GetMaterialEmissiveRaw(PixelMaterialInputs);
+	EmissiveColor = GetMaterialEmissiveRaw(PixelMaterialInputs).rgb;
 #endif
 	return clamp(EmissiveColor, 0.0f, 65000.0f);
 }
@@ -115,10 +115,10 @@ float3 SampleAlbedo(in FPixelMaterialInputs PixelMaterialInputs)
 	float3 Albedo = 0.0f;
 #if STRATA_ENABLED
 	FStrataBSDF BSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
-	Albedo = VOLUMETRICFOGCLOUD_ALBEDO(BSDF);
+	Albedo = VOLUMETRICFOGCLOUD_ALBEDO(BSDF).rgb;
 #else
 	#if !MATERIAL_SHADINGMODEL_UNLIT
-	Albedo = GetMaterialBaseColor(PixelMaterialInputs) * View.DiffuseOverrideParameter.w + View.DiffuseOverrideParameter.xyz;
+	Albedo = GetMaterialBaseColor(PixelMaterialInputs).rgb * View.DiffuseOverrideParameter.w + View.DiffuseOverrideParameter.xyz;
 	#endif
 #endif
 	return saturate(Albedo);
@@ -178,53 +178,6 @@ void ConvertCloudPixelMaterialInputsToWorkingColorSpace(inout FPixelMaterialInpu
 #include "LightData.ush"
 #endif
 
-
-
-////////////////////////////////////////////////////////////
-// When we get HZB.hlsl from Reverb, remove that and use common code. 
-// Keeping duplicated code for now to avoid merge pain.
-////////////////////////////////////////////////////////////
-
-// Adapted from HZBOcclusion.usf.
-// Rect contains screen coordinates as {minx, miny, maxx, maxy}. Those coordinates are not clamped to screen edges so they mnight be outside the [0,1]^2.
-bool ViewHierarchicalZBufferMinDepth(float4 ScreenUVMinMax, const float MaxZDepth)
-{
-	float4 Rect = saturate(ScreenUVMinMax);
-	float4 RectPixels = Rect * RenderVolumetricCloudParameters.HZBSize.xyxy;
-
-	float2 RectSize = (RectPixels.zw - RectPixels.xy);
-	float Level = max(ceil(log2(max(RectSize.x, RectSize.y))), RenderVolumetricCloudParameters.HZBUvFactor.z);
-
-	// Check if we can drop one level lower
-	float LevelLower = max(Level - 1, 0);
-	float4 LowerRect = RectPixels * exp2(-LevelLower);
-	float2 LowerRectSize = ceil(LowerRect.zw) - floor(LowerRect.xy);
-	if (all(LowerRectSize <= 4))
-	{
-		Level = LevelLower;
-	}
-
-	// 4x4 samples
-	float2 Scale = RenderVolumetricCloudParameters.HZBUvFactor.xy * (Rect.zw - Rect.xy) / 3;
-	float2 Bias = RenderVolumetricCloudParameters.HZBUvFactor.xy * Rect.xy;
-
-	float4 MinDepth = 1;
-	/*UNROLL*/ for (int i = 0; i < 4; i++)
-	{
-		// TODO could vectorize this
-		float4 Depth;
-		Depth.x = RenderVolumetricCloudParameters.HZBTexture.SampleLevel(RenderVolumetricCloudParameters.HZBSampler, float2(i, 0) * Scale + Bias, Level).r;
-		Depth.y = RenderVolumetricCloudParameters.HZBTexture.SampleLevel(RenderVolumetricCloudParameters.HZBSampler, float2(i, 1) * Scale + Bias, Level).r;
-		Depth.z = RenderVolumetricCloudParameters.HZBTexture.SampleLevel(RenderVolumetricCloudParameters.HZBSampler, float2(i, 2) * Scale + Bias, Level).r;
-		Depth.w = RenderVolumetricCloudParameters.HZBTexture.SampleLevel(RenderVolumetricCloudParameters.HZBSampler, float2(i, 3) * Scale + Bias, Level).r;
-		MinDepth = min(MinDepth, Depth);
-	}
-	MinDepth.x = min(min(MinDepth.x, MinDepth.y), min(MinDepth.z, MinDepth.w));
-
-	// Inverted Z buffer
-	//return RectMax.z >= MinDepth.x ? true : false;
-	return MaxZDepth >= MinDepth.x ? true : false;
-}
 
 
 ////////////////////////////////////////////////////////////
@@ -533,10 +486,10 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 		//
 		// Check tracing start and end position within the cloud layer
 		//
-		float2 tTop2 = 0.0f;
+		float2 tTop2 = -1.0f;
+		float2 tBottom2 = -1.0f;
 		if (RayIntersectSphereSolution(RayWorldOriginKm, Raydir, float4(RenderVolumetricCloudParameters.CloudLayerCenterKm, RenderVolumetricCloudParameters.TopRadiusKm), tTop2))
 		{
-			float2 tBottom2 = 0.0f;
 			if (RayIntersectSphereSolution(RayWorldOriginKm, Raydir, float4(RenderVolumetricCloudParameters.CloudLayerCenterKm, RenderVolumetricCloudParameters.BottomRadiusKm), tBottom2))
 			{
 				// If we see both intersection in front of us, keep the min/closest, otherwise the max/furthest
@@ -575,7 +528,7 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 
 		if (TMax <= TMin || TMin > RenderVolumetricCloudParameters.TracingStartMaxDistance)
 		{
-			//OutColor0 = float4(1.0f, 0.0f, 0.0f, 1.0f);
+			//OutColor0 = float4(1.0f, 0.0f, 1.0f, 1.0f);
 			return;
 		}
 
@@ -622,7 +575,7 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 
 		if (bDoDepthInteresectionAndTest && (TDepthBufferKm * KILOMETER_TO_CENTIMETER) < TMin)
 		{
-			//OutColor0 = float4(1.0f, 1.0f, 0.0f, 1.0f);
+			//OutColor0 = float4(0.0f, 0.0f, 1.0f, 1.0f);
 			return;
 		}
 
@@ -660,7 +613,7 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 #endif // CLOUD_SAMPLE_SECOND_LIGHT
 
 
-		const bool SkyAtmospherePresentInScene = ResolvedView.SkyAtmospherePresentInScene > 0.0f;
+		const bool bTracingMaxDistanceModeFromCamera = RenderVolumetricCloudParameters.TracingMaxDistanceMode == 1;
 
 		// Clamp to tracing max distance according to the selected mode
 		if (RenderVolumetricCloudParameters.TracingMaxDistanceMode == 0)
@@ -672,12 +625,24 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 		else // if (RenderVolumetricCloudParameters.TracingMaxDistanceMode == 1)
 		{
 			// Distance from the point of view
-			TMin = min(TMin, RenderVolumetricCloudParameters.TracingMaxDistance);
-			TMax = min(TMax, RenderVolumetricCloudParameters.TracingMaxDistance);
+			TMin = min(RenderVolumetricCloudParameters.TracingMaxDistance, TMin);
+
+			const float MaxBottom = max(tBottom2.x, tBottom2.y) * KILOMETER_TO_CENTIMETER;
+			if (all(tBottom2 > 0.0f) && (MaxBottom <= RenderVolumetricCloudParameters.TracingMaxDistance))
+			{
+				// Make sure we trace when traveling out of the bottom entry point but travel back again in for the specified range of distance.
+				// But we try to not trace outside of the cloud layer still for highly curved planets.
+				TMax = min(RenderVolumetricCloudParameters.TracingMaxDistance, max(tTop2.x, tTop2.y) * KILOMETER_TO_CENTIMETER);
+			}
+			else
+			{
+				TMax = min(TMax, RenderVolumetricCloudParameters.TracingMaxDistance);
+			}
 
 			// Exit if tracing a 0 length segment.
 			if ((TMax - TMin) <= 0.0f)
 			{
+				//OutColor0 = float4(1.0f, 1.0f, 0.0f, 1.0f);
 				return;
 			}
 		}
@@ -687,7 +652,6 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 		const float StepCount = float(IStepCount);
 		const float StepT = (TMax - TMin) / StepCount; // StepT is step distance in centimeters
 		const float dtMeters = StepT * CENTIMETER_TO_METER;
-		// TODO adaptive sample count based on distance
 
 		// This is the scattered sky light luminance assuming a uniform phase function.
 		// TODO Approximate some form of occlusion
@@ -695,7 +659,8 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 		float3 DistantSkyLightLuminance = 0.0f;
 		if (RenderVolumetricCloudParameters.EnableDistantSkyLightSampling)
 		{
-			if (SkyAtmospherePresentInScene)
+			const bool bSkyAtmospherePresentInScene = ResolvedView.SkyAtmospherePresentInScene > 0.0f;
+			if (bSkyAtmospherePresentInScene)
 			{
 				// TODO Only works for ground view. This should be spatially varying for space viewsspace view. 
 				// TODO Have a illuminance texture to get that overall ambient contribution? 
@@ -849,6 +814,14 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 			}
 		#endif
 #endif
+
+			if (MaterialParameters.CloudSampleNormAltitudeInLayer <= 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer >= 1.0f)
+			{
+				// If we are out of the cloud volume, for instance when bTracingMaxDistanceModeFromCamera is true, 
+				// we can and must ignore all material to not change the look in case the material graph is not fading out the clouds below the layer.
+				t += StepT;
+				continue;
+			}
 
 			//////////////////////////////
 			// Sample the participating media material at the sample position.
@@ -1076,7 +1049,7 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 					#endif // CLOUD_DEBUG_SAMPLES
 #endif
 
-					if (MaterialParameters.CloudSampleNormAltitudeInLayer < 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer > 1.0f)
+					if (MaterialParameters.CloudSampleNormAltitudeInLayer <= 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer >= 1.0f)
 					{
 						break; // Ignore remaining samples since we have just traveld out of the cloud layer.
 					}
@@ -1141,7 +1114,7 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 						}
 #endif
 
-						if (MaterialParameters.CloudSampleNormAltitudeInLayer < 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer > 1.0f)
+						if (MaterialParameters.CloudSampleNormAltitudeInLayer <= 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer >= 1.0f)
 						{
 							break; // Ignore remaining samples since we have just traveld out of the cloud layer.
 						}
@@ -1274,7 +1247,7 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 								ConvertCloudPixelMaterialInputsToWorkingColorSpace(PixelMaterialInputs);
 								MATVEC ShadowExtinctionCoefficients = SampleExtinctionCoefficients(PixelMaterialInputs);
 
-								if (MaterialParameters.CloudSampleNormAltitudeInLayer < 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer > 1.0f)
+								if (MaterialParameters.CloudSampleNormAltitudeInLayer <= 0.0f || MaterialParameters.CloudSampleNormAltitudeInLayer >= 1.0f)
 								{
 									ShadowExtinctionCoefficients = 0.0f; // Ignore remaining samples since we have just traveld out of the cloud layer.
 								}
@@ -1579,6 +1552,8 @@ void MainCommon(in FMaterialPixelParameters MaterialParameters, in float4 SvPosi
 	{
 		OutDepth.x = ((GrayScaleTransmittance > 0.99) ? NoCloudDepth : tAP) * CENTIMETER_TO_KILOMETER; // using a small threshold on transmittance
 	}
+
+	//OutColor0.g = 0.3f; // Debug revealing reveal pixels that have been traced.
 }
 
 #endif // SHADER_RENDERVIEW_PS || SHADER_RENDERVIEW_CS

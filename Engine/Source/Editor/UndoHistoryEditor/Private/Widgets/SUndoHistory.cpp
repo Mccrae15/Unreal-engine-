@@ -483,7 +483,7 @@ FText SUndoHistory::HandleUndoSizeTextBlockText() const
 		return FText::GetEmpty();
 	}
 
-	return FText::Format(LOCTEXT("TransactionCountF", "{0} Transactions ({1})"), FText::AsNumber(UndoList.Num()), FText::AsMemory(GEditor->Trans->GetUndoSize()));
+	return FText::Format(LOCTEXT("TransactionCountF", "{0} {0}|plural(one=Transaction,other=Transactions) ({1})"), FText::AsNumber(UndoList.Num()), FText::AsMemory(GEditor->Trans->GetUndoSize()));
 }
 
 EVisibility SUndoHistory::HandleUndoWarningVisibility() const

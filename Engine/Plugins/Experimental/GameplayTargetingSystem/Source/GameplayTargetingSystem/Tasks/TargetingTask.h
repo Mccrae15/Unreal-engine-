@@ -2,7 +2,7 @@
 #pragma once
 
 #include "DrawDebugHelpers.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemTypes.h"
+#include "Types/TargetingSystemTypes.h"
 #include "UObject/Object.h"
 
 #include "TargetingTask.generated.h"
@@ -40,7 +40,7 @@ struct FTargetingDebugInfo;
 *	the end user might prefer to make decisions on. Distance (min/max), score rating
 *	etc.
 */
-UCLASS(EditInlineNew)
+UCLASS(EditInlineNew, Abstract)
 class TARGETINGSYSTEM_API UTargetingTask : public UObject
 {
 	GENERATED_BODY()

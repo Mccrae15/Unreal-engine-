@@ -6,7 +6,7 @@ public class PakFileUtilities : ModuleRules
 {
 	public PakFileUtilities(ReadOnlyTargetRules Target) : base(Target)
 	{
-		UnsafeTypeCastWarningLevel = WarningLevel.Warning;
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Core",
 			"PakFile",
@@ -18,7 +18,6 @@ public class PakFileUtilities : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(new string[] {
 			"DerivedDataCache",
-			"Json",
 		});
 
 		if (Target.bBuildWithEditorOnlyData)

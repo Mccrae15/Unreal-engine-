@@ -74,9 +74,9 @@ enum class ENiagaraGetGraphParameterReferencesMode
 DECLARE_DELEGATE_RetVal(FName, FOnGetWorkflowMode);
 
 /** Defines options for the niagara System view model */
-struct NIAGARAEDITOR_API FNiagaraSystemViewModelOptions
+struct FNiagaraSystemViewModelOptions
 {
-	FNiagaraSystemViewModelOptions();
+	NIAGARAEDITOR_API FNiagaraSystemViewModelOptions();
 
 	/** Whether or not the user can edit emitters from the timeline. */
 	bool bCanModifyEmittersFromTimeline = true;
@@ -206,7 +206,7 @@ public:
 	TSharedPtr<FNiagaraSystemScriptViewModel> GetSystemScriptViewModel();
 
 	/** Gets a niagara component for previewing the simulated System. */
-	UNiagaraComponent* GetPreviewComponent();
+	NIAGARAEDITOR_API UNiagaraComponent* GetPreviewComponent();
 
 	/** Gets the sequencer for this System for displaying the timeline. */
 	TSharedPtr<ISequencer> GetSequencer();
@@ -284,8 +284,14 @@ public:
 	 * @param ReinitMode Defines whether the system should reinitialize and pull in changes or reset and keep its current state.
 	 */
 	void ResetSystem(ETimeResetMode TimeResetMode, EMultiResetMode MultiResetMode, EReinitMode ReinitMode);
-	
-	void IsolateSelectedEmitters();
+
+	/** This is specifically for UI with some unique behavior.
+	 *  If at least 1 selected emitter is currently not in solo-mode, we assume the user wants to override the 'solo selection' so that all currently selected emitters enter solo mode
+	 *  Since the UI functions can be activated without selection (i.e. clicking 'Isolate' in a overview node won't select the emitter), we always have to specify the guid of the emitter that triggered the call.
+	 *  This is so we can work on all selected emitters + the emitter we clicked Isolate on.
+	 */
+	NIAGARAEDITOR_API void ToggleIsolateEmitterAndSelectedEmitters(FGuid OriginEmitter);
+	NIAGARAEDITOR_API void IsolateSelectedEmitters();
 	void DisableSelectedEmitters();
 	
 	/** Compiles the spawn and update scripts. */
@@ -307,6 +313,9 @@ public:
 
 	/** Called to notify the system view model that one of the data objects in the system was modified. */
 	void NotifyDataObjectChanged(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
+
+	/** Called to notify the system view model that one of the object references in the system was modified. */
+	NIAGARAEDITOR_API void NotifyObjectAssetChanged(UNiagaraNode& OwningNode, FName VariableReadName, UObject* NewValue);
 
 	/** Updates all selected emitter's fixed bounds with their current dynamic bounds. */
 	void UpdateEmitterFixedBounds();
@@ -349,6 +358,7 @@ public:
 
 	NIAGARAEDITOR_API void NotifyPreClose();
 
+	NIAGARAEDITOR_API FSimpleMulticastDelegate& OnPreSave();
 	NIAGARAEDITOR_API FOnPreClose& OnPreClose();
 
 	FOnRequestFocusTab& OnRequestFocusTab();
@@ -410,8 +420,7 @@ public:
 	/** Remove a serialized message from the target function call node inside a script this viewmodel is managing. */
 	NIAGARAEDITOR_API void RemoveStackMessage(const FGuid& MessageKey, UNiagaraNodeFunctionCall* TargetFunctionCallNode) const;
 
-	/** Wrapper to set bPendingMessagesChanged after calling a delegate off of a message link. */
-	void ExecuteMessageDelegateAndRefreshMessages(FSimpleDelegate MessageDelegate);
+	void DismissMessageAndRefresh(FNiagaraMessageSourceAndStore MessageSourceAndStore, FGuid MessageKey);
 
 	/** Helper to get the current System or Emitter's EditorParameters. */
 	UNiagaraEditorParametersAdapter* GetEditorOnlyParametersAdapter() const;
@@ -452,6 +461,10 @@ public:
 
 	/** Utility method to gather graph parameter references */
 	TArray<FNiagaraGraphParameterReference> GetGraphParameterReferences(const FNiagaraVariable& Parameter, ENiagaraGetGraphParameterReferencesMode Mode);
+
+	void GetSystemMessageStores(TArray<FNiagaraMessageSourceAndStore>& OutMessageStores);
+
+	void RefreshAssetMessagesDeferred();
 
 private:
 	/** Sends message jobs to FNiagaraMessageManager for all compile events from the last compile. */
@@ -588,12 +601,15 @@ private:
 	/** Utility method to gather all emitter handle viewmodels marked as selected via the system selection viewmodel. */
 	TArray<TSharedRef<FNiagaraEmitterHandleViewModel>> GetSelectedEmitterHandleViewModels();
 
+	/** Indicates whether this instance of the view model should impact whether the System's CompileForEdit flag should be updated by the viewmodel. */
+	bool CanImpactCompileForEdit() const;
+
 private:
 	/** The System being viewed and edited by this view model. */
 	UNiagaraSystem* System;
 
 	/** The component used for previewing the System in a viewport. */
-	UNiagaraComponent* PreviewComponent;
+	TObjectPtr<UNiagaraComponent> PreviewComponent;
 
 	/** The system instance currently simulating this system if available. */
 	FNiagaraSystemInstance* SystemInstance;
@@ -605,7 +621,7 @@ private:
 	TSharedPtr<FNiagaraSystemScriptViewModel> SystemScriptViewModel;
 
 	/** A niagara sequence for displaying this System in the sequencer timeline. */
-	UNiagaraSequence *NiagaraSequence;
+	TObjectPtr<UNiagaraSequence >NiagaraSequence;
 
 	/** The sequencer instance viewing and editing the niagara sequence. */
 	TSharedPtr<ISequencer> Sequencer;
@@ -655,6 +671,9 @@ private:
 	/** A multicast delegate which is called whenever the system has been compiled. */
 	FOnSystemCompiled OnSystemCompiledDelegate;
 
+	/** A multicast delegate which is called before the asset is saved. Useful to notify other systems that need to transfer data into the asset before saving is done.. */
+	FSimpleMulticastDelegate OnPreSaveDelegate;
+	
 	/** A multicast delegate which is called whenever this has been notified it's owner will be closing. */
 	FOnPreClose OnPreCloseDelegate;
 
@@ -724,19 +743,19 @@ private:
 	/** ViewModel for the system overview graph */
 	TSharedPtr<FNiagaraOverviewGraphViewModel> OverviewGraphViewModel;
 
-	UNiagaraStackViewModel* SystemStackViewModel;
+	TObjectPtr<UNiagaraStackViewModel> SystemStackViewModel;
 	
-	UNiagaraSystemEditorDocumentsViewModel* EditorDocumentsViewModel;
+	TObjectPtr<UNiagaraSystemEditorDocumentsViewModel> EditorDocumentsViewModel;
 
-	UNiagaraSystemSelectionViewModel* SelectionViewModel;
+	TObjectPtr<UNiagaraSystemSelectionViewModel> SelectionViewModel;
 
-	UNiagaraScratchPadViewModel* ScriptScratchPadViewModel;
+	TObjectPtr<UNiagaraScratchPadViewModel> ScriptScratchPadViewModel;
 
-	UNiagaraCurveSelectionViewModel* CurveSelectionViewModel;
+	TObjectPtr<UNiagaraCurveSelectionViewModel> CurveSelectionViewModel;
 
-	UNiagaraSystemScalabilityViewModel* ScalabilityViewModel;
+	TObjectPtr<UNiagaraSystemScalabilityViewModel> ScalabilityViewModel;
 
-	UNiagaraUserParametersHierarchyViewModel* UserParametersHierarchyViewModel;
+	TObjectPtr<UNiagaraUserParametersHierarchyViewModel> UserParametersHierarchyViewModel;
 	
 	TWeakPtr<INiagaraParameterPanelViewModel> ParameterPanelViewModel;
 
@@ -749,8 +768,8 @@ private:
 
 	FDelegateHandle SystemChangedDelegateHandle;
 
-	/** ObjectKeys for function call nodes that supply messages. Used to invalidate the messages of these nodes on refresh.*/
-	TArray<FObjectKey> LastFunctionCallNodeObjectKeys;
+	/** ObjectKeys for object viewed by this view model that supply messages. Used to invalidate the messages of these objects on refresh.*/
+	TArray<FObjectKey> MessageSourceObjectKeys;
 
 	/** Flag for when messages have been added/removed through the viewmodel to signal that the message manager needs to be refreshed. */
 	mutable bool bPendingAssetMessagesChanged;

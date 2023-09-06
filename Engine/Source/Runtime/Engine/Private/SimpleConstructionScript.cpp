@@ -26,6 +26,8 @@ USimpleConstructionScript::USimpleConstructionScript(const FObjectInitializer& O
 	: Super(ObjectInitializer)
 {
 	DefaultSceneRootNode = nullptr;
+	NameToSCSNodeMapRefCount = 0;
+	ReregisterContext = nullptr;
 
 #if WITH_EDITOR
 	bIsConstructingEditorComponents = false;
@@ -511,7 +513,7 @@ void USimpleConstructionScript::FixupSceneNodeHierarchy()
 		USCS_Node* PendingParent;
 	};
 
-	FSceneHierarchyMapper HierarchyMapper(RootNodes);
+	FSceneHierarchyMapper HierarchyMapper(MutableView(RootNodes));
 	// identify orphan (root) nodes, and fixup cyclic hierarchies
 	HierarchyMapper.MapHierarchy(AllNodes);
 	// nest all orphaned nodes under the primary root node
@@ -704,26 +706,36 @@ void USimpleConstructionScript::ExecuteScriptOnActor(AActor* Actor, const TInlin
 
 void USimpleConstructionScript::CreateNameToSCSNodeMap()
 {
-	const TArray<USCS_Node*>& Nodes = GetAllNodes();
-	NameToSCSNodeMap.Reserve(Nodes.Num() * 2);
-
-	for (USCS_Node* SCSNode : Nodes)
+	if (NameToSCSNodeMapRefCount == 0)
 	{
-		if (SCSNode)
-		{
-			NameToSCSNodeMap.Add(SCSNode->GetVariableName(), SCSNode);
+		const TArray<USCS_Node*>& Nodes = GetAllNodes();
+		NameToSCSNodeMap.Reserve(Nodes.Num() * 2);
 
-			if (SCSNode->ComponentTemplate)
+		for (USCS_Node* SCSNode : Nodes)
+		{
+			if (SCSNode)
 			{
-				NameToSCSNodeMap.Add(SCSNode->ComponentTemplate->GetFName(), SCSNode);
+				NameToSCSNodeMap.Add(SCSNode->GetVariableName(), SCSNode);
+
+				if (SCSNode->ComponentTemplate)
+				{
+					NameToSCSNodeMap.Add(SCSNode->ComponentTemplate->GetFName(), SCSNode);
+				}
 			}
 		}
 	}
+	NameToSCSNodeMapRefCount++;
 }
 
 void USimpleConstructionScript::RemoveNameToSCSNodeMap()
 {
-	NameToSCSNodeMap.Reset();
+	NameToSCSNodeMapRefCount--;
+	check(NameToSCSNodeMapRefCount >= 0);
+
+	if (NameToSCSNodeMapRefCount == 0)
+	{
+		NameToSCSNodeMap.Reset();
+	}
 }
 
 #if WITH_EDITOR
@@ -1216,16 +1228,16 @@ void USimpleConstructionScript::ValidateSceneRootNodes()
 }
 
 #if WITH_EDITOR
-EDataValidationResult USimpleConstructionScript::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult USimpleConstructionScript::IsDataValid(FDataValidationContext& Context) const
 {
-	EDataValidationResult Result = Super::IsDataValid(ValidationErrors);
+	EDataValidationResult Result = Super::IsDataValid(Context);
 	Result = (Result == EDataValidationResult::NotValidated) ? EDataValidationResult::Valid : Result;
 
 	for (USCS_Node* Node : RootNodes)
 	{
 		if (Node)
 		{
-			EDataValidationResult NodeResult = Node->IsDataValid(ValidationErrors);
+			EDataValidationResult NodeResult = Node->IsDataValid(Context);
 			Result = CombineDataValidationResults(Result, NodeResult);
 		}
 	}

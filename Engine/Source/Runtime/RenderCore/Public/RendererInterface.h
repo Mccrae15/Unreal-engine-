@@ -30,12 +30,15 @@ class FGlobalDistanceFieldParameterData;
 struct FMeshBatch;
 struct FSynthBenchmarkResults;
 struct FSceneTextures;
+struct FViewMatrices;
 class FShader;
 class FShaderMapPointerTable;
 class FRDGBuilder;
 class FMaterialRenderProxy;
+class FGPUScenePrimitiveCollector;
 class FViewInfo;
 template<typename ShaderType, typename PointerTableType> class TShaderRefBase;
+class FSceneUniformBuffer;
 
 namespace Nanite
 {
@@ -277,7 +280,8 @@ public:
 			&& ArraySize == rhs.ArraySize
 			&& NumMips == rhs.NumMips
 			&& NumSamples == rhs.NumSamples
-			&& PackedBits == rhs.PackedBits;
+			&& PackedBits == rhs.PackedBits
+			&& FastVRAMPercentage == rhs.FastVRAMPercentage;
 	}
 
 	bool IsCubemap() const
@@ -416,7 +420,8 @@ public:
 	uint8 NumMips = 0;
 	/** Number of MSAA samples, default: 1  */
 	uint8 NumSamples = 1;
-
+	/** Resource memory percentage which should be allocated onto fast VRAM (hint-only). (encoding into 8bits, 0..255 -> 0%..100%) */
+	uint8 FastVRAMPercentage = 0xFF;
 	union
 	{
 		struct
@@ -491,14 +496,6 @@ struct IPooledRenderTarget
 	 * @return in bytes
 	 **/
 	virtual uint32 ComputeMemorySize() const = 0;
-
-	/** Get the low level internals (texture/surface) */
-	UE_DEPRECATED(5.1, "GetRenderTargetItem is deprecated. Use GetRHI() and GetUAV() instead.")
-	inline FSceneRenderTargetItem& GetRenderTargetItem() { return RenderTargetItem; }
-
-	/** Get the low level internals (texture/surface) */
-	UE_DEPRECATED(5.1, "GetRenderTargetItem is deprecated. Use GetRHI() and GetUAV() instead.")
-	inline const FSceneRenderTargetItem& GetRenderTargetItem() const { return RenderTargetItem; }
 
 	/** Returns if the render target is tracked by a pool. */
 	virtual bool IsTracked() const = 0;
@@ -717,6 +714,9 @@ public:
 
 	virtual void InitializeSystemTextures(FRHICommandListImmediate& RHICmdList) = 0;
 
+	/** Create a Scene Uniform Buffer containing only the scene representation for a single primitive */
+	virtual FSceneUniformBuffer* CreateSinglePrimitiveSceneUniformBuffer(FRDGBuilder& GraphBuilder, const FViewInfo& SceneView, FMeshBatch& Mesh) = 0;
+
 	/** Draws a tile mesh element with the specified view. */
 	virtual void DrawTileMesh(FCanvasRenderContext& RenderContext, struct FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& View, FMeshBatch& Mesh, bool bIsHitTesting, const class FHitProxyId& HitProxyId, bool bUse128bitRT = false) = 0;
 
@@ -840,5 +840,10 @@ public:
 	 *  targets. The next scene render will create them at the requested size.
 	 */
 	virtual void ResetSceneTextureExtentHistory() = 0;
+
+	virtual const FViewMatrices& GetPreviousViewMatrices(const FSceneView& View) = 0;
+	virtual const FGlobalDistanceFieldParameterData* GetGlobalDistanceFieldParameterData(const FSceneView& View) = 0;
+	virtual void RequestStaticMeshUpdate(FPrimitiveSceneInfo* Info) = 0;
+	virtual void AddMeshBatchToGPUScene(FGPUScenePrimitiveCollector* Collector, FMeshBatch& MeshBatch) = 0;
 };
 

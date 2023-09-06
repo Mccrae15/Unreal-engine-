@@ -4,7 +4,6 @@
 #include "CADKernel/Core/Types.h"
 #include "CADKernel/Math/Boundary.h"
 #include "CADKernel/Math/Geometry.h"
-#include "CADKernel/UI/Message.h"
 #include "CADKernel/UI/Visu.h"
 
 namespace UE::CADKernel
@@ -15,11 +14,19 @@ class FIsoInnerNode;
 class FIsoSegment;
 class FPoint2D;
 
+enum class EConnectionType : uint8
+{
+	DoesntStartFrom = 0,
+	StartFrom,
+	SuperimposedByOrOn,
+	SameSegment,
+};
+
 namespace IntersectionToolBase
 {
 struct FSegment
 {
-	const TSegment<FPoint2D> Segment2D;
+	const FSegment2D Segment2D;
 
 	/**
 	 * Segment's axis aligned bounding box
@@ -36,9 +43,9 @@ struct FSegment
 	/**
 	 * WARNING StartPoint, EndPoint must be defined in EGridSpace::UniformScaled
 	 */
-	FSegment(const FPoint2D& StartPoint, const FPoint2D& EndPoint)
+	FSegment(const double Tolerance, const FPoint2D& StartPoint, const FPoint2D& EndPoint)
 		: Segment2D(StartPoint, EndPoint)
-		, Boundary(StartPoint, EndPoint)
+		, Boundary(StartPoint, EndPoint, Tolerance)
 	{
 		AxisMin = Boundary[EIso::IsoU].Min + Boundary[EIso::IsoV].Min;
 		AxisMax = Boundary[EIso::IsoU].Max + Boundary[EIso::IsoV].Max;
@@ -51,39 +58,79 @@ struct FSegment
 	virtual const FIsoNode* GetFirstNode() const = 0;
 	virtual const FIsoNode* GetSecondNode() const = 0;
 
-	virtual const FIsoSegment* GetIsoSegment() const 
+	virtual const FIsoSegment* GetIsoSegment() const
 	{
 		return nullptr;
 	}
 
-	bool DoesItStartFrom(const FIsoNode* StartNode, const FIsoNode* EndNode) const
+	static EConnectionType IsSuperimposed(const FSegment2D& SegmentAB, const FSegment2D& SegmentCD, bool bSameOrientation)
 	{
-		if (GetFirstNode() == StartNode || GetSecondNode() == StartNode)
+		const FPoint2D AB = SegmentAB.GetVector().Normalize();
+		const FPoint2D CD = SegmentCD.GetVector().Normalize();
+		const double ParallelCoef = AB ^ CD;
+		if (FMath::IsNearlyZero(ParallelCoef, DOUBLE_KINDA_SMALL_NUMBER))
 		{
-			return true;
+			const double OrientationCoef = AB * CD;
+			if ((OrientationCoef >= 0) == bSameOrientation)
+			{
+				return EConnectionType::SuperimposedByOrOn;
+			}
+		}
+		return EConnectionType::StartFrom;
+	};
+
+	EConnectionType DoesItStartFromAndSuperimposed(const FIsoNode* StartNode, const FPoint2D* EndPoint, const FSegment2D& InSegment) const
+	{
+		if (GetFirstNode() == StartNode)
+		{
+			constexpr bool bSameOrientation = true;
+			return IsSuperimposed(Segment2D, InSegment, bSameOrientation);
+		}
+		if (GetSecondNode() == StartNode)
+		{
+			constexpr bool bNotSameOrientation = false;
+			return IsSuperimposed(Segment2D, InSegment, bNotSameOrientation);
 		}
 
-		if (GetFirstNode() == EndNode || GetSecondNode() == EndNode)
-		{
-			return true;
-		}
-
-		return false;
+		return EConnectionType::DoesntStartFrom;
 	}
 
-	bool DoesItStartFrom(const FIsoNode* StartNode, const FPoint2D* EndPoint) const
+	EConnectionType DoesItStartFromAndSuperimposed(const FPoint2D* StartPoint, const FPoint2D* EndPoint, const FSegment2D& InSegment) const
 	{
-		if (GetFirstNode() == StartNode || GetSecondNode() == StartNode)
-		{
-			return true;
-		}
-
-		return false;
+		return EConnectionType::DoesntStartFrom;
 	}
 
-	bool DoesItStartFrom(const FPoint2D* StartPoint, const FPoint2D* EndPoint) const
+	EConnectionType DoesItStartFromAndSuperimposed(const FIsoNode* StartNode, const FIsoNode* EndNode, const FSegment2D& InSegment) const
 	{
-		return false;
+		if (GetFirstNode() == StartNode)
+		{
+			if (GetSecondNode() == EndNode)
+			{
+				return EConnectionType::SameSegment;
+			}
+			return IsSuperimposed(Segment2D, InSegment, true);
+		}
+
+		if (GetSecondNode() == EndNode)
+		{
+			return IsSuperimposed(Segment2D, InSegment, true);
+		}
+
+		if (GetFirstNode() == EndNode)
+		{
+			if (GetSecondNode() == StartNode)
+			{
+				return EConnectionType::SameSegment;
+			}
+			return IsSuperimposed(Segment2D, InSegment, false);
+		}
+
+		if (GetSecondNode() == StartNode)
+		{
+			return IsSuperimposed(Segment2D, InSegment, false);
+		}
+
+		return EConnectionType::DoesntStartFrom;
 	}
 
 	bool IsFullyBefore(const FSegment& Segment) const
@@ -110,14 +157,19 @@ struct FSegment
 		return true;
 	}
 
-	bool DoesItIntersect(const FSegment& Segment) const
+	virtual bool DoesItIntersect(const FSegment& Segment) const
 	{
 		if (!CouldItIntersect(Segment.Boundary))
 		{
 			return false;
 		}
 
-		return IntersectSegments2D(Segment2D, Segment.Segment2D);
+		return DoIntersect(Segment2D, Segment.Segment2D);
+	}
+
+	bool IsParallelWith(const FSegment& Segment) const
+	{
+		return AreParallel(Segment2D, Segment.Segment2D);
 	}
 };
 }
@@ -129,11 +181,11 @@ struct FSegment : public IntersectionToolBase::FSegment
 {
 	const FIsoSegment* IsoSegment;
 
-	FSegment(const FGrid& Grid, const FIsoSegment& InSegment);
-	FSegment(const FGrid& Grid, const FIsoNode& StartNode, const FIsoNode& EndNode);
-	FSegment(const FGrid& Grid, const FIsoNode& StartNode, const FPoint2D& EndPoint);
-	FSegment(const FGrid& Grid, const FPoint2D& StartPoint, const FPoint2D& EndPoint)
-		: IntersectionToolBase::FSegment(StartPoint, EndPoint)
+	FSegment(const FGrid& Grid, const double Tolerance, const FIsoSegment& InSegment);
+	FSegment(const FGrid& Grid, const double Tolerance, const FIsoNode& StartNode, const FIsoNode& EndNode);
+	FSegment(const FGrid& Grid, const double Tolerance, const FIsoNode& StartNode, const FPoint2D& EndPoint);
+	FSegment(const FGrid& Grid, const double Tolerance, const FPoint2D& StartPoint, const FPoint2D& EndPoint)
+		: IntersectionToolBase::FSegment(Tolerance, StartPoint, EndPoint)
 		, IsoSegment(nullptr)
 	{
 	}
@@ -152,36 +204,6 @@ struct FSegment : public IntersectionToolBase::FSegment
 
 }
 
-namespace IntersectionNodePairTool
-{
-
-struct FSegment : public IntersectionToolBase::FSegment
-{
-	const FIsoNode* StartNode;
-	const FIsoNode* EndNode;
-
-	FSegment(const FIsoNode* StartNode, const FIsoNode* EndNode, const FPoint2D& StartPoint, const FPoint2D& EndPoint);
-	FSegment(const FGrid& Grid, const FIsoNode& StartNode, const FIsoNode& EndNode);
-
-	virtual bool IsValid() const override
-	{
-		return true;
-	}
-
-	virtual const FIsoNode* GetFirstNode() const override
-	{
-		return StartNode;
-	}
-
-	virtual const FIsoNode* GetSecondNode() const override
-	{
-		return EndNode;
-	}
-
-};
-
-}
-
 template<typename SegmentType>
 class TIntersectionSegmentTool
 {
@@ -191,10 +213,13 @@ protected:
 	TArray<SegmentType> Segments;
 	bool bSegmentsAreSorted;
 
+	const double Tolerance;
+
 public:
-	TIntersectionSegmentTool(const FGrid& InGrid)
+	TIntersectionSegmentTool(const FGrid& InGrid, const double InTolerance)
 		: Grid(InGrid)
 		, bSegmentsAreSorted(false)
+		, Tolerance(InTolerance)
 	{
 	}
 
@@ -202,7 +227,7 @@ public:
 
 	void Empty(int32 InMaxNum)
 	{
-		Segments.Empty(InMaxNum);
+		Segments.Reset(InMaxNum);
 		bSegmentsAreSorted = false;
 	}
 
@@ -239,12 +264,12 @@ public:
 	}
 
 	template<typename ExtremityType1, typename ExtremityType2>
-	const FIsoSegment* FindIntersectingSegment(const ExtremityType1* StartExtremity, const ExtremityType2* EndExtremity) const
+	const SegmentType* FindIntersectingSegment(const ExtremityType1* StartExtremity, const ExtremityType2* EndExtremity) const
 	{
 		using namespace IntersectionSegmentTool;
-		FSegment InSegment(Grid, *StartExtremity, *EndExtremity);
+		const SegmentType InSegment(Grid, Tolerance, *StartExtremity, *EndExtremity);
 
-		for (const FSegment& Segment : Segments)
+		for (const SegmentType& Segment : Segments)
 		{
 			if (!Segment.IsValid())
 			{
@@ -262,16 +287,23 @@ public:
 				{
 					break;
 				}
-}
+			}
 
-			if (Segment.DoesItStartFrom(StartExtremity, EndExtremity))
+			switch (Segment.DoesItStartFromAndSuperimposed(StartExtremity, EndExtremity, InSegment.Segment2D))
 			{
+			case EConnectionType::SameSegment:
+			case EConnectionType::StartFrom:
 				continue;
+			case EConnectionType::SuperimposedByOrOn:
+				return &Segment;
+			case EConnectionType::DoesntStartFrom:
+			default:
+				break;
 			}
 
 			if (Segment.DoesItIntersect(InSegment))
 			{
-				return Segment.IsoSegment;
+				return &Segment;
 			}
 		}
 
@@ -281,10 +313,10 @@ public:
 	template<typename ExtremityType1, typename ExtremityType2>
 	int32 FindIntersectingSegments(const ExtremityType1* StartExtremity, const ExtremityType2* EndExtremity, TArray<const FIsoSegment*>* OutIntersectedSegments) const
 	{
-		SegmentType InSegment(Grid, *StartExtremity, *EndExtremity);
-		if(OutIntersectedSegments)
+		SegmentType InSegment(Grid, Tolerance, *StartExtremity, *EndExtremity);
+		if (OutIntersectedSegments)
 		{
-			OutIntersectedSegments->Empty(10);
+			OutIntersectedSegments->Reset(10);
 		}
 
 		int32 IntersectionCount = 0;
@@ -306,11 +338,25 @@ public:
 				{
 					break;
 				}
-}
+			}
 
-			if (Segment.DoesItStartFrom(StartExtremity, EndExtremity))
+			switch (Segment.DoesItStartFromAndSuperimposed(StartExtremity, EndExtremity, InSegment.Segment2D))
 			{
+			case EConnectionType::StartFrom:
+			case EConnectionType::SameSegment:
 				continue;
+
+			case EConnectionType::SuperimposedByOrOn:
+				++IntersectionCount;
+				if (OutIntersectedSegments)
+				{
+					OutIntersectedSegments->Add(Segment.GetIsoSegment());
+				}
+				continue;
+
+			case EConnectionType::DoesntStartFrom:
+			default:
+				break;
 			}
 
 			if (Segment.DoesItIntersect(InSegment))
@@ -326,7 +372,7 @@ public:
 		return IntersectionCount;
 	}
 
-#ifdef CADKERNEL_DEV
+#ifdef CADKERNEL_DEBUG
 	virtual void Display(bool bDisplay, const TCHAR* Message, EVisuProperty Property = EVisuProperty::BlueCurve) const
 	{
 		if (!bDisplay)
@@ -349,8 +395,8 @@ public:
 class FIntersectionSegmentTool : public TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>
 {
 public:
-	FIntersectionSegmentTool(const FGrid& InGrid)
-		: TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>(InGrid)
+	FIntersectionSegmentTool(const FGrid& InGrid, const double Tolerance)
+		: TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>(InGrid, Tolerance)
 	{
 	}
 
@@ -364,7 +410,7 @@ public:
 		if (SegmentIndex != INDEX_NONE)
 		{
 			Segments.RemoveAt(SegmentIndex);
-			Segments.EmplaceAt(SegmentIndex, Grid, *Segment);
+			Segments.EmplaceAt(SegmentIndex, Grid, Tolerance, *Segment);
 			bSegmentsAreSorted = false;
 			return true;
 		}
@@ -395,13 +441,13 @@ public:
 	void AddSegment(const FIsoSegment& Segment)
 	{
 		bSegmentsAreSorted = false;
-		Segments.Emplace(Grid, Segment);
+		Segments.Emplace(Grid, Tolerance, Segment);
 	}
 
 	void AddSegment(const FPoint2D& StartPoint, const FPoint2D& EndPoint)
 	{
 		bSegmentsAreSorted = false;
-		Segments.Emplace(Grid, StartPoint, EndPoint);
+		Segments.Emplace(Grid, Tolerance, StartPoint, EndPoint);
 	}
 
 	/**
@@ -447,6 +493,11 @@ public:
 		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegment(&StartNode, &EndPoint) != nullptr;
 	}
 
+	bool DoesIntersect(const FIsoNode* StartNode, const FIsoNode* EndNode) const
+	{
+		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegment(StartNode, EndNode) != nullptr;
+	}
+
 	bool DoesIntersect(const FIsoNode& StartNode, const FIsoNode& EndNode) const
 	{
 		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegment(&StartNode, &EndNode) != nullptr;
@@ -457,7 +508,27 @@ public:
 	 */
 	const FIsoSegment* FindIntersectingSegment(const FIsoNode& StartNode, const FIsoNode& EndNode) const
 	{
-		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegment(&StartNode, &EndNode);
+		const IntersectionSegmentTool::FSegment* IntersectingSegment = TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegment(&StartNode, &EndNode);
+		if (IntersectingSegment)
+		{
+			return IntersectingSegment->IsoSegment;
+		}
+		return nullptr;
+	}
+
+	const FIsoSegment* FindIntersectingSegment(const FIsoNode* StartNode, const FIsoNode* EndNode) const
+	{
+		const IntersectionSegmentTool::FSegment* IntersectingSegment = TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegment(StartNode, EndNode);
+		if (IntersectingSegment)
+		{
+			return IntersectingSegment->IsoSegment;
+		}
+		return nullptr;
+	}
+
+	bool FindIntersectingSegments(const FIsoNode* StartNode, const FIsoNode* EndNode, TArray<const FIsoSegment*>& OutIntersections) const
+	{
+		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegments(StartNode, EndNode, &OutIntersections) > 0;
 	}
 
 	bool FindIntersectingSegments(const FIsoNode& StartNode, const FIsoNode& EndNode, TArray<const FIsoSegment*>& OutIntersections) const
@@ -465,34 +536,10 @@ public:
 		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegments(&StartNode, &EndNode, &OutIntersections) > 0;
 	}
 
-};
-
-class FIntersectionNodePairTool : public TIntersectionSegmentTool<IntersectionNodePairTool::FSegment>
-{
-
-public:
-	FIntersectionNodePairTool(const FGrid& InGrid)
-		: TIntersectionSegmentTool<IntersectionNodePairTool::FSegment>(InGrid)
+	int32 CountIntersections(const FIsoNode* StartNode, const FIsoNode* EndNode) const
 	{
+		return TIntersectionSegmentTool<IntersectionSegmentTool::FSegment>::FindIntersectingSegments(StartNode, EndNode, nullptr);
 	}
-
-	void AddSegment(const FIsoNode& StartNode, const FIsoNode& EndNode)
-	{
-		bSegmentsAreSorted = false;
-		Segments.Emplace(Grid, StartNode, EndNode);
-	}
-
-	void AddSegment(const FIsoNode* StartNode, const FIsoNode* EndNode, const FPoint2D& StartPoint, const FPoint2D& EndPoint)
-	{
-		bSegmentsAreSorted = false;
-		Segments.Emplace(StartNode, EndNode, StartPoint, EndPoint);
-	}
-
-	int32 CountIntersections(const FIsoNode& StartNode, const FIsoNode& EndNode) const
-	{
-		return TIntersectionSegmentTool<IntersectionNodePairTool::FSegment>::FindIntersectingSegments(&StartNode, &EndNode, nullptr);
-	}
-
 };
 
 } // namespace UE::CADKernel

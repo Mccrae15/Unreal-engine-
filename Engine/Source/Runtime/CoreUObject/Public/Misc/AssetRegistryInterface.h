@@ -25,7 +25,7 @@ struct FAssetData;
 
 namespace EAssetRegistryDependencyType
 {
-	enum Type
+	enum UE_DEPRECATED(5.3, "No longer used") Type
 	{
 		// Dependencies which don't need to be loaded for the object to be used (i.e. soft object paths)
 		Soft = 0x01,
@@ -45,10 +45,16 @@ namespace EAssetRegistryDependencyType
 		// Note: Also update FAssetRegistryDependencyOptions when adding more flags
 	};
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	UE_DEPRECATED(5.3, "No longer used")
 	inline static const Type None = (Type)(0);
+	UE_DEPRECATED(5.3, "No longer used")
 	inline static const Type All = (Type)(Soft | Hard | SearchableName | SoftManage | HardManage);
+	UE_DEPRECATED(5.3, "No longer used")
 	inline static const Type Packages = (Type)(Soft | Hard);
+	UE_DEPRECATED(5.3, "No longer used")
 	inline static const Type Manage = (Type)(SoftManage | HardManage);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 }
 
 class IAssetRegistry;
@@ -180,22 +186,13 @@ namespace UE::AssetRegistry
 				| (!!(QueryFlags & EDependencyQuery::NotDirect) ? UE::AssetRegistry::EDependencyProperty::Direct : UE::AssetRegistry::EDependencyProperty::None);
 		}
 
-		UE_DEPRECATED(4.26, "Helper function for backwards compatibility")
-		inline explicit FDependencyQuery(EAssetRegistryDependencyType::Type DependencyType)
-		{
-			Required = (DependencyType & EAssetRegistryDependencyType::Soft) ? UE::AssetRegistry::EDependencyProperty::None : UE::AssetRegistry::EDependencyProperty::Hard;
-			Excluded = (DependencyType & EAssetRegistryDependencyType::Hard) ? UE::AssetRegistry::EDependencyProperty::None : UE::AssetRegistry::EDependencyProperty::Hard;
-			Required |= (DependencyType & EAssetRegistryDependencyType::SoftManage) ? UE::AssetRegistry::EDependencyProperty::None : UE::AssetRegistry::EDependencyProperty::Direct;
-			Excluded |= (DependencyType & EAssetRegistryDependencyType::HardManage) ? UE::AssetRegistry::EDependencyProperty::None : UE::AssetRegistry::EDependencyProperty::Direct;
-		}
-
 		FDependencyQuery(const FDependencyQuery& Other) = default;
 		FDependencyQuery& operator=(const FDependencyQuery& Other) = default;
 	};
 
 	// Functions to read and write the data used by the AssetRegistry in each package; the format of this data is separate from the format of the data in the asset registry
 	COREUOBJECT_API void WritePackageData(FStructuredArchiveRecord& ParentRecord, bool bIsCooking,
-		const UPackage* Package, FLinkerSave* Linker, const TSet<UObject*>& ImportsUsedInGame,
+		const UPackage* Package, FLinkerSave* Linker, const TSet<TObjectPtr<UObject>>& ImportsUsedInGame,
 		const TSet<FName>& SoftPackagesUsedInGame, const ITargetPlatform* TargetPlatform,
 		TArray<FAssetData>* OutAssetDatas);
 	// ReadPackageDataMain and ReadPackageDataDependencies are declared in IAssetRegistry.h, in the AssetRegistry module, because they depend upon some structures defined in the AssetRegistry module
@@ -207,7 +204,7 @@ namespace UE::AssetRegistry
 		 * TODO: this storage should be a class static variable on IAssetRegistry, but that type is defined in the AssetRegistry module, and many modules try to access the singleton (and call virtual functions on it) without linking against
 		 * the AssetRegistry module, so the storage for the singleton needs to be defined in a lower-level module that all of those modules do include
 		 */
-		class COREUOBJECT_API IAssetRegistrySingleton
+		class IAssetRegistrySingleton
 		{
 		public:
 			static IAssetRegistry* Get()
@@ -215,26 +212,26 @@ namespace UE::AssetRegistry
 				return Singleton;
 			}
 		private:
-			static IAssetRegistry* Singleton;
+			static COREUOBJECT_API IAssetRegistry* Singleton;
 			friend class ::UAssetRegistryImpl;
 		};
 	}
 
-	class COREUOBJECT_API FFiltering
+	class FFiltering
 	{
 	public:
 		/** Return whether to filter out assets of the given class and flags from the editor's asset registry */
-		static bool ShouldSkipAsset(const FTopLevelAssetPath& AssetClass, uint32 PackageFlags);
+		static COREUOBJECT_API bool ShouldSkipAsset(const FTopLevelAssetPath& AssetClass, uint32 PackageFlags);
 
 		/** Return whether to filter out the given object (assumed to be an asset) from the editor's asset registry */
-		static bool ShouldSkipAsset(const UObject* InAsset);
+		static COREUOBJECT_API bool ShouldSkipAsset(const UObject* InAsset);
 
 		/** Call to invalidate the list of skip assets and cause their next use to recreate them on demand */
-		static void MarkDirty();
+		static COREUOBJECT_API void MarkDirty();
 
 #if WITH_ENGINE && WITH_EDITOR
 		/** Copy the global skip classes set from the given external sets that were already populated. */
-		static void SetSkipClasses(const TSet<FTopLevelAssetPath>& InSkipUncookedClasses, const TSet<FTopLevelAssetPath>& InSkipCookedClasses);
+		static COREUOBJECT_API void SetSkipClasses(const TSet<FTopLevelAssetPath>& InSkipUncookedClasses, const TSet<FTopLevelAssetPath>& InSkipCookedClasses);
 #endif
 	};
 
@@ -278,19 +275,13 @@ namespace EAssetSetManagerFlags
 /**
  * Asset Registry module interface
  */
-class COREUOBJECT_API IAssetRegistryInterface
+class IAssetRegistryInterface
 {
 public:
 	/**
 	 * Tries to gets a pointer to the active AssetRegistryInterface implementation. 
 	 */
-	static IAssetRegistryInterface* GetPtr();
-
-	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
-	void GetDependencies(FName InPackageName, TArray<FName>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType)
-	{
-		GetDependenciesDeprecated(InPackageName, OutDependencies, InDependencyType);
-	}
+	static COREUOBJECT_API IAssetRegistryInterface* GetPtr();
 
 	/**
 	 * Lookup dependencies for the given package name and fill OutDependencies with direct dependencies
@@ -316,9 +307,7 @@ public:
 	virtual UE::AssetRegistry::EExists TryGetAssetPackageData(FName PackageName, class FAssetPackageData& OutPackageData) const = 0;
 
 protected:
-	/* This function is a workaround for platforms that don't support disable of deprecation warnings on override functions*/
-	virtual void GetDependenciesDeprecated(FName InPackageName, TArray<FName>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) = 0;
 
-	static IAssetRegistryInterface* Default;
+	static COREUOBJECT_API IAssetRegistryInterface* Default;
 	friend class UAssetRegistryImpl;
 };

@@ -2,7 +2,8 @@
 
 #pragma once
 
-#include "FieldNotification/FieldId.h" // IWYU pragma: keep
+#include "FieldNotificationId.h" // IWYU pragma: keep
+#include "Types/MVVMObjectVariant.h"
 #include "MVVMCompiledBindingLibrary.generated.h"
 
 namespace UE::FieldNotification { struct FFieldId; }
@@ -168,6 +169,7 @@ struct FMVVMCompiledLoadedPropertyOrFunctionIndex
 	}
 
 private:
+	/** Is the index in LoadedProperties or LoadedFunctions.*/
 	UPROPERTY()
 	int16 Index = INDEX_NONE;
 
@@ -179,7 +181,7 @@ private:
 	UPROPERTY()
 	uint8 bIsScriptStructProperty : 1;
 
-	/** Is the index in LoadedProperties or the index is in LoadedFunctions. */
+	/** Is the index in LoadedProperties or LoadedFunctions. */
 	UPROPERTY()
 	uint8 bIsProperty : 1;
 };
@@ -197,7 +199,10 @@ struct FMVVMVCompiledBinding
 public:
 	bool IsValid() const
 	{
-		return SourceFieldPath.IsValid() && DestinationFieldPath.IsValid();
+		const bool bSourceValid = SourceFieldPath.IsValid() || IsComplexFunction();
+		const bool bDestinationValid = DestinationFieldPath.IsValid();
+		const bool bFunctionValid = ConversionFunctionFieldPath.IsValid() || !HasConversionFunction();
+		return bSourceValid && bDestinationValid && bFunctionValid;
 	}
 
 	FMVVMVCompiledFieldPath GetSourceFieldPath() const
@@ -215,17 +220,45 @@ public:
 		return ConversionFunctionFieldPath;
 	}
 
+	bool HasConversionFunction() const
+	{
+		return (Flags & (uint8)EFlags::HasConversionFunction) != 0;
+	}
+
+	bool IsComplexFunction() const
+	{
+		uint8 AllFunctionFlags = (uint8)EFlags::IsConversionFunctionComplex | (uint8)EFlags::HasConversionFunction;
+		return (Flags & AllFunctionFlags) == AllFunctionFlags;
+	}
+
+	/** @return true if multiple field can trigger this binding. */
+	bool IsShared() const
+	{
+		return (Flags & (uint8)EFlags::IsShared) != 0;
+	}
+
 private:
 	using IndexType = int16;
 
 	UPROPERTY()
-	FMVVMVCompiledFieldPath SourceFieldPath; // todo: make this an array to support multiple input to conversion functions
+	FMVVMVCompiledFieldPath SourceFieldPath;
 
 	UPROPERTY()
 	FMVVMVCompiledFieldPath DestinationFieldPath;
 
 	UPROPERTY()
 	FMVVMVCompiledFieldPath ConversionFunctionFieldPath;
+
+	enum class EFlags : uint8
+	{
+		None = 0,
+		HasConversionFunction = 1 << 0,
+		IsConversionFunctionComplex = 1 << 1,
+		IsShared = 1 << 2,
+	};
+
+	UPROPERTY()
+	uint8 Flags = 0;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(meta = (IgnoreForMemberInitializationTest))
@@ -239,11 +272,11 @@ USTRUCT()
 struct MODELVIEWVIEWMODEL_API FMVVMCompiledBindingLibrary
 {
 	GENERATED_BODY()
+
 	friend UE::MVVM::FCompiledBindingLibraryCompiler;
 
 public:
 	FMVVMCompiledBindingLibrary();
-	~FMVVMCompiledBindingLibrary();
 
 public:
 	/** */
@@ -256,6 +289,8 @@ public:
 		InvalidCast,
 	};
 
+	static FText LexToText(EExecutionFailingReason Reason);
+
 	/** */
 	enum class EConversionFunctionType
 	{
@@ -267,6 +302,10 @@ public:
 
 	/** Fetch the FProperty and UFunction. */
 	void Load();
+	/** Release the acquired FProperty and UFunction. */
+	void Unload();
+	/** FProperty and UFunction are fetched. */
+	bool IsLoaded() const;
 
 	/**
 	 * Execute a binding, in one direction.
@@ -288,13 +327,13 @@ public:
 	TValueOrError<UE::FieldNotification::FFieldId, void> GetFieldId(const FMVVMVCompiledFieldId& FieldId) const;
 
 	/** Return a readable version of the FieldPath. */
-	TValueOrError<FString, FString> FieldPathToString(const FMVVMVCompiledFieldPath& FieldPath) const;
+	TValueOrError<FString, FString> FieldPathToString(FMVVMVCompiledFieldPath FieldPath, bool bUseDisplayName) const;
 
 private:
 	TValueOrError<void, EExecutionFailingReason> ExecuteImpl(UObject* ExecutionSource, const FMVVMVCompiledBinding& Binding, UObject* Source, EConversionFunctionType ConversionType) const;
 	TValueOrError<void, EExecutionFailingReason> ExecuteImpl(UE::MVVM::FFieldContext& Source, UE::MVVM::FFieldContext& Destination, UE::MVVM::FFunctionContext& ConversionFunction, EConversionFunctionType ConversionType) const;
 
-	TValueOrError<UE::MVVM::FMVVMFieldVariant, void> GetFinalFieldFromPathImpl(const FMVVMVCompiledFieldPath& FieldPath) const;
+	TValueOrError<UE::MVVM::FMVVMFieldVariant, void> GetFinalFieldFromPathImpl(UE::MVVM::FObjectVariant CurrentContainer, const FMVVMVCompiledFieldPath& FieldPath) const;
 
 private:
 	TArray<FProperty*> LoadedProperties;

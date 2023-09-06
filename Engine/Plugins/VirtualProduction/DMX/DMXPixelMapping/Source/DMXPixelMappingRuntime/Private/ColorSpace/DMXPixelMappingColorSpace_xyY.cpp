@@ -17,28 +17,30 @@ void UDMXPixelMappingColorSpace_xyY::SetRGBA(const FLinearColor& InColor)
 		SRGBColorSpace;
 
 	// Convert RGB to CIE XYZ
-	const FMatrix44d Matrix = InputColorSpace.GetRgbToXYZ();
+	const FMatrix44d& Matrix = InputColorSpace.GetRgbToXYZ();
 	const FVector4 XYZW = Matrix.TransformVector(FVector(InColor));
+	const FVector3d xyY = UE::Color::XYZToxyY(XYZW);
 
-	const double SumXYZ = XYZW.X + XYZW.Y + XYZW.Z;
-
-	// Calculate chromaticity coordinates x and y, use white point if SumXYZ is zero
-	const double x = SumXYZ > 0.f ? XYZW.X / SumXYZ : 0.3127;
-	const double y = SumXYZ > 0.f ? XYZW.Y / SumXYZ : 0.3290;
+	if (!ensureMsgf(ColorSpaceRange != 0.0, TEXT("Coversion in PixelMapping Color Space xyY failed. Color space range is 0.")))
+	{
+		return;
+	}
 
 	if (XAttribute.IsValid())
 	{
+		const double x = xyY[0] / ColorSpaceRange;
 		SetAttributeValue(XAttribute, x);
 	}
 
 	if (YAttribute.IsValid())
 	{
+		const double y = xyY[1] / ColorSpaceRange;
 		SetAttributeValue(YAttribute, y);
 	}
 
 	if (LuminanceAttribute.IsValid())
 	{
-		const float Luminance = FMath::Clamp(XYZW.Y, MinLuminance, MaxLuminance);
+		const double Luminance = FMath::Clamp(xyY[2], MinLuminance, MaxLuminance);
 		SetAttributeValue(LuminanceAttribute, Luminance);
 	}
 }

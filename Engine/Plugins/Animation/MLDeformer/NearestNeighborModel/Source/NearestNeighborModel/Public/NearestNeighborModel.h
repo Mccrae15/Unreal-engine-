@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerModel.h"
 #include "MLDeformerVizSettings.h"
 #include "MLDeformerInputInfo.h"
@@ -14,7 +14,6 @@ struct FSkelMeshImportedMeshInfo;
 class USkeletalMesh;
 class UGeometryCache;
 class UAnimSequence;
-class UNeuralNetwork;
 class UMLDeformerAsset;
 class USkeleton;
 class IPropertyHandle;
@@ -40,7 +39,7 @@ namespace UE::NearestNeighborModel
 		void Init(TArray<T>* InArray, const FString& InDebugName);
 
 	private:
-		void InitRHI() override;
+		void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 		TArray<T>* Array = nullptr;
 		FString DebugName;
@@ -53,7 +52,7 @@ namespace UE::NearestNeighborModel
 		void Init(int32 InNumElements, const FString& InDebugName);
 
 	private:
-		void InitRHI() override;
+		void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 		int32 NumElements = 0;
 		FString DebugName;
@@ -255,14 +254,11 @@ private:
 	virtual int32 GetNumFloatsPerCurve() const override { return NearestNeighborNumFloatsPerCurve; }
 
 	bool DoesUseOptimizedNetwork() const;
-	bool DoesMeetOptimizedNetworkPrerequisites() const;
+	bool ShouldUseOptimizedNetwork() const;
 	UNearestNeighborOptimizedNetwork* GetOptimizedNetwork() const { return OptimizedNetwork.Get(); }
 	int32 GetOptimizedNetworkNumOutputs() const;
 	void SetOptimizedNetwork(UNearestNeighborOptimizedNetwork* InOptimizedNetwork);
 	bool LoadOptimizedNetwork(const FString& OnnxPath);
-
-	UNeuralNetwork* GetNNINetwork() const;
-	void SetNNINetwork(UNeuralNetwork* InNeuralNetwork, bool bBroadcast = true);
 
 #if WITH_EDITORONLY_DATA
 	TObjectPtr<UAnimSequence> GetNearestNeighborSkeletons(int32 PartId);
@@ -290,7 +286,6 @@ private:
 	bool IsClothPartDataValid() const { return bClothPartDataValid; }
 	bool IsNearestNeighborDataValid() const { return bNearestNeighborDataValid; }
 	bool IsMorphTargetDataValid() const { return bMorphTargetDataValid; }
-	bool DoesEditorSupportOptimizedNetwork() const;
 	void SetUseOptimizedNetwork(bool bInUseOptimizedNetwork);
 #endif
 
@@ -337,9 +332,6 @@ private:
 	static FName GetFileCacheDirectoryPropertyName() { return GET_MEMBER_NAME_CHECKED(UNearestNeighborModel, FileCacheDirectory); }
 	static FName GetRecomputeDeltasPropertyName() { return GET_MEMBER_NAME_CHECKED(UNearestNeighborModel, bRecomputeDeltas); }
 	static FName GetRecomputePCAPropertyName() { return GET_MEMBER_NAME_CHECKED(UNearestNeighborModel, bRecomputePCA); }
-
-	bool GetUsePartOnlyMesh() const { return bUsePartOnlyMesh; }
-	static FName GetUsePartOnlyMeshPropertyName() { return GET_MEMBER_NAME_CHECKED(UNearestNeighborModel, bUsePartOnlyMesh); }
 
 	UFUNCTION(BlueprintPure, Category = "Nearest Neighbor Model")
 	FString GetModelDir() const;
@@ -388,9 +380,6 @@ protected:
 
 	UPROPERTY()
 	bool bMorphTargetDataValid = false;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nearest Neighbors")
-	bool bUsePartOnlyMesh = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Nearest Neighbors")
 	TArray<FSkeletonCachePair> NearestNeighborData;
@@ -453,13 +442,6 @@ protected:
 private:
 	UPROPERTY()
 	TObjectPtr<UNearestNeighborOptimizedNetwork> OptimizedNetwork = nullptr;
-
-	/** The NNI neural network. */
-	UPROPERTY()
-	TObjectPtr<UNeuralNetwork> NNINetwork;
-
-	UPROPERTY()
-	bool bDoesMeetOptimizedNetworkPrerequisites = false;
 
 	UPROPERTY()
 	bool bUseOptimizedNetwork = true;

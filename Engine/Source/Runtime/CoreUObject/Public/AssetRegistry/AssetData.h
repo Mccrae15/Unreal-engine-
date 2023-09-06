@@ -66,7 +66,7 @@ COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogAssetData, Log, All);
 COREUOBJECT_API extern const FName GAssetBundleDataName;
 
 /** Version used for serializing asset registry caches, both runtime and editor */
-struct COREUOBJECT_API FAssetRegistryVersion
+struct FAssetRegistryVersion
 {
 	enum Type
 	{
@@ -106,10 +106,10 @@ struct COREUOBJECT_API FAssetRegistryVersion
 	};
 
 	/** The GUID for this custom version number */
-	const static FGuid GUID;
+	COREUOBJECT_API const static FGuid GUID;
 
 	/** Read/write the custom version to the archive, should call at the very beginning */
-	static bool SerializeVersion(FArchive& Ar, FAssetRegistryVersion::Type& Version);
+	static COREUOBJECT_API bool SerializeVersion(FArchive& Ar, FAssetRegistryVersion::Type& Version);
 
 private:
 	FAssetRegistryVersion() {}
@@ -488,13 +488,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		AppendObjectPath(Builder);
 		String.Append(FString(Builder));
 	}
-
-
-	UE_DEPRECATED(4.18, "ToStringReference was renamed to GetSoftObjectPath")
-	FSoftObjectPath ToStringReference() const
-	{
-		return GetSoftObjectPath();
-	}
 	
 	/** Gets primary asset id of this data */
 	COREUOBJECT_API FPrimaryAssetId GetPrimaryAssetId() const;
@@ -726,13 +719,9 @@ private:
 		return PackageBaseName.Equals(ObjectPathName, ESearchCase::IgnoreCase);
 	}
 
-	static bool IsRedirectorClassName(FTopLevelAssetPath ClassPathName)
-	{
-		static const FTopLevelAssetPath ObjectRedirectorClassPathName = UObjectRedirector::StaticClass()->GetClassPathName();
-		return ClassPathName == ObjectRedirectorClassPathName;
-	}
-
 public:
+	COREUOBJECT_API static bool IsRedirectorClassName(FTopLevelAssetPath ClassPathName);
+
 	/** Helper function that tries to convert short class name to path name */
 	COREUOBJECT_API static FTopLevelAssetPath TryConvertShortClassNameToPathName(FName InClassName, ELogVerbosity::Type FailureMessageVerbosity = ELogVerbosity::Warning);
 

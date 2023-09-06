@@ -2,7 +2,7 @@
 
 import { Stack } from "@fluentui/react";
 import { observer } from "mobx-react-lite";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { hordeClasses } from "../../styles/Styles";
 import { HistoryModal } from "../HistoryModal";
@@ -12,10 +12,14 @@ import { HealthPanel } from "./JobDetailHealthV2";
 import { StepHistoryPanel } from "./JobDetailStepHistory";
 import { StepTrendsPanel } from "./JobDetailStepTrends";
 import { JobDataView, JobDetailsV2 } from "./JobDetailsViewCommon";
+import { TimelinePanel } from "./JobDetailTimeline";
 import { StepsPanelV2 } from "./JobDetailViewSteps";
 import { StepSummaryPanel } from "./StepDetailSummary";
 import { StepTestReportPanel } from "./StepDetailTestPanel";
 import { StepErrorPanel } from "./StepErrorPanel";
+import backend from "../../backend";
+import { GetArtifactResponseV2 } from "../../backend/Api";
+import { StepTrendsPanelV2 } from "./JobDetailStepTrendsV2";
 
 
 class StepDetailDataView extends JobDataView {
@@ -30,8 +34,73 @@ class StepDetailDataView extends JobDataView {
          return;
       }
 
+      this.queryArtifacts();
+
       this.updateReady();
+
    }
+
+   async queryArtifacts() {
+
+      if (this.artifacts) {
+         return;
+      }
+
+      if (!this.details?.jobData) {
+         return;
+      }
+
+      if (!this.details.jobData.useArtifactsV2) {
+         this.artifacts = [];
+         return;
+      }
+
+      const stepId = this.stepId!;
+
+      let artifacts = this.details.stepArtifacts.get(stepId);
+      if (!artifacts) {
+         const key = `job:${this.details!.jobData!.id}/step:${this.stepId}`;
+         try {
+            const v = await backend.getJobArtifactsV2(undefined, [key]);
+            artifacts = v.artifacts;
+            this.details.stepArtifacts.set(stepId, artifacts);
+
+            // need to notify things like the operations bar
+            this.details.externalUpdate();
+         } catch (err) {
+            console.error(err);
+         } finally {
+            artifacts = [];
+         }
+         this.artifacts = artifacts;
+      }
+
+
+   }
+
+   async set(stepId: string) {
+
+      if (this.stepId === stepId) {
+         return;
+      }
+
+      this.stepId = stepId;
+
+      this.queryArtifacts();
+
+      this.updateReady();
+
+   }
+
+   clear() {
+      this.stepId = undefined;
+      this.artifacts = undefined;
+      super.clear();
+   }
+
+   artifacts?: GetArtifactResponseV2[];
+
+   stepId?: string;
 
 }
 
@@ -45,9 +114,18 @@ const StepDetailViewInner: React.FC<{ jobDetails: JobDetailsV2, stepId: string }
 
    const dataView = jobDetails.getDataView<StepDetailDataView>("StepDetailDataView");
 
-   dataView.initialize();
+   useEffect(() => {
+      return () => {
+         dataView?.clear();
+      };
+   }, [dataView]);
+
 
    dataView.subscribe();
+
+   dataView.initialize();
+
+   dataView.set(stepId);
 
    if (!historyAgentId && query.get("agentId")) {
       historyAgentId = query.get("agentId")!;
@@ -77,7 +155,7 @@ const StepDetailViewInner: React.FC<{ jobDetails: JobDetailsV2, stepId: string }
          <StepErrorPanel jobDetails={jobDetails} stepId={stepId} showErrors={false} />
       </Stack>
       <Stack>
-         <StepsPanelV2 jobDetails={jobDetails} depStepId={stepId}/>
+         <StepsPanelV2 jobDetails={jobDetails} depStepId={stepId} />
       </Stack>
       <Stack>
          <StepTestReportPanel jobDetails={jobDetails} stepId={stepId} />
@@ -85,11 +163,14 @@ const StepDetailViewInner: React.FC<{ jobDetails: JobDetailsV2, stepId: string }
       {<Stack>
          <StepHistoryPanel jobDetails={jobDetails} stepId={stepId} />
       </Stack>}
-      <Stack>
+      {!jobData.useArtifactsV2 && <Stack>
          <JobDetailArtifactsV2 jobDetails={jobDetails} stepId={stepId} />
-      </Stack>
+      </Stack>}
       {!!step && <Stack>
-         <StepTrendsPanel jobDetails={jobDetails} />
+         <TimelinePanel jobDetails={jobDetails} stepId={stepId} />
+      </Stack>}
+      {!!step && <Stack>
+         <StepTrendsPanelV2 jobDetails={jobDetails} stepId={stepId}/>
       </Stack>}
    </Stack>
 });

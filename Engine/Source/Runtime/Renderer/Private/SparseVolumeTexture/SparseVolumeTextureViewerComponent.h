@@ -15,6 +15,18 @@
 
 class FSparseVolumeTextureViewerSceneProxy;
 
+UENUM(BlueprintType)
+enum ESparseVolumeTexturePreviewAttribute : uint8
+{
+	ESVTPA_AttributesA_R UMETA(DisplayName = "AttributesA Red"),
+	ESVTPA_AttributesA_G UMETA(DisplayName = "AttributesA Green"),
+	ESVTPA_AttributesA_B UMETA(DisplayName = "AttributesA Blue"),
+	ESVTPA_AttributesA_A UMETA(DisplayName = "AttributesA Alpha"),
+	ESVTPA_AttributesB_R UMETA(DisplayName = "AttributesB Red"),
+	ESVTPA_AttributesB_G UMETA(DisplayName = "AttributesB Green"),
+	ESVTPA_AttributesB_B UMETA(DisplayName = "AttributesB Blue"),
+	ESVTPA_AttributesB_A UMETA(DisplayName = "AttributesB Alpha"),
+};
 
 /**
  * A component used to inspect sparse volume textures.
@@ -32,6 +44,12 @@ class USparseVolumeTextureViewerComponent : public UPrimitiveComponent
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asset Preview")
 	uint32 bAnimate : 1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asset Preview")
+	uint32 bReversePlayback : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Asset Preview")
+	uint32 bBlockingStreamingRequests : 1;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asset Preview", meta = (UIMin = 0.0, UIMax = 1.0, ClampMin = 0.0, ClampMax = 1.0, EditCondition = "!bAnimate"))
 	float AnimationFrame;
 
@@ -41,8 +59,16 @@ class USparseVolumeTextureViewerComponent : public UPrimitiveComponent
 	UPROPERTY(VisibleAnywhere, Category = "Asset Preview", meta = (UIMin = 0.0, UIMax = 60.0))
 	float AnimationTime;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asset Preview", meta = (UIMin = 0, UIMax = 7, ClampMin = 0, ClampMax = 7))
-	int32 ComponentToVisualize;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asset Preview")
+	TEnumAsByte<ESparseVolumeTexturePreviewAttribute> PreviewAttribute;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asset Preview", meta = (UIMin = 0, UIMax = 11, ClampMin = 0, ClampMax = 11))
+	int32 MipLevel;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Asset Preview", meta = (UIMin = 0.0, UIMax = 1.0, ClampMin = 0))
+	float Extinction = 0.025f;
+
+	TObjectPtr<class USparseVolumeTextureFrame> SparseVolumeTextureFrame;
 
 	//~ Begin UPrimitiveComponent Interface.
 	virtual bool SupportsStaticLighting() const override { return false; }
@@ -65,7 +91,6 @@ protected:
 public:
 
 	//~ Begin UObject Interface. 
-	virtual void PostInterpChange(FProperty* PropertyThatChanged) override;
 	virtual void Serialize(FArchive& Ar) override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -102,7 +127,7 @@ private:
 	TObjectPtr<class USparseVolumeTextureViewerComponent> SparseVolumeTextureViewerComponent;
 
 #if WITH_EDITOR
-	virtual bool ActorTypeSupportsDataLayer() const override { return true; }
+	virtual bool IsDataLayerTypeSupported(TSubclassOf<UDataLayerInstance> DataLayerType) const override { return true; }
 #endif
 
 };

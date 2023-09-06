@@ -2,29 +2,27 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
 	partial class SyncFilter : Form
 	{
-		Dictionary<Guid, WorkspaceSyncCategory> _uniqueIdToCategory;
+		readonly Dictionary<Guid, WorkspaceSyncCategory> _uniqueIdToCategory;
 		public FilterSettings GlobalFilter;
 		public FilterSettings WorkspaceFilter;
+		readonly ConfigSection? _perforceSection;
 
-		public SyncFilter(Dictionary<Guid, WorkspaceSyncCategory> inUniqueIdToCategory, FilterSettings inGlobalFilter, FilterSettings inWorkspaceFilter)
+		public SyncFilter(Dictionary<Guid, WorkspaceSyncCategory> uniqueIdToCategory, FilterSettings globalFilter, FilterSettings workspaceFilter, ConfigSection? perforceSection)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			_uniqueIdToCategory = inUniqueIdToCategory;
-			GlobalFilter = inGlobalFilter;
-			WorkspaceFilter = inWorkspaceFilter;
+			_uniqueIdToCategory = uniqueIdToCategory;
+			GlobalFilter = globalFilter;
+			WorkspaceFilter = workspaceFilter;
+			_perforceSection = perforceSection;
 
 			Dictionary<Guid, bool> syncCategories = WorkspaceSyncCategory.GetDefault(_uniqueIdToCategory.Values);
 
@@ -82,7 +80,7 @@ namespace UnrealGameSync
 			Dictionary<Guid, bool> defaultSyncCategories = WorkspaceSyncCategory.GetDefault(_uniqueIdToCategory.Values);
 
 			newGlobalFilter = new FilterSettings();
-			newGlobalFilter.View = GlobalControl.GetView().ToList();
+			newGlobalFilter.View.AddRange(GlobalControl.GetView());
 			newGlobalFilter.AllProjects = GlobalControl.SyncAllProjects.Checked;
 			newGlobalFilter.AllProjectsInSln = GlobalControl.IncludeAllProjectsInSolution.Checked;
 
@@ -90,7 +88,7 @@ namespace UnrealGameSync
 			newGlobalFilter.SetCategories(WorkspaceSyncCategory.GetDelta(defaultSyncCategories, globalSyncCategories));
 
 			newWorkspaceFilter = new FilterSettings();
-			newWorkspaceFilter.View = WorkspaceControl.GetView().ToList();
+			newWorkspaceFilter.View.AddRange(WorkspaceControl.GetView());
 			newWorkspaceFilter.AllProjects = (WorkspaceControl.SyncAllProjects.Checked == newGlobalFilter.AllProjects) ? (bool?)null : WorkspaceControl.SyncAllProjects.Checked;
 			newWorkspaceFilter.AllProjectsInSln = (WorkspaceControl.IncludeAllProjectsInSolution.Checked == newGlobalFilter.AllProjectsInSln) ? (bool?)null : WorkspaceControl.IncludeAllProjectsInSolution.Checked;
 
@@ -119,21 +117,11 @@ namespace UnrealGameSync
 			return result;
 		}
 
-		private static string[] GetView(TextBox filterText)
-		{
-			List<string> newLines = new List<string>(filterText.Lines);
-			while (newLines.Count > 0 && newLines.Last().Trim().Length == 0)
-			{
-				newLines.RemoveAt(newLines.Count - 1);
-			}
-			return newLines.Count > 0 ? filterText.Lines : new string[0];
-		}
-
 		private void OkButton_Click(object sender, EventArgs e)
 		{
 			GetSettings(out FilterSettings newGlobalFilter, out FilterSettings newWorkspaceFilter);
 
-			if(newGlobalFilter.View.Any(x => x.Contains("//")) || newWorkspaceFilter.View.Any(x => x.Contains("//")))
+			if(newGlobalFilter.View.Any(x => x.Contains("//", StringComparison.Ordinal)) || newWorkspaceFilter.View.Any(x => x.Contains("//", StringComparison.Ordinal)))
 			{
 				if(MessageBox.Show(this, "Custom views should be relative to the stream root (eg. -/Engine/...).\r\n\r\nFull depot paths (eg. //depot/...) will not match any files.\r\n\r\nAre you sure you want to continue?", "Invalid view", MessageBoxButtons.OKCancel) != System.Windows.Forms.DialogResult.OK)
 				{
@@ -156,7 +144,7 @@ namespace UnrealGameSync
 		{
 			GetSettings(out FilterSettings newGlobalFilter, out FilterSettings newWorkspaceFilter);
 
-			string[] filter = UserSettings.GetCombinedSyncFilter(_uniqueIdToCategory, newGlobalFilter, newWorkspaceFilter);
+			string[] filter = UserSettings.GetCombinedSyncFilter(_uniqueIdToCategory, newGlobalFilter, newWorkspaceFilter, _perforceSection);
 			if(filter.Length == 0)
 			{
 				filter = new string[]{ "All files will be synced." };

@@ -148,8 +148,6 @@ class GeodesicSingleTriangleUtils::FTangentTri2
 public:
 	FTangentTri2() = default;
 
-	FTangentTri2(const FTangentTri2& other) = default;
-
 	// The PrimaryEdge will be aligned with the x-axis in 2d ( and must be one of the edges of the triangle indicated by TriID)
 	FTangentTri2(const FDynamicMesh3& Mesh, int32 TriID, int32 PrimaryEdgeID);
 
@@ -199,7 +197,7 @@ public:
 * in terms of barycentric coordinates, triangle references and local path direction relative 
 * to a local frame (in the form of one of the edges of the triangle).
 */
-class FMeshGeodesicSurfaceTracer
+class DYNAMICMESH_API FMeshGeodesicSurfaceTracer
 {
 public:
 
@@ -309,8 +307,6 @@ struct GeodesicSingleTriangleUtils::FMeshSurfaceDirection
 		, Dir(FVector2d(FMath::Cos(PolarAngle), FMath::Sin(PolarAngle)))
 	{}
 
-	FMeshSurfaceDirection(const FMeshSurfaceDirection& Other) = default;
-	
 
 	int32 EdgeID;           // Mesh Edge, has implicit order (from Edge.A to Edge.B)
 	FVector2d  Dir;         // Normalized direction relative to the frame defined by the mesh edge EdgeID aligned with the x-axis

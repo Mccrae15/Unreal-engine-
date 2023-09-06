@@ -111,7 +111,7 @@ using FRDGTextureSubresourceState = TRDGTextureSubresourceArray<FRDGSubresourceS
 using FRDGTextureSubresourceStateIndirect = TRDGTextureSubresourceArray<FRDGSubresourceState*, FRDGArrayAllocator>;
 
 /** Generic graph resource. */
-class RENDERCORE_API FRDGResource
+class FRDGResource
 {
 public:
 	FRDGResource(const FRDGResource&) = delete;
@@ -125,7 +125,7 @@ public:
 
 	/** Marks this resource as actually used by a resource. This is to track what dependencies on pass was actually unnecessary. */
 #if RDG_ENABLE_DEBUG
-	virtual void MarkResourceAsUsed();
+	RENDERCORE_API virtual void MarkResourceAsUsed();
 #else
 	inline  void MarkResourceAsUsed() {}
 #endif
@@ -163,13 +163,13 @@ protected:
 	FRHIResource* ResourceRHI = nullptr;
 
 #if RDG_ENABLE_DEBUG
-	void ValidateRHIAccess() const;
+	RENDERCORE_API void ValidateRHIAccess() const;
 #endif
 
 private:
 #if RDG_ENABLE_DEBUG
 	struct FRDGResourceDebugData* DebugData = nullptr;
-	FRDGResourceDebugData& GetDebugData() const;
+	RENDERCORE_API FRDGResourceDebugData& GetDebugData() const;
 #endif
 
 #if RHI_ENABLE_RESOURCE_INFO
@@ -181,7 +181,7 @@ private:
 	friend FRDGBarrierValidation;
 };
 
-class RENDERCORE_API FRDGUniformBuffer
+class FRDGUniformBuffer
 	: public FRDGResource
 {
 public:
@@ -199,7 +199,7 @@ public:
 	}
 
 #if RDG_ENABLE_DEBUG
-	void MarkResourceAsUsed() override;
+	RENDERCORE_API void MarkResourceAsUsed() override;
 #else
 	inline void MarkResourceAsUsed() {}
 #endif
@@ -227,7 +227,7 @@ private:
 		return static_cast<FRHIUniformBuffer*>(FRDGResource::GetRHIUnchecked());
 	}
 
-	void InitRHI();
+	RENDERCORE_API void InitRHI();
 
 	const FRDGParameterStruct ParameterStruct;
 	TRefCountPtr<FRHIUniformBuffer> UniformBufferRHI;
@@ -280,7 +280,7 @@ private:
 };
 
 /** A render graph resource with an allocation lifetime tracked by the graph. May have child resources which reference it (e.g. views). */
-class RENDERCORE_API FRDGViewableResource
+class FRDGViewableResource
 	: public FRDGResource
 {
 public:
@@ -313,7 +313,7 @@ public:
 	}
 
 protected:
-	FRDGViewableResource(const TCHAR* InName, ERDGViewableResourceType InType, bool bSkipTracking, bool bImmediateFirstBarrier);
+	RENDERCORE_API FRDGViewableResource(const TCHAR* InName, ERDGViewableResourceType InType, bool bSkipTracking, bool bImmediateFirstBarrier);
 
 	static const ERHIAccess DefaultEpilogueAccess = ERHIAccess::SRVMask;
 
@@ -419,7 +419,7 @@ private:
 
 #if RDG_ENABLE_DEBUG
 	struct FRDGViewableResourceDebugData* ViewableDebugData = nullptr;
-	FRDGViewableResourceDebugData& GetViewableDebugData() const;
+	RENDERCORE_API FRDGViewableResourceDebugData& GetViewableDebugData() const;
 #endif
 
 	friend FRDGBuilder;
@@ -472,7 +472,7 @@ inline FRDGTextureDesc Translate(const FPooledRenderTargetDesc& InDesc);
 /** Translates from an RHI/RDG texture descriptor to a pooled render target descriptor. */
 inline FPooledRenderTargetDesc Translate(const FRHITextureDesc& InDesc);
 
-class RENDERCORE_API FRDGPooledTexture final
+class FRDGPooledTexture final
 	: public FRefCountBase
 {
 public:
@@ -481,10 +481,16 @@ public:
 	{}
 
 	/** Finds a UAV matching the descriptor in the cache or creates a new one and updates the cache. */
-	FORCEINLINE FRHIUnorderedAccessView* GetOrCreateUAV(const FRHITextureUAVCreateInfo& UAVDesc) { return ViewCache.GetOrCreateUAV(Texture, UAVDesc); }
+	FORCEINLINE FRHIUnorderedAccessView* GetOrCreateUAV(FRHICommandListBase& RHICmdList, const FRHITextureUAVCreateInfo& UAVDesc) { return ViewCache.GetOrCreateUAV(RHICmdList, Texture, UAVDesc); }
 
 	/** Finds a SRV matching the descriptor in the cache or creates a new one and updates the cache. */
-	FORCEINLINE FRHIShaderResourceView* GetOrCreateSRV(const FRHITextureSRVCreateInfo& SRVDesc) { return ViewCache.GetOrCreateSRV(Texture, SRVDesc); }
+	FORCEINLINE FRHIShaderResourceView* GetOrCreateSRV(FRHICommandListBase& RHICmdList, const FRHITextureSRVCreateInfo& SRVDesc) { return ViewCache.GetOrCreateSRV(RHICmdList, Texture, SRVDesc); }
+
+	UE_DEPRECATED(5.3, "GetOrCreateUAV now requires a command list.")
+	FORCEINLINE FRHIUnorderedAccessView* GetOrCreateUAV(const FRHITextureUAVCreateInfo& UAVDesc) { return ViewCache.GetOrCreateUAV(FRHICommandListImmediate::Get(), Texture, UAVDesc); }
+
+	UE_DEPRECATED(5.3, "GetOrCreateSRV now requires a command list.")
+	FORCEINLINE FRHIShaderResourceView* GetOrCreateSRV(const FRHITextureSRVCreateInfo& SRVDesc) { return ViewCache.GetOrCreateSRV(FRHICommandListImmediate::Get(), Texture, SRVDesc); }
 
 	FORCEINLINE FRHITexture* GetRHI() const { return Texture; }
 
@@ -496,7 +502,7 @@ private:
 };
 
 /** Render graph tracked Texture. */
-class RENDERCORE_API FRDGTexture final
+class FRDGTexture final
 	: public FRDGViewableResource
 {
 public:
@@ -541,7 +547,7 @@ public:
 		return Layout.GetSubresource(SubresourceIndex);
 	}
 
-	FRDGTextureSubresourceRange GetSubresourceRangeSRV() const;
+	RENDERCORE_API FRDGTextureSubresourceRange GetSubresourceRangeSRV() const;
 
 private:
 	FRDGTexture(const TCHAR* InName, const FRDGTextureDesc& InDesc, ERDGTextureFlags InFlags)
@@ -616,7 +622,7 @@ private:
 
 #if RDG_ENABLE_DEBUG
 	struct FRDGTextureDebugData* TextureDebugData = nullptr;
-	FRDGTextureDebugData& GetTextureDebugData() const;
+	RENDERCORE_API FRDGTextureDebugData& GetTextureDebugData() const;
 #endif
 
 	friend FRDGBuilder;
@@ -715,11 +721,14 @@ public:
 	static FRDGTextureSRVDesc CreateForSlice(FRDGTextureRef Texture, int32 SliceIndex)
 	{
 		check(Texture);
-		check(Texture->Desc.IsTextureArray());
+        check(Texture->Desc.Dimension == ETextureDimension::Texture2DArray);
 		check(SliceIndex >= 0 && SliceIndex < Texture->Desc.ArraySize);
+        
 		FRDGTextureSRVDesc Desc = FRDGTextureSRVDesc::Create(Texture);
 		Desc.FirstArraySlice = (uint16)SliceIndex;
 		Desc.NumArraySlices = 1;
+        Desc.DimensionOverride = ETextureDimension::Texture2D;
+        
 		return Desc;
 	}
 
@@ -872,21 +881,6 @@ private:
 /** Descriptor for render graph tracked Buffer. */
 struct FRDGBufferDesc
 {
-	enum class UE_DEPRECATED(5.1, "EUnderlying type has been deprecated.") EUnderlyingType
-	{
-		VertexBuffer,
-		StructuredBuffer,
-		AccelerationStructure
-	};
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FRDGBufferDesc() = default;
-	FRDGBufferDesc(FRDGBufferDesc&&) = default;
-	FRDGBufferDesc(const FRDGBufferDesc&) = default;
-	FRDGBufferDesc& operator=(FRDGBufferDesc&&) = default;
-	FRDGBufferDesc& operator=(const FRDGBufferDesc&) = default;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	static FRDGBufferDesc CreateIndirectDesc(uint32 BytesPerElement, uint32 NumElements)
 	{
 		FRDGBufferDesc Desc;
@@ -1024,12 +1018,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return BytesPerElement * NumElements;
 	}
 
-	UE_DEPRECATED(5.1, "GetTotalNumBytes is deprecated, use GetSize instead.")
-	uint32 GetTotalNumBytes() const
-	{
-		return BytesPerElement * NumElements;
-	}
-
 	friend uint32 GetTypeHash(const FRDGBufferDesc& Desc)
 	{
 		uint32 Hash = GetTypeHash(Desc.BytesPerElement);
@@ -1061,23 +1049,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	/** Bitfields describing the uses of that buffer. */
 	EBufferUsageFlags Usage = EBufferUsageFlags::None;
 
-	/** The underlying RHI type to use. */
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	UE_DEPRECATED(5.1, "EUnderlyingType has been deprecated. Use explicit EBufferUsageFlags instead.")
-	EUnderlyingType UnderlyingType = EUnderlyingType::VertexBuffer;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	/** Meta data of the layout of the buffer for debugging purposes. */
 	const FShaderParametersMetadata* Metadata = nullptr;
 };
-
-UE_DEPRECATED(5.1, "FRDGBuffer::EUnderylingType has been deprecated. Use EBufferCreateFlags instead.")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-inline const TCHAR* GetBufferUnderlyingTypeName(FRDGBufferDesc::EUnderlyingType)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	return TEXT("");
-}
 
 struct FRDGBufferSRVDesc final
 	: public FRHIBufferSRVCreateInfo
@@ -1090,8 +1064,12 @@ struct FRDGBufferSRVDesc final
 		: FRHIBufferSRVCreateInfo(InFormat)
 		, Buffer(InBuffer)
 	{
-		BytesPerElement = GPixelFormats[Format].BlockBytes;
 	}
+
+	FRDGBufferSRVDesc(FRDGBufferRef InBuffer, uint32 InStartOffsetBytes, uint32 InNumElements)
+		: FRHIBufferSRVCreateInfo(InStartOffsetBytes, InNumElements)
+		, Buffer(InBuffer)
+	{}
 
 	bool operator == (const FRDGBufferSRVDesc& Other) const
 	{
@@ -1144,24 +1122,37 @@ struct FRDGBufferUAVDesc final
 /** Translates from a RDG buffer descriptor to a RHI buffer creation info */
 inline FRHIBufferCreateInfo Translate(const FRDGBufferDesc& InDesc);
 
-class RENDERCORE_API FRDGPooledBuffer final
+class FRDGPooledBuffer final
 	: public FRefCountBase
 {
 public:
-	FRDGPooledBuffer(TRefCountPtr<FRHIBuffer> InBuffer, const FRDGBufferDesc& InDesc, uint32 InNumAllocatedElements, const TCHAR* InName)
+	FRDGPooledBuffer(FRHICommandListBase& RHICmdList, TRefCountPtr<FRHIBuffer> InBuffer, const FRDGBufferDesc& InDesc, uint32 InNumAllocatedElements, const TCHAR* InName)
 		: Desc(InDesc)
 		, Buffer(MoveTemp(InBuffer))
 		, Name(InName)
 		, NumAllocatedElements(InNumAllocatedElements)
-	{}
+	{
+		if (EnumHasAnyFlags(InDesc.Usage, EBufferUsageFlags::StructuredBuffer | EBufferUsageFlags::ByteAddressBuffer))
+		{
+			CachedSRV = GetOrCreateSRV(RHICmdList, FRHIBufferSRVCreateInfo());
+		}
+	}
+
+	RENDERCORE_API FRDGPooledBuffer(TRefCountPtr<FRHIBuffer> InBuffer, const FRDGBufferDesc& InDesc, uint32 InNumAllocatedElements, const TCHAR* InName);
 
 	const FRDGBufferDesc Desc;
 
 	/** Finds a UAV matching the descriptor in the cache or creates a new one and updates the cache. */
-	FORCEINLINE FRHIUnorderedAccessView* GetOrCreateUAV(const FRHIBufferUAVCreateInfo& UAVDesc) { return ViewCache.GetOrCreateUAV(Buffer, UAVDesc); }
+	FORCEINLINE FRHIUnorderedAccessView* GetOrCreateUAV(FRHICommandListBase& RHICmdList, const FRHIBufferUAVCreateInfo& UAVDesc) { return ViewCache.GetOrCreateUAV(RHICmdList, Buffer, UAVDesc); }
 
 	/** Finds a SRV matching the descriptor in the cache or creates a new one and updates the cache. */
-	FORCEINLINE FRHIShaderResourceView* GetOrCreateSRV(const FRHIBufferSRVCreateInfo& SRVDesc) { return ViewCache.GetOrCreateSRV(Buffer, SRVDesc); }
+	FORCEINLINE FRHIShaderResourceView* GetOrCreateSRV(FRHICommandListBase& RHICmdList, const FRHIBufferSRVCreateInfo& SRVDesc) { return ViewCache.GetOrCreateSRV(RHICmdList, Buffer, SRVDesc); }
+
+	UE_DEPRECATED(5.3, "GetOrCreateUAV now requires a command list.")
+	FORCEINLINE FRHIUnorderedAccessView* GetOrCreateUAV(const FRHIBufferUAVCreateInfo& UAVDesc) { return ViewCache.GetOrCreateUAV(FRHICommandListImmediate::Get(), Buffer, UAVDesc); }
+
+	UE_DEPRECATED(5.3, "GetOrCreateSRV now requires a command list.")
+	FORCEINLINE FRHIShaderResourceView* GetOrCreateSRV(const FRHIBufferSRVCreateInfo& SRVDesc) { return ViewCache.GetOrCreateSRV(FRHICommandListImmediate::Get(), Buffer, SRVDesc); }
 
 	/** Returns the RHI buffer. */
 	FORCEINLINE FRHIBuffer* GetRHI() const { return Buffer; }
@@ -1169,16 +1160,19 @@ public:
 	/** Returns the default SRV. */
 	FORCEINLINE FRHIShaderResourceView* GetSRV()
 	{
-		if (!CachedSRV)
-		{
-			CachedSRV = GetOrCreateSRV(FRHIBufferSRVCreateInfo());
-		}
+		checkf(CachedSRV, TEXT("Only byte address and structured buffers can use the default GetSRV call"));
 		return CachedSRV;
 	}
 
+	UE_DEPRECATED(5.3, "GetSRV now requires a command list.")
 	FORCEINLINE FRHIShaderResourceView* GetSRV(const FRHIBufferSRVCreateInfo& SRVDesc)
 	{
-		return GetOrCreateSRV(SRVDesc);
+		return GetOrCreateSRV(FRHICommandListImmediate::Get(), SRVDesc);
+	}
+
+	FORCEINLINE FRHIShaderResourceView* GetSRV(FRHICommandListBase& RHICmdList, const FRHIBufferSRVCreateInfo& SRVDesc)
+	{
+		return GetOrCreateSRV(RHICmdList, SRVDesc);
 	}
 
 	FORCEINLINE uint32 GetSize() const
@@ -1218,7 +1212,7 @@ private:
 };
 
 /** A render graph tracked buffer. */
-class RENDERCORE_API FRDGBuffer final
+class FRDGBuffer final
 	: public FRDGViewableResource
 {
 public:
@@ -1329,7 +1323,7 @@ private:
 
 #if RDG_ENABLE_DEBUG
 	struct FRDGBufferDebugData* BufferDebugData = nullptr;
-	FRDGBufferDebugData& GetBufferDebugData() const;
+	RENDERCORE_API FRDGBufferDebugData& GetBufferDebugData() const;
 #endif
 
 	friend FRDGBuilder;

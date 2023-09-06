@@ -555,6 +555,34 @@ TSharedRef<ITextInputMethodContext> FSlateEditableTextLayout::GetTextInputMethod
 	return TextInputMethodContext.ToSharedRef();
 }
 
+void FSlateEditableTextLayout::EnableTextInputMethodContext()
+{
+	ITextInputMethodSystem* const TextInputMethodSystem = FSlateApplication::Get().GetTextInputMethodSystem();
+	if (TextInputMethodSystem)
+	{
+		if (!bHasRegisteredTextInputMethodContext)
+		{
+			bHasRegisteredTextInputMethodContext = true;
+
+			TextInputMethodChangeNotifier = TextInputMethodSystem->RegisterContext(TextInputMethodContext.ToSharedRef());
+			if (TextInputMethodChangeNotifier.IsValid())
+			{
+				TextInputMethodChangeNotifier->NotifyLayoutChanged(ITextInputMethodChangeNotifier::ELayoutChangeType::Created);
+			}
+		}
+
+		TextInputMethodContext->CacheWindow();
+
+		// Make sure to set Native OS window focus as well to ensure IME support
+		if (TSharedPtr<FGenericWindow> NativeWindow = TextInputMethodContext->GetWindow())
+		{
+			NativeWindow->SetWindowFocus();
+		}
+
+		TextInputMethodSystem->ActivateContext(TextInputMethodContext.ToSharedRef());
+	}
+}
+
 bool FSlateEditableTextLayout::Refresh()
 {
 	const FText& TextToSet = BoundText.Get(FText::GetEmpty());
@@ -811,30 +839,7 @@ bool FSlateEditableTextLayout::HandleFocusReceived(const FFocusEvent& InFocusEve
 	}
 	else
 	{
-		ITextInputMethodSystem* const TextInputMethodSystem = FSlateApplication::Get().GetTextInputMethodSystem();
-		if (TextInputMethodSystem)
-		{
-			if (!bHasRegisteredTextInputMethodContext)
-			{
-				bHasRegisteredTextInputMethodContext = true;
-
-				TextInputMethodChangeNotifier = TextInputMethodSystem->RegisterContext(TextInputMethodContext.ToSharedRef());
-				if (TextInputMethodChangeNotifier.IsValid())
-				{
-					TextInputMethodChangeNotifier->NotifyLayoutChanged(ITextInputMethodChangeNotifier::ELayoutChangeType::Created);
-				}
-			}
-
-			TextInputMethodContext->CacheWindow();
-
-			// Make sure to set Native OS window focus as well to ensure IME support
-			if (TSharedPtr<FGenericWindow> NativeWindow = TextInputMethodContext->GetWindow())
-			{
-				NativeWindow->SetWindowFocus();
-			}
-
-			TextInputMethodSystem->ActivateContext(TextInputMethodContext.ToSharedRef());
-		}
+		EnableTextInputMethodContext();
 	}
 
 	// Make sure we have the correct text (we might have been collapsed and have missed updates due to not being ticked)
@@ -1817,6 +1822,7 @@ void FSlateEditableTextLayout::SelectAllText()
 	const FTextLocation NewCursorPosition = FTextLocation(NumberOfLines - 1, Lines[NumberOfLines - 1].Text->Len());
 	CursorInfo.SetCursorLocationAndCalculateAlignment(*TextLayout, NewCursorPosition);
 	UpdateCursorHighlight();
+	OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
 }
 
 void FSlateEditableTextLayout::SelectWordAt(const FGeometry& MyGeometry, const UE::Slate::FDeprecateVector2DParameter& ScreenSpacePosition)
@@ -2044,8 +2050,12 @@ void FSlateEditableTextLayout::InsertTextAtCursorImpl(const FString& InString)
 		const bool bIsMultiLine = OwnerWidget->IsMultiLineTextEdit();
 		SanitizedString.GetCharArray().RemoveAll([&](const TCHAR InChar) -> bool
 		{
-			const bool bIsCharAllowed = IsCharAllowed(InChar) || (bIsMultiLine || !FChar::IsLinebreak(InChar));
-			return !bIsCharAllowed;
+			if (InChar != 0)
+			{
+				const bool bIsCharAllowed = IsCharAllowed(InChar) || (bIsMultiLine && FChar::IsLinebreak(InChar));
+				return !bIsCharAllowed;
+			}
+			return false;
 		});
 	}
 

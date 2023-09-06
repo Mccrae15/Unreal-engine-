@@ -429,6 +429,12 @@ public:
 	const FObjectPropertyNode* FindObjectItemParent() const;
 
 	/**
+	 * Follows the chain of items upwards until it finds the structure property that houses this item.
+	 */
+	FStructurePropertyNode* FindStructureItemParent();
+	const FStructurePropertyNode* FindStructureItemParent() const;
+
+	/**
 	 * Follows the top-most object window that contains this property window item.
 	 */
 	FObjectPropertyNode* FindRootObjectItemParent();
@@ -436,7 +442,7 @@ public:
 	/**
 	 * Used to see if any data has been destroyed from under the property tree.  Should only be called during Tick
 	 */
-	EPropertyDataValidationResult EnsureDataIsValid();
+	virtual EPropertyDataValidationResult EnsureDataIsValid();
 
 	//////////////////////////////////////////////////////////////////////////
 	// Text
@@ -489,8 +495,8 @@ public:
 	/**
 	 * Accessor functions for internals
 	 */
-	const int32 GetArrayOffset() const { return ArrayOffset; }
-	const int32 GetArrayIndex() const { return ArrayIndex; }
+	int32 GetArrayOffset() const { return ArrayOffset; }
+	int32 GetArrayIndex() const { return ArrayIndex; }
 
 	/**
 	 * Return number of children that survived being filtered
@@ -596,7 +602,7 @@ public:
 	 *
 	 * @return	a pointer to a FProperty value or UObject.  (For dynamic arrays, you'd cast this value to an FArray*)
 	 */
-	virtual uint8* GetValueBaseAddress(uint8* StartAddress, bool bIsSparseData) const;
+	virtual uint8* GetValueBaseAddress(uint8* StartAddress, bool bIsSparseData, bool bIsStruct = false) const;
 
 	/**
 	 * Calculates the memory address for the data associated with this item's value.  For most properties, identical to GetValueBaseAddress.  For items corresponding
@@ -607,7 +613,7 @@ public:
 	 *
 	 * @return	a pointer to a FProperty value or UObject.  (For dynamic arrays, you'd cast this value to whatever type is the Inner for the dynamic array)
 	 */
-	virtual uint8* GetValueAddress(uint8* StartAddress, bool bIsSparseData) const;
+	virtual uint8* GetValueAddress(uint8* StartAddress, bool bIsSparseData, bool bIsStruct = false) const;
 
 	/**
 	 * Caclulates the memory address for the starting point of the structure that contains the property this node uses.
@@ -688,7 +694,9 @@ public:
 
 	void NotifyPostChange(FPropertyChangedEvent& InPropertyChangedEvent, FNotifyHook* InNotifyHook);
 
-	void SetOnRebuildChildren(FSimpleDelegate InOnRebuildChildren);
+	DECLARE_EVENT(FPropertyNode, FPropertyChildrenRebuiltEvent);
+	FDelegateHandle SetOnRebuildChildren(const FSimpleDelegate& InOnRebuildChildren);
+	FPropertyChildrenRebuiltEvent& OnRebuildChildren() { return OnRebuildChildrenEvent; }
 
 	/**
 	 * Propagates the property change to all instances of an archetype
@@ -1056,6 +1064,12 @@ public:
 	 */
 	const FString& GetPropertyPath() const { return PropertyPath; }
 
+	/** Marks this property node as ignoring CPF_InstancedReference */
+	void SetIgnoreInstancedReference();
+
+	/** Queries whether the node would like to ignore CPF_InstancedReference semantics */
+	bool IsIgnoringInstancedReference() const;
+
 protected:
 	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange ) const;
 	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, const TSet<UObject*>& InAffectedArchetypeInstances ) const;
@@ -1095,11 +1109,11 @@ protected:
 	/** @return		The property stored at this node, to be passed to Pre/PostEditChange. */
 	FProperty*		GetStoredProperty()		{ return nullptr; }
 
+	bool GetDiffersFromDefault(const uint8* PropertyValueAddress, const uint8* PropertyDefaultAddress, const uint8* DefaultPropertyValueBaseAddress, const FProperty* InProperty) const;
 	bool GetDiffersFromDefaultForObject( FPropertyItemValueDataTrackerSlate& ValueTracker, FProperty* InProperty );
 
+	FString GetDefaultValueAsString(const uint8* PropertyDefaultAddress, const FProperty* InProperty, const bool bUseDisplayName) const;
 	FString GetDefaultValueAsStringForObject( FPropertyItemValueDataTrackerSlate& ValueTracker, UObject* InObject, FProperty* InProperty, bool bUseDisplayName );
-
-	FString GetDefaultValueAsStringForObject( FPropertyItemValueDataTrackerSlate& ValueTracker, UObject* InObject, FProperty* InProperty );
 	
 	/**
 	 * Helper function to obtain the display name for an enum property
@@ -1171,7 +1185,7 @@ protected:
 	TArray< TSharedPtr<FPropertyNode> > ChildNodes;
 
 	/** Called when this node's children are rebuilt */
-	FSimpleDelegate OnRebuildChildren;
+	FPropertyChildrenRebuiltEvent OnRebuildChildrenEvent;
 
 	/** Called when this node's property value is about to change (called during NotifyPreChange) */
 	FPropertyValuePreChangeEvent PropertyValuePreChangeEvent;
@@ -1218,6 +1232,9 @@ protected:
 
 	/** Set to true when RebuildChildren is called on the node */
 	bool bChildrenRebuilt;
+
+	/** Set to true when we want to ignore CPF_InstancedReference */
+	bool bIgnoreInstancedReference;
 
 	/** An array of restrictions limiting this property's potential values in property editors.*/
 	TArray<TSharedRef<const FPropertyRestriction>> Restrictions;

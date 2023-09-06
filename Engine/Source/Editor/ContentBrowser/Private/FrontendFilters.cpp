@@ -849,16 +849,8 @@ void FFrontendFilter_NotSourceControlled::RequestStatus()
 		// Request the state of files at filter construction time to make sure files have the correct state for the filter
 		TSharedRef<FUpdateStatus, ESPMode::ThreadSafe> UpdateStatusOperation = ISourceControlOperation::Create<FUpdateStatus>();
 
-		TArray<FString> Filenames;
-		if (ISourceControlModule::Get().UsesCustomProjectDir())
-		{
-			FString SourceControlProjectDir = ISourceControlModule::Get().GetSourceControlProjectDir();
-			Filenames.Add(SourceControlProjectDir);
-		}
-		else
-		{
-			Filenames = SourceControlHelpers::GetSourceControlLocations(/*bContentOnly*/true);
-		}
+		TArray<FString> Filenames = SourceControlHelpers::GetSourceControlLocations(/*bContentOnly*/true);
+
 		UpdateStatusOperation->SetCheckingAllFiles(false);
 		SourceControlProvider.Execute(UpdateStatusOperation, Filenames, EConcurrency::Asynchronous, FSourceControlOperationComplete::CreateSP(this, &FFrontendFilter_NotSourceControlled::SourceControlOperationComplete));
 	}
@@ -1556,4 +1548,14 @@ bool FFrontendFilter_VirtualizedData::PassesFilter(FAssetFilterType InItem) cons
 	{
 		return false;
 	}
+}
+
+FFrontendFilter_Unsupported::FFrontendFilter_Unsupported(TSharedPtr<FFrontendFilterCategory> InCategory)
+	:FFrontendFilter (InCategory)
+{
+}
+
+bool FFrontendFilter_Unsupported::PassesFilter(FAssetFilterType InItem) const
+{
+	return !InItem.IsSupported();
 }

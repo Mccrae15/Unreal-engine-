@@ -6,9 +6,10 @@
 #include "Iris/Serialization/BitPacking.h"
 #include "Iris/Serialization/NetBitStreamReader.h"
 #include "Iris/Serialization/NetBitStreamWriter.h"
+#include "Iris/Serialization/NetSerializationContext.h"
+#include "Iris/Serialization/NetSerializer.h"
 #include "Iris/Core/BitTwiddling.h"
-#include "Traits/IntType.h"
-#include "Templates/IsSigned.h"
+#include <type_traits>
 
 namespace UE::Net::Private
 {
@@ -19,9 +20,9 @@ struct FIntNetSerializerBase
 {
 	static const uint32 Version = 0;
 
-	typedef InSourceType SourceType;
+	using SourceType = InSourceType;
 	// For convenience we'll use an unsigned type as the quantized type
-	typedef typename TUnsignedIntType<sizeof(SourceType)>::Type QuantizedType;
+	using QuantizedType = std::make_unsigned_t<SourceType>;
 	typedef InConfigType ConfigType;
 
 	static void Serialize(FNetSerializationContext& Context, const FNetSerializeArgs& Args)
@@ -86,11 +87,11 @@ struct FIntNetSerializerBase
 		}
 		else
 		{
-			Value = Reader->ReadBits(BitCount);
+			Value = static_cast<QuantizedType>(Reader->ReadBits(BitCount));
 		}
 
 		// Sign-extend the value if needed
-		if constexpr (TIsSigned<SourceType>::Value)
+		if constexpr (std::is_signed_v<SourceType>)
 		{
 			const QuantizedType SignMask = QuantizedType(1) << (BitCount - 1U);
 			Value = (Value ^ SignMask) - SignMask;
@@ -118,7 +119,7 @@ struct FIntNetSerializerBase
 		const uint32 BitCountTableEntryCount = DeltaBitCountTableEntryCount[IndexToBitCountEntries];
 
 		FNetBitStreamWriter* Writer = Context.GetBitStreamWriter();
-		if constexpr (TIsSigned<SourceType>::Value)
+		if constexpr (std::is_signed_v<SourceType>)
 		{
 			SerializeIntDelta(*Writer, Value, PrevValue, BitCountTable, BitCountTableEntryCount, MaxBitCount);
 		}
@@ -147,7 +148,7 @@ struct FIntNetSerializerBase
 		const uint32 BitCountTableEntryCount = DeltaBitCountTableEntryCount[IndexToBitCountEntries];
 
 		FNetBitStreamReader* Reader = Context.GetBitStreamReader();
-		if constexpr (TIsSigned<SourceType>::Value)
+		if constexpr (std::is_signed_v<SourceType>)
 		{
 			DeserializeIntDelta(*Reader, Target, PrevValue, BitCountTable, BitCountTableEntryCount, MaxBitCount);
 		}
@@ -165,7 +166,7 @@ struct FIntNetSerializerBase
 		const uint32 BitCount = Config->BitCount;
 
 		QuantizedType Value;
-		if constexpr (TIsSigned<SourceType>::Value)
+		if constexpr (std::is_signed_v<SourceType>)
 		{
 			const QuantizedType SignMask = (QuantizedType(1) << (BitCount - 1U));
 			const QuantizedType ValueMask = SignMask | (SignMask - QuantizedType(1));

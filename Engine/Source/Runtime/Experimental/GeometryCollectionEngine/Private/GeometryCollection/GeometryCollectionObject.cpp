@@ -6,9 +6,11 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionCache.h"
+#include "GeometryCollection/GeometryCollectionRenderData.h"
 #include "Materials/Material.h"
 #include "UObject/DestructionObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "Serialization/ArchiveCountMem.h"
 #include "HAL/IConsoleManager.h"
 #include "Interfaces/ITargetPlatform.h"
@@ -16,9 +18,13 @@
 #include "Materials/MaterialInstance.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "EngineUtils.h"
+#include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "EditorFramework/AssetImportData.h"
+#include "Rendering/NaniteResources.h"
+#include "Engine/AssetUserData.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 #if WITH_EDITOR
 #include "GeometryCollection/DerivedDataGeometryCollectionCooker.h"
@@ -35,7 +41,10 @@
 
 #include "GeometryCollection/GeometryCollectionSimulationCoreTypes.h"
 #include "Chaos/ChaosArchive.h"
+#include "Chaos/MassProperties.h"
 #include "GeometryCollectionProxyData.h"
+#include "GeometryCollection/Facades/CollectionHierarchyFacade.h"
+#include "GeometryCollection/Facades/CollectionInstancedMeshFacade.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionObject)
 
@@ -45,7 +54,7 @@ bool GeometryCollectionAssetForceStripOnCook = false;
 FAutoConsoleVariableRef CVarGeometryCollectionBypassPhysicsAttributes(
 	TEXT("p.GeometryCollectionAssetForceStripOnCook"),
 	GeometryCollectionAssetForceStripOnCook,
-	TEXT("Bypass the construction of simulation properties when all bodies are simply cached. for playback."));
+	TEXT("Bypass the construction of simulation properties when all bodies are simply cached for playback."));
 
 bool bGeometryCollectionEnableForcedConvexGenerationInSerialize = true;
 FAutoConsoleVariableRef CVarGeometryCollectionEnableForcedConvexGenerationInSerialize(
@@ -81,6 +90,7 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	, EnableClustering(true)
 	, ClusterGroupIndex(0)
 	, MaxClusterLevel(100)
+	, DamageModel(EDamageModelTypeEnum::Chaos_Damage_Model_UserDefined_Damage_Threshold)
 	, DamageThreshold({ 500000.f, 50000.f, 5000.f })
 	, bUseSizeSpecificDamageThreshold(false)
 	, PerClusterOnlyDamageThreshold(false)
@@ -88,6 +98,7 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	, ConnectionGraphBoundsFilteringMargin(0)
 	, bUseFullPrecisionUVs(false)
 	, bStripOnCook(false)
+	, bStripRenderDataOnCook(false)
 	, EnableNanite(false)
 #if WITH_EDITORONLY_DATA
 	, CollisionType_DEPRECATED(ECollisionTypeEnum::Chaos_Volumetric)
@@ -98,10 +109,12 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	, MaxClusterLevelSetResolution_DEPRECATED(50)
 	, CollisionObjectReductionPercentage_DEPRECATED(0.0f)
 #endif
+	, bDensityFromPhysicsMaterial(false)
 	, bMassAsDensity(true)
 	, Mass(2500.0f)
 	, MinimumMassClamp(0.1f)
 	, bImportCollisionFromSource(false)
+	, bScaleOnRemoval(true)
 	, bRemoveOnMaxSleep(false)
 	, MaximumSleepTime(5.0, 10.0)
 	, RemovalDuration(2.5, 5.0)
@@ -114,8 +127,10 @@ UGeometryCollection::UGeometryCollection(const FObjectInitializer& ObjectInitial
 	InvalidateCollection();
 #if WITH_EDITOR
 	SimulationDataGuid = StateGuid;
+	RenderDataGuid = StateGuid;
 	bStripOnCook = GeometryCollectionAssetForceStripOnCook;
 #endif
+	PhysicsMaterial = GEngine? GEngine->DefaultPhysMaterial: nullptr;
 }
 
 FGeometryCollectionLevelSetData::FGeometryCollectionLevelSetData()
@@ -290,6 +305,18 @@ void UGeometryCollection::ValidateSizeSpecificDataDefaults()
 	check(SizeSpecificData.Num());
 }
 
+
+// update cachedroot index using the current hierarchy setup
+void UGeometryCollection::UpdateRootIndex()
+{
+	RootIndex = INDEX_NONE;
+	if (GeometryCollection)
+	{
+		Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(*GeometryCollection);
+		RootIndex = HierarchyFacade.GetRootIndex();
+	}
+}
+
 void UGeometryCollection::UpdateGeometryDependentProperties()
 {
 #if WITH_EDITOR
@@ -332,22 +359,33 @@ void UGeometryCollection::PostInitProperties()
 	Super::PostInitProperties();
 }
 
-float KgCm3ToKgM3(float Density)
+float UGeometryCollection::GetMassOrDensity(bool& bOutIsDensity) const
 {
-	return Density * 1000000;
-}
-
-float KgM3ToKgCm3(float Density)
-{
-	return Density / 1000000;
+	bOutIsDensity = bMassAsDensity;
+	float MassOrDensity = bMassAsDensity ? Chaos::KgM3ToKgCm3(Mass) : Mass;
+	
+	if (bDensityFromPhysicsMaterial)
+	{
+		UPhysicalMaterial* PhysicsMaterialForDensity = PhysicsMaterial;
+		if (!PhysicsMaterialForDensity)
+		{
+			PhysicsMaterialForDensity = GEngine ? GEngine->DefaultPhysMaterial : nullptr;
+		}
+		if (ensureMsgf(PhysicsMaterialForDensity, TEXT("bDensityFromPhysicsMaterial is true but no physics material has been set (and engine default cannot be found )")))
+		{
+			// materials only provide density
+			bOutIsDensity = true;
+			MassOrDensity = Chaos::GCm3ToKgCm3(PhysicsMaterial->Density);
+		}
+	}
+	return MassOrDensity;
 }
 
 void UGeometryCollection::GetSharedSimulationParams(FSharedSimulationParameters& OutParams) const
 {
 	const FGeometryCollectionSizeSpecificData& SizeSpecificDefault = GetDefaultSizeSpecificData();
 
-	OutParams.bMassAsDensity = bMassAsDensity;
-	OutParams.Mass = bMassAsDensity ? KgM3ToKgCm3(Mass) : Mass;	//todo(ocohen): we still have the solver working in old units. This is mainly to fix ui issues. Long term need to normalize units for best precision
+	OutParams.Mass = GetMassOrDensity(OutParams.bMassAsDensity);
 	OutParams.MinimumMassClamp = MinimumMassClamp;
 
 	FGeometryCollectionSizeSpecificData InfSize;
@@ -393,8 +431,8 @@ void UGeometryCollection::Reset()
 {
 	if (GeometryCollection.IsValid())
 	{
-		Modify();
-		GeometryCollection->Empty();
+		Modify(); 
+		GeometryCollection->Reset();
 		Materials.Empty();
 		EmbeddedGeometryExemplar.Empty();
 		AutoInstanceMeshes.Empty();
@@ -494,12 +532,12 @@ void UGeometryCollection::ReindexMaterialSections()
 	InvalidateCollection();
 }
 
-void UGeometryCollection::InitializeMaterials(bool bHasInternalMaterials)
+void UGeometryCollection::InitializeMaterials(bool bHasLegacyInternalMaterialsPairs)
 {
 	Modify();
 
-	// Last Material is the selection one
-	UMaterialInterface* BoneSelectedMaterial = LoadObject<UMaterialInterface>(nullptr, GetSelectedMaterialPath(), nullptr, LOAD_None, nullptr);
+	// Initialize the BoneSelectedMaterial separate from the materials on the collection
+	BoneSelectedMaterial = LoadObject<UMaterialInterface>(nullptr, GetSelectedMaterialPath(), nullptr, LOAD_None, nullptr);
 
 	TManagedArray<int32>& MaterialIDs = GeometryCollection->MaterialID;
 
@@ -516,7 +554,7 @@ void UGeometryCollection::InitializeMaterials(bool bHasInternalMaterials)
 	}
 
 	TArray<UMaterialInterface*> FinalMaterials;
-	if (bHasInternalMaterials)
+	if (bHasLegacyInternalMaterialsPairs)
 	{
 		// We're assuming that all materials are arranged in pairs, so first we collect these.
 		using FMaterialPair = TPair<UMaterialInterface*, UMaterialInterface*>;
@@ -604,21 +642,46 @@ void UGeometryCollection::InitializeMaterials(bool bHasInternalMaterials)
 	// Set new material array on the collection
 	Materials = FinalMaterials;
 
-	// Last Material is the selection one
-	BoneSelectedMaterialIndex = Materials.Add(BoneSelectedMaterial);
+	// BoneSelectedMaterial is no longer stored in the general Materials array
+	BoneSelectedMaterialIndex = INDEX_NONE;
 
 	GeometryCollection->ReindexMaterials();
 	InvalidateCollection();
 }
 
+int32 UGeometryCollection::AddNewMaterialSlot(bool bCopyLastMaterial)
+{
+	Modify();
+	int32 NewIdx = Materials.Emplace();
+	if (NewIdx > 0 && bCopyLastMaterial)
+	{
+		Materials[NewIdx] = Materials[NewIdx - 1];
+	}
 
+	InvalidateCollection();
+
+	return NewIdx;
+}
+
+bool UGeometryCollection::RemoveLastMaterialSlot()
+{
+	if (Materials.Num() > 1)
+	{
+		Modify();
+		Materials.Pop();
+		InvalidateCollection();
+		return true;
+	}
+
+	return false;
+}
 
 /** Returns true if there is anything to render */
 bool UGeometryCollection::HasVisibleGeometry() const
 {
 	if(ensureMsgf(GeometryCollection.IsValid(), TEXT("Geometry Collection %s has an invalid internal collection")))
 	{
-		return ( (EnableNanite && NaniteData) || GeometryCollection->HasVisibleGeometry());
+		return ( (EnableNanite && RenderData && RenderData->bHasNaniteData) || GeometryCollection->HasVisibleGeometry());
 	}
 
 	return false;
@@ -712,6 +775,7 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 	Ar.UsingCustomVersion(FPhysicsObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 	
 	Chaos::FChaosArchive ChaosAr(Ar);
 
@@ -731,10 +795,14 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 		{
 			Materials[SelectedMaterialIndex] = Materials[0];
 		}
+		// Likewise remove the direct reference to the BoneSelectedMaterial on cook
+		BoneSelectedMaterial = nullptr;
 
 		if (bStripOnCook)
 		{
-			if (EnableNanite && NaniteData)
+			// TODO: Since non-nanite path now stores mesh data in cooked build we may be able to unify 
+			// the simplification of the Geometry Collection for both nanite and non-nanite cases.
+			if (EnableNanite && HasNaniteData())
 			{
 				// If this is a cooked archive, we strip unnecessary data from the Geometry Collection to keep the memory footprint as small as possible.
 				ArchiveGeometryCollection = GenerateMinimalGeometryCollection();
@@ -743,6 +811,17 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 			{
 				// non-nanite path where it may be necessary to remove geometry if the geometry collection is rendered using ISMPool or an external rendering system 
 				ArchiveGeometryCollection = CopyCollectionAndRemoveGeometry(GeometryCollection);
+			}
+		}
+		else
+		{
+			// do we need to remove the simplicial attribute ? 
+			if (false == FGeometryCollection::AreCollisionParticlesEnabled())
+			{
+				ArchiveGeometryCollection = TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe>(new FGeometryCollection);
+				const TArray<FName> NoGroupsToSkip;
+				const TArray<TTuple<FName, FName>> AttributesToSkip{ { FGeometryDynamicCollection::SimplicialsAttribute, FTransformCollection::TransformGroup } };
+				GeometryCollection->CopyTo(ArchiveGeometryCollection.Get(), NoGroupsToSkip, AttributesToSkip);
 			}
 		}
 
@@ -806,7 +885,7 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 	{
 		if (bMassAsDensity)
 		{
-			Mass = KgCm3ToKgM3(Mass);
+			Mass = Chaos::KgCm3ToKgM3(Mass);
 		}
 	}
 
@@ -821,7 +900,7 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 #if WITH_EDITOR
 		if (Ar.IsSaving() && !Ar.IsTransacting())
 		{
-			CreateSimulationDataImp(/*bCopyFromDDC=*/false);	//make sure content is built before saving
+			EnsureDataIsCooked(false /*bInitResources*/, Ar.IsTransacting(), Ar.IsPersistent(), false /*bAllowCopyFromDDC*/);
 		}
 #endif
 		if (Ar.IsLoading())
@@ -875,12 +954,12 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 		Ar << bCooked;
 		if (bCooked)
 		{
-			if (NaniteData == nullptr)
+			if (RenderData == nullptr)
 			{
-				NaniteData = MakeUnique<FGeometryCollectionNaniteData>();
+				RenderData = MakeUnique<FGeometryCollectionRenderData>();
 			}
 
-			NaniteData->Serialize(ChaosAr, this);
+			RenderData->Serialize(ChaosAr, *this);
 		}
 	}
 
@@ -915,23 +994,113 @@ void UGeometryCollection::Serialize(FArchive& Ar)
 		DamagePropagationData.bEnabled = false;
 	}
 
+	if (Ar.IsLoading() && !bIsCookedOrCooking && BoneSelectedMaterialIndex != INDEX_NONE)
+	{
+		BoneSelectedMaterial = LoadObject<UMaterialInterface>(nullptr, GetSelectedMaterialPath(), nullptr, LOAD_None, nullptr);
+		if (Materials.IsValidIndex(BoneSelectedMaterialIndex))
+		{
+			if (!BoneSelectedMaterial)
+			{
+				BoneSelectedMaterial = Materials[BoneSelectedMaterialIndex];
+			}
+			// Remove the material assuming it's the last in the list (otherwise, leave it, as it's not clear why it would be in that state)
+			if (BoneSelectedMaterialIndex == Materials.Num() - 1)
+			{
+				Materials.RemoveAt(BoneSelectedMaterialIndex);
+			}
+		}
+		BoneSelectedMaterialIndex = INDEX_NONE;
+	}
+
+	// Make sure the root index is properly set 
+	if (RootIndex == INDEX_NONE)
+	{
+		UpdateRootIndex();
+	}
+
+	if (Ar.IsLoading())
+	{
+		FillAutoInstanceMeshesInstancesIfNeeded();
+	}
+
 #if WITH_EDITORONLY_DATA
 	if (bCreateSimulationData)
 	{
 		CreateSimulationData();
 	}
 
-	//for all versions loaded, make sure sim data is up to date
+	//for all versions loaded, make sure loaded content is built
  	if (Ar.IsLoading())
 	{
-		EnsureDataIsCooked(true, Ar.IsTransacting());	//make sure loaded content is built
+		// note: don't allow copy from DDC here, since we've already loaded the data above, and the DDC data does not include any data migrations performed by the load
+		EnsureDataIsCooked(true /*bInitResources*/, Ar.IsTransacting(), Ar.IsPersistent(), false /*bAllowCopyFromDDC*/);
 	}
 #endif
+
+	if (Ar.IsLoading() && Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::GeometryCollectionConvertVertexColorToSRGB)
+	{
+		// disable sRGB conversion for old assets to keep the default behavior from before this setting existed
+		// (new assets will default-enable the conversion, because that matches static meshes and is the more-expected behavior)
+		bConvertVertexColorsToSRGB = false;
+	}
 }
 
 const TCHAR* UGeometryCollection::GetSelectedMaterialPath()
 {
 	return TEXT("/Engine/EditorMaterials/GeometryCollection/SelectedGeometryMaterial.SelectedGeometryMaterial");
+}
+
+void UGeometryCollection::SetEnableNanite(bool bValue)
+{
+	if (EnableNanite != bValue)
+	{
+		EnableNanite = bValue;
+
+#if WITH_EDITOR
+		RebuildRenderData();
+#endif
+	}
+}
+
+void UGeometryCollection::SetConvertVertexColorsToSRGB(bool bValue)
+{
+	if (bConvertVertexColorsToSRGB != bValue)
+	{
+		bConvertVertexColorsToSRGB = bValue;
+
+#if WITH_EDITOR
+		RebuildRenderData();
+#endif
+	}
+}
+
+void UGeometryCollection::FillAutoInstanceMeshesInstancesIfNeeded()
+{
+	// make sure the instanced meshes have their instance count properly set 
+	if (GeometryCollection && AutoInstanceMeshes.Num() > 0 && AutoInstanceMeshes[0].NumInstances == 0)
+	{
+		//  make sure to rest all of it first 
+		for (FGeometryCollectionAutoInstanceMesh& AutoInstanceMesh : AutoInstanceMeshes)
+		{
+			AutoInstanceMesh.NumInstances = 0;
+		}
+
+		const GeometryCollection::Facades::FCollectionInstancedMeshFacade InstancedMeshFacade(*GeometryCollection);
+
+		const int32 NumTransforms = GeometryCollection->Children.Num();
+		for (int32 TransformIndex = 0; TransformIndex < NumTransforms; TransformIndex++)
+		{
+			// only applies to leaves nodes
+			if (GeometryCollection->Children[TransformIndex].Num() == 0)
+			{
+				const int32 AutoInstanceMeshIndex = InstancedMeshFacade.GetIndex(TransformIndex);
+				if (AutoInstanceMeshes.IsValidIndex(AutoInstanceMeshIndex))
+				{
+					AutoInstanceMeshes[AutoInstanceMeshIndex].NumInstances++;
+				}
+			}
+		}
+	}
 }
 
 #if WITH_EDITOR
@@ -966,9 +1135,6 @@ void UGeometryCollection::CreateSimulationDataImp(bool bCopyFromDDC)
 			FMemoryReader Ar(DDCData, true);	// Must be persistent for BulkData to serialize
 			Chaos::FChaosArchive ChaosAr(Ar);
 			GeometryCollection->Serialize(ChaosAr);
-
-			NaniteData = MakeUnique<FGeometryCollectionNaniteData>();
-			NaniteData->Serialize(ChaosAr, this);
 		}
 	}
 }
@@ -987,136 +1153,78 @@ void UGeometryCollection::CreateSimulationDataIfNeeded()
 	}
 }
 
-TUniquePtr<FGeometryCollectionNaniteData> UGeometryCollection::CreateNaniteData(FGeometryCollection* Collection)
+
+void UGeometryCollection::CreateRenderDataImp(bool bCopyFromDDC)
 {
-	TUniquePtr<FGeometryCollectionNaniteData> NaniteData;
+	COOK_STAT(auto Timer = GeometryCollectionCookStats::UsageStats.TimeSyncWork());
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(UGeometryCollection::CreateNaniteData);
+	// Skips the DDC fetch entirely for testing the builder without adding to the DDC
+	const static bool bSkipDDC = false;
 
-	Nanite::IBuilderModule& NaniteBuilderModule = Nanite::IBuilderModule::Get();
+	//Use the DDC to build simulation data. If we are loading in the editor we then serialize this data into the geometry collection
+	TArray<uint8> DDCData;
+	FDerivedDataGeometryCollectionRenderDataCooker* GeometryCollectionCooker = new FDerivedDataGeometryCollectionRenderDataCooker(*this);
 
-	NaniteData = MakeUnique<FGeometryCollectionNaniteData>();
-
-	// Transform Group
-	const TManagedArray<int32>& TransformToGeometryIndexArray = Collection->TransformToGeometryIndex;
-	const TManagedArray<int32>& SimulationTypeArray = Collection->SimulationType;
-	const TManagedArray<int32>& StatusFlagsArray = Collection->StatusFlags;
-
-	// Vertices Group
-	const TManagedArray<FVector3f>& VertexArray = Collection->Vertex;
-	GeometryCollection::UV::FUVLayers UVsLayers = GeometryCollection::UV::FindActiveUVLayers(*Collection);
-	const TManagedArray<FLinearColor>& ColorArray = Collection->Color;
-	const TManagedArray<FVector3f>& TangentUArray = Collection->TangentU;
-	const TManagedArray<FVector3f>& TangentVArray = Collection->TangentV;
-	const TManagedArray<FVector3f>& NormalArray = Collection->Normal;
-	const TManagedArray<int32>& BoneMapArray = Collection->BoneMap;
-
-	// Faces Group
-	const TManagedArray<FIntVector>& IndicesArray = Collection->Indices;
-	const TManagedArray<bool>& VisibleArray = Collection->Visible;
-	const TManagedArray<int32>& MaterialIndexArray = Collection->MaterialIndex;
-	const TManagedArray<int32>& MaterialIDArray = Collection->MaterialID;
-
-	// Geometry Group
-	const TManagedArray<int32>& TransformIndexArray = Collection->TransformIndex;
-	const TManagedArray<FBox>& BoundingBoxArray = Collection->BoundingBox;
-	const TManagedArray<float>& InnerRadiusArray = Collection->InnerRadius;
-	const TManagedArray<float>& OuterRadiusArray = Collection->OuterRadius;
-	const TManagedArray<int32>& VertexStartArray = Collection->VertexStart;
-	const TManagedArray<int32>& VertexCountArray = Collection->VertexCount;
-	const TManagedArray<int32>& FaceStartArray = Collection->FaceStart;
-	const TManagedArray<int32>& FaceCountArray = Collection->FaceCount;
-
-	// Material Group
-	const int32 NumGeometry = Collection->NumElements(FGeometryCollection::GeometryGroup);
-
-	const uint32 NumTexCoords = Collection->NumUVLayers();
-	const bool bHasColors = ColorArray.Num() > 0;
-
-	TArray<FStaticMeshBuildVertex> BuildVertices;
-	TArray<uint32> BuildIndices;
-	TArray<int32> MaterialIndices;
-
-	TArray<uint32> MeshTriangleCounts;
-	MeshTriangleCounts.SetNum(NumGeometry);
-
-	for (int32 GeometryGroupIndex = 0; GeometryGroupIndex < NumGeometry; GeometryGroupIndex++)
+	if (GeometryCollectionCooker->CanBuild())
 	{
-		const int32 VertexStart = VertexStartArray[GeometryGroupIndex];
-		const int32 VertexCount = VertexCountArray[GeometryGroupIndex];
-
-		uint32 DestVertexStart = BuildVertices.Num();
-		BuildVertices.Reserve(DestVertexStart + VertexCount);
-		for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
+		if (bSkipDDC)
 		{
-			FStaticMeshBuildVertex& Vertex = BuildVertices.Emplace_GetRef();
-			Vertex.Position = VertexArray[VertexStart + VertexIndex];
-			Vertex.Color = bHasColors ? ColorArray[VertexStart + VertexIndex].ToFColor(false /* sRGB */) : FColor::White;
-			Vertex.TangentX = FVector3f::ZeroVector;
-			Vertex.TangentY = FVector3f::ZeroVector;
-			Vertex.TangentZ = NormalArray[VertexStart + VertexIndex];
-			for (int32 UVIdx = 0; UVIdx < UVsLayers.Num(); ++UVIdx)
-			{
-				Vertex.UVs[UVIdx] = UVsLayers[UVIdx][VertexStart + VertexIndex];
-				if (Vertex.UVs[UVIdx].ContainsNaN())
-				{
-					Vertex.UVs[UVIdx] = FVector2f::ZeroVector;
-				}
-			}
+			GeometryCollectionCooker->Build(DDCData);
+			COOK_STAT(Timer.AddMiss(DDCData.Num()));
+		}
+		else
+		{
+			bool bBuilt = false;
+			const bool bSuccess = GetDerivedDataCacheRef().GetSynchronous(GeometryCollectionCooker, DDCData, &bBuilt);
+			COOK_STAT(Timer.AddHitOrMiss(!bSuccess || bBuilt ? FCookStats::CallStats::EHitOrMiss::Miss : FCookStats::CallStats::EHitOrMiss::Hit, DDCData.Num()));
 		}
 
-		const int32 FaceStart = FaceStartArray[GeometryGroupIndex];
-		const int32 FaceCount = FaceCountArray[GeometryGroupIndex];
-
-		// TODO: Respect multiple materials like in FGeometryCollectionConversion::AppendStaticMesh
-
-		int32 DestFaceStart = MaterialIndices.Num();
-		MaterialIndices.Reserve(DestFaceStart + FaceCount);
-		BuildIndices.Reserve((DestFaceStart + FaceCount) * 3);
-		for (int32 FaceIndex = 0; FaceIndex < FaceCount; ++FaceIndex)
+		if (bCopyFromDDC)
 		{
-			if (!VisibleArray[FaceStart + FaceIndex]) // TODO: Always in range?
-			{
-				continue;
-			}
+			FMemoryReader Ar(DDCData, true);	// Must be persistent for BulkData to serialize
+			Chaos::FChaosArchive ChaosAr(Ar);
 
-			FIntVector FaceIndices = IndicesArray[FaceStart + FaceIndex];
-			FaceIndices = FaceIndices + FIntVector( DestVertexStart - VertexStart );
-
-			// Remove degenerates
-			if( BuildVertices[ FaceIndices[0] ].Position == BuildVertices[ FaceIndices[1] ].Position ||
-				BuildVertices[ FaceIndices[1] ].Position == BuildVertices[ FaceIndices[2] ].Position ||
-				BuildVertices[ FaceIndices[2] ].Position == BuildVertices[ FaceIndices[0] ].Position )
-			{
-				continue;
-			}
-
-			BuildIndices.Add(FaceIndices.X);
-			BuildIndices.Add(FaceIndices.Y);
-			BuildIndices.Add(FaceIndices.Z);
-
-			const int32 MaterialIndex = MaterialIDArray[FaceStart + FaceIndex];
-			MaterialIndices.Add(MaterialIndex);
+			RenderData = MakeUnique<FGeometryCollectionRenderData>();
+			RenderData->Serialize(ChaosAr, *this);
 		}
-
-		MeshTriangleCounts[GeometryGroupIndex] = MaterialIndices.Num() - DestFaceStart;
 	}
+}
 
-	FMeshNaniteSettings NaniteSettings = {};
-	NaniteSettings.bEnabled = true;
-	NaniteSettings.TargetMinimumResidencyInKB = 0;	// Default to smallest possible, which is a single page
-	NaniteSettings.KeepPercentTriangles = 1.0f;
-	NaniteSettings.TrimRelativeError = 0.0f;
-	NaniteSettings.FallbackPercentTriangles = 1.0f; // 100% - no reduction
-	NaniteSettings.FallbackRelativeError = 0.0f;
-
-	NaniteData->NaniteResource = {};
-	if (!NaniteBuilderModule.Build(NaniteData->NaniteResource, BuildVertices, BuildIndices, MaterialIndices, MeshTriangleCounts, NumTexCoords, NaniteSettings))
+void UGeometryCollection::RebuildRenderData()
+{
+	if (RenderDataGuid != StateGuid)
 	{
-		UE_LOG(LogStaticMesh, Error, TEXT("Failed to build Nanite for geometry collection. See previous line(s) for details."));
+		ReleaseResources();
+		RenderData = FGeometryCollectionRenderData::Create(*GetGeometryCollection(), EnableNanite, bUseFullPrecisionUVs, bConvertVertexColorsToSRGB);
+		InitResources();
+		PropagateMarkDirtyToComponents();
+		RenderDataGuid = StateGuid;
 	}
+}
 
-	return NaniteData;
+void UGeometryCollection::PropagateMarkDirtyToComponents() const
+{
+	for (TObjectIterator<UGeometryCollectionComponent> It(RF_ClassDefaultObject, false, EInternalObjectFlags::Garbage); It; ++It)
+	{
+		if (It->RestCollection == this)
+		{
+			It->MarkRenderStateDirty();
+			It->MarkRenderDynamicDataDirty();
+		}
+	}
+}
+
+void  UGeometryCollection::PropagateTransformUpdateToComponents() const
+{
+	for (TObjectIterator<UGeometryCollectionComponent> It(RF_ClassDefaultObject, false, EInternalObjectFlags::Garbage); It; ++It)
+	{
+		if (It->RestCollection == this)
+		{
+			// make sure to reset the rest collection to make sure the internal state of the components is up to date 
+			// but we do not apply asset default to avoid overriding the existing overrides
+			It->SetRestCollection(this, false /* bApplyAssetDefaults */);
+		}
+	}
 }
 
 TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> UGeometryCollection::GenerateMinimalGeometryCollection() const
@@ -1199,32 +1307,83 @@ TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> UGeometryCollection::CopyCo
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionToReturn(new FGeometryCollection());
 
 	const TArray<FName> GroupsToSkip{ FGeometryCollection::GeometryGroup, FGeometryCollection::VerticesGroup, FGeometryCollection::FacesGroup };
-	CollectionToCopy->CopyTo(GeometryCollectionToReturn.Get(), GroupsToSkip);
+	const TArray<TTuple<FName, FName>> AttributesToSkip{ { FGeometryDynamicCollection::SimplicialsAttribute, FTransformCollection::TransformGroup } };
+
+	CollectionToCopy->CopyTo(GeometryCollectionToReturn.Get(), GroupsToSkip, AttributesToSkip);
+
+	if (FGeometryCollection::AreCollisionParticlesEnabled())
+	{
+		// recreate the simplicial attribute since we cannot copy it and we skipped it 
+		using FSimplicialUniquePtr = TUniquePtr<FCollisionStructureManager::FSimplicial>;
+		if (const TManagedArray<FSimplicialUniquePtr>* SourceSimplicials = CollectionToCopy->FindAttribute<FSimplicialUniquePtr>(FGeometryDynamicCollection::SimplicialsAttribute, FTransformCollection::TransformGroup))
+		{
+			TManagedArray<FSimplicialUniquePtr>& SimplicialsToWrite = GeometryCollectionToReturn->AddAttribute<FSimplicialUniquePtr>(FGeometryDynamicCollection::SimplicialsAttribute, FTransformCollection::TransformGroup);
+			for (int32 Index = SourceSimplicials->Num() - 1; 0 <= Index; Index--)
+			{
+				SimplicialsToWrite[Index].Reset((*SourceSimplicials)[Index] ? (*SourceSimplicials)[Index]->NewCopy() : nullptr);
+			}
+		}
+	}
+
+	// since we are removing the bounding box attribute from the geometry group we need to move it to the transform group 
+	const TManagedArray<FBox>& GeometryBounds = CollectionToCopy->GetAttribute<FBox>("BoundingBox", "Geometry");
+	const TManagedArray<int32>& TransformToGeometryIndexArray = CollectionToCopy->TransformToGeometryIndex;
+
+	TManagedArray<FBox>& TransformBounds = GeometryCollectionToReturn->AddAttribute<FBox>("BoundingBox", "Transform");
+	
+	for (int TransformIndex = 0; TransformIndex < TransformBounds.Num(); TransformIndex++)
+	{
+		const int32 GeometryIndex = TransformToGeometryIndexArray[TransformIndex];
+		if (GeometryIndex != INDEX_NONE)
+		{
+			TransformBounds[TransformIndex] = GeometryBounds[GeometryIndex];
+		}
+		else
+		{
+			TransformBounds[TransformIndex].Init();
+		}
+	}
 
 	return GeometryCollectionToReturn;
 }
 
 #endif
 
+FGeometryCollectionRenderResourceSizeInfo UGeometryCollection::GetRenderResourceSizeInfo() const
+{
+	FGeometryCollectionRenderResourceSizeInfo InfoOut;
+	const FGeometryCollectionMeshResources& MeshResources = RenderData->MeshResource;
+	InfoOut.MeshResourcesSize += MeshResources.IndexBuffer.GetIndexDataSize();
+	InfoOut.MeshResourcesSize += MeshResources.PositionVertexBuffer.GetAllocatedSize();
+	InfoOut.MeshResourcesSize += MeshResources.StaticMeshVertexBuffer.GetResourceSize();
+	InfoOut.MeshResourcesSize += MeshResources.ColorVertexBuffer.GetAllocatedSize();
+	InfoOut.MeshResourcesSize += MeshResources.BoneMapVertexBuffer.GetAllocatedSize();
+
+	InfoOut.NaniteResourcesSize += GetNaniteResourcesSize(*RenderData->NaniteResourcesPtr);
+
+	return InfoOut;
+}
+
 void UGeometryCollection::InitResources()
 {
-	if (NaniteData)
+	if (RenderData)
 	{
-		NaniteData->InitResources(this);
+		RenderData->InitResources(*this);
 	}
 }
 
 void UGeometryCollection::ReleaseResources()
 {
-	if (NaniteData)
+	if (RenderData)
 	{
-		NaniteData->ReleaseResources();
+		RenderData->ReleaseResources();
 	}
 }
 
 void UGeometryCollection::InvalidateCollection()
 {
 	StateGuid = FGuid::NewGuid();
+	UpdateRootIndex();
 }
 
 #if WITH_EDITOR
@@ -1261,9 +1420,14 @@ void UGeometryCollection::RemoveExemplars(const TArray<int32>& SortedRemovalIndi
 	}
 }
 
+int32 FGeometryCollectionAutoInstanceMesh::GetNumDataPerInstance() const
+{
+	return NumInstances? (CustomData.Num() / NumInstances): 0;
+}
+
 bool FGeometryCollectionAutoInstanceMesh::operator ==(const FGeometryCollectionAutoInstanceMesh& Other) const
 {
-	return (StaticMesh == Other.StaticMesh) && (Materials == Other.Materials);
+	return (Mesh == Other.Mesh) && (Materials == Other.Materials);
 }
 
 /** find or add a auto instance mesh and return its index */
@@ -1273,17 +1437,21 @@ const FGeometryCollectionAutoInstanceMesh& UGeometryCollection::GetAutoInstanceM
 }
 
 /**  find or add a auto instance mesh from another one and return its index */
-int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanecMesh)
+int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const FGeometryCollectionAutoInstanceMesh& AutoInstanceMesh)
 {
-	return AutoInstanceMeshes.AddUnique(AutoInstanecMesh);
+	int32 AutoInstanceMeshIndex = AutoInstanceMeshes.AddUnique(AutoInstanceMesh);
+	FGeometryCollectionAutoInstanceMesh& Instance = AutoInstanceMeshes[AutoInstanceMeshIndex];
+	Instance.NumInstances++;
+	return AutoInstanceMeshIndex;
 }
 
-int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const UStaticMesh& StaticMesh, const TArray<UMaterialInterface*>& MeshMaterials)
+int32 UGeometryCollection::FindOrAddAutoInstanceMesh(const UStaticMesh* StaticMesh, const TArray<UMaterialInterface*>& MeshMaterials)
 {
 	FGeometryCollectionAutoInstanceMesh NewMesh;
-	NewMesh.StaticMesh = FSoftObjectPath(&StaticMesh);
+	NewMesh.Mesh = StaticMesh;
 	NewMesh.Materials = MeshMaterials;
-	return AutoInstanceMeshes.AddUnique(NewMesh);
+
+	return FindOrAddAutoInstanceMesh(NewMesh);
 }
 
 FGuid UGeometryCollection::GetIdGuid() const
@@ -1300,24 +1468,29 @@ FGuid UGeometryCollection::GetStateGuid() const
 
 void UGeometryCollection::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
+	bool bDoInvalidateCollection = false;
+	bool bValidateSizeSpecificDataDefaults = false;
+	bool bDoUpdateConvexGeometry = false;
+	bool bRebuildSimulationData = false;
+	bool bRebuildRenderData = false;
+
 	if (PropertyChangedEvent.Property)
 	{
 		FName PropertyName = PropertyChangedEvent.Property->GetFName();
 
-		bool bDoInvalidateCollection = false;
-		bool bDoEnsureDataIsCooked = false;
-		bool bValidateSizeSpecificDataDefaults = false;
-		bool bDoUpdateConvexGeometry = false;
-		bool bRebuildSimulationData = false;
-
 		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UGeometryCollection, EnableNanite))
 		{
 			bDoInvalidateCollection = true;
-			bDoEnsureDataIsCooked = true;
+			bRebuildRenderData = true;
 		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UGeometryCollection, bUseFullPrecisionUVs))
 		{
 			bDoInvalidateCollection = true;
+			bRebuildRenderData = true;
+		}
+		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UGeometryCollection, bConvertVertexColorsToSRGB))
+		{
+			bRebuildRenderData = true;
 		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UGeometryCollection, SizeSpecificData))
 		{
@@ -1339,35 +1512,40 @@ void UGeometryCollection::PostEditChangeProperty(struct FPropertyChangedEvent& P
 			bDoInvalidateCollection = true;
 			bRebuildSimulationData = true;
 		}
+	}
+	else if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Unspecified)
+	{
+		// We get here on undo/redo operations.
+		// Make sure that render data rebuilds.
+		bRebuildRenderData = true;
+	}
 
+	if (bDoInvalidateCollection)
+	{
+		InvalidateCollection();
+	}
 
-		if (bDoInvalidateCollection)
+	if (bValidateSizeSpecificDataDefaults)
+	{
+		ValidateSizeSpecificDataDefaults();
+	}
+
+	if (bDoUpdateConvexGeometry)
+	{
+		UpdateConvexGeometry();
+	}
+
+	if (bRebuildSimulationData)
+	{
+		if (!bManualDataCreate)
 		{
-			InvalidateCollection();
+			CreateSimulationData();
 		}
+	}
 
-		if (bValidateSizeSpecificDataDefaults)
-		{
-			ValidateSizeSpecificDataDefaults();
-		}
-
-		if (bDoUpdateConvexGeometry)
-		{
-			UpdateConvexGeometry();
-		}
-
-		if (bDoEnsureDataIsCooked)
-		{
-			EnsureDataIsCooked();
-		}
-
-		if (bRebuildSimulationData)
-		{
-			if (!bManualDataCreate)
-			{
-				CreateSimulationData();
-			}
-		}
+	if (bRebuildRenderData)
+	{
+		RebuildRenderData();
 	}
 }
 
@@ -1384,24 +1562,34 @@ bool UGeometryCollection::Modify(bool bAlwaysMarkDirty /*= true*/)
 	return bSuperResult;
 }
 
-void UGeometryCollection::EnsureDataIsCooked(bool bInitResources, bool bIsTransacting)
+void UGeometryCollection::EnsureDataIsCooked(bool bInitResources, bool bIsTransacting, bool bIsPersistant, bool bAllowCopyFromDDC)
 {
-	if (StateGuid != LastBuiltGuid)
+	if (StateGuid != LastBuiltSimulationDataGuid)
 	{
-		CreateSimulationDataImp(/*bCopyFromDDC=*/ !bIsTransacting);
+		CreateSimulationDataImp(/*bCopyFromDDC=*/ bAllowCopyFromDDC && !bIsTransacting);
+		LastBuiltSimulationDataGuid = StateGuid;
+	}
+
+	// Render data only goes through DDC when loading and saving (bIsPersistant).
+	// Using DDC during edits isn't worth it especially as we use a continually mutating guid instead of a state hash.
+	// That ensures that all edits are cache misses (slow) and unnecessarily fill up DDC disk space.
+	// TODO: SimulationData currently relies on these calls to update reliably, so we still need to use DDC for edits.
+	//       We could make CreateSimulationData() be reliably called for all edits and then only use DDC for loading and saving.
+	//       If we do that we can combine CreateSimulationDataImp() with CreateRenderDataImp() and FDerivedDataGeometryCollectionCooker
+	//       with FDerivedDataGeometryCollectionRenderDataCooker.
+	if (bIsPersistant && StateGuid != LastBuiltRenderDataGuid)
+	{
+		CreateRenderDataImp(/*bCopyFromDDC=*/ bInitResources);
 
 		if (FApp::CanEverRender() && bInitResources)
 		{
-			// If there is no geometry in the collection, we leave Nanite data alone.
-			if (GeometryCollection->NumElements(FGeometryCollection::GeometryGroup) > 0)
+			if (RenderData)
 			{
-				if (NaniteData)
-				{
-					NaniteData->InitResources(this);
-				}
+				RenderData->InitResources(*this);
 			}
 		}
-		LastBuiltGuid = StateGuid;
+	
+		LastBuiltRenderDataGuid = StateGuid;
 	}
 }
 #endif
@@ -1415,6 +1603,30 @@ void UGeometryCollection::PostLoad()
 	{
 		InitResources();
 	}
+
+#if WITH_EDITORONLY_DATA
+	if (!RootProxy_DEPRECATED.IsNull())
+	{
+		if (UStaticMesh* ProxyMesh = Cast<UStaticMesh>(RootProxy_DEPRECATED.TryLoad()))
+		{
+			RootProxyData.ProxyMeshes.Add(TObjectPtr<UStaticMesh>(ProxyMesh));
+		}
+		RootProxy_DEPRECATED = nullptr;
+	}
+
+	for (int32 MeshIndex = 0; MeshIndex < AutoInstanceMeshes.Num(); MeshIndex++)
+	{
+		FGeometryCollectionAutoInstanceMesh& AutoInstanceMesh = AutoInstanceMeshes[MeshIndex];
+		if (!AutoInstanceMesh.StaticMesh_DEPRECATED.IsNull())
+		{
+			if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(AutoInstanceMesh.StaticMesh_DEPRECATED.TryLoad()))
+			{
+				AutoInstanceMesh.Mesh = TObjectPtr<UStaticMesh>(StaticMesh);
+			}
+			AutoInstanceMesh.StaticMesh_DEPRECATED = nullptr;
+		}
+	}
+#endif
 }
 
 void UGeometryCollection::BeginDestroy()
@@ -1423,69 +1635,78 @@ void UGeometryCollection::BeginDestroy()
 	ReleaseResources();
 }
 
-FGeometryCollectionNaniteData::FGeometryCollectionNaniteData()
+bool UGeometryCollection::HasMeshData() const
 {
+	return RenderData != nullptr && RenderData->bHasMeshData;
 }
 
-FGeometryCollectionNaniteData::~FGeometryCollectionNaniteData()
+bool UGeometryCollection::HasNaniteData() const
 {
-	ReleaseResources();
+	return RenderData != nullptr && RenderData->bHasNaniteData;
 }
 
-void FGeometryCollectionNaniteData::Serialize(FArchive& Ar, UGeometryCollection* Owner)
+uint32 UGeometryCollection::GetNaniteResourceID() const
 {
-	if (Ar.IsSaving())
+	return RenderData->NaniteResourcesPtr->RuntimeResourceID;
+}
+
+uint32 UGeometryCollection::GetNaniteHierarchyOffset() const
+{
+	return RenderData->NaniteResourcesPtr->HierarchyOffset;
+}
+
+uint32 UGeometryCollection::GetNaniteHierarchyOffset(int32 GeometryIndex, bool bFlattened) const
+{
+	const Nanite::FResources& NaniteResources = *RenderData->NaniteResourcesPtr;
+	check(GeometryIndex >= 0 && GeometryIndex < NaniteResources.HierarchyRootOffsets.Num());
+	uint32 HierarchyOffset = NaniteResources.HierarchyRootOffsets[GeometryIndex];
+	if (bFlattened)
 	{
-		if (Owner->EnableNanite)
+		HierarchyOffset += NaniteResources.HierarchyOffset;
+	}
+	return HierarchyOffset;
+}
+
+void UGeometryCollection::AddAssetUserData(UAssetUserData* InUserData)
+{
+	if (InUserData != nullptr)
+	{
+		UAssetUserData* ExistingData = GetAssetUserDataOfClass(InUserData->GetClass());
+		if (ExistingData != nullptr)
 		{
-			// Nanite data is currently 1:1 with each geometry group in the collection.
-			const int32 NumGeometryGroups = Owner->NumElements(FGeometryCollection::GeometryGroup);
-			if (NumGeometryGroups != NaniteResource.HierarchyRootOffsets.Num())
-			{
-				Ar.SetError();
-			}
+			AssetUserData.Remove(ExistingData);
 		}
-
-		NaniteResource.Serialize(Ar, Owner, true);
+		AssetUserData.Add(InUserData);
 	}
-	else if (Ar.IsLoading())
+}
+
+UAssetUserData* UGeometryCollection::GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
+{
+	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
 	{
-		NaniteResource.Serialize(Ar, Owner, true);
-	
-		if (!Owner->EnableNanite)
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if (Datum != nullptr && Datum->IsA(InUserDataClass))
 		{
-			NaniteResource = {};
+			return Datum;
+		}
+	}
+	return nullptr;
+}
+
+void UGeometryCollection::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
+{
+	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if (Datum != nullptr && Datum->IsA(InUserDataClass))
+		{
+			AssetUserData.RemoveAt(DataIdx);
+			return;
 		}
 	}
 }
 
-void FGeometryCollectionNaniteData::InitResources(UGeometryCollection* Owner)
+const TArray<UAssetUserData*>* UGeometryCollection::GetAssetUserDataArray() const
 {
-	if (bIsInitialized)
-	{
-		ReleaseResources();
-	}
-
-	NaniteResource.InitResources(Owner);
-
-	bIsInitialized = true;
-}
-
-void FGeometryCollectionNaniteData::ReleaseResources()
-{
-	if (!bIsInitialized)
-	{
-		return;
-	}
-
-	if (NaniteResource.ReleaseResources())
-	{
-		// HACK: Make sure the renderer is done processing the command, and done using NaniteResource, before we continue.
-		// This code could really use a refactor.
-		FRenderCommandFence Fence;
-		Fence.BeginFence();
-		Fence.Wait();
-	}
-
-	bIsInitialized = false;
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }

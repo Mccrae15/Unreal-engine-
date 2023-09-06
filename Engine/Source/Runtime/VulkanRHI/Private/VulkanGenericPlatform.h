@@ -12,6 +12,7 @@ struct FOptionalVulkanDeviceExtensions;
 class FVulkanDevice;
 class FVulkanRenderTargetLayout;
 struct FGfxPipelineDesc;
+class FVulkanPhysicalDeviceFeatures;
 
 using FVulkanDeviceExtensionArray = TArray<TUniquePtr<class FVulkanDeviceExtension>>;
 using FVulkanInstanceExtensionArray = TArray<TUniquePtr<class FVulkanInstanceExtension>>;
@@ -20,12 +21,11 @@ using FVulkanInstanceExtensionArray = TArray<TUniquePtr<class FVulkanInstanceExt
 class FVulkanGenericPlatform
 {
 public:
-	static void SetupMaxRHIFeatureLevelAndShaderPlatform(ERHIFeatureLevel::Type InRequestedFeatureLevel);
-
 	static bool IsSupported() { return true; }
 
 	static bool LoadVulkanLibrary() { return true; }
-	static bool LoadVulkanInstanceFunctions(VkInstance inInstance) { return true; }
+	static bool LoadVulkanInstanceFunctions(VkInstance inInstance);
+	static void ClearVulkanInstanceFunctions();
 	static void FreeVulkanLibrary() {}
 
 	static void InitDevice(FVulkanDevice* InDevice) {}
@@ -52,7 +52,7 @@ public:
 	// most platforms can query the surface for the present mode, and size, etc
 	static bool SupportsQuerySurfaceProperties() { return true; }
 
-	static void SetupFeatureLevels();
+	static void SetupFeatureLevels(TArrayView<EShaderPlatform> ShaderPlatformForFeatureLevel);
 
 	static bool SupportsTimestampRenderQueries() { return true; }
 
@@ -75,20 +75,7 @@ public:
 	static void WriteCrashMarker(const FOptionalVulkanDeviceExtensions& OptionalExtensions, VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TArrayView<uint32>& Entries, bool bAdding) {}
 
 	// Allow the platform code to restrict the device features
-	static void RestrictEnabledPhysicalDeviceFeatures(VkPhysicalDeviceFeatures& InOutFeaturesToEnable)
-	{ 
-		// Disable everything sparse-related
-		InOutFeaturesToEnable.shaderResourceResidency	= VK_FALSE;
-		InOutFeaturesToEnable.shaderResourceMinLod		= VK_FALSE;
-		InOutFeaturesToEnable.sparseBinding				= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidencyBuffer		= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidencyImage2D	= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidencyImage3D	= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidency2Samples	= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidency4Samples	= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidency8Samples	= VK_FALSE;
-		InOutFeaturesToEnable.sparseResidencyAliased	= VK_FALSE;
-	}
+	static void RestrictEnabledPhysicalDeviceFeatures(FVulkanPhysicalDeviceFeatures* InOutFeaturesToEnable);
 
 	static bool SupportParallelRenderingTasks() { return true; }
 
@@ -96,9 +83,6 @@ public:
 	static bool SupportsDynamicResolution() { return false; }
 
 	static bool SupportsVolumeTextureRendering() { return true; }
-
-	// Allow platforms to add extension features to the DeviceInfo pNext chain
-	static void EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo, FVulkanDevice& Device) {}
 
 	static bool RequiresSwapchainGeneralInitialLayout() { return false; }
 
@@ -144,4 +128,8 @@ public:
 	// Setup platform to use a workaround to reduce textures memory requirements
 	static void SetupImageMemoryRequirementWorkaround(const FVulkanDevice& InDevice) {};
 	static void SetImageMemoryRequirementWorkaround(VkImageCreateInfo& ImageCreateInfo) {};
+
+	// Returns the profile name to look up for a given feature level on a platform
+	static bool SupportsProfileChecks();
+	static FString GetVulkanProfileNameForFeatureLevel(ERHIFeatureLevel::Type FeatureLevel, bool bRaytracing);
 };

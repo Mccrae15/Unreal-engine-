@@ -10,13 +10,14 @@
 #include "Components/StaticMeshComponent.h"
 #include "MotionDelayBuffer.h"
 #include "UObject/VRObjectVersion.h"
-#include "XRDeviceVisualizationComponent.h"
-#include "XRMotionControllerBase.h"
 #include "IXRTrackingSystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MotionControllerComponent)
 
 DEFINE_LOG_CATEGORY_STATIC(LogMotionControllerComponent, Log, All);
+
+UMotionControllerComponent::FActivateVisualizationComponent UMotionControllerComponent::OnActivateVisualizationComponent;
+
 
 namespace {
 	/** This is to prevent destruction of motion controller components while they are
@@ -66,7 +67,7 @@ UMotionControllerComponent::UMotionControllerComponent(const FObjectInitializer&
 	PrimaryComponentTick.bTickEvenWhenPaused = true;
 
 	PlayerIndex = 0;
-	MotionSource = FXRMotionControllerBase::LeftHandSourceId;
+	MotionSource = IMotionController::LeftHandSourceId;
 	bDisableLowLatencyUpdate = false;
 	bHasAuthority = false;
 	bAutoActivate = true;
@@ -103,24 +104,6 @@ void UMotionControllerComponent::PostLoad()
 }
 
 //=============================================================================
-void UMotionControllerComponent::BeginPlay() 
-{
-	Super::BeginPlay();
-
-	TArray<USceneComponent*> ChildrenComponents;
-	GetChildrenComponents(/*bIncludeAllDescendants*/ false, ChildrenComponents);
-
-	for (USceneComponent* ChildComponent : ChildrenComponents) 
-	{
-		VisualizationComponent = Cast<UXRDeviceVisualizationComponent>(ChildComponent);
-		if (VisualizationComponent != nullptr) 
-		{
-			return;
-		}
-	}
-}
-
-//=============================================================================
 FName UMotionControllerComponent::GetTrackingMotionSource() 
 {
 	return MotionSource;
@@ -136,21 +119,20 @@ void UMotionControllerComponent::TickComponent(float DeltaTime, enum ELevelTick 
 		FVector Position = GetRelativeTransform().GetTranslation();
 		FRotator Orientation = GetRelativeTransform().GetRotation().Rotator();
 		float WorldToMeters = GetWorld() ? GetWorld()->GetWorldSettings()->WorldToMeters : 100.0f;
-		const bool bNewTrackedState = PollControllerState(Position, Orientation, WorldToMeters);
+		const bool bNewTrackedState = PollControllerState_GameThread(Position, Orientation, bProvidedLinearVelocity, LinearVelocity, bProvidedAngularVelocity, AngularVelocityAsAxisAndLength, bProvidedLinearAcceleration, LinearAcceleration, WorldToMeters);
 		if (bNewTrackedState)
 		{
+			// Only update the location and rotation if we are tracking because we want the controller to stay in place rather than pop to 0,0,0.  
+			// Note we do update the velocity and acceleration values even if untracked because we won't see any change in the position this frame.
+			// This means that for brief tracking dropouts position and orientation should behave somewhat gracefully even without interpolation, but velocity/acceleration will show snaps to zero.
 			SetRelativeLocationAndRotation(Position, Orientation);
 		}
 
 		// if controller tracking just kicked in or we haven't started rendering in the (possibly present) 
 		// visualization component.
-		if (!bTracked && bNewTrackedState && !bHasStartedRendering)
+		if (!bTracked && bNewTrackedState)
 		{
-			if (VisualizationComponent)
-			{
-				VisualizationComponent->SetIsRenderingActive(true);
-				bHasStartedRendering = true;
-			}
+			OnActivateVisualizationComponent.Broadcast(true);
 		}
 
 		// This part is deprecated and will be removed in later versions.
@@ -217,7 +199,7 @@ void UMotionControllerComponent::SetTrackingSource(const EControllerHand NewSour
 EControllerHand UMotionControllerComponent::GetTrackingSource() const
 {
 	EControllerHand Hand = EControllerHand::Left;
-	FXRMotionControllerBase::GetHandEnumForSourceName(MotionSource, Hand);
+	IMotionController::GetHandEnumForSourceName(MotionSource, Hand);
 	return Hand;
 }
 
@@ -250,11 +232,6 @@ void UMotionControllerComponent::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FVRObjectVersion::GUID);
 
 	Super::Serialize(Ar);
-
-	if (Ar.CustomVer(FVRObjectVersion::GUID) < FVRObjectVersion::UseFNameInsteadOfEControllerHandForMotionSource)
-	{
-		LegacyMotionSources::GetSourceNameForHand(Hand_DEPRECATED, MotionSource);
-	}
 }
 
 //=============================================================================
@@ -322,43 +299,38 @@ bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator
 {
 	if (IsInGameThread())
 	{
-		// Cache state from the game thread for use on the render thread
-		const AActor* MyOwner = GetOwner();
-		bHasAuthority = MyOwner->HasLocalNetOwner();
-
+		bool OutbProvidedLinearVelocity;
+		bool OutbProvidedAngularVelocity;
+		bool OutbProvidedLinearAcceleration;
+		FVector OutLinearVelocity;
+		FVector OutAngularVelocityAsAxisAndLength;
+		FVector OutLinearAcceleration;
+		return PollControllerState_GameThread(Position, Orientation, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 	}
+	else
+	{
+		return PollControllerState_RenderThread(Position, Orientation, WorldToMetersScale);
+	}
+}
+
+bool UMotionControllerComponent::PollControllerState_GameThread(FVector& Position, FRotator& Orientation, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityAsAxisAndLength, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale)
+{
+	check(IsInGameThread());
+
+	// Cache state from the game thread for use on the render thread
+	const AActor* MyOwner = GetOwner();
+	bHasAuthority = MyOwner->HasLocalNetOwner();
 
 	if(bHasAuthority)
 	{
-		UEMotionController::FScopeLockOptional LockOptional;
+		{
+			FScopeLock Lock(&PolledMotionControllerMutex);
+			PolledMotionController_GameThread = nullptr;
+			bPolledHMD_GameThread = false;
+		}
 
 		TArray<IMotionController*> MotionControllers;
-		if (IsInGameThread())
-		{
-			MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
-			{
-				FScopeLock Lock(&PolledMotionControllerMutex);
-				PolledMotionController_GameThread = nullptr;
-			}
-		}
-		else if (IsInRenderingThread())
-		{
-			LockOptional.Lock(&PolledMotionControllerMutex);
-			if (PolledMotionController_RenderThread != nullptr)
-			{
-				MotionControllers.Add(PolledMotionController_RenderThread);
-			}
-		}
-		else
-		{
-			// If we are in some other thread we can't use the game thread code, because the ModularFeature access isn't threadsafe.
-			// The render thread code might work, or not.  
-			// Let's do the fully safe locking version, and assert because this case is not expected.
-			checkNoEntry();
-			IModularFeatures::FScopedLockModularFeatureList FeatureListLock;
-			MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
-		}
-
+		MotionControllers = IModularFeatures::Get().GetModularFeatureImplementations<IMotionController>(IMotionController::GetModularFeatureName());
 		for (auto MotionController : MotionControllers)
 		{
 			if (MotionController == nullptr)
@@ -367,24 +339,21 @@ bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator
 			}
 
 			CurrentTrackingStatus = MotionController->GetControllerTrackingStatus(PlayerIndex, MotionSource);
-			if (MotionController->GetControllerOrientationAndPosition(PlayerIndex, MotionSource, Orientation, Position, WorldToMetersScale))
+			if (MotionController->GetControllerOrientationAndPosition(PlayerIndex, MotionSource, Orientation, Position, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale))
 			{
-				if (IsInGameThread())
-				{
-					InUseMotionController = MotionController;
-					OnMotionControllerUpdated();
-					InUseMotionController = nullptr;
+				InUseMotionController = MotionController;
+				OnMotionControllerUpdated();
+				InUseMotionController = nullptr;
 
-					{
-						FScopeLock Lock(&PolledMotionControllerMutex);
-						PolledMotionController_GameThread = MotionController;  // We only want a render thread update from the motion controller we polled on the game thread.
-					}
+				{
+					FScopeLock Lock(&PolledMotionControllerMutex);
+					PolledMotionController_GameThread = MotionController;  // We only want a render thread update from the motion controller we polled on the game thread.
 				}
 				return true;
 			}
 		}
 
-		if (MotionSource == FXRMotionControllerBase::HMDSourceId)
+		if (MotionSource == IMotionController::HMDSourceId)
 		{
 			IXRTrackingSystem* TrackingSys = GEngine->XRSystem.Get();
 			if (TrackingSys)
@@ -393,11 +362,45 @@ bool UMotionControllerComponent::PollControllerState(FVector& Position, FRotator
 				if (TrackingSys->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, OrientationQuat, Position))
 				{
 					Orientation = OrientationQuat.Rotator();
+					{
+						FScopeLock Lock(&PolledMotionControllerMutex);
+						bPolledHMD_GameThread = true;  // We only want a render thread update from the hmd if we polled it on the game thread.
+					}
 					return true;
 				}
 			}
 		}
 	}
+	return false;
+}
+
+bool UMotionControllerComponent::PollControllerState_RenderThread(FVector& Position, FRotator& Orientation, float WorldToMetersScale)
+{
+	check(IsInRenderingThread());
+
+	if (PolledMotionController_RenderThread)
+	{
+		CurrentTrackingStatus = PolledMotionController_RenderThread->GetControllerTrackingStatus(PlayerIndex, MotionSource);
+		if (PolledMotionController_RenderThread->GetControllerOrientationAndPosition(PlayerIndex, MotionSource, Orientation, Position, WorldToMetersScale))
+		{
+			return true;
+		}
+	}
+
+	if (bPolledHMD_RenderThread)
+	{
+		IXRTrackingSystem* TrackingSys = GEngine->XRSystem.Get();
+		if (TrackingSys)
+		{
+			FQuat OrientationQuat;
+			if (TrackingSys->GetCurrentPose(IXRTrackingSystem::HMDDeviceId, OrientationQuat, Position))
+			{
+				Orientation = OrientationQuat.Rotator();
+				return true;
+			}
+		}
+	}
+
 	return false;
 }
 
@@ -454,6 +457,7 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 		{
 			FScopeLock Lock(&MotionControllerComponent->PolledMotionControllerMutex);
 			MotionControllerComponent->PolledMotionController_RenderThread = MotionControllerComponent->PolledMotionController_GameThread;
+			MotionControllerComponent->bPolledHMD_RenderThread = MotionControllerComponent->bPolledHMD_GameThread;
 		}
 
 		// Find a view that is associated with this player.
@@ -476,7 +480,7 @@ void UMotionControllerComponent::FViewExtension::PreRenderViewFamily_RenderThrea
 		// Poll state for the most recent controller transform
 		FVector Position = MotionControllerComponent->RenderThreadRelativeTransform.GetTranslation();
 		FRotator Orientation = MotionControllerComponent->RenderThreadRelativeTransform.GetRotation().Rotator();
-		if (!MotionControllerComponent->PollControllerState(Position, Orientation, WorldToMetersScale))
+		if (!MotionControllerComponent->PollControllerState_RenderThread(Position, Orientation, WorldToMetersScale))
 		{
 			return;
 		}
@@ -522,6 +526,38 @@ FVector UMotionControllerComponent::GetHandJointPosition(int jointIndex, bool& b
 		return FVector::ZeroVector;
 	}
 }
+
+//=============================================================================
+bool UMotionControllerComponent::GetLinearVelocity(FVector& OutLinearVelocity) const
+{
+	const IXRTrackingSystem* const TrackingSys = GEngine->XRSystem.Get();
+	const FTransform TrackingToWorldTransform = TrackingSys ? TrackingSys->GetTrackingToWorldTransform() : FTransform::Identity;
+	OutLinearVelocity = TrackingToWorldTransform.TransformVector(LinearVelocity);
+	
+	return bProvidedLinearVelocity;
+}
+
+//=============================================================================
+bool UMotionControllerComponent::GetAngularVelocity(FRotator& OutAngularVelocity) const
+{
+	const IXRTrackingSystem* const TrackingSys = GEngine->XRSystem.Get();
+	const FTransform TrackingToWorldTransform = TrackingSys ? TrackingSys->GetTrackingToWorldTransform() : FTransform::Identity;
+	FVector WorldVector = TrackingToWorldTransform.TransformVector(AngularVelocityAsAxisAndLength);
+	// Note: the rotator may contain rotations greater than 180 or 360 degrees, and some mathmatical operations (eg conversion to quaternion) would lose those.
+	OutAngularVelocity = IMotionController::AngularVelocityAsAxisAndLengthToRotator(WorldVector);
+	return bProvidedAngularVelocity;
+}
+
+//=============================================================================
+bool UMotionControllerComponent::GetLinearAcceleration(FVector& OutLinearAcceleration) const
+{
+	const IXRTrackingSystem* const TrackingSys = GEngine->XRSystem.Get();
+	const FTransform TrackingToWorldTransform = TrackingSys ? TrackingSys->GetTrackingToWorldTransform() : FTransform::Identity;
+	OutLinearAcceleration = TrackingToWorldTransform.TransformVector(LinearAcceleration);
+	
+	return bProvidedLinearAcceleration;
+}
+
 
 // These functions are deprecated and will be removed in later versions.
 //=============================================================================
@@ -672,14 +708,14 @@ void UMotionControllerComponent::RefreshDisplayComponent(const bool bForceDestro
 					}
 
 					int32 DeviceId = INDEX_NONE;
-					if (MotionSource == FXRMotionControllerBase::HMDSourceId)
+					if (MotionSource == IMotionController::HMDSourceId)
 					{
 						DeviceId = IXRTrackingSystem::HMDDeviceId;
 					}
 					else
 					{
 						EControllerHand ControllerHandIndex;
-						if (!FXRMotionControllerBase::GetHandEnumForSourceName(MotionSource, ControllerHandIndex))
+						if (!IMotionController::GetHandEnumForSourceName(MotionSource, ControllerHandIndex))
 						{
 							break;
 						}

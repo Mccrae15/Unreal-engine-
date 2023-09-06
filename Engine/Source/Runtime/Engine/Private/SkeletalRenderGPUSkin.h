@@ -31,7 +31,7 @@ class FVertexOffsetBuffers;
 * Stores the updated matrices needed to skin the verts.
 * Created by the game thread and sent to the rendering thread as an update 
 */
-class ENGINE_API FDynamicSkelMeshObjectDataGPUSkin
+class FDynamicSkelMeshObjectDataGPUSkin
 {
 	/**
 	* Constructor, these are recycled, so you never use a constructor
@@ -45,12 +45,12 @@ class ENGINE_API FDynamicSkelMeshObjectDataGPUSkin
 	{
 	}
 
-	void Clear();
+	ENGINE_API void Clear();
 
 public:
 
-	static FDynamicSkelMeshObjectDataGPUSkin* AllocDynamicSkelMeshObjectDataGPUSkin();
-	static void FreeDynamicSkelMeshObjectDataGPUSkin(FDynamicSkelMeshObjectDataGPUSkin* Who);
+	static ENGINE_API FDynamicSkelMeshObjectDataGPUSkin* AllocDynamicSkelMeshObjectDataGPUSkin();
+	static ENGINE_API void FreeDynamicSkelMeshObjectDataGPUSkin(FDynamicSkelMeshObjectDataGPUSkin* Who);
 
 	/**
 	* Constructor
@@ -60,7 +60,7 @@ public:
 	* @param	InActiveMorphTargets - morph targets active for the mesh
 	* @param	InMorphTargetWeights - All morph target weights for the mesh
 	*/
-	void InitDynamicSkelMeshObjectDataGPUSkin(
+	ENGINE_API void InitDynamicSkelMeshObjectDataGPUSkin(
 		USkinnedMeshComponent* InMeshComponent,
 		FSkeletalMeshRenderData* InSkeletalMeshRenderData,
 		FSkeletalMeshObjectGPUSkin* InMeshObject,
@@ -125,7 +125,7 @@ public:
 	* @param MorphTargetWeights - array of morphs weights to compare
 	* @return true if both sets of active morphs are equal
 	*/
-	bool ActiveMorphTargetsEqual(const FMorphTargetWeightMap& InCompareActiveMorphTargets, const TArray<float>& CompareMorphTargetWeights);
+	ENGINE_API bool ActiveMorphTargetsEqual(const FMorphTargetWeightMap& InCompareActiveMorphTargets, const TArray<float>& CompareMorphTargetWeights);
 	
 	/** Returns the size of memory allocated by render data */
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
@@ -138,7 +138,7 @@ public:
 
 	/** Update Simulated Positions & Normals from APEX Clothing actor */
 	UE_DEPRECATED(5.2, "Use USkinnedMeshComponent::GetUpdateClothSimulationData_AnyThread() instead.")
-	bool UpdateClothSimulationData(USkinnedMeshComponent* InMeshComponent);
+	ENGINE_API bool UpdateClothSimulationData(USkinnedMeshComponent* InMeshComponent);
 
 	// Whether this LOD is allowed to use the skin cache feature
 	uint8 bIsSkinCacheAllowed : 1;
@@ -210,18 +210,18 @@ public:
 	/** 
 	* Initialize the dynamic RHI for this rendering resource 
 	*/
-	virtual void InitDynamicRHI();
+	virtual void InitRHI(FRHICommandListBase& RHICmdList);
 
 	/** 
 	* Release the dynamic RHI for this rendering resource 
 	*/
-	virtual void ReleaseDynamicRHI();
+	virtual void ReleaseRHI();
 
 	inline void RecreateResourcesIfRequired(bool bInUsesComputeShader)
 	{
 		if (bUsesComputeShader != bInUsesComputeShader)
 		{
-			UpdateRHI();
+			UpdateRHI(FRHICommandListImmediate::Get());
 		}
 	}
 
@@ -231,7 +231,7 @@ public:
 	virtual FString GetFriendlyName() const { return TEXT("Morph target mesh vertices"); }
 
 	/**
-	 * Get Resource Size : mostly copied from InitDynamicRHI - how much they allocate when initialize
+	 * Get Resource Size : mostly copied from InitRHI - how much they allocate when initialize
 	 */
 	SIZE_T GetResourceSize() const
 	{
@@ -260,7 +260,7 @@ public:
 	/** Has been updated or not by UpdateMorphVertexBuffer**/
 	bool bHasBeenUpdated;
 
-	/** DX12 cannot clear the buffer in InitDynamicRHI with UAV flag enables, we should really have a Zero initzialized flag instead**/
+	/** DX12 cannot clear the buffer in InitRHI with UAV flag enables, we should really have a Zero initzialized flag instead**/
 	bool bNeedsInitialClear;
 
 	// @param guaranteed only to be valid if the vertex buffer is valid
@@ -316,7 +316,9 @@ public:
 	void ReleaseResources();
 	SIZE_T GetResourceSize() const;
 	void EnableDoubleBuffer();
-	bool IsDoubleBuffered() const	{ return bDoubleBuffer; }
+	bool IsDoubleBuffered() const					{ return bDoubleBuffer; }
+	void SetUpdatedFrameNumber(uint32 FrameNumber)	{ UpdatedFrameNumber = FrameNumber; }
+	uint32 GetUpdatedFrameNumber() const			{ return UpdatedFrameNumber; }
 	void SetCurrentRevisionNumber(uint32 RevisionNumber);
 	const FMorphVertexBuffer& GetMorphVertexBufferForReading(bool bPrevious) const;
 	FMorphVertexBuffer& GetMorphVertexBufferForWriting();
@@ -332,33 +334,35 @@ private:
 	// RevisionNumber Tracker
 	uint32 PreviousRevisionNumber = 0;
 	uint32 CurrentRevisionNumber = 0;
+	// Frame number of the morph vertex buffer that is last updated
+	uint32 UpdatedFrameNumber = 0;
 };
 
 /**
  * Render data for a GPU skinned mesh
  */
-class ENGINE_API FSkeletalMeshObjectGPUSkin : public FSkeletalMeshObject
+class FSkeletalMeshObjectGPUSkin : public FSkeletalMeshObject
 {
 public:
 	/** @param	InSkeletalMeshComponent - skeletal mesh primitive we want to render */
-	FSkeletalMeshObjectGPUSkin(USkinnedMeshComponent* InMeshComponent, FSkeletalMeshRenderData* InSkelMeshRenderData, ERHIFeatureLevel::Type InFeatureLevel);
-	virtual ~FSkeletalMeshObjectGPUSkin();
+	ENGINE_API FSkeletalMeshObjectGPUSkin(USkinnedMeshComponent* InMeshComponent, FSkeletalMeshRenderData* InSkelMeshRenderData, ERHIFeatureLevel::Type InFeatureLevel);
+	ENGINE_API virtual ~FSkeletalMeshObjectGPUSkin();
 
 	//~ Begin FSkeletalMeshObject Interface
-	virtual void InitResources(USkinnedMeshComponent* InMeshComponent) override;
-	virtual void ReleaseResources() override;
-	virtual void Update(int32 LODIndex,USkinnedMeshComponent* InMeshComponent,const FMorphTargetWeightMap& InActiveMorphTargets, const TArray<float>& InMorphTargetWeights, EPreviousBoneTransformUpdateMode PreviousBoneTransformUpdateMode, const FExternalMorphWeightData& InExternalMorphWeightData) override;
-	void UpdateDynamicData_RenderThread(FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, FDynamicSkelMeshObjectDataGPUSkin* InDynamicData, FSceneInterface* Scene, uint32 FrameNumberToPrepare, uint32 RevisionNumber);
-	virtual void PreGDMECallback(FGPUSkinCache* GPUSkinCache, uint32 FrameNumber) override;
-	virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 ChunkIdx, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const override;
-	virtual const FSkinBatchVertexFactoryUserData* GetVertexFactoryUserData(const int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode) const override;
+	ENGINE_API virtual void InitResources(USkinnedMeshComponent* InMeshComponent) override;
+	ENGINE_API virtual void ReleaseResources() override;
+	ENGINE_API virtual void Update(int32 LODIndex,USkinnedMeshComponent* InMeshComponent,const FMorphTargetWeightMap& InActiveMorphTargets, const TArray<float>& InMorphTargetWeights, EPreviousBoneTransformUpdateMode PreviousBoneTransformUpdateMode, const FExternalMorphWeightData& InExternalMorphWeightData) override;
+	ENGINE_API void UpdateDynamicData_RenderThread(FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, FDynamicSkelMeshObjectDataGPUSkin* InDynamicData, FSceneInterface* Scene, uint64 FrameNumberToPrepare, uint32 RevisionNumber);
+	ENGINE_API virtual void PreGDMECallback(FGPUSkinCache* GPUSkinCache, uint32 FrameNumber) override;
+	ENGINE_API virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 ChunkIdx, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const override;
+	ENGINE_API virtual const FSkinBatchVertexFactoryUserData* GetVertexFactoryUserData(const int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode) const override;
 	virtual void CacheVertices(int32 LODIndex, bool bForce) const override {}
 	virtual bool IsCPUSkinned() const override { return false; }
-	virtual TArray<FTransform>* GetComponentSpaceTransforms() const override;
-	virtual const TArray<FMatrix44f>& GetReferenceToLocalMatrices() const override;
-	virtual bool GetCachedGeometry(FCachedGeometry& OutCachedGeometry) const override;
+	ENGINE_API virtual TArray<FTransform>* GetComponentSpaceTransforms() const override;
+	ENGINE_API virtual const TArray<FMatrix44f>& GetReferenceToLocalMatrices() const override;
+	ENGINE_API virtual bool GetCachedGeometry(FCachedGeometry& OutCachedGeometry) const override;
 	
-	FMeshDeformerGeometry& GetDeformerGeometry(int32 LODIndex);
+	ENGINE_API FMeshDeformerGeometry& GetDeformerGeometry(int32 LODIndex);
 
 #if RHI_RAYTRACING
 	/** Geometry for ray tracing. */
@@ -391,7 +395,7 @@ public:
 	 * VSinCS path is still required for world position offset materials but this can still use 
 	 * the updated vertex buffers from here with a passthrough vertex factory.
 	 */
-	void UpdateRayTracingGeometry(FSkeletalMeshLODRenderData& LODModel, uint32 LODIndex, TArray<FBufferRHIRef>& VertexBufffers);
+	ENGINE_API void UpdateRayTracingGeometry(FSkeletalMeshLODRenderData& LODModel, uint32 LODIndex, TArray<FBufferRHIRef>& VertexBufffers);
 
 #endif // RHI_RAYTRACING
 
@@ -407,7 +411,7 @@ public:
 		}
 	}
 
-	virtual bool HaveValidDynamicData() override
+	virtual bool HaveValidDynamicData() const override
 	{ 
 		return ( DynamicData!=NULL ); 
 	}
@@ -435,18 +439,18 @@ public:
 	 * Calculate how many GPU compressed morph target sets are active.
 	 * This includes regular morph targets as well as external morph targets.
 	 */
-	int32 CalcNumActiveGPUMorphSets(FMorphVertexBuffer& MorphVertexBuffer, const FExternalMorphSets& ExternalMorphSets) const;
+	ENGINE_API int32 CalcNumActiveGPUMorphSets(FMorphVertexBuffer& MorphVertexBuffer, const FExternalMorphSets& ExternalMorphSets) const;
 
 	/** Check if a given morph set is active or not. If so, we will process it. */
-	bool IsExternalMorphSetActive(int32 MorphSetID, const FExternalMorphSet& MorphSet) const;
+	ENGINE_API bool IsExternalMorphSetActive(int32 MorphSetID, const FExternalMorphSet& MorphSet) const;
 
-	FSkinWeightVertexBuffer* GetSkinWeightVertexBuffer(int32 LODIndex) const;
+	ENGINE_API FSkinWeightVertexBuffer* GetSkinWeightVertexBuffer(int32 LODIndex) const;
 
 	/** 
 	 * Get the skin vertex factory for direct skinning. 
 	 * This is different from GetSkinVertexFactory because it ignores any passthrough vertex factories that may be in use.
 	 */
-	FGPUBaseSkinVertexFactory const* GetBaseSkinVertexFactory(int32 LODIndex, int32 ChunkIdx) const;
+	ENGINE_API FGPUBaseSkinVertexFactory const* GetBaseSkinVertexFactory(int32 LODIndex, int32 ChunkIdx) const;
 
 	/** 
 	 * Vertex buffers that can be used for GPU skinning factories 
@@ -462,12 +466,12 @@ public:
 		uint32 NumVertices = 0;
 	};
 
-	FMatrix GetTransform() const;
-	virtual void SetTransform(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) override;
-	virtual void RefreshClothingTransforms(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) override;
-	virtual void UpdateSkinWeightBuffer(USkinnedMeshComponent* InMeshComponent) override;
+	ENGINE_API FMatrix GetTransform() const;
+	ENGINE_API virtual void SetTransform(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) override;
+	ENGINE_API virtual void RefreshClothingTransforms(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) override;
+	ENGINE_API virtual void UpdateSkinWeightBuffer(USkinnedMeshComponent* InMeshComponent) override;
 
-	static void GetUsedVertexFactoryData(FSkeletalMeshRenderData* SkelMeshRenderData, int32 InLOD, USkinnedMeshComponent* SkinnedMeshComponent, FSkelMeshRenderSection& RenderSection, ERHIFeatureLevel::Type InFeatureLevel, bool bHasMorphTargets, FPSOPrecacheVertexFactoryDataList& VertexFactoryDataList);
+	static ENGINE_API void GetUsedVertexFactoryData(FSkeletalMeshRenderData* SkelMeshRenderData, int32 InLOD, USkinnedMeshComponent* SkinnedMeshComponent, FSkelMeshRenderSection& RenderSection, ERHIFeatureLevel::Type InFeatureLevel, bool bHasMorphTargets, FPSOPrecacheVertexFactoryDataList& VertexFactoryDataList);
 
 protected:
 	friend class FSkeletalMeshDeformerHelpers;
@@ -655,18 +659,18 @@ protected:
 	/** 
 	* Initialize morph rendering resources for each LOD 
 	*/
-	void InitMorphResources(bool bInUsePerBoneMotionBlur, const TArray<float>& MorphTargetWeights);
+	ENGINE_API void InitMorphResources(bool bInUsePerBoneMotionBlur, const TArray<float>& MorphTargetWeights);
 
 	/** 
 	* Release morph rendering resources for each LOD. 
 	*/
-	void ReleaseMorphResources();
+	ENGINE_API void ReleaseMorphResources();
 
-	void ProcessUpdatedDynamicData(EGPUSkinCacheEntryMode Mode, FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, uint32 FrameNumberToPrepare, uint32 RevisionNumber, bool bMorphNeedsUpdate, int32 LODIndex);
+	ENGINE_API void ProcessUpdatedDynamicData(EGPUSkinCacheEntryMode Mode, FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, uint32 FrameNumberToPrepare, uint32 RevisionNumber, bool bMorphNeedsUpdate, int32 LODIndex);
 
-	virtual void UpdateMorphVertexBuffer(FRHICommandListImmediate& RHICmdList, EGPUSkinCacheEntryMode Mode, FSkeletalMeshObjectLOD& LOD, const FSkeletalMeshLODRenderData& LODData, bool bGPUSkinCacheEnabled, FMorphVertexBuffer& MorphVertexBuffer);
+	ENGINE_API virtual void UpdateMorphVertexBuffer(FRHICommandListImmediate& RHICmdList, EGPUSkinCacheEntryMode Mode, FSkeletalMeshObjectLOD& LOD, const FSkeletalMeshLODRenderData& LODData, bool bGPUSkinCacheEnabled, FMorphVertexBuffer& MorphVertexBuffer);
 
-	void WaitForRHIThreadFenceForDynamicData();
+	ENGINE_API void WaitForRHIThreadFenceForDynamicData();
 
 	/** Render data for each LOD */
 	TArray<struct FSkeletalMeshObjectLOD> LODs;
@@ -693,8 +697,8 @@ protected:
 	bool bAlwaysUpdateMorphVertexBuffer;
 
 private:
-	FSkeletalMeshObjectGPUSkin(const FSkeletalMeshObjectGPUSkin&);
-	FSkeletalMeshObjectGPUSkin& operator=(const FSkeletalMeshObjectGPUSkin&);
+	ENGINE_API FSkeletalMeshObjectGPUSkin(const FSkeletalMeshObjectGPUSkin&);
+	ENGINE_API FSkeletalMeshObjectGPUSkin& operator=(const FSkeletalMeshObjectGPUSkin&);
 };
 
 
@@ -708,11 +712,18 @@ public:
 
 	static const uint32 MorphTargetDispatchBatchSize = 128;
 
-	void SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumGroups);
-	void SetMorphOffsetsAndWeights(FRHICommandList& RHICmdList, uint32 BatchOffsets[MorphTargetDispatchBatchSize], uint32 GroupOffsets[MorphTargetDispatchBatchSize], float Weights[MorphTargetDispatchBatchSize]);
+	void SetParameters(
+		FRHIBatchedShaderParameters& BatchedParameters,
+		const FVector4& LocalScale,
+		const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers,
+		FMorphVertexBuffer& MorphVertexBuffer,
+		uint32 NumGroups,
+		uint32 BatchOffsets[MorphTargetDispatchBatchSize],
+		uint32 GroupOffsets[MorphTargetDispatchBatchSize],
+		float Weights[MorphTargetDispatchBatchSize]);
 
 	void Dispatch(FRHICommandList& RHICmdList, uint32 Size);
-	void EndAllDispatches(FRHICommandList& RHICmdList);
+	void UnsetParameters(FRHIBatchedShaderUnbinds& BatchedUnbinds);
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 
@@ -740,10 +751,10 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 
-	void SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumVertices);
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumVertices);
 
 	void Dispatch(FRHICommandList& RHICmdList, uint32 NumVertices);
-	void EndAllDispatches(FRHICommandList& RHICmdList);
+	void UnsetParameters(FRHIBatchedShaderUnbinds& BatchedUnbinds);
 
 protected:
 	LAYOUT_FIELD(FShaderResourceParameter, MorphVertexBufferParameter);

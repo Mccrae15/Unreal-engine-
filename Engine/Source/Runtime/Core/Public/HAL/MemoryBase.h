@@ -32,9 +32,6 @@ enum
 CORE_API extern class FMalloc* GMalloc;
 CORE_API extern class FMalloc** GFixedMallocLocationPtr;
 
-/** Global FMallocProfiler variable to allow multiple malloc profilers to communicate. */
-MALLOC_PROFILER( CORE_API extern class FMallocProfiler* GMallocProfiler; )
-
 /** Holds generic memory stats, internally implemented as a map. */
 struct FGenericMemoryStats;
 
@@ -44,7 +41,7 @@ struct FGenericMemoryStats;
  * alloced by the system malloc routines, bypassing GMalloc. This is e.g. used by FMalloc
  * itself.
  */
-class CORE_API FUseSystemMallocForNew
+class FUseSystemMallocForNew
 {
 public:
 	/**
@@ -53,14 +50,14 @@ public:
 	 * @param	Size	Amount of memory to allocate (in bytes)
 	 * @return			A pointer to a block of memory with size Size or nullptr
 	 */
-	void* operator new(size_t Size);
+	CORE_API void* operator new(size_t Size);
 
 	/**
 	 * Overloaded delete operator using the system allocator
 	 *
 	 * @param	Ptr		Pointer to delete
 	 */
-	void operator delete(void* Ptr);
+	CORE_API void operator delete(void* Ptr);
 
 	/**
 	 * Overloaded array new operator using the system allocator.
@@ -79,7 +76,7 @@ public:
 };
 
 /** The global memory allocator's interface. */
-class CORE_API FMalloc  : 
+class FMalloc  : 
 	public FUseSystemMallocForNew,
 	public FExec
 {
@@ -93,7 +90,7 @@ public:
 	 * TryMalloc - like Malloc(), but may return a nullptr result if the allocation
 	 *             request cannot be satisfied.
 	 */
-	virtual void* TryMalloc( SIZE_T Count, uint32 Alignment=DEFAULT_ALIGNMENT );
+	CORE_API virtual void* TryMalloc( SIZE_T Count, uint32 Alignment=DEFAULT_ALIGNMENT );
 
 	/** 
 	 * Realloc
@@ -105,7 +102,7 @@ public:
 	 *              request cannot be satisfied. Note that in this case the memory
 	 *              pointed to by Original will still be valid
 	 */
-	virtual void* TryRealloc(void* Original, SIZE_T Count, uint32 Alignment=DEFAULT_ALIGNMENT);
+	CORE_API virtual void* TryRealloc(void* Original, SIZE_T Count, uint32 Alignment=DEFAULT_ALIGNMENT);
 
 	/** 
 	 * Free
@@ -160,8 +157,9 @@ public:
 	*	Initializes stats metadata. We need to do this as soon as possible, but cannot be done in the constructor
 	*	due to the FName::StaticInit
 	*/
-	virtual void InitializeStatsMetadata();
+	CORE_API virtual void InitializeStatsMetadata();
 
+#if UE_ALLOW_EXEC_COMMANDS
 	/**
 	 * Handles any commands passed in on the command line
 	 */
@@ -169,12 +167,13 @@ public:
 	{ 
 		return false; 
 	}
+#endif // UE_ALLOW_EXEC_COMMANDS
 
 	/** Called once per frame, gathers and sets all memory allocator statistics into the corresponding stats. MUST BE THREAD SAFE. */
-	virtual void UpdateStats();
+	CORE_API virtual void UpdateStats();
 
 	/** Writes allocator stats from the last update into the specified destination. */
-	virtual void GetAllocatorStats( FGenericMemoryStats& out_Stats );
+	CORE_API virtual void GetAllocatorStats( FGenericMemoryStats& out_Stats );
 
 	/** Dumps current allocator stats to the log. */
 	virtual void DumpAllocatorStats( class FOutputDevice& Ar )
@@ -230,6 +229,6 @@ protected:
 #if !UE_BUILD_SHIPPING
 public:
 	/** Limits the maximum single allocation, to this many bytes, for debugging */
-	static TAtomic<uint64> MaxSingleAlloc;
+	static CORE_API TAtomic<uint64> MaxSingleAlloc;
 #endif
 };

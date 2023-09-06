@@ -2,17 +2,15 @@
 
 #pragma once
 
+#include "CoreMinimal.h"
 #include "DMXProtocolTypes.h"
 #include "DMXAttribute.h"
 #include "IO/DMXInputPortConfig.h"
 #include "IO/DMXOutputPortConfig.h"
-
-#include "CoreMinimal.h"
 #include "Misc/Optional.h"
 #include "UObject/Object.h"
 
 #include "DMXProtocolSettings.generated.h"
-
 
 
 /**  
@@ -36,7 +34,6 @@ public:
 
 	// ~Begin UObject Interface
 	virtual void PostInitProperties() override;
-	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent) override;
@@ -99,25 +96,31 @@ public:
 	/** Returns an automatic/unique name for an OutputPort */
 	FString GetUniqueOutputPortName() const;
 
-	/** Gets a Delegate Broadcast when send DMX is enabled or disabled */
+	/** Gets a delegate broadcast when the Sending Refresh Rate (the DMX send rate) changed */
+	FSimpleMulticastDelegate& GetOnSendingRefresRateChanged()
+	{
+		return OnSendingRefresRateChanged;
+	}
+
+	/** Gets a delegate broadcast when send DMX is enabled or disabled */
 	FDMXOnSendDMXEnabled& GetOnSetSendDMXEnabled()
 	{
 		return OnSetSendDMXEnabledDelegate;
 	}
 
-	/** Gets a Delegate Broadcast when receive DMX is enabled or disabled */
+	/** Gets a delegate broadcast when receive DMX is enabled or disabled */
 	FDMXOnSendDMXEnabled& GetOnSetReceiveDMXEnabled()
 	{
 		return OnSetReceiveDMXEnabledDelegate;
 	}
 
-	/** Gets a Delegate Broadcast when default attributes were changed */
+	/** Gets a delegate broadcast when default attributes were changed */
 	FSimpleMulticastDelegate& GetOnDefaultAttributesChanged()
 	{
 		return OnDefaultAttributesChanged;
 	}
 
-	/** Gets a Delegate Broadcast when default fixture categories were changed */
+	/** Gets a delegate broadcast when default fixture categories were changed */
 	FSimpleMulticastDelegate& GetOnDefaultFixtureCategoriesChanged()
 	{
 		return OnDefaultFixtureCategoriesChanged;
@@ -167,6 +170,9 @@ private:
 
 	/** Overrides the default bDefaultReceiveDMXEnabled value at runtime */
 	bool bOverrideReceiveDMXEnabled = true;
+
+	/** Broadcast the Sending Refresh Rate (the DMX send rate) changed */
+	FSimpleMulticastDelegate OnSendingRefresRateChanged;
 
 	/** Broadcast when send DMX is enabled or disabled */
 	FDMXOnSendDMXEnabled OnSetSendDMXEnabledDelegate;

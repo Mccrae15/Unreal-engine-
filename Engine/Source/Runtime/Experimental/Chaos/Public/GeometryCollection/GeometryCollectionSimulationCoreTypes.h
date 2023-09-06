@@ -9,6 +9,7 @@
 #include "Chaos/ClusterCreationParameters.h"
 #include "Chaos/CollisionFilterData.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
+#include "Chaos/PBDRigidClusteringTypes.h"
 
 class FGeometryCollection;
 class FGeometryDynamicCollection;
@@ -170,6 +171,7 @@ struct FSimulationParameters
 	FSimulationParameters()
 		: Name("")
 		, RestCollection(nullptr)
+		, InitialRootIndex(INDEX_NONE)
 		, RecordedTrack(nullptr)
 		, bOwnsTrack(false)
 		, Simulating(false)
@@ -177,7 +179,10 @@ struct FSimulationParameters
 		, EnableClustering(true)
 		, ClusterGroupIndex(0)
 		, MaxClusterLevel(100)
+		, MaxSimulatedLevel(100)
 		, bUseSizeSpecificDamageThresholds(false)
+		, DamageModel(EDamageModelTypeEnum::Chaos_Damage_Model_UserDefined_Damage_Threshold)
+		, DamageEvaluationModel(Chaos::EDamageEvaluationModel::StrainFromDamageThreshold)
 		, DamageThreshold({500000.f, 50000.f, 5000.f})
 		, bUsePerClusterOnlyDamageThreshold(false)
 		, ClusterConnectionMethod(Chaos::FClusterCreationParameters::EConnectionMethod::PointImplicit)
@@ -193,13 +198,18 @@ struct FSimulationParameters
 		, bClearCache(false)
 		, ObjectType(EObjectStateTypeEnum::Chaos_NONE)
 		, StartAwake(true)
+		, MaterialOverrideMassScaleMultiplier(1.0f)
 		, bGenerateBreakingData(false)
 		, bGenerateCollisionData(false)
 		, bGenerateTrailingData(false)
-		, bGenerateRemovalsData(false)
 		, bGenerateCrumblingData(false)
 		, bGenerateCrumblingChildrenData(false)
+		, bGenerateGlobalBreakingData(false)
+		, bGenerateGlobalCollisionData(false)
+		, bGenerateGlobalCrumblingData(false)
+		, bGenerateGlobalCrumblingChildrenData(false)
 		, EnableGravity(true)
+		, GravityGroupIndex(0)
 		, UseInertiaConditioning(true)
 		, UseCCD(false)
 		, LinearDamping(0.01f)
@@ -216,6 +226,7 @@ struct FSimulationParameters
 	FSimulationParameters(const FSimulationParameters& Other)
 		: Name(Other.Name)
 		, RestCollection(Other.RestCollection)
+		, InitialRootIndex(Other.InitialRootIndex)
 		, InitializationCommands(Other.InitializationCommands)
 		, RecordedTrack(Other.RecordedTrack)
 		, bOwnsTrack(false)
@@ -224,7 +235,10 @@ struct FSimulationParameters
 		, EnableClustering(Other.EnableClustering)
 		, ClusterGroupIndex(Other.ClusterGroupIndex)
 		, MaxClusterLevel(Other.MaxClusterLevel)
+		, MaxSimulatedLevel(Other.MaxSimulatedLevel)
 		, bUseSizeSpecificDamageThresholds(Other.bUseSizeSpecificDamageThresholds)
+		, DamageModel(Other.DamageModel)
+		, DamageEvaluationModel(Other.DamageEvaluationModel)
 		, DamageThreshold(Other.DamageThreshold)
 		, bUsePerClusterOnlyDamageThreshold(Other.bUsePerClusterOnlyDamageThreshold)
 		, ClusterConnectionMethod(Other.ClusterConnectionMethod)
@@ -241,14 +255,19 @@ struct FSimulationParameters
 		, ObjectType(Other.ObjectType)
 		, StartAwake(Other.StartAwake)
 		, PhysicalMaterialHandle(Other.PhysicalMaterialHandle)
+		, MaterialOverrideMassScaleMultiplier(Other.MaterialOverrideMassScaleMultiplier)
 		, bGenerateBreakingData(Other.bGenerateBreakingData)
 		, bGenerateCollisionData(Other.bGenerateCollisionData)
 		, bGenerateTrailingData(Other.bGenerateTrailingData)
-		, bGenerateRemovalsData(Other.bGenerateRemovalsData)
 		, bGenerateCrumblingData(Other.bGenerateCrumblingData)
 		, bGenerateCrumblingChildrenData(Other.bGenerateCrumblingChildrenData)
+		, bGenerateGlobalBreakingData(Other.bGenerateGlobalBreakingData)
+		, bGenerateGlobalCollisionData(Other.bGenerateGlobalCollisionData)
+		, bGenerateGlobalCrumblingData(Other.bGenerateGlobalCrumblingData)
+		, bGenerateGlobalCrumblingChildrenData(Other.bGenerateGlobalCrumblingChildrenData)
 		, Shared(Other.Shared)
 		, EnableGravity(Other.EnableGravity)
+		, GravityGroupIndex(Other.GravityGroupIndex)
 		, UseInertiaConditioning(Other.UseInertiaConditioning)
 		, UseCCD(Other.UseCCD)
 		, LinearDamping(Other.LinearDamping)
@@ -276,6 +295,7 @@ struct FSimulationParameters
 
 	FString Name;
 	const FGeometryCollection* RestCollection;
+	int32 InitialRootIndex;
 	TArray<FFieldSystemCommand> InitializationCommands;
 	const FRecordedTransformTrack* RecordedTrack;
 	bool bOwnsTrack;
@@ -288,7 +308,15 @@ struct FSimulationParameters
 	bool EnableClustering;
 	int32 ClusterGroupIndex;
 	int32 MaxClusterLevel;
+	int32 MaxSimulatedLevel;
 	bool bUseSizeSpecificDamageThresholds;
+
+	/** this is the user expose damage model, used for creation of the particles */
+	EDamageModelTypeEnum DamageModel; 
+
+	/** this is the lower level damage model for clustering, used at runm time */
+	Chaos::EDamageEvaluationModel DamageEvaluationModel;
+
 	TArray<float> DamageThreshold;
 	bool bUsePerClusterOnlyDamageThreshold;
 	Chaos::FClusterCreationParameters::EConnectionMethod ClusterConnectionMethod;
@@ -311,16 +339,23 @@ struct FSimulationParameters
 
 	Chaos::FMaterialHandle PhysicalMaterialHandle;
 
+	float MaterialOverrideMassScaleMultiplier;
+
 	bool bGenerateBreakingData;
 	bool bGenerateCollisionData;
 	bool bGenerateTrailingData;
-	bool bGenerateRemovalsData;
 	bool bGenerateCrumblingData;
 	bool bGenerateCrumblingChildrenData;
+
+	bool bGenerateGlobalBreakingData;
+	bool bGenerateGlobalCollisionData;
+	bool bGenerateGlobalCrumblingData;
+	bool bGenerateGlobalCrumblingChildrenData;
 
 	FSharedSimulationParameters Shared;
 
 	bool EnableGravity;
+	int32 GravityGroupIndex;
 	bool UseInertiaConditioning;
 	bool UseCCD;
 	float LinearDamping;

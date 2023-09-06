@@ -143,7 +143,7 @@ namespace EpicGames.UHT.Utils
 		/// <param name="builder">Source for the content</param>
 		public void CommitOutput(string filePath, StringBuilder builder)
 		{
-			using UhtBorrowBuffer borrowBuffer = new(builder);
+			using UhtRentedPoolBuffer<char> borrowBuffer = builder.RentPoolBuffer();
 			string tempFilePath = filePath + ".tmp";
 			SaveIfChanged(filePath, tempFilePath, new StringView(borrowBuffer.Buffer.Memory));
 		}
@@ -172,16 +172,16 @@ namespace EpicGames.UHT.Utils
 				Task[]? prereqTasks = prereqs?.Where(x => x != null).Cast<Task>().ToArray();
 				if (prereqTasks != null && prereqTasks.Length > 0)
 				{
-					return Task.Factory.ContinueWhenAll(prereqTasks, (Task[] tasks) => { action(this); });
+					return Task.Factory.ContinueWhenAll(prereqTasks, (Task[] tasks) => { Session.TryNoErrorCheck(null, () => action(this)); });
 				}
 				else
 				{
-					return Task.Factory.StartNew(() => { action(this); }, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+					return Task.Factory.StartNew(() => { Session.TryNoErrorCheck(null, () => action(this)); }, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
 				}
 			}
 			else
 			{
-				action(this);
+				Session.TryNoErrorCheck(null, () => action(this));
 				return null;
 			}
 		}
@@ -288,15 +288,14 @@ namespace EpicGames.UHT.Utils
 				{
 					string message = String.Empty;
 					string refPath = Path.Combine(ReferenceDirectory, fileName);
-					UhtBuffer? existingRef = Session.ReadSourceToBuffer(refPath);
-					if (existingRef != null)
+					if (Session.ReadSource(refPath, out UhtPoolBuffer<char> existingRef))
 					{
 						ReadOnlySpan<char> existingSpan = existingRef.Memory.Span;
 						if (existingSpan.CompareTo(exportedSpan, StringComparison.Ordinal) != 0)
 						{
 							message = $"********************************* {fileName} has changed.";
 						}
-						UhtBuffer.Return(existingRef);
+						UhtPoolBuffers.Return<char>(existingRef);
 					}
 					else
 					{
@@ -305,7 +304,7 @@ namespace EpicGames.UHT.Utils
 
 					if (!String.IsNullOrEmpty(message))
 					{
-						Log.TraceInformation(message);
+						Session.Logger.LogInformation("{Message}", message);
 						lock (ReferenceErrorMessages)
 						{
 							ReferenceErrorMessages.Add(message, true);
@@ -315,9 +314,8 @@ namespace EpicGames.UHT.Utils
 			}
 
 			// Check to see if the contents have changed
-			UhtBuffer? original = Session.ReadSourceToBuffer(filePath);
-			bool save = original == null;
-			if (original != null)
+			bool save = false;
+			if (Session.ReadSource(filePath, out UhtPoolBuffer<char> original))
 			{
 				ReadOnlySpan<char> originalSpan = original.Memory.Span;
 				if (originalSpan.CompareTo(exportedSpan, StringComparison.Ordinal) != 0)
@@ -332,7 +330,11 @@ namespace EpicGames.UHT.Utils
 					}
 					save = true;
 				}
-				UhtBuffer.Return(original);
+				UhtPoolBuffers.Return<char>(original);
+			}
+			else
+			{
+				save = true;
 			}
 
 			// If changed of the original didn't exist, then save the new version
@@ -563,9 +565,9 @@ namespace EpicGames.UHT.Utils
 		#region Configurable settings
 
 		/// <summary>
-		/// Logger interface.  If not set, Log.Logger will be used
+		/// Logger interface.
 		/// </summary>
-		public ILogger? Logger { get; set; }
+		public ILogger Logger { get; }
 
 		/// <summary>
 		/// Interface used to read/write files
@@ -768,6 +770,12 @@ namespace EpicGames.UHT.Utils
 		/// </summary>
 		public UhtClass? INotifyFieldValueChanged { get; set; } = null;
 
+		/// <summary>
+		/// After headers are parsed, returns the FInstancedStruct script struct.  Unlike such properties as 
+		/// "UObject", there is no requirement for FInstancedStruct to be defined.  May be null.
+		/// </summary>
+		public UhtScriptStruct? FInstancedStruct { get; set; } = null;
+
 		private readonly List<UhtPackage> _packages = new();
 		private readonly List<UhtHeaderFile> _headerFiles = new();
 		private readonly List<UhtHeaderFile> _sortedHeaderFiles = new();
@@ -816,6 +824,15 @@ namespace EpicGames.UHT.Utils
 		/// <inheritdoc/>
 		public IUhtMessageLineNumber? MessageLineNumber => null;
 		#endregion
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="logger">Logger for the session</param>
+		public UhtSession(ILogger logger)
+		{
+			Logger = logger;
+		}
 
 		/// <summary>
 		/// Return the index for a newly defined type
@@ -980,21 +997,21 @@ namespace EpicGames.UHT.Utils
 			if (FileManager == null)
 			{
 				Interlocked.Increment(ref _errorCount);
-				Log.Logger.LogError("No file manager supplied, aborting.");
+				Logger.LogError("No file manager supplied, aborting.");
 				return;
 			}
 
 			if (Config == null)
 			{
 				Interlocked.Increment(ref _errorCount);
-				Log.Logger.LogError("No configuration supplied, aborting.");
+				Logger.LogError("No configuration supplied, aborting.");
 				return;
 			}
 
 			if (Tables == null)
 			{
 				Interlocked.Increment(ref _errorCount);
-				Log.Logger.LogError("No parsing tables supplied, aborting.");
+				Logger.LogError("No parsing tables supplied, aborting.");
 				return;
 			}
 
@@ -1006,7 +1023,7 @@ namespace EpicGames.UHT.Utils
 				case UhtReferenceMode.Reference:
 					if (String.IsNullOrEmpty(ReferenceDirectory))
 					{
-						Log.Logger.LogError("WRITEREF requested but directory not set, ignoring");
+						Logger.LogError("WRITEREF requested but directory not set, ignoring");
 						ReferenceMode = UhtReferenceMode.None;
 					}
 					break;
@@ -1014,10 +1031,22 @@ namespace EpicGames.UHT.Utils
 				case UhtReferenceMode.Verify:
 					if (String.IsNullOrEmpty(ReferenceDirectory) || String.IsNullOrEmpty(VerifyDirectory))
 					{
-						Log.Logger.LogError("VERIFYREF requested but directories not set, ignoring");
+						Logger.LogError("VERIFYREF requested but directories not set, ignoring");
 						ReferenceMode = UhtReferenceMode.None;
 					}
 					break;
+			}
+
+			{
+				string defaultPolicyName = Config.DefaultDocumentationPolicy;
+				if (!String.IsNullOrEmpty(defaultPolicyName))
+				{
+					if (!Config.DocumentationPolicies.TryGetValue(defaultPolicyName, out UhtDocumentationPolicy? policy))
+					{
+						Logger.LogError("The default documentation policy '{DefaultPolicyName}' isn't known", defaultPolicyName);
+						return;
+					}
+				}
 			}
 
 			if (ReferenceMode != UhtReferenceMode.None)
@@ -1052,12 +1081,27 @@ namespace EpicGames.UHT.Utils
 			// If we are deleting the reference directory, then wait for that task to complete
 			if (_referenceDeleteTask != null)
 			{
-				Log.Logger.LogTrace("Step - Waiting for reference output to be cleared.");
+				Logger.LogTrace("Step - Waiting for reference output to be cleared.");
 				_referenceDeleteTask.Wait();
 			}
 
-			Log.Logger.LogTrace("Step - Starting exporters.");
+			Logger.LogTrace("Step - Starting exporters.");
 			StepExport();
+		}
+
+		/// <summary>
+		/// Try the given action.  If an exception occurs that doesn't have the required
+		/// context, use the supplied context to generate the message.  If a previous error
+		/// has occured, the action will not be executed
+		/// </summary>
+		/// <param name="messageSource">Message context for when the exception doesn't contain a context.</param>
+		/// <param name="action">The lambda to be invoked</param>
+		public void Try(IUhtMessageSource? messageSource, Action action)
+		{
+			if (!HasErrors)
+			{
+				TryNoErrorCheck(messageSource, action);
+			}
 		}
 
 		/// <summary>
@@ -1066,18 +1110,15 @@ namespace EpicGames.UHT.Utils
 		/// </summary>
 		/// <param name="messageSource">Message context for when the exception doesn't contain a context.</param>
 		/// <param name="action">The lambda to be invoked</param>
-		public void Try(IUhtMessageSource? messageSource, Action action)
+		public void TryNoErrorCheck(IUhtMessageSource? messageSource, Action action)
 		{
-			if (!HasErrors)
+			try
 			{
-				try
-				{
-					action();
-				}
-				catch (Exception e)
-				{
-					HandleException(messageSource, e);
-				}
+				action();
+			}
+			catch (Exception e)
+			{
+				HandleException(messageSource, e);
 			}
 		}
 
@@ -1100,9 +1141,21 @@ namespace EpicGames.UHT.Utils
 		/// </summary>
 		/// <param name="filePath">Full or relative file path</param>
 		/// <returns>Buffer containing the read data or null if not found.  The returned buffer must be returned to the cache via a call to UhtBuffer.Return</returns>
+		[Obsolete("Use the ReadSource method with the UhtPoolBuffer<char> output parameter")]
 		public UhtBuffer? ReadSourceToBuffer(string filePath)
 		{
 			return FileManager!.ReadOutput(filePath);
+		}
+
+		/// <summary>
+		/// Read the given source file
+		/// </summary>
+		/// <param name="filePath">Full or relative file path</param>
+		/// <param name="output">Read source file</param>
+		/// <returns>True if the file was read</returns>
+		public bool ReadSource(string filePath, out UhtPoolBuffer<char> output)
+		{
+			return FileManager!.ReadOutput(filePath, out output);
 		}
 
 		/// <summary>
@@ -1986,6 +2039,7 @@ namespace EpicGames.UHT.Utils
 				_iinterface = (UhtClass?)FindType(null, UhtFindOptions.SourceName | UhtFindOptions.Class, "IInterface");
 				AActor = (UhtClass?)FindType(null, UhtFindOptions.SourceName | UhtFindOptions.Class, "AActor");
 				INotifyFieldValueChanged = (UhtClass?)FindType(null, UhtFindOptions.SourceName | UhtFindOptions.Class, "INotifyFieldValueChanged");
+				FInstancedStruct = (UhtScriptStruct?)FindType(null, UhtFindOptions.SourceName | UhtFindOptions.ScriptStruct, "FInstancedStruct");
 			});
 		}
 
@@ -2419,11 +2473,10 @@ namespace EpicGames.UHT.Utils
 		{
 			if (_projectJson == null && ProjectDirectory != null && ProjectFile != null)
 			{
-				UhtBuffer? contents = ReadSourceToBuffer(ProjectFile);
-				if (contents != null)
+				if (ReadSource(ProjectFile, out UhtPoolBuffer<char> contents))
 				{
 					_projectJson = JsonDocument.Parse(contents.Memory);
-					UhtBuffer.Return(contents);
+					UhtPoolBuffers.Return<char>(contents);
 				}
 			}
 
@@ -2474,7 +2527,7 @@ namespace EpicGames.UHT.Utils
 			long totalWrittenFiles = 0;
 			Try(null, () =>
 			{
-				Log.Logger.LogTrace("Step - Exports");
+				Logger.LogDebug("Step - Exports");
 
 				foreach (UhtExporter exporter in ExporterTable)
 				{
@@ -2497,14 +2550,14 @@ namespace EpicGames.UHT.Utils
 						}
 						if (pluginModule == null)
 						{
-							Log.TraceWarning($"Exporter \"{exporter.Name}\" skipped because module \"{exporter.ModuleName}\" was not found in manifest");
+							Logger.LogWarning("Exporter \"{ExporterName}\" skipped because module \"{ModuleName}\" was not found in manifest", exporter.Name, exporter.ModuleName);
 							continue;
 						}
 					}
 
 					if (run)
 					{
-						Log.TraceLog($"       Running exporter {exporter.Name}");
+						Logger.LogDebug("       Running exporter {ExporterName}", exporter.Name);
 						UhtExportFactory factory = new(this, pluginModule, exporter);
 						factory.Run();
 						foreach (UhtExportFactory.Output output in factory.Outputs)
@@ -2521,7 +2574,7 @@ namespace EpicGames.UHT.Utils
 					}
 					else
 					{
-						Log.TraceLog($"       Exporter {exporter.Name} skipped");
+						Logger.LogDebug("       Exporter {ExporterName} skipped", exporter.Name);
 					}
 				}
 
@@ -2536,7 +2589,7 @@ namespace EpicGames.UHT.Utils
 				}
 			});
 
-			Log.TraceInformation($"Total of {totalWrittenFiles} written");
+			Logger.LogInformation("Total of {NumFiles} written", totalWrittenFiles);
 		}
 		#endregion
 	}

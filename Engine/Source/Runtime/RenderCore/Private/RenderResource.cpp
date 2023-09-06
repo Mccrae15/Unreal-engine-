@@ -5,15 +5,15 @@
 =============================================================================*/
 
 #include "RenderResource.h"
-#include "Misc/ScopedEvent.h"
 #include "Misc/App.h"
+#include "RHI.h"
 #include "RenderingThread.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "CoreGlobals.h"
-#include "RayTracingGeometryManager.h"
 #include "RenderGraphResources.h"
 #include "Containers/ResourceArray.h"
 #include "RenderCore.h"
+#include "Async/RecursiveMutex.h"
 
 /** Whether to enable mip-level fading or not: +1.0f if enabled, -1.0f if disabled. */
 float GEnableMipLevelFading = 1.0f;
@@ -24,106 +24,65 @@ FAutoConsoleVariableRef CVarFreeStructuresOnRHIBufferCreation(
 	GFreeStructuresOnRHIBufferCreation,
 	TEXT("Toggles experimental method for freeing helper structures that own the resource arrays after submitting to RHI instead of in the callback sink."));
 
-/** Tracks render resources in a list. The implementation is optimized to allow fast allocation / deallocation from any thread,
- *  at the cost of period coalescing of thread-local data at a sync point each frame. Furthermore, iteration is not thread safe
- *  and must be performed at sync points.
- */
 class FRenderResourceList
 {
 public:
+	template <FRenderResource::EInitPhase>
 	static FRenderResourceList& Get()
 	{
 		static FRenderResourceList Instance;
 		return Instance;
 	}
 
-	~FRenderResourceList()
+	static FRenderResourceList& Get(FRenderResource::EInitPhase InitPhase)
 	{
-		for (FFreeList* FreeList : LocalFreeLists)
+		switch (InitPhase)
 		{
-			delete FreeList;
+		case FRenderResource::EInitPhase::Pre:
+			return Get<FRenderResource::EInitPhase::Pre>();
+		default:
+			return Get<FRenderResource::EInitPhase::Default>();
 		}
-		FPlatformTLS::FreeTlsSlot(TLSSlot);
 	}
 
 	int32 Allocate(FRenderResource* Resource)
 	{
-		if (bIsIterating)
+		Mutex.Lock();
+		int32 Index;
+		if (FreeIndexList.IsEmpty())
 		{
-			// This part is not thread safe. Iteration requires that no adds / removals are happening concurrently. The only
-			// supported case is recursive adds on the same thread (i.e. a parent resource initializes a child resource). In
-			// this case, we need to add the resource to the end so that it gets iterated as well.
-			check(IsInRenderingThread());
-			return ResourceList.AddElement(Resource);
+			Index = ResourceList.Num();
+			ResourceList.Emplace(Resource);
 		}
-
-		FFreeList& LocalFreeList = GetLocalFreeList();
-
-		if (LocalFreeList.IsEmpty())
+		else
 		{
-			FScopeLock Lock(&CS);
-
-			// Try to allocate free slots from the global free list.
-			const int32 OldFreeListSize = GlobalFreeList.Num();
-			const int32 NewFreeListSize = FMath::Max(OldFreeListSize - ChunkSize, 0);
-			int32 NumElements = OldFreeListSize - NewFreeListSize;
-
-			if (NumElements > 0)
-			{
-				LocalFreeList.Append(GlobalFreeList.GetData() + NewFreeListSize, NumElements);
-				GlobalFreeList.SetNum(NewFreeListSize, false);
-			}
-
-			// Allocate more if we didn't get a full chunk from the global list.
-			while (NumElements < ChunkSize)
-			{
-				LocalFreeList.Emplace(ResourceList.AddElement(nullptr));
-				NumElements++;
-			}
+			Index = FreeIndexList.Pop(false);
+			ResourceList[Index] = Resource;
 		}
-
-		int32 Index = LocalFreeList.Pop(false);
-		ResourceList[Index] = Resource;
+		Mutex.Unlock();
 		return Index;
 	}
 
 	void Deallocate(int32 Index)
 	{
-		GetLocalFreeList().Emplace(Index);
+		Mutex.Lock();
+		FreeIndexList.Emplace(Index);
 		ResourceList[Index] = nullptr;
+		Mutex.Unlock();
 	}
-
-	//////////////////////////////////////////////////////////////////////////////
-	// These methods must be called at sync points where allocations / deallocations can't occur from another thread.
 
 	void Clear()
 	{
-		check(IsInRenderingThread());
-
-		for (FFreeList* FreeList : LocalFreeLists)
-		{
-			FreeList->Empty();
-		}
+		Mutex.Lock();
+		FreeIndexList.Empty();
 		ResourceList.Empty();
-	}
-
-	void Coalesce()
-	{
-		check(IsInRenderingThread());
-
-		for (FFreeList* FreeList : LocalFreeLists)
-		{
-			GlobalFreeList.Append(*FreeList);
-			FreeList->Empty();
-		}
+		Mutex.Unlock();
 	}
 
 	template<typename FunctionType>
 	void ForEach(const FunctionType& Function)
 	{
-		check(IsInRenderingThread());
-		check(!bIsIterating);
-		bIsIterating = true;
+		Mutex.Lock();
 		for (int32 Index = 0; Index < ResourceList.Num(); ++Index)
 		{
 			FRenderResource* Resource = ResourceList[Index];
@@ -133,15 +92,13 @@ public:
 				Function(Resource);
 			}
 		}
-		bIsIterating = false;
+		Mutex.Unlock();
 	}
 
 	template<typename FunctionType>
 	void ForEachReverse(const FunctionType& Function)
 	{
-		check(IsInRenderingThread());
-		check(!bIsIterating);
-		bIsIterating = true;
+		Mutex.Lock();
 		for (int32 Index = ResourceList.Num() - 1; Index >= 0; --Index)
 		{
 			FRenderResource* Resource = ResourceList[Index];
@@ -151,67 +108,38 @@ public:
 				Function(Resource);
 			}
 		}
-		bIsIterating = false;
+		Mutex.Unlock();
 	}
-
-	//////////////////////////////////////////////////////////////////////////////
 
 private:
-	FRenderResourceList()
-	{
-		TLSSlot = FPlatformTLS::AllocTlsSlot();
-	}
-
-	const int32 ChunkSize = 1024;
-
-	using FFreeList = TArray<int32>;
-
-	FFreeList& GetLocalFreeList()
-	{
-		void* TLSValue = FPlatformTLS::GetTlsValue(TLSSlot);
-		if (TLSValue == nullptr)
-		{
-			FFreeList* TLSCache = new FFreeList();
-			FPlatformTLS::SetTlsValue(TLSSlot, (void*)(TLSCache));
-			FScopeLock S(&CS);
-			LocalFreeLists.Add(TLSCache);
-			return *TLSCache;
-		}
-		return *((FFreeList*)TLSValue);
-	}
-
-	uint32 TLSSlot;
-	FCriticalSection CS;
-	TArray<FFreeList*> LocalFreeLists;
-	FFreeList GlobalFreeList;
-	TChunkedArray<FRenderResource*> ResourceList;
-	bool bIsIterating = false;
+	UE::FRecursiveMutex Mutex;
+	TArray<int32> FreeIndexList;
+	TArray<FRenderResource*> ResourceList;
 };
-
-void FRenderResource::CoalesceResourceList()
-{
-	FRenderResourceList::Get().Coalesce();
-}
 
 void FRenderResource::ReleaseRHIForAllResources()
 {
-	FRenderResourceList& ResourceList = FRenderResourceList::Get();
-	ResourceList.ForEachReverse([](FRenderResource* Resource) { check(Resource->IsInitialized()); Resource->ReleaseRHI(); });
-	ResourceList.ForEachReverse([](FRenderResource* Resource) { Resource->ReleaseDynamicRHI(); });
+	const auto Lambda = [](FRenderResource* Resource) { check(Resource->IsInitialized()); Resource->ReleaseRHI(); };
+	FRenderResourceList::Get<FRenderResource::EInitPhase::Default>().ForEachReverse(Lambda);
+	FRenderResourceList::Get<FRenderResource::EInitPhase::Pre>().ForEachReverse(Lambda);
 }
 
 /** Initialize all resources initialized before the RHI was initialized */
 void FRenderResource::InitPreRHIResources()
 {
-	FRenderResourceList& ResourceList = FRenderResourceList::Get();
+	FRHICommandListBase& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
+	FRenderResourceList& PreResourceList = FRenderResourceList::Get<FRenderResource::EInitPhase::Pre>();
+	FRenderResourceList& DefaultResourceList = FRenderResourceList::Get<FRenderResource::EInitPhase::Default>();
 
 	// Notify all initialized FRenderResources that there's a valid RHI device to create their RHI resources for now.
-	ResourceList.ForEach([](FRenderResource* Resource) { Resource->InitRHI(); });
-	// Dynamic resources can have dependencies on static resources (with uniform buffers) and must initialized last!
-	ResourceList.ForEach([](FRenderResource* Resource) { Resource->InitDynamicRHI(); });
+	const auto Lambda = [&](FRenderResource* Resource) { Resource->InitRHI(RHICmdList); };
+	PreResourceList.ForEach(Lambda);
+	DefaultResourceList.ForEach(Lambda);
 
 #if !PLATFORM_NEEDS_RHIRESOURCELIST
-	ResourceList.Clear();
+	PreResourceList.Clear();
+	DefaultResourceList.Clear();
 #endif
 }
 
@@ -220,22 +148,29 @@ void FRenderResource::ChangeFeatureLevel(ERHIFeatureLevel::Type NewFeatureLevel)
 	ENQUEUE_RENDER_COMMAND(FRenderResourceChangeFeatureLevel)(
 		[NewFeatureLevel](FRHICommandList& RHICmdList)
 	{
-		FRenderResourceList::Get().ForEach([NewFeatureLevel](FRenderResource* Resource)
+		const auto Lambda = [NewFeatureLevel, &RHICmdList](FRenderResource* Resource)
 		{
 			// Only resources configured for a specific feature level need to be updated
 			if (Resource->HasValidFeatureLevel() && (Resource->FeatureLevel != NewFeatureLevel))
 			{
 				Resource->ReleaseRHI();
-				Resource->ReleaseDynamicRHI();
 				Resource->FeatureLevel = NewFeatureLevel;
-				Resource->InitDynamicRHI();
-				Resource->InitRHI();
+				Resource->InitRHI(RHICmdList);
 			}
-		});
+		};
+
+		FRenderResourceList::Get<FRenderResource::EInitPhase::Pre>().ForEach(Lambda);
+		FRenderResourceList::Get<FRenderResource::EInitPhase::Default>().ForEach(Lambda);
 	});
 }
 
-void FRenderResource::InitResource()
+FRHICommandListBase& FRenderResource::GetCommandList()
+{
+	check(IsInRenderingThread());
+	return FRHICommandListExecutor::GetImmediateCommandList();
+}
+
+void FRenderResource::InitResource(FRHICommandListBase& RHICmdList)
 {
 	if (ListIndex == INDEX_NONE)
 	{
@@ -244,7 +179,7 @@ void FRenderResource::InitResource()
 		if (PLATFORM_NEEDS_RHIRESOURCELIST || !GIsRHIInitialized)
 		{
 			LLM_SCOPE(ELLMTag::SceneRender);
-			LocalListIndex = FRenderResourceList::Get().Allocate(this);
+			LocalListIndex = FRenderResourceList::Get(InitPhase).Allocate(this);
 		}
 		else
 		{
@@ -255,8 +190,7 @@ void FRenderResource::InitResource()
 		if (GIsRHIInitialized)
 		{
 			CSV_SCOPED_TIMING_STAT_EXCLUSIVE(InitRenderResource);
-			InitDynamicRHI();
-			InitRHI();
+			InitRHI(RHICmdList);
 		}
 
 		FPlatformMisc::MemoryBarrier(); // there are some multithreaded reads of ListIndex
@@ -273,11 +207,10 @@ void FRenderResource::ReleaseResource()
 			if(GIsRHIInitialized)
 			{
 				ReleaseRHI();
-				ReleaseDynamicRHI();
 			}
 
 #if PLATFORM_NEEDS_RHIRESOURCELIST
-			FRenderResourceList::Get().Deallocate(ListIndex);
+			FRenderResourceList::Get(InitPhase).Deallocate(ListIndex);
 #endif
 			ListIndex = INDEX_NONE;
 		}
@@ -287,15 +220,17 @@ void FRenderResource::ReleaseResource()
 void FRenderResource::UpdateRHI()
 {
 	check(IsInRenderingThread());
-	if(IsInitialized() && GIsRHIInitialized)
-	{
-		ReleaseRHI();
-		ReleaseDynamicRHI();
-		InitDynamicRHI();
-		InitRHI();
-	}
+	UpdateRHI(FRHICommandListExecutor::GetImmediateCommandList());
 }
 
+void FRenderResource::UpdateRHI(FRHICommandListBase& RHICmdList)
+{
+	if (IsInitialized() && GIsRHIInitialized)
+	{
+		ReleaseRHI();
+		InitRHI(RHICmdList);
+	}
+}
 FRenderResource::FRenderResource()
 	: ListIndex(INDEX_NONE)
 	, FeatureLevel(ERHIFeatureLevel::Num)
@@ -335,12 +270,14 @@ FBufferRHIRef FRenderResource::CreateRHIBufferInternal(
 {
 	const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
 	FRHIResourceCreateInfo CreateInfo(InDebugName, ResourceArray);
+	CreateInfo.ClassName = FName(InDebugName);
+	CreateInfo.OwnerName = InOwnerName;
 	CreateInfo.bWithoutNativeResource = bWithoutNativeResource;
 
 	FBufferRHIRef Buffer;
 	if (bRenderThread)
 	{
-		Buffer = RHICreateVertexBuffer(SizeInBytes, InBufferUsageFlags, CreateInfo);
+		Buffer = FRHICommandListImmediate::Get().CreateVertexBuffer(SizeInBytes, InBufferUsageFlags, CreateInfo);
 	}
 	else
 	{
@@ -370,11 +307,10 @@ FName FRenderResource::GetOwnerName() const
 
 void BeginInitResource(FRenderResource* Resource)
 {
-	LLM_SCOPE(ELLMTag::SceneRender);
 	ENQUEUE_RENDER_COMMAND(InitCommand)(
 		[Resource](FRHICommandListImmediate& RHICmdList)
 		{
-			Resource->InitResource();
+			Resource->InitResource(RHICmdList);
 		});
 }
 
@@ -383,7 +319,7 @@ void BeginUpdateResourceRHI(FRenderResource* Resource)
 	ENQUEUE_RENDER_COMMAND(UpdateCommand)(
 		[Resource](FRHICommandListImmediate& RHICmdList)
 		{
-			Resource->UpdateRHI();
+			Resource->UpdateRHI(RHICmdList);
 		});
 }
 
@@ -598,7 +534,7 @@ void FTextureReference::InvalidateLastRenderTime()
 	}
 }
 
-void FTextureReference::InitRHI()
+void FTextureReference::InitRHI(FRHICommandListBase&)
 {
 	SCOPED_LOADTIMER(FTextureReference_InitRHI);
 	TextureReferenceRHI = RHICreateTextureReference();

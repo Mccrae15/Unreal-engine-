@@ -240,12 +240,8 @@ void FDisplayClusterLightCardEditorHelper::SetLevelInstanceRootActor(ADisplayClu
 
 const UTexture2D* FDisplayClusterLightCardEditorHelper::GetNormalMapTexture(bool bShowNorthMap)
 {
-	if (ADisplayClusterRootActor* RootActor = UpdateRootActor())
-	{
-		UTexture2D* NormalMapTexture = bShowNorthMap ? RootActor->GetStageGeometryComponent()->GetNorthGeometryMapTexture() : RootActor->GetStageGeometryComponent()->GetSouthGeometryMapTexture();
-		return NormalMapTexture;
-	}
-
+	// TODO: Exposure to the raw stage geometry normal maps was removed since they are generally undecipherable, and an upcoming task (UE-153862) will add a
+	// way to visualize the normal maps in a way that is far more user friendly
 	return nullptr;
 }
 
@@ -323,7 +319,8 @@ void FDisplayClusterLightCardEditorHelper::MoveActorsToPixel(
 		AverageCoords.Conform();
 
 		// Compute desired coordinates (radius doesn't matter here since we will use the flush constraint on the light cards after moving them)
-		const FSphericalCoordinates DesiredCoords(Direction * 100.0f);
+		const FVector LocalDirection = CachedRootActor->GetActorRotation().RotateVector(Direction);
+		const FSphericalCoordinates DesiredCoords(LocalDirection * 100.0f);
 		const FSphericalCoordinates DeltaCoords = DesiredCoords - AverageCoords;
 
 		// Update each light card with the delta coordinates; the flush constraint is applied by MoveLightCardTo, ensuring the light card is always flush to screens
@@ -882,7 +879,10 @@ AActor* FDisplayClusterLightCardEditorHelper::SpawnStageActor(const FSpawnActorA
 			}
 		}
 
-		NewLightCard->ShowLightCardLabel(InSpawnArgs.AddLightCardArgs.bShowLabels, InSpawnArgs.AddLightCardArgs.LabelScale, RootActor);
+		FDisplayClusterLabelConfiguration LabelConfiguration = InSpawnArgs.AddLightCardArgs.LabelConfiguration;
+		LabelConfiguration.RootActor = RootActor;
+
+		NewLightCard->ShowLightCardLabel(LabelConfiguration);
 		
 		if (ADisplayClusterChromakeyCardActor* ChromakeyCardActor = Cast<ADisplayClusterChromakeyCardActor>(NewActor))
 		{

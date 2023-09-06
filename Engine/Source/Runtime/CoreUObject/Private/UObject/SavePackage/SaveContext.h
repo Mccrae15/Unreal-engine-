@@ -90,6 +90,7 @@ enum class EIllegalRefReason : uint8
 	ReferenceFromOptionalToMissingGameExport,
 	UnsaveableClass,
 	UnsaveableOuter,
+	ExternalPackage,
 };
 
 /** Small struct to store illegal references harvested during save */
@@ -99,6 +100,20 @@ struct FIllegalReference
 	UObject* To = nullptr;
 	EIllegalRefReason Reason;
 	FString FormatStringArg;
+};
+
+enum class ESaveableStatus
+{
+	Success,
+	PendingKill,
+	Transient,
+	AbstractClass,
+	DeprecatedClass,
+	NewerVersionExistsClass,
+	OuterUnsaveable,
+	ClassUnsaveable,
+	ExcludedByPlatform,
+	__Count,
 };
 
 /** Hold the harvested exports and imports for a realm */
@@ -119,7 +134,7 @@ struct FHarvestedRealm
 		}
 	}
 
-	void AddImport(UObject* InObject)
+	void AddImport(TObjectPtr<UObject> InObject)
 	{
 		Imports.Add(InObject);
 	}
@@ -129,12 +144,12 @@ struct FHarvestedRealm
 		Exports.Add(MoveTemp(InTagObj));
 	}
 
-	void AddExcluded(UObject* InObject)
+	void AddExcluded(TObjectPtr<UObject> InObject)
 	{
 		Excluded.Add(InObject);
 	}
 
-	bool IsImport(UObject* InObject) const
+	bool IsImport(TObjectPtr<UObject> InObject) const
 	{
 		return Imports.Contains(InObject);
 	}
@@ -144,12 +159,16 @@ struct FHarvestedRealm
 		return Exports.Contains(InObject);
 	}
 
-	bool IsIncluded(UObject* InObject) const
+	bool IsIncluded(TObjectPtr<UObject> InObject) const
 	{
-		return IsImport(InObject) || IsExport(InObject);
+		return IsImport(InObject) || (InObject.IsResolved() && IsExport(InObject));
 	}
 
-	bool IsExcluded(UObject* InObject) const
+	/**
+	 * Used during harvesting to early exit from objects we have found referenced earlier but excluded because of
+	 * editoronly or unsaveable or otherwise.
+	 */
+	bool IsExcluded(TObjectPtr<UObject> InObject) const
 	{
 		return Excluded.Contains(InObject);
 	}
@@ -164,7 +183,7 @@ struct FHarvestedRealm
 		return Exports;
 	}
 
-	const TSet<UObject*>& GetImports() const
+	const TSet<TObjectPtr<UObject>>& GetImports() const
 	{
 		return Imports;
 	}
@@ -179,12 +198,12 @@ struct FHarvestedRealm
 		return SoftPackageReferenceList;
 	}
 
-	const TMap<UObject*, TArray<FName>>& GetSearchableNamesObjectMap() const
+	const TMap<TObjectPtr<UObject>, TArray<FName>>& GetSearchableNamesObjectMap() const
 	{
 		return SearchableNamesObjectMap;
 	}
 
-	TMap<UObject*, TArray<FName>>& GetSearchableNamesObjectMap()
+	TMap<TObjectPtr<UObject>, TArray<FName>>& GetSearchableNamesObjectMap()
 	{
 		return SearchableNamesObjectMap;
 	}
@@ -219,22 +238,22 @@ struct FHarvestedRealm
 		return SoftObjectPathList;
 	}
 
-	const TMap<UObject*, TSet<UObject*>>& GetObjectDependencies() const
+	const TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>>& GetObjectDependencies() const
 	{
 		return ExportObjectDependencies;
 	}
 
-	TMap<UObject*, TSet<UObject*>>& GetObjectDependencies()
+	TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>>& GetObjectDependencies()
 	{
 		return ExportObjectDependencies;
 	}
 
-	const TMap<UObject*, TSet<UObject*>>& GetNativeObjectDependencies() const
+	const TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>>& GetNativeObjectDependencies() const
 	{
 		return ExportNativeObjectDependencies;
 	}
 
-	TMap<UObject*, TSet<UObject*>>& GetNativeObjectDependencies()
+	TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>>& GetNativeObjectDependencies()
 	{
 		return ExportNativeObjectDependencies;
 	}
@@ -347,11 +366,11 @@ private:
 	TOptional<FString> TextFormatTempFilename;
 
 	// Set of objects excluded (import or exports) through marks or otherwise (i.e. transient flags, etc)
-	TSet<UObject*> Excluded;
+	TSet<TObjectPtr<UObject>> Excluded;
 	// Set of objects marked as export
 	TSet<FTaggedExport> Exports;
 	// Set of objects marked as import
-	TSet<UObject*> Imports;
+	TSet<TObjectPtr<UObject>> Imports;
 	// Set of names referenced from export serialization
 	TSet<FNameEntryId> NamesReferencedFromExportData;
 	// Set of names referenced from the package header (import and export table object names etc)
@@ -361,11 +380,11 @@ private:
 	// List of soft package reference found
 	TSet<FName> SoftPackageReferenceList;
 	// Map of objects to their list of searchable names
-	TMap<UObject*, TArray<FName>> SearchableNamesObjectMap;
+	TMap<TObjectPtr<UObject>, TArray<FName>> SearchableNamesObjectMap;
 	// Map of objects to their dependencies
-	TMap<UObject*, TSet<UObject*>> ExportObjectDependencies;
+	TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>> ExportObjectDependencies;
 	// Map of objects to their native dependencies
-	TMap<UObject*, TSet<UObject*>> ExportNativeObjectDependencies;
+	TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>> ExportNativeObjectDependencies;
 };
 
 
@@ -402,14 +421,17 @@ public:
 		, SaveArgs(InSaveArgs)
 		, PackageWriter(InSaveArgs.SavePackageContext ? InSaveArgs.SavePackageContext->PackageWriter : nullptr)
 		, SerializeContext(InSerializeContext)
-		, ExcludedObjectMarks(SavePackageUtilities::GetExcludedObjectMarksForTargetPlatform(SaveArgs.GetTargetPlatform()))
+		, GameRealmExcludedObjectMarks(GetExcludedObjectMarksForGameRealm(SaveArgs.GetTargetPlatform()))
 	{
 		// Assumptions & checks
 		check(InPackage);
 		check(InFilename);
-		// if we are cooking we should be doing it in the editor and with a CookedPackageWriter
+		// if we are cooking we should be doing it in the editor and with a PackageWriter
 		check(!IsCooking() || WITH_EDITOR);
-		checkf(!IsCooking() || (PackageWriter && PackageWriter->AsCookedPackageWriter()), TEXT("Cook saves require an ICookedPackageWriter"));
+		checkf(!IsCooking() || PackageWriter, TEXT("Cook saves require an IPackageWriter"));
+
+		// Store initial state
+		InitialPackageFlags = Package->GetPackageFlags();
 
 		SaveArgs.TopLevelFlags = UE::SavePackageUtilities::NormalizeTopLevelFlags(SaveArgs.TopLevelFlags, IsCooking());
 		if (PackageWriter)
@@ -456,6 +478,11 @@ public:
 		}
 	}
 
+	uint32 GetInitialPackageFlags() const
+	{
+		return InitialPackageFlags;
+	}
+
 	const FSavePackageArgs& GetSaveArgs() const
 	{
 		return SaveArgs;
@@ -493,8 +520,19 @@ public:
 
 	EObjectMark GetExcludedObjectMarks(ESaveRealm HarvestingRealm) const
 	{
-		// When considering excluded objects for a platform, do not consider editor only object and not for platform objects in the optional context as excluded
-		return (HarvestingRealm == ESaveRealm::Optional) ? (EObjectMark)(ExcludedObjectMarks & ~(EObjectMark::OBJECTMARK_EditorOnly|EObjectMark::OBJECTMARK_NotForTargetPlatform)) : ExcludedObjectMarks;
+		switch (HarvestingRealm)
+		{
+		case ESaveRealm::Optional:
+			// When considering excluded objects for a platform, do not consider editor only object and not for platform objects in the optional context as excluded
+			return (EObjectMark)(GameRealmExcludedObjectMarks & ~(EObjectMark::OBJECTMARK_EditorOnly | EObjectMark::OBJECTMARK_NotForTargetPlatform));
+		case ESaveRealm::Game:
+			return GameRealmExcludedObjectMarks;
+		case ESaveRealm::Editor:
+			return EObjectMark::OBJECTMARK_NOMARKS;
+		default:
+			checkNoEntry();
+			return EObjectMark::OBJECTMARK_NOMARKS;
+		}
 	}
 
 	EObjectFlags GetTopLevelFlags() const
@@ -707,20 +745,9 @@ public:
 
 	void MarkUnsaveable(UObject* InObject);
 
-	bool IsUnsaveable(UObject* InObject, bool bEmitWarning = true) const;
-	enum class ESaveableStatus
-	{
-		Success,
-		PendingKill,
-		Transient,
-		AbstractClass,
-		DeprecatedClass,
-		NewerVersionExistsClass,
-		OuterUnsaveable,
-		__Count,
-	};
-	ESaveableStatus GetSaveableStatus(UObject* InObject, UObject** OutCulprit = nullptr, ESaveableStatus* OutCulpritStatus = nullptr) const;
-	ESaveableStatus GetSaveableStatusNoOuter(UObject* InObject) const;
+	bool IsUnsaveable(TObjectPtr<UObject> InObject, bool bEmitWarning = true) const;
+	ESaveableStatus GetSaveableStatus(TObjectPtr<UObject> InObject, TObjectPtr<UObject>* OutCulprit = nullptr, ESaveableStatus* OutCulpritStatus = nullptr) const;
+	ESaveableStatus GetSaveableStatusNoOuter(TObjectPtr<UObject> InObject) const;
 
 	void RecordIllegalReference(UObject* InFrom, UObject* InTo, EIllegalRefReason InReason, FString&& InOptionalReasonText = FString())
 	{
@@ -757,14 +784,9 @@ public:
 		return GetHarvestedRealm().IsExport(InObject);
 	}
 
-	bool IsIncluded(UObject* InObject) const
+	bool IsIncluded(TObjectPtr<UObject> InObject) const
 	{
 		return GetHarvestedRealm().IsIncluded(InObject);
-	}
-
-	bool IsExcluded(UObject* InObject) const
-	{
-		return GetHarvestedRealm().IsExcluded(InObject);
 	}
 
 	TSet<FTaggedExport>& GetExports()
@@ -772,12 +794,12 @@ public:
 		return GetHarvestedRealm().GetExports();
 	}
 
-	const TSet<UObject*>& GetImports() const
+	const TSet<TObjectPtr<UObject>>& GetImports() const
 	{
 		return GetHarvestedRealm().GetImports();
 	}
 
-	const TSet<UObject*>& GetImportsUsedInGame() const
+	const TSet<TObjectPtr<UObject>>& GetImportsUsedInGame() const
 	{
 		return GetHarvestedRealm(ESaveRealm::Game).GetImports();
 	}
@@ -802,12 +824,12 @@ public:
 		return GetHarvestedRealm(ESaveRealm::Game).GetSoftPackageReferenceList();
 	}
 
-	const TMap<UObject*, TArray<FName>>& GetSearchableNamesObjectMap() const
+	const TMap<TObjectPtr<UObject>, TArray<FName>>& GetSearchableNamesObjectMap() const
 	{
 		return GetHarvestedRealm().GetSearchableNamesObjectMap();
 	}
 
-	TMap<UObject*, TArray<FName>>& GetSearchableNamesObjectMap()
+	TMap<TObjectPtr<UObject>, TArray<FName>>& GetSearchableNamesObjectMap()
 	{
 		return GetHarvestedRealm().GetSearchableNamesObjectMap();
 	}
@@ -827,12 +849,12 @@ public:
 		return GetHarvestedRealm().GetSoftObjectPathList();
 	}
 
-	const TMap<UObject*, TSet<UObject*>>& GetObjectDependencies() const
+	const TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>>& GetObjectDependencies() const
 	{
 		return GetHarvestedRealm().GetObjectDependencies();
 	}
 
-	const TMap<UObject*, TSet<UObject*>>& GetNativeObjectDependencies() const
+	const TMap<TObjectPtr<UObject>, TSet<TObjectPtr<UObject>>>& GetNativeObjectDependencies() const
 	{
 		return GetHarvestedRealm().GetNativeObjectDependencies();
 	}
@@ -847,17 +869,17 @@ public:
 		return CustomVersions;
 	}
 
-	const TSet<UPackage*>& GetPrestreamPackages() const
+	const TSet<TObjectPtr<UPackage>>& GetPrestreamPackages() const
 	{
 		return PrestreamPackages;
 	}
 
-	TSet<UPackage*>& GetPrestreamPackages()
+	TSet<TObjectPtr<UPackage>>& GetPrestreamPackages()
 	{
 		return PrestreamPackages;
 	}
 
-	bool IsPrestreamPackage(UPackage* InPackage) const
+	bool IsPrestreamPackage(TObjectPtr<UPackage> InPackage) const
 	{
 		return PrestreamPackages.Contains(InPackage);
 	}
@@ -964,19 +986,7 @@ public:
 		GetHarvestedRealm().SetTextFormatTempFilename(MoveTemp(InTemp));
 	}
 
-	FSavePackageResultStruct GetFinalResult()
-	{
-		if (Result != ESavePackageResult::Success)
-		{
-			return Result;
-		}
-
-		ESavePackageResult FinalResult = IsStubRequested() ? ESavePackageResult::GenerateStub : ESavePackageResult::Success;
-		FSavePackageResultStruct FinalResultStruct(FinalResult, TotalPackageSizeUncompressed,
-			SerializedPackageFlags, IsCompareLinker() ? MoveTemp(GetHarvestedRealm().Linker) : nullptr);
-		FinalResultStruct.SavedAssets = MoveTemp(SavedAssets);
-		return FinalResultStruct;
-	}
+	FSavePackageResultStruct GetFinalResult();
 
 	FObjectSaveContextData& GetObjectSaveContext()
 	{
@@ -1031,6 +1041,16 @@ public:
 		return SavedAssets;
 	}
 
+	const TMap<UObject*, TSet<FProperty*>>& GetTransientPropertyOverrides()
+	{
+		return TransientPropertyOverrides;
+	}
+
+	void SetTransientPropertyOverrides(TMap<UObject*, TSet<FProperty*>>&& InTransientPropertyOverrides)
+	{
+		TransientPropertyOverrides = MoveTemp(InTransientPropertyOverrides);
+	}
+
 public:
 	ESavePackageResult Result;
 
@@ -1050,6 +1070,7 @@ private:
 
 	// Create the harvesting contexts and automatic optional context gathering options
 	void SetupHarvestingRealms();
+	static EObjectMark GetExcludedObjectMarksForGameRealm(const ITargetPlatform* TargetPlatform);
 		
 	friend class FPackageHarvester;
 
@@ -1074,14 +1095,17 @@ private:
 	bool bIgnoreHeaderDiffs = false;
 	bool bIsSaveAutoOptional = false;
 
+	// Mutated package state
+	uint32 InitialPackageFlags;
+
 	// Config classes shared with the old Save
 	FCanSkipEditorReferencedPackagesWhenCooking SkipEditorRefCookingSetting;
 
 	// Pointer to the EDLCookChecker associated with this context
 	FEDLCookCheckerThreadState* EDLCookChecker = nullptr;
 
-	// Matching any mark in ExcludedObjectMarks indicates that an object should be excluded from being either an import or an export for this save
-	const EObjectMark ExcludedObjectMarks;
+	// An object matching any GameRealmExcludedObjectMarks should be excluded from imports or exports in the game realm
+	const EObjectMark GameRealmExcludedObjectMarks;
 
 	// Harvested custom versions
 	FCustomVersionContainer CustomVersions;
@@ -1096,11 +1120,13 @@ private:
 	TArray<FIllegalReference> HarvestedIllegalReferences;
 
 	// Set of harvested prestream packages, should be deprecated
-	TSet<UPackage*> PrestreamPackages;
+	TSet<TObjectPtr<UPackage>> PrestreamPackages;
 
 	// Set of AssetDatas created for the Assets saved into the package
 	TArray<FAssetData> SavedAssets;
 
+	// Overrided properties for each export that should be treated as transient, and nulled out when serializing
+	TMap<UObject*, TSet<FProperty*>> TransientPropertyOverrides;
 };
 
-const TCHAR* LexToString(FSaveContext::ESaveableStatus Status);
+const TCHAR* LexToString(ESaveableStatus Status);

@@ -7,10 +7,9 @@
 
 class UDataLayerInstance;
 class UDataLayerAsset;
-class IWorldPartitionRuntimeCellOwner;
 
-UINTERFACE()
-class ENGINE_API UWorldPartitionCell : public UInterface
+UINTERFACE(MinimalAPI)
+class UWorldPartitionCell : public UInterface
 {
 	GENERATED_UINTERFACE_BODY()
 };
@@ -27,7 +26,7 @@ public:
 	/** Returns whether the cell data layers referenced the provided data layer instance or not. */
 	virtual bool ContainsDataLayer(const UDataLayerInstance* DataLayerInstance) const = 0;
 	/** Returns whether the cell content is associated with data layers or not. */
-	virtual bool HasDataLayers() const = 0;
+	bool HasDataLayers() const { return !GetDataLayers().IsEmpty(); }
 	/** Returns the cell content associated data layers. */
 	virtual const TArray<FName>& GetDataLayers() const = 0;
 	/** Returns whether the cell data layers referenced any of the provided data layer or not. */
@@ -38,8 +37,12 @@ public:
 	virtual FBox GetCellBounds() const = 0;
 	/** Returns the associated level package name. */
 	virtual FName GetLevelPackageName() const = 0;
-	/** Returns cell owner */
-	virtual IWorldPartitionRuntimeCellOwner* GetCellOwner() const = 0;
+	/** Returns the debug name associated with this cell. */
+	virtual FString GetDebugName() const = 0;
+	/**  Returns the owning world of this cell. */
+	virtual UWorld* GetOwningWorld() const = 0;
+	/**  REturns the outer world of this cell. */
+	virtual UWorld* GetOuterWorld() const = 0;
 
 #if WITH_EDITOR
 	/** Returns the referenced actor packages. */

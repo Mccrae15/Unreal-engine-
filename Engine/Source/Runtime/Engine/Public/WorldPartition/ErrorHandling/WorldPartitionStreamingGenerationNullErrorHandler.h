@@ -4,7 +4,7 @@
 #if WITH_EDITOR
 #include "WorldPartition/ErrorHandling/WorldPartitionStreamingGenerationErrorHandler.h"
 
-class ENGINE_API FStreamingGenerationNullErrorHandler : public IStreamingGenerationErrorHandler
+class FStreamingGenerationNullErrorHandler : public IStreamingGenerationErrorHandler
 {
 public:
 	virtual void OnInvalidRuntimeGrid(const FWorldPartitionActorDescView& ActorDescView, FName GridName) override {}
@@ -19,5 +19,6 @@ public:
 	virtual void OnDataLayerAssetConflict(const UDataLayerInstanceWithAsset* DataLayerInstance, const UDataLayerInstanceWithAsset* ConflictingDataLayerInstance) override {};
 	virtual void OnActorNeedsResave(const FWorldPartitionActorDescView& ActorDescView) override {};
 	virtual void OnLevelInstanceInvalidWorldAsset(const FWorldPartitionActorDescView& ActorDescView, FName WorldAsset, ELevelInstanceInvalidReason Reason) override {};
+	virtual void OnInvalidActorFilterReference(const FWorldPartitionActorDescView& ActorDescView, const FWorldPartitionActorDescView& ReferenceActorDescView) override {};
 };
 #endif

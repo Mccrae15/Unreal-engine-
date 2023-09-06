@@ -17,6 +17,9 @@
 #include "Serialization/JsonSerializerMacros.h"
 #include "Stats/Stats.h"
 
+#include "Algo/AnyOf.h"
+#include "Algo/Find.h"
+
 namespace InstallBundleUtil
 {
 	FString GetAppVersion()
@@ -52,6 +55,100 @@ namespace InstallBundleUtil
 		return Prefix;
 	}
 
+	bool AllInstallBundlePredicate(const FConfigFile& InstallBundleConfig, const FString& Section) 
+	{ 
+		return true; 
+	}
+
+	bool IsPlatformInstallBundlePredicate(const FConfigFile& InstallBundleConfig, const FString& Section)
+	{
+		int32 ChunkID = 0;
+		if (InstallBundleConfig.GetInt(*Section, TEXT("PlatformChunkID"), ChunkID) && ChunkID < 0)
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	TArray<TPair<FString, TArray<FRegexPattern>>> LoadBundleRegexFromConfig(
+		const FConfigFile& InstallBundleConfig, 
+		TFunctionRef<bool(const FConfigFile& InstallBundleConfig, const FString& Section)> SectionPredicate /*= AllInstallBundlePredicate*/)
+	{
+		TArray<TPair<FString, TArray<FRegexPattern>>> BundleRegexList; // BundleName -> FileRegex
+
+		for (const TPair<FString, FConfigSection>& Pair : InstallBundleConfig)
+		{
+			const FString& Section = Pair.Key;
+			if (!Section.StartsWith(InstallBundleUtil::GetInstallBundleSectionPrefix()))
+				continue;
+
+			if (!SectionPredicate(InstallBundleConfig, Section))
+				continue;
+
+			TArray<FString> StrSearchRegexPatterns;
+			if (!InstallBundleConfig.GetArray(*Section, TEXT("FileRegex"), StrSearchRegexPatterns))
+				continue;
+
+			TArray<FRegexPattern> SearchRegexPatterns;
+			SearchRegexPatterns.Reserve(StrSearchRegexPatterns.Num());
+			for (const FString& Str : StrSearchRegexPatterns)
+			{
+				SearchRegexPatterns.Emplace(Str, ERegexPatternFlags::CaseInsensitive);
+			}
+
+			const FString BundleName = Section.RightChop(InstallBundleUtil::GetInstallBundleSectionPrefix().Len());
+			BundleRegexList.Emplace(TPair<FString, TArray<FRegexPattern>>(BundleName, MoveTemp(SearchRegexPatterns)));
+		}
+
+		BundleRegexList.StableSort([](const TPair<FString, TArray<FRegexPattern>>& PairA, const TPair<FString, TArray<FRegexPattern>>& PairB) -> bool
+		{
+			int BundleAOrder = INT_MAX;
+			int BundleBOrder = INT_MAX;
+
+			const FString SectionA = InstallBundleUtil::GetInstallBundleSectionPrefix() + PairA.Key;
+			const FString SectionB = InstallBundleUtil::GetInstallBundleSectionPrefix() + PairB.Key;
+
+			if (!GConfig->GetInt(*SectionA, TEXT("Order"), BundleAOrder, GInstallBundleIni))
+			{
+				UE_LOG(LogInstallBundleManager, Warning, TEXT("Bundle Section %s doesn't have an order"), *SectionA);
+			}
+
+			if (!GConfig->GetInt(*SectionB, TEXT("Order"), BundleBOrder, GInstallBundleIni))
+			{
+				UE_LOG(LogInstallBundleManager, Warning, TEXT("Bundle Section %s doesn't have an order"), *SectionB);
+			}
+
+			return BundleAOrder < BundleBOrder;
+		});
+
+		return BundleRegexList;
+	}
+
+	bool MatchBundleRegex(
+		const TArray<TPair<FString, TArray<FRegexPattern>>>& BundleRegexList,
+		const FString& Path,
+		FString& OutBundleName)
+	{
+		const TPair<FString, TArray<FRegexPattern>>* BundleRegexPair = Algo::FindByPredicate(BundleRegexList,
+			[&Path](const TPair<FString, TArray<FRegexPattern>>& Pair)
+			{
+				const TArray<FRegexPattern>& SearchRegexPatterns = Pair.Value;
+				return Algo::AnyOf(SearchRegexPatterns, [&Path](const FRegexPattern& Pattern)
+				{
+					return FRegexMatcher(Pattern, Path).FindNext();
+				});
+			});
+
+		if (BundleRegexPair)
+		{
+			OutBundleName = BundleRegexPair->Key;
+			return true;
+		}
+
+		return false;
+	}
+
 	FName FInstallBundleManagerKeepAwake::Tag(TEXT("InstallBundleManagerKeepAwake"));
 	FName FInstallBundleManagerKeepAwake::TagWithRendering(TEXT("InstallBundleManagerKeepAwakeWithRendering"));
 
@@ -77,6 +174,42 @@ namespace InstallBundleUtil
 			bDidDisableScreensaver = false;
 		}
 	}
+
+	std::atomic<int32> InstallBundleSuppressAnalyticsCounter = 0;
+
+	FInstallBundleSuppressAnalytics::FInstallBundleSuppressAnalytics()
+		: bIsEnabled(false)
+	{
+	}
+
+	FInstallBundleSuppressAnalytics::~FInstallBundleSuppressAnalytics()
+	{
+		Disable();
+	}
+
+	void FInstallBundleSuppressAnalytics::Enable()
+	{
+		if (!bIsEnabled)
+		{
+			bIsEnabled = true;
+			ensure(InstallBundleSuppressAnalyticsCounter++ >= 0);
+		}
+	}
+
+	void FInstallBundleSuppressAnalytics::Disable()
+	{
+		if (bIsEnabled)
+		{
+			bIsEnabled = false;
+			ensure(--InstallBundleSuppressAnalyticsCounter >= 0);
+		}
+	}
+
+	bool FInstallBundleSuppressAnalytics::IsEnabled()
+	{
+		return InstallBundleSuppressAnalyticsCounter > 0;
+	}
+
 
 	void StartInstallBundleAsyncIOTask(TArray<TUniquePtr<FInstallBundleTask>>& Tasks, TUniqueFunction<void()> WorkFunc, TUniqueFunction<void()> OnComplete)
 	{

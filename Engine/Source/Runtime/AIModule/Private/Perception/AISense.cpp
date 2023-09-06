@@ -29,10 +29,6 @@ UAISense::UAISense(const FObjectInitializer& ObjectInitializer)
 	, TimeUntilNextUpdate(SuspendNextUpdate)
 	, SenseID(FAISenseID::InvalidID())
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	DefaultExpirationAge = FAIStimulus::NeverHappenedAge;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	bNeedsForgettingNotification = false;
 
 	if (HasAnyFlags(RF_ClassDefaultObject) == false)
@@ -108,6 +104,13 @@ void UAISense::RegisterWrappedEvent(UAISenseEvent& PerceptionEvent)
 {
 	UE_VLOG(GetPerceptionSystem(), LogAIPerception, Error, TEXT("%s did not override UAISense::RegisterWrappedEvent!"), *GetName());
 }
+
+#if WITH_GAMEPLAY_DEBUGGER_MENU
+void UAISense::DescribeSelfToGameplayDebugger(const UAIPerceptionSystem& PerceptionSystem, FGameplayDebuggerCategory& DebuggerCategory) const
+{
+	DebuggerCategory.AddTextLine(FString::Printf(TEXT("%s"), *SenseID.Name.ToString()));
+}
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU
 
 //----------------------------------------------------------------------//
 // 

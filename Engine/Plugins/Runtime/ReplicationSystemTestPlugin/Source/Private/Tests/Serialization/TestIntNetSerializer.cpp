@@ -2,6 +2,7 @@
 
 #include "TestNetSerializerFixture.h"
 #include "Iris/Serialization/IntNetSerializers.h"
+#include <limits>
 
 namespace UE::Net::Private
 {
@@ -40,7 +41,7 @@ public: \
 \
 UE_NET_TEST_FIXTURE(TestClassName, HasTestValues) \
 { \
-	UE_NET_ASSERT_GT(ValueCount, SIZE_T(0)) << "No test values found"; \
+	UE_NET_ASSERT_GT_MSG(ValueCount, SIZE_T(0), "No test values found"); \
 } \
 \
 UE_NET_TEST_FIXTURE(TestClassName, TestIsEqual) \
@@ -78,7 +79,7 @@ UE_NET_IMPLEMENT_INT_NETSERIALIZER_TEST(FTestInt8NetSerializer, FInt8NetSerializ
 //
 template<typename SourceType> const SourceType FTestIntNetSerializer<SourceType>::Values[] =
 {
-	TNumericLimits<SourceType>::Lowest(), TNumericLimits<SourceType>::Max(), SourceType(0), SourceType(-1), SourceType(-16), SourceType(2048458 % TNumericLimits<SourceType>::Max())
+	std::numeric_limits<SourceType>::min(), std::numeric_limits<SourceType>::max(), SourceType(0), SourceType(-1), SourceType(-16), SourceType(2048458 % std::numeric_limits<SourceType>::max())
 };
 template<typename SourceType> const SIZE_T FTestIntNetSerializer<SourceType>::ValueCount = sizeof(Values)/sizeof(Values[0]);
 
@@ -128,7 +129,7 @@ void FTestIntNetSerializer<SourceType>::TestValidate()
 	bool ExpectedResults[sizeof(Values)/sizeof(Values[0])];
 	for (uint8 BitCount = MinBitCount; BitCount <= MaxBitCount; ++BitCount)
 	{
-		constexpr SourceType MaxValue = TNumericLimits<SourceType>::Max();
+		constexpr SourceType MaxValue = std::numeric_limits<SourceType>::max();
 		const SourceType MaxValueForBitCount = MaxValue >> (sizeof(SourceType)*8 - BitCount);
 		const SourceType MinValueForBitCount = -MaxValueForBitCount - SourceType(1);
 		for (SIZE_T ValueIt = 0; ValueIt < ValueCount; ++ValueIt)
@@ -137,7 +138,7 @@ void FTestIntNetSerializer<SourceType>::TestValidate()
 			ExpectedResults[ValueIt] = (FMath::Clamp(Value, MinValueForBitCount, MaxValueForBitCount) == Value);
 			if (BitCount == sizeof(SourceType)*8)
 			{
-				UE_NET_ASSERT_TRUE(ExpectedResults[ValueIt]) << "Clamping of value with full bit precision resulted in value being clamped. This is unexpected. Make sure no undefined behavior is used in code.";
+				UE_NET_ASSERT_TRUE_MSG(ExpectedResults[ValueIt], "Clamping of value with full bit precision resulted in value being clamped. This is unexpected. Make sure no undefined behavior is used in code.");
 			}
 		}
 

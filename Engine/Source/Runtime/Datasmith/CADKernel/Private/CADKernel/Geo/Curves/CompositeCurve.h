@@ -16,11 +16,6 @@ public:
 	{
 	}
 
-	FOrientedCurve(const FOrientedCurve& OrientiredEntity)
-		: TOrientedEntity(OrientiredEntity)
-	{
-	}
-
 	FOrientedCurve()
 		: TOrientedEntity()
 	{
@@ -58,7 +53,7 @@ public:
 		SpawnIdentOnEntities((TArray<TOrientedEntity<FEntity>>&) Curves, Database);
 	}
 
-	virtual void ResetMarkersRecursively() override
+	virtual void ResetMarkersRecursively() const override
 	{
 		ResetMarkers();
 		ResetMarkersRecursivelyOnEntities((TArray<TOrientedEntity<FEntity>>&) Curves);

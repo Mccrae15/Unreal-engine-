@@ -21,6 +21,7 @@ bool FGameplayInteractionSendSlotEventTask::Link(FStateTreeLinker& Linker)
 {
 	Linker.LinkExternalData(SmartObjectSubsystemHandle);
 
+	bShouldStateChangeOnReselect = bShouldTriggerOnReselect;
 	// Copy properties on exit state if the event is sent then.
 	bShouldCopyBoundPropertiesOnExitState = (Trigger == EGameplayInteractionTaskTrigger::OnExitState);
 
@@ -63,8 +64,9 @@ EStateTreeRunStatus FGameplayInteractionSendSlotEventTask::EnterState(FStateTree
 
 void FGameplayInteractionSendSlotEventTask::ExitState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
-	const bool bLastStateFailed = Transition.CurrentRunStatus == EStateTreeRunStatus::Failed;
-
+	const bool bLastStateFailed = Transition.CurrentRunStatus == EStateTreeRunStatus::Failed
+								|| (bHandleExternalStopAsFailure &&  Transition.CurrentRunStatus == EStateTreeRunStatus::Stopped);
+	
 	if (Trigger == EGameplayInteractionTaskTrigger::OnExitState
 		|| (bLastStateFailed && Trigger == EGameplayInteractionTaskTrigger::OnExitStateFailed)
 		|| (!bLastStateFailed && Trigger == EGameplayInteractionTaskTrigger::OnExitStateSucceeded))

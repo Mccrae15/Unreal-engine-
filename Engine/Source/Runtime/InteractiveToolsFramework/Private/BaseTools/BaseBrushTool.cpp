@@ -1,17 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BaseTools/BaseBrushTool.h"
+
+#include "Engine/Engine.h"
+#include "CanvasItem.h"
+#include "CanvasTypes.h"
 #include "InteractiveToolManager.h"
 #include "InteractiveGizmoManager.h"
-#include "ToolBuilderUtil.h"
 #include "InteractiveTool.h"
+#include "GenericPlatform/GenericPlatformApplicationMisc.h"
+#include "BaseBehaviors/ClickDragBehavior.h"
 #include "BaseGizmos/BrushStampIndicator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BaseBrushTool)
 
 
 #define LOCTEXT_NAMESPACE "UBaseBrushTool"
-
 
 
 UBrushBaseProperties::UBrushBaseProperties()
@@ -23,11 +27,158 @@ UBrushBaseProperties::UBrushBaseProperties()
 	BrushFalloffAmount = 1.0f;
 }
 
+void UBrushAdjusterInputBehavior::Initialize(UBaseBrushTool* InBrushTool)
+{
+	BrushTool = InBrushTool;
+}
+
+void UBrushAdjusterInputBehavior::DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI)
+{
+	if (!bAdjustingBrush)
+	{
+		return;
+	}
+
+	FText BrushAdjustmentMessage;
+	if (bAdjustingHorizontally)
+	{
+		BrushAdjustmentMessage = FText::Format(LOCTEXT("AdjustRadius", "Radius: {0}"), FText::AsNumber(BrushTool->BrushProperties->BrushRadius));
+	}
+	else
+	{
+		BrushAdjustmentMessage = FText::Format(LOCTEXT("AdjustStrength", "Strength: {0}"), FText::AsNumber(BrushTool->BrushProperties->BrushStrength));
+	}
+
+	FCanvasTextItem TextItem(BrushOrigin, BrushAdjustmentMessage, GEngine->GetMediumFont(), FLinearColor::White);
+	TextItem.EnableShadow(FLinearColor::Black);
+	Canvas->DrawItem(TextItem);
+}
+
+void UBrushAdjusterInputBehavior::OnDragStart(FVector2D InScreenPosition)
+{
+	constexpr bool bAdjustHorizontal = true;
+	BrushOrigin = InScreenPosition;
+	ResetAdjustmentOrigin(InScreenPosition, bAdjustHorizontal);
+}
+
+void UBrushAdjusterInputBehavior::ResetAdjustmentOrigin(FVector2D InScreenPosition, bool bHorizontalAdjust)
+{
+	bAdjustingHorizontally = bHorizontalAdjust;
+	AdjustmentOrigin = InScreenPosition;
+	StartBrushRadius = BrushTool->BrushProperties->BrushRadius;
+	StartBrushStrength = BrushTool->BrushProperties->BrushStrength;
+}
+
+void UBrushAdjusterInputBehavior::OnDragUpdate(FVector2D InScreenPosition)
+{
+	if (!bAdjustingBrush)
+	{
+		return;
+	}
+
+	// calculate screen space cursor delta relative to adjustment origin
+	const float HorizontalDelta = InScreenPosition.X - AdjustmentOrigin.X;
+	const float VerticalDelta = InScreenPosition.Y - AdjustmentOrigin.Y;
+	const float HorizDeltaMag = FMath::Abs(HorizontalDelta);
+	const float VertDeltaMag = FMath::Abs(VerticalDelta);
+
+	if (bAdjustingHorizontally && HorizDeltaMag < VertDeltaMag)
+	{
+		// switch to adjusting vertically and re-center adjustment origin
+		ResetAdjustmentOrigin(InScreenPosition, false);
+	}
+	else if (!bAdjustingHorizontally && VertDeltaMag < HorizDeltaMag)
+	{
+		// switch to adjusting horizontally and re-center adjustment origin
+		ResetAdjustmentOrigin(InScreenPosition, true);
+	}
+
+	// scale for consistent screen space speed on varying monitor DPI
+	// (takes device coordinates as input because multi-monitor setups may have different DPI)
+	const float DPIScale = FGenericPlatformApplicationMisc::GetDPIScaleFactorAtPoint(InScreenPosition.X, InScreenPosition.Y);
+	
+	// apply directional adjustments
+	if (bAdjustingHorizontally)
+	{
+		// adjust brush size based on horizontal mouse drag
+		float NewRadius = StartBrushRadius + HorizontalDelta * (SizeAdjustSpeed * DPIScale);
+		NewRadius = FMath::Max(NewRadius, 0.01f);
+		BrushTool->BrushProperties->BrushRadius = NewRadius;
+		BrushTool->LastBrushStamp.Radius = NewRadius;
+	}
+	else
+	{
+		// adjust brush strength based on vertical mouse drag
+		float NewStrength = StartBrushStrength + VerticalDelta * -(StrengthAdjustSpeed * DPIScale);
+		NewStrength = FMath::Min(1.0f,FMath::Max(NewStrength, 0.f));
+		BrushTool->BrushProperties->BrushStrength = NewStrength;
+	}	
+}
+
+EInputDevices UBrushAdjusterInputBehavior::GetSupportedDevices()
+{
+	return EInputDevices::Keyboard;
+}
+
+bool UBrushAdjusterInputBehavior::IsPressed(const FInputDeviceState& Input)
+{
+	if (Input.IsFromDevice(EInputDevices::Keyboard))
+	{
+		ActiveDevice = EInputDevices::Keyboard;
+		return Input.Keyboard.ActiveKey.Button == EKeys::B && Input.Keyboard.ActiveKey.bDown;
+	}
+	
+	return false;
+}
+
+bool UBrushAdjusterInputBehavior::IsReleased(const FInputDeviceState& Input)
+{
+	if (Input.IsFromDevice(EInputDevices::Keyboard))
+	{
+		return Input.Keyboard.ActiveKey.Button == EKeys::B && Input.Keyboard.ActiveKey.bReleased;
+	}
+	
+	return false;
+}
+
+FInputCaptureRequest UBrushAdjusterInputBehavior::WantsCapture(const FInputDeviceState& Input)
+{
+	if (IsPressed(Input))
+	{
+		return FInputCaptureRequest::Begin(this, EInputCaptureSide::Any, 0.f);
+	}
+
+	return FInputCaptureRequest::Ignore();
+}
+
+FInputCaptureUpdate UBrushAdjusterInputBehavior::BeginCapture(const FInputDeviceState& Input, EInputCaptureSide Side)
+{
+	bAdjustingBrush = true;
+	return FInputCaptureUpdate::Begin(this, EInputCaptureSide::Any);
+}
+
+FInputCaptureUpdate UBrushAdjusterInputBehavior::UpdateCapture(
+	const FInputDeviceState& Input,
+	const FInputCaptureData& Data)
+{
+	if (IsReleased(Input))
+	{
+		bAdjustingBrush = false;
+		return FInputCaptureUpdate::End();
+	}
+
+	return FInputCaptureUpdate::Continue();
+}
+
+void UBrushAdjusterInputBehavior::ForceEndCapture(const FInputCaptureData& data)
+{
+	bAdjustingBrush = false;
+}
+
 UBaseBrushTool::UBaseBrushTool()
 {
 	PropertyClass = UBrushBaseProperties::StaticClass();
 }
-
 
 void UBaseBrushTool::Setup()
 {
@@ -42,6 +193,14 @@ void UBaseBrushTool::Setup()
 	AddToolPropertySource(BrushProperties);
 
 	SetupBrushStampIndicator();
+
+	// add input behavior to click-drag while holding hotkey to adjust brush size and strength
+	if (SupportsBrushAdjustmentInput())
+	{
+		BrushAdjusterBehavior = NewObject<UBrushAdjusterInputBehavior>(this);
+		BrushAdjusterBehavior->Initialize(this);
+		AddInputBehavior(BrushAdjusterBehavior.Get());	
+	}
 }
 
 
@@ -59,7 +218,41 @@ void UBaseBrushTool::OnPropertyModified(UObject* PropertySet, FProperty* Propert
 	}
 }
 
+FInputRayHit UBaseBrushTool::CanBeginClickDragSequence(const FInputDeviceRay& PressPos)
+{
+	if (!bEnabled)
+	{
+		// no hit
+		return FInputRayHit();
+	}
+	
+	if (BrushAdjusterBehavior.IsValid() && BrushAdjusterBehavior->IsBrushBeingAdjusted())
+	{
+		// fake screen hit
+		return FInputRayHit(0.f);
+	}
 
+	// hit-test the tool target
+	return Super::CanBeginClickDragSequence(PressPos);	
+}
+
+void UBaseBrushTool::OnClickPress(const FInputDeviceRay& PressPos)
+{
+	Super::OnClickPress(PressPos);
+	if (BrushAdjusterBehavior.IsValid())
+	{
+		BrushAdjusterBehavior->OnDragStart(PressPos.ScreenPosition);
+	}
+}
+
+void UBaseBrushTool::OnClickDrag(const FInputDeviceRay& DragPos)
+{
+	Super::OnClickDrag(DragPos);
+	if (BrushAdjusterBehavior.IsValid())
+	{
+		BrushAdjusterBehavior->OnDragUpdate(DragPos.ScreenPosition);
+	}
+}
 
 void UBaseBrushTool::IncreaseBrushSizeAction()
 {
@@ -132,6 +325,12 @@ void UBaseBrushTool::DecreaseBrushFalloffAction()
 	NotifyOfPropertyChangeByTool(BrushProperties);
 }
 
+void UBaseBrushTool::SetBrushEnabled(bool bIsEnabled)
+{
+	bEnabled = bIsEnabled;
+	BrushStampIndicator->bVisible = bIsEnabled;
+}
+
 void UBaseBrushTool::RegisterActions(FInteractiveToolActionSet& ActionSet)
 {
 	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 10,
@@ -199,6 +398,12 @@ void UBaseBrushTool::RecalculateBrushRadius()
 
 void UBaseBrushTool::OnBeginDrag(const FRay& Ray)
 {
+	if (BrushAdjusterBehavior.IsValid() && BrushAdjusterBehavior->IsBrushBeingAdjusted())
+	{
+		bInBrushStroke = false;
+		return;
+	}
+	
 	FHitResult OutHit;
 	if (HitTest(Ray, OutHit))
 	{
@@ -213,6 +418,13 @@ void UBaseBrushTool::OnBeginDrag(const FRay& Ray)
 
 void UBaseBrushTool::OnUpdateDrag(const FRay& Ray)
 {
+	if (BrushAdjusterBehavior.IsValid() && BrushAdjusterBehavior->IsBrushBeingAdjusted())
+	{
+		RecalculateBrushRadius();
+		NotifyOfPropertyChangeByTool(BrushProperties);
+		return;
+	}
+	
 	FHitResult OutHit;
 	if (HitTest(Ray, OutHit))
 	{
@@ -229,9 +441,13 @@ void UBaseBrushTool::OnEndDrag(const FRay& Ray)
 	bInBrushStroke = false;
 }
 
-
 bool UBaseBrushTool::OnUpdateHover(const FInputDeviceRay& DevicePos)
 {
+	if (BrushAdjusterBehavior.IsValid() && BrushAdjusterBehavior->IsBrushBeingAdjusted())
+	{
+		return true;
+	}
+	
 	FHitResult OutHit;
 	if (HitTest(DevicePos.WorldRay, OutHit))
 	{
@@ -244,13 +460,22 @@ bool UBaseBrushTool::OnUpdateHover(const FInputDeviceRay& DevicePos)
 	return true;
 }
 
-
-
 void UBaseBrushTool::Render(IToolsContextRenderAPI* RenderAPI)
 {
-	UMeshSurfacePointTool::Render(RenderAPI);
+	if (bEnabled)
+	{
+		UMeshSurfacePointTool::Render(RenderAPI);
+		UpdateBrushStampIndicator();
+	}
+}
 
-	UpdateBrushStampIndicator();
+void UBaseBrushTool::DrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI)
+{
+	Super::DrawHUD(Canvas, RenderAPI);
+	if (BrushAdjusterBehavior.IsValid())
+	{
+		BrushAdjusterBehavior->DrawHUD(Canvas, RenderAPI);	
+	}
 }
 
 const FString BaseBrushIndicatorGizmoType = TEXT("BrushIndicatorGizmoType");
@@ -269,6 +494,11 @@ void UBaseBrushTool::UpdateBrushStampIndicator()
 {
 	if (BrushStampIndicator)
 	{
+		if (BrushAdjusterBehavior.IsValid())
+		{
+			BrushStampIndicator->LineColor = BrushAdjusterBehavior->IsBrushBeingAdjusted() ? FLinearColor::White : FLinearColor::Green;	
+		}
+		
 		BrushStampIndicator->Update(LastBrushStamp.Radius, LastBrushStamp.WorldPosition, LastBrushStamp.WorldNormal, LastBrushStamp.Falloff);
 	}
 }

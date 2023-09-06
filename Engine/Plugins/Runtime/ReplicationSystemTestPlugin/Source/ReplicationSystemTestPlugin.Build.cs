@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System;
 using System.IO;
 
 namespace UnrealBuildTool.Rules
@@ -8,22 +9,13 @@ namespace UnrealBuildTool.Rules
 	{
 		public ReplicationSystemTestPlugin(ReadOnlyTargetRules Target) : base(Target)
 		{
-			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
-
 			// We never want to precompile this plugin
 			PrecompileForTargets = PrecompileTargetsType.None;
-
-			PublicIncludePaths.AddRange(
-				new string[] {
-					ModuleDirectory + "/Public",
-
-				}
-				);
 
 			PrivateIncludePaths.AddRange(
 				new string[]
 				{
-                    Path.Combine(EngineDir, "Source/Runtime/Experimental/Iris/Core/Private"),
+					Path.Combine(GetModuleDirectory("IrisCore"), "Private"),
 				}
 				);
 
@@ -44,12 +36,22 @@ namespace UnrealBuildTool.Rules
 				}
 				);
 
-			DynamicallyLoadedModuleNames.AddRange(
-				new string[]
-				{
-					// ... add any modules that your module loads dynamically here ...
-				}
-				);
+			if (Target.IsTestTarget)
+			{
+				PrivateDependencyModuleNames.AddRange(
+					new string[]
+					{
+						"LowLevelTestsRunner",
+					}
+					);
+			}
+			else
+			{
+				// For validation of compatibility with low-level tests even when not running them
+				PrivateDependencyModuleNames.Add("Catch2");
+			}
+
+			PrivateDefinitions.Add(String.Format("UE_NET_WITH_LOW_LEVEL_TESTS={0}", Target.ExplicitTestsTarget ? "1" : "0"));
 
 			SetupIrisSupport(Target);
 		}

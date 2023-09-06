@@ -31,9 +31,9 @@ TWaterVertexFactory<bWithWaterSelectionSupport>::~TWaterVertexFactory()
 }
 
 template <bool bWithWaterSelectionSupport>
-void TWaterVertexFactory<bWithWaterSelectionSupport>::InitRHI()
+void TWaterVertexFactory<bWithWaterSelectionSupport>::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	Super::InitRHI();
+	Super::InitRHI(RHICmdList);
 
 	// Setup the uniform data:
 	SetupUniformDataForGroup(EWaterMeshRenderGroupType::RG_RenderWaterTiles);
@@ -43,8 +43,8 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::InitRHI()
 	SetupUniformDataForGroup(EWaterMeshRenderGroupType::RG_RenderUnselectedWaterTilesOnly);
 #endif // WITH_WATER_SELECTION_SUPPORT
 
-	VertexBuffer->InitResource();
-	IndexBuffer->InitResource();
+	VertexBuffer->InitResource(RHICmdList);
+	IndexBuffer->InitResource(RHICmdList);
 
 	// No streams should currently exist.
 	check(Streams.Num() == 0);
@@ -172,7 +172,7 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::ValidateCompiledResult(con
 #if 0
 	if (Type->SupportsPrimitiveIdStream()
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform))
-		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
+		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 	{
 		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}
@@ -183,11 +183,11 @@ template <bool bWithWaterSelectionSupport>
 void TWaterVertexFactory<bWithWaterSelectionSupport>::GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements)
 {
 	// Add position stream
-	Elements.Add(FVertexElement(0, 0, VET_Float4, 0, 0, false));
+	Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4f), false));
 
 	// Add all the additional streams
 	for (int32 StreamIdx = 0; StreamIdx < NumAdditionalVertexStreams; ++StreamIdx)
 	{
-		Elements.Add(FVertexElement(1 + StreamIdx, 0, VET_Float4, 8 + StreamIdx, 0, true));
+		Elements.Add(FVertexElement(1 + StreamIdx, 0, VET_Float4, 8 + StreamIdx, sizeof(FVector4f), true));
 	}
 }

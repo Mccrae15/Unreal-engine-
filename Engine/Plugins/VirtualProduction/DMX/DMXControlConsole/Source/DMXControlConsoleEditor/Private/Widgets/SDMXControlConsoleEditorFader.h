@@ -5,22 +5,24 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 
-class UDMXControlConsoleFaderBase;
-template<typename NumericType> class SDMXControlConsoleEditorSpinBoxVertical;
-
+enum class ECheckBoxState : uint8;
+struct FOptionalSize;
 struct FSlateColor;
+class SButton;
+template<typename NumericType> class SDMXControlConsoleEditorSpinBoxVertical;
 class SInlineEditableTextBlock;
+class UDMXControlConsoleFaderBase;
 
 
 /** Individual fader UI class */
 class SDMXControlConsoleEditorFader
 	: public SCompoundWidget
-{	
+{
 public:
 	SLATE_BEGIN_ARGS(SDMXControlConsoleEditorFader)
 	{}
-		
-		SLATE_ARGUMENT(FMargin, Padding)
+
+	SLATE_ARGUMENT(FMargin, Padding)
 
 	SLATE_END_ARGS()
 
@@ -33,22 +35,26 @@ public:
 	/** Sets the value of the fader by a percentage value */
 	void SetValueByPercentage(float InNewPercentage);
 
-	/** Filters children by given search string  */
-	void ApplyGlobalFilter(const FString& InSearchString);
-
 protected:
 	//~ Begin SWidget interface
-	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-	virtual bool SupportsKeyboardFocus() const override { return true; }
 	//~ End of SWidget interface
 
 private:
-	/** Generates ExpanderArrow widget  */
-	TSharedRef<SWidget> GenerateMuteButtonWidget();
+	/** Generates Lock button widget  */
+	TSharedRef<SWidget> GenerateLockButtonWidget();
+
+	/** Generates a menu widget for Fader options  */
+	TSharedRef<SWidget> GenerateFaderOptionsMenuWidget();
 
 	/** Gets wheter this Fader is selected or not */
 	bool IsSelected() const;
+
+	/** Gets wheter this widget should have readonly properties or not */
+	bool IsReadOnly() const;
+
+	/** True if this Fader is a Raw Fader */
+	bool IsRawFader() const;
 
 	/** Gets the Fader Name */
 	FString GetFaderName() const;
@@ -59,11 +65,20 @@ private:
 	/** Gets Fader's value */
 	uint32 GetValue() const;
 
+	/** Returns the value as text */
+	FText GetValueAsText() const;
+
+	/** Called when a new text on value editable text box is committed */
+	void OnValueTextCommitted(const FText& NewText, ETextCommit::Type CommitInfo);
+
 	/** Gets the Fader's minimum value */
 	TOptional<uint32> GetMinValue() const;
 
 	/** Returns the min value as text */
 	FText GetMinValueAsText() const;
+
+	/** Called when a new text on min value editable text box is committed */
+	void OnMinValueTextCommitted(const FText& NewText, ETextCommit::Type CommitInfo);
 
 	/** Gets Fader's maximum value */
 	TOptional<uint32> GetMaxValue() const;
@@ -71,33 +86,75 @@ private:
 	/** Returns the max value as text */
 	FText GetMaxValueAsText() const;
 
+	/** Called when a new text on max value editable text box is committed */
+	void OnMaxValueTextCommitted(const FText& NewText, ETextCommit::Type CommitInfo);
+
 	/** Handles when the user changes the Fader value */
 	void HandleValueChanged(uint32 NewValue);
 
-	/** Called when fader selection changes */
-	void OnSelectionChanged();
+	/** Called before Fader Value starts to change */
+	void OnBeginValueChange();
+
+	/** Called when new Fader Value is committed */
+	void OnValueCommitted(uint32 NewValue, ETextCommit::Type CommitType);
+
+	/** Called when mute option is selected */
+	void OnMuteFader(bool bMute) const;
+
+	/** Called when remove option is selected */
+	void OnRemoveFader() const;
+
+	/** Called when reset option is selected */
+	void OnResetFader() const;
+
+	/** Called when lock option is selected */
+	void OnLockFader(bool bLock) const;
 
 	/** Called when the delete button was clicked */
 	FReply OnDeleteClicked();
 
-	/** Called to mute/unmute this Fader */
-	FReply OnMuteClicked();
+	/** Called to lock/unlock this Fader */
+	FReply OnLockClicked();
 
-	/** Gets correct text for mute button */
-	FSlateColor GetMuteButtonColor() const;
+	/** Checks the current mute state of the Fader */
+	ECheckBoxState IsMuteChecked() const;
 
-	/** Gets wheter the FaderSpinBox widget should be enabled or not */
-	bool GetFaderSpinBoxEnabled() const;
+	/** Called to toggle the mute state of this Fader */
+	void OnMuteToggleChanged(ECheckBoxState CheckState);
 
-	/**  Gets visibility attribute of the delete button */
-	EVisibility GetDeleteButtonVisibility() const;
+	/** Gets wheter the FaderSpinBox widget should be active or not */
+	bool IsFaderSpinBoxActive() const;
 
-	/**Change fader background color on hover */
+	/** Gets the height of the Fader according to the current View Mode  */
+	FOptionalSize GetFaderHeightByViewMode() const;
+
+	/** Returns Fader's parameters as tooltip text */
+	FText GetToolTipText() const;
+
+	/** Gets correct text for lock button */
+	FSlateColor GetLockButtonColor() const;
+
+	/** Gets visibility for expanded view only toolbar sections  */
+	EVisibility GetExpandedViewModeVisibility() const;
+
+	/** Gets visibility for lock button  */
+	EVisibility GetLockButtonVisibility() const;
+
+	/** Change fader background color on hover */
 	const FSlateBrush* GetBorderImage() const;
+
+	/** Change spin box background color on hover */
+	const FSlateBrush* GetSpinBoxBorderImage() const;
+
+	/** Reference to Lock button widget */
+	TSharedPtr<SButton> LockButton;
+
+	/** The actual editable fader */
+	TSharedPtr<SDMXControlConsoleEditorSpinBoxVertical<uint32>> FaderSpinBox;
 
 	/** Reference to the Fader being displayed */
 	TWeakObjectPtr<UDMXControlConsoleFaderBase> Fader;
 
-	/** The actual editable fader */
-	TSharedPtr<SDMXControlConsoleEditorSpinBoxVertical<uint32>> FaderSpinBox;
+	/** Fader Value before committing */
+	uint32 PreCommittedValue;
 };

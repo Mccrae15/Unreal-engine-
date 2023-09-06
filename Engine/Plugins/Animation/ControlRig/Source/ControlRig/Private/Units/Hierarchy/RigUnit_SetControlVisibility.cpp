@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "RigUnit_SetControlVisibility.h"
+#include "Units/Hierarchy/RigUnit_SetControlVisibility.h"
 #include "Units/RigUnitContext.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SetControlVisibility)
@@ -68,6 +68,18 @@ FRigUnit_SetControlVisibility_Execute()
 		{
 			if (CachedControlIndex.IsValid())
 			{
+#if WITH_EDITOR
+				if (FRigControlElement* ControlElement = Cast<FRigControlElement>(Hierarchy->Find(CachedControlIndex.GetKey())))
+				{
+					if (ControlElement->Settings.ShapeVisibility == ERigControlVisibility::BasedOnSelection)
+					{
+						UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(
+						TEXT("SetControlVisibility: visibility of '%s' is based on selection, and cannot be modified through SetControlVisibility. "
+						"In order to be able to modify the control's visibility, set the ShapeVisibility to UserDefined."),
+						*ControlElement->GetKey().ToString());
+					}
+				}
+#endif
 				Hierarchy->SetControlVisibility(CachedControlIndex, bVisible);
 			}
 		}

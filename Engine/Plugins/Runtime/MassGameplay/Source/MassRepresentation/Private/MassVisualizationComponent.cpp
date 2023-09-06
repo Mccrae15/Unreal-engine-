@@ -9,7 +9,10 @@
 #include "Engine/CollisionProfile.h"
 #include "RenderUtils.h"
 #include "SceneInterface.h"
-
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "MassInstancedStaticMeshComponent.h"
+#include "VisualLogger/VisualLogger.h"
+#include "Rendering/NaniteResources.h"
 
 //---------------------------------------------------------------
 // UMassVisualizationComponent
@@ -33,10 +36,18 @@ void UMassVisualizationComponent::PostInitProperties()
 int16 UMassVisualizationComponent::FindOrAddVisualDesc(const FStaticMeshInstanceVisualizationDesc& Desc)
 {
 	UE_MT_SCOPED_WRITE_ACCESS(InstancedStaticMeshInfosDetector);
-	int32 VisualIndex = InstancedStaticMeshInfos.IndexOfByPredicate([&Desc](const FMassInstancedStaticMeshInfo& Info) { return Info == Desc; });
+	int32 VisualIndex = InstancedStaticMeshInfos.IndexOfByPredicate([&Desc](const FMassInstancedStaticMeshInfo& Info) { return Info.GetDesc() == Desc; });
 	if (VisualIndex == INDEX_NONE)
 	{
 		VisualIndex = InstancedStaticMeshInfos.Emplace(Desc);
+
+		for (const FMassStaticMeshInstanceVisualizationMeshDesc& MeshDesc : Desc.Meshes)
+		{
+			ISMCSharedData.FindOrAdd(GetTypeHash(MeshDesc), FMassISMCSharedData());
+		}
+
+		BuildLODSignificanceForInfo(InstancedStaticMeshInfos[VisualIndex]);
+
 		bNeedStaticMeshComponentConstruction = true;
 	}
 	check(VisualIndex < INT16_MAX);
@@ -63,17 +74,17 @@ void UMassVisualizationComponent::ConstructStaticMeshComponents()
 			UE_LOG(LogMassRepresentation, Error, TEXT("No associated meshes for this intanced static mesh type"));
 			continue;
 		}
-		for (const FStaticMeshInstanceVisualizationMeshDesc& MeshDesc : Info.Desc.Meshes)
-		{			
-			FISMCSharedData* SharedData = ISMCSharedData.Find(MeshDesc);
-			UInstancedStaticMeshComponent* ISMC = SharedData ? SharedData->ISMC : nullptr;
-			if (SharedData)
+		for (const FMassStaticMeshInstanceVisualizationMeshDesc& MeshDesc : Info.Desc.Meshes)
+		{
+			FMassISMCSharedData* SharedData = ISMCSharedData.Find(GetTypeHash(MeshDesc));
+			UInstancedStaticMeshComponent* ISMC = SharedData ? SharedData->GetISMComponent() : nullptr;
+
+			if (SharedData == nullptr || SharedData->GetISMComponent() == nullptr)
 			{
-				SharedData->RefCount += 1;
-			}
-			else
-			{
-				ISMC = NewObject<UInstancedStaticMeshComponent>(ActorOwner);
+				ISMC = NewObject<UInstancedStaticMeshComponent>(ActorOwner, MeshDesc.ISMComponentClass);
+				CA_ASSUME(ISMC);
+				REDIRECT_OBJECT_TO_VLOG(ISMC, this);
+
 				ISMC->SetStaticMesh(MeshDesc.Mesh);
 				for (int32 ElementIndex = 0; ElementIndex < MeshDesc.MaterialOverrides.Num(); ++ElementIndex)
 				{
@@ -91,36 +102,56 @@ void UMassVisualizationComponent::ConstructStaticMeshComponents()
 				ISMC->SetReceivesDecals(false);
 				ISMC->RegisterComponent();
 
-				ISMCSharedData.Emplace(MeshDesc, FISMCSharedData(ISMC));
+				if (SharedData == nullptr)
+				{
+					SharedData = &ISMCSharedData.Emplace(GetTypeHash(MeshDesc), FMassISMCSharedData(ISMC));
+				}
+				else
+				{
+					SharedData->SetISMComponent(*ISMC);
+				}
 			}
 
-			Info.InstancedStaticMeshComponents.Add(ISMC);
+			check(SharedData);
+			Info.AddISMComponent(*SharedData);
 		}
 
 		// Build the LOD significance ranges
-		TArray<float> AllLODSignificances;
-		auto UniqueInsertOrdered = [&AllLODSignificances](const float Significance)
+		if (Info.LODSignificanceRanges.Num() == 0)
 		{
-			int i = 0;
-			for (; i < AllLODSignificances.Num(); ++i)
-			{
-				// I did not use epsilon check here on purpose, because it will make it hard later meshes inside.
-				if (Significance == AllLODSignificances[i])
-				{
-					return;
-				}
-				if (AllLODSignificances[i] > Significance)
-				{
-					break;
-				}
-			}
-			AllLODSignificances.Insert(Significance, i);
-		};
-		for (const FStaticMeshInstanceVisualizationMeshDesc& MeshDesc : Info.Desc.Meshes)
-		{
-			UniqueInsertOrdered(MeshDesc.MinLODSignificance);
-			UniqueInsertOrdered(MeshDesc.MaxLODSignificance);
+			BuildLODSignificanceForInfo(Info);
 		}
+	}
+}
+
+void UMassVisualizationComponent::BuildLODSignificanceForInfo(FMassInstancedStaticMeshInfo& Info)
+{
+	TArray<float> AllLODSignificances;
+	auto UniqueInsertOrdered = [&AllLODSignificances](const float Significance)
+	{
+		int i = 0;
+		for (; i < AllLODSignificances.Num(); ++i)
+		{
+			// I did not use epsilon check here on purpose, because it will make it hard later meshes inside.
+			if (Significance == AllLODSignificances[i])
+			{
+				return;
+			}
+			if (AllLODSignificances[i] > Significance)
+			{
+				break;
+			}
+		}
+		AllLODSignificances.Insert(Significance, i);
+	};
+	for (const FMassStaticMeshInstanceVisualizationMeshDesc& MeshDesc : Info.Desc.Meshes)
+	{
+		UniqueInsertOrdered(MeshDesc.MinLODSignificance);
+		UniqueInsertOrdered(MeshDesc.MaxLODSignificance);
+	}
+
+	if (AllLODSignificances.Num() > 1)
+	{
 		Info.LODSignificanceRanges.SetNum(AllLODSignificances.Num() - 1);
 		for (int i = 0; i < Info.LODSignificanceRanges.Num(); ++i)
 		{
@@ -131,15 +162,14 @@ void UMassVisualizationComponent::ConstructStaticMeshComponents()
 
 			for (int j = 0; j < Info.Desc.Meshes.Num(); ++j)
 			{
-				const FStaticMeshInstanceVisualizationMeshDesc& MeshDesc = Info.Desc.Meshes[j];
+				const FMassStaticMeshInstanceVisualizationMeshDesc& MeshDesc = Info.Desc.Meshes[j];
 				const bool bAddMeshInRange = (Range.MinSignificance >= MeshDesc.MinLODSignificance && Range.MinSignificance < MeshDesc.MaxLODSignificance);
 				if (bAddMeshInRange)
 				{
-					Range.StaticMeshRefs.Add(MeshDesc);
+					Range.StaticMeshRefs.Add(GetTypeHash(MeshDesc));
 				}
 			}
 		}
-
 	}
 }
 
@@ -155,7 +185,7 @@ void UMassVisualizationComponent::ClearAllVisualInstances()
 	// Pool should already be empty, got a problem if it's not
 	for (auto It = ISMCSharedData.CreateIterator(); It; ++It)
 	{
-		if (UInstancedStaticMeshComponent* InstancedStaticMeshComponent = It.Value().ISMC)
+		if (UInstancedStaticMeshComponent* InstancedStaticMeshComponent = It.Value().GetISMComponent())
 		{
 			InstancedStaticMeshComponent->ClearInstances();
 			InstancedStaticMeshComponent->DestroyComponent();
@@ -187,17 +217,6 @@ void UMassVisualizationComponent::BeginVisualChanges()
 		ConstructStaticMeshComponents();
 		bNeedStaticMeshComponentConstruction = false;
 	}
-
-	// Reset instance transform scratch buffers
-	for (auto It = ISMCSharedData.CreateIterator(); It; ++It)
-	{
-		FISMCSharedData& SharedData = It.Value();
-		SharedData.UpdateInstanceIds.Reset();
-		SharedData.StaticMeshInstanceCustomFloats.Reset();
-		SharedData.StaticMeshInstanceTransforms.Reset();
-		SharedData.StaticMeshInstancePrevTransforms.Reset();
-		SharedData.WriteIterator = 0;
-	}
 }
 
 void UMassVisualizationComponent::EndVisualChanges()
@@ -207,9 +226,15 @@ void UMassVisualizationComponent::EndVisualChanges()
 	// Batch update gathered instance transforms
 	for (auto It = ISMCSharedData.CreateIterator(); It; ++It)
 	{
-		FISMCSharedData& SharedData = It.Value();
-		if (UInstancedStaticMeshComponent* InstancedStaticMeshComponent = SharedData.ISMC)
+		FMassISMCSharedData& SharedData = It.Value();
+		if (UInstancedStaticMeshComponent* InstancedStaticMeshComponent = SharedData.GetISMComponent())
 		{
+			if (UMassInstancedStaticMeshComponent* MassISMComponent = Cast<UMassInstancedStaticMeshComponent>(InstancedStaticMeshComponent))
+			{
+				MassISMComponent->ApplyVisualChanges(SharedData);
+				continue;
+			}
+
 			const int32 NumCustomDataFloats = SharedData.StaticMeshInstanceCustomFloats.Num() / (FMath::Max(1, SharedData.UpdateInstanceIds.Num()));
 
 			// Ensure InstanceCustomData is passed if NumCustomDataFloats > 0. If it is, also make sure
@@ -223,6 +248,10 @@ void UMassVisualizationComponent::EndVisualChanges()
 			if ((bool)UE::MassRepresentation::GCallUpdateInstances)
 			{
 				InstancedStaticMeshComponent->UpdateInstances(SharedData.UpdateInstanceIds, SharedData.StaticMeshInstanceTransforms, SharedData.StaticMeshInstancePrevTransforms, NumCustomDataFloats, SharedData.StaticMeshInstanceCustomFloats);
+				if (UHierarchicalInstancedStaticMeshComponent* HISMComp = Cast<UHierarchicalInstancedStaticMeshComponent>(InstancedStaticMeshComponent))
+				{
+					HISMComp->BuildTreeIfOutdated(true, false);
+				}
 			}
 			else
 			{
@@ -246,10 +275,9 @@ void UMassVisualizationComponent::EndVisualChanges()
 				{
 					StaticMeshRenderData = StaticMesh->GetRenderData();
 				}
-				const bool bNaniteISMC = UseNanite(InstancedStaticMeshComponent->GetScene()->GetShaderPlatform()) && StaticMeshRenderData && StaticMeshRenderData->NaniteResources.PageStreamingStates.Num();
+				const bool bNaniteISMC = UseNanite(InstancedStaticMeshComponent->GetScene()->GetShaderPlatform()) && StaticMeshRenderData && StaticMeshRenderData->HasValidNaniteData();
 				if (bNaniteISMC)
 				{
-
 					// ISMC currently rebuilds PerInstanceRenderData regardless of whether it's using a 
 					// Nanite::FSceneProxy which doesn't actually use this data. So to skip that we 
 					// reset the InstanceUpdateCmdBuffer here after BatchUpdateInstancesTransforms has
@@ -265,26 +293,33 @@ void UMassVisualizationComponent::EndVisualChanges()
 			}
 		}
 	}
+
+	// Reset instance transform scratch buffers
+	for (auto It = ISMCSharedData.CreateIterator(); It; ++It)
+	{
+		FMassISMCSharedData& SharedData = It.Value();
+		SharedData.ResetAccumulatedData();
+	}
 }
 
 //---------------------------------------------------------------
 // FMassInstancedStaticMeshInfo
 //---------------------------------------------------------------
 
-void FMassInstancedStaticMeshInfo::ClearVisualInstance(FISMCSharedDataMap& ISMCSharedData)
+void FMassInstancedStaticMeshInfo::ClearVisualInstance(FMassISMCSharedDataMap& ISMCSharedData)
 {
 	for (int i = 0; i < Desc.Meshes.Num(); i++)
 	{
-		FISMCSharedData* SharedData = ISMCSharedData.Find(Desc.Meshes[i]);
-		if (SharedData)
+		const uint32 MeshDescHash = GetTypeHash(Desc.Meshes[i]);
+		FMassISMCSharedData* SharedData = ISMCSharedData.Find(MeshDescHash);
+		if (SharedData && SharedData->ReleaseReference() == 0)
 		{
-			SharedData->RefCount -= 1;
-			if (SharedData->RefCount == 0)
+			if (UInstancedStaticMeshComponent* ISMC = SharedData->GetISMComponent())
 			{
-				SharedData->ISMC->ClearInstances();
-				SharedData->ISMC->DestroyComponent();
-				ISMCSharedData.Remove(Desc.Meshes[i]);
+				ISMC->ClearInstances();
+				ISMC->DestroyComponent();
 			}
+			ISMCSharedData.Remove(MeshDescHash);
 		}
 	}
 
@@ -306,7 +341,7 @@ void FMassLODSignificanceRange::AddBatchedTransform(const int32 InstanceId, cons
 			continue;
 		}
 
-		FISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
+		FMassISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
 
 		SharedData.UpdateInstanceIds.Add(InstanceId);
 		SharedData.StaticMeshInstanceTransforms.Add(Transform);
@@ -324,8 +359,30 @@ void FMassLODSignificanceRange::AddBatchedCustomDataFloats(const TArray<float>& 
 			continue;
 		}
 
-		FISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
+		FMassISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
 		SharedData.StaticMeshInstanceCustomFloats.Append(CustomFloats);
+	}
+}
+
+void FMassLODSignificanceRange::AddInstance(const int32 InstanceId, const FTransform& Transform)
+{
+	check(ISMCSharedDataPtr);
+	for (int i = 0; i < StaticMeshRefs.Num(); i++)
+	{
+		FMassISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
+		SharedData.UpdateInstanceIds.Add(InstanceId);
+		SharedData.StaticMeshInstanceTransforms.Add(Transform);
+		SharedData.StaticMeshInstancePrevTransforms.Add(Transform);
+	}
+}
+
+void FMassLODSignificanceRange::RemoveInstance(const int32 InstanceId)
+{
+	check(ISMCSharedDataPtr);
+	for (int i = 0; i < StaticMeshRefs.Num(); i++)
+	{
+		FMassISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[i]];
+		SharedData.RemoveInstanceIds.Add(InstanceId);
 	}
 }
 
@@ -339,7 +396,7 @@ void FMassLODSignificanceRange::WriteCustomDataFloatsAtStartIndex(int32 StaticMe
 			return;
 		}
 
-		FISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[StaticMeshIndex]];
+		FMassISMCSharedData& SharedData = (*ISMCSharedDataPtr)[StaticMeshRefs[StaticMeshIndex]];
 
 		int32 StartIndex = FloatsPerInstance * SharedData.WriteIterator + StartFloatIndex;
 

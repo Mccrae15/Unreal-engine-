@@ -7,12 +7,38 @@
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
 
+#include "Math/Vector.h"
+#include "Math/IntVector.h"
+#include "Math/Vector4.h"
+#include "MuR/MutableMath.h"
 
 namespace mu
 {    
     class Image;
 	class Model;
 
+#define MUTABLE_DEFINE_POD_SERIALISABLE(T)							\
+	template<>														\
+	void DLLEXPORT operator<< <T>(OutputArchive& arch, const T& t);	\
+																	\
+	template<>														\
+	void DLLEXPORT operator>> <T>(InputArchive& arch, T& t);		\
+
+#define MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(T)									     \
+	template<typename Alloc>                                                             \
+	void operator <<(OutputArchive& arch, const TArray<T, Alloc>& v);					 \
+	                                                                                     \
+	template<typename Alloc>                                                             \
+	void operator >>(InputArchive& arch, TArray<T, Alloc>& v);                           \
+
+#define MUTABLE_DEFINE_ENUM_SERIALISABLE(T)							\
+	template<>														\
+    void DLLEXPORT operator<< <T>(OutputArchive& arch, const T& t);	\
+																	\
+	template<>														\
+    void DLLEXPORT operator>> <T>(InputArchive& arch, T& t);		\
+	
+	
     //! \brief
     //! \ingroup model
     template<class R>
@@ -47,13 +73,8 @@ namespace mu
 	};
 
 
-    //! \brief Interface of any class responsible of providing model data.
-    //!
-    //! When building a Model that was generated with split data, an object implementing this
-    //! interface must be provided to the System. The System will call this interface to fetch the
-    //! data it needs from the model.
-    //! \ingroup runtime
-    class MUTABLERUNTIME_API ModelStreamer : public Base
+	/** */
+	class MUTABLERUNTIME_API ModelReader : public Base
     {
     public:
 
@@ -62,7 +83,7 @@ namespace mu
         //-----------------------------------------------------------------------------------------
 
         //! Ensure virtual destruction.
-        virtual ~ModelStreamer() {}
+        virtual ~ModelReader() {}
 
         //-----------------------------------------------------------------------------------------
         // Reading interface
@@ -79,10 +100,11 @@ namespace mu
 		//! \param pBuffer is an already-allocated buffer big enough to receive the expected data.
 		//! \param size is the size of the pBuffer buffer, which must match the size of the data
 		//! requested with the key identifiers.
+		//! \param CompletionCallback Optional callback. Copied inside the called function. Will always be called.
 		//! \return a previously unused identifier, now used for this operation, that can be used in
 		//! calls to the other methods of this interface. If the return value is negative it indicates
 		//! an unrecoverable error.
-		virtual OPERATION_ID BeginReadBlock(const mu::Model*, uint64 key0, void* pBuffer, uint64 size) = 0;
+		virtual OPERATION_ID BeginReadBlock(const mu::Model*, uint64 key0, void* pBuffer, uint64 size, TFunction<void(bool bSuccess)>* CompletionCallback = nullptr) = 0;
 
         //! Check if a data request operation has been completed.
         //! This is a weak check than *may* return true if the given operation has completed, but
@@ -96,35 +118,50 @@ namespace mu
         //! any more to identify the same operation and becomes free.
         virtual void EndRead( OPERATION_ID ) = 0;
 
-        //-----------------------------------------------------------------------------------------
-        // Writing interface
-        //-----------------------------------------------------------------------------------------
-
-        //! \brief Open a file for writing data.
-        //!
-        //! Only one file can be open a time for writing. This method is only required when
-        //! writing model data from tools.
-        //! \param strModelName Name of the model where the file to open belongs to. This string's
-        //!         meaning depends on the implementation of the ModelStreamer subclasses. It could
-        //!         be a file path, or a resource identifier, etc. It will be the same for all
-        //!         files in a model.
-        //! \param key key identifying the model data fragment that is requested.
-        //!         This key interpretation depends on the implementation of the ModelStreamer,
-        virtual void OpenWriteFile( const char* strModelName, uint64 key0 ) = 0;
-
-        //! \brief Write a piece of data to the currently open file.
-        //!
-        //! There must be a file open with OpenWriteFile before calling this.
-        //! \param pBuffer pointer to the data that will be written to the file.
-        //! \param size size of the data to write on the file, in bytes.
-        virtual void Write( const void* pBuffer, uint64 size ) = 0;
-
-        //! \brief Close the file open for writing in a previous call to OpenWriteFile in this
-        //! object.
-        virtual void CloseWriteFile() = 0;
-
-
     };
+
+
+	/** */
+	class MUTABLERUNTIME_API ModelWriter : public Base
+	{
+	public:
+
+		//-----------------------------------------------------------------------------------------
+		// Life cycle
+		//-----------------------------------------------------------------------------------------
+
+		//! Ensure virtual destruction.
+		virtual ~ModelWriter() {}
+
+		//-----------------------------------------------------------------------------------------
+		// Writing interface
+		//-----------------------------------------------------------------------------------------
+
+		//! \brief Open a file for writing data.
+		//!
+		//! Only one file can be open a time for writing. This method is only required when
+		//! writing model data from tools.
+		//! \param strModelName Name of the model where the file to open belongs to. This string's
+		//!         meaning depends on the implementation of the ModelStreamer subclasses. It could
+		//!         be a file path, or a resource identifier, etc. It will be the same for all
+		//!         files in a model.
+		//! \param key key identifying the model data fragment that is requested.
+		//!         This key interpretation depends on the implementation of the ModelStreamer,
+		virtual void OpenWriteFile(uint64 key0) = 0;
+
+		//! \brief Write a piece of data to the currently open file.
+		//!
+		//! There must be a file open with OpenWriteFile before calling this.
+		//! \param pBuffer pointer to the data that will be written to the file.
+		//! \param size size of the data to write on the file, in bytes.
+		virtual void Write(const void* pBuffer, uint64 size) = 0;
+
+		//! \brief Close the file open for writing in a previous call to OpenWriteFile in this
+		//! object.
+		virtual void CloseWriteFile() = 0;
+
+
+	};
 
 
 
@@ -285,6 +322,105 @@ namespace mu
         Private* m_pD;
 
     };
+
+
+	template< typename T >
+	void operator<< ( OutputArchive& arch, const T& t )
+	{
+        t.Serialise( arch );
+	}
+
+	template< typename T >
+	void operator>> ( InputArchive& arch, T& t )
+	{
+        t.Unserialise( arch );
+	}
+
+	MUTABLE_DEFINE_POD_SERIALISABLE(float);
+	MUTABLE_DEFINE_POD_SERIALISABLE(double);
+
+    MUTABLE_DEFINE_POD_SERIALISABLE(int8);
+    MUTABLE_DEFINE_POD_SERIALISABLE(int16);
+    MUTABLE_DEFINE_POD_SERIALISABLE(int32);
+    MUTABLE_DEFINE_POD_SERIALISABLE(int64);
+
+    MUTABLE_DEFINE_POD_SERIALISABLE(uint8);
+    MUTABLE_DEFINE_POD_SERIALISABLE(uint16);
+    MUTABLE_DEFINE_POD_SERIALISABLE(uint32);
+    MUTABLE_DEFINE_POD_SERIALISABLE(uint64);
+
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(float);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(double);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint8);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint16);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint32);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint64);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int8);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int16);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int32);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int64);
+
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(vec2f);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(vec3f);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(mat3f);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(mat4f);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(vec2<int>);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(TCHAR);
+
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(FUintVector2);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(UE::Math::TIntVector2<uint16>);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(UE::Math::TIntVector2<int16>);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(FVector4f);
+	
+	//---------------------------------------------------------------------------------------------
+	template<>
+	void operator<< <FString>(OutputArchive& arch, const FString& t);
+	
+	template<>
+	void operator>> <FString>(InputArchive& arch, FString& t);
+
+
+	//---------------------------------------------------------------------------------------------
+	template<typename T, typename Alloc> 
+	void operator<<(OutputArchive& arch, const TArray<T, Alloc>& v)
+	{
+		const uint32 Num = (uint32)v.Num();
+		arch << Num;
+		
+		for (SIZE_T i = 0; i < Num; ++i)
+		{
+			arch << v[i];
+		}
+	}
+
+	template<typename T, typename Alloc> 
+	void operator>>(InputArchive& arch, TArray<T, Alloc>& v)
+	{
+		uint32 Num;
+		arch >> Num;
+		v.SetNum(Num);
+
+		for (SIZE_T i = 0; i < Num; ++i)
+		{
+			arch >> v[i];
+		}
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	template<> 
+	inline void operator<<(OutputArchive& arch, const FName& v)
+	{
+		arch << v.ToString();
+	}
+
+	template<> 
+	inline void operator>>(InputArchive& arch, FName& v)
+	{
+		FString Temp;
+		arch >> Temp;
+		v = FName(Temp);
+	}
 
 }
 

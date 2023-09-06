@@ -124,15 +124,12 @@ void ADisplayClusterRootActor::Destructor_Editor()
 	}
 }
 
-void ADisplayClusterRootActor::Tick_Editor(float DeltaSeconds)
+void ADisplayClusterRootActor::RenderPreview_Editor()
 {
 	if (IsPreviewEnabled())
 	{
 		// Restore ViewportManager
-		if (ViewportManager.IsValid() == false)
-		{
-			ViewportManager = MakeUnique<FDisplayClusterViewportManager>();
-		}
+		CreateViewportManagerImpl();
 
 		if (bDeferPreviewGeneration)
 		{
@@ -162,17 +159,10 @@ void ADisplayClusterRootActor::Tick_Editor(float DeltaSeconds)
 		ResetPreviewInternals_Editor();
 		if (ViewportManager.IsValid())
 		{
-			if (FDisplayClusterViewportManager* ViewportManagerPrivate = static_cast<FDisplayClusterViewportManager*>(ViewportManager.Get()))
+			if(ViewportManager->GetRenderMode() == EDisplayClusterRenderFrameMode::PreviewInScene)
 			{
-				switch (ViewportManagerPrivate->GetRenderFrameSettings().RenderMode)
-				{
-				case EDisplayClusterRenderFrameMode::PreviewInScene:
-					// Release viewport manager with resources immediatelly for preview in scene
-					ViewportManager.Reset();
-					break;
-				default:
-					break;
-				}
+				// Release viewport manager with resources immediatelly for preview in scene
+				RemoveViewportManagerImpl();
 			}
 		}
 	}
@@ -416,6 +406,12 @@ void ADisplayClusterRootActor::ResetClusterNodePreviewRendering_Editor()
 
 bool ADisplayClusterRootActor::ImplUpdatePreviewRenderFrame_Editor(const FString& InClusterNodeId)
 {
+	// Skip rendering on dedicated server
+	if (GetGameInstance() && GetGameInstance()->IsDedicatedServerInstance())
+	{
+		return false;
+	}
+
 	// Update cluster node for render:
 	if (PreviewRenderFrameClusterNodeId != InClusterNodeId)
 	{
@@ -511,11 +507,6 @@ void ADisplayClusterRootActor::ImplRenderPreview_Editor()
 
 	if (PreviewClusterNodeIndex < 0)
 	{
-		if (bFreezePreviewRender)
-		{
-			return;
-		}
-
 		// Allow preview render
 		PreviewClusterNodeIndex = 0;
 	}
@@ -565,7 +556,7 @@ void ADisplayClusterRootActor::ImplRenderPreview_Editor()
 		PreviewClusterNodeIndex++;
 		if (PreviewClusterNodeIndex >= ExistClusterNodesIDs.Num())
 		{
-			PreviewClusterNodeIndex = bFreezePreviewRender ? -1 : 0;
+			PreviewClusterNodeIndex = 0;
 
 			bOutputFrameToPostProcessRenderTarget = bOutputFrameToPostProcessRenderTarget ?
 				bPreviewEnablePostProcess :
@@ -624,9 +615,12 @@ void ADisplayClusterRootActor::ImplRenderPreviewFrustums_Editor()
 				if (CineCameraComponent && CineCameraComponent->IsICVFXEnabled())
 				{
 					// Iterate over rendered incamera viewports (whole cluster)
-					for (FDisplayClusterViewport* InCameraViewportIt : FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewGetRenderedInCameraViewports(*this, *CineCameraComponent))
+					for (const TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>& InCameraViewportIt : FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewGetRenderedInCameraViewports(*this, *CineCameraComponent))
 					{
-						FrustumPreviewViewports.Add(InCameraViewportIt);
+						if (InCameraViewportIt.IsValid())
+						{
+							FrustumPreviewViewports.Add(InCameraViewportIt.Get());
+						}
 					}
 				}
 			}
@@ -643,7 +637,7 @@ void ADisplayClusterRootActor::ImplRenderPreviewFrustums_Editor()
 		bool bIsValidViewportContext = false;
 
 		// Preview rendered only in mono
-		if (Contexts.Num() == 1 && Contexts[0].bIsValidProjectionMatrix && Contexts[0].bIsValidViewLocation && Contexts[0].bIsValidViewRotation)
+		if (Contexts.Num() == 1 && EnumHasAllFlags(Contexts[0].ContextState, EDisplayClusterViewportContextState::HasCalculatedProjectionMatrix | EDisplayClusterViewportContextState::HasCalculatedViewPoint))
 		{
 			FrustumPreviewViewportContext.ProjectionMatrix = Contexts[0].ProjectionMatrix;
 			FrustumPreviewViewportContext.ViewLocation = Contexts[0].ViewLocation;

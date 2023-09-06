@@ -3,7 +3,7 @@
 import { getTheme } from "@fluentui/react";
 import { action, makeObservable, observable } from 'mobx';
 import backend from '.';
-import { DashboardPreference, GetDashboardConfigResponse, GetUserResponse, UserClaim } from './Api';
+import { DashboardPreference, GetDashboardConfigResponse, GetJobTemplateSettingsResponse, GetUserResponse, UserClaim } from './Api';
 
 const theme = getTheme();
 
@@ -96,18 +96,6 @@ export class Dashboard {
         return this.data.image32;
     }
 
-
-    get hordeAdmin(): boolean {
-
-        return !!this.roles.find(r => r.value === "app-horde-admins");
-    }
-
-    get internalEmployee(): boolean {
-
-        return !!this.roles.find(r => r.value === "Internal-Employees");
-
-    }
-
     get email(): string {
 
         const email = this.claims.find(c => c.type.endsWith("/emailaddress"));
@@ -123,6 +111,26 @@ export class Dashboard {
         }
         return user[0].value;
 
+    }
+
+    get preview(): boolean {
+
+        try {
+            return !!(process.env.REACT_APP_HORDE_DEBUG_PREVIEW) || window?.location?.hostname?.indexOf("preview") !== -1;
+        } catch (reason) {
+            console.error(reason);
+        }
+        return false;
+    }
+
+    get development(): boolean {
+
+        try {
+            return window?.location?.hostname?.indexOf("devtools-dev") !== -1;
+        } catch (reason) {
+            console.error(reason);
+        }
+        return false;
     }
 
     get browser(): WebBrowser {
@@ -168,6 +176,34 @@ export class Dashboard {
     get pinnedJobsIds(): string[] {
 
         return this.data.pinnedJobIds ?? [];
+    }
+
+    getLastJobTemplateSettings(streamId: string, templateIds: string[]): GetJobTemplateSettingsResponse | undefined {
+
+        try {
+            
+            const streamTemplates = this.data?.jobTemplateSettings?.filter(t => t.streamId === streamId && templateIds.indexOf(t.templateId) !== -1)
+
+            if (!streamTemplates?.length) {
+                return undefined;
+            }
+
+            const sorted = streamTemplates.sort((a, b) => {
+                return new Date(b.updateTimeUtc).getTime() - new Date(a.updateTimeUtc).getTime();
+            });
+
+            return sorted[0];
+        } catch (error) {
+            console.error(error);
+        }
+
+        return undefined;
+    }
+
+    set jobTemplateSettings(settings: GetJobTemplateSettingsResponse[]) {
+        if (this.data) {
+            this.data.jobTemplateSettings = settings;
+        }
     }
 
     get experimentalFeatures(): boolean {
@@ -273,9 +309,9 @@ export class Dashboard {
             return true;
         }
         */
-        
+
         const value = this.preferences.get(DashboardPreference.LocalCache) !== 'false';
-        
+
         if (value && !this.hasLoggedLocalCache) {
             this.hasLoggedLocalCache = true;
             console.log("Local graph and template caching is enabled")
@@ -565,6 +601,8 @@ export class Dashboard {
     private pollMS = 4 * 1000;
 
     private config?: GetDashboardConfigResponse;
+
+    alertSquelch?: string;
 
 }
 

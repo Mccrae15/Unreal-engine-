@@ -21,6 +21,7 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+class SFrameTrack;
 class FMenuBuilder;
 class FTimingGraphTrack;
 class FUICommandList;
@@ -87,6 +88,8 @@ public:
 	void SelectTimerNode(uint32 TimerId);
 
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	ETraceFrameType GetFrameTypeMode() { return ModeFrameType; }
 
 private:
 	void InitCommandList();
@@ -217,6 +220,23 @@ private:
 	FText GroupBy_GetSelectedTooltipText() const;
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// Frame Type
+
+	void CreateModeOptionsSources();
+
+	void Mode_OnSelectionChanged(TSharedPtr<ETraceFrameType> NewGroupingMode, ESelectInfo::Type SelectInfo);
+
+	TSharedRef<SWidget> Mode_OnGenerateWidget(TSharedPtr<ETraceFrameType> InGroupingMode) const;
+
+	FText Mode_GetSelectedText() const;
+	
+	FText Mode_GetText(ETraceFrameType InFrameType) const;
+
+	FText Mode_GetSelectedTooltipText() const;
+
+	FText Mode_GetTooltipText(ETraceFrameType InFrameType) const;
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Sorting
 
 	static const FName GetDefaultColumnBeingSorted();
@@ -282,10 +302,21 @@ private:
 
 	void ToggleTimingViewEventFilter(FTimerNodePtr TimerNode) const;
 
+	void TreeView_BuildPlotTimerMenu(FMenuBuilder& MenuBuilder);
+
 	TSharedPtr<FTimingGraphTrack> GetTimingViewMainGraphTrack() const;
+	TSharedPtr<SFrameTrack> GetFrameTrack() const;
+
 	void ToggleGraphSeries(TSharedRef<FTimingGraphTrack> GraphTrack, FTimerNodeRef NodePtr) const;
 	bool IsSeriesInTimingViewMainGraph(FTimerNodePtr TimerNode) const;
 	void ToggleTimingViewMainGraphEventSeries(FTimerNodePtr TimerNode) const;
+
+	void ToggleGraphFrameStatsSeries(TSharedRef<FTimingGraphTrack> GraphTrack, FTimerNodeRef NodePtr, ETraceFrameType FrameType) const;
+	bool IsFrameStatsSeriesInTimingViewMainGraph(FTimerNodePtr TimerNode, ETraceFrameType FrameType) const;
+	void ToggleTimingViewMainGraphEventFrameStatsSeries(FTimerNodePtr TimerNode, ETraceFrameType FrameType) const;
+
+	bool IsSeriesInFrameTrack(FTimerNodePtr TimerNode, ETraceFrameType FrameType) const;
+	void ToggleFrameTrackSeries(FTimerNodePtr TimerNode, ETraceFrameType FrameType) const;
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -299,6 +330,13 @@ private:
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 	void OpenSourceFileInIDE(FTimerNodePtr InNode) const;
+
+	void SaveSettings();
+	void SaveVisibleColumnsSettings();
+	void LoadSettings();
+	void LoadVisibleColumnsSettings();
+
+	void SetTimingViewFrameType();
 
 private:
 	/** Table view model. */
@@ -382,6 +420,15 @@ private:
 
 	/** How we group the timers? */
 	ETimerGroupingMode GroupingMode;
+
+	//////////////////////////////////////////////////
+	// Frame Type
+
+	TArray<TSharedPtr<ETraceFrameType>> ModeOptionsSource;
+
+	TSharedPtr<SComboBox<TSharedPtr<ETraceFrameType>>> ModeComboBox;
+
+	ETraceFrameType ModeFrameType;
 
 	//////////////////////////////////////////////////
 	// Sorting

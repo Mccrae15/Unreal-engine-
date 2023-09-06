@@ -8,10 +8,12 @@
 #include "RayTracingInstance.h"
 #include "SceneInterface.h"
 #include "SceneManagement.h"
+#include "Engine/Engine.h"		// for GEngine definition
 
 FBaseDynamicMeshSceneProxy::FBaseDynamicMeshSceneProxy(UBaseDynamicMeshComponent* Component)
 	: FPrimitiveSceneProxy(Component),
 	ParentBaseComponent(Component),
+	ColorSpaceTransformMode(Component->GetVertexColorSpaceTransformMode()),
 	bEnableRaytracing(Component->GetEnableRaytracing()),
 	bEnableViewModeOverrides(Component->GetViewModeOverridesEnabled())
 {
@@ -96,12 +98,63 @@ void FBaseDynamicMeshSceneProxy::UpdatedReferencedMaterials()
 #endif
 }
 
+FMaterialRenderProxy* FBaseDynamicMeshSceneProxy::GetEngineVertexColorMaterialProxy(FMeshElementCollector& Collector, const FEngineShowFlags& EngineShowFlags, bool bProxyIsSelected, bool bIsHovered)
+{
+	FMaterialRenderProxy* ForceOverrideMaterialProxy = nullptr;
+#if UE_ENABLE_DEBUG_DRAWING
+	if (bProxyIsSelected && EngineShowFlags.VertexColors && AllowDebugViewmodes())
+	{
+		// Override the mesh's material with our material that draws the vertex colors
+		UMaterial* VertexColorVisualizationMaterial = NULL;
+		switch (GVertexColorViewMode)
+		{
+		case EVertexColorViewMode::Color:
+			VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_ColorOnly;
+			break;
+
+		case EVertexColorViewMode::Alpha:
+			VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_AlphaAsColor;
+			break;
+
+		case EVertexColorViewMode::Red:
+			VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_RedOnly;
+			break;
+
+		case EVertexColorViewMode::Green:
+			VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_GreenOnly;
+			break;
+
+		case EVertexColorViewMode::Blue:
+			VertexColorVisualizationMaterial = GEngine->VertexColorViewModeMaterial_BlueOnly;
+			break;
+		}
+		check(VertexColorVisualizationMaterial != NULL);
+
+		// Note: static mesh renderer does something more complicated involving per-section selection,
+		// but whole component selection seems ok for now
+		bool bSectionIsSelected = bProxyIsSelected;
+
+		auto VertexColorVisualizationMaterialInstance = new FColoredMaterialRenderProxy(
+			VertexColorVisualizationMaterial->GetRenderProxy(),
+			GetSelectionColor(FLinearColor::White, bSectionIsSelected, bIsHovered)
+		);
+
+		Collector.RegisterOneFrameMaterialProxy(VertexColorVisualizationMaterialInstance);
+		ForceOverrideMaterialProxy = VertexColorVisualizationMaterialInstance;
+	}
+#endif
+	return ForceOverrideMaterialProxy;
+}
+
 void FBaseDynamicMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_BaseDynamicMeshSceneProxy_GetDynamicMeshElements);
 
-	bool bWireframe = (AllowDebugViewmodes() && ViewFamily.EngineShowFlags.Wireframe)
-		|| ParentBaseComponent->GetEnableWireframeRenderPass();
+	const FEngineShowFlags& EngineShowFlags = ViewFamily.EngineShowFlags;
+	bool bIsWireframeViewMode = (AllowDebugViewmodes() && EngineShowFlags.Wireframe);
+	bool bWantWireframeOnShaded = ParentBaseComponent->GetEnableWireframeRenderPass();
+	bool bWireframe = bIsWireframeViewMode || bWantWireframeOnShaded;
+	const bool bProxyIsSelected = IsSelected();
 
 	// Get wireframe material proxy if requested and available, otherwise disable wireframe
 	FMaterialRenderProxy* WireframeMaterialProxy = nullptr;
@@ -110,8 +163,10 @@ void FBaseDynamicMeshSceneProxy::GetDynamicMeshElements(const TArray<const FScen
 		UMaterialInterface* WireframeMaterial = UBaseDynamicMeshComponent::GetDefaultWireframeMaterial_RenderThread();
 		if (WireframeMaterial != nullptr)
 		{
+			FLinearColor UseWireframeColor = (bProxyIsSelected && (bWantWireframeOnShaded == false || bIsWireframeViewMode))  ?
+				GEngine->GetSelectedMaterialColor() : ParentBaseComponent->WireframeColor;
 			FColoredMaterialRenderProxy* WireframeMaterialInstance = new FColoredMaterialRenderProxy(
-				WireframeMaterial->GetRenderProxy(), ParentBaseComponent->WireframeColor);
+				WireframeMaterial->GetRenderProxy(), UseWireframeColor);
 			Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
 			WireframeMaterialProxy = WireframeMaterialInstance;
 		}
@@ -121,18 +176,17 @@ void FBaseDynamicMeshSceneProxy::GetDynamicMeshElements(const TArray<const FScen
 		}
 	}
 
-	// will use this material instead of any others below, if it becomes non-null
-	UMaterialInterface* ForceOverrideMaterial = nullptr;
-
-	// Note: there is an engine show flags for vertex colors. However if we enable that, then
-	// we will fail the used-materials checks in the Editor, because UBaseDynamicMeshComponent::GetUsedMaterials()
-	// cannot check the active show flags. One option would be to always add the vertex color material there...
-	const bool bVertexColor = ParentBaseComponent->ColorMode == EDynamicMeshComponentColorOverrideMode::VertexColors ||
-								ParentBaseComponent->ColorMode == EDynamicMeshComponentColorOverrideMode::Polygroups ||
-								ParentBaseComponent->ColorMode == EDynamicMeshComponentColorOverrideMode::Constant;
-	if (bVertexColor)
+	FMaterialRenderProxy* ForceOverrideMaterialProxy = GetEngineVertexColorMaterialProxy(Collector, EngineShowFlags, bProxyIsSelected, IsHovered());
+	// If engine show flags aren't setting vertex color, also check if the component requested custom vertex color modes for the dynamic mesh
+	if (!ForceOverrideMaterialProxy)
 	{
-		ForceOverrideMaterial = UBaseDynamicMeshComponent::GetDefaultVertexColorMaterial_RenderThread();
+		const bool bVertexColor = ParentBaseComponent->ColorMode == EDynamicMeshComponentColorOverrideMode::VertexColors ||
+			ParentBaseComponent->ColorMode == EDynamicMeshComponentColorOverrideMode::Polygroups ||
+			ParentBaseComponent->ColorMode == EDynamicMeshComponentColorOverrideMode::Constant;
+		if (bVertexColor)
+		{
+			ForceOverrideMaterialProxy = UBaseDynamicMeshComponent::GetDefaultVertexColorMaterial_RenderThread()->GetRenderProxy();
+		}
 	}
 
 	ESceneDepthPriorityGroup DepthPriority = SDPG_World;
@@ -140,10 +194,10 @@ void FBaseDynamicMeshSceneProxy::GetDynamicMeshElements(const TArray<const FScen
 	TArray<FMeshRenderBufferSet*> Buffers;
 	GetActiveRenderBufferSets(Buffers);
 
-	UMaterialInterface* UseSecondaryMaterial = ForceOverrideMaterial;
-	if (ParentBaseComponent->HasSecondaryRenderMaterial() && ForceOverrideMaterial == nullptr)
+	FMaterialRenderProxy* SecondaryMaterialProxy = ForceOverrideMaterialProxy;
+	if (ParentBaseComponent->HasSecondaryRenderMaterial() && ForceOverrideMaterialProxy == nullptr)
 	{
-		UseSecondaryMaterial = ParentBaseComponent->GetSecondaryRenderMaterial();
+		SecondaryMaterialProxy = ParentBaseComponent->GetSecondaryRenderMaterial()->GetRenderProxy();
 	}
 	bool bDrawSecondaryBuffers = ParentBaseComponent->GetSecondaryBuffersVisibility();
 
@@ -163,16 +217,16 @@ void FBaseDynamicMeshSceneProxy::GetDynamicMeshElements(const TArray<const FScen
 			// Draw the mesh.
 			for (FMeshRenderBufferSet* BufferSet : Buffers)
 			{
-				UMaterialInterface* UseMaterial = BufferSet->Material;
-				if (ParentBaseComponent->HasOverrideRenderMaterial(0))
+				FMaterialRenderProxy* MaterialProxy = ForceOverrideMaterialProxy;
+				if (!MaterialProxy)
 				{
-					UseMaterial = ParentBaseComponent->GetOverrideRenderMaterial(0);
+					UMaterialInterface* UseMaterial = BufferSet->Material;
+					if (ParentBaseComponent->HasOverrideRenderMaterial(0))
+					{
+						UseMaterial = ParentBaseComponent->GetOverrideRenderMaterial(0);
+					}
+					MaterialProxy = UseMaterial->GetRenderProxy();
 				}
-				if (ForceOverrideMaterial)
-				{
-					UseMaterial = ForceOverrideMaterial;
-				}
-				FMaterialRenderProxy* MaterialProxy = UseMaterial->GetRenderProxy();
 
 				if (BufferSet->TriangleCount == 0)
 				{
@@ -186,29 +240,41 @@ void FBaseDynamicMeshSceneProxy::GetDynamicMeshElements(const TArray<const FScen
 				FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
 				DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
 
+				// If we want Wireframe-on-Shaded, we have to draw the solid. If View Mode Overrides are enabled, the solid
+				// will be replaced with it's wireframe, so we might as well not. 
+				bool bDrawSolidWithWireframe = ( bWantWireframeOnShaded && (bIsWireframeViewMode == false || bEnableViewModeOverrides == false) );
+
 				if (BufferSet->IndexBuffer.Indices.Num() > 0)
 				{
-					// Unlike most meshes, which just use the wireframe material in wireframe mode, we draw the wireframe on top of the normal material if needed,
-					// as this is easier to interpret. However, we do not do this in ortho viewports, where it frequently causes the our edit gizmo to be hidden 
-					// beneath the material. So, only draw the base material if we are in perspective mode, or we're in ortho but not in wireframe.
-					if (View->IsPerspectiveProjection() || !(AllowDebugViewmodes() && ViewFamily.EngineShowFlags.Wireframe))
-					{
-						DrawBatch(Collector, *BufferSet, BufferSet->IndexBuffer, MaterialProxy, false, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
-					}
 					if (bWireframe)
 					{
-						DrawBatch(Collector, *BufferSet, BufferSet->IndexBuffer, WireframeMaterialProxy, true, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
+						if (bDrawSolidWithWireframe)
+						{
+							DrawBatch(Collector, *BufferSet, BufferSet->IndexBuffer, MaterialProxy, /*bWireframe*/false, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
+						}
+						DrawBatch(Collector, *BufferSet, BufferSet->IndexBuffer, WireframeMaterialProxy, /*bWireframe*/true, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
+					}
+					else
+					{
+						DrawBatch(Collector, *BufferSet, BufferSet->IndexBuffer, MaterialProxy, /*bWireframe*/false, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
 					}
 				}
 
 				// draw secondary buffer if we have it, falling back to base material if we don't have the Secondary material
-				FMaterialRenderProxy* UseSecondaryMaterialProxy = (UseSecondaryMaterial != nullptr) ? UseSecondaryMaterial->GetRenderProxy() : MaterialProxy;
+				FMaterialRenderProxy* UseSecondaryMaterialProxy = (SecondaryMaterialProxy != nullptr) ? SecondaryMaterialProxy : MaterialProxy;
 				if (bDrawSecondaryBuffers && BufferSet->SecondaryIndexBuffer.Indices.Num() > 0 && UseSecondaryMaterialProxy != nullptr)
 				{
-					DrawBatch(Collector, *BufferSet, BufferSet->SecondaryIndexBuffer, UseSecondaryMaterialProxy, false, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
 					if (bWireframe)
 					{
-						DrawBatch(Collector, *BufferSet, BufferSet->SecondaryIndexBuffer, UseSecondaryMaterialProxy, true, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
+						if (bDrawSolidWithWireframe)
+						{
+							DrawBatch(Collector, *BufferSet, BufferSet->SecondaryIndexBuffer, UseSecondaryMaterialProxy, /*bWireframe*/false, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
+						}
+						DrawBatch(Collector, *BufferSet, BufferSet->SecondaryIndexBuffer, UseSecondaryMaterialProxy, /*bWireframe*/true, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
+					}
+					else
+					{
+						DrawBatch(Collector, *BufferSet, BufferSet->SecondaryIndexBuffer, UseSecondaryMaterialProxy, /*bWireframe*/false, DepthPriority, ViewIndex, DynamicPrimitiveUniformBuffer);
 					}
 				}
 			}
@@ -222,6 +288,7 @@ void FBaseDynamicMeshSceneProxy::DrawBatch(FMeshElementCollector& Collector, con
 	FMeshBatchElement& BatchElement = Mesh.Elements[0];
 	BatchElement.IndexBuffer = &IndexBuffer;
 	Mesh.bWireframe = bWireframe;
+	//Mesh.bDisableBackfaceCulling = bWireframe;		// todo: doing this would be more consistent w/ other meshes in wireframe mode, but it is problematic for modeling tools - perhaps should be configurable
 	Mesh.VertexFactory = &RenderBuffers.VertexFactory;
 	Mesh.MaterialRenderProxy = UseMaterial;
 
@@ -234,7 +301,8 @@ void FBaseDynamicMeshSceneProxy::DrawBatch(FMeshElementCollector& Collector, con
 	Mesh.ReverseCulling = IsLocalToWorldDeterminantNegative();
 	Mesh.Type = PT_TriangleList;
 	Mesh.DepthPriorityGroup = DepthPriority;
-	Mesh.bCanApplyViewModeOverrides = this->bEnableViewModeOverrides;
+	// if this is a wireframe draw pass then we do not want to apply View Mode Overrides
+	Mesh.bCanApplyViewModeOverrides = (bWireframe) ? false : this->bEnableViewModeOverrides;
 	Collector.AddMesh(ViewIndex, Mesh);
 }
 

@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceRenderTargetVolume.h"
-#include "ShaderParameterUtils.h"
-#include "ClearQuad.h"
+#include "Engine/Engine.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "TextureResource.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "TextureRenderTargetVolumeResource.h"
 #include "Engine/TextureRenderTargetVolume.h"
 #include "HAL/PlatformFileManager.h"
@@ -10,18 +11,28 @@
 #include "NDIRenderTargetVolumeSimCacheData.h"
 #include "NiagaraDataInterfaceRenderTargetCommon.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraSettings.h"
+#include "NiagaraSVTShaders.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraStats.h"
-#include "NiagaraRenderer.h"
-#include "NiagaraSettings.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraShader.h"
 #include "NiagaraGpuComputeDebugInterface.h"
 #include "VolumeCache.h"
+#include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
 #include "RHIStaticStates.h"
 #include "Misc/PathViews.h"
 #include "Misc/Paths.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "GlobalRenderResources.h"
+
+#include "RenderGraphUtils.h"
+
+#include "SparseVolumeTexture/SparseVolumeTexture.h"
+#include "SparseVolumeTexture/SparseVolumeTextureData.h"
+#include "SparseVolumeTexture/ISparseVolumeTextureStreamingManager.h"
+
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRenderTargetVolume)
 
@@ -81,11 +92,27 @@ namespace NDIRenderTargetVolumeLocal
 		ECVF_Default
 	);
 
-	int32 GSimCacheUseOpenVDB = true;
-	static FAutoConsoleVariableRef CVarSimCacheUseOpenVDB(
-		TEXT("fx.Niagara.RenderTargetVolume.SimCacheUseOpenVDB"),
-		GSimCacheUseOpenVDB,
-		TEXT("Use OpenVDB as the backing data for the sim cache."),
+	enum SimCacheStorageMode
+	{
+		Dense = 0,
+		SVT = 1
+	};
+
+	int32 GSimCacheDataStorageMode = SimCacheStorageMode::SVT;
+	static FAutoConsoleVariableRef CVarSimCacheDataStorageMode(
+		TEXT("fx.Niagara.RenderTargetVolume.SimCacheDataStorageMode"),
+		GSimCacheDataStorageMode,
+		TEXT("Backing storage type for Volume RT sim cache data.  0 uses raw data, 1 uses OpenVDB, 2 uses SVT"),
+		ECVF_Default
+	);
+
+
+
+	int32 GSimCacheUseOpenVDBFloatGrids = false;
+	static FAutoConsoleVariableRef CVarSimCacheUseOpenVDBFloatGrids(
+		TEXT("fx.Niagara.RenderTargetVolume.SimCacheUseOpenVDBFloatGrids"),
+		GSimCacheUseOpenVDBFloatGrids,
+		TEXT("Use OpenVDB float grids as output."),
 		ECVF_Default
 	);
 
@@ -425,7 +452,7 @@ void UNiagaraDataInterfaceRenderTargetVolume::SetShaderParameters(const FNiagara
 	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
 
 	// Ensure RDG resources are ready to use
-	if (InstanceData_RT->TransientRDGTexture == nullptr)
+	if (InstanceData_RT->TransientRDGTexture == nullptr && InstanceData_RT->RenderTarget)
 	{
 		InstanceData_RT->TransientRDGTexture = GraphBuilder.RegisterExternalTexture(InstanceData_RT->RenderTarget);
 		InstanceData_RT->TransientRDGSRV = GraphBuilder.CreateSRV(InstanceData_RT->TransientRDGTexture);
@@ -455,7 +482,6 @@ void UNiagaraDataInterfaceRenderTargetVolume::SetShaderParameters(const FNiagara
 
 	if (bRTRead)
 	{
-		ensureMsgf(bRTWrite == false, TEXT("RenderTarget DataInterface is both wrote and read from in the same stage, this is not allowed, read will be invalid"));
 		if (bRTWrite == false && InstanceData_RT->RenderTarget.IsValid())
 		{
 			InstanceData_RT->bReadThisFrame = true;
@@ -463,6 +489,9 @@ void UNiagaraDataInterfaceRenderTargetVolume::SetShaderParameters(const FNiagara
 		}
 		else
 		{
+		#if WITH_NIAGARA_DEBUG_EMITTER_NAME
+			GEngine->AddOnScreenDebugMessage(uint64(this), 1.f, FColor::White, *FString::Printf(TEXT("RenderTarget is read and wrote in the same stage, this is not allowed, read will be invalid. (%s)"), *Context.GetDebugString()));
+		#endif
 			Parameters->Texture = Context.GetComputeDispatchInterface().GetBlackTextureSRV(GraphBuilder, ETextureDimension::Texture3D);
 		}
 
@@ -483,15 +512,18 @@ bool UNiagaraDataInterfaceRenderTargetVolume::InitPerInstanceData(void* PerInsta
 
 	FRenderTargetVolumeRWInstanceData_GameThread* InstanceData = new (PerInstanceData) FRenderTargetVolumeRWInstanceData_GameThread();
 
-	if (NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut && !IsUsedWithGPUEmitter())
-	{
-		return true;
-	}
+	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
+	const bool bValidGpuDataInterface = NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut == 0 || IsUsedWithGPUScript();
 
 	ETextureRenderTargetFormat RenderTargetFormat;
 	if (NiagaraDataInterfaceRenderTargetCommon::GetRenderTargetFormat(bOverrideFormat, OverrideRenderTargetFormat, RenderTargetFormat) == false)
 	{
-		return false;
+		if (bValidGpuDataInterface)
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NDIRTVolume failed to find a render target format that supports UAV store"));
+			return false;
+		}
+		return true;
 	}
 
 	InstanceData->Size.X = FMath::Clamp<int>(int(float(Size.X) * NiagaraDataInterfaceRenderTargetCommon::GResolutionMultiplier), 1, GMaxVolumeTextureDimensions);
@@ -509,8 +541,10 @@ bool UNiagaraDataInterfaceRenderTargetVolume::InitPerInstanceData(void* PerInsta
 
 void UNiagaraDataInterfaceRenderTargetVolume::DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)
 {
-	FRenderTargetVolumeRWInstanceData_GameThread* InstanceData = static_cast<FRenderTargetVolumeRWInstanceData_GameThread*>(PerInstanceData);
+	using namespace NDIRenderTargetVolumeLocal;
 
+	FRenderTargetVolumeRWInstanceData_GameThread* InstanceData = static_cast<FRenderTargetVolumeRWInstanceData_GameThread*>(PerInstanceData);
+	NiagaraDataInterfaceRenderTargetCommon::ReleaseRenderTarget(SystemInstance, InstanceData);
 	InstanceData->~FRenderTargetVolumeRWInstanceData_GameThread();
 
 	FNiagaraDataInterfaceProxyRenderTargetVolumeProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTargetVolumeProxy>();
@@ -528,14 +562,6 @@ void UNiagaraDataInterfaceRenderTargetVolume::DestroyPerInstanceData(void* PerIn
 			RT_Proxy->SystemInstancesToProxyData_RT.Remove(InstanceID);
 		}
 	);
-
-	// Make sure to clear out the reference to the render target if we created one.
-	using RenderTargetType = decltype(decltype(ManagedRenderTargets)::ElementType::Value);
-	RenderTargetType ExistingRenderTarget = nullptr;
-	if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && NiagaraDataInterfaceRenderTargetCommon::GReleaseResourceOnRemove)
-	{
-		ExistingRenderTarget->ReleaseResource();
-	}
 }
 
 
@@ -558,52 +584,15 @@ bool UNiagaraDataInterfaceRenderTargetVolume::GetExposedVariableValue(const FNia
 
 UObject* UNiagaraDataInterfaceRenderTargetVolume::SimCacheBeginWrite(UObject* InSimCache, FNiagaraSystemInstance* NiagaraSystemInstance, const void* OptionalPerInstanceData, FNiagaraSimCacheFeedbackContext& FeedbackContext) const
 {
-	if (NDIRenderTargetVolumeLocal::GSimCacheUseOpenVDB)
+	if (NDIRenderTargetVolumeLocal::GSimCacheDataStorageMode == NDIRenderTargetVolumeLocal::SimCacheStorageMode::SVT)
 	{		
-		UVolumeCache* OpenVDBSimCacheData = nullptr;
-
 		UNiagaraSimCache* SimCache = CastChecked<UNiagaraSimCache>(InSimCache);
-		OpenVDBSimCacheData = NewObject<UVolumeCache>(SimCache);
-
-		FString SystemInstanceName = NiagaraSystemInstance->GetSystem()->GetName();
-
-		if (GetDefault<UNiagaraSettings>()->SimCacheAuxiliaryFileBasePath == "")
-		{
-			FeedbackContext.Errors.Emplace(TEXT("UNiagaraDataInterfaceRenderTargetVolume - You must set SimCacheAuxiliaryFileBasePath in project settings"));
-			return nullptr;
-		}
-
-		const FGuid& CacheGuid = SimCache->GetCacheGuid();
-		const FString DIName = Proxy->SourceDIName.ToString();
-		FString FullFilePathSpec = GetDefault<UNiagaraSettings>()->SimCacheAuxiliaryFileBasePath + "/" + CacheGuid.ToString() + "/" + DIName + "_SimCache.{FrameIndex}.vdb";
-		FullFilePathSpec.ReplaceInline(TEXT("//"), TEXT("/"));		
+		UAnimatedSparseVolumeTexture* CurrCache = NewObject<UAnimatedSparseVolumeTexture>(SimCache);			
 		
-		FullFilePathSpec.ReplaceInline(TEXT("{project_dir}"), *FPaths::ProjectDir());
+		CurrCache->BeginInitialize(1);
 
-		FullFilePathSpec = FPaths::ConvertRelativePathToFull(FullFilePathSpec);
-
-		// Create output directory		
-		const FString FileDirectory = FString(FPathViews::GetPath(FullFilePathSpec));
-
-		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-		if (!PlatformFile.DirectoryExists(*FileDirectory))
-		{
-			if (!PlatformFile.CreateDirectoryTree(*FileDirectory))
-			{
-				FeedbackContext.Errors.Emplace(FString::Printf(TEXT("Cannot Create Directory : %s"), *FileDirectory));
-				return nullptr;
-			}
-		}
-
-		OpenVDBSimCacheData->FilePath = FullFilePathSpec;
-		OpenVDBSimCacheData->CacheType = EVolumeCacheType::OpenVDB;
-		OpenVDBSimCacheData->Resolution = FIntVector3(1,1,1);
-		OpenVDBSimCacheData->FrameRangeStart = TNumericLimits<int32>::Lowest();
-		OpenVDBSimCacheData->FrameRangeEnd = TNumericLimits<int32>::Lowest();
-		OpenVDBSimCacheData->InitData();
-
-		return OpenVDBSimCacheData;
-	}
+		return CurrCache;
+	}	
 	else
 	{
 		UNDIRenderTargetVolumeSimCacheData* SimCacheData = nullptr;
@@ -631,20 +620,48 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheWriteFrame(UObject* Storag
 		const FTextureRenderTargetResource* RT_TargetTexture = InstanceData_GT->TargetTexture->GameThread_GetRenderTargetResource();
 
 		//-OPT: Currently we are flushing rendering commands.  Do not remove this until making access to the frame data safe across threads.
-		TArray<FFloat16Color> TextureData;
+		TArray<uint8> TextureData;
+
 		ENQUEUE_RENDER_COMMAND(NDIRenderTargetVolume_CacheFrame)
 		(
-			[RT_Proxy, RT_InstanceID=SystemInstance->GetId(), RT_TargetTexture, RT_TextureData=&TextureData](FRHICommandListImmediate& RHICmdList)
+			[RT_Proxy, RT_InstanceID=SystemInstance->GetId(), RT_TargetTexture, RT_TextureData = &TextureData, RT_VolumeResolution = InstanceData_GT->Size](FRHICommandListImmediate& RHICmdList)
 			{
 				if (const FRenderTargetVolumeRWInstanceData_RenderThread* InstanceData_RT = RT_Proxy->SystemInstancesToProxyData_RT.Find(RT_InstanceID))
-				{
-					// Readback TextureData
-					RHICmdList.Read3DSurfaceFloatData(
-						InstanceData_RT->RenderTarget->GetRHI(),
-						FIntRect(0, 0, InstanceData_RT->Size.X, InstanceData_RT->Size.Y),
-						FIntPoint(0, InstanceData_RT->Size.Z),
-						*RT_TextureData
-					);
+				{					
+					FRHIGPUTextureReadback RenderTargetReadback("ReadVolumeTexture");
+
+					RenderTargetReadback.EnqueueCopy(RHICmdList, InstanceData_RT->RenderTarget->GetRHI(), FIntVector(0,0,0), 0, RT_VolumeResolution);
+					
+					// Sync the GPU. Unfortunately we can't use the fences because not all RHIs implement them yet.
+					RHICmdList.BlockUntilGPUIdle();
+					RHICmdList.FlushResources();
+
+					//Lock the readback staging texture
+					int32 RowPitchInPixels;
+					int32 BufferHeight;
+					const uint8* LockedData = (const uint8*) RenderTargetReadback.Lock(RowPitchInPixels, &BufferHeight);
+					
+					uint32 BlockBytes = GPixelFormats[InstanceData_RT->RenderTarget->GetRHI()->GetFormat()].BlockBytes;
+					int32 Count = InstanceData_RT->Size.X * InstanceData_RT->Size.Y * InstanceData_RT->Size.Z * BlockBytes;
+					RT_TextureData->AddUninitialized(Count);
+
+					const uint8* SliceStart = LockedData;
+					for (int32 Z = 0; Z < InstanceData_RT->Size.Z; ++Z)
+					{
+						const uint8* RowStart = SliceStart;
+						for (int32 Y = 0; Y < InstanceData_RT->Size.Y; ++Y)
+						{									
+							int32 Offset = 0 + Y * InstanceData_RT->Size.X + Z * InstanceData_RT->Size.X * InstanceData_RT->Size.Y;
+							FMemory::Memcpy(RT_TextureData->GetData() + Offset * BlockBytes, RowStart, BlockBytes * InstanceData_RT->Size.X);
+
+							RowStart += RowPitchInPixels * BlockBytes;
+						}
+
+						SliceStart += BufferHeight * RowPitchInPixels * BlockBytes;
+					}
+
+					//Unlock the staging texture
+					RenderTargetReadback.Unlock();
 				}
 			}
 		);
@@ -652,18 +669,30 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheWriteFrame(UObject* Storag
 
 		if (TextureData.Num() > 0)
 		{
-			if (NDIRenderTargetVolumeLocal::GSimCacheUseOpenVDB)
+			if (NDIRenderTargetVolumeLocal::GSimCacheDataStorageMode == NDIRenderTargetVolumeLocal::SimCacheStorageMode::SVT)
 			{
-#if PLATFORM_WINDOWS
-				UVolumeCache* OpenVDBSimCacheData = CastChecked<UVolumeCache>(StorageObject);
+#if WITH_EDITOR
+				UAnimatedSparseVolumeTexture* CurrCache = CastChecked<UAnimatedSparseVolumeTexture>(StorageObject);
 				
-				FString FullPath = OpenVDBSimCacheData->GetAssetPath(FrameIndex);
+				UE::SVT::FTextureDataCreateInfo SVTCreateInfo;
+				SVTCreateInfo.VirtualVolumeAABBMin = FIntVector3::ZeroValue;
+				SVTCreateInfo.VirtualVolumeAABBMax = InstanceData_GT->Size;
+				SVTCreateInfo.FallbackValues[0] = FVector4f(0, 0, 0, 0);
+				SVTCreateInfo.FallbackValues[1] = FVector4f(0, 0, 0, 0);
+				SVTCreateInfo.AttributesFormats[0] = InstanceData_GT->Format;
+				SVTCreateInfo.AttributesFormats[1] = PF_Unknown;
 
-				OpenVDBTools::WriteImageDataToOpenVDBFile(FullPath, InstanceData_GT->Size, TextureData, false);
+				UE::SVT::FTextureData SparseTextureData{};
+				bool Success = SparseTextureData.CreateFromDense(SVTCreateInfo, TArrayView<uint8, int64>((uint8*)TextureData.GetData(), (int64)TextureData.Num() * sizeof(TextureData[0])), TArrayView<uint8>());
+				
+				if (!Success)
+				{
+					UE_LOG(LogNiagara, Error, TEXT("Cannot create SVT for volume render target"));
 
-				OpenVDBSimCacheData->FrameRangeStart = FMath::Min(FrameIndex, OpenVDBSimCacheData->FrameRangeStart);
-				OpenVDBSimCacheData->FrameRangeEnd = FMath::Max(FrameIndex, OpenVDBSimCacheData->FrameRangeEnd);
-				OpenVDBSimCacheData->Resolution = InstanceData_GT->Size;
+					return false;
+				}
+
+				CurrCache->AppendFrame(SparseTextureData);
 #endif
 			}
 			else
@@ -674,7 +703,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheWriteFrame(UObject* Storag
 				FNDIRenderTargetVolumeSimCacheFrame* CacheFrame = &SimCacheData->Frames[FrameIndex];
 				
 				CacheFrame->Size = InstanceData_GT->Size;
-				CacheFrame->Format = EPixelFormat::PF_FloatRGBA;
+				CacheFrame->Format = InstanceData_GT->Format;
 
 				const FName CompressionType = SimCacheData->CompressionType;
 				const bool bUseCompression = CompressionType.IsNone() == false;
@@ -716,6 +745,13 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheWriteFrame(UObject* Storag
 
 bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheEndWrite(UObject* StorageObject) const
 {
+	if (NDIRenderTargetVolumeLocal::GSimCacheDataStorageMode == NDIRenderTargetVolumeLocal::SimCacheStorageMode::SVT)
+	{	
+		UAnimatedSparseVolumeTexture* CurrCache = CastChecked<UAnimatedSparseVolumeTexture>(StorageObject);
+		CurrCache->EndInitialize();
+		CurrCache->PostLoad();
+	}
+
 	return true;
 }
 
@@ -725,38 +761,125 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheReadFrame(UObject* Storage
 
 	if (Cast<UVolumeCache>(StorageObject))
 	{
-#if PLATFORM_WINDOWS
-		UVolumeCache *OpenVDBSimCacheData = CastChecked<UVolumeCache>(StorageObject);
+		UE_LOG(LogNiagara, Error, TEXT("vdb caches are no longer supported.  Regenerate your Sim Cache, which will use SVT to store volume data."));
 
-		TSharedPtr<FVolumeCacheData> VolumeCacheData = OpenVDBSimCacheData->GetData();
+	}
+	else if (Cast<UAnimatedSparseVolumeTexture>(StorageObject))
+	{			
+		UAnimatedSparseVolumeTexture* SVT = Cast<UAnimatedSparseVolumeTexture>(StorageObject);
+		
+		const int32 MipLevel = 0;
+		const bool bBlocking = true;
+		USparseVolumeTextureFrame *SVTFrame = USparseVolumeTextureFrame::GetFrameAndIssueStreamingRequest(SVT, FrameA + Interp, MipLevel, bBlocking);
+		
+		// The streaming manager normally ticks in FDeferredShadingSceneRenderer::Render(), but the SVT->DenseTexture conversion compute shader happens in a render command before that.
+		// At execution time of that command, the streamer hasn't had the chance to do any streaming yet, so we force another tick here.
+		// Assuming blocking requests are used, this guarantees that the requested frame is fully streamed in (if there is memory available).
+		UE::SVT::GetStreamingManager().Update_GameThread();
 
-		InstanceData_GT->Size = OpenVDBSimCacheData->Resolution;
-		InstanceData_GT->Format = PF_FloatRGBA;
+		FIntVector VolumeResolution = SVT->GetVolumeResolution();						
+
+		InstanceData_GT->Size = VolumeResolution;
+		InstanceData_GT->Format = SVT->GetFormat(0);
 		InstanceData_GT->Filter = TextureFilter::TF_Default;
 
 		PerInstanceTick(InstanceData_GT, SystemInstance, 0.0f);
 		PerInstanceTickPostSimulate(InstanceData_GT, SystemInstance, 0.0f);
 
-		const int FrameIndex = Interp >= 0.5f ? FrameB : FrameA;
-		OpenVDBSimCacheData->LoadFile(FrameIndex);
+		FNiagaraDataInterfaceProxyRenderTargetVolumeProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTargetVolumeProxy>();
 
-		//  write to the volume texture
-		if (InstanceData_GT->TargetTexture)
-		{
-			FNiagaraDataInterfaceProxyRenderTargetVolumeProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTargetVolumeProxy>();
 
-			FTextureRenderTargetResource* RT_TargetTexture = InstanceData_GT->TargetTexture->GameThread_GetRenderTargetResource();
-			ENQUEUE_RENDER_COMMAND(NDIRenderTargetVolumeUpdate)
-				(
-					[RT_Proxy, RT_VolumeCacheData = OpenVDBSimCacheData->GetData(), RT_InstanceID = SystemInstance->GetId(), RT_TargetTexture, RT_FrameIndex = FrameIndex](FRHICommandListImmediate& RHICmdList)
+		// Execute compute shader
+		ENQUEUE_RENDER_COMMAND(NDIRenderTargetVolumeUpdate)
+			(
+				[RT_Proxy, RT_InstanceID = SystemInstance->GetId(), RT_Format = InstanceData_GT->Format,
+				RT_VolumeResolution = VolumeResolution, RT_SVTRenderResources = SVTFrame ? SVTFrame->GetTextureRenderResources() : nullptr,
+				FeatureLevel = SystemInstance->GetFeatureLevel()](FRHICommandListImmediate& RHICmdList)
+				{
+					if (RT_SVTRenderResources == nullptr)
 					{
-						if (FRenderTargetVolumeRWInstanceData_RenderThread* InstanceData_RT = RT_Proxy->SystemInstancesToProxyData_RT.Find(RT_InstanceID))
+						return;
+					}
+
+					FUintVector4 CurrentPackedUniforms0 = FUintVector4();
+					FUintVector4 CurrentPackedUniforms1 = FUintVector4();
+					RT_SVTRenderResources->GetPackedUniforms(CurrentPackedUniforms0, CurrentPackedUniforms1);
+
+					if (FRenderTargetVolumeRWInstanceData_RenderThread * InstanceData_RT = RT_Proxy->SystemInstancesToProxyData_RT.Find(RT_InstanceID))
+					{
+						FRDGBuilder GraphBuilder(RHICmdList);
+
+						FIntVector ThreadGroupSize = FNiagaraShader::GetDefaultThreadGroupSize(ENiagaraGpuDispatchType::ThreeD);
+
+						TShaderMapRef<FNiagaraCopySVTToDenseBufferCS> ComputeShader(GetGlobalShaderMap(FeatureLevel));						
+
+						const FIntVector NumThreadGroups(
+							FMath::DivideAndRoundUp(RT_VolumeResolution.X, ThreadGroupSize.X),
+							FMath::DivideAndRoundUp(RT_VolumeResolution.Y, ThreadGroupSize.Y),
+							FMath::DivideAndRoundUp(RT_VolumeResolution.Z, ThreadGroupSize.Z)
+						);
+						
+						FNiagaraCopySVTToDenseBufferCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FNiagaraCopySVTToDenseBufferCS::FParameters>();
+
+						if (InstanceData_RT->RenderTarget.IsValid() && InstanceData_RT->TransientRDGTexture == nullptr)
 						{
-							RT_VolumeCacheData->Fill3DTexture_RenderThread(RT_FrameIndex, InstanceData_RT->RenderTarget->GetRHI(), RHICmdList);
+							InstanceData_RT->TransientRDGTexture = GraphBuilder.RegisterExternalTexture(InstanceData_RT->RenderTarget);							
+							InstanceData_RT->TransientRDGUAV = GraphBuilder.CreateUAV(InstanceData_RT->TransientRDGTexture);
+
+							// #todo(dmp): needed?							
+							//Context.GetRDGExternalAccessQueue().Add(InstanceData_RT->TransientRDGTexture);
 						}
-					});
-		}
-#endif
+
+						if (InstanceData_RT->RenderTarget.IsValid() && InstanceData_RT->TransientRDGUAV != nullptr)
+						{
+							PassParameters->DestinationBuffer = InstanceData_RT->TransientRDGUAV;
+						}
+						else
+						{
+							PassParameters->DestinationBuffer = GraphBuilder.CreateUAV(GraphBuilder.CreateTexture(
+									FRDGTextureDesc::Create3D(FIntVector(1, 1, 1), RT_Format, FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV),
+									TEXT("NiagaraEmptyTextureUAV::Texture3D")
+								),
+								ERDGUnorderedAccessViewFlags::SkipBarrier
+							);
+						}						
+
+						FRHITexture* PageTableTexture = RT_SVTRenderResources->GetPageTableTexture();
+						FRHITexture* TextureA = RT_SVTRenderResources->GetPhysicalTileDataATexture();
+						FRHIShaderResourceView* StreamingInfoBufferSRV = RT_SVTRenderResources->GetStreamingInfoBufferSRV();
+
+						PassParameters->TileDataTextureSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+						PassParameters->SparseVolumeTexturePageTable = PageTableTexture ? PageTableTexture : GBlackUintVolumeTexture->TextureRHI.GetReference();
+						PassParameters->SparseVolumeTextureA = TextureA ? TextureA : GBlackVolumeTexture->TextureRHI.GetReference();
+						PassParameters->StreamingInfoBuffer = StreamingInfoBufferSRV ? StreamingInfoBufferSRV : GEmptyStructuredBufferWithUAV->ShaderResourceViewRHI.GetReference();
+							
+						PassParameters->PackedSVTUniforms0 = CurrentPackedUniforms0;
+						PassParameters->PackedSVTUniforms1 = CurrentPackedUniforms1;
+
+						PassParameters->TextureSize = RT_VolumeResolution;
+						PassParameters->MipLevel = 0;
+						
+						GraphBuilder.AddPass(
+							// Friendly name of the pass for profilers using printf semantics.
+							RDG_EVENT_NAME("Copy SVT to Volume RT"),
+							// Parameters provided to RDG.
+							PassParameters,
+							// Issues compute commands.
+							ERDGPassFlags::Compute,
+							// This is deferred until Execute. May execute in parallel with other passes.
+							[PassParameters, ComputeShader, NumThreadGroups](FRHIComputeCommandList& RHICmdList)
+							{
+								FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, *PassParameters, NumThreadGroups);
+							});
+
+						// Execute the graph.
+						GraphBuilder.Execute();						
+						
+						InstanceData_RT->TransientRDGTexture = nullptr;
+						InstanceData_RT->TransientRDGSRV = nullptr;
+						InstanceData_RT->TransientRDGUAV = nullptr;
+					}					
+				});	
 	}
 	else
 	{
@@ -783,7 +906,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheReadFrame(UObject* Storage
 			FTextureRenderTargetResource* RT_TargetTexture = InstanceData_GT->TargetTexture->GameThread_GetRenderTargetResource();
 			ENQUEUE_RENDER_COMMAND(NDIRenderTargetVolumeUpdate)
 			(
-				[RT_Proxy, RT_InstanceID=SystemInstance->GetId(), RT_TargetTexture, RT_CacheFrame=CacheFrame, RT_CompressionType=SimCacheData->CompressionType](FRHICommandListImmediate& RHICmdList)
+				[RT_Proxy, RT_InstanceID=SystemInstance->GetId(), RT_TargetTexture, RT_CacheFrame=CacheFrame, RT_CompressionType=SimCacheData->CompressionType, RT_Format = InstanceData_GT->Format](FRHICommandListImmediate& RHICmdList)
 				{
 					if (FRenderTargetVolumeRWInstanceData_RenderThread* InstanceData_RT = RT_Proxy->SystemInstancesToProxyData_RT.Find(RT_InstanceID))
 					{
@@ -791,7 +914,9 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheReadFrame(UObject* Storage
 
 						FUpdateTexture3DData UpdateTexture = RHICmdList.BeginUpdateTexture3D(InstanceData_RT->RenderTarget->GetRHI(), 0, UpdateRegion);
 
-						const int32 SrcRowPitch = InstanceData_RT->Size.X * sizeof(FFloat16Color);
+						uint32 BlockBytes = GPixelFormats[RT_Format].BlockBytes;
+
+						const int32 SrcRowPitch = InstanceData_RT->Size.X * BlockBytes;
 						const int32 SrcDepthPitch = InstanceData_RT->Size.Y * SrcRowPitch;
 						if (UpdateTexture.RowPitch == SrcRowPitch && UpdateTexture.DepthPitch == SrcDepthPitch)
 						{
@@ -809,7 +934,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::SimCacheReadFrame(UObject* Storage
 							TArray<uint8> Decompressed;
 							if (RT_CacheFrame->CompressedSize > 0)
 							{
-								Decompressed.AddUninitialized(sizeof(FFloat16Color) * InstanceData_RT->Size.X * InstanceData_RT->Size.Y * InstanceData_RT->Size.Z);
+								Decompressed.AddUninitialized(sizeof(BlockBytes) * InstanceData_RT->Size.X * InstanceData_RT->Size.Y * InstanceData_RT->Size.Z);
 								FCompression::UncompressMemory(RT_CompressionType, Decompressed.GetData(), Decompressed.Num(), RT_CacheFrame->GetPixelData(), RT_CacheFrame->CompressedSize);
 							}
 
@@ -927,19 +1052,16 @@ void UNiagaraDataInterfaceRenderTargetVolume::VMSetFormat(FVectorVMExternalFunct
 
 bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds)
 {
+	using namespace NDIRenderTargetVolumeLocal;
+
 	FRenderTargetVolumeRWInstanceData_GameThread* InstanceData = static_cast<FRenderTargetVolumeRWInstanceData_GameThread*>(PerInstanceData);
 
 	// Pull from user parameter
 	UTextureRenderTargetVolume* UserTargetTexture = InstanceData->RTUserParamBinding.GetValue<UTextureRenderTargetVolume>();
 	if (UserTargetTexture && (InstanceData->TargetTexture != UserTargetTexture))
 	{
+		NiagaraDataInterfaceRenderTargetCommon::ReleaseRenderTarget(SystemInstance, InstanceData);
 		InstanceData->TargetTexture = UserTargetTexture;
-
-		TObjectPtr<UTextureRenderTargetVolume> ExistingRenderTarget = nullptr;
-		if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && NiagaraDataInterfaceRenderTargetCommon::GReleaseResourceOnRemove)
-		{
-			ExistingRenderTarget->ReleaseResource();
-		}
 	}
 
 	// Do we inherit the texture parameters from the user supplied texture?
@@ -973,6 +1095,8 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTick(void* PerInstanceD
 
 bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds)
 {
+	using namespace NDIRenderTargetVolumeLocal;
+
 	// Update InstanceData as the texture may have changed
 	FRenderTargetVolumeRWInstanceData_GameThread* InstanceData = static_cast<FRenderTargetVolumeRWInstanceData_GameThread*>(PerInstanceData);
 #if WITH_EDITORONLY_DATA
@@ -980,23 +1104,27 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTickPostSimulate(void* 
 #endif
 
 	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
-	if (NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut && !IsUsedWithGPUEmitter())
+	const bool bValidGpuDataInterface = NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut == 0 || IsUsedWithGPUScript();
+
+	if (::IsValid(InstanceData->TargetTexture) == false)
 	{
-		return false;
+		InstanceData->TargetTexture = nullptr;
 	}
 
 	// Do we need to create a new texture?
-	if (!bInheritUserParameterSettings && (InstanceData->TargetTexture == nullptr))
+	if (bValidGpuDataInterface && !bInheritUserParameterSettings && (InstanceData->TargetTexture == nullptr))
 	{
-		InstanceData->TargetTexture = NewObject<UTextureRenderTargetVolume>(this);
+		if (NiagaraDataInterfaceRenderTargetCommon::CreateRenderTarget<UTextureRenderTargetVolume>(SystemInstance, InstanceData) == false)
+		{
+			return false;
+		}
+		check(InstanceData->TargetTexture);
 		InstanceData->TargetTexture->bCanCreateUAV = true;
 		//InstanceData->TargetTexture->bAutoGenerateMips = InstanceData->MipMapGeneration != ENiagaraMipMapGeneration::Disabled;
 		InstanceData->TargetTexture->ClearColor = FLinearColor(0.0, 0, 0, 0);
 		InstanceData->TargetTexture->Filter = InstanceData->Filter;
 		InstanceData->TargetTexture->Init(InstanceData->Size.X, InstanceData->Size.Y, InstanceData->Size.Z, InstanceData->Format);
 		InstanceData->TargetTexture->UpdateResourceImmediate(true);
-
-		ManagedRenderTargets.Add(SystemInstance->GetId()) = InstanceData->TargetTexture;
 	}
 
 	// Do we need to update the existing texture?
@@ -1020,7 +1148,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTickPostSimulate(void* 
 	}
 
 	//-TODO: We could avoid updating each frame if we cache the resource pointer or a serial number
-	bool bUpdateRT = true;
+	const bool bUpdateRT = true && bValidGpuDataInterface;
 	if (bUpdateRT)
 	{
 		FNiagaraDataInterfaceProxyRenderTargetVolumeProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTargetVolumeProxy>();
@@ -1090,13 +1218,12 @@ void FNiagaraDataInterfaceProxyRenderTargetVolumeProxy::PostSimulate(const FNDIG
 	ProxyData->TransientRDGUAV = nullptr;
 }
 
-FIntVector FNiagaraDataInterfaceProxyRenderTargetVolumeProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNiagaraDataInterfaceProxyRenderTargetVolumeProxy::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
 {
-	if ( const FRenderTargetVolumeRWInstanceData_RenderThread* TargetData = SystemInstancesToProxyData_RT.Find(SystemInstanceID) )
+	if ( const FRenderTargetVolumeRWInstanceData_RenderThread* TargetData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID()) )
 	{
-		return TargetData->Size;
+		Context.SetDirect(TargetData->Size);
 	}
-	return FIntVector::ZeroValue;
 }
 
 #undef LOCTEXT_NAMESPACE

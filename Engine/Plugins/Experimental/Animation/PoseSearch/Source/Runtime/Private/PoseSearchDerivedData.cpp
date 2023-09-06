@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "PoseSearch/PoseSearchDerivedData.h"
-
 #if WITH_EDITOR
 
+#include "PoseSearch/PoseSearchDerivedData.h"
 #include "Animation/AnimComposite.h"
+#include "Animation/AnimMontage.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/BlendSpace.h"
 #include "AssetRegistry/ARFilter.h"
@@ -20,11 +20,13 @@
 #include "PoseSearch/PoseSearchDefines.h"
 #include "PoseSearch/PoseSearchDerivedDataKey.h"
 #include "PoseSearch/PoseSearchFeatureChannel.h"
+#include "PoseSearch/PoseSearchNormalizationSet.h"
 #include "PoseSearch/PoseSearchSchema.h"
 #include "PoseSearchEigenHelper.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "Serialization/BulkDataRegistry.h"
 #include "UObject/NoExportTypes.h"
+#include "UObject/PackageReload.h"
 
 namespace UE::PoseSearch
 {
@@ -39,46 +41,45 @@ static FCookStatsManager::FAutoRegisterCallback RegisterCookStats([](FCookStatsM
 	});
 #endif
 
-// data structure collecting the internal layout representation of UPoseSearchFeatureChannel,
-// so we can aggregate data from different FPoseSearchIndex and calculate mean deviation with a homogeneous data set (ComputeChannelsDeviations
-struct FFeatureChannelLayoutSet
+// helper struct to calculate mean deviations
+struct FMeanDeviationCalculator
 {
-	// data structure holding DataOffset and Cardinality to find the data of the DebugName (channel breakdown / layout) in the related SearchIndexBases[SchemaIndex]
+private:
 	struct FEntry
 	{
-		FString DebugName; // for easier debugging
-		int32 SchemaIndex = -1; // index of the associated Schemas / SearchIndexBases used as input of the algorithm
-		int32 DataOffset = -1; // data offset from the base of SearchIndexBases[SchemaIndex].Values.GetData() from where the data associated to this Item starts
-		int32 Cardinality = -1; // data cardinality
+		int32 SchemaIndex = -1; // index of the Channel associated Schemas / SearchIndexBases index
+		const UPoseSearchFeatureChannel* Channel;
 	};
 
-	// FIoHash is the hash associated to the channel data breakdown (e.g.: it could be a single SampledBones at a specific SampleTimes for a UPoseSearchFeatureChannel_Pose)
-	TMap<FIoHash, TArray<FEntry>> EntriesMap;
-	int32 CurrentSchemaIndex = -1;
-	TWeakObjectPtr<const UPoseSearchSchema> CurrentSchema;
+	typedef TArray<FEntry> FEntries;		// array of FEntry with channels that can be normalized together (for example it contains all the phases of the left foot from different schemas)
+	typedef TArray<FEntries> FEntriesGroup;	// array of FEntries incompatible between each other
 
-	void Add(FString DebugName, FIoHash IoHash, int32 DataOffset, int32 Cardinality)
+	static void Add(const UPoseSearchFeatureChannel* Channel, int32 SchemaIndex, FEntriesGroup& EntriesGroup)
 	{
-		check(DataOffset >= 0 && Cardinality >= 0 && CurrentSchemaIndex >= 0);
-		TArray<FEntry>& Entries = EntriesMap.FindOrAdd(IoHash);
+		bool bEntryFound = false;
+		for (FEntries& Entries : EntriesGroup)
+		{
+			if (Entries[0].Channel->CanBeNormalizedWith(Channel))
+			{
+				Entries.Add({ SchemaIndex, Channel });
+				bEntryFound = true;
+				break;
+			}
+		}
 
-		// making sure all the FEntry associated with the same IoHash have the same Cardinality
-		check(Entries.IsEmpty() || Entries[0].Cardinality == Cardinality);
-		Entries.Add({ DebugName, CurrentSchemaIndex, DataOffset, Cardinality });
+		if (!bEntryFound)
+		{
+			FEntries& Entries = EntriesGroup[EntriesGroup.AddDefaulted()];
+			Entries.Add({ SchemaIndex, Channel });
+		}
 	}
 
-	void AnalyzeChannelRecursively(const UPoseSearchFeatureChannel* Channel)
+	static void AnalyzeChannelRecursively(const UPoseSearchFeatureChannel* Channel, int32 SchemaIndex, FEntriesGroup& EntriesGroup)
 	{
 		const TConstArrayView<TObjectPtr<UPoseSearchFeatureChannel>> SubChannels = Channel->GetSubChannels();
 		if (SubChannels.Num() == 0)
 		{
-			// @todo: figure out if Label + SkeletonName is enough to identify this channel, if better performances are needed
-			// FString Label = Channel->GetLabel();
-			// FString SkeletonName = Channel->GetSchema()->Skeleton->GetName();
-			// UE::PoseSearch::FKeyBuilder KeyBuilder;
-			// KeyBuilder << SkeletonName << Label;
-
-			Add(Channel->GetLabel(), UE::PoseSearch::FKeyBuilder(Channel).Finalize(), Channel->GetChannelDataOffset(), Channel->GetChannelCardinality());
+			Add(Channel, SchemaIndex, EntriesGroup);
 		}
 		else
 		{
@@ -87,130 +88,131 @@ struct FFeatureChannelLayoutSet
 			{
 				if (const UPoseSearchFeatureChannel* SubChannel = SubChannelPtr.Get())
 				{
-					AnalyzeChannelRecursively(SubChannel);
+					AnalyzeChannelRecursively(SubChannel, SchemaIndex, EntriesGroup);
 				}
 			}
 		}
 	}
-};
 
-static float ComputeFeatureMeanDeviation(TConstArrayView<FFeatureChannelLayoutSet::FEntry> Entries, TConstArrayView<FPoseSearchIndexBase> SearchIndexBases, TConstArrayView<const UPoseSearchSchema*> Schemas)
-{
-	check(Schemas.Num() == SearchIndexBases.Num());
-	
-	const int32 EntriesNum = Entries.Num();
-	check(EntriesNum > 0);
-
-	const int32 Cardinality = Entries[0].Cardinality;
-	check(Cardinality > 0);
-
-	int32 TotalNumPoses = 0;
-	for (int32 EntryIdx = 0; EntryIdx < EntriesNum; ++EntryIdx)
+	static void AnalyzeSchemas(TConstArrayView<const UPoseSearchSchema*> Schemas, FEntriesGroup& EntriesGroup)
 	{
-		TotalNumPoses += SearchIndexBases[Entries[EntryIdx].SchemaIndex].NumPoses;
-	}
-
-	int32 AccumulatedNumPoses = 0;
-	RowMajorMatrix CenteredSubPoseMatrix(TotalNumPoses, Cardinality);
-	for (int32 EntryIdx = 0; EntryIdx < EntriesNum; ++EntryIdx)
-	{
-		const FFeatureChannelLayoutSet::FEntry& Entry = Entries[EntryIdx];
-		check(Cardinality == Entry.Cardinality);
-
-		const int32 DataSetIdx = Entry.SchemaIndex;
-
-		const UPoseSearchSchema* Schema = Schemas[DataSetIdx];
-		const FPoseSearchIndexBase& SearchIndex = SearchIndexBases[DataSetIdx];
-
-		const int32 NumPoses = SearchIndex.NumPoses;
-
-		// Map input buffer with NumPoses as rows and NumDimensions	as cols
-		RowMajorMatrixMapConst PoseMatrixSourceMap(SearchIndex.Values.GetData(), NumPoses, Schema->SchemaCardinality);
-
-		// Given the sub matrix for the features, find the average distance to the feature's centroid.
-		CenteredSubPoseMatrix.block(AccumulatedNumPoses, 0, NumPoses, Cardinality) = PoseMatrixSourceMap.block(0, Entry.DataOffset, NumPoses, Cardinality);
-		AccumulatedNumPoses += NumPoses;
-	}
-
-	RowMajorVector SampleMean = CenteredSubPoseMatrix.colwise().mean();
-	CenteredSubPoseMatrix = CenteredSubPoseMatrix.rowwise() - SampleMean;
-
-	// after mean centering the data, the average distance to the centroid is simply the average norm.
-	const float FeatureMeanDeviation = CenteredSubPoseMatrix.rowwise().norm().mean();
-
-	return FeatureMeanDeviation;
-}
-
-// it collects FFeatureChannelLayoutSet from all the Schemas (for example, figuring out the data offsets of SampledBones at a specific 
-// SampleTimes for a UPoseSearchFeatureChannel_Pose for all the SearchIndexBases), and call ComputeFeatureMeanDeviation
-static TArray<float> ComputeChannelsDeviations(TConstArrayView<FPoseSearchIndexBase> SearchIndexBases, TConstArrayView<const UPoseSearchSchema*> Schemas)
-{
-	// This function performs a modified z-score normalization where features are normalized
-	// by mean absolute deviation rather than standard deviation. Both methods are preferable
-	// here to min-max scaling because they preserve outliers.
-	// 
-	// Mean absolute deviation is preferred here over standard deviation because the latter
-	// emphasizes outliers since squaring the distance from the mean increases variance 
-	// exponentially rather than additively and square rooting the sum of squares does not 
-	// remove that bias. [1]
-	//
-	// References:
-	// [1] Gorard, S. (2005), "Revisiting a 90-Year-Old Debate: The Advantages of the Mean Deviation."
-	//     British Journal of Educational Studies, 53: 417-430.
-
-	using namespace Eigen;
-	using namespace UE::PoseSearch;
-
-	int32 ThisSchemaIndex = 0;
-	check(SearchIndexBases.Num() == Schemas.Num() && Schemas.Num() > ThisSchemaIndex);
-	const UPoseSearchSchema* ThisSchema = Schemas[ThisSchemaIndex];
-	check(ThisSchema->IsValid());
-	const int32 NumDimensions = ThisSchema->SchemaCardinality;
-
-	TArray<float> MeanDeviations;
-	MeanDeviations.Init(1.f, NumDimensions);
-	RowMajorVectorMap MeanDeviationsMap(MeanDeviations.GetData(), 1, NumDimensions);
-
-	const EPoseSearchDataPreprocessor DataPreprocessor = ThisSchema->DataPreprocessor;
-	if (SearchIndexBases[ThisSchemaIndex].NumPoses > 0 && (DataPreprocessor == EPoseSearchDataPreprocessor::Normalize || DataPreprocessor == EPoseSearchDataPreprocessor::NormalizeOnlyByDeviation))
-	{
-		FFeatureChannelLayoutSet FeatureChannelLayoutSet;
 		for (int32 SchemaIndex = 0; SchemaIndex < Schemas.Num(); ++SchemaIndex)
 		{
 			const UPoseSearchSchema* Schema = Schemas[SchemaIndex];
-
-			FeatureChannelLayoutSet.CurrentSchemaIndex = SchemaIndex;
-			FeatureChannelLayoutSet.CurrentSchema = Schema;
-			for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Schema->Channels)
+			for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Schema->GetChannels())
 			{
-				if (const UPoseSearchFeatureChannel* Channel = ChannelPtr.Get())
-				{
-					FeatureChannelLayoutSet.AnalyzeChannelRecursively(Channel);
-				}
-			}
-		}
-
-		for (auto Pair : FeatureChannelLayoutSet.EntriesMap)
-		{
-			const TArray<FFeatureChannelLayoutSet::FEntry>& Entries = Pair.Value;
-			for (const FFeatureChannelLayoutSet::FEntry& Entry : Entries)
-			{
-				if (Entry.Cardinality > 0 && Entry.SchemaIndex == ThisSchemaIndex)
-				{
-					const float FeatureMeanDeviation = ComputeFeatureMeanDeviation(Entries, SearchIndexBases, Schemas);
-					// the associated data to all the Entries data is going to be used to calculate the deviation of Deviation[Entry.DataOffset] to Deviation[Entry.DataOffset + Entry.Cardinality]
-
-					// Fill the feature's corresponding scaling axes with the average distance
-					// Avoid scaling by zero by leaving near-zero deviations as 1.0
-					static const float MinFeatureMeanDeviation = 0.1f;
-					MeanDeviationsMap.segment(Entry.DataOffset, Entry.Cardinality).setConstant(FeatureMeanDeviation > MinFeatureMeanDeviation ? FeatureMeanDeviation : 1.f);
-				}
+				AnalyzeChannelRecursively(ChannelPtr.Get(), SchemaIndex, EntriesGroup);
 			}
 		}
 	}
+
+	// given an array of channels that can be normalized together (Entries), with the same cardinality (Entries[0].Channel->GetChannelCardinality()),
+	// it'll calculate the mean deviation of the associated data (from SearchIndexBases)
+	static float CalculateEntriesMeanDeviation(const FEntries& Entries, TConstArrayView<FSearchIndexBase> SearchIndexBases, TConstArrayView<const UPoseSearchSchema*> Schemas)
+	{
+		check(Schemas.Num() == SearchIndexBases.Num());
 	
-	return MeanDeviations;
-}
+		const int32 EntriesNum = Entries.Num();
+		check(EntriesNum > 0);
+
+		const int32 Cardinality = Entries[0].Channel->GetChannelCardinality();
+		check(Cardinality > 0);
+
+		int32 TotalNumPoses = 0;
+		for (int32 EntryIdx = 0; EntryIdx < EntriesNum; ++EntryIdx)
+		{
+			TotalNumPoses += SearchIndexBases[Entries[EntryIdx].SchemaIndex].GetNumPoses();
+		}
+
+		int32 AccumulatedNumPoses = 0;
+		RowMajorMatrix CenteredSubPoseMatrix(TotalNumPoses, Cardinality);
+		for (int32 EntryIdx = 0; EntryIdx < EntriesNum; ++EntryIdx)
+		{
+			const FEntry& Entry = Entries[EntryIdx];
+			check(Cardinality == Entry.Channel->GetChannelCardinality());
+
+			const int32 DataSetIdx = Entry.SchemaIndex;
+
+			const UPoseSearchSchema* Schema = Schemas[DataSetIdx];
+			const FSearchIndexBase& SearchIndex = SearchIndexBases[DataSetIdx];
+
+			const int32 NumPoses = SearchIndex.GetNumPoses();
+
+			// Map input buffer with NumPoses as rows and NumDimensions	as cols
+			RowMajorMatrixMapConst PoseMatrixSourceMap(SearchIndex.Values.GetData(), NumPoses, Schema->SchemaCardinality);
+
+			// Given the sub matrix for the features, find the average distance to the feature's centroid.
+			CenteredSubPoseMatrix.block(AccumulatedNumPoses, 0, NumPoses, Cardinality) = PoseMatrixSourceMap.block(0, Entry.Channel->GetChannelDataOffset(), NumPoses, Cardinality);
+			AccumulatedNumPoses += NumPoses;
+		}
+
+		RowMajorVector SampleMean = CenteredSubPoseMatrix.colwise().mean();
+		CenteredSubPoseMatrix = CenteredSubPoseMatrix.rowwise() - SampleMean;
+
+		// after mean centering the data, the average distance to the centroid is simply the average norm.
+		const float FeatureMeanDeviation = CenteredSubPoseMatrix.rowwise().norm().mean();
+
+		return FeatureMeanDeviation;
+	}
+
+public:
+
+	// it returns an array of dimension Schemas[0]->SchemaCardinality containing the mean deviation calculated from the data passed in with SearchIndexBases following the layout described in the schemas channels:
+	// channels from all the schemas get collected in groups that can be normalized together (FEntriesGroup, populated in AnalyzeSchemas) and then those homogeneous (in cardinality and meaning) groups get processed 
+	// one by one in CalculateEntriesMeanDeviation to extract the group mean deviation against the input data contained in SearchIndexBases
+	static TArray<float> Calculate(TConstArrayView<FSearchIndexBase> SearchIndexBases, TConstArrayView<const UPoseSearchSchema*> Schemas)
+	{
+		// This method performs a modified z-score normalization where features are normalized
+		// by mean absolute deviation rather than standard deviation. Both methods are preferable
+		// here to min-max scaling because they preserve outliers.
+		// 
+		// Mean absolute deviation is preferred here over standard deviation because the latter
+		// emphasizes outliers since squaring the distance from the mean increases variance 
+		// exponentially rather than additively and square rooting the sum of squares does not 
+		// remove that bias. [1]
+		//
+		// References:
+		// [1] Gorard, S. (2005), "Revisiting a 90-Year-Old Debate: The Advantages of the Mean Deviation."
+		//     British Journal of Educational Studies, 53: 417-430.
+
+		int32 ThisSchemaIndex = 0;
+		check(SearchIndexBases.Num() == Schemas.Num() && Schemas.Num() > ThisSchemaIndex);
+		const UPoseSearchSchema* ThisSchema = Schemas[ThisSchemaIndex];
+		check(ThisSchema->IsValid());
+		const int32 NumDimensions = ThisSchema->SchemaCardinality;
+
+		TArray<float> MeanDeviations;
+		MeanDeviations.Init(1.f, NumDimensions);
+		RowMajorVectorMap MeanDeviationsMap(MeanDeviations.GetData(), 1, NumDimensions);
+
+		const EPoseSearchDataPreprocessor DataPreprocessor = ThisSchema->DataPreprocessor;
+		if (SearchIndexBases[ThisSchemaIndex].GetNumPoses() > 0 && (DataPreprocessor == EPoseSearchDataPreprocessor::Normalize || DataPreprocessor == EPoseSearchDataPreprocessor::NormalizeOnlyByDeviation))
+		{
+			FEntriesGroup EntriesGroup;
+
+			AnalyzeSchemas(Schemas, EntriesGroup);
+
+			for (const FEntries& Entries : EntriesGroup)
+			{
+				for (const FEntry& Entry : Entries)
+				{
+					if (Entry.Channel->GetChannelCardinality() > 0 && Entry.SchemaIndex == ThisSchemaIndex)
+					{
+						const float FeatureMeanDeviation = CalculateEntriesMeanDeviation(Entries, SearchIndexBases, Schemas);
+						// the associated data to all the Entries data is going to be used to calculate the deviation of Deviation[Entry.Channel->GetChannelDataOffset()] to Deviation[Entry.Channel->GetChannelDataOffset() + Entry.Channel->GetChannelCardinality()]
+
+						// Fill the feature's corresponding scaling axes with the average distance
+						// Avoid scaling by zero by leaving near-zero deviations as 1.0
+						static const float MinFeatureMeanDeviation = 0.1f;
+						MeanDeviationsMap.segment(Entry.Channel->GetChannelDataOffset(), Entry.Channel->GetChannelCardinality()).setConstant(FeatureMeanDeviation > MinFeatureMeanDeviation ? FeatureMeanDeviation : 1.f);
+					}
+				}
+			}
+		}
+	
+		return MeanDeviations;
+	}
+};
 
 static inline FFloatInterval GetEffectiveSamplingRange(const UAnimSequenceBase* Sequence, FFloatInterval RequestedSamplingRange)
 {
@@ -267,7 +269,7 @@ static void FindValidSequenceIntervals(const UAnimSequenceBase* SequenceBase, FF
 	}
 }
 
-static void InitSearchIndexAssets(FPoseSearchIndexBase& SearchIndex, UPoseSearchDatabase* Database)
+static void InitSearchIndexAssets(FSearchIndexBase& SearchIndex, const UPoseSearchDatabase* Database)
 {
 	using namespace UE::PoseSearch;
 
@@ -275,6 +277,7 @@ static void InitSearchIndexAssets(FPoseSearchIndexBase& SearchIndex, UPoseSearch
 	TArray<FFloatRange> ValidRanges;
 	TArray<FBlendSampleData> BlendSamples;
 
+	int32 TotalPoses = 0;
 	for (int32 AnimationAssetIndex = 0; AnimationAssetIndex < Database->AnimationAssets.Num(); ++AnimationAssetIndex)
 	{
 		const FInstancedStruct& DatabaseAssetStruct = Database->GetAnimationAssetStruct(AnimationAssetIndex);
@@ -287,42 +290,9 @@ static void InitSearchIndexAssets(FPoseSearchIndexBase& SearchIndex, UPoseSearch
 
 			const bool bAddUnmirrored = DatabaseAsset->GetMirrorOption() == EPoseSearchMirrorOption::UnmirroredOnly || DatabaseAsset->GetMirrorOption() == EPoseSearchMirrorOption::UnmirroredAndMirrored;
 			const bool bAddMirrored = DatabaseAsset->GetMirrorOption() == EPoseSearchMirrorOption::MirroredOnly || DatabaseAsset->GetMirrorOption() == EPoseSearchMirrorOption::UnmirroredAndMirrored;
+			const int32 SchemaSampleRate = Database->Schema->SampleRate;
 
-			if (const FPoseSearchDatabaseSequence* DatabaseSequence = DatabaseAssetStruct.GetPtr<FPoseSearchDatabaseSequence>())
-			{
-				ValidRanges.Reset();
-				FindValidSequenceIntervals(DatabaseSequence->Sequence, DatabaseSequence->SamplingRange, DatabaseSequence->IsLooping(), Database->ExcludeFromDatabaseParameters, ValidRanges);
-				for (const FFloatRange& Range : ValidRanges)
-				{
-					if (bAddUnmirrored)
-					{
-						SearchIndex.Assets.Add(FPoseSearchIndexAsset(ESearchIndexAssetType::Sequence, AnimationAssetIndex, false, FFloatInterval(Range.GetLowerBoundValue(), Range.GetUpperBoundValue())));
-					}
-
-					if (bAddMirrored)
-					{
-						SearchIndex.Assets.Add(FPoseSearchIndexAsset(ESearchIndexAssetType::Sequence, AnimationAssetIndex, true, FFloatInterval(Range.GetLowerBoundValue(), Range.GetUpperBoundValue())));
-					}
-				}
-			}
-			else if (const FPoseSearchDatabaseAnimComposite* DatabaseAnimComposite = DatabaseAssetStruct.GetPtr<FPoseSearchDatabaseAnimComposite>())
-			{
-				ValidRanges.Reset();
-				FindValidSequenceIntervals(DatabaseAnimComposite->AnimComposite, DatabaseAnimComposite->SamplingRange, DatabaseAnimComposite->IsLooping(), Database->ExcludeFromDatabaseParameters, ValidRanges);
-				for (const FFloatRange& Range : ValidRanges)
-				{
-					if (bAddUnmirrored)
-					{
-						SearchIndex.Assets.Add(FPoseSearchIndexAsset(ESearchIndexAssetType::AnimComposite, AnimationAssetIndex, false, FFloatInterval(Range.GetLowerBoundValue(), Range.GetUpperBoundValue())));
-					}
-
-					if (bAddMirrored)
-					{
-						SearchIndex.Assets.Add(FPoseSearchIndexAsset(ESearchIndexAssetType::AnimComposite, AnimationAssetIndex, true, FFloatInterval(Range.GetLowerBoundValue(), Range.GetUpperBoundValue())));
-					}
-				}
-			}
-			else if (const FPoseSearchDatabaseBlendSpace* DatabaseBlendSpace = DatabaseAssetStruct.GetPtr<FPoseSearchDatabaseBlendSpace>())
+			if (const FPoseSearchDatabaseBlendSpace* DatabaseBlendSpace = DatabaseAssetStruct.GetPtr<FPoseSearchDatabaseBlendSpace>())
 			{
 				int32 HorizontalBlendNum, VerticalBlendNum;
 				DatabaseBlendSpace->GetBlendSpaceParameterSampleRanges(HorizontalBlendNum, VerticalBlendNum);
@@ -338,16 +308,61 @@ static void InitSearchIndexAssets(FPoseSearchIndexBase& SearchIndex, UPoseSearch
 						int32 TriangulationIndex = 0;
 						DatabaseBlendSpace->BlendSpace->GetSamplesFromBlendInput(BlendParameters, BlendSamples, TriangulationIndex, true);
 
-						float PlayLength = DatabaseBlendSpace->BlendSpace->GetAnimationLengthFromSampleData(BlendSamples);
+						const float PlayLength = DatabaseBlendSpace->BlendSpace->GetAnimationLengthFromSampleData(BlendSamples);
 
+						for (int32 PermutationIdx = 0; PermutationIdx < Database->Schema->NumberOfPermutations; ++PermutationIdx)
+						{
+							if (bAddUnmirrored)
+							{
+								const FSearchIndexAsset PoseSearchIndexAsset(AnimationAssetIndex, TotalPoses, false, FFloatInterval(0.f, PlayLength), SchemaSampleRate, PermutationIdx, BlendParameters);
+								if (PoseSearchIndexAsset.GetNumPoses() > 0)
+								{
+									SearchIndex.Assets.Add(PoseSearchIndexAsset);
+									TotalPoses += PoseSearchIndexAsset.GetNumPoses();
+								}
+							}
+
+							if (bAddMirrored)
+							{
+								const FSearchIndexAsset PoseSearchIndexAsset(AnimationAssetIndex, TotalPoses, true, FFloatInterval(0.f, PlayLength), SchemaSampleRate, PermutationIdx, BlendParameters);
+								if (PoseSearchIndexAsset.GetNumPoses() > 0)
+								{
+									SearchIndex.Assets.Add(PoseSearchIndexAsset);
+									TotalPoses += PoseSearchIndexAsset.GetNumPoses();
+								}
+							}
+						}
+					}
+				}
+			}
+			// support for FPoseSearchDatabaseSequence, FPoseSearchDatabaseAnimComposite, FPoseSearchDatabaseAnimMontage
+			else if (const UAnimSequenceBase* SequenceBase = Cast<UAnimSequenceBase>(DatabaseAsset->GetAnimationAsset()))
+			{
+				ValidRanges.Reset();
+
+				FindValidSequenceIntervals(SequenceBase, DatabaseAsset->GetSamplingRange(), DatabaseAsset->IsLooping(), Database->ExcludeFromDatabaseParameters, ValidRanges);
+				for (const FFloatRange& Range : ValidRanges)
+				{
+					for (int32 PermutationIdx = 0; PermutationIdx < Database->Schema->NumberOfPermutations; ++PermutationIdx)
+					{
 						if (bAddUnmirrored)
 						{
-							SearchIndex.Assets.Add(FPoseSearchIndexAsset(ESearchIndexAssetType::BlendSpace, AnimationAssetIndex, false, FFloatInterval(0.0f, PlayLength), BlendParameters));
+							const FSearchIndexAsset PoseSearchIndexAsset(AnimationAssetIndex, TotalPoses, false, FFloatInterval(Range.GetLowerBoundValue(), Range.GetUpperBoundValue()), SchemaSampleRate, PermutationIdx);
+							if (PoseSearchIndexAsset.GetNumPoses() > 0)
+							{
+								SearchIndex.Assets.Add(PoseSearchIndexAsset);
+								TotalPoses += PoseSearchIndexAsset.GetNumPoses();
+							}
 						}
 
 						if (bAddMirrored)
 						{
-							SearchIndex.Assets.Add(FPoseSearchIndexAsset(ESearchIndexAssetType::BlendSpace, AnimationAssetIndex, true, FFloatInterval(0.0f, PlayLength), BlendParameters));
+							const FSearchIndexAsset PoseSearchIndexAsset(AnimationAssetIndex, TotalPoses, true, FFloatInterval(Range.GetLowerBoundValue(), Range.GetUpperBoundValue()), SchemaSampleRate, PermutationIdx);
+							if (PoseSearchIndexAsset.GetNumPoses() > 0)
+							{
+								SearchIndex.Assets.Add(PoseSearchIndexAsset);
+								TotalPoses += PoseSearchIndexAsset.GetNumPoses();
+							}
 						}
 					}
 				}
@@ -360,17 +375,14 @@ static void InitSearchIndexAssets(FPoseSearchIndexBase& SearchIndex, UPoseSearch
 	}
 }
 
-static void PreprocessSearchIndexWeights(FPoseSearchIndex& SearchIndex, const UPoseSearchSchema* Schema, TConstArrayView<float> Deviation)
+static void PreprocessSearchIndexWeights(FSearchIndex& SearchIndex, const UPoseSearchSchema* Schema, TConstArrayView<float> Deviation)
 {
 	const int32 NumDimensions = Schema->SchemaCardinality;
 	SearchIndex.WeightsSqrt.Init(1.f, NumDimensions);
 
-	for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Schema->Channels)
+	for (const TObjectPtr<UPoseSearchFeatureChannel>& ChannelPtr : Schema->GetChannels())
 	{
-		if (ChannelPtr)
-		{
-			ChannelPtr->FillWeights(SearchIndex.WeightsSqrt);
-		}
+		ChannelPtr->FillWeights(SearchIndex.WeightsSqrt);
 	}
 
 	EPoseSearchDataPreprocessor DataPreprocessor = Schema->DataPreprocessor;
@@ -402,25 +414,23 @@ static void PreprocessSearchIndexWeights(FPoseSearchIndex& SearchIndex, const UP
 }
 
 // it calculates Mean, PCAValues, and PCAProjectionMatrix
-static void PreprocessSearchIndexPCAData(FPoseSearchIndex& SearchIndex, int32 NumDimensions, uint32 NumberOfPrincipalComponents, EPoseSearchMode PoseSearchMode)
+static void PreprocessSearchIndexPCAData(FSearchIndex& SearchIndex, int32 NumDimensions, uint32 NumberOfPrincipalComponents, EPoseSearchMode PoseSearchMode)
 {
 	// binding SearchIndex.Values and SearchIndex.PCAValues Eigen row major matrix maps
-	const int32 NumPoses = SearchIndex.NumPoses;
+	const int32 NumPoses = SearchIndex.GetNumPoses();
+
+	SearchIndex.PCAExplainedVariance = 0.f;
 
 	SearchIndex.PCAValues.Reset();
 	SearchIndex.Mean.Reset();
 	SearchIndex.PCAProjectionMatrix.Reset();
 
-	SearchIndex.PCAValues.AddZeroed(NumPoses * NumberOfPrincipalComponents);
-	SearchIndex.Mean.AddZeroed(NumDimensions);
-	SearchIndex.PCAProjectionMatrix.AddZeroed(NumDimensions * NumberOfPrincipalComponents);
-
-#if WITH_EDITORONLY_DATA
-	SearchIndex.PCAExplainedVariance = 0.f;
-#endif
-
-	if (NumDimensions > 0)
+	if (PoseSearchMode != EPoseSearchMode::BruteForce && NumDimensions > 0 && NumPoses > 0 && NumberOfPrincipalComponents > 0)
 	{
+		SearchIndex.PCAValues.AddZeroed(NumPoses * NumberOfPrincipalComponents);
+		SearchIndex.Mean.AddZeroed(NumDimensions);
+		SearchIndex.PCAProjectionMatrix.AddZeroed(NumDimensions * NumberOfPrincipalComponents);
+
 		const RowMajorVectorMapConst MapWeightsSqrt(SearchIndex.WeightsSqrt.GetData(), 1, NumDimensions);
 		const RowMajorMatrixMapConst MapValues(SearchIndex.Values.GetData(), NumPoses, NumDimensions);
 		const RowMajorMatrix WeightedValues = MapValues.array().rowwise() * MapWeightsSqrt.array();
@@ -479,12 +489,10 @@ static void PreprocessSearchIndexPCAData(FPoseSearchIndex& SearchIndex, int32 Nu
 			AccumulatedVariance += EigenValues[Indexer[PCAComponentIndex]];
 		}
 
-#if WITH_EDITORONLY_DATA
 		// calculating the total variance knowing that eigen values measure variance along the principal components:
 		const float TotalVariance = EigenValues.sum();
 		// and explained variance as ratio between AccumulatedVariance and TotalVariance: https://ro-che.info/articles/2017-12-11-pca-explained-variance
 		SearchIndex.PCAExplainedVariance = TotalVariance > UE_KINDA_SMALL_NUMBER ? AccumulatedVariance / TotalVariance : 0.f;
-#endif // WITH_EDITORONLY_DATA
 
 		MapPCAValues = CenteredValues * PCAProjectionMatrix;
 
@@ -498,82 +506,101 @@ static void PreprocessSearchIndexPCAData(FPoseSearchIndex& SearchIndex, int32 Nu
 				const float Error = (ReconstructedValues - MapValues.row(RowIndex)).squaredNorm();
 				check(Error < UE_KINDA_SMALL_NUMBER);
 			}
+
+			TArray<float> ReconstructedPoseValues;
+			ReconstructedPoseValues.SetNumZeroed(NumDimensions);
+			for (int32 PoseIdx = 0; PoseIdx < NumPoses; ++PoseIdx)
+			{
+				SearchIndex.GetReconstructedPoseValues(PoseIdx, ReconstructedPoseValues);
+				TConstArrayView<float> PoseValues = SearchIndex.GetPoseValues(PoseIdx);
+
+				check(ReconstructedPoseValues.Num() == PoseValues.Num());
+				Eigen::Map<const Eigen::ArrayXf> VA(ReconstructedPoseValues.GetData(), ReconstructedPoseValues.Num());
+				Eigen::Map<const Eigen::ArrayXf> VB(PoseValues.GetData(), PoseValues.Num());
+
+				const float Error = (VA - VB).square().sum();
+				check(Error < UE_KINDA_SMALL_NUMBER);
+			}
 		}
 	}
 }
 
-static void PreprocessSearchIndexKDTree(FPoseSearchIndex& SearchIndex, int32 NumDimensions, uint32 NumberOfPrincipalComponents, EPoseSearchMode PoseSearchMode, int32 KDTreeMaxLeafSize, int32 KDTreeQueryNumNeighbors)
+static void PreprocessSearchIndexKDTree(FSearchIndex& SearchIndex, int32 NumDimensions, uint32 NumberOfPrincipalComponents, EPoseSearchMode PoseSearchMode, int32 KDTreeMaxLeafSize, int32 KDTreeQueryNumNeighbors)
 {
-	const int32 NumPoses = SearchIndex.NumPoses;
-	SearchIndex.KDTree.Construct(NumPoses, NumberOfPrincipalComponents, SearchIndex.PCAValues.GetData(), KDTreeMaxLeafSize);
-
-	if (PoseSearchMode == EPoseSearchMode::PCAKDTree_Validate)
+	SearchIndex.KDTree.Reset();
+	if (PoseSearchMode != EPoseSearchMode::BruteForce && NumDimensions > 0)
 	{
-		// testing the KDTree is returning the proper searches for all the points in pca space
-		int32 NumberOfFailingPoints = 0;
-		for (size_t PointIndex = 0; PointIndex < NumPoses; ++PointIndex)
-		{
-			TArray<size_t> ResultIndexes;
-			TArray<float> ResultDistanceSqr;
-			ResultIndexes.SetNum(KDTreeQueryNumNeighbors + 1);
-			ResultDistanceSqr.SetNum(KDTreeQueryNumNeighbors + 1);
-			FKDTree::KNNResultSet ResultSet(KDTreeQueryNumNeighbors, ResultIndexes, ResultDistanceSqr);
-			SearchIndex.KDTree.FindNeighbors(ResultSet, &SearchIndex.PCAValues[PointIndex * NumberOfPrincipalComponents]);
+		const int32 NumPoses = SearchIndex.GetNumPoses();
+		SearchIndex.KDTree.Construct(NumPoses, NumberOfPrincipalComponents, SearchIndex.PCAValues.GetData(), KDTreeMaxLeafSize);
 
-			size_t ResultIndex = 0;
-			for (; ResultIndex < ResultSet.Num(); ++ResultIndex)
+		if (PoseSearchMode == EPoseSearchMode::PCAKDTree_Validate)
+		{
+			// testing the KDTree is returning the proper searches for all the points in pca space
+			int32 NumberOfFailingPoints = 0;
+			for (size_t PointIndex = 0; PointIndex < NumPoses; ++PointIndex)
 			{
-				if (PointIndex == ResultIndexes[ResultIndex])
+				TArray<size_t> ResultIndexes;
+				TArray<float> ResultDistanceSqr;
+				ResultIndexes.SetNum(KDTreeQueryNumNeighbors + 1);
+				ResultDistanceSqr.SetNum(KDTreeQueryNumNeighbors + 1);
+				FKDTree::KNNResultSet ResultSet(KDTreeQueryNumNeighbors, ResultIndexes, ResultDistanceSqr);
+				SearchIndex.KDTree.FindNeighbors(ResultSet, &SearchIndex.PCAValues[PointIndex * NumberOfPrincipalComponents]);
+
+				size_t ResultIndex = 0;
+				for (; ResultIndex < ResultSet.Num(); ++ResultIndex)
 				{
-					check(ResultDistanceSqr[ResultIndex] < UE_KINDA_SMALL_NUMBER);
-					break;
+					if (PointIndex == ResultIndexes[ResultIndex])
+					{
+						check(ResultDistanceSqr[ResultIndex] < UE_KINDA_SMALL_NUMBER);
+						break;
+					}
+				}
+				if (ResultIndex == ResultSet.Num())
+				{
+					++NumberOfFailingPoints;
 				}
 			}
-			if (ResultIndex == ResultSet.Num())
+
+			check(NumberOfFailingPoints == 0);
+
+			// testing the KDTree is returning the proper searches for all the original points transformed in pca space
+			NumberOfFailingPoints = 0;
+			for (size_t PointIndex = 0; PointIndex < NumPoses; ++PointIndex)
 			{
-				++NumberOfFailingPoints;
-			}
-		}
+				TArray<size_t> ResultIndexes;
+				TArray<float> ResultDistanceSqr;
+				ResultIndexes.SetNum(KDTreeQueryNumNeighbors + 1);
+				ResultDistanceSqr.SetNum(KDTreeQueryNumNeighbors + 1);
+				FKDTree::KNNResultSet ResultSet(KDTreeQueryNumNeighbors, ResultIndexes, ResultDistanceSqr);
 
-		check(NumberOfFailingPoints == 0);
+				const RowMajorVectorMapConst MapValues(&SearchIndex.Values[PointIndex * NumDimensions], 1, NumDimensions);
+				const RowMajorVectorMapConst MapWeightsSqrt(SearchIndex.WeightsSqrt.GetData(), 1, NumDimensions);
+				const RowMajorVectorMapConst Mean(SearchIndex.Mean.GetData(), 1, NumDimensions);
+				const ColMajorMatrixMapConst PCAProjectionMatrix(SearchIndex.PCAProjectionMatrix.GetData(), NumDimensions, NumberOfPrincipalComponents);
 
-		// testing the KDTree is returning the proper searches for all the original points transformed in pca space
-		NumberOfFailingPoints = 0;
-		for (size_t PointIndex = 0; PointIndex < NumPoses; ++PointIndex)
-		{
-			TArray<size_t> ResultIndexes;
-			TArray<float> ResultDistanceSqr;
-			ResultIndexes.SetNum(KDTreeQueryNumNeighbors + 1);
-			ResultDistanceSqr.SetNum(KDTreeQueryNumNeighbors + 1);
-			FKDTree::KNNResultSet ResultSet(KDTreeQueryNumNeighbors, ResultIndexes, ResultDistanceSqr);
+				const RowMajorMatrix WeightedValues = MapValues.array() * MapWeightsSqrt.array();
+				const RowMajorMatrix CenteredValues = WeightedValues - Mean;
+				const RowMajorVector ProjectedValues = CenteredValues * PCAProjectionMatrix;
 
-			const RowMajorVectorMapConst MapValues(&SearchIndex.Values[PointIndex * NumDimensions], 1, NumDimensions);
-			const RowMajorVectorMapConst MapWeightsSqrt(SearchIndex.WeightsSqrt.GetData(), 1, NumDimensions);
-			const RowMajorVectorMapConst Mean(SearchIndex.Mean.GetData(), 1, NumDimensions);
-			const ColMajorMatrixMapConst PCAProjectionMatrix(SearchIndex.PCAProjectionMatrix.GetData(), NumDimensions, NumberOfPrincipalComponents);
+				SearchIndex.KDTree.FindNeighbors(ResultSet, ProjectedValues.data());
 
-			const RowMajorMatrix WeightedValues = MapValues.array() * MapWeightsSqrt.array();
-			const RowMajorMatrix CenteredValues = WeightedValues - Mean;
-			const RowMajorVector ProjectedValues = CenteredValues * PCAProjectionMatrix;
-
-			SearchIndex.KDTree.FindNeighbors(ResultSet, ProjectedValues.data());
-
-			size_t ResultIndex = 0;
-			for (; ResultIndex < ResultSet.Num(); ++ResultIndex)
-			{
-				if (PointIndex == ResultIndexes[ResultIndex])
+				size_t ResultIndex = 0;
+				for (; ResultIndex < ResultSet.Num(); ++ResultIndex)
 				{
-					check(ResultDistanceSqr[ResultIndex] < UE_KINDA_SMALL_NUMBER);
-					break;
+					if (PointIndex == ResultIndexes[ResultIndex])
+					{
+						check(ResultDistanceSqr[ResultIndex] < UE_KINDA_SMALL_NUMBER);
+						break;
+					}
+				}
+				if (ResultIndex == ResultSet.Num())
+				{
+					++NumberOfFailingPoints;
 				}
 			}
-			if (ResultIndex == ResultSet.Num())
-			{
-				++NumberOfFailingPoints;
-			}
-		}
 
-		check(NumberOfFailingPoints == 0);
+			check(NumberOfFailingPoints == 0);
+		}
 	}
 }
 
@@ -583,10 +610,11 @@ struct FPoseSearchDatabaseAsyncCacheTask
 {
 	enum class EState
 	{
-		Prestarted,
-		Cancelled,
-		Ended,
-		Failed
+		Notstarted,	// key generation failed (not all the asset has been post loaded). It'll be retried to StartNewRequestIfNeeded the next Update
+		Prestarted,	// key has been successfully generated and we kicked the DDC get
+		Cancelled,	// the task has been cancelled
+		Ended,		// the task has ended successfully
+		Failed		// the task has ended unsuccessfully
 	};
 
 	// these methods MUST be protected by FPoseSearchDatabaseAsyncCacheTask::Mutex! and to make sure we pass the mutex as input param
@@ -597,8 +625,11 @@ struct FPoseSearchDatabaseAsyncCacheTask
 	void Wait(FCriticalSection& OuterMutex);
 	void Cancel(FCriticalSection& OuterMutex);
 	bool Poll(FCriticalSection& OuterMutex) const;
+	void AddReferencedObjects(FReferenceCollector& Collector, FCriticalSection& OuterMutex);
 	bool ContainsDatabase(const UPoseSearchDatabase* OtherDatabase, FCriticalSection& OuterMutex) const;
 	bool IsValid(FCriticalSection& OuterMutex) const;
+	const FIoHash& GetDerivedDataKey() const { return DerivedDataKey; }
+	const UPoseSearchDatabase* GetDatabase() const { return Database.Get(); }
 
 	~FPoseSearchDatabaseAsyncCacheTask();
 	EState GetState() const { return EState(ThreadSafeState.GetValue()); }
@@ -613,13 +644,12 @@ private:
 	void SetState(EState State) { ThreadSafeState.Set(int32(State)); }
 
 	TWeakObjectPtr<UPoseSearchDatabase> Database;
-	// @todo: this is not relevant when the async task is completed, so to save memory we should move it as pointer perhaps
-	FPoseSearchIndex SearchIndex;
+	FSearchIndex SearchIndex;
 	UE::DerivedData::FRequestOwner Owner;
 	FIoHash DerivedDataKey = FIoHash::Zero;
-	TSet<TWeakObjectPtr<const UObject>> DatabaseDependencies; // @todo: make this const
+	TSet<TWeakObjectPtr<const UObject>> DatabaseDependencies;
 		
-	FThreadSafeCounter ThreadSafeState = int32(EState::Prestarted);
+	FThreadSafeCounter ThreadSafeState = int32(EState::Notstarted);
 	bool bBroadcastOnDerivedDataRebuild = false;
 };
 
@@ -630,7 +660,15 @@ FPoseSearchDatabaseAsyncCacheTask::FPoseSearchDatabaseAsyncCacheTask(UPoseSearch
 	, Owner(UE::DerivedData::EPriority::Normal)
 	, DerivedDataKey(FIoHash::Zero)
 {
-	StartNewRequestIfNeeded(OuterMutex);
+	if (IsInGameThread())
+	{
+		// it is safe to compose DDC key only on the game thread, since assets can modified in this thread execution
+		StartNewRequestIfNeeded(OuterMutex);
+	}
+	else
+	{
+		UE_LOG(LogPoseSearch, Log, TEXT("Delaying DDC until on the game thread    - %s"), *Database->GetName());
+	}
 }
 
 FPoseSearchDatabaseAsyncCacheTask::~FPoseSearchDatabaseAsyncCacheTask()
@@ -646,6 +684,8 @@ void FPoseSearchDatabaseAsyncCacheTask::StartNewRequestIfNeeded(FCriticalSection
 {
 	using namespace UE::DerivedData;
 
+	check(IsInGameThread());
+
 	FScopeLock Lock(&OuterMutex);
 
 	// making sure there are no active requests
@@ -653,37 +693,49 @@ void FPoseSearchDatabaseAsyncCacheTask::StartNewRequestIfNeeded(FCriticalSection
 
 	// composing the key
 	const FKeyBuilder KeyBuilder(Database.Get(), true);
-	const FIoHash NewDerivedDataKey(KeyBuilder.Finalize());
-	const bool bHasKeyChanged = NewDerivedDataKey != DerivedDataKey;
-	if (bHasKeyChanged)
+	if (KeyBuilder.AnyAssetNotReady())
 	{
-		DerivedDataKey = NewDerivedDataKey;
-
-		DatabaseDependencies.Reset();
-		for (const UObject* Dependency : KeyBuilder.GetDependencies())
+		DerivedDataKey = FIoHash::Zero;
+		SetState(EState::Notstarted);
+	
+		UE_LOG(LogPoseSearch, Log, TEXT("Delaying DDC until dependents post load  - %s"), *Database->GetName());
+	}
+	else
+	{
+		const FIoHash NewDerivedDataKey(KeyBuilder.Finalize());
+		const bool bHasKeyChanged = NewDerivedDataKey != DerivedDataKey;
+		if (bHasKeyChanged)
 		{
-			DatabaseDependencies.Add(Dependency);
-		}
+			DerivedDataKey = NewDerivedDataKey;
 
-		SetState(EState::Prestarted);
-
-		UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BeginCache"), *LexToString(DerivedDataKey), *Database->GetName());
-
-		TArray<FCacheGetRequest> CacheRequests;
-		const FCacheKey CacheKey{ Bucket, DerivedDataKey };
-		CacheRequests.Add({ { Database->GetPathName() }, CacheKey, ECachePolicy::Default });
-
-		Owner = FRequestOwner(EPriority::Normal);
-		GetCache().Get(CacheRequests, Owner, [this](FCacheGetResponse&& Response)
+			DatabaseDependencies.Reset();
+			for (const UObject* Dependency : KeyBuilder.GetDependencies())
 			{
-				OnGetComplete(MoveTemp(Response));
-			});
+				DatabaseDependencies.Add(Dependency);
+			}
+
+			SetState(EState::Prestarted);
+
+			UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BeginCache"), *LexToString(DerivedDataKey), *Database->GetName());
+
+			TArray<FCacheGetRequest> CacheRequests;
+			const FCacheKey CacheKey{ Bucket, DerivedDataKey };
+			CacheRequests.Add({ { Database->GetPathName() }, CacheKey, ECachePolicy::Default });
+
+			Owner = FRequestOwner(EPriority::Normal);
+			GetCache().Get(CacheRequests, Owner, [this](FCacheGetResponse&& Response)
+				{
+					OnGetComplete(MoveTemp(Response));
+				});
+		}
 	}
 }
 
 // it cancels and waits for the task to be done and reset the local SearchIndex. SetState to Cancelled
 void FPoseSearchDatabaseAsyncCacheTask::Cancel(FCriticalSection& OuterMutex)
 {
+	check(IsInGameThread());
+
 	FScopeLock Lock(&OuterMutex);
 
 	Owner.Cancel();
@@ -694,13 +746,17 @@ void FPoseSearchDatabaseAsyncCacheTask::Cancel(FCriticalSection& OuterMutex)
 
 bool FPoseSearchDatabaseAsyncCacheTask::CancelIfDependsOn(const UObject* Object, FCriticalSection& OuterMutex)
 {
-	FScopeLock Lock(&OuterMutex);
-
-	// DatabaseDependencies is updated only in StartNewRequestIfNeeded when there are no active requests, so it's thread safe to access it 
-	if (DatabaseDependencies.Contains(Object))
+	if (Object)
 	{
-		Cancel(OuterMutex);
-		return true;
+		FScopeLock Lock(&OuterMutex);
+
+		// DatabaseDependencies is updated only in StartNewRequestIfNeeded when there are no active requests, so it's thread safe to access it 
+		if (DatabaseDependencies.Contains(Object))
+		{
+			UE_LOG(LogPoseSearch, Log, TEXT("%s - %s Cancelled because of %s"), *LexToString(DerivedDataKey), *Database->GetName(), *Object->GetName());
+			Cancel(OuterMutex);
+			return true;
+		}
 	}
 	return false;
 }
@@ -712,6 +768,11 @@ void FPoseSearchDatabaseAsyncCacheTask::Update(FCriticalSection& OuterMutex)
 	FScopeLock Lock(&OuterMutex);
 
 	check(GetState() != EState::Cancelled); // otherwise FPoseSearchDatabaseAsyncCacheTask should have been already removed
+
+	if (GetState() == EState::Notstarted)
+	{
+		StartNewRequestIfNeeded(OuterMutex);
+	}
 
 	if (GetState() == EState::Prestarted && Poll(OuterMutex))
 	{
@@ -738,9 +799,9 @@ void FPoseSearchDatabaseAsyncCacheTask::Wait(FCriticalSection& OuterMutex)
 	const bool bFailedIndexing = SearchIndex.IsEmpty();
 	if (!bFailedIndexing)
 	{
-		Database->SetSearchIndex(SearchIndex); // @todo: implement FPoseSearchIndex move ctor and assignment operator and use a MoveTemp(SearchIndex) here
+		Database->SetSearchIndex(SearchIndex); // @todo: implement FSearchIndex move ctor and assignment operator and use a MoveTemp(SearchIndex) here
 
-		check(Database->Schema && Database->Schema->IsValid() && !SearchIndex.IsEmpty() && SearchIndex.WeightsSqrt.Num() == Database->Schema->SchemaCardinality && SearchIndex.KDTree.Impl);
+		check(Database->Schema && Database->Schema->IsValid() && !SearchIndex.IsEmpty() && SearchIndex.WeightsSqrt.Num() == Database->Schema->SchemaCardinality);
 
 		SetState(EState::Ended);
 		bBroadcastOnDerivedDataRebuild = true;
@@ -796,7 +857,7 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 		// cache can be corrupted in case the version of the derived data cache has not being updated while 
 		// developing channels that changes their cardinality without impacting any asset properties
 		// so to account for this, we just reindex the database and update the associated DDC 
-		if (!SearchIndex.IsEmpty() && SearchIndex.WeightsSqrt.Num() == Database->Schema->SchemaCardinality && SearchIndex.KDTree.Impl)
+		if (!SearchIndex.IsEmpty() && SearchIndex.WeightsSqrt.Num() == Database->Schema->SchemaCardinality)
 		{
 			UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex From Cache"), *LexToString(FullIndexKey.Hash), *Database->GetName());
 		}
@@ -822,29 +883,24 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 			{
 				COOK_STAT(auto Timer = UsageStats.TimeSyncWork());
 
-				// collecting all the databases that need to be built to gather their FPoseSearchIndexBase
-				TArray<TWeakObjectPtr<const UPoseSearchDatabase>> IndexBaseDatabases;
-				IndexBaseDatabases.Add(Database); // the first one is always this Database
+				// collecting all the databases that need to be built to gather their FSearchIndexBase
+				TArray<TObjectPtr<const UPoseSearchDatabase>> IndexBaseDatabases;
+				IndexBaseDatabases.Add(Database.Get()); // the first one is always this Database
 				if (Database->NormalizationSet)
 				{
-					for (auto OtherDatabase : Database->NormalizationSet->Databases)
-					{
-						if (OtherDatabase)
-						{
-							IndexBaseDatabases.AddUnique(OtherDatabase);
-						}
-					}
+					Database->NormalizationSet->AddUniqueDatabases(IndexBaseDatabases);
 				}
 
 				// @todo: DDC or parallelize this code
-				TArray<FPoseSearchIndexBase> SearchIndexBases;
+				TArray<FSearchIndexBase> SearchIndexBases;
 				TArray<const UPoseSearchSchema*> Schemas;
 				SearchIndexBases.AddDefaulted(IndexBaseDatabases.Num());
 				Schemas.AddDefaulted(IndexBaseDatabases.Num());
 				for (int32 IndexBaseIdx = 0; IndexBaseIdx < IndexBaseDatabases.Num(); ++IndexBaseIdx)
 				{
-					auto IndexBaseDatabase = IndexBaseDatabases[IndexBaseIdx];
-					FPoseSearchIndexBase& SearchIndexBase = SearchIndexBases[IndexBaseIdx];
+					const UPoseSearchDatabase* IndexBaseDatabase = IndexBaseDatabases[IndexBaseIdx].Get();
+					check(IndexBaseDatabase);
+					FSearchIndexBase& SearchIndexBase = SearchIndexBases[IndexBaseIdx];
 					Schemas[IndexBaseIdx] = IndexBaseDatabase->Schema;
 
 					// early out for invalid indexing conditions
@@ -862,6 +918,24 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 						return;
 					}
 
+					// validating that the missing MirrorDataTable is not necessary 
+					if (!IndexBaseDatabase->Schema->MirrorDataTable)
+					{
+						for (int32 AnimationAssetIndex = 0; AnimationAssetIndex < IndexBaseDatabase->AnimationAssets.Num(); ++AnimationAssetIndex)
+						{
+							if (const FPoseSearchDatabaseAnimationAssetBase* DatabaseAsset = IndexBaseDatabase->GetAnimationAssetBase(AnimationAssetIndex))
+							{
+								if (DatabaseAsset->GetMirrorOption() == EPoseSearchMirrorOption::MirroredOnly || DatabaseAsset->GetMirrorOption() == EPoseSearchMirrorOption::UnmirroredAndMirrored)
+								{
+									// want to sample a mirrored asset
+									UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Failed because '%s' requires a MirrorDataTable to sample mirrored animation assets"), *LexToString(FullIndexKey.Hash), *Database->GetName(), *IndexBaseDatabase->Schema->GetName());
+									SearchIndex.Reset();
+									return;
+								}
+							}
+						}
+					}
+
 					if (Owner.IsCanceled())
 					{
 						UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Cancelled"), *LexToString(FullIndexKey.Hash), *Database->GetName());
@@ -870,7 +944,7 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 					}
 
 					// Building all the related FPoseSearchBaseIndex first
-					InitSearchIndexAssets(SearchIndexBase, Database.Get());
+					InitSearchIndexAssets(SearchIndexBase, IndexBaseDatabase);
 
 					if (Owner.IsCanceled())
 					{
@@ -880,20 +954,13 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 					}
 
 					FDatabaseIndexingContext DbIndexingContext;
-					DbIndexingContext.SearchIndexBase = &SearchIndexBase;
-					DbIndexingContext.Prepare(IndexBaseDatabase.Get());
-
-					if (Owner.IsCanceled())
+					if (!DbIndexingContext.IndexDatabase(SearchIndexBase, *IndexBaseDatabase, Owner))
 					{
-						UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Cancelled"), *LexToString(FullIndexKey.Hash), *Database->GetName());
-						SearchIndex.Reset();
-						return;
-					}
-
-					const bool bSuccess = DbIndexingContext.IndexAssets();
-					if (!bSuccess)
-					{
-						if (IndexBaseDatabase == Database)
+						if (Owner.IsCanceled())
+						{
+							UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Cancelled"), *LexToString(FullIndexKey.Hash), *Database->GetName());
+						}
+						else if (IndexBaseDatabase == Database)
 						{
 							UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Failed"), *LexToString(FullIndexKey.Hash), *Database->GetName());
 						}
@@ -901,35 +968,17 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 						{
 							UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Failed because of dependent database fail '%s'"), *LexToString(FullIndexKey.Hash), *Database->GetName(), *IndexBaseDatabase->GetName());
 						}
-						SearchIndex.Reset();
-						return;
-					}
 
-					if (Owner.IsCanceled())
-					{
-						UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Cancelled"), *LexToString(FullIndexKey.Hash), *Database->GetName());
-						SearchIndex.Reset();
-						return;
-					}
-
-					DbIndexingContext.JoinIndex();
-					if (Owner.IsCanceled())
-					{
-						UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Cancelled"), *LexToString(FullIndexKey.Hash), *Database->GetName());
 						SearchIndex.Reset();
 						return;
 					}
 				}
 
-				static_cast<FPoseSearchIndexBase&>(SearchIndex) = SearchIndexBases[0];
+				static_cast<FSearchIndexBase&>(SearchIndex) = SearchIndexBases[0];
 				
-				TArray<float> Deviation = ComputeChannelsDeviations(SearchIndexBases, Schemas);
+				TArray<float> Deviation = FMeanDeviationCalculator::Calculate(SearchIndexBases, Schemas);
 
-				#if WITH_EDITORONLY_DATA
-				SearchIndex.Deviation = Deviation;
-				#endif // WITH_EDITORONLY_DATA
-
-				// Building FPoseSearchIndex
+				// Building FSearchIndex
 				PreprocessSearchIndexWeights(SearchIndex, Database->Schema, Deviation);
 				if (Owner.IsCanceled())
 				{
@@ -952,6 +1001,12 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 					UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Cancelled"), *LexToString(FullIndexKey.Hash), *Database->GetName());
 					SearchIndex.Reset();
 					return;
+				}
+
+				// removing SearchIndex.Values and relying on FSearchIndex::GetReconstructedPoseValues to reconstruct the Values data from the PCAValues
+				if (Database->PoseSearchMode == EPoseSearchMode::PCAKDTree && Database->KDTreeQueryNumNeighbors <= 1)
+				{
+					SearchIndex.Values.Reset();
 				}
 
 				UE_LOG(LogPoseSearch, Log, TEXT("%s - %s BuildIndex Succeeded"), *LexToString(FullIndexKey.Hash), *Database->GetName());
@@ -978,6 +1033,23 @@ void FPoseSearchDatabaseAsyncCacheTask::OnGetComplete(UE::DerivedData::FCacheGet
 	}
 }
 
+void FPoseSearchDatabaseAsyncCacheTask::AddReferencedObjects(FReferenceCollector& Collector, FCriticalSection& OuterMutex)
+{
+	FScopeLock Lock(&OuterMutex);
+
+	const EState State = GetState();
+	if (State != EState::Ended && State != EState::Failed)
+	{
+		// keeping around the assets for starting or in progress tasks
+		Collector.AddReferencedObject(Database);
+
+		for (TWeakObjectPtr<const UObject>& Dependency : DatabaseDependencies )
+		{
+			Collector.AddReferencedObject(Dependency);
+		}
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // FAsyncPoseSearchDatabasesManagement
 FCriticalSection FAsyncPoseSearchDatabasesManagement::Mutex;
@@ -996,6 +1068,8 @@ FAsyncPoseSearchDatabasesManagement::FAsyncPoseSearchDatabasesManagement()
 	FScopeLock Lock(&Mutex);
 
 	OnObjectModifiedHandle = FCoreUObjectDelegates::OnObjectModified.AddRaw(this, &FAsyncPoseSearchDatabasesManagement::OnObjectModified);
+	OnPackageReloadedHandle = FCoreUObjectDelegates::OnPackageReloaded.AddRaw(this, &FAsyncPoseSearchDatabasesManagement::OnPackageReloaded);
+
 	FCoreDelegates::OnPreExit.AddRaw(this, &FAsyncPoseSearchDatabasesManagement::Shutdown);
 }
 
@@ -1012,6 +1086,8 @@ FAsyncPoseSearchDatabasesManagement::~FAsyncPoseSearchDatabasesManagement()
 // we're listening to OnObjectModified to cancel any pending Task indexing databases depending from Object to avoid multi threading issues
 void FAsyncPoseSearchDatabasesManagement::OnObjectModified(UObject* Object)
 {
+	check(IsInGameThread());
+
 	FScopeLock Lock(&Mutex);
 
 	// iterating backwards because of the possible RemoveAtSwap
@@ -1024,12 +1100,38 @@ void FAsyncPoseSearchDatabasesManagement::OnObjectModified(UObject* Object)
 	}
 }
 
+void FAsyncPoseSearchDatabasesManagement::OnPackageReloaded(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent)
+{
+	check(IsInGameThread());
+
+	if (InPackageReloadPhase == EPackageReloadPhase::PostPackageFixup && InPackageReloadedEvent)
+	{
+		FScopeLock Lock(&Mutex);
+
+		// @todo: figure out why we don't find the correct dependency into InPackageReloadedEvent->GetRepointedObjects()
+		//		  for now we invalidate all the DDC cache to be on the safe side
+		//for (const TPair<UObject*, UObject*>& Pair : InPackageReloadedEvent->GetRepointedObjects())
+		//{
+		//	OnObjectModified(Pair.Key);
+		//}
+
+		for (TUniquePtr<FPoseSearchDatabaseAsyncCacheTask>& TaskPtr : Tasks)
+		{
+			UE_LOG(LogPoseSearch, Log, TEXT("%s - %s Cancelled because of OnPackageReloaded"), *LexToString(TaskPtr->GetDerivedDataKey()), *TaskPtr->GetDatabase()->GetName());
+		}
+		Tasks.Reset();
+	}
+}
+
 void FAsyncPoseSearchDatabasesManagement::Shutdown()
 {
 	FScopeLock Lock(&Mutex);
 
 	FCoreUObjectDelegates::OnObjectModified.Remove(OnObjectModifiedHandle);
 	OnObjectModifiedHandle.Reset();
+
+	FCoreUObjectDelegates::OnPackageReloaded.Remove(OnPackageReloadedHandle);
+	OnPackageReloadedHandle.Reset();
 }
 
 void FAsyncPoseSearchDatabasesManagement::Tick(float DeltaTime)
@@ -1056,8 +1158,6 @@ void FAsyncPoseSearchDatabasesManagement::Tick(float DeltaTime)
 
 void FAsyncPoseSearchDatabasesManagement::TickCook(float DeltaTime, bool bCookCompete)
 {
-	FScopeLock Lock(&Mutex);
-
 	Tick(DeltaTime);
 }
 
@@ -1068,6 +1168,12 @@ TStatId FAsyncPoseSearchDatabasesManagement::GetStatId() const
 
 void FAsyncPoseSearchDatabasesManagement::AddReferencedObjects(FReferenceCollector& Collector)
 {
+	FScopeLock Lock(&Mutex);
+
+	for (TUniquePtr<FPoseSearchDatabaseAsyncCacheTask>& TaskPtr : Tasks)
+	{
+		TaskPtr->AddReferencedObjects(Collector, Mutex);
+	}
 }
 
 // returns true if the index has been built and the Database updated correctly  
@@ -1096,27 +1202,9 @@ bool FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(const UPoseSear
 			{
 				if (Task->GetState() == FPoseSearchDatabaseAsyncCacheTask::EState::Prestarted)
 				{
-					if (EnumHasAnyFlags(Flag, ERequestAsyncBuildFlag::WaitPreviousRequest))
-					{
-						Task->Wait(Mutex);
-					}
-					else
-					{
-						Task->Cancel(Mutex);
-					}
+					Task->Cancel(Mutex);
 				}
-
 				Task->StartNewRequestIfNeeded(Mutex);
-			}
-			else // if (EnumHasAnyFlags(Flag, ERequestAsyncBuildFlag::ContinueRequest))
-			{
-				if (Task->GetState() == FPoseSearchDatabaseAsyncCacheTask::EState::Prestarted)
-				{
-					if (EnumHasAnyFlags(Flag, ERequestAsyncBuildFlag::WaitPreviousRequest))
-					{
-						Task->Wait(Mutex);
-					}
-				}
 			}
 			break;
 		}
@@ -1129,9 +1217,13 @@ bool FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(const UPoseSear
 		Task = This.Tasks.Last().Get();
 	}
 
-	if (EnumHasAnyFlags(Flag, ERequestAsyncBuildFlag::WaitForCompletion) && Task->GetState() == FPoseSearchDatabaseAsyncCacheTask::EState::Prestarted)
+	if (EnumHasAnyFlags(Flag, ERequestAsyncBuildFlag::WaitForCompletion))
 	{
-		Task->Wait(Mutex);
+		check(Task->GetState() != FPoseSearchDatabaseAsyncCacheTask::EState::Notstarted);
+		if (Task->GetState() == FPoseSearchDatabaseAsyncCacheTask::EState::Prestarted)
+		{
+			Task->Wait(Mutex);
+		}
 	}
 
 	return Task->GetState() == FPoseSearchDatabaseAsyncCacheTask::EState::Ended;

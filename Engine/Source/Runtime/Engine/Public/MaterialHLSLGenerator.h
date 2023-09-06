@@ -27,6 +27,7 @@ class UMaterialExpressionFunctionInput;
 class UMaterialExpressionFunctionOutput;
 class UMaterialExpressionCustomOutput;
 class UMaterialExpressionVertexInterpolator;
+class UMaterialParameterCollection;
 struct FFunctionExpressionInput;
 struct FExpressionInput;
 class ITargetPlatform;
@@ -64,6 +65,8 @@ struct TMaterialHLSLGeneratorType;
 class FMaterialHLSLGenerator
 {
 public:
+	static const uint32 Version = 1;
+
 	FMaterialHLSLGenerator(UMaterial* Material,
 		const FMaterialLayersFunctions* InLayerOverrides,
 		UMaterialExpression* InPreviewExpression,
@@ -71,6 +74,7 @@ public:
 
 	const FMaterialLayersFunctions* GetLayerOverrides() const { return LayerOverrides; }
 
+	const UMaterial* GetTargetMaterial() const;
 	UE::HLSLTree::FTree& GetTree() const;
 	UE::Shader::FStructTypeRegistry& GetTypeRegistry() const;
 	const UE::Shader::FStructType* GetMaterialAttributesType() const;
@@ -186,6 +190,10 @@ public:
 	bool GetParameterOverrideValueForCurrentFunction(EMaterialParameterType ParameterType, FName ParameterName, FMaterialParameterMetadata& OutResult) const;
 	FMaterialParameterInfo GetParameterInfo(const FName& ParameterName) const;
 
+	int32 FindOrAddCustomExpressionOutputStructId(TArrayView<UE::Shader::FStructFieldInitializer> StructFields);
+	
+	int32 FindOrAddParameterCollection(UMaterialParameterCollection* ParameterCollection);
+
 private:
 	static constexpr int32 MaxNumPreviousScopes = UE::HLSLTree::MaxNumPreviousScopes;
 	
@@ -265,6 +273,9 @@ private:
 	TMap<FExpressionDataKey, void*> ExpressionDataMap;
 	const UE::HLSLTree::FExpression* PreviewExpressionResult = nullptr;
 	bool bGeneratedResult;
+
+	TMap<FXxHash64, const UE::HLSLTree::FExpression*> GeneratedExpressionMap;
+	TMap<FXxHash64, int32> CustomExpressionOutputStructIdMap;
 };
 
 #endif // WITH_EDITOR

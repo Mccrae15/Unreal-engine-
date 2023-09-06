@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/SNiagaraScriptGraph.h"
-#include "NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNode.h"
@@ -9,6 +9,7 @@
 #include "NiagaraEditorStyle.h"
 #include "NiagaraNodeParameterMapBase.h"
 #include "NiagaraNodeReroute.h"
+#include "NiagaraScriptSource.h"
 
 #include "GraphEditor.h"
 #include "Styling/AppStyle.h"

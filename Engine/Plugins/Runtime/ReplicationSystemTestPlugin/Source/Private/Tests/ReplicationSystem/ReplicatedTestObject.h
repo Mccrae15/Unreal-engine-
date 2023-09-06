@@ -347,6 +347,36 @@ public:
 	TArray<UE::Net::FReplicationFragment*> ReplicationFragments;
 };
 
+/**
+ *  A test class for Replication that itself uses Property based replication but also has "components" that uses a mix of property based replication and native ReplicationStates
+ */
+UCLASS()
+class UTestReplicatedIrisObjectWithDynamicCondition : public UReplicatedTestObject
+{
+	GENERATED_BODY()
+
+public:
+	UTestReplicatedIrisObjectWithDynamicCondition();
+
+	// Sets the condition for the DynamicConditionInt member.
+	void SetDynamicCondition(ELifetimeCondition Condition);
+
+	// Sets custom condition on DynamicConditionInt member.
+	void SetDynamicConditionCustomCondition(bool bActive);
+
+public:
+	UPROPERTY(Transient, Replicated)
+	int32 DynamicConditionInt;
+
+private:
+	// Network interface must be part of base.
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Fragments, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+
+public:
+	// Network data only for test
+	TArray<UE::Net::FReplicationFragment*> ReplicationFragments;
+};
+
 UCLASS()
 class UReplicatedSubObjectOrderObject : public UReplicatedTestObject
 {
@@ -381,7 +411,7 @@ public:
 
 
 /**
- *  A test class for Replication that itself uses Property based replication but also has "components" that uses a mix of property based replication and native ReplicationStates
+ *  A test class for Replication on an object with no replicated members
  */
 UCLASS()
 class UTestReplicatedIrisObjectWithNoReplicatedMembers : public UReplicatedTestObject
@@ -390,6 +420,8 @@ class UTestReplicatedIrisObjectWithNoReplicatedMembers : public UReplicatedTestO
 
 public:
 	UTestReplicatedIrisObjectWithNoReplicatedMembers();
+
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
 };
 
 /**
@@ -408,12 +440,17 @@ public:
 	// This is the local Interface, it is up to each bridge implementation to define the interface for that type
 	// In this example we have methods that directly uses UReplicatedTestObject;
 	FNetRefHandle BeginReplication(UReplicatedTestObject* Instance);
+	FNetRefHandle BeginReplication(UReplicatedTestObject* Instance, const UObjectReplicationBridge::FCreateNetRefHandleParams& Params);
 	FNetRefHandle BeginReplication(FNetRefHandle OwnerHandle, UReplicatedTestObject* Instance, FNetRefHandle InsertRelativeToSubObjectHandle = FNetRefHandle(), ESubObjectInsertionOrder InsertionOrder = UReplicationBridge::ESubObjectInsertionOrder::None);
 
 	// For testing we expose some things that normally are not accessible
 	const UE::Net::FReplicationInstanceProtocol* GetReplicationInstanceProtocol(FNetRefHandle Handle) const;
 
-	void SetPollFramePeriod(UReplicatedTestObject* Instance, uint8 FramePeriod);
+	void SetExternalWorldLocationUpdateFunctor(TFunction<void(FNetRefHandle NetHandle, const UObject* ReplicatedObject, FVector& OutLocation, float& OutCullDistance)> LocUpdateFunctor);
+
+	void SetExternalPreUpdateFunctor(TFunction<void(FNetRefHandle, UObject*, const UReplicationBridge*)> PreUpdateFunctor);
+
+	float GetMaxTickRate() const { return Super::GetMaxTickRate(); }
 
 protected:
 	// Type specifics for serializing creation data this will most likely be made into a separate interface to support different types of header data for different types
@@ -437,6 +474,8 @@ protected:
 	virtual bool IsAllowedToDestroyInstance(const UObject* Instance) const override;
 
 	TArray<TStrongObjectPtr<UObject>>* CreatedObjectsOnNode;
+
+	TFunction<void(FNetRefHandle NetHandle, const UObject* ReplicatedObject, FVector& OutLocation, float& OutCullDistance)> WorldLocationUpdateFunc;
 };
 
 extern const UE::Net::FRepTag RepTag_FakeGeneratedReplicationState_IntB;

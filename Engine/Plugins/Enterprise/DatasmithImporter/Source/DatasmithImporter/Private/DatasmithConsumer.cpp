@@ -630,7 +630,7 @@ bool UDatasmithConsumer::CreateWorld()
 								const FText WarningMessage = FText::Format( Format, FText::FromString(LevelName) );
 								const FText DialogTitle( LOCTEXT("DatasmithConsumerAlreadyLoaded_DlgTitle", "Warning - Level already loaded") );
 
-								if(FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage, &DialogTitle) != EAppReturnType::Yes)
+								if(FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage, DialogTitle) != EAppReturnType::Yes)
 								{
 									bUnloadLevel = false;
 								}
@@ -876,7 +876,7 @@ bool UDatasmithConsumer::CanCreateLevel(const FString& RequestedFolder, const FS
 							const FText WarningMessage = FText::Format( Format, FText::FromString(RequestedName), FText::FromString(RequestedFolder));
 							const FText DialogTitle( LOCTEXT("DatasmithConsumer_Update_DlgTitle", "Warning - Level already exists") );
 
-							EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, WarningMessage, &DialogTitle);
+							EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, EAppReturnType::No, WarningMessage, DialogTitle);
 
 							if(Result != EAppReturnType::Yes)
 							{
@@ -905,7 +905,7 @@ bool UDatasmithConsumer::CanCreateLevel(const FString& RequestedFolder, const FS
 			{
 				const FText DialogTitle( LOCTEXT("DatasmithConsumer_CantCreateFile_DlgTitle", "Warning - Cannot create level") );
 
-				FMessageDialog::Open(EAppMsgType::Ok, Message, &DialogTitle);
+				FMessageDialog::Open(EAppMsgType::Ok, Message, DialogTitle);
 			}
 			else
 			{
@@ -924,7 +924,7 @@ bool UDatasmithConsumer::CanCreateLevel(const FString& RequestedFolder, const FS
 		{
 			const FText DialogTitle( LOCTEXT("DatasmithConsumer_CantCreate_DlgTitle", "Warning - Cannot create level") );
 
-			FMessageDialog::Open(EAppMsgType::Ok, Message, &DialogTitle);
+			FMessageDialog::Open(EAppMsgType::Ok, Message, DialogTitle);
 		}
 		else
 		{
@@ -1315,7 +1315,7 @@ bool UDatasmithConsumer::ValidateAssets()
 			const FText Title( LOCTEXT( "DatasmithConsumer_SavingIssues", "Some assets may not be saved properly..." ) );
 			const FText Message = FText::Format( LOCTEXT( "DatasmithConsumer_AssetsWithIssues", "All assets cannot be created in their destination folder.\nBelow is the list of assets with issues. See output log for details.\nClick \'Yes\' to continue with the commit.\n\n{0}{1}\n" ), AssetsToBeSkippedText, AssetsNotMovedText);
 
-			if(FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) != EAppReturnType::Yes)
+			if(FMessageDialog::Open(EAppMsgType::YesNo, Message, Title) != EAppReturnType::Yes)
 			{
 				return false;
 			}
@@ -1846,21 +1846,17 @@ namespace DatasmithConsumerUtils
 
 		UEditorLevelUtils::SetLevelVisibility(DestLevel, true, false, ELevelVisibilityDirtyMode::DontModify);
 
-		// Scope this so that Actors that have been pasted will have their final levels set before doing the actor mapping
-		{
-			// Set the new level and force it visible while we do the paste
-			FLevelPartitionOperationScope LevelPartitionScope(DestLevel);
-			OwningWorld->SetCurrentLevel(LevelPartitionScope.GetLevel());
+		// Set the new level and force it visible while we do the paste
+		OwningWorld->SetCurrentLevel(DestLevel);
 
-			//const bool bDuplicate = false;
-			const bool bOffsetLocations = false;
-			const bool bWarnIfHidden = false;
-			GEditor->edactPasteSelected(OwningWorld, bDuplicate, bOffsetLocations, bWarnIfHidden);
+		//const bool bDuplicate = false;
+		const bool bOffsetLocations = false;
+		const bool bWarnIfHidden = false;
+		GEditor->edactPasteSelected(OwningWorld, bDuplicate, bOffsetLocations, bWarnIfHidden);
 
-			// Restore the original current level
-			OwningWorld->SetCurrentLevel(OldCurrentLevel);
-		}
-
+		// Restore the original current level
+		OwningWorld->SetCurrentLevel(OldCurrentLevel);
+		
 		TArray<AActor*> NewActors;
 		NewActors.Reserve(GEditor->GetSelectedActorCount());
 

@@ -41,7 +41,7 @@ namespace FriendAcceptFailureReason
 DECLARE_DELEGATE_OneParam(FUserDependentAction, USocialUser&);
 
 /** Represents the full suite of social functionality available to a given LocalPlayer */
-UCLASS(Within = SocialManager)
+UCLASS(Within = SocialManager, Config = Game)
 class PARTY_API USocialToolkit : public UObject, public FExec
 {
 	GENERATED_BODY()
@@ -186,10 +186,6 @@ protected:
 	virtual void OnBlockPlayerComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& BlockedPlayerID, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
 	virtual void OnUnblockPlayerComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UnblockedPlayerID, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
 	
-public:
-	UE_DEPRECATED(5.1, "This function is deprecated and will be removed; please use USocialUser::HandlePartyRequestToJoinSent.")
-	virtual void OnRequestToJoinPartyComplete(const FUniqueNetId& PartyLeaderId, ERequestToJoinPartyCompletionResult Result) {}
-
 protected:
 	/** Called when a Friend's presence did change */
 	virtual void OnFriendPresenceDidChange(const USocialUser& FriendSocialUser, const TSharedRef<FOnlineUserPresence>& NewPresence, ESocialSubsystem SubsystemType) {}
@@ -308,6 +304,9 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<USocialUser>> AllUsers;
 	TMap<FUniqueNetIdRepl, TWeakObjectPtr<USocialUser>> UsersBySubsystemIds;
+
+	UPROPERTY(config)
+	bool bRemoveInvalidatedUserFromMaps = true;
 
 	UPROPERTY()
 	TWeakObjectPtr<ULocalPlayer> LocalPlayerOwner = nullptr;

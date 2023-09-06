@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using EpicGames.Core;
+using EpicGames.OIDC;
 using EpicGames.Perforce;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,27 +20,29 @@ namespace UnrealGameSync
 		public IPerforceSettings PerforceSettings { get; }
 		public ProjectInfo ProjectInfo { get; }
 		public UserWorkspaceSettings WorkspaceSettings { get; }
-		public UserWorkspaceState WorkspaceState { get; }
+		public WorkspaceStateWrapper WorkspaceStateWrapper { get; }
 		public ConfigFile LatestProjectConfigFile { get; }
 		public ConfigFile WorkspaceProjectConfigFile { get; }
 		public IReadOnlyList<string>? WorkspaceProjectStreamFilter { get; }
 		public List<KeyValuePair<FileReference, DateTime>> LocalConfigFiles { get; }
+		public OidcTokenClient? OidcTokenClient { get; }
 
-		public OpenProjectInfo(UserSelectedProjectSettings selectedProject, IPerforceSettings perforceSettings, ProjectInfo projectInfo, UserWorkspaceSettings workspaceSettings, UserWorkspaceState workspaceState, ConfigFile latestProjectConfigFile, ConfigFile workspaceProjectConfigFile, IReadOnlyList<string>? workspaceProjectStreamFilter, List<KeyValuePair<FileReference, DateTime>> localConfigFiles)
+		public OpenProjectInfo(UserSelectedProjectSettings selectedProject, IPerforceSettings perforceSettings, ProjectInfo projectInfo, UserWorkspaceSettings workspaceSettings, WorkspaceStateWrapper workspaceStateWrapper, ConfigFile latestProjectConfigFile, ConfigFile workspaceProjectConfigFile, IReadOnlyList<string>? workspaceProjectStreamFilter, List<KeyValuePair<FileReference, DateTime>> localConfigFiles, OidcTokenClient? oidcTokenClient)
 		{
-			this.SelectedProject = selectedProject;
+			SelectedProject = selectedProject;
 
-			this.PerforceSettings = perforceSettings;
-			this.ProjectInfo = projectInfo;
-			this.WorkspaceSettings = workspaceSettings;
-			this.WorkspaceState = workspaceState;
-			this.LatestProjectConfigFile = latestProjectConfigFile;
-			this.WorkspaceProjectConfigFile = workspaceProjectConfigFile;
-			this.WorkspaceProjectStreamFilter = workspaceProjectStreamFilter;
-			this.LocalConfigFiles = localConfigFiles;
+			PerforceSettings = perforceSettings;
+			ProjectInfo = projectInfo;
+			WorkspaceSettings = workspaceSettings;
+			WorkspaceStateWrapper = workspaceStateWrapper;
+			LatestProjectConfigFile = latestProjectConfigFile;
+			WorkspaceProjectConfigFile = workspaceProjectConfigFile;
+			WorkspaceProjectStreamFilter = workspaceProjectStreamFilter;
+			LocalConfigFiles = localConfigFiles;
+			OidcTokenClient = oidcTokenClient;
 		}
 
-		public static async Task<OpenProjectInfo> CreateAsync(IPerforceSettings defaultPerforceSettings, UserSelectedProjectSettings selectedProject, UserSettings userSettings, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
+		public static async Task<OpenProjectInfo> CreateAsync(IPerforceSettings defaultPerforceSettings, UserSelectedProjectSettings selectedProject, UserSettings userSettings, OidcTokenManager oidcTokenManager, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
 		{
 			PerforceSettings perforceSettings = Utility.OverridePerforceSettings(defaultPerforceSettings, selectedProject.ServerAndPort, selectedProject.UserName);
 			using IPerforceConnection perforce = await PerforceConnection.CreateAsync(perforceSettings, logger);
@@ -54,10 +55,10 @@ namespace UnrealGameSync
 			}
 
 			// Execute like a regular task
-			return await CreateAsync(perforce, selectedProject, userSettings, logger, cancellationToken);
+			return await CreateAsync(perforce, selectedProject, userSettings, oidcTokenManager, logger, cancellationToken);
 		}
 
-		public static async Task<OpenProjectInfo> CreateAsync(IPerforceConnection defaultConnection, UserSelectedProjectSettings selectedProject, UserSettings userSettings, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
+		public static async Task<OpenProjectInfo> CreateAsync(IPerforceConnection defaultConnection, UserSelectedProjectSettings selectedProject, UserSettings userSettings, OidcTokenManager oidcTokenManager, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
 		{
 			using IDisposable loggerScope = logger.BeginScope("Project {SelectedProject}", selectedProject.ToString());
 			logger.LogInformation("Detecting settings for {Project}", selectedProject);
@@ -128,11 +129,13 @@ namespace UnrealGameSync
 						// Filter this list of clients
 						candidateClients = await FilterClients(clients, newSelectedFileName, defaultConnection.Settings, perforceInfo.ClientHost, logger, cancellationToken);
 
+#pragma warning disable CA1508 // False positive? "warning CA1508: 'newCandidateClients.Count == 0' is always 'true'. Remove or refactor the condition(s) to avoid dead code."
 						// If we still couldn't find any, fail.
 						if (candidateClients.Count == 0)
 						{
 							throw new UserErrorException($"Couldn't find any Perforce workspace containing {newSelectedFileName}. Check your connection settings.");
 						}
+#pragma warning restore CA1508
 					}
 
 					// Check there's only one client
@@ -186,7 +189,7 @@ namespace UnrealGameSync
 				{
 					if (newSelectedClientFileName[endIdx] == '/')
 					{
-						List<PerforceResponse<FStatRecord>> fileRecords = await perforceClient.TryFStatAsync(FStatOptions.None, newSelectedClientFileName.Substring(0, endIdx) + "/Engine/Build/Build.version", cancellationToken).ToListAsync();
+						List<PerforceResponse<FStatRecord>> fileRecords = await perforceClient.TryFStatAsync(FStatOptions.None, newSelectedClientFileName.Substring(0, endIdx) + "/Engine/Build/Build.version", cancellationToken).ToListAsync(cancellationToken);
 						if (fileRecords.Succeeded() && fileRecords.Count > 0)
 						{
 							FStatRecord fileRecord = fileRecords[0].Data;
@@ -218,17 +221,20 @@ namespace UnrealGameSync
 				ProjectInfo projectInfo = await ProjectInfo.CreateAsync(perforceClient, userWorkspaceSettings, cancellationToken);
 
 				// Update the cached workspace state
-				UserWorkspaceState userWorkspaceState = userSettings.FindOrAddWorkspaceState(projectInfo, userWorkspaceSettings, logger);
+				WorkspaceStateWrapper workspaceStateWrapper = userSettings.FindOrAddWorkspaceState(projectInfo, userWorkspaceSettings);
 
 				// Read the initial config file
 				List<KeyValuePair<FileReference, DateTime>> localConfigFiles = new List<KeyValuePair<FileReference, DateTime>>();
 				ConfigFile latestProjectConfigFile = await ConfigUtils.ReadProjectConfigFileAsync(perforceClient, projectInfo, localConfigFiles, logger, cancellationToken);
 
+				// Read the initial OIDC config files
+				OidcTokenClient? oidcTokenClient = await ConfigUtils.CreateOidcTokenClientAsync(oidcTokenManager, latestProjectConfigFile, projectInfo.ProjectIdentifier, perforceClient, branchClientPath, newSelectedClientFileName, localConfigFiles, projectInfo.CacheFolder, logger, cancellationToken);
+
 				// Get the local config file and stream filter
 				ConfigFile workspaceProjectConfigFile = await WorkspaceUpdate.ReadProjectConfigFile(branchDirectoryName, newSelectedFileName, logger);
-				IReadOnlyList<string>? workspaceProjectStreamFilter = await WorkspaceUpdate.ReadProjectStreamFilter(perforceClient, workspaceProjectConfigFile, logger, cancellationToken);
+				IReadOnlyList<string>? workspaceProjectStreamFilter = await WorkspaceUpdate.ReadProjectStreamFilter(perforceClient, workspaceProjectConfigFile, cancellationToken);
 
-				OpenProjectInfo workspaceSettings = new OpenProjectInfo(selectedProject, perforceSettings, projectInfo, userWorkspaceSettings, userWorkspaceState, latestProjectConfigFile, workspaceProjectConfigFile, workspaceProjectStreamFilter, localConfigFiles);
+				OpenProjectInfo workspaceSettings = new OpenProjectInfo(selectedProject, perforceSettings, projectInfo, userWorkspaceSettings, workspaceStateWrapper, latestProjectConfigFile, workspaceProjectConfigFile, workspaceProjectStreamFilter, localConfigFiles, oidcTokenClient);
 
 				return workspaceSettings;
 			}
@@ -247,7 +253,7 @@ namespace UnrealGameSync
 				if(!String.IsNullOrEmpty(client.Name) && (!String.IsNullOrEmpty(client.Host) || !String.IsNullOrEmpty(client.Owner)) && !String.IsNullOrEmpty(client.Root))
 				{
 					// Require either a username or host name match
-					if((String.IsNullOrEmpty(client.Host) || String.Compare(client.Host, hostName, StringComparison.OrdinalIgnoreCase) == 0) && (String.IsNullOrEmpty(client.Owner) || String.Compare(client.Owner, defaultPerforceSettings.UserName, StringComparison.OrdinalIgnoreCase) == 0))
+					if((String.IsNullOrEmpty(client.Host) || String.Equals(client.Host, hostName, StringComparison.OrdinalIgnoreCase)) && (String.IsNullOrEmpty(client.Owner) || String.Equals(client.Owner, defaultPerforceSettings.UserName, StringComparison.OrdinalIgnoreCase)))
 					{
 						if(!Utility.SafeIsFileUnderDirectory(newSelectedFileName.FullName, client.Root))
 						{

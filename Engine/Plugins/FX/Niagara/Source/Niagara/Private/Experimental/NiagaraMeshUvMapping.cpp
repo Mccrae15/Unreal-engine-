@@ -5,6 +5,7 @@
 #include "Experimental/NiagaraMeshUvMappingHandle.h"
 #include "NiagaraResourceArrayWriter.h"
 #include "NiagaraStats.h"
+#include "RenderingThread.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - UvQuadTree Cpu"), STAT_Niagara_UvMapping_Cpu, STATGROUP_Niagara);
 DECLARE_CYCLE_STAT(TEXT("Niagara - UvQuadTree Gpu"), STAT_Niagara_UvMapping_Gpu, STATGROUP_Niagara);
@@ -115,15 +116,15 @@ FMeshUvMappingBufferProxy::Initialize(const FMeshUvMapping& UvMapping)
 }
 
 void
-FMeshUvMappingBufferProxy::InitRHI()
+FMeshUvMappingBufferProxy::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FRHIResourceCreateInfo CreateInfo(TEXT("UvMappingBuffer"));
 	CreateInfo.ResourceArray = &FrozenQuadTree;
 
 	const int32 BufferSize = FrozenQuadTree.Num();
 
-	UvMappingBuffer = RHICreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_Static, CreateInfo);
-	UvMappingSrv = RHICreateShaderResourceView(UvMappingBuffer, sizeof(int32), PF_R32_SINT);
+	UvMappingBuffer = RHICmdList.CreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_Static, CreateInfo);
+	UvMappingSrv = RHICmdList.CreateShaderResourceView(UvMappingBuffer, sizeof(int32), PF_R32_SINT);
 
 #if STATS
 	check(GpuMemoryUsage == 0);

@@ -340,7 +340,7 @@ TSharedRef<SWidget> FLandscapeEditorCustomNodeBuilder_TargetLayers::GetTargetLay
 {
 	FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr, nullptr, /*bCloseSelfOnly=*/ true);
 
-	MenuBuilder.BeginSection("TargetLayerUnusedType", LOCTEXT("UnusedTypeHeading", "Layer Visilibity"));
+	MenuBuilder.BeginSection("TargetLayerUnusedType", LOCTEXT("UnusedTypeHeading", "Layer Visibility"));
 	{
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("TargetLayerShowUnusedLayer", "Show all layers"),
@@ -508,7 +508,7 @@ TSharedPtr<SWidget> FLandscapeEditorCustomNodeBuilder_TargetLayers::GenerateRow(
 	if (Target->TargetType != ELandscapeToolTargetType::Weightmap)
 	{
 		RowWidget = SNew(SLandscapeEditorSelectableBorder)
-			.Padding(0)
+			.Padding(0.0f)
 			.VAlign(VAlign_Center)
 			.OnContextMenuOpening_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::OnTargetLayerContextMenuOpening, Target)
 			.OnSelected_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::OnTargetSelectionChanged, Target)
@@ -547,7 +547,7 @@ TSharedPtr<SWidget> FLandscapeEditorCustomNodeBuilder_TargetLayers::GenerateRow(
 		static const FSlateColorBrush SolidWhiteBrush = FSlateColorBrush(FColorList::White);
 
 		RowWidget = SNew(SLandscapeEditorSelectableBorder)
-			.Padding(0)
+			.Padding(0.0f)
 			.VAlign(VAlign_Center)
 			.OnContextMenuOpening_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::OnTargetLayerContextMenuOpening, Target)
 			.OnSelected_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::OnTargetSelectionChanged, Target)
@@ -575,8 +575,8 @@ TSharedPtr<SWidget> FLandscapeEditorCustomNodeBuilder_TargetLayers::GenerateRow(
 				[
 					SNew(SBox)
 					.Visibility_Static(&FLandscapeEditorCustomNodeBuilder_TargetLayers::GetDebugModeLayerUsageVisibility, Target)
-					.WidthOverride(48)
-					.HeightOverride(48)
+					.WidthOverride(48.0f)
+					.HeightOverride(48.0f)
 					[
 						SNew(SImage)
 						.Image(FCoreStyle::Get().GetBrush("WhiteBrush"))
@@ -1306,7 +1306,10 @@ void FLandscapeEditorCustomNodeBuilder_TargetLayers::OnTargetLayerCreateClicked(
 			LayerObjectName = FName(*NewLayerDlg->GetAssetName().ToString());
 
 			UPackage* Package = CreatePackage( *PackageName);
-			ULandscapeLayerInfoObject* LayerInfo = NewObject<ULandscapeLayerInfoObject>(Package, LayerObjectName, RF_Public | RF_Standalone | RF_Transactional);
+
+			// Do not pass RF_Transactional to NewObject, or the asset will mark itself as garbage on Undo (which is not a well-supported path, potentially causing crashes)
+			ULandscapeLayerInfoObject* LayerInfo = NewObject<ULandscapeLayerInfoObject>(Package, LayerObjectName, RF_Public | RF_Standalone);
+			LayerInfo->SetFlags(RF_Transactional);	// we add RF_Transactional after creation, so that future edits _are_ recorded in undo
 			LayerInfo->LayerName = LayerName;
 			LayerInfo->bNoWeightBlend = bNoWeightBlend;
 

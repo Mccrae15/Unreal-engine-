@@ -4,9 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "InterchangeFactoryBase.h"
+#include "MeshDescription.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
-#include "Mesh/InterchangeStaticMeshPayload.h"
+#include "Mesh/InterchangeMeshPayload.h"
 
 #include "InterchangeStaticMeshFactory.generated.h"
 
@@ -15,7 +16,6 @@ class UBodySetup;
 class UStaticMesh;
 class UInterchangeStaticMeshFactoryNode;
 class UInterchangeStaticMeshLodDataNode;
-struct FMeshDescription;
 struct FKAggregateGeom;
 
 
@@ -30,8 +30,9 @@ public:
 
 	virtual UClass* GetFactoryClass() const override;
 	virtual EInterchangeFactoryAssetType GetFactoryAssetType() override { return EInterchangeFactoryAssetType::Meshes; }
-	virtual UObject* ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments) override;
-	virtual UObject* ImportAssetObject_Async(const FImportAssetObjectParams& Arguments) override;
+	virtual FImportAssetResult BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments) override;
+	virtual FImportAssetResult ImportAsset_Async(const FImportAssetObjectParams& Arguments) override;
+	virtual FImportAssetResult EndImportAsset_GameThread(const FImportAssetObjectParams& Arguments) override;
 	virtual void SetupObject_GameThread(const FSetupObjectParams& Arguments) override;
 	virtual bool GetSourceFilenames(const UObject* Object, TArray<FString>& OutSourceFilenames) const override;
 	virtual bool SetSourceFilename(const UObject* Object, const FString& SourceFilename, int32 SourceIndex) const override;
@@ -44,7 +45,7 @@ private:
 	struct FMeshPayload
 	{
 		FString MeshName;
-		TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> PayloadData;
+		TFuture<TOptional<UE::Interchange::FMeshPayloadData>> PayloadData;
 		FTransform Transform = FTransform::Identity;
 	};
 
@@ -68,4 +69,11 @@ private:
 #if WITH_EDITORONLY_DATA
 	void SetupSourceModelsSettings(UStaticMesh& StaticMesh, const TArray<FMeshDescription>& LodMeshDescriptions, int32 PreviousLodCount, int32 FinalLodCount, bool bIsAReimport);
 #endif
+	struct FImportAssetObjectData
+	{
+		bool bImportedCustomCollision = false;
+		bool bImportCollision = false;
+		TArray<FMeshDescription> LodMeshDescriptions;
+	};
+	FImportAssetObjectData ImportAssetObjectData;
 };

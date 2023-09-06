@@ -516,7 +516,10 @@ FReply SGraphPin::OnPinMouseDown( const FGeometry& SenderGeometry, const FPointe
 					TArray<TSharedRef<SGraphPin>> PinArray;
 					PinArray.Add(SharedThis(this));
 
-					return FReply::Handled().BeginDragDrop(SpawnPinDragEvent(OwnerNodePinned->GetOwnerPanel().ToSharedRef(), PinArray));
+					if (TSharedPtr<SGraphPanel> OwnerGraphPanel = OwnerNodePinned->GetOwnerPanel())
+					{
+						return FReply::Handled().BeginDragDrop(SpawnPinDragEvent(OwnerGraphPanel.ToSharedRef(), PinArray));
+					}
 				}
 				else
 				{
@@ -551,7 +554,10 @@ FReply SGraphPin::OnPinNameMouseDown( const FGeometry& SenderGeometry, const FPo
 
 FReply SGraphPin::OnMouseMove( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
 {
-	bIsMovingLinks = MouseEvent.IsControlDown() && (GraphPinObj->LinkedTo.Num() > 0);
+	if (UEdGraphPin* GraphPin = GetPinObj())
+	{
+		bIsMovingLinks = MouseEvent.IsControlDown() && (GraphPin->LinkedTo.Num() > 0);
+	}
 
 	return FReply::Unhandled();
 }
@@ -720,14 +726,17 @@ void SGraphPin::OnDragEnter( const FGeometry& MyGeometry, const FDragDropEvent& 
 	}
 
 	// Is someone dragging a connection?
-	if (Operation->IsOfType<FGraphEditorDragDropAction>() && GetIsConnectable())
+	if (Operation->IsOfType<FGraphEditorDragDropAction>())
 	{
 		// Ensure that the pin is valid before using it
 		if(GraphPinObj != NULL && !GraphPinObj->IsPendingKill() && GraphPinObj->GetOuter() != NULL && GraphPinObj->GetOuter()->IsA(UEdGraphNode::StaticClass()))
 		{
-			// Inform the Drag and Drop operation that we are hovering over this pin.
-			TSharedPtr<FGraphEditorDragDropAction> DragConnectionOp = StaticCastSharedPtr<FGraphEditorDragDropAction>(Operation);
-			DragConnectionOp->SetHoveredPin(GraphPinObj);
+			if (GetIsConnectable())
+			{
+				// Inform the Drag and Drop operation that we are hovering over this pin.
+				TSharedPtr<FGraphEditorDragDropAction> DragConnectionOp = StaticCastSharedPtr<FGraphEditorDragDropAction>(Operation);
+				DragConnectionOp->SetHoveredPin(GraphPinObj);
+			}
 		}	
 
 		// Pins treat being dragged over the same as being hovered outside of drag and drop if they know how to respond to the drag action.
@@ -903,7 +912,13 @@ void SGraphPin::Tick( const FGeometry& AllottedGeometry, const double InCurrentT
 UEdGraphPin* SGraphPin::GetPinObj() const
 {
 	ensureMsgf(!bGraphDataInvalid, TEXT("The Graph Pin Object has been invalidated. Someone is keeping a hard ref on the SGraphPin (%s). See InvalidateGraphData for more info"), *ToString());
-	return !bGraphDataInvalid ? GraphPinObj : nullptr;
+
+	if (bGraphDataInvalid || (GraphPinObj && GraphPinObj->bWasTrashed))
+	{
+		return nullptr;
+	}
+
+	return GraphPinObj;
 }
 
 /** @param OwnerNode  The SGraphNode that this pin belongs to */
@@ -911,6 +926,11 @@ void SGraphPin::SetOwner( const TSharedRef<SGraphNode> OwnerNode )
 {
 	check( !OwnerNodePtr.IsValid() );
 	OwnerNodePtr = OwnerNode;
+}
+
+void SGraphPin::SetPinObj(UEdGraphPin* PinObj)
+{
+	GraphPinObj = PinObj;
 }
 
 EVisibility SGraphPin::IsPinVisibleAsAdvanced() const

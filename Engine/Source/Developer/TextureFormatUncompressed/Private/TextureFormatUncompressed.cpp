@@ -86,7 +86,7 @@ class FTextureFormatUncompressed : public ITextureFormat
 		return 0;
 	}
 	
-	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& InBuildSettings) const override
+	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& InBuildSettings, int32 InMipCount, const FIntVector3& InMip0Dimensions) const override
 	{
 		if (InBuildSettings.TextureFormatName == GTextureFormatNameRGBA16F)
 		{
@@ -174,10 +174,12 @@ class FTextureFormatUncompressed : public ITextureFormat
 	}
 
 	virtual bool CompressImage(
-		FImage& InImage,
+		const FImage& InImage,
 		const FTextureBuildSettings& BuildSettings,
 		const FIntVector3& InMip0Dimensions,
 		int32 InMip0NumSlicesNoDepth,
+		int32 InMipIndex,
+		int32 InMipCount,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage

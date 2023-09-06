@@ -12,6 +12,10 @@
 #include "ChaosLog.h"
 #include "ChaosStats.h"
 
+#if WITH_CHAOS_VISUAL_DEBUGGER
+#include "ChaosVDRuntimeModule.h"
+#endif
+
 #include "Field/FieldSystem.h"
 
 #include "PhysicsProxy/PerSolverFieldSystem.h"
@@ -22,7 +26,6 @@
 #include "Chaos/UniformGrid.h"
 #include "Chaos/BoundingVolume.h"
 #include "Chaos/Framework/DebugSubstep.h"
-#include "Chaos/PBDSpringConstraints.h"
 #include "Chaos/PerParticleGravity.h"
 #include "PBDRigidActiveParticlesBuffer.h"
 #include "Chaos/GeometryParticlesfwd.h"
@@ -33,6 +36,7 @@
 #include "PhysicsSettingsCore.h"
 #include "Chaos/PhysicsSolverBaseImpl.h"
 
+#include "ChaosVisualDebugger/ChaosVisualDebuggerTrace.h"
 
 DECLARE_CYCLE_STAT(TEXT("Update Kinematics On Deferred SkelMeshes"),STAT_UpdateKinematicsOnDeferredSkelMeshesChaos,STATGROUP_Physics);
 CSV_DEFINE_CATEGORY(ChaosPhysics,true);
@@ -74,6 +78,11 @@ FChaosScene::FChaosScene(
 #endif
 		);
 	check(SceneSolver);
+
+#if WITH_CHAOS_VISUAL_DEBUGGER
+	SceneSolver->GetChaosVDContextData().OwnerID = GetChaosVDContextData().Id;
+	SceneSolver->GetChaosVDContextData().Id = FChaosVDRuntimeModule::Get().GenerateUniqueID();
+#endif
 
 	SceneSolver->PhysSceneHack = this;
 	SimCallback = SceneSolver->CreateAndRegisterSimCallbackObject_External<FChaosSceneSimCallback>();
@@ -118,7 +127,7 @@ FChaosScene::~FChaosScene()
 void FChaosScene::AddReferencedObjects(FReferenceCollector& Collector)
 {
 #if WITH_EDITOR
-	for(UObject* Obj : PieModifiedObjects)
+	for(auto& Obj : PieModifiedObjects)
 	{
 		Collector.AddReferencedObject(Obj);
 	}
@@ -131,7 +140,7 @@ void FChaosScene::AddPieModifiedObject(UObject* InObj)
 {
 	if(GIsPlayInEditorWorld)
 	{
-		PieModifiedObjects.AddUnique(InObj);
+		PieModifiedObjects.AddUnique(ObjectPtrWrap(InObj));
 	}
 }
 #endif
@@ -224,7 +233,7 @@ void FChaosScene::UpdateActorInAccelerationStructure(const FPhysicsActorHandle& 
 			SpatialAcceleration->UpdateElementIn(AccelerationHandle,WorldBounds,bHasBounds, Body_External.SpatialIdx());
 		}
 
-		GetSolver()->UpdateParticleInAccelerationStructure_External(Actor->GetParticle_LowLevel(),/*bDelete=*/false);
+		GetSolver()->UpdateParticleInAccelerationStructure_External(Actor->GetParticle_LowLevel(), EPendingSpatialDataOperation::Update);
 	}
 }
 
@@ -266,7 +275,7 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 			const FPhysicsActorHandle& Actor = Actors[ActorIndex];
 			if(Actor)
 			{
-				GetSolver()->UpdateParticleInAccelerationStructure_External(Actor->GetParticle_LowLevel(),/*bDelete=*/false);
+				GetSolver()->UpdateParticleInAccelerationStructure_External(Actor->GetParticle_LowLevel(), EPendingSpatialDataOperation::Update);
 			}
 		}
 	}
@@ -306,8 +315,15 @@ void FChaosSceneSimCallback::OnPreSimulate_Internal()
 {
 	if(const FChaosSceneCallbackInput* Input = GetConsumerInput_Internal())
 	{
-		static_cast<Chaos::FPBDRigidsSolver*>(GetSolver())->GetEvolution()->GetGravityForces().SetAcceleration(Input->Gravity);
+		// the "main" gravity is index 0
+		static_cast<Chaos::FPBDRigidsSolver*>(GetSolver())->GetEvolution()->GetGravityForces().SetAcceleration(Input->Gravity, 0);
 	}
+}
+
+FName FChaosSceneSimCallback::GetFNameForStatId() const
+{
+	const static FLazyName StaticName("FChaosSceneSimCallback");
+	return StaticName;
 }
 
 void FChaosScene::SetGravity(const Chaos::FVec3& Acceleration)
@@ -379,7 +395,8 @@ void FChaosScene::StartFrame()
 
 void FChaosScene::OnSyncBodies(Chaos::FPhysicsSolverBase* Solver)
 {
-	Solver->PullPhysicsStateForEachDirtyProxy_External([](auto) {}, [](auto) {}, [](auto) {});
+	struct FDispatcher {} Dispatcher;
+	Solver->PullPhysicsStateForEachDirtyProxy_External(Dispatcher);
 }
 
 bool FChaosScene::AreAnyTasksPending() const

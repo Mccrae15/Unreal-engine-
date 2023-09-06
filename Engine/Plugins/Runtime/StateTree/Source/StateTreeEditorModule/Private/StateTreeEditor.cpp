@@ -27,6 +27,8 @@
 #include "ToolMenuEntry.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "FileHelpers.h"
+#include "Debugger/SStateTreeDebuggerView.h"
+#include "StateTreeSettings.h"
 #include "ToolMenuSection.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
@@ -38,6 +40,20 @@ const FName FStateTreeEditor::AssetDetailsTabId(TEXT("StateTreeEditor_AssetDetai
 const FName FStateTreeEditor::StateTreeViewTabId(TEXT("StateTreeEditor_StateTreeView"));
 const FName FStateTreeEditor::StateTreeStatisticsTabId(TEXT("StateTreeEditor_StateTreeStatistics"));
 const FName FStateTreeEditor::CompilerResultsTabId(TEXT("StateTreeEditor_CompilerResults"));
+#if WITH_STATETREE_DEBUGGER
+const FName FStateTreeEditor::DebuggerTabId(TEXT("StateTreeEditor_Debugger"));
+#endif // WITH_STATETREE_DEBUGGER
+
+
+namespace UE::StateTree::Editor
+{
+bool GbDisplayItemIds = false;
+
+FAutoConsoleVariableRef CVarDisplayItemIds(
+	TEXT("statetree.displayitemids"),
+	GbDisplayItemIds,
+	TEXT("Appends Id to task and state names in the treeview and expose Ids in the details view."));
+}
 
 void FStateTreeEditor::PostUndo(bool bSuccess)
 {
@@ -76,14 +92,23 @@ void FStateTreeEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& 
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "StateTreeViewTab", "StateTree"))
 		.SetGroup(WorkspaceMenuCategoryRef)
 		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
+	
 	InTabManager->RegisterTabSpawner(StateTreeStatisticsTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_StateTreeStatistics))
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "StatisticsTab", "StateTree Statistics"))
 		.SetGroup(WorkspaceMenuCategoryRef)
 		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
+	
 	InTabManager->RegisterTabSpawner(CompilerResultsTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_CompilerResults))
 		.SetDisplayName(NSLOCTEXT("StateTreeEditor", "CompilerResultsTab", "Compiler Results"))
 		.SetGroup(WorkspaceMenuCategoryRef)
 		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
+
+#if WITH_STATETREE_DEBUGGER
+	InTabManager->RegisterTabSpawner(DebuggerTabId, FOnSpawnTab::CreateSP(this, &FStateTreeEditor::SpawnTab_Debugger))
+	   .SetDisplayName(NSLOCTEXT("StateTreeEditor", "DebuggerTab", "Debugger"))
+	   .SetGroup(WorkspaceMenuCategoryRef)
+	   .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Outliner"));
+#endif // WITH_STATETREE_DEBUGGER
 }
 
 
@@ -96,6 +121,9 @@ void FStateTreeEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>
 	InTabManager->UnregisterTabSpawner(StateTreeViewTabId);
 	InTabManager->UnregisterTabSpawner(StateTreeStatisticsTabId);
 	InTabManager->UnregisterTabSpawner(CompilerResultsTabId);
+#if WITH_STATETREE_DEBUGGER
+	InTabManager->UnregisterTabSpawner(DebuggerTabId);
+#endif // WITH_STATETREE_DEBUGGER
 }
 
 void FStateTreeEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UStateTree* InStateTree)
@@ -140,6 +168,9 @@ void FStateTreeEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedP
 	StateTreeViewModel->Init(EditorData);
 
 	StateTreeViewModel->GetOnAssetChanged().AddSP(this, &FStateTreeEditor::HandleModelAssetChanged);
+	StateTreeViewModel->GetOnStateAdded().AddSPLambda(this, [this](UStateTreeState* , UStateTreeState*){ UpdateAsset(); });
+	StateTreeViewModel->GetOnStatesRemoved().AddSPLambda(this, [this](const TSet<UStateTreeState*>&){ UpdateAsset(); });
+	StateTreeViewModel->GetOnStatesMoved().AddSPLambda(this, [this](const TSet<UStateTreeState*>&, const TSet<UStateTreeState*>&){ UpdateAsset(); });
 	StateTreeViewModel->GetOnSelectionChanged().AddSP(this, &FStateTreeEditor::HandleModelSelectionChanged);
 
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
@@ -194,6 +225,9 @@ void FStateTreeEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedP
 					FTabManager::NewStack()
 					->SetSizeCoefficient(0.25f)
 					->AddTab(CompilerResultsTabId, ETabState::ClosedTab)
+#if WITH_STATETREE_DEBUGGER
+					->AddTab(DebuggerTabId, ETabState::ClosedTab)
+#endif // WITH_STATETREE_DEBUGGER
 				)
 			)
 			->Split
@@ -273,7 +307,7 @@ TSharedRef<SDockTab> FStateTreeEditor::SpawnTab_StateTreeView(const FSpawnTabArg
 		.Label(NSLOCTEXT("StateTreeEditor", "StateTreeViewTab", "StateTree"))
 		.TabColorScale(GetTabColorScale())
 		[
-			SAssignNew(StateTreeView, SStateTreeView, StateTreeViewModel.ToSharedRef())
+			SAssignNew(StateTreeView, SStateTreeView, StateTreeViewModel.ToSharedRef(), TreeViewCommandList)
 		];
 }
 
@@ -354,6 +388,31 @@ TSharedRef<SDockTab> FStateTreeEditor::SpawnTab_CompilerResults(const FSpawnTabA
 		];
 	return SpawnedTab;
 }
+
+#if WITH_STATETREE_DEBUGGER
+TSharedRef<SDockTab> FStateTreeEditor::SpawnTab_Debugger(const FSpawnTabArgs& Args)
+{
+	TSharedPtr<SWidget> Widget = SNullWidget::NullWidget;
+	if (StateTree != nullptr)
+	{
+		// Reuse existing view if Tab is reopened
+		if (!DebuggerView.IsValid())
+		{
+			DebuggerView = SNew(SStateTreeDebuggerView, *StateTree, StateTreeViewModel.ToSharedRef(), TreeViewCommandList);
+		}
+		Widget = DebuggerView;
+	}
+	
+	check(Args.GetTabId() == DebuggerTabId);
+
+	return SNew(SDockTab)
+		.Label(LOCTEXT("DebuggerTitle", "Debugger"))
+		.TabColorScale(GetTabColorScale())
+		[
+			Widget.ToSharedRef()
+		];
+}
+#endif // WITH_STATETREE_DEBUGGER
 
 FText FStateTreeEditor::GetStatisticsText() const
 {
@@ -580,11 +639,7 @@ namespace UE::StateTree::Editor::Internal
 			return;
 		}
 
-		TreeData->VisitHierarchy([](UStateTreeState& State, UStateTreeState* ParentState)
-		{
-			State.Parent = ParentState;
-			return EStateTreeVisitor::Continue;
-		});
+		TreeData->ReparentStates();
 	}
 
 	void ApplySchema(UStateTree& StateTree)
@@ -654,9 +709,9 @@ namespace UE::StateTree::Editor::Internal
 			return;
 		}
 
-		TMap<FGuid, const UStruct*> AllStructIDs;
-		TreeData->GetAllStructIDs(AllStructIDs);
-		TreeData->GetPropertyEditorBindings()->RemoveUnusedBindings(AllStructIDs);
+		TMap<FGuid, const FStateTreeDataView> AllStructValues;
+		TreeData->GetAllStructValues(AllStructValues);
+		TreeData->GetPropertyEditorBindings()->RemoveUnusedBindings(AllStructValues);
 	}
 
 	void UpdateLinkedStateParameters(UStateTree& StateTree)
@@ -802,7 +857,7 @@ void FStateTreeEditor::RegisterToolbar()
 	const FToolMenuInsert InsertAfterAssetSection("Asset", EToolMenuInsertType::After);
 
 	FToolMenuSection& Section = ToolBar->AddSection("Compile", TAttribute<FText>(), InsertAfterAssetSection);
-
+	
 	Section.AddDynamicEntry("CompileCommands", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
 		const UStateTreeToolMenuContext* Context = InSection.FindContext<UStateTreeToolMenuContext>();

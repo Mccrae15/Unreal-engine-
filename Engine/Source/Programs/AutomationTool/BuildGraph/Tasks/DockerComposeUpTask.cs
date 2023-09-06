@@ -10,6 +10,7 @@ using System.Xml;
 using AutomationTool;
 using UnrealBuildBase;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace AutomationTool.Tasks
 {
@@ -59,6 +60,14 @@ namespace AutomationTool.Tasks
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
 		public override async Task ExecuteAsync(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
+			FileReference LogFile = FileReference.Combine(Unreal.RootDirectory, "Engine/Programs/AutomationTool/Saved/Logs/docker-compose-logs.txt");
+			string[] Lines =
+			{
+				$"docker-compose -f {Parameters.File.QuoteArgument()} logs --no-color > {LogFile.FullName.QuoteArgument()}",
+				$"docker-compose -f {Parameters.File.QuoteArgument()} down"
+			};
+			await AddCleanupCommandsAsync(Lines);
+
 			StringBuilder Arguments = new StringBuilder("--ansi never ");
 			if (!String.IsNullOrEmpty(Parameters.File))
 			{
@@ -70,7 +79,7 @@ namespace AutomationTool.Tasks
 				Arguments.Append($" {Parameters.Arguments}");
 			}
 
-			Log.TraceInformation("Running docker compose {0}", Arguments.ToString());
+			Logger.LogInformation("Running docker compose {Arguments}", Arguments.ToString());
 			using (LogIndentScope Scope = new LogIndentScope("  "))
 			{
 				await SpawnTaskBase.ExecuteAsync("docker-compose", Arguments.ToString());

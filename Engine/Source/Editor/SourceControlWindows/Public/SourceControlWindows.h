@@ -5,6 +5,36 @@
 #include "CoreMinimal.h"
 #include "SlateFwd.h"
 #include "ISourceControlProvider.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "SourceControlWindows.generated.h"
+
+class SSourceControlHistoryWidget;
+
+/** Context object for SSourceControlHistoryWidget's right-click context menu to get info about which history widget is trying to generate the menu */
+UCLASS()
+class SOURCECONTROLWINDOWS_API USourceControlHistoryWidgetContext : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	struct SelectedItem
+	{
+		FString FileName;
+		FString Revision;
+	};
+
+	TWeakPtr<class SSourceControlHistoryWidget> HistoryWidget;
+
+	TArray<SelectedItem>& GetSelectedItems()
+	{
+		return SelectedItems;
+	}
+
+private:
+	TArray<SelectedItem> SelectedItems;
+};
 
 
 /** Info supplied as argument to delegate FSourceControlWindowsOnCheckInComplete called by FSourceControlWindows::ChoosePackagesToCheckIn() and optional argument to PromptForCheckin(). */

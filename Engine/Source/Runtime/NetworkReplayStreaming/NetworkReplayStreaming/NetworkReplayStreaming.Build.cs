@@ -6,8 +6,6 @@ namespace UnrealBuildTool.Rules
 	{
 		public NetworkReplayStreaming( ReadOnlyTargetRules Target ) : base(Target)
 		{
-			PrivateIncludePaths.Add( "Runtime/NetworkReplayStreaming/NetworkReplayStreaming/Private" );
-
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -17,6 +15,8 @@ namespace UnrealBuildTool.Rules
 					"NetCore",
 				}
 			);
+
+			UnsafeTypeCastWarningLevel = WarningLevel.Error;
 		}
 	}
 }

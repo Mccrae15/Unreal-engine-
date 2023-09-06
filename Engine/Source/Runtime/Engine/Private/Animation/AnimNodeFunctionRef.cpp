@@ -76,23 +76,24 @@ namespace Anim
 {
 
 template<typename WrapperType, typename ContextType>
-static void CallFunctionHelper(const FAnimNodeFunctionRef& InFunction, ContextType InContext, FAnimNode_Base& InNode)
+static void CallFunctionHelper(const FAnimNodeFunctionRef& InFunction, const ContextType& InContext, FAnimNode_Base& InNode)
 {
+	struct FAnimNodeFunctionParams
+	{
+		WrapperType ExecutionContext;
+		FAnimNodeReference NodeReference;
+	};
+
 	if(InFunction.IsValid())
 	{
-		UAnimInstance* AnimInstance = CastChecked<UAnimInstance>(InContext.GetAnimInstanceObject());
-		
-		TSharedRef<FAnimExecutionContext::FData> ContextData = MakeShared<FAnimExecutionContext::FData>(InContext);
-			
-		struct FAnimNodeFunctionParams
+		if(ensureMsgf(InFunction.GetFunction()->ParmsSize == sizeof(FAnimNodeFunctionParams), TEXT("Function parameters size of %s does not match expected."), *InFunction.GetFunction()->GetName()))
 		{
-			WrapperType ExecutionContext;
-			FAnimNodeReference NodeReference;
-		};
-			
-		FAnimNodeFunctionParams Params = { WrapperType(ContextData), FAnimNodeReference(AnimInstance, InNode) };
-			
-		InFunction.Call(AnimInstance, &Params);
+			UAnimInstance* AnimInstance = CastChecked<UAnimInstance>(InContext.GetAnimInstanceObject());
+			TSharedRef<FAnimExecutionContext::FData> ContextData = MakeShared<FAnimExecutionContext::FData>(InContext);
+			FAnimNodeFunctionParams Params = { WrapperType(ContextData), FAnimNodeReference(AnimInstance, InNode) };
+
+			InFunction.Call(AnimInstance, &Params);
+		}
 	}
 }
 
@@ -112,7 +113,7 @@ void FNodeFunctionCaller::InitialUpdate(const FAnimationUpdateContext& InContext
 		}
 	}
 }
-	
+
 void FNodeFunctionCaller::BecomeRelevant(const FAnimationUpdateContext& InContext, FAnimNode_Base& InNode)
 {
 	if(InNode.NodeData != nullptr && InNode.NodeData->HasNodeAnyFlags(EAnimNodeDataFlags::HasBecomeRelevantFunction))
@@ -129,13 +130,18 @@ void FNodeFunctionCaller::BecomeRelevant(const FAnimationUpdateContext& InContex
 		}
 	}
 }
-	
+
 void FNodeFunctionCaller::Update(const FAnimationUpdateContext& InContext, FAnimNode_Base& InNode)
 {
 	if(InNode.NodeData != nullptr && InNode.NodeData->HasNodeAnyFlags(EAnimNodeDataFlags::HasUpdateFunction))
 	{
 		CallFunctionHelper<FAnimUpdateContext>(InNode.GetUpdateFunction(), InContext, InNode);
 	}
+}
+
+void FNodeFunctionCaller::CallFunction(const FAnimNodeFunctionRef& InFunction, const FAnimationBaseContext& InContext, FAnimNode_Base& InNode)
+{
+	CallFunctionHelper<FAnimExecutionContext>(InFunction, InContext, InNode);
 }
 
 }}

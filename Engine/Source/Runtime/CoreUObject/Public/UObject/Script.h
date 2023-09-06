@@ -196,12 +196,12 @@ enum EExprToken : uint8
 	EX_Assert				= 0x09,	// Assertion.
 	//						= 0x0A,
 	EX_Nothing				= 0x0B,	// No operation.
-	//						= 0x0C,
+	EX_NothingInt32			= 0x0C, // No operation with an int32 argument (useful for debugging script disassembly)
 	//						= 0x0D,
 	//						= 0x0E,
 	EX_Let					= 0x0F,	// Assign an arbitrary size value to a variable.
 	//						= 0x10,
-	//						= 0x11,
+	EX_BitFieldConst		= 0x11, // assign to a single bit, defined by an FProperty
 	EX_ClassContext			= 0x12,	// Class default object context.
 	EX_MetaCast             = 0x13, // Metaclass cast.
 	EX_LetBool				= 0x14, // Let boolean variable.
@@ -294,7 +294,19 @@ enum EExprToken : uint8
 	EX_ArrayGetByRef		= 0x6B,
 	EX_ClassSparseDataVariable = 0x6C, // Sparse data variable
 	EX_FieldPathConst		= 0x6D,
+	//						= 0x6E,
+	//						= 0x6F,
+	EX_AutoRtfmTransact     = 0x70, // AutoRTFM: run following code in a transaction
+	EX_AutoRtfmStopTransact = 0x71, // AutoRTFM: if in a transaction, abort or break, otherwise no operation
+	EX_AutoRtfmAbortIfNot   = 0x72, // AutoRTFM: evaluate bool condition, abort transaction on false
 	EX_Max					= 0xFF,
+};
+
+enum EAutoRtfmStopTransactMode : uint8
+{
+	GracefulExit,
+	AbortingExit,
+	AbortingExitAndAbortParent,
 };
 
 enum ECastToken : uint8
@@ -394,11 +406,11 @@ protected:
 };
 
 // Information about a blueprint instrumentation signal
-struct COREUOBJECT_API FScriptInstrumentationSignal
+struct FScriptInstrumentationSignal
 {
 public:
 
-	FScriptInstrumentationSignal(EScriptInstrumentation::Type InEventType, const UObject* InContextObject, const struct FFrame& InStackFrame, const FName EventNameIn = NAME_None);
+	COREUOBJECT_API FScriptInstrumentationSignal(EScriptInstrumentation::Type InEventType, const UObject* InContextObject, const struct FFrame& InStackFrame, const FName EventNameIn = NAME_None);
 
 	FScriptInstrumentationSignal(EScriptInstrumentation::Type InEventType, const UObject* InContextObject, UFunction* InFunction, const int32 LinkId = INDEX_NONE)
 		: EventType(InEventType)
@@ -429,16 +441,16 @@ public:
 	const FFrame& GetStackFrame() const { return *StackFramePtr; }
 
 	/** Returns the owner class name of the active instance */
-	const UClass* GetClass() const;
+	COREUOBJECT_API const UClass* GetClass() const;
 
 	/** Returns the function scope class */
-	const UClass* GetFunctionClassScope() const;
+	COREUOBJECT_API const UClass* GetFunctionClassScope() const;
 
 	/** Returns the name of the active function */
-	FName GetFunctionName() const;
+	COREUOBJECT_API FName GetFunctionName() const;
 
 	/** Returns the script code offset */
-	int32 GetScriptCodeOffset() const;
+	COREUOBJECT_API int32 GetScriptCodeOffset() const;
 
 	/** Returns the latent link id for latent events */
 	int32 GetLatentLinkId() const { return LatentLinkId; }
@@ -459,7 +471,7 @@ protected:
 };
 
 // Blueprint core runtime delegates
-class COREUOBJECT_API FBlueprintCoreDelegates
+class FBlueprintCoreDelegates
 {
 public:
 	// Callback for debugging events such as a breakpoint (Object that triggered event, active stack frame, Info)
@@ -469,25 +481,19 @@ public:
 	// Callback for blueprint instrumentation enable/disable events
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnToggleScriptProfiler, bool );
 
-	// Deprecated
-	DECLARE_MULTICAST_DELEGATE(FOnScriptExecutionEnd);
-
 public:
 	// Called when a script exception occurs
-	static FOnScriptDebuggingEvent OnScriptException;
+	static COREUOBJECT_API FOnScriptDebuggingEvent OnScriptException;
 	// Called when a script profiling event is fired
-	static FOnScriptInstrumentEvent OnScriptProfilingEvent;
+	static COREUOBJECT_API FOnScriptInstrumentEvent OnScriptProfilingEvent;
 	// Called when a script profiler is enabled/disabled
-	static FOnToggleScriptProfiler OnToggleScriptProfiler;
-
-	UE_DEPRECATED(4.26, "OnScriptExecutionEnd is deprecated, bind to delegate inside FBlueprintContextTracker instead")
-	static FOnScriptExecutionEnd OnScriptExecutionEnd;
+	static COREUOBJECT_API FOnToggleScriptProfiler OnToggleScriptProfiler;
 
 public:
-	static void ThrowScriptException(const UObject* ActiveObject, struct FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
-	static void InstrumentScriptEvent(const FScriptInstrumentationSignal& Info);
-	static void SetScriptMaximumLoopIterations( const int32 MaximumLoopIterations );
-	static bool IsDebuggingEnabled();
+	static COREUOBJECT_API void ThrowScriptException(const UObject* ActiveObject, struct FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
+	static COREUOBJECT_API void InstrumentScriptEvent(const FScriptInstrumentationSignal& Info);
+	static COREUOBJECT_API void SetScriptMaximumLoopIterations( const int32 MaximumLoopIterations );
+	static COREUOBJECT_API bool IsDebuggingEnabled();
 };
 
 #if DO_BLUEPRINT_GUARD
@@ -585,11 +591,11 @@ private:
 
 
 // Scoped struct to allow execution of script in editor, while resetting the runaway loop counts
-struct COREUOBJECT_API FEditorScriptExecutionGuard
+struct FEditorScriptExecutionGuard
 {
 public:
-	FEditorScriptExecutionGuard();
-	~FEditorScriptExecutionGuard();
+	COREUOBJECT_API FEditorScriptExecutionGuard();
+	COREUOBJECT_API ~FEditorScriptExecutionGuard();
 
 private:
 	bool bOldGAllowScriptExecutionInEditor;

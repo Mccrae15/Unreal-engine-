@@ -115,20 +115,53 @@ float2 ComputeWeightedTextureAverageAlphaSubRegion(
 	return float2(Value, max(WeightTotal,0.0000000001f));
 }
 
-#if COMPUTESHADER
-[numthreads(1, 1, 1)]
-void EyeAdaptationCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+float2 ComputeTextureAverageAlphaSubRegion(
+	Texture2D Texture,
+	uint2 SubRectMin,
+	uint2 SubRectMax,
+	uint2 RectMin,
+	uint2 RectMax)
 {
-	float4 OutColor = 0;
+	if (((SubRectMax.x - SubRectMin.x) == 0) || ((SubRectMax.y - SubRectMin.y) == 0))
+	{
+		return float2(0.0, 0.0000000001f);
+	}
 
-	const float AverageSceneLuminance = ComputeEyeAdaptationExposure(HistogramTexture);
+	// The inverse of the Region of Interest size.
+	const float InvRectWidth = 1.f / float(RectMax.x - RectMin.x);
+	const float InvRectHeight = 1.f / float(RectMax.y - RectMin.y);
 
+	// use product of linear weight in x and y.
+	float Value = 0.0f;
+
+	for (uint i = SubRectMin.x; i < SubRectMax.x; ++i)
+	{
+		// for precision, accumulate in rows
+		float RowValue = 0.0;
+		for (uint j = SubRectMin.y; j < SubRectMax.y; ++j)
+		{
+			float2 ScreenUV = float2(float(i) * InvRectWidth, float(j) * InvRectHeight);
+
+			// Accumulate values from alpha channel.
+			float Sample = Texture.Load(int3(i, j, 0)).w;
+			RowValue += Sample;
+		}
+
+		Value += RowValue;
+	}
+
+	const float NumSamples = (SubRectMax.x - SubRectMin.x) * (SubRectMax.y - SubRectMin.y);
+
+	return float2(Value, NumSamples);
+}
+
+float4 EyeAdaptationCommon(float AverageSceneLuminance, float OldExposureScale)
+{
 	const float TargetAverageLuminance = clamp(AverageSceneLuminance, EyeAdaptation_MinAverageLuminance, EyeAdaptation_MaxAverageLuminance);
-	
+
 	// White point luminance is target luminance divided by 0.18 (18% grey).
 	const float TargetExposure = TargetAverageLuminance / 0.18;
 
-	const float OldExposureScale = HistogramTexture.Load(int3(0, 1, 0)).x;
 	const float MiddleGreyExposureCompensation = EyeAdaptation_ExposureCompensationSettings * EyeAdaptation_ExposureCompensationCurve; // we want the average luminance remapped to 0.18, not 1.0
 	const float OldExposure = MiddleGreyExposureCompensation / (OldExposureScale != 0 ? OldExposureScale : 1.0f);
 
@@ -136,17 +169,69 @@ void EyeAdaptationCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	const float EstimatedExposure = ComputeEyeAdaptation(OldExposure, TargetExposure, EyeAdaptation_DeltaWorldTime);
 
 	// maybe make this an option to avoid hard clamping when transitioning between different exposure volumes?
-	const float SmoothedExposure = clamp(EstimatedExposure, EyeAdaptation_MinAverageLuminance/.18f, EyeAdaptation_MaxAverageLuminance/.18f);
+	const float SmoothedExposure = clamp(EstimatedExposure, EyeAdaptation_MinAverageLuminance / .18f, EyeAdaptation_MaxAverageLuminance / .18f);
 
 	const float SmoothedExposureScale = 1.0f / max(0.0001f, SmoothedExposure);
-	const float TargetExposureScale =   1.0f / max(0.0001f, TargetExposure);
+	const float TargetExposureScale = 1.0f / max(0.0001f, TargetExposure);
 
-	OutColor.x = MiddleGreyExposureCompensation * SmoothedExposureScale;
-	OutColor.y = MiddleGreyExposureCompensation * TargetExposureScale;
-	OutColor.z = AverageSceneLuminance;
-	OutColor.w = MiddleGreyExposureCompensation;
+	float4 OutData;
+	// Output the number that will rescale the image intensity
+	OutData.x = MiddleGreyExposureCompensation * SmoothedExposureScale;
+	// Output the target value
+	OutData.y = MiddleGreyExposureCompensation * TargetExposureScale;
+	OutData.z = AverageSceneLuminance;
+	OutData.w = MiddleGreyExposureCompensation;
+
+	return OutData;
+}
+
+#if COMPUTE_AVERAGE_LOCAL_EXPOSURE
+float ComputeAverageLocalExposure(Texture2D HistogramTexture, float ExposureScale, float MiddleGreyExposureCompensation)
+{
+	// Average Local Exposure is calculated using log(LocalExposure) 
+	// since it results in a more consistent value when applied to Pre-Exposure
+
+	const float MiddleGreyLumValue = log2(0.18 * MiddleGreyExposureCompensation * LocalExposure_MiddleGreyExposureCompensation);
+
+	float2 Sum = 0;
+
+	UNROLL for (uint i = 0; i < HISTOGRAM_SIZE; ++i)
+	{
+		float LocalValue = GetHistogramBucket(HistogramTexture, i);
+
+		float LogLuminanceAtBucket = ComputeLogLuminanceFromHistogramPosition(float(i) / (float)(HISTOGRAM_SIZE - 1));
+
+		float BaseLogLum = LogLuminanceAtBucket + log2(ExposureScale);
+		float LogLocalExposure = CalculateLogLocalExposure(BaseLogLum, BaseLogLum, MiddleGreyLumValue, LocalExposure_HighlightContrastScale, LocalExposure_ShadowContrastScale, 0.0f);
+
+		Sum += float2(LogLocalExposure, 1) * LocalValue;
+	}
+
+	float AverageLocalExposure = Sum.x / max(0.0001f, Sum.y);
+	AverageLocalExposure = exp2(AverageLocalExposure);
+
+	return AverageLocalExposure;
+}
+#endif
+
+#if COMPUTESHADER
+[numthreads(1, 1, 1)]
+void EyeAdaptationCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	const float AverageSceneLuminance = ComputeEyeAdaptationExposure(HistogramTexture);
+	const float OldExposureScale = HistogramTexture.Load(int3(0, 1, 0)).x;
+
+	const float4 OutData0 = EyeAdaptationCommon(AverageSceneLuminance, OldExposureScale);
 	
-	RWEyeAdaptationBuffer[0] = OutColor;
+
+#if COMPUTE_AVERAGE_LOCAL_EXPOSURE
+	const float AverageLocalExposure = ComputeAverageLocalExposure(HistogramTexture, OutData0.x, OutData0.w);
+#else
+	const float AverageLocalExposure = 1.0f;
+#endif
+
+	RWEyeAdaptationBuffer[0] = OutData0;
+	RWEyeAdaptationBuffer[1] = float4(AverageLocalExposure, 0.0f, 0.0f, 0.0f);
 }
 
 RWTexture2D<float4> RWEyeAdaptationTexture;
@@ -166,7 +251,7 @@ void BasicEyeAdaptationSetupPS(
 	OutColor = Texture2DSample(ColorTexture, ColorSampler, UV);
 
 	// Use max to ensure intensity is never zero (so the following log is well behaved)
-	const float Intensity = CalculateEyeAdaptationLuminance(OutColor.xyz);
+	const float Intensity = CalculateEyeAdaptationLuminance(OutColor.xyz * View.OneOverPreExposure);
 	const float LogIntensity = clamp(log2(Intensity),-10.0f,20.0f);
 
 	// Store log intensity in the alpha channel: scale to 0,1 range.
@@ -179,11 +264,43 @@ void BasicEyeAdaptationSetupPS(
 
 groupshared float2 SubRectValueWeight[TGSIZE*TGSIZE];
 
+float2 Reduce(uint GIndex, float2 Value)
+{
+	// Store in LDS
+	SubRectValueWeight[GIndex] = Value;
+	GroupMemoryBarrierWithGroupSync();
+
+	// Merge the ValueWeight from all threads
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 1];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 2];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 4];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 8];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 16];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 32];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 64];
+	GroupMemoryBarrierWithGroupSync();
+
+	SubRectValueWeight[GIndex] = SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 128];
+	GroupMemoryBarrierWithGroupSync();
+
+	return SubRectValueWeight[0];
+}
+
 [numthreads(TGSIZE, TGSIZE, 1)]
 void BasicEyeAdaptationCS(uint GIndex : SV_GroupIndex, uint2 GTId : SV_GroupThreadID)
-{
-	float4 OutColor = 0;
-	
+{	
 	// Compute scaled Log Luminance Average
 
 	// There are TGSIZE*TGSIZE threads. Each thread will calculate the luminance for its own subregions from a TGSIZE*TGSIZE screen grid
@@ -197,76 +314,49 @@ void BasicEyeAdaptationCS(uint GIndex : SV_GroupIndex, uint2 GTId : SV_GroupThre
 
 	const float2 LogLumAveWithWeight = ComputeWeightedTextureAverageAlphaSubRegion(ColorTexture, SubRectMin, SubRectMax, Color_ViewportMin, Color_ViewportMax);
 
-	// Store in LDS
-	SubRectValueWeight[GIndex] = LogLumAveWithWeight;
-	GroupMemoryBarrierWithGroupSync();
+	const float2 ReducedLogLumAveWithWeight = Reduce(GIndex, LogLumAveWithWeight);
 
-	// Merge the ValueWeight from all threads
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 1];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 2];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 4];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 8];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 16];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 32];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 64];
-	GroupMemoryBarrierWithGroupSync();
-
-	SubRectValueWeight[GIndex] =  SubRectValueWeight[GIndex] + SubRectValueWeight[GIndex ^ 128];
-	GroupMemoryBarrierWithGroupSync();
-
-	float LogLumAve = SubRectValueWeight[0].x /  SubRectValueWeight[0].y;
+	float LogLumAve = ReducedLogLumAveWithWeight.x / ReducedLogLumAveWithWeight.y;
 
 	// Correct for [0,1] scaling
 	LogLumAve = (LogLumAve - EyeAdaptation_HistogramBias) / EyeAdaptation_HistogramScale;
 	
 	// Convert LogLuminanceAverage to Average Intensity
-	const float AverageSceneLuminance = View.OneOverPreExposure * exp2(LogLumAve);
-
-	const float MiddleGreyExposureCompensation = EyeAdaptation_ExposureCompensationSettings * EyeAdaptation_ExposureCompensationCurve * EyeAdaptation_GreyMult;// we want the average luminance remapped to 0.18, not 1.0
-
-	const float LumAve = AverageSceneLuminance; 
-
-	const float ClampedLumAve = clamp(LumAve, EyeAdaptation_MinAverageLuminance, EyeAdaptation_MaxAverageLuminance);
+	const float AverageSceneLuminance = exp2(LogLumAve);
 	
 	// The Exposure Scale (and thus intensity) used in the previous frame
-	const float ExposureScaleOld = EyeAdaptationBuffer[0].x;
-	const float LuminanceAveOld = MiddleGreyExposureCompensation / (ExposureScaleOld != 0 ? ExposureScaleOld : 1.0f);
+	const float OldExposureScale = EyeAdaptationBuffer[0].x;
 
-	// Time-based expoential blend of the intensity to allow the eye adaptation to ramp up over a few frames.
-	const float EstimatedLuminance = ComputeEyeAdaptation(LuminanceAveOld, ClampedLumAve, EyeAdaptation_DeltaWorldTime);
+	const float4 OutData0 = EyeAdaptationCommon(AverageSceneLuminance, OldExposureScale);
 
-	// maybe make this an option to avoid hard clamping when transitioning between different exposure volumes?
-	const float SmoothedLuminance = clamp(EstimatedLuminance, EyeAdaptation_MinAverageLuminance, EyeAdaptation_MaxAverageLuminance);
+#if COMPUTE_AVERAGE_LOCAL_EXPOSURE
+	const float MiddleGreyLumValue = log2(0.18 * OutData0.w * LocalExposure_MiddleGreyExposureCompensation);
 
-	const float SmoothedExposureScale = 1.0f / max(0.0001f, SmoothedLuminance);
-	const float TargetExposureScale   = 1.0f / max(0.0001f, ClampedLumAve);
-	
-	// Output the number that will rescale the image intensity
-	OutColor.x = MiddleGreyExposureCompensation * SmoothedExposureScale;
-	// Output the target value
-	OutColor.y = MiddleGreyExposureCompensation * TargetExposureScale;
-	OutColor.z = AverageSceneLuminance;
-	OutColor.w = MiddleGreyExposureCompensation / EyeAdaptation_GreyMult;
-	
-#if XBOXONE_PROFILE
-	OutColor = !all(IsFinite(OutColor)) ? float4(1, 1, 1, 0) : OutColor;
+	const float2 LogLumSumWithCount = ComputeTextureAverageAlphaSubRegion(ColorTexture, SubRectMin, SubRectMax, Color_ViewportMin, Color_ViewportMax);
+
+	float LogLum = LogLumSumWithCount.x / LogLumSumWithCount.y;
+	LogLum = (LogLum - EyeAdaptation_HistogramBias) / EyeAdaptation_HistogramScale;
+
+	const float BaseLogLum = LogLum + log2(OutData0.x);
+	const float LogLocalExposure = CalculateLogLocalExposure(BaseLogLum, BaseLogLum, MiddleGreyLumValue, LocalExposure_HighlightContrastScale, LocalExposure_ShadowContrastScale, 0.0f);
+
+	const float2 LogLocalExposureSumWithCount = float2(LogLocalExposure, 1.0f) * LogLumSumWithCount.y;
+
+	const float2 ReducedLogLocalExposureSumWithCount = Reduce(GIndex, LogLocalExposureSumWithCount);
+
+	const float AverageLocalExposure = exp2(ReducedLogLocalExposureSumWithCount.x / ReducedLogLocalExposureSumWithCount.y);
+#else
+	const float AverageLocalExposure = 1.0f;
 #endif
 	
-	if(GIndex==0)
+#if XBOXONE_PROFILE
+	OutData0 = !all(IsFinite(OutData0)) ? float4(1, 1, 1, 0) : OutData0;
+#endif
+	
+	if(GIndex == 0)
 	{
-		RWEyeAdaptationBuffer[0] = OutColor;
+		RWEyeAdaptationBuffer[0] = OutData0;
+		RWEyeAdaptationBuffer[1] = float4(AverageLocalExposure, 0.0f, 0.0f, 0.0f);
 	}
 }
 
@@ -301,72 +391,7 @@ Texture3D TranslucencyLightingVolumeAmbientOuter;
 Texture3D TranslucencyLightingVolumeDirectionalInner;
 Texture3D TranslucencyLightingVolumeDirectionalOuter;
 
-#define SharedAmbientInnerSampler View.SharedBilinearClampedSampler
-#define SharedAmbientOuterSampler View.SharedBilinearClampedSampler
-#define SharedDirectionalInnerSampler View.SharedBilinearClampedSampler
-#define SharedDirectionalOuterSampler View.SharedBilinearClampedSampler
-
-// TODO: Move these functions to header file shared with BasePass/Strata
-
-void ComputeVolumeUVs(float3 TranslatedWorldPosition, float3 LightingPositionOffset, out float3 InnerVolumeUVs, out float3 OuterVolumeUVs, out float FinalLerpFactor)
-{
-	// Apply a stable offset to the world position used for lighting, which breaks up artifacts from using a low res volume texture
-	InnerVolumeUVs = (TranslatedWorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[0].xyz) * View.TranslucencyLightingVolumeInvSize[0].xyz;
-	OuterVolumeUVs = (TranslatedWorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[1].xyz) * View.TranslucencyLightingVolumeInvSize[1].xyz;
-
-	// Controls how fast the lerp between the inner and outer cascades happens
-	// Larger values result in a shorter transition distance
-	float TransitionScale = 6;
-	// Setup a 3d lerp factor going to 0 at the edge of the inner volume
-	float3 LerpFactors = saturate((.5f - abs(InnerVolumeUVs - .5f)) * TransitionScale);
-	FinalLerpFactor = LerpFactors.x * LerpFactors.y * LerpFactors.z;
-}
-
-float4 GetAmbientLightingVectorFromTranslucentLightingVolume(float3 InnerVolumeUVs, float3 OuterVolumeUVs, float FinalLerpFactor)
-{
-	// Lookup the inner and outer cascade ambient lighting values
-	float4 InnerLighting = Texture3DSampleLevel(TranslucencyLightingVolumeAmbientInner, SharedAmbientInnerSampler, InnerVolumeUVs, 0);
-	float4 OuterLighting = Texture3DSampleLevel(TranslucencyLightingVolumeAmbientOuter, SharedAmbientOuterSampler, OuterVolumeUVs, 0);
-
-	// Lerp between cascades
-	return lerp(OuterLighting, InnerLighting, FinalLerpFactor);
-}
-
-float3 GetDirectionalLightingVectorFromTranslucentLightingVolume(float3 InnerVolumeUVs, float3 OuterVolumeUVs, float FinalLerpFactor)
-{
-	// Fetch both the ambient and directional values for both cascades
-	float3 InnerVector1 = Texture3DSampleLevel(TranslucencyLightingVolumeDirectionalInner, SharedDirectionalInnerSampler, InnerVolumeUVs, 0).rgb;
-	float3 OuterVector1 = Texture3DSampleLevel(TranslucencyLightingVolumeDirectionalOuter, SharedDirectionalOuterSampler, OuterVolumeUVs, 0).rgb;
-
-	// Lerp between cascades
-	return lerp(OuterVector1, InnerVector1, FinalLerpFactor);
-}
-
-float4 GetVolumeLightingDirectional(float4 AmbientLightingVector, float3 DirectionalLightingVector, float3 WorldNormal)
-{
-	//const float DirectionalLightingIntensity = GetMaterialTranslucencyDirectionalLightingIntensity();
-	const float DirectionalLightingIntensity = 1.0f;
-
-	AmbientLightingVector.rgb /= DirectionalLightingIntensity;
-	DirectionalLightingVector.rgb *= DirectionalLightingIntensity;
-
-	// Reconstruct the SH coefficients based on what was encoded
-	FTwoBandSHVectorRGB TranslucentLighting;
-	TranslucentLighting.R.V.x = AmbientLightingVector.r;
-	TranslucentLighting.G.V.x = AmbientLightingVector.g;
-	TranslucentLighting.B.V.x = AmbientLightingVector.b;
-	float3 NormalizedAmbientColor = AmbientLightingVector.rgb / (Luminance(AmbientLightingVector.rgb) + 0.00001f);
-
-	// Scale the monocrome directional coefficients with the normalzed ambient color as an approximation to the uncompressed values
-	TranslucentLighting.R.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.r;
-	TranslucentLighting.G.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.g;
-	TranslucentLighting.B.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.b;
-
-	// Compute diffuse lighting which takes the normal into account
-	FTwoBandSHVector DiffuseTransferSH = CalcDiffuseTransferSH(WorldNormal, 1);
-	
-	return float4(max(half3(0, 0, 0), DotSH(TranslucentLighting, DiffuseTransferSH)), AmbientLightingVector.a);
-}
+#include "TranslucencyVolumeCommon.ush"
 
 struct FExposureMaterial
 {
@@ -385,9 +410,9 @@ FExposureMaterial GetExposureMaterial(uint2 InPixelPos)
 	#if STRATA_ENABLED
 	{	
 		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(InPixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
-		const FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
-		const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(InPixelPos, 0)));
-		const FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, InPixelPos);
+		FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+		FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(InPixelPos, 0)));
+		FStrataSubsurfaceHeader SSSHeader = StrataLoadSubsurfaceHeader(Strata.MaterialTextureArray, Strata.FirstSliceStoringStrataSSSData, InPixelPos);
 
 		const float DeviceZ = ConvertFromDeviceZ(SceneDepthTexture.Load(int3(InPixelPos, 0)).r);
 		const float3 TranslatedWorldPosition = ReconstructTranslatedWorldPositionFromDeviceZ(InPixelPos, DeviceZ);
@@ -412,7 +437,7 @@ FExposureMaterial GetExposureMaterial(uint2 InPixelPos)
 				DirectionalAlbedo        += BSDFThroughput * StrataEnvLight.DiffuseWeight;
 				DirectionalAlbedo        += BSDFThroughput * StrataEnvLight.SpecularWeight;
 
-				const bool bHasBackfaceDiffuse = StrataGetBSDFType(BSDF) == STRATA_BSDF_TYPE_SLAB && BSDF_GETSSSTYPE(BSDF) != SSS_TYPE_INVALID;
+				const bool bHasBackfaceDiffuse = StrataGetBSDFType(BSDF) == STRATA_BSDF_TYPE_SLAB && BSDF.HasBackScattering();
 				if (bHasBackfaceDiffuse)
 				{
 					DirectionalAlbedo += BSDFThroughput * StrataEnvLight.DiffuseBackFaceWeight; // StrataEnvLight.DiffuseBackFaceWeight is already divided PI
@@ -427,7 +452,7 @@ FExposureMaterial GetExposureMaterial(uint2 InPixelPos)
 		Out.TranslatedWorldPosition = ReconstructTranslatedWorldPositionFromDeviceZ(InPixelPos, DeviceZ);
 		Out.WorldNormal = TopLayerData.WorldNormal;
 		Out.DirectionalAlbedo = DirectionalAlbedo;
-		Out.bIsValid = IsStrataMaterial(StrataPixelHeader);
+		Out.bIsValid = StrataPixelHeader.IsStrataMaterial();
 		Out.bHasBackfaceLighting = bHasMaterialBackfaceDiffuse;
 		Out.bHasValidDirectionalAlbedo = CalculateEyeAdaptationLuminanceWithoutMin(DiffuseDirectionalAlbedo) > EyeAdaptation_IgnoreMaterialsMinBaseColorLuminance;
 	}
@@ -524,11 +549,11 @@ void CalculateExposureIlluminance(uint2 ThreadId : SV_DispatchThreadID)
 			float4 AmbientLightingVector = GetAmbientLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
 			float3 DirectionalLightingVector = GetDirectionalLightingVectorFromTranslucentLightingVolume(InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
 			
-			float3 VolumeLighting = GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, Material.WorldNormal).rgb;
+			float3 VolumeLighting = GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, Material.WorldNormal, 1.0f).rgb;
 			
 			if (Material.bHasBackfaceLighting)
 			{
-				VolumeLighting += GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, -Material.WorldNormal).rgb;
+				VolumeLighting += GetVolumeLightingDirectional(AmbientLightingVector, DirectionalLightingVector, -Material.WorldNormal, 1.0f).rgb;
 			}
 
 		#if PROJECT_SUPPORTS_LUMEN && !FORWARD_SHADING

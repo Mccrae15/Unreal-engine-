@@ -970,6 +970,9 @@ int ReadDxcOpts(const OptTable *optionTable, unsigned flagsToInclude,
   // UE Change Begin: Use custom layout rules for UE5.
   opts.SpirvOptions.ue5Layout = Args.hasFlag(OPT_fvk_ue5_layout, OPT_INVALID, false);
   // UE Change End: Use custom layout rules for UE5.
+  // UE Change Begin: Added new flag for forceStorageImageFormat
+  opts.SpirvOptions.forceStorageImageFormat = Args.hasFlag(OPT_fvk_force_storage_image_format, OPT_INVALID, false);;
+  // UE Change End: Added new flag for forceStorageImageFormat
   // UE Change Begin: Force subpass OpTypeImage depth flag to be set to 0
   opts.SpirvOptions.forceSubpassImageDepthFalse = Args.hasFlag(OPT_fspv_force_subpass_image_depth_false, OPT_INVALID, false);
   // UE Change End: Force subpass OpTypeImage depth flag to be set to 0
@@ -985,6 +988,10 @@ int ReadDxcOpts(const OptTable *optionTable, unsigned flagsToInclude,
   // UE Change Begin: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
   opts.SpirvOptions.preserveStorageInput = Args.hasFlag(OPT_fspv_preserve_storage_input, OPT_INVALID, false);
   // UE Change End: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
+  // UE Change Begin: Allow SV_Position to be implicit invariant
+  opts.SpirvOptions.svPositionimplicitInvariant =
+      Args.hasFlag(OPT_fspv_svposition_implicit_invariant, OPT_INVALID, false);
+  // UE Change End: Allow SV_Position to be implicit invariant
   // qualifier for older versions of Metal.
   opts.SpirvOptions.noWarnIgnoredFeatures =
       Args.hasFlag(OPT_Wno_vk_ignored_features, OPT_INVALID, false);

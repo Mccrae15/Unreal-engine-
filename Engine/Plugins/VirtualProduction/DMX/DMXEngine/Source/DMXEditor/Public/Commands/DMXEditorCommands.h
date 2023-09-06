@@ -35,4 +35,9 @@ public:
 	TSharedPtr<FUICommandInfo> OpenPatchTool;
 	TSharedPtr<FUICommandInfo> ToggleReceiveDMX;
 	TSharedPtr<FUICommandInfo> ToggleSendDMX;
+
+	// Auto assign
+	TSharedPtr<FUICommandInfo> Align;
+	TSharedPtr<FUICommandInfo> Stack;
+	TSharedPtr<FUICommandInfo> AutoAssignSelectedUniverse;
 };

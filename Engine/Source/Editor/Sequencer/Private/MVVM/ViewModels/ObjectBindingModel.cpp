@@ -11,32 +11,37 @@
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
 #include "MVVM/ViewModels/OutlinerViewModelDragDropOp.h"
 #include "MVVM/Views/SOutlinerObjectBindingView.h"
+#include "MVVM/Selection/Selection.h"
 #include "MVVM/Extensions/IRecyclableExtension.h"
-#include "Modules/ModuleManager.h"
-#include "ISequencerModule.h"
-#include "MovieScene.h"
-#include "MovieSceneFolder.h"
-#include "MovieSceneBinding.h"
-#include "PropertyPath.h"
-#include "ScopedTransaction.h"
-#include "Sequencer.h"
-#include "SequencerNodeTree.h"
-#include "SequencerCommands.h"
-#include "SequencerSettings.h"
-#include "SequencerUtilities.h"
-#include "ISequencerTrackEditor.h"
-#include "SObjectBindingTag.h"
-#include "Containers/ArrayBuilder.h"
-#include "ObjectBindingTagCache.h"
-#include "ObjectEditorUtils.h"
-#include "Styling/AppStyle.h"
-#include "Styling/SlateIconFinder.h"
-#include "Tracks/MovieSceneSpawnTrack.h"
-#include "ClassViewerModule.h"
 #include "Algo/Sort.h"
+#include "ClassViewerModule.h"
+#include "Containers/ArrayBuilder.h"
 #include "Engine/LevelStreaming.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "IDetailCustomization.h"
+#include "IDetailsView.h"
+#include "ISequencerModule.h"
+#include "ISequencerTrackEditor.h"
+#include "IStructureDetailsView.h"
+#include "Modules/ModuleManager.h"
+#include "MovieScene.h"
+#include "MovieSceneBinding.h"
+#include "MovieSceneDynamicBindingCustomization.h"
+#include "MovieSceneFolder.h"
+#include "ObjectBindingTagCache.h"
+#include "ObjectEditorUtils.h"
+#include "PropertyEditorModule.h"
+#include "PropertyPath.h"
+#include "SObjectBindingTag.h"
+#include "ScopedTransaction.h"
+#include "Sequencer.h"
+#include "SequencerCommands.h"
+#include "SequencerNodeTree.h"
+#include "SequencerSettings.h"
+#include "SequencerUtilities.h"
+#include "Styling/AppStyle.h"
+#include "Styling/SlateIconFinder.h"
 
 #define LOCTEXT_NAMESPACE "ObjectBindingModel"
 
@@ -112,66 +117,6 @@ void GetKeyablePropertyPaths(UClass* Class, void* ValuePtr, UStruct* PropertySou
 	}
 }
 
-struct FMovieSceneSpawnableFlagCheckState
-{
-	FSequencer* Sequencer;
-	UMovieScene* MovieScene;
-	bool FMovieSceneSpawnable::*PtrToFlag;
-
-	ECheckBoxState operator()() const
-	{
-		using namespace UE::Sequencer;
-
-		ECheckBoxState CheckState = ECheckBoxState::Undetermined;
-		for (TWeakPtr<FViewModel> WeakItem : Sequencer->GetSelection().GetSelectedOutlinerItems())
-		{
-			if (IObjectBindingExtension* ObjectBindingID = ICastable::CastWeakPtr<IObjectBindingExtension>(WeakItem))
-			{
-				FMovieSceneSpawnable* SelectedSpawnable = MovieScene->FindSpawnable(ObjectBindingID->GetObjectGuid());
-				if (SelectedSpawnable)
-				{
-					if (CheckState != ECheckBoxState::Undetermined && SelectedSpawnable->*PtrToFlag != ( CheckState == ECheckBoxState::Checked ))
-					{
-						return ECheckBoxState::Undetermined;
-					}
-					CheckState = SelectedSpawnable->*PtrToFlag ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-				}
-			}
-		}
-		return CheckState;
-	}
-};
-
-struct FMovieSceneSpawnableFlagToggler
-{
-	FSequencer* Sequencer;
-	UMovieScene* MovieScene;
-	bool FMovieSceneSpawnable::*PtrToFlag;
-	FText TransactionText;
-
-	void operator()() const
-	{
-		using namespace UE::Sequencer;
-
-		FScopedTransaction Transaction(TransactionText);
-
-		const ECheckBoxState CheckState = FMovieSceneSpawnableFlagCheckState{Sequencer, MovieScene, PtrToFlag}();
-
-		MovieScene->Modify();
-		for (TWeakPtr<FViewModel> WeakItem : Sequencer->GetSelection().GetSelectedOutlinerItems())
-		{
-			if (IObjectBindingExtension* ObjectBinding = ICastable::CastWeakPtr<IObjectBindingExtension>(WeakItem))
-			{
-				FMovieSceneSpawnable* SelectedSpawnable = MovieScene->FindSpawnable(ObjectBinding->GetObjectGuid());
-				if (SelectedSpawnable)
-				{
-					SelectedSpawnable->*PtrToFlag = (CheckState == ECheckBoxState::Unchecked);
-				}
-			}
-		}
-	}
-};
-
 } // anon-namespace
 
 FObjectBindingModel::FObjectBindingModel(FSequenceModel* InOwnerModel, const FMovieSceneBinding& InBinding)
@@ -198,7 +143,7 @@ void FObjectBindingModel::OnConstruct()
 		if (Sequencer->GetSequencerSettings()->GetShowLayerBars())
 		{
 			LayerBar = MakeShared<FLayerBarModel>(AsShared());
-			LayerBar->SetLinkedOutlinerItem(AsShared());
+			LayerBar->SetLinkedOutlinerItem(SharedThis(this));
 
 			GetChildrenForList(&TrackAreaList).AddChild(LayerBar);
 		}
@@ -357,8 +302,6 @@ void FObjectBindingModel::Rename(const FText& NewName)
 		{
 			MovieScene->SetObjectDisplayName(ObjectBindingID, NewName);
 		}
-
-		SetIdentifier(FName(*NewName.ToString()));
 	}
 }
 
@@ -532,16 +475,10 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 
 	// Only include other selected object bindings if this binding is selected. Otherwise, this will lead to 
 	// confusion with multiple tracks being added to possibly unrelated objects
-	if (Sequencer->GetSelection().IsSelected(AsShared()))
+	if (Sequencer->GetViewModel()->GetSelection()->Outliner.IsSelected(SharedThis(this)))
 	{
-		for (const TWeakPtr<FViewModel>& Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+		for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 		{
-			const FObjectBindingModel* ObjectBindingNode = Node.Pin()->CastThis<FObjectBindingModel>();
-			if (!ObjectBindingNode)
-			{
-				continue;
-			}
-
 			const FGuid Guid = ObjectBindingNode->GetObjectGuid();
 			for (auto RuntimeObject : Sequencer->FindBoundObjects(Guid, OwnerModel->GetSequenceID()))
 			{
@@ -620,7 +557,7 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 	bool bDefaultCategoryFound = false;
 
 	// Create property menu data based on keyable property paths
-	TSortedMap<FString, TArray<PropertyMenuData>, FDefaultAllocator, FCategorySortPredicate> KeyablePropertyMenuData;
+	TMap<FString, TArray<PropertyMenuData>> KeyablePropertyMenuData;
 	for (const FPropertyPath& KeyablePropertyPath : KeyablePropertyPaths)
 	{
 		FProperty* Property = KeyablePropertyPath.GetRootProperty().Property.Get();
@@ -647,6 +584,8 @@ TSharedRef<SWidget> FObjectBindingModel::GetAddTrackMenuContent()
 			KeyablePropertyMenuData.FindOrAdd(CategoryText).Add(KeyableMenuData);
 		}
 	}
+
+	KeyablePropertyMenuData.KeySort(FCategorySortPredicate());
 
 	// Always add an extension point for Properties section even if none are found (Components rely on this) 
 	if (!bDefaultCategoryFound)
@@ -849,18 +788,14 @@ void FObjectBindingModel::HandlePropertyMenuItemExecute(FPropertyPath PropertyPa
 		}
 	}
 
-	for (const TWeakPtr<FViewModel>& Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 	{
-		FObjectBindingModel* ObjectBindingNode = ICastable::CastWeakPtr<FObjectBindingModel>(Node);
-		if (ObjectBindingNode)
+		FGuid Guid = ObjectBindingNode->GetObjectGuid();
+		for (auto RuntimeObject : Sequencer->FindBoundObjects(Guid, OwnerModel->GetSequenceID()))
 		{
-			FGuid Guid = ObjectBindingNode->GetObjectGuid();
-			for (auto RuntimeObject : Sequencer->FindBoundObjects(Guid, OwnerModel->GetSequenceID()))
+			if (Sequencer->CanKeyProperty(FCanKeyPropertyParams(RuntimeObject->GetClass(), PropertyPath)))
 			{
-				if (Sequencer->CanKeyProperty(FCanKeyPropertyParams(RuntimeObject->GetClass(), PropertyPath)))
-				{
-					KeyableBoundObjects.AddUnique(RuntimeObject.Get());
-				}
+				KeyableBoundObjects.AddUnique(RuntimeObject.Get());
 			}
 		}
 	}
@@ -922,120 +857,29 @@ void FObjectBindingModel::AddPropertyMenuItems(FMenuBuilder& AddTrackMenuBuilder
 
 void FObjectBindingModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 {
-	FSequencer* Sequencer = GetEditor()->GetSequencerImpl().Get();
+	TSharedPtr<FSequencerEditorViewModel> EditorViewModel = GetEditor();
+	FSequencer* Sequencer = EditorViewModel->GetSequencerImpl().Get();
 	ISequencerModule& SequencerModule = FModuleManager::GetModuleChecked<ISequencerModule>("Sequencer");
 
 	UObject* BoundObject = Sequencer->FindSpawnedObjectOrTemplate(ObjectBindingID);
 	const UClass* ObjectClass = FindObjectClass();
-
-	TSharedRef<FUICommandList> CommandList(new FUICommandList);
-	TSharedPtr<FExtender> Extender = SequencerModule.GetObjectBindingContextMenuExtensibilityManager()->GetAllExtenders(CommandList, TArrayBuilder<UObject*>().Add(BoundObject));
+	
+	TSharedPtr<FExtender> Extender = EditorViewModel->GetSequencerMenuExtender(
+			SequencerModule.GetObjectBindingContextMenuExtensibilityManager(), TArrayBuilder<UObject*>().Add(BoundObject),
+			&FSequencerCustomizationInfo::OnBuildObjectBindingContextMenu, SharedThis(this));
 	if (Extender.IsValid())
 	{
 		MenuBuilder.PushExtender(Extender.ToSharedRef());
 	}
-
-	if (Sequencer->IsLevelEditorSequencer())
-	{
-		UMovieScene* MovieScene = OwnerModel->GetMovieScene();
-		FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(ObjectBindingID);
-
-		if (Spawnable)
-		{
-			MenuBuilder.BeginSection("Spawnable", LOCTEXT("SpawnableMenuSectionName", "Spawnable"));
 	
-			MenuBuilder.AddSubMenu(
-				LOCTEXT("OwnerLabel", "Spawned Object Owner"),
-				LOCTEXT("OwnerTooltip", "Specifies how the spawned object is to be owned"),
-				FNewMenuDelegate::CreateSP(this, &FObjectBindingModel::AddSpawnOwnershipMenu)
-			);
+	// Extenders can go in there.
+	MenuBuilder.BeginSection("ObjectBindingActions");
+	MenuBuilder.EndSection();
 
-			MenuBuilder.AddSubMenu(
-				LOCTEXT("SubLevelLabel", "Spawnable Level"),
-				LOCTEXT("SubLevelTooltip", "Specifies which level the spawnable should be spawned into"),
-				FNewMenuDelegate::CreateSP(this, &FObjectBindingModel::AddSpawnLevelMenu)
-			);
-
-			MenuBuilder.AddSubMenu(
-				LOCTEXT("ChangeClassLabel", "Change Class"),
-				LOCTEXT("ChangeClassTooltip", "Change the class (object template) that this spawns from"),
-				FNewMenuDelegate::CreateSP(this, &FObjectBindingModel::AddChangeClassMenu));
-
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("ContinuouslyRespawn", "Continuously Respawn"),
-				LOCTEXT("ContinuouslyRespawnTooltip", "When enabled, this spawnable will always be respawned if it gets destroyed externally. When disabled, this object will only ever be spawned once for each spawn key even if it is destroyed externally"),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateLambda(FMovieSceneSpawnableFlagToggler{Sequencer, MovieScene, &FMovieSceneSpawnable::bContinuouslyRespawn, LOCTEXT("ContinuouslyRespawnTransaction", "Set Continuously Respawn")}),
-					FCanExecuteAction(),
-					FGetActionCheckState::CreateLambda(FMovieSceneSpawnableFlagCheckState{Sequencer, MovieScene, &FMovieSceneSpawnable::bContinuouslyRespawn})
-				),
-				NAME_None,
-				EUserInterfaceActionType::ToggleButton
-			);
-
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("EvaluateTracksWhenNotSpawned", "Evaluate Tracks When Not Spawned"),
-				LOCTEXT("EvaluateTracksWhenNotSpawnedTooltip", "When enabled, any tracks on this object binding or its children will still be evaluated even when the object is not spawned."),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateLambda(FMovieSceneSpawnableFlagToggler{Sequencer, MovieScene, &FMovieSceneSpawnable::bEvaluateTracksWhenNotSpawned, LOCTEXT("EvaluateTracksWhenNotSpawned_Transaction", "Evaluate Tracks When Not Spawned")}),
-					FCanExecuteAction(),
-					FGetActionCheckState::CreateLambda(FMovieSceneSpawnableFlagCheckState{Sequencer, MovieScene, &FMovieSceneSpawnable::bEvaluateTracksWhenNotSpawned})
-				),
-				NAME_None,
-				EUserInterfaceActionType::ToggleButton
-			);
-
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("NetAddressable", "Net Addressable"),
-				LOCTEXT("NetAddressableTooltip", "When enabled, this spawnable will be spawned using a unique name that allows it to be addressed by the server and client (useful for relative movement calculations on spawned props)"),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateLambda(FMovieSceneSpawnableFlagToggler{Sequencer, MovieScene, &FMovieSceneSpawnable::bNetAddressableName, LOCTEXT("NetAddressableTransaction", "Set Net Addressable")}),
-					FCanExecuteAction(),
-					FGetActionCheckState::CreateLambda(FMovieSceneSpawnableFlagCheckState{Sequencer, MovieScene, &FMovieSceneSpawnable::bNetAddressableName})
-				),
-				NAME_None,
-				EUserInterfaceActionType::ToggleButton
-			);
-
-			MenuBuilder.AddMenuEntry( FSequencerCommands::Get().SaveCurrentSpawnableState );
-			MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ConvertToPossessable );
-
-			MenuBuilder.EndSection();
-		}
-		else
-		{
-			MenuBuilder.BeginSection("Possessable");
-
-			MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ConvertToSpawnable );
-
-			MenuBuilder.EndSection();
-		}
-
-		MenuBuilder.BeginSection("Import/Export", LOCTEXT("ImportExportMenuSectionName", "Import/Export"));
-		
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("ImportFBX", "Import..."),
-			LOCTEXT("ImportFBXTooltip", "Import FBX animation to this object"),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([=]{ Sequencer->ImportFBXOntoSelectedNodes(); })
-			));
-
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("ExportFBX", "Export..."),
-			LOCTEXT("ExportFBXTooltip", "Export FBX animation from this object"),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateLambda([=]{ Sequencer->ExportFBX(); })
-			));
-			
-		MenuBuilder.EndSection();
-	}
-
+	// External extension.
 	Sequencer->BuildCustomContextMenuForGuid(MenuBuilder, ObjectBindingID);
+
+	// Track editor extension.
 	TArray<FGuid> ObjectBindings;
 	ObjectBindings.Add(ObjectBindingID);
 	for (const TSharedPtr<ISequencerTrackEditor>& TrackEditor : Sequencer->GetTrackEditors())
@@ -1043,6 +887,7 @@ void FObjectBindingModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		TrackEditor->BuildObjectBindingContextMenu(MenuBuilder, ObjectBindings, ObjectClass);
 	}
 
+	// Up-call.
 	FOutlinerItemModel::BuildContextMenu(MenuBuilder);
 }
 
@@ -1056,188 +901,76 @@ void FObjectBindingModel::BuildOrganizeContextMenu(FMenuBuilder& MenuBuilder)
 
 	FOutlinerItemModel::BuildOrganizeContextMenu(MenuBuilder);
 }
-
-void FObjectBindingModel::AddSpawnOwnershipMenu(FMenuBuilder& MenuBuilder)
+	
+void FObjectBindingModel::AddDynamicBindingMenu(FMenuBuilder& MenuBuilder, FMovieSceneDynamicBinding& DynamicBinding)
 {
-	TSharedPtr<ISequencer> Sequencer = OwnerModel->GetSequencer();
-	UMovieScene* MovieScene = OwnerModel->GetMovieScene();
-	FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(ObjectBindingID);
-	if (!Spawnable)
+	FDetailsViewArgs DetailsViewArgs;
 	{
-		return;
+		DetailsViewArgs.bAllowSearch = false;
+		DetailsViewArgs.bCustomFilterAreaLocation = true;
+		DetailsViewArgs.bCustomNameAreaLocation = true;
+		DetailsViewArgs.bHideSelectionTip = true;
+		DetailsViewArgs.bLockable = false;
+		DetailsViewArgs.bSearchInitialKeyFocus = true;
+		DetailsViewArgs.bUpdatesFromSelection = false;
+		DetailsViewArgs.bShowOptions = false;
+		DetailsViewArgs.bShowModifiedPropertiesOption = false;
+		DetailsViewArgs.bShowScrollBar = false;
 	}
-	auto Callback = [=](ESpawnOwnership NewOwnership){
 
-		FScopedTransaction Transaction(LOCTEXT("SetSpawnOwnership", "Set Spawnable Ownership"));
+	FStructureDetailsViewArgs StructureViewArgs;
+	{
+		StructureViewArgs.bShowObjects = false;
+		StructureViewArgs.bShowAssets = true;
+		StructureViewArgs.bShowClasses = true;
+		StructureViewArgs.bShowInterfaces = false;
+	}
 
-		Spawnable->SetSpawnOwnership(NewOwnership);
+	TSharedRef<IStructureDetailsView> StructureDetailsView = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor")
+		.CreateStructureDetailView(DetailsViewArgs, StructureViewArgs, nullptr);
 
-		// Overwrite the completion state for all spawn sections to ensure the expected behaviour.
-		EMovieSceneCompletionMode NewCompletionMode = NewOwnership == ESpawnOwnership::InnerSequence ? EMovieSceneCompletionMode::RestoreState : EMovieSceneCompletionMode::KeepState;
-
-		// Make all spawn sections retain state
-		UMovieSceneSpawnTrack* SpawnTrack = MovieScene->FindTrack<UMovieSceneSpawnTrack>(ObjectBindingID);
-		if (SpawnTrack)
-		{
-			for (UMovieSceneSection* Section : SpawnTrack->GetAllSections())
-			{
-				Section->Modify();
-				Section->EvalOptions.CompletionMode = NewCompletionMode;
-			}
-		}
-	};
-
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("ThisSequence_Label", "This Sequence"),
-		LOCTEXT("ThisSequence_Tooltip", "Indicates that this sequence will own the spawned object. The object will be destroyed at the end of the sequence."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda(Callback, ESpawnOwnership::InnerSequence),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([=]{ return Spawnable->GetSpawnOwnership() == ESpawnOwnership::InnerSequence; })
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("RootSequence_Label", "Root Sequence"),
-		LOCTEXT("RootSequence_Tooltip", "Indicates that the outermost sequence will own the spawned object. The object will be destroyed when the outermost sequence stops playing."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda(Callback, ESpawnOwnership::RootSequence),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([=]{ return Spawnable->GetSpawnOwnership() == ESpawnOwnership::RootSequence; })
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("External_Label", "External"),
-		LOCTEXT("External_Tooltip", "Indicates this object's lifetime is managed externally once spawned. It will not be destroyed by sequencer."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda(Callback, ESpawnOwnership::External),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([=]{ return Spawnable->GetSpawnOwnership() == ESpawnOwnership::External; })
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-}
-
-void FObjectBindingModel::AddSpawnLevelMenu(FMenuBuilder& MenuBuilder)
-{
+	// Register details customizations for this instance
 	TSharedPtr<FSequencer> Sequencer = OwnerModel->GetSequencerImpl();
-	UMovieScene* MovieScene = OwnerModel->GetMovieScene();
-	FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(ObjectBindingID);
-	if (!Spawnable)
+	UMovieSceneSequence* Sequence = Sequencer->GetFocusedMovieSceneSequence();
+	StructureDetailsView->GetDetailsView()->RegisterInstancedCustomPropertyTypeLayout(
+		FMovieSceneDynamicBinding::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMovieSceneDynamicBindingCustomization::MakeInstance, Sequence->GetMovieScene(), ObjectBindingID));
+
+	// We can't just show the FMovieSceneDynamicBinding struct in the details view, because Slate only uses
+	// the above details view customization for *properties* (not for the root object). So here we put a copy of
+	// our dynamic binding struct inside a container, and when the details view is done setting values on it,
+	// we copy these values back to the original dynamic binding.
+	TSharedPtr<FStructOnScope> StructOnScope = MakeShared<FStructOnScope>(FMovieSceneDynamicBindingContainer::StaticStruct());
+	FMovieSceneDynamicBindingContainer* BufferContainer = (FMovieSceneDynamicBindingContainer*)StructOnScope->GetStructMemory();
+	BufferContainer->DynamicBinding = DynamicBinding;
+	StructureDetailsView->SetStructureData(StructOnScope);
+
+	StructureDetailsView->GetOnFinishedChangingPropertiesDelegate().AddSP(this, &FObjectBindingModel::OnFinishedChangingDynamicBindingProperties, StructOnScope);
+
+	MenuBuilder.BeginSection(NAME_None, LOCTEXT("DynamicBindingHeader", "Dynamic Binding"));
 	{
-		return;
+		TSharedRef<SWidget> Widget = StructureDetailsView->GetWidget().ToSharedRef();
+		MenuBuilder.AddWidget(Widget, FText());
 	}
-
-	MenuBuilder.AddMenuEntry(
-		NSLOCTEXT("UnrealEd", "PersistentLevel", "Persistent Level"),
-		NSLOCTEXT("UnrealEd", "PersistentLevel", "Persistent Level"),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { Sequencer->SetSelectedNodesSpawnableLevel(NAME_None); }),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([=] { return Spawnable->GetLevelName() == NAME_None; })
-		),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
-	);
-
-	UWorld* World = Cast<UWorld>(Sequencer->GetPlaybackContext());
-	if (!World)
-	{
-		return;
-	}
-
-	for (ULevelStreaming* LevelStreaming : World->GetStreamingLevels())
-	{
-		if (LevelStreaming)
-		{
-			FName LevelName = FPackageName::GetShortFName( LevelStreaming->GetWorldAssetPackageFName() );
-
-			MenuBuilder.AddMenuEntry(
-				FText::FromName(LevelName),
-				FText::FromName(LevelName),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateLambda([=] { Sequencer->SetSelectedNodesSpawnableLevel(LevelName); }),
-					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([=] { return Spawnable->GetLevelName() == LevelName; })
-				),
-				NAME_None,
-				EUserInterfaceActionType::ToggleButton
-			);
-		}
-	}
+	MenuBuilder.EndSection();
 }
 
-void FObjectBindingModel::AddChangeClassMenu(FMenuBuilder& MenuBuilder)
+void FObjectBindingModel::OnFinishedChangingDynamicBindingProperties(const FPropertyChangedEvent& ChangeEvent, TSharedPtr<FStructOnScope> ValueStruct)
 {
+	auto* Container = (FMovieSceneDynamicBindingContainer*)ValueStruct->GetStructMemory();
+
 	UMovieScene* MovieScene = OwnerModel->GetMovieScene();
-	FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(ObjectBindingID);
-	if (!Spawnable)
+	FMovieScenePossessable* Possessable = MovieScene->FindPossessable(ObjectBindingID);
+	if (Possessable)
 	{
+		Possessable->DynamicBinding = Container->DynamicBinding;
 		return;
 	}
-
-	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
-
-	FClassViewerInitializationOptions Options;
-	Options.Mode = EClassViewerMode::ClassPicker;
-	Options.bIsActorsOnly = true;
-	Options.bIsPlaceableOnly = true;
-
-	const UClass* ClassForObjectBinding = FindObjectClass();
-	if (ClassForObjectBinding)
-	{
-		Options.ViewerTitleString = FText::FromString(TEXT("Change from: ") + ClassForObjectBinding->GetFName().ToString());
-	}
-	else
-	{
-		Options.ViewerTitleString = FText::FromString(TEXT("Change from: (empty)"));
-	}
-
-	MenuBuilder.AddWidget(
-		SNew(SBox)
-		.MinDesiredWidth(300.0f)
-		.MaxDesiredHeight(400.0f)
-		[
-			ClassViewerModule.CreateClassViewer(Options, FOnClassPicked::CreateRaw(this, &FObjectBindingModel::HandleTemplateActorClassPicked))
-		],
-		FText(), true, false
-	);
-}
-
-void FObjectBindingModel::HandleTemplateActorClassPicked(UClass* ChosenClass)
-{
-	FSlateApplication::Get().DismissAllMenus();
-
-	TSharedPtr<ISequencer> Sequencer = OwnerModel->GetSequencer();
-	UMovieScene* MovieScene = OwnerModel->GetMovieScene();
 	FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(ObjectBindingID);
-	if (!Spawnable)
+	if (Spawnable)
 	{
+		Spawnable->DynamicBinding = Container->DynamicBinding;
 		return;
-	}
-
-	FScopedTransaction Transaction(LOCTEXT("ChangeClass", "Change Class"));
-
-	MovieScene->Modify();
-
-	TValueOrError<FNewSpawnable, FText> Result = Sequencer->GetSpawnRegister().CreateNewSpawnableType(*ChosenClass, *MovieScene, nullptr);
-	if (Result.IsValid())
-	{
-		Spawnable->SetObjectTemplate(Result.GetValue().ObjectTemplate);
-
-		Sequencer->GetSpawnRegister().DestroySpawnedObject(Spawnable->GetGuid(), OwnerModel->GetSequenceID(), *Sequencer.Get());
-		Sequencer->ForceEvaluate();
 	}
 }
 
@@ -1256,17 +989,14 @@ void FObjectBindingModel::AddTagMenu(FMenuBuilder& MenuBuilder)
 
 		// Gather all the tags on all currently selected object binding IDs
 		FMovieSceneSequenceID SequenceID = OwnerModel->GetSequenceID();
-		for (const TWeakPtr<FViewModel>& Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+		for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 		{
-			if (FObjectBindingModel* ObjectBindingNode = ICastable::CastWeakPtr<FObjectBindingModel>(Node))
-			{
-				const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
+			const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
 
-				UE::MovieScene::FFixedObjectBindingID BindingID(ObjectID, SequenceID);
-				for (auto It = Sequencer->GetObjectBindingTagCache()->IterateTags(BindingID); It; ++It)
-				{
-					AllTags.Add(It.Value());
-				}
+			UE::MovieScene::FFixedObjectBindingID BindingID(ObjectID, SequenceID);
+			for (auto It = Sequencer->GetObjectBindingTagCache()->IterateTags(BindingID); It; ++It)
+			{
+				AllTags.Add(It.Value());
 			}
 		}
 
@@ -1310,25 +1040,22 @@ ECheckBoxState FObjectBindingModel::GetTagCheckState(FName TagName)
 	TSharedPtr<FSequencer> Sequencer = OwnerModel->GetSequencerImpl();
 	FMovieSceneSequenceID SequenceID = OwnerModel->GetSequenceID();
 
-	for (const TWeakPtr<FViewModel>& Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 	{
-		if (FObjectBindingModel* ObjectBindingNode = ICastable::CastWeakPtr<FObjectBindingModel>(Node))
+		const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
+
+		UE::MovieScene::FFixedObjectBindingID BindingID(ObjectID, SequenceID);
+		ECheckBoxState ThisCheckState = Sequencer->GetObjectBindingTagCache()->HasTag(BindingID, TagName)
+			? ECheckBoxState::Checked
+			: ECheckBoxState::Unchecked;
+
+		if (CheckBoxState == ECheckBoxState::Undetermined)
 		{
-			const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
-
-			UE::MovieScene::FFixedObjectBindingID BindingID(ObjectID, SequenceID);
-			ECheckBoxState ThisCheckState = Sequencer->GetObjectBindingTagCache()->HasTag(BindingID, TagName)
-				? ECheckBoxState::Checked
-				: ECheckBoxState::Unchecked;
-
-			if (CheckBoxState == ECheckBoxState::Undetermined)
-			{
-				CheckBoxState = ThisCheckState;
-			}
-			else if (CheckBoxState != ThisCheckState)
-			{
-				return ECheckBoxState::Undetermined;
-			}
+			CheckBoxState = ThisCheckState;
+		}
+		else if (CheckBoxState != ThisCheckState)
+		{
+			return ECheckBoxState::Undetermined;
 		}
 	}
 
@@ -1340,18 +1067,15 @@ void FObjectBindingModel::ToggleTag(FName TagName)
 	TSharedPtr<FSequencer> Sequencer = OwnerModel->GetSequencerImpl();
 	FMovieSceneSequenceID SequenceID = OwnerModel->GetSequenceID();
 
-	for (TWeakPtr<FViewModel> Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 	{
-		if (FObjectBindingModel* ObjectBindingNode = ICastable::CastWeakPtr<FObjectBindingModel>(Node))
-		{
-			const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
+		const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
 
-			UE::MovieScene::FFixedObjectBindingID BindingID(ObjectID, SequenceID);
-			if (!Sequencer->GetObjectBindingTagCache()->HasTag(BindingID, TagName))
-			{
-				HandleAddTag(TagName);
-				return;
-			}
+		UE::MovieScene::FFixedObjectBindingID BindingID(ObjectID, SequenceID);
+		if (!Sequencer->GetObjectBindingTagCache()->HasTag(BindingID, TagName))
+		{
+			HandleAddTag(TagName);
+			return;
 		}
 	}
 
@@ -1363,18 +1087,14 @@ void FObjectBindingModel::HandleDeleteTag(FName TagName)
 	FScopedTransaction Transaction(FText::Format(LOCTEXT("RemoveBindingTag", "Remove tag '{0}' from binding(s)"), FText::FromName(TagName)));
 
 	TSharedPtr<ISequencer> Sequencer = OwnerModel->GetSequencer();
-	UMovieScene* MovieScene = OwnerModel->GetMovieScene();
+	UMovieScene* MovieScene = Sequencer->GetRootMovieSceneSequence()->GetMovieScene();
 	MovieScene->Modify();
 
 	FMovieSceneSequenceID SequenceID = OwnerModel->GetSequenceID();
-	for (TWeakPtr<FViewModel> Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 	{
-		if (FObjectBindingModel* ObjectBindingNode = ICastable::CastWeakPtr<FObjectBindingModel>(Node))
-		{
-			const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
-
-			MovieScene->UntagBinding(TagName, UE::MovieScene::FFixedObjectBindingID(ObjectID, SequenceID));
-		}
+		const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
+		MovieScene->UntagBinding(TagName, UE::MovieScene::FFixedObjectBindingID(ObjectID, SequenceID));
 	}
 }
 
@@ -1387,14 +1107,10 @@ void FObjectBindingModel::HandleAddTag(FName TagName)
 	MovieScene->Modify();
 
 	FMovieSceneSequenceID SequenceID = OwnerModel->GetSequenceID();
-	for (TWeakPtr<FViewModel> Node : Sequencer->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<FObjectBindingModel> ObjectBindingNode : Sequencer->GetViewModel()->GetSelection()->Outliner.Filter<FObjectBindingModel>())
 	{
-		if (FObjectBindingModel* ObjectBindingNode = ICastable::CastWeakPtr<FObjectBindingModel>(Node))
-		{
-			const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
-
-			MovieScene->TagBinding(TagName, UE::MovieScene::FFixedObjectBindingID(ObjectID, SequenceID));
-		}
+		const FGuid& ObjectID = ObjectBindingNode->GetObjectGuid();
+		MovieScene->TagBinding(TagName, UE::MovieScene::FFixedObjectBindingID(ObjectID, SequenceID));
 	}
 }
 
@@ -1457,7 +1173,10 @@ bool FObjectBindingModel::CanDelete(FText* OutErrorMessage) const
 
 void FObjectBindingModel::Delete()
 {
-	UMovieScene* MovieScene = OwnerModel->GetMovieScene();
+	TSharedPtr<ISequencer> Sequencer = OwnerModel->GetSequencer();
+	UMovieScene* MovieScene = Sequencer->GetRootMovieSceneSequence()->GetMovieScene();
+
+	MovieScene->Modify();
 
 	// Untag this binding
 	UE::MovieScene::FFixedObjectBindingID BindingID(ObjectBindingID, OwnerModel->GetSequenceID());

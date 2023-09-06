@@ -409,12 +409,12 @@ void FManagedArrayCollection::ReorderElements(FName Group, const TArray<int32>& 
 	}
 }
 
-void FManagedArrayCollection::SetDependency(FName Name, FName Group, FName DependencyGroup)
+void FManagedArrayCollection::SetDependency(FName Name, FName Group, FName DependencyGroup, bool bAllowCircularDependency)
 {
 	ensure(HasAttribute(Name, Group));
-	if (ensure(!IsConnected(DependencyGroup, Group)))
+	FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	if (ensure(bAllowCircularDependency || !IsConnected(DependencyGroup, Group)))
 	{
-		FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
 		Map[Key].GroupIndexDependency = DependencyGroup;
 	}
 }
@@ -427,6 +427,17 @@ void FManagedArrayCollection::RemoveDependencyFor(FName Group)
 		if (Entry.Value.GroupIndexDependency == Group)
 		{
 			Entry.Value.GroupIndexDependency = "";
+		}
+	}
+}
+
+void FManagedArrayCollection::SetDefaults(FName Group, uint32 StartSize, uint32 NumElements)
+{
+	for (TTuple<FKeyType, FValueType>& Entry : Map)
+	{
+		if (Entry.Key.Get<1>() == Group)
+		{
+			Entry.Value.Value->SetDefaults(StartSize, NumElements, Entry.Value.GroupIndexDependency != "");
 		}
 	}
 }
@@ -547,18 +558,17 @@ bool FManagedArrayCollection::IsConnected(FName StartingNode, FName TargetNode)
 	return false;
 }
 
-#include <sstream> 
-#include <string>
 FString FManagedArrayCollection::ToString() const
 {
-	FString Buffer("Group : Attribute [Ptr] [AllocatedSize]\n");
+	FString Buffer;
 
 	const TArray<FStringFormatArg> CollectionInfos = { FString::FormatAsNumber((int32)GetAllocatedSize()) };
-	Buffer += FString::Format(TEXT("*:* [n/a] [{0}]\n"), CollectionInfos);
+	Buffer += FString::Format(TEXT("All attributes [{0} bytes]\n"), CollectionInfos);
 
 	for (FName GroupName : GroupNames())
 	{
-		Buffer += GroupName.ToString() + "\n";
+		const TArray<FStringFormatArg> GroupNameInfos = { GroupName.ToString(), FString::FormatAsNumber((int32)NumElements(GroupName)) };
+		Buffer += FString::Format(TEXT("{0} - [{1} elements]\n"), GroupNameInfos);
 		for (FName AttributeName : AttributeNames(GroupName))
 		{
 			FKeyType Key = FManagedArrayCollection::MakeMapKey(AttributeName, GroupName);
@@ -567,8 +577,8 @@ FString FManagedArrayCollection::ToString() const
 			const SIZE_T AttributeAllocatedSize = Value.Value? Value.Value->GetAllocatedSize() : 0;
 			const FString AttributeAllocatedSizeStr = FString::FormatAsNumber((int32)AttributeAllocatedSize);
 
-			const TArray<FStringFormatArg> AttributeInfos = { GroupName.ToString(), AttributeName.ToString(), (uint64)Value.Value, AttributeAllocatedSizeStr };
-			Buffer += FString::Format(TEXT("{0}:{1} [{2}] [{3}]\n"), AttributeInfos);
+			const TArray<FStringFormatArg> AttributeInfos = { AttributeName.ToString(), AttributeAllocatedSizeStr };
+			Buffer += FString::Format(TEXT(" |-- {0} [{1} bytes]\n"), AttributeInfos);
 		}
 	}
 	return Buffer;
@@ -585,6 +595,26 @@ SIZE_T FManagedArrayCollection::GetAllocatedSize() const
 		}
 	}
 	return AllocatedSize;
+}
+
+void FManagedArrayCollection::GetElementSizeInfoForGroups(TArray<TPair<FName, SIZE_T>>& OutSizeInfo) const
+{
+	// Group name to total element size map
+	TMap<FName, SIZE_T> GroupToElementSizeMap;
+
+	for (const TPair<FKeyType, FValueType>& Attribute : Map)
+	{
+		SIZE_T& GroupSize = GroupToElementSizeMap.FindOrAdd(Attribute.Key.Get<1>());
+		if (FManagedArrayBase* Array = Attribute.Value.Value)
+		{
+			GroupSize += Array->GetTypeSize();
+		}
+	}
+
+	for (const TPair<FName, SIZE_T>& GroupAndElementSize : GroupToElementSizeMap)
+	{
+		OutSizeInfo.Add(GroupAndElementSize);
+	}
 }
 
 static const FName GuidName("GUID");
@@ -614,7 +644,6 @@ void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 {
 	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
-	if (Ar.IsSaving()) Version = 9;
 	Ar << Version;
 
 	if (Ar.IsLoading())

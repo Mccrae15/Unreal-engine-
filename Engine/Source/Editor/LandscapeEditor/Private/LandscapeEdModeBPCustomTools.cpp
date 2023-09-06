@@ -88,7 +88,9 @@ public:
 		}
 
 		// Only allow placing brushes that would affect our target type
-		if ((DefaultObject->IsAffectingHeightmap() && Target.TargetType == ELandscapeToolTargetType::Heightmap) || (DefaultObject->IsAffectingWeightmap() && Target.TargetType == ELandscapeToolTargetType::Weightmap))
+		if ((DefaultObject->CanAffectHeightmap() && Target.TargetType == ELandscapeToolTargetType::Heightmap) 
+			|| (DefaultObject->CanAffectWeightmap() && Target.TargetType == ELandscapeToolTargetType::Weightmap)
+			|| (DefaultObject->CanAffectVisibilityLayer() && Target.TargetType == ELandscapeToolTargetType::Visibility))
 		{
 			ULandscapeInfo* Info = EdMode->CurrentToolTarget.LandscapeInfo.Get();
 			check(Info);
@@ -165,48 +167,7 @@ public:
 			}
 		}
 	}
-
-	
-protected:
-/*	float GetLocalZAtPoint(const ULandscapeInfo* LandscapeInfo, int32 x, int32 y) const
-	{
-		// try to find Z location
-		TSet<ULandscapeComponent*> Components;
-		LandscapeInfo->GetComponentsInRegion(x, y, x, y, Components);
-		for (ULandscapeComponent* Component : Components)
-		{
-			FLandscapeComponentDataInterface DataInterface(Component);
-			return LandscapeDataAccess::GetLocalHeight(DataInterface.GetHeight(x - Component->SectionBaseX, y - Component->SectionBaseY));
-		}
-		return 0.0f;
-	}
-*/
-
-public:
 };
-/*
-void FEdModeLandscape::ApplyMirrorTool()
-{
-	if (CurrentTool->GetToolName() == FName("Mirror"))
-	{
-		FLandscapeToolMirror* MirrorTool = (FLandscapeToolMirror*)CurrentTool;
-		MirrorTool->ApplyMirror();
-		GEditor->RedrawLevelEditingViewports();
-	}
-}
-
-void FEdModeLandscape::CenterMirrorTool()
-{
-	if (CurrentTool->GetToolName() == FName("Mirror"))
-	{
-		FLandscapeToolMirror* MirrorTool = (FLandscapeToolMirror*)CurrentTool;
-		MirrorTool->CenterMirrorPoint();
-		GEditor->RedrawLevelEditingViewports();
-	}
-}
-*/
-
-
 
 //
 // Toolset initialization

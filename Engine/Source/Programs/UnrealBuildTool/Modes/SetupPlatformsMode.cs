@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
@@ -22,11 +18,9 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
-			// Output a warning if there are any arguments that are still unused
-			Arguments.CheckAllArgumentsUsed();
-			return 0;
+			return Task.FromResult(0);
 		}
 	}
 }

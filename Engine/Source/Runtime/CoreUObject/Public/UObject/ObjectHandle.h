@@ -11,10 +11,10 @@
 #include "Templates/TypeHash.h"
 #include "UObject/NameTypes.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectHandleTracking.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ObjectRef.h"
 #include "UObject/PackedObjectRef.h"
-#include "UObject/ObjectHandleTracking.h"
 
 
 class UClass;
@@ -60,7 +60,7 @@ namespace UE::CoreUObject::Private
 	};
 
 	/* Returns the packed object ref for this object IF one exists otherwise returns a null PackedObjectRef */
-	COREUOBJECT_API FPackedObjectRef GetPackedObjectRef(const UObject& Object);
+	COREUOBJECT_API FPackedObjectRef FindExistingPackedObjectRef(const UObject* Object);
 
 	/* Creates and ObjectRef from a packed object ref*/
 	COREUOBJECT_API FObjectRef MakeObjectRef(FPackedObjectRef Handle);
@@ -141,7 +141,7 @@ inline bool operator==(UE::CoreUObject::Private::FObjectHandlePrivate LHS, UE::C
 		}
 
 		//if packed ref empty then can't be equal as RHS is an unresolved pointer
-		FPackedObjectRef PackedLhs = GetPackedObjectRef(*Obj);
+		FPackedObjectRef PackedLhs = FindExistingPackedObjectRef(Obj);
 		if (PackedLhs.EncodedRef == 0)
 		{
 			return false;
@@ -159,7 +159,7 @@ inline bool operator==(UE::CoreUObject::Private::FObjectHandlePrivate LHS, UE::C
 		}
 
 		//if packed ref empty then can't be equal as RHS is an unresolved pointer
-		FPackedObjectRef PackedRhs = GetPackedObjectRef(*Obj);
+		FPackedObjectRef PackedRhs = FindExistingPackedObjectRef(Obj);
 		if (PackedRhs.EncodedRef == 0)
 		{
 			return false;
@@ -186,7 +186,8 @@ inline uint32 GetTypeHash(UE::CoreUObject::Private::FObjectHandlePrivate Handle)
 	if (IsObjectHandleResolved(Handle))
 	{
 		const UObject* Obj = ReadObjectHandlePointerNoCheck(Handle);
-		FPackedObjectRef PackedObjectRef = GetPackedObjectRef(*Obj);
+
+		FPackedObjectRef PackedObjectRef = FindExistingPackedObjectRef(Obj);
 		if (PackedObjectRef.EncodedRef == 0)
 		{
 			return GetTypeHash(Obj);
@@ -300,8 +301,7 @@ namespace UE::CoreUObject::Private
 	struct FObjectHandlePackageDebugData
 	{
 		FMinimalName PackageName;
-		FScriptArray ObjectPaths;
-		FScriptArray DataClassDescriptors;
+		FScriptArray ObjectDescriptors;
 		uint8 _Padding[sizeof(FRWLock)];
 	};
 
@@ -311,18 +311,42 @@ namespace UE::CoreUObject::Private
 		FMinimalName ClassName;
 	};
 
+	struct FObjectPathIdDebug
+	{
+		uint32 Index = 0;
+		uint32 Number = 0;
+
+		static constexpr uint32 WeakObjectMask = ~((~0u) >> 1);       //most significant bit
+		static constexpr uint32 SimpleNameMask = WeakObjectMask >> 1; //second most significant bits
+	};
+
+	struct FObjectDescriptorDebug
+	{
+		FObjectPathIdDebug ObjectPath;
+		FObjectHandleDataClassDescriptor ClassDescriptor;
+	};
+
+	struct FStoredObjectPathDebug
+	{
+		static constexpr const int32 NumInlineElements = 3;
+		int32 NumElements;
+
+		union
+		{
+			FMinimalName Short[NumInlineElements];
+			FMinimalName* Long;
+		};
+	};
+
+	constexpr uint32 ObjectIdShift = 1;
 	constexpr uint32 PackageIdShift = 33;
-	constexpr uint32 ObjectPathIdShift = 1;
-	constexpr uint32 ObjectPathIdMask = 0x00FF'FFFF;
-	constexpr uint32 DataClassDescriptorIdShift = 25;
-	constexpr uint32 DataClassDescriptorIdMask = 0x0000'00FF;
 	constexpr uint32 PackageIdMask = 0x7FFF'FFFF;
 
 #if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
 	//forward declarations
 	void InitObjectHandles(int32 Size);
-	void FreeObjectHandle(const UObjectBase& Object);
-	void UpdateRenamedObject(const UObject& Obj, FName NewName, UObject* NewOuter);
+	void FreeObjectHandle(const UObjectBase* Object);
+	void UpdateRenamedObject(const UObject* Obj, FName NewName, UObject* NewOuter);
 	UE::CoreUObject::Private::FPackedObjectRef MakePackedObjectRef(const UObject* Object);
 #endif
 }

@@ -253,6 +253,8 @@ TSharedPtr<FAssetThumbnailPool> FPropertyEditorModule::GetThumbnailPool()
 
 TSharedRef<IDetailsView> FPropertyEditorModule::CreateDetailView( const FDetailsViewArgs& DetailsViewArgs )
 {
+	LLM_SCOPE(ELLMTag::UI);
+
 	// Compact the list of detail view instances
 	for( int32 ViewIndex = 0; ViewIndex < AllDetailViews.Num(); ++ViewIndex )
 	{
@@ -358,7 +360,7 @@ TSharedRef< IPropertyTableWidgetHandle > FPropertyEditorModule::CreatePropertyTa
 }
 
 TSharedRef< IPropertyTableCellPresenter > FPropertyEditorModule::CreateTextPropertyCellPresenter(const TSharedRef< class FPropertyNode >& InPropertyNode, const TSharedRef< class IPropertyTableUtilities >& InPropertyUtilities, 
-																								 const FSlateFontInfo* InFontPtr /* = NULL */)
+																								 const FSlateFontInfo* InFontPtr /* = NULL */ , const TSharedPtr< IPropertyTableCell >& InCell /* = nullptr */)
 {
 	FSlateFontInfo InFont;
 
@@ -373,7 +375,7 @@ TSharedRef< IPropertyTableCellPresenter > FPropertyEditorModule::CreateTextPrope
 	}
 
 	TSharedRef< FPropertyEditor > PropertyEditor = FPropertyEditor::Create( InPropertyNode, InPropertyUtilities );
-	return MakeShareable( new FTextPropertyTableCellPresenter( PropertyEditor, InPropertyUtilities, InFont) );
+	return MakeShareable( new FTextPropertyTableCellPresenter( PropertyEditor, InPropertyUtilities, InFont, InCell) );
 }
 
 FStructProperty* FPropertyEditorModule::RegisterStructOnScopeProperty(TSharedRef<FStructOnScope> StructOnScope)
@@ -430,14 +432,13 @@ TSharedRef<IPropertyChangeListener> FPropertyEditorModule::CreatePropertyChangeL
 	return MakeShareable( new FPropertyChangeListener );
 }
 
-void FPropertyEditorModule::RegisterCustomClassLayout( FName ClassName, FOnGetDetailCustomizationInstance DetailLayoutDelegate )
+void FPropertyEditorModule::RegisterCustomClassLayout( FName ClassName, FOnGetDetailCustomizationInstance DetailLayoutDelegate, FRegisterCustomClassLayoutParams Params )
 {
 	if (ClassName != NAME_None)
 	{
 		FDetailLayoutCallback Callback;
 		Callback.DetailLayoutDelegate = DetailLayoutDelegate;
-		// @todo: DetailsView: Fix me: this specifies the order in which detail layouts should be queried
-		Callback.Order = ClassNameToDetailLayoutNameMap.Num();
+		Callback.Order = Params.OptionalOrder.Get(ClassNameToDetailLayoutNameMap.Num());
 
 		ClassNameToDetailLayoutNameMap.Add(ClassName, Callback);
 	}

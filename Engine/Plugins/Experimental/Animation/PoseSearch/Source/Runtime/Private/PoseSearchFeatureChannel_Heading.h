@@ -6,7 +6,7 @@
 #include "BoneContainer.h"
 #include "PoseSearchFeatureChannel_Heading.generated.h"
 
-UENUM(BlueprintType)
+UENUM()
 enum class EHeadingAxis : uint8
 {
 	X,
@@ -17,7 +17,7 @@ enum class EHeadingAxis : uint8
 	Invalid = Num UMETA(Hidden)
 };
 
-UCLASS(BlueprintType, EditInlineNew, meta = (DisplayName = "Heading Channel"), CollapseCategories)
+UCLASS(EditInlineNew, meta = (DisplayName = "Heading Channel"), CollapseCategories)
 class POSESEARCH_API UPoseSearchFeatureChannel_Heading : public UPoseSearchFeatureChannel
 {
 	GENERATED_BODY()
@@ -35,23 +35,32 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	EHeadingAxis HeadingAxis = EHeadingAxis::X;	
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	int8 SchemaBoneIdx = 0;
 
-	UPROPERTY(EditAnywhere, Category = "Settings", meta = (ExcludeFromHash))
-	int32 ColorPresetIndex = 0;
+	UPROPERTY(EditAnywhere, Category = "Settings", meta = (ExcludeFromHash, DisplayPriority = 0))
+	FLinearColor DebugColor = FLinearColor::White;
 
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	EInputQueryPose InputQueryPose = EInputQueryPose::UseContinuingPose;
 
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	EComponentStrippingVector ComponentStripping = EComponentStrippingVector::None;
+
 	// UPoseSearchFeatureChannel interface
 	virtual void Finalize(UPoseSearchSchema* Schema) override;
-	virtual void FillWeights(TArray<float>& Weights) const override;
-	virtual void IndexAsset(UE::PoseSearch::IAssetIndexer& Indexer, TArrayView<float> FeatureVectorTable) const override;
-	virtual void BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, FPoseSearchFeatureVectorBuilder& InOutQuery) const override;
+	virtual void BuildQuery(UE::PoseSearch::FSearchContext& SearchContext, UE::PoseSearch::FFeatureVectorBuilder& InOutQuery) const override;
+
+	virtual void AddDependentChannels(UPoseSearchSchema* Schema) const override;
+
+#if ENABLE_DRAW_DEBUG
 	virtual void DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const override;
+#endif // ENABLE_DRAW_DEBUG
+
 #if WITH_EDITOR
-	virtual FString GetLabel() const;
+	virtual void FillWeights(TArrayView<float> Weights) const override;
+	virtual void IndexAsset(UE::PoseSearch::FAssetIndexer& Indexer) const override;
+	virtual FString GetLabel() const override;
 #endif
 
 	FVector GetAxis(const FQuat& Rotation) const;

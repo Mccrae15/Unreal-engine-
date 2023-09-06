@@ -12,6 +12,7 @@
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/CustomizableSkeletalComponent.h"
+#include "MuCO/UnrealPortabilityHelpers.h"
 #include "UObject/UObjectIterator.h"
 #include "Components/SkeletalMeshComponent.h"
 
@@ -50,7 +51,7 @@ static TAutoConsoleVariable<int32> CVarDistanceForFixedLOD2(
 
 static TAutoConsoleVariable<bool> CVarOnlyUpdateCloseCustomizableObjects(
 	TEXT("b.OnlyUpdateCloseCustomizableObjects"),
-	true,
+	false,
 	TEXT("If true, only CustomizableObjects within a predefined distance to the view centers will be generated"),
 	ECVF_Scalability);
 
@@ -93,7 +94,7 @@ void UpdateCameraToInstancesDistance(const FVector CameraPosition)
 #endif
 
 
-void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
+void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs(FMutableInstanceUpdateMap& InOutRequestedUpdates)
 {
 	int32 NumGeneratedInstancesLimitLODs = GetNumGeneratedInstancesLimitFullLODs();
 	if (NumGeneratedInstancesLimitLODs > 0 || (IsOnlyUpdateCloseCustomizableObjectsEnabled() && IsOnlyGenerateRequestedLODLevelsEnabled()))
@@ -212,12 +213,12 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 				if (!bAlreadyReachedFixedLOD && SortedInstances[i]->GetMinSquareDistToPlayer() < DistanceForFixedLODSquared)
 				{
 					RequestedLODs.Init(MAX_uint16, SortedInstances[i]->GetNumComponents());
-					SortedInstances[i]->SetRequestedLODs(0, MAX_int32, RequestedLODs);
+					SortedInstances[i]->SetRequestedLODs(0, MAX_int32, RequestedLODs, InOutRequestedUpdates);
 				}
 				else
 				{
 					RequestedLODs.Init(MAX_uint16, SortedInstances[i]->GetNumComponents());
-					SortedInstances[i]->SetRequestedLODs(2, 2, RequestedLODs);
+					SortedInstances[i]->SetRequestedLODs(2, 2, RequestedLODs, InOutRequestedUpdates);
 					bAlreadyReachedFixedLOD = true;
 				}
 			}
@@ -227,12 +228,12 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 				if (!bAlreadyReachedFixedLOD && SortedInstances[i]->GetMinSquareDistToPlayer() < DistanceForFixedLODSquared)
 				{
 					RequestedLODs.Init(MAX_uint16, SortedInstances[i]->GetNumComponents());
-					SortedInstances[i]->SetRequestedLODs(1, MAX_int32, RequestedLODs);
+					SortedInstances[i]->SetRequestedLODs(1, MAX_int32, RequestedLODs, InOutRequestedUpdates);
 				}
 				else
 				{
 					RequestedLODs.Init(MAX_uint16, SortedInstances[i]->GetNumComponents());
-					SortedInstances[i]->SetRequestedLODs(2, MAX_int32, RequestedLODs);
+					SortedInstances[i]->SetRequestedLODs(2, MAX_int32, RequestedLODs, InOutRequestedUpdates);
 					bAlreadyReachedFixedLOD = true;
 				}
 			}
@@ -240,7 +241,7 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 			for (int32 i = NumGeneratedInstancesLimitLODs + NumGeneratedInstancesLimitLOD1; i < NumGeneratedInstancesLimitLODs + NumGeneratedInstancesLimitLOD1 + NumGeneratedInstancesLimitLOD2 && i < SortedInstances.Num(); ++i)
 			{
 				RequestedLODs.Init(MAX_uint16, SortedInstances[i]->GetNumComponents());
-				SortedInstances[i]->SetRequestedLODs(2, MAX_int32, RequestedLODs);
+				SortedInstances[i]->SetRequestedLODs(2, MAX_int32, RequestedLODs, InOutRequestedUpdates);
 			}
 
 			for (int32 i = NumGeneratedInstancesLimitLODs + NumGeneratedInstancesLimitLOD1 + NumGeneratedInstancesLimitLOD2; i < SortedInstances.Num(); ++i)
@@ -254,7 +255,7 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 			for (int32 i = 0; i < SortedInstances.Num(); ++i)
 			{
 				RequestedLODs.Init(MAX_uint16, SortedInstances[i]->GetNumComponents());
-				SortedInstances[i]->SetRequestedLODs(2, MAX_int32, RequestedLODs);
+				SortedInstances[i]->SetRequestedLODs(2, MAX_int32, RequestedLODs, InOutRequestedUpdates);
 			}
 		}
 	}
@@ -293,7 +294,11 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 				}
 
 				// Blueprint instances and CO Editors
-				if (WorldType == EWorldType::EditorPreview || (!World && !CustomizableSkeletalComponent->GetAttachParentActor()))
+				
+				const USceneComponent* const AttachParentComponent = CustomizableSkeletalComponent->GetAttachParent();
+				bool bAttachParentActor = AttachParentComponent ? AttachParentComponent->GetOwner()!=nullptr : false;
+
+				if (WorldType == EWorldType::EditorPreview || (!World && !bAttachParentActor))
 				{
 					CustomizableSkeletalComponent->EditorUpdateComponent();
 					continue;
@@ -320,8 +325,11 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 					COI->SetIsBeingUsedByComponentInPlay(true);
 
 					// If it's the local player set max priority
-					const APawn* Pawn = Cast<APawn>(Parent->GetAttachParentActor());
-					if (Pawn && Pawn->IsLocallyControlled())
+					const USceneComponent* const AttachParentParentComponent = Parent->GetAttachParent();
+					AActor* ParentParentActor = AttachParentParentComponent ? AttachParentParentComponent->GetOwner() : nullptr;
+
+					const APawn* Pawn = Cast<APawn>(ParentParentActor);
+					if (Pawn && Pawn->IsPlayerControlled())
 					{
 						COI->SetMinSquareDistToPlayer(-1.f);
 					}
@@ -335,7 +343,7 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 					LODTracker.MinLOD = FMath::Min(LODTracker.MinLOD, Parent->bOverrideMinLod ? Parent->MinLodModel : 0);
 
 					// If the parent component have a SkeletalMesh use the RequestedLODLevel of the component as reference to know which LODs mutable should generate.
-					if (Parent->GetSkeletalMeshAsset() && LODTracker.RequestedLODsPerComponent.IsValidIndex(CustomizableSkeletalComponent->ComponentIndex))
+					if (UE_MUTABLE_GETSKELETALMESHASSET(Parent) && LODTracker.RequestedLODsPerComponent.IsValidIndex(CustomizableSkeletalComponent->ComponentIndex))
 					{
 						LODTracker.RequestedLODsPerComponent[CustomizableSkeletalComponent->ComponentIndex] |= 1 << Parent->GetPredictedLODLevel();
 					}
@@ -367,7 +375,7 @@ void UCustomizableInstanceLODManagement::UpdateInstanceDistsAndLODs()
 					It.Value.MaxLOD = It.Value.MinLOD;
 				}
 
-				It.Key->SetRequestedLODs(It.Value.MinLOD, It.Value.MaxLOD, It.Value.RequestedLODsPerComponent);
+				It.Key->SetRequestedLODs(It.Value.MinLOD, It.Value.MaxLOD, It.Value.RequestedLODsPerComponent, InOutRequestedUpdates);
 			}
 		}
 	}
@@ -420,4 +428,3 @@ bool UCustomizableInstanceLODManagement::IsOnlyUpdateCloseCustomizableObjectsEna
 {
 	return CVarOnlyUpdateCloseCustomizableObjects.GetValueOnGameThread();
 }
-

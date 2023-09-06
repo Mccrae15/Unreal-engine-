@@ -26,16 +26,22 @@ public:
 	/** Initialize the editor graph from a PCGGraph */
 	void InitFromNodeGraph(UPCGGraph* InPCGGraph);
 
+	/** If the underlying graph changed without UI interaction, use this function to reconstruct the UI elements. */
+	void ReconstructGraph();
+
 	/** When the editor is closing */
 	void OnClose();
 
 	/** Creates the links for a given node */
 	void CreateLinks(UPCGEditorGraphNodeBase* InGraphNode, bool bCreateInbound, bool bCreateOutbound);
 
-	UPCGGraph* GetPCGGraph() { return PCGGraph; }
+	UPCGGraph* GetPCGGraph() const { return PCGGraph; }
 
 	void SetEditor(TWeakPtr<const FPCGEditor> InEditor) { PCGEditor = InEditor; }
 	TWeakPtr<const FPCGEditor> GetEditor() const { return PCGEditor; }
+
+	/** Updates the grid size visualization in the editor. */
+	void UpdateGridSizeVisualization(UPCGComponent* InPCGComponentBeingInspected);
 
 protected:
 	void CreateLinks(UPCGEditorGraphNodeBase* InGraphNode, bool bCreateInbound, bool bCreateOutbound, const TMap<UPCGNode*, UPCGEditorGraphNodeBase*>& InGraphNodeToPCGNodeMap);

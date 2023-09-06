@@ -234,13 +234,11 @@ void BuildMetalShaderOutput(
 	uint32 Version,
 	TCHAR const* Standard,
 	TCHAR const* MinOSVersion,
-	EMetalTypeBufferMode TypeMode,
 	TArray<FShaderCompilerError>& OutErrors,
 	uint32 TypedBuffers,
 	uint32 InvariantBuffers,
 	uint32 TypedUAVs,
 	uint32 ConstantBuffers,
-	TArray<uint8> const& TypedBufferFormats,
 	bool bAllowFastIntriniscs
 	)
 {
@@ -268,10 +266,10 @@ void BuildMetalShaderOutput(
 	const EShaderFrequency Frequency = ShaderOutput.Target.GetFrequency();
 
 	//TODO read from toolchain
-	const bool bIsMobile = (ShaderInput.Target.Platform == SP_METAL || ShaderInput.Target.Platform == SP_METAL_MRT || ShaderInput.Target.Platform == SP_METAL_TVOS || ShaderInput.Target.Platform == SP_METAL_MRT_TVOS);
+	const bool bIsMobile = (ShaderInput.Target.Platform == SP_METAL || ShaderInput.Target.Platform == SP_METAL_MRT || ShaderInput.Target.Platform == SP_METAL_TVOS || ShaderInput.Target.Platform == SP_METAL_MRT_TVOS || ShaderInput.Target.Platform == SP_METAL_SIM);
 	bool bNoFastMath = ShaderInput.Environment.CompilerFlags.Contains(CFLAG_NoFastMath);
-	FString const* UsingWPO = ShaderInput.Environment.GetDefinitions().Find(TEXT("USES_WORLD_POSITION_OFFSET"));
-	if (UsingWPO && FString("1") == *UsingWPO && (ShaderInput.Target.Platform == SP_METAL_MRT || ShaderInput.Target.Platform == SP_METAL_MRT_TVOS) && Frequency == SF_Vertex)
+	const bool bUsingWPO = ShaderInput.Environment.GetCompileArgument(TEXT("USES_WORLD_POSITION_OFFSET"), false);
+	if (bUsingWPO && (ShaderInput.Target.Platform == SP_METAL_MRT || ShaderInput.Target.Platform == SP_METAL_MRT_TVOS) && Frequency == SF_Vertex)
 	{
 		// WPO requires that we make all multiply/sincos instructions invariant :(
 		bNoFastMath = true;
@@ -293,35 +291,7 @@ void BuildMetalShaderOutput(
 	Header.SourceCRC = SourceCRC;
 	Header.Bindings.bDiscards = false;
 	Header.Bindings.ConstantBuffers = ConstantBuffers;
-	{
-		Header.Bindings.TypedBuffers = TypedBuffers;
-		for (uint32 i = 0; i < (uint32)TypedBufferFormats.Num(); i++)
-		{
-			if ((TypedBuffers & (1 << i)) != 0)
-			{
-				check(TypedBufferFormats[i] > (uint8)EMetalBufferFormat::Unknown);
-				check(TypedBufferFormats[i] < (uint8)EMetalBufferFormat::Max);
-				if ((TypeMode > EMetalTypeBufferModeRaw)
-					&& (TypeMode <= EMetalTypeBufferModeTB)
-					&& (TypedBufferFormats[i] < (uint8)EMetalBufferFormat::RGB8Sint || TypedBufferFormats[i] > (uint8)EMetalBufferFormat::RGB32Float)
-					&& (TypeMode == EMetalTypeBufferMode2D || TypeMode == EMetalTypeBufferModeTB || !(TypedUAVs & (1 << i))))
-				{
-					Header.Bindings.LinearBuffer |= (1 << i);
-					Header.Bindings.TypedBuffers &= ~(1 << i);
-				}
-			}
-		}
-		
-		Header.Bindings.LinearBuffer = Header.Bindings.TypedBuffers;
-		Header.Bindings.TypedBuffers = 0;
-		
-		// Raw mode means all buffers are invariant
-		if (TypeMode == EMetalTypeBufferModeRaw)
-		{
-			Header.Bindings.TypedBuffers = 0;
-		}
-	}
-	
+    
 	FShaderParameterMap& ParameterMap = ShaderOutput.ParameterMap;
 
 	TBitArray<> UsedUniformBufferSlots;
@@ -793,58 +763,6 @@ void BuildMetalShaderOutput(
 	External interface.
 ------------------------------------------------------------------------------*/
 
-FString CreateRemoteDataFromEnvironment(const FShaderCompilerEnvironment& Environment)
-{
-	FString Line = TEXT("\n#if 0 /*BEGIN_REMOTE_SERVER*/\n");
-	for (auto Pair : Environment.RemoteServerData)
-	{
-		Line += FString::Printf(TEXT("%s=%s\n"), *Pair.Key, *Pair.Value);
-	}
-	Line += TEXT("#endif /*END_REMOTE_SERVER*/\n");
-	return Line;
-}
-
-void CreateEnvironmentFromRemoteData(const FString& String, FShaderCompilerEnvironment& OutEnvironment)
-{
-	FString Prolog = TEXT("#if 0 /*BEGIN_REMOTE_SERVER*/");
-	int32 FoundBegin = String.Find(Prolog, ESearchCase::CaseSensitive);
-	if (FoundBegin == INDEX_NONE)
-	{
-		return;
-	}
-	int32 FoundEnd = String.Find(TEXT("#endif /*END_REMOTE_SERVER*/"), ESearchCase::CaseSensitive, ESearchDir::FromStart, FoundBegin);
-	if (FoundEnd == INDEX_NONE)
-	{
-		return;
-	}
-
-	// +1 for EOL
-	const TCHAR* Ptr = &String[FoundBegin + 1 + Prolog.Len()];
-	const TCHAR* PtrEnd = &String[FoundEnd];
-	while (Ptr < PtrEnd)
-	{
-		FString Key;
-		if (!CrossCompiler::ParseIdentifier(Ptr, Key))
-		{
-			return;
-		}
-		if (!CrossCompiler::Match(Ptr, TEXT("=")))
-		{
-			return;
-		}
-		FString Value;
-		if (!CrossCompiler::ParseString(Ptr, Value))
-		{
-			return;
-		}
-		if (!CrossCompiler::Match(Ptr, '\n'))
-		{
-			return;
-		}
-		OutEnvironment.RemoteServerData.FindOrAdd(Key) = Value;
-	}
-}
-
 void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutput& Output,const FString& WorkingDirectory)
 {
 	auto Input = _Input;
@@ -870,28 +788,24 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	
 	EMetalGPUSemantics Semantics = EMetalGPUSemanticsMobile;
 	
-    const int32 VersionEnum = [&Input, &Output]() -> int32
+	uint32 VersionEnum = GMetalDefaultShadingLanguageVersion;
+	bool bFoundVersion = Input.Environment.GetCompileArgument(TEXT("SHADER_LANGUAGE_VERSION"), VersionEnum);
+	if (!bFoundVersion)
 	{
-		if (const FString* VersionEnumEntry = Input.Environment.GetDefinitions().Find(TEXT("SHADER_LANGUAGE_VERSION")))
-		{
-			return FCString::Atoi(*FString(*VersionEnumEntry));
-		}
-		else
-		{
-			new(Output.Errors) FShaderCompilerError(*FString::Printf(TEXT("Missing definition of SHADER_LANGUAGE_VERSION; Falling back to default value %d"), GMetalDefaultShadingLanguageVersion));
-			return GMetalDefaultShadingLanguageVersion;
-		}
-	}();
-
-	#if PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
-		AdditionalDefines.SetDefine(TEXT("METAL_ENABLE_EXPERIMENTAL_NANITE_SUPPORT"), 1);
-	#endif 
+		new(Output.Errors) FShaderCompilerError(*FString::Printf(TEXT("Missing SHADER_LANGUAGE_VERSION compile argument; Falling back to default value %d"), GMetalDefaultShadingLanguageVersion));
+	}
 
 	// TODO read from toolchain
 	bool bAppleTV = (Input.ShaderFormat == NAME_SF_METAL_TVOS || Input.ShaderFormat == NAME_SF_METAL_MRT_TVOS);
+	bool bIsSimulator = false;
 	if (Input.ShaderFormat == NAME_SF_METAL || Input.ShaderFormat == NAME_SF_METAL_TVOS)
 	{
 		AdditionalDefines.SetDefine(TEXT("METAL_PROFILE"), 1);
+	}
+	else if (Input.ShaderFormat == NAME_SF_METAL_SIM)
+	{
+		AdditionalDefines.SetDefine(TEXT("METAL_PROFILE"), 1);
+		bIsSimulator = true;
 	}
 	else if (Input.ShaderFormat == NAME_SF_METAL_MRT || Input.ShaderFormat == NAME_SF_METAL_MRT_TVOS)
 	{
@@ -909,6 +823,12 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		AdditionalDefines.SetDefine(TEXT("USING_VERTEX_SHADER_LAYER"), 1);
 		Semantics = EMetalGPUSemanticsImmediateDesktop;
 	}
+    else if (Input.ShaderFormat == NAME_SF_METAL_SM6)
+    {
+        AdditionalDefines.SetDefine(TEXT("METAL_SM6_PROFILE"), 1);
+        AdditionalDefines.SetDefine(TEXT("USING_VERTEX_SHADER_LAYER"), 1);
+        Semantics = EMetalGPUSemanticsImmediateDesktop;
+    }
 	else if (Input.ShaderFormat == NAME_SF_METAL_MRT_MAC)
 	{
 		AdditionalDefines.SetDefine(TEXT("METAL_MRT_PROFILE"), 1);
@@ -924,12 +844,32 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 
 	AdditionalDefines.SetDefine(TEXT("COMPILER_HLSLCC"), 2);
 	
-	EMetalTypeBufferMode TypeMode = EMetalTypeBufferModeRaw;
 	FString MinOSVersion;
 	FString StandardVersion;
-    TypeMode = EMetalTypeBufferModeTB;
 	switch(VersionEnum)
 	{
+    case 9:
+        StandardVersion = TEXT("3.1");
+        if (bAppleTV)
+        {
+            MinOSVersion = TEXT("-mtvos-version-min=17.0");
+        }
+        else if (bIsMobile)
+        {
+			if (bIsSimulator)
+			{
+				MinOSVersion = TEXT("-miphonesimulator-version-min=17.0");
+			}
+			else
+			{
+				MinOSVersion = TEXT("-mios-version-min=17.0");
+			}
+        }
+        else
+        {
+            MinOSVersion = TEXT("-mmacosx-version-min=14");
+        }
+            break;
     case 8:
         StandardVersion = TEXT("3.0");
         if (bAppleTV)
@@ -938,7 +878,14 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
         }
         else if (bIsMobile)
         {
-            MinOSVersion = TEXT("-mios-version-min=16.0");
+			if (bIsSimulator)
+			{
+				MinOSVersion = TEXT("-miphonesimulator-version-min=16.0");
+			}
+			else
+			{
+				MinOSVersion = TEXT("-mios-version-min=16.0");
+			}
         }
         else
         {
@@ -954,7 +901,14 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		}
 		else if (bIsMobile)
 		{
-			MinOSVersion = TEXT("-mios-version-min=15.0");
+			if (bIsSimulator)
+			{
+				MinOSVersion = TEXT("-miphonesimulator-version-min=15.0");
+			}
+			else
+			{
+				MinOSVersion = TEXT("-mios-version-min=15.0");
+			}
 		}
 		else
 		{
@@ -969,7 +923,14 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		}
 		else if (bIsMobile)
 		{
-			MinOSVersion = TEXT("-mios-version-min=15.0");
+			if (bIsSimulator)
+			{
+				MinOSVersion = TEXT("-miphonesimulator-version-min=15.0");
+			}
+			else
+			{
+				MinOSVersion = TEXT("-mios-version-min=15.0");
+			}
 		}
 		else
 		{
@@ -990,7 +951,14 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		}
 		else if (bIsMobile)
 		{
-			MinOSVersion = TEXT("-mios-version-min=15.0");
+			if (bIsSimulator)
+			{
+				MinOSVersion = TEXT("-miphonesimulator-version-min=15.0");
+			}
+			else
+			{
+				MinOSVersion = TEXT("-mios-version-min=15.0");
+			}
 		}
 		else
 		{
@@ -1072,7 +1040,6 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 
 		// Remove const as we are on debug-only mode
 		CrossCompiler::CreateEnvironmentFromResourceTable(PreprocessedShader, (FShaderCompilerEnvironment&)Input.Environment);
-		CreateEnvironmentFromRemoteData(PreprocessedShader, (FShaderCompilerEnvironment&)Input.Environment);
 	}
 	else
 	{
@@ -1098,8 +1065,8 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		return;
 	}
 
-	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader))
+	FShaderParameterParser ShaderParameterParser(Input.Environment.CompilerFlags);
+	if (!ShaderParameterParser.ParseAndModify(Input, Output.Errors, PreprocessedShader))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -1111,7 +1078,7 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	// Process TEXT macro.
 	TransformStringIntoCharacterArray(PreprocessedShader);
 
-	// Run the experimental shader minifier
+	// Run the shader minifier
 	#if UE_METAL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 	if (Input.Environment.CompilerFlags.Contains(CFLAG_RemoveDeadCode))
 	{
@@ -1136,14 +1103,6 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	{
 		UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
 		DebugDataOptions.HlslCCFlags = CCFlags;
-		DebugDataOptions.AppendPostSource = [&Input]()
-		{
-			// add the remote data if necessary
-//			if (IsRemoteBuildingConfigured(&Input.Environment))
-			{
-				return CreateRemoteDataFromEnvironment(Input.Environment);
-			}
-		};
 		UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShader, DebugDataOptions);
 	}
 
@@ -1161,7 +1120,7 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		FSHA1::HashBuffer(&Guid, sizeof(FGuid), GUIDHash.Hash);
 	}
 
-	bool bCompiled = DoCompileMetalShader(Input, Output, WorkingDirectory, PreprocessedShader, GUIDHash, VersionEnum, CCFlags, Semantics, TypeMode, MaxUnrollLoops, Frequency, bDumpDebugInfo, Standard, MinOSVersion);
+	bool bCompiled = DoCompileMetalShader(Input, Output, WorkingDirectory, PreprocessedShader, GUIDHash, VersionEnum, CCFlags, Semantics, MaxUnrollLoops, Frequency, bDumpDebugInfo, Standard, MinOSVersion);
 	if (bCompiled && Output.bSucceeded)
 	{
 

@@ -149,7 +149,7 @@ public:
 		return TypeAndId != Other.TypeAndId;
 	}
 
-	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FPackageObjectIndex& Value)
+	friend FArchive& operator<<(FArchive& Ar, FPackageObjectIndex& Value)
 	{
 		Ar << Value.TypeAndId;
 		return Ar;
@@ -246,6 +246,8 @@ enum class EZenPackageVersion : uint32
 {
 	Initial,
 	DataResourceTable,
+	ImportedPackageNames,
+	ExportDependencies,
 
 	LatestPlusOne,
 	Latest = LatestPlusOne - 1
@@ -259,6 +261,13 @@ struct FZenPackageVersioningInfo
 	FCustomVersionContainer CustomVersions;
 
 	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FZenPackageVersioningInfo& ExportBundleEntry);
+};
+
+struct FZenPackageImportedPackageNamesContainer
+{
+	TArray<FName> Names;
+
+	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FZenPackageImportedPackageNamesContainer& Container);
 };
 
 /**
@@ -275,7 +284,9 @@ struct FZenPackageSummary
 	int32 ImportMapOffset;
 	int32 ExportMapOffset;
 	int32 ExportBundleEntriesOffset;
-	int32 GraphDataOffset;
+	int32 DependencyBundleHeadersOffset;
+	int32 DependencyBundleEntriesOffset;
+	int32 ImportedPackageNamesOffset;
 };
 
 /**
@@ -295,16 +306,19 @@ struct FExportBundleEntry
 	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FExportBundleEntry& ExportBundleEntry);
 };
 
-/**
- * Export bundle header
- */
-struct FExportBundleHeader
+struct FDependencyBundleEntry
 {
-	uint64 SerialOffset;
-	uint32 FirstEntryIndex;
-	uint32 EntryCount;
+	FPackageIndex LocalImportOrExportIndex;
 
-	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FExportBundleHeader& ExportBundleHeader);
+	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FDependencyBundleEntry& DependencyBundleEntry);
+};
+
+struct FDependencyBundleHeader
+{
+	int32 FirstEntryIndex;
+	uint32 EntryCount[FExportBundleEntry::ExportCommandType_Count][FExportBundleEntry::ExportCommandType_Count];
+
+	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FDependencyBundleHeader& DependencyBundleHeader);
 };
 
 struct FScriptObjectEntry
@@ -330,7 +344,7 @@ static_assert(sizeof(FMappedName) >= sizeof(FMinimalName));
  */
 struct FExportMapEntry
 {
-	uint64 CookedSerialOffset = 0;
+	uint64 CookedSerialOffset = 0; // Offset from start of exports data (HeaderSize + CookedSerialOffset gives actual offset in iobuffer)
 	uint64 CookedSerialSize = 0;
 	FMappedName ObjectName;
 	FPackageObjectIndex OuterIndex;

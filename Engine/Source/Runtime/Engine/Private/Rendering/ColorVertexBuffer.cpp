@@ -85,38 +85,17 @@ void FColorVertexBuffer::Init(uint32 InNumVertices, bool bNeedsCPUAccess)
 */
 void FColorVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices, bool bNeedsCPUAccess)
 {
-	// First, make sure that there is at least one non-default vertex color in the original data.
-	const int32 InVertexCount = InVertices.Num();
+	const FConstMeshBuildVertexView VertexView = MakeConstMeshBuildVertexView(InVertices);
+	Init(VertexView, bNeedsCPUAccess);
+}
+
+void FColorVertexBuffer::Init(const FConstMeshBuildVertexView& InVertices, bool bNeedsCPUAccess)
+{
 	NeedsCPUAccess = bNeedsCPUAccess;
-	bool bAllColorsAreOpaqueWhite = true;
-	bool bAllColorsAreEqual = true;
 
-	if( InVertexCount > 0 )
-	{
-		const FColor FirstColor = InVertices[ 0 ].Color;
+	const int32 ColorCount = InVertices.Color.Num();
 
-		for( int32 CurVertexIndex = 0; CurVertexIndex < InVertexCount; ++CurVertexIndex )
-		{
-			const FColor CurColor = InVertices[ CurVertexIndex ].Color;
-
-			if( CurColor.R != 255 || CurColor.G != 255 || CurColor.B != 255 || CurColor.A != 255 )
-			{
-				bAllColorsAreOpaqueWhite = false;
-			}
-
-			if( CurColor.R != FirstColor.R || CurColor.G != FirstColor.G || CurColor.B != FirstColor.B || CurColor.A != FirstColor.A )
-			{
-				bAllColorsAreEqual = false;
-			}
-
-			if( !bAllColorsAreEqual && !bAllColorsAreOpaqueWhite )
-			{
-				break;
-			}
-		}
-	}
-
-	if( bAllColorsAreOpaqueWhite )
+	if (ColorCount == 0)
 	{
 		// Ensure no vertex data is allocated.
 		CleanUp();
@@ -127,14 +106,12 @@ void FColorVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices, 
 	}
 	else
 	{
-		Init(InVertexCount, bNeedsCPUAccess);
+		Init(ColorCount, bNeedsCPUAccess);
 
-		// Copy the vertices into the buffer.
-		for(int32 VertexIndex = 0;VertexIndex < InVertices.Num();VertexIndex++)
+		// Copy the vertex colors into the buffer.
+		for (int32 VertexIndex = 0;VertexIndex < ColorCount; ++VertexIndex)
 		{
-			const FStaticMeshBuildVertex& SourceVertex = InVertices[VertexIndex];
-			const uint32 DestVertexIndex = VertexIndex;
-			VertexColor(DestVertexIndex) = SourceVertex.Color;
+			VertexColor(VertexIndex) = InVertices.Color[VertexIndex];
 		}
 	}
 }
@@ -245,6 +222,11 @@ void FColorVertexBuffer::Serialize( FArchive& Ar, bool bNeedsCPUAccess )
 					Data = VertexData->GetDataPointer();
 				}
 			}
+		}
+		if (StripFlags.IsDataStrippedForServer())
+		{
+			// if we stripped all the other stuff and decided not to serialize it in probably need to strip the NumVertices Too
+			NumVertices = Stride = 0;
 		}
 	}
 }
@@ -419,37 +401,11 @@ FBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Async()
 	return CreateRHIBuffer_Internal<false>();
 }
 
-void FColorVertexBuffer::CopyRHIForStreaming(const FColorVertexBuffer& Other, bool InAllowCPUAccess)
-{
-	// Copy serialized properties.
-	Stride = Other.Stride;
-	NumVertices = Other.NumVertices;
-
-	// Handle CPU access.
-	if (InAllowCPUAccess)
-	{
-		NeedsCPUAccess = Other.NeedsCPUAccess;
-		AllocateData(NeedsCPUAccess);
-	}
-	else
-	{
-		NeedsCPUAccess = false;
-	}
-
-	// Copy resource references.
-	VertexBufferRHI = Other.VertexBufferRHI;
-	ColorComponentsSRV = Other.ColorComponentsSRV;
-}
-
 void FColorVertexBuffer::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
 {
 	if (VertexBufferRHI && IntermediateBuffer)
 	{
 		Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
-		if (ColorComponentsSRV)
-		{
-			Batcher.QueueUpdateRequest(ColorComponentsSRV, VertexBufferRHI, 4, PF_R8G8B8A8);
-		}
 	}
 }
 
@@ -459,24 +415,17 @@ void FColorVertexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batch
 	{
 		Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
 	}
-	if (ColorComponentsSRV)
-	{
-		Batcher.QueueUpdateRequest(ColorComponentsSRV, nullptr, 0, 0);
-	}
 }
 
-void FColorVertexBuffer::InitRHI()
+void FColorVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FColorVertexBuffer::InitRHI);
 	SCOPED_LOADTIMER(FColorVertexBuffer_InitRHI);
 
-	const bool bHadVertexData = VertexData != nullptr;
 	VertexBufferRHI = CreateRHIBuffer_RenderThread();
 	if (VertexBufferRHI && RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
 	{
-		// When VertexData is null, this buffer hasn't been streamed in yet. We still need to create a FRHIShaderResourceView which will be
-		// cached in a vertex factory uniform buffer later. The nullptr tells the RHI that the SRV doesn't view on anything yet.
-		ColorComponentsSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(bHadVertexData ? VertexBufferRHI : nullptr, PF_R8G8B8A8));
+		ColorComponentsSRV = RHICmdList.CreateShaderResourceView(VertexBufferRHI, 4, PF_R8G8B8A8);
 	}
 }
 

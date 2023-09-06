@@ -7,7 +7,7 @@
 
 // Insights
 #include "Insights/TaskGraphProfiler/ViewModels/TaskTable.h"
-#include "Insights/Table/Widgets/STableTreeView.h"
+#include "Insights/Table/Widgets/SSessionTableTreeView.h"
 
 class FMenuBuilder;
 
@@ -49,7 +49,8 @@ public:
 	 */
 	void Construct(const FArguments& InArgs, TSharedPtr<FTaskTable> InTablePtr);
 
-	virtual TSharedPtr<SWidget> ConstructToolbar() override;
+	void ConstructHeaderArea(TSharedRef<SVerticalBox> InWidgetContent) override;
+
 	virtual TSharedPtr<SWidget> ConstructFooter() override;
 
 	TSharedPtr<FTaskTable> GetTaskTable() { return StaticCastSharedPtr<FTaskTable>(GetTable()); }
@@ -105,6 +106,14 @@ private:
 	FText TimestampOptions_GetText(ETimestampOptions InOption) const;
 	bool TimestampOptions_IsEnabled() const;
 
+	const TArray<TSharedPtr<TraceServices::ETaskEnumerationOption>>* GetAvailableTasksSelectionOptions();
+	TSharedRef<SWidget> TasksSelectionOptions_OnGenerateWidget(TSharedPtr<TraceServices::ETaskEnumerationOption> InOption);
+	void TasksSelectionOptions_OnSelectionChanged(TSharedPtr<TraceServices::ETaskEnumerationOption> InOption, ESelectInfo::Type SelectInfo);
+	void TasksSelectionOptions_OnSelectionChanged(TraceServices::ETaskEnumerationOption InOption);
+	FText TasksSelectionOptions_GetSelectionText() const;
+	FText TasksSelectionOptions_GetText(TraceServices::ETaskEnumerationOption InOption) const;
+	bool TasksSelectionOptions_IsEnabled() const;
+
 	bool ContextMenu_GoToTask_CanExecute() const;
 	void ContextMenu_GoToTask_Execute();
 
@@ -117,6 +126,9 @@ private:
 
 	ETimestampOptions SelectedTimestampOption = ETimestampOptions::RelativeToPrevious;
 	TArray<TSharedPtr<ETimestampOptions>> AvailableTimestampOptions;
+
+	TraceServices::ETaskEnumerationOption SelectedTasksSelectionOption = TraceServices::ETaskEnumerationOption::Alive;
+	TArray<TSharedPtr<TraceServices::ETaskEnumerationOption>> AvailableTasksSelectionOptions;
 
 	TaskTrace::FId TaskIdToSelect;
 };

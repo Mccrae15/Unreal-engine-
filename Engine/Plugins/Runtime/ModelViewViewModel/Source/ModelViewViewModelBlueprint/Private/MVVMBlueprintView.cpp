@@ -4,10 +4,18 @@
 
 #include "Components/Widget.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "MVVMBlueprintViewConversionFunction.h"
 #include "MVVMWidgetBlueprintExtension_View.h"
+#include "WidgetBlueprint.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMBlueprintView)
 
+
+UMVVMBlueprintView::UMVVMBlueprintView()
+{
+	Settings = CreateDefaultSubobject<UMVVMBlueprintViewSettings>("Settings");
+}
 
 FMVVMBlueprintViewModelContext* UMVVMBlueprintView::FindViewModel(FGuid ViewModelId)
 {
@@ -91,14 +99,6 @@ bool UMVVMBlueprintView::RenameViewModel(FName OldViewModelName, FName NewViewMo
 	return ViewModelContext != nullptr;
 }
 
-void UMVVMBlueprintView::SetViewModels(const TArray<FMVVMBlueprintViewModelContext>& ViewModelContexts)
-{
-	AvailableViewModels = ViewModelContexts;
-
-	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint());
-	OnViewModelsUpdated.Broadcast();
-}
-
 const FMVVMBlueprintViewBinding* UMVVMBlueprintView::FindBinding(const UWidget* Widget, const FProperty* Property) const
 {
 	return const_cast<UMVVMBlueprintView*>(this)->FindBinding(Widget, Property);
@@ -107,10 +107,10 @@ const FMVVMBlueprintViewBinding* UMVVMBlueprintView::FindBinding(const UWidget* 
 FMVVMBlueprintViewBinding* UMVVMBlueprintView::FindBinding(const UWidget* Widget, const FProperty* Property)
 {
 	FName WidgetName = Widget->GetFName();
-	return Bindings.FindByPredicate([WidgetName, Property](const FMVVMBlueprintViewBinding& Binding)
+	return Bindings.FindByPredicate([WidgetBlueprint = GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint(), WidgetName, Property](const FMVVMBlueprintViewBinding& Binding)
 		{
-			return Binding.WidgetPath.GetWidgetName() == WidgetName &&
-				Binding.WidgetPath.BasePropertyPathContains(UE::MVVM::FMVVMConstFieldVariant(Property));
+			return Binding.DestinationPath.GetWidgetName() == WidgetName &&
+				Binding.DestinationPath.PropertyPathContains(WidgetBlueprint->GeneratedClass, UE::MVVM::FMVVMConstFieldVariant(Property));
 		});
 }
 
@@ -118,6 +118,15 @@ void UMVVMBlueprintView::RemoveBindingAt(int32 Index)
 {
 	if (Bindings.IsValidIndex(Index))
 	{
+		if (Bindings[Index].Conversion.SourceToDestinationConversion)
+		{
+			Bindings[Index].Conversion.SourceToDestinationConversion->RemoveWrapperGraph(GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint());
+		}
+		if (Bindings[Index].Conversion.DestinationToSourceConversion)
+		{
+			Bindings[Index].Conversion.DestinationToSourceConversion->RemoveWrapperGraph(GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint());
+		}
+
 		Bindings.RemoveAt(Index);
 		OnBindingsUpdated.Broadcast();
 	}
@@ -140,10 +149,11 @@ void UMVVMBlueprintView::RemoveBinding(const FMVVMBlueprintViewBinding* Binding)
 FMVVMBlueprintViewBinding& UMVVMBlueprintView::AddBinding(const UWidget* Widget, const FProperty* Property)
 {
 	FMVVMBlueprintViewBinding& NewBinding = Bindings.AddDefaulted_GetRef();
-	NewBinding.WidgetPath.SetWidgetName(Widget->GetFName());
-	NewBinding.WidgetPath.SetBasePropertyPath(UE::MVVM::FMVVMConstFieldVariant(Property));
+	NewBinding.DestinationPath.SetWidgetName(Widget->GetFName());
+	NewBinding.DestinationPath.SetPropertyPath(GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint(), UE::MVVM::FMVVMConstFieldVariant(Property));
 	NewBinding.BindingId = FGuid::NewGuid();
 
+	OnBindingsAdded.Broadcast();
 	OnBindingsUpdated.Broadcast();
 	return NewBinding;
 }
@@ -153,6 +163,7 @@ FMVVMBlueprintViewBinding& UMVVMBlueprintView::AddDefaultBinding()
 	FMVVMBlueprintViewBinding& NewBinding = Bindings.AddDefaulted_GetRef();
 	NewBinding.BindingId = FGuid::NewGuid();
 
+	OnBindingsAdded.Broadcast();
 	OnBindingsUpdated.Broadcast();
 	return NewBinding;
 }
@@ -185,6 +196,58 @@ const FMVVMBlueprintViewBinding* UMVVMBlueprintView::GetBinding(FGuid Id) const
 	return Bindings.FindByPredicate([Id](const FMVVMBlueprintViewBinding& Binding) { return Id == Binding.BindingId; });
 }
 
+TArray<FText> UMVVMBlueprintView::GetBindingMessages(FGuid Id, UE::MVVM::EBindingMessageType InMessageType) const
+{
+	TArray<FText> Results;
+
+	if (BindingMessages.Contains(Id))
+	{
+		const TArray<UE::MVVM::FBindingMessage>& AllBindingMessages = BindingMessages[Id];
+		for (const UE::MVVM::FBindingMessage& Message : AllBindingMessages)
+		{
+			if (Message.MessageType == InMessageType)
+			{
+				Results.Add(Message.MessageText);
+			}
+		}
+	}
+	return Results;
+}
+
+bool UMVVMBlueprintView::HasBindingMessage(FGuid Id, UE::MVVM::EBindingMessageType InMessageType) const
+{
+	if (const TArray<UE::MVVM::FBindingMessage>* FoundBindingMessages = BindingMessages.Find(Id))
+	{
+		for (const UE::MVVM::FBindingMessage& Message : *FoundBindingMessages)
+		{
+			if (Message.MessageType == InMessageType)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+void UMVVMBlueprintView::AddMessageToBinding(FGuid Id, UE::MVVM::FBindingMessage MessageToAdd)
+{
+	TArray<UE::MVVM::FBindingMessage>& FoundBindingMessages = BindingMessages.FindOrAdd(Id);
+	FoundBindingMessages.Add(MessageToAdd);
+}
+
+void UMVVMBlueprintView::ResetBindingMessages()
+{
+	BindingMessages.Reset();
+}
+
+void UMVVMBlueprintView::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);	
+}
+
+#if WITH_EDITOR
 void UMVVMBlueprintView::PostLoad()
 {
 	Super::PostLoad();
@@ -196,16 +259,43 @@ void UMVVMBlueprintView::PostLoad()
 			Binding.BindingId = FGuid::NewGuid();
 		}
 	}
+
+	GetOuterUMVVMWidgetBlueprintExtension_View()->ConditionalPostLoad();
+	GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint()->ConditionalPostLoad();
+
+	// Make sure all bindings uses the skeletal class
+	if (GetLinkerCustomVersion(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::MVVMConvertPropertyPathToSkeletalClass)
+	{
+		const UWidgetBlueprint* ThisWidgetBlueprint = GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint();
+		for (FMVVMBlueprintViewBinding& Binding : Bindings)
+		{
+			for (const FMVVMBlueprintFieldPath& FieldPath : Binding.SourcePath.GetFieldPaths())
+			{
+				const_cast<FMVVMBlueprintFieldPath&>(FieldPath).SetDeprecatedSelfReference(ThisWidgetBlueprint);
+			}
+			for (const FMVVMBlueprintFieldPath& FieldPath : Binding.DestinationPath.GetFieldPaths())
+			{
+				const_cast<FMVVMBlueprintFieldPath&>(FieldPath).SetDeprecatedSelfReference(ThisWidgetBlueprint);
+			}
+		}
+	}
+
+	for (FMVVMBlueprintViewBinding& Binding : Bindings)
+	{
+		Binding.Conversion.DeprecateViewConversionFunction(GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint());
+	}
 }
 
-#if WITH_EDITOR
-
-/*
-void UMVVMBlueprintView::PostEditUndo() 
+void UMVVMBlueprintView::PreSave(FObjectPreSaveContext Context)
 {
-	OnBindingsUpdated.Broadcast();
-	OnViewModelsUpdated.Broadcast();
-}*/
+	UWidgetBlueprint* WidgetBlueprint = GetOuterUMVVMWidgetBlueprintExtension_View()->GetWidgetBlueprint();
+	for (FMVVMBlueprintViewBinding& Binding : Bindings)
+	{
+		Binding.Conversion.SavePinValues(WidgetBlueprint);
+	}
+
+	Super::PreSave(Context);
+}
 
 void UMVVMBlueprintView::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
@@ -233,7 +323,7 @@ void UMVVMBlueprintView::PostEditChangeChainProperty(FPropertyChangedChainEvent&
 	}
 }
 
-void UMVVMBlueprintView::AddAssetTags(TArray<FAssetRegistryTag>& OutTags)
+void UMVVMBlueprintView::AddAssetTags(TArray<FAssetRegistryTag>& OutTags) const
 {
 	if (AvailableViewModels.Num() > 0)
 	{
@@ -252,7 +342,7 @@ void UMVVMBlueprintView::AddAssetTags(TArray<FAssetRegistryTag>& OutTags)
 
 		if (Builder.Len() > 0)
 		{
-			OutTags.Emplace(TEXT("Viewmodels"), Builder.ToString(), FAssetRegistryTag::TT_Hidden);
+			OutTags.Emplace(FName("Viewmodels"), Builder.ToString(), FAssetRegistryTag::TT_Hidden);
 		}
 	}
 }
@@ -262,9 +352,9 @@ void UMVVMBlueprintView::WidgetRenamed(FName OldObjectName, FName NewObjectName)
 	bool bRenamed = false;
 	for (FMVVMBlueprintViewBinding& Binding : Bindings)
 	{
-		if (Binding.WidgetPath.GetWidgetName() == OldObjectName)
+		if (Binding.DestinationPath.GetWidgetName() == OldObjectName)
 		{
-			Binding.WidgetPath.SetWidgetName(NewObjectName);
+			Binding.DestinationPath.SetWidgetName(NewObjectName);
 			bRenamed = true;
 		}
 	}

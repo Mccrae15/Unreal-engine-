@@ -5,9 +5,9 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Reflection;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
 
 namespace UnrealBuildTool
@@ -405,9 +405,30 @@ namespace UnrealBuildTool
 			internal string? CopyBundledAssets = null;
 
 			/// <summary>
-			/// Copy the framework to the target's Framework directory
+			/// How to handle linking and copying the framework
 			/// </summary>
-			internal bool bCopyFramework = false;
+			public enum FrameworkMode
+			{
+				/// <summary>
+				/// Pass this framework to the linker
+				/// </summary>
+				Link,
+
+				/// <summary>
+				/// Copy this framework into the final .app
+				/// </summary>
+				Copy,
+
+				/// <summary>
+				/// Both link into executable and copy into .app
+				/// </summary>
+				LinkAndCopy,
+			}
+
+			/// <summary>
+			/// How to treat the framework during linking and creating the .app
+			/// </summary>
+			internal FrameworkMode Mode;
 
 			/// <summary>
 			/// Constructor
@@ -417,11 +438,23 @@ namespace UnrealBuildTool
 			/// <param name="CopyBundledAssets"></param>
 			/// <param name="bCopyFramework">Copy the framework to the target's Framework directory</param>
 			public Framework(string Name, string Path, string? CopyBundledAssets = null, bool bCopyFramework = false)
+				: this(Name, Path, bCopyFramework ? FrameworkMode.LinkAndCopy : FrameworkMode.Link, CopyBundledAssets)
+			{
+			}
+
+			/// <summary>
+			/// Constructor
+			/// </summary>
+			/// <param name="Name">Name of the framework</param>
+			/// <param name="Path">Path to a zip file containing the framework or a framework on disk</param>
+			/// <param name="Mode">How to treat the framework during linking and creating the .app</param>
+			/// <param name="CopyBundledAssets"></param>
+			public Framework(string Name, string Path, FrameworkMode Mode, string? CopyBundledAssets = null)
 			{
 				this.Name = Name;
 				this.Path = Path;
+				this.Mode = Mode;
 				this.CopyBundledAssets = CopyBundledAssets;
-				this.bCopyFramework = bCopyFramework;
 			}
 
 			/// <summary>
@@ -544,13 +577,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// True if a Plugin contains this module
 		/// </summary>
-		public bool IsPlugin
-		{
-			get
-			{
-				return Plugin != null;
-			}
-		}
+		public bool IsPlugin => Plugin != null;
 
 		/// <summary>
 		/// The rules context for this instance
@@ -568,13 +595,18 @@ namespace UnrealBuildTool
 		public ModuleType Type = ModuleType.CPlusPlus;
 
 		/// <summary>
+		/// Accessor for the target logger
+		/// </summary>
+		public ILogger Logger => Target.Logger;
+
+		/// <summary>
 		/// Overridden type of module that will set different package flags.
 		/// Cannot be used for modules that are a part of a plugin because that is 
 		/// set in the `.uplugin` file already. 
 		/// </summary>
 		public PackageOverrideType OverridePackageType
 		{
-			get { return overridePackageType ?? PackageOverrideType.None; }
+			get => overridePackageType ?? PackageOverrideType.None;
 			set
 			{
 				if (!IsPlugin)
@@ -593,13 +625,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Returns true if there has been an override type specified on this module
 		/// </summary>
-		public bool HasPackageOverride
-		{
-			get
-			{
-				return OverridePackageType != PackageOverrideType.None;
-			}
-		}
+		public bool HasPackageOverride => OverridePackageType != PackageOverrideType.None;
 
 		/// <summary>
 		/// Subfolder of Binaries/PLATFORM folder to put this module in when building DLLs. This should only be used by modules that are found via searching like the
@@ -616,21 +642,63 @@ namespace UnrealBuildTool
 		{
 			get
 			{
+				if (bCodeCoverage) {
+					return CodeOptimization.Never;
+				}
+
 				if (OptimizeCodeOverride.HasValue)
+				{
 					return OptimizeCodeOverride.Value;
+				}
 
 				bool? ShouldOptimizeCode = null;
 				if (Target.EnableOptimizeCodeForModules?.Contains(Name) ?? false)
+				{
 					ShouldOptimizeCode = true;
+				}
+
 				if (Target.DisableOptimizeCodeForModules?.Contains(Name) ?? false)
+				{
 					ShouldOptimizeCode = false;
+				}
 
 				if (!ShouldOptimizeCode.HasValue)
+				{
 					return CodeOptimization.Default;
+				}
 
 				return ShouldOptimizeCode.Value ? CodeOptimization.Always : CodeOptimization.Never;
 			}
-			set { OptimizeCodeOverride = value; }
+			set => OptimizeCodeOverride = value;
+		}
+
+		private OptimizationMode? OptimizationLevelOverride = null;
+
+		/// <summary>
+		/// Allows fine tuning optimization level for speed and\or code size. This requires a private PCH (or NoPCHs, which is not recommended)
+		/// </summary>
+		public OptimizationMode OptimizationLevel
+		{
+			get
+			{
+				if (Target.OptimizeForSizeModules?.Contains(Name) ?? false)
+				{
+					return OptimizationMode.Size;
+				}
+				if (Target.OptimizeForSizeAndSpeedModules?.Contains(Name) ?? false)
+				{
+					return OptimizationMode.SizeAndSpeed;
+				}
+				if (OptimizationLevelOverride.HasValue)
+				{
+					return OptimizationLevelOverride.Value;
+				}
+				else
+				{
+					return Target.OptimizationLevel;
+				}
+			}
+			set => OptimizationLevelOverride = value;
 		}
 
 		/// <summary>
@@ -681,7 +749,7 @@ namespace UnrealBuildTool
 					return PCHUsageMode.NoSharedPCHs;
 				}
 			}
-			set { PCHUsagePrivate = value; }
+			set => PCHUsagePrivate = value;
 		}
 		private PCHUsageMode? PCHUsagePrivate;
 
@@ -696,8 +764,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		public BuildSettingsVersion DefaultBuildSettings
 		{
-			get { return DefaultBuildSettingsPrivate ?? Target.DefaultBuildSettings; }
-			set { DefaultBuildSettingsPrivate = value; }
+			get => DefaultBuildSettingsPrivate ?? Target.DefaultBuildSettings;
+			set => DefaultBuildSettingsPrivate = value;
 		}
 		private BuildSettingsVersion? DefaultBuildSettingsPrivate;
 
@@ -718,14 +786,9 @@ namespace UnrealBuildTool
 				}
 				return IncludeOrderVersionPrivate ?? Target.IncludeOrderVersion;
 			}
-			set { IncludeOrderVersionPrivate = value; }
+			set => IncludeOrderVersionPrivate = value;
 		}
 		private EngineIncludeOrderVersion? IncludeOrderVersionPrivate;
-
-		/// <summary>
-		/// Set flags for determinstic compiles (experimental, may not be fully supported). Deterministic linking is controlled via TargetRules.
-		/// </summary>
-		public bool bDeterministic = false;
 
 		/// <summary>
 		/// Use run time type information
@@ -733,10 +796,26 @@ namespace UnrealBuildTool
 		public bool bUseRTTI = false;
 
 		/// <summary>
-		/// Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the platforms that support it.
+		/// Enable code coverage compilation/linking support.
+		/// </summary>
+		public bool bCodeCoverage = false;
+
+		/// <summary>
+		/// Obsolete: Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the platforms that support it.
 		/// Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
 		/// </summary>
-		public bool bUseAVX = false;
+		[Obsolete("bUseAVX is obsolete and will be removed in UE5.4, please replace with MinCpuArchX64")]
+		public bool bUseAVX
+		{
+			get => MinCpuArchX64 >= MinimumCpuArchitectureX64.AVX;
+			set => MinCpuArchX64 = value ? MinimumCpuArchitectureX64.AVX : MinimumCpuArchitectureX64.None;
+		}
+
+		/// <summary>
+		/// Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the x64 platforms that support it.
+		/// Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
+		/// </summary>
+		public MinimumCpuArchitectureX64? MinCpuArchX64 = null;
 
 		/// <summary>
 		/// Enable buffer security checks.  This should usually be enabled as it prevents severe security risks.
@@ -759,26 +838,43 @@ namespace UnrealBuildTool
 		/// Not doing this will result in a compile errors because shared PCHs were compiled with different flags than consumer
 		/// </summary>
 		public bool bEnableObjCAutomaticReferenceCounting = false;
-		
+
+		/// <summary>
+		/// How to treat deterministic warnings (experimental).
+		/// </summary>
+		public WarningLevel DeterministicWarningLevel
+		{
+			get => (DeterministicWarningLevelPrivate == WarningLevel.Default) ? (Target.bDeterministic ? WarningLevel.Warning : WarningLevel.Off) : DeterministicWarningLevelPrivate;
+			set => DeterministicWarningLevelPrivate = value;
+		}
+
+		/// <inheritdoc cref="DeterministicWarningLevelPrivate"/>
+		private WarningLevel DeterministicWarningLevelPrivate;
+
 		/// <summary>
 		/// How to treat shadow variable warnings
 		/// </summary>
 		public WarningLevel ShadowVariableWarningLevel
 		{
-			get { return (ShadowVariableWarningLevelPrivate == WarningLevel.Default)? ((DefaultBuildSettings >= BuildSettingsVersion.V2) ? WarningLevel.Error : Target.ShadowVariableWarningLevel) : ShadowVariableWarningLevelPrivate; }
-			set { ShadowVariableWarningLevelPrivate = value; }
+			get => (ShadowVariableWarningLevelPrivate == WarningLevel.Default) ? ((DefaultBuildSettings >= BuildSettingsVersion.V2) ? WarningLevel.Error : Target.ShadowVariableWarningLevel) : ShadowVariableWarningLevelPrivate;
+			set => ShadowVariableWarningLevelPrivate = value;
 		}
 
 		/// <inheritdoc cref="ShadowVariableWarningLevelPrivate"/>
 		private WarningLevel ShadowVariableWarningLevelPrivate;
 
 		/// <summary>
+		/// Whether to enable all warnings as errors. UE enables most warnings as errors already, but disables a few (such as deprecation warnings).
+		/// </summary>`
+		public bool bWarningsAsErrors = false;
+
+		/// <summary>
 		/// How to treat unsafe implicit type cast warnings (e.g., double->float or int64->int32)
 		/// </summary>
 		public WarningLevel UnsafeTypeCastWarningLevel
 		{
-			get { return (UnsafeTypeCastWarningLevelPrivate == WarningLevel.Default)? Target.UnsafeTypeCastWarningLevel : UnsafeTypeCastWarningLevelPrivate; }
-			set { UnsafeTypeCastWarningLevelPrivate = value; }
+			get => (UnsafeTypeCastWarningLevelPrivate == WarningLevel.Default) ? Target.UnsafeTypeCastWarningLevel : UnsafeTypeCastWarningLevelPrivate;
+			set => UnsafeTypeCastWarningLevelPrivate = value;
 		}
 
 		/// <inheritdoc cref="UnsafeTypeCastWarningLevel"/>
@@ -788,6 +884,42 @@ namespace UnrealBuildTool
 		/// Enable warnings for using undefined identifiers in #if expressions
 		/// </summary>
 		public bool bEnableUndefinedIdentifierWarnings = true;
+
+		/// <summary>
+		/// How to treat general module include path validation messages
+		/// </summary>
+		public WarningLevel ModuleIncludePathWarningLevel
+		{
+			get => (ModuleIncludePathWarningLevelPrivate == WarningLevel.Default) ? Target.ModuleIncludePathWarningLevel : ModuleIncludePathWarningLevelPrivate;
+			set => ModuleIncludePathWarningLevelPrivate = value;
+		}
+
+		/// <inheritdoc cref="ModuleIncludePathWarningLevel"/>
+		private WarningLevel ModuleIncludePathWarningLevelPrivate;
+
+		/// <summary>
+		/// How to treat private module include path validation messages, where a module is adding an include path that exposes private headers
+		/// </summary>
+		public WarningLevel ModuleIncludePrivateWarningLevel
+		{
+			get => (ModuleIncludePrivateWarningLevelPrivate == WarningLevel.Default) ? Target.ModuleIncludePrivateWarningLevel : ModuleIncludePrivateWarningLevelPrivate;
+			set => ModuleIncludePrivateWarningLevelPrivate = value;
+		}
+
+		/// <inheritdoc cref="ModuleIncludePrivateWarningLevel"/>
+		private WarningLevel ModuleIncludePrivateWarningLevelPrivate;
+
+		/// <summary>
+		/// How to treat unnecessary module sub-directory include path validation messages
+		/// </summary>
+		public WarningLevel ModuleIncludeSubdirectoryWarningLevel
+		{
+			get => (ModuleIncludeSubdirectoryWarningLevelPrivate == WarningLevel.Default) ? Target.ModuleIncludeSubdirectoryWarningLevel : ModuleIncludeSubdirectoryWarningLevelPrivate;
+			set => ModuleIncludeSubdirectoryWarningLevelPrivate = value;
+		}
+
+		/// <inheritdoc cref="ModuleIncludeSubdirectoryWarningLevel"/>
+		private WarningLevel ModuleIncludeSubdirectoryWarningLevelPrivate;
 
 		/// <summary>
 		/// Disable all static analysis - clang, msvc, pvs-studio.
@@ -845,12 +977,15 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bUseUnity
 		{
-			set { bUseUnityOverride = value; }
+			set => bUseUnityOverride = value;
 			get
 			{
 				bool UseUnity = true;
 				if (Target.DisableUnityBuildForModules?.Contains(Name) ?? false)
+				{
 					UseUnity = false;
+				}
+
 				return bUseUnityOverride ?? UseUnity;
 			}
 		}
@@ -921,7 +1056,7 @@ namespace UnrealBuildTool
 		/// are used, and checks that source files include their matching header first.
 		/// </summary>
 		[Obsolete("Deprecated in UE5.2 - Use IWYUSupport instead.")]
-		public bool bEnforceIWYU { set { if (!value) IWYUSupport = IWYUSupport.None; } }
+		public bool bEnforceIWYU { set { if (!value) { IWYUSupport = IWYUSupport.None; } } }
 
 		/// <summary>
 		/// Allows "include what you use" to modify the source code when run. bEnforceIWYU must be true for this variable to matter.
@@ -954,6 +1089,11 @@ namespace UnrealBuildTool
 		/// shared code does not reveal confidential information inside an #if PLATFORM_XXXX block. Licensee game code may want to allow for them, however.
 		/// </summary>
 		public bool bAllowConfidentialPlatformDefines = false;
+
+		/// <summary>
+		/// Enables AutoRTFM instrumentation to this module only when AutoRTFMCompiler is enabled
+		/// </summary>
+		public bool bAllowAutoRTFMInstrumentation = false;
 
 		/// <summary>
 		/// List of modules names (no path needed) with header files that our module's public headers needs access to, but we don't need to "import" or link against.
@@ -1165,8 +1305,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bLegacyPublicIncludePaths
 		{
-			set { bLegacyPublicIncludePathsPrivate = value; }
-			get { return bLegacyPublicIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V2) ? Target.bLegacyPublicIncludePaths : false); }
+			set => bLegacyPublicIncludePathsPrivate = value;
+			get => bLegacyPublicIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V2) ? Target.bLegacyPublicIncludePaths : false);
 		}
 		private bool? bLegacyPublicIncludePathsPrivate;
 
@@ -1176,8 +1316,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bLegacyParentIncludePaths
 		{
-			set { bLegacyParentIncludePathsPrivate = value; }
-			get { return bLegacyParentIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V3) ? Target.bLegacyParentIncludePaths : false); }
+			set => bLegacyParentIncludePathsPrivate = value;
+			get => bLegacyParentIncludePathsPrivate ?? ((DefaultBuildSettings < BuildSettingsVersion.V3) ? Target.bLegacyParentIncludePaths : false);
 		}
 		private bool? bLegacyParentIncludePathsPrivate;
 
@@ -1191,13 +1331,19 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Which stanard to use for compiling this module
 		/// </summary>
-		public CppStandardVersion CppStandard = CppStandardVersion.Default;
-		
+		public CppStandardVersion? CppStandard;
+
 		/// <summary>
 		/// Which standard to use for compiling this module
 		/// </summary>
-		public CStandardVersion CStandard = CStandardVersion.Default;
+		public CStandardVersion? CStandard;
 
+		/// <summary>
+		/// A list of subdirectory names and functions that are invoked to generate header files.
+		/// The subdirectory name is appended to the generated code directory to form a new directory
+		/// that headers are generated inside.
+		/// </summary>
+		public List<Tuple<string, Action<ILogger, DirectoryReference>>> GenerateHeaderFuncs = new List<Tuple<string, Action<ILogger, DirectoryReference>>>();
 
 		/// <summary>
 		///  Control visibility of symbols
@@ -1219,13 +1365,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The current engine directory
 		/// </summary>
-		public string EngineDirectory
-		{
-			get
-			{
-				return Unreal.EngineDirectory.FullName;
-			}
-		}
+		public string EngineDirectory => Unreal.EngineDirectory.FullName;
 
 		/// <summary>
 		/// Property for the directory containing this plugin. Useful for adding paths to third party dependencies.
@@ -1248,13 +1388,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Property for the directory containing this module. Useful for adding paths to third party dependencies.
 		/// </summary>
-		public string ModuleDirectory
-		{
-			get
-			{
-				return Directory.FullName;
-			}
-		}
+		public string ModuleDirectory => Directory.FullName;
 
 		/// <summary>
 		/// Returns module's low level tests directory "Tests".
@@ -1263,6 +1397,10 @@ namespace UnrealBuildTool
 		{
 			get
 			{
+				if (IsTestModule)
+				{
+					return Directory.FullName;
+				}
 				return Path.Combine(Directory.FullName, "Tests");
 			}
 		}
@@ -1351,7 +1489,7 @@ namespace UnrealBuildTool
 					if (Target.Type == TargetType.Editor)
 					{
 						PublicDependencyModuleNames.Add("GameplayDebuggerEditor");
-					}					
+					}
 				}
 				else
 				{
@@ -1406,6 +1544,24 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Setup this module for Chaos Visual Debugger support (Required for recording debug data that will be visualized in the Chaos Visual Debugger tool)
+		/// </summary>
+		public void SetupModuleChaosVisualDebuggerSupport(ReadOnlyTargetRules Target)
+		{
+			bool bHasChaosVisualDebuggerSupport = Target.bCompileChaosVisualDebuggerSupport && Target.Configuration != UnrealTargetConfiguration.Shipping;
+			if (bHasChaosVisualDebuggerSupport)
+			{
+				PublicDependencyModuleNames.Add("ChaosVDRuntime");
+
+				PublicDefinitions.Add("WITH_CHAOS_VISUAL_DEBUGGER=1");
+			}
+			else
+			{
+				PublicDefinitions.Add("WITH_CHAOS_VISUAL_DEBUGGER=0");
+			}
+		}
+
+		/// <summary>
 		/// Setup this module for physics support (based on the settings in UEBuildConfiguration)
 		/// </summary>
 		public void SetupModulePhysicsSupport(ReadOnlyTargetRules Target)
@@ -1425,6 +1581,8 @@ namespace UnrealBuildTool
 				);
 
 			PublicDefinitions.Add("WITH_CLOTH_COLLISION_DETECTION=1");
+
+			SetupModuleChaosVisualDebuggerSupport(Target);
 
 			// Modules may still be relying on appropriate definitions for physics.
 			// Nothing in engine should use these anymore as they were all deprecated and 
@@ -1454,13 +1612,53 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Determines if a module type is valid for a target, based on custom attributes
+		/// </summary>
+		/// <param name="ModuleType">The type of the module to check</param>
+		/// <param name="TargetRules">The target to check against</param>
+		/// <param name="InvalidReason">Out, reason this module was invalid</param>
+		/// <returns>True if the module is valid, false otherwise</returns>
+		internal static bool IsValidForTarget(Type ModuleType, ReadOnlyTargetRules TargetRules, [NotNullWhen(false)] out string? InvalidReason)
+		{
+			IEnumerable<TargetType> SupportedTargetTypes = ModuleType.GetCustomAttributes<SupportedTargetTypesAttribute>().SelectMany(x => x.TargetTypes).Distinct();
+			if (SupportedTargetTypes.Any() && !SupportedTargetTypes.Contains(TargetRules.Type))
+			{
+				InvalidReason = $"TargetType '{TargetRules.Type}'";
+				return false;
+			}
+
+			IEnumerable<UnrealTargetConfiguration> SupportedConfigurations = ModuleType.GetCustomAttributes<SupportedConfigurationsAttribute>().SelectMany(x => x.Configurations).Distinct();
+			if (SupportedConfigurations.Any() && !SupportedConfigurations.Contains(TargetRules.Configuration))
+			{
+				InvalidReason = $"Configuration '{TargetRules.Configuration}'";
+				return false;
+			}
+
+			// Skip platform extension modules. We only care about the base modules, not the platform overrides.
+			// The platform overrides get applied at a later stage when we actually come to build the module.
+			if (!UEBuildPlatform.GetPlatformFolderNames().Any(Name => ModuleType.Name.EndsWith("_" + Name)))
+			{
+				IEnumerable<SupportedPlatformsAttribute> PlatformAttributes = ModuleType.GetCustomAttributes<SupportedPlatformsAttribute>();
+				IEnumerable<UnrealTargetPlatform> SupportedPlatforms = PlatformAttributes.SelectMany(x => x.Platforms).Distinct();
+				if (PlatformAttributes.Any() && !SupportedPlatforms.Contains(TargetRules.Platform))
+				{
+					InvalidReason = $"Platform '{TargetRules.Platform}'";
+					return false;
+				}
+			}
+
+			InvalidReason = null;
+			return true;
+		}
+
+		/// <summary>
 		/// Determines if this module can be precompiled for the current target.
 		/// </summary>
 		/// <param name="RulesFile">Path to the module rules file</param>
 		/// <returns>True if the module can be precompiled, false otherwise</returns>
 		internal bool IsValidForTarget(FileReference RulesFile)
 		{
-			if(Type == ModuleRules.ModuleType.CPlusPlus)
+			if (Type == ModuleRules.ModuleType.CPlusPlus)
 			{
 				switch (PrecompileForTargets)
 				{
@@ -1480,69 +1678,82 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Determines whether a given platform is available in the context of the current Target
+		/// </summary>
+		/// <param name="InPlatform">The platform to check for</param>
+		/// <returns>True if it's available, false otherwise</returns>
+		protected bool IsPlatformAvailable(UnrealTargetPlatform InPlatform)
+		{
+			return UEBuildPlatform.IsPlatformAvailableForTarget(InPlatform, Target);
+		}
+
+		/// <summary>
 		/// Prepares a module for building a low level tests executable.
 		/// If we're building a module as part of a test module chain and there's a Tests folder with low level tests, then they require the LowLevelTestsRunner dependency.
 		/// We also keep track of any Editor, Engine and other conditionally compiled dependencies.
 		/// </summary>
 		internal void PrepareModuleForTests()
 		{
-			if (Name != "LowLevelTestsRunner" && System.IO.Directory.Exists(TestsDirectory))
+			TestTargetRules? TestTargetRules = Target.InnerTestTargetRules;
+			if (TestTargetRules == null)
 			{
-				if (!PrivateIncludePathModuleNames.Contains("LowLevelTestsRunner"))
-				{
-					PrivateIncludePathModuleNames.Add("LowLevelTestsRunner");
-				}
-			}
-			else if (Name == "LowLevelTestsRunner")
-			{
-				TestTargetRules.LowLevelTestsRunnerModule = this;
+				return;
 			}
 
-			// If one of these modules is in the dependency graph, we must enable their appropriate global definitions
-			if (Name == "UnrealEd")
+			lock (TestTargetRules)
 			{
-				// TODO: more support code required...
-				TestTargetRules.bTestsRequireEditor = false;
-			}
-			if (Name == "Engine")
-			{
-				// TODO: more support code required...
-				TestTargetRules.bTestsRequireEngine = false;
-			}
-			if (Name == "ApplicationCore")
-			{
-				TestTargetRules.bTestsRequireApplicationCore = true;
-			}
-			if (Name == "CoreUObject")
-			{
-				TestTargetRules.bTestsRequireCoreUObject = true;
-			}
+				if (Name != "LowLevelTestsRunner" && System.IO.Directory.Exists(TestsDirectory))
+				{
+					if (!PrivateIncludePathModuleNames.Contains("LowLevelTestsRunner"))
+					{
+						PrivateIncludePathModuleNames.Add("LowLevelTestsRunner");
+					}
+				}
+				else if (Name == "LowLevelTestsRunner")
+				{
+					TestTargetRules.LowLevelTestsRunnerModule = this;
+				}
 
-			if (TestTargetRules.LowLevelTestsRunnerModule != null)
-			{
-				if (TestTargetRules.bTestsRequireEditor && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("UnrealEd"))
+				if (Name == "Engine" && !TestTargetRules.bNeverCompileAgainstEngine)
 				{
-					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("UnrealEd");
+					TestTargetRules.bTestsRequireEngine = true;
 				}
-				if (TestTargetRules.bTestsRequireEngine && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("Engine"))
+				if (Name == "UnrealEd" && !TestTargetRules.bNeverCompileAgainstEditor)
 				{
-					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("Engine");
+					TestTargetRules.bTestsRequireEditor = true;
 				}
-				if (TestTargetRules.bTestsRequireApplicationCore && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("ApplicationCore"))
+				if (Name == "ApplicationCore" && !TestTargetRules.bNeverCompileAgainstApplicationCore)
 				{
-					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("ApplicationCore");
+					TestTargetRules.bTestsRequireApplicationCore = true;
 				}
-				if (TestTargetRules.bTestsRequireCoreUObject && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("CoreUObject"))
+				if (Name == "CoreUObject" && !TestTargetRules.bNeverCompileAgainstCoreUObject)
 				{
-					TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("CoreUObject");
+					TestTargetRules.bTestsRequireCoreUObject = true;
+				}
+
+				if (TestTargetRules.LowLevelTestsRunnerModule != null)
+				{
+					if (TestTargetRules.bTestsRequireEditor && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("UnrealEd"))
+					{
+						TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("UnrealEd");
+					}
+					if (TestTargetRules.bTestsRequireEngine && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("Engine"))
+					{
+						TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("Engine");
+					}
+					if (TestTargetRules.bTestsRequireApplicationCore && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("ApplicationCore"))
+					{
+						TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("ApplicationCore");
+					}
+					if (TestTargetRules.bTestsRequireCoreUObject && !TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Contains("CoreUObject"))
+					{
+						TestTargetRules.LowLevelTestsRunnerModule.PrivateDependencyModuleNames.Add("CoreUObject");
+					}
 				}
 			}
 		}
 
-		internal bool IsTestModule
-		{
-			get { return bIsTestModuleOverride ?? false; }
-		}
+		internal bool IsTestModule => bIsTestModuleOverride ?? false;
 		/// <summary>
 		/// Whether this is a low level tests module.
 		/// </summary>
@@ -1605,16 +1816,10 @@ namespace UnrealBuildTool
 		/// Returns if VcPkg is supported for the build configuration.
 		/// </summary>
 		/// <returns>True if supported</returns>
-		public bool IsVcPackageSupported
-		{
-			get
-			{
-				return Target.Platform == UnrealTargetPlatform.Win64 ||
+		public bool IsVcPackageSupported => Target.Platform == UnrealTargetPlatform.Win64 ||
 					Target.Platform == UnrealTargetPlatform.Linux ||
 					Target.Platform == UnrealTargetPlatform.LinuxArm64 ||
 					Target.Platform == UnrealTargetPlatform.Mac;
-			}
-		}
 
 		/// <summary>
 		/// Returns the VcPkg root directory for the build configuration
@@ -1627,8 +1832,8 @@ namespace UnrealBuildTool
 			string TargetPlatform = Target.Platform.ToString();
 			string? Platform = null;
 			string? Architecture = null;
-			string Linkage = string.Empty;
-			string Toolset = string.Empty;
+			string Linkage = String.Empty;
+			string Toolset = String.Empty;
 			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				Platform = "windows";
@@ -1659,7 +1864,7 @@ namespace UnrealBuildTool
 				Platform = "osx";
 			}
 
-			if (string.IsNullOrEmpty(TargetPlatform) || string.IsNullOrEmpty(Platform) || string.IsNullOrEmpty(Architecture))
+			if (String.IsNullOrEmpty(TargetPlatform) || String.IsNullOrEmpty(Platform) || String.IsNullOrEmpty(Architecture))
 			{
 				throw new System.NotSupportedException($"Platform {Target.Platform} not currently supported by vcpkg");
 			}
@@ -1684,7 +1889,7 @@ namespace UnrealBuildTool
 				throw new DirectoryNotFoundException(VcPackageRoot);
 			}
 
-			string LibraryExtension = string.Empty;
+			string LibraryExtension = String.Empty;
 			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				LibraryExtension = ".lib";

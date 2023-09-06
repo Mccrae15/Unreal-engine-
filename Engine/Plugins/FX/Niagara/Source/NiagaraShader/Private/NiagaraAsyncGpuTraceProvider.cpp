@@ -2,12 +2,17 @@
 
 #include "NiagaraAsyncGpuTraceProvider.h"
 
+#include "Containers/StridedView.h"
 #include "GlobalShader.h"
 #include "NiagaraAsyncGpuTraceProviderGsdf.h"
 #include "NiagaraAsyncGpuTraceProviderHwrt.h"
 #include "NiagaraSettings.h"
 #include "NiagaraShaderParticleID.h"
-#include "ScenePrivate.h"
+
+#include "PrimitiveSceneInfo.h"
+#include "RenderGraphUtils.h"
+#include "ShaderParameterStruct.h"
+#include "SceneInterface.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -194,7 +199,7 @@ void FNiagaraAsyncGpuTraceProvider::ClearResults(FRHICommandList& RHICmdList, ES
 	UnsetShaderUAVs(RHICmdList, TraceShader, TraceShader.GetComputeShader());
 }
 
-void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, FScene* Scene, const TMap<FPrimitiveComponentId, uint32>& CollisionGroupMap, FCollisionGroupHashMap& Result)
+void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, FSceneInterface* Scene, const TMap<FPrimitiveComponentId, uint32>& CollisionGroupMap, FCollisionGroupHashMap& Result)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, NiagaraUpdateCollisionGroupsMap);
 
@@ -215,9 +220,9 @@ void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& 
 	//We can probably be smarter here but for now just push the whole map over to the GPU each time it's dirty.
 	//Ideally this should be a small amount of data and updated infrequently.
 	FReadBuffer NewPrimIdCollisionGroupPairs;
-	NewPrimIdCollisionGroupPairs.Initialize(TEXT("NewPrimIdCollisionGroupPairs"), sizeof(uint32) * 2, AllocInstances, EPixelFormat::PF_R32G32_UINT, BUF_Volatile);
+	NewPrimIdCollisionGroupPairs.Initialize(RHICmdList, TEXT("NewPrimIdCollisionGroupPairs"), sizeof(uint32) * 2, AllocInstances, EPixelFormat::PF_R32G32_UINT, BUF_Volatile);
 
-	uint32* PrimIdCollisionGroupPairPtr = (uint32*)RHILockBuffer(NewPrimIdCollisionGroupPairs.Buffer, 0, AllocInstances * sizeof(uint32) * 2, RLM_WriteOnly);
+	uint32* PrimIdCollisionGroupPairPtr = (uint32*)RHICmdList.LockBuffer(NewPrimIdCollisionGroupPairs.Buffer, 0, AllocInstances * sizeof(uint32) * 2, RLM_WriteOnly);
 	FMemory::Memset(PrimIdCollisionGroupPairPtr, 0, AllocInstances * sizeof(uint32) * 2);
 
 	for (auto Entry : CollisionGroupMap)
@@ -225,19 +230,14 @@ void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& 
 		FPrimitiveComponentId PrimId = Entry.Key;
 		uint32 CollisionGroup = Entry.Value;
 
-		uint32 GPUSceneInstanceIndex = INDEX_NONE;
-		//Ugh this is a bit pants. Maybe try to rework things so I can use the direct prim index.
-		int32 PrimIndex = Scene->PrimitiveComponentIds.Find(PrimId);
-		if (PrimIndex != INDEX_NONE)
-		{
-			GPUSceneInstanceIndex = Scene->Primitives[PrimIndex]->GetInstanceSceneDataOffset();
-		}
+		const FPrimitiveSceneInfo* const PrimitiveSceneInfo = Scene->GetPrimitiveSceneInfo(PrimId);
+		const uint32 GPUSceneInstanceIndex = PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstanceSceneDataOffset() : INDEX_NONE;
 
 		PrimIdCollisionGroupPairPtr[0] = GPUSceneInstanceIndex;
 		PrimIdCollisionGroupPairPtr[1] = CollisionGroup;
 		PrimIdCollisionGroupPairPtr += 2;
 	}
-	RHIUnlockBuffer(NewPrimIdCollisionGroupPairs.Buffer);
+	RHICmdList.UnlockBuffer(NewPrimIdCollisionGroupPairs.Buffer);
 
 	//Init the hash table if needed
 	if (Result.HashTableSize < AllocInstances)
@@ -245,10 +245,10 @@ void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& 
 		Result.HashTableSize = AllocInstances;
 
 		Result.PrimIdHashTable.Release();
-		Result.PrimIdHashTable.Initialize(TEXT("NiagaraPrimIdHashTable"), sizeof(uint32), AllocInstances, EPixelFormat::PF_R32_UINT, BUF_Static);
+		Result.PrimIdHashTable.Initialize(RHICmdList, TEXT("NiagaraPrimIdHashTable"), sizeof(uint32), AllocInstances, BUF_Static);
 
 		Result.HashToCollisionGroups.Release();
-		Result.HashToCollisionGroups.Initialize(TEXT("NiagaraPrimIdHashToCollisionGroups"), sizeof(uint32), AllocInstances, EPixelFormat::PF_R32_UINT, BUF_Static);
+		Result.HashToCollisionGroups.Initialize(RHICmdList, TEXT("NiagaraPrimIdHashToCollisionGroups"), sizeof(uint32), AllocInstances, EPixelFormat::PF_R32_UINT, BUF_Static);
 	}
 
 	RHICmdList.Transition(FRHITransitionInfo(Result.PrimIdHashTable.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
@@ -280,4 +280,8 @@ void FNiagaraAsyncGpuTraceProvider::BuildCollisionGroupHashMap(FRHICommandList& 
 
 	RHICmdList.Transition(FRHITransitionInfo(Result.PrimIdHashTable.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(Result.HashToCollisionGroups.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+}
+
+void FNiagaraAsyncGpuTraceProvider::PostRenderOpaque(FRHICommandList& RHICmdList, TConstStridedView<FSceneView> Views, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI, FCollisionGroupHashMap* CollisionGroupHash)
+{
 }

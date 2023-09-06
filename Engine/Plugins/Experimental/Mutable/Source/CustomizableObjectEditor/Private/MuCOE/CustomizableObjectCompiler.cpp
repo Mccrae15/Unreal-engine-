@@ -18,8 +18,10 @@
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/ICustomizableObjectPopulationModule.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeObjectGroup.h"
+#include "UObject/ICookInfo.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Interfaces/ITargetPlatform.h"
 
 class UTexture2D;
 
@@ -38,7 +40,7 @@ FCustomizableObjectCompiler::FCustomizableObjectCompiler() : FCustomizableObject
 	, CompletedUnrealToMutableTask(0)
 	, MaxConvertToMutableTextureTime(0.2f)
 {
-	bAreExtraBoneInfluencesEnabled = ICustomizableObjectModule::Get().AreExtraBoneInfluencesEnabled();
+	CustomizableObjectNumBoneInfluences = ICustomizableObjectModule::Get().GetNumBoneInfluences();
 }
 
 
@@ -49,7 +51,7 @@ bool FCustomizableObjectCompiler::Tick()
 
 	if (CompileTask.IsValid() && CompileTask->IsCompleted())
 	{
-		UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] Finishing Compilation task."), FPlatformTime::Seconds());
+		UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] Finishing Compilation task for Object %s."), FPlatformTime::Seconds(), *CurrentObject->GetName());
 
 		FinishCompilation();
 
@@ -60,13 +62,13 @@ bool FCustomizableObjectCompiler::Tick()
 		else
 		{
 			bUpdated = true;
-			State = ECustomizableObjectCompilationState::Completed;
+			SetCompilationState(ECustomizableObjectCompilationState::Completed);
 
 			RemoveCompileNotification();
 
 			NotifyCompilationErrors();
 		}
-		
+
 		UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] Finished Compilation task."), FPlatformTime::Seconds());
 		UE_LOG(LogMutable, Verbose, TEXT("PROFILE: -----------------------------------------------------------"));
 
@@ -80,7 +82,8 @@ bool FCustomizableObjectCompiler::Tick()
 
 	if (SaveDDTask.IsValid() && SaveDDTask->IsCompleted())
 	{
-		State = ECustomizableObjectCompilationState::Completed;
+		SetCompilationState(ECustomizableObjectCompilationState::Completed);
+
 		bUpdated = true;
 
 		FinishSavingDerivedData();
@@ -122,8 +125,8 @@ void FCustomizableObjectCompiler::MutableIsDisabledCase(UCustomizableObject* Obj
 		return;
 	}
 
-	UE_LOG(LogMutable, Warning, TEXT("Mutable has been disabled. To reenable it, please deactivate the Disable Mutale Option in the Plugins -> Mutable option"), FPlatformTime::Seconds());
-	CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(nullptr, true));
+	UE_LOG(LogMutable, Log, TEXT("Mutable has been disabled. To reenable it, please deactivate the Disable Mutale Option in the Plugins -> Mutable option"), FPlatformTime::Seconds());
+	CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(nullptr));
 	CompileTask->MutableIsDisabled = true;
 	LaunchMutableCompile(false);
 }
@@ -156,7 +159,7 @@ bool FCustomizableObjectCompiler::IsRootObject(const UCustomizableObject* Object
 
 void FCustomizableObjectCompiler::PreloadingReferencerAssetsCallback(UCustomizableObject* Object, FCustomizableObjectCompiler* CustomizableObjectCompiler, const FCompilationOptions Options, bool bAsync)
 {
-	UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] Preload asynchronously assets end."), FPlatformTime::Seconds());
+	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] Preload asynchronously assets end."), FPlatformTime::Seconds());
 
 	if (CustomizableObjectCompiler->GetCurrentGAsyncLoadingTimeLimit() != -1.0f)
 	{
@@ -187,7 +190,7 @@ void FCustomizableObjectCompiler::Compile(UCustomizableObject& Object, const FCo
 		return;
 	}
 
-	UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] Preload asynchronously assets start."), FPlatformTime::Seconds());
+	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] Preload asynchronously assets start."), FPlatformTime::Seconds());
 
 	FString Message = FString::Printf(TEXT("Customizable Object %s is already being compiled or updated. Please wait a few seconds and try again."), *Object.GetName());
 	FNotificationInfo Info(LOCTEXT("CustomizableObjectBeingCompilerOrUpdated", "Customizable Object compile and/or update still in process. Please wait a few seconds and try again."));
@@ -215,6 +218,18 @@ void FCustomizableObjectCompiler::Compile(UCustomizableObject& Object, const FCo
 		return;
 	}
 
+	// Now that we know for sure that the CO is locked and there are no pending updates of instances using the CO,
+	// destroy any live update instances, as they become invalid when recompiling the CO
+	for (TObjectIterator<UCustomizableObjectInstance> It; It; ++It)
+	{
+		UCustomizableObjectInstance* Instance = *It;
+		if (Instance &&
+			Instance->GetCustomizableObject() == &Object)
+		{
+			Instance->DestroyLiveUpdateInstance();
+		}
+	}
+
 	CurrentObject = &Object;
 
 	PreloadingReferencerAssets = true;
@@ -235,6 +250,9 @@ void FCustomizableObjectCompiler::Compile(UCustomizableObject& Object, const FCo
 
 	bool bAssetsLoaded = true;
 
+	// Customizations are marked as editoronly on load and are not packaged into the runtime game by default.
+ 	// The ones that need to be kept will be copied into SoftObjectPath on the object during save.
+	FCookLoadScope CookLoadScope(ECookLoadType::EditorOnly);
 	if (ArrayAssetToStream.Num() > 0)
 	{
 		FStreamableManager& Streamable = System->GetStreamableManager();
@@ -275,6 +293,11 @@ void FCustomizableObjectCompiler::AddReferencedObjects(FReferenceCollector& Coll
 	for (int32 i = 0; i < MaxIndex; ++i)
 	{
 		Collector.AddReferencedObject(ArrayGCProtect[i]);
+	}
+
+	if (CurrentObject)
+	{
+		Collector.AddReferencedObject(CurrentObject);
 	}
 }
 
@@ -449,17 +472,16 @@ UCustomizableObject* FCustomizableObjectCompiler::GetRootObject( UCustomizableOb
 	// Grab a node to start the search -> Get the root since it should be always present
 	bool bMultipleBaseObjectsFound = false;
 	UCustomizableObjectNodeObject* ObjectRootNode = GetRootNode(InObject, bMultipleBaseObjectsFound);
-	
-	if (ObjectRootNode->ParentObject)
+
+	if (ObjectRootNode && ObjectRootNode->ParentObject)
 	{
 		TArray<UCustomizableObject*> VisitedNodes;
 		return GetFullGraphRootObject(ObjectRootNode,VisitedNodes);
 	}
-	else
-	{
-		// No parent object found, return input as the parent of the graph
-		return InObject;
-	}
+
+	// No parent object found, return input as the parent of the graph
+	// This can also mean the ObjectRootNode does not exist because it has not been opened yet (so no nodes have been generated)
+	return InObject;
 }
 
 
@@ -502,7 +524,6 @@ mu::NodeObjectPtr FCustomizableObjectCompiler::GenerateMutableRoot(
 	UCustomizableObjectNodeObject* ActualRoot = Root;
 	UCustomizableObject* ActualRootObject = Object;
 
-	GenerationContext.bDisableTextureLayoutManagementFlag = Object->bDisableTextureLayoutManagement;
 	ArrayAlreadyProcessedChild.Empty();
 
 	if (Root->ObjectName.IsEmpty())
@@ -521,11 +542,10 @@ mu::NodeObjectPtr FCustomizableObjectCompiler::GenerateMutableRoot(
 		// We cannot load while saving. This should only happen in cooking and all assets should have been preloaded.
 		if (!GIsSavingPackage)
 		{
-			UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] Begin search for children."), FPlatformTime::Seconds());
+			UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] Begin search for children."), FPlatformTime::Seconds());
 
 			TArray<UCustomizableObject*> VisitedObjects;
 			ActualRootObject = Root->ParentObject ? GetFullGraphRootObject(Root, VisitedObjects) : Object;
-			GenerationContext.bDisableTextureLayoutManagementFlag = ActualRootObject->bDisableTextureLayoutManagement;
 
 			if (Root->ParentObject != nullptr)
 			{
@@ -536,7 +556,7 @@ mu::NodeObjectPtr FCustomizableObjectCompiler::GenerateMutableRoot(
 			// The object doesn't reference a root object but is a root object, look for all the objects that reference it and get their root nodes
 			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 			ProcessChildObjectsRecursively(ActualRootObject, AssetRegistryModule, GenerationContext);
-			UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] End search for children."), FPlatformTime::Seconds());
+			UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] End search for children."), FPlatformTime::Seconds());
 		}
 	}
 	else
@@ -557,11 +577,11 @@ mu::NodeObjectPtr FCustomizableObjectCompiler::GenerateMutableRoot(
 			const int32 MaxIndex = Object->WorkingSet.Num();
 			for (int32 i = 0; i < MaxIndex; ++i)
 			{
-				if (Object->WorkingSet[i] != nullptr)
+				if (UCustomizableObject* WorkingSetObject = Object->WorkingSet[i].LoadSynchronous())
 				{
 					ArrayCustomizableObject.Reset();
 
-					if (!GetParentsUntilRoot(Object->WorkingSet[i].LoadSynchronous(), ArrayNodeObject, ArrayCustomizableObject))
+					if (!GetParentsUntilRoot(WorkingSetObject, ArrayNodeObject, ArrayCustomizableObject))
 					{
 						CompilerLog(LOCTEXT("NoReferenceMesh", "Error! Cycle detected in the Customizable Object hierarchy."), Root);
 						return nullptr;
@@ -600,8 +620,14 @@ mu::NodeObjectPtr FCustomizableObjectCompiler::GenerateMutableRoot(
 
 		VisitedObjects.Empty();
 		ActualRootObject = Root->ParentObject ? GetFullGraphRootObject(Root, VisitedObjects) : Object;
-		GenerationContext.bDisableTextureLayoutManagementFlag = ActualRootObject->bDisableTextureLayoutManagement;
 
+	}
+
+	// Ensure that the CO has a valid AutoLODStrategy on the ActualRoot.
+	if (ActualRoot->AutoLODStrategy == ECustomizableObjectAutomaticLODStrategy::Inherited)
+	{
+		CompilerLog(LOCTEXT("RootInheritsFromParent", "Error! Base CustomizableObject's LOD Strategy can't be set to 'Inherit from parent object'"), ActualRoot);
+		return nullptr;
 	}
 
 	// Make sure we have a valid Reference SkeletalMesh and Skeleton for each component
@@ -637,9 +663,9 @@ mu::NodeObjectPtr FCustomizableObjectCompiler::GenerateMutableRoot(
     GenerationContext.RealTimeMorphTargetsOverrides.Reset();
 
 	// Generate the object expression
-	UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] GenerateMutableSource start."), FPlatformTime::Seconds());
+	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] GenerateMutableSource start."), FPlatformTime::Seconds());
 	mu::NodeObjectPtr MutableRoot = GenerateMutableSource(ActualRoot->OutputPin(), GenerationContext, !bOutIsRootObject);
-	UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] GenerateMutableSource end."), FPlatformTime::Seconds());
+	UE_LOG(LogMutable, Verbose, TEXT("PROFILE: [ %16.8f ] GenerateMutableSource end."), FPlatformTime::Seconds());
 
     ActualRoot->RealTimeMorphSelectionOverrides = GenerationContext.RealTimeMorphTargetsOverrides;
 	GenerationContext.GenerateClippingCOInternalTags();
@@ -706,9 +732,9 @@ void FCustomizableObjectCompiler::AddCachedReferencers(const FName& PathName, TA
 }
 
 
-void FCustomizableObjectCompiler::LaunchMutableCompile(bool ShowNotification)
+void FCustomizableObjectCompiler::LaunchMutableCompile(bool bShowNotification)
 {
-	if(!Options.bSilentCompilation && ShowNotification)
+	if(bShowNotification)
 	{
 		AddCompileNotification(LOCTEXT("CustomizableObjectCompileInProgress", "Compiling"));
 	}
@@ -721,14 +747,14 @@ void FCustomizableObjectCompiler::LaunchMutableCompile(bool ShowNotification)
 }
 
 
-void FCustomizableObjectCompiler::SaveCODerivedData(bool ShowNotification)
+void FCustomizableObjectCompiler::SaveCODerivedData(bool bShowNotification)
 {
 	if (!SaveDDTask.IsValid())
 	{
 		return;
 	}
 
-	if (!Options.bSilentCompilation && ShowNotification)
+	if (bShowNotification)
 	{
 		AddCompileNotification(LOCTEXT("SavingCustomizableObjectDerivedData", "Saving Data"));
 	}
@@ -864,11 +890,22 @@ void FCustomizableObjectCompiler::GetCompilationMessages(TArray<FText>& OutWarni
 }
 
 
+void FCustomizableObjectCompiler::SetCompilationState(ECustomizableObjectCompilationState InState)
+{
+	State = InState;
+	
+	if (CurrentObject)
+	{
+		CurrentObject->CompilationState = InState;
+	}
+}
+
+
 void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, const FCompilationOptions& InOptions, bool bAsync)
 {
 	MUTABLE_CPUPROFILER_SCOPE(FCustomizableObjectCompiler::Compile)
 	
-	State = ECustomizableObjectCompilationState::Failed;
+	SetCompilationState(ECustomizableObjectCompilationState::Failed);
 
 	if (!Object) return;
 
@@ -892,12 +929,20 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 	if (!Object || !CurrentObject) return;
 
 	Options = InOptions;
-	Options.bExtraBoneInfluencesEnabled = bAreExtraBoneInfluencesEnabled;
+	Options.CustomizableObjectNumBoneInfluences = CustomizableObjectNumBoneInfluences;
 	Options.bRealTimeMorphTargetsEnabled = Object->bEnableRealTimeMorphTargets;
 	Options.bClothingEnabled = Object->bEnableClothing;
 	Options.b16BitBoneWeightsEnabled = Object->bEnable16BitBoneWeights;
 	Options.bSkinWeightProfilesEnabled = Object->bEnableAltSkinWeightProfiles;
-	Options.bPhysicsAssetMergeEnebled = Object->bEnablePhysicsAssetMerge;
+	Options.bPhysicsAssetMergeEnabled = Object->bEnablePhysicsAssetMerge;
+	Options.bAnimBpPhysicsManipulationEnabled = Object->bEnableAnimBpPhysicsAssetsManipualtion;
+	Options.ImageTiling = Object->CompileOptions.ImageTiling;
+
+	if (!InOptions.bIsCooking && IsRunningCookCommandlet())
+	{
+		UE_LOG(LogMutable, Display, TEXT("Editor compilation suspended for Customizable Object [%s]. Can not compile COs when the cook commandlet is running. "), *Object->GetName());
+		return;
+	}
 
 	if (Object->IsLocked() || !UCustomizableObjectSystem::GetInstance()->LockObject(Object))
 	{
@@ -905,9 +950,17 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 		return;
 	}
 
-	UE_LOG(LogMutable, Display, TEXT("Started Customizable Object Compile %s."), *Object->GetName());	
+	UE_LOG(LogMutable, Display, TEXT("Started Customizable Object Compile %s."), *Object->GetName());
 
-	CompilationLogsContainer.ClearMessageCounters();
+	if (InOptions.bIsCooking && InOptions.TargetPlatform)
+	{
+		UE_LOG(LogMutable, Display, TEXT("Compiling Customizable Object %s for platform %s."), *Object->GetName(), *InOptions.TargetPlatform->PlatformName());
+	}
+
+	if (InOptions.bIsCooking && InOptions.bForceLargeLODBias)
+	{
+		UE_LOG(LogMutable, Display, TEXT("Compiling Customizable Object with %d LODBias."), InOptions.DebugBias);
+	}
 
 	FMutableGraphGenerationContext GenerationContext(Object, this, Options);
 	GenerationContext.ParamNamesToSelectedOptions = ParamNamesToSelectedOptions;
@@ -929,6 +982,7 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 	}
 
 	// Clear Messages from previous Compilations
+	CompilationLogsContainer.ClearMessageCounters();
 	CompilationLogsContainer.ClearMessagesArray();
 
 	// Generate the mutable node expression
@@ -981,6 +1035,7 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 		Object->MorphTargetReconstructionData = MoveTemp(GenerationContext.MorphTargetReconstructionData);
 		
 		Object->SkinWeightProfilesInfo = MoveTemp(GenerationContext.SkinWeightProfilesInfo);
+		Object->AnimBpOverridePhysiscAssetsInfo = MoveTemp(GenerationContext.AnimBpOverridePhysicsAssetsInfo);
 		
 		// Clothing	
 		Object->ClothMeshToMeshVertData = MoveTemp(GenerationContext.ClothMeshToMeshVertData);
@@ -1077,6 +1132,13 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 		Object->GroupNodeMap = GenerationContext.GroupNodeMap;
 		Object->ParameterUIDataMap = GenerationContext.ParameterUIDataMap;
 		Object->StateUIDataMap = GenerationContext.StateUIDataMap;
+		Object->AlwaysLoadedExtensionData = MoveTemp(GenerationContext.AlwaysLoadedExtensionData);
+
+		Object->StreamedExtensionData.Empty(GenerationContext.StreamedExtensionData.Num());
+		for (UCustomizableObjectExtensionDataContainer* Container : GenerationContext.StreamedExtensionData)
+		{
+			Object->StreamedExtensionData.Emplace(Container);
+		}
 
 #if WITH_EDITORONLY_DATA
 		Object->CustomizableObjectPathMap = GenerationContext.CustomizableObjectPathMap;
@@ -1151,6 +1213,29 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 			Object->ReferencedSkeletons.Add(Skeleton);
 		}
 
+		Object->SetBoneNamesArray(GenerationContext.BoneNames);
+
+		// Pass-through textures
+		TArray<TSoftObjectPtr<UTexture>> NewReferencedPassThroughTextures;
+
+		for (const TPair<TSoftObjectPtr<UTexture>, uint32>& Pair : GenerationContext.PassThroughTextureToIndexMap)
+		{
+			check(Pair.Value == NewReferencedPassThroughTextures.Num());
+			NewReferencedPassThroughTextures.Add(Pair.Key);
+		}
+
+		// Mark the object as modified, used to avoid missing assets in packages.
+		if (Object->ReferencedPassThroughTextures != NewReferencedPassThroughTextures)
+		{
+			Object->ReferencedPassThroughTextures.Empty(NewReferencedPassThroughTextures.Num());
+			Object->ReferencedPassThroughTextures = NewReferencedPassThroughTextures;
+
+			if (!ParamNamesToSelectedOptions.Num()) // Don't mark the objects as modified because of a partial compilation
+			{
+				Object->MarkPackageDirty();
+			}
+		}
+
 		if (bIsRootObject && (GenerationContext.MaskOutMaterialCache.Num() > 0 || GenerationContext.MaskOutTextureCache.Num() > 0))
 		{
 			// Load MaskOutCache, if can't, create it.
@@ -1200,12 +1285,6 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 			}
 		}
 
-		// Initializes a unique identifier for this object
-		if (!Options.bIsCooking)
-		{
-			Object->InitializeIdentifier();
-		}
-
 		if (CompileTask.IsValid()) // Don't start compilation if there's a compilation running
 		{
 			// TODO : warning?
@@ -1220,9 +1299,9 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 			UCustomizableObjectSystem::GetInstance()->LockObject(Object);
 		}
 
-		CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(MutableRoot, GenerationContext.bDisableTextureLayoutManagementFlag));
+		CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(MutableRoot));
 		CompileTask->Options = Options;
-		State = ECustomizableObjectCompilationState::InProgress;
+		SetCompilationState(ECustomizableObjectCompilationState::InProgress);
 
 		if (GenerationContext.ArrayTextureUnrealToMutableTask.Num() > 0)
 		{
@@ -1249,7 +1328,9 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 			CleanCachedReferencers();
 			UpdateArrayGCProtect();
 
-			State = ECustomizableObjectCompilationState::Completed;
+			CurrentObject->PostCompile(); 
+
+			SetCompilationState(ECustomizableObjectCompilationState::Completed);
 		}
 		else
 		{
@@ -1265,7 +1346,7 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 				// will do the remaining steps (convert textures asynchronously and launch the Mutable compile thread)
 				CompilationLaunchPending = true;
 
-				if (!Options.bSilentCompilation && PendingTexturesToLoad)
+				if (PendingTexturesToLoad)
 				{
 					AddCompileNotification(LOCTEXT("ConvertingToMutableTexture", "Converting textures"));
 				}
@@ -1297,7 +1378,7 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 
 mu::NodePtr FCustomizableObjectCompiler::Export(UCustomizableObject* Object, const FCompilationOptions& InCompilerOptions)
 {
-	UE_LOG(LogMutable, Display, TEXT("Started Customizable Object Export %s."), *Object->GetName());
+	UE_LOG(LogMutable, Log, TEXT("Started Customizable Object Export %s."), *Object->GetName());
 
 	FNotificationInfo Info(LOCTEXT("CustomizableObjectExportInProgress", "Exported Customizable Object"));
 	Info.bFireAndForget = true;
@@ -1307,7 +1388,7 @@ mu::NodePtr FCustomizableObjectCompiler::Export(UCustomizableObject* Object, con
 	FSlateNotificationManager::Get().AddNotification(Info);
 
 	FCompilationOptions CompilerOptions = InCompilerOptions;
-	CompilerOptions.bExtraBoneInfluencesEnabled = bAreExtraBoneInfluencesEnabled;
+	CompilerOptions.CustomizableObjectNumBoneInfluences = CustomizableObjectNumBoneInfluences;
 		
 	FMutableGraphGenerationContext GenerationContext(Object, this, CompilerOptions);
 	GenerationContext.ParamNamesToSelectedOptions = ParamNamesToSelectedOptions;
@@ -1376,7 +1457,7 @@ void FCustomizableObjectCompiler::FinishCompilation()
 		UCustomizableObjectSystem::GetInstance()->UnlockObject(CurrentObject);
 	}
 
-	UE_LOG(LogMutable, Log, TEXT("Finished Customizable Object Compile."));
+	UE_LOG(LogMutable, Display, TEXT("Finished Customizable Object Compile %s."), *CurrentObject->GetName());
 }
 
 void FCustomizableObjectCompiler::FinishSavingDerivedData()
@@ -1413,14 +1494,25 @@ void FCustomizableObjectCompiler::ForceFinishCompilation()
 		CleanCachedReferencers();
 		UpdateArrayGCProtect();
 
-		UCustomizableObjectSystem::GetInstance()->UnlockObject(CurrentObject);
+		UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+
+		// Check the system has not started BeginDestroy, it can crash during a GC during a compilation forced shutdown without this check
+		if (!System->HasAnyFlags(EObjectFlags::RF_BeginDestroyed))
+		{
+			System->UnlockObject(CurrentObject);
+		}
 	}
 
 	else if (SaveDDTask.IsValid())
 	{
 		SaveDDThread->WaitForCompletion();
 
-		UCustomizableObjectSystem::GetInstance()->UnlockObject(CurrentObject);
+		UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+
+		if (!System->HasAnyFlags(EObjectFlags::RF_BeginDestroyed))
+		{
+			System->UnlockObject(CurrentObject);
+		}
 	}
 
 	RemoveCompileNotification();
@@ -1443,6 +1535,11 @@ void FCustomizableObjectCompiler::ForceFinishBeforeStartCompilation(UCustomizabl
 
 void FCustomizableObjectCompiler::AddCompileNotification(const FText& CompilationStep) const
 {
+	if (Options.bSilentCompilation)
+	{
+		return;
+	}
+
 	const FText Text = CurrentObject ? FText::FromString(FString::Printf(TEXT("Compiling %s"), *CurrentObject->GetName())) : LOCTEXT("CustomizableObjectCompileInProgressNotification", "Compiling Customizable Object");
 	
 	FCustomizableObjectEditorLogger::CreateLog(Text)
@@ -1464,6 +1561,7 @@ void FCustomizableObjectCompiler::NotifyCompilationErrors() const
 {
 	const uint32 NumWarnings = CompilationLogsContainer.GetWarningCount(false);
 	const uint32 NumErrors = CompilationLogsContainer.GetErrorCount();
+	const uint32 NumIgnoreds = CompilationLogsContainer.GetIgnoredCount();
 	const bool NoWarningsOrErrors = !(NumWarnings || NumErrors);
 
 	if (Options.bSilentCompilation && NoWarningsOrErrors)
@@ -1490,8 +1588,11 @@ void FCustomizableObjectCompiler::NotifyCompilationErrors() const
 	const FText Prefix = FText::FromString(CurrentObject ? CurrentObject->GetName() : "Customizable Object");
 
 	const FText Message = NoWarningsOrErrors ?
-		FText::Format(LOCTEXT("CompilationFinishedSuccessfully", "{0} finished compiling successfully"), Prefix) :
-		FText::Format(LOCTEXT("CompilationFinished", "{0} finished compiling successfully with {1} {1}|plural(one=warning,other=warnings) and {2} {2}|plural(one=error,other=errors)"), Prefix, NumWarnings, NumErrors);
+		FText::Format(LOCTEXT("CompilationFinishedSuccessfully", "{0} finished compiling."), Prefix) :
+		NumIgnoreds > 0 ?
+		FText::Format(LOCTEXT("CompilationFinished_WithIgnoreds", "{0} finished compiling with {1} {1}|plural(one=warning,other=warnings), {2} {2}|plural(one=error,other=errors) and {3} more similar warnings."), Prefix, NumWarnings, NumErrors, NumIgnoreds)
+		:
+		FText::Format(LOCTEXT("CompilationFinished_WithoutIgnoreds", "{0} finished compiling with {1} {1}|plural(one=warning,other=warnings) and {2} {2}|plural(one=error,other=errors)."), Prefix, NumWarnings, NumErrors);
 	
 	FCustomizableObjectEditorLogger::CreateLog(Message)
 	.Category(ELoggerCategory::Compilation)
@@ -1501,27 +1602,28 @@ void FCustomizableObjectCompiler::NotifyCompilationErrors() const
 }
 
 
-void FCustomizableObjectCompiler::CompilerLog(const FText& Message, const TArray<const UCustomizableObjectNode*>& ArrayNode, EMessageSeverity::Type MessageSeverity, bool bAddBaseObjectInfo)
+void FCustomizableObjectCompiler::CompilerLog(const FText& Message, const TArray<const UCustomizableObjectNode*>& ArrayNode, const EMessageSeverity::Type MessageSeverity, const bool bAddBaseObjectInfo, const ELoggerSpamBin SpamBin)
 {
-	// Cache the message for later reference
-	CompilationLogsContainer.AddMessage(Message,ArrayNode,MessageSeverity);
-	
-	FCustomizableObjectEditorLogger::CreateLog(Message)
-	.Severity(MessageSeverity)
-	.Nodes(ArrayNode)
-	.BaseObject(bAddBaseObjectInfo)
-	.Log();
+	if (CompilationLogsContainer.AddMessage(Message, ArrayNode, MessageSeverity, SpamBin)) // Cache the message for later reference
+	{
+		FCustomizableObjectEditorLogger::CreateLog(Message)
+			.Severity(MessageSeverity)
+			.Nodes(ArrayNode)
+			.BaseObject(bAddBaseObjectInfo)
+			.SpamBin(SpamBin)
+			.Log();
+	}
 }
 
 
-void FCustomizableObjectCompiler::CompilerLog(const FText& Message, const UCustomizableObjectNode* Node, EMessageSeverity::Type MessageSeverity, bool AddBaseObjectInfo)
+void FCustomizableObjectCompiler::CompilerLog(const FText& Message, const UCustomizableObjectNode* Node, const EMessageSeverity::Type MessageSeverity, const bool bAddBaseObjectInfo, const ELoggerSpamBin SpamBin)
 {
 	TArray<const UCustomizableObjectNode*> ArrayNode;
 	if (Node)
 	{
 		ArrayNode.Add(Node);
 	}
-	CompilerLog(Message, ArrayNode, MessageSeverity, AddBaseObjectInfo);
+	CompilerLog(Message, ArrayNode, MessageSeverity, bAddBaseObjectInfo, SpamBin);
 }
 
 
@@ -1529,48 +1631,27 @@ void FCustomizableObjectCompiler::UpdateCompilerLogData()
 {
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
 	MessageLogModule.RegisterLogListing(FName("Mutable"), LOCTEXT("MutableLog", "Mutable"));
-	const TArray<FCustomizableObjectCompileRunnable::FError>& ArrayCompileWarning = CompileTask->GetArrayWarning();
-	const TArray<FCustomizableObjectCompileRunnable::FError>& ArrayCompileError = CompileTask->GetArrayError();
+	const TArray<FCustomizableObjectCompileRunnable::FError>& ArrayCompileErrors = CompileTask->GetArrayErrors();
 
 	FText ObjectName = CurrentObject ? FText::FromString(CurrentObject->GetName()) : LOCTEXT("Unknown Object", "Unknown Object");
 
 	int32 i;
-	for (i = 0; i < ArrayCompileError.Num(); ++i)
+	for (i = 0; i < ArrayCompileErrors.Num(); ++i)
 	{
-		const UCustomizableObjectNode** pNode = GeneratedNodes.Find(ArrayCompileError[i].Context);
+		const UCustomizableObjectNode** pNode = GeneratedNodes.Find(ArrayCompileErrors[i].Context);
 
-		if (ArrayCompileError[i].AttachedData && pNode)
+		if (ArrayCompileErrors[i].AttachedData && pNode)
 		{
 			UCustomizableObjectNode::FAttachedErrorDataView ErrorDataView;
-			ErrorDataView.UnassignedUVs = { ArrayCompileError[i].AttachedData->UnassignedUVs.GetData(),
-											ArrayCompileError[i].AttachedData->UnassignedUVs.Num() };
+			ErrorDataView.UnassignedUVs = { ArrayCompileErrors[i].AttachedData->UnassignedUVs.GetData(),
+											ArrayCompileErrors[i].AttachedData->UnassignedUVs.Num() };
 
 			const UCustomizableObjectNode* Node = Cast<UCustomizableObjectNode>(*pNode);
 			const_cast<UCustomizableObjectNode*>(Node)->AddAttachedErrorData(ErrorDataView);
 		}
 
-		FText FullMsg = FText::Format(LOCTEXT("MutableMessage", "{0} : {1}"), ObjectName, ArrayCompileError[i].Message);
-		CompilerLog(FullMsg, pNode ? *pNode : nullptr, EMessageSeverity::Error, true);
-		UE_LOG(LogMutable, Warning, TEXT("  %s"), *FullMsg.ToString());
-	}
-
-	for (i = 0; i < ArrayCompileWarning.Num(); ++i)
-	{
-		const UCustomizableObjectNode** pNode = GeneratedNodes.Find(ArrayCompileWarning[i].Context);
-
-		if (ArrayCompileWarning[i].AttachedData && pNode)
-		{
-			UCustomizableObjectNode::FAttachedErrorDataView ErrorDataView;
-			ErrorDataView.UnassignedUVs = { ArrayCompileWarning[i].AttachedData->UnassignedUVs.GetData(),
-											ArrayCompileWarning[i].AttachedData->UnassignedUVs.Num() };
-
-			const UCustomizableObjectNode* Node = Cast<UCustomizableObjectNode>(*pNode);
-			const_cast<UCustomizableObjectNode*>(Node)->AddAttachedErrorData(ErrorDataView);
-		}
-
-		FText FullMsg = FText::Format(LOCTEXT("MutableMessage", "{0} : {1}"), ObjectName, ArrayCompileWarning[i].Message);
-		CompilerLog(FullMsg, pNode?*pNode:nullptr, EMessageSeverity::Warning, true);
-		UE_LOG(LogMutable, Warning, TEXT("  %s"), *FullMsg.ToString());
+		FText FullMsg = FText::Format(LOCTEXT("MutableMessage", "{0} : {1}"), ObjectName, ArrayCompileErrors[i].Message);
+		CompilerLog(FullMsg, pNode ? *pNode : nullptr, ArrayCompileErrors[i].Severity, true, ArrayCompileErrors[i].SpamBin);
 	}
 }
 

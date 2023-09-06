@@ -2,12 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "OptimusComputeDataInterface.h"
 #include "ComputeFramework/ComputeDataProvider.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "SkeletalRenderPublic.h"
+#include "NNE.h"
+#include "NNEModelData.h"
+#include "NNERuntimeRDG.h"
 #include "VertexDeltaGraphDataInterface.generated.h"
 
 class FRDGBuffer;
@@ -15,9 +18,9 @@ class FRDGBufferSRV;
 class FRHIShaderResourceView;
 class FSkeletalMeshObject;
 class UMLDeformerComponent;
-class UNeuralNetwork;
 class USkeletalMeshComponent;
 class UMLDeformerModel;
+class UVertexDeltaModelInstance;
 
 /** Compute Framework Data Interface for MLDefomer data. */
 UCLASS(Category = ComputeFramework)
@@ -76,18 +79,18 @@ namespace UE::VertexDeltaModel
 
 		// FComputeDataProviderRenderProxy overrides.
 		bool IsValid(FValidationData const& InValidationData) const override;
-		void AllocateResources(FRDGBuilder& GraphBuilder) override;
 		void GatherDispatchData(FDispatchData const& InDispatchData) override;
+		void AllocateResources(FRDGBuilder& GraphBuilder) override;
 		// ~END FComputeDataProviderRenderProxy overrides.
 
 	protected:
 		FSkeletalMeshObject* SkeletalMeshObject = nullptr;
-		TObjectPtr<UNeuralNetwork> NeuralNetwork = nullptr;
+		UE::NNE::IModelInstanceRDG* NNEModelInstanceRDG = nullptr;
+		UVertexDeltaModelInstance* VertexDeltaModelInstance = nullptr;
 		FRHIShaderResourceView* VertexMapBufferSRV = nullptr;
 		FRDGBuffer* Buffer = nullptr;
 		FRDGBufferSRV* BufferSRV = nullptr;
 		int32 NeuralNetworkInferenceHandle = -1;
 		float Weight = 1.0f;
-		bool bCanRunNeuralNet = false;
 	};
 }	// namespace UE::VertexDeltaModel

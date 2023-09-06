@@ -297,18 +297,19 @@ namespace Chaos
 
 			for (FPBDCollisionConstraintHandle* ConstraintHandle : ConstraintContainer.GetConstraintHandles())
 			{
+				check(ConstraintHandle != nullptr);
 				FPBDCollisionConstraint& Constraint = ConstraintHandle->GetContact();
 
 				AddConstraint(Constraint);
 			}
 		}
 
-		void FPBDCollisionContainerSolverJacobi::AddConstraints(const TArrayView<Private::FPBDIslandConstraint>& IslandConstraints)
+		void FPBDCollisionContainerSolverJacobi::AddConstraints(const TArrayView<Private::FPBDIslandConstraint*>& IslandConstraints)
 		{
-			for (Private::FPBDIslandConstraint& IslandConstraint : IslandConstraints)
+			for (Private::FPBDIslandConstraint* IslandConstraint : IslandConstraints)
 			{
 				// We will only ever be given constraints from our container (asserts in non-shipping)
-				FPBDCollisionConstraint& Constraint = IslandConstraint.GetConstraint()->AsUnsafe<FPBDCollisionConstraintHandle>()->GetContact();
+				FPBDCollisionConstraint& Constraint = IslandConstraint->GetConstraint()->AsUnsafe<FPBDCollisionConstraintHandle>()->GetContact();
 
 				AddConstraint(Constraint);
 			}

@@ -30,7 +30,7 @@ public:
 	}
 
 	/* Create on rhi thread. Uninitialized with NumVertices space.*/
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	virtual void ReleaseRHI() override;
 
@@ -96,13 +96,13 @@ protected:
 class GEOMETRYCACHE_API FGeomCacheTangentBuffer : public FGeomCacheVertexBuffer
 {
 public:
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
 class GEOMETRYCACHE_API FGeomCacheColorBuffer : public FGeomCacheVertexBuffer
 {
 public:
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
 /** Index Buffer */
@@ -113,7 +113,7 @@ public:
 	int32 NumValidIndices = 0; // Current valid data region of the index buffer (may be smaller than allocated buffer)
 
 	/* Create on rhi thread. Uninitialized with NumIndices space.*/
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	virtual void ReleaseRHI() override;
 
@@ -318,12 +318,13 @@ public:
 	virtual bool HasRayTracingRepresentation() const override { return true; }
 #endif
 
-	const TArray<FGeomCacheTrackProxy*>& GetTracks() { return Tracks; }
+	const TArray<FGeomCacheTrackProxy*>& GetTracks() const { return Tracks; }
 
 private:
 	void FrameUpdate() const;
 
 	void CreateMeshBatch(
+		FRHICommandListBase& RHICmdList,
 		const FGeomCacheTrackProxy* TrackProxy,
 		const struct FGeometryCacheMeshBatchInfo& BatchInfo,
 		class FGeometryCacheVertexFactoryUserDataWrapper& UserDataWrapper,

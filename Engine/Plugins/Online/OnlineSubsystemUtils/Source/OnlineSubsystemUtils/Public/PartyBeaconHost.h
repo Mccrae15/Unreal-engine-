@@ -98,6 +98,13 @@ class ONLINESUBSYSTEMUTILS_API APartyBeaconHost : public AOnlineBeaconHostObject
 	virtual bool ReconfigureTeamAndPlayerCount(int32 InNumTeams, int32 InNumPlayersPerTeam, int32 InNumReservations);
 
 	/**
+	 * Competitive integrity represents how "fair" we need to keep the game. So no friends on other teams, no cross team chat, etc.
+	 *
+	 * @param bNewCompetitiveIntegrity The new value for Competitive Integrity
+	 */
+	virtual void SetCompetitiveIntegrity(bool bNewCompetitiveIntegrity);
+
+	/**
 	 * Define the method for assignment new reservations to teams
 	 * 
 	 * @param NewAssignmentMethod name of the assignment method to use (@see ETeamAssignmentMethod for descriptions)
@@ -179,6 +186,13 @@ class ONLINESUBSYSTEMUTILS_API APartyBeaconHost : public AOnlineBeaconHostObject
 	 * @return The number of players per team
 	 */
 	virtual int32 GetMaxPlayersPerTeam() const { return State->GetMaxPlayersPerTeam(); }
+
+	/**
+	 * Competitive integrity represents how "fair" we need to keep the game. So no friends on other teams, no cross team chat, etc.
+	 *
+	 * @return Whether or not we should respect competitive integrity
+	 */
+	virtual bool ShouldRespectCompetitiveIntegrity() const { return State->ShouldRespectCompetitiveIntegrity(); }
 
 	/**
 	 * Determine the maximum team size that can be accommodated based
@@ -373,6 +387,11 @@ class ONLINESUBSYSTEMUTILS_API APartyBeaconHost : public AOnlineBeaconHostObject
 	 */
 	virtual void DumpReservations() const;
 
+	/**
+	 * Do party members require validation strings.
+	 */
+	bool IsValidationStrRequired() const { return bIsValidationStrRequired; }
+
 protected:
 
 	/** State of the beacon */
@@ -395,6 +414,9 @@ protected:
 	/** Do the timeouts below cause a player to be removed from the reservation list */
 	UPROPERTY(Config)
 	bool bLogoutOnSessionTimeout;
+	/** Do party members require validation strings. */
+	UPROPERTY(Config)
+	bool bIsValidationStrRequired;
 	/** Seconds that can elapse before a reservation is removed due to player not being registered with the session */
 	UPROPERTY(Transient, Config)
 	float SessionTimeoutSecs;

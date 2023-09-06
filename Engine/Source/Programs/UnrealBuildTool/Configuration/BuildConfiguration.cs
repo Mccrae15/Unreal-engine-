@@ -1,10 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.IO;
-using System.Collections.Generic;
-using System.Xml;
-using System.Reflection;
 using EpicGames.Core;
 
 namespace UnrealBuildTool
@@ -14,13 +10,13 @@ namespace UnrealBuildTool
 	/// </summary>
 	class BuildConfiguration
 	{
-        /// <summary>
-        /// Whether to ignore import library files that are out of date when building targets. Set this to true to improve iteration time.
-        /// By default, we do not bother re-linking targets if only a dependent .lib has changed, as chances are that
-        /// the import library was not actually different unless a dependent header file of this target was also changed,
-        /// in which case the target would automatically be rebuilt.
-        /// </summary>
-        [XmlConfigFile]
+		/// <summary>
+		/// Whether to ignore import library files that are out of date when building targets. Set this to true to improve iteration time.
+		/// By default, we do not bother re-linking targets if only a dependent .lib has changed, as chances are that
+		/// the import library was not actually different unless a dependent header file of this target was also changed,
+		/// in which case the target would automatically be rebuilt.
+		/// </summary>
+		[XmlConfigFile]
 		public bool bIgnoreOutdatedImportLibraries = true;
 
 		/// <summary>
@@ -42,12 +38,15 @@ namespace UnrealBuildTool
 		[XmlConfigFile]
 		public bool bAllowHybridExecutor = false;
 
+#if __BOXEXECUTOR_AVAILABLE__
 		/// <summary>
-		/// Whether Horde remote compute may be used. Highly experimental, disabled by default.
+		/// Whether the experimental box executor will be used.
 		/// </summary>
 		[XmlConfigFile]
-		[CommandLine("-HordeCompute", Value = "true")]
-		public bool bAllowHordeCompute = false;
+		[CommandLine("-Box", Value = "true")]
+		[CommandLine("-NoBox", Value = "false")]
+		public bool bAllowBoxExecutor = false;
+#endif // #if __BOXEXECUTOR_AVAILABLE__
 
 		/// <summary>
 		/// Whether XGE may be used.
@@ -134,7 +133,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// True if hot-reload from IDE is allowed.
 		/// </summary>
-		[CommandLine("-NoHotReloadFromIDE", Value="false")]
+		[CommandLine("-NoHotReloadFromIDE", Value = "false")]
 		[XmlConfigFile(Category = "UEBuildConfiguration")]
 		public bool bAllowHotReloadFromIDE = true;
 
@@ -201,9 +200,70 @@ namespace UnrealBuildTool
 		private bool bCompactOutputCommandLine = false;
 
 		/// <summary>
+		/// If set, artifacts will be read
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		[CommandLine("-ArtifactReads", Value = "True")]
+		[CommandLine("-NoArtifactReads", Value = "False")]
+		public bool bArtifactRead = true;
+
+		/// <summary>
+		/// If set, artifacts will be written
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		[CommandLine("-ArtifactWrites", Value = "True")]
+		[CommandLine("-NoArtifactWrites", Value = "False")]
+		public bool bArtifactWrites = true;
+
+		/// <summary>
+		/// If true, log all artifact cache misses as informational messages
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		[CommandLine("-LogArtifactCacheMisses", Value = "True")]
+		public bool bLogArtifactCacheMisses = false;
+
+		/// <summary>
+		/// Location to store the artifacts.
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		[CommandLine("-ArtifactDirectory=")]
+		public string ArtifactDirectory = String.Empty;
+
+		/// <summary>
 		/// Instruct the executor to write compact output e.g. only errors, if supported by the executor,
 		/// and only if output is not being redirected e.g. during a build from within Visual Studio
 		/// </summary>
 		public bool bCompactOutput => bCompactOutputCommandLine && !Console.IsOutputRedirected;
+
+		/// <summary>
+		/// Whether to unify C++ code into larger files for faster compilation.
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public bool? bUseUnityBuild;
+
+		/// <summary>
+		/// Whether to force C++ source files to be combined into larger files for faster compilation.
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration")]
+		public bool? bForceUnityBuild;
+
+		/// <summary>
+		/// Intermediate environment. Determines if the intermediates end up in a different folder than normal.
+		/// </summary>
+		public UnrealIntermediateEnvironment? IntermediateEnvironment
+		{
+			get
+			{
+				if (bForceUnityBuild == true)
+				{
+					return UnrealIntermediateEnvironment.Default;
+				}
+				if (bUseUnityBuild == false)
+				{
+					return UnrealIntermediateEnvironment.NonUnity;
+				}
+				return null;
+			}
+		}
 	}
 }

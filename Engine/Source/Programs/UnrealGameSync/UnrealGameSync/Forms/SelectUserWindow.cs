@@ -5,13 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Diagnostics.CodeAnalysis;
-using System.Drawing;
-using System.IO;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -31,14 +25,15 @@ namespace UnrealGameSync
 		}
 
 		private int _selectedUserIndex;
-		private List<UsersRecord> _users;
+		private readonly List<UsersRecord> _users;
 		
 		private SelectUserWindow(List<UsersRecord> users, int selectedUserIndex)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._selectedUserIndex = selectedUserIndex;
-			this._users = users;
+			_selectedUserIndex = selectedUserIndex;
+			_users = users;
 
 			PopulateList();
 			UpdateOkButton();
@@ -92,13 +87,13 @@ namespace UnrealGameSync
 			return base.ProcessCmdKey(ref msg, keyData);
 		}
 
-		private bool IncludeInFilter(UsersRecord user, string[] filterWords)
+		private static bool IncludeInFilter(UsersRecord user, string[] filterWords)
 		{
 			foreach(string filterWord in filterWords)
 			{
-				if(user.UserName.IndexOf(filterWord, StringComparison.OrdinalIgnoreCase) == -1 
-					&& user.FullName.IndexOf(filterWord, StringComparison.OrdinalIgnoreCase) == -1
-					&& user.Email.IndexOf(filterWord, StringComparison.OrdinalIgnoreCase) == -1)
+				if(!user.UserName.Contains(filterWord, StringComparison.OrdinalIgnoreCase) 
+					&& !user.FullName.Contains(filterWord, StringComparison.OrdinalIgnoreCase)
+					&& !user.Email.Contains(filterWord, StringComparison.OrdinalIgnoreCase))
 				{
 					return false;
 				}
@@ -160,7 +155,7 @@ namespace UnrealGameSync
 				return false;
 			}
 
-			SelectUserWindow selectUser = new SelectUserWindow(usersTask.Result, 0);
+			using SelectUserWindow selectUser = new SelectUserWindow(usersTask.Result, 0);
 			if(selectUser.ShowDialog(owner) == DialogResult.OK)
 			{
 				selectedUserName = usersTask.Result[selectUser._selectedUserIndex].UserName;

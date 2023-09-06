@@ -2,6 +2,7 @@
 
 #include "AnimNodes/AnimNode_TwoWayBlend.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "AnimationRuntime.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_TwoWayBlend)
@@ -109,6 +110,8 @@ void FAnimNode_TwoWayBlend::Update_AnyThread(const FAnimationUpdateContext& Cont
 void FAnimNode_TwoWayBlend::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(TwoWayBlend, !IsInGameThread());
+
 	if (bBIsRelevant)
 	{
 		if (bAIsRelevant)

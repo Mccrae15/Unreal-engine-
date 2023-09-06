@@ -3,16 +3,21 @@
 #include "WaveformEditorStyle.h"
 
 #include "Styling/SlateStyleRegistry.h"
-#include "WaveformEditorSlateTypes.h"
-#include "WaveformEditorWidgetsSettings.h"
 #include "WaveformEditorWidgetsSettings.h"
 
-static FLazyName WaveformViewerStyleName("WaveformViewer.Style");
-static FLazyName WaveformViewerOverlayStyleName("WaveformViewerOverlay.Style");
+static FLazyName PlayheadOverlayStyleName("WaveformEditorPlayheadOverlay.Style");
+static FLazyName ValueGridOverlayStyleName("WaveformEditorValueGrid.Style");
 static FLazyName WaveformEditorRulerStyleName("WaveformEditorRuler.Style");
+static FLazyName WaveformViewerStyleName("WaveformViewer.Style");
+
 
 FName FWaveformEditorStyle::StyleName("WaveformEditorStyle");
 TUniquePtr<FWaveformEditorStyle> FWaveformEditorStyle::StyleInstance = nullptr;
+
+FOnNewWaveformViewerStyle FWaveformEditorStyle::OnNewWaveformViewerStyle;
+FOnNewPlayheadOverlayStyle FWaveformEditorStyle::OnNewPlayheadOverlayStyle;
+FOnNewTimeRulerStyle FWaveformEditorStyle::OnNewTimeRulerStyle;
+FOnNewValueGridOverlayStyle FWaveformEditorStyle::OnNewValueGridOverlayStyle;
 
 FWaveformEditorStyle::FWaveformEditorStyle()
 	: FSlateStyleSet(StyleName)
@@ -41,38 +46,25 @@ void FWaveformEditorStyle::Init()
 	
 	check(Settings);
 	Settings->OnSettingChanged().AddStatic(&FWaveformEditorStyle::OnWidgetSettingsUpdated);
-
 	StyleInstance->SetParentStyleName("CoreStyle");
 
 	//Waveform Viewer style
-	FWaveformViewerStyle WaveViewerStyle = FWaveformViewerStyle()
-		.SetWaveformColor(Settings->WaveformColor)
-		.SetBackgroundColor(Settings->WaveformBackgroundColor)
-		.SetWaveformLineThickness(Settings->WaveformLineThickness)
-		.SetSampleMarkersSize(Settings->SampleMarkersSize)
-		.SetMajorGridLineColor(Settings->MajorGridColor)
-		.SetMinorGridLineColor(Settings->MinorGridColor)
-		.SetZeroCrossingLineColor(Settings->ZeroCrossingLineColor)
-		.SetZeroCrossingLineThickness(Settings->ZeroCrossingLineThickness);
-
+	FSampledSequenceViewerStyle WaveViewerStyle = CreateWaveformViewerStyleFromSettings(*Settings);
 	StyleInstance->Set(WaveformViewerStyleName, WaveViewerStyle);
 
-	//Waveform Viewer Overlay style
-	FWaveformViewerOverlayStyle WaveViewerOverlayStyle = FWaveformViewerOverlayStyle().SetPlayheadColor(Settings->PlayheadColor);
-	StyleInstance->Set(WaveformViewerOverlayStyleName, WaveViewerOverlayStyle);
+	//Playhead Overlay style
+	FPlayheadOverlayStyle PlayheadOverlayStyle = CreatePlayheadOverlayStyleFromSettings(*Settings);
+	StyleInstance->Set(PlayheadOverlayStyleName, PlayheadOverlayStyle);
 
 	//Time Ruler style 
-	FWaveformEditorTimeRulerStyle TimeRulerStyle = FWaveformEditorTimeRulerStyle()
-		.SetHandleColor(Settings->PlayheadColor)
-		.SetTicksColor(Settings->RulerTicksColor)
-		.SetTicksTextColor(Settings->RulerTextColor)
-		.SetHandleColor(Settings->PlayheadColor)
-		.SetFontSize(Settings->RulerFontSize);
-
+	FFixedSampleSequenceRulerStyle TimeRulerStyle = CreateTimeRulerStyleFromSettings(*Settings);
 	StyleInstance->Set(WaveformEditorRulerStyleName, TimeRulerStyle);
 
-	FSlateStyleRegistry::RegisterSlateStyle(StyleInstance->Get());
+	//ValueGridOverlayStyle
+	FSampledSequenceValueGridOverlayStyle ValueGridOverlayStyle = CreateValueGridOverlayStyleFromSettings(*Settings);
+	StyleInstance->Set(ValueGridOverlayStyleName, ValueGridOverlayStyle);
 
+	FSlateStyleRegistry::RegisterSlateStyle(StyleInstance->Get());
 }
 
 const UWaveformEditorWidgetsSettings* FWaveformEditorStyle::GetWidgetsSettings() 
@@ -85,61 +77,127 @@ const UWaveformEditorWidgetsSettings* FWaveformEditorStyle::GetWidgetsSettings()
 
 void FWaveformEditorStyle::OnWidgetSettingsUpdated(const FName& PropertyName, const UWaveformEditorWidgetsSettings* Settings)
 {
-	TSharedRef<FWaveformViewerStyle> WaveformViewerStyle = GetRegisteredWidgetStyle<FWaveformViewerStyle>(WaveformViewerStyleName);
-	TSharedRef<FWaveformViewerOverlayStyle> WaveformViewerOverlayStyle = GetRegisteredWidgetStyle<FWaveformViewerOverlayStyle>(WaveformViewerOverlayStyleName);
-	TSharedRef<FWaveformEditorTimeRulerStyle> WaveformEditorTimeRulerStyle = GetRegisteredWidgetStyle<FWaveformEditorTimeRulerStyle>(WaveformEditorRulerStyleName);
+	check(Settings)
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, WaveformColor))
 	{
-		WaveformViewerStyle->SetWaveformColor(Settings->WaveformColor);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, WaveformBackgroundColor))
 	{
-		WaveformViewerStyle->SetBackgroundColor(Settings->WaveformBackgroundColor);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, WaveformLineThickness))
 	{
-		WaveformViewerStyle->SetWaveformLineThickness(Settings->WaveformLineThickness);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, SampleMarkersSize))
 	{
-		WaveformViewerStyle->SetSampleMarkersSize(Settings->SampleMarkersSize);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, MajorGridColor))
 	{
-		WaveformViewerStyle->SetMajorGridLineColor(Settings->MajorGridColor);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, MinorGridColor))
 	{
-		WaveformViewerStyle->SetMinorGridLineColor(Settings->MinorGridColor);
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, ZeroCrossingLineColor))
-	{
-		WaveformViewerStyle->SetZeroCrossingLineColor(Settings->ZeroCrossingLineColor);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, ZeroCrossingLineThickness))
 	{
-		WaveformViewerStyle->SetZeroCrossingLineThickness(Settings->ZeroCrossingLineThickness);
+		CreateWaveformViewerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, PlayheadColor))
 	{
-		WaveformViewerOverlayStyle->SetPlayheadColor(Settings->PlayheadColor);
-		WaveformEditorTimeRulerStyle->SetHandleColor(Settings->PlayheadColor);
+		CreatePlayheadOverlayStyleFromSettings(*Settings);
+		CreateTimeRulerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, RulerBackgroundColor))
 	{
-		WaveformEditorTimeRulerStyle->SetBackgroundColor(Settings->RulerBackgroundColor);
+		CreateTimeRulerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, RulerTicksColor))
 	{
-		WaveformEditorTimeRulerStyle->SetTicksColor(Settings->RulerTicksColor);
+		CreateTimeRulerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, RulerTextColor))
 	{
-		WaveformEditorTimeRulerStyle->SetTicksTextColor(Settings->RulerTextColor);
+		CreateTimeRulerStyleFromSettings(*Settings);
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, RulerFontSize))
 	{
-		WaveformEditorTimeRulerStyle->SetFontSize(Settings->RulerFontSize);
+		CreateTimeRulerStyleFromSettings(*Settings);
 	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, LoudnessGridColor))
+	{
+		CreateValueGridOverlayStyleFromSettings(*Settings);
+		CreateWaveformViewerStyleFromSettings(*Settings);
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, LoudnessGridThickness))
+	{
+		CreateValueGridOverlayStyleFromSettings(*Settings);
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, LoudnessGridTextColor))
+	{
+		CreateValueGridOverlayStyleFromSettings(*Settings);
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaveformEditorWidgetsSettings, LoudnessGridTextSize))
+	{
+		CreateValueGridOverlayStyleFromSettings(*Settings);
+	}
+
+}
+
+FSampledSequenceViewerStyle FWaveformEditorStyle::CreateWaveformViewerStyleFromSettings(const UWaveformEditorWidgetsSettings& InSettings)
+{
+	FSampledSequenceViewerStyle WaveViewerStyle = FSampledSequenceViewerStyle()
+		.SetSequenceColor(InSettings.WaveformColor)
+		.SetBackgroundColor(InSettings.WaveformBackgroundColor)
+		.SetSequenceLineThickness(InSettings.WaveformLineThickness)
+		.SetSampleMarkersSize(InSettings.SampleMarkersSize)
+		.SetMajorGridLineColor(InSettings.MajorGridColor)
+		.SetMinorGridLineColor(InSettings.MinorGridColor)
+		.SetZeroCrossingLineColor(InSettings.LoudnessGridColor)
+		.SetZeroCrossingLineThickness(InSettings.ZeroCrossingLineThickness);
+
+	OnNewWaveformViewerStyle.Broadcast(WaveViewerStyle);
+
+	return WaveViewerStyle;
+}
+
+FPlayheadOverlayStyle FWaveformEditorStyle::CreatePlayheadOverlayStyleFromSettings(const UWaveformEditorWidgetsSettings& InSettings)
+{
+	FPlayheadOverlayStyle PlayheadOverlayStyle = FPlayheadOverlayStyle().SetPlayheadColor(InSettings.PlayheadColor);
+
+	OnNewPlayheadOverlayStyle.Broadcast(PlayheadOverlayStyle);
+
+	return PlayheadOverlayStyle;
+}
+
+FFixedSampleSequenceRulerStyle FWaveformEditorStyle::CreateTimeRulerStyleFromSettings(const UWaveformEditorWidgetsSettings& InSettings)
+{
+	FFixedSampleSequenceRulerStyle TimeRulerStyle = FFixedSampleSequenceRulerStyle()
+		.SetHandleColor(InSettings.PlayheadColor)
+		.SetTicksColor(InSettings.RulerTicksColor)
+		.SetTicksTextColor(InSettings.RulerTextColor)
+		.SetHandleColor(InSettings.PlayheadColor)
+		.SetFontSize(InSettings.RulerFontSize)
+		.SetBackgroundColor(InSettings.RulerBackgroundColor);
+
+	OnNewTimeRulerStyle.Broadcast(TimeRulerStyle);
+
+	return TimeRulerStyle;
+}
+
+FSampledSequenceValueGridOverlayStyle FWaveformEditorStyle::CreateValueGridOverlayStyleFromSettings(const UWaveformEditorWidgetsSettings& InSettings)
+{
+	FSampledSequenceValueGridOverlayStyle ValueGridOverlayStyle = FSampledSequenceValueGridOverlayStyle()
+		.SetGridColor(InSettings.LoudnessGridColor)
+		.SetGridThickness(InSettings.LoudnessGridThickness)
+		.SetLabelTextColor(InSettings.LoudnessGridTextColor)
+		.SetLabelTextFontSize(InSettings.LoudnessGridTextSize);
+
+	OnNewValueGridOverlayStyle.Broadcast(ValueGridOverlayStyle);
+
+	return ValueGridOverlayStyle;
 }

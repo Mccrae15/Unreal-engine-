@@ -13,7 +13,6 @@ public class AnimationSharing : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
-				"EngineSettings",
 				"SignificanceManager"
             }
 		);
@@ -21,6 +20,8 @@ public class AnimationSharing : ModuleRules
         if (Target.Type == TargetType.Editor)
         {
             PrivateDependencyModuleNames.Add("TargetPlatform");
-        }     
-    }
+        }
+
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
+	}
 }

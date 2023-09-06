@@ -365,6 +365,10 @@ void AddParametersForGraph(TArray<TSharedPtr<FNiagaraAction_NewNode>>& NewAction
 				{
 					InputNodeTemplate->SetDataInterface(Cast<UNiagaraDataInterface>(StaticDuplicateObject(InputNode->GetDataInterface(), InputNodeTemplate, NAME_None, ~RF_Transient)));
 				}
+				if (InputNode->GetObjectAsset())
+				{
+					InputNodeTemplate->SetObjectAsset(InputNode->GetObjectAsset());
+				}
 			}
 		}
 	}
@@ -799,7 +803,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			FNiagaraTypeDefinition PinType = PinToTypeDefinition(FromPin);
 
 			//Add all swizzles for this type if it's a vector.
-			if (FHlslNiagaraTranslator::IsHlslBuiltinVector(PinType))
+			if (FNiagaraHlslTranslator::IsHlslBuiltinVector(PinType))
 			{
 				TArray<FString> Components;
 				for (TFieldIterator<FProperty> PropertyIt(PinType.GetStruct(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
@@ -1366,6 +1370,22 @@ void UEdGraphSchema_Niagara::TrySetDefaultValue(UEdGraphPin& Pin, const FString&
 	}
 }
 
+FNiagaraTypeDefinition ResolveNumericPinType(const UEdGraphPin* Pin)
+{
+	FNiagaraTypeDefinition PinType = UEdGraphSchema_Niagara::PinToTypeDefinition(Pin);
+	if (PinType == FNiagaraTypeDefinition::GetGenericNumericDef())
+	{
+		if (UNiagaraNode* Node = Cast<UNiagaraNode>(Pin->GetOwningNode()))
+		{
+			if (UNiagaraGraph* NiagaraGraph = Node->GetNiagaraGraph())
+			{
+				return NiagaraGraph->GetCachedNumericConversion(Pin);
+			}
+		}
+	}
+	return PinType;
+}
+
 bool UEdGraphSchema_Niagara::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin* PinB) const
 {
 	const FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "NiagaraEditorCreateConnection", "Niagara Editor: Create Connection"));
@@ -1373,8 +1393,8 @@ bool UEdGraphSchema_Niagara::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin*
 	const FPinConnectionResponse Response = CanCreateConnection(PinA, PinB);
 	bool bModified = false;
 
-	FNiagaraTypeDefinition TypeA = PinToTypeDefinition(PinA);
-	FNiagaraTypeDefinition TypeB = PinToTypeDefinition(PinB);
+	FNiagaraTypeDefinition TypeA = ResolveNumericPinType(PinA);
+	FNiagaraTypeDefinition TypeB = ResolveNumericPinType(PinB);
 	
 	switch (Response.Response)
 	{
@@ -1823,6 +1843,16 @@ FPinConnectionResponse UEdGraphSchema_Niagara::GetWildcardConnectionResponse(con
 		PinBType = TmpType;
 		bPinsSwapped = true;
 	}
+
+	// we can't link to numeric types, but maybe it was already resolved to a usable type
+	if (PinBType == FNiagaraTypeDefinition::GetGenericNumericDef())
+	{
+		if (UNiagaraGraph* NiagaraGraph = const_cast<UNiagaraGraph*>(NodeB->GetNiagaraGraph()))
+		{
+			FNiagaraTypeDefinition ResolvedType = NiagaraGraph->GetCachedNumericConversion(PinB);
+			PinBType = ResolvedType;
+		}
+	}
 	
 	FString Message;
 	ECanCreateConnectionResponse Response = CONNECT_RESPONSE_DISALLOW;
@@ -1917,11 +1947,11 @@ static UNiagaraParameterCollection* EnsureCollectionLoaded(FAssetData& Collectio
 
 UNiagaraParameterCollection* UEdGraphSchema_Niagara::VariableIsFromParameterCollection(const FNiagaraVariable& Var)const
 {
-	FString VarName = Var.GetName().ToString();
-	if (VarName.StartsWith(TEXT("NPC.")))
+	FNameBuilder VarName(Var.GetName());
+	if (VarName.ToView().StartsWith(TEXT("NPC.")))
 	{
 		FNiagaraEditorModule& NiagaraEditorModule = FModuleManager::GetModuleChecked<FNiagaraEditorModule>("NiagaraEditor");
-		if (UNiagaraParameterCollection* Collection = NiagaraEditorModule.FindCollectionForVariable(VarName))
+		if (UNiagaraParameterCollection* Collection = NiagaraEditorModule.FindCollectionForVariable(FString(VarName.ToView())))
 		{
 			return Collection;
 		}
@@ -2160,9 +2190,9 @@ void UEdGraphSchema_Niagara::GetNumericConversionToSubMenuActionsAll(UToolMenu* 
 	}
 }
 
-TArray<TPair<FString, FString>> UEdGraphSchema_Niagara::GetDataInterfaceFunctionPrototypes(const UEdGraphPin* InGraphPin)
+TArray<TTuple<FString, FString, FText>> UEdGraphSchema_Niagara::GetDataInterfaceFunctionPrototypes(const UEdGraphPin* InGraphPin)
 {
-	TArray<TPair<FString, FString>> FunctionPrototypes;
+	TArray<TTuple<FString, FString, FText>> FunctionPrototypes;
 	if (InGraphPin)
 	{
 		FNiagaraTypeDefinition GraphPinType = UEdGraphSchema_Niagara::PinToTypeDefinition(InGraphPin);
@@ -2186,7 +2216,7 @@ TArray<TPair<FString, FString>> UEdGraphSchema_Niagara::GetDataInterfaceFunction
 				{
 					DataInterfaceName.RightChopInline(LastPinNameDot + 1);
 				}
-				DataInterfaceName = FHlslNiagaraTranslator::GetSanitizedSymbolName(DataInterfaceName);
+				DataInterfaceName = FNiagaraHlslTranslator::GetSanitizedSymbolName(DataInterfaceName);
 			}
 
 			// Generate all prototypes
@@ -2198,11 +2228,12 @@ TArray<TPair<FString, FString>> UEdGraphSchema_Niagara::GetDataInterfaceFunction
 					continue;
 				}
 
-				FString Prototype = FHlslNiagaraTranslator::GenerateFunctionHlslPrototype(DataInterfaceName, FunctionSignature);
+				FString Prototype = FNiagaraHlslTranslator::GenerateFunctionHlslPrototype(DataInterfaceName, FunctionSignature);
 				if ( Prototype.Len() > 0 )
 				{
 					Prototype.Append(TEXT("\r\n"));
-					FunctionPrototypes.Emplace(FunctionSignature.GetNameString(), Prototype);
+					FText Description = FText::Format(LOCTEXT("DataInterfacePrototypeDescriptionFormat", "{0}\n{1}"), FText::FromString(Prototype), FunctionSignature.GetDescription());
+					FunctionPrototypes.Emplace(FunctionSignature.GetNameString(), Prototype, Description);
 				}
 			}
 		}
@@ -2212,13 +2243,13 @@ TArray<TPair<FString, FString>> UEdGraphSchema_Niagara::GetDataInterfaceFunction
 
 void UEdGraphSchema_Niagara::GenerateDataInterfacePinMenu(UToolMenu* ToolMenu, const FName SectionName, const UEdGraphPin* GraphPin, FNiagaraTypeDefinition TypeDef) const
 {
-	TArray<TPair<FString, FString>> FunctionPrototypes = GetDataInterfaceFunctionPrototypes(GraphPin);
+	TArray<TTuple<FString, FString, FText>> FunctionPrototypes = GetDataInterfaceFunctionPrototypes(GraphPin);
 	if (FunctionPrototypes.Num () == 0)
 	{
 		return;
 	}
 
-	Algo::Sort(FunctionPrototypes, [](const TPair<FString, FString>& Lhs, const TPair<FString, FString>& Rhs) { return Lhs.Key < Rhs.Key; });
+	Algo::Sort(FunctionPrototypes, [](const TTuple<FString, FString, FText>& Lhs, const TTuple<FString, FString, FText>& Rhs) { return Lhs.Get<0>() < Rhs.Get<0>(); });
 
 	// Make the menu
 	FToolMenuSection& Section = ToolMenu->FindOrAddSection(SectionName);
@@ -2232,7 +2263,7 @@ void UEdGraphSchema_Niagara::GenerateDataInterfacePinMenu(UToolMenu* ToolMenu, c
 				FString AllPrototypes;
 				for ( const auto& Prototype : FunctionPrototypes )
 				{
-					AllPrototypes += Prototype.Value;
+					AllPrototypes += Prototype.Get<1>();
 				}
 
 				FToolMenuSection& Section = ToolMenu->FindOrAddSection(SectionName);
@@ -2247,12 +2278,13 @@ void UEdGraphSchema_Niagara::GenerateDataInterfacePinMenu(UToolMenu* ToolMenu, c
 
 				for (const auto& Prototype : FunctionPrototypes)
 				{
+					const FString SaveClipboardText = Prototype.Get<1>();
 					Section.AddMenuEntry(
 						NAME_None,
-						FText::FromString(Prototype.Key),
-						FText::FromString(Prototype.Value),
+						FText::FromString(Prototype.Get<0>()),
+						Prototype.Get<2>(),
 						FSlateIcon(),
-						FUIAction(FExecuteAction::CreateLambda([ClipboardText=Prototype.Value]() { FPlatformApplicationMisc::ClipboardCopy(*ClipboardText); }))
+						FUIAction(FExecuteAction::CreateLambda([ClipboardText=SaveClipboardText]() { FPlatformApplicationMisc::ClipboardCopy(*ClipboardText); }))
 					);
 				}
 			}

@@ -36,6 +36,9 @@ DEFINE_LOG_CATEGORY_STATIC(LogTextureBuildFunction, Log, All);
 //
 static const FGuid TextureBuildFunctionVersion(TEXT("B20676CE-A786-43EE-96F0-2620A4C38ACA"));
 
+// This is mirrored in TextureDerivedData.cpp
+static const FGuid TextureMetadataDerivedDataVer(0xB9106D68, 0xA61B4F2A, 0x8105E16F, 0x48799976);
+
 static void ReadCbField(FCbFieldView Field, bool& OutValue) { OutValue = Field.AsBool(OutValue); }
 static void ReadCbField(FCbFieldView Field, int32& OutValue) { OutValue = Field.AsInt32(OutValue); }
 static void ReadCbField(FCbFieldView Field, uint8& OutValue) { OutValue = Field.AsUInt8(OutValue); }
@@ -231,14 +234,14 @@ static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::Deriv
 	}
 
 	FCbArrayView MipsCbArrayView = Source["Mips"].AsArrayView();
-	OutMips.Reserve(MipsCbArrayView.Num());
+	OutMips.Reserve(IntCastChecked<int32>(MipsCbArrayView.Num()));
 	for (FCbFieldView MipsCbArrayIt : MipsCbArrayView)
 	{
 		FCbObjectView MipCbObjectView = MipsCbArrayIt.AsObjectView();
 		int64 MipOffset = MipCbObjectView["Offset"].AsInt64();
 		int64 MipSize = MipCbObjectView["Size"].AsInt64();
 
-		FImage* SourceMip = new(OutMips) FImage(
+		FImage& SourceMip = OutMips.Emplace_GetRef(
 			MipSizeX, MipSizeY,
 			NumSlices,
 			RawImageFormat,
@@ -246,20 +249,20 @@ static bool TryReadTextureSourceFromCompactBinary(FCbFieldView Source, UE::Deriv
 		);
 
 		check( MipOffset + MipSize <= DecompressedSourceDataSize );
-		check( SourceMip->GetImageSizeBytes() == MipSize );
+		check( SourceMip.GetImageSizeBytes() == MipSize );
 
 		if ((MipsCbArrayView.Num() == 1) && (CompressionFormat != TSCF_None))
 		{
 			// In the case where there is only one mip and its already in a TArray, there is no need to allocate new array contents, just use a move instead
 			check( MipOffset == 0 );
-			SourceMip->RawData = MoveTemp(IntermediateDecompressedData);
+			SourceMip.RawData = MoveTemp(IntermediateDecompressedData);
 		}
 		else
 		{
-			SourceMip->RawData.Reset(MipSize);
-			SourceMip->RawData.AddUninitialized(MipSize);
+			SourceMip.RawData.Reset(MipSize);
+			SourceMip.RawData.AddUninitialized(MipSize);
 			FMemory::Memcpy(
-				SourceMip->RawData.GetData(),
+				SourceMip.RawData.GetData(),
 				DecompressedSourceData + MipOffset,
 				MipSize
 			);
@@ -280,6 +283,7 @@ FGuid FTextureBuildFunction::GetVersion() const
 {
 	UE::DerivedData::FBuildVersionBuilder Builder;
 	Builder << TextureBuildFunctionVersion;
+	Builder << TextureMetadataDerivedDataVer;
 	ITextureFormat* TextureFormat = nullptr;
 	GetVersion(Builder, TextureFormat);
 	if (TextureFormat)
@@ -359,7 +363,7 @@ void FTextureBuildFunction::Build(UE::DerivedData::FBuildContext& Context) const
 		return;
 	}
 
-	UE_LOG(LogTextureBuildFunction, Display, TEXT("Compressing %d source mip(s) (%dx%d) to %s..."), SourceMips.Num(), SourceMips[0].SizeX, SourceMips[0].SizeY, *BuildSettings.TextureFormatName.ToString());
+	UE_LOG(LogTextureBuildFunction, Display, TEXT("Compressing %s -> %d source mip(s) (%dx%d) to %s..."), *Context.GetName(), SourceMips.Num(), SourceMips[0].SizeX, SourceMips[0].SizeY, *BuildSettings.TextureFormatName.ToString());
 
 	ITextureCompressorModule& TextureCompressorModule = FModuleManager::GetModuleChecked<ITextureCompressorModule>(TEXTURE_COMPRESSOR_MODULENAME);
 	
@@ -444,7 +448,7 @@ void FTextureBuildFunction::Build(UE::DerivedData::FBuildContext& Context) const
 	}
 }
 
-void GenericTextureTilingBuildFunction(UE::DerivedData::FBuildContext& Context, const ITextureTiler* Tiler)
+void GenericTextureTilingBuildFunction(UE::DerivedData::FBuildContext& Context, const ITextureTiler* Tiler, const UE::DerivedData::FUtf8SharedString& BuildFunctionName)
 {
 	// The texture description is either passed as a constant or as an output from the other build ("build input").
 	FEncodedTextureDescription TextureDescription;
@@ -473,7 +477,9 @@ void GenericTextureTilingBuildFunction(UE::DerivedData::FBuildContext& Context, 
 		}
 		else
 		{
-			TextureExtendedData = Tiler->GetExtendedDataForTexture(TextureDescription);
+			// If we're in this path we need to have the LODBias delivered to us.
+			FCbObject LODBiasCb = Context.FindConstant(UTF8TEXTVIEW("LODBias"));
+			TextureExtendedData = Tiler->GetExtendedDataForTexture(TextureDescription, LODBiasCb["LODBias"].AsInt8());
 		}
 	}
 
@@ -485,7 +491,7 @@ void GenericTextureTilingBuildFunction(UE::DerivedData::FBuildContext& Context, 
 
 	UE::TextureBuildUtilities::FTextureBuildMetadata BuildMetadata(FCbObject(Context.FindInput(ANSITEXTVIEW("TextureBuildMetadata"))));
 
-	UE_LOG(LogTextureBuildFunction, Display, TEXT("Tiling %d source mip(s) with a tail of %d..."), TextureDescription.NumMips, TextureExtendedData.NumMipsInTail);
+	UE_LOG(LogTextureBuildFunction, Display, TEXT("Tiling %s with %hs -> %d source mip(s) with a tail of %d..."), *Context.GetName(), *BuildFunctionName, TextureDescription.NumMips, TextureExtendedData.NumMipsInTail);
 
 	//
 	// Careful - the linear build might have a different streaming mip count than we output due to mip tail
@@ -523,6 +529,7 @@ void GenericTextureTilingBuildFunction(UE::DerivedData::FBuildContext& Context, 
 			StreamingMipName << "Mip" << MipIndex;
 
 			FSharedBuffer SourceData = Context.FindInput(StreamingMipName);
+			check(SourceData.GetSize() == TextureDescription.GetMipSizeInBytes(MipIndex));
 			SourceMipView = SourceData.GetView();
 			InputTextureMipBuffers.Add(SourceData);
 		}

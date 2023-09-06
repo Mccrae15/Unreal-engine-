@@ -50,9 +50,9 @@ class FForwardLocalLightData
 {
 public:
 	FVector4f LightPositionAndInvRadius;
-	FVector4f LightColorAndFalloffExponent;
+	FVector4f LightColorAndIdAndFalloffExponent;
 	FVector4f LightDirectionAndShadowMapChannelMask;
-	FVector4f SpotAnglesAndIdAndSourceRadiusPacked;
+	FVector4f SpotAnglesAndSourceRadiusPacked;
 	FVector4f LightTangentAndIESDataAndSpecularScale;
 	FVector4f RectDataAndVirtualShadowMapId;
 };
@@ -107,7 +107,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FTranslucentBasePassUniformParameters,)
 	SHADER_PARAMETER(int32, SSRQuality)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HZBTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HZBSampler)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PrevSceneColor)
+	SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, PrevSceneColor)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PrevSceneColorSampler)
 	// Volumetric cloud
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, VolumetricCloudColor)
@@ -314,7 +314,7 @@ public:
 
 	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
 	{
-		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName()))
+		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 		{
 			OutError.Add(TEXT("Base pass shaders cannot read from the SceneTexturesStruct."));
 			return false;
@@ -334,19 +334,21 @@ public:
 		ViewRectParam.Bind(Initializer.ParameterMap, TEXT("ViewRect"));
 		PassDataParam.Bind(Initializer.ParameterMap, TEXT("PassData"));
 
-		Target0.Bind(Initializer.ParameterMap, TEXT("OutTarget0UAV"), SPF_Optional);
-		Target1.Bind(Initializer.ParameterMap, TEXT("OutTarget1UAV"), SPF_Optional);
-		Target2.Bind(Initializer.ParameterMap, TEXT("OutTarget2UAV"), SPF_Optional);
-		Target3.Bind(Initializer.ParameterMap, TEXT("OutTarget3UAV"), SPF_Optional);
-		Target4.Bind(Initializer.ParameterMap, TEXT("OutTarget4UAV"), SPF_Optional);
-		Target5.Bind(Initializer.ParameterMap, TEXT("OutTarget5UAV"), SPF_Optional);
-		Target6.Bind(Initializer.ParameterMap, TEXT("OutTarget6UAV"), SPF_Optional);
-		Target7.Bind(Initializer.ParameterMap, TEXT("OutTarget7UAV"), SPF_Optional);
+		Target0.Bind(Initializer.ParameterMap, TEXT("OutTarget0"), SPF_Optional);
+		Target1.Bind(Initializer.ParameterMap, TEXT("OutTarget1"), SPF_Optional);
+		Target2.Bind(Initializer.ParameterMap, TEXT("OutTarget2"), SPF_Optional);
+		Target3.Bind(Initializer.ParameterMap, TEXT("OutTarget3"), SPF_Optional);
+		Target4.Bind(Initializer.ParameterMap, TEXT("OutTarget4"), SPF_Optional);
+		Target5.Bind(Initializer.ParameterMap, TEXT("OutTarget5"), SPF_Optional);
+		Target6.Bind(Initializer.ParameterMap, TEXT("OutTarget6"), SPF_Optional);
+		Target7.Bind(Initializer.ParameterMap, TEXT("OutTarget7"), SPF_Optional);
+
+		Targets.Bind(Initializer.ParameterMap, TEXT("OutTargets"), SPF_Optional);
 
 		// These parameters should only be used nested in the base pass uniform buffer
-		check(!Initializer.ParameterMap.ContainsParameterAllocation(FFogUniformParameters::StaticStructMetadata.GetShaderVariableName()));
-		check(!Initializer.ParameterMap.ContainsParameterAllocation(FReflectionUniformParameters::StaticStructMetadata.GetShaderVariableName()));
-		check(!Initializer.ParameterMap.ContainsParameterAllocation(FPlanarReflectionUniformParameters::StaticStructMetadata.GetShaderVariableName()));
+		check(!Initializer.ParameterMap.ContainsParameterAllocation(FFogUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()));
+		check(!Initializer.ParameterMap.ContainsParameterAllocation(FReflectionUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()));
+		check(!Initializer.ParameterMap.ContainsParameterAllocation(FPlanarReflectionUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()));
 	}
 	TBasePassComputeShaderPolicyParamType() {}
 
@@ -361,8 +363,7 @@ public:
 		FMeshDrawSingleShaderBindings& ShaderBindings) const;
 
 	void SetPassParameters(
-		FRHIComputeCommandList& RHICmdList,
-		FRHIComputeShader* ComputeShader,
+		FRHIBatchedShaderParameters& BatchedParameters,
 		const FUintVector4& ViewRect,
 		const FUintVector4& PassData,
 		FRHIUnorderedAccessView* Target0UAV,
@@ -372,8 +373,11 @@ public:
 		FRHIUnorderedAccessView* Target4UAV,
 		FRHIUnorderedAccessView* Target5UAV,
 		FRHIUnorderedAccessView* Target6UAV,
-		FRHIUnorderedAccessView* Target7UAV
+		FRHIUnorderedAccessView* Target7UAV,
+		FRHIUnorderedAccessView* Targets
 	);
+
+	uint32 GetBoundTargetMask() const;
 
 private:
 	LAYOUT_FIELD(FShaderUniformBufferParameter,	ReflectionCaptureBuffer);
@@ -387,6 +391,7 @@ private:
 	LAYOUT_FIELD(FShaderResourceParameter,		Target5);
 	LAYOUT_FIELD(FShaderResourceParameter,		Target6);
 	LAYOUT_FIELD(FShaderResourceParameter,		Target7);
+	LAYOUT_FIELD(FShaderResourceParameter,		Targets);
 };
 
 /**
@@ -485,7 +490,7 @@ public:
 
 	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
 	{
-		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName()))
+		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()))
 		{
 			OutError.Add(TEXT("Base pass shaders cannot read from the SceneTexturesStruct."));
 			return false;
@@ -502,9 +507,9 @@ public:
 		ReflectionCaptureBuffer.Bind(Initializer.ParameterMap, TEXT("ReflectionCapture"));
 
 		// These parameters should only be used nested in the base pass uniform buffer
-		check(!Initializer.ParameterMap.ContainsParameterAllocation(FFogUniformParameters::StaticStructMetadata.GetShaderVariableName()));
-		check(!Initializer.ParameterMap.ContainsParameterAllocation(FReflectionUniformParameters::StaticStructMetadata.GetShaderVariableName()));
-		check(!Initializer.ParameterMap.ContainsParameterAllocation(FPlanarReflectionUniformParameters::StaticStructMetadata.GetShaderVariableName()));
+		check(!Initializer.ParameterMap.ContainsParameterAllocation(FFogUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()));
+		check(!Initializer.ParameterMap.ContainsParameterAllocation(FReflectionUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()));
+		check(!Initializer.ParameterMap.ContainsParameterAllocation(FPlanarReflectionUniformParameters::FTypeInfo::GetStructMetadata()->GetShaderVariableName()));
 	}
 	TBasePassPixelShaderPolicyParamType() {}
 

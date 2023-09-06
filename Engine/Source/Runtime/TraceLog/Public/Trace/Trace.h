@@ -79,12 +79,36 @@ TEventRef<IdType> MakeEventRef(IdType InId, uint32 InTypeId)
 
 using OnConnectFunc = void(void);
 
+enum class EMessageType : uint8
+{
+	Reserved = 0,
+	WriteError,
+	ReadError,
+	ConnectError,
+	ListenError,
+	EstablishError,
+	FileOpenError,
+};
+	
+struct FMessageEvent
+{
+	/** Type of message */
+	EMessageType		Type;
+	/** Type of message stringified */
+	const char*			TypeStr;
+	/** Clarifying message, may be null for some message types. Pointer only valide during callback. */
+	const char*			Description;
+};
+
+using OnMessageFunc = void(const FMessageEvent&);
+
 struct FInitializeDesc
 {
 	uint32			TailSizeBytes		= 4 << 20; // can be set to 0 to disable the tail buffer
 	uint32			ThreadSleepTimeInMS = 0;
 	bool			bUseWorkerThread	= true;
 	bool			bUseImportantCache	= true;
+	uint32			SessionGuid[4]		= {0,0,0,0}; // leave as zero to generate random
 	OnConnectFunc*	OnConnectionFunc	= nullptr;
 };
 
@@ -115,9 +139,11 @@ struct FSendFlags
 };
 
 UE_TRACE_API void	SetMemoryHooks(AllocFunc Alloc, FreeFunc Free) UE_TRACE_IMPL();
+UE_TRACE_API void	SetMessageCallback(OnMessageFunc MessageFunc) UE_TRACE_IMPL();
 UE_TRACE_API void	Initialize(const FInitializeDesc& Desc) UE_TRACE_IMPL();
 UE_TRACE_API void	StartWorkerThread() UE_TRACE_IMPL();	
 UE_TRACE_API void	Shutdown() UE_TRACE_IMPL();
+UE_TRACE_API void	Panic() UE_TRACE_IMPL();
 UE_TRACE_API void	Update() UE_TRACE_IMPL();
 UE_TRACE_API void	GetStatistics(FStatistics& Out) UE_TRACE_IMPL();
 UE_TRACE_API bool	SendTo(const TCHAR* Host, uint32 Port=0, uint16 Flags=FSendFlags::None) UE_TRACE_IMPL(false);
@@ -125,6 +151,7 @@ UE_TRACE_API bool	WriteTo(const TCHAR* Path, uint16 Flags=FSendFlags::None) UE_T
 UE_TRACE_API bool	WriteSnapshotTo(const TCHAR* Path) UE_TRACE_IMPL(false);
 UE_TRACE_API bool	SendSnapshotTo(const TCHAR* Host, uint32 Port) UE_TRACE_IMPL(false);	
 UE_TRACE_API bool	IsTracing() UE_TRACE_IMPL(false);
+UE_TRACE_API bool	IsTracingTo(uint32 (&OutSessionGuid)[4], uint32 (&OutTraceGuid)[4]) UE_TRACE_IMPL(false);
 UE_TRACE_API bool	Stop() UE_TRACE_IMPL(false);
 UE_TRACE_API bool	IsChannel(const TCHAR* ChanneName) UE_TRACE_IMPL(false);
 UE_TRACE_API bool	ToggleChannel(const TCHAR* ChannelName, bool bEnabled) UE_TRACE_IMPL(false);

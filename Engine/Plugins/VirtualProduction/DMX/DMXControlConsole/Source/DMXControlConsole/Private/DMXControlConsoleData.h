@@ -3,8 +3,6 @@
 #pragma once
 
 #include "DMXProtocolCommon.h"
-
-#include "CoreMinimal.h"
 #include "Tickable.h"
 #include "UObject/Object.h"
 
@@ -12,8 +10,12 @@
 
 class UDMXControlConsoleFaderGroup;
 class UDMXControlConsoleFaderGroupRow;
+class UDMXEntity;
+class UDMXEntityFixturePatch;
 class UDMXLibrary;
 
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FDMXControlConsoleFaderGroupDelegate, const UDMXControlConsoleFaderGroup*);
 
 /** The DMX Control Console */
 UCLASS()
@@ -22,6 +24,9 @@ class DMXCONTROLCONSOLE_API UDMXControlConsoleData
 	, public FTickableGameObject
 {
 	GENERATED_BODY()
+
+	// Allow the DMXControlConsoleFaderGroupRow to read Control Console Data
+	friend UDMXControlConsoleFaderGroupRow;
 
 public:
 	/** Adds a Fader Group Row to this DMX Control Console */
@@ -36,11 +41,19 @@ public:
 	/** Gets an array of all Fader Groups in this DMX Control Console */
 	TArray<UDMXControlConsoleFaderGroup*> GetAllFaderGroups() const;
 
+#if WITH_EDITOR
+	/** Gets an array of all active Fader Groups in this DMX Control Console */
+	TArray<UDMXControlConsoleFaderGroup*> GetAllActiveFaderGroups() const;
+#endif // WITH_EDITOR 
+
 	/** Generates sorted Fader Groups based on the DMX Control Console's current DMX Library */
 	void GenerateFromDMXLibrary();
 
+	/** Finds the Fader Group matching the given Fixture Patch, if valid */
+	UDMXControlConsoleFaderGroup* FindFaderGroupByFixturePatch(const UDMXEntityFixturePatch* InFixturePatch) const;
+
 	/** Gets this DMX Control Console's DMXLibrary */
-	UDMXLibrary* GetDMXLibrary() const { return DMXLibrary.Get(); }
+	UDMXLibrary* GetDMXLibrary() const { return CachedWeakDMXLibrary.Get(); }
 
 	/** Sends DMX on this DMX Control Console on tick */
 	void StartSendingDMX();
@@ -59,14 +72,46 @@ public:
 	/** Updates DMX Output Ports */
 	void UpdateOutputPorts(const TArray<FDMXOutputPortSharedRef> InOutputPorts);
 
-	/** Resets the DMX Control Console to its default */
-	void Reset();
+	/** Clears FaderGroupRows array from data */
+	void Clear();
+
+	/** Clears Patched Fader Groups from data */
+	void ClearPatchedFaderGroups();
+
+	/** Clears the DMX Control Console to its default */
+	void ClearAll(bool bOnlyPatchedFaderGroups = false);
+
+	/** Called when a Fixture Patch was added to a DMX Library */
+	void OnFixturePatchAddedToLibrary(UDMXLibrary* Library, TArray<UDMXEntity*> Entities);
+
+	/** Gets a reference to OnFaderGroupAdded delegate */
+	FDMXControlConsoleFaderGroupDelegate& GetOnFaderGroupAdded() { return OnFaderGroupAdded; }
+
+	/** Gets a reference to OnFaderGroupRemoved delegate */
+	FDMXControlConsoleFaderGroupDelegate& GetOnFaderGroupRemoved() { return OnFaderGroupRemoved; }
+
+#if WITH_EDITOR
+	/** Called when the DMX Library has been changed */
+	static FSimpleMulticastDelegate& GetOnDMXLibraryChanged() { return OnDMXLibraryChanged; }
+#endif // WITH_EDITOR 
+
+#if WITH_EDITORONLY_DATA
+	/** The current editor filter string */
+	UPROPERTY()
+	FString FilterString;
+#endif // WITH_EDITORONLY_DATA
 
 	// Property Name getters
-	FORCEINLINE static FName GetDMXLibraryPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleData, DMXLibrary); }
-	FORCEINLINE static FName GetFaderGroupRowsPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleData, FaderGroupRows); }
+	FORCEINLINE static FName GetDMXLibraryPropertyName() { return GET_MEMBER_NAME_CHECKED(UDMXControlConsoleData, SoftDMXLibraryPtr); }
 
 protected:
+	//~ Begin UObject interface
+	virtual void PostLoad() override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITOR 
+	//~ End UObject interface
+
 	// ~ Begin FTickableGameObject interface
 	virtual void Tick(float InDeltaTime) override;
 	virtual bool IsTickable() const override { return true; }
@@ -76,15 +121,27 @@ protected:
 	// ~ End FTickableGameObject interface
 
 private:
-	/** Clears FaderGroupRows array */
-	void ClearFaderGroupRows();
+	/** Called when a Fader Group is added to the Control Console */
+	FDMXControlConsoleFaderGroupDelegate OnFaderGroupAdded;
+
+	/** Called when a Fader Group is removed from the Control Console */
+	FDMXControlConsoleFaderGroupDelegate OnFaderGroupRemoved;
+
+#if WITH_EDITOR
+	/** Called when the DMX Library has been changed */
+	static FSimpleMulticastDelegate OnDMXLibraryChanged;
+#endif // WITH_EDITOR 
 
 	/** Library used to generate Fader Groups */
-	UPROPERTY(EditAnywhere, Category = "DMX Control Console")
-	TWeakObjectPtr<UDMXLibrary> DMXLibrary;
+	UPROPERTY(EditAnywhere, meta = (DisplayName = "DMX Library", ShowDisplayNames), Category = "DMX Control Console")
+	TSoftObjectPtr<UDMXLibrary> SoftDMXLibraryPtr;
+
+	/** Cached DMX Library for faster access */
+	UPROPERTY()
+	TWeakObjectPtr<UDMXLibrary> CachedWeakDMXLibrary;
 
 	/** DMX Control Console's Fader Group Rows array */
-	UPROPERTY(VisibleAnywhere, Category = "DMX Control Console")
+	UPROPERTY()
 	TArray<TObjectPtr<UDMXControlConsoleFaderGroupRow>> FaderGroupRows;
 
 	/** Output ports to output dmx to */
@@ -93,8 +150,8 @@ private:
 	/** True when this object is ticking */
 	bool bSendDMX = false;
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	/** True if the Control Console ticks in Editor */
 	bool bSendDMXInEditor = true;
-#endif // WITH_EDITOR
+#endif // WITH_EDITORONLY_DATA
 };

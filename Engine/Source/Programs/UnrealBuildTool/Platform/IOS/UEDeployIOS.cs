@@ -1,17 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
-using System.Xml;
-using System.IO;
-using System.Diagnostics;
 using System.Xml.Linq;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -27,8 +24,8 @@ namespace UnrealBuildTool
 
 		public bool ForDistribution
 		{
-			get { return bForDistribution; }
-			set { bForDistribution = value; }
+			get => bForDistribution;
+			set => bForDistribution = value;
 		}
 		bool bForDistribution = false;
 
@@ -45,12 +42,9 @@ namespace UnrealBuildTool
 				set;
 			}
 
-			public static bool bCustomLaunchscreenStoryboard = false;			
+			public static bool bCustomLaunchscreenStoryboard = false;
 
-			static string RunningVersionFilename
-			{
-				get { return Path.Combine(BuildDirectory!, GameName + ".PackageVersionCounter"); }
-			}
+			static string RunningVersionFilename => Path.Combine(BuildDirectory!, GameName + ".PackageVersionCounter");
 
 			/// <summary>
 			/// Reads the GameName.PackageVersionCounter from disk and bumps the minor version number in it
@@ -84,12 +78,12 @@ namespace UnrealBuildTool
 				// Parse the version string
 				string[] VersionParts = Parts[0].Split(new char[] { '.' });
 
-				if (!int.TryParse(VersionParts[0], out VersionMajor))
+				if (!Int32.TryParse(VersionParts[0], out VersionMajor))
 				{
 					VersionMajor = 0;
 				}
 
-				if ((VersionParts.Length < 2) || (!int.TryParse(VersionParts[1], out VersionMinor)))
+				if ((VersionParts.Length < 2) || (!Int32.TryParse(VersionParts[1], out VersionMinor)))
 				{
 					VersionMinor = 0;
 				}
@@ -172,8 +166,8 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-                    // get the changelist
-                    CFBundleVersion = ReadOnlyBuildVersion.Current.Changelist.ToString();
+					// get the changelist
+					CFBundleVersion = ReadOnlyBuildVersion.Current.Changelist.ToString();
 
 				}
 
@@ -203,21 +197,347 @@ namespace UnrealBuildTool
 			string MinVersionToReturn = "";
 			switch (MinVersion)
 			{
-				case "IOS_14":
-					MinVersionToReturn = "14.0";
-					break;
+				case "":
 				case "IOS_15":
+				case "IOS_Minimum":
 					MinVersionToReturn = "15.0";
 					break;
+				case "IOS_16":
+					MinVersionToReturn = "16.0";
+					break;
+				case "IOS_17":
+					MinVersionToReturn = "17.0";
+					break;
 				default:
-					Logger.LogWarning("MinimumiOSVersion {MinVersion} specified in ini file is no longer supported, defaulting to 14.0", MinVersion);
-					MinVersionToReturn = "14.0";
+					MinVersionToReturn = "15.0";
+					Logger.LogInformation("MinimumiOSVersion {MinVersion} specified in ini file is no longer supported, defaulting to {MinVersionToReturn}", MinVersion, MinVersionToReturn);
 					break;
 			}
 			return MinVersionToReturn;
 		}
 
+		public static void WritePlistFile(FileReference PlistFile, DirectoryReference? ProjectLocation, UnrealPluginLanguage? UPL, string GameName, bool bIsUnrealGame, string ProjectName, ILogger Logger)
+		{
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ProjectLocation, UnrealTargetPlatform.IOS);
+			// required capabilities
+			List<string> RequiredCaps = new() { "arm64", "metal" };
+
+			// orientations
+			string InterfaceOrientation = "";
+			string PreferredLandscapeOrientation = "";
+			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "PreferredLandscapeOrientation", out PreferredLandscapeOrientation);
+
+			string SupportedOrientations = "";
+			bool bSupported = true;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsPortraitOrientation", out bSupported);
+			SupportedOrientations += bSupported ? "\t\t<string>UIInterfaceOrientationPortrait</string>\n" : "";
+			bool bSupportsPortrait = bSupported;
+
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsUpsideDownOrientation", out bSupported);
+			SupportedOrientations += bSupported ? "\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n" : "";
+			bSupportsPortrait |= bSupported;
+
+			bool bSupportsLandscapeLeft = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsLandscapeLeftOrientation", out bSupportsLandscapeLeft);
+			bool bSupportsLandscapeRight = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsLandscapeRightOrientation", out bSupportsLandscapeRight);
+			bool bSupportsLandscape = bSupportsLandscapeLeft || bSupportsLandscapeRight;
+
+			if (bSupportsLandscapeLeft && bSupportsLandscapeRight)
+			{
+				// if both landscape orientations are present, set the UIInterfaceOrientation key
+				// in the orientation list, the preferred orientation should be first
+				if (PreferredLandscapeOrientation == "LandscapeLeft")
+				{
+					InterfaceOrientation = "\t<key>UIInterfaceOrientation</key>\n\t<string>UIInterfaceOrientationLandscapeLeft</string>\n";
+					SupportedOrientations += "\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n";
+				}
+				else
+				{
+					// by default, landscape right is the preferred orientation - Apple's UI guidlines
+					InterfaceOrientation = "\t<key>UIInterfaceOrientation</key>\n\t<string>UIInterfaceOrientationLandscapeRight</string>\n";
+					SupportedOrientations += "\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n";
+				}
+			}
+			else
+			{
+				// max one landscape orientation is supported
+				SupportedOrientations += bSupportsLandscapeRight ? "\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n" : "";
+				SupportedOrientations += bSupportsLandscapeLeft ? "\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n" : "";
+			}
+
+			// ITunes file sharing
+			bool bSupportsITunesFileSharing = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsITunesFileSharing", out bSupportsITunesFileSharing);
+			bool bSupportsFilesApp = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsFilesApp", out bSupportsFilesApp);
+
+			// disable https requirement
+			bool bDisableHTTPS;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bDisableHTTPS", out bDisableHTTPS);
+
+			// bundle display name
+			string BundleDisplayName;
+			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "BundleDisplayName", out BundleDisplayName);
+
+			// short version string
+			string BundleShortVersion;
+			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "VersionInfo", out BundleShortVersion);
+
+			// Get Google Support details
+			bool bEnableGoogleSupport = true;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableGoogleSupport", out bEnableGoogleSupport);
+
+			// Write the Google iOS URL Scheme if we need it.
+			string GoogleReversedClientId = "";
+			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "GoogleReversedClientId", out GoogleReversedClientId);
+			bEnableGoogleSupport = bEnableGoogleSupport && !String.IsNullOrWhiteSpace(GoogleReversedClientId);
+
+			// Add remote-notifications as background mode
+			bool bRemoteNotificationsSupported = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableRemoteNotificationsSupport", out bRemoteNotificationsSupported);
+
+			// Add audio as background mode
+			bool bBackgroundAudioSupported = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportsBackgroundAudio", out bBackgroundAudioSupported);
+
+			// Add background fetch as background mode
+			bool bBackgroundFetch = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableBackgroundFetch", out bBackgroundFetch);
+
+			// Get any Location Services permission descriptions added
+			string LocationAlwaysUsageDescription = "";
+			string LocationWhenInUseDescription = "";
+			Ini.GetString("/Script/LocationServicesIOSEditor.LocationServicesIOSSettings", "LocationAlwaysUsageDescription", out LocationAlwaysUsageDescription);
+			Ini.GetString("/Script/LocationServicesIOSEditor.LocationServicesIOSSettings", "LocationWhenInUseDescription", out LocationWhenInUseDescription);
+
+			// extra plist data
+			string ExtraData = "";
+			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "AdditionalPlistData", out ExtraData);
+
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bCustomLaunchscreenStoryboard", out VersionUtilities.bCustomLaunchscreenStoryboard);
+
+			// generate the plist file
+			StringBuilder Text = new StringBuilder();
+			Text.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+			Text.AppendLine("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">");
+			Text.AppendLine("<plist version=\"1.0\">");
+			Text.AppendLine("<dict>");
+			Text.AppendLine("\t<key>CFBundleURLTypes</key>");
+			Text.AppendLine("\t<array>");
+			Text.AppendLine("\t\t<dict>");
+
+			Text.AppendLine("\t\t\t<key>CFBundleURLName</key>");
+			Text.AppendLine("\t\t\t<string>com.Epic.Unreal</string>");
+			Text.AppendLine("\t\t\t<key>CFBundleURLSchemes</key>");
+			Text.AppendLine("\t\t\t<array>");
+			Text.AppendLine(String.Format("\t\t\t\t<string>{0}</string>", bIsUnrealGame ? "UnrealGame" : GameName));
+			if (bEnableGoogleSupport)
+			{
+				Text.AppendLine(String.Format("\t\t\t\t<string>{0}</string>", GoogleReversedClientId));
+			}
+			Text.AppendLine("\t\t\t</array>");
+			Text.AppendLine("\t\t</dict>");
+			Text.AppendLine("\t</array>");
+			Text.AppendLine("\t<key>UIStatusBarHidden</key>");
+			Text.AppendLine("\t<true/>");
+			Text.AppendLine("\t<key>UIFileSharingEnabled</key>");
+			Text.AppendLine(String.Format("\t<{0}/>", bSupportsITunesFileSharing ? "true" : "false"));
+			if (bSupportsFilesApp)
+			{
+				Text.AppendLine("\t<key>LSSupportsOpeningDocumentsInPlace</key>");
+				Text.AppendLine("\t<true/>");
+			}
+
+			Text.AppendLine("\t<key>CFBundleDisplayName</key>");
+			Text.AppendLine(String.Format("\t<string>{0}</string>", EncodeBundleName(BundleDisplayName, ProjectName)));
+
+			Text.AppendLine("\t<key>UIRequiresFullScreen</key>");
+			Text.AppendLine("\t<true/>");
+
+			Text.AppendLine("\t<key>UIViewControllerBasedStatusBarAppearance</key>");
+			Text.AppendLine("\t<false/>");
+			if (!String.IsNullOrEmpty(InterfaceOrientation))
+			{
+				Text.AppendLine(InterfaceOrientation);
+			}
+			Text.AppendLine("\t<key>UISupportedInterfaceOrientations</key>");
+			Text.AppendLine("\t<array>");
+			foreach (string Line in SupportedOrientations.Split("\n".ToCharArray()))
+			{
+				if (!String.IsNullOrWhiteSpace(Line))
+				{
+					Text.AppendLine(Line);
+				}
+			}
+			Text.AppendLine("\t</array>");
+
+			bool bEnableSplitView = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bEnableSplitView", out bEnableSplitView);
+			if (bEnableSplitView)
+			{
+				// As this is (currently) an iPad only feature, use the iPad descriminator to set it for iPad only
+				// as it also requires supporting all UIOrientations
+				Text.AppendLine("\t<key>UIRequiresFullScreen~ipad</key>");
+				Text.AppendLine("\t<false/>");
+
+				Text.AppendLine("\t<key>UISupportedInterfaceOrientations~ipad</key>");
+				Text.AppendLine("\t<array>");
+					Text.AppendLine($"\t\t<string>UIInterfaceOrientationPortrait</string>");
+					Text.AppendLine($"\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>");
+					Text.AppendLine($"\t\t<string>UIInterfaceOrientationLandscapeLeft</string>");
+					Text.AppendLine($"\t\t<string>UIInterfaceOrientationLandscapeRight</string>");
+				Text.AppendLine("\t</array>");
+			}
+
+			Text.AppendLine("\t<key>UIRequiredDeviceCapabilities</key>");
+			Text.AppendLine("\t<array>");
+			foreach (string Cap in RequiredCaps)
+			{
+				Text.AppendLine($"\t\t<string>{Cap}</string>\n");
+			}
+			Text.AppendLine("\t</array>");
+
+			Text.AppendLine("\t<key>UILaunchStoryboardName</key>");
+			Text.AppendLine("\t<string>LaunchScreen</string>");
+
+			// Support high refresh rates (iPhone only)
+			// https://developer.apple.com/documentation/quartzcore/optimizing_promotion_refresh_rates_for_iphone_13_pro_and_ipad_pro
+			bool bSupportHighRefreshRates = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportHighRefreshRates", out bSupportHighRefreshRates);
+			if (bSupportHighRefreshRates)
+			{
+				Text.AppendLine("\t<key>CADisableMinimumFrameDurationOnPhone</key><true/>");
+			}
+
+			// disable exempt encryption
+			Text.AppendLine("\t<key>ITSAppUsesNonExemptEncryption</key>");
+			Text.AppendLine("\t<false/>");
+			// add location services descriptions if used
+			if (!String.IsNullOrWhiteSpace(LocationAlwaysUsageDescription))
+			{
+				Text.AppendLine("\t<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>");
+				Text.AppendLine(String.Format("\t<string>{0}</string>", LocationAlwaysUsageDescription));
+			}
+			if (!String.IsNullOrWhiteSpace(LocationWhenInUseDescription))
+			{
+				Text.AppendLine("\t<key>NSLocationWhenInUseUsageDescription</key>");
+				Text.AppendLine(String.Format("\t<string>{0}</string>", LocationWhenInUseDescription));
+			}
+			// disable HTTPS requirement
+			if (bDisableHTTPS)
+			{
+				Text.AppendLine("\t<key>NSAppTransportSecurity</key>");
+				Text.AppendLine("\t\t<dict>");
+				Text.AppendLine("\t\t\t<key>NSAllowsArbitraryLoads</key><true/>");
+				Text.AppendLine("\t\t</dict>");
+			}
+
+			// add a TVOS setting since they share this file
+			Text.AppendLine("\t<key>TVTopShelfImage</key>");
+			Text.AppendLine("\t<dict>");
+			Text.AppendLine("\t\t<key>TVTopShelfPrimaryImageWide</key>");
+			Text.AppendLine("\t\t<string>Top Shelf Image Wide</string>");
+			Text.AppendLine("\t</dict>");
+
+			if (!String.IsNullOrEmpty(ExtraData))
+			{
+				ExtraData = ExtraData.Replace("\\n", "\n");
+				foreach (string Line in ExtraData.Split("\r\n".ToCharArray()))
+				{
+					if (!String.IsNullOrWhiteSpace(Line))
+					{
+						Text.AppendLine("\t" + Line);
+					}
+				}
+			}
+
+			// Add remote-notifications as background mode
+			if (bRemoteNotificationsSupported || bBackgroundFetch || bBackgroundAudioSupported)
+			{
+				Text.AppendLine("\t<key>UIBackgroundModes</key>");
+				Text.AppendLine("\t<array>");
+				if (bBackgroundAudioSupported)
+				{
+					Text.AppendLine("\t\t<string>audio</string>");
+				}
+				if (bRemoteNotificationsSupported)
+				{
+					Text.AppendLine("\t\t<string>remote-notification</string>");
+				}
+				if (bBackgroundFetch)
+				{
+					Text.AppendLine("\t\t<string>fetch</string>");
+				}
+				Text.AppendLine("\t</array>");
+			}
+			Text.AppendLine("</dict>");
+			Text.AppendLine("</plist>");
+
+			DirectoryReference.CreateDirectory(PlistFile.Directory);
+
+			if (UPL != null)
+			{
+				// Allow UPL to modify the plist here
+				XDocument XDoc;
+				try
+				{
+					XDoc = XDocument.Parse(Text.ToString());
+				}
+				catch (Exception e)
+				{
+					throw new BuildException("plist is invalid {0}\n{1}", e, Text.ToString());
+				}
+
+				XDoc.DocumentType!.InternalSubset = "";
+				UPL.ProcessPluginNode("None", "iosPListUpdates", "", ref XDoc);
+				string result = XDoc.Declaration?.ToString() + "\n" + XDoc.ToString().Replace("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"[]>", "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">");
+				File.WriteAllText(PlistFile.FullName, result);
+
+				Text = new StringBuilder(result);
+			}
+
+			Text = Text.Replace("[PROJECT_NAME]", "$(UE_PROJECT_NAME)");
+
+			File.WriteAllText(PlistFile.FullName, Text.ToString());
+		}
+
 		public static bool GenerateIOSPList(FileReference? ProjectFile, UnrealTargetConfiguration Config, string ProjectDirectory, bool bIsUnrealGame, string GameName, bool bIsClient, string ProjectName, string InEngineDir, string AppDirectory, UnrealPluginLanguage? UPL, string? BundleID, bool bBuildAsFramework, ILogger Logger)
+		{
+			// get the settings from the ini file
+			// plist replacements
+			DirectoryReference? DirRef = bIsUnrealGame ? (!String.IsNullOrEmpty(UnrealBuildTool.GetRemoteIniPath()) ? new DirectoryReference(UnrealBuildTool.GetRemoteIniPath()!) : null) : new DirectoryReference(ProjectDirectory);
+
+			if (!AppleExports.UseModernXcode(ProjectFile))
+			{
+				return GenerateLegacyIOSPList(ProjectFile, Config, ProjectDirectory, bIsUnrealGame, GameName, bIsClient, ProjectName, InEngineDir, AppDirectory, UPL, BundleID, bBuildAsFramework, Logger);
+			}
+
+			// generate the Info.plist for future use
+			string BuildDirectory = ProjectDirectory + "/Build/IOS";
+			string IntermediateDirectory = ProjectDirectory + "/Intermediate/IOS";
+			string PListFile = IntermediateDirectory + "/" + GameName + "-Info.plist"; ;
+			ProjectName = !String.IsNullOrEmpty(ProjectName) ? ProjectName : GameName;
+			VersionUtilities.BuildDirectory = BuildDirectory;
+			VersionUtilities.GameName = GameName;
+
+			WritePlistFile(new FileReference(PListFile), DirRef, UPL, GameName, bIsUnrealGame, ProjectName, Logger);
+
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && !bBuildAsFramework)
+			{
+				FileReference FinalPlistFile;
+				FinalPlistFile = new FileReference($"{ProjectDirectory}/Build/IOS/UBTGenerated/Info.Template.plist");
+
+				DirectoryReference.CreateDirectory(FinalPlistFile.Directory);
+				// @todo: writeifdifferent is better
+				FileReference.Delete(FinalPlistFile);
+				File.Copy(PListFile, FinalPlistFile.FullName);
+			}
+
+			return true;
+		}
+
+		public static bool GenerateLegacyIOSPList(FileReference? ProjectFile, UnrealTargetConfiguration Config, string ProjectDirectory, bool bIsUnrealGame, string GameName, bool bIsClient, string ProjectName, string InEngineDir, string AppDirectory, UnrealPluginLanguage? UPL, string? BundleID, bool bBuildAsFramework, ILogger Logger)
 		{
 			// generate the Info.plist for future use
 			string BuildDirectory = ProjectDirectory + "/Build/IOS";
@@ -232,7 +552,7 @@ namespace UnrealBuildTool
 
 			// get the settings from the ini file
 			// plist replacements
-			DirectoryReference? DirRef = bIsUnrealGame ? (!string.IsNullOrEmpty(UnrealBuildTool.GetRemoteIniPath()) ? new DirectoryReference(UnrealBuildTool.GetRemoteIniPath()!) : null) : new DirectoryReference(ProjectDirectory);
+			DirectoryReference? DirRef = bIsUnrealGame ? (!String.IsNullOrEmpty(UnrealBuildTool.GetRemoteIniPath()) ? new DirectoryReference(UnrealBuildTool.GetRemoteIniPath()!) : null) : new DirectoryReference(ProjectDirectory);
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirRef, UnrealTargetPlatform.IOS);
 
 			// orientations
@@ -292,7 +612,7 @@ namespace UnrealBuildTool
 			// bundle identifier
 			string BundleIdentifier;
 			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "BundleIdentifier", out BundleIdentifier);
-			if (!string.IsNullOrEmpty(BundleID))
+			if (!String.IsNullOrEmpty(BundleID))
 			{
 				BundleIdentifier = BundleID; // overriding bundle ID
 			}
@@ -318,7 +638,7 @@ namespace UnrealBuildTool
 			// minimum iOS version
 			string MinVersionSetting = "";
 			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "MinimumiOSVersion", out MinVersionSetting);
-			string MinVersion  = GetMinimumOSVersion(MinVersionSetting, Logger);
+			string MinVersion = GetMinimumOSVersion(MinVersionSetting, Logger);
 
 			// Get Google Support details
 			bool bEnableGoogleSupport = true;
@@ -327,7 +647,7 @@ namespace UnrealBuildTool
 			// Write the Google iOS URL Scheme if we need it.
 			string GoogleReversedClientId = "";
 			Ini.GetString("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "GoogleReversedClientId", out GoogleReversedClientId);
-			bEnableGoogleSupport = bEnableGoogleSupport && !string.IsNullOrWhiteSpace(GoogleReversedClientId);
+			bEnableGoogleSupport = bEnableGoogleSupport && !String.IsNullOrWhiteSpace(GoogleReversedClientId);
 
 			// Add remote-notifications as background mode
 			bool bRemoteNotificationsSupported = false;
@@ -366,10 +686,10 @@ namespace UnrealBuildTool
 			Text.AppendLine("\t\t\t<string>com.Epic.Unreal</string>");
 			Text.AppendLine("\t\t\t<key>CFBundleURLSchemes</key>");
 			Text.AppendLine("\t\t\t<array>");
-			Text.AppendLine(string.Format("\t\t\t\t<string>{0}</string>", bIsUnrealGame ? "UnrealGame" : GameName));
+			Text.AppendLine(String.Format("\t\t\t\t<string>{0}</string>", bIsUnrealGame ? "UnrealGame" : GameName));
 			if (bEnableGoogleSupport)
 			{
-				Text.AppendLine(string.Format("\t\t\t\t<string>{0}</string>", GoogleReversedClientId));
+				Text.AppendLine(String.Format("\t\t\t\t<string>{0}</string>", GoogleReversedClientId));
 			}
 			Text.AppendLine("\t\t\t</array>");
 			Text.AppendLine("\t\t</dict>");
@@ -377,32 +697,32 @@ namespace UnrealBuildTool
 			Text.AppendLine("\t<key>CFBundleDevelopmentRegion</key>");
 			Text.AppendLine("\t<string>English</string>");
 			Text.AppendLine("\t<key>CFBundleDisplayName</key>");
-			Text.AppendLine(string.Format("\t<string>{0}</string>", EncodeBundleName(BundleDisplayName, ProjectName)));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", EncodeBundleName(BundleDisplayName, ProjectName)));
 			Text.AppendLine("\t<key>CFBundleExecutable</key>");
 			string BundleExecutable = bIsUnrealGame ?
 				(bIsClient ? "UnrealClient" : "UnrealGame") :
 				(bIsClient ? GameName + "Client" : GameName);
-			Text.AppendLine(string.Format("\t<string>{0}</string>", BundleExecutable));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", BundleExecutable));
 			Text.AppendLine("\t<key>CFBundleIdentifier</key>");
-			Text.AppendLine(string.Format("\t<string>{0}</string>", BundleIdentifier.Replace("[PROJECT_NAME]", ProjectName).Replace("_", "")));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", BundleIdentifier.Replace("[PROJECT_NAME]", ProjectName).Replace("_", "")));
 			Text.AppendLine("\t<key>CFBundleInfoDictionaryVersion</key>");
 			Text.AppendLine("\t<string>6.0</string>");
 			Text.AppendLine("\t<key>CFBundleName</key>");
-			Text.AppendLine(string.Format("\t<string>{0}</string>", EncodeBundleName(BundleName, ProjectName)));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", EncodeBundleName(BundleName, ProjectName)));
 			Text.AppendLine("\t<key>CFBundlePackageType</key>");
 			Text.AppendLine("\t<string>APPL</string>");
 			Text.AppendLine("\t<key>CFBundleSignature</key>");
 			Text.AppendLine("\t<string>????</string>");
 			Text.AppendLine("\t<key>CFBundleVersion</key>");
-			Text.AppendLine(string.Format("\t<string>{0}</string>", VersionUtilities.UpdateBundleVersion(OldPListData, InEngineDir)));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", VersionUtilities.UpdateBundleVersion(OldPListData, InEngineDir)));
 			Text.AppendLine("\t<key>CFBundleShortVersionString</key>");
-			Text.AppendLine(string.Format("\t<string>{0}</string>", BundleShortVersion));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", BundleShortVersion));
 			Text.AppendLine("\t<key>LSRequiresIPhoneOS</key>");
 			Text.AppendLine("\t<true/>");
 			Text.AppendLine("\t<key>UIStatusBarHidden</key>");
 			Text.AppendLine("\t<true/>");
 			Text.AppendLine("\t<key>UIFileSharingEnabled</key>");
-			Text.AppendLine(string.Format("\t<{0}/>", bSupportsITunesFileSharing ? "true" : "false"));
+			Text.AppendLine(String.Format("\t<{0}/>", bSupportsITunesFileSharing ? "true" : "false"));
 			if (bSupportsFilesApp)
 			{
 				Text.AppendLine("\t<key>LSSupportsOpeningDocumentsInPlace</key>");
@@ -412,15 +732,15 @@ namespace UnrealBuildTool
 			Text.AppendLine("\t<true/>");
 			Text.AppendLine("\t<key>UIViewControllerBasedStatusBarAppearance</key>");
 			Text.AppendLine("\t<false/>");
-			if (InterfaceOrientation != "")
-			{ 
+			if (!String.IsNullOrEmpty(InterfaceOrientation))
+			{
 				Text.AppendLine(InterfaceOrientation);
 			}
 			Text.AppendLine("\t<key>UISupportedInterfaceOrientations</key>");
 			Text.AppendLine("\t<array>");
-			foreach(string Line in SupportedOrientations.Split("\r\n".ToCharArray()))
+			foreach (string Line in SupportedOrientations.Split("\r\n".ToCharArray()))
 			{
-				if (!string.IsNullOrWhiteSpace(Line))
+				if (!String.IsNullOrWhiteSpace(Line))
 				{
 					Text.AppendLine(Line);
 				}
@@ -428,9 +748,9 @@ namespace UnrealBuildTool
 			Text.AppendLine("\t</array>");
 			Text.AppendLine("\t<key>UIRequiredDeviceCapabilities</key>");
 			Text.AppendLine("\t<array>");
-			foreach(string Line in RequiredCaps.Split("\r\n".ToCharArray()))
+			foreach (string Line in RequiredCaps.Split("\r\n".ToCharArray()))
 			{
-				if (!string.IsNullOrWhiteSpace(Line))
+				if (!String.IsNullOrWhiteSpace(Line))
 				{
 					Text.AppendLine(Line);
 				}
@@ -487,25 +807,34 @@ namespace UnrealBuildTool
 				}
 			}
 
+			// Support high refresh rates (iPhone only)
+			// https://developer.apple.com/documentation/quartzcore/optimizing_promotion_refresh_rates_for_iphone_13_pro_and_ipad_pro
+			bool bSupportHighRefreshRates = false;
+			Ini.GetBool("/Script/IOSRuntimeSettings.IOSRuntimeSettings", "bSupportHighRefreshRates", out bSupportHighRefreshRates);
+			if (bSupportHighRefreshRates)
+			{
+				Text.AppendLine("\t<key>CADisableMinimumFrameDurationOnPhone</key><true/>");
+			}
+
 			Text.AppendLine("\t<key>CFBundleSupportedPlatforms</key>");
 			Text.AppendLine("\t<array>");
-			Text.AppendLine("\t\t<string>iPhoneOS</string>");
+			Text.AppendLine("\t\t<string>iPhoneOS iPhoneSimulator</string>");
 			Text.AppendLine("\t</array>");
 			Text.AppendLine("\t<key>MinimumOSVersion</key>");
-			Text.AppendLine(string.Format("\t<string>{0}</string>", MinVersion));
+			Text.AppendLine(String.Format("\t<string>{0}</string>", MinVersion));
 			// disable exempt encryption
 			Text.AppendLine("\t<key>ITSAppUsesNonExemptEncryption</key>");
 			Text.AppendLine("\t<false/>");
 			// add location services descriptions if used
-			if (!string.IsNullOrWhiteSpace(LocationAlwaysUsageDescription))
+			if (!String.IsNullOrWhiteSpace(LocationAlwaysUsageDescription))
 			{
 				Text.AppendLine("\t<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>");
-				Text.AppendLine(string.Format("\t<string>{0}</string>", LocationAlwaysUsageDescription));
+				Text.AppendLine(String.Format("\t<string>{0}</string>", LocationAlwaysUsageDescription));
 			}
-			if (!string.IsNullOrWhiteSpace(LocationWhenInUseDescription))
+			if (!String.IsNullOrWhiteSpace(LocationWhenInUseDescription))
 			{
 				Text.AppendLine("\t<key>NSLocationWhenInUseUsageDescription</key>");
-				Text.AppendLine(string.Format("\t<string>{0}</string>", LocationWhenInUseDescription));
+				Text.AppendLine(String.Format("\t<string>{0}</string>", LocationWhenInUseDescription));
 			}
 			// disable HTTPS requirement
 			if (bDisableHTTPS)
@@ -516,12 +845,12 @@ namespace UnrealBuildTool
 				Text.AppendLine("\t\t</dict>");
 			}
 
-			if (!string.IsNullOrEmpty(ExtraData))
+			if (!String.IsNullOrEmpty(ExtraData))
 			{
 				ExtraData = ExtraData.Replace("\\n", "\n");
-				foreach(string Line in ExtraData.Split("\r\n".ToCharArray()))
+				foreach (string Line in ExtraData.Split("\r\n".ToCharArray()))
 				{
-					if (!string.IsNullOrWhiteSpace(Line))
+					if (!String.IsNullOrWhiteSpace(Line))
 					{
 						Text.AppendLine("\t" + Line);
 					}
@@ -549,7 +878,7 @@ namespace UnrealBuildTool
 			}
 
 			// write the iCloud container identifier, if present in the old file
-			if (!string.IsNullOrEmpty(OldPListData))
+			if (!String.IsNullOrEmpty(OldPListData))
 			{
 				int index = OldPListData.IndexOf("ICloudContainerIdentifier");
 				if (index > 0)
@@ -558,7 +887,7 @@ namespace UnrealBuildTool
 					int length = OldPListData.IndexOf("</string>", index) - index;
 					string ICloudContainerIdentifier = OldPListData.Substring(index, length);
 					Text.AppendLine("\t<key>ICloudContainerIdentifier</key>");
-					Text.AppendLine(string.Format("\t<string>{0}</string>", ICloudContainerIdentifier));
+					Text.AppendLine(String.Format("\t<string>{0}</string>", ICloudContainerIdentifier));
 				}
 			}
 
@@ -594,7 +923,7 @@ namespace UnrealBuildTool
 
 			File.WriteAllText(PListFile, Text.ToString());
 
-            if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && !bBuildAsFramework)
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && !bBuildAsFramework)
 			{
 				if (!Directory.Exists(AppDirectory))
 				{
@@ -606,19 +935,19 @@ namespace UnrealBuildTool
 			return true;
 		}
 
-        public static VersionNumber? GetSdkVersion(TargetReceipt Receipt)
-        {
+		public static VersionNumber? GetSdkVersion(TargetReceipt Receipt)
+		{
 			VersionNumber? SdkVersion = null;
-            if (Receipt != null)
-            {
-                ReceiptProperty? SdkVersionProperty = Receipt.AdditionalProperties.FirstOrDefault(x => x.Name == "SDK");
-				if(SdkVersionProperty != null)
+			if (Receipt != null)
+			{
+				ReceiptProperty? SdkVersionProperty = Receipt.AdditionalProperties.FirstOrDefault(x => x.Name == "SDK");
+				if (SdkVersionProperty != null)
 				{
 					VersionNumber.TryParse(SdkVersionProperty.Value, out SdkVersion);
 				}
 			}
 			return SdkVersion;
-        }
+		}
 
 		public static bool GetCompileAsDll(TargetReceipt? Receipt)
 		{
@@ -633,7 +962,7 @@ namespace UnrealBuildTool
 			return false;
 		}
 
- 		public bool GeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, string ProjectDirectory, bool bIsUnrealGame, string GameName, bool bIsClient, string ProjectName, string InEngineDir, string AppDirectory, TargetReceipt Receipt)
+		public bool GeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, string ProjectDirectory, bool bIsUnrealGame, string GameName, bool bIsClient, string ProjectName, string InEngineDir, string AppDirectory, TargetReceipt Receipt)
 		{
 			List<string> UPLScripts = CollectPluginDataPaths(Receipt.AdditionalProperties, Logger);
 			VersionNumber? SdkVersion = GetSdkVersion(Receipt);
@@ -707,7 +1036,6 @@ namespace UnrealBuildTool
 			{
 				CopyFiles(InEngineDir + "/Build/IOS/Resources/Graphics", AppDirectory, "LaunchScreenIOS.png", true);
 			}
-
 		}
 
 		protected virtual void CopyLaunchScreenResources(string InEngineDir, string AppDirectory, string BuildDirectory, ILogger Logger)
@@ -740,9 +1068,9 @@ namespace UnrealBuildTool
 			try
 			{
 				FileInfo DestFileInfo;
-				if(!Directory.Exists(ProvisionDir))
+				if (!Directory.Exists(ProvisionDir))
 				{
-					throw new DirectoryNotFoundException(string.Format("Provision Directory {0} not found.", ProvisionDir), null);
+					throw new DirectoryNotFoundException(String.Format("Provision Directory {0} not found.", ProvisionDir), null);
 				}
 
 				string LocalProvisionFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library/MobileDevice/Provisioning Profiles");
@@ -750,23 +1078,23 @@ namespace UnrealBuildTool
 				{
 					Logger.LogDebug("Local Provision Folder {LocalProvisionFolder} not found, attempting to create...", LocalProvisionFolder);
 					Directory.CreateDirectory(LocalProvisionFolder);
-					if(Directory.Exists(LocalProvisionFolder))
+					if (Directory.Exists(LocalProvisionFolder))
 					{
 						Logger.LogDebug("Local Provision Folder {LocalProvisionFolder} created successfully.", LocalProvisionFolder);
 					}
 					else
 					{
-						throw new DirectoryNotFoundException(string.Format("Local Provision Folder {0} could not be created.", LocalProvisionFolder), null);
+						throw new DirectoryNotFoundException(String.Format("Local Provision Folder {0} could not be created.", LocalProvisionFolder), null);
 					}
 				}
 
-				foreach(string Provision in Directory.EnumerateFiles(ProvisionDir, "*.mobileprovision", SearchOption.AllDirectories))
+				foreach (string Provision in Directory.EnumerateFiles(ProvisionDir, "*.mobileprovision", SearchOption.AllDirectories))
 				{
 					string LocalProvisionFile = Path.Combine(LocalProvisionFolder, Path.GetFileName(Provision));
 					bool LocalFileExists = File.Exists(LocalProvisionFile);
-					if(!LocalFileExists || File.GetLastWriteTime(LocalProvisionFile) < File.GetLastWriteTime(Provision))
+					if (!LocalFileExists || File.GetLastWriteTime(LocalProvisionFile) < File.GetLastWriteTime(Provision))
 					{
-						if(LocalFileExists)
+						if (LocalFileExists)
 						{
 							DestFileInfo = new FileInfo(LocalProvisionFile);
 							DestFileInfo.Attributes = DestFileInfo.Attributes & ~FileAttributes.ReadOnly;
@@ -786,6 +1114,7 @@ namespace UnrealBuildTool
 
 		public bool PrepForUATPackageOrDeploy(UnrealTargetConfiguration Config, FileReference? ProjectFile, string InProjectName, string InProjectDirectory, FileReference Executable, string InEngineDir, bool bForDistribution, string CookFlavor, bool bIsDataDeploy, bool bCreateStubIPA, List<string> UPLScripts, string? BundleID, bool bBuildAsFramework)
 		{
+
 			if (BuildHostPlatform.Current.Platform != UnrealTargetPlatform.Mac)
 			{
 				throw new BuildException("UEDeployIOS.PrepForUATPackageOrDeploy only supports running on the Mac");
@@ -809,6 +1138,25 @@ namespace UnrealBuildTool
 			string BuildDirectory = InProjectDirectory + "/Build/" + SubDir;
 			string BuildDirectory_NFL = InProjectDirectory + "/Restricted/NotForLicensees/Build/" + SubDir;
 			string IntermediateDirectory = (bIsUnrealGame ? InEngineDir : InProjectDirectory) + "/Intermediate/" + SubDir;
+
+			if (AppleExports.UseModernXcode(ProjectFile))
+			{
+				Logger.LogInformation("Generating plist (only step needed when deploying with Modern Xcode)");
+				AppDirectory = BinaryPath + "/" + GameExeName + ".app";
+				GeneratePList(ProjectFile, Config, InProjectDirectory, bIsUnrealGame, GameExeName, false, InProjectName, InEngineDir, AppDirectory, UPLScripts, BundleID, bBuildAsFramework);
+
+				//// for now, copy the executable into the .app
+				//if (File.Exists(AppDirectory + "/" + GameName))
+				//{
+				//	FileInfo GameFileInfo = new FileInfo(AppDirectory + "/" + GameName);
+				//	GameFileInfo.Attributes = GameFileInfo.Attributes & ~FileAttributes.ReadOnly;
+				//}
+				//// copy the GameName binary
+				//File.Copy(BinaryPath + "/" + GameExeName, AppDirectory + "/" + GameName, true);
+
+				// none of this is needed with modern xcode
+				return false;
+			}
 
 			DirectoryReference.CreateDirectory(BinaryPath);
 			Directory.CreateDirectory(PayloadDirectory);
@@ -875,7 +1223,7 @@ namespace UnrealBuildTool
 				CopyAllProvisions(BuildDirectory, Logger);
 				CopyAllProvisions(InEngineDir + "/Build/IOS", Logger);
 				string? ProvisionDirectory = Environment.GetEnvironmentVariable("ProvisionDirectory");
-				if (!string.IsNullOrWhiteSpace(ProvisionDirectory))
+				if (!String.IsNullOrWhiteSpace(ProvisionDirectory))
 				{
 					CopyAllProvisions(ProvisionDirectory, Logger);
 				}
@@ -884,7 +1232,7 @@ namespace UnrealBuildTool
 			// install the distribution provision
 			ProvisionWithPrefix = InEngineDir + "/Build/IOS/UnrealGame_Distro.mobileprovision";
 			string ProjectDistroProvision = InProjectName + "_Distro.mobileprovision";
-			if (File.Exists(Path.Combine(BuildDirectory, ProjectDistroProvision )))
+			if (File.Exists(Path.Combine(BuildDirectory, ProjectDistroProvision)))
 			{
 				ProvisionWithPrefix = Path.Combine(BuildDirectory, ProjectDistroProvision);
 			}
@@ -972,8 +1320,6 @@ namespace UnrealBuildTool
 			string ProjectDirectory = (DirectoryReference.FromFile(ProjectFile) ?? Unreal.EngineDirectory).FullName;
 			bool bIsUnrealGame = GameName.Contains("UnrealGame");
 
-			Console.WriteLine("1 GameName: {0}, ProjectName: {1}, Executable: {2}", GameName, (ProjectFile == null) ? "" : Path.GetFileNameWithoutExtension(ProjectFile.FullName), Executable);
-
 			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && Environment.GetEnvironmentVariable("UBT_NO_POST_DEPLOY") != "true")
 			{
 				return PrepForUATPackageOrDeploy(Configuration, ProjectFile, GameName, ProjectDirectory, Executable, "../../Engine", bForDistribution, "", false, bCreateStubIPA, UPLScripts, BundleID, bBuildAsFramework);
@@ -998,7 +1344,7 @@ namespace UnrealBuildTool
 
 			// collect plugin extra data paths from target receipt
 			IEnumerable<ReceiptProperty> Results = ReceiptProperties.Where(x => x.Name == "IOSPlugin");
-			foreach(ReceiptProperty Property in Results)
+			foreach (ReceiptProperty Property in Results)
 			{
 				// Keep only unique paths
 				string PluginPath = Property.Value;
@@ -1036,7 +1382,7 @@ namespace UnrealBuildTool
 			if (SourceFolderInfo.Exists)
 			{
 				FileInfo[] SourceFiles = SourceFolderInfo.GetFiles(TargetFiles);
-				foreach(FileInfo SourceFile in SourceFiles)
+				foreach (FileInfo SourceFile in SourceFiles)
 				{
 					string DestinationPath = Path.Combine(DestinationDirectory, SourceFile.Name);
 					SafeFileCopy(SourceFile, DestinationPath, bOverwrite);
@@ -1050,9 +1396,9 @@ namespace UnrealBuildTool
 			RecursiveFolderCopy(new DirectoryInfo(SourceDirectory), new DirectoryInfo(DestinationDirectory), bOverwrite, Filter);
 		}
 
-		static private void RecursiveFolderCopy(DirectoryInfo SourceFolderInfo, DirectoryInfo DestFolderInfo, bool bOverwrite = false, FilenameFilter? Filter = null)
+		private static void RecursiveFolderCopy(DirectoryInfo SourceFolderInfo, DirectoryInfo DestFolderInfo, bool bOverwrite = false, FilenameFilter? Filter = null)
 		{
-			foreach(FileInfo SourceFileInfo in SourceFolderInfo.GetFiles())
+			foreach (FileInfo SourceFileInfo in SourceFolderInfo.GetFiles())
 			{
 				string DestinationPath = Path.Combine(DestFolderInfo.FullName, SourceFileInfo.Name);
 				if (Filter != null && !Filter(DestinationPath))
@@ -1062,7 +1408,7 @@ namespace UnrealBuildTool
 				SafeFileCopy(SourceFileInfo, DestinationPath, bOverwrite);
 			}
 
-			foreach(DirectoryInfo SourceSubFolderInfo in SourceFolderInfo.GetDirectories())
+			foreach (DirectoryInfo SourceSubFolderInfo in SourceFolderInfo.GetDirectories())
 			{
 				string DestFolderName = Path.Combine(DestFolderInfo.FullName, SourceSubFolderInfo.Name);
 				Directory.CreateDirectory(DestFolderName);

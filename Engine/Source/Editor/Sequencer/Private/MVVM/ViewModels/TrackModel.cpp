@@ -16,7 +16,9 @@
 #include "MVVM/TrackRowModelStorageExtension.h"
 #include "MVVM/Views/SOutlinerTrackView.h"
 #include "MVVM/ViewModels/SequencerEditorViewModel.h"
+#include "MVVM/Selection/Selection.h"
 
+#include "MovieScene.h"
 #include "MovieSceneFolder.h"
 #include "MovieSceneTrack.h"
 #include "MovieSceneSection.h"
@@ -151,6 +153,7 @@ void FTrackModel::ForceUpdate()
 
 	FViewModelChildren OutlinerChildren = GetChildList(EViewModelListType::Outliner);
 	FViewModelChildren SectionChildren  = GetChildList(EViewModelListType::TrackArea);
+	FViewModelChildren TopLevelChannelChildren = GetChildList(GetTopLevelChannelGroupType());
 
 	UMovieSceneTrack* Track = WeakTrack.Get();
 	if (!Track)
@@ -158,6 +161,7 @@ void FTrackModel::ForceUpdate()
 		// Free outliner and section children, this track is gone.
 		OutlinerChildren.Empty();
 		SectionChildren.Empty();
+		TopLevelChannelChildren.Empty();
 		return;
 	}
 
@@ -195,6 +199,7 @@ void FTrackModel::ForceUpdate()
 		// Clear any left-over row models, layout models, or section models.
 		OutlinerChildren.Empty();
 		SectionChildren.Empty();
+		TopLevelChannelChildren.Empty();
 	}
 	else if (NumRows == 1)
 	{
@@ -204,6 +209,7 @@ void FTrackModel::ForceUpdate()
 		FScopedViewModelListHead RecycledModels(AsShared(), EViewModelListType::Recycled);
 		GetChildrenForList(&SectionList).MoveChildrenTo<IRecyclableExtension>(RecycledModels.GetChildren(), IRecyclableExtension::CallOnRecycle);
 		OutlinerChildren.MoveChildrenTo<IRecyclableExtension>(RecycledModels.GetChildren(), IRecyclableExtension::CallOnRecycle);
+		TopLevelChannelChildren.MoveChildrenTo<IRecyclableExtension>(RecycledModels.GetChildren(), IRecyclableExtension::CallOnRecycle);
 
 		// Add all sections directly to this track row
 		for (UMovieSceneSection* Section : Track->GetAllSections())
@@ -250,6 +256,7 @@ void FTrackModel::ForceUpdate()
 		FScopedViewModelListHead RecycledModels(AsShared(), EViewModelListType::Recycled);
 		GetChildrenForList(&SectionList).MoveChildrenTo<IRecyclableExtension>(RecycledModels.GetChildren(), IRecyclableExtension::CallOnRecycle);
 		OutlinerChildren.MoveChildrenTo<IRecyclableExtension>(RecycledModels.GetChildren(), IRecyclableExtension::CallOnRecycle);
+		TopLevelChannelChildren.MoveChildrenTo<IRecyclableExtension>(RecycledModels.GetChildren(), IRecyclableExtension::CallOnRecycle);
 
 		// We need to build row models so let's grab the storage for that
 		FTrackRowModelStorageExtension* TrackRowModelStorage = SequenceModel->CastDynamic<FTrackRowModelStorageExtension>();
@@ -260,8 +267,8 @@ void FTrackModel::ForceUpdate()
 		struct FRowData
 		{
 			TSharedPtr<FTrackRowModel> Row;
-			TUniquePtr<FScopedViewModelListHead> OldSections;
 			TSharedPtr<FViewModel> SectionsTail;
+			TUniquePtr<FScopedViewModelListHead> RecycledModels;
 		};
 		TArray<FRowData, TInlineAllocator<8>> RowModels;
 		RowModels.SetNum(PopulatedRows.Num());
@@ -285,9 +292,12 @@ void FTrackModel::ForceUpdate()
 
 				RowModels[RowIndex].Row = TrackRowModel;
 
-				// Keep sections on rows alive as well
-				RowModels[RowIndex].OldSections = MakeUnique<FScopedViewModelListHead>(TrackRowModel, EViewModelListType::Recycled);
-				TrackRowModel->GetSectionModels().MoveChildrenTo<IRecyclableExtension>(RowModels[RowIndex].OldSections->GetChildren(), IRecyclableExtension::CallOnRecycle);
+				// Recycle sections, outliner children, and more, while keeping them alive.
+				RowModels[RowIndex].RecycledModels = MakeUnique<FScopedViewModelListHead>(TrackRowModel, EViewModelListType::Recycled);
+				FViewModelChildren RecycledRowModels = RowModels[RowIndex].RecycledModels->GetChildren();
+				TrackRowModel->GetSectionModels().MoveChildrenTo<IRecyclableExtension>(RecycledRowModels, IRecyclableExtension::CallOnRecycle);
+				TrackRowModel->GetChildList(EViewModelListType::Outliner).MoveChildrenTo<IRecyclableExtension>(RecycledRowModels, IRecyclableExtension::CallOnRecycle);
+				TrackRowModel->GetTopLevelChannels().MoveChildrenTo<IRecyclableExtension>(RecycledRowModels, IRecyclableExtension::CallOnRecycle);
 			}
 		}
 
@@ -321,11 +331,6 @@ void FTrackModel::ForceUpdate()
 			// else: unset row... it should only happen while we are dragging sections, until
 			//       we fixup row indices
 		}
-	}
-
-	for (TSharedPtr<FChannelGroupModel> ChannelModel : GetDescendantsOfType<FChannelGroupModel>(false, EViewModelListType::Outliner))
-	{
-
 	}
 }
 
@@ -687,14 +692,11 @@ void FTrackModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 	// Find sections in the track to add batch properties for
 	TArray<TWeakObjectPtr<UObject>> TrackSections;
 
-	for (TWeakPtr<FViewModel> Node : GetEditor()->GetSequencer()->GetSelection().GetSelectedOutlinerItems())
+	for (TViewModelPtr<ITrackExtension> TrackExtension : WeakSequencer.Pin()->GetViewModel()->GetSelection()->Outliner.Filter<ITrackExtension>())
 	{
-		if (ITrackExtension* TrackExtension = ICastable::CastWeakPtr<ITrackExtension>(Node))
+		for (UMovieSceneSection* Section : TrackExtension->GetSections())
 		{
-			for (UMovieSceneSection* Section : TrackExtension->GetSections())
-			{
-				TrackSections.Add(Section);
-			}
+			TrackSections.Add(Section);
 		}
 	}
 
@@ -715,7 +717,7 @@ void FTrackModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		MenuBuilder.AddSubMenu(
 			TrackSections.Num() > 1 ? LOCTEXT("BatchEditSections", "Batch Edit Sections") : LOCTEXT("EditSection", "Edit Section"),
 			FText(),
-			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){
+			FNewMenuDelegate::CreateLambda([this, TrackSections](FMenuBuilder& SubMenuBuilder){
 				FSequencer* Sequencer = static_cast<FSequencer*>(GetEditor()->GetSequencer().Get());
 				SequencerHelpers::AddPropertiesMenu(*Sequencer, SubMenuBuilder, TrackSections);
 			})

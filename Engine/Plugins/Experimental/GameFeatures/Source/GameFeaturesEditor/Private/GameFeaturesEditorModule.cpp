@@ -34,12 +34,13 @@
 
 struct FGameFeaturePluginTemplateDescription : public FPluginTemplateDescription
 {
-	FGameFeaturePluginTemplateDescription(FText InName, FText InDescription, FString InOnDiskPath
+	FGameFeaturePluginTemplateDescription(FText InName, FText InDescription, FString InOnDiskPath, FString InDefaultSubfolder
 		, TSubclassOf<UGameFeatureData> GameFeatureDataClassOverride, FString GameFeatureDataNameOverride, EPluginEnabledByDefault InEnabledByDefault)
 		: FPluginTemplateDescription(InName, InDescription, InOnDiskPath, /*bCanContainContent=*/ true, EHostType::Runtime)
 	{
 		SortPriority = 10;
 		bCanBePlacedInEngine = false;
+		DefaultSubfolder = InDefaultSubfolder;
 		GameFeatureDataName = !GameFeatureDataNameOverride.IsEmpty() ? GameFeatureDataNameOverride : FString();
 		GameFeatureDataClass = GameFeatureDataClassOverride != nullptr ? GameFeatureDataClassOverride : TSubclassOf<UGameFeatureData>(UGameFeatureData::StaticClass());
 		PluginEnabledByDefault = InEnabledByDefault;
@@ -116,18 +117,27 @@ struct FGameFeaturePluginTemplateDescription : public FPluginTemplateDescription
 
 		// Activate the new game feature plugin
 		auto AdditionalFilter = [](const FString&, const FGameFeaturePluginDetails&, FBuiltInGameFeaturePluginBehaviorOptions&) -> bool { return true; };
-		UGameFeaturesSubsystem::Get().LoadBuiltInGameFeaturePlugin(NewPlugin.ToSharedRef(), AdditionalFilter);
-
-		// Edit the new game feature data
-		if (GameFeatureDataAsset != nullptr)
-		{
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(GameFeatureDataAsset);
-		}
+		UGameFeaturesSubsystem::Get().LoadBuiltInGameFeaturePlugin(NewPlugin.ToSharedRef(), AdditionalFilter,
+			FGameFeaturePluginLoadComplete::CreateLambda([GameFeatureDataAsset](const UE::GameFeatures::FResult&)
+			{
+				// Edit the new game feature data
+				if (GameFeatureDataAsset != nullptr)
+				{
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(GameFeatureDataAsset);
+				}
+			}));
 	}
 
 	FString GetGameFeatureRoot() const
 	{
 		FString Result = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*(FPaths::ProjectPluginsDir() / TEXT("GameFeatures/")));
+
+		// Append the optional subfolder if specified.
+		if (!DefaultSubfolder.IsEmpty())
+		{
+			Result /= DefaultSubfolder + TEXT("/");
+		}
+
 		FPaths::MakePlatformFilename(Result);
 		return Result;
 	}
@@ -138,6 +148,7 @@ struct FGameFeaturePluginTemplateDescription : public FPluginTemplateDescription
 		return GetDefault<UGameFeaturesSubsystemSettings>()->IsValidGameFeaturePlugin(ConvertedPath);
 	}
 
+	FString DefaultSubfolder;
 	TSubclassOf<UGameFeatureData> GameFeatureDataClass;
 	FString GameFeatureDataName;
 	EPluginEnabledByDefault PluginEnabledByDefault = EPluginEnabledByDefault::Disabled;
@@ -230,6 +241,7 @@ class FGameFeaturesEditorModule : public FDefaultModuleImpl
 					PluginTemplate.Label,
 					PluginTemplate.Description,
 					PluginTemplate.Path.Path,
+					PluginTemplate.DefaultSubfolder,
 					PluginTemplate.DefaultGameFeatureDataClass,
 					PluginTemplate.DefaultGameFeatureDataName,
 					PluginTemplate.bIsEnabledByDefault ? EPluginEnabledByDefault::Enabled : EPluginEnabledByDefault::Disabled)));
@@ -362,7 +374,7 @@ class FGameFeaturesEditorModule : public FDefaultModuleImpl
 		// Make sure the game has the appropriate asset manager configuration or we won't be able to load game feature data assets
 		FPrimaryAssetId DummyGameFeatureDataAssetId(UGameFeatureData::StaticClass()->GetFName(), NAME_None);
 		FPrimaryAssetRules GameDataRules = UAssetManager::Get().GetPrimaryAssetRules(DummyGameFeatureDataAssetId);
-		if (GameDataRules.IsDefault())
+		if (FApp::HasProjectName() && GameDataRules.IsDefault())
 		{
 			FMessageLog("LoadErrors").Error()
 				->AddToken(FTextToken::Create(FText::Format(NSLOCTEXT("GameFeatures", "MissingRuleForGameFeatureData", "Asset Manager settings do not include an entry for assets of type {0}, which is required for game feature plugins to function."), FText::FromName(UGameFeatureData::StaticClass()->GetFName()))))

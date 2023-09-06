@@ -272,6 +272,11 @@ protected:
 	 */
 	void CompletesPolyline(int32 NeededPointNumber, int32 IntermediateIndex)
 	{
+		if (NeededPointNumber > 50)
+		{
+			NeededPointNumber = 50;
+		}
+
 		const TArray<double>& CandidateCoordinates = CandidatePoints.GetCoordinates();
 
 		if (NeededPointNumber > 1)

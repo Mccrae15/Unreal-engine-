@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ChaosClothAsset/SClothCollectionOutliner.h"
-#include "ChaosClothAsset/ClothCollection.h"
+#include "GeometryCollection/ManagedArrayCollection.h"
 #include "Templates/EnableIf.h"
 
 #define LOCTEXT_NAMESPACE "ClothCollectionOutliner"
@@ -61,6 +61,32 @@ void SClothCollectionOutliner::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SVerticalBox)
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SAssignNew(SelectedGroupNameComboBox, SComboBox<FName>)
+			.OptionsSource(&ClothCollectionGroupNames)
+			.OnSelectionChanged(SComboBox<FName>::FOnSelectionChanged::CreateLambda(
+				[this](FName SelectedName, ESelectInfo::Type)
+				{
+					SetSelectedGroupName(SelectedName);
+				}))
+			.OnGenerateWidget(SComboBox<FName>::FOnGenerateWidget::CreateLambda(
+				[](FName Item)
+				{
+					return SNew(STextBlock)
+						.Text(FText::FromName(Item));
+				}))
+			[
+				SNew(STextBlock)
+				.Text_Lambda([this]()
+				{
+					return FText::FromName(GetSelectedGroupName());
+				})
+			]
+		]
+
 		+ SVerticalBox::Slot()
 		.Padding(FMargin(0.0f, 3.f))
 		[
@@ -77,9 +103,40 @@ void SClothCollectionOutliner::Construct(const FArguments& InArgs)
 	];
 }
 
-void SClothCollectionOutliner::SetClothCollection(TWeakPtr<UE::Chaos::ClothAsset::FClothCollection> InClothCollection)
+void SClothCollectionOutliner::SetClothCollection(TSharedPtr<FManagedArrayCollection> InClothCollection)
 {
+	if (!InClothCollection.IsValid() && ClothCollection.IsValid())
+	{
+		// Going from valid node selected to no node selected
+		SavedLastValidGroupName = SelectedGroupName;
+	}
+	else if (InClothCollection.IsValid() && !ClothCollection.IsValid())
+	{
+		// Going from no node selected to a valid node selected
+		SelectedGroupName = SavedLastValidGroupName;
+	}
+
 	ClothCollection = InClothCollection;
+
+	if (ClothCollection.IsValid())
+	{
+		ClothCollectionGroupNames = ClothCollection->GroupNames();
+		RegenerateHeader();
+		RepopulateListView();
+	}
+	else
+	{
+		ClothCollectionGroupNames.Reset();
+		HeaderRowWidget->ClearColumns();
+		if (HeaderData)
+		{
+			HeaderData->AttributeNames.Empty();
+		}
+		ListItems.Empty();
+		SelectedGroupName = FName();
+	}
+	// Refresh the combo box with the new set of group names after ClothCollectionGroupNames changed
+	SelectedGroupNameComboBox->RefreshOptions();
 }
 
 void SClothCollectionOutliner::SetSelectedGroupName(const FName& InSelectedGroupName)
@@ -99,9 +156,7 @@ void SClothCollectionOutliner::RegenerateHeader()
 {
 	constexpr float CustomFillWidth = 2.0f;
 
-	TSharedPtr<UE::Chaos::ClothAsset::FClothCollection> PinnedClothCollection = ClothCollection.Pin();
-
-	if (!PinnedClothCollection.IsValid())
+	if (!ClothCollection.IsValid())
 	{
 		return;
 	}
@@ -110,11 +165,16 @@ void SClothCollectionOutliner::RegenerateHeader()
 
 	HeaderData = MakeShared<FClothCollectionHeaderData>();
 	HeaderData->AttributeNames.Add(FClothCollectionHeaderData::ColumnZeroName);
-	HeaderData->AttributeNames.Append(PinnedClothCollection->AttributeNames(SelectedGroupName));
+	HeaderData->AttributeNames.Append(ClothCollection->AttributeNames(SelectedGroupName));
 
+	int32 UnnamedCount = 0;
 	for (int32 AttributeNameIndex = 0; AttributeNameIndex < HeaderData->AttributeNames.Num(); ++AttributeNameIndex)
 	{
-		const FName& AttrName = HeaderData->AttributeNames[AttributeNameIndex];
+		FName AttrName = HeaderData->AttributeNames[AttributeNameIndex];
+		if (AttrName == NAME_None)  // AddColumn needs a name, otherwise it crashes
+		{
+			AttrName = FName(FString::Format(TEXT("Unnamed{0}"), { UnnamedCount++ }));
+		}
 
 		HeaderRowWidget->AddColumn(
 			SHeaderRow::Column(AttrName)
@@ -142,6 +202,21 @@ namespace ClothCollectionOutlinerHelpers
 		return FString::FromInt(Value);
 	}
 
+	FString AttributeValueToString(uint8 Value)
+	{
+		return FString::FromInt(Value);
+	}
+
+	FString AttributeValueToString(const FString& Value)
+	{
+		return Value;
+	}
+
+	FString AttributeValueToString(const FIntVector2& Value)
+	{
+		return FString::Printf(TEXT("X=%d Y=%d"), Value.X, Value.Y);
+	}
+
 	template<typename T>
 	FString AttributeValueToString(const TArray<T>& Array)
 	{
@@ -159,7 +234,24 @@ namespace ClothCollectionOutlinerHelpers
 	}
 
 	template<typename T>
-	FString AttributeValueToString(const UE::Chaos::ClothAsset::FClothCollection& ClothCollection, const FName& AttributeName, const FName& GroupName, int32 AttributeArrayIndex)
+	FString AttributeValueToString(const TSet<T>& Set)
+	{
+		FString Out;
+		typename TSet<T>::TConstIterator Iter = Set.CreateConstIterator();
+		while(Iter)
+		{
+			Out += AttributeValueToString(*Iter);
+
+			if (++Iter)
+			{
+				Out += "; ";
+			}
+		}
+		return Out;
+	}
+
+	template<typename T>
+	FString AttributeValueToString(const FManagedArrayCollection& ClothCollection, const FName& AttributeName, const FName& GroupName, int32 AttributeArrayIndex)
 	{
 		const TManagedArray<T>* const Array = ClothCollection.FindAttributeTyped<T>(AttributeName, GroupName);
 		if (Array == nullptr)
@@ -170,7 +262,7 @@ namespace ClothCollectionOutlinerHelpers
 		return AttributeValueToString((*Array)[AttributeArrayIndex]);
 	}
 
-	FString AttributeValueToString(const UE::Chaos::ClothAsset::FClothCollection& ClothCollection, const FName& AttributeName, const FName& GroupName, int32 AttributeArrayIndex)
+	FString AttributeValueToString(const FManagedArrayCollection& ClothCollection, const FName& AttributeName, const FName& GroupName, int32 AttributeArrayIndex)
 	{
 		const FManagedArrayCollection::EArrayType ArrayType = ClothCollection.GetAttributeType(AttributeName, GroupName);
 
@@ -188,7 +280,7 @@ namespace ClothCollectionOutlinerHelpers
 			ValueAsString = AttributeValueToString<float>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
 			break;
 		case FManagedArrayCollection::EArrayType::FIntVectorType:
-			ValueAsString = AttributeValueToString<FIntVector>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
+			ValueAsString = AttributeValueToString<FIntVector3>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
 			break;
 		case FManagedArrayCollection::EArrayType::FVector2DArrayType:
 			ValueAsString = AttributeValueToString<TArray<FVector2f>>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
@@ -205,6 +297,21 @@ namespace ClothCollectionOutlinerHelpers
 		case FManagedArrayCollection::EArrayType::FFloatArrayType:
 			ValueAsString = AttributeValueToString<TArray<float>>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
 			break;
+		case FManagedArrayCollection::EArrayType::FStringType:
+			ValueAsString = AttributeValueToString<FString>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
+			break;
+		case FManagedArrayCollection::EArrayType::FIntVector2Type:
+			ValueAsString = AttributeValueToString<FIntVector2>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
+			break;
+		case FManagedArrayCollection::EArrayType::FIntVector2ArrayType:
+			ValueAsString = AttributeValueToString<TArray<FIntVector2>>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
+			break;
+		case FManagedArrayCollection::EArrayType::FIntArrayType:
+			ValueAsString = AttributeValueToString<TSet<int32>>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
+			break;
+		case FManagedArrayCollection::EArrayType::FUInt8Type:
+			ValueAsString = AttributeValueToString<uint8>(ClothCollection, AttributeName, GroupName, AttributeArrayIndex);
+			break;
 		default:
 			ensure(false);
 			ValueAsString = "(Unknown Data Type)";
@@ -218,14 +325,12 @@ void SClothCollectionOutliner::RepopulateListView()
 {
 	ListItems.Empty();
 
-	const TSharedPtr<const UE::Chaos::ClothAsset::FClothCollection> PinnedClothCollection = ClothCollection.Pin();
-
-	if (!PinnedClothCollection.IsValid())
+	if (!ClothCollection.IsValid())
 	{
 		return;
 	}
 
-	const int32 NumElements = PinnedClothCollection->NumElements(SelectedGroupName);
+	const int32 NumElements = ClothCollection->NumElements(SelectedGroupName);
 
 	for (int32 ElementIndex = 0; ElementIndex < NumElements; ++ElementIndex)
 	{
@@ -241,7 +346,7 @@ void SClothCollectionOutliner::RepopulateListView()
 			}
 			else
 			{
-				NewItem->AttributeValues[AttributeNameIndex] = ClothCollectionOutlinerHelpers::AttributeValueToString(*PinnedClothCollection, AttributeName, SelectedGroupName, ElementIndex);
+				NewItem->AttributeValues[AttributeNameIndex] = ClothCollectionOutlinerHelpers::AttributeValueToString(*ClothCollection, AttributeName, SelectedGroupName, ElementIndex);
 			}
 		}
 

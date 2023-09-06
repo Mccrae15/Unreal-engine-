@@ -25,6 +25,7 @@ public:
 
 	bool OpenStageEditor() const;
 	bool CloseStageEditor() const;
+	bool IsStageEditorOpened() const;
 
 	AUsdStageActor* GetAttachedStageActor() const;
 	bool SetAttachedStageActor( AUsdStageActor* NewActor ) const;
@@ -37,6 +38,9 @@ public:
 
 	TArray<FString> GetSelectedPropertyNames() const;
 	void SetSelectedPropertyNames( const TArray<FString>& NewSelection ) const;
+
+	TArray<FString> GetSelectedPropertyMetadataNames() const;
+	void SetSelectedPropertyMetadataNames(const TArray<FString>& NewSelection) const;
 
 	// For all of these, providing an empty path will cause us to pop open a dialog to let the user pick the path
 	// instead.

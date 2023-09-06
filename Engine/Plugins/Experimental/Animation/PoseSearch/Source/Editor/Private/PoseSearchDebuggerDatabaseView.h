@@ -66,9 +66,18 @@ private:
 	/** Called when the text in the filter box is modified to update the filtering */
 	void OnFilterTextChanged(const FText& SearchText);
 
+	/** Called when the ShowAllPoses Checkbox is Toggled */
+	void OnShowAllPosesCheckboxChanged(ECheckBoxState State);
+	
+	/** Called when the ShowOnlyBestAssetPose Checkbox is Toggled */
+	void OnShowOnlyBestAssetPoseCheckboxChanged(ECheckBoxState State);	
+
 	/** Called when the HideInvalidPoses Checkbox is Toggled */
 	void OnHideInvalidPosesCheckboxChanged(ECheckBoxState State);
 
+	/** Called when the UseRegex Checkbox is Toggled */
+	void OnUseRegexCheckboxChanged(ECheckBoxState State);
+	
 	/** Row selection to update model view */
 	void OnDatabaseRowSelectionChanged(TSharedPtr<FDebuggerDatabaseRowData> Row, ESelectInfo::Type SelectInfo);
 
@@ -95,6 +104,7 @@ private:
     FColumnMap Columns;
 
 	TArray<FText> OldLabels;
+	bool bHasPCACostColumn = false;
 
 	struct FTable
 	{
@@ -136,8 +146,21 @@ private:
 	/** Text used to filter DatabaseView */
 	FText FilterText;
 
+	/* Bool used to show all poses from display */
+	bool bShowAllPoses = false;
+	
+	/* Bool used to show only the best pose of every asset */
+	bool bShowOnlyBestAssetPose = false;
+
 	/* Bool used to hide invalid poses from display */
 	bool bHideInvalidPoses = false;
+
+	/* Bool used to use FilterText as regex filter*/
+	bool bUseRegex = false;
+
+	FText ReasonForNoActivePose;
+	FText ReasonForNoContinuingPose;
+	FText ReasonForNoCandidates;
 };
 
 } // namespace UE::PoseSearch

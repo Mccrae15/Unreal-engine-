@@ -20,6 +20,7 @@ namespace TaskTrace
 	UE_TRACE_EVENT_BEGIN(TaskTrace, Created)
 		UE_TRACE_EVENT_FIELD(uint64, Timestamp)
 		UE_TRACE_EVENT_FIELD(uint64, TaskId)
+		UE_TRACE_EVENT_FIELD(uint64, TaskSize)
 	UE_TRACE_EVENT_END()
 
 	UE_TRACE_EVENT_BEGIN(TaskTrace, Launched)
@@ -28,6 +29,7 @@ namespace TaskTrace
 		UE_TRACE_EVENT_FIELD(UE::Trace::WideString, DebugName)
 		UE_TRACE_EVENT_FIELD(bool, Tracked)
 		UE_TRACE_EVENT_FIELD(int32, ThreadToExecuteOn)
+		UE_TRACE_EVENT_FIELD(uint64, TaskSize)
 	UE_TRACE_EVENT_END()
 
 	UE_TRACE_EVENT_BEGIN(TaskTrace, Scheduled)
@@ -92,19 +94,28 @@ namespace TaskTrace
 #endif
 	}
 
-	void Created(FId TaskId)
+	void Created(FId TaskId, uint64 TaskSize)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
+
 		check(TaskId != InvalidId);
 
 		UE_TRACE_LOG(TaskTrace, Created, TaskChannel)
 			<< Created.Timestamp(FPlatformTime::Cycles64())
-			<< Created.TaskId(TaskId);
+			<< Created.TaskId(TaskId)
+			<< Created.TaskSize(TaskSize);
 	}
 
-	void Launched(FId TaskId, const TCHAR* DebugName, bool bTracked, ENamedThreads::Type ThreadToExecuteOn)
+	void Launched(FId TaskId, const TCHAR* DebugName, bool bTracked, ENamedThreads::Type ThreadToExecuteOn, uint64 TaskSize)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
+
 		check(TaskId != InvalidId);
 
 		UE_TRACE_LOG(TaskTrace, Launched, TaskChannel)
@@ -112,12 +123,17 @@ namespace TaskTrace
 			<< Launched.TaskId(TaskId)
 			<< Launched.DebugName(DebugName != nullptr ? DebugName : TEXT(""))
 			<< Launched.Tracked(bTracked)
-			<< Launched.ThreadToExecuteOn(ThreadToExecuteOn);
+			<< Launched.ThreadToExecuteOn(ThreadToExecuteOn)
+			<< Launched.TaskSize(TaskSize);
 	}
 
 	void Scheduled(FId TaskId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
+
 		check(TaskId != InvalidId);
 
 		UE_TRACE_LOG(TaskTrace, Scheduled, TaskChannel)
@@ -127,7 +143,10 @@ namespace TaskTrace
 
 	void SubsequentAdded(FId TaskId, FId SubsequentId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
 
 		// "empty" FGraphEvent is used for synchronisation only, to wait for a notification. It doesn't have an associated task and ID.
 		if (TaskId == InvalidId)
@@ -144,7 +163,11 @@ namespace TaskTrace
 
 	void Started(FId TaskId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
+
 		check(TaskId != InvalidId);
 
 		UE_TRACE_LOG(TaskTrace, Started, TaskChannel)
@@ -154,7 +177,11 @@ namespace TaskTrace
 
 	void Finished(FId TaskId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
+
 		check(TaskId != InvalidId);
 
 		UE_TRACE_LOG(TaskTrace, Finished, TaskChannel)
@@ -164,7 +191,10 @@ namespace TaskTrace
 
 	void Completed(FId TaskId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
 
 		// "empty" FGraphEvent is used for synchronisation only, to wait for a notification. It doesn't have an associated task and ID.
 		if (TaskId == InvalidId)
@@ -179,7 +209,10 @@ namespace TaskTrace
 
 	void Destroyed(FId TaskId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
 
 		UE_TRACE_LOG(TaskTrace, Destroyed, TaskChannel)
 			<< Destroyed.Timestamp(FPlatformTime::Cycles64())
@@ -188,7 +221,10 @@ namespace TaskTrace
 
 	FWaitingScope::FWaitingScope(const TArray<FId>& Tasks)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
 
 		UE_TRACE_LOG(TaskTrace, WaitingStarted, TaskChannel)
 			<< WaitingStarted.Timestamp(FPlatformTime::Cycles64())
@@ -197,7 +233,10 @@ namespace TaskTrace
 
 	FWaitingScope::FWaitingScope(FId TaskId)
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
 
 		UE_TRACE_LOG(TaskTrace, WaitingStarted, TaskChannel)
 			<< WaitingStarted.Timestamp(FPlatformTime::Cycles64())
@@ -206,7 +245,10 @@ namespace TaskTrace
 
 	FWaitingScope::~FWaitingScope()
 	{
-		check(bGTaskTraceInitialized);
+		if (!bGTaskTraceInitialized)
+		{
+			return;
+		}
 
 		UE_TRACE_LOG(TaskTrace, WaitingFinished, TaskChannel)
 			<< WaitingFinished.Timestamp(FPlatformTime::Cycles64());

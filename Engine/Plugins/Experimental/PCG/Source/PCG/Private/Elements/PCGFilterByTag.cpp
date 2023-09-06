@@ -32,11 +32,24 @@ FText UPCGFilterByTagSettings::GetNodeTooltipText() const
 }
 #endif
 
+EPCGDataType UPCGFilterByTagSettings::GetCurrentPinTypes(const UPCGPin* InPin) const
+{
+	check(InPin);
+	if (!InPin->IsOutputPin())
+	{
+		return Super::GetCurrentPinTypes(InPin);
+	}
+
+	// Output pin narrows to union of inputs on first pin
+	const EPCGDataType InputTypeUnion = GetTypeUnionOfIncidentEdges(PCGPinConstants::DefaultInputLabel);
+	return InputTypeUnion != EPCGDataType::None ? InputTypeUnion : EPCGDataType::Any;
+}
+
 FName UPCGFilterByTagSettings::AdditionalTaskName() const
 {
 	const TArray<FString> Tags = PCGHelpers::GetStringArrayFromCommaSeparatedString(SelectedTags);
 
-	FString NodeName = PCGFilterByTagConstants::NodeName.ToString();
+	FString NodeName = PCGFilterByTagConstants::NodeTitle.ToString();
 	NodeName += (Operation == EPCGFilterByTagOperation::KeepTagged ? TEXT(" (Keep)") : TEXT(" (Remove)"));
 
 	if (Tags.Num() == 1)
@@ -47,6 +60,14 @@ FName UPCGFilterByTagSettings::AdditionalTaskName() const
 	{
 		return FName(NodeName);
 	}
+}
+
+TArray<FPCGPinProperties> UPCGFilterByTagSettings::InputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, EPCGDataType::Any);
+
+	return PinProperties;
 }
 
 TArray<FPCGPinProperties> UPCGFilterByTagSettings::OutputPinProperties() const
@@ -72,7 +93,7 @@ bool FPCGFilterByTagElement::ExecuteInternal(FPCGContext* Context) const
 	const bool bKeepIfTag = (Settings->Operation == EPCGFilterByTagOperation::KeepTagged);
 	const TArray<FString> Tags = PCGHelpers::GetStringArrayFromCommaSeparatedString(Settings->SelectedTags);
 
-	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
+	TArray<FPCGTaggedData> Inputs = Context->InputData.TaggedData;
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
 	for (const FPCGTaggedData& Input : Inputs)

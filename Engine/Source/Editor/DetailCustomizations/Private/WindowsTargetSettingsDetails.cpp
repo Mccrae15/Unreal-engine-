@@ -65,13 +65,13 @@ static FText GetFriendlyNameFromWindowsShaderPlatform(FName InShaderPlatformName
 		FriendlyRHIName = LOCTEXT("DirectX11", "DirectX 11 & 12 (SM5)");
 		break;
 	case SP_PCD3D_ES3_1:
-		FriendlyRHIName = LOCTEXT("DirectXES31", "DirectX Mobile Emulation (ES3.1)");
-		break;
-	case SP_D3D_ES3_1_HOLOLENS:
-		FriendlyRHIName = LOCTEXT("DirectXES31HL", "DirectX Hololens (ES3.1)");
+		FriendlyRHIName = LOCTEXT("DirectXMobile", "DirectX Mobile Emulation (Mobile)");
 		break;
 	case SP_VULKAN_SM5:
 		FriendlyRHIName = LOCTEXT("VulkanSM5", "Vulkan (SM5)");
+		break;
+	case SP_VULKAN_SM6:
+		FriendlyRHIName = LOCTEXT("VulkanSM6", "Vulkan (SM6)");
 		break;
 
 	case SP_OPENGL_PCES3_1:
@@ -98,16 +98,15 @@ static FText GetFriendlyNameForWindowsShaderPlatformCheckbox(FName InShaderPlatf
 	switch (ShaderPlatform)
 	{
 	case SP_PCD3D_SM6:
+	case SP_VULKAN_SM6:
 		FriendlyName = LOCTEXT("SM6", "SM6");
 		break;
 	case SP_PCD3D_SM5:
+	case SP_VULKAN_SM5:
 		FriendlyName = LOCTEXT("SM5", "SM5");
 		break;
 	case SP_PCD3D_ES3_1:
-		FriendlyName = LOCTEXT("ES31", "ES3.1");
-		break;
-	case SP_VULKAN_SM5:
-		FriendlyName = LOCTEXT("SM5", "SM5");
+		FriendlyName = LOCTEXT("Mobile", "Mobile");
 		break;
 	default:
 		break;
@@ -128,7 +127,7 @@ static bool FilterShaderPlatform_D3D11(FName InShaderPlatform)
 
 static bool FilterShaderPlatform_Vulkan(FName InShaderPlatform)
 {
-	return InShaderPlatform == NAME_VULKAN_SM5;
+	return InShaderPlatform == NAME_VULKAN_SM5 || InShaderPlatform == NAME_VULKAN_SM6;
 }
 
 TSharedRef<IDetailCustomization> FWindowsTargetSettingsDetails::MakeInstance()

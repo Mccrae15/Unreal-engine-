@@ -63,8 +63,6 @@ public:
 	virtual bool RemoveCurveKey(const FAnimationCurveIdentifier& CurveId, float Time, bool bShouldTransact = true) override;
 	virtual bool SetCurveKeys(const FAnimationCurveIdentifier& CurveId, const TArray<FRichCurveKey>& CurveKeys, bool bShouldTransact = true) override;
 	virtual bool SetCurveAttributes(const FAnimationCurveIdentifier& CurveId, const FCurveAttributes& Attributes, bool bShouldTransact = true) override;
-	virtual void UpdateCurveNamesFromSkeleton(const USkeleton* Skeleton, ERawCurveTrackTypes SupportedCurveType, bool bShouldTransact = true) override;
-	virtual void FindOrAddCurveNamesOnSkeleton(USkeleton* Skeleton, ERawCurveTrackTypes SupportedCurveType, bool bShouldTransact = true) override;
 	virtual bool RemoveBoneTracksMissingFromSkeleton(const USkeleton* Skeleton, bool bShouldTransact = true) override;
 	virtual void UpdateAttributesFromSkeleton(const USkeleton* Skeleton, bool bShouldTransact = true) override;
 	virtual void NotifyPopulated() override;
@@ -113,7 +111,7 @@ private:
 	bool RenameCurveControl(const FName& CurveName, const FName& NewCurveName) const;
 	bool RemoveCurveControl(const FName& CurveName) const;
 	bool SetCurveControlKeys(const FName& CurveName, const TArray<FRichCurveKey>& CurveKeys) const;
-	bool SetCurveControlKey(const FName& CurveName, const FRichCurveKey& Key) const;
+	bool SetCurveControlKey(const FName& CurveName, const FRichCurveKey& Key, bool bUpdateKey) const;
 	bool RemoveCurveControlKey(const FName& CurveName, float Time) const;
 	bool DuplicateCurveControl(const FName& CurveName, const FName& DuplicateCurveName) const;
 

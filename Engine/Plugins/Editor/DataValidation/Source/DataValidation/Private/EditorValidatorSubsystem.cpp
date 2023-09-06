@@ -157,7 +157,7 @@ EDataValidationResult UEditorValidatorSubsystem::IsObjectValid(UObject* InObject
 	{
 		// First check the class level validation
 		FDataValidationContext Context;
-		Result = InObject->IsDataValid(Context);
+		Result = const_cast<const UObject*>(InObject)->IsDataValid(Context);
 		Context.SplitIssues(ValidationWarnings, ValidationErrors);
 
 		// If the asset is still valid or there wasn't a class-level validation, keep validating with custom validators
@@ -335,6 +335,16 @@ int32 UEditorValidatorSubsystem::ValidateAssetsWithSettings(const TArray<FAssetD
 				}
 				++NumFilesUnableToValidate;
 			}
+		}
+
+		if (InSettings.bCollectPerAssetDetails)
+		{
+			FValidateAssetsDetails& Details = OutResults.AssetsDetails.Emplace(Data.GetObjectPathString());
+			Details.PackageName = Data.PackageName;
+			Details.AssetName = Data.AssetName;
+			Details.Result = Result;
+			Details.ValidationErrors = MoveTemp(ValidationErrors);
+			Details.ValidationWarnings = MoveTemp(ValidationWarnings);
 		}
 	}
 

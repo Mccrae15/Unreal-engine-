@@ -4,7 +4,6 @@
 
 #include "Chaos/Box.h"
 #include "Chaos/CollisionResolution.h"
-#include "Chaos/Collision/ContactTriangles.h"
 #include "Chaos/Collision/PBDCollisionConstraint.h"
 #include "Chaos/Convex.h"
 #include "Chaos/Defines.h"
@@ -36,6 +35,10 @@ namespace Chaos
 	// When two capsule lie on top of each other in an X, the extra manifold points are this fraction of the radius from the primary contact point
 	FRealSingle Chaos_Collision_Manifold_CapsuleRadialContactFraction = 0.25f;
 	FAutoConsoleVariableRef CVarChaos_Manifold_CapsuleRadialContactFraction(TEXT("p.Chaos.Collision.Manifold.CapsuleRadialContactFraction"), Chaos_Collision_Manifold_CapsuleRadialContactFraction, TEXT(""));
+
+	// When a capsule-convex contact has points closer together than this fraction of radius, ignore one of the contacts
+	FRealSingle Chaos_Collision_Manifold_CapsuleMinContactDistanceFraction = 0.1f;
+	FAutoConsoleVariableRef CVarChaos_Manifold_CapsuleMinContactDistanceFraction(TEXT("p.Chaos.Collision.Manifold.CapsuleMinContactDistanceFraction"), Chaos_Collision_Manifold_CapsuleMinContactDistanceFraction, TEXT(""));
 
 	FRealSingle Chaos_Collision_Manifold_PlaneContactNormalEpsilon = 0.001f;
 	FAutoConsoleVariableRef CVarChaos_Manifold_PlaneContactNormalEpsilon(TEXT("p.Chaos.Collision.Manifold.PlaneContactNormalEpsilon"), Chaos_Collision_Manifold_PlaneContactNormalEpsilon, TEXT("Normal tolerance used to distinguish face contacts from edge-edge contacts"));
@@ -88,6 +91,12 @@ namespace Chaos
 	bool bChaos_Collision_OneSidedHeightField = true;
 	FAutoConsoleVariableRef CVarChaos_Collision_OneSidedTriangleMesh(TEXT("p.Chaos.Collision.OneSidedTriangleMesh"), bChaos_Collision_OneSidedTriangleMesh, TEXT(""));
 	FAutoConsoleVariableRef CVarChaos_Collision_OneSidedHeightfield(TEXT("p.Chaos.Collision.OneSidedHeightField"), bChaos_Collision_OneSidedHeightField, TEXT(""));
+
+	// Ueed to reject contacts against tri meshes
+	FRealSingle Chaos_Collision_TriMeshPhiToleranceScale = 1.0f;	// A multipler on cull distance. Points farther than this from the deepest point are ignored
+	FRealSingle Chaos_Collision_TriMeshDistanceTolerance = 0.1f;	// Points closer than this to a deeper point are ignored
+	FAutoConsoleVariableRef CVarChaos_Collision_TriMeshDistanceolerance(TEXT("p.Chaos.Collision.TriangeMeshDistanceTolerance"), Chaos_Collision_TriMeshDistanceTolerance, TEXT(""));
+	FAutoConsoleVariableRef CVarChaos_Collision_TriMeshPhiToleranceScale(TEXT("p.Chaos.Collision.TriangeMeshPhiToleranceScale"), Chaos_Collision_TriMeshPhiToleranceScale, TEXT(""));
 
 	bool bChaos_Collision_UseCapsuleTriMesh2 = true;
 	FAutoConsoleVariableRef CVarChaos_Collision_UseCapsuleTriMesh2(TEXT("p.Chaos.Collision.UseCapsuleTriMesh2"), bChaos_Collision_UseCapsuleTriMesh2, TEXT(""));
@@ -769,6 +778,13 @@ namespace Chaos
 			const FReal Margin2 = Constraint.GetCollisionMargin1();
 			const FRigidTransform3 Convex2ToConvex1Transform = Convex2Transform.GetRelativeTransformNoScale(Convex1Transform);
 
+			const bool bEnableNetworkPhysicsResim = FPhysicsSolverBase::IsNetworkPhysicsPredictionEnabled() && FPhysicsSolverBase::IsPhysicsResimulationEnabled();
+			
+			if (bEnableNetworkPhysicsResim)
+			{
+				Constraint.GetGJKWarmStartData().Reset();
+			}
+
 			// Find the deepest penetration. This is used to determine the planes and points to use for the manifold
 			// MaxMarginDelta is an upper bound on the distance from the contact on the rounded core shape to the actual shape surface. 
 			FReal MaxMarginDelta = FReal(0);
@@ -1150,7 +1166,8 @@ namespace Chaos
 						MaxContactPointCount,
 						PlaneTolerance);
 
-					const FReal PointDistanceToleranceSq = FMath::Square(FReal(0.1) * CapsuleRadius);
+					const FReal PointDistanceToleranceFraction = Chaos_Collision_Manifold_CapsuleMinContactDistanceFraction;
+					const FReal PointDistanceToleranceSq = FMath::Square(PointDistanceToleranceFraction * CapsuleRadius);
 
 					// Add the vertices if not clipped away
 					for (int32 ContactPointIndex = 0; ContactPointIndex < ContactPointCount; ++ContactPointIndex)

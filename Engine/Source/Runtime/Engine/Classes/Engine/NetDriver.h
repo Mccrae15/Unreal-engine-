@@ -356,8 +356,24 @@ namespace UE::Net
 }
 #endif // UE_WITH_IRIS
 
+namespace UE::Net
+{
+	class FScopedIgnoreStaticActorDestruction
+	{
+	public:
+		FScopedIgnoreStaticActorDestruction();
+		~FScopedIgnoreStaticActorDestruction();
 
-using FConnectionMap = TMap<TSharedRef<const FInternetAddr>, UNetConnection*, FDefaultSetAllocator, FInternetAddrConstKeyMapFuncs<UNetConnection*>>;
+		UE_NONCOPYABLE(FScopedIgnoreStaticActorDestruction);
+
+	private:
+		bool bCachedValue = false;
+	};
+
+	bool ShouldIgnoreStaticActorDestruction();
+}
+
+using FConnectionMap = TMap<TSharedRef<const FInternetAddr>, TObjectPtr<UNetConnection>, FDefaultSetAllocator, FInternetAddrConstKeyMapFuncs<TObjectPtr<UNetConnection>>>;
 
 extern ENGINE_API TAutoConsoleVariable<int32> CVarNetAllowEncryption;
 extern ENGINE_API int32 GNumSaturatedConnections;
@@ -397,6 +413,22 @@ DECLARE_DELEGATE_RetVal(bool, FShouldSkipRepNotifies);
 
 #endif
 
+/**
+ * The structure to pass to the OnConsiderListUpdate delegate 
+ * 
+ * @param DeltaSeconds     Time between the frames
+ * @param Connection       NetConnection to process
+ * @param bCPUSaturated    Not used by the engine at the moment but kept for compatibility
+ */
+struct ENGINE_API ConsiderListUpdateParams
+{
+	float DeltaSeconds = 0;
+	UNetConnection* Connection = nullptr;
+	bool bCPUSaturated = false;
+};
+
+DECLARE_DELEGATE_ThreeParams(FOnConsiderListUpdate, const ConsiderListUpdateParams& UpdateParams, int32& OutUpdated, const TArray<FNetworkObjectInfo*>& ConsiderList);
+
 //
 // Whether to support net lag and packet loss testing.
 //
@@ -408,7 +440,7 @@ DECLARE_DELEGATE_RetVal(bool, FShouldSkipRepNotifies);
 
 /** Holds the packet simulation settings in one place */
 USTRUCT()
-struct ENGINE_API FPacketSimulationSettings
+struct FPacketSimulationSettings
 {
 	GENERATED_BODY()
 
@@ -520,24 +552,24 @@ struct ENGINE_API FPacketSimulationSettings
 	/** reads in settings from the .ini file 
 	 * @note: overwrites all previous settings
 	 */
-	void LoadConfig(const TCHAR* OptionalQualifier = nullptr);
+	ENGINE_API void LoadConfig(const TCHAR* OptionalQualifier = nullptr);
 	
 	/** 
 	 * Load a preconfigured emulation profile from the .ini
 	 * Returns true if the given profile existed
 	 */
-	bool LoadEmulationProfile(const TCHAR* ProfileName);
+	ENGINE_API bool LoadEmulationProfile(const TCHAR* ProfileName);
 
 	/**
 	 * Force new emulation settings and ignore config or cmdline values
 	 */
-	void ApplySettings(const FPacketSimulationSettings& NewSettings);
+	ENGINE_API void ApplySettings(const FPacketSimulationSettings& NewSettings);
 
 	/**
 	 * Ensure that settings have proper values
 	 */
-	void ValidateSettings();
-	void ResetSettings();
+	ENGINE_API void ValidateSettings();
+	ENGINE_API void ResetSettings();
 
 	/**
 	* Tells if a packet fits the size settings to potentially be dropped
@@ -555,15 +587,15 @@ struct ENGINE_API FPacketSimulationSettings
 	 * @param Stream the string to read the settings from
 	 * @Param OptionalQualifier: optional string to prepend to Pkt* settings. E.g, "GameNetDriverPktLoss=50"
 	 */
-	bool ParseSettings(const TCHAR* Stream, const TCHAR* OptionalQualifier=nullptr);
+	ENGINE_API bool ParseSettings(const TCHAR* Stream, const TCHAR* OptionalQualifier=nullptr);
 
-	bool ParseHelper(const TCHAR* Cmd, const TCHAR* Name, int32& Value, const TCHAR* OptionalQualifier);
+	ENGINE_API bool ParseHelper(const TCHAR* Cmd, const TCHAR* Name, int32& Value, const TCHAR* OptionalQualifier);
 
-	bool ConfigHelperInt(const TCHAR* Name, int32& Value, const TCHAR* OptionalQualifier);
-	bool ConfigHelperBool(const TCHAR* Name, bool& Value, const TCHAR* OptionalQualifier);
+	ENGINE_API bool ConfigHelperInt(const TCHAR* Name, int32& Value, const TCHAR* OptionalQualifier);
+	ENGINE_API bool ConfigHelperBool(const TCHAR* Name, bool& Value, const TCHAR* OptionalQualifier);
 };
 
-struct ENGINE_API FActorDestructionInfo
+struct FActorDestructionInfo
 {
 public:
 	FActorDestructionInfo()
@@ -588,10 +620,29 @@ public:
 	}
 };
 
+/** Used to configure the replication system default values */
+USTRUCT()
+struct FNetDriverReplicationSystemConfig
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** Override the max object count. If 0 use the default system value. */
+	UPROPERTY()
+	uint32 MaxReplicatedObjectCount = 0;
+	
+	/** Override the max compressed object count. If 0 use the default system value. */
+	UPROPERTY()
+	uint32 MaxDeltaCompressedObjectCount = 0;
+	
+	/** Override the max group count. If 0 use the default system value. */
+	UPROPERTY()
+	uint32 MaxNetObjectGroupCount = 0;
+};
+
 //
 // Priority sortable list.
 //
-struct FActorPriority
+struct ENGINE_API FActorPriority
 {
 	int32						Priority;	// Update priority, higher = more important.
 	
@@ -618,7 +669,7 @@ struct FCompareFActorPriority
 
 /** Used to specify properties of a channel type */
 USTRUCT()
-struct ENGINE_API FChannelDefinition
+struct FChannelDefinition
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -734,6 +785,10 @@ public:
 	/** Used to specify the class to use for ReplicationBridge */
 	UPROPERTY(Config)
 	FString ReplicationBridgeClassName;
+	
+	/** Can be used to configure settings for the ReplicationSystem */
+	UPROPERTY(Config)
+	FNetDriverReplicationSystemConfig ReplicationSystemConfig;
 
 	/** @todo document */
 	UPROPERTY(Config)
@@ -743,9 +798,33 @@ public:
 	UPROPERTY(Config)
 	uint32 bClampListenServerTickRate:1;
 
-	/** @todo document */
+	/** 
+	* Limit the tick rate of the engine when running in dedicated server mode. 
+	* @see UGameEngine::GetMaxTickRate 
+	*/
+	UE_DEPRECATED(5.3, "Variable will be made private. Use GetNetServerMaxTickRate and SetNetServerMaxTickRate instead.")
 	UPROPERTY(Config)
 	int32 NetServerMaxTickRate;
+
+	/** The current max tick rate of the engine when running in dedicated server mode. */
+	int32 GetNetServerMaxTickRate() const 
+	{ 
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return NetServerMaxTickRate;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	/** Override the configured server tick rate. Value is in ticks per second. */
+	ENGINE_API void SetNetServerMaxTickRate(int32 InServerMaxTickRate);
+
+	/** 
+	* Delegate triggered when SetNetServerMaxTickRate is called and causes a change to the current max tick rate.
+	* @param UNetDriver The netdriver that changed max tick rate.
+	* @param int32 The new value of NetServerMaxTickRate
+	* @param int32 The old value of NetServerMaxTickRate 
+	*/
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnNetServerMaxTickRateChanged, UNetDriver*, int32, int32);
+	FOnNetServerMaxTickRateChanged OnNetServerMaxTickRateChanged;
 
 	/** Limit tick rate of replication to allow very high frame rates to still replicate data. A value less or equal to zero means use the engine tick rate. A value greater than zero will clamp the net tick rate to this value.  */
 	UPROPERTY(Config)
@@ -1033,10 +1112,6 @@ public:
 	uint32						OutPacketsLost;
 	/** Total packets lost that have been sent by the server since the net driver's creation  */
 	uint32						OutTotalPacketsLost;
-	UE_DEPRECATED(5.0, "Use GetTotalOutOfOrderPackets instead.")
-	uint32						InOutOfOrderPackets = 0;
-	UE_DEPRECATED(5.0, "OutOutOfOrderPackets is not updated and is now deprecated.")
-	uint32						OutOutOfOrderPackets = 0;
 	/** Tracks the total number of voice packets sent */
 	uint32						VoicePacketsSent;
 	/** Tracks the total number of voice bytes sent */
@@ -1347,7 +1422,7 @@ public:
 	ENGINE_API virtual FString LowLevelGetNetworkNumber();
 
 	/* @return local addr of this machine if set */
-	ENGINE_API virtual TSharedPtr<const FInternetAddr> GetLocalAddr() { return LocalAddr; }
+	virtual TSharedPtr<const FInternetAddr> GetLocalAddr() { return LocalAddr; }
 
 	/** Make sure this connection is in a reasonable state. */
 	ENGINE_API virtual void AssertValid();
@@ -1604,7 +1679,7 @@ public:
 	/**
 	 * Get the world associated with this net driver
 	 */
-	ENGINE_API virtual class UWorld* GetWorld() const override final { return World; }
+	virtual class UWorld* GetWorld() const override final { return World; }
 
 	class UPackage* GetWorldPackage() const { return WorldPackage; }
 
@@ -1629,43 +1704,49 @@ public:
 	TSharedPtr<FRepChangedPropertyTracker> FindRepChangedPropertyTracker(UObject* Obj);
 
 	/** Returns true if the client should destroy immediately any actor that becomes torn-off */
-	ENGINE_API virtual bool ShouldClientDestroyTearOffActors() const { return false; }
+	virtual bool ShouldClientDestroyTearOffActors() const { return false; }
 
 	/** Returns whether or not properties that are replicating using this driver should not call RepNotify functions. */
 	ENGINE_API virtual bool ShouldSkipRepNotifies() const;
 
 	/** Returns true if actor channels with InGUID should queue up bunches, even if they wouldn't otherwise be queued. */
-	ENGINE_API virtual bool ShouldQueueBunchesForActorGUID(FNetworkGUID InGUID) const { return false; }
+	virtual bool ShouldQueueBunchesForActorGUID(FNetworkGUID InGUID) const { return false; }
 
 	/** Returns whether or not RPCs processed by this driver should be ignored. */
-	ENGINE_API virtual bool ShouldIgnoreRPCs() const { return false; }
+	virtual bool ShouldIgnoreRPCs() const { return false; }
 
 	/** Returns the existing FNetworkGUID of InActor, if it has one. */
-	ENGINE_API virtual FNetworkGUID GetGUIDForActor(const AActor* InActor) const { return FNetworkGUID(); }
+	virtual FNetworkGUID GetGUIDForActor(const AActor* InActor) const { return FNetworkGUID(); }
 
 	/** Returns the actor that corresponds to InGUID, if one can be found. */
-	ENGINE_API virtual AActor* GetActorForGUID(FNetworkGUID InGUID) const { return nullptr; }
+	virtual AActor* GetActorForGUID(FNetworkGUID InGUID) const { return nullptr; }
 
 	/** Returns true if RepNotifies should be checked and generated when receiving properties for the given object. */
-	ENGINE_API virtual bool ShouldReceiveRepNotifiesForObject(UObject* Object) const { return true; }
+	virtual bool ShouldReceiveRepNotifiesForObject(UObject* Object) const { return true; }
 
 	/** Returns the object that manages the list of replicated UObjects. */
-	ENGINE_API FNetworkObjectList& GetNetworkObjectList() { return *NetworkObjects; }
+	FNetworkObjectList& GetNetworkObjectList() { return *NetworkObjects; }
 
 	/** Returns the object that manages the list of replicated UObjects. */
-	ENGINE_API const FNetworkObjectList& GetNetworkObjectList() const { return *NetworkObjects; }
+	const FNetworkObjectList& GetNetworkObjectList() const { return *NetworkObjects; }
 
 	/**
      *	Get the network object matching the given Actor.
 	 *	If the Actor is not present in the NetworkObjectInfo list, it will be added.
 	 */
+	UE_DEPRECATED(5.3, "Will be made private in a future release")
 	ENGINE_API FNetworkObjectInfo* FindOrAddNetworkObjectInfo(const AActor* InActor);
 
 	/** Get the network object matching the given Actor. */
+	UE_DEPRECATED(5.3, "Will be made private in a future release")
 	ENGINE_API FNetworkObjectInfo* FindNetworkObjectInfo(const AActor* InActor);
-	ENGINE_API const FNetworkObjectInfo* FindNetworkObjectInfo(const AActor* InActor) const
+
+	UE_DEPRECATED(5.3, "Will be made private in a future release")
+	const FNetworkObjectInfo* FindNetworkObjectInfo(const AActor* InActor) const
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return const_cast<UNetDriver*>(this)->FindNetworkObjectInfo(InActor);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	/**
@@ -1678,21 +1759,28 @@ public:
 	ENGINE_API bool IsNetworkActorUpdateFrequencyThrottled(const AActor* InActor) const;
 
 	/** Returns true if adaptive net update frequency is enabled and the given actor is having its update rate lowered from its standard rate. */
+	UE_DEPRECATED(5.3, "Will be made private in a future release, please use version that takes an actor")
 	ENGINE_API bool IsNetworkActorUpdateFrequencyThrottled(const FNetworkObjectInfo& InNetworkActor) const;
 
 	/** Stop adaptive replication for the given actor if it's currently throttled. It maybe be allowed to throttle again later. */
+	UE_DEPRECATED(5.3, "Will be made private in a future release, please use version that takes an actor")
 	ENGINE_API void CancelAdaptiveReplication(FNetworkObjectInfo& InNetworkActor);
 
+	ENGINE_API void CancelAdaptiveReplication(const AActor* InActor);
+
+	/** Returns true if the driver's world time has exceeded the next replication update time for this actor, or if it is pending replication from a previous frame. */
+	ENGINE_API bool IsPendingNetUpdate(const AActor* InActor) const;
+
 	/** Returns the level ID/PIE instance ID for this netdriver to use. */
-	ENGINE_API int32 GetDuplicateLevelID() const { return DuplicateLevelID; }
+	int32 GetDuplicateLevelID() const { return DuplicateLevelID; }
 
 	/** Sets the level ID/PIE instance ID for this netdriver to use. */
-	ENGINE_API void SetDuplicateLevelID(const int32 InDuplicateLevelID) { DuplicateLevelID = InDuplicateLevelID; }
+	void SetDuplicateLevelID(const int32 InDuplicateLevelID) { DuplicateLevelID = InDuplicateLevelID; }
 
 	/** Explicitly sets the ReplicationDriver instance (you instantiate it and initialize it). Shouldn't be done during gameplay: ok to do in GameMode startup or via console commands for testing. Existing ReplicationDriver (if set) is destroyed when this is called.  */
 	ENGINE_API void SetReplicationDriver(UReplicationDriver* NewReplicationManager);
 
-	ENGINE_API UReplicationDriver* GetReplicationDriver() const { return ReplicationDriver; }
+	UReplicationDriver* GetReplicationDriver() const { return ReplicationDriver; }
 
 	/** Returns if this netdriver is initialized to replicate using the Iris replication system or the Legacy replication system. */
 	FORCEINLINE bool IsUsingIrisReplication() const
@@ -1713,6 +1801,13 @@ public:
 
 	/** Set a previously initialized IrisSystem into this NetDriver */
 	ENGINE_API void RestoreIrisSystem(UReplicationSystem* InReplicationSystem);
+
+	/**
+	 * Destroy and recreate the iris replication system for an active netdrive.
+	 * This will re-add all existing replicated actors back in the system.
+	 * Useful if you need to reapply hotfix configs downloaded post-initialization.
+	 */
+	ENGINE_API void RestartIrisSystem();
 #endif // UE_WITH_IRIS
 
 	template<class T>
@@ -1725,7 +1820,7 @@ public:
 	void UpdateGroupFilterStatusForLevel(const ULevel* Level, UE::Net::FNetObjectGroupHandle LevelGroupHandle);
 #endif // UE_WITH_IRIS
 
-	void RemoveClientConnection(UNetConnection* ClientConnectionToRemove);
+	ENGINE_API void RemoveClientConnection(UNetConnection* ClientConnectionToRemove);
 
 	/** Adds (fully initialized, ready to go) client connection to the ClientConnections list + any other game related setup */
 	ENGINE_API void	AddClientConnection(UNetConnection * NewConnection);
@@ -1819,8 +1914,38 @@ protected:
 	*/
 	int32 ServerReplicateActors_PrepConnections( const float DeltaSeconds );
 	void ServerReplicateActors_BuildConsiderList( TArray<FNetworkObjectInfo*>& OutConsiderList, const float ServerTickTime );
-	int32 ServerReplicateActors_PrioritizeActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, const TArray<FNetworkObjectInfo*>& ConsiderList, const bool bCPUSaturated, FActorPriority*& OutPriorityList, FActorPriority**& OutPriorityActors );
+
+	// Actor prioritization
+	ENGINE_API int32 ServerReplicateActors_PrioritizeActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, const TArray<FNetworkObjectInfo*>& ConsiderList, const bool bCPUSaturated, FActorPriority*& OutPriorityList, FActorPriority**& OutPriorityActors );
+	
+	UE_DEPRECATED(5.3, "This function has been deprecated. Please use ServerReplicateActors_ProcessPrioritizedActorsRange instead")
 	int32 ServerReplicateActors_ProcessPrioritizedActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, FActorPriority** PriorityActors, const int32 FinalSortedCount, int32& OutUpdated );
+	
+	// Actor relevancy processing within specified range
+	ENGINE_API int32 ServerReplicateActors_ProcessPrioritizedActorsRange( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, FActorPriority** PriorityActors, const TInterval<int32>& ActorsIndexRange, int32& OutUpdated, bool bIgnoreSaturation = false );
+	
+	// Relevant actors that could not be processed this frame are marked to be considered for next frame
+	ENGINE_API void ServerReplicateActors_MarkRelevantActors( UNetConnection* Connection, const TArray<FNetViewer>& ConnectionViewers, int32 StartActorIndex, int32 EndActorIndex, FActorPriority** PriorityActors );
+	
+	/**
+	* Delegate for overriding the method ServerReplicateActors
+	* in the part that prepares prioritized actors list of
+	* client connections
+	*/
+	FOnConsiderListUpdate OnPreConsiderListUpdateOverride;
+
+	/**
+	* Delegate that complements the method ServerReplicateActors
+	* with the additional replication logic
+	*/
+	FOnConsiderListUpdate OnPostConsiderListUpdateOverride;
+
+	/**
+	* Delegate that allows to implement additional procedures after
+	* main replication logic in the corresponding part of the method
+	* ServerReplicateActors
+	*/
+	FOnConsiderListUpdate OnProcessConsiderListOverride;
 #endif
 
 	/** Used to handle any NetDriver specific cleanup once a level has been removed from the world. */
@@ -1852,7 +1977,7 @@ public:
 	/**
 	 * Get the current number of sent packets for which we have received a delivery notification
 	 */
-	ENGINE_API uint32 GetOutTotalNotifiedPackets() const { return OutTotalNotifiedPackets; }
+	uint32 GetOutTotalNotifiedPackets() const { return OutTotalNotifiedPackets; }
 
 	/**
 	 * Increase the current number of sent packets for which we have received a delivery notification
@@ -1887,10 +2012,6 @@ public:
 	void IncreaseTotalOutOfOrderPacketsLost(int32 Count=1)
 	{
 		TotalOutOfOrderPacketsLost += Count;
-
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		InOutOfOrderPackets += Count;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	/**
@@ -1953,7 +2074,7 @@ public:
 	 *
 	 * @return		Whether or not this NetDriver supports encryption.
 	 */
-	ENGINE_API virtual bool DoesSupportEncryption() const
+	virtual bool DoesSupportEncryption() const
 	{
 		return true;
 	}
@@ -2001,6 +2122,7 @@ private:
 #if UE_WITH_IRIS
 	void InitIrisSettings(FName NewDriverName);
 	void SetReplicationSystem(UReplicationSystem* ReplicationSystem);
+	void CreateReplicationSystem(bool bInitAsClient);
 	void UpdateReplicationViews() const;
 	void SendClientMoveAdjustments();
 #endif

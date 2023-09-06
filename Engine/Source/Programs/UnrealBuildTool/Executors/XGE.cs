@@ -3,22 +3,21 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 using System.Diagnostics;
-using System.Xml;
-using System.Text.RegularExpressions;
+using System.Diagnostics.CodeAnalysis;
+using System.IO;
 using System.Linq;
-using System.Reflection;
-using Microsoft.Win32;
-using System.Text;
-using EpicGames.Core;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
-using UnrealBuildBase;
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
+using System.Threading.Tasks;
+using System.Xml;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32;
+using UnrealBuildBase;
+using UnrealBuildTool.Artifacts;
 
 namespace UnrealBuildTool
 {
@@ -70,7 +69,7 @@ namespace UnrealBuildTool
 		/// Minimum number of actions to use XGE execution.
 		/// </summary>
 		[XmlConfigFile(Category = "XGE")]
-		static public int MinActions = 2;
+		public static int MinActions = 2;
 
 		/// <summary>
 		/// Check for a concurrent XGE build and treat the XGE executor as unavailable if it's in use.
@@ -81,15 +80,25 @@ namespace UnrealBuildTool
 
 		private const string ProgressMarkupPrefix = "@action";
 
-		public XGE()
+		private static List<string> CompileAutoRecover = new List<string> {
+			"C1060", // C1060: compiler is out of heap space
+			"C1076", // C1076: compiler limit: internal heap limit reached
+			"C2855", // C2855: command-line option 'X' inconsistent with precompiled header
+			"C3435", // C3435: character set 'X' is not supported
+			"C3859", // C3859: Failed to create virtual memory for PCH
+		};
+
+		private static List<string> LinkAutoRecover = new List<string> {
+			"Unexpected PDB error; OK (0)"
+		};
+
+		public XGE(ILogger Logger)
+			: base(Logger)
 		{
 			XmlConfig.ApplyTo(this);
 		}
 
-		public override string Name
-		{
-			get { return "XGE"; }
-		}
+		public override string Name => "XGE";
 
 		public static bool TryGetXgConsoleExecutable([NotNullWhen(true)] out string? OutXgConsoleExe)
 		{
@@ -97,12 +106,12 @@ namespace UnrealBuildTool
 			if (OperatingSystem.IsWindows())
 			{
 				string? XgConsoleExe;
-				if(TryGetXgConsoleExecutableFromRegistry(RegistryView.Registry32, out XgConsoleExe))
+				if (TryGetXgConsoleExecutableFromRegistry(RegistryView.Registry32, out XgConsoleExe))
 				{
 					OutXgConsoleExe = XgConsoleExe;
 					return true;
 				}
-				if(TryGetXgConsoleExecutableFromRegistry(RegistryView.Registry64, out XgConsoleExe))
+				if (TryGetXgConsoleExecutableFromRegistry(RegistryView.Registry64, out XgConsoleExe))
 				{
 					OutXgConsoleExe = XgConsoleExe;
 					return true;
@@ -151,17 +160,17 @@ namespace UnrealBuildTool
 		{
 			try
 			{
-				using(RegistryKey BaseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, View))
+				using (RegistryKey BaseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, View))
 				{
 					using (RegistryKey? Key = BaseKey.OpenSubKey("SOFTWARE\\Xoreax\\IncrediBuild\\Builder", false))
 					{
-						if(Key != null)
+						if (Key != null)
 						{
 							string? Folder = Key.GetValue("Folder", null) as string;
-							if(!String.IsNullOrEmpty(Folder))
+							if (!String.IsNullOrEmpty(Folder))
 							{
 								string FileName = Path.Combine(Folder, "xgConsole.exe");
-								if(File.Exists(FileName))
+								if (File.Exists(FileName))
 								{
 									OutXgConsoleExe = FileName;
 									return true;
@@ -171,7 +180,7 @@ namespace UnrealBuildTool
 					}
 				}
 			}
-			catch(Exception Ex)
+			catch (Exception Ex)
 			{
 				Log.WriteException(Ex, null);
 			}
@@ -320,7 +329,7 @@ namespace UnrealBuildTool
 						return false;
 					}
 				}
-				catch(Exception Ex)
+				catch (Exception Ex)
 				{
 					Logger.LogDebug("Unable to query for status of Incredibuild service: {Ex}", ExceptionUtils.FormatExceptionDetails(Ex));
 					return false;
@@ -365,10 +374,10 @@ namespace UnrealBuildTool
 
 		public static void ExportActions(List<LinkedAction> ActionsToExecute, ILogger Logger)
 		{
-			for(int FileNum = 0;;FileNum++)
+			for (int FileNum = 0; ; FileNum++)
 			{
 				string OutFile = Path.Combine(Unreal.EngineDirectory.FullName, "Intermediate", "Build", String.Format("UBTExport.{0}.xge.xml", FileNum.ToString("D3")));
-				if(!File.Exists(OutFile))
+				if (!File.Exists(OutFile))
 				{
 					ExportActions(ActionsToExecute, OutFile, Logger);
 					break;
@@ -382,7 +391,13 @@ namespace UnrealBuildTool
 			Logger.LogInformation("XGEEXPORT: Exported '{OutFile}'", OutFile);
 		}
 
-		public override bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
+		/// <inheritdoc/>
+		public override Task<bool> ExecuteActionsAsync(IEnumerable<LinkedAction> ActionsToExecute, ILogger Logger, IActionArtifactCache? actionArtifactCache)
+		{
+			return Task.FromResult(ExecuteActions(ActionsToExecute, Logger));
+		}
+
+		bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
 		{
 			if (!Actions.Any())
 			{
@@ -393,7 +408,7 @@ namespace UnrealBuildTool
 			string XGETaskFilePath = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "XGETasks.xml").FullName;
 			WriteTaskFile(Actions, XGETaskFilePath, true, false, Logger);
 
-			return ExecuteTaskFileWithProgressMarkup(XGETaskFilePath, Actions.Count(), Logger);
+			return ExecuteTaskFileWithProgressMarkup(XGETaskFilePath, Actions.ToArray(), Logger);
 		}
 
 		/// <summary>
@@ -462,8 +477,8 @@ namespace UnrealBuildTool
 				LinkedAction Action = Actions[ActionIndex];
 
 				// Don't allow remote linking if on VPN.
-				bool CanExecuteRemotely = Action.bCanExecuteRemotely;
-				if(CanExecuteRemotely && Action.ActionType == ActionType.Link)
+				bool CanExecuteRemotely = Action.bCanExecuteRemotely && Action.bCanExecuteRemotelyWithXGE;
+				if (CanExecuteRemotely && Action.ActionType == ActionType.Link)
 				{
 					if (HostOnVpn || !bAllowRemoteLinking)
 					{
@@ -474,7 +489,7 @@ namespace UnrealBuildTool
 				// <Tool ... />
 				XmlElement ToolElement = XGETaskDocument.CreateElement("Tool");
 				ToolsElement.AppendChild(ToolElement);
-				ToolElement.SetAttribute("Name", string.Format("Tool{0}", ActionIndex));
+				ToolElement.SetAttribute("Name", String.Format("Tool{0}", ActionIndex));
 				ToolElement.SetAttribute("AllowRemote", CanExecuteRemotely.ToString());
 
 				// The XGE documentation says that 'AllowIntercept' must be set to 'true' for all tools where 'AllowRemote' is enabled
@@ -483,7 +498,7 @@ namespace UnrealBuildTool
 				string OutputPrefix = "";
 				if (bProgressMarkup)
 				{
-					OutputPrefix += ProgressMarkupPrefix;
+					OutputPrefix += $"{ProgressMarkupPrefix}_{ActionIndex} ";
 				}
 				if (Action.bShouldOutputStatusDescription)
 				{
@@ -493,7 +508,7 @@ namespace UnrealBuildTool
 				{
 					ToolElement.SetAttribute("OutputPrefix", OutputPrefix);
 				}
-				if(Action.GroupNames.Count > 0)
+				if (Action.GroupNames.Count > 0)
 				{
 					ToolElement.SetAttribute("GroupPrefix", String.Format("** For {0} **", String.Join(" + ", Action.GroupNames)));
 				}
@@ -519,24 +534,21 @@ namespace UnrealBuildTool
 				}
 				ToolElement.SetAttribute(
 					"OutputFileMasks",
-					string.Join(
+					String.Join(
 						",",
 						Action.ProducedItems.Select(
-							delegate(FileItem ProducedItem) { return ProducedItem.Location.GetFileName(); }
+							delegate (FileItem ProducedItem) { return ProducedItem.Location.GetFileName(); }
 							).ToArray()
 						)
 					);
 
 				if (Action.ActionType == ActionType.Compile)
 				{
-					// C1060: compiler is out of heap space
-					// C1076: compiler limit: internal heap limit reached
-					// C3859: Failed to create virtual memory for PCH
-					ToolElement.SetAttribute("AutoRecover", "C1060,C1076,C3859");
+					ToolElement.SetAttribute("AutoRecover", String.Join(',', CompileAutoRecover));
 				}
 				else if (Action.ActionType == ActionType.Link)
 				{
-					ToolElement.SetAttribute("AutoRecover", "Unexpected PDB error; OK (0)");
+					ToolElement.SetAttribute("AutoRecover", String.Join(',', LinkAutoRecover));
 				}
 			}
 
@@ -555,25 +567,25 @@ namespace UnrealBuildTool
 				ProjectElement.AppendChild(TaskElement);
 				TaskElement.SetAttribute("SourceFile", "");
 				TaskElement.SetAttribute("Caption", Action.StatusDescription);
-				TaskElement.SetAttribute("Name", string.Format("Action{0}", ActionIndex));
-				TaskElement.SetAttribute("Tool", string.Format("Tool{0}", ActionIndex));
+				TaskElement.SetAttribute("Name", String.Format("Action{0}", ActionIndex));
+				TaskElement.SetAttribute("Tool", String.Format("Tool{0}", ActionIndex));
 				TaskElement.SetAttribute("WorkingDir", Action.WorkingDirectory.FullName);
 				TaskElement.SetAttribute("SkipIfProjectFailed", "true");
 				TaskElement.SetAttribute("AllowRestartOnLocal", "true");
 
 				// Create a semi-colon separated list of the other tasks this task depends on the results of.
 				List<string> DependencyNames = new List<string>();
-				foreach(LinkedAction PrerequisiteAction in Action.PrerequisiteActions)
+				foreach (LinkedAction PrerequisiteAction in Action.PrerequisiteActions)
 				{
 					if (Actions.Contains(PrerequisiteAction))
 					{
-						DependencyNames.Add(string.Format("Action{0}", Actions.IndexOf(PrerequisiteAction)));
+						DependencyNames.Add(String.Format("Action{0}", Actions.IndexOf(PrerequisiteAction)));
 					}
 				}
 
 				if (DependencyNames.Count > 0)
 				{
-					TaskElement.SetAttribute("DependsOn", string.Join(";", DependencyNames.ToArray()));
+					TaskElement.SetAttribute("DependsOn", String.Join(";", DependencyNames.ToArray()));
 				}
 			}
 
@@ -626,7 +638,7 @@ namespace UnrealBuildTool
 			}
 
 			string? XgConsolePath;
-			if(!TryGetXgConsoleExecutable(out XgConsolePath))
+			if (!TryGetXgConsoleExecutable(out XgConsolePath))
 			{
 				throw new BuildException("Unable to find xgConsole executable.");
 			}
@@ -636,7 +648,7 @@ namespace UnrealBuildTool
 
 			ProcessStartInfo XGEStartInfo = new ProcessStartInfo(
 				XgConsolePath,
-				string.Format("\"{0}\" /Rebuild /NoWait {1} /NoLogo {2} /ShowAgent /ShowTime {3}",
+				String.Format("\"{0}\" /Rebuild /NoWait {1} /NoLogo {2} /ShowAgent /ShowTime {3}",
 					TaskFilePath,
 					bStopXGECompilationAfterErrors ? "/StopOnErrors" : "",
 					SilentOption,
@@ -693,47 +705,69 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Executes the tasks in the specified file, parsing progress markup as part of the output.
 		/// </summary>
-		bool ExecuteTaskFileWithProgressMarkup(string TaskFilePath, int NumActions, ILogger Logger)
+		bool ExecuteTaskFileWithProgressMarkup(string TaskFilePath, LinkedAction[] Actions, ILogger Logger)
 		{
+			int NumActions = Actions.Length;
 			using (ProgressWriter Writer = new ProgressWriter("Compiling C++ source files...", false, Logger))
 			{
 				int NumCompletedActions = 0;
-				string ProgressText = string.Empty;
+				string ProgressText = String.Empty;
+				string CommandDescription = String.Empty;
+				HashSet<int> ReportedActionIndices = new();
 
 				// Create a wrapper delegate that will parse the output actions
 				DataReceivedEventHandler EventHandlerWrapper = (Sender, Args) =>
 				{
-					if(Args.Data != null)
+					if (Args.Data != null)
 					{
 						string Text = Args.Data;
 						if (Text.StartsWith(ProgressMarkupPrefix))
 						{
+							// Code below should not need to be tested for success but if some logging from XGE is wrong we just gracefully ignore it and accept that counting might end up wrong
+							int ActionIndex = -1;
+							int MarkupLength = ProgressMarkupPrefix.Length;
+							int EndOfMarkupPrefix = Text.IndexOf(' ', MarkupLength);
+							if (EndOfMarkupPrefix != -1)
+							{
+								MarkupLength = EndOfMarkupPrefix + 1;
+								if (Int32.TryParse(Text.Substring(ProgressMarkupPrefix.Length + 1, EndOfMarkupPrefix - ProgressMarkupPrefix.Length - 1), out ActionIndex))
+								{
+									// We keep track of the actions that we have already reported so NumCompletedActions match up with NumActions
+									if (ReportedActionIndices.Add(ActionIndex))
+									{
+										Writer.Write(++NumCompletedActions, NumActions);
+									}
+								}
+							}
 							// Flush old progress text
-							if (!string.IsNullOrEmpty(ProgressText))
+							if (!String.IsNullOrEmpty(ProgressText))
 							{
 								Logger.LogInformation("[{NumCompletedActions}/{NumActions}] Complete {ProgressText}", NumCompletedActions, NumActions, ProgressText);
-								ProgressText = string.Empty;
+								ProgressText = String.Empty;
 							}
-							Writer.Write(++NumCompletedActions, NumActions);
+
+							CommandDescription = ActionIndex != -1 ? Actions[ActionIndex].CommandDescription + " " : String.Empty;
 
 							// Strip out anything that is just an XGE timer. Some programs don't output anything except the progress text.
-							Text = Args.Data.Substring(ProgressMarkupPrefix.Length);
-							if(Text.StartsWith(" (") && Text.EndsWith(")"))
+							Text = Args.Data.Substring(MarkupLength);
+							if (Text.StartsWith(" (") && Text.EndsWith(")"))
 							{
 								// Write the progress text with the next line of output if the current doesn't have any status.
 								ProgressText = Text.Trim();
 								return;
 							}
-							Logger.LogInformation("[{NumCompletedActions}/{NumActions}] {Text}", NumCompletedActions, NumActions, Text);
+
+							Logger.LogInformation("[{NumCompletedActions}/{NumActions}] {CommandDescription}{Text}", NumCompletedActions, NumActions, CommandDescription, Text);
 							return;
 						}
-						if (!string.IsNullOrEmpty(ProgressText))
+						if (!String.IsNullOrEmpty(ProgressText))
 						{
-							Logger.LogInformation("[{NumCompletedActions}/{NumActions}] {Text} {ProgressText}", NumCompletedActions, NumActions, Text, ProgressText);
-							ProgressText = string.Empty;
+							Logger.LogInformation("[{NumCompletedActions}/{NumActions}] {CommandDescription}{Text} {ProgressText}", NumCompletedActions, NumActions, CommandDescription, Text, ProgressText);
+							ProgressText = String.Empty;
+							CommandDescription = String.Empty;
 							return;
 						}
-						Log.TraceInformation("{0}", Text); // Using old log function to pick up registered event parsers
+						WriteToolOutput(Text);
 					}
 				};
 

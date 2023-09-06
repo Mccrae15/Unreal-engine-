@@ -338,7 +338,7 @@ void SSettingsEditor::RecordPreferenceChangedAnalytics( ISettingsSectionPtr Sele
 	if(FEngineAnalytics::IsAvailable() && ChangedProperty != nullptr && ChangedProperty->GetOwnerClass() != nullptr)
 	{
 		TArray<FAnalyticsEventAttribute> EventAttributes;
-		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("PropertySection"), SelectedSection->GetDisplayName().ToString()));
+		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("PropertySection"), SelectedSection->GetName().ToString()));
 		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("PropertyClass"), ChangedProperty->GetOwnerClass()->GetName()));
 		EventAttributes.Add(FAnalyticsEventAttribute(TEXT("PropertyName"), ChangedProperty->GetName()));
 
@@ -450,6 +450,12 @@ void SSettingsEditor::HandleCultureChanged()
 
 void SSettingsEditor::HandleModelSelectionChanged()
 {
+	// This callback can trigger on unregister during shutdown, simply return in this case
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
 	ISettingsSectionPtr SelectedSection = Model->GetSelectedSection();
 
 	if (SelectedSection.IsValid())

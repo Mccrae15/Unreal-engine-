@@ -5,12 +5,11 @@
 #include "SequentialID.generated.h"
 
 USTRUCT()
-struct AIMODULE_API FSequentialIDBase
+struct FSequentialIDBase
 {
 	GENERATED_BODY()
 
 	FSequentialIDBase() = default;
-	FSequentialIDBase(const FSequentialIDBase& Other) = default;
 
 	explicit FSequentialIDBase(uint32 InID) : Value(InID) {}
 

@@ -82,6 +82,7 @@ namespace mu
 		case OP_TYPE::ME_CONDITIONAL:
 		case OP_TYPE::LA_CONDITIONAL:
 		case OP_TYPE::IN_CONDITIONAL:
+		case OP_TYPE::ED_CONDITIONAL:
 			break;
 		default:
 			// Unexpected type
@@ -103,7 +104,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpConditional::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpConditional::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -281,7 +282,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> ASTOpConditional::OptimiseSemantic(const FModelOptimizationOptions&) const
+	mu::Ptr<ASTOp> ASTOpConditional::OptimiseSemantic(const FModelOptimizationOptions&, int32 Pass) const
 	{
 		if (!condition)
 		{

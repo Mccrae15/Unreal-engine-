@@ -167,7 +167,6 @@ static void LoadValidationCache(VkDevice Device, VkValidationCacheEXT& OutValida
 }
 #endif
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 static VkExtent2D GetBestMatchedShadingRateExtents(uint32 ShadingRate, const TArray<VkPhysicalDeviceFragmentShadingRateKHR>& FragmentShadingRates)
 {
 	// Given that for Vulkan we need to query available device shading rates, we're not guaranteed to have everything that's in our enum;
@@ -200,7 +199,40 @@ static VkExtent2D GetBestMatchedShadingRateExtents(uint32 ShadingRate, const TAr
 
 	return BestMatchedExtent;
 }
-#endif
+
+
+void FVulkanPhysicalDeviceFeatures::Query(VkPhysicalDevice PhysicalDevice, uint32 APIVersion)
+{
+	VkPhysicalDeviceFeatures2 PhysicalDeviceFeatures2;
+	ZeroVulkanStruct(PhysicalDeviceFeatures2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
+
+	PhysicalDeviceFeatures2.pNext = &Core_1_1;
+	Core_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+
+	if (APIVersion >= VK_API_VERSION_1_2)
+	{
+		Core_1_1.pNext = &Core_1_2;
+		Core_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+	}
+
+	if (APIVersion >= VK_API_VERSION_1_3)
+	{
+		Core_1_2.pNext = &Core_1_3;
+		Core_1_3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+	}
+
+	VulkanRHI::vkGetPhysicalDeviceFeatures2(PhysicalDevice, &PhysicalDeviceFeatures2);
+
+	// Copy features into old struct for convenience
+	Core_1_0 = PhysicalDeviceFeatures2.features;
+
+	// Apply config modifications
+	Core_1_0.robustBufferAccess = GCVarRobustBufferAccess.GetValueOnAnyThread() > 0 ? VK_TRUE : VK_FALSE;
+
+	// Apply platform restrictions
+	FVulkanPlatform::RestrictEnabledPhysicalDeviceFeatures(this);
+}
+
 
 
 FVulkanDevice::FVulkanDevice(FVulkanDynamicRHI* InRHI, VkPhysicalDevice InGpu)
@@ -220,38 +252,30 @@ FVulkanDevice::FVulkanDevice(FVulkanDynamicRHI* InRHI, VkPhysicalDevice InGpu)
 {
 	RHI = InRHI;
 	FMemory::Memzero(GpuProps);
-	FMemory::Memzero(PhysicalFeatures);
 	FMemory::Memzero(FormatProperties);
 	FMemory::Memzero(PixelFormatComponentMapping);
 
 	ZeroVulkanStruct(GpuIdProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR);
 	ZeroVulkanStruct(GpuSubgroupProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES);
-	if (RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2)
+
 	{
 		VkPhysicalDeviceProperties2KHR PhysicalDeviceProperties2;
 		ZeroVulkanStruct(PhysicalDeviceProperties2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR);
 		PhysicalDeviceProperties2.pNext = &GpuIdProps;
-		if (UE_VK_API_VERSION >= VK_API_VERSION_1_1)
-		{
-			// Only consider wave ops on platforms creating a Vulkan 1.1 instance (or greater)
-			GpuIdProps.pNext = &GpuSubgroupProps;
-		}
-		VulkanRHI::vkGetPhysicalDeviceProperties2KHR(Gpu, &PhysicalDeviceProperties2);
+		GpuIdProps.pNext = &GpuSubgroupProps;
+		VulkanRHI::vkGetPhysicalDeviceProperties2(Gpu, &PhysicalDeviceProperties2);
 		GpuProps = PhysicalDeviceProperties2.properties;
-	}
-	else
-	{
-		VulkanRHI::vkGetPhysicalDeviceProperties(Gpu, &GpuProps);
 	}
 
 	// First get the VendorId. We'll have to get properties again after finding out which extensions we want to use
 	VendorId = RHIConvertToGpuVendorId(GpuProps.vendorID);
-	ensure(VendorId != EGpuVendorId::Unknown);
 
 	UE_LOG(LogVulkanRHI, Display, TEXT("- DeviceName: %s"), ANSI_TO_TCHAR(GpuProps.deviceName));
 	UE_LOG(LogVulkanRHI, Display, TEXT("- API=%d.%d.%d (0x%x) Driver=0x%x VendorId=0x%x"), VK_VERSION_MAJOR(GpuProps.apiVersion), VK_VERSION_MINOR(GpuProps.apiVersion), VK_VERSION_PATCH(GpuProps.apiVersion), GpuProps.apiVersion, GpuProps.driverVersion, GpuProps.vendorID);
 	UE_LOG(LogVulkanRHI, Display, TEXT("- DeviceID=0x%x Type=%s"), GpuProps.deviceID, VK_TYPE_TO_STRING(VkPhysicalDeviceType, GpuProps.deviceType));
 	UE_LOG(LogVulkanRHI, Display, TEXT("- Max Descriptor Sets Bound %d, Timestamps %d"), GpuProps.limits.maxBoundDescriptorSets, GpuProps.limits.timestampComputeAndGraphics);
+
+	ensureMsgf(VendorId != EGpuVendorId::Unknown, TEXT("Unknown vendor ID 0x%x"), GpuProps.vendorID);
 }
 
 FVulkanDevice::~FVulkanDevice()
@@ -294,7 +318,9 @@ void FVulkanDevice::CreateDevice(TArray<const ANSICHAR*>& DeviceLayers, FVulkanD
 	// Setup extension and layer info
 	VkDeviceCreateInfo DeviceInfo;
 	ZeroVulkanStruct(DeviceInfo, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
-	
+
+	DeviceInfo.pEnabledFeatures = &PhysicalDeviceFeatures.Core_1_0;
+
 	for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
 	{
 		if (UEExtension->InUse())
@@ -389,12 +415,6 @@ void FVulkanDevice::CreateDevice(TArray<const ANSICHAR*>& DeviceLayers, FVulkanD
 	DeviceInfo.queueCreateInfoCount = QueueFamilyInfos.Num();
 	DeviceInfo.pQueueCreateInfos = QueueFamilyInfos.GetData();
 
-	PhysicalFeatures.robustBufferAccess = GCVarRobustBufferAccess.GetValueOnAnyThread() > 0 ? VK_TRUE : VK_FALSE;
-	FVulkanPlatform::RestrictEnabledPhysicalDeviceFeatures(PhysicalFeatures);
-	DeviceInfo.pEnabledFeatures = &PhysicalFeatures;
-
-	FVulkanPlatform::EnablePhysicalDeviceFeatureExtensions(DeviceInfo, *this);
-
 #if NV_AFTERMATH && VULKAN_SUPPORTS_NV_DIAGNOSTICS
 	if (GGPUCrashDebuggingEnabled && GVulkanNVAftermathModuleLoaded)
 	{
@@ -462,8 +482,7 @@ void FVulkanDevice::CreateDevice(TArray<const ANSICHAR*>& DeviceLayers, FVulkanD
 		}
 	}
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	// Enumerate the available shading rates if it's supported
+	// Enumerate the available shading rates
 	if (OptionalDeviceExtensions.HasKHRFragmentShadingRate)
 	{
 		uint32 FragmentShadingRateCount = 0;
@@ -484,7 +503,6 @@ void FVulkanDevice::CreateDevice(TArray<const ANSICHAR*>& DeviceLayers, FVulkanD
 			}
 		}
 	}
-#endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 
 	UE_LOG(LogVulkanRHI, Display, TEXT("Using %d device layers%s"), DeviceLayers.Num(), DeviceLayers.Num() ? TEXT(":") : TEXT("."));
 	for (const ANSICHAR* Layer : DeviceLayers)
@@ -715,7 +733,7 @@ void FVulkanDevice::SetupFormats()
 		MapFormatSupport(PF_G16, { VK_FORMAT_R16_SFLOAT, VK_FORMAT_R16_UNORM }, ComponentMappingR001);
 	}
 
-	if (GetOptionalExtensions().HasEXTASTCDecodeMode)
+	if (GetOptionalExtensions().HasEXTTextureCompressionASTCHDR)
 	{
 		MapFormatSupport(PF_ASTC_4x4_HDR,   { VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT },   ComponentMappingRGBA);
 		MapFormatSupport(PF_ASTC_6x6_HDR,   { VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT },   ComponentMappingRGBA);
@@ -994,7 +1012,7 @@ void FVulkanDevice::MapImageFormatSupport(FPixelFormatInfo& PixelFormatInfo, con
 		if (EnumHasAllFlags(Capabilities, EPixelFormatCapabilities::AnyTexture))
 		{
 			// We support gather, but some of our shaders assume offsets so check against features
-			if (GetPhysicalFeatures().shaderImageGatherExtended)
+			if (GetPhysicalDeviceFeatures().Core_1_0.shaderImageGatherExtended)
 			{
 				EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureGather);
 			}
@@ -1084,66 +1102,66 @@ void FVulkanDevice::InitGPU()
 	VulkanRHI::vkGetPhysicalDeviceQueueFamilyProperties(Gpu, &QueueCount, QueueFamilyProps.GetData());
 
 	// Query base features
-	VulkanRHI::vkGetPhysicalDeviceFeatures(Gpu, &PhysicalFeatures);
+	PhysicalDeviceFeatures.Query(Gpu, RHI->GetApiVersion());
 
 	// Setup layers and extensions
-	FVulkanDeviceExtensionArray UEExtensions = FVulkanDeviceExtension::GetUESupportedDeviceExtensions(this);
+	FVulkanDeviceExtensionArray UEExtensions = FVulkanDeviceExtension::GetUESupportedDeviceExtensions(this, RHI->GetApiVersion());
 	TArray<const ANSICHAR*> DeviceLayers = FVulkanDevice::SetupDeviceLayers(Gpu, UEExtensions);
 
-	if (RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2)
+	// Query advanced features
 	{
-		// Query advanced features
+		VkPhysicalDeviceFeatures2 PhysicalDeviceFeatures2;
+		ZeroVulkanStruct(PhysicalDeviceFeatures2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
+
+		for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
 		{
-			VkPhysicalDeviceFeatures2 PhysicalDeviceFeatures2;
-			ZeroVulkanStruct(PhysicalDeviceFeatures2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
-
-			for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
+			if (UEExtension->InUse())
 			{
-				if (UEExtension->InUse())
-				{
-					UEExtension->PrePhysicalDeviceFeatures(PhysicalDeviceFeatures2);
-				}
-			}
-
-			VulkanRHI::vkGetPhysicalDeviceFeatures2KHR(Gpu, &PhysicalDeviceFeatures2);
-
-			for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
-			{
-				if (UEExtension->InUse())
-				{
-					UEExtension->PostPhysicalDeviceFeatures(OptionalDeviceExtensions);
-				}
+				UEExtension->PrePhysicalDeviceFeatures(PhysicalDeviceFeatures2);
 			}
 		}
 
-		// Query advances properties
+		VulkanRHI::vkGetPhysicalDeviceFeatures2(Gpu, &PhysicalDeviceFeatures2);
+
+		for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
 		{
-			VkPhysicalDeviceProperties2KHR PhysicalDeviceProperties2;
-			ZeroVulkanStruct(PhysicalDeviceProperties2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR);
-			PhysicalDeviceProperties2.pNext = &GpuIdProps;
-			ZeroVulkanStruct(GpuIdProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR);
-
-			for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
+			if (UEExtension->InUse())
 			{
-				if (UEExtension->InUse())
-				{
-					UEExtension->PrePhysicalDeviceProperties(PhysicalDeviceProperties2);
-				}
-			}
-
-			VulkanRHI::vkGetPhysicalDeviceProperties2KHR(Gpu, &PhysicalDeviceProperties2);
-
-			for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
-			{
-				if (UEExtension->InUse())
-				{
-					UEExtension->PostPhysicalDeviceProperties();
-				}
+				UEExtension->PostPhysicalDeviceFeatures(OptionalDeviceExtensions);
 			}
 		}
 	}
 
-	UE_LOG(LogVulkanRHI, Display, TEXT("Device properties: Geometry %d BufferAtomic64 %d ImageAtomic64 %d"), PhysicalFeatures.geometryShader, OptionalDeviceExtensions.HasKHRShaderAtomicInt64, OptionalDeviceExtensions.HasImageAtomicInt64);
+	// Query advances properties
+	{
+		VkPhysicalDeviceProperties2 PhysicalDeviceProperties2;
+		ZeroVulkanStruct(PhysicalDeviceProperties2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2);
+		PhysicalDeviceProperties2.pNext = &GpuIdProps;
+		ZeroVulkanStruct(GpuIdProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES);
+
+		for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
+		{
+			if (UEExtension->InUse())
+			{
+				UEExtension->PrePhysicalDeviceProperties(PhysicalDeviceProperties2);
+			}
+		}
+
+		VulkanRHI::vkGetPhysicalDeviceProperties2(Gpu, &PhysicalDeviceProperties2);
+
+		for (TUniquePtr<FVulkanDeviceExtension>& UEExtension : UEExtensions)
+		{
+			if (UEExtension->InUse())
+			{
+				UEExtension->PostPhysicalDeviceProperties();
+			}
+		}
+	}
+
+	ChooseVariableRateShadingMethod(OptionalDeviceExtensions, GetOptionalExtensionProperties().FragmentShadingRateFeatures);
+
+	UE_LOG(LogVulkanRHI, Display, TEXT("Device properties: Geometry %d BufferAtomic64 %d ImageAtomic64 %d"), 
+		PhysicalDeviceFeatures.Core_1_0.geometryShader, OptionalDeviceExtensions.HasKHRShaderAtomicInt64, OptionalDeviceExtensions.HasImageAtomicInt64);
 
 	CreateDevice(DeviceLayers, UEExtensions);
 
@@ -1182,15 +1200,6 @@ void FVulkanDevice::InitGPU()
 			// Start with 0 entries
 			*Entry = 0;
 			VERIFYVULKANRESULT(VulkanRHI::vkBindBufferMemory(Device, CrashMarker.Buffer, CrashMarker.Allocation->GetHandle(), 0));
-		}
-		else if (OptionalDeviceExtensions.HasNVDiagnosticCheckpoints)
-		{
-			CrashMarker.Allocation = DeviceMemoryManager.Alloc(false, GMaxCrashBufferEntries * sizeof(uint32_t), UINT32_MAX, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-				VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, nullptr, VULKAN_MEMORY_MEDIUM_PRIORITY, false, __FILE__, __LINE__);
-			uint32* Entry = (uint32*)CrashMarker.Allocation->Map(VK_WHOLE_SIZE, 0);
-			check(Entry);
-			// Start with 0 entries
-			*Entry = 0;
 		}
 	}
 #endif
@@ -1262,8 +1271,11 @@ void FVulkanDevice::InitGPU()
 	}
 
 #if VULKAN_RHI_RAYTRACING
-	check(RayTracingCompactionRequestHandler == nullptr);
-	RayTracingCompactionRequestHandler = new FVulkanRayTracingCompactionRequestHandler(this);
+	if (RHISupportsRayTracing(GMaxRHIShaderPlatform) && GetOptionalExtensions().HasRaytracingExtensions())
+	{
+		check(RayTracingCompactionRequestHandler == nullptr);
+		RayTracingCompactionRequestHandler = new FVulkanRayTracingCompactionRequestHandler(this);
+	}
 #endif
 
 	FVulkanPlatform::SetupImageMemoryRequirementWorkaround(*this);
@@ -1306,7 +1318,7 @@ void FVulkanDevice::Destroy()
 	do
 	{
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-		NumDeletes = FRHIResource::FlushPendingDeletes(RHICmdList);
+		NumDeletes = RHICmdList.FlushPendingDeletes();
 		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 	} while (NumDeletes > 0);
 
@@ -1355,26 +1367,22 @@ void FVulkanDevice::Destroy()
 	PipelineStateCache = nullptr;
 	StagingManager.Deinit();
 
+#if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 	if (GGPUCrashDebuggingEnabled)
 	{
-#if VULKAN_SUPPORTS_AMD_BUFFER_MARKER
-		if (OptionalDeviceExtensions.HasAMDBufferMarker)
+		if (CrashMarker.Buffer != VK_NULL_HANDLE)
 		{
-			CrashMarker.Allocation->Unmap();
 			VulkanRHI::vkDestroyBuffer(Device, CrashMarker.Buffer, VULKAN_CPU_ALLOCATOR);
 			CrashMarker.Buffer = VK_NULL_HANDLE;
-
-			DeviceMemoryManager.Free(CrashMarker.Allocation);
 		}
-#endif
-#if VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT
-		if (OptionalDeviceExtensions.HasNVDiagnosticCheckpoints)
+
+		if (CrashMarker.Allocation)
 		{
 			CrashMarker.Allocation->Unmap();
 			DeviceMemoryManager.Free(CrashMarker.Allocation);
 		}
-#endif
 	}
+#endif // VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 
 	DeferredDeletionQueue.Clear();
 

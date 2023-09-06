@@ -5,9 +5,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -56,13 +57,13 @@ namespace UnrealBuildTool
 			}
 
 			/// <inheritdoc/>
-			public void CreateIntermediateTextFile(FileItem FileItem, string Contents)
+			public void CreateIntermediateTextFile(FileItem FileItem, string Contents, bool AllowAsync)
 			{
 				Utils.WriteFileIfChanged(FileItem, Contents, Logger);
 			}
 
 			/// <inheritdoc/>
-			public void CreateIntermediateTextFile(FileItem FileItem, IEnumerable<string> ContentLines)
+			public void CreateIntermediateTextFile(FileItem FileItem, IEnumerable<string> ContentLines, bool AllowAsync = true)
 			{
 				Utils.WriteFileIfChanged(FileItem, ContentLines, Logger);
 				CapturedTextFiles.Add(new Tuple<FileItem, IEnumerable<string>>(FileItem, ContentLines));
@@ -75,6 +76,11 @@ namespace UnrealBuildTool
 
 			/// <inheritdoc/>
 			public void AddSourceFiles(DirectoryItem SourceDir, FileItem[] SourceFiles)
+			{
+			}
+
+			/// <inheritdoc/>
+			public void AddHeaderFiles(FileItem[] HeaderFiles)
 			{
 			}
 
@@ -105,7 +111,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override async Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -129,7 +135,7 @@ namespace UnrealBuildTool
 			UEBuildModuleCPP.bForceAddGeneratedCodeIncludePath = true;
 
 			// Parse all the target descriptors
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration, Logger);
 
 			// Generate the compile DB for each target
 			using (ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet())
@@ -139,17 +145,19 @@ namespace UnrealBuildTool
 				foreach (TargetDescriptor TargetDescriptor in TargetDescriptors)
 				{
 					// Disable PCHs and unity builds for the target
-					TargetDescriptor.AdditionalArguments = TargetDescriptor.AdditionalArguments.Append(new string[] { "-NoPCH", "-DisableUnity" });
+					TargetDescriptor.bUseUnityBuild = false;
+					TargetDescriptor.IntermediateEnvironment = UnrealIntermediateEnvironment.GenerateClangDatabase;
+					TargetDescriptor.AdditionalArguments = TargetDescriptor.AdditionalArguments.Append(new string[] { "-NoPCH" });
 
 					// Create a makefile for the target
-					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, Logger);
+					UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration, Logger);
 					UEToolChain TargetToolChain = Target.CreateToolchain(Target.Platform);
 
 					// Execute code generation actions
 					if (bExecCodeGenActions)
 					{
 						// Create the makefile
-						TargetMakefile Makefile = Target.Build(BuildConfiguration, WorkingSet, TargetDescriptor, Logger);
+						TargetMakefile Makefile = await Target.BuildAsync(BuildConfiguration, WorkingSet, TargetDescriptor, Logger);
 						List<LinkedAction> Actions = Makefile.Actions.ConvertAll(x => new LinkedAction(x, TargetDescriptor));
 						ActionGraph.Link(Actions, Logger);
 
@@ -161,7 +169,7 @@ namespace UnrealBuildTool
 						if (PrerequisiteActions.Count > 0)
 						{
 							Logger.LogInformation("Executing actions that produce source files...");
-							ActionGraph.ExecuteActions(BuildConfiguration, PrerequisiteActions, new List<TargetDescriptor> { TargetDescriptor }, Logger);
+							await ActionGraph.ExecuteActionsAsync(BuildConfiguration, PrerequisiteActions, new List<TargetDescriptor> { TargetDescriptor }, Logger);
 						}
 					}
 
@@ -175,60 +183,69 @@ namespace UnrealBuildTool
 							if (!Module.Rules.bUsePrecompiled)
 							{
 								// Gather all the files we care about
-								UEBuildModuleCPP.InputFileCollection InputFileCollection = Module.FindInputFiles(Target.Platform, new Dictionary<DirectoryItem, FileItem[]>());
+								UEBuildModuleCPP.InputFileCollection InputFileCollection = Module.FindInputFiles(Target.Platform, new Dictionary<DirectoryItem, FileItem[]>(), Logger);
 								List<FileItem> InputFiles = new List<FileItem>();
 								InputFiles.AddRange(InputFileCollection.CPPFiles);
 								InputFiles.AddRange(InputFileCollection.CCFiles);
 
-								var fileList = new List<FileReference>();
+								HashSet<FileItem> FilterFileList = new();
 								foreach (FileItem InputFile in InputFiles)
 								{
 									if (FileFilter == null || FileFilter.Matches(InputFile.Location.MakeRelativeTo(Unreal.RootDirectory)))
 									{
-										var fileRef = new FileReference(InputFile.AbsolutePath);
-										fileList.Add(fileRef);
+										FilterFileList.Add(InputFile);
 									}
 								}
 
-								if (fileList.Any())
+								CaptureActionGraphBuilder ActionGraphBuilder = new CaptureActionGraphBuilder(Logger);
+
+								Module.Compile(Target.Rules, TargetToolChain, BinaryCompileEnvironment, WorkingSet, ActionGraphBuilder, Logger);
+
+								List<IExternalAction> ValidActions = new();
+								foreach (IExternalAction Action in ActionGraphBuilder.CapturedActions)
 								{
-									CaptureActionGraphBuilder ActionGraphBuilder = new CaptureActionGraphBuilder(Logger);
-
-									Module.Compile(Target.Rules, TargetToolChain, BinaryCompileEnvironment, fileList, WorkingSet, ActionGraphBuilder, Logger);
-
-									IEnumerable<IExternalAction> CompileActions = ActionGraphBuilder.CapturedActions.Where(Action => Action.ActionType == ActionType.Compile);
-
-									if (CompileActions.Any())
+									if (Action.ActionType == ActionType.Compile && Action.ProducedItems.Any())
 									{
-										// convert any rsp files
-										Dictionary<string, string> UpdatedResFiles = new Dictionary<string, string>();
-										foreach (Tuple<FileItem, IEnumerable<string>> FileAndContents in ActionGraphBuilder.CapturedTextFiles)
+										foreach (FileItem Prereq in Action.PrerequisiteItems)
 										{
-											if (FileAndContents.Item1.AbsolutePath.EndsWith(".rsp") || FileAndContents.Item1.AbsolutePath.EndsWith(".response"))
+											if (FilterFileList.Contains(Prereq))
 											{
-												string NewResPath = ConvertResponseFile(FileAndContents.Item1, FileAndContents.Item2, Logger);
-												UpdatedResFiles[FileAndContents.Item1.AbsolutePath] = NewResPath;
+												ValidActions.Add(Action);
 											}
 										}
+									}
+								}
 
-										foreach (IExternalAction Action in CompileActions)
+								if (ValidActions.Count != 0)
+								{
+									// convert any rsp files
+									Dictionary<string, string> UpdatedResFiles = new Dictionary<string, string>();
+									foreach (Tuple<FileItem, IEnumerable<string>> FileAndContents in ActionGraphBuilder.CapturedTextFiles)
+									{
+										if (FileAndContents.Item1.AbsolutePath.EndsWith(".rsp") || FileAndContents.Item1.AbsolutePath.EndsWith(".response"))
 										{
-											// Create the command
-											StringBuilder CommandBuilder = new StringBuilder();
-											string CommandArguments = Action.CommandArguments.Replace(".rsp", ".rsp.gcd").Replace(".response", ".response.gcd");
-											CommandBuilder.AppendFormat("\"{0}\" {1}", Action.CommandPath, CommandArguments);
+											string NewResPath = ConvertResponseFile(FileAndContents.Item1, FileAndContents.Item2, Logger);
+											UpdatedResFiles[FileAndContents.Item1.AbsolutePath] = NewResPath;
+										}
+									}
 
-											foreach (string ExtraArgument in GetExtraPlatformArguments(TargetToolChain))
-											{
-												CommandBuilder.AppendFormat(" {0}", ExtraArgument);
-											}
+									foreach (IExternalAction Action in ValidActions)
+									{
+										// Create the command
+										StringBuilder CommandBuilder = new StringBuilder();
+										string CommandArguments = Action.CommandArguments.Replace(".rsp", ".rsp.gcd").Replace(".response", ".response.gcd");
+										CommandBuilder.AppendFormat("\"{0}\" {1}", Action.CommandPath, CommandArguments);
 
-											// find source file
-											var SourceFile = Action.PrerequisiteItems.FirstOrDefault(fi => fi.HasExtension(".cpp") || fi.HasExtension(".c") || fi.HasExtension(".c"));
-											if (SourceFile != null)
-											{
-												FileToCommand[SourceFile.Location] = CommandBuilder.ToString();
-											}
+										foreach (string ExtraArgument in GetExtraPlatformArguments(TargetToolChain))
+										{
+											CommandBuilder.AppendFormat(" {0}", ExtraArgument);
+										}
+
+										// find source file
+										FileItem? SourceFile = Action.PrerequisiteItems.FirstOrDefault(fi => fi.HasExtension(".cpp") || fi.HasExtension(".c") || fi.HasExtension(".c"));
+										if (SourceFile != null)
+										{
+											FileToCommand[SourceFile.Location] = CommandBuilder.ToString();
 										}
 									}
 								}
@@ -253,6 +270,8 @@ namespace UnrealBuildTool
 					}
 					Writer.WriteArrayEnd();
 				}
+				Logger.LogInformation($"ClangDatabase written to {DatabaseFile.FullName}");
+
 			}
 
 			return 0;
@@ -271,7 +290,7 @@ namespace UnrealBuildTool
 			return ExtraPlatformArguments;
 		}
 
-		static private string ConvertResponseFile(FileItem OriginalFileItem, IEnumerable<string> FileContents, ILogger Logger)
+		private static string ConvertResponseFile(FileItem OriginalFileItem, IEnumerable<string> FileContents, ILogger Logger)
 		{
 			List<string> NewFileContents = new List<string>(FileContents);
 			FileItem NewFileItem = FileItem.GetItemByFileReference(new FileReference(OriginalFileItem.AbsolutePath + ".gcd"));
@@ -281,7 +300,7 @@ namespace UnrealBuildTool
 				string Line = NewFileContents[i].TrimStart();
 
 				// Ignore empty strings
-				if (String.IsNullOrEmpty(Line)) 
+				if (String.IsNullOrEmpty(Line))
 				{
 					continue;
 				}
@@ -316,7 +335,7 @@ namespace UnrealBuildTool
 			return NewFileItem.AbsolutePath;
 		}
 
-		static private string ConvertPath(string Line, string OldPath)
+		private static string ConvertPath(string Line, string OldPath)
 		{
 			OldPath = OldPath.Replace("\"", "");
 			if (OldPath[^1] == '\\' || OldPath[^1] == '/')
@@ -324,7 +343,7 @@ namespace UnrealBuildTool
 				OldPath = OldPath.Remove(OldPath.Length - 1, 1);
 			}
 
-			var FileReference = new FileReference(OldPath);
+			FileReference FileReference = new FileReference(OldPath);
 			return Line.Replace(OldPath, FileReference.FullName.Replace("\\", "/"));
 		}
 	}

@@ -3,9 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using EpicGames.Core;
-using System.Text.RegularExpressions;
 using System.Linq;
+using System.Text.RegularExpressions;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 
 ///////////////////////////////////////////////////////////////////
@@ -53,11 +53,10 @@ namespace UnrealBuildTool
 							string PathVar = BashProfileContents[LineIndex].Split('=')[1].Replace("\"", "");
 							return PathVar;
 						}
-
 					}
 				}
 			}
-	
+
 			return null;
 		}
 
@@ -93,7 +92,7 @@ namespace UnrealBuildTool
 				if (EqualsIndex > 0)
 				{
 					string[] RevisionParts = RevisionString.Substring(EqualsIndex + 1).Trim().Split('.');
-					int RevisionMinor = int.Parse(RevisionParts.Length > 1 ? RevisionParts[1] : "0");
+					int RevisionMinor = Int32.Parse(RevisionParts.Length > 1 ? RevisionParts[1] : "0");
 					char RevisionLetter = Convert.ToChar('a' + RevisionMinor);
 					NDKToolchainVersion = "r" + RevisionParts[0] + (RevisionMinor > 0 ? Char.ToString(RevisionLetter) : "");
 				}
@@ -112,11 +111,10 @@ namespace UnrealBuildTool
 			return NDKToolchainVersion;
 		}
 
-
-		public override bool TryConvertVersionToInt(string? StringValue, out UInt64 OutValue, string? Hint)
+		public override bool TryConvertVersionToInt(string? StringValue, out ulong OutValue, string? Hint)
 		{
 			// convert r<num>[letter] to hex
-			if (!string.IsNullOrEmpty(StringValue))
+			if (!String.IsNullOrEmpty(StringValue))
 			{
 				Match Result = Regex.Match(StringValue, @"^r(\d*)([a-z])?");
 
@@ -128,7 +126,7 @@ namespace UnrealBuildTool
 					{
 						RevisionNumber = (Result.Groups[2].Value[0] - 'a') + 1;
 					}
-					string VersionString = string.Format("{0}{1:00}{2:00}", Result.Groups[1], RevisionNumber, 0);
+					string VersionString = String.Format("{0}{1:00}{2:00}", Result.Groups[1], RevisionNumber, 0);
 					return UInt64.TryParse(VersionString, out OutValue);
 				}
 			}
@@ -136,7 +134,6 @@ namespace UnrealBuildTool
 			OutValue = 0;
 			return false;
 		}
-
 
 		//public override SDKStatus PrintSDKInfoAndReturnValidity(LogEventType Verbosity, LogFormatOptions Options, LogEventType ErrorVerbosity, LogFormatOptions ErrorOptions)
 		//{
@@ -149,7 +146,6 @@ namespace UnrealBuildTool
 
 		//	return Validity;
 		//}
-
 
 		protected override bool PlatformSupportsAutoSDKs()
 		{
@@ -205,12 +201,16 @@ namespace UnrealBuildTool
 			// the SDK setup we can force this to be on to build AndroidTargetPlatform.
 			string? ForceAndroidSDK = Environment.GetEnvironmentVariable("FORCE_ANDROID_SDK_ENABLED");
 
+			// ANDROID_SDK_HOME defined messes up newer Android Gradle plugin finding of .android so clear it
+			Environment.SetEnvironmentVariable("ANDROID_SDK_HOME", null);
+
 			if (!String.IsNullOrEmpty(ForceAndroidSDK))
 			{
 				return true;
 			}
 
 			string? NDKPath = Environment.GetEnvironmentVariable("NDKROOT");
+			string? JavaPath = Environment.GetEnvironmentVariable("JAVA_HOME");
 			{
 				ConfigHierarchy configCacheIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, null, BuildHostPlatform.Current.Platform);
 				Dictionary<string, string> AndroidEnv = new Dictionary<string, string>();
@@ -224,7 +224,7 @@ namespace UnrealBuildTool
 				string path;
 				foreach (KeyValuePair<string, string> kvp in EnvVarNames)
 				{
-					if (GetPath(configCacheIni, "/Script/AndroidPlatformEditor.AndroidSDKSettings", kvp.Value, out path) && !string.IsNullOrEmpty(path))
+					if (GetPath(configCacheIni, "/Script/AndroidPlatformEditor.AndroidSDKSettings", kvp.Value, out path) && !String.IsNullOrEmpty(path))
 					{
 						AndroidEnv.Add(kvp.Key, path);
 					}
@@ -279,11 +279,13 @@ namespace UnrealBuildTool
 
 				// See if we have an NDK path now...
 				AndroidEnv.TryGetValue("NDKROOT", out NDKPath);
+				AndroidEnv.TryGetValue("JAVA_HOME", out JavaPath);
 			}
 
 			// we don't have an NDKROOT specified
 			if (String.IsNullOrEmpty(NDKPath))
 			{
+				Logger.LogInformation("NDKROOT not set");
 				return false;
 			}
 
@@ -292,8 +294,44 @@ namespace UnrealBuildTool
 			// need a supported llvm
 			if (!Directory.Exists(Path.Combine(NDKPath, @"toolchains/llvm")))
 			{
+				Logger.LogInformation("NDKROOT llvm missing");
 				return false;
 			}
+
+			// check JDK is valid
+			if (String.IsNullOrEmpty(JavaPath))
+			{
+				Logger.LogInformation("JAVA_HOME not set");
+				return false;
+			}
+			JavaPath = JavaPath.Replace("\"", "");
+			string JavaReleaseFile = Path.Combine(JavaPath, "release");
+			if (!File.Exists(JavaReleaseFile))
+			{
+				Logger.LogInformation("JAVA_HOME/release not found: {JavaReleaseFile}", JavaReleaseFile);
+				return false;
+			}
+
+			// check Java version
+			int JavaVersion = 0;
+			string[] JavaReleaseLines = File.ReadAllLines(JavaReleaseFile);
+			foreach (string LineContents in JavaReleaseLines)
+			{
+				if (LineContents.StartsWith("JAVA_VERSION="))
+				{
+					// JAVA_VERSION="17.0.6"
+					int VersionStartIndex = LineContents.IndexOf("\"");
+					int VersionStopIndex = LineContents.IndexOf(".");
+					Int32.TryParse(LineContents.Substring(VersionStartIndex, VersionStopIndex - VersionStartIndex), out JavaVersion);
+					break;
+				}
+			}
+			if (JavaVersion < 17)
+			{
+				Logger.LogInformation("JAVA_HOME release too old {JavaVersion}", JavaVersion);
+				return false;
+			}
+
 			return true;
 		}
 	}

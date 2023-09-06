@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequence.h"
-#include "ILevelSequenceMetaData.h"
+#include "IMovieSceneMetaData.h"
+#include "MovieSceneMetaData.h"
 #include "Engine/EngineTypes.h"
 #include "HAL/IConsoleManager.h"
 #include "Components/ActorComponent.h"
@@ -36,6 +37,8 @@
 #include "Compilation/MovieSceneCompiledDataManager.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Engine/AssetUserData.h"
+#include "Misc/App.h"
+#include "Misc/DateTime.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelSequence)
 
@@ -97,6 +100,12 @@ void ULevelSequence::Initialize()
 
 	int32 ClockSource = CVarDefaultClockSource.GetValueOnGameThread();
 	MovieScene->SetClockSource((EUpdateClockSource)ClockSource);
+
+#if WITH_EDITOR
+	UMovieSceneMetaData* MetaData = FindOrAddMetaData<UMovieSceneMetaData>();
+	MetaData->SetCreated(FDateTime::UtcNow());
+	MetaData->SetAuthor(FApp::GetSessionOwner());
+#endif
 }
 
 UObject* ULevelSequence::MakeSpawnableTemplateFromInstance(UObject& InSourceObject, FName ObjectName)
@@ -151,7 +160,7 @@ void ULevelSequence::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) co
 
 	for (UObject* MetaData : MetaDataObjects)
 	{
-		ILevelSequenceMetaData* MetaDataInterface = Cast<ILevelSequenceMetaData>(MetaData);
+		IMovieSceneMetaDataInterface* MetaDataInterface = Cast<IMovieSceneMetaDataInterface>(MetaData);
 		if (MetaDataInterface)
 		{
 			MetaDataInterface->ExtendAssetRegistryTags(OutTags);
@@ -165,7 +174,7 @@ void ULevelSequence::GetAssetRegistryTagMetadata(TMap<FName, FAssetRegistryTagMe
 {
 	for (UObject* MetaData : MetaDataObjects)
 	{
-		ILevelSequenceMetaData* MetaDataInterface = Cast<ILevelSequenceMetaData>(MetaData);
+		IMovieSceneMetaDataInterface* MetaDataInterface = Cast<IMovieSceneMetaDataInterface>(MetaData);
 		if (MetaDataInterface)
 		{
 			MetaDataInterface->ExtendAssetRegistryTagMetaData(OutMetadata);
@@ -264,6 +273,13 @@ void ULevelSequence::PostDuplicate(bool bDuplicateForPIE)
 		PostDuplicateEvent.Execute(this);
 	}
 #endif
+
+#if WITH_EDITOR
+	UMovieSceneMetaData* MetaData = FindOrAddMetaData<UMovieSceneMetaData>();
+	MetaData->SetCreated(FDateTime::UtcNow());
+	MetaData->SetAuthor(FApp::GetSessionOwner());
+	MetaData->SetNotes(FString()); // Intentionally clear the notes
+#endif
 }
 
 void ULevelSequence::PostLoad()
@@ -294,29 +310,32 @@ void ULevelSequence::PostLoad()
 		}
 	}
 
-	TSet<FGuid> InvalidSpawnables;
-
-	for (int32 Index = 0; Index < MovieScene->GetSpawnableCount(); ++Index)
+	if (MovieScene)
 	{
-		FMovieSceneSpawnable& Spawnable = MovieScene->GetSpawnable(Index);
-		if (!Spawnable.GetObjectTemplate())
-		{
-			if (Spawnable.GeneratedClass_DEPRECATED && Spawnable.GeneratedClass_DEPRECATED->ClassGeneratedBy)
-			{
-				const FName TemplateName = MakeUniqueObjectName(MovieScene, UObject::StaticClass(), Spawnable.GeneratedClass_DEPRECATED->ClassGeneratedBy->GetFName());
+		TSet<FGuid> InvalidSpawnables;
 
-				UObject* NewTemplate = NewObject<UObject>(MovieScene, Spawnable.GeneratedClass_DEPRECATED->GetSuperClass(), TemplateName);
-				if (NewTemplate)
+		for (int32 Index = 0; Index < MovieScene->GetSpawnableCount(); ++Index)
+		{
+			FMovieSceneSpawnable& Spawnable = MovieScene->GetSpawnable(Index);
+			if (!Spawnable.GetObjectTemplate())
+			{
+				if (Spawnable.GeneratedClass_DEPRECATED && Spawnable.GeneratedClass_DEPRECATED->ClassGeneratedBy)
 				{
-					Spawnable.CopyObjectTemplate(*NewTemplate, *this);
+					const FName TemplateName = MakeUniqueObjectName(MovieScene, UObject::StaticClass(), Spawnable.GeneratedClass_DEPRECATED->ClassGeneratedBy->GetFName());
+
+					UObject* NewTemplate = NewObject<UObject>(MovieScene, Spawnable.GeneratedClass_DEPRECATED->GetSuperClass(), TemplateName);
+					if (NewTemplate)
+					{
+						Spawnable.CopyObjectTemplate(*NewTemplate, *this);
+					}
 				}
 			}
-		}
 
-		if (!Spawnable.GetObjectTemplate())
-		{
-			InvalidSpawnables.Add(Spawnable.GetGuid());
-			UE_LOG(LogLevelSequence, Warning, TEXT("Spawnable '%s' with ID '%s' does not have a valid object template"), *Spawnable.GetName(), *Spawnable.GetGuid().ToString());
+			if (!Spawnable.GetObjectTemplate())
+			{
+				InvalidSpawnables.Add(Spawnable.GetGuid());
+				UE_LOG(LogLevelSequence, Warning, TEXT("Spawnable '%s' with ID '%s' does not have a valid object template"), *Spawnable.GetName(), *Spawnable.GetGuid().ToString());
+			}
 		}
 	}
 
@@ -417,10 +436,10 @@ bool ULevelSequence::CanPossessObject(UObject& Object, UObject* InPlaybackContex
 
 void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
 {
-	LocateBoundObjects(ObjectId, Context, {}, OutObjects);
+	LocateBoundObjects(ObjectId, Context, FLevelSequenceBindingReference::FResolveBindingParams(), OutObjects);
 }
 
-void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, const FTopLevelAssetPath& StreamedLevelAssetPath, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
+void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, const FLevelSequenceBindingReference::FResolveBindingParams& InResolveBindingParams, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
 {
 	// Handle legacy object references
 	UObject* Object = Context ? ObjectReferences.ResolveBinding(ObjectId, Context) : nullptr;
@@ -429,7 +448,7 @@ void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context,
 		OutObjects.Add(Object);
 	}
 
-	BindingReferences.ResolveBinding(ObjectId, Context, StreamedLevelAssetPath, OutObjects);
+	BindingReferences.ResolveBinding(ObjectId, Context, InResolveBindingParams, OutObjects);
 }
 
 FGuid ULevelSequence::FindBindingFromObject(UObject* InObject, UObject* Context) const
@@ -587,7 +606,7 @@ FGuid ULevelSequence::FindOrAddBinding(UObject* InObject)
 		{
 		public:
 			FMovieSceneRootEvaluationTemplateInstance Template;
-			virtual FMovieSceneRootEvaluationTemplateInstance& GetEvaluationTemplate() override { check(false); return Template; }
+			virtual FMovieSceneRootEvaluationTemplateInstance& GetEvaluationTemplate() override { return Template; }
 			virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) override {}
 			virtual void SetViewportSettings(const TMap<FViewportClient*, EMovieSceneViewportParams>& ViewportParamsMap) override {}
 			virtual void GetViewportSettings(TMap<FViewportClient*, EMovieSceneViewportParams>& ViewportParamsMap) const override {}

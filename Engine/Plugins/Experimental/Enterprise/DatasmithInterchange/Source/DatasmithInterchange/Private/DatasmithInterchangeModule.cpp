@@ -132,7 +132,6 @@ void FDatasmithInterchangeModule::OnImportInterchange()
 	FString Extensions;
 
 	FString DefaultLocation(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_IMPORT));
-
 	ObjectTools::AppendFormatsFileExtensions(Formats, FileTypes, Extensions);
 
 	const FString FormatString = FString::Printf(TEXT("All Files (%s)|%s|%s"), *Extensions, *Extensions, *FileTypes);

@@ -207,6 +207,11 @@ bool FCUDAModule::IsRHISelectedDevice(CUdevice cuDevice)
 						sizeof(AdapterLUID.HighPart))
 					== 0));
 		}
+		else if (RHIType == ERHIInterfaceType::OpenGL)
+		{
+			UE_LOG(LogCUDA, Warning, TEXT("CUDA is unsupported on OpenGL."));
+			return false;
+		}
 		else
 	#endif // PLATFORM_WINDOWS
 #endif	   // PLATFORM_SUPPORTS_CUDA

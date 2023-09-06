@@ -192,12 +192,13 @@ void SGraphEditorImpl::OnGraphChanged(const FEdGraphEditAction& InAction)
 		const bool bWasAddAction = (InAction.Action & GRAPHACTION_AddNode) != 0;
 		const bool bWasSelectAction = (InAction.Action & GRAPHACTION_SelectNode) != 0;
 		const bool bWasRemoveAction = (InAction.Action & GRAPHACTION_RemoveNode) != 0;
+		const bool bWasEditAction = (InAction.Action & GRAPHACTION_EditNode) != 0;
 
 		// If we did a 'default action' (or some other action not handled by SGraphPanel::OnGraphChanged
 		// or if we're using a schema that always needs a full refresh, then purge the current nodes
 		// and queue an update:
 		if (bSchemaRequiresFullRefresh || 
-			(!bWasAddAction && !bWasSelectAction && !bWasRemoveAction) )
+			(!bWasAddAction && !bWasSelectAction && !bWasRemoveAction && !bWasEditAction) )
 		{
 			GraphPanel->PurgeVisualRepresentation();
 			// Trigger the refresh
@@ -208,6 +209,13 @@ void SGraphEditorImpl::OnGraphChanged(const FEdGraphEditAction& InAction)
 		if (bWasAddAction)
 		{
 			NumNodesAddedSinceLastPointerPosition++;
+		}
+		else if (bWasEditAction && !bSchemaRequiresFullRefresh)
+		{
+			for (const UEdGraphNode* Node : InAction.Nodes)
+			{
+				RefreshNode(const_cast<UEdGraphNode&>(*Node));
+			}
 		}
 	}
 }
@@ -710,6 +718,12 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 			FText OverrideText = Appearance.Get().ReadOnlyText;
 			return !OverrideText.IsEmpty() ? OverrideText : DefaultText;
 		}
+
+		static FText GetWarningText(TAttribute<FGraphAppearanceInfo> Appearance, FText DefaultText)
+		{
+			FText OverrideText = Appearance.Get().WarningText;
+			return !OverrideText.IsEmpty() ? OverrideText : DefaultText;
+		}
 	};
 	
 	FText DefaultPIENotify(LOCTEXT("GraphSimulatingText", "SIMULATING"));
@@ -721,6 +735,11 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 	TAttribute<FText> ReadOnlyText = Appearance.IsBound() ?
 		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateStatic(&Local::GetReadOnlyText, Appearance, DefaultReadOnlyText)) :
 		TAttribute<FText>(DefaultReadOnlyText);
+
+	FText DefaultWarningText(LOCTEXT("GraphWarningText", ""));
+	TAttribute<FText> WarningText = Appearance.IsBound() ?
+		TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateStatic(&Local::GetWarningText, Appearance, DefaultWarningText)) :
+		TAttribute<FText>(DefaultWarningText);
 
 	TSharedPtr<SOverlay> OverlayWidget;
 
@@ -750,6 +769,8 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 			.OnDisallowedPinConnection( InArgs._GraphEvents.OnDisallowedPinConnection )
 			.ShowGraphStateOverlay(InArgs._ShowGraphStateOverlay)
 			.OnDoubleClicked(InArgs._GraphEvents.OnDoubleClicked)
+			.OnMouseButtonDown(InArgs._GraphEvents.OnMouseButtonDown)
+		    .OnNodeSingleClicked(InArgs._GraphEvents.OnNodeSingleClicked)
 		]
 
 		// Indicator of current zoom level
@@ -792,6 +813,18 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 					.Text(this, &SGraphEditorImpl::GetInstructionText)
 				]
 			]			
+		]
+
+		// Bottom-left corner text for Substrate
+		+SOverlay::Slot()
+		.Padding(10)
+		.VAlign(VAlign_Bottom)
+		.HAlign(HAlign_Left)
+		[
+			SNew(STextBlock)
+			.Visibility(EVisibility::Visible)
+			.TextStyle(FAppStyle::Get(), "Graph.WarningText")
+			.Text(WarningText)
 		]
 
 		// Bottom-right corner text indicating the type of tool

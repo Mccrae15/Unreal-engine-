@@ -32,10 +32,28 @@ TDelegate<IPakFile*(const FString&, int32)> FCoreDelegates::MountPak;
 TDelegate<bool(const FString&)> FCoreDelegates::OnUnmountPak;
 TDelegate<void()> FCoreDelegates::OnOptimizeMemoryUsageForMountedPaks;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TMulticastDelegate<void(const IPakFile&)> FCoreDelegates::OnPakFileMounted2;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+TTSMulticastDelegate<void(const IPakFile&)>& FCoreDelegates::GetOnPakFileMounted2()
+{
+	static TTSMulticastDelegate<void(const IPakFile&)> Singleton;
+	return Singleton;
+}
+
 TMulticastDelegate<void(const FString&)> FCoreDelegates::NewFileAddedDelegate;
 TMulticastDelegate<void()> FCoreDelegates::NoPakFilesMountedDelegate;
-TMulticastDelegate<void(const TCHAR*, const TCHAR*)> FCoreDelegates::OnFileOpenedForReadFromPakFile;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TMulticastDelegate<void(const TCHAR*, const TCHAR*), FNotThreadSafeNotCheckedDelegateUserPolicy> FCoreDelegates::OnFileOpenedForReadFromPakFile;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+TTSMulticastDelegate<void(const TCHAR*, const TCHAR*)>& FCoreDelegates::GetOnFileOpenedForReadFromPakFile()
+{
+	static TTSMulticastDelegate<void(const TCHAR*, const TCHAR*)> Singleton;
+	return Singleton;
+}
 
 TMulticastDelegate<void(bool, int32, int32)> FCoreDelegates::OnUserLoginChangedEvent;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -84,6 +102,8 @@ FSimpleMulticastDelegate FCoreDelegates::OnOutputDevicesInit;
 FSimpleMulticastDelegate FCoreDelegates::OnPostEngineInit;
 FSimpleMulticastDelegate FCoreDelegates::OnAllModuleLoadingPhasesComplete;
 FSimpleMulticastDelegate FCoreDelegates::OnFEngineLoopInitComplete;
+FSimpleMulticastDelegate FCoreDelegates::OnCommandletPreMain;
+FSimpleMulticastDelegate FCoreDelegates::OnCommandletPostMain;
 FSimpleMulticastDelegate FCoreDelegates::OnExit;
 FSimpleMulticastDelegate FCoreDelegates::OnPreExit;
 FSimpleMulticastDelegate FCoreDelegates::OnEnginePreExit;
@@ -94,7 +114,8 @@ FSimpleMulticastDelegate FCoreDelegates::OnSamplingInput;
 FSimpleMulticastDelegate FCoreDelegates::OnEndFrame;
 FSimpleMulticastDelegate FCoreDelegates::OnBeginFrameRT;
 FSimpleMulticastDelegate FCoreDelegates::OnEndFrameRT;
-TDelegate<EAppReturnType::Type(EAppMsgType::Type, const FText&, const FText&)> FCoreDelegates::ModalErrorMessage;
+FCoreDelegates::FOnNetworkConnectionChanged FCoreDelegates::OnNetworkConnectionChanged;
+TDelegate<EAppReturnType::Type(EAppMsgCategory, EAppMsgType::Type, const FText&, const FText&)> FCoreDelegates::ModalMessageDialog;
 TMulticastDelegate<void(const FString&, const FString&)> FCoreDelegates::OnInviteAccepted;
 TMulticastDelegate<void(class UWorld*, FIntVector, FIntVector)> FCoreDelegates::PreWorldOriginOffset;
 TMulticastDelegate<void(class UWorld*, FIntVector, FIntVector)> FCoreDelegates::PostWorldOriginOffset;
@@ -106,7 +127,17 @@ TMulticastDelegate<void()> FCoreDelegates::ApplicationWillDeactivateDelegate;
 TMulticastDelegate<void()> FCoreDelegates::ApplicationHasReactivatedDelegate;
 TMulticastDelegate<void()> FCoreDelegates::ApplicationWillEnterBackgroundDelegate;
 TMulticastDelegate<void()> FCoreDelegates::ApplicationHasEnteredForegroundDelegate;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 TMulticastDelegate<void()> FCoreDelegates::ApplicationWillTerminateDelegate;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+TTSMulticastDelegate<void()>& FCoreDelegates::GetApplicationWillTerminateDelegate()
+{
+	static TTSMulticastDelegate<void()> Singleton;
+	return Singleton;
+}
+
 TMulticastDelegate<void()> FCoreDelegates::ApplicationShouldUnloadResourcesDelegate;
 TMulticastDelegate<void(float)> FCoreDelegates::MobileBackgroundTickDelegate;
 
@@ -127,18 +158,6 @@ TMulticastDelegate<void(FString, int, int)> FCoreDelegates::ApplicationReceivedL
 
 TMulticastDelegate<void()> FCoreDelegates::ApplicationPerformFetchDelegate;
 TMulticastDelegate<void(FString)> FCoreDelegates::ApplicationBackgroundSessionEventDelegate;
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-TMulticastDelegate<void(const TCHAR*, int32&)> FCoreDelegates::CountPreLoadConfigFileRespondersDelegate;
-TMulticastDelegate<void(const TCHAR*, FString&)> FCoreDelegates::PreLoadConfigFileDelegate;
-TMulticastDelegate<void(const TCHAR*, const FString&, int32&)> FCoreDelegates::PreSaveConfigFileDelegate;
-TMulticastDelegate<void(const FConfigFile*)> FCoreDelegates::OnFConfigCreated;
-TMulticastDelegate<void(const FConfigFile*)> FCoreDelegates::OnFConfigDeleted;
-TMulticastDelegate<void(const TCHAR*, const TCHAR*, const TCHAR*)> FCoreDelegates::OnConfigValueRead;
-TMulticastDelegate<void(const TCHAR*, const TCHAR*)> FCoreDelegates::OnConfigSectionRead;
-TMulticastDelegate<void(const TCHAR*, const TCHAR*)> FCoreDelegates::OnConfigSectionNameRead;
-TMulticastDelegate<void(const FString&, const TSet<FString>&)> FCoreDelegates::OnConfigSectionsChanged;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 TTSMulticastDelegate<void(const TCHAR*, int32&)>& FCoreDelegates::TSCountPreLoadConfigFileRespondersDelegate()
 {
@@ -235,10 +254,6 @@ TMulticastDelegate<void()> FCoreDelegates::PreRenderingThreadDestroyed;
 
 TMulticastDelegate<void(int32)> FCoreDelegates::ApplicationReceivedScreenOrientationChangedNotificationDelegate;
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-TMulticastDelegate<void()> FCoreDelegates::ConfigReadyForUse;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 TTSMulticastDelegate<void()>& FCoreDelegates::TSConfigReadyForUse()
 {
 	static TTSMulticastDelegate<void()> Singleton;
@@ -248,14 +263,11 @@ TTSMulticastDelegate<void()>& FCoreDelegates::TSConfigReadyForUse()
 TDelegate<bool()> FCoreDelegates::IsLoadingMovieCurrentlyPlaying;
 
 TDelegate<bool(const TCHAR*)> FCoreDelegates::ShouldLaunchUrl;
+TDelegate<void(const FString&, FString*)> FCoreDelegates::LaunchCustomHandlerForURL;
 
 TMulticastDelegate<void(const FString&, FPlatformUserId)> FCoreDelegates::OnActivatedByProtocol;
 
 TMulticastDelegate<void(const FString&)> FCoreDelegates::OnGCFinishDestroyTimeExtended;
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-TMulticastDelegate<void(FCoreDelegates::FExtraBinaryConfigData&)> FCoreDelegates::AccessExtraBinaryConfigData;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 TTSMulticastDelegate<void(FCoreDelegates::FExtraBinaryConfigData&)>& FCoreDelegates::TSAccessExtraBinaryConfigData()
 {
@@ -334,7 +346,12 @@ CORE_API void RegisterEncryptionKeyCallback(TEncryptionKeyFunc InCallback)
 	});
 }
 
+TDelegate<const TCHAR*(void)> FCoreDelegates::OnGetBuildURL;
+TDelegate<const TCHAR*(void)> FCoreDelegates::OnGetExecutingJobURL;
+
 FSimpleMulticastDelegate FCoreDelegates::OnParentBeginFork;
 FSimpleMulticastDelegate FCoreDelegates::OnParentPreFork;
 TMulticastDelegate<void(EForkProcessRole /* ProcessRole */)> FCoreDelegates::OnPostFork;
 FSimpleMulticastDelegate FCoreDelegates::OnChildEndFramePostFork;
+FCoreDelegates::FOnDisallowedExecCommandCalled FCoreDelegates::OnDisallowedExecCommandCalled;
+FCoreDelegates::FOnNamedCommandParsed FCoreDelegates::OnNamedCommandParsed;

@@ -43,6 +43,7 @@
 #include "Materials/MaterialExpressionCurveAtlasRowParameter.h"
 #include "Curves/CurveLinearColorAtlas.h"
 #include "RenderUtils.h"
+#include "MaterialShared.h"
 
 #define LOCTEXT_NAMESPACE "MaterialEditor"
 
@@ -60,9 +61,6 @@ UEnum* GetBlendModeEnum()
 
 		// BLEND_TranslucentColoredTransmittance is only supported in Strata mode
 		BlendModeEnum->SetMetaData(TEXT("DisplayName"), TEXT("TranslucentColoredTransmittance"), BLEND_TranslucentColoredTransmittance);
-
-		// BLEND_AlphaComposite is identical to BLEND_Translucent in Strata mode
-		BlendModeEnum->SetMetaData(TEXT("Hidden"), TEXT("True"), BLEND_AlphaComposite);
 	}
 	else
 	{
@@ -780,7 +778,6 @@ TSharedRef<class IDetailCustomization> FMaterialDetailCustomization::MakeInstanc
 
 void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 {
-	static const auto CVarMaterialEnableControlFlow = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableControlFlow"));
 	static const auto CVarMaterialEnableNewHLSLGenerator = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableNewHLSLGenerator"));
 
 	TArray<TWeakObjectPtr<UObject> > Objects;
@@ -843,7 +840,7 @@ void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& Detai
 				BlendModeProperty->Enum = GetBlendModeEnum();
 			}
 
-			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, bEnableExecWire) && !CVarMaterialEnableControlFlow->GetValueOnAnyThread())
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, bEnableExecWire) && !AllowMaterialControlFlow())
 			{
 				DetailLayout.HideProperty(PropertyHandle);
 			}
@@ -903,7 +900,6 @@ TSharedRef<class IDetailCustomization> FMaterialFunctionDetailCustomization::Mak
 
 void FMaterialFunctionDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& DetailLayout)
 {
-	static const auto CVarMaterialEnableControlFlow = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableControlFlow"));
 	static const auto CVarMaterialEnableNewHLSLGenerator = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableNewHLSLGenerator"));
 
 	// MaterialFunction category
@@ -918,7 +914,7 @@ void FMaterialFunctionDetailCustomization::CustomizeDetails(IDetailLayoutBuilder
 			FProperty* Property = PropertyHandle->GetProperty();
 			FName PropertyName = Property->GetFName();
 
-			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterialFunction, bEnableExecWire) && !CVarMaterialEnableControlFlow->GetValueOnAnyThread())
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterialFunction, bEnableExecWire) && !AllowMaterialControlFlow())
 			{
 				DetailLayout.HideProperty(PropertyHandle);
 			}

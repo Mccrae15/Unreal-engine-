@@ -54,13 +54,14 @@ protected:
 	/** Overridden to make sure this component is only added to a MassVisualizer actor */
 	virtual void PostInitProperties() override;
 
+	void BuildLODSignificanceForInfo(FMassInstancedStaticMeshInfo& Info);
+
 	/** The information of all the instanced static meshes */
 	UPROPERTY(Transient)
 	TArray<FMassInstancedStaticMeshInfo> InstancedStaticMeshInfos;
 	UE_MT_DECLARE_RW_RECURSIVE_ACCESS_DETECTOR(InstancedStaticMeshInfosDetector);
 
-	FISMCSharedDataMap ISMCSharedData;
-
+	FMassISMCSharedDataMap ISMCSharedData;
 
 	/** Whether there is a need to create a StaticMeshComponent */
 	bool bNeedStaticMeshComponentConstruction = false;

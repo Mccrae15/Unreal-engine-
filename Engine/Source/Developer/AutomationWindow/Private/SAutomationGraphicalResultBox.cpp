@@ -72,7 +72,7 @@ void SAutomationGraphicalResultBox::PopulateData()
 {
 	//Get the report list
 	TArray< TSharedPtr< IAutomationReport > > AllReports;
-	AllReports = AutomationController->GetReports();
+	AllReports = AutomationController->GetEnabledReports();
 
 	//Find only the enabled tests
 	TArray< TSharedPtr< IAutomationReport > > EnabledReports;
@@ -111,6 +111,11 @@ void SAutomationGraphicalResultBox::PopulateData()
 					{
 						DeviceIt->TotalTestSuccesses++;
 						ClusterIt->TotalTestSuccesses++;
+					}
+					else if (TestResults.State == EAutomationState::Skipped)
+					{
+						DeviceIt->TotalTestSkips++;
+						ClusterIt->TotalTestSkips++;
 					}
 				}
 			}
@@ -155,7 +160,8 @@ void SAutomationGraphicalResultBox::CreateWidgets()
 		FFormatNamedArguments ClusterArgs;
 		ClusterArgs.Add(TEXT("Name"), FText::FromString(ClusterIt->ClusterName));
 		ClusterArgs.Add(TEXT("NumTests"), ClusterIt->TotalNumTests);
-		ClusterArgs.Add(TEXT("NumFails"), ClusterIt->TotalNumTests - ClusterIt->TotalTestSuccesses);
+		ClusterArgs.Add(TEXT("NumSkips"), ClusterIt->TotalTestSkips);
+		ClusterArgs.Add(TEXT("NumFails"), ClusterIt->TotalNumTests - ClusterIt->TotalTestSuccesses - ClusterIt->TotalTestSkips);
 		ClusterArgs.Add(TEXT("TotalTime"), ClusterIt->TotalTime);
 		ClusterArgs.Add(TEXT("ParallelTime"), ClusterIt->ParallelTime);
 
@@ -168,7 +174,7 @@ void SAutomationGraphicalResultBox::CreateWidgets()
 			[
 				SNew(STextBlock)
 				.TextStyle(FAutomationWindowStyle::Get(), "Automation.ReportHeader" )
-				.Text(FText::Format(LOCTEXT("AutomationGraphicalClusterHeader", "{Name}  -  {NumTests} Tests / {NumFails} Fails / {TotalTime} Seconds (Total) / {ParallelTime} Seconds (Parallel)"), ClusterArgs))
+				.Text(FText::Format(LOCTEXT("AutomationGraphicalClusterHeader", "{Name}  -  {NumTests} Tests / {NumFails} Fails / {NumSkips} Skips / {TotalTime} Seconds (Total) / {ParallelTime} Seconds (Parallel)"), ClusterArgs))
 			];
 
 		RowCounter++;
@@ -181,7 +187,8 @@ void SAutomationGraphicalResultBox::CreateWidgets()
 			//Add Device Header
 			FFormatNamedArguments DeviceArgs;
 			DeviceArgs.Add(TEXT("NumTests"), NumTests);
-			DeviceArgs.Add(TEXT("NumFails"), NumTests - DeviceIt->TotalTestSuccesses);
+			DeviceArgs.Add(TEXT("NumSkips"), DeviceIt->TotalTestSkips);
+			DeviceArgs.Add(TEXT("NumFails"), NumTests - DeviceIt->TotalTestSuccesses - DeviceIt->TotalTestSkips);
 			DeviceArgs.Add(TEXT("TotalTime"), DeviceIt->TotalTime);
 
 			GridContainer->AddSlot(0,RowCounter)
@@ -197,11 +204,16 @@ void SAutomationGraphicalResultBox::CreateWidgets()
 					+SVerticalBox::Slot()
 					[
 						SNew(STextBlock)
-						.Text(FText::Format(LOCTEXT("AutomationGraphicalDeviceHeader", "{NumTests} Tests / {NumFails} Fails / {TotalTime} Seconds"), DeviceArgs))
+						.Text(FText::Format(LOCTEXT("AutomationGraphicalDeviceHeader", "{NumTests} Tests / {NumFails} Fails / {NumSkips} Skips / {TotalTime} Seconds"), DeviceArgs))
 					]
 				];
 
 			TSharedRef<SHorizontalBox> TestContainer = SNew(SHorizontalBox);
+
+			// If there are too many tests then result blocks may become invisible because they get too tiny
+			// and margins are covering them up. Hence reducing the margins with relation to the number of tests.
+			int32 TestsNum = DeviceIt->Tests.Num();
+			float HorizontalMargin = TestsNum < 30 ? 1.0 : (TestsNum < 100 ? 0.5 : (TestsNum < 1000 ? 0.25 : 0.1));
 
 			for( int32 TestIndex = 0; TestIndex < DeviceIt->Tests.Num(); ++TestIndex)
 			{
@@ -214,7 +226,7 @@ void SAutomationGraphicalResultBox::CreateWidgets()
 				TestContainer->AddSlot()
 					.HAlign(HAlign_Fill)
 					.VAlign(VAlign_Fill)
-					.Padding( FMargin(1,5) )
+					.Padding( FMargin(HorizontalMargin, 5) )
 					.FillWidth(TestIt->Duration)
 					[
 						SNew(SOverlay)
@@ -254,12 +266,13 @@ void SAutomationGraphicalResultBox::CreateWidgets()
 					];
 			}
 
-			
-			GridContainer->AddSlot(1,RowCounter)
+			RowCounter++;
+
+			GridContainer->AddSlot(0,RowCounter)
 				.HAlign(HAlign_Fill)
 				.VAlign(VAlign_Center)
-				.Padding( FMargin(1,3) )
-				.ColumnSpan(9)
+				.Padding( FMargin(1,0) )
+				.ColumnSpan(11)
 				[
 					SNew(SHorizontalBox)
 					+SHorizontalBox::Slot()

@@ -10,11 +10,13 @@
 #include "AbcPolyMesh.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/ParallelFor.h"
-#include "MaterialDomain.h"
-#include "MeshUtilities.h"
 #include "GeometryCacheMeshData.h"
-#include "Materials/Material.h"
 #include "Logging/TokenizedMessage.h"
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
+#include "MeshUtilities.h"
+#include "Misc/PackageName.h"
+#include "PackageTools.h"
 #include "RenderMath.h"
 #include "UObject/Package.h"
 
@@ -1202,9 +1204,9 @@ void AbcImporterUtilities::GenerateDeltaFrameDataMatrix(const TArray<FVector3f>&
 		const int32 ComponentIndexOffset = (VertexIndex + AverageVertexOffset) * 3;
 		const FVector AverageDifference = ((FVector)AverageVertexData[VertexIndex + AverageVertexOffset] + SamplePositionOffset) - (FVector)FrameVertexData[VertexIndex];
 
-		OutGeneratedMatrix[VertexOffset + ComponentIndexOffset + 0] = AverageDifference.X;
-		OutGeneratedMatrix[VertexOffset + ComponentIndexOffset + 1] = AverageDifference.Y;
-		OutGeneratedMatrix[VertexOffset + ComponentIndexOffset + 2] = AverageDifference.Z;
+		OutGeneratedMatrix[VertexOffset + ComponentIndexOffset + 0] = static_cast<float>(AverageDifference.X);
+		OutGeneratedMatrix[VertexOffset + ComponentIndexOffset + 1] = static_cast<float>(AverageDifference.Y);
+		OutGeneratedMatrix[VertexOffset + ComponentIndexOffset + 2] = static_cast<float>(AverageDifference.Z);
 	}
 
 	const uint32 NumIndices = FrameNormalData.Num();
@@ -1215,9 +1217,9 @@ void AbcImporterUtilities::GenerateDeltaFrameDataMatrix(const TArray<FVector3f>&
 		const int32 ComponentIndexOffset = (Index + AverageIndexOffset) * 3;
 		const FVector AverageNormal = (FVector)AverageNormalData[Index + AverageIndexOffset] - (FVector)FrameNormalData[Index];
 
-		OutGeneratedNormalsMatrix[IndexOffset + ComponentIndexOffset + 0] = AverageNormal.X;
-		OutGeneratedNormalsMatrix[IndexOffset + ComponentIndexOffset + 1] = AverageNormal.Y;
-		OutGeneratedNormalsMatrix[IndexOffset + ComponentIndexOffset + 2] = AverageNormal.Z;
+		OutGeneratedNormalsMatrix[IndexOffset + ComponentIndexOffset + 0] = static_cast<float>(AverageNormal.X);
+		OutGeneratedNormalsMatrix[IndexOffset + ComponentIndexOffset + 1] = static_cast<float>(AverageNormal.Y);
+		OutGeneratedNormalsMatrix[IndexOffset + ComponentIndexOffset + 2] = static_cast<float>(AverageNormal.Z);
 	}
 }
 
@@ -1274,7 +1276,7 @@ void AbcImporterUtilities::GenerateCompressedMeshData(FCompressedAbcData& Compre
 		for (uint32 CurveSampleIndex = 0; CurveSampleIndex < NumSamples; ++CurveSampleIndex)
 		{
 			CurveValues.Add(BasesWeights[BaseIndex + (OriginalNumberOfSingularValues * CurveSampleIndex)]);
-			TimeValues.Add(StartTime + (SampleTimeStep * CurveSampleIndex));
+			TimeValues.Add(StartTime + (SampleTimeStep * static_cast<float>(CurveSampleIndex)));
 		}
 	}
 }
@@ -1282,8 +1284,8 @@ void AbcImporterUtilities::GenerateCompressedMeshData(FCompressedAbcData& Compre
 void AbcImporterUtilities::CalculateNewStartAndEndFrameIndices(const float FrameStepRatio, int32& InOutStartFrameIndex, int32& InOutEndFrameIndex )
 {
 	// Using the calculated ratio we recompute the start/end frame indices
-	InOutStartFrameIndex = FMath::Max(FMath::FloorToInt(InOutStartFrameIndex * FrameStepRatio), 0);
-	InOutEndFrameIndex = FMath::CeilToInt(InOutEndFrameIndex * FrameStepRatio);
+	InOutStartFrameIndex = FMath::Max(FMath::FloorToInt(static_cast<float>(InOutStartFrameIndex) * FrameStepRatio), 0);
+	InOutEndFrameIndex = FMath::CeilToInt(static_cast<float>(InOutEndFrameIndex) * FrameStepRatio);
 }
 
 bool AbcImporterUtilities::AreVerticesEqual(const FSoftSkinVertex& V1, const FSoftSkinVertex& V2)
@@ -1460,8 +1462,9 @@ bool AbcImporterUtilities::IsObjectVisibilityConstant(const Alembic::Abc::IObjec
 
 FBoxSphereBounds AbcImporterUtilities::ExtractBounds(Alembic::Abc::IBox3dProperty InBoxBoundsProperty)
 {
-	FBoxSphereBounds Bounds(ForceInitToZero);
-        // Extract data only if the property is found	
+	FBoxSphereBounds::Builder BoundsBuilder;
+
+	// Extract data only if the property is found	
 	if (InBoxBoundsProperty.valid())
 	{
 		const int32 NumSamples = InBoxBoundsProperty.getNumSamples();
@@ -1469,15 +1472,17 @@ FBoxSphereBounds AbcImporterUtilities::ExtractBounds(Alembic::Abc::IBox3dPropert
 		{
 			Alembic::Abc::Box3d BoundsSample;
 			InBoxBoundsProperty.get(BoundsSample, SampleIndex);
-                        // Set up bounds from Alembic data format
+
+			// Set up bounds from Alembic data format
 			const Imath::V3d BoundSize = BoundsSample.size();
 			const Imath::V3d BoundCenter = BoundsSample.center();
 			const FBoxSphereBounds ConvertedBounds(FVector(BoundCenter.x, BoundCenter.y, BoundCenter.z), FVector(BoundSize.x  * 0.5f, BoundSize.y * 0.5f, BoundSize.z * 0.5f), (const float)BoundSize.length() * 0.5f);
-			Bounds = ( SampleIndex == 0 ) ? ConvertedBounds : Bounds + ConvertedBounds;
+
+			BoundsBuilder += ConvertedBounds;
 		}
 	}
 
-	return Bounds;
+	return BoundsBuilder;
 }
 
 void AbcImporterUtilities::ApplyConversion(FMatrix& InOutMatrix, const FAbcConversionSettings& InConversionSettings)
@@ -1625,7 +1630,7 @@ void AbcImporterUtilities::GeometryCacheDataForMeshSample(FGeometryCacheMeshData
 }
 
 void AbcImporterUtilities::MergePolyMeshesToMeshData(int32 FrameIndex, int32 FrameStart, float SecondsPerFrame, bool bUseVelocitiesAsMotionVectors,
-	const TArray<FAbcPolyMesh*>& PolyMeshes, const TArray<FString>& UniqueFaceSetNames,
+	const TArray<FAbcPolyMesh*>& PolyMeshes, const TArray<FString>& UniqueFaceSetNames, float& FrameTime,
 	FGeometryCacheMeshData& MeshData, int32& PreviousNumVertices, bool& bConstantTopology, bool bStoreImportedVertexNumbers)
 {
 	FAbcMeshSample MergedSample;
@@ -1640,6 +1645,7 @@ void AbcImporterUtilities::MergePolyMeshesToMeshData(int32 FrameIndex, int32 Fra
 			if (PolyMesh->GetVisibility(FrameIndex))
 			{
 				const FAbcMeshSample* Sample = PolyMesh->GetSample(FrameIndex);
+				FrameTime = PolyMesh->GetTimeForFrameIndex(FrameIndex);
 				AbcImporterUtilities::AppendMeshSample(&MergedSample, Sample);
 				if (PolyMesh->FaceSetNames.Num() == 0)
 				{
@@ -1684,36 +1690,40 @@ UMaterialInterface* AbcImporterUtilities::RetrieveMaterial(FAbcFile& AbcFile, co
 	if (CachedMaterial)
 	{
 		Material = *CachedMaterial;
+
+		// Setup package name next to InParent
+		FString NewPackageName = FPackageName::GetLongPackagePath(InParent->GetOutermost()->GetPathName()) + TEXT("/") + MaterialName;
+		NewPackageName = UPackageTools::SanitizePackageName(NewPackageName);
+
 		// Material could have been deleted if we're overriding/reimporting an asset
 		if (Material->IsValidLowLevel())
 		{
 			if (Material->GetOuter() == GetTransientPackage())
 			{
-				UMaterial* ExistingTypedObject = FindObject<UMaterial>(InParent, *MaterialName);
-				if (!ExistingTypedObject)
+				UPackage* Package = CreatePackage(*NewPackageName);
+				UObject* ExistingObject = FindObject<UObject>(Package, *MaterialName);
+				if (ExistingObject)
 				{
-					// This is in for safety, as we do not expect this to happen
-					UObject* ExistingObject = FindObject<UObject>(InParent, *MaterialName);
-					if (ExistingObject)
-					{
-						return nullptr;
-					}
+					return Cast<UMaterial>(ExistingObject);
+				}
 
-					Material->Rename(*MaterialName, InParent);				
-					Material->SetFlags(Flags);
-					FAssetRegistryModule::AssetCreated(Material);
-				}
-				else
-				{
-					ExistingTypedObject->PreEditChange(nullptr);
-					Material = ExistingTypedObject;
-				}
+				Material->Rename(*MaterialName, Package);				
+				Material->SetFlags(Flags);
+				FAssetRegistryModule::AssetCreated(Material);
 			}
 		}
 		else
 		{
+			// #ueent_todo: Revisit this code path
 			// In this case recreate the material
-			Material = NewObject<UMaterial>(InParent, *MaterialName);
+			UPackage* Package = CreatePackage(*NewPackageName);
+			UObject* ExistingObject = FindObject<UObject>(Package, *MaterialName);
+			if (ExistingObject)
+			{
+				return Cast<UMaterial>(ExistingObject);
+			}
+
+			Material = NewObject<UMaterial>(Package, *MaterialName);
 			Material->SetFlags(Flags);
 			FAssetRegistryModule::AssetCreated(Material);
 		}

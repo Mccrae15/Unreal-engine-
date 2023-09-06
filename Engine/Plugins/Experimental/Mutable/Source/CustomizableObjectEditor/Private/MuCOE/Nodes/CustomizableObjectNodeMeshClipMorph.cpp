@@ -87,11 +87,17 @@ void UCustomizableObjectNodeMeshClipMorph::ChangeStartOffsetTransform()
 }
 
 
+UEdGraphPin* UCustomizableObjectNodeMeshClipMorph::OutputPin() const
+{
+	return FindPin(TEXT("Material"));
+}
+
+
 void UCustomizableObjectNodeMeshClipMorph::PostEditChangeProperty(FPropertyChangedEvent & PropertyChangedEvent)
 {
 	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 
-	const FName PropertyName = Helper_GetPropertyName(PropertyChangedEvent);
+	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
 
 	if (PropertyName == "bLocalStartOffset")
 	{

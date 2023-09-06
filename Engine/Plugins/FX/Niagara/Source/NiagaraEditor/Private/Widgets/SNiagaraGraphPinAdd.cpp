@@ -8,6 +8,7 @@
 #include "NiagaraNodeParameterMapBase.h"
 #include "NiagaraNodeWithDynamicPins.h"
 #include "NiagaraScript.h"
+#include "NiagaraScriptSource.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
 #include "ViewModels/TNiagaraViewModelManager.h"
 #include "Widgets/SNiagaraParameterMenu.h"
@@ -126,9 +127,9 @@ TSharedRef<SWidget> SNiagaraGraphPinAdd::OnGetAddButtonMenuContent()
 		.Graphs(InGraphs)
 		.AvailableParameterDefinitions(ScriptViewModel->GetAvailableParameterDefinitions(bSkipSubscribedLibraries))
 		.SubscribedParameterDefinitions(ScriptViewModel->GetSubscribedParameterDefinitions())
-		.OnNewParameterRequested_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AddParameter, ConstAddPin)
+		.OnNewParameterRequested_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AddParameter, ConstAddPin->Direction)
 		.OnSpecificParameterRequested_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AddExistingParameter, ConstAddPin)
-		.OnAddScriptVar_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AddParameter, ConstAddPin)
+		.OnAddScriptVar_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AddParameter, ConstAddPin->Direction)
 		.OnAddParameterDefinitions(ScriptViewModel.ToSharedRef(), &FNiagaraScriptViewModel::SubscribeToParameterDefinitions)
 		.OnAllowMakeType_UObject(OwningNode, &UNiagaraNodeWithDynamicPins::AllowNiagaraTypeForAddPin) 
 		.AllowCreatingNew(true)

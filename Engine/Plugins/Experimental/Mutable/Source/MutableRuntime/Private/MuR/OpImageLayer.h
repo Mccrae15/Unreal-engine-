@@ -7,6 +7,8 @@
 #include "Async/ParallelFor.h"
 #include "Templates/UnrealTemplate.h"
 
+#include "MuR/OpImageBlend.h"
+
 namespace mu
 {
 	inline bool IsAnyComponentLargerThan1( FVector4f v )
@@ -15,11 +17,11 @@ namespace mu
 	}
 	
 
-	//---------------------------------------------------------------------------------------------
-	//! Apply a blending function to an image with a colour source
-	//---------------------------------------------------------------------------------------------
+	/** Apply a blending function to an image with a colour source.
+	* It only affects the RGB or L channels, leaving alpha untouched.
+	*/
 	template< unsigned (*BLEND_FUNC)(unsigned,unsigned), bool CLAMP >
-    inline void BufferLayerColour( Image* pResult, const Image* pBase, vec3<float> col )
+    inline void BufferLayerColour( Image* pResult, const Image* pBase, FVector4f col )
 	{
         check( pResult->GetFormat() == pBase->GetFormat() );
         check( pResult->GetSizeX() == pBase->GetSizeX() );
@@ -31,92 +33,109 @@ namespace mu
         uint8* pDestBuf = pResult->GetData();
         const uint8* pBaseBuf = pBase->GetData();
 
-		unsigned top[3];
-		top[0] = (unsigned)(255 * col[0]);
-		top[1] = (unsigned)(255 * col[1]);
-		top[2] = (unsigned)(255 * col[2]);
+		uint32 top[3];
+		top[0] = uint32(255 * col[0]);
+		top[1] = uint32(255 * col[1]);
+		top[2] = uint32(255 * col[2]);
 
 		// Generic implementation
-		int32 pixelCount = pBase->CalculatePixelCount();
+		const int32 PixelCount = pBase->CalculatePixelCount();
 
-		constexpr int PixelCountConcurrencyThreshold = 0xff;
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
 
 		switch (baseFormat)
 		{
 		case EImageFormat::IF_RGB_UBYTE:
 		{
-			const auto& ProcessPixel = [
-				pBaseBuf, pDestBuf, top
-			] (uint32 i)
+			auto ProcessBatch =
+			[
+				pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems
+			] (int32 BatchId)
 			{
-				for (int c = 0; c < 3; ++c)
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
-					unsigned base = pBaseBuf[3 * i + c];
-					unsigned result = BLEND_FUNC(base, top[c]);
-					if (CLAMP)
+					for (int c = 0; c < 3; ++c)
 					{
-						pDestBuf[3 * i + c] = (uint8)FMath::Min(255u, result);
-					}
-					else
-					{
-						pDestBuf[3 * i + c] = (uint8)result;
+						unsigned base = pBaseBuf[3 * i + c];
+						unsigned result = BLEND_FUNC(base, top[c]);
+						if constexpr (CLAMP)
+						{
+							pDestBuf[3 * i + c] = (uint8)FMath::Min(255u, result);
+						}
+						else
+						{
+							pDestBuf[3 * i + c] = (uint8)result;
+						}
 					}
 				}
 			};
 
-			if (pixelCount > PixelCountConcurrencyThreshold)
+			if (NumBatches == 1)
 			{
-				ParallelFor(pixelCount, ProcessPixel);
+				ProcessBatch(0);
 			}
-			else
+			else if (NumBatches > 1)
 			{
-				for ( int p=0; p< pixelCount; ++p )
-				{
-					ProcessPixel(p);
-				}
+				ParallelFor(NumBatches, ProcessBatch);
 			}
+
 			break;
 		}
 		case EImageFormat::IF_RGBA_UBYTE:
 		{
-			const auto& ProcessPixel = [
-				pBaseBuf, pDestBuf, top
-			] (uint32 i)
+			auto ProcessBatch = 
+			[
+				pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems
+			] (int32 BatchId)
 			{
-				for (int c = 0; c < 3; ++c)
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
-					unsigned base = pBaseBuf[4 * i + c];
-					unsigned result = BLEND_FUNC(base, top[c]);
-					if (CLAMP)
+					for (int c = 0; c < 3; ++c)
 					{
-						pDestBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+						unsigned base = pBaseBuf[4 * i + c];
+						unsigned result = BLEND_FUNC(base, top[c]);
+						if constexpr (CLAMP)
+						{
+							pDestBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+						}
+						else
+						{
+							pDestBuf[4 * i + c] = (uint8)result;
+						}
 					}
-					else
-					{
-						pDestBuf[4 * i + c] = (uint8)result;
-					}
+					pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
 				}
-				pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
 			};
 
-			if (pixelCount > PixelCountConcurrencyThreshold)
+			if (NumBatches == 1)
 			{
-				ParallelFor(pixelCount, ProcessPixel);
+				ProcessBatch(0);
 			}
-			else
+			else if (NumBatches > 1)
 			{
-				for (int p = 0; p < pixelCount; ++p)
-				{
-					ProcessPixel(p);
-				}
+				ParallelFor(NumBatches, ProcessBatch);
 			}
+
 			break;
 		}
 		case EImageFormat::IF_BGRA_UBYTE:
 		{
-			const auto& ProcessPixel = [
-					pBaseBuf, pDestBuf, top
-				] (uint32 i)
+			auto ProcessBatch =
+			[
+				pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems
+			] (int32 BatchId)
+			{
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
 					for (int c = 0; c < 3; ++c)
 					{
@@ -132,30 +151,35 @@ namespace mu
 						}
 					}
 					pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
-				};
-
-			if (pixelCount > PixelCountConcurrencyThreshold)
-			{
-				ParallelFor(pixelCount, ProcessPixel);
-			}
-			else
-			{
-				for (int p = 0; p < pixelCount; ++p)
-				{
-					ProcessPixel(p);
 				}
+			};
+
+			if (NumBatches == 1)
+			{
+				ProcessBatch(0);
 			}
+			else if (NumBatches > 1)
+			{
+				ParallelFor(NumBatches, ProcessBatch);
+			}
+
 			break;
 		}
 		case EImageFormat::IF_L_UBYTE:
 		{
-			const auto& ProcessPixel = [
-					pBaseBuf, pDestBuf, top
-				] (uint32 i)
+			auto ProcessBatch = 
+			[
+				pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems
+			] (int32 BatchId)
+			{
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
 					unsigned base = pBaseBuf[i];
 					unsigned result = BLEND_FUNC(base, top[0]);
-					if (CLAMP)
+					if constexpr (CLAMP)
 					{
 						pDestBuf[i] = (uint8)FMath::Min(255u, result);
 					}
@@ -163,20 +187,18 @@ namespace mu
 					{
 						pDestBuf[i] = (uint8)result;
 					}
-				};
-
-
-			if (pixelCount > PixelCountConcurrencyThreshold)
-			{
-				ParallelFor(pixelCount, ProcessPixel);
-			}
-			else
-			{
-				for (int p = 0; p < pixelCount; ++p)
-				{
-					ProcessPixel(p);
 				}
+			};
+
+			if (NumBatches == 1)
+			{
+				ProcessBatch(0);
 			}
+			else if (NumBatches > 1)
+			{
+				ParallelFor(NumBatches, ProcessBatch);
+			}
+
 			break;
 		}
 
@@ -222,141 +244,160 @@ namespace mu
 		top[2] = (unsigned)(255 * Col[2]);
 
 		// Generic implementation
-		int32 pixelCount = Base->CalculatePixelCount();
+		int32 PixelCount = Base->CalculatePixelCount();
 
-		constexpr int PixelCountConcurrencyThreshold = 0xff;
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
 
 		switch (baseFormat)
 		{
 		case EImageFormat::IF_RGB_UBYTE:
 		{
 			// There is no alpha so we assume 255
-			const auto& ProcessPixel = [ pDestBuf, top ] (uint32 i)
+			auto ProcessBatch =
+				[ pDestBuf, top, PixelCount, NumBatchElems ] (uint32 BatchId)
 			{
-				for (int c = 0; c < 3; ++c)
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
-					unsigned base = 255;
-					unsigned result = BLEND_FUNC(base, top[c]);
-					if (CLAMP)
+					for (int c = 0; c < 3; ++c)
 					{
-						pDestBuf[3 * i + c] = (uint8)FMath::Min(255u, result);
-					}
-					else
-					{
-						pDestBuf[3 * i + c] = (uint8)result;
+						unsigned base = 255;
+						unsigned result = BLEND_FUNC(base, top[c]);
+						if constexpr (CLAMP)
+						{
+							pDestBuf[3 * i + c] = (uint8)FMath::Min(255u, result);
+						}
+						else
+						{
+							pDestBuf[3 * i + c] = (uint8)result;
+						}
 					}
 				}
 			};
 
-			if (pixelCount > PixelCountConcurrencyThreshold)
+			if (NumBatches == 1)
 			{
-				ParallelFor(pixelCount, ProcessPixel);
+				ProcessBatch(0);
 			}
-			else
+			else if (NumBatches > 1)
 			{
-				for (int p = 0; p < pixelCount; ++p)
-				{
-					ProcessPixel(p);
-				}
+				ParallelFor(NumBatches, ProcessBatch);
 			}
+
 			break;
 		}
 		case EImageFormat::IF_RGBA_UBYTE:
 		{
-			const auto& ProcessPixel = [ pBaseBuf, pDestBuf, top ] (uint32 i)
-			{
-				for (int c = 0; c < 3; ++c)
+			auto ProcessBatch =
+				[ pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems ] (uint32 BatchId)
+			{	
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
-					unsigned base = pBaseBuf[4 * i + 3];
-					unsigned result = BLEND_FUNC(base, top[c]);
-					if (CLAMP)
+					for (int c = 0; c < 3; ++c)
 					{
-						pDestBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+						unsigned base = pBaseBuf[4 * i + 3];
+						unsigned result = BLEND_FUNC(base, top[c]);
+						if constexpr (CLAMP)
+						{
+							pDestBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+						}
+						else
+						{
+							pDestBuf[4 * i + c] = (uint8)result;
+						}
 					}
-					else
-					{
-						pDestBuf[4 * i + c] = (uint8)result;
-					}
+					pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
 				}
-				pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
 			};
 
-			if (pixelCount > PixelCountConcurrencyThreshold)
+			if (NumBatches == 1)
 			{
-				ParallelFor(pixelCount, ProcessPixel);
+				ProcessBatch(0);
 			}
-			else
+			else if (NumBatches > 1)
 			{
-				for (int p = 0; p < pixelCount; ++p)
-				{
-					ProcessPixel(p);
-				}
+				ParallelFor(NumBatches, ProcessBatch);
 			}
+
 			break;
 		}
 		case EImageFormat::IF_BGRA_UBYTE:
-		{
-			const auto& ProcessPixel = [ pBaseBuf, pDestBuf, top ] (uint32 i)
+		{	
+			auto ProcessBatch =
+				[ pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems ] (uint32 BatchId)
 			{
-				for (int c = 0; c < 3; ++c)
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
-					unsigned base = pBaseBuf[4 * i + 3];
-					unsigned result = BLEND_FUNC(base, top[2 - c]);
-					if (CLAMP)
+					for (int c = 0; c < 3; ++c)
 					{
-						pDestBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+						unsigned base = pBaseBuf[4 * i + 3];
+						unsigned result = BLEND_FUNC(base, top[2 - c]);
+						if constexpr (CLAMP)
+						{
+							pDestBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+						}
+						else
+						{
+							pDestBuf[4 * i + c] = (uint8)result;
+						}
 					}
-					else
-					{
-						pDestBuf[4 * i + c] = (uint8)result;
-					}
+					pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
 				}
-				pDestBuf[4 * i + 3] = pBaseBuf[4 * i + 3];
 			};
 
-			if (pixelCount > PixelCountConcurrencyThreshold)
+			if (NumBatches == 1)
 			{
-				ParallelFor(pixelCount, ProcessPixel);
+				ProcessBatch(0);
 			}
-			else
+			else if (NumBatches > 1)
 			{
-				for (int p = 0; p < pixelCount; ++p)
-				{
-					ProcessPixel(p);
-				}
+				ParallelFor(NumBatches, ProcessBatch);
 			}
+
 			break;
 		}
 		case EImageFormat::IF_L_UBYTE:
 		{
-			const auto& ProcessPixel = [ pBaseBuf, pDestBuf, top ] (uint32 i)
+			auto ProcessBatch =
+				[ pBaseBuf, pDestBuf, top, PixelCount, NumBatchElems ] (uint32 BatchId)
 			{
-				// There is no alpha so we assume 255
-				unsigned base = 255;
-				unsigned result = BLEND_FUNC(base, top[0]);
-				if (CLAMP)
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
-					pDestBuf[i] = (uint8)FMath::Min(255u, result);
-				}
-				else
-				{
-					pDestBuf[i] = (uint8)result;
+					// There is no alpha so we assume 255
+					unsigned base = 255;
+					unsigned result = BLEND_FUNC(base, top[0]);
+					if constexpr (CLAMP)
+					{
+						pDestBuf[i] = (uint8)FMath::Min(255u, result);
+					}
+					else
+					{
+						pDestBuf[i] = (uint8)result;
+					}
 				}
 			};
 
-
-				if (pixelCount > PixelCountConcurrencyThreshold)
-				{
-					ParallelFor(pixelCount, ProcessPixel);
-				}
-				else
-				{
-					for (int p = 0; p < pixelCount; ++p)
-					{
-						ProcessPixel(p);
-					}
-				}
-				break;
+			if (NumBatches == 1)
+			{
+				ProcessBatch(0);
+			}
+			else if (NumBatches > 1)
+			{
+				ParallelFor(NumBatches, ProcessBatch);
+			}
+			break;
 		}
 
 		default:
@@ -390,14 +431,15 @@ namespace mu
 		uint32 CHANNELS_TO_BLEND,
 		// Number of total channels in the base image
 		int32 BASE_CHANNEL_STRIDE >
-    inline void BufferLayerColourFormat( uint8* StartDestBuf, const Image* Base, const Image* Mask, FVector4f Col, uint32 BaseOffset, bool bOnlyOneMip )
+    inline void BufferLayerColourFormat( uint8* StartDestBuf, const Image* Base, const Image* Mask, FVector4f Col, uint32 BaseOffset, uint8 ColorOffset, bool bOnlyOneMip )
 	{
 		check(CHANNELS_TO_BLEND+BaseOffset<=BASE_CHANNEL_STRIDE);
 
-		unsigned top[3];
-		top[0] = (unsigned)(255 * Col[0]);
-		top[1] = (unsigned)(255 * Col[1]);
-		top[2] = (unsigned)(255 * Col[2]);
+		uint32 top[4];
+		top[0] = uint32(255 * Col[0]);
+		top[1] = uint32(255 * Col[1]);
+		top[2] = uint32(255 * Col[2]);
+		top[3] = uint32(255 * Col[3]);
 
 		uint8* pDestBuf = StartDestBuf+ BaseOffset;
         const uint8* pMaskBuf = Mask->GetData();
@@ -414,6 +456,8 @@ namespace mu
         bool isUncompressed = ( maskFormat == EImageFormat::IF_L_UBYTE );
 
 		constexpr uint32 NumColorChannels = FMath::Min(CHANNELS_TO_BLEND,3u);
+		check(NumColorChannels+ColorOffset<4);
+
         if ( isUncompressed )
         {
             int32 pixelCount = Base->CalculatePixelCount();
@@ -423,7 +467,7 @@ namespace mu
                 for ( int32 c=0; c<NumColorChannels; ++c )
                 {
                     unsigned base = pBaseBuf[BASE_CHANNEL_STRIDE *i+c];
-                    unsigned result = BLEND_FUNC_MASKED( base, top[c], mask );
+                    unsigned result = BLEND_FUNC_MASKED( base, top[c+ColorOffset], mask );
                     if ( CLAMP )
                     {
                         pDestBuf[BASE_CHANNEL_STRIDE *i+c] = (uint8)FMath::Min( 255u, result );
@@ -445,10 +489,6 @@ namespace mu
         {
             int rows = Base->GetSizeY();
             int width = Base->GetSizeX();
-
-			// debug test
-			ImagePtr TempDecodedMask = new Image(Mask->GetSizeX(), Mask->GetSizeY(), Mask->GetLODCount(), EImageFormat::IF_L_UBYTE);
-			UncompressRLE_L(Mask, TempDecodedMask.get());
 
             for (int32 lod=0;lod<LODCount; ++lod)
             {
@@ -480,7 +520,7 @@ namespace mu
                                 for ( int32 c=0; c<NumColorChannels; ++c )
                                 {
                                     unsigned base = pBaseBuf[BASE_CHANNEL_STRIDE *i+c];
-                                    unsigned result = BLEND_FUNC( base, top[c] );
+                                    unsigned result = BLEND_FUNC( base, top[c+ColorOffset] );
                                     if ( CLAMP )
                                     {
                                         pDestBuf[BASE_CHANNEL_STRIDE *i+c] = (uint8)FMath::Min( 255u, result );
@@ -505,7 +545,7 @@ namespace mu
                                 for ( int32 c=0; c<NumColorChannels; ++c )
                                 {
                                     unsigned base = pBaseBuf[BASE_CHANNEL_STRIDE *i+c];
-                                    unsigned result = BLEND_FUNC_MASKED( base, top[c], equalPixel );
+                                    unsigned result = BLEND_FUNC_MASKED( base, top[c+ColorOffset], equalPixel );
                                     if ( CLAMP )
                                     {
                                         pDestBuf[BASE_CHANNEL_STRIDE *i+c] = (uint8)FMath::Min( 255u, result );
@@ -542,7 +582,7 @@ namespace mu
                             {
                                 unsigned mask = pMaskBuf[i];
                                 unsigned base = pBaseBuf[BASE_CHANNEL_STRIDE *i+c];
-                                unsigned result = BLEND_FUNC_MASKED( base, top[c], mask );
+                                unsigned result = BLEND_FUNC_MASKED( base, top[c+ColorOffset], mask );
                                 if ( CLAMP )
                                 {
                                     pDestBuf[BASE_CHANNEL_STRIDE *i+c] = (uint8)FMath::Min( 255u, result );
@@ -598,8 +638,8 @@ namespace mu
 			(Base->GetSizeY() == Mask->GetSizeY())
 			&&
 			(Mask->GetFormat() == EImageFormat::IF_L_UBYTE
-				||
-				Mask->GetFormat() == EImageFormat::IF_L_UBYTE_RLE);
+			||
+			Mask->GetFormat() == EImageFormat::IF_L_UBYTE_RLE);
 		if (!bValid)
 		{
 			return;
@@ -608,22 +648,22 @@ namespace mu
 		EImageFormat baseFormat = Base->GetFormat();
 		if ( baseFormat==EImageFormat::IF_RGB_UBYTE )
 		{
-			BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 3, 3>( DestBuf, Base, Mask, Col, 0, false);
+			BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 3, 3>( DestBuf, Base, Mask, Col, 0, 0, false);
 		}
         else if ( baseFormat==EImageFormat::IF_RGBA_UBYTE )
         {
-            BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 3, 4>( DestBuf, Base, Mask, Col, 0, false);
+            BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 3, 4>( DestBuf, Base, Mask, Col, 0, 0, false);
         }
         else if ( baseFormat==EImageFormat::IF_BGRA_UBYTE )
         {
             float temp = Col[0];
             Col[0] = Col[2];
             Col[2] = temp;
-            BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 3, 4>( DestBuf, Base, Mask, Col, 0, false);
+            BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 3, 4>( DestBuf, Base, Mask, Col, 0, 0, false);
         }
         else if ( baseFormat==EImageFormat::IF_L_UBYTE )
 		{
-			BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 1, 1>( DestBuf, Base, Mask, Col, 0, false);
+			BufferLayerColourFormat<BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, 1, 1>( DestBuf, Base, Mask, Col, 0, 0, false);
 		}
 		else
 		{
@@ -659,7 +699,7 @@ namespace mu
 		// Number of total channels in the base image
 		int32 BASE_CHANNEL_STRIDE>
 
-	inline void BufferLayerColourFormatInPlace(Image* Base, FVector4f Col, uint32 BaseChannelOffset, bool bOnlyFirstLOD)
+	inline void BufferLayerColourFormatInPlace(Image* Base, FVector4f Col, uint32 BaseChannelOffset, uint8 ColOffset, bool bOnlyFirstLOD)
 	{
 		uint8* pBaseBuf = Base->GetData() + BaseChannelOffset;
 
@@ -667,7 +707,7 @@ namespace mu
 		top[0] = (uint32)(255 * Col[0]);
 		top[1] = (uint32)(255 * Col[1]);
 		top[2] = (uint32)(255 * Col[2]);
-		top[3] = (uint32)(255 * Col[0]); // used for 1 channel blends to alpha
+		top[3] = (uint32)(255 * Col[3]);
 
 		// Generic implementation
 		int32 PixelCount = 0;
@@ -680,15 +720,23 @@ namespace mu
 			PixelCount = Base->CalculatePixelCount();
 		}
 
-		ParallelFor(PixelCount,
-			[
-				pBaseBuf, top, BaseChannelOffset
-			] (uint32 i)
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+		auto ProcessBatch =
+		[
+			pBaseBuf, top, BaseChannelOffset, ColOffset, PixelCount, NumBatchElems
+		] (uint32 BatchId)
+		{
+			const int32 BatchBegin = BatchId * NumBatchElems;
+			const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+			
+			for (int32 i = BatchBegin; i < BatchEnd; ++i)
 			{
 				for (int c = 0; c < CHANNELS_TO_BLEND; ++c)
 				{
 					uint32 base = pBaseBuf[BASE_CHANNEL_STRIDE * i + c];
-					uint32 blended = top[c + BaseChannelOffset];
+					uint32 blended = top[c + ColOffset];
 					uint32 result = BLEND_FUNC(base, blended);
 					if (CLAMP)
 					{
@@ -699,38 +747,48 @@ namespace mu
 						pBaseBuf[BASE_CHANNEL_STRIDE * i + c] = (uint8)result;
 					}
 				}
-			});
+			}
+		};
+
+		if (NumBatches == 1)
+		{
+			ProcessBatch(0);
+		}
+		else if (NumBatches > 1)
+		{
+			ParallelFor(NumBatches, ProcessBatch);
+		}
 	}
 
 
 	//---------------------------------------------------------------------------------------------
 	template< unsigned (*BLEND_FUNC)(unsigned, unsigned), bool CLAMP, uint32 CHANNEL_COUNT >
-	inline void BufferLayerColourInPlace(Image* Base, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset)
+	inline void BufferLayerColourInPlace(Image* Base, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset, uint8 ColOffset)
 	{
 		EImageFormat baseFormat = Base->GetFormat();
 
 		if (baseFormat == EImageFormat::IF_RGB_UBYTE)
 		{
 			check(BaseOffset + CHANNEL_COUNT <= 3);
-			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 3 >(Base, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 3 >(Base, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else if (baseFormat == EImageFormat::IF_RGBA_UBYTE)
 		{
 			check(BaseOffset + CHANNEL_COUNT <= 4);
-			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4 >(Base, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4 >(Base, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else if (baseFormat == EImageFormat::IF_BGRA_UBYTE)
 		{
 			float temp = Col[0];
 			Col[0] = Col[2];
 			Col[2] = temp;
-			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4>(Base, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4>(Base, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 
 		else if (baseFormat == EImageFormat::IF_L_UBYTE)
 		{
 			check(BaseOffset + CHANNEL_COUNT <= 1);
-			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 1 >(Base, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 1 >(Base, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else
 		{
@@ -741,16 +799,16 @@ namespace mu
 
 	//---------------------------------------------------------------------------------------------
 	template< unsigned (*BLEND_FUNC)(unsigned, unsigned), uint32 CHANNEL_COUNT >
-	inline void BufferLayerColourInPlace(Image* Base, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset)
+	inline void BufferLayerColourInPlace(Image* Base, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset, uint8 ColOffset)
 	{
 		bool bIsClampNeeded = IsAnyComponentLargerThan1(Col);
 		if (bIsClampNeeded)
 		{
-			BufferLayerColourInPlace<BLEND_FUNC, true, CHANNEL_COUNT>(Base, Col, bOnlyOneMip, BaseOffset);
+			BufferLayerColourInPlace<BLEND_FUNC, true, CHANNEL_COUNT>(Base, Col, bOnlyOneMip, BaseOffset, ColOffset);
 		}
 		else
 		{
-			BufferLayerColourInPlace<BLEND_FUNC, false, CHANNEL_COUNT>(Base, Col, bOnlyOneMip, BaseOffset);
+			BufferLayerColourInPlace<BLEND_FUNC, false, CHANNEL_COUNT>(Base, Col, bOnlyOneMip, BaseOffset, ColOffset);
 		}
 	}
 
@@ -761,7 +819,7 @@ namespace mu
 		unsigned (*BLEND_FUNC)(unsigned, unsigned), 
 		bool CLAMP, 
 		int32 CHANNEL_COUNT >
-	inline void BufferLayerColourInPlace(Image* Base, const Image* Mask, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset)
+	inline void BufferLayerColourInPlace(Image* Base, const Image* Mask, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset, uint8 ColOffset)
 	{
 		check(Base->GetSizeX() == Mask->GetSizeX());
 		check(Base->GetSizeY() == Mask->GetSizeY());
@@ -771,12 +829,12 @@ namespace mu
 		if (baseFormat == EImageFormat::IF_RGB_UBYTE)
 		{
 			check(BaseOffset + CHANNEL_COUNT <= 3);
-			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 3 >(Base->GetData(), Base, Mask, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 3 >(Base->GetData(), Base, Mask, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else if (baseFormat == EImageFormat::IF_RGBA_UBYTE)
 		{
 			check(BaseOffset + CHANNEL_COUNT <= 4);
-			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4 >(Base->GetData(), Base, Mask, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4 >(Base->GetData(), Base, Mask, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else if (baseFormat == EImageFormat::IF_BGRA_UBYTE)
 		{
@@ -784,12 +842,12 @@ namespace mu
 			float temp = Col[0];
 			Col[0] = Col[2];
 			Col[2] = temp;
-			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4 >(Base->GetData(), Base, Mask, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4 >(Base->GetData(), Base, Mask, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else if (baseFormat == EImageFormat::IF_L_UBYTE)
 		{
 			check(BaseOffset + CHANNEL_COUNT <= 1);
-			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 1 >(Base->GetData(), Base, Mask, Col, BaseOffset, bOnlyOneMip);
+			BufferLayerColourFormat< BLEND_FUNC_MASKED, BLEND_FUNC, CLAMP, CHANNEL_COUNT, 1 >(Base->GetData(), Base, Mask, Col, BaseOffset, ColOffset, bOnlyOneMip);
 		}
 		else
 		{
@@ -800,16 +858,16 @@ namespace mu
 
 	//---------------------------------------------------------------------------------------------
 	template< unsigned (*BLEND_FUNC_MASKED)(unsigned, unsigned, unsigned), unsigned (*BLEND_FUNC)(unsigned, unsigned), uint32 CHANNEL_COUNT >
-	inline void BufferLayerColourInPlace(Image* Base, const Image* Mask, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset)
+	inline void BufferLayerColourInPlace(Image* Base, const Image* Mask, FVector4f Col, bool bOnlyOneMip, uint32 BaseOffset, uint8 ColOffset)
 	{
 		bool bIsClampNeeded = IsAnyComponentLargerThan1(Col);
 		if (bIsClampNeeded)
 		{
-			BufferLayerColourInPlace<BLEND_FUNC_MASKED, BLEND_FUNC, true, CHANNEL_COUNT>(Base, Mask, Col, bOnlyOneMip, BaseOffset);
+			BufferLayerColourInPlace<BLEND_FUNC_MASKED, BLEND_FUNC, true, CHANNEL_COUNT>(Base, Mask, Col, bOnlyOneMip, BaseOffset, ColOffset);
 		}
 		else
 		{
-			BufferLayerColourInPlace<BLEND_FUNC_MASKED, BLEND_FUNC, false, CHANNEL_COUNT>(Base, Mask, Col, bOnlyOneMip, BaseOffset);
+			BufferLayerColourInPlace<BLEND_FUNC_MASKED, BLEND_FUNC, false, CHANNEL_COUNT>(Base, Mask, Col, bOnlyOneMip, BaseOffset, ColOffset);
 		}
 	}
 
@@ -832,7 +890,12 @@ namespace mu
 	{
 		check(pBase->GetSizeX() == pBlended->GetSizeX());
 		check(pBase->GetSizeY() == pBlended->GetSizeY());
-		check(pBase->GetFormat() == pBlended->GetFormat());
+
+		// No longer required.
+		//check(pBase->GetFormat() == pBlended->GetFormat());
+		check(BaseChannelOffset + CHANNELS_TO_BLEND <= GetImageFormatData(pBase->GetFormat()).Channels);
+		check(BlendedChannelOffset + CHANNELS_TO_BLEND <= GetImageFormatData(pBlended->GetFormat()).Channels);
+
 		check(bOnlyFirstLOD || pBase->GetLODCount() <= pBlended->GetLODCount());
 
         uint8* pBaseBuf = pBase->GetData() + BaseChannelOffset;
@@ -849,10 +912,18 @@ namespace mu
 			PixelCount = pBase->CalculatePixelCount();
 		}
 
-		ParallelFor(PixelCount,
-			[
-				pBaseBuf, pBlendedBuf
-			] (uint32 i)
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+		auto ProcessBatch =
+		[
+			pBaseBuf, pBlendedBuf, PixelCount, NumBatchElems
+		] (int32 BatchId)
+		{
+			const int32 BatchBegin = BatchId * NumBatchElems;
+			const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+			for (int32 i = BatchBegin; i < BatchEnd; ++i)
 			{
 				for (int c = 0; c < CHANNELS_TO_BLEND; ++c)
 				{
@@ -867,8 +938,18 @@ namespace mu
 					{
 						pBaseBuf[BASE_CHANNEL_STRIDE * i + c] = (uint8)result;
 					}
-				}				
-			});
+				}
+			}
+		};
+
+		if (NumBatches == 1)
+		{
+			ProcessBatch(0);
+		}
+		else if (NumBatches > 1)
+		{
+			ParallelFor(NumBatches, ProcessBatch);
+		}
 	}
 	
 	//---------------------------------------------------------------------------------------------
@@ -880,18 +961,20 @@ namespace mu
 		// Number of total channels in the base image
 		int32 BASE_CHANNEL_STRIDE,
 		// Number of total channels in the blend image
-		int32 BLENDED_CHANNEL_STRIDE>
+		int32 BLENDED_CHANNEL_STRIDE,
+		int32 BLENDED_CHANNEL_OFFSET>
 
 	inline void BufferLayerFormat(uint8* pDestBuf, const Image* pBase, const Image* pBlended,
 		bool bOnlyFirstLOD)
 	{
 		check(pBase->GetSizeX() == pBlended->GetSizeX());
 		check(pBase->GetSizeY() == pBlended->GetSizeY());
-		check(pBase->GetFormat() == pBlended->GetFormat());
+		// Not true anymore, since the BLENDED_CHANNEL_OFFSET has been added.
+		// check(pBase->GetFormat() == pBlended->GetFormat());
 		check(bOnlyFirstLOD || pBase->GetLODCount() <= pBlended->GetLODCount());
 
 		const uint8* pBaseBuf = pBase->GetData();
-		const uint8* pBlendedBuf = pBlended->GetData();
+		const uint8* pBlendedBuf = pBlended->GetData()+BLENDED_CHANNEL_OFFSET;
 
 		// Generic implementation
 		int32 PixelCount = 0;
@@ -906,17 +989,25 @@ namespace mu
 
 		int32 UnblendedChannels = BASE_CHANNEL_STRIDE - CHANNELS_TO_BLEND;
 
-		ParallelFor(PixelCount,
-			[
-				pBaseBuf, pBlendedBuf, pDestBuf, UnblendedChannels
-			] (uint32 i)
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+		
+		auto ProcessBatch =
+		[
+			pBaseBuf, pBlendedBuf, pDestBuf, UnblendedChannels, PixelCount, NumBatchElems
+		] (int32 BatchId)
+		{
+			const int32 BatchBegin = BatchId * NumBatchElems;
+			const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+			for (int32 i = BatchBegin; i < BatchEnd; ++i)
 			{
 				for (int c = 0; c < CHANNELS_TO_BLEND; ++c)
 				{
 					unsigned base = pBaseBuf[BASE_CHANNEL_STRIDE * i + c];
 					unsigned blended = pBlendedBuf[BLENDED_CHANNEL_STRIDE * i + c];
 					unsigned result = BLEND_FUNC(base, blended);
-					if (CLAMP)
+					if constexpr (CLAMP)
 					{
 						pDestBuf[BASE_CHANNEL_STRIDE * i + c] = (uint8)FMath::Min(255u, result);
 					}
@@ -932,7 +1023,17 @@ namespace mu
 				{
 					pDestBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c] = pBaseBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c];
 				}
-			});
+			}
+		};
+
+		if (NumBatches == 1)
+		{
+			ProcessBatch(0);
+		}
+		else if (NumBatches > 1)
+		{
+			ParallelFor(NumBatches, ProcessBatch);
+		}
 	}
 
 
@@ -940,7 +1041,7 @@ namespace mu
 	//! Apply a blending function to an image with another image as blending layer
 	//---------------------------------------------------------------------------------------------
 	template< unsigned (*BLEND_FUNC)(unsigned, unsigned), bool CLAMP >
-	inline void BufferLayer(Image* pResult, const Image* pBase, const Image* pBlended, bool bApplyToAlpha, bool bOnlyOneMip)
+	inline void BufferLayer(Image* pResult, const Image* pBase, const Image* pBlended, bool bApplyToAlpha, bool bOnlyOneMip, bool bUseBlendSourceFromBlendAlpha)
 	{
 		check(pResult->GetFormat() == pBase->GetFormat());
 		check(pResult->GetSizeX() == pBase->GetSizeX());
@@ -948,34 +1049,58 @@ namespace mu
 		check(bOnlyOneMip || pResult->GetLODCount() == pBase->GetLODCount());
 		check(pBase->GetSizeX() == pBlended->GetSizeX());
 		check(pBase->GetSizeY() == pBlended->GetSizeY());
-		check(pBase->GetFormat() == pBlended->GetFormat());
 		check(bOnlyOneMip || pResult->GetLODCount() <= pBlended->GetLODCount());
 
-		EImageFormat baseFormat = pBase->GetFormat();
+		EImageFormat BaseFormat = pBase->GetFormat();
+		EImageFormat BlendedFormat = pBlended->GetFormat();
 		uint8* pDestBuf = pResult->GetData();
 
-		if (baseFormat == EImageFormat::IF_RGB_UBYTE)
+		if (bUseBlendSourceFromBlendAlpha)
 		{
-			BufferLayerFormat< BLEND_FUNC, CLAMP, 3, 3, 3 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
-		}
-		else if (baseFormat == EImageFormat::IF_RGBA_UBYTE || baseFormat == EImageFormat::IF_BGRA_UBYTE)
-		{
-			if (bApplyToAlpha)
+			if (BlendedFormat == EImageFormat::IF_RGBA_UBYTE || BlendedFormat == EImageFormat::IF_BGRA_UBYTE)
 			{
-				BufferLayerFormat< BLEND_FUNC, CLAMP, 4, 4, 4 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+				if (BaseFormat == EImageFormat::IF_L_UBYTE)
+				{
+					BufferLayerFormat< BLEND_FUNC, CLAMP, 1, 1, 4, 3 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+				}
+				else
+				{
+					checkf(false, TEXT("Unsupported format."));
+				}
 			}
-			else
+			else if (BlendedFormat == EImageFormat::IF_L_UBYTE)
 			{
-				BufferLayerFormat< BLEND_FUNC, CLAMP, 3, 4, 4 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+				BufferLayerFormat< BLEND_FUNC, CLAMP, 1, 1, 1, 0 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
 			}
-		}
-		else if (baseFormat == EImageFormat::IF_L_UBYTE)
-		{
-			BufferLayerFormat< BLEND_FUNC, CLAMP, 1, 1, 1 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
 		}
 		else
 		{
-			checkf(false, TEXT("Unsupported format."));
+			check(BaseFormat == BlendedFormat);
+			if (BaseFormat == EImageFormat::IF_RGB_UBYTE)
+			{
+				check(!bUseBlendSourceFromBlendAlpha);
+				BufferLayerFormat< BLEND_FUNC, CLAMP, 3, 3, 3, 0 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+			}
+			else if (BaseFormat == EImageFormat::IF_RGBA_UBYTE || BaseFormat == EImageFormat::IF_BGRA_UBYTE)
+			{
+				check(!bUseBlendSourceFromBlendAlpha);
+				if (bApplyToAlpha)
+				{
+					BufferLayerFormat< BLEND_FUNC, CLAMP, 4, 4, 4, 0 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+				}
+				else
+				{
+					BufferLayerFormat< BLEND_FUNC, CLAMP, 3, 4, 4, 0 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+				}
+			}
+			else if (BaseFormat == EImageFormat::IF_L_UBYTE)
+			{
+				BufferLayerFormat< BLEND_FUNC, CLAMP, 1, 1, 1, 0 >(pDestBuf, pBase, pBlended, bOnlyOneMip);
+			}
+			else
+			{
+				checkf(false, TEXT("Unsupported format."));
+			}
 		}
 	}
 
@@ -986,23 +1111,35 @@ namespace mu
 	{
 		check(pBase->GetSizeX() == pBlended->GetSizeX());
 		check(pBase->GetSizeY() == pBlended->GetSizeY());
-		check(pBase->GetFormat() == pBlended->GetFormat());
+		// Not required since we have the CHANNEL_COUNT and offsets. 
+		// check(pBase->GetFormat() == pBlended->GetFormat());
 
-		EImageFormat baseFormat = pBase->GetFormat();
+		EImageFormat BaseFormat = pBase->GetFormat();
+		EImageFormat BlendFormat = pBlended->GetFormat();
 
-		if (baseFormat == EImageFormat::IF_RGB_UBYTE)
+		if (BaseFormat==EImageFormat::IF_RGB_UBYTE && BlendFormat==EImageFormat::IF_RGB_UBYTE)
 		{
 			check(BaseOffset+CHANNEL_COUNT <= 3);
 			check(BlendedOffset+CHANNEL_COUNT <= 3);
 			BufferLayerFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 3, 3 >(pBase, pBlended, BaseOffset, BlendedOffset, bOnlyOneMip);
 		}
-		else if (baseFormat == EImageFormat::IF_RGBA_UBYTE || baseFormat == EImageFormat::IF_BGRA_UBYTE)
+		else if ( (BaseFormat == EImageFormat::IF_RGBA_UBYTE || BaseFormat == EImageFormat::IF_BGRA_UBYTE)
+			&&
+			(BlendFormat == EImageFormat::IF_RGBA_UBYTE || BlendFormat == EImageFormat::IF_BGRA_UBYTE) )
 		{
-			check(BaseOffset+CHANNEL_COUNT <= 4);
-			check(BlendedOffset+CHANNEL_COUNT <= 4);
+			check(BaseOffset + CHANNEL_COUNT <= 4);
+			check(BlendedOffset + CHANNEL_COUNT <= 4);
 			BufferLayerFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4, 4 >(pBase, pBlended, BaseOffset, BlendedOffset, bOnlyOneMip);
 		}
-		else if (baseFormat == EImageFormat::IF_L_UBYTE)
+		else if ( (BaseFormat == EImageFormat::IF_RGBA_UBYTE || BaseFormat == EImageFormat::IF_BGRA_UBYTE)
+			&&
+			BlendFormat == EImageFormat::IF_L_UBYTE )
+		{
+			check(BaseOffset + CHANNEL_COUNT <= 4);
+			check(BlendedOffset + CHANNEL_COUNT <= 1);
+			BufferLayerFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 4, 1 >(pBase, pBlended, BaseOffset, BlendedOffset, bOnlyOneMip);
+		}
+		else if (BaseFormat==EImageFormat::IF_L_UBYTE && BlendFormat==EImageFormat::IF_L_UBYTE)
 		{
 			check(BaseOffset+CHANNEL_COUNT <= 1);
 			BufferLayerFormatInPlace< BLEND_FUNC, CLAMP, CHANNEL_COUNT, 1, 1 >(pBase, pBlended, BaseOffset, BlendedOffset, bOnlyOneMip);
@@ -1065,10 +1202,18 @@ namespace mu
 				PixelCount = pBase->CalculatePixelCount();
 			}
 
-			ParallelFor(PixelCount,
-				[
-					pBaseBuf, pBlendedBuf, pMaskBuf, pDestBuf, UnblendedChannels
-				] (uint32 i)
+			constexpr int32 NumBatchElems = 4096*2;
+			const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+			auto ProcessBatch = 
+			[
+				pBaseBuf, pBlendedBuf, pMaskBuf, pDestBuf, UnblendedChannels, PixelCount, NumBatchElems
+			] (uint32 BatchId)
+			{
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
 					unsigned mask = pMaskBuf[i];
 					for (int c = 0; c < CHANNELS_TO_BLEND; ++c)
@@ -1076,7 +1221,7 @@ namespace mu
 						uint32 base = pBaseBuf[BASE_CHANNEL_STRIDE * i + c];
 						uint32 blended = pBlendedBuf[BLENDED_CHANNEL_STRIDE * i + c];
 						uint32 result = BLEND_FUNC_MASKED(base, blended, mask);
-						if (CLAMP)
+						if constexpr (CLAMP)
 						{
 							pDestBuf[BASE_CHANNEL_STRIDE * i + c] = (uint8)FMath::Min(255u, result);
 						}
@@ -1091,7 +1236,17 @@ namespace mu
 					{
 						pDestBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c] = pBaseBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c];
 					}
-				});
+				}
+			};
+
+			if (NumBatches == 1)
+			{
+				ProcessBatch(0);
+			}
+			else if (NumBatches > 1)
+			{
+				ParallelFor(NumBatches, ProcessBatch);
+			}
 		}
 		else if (maskFormat == EImageFormat::IF_L_UBYTE_RLE)
 		{
@@ -1235,7 +1390,6 @@ namespace mu
 		}
 	}
 
-
 	//---------------------------------------------------------------------------------------------
 	template< unsigned (*BLEND_FUNC_MASKED)(unsigned, unsigned, unsigned),
 		unsigned (*BLEND_FUNC)(unsigned, unsigned),
@@ -1278,10 +1432,18 @@ namespace mu
 		{
 			const uint8* pMaskBuf = pBlend->GetData() + 3;
 
-			ParallelFor(PixelCount,
-				[
-					pBaseBuf, pBlendedBuf, pDestBuf, pMaskBuf, UnblendedChannels
-				] (uint32 i)
+			constexpr int32 NumBatchElems = 4096*2;
+			const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+			auto ProcessBatch = 
+			[
+				pBaseBuf, pBlendedBuf, pDestBuf, pMaskBuf, UnblendedChannels, PixelCount, NumBatchElems
+			] (int32 BatchId)
+			{
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
 					uint32 mask = pMaskBuf[BLENDED_CHANNEL_STRIDE * i];
 					for (int c = 0; c < CHANNELS_TO_BLEND; ++c)
@@ -1289,7 +1451,7 @@ namespace mu
 						uint32 base = pBaseBuf[BASE_CHANNEL_STRIDE * i + c];
 						uint32 blended = pBlendedBuf[BLENDED_CHANNEL_STRIDE * i + c];
 						uint32 result = BLEND_FUNC_MASKED(base, blended, mask);
-						if (CLAMP)
+						if constexpr (CLAMP)
 						{
 							pDestBuf[BASE_CHANNEL_STRIDE * i + c] = (uint8)FMath::Min(255u, result);
 						}
@@ -1304,21 +1466,39 @@ namespace mu
 					{
 						pDestBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c] = pBaseBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c];
 					}
-				});
+				}
+			};
+
+			if (NumBatches == 1)
+			{
+				ProcessBatch(0);
+			}
+			else if (NumBatches > 1)
+			{
+				ParallelFor(NumBatches, ProcessBatch);
+			}
 		}
 		else
 		{
-			ParallelFor(PixelCount,
-				[
-					pBaseBuf, pBlendedBuf, pDestBuf, UnblendedChannels
-				] (uint32 i)
+			constexpr int32 NumBatchElems = 4096*2;
+			const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+			auto ProcessBatch = 
+			[
+				pBaseBuf, pBlendedBuf, pDestBuf, UnblendedChannels, PixelCount, NumBatchElems
+			] (uint32 BatchId)
+			{
+				const int32 BatchBegin = BatchId * NumBatchElems;
+				const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+				for (int32 i = BatchBegin; i < BatchEnd; ++i)
 				{
 					for (int c = 0; c < CHANNELS_TO_BLEND; ++c)
 					{
 						uint32 base = pBaseBuf[BASE_CHANNEL_STRIDE * i + c];
 						uint32 blended = pBlendedBuf[BLENDED_CHANNEL_STRIDE * i + c];
 						uint32 result = BLEND_FUNC(base, blended);
-						if (CLAMP)
+						if constexpr (CLAMP)
 						{
 							pDestBuf[BASE_CHANNEL_STRIDE * i + c] = (uint8)FMath::Min(255u, result);
 						}
@@ -1333,8 +1513,17 @@ namespace mu
 					{
 						pDestBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c] = pBaseBuf[BASE_CHANNEL_STRIDE * i + CHANNELS_TO_BLEND + c];
 					}
-				});
+				}
+			};
 
+			if (NumBatches == 1)
+			{
+				ProcessBatch(0);
+			}
+			else if (NumBatches > 1)
+			{
+				ParallelFor(NumBatches, ProcessBatch);
+			}
 		}
 	}
 
@@ -1522,7 +1711,196 @@ namespace mu
 	inline void BufferLayerComposite(
 		Image* pBase,
 		const Image* pBlend,
-		bool bOnlyFirstLOD)
+		bool bOnlyFirstLOD,
+		uint8 BlendAlphaSourceChannel )
+	{
+		check(pBase->GetFormat() == EImageFormat::IF_RGBA_UBYTE);
+		check(pBlend->GetFormat() == EImageFormat::IF_RGBA_UBYTE);
+		check(pBase->GetSizeX() == pBlend->GetSizeX() && pBase->GetSizeY() == pBlend->GetSizeY());
+		check(bOnlyFirstLOD || pBase->GetLODCount() <= pBlend->GetLODCount());
+
+		uint8* pBaseBuf = pBase->GetData();
+		const uint8* pBlendedBuf = pBlend->GetData();
+
+		int32 PixelCount = 0;
+		uint16 SizeX = pBase->GetSizeX();
+
+		if (pBlend->m_flags & Image::IF_HAS_RELEVANCY_MAP 
+			&& 
+			(bOnlyFirstLOD || pBase->GetLODCount()==1 ) )
+		{
+			int32 NumRelevantRows = pBlend->RelevancyMaxY - pBlend->RelevancyMinY + 1;
+			PixelCount = SizeX * NumRelevantRows;
+			int32 DataOffset = pBlend->RelevancyMinY * SizeX * 4;
+			pBaseBuf += DataOffset;
+			pBlendedBuf += DataOffset;
+		}
+		else
+		{ 
+			if (bOnlyFirstLOD)
+			{
+				PixelCount = SizeX * pBase->GetSizeY();
+			}
+			else
+			{
+				PixelCount = pBase->CalculatePixelCount();
+			}
+		}
+
+		// \TODO: Ensure batches operate on 32Kb aligned buffers?
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+		auto ProcessBatch = 
+		[
+			pBaseBuf, pBlendedBuf, BlendAlphaSourceChannel, PixelCount, NumBatchElems
+		] (uint32 BatchId)
+		{
+			const int32 BatchBegin = BatchId * NumBatchElems;
+			const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+			for (int32 i = BatchBegin; i < BatchEnd; ++i)
+			{
+				// TODO: Optimize this (SIMD?)
+				uint32 mask = pBlendedBuf[4 * i + 3];
+
+				// RGB
+				for (int c = 0; c < 3; ++c)
+				{
+					uint32 base = pBaseBuf[4 * i + c];
+					uint32 blended = pBlendedBuf[4 * i + c];
+					uint32 result = RGB_FUNC_MASKED(base, blended, mask);
+					if constexpr (CLAMP)
+					{
+						pBaseBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
+					}
+					else
+					{
+						pBaseBuf[4 * i + c] = (uint8)result;
+					}
+				}
+
+				// A
+				{
+					uint32 base = pBaseBuf[4 * i + 3];
+					uint32 blended = pBlendedBuf[4 * i + BlendAlphaSourceChannel];
+					uint32 result = A_FUNC(base, blended);
+					if constexpr (CLAMP)
+					{
+						pBaseBuf[4 * i + 3] = (uint8)FMath::Min(255u, result);
+					}
+					else
+					{
+						pBaseBuf[4 * i + 3] = (uint8)result;
+					}
+				}
+			}
+		};
+
+		if (NumBatches == 1)
+		{
+			ProcessBatch(0);
+		}
+		else if (NumBatches > 1)
+		{
+			ParallelFor(NumBatches, ProcessBatch);
+		}
+	}
+
+
+
+	//---------------------------------------------------------------------------------------------
+	template<>
+	inline void BufferLayerComposite<BlendChannelMasked, LightenChannel, false>
+	(
+		Image* pBase,
+		const Image* pBlend,
+		bool bOnlyFirstLOD,
+		uint8 BlendAlphaSourceChannel)
+	{
+		check(pBase->GetFormat() == EImageFormat::IF_RGBA_UBYTE);
+		check(pBlend->GetFormat() == EImageFormat::IF_RGBA_UBYTE);
+		check(pBase->GetSizeX() == pBlend->GetSizeX() && pBase->GetSizeY() == pBlend->GetSizeY());
+		check(bOnlyFirstLOD || pBase->GetLODCount() <= pBlend->GetLODCount());
+		check(BlendAlphaSourceChannel==3);
+
+		uint32* pBaseBuf = reinterpret_cast<uint32*>(pBase->GetData());
+		const uint32* pBlendedBuf = reinterpret_cast<const uint32*>(pBlend->GetData());
+
+		int32 PixelCount = 0;
+		uint16 SizeX = pBase->GetSizeX();
+
+		if (pBlend->m_flags & Image::IF_HAS_RELEVANCY_MAP
+			&&
+			(bOnlyFirstLOD || pBase->GetLODCount() == 1))
+		{
+			int32 NumRelevantRows = pBlend->RelevancyMaxY - pBlend->RelevancyMinY + 1;
+			PixelCount = SizeX * NumRelevantRows;
+			int32 DataOffset = pBlend->RelevancyMinY * SizeX;
+			pBaseBuf += DataOffset;
+			pBlendedBuf += DataOffset;
+		}
+		else
+		{
+			if (bOnlyFirstLOD)
+			{
+				PixelCount = SizeX * pBase->GetSizeY();
+			}
+			else
+			{
+				PixelCount = pBase->CalculatePixelCount();
+			}
+		}
+
+		// \TODO: Ensure batches operate on 32Kb aligned buffers?
+		constexpr int32 NumBatchElems = 4096 * 2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+		auto ProcessBatch =
+			[
+				pBaseBuf, pBlendedBuf, PixelCount, NumBatchElems
+			] (uint32 BatchId)
+		{
+			const int32 BatchBegin = BatchId * NumBatchElems;
+			const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+
+			for (int32 i = BatchBegin; i < BatchEnd; ++i)
+			{
+				// TODO: Optimize this (SIMD?)
+				uint32 FullBase = pBaseBuf[i];
+				uint32 FullBlended = pBlendedBuf[i];
+				uint32 mask = (FullBlended & 0xff000000) >> 24;
+
+				uint32 FullResult = 0;
+				FullResult |= BlendChannelMasked((FullBase >>  0) & 0xff, (FullBlended >>  0) & 0xff, mask) << 0;
+				FullResult |= BlendChannelMasked((FullBase >>  8) & 0xff, (FullBlended >>  8) & 0xff, mask) << 8;
+				FullResult |= BlendChannelMasked((FullBase >> 16) & 0xff, (FullBlended >> 16) & 0xff, mask) << 16;
+				FullResult |= LightenChannel	((FullBase >> 24) & 0xff, (FullBlended >> 24) & 0xff) << 24;
+
+				pBaseBuf[i] = FullResult;
+			}
+		};
+
+		if (NumBatches == 1)
+		{
+			ProcessBatch(0);
+		}
+		else if (NumBatches > 1)
+		{
+			ParallelFor(NumBatches, ProcessBatch);
+		}
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	template< VectorRegister4Int (*RGB_FUNC_MASKED)(const VectorRegister4Int&, const VectorRegister4Int&, const VectorRegister4Int&),
+		int32 (*A_FUNC)(int32, int32),
+		bool CLAMP >
+	inline void BufferLayerCompositeVector(
+		Image* pBase,
+		const Image* pBlend,
+		bool bOnlyFirstLOD,
+		uint8 BlendAlphaSourceChannel)
 	{
 		check(pBase->GetFormat() == EImageFormat::IF_RGBA_UBYTE);
 		check(pBlend->GetFormat() == EImageFormat::IF_RGBA_UBYTE);
@@ -1545,47 +1923,61 @@ namespace mu
 			PixelCount = pBase->CalculatePixelCount();
 		}
 
-		ParallelFor(PixelCount,
-			[
-				pBaseBuf, pBlendedBuf
-			] (uint32 i)
+		constexpr int32 NumBatchElems = 4096*2;
+		const int32 NumBatches = FMath::DivideAndRoundUp(PixelCount, NumBatchElems);
+
+		auto ProcessBatch = 
+		[
+			pBaseBuf, pBlendedBuf, PixelCount, NumBatchElems, BlendAlphaSourceChannel
+		] (uint32 BatchId)
+		{
+
+			const int32 BatchBegin = BatchId * NumBatchElems;
+			const int32 BatchEnd = FMath::Min(BatchBegin + NumBatchElems, PixelCount);
+			for (int32 i = BatchBegin; i < BatchEnd; ++i)
 			{
 				// TODO: Optimize this (SIMD?)
-				uint32 mask = pBlendedBuf[4 * i + 3];
+				const int32 BaseAlpha = pBaseBuf[4 * i + BlendAlphaSourceChannel];
+				const int32 BlendedAlpha = pBlendedBuf[4 * i + BlendAlphaSourceChannel];
 
-				// RGB
-				for (int c = 0; c < 3; ++c)
+				const VectorRegister4Int Mask = VectorIntSet1(BlendedAlpha);
+				const VectorRegister4Int Blended = MakeVectorRegisterInt(pBlendedBuf[4 * i + 0], pBlendedBuf[4 * i + 1], pBlendedBuf[4 * i + 2], pBlendedBuf[4 * i + 3]);
+				const VectorRegister4Int Base = MakeVectorRegisterInt(pBaseBuf[4 * i + 0], pBaseBuf[4 * i + 1], pBaseBuf[4 * i + 2], pBaseBuf[4 * i + 3]);
+
+				VectorRegister4Int Result = RGB_FUNC_MASKED(Base, Blended, Mask);
+				if constexpr (CLAMP)
 				{
-					uint32 base = pBaseBuf[4 * i + c];
-					uint32 blended = pBlendedBuf[4 * i + c];
-					uint32 result = RGB_FUNC_MASKED(base, blended, mask);
-					if (CLAMP)
-					{
-						pBaseBuf[4 * i + c] = (uint8)FMath::Min(255u, result);
-					}
-					else
-					{
-						pBaseBuf[4 * i + c] = (uint8)result;
-					}
+					Result = VectorIntMin(MakeVectorRegisterIntConstant(255, 255, 255, 255), Result);
 				}
 
-				// A
+				int32 AlphaResult = A_FUNC(BaseAlpha, BlendedAlpha);
+				if constexpr (CLAMP)
 				{
-					uint32 base = pBaseBuf[4 * i + 3];
-					uint32 blended = pBlendedBuf[4 * i + 3];
-					uint32 result = A_FUNC(base, blended);
-					if (CLAMP)
-					{
-						pBaseBuf[4 * i + 3] = (uint8)FMath::Min(255u, result);
-					}
-					else
-					{
-						pBaseBuf[4 * i + 3] = (uint8)result;
-					}
+					AlphaResult = FMath::Min(255, AlphaResult);
 				}
-			});
+
+				alignas(VectorRegister4Int) int32 IndexableRegister[4];
+
+				VectorIntStoreAligned(Result, &IndexableRegister);
+
+				pBaseBuf[4 * i + 0] = static_cast<uint8>(IndexableRegister[0]);
+				pBaseBuf[4 * i + 1] = static_cast<uint8>(IndexableRegister[1]);
+				pBaseBuf[4 * i + 2] = static_cast<uint8>(IndexableRegister[2]);
+				pBaseBuf[4 * i + 3] = static_cast<uint8>(IndexableRegister[3]);
+
+				pBaseBuf[4 * i + BlendAlphaSourceChannel] = static_cast<uint8>(AlphaResult);
+			}
+		};
+
+		if (NumBatches == 1)
+		{
+			ProcessBatch(0);
+		}
+		else if (NumBatches > 1)
+		{
+			ParallelFor(NumBatches, ProcessBatch);
+		}
 	}
-
 
 	//---------------------------------------------------------------------------------------------
 	template< unsigned (*BLEND_FUNC)(unsigned,unsigned),
@@ -1625,7 +2017,7 @@ namespace mu
 	inline void ImageLayerOnBaseNoAlpha( Image* pBase,
 										 const Image* pMask,
 										 const Image* pBlended,
-										 const box< vec2<int> >& rect )
+										 const box<UE::Math::TIntVector2<uint16>>& rect )
 	{
 		check( pBase->GetSizeX() >= rect.min[0]+rect.size[0] );
 		check( pBase->GetSizeY() >= rect.min[1]+rect.size[1] );
@@ -1640,7 +2032,7 @@ namespace mu
         check( pBase->GetLODCount() <= pMask->GetLODCount() );
         check( pBase->GetLODCount() <= pBlended->GetLODCount() );
 
-		int pixelSize = GetImageFormatData( pBase->GetFormat() ).m_bytesPerBlock;
+		int pixelSize = GetImageFormatData( pBase->GetFormat() ).BytesPerBlock;
 
 		int start = ( pBase->GetSizeX()*rect.min[1]+rect.min[0] ) * pixelSize;
 		int stride = ( pBase->GetSizeX() - rect.size[0] ) * pixelSize;
@@ -1879,7 +2271,7 @@ namespace mu
 	template< 
 			uint32 (*BLEND_FUNC)(uint32, uint32), 
 			size_t NC >
-	inline void BufferLayerCombineColour(uint8* pDestBuf, const Image* pBase, vec3<float> col)
+	inline void BufferLayerCombineColour(uint8* pDestBuf, const Image* pBase, FVector4f col)
 	{
 		//static_assert(NC > 0 && NC <= 4);
 
@@ -1979,7 +2371,7 @@ namespace mu
 	template< 
 			uint32 (*BLEND_FUNC_MASKED)(uint32, uint32, uint32), 
 			size_t NC >
-	inline void BufferLayerCombineColour(uint8* pDestBuf, const Image* pBase, const Image* pMask, vec3<float> col)
+	inline void BufferLayerCombineColour(uint8* pDestBuf, const Image* pBase, const Image* pMask, FVector4f col)
 	{
 		//static_assert(NC > 0 && NC <= 4);
 
@@ -2088,7 +2480,7 @@ namespace mu
 	}
 
 	template< uint32 (*BLEND_FUNC)(uint32, uint32)>
-	inline void ImageLayerCombineColour(Image* pResult, const Image* pBase, vec3<float> col)
+	inline void ImageLayerCombineColour(Image* pResult, const Image* pBase, FVector4f col)
 	{
 		check(pResult->GetFormat() == pBase->GetFormat());
 		check(pResult->GetSizeX() == pBase->GetSizeX());
@@ -2121,7 +2513,7 @@ namespace mu
 	template< 
 		uint32 (*BLEND_FUNC)(uint32, uint32),
 		uint32 (*BLEND_FUNC_MASKED)(uint32, uint32, uint32) >
-	inline void ImageLayerCombineColour(Image* pResult, const Image* pBase, const Image* pMask, vec3<float> col)
+	inline void ImageLayerCombineColour(Image* pResult, const Image* pBase, const Image* pMask, FVector4f col)
 	{
 		check(pResult->GetFormat() == pBase->GetFormat());
 		check(pResult->GetSizeX() == pBase->GetSizeX());
@@ -2260,6 +2652,17 @@ namespace mu
 		{
 			checkf(false, TEXT("Unsupported format."));
 		}
+	}
+
+
+	//! Blend a subimage on the base using a mask.
+	inline void ImageBlendOnBaseNoAlpha(Image* pBase,
+		const Image* pMask,
+		const Image* pBlended,
+		const box< UE::Math::TIntVector2<uint16> >& rect)
+	{
+		ImageLayerOnBaseNoAlpha< BlendChannel, false>
+			(pBase, pMask, pBlended, rect);
 	}
 
 }

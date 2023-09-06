@@ -32,6 +32,24 @@ struct FHairStrandsRestResource;
 struct FHairStrandsInterpolationResource;
 struct FHairStrandsRaytracingResource;
 
+enum class EHairGroupInfoFlags : uint8
+{
+	HasTrimmedPoint = 1,
+	HasTrimmedCurve = 2
+};
+
+USTRUCT(BlueprintType)
+struct HAIRSTRANDSCORE_API FHairGroupLODInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Point Count"))
+	int32 NumPoints = 0;
+
+	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Curve Count"))
+	int32 NumCurves = 0;
+};
+
 USTRUCT(BlueprintType)
 struct HAIRSTRANDSCORE_API FHairGroupInfo
 {
@@ -58,11 +76,14 @@ struct HAIRSTRANDSCORE_API FHairGroupInfo
 	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Length of the longest hair strands"))
 	float MaxCurveLength = 0;
 
-	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Imported width (DCC) of the larget hair strands"))
-	float MaxImportedWidth = -1.f;
-
 	UPROPERTY(VisibleAnywhere, Category = "Info", meta = (DisplayName = "Card Group ID for split hair card generation"))
 	int32 GroupCardsID = 0;
+
+	UPROPERTY()
+	uint32 Flags = 0;
+
+	UPROPERTY()
+	TArray<FHairGroupLODInfo> LODInfos;
 };
 
 USTRUCT(BlueprintType)
@@ -79,7 +100,7 @@ struct HAIRSTRANDSCORE_API FHairGroupsMaterial
 
 
 /** Describe all data & resource for a groom asset's hair group */
-struct HAIRSTRANDSCORE_API FHairGroupData
+struct HAIRSTRANDSCORE_API FHairGroupPlatformData
 {
 	////////////////////////////////////////////////////////////////////////////
 	// Helper
@@ -93,10 +114,11 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 		uint32 GetDataSize() const
 		{
 			uint32 Total = 0;
-			Total += BulkData.Positions.IsBulkDataLoaded() 		? BulkData.Positions.GetBulkDataSize()   : 0;
-			Total += BulkData.Attributes.IsBulkDataLoaded()		? BulkData.Attributes.GetBulkDataSize() : 0;
-			Total += BulkData.Curves.IsBulkDataLoaded() 		? BulkData.Curves.GetBulkDataSize(): 0;
-			Total += BulkData.VertexToCurve.IsBulkDataLoaded()	? BulkData.VertexToCurve.GetBulkDataSize() : 0;
+			Total += BulkData.Data.Positions.IsBulkDataLoaded() 		? BulkData.Data.Positions.GetBulkDataSize()   : 0;
+			Total += BulkData.Data.CurveAttributes.IsBulkDataLoaded()	? BulkData.Data.CurveAttributes.GetBulkDataSize() : 0;
+			Total += BulkData.Data.PointAttributes.IsBulkDataLoaded()	? BulkData.Data.PointAttributes.GetBulkDataSize() : 0;
+			Total += BulkData.Data.Curves.IsBulkDataLoaded() 			? BulkData.Data.Curves.GetBulkDataSize(): 0;
+			Total += BulkData.Data.PointToCurve.IsBulkDataLoaded()		? BulkData.Data.PointToCurve.GetBulkDataSize() : 0;
 			return Total;
 		}
 
@@ -110,10 +132,8 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 		{
 			uint32 Total = 0;
 			Total += FBase::GetDataSize();
-			Total += InterpolationBulkData.Interpolation.IsBulkDataLoaded()		? InterpolationBulkData.Interpolation.GetBulkDataSize() : 0;
-			Total += InterpolationBulkData.Interpolation0.IsBulkDataLoaded()	? InterpolationBulkData.Interpolation0.GetBulkDataSize() : 0;
-			Total += InterpolationBulkData.Interpolation1.IsBulkDataLoaded()	? InterpolationBulkData.Interpolation1.GetBulkDataSize() : 0;
-			Total += InterpolationBulkData.SimRootPointIndex.IsBulkDataLoaded()	? InterpolationBulkData.SimRootPointIndex.GetBulkDataSize() : 0;
+			Total += InterpolationBulkData.Data.Interpolation.IsBulkDataLoaded()	? InterpolationBulkData.Data.Interpolation.GetBulkDataSize() : 0;
+			Total += InterpolationBulkData.Data.SimRootPointIndex.IsBulkDataLoaded()? InterpolationBulkData.Data.SimRootPointIndex.GetBulkDataSize() : 0;
 			return Total;
 		}
 
@@ -124,7 +144,7 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 	////////////////////////////////////////////////////////////////////////////
 	// Data
 
-	struct FSim : FBase
+	struct FGuides : FBase
 	{
 		/* Return the memory size for GPU resources */
 		uint32 GetResourcesSize() const
@@ -151,7 +171,7 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 			uint32 Total = 0;
 			if (RestResource) Total += RestResource->GetResourcesSize();
 			if (InterpolationResource) Total += InterpolationResource->GetResourcesSize();
-			if (ClusterCullingResource) Total += ClusterCullingResource->GetResourcesSize();
+			if (ClusterResource) Total += ClusterResource->GetResourcesSize();
 			#if RHI_RAYTRACING
 			if (RaytracingResource) Total += RaytracingResource->GetResourcesSize();
 			#endif
@@ -159,27 +179,15 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 		}
 
 		uint32 GetDataSize() const;
-#if 0
-		{
-			uint32 Total = 0;
-			Total += FBaseWithInterpolation::GetDataSize();
 
-			Total += ClusterCullingBulkData.LODVisibility.GetAllocatedSize();
-			Total += ClusterCullingBulkData.CPULODScreenSize.GetAllocatedSize();
-			Total += ClusterCullingBulkData.ClusterInfos.IsBulkDataLoaded()			? ClusterCullingBulkData.ClusterInfos.GetBulkDataSize() : 0;
-			Total += ClusterCullingBulkData.ClusterLODInfos.IsBulkDataLoaded()		? ClusterCullingBulkData.ClusterLODInfos.GetBulkDataSize() : 0;
-			Total += ClusterCullingBulkData.VertexToClusterIds.IsBulkDataLoaded()	? ClusterCullingBulkData.VertexToClusterIds.GetBulkDataSize() : 0;
-			Total += ClusterCullingBulkData.ClusterVertexIds.IsBulkDataLoaded()		? ClusterCullingBulkData.ClusterVertexIds.GetBulkDataSize() : 0;
-			return Total;
-		}
-#endif
-		FHairStrandsClusterCullingBulkData	ClusterCullingBulkData;
-		FHairStrandsClusterCullingResource* ClusterCullingResource = nullptr;
+		FHairStrandsClusterBulkData	ClusterBulkData;
+		FHairStrandsClusterResource* ClusterResource = nullptr;
 
 		#if RHI_RAYTRACING
 		FHairStrandsRaytracingResource*		RaytracingResource = nullptr;
 		#endif
 
+		bool bIsCookedOut = false;
 	} Strands;
 
 	struct FCards
@@ -360,8 +368,6 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 		FHairStrandsDebugDatas Data;
 		FHairStrandsDebugDatas::FResources* Resource = nullptr;
 	} Debug;
-
-	bool bIsCookedOut = false;
 };
 
 struct FHairDescriptionGroup
@@ -369,9 +375,8 @@ struct FHairDescriptionGroup
 	FHairGroupInfo		Info;
 	FHairStrandsDatas	Strands;
 	FHairStrandsDatas	Guides;
-
-	bool  bCanUseClosestGuidesAndWeights = false;
-	bool  bHasUVData = false;
+	uint32 GetHairAttributes() const { return Strands.GetAttributes() | Guides.GetAttributes(); }
+	uint32 GetHairAttributeFlags() const { return Strands.GetAttributeFlags() | Guides.GetAttributeFlags(); }
 };
 
 struct FHairDescriptionGroups
@@ -425,64 +430,166 @@ class HAIRSTRANDSCORE_API UGroomAsset : public UObject, public IInterface_AssetU
 #endif
 
 public:
-	
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
 	UPROPERTY(EditAnywhere, Transient, EditFixedSize, Category = "HairInfo", meta = (DisplayName = "Group"))
 	TArray<FHairGroupInfoWithVisibility> HairGroupsInfo;
 
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairRendering", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetHairGroupsRendering, BlueprintSetter = SetHairGroupsRendering, Category = "HairRendering", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsRendering> HairGroupsRendering;
 
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairPhysics", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetHairGroupsPhysics, BlueprintSetter = SetHairGroupsPhysics, Category = "HairPhysics", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsPhysics> HairGroupsPhysics;
 
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairInterpolation", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetHairGroupsInterpolation, BlueprintSetter = SetHairGroupsInterpolation, Category = "HairInterpolation", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsInterpolation> HairGroupsInterpolation;
 
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairLOD", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetHairGroupsLOD, BlueprintSetter = SetHairGroupsLOD, Category = "HairLOD", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsLOD> HairGroupsLOD;
 
 	/** Cards - Source description data */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HairCards", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, BlueprintGetter = GetHairGroupsCards, BlueprintSetter = SetHairGroupsCards, Category = "HairCards", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsCardsSourceDescription> HairGroupsCards;
 
 	/** Meshes - Source description data */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HairMeshes", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, BlueprintGetter = GetHairGroupsMeshes, BlueprintSetter = SetHairGroupsMeshes, Category = "HairMeshes", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsMeshesSourceDescription> HairGroupsMeshes;
 
 	/** Meshes - Source description data */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HairMaterials", meta = (DisplayName = "Group"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+		UPROPERTY(EditAnywhere, BlueprintGetter = GetHairGroupsMaterials, BlueprintSetter = SetHairGroupsMaterials, Category = "HairMaterials", meta = (DisplayName = "Group"))
 	TArray<FHairGroupsMaterial> HairGroupsMaterials;
 
-	/** Store strands/cards/meshes data */
-	TArray<FHairGroupData> HairGroupsData;
-
 	/** Enable radial basis function interpolation to be used instead of the local skin rigid transform */
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairInterpolation", meta = (ToolTip = "Enable radial basis function interpolation to be used instead of the local skin rigid transform (WIP)", DisplayName = "RBF Interpolation"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetEnableGlobalInterpolation, BlueprintSetter = SetEnableGlobalInterpolation, Category = "HairInterpolation", meta = (ToolTip = "Enable radial basis function interpolation to be used instead of the local skin rigid transform (WIP)", DisplayName = "RBF Interpolation"))
 	bool EnableGlobalInterpolation = false;
 
+	/** Enable guide-cache support. This allows to attach a guide-cache dynamically at runtime */
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetEnableSimulationCache, BlueprintSetter = SetEnableSimulationCache, Category = "HairInterpolation", meta = (ToolTip = "Enable guide-cache support. This allows to attach a simulation-cache dynamically at runtime", DisplayName = "Enable Guide-Cache Support"))
+	bool EnableSimulationCache = false;
+
 	/** Type of interpolation used */
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "HairInterpolation", meta = (ToolTip = "Type of interpolation used (WIP)"))
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintGetter = GetHairInterpolationType, BlueprintSetter = SetHairInterpolationType, Category = "HairInterpolation", meta = (ToolTip = "Type of interpolation used (WIP)"))
 	EGroomInterpolationType HairInterpolationType = EGroomInterpolationType::SmoothTransform;
 
 	/** Deformed skeletal mesh that will drive the groom deformation/simulation. For creating this skeletal mesh, enable EnableDeformation within the interpolation settings*/
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "HairInterpolation")
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	UPROPERTY(VisibleAnywhere, BlueprintGetter = GetRiggedSkeletalMesh, BlueprintSetter = SetRiggedSkeletalMesh, Category = "HairInterpolation")
 	TObjectPtr<USkeletalMesh> RiggedSkeletalMesh;
 
 	/** Deformed skeletal mesh mapping from groups to sections */
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
 	UPROPERTY()
 	TArray<int32> DeformedGroupSections;
 
 	/** Minimum LOD to cook */
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
 	UPROPERTY(EditAnywhere, Category = "LOD", meta = (DisplayName = "Minimum LOD"))
 	FPerPlatformInt MinLOD;
 
 	/** When true all LODs below MinLod will still be cooked */
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "LOD")
 	FPerPlatformBool DisableBelowMinLodStripping;
 
 	/** The LOD bias to use after LOD stripping, regardless of MinLOD. Computed at cook time */
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
 	UPROPERTY()
 	TArray<float> EffectiveLODBias;
+
+	/** Store strands/cards/meshes data */
+	UE_DEPRECATED(5.3, "Please do not access this member directly; use UGroomAsset accessor.")
+	TArray<FHairGroupPlatformData> HairGroupsPlatformData;
+
+public:
+	static FName GetHairGroupsRenderingMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsRendering>& GetHairGroupsRendering();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsRendering(const TArray<FHairGroupsRendering>& In);
+	const TArray<FHairGroupsRendering>& GetHairGroupsRendering() const;
+
+	static FName GetHairGroupsPhysicsMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsPhysics>& GetHairGroupsPhysics();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsPhysics(const TArray<FHairGroupsPhysics>& In);
+	const TArray<FHairGroupsPhysics>& GetHairGroupsPhysics() const;
+
+	static FName GetHairGroupsInterpolationMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsInterpolation>& GetHairGroupsInterpolation();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsInterpolation(const TArray<FHairGroupsInterpolation>& In);
+	const TArray<FHairGroupsInterpolation>& GetHairGroupsInterpolation() const;
+
+	static FName GetHairGroupsLODMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsLOD>& GetHairGroupsLOD();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsLOD(const TArray<FHairGroupsLOD>& In);
+	const TArray<FHairGroupsLOD>& GetHairGroupsLOD() const;
+
+	static FName GetHairGroupsCardsMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsCardsSourceDescription>& GetHairGroupsCards();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsCards(const TArray<FHairGroupsCardsSourceDescription>& In);
+	const TArray<FHairGroupsCardsSourceDescription>& GetHairGroupsCards() const;
+
+	static FName GetHairGroupsMeshesMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsMeshesSourceDescription>& GetHairGroupsMeshes();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsMeshes(const TArray<FHairGroupsMeshesSourceDescription>& In);
+	const TArray<FHairGroupsMeshesSourceDescription>& GetHairGroupsMeshes() const;
+
+	static FName GetHairGroupsMaterialsMemberName();
+	UFUNCTION(BlueprintGetter) TArray<FHairGroupsMaterial>& GetHairGroupsMaterials();
+	UFUNCTION(BlueprintSetter) void SetHairGroupsMaterials(const TArray<FHairGroupsMaterial>& In);
+	const TArray<FHairGroupsMaterial>& GetHairGroupsMaterials() const;
+
+	static FName GetEnableGlobalInterpolationMemberName();
+	UFUNCTION(BlueprintGetter) bool GetEnableGlobalInterpolation() const;
+	UFUNCTION(BlueprintSetter) void SetEnableGlobalInterpolation(bool In);
+
+	static FName GetEnableSimulationCacheMemberName();
+	UFUNCTION(BlueprintGetter) bool GetEnableSimulationCache() const;
+	UFUNCTION(BlueprintSetter) void SetEnableSimulationCache(bool In);
+
+	static FName GetHairInterpolationTypeMemberName();
+	UFUNCTION(BlueprintGetter) EGroomInterpolationType GetHairInterpolationType() const;
+	UFUNCTION(BlueprintSetter) void SetHairInterpolationType(EGroomInterpolationType In);
+
+	static FName GetRiggedSkeletalMeshMemberName();
+	UFUNCTION(BlueprintGetter) USkeletalMesh* GetRiggedSkeletalMesh() const;
+	UFUNCTION(BlueprintSetter) void SetRiggedSkeletalMesh(USkeletalMesh* In);
+
+	static FName GetDeformedGroupSectionsMemberName();
+	UFUNCTION(BlueprintGetter) TArray<int32>& GetDeformedGroupSections();
+	UFUNCTION(BlueprintSetter) void SetDeformedGroupSections(const TArray<int32>& In);
+	const TArray<int32>& GetDeformedGroupSections() const;
+
+	static FName GetMinLODMemberName();
+	FPerPlatformInt GetMinLOD() const;
+	void SetMinLOD(FPerPlatformInt In);
+
+	static FName GetDisableBelowMinLodStrippingMemberName();
+	FPerPlatformBool GetDisableBelowMinLodStripping() const;
+	void SetDisableBelowMinLodStripping(FPerPlatformBool In);
+
+	static FName GetEffectiveLODBiasMemberName();
+	TArray<float>& GetEffectiveLODBias();
+	void SetEffectiveLODBias(const TArray<float>& In);
+	const TArray<float>& GetEffectiveLODBias() const;
+
+	static FName GetHairGroupsPlatformDataMemberName();
+	TArray<FHairGroupPlatformData>& GetHairGroupsPlatformData();
+	const TArray<FHairGroupPlatformData>& GetHairGroupsPlatformData() const;
+	void SetHairGroupsPlatformData(const TArray<FHairGroupPlatformData>& In);
+
+	static FName GetHairGroupsInfoMemberName();
+	TArray<FHairGroupInfoWithVisibility>& GetHairGroupsInfo();
+	const TArray<FHairGroupInfoWithVisibility>& GetHairGroupsInfo() const;
+	void SetHairGroupsInfo(const TArray<FHairGroupInfoWithVisibility>& In);
+
+public:
 
 	//~ Begin UObject Interface.
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
@@ -608,8 +715,8 @@ public:
 	bool IsMaterialUsed(int32 MaterialIndex) const;
 	TArray<FName> GetMaterialSlotNames() const;
 
-	bool BuildCardsGeometry();
-	bool BuildMeshesGeometry();
+	bool BuildCardsData();
+	bool BuildMeshesData();
 
 	enum EClassDataStripFlag : uint8
 	{
@@ -638,8 +745,8 @@ private:
 #if WITH_EDITORONLY_DATA
 	bool HasImportedStrandsData() const;
 
-	bool BuildCardsGeometry(uint32 GroupIndex);
-	bool BuildMeshesGeometry(uint32 GroupIndex);
+	bool BuildCardsData(uint32 GroupIndex);
+	bool BuildMeshesData(uint32 GroupIndex);
 
 	bool HasValidCardsData(uint32 GroupIndex) const;
 	bool HasValidMeshesData(uint32 GroupIndex) const;
@@ -665,10 +772,10 @@ public:
 	bool CacheDerivedDatas();
 	bool CacheDerivedData(uint32 GroupIndex);
 	bool CacheStrandsData(uint32 GroupIndex, FString& OutDerivedDataKey);
-	bool CacheCardsGeometry(uint32 GroupIndex, const FString& StrandsKey);
-	bool CacheMeshesGeometry(uint32 GroupIndex);
+	bool CacheCardsData(uint32 GroupIndex, const FString& StrandsKey);
+	bool CacheMeshesData(uint32 GroupIndex);
 
-	FString GetDerivedDataKey();
+	FString GetDerivedDataKey(bool bUseCacheKey=false);
 	FString GetDerivedDataKeyForCards(uint32 GroupIt, const FString& StrandsKey);
 	FString GetDerivedDataKeyForStrands(uint32 GroupIndex);
 	FString GetDerivedDataKeyForMeshes(uint32 GroupIndex);
@@ -676,7 +783,6 @@ public:
 	const FHairDescriptionGroups& GetHairDescriptionGroups();
 private:
 	
-	FString BuildDerivedDataKeySuffix(uint32 GroupIndex, const FHairGroupsInterpolation& InterpolationSettings, const FHairGroupsLOD& LODSettings) const;
 	bool IsFullyCached();
 	TUniquePtr<FHairDescriptionBulkData> HairDescriptionBulkData[EHairDescriptionType::Count];
 	EHairDescriptionType HairDescriptionType = EHairDescriptionType::Source;
@@ -715,4 +821,32 @@ private:
 	TQueue<UStaticMesh*> AssetToSave_Meshes;
 	TQueue<FHairGroupCardsTextures*> AssetToSave_Textures;
 #endif // WITH_EDITOR
+};
+
+struct FGroomAssetMemoryStats
+{
+	struct FStats
+	{
+		uint32 Guides = 0;
+		uint32 Strands= 0;
+		uint32 Cards  = 0;
+		uint32 Meshes = 0;
+	};
+	FStats CPU;
+	FStats GPU;
+
+	struct FStrandsDetails
+	{
+		uint32 Rest = 0;
+		uint32 Interpolation= 0;
+		uint32 Cluster  = 0;
+		uint32 Raytracing = 0;
+	};
+	FStrandsDetails Memory;
+	FStrandsDetails Curves;
+
+	static FGroomAssetMemoryStats Get(const FHairGroupPlatformData& In);
+	void Accumulate(const FGroomAssetMemoryStats& In);
+	uint32 GetTotalCPUSize() const;
+	uint32 GetTotalGPUSize() const;
 };

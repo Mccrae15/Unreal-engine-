@@ -234,7 +234,11 @@ public:
 		// Someone may accidentally call this static function without calling FPixelStreamingPeerConnection::Create first
 		if (SignallingThread != nullptr)
 		{
+#if WEBRTC_5414
+			SignallingThread->PostTask(Forward<FunctorT>(InFunc));
+#else
 			SignallingThread->PostTask(RTC_FROM_HERE, Forward<FunctorT>(InFunc));
+#endif
 		}
 	}
 
@@ -284,6 +288,7 @@ private:
 	std::unique_ptr<class FPeerWebRTCStatsSource> StatsSource;
 
 	bool IsSFU = false;
+	bool bIsDestroying = false;
 
 	// TODO these static methods can probably be moved off into a singleton or something
 	static void CreatePeerConnectionFactory();

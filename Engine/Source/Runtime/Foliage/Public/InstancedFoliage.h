@@ -247,7 +247,9 @@ struct FFoliageImpl
 	virtual void PreEditUndo(UFoliageType* FoliageType) {}
 	virtual void PostEditUndo(FFoliageInfo* InInfo, UFoliageType* FoliageType) { Info = InInfo; }
 	virtual void NotifyFoliageTypeWillChange(UFoliageType* FoliageType) {}
-	virtual void NotifyFoliageTypeChanged(UFoliageType* FoliageType, bool bSourceChanged) = 0;
+
+	// Return true if implementation needs to change 
+	virtual bool NotifyFoliageTypeChanged(UFoliageType* FoliageType, bool bSourceChanged) = 0;
 	virtual void EnterEditMode() {}
 	virtual void ExitEditMode() {}
 	virtual bool ShouldAttachToBaseComponent() const { return true; }
@@ -364,7 +366,7 @@ struct FFoliageInfo
 	FOLIAGE_API void AddToBaseHash(int32 InstanceIdx);
 	FOLIAGE_API void RemoveFromBaseHash(int32 InstanceIdx);
 	FOLIAGE_API void RecomputeHash();
-	FOLIAGE_API bool ShouldAttachToBaseComponent() const { return Implementation->ShouldAttachToBaseComponent(); }
+	bool ShouldAttachToBaseComponent() const { return Implementation->ShouldAttachToBaseComponent(); }
 
 	// For debugging. Validate state after editing.
 	void CheckValid();
@@ -495,7 +497,7 @@ struct FDesiredFoliageInstance
 
 #if WITH_EDITOR
 // Struct to hold potential instances we've sampled
-struct FOLIAGE_API FPotentialInstance
+struct FPotentialInstance
 {
 	FVector HitLocation;
 	FVector HitNormal;
@@ -503,7 +505,7 @@ struct FOLIAGE_API FPotentialInstance
 	float HitWeight;
 	FDesiredFoliageInstance DesiredInstance;
 
-	FPotentialInstance(FVector InHitLocation, FVector InHitNormal, UPrimitiveComponent* InHitComponent, float InHitWeight, const FDesiredFoliageInstance& InDesiredInstance = FDesiredFoliageInstance());
-	bool PlaceInstance(const UWorld* InWorld, const UFoliageType* Settings, FFoliageInstance& Inst, bool bSkipCollision = false);
+	FOLIAGE_API FPotentialInstance(FVector InHitLocation, FVector InHitNormal, UPrimitiveComponent* InHitComponent, float InHitWeight, const FDesiredFoliageInstance& InDesiredInstance = FDesiredFoliageInstance());
+	FOLIAGE_API bool PlaceInstance(const UWorld* InWorld, const UFoliageType* Settings, FFoliageInstance& Inst, bool bSkipCollision = false);
 };
 #endif

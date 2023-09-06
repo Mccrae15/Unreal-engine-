@@ -111,16 +111,6 @@ private:
 	/** Binds commands associated with the Static Mesh Editor. */
 	void BindCommands();
 		
-	/**
-	 *	Sets the editor's current mesh and refreshes various settings to correspond with the new data.
-	 *
-	 *	@param	InCustomizableObject		The static mesh to use for the editor.
-	 */
-	void SetEditorMesh(UCustomizableObjectInstance* InCustomizableObjectInstance);
-
-	/** Change the mesh the editor is viewing. */
-	void OnChangeMesh();
-
 	/** Callback when selection changes in the Property Tree. */
 	void OnInstancePropertySelectionChanged(FProperty* InProperty);
 
@@ -151,10 +141,10 @@ private:
 private:
 
 	/** The currently viewed object. */
-	class UCustomizableObjectInstance* CustomizableObjectInstance;
-	TArray<class UCustomizableSkeletalComponent*> PreviewCustomizableSkeletalComponents;
-	class UStaticMeshComponent* PreviewStaticMeshComponent;
-	TArray<class UDebugSkelMeshComponent*> PreviewSkeletalMeshComponents;
+	TObjectPtr<class UCustomizableObjectInstance> CustomizableObjectInstance;
+	TArray<TObjectPtr<class UCustomizableSkeletalComponent>> PreviewCustomizableSkeletalComponents;
+	TObjectPtr<class UStaticMeshComponent> PreviewStaticMeshComponent;
+	TArray<TObjectPtr<class UDebugSkelMeshComponent>> PreviewSkeletalMeshComponents;
 
 	/** List of open tool panels; used to ensure only one exists at any one time */
 	TMap< FName, TWeakPtr<class SDockableTab> > SpawnedToolPanels;
@@ -188,16 +178,10 @@ private:
 	FDelegateHandle OnObjectModifiedHandle;
 
 	/** Flag to know when the asset registry initial loading has completed */
-	bool AssetRegistryLoaded;
-
-	/** Flag to know whether the lasts steps when making a new preview instance need to be done when asset registry completes asset loading */
-	bool UpdateSkeletalMeshAfterAssetLoaded;
-
-	/** Copy of variable needed when asset registry finishes loading assets to complete editor loading */
-	UCustomizableObjectInstance* ObjectToEditCopy;
+	bool AssetRegistryLoaded = true;
 
 	/** UObject class to be able to use the update callback */
-	UUpdateClassWrapperClass* HelperCallback;
+	TObjectPtr<UUpdateClassWrapperClass> HelperCallback;
 
 	/** Scene preview settings widget */
 	TSharedPtr<SWidget> AdvancedPreviewSettingsWidget;
@@ -205,16 +189,11 @@ private:
 	/** Object compiler */
 	TUniquePtr<class FCustomizableObjectCompiler> Compiler;
 
-	/** Used in InitCustomizableObjectInstanceEditor, in the case the CO being opened is not compiled. Since referencer assets are loaded asynchronously,
-	* this flag is used to complete editor initialization */
-	bool CreatePreviewInstanceAfterCOCompile;
-
 	/** Pose asset when doing drag and drop of an UPoseAsset to the viewport */
 	UPoseAsset* PoseAsset;
 
 	/** Texture Analyzer table widget which shows the information of the transient textures used in the customizable object instance */
 	TSharedPtr<class SCustomizableObjecEditorTextureAnalyzer> TextureAnalyzer;
-
 
 	/** Variables used to force the refresh of the details view widget. These are needed because sometimes the scrollbar of the window doesn't appear
 	    until we force the refresh */

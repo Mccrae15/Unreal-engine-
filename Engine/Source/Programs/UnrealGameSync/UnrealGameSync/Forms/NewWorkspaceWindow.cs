@@ -6,10 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -29,23 +27,23 @@ namespace UnrealGameSync
 
 			public NewWorkspaceSettings(string name, string stream, DirectoryReference rootDir)
 			{
-				this.Name = name;
-				this.Stream = stream;
-				this.RootDir = rootDir;
+				Name = name;
+				Stream = stream;
+				RootDir = rootDir;
 			}
 		}
 
 		class FindWorkspaceSettingsTask
 		{
-			public InfoRecord Info;
-			public List<ClientsRecord> Clients;
-			public string? CurrentStream;
+			public InfoRecord Info { get; }
+			public List<ClientsRecord> Clients { get; }
+			public string? CurrentStream { get; }
 
 			public FindWorkspaceSettingsTask(InfoRecord info, List<ClientsRecord> clients, string? currentStream)
 			{
-				this.Info = info;
-				this.Clients = clients;
-				this.CurrentStream = currentStream;
+				Info = info;
+				Clients = clients;
+				CurrentStream = currentStream;
 			}
 
 			public static async Task<FindWorkspaceSettingsTask> RunAsync(IPerforceConnection perforce, string currentWorkspaceName, CancellationToken cancellationToken)
@@ -85,26 +83,27 @@ namespace UnrealGameSync
 			}
 		}
 
-		IPerforceSettings _perforceSettings;
-		InfoRecord _info;
-		List<ClientsRecord> _clients;
-		IServiceProvider _serviceProvider;
+		readonly IPerforceSettings _perforceSettings;
+		readonly InfoRecord _info;
+		readonly List<ClientsRecord> _clients;
+		readonly IServiceProvider _serviceProvider;
 		NewWorkspaceSettings? _settings;
-		DirectoryReference? _defaultRootPath;
+		readonly DirectoryReference? _defaultRootPath;
 
 		private NewWorkspaceWindow(IPerforceSettings perforceSettings, string? forceStream, string? defaultStream, InfoRecord info, List<ClientsRecord> clients, IServiceProvider serviceProvider)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._perforceSettings = perforceSettings;
-			this._info = info;
-			this._clients = clients;
-			this._serviceProvider = serviceProvider;
+			_perforceSettings = perforceSettings;
+			_info = info;
+			_clients = clients;
+			_serviceProvider = serviceProvider;
 
 			Dictionary<DirectoryReference, int> rootPathToCount = new Dictionary<DirectoryReference, int>();
 			foreach(ClientsRecord client in clients)
 			{
-				if(client.Host == null || String.Compare(client.Host, info.ClientHost, StringComparison.OrdinalIgnoreCase) == 0)
+				if(client.Host == null || String.Equals(client.Host, info.ClientHost, StringComparison.OrdinalIgnoreCase))
 				{
 					if(!String.IsNullOrEmpty(client.Root) && client.Root != ".")
 					{
@@ -168,7 +167,7 @@ namespace UnrealGameSync
 				return false;
 			}
 
-			NewWorkspaceWindow window = new NewWorkspaceWindow(perforceSettings, forceStreamName, task.Result.CurrentStream, task.Result.Info, task.Result.Clients, serviceProvider);
+			using NewWorkspaceWindow window = new NewWorkspaceWindow(perforceSettings, forceStreamName, task.Result.CurrentStream, task.Result.Info, task.Result.Clients, serviceProvider);
 			if(window.ShowDialog(owner) == DialogResult.OK)
 			{
 				workspaceName = window._settings!.Name;
@@ -183,7 +182,7 @@ namespace UnrealGameSync
 
 		private void RootDirBrowseBtn_Click(object sender, EventArgs e)
 		{
-			FolderBrowserDialog dialog = new FolderBrowserDialog();
+			using FolderBrowserDialog dialog = new FolderBrowserDialog();
 			dialog.ShowNewFolderButton = true;
 			dialog.SelectedPath = RootDirTextBox.Text;
 			if (dialog.ShowDialog() == DialogResult.OK)
@@ -198,7 +197,7 @@ namespace UnrealGameSync
 			string baseName = Sanitize(String.Format("{0}_{1}_{2}", _info.UserName, _info.ClientHost, StreamTextBox.Text.Replace('/', '_').Trim('_'))).Trim('_');
 
 			string name = baseName;
-			for(int idx = 2; _clients.Any(x => x.Name != null && String.Compare(x.Name, name, StringComparison.InvariantCultureIgnoreCase) == 0); idx++)
+			for(int idx = 2; _clients.Any(x => x.Name != null && String.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase)); idx++)
 			{
 				name = String.Format("{0}_{1}", baseName, idx);
 			}
@@ -219,7 +218,7 @@ namespace UnrealGameSync
 			return rootDir;
 		}
 
-		private string Sanitize(string text)
+		private static string Sanitize(string text)
 		{
 			StringBuilder result = new StringBuilder();
 			for(int idx = 0; idx < text.Length; idx++)
@@ -244,8 +243,7 @@ namespace UnrealGameSync
 
 		private void UpdateOkButton()
 		{
-			NewWorkspaceSettings? settings;
-			OkBtn.Enabled = TryGetWorkspaceSettings(out settings);
+			OkBtn.Enabled = TryGetWorkspaceSettings(out _);
 		}
 
 		private bool TryGetWorkspaceSettings([NotNullWhen(true)] out NewWorkspaceSettings? settings)
@@ -262,7 +260,7 @@ namespace UnrealGameSync
 			}
 
 			string newStream = StreamTextBox.Text.Trim();
-			if(!newStream.StartsWith("//") || newStream.IndexOf('/', 2) == -1)
+			if(!newStream.StartsWith("//", StringComparison.Ordinal) || newStream.IndexOf('/', 2) == -1)
 			{
 				settings = null;
 				return false;

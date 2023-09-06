@@ -31,6 +31,7 @@ const ztag_group_rex = /\n\n\.\.\.\s/;
 const ztag_field_rex = /(?:\n|^)\.\.\.\s/;
 const newline_rex = /\r\n|\n|\r/g;
 const integer_rex = /^[1-9][0-9]*\s*$/;
+const resolveGarbage_rex = /^(Branch resolve:|at: branch|ay: ignore)$/gm;
 
 export interface BranchSpec {
 	name: string;
@@ -98,7 +99,7 @@ function parseTrace(response: string): [string, string] {
 
 // parse the perforce tagged output format into an array of objects
 // TODO: probably should switch this to scrape Python dictionary format (-G) since ztag is super inconsistent with multiline fields
-export function parseZTag(buffer: string, multiLine?: boolean) {
+export function parseZTag(buffer: string, opts?: ExecZtagOpts) {
 	let output = [];
 
 	// check for error lines ahead of the first ztag field
@@ -114,6 +115,12 @@ export function parseZTag(buffer: string, multiLine?: boolean) {
 		if (preamble.length > 0)
 			output.push(preamble.split(newline_rex));
 		buffer = "";
+	}
+
+	// resolve ztag can have some garbage that causes issues with
+	// parsing the groups, so we're just going to strip them out
+	if (opts && opts.resolve) {
+		buffer = buffer.replaceAll(resolveGarbage_rex,"")
 	}
 
 	// split into groups
@@ -141,7 +148,7 @@ export function parseZTag(buffer: string, multiLine?: boolean) {
 			if (s >= 0) {
 				key = pair.substr(0, s);
 				value = pair.substr(s + 1);
-				if (value.indexOf('\n') >= 0 && !multiLine) {
+				if (value.indexOf('\n') >= 0 && !(opts && opts.multiline)) {
 					let lines = value.split('\n');
 					value = lines.shift();
 					text = text.concat(lines.filter((str) => { return str !== ""; }));
@@ -278,12 +285,26 @@ interface ExecOpts {
 
 interface ExecZtagOpts extends ExecOpts {
 	multiline?: boolean;
+	resolve?: boolean; // hacky solution to clear certain problematic lines out of resolve ztags
 }
 
-export interface EditOwnerOpts {
-	newWorkspace?: string;
-	changeSubmitted?: boolean;
+export interface EditChangeOpts {
+	newOwner?: string
+	newWorkspace?: string
+	newDescription?: string
+	changeSubmitted?: boolean
 	edgeServerAddress?: string
+}
+
+export interface IntegrateOpts {
+	edgeServerAddress?: string
+	virtual?: boolean
+}
+
+export interface SyncParams {
+	opts?: string[]
+	edgeServerAddress?: string
+	okToFail?: boolean // default is false
 }
 
 export interface ConflictedResolveNFile {
@@ -647,12 +668,12 @@ export class PerforceContext {
 	}
 
 	// sync the depot path specified
-	async sync(roboWorkspace: RoboWorkspace, depotPath: string, opts?: string[], edgeServerAddress?: string) {
+	async sync(roboWorkspace: RoboWorkspace, depotPath: string, params?: SyncParams) {
 		const workspace = coercePerforceWorkspace(roboWorkspace);
-		let args = edgeServerAddress ? ['-p', edgeServerAddress] : []
+		let args = params && params.edgeServerAddress ? ['-p', params.edgeServerAddress] : []
 		args.push('sync')
-		if (opts) {
-			args = [...args, ...opts]
+		if (params && params.opts) {
+			args = [...args, ...params.opts]
 		}
 		args.push(depotPath)
 		try {
@@ -662,10 +683,13 @@ export class PerforceContext {
 			if (!isExecP4Error(reason)) {
 				throw reason
 			}
-			const [err, output] = reason
-			// this is an acceptable non-error case for us
-			if (!output || typeof output !== "string" || !output.trim().endsWith("up-to-date."))
-				throw err
+			if (!params || !params.okToFail) {
+				const [err, output] = reason
+				// this is an acceptable non-error case for us
+				if (!output || typeof output !== "string" || !output.trim().endsWith("up-to-date.")) {
+					throw err
+				}
+			}
 		}
 	}
 
@@ -675,7 +699,7 @@ export class PerforceContext {
 		if (!change) {
 			throw new Error('Unable to find changelist');
 		}
-		await this.sync(workspace, `${depotPath}@${change.change}`, opts);
+		await this.sync(workspace, `${depotPath}@${change.change}`, {opts});
 		return change.change;
 	}
 
@@ -787,19 +811,24 @@ export class PerforceContext {
 	// integrate a CL from source to destination, resolve, and place the results in a new CL
 	// output format is true if the integration resolved or false if the integration wasn't necessary (still considered a success)
 	// failure to resolve is treated as an error condition
-	async integrate(roboWorkspace: RoboWorkspace, source: IntegrationSource, dest_changelist: number, target: IntegrationTarget, edgeServerAddress?: string)
+	async integrate(roboWorkspace: RoboWorkspace, source: IntegrationSource, dest_changelist: number, target: IntegrationTarget, opts?: IntegrateOpts)
 		: Promise<[string, (Change | string)[]]> {
+
+		opts = opts || {};
 		const workspace = coercePerforceWorkspace(roboWorkspace);
+
 		// build a command
 		let cmdList = [
 			"integrate",
 			"-Ob",
 			"-Or",
-			"-Rd",
-			"-Rb",
 			"-c" + dest_changelist
 		];
 		const range = `@${source.changelist},${source.changelist}`
+
+		if (opts.virtual) {
+			cmdList.push('-v')
+		}
 
 		let noSuchFilesPossible = false // Helper variable for error catching
 		// Branchspec -- takes priority above other possibilities
@@ -830,7 +859,7 @@ export class PerforceContext {
 		// execute the P4 command
 		let changes;
 		try {
-			changes = await this._execP4Ztag(workspace, cmdList, { numRetries: 0, edgeServerAddress });
+			changes = await this._execP4Ztag(workspace, cmdList, { numRetries: 0, edgeServerAddress: opts.edgeServerAddress });
 		}
 		catch (reason) {
 			if (!isExecP4Error(reason)) {
@@ -955,6 +984,10 @@ export class PerforceContext {
 
 		// If resolveHelper() returned a string, we do not need to return a dashNResult
 		if (typeof fileInfo === 'string') {
+			// If our error is just there are no files to resolve, that is a success
+			if (fileInfo.startsWith('No file(s) to resolve.')) {
+				return new ResolveResult(null, 'success', this.logger)
+			}
 			return new ResolveResult(null, fileInfo, this.logger)
 		}
 
@@ -965,8 +998,7 @@ export class PerforceContext {
 
 		let dashNresult: string[]
 		try {
-			//dashNresult = await this._execP4(workspace, ['resolve', '-N', `-c${changelist}`])
-			dashNresult = await this._execP4Ztag(workspace, ['resolve', '-N', `-c${changelist}`], {edgeServerAddress})
+			dashNresult = await this._execP4Ztag(workspace, ['resolve', '-N', `-c${changelist}`], {edgeServerAddress, resolve: true})
 		}
 		catch (reason) {
 			if (!isExecP4Error(reason)) {
@@ -975,7 +1007,7 @@ export class PerforceContext {
 
 			let [err, output] = reason
 			
-			// If our error is just there are no files to resolve, 
+			// If our error is just there are no files to resolve, that is a success
 			if (output.startsWith('No file(s) to resolve.')) {
 				dashNresult = ['success']
 			} else {
@@ -1196,9 +1228,12 @@ export class PerforceContext {
 
 	// get the email (according to P4) for a specific user
 	async getEmail(username: string) {
-		const output = await this._execP4(null, ['user', '-o', username]);
-		// look for the email field
-		let m = output.match(/\nEmail:\s+([^\n]+)\n/);
+		let m = null
+		if (!username.startsWith('@')) {
+			const output = await this._execP4(null, ['user', '-o', username]);
+			// look for the email field
+			m = output.match(/\nEmail:\s+([^\n]+)\n/);
+		}
 		return m && m[1];
 	}
 
@@ -1246,44 +1281,49 @@ export class PerforceContext {
 		return result;
 	}
 
-	// change the description on an existing CL
+	// update the fields on an existing CL using p4 change
 	// output format is just error or not
-	async editDescription(roboWorkspace: RoboWorkspace, changelist: number, description: string, edgeServerAddress?: string) {
-		const workspace = coercePerforceWorkspace(roboWorkspace);
-
-		// get the current changelist description
-		const output = await this._execP4(workspace, ['change', '-o', changelist.toString()], {edgeServerAddress});
-		// replace the description
-		let new_desc = '\nDescription:\n\t' + this._sanitizeDescription(description);
-		let form = output.replace(/\nDescription:\n(\t[^\n]*\n)*/, new_desc.replace(/\$/g, '$$$$'));
-
-		// run the P4 change command to update
-		this.logger.info("Executing: 'p4 change -i -u' to edit description on CL" + changelist);
-		await this._execP4(workspace, ['change', '-i', '-u'], { stdin: form, quiet: true, edgeServerAddress });
-	}
-
-	// change the owner of an existing CL
-	// output format is just error or not
-	async editOwner(roboWorkspace: RoboWorkspace, changelist: number, newOwner: string, opts?: EditOwnerOpts) {
+	async editChange(roboWorkspace: RoboWorkspace, changelist: number, opts?: EditChangeOpts) {
 		const workspace = coercePerforceWorkspace(roboWorkspace);
 
 		opts = opts || {}; // optional newWorkspace:string and/or changeSubmitted:boolean
 		// get the current changelist description
-		const output = await this._execP4(workspace, ['change', '-o', changelist.toString()],
+		let form = await this._execP4(workspace, ['change', '-o', changelist.toString()],
 			{edgeServerAddress: opts.edgeServerAddress});
 
-		// replace the description
-		let form = output.replace(/\nUser:\t[^\n]*\n/, `\nUser:\t${newOwner}\n`);
+		if (opts.newOwner) {
+			form = form.replace(/\nUser:\t[^\n]*\n/, `\nUser:\t${opts.newOwner}\n`);
+		}
 		if (opts.newWorkspace) {
 			form = form.replace(/\nClient:\t[^\n]*\n/, `\nClient:\t${opts.newWorkspace}\n`);
+		}
+		if (opts.newDescription) {
+			// replace the description
+			let new_desc = '\nDescription:\n\t' + this._sanitizeDescription(opts.newDescription);
+			form = form.replace(/\nDescription:\n(\t[^\n]*\n)*/, new_desc.replace(/\$/g, '$$$$'));
 		}
 
 		// run the P4 change command to update
 		const changeFlag = opts.changeSubmitted ? '-f' : '-u';
-		this.logger.info(`Executing: 'p4 change -i ${changeFlag}' to edit user/client on CL${changelist}`);
+		this.logger.info(`Executing: 'p4 change -i ${changeFlag}' to edit CL${changelist}`);
 
 		await this._execP4(workspace, ['change', '-i', changeFlag],
 				{ stdin: form, quiet: true, edgeServerAddress: opts.edgeServerAddress })
+	}
+
+	// change the description on an existing CL
+	// output format is just error or not
+	async editDescription(roboWorkspace: RoboWorkspace, changelist: number, description: string, edgeServerAddress?: string) {
+		const opts: EditChangeOpts = {newDescription: description, edgeServerAddress}
+		await this.editChange(roboWorkspace, changelist, opts)
+	}
+
+	// change the owner of an existing CL
+	// output format is just error or not
+	async editOwner(roboWorkspace: RoboWorkspace, changelist: number, newOwner: string, opts?: EditChangeOpts) {
+		opts = opts || {}; // optional newWorkspace:string and/or changeSubmitted:boolean
+		opts.newOwner = newOwner
+		await this.editChange(roboWorkspace, changelist, opts)
 	}
 
 	where(roboWorkspace: RoboWorkspace, clientPath: string) {
@@ -1505,7 +1545,7 @@ export class PerforceContext {
 
 	static async _execP4Ztag(logger: ContextualLogger, roboWorkspace: RoboWorkspace, args: string[], opts?: ExecZtagOpts) {
 		const workspace = coercePerforceWorkspace(roboWorkspace);
-		return parseZTag(await PerforceContext._execP4(logger, workspace, ['-ztag', ...args], opts), opts && opts.multiline);
+		return parseZTag(await PerforceContext._execP4(logger, workspace, ['-ztag', ...args], opts), opts);
 	}
 
 	private async _execP4Ztag(roboWorkspace: RoboWorkspace, args: string[], opts?: ExecZtagOpts) {

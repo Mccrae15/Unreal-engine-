@@ -23,16 +23,18 @@ namespace Chaos
 		 * Container the storage for the FCollisionConstraintAllocator, as well as the API to create new midphases and collision constraints.
 		 * We have one of these objects per thread on which collisions detection is performed to get lock-free allocations and lists.
 		 */
-		class CHAOS_API FCollisionContextAllocator
+		class FCollisionContextAllocator
 		{
 		public:
 			FCollisionContextAllocator(FPBDCollisionConstraints* InCollisionContainer, const int32 InNumCollisionsPerBlock, const int32 InCurrentEpoch)
 				: CollisionContainer(InCollisionContainer)
 				, CurrentEpoch(InCurrentEpoch)
-	#if CHAOS_COLLISION_OBJECTPOOL_ENABLED
+#if CHAOS_COLLISION_OBJECTPOOL_ENABLED
 				, ConstraintPool(InNumCollisionsPerBlock, 0)
+#endif
+#if CHAOS_MIDPHASE_OBJECTPOOL_ENABLED
 				, MidPhasePool(InNumCollisionsPerBlock, 0)
-	#endif
+#endif
 			{
 			}
 
@@ -47,7 +49,7 @@ namespace Chaos
 			/**
 			 * Create a constraint (called by the MidPhase)
 			 */
-			FPBDCollisionConstraintPtr CreateConstraint(
+			CHAOS_API FPBDCollisionConstraintPtr CreateConstraint(
 				FGeometryParticleHandle* Particle0,
 				const FImplicitObject* Implicit0,
 				const FPerShapeData* Shape0,
@@ -67,12 +69,12 @@ namespace Chaos
 			 */
 			FPBDCollisionConstraintPtr CreateConstraint()
 			{
-	#if CHAOS_COLLISION_OBJECTPOOL_ENABLED 
+#if CHAOS_COLLISION_OBJECTPOOL_ENABLED 
 				FPBDCollisionConstraint* Constraint = ConstraintPool.Alloc();
 				return FPBDCollisionConstraintPtr(Constraint, FPBDCollisionConstraintDeleter(ConstraintPool));
-	#else
+#else
 				return MakeUnique<FPBDCollisionConstraint>();
-	#endif
+#endif
 			}
 
 			/**
@@ -88,6 +90,8 @@ namespace Chaos
 				if (Cookie.LastUsedEpoch != CurrentEpoch)
 				{
 					Cookie.LastUsedEpoch = CurrentEpoch;
+					Cookie.ConstraintIndex = INDEX_NONE;
+					Cookie.CCDConstraintIndex = INDEX_NONE;
 
 					NewActiveConstraints.Push(Constraint);
 
@@ -129,10 +133,12 @@ namespace Chaos
 
 			void Reset()
 			{
-	#if CHAOS_COLLISION_OBJECTPOOL_ENABLED
+#if CHAOS_COLLISION_OBJECTPOOL_ENABLED
 				ConstraintPool.Reset();
+#endif
+#if CHAOS_MIDPHASE_OBJECTPOOL_ENABLED
 				MidPhasePool.Reset();
-	#endif
+#endif
 			}
 
 			void BeginDetectCollisions(const int32 InEpoch)
@@ -144,10 +150,10 @@ namespace Chaos
 			}
 
 			// Process all the new midphases from the parallel collision detection
-			void ProcessNewMidPhases(FCollisionConstraintAllocator* Allocator);
+			CHAOS_API void ProcessNewMidPhases(FCollisionConstraintAllocator* Allocator);
 
 			// Process all the activated collisions from the parallel collision detection
-			void ProcessNewConstraints(FCollisionConstraintAllocator* Allocator);
+			CHAOS_API void ProcessNewConstraints(FCollisionConstraintAllocator* Allocator);
 
 			// Find the midphase for the particle pair if it exists. Every particle holds a list of its midphases. We search "SearchParticle" which should be
 			// ideally be the one with fewer midphases on it.
@@ -165,11 +171,11 @@ namespace Chaos
 				const FCollisionParticlePairKey Key = FCollisionParticlePairKey(Particle0, Particle1);
 
 				// We temporarily hold new midphases as raw pointers and wrap them in a unique ptr later in ProcessNewMidPhases
-	#if CHAOS_COLLISION_OBJECTPOOL_ENABLED 
+#if CHAOS_MIDPHASE_OBJECTPOOL_ENABLED 
 				FParticlePairMidPhase* MidPhase = MidPhasePool.Alloc();
-	#else
-				FParticlePairMidPhase* MidPhase = new FParticlePairMidPhase();
-	#endif
+#else
+				FParticlePairMidPhase* MidPhase = FParticlePairMidPhase::Make(Particle0, Particle1);
+#endif
 
 				NewMidPhases.Add(MidPhase);
 
@@ -183,10 +189,13 @@ namespace Chaos
 			TArray<FPBDCollisionConstraint*> NewActiveConstraints;
 			TArray<FParticlePairMidPhase*> NewMidPhases;
 
-	#if CHAOS_COLLISION_OBJECTPOOL_ENABLED
+#if CHAOS_COLLISION_OBJECTPOOL_ENABLED
 			FPBDCollisionConstraintPool ConstraintPool;
+#endif
+#if CHAOS_MIDPHASE_OBJECTPOOL_ENABLED
 			FParticlePairMidPhasePool MidPhasePool;
-	#endif
+			FParticlePairMidPhasePool MidPhasePool;
+#endif
 		};
 
 
@@ -221,7 +230,7 @@ namespace Chaos
 		 * NOTE: To reduce RBAN memory use, we do not create any collision blocks until the first call to CreateCollisionConstraint
 		 * (see ConstraintPool initialization)
 		*/
-		class CHAOS_API FCollisionConstraintAllocator
+		class FCollisionConstraintAllocator
 		{
 		public:
 			UE_NONCOPYABLE(FCollisionConstraintAllocator);
@@ -467,23 +476,10 @@ namespace Chaos
 			 * @brief Destroy all collision and caches involving the particle
 			 * Called when a particle is destroyed or disabled (not sleeping).
 			*/
-			void RemoveParticle(FGeometryParticleHandle* Particle)
-			{
-				// We will be removing collisions, and don't want to have to prune the queues
-				check(!bInCollisionDetectionPhase);
-
-				// Loop over all particle pairs involving this particle.
-				// Tell each Particle Pair MidPhase that one of its particles is gone. 
-				// It will get pruned at the next collision detection phase.
-				Particle->ParticleCollisions().VisitMidPhases([Particle](FParticlePairMidPhase& MidPhase)
-					{
-						MidPhase.DetachParticle(Particle);
-						return ECollisionVisitorResult::Continue;
-					});
-			}
+			CHAOS_API void RemoveParticle(FGeometryParticleHandle* Particle);
 
 			/**
-			 * @brief Iterate over all collisions, including sleeping ones
+			 * @brief Iterate over all collisions (read-only), including sleeping ones
 			 * Visitor signature: ECollisionVisitorResult(const FPBDCollisionConstraint&)
 			*/
 			template<typename TLambda>
@@ -492,6 +488,22 @@ namespace Chaos
 				for (const FParticlePairMidPhasePtr& MidPhase : ParticlePairMidPhases)
 				{
 					if (MidPhase->VisitConstCollisions(Visitor) == ECollisionVisitorResult::Stop)
+					{
+						return;
+					}
+				}
+			}
+
+			/**
+			 * @brief Iterate over all collisions (write-enabled), including sleeping ones
+			 * Visitor signature: ECollisionVisitorResult(FPBDCollisionConstraint&)
+			*/
+			template<typename TLambda>
+			void VisitCollisions(const TLambda& Visitor) const
+			{
+				for (const FParticlePairMidPhasePtr& MidPhase : ParticlePairMidPhases)
+				{
+					if (MidPhase->VisitCollisions(Visitor) == ECollisionVisitorResult::Stop)
 					{
 						return;
 					}
@@ -547,7 +559,7 @@ namespace Chaos
 			}
 
 			// Find all midphases that have not been updated this tick (i.e., bounds no longer overlap) and destroy them
-			void PruneExpiredMidPhases();
+			CHAOS_API void PruneExpiredMidPhases();
 
 			// Collect all the constraints activated in the collision tasks and register them (calls ActivateConstraintImp on each)
 			void ProcessNewConstraints()
@@ -576,6 +588,8 @@ namespace Chaos
 
 				Cookie.LastUsedEpoch = CurrentEpoch;
 			}
+
+			CHAOS_API void RemoveActiveConstraint(FPBDCollisionConstraint& Constraint);
 
 			// The container that owns the allocator (only needed because new constraints need to know)
 			FPBDCollisionConstraints* CollisionContainer;
@@ -612,61 +626,38 @@ namespace Chaos
 	///////////////////////////////////////////////////////////////////////////////////////////////
 	///////////////////////////////////////////////////////////////////////////////////////////////
 
-	template<typename TLambda>
-	inline ECollisionVisitorResult FMultiShapePairCollisionDetector::VisitCollisions(const TLambda& Visitor, const bool bOnlyActive)
-	{
-		for (auto& KVP : Constraints)
-		{
-			const FPBDCollisionConstraintPtr& Constraint = KVP.Value;
-
-			if (Constraint.IsValid() && (!bOnlyActive || !Constraint->GetDisabled()))
-			{
-				if (Visitor(*Constraint) == ECollisionVisitorResult::Stop)
-				{
-					return ECollisionVisitorResult::Stop;
-				}
-			}
-		}
-		return ECollisionVisitorResult::Continue;
-	}
-
-	template<typename TLambda>
-	inline ECollisionVisitorResult FMultiShapePairCollisionDetector::VisitConstCollisions(const TLambda& Visitor, const bool bOnlyActive) const
-	{
-		for (auto& KVP : Constraints)
-		{
-			const FPBDCollisionConstraintPtr& Constraint = KVP.Value;
-
-			if (Constraint.IsValid() && (!bOnlyActive || !Constraint->GetDisabled()))
-			{
-				if (!bOnlyActive || (Visitor(*Constraint) == ECollisionVisitorResult::Stop))
-				{
-					return ECollisionVisitorResult::Stop;
-				}
-			}
-		}
-		return ECollisionVisitorResult::Continue;
-	}
 
 	template<typename TLambda>
 	inline ECollisionVisitorResult FParticlePairMidPhase::VisitCollisions(const TLambda& Visitor, const bool bOnlyActive)
 	{
-		for (FSingleShapePairCollisionDetector& ShapePair : ShapePairDetectors)
+		if (GetMidPhaseType() == EParticlePairMidPhaseType::ShapePair)
 		{
-			if ((ShapePair.GetConstraint() != nullptr) && (!bOnlyActive || !ShapePair.GetConstraint()->GetDisabled()))
+			FShapePairParticlePairMidPhase* This = static_cast<FShapePairParticlePairMidPhase*>(this);
+			for (FSingleShapePairCollisionDetector& ShapePair : This->ShapePairDetectors)
 			{
-				if (Visitor(*ShapePair.GetConstraint()) == ECollisionVisitorResult::Stop)
+				if ((ShapePair.GetConstraint() != nullptr) && (!bOnlyActive || !ShapePair.GetConstraint()->GetDisabled()))
 				{
-					return ECollisionVisitorResult::Stop;
+					if (Visitor(*ShapePair.GetConstraint()) == ECollisionVisitorResult::Stop)
+					{
+						return ECollisionVisitorResult::Stop;
+					}
 				}
 			}
 		}
 
-		for (FMultiShapePairCollisionDetector& MultiShapePair : MultiShapePairDetectors)
+		if (GetMidPhaseType() == EParticlePairMidPhaseType::Generic)
 		{
-			if (MultiShapePair.VisitCollisions(Visitor, bOnlyActive) == ECollisionVisitorResult::Stop)
+			FGenericParticlePairMidPhase* This = static_cast<FGenericParticlePairMidPhase*>(this);
+			for (auto& KVP : This->Constraints)
 			{
-				return ECollisionVisitorResult::Stop;
+				FPBDCollisionConstraintPtr& Constraint = KVP.Value;
+				if (!bOnlyActive || Constraint->IsEnabled())
+				{
+					if (Visitor(*Constraint) == ECollisionVisitorResult::Stop)
+					{
+						return ECollisionVisitorResult::Stop;
+					}
+				}
 			}
 		}
 
@@ -677,22 +668,34 @@ namespace Chaos
 	template<typename TLambda>
 	inline ECollisionVisitorResult FParticlePairMidPhase::VisitConstCollisions(const TLambda& Visitor, const bool bOnlyActive) const
 	{
-		for (const FSingleShapePairCollisionDetector& ShapePair : ShapePairDetectors)
+		if (GetMidPhaseType() == EParticlePairMidPhaseType::ShapePair)
 		{
-			if ((ShapePair.GetConstraint() != nullptr) && (!bOnlyActive || !ShapePair.GetConstraint()->GetDisabled()))
+			const FShapePairParticlePairMidPhase* This = static_cast<const FShapePairParticlePairMidPhase*>(this);
+			for (const FSingleShapePairCollisionDetector& ShapePair : This->ShapePairDetectors)
 			{
-				if (Visitor(*ShapePair.GetConstraint()) == ECollisionVisitorResult::Stop)
+				if ((ShapePair.GetConstraint() != nullptr) && (!bOnlyActive || !ShapePair.GetConstraint()->GetDisabled()))
 				{
-					return ECollisionVisitorResult::Stop;
+					if (Visitor(*ShapePair.GetConstraint()) == ECollisionVisitorResult::Stop)
+					{
+						return ECollisionVisitorResult::Stop;
+					}
 				}
 			}
 		}
 
-		for (const FMultiShapePairCollisionDetector& MultiShapePair : MultiShapePairDetectors)
+		if (GetMidPhaseType() == EParticlePairMidPhaseType::Generic)
 		{
-			if (MultiShapePair.VisitConstCollisions(Visitor, bOnlyActive) == ECollisionVisitorResult::Stop)
+			const FGenericParticlePairMidPhase* This = static_cast<const FGenericParticlePairMidPhase*>(this);
+			for (const auto& KVP : This->Constraints)
 			{
-				return ECollisionVisitorResult::Stop;
+				const FPBDCollisionConstraintPtr& Constraint = KVP.Value;
+				if (!bOnlyActive || Constraint->IsEnabled())
+				{
+					if (Visitor(*Constraint) == ECollisionVisitorResult::Stop)
+					{
+						return ECollisionVisitorResult::Stop;
+					}
+				}
 			}
 		}
 

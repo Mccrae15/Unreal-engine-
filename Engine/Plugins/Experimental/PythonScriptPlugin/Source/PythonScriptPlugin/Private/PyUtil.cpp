@@ -289,14 +289,14 @@ bool CalculatePropertyDef(PyTypeObject* InPyType, FPropertyDef& OutPropertyDef)
 	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyWrapperDelegateType) == 1)
 	{
 		OutPropertyDef.PropertyClass = FDelegateProperty::StaticClass();
-		OutPropertyDef.PropertySubType = (UObject*)FPyWrapperDelegateMetaData::GetDelegateSignature(InPyType).Func;
+		OutPropertyDef.PropertySubType = ConstCast(FPyWrapperDelegateMetaData::GetDelegateSignature(InPyType).Func);
 		return true;
 	}
 
 	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyWrapperMulticastDelegateType) == 1)
 	{
 		OutPropertyDef.PropertyClass = FMulticastDelegateProperty::StaticClass();
-		OutPropertyDef.PropertySubType = (UObject*)FPyWrapperMulticastDelegateMetaData::GetDelegateSignature(InPyType).Func;
+		OutPropertyDef.PropertySubType = ConstCast(FPyWrapperMulticastDelegateMetaData::GetDelegateSignature(InPyType).Func);
 		return true;
 	}
 
@@ -1513,8 +1513,7 @@ bool LogPythonError(FString* OutError, const bool bInteractive)
 		// Also display the error if this was an interactive request
 		if (bInteractive)
 		{
-			const FText DlgTitle = LOCTEXT("PythonErrorTitle", "Python Error");
-			FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant(ErrorStr), &DlgTitle);
+			FMessageDialog::Open(EAppMsgType::Ok, FText::AsCultureInvariant(ErrorStr), LOCTEXT("PythonErrorTitle", "Python Error"));
 		}
 	}
 

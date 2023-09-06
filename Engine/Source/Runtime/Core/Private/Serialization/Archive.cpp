@@ -156,10 +156,6 @@ void FArchiveState::Reset()
 	ArUEVer								= GPackageFileUEVersion;
 	ArLicenseeUEVer						= GPackageFileLicenseeUEVersion;
 	ArEngineVer							= FEngineVersion::Current();
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ArEngineNetVer						= FNetworkVersion::GetNetworkProtocolVersion(FEngineNetworkCustomVersion::Guid);
-	ArGameNetVer						= FNetworkVersion::GetNetworkProtocolVersion(FGameNetworkCustomVersion::Guid);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	ArIsLoading							= false;
 	ArIsLoadingFromCookedPackage		= false;
 	ArIsSaving							= false;
@@ -195,6 +191,7 @@ void FArchiveState::Reset()
 	ArIsNetArchive						= false;
 	ArCustomPropertyList				= nullptr;
 	ArUseCustomPropertyList				= false;
+	ArShouldSkipUpdateCustomVersion		= false;
 	CookData							= nullptr;
 	SerializedProperty					= nullptr;
 
@@ -218,10 +215,6 @@ void FArchiveState::CopyTrivialFArchiveStatusMembers(const FArchiveState& Archiv
 	ArUEVer                              = ArchiveToCopy.ArUEVer;
 	ArLicenseeUEVer                      = ArchiveToCopy.ArLicenseeUEVer;
 	ArEngineVer                          = ArchiveToCopy.ArEngineVer;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ArEngineNetVer                       = ArchiveToCopy.ArEngineNetVer;
-	ArGameNetVer                         = ArchiveToCopy.ArGameNetVer;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	ArIsLoading                          = ArchiveToCopy.ArIsLoading;
 	ArIsLoadingFromCookedPackage         = ArchiveToCopy.ArIsLoadingFromCookedPackage;
 	ArIsSaving                           = ArchiveToCopy.ArIsSaving;
@@ -257,6 +250,7 @@ void FArchiveState::CopyTrivialFArchiveStatusMembers(const FArchiveState& Archiv
 	ArIsNetArchive                       = ArchiveToCopy.ArIsNetArchive;
 	ArCustomPropertyList                 = ArchiveToCopy.ArCustomPropertyList;
 	ArUseCustomPropertyList              = ArchiveToCopy.ArUseCustomPropertyList;
+	ArShouldSkipUpdateCustomVersion		 = ArchiveToCopy.ArShouldSkipUpdateCustomVersion;
 	CookData							 = ArchiveToCopy.CookData;
 	SerializedProperty					 = ArchiveToCopy.SerializedProperty;
 #if USE_STABLE_LOCALIZATION_KEYS
@@ -577,8 +571,8 @@ void FArchive::UsingCustomVersion(const FGuid& Key)
 		return;
 	}
 
-	FCustomVersion RegisteredVersion = FCurrentCustomVersions::Get(Key).GetValue();
-	const_cast<FCustomVersionContainer&>(GetCustomVersions()).SetVersion(Key, RegisteredVersion.Version, RegisteredVersion.GetFriendlyName());
+	ESetCustomVersionFlags SetVersionFlags = ArShouldSkipUpdateCustomVersion ? ESetCustomVersionFlags::SkipUpdateExistingVersion : ESetCustomVersionFlags::None;
+	const_cast<FCustomVersionContainer&>(GetCustomVersions()).SetVersionUsingRegistry(Key, SetVersionFlags);
 }
 
 int32 FArchiveState::CustomVer(const FGuid& Key) const
@@ -590,6 +584,11 @@ int32 FArchiveState::CustomVer(const FGuid& Key) const
 	check(IsLoading() || CustomVersion);
 
 	return CustomVersion ? CustomVersion->Version : -1;
+}
+
+void FArchiveState::SetShouldSkipUpdateCustomVersion(bool bShouldSkip)
+{
+	ForEachState([bShouldSkip](FArchiveState& State) { State.ArShouldSkipUpdateCustomVersion = bShouldSkip; });
 }
 
 void FArchiveState::SetCustomVersion(const FGuid& Key, int32 Version, FName FriendlyName)
@@ -1327,6 +1326,48 @@ void FArchive::SerializeIntPacked(uint32& Value)
 	}
 }
 
+void FArchive::SerializeIntPacked64(uint64& Value)
+{
+	if (IsLoading())
+	{
+		Value = 0;
+		uint8 cnt = 0;
+		uint8 more = 1;
+		while (more)
+		{
+			uint8 NextByte;
+			Serialize(&NextByte, 1);			// Read next byte
+
+			more = NextByte & 1;				// Check 1 bit to see if theres more after this
+			NextByte = NextByte >> 1;			// Shift to get actual 7 bit value
+			Value += (uint64)NextByte << (7 * cnt++);	// Add to total value
+		}
+	}
+	else
+	{
+		uint8 PackedBytes[10];
+		int32 PackedByteCount = 0;
+		uint64 Remaining = Value;
+		while (true)
+		{
+			uint8 nextByte = Remaining & 0x7f;		// Get next 7 bits to write
+			Remaining = Remaining >> 7;				// Update remaining
+			nextByte = nextByte << 1;				// Make room for 'more' bit
+			if (Remaining > 0)
+			{
+				nextByte |= 1;						// set more bit
+				PackedBytes[PackedByteCount++] = nextByte;
+			}
+			else
+			{
+				PackedBytes[PackedByteCount++] = nextByte;
+				break;
+			}
+		}
+		Serialize(PackedBytes, PackedByteCount); // Actually serialize the bytes we made
+	}
+}
+
 void FArchive::LogfImpl(const TCHAR* Fmt, ...)
 {
 	// We need to use malloc here directly as GMalloc might not be safe, e.g. if called from within GMalloc!
@@ -1378,9 +1419,6 @@ void FArchiveState::SetEngineVer(const FEngineVersionBase& InVer)
 
 void FArchiveState::SetEngineNetVer(const uint32 InEngineNetVer)
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ArEngineNetVer = InEngineNetVer;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	SetCustomVersion(FEngineNetworkCustomVersion::Guid, InEngineNetVer, TEXT("EngineNetworkVersion"));
 }
 
@@ -1391,9 +1429,6 @@ uint32 FArchiveState::EngineNetVer() const
 
 void FArchiveState::SetGameNetVer(const uint32 InGameNetVer)
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ArGameNetVer = InGameNetVer;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	SetCustomVersion(FGameNetworkCustomVersion::Guid, InGameNetVer, TEXT("GameNetworkVersion"));
 }
 

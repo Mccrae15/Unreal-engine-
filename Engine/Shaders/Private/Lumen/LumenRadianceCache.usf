@@ -3,9 +3,11 @@
 #include "../Common.ush"
 #include "../MonteCarlo.ush"
 #include "../FastMath.ush"
+#include "../SHCommon.ush"
 #include "../DeferredShadingCommon.ush"
 #include "LumenCardCommon.ush"
 #include "LumenTracingCommon.ush"
+#include "LumenSoftwareRayTracing.ush"
 #include "LumenRadianceCacheCommon.ush"
 #include "LumenRadianceCacheMarkCommon.ush"
 #include "LumenRadianceCacheTracingCommon.ush"
@@ -223,7 +225,7 @@ void ScatterScreenProbeBRDFToRadianceProbesCS(
 		{
 			float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
 			uint2 ScreenTileCoord = GetScreenTileCoord(ScreenProbeScreenPosition);
-			uint ClipmapIndex = GetRadianceProbeClipmap(WorldPosition, InterleavedGradientNoise(ScreenTileCoord, View.StateFrameIndexMod8));
+			uint ClipmapIndex = GetRadianceProbeClipmap(WorldPosition, 0);
 
 			if (ClipmapIndex < NumRadianceProbeClipmaps)
 			{
@@ -357,7 +359,9 @@ void SubdivideTraceTileTree(
 }
 
 StructuredBuffer<uint> ProbesToUpdateTraceCost;
+int ForcedUniformLevel;
 
+// Note: should match GetProbeTraceCost as closely as possible
 [numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
 void GenerateProbeTraceTilesCS(
 	uint3 GroupId : SV_GroupID,
@@ -375,7 +379,7 @@ void GenerateProbeTraceTilesCS(
 #define DEBUG_UNIFORM_TRACES 0
 #if FORCE_UNIFORM_TRACES || DEBUG_UNIFORM_TRACES
 
-	uint UniformLevel = 1;
+	uint UniformLevel = DEBUG_UNIFORM_TRACES ? 1 : ForcedUniformLevel;
 
 #if FORCE_UNIFORM_TRACES
 	if (DistanceFromCameraSq >= DownsampleDistanceFromCameraSq)
@@ -517,7 +521,7 @@ void GenerateProbeTraceTilesCS(
 RWBuffer<uint> RWTraceProbesIndirectArgs;
 RWBuffer<uint> RWSortProbeTraceTilesIndirectArgs;
 RWBuffer<uint> RWRadianceCacheHardwareRayTracingIndirectArgs;
-RWBuffer<uint> RWHardwareRayTracingRayAllocatorBuffer;
+RWStructuredBuffer<uint> RWHardwareRayTracingRayAllocatorBuffer;
 uint SortTraceTilesGroupSize;
 
 [numthreads(1, 1, 1)]

@@ -25,6 +25,7 @@
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
+#include "DiffUtils.h"
 #include "EditorSupportDelegates.h"
 #include "GameFramework/WorldSettings.h"
 
@@ -135,7 +136,7 @@ void FLevelCollectionModel::BindCommands()
 
 	ActionList.MapAction(Commands.World_UnloadLevel,
 		FExecuteAction::CreateSP(this, &FLevelCollectionModel::UnloadSelectedLevels_Executed),
-		FCanExecuteAction::CreateSP(this, &FLevelCollectionModel::AreAnySelectedLevelsLoaded));
+		FCanExecuteAction::CreateSP(this, &FLevelCollectionModel::AreAllSelectedLevelsUserManaged));
 
 	ActionList.MapAction( Commands.World_MigrateSelectedLevels,
 		FExecuteAction::CreateSP( this, &FLevelCollectionModel::MigrateSelectedLevels_Executed),
@@ -411,7 +412,7 @@ void FLevelCollectionModel::SetSelectedLevels(const FLevelModelList& InList)
 
 void FLevelCollectionModel::SetSelectedLevelsFromWorld()
 {
-	TArray<ULevel*>& SelectedLevelObjects = CurrentWorld->GetSelectedLevels();
+	TArray<TObjectPtr<ULevel>>& SelectedLevelObjects = CurrentWorld->GetSelectedLevels();
 	FLevelModelList LevelsToSelect;
 	for (ULevel* LevelObject : SelectedLevelObjects)
 	{
@@ -714,7 +715,7 @@ void FLevelCollectionModel::UnloadLevels(const FLevelModelList& InLevelList)
 		TSharedPtr<FLevelModel> LevelModel = (*It);
 		ULevel* Level = LevelModel->GetLevelObject();
 
-		if (Level != nullptr && !LevelModel->IsPersistent())
+		if (Level != nullptr && !LevelModel->IsPersistent() && LevelModel->IsUserManaged())
 		{
 			// Unselect all actors before removing the level
 			// This avoids crashing in areas that rely on getting a selected actors level. The level will be invalid after its removed.
@@ -930,6 +931,19 @@ bool FLevelCollectionModel::AreAnyLevelsSelected() const
 	return SelectedLevelsList.Num() > 0;
 }
 
+bool FLevelCollectionModel::AreAllSelectedLevelsUserManaged() const
+{
+	for (int32 LevelIdx = 0; LevelIdx < SelectedLevelsList.Num(); LevelIdx++)
+	{
+		if (!SelectedLevelsList[LevelIdx]->IsUserManaged())
+		{
+			return false;
+		}
+	}
+
+	return AreAnyLevelsSelected();
+}
+
 bool FLevelCollectionModel::AreAllSelectedLevelsLoaded() const
 {
 	for (int32 LevelIdx = 0; LevelIdx < SelectedLevelsList.Num(); LevelIdx++)
@@ -983,7 +997,7 @@ bool FLevelCollectionModel::AreAllSelectedLevelsEditableAndNotPersistent() const
 {
 	for (auto It = SelectedLevelsList.CreateConstIterator(); It; ++It)
 	{
-		if ((*It)->IsEditable() == false || (*It)->IsPersistent())
+		if ((*It)->IsEditable() == false || (*It)->IsPersistent() || !(*It)->IsUserManaged())
 		{
 			return false;
 		}
@@ -1316,12 +1330,11 @@ void FLevelCollectionModel::SCCDiffAgainstDepot(const FLevelModelList& InList, U
 					// Get the head revision of this package from source control
 					FString AbsoluteFileName = FPaths::ConvertRelativePathToFull(RelativeFileName);
 					FString TempFileName;
-					if (Revision->Get(TempFileName))
+					if (UPackage* OldPackage = DiffUtils::LoadPackageForDiff(Revision))
 					{
 						// Try and load that package
 						FText NotMapReason;
-						UPackage* OldPackage = LoadPackage(NULL, *TempFileName, LOAD_ForDiff|LOAD_DisableCompileOnLoad);
-						if(OldPackage != NULL && InEditor->PackageIsAMapFile(*TempFileName, NotMapReason))
+						if(InEditor->PackageIsAMapFile(*TempFileName, NotMapReason))
 						{
 							/* Set the revision information*/
 							UPackage* Package = OriginalPackage;

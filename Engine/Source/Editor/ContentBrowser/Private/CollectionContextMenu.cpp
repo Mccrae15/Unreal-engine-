@@ -33,6 +33,7 @@
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "SlotBase.h"
+#include "TelemetryRouter.h"
 #include "Styling/AppStyle.h"
 #include "Textures/SlateIcon.h"
 #include "UObject/NameTypes.h"
@@ -451,7 +452,17 @@ void FCollectionContextMenu::ExecuteNewCollection(ECollectionShareType::Type Col
 		return;
 	}
 
+	const double BeginTimeSec = FPlatformTime::Seconds();
+	
 	CollectionView.Pin()->CreateCollectionItem(CollectionType, StorageMode, InCreationPayload);
+
+	// Telemetry Event
+	{
+		FCollectionCreatedTelemetryEvent AssetAdded;
+		AssetAdded.DurationSec = FPlatformTime::Seconds() - BeginTimeSec;
+		AssetAdded.CollectionShareType = CollectionType;
+		FTelemetryRouter::Get().ProvideTelemetry(AssetAdded);
+	}
 }
 
 void FCollectionContextMenu::ExecuteSetCollectionShareType(ECollectionShareType::Type CollectionType)
@@ -588,7 +599,17 @@ void FCollectionContextMenu::ExecuteDestroyCollection()
 
 FReply FCollectionContextMenu::ExecuteDestroyCollectionConfirmed(TArray<TSharedPtr<FCollectionItem>> CollectionList)
 {
+	const double BeginEventSec = FPlatformTime::Seconds();
+	
 	CollectionView.Pin()->DeleteCollectionItems(CollectionList);
+
+	{
+		FCollectionsDeletedTelemetryEvent CollectionDeleted;
+		CollectionDeleted.DurationSec = FPlatformTime::Seconds() - BeginEventSec;
+		CollectionDeleted.CollectionsDeleted = CollectionList.Num();
+		FTelemetryRouter::Get().ProvideTelemetry(CollectionDeleted);
+	}
+	
 	return FReply::Handled();
 }
 

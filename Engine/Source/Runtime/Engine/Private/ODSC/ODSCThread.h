@@ -13,6 +13,15 @@
 class FEvent;
 class FRunnableThread;
 
+namespace UE
+{
+	namespace Cook
+	{
+		class ICookOnTheFlyServerConnection;
+		class FCookOnTheFlyMessage;
+	}
+}
+
 class FODSCMessageHandler : public IPlatformFile::IFileServerMessageHandler
 {
 public:
@@ -72,7 +81,7 @@ class FODSCThread
 {
 public:
 
-	FODSCThread();
+	FODSCThread(const FString& HostIP);
 	virtual ~FODSCThread();
 
 	/**
@@ -112,10 +121,20 @@ public:
 	 * @param VertexFactoryName - The name of the vertex factory type we should compile.
 	 * @param PipelineName - The name of the shader pipeline we should compile.
 	 * @param ShaderTypeNames - The shader type names of all the shader stages in the pipeline.
+	 * @param PermutationId - The permutation ID of the shader we should compile.
 	 *
 	 * @return false if no longer needs ticking
 	 */
-	void AddShaderPipelineRequest(EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const FString& MaterialName, const FString& VertexFactoryName, const FString& PipelineName, const TArray<FString>& ShaderTypeNames);
+	void AddShaderPipelineRequest(
+		EShaderPlatform ShaderPlatform,
+		ERHIFeatureLevel::Type FeatureLevel,
+		EMaterialQualityLevel::Type QualityLevel,
+		const FString& MaterialName,
+		const FString& VertexFactoryName,
+		const FString& PipelineName,
+		const TArray<FString>& ShaderTypeNames,
+		int32 PermutationId
+	);
 
 	/**
 	 * Get completed requests.  Clears internal arrays.  Called on Game thread.
@@ -178,4 +197,9 @@ private:
 
 	/** Holds an event signaling the thread to wake up. */
 	FEvent* WakeupEvent;
+
+	void SendMessageToServer(IPlatformFile::IFileServerMessageHandler* Handler);
+
+	/** Special connection to the cooking server.  This is only used to send recompileshaders commands on. */
+	TUniquePtr<UE::Cook::ICookOnTheFlyServerConnection> CookOnTheFlyServerConnection;
 };

@@ -60,7 +60,13 @@ void FPixelStreamingEditorModule::ShutdownModule()
 
 void FPixelStreamingEditorModule::InitEditorStreaming(IPixelStreamingModule& Module)
 {
-	EditorStreamer = Module.CreateStreamer("Editor");
+	FString EditorStreamerID;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingID="), EditorStreamerID))
+	{
+		EditorStreamerID = "Editor";
+	}
+
+	EditorStreamer = Module.CreateStreamer(EditorStreamerID);
 
 	// Give the editor streamer the default url if the user hasn't specified one when launching the editor
 	if (EditorStreamer->GetSignallingServerURL().IsEmpty())
@@ -93,13 +99,22 @@ void FPixelStreamingEditorModule::InitEditorStreaming(IPixelStreamingModule& Mod
 	IMainFrameModule::Get().OnMainFrameCreationFinished().AddLambda([&](TSharedPtr<SWindow> RootWindow, bool bIsRunningStartupDialog) {
 		MaybeResizeEditor(RootWindow);
 
-		// We don't want to show tooltips in render off screen as they're currently broken
-		bool bIsRenderingOffScreen = FParse::Param(FCommandLine::Get(), TEXT("RenderOffScreen"));
-		FSlateApplication::Get().SetAllowTooltips(!bIsRenderingOffScreen);
-
 		if (UE::EditorPixelStreaming::Settings::CVarEditorPixelStreamingStartOnLaunch.GetValueOnAnyThread())
 		{
-			StartStreaming(UE::EditorPixelStreaming::EStreamTypes::Editor);
+            // Default our source to the full editor
+            UE::EditorPixelStreaming::EStreamTypes Source = UE::EditorPixelStreaming::EStreamTypes::Editor;
+
+            FString SourceStr = UE::EditorPixelStreaming::Settings::CVarEditorPixelStreamingSource.GetValueOnAnyThread();
+            if(SourceStr == TEXT("Editor") || SourceStr == TEXT("editor"))
+            {
+                Source = UE::EditorPixelStreaming::EStreamTypes::Editor;
+            }
+            else if(SourceStr == TEXT("LevelEditor") || SourceStr == TEXT("leveleditor"))
+            {
+                Source = UE::EditorPixelStreaming::EStreamTypes::LevelEditorViewport;
+            }
+
+			StartStreaming(Source);
 		}
 	});
 
@@ -143,6 +158,10 @@ void FPixelStreamingEditorModule::StartStreaming(UE::EditorPixelStreaming::EStre
 				TSharedPtr<SWindow> ParentWindow = IMainFrameModule::Get().GetParentWindow();
 				ParentWindow->Resize(FVector2D(Width, Height));
 				FSlateApplication::Get().OnSizeChanged(ParentWindow->GetNativeWindow().ToSharedRef(), Width, Height);
+                // Triggers the NullApplication to rebuild its DisplayMetrics with the new resolution and inform slate 
+                // about the updated virtual desktop size
+                FSystemResolution::RequestResolutionChange(Width, Height, GSystemResolution.WindowMode);
+	            IConsoleManager::Get().CallAllConsoleVariableSinks();
 			});
 	}
 
@@ -357,8 +376,13 @@ void FPixelStreamingEditorModule::MaybeResizeEditor(TSharedPtr<SWindow> RootWind
 
 	if (bSuccess)
 	{
+        // Update editor window size
 		RootWindow->Resize(FVector2D(ResolutionX, ResolutionY));
 		FSlateApplication::Get().OnSizeChanged(RootWindow->GetNativeWindow().ToSharedRef(), ResolutionX, ResolutionY);
+        // Triggers the NullApplication to rebuild its DisplayMetrics with the new resolution and inform slate 
+        // about the updated virtual desktop size
+        FSystemResolution::RequestResolutionChange(ResolutionX, ResolutionY, GSystemResolution.WindowMode);
+	    IConsoleManager::Get().CallAllConsoleVariableSinks();
 	}
 }
 

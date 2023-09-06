@@ -11,10 +11,7 @@
 #include "HAL/IConsoleManager.h"
 #include "IGeometryCacheStreamer.h"
 
-// Currently disabled by default as it prevents AUsdStageActor::ExpandPrim from animating Mesh prim transforms,
-// and fixing it is not trivial: UGeometryCacheTrackUsd currently either works for animating via the Time property
-// *OR* via the geometry cache Sequencer tracks, while we still need the Time property animation to work in both cases
-static bool GDisableGeoCacheTracks = true;
+static bool GDisableGeoCacheTracks = false;
 static FAutoConsoleVariableRef CVarDisableGeoCacheTracks(
 	TEXT("USD.DisableGeoCacheTracks"),
 	GDisableGeoCacheTracks,
@@ -34,6 +31,33 @@ void UGeometryCacheTrackUsd::BeginDestroy()
 	UsdStream.Reset();
 
 	Super::BeginDestroy();
+}
+
+void UGeometryCacheTrackUsd::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	// This is an additional copy that lives on the track
+	MeshData.GetResourceSizeEx(CumulativeResourceSize);
+
+	if (FGeometryCacheUsdStream* UsdStreamPtr = UsdStream.Get())
+	{
+		const FGeometryCacheStreamStats& Stats = UsdStreamPtr->GetStreamStats();
+
+		int32 NumFramesFullyLoaded = Stats.NumCachedFrames;
+		float TotalMemoryForLoadedFramesMB = Stats.MemoryUsed;
+		float MemoryPerFrameMB = TotalMemoryForLoadedFramesMB / NumFramesFullyLoaded;
+
+		// Also account for frames we're going to prefetch
+		uint32 NumRemainingFrames = UsdStreamPtr->GetNumFramesNeeded();
+		float TotalMemoryMB = TotalMemoryForLoadedFramesMB + NumRemainingFrames * MemoryPerFrameMB;
+
+		// Using 1048576 instead of 1000000 for megabyte as that's what's used by FGeometryCacheStreamBase memory stats
+		double TotalMemoryBytes = TotalMemoryMB * 1048576;
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(static_cast<SIZE_T>(TotalMemoryBytes + 0.5));
+	}
+
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(SampleInfos.GetAllocatedSize());
 }
 
 const bool UGeometryCacheTrackUsd::UpdateMeshData(const float Time, const bool bLooping, int32& InOutMeshSampleIndex, FGeometryCacheMeshData*& OutMeshData)
@@ -70,34 +94,23 @@ const bool UGeometryCacheTrackUsd::UpdateBoundsData(const float Time, const bool
 
 const int32 UGeometryCacheTrackUsd::FindSampleIndexFromTime(const float Time, const bool bLooping) const
 {
-	if (!GDisableGeoCacheTracks)
+	// Time is relative to the start of the section on the track
+	float SampleTime = Time;
+	if (bLooping)
 	{
-		// Time is relative to the start of the section on the track
-		float SampleTime = Time;
-		if (bLooping)
-		{
-			SampleTime = GeometyCacheHelpers::WrapAnimationTime(Time, Duration);
-		}
-		// Which is converted to an index
-		int32 FrameIndex = FMath::RoundToInt(Time * FramesPerSecond);
-
-		// The final computed frame index must be offset by the start frame index
-		return FMath::Clamp(FrameIndex + StartFrameIndex, StartFrameIndex, EndFrameIndex - 1);
+		SampleTime = GeometyCacheHelpers::WrapAnimationTime(Time, Duration);
 	}
-	// Treat the time as the frame index
-	int32 FrameIndex = (int32)Time;
-	return FMath::Clamp(FrameIndex, StartFrameIndex, EndFrameIndex - 1);
+	// Which is converted to an index
+	int32 FrameIndex = FMath::FloorToInt(Time * FramesPerSecond);
+
+	// The final computed frame index must be offset by the start frame index
+	return FMath::Clamp(FrameIndex + StartFrameIndex, StartFrameIndex, EndFrameIndex - 1);
 }
 
 float UGeometryCacheTrackUsd::GetTimeFromSampleIndex(int32 SampleIndex) const
 {
-	if (!GDisableGeoCacheTracks)
-	{
-		// Time is relative to the start of the section on the track
-		return float((SampleIndex - StartFrameIndex) / FramesPerSecond);
-	}
-	// Treat the frame index as time
-	return SampleIndex;
+	// Time is relative to the start of the section on the track
+	return float((SampleIndex - StartFrameIndex) / FramesPerSecond);
 }
 
 void UGeometryCacheTrackUsd::GetFractionalFrameIndexFromTime(const float Time, const bool bLooping, int& OutFrameIndex, float& OutFraction) const
@@ -105,22 +118,15 @@ void UGeometryCacheTrackUsd::GetFractionalFrameIndexFromTime(const float Time, c
 	OutFrameIndex = FindSampleIndexFromTime(Time, bLooping);
 
 	float AdjustedTime = Time;
-	if (!GDisableGeoCacheTracks)
+	if (bLooping)
 	{
-		if (bLooping)
-		{
-			AdjustedTime = GeometyCacheHelpers::WrapAnimationTime(Time, Duration);
-		}
-		// Time at ThisFrameIndex with index normalized to 0
-		const float FrameIndexTime = (OutFrameIndex - StartFrameIndex) / FramesPerSecond;
-		OutFraction = float((AdjustedTime - FrameIndexTime) * FramesPerSecond);
+		AdjustedTime = GeometyCacheHelpers::WrapAnimationTime(Time, Duration);
 	}
-	else
-	{
-		// Clamp the Time (which is the FrameNumber) to the range of the USD GeometryCache track
-		// EndFrameIndex - 1 since last frame index is not included
-		OutFraction = FMath::Clamp(Time, float(StartFrameIndex), float(EndFrameIndex - 1)) - OutFrameIndex;
-	}
+	// Time at ThisFrameIndex with index normalized to 0
+	const float FrameIndexTime = (OutFrameIndex - StartFrameIndex) / FramesPerSecond;
+	OutFraction = float((AdjustedTime - FrameIndexTime) * FramesPerSecond);
+	// The fractional part is clamped to (0, 1) for subframe interpolation since the FrameIndex is floored
+	OutFraction = FMath::Clamp(OutFraction, 0.0f, 1.0f);
 }
 
 const FGeometryCacheTrackSampleInfo& UGeometryCacheTrackUsd::GetSampleInfo(float Time, bool bLooping)
@@ -229,8 +235,6 @@ void UGeometryCacheTrackUsd::UnloadUsdStage()
 void UGeometryCacheTrackUsd::Initialize(
 	const UE::FUsdStage& InStage,
 	const FString& InPrimPath,
-	const FName& InRenderContext,
-	const TMap< FString, TMap< FString, int32 > >& InMaterialToPrimvarToUVIndex,
 	int32 InStartFrameIndex,
 	int32 InEndFrameIndex,
 	FReadUsdMeshFunction InReadFunc
@@ -241,8 +245,6 @@ void UGeometryCacheTrackUsd::Initialize(
 	StageRootLayerPath = CurrentStagePinned ? CurrentStagePinned.GetRootLayer().GetRealPath() : FString();
 
 	PrimPath = InPrimPath;
-	RenderContext = InRenderContext;
-	MaterialToPrimvarToUVIndex = InMaterialToPrimvarToUVIndex;
 	StartFrameIndex = InStartFrameIndex;
 	EndFrameIndex = InEndFrameIndex;
 	FramesPerSecond = CurrentStagePinned.GetTimeCodesPerSecond();
@@ -253,15 +255,25 @@ void UGeometryCacheTrackUsd::Initialize(
 		FramesPerSecond = 1;
 	}
 
-	// The main difference between GDisableGeoCacheTracks true or false is in how time
-	// is converted to frame index. When true, the time is basically the frame indices
-	// and no conversion is actually needed.
 	const int32 NumFrames = EndFrameIndex - StartFrameIndex + 1;
-	Duration = GDisableGeoCacheTracks ? NumFrames : NumFrames / FramesPerSecond;
+	Duration = NumFrames / FramesPerSecond;
 
 	UsdStream.Reset(new FGeometryCacheUsdStream(this, InReadFunc));
 	IGeometryCacheStreamer::Get().RegisterTrack(this, UsdStream.Get());
 	UsdStream->Prefetch(StartFrameIndex);
+}
+
+void UGeometryCacheTrackUsd::Initialize(
+	const UE::FUsdStage& InStage,
+	const FString& InPrimPath,
+	const FName& InRenderContext,
+	const TMap< FString, TMap< FString, int32 > >& InMaterialToPrimvarToUVIndex,
+	int32 InStartFrameIndex,
+	int32 InEndFrameIndex,
+	FReadUsdMeshFunction InReadFunc
+)
+{
+	Initialize(InStage, InPrimPath, InStartFrameIndex, InEndFrameIndex, InReadFunc);
 }
 
 void UGeometryCacheTrackUsd::UpdateTime(float Time, bool bLooping)

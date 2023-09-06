@@ -10,7 +10,7 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "WidgetBlueprintEditorToolbar.h"
 #include "UMGEditorModule.h"
-#include "UMGEditorProjectSettings.h"
+#include "WidgetEditingProjectSettings.h"
 #include "StatusBarSubsystem.h"
 #include "ToolMenus.h"
 #include "WidgetDrawerConfig.h"
@@ -25,6 +25,7 @@
 #include "TabFactory/AnimationTabSummoner.h"
 #include "TabFactory/NavigationTabSummoner.h"
 #include "BlueprintModes/WidgetBlueprintApplicationModes.h"
+#include "WidgetBlueprintEditorUtils.h"
 
 #define LOCTEXT_NAMESPACE "WidgetDesignerMode"
 
@@ -48,73 +49,104 @@ FWidgetDesignerApplicationMode::FWidgetDesignerApplicationMode(TSharedPtr<FWidge
 		DisplayMetrics.PrimaryDisplayWorkAreaRect.Bottom - DisplayMetrics.PrimaryDisplayWorkAreaRect.Top);
 	const FVector2D WindowSize = (CenterScale * DisplaySize) / DPIScale;
 
+	TSharedPtr<FTabManager::FStack> PaletteTab;
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnablePaletteWindow || FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableLibraryWindow)
+	{
+		PaletteTab = FTabManager::NewStack()
+			->SetSizeCoefficient(0.5f);
+
+		if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnablePaletteWindow)
+		{
+			PaletteTab->SetForegroundTab(FPaletteTabSummoner::TabID)
+				->AddTab(FPaletteTabSummoner::TabID, ETabState::OpenedTab);
+		}
+		if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableLibraryWindow)
+		{
+			PaletteTab->AddTab(FLibraryTabSummoner::TabID, ETabState::OpenedTab);
+		}
+	}
+
+	TSharedPtr<FTabManager::FStack> EnableHierarchyTab;
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableHierarchyWindow || FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableBindWidgetWindow)
+	{
+		EnableHierarchyTab = FTabManager::NewStack()
+			->SetSizeCoefficient(0.5f);
+
+		if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableHierarchyWindow)
+		{
+			EnableHierarchyTab->SetForegroundTab(FHierarchyTabSummoner::TabID)
+				->AddTab(FHierarchyTabSummoner::TabID, ETabState::OpenedTab);
+		}
+
+		if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableBindWidgetWindow)
+		{
+			EnableHierarchyTab->AddTab(FBindWidgetTabSummoner::TabID, ETabState::OpenedTab);
+		}
+	}
+
+	TSharedRef<FTabManager::FArea> MainArea = FTabManager::NewPrimaryArea()
+		->SetOrientation(Orient_Horizontal);
+	if (PaletteTab || EnableHierarchyTab)
+	{
+		TSharedRef<FTabManager::FSplitter> LeftSplit = FTabManager::NewSplitter()
+			->SetSizeCoefficient(0.15f)
+			->SetOrientation(Orient_Vertical);
+		if (PaletteTab)
+		{
+			LeftSplit->Split(PaletteTab.ToSharedRef());
+		}
+		if (EnableHierarchyTab)
+		{
+			LeftSplit->Split(EnableHierarchyTab.ToSharedRef());
+		}
+		MainArea->Split(LeftSplit);
+	}
+
+	MainArea->Split
+	(
+		FTabManager::NewSplitter()
+		->SetSizeCoefficient(0.85f)
+		->SetOrientation(Orient_Vertical)
+		->Split
+		(
+			FTabManager::NewSplitter()
+			->SetSizeCoefficient(0.7f)
+			->SetOrientation(Orient_Horizontal)
+			->Split
+			(
+				FTabManager::NewStack()
+				->SetHideTabWell(true)
+				->SetSizeCoefficient(0.05f)
+				->AddTab(FDesignerTabSummoner::ToolPaletteTabID, ETabState::ClosedTab)
+			)
+			->Split
+			(
+				FTabManager::NewStack()
+				->SetHideTabWell(true)
+				->SetSizeCoefficient(0.80f)
+				->AddTab(FDesignerTabSummoner::TabID, ETabState::OpenedTab)
+			)
+			->Split
+			(
+				FTabManager::NewStack()
+				->SetSizeCoefficient(0.35f)
+				->AddTab(FDetailsTabSummoner::TabID, ETabState::OpenedTab)
+			)
+		)
+		->Split
+		(
+			FTabManager::NewStack()
+			->SetSizeCoefficient(0.3f)
+			->SetForegroundTab(FAnimationTabSummoner::TabID)
+			->AddTab(FAnimationTabSummoner::TabID, ETabState::ClosedTab)
+			->AddTab(FBlueprintEditorTabs::CompilerResultsID, ETabState::ClosedTab)
+		)
+	);
+
 	TabLayout = FTabManager::NewLayout("WidgetBlueprintEditor_Designer_Layout_v4_8")
 	->AddArea
 	(
-		FTabManager::NewPrimaryArea()
-		->SetOrientation(Orient_Horizontal)
-		->Split
-		(
-			FTabManager::NewSplitter()
-			->SetSizeCoefficient( 0.15f )
-			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.5f)
-				->SetForegroundTab(FPaletteTabSummoner::TabID)
-				->AddTab(FPaletteTabSummoner::TabID, ETabState::OpenedTab)
-				->AddTab(FLibraryTabSummoner::TabID, ETabState::OpenedTab)
-			)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.5f)
-				->SetForegroundTab(FHierarchyTabSummoner::TabID)
-				->AddTab(FHierarchyTabSummoner::TabID, ETabState::OpenedTab)
-				->AddTab(FBindWidgetTabSummoner::TabID, ETabState::OpenedTab)
-			)
-		)
-		->Split
-		(
-			FTabManager::NewSplitter()
-			->SetSizeCoefficient(0.85f)
-			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewSplitter()
-				->SetSizeCoefficient(0.7f)
-				->SetOrientation(Orient_Horizontal)
-				->Split
-				(
-					FTabManager::NewStack()
-					->SetHideTabWell(true)
-					->SetSizeCoefficient(0.05f)
-					->AddTab(FDesignerTabSummoner::ToolPaletteTabID, ETabState::ClosedTab)
-				)
-				->Split
-				(
-					FTabManager::NewStack()
-					->SetHideTabWell(true)
-					->SetSizeCoefficient(0.80f)
-					->AddTab( FDesignerTabSummoner::TabID, ETabState::OpenedTab )
-				)
-				->Split
-				(
-					FTabManager::NewStack()
-					->SetSizeCoefficient(0.35f)
-					->AddTab(FDetailsTabSummoner::TabID, ETabState::OpenedTab)
-				)
-			)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient( 0.3f )
-				->AddTab(FAnimationTabSummoner::TabID, ETabState::ClosedTab)
-				->AddTab(FBlueprintEditorTabs::CompilerResultsID, ETabState::ClosedTab)
-				->SetForegroundTab(FAnimationTabSummoner::TabID)
-			)
-		)
+		MainArea
 	)
 	->AddArea
 	(
@@ -133,13 +165,28 @@ FWidgetDesignerApplicationMode::FWidgetDesignerApplicationMode(TSharedPtr<FWidge
 	//TabFactories.RegisterFactory(MakeShareable(new FSelectionDetailsSummoner(InWidgetEditor)));
 	TabFactories.RegisterFactory(MakeShareable(new FDetailsTabSummoner(InWidgetEditor)));
 	TabFactories.RegisterFactory(MakeShareable(new FDesignerTabSummoner(InWidgetEditor)));
-	TabFactories.RegisterFactory(MakeShareable(new FHierarchyTabSummoner(InWidgetEditor)));
-	TabFactories.RegisterFactory(MakeShareable(new FBindWidgetTabSummoner(InWidgetEditor)));
-	TabFactories.RegisterFactory(MakeShareable(new FPaletteTabSummoner(InWidgetEditor)));
-	TabFactories.RegisterFactory(MakeShareable(new FLibraryTabSummoner(InWidgetEditor)));
-	TabFactories.RegisterFactory(MakeShareable(new FAnimationTabSummoner(InWidgetEditor)));
 	TabFactories.RegisterFactory(MakeShareable(new FCompilerResultsSummoner(InWidgetEditor)));
-	TabFactories.RegisterFactory(MakeShareable(new FNavigationTabSummoner(InWidgetEditor)));
+	TabFactories.RegisterFactory(MakeShareable(new FAnimationTabSummoner(InWidgetEditor)));
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableHierarchyWindow)
+	{
+		TabFactories.RegisterFactory(MakeShareable(new FHierarchyTabSummoner(InWidgetEditor)));
+	}
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableBindWidgetWindow)
+	{
+		TabFactories.RegisterFactory(MakeShareable(new FBindWidgetTabSummoner(InWidgetEditor)));
+	}
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnablePaletteWindow)
+	{
+		TabFactories.RegisterFactory(MakeShareable(new FPaletteTabSummoner(InWidgetEditor)));
+	}
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableLibraryWindow)
+	{
+		TabFactories.RegisterFactory(MakeShareable(new FLibraryTabSummoner(InWidgetEditor)));
+	}
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(InWidgetEditor)->bEnableNavigationSimulationWindow)
+	{
+		TabFactories.RegisterFactory(MakeShareable(new FNavigationTabSummoner(InWidgetEditor)));
+	}
 
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 	UMGEditorModule.OnRegisterTabsForEditor().Broadcast(*this, TabFactories);
@@ -200,7 +247,7 @@ void FWidgetDesignerApplicationMode::PostActivateMode()
 
 	TSharedPtr<FWidgetBlueprintEditor> BP = GetBlueprintEditor();
 
-	if (!GetDefault<UUMGEditorProjectSettings>()->bHideWidgetAnimationEditor)
+	if (FWidgetBlueprintEditorUtils::GetRelevantSettings(BP)->bEnableWidgetAnimationEditor)
 	{
 		FWidgetDrawerConfig WidgetAnimSequencerDrawer(FAnimationTabSummoner::WidgetAnimSequencerDrawerID);
 		WidgetAnimSequencerDrawer.GetDrawerContentDelegate.BindSP(BP.Get(), &FWidgetBlueprintEditor::OnGetWidgetAnimSequencer);

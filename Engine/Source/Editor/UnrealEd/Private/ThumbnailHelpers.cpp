@@ -459,6 +459,10 @@ void FSkeletalMeshThumbnailScene::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 		PreviewActor->SetActorLocation( -PreviewActor->GetSkeletalMeshComponent()->Bounds.Origin + FVector(0, 0, BoundsZOffset), false );
 		PreviewActor->GetSkeletalMeshComponent()->RecreateRenderState_Concurrent();
 	}
+	else
+	{
+		PreviewActor->GetSkeletalMeshComponent()->ClearAnimScriptInstance();
+	}
 }
 
 void FSkeletalMeshThumbnailScene::SetDrawDebugSkeleton(bool bInDrawDebugSkeleton, const FLinearColor& InSkeletonColor)
@@ -1013,6 +1017,11 @@ void FPhysicsAssetThumbnailScene::SetPhysicsAsset(UPhysicsAsset* InPhysicsAsset)
 			PreviewActor->GetSkeletalMeshComponent()->RecreateRenderState_Concurrent();
 		}
 	}
+	else
+	{
+		PreviewActor->GetSkeletalMeshComponent()->SetSkeletalMesh(nullptr);
+		PreviewActor->GetSkeletalMeshComponent()->ClearAnimScriptInstance();
+	}
 }
 
 void FPhysicsAssetThumbnailScene::GetViewMatrixParameters(const float InFOVDegrees, FVector& OutOrigin, float& OutOrbitPitch, float& OutOrbitYaw, float& OutOrbitZoom) const
@@ -1109,18 +1118,18 @@ void FClassActorThumbnailScene::ClearStaleActors()
 	}
 }
 
-bool FClassActorThumbnailScene::IsValidComponentForVisualization(UActorComponent* Component)
+bool FClassActorThumbnailScene::IsValidComponentForVisualization(const UActorComponent* Component)
 {
-	UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component);
+	const UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(Component);
 	if ( PrimComp && PrimComp->IsVisible() && !PrimComp->bHiddenInGame )
 	{
-		UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(Component);
+		const UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(Component);
 		if ( StaticMeshComp && StaticMeshComp->GetStaticMesh())
 		{
 			return true;
 		}
 
-		USkeletalMeshComponent* SkelMeshComp = Cast<USkeletalMeshComponent>(Component);
+		const USkeletalMeshComponent* SkelMeshComp = Cast<USkeletalMeshComponent>(Component);
 		if ( SkelMeshComp && SkelMeshComp->GetSkeletalMeshAsset())
 		{
 			return true;
@@ -1141,7 +1150,7 @@ bool FClassActorThumbnailScene::IsValidComponentForVisualization(UActorComponent
 
 FBoxSphereBounds FClassActorThumbnailScene::GetPreviewActorBounds() const
 {
-	FBoxSphereBounds Bounds(ForceInitToZero);
+	FBoxSphereBounds::Builder BoundsBuilder;
 	if (PreviewActor.IsValid() && PreviewActor->GetRootComponent())
 	{
 		TArray<USceneComponent*> PreviewComponents;
@@ -1152,12 +1161,12 @@ FBoxSphereBounds FClassActorThumbnailScene::GetPreviewActorBounds() const
 		{
 			if (IsValidComponentForVisualization(PreviewComponent))
 			{
-				Bounds = Bounds + PreviewComponent->Bounds;
+				BoundsBuilder += PreviewComponent->Bounds;
 			}
 		}
 	}
 
-	return Bounds;
+	return BoundsBuilder;
 }
 
 void FClassActorThumbnailScene::GetViewMatrixParameters(const float InFOVDegrees, FVector& OutOrigin, float& OutOrbitPitch, float& OutOrbitYaw, float& OutOrbitZoom) const

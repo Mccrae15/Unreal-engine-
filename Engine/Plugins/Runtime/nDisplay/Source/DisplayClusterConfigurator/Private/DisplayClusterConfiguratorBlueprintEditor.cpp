@@ -1075,9 +1075,9 @@ TStatId FDisplayClusterConfiguratorBlueprintEditor::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(FDisplayClusterConfiguratorBlueprintEditor, STATGROUP_Tickables);
 }
 
-bool FDisplayClusterConfiguratorBlueprintEditor::OnRequestClose()
+bool FDisplayClusterConfiguratorBlueprintEditor::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
-	return FBlueprintEditor::OnRequestClose();
+	return FBlueprintEditor::OnRequestClose(InCloseReason);
 }
 
 void FDisplayClusterConfiguratorBlueprintEditor::OnClose()
@@ -1318,7 +1318,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::ShutdownDCSCSEditors()
 
 	// Remove this blueprint editor and any registered blueprint editors that are no longer valid (as is the case when in a destructor)
 	// from the list of registered blueprint editors
-	EditorsRegisteredForPanelExtension.RemoveAll([=](const TWeakPtr<FDisplayClusterConfiguratorBlueprintEditor>& BlueprintEditor)
+	EditorsRegisteredForPanelExtension.RemoveAll([this](const TWeakPtr<FDisplayClusterConfiguratorBlueprintEditor>& BlueprintEditor)
 	{
 		return !BlueprintEditor.IsValid() || BlueprintEditor.Pin().Get() == this;
 	});
@@ -1326,7 +1326,7 @@ void FDisplayClusterConfiguratorBlueprintEditor::ShutdownDCSCSEditors()
 
 TSharedRef<SWidget> FDisplayClusterConfiguratorBlueprintEditor::CreateAddComponentButton()
 {
-	auto PerformComboAddClass = [=](TSubclassOf<UActorComponent> ComponentClass, EComponentCreateAction::Type ComponentCreateAction,
+	auto PerformComboAddClass = [this](TSubclassOf<UActorComponent> ComponentClass, EComponentCreateAction::Type ComponentCreateAction,
 		UObject* AssetOverride) -> FSubobjectDataHandle
 	{
 		FSubobjectDataHandle NewComponentHandle = FSubobjectDataHandle::InvalidHandle;

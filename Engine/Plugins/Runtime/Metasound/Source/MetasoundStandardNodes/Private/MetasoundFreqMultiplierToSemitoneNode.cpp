@@ -1,14 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Internationalization/Text.h"
-#include "MetasoundFacade.h"
 #include "MetasoundExecutableOperator.h"
+#include "MetasoundFacade.h"
+#include "MetasoundFrontendNodesCategories.h"
 #include "MetasoundNodeRegistrationMacro.h"
+#include "MetasoundParamHelper.h"
 #include "MetasoundPrimitives.h"
 #include "MetasoundStandardNodesNames.h"
 #include "MetasoundStandardNodesCategories.h"
 #include "DSP/Dsp.h"
-#include "MetasoundParamHelper.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundStandardNodes_FreqMultiplierToSemitone"
 
@@ -33,8 +34,11 @@ namespace Metasound
 
 		FFrequencyMultiplierToSemitoneOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InFrequencyMultiplier);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -55,24 +59,39 @@ namespace Metasound
 	{
 	}
 
-	
-	FDataReferenceCollection FFrequencyMultiplierToSemitoneOperator::GetInputs() const
+
+	void FFrequencyMultiplierToSemitoneOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace FrequencyMultiplierToSemitoneVertexNames;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputFrequencyMultiplier), FrequencyMultiplierInput);
+	}
 
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputFrequencyMultiplier), FrequencyMultiplierInput);
+	void FFrequencyMultiplierToSemitoneOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace FrequencyMultiplierToSemitoneVertexNames;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputSemitone), SemitoneOutput);
+	}
 
-		return InputDataReferences;
+	FDataReferenceCollection FFrequencyMultiplierToSemitoneOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FFrequencyMultiplierToSemitoneOperator::GetOutputs() const
 	{
-		using namespace FrequencyMultiplierToSemitoneVertexNames;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
 
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputSemitone), SemitoneOutput);
-		return OutputDataReferences;
+	void FFrequencyMultiplierToSemitoneOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		PrevFrequencyMultiplier = *FrequencyMultiplierInput;
+		*SemitoneOutput = Audio::GetSemitones(*FrequencyMultiplierInput);
 	}
 
 	void FFrequencyMultiplierToSemitoneOperator::Execute()

@@ -14,6 +14,7 @@
 
 class FNotifyHook;
 class FObjectPropertyNode;
+class FDetailWidgetRow;
 
 /** Property button enums. */
 namespace EPropertyButton
@@ -60,6 +61,7 @@ public:
 		: _ShowPropertyButtons( true )
 	{}
 		SLATE_ARGUMENT( bool, ShowPropertyButtons )
+		SLATE_ARGUMENT(TOptional<FDetailWidgetRow*>, InWidgetRow)
 	SLATE_END_ARGS()
 
 	void Construct( const FArguments& InArgs, TSharedPtr<FPropertyEditor> InPropertyEditor, TSharedPtr<IPropertyUtilities> InPropertyUtilities );
@@ -78,6 +80,9 @@ private:
 	float MinDesiredWidth;
 	/** The maximum desired with if this property value */
 	float MaxDesiredWidth;
+	/** The widget row this value widget is part of */
+	TOptional<FDetailWidgetRow*> WidgetRow;
+
 };
 
 class SEditConditionWidget : public SCompoundWidget
@@ -256,6 +261,15 @@ namespace PropertyEditorHelpers
 	 * @return The array of disallowed enums.
 	 */
 	TArray<FName> GetInvalidEnumsFromPropertyOverride(const FProperty* Property, const UEnum* InEnum);
+
+	/**
+	 * Returns any enums that are have an overridden display name from the "EnumValueDisplayNameOverrides" metadata on FProperty using the specified enum.
+	 *
+	 * @param Property	The property which may contain the "EnumValueDisplayNameOverrides" metadata
+	 * @param InEnum	The enum to search
+	 * @return The map of display name overrides.
+	 */
+	TMap<FName, FText> GetEnumValueDisplayNamesFromPropertyOverride(const FProperty* Property, const UEnum* InEnum);
 	
 	/**
 	 * Whether or not a category is hidden by a given root object

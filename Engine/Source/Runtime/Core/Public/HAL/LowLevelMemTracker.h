@@ -127,6 +127,24 @@ enum class ELLMTagSet : uint8
 	Max, // note: see FLowLevelMemTracker::ShouldReduceThreads and IsAssetTagForAssets if you add any asset-style tagsets
 };
 
+/*
+ * Size parameter flags used when requesting the size of the tracked tag data.
+ */
+namespace UE::LLM
+{
+
+enum class ESizeParams : uint8
+{
+	Default = 0,
+	ReportCurrent = 0,
+	ReportPeak = 1,
+	RelativeToSnapshot = 2
+};
+
+ENUM_CLASS_FLAGS(ESizeParams);
+
+} // UE::LLM
+
 // Do not add to these macros. Please use the LLM_DECLARE_TAG family of macros below to create new tags.
 #define LLM_ENUM_GENERIC_TAGS(macro) \
 	macro(Untagged,								"Untagged",						NAME_None,													NAME_None,										-1)\
@@ -143,8 +161,10 @@ enum class ELLMTagSet : uint8
 	macro(PlatformUntracked,					"Untracked",					GET_STATFNAME(STAT_PlatformUntrackedLLM),					NAME_None,										-1)\
 	macro(PlatformOverhead,						"LLMOverhead",					GET_STATFNAME(STAT_PlatformOverheadLLM),					NAME_None,										-1)\
 	macro(PlatformOSAvailable,					"OSAvailable",					GET_STATFNAME(STAT_PlatformOSAvailableLLM),					NAME_None,										-1)\
+	/*FMalloc is a special tag that is reserved for the Platform Tracker only. It's used with ELLMAllocType::FMalloc to calculate ELLMTag::FMallocUnused. */								   \
 	macro(FMalloc,								"FMalloc",						GET_STATFNAME(STAT_FMallocLLM),								NAME_None,										-1)\
 	macro(FMallocUnused,						"FMallocUnused",				GET_STATFNAME(STAT_FMallocUnusedLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+	macro(RHIUnused,							"RHIUnused",					GET_STATFNAME(STAT_RHIUnusedLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(ThreadStack,							"ThreadStack",					GET_STATFNAME(STAT_ThreadStackLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(ThreadStackPlatform,					"ThreadStack",					GET_STATFNAME(STAT_ThreadStackPlatformLLM),					NAME_None,										-1)\
 	macro(ProgramSizePlatform,					"ProgramSize",					GET_STATFNAME(STAT_ProgramSizePlatformLLM),					NAME_None,										-1)\
@@ -271,10 +291,10 @@ enum class ELLMTag : LLM_TAG_TYPE
 static_assert( ELLMTag::GenericTagCount <= ELLMTag::PlatformTagStart,
 	"too many LLM tags defined -- Instead of adding a new tag and updating the limits, please use the LLM_DECLARE_TAG macros below"); 
 
-static constexpr uint32 LLM_TAG_COUNT = 256;
-static constexpr uint32 LLM_CUSTOM_TAG_START = (int32)ELLMTag::PlatformTagStart;
-static constexpr uint32 LLM_CUSTOM_TAG_END = (int32)ELLMTag::ProjectTagEnd;
-static constexpr uint32 LLM_CUSTOM_TAG_COUNT = LLM_CUSTOM_TAG_END + 1 - LLM_CUSTOM_TAG_START;
+constexpr inline uint32 LLM_TAG_COUNT = 256;
+constexpr inline uint32 LLM_CUSTOM_TAG_START = (int32)ELLMTag::PlatformTagStart;
+constexpr inline uint32 LLM_CUSTOM_TAG_END = (int32)ELLMTag::ProjectTagEnd;
+constexpr inline uint32 LLM_CUSTOM_TAG_COUNT = LLM_CUSTOM_TAG_END + 1 - LLM_CUSTOM_TAG_START;
 
 /**
  * Passed in to OnLowLevelAlloc to specify the type of allocation. Used to track FMalloc total
@@ -285,7 +305,7 @@ enum class ELLMAllocType
 	None = 0,
 	FMalloc,
 	System,
-
+	RHI,
 	Count
 };
 
@@ -508,7 +528,7 @@ struct FLLMTagInfo
 };
 
 /** The main LLM tracker class. */
-class CORE_API FLowLevelMemTracker
+class FLowLevelMemTracker
 {
 public:
 
@@ -521,18 +541,18 @@ public:
 			return Construct();
 	}
 
-	static FLowLevelMemTracker& Construct();
+	static CORE_API FLowLevelMemTracker& Construct();
 
-	static bool IsEnabled();
+	static CORE_API bool IsEnabled();
 
 	/**
 	 * We always start up running, but if the commandline disables us, we will do it later after main
 	 * (can't get the commandline early enough in a cross-platform way).
 	 */
-	void ProcessCommandLine(const TCHAR* CmdLine);
+	CORE_API void ProcessCommandLine(const TCHAR* CmdLine);
 
 	/** Return the total amount of memory being tracked. */
-	uint64 GetTotalTrackedMemory(ELLMTracker Tracker);
+	CORE_API uint64 GetTotalTrackedMemory(ELLMTracker Tracker);
 
 	/**
 	 * Records the use of memory that was allocated for a pointer.
@@ -545,9 +565,9 @@ public:
 	 * @param AllocType Type of allocation, FMalloc for regular allocations done through GMalloc, System for others.
 	 * @param bTrackInMemPro Whether to pass the allocation/free information on to FMemProProfiler.
 	 */
-	void OnLowLevelAlloc(ELLMTracker Tracker, const void* Ptr, uint64 Size, ELLMTag DefaultTag = ELLMTag::Untagged,
+	CORE_API void OnLowLevelAlloc(ELLMTracker Tracker, const void* Ptr, uint64 Size, ELLMTag DefaultTag = ELLMTag::Untagged,
 		ELLMAllocType AllocType = ELLMAllocType::None, bool bTrackInMemPro = true);
-	void OnLowLevelAlloc(ELLMTracker Tracker, const void* Ptr, uint64 Size, FName DefaultTag,
+	CORE_API void OnLowLevelAlloc(ELLMTracker Tracker, const void* Ptr, uint64 Size, FName DefaultTag,
 		ELLMAllocType AllocType = ELLMAllocType::None, bool bTrackInMemPro = true);
 
 	/**
@@ -559,7 +579,7 @@ public:
 	 * @param AllocType Type of allocation, FMalloc for regular allocations done through GMalloc, System for others.
 	 * @param bTrackInMemPro Whether to pass the allocation/free information on to FMemProProfiler.
 	 */
-	void OnLowLevelFree(ELLMTracker Tracker, const void* Ptr,
+	CORE_API void OnLowLevelFree(ELLMTracker Tracker, const void* Ptr,
 		ELLMAllocType AllocType = ELLMAllocType::None, bool bTrackInMemPro = true);
 
 	/**
@@ -571,98 +591,112 @@ public:
 	 * @param DefaultTag The tag to use if there is no tag already in scope on the callstack.
 	 * @param AllocType Type of allocation, FMalloc for regular allocations done through GMalloc, System for others.
 	 */
-	void OnLowLevelChangeInMemoryUse(ELLMTracker Tracker, int64 DeltaMemory, ELLMTag DefaultTag = ELLMTag::Untagged, ELLMAllocType AllocType = ELLMAllocType::None);
-	void OnLowLevelChangeInMemoryUse(ELLMTracker Tracker, int64 DeltaMemory, FName DefaultTag, ELLMAllocType AllocType = ELLMAllocType::None);
+	CORE_API void OnLowLevelChangeInMemoryUse(ELLMTracker Tracker, int64 DeltaMemory, ELLMTag DefaultTag = ELLMTag::Untagged, ELLMAllocType AllocType = ELLMAllocType::None);
+	CORE_API void OnLowLevelChangeInMemoryUse(ELLMTracker Tracker, int64 DeltaMemory, FName DefaultTag, ELLMAllocType AllocType = ELLMAllocType::None);
 
 	/** Call if an allocation is moved in memory, such as in a defragger. */
-	void OnLowLevelAllocMoved(ELLMTracker Tracker, const void* Dest, const void* Source,
+	CORE_API void OnLowLevelAllocMoved(ELLMTracker Tracker, const void* Dest, const void* Source,
 		ELLMAllocType AllocType = ELLMAllocType::None);
 
 	/** Updates memory stats and optionally publishes them to observers. */
-	void UpdateStatsPerFrame(const TCHAR* LogName=nullptr);
+	CORE_API void UpdateStatsPerFrame(const TCHAR* LogName=nullptr);
 	/** Updates memory stats. */
-	void Tick();
+	CORE_API void Tick();
 
 	/** Optionally set the amount of memory taken up before the game starts for executable and data segments .*/
-	void SetProgramSize(uint64 InProgramSize);
+	CORE_API void SetProgramSize(uint64 InProgramSize);
 
 	/** console command handler */
-	bool Exec(const TCHAR* Cmd, FOutputDevice& Ar);
+	CORE_API bool Exec(const TCHAR* Cmd, FOutputDevice& Ar);
 
 	/** Report whether the given TagSet is active, e.g. AssetTracking. */
-	bool IsTagSetActive(ELLMTagSet Set);
+	CORE_API bool IsTagSetActive(ELLMTagSet Set);
 
 	/** For some tag sets, it's really useful to reduce threads, to attribute allocations to assets, for instance. */
-	bool ShouldReduceThreads();
+	CORE_API bool ShouldReduceThreads();
 
 	/** Get the top active tag for the given tracker */
 	UE_DEPRECATED(4.27, "Tags have been changed to FNames and the old ELLMTag is now only the top-level coarse tag. Use GetActivateTagData instead to get the current Tag instead of its toplevel parent.")
-	int64 GetActiveTag(ELLMTracker Tracker);
+	CORE_API int64 GetActiveTag(ELLMTracker Tracker);
 
 	/** Get an opaque identifier for the top active tag for the given tracker. */
-	const UE::LLMPrivate::FTagData* GetActiveTagData(ELLMTracker Tracker, ELLMTagSet TagSet = ELLMTagSet::None);
+	CORE_API const UE::LLMPrivate::FTagData* GetActiveTagData(ELLMTracker Tracker, ELLMTagSet TagSet = ELLMTagSet::None);
 
 	/** Register custom ELLMTags. */
-	void RegisterPlatformTag(int32 Tag, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
-	void RegisterProjectTag(int32 Tag, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
+	CORE_API void RegisterPlatformTag(int32 Tag, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
+	CORE_API void RegisterProjectTag(int32 Tag, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
     
 	/** Get all tags being tracked. */
-	TArray<const UE::LLMPrivate::FTagData*> GetTrackedTags(ELLMTagSet TagSet = ELLMTagSet::None);
+	CORE_API TArray<const UE::LLMPrivate::FTagData*> GetTrackedTags(ELLMTagSet TagSet = ELLMTagSet::None);
 
 	/** Get all tags being tracked by the given tracker. */
-	TArray<const UE::LLMPrivate::FTagData*> GetTrackedTags(ELLMTracker Tracker, ELLMTagSet TagSet = ELLMTagSet::None);
+	CORE_API TArray<const UE::LLMPrivate::FTagData*> GetTrackedTags(ELLMTracker Tracker, ELLMTagSet TagSet = ELLMTagSet::None);
 
-	void GetTrackedTagsNamesWithAmount(TMap<FName, uint64>& TagsNamesWithAmount, ELLMTracker Tracker, ELLMTagSet TagSet);
-	void GetTrackedTagsNamesWithAmountFiltered(TMap<FName, uint64>& TagsNamesWithAmount, ELLMTracker Tracker, ELLMTagSet TagSet, TArray<FLLMTagSetAllocationFilter>& Filters);
+	CORE_API void GetTrackedTagsNamesWithAmount(TMap<FName, uint64>& TagsNamesWithAmount, ELLMTracker Tracker, ELLMTagSet TagSet);
+	CORE_API void GetTrackedTagsNamesWithAmountFiltered(TMap<FName, uint64>& TagsNamesWithAmount, ELLMTracker Tracker, ELLMTagSet TagSet, TArray<FLLMTagSetAllocationFilter>& Filters);
 
 	/** Look up the ELLMTag associated with the given display name. */
-	bool FindTagByName(const TCHAR* Name, uint64& OutTag, ELLMTagSet InTagSet = ELLMTagSet::None) const;
+	CORE_API bool FindTagByName(const TCHAR* Name, uint64& OutTag, ELLMTagSet InTagSet = ELLMTagSet::None) const;
 
 	UE_DEPRECATED(4.27, "Use FindTagDisplayName instead")
-	const TCHAR* FindTagName(uint64 Tag) const;
+	CORE_API const TCHAR* FindTagName(uint64 Tag) const;
 
 	/** Get the display name for the given ELLMTag. */
-	FName FindTagDisplayName(uint64 Tag) const;
+	CORE_API FName FindTagDisplayName(uint64 Tag) const;
 
 	/** Get the display name for the given FTagData. */
-	FName GetTagDisplayName(const UE::LLMPrivate::FTagData* TagData) const;
+	CORE_API FName GetTagDisplayName(const UE::LLMPrivate::FTagData* TagData) const;
 
 	/** Get the path name for the given FTagData from a chain of its parents' display names. */
-	FString GetTagDisplayPathName(const UE::LLMPrivate::FTagData* TagData) const;
+	CORE_API FString GetTagDisplayPathName(const UE::LLMPrivate::FTagData* TagData) const;
 
 	/** Get the unique identifier name for the given FTagData. */
-	FName GetTagUniqueName(const UE::LLMPrivate::FTagData* TagData) const;
+	CORE_API FName GetTagUniqueName(const UE::LLMPrivate::FTagData* TagData) const;
 
 	/** Get the amount of memory for an ELLMTag from the given tracker. */
-	int64 GetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, bool bPeakAmount = false);
+	CORE_API int64 GetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, UE::LLM::ESizeParams SizeParams = UE::LLM::ESizeParams::Default);
 
 	/** Get the amount of memory for a FTagData from the given tracker. */
-	int64 GetTagAmountForTracker(ELLMTracker Tracker, const UE::LLMPrivate::FTagData* TagData, bool bPeakAmount = false);
+	CORE_API int64 GetTagAmountForTracker(ELLMTracker Tracker, const UE::LLMPrivate::FTagData* TagData, UE::LLM::ESizeParams SizeParams = UE::LLM::ESizeParams::Default);
 
-    int64 GetTagAmountForTracker(ELLMTracker Tracker, FName Tag, ELLMTagSet TagSet, bool bPeakAmount = false);
+    CORE_API int64 GetTagAmountForTracker(ELLMTracker Tracker, FName Tag, ELLMTagSet TagSet, UE::LLM::ESizeParams SizeParams = UE::LLM::ESizeParams::Default);
+
+	/** Get the amount of memory for an ELLMTag from the given tracker. */
+	UE_DEPRECATED(5.3, "Use version that takes ESizeParams instead")
+	CORE_API int64 GetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, bool bPeakAmount);
+
+	/** Get the amount of memory for a FTagData from the given tracker. */
+	UE_DEPRECATED(5.3, "Use version that takes ESizeParams instead")
+	CORE_API int64 GetTagAmountForTracker(ELLMTracker Tracker, const UE::LLMPrivate::FTagData* TagData, bool bPeakAmount);
+
+	UE_DEPRECATED(5.3, "Use version that takes ESizeParams instead")
+	CORE_API int64 GetTagAmountForTracker(ELLMTracker Tracker, FName Tag, ELLMTagSet TagSet, bool bPeakAmount);
 
 	/** Set the amount of memory for an ELLMTag for a given tracker and optionally update the total tracked memory. */
-	void SetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, int64 Amount, bool bAddToTotal);
+	CORE_API void SetTagAmountForTracker(ELLMTracker Tracker, ELLMTag Tag, int64 Amount, bool bAddToTotal);
 
+	/** Set the amount of memory for an tag name for a given tracker and optionally update the total tracked memory. */
+	CORE_API void SetTagAmountForTracker(ELLMTracker Tracker, FName Tag, ELLMTagSet TagSet, int64 Amount, bool bAddToTotal);
+	
 	/** Dump the display name of the current TagData for the given tracker to the output. */
-	uint64 DumpTag(ELLMTracker Tracker, const char* FileName, int LineNumber);
+	CORE_API uint64 DumpTag(ELLMTracker Tracker, const char* FileName, int LineNumber);
 
 	/** Publishes the active LLM stats in the active frame, useful for single targeted LLM snapshots. */
-	void PublishDataSingleFrame();
+	CORE_API void PublishDataSingleFrame();
 
 	enum class EDumpFormat
 	{
 		PlainText,
 		CSV,
 	};
-	void DumpToLog(EDumpFormat DumpFormat = EDumpFormat::PlainText, FOutputDevice* OutputDevice = nullptr);
+	CORE_API void DumpToLog(EDumpFormat DumpFormat = EDumpFormat::PlainText, FOutputDevice* OutputDevice = nullptr, UE::LLM::ESizeParams SizeParams = UE::LLM::ESizeParams::Default);
 
-	void OnPreFork();
+	CORE_API void OnPreFork();
 
 private:
-	FLowLevelMemTracker();
+	CORE_API FLowLevelMemTracker();
 
-	~FLowLevelMemTracker();
+	CORE_API ~FLowLevelMemTracker();
 
 	/**
 	 * Allocation and Setup of the data required for tracking allocations is done as late as possible to prevent
@@ -670,43 +704,43 @@ private:
 	 * than ParseCommandLine, so we do not complete all initialization in this function (e.g. features required only
 	 * for Update are omitted). Initialization done here will be torn down in ParseCommandLine if LLM is disabled.
 	 */
-	void BootstrapInitialise();
+	CORE_API void BootstrapInitialise();
 
 	bool IsBootstrapping() const { return bIsBootstrapping; }
 
 	/** Free all memory. This will put the tracker into a permanently disabled state. */
-	void Clear();
-	void InitialiseProgramSize();
+	CORE_API void Clear();
+	CORE_API void InitialiseProgramSize();
 
-	class UE::LLMPrivate::FLLMTracker* GetTracker(ELLMTracker Tracker);
+	CORE_API class UE::LLMPrivate::FLLMTracker* GetTracker(ELLMTracker Tracker);
 
-	void TickInternal();
-	void UpdateTags();
-	void SortTags(UE::LLMPrivate::FTagDataArray*& OutOldTagDatas);
-	void PublishDataPerFrame(const TCHAR* LogName);
+	CORE_API void TickInternal();
+	CORE_API void UpdateTags();
+	CORE_API void SortTags(UE::LLMPrivate::FTagDataArray*& OutOldTagDatas);
+	CORE_API void PublishDataPerFrame(const TCHAR* LogName);
 
-	void RegisterCustomTagInternal(int32 Tag, ELLMTagSet TagSet, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
+	CORE_API void RegisterCustomTagInternal(int32 Tag, ELLMTagSet TagSet, const TCHAR* Name, FName StatName, FName SummaryStatName, int32 ParentTag = -1);
 	/**
 	* Called during C++ global static initialization when GMalloc is available (and hence FNames are unavailable)
 	* Creates the subset of tags necessary to record allocations during GMalloc and FName construction
 	*/
-	void BootstrapTagDatas();
+	CORE_API void BootstrapTagDatas();
 	/** Called when we have detected enabled in processcommandline, or as late as possible if callers access features that require full initialisation before then */
-	void FinishInitialise();
-	void InitialiseTagDatas_SetLLMTagNames();
-	void InitialiseTagDatas_FinishRegister();
-	void InitialiseTagDatas();
-	void ClearTagDatas();
-	void RegisterTagDeclaration(FLLMTagDeclaration& TagDeclaration);
-	UE::LLMPrivate::FTagData& RegisterTagData(FName Name, FName DisplayName, FName ParentName, FName StatName, FName SummaryStatName, bool bHasEnumTag, ELLMTag EnumTag, bool bIsStatTag, UE::LLMPrivate::ETagReferenceSource ReferenceSource, ELLMTagSet TagSet = ELLMTagSet::None);
+	CORE_API void FinishInitialise();
+	CORE_API void InitialiseTagDatas_SetLLMTagNames();
+	CORE_API void InitialiseTagDatas_FinishRegister();
+	CORE_API void InitialiseTagDatas();
+	CORE_API void ClearTagDatas();
+	CORE_API void RegisterTagDeclaration(FLLMTagDeclaration& TagDeclaration);
+	CORE_API UE::LLMPrivate::FTagData& RegisterTagData(FName Name, FName DisplayName, FName ParentName, FName StatName, FName SummaryStatName, bool bHasEnumTag, ELLMTag EnumTag, bool bIsStatTag, UE::LLMPrivate::ETagReferenceSource ReferenceSource, ELLMTagSet TagSet = ELLMTagSet::None);
 	/** Construct if not yet done the data on the given FTagData that relies on the presence of other TagDatas */
-	void FinishConstruct(UE::LLMPrivate::FTagData* TagData, UE::LLMPrivate::ETagReferenceSource ReferenceSource);
-	void ReportDuplicateTagName(UE::LLMPrivate::FTagData* TagData, UE::LLMPrivate::ETagReferenceSource ReferenceSource);
+	CORE_API void FinishConstruct(UE::LLMPrivate::FTagData* TagData, UE::LLMPrivate::ETagReferenceSource ReferenceSource);
+	CORE_API void ReportDuplicateTagName(UE::LLMPrivate::FTagData* TagData, UE::LLMPrivate::ETagReferenceSource ReferenceSource);
 
-	const UE::LLMPrivate::FTagData* FindOrAddTagData(ELLMTag EnumTag, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
-	const UE::LLMPrivate::FTagData* FindOrAddTagData(FName Name, ELLMTagSet TagSet, bool bIsStatData=false, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
-	const UE::LLMPrivate::FTagData* FindTagData(ELLMTag EnumTag, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
-	const UE::LLMPrivate::FTagData* FindTagData(FName Name, ELLMTagSet TagSet, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
+	CORE_API const UE::LLMPrivate::FTagData* FindOrAddTagData(ELLMTag EnumTag, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
+	CORE_API const UE::LLMPrivate::FTagData* FindOrAddTagData(FName Name, ELLMTagSet TagSet, bool bIsStatData=false, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
+	CORE_API const UE::LLMPrivate::FTagData* FindTagData(ELLMTag EnumTag, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
+	CORE_API const UE::LLMPrivate::FTagData* FindTagData(FName Name, ELLMTagSet TagSet, UE::LLMPrivate::ETagReferenceSource ReferenceSource = UE::LLMPrivate::ETagReferenceSource::FunctionAPI);
 
 	friend class FLLMPauseScope;
 	friend class FLLMScope;
@@ -748,14 +782,15 @@ private:
 	bool bTagAdded;
 	bool bAutoPublish;
 	bool bPublishSingleFrame;
+	bool bCapturedSizeSnapshot;
 
-	static FLowLevelMemTracker* TrackerInstance;
+	static CORE_API FLowLevelMemTracker* TrackerInstance;
 public: // really internal but needs to be visible for LLM_IF_ENABLED macro
-	static bool bIsDisabled;
+	static CORE_API bool bIsDisabled;
 };
 
 /** LLM scope for tracking memory. */
-class CORE_API FLLMScope
+class FLLMScope
 {
 public:
 	FLLMScope(FName TagName, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true)
@@ -791,10 +826,10 @@ public:
 	}
 
 protected:
-	void Init(FName TagName, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true);
-	void Init(ELLMTag TagEnum, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true);
-	void Init(const UE::LLMPrivate::FTagData* TagData, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true);
-	void Destruct();
+	CORE_API void Init(FName TagName, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true);
+	CORE_API void Init(ELLMTag TagEnum, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true);
+	CORE_API void Init(const UE::LLMPrivate::FTagData* TagData, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker, bool bOverride = true);
+	CORE_API void Destruct();
 
 	ELLMTracker Tracker{};
 	bool bEnabled = false;
@@ -802,14 +837,14 @@ protected:
 };
 
 /** LLM scope for pausing LLM (disables the allocation hooks). */
-class CORE_API FLLMPauseScope
+class FLLMPauseScope
 {
 public:
-	FLLMPauseScope(FName TagName, bool bIsStatTag, uint64 Amount, ELLMTracker TrackerToPause, ELLMAllocType InAllocType);
-	FLLMPauseScope(ELLMTag TagEnum, bool bIsStatTag, uint64 Amount, ELLMTracker TrackerToPause, ELLMAllocType InAllocType);
-	~FLLMPauseScope();
+	CORE_API FLLMPauseScope(FName TagName, bool bIsStatTag, uint64 Amount, ELLMTracker TrackerToPause, ELLMAllocType InAllocType);
+	CORE_API FLLMPauseScope(ELLMTag TagEnum, bool bIsStatTag, uint64 Amount, ELLMTracker TrackerToPause, ELLMAllocType InAllocType);
+	CORE_API ~FLLMPauseScope();
 protected:
-	void Init(FName TagName, ELLMTag EnumTag, bool bIsEnumTag, bool bIsStatTag, uint64 Amount,
+	CORE_API void Init(FName TagName, ELLMTag EnumTag, bool bIsEnumTag, bool bIsStatTag, uint64 Amount,
 		ELLMTracker TrackerToPause, ELLMAllocType InAllocType);
 	ELLMTracker PausedTracker;
 	ELLMAllocType AllocType;
@@ -817,11 +852,11 @@ protected:
 };
 
 /** LLM scope for inheriting tag from the given address. */
-class CORE_API FLLMScopeFromPtr
+class FLLMScopeFromPtr
 {
 public:
-	FLLMScopeFromPtr(void* Ptr, ELLMTracker Tracker);
-	~FLLMScopeFromPtr();
+	CORE_API FLLMScopeFromPtr(void* Ptr, ELLMTracker Tracker);
+	CORE_API ~FLLMScopeFromPtr();
 protected:
 	ELLMTracker Tracker;
 	bool bEnabled[static_cast<int32>(ELLMTagSet::Max)];
@@ -834,24 +869,24 @@ private:
 };
 
 /** Global instances to provide information about a tag to LLM. */
-class CORE_API FLLMTagDeclaration
+class FLLMTagDeclaration
 {
 public:
-	FLLMTagDeclaration(const TCHAR* InCPPName, const FName InDisplayName=NAME_None, FName InParentTagName = NAME_None, FName InStatName = NAME_None, FName InSummaryStatName = NAME_None, ELLMTagSet TagSet = ELLMTagSet::None);
+	CORE_API FLLMTagDeclaration(const TCHAR* InCPPName, const FName InDisplayName=NAME_None, FName InParentTagName = NAME_None, FName InStatName = NAME_None, FName InSummaryStatName = NAME_None, ELLMTagSet TagSet = ELLMTagSet::None);
 	FName GetUniqueName() const { return UniqueName; }
 
 	typedef void (*FCreationCallback)(FLLMTagDeclaration&);
 protected:
 
-	static void AddCreationCallback(FCreationCallback InCallback);
-	static void ClearCreationCallbacks();
-	static TArrayView<FCreationCallback> GetCreationCallbacks();
-	static FLLMTagDeclaration* GetList();
+	static CORE_API void AddCreationCallback(FCreationCallback InCallback);
+	static CORE_API void ClearCreationCallbacks();
+	static CORE_API TArrayView<FCreationCallback> GetCreationCallbacks();
+	static CORE_API FLLMTagDeclaration* GetList();
 
-	void Register();
+	CORE_API void Register();
 
 protected:
-	void ConstructUniqueName();
+	CORE_API void ConstructUniqueName();
 
 	const TCHAR* CPPName;
 	FName UniqueName;
@@ -867,7 +902,7 @@ protected:
 };
 
 /** Used to filter Tag allocations specifying a Name that matches in a TagSet, or TagSet alone or just by Name. */
-struct CORE_API FLLMTagSetAllocationFilter
+struct FLLMTagSetAllocationFilter
 {
 	/** Tag name to match */
 	FName Name;

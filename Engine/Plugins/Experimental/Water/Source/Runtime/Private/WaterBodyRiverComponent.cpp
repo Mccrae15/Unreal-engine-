@@ -13,14 +13,13 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "DynamicMesh/DynamicMesh3.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
+#include "WaterBodyActor.h"
 
 // for working around Chaos issue
 #include "Chaos/Convex.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyRiverComponent)
-
-#if WITH_EDITOR
-#endif
 
 // ----------------------------------------------------------------------------------
 
@@ -48,12 +47,11 @@ TArray<UPrimitiveComponent*> UWaterBodyRiverComponent::GetCollisionComponents(bo
 
 TArray<UPrimitiveComponent*> UWaterBodyRiverComponent::GetStandardRenderableComponents() const
 {
-	TArray<UPrimitiveComponent*> Result;
-	Result.Reserve(SplineMeshComponents.Num());
+	TArray<UPrimitiveComponent*> Result = Super::GetStandardRenderableComponents();
+	Result.Reserve(Result.Num() + SplineMeshComponents.Num());
 
-	Algo::TransformIf(SplineMeshComponents, Result, 
-		[](USplineMeshComponent* SplineComp) { return (SplineComp != nullptr); }, 
-		[](USplineMeshComponent* SplineComp) { return SplineComp; });
+	Algo::CopyIf(SplineMeshComponents, Result, 
+		[](USplineMeshComponent* SplineComp) { return (SplineComp != nullptr); });
 
 	return Result;
 }
@@ -137,12 +135,13 @@ static void AddVerticesForRiverSplineStep(
 	FVertexInfo Left(FVector3d(Pos - OutwardDistance));
 	FVertexInfo Right(FVector3d(Pos + OutwardDistance));
 
-	const FVector3f FlowData = FVector3f(Velocity, FlowDirection, 0.f);
+	const FVector4f FlowData = FWaterUtils::PackFlowData(Velocity, FlowDirection);
 	Left.Color = FlowData;
 	Right.Color = FlowData;
-	Left.bHaveC = true;
-	Right.bHaveC = true;
 
+	check(OutMesh.Attributes());
+	FDynamicMeshColorOverlay* Colors = OutMesh.Attributes()->PrimaryColors();
+	FDynamicMeshNormalOverlay* Normals = OutMesh.Attributes()->PrimaryNormals();
 	// Append regular geometry to mesh:
 	{
 		/* Non - dilated river segment geometry:
@@ -153,15 +152,23 @@ static void AddVerticesForRiverSplineStep(
 		const int32 BaseIndex = OutMesh.GetVerticesBuffer().Num();
 
 		OutMesh.AppendVertex(Left);
+		Colors->AppendElement(FlowData);
+		Normals->AppendElement(FVector3f(0., 0., 1.));
+
 		OutMesh.AppendVertex(Right);
+		Colors->AppendElement(FlowData);
+		Normals->AppendElement(FVector3f(0., 0., 1.));
 
 		if (BaseIndex != 0)
 		{
-			OutMesh.AppendTriangle(BaseIndex - 2, BaseIndex + 1, BaseIndex - 1);
-			OutMesh.AppendTriangle(BaseIndex - 2, BaseIndex, BaseIndex + 1);
+			int TriangleID1 = OutMesh.AppendTriangle(BaseIndex - 2, BaseIndex + 1, BaseIndex - 1);
+			int TriangleID2 = OutMesh.AppendTriangle(BaseIndex - 2, BaseIndex, BaseIndex + 1);
+
+			Colors->SetTriangle(TriangleID1, FIndex3i(BaseIndex - 2, BaseIndex + 1, BaseIndex - 1));
+			Colors->SetTriangle(TriangleID2, FIndex3i(BaseIndex - 2, BaseIndex, BaseIndex + 1));
 		}
 	}
-	
+
 	const float DilationAmount = Component->ShapeDilation;
 	// If dilation is required, append dilated geometry:
 	if (DilationAmount > 0.f && OutDilatedMesh)
@@ -284,7 +291,11 @@ bool UWaterBodyRiverComponent::GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3
 	TRACE_CPUPROFILER_EVENT_SCOPE(GenerateRiverMesh);
 
 	const UWaterSplineComponent* SplineComp = GetWaterSpline();
-	if ((SplineComp == nullptr) || (WaterSplineMetadata == nullptr) || (SplineComp->GetNumberOfSplinePoints() < 2))
+
+	check(GetWaterBodyActor());
+
+	const UWaterSplineMetadata* SplineMetadata = GetWaterBodyActor()->GetWaterSplineMetadata();
+	if ((SplineComp == nullptr) || (SplineMetadata == nullptr) || (SplineComp->GetNumberOfSplinePoints() < 2))
 	{
 		return false;
 	}
@@ -299,17 +310,17 @@ bool UWaterBodyRiverComponent::GenerateWaterBodyMesh(UE::Geometry::FDynamicMesh3
 	
 	if (ShapeDilation > 0.f && OutDilatedMesh)
 	{
-		AddTerminalVerticesForRiverSpline(ERiverBoundaryEdge::Start, this, SplineComp, WaterSplineMetadata, *OutDilatedMesh);
+		AddTerminalVerticesForRiverSpline(ERiverBoundaryEdge::Start, this, SplineComp, SplineMetadata, *OutDilatedMesh);
 	}
 
 	for (double DistanceAlongSpline : Distances)
 	{
-		AddVerticesForRiverSplineStep(DistanceAlongSpline, this, SplineComp, WaterSplineMetadata, OutMesh, OutDilatedMesh);
+		AddVerticesForRiverSplineStep(DistanceAlongSpline, this, SplineComp, SplineMetadata, OutMesh, OutDilatedMesh);
 	}
 	
 	if (ShapeDilation > 0.f && OutDilatedMesh)
 	{
-		AddTerminalVerticesForRiverSpline(ERiverBoundaryEdge::End, this, SplineComp, WaterSplineMetadata, *OutDilatedMesh);
+		AddTerminalVerticesForRiverSpline(ERiverBoundaryEdge::End, this, SplineComp, SplineMetadata, *OutDilatedMesh);
 	}
 	return true;
 }

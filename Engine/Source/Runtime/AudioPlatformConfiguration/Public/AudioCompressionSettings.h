@@ -100,52 +100,11 @@ struct FPlatformAudioCookOverrides
 	}
 
 	// This is used to invalidate compressed audio for a specific platform.
-	static void GetHashSuffix(const FPlatformAudioCookOverrides* InOverrides, FString& OutSuffix)
-	{
-		if (InOverrides == nullptr)
-		{
-			return;
-		}
-		OutSuffix.AppendChar('_');
-
-		int32 CompressionQualityHash = FMath::FloorToInt(InOverrides->CompressionQualityModifier * 100.0f);
-		OutSuffix.AppendInt(CompressionQualityHash);
-
-		int32 AutoStreamingThresholdHash = FMath::FloorToInt(InOverrides->AutoStreamingThreshold * 100.0f);
-		OutSuffix.AppendInt(AutoStreamingThresholdHash);
-
-		OutSuffix.Append(TEXT("_StreamCache_Ver"));
-		OutSuffix.AppendInt(GetStreamCachingVersion());
-		OutSuffix.AppendChar('_');
-
-		// cache info:
-		OutSuffix.Append(TEXT("MEM_"));
-		OutSuffix.AppendInt(InOverrides->StreamCachingSettings.CacheSizeKB);
-		OutSuffix.Append(TEXT("MaxChnkSize_"));
-		OutSuffix.AppendInt(InOverrides->StreamCachingSettings.MaxChunkSizeOverrideKB);
-
-		if (InOverrides->StreamCachingSettings.bForceLegacyStreamChunking)
-		{
-			OutSuffix.Append(TEXT("_LegacyChunking_"));
-			OutSuffix.AppendInt(InOverrides->StreamCachingSettings.ZerothChunkSizeForLegacyStreamChunkingKB);
-		}
-		
-
-		int32 ResampleBoolHash = (int32)InOverrides->bResampleForDevice;
-		OutSuffix.AppendInt(ResampleBoolHash);
-
-		TMap<ESoundwaveSampleRateSettings, float> SampleRateMap = InOverrides->PlatformSampleRates;
-
-		for (auto& SampleRateQuality : SampleRateMap)
-		{
-			int32 SampleRateHash = FMath::FloorToInt(SampleRateQuality.Value / 1000.0f);
-			OutSuffix.AppendInt(SampleRateHash);
-		}
-	}
+	static AUDIOPLATFORMCONFIGURATION_API void GetHashSuffix(const FPlatformAudioCookOverrides* InOverrides, FString& OutSuffix);
 };
 
 USTRUCT()
-struct AUDIOPLATFORMCONFIGURATION_API FPlatformRuntimeAudioCompressionOverrides
+struct FPlatformRuntimeAudioCompressionOverrides
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -168,7 +127,7 @@ struct AUDIOPLATFORMCONFIGURATION_API FPlatformRuntimeAudioCompressionOverrides
 	UPROPERTY(EditAnywhere, Category = "SoundCueLoading", meta = (DisplayName = "Quality Index for Sound Cues", ClampMin = "0", ClampMax = "50"))
 	int32 SoundCueQualityIndex = 1;
 
-	FPlatformRuntimeAudioCompressionOverrides();
+	AUDIOPLATFORMCONFIGURATION_API FPlatformRuntimeAudioCompressionOverrides();
 
 	// Get singleton containing default settings for compression.
 	static FPlatformRuntimeAudioCompressionOverrides* GetDefaultCompressionOverrides()
@@ -182,5 +141,5 @@ struct AUDIOPLATFORMCONFIGURATION_API FPlatformRuntimeAudioCompressionOverrides
 	}
 
 private:
-	static FPlatformRuntimeAudioCompressionOverrides* DefaultCompressionOverrides;
+	static AUDIOPLATFORMCONFIGURATION_API FPlatformRuntimeAudioCompressionOverrides* DefaultCompressionOverrides;
 };

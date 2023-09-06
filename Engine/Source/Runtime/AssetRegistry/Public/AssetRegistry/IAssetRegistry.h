@@ -24,6 +24,8 @@
 
 class FArchive;
 class FAssetRegistryState;
+class FCbFieldView;
+class FCbWriter;
 class FDependsNode;
 struct FARFilter;
 struct FARCompiledFilter;
@@ -53,15 +55,25 @@ namespace EAssetAvailabilityProgressReportingType
 	};
 }
 
+namespace UE::AssetRegistry
+{
+
+enum class EScanFlags : uint32
+{
+	None = 0,
+	ForceRescan = 1 << 0,				// the paths will be scanned again, even if they were previously scanned
+	IgnoreDenyListScanFilters = 1 << 1,	// ignore deny list scan filters
+	WaitForInMemoryObjects = 1 << 2,	// update the tags of all assets that have loaded into memory before returning from the scan
+};
+ENUM_CLASS_FLAGS(EScanFlags);
+
+} // namespace UE::AssetRegistry
+
 USTRUCT(BlueprintType)
 struct FAssetRegistryDependencyOptions
 {
 	GENERATED_BODY()
 
-	UE_DEPRECATED(4.26, "Implementation detail that is no longer needed by the AssetRegistry; contact Epic if you need it on your project")
-	void SetFromFlags(const EAssetRegistryDependencyType::Type InFlags);
-	UE_DEPRECATED(4.26, "Implementation detail that is no longer needed by the AssetRegistry; contact Epic if you need it on your project")
-	EAssetRegistryDependencyType::Type GetAsFlags() const;
 	bool GetPackageQuery(UE::AssetRegistry::FDependencyQuery& Flags) const;
 	bool GetSearchableNameQuery(UE::AssetRegistry::FDependencyQuery& Flags) const;
 	bool GetManageQuery(UE::AssetRegistry::FDependencyQuery& Flags) const;
@@ -91,12 +103,42 @@ struct FAssetRegistryDependencyOptions
 struct FAssetDependency
 {
 	FAssetIdentifier AssetId;
-	UE::AssetRegistry::EDependencyCategory Category;
-	UE::AssetRegistry::EDependencyProperty Properties;
+	UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::None;
+	UE::AssetRegistry::EDependencyProperty Properties = UE::AssetRegistry::EDependencyProperty::None;
+
 	bool operator==(const FAssetDependency& Other) const
 	{
 		return AssetId == Other.AssetId && Category == Other.Category && Properties == Other.Properties;
 	}
+	bool LexicalLess(const FAssetDependency& Other) const
+	{
+		if (!(AssetId == Other.AssetId))
+		{
+			return AssetId.LexicalLess(Other.AssetId);
+		}
+		if (Category != Other.Category)
+		{
+			return Category < Other.Category;
+		}
+		return Properties < Other.Properties;
+	}
+
+	static FAssetDependency PackageDependency(FName PackageName, UE::AssetRegistry::EDependencyProperty Properties)
+	{
+		return FAssetDependency{ FAssetIdentifier(PackageName), UE::AssetRegistry::EDependencyCategory::Package,
+			Properties };
+	}
+
+	ASSETREGISTRY_API void WriteCompactBinary(FCbWriter& Writer) const;
+private:
+	friend FCbWriter& operator<<(FCbWriter& Writer, const FAssetDependency& Dependency)
+	{
+		// Hidden friend function needs to be inline, but call a subfunction to hide the implementation
+		Dependency.WriteCompactBinary(Writer);
+		return Writer;
+	}
+	// Load Cannot be inline because we need to hide implementation and copy-by-value is invalid without definition
+	ASSETREGISTRY_API friend bool LoadFromCompactBinary(FCbFieldView Field, FAssetDependency& Dependency);
 };
 
 UINTERFACE(MinimalApi, BlueprintType, meta = (CannotImplementInterfaceInBlueprint))
@@ -230,19 +272,21 @@ public:
 	 *
 	 * @param ObjectPath the path of the object to be looked up
 	 * @param bIncludeOnlyOnDiskAssets if true, in-memory objects will be ignored. The call will be faster.
+	 * @param bSkipARFilteredAssets If true, skips Objects that return true for IsAsset but are not assets in the current platform.
 	 * @return the assets data;Will be invalid if object could not be found
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry", DisplayName="Get Asset By Object Path")
-	ASSETREGISTRY_API virtual FAssetData K2_GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const;
+	ASSETREGISTRY_API virtual FAssetData K2_GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false, bool bSkipARFilteredAssets = true) const;
 
 	/**
 	 * Gets the asset data for the specified object path
 	 *
 	 * @param ObjectPath the path of the object to be looked up
 	 * @param bIncludeOnlyOnDiskAssets if true, in-memory objects will be ignored. The call will be faster.
+	 * @param bSkipARFilteredAssets If true, skips Objects that return true for IsAsset but are not assets in the current platform.
 	 * @return the assets data;Will be invalid if object could not be found
 	 */
-	virtual FAssetData GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false) const = 0;
+	virtual FAssetData GetAssetByObjectPath(const FSoftObjectPath& ObjectPath, bool bIncludeOnlyOnDiskAssets = false, bool bSkipARFilteredAssets = true) const = 0;
 
 	/**
 	 * Tries to get the asset data for the specified object path
@@ -298,8 +342,6 @@ public:
 	 */
 	virtual FName GetFirstPackageByName(FStringView PackageName) const = 0;
 
-	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const = 0;
 	/**
 	 * Gets a list of AssetIdentifiers or FAssetDependencies that are referenced by the supplied AssetIdentifier. (On disk references ONLY)
 	 *
@@ -311,8 +353,6 @@ public:
 	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const = 0;
 	virtual bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetDependency>& OutDependencies, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const = 0;
 
-	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetDependencies(FName PackageName, TArray<FName>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const = 0;
 	/**
 	 * Gets a list of PackageNames that are referenced by the supplied package. (On disk references ONLY)
 	 *
@@ -333,8 +373,6 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure=false, Category = "AssetRegistry", meta=(DisplayName="Get Dependencies", ScriptName="GetDependencies"))
 	virtual bool K2_GetDependencies(FName PackageName, const FAssetRegistryDependencyOptions& DependencyOptions, TArray<FName>& OutDependencies) const;
 
-	UE_DEPRECATED(4.26, "Use GetReferencers that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetReferencers(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutReferencers, EAssetRegistryDependencyType::Type InReferenceType) const = 0;
 	/**
 	 * Gets a list of AssetIdentifiers or FAssetDependencies that reference the supplied AssetIdentifier. (On disk references ONLY)
 	 *
@@ -346,8 +384,6 @@ public:
 	virtual bool GetReferencers(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutReferencers, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const = 0;
 	virtual bool GetReferencers(const FAssetIdentifier& AssetIdentifier, TArray<FAssetDependency>& OutReferencers, UE::AssetRegistry::EDependencyCategory Category = UE::AssetRegistry::EDependencyCategory::All, const UE::AssetRegistry::FDependencyQuery& Flags = UE::AssetRegistry::FDependencyQuery()) const = 0;
 
-	UE_DEPRECATED(4.26, "Use GetReferencers that takes a UE::AssetRegistry::EDependencyCategory instead")
-	virtual bool GetReferencers(FName PackageName, TArray<FName>& OutReferencers, EAssetRegistryDependencyType::Type InReferenceType) const = 0;
 	/**
 	 * Gets a list of PackageNames that reference the supplied package. (On disk references ONLY)
 	 *
@@ -370,8 +406,6 @@ public:
 
 	/** Finds Package data for a package name. This data is only updated on save and can only be accessed for valid packages */
 	virtual TOptional<FAssetPackageData> GetAssetPackageDataCopy(FName PackageName) const = 0;
-	UE_DEPRECATED(5.0, "Receiving a pointer is not threadsafe. Use GetAssetPackageDataCopy instead.")
-	virtual const FAssetPackageData* GetAssetPackageData(FName PackageName) const = 0;
 
 	/**
 	 * Enumerate all PackageDatas in the AssetRegistry. The callback is called from within the AssetRegistry's lock, so it must not call
@@ -386,10 +420,6 @@ public:
 
 	UE_DEPRECATED(5.1, "Asset path FNames have been deprecated, use FSoftObjectPath instead.")
 	virtual FName GetRedirectedObjectPath(const FName ObjectPath) const = 0;
-
-	UE_DEPRECATED(4.27, "Loading then discarding tags is no longer allowed as it can "
-						"increase engine init time and since the new fixed tag store uses less memory. ")
-	virtual void StripAssetRegistryKeyForObject(FName ObjectPath, FName Key) {}
 
 	/** Returns true if the specified ClassName's ancestors could be found. If so, OutAncestorClassNames is a list of all its ancestors. This can be slow if temporary caching mode is not on */
 	UFUNCTION(BlueprintCallable, BlueprintPure = false, Category = "AssetRegistry", meta = (DisplayName = "GetAncestorClassNames", ScriptName = "GetAncestorClassNames"))
@@ -445,10 +475,6 @@ public:
 	/** Tests to see whether the given asset would be excluded (fails) the given filter */
 	virtual bool IsAssetExcludedByFilter(const FAssetData& AssetData, const FARCompiledFilter& Filter) const = 0;
 
-	/** Modifies passed in filter to make it safe for use on FAssetRegistryState. This expands recursive paths and classes */
-	UE_DEPRECATED(4.26, "ExpandRecursiveFilter is deprecated in favor of CompileFilter")
-	virtual void ExpandRecursiveFilter(const FARFilter& InFilter, FARFilter& ExpandedFilter) const = 0;
-
 	/** Modifies passed in filter optimize it for query and expand any recursive paths and classes */
 	virtual void CompileFilter(const FARFilter& InFilter, FARCompiledFilter& OutCompiledFilter) const = 0;
 
@@ -492,11 +518,20 @@ public:
 	virtual void PrioritizeAssetInstall(const FAssetData& AssetData) const = 0;
 
 	/**
-	 * Gets paths for all Verse files in the supplied folder path
+	 * Returns whether the supplied folder contains any verse file
+	 * 
+	 * @param PackagePath the path to query asset data in (e.g. /Game/MyFolder)
+	 * @param bRecursive if true, the supplied path will be searched recursively
+	 * @return True if any verse file is found under the supplied folder
+	 */
+	virtual bool HasVerseFiles(FName PackagePath, bool bRecursive = false) const = 0;
+
+	/**
+	 * Gets paths for all Verse files in the supplied folder
 	 *
 	 * @param PackagePath the path to query asset data in (e.g. /Game/MyFolder)
 	 * @param OutFilePaths the list of Verse files in this path, as pseudo UE LongPackagePaths with extension (e.g. /Game/MyFolder/MyVerseFile.verse)
-	 * @param bRecursive if true, all supplied paths will be searched recursively
+	 * @param bRecursive if true, the supplied path will be searched recursively
 	 */
 	virtual bool GetVerseFilesByPath(FName PackagePath, TArray<FName>& OutFilePaths, bool bRecursive = false) const = 0;
 
@@ -517,6 +552,9 @@ public:
 	/** Scan the specified individual files right now and populate the asset registry. If bForceRescan is true, the paths will be scanned again, even if they were previously scanned */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
 	virtual void ScanFilesSynchronous(const TArray<FString>& InFilePaths, bool bForceRescan = false) = 0;
+
+	/** Scan the supplied paths and files recursively right now and populate the asset registry. */
+	virtual void ScanSynchronous(const TArray<FString>& InPaths, const TArray<FString>& InFilePaths, UE::AssetRegistry::EScanFlags InScanFlags = UE::AssetRegistry::EScanFlags::None) = 0;
 
 	/** Look for all assets on disk (can be async or synchronous) */
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
@@ -558,6 +596,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AssetRegistry")
 	virtual void ScanModifiedAssetFiles(const TArray<FString>& InFilePaths) = 0;
 
+	/** Event for when one or more files have been blocked from the registry */
+	DECLARE_EVENT_OneParam( IAssetRegistry, FFilesBlockedEvent, const TArray<FString>& /*Files*/ );
+	virtual FFilesBlockedEvent& OnFilesBlocked() = 0;
+
 	/** Event for when paths are added to the registry */
 	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FPathAddedEvent, const FString& /*Path*/ );
 	virtual FPathAddedEvent& OnPathAdded() = 0;
@@ -598,13 +640,21 @@ public:
 	/** Informs the asset registry that an Asset has finalized its tags after loading. Ignored if the Asset's package has been modified. */
 	virtual void AssetTagsFinalized(const UObject& FinalizedAsset) = 0;
 
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetsEvent, TConstArrayView<FAssetData> );
+
 	/** Event for when assets are added to the registry */
 	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetAddedEvent, const FAssetData& );
 	virtual FAssetAddedEvent& OnAssetAdded() = 0;
 
+	/** Event for when assets are added to the registry to handle batches more efficiently */
+	virtual FAssetsEvent& OnAssetsAdded() = 0;
+
 	/** Event for when assets are removed from the registry */
 	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetRemovedEvent, const FAssetData& );
 	virtual FAssetRemovedEvent& OnAssetRemoved() = 0;
+
+	/** Event for when assets are removed from the registry */
+	virtual FAssetsEvent& OnAssetsRemoved() = 0;
 
 	/** Event for when assets are renamed in the registry */
 	DECLARE_TS_MULTICAST_DELEGATE_TwoParams( FAssetRenamedEvent, const FAssetData&, const FString& );
@@ -614,8 +664,14 @@ public:
 	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FAssetUpdatedEvent, const FAssetData&);
 	virtual FAssetUpdatedEvent& OnAssetUpdated() = 0;
 
+	/** Event for when assets are updated in the registry */
+	virtual FAssetsEvent& OnAssetsUpdated() = 0;
+
 	/** Event for when assets are updated on disk and have been refreshed in the assetregistry */
 	virtual FAssetUpdatedEvent& OnAssetUpdatedOnDisk() = 0;
+
+	/** Event for when assets are updated on disk and have been refreshed in the assetregistry */
+	virtual FAssetsEvent& OnAssetsUpdatedOnDisk() = 0;
 
 	/** Event for when in-memory assets are created */
 	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FInMemoryAssetCreatedEvent, UObject* );
@@ -624,6 +680,14 @@ public:
 	/** Event for when assets are deleted */
 	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FInMemoryAssetDeletedEvent, UObject* );
 	virtual FInMemoryAssetDeletedEvent& OnInMemoryAssetDeleted() = 0;
+
+	/** Event for when Verse files are added to the registry */
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FVerseAddedEvent, const FName /* VerseFilePath */);
+	virtual FVerseAddedEvent& OnVerseAdded() = 0;
+
+	/** Event for when Verse files are removed from the registry */
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam( FVerseRemovedEvent, const FName /* VerseFilePath */);
+	virtual FVerseRemovedEvent& OnVerseRemoved() = 0;
 
 	/** Event for when the asset registry is done loading files */
 	DECLARE_TS_MULTICAST_DELEGATE( FFilesLoadedEvent );
@@ -673,8 +737,12 @@ public:
 	 * @param OutState			This will be filled in with a copy of the asset data, platform data, and dependency data
 	 * @param Options			Serialization options that will be used to write this later
 	 * @param bRefreshExisting	If true, will not delete or add packages in OutState and will just update things that already exist
+	 * @param RequiredPackages  If non-empty, only packages in this set will be kept.
+	 * @param RemovePackages	If non-empty, packages in this set will not be kept.
 	 */
-	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options, bool bRefreshExisting = false) const = 0;
+	virtual void InitializeTemporaryAssetRegistryState(FAssetRegistryState& OutState, const FAssetRegistrySerializationOptions& Options,
+		bool bRefreshExisting = false, const TSet<FName>& RequiredPackages = TSet<FName>(),
+		const TSet<FName>& RemovePackages = TSet<FName>()) const = 0;
 
 	UE_DEPRECATED(5.0, "Receiving a pointer is not threadsafe. Use other functions on IAssetRegistry to access the same data, or contact Epic Core team to add the threadsafe functions you require..")
 	virtual const FAssetRegistryState* GetAssetRegistryState() const = 0;
@@ -776,29 +844,29 @@ namespace AssetRegistry
 		InvalidTag = 3,
 	};
 
-	struct ASSETREGISTRY_API FDeserializePackageData
+	struct FDeserializePackageData
 	{
 		int64 DependencyDataOffset = INDEX_NONE;
 		int32 ObjectCount = 0;
 
-		bool DoSerialize(FArchive& BinaryArchive, const FPackageFileSummary& PackageFileSummary, EReadPackageDataMainErrorCode& OutError);
+		ASSETREGISTRY_API bool DoSerialize(FArchive& BinaryArchive, const FPackageFileSummary& PackageFileSummary, EReadPackageDataMainErrorCode& OutError);
 	};
 
-	struct ASSETREGISTRY_API FDeserializeObjectPackageData
+	struct FDeserializeObjectPackageData
 	{
 		FString ObjectPath;
 		FString ObjectClassName;
 		int32 TagCount = 0;
 
-		bool DoSerialize(FArchive& BinaryArchive, EReadPackageDataMainErrorCode& OutError);
+		ASSETREGISTRY_API bool DoSerialize(FArchive& BinaryArchive, EReadPackageDataMainErrorCode& OutError);
 	};
 
-	struct ASSETREGISTRY_API FDeserializeTagData
+	struct FDeserializeTagData
 	{
 		FString Key;
 		FString Value;
 
-		bool DoSerialize(FArchive& BinaryArchive, EReadPackageDataMainErrorCode& OutError);
+		ASSETREGISTRY_API bool DoSerialize(FArchive& BinaryArchive, EReadPackageDataMainErrorCode& OutError);
 	};
 
 	// Functions to read and write the data used by the AssetRegistry in each package; the format of this data is separate from the format of the data in the asset registry
@@ -815,6 +883,19 @@ namespace AssetRegistry
 	 */
 	ASSETREGISTRY_API void GetAssetForPackages(TConstArrayView<FName> PackageNames, TMap<FName, FAssetData>& OutPackageToAssetData);
 
+	enum class EGetMostImportantAssetFlags
+	{
+		None = 0,
+		
+		/* Returns nullptr if there are multiple top level assets. */
+		RequireOneTopLevelAsset = 0x1,
+
+		/* Don't skip AR filtered classes (i.e. BP and BPGC). This is cruicial if you are
+		* running in environments where the skip classes can't be initialized (i.e. Programs) as you
+		* could get different results in such cases. */
+		IgnoreSkipClasses = 0x2
+	};
+
 	/**
 	 * Given a list of asset datas for a specific package, find an asset considered "most important" or "representative".
 	 * This is distinct from a Primary asset, and is used for user facing representation of a package or other cases
@@ -824,13 +905,14 @@ namespace AssetRegistry
 	 *	Tries to find the "UAsset" via the FAssetData::IsUAsset() function. (i.e. asset name matches package name)
 	 *	If none exist, tries to find a "Top Level Asset" using FAssetData::IsToplevelAsset(). (i.e. outer == package)
 	 *		If only one exists, use that.
-	 *		Otherwise, if bRequireOneTopLevelAsset is false, gather the set of possibles and return the first sorted on asset class then name.
+	 *		Otherwise, if EGetMostImportantAssetFlags::RequireOneTopLevelAsset isn't set, gather the set of possibles and return the first sorted on asset class then name.
 	 *			If no top level assets, all package assets
 	 *			If multiple top level assets, all top level assets
 	 * 
 	 * A good source for PackageAssetDatas is FAssetRegistryState::GetAssetsByPackageName.
+	 * 
 	 */
-	ASSETREGISTRY_API const FAssetData* GetMostImportantAsset(TConstArrayView<const FAssetData*> PackageAssetDatas, bool bRequireOneTopLevelAsset);
+	ASSETREGISTRY_API const FAssetData* GetMostImportantAsset(TConstArrayView<const FAssetData*> PackageAssetDatas, EGetMostImportantAssetFlags InFlags = EGetMostImportantAssetFlags::None);
 
 	/*
 	* Returns true if the asset registry should start searching all assets on startup

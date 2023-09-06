@@ -21,7 +21,7 @@ enum class EAnimExecutionContextConversionResult : uint8
 
 // Context used to expose anim graph execution to BP function libraries
 USTRUCT(BlueprintType)
-struct ENGINE_API FAnimExecutionContext
+struct FAnimExecutionContext
 {
 	GENERATED_BODY()
 
@@ -30,6 +30,8 @@ public:
 	struct FData
 	{
 	public:
+		FData(const FAnimationBaseContext& InContext);
+		
 		FData(const FAnimationInitializeContext& InContext);
 
 		FData(const FAnimationUpdateContext& InContext);
@@ -48,6 +50,7 @@ public:
 		enum class EContextType
 		{
 			None,
+			Base,
 			Initialize,
 			Update,
 			Pose,
@@ -131,7 +134,7 @@ protected:
 };
 
 USTRUCT()
-struct ENGINE_API FAnimInitializationContext : public FAnimExecutionContext
+struct FAnimInitializationContext : public FAnimExecutionContext
 {
 	GENERATED_BODY()
 
@@ -147,11 +150,11 @@ public:
 		check(InData.Pin()->ContextType == InternalContextTypeId);
 	}
 
-	FAnimationInitializeContext* GetContext() const;
+	ENGINE_API FAnimationInitializeContext* GetContext() const;
 };
 
 USTRUCT()
-struct ENGINE_API FAnimUpdateContext : public FAnimExecutionContext
+struct FAnimUpdateContext : public FAnimExecutionContext
 {
 	GENERATED_BODY()
 
@@ -167,11 +170,11 @@ public:
 		check(InData.Pin()->ContextType == InternalContextTypeId);
 	}
 
-	FAnimationUpdateContext* GetContext() const;
+	ENGINE_API FAnimationUpdateContext* GetContext() const;
 };
 
 USTRUCT()
-struct ENGINE_API FAnimPoseContext : public FAnimExecutionContext
+struct FAnimPoseContext : public FAnimExecutionContext
 {
 	GENERATED_BODY()
 
@@ -187,11 +190,11 @@ public:
 		check(InData.Pin()->ContextType == InternalContextTypeId);
 	}
 
-	FPoseContext* GetContext() const;
+	ENGINE_API FPoseContext* GetContext() const;
 };
 
 USTRUCT()
-struct ENGINE_API FAnimComponentSpacePoseContext : public FAnimExecutionContext
+struct FAnimComponentSpacePoseContext : public FAnimExecutionContext
 {
 	GENERATED_BODY()
 
@@ -207,5 +210,5 @@ public:
 		check(InData.Pin()->ContextType == InternalContextTypeId);
 	}
 
-	FComponentSpacePoseContext* GetContext() const;
+	ENGINE_API FComponentSpacePoseContext* GetContext() const;
 };

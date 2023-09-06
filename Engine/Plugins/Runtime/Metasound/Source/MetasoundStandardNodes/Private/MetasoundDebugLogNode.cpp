@@ -99,7 +99,51 @@ namespace Metasound
 				TDataReadReference<FString> Label = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<FString>(InputInterface, METASOUND_GET_PARAM_NAME(InputLabel), InParams.OperatorSettings);
 				TDataReadReference<PrintLogType> ValueToLog = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<PrintLogType>(InputInterface, METASOUND_GET_PARAM_NAME(InputValueToLog), InParams.OperatorSettings);
 
-				FString GraphName;
+				return MakeUnique<TPrintLogOperator<PrintLogType>>(InParams, Trigger, Label, ValueToLog);
+			}
+
+
+			TPrintLogOperator(const FCreateOperatorParams& InParams, TDataReadReference<FTrigger> InTrigger, TDataReadReference<FString> InLabelPrintLog, TDataReadReference<PrintLogType> InValueToLogPrintLog)
+				: Trigger(InTrigger)
+				, Label(InLabelPrintLog)
+				, ValueToLog(InValueToLogPrintLog)
+			{
+				Reset(InParams);
+			}
+
+			virtual ~TPrintLogOperator() = default;
+
+			virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+			{
+				using namespace PrintLogVertexNames;
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputTrigger), Trigger);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputLabel), Label);
+				InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputValueToLog), ValueToLog);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData&) override
+			{
+			}
+
+			virtual FDataReferenceCollection GetInputs() const override
+			{
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
+			}
+
+			virtual FDataReferenceCollection GetOutputs() const override
+			{
+				// This should never be called. Bind(...) is called instead. This method
+				// exists as a stop-gap until the API can be deprecated and removed.
+				checkNoEntry();
+				return {};
+			}
+
+			void Reset(const IOperator::FResetParams& InParams)
+			{
+				GraphName = TEXT("");
 				if (InParams.Environment.Contains<FString>(Frontend::SourceInterface::Environment::GraphName))
 				{
 					FString GraphNameFull = InParams.Environment.GetValue<FString>(Frontend::SourceInterface::Environment::GraphName);
@@ -110,39 +154,6 @@ namespace Metasound
 						GraphName = ParsedString.Last();
 					}
 				}
-
-				return MakeUnique<TPrintLogOperator<PrintLogType>>(InParams.OperatorSettings, Trigger, Label, ValueToLog, GraphName);
-			}
-
-
-			TPrintLogOperator(const FOperatorSettings& InSettings, TDataReadReference<FTrigger> InTrigger, TDataReadReference<FString> InLabelPrintLog, TDataReadReference<PrintLogType> InValueToLogPrintLog, const FString& InGraphName)
-				: Trigger(InTrigger)
-				, Label(InLabelPrintLog)
-				, ValueToLog(InValueToLogPrintLog)
-				, GraphName(InGraphName)
-			{
-			}
-
-			virtual ~TPrintLogOperator() = default;
-
-
-			virtual FDataReferenceCollection GetInputs() const override
-			{
-				using namespace PrintLogVertexNames;
-				FDataReferenceCollection Inputs;
-
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputTrigger), Trigger);
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLabel), Label);
-				Inputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputValueToLog), ValueToLog);
-
-				return Inputs;
-			}
-
-			virtual FDataReferenceCollection GetOutputs() const override
-			{
-				FDataReferenceCollection Outputs;
-
-				return Outputs;
 			}
 
 			void Execute()

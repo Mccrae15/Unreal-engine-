@@ -15,6 +15,7 @@ import { AutomationView } from './components/AutomationView';
 import { DashboardView } from './components/DashboardView';
 import { DebugView } from './components/DebugView';
 import { DeviceView } from './components/DeviceView';
+import { DocView } from './components/docs/DocView';
 import { ErrorDialog, ErrorHandler } from './components/ErrorHandler';
 import { JobDetailViewV2 } from './components/jobDetailsV2/JobDetailViewV2';
 import { LogView } from './components/LogView';
@@ -25,10 +26,13 @@ import { PreflightRedirector } from './components/Preflight';
 import { ProjectHome } from './components/ProjectHome';
 import { StreamView } from './components/StreamView';
 import { TestReportView } from './components/TestReportView';
+import { ToolView } from './components/ToolView';
 import { UserHomeView } from './components/UserHome';
 import { UtilizationReportView } from './components/UtilizationReportView';
 import hordePlugins from './Plugins';
 import { modeColors, preloadFonts } from './styles/Styles';
+import { StepIssueReportTest } from './components/test/IssueStepReport';
+import { JobRedirector } from './components/JobRedirector';
 
 
 let router: any;
@@ -126,14 +130,15 @@ const Main: React.FC = () => {
       const routes: RouteObject[] = [
          {
             path: "/", element: <Root />, errorElement: <RouteError />, children: [
-               { path: "index", element: <UserHomeView /> },
+               { path: "index", element: (dashboard.user?.dashboardFeatures?.showLandingPage === true) ? <DocView /> : <UserHomeView /> },
                { path: "project/:projectId", element: <ProjectHome /> },
-               { path: "pool/:poolId", element: <PoolView /> },
-               { path: "job/:jobId", element: <JobDetailViewV2 /> },
+               { path: "pools", element: <PoolView /> },
+               { path: "job/:jobId", element: <JobDetailViewV2 /> },               
+               { path: "job", element: <JobRedirector /> },
                { path: "log/:logId", element: <LogView /> },
                { path: "testreport/:testdataId", element: <TestReportView /> },
                { path: "stream/:streamId", element: <StreamView /> },
-               { path: "agents/:agentId?", element: <AgentView /> },
+               { path: "agents", element: <AgentView /> },
                { path: "admin/token", element: <AdminToken /> },
                { path: "reports/utilization", element: <UtilizationReportView /> },
                { path: "preflight", element: <PreflightRedirector /> },
@@ -144,7 +149,11 @@ const Main: React.FC = () => {
                { path: "audit/agent/:agentId", element: <AuditLogView /> },
                { path: "audit/issue/:issueId", element: <AuditLogView /> },
                { path: "automation", element: <AutomationView /> },
-               { path: "debug/lease/:leaseId", element: <DebugView /> }
+               { path: "tools", element: <ToolView /> },
+               { path: "debug/lease/:leaseId", element: <DebugView /> },
+               { path: "docs", element: <DocView /> },
+               { path: "docs/*", element: <DocView /> },
+               { path: "test/stepissuereport", element: <StepIssueReportTest /> }
             ]
          }
       ];
@@ -201,7 +210,7 @@ const HomeRedirect: React.FC = () => {
 const Root: React.FC = () => {
    return <div>
       <Outlet />
-      <HomeRedirect />      
+      <HomeRedirect />
    </div>
 }
 

@@ -2,11 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "IDetailCustomization.h"
 #include "UObject/WeakObjectPtr.h"
-
-class SDMXControlConsoleEditorPortSelector;
 
 class IPropertyUtilities;
 
@@ -27,17 +24,8 @@ public:
 	//~ End of IDetailCustomization interface
 
 private:
-	/** Generates the Port Selector for the DMX Control Console being edited */
-	void GeneratePortSelectorRow(IDetailLayoutBuilder& InDetailLayout);
-
 	/** Forces a refresh on the entire Details View */
 	void ForceRefresh() const;
-
-	/** Called when Port selection changes */
-	void OnSelectedPortsChanged();
-
-	/** Widget to handle Port selection */
-	TSharedPtr<SDMXControlConsoleEditorPortSelector> PortSelector;
 
 	/** Property Utilities for this Details Customization layout */
 	TSharedPtr<IPropertyUtilities> PropertyUtilities;

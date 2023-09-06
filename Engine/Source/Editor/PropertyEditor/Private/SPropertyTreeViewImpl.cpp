@@ -20,6 +20,7 @@
 #include "UserInterface/PropertyTree/SPropertyTreeCategoryRow.h"
 #include "ScopedTransaction.h"
 #include "PropertyEditorHelpers.h"
+#include "PropertyPermissionList.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Input/SSearchBox.h"
@@ -158,6 +159,14 @@ void SPropertyTreeViewImpl::Construct(const FArguments& InArgs)
 	PropertySettings = MakeShareable( new FPropertyUtilitiesTreeView(*this) );
 
 	ConstructPropertyTree();
+	
+	FPropertyEditorPermissionList::Get().PermissionListUpdatedDelegate.AddSP(this, &SPropertyTreeViewImpl::OnPermissionListUpdated);
+	FPropertyEditorPermissionList::Get().PermissionListEnabledDelegate.AddSP(this, &SPropertyTreeViewImpl::RequestRefresh);
+}
+
+void SPropertyTreeViewImpl::OnPermissionListUpdated(TSoftObjectPtr<UStruct>, FName)
+{
+	RequestRefresh();
 }
 
 /** Reconstructs the entire property tree widgets */
@@ -226,6 +235,7 @@ void SPropertyTreeViewImpl::ConstructPropertyTree()
 				[
 					SNew( SImage )
 					.Image( this, &SPropertyTreeViewImpl::OnGetLockButtonImageResource )
+					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
 		]
@@ -652,6 +662,86 @@ void SPropertyTreeViewImpl::MarkFavoritesInternal( TSharedPtr<FPropertyNode> InP
 	}
 }
 
+bool SPropertyTreeViewImpl::IsPropertyNodeVisible(TSharedPtr<FPropertyNode> InPropertyNode)
+{
+	// Object nodes always mark themselves as visible (but are never actually shown)
+	if(InPropertyNode->AsObjectNode())
+	{
+		return true;
+	}
+
+	// The node is marked not visible due to filtering etc
+	if(!InPropertyNode->IsVisible())
+	{
+		return false;
+	}
+	
+	// Category nodes are visible if they have any visible children
+	if(InPropertyNode->AsCategoryNode())
+	{
+		bool bHasVisibleChild = false;
+
+		// If we have a permission list in use, make sure the category has at least one child visible otherwise hide it
+		if(FPropertyEditorPermissionList::Get().IsEnabled())
+		{
+			for( int32 GrandChildIndex = 0; GrandChildIndex < InPropertyNode->GetNumChildNodes(); ++GrandChildIndex )
+			{
+				const TSharedPtr<FPropertyNode> GrandChildNode = InPropertyNode->GetChildNode( GrandChildIndex );
+
+				if(IsPropertyNodeVisible(GrandChildNode) && GrandChildNode->IsVisible())
+				{
+					bHasVisibleChild = true;
+					break;
+				}
+			}
+		}
+		// If we don't have a permission list, we can trivially check the child node count to see if there are any children
+		else
+		{
+			bHasVisibleChild = InPropertyNode->GetNumChildNodes() > 0;
+		}
+
+		return bHasVisibleChild;
+	}
+
+	// Regular property nodes are visible if they pass the IsPropertyVisible delegate and any permission lists if valid
+	bool bPropertyVisible = true;
+	
+	const FProperty* Property = InPropertyNode->GetProperty();
+	if(Property != NULL)
+	{
+		// If we have a permission list in use, make sure this property is in the list for the most common base class and the class of all objects we are viewing
+		if(FPropertyEditorPermissionList::Get().IsEnabled())
+		{
+			bPropertyVisible &= FPropertyEditorPermissionList::Get().DoesPropertyPassFilter(FDetailTreeNode::GetPropertyNodeBaseStructure(InPropertyNode->GetParentNode()), Property->GetFName());
+
+			for (int32 ObjectIndex = 0; ObjectIndex < RootPropertyNode->GetNumObjects(); ++ObjectIndex)
+			{
+				UObject* ObjectToCheck = RootPropertyNode->GetUObject(ObjectIndex);
+
+				const UClass* ObjClass = Cast<UClass>(ObjectToCheck);
+				if (ObjClass == nullptr)
+				{
+					ObjClass = ObjectToCheck->GetClass();
+				}
+
+				if(ObjClass)
+				{
+					bPropertyVisible &= FPropertyEditorPermissionList::Get().DoesPropertyPassFilter(ObjClass, Property->GetFName());
+				}
+			}
+		}
+
+		if(IsPropertyVisible.IsBound())
+		{
+			const FPropertyAndParent PropertyAndParent(InPropertyNode.ToSharedRef());
+			bPropertyVisible &= IsPropertyVisible.Execute(PropertyAndParent);
+		}
+	}
+
+	return bPropertyVisible;
+}
+
 void SPropertyTreeViewImpl::OnGetChildrenForPropertyNode( TSharedPtr<FPropertyNode> InPropertyNode, TArray< TSharedPtr<FPropertyNode> >& OutChildren )
 {
 	if( CurrentFilterText.Len() > 0 ) 
@@ -687,18 +777,13 @@ void SPropertyTreeViewImpl::OnGetChildrenForPropertyNode( TSharedPtr<FPropertyNo
 	for( int32 ChildIndex = 0; ChildIndex < InPropertyNode->GetNumChildNodes(); ++ChildIndex )
 	{
 		TSharedPtr<FPropertyNode> ChildNode = InPropertyNode->GetChildNode( ChildIndex );
-		FObjectPropertyNode* ObjNode = ChildNode->AsObjectNode();
 
-		bool bPropertyVisible = true;
-		FProperty* Property = ChildNode->GetProperty();
-		if(Property != NULL && IsPropertyVisible.IsBound())
-		{
-			FPropertyAndParent PropertyAndParent(ChildNode.ToSharedRef());
-			bPropertyVisible = IsPropertyVisible.Execute(PropertyAndParent);
-		}
-
+		const bool bPropertyVisible = IsPropertyNodeVisible(ChildNode);
+		
 		if(bPropertyVisible)
 		{
+			const FObjectPropertyNode* ObjNode = ChildNode->AsObjectNode();
+
 			if( ObjNode )
 			{
 				// Currently object property nodes do not provide any useful information other than being a container for its children.  We do not draw anything for them.
@@ -707,14 +792,7 @@ void SPropertyTreeViewImpl::OnGetChildrenForPropertyNode( TSharedPtr<FPropertyNo
 			}
 			else
 			{
-				if( ChildNode->IsVisible() )
-				{				
-					// Don't add empty category nodes
-					if( ChildNode->AsCategoryNode() == NULL || ChildNode->GetNumChildNodes() > 0 )
-					{
-						OutChildren.Add( ChildNode );
-					}
-				}
+				OutChildren.Add(ChildNode);
 			}
 		}
 	}

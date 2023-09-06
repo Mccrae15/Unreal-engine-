@@ -6,8 +6,16 @@
 
 #include "UsdWrappers/ForwardDeclarations.h"
 
+#if USE_USD_SDK
+PXR_NAMESPACE_OPEN_SCOPE
+	class UsdPrim;
+	class UsdProperty;
+PXR_NAMESPACE_CLOSE_SCOPE
+#endif // USE_USD_SDK
+
 namespace UE
 {
+	class FUsdPrim;
 	class FUsdAttribute;
 }
 
@@ -30,6 +38,15 @@ namespace UsdUtils
 	 * Use this after setting any attribute: This function does nothing in case the Stage's current edit target has
 	 * the strongest opinion for the attribute already
 	 */
-	USDUTILITIES_API void NotifyIfOverriddenOpinion( const UE::FUsdAttribute& Attribute );
+#if USE_USD_SDK
+	USDUTILITIES_API void NotifyIfOverriddenOpinion( const pxr::UsdProperty& Property );
+
+	/**
+	 * Generally we are not allowed to author opinions inside instanceables. Our actual results when doing that will range from
+	 * USD coding errors to seeming like nothing has happened on the stage.
+	 * This will show a warning and return true if Prim is an instance, letting us avoid those scenarios
+	 */
+	USDUTILITIES_API bool NotifyIfInstanceProxy(const pxr::UsdPrim& Prim);
+#endif // USE_USD_SDK
 }
 

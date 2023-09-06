@@ -16,6 +16,13 @@
 #include "CADKernel/Topo/TopologicalLoop.h"
 #include "CADKernel/Topo/TopologicalShapeEntity.h"
 
+#include "CADKernel/Mesh/Structure/EdgeSegment.h"
+#include "CADKernel/Mesh/Structure/ThinZone2D.h"
+
+#ifdef CADKERNEL_DEV
+#include "CADKernel/UI/DefineForDebug.h"
+#endif
+
 namespace UE::CADKernel
 {
 
@@ -78,6 +85,8 @@ protected:
 	 */
 	FCoordinateGrid CrossingPointDeltaMaxs;
 
+	double EstimatedMinimalElementLength = DOUBLE_BIG_NUMBER;
+
 	/**
 	 * Build a non-trimmed trimmed surface
 	 * This constructor has to be completed with one of the three "AddBoundaries" methods to be finalized.
@@ -113,7 +122,7 @@ public:
 
 	virtual void SpawnIdent(FDatabase& Database) override;
 
-	virtual void ResetMarkersRecursively() override
+	virtual void ResetMarkersRecursively() const override
 	{
 		ResetMarkers();
 		ResetMarkersRecursivelyOnEntities(Loops);
@@ -162,7 +171,12 @@ public:
 		}
 	}
 
-	virtual void SpreadBodyOrientation() override
+	virtual void CompleteMetaData() override
+	{
+		CompleteMetaDataWithHostMetaData();
+	}
+
+	virtual void PropagateBodyOrientation() override
 	{
 	}
 
@@ -289,21 +303,24 @@ public:
 	void Remove(TArray<FTopologicalEdge*>* NewBorderEdges = nullptr)
 	{
 		Disjoin(NewBorderEdges);
-		RemoveOfHost();
 		Delete();
 	}
 
 	virtual void Empty() override
 	{
-#ifndef CADKERNEL_DEV
+#ifndef DONT_DELETE_FACE_FOR_DEBUG
 		CarrierSurface.Reset();
 		for (TSharedPtr<FTopologicalLoop>& Loop : Loops)
 		{
+			for (FOrientedEdge& Edge : Loop->GetEdges())
+			{
+				Edge.Entity->Delete();
+			}
+
 			Loop->Empty();
 		}
 		Loops.Empty();
 #endif
-		RemoveOfHost();
 
 		Mesh.Reset();
 		MeshCuttingCoordinates.Empty();
@@ -341,23 +358,33 @@ public:
 	 */
 	void Disjoin(TArray<FTopologicalEdge*>* NewBorderEdges = nullptr);
 
+	/**
+	 * Delete only nonmanifold edge link
+	 * 
+	 */
+	void DeleteNonmanifoldLink();
+
+
 #ifdef CADKERNEL_DEV
 	virtual void FillTopologyReport(FTopologyReport& Report) const override;
 #endif
 
 	// ======   Meshing Function   ======
 
-	TSharedRef<FFaceMesh> GetOrCreateMesh(FModelMesh& ModelMesh);
+	FFaceMesh& GetOrCreateMesh(FModelMesh& ModelMesh);
 
 	const bool HasTesselation() const
 	{
 		return Mesh.IsValid();
 	}
 
-	const TSharedRef<FFaceMesh> GetMesh() const
+	FFaceMesh* GetMesh() const
 	{
-		ensureCADKernel(Mesh.IsValid());
-		return Mesh.ToSharedRef();
+		if (Mesh.IsValid())
+		{
+			return Mesh.Get();
+		}
+		return nullptr;
 	}
 
 	void InitDeltaUs();
@@ -431,7 +458,7 @@ public:
 		return ((States & EHaveStates::ThinZone) == EHaveStates::ThinZone);
 	}
 
-	void SetHasThinZone()
+	void SetHasThinZoneMarker()
 	{
 		States |= EHaveStates::ThinZone;
 	}
@@ -472,19 +499,27 @@ public:
 	{
 	}
 
-	// =========================================================================================================================================================================================================
-	// =========================================================================================================================================================================================================
-	// =========================================================================================================================================================================================================
-	//
-	//
-	//                                                                            NOT YET REVIEWED
-	//
-	//
-	// =========================================================================================================================================================================================================
-	// =========================================================================================================================================================================================================
-	// =========================================================================================================================================================================================================
+	// ======================================================================================================================================================================================================================
+	// Thin zone properties ===============================================================================================================================================================================
+	// ======================================================================================================================================================================================================================
+private:
+	TArray<FThinZone2D> ThinZones;
 
+public:
+	void MoveThinZones(TArray<FThinZone2D>& InThinZones)
+	{
+		ThinZones = MoveTemp(InThinZones);
+	}
 
+	const TArray<FThinZone2D>& GetThinZones() const
+	{
+		return ThinZones;
+	}
+
+	TArray<FThinZone2D>& GetThinZones()
+	{
+		return ThinZones;
+	}
 
 	// ======================================================================================================================================================================================================================
 	// Quad properties for meshing scheduling ===============================================================================================================================================================================
@@ -499,8 +534,6 @@ private:
 	double QuadCriteria = 0;
 	FSurfaceCurvature Curvatures;
 	EQuadType QuadType = EQuadType::Unset;
-
-	double EstimatedMinimalElementLength = DOUBLE_BIG_NUMBER;
 
 public:
 	void ComputeQuadCriteria();
@@ -609,7 +642,10 @@ public:
 
 	void SetEstimatedMinimalElementLength(double Value)
 	{
-		EstimatedMinimalElementLength = Value;
+		if(Value < EstimatedMinimalElementLength)
+		{
+			EstimatedMinimalElementLength = Value;
+		}
 	}
 
 	/**

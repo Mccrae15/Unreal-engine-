@@ -22,13 +22,6 @@ static FAutoConsoleVariableRef CVarStreamingMaxReferenceChecksBeforeStreamOut(
 	ECVF_Default
 );
 
-int32 GStreamingStaticMeshIOPriority = (int32)AIOP_Low;
-static FAutoConsoleVariableRef CVarStreamingStaticMeshIOPriority(
-	TEXT("r.Streaming.StaticMeshIOPriority"),
-	GStreamingStaticMeshIOPriority,
-	TEXT("Base I/O priority for loading static mesh LODs"),
-	ECVF_Default);
-
 // Instantiate TRenderAssetUpdate for FStaticMeshUpdateContext
 template class TRenderAssetUpdate<FStaticMeshUpdateContext>;
 
@@ -168,6 +161,7 @@ void FStaticMeshStreamIn::CreateBuffers_Internal(const FContext& Context)
 		for (int32 LODIdx = PendingFirstLODIdx; LODIdx < CurrentFirstLODIdx; ++LODIdx)
 		{
 			FStaticMeshLODResources& LODResource = *Context.LODResourcesView[LODIdx];
+
 			if (bRenderThread)
 			{
 				IntermediateBuffersArray[LODIdx].CreateFromCPUData_RenderThread(LODResource);
@@ -490,7 +484,23 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 		TaskSynchronization.Increment();
 
-		const EAsyncIOPriorityAndFlags Priority = (EAsyncIOPriorityAndFlags)FMath::Clamp<int32>(GStreamingStaticMeshIOPriority + (bHighPrioIORequest ? 1 : 0), AIOP_Low, AIOP_High);
+		EAsyncIOPriorityAndFlags Priority = AIOP_Low;
+		if (bHighPrioIORequest)
+		{
+			static IConsoleVariable* CVarAsyncLoadingPrecachePriority = IConsoleManager::Get().FindConsoleVariable(TEXT("s.AsyncLoadingPrecachePriority"));
+			const bool bLoadBeforeAsyncPrecache = CVarStreamingLowResHandlingMode.GetValueOnAnyThread() == (int32)FRenderAssetStreamingSettings::LRHM_LoadBeforeAsyncPrecache;
+
+			if (CVarAsyncLoadingPrecachePriority && bLoadBeforeAsyncPrecache)
+			{
+				const int32 AsyncIOPriority = CVarAsyncLoadingPrecachePriority->GetInt();
+				// Higher priority than regular requests but don't go over max
+				Priority = (EAsyncIOPriorityAndFlags)FMath::Clamp<int32>(AsyncIOPriority + 1, AIOP_BelowNormal, AIOP_MAX);
+			}
+			else
+			{
+				Priority = AIOP_BelowNormal;
+			}
+		}
 
 		Batch.Issue(BulkData, Priority, [this](FBulkDataRequest::EStatus Status)
 		{
@@ -570,7 +580,31 @@ void FStaticMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 			constexpr uint8 DummyStripFlags = 0;
 			typename FStaticMeshLODResources::FStaticMeshBuffersSize DummyBuffersSize;
 			LODResource.SerializeBuffers(Ar, const_cast<UStaticMesh*>(Mesh), DummyStripFlags, DummyBuffersSize);
-			check(DummyBuffersSize.CalcBuffersSize() == LODResource.BuffersSize);
+
+			// Attempt to recover from possibly corrupted data if allowed
+			if (Ar.IsError())
+			{
+				UE_LOG(LogContentStreaming, Error,
+					TEXT("[%s] StaticMesh stream in failed due to possibly corrupted data. LOD %d %d-%d. BulkData %#x offset %lld size %lld flags %#x."),
+					*Mesh->GetPathName(),
+					LODIdx,
+					PendingFirstLODIdx,
+					CurrentFirstLODIdx - 1,
+					LODResource.StreamingBulkData.GetIoFilenameHash(),
+					LODResource.StreamingBulkData.GetBulkDataOffsetInFile(),
+					LODResource.StreamingBulkData.GetBulkDataSize(),
+					LODResource.StreamingBulkData.GetBulkDataFlags());
+
+#if STREAMING_RETRY_ON_DESERIALIZATION_ERROR
+				bFailedOnIOError = true;
+				MarkAsCancelled();
+				break;
+#else
+				GLog->FlushThreadedLogs();
+				GLog->Flush();
+				UE_LOG(LogContentStreaming, Fatal, TEXT("Possibly corrupted static mesh LOD data detected."));
+#endif
+			}
 		}
 
 		BulkData = FIoBuffer();

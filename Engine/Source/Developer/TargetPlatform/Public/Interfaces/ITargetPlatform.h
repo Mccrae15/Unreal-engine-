@@ -109,7 +109,16 @@ enum class ETargetPlatformFeatures
 	CookFileRegionMetadata,
 
 	/** The platform supports communication (reading and writing data) between a target a connected PC. */
-	DirectDataExchange
+	DirectDataExchange,
+
+	/** The platform supports Luminance + Alpha encoding mode for normalmaps */
+	NormalmapLAEncodingMode,
+
+	/** All devices of this platform should be grouped under one platform group */
+	ShowAsPlatformGroup,
+
+	/** Does the platform allow various connection types to be used (ie: wifi and usb) */
+	SupportsMultipleConnectionTypes
 };
 
 enum class EPlatformAuthentication
@@ -640,10 +649,7 @@ public:
 	 */
 	virtual bool AllowAudioVisualData() const = 0;
 
-	/**
-	 * Checks if this Target will want to load this object (generally used to mark an object to not be cooked for this target,
-	 * as called by ConditionallyExcludeObjectForTarget)
-	 */
+	/** Checks if this Target will want to load this object (generally used to mark an object to not be cooked for this target) */
 	virtual bool AllowObject(const class UObject* Object) const = 0;
 
 	/**

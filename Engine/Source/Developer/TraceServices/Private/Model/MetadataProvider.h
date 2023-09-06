@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Common/PagedArray.h"
+#include "Common/ProviderLock.h"
 #include "TraceServices/Model/MetadataProvider.h"
 
 namespace TraceServices
@@ -10,6 +11,8 @@ namespace TraceServices
 
 class IAnalysisSession;
 class ILinearAllocator;
+
+extern thread_local FProviderLock::FThreadLocalState GMetadataProviderLockState;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -31,7 +34,9 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-class FMetadataProvider : public IMetadataProvider
+class FMetadataProvider
+	: public IMetadataProvider
+	, public IEditableMetadataProvider
 {
 public:
 	static constexpr uint32 MaxMetadataSize = 0xFFFF;
@@ -79,10 +84,7 @@ private:
 		uint32 ThreadId;
 		TArray<FMetadataStackEntry> CurrentStack;
 		TPagedArray<FMetadataEntry> Metadata; // a metadata id is an index in this array
-		bool bIsClearStackScope;
-		bool bIsRestoreSavedStackScope;
-		uint32 RestoreSavedStackId;
-		uint32 RestoreSavedStackSize;
+		TArray<uint32> SavedMetadataStack; // stack of MetadataId values for each saved Clear or Restore scope
 	};
 
 	struct FMetadataSavedStackInfo
@@ -95,36 +97,12 @@ public:
 	explicit FMetadataProvider(IAnalysisSession& InSession);
 	virtual ~FMetadataProvider();
 
-	virtual void BeginEdit() const override { Lock.BeginWrite(); }
-	virtual void EndEdit() const override { Lock.EndWrite(); }
-	void EditAccessCheck() const { return Lock.WriteAccessCheck(); }
-
-	virtual void BeginRead() const override { Lock.BeginRead(); }
-	virtual void EndRead() const override { Lock.EndRead(); }
-	void ReadAccessCheck() const { return Lock.ReadAccessCheck(); }
-
-	//////////////////////////////////////////////////
-	// Edit operations
-
-	uint16 RegisterMetadataType(const TCHAR* InName, const FMetadataSchema& InSchema);
-
-	void PushScopedMetadata(uint32 InThreadId, uint16 InType, const void* InData, uint32 InSize);
-	void PopScopedMetadata(uint32 InThreadId, uint16 InType);
-
-	void BeginClearStackScope(uint32 InThreadId);
-	void EndClearStackScope(uint32 InThreadId);
-
-	void SaveStack(uint32 InThreadId, uint32 InSavedStackId);
-	void BeginRestoreSavedStackScope(uint32 InThreadId, uint32 InSavedStackId);
-	void EndRestoreSavedStackScope(uint32 InThreadId);
-
-	// Pins the metadata stack and returns an id for it.
-	uint32 PinAndGetId(uint32 InThreadId);
-
-	void OnAnalysisCompleted();
-
 	//////////////////////////////////////////////////
 	// Read operations
+
+	virtual void BeginRead() const override       { Lock.BeginRead(GMetadataProviderLockState); }
+	virtual void EndRead() const override         { Lock.EndRead(GMetadataProviderLockState); }
+	virtual void ReadAccessCheck() const override { Lock.ReadAccessCheck(GMetadataProviderLockState); }
 
 	virtual uint16 GetRegisteredMetadataType(FName InName) const override;
 	virtual FName GetRegisteredMetadataName(uint16 InType) const override;
@@ -133,6 +111,32 @@ public:
 	virtual uint32 GetMetadataStackSize(uint32 InThreadId, uint32 InMetadataId) const override;
 	virtual bool GetMetadata(uint32 InThreadId, uint32 InMetadataId, uint32 InStackDepth, uint16& OutType, const void*& OutData, uint32& OutSize) const override;
 	virtual void EnumerateMetadata(uint32 InThreadId, uint32 InMetadataId, TFunctionRef<bool(uint32 StackDepth, uint16 Type, const void* Data, uint32 Size)> Callback) const override;
+
+	//////////////////////////////////////////////////
+	// Edit operations
+
+	virtual void BeginEdit() const override       { Lock.BeginWrite(GMetadataProviderLockState); }
+	virtual void EndEdit() const override         { Lock.EndWrite(GMetadataProviderLockState); }
+	virtual void EditAccessCheck() const override { Lock.WriteAccessCheck(GMetadataProviderLockState); }
+
+	virtual uint16 RegisterMetadataType(const TCHAR* InName, const FMetadataSchema& InSchema) override;
+
+	virtual void PushScopedMetadata(uint32 InThreadId, uint16 InType, const void* InData, uint32 InSize) override;
+	virtual void PopScopedMetadata(uint32 InThreadId, uint16 InType) override;
+
+	virtual void BeginClearStackScope(uint32 InThreadId) override;
+	virtual void EndClearStackScope(uint32 InThreadId) override;
+
+	virtual void SaveStack(uint32 InThreadId, uint32 InSavedStackId) override;
+	virtual void BeginRestoreSavedStackScope(uint32 InThreadId, uint32 InSavedStackId) override;
+	virtual void EndRestoreSavedStackScope(uint32 InThreadId) override;
+
+	// Pins the metadata stack and returns an id for it.
+	virtual uint32 PinAndGetId(uint32 InThreadId) override;
+
+	virtual void OnAnalysisCompleted() override;
+
+	//////////////////////////////////////////////////
 
 private:
 	FMetadataThread& GetOrAddThread(uint32 InThreadId);
@@ -143,11 +147,13 @@ private:
 	void InternalPushStackEntry(FMetadataThread& InMetadataThread, uint16 InType, const void* InData, uint32 InSize);
 	void InternalPopStackEntry(FMetadataThread& InMetadataThread);
 	void InternalClearStack(FMetadataThread& InMetadataThread);
+	void InternalPushSavedStack(FMetadataThread& InMetadataThread, FMetadataThread& InSavedMetadataThread, uint32 InSavedMetadataId);
 
 private:
+	mutable FProviderLock Lock;
+
 	IAnalysisSession& Session;
 
-	mutable FMetadataProviderLock Lock;
 	TPagedArray<FMetadataSchema> RegisteredTypes;
 	TMap<FName, uint16> RegisteredTypesMap;
 
@@ -160,6 +166,7 @@ private:
 	uint32 MetaScopeErrors = 0; // debug
 	uint32 ClearScopeErrors = 0; // debug
 	uint32 RestoreScopeErrors = 0; // debug
+	uint32 PushSavedStackErrors = 0; // debug
 
 	uint64 EventCount = 0; // debug
 	uint64 AllocationEventCount = 0; // debug

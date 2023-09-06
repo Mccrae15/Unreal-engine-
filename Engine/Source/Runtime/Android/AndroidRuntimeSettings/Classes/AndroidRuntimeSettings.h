@@ -284,6 +284,14 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Use display cutout region?"))
 	bool bUseDisplayCutout;
 
+	// Allow resizing of the window on Android devices with splitscreen
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Allow splitscreen resizing?"))
+	bool bAllowResizing;
+
+	// Allow support for size change when foldable and flip devices change screen or layout on Android 10+
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Allow fold/flip size changes?"))
+	bool bSupportSizeChanges;
+
 	// Should we restore scheduled local notifications on reboot? This will add a receiver for boot complete and a permission to the manifest.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Restore scheduled notifications on reboot"))
 	bool bRestoreNotificationsOnReboot;
@@ -365,8 +373,12 @@ public:
 	bool bEnableMulticastSupport;
 
 	// Package for an Oculus Mobile device
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Package for Oculus Mobile devices"))
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use the \"Package for Meta Quest devices\" checkbox instead"))
 	TArray<TEnumAsByte<EOculusMobileDevice::Type>> PackageForOculusMobile;
+
+	// Package for Oculus Mobile devices. When enabled, it will enable build support for arm64 and vulkan, and disable build support for x86_64, Vulkan Desktop, and OpenGL.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Package for Meta Quest devices."))
+	bool bPackageForMetaQuest;
 
 	// Removes Oculus Signature Files (osig) from APK if Quest/Go APK signed for distribution and enables entitlement checker
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Remove Oculus Signature Files from Distribution APK"))
@@ -393,11 +405,11 @@ public:
 	bool bBuildForArm64;
 
 	// Enable x86-64 support? [CURRENTLY FOR FULL SOURCE GAMES ONLY]
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support x86_64 [aka x64]"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support x86_64 [aka x64]", EditCondition = "!bPackageForMetaQuest"))
 	bool bBuildForX8664;
 
 	// Include shaders for devices supporting OpenGL ES 3.2 and above (default)
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support OpenGL ES3.2"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support OpenGL ES3.2", EditCondition = "!bPackageForMetaQuest"))
 	bool bBuildForES31;
 
 	// Support the Vulkan RHI and include Vulkan shaders
@@ -405,7 +417,7 @@ public:
 	bool bSupportsVulkan;
 
 	// Enable Vulkan SM5 rendering support
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan Desktop [Experimental]"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan Desktop [Experimental]", EditCondition = "!bPackageForMetaQuest"))
 	bool bSupportsVulkanSM5;
 
 	/** Directory for Debug Vulkan Layers to package */
@@ -671,7 +683,7 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Project SDK Override", Meta = (DisplayName = "Build-Tools Version (specific version or 'latest')"))
 	FString BuildToolsOverride;
 
-	/** Whether to enable LOD streaming for landscape visual meshes. Only supported on feature level ES3.1 or above. */
+	/** Whether to enable LOD streaming for landscape visual meshes. Only supported on feature level Mobile or above. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Misc", Meta = (DisplayName = "Stream landscape visual mesh LODs"))
 	bool bStreamLandscapeMeshLODs;
 
@@ -692,6 +704,8 @@ private:
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostInitProperties() override;
 	void HandlesRGBHWSupport();
+	void HandleMetaQuestSupport();
+	void RemoveExtraApplicationTag(FString TagToRemove);
 	
 	// End of UObject interface
 	void EnsureValidGPUArch();

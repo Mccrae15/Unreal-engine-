@@ -4,15 +4,19 @@
 #include "ProfilingDebugging/StringsTrace.h"
 #include "Trace/Trace.h"
 #include "CoreGlobals.h"
+#include "Misc/ScopeRWLock.h"
 
 #if PLATFORM_WINDOWS
 #	include "Windows/AllowWindowsPlatformTypes.h"
 #	include <Windows.h>
 #	include "Windows/HideWindowsPlatformTypes.h"
 #endif
+#if PLATFORM_LINUX || PLATFORM_MAC
+# 	include <sys/wait.h>
+#endif
 
 #if !defined(WITH_UNREAL_TRACE_LAUNCH)
-#	define WITH_UNREAL_TRACE_LAUNCH (PLATFORM_DESKTOP && !UE_BUILD_SHIPPING && !IS_PROGRAM)
+#	define WITH_UNREAL_TRACE_LAUNCH (PLATFORM_DESKTOP && !UE_BUILD_SHIPPING && !IS_PROGRAM && !PLATFORM_MAC)
 #endif
 
 #if !defined(UE_TRACE_AUTOSTART)
@@ -55,7 +59,7 @@
 #include "Trace/Trace.inl"
 
 ////////////////////////////////////////////////////////////////////////////////
-const TCHAR* GDefaultChannels = TEXT("cpu,gpu,frame,log,bookmark,screenshot");
+const TCHAR* GDefaultChannels = TEXT("cpu,gpu,frame,log,bookmark,screenshot,region");
 const TCHAR* GMemoryChannels = TEXT("memtag,memalloc,callstack,module");
 const TCHAR* GTraceConfigSection = TEXT("Trace.Config");
 
@@ -78,11 +82,19 @@ enum class ETraceConnectType
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+#if NO_LOGGING
+FTraceAuxiliary::FLogCategoryAlias LogTrace;
+#else
+DEFINE_LOG_CATEGORY_STATIC(LogTrace, Log, All);
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
 class FTraceAuxiliaryImpl
 {
 public:
-	const TCHAR* GetDest() const;
+	FString GetDest() const;
 	bool IsConnected() const;
+	bool IsConnected(FGuid& OutSessionGuid, FGuid& OutTraceGuid);
 	FTraceAuxiliary::EConnectionType GetConnectionType() const;
 	void GetActiveChannelsString(FStringBuilderBase& String) const;
 	void AddCommandlineChannels(const TCHAR* ChannelList);
@@ -90,7 +102,7 @@ public:
 	bool HasCommandlineChannels() const { return !CommandlineChannels.IsEmpty(); }
 	void EnableChannels(const TCHAR* ChannelList);
 	void DisableChannels(const TCHAR* ChannelList);
-	bool Connect(ETraceConnectType Type, const TCHAR* Parameter, const FTraceAuxiliary::FLogCategoryAlias& LogCategory, uint16 SendFlags);
+	bool Connect(FTraceAuxiliary::EConnectionType Type, const TCHAR* Parameter, const FTraceAuxiliary::FLogCategoryAlias& LogCategory, uint16 SendFlags);
 	bool Stop();
 	void ResumeChannels();
 	void PauseChannels();
@@ -131,12 +143,16 @@ private:
 
 	typedef TMap<uint32, FChannelEntry, TInlineSetAllocator<128>> ChannelSet;
 	ChannelSet CommandlineChannels;
-	FString TraceDest;
-	std::atomic<FTraceAuxiliary::EConnectionType> TraceType = FTraceAuxiliary::EConnectionType::None;
-	std::atomic<EState> State = EState::Stopped;
-	bool bTruncateFile = false;
 	bool bWorkerThreadStarted = false;
+	bool bTruncateFile = false;
 	FString PausedPreset;
+	
+	struct FCurrentTraceTarget
+	{
+		FString TraceDest;
+		FTraceAuxiliary::EConnectionType TraceType = FTraceAuxiliary::EConnectionType::None;
+	} CurrentTraceTarget;
+	mutable FRWLock CurrentTargetLock;
 };
 
 static FTraceAuxiliaryImpl GTraceAuxiliary;
@@ -251,7 +267,7 @@ void FTraceAuxiliaryImpl::AddChannel(const TCHAR* Name)
 	FChannelEntry& Value = CommandlineChannels.Add(Hash, {});
 	Value.Name = Name;
 
-	if (State.load() >= EState::Tracing && !Value.bActive)
+	if (IsConnected() && !Value.bActive)
 	{
 		Value.bActive = EnableChannel(*Value.Name);
 	}
@@ -268,7 +284,7 @@ void FTraceAuxiliaryImpl::RemoveChannel(const TCHAR* Name)
 		return;
 	}
 
-	if (State.load() >= EState::Tracing && Channel.bActive)
+	if (IsConnected() && Channel.bActive)
 	{
 		DisableChannel(*Channel.Name);
 		Channel.bActive = false;
@@ -276,34 +292,32 @@ void FTraceAuxiliaryImpl::RemoveChannel(const TCHAR* Name)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool FTraceAuxiliaryImpl::Connect(ETraceConnectType Type, const TCHAR* Parameter, const FTraceAuxiliary::FLogCategoryAlias& LogCategory, uint16 SendFlags)
+bool FTraceAuxiliaryImpl::Connect(FTraceAuxiliary::EConnectionType Type, const TCHAR* Parameter, const FTraceAuxiliary::FLogCategoryAlias& LogCategory, uint16 SendFlags)
 {
 	// Connect/write to file, but only if we're not already sending/writing.
 	bool bConnected = UE::Trace::IsTracing();
 	if (!bConnected)
 	{
-		if (Type == ETraceConnectType::Network)
+		if (Type == FTraceAuxiliary::EConnectionType::Network)
 		{
 			bConnected = SendToHost(Parameter, LogCategory, SendFlags);
 			if (bConnected)
 			{
-				UE_LOG_REF(LogCategory, Display, TEXT("Trace started (connected to trace server %s)."), GetDest());
-				TraceType.store(FTraceAuxiliary::EConnectionType::Network);
+				UE_LOG_REF(LogCategory, Display, TEXT("Trace started (connected to trace server %s)."), *GetDest());
 			}
 			else
 			{
-				UE_LOG_REF(LogCategory, Error, TEXT("Trace failed to connect (trace server: %s)!"), Parameter ? Parameter : TEXT(""));
+				UE_LOG_REF(LogCategory, Error, TEXT("Trace failed to connect (trace host: %s)!"), Parameter ? Parameter : TEXT(""));
 			}
 
 		}
 
-		else if (Type == ETraceConnectType::File)
+		else if (Type == FTraceAuxiliary::EConnectionType::File)
 		{
 			bConnected = WriteToFile(Parameter, LogCategory, SendFlags);
 			if (bConnected)
 			{
-				UE_LOG_REF(LogCategory, Display, TEXT("Trace started (writing to file \"%s\")."), GetDest());
-				TraceType.store(FTraceAuxiliary::EConnectionType::File);
+				UE_LOG_REF(LogCategory, Display, TEXT("Trace started (writing to file \"%s\")."), *GetDest());
 			}
 			else
 			{
@@ -314,17 +328,24 @@ bool FTraceAuxiliaryImpl::Connect(ETraceConnectType Type, const TCHAR* Parameter
 
 		if (bConnected)
 		{
-			FTraceAuxiliary::OnTraceStarted.Broadcast(TraceType.load(), TraceDest);
+			FString StartedDest;
+			FTraceAuxiliary::EConnectionType StartedType = FTraceAuxiliary::EConnectionType::None;
+			
+			{
+				FReadScopeLock _(CurrentTargetLock);
+				StartedDest = CurrentTraceTarget.TraceDest;
+				StartedType = CurrentTraceTarget.TraceType;
+			}
+			
+			FTraceAuxiliary::OnTraceStarted.Broadcast(StartedType, StartedDest);
 		}
 	}
-
-	if (!bConnected)
+	else
 	{
-		return false;
+		UE_LOG_REF(LogCategory, Error, TEXT("Already tracing from unknown source."));
 	}
 
-	State.store(EState::Tracing);
-	return true;
+	return bConnected;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -340,11 +361,19 @@ bool FTraceAuxiliaryImpl::Stop()
 		return false;
 	}
 
-	FTraceAuxiliary::OnTraceStopped.Broadcast(TraceType.load(), TraceDest);
+	FString StopedDest;
+	FTraceAuxiliary::EConnectionType StopedType = FTraceAuxiliary::EConnectionType::None;
+	
+	{
+		FWriteScopeLock _(CurrentTargetLock);
+		StopedDest = CurrentTraceTarget.TraceDest;
+		StopedType = CurrentTraceTarget.TraceType;
+		CurrentTraceTarget.TraceType = FTraceAuxiliary::EConnectionType::None;
+		CurrentTraceTarget.TraceDest.Reset();
+	}
 
-	State.store(EState::Stopped);
-	TraceType.store(FTraceAuxiliary::EConnectionType::None);
-	TraceDest.Reset();
+	FTraceAuxiliary::OnTraceStopped.Broadcast(StopedType, StopedDest);
+	
 	return true;
 }
 
@@ -452,7 +481,11 @@ bool FTraceAuxiliaryImpl::SendToHost(const TCHAR* Host, const FTraceAuxiliary::F
 		return false;
 	}
 
-	TraceDest = Host;
+	{
+		FWriteScopeLock _(CurrentTargetLock);
+		CurrentTraceTarget.TraceType = FTraceAuxiliary::EConnectionType::Network;
+		CurrentTraceTarget.TraceDest = MoveTemp(Host);
+	}
 	return true;
 }
 
@@ -547,7 +580,11 @@ bool FTraceAuxiliaryImpl::WriteToFile(const TCHAR* Path, const FTraceAuxiliary::
 		return false;
 	}
 
-	TraceDest = MoveTemp(NativePath);
+	{
+		FWriteScopeLock _(CurrentTargetLock);
+		CurrentTraceTarget.TraceType = FTraceAuxiliary::EConnectionType::File;
+		CurrentTraceTarget.TraceDest = MoveTemp(NativePath);
+	}
 	return true;
 }
 
@@ -608,21 +645,37 @@ bool FTraceAuxiliaryImpl::SendSnapshot(const TCHAR* InHost, uint32 InPort, const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-const TCHAR* FTraceAuxiliaryImpl::GetDest() const
+FString FTraceAuxiliaryImpl::GetDest() const
 {
-	return *TraceDest;
+	FReadScopeLock _(CurrentTargetLock);
+	return CurrentTraceTarget.TraceDest;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 bool FTraceAuxiliaryImpl::IsConnected() const
 {
-	return State.load() == EState::Tracing;
+	return UE::Trace::IsTracing();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FTraceAuxiliaryImpl::IsConnected(FGuid& OutSessionGuid, FGuid& OutTraceGuid)
+{
+	uint32 SessionGuid[4];
+	uint32 TraceGuid[4];
+	if (UE::Trace::IsTracingTo(SessionGuid, TraceGuid))
+	{
+		OutSessionGuid = *(FGuid*)SessionGuid;
+		OutTraceGuid = *(FGuid*)TraceGuid;
+		return true;
+	}
+	return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 FTraceAuxiliary::EConnectionType FTraceAuxiliaryImpl::GetConnectionType() const
 {
-	return TraceType.load();
+	FReadScopeLock _(CurrentTargetLock);
+	return CurrentTraceTarget.TraceType;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -669,6 +722,9 @@ void FTraceAuxiliaryImpl::StartWorkerThread()
 	}
 }
 
+LLM_DEFINE_TAG(Trace_TraceLog);
+LLM_DEFINE_TAG(Trace_TraceLog_Cache);
+
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliaryImpl::StartEndFramePump()
 {
@@ -689,6 +745,12 @@ void FTraceAuxiliaryImpl::StartEndFramePump()
 			SET_MEMORY_STAT(STAT_TraceCacheUsed, Stats.CacheUsed);
 			SET_MEMORY_STAT(STAT_TraceCacheWaste, Stats.CacheWaste);
 			SET_MEMORY_STAT(STAT_TraceSent, Stats.BytesSent);
+
+#if ENABLE_LOW_LEVEL_MEM_TRACKER
+			const int64 NonCacheMemory = Stats.MemoryUsed - Stats.CacheAllocated;
+			FLowLevelMemTracker::Get().SetTagAmountForTracker(ELLMTracker::Default, LLM_TAG_NAME(Trace_TraceLog), ELLMTagSet::None, NonCacheMemory, true);
+			FLowLevelMemTracker::Get().SetTagAmountForTracker(ELLMTracker::Default, LLM_TAG_NAME(Trace_TraceLog_Cache), ELLMTagSet::None, Stats.CacheAllocated, true);
+#endif
 		});
 	}
 }
@@ -697,6 +759,21 @@ void FTraceAuxiliaryImpl::StartEndFramePump()
 void OnConnectionCallback()
 {
 	FTraceAuxiliary::OnConnection.Broadcast();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void OnMessageCallback(const UE::Trace::FMessageEvent& Message)
+{
+	const auto TypeStr = StringCast<TCHAR>(Message.TypeStr);
+	if (Message.Description != nullptr)
+	{
+		const auto Description = StringCast<TCHAR>(Message.Description);
+		UE_LOG(LogTrace, Error, TEXT("%s %s"), TypeStr.Get(), Description.Get());
+	}
+	else
+	{
+		UE_LOG(LogTrace, Error, TEXT("%s"), TypeStr.Get());
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -726,18 +803,6 @@ static void SetupInitFromConfig(UE::Trace::FInitializeDesc& OutDesc)
 ////////////////////////////////////////////////////////////////////////////////
 static void TraceAuxiliaryConnectEpilogue()
 {
-	// It is possible that something outside of TraceAux's world view has called
-	// UE::Trace::SendTo/WriteTo(). A plugin that has created its own store for
-	// example. There's not really much that can be done about that here (tracing
-	// is singular within a process. We can at least detect the obvious case and
-	// inform the user.
-	const TCHAR* TraceDest = GTraceAuxiliary.GetDest();
-	if (TraceDest[0] == '\0')
-	{
-		UE_LOG(LogConsoleResponse, Warning, TEXT("Trace system already in use by a plugin or -trace*=... argument. Use 'Trace.Stop' first."));
-		return;
-	}
-
 	// Give the user some feedback that everything's underway.
 	TStringBuilder<128> Channels;
 	GTraceAuxiliary.GetActiveChannelsString(Channels);
@@ -835,12 +900,14 @@ static void TraceAuxiliaryStatus()
 
 	// Status of data connection
 	TStringBuilder<256> ConnectionStr;
-	if (UE::Trace::IsTracing())
+	FGuid SessionGuid, TraceGuid;
+	if (GTraceAuxiliary.IsConnected(SessionGuid, TraceGuid))
 	{
-		const TCHAR* Dest = GTraceAuxiliary.GetDest();
-		if (Dest && FCString::Strlen(Dest) > 0)
+		const FString Dest = GTraceAuxiliary.GetDest();
+		if (!Dest.IsEmpty())
 		{
-			ConnectionStr.Appendf(TEXT("Tracing to '%s'"), Dest);
+			ConnectionStr.Appendf(TEXT("Tracing to '%s', "), *Dest);
+			ConnectionStr.Appendf(TEXT("session %s trace %s"), *SessionGuid.ToString(), *TraceGuid.ToString());
 		}
 		else
 		{
@@ -972,9 +1039,9 @@ static void TraceAuxiliarySnapshotSend(const TArray<FString>& Args)
 	{
 		LexFromString(Port, *Args[1]);
 	}
-	if (Args.Num() > 2) 
+	if (Args.Num() > 2)
 	{
-		UE_LOG(LogConsoleResponse, Warning, TEXT("Invalid arguments. Usage: Trace.SnapshotFile <Host> <Port>"));
+		UE_LOG(LogConsoleResponse, Warning, TEXT("Invalid arguments. Usage: Trace.SnapshotSend <Host> <Port>"));
 		return;
 	}
 
@@ -1159,9 +1226,8 @@ static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 #if PLATFORM_UNIX || PLATFORM_MAC
 static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 {
-	/* nop */
-
-#if 0
+// TSAN doesn't like fork(), so disable this for now.
+#if !USING_THREAD_SANITISER 
 	if (GUnrealTraceLaunched.load(std::memory_order_relaxed))
 	{
 		UE_LOG(LogCore, Log, TEXT("UnrealTraceServer: Trace store already started"));
@@ -1175,6 +1241,7 @@ static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 #elif PLATFORM_MAC
 	BinPath << "Binaries/Mac/UnrealTraceServer";
 #endif
+	BinPath.ToString(); //Ensure zero termination
 
 	if (access(*BinPath, F_OK) < 0)
 	{
@@ -1184,8 +1251,9 @@ static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 
 	TAnsiStringBuilder<64> ForkArg;
 	ForkArg << "fork";
+	ForkArg.ToString(); //Ensure zero termination
 
-	pid_t UtsPid = vfork();
+	pid_t UtsPid = fork();
 	if (UtsPid < 0)
 	{
 		UE_LOG(LogCore, Display, TEXT("UnrealTraceServer: Unable to fork (errno: %d)"), errno);
@@ -1221,7 +1289,7 @@ static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 		UE_LOG(LogCore, Log, TEXT("UnrealTraceServer: Trace store launch successful"));
 		GUnrealTraceLaunched.fetch_add(1, std::memory_order_relaxed);
 	}
-#endif // 0
+#endif // #if !USING_THREAD_SANITISER
 }
 #endif // PLATFORM_UNIX/MAC
 #endif // WITH_UNREAL_TRACE_LAUNCH
@@ -1232,6 +1300,7 @@ static void LaunchUnrealTraceInternal(const TCHAR* CommandLine)
 UE_TRACE_EVENT_BEGIN(Diagnostics, Session2, NoSync|Important)
 	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Platform)
 	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, AppName)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, ProjectName)
 	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, CommandLine)
 	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Branch)
 	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, BuildVersion)
@@ -1288,7 +1357,7 @@ static bool StartFromCommandlineArguments(const TCHAR* CommandLine, bool& bOutSt
 		Type = FTraceAuxiliary::EConnectionType::File;
 		if (Parameter.IsEmpty())
 		{
-			UE_LOG(LogCore, Warning, TEXT("Empty parameter to 'tracefile' argument. Using default filename."));
+			UE_LOG(LogTrace, Warning, TEXT("Empty parameter to 'tracefile' argument. Using default filename."));
 			Target = nullptr;
 		}
 		else
@@ -1348,7 +1417,7 @@ bool FTraceAuxiliary::Start(EConnectionType Type, const TCHAR* Target, const TCH
 
 	if (GTraceAuxiliary.IsConnected())
 	{
-		UE_LOG_REF(LogCategory, Error, TEXT("Unable to start trace, already tracing to %s"), GTraceAuxiliary.GetDest());
+		UE_LOG_REF(LogCategory, Error, TEXT("Unable to start trace, already tracing to %s"), *GTraceAuxiliary.GetDest());
 		return false;
 	}
 
@@ -1379,15 +1448,8 @@ bool FTraceAuxiliary::Start(EConnectionType Type, const TCHAR* Target, const TCH
 	}
 
 	uint16 SendFlags = (Options && Options->bExcludeTail) ? UE::Trace::FSendFlags::ExcludeTail : 0;
-	
-	if (Type == EConnectionType::File)
-	{
-		return GTraceAuxiliary.Connect(ETraceConnectType::File, Target, LogCategory, SendFlags);
-	}
-	else if(Type == EConnectionType::Network)
-	{
-		return GTraceAuxiliary.Connect(ETraceConnectType::Network, Target, LogCategory, SendFlags);
-	}
+
+	return GTraceAuxiliary.Connect(Type, Target, LogCategory, SendFlags);
 #endif
 	return false;
 }
@@ -1424,7 +1486,7 @@ bool FTraceAuxiliary::Resume()
 bool FTraceAuxiliary::WriteSnapshot(const TCHAR* InFilePath)
 {
 #if UE_TRACE_ENABLED
-	return GTraceAuxiliary.WriteSnapshot(InFilePath, LogCore);
+	return GTraceAuxiliary.WriteSnapshot(InFilePath, LogTrace);
 #else
 	return true;
 #endif
@@ -1434,7 +1496,7 @@ bool FTraceAuxiliary::WriteSnapshot(const TCHAR* InFilePath)
 bool FTraceAuxiliary::SendSnapshot(const TCHAR* Host, uint32 Port)
 {
 #if UE_TRACE_ENABLED
-	return GTraceAuxiliary.SendSnapshot(Host, Port, LogCore);
+	return GTraceAuxiliary.SendSnapshot(Host, Port, LogTrace);
 #else
 	return true;
 #endif
@@ -1446,7 +1508,7 @@ static void TraceAuxiliaryAddPostForkCallback(const TCHAR* CommandLine)
 {
 	if (GTraceAutoStart)
 	{
-		UE_LOG(LogCore, Display, TEXT("Trace not started in parent because forking is expected. Use -NoFakeForking to trace parent."));
+		UE_LOG(LogTrace, Display, TEXT("Trace not started in parent because forking is expected. Use -NoFakeForking to trace parent."));
 	}
 
 	checkf(!GOnPostForkHandle.IsValid(), TEXT("TraceAuxiliaryAddPostForkCallback should only be called once."));
@@ -1483,14 +1545,17 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 #endif
 
 #if UE_TRACE_ENABLED
-	UE_LOG(LogCore, Log, TEXT("Initializing trace..."));
+	UE_LOG(LogTrace, Log, TEXT("Initializing trace..."));
+
+	// Setup message callback so we get feedback from TraceLog
+	UE::Trace::SetMessageCallback(&OnMessageCallback);
 
 	FParse::Bool(CommandLine, TEXT("-traceautostart="), GTraceAutoStart);
-	UE_LOG(LogCore, Verbose, TEXT("Trace auto start = %d."), GTraceAutoStart);
+	UE_LOG(LogTrace, Verbose, TEXT("Trace auto start = %d."), GTraceAutoStart);
 
 	if (GTraceAuxiliary.IsParentProcessAndPreFork())
 	{
-		UE_LOG(LogCore, Log, TEXT("Trace initialization skipped for parent process (pre fork)."));
+		UE_LOG(LogTrace, Log, TEXT("Trace initialization skipped for parent process (pre fork)."));
 
 		GTraceAuxiliary.DisableChannels(nullptr);
 
@@ -1500,11 +1565,11 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 	}
 
 	const TCHAR* AppName = TEXT(UE_APP_NAME);
+	const TCHAR* ProjectName = TEXT("");
 #if IS_MONOLITHIC && !IS_PROGRAM
-	extern TCHAR GInternalProjectName[];
-	if (GInternalProjectName[0] != '\0')
+	if (FApp::HasProjectName())
 	{
-		AppName = GInternalProjectName;
+		ProjectName = FApp::GetProjectName();
 	}
 #endif
 
@@ -1514,18 +1579,21 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 	const TCHAR* BuildVersion = BuildSettings::GetBuildVersion();
 	constexpr uint32 PlatformLen = UE_ARRAY_COUNT(PREPROCESSOR_TO_STRING(UBT_COMPILED_PLATFORM)) - 1;
 	const uint32 AppNameLen = FCString::Strlen(AppName);
+	const uint32 ProjectNameLen = FCString::Strlen(ProjectName);
 	const uint32 CommandLineLen = FCString::Strlen(CommandLine);
 	const uint32 BranchNameLen = FCString::Strlen(BranchName);
 	const uint32 BuildVersionLen = FCString::Strlen(BuildVersion);
-	uint32 DataSize =
+	const uint32 DataSize =
 		(PlatformLen * sizeof(ANSICHAR)) +
 		(AppNameLen * sizeof(ANSICHAR)) +
+		(ProjectNameLen * sizeof(TCHAR)) +
 		(CommandLineLen * sizeof(TCHAR)) +
 		(BranchNameLen * sizeof(TCHAR)) +
 		(BuildVersionLen * sizeof(TCHAR));
 	UE_TRACE_LOG(Diagnostics, Session2, UE::Trace::TraceLogChannel, DataSize)
 		<< Session2.Platform(PREPROCESSOR_TO_STRING(UBT_COMPILED_PLATFORM), PlatformLen)
 		<< Session2.AppName(AppName, AppNameLen)
+		<< Session2.ProjectName(ProjectName, ProjectNameLen)
 		<< Session2.CommandLine(CommandLine, CommandLineLen)
 		<< Session2.Branch(BranchName, BranchNameLen)
 		<< Session2.BuildVersion(BuildVersion, BuildVersionLen)
@@ -1545,10 +1613,18 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 	Desc.TailSizeBytes = 32 << 20;
 #endif
 	SetupInitFromConfig(Desc);
-	
+
 	Desc.bUseWorkerThread = bShouldStartWorkerThread;
 	Desc.bUseImportantCache = (FParse::Param(CommandLine, TEXT("tracenocache")) == false);
 	Desc.OnConnectionFunc = &OnConnectionCallback;
+
+	FGuid SessionGuid;
+	if (!FParse::Value(CommandLine, TEXT("-tracesessionguid="), SessionGuid))
+	{
+		SessionGuid = FApp::GetInstanceId();
+	}
+	FMemory::Memcpy((FGuid&)Desc.SessionGuid, SessionGuid);
+	
 	if (FParse::Value(CommandLine, TEXT("-tracetailmb="), Desc.TailSizeBytes))
 	{
 		Desc.TailSizeBytes <<= 20;
@@ -1612,7 +1688,7 @@ void FTraceAuxiliary::Initialize(const TCHAR* CommandLine)
 
 	UE::Trace::ThreadRegister(TEXT("GameThread"), FPlatformTLS::GetCurrentThreadId(), -1);
 
-	UE_LOG(LogCore, Log, TEXT("Finished trace initialization."));
+	UE_LOG(LogTrace, Log, TEXT("Finished trace initialization."));
 #endif //UE_TRACE_ENABLED
 }
 
@@ -1669,9 +1745,18 @@ void FTraceAuxiliary::DisableChannels(const TCHAR* Channels)
 const TCHAR* FTraceAuxiliary::GetTraceDestination()
 {
 #if UE_TRACE_ENABLED
-	return GTraceAuxiliary.GetDest();
+	static FString TempUnsafe = GTraceAuxiliary.GetDest();
+	return *TempUnsafe;
 #endif
 	return nullptr;
+}
+
+FString FTraceAuxiliary::GetTraceDestinationString()
+{
+#if UE_TRACE_ENABLED
+	return GTraceAuxiliary.GetDest();
+#endif
+	return FString();
 }
 
 bool FTraceAuxiliary::IsConnected()
@@ -1680,6 +1765,15 @@ bool FTraceAuxiliary::IsConnected()
 	return GTraceAuxiliary.IsConnected();
 #endif
 	return false;
+}
+
+bool FTraceAuxiliary::IsConnected(FGuid& OutSessionGuid, FGuid& OutTraceGuid)
+{
+#if UE_TRACE_ENABLED
+	return GTraceAuxiliary.IsConnected(OutSessionGuid, OutTraceGuid);
+#else
+	return false;
+#endif
 }
 
 FTraceAuxiliary::EConnectionType FTraceAuxiliary::GetConnectionType()
@@ -1697,6 +1791,11 @@ void FTraceAuxiliary::GetActiveChannelsString(FStringBuilderBase& String)
 #endif
 }
 
+void FTraceAuxiliary::Panic()
+{
+	UE::Trace::Panic();
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliary::TryAutoConnect()
 {
@@ -1709,7 +1808,7 @@ void FTraceAuxiliary::TryAutoConnect()
 		HANDLE KnownEvent = ::OpenEvent(EVENT_ALL_ACCESS, false, TEXT("Local\\UnrealInsightsBrowser"));
 		if (KnownEvent != nullptr)
 		{
-			UE_LOG(LogCore, Display, TEXT("Unreal Insights instance detected, auto-connecting to local trace server..."));
+			UE_LOG(LogTrace, Display, TEXT("Unreal Insights instance detected, auto-connecting to local trace server..."));
 			Start(EConnectionType::Network, TEXT("127.0.0.1"), GTraceAuxiliary.HasCommandlineChannels() ? nullptr : TEXT("default"), nullptr);
 			::CloseHandle(KnownEvent);
 		}

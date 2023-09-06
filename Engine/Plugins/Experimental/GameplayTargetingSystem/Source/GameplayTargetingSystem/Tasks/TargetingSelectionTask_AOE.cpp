@@ -2,18 +2,19 @@
 #include "TargetingSelectionTask_AOE.h"
 
 #include "CollisionQueryParams.h"
+#include "CollisionQueryTaskData.h"
 #include "Components/PrimitiveComponent.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
-#include "GameplayTargetingSystem/TargetingSystem/TargetingSubsystem.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemLogs.h"
+#include "TargetingSystem/TargetingSubsystem.h"
+#include "Types/TargetingSystemDataStores.h"
+#include "Types/TargetingSystemLogs.h"
 
 #if ENABLE_DRAW_DEBUG
 #include "Engine/Canvas.h"
 #endif // ENABLE_DRAW_DEBUG
-
 
 UTargetingSelectionTask_AOE::UTargetingSelectionTask_AOE(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -21,6 +22,7 @@ UTargetingSelectionTask_AOE::UTargetingSelectionTask_AOE(const FObjectInitialize
 	CollisionChannel = ECC_PhysicsBody;
 	bIgnoreSourceActor = false;
 	bIgnoreInstigatorActor = false;
+	bUseRelativeOffset = false;
 }
 
 void UTargetingSelectionTask_AOE::Execute(const FTargetingRequestHandle& TargetingHandle) const
@@ -47,10 +49,11 @@ void UTargetingSelectionTask_AOE::ExecuteImmediateTrace(const FTargetingRequestH
 	ResetDebugString(TargetingHandle);
 #endif // ENABLE_DRAW_DEBUG
 
-	UWorld* World = GetSourceContextWorld(TargetingHandle);
+	const UWorld* World = GetSourceContextWorld(TargetingHandle);
 	if (World && TargetingHandle.IsValid())
 	{
 		const FVector SourceLocation = GetSourceLocation(TargetingHandle) + GetSourceOffset(TargetingHandle);
+		const FQuat SourceRotation = GetSourceRotation(TargetingHandle);
 
 		TArray<FOverlapResult> OverlapResults;
 		if (ShapeType == ETargetingAOEShape::SourceComponent)
@@ -68,7 +71,7 @@ void UTargetingSelectionTask_AOE::ExecuteImmediateTrace(const FTargetingRequestH
 		}
 		else
 		{
-			FCollisionShape CollisionShape = GetCollisionShape();
+			const FCollisionShape CollisionShape = GetCollisionShape();
 			FCollisionQueryParams OverlapParams(TEXT("UTargetingSelectionTask_AOE"), SCENE_QUERY_STAT_ONLY(UTargetingSelectionTask_AOE_Shape), false);
 			InitCollisionParams(TargetingHandle, OverlapParams);
 
@@ -81,36 +84,21 @@ void UTargetingSelectionTask_AOE::ExecuteImmediateTrace(const FTargetingRequestH
 					ObjectParams.AddObjectTypesToQuery(Channel);
 				}
 
-				World->OverlapMultiByObjectType(OverlapResults, SourceLocation, FQuat::Identity, ObjectParams, CollisionShape, OverlapParams);
+				World->OverlapMultiByObjectType(OverlapResults, SourceLocation, SourceRotation, ObjectParams, CollisionShape, OverlapParams);
 			}
 			else if (CollisionProfileName.Name != TEXT("NoCollision"))
 			{
-				World->OverlapMultiByProfile(OverlapResults, SourceLocation, FQuat::Identity, CollisionProfileName.Name, CollisionShape, OverlapParams);
+				World->OverlapMultiByProfile(OverlapResults, SourceLocation, SourceRotation, CollisionProfileName.Name, CollisionShape, OverlapParams);
 			}
 			else
 			{
-				World->OverlapMultiByChannel(OverlapResults, SourceLocation, FQuat::Identity, CollisionChannel, CollisionShape, OverlapParams);
+				World->OverlapMultiByChannel(OverlapResults, SourceLocation, SourceRotation, CollisionChannel, CollisionShape, OverlapParams);
 			}
 
 #if ENABLE_DRAW_DEBUG
 			if (UTargetingSubsystem::IsTargetingDebugEnabled())
 			{
-				switch (ShapeType)
-				{
-				case ETargetingAOEShape::Box:
-					DrawDebugBox(World, SourceLocation, CollisionShape.GetExtent(), FQuat::Identity, FColor::Red, false, 30.0f, 0, 2.0f);
-					break;
-				case ETargetingAOEShape::Sphere:
-					DrawDebugSphere(World, SourceLocation, CollisionShape.GetSphereRadius(), 32, FColor::Red, false, 30.0f, 0, 2.0f);
-					break;
-				case ETargetingAOEShape::Capsule:
-					DrawDebugCapsule(World, SourceLocation, CollisionShape.GetCapsuleHalfHeight(), CollisionShape.GetCapsuleRadius(), FQuat::Identity, FColor::Red, false, 30.0f, 0, 2.0f);
-					break;
-				case ETargetingAOEShape::Cylinder:
-					DrawDebugBox(World, SourceLocation, CollisionShape.GetExtent(), FQuat::Identity, FColor::Red, false, 30.0f, 0, 1.0f);
-					DrawDebugCylinder(World, -1.0f * CollisionShape.GetExtent(), CollisionShape.GetExtent(), CollisionShape.GetExtent().X, 32, FColor::Yellow, false, 30.0f, 0, 2.0f);
-					break;
-				}
+				DebugDrawBoundingVolume(TargetingHandle, FColor::Red);
 			}
 #endif // ENABLE_DRAW_DEBUG
 		}
@@ -121,12 +109,71 @@ void UTargetingSelectionTask_AOE::ExecuteImmediateTrace(const FTargetingRequestH
 	SetTaskAsyncState(TargetingHandle, ETargetingTaskAsyncState::Completed);
 }
 
+void UTargetingSelectionTask_AOE::DebugDrawBoundingVolume(const FTargetingRequestHandle& TargetingHandle, const FColor& Color, const FOverlapDatum* OverlapDatum) const
+{
+#if ENABLE_DRAW_DEBUG
+	const UWorld* World = GetSourceContextWorld(TargetingHandle);
+	const FVector SourceLocation = OverlapDatum ? OverlapDatum->Pos : GetSourceLocation(TargetingHandle) + GetSourceOffset(TargetingHandle);
+	const FQuat SourceRotation = OverlapDatum ? OverlapDatum->Rot : GetSourceRotation(TargetingHandle);
+	const FCollisionShape CollisionShape = GetCollisionShape();
+
+	const bool bPersistentLines = false;
+	const float LifeTime = 0.0f;
+	const uint8 DepthPriority = 0;
+	const float Thickness = 2.0f;
+
+	switch (ShapeType)
+	{
+	case ETargetingAOEShape::Box:
+		DrawDebugBox(World, SourceLocation, CollisionShape.GetExtent(), SourceRotation,
+			Color, bPersistentLines, LifeTime, DepthPriority, Thickness);
+		break;
+	case ETargetingAOEShape::Sphere:
+		DrawDebugCapsule(World, SourceLocation, CollisionShape.GetSphereRadius(), CollisionShape.GetSphereRadius(), SourceRotation,
+			Color, bPersistentLines, LifeTime, DepthPriority, Thickness);
+		break;
+	case ETargetingAOEShape::Capsule:
+		DrawDebugCapsule(World, SourceLocation, CollisionShape.GetCapsuleHalfHeight(), CollisionShape.GetCapsuleRadius(), SourceRotation,
+			Color, bPersistentLines, LifeTime, DepthPriority, Thickness);
+		break;
+	case ETargetingAOEShape::Cylinder:
+		{
+			const FVector RotatedExtent = SourceRotation * CollisionShape.GetExtent();
+			DrawDebugCylinder(World, SourceLocation - RotatedExtent, SourceLocation + RotatedExtent, CollisionShape.GetExtent().X, 32,
+				Color, bPersistentLines, LifeTime, DepthPriority, Thickness);
+			break;
+		}
+	}
+#endif // ENABLE_DRAW_DEBUG
+}
+
+void UTargetingSelectionTask_AOE::SetShapeType(ETargetingAOEShape InShapeType)
+{
+	ShapeType = InShapeType;
+}
+
+void UTargetingSelectionTask_AOE::SetHalfExtent(FVector InHalfExtent)
+{
+	HalfExtent = InHalfExtent;
+}
+
+void UTargetingSelectionTask_AOE::SetRadius(FScalableFloat InRadius)
+{
+	Radius = InRadius;
+}
+
+void UTargetingSelectionTask_AOE::SetHalfHeight(FScalableFloat InHalfHeight)
+{
+	HalfHeight = InHalfHeight;
+}
+
 void UTargetingSelectionTask_AOE::ExecuteAsyncTrace(const FTargetingRequestHandle& TargetingHandle) const
 {
 	UWorld* World = GetSourceContextWorld(TargetingHandle);
 	if (World && TargetingHandle.IsValid())
 	{
 		const FVector SourceLocation = GetSourceLocation(TargetingHandle) + GetSourceOffset(TargetingHandle);
+		const FQuat SourceRotation = GetSourceRotation(TargetingHandle);
 
 		FCollisionShape CollisionShape = GetCollisionShape();
 		FCollisionQueryParams OverlapParams(TEXT("UTargetingSelectionTask_AOE"), SCENE_QUERY_STAT_ONLY(UTargetingSelectionTask_AOE_Shape), false);
@@ -142,15 +189,15 @@ void UTargetingSelectionTask_AOE::ExecuteAsyncTrace(const FTargetingRequestHandl
 				ObjectParams.AddObjectTypesToQuery(Channel);
 			}
 
-			World->AsyncOverlapByObjectType(SourceLocation, FQuat::Identity, ObjectParams, CollisionShape, OverlapParams, &Delegate);
+			World->AsyncOverlapByObjectType(SourceLocation, SourceRotation, ObjectParams, CollisionShape, OverlapParams, &Delegate);
 		}
 		else if (CollisionProfileName.Name != TEXT("NoCollision"))
 		{
-			World->AsyncOverlapByProfile(SourceLocation, FQuat::Identity, CollisionProfileName.Name, CollisionShape, OverlapParams, &Delegate);
+			World->AsyncOverlapByProfile(SourceLocation, SourceRotation, CollisionProfileName.Name, CollisionShape, OverlapParams, &Delegate);
 		}
 		else
 		{
-			World->AsyncOverlapByChannel(SourceLocation, FQuat::Identity, CollisionChannel, CollisionShape, OverlapParams, FCollisionResponseParams::DefaultResponseParam, &Delegate);
+			World->AsyncOverlapByChannel(SourceLocation, SourceRotation, CollisionChannel, CollisionShape, OverlapParams, FCollisionResponseParams::DefaultResponseParam, &Delegate);
 		}
 	}
 	else
@@ -168,27 +215,7 @@ void UTargetingSelectionTask_AOE::HandleAsyncOverlapComplete(const FTraceHandle&
 
 		if (UTargetingSubsystem::IsTargetingDebugEnabled())
 		{
-			if (UWorld* World = GetSourceContextWorld(TargetingHandle))
-			{
-				const FVector& SourceLocation = InOverlapDatum.Pos;
-				const FCollisionShape& CollisionShape = InOverlapDatum.CollisionParams.CollisionShape;
-				switch (ShapeType)
-				{
-				case ETargetingAOEShape::Box:
-					DrawDebugBox(World, SourceLocation, CollisionShape.GetExtent(), FQuat::Identity, FColor::Red, false, 30.0f, 0, 2.0f);
-					break;
-				case ETargetingAOEShape::Sphere:
-					DrawDebugSphere(World, SourceLocation, CollisionShape.GetSphereRadius(), 32, FColor::Red, false, 30.0f, 0, 2.0f);
-					break;
-				case ETargetingAOEShape::Capsule:
-					DrawDebugCapsule(World, SourceLocation, CollisionShape.GetCapsuleHalfHeight(), CollisionShape.GetCapsuleRadius(), FQuat::Identity, FColor::Red, false, 30.0f, 0, 2.0f);
-					break;
-				case ETargetingAOEShape::Cylinder:
-					DrawDebugBox(World, SourceLocation, CollisionShape.GetExtent(), FQuat::Identity, FColor::Red, false, 30.0f, 0, 1.0f);
-					DrawDebugCylinder(World, -1.0f * CollisionShape.GetExtent(), CollisionShape.GetExtent(), CollisionShape.GetExtent().X, 32, FColor::Yellow, false, 30.0f, 0, 2.0f);
-					break;
-				}
-			}
+			DebugDrawBoundingVolume(TargetingHandle, FColor::Red, &InOverlapDatum);
 		}
 #endif // ENABLE_DRAW_DEBUG
 
@@ -204,8 +231,10 @@ void UTargetingSelectionTask_AOE::ProcessOverlapResults(const FTargetingRequestH
 	if (Overlaps.Num() > 0)
 	{
 		FTargetingDefaultResultsSet& TargetingResults = FTargetingDefaultResultsSet::FindOrAdd(TargetingHandle);
+		const FVector SourceLocation = GetSourceLocation(TargetingHandle) + GetSourceOffset(TargetingHandle);
 		for (const FOverlapResult& OverlapResult : Overlaps)
 		{
+
 			if (!OverlapResult.GetActor())
 			{
 				continue;
@@ -215,7 +244,6 @@ void UTargetingSelectionTask_AOE::ProcessOverlapResults(const FTargetingRequestH
 			if (ShapeType == ETargetingAOEShape::Cylinder)
 			{
 				const float RadiusSquared = (HalfExtent.X * HalfExtent.X);
-				const FVector SourceLocation = GetSourceLocation(TargetingHandle) + GetSourceOffset(TargetingHandle);
 				const float DistanceSquared = FVector::DistSquared2D(OverlapResult.GetActor()->GetActorLocation(), SourceLocation);
 				if (DistanceSquared > RadiusSquared)
 				{
@@ -239,6 +267,7 @@ void UTargetingSelectionTask_AOE::ProcessOverlapResults(const FTargetingRequestH
 				ResultData->HitResult.HitObjectHandle = FActorInstanceHandle(OverlapResult.GetActor());
 				ResultData->HitResult.Component = OverlapResult.GetComponent();
 				ResultData->HitResult.bBlockingHit = OverlapResult.bBlockingHit;
+				ResultData->HitResult.TraceStart = SourceLocation;
 			}
 		}
 
@@ -265,7 +294,32 @@ FVector UTargetingSelectionTask_AOE::GetSourceLocation_Implementation(const FTar
 
 FVector UTargetingSelectionTask_AOE::GetSourceOffset_Implementation(const FTargetingRequestHandle& TargetingHandle) const
 {
+	// If we want to apply a relative offset, we offset the different base vectors of the local space of the source actor with the values provided
+	if(bUseRelativeOffset)
+	{
+		const FTargetingSourceContext* SourceContext = FTargetingSourceContext::Find(TargetingHandle);
+		if (const AActor* SourceActor = SourceContext ? SourceContext->SourceActor : nullptr)
+		{
+			return	SourceActor->GetActorForwardVector() * DefaultSourceOffset.X +
+					SourceActor->GetActorRightVector() * DefaultSourceOffset.Y +
+					SourceActor->GetActorUpVector() * DefaultSourceOffset.Z;
+		}
+	}
+
 	return DefaultSourceOffset;
+}
+
+FQuat UTargetingSelectionTask_AOE::GetSourceRotation_Implementation(const FTargetingRequestHandle& TargetingHandle) const
+{
+	if (const FTargetingSourceContext* SourceContext = FTargetingSourceContext::Find(TargetingHandle))
+	{
+		if (SourceContext->SourceActor)
+		{
+			return SourceContext->SourceActor->GetActorQuat();
+		}
+	}
+
+	return FQuat::Identity;
 }
 
 FCollisionShape UTargetingSelectionTask_AOE::GetCollisionShape() const
@@ -323,6 +377,12 @@ void UTargetingSelectionTask_AOE::InitCollisionParams(const FTargetingRequestHan
 		{
 			OutParams.AddIgnoredActor(SourceContext->InstigatorActor);
 		}
+	}
+
+	// If we have a data store to override the collision query params from, add that to our collision params
+	if (FCollisionQueryTaskData* FoundOverride = UE::TargetingSystem::TTargetingDataStore<FCollisionQueryTaskData>::Find(TargetingHandle))
+	{
+		OutParams.AddIgnoredActors(FoundOverride->IgnoredActors);
 	}
 }
 

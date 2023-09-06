@@ -63,7 +63,7 @@ namespace Horde.Agent.Tests
 			JsonRpcLogWriter writer = new JsonRpcLogWriter();
 			int count = writer.SanitizeAndWriteEvent(jsonLogEvent);
 
-			string[] result = Encoding.UTF8.GetString(writer.CreatePacket().Span).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+			string[] result = Encoding.UTF8.GetString(writer.CreatePacket().Item1.Span).Split('\n', StringSplitOptions.RemoveEmptyEntries);
 			Assert.AreEqual(count, result.Length);
 			return result;
 		}
@@ -107,14 +107,14 @@ namespace Horde.Agent.Tests
 
 		class FakeJsonRpcLoggerBackend : JsonRpcAndStorageLogSink
 		{
-			public NodeHandle? Target { get; private set; }
+			public BlobHandle? Target { get; private set; }
 
 			public FakeJsonRpcLoggerBackend(IRpcConnection connection, string logId, IJsonRpcLogSink inner, IStorageClient store, ILogger logger)
 				: base(connection, logId, inner, store, logger)
 			{
 			}
 
-			protected override Task UpdateLogAsync(NodeHandle target, int lineCount, CancellationToken cancellationToken)
+			protected override Task UpdateLogAsync(BlobHandle target, int lineCount, bool complete, CancellationToken cancellationToken)
 			{
 				Target = target;
 				return Task.CompletedTask;
@@ -144,7 +144,7 @@ namespace Horde.Agent.Tests
 			using MemoryCache cache = new MemoryCache(new MemoryCacheOptions());
 			MemoryStorageClient store = new MemoryStorageClient();
 
-			TreeReader reader = new TreeReader(store, cache, NullLogger.Instance);
+			BundleReader reader = new BundleReader(store, cache, NullLogger.Instance);
 
 			await using FakeLogSink innerSink = new FakeLogSink();
 
@@ -160,16 +160,16 @@ namespace Horde.Agent.Tests
 						logger.LogInformation("Testing {Number}", idx);
 					}
 				}
-				file = await reader.ReadNodeAsync<LogNode>(sink.Target!.Locator!);
+				file = await sink.Target!.ReadNodeAsync<LogNode>();
 			}
 
 			// Check the index text
 			List<Utf8String> extractedIndexText = new List<Utf8String>();
 
-			LogIndexNode index = await file.IndexRef.ExpandAsync(reader);
+			LogIndexNode index = await file.IndexRef.ExpandAsync();
 			foreach (LogChunkRef block in index.PlainTextChunkRefs)
 			{
-				LogChunkNode text = await block.ExpandAsync(reader);
+				LogChunkNode text = await block.ExpandAsync();
 				extractedIndexText.AddRange(text.Lines);
 			}
 
@@ -184,7 +184,7 @@ namespace Horde.Agent.Tests
 
 			foreach (LogChunkRef blockRef in file.TextChunkRefs)
 			{
-				LogChunkNode blockText = await blockRef.ExpandAsync(reader);
+				LogChunkNode blockText = await blockRef.ExpandAsync();
 				foreach (Utf8String line in blockText.Lines)
 				{
 					LogEvent logEvent = LogEvent.Read(line.Span);
@@ -220,7 +220,7 @@ namespace Horde.Agent.Tests
 			JsonRpcLogWriter writer = new JsonRpcLogWriter();
 			writer.SanitizeAndWriteEvent(new JsonLogEvent(baseEvent));
 
-			string[] output = Encoding.UTF8.GetString(writer.CreatePacket().Span).Split('\n');
+			string[] output = Encoding.UTF8.GetString(writer.CreatePacket().Item1.Span).Split('\n');
 			string[] expected =
 			{
 				@"{""time"":""2023-01-01T00:00:00"",""level"":""Information"",""message"":""start A0"",""format"":""start {LongLineA$0}"",""properties"":{""LongLineA$0"":""A0""},""line"":0,""lineCount"":14}",
@@ -259,7 +259,7 @@ namespace Horde.Agent.Tests
 
 			for(int idx = 0; idx < 2; idx++)
 			{
-				string output = Encoding.UTF8.GetString(writer.CreatePacket().Span);
+				string output = Encoding.UTF8.GetString(writer.CreatePacket().Item1.Span);
 				string expected = @"{""time"":""2023-01-01T00:00:00"",""level"":""Information"",""message"":""abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ""}" + "\n";
 				Assert.AreEqual(expected, output);
 			}
@@ -275,7 +275,7 @@ namespace Horde.Agent.Tests
 			JsonRpcLogWriter writer = new JsonRpcLogWriter(85);
 			writer.SanitizeAndWriteEvent(new JsonLogEvent(baseEvent));
 
-			string[] output = Encoding.UTF8.GetString(writer.CreatePacket().Span).Split('\n');
+			string[] output = Encoding.UTF8.GetString(writer.CreatePacket().Item1.Span).Split('\n');
 			string[] expected =
 			{
 				@"{""time"":""2023-01-01T00:00:00"",""level"":""Information"",""message"":""abcdefghijklmnopqrstuvwxyzABCDEFGHI [...]""}",

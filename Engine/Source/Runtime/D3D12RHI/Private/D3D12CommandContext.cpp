@@ -6,12 +6,7 @@ D3D12CommandContext.cpp: RHI  Command Context implementation.
 
 #include "D3D12RHIPrivate.h"
 
-#if WITH_AMD_AGS
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include "amd_ags.h"
-#include "Windows/HideWindowsPlatformTypes.h"
-#endif
-
+#include "D3D12AmdExtensions.h"
 #include "D3D12RayTracing.h"
 
 int32 GD3D12MaxCommandsPerCommandList = 10000;
@@ -121,78 +116,6 @@ FD3D12CommandContext::~FD3D12CommandContext()
 	ClearState();
 }
 
-
-/** Write out the event stack to the bread crumb resource if available */
-void FD3D12CommandContext::WriteGPUEventStackToBreadCrumbData(bool bBeginEvent)
-{
-	// Write directly to command list if breadcrumb resource is available
-	TUniquePtr<FD3D12DiagnosticBuffer>& DiagnosticBuffer = Device->GetQueue(QueueType).DiagnosticBuffer;
-	if (!DiagnosticBuffer)
-		return;
-
-	if (!GraphicsCommandList2())
-		return;
-
-	// Find the max parameter count from the resource
-	const int32 MaxParameterCount = DiagnosticBuffer->BreadCrumbsSize / sizeof(uint32);
-
-	// allocate the parameters on the stack if smaller than 4K
-	int32 ParameterCount = GPUEventStack.Num() < (MaxParameterCount - 2) ? GPUEventStack.Num() + 2 : MaxParameterCount;
-	size_t MemSize = ParameterCount * (sizeof(D3D12_WRITEBUFFERIMMEDIATE_PARAMETER) + sizeof(D3D12_WRITEBUFFERIMMEDIATE_PARAMETER));
-	const bool bAllocateOnStack = (MemSize < 4096);
-	void* Mem = bAllocateOnStack ? FMemory_Alloca(MemSize) : FMemory::Malloc(MemSize);
-
-	if (Mem)
-	{
-		D3D12_WRITEBUFFERIMMEDIATE_PARAMETER* Parameters = (D3D12_WRITEBUFFERIMMEDIATE_PARAMETER*)Mem;
-		D3D12_WRITEBUFFERIMMEDIATE_MODE* Modes = (D3D12_WRITEBUFFERIMMEDIATE_MODE*)(Parameters + ParameterCount);
-		for (int i = 0; i < ParameterCount; ++i)
-		{
-			Parameters[i].Dest = DiagnosticBuffer->Resource->GetGPUVirtualAddress() + 4 * i;
-
-		#if 1 // This is more accurate, but may have a higher theoretical GPU overhead
-			if (bBeginEvent)
-			{
-				// The write operation is guaranteed to occur after all preceding commands in the command stream have started, including previous.
-				// We use this mode because we want to know which ops have started on the GPU.
-				Modes[i] = D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN;
-			}
-			else
-			{
-				// The write operation is deferred until all previous commands in the command stream have completed through the GPU pipeline, including previous WriteBufferImmediate operations.
-				// We want this mode when ending breadcrumb scopes because the GPU might start the next scope before we hit a problem in the current one in some cases (when there are no barriers).
-				Modes[i] = D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT;
-			}
-		#else // This is less accurate (we don't know for sure if the event has finished), but has lower theoretical GPU overhead
-			Modes[i] = D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN;
-		#endif
-
-			// Write event stack count first
-			if (i == 0)
-			{
-				Parameters[i].Value = GPUEventStack.Num();
-			}
-			// Then if it's the begin or end event
-			else if (i == 1)
-			{
-				Parameters[i].Value = bBeginEvent ? 1 : 0;
-			}
-			// Otherwise the actual stack value
-			else
-			{
-				Parameters[i].Value = GPUEventStack[i - 2];
-			}
-		}
-		GraphicsCommandList2()->WriteBufferImmediate(ParameterCount, Parameters, Modes);
-	}
-
-	if (!bAllocateOnStack)
-	{
-		FMemory::Free(Mem);
-	}
-}
-
-
 void FD3D12CommandContext::RHIPushEvent(const TCHAR* Name, FColor Color)
 {
 	D3D12RHI::FD3DGPUProfiler& GPUProfiler = GetParentDevice()->GetGPUProfiler();
@@ -211,7 +134,7 @@ void FD3D12CommandContext::RHIPushEvent(const TCHAR* Name, FColor Color)
 		uint32 CRC = GPUProfiler.GetOrAddEventStringHash(Name);
 
 		GPUEventStack.Push(CRC);
-		WriteGPUEventStackToBreadCrumbData(true);
+		WriteGPUEventStackToBreadCrumbData(Name, CRC);
 
 #if NV_AFTERMATH
 		// Only track aftermath for default context?
@@ -247,7 +170,7 @@ void FD3D12CommandContext::RHIPopEvent()
 
 	if (GPUProfiler.bTrackingGPUCrashData)
 	{
-		WriteGPUEventStackToBreadCrumbData(false);
+		PopGPUEventStackFromBreadCrumbData();
 
 		// need to look for unbalanced push/pop
 		if (GPUEventStack.Num() > 0)
@@ -278,6 +201,7 @@ FD3D12ContextCommon::FD3D12ContextCommon(FD3D12Device* Device, ED3D12QueueType Q
 	, bIsDefaultContext(bIsDefaultContext)
 	, TimestampQueries(Device, QueueType, D3D12_QUERY_TYPE_TIMESTAMP)
 	, OcclusionQueries(Device, QueueType, D3D12_QUERY_TYPE_OCCLUSION)
+	, PipelineStatsQueries(Device, QueueType, D3D12_QUERY_TYPE_PIPELINE_STATISTICS)
 {
 }
 
@@ -321,7 +245,7 @@ void FD3D12ContextCommon::WaitManualFence(ID3D12Fence* Fence, uint64 Value)
 	GetPayload(EPhase::Wait)->FencesToWait.Emplace(Fence, Value);
 }
 
-FD3D12QueryLocation FD3D12ContextCommon::AllocateQuery(ED3D12QueryType Type, uint64* Target)
+FD3D12QueryLocation FD3D12ContextCommon::AllocateQuery(ED3D12QueryType Type, void* Target)
 {
 	switch (Type)
 	{
@@ -335,6 +259,9 @@ FD3D12QueryLocation FD3D12ContextCommon::AllocateQuery(ED3D12QueryType Type, uin
 
 	case ED3D12QueryType::Occlusion:
 		return OcclusionQueries.Allocate(Type, Target);
+
+	case ED3D12QueryType::PipelineStats:
+		return PipelineStatsQueries.Allocate(Type, Target);
 	}
 }
 
@@ -369,7 +296,7 @@ void FD3D12ContextCommon::OpenCommandList()
 	}
 
 	// Get a new command list
-	CommandList = Device->ObtainCommandList(CommandAllocator, &TimestampQueries);
+	CommandList = Device->ObtainCommandList(CommandAllocator, &TimestampQueries, &PipelineStatsQueries);
 	GetPayload(EPhase::Execute)->CommandListsToExecute.Add(CommandList);
 
 	check(ActiveQueries == 0);
@@ -401,6 +328,7 @@ void FD3D12ContextCommon::CloseCommandList()
 
 	TimestampQueries.CloseAndReset(Payload->QueryRanges);
 	OcclusionQueries.CloseAndReset(Payload->QueryRanges);
+	PipelineStatsQueries.CloseAndReset(Payload->QueryRanges);
 }
 
 void FD3D12CommandContext::CloseCommandList()
@@ -446,6 +374,7 @@ void FD3D12ContextCommon::Finalize(TArray<FD3D12Payload*>& OutPayloads)
 
 	check(!TimestampQueries.HasQueries());
 	check(!OcclusionQueries.HasQueries());
+	check(!PipelineStatsQueries.HasQueries());
 
 	ContextSyncPoint = nullptr;
 
@@ -453,7 +382,7 @@ void FD3D12ContextCommon::Finalize(TArray<FD3D12Payload*>& OutPayloads)
 	OutPayloads.Append(MoveTemp(Payloads));
 }
 
-FD3D12QueryLocation FD3D12QueryAllocator::Allocate(ED3D12QueryType Type, uint64* Target)
+FD3D12QueryLocation FD3D12QueryAllocator::Allocate(ED3D12QueryType Type, void* Target)
 {
 	check(Type != ED3D12QueryType::None);
 
@@ -536,6 +465,138 @@ FD3D12SyncPoint* FD3D12CopyScope::GetSyncPoint() const
 #endif
 
 	return SyncPoint;
+}
+
+bool FD3D12ContextCommon::InitPayloadBreadcrumbs()
+{
+	TUniquePtr<FD3D12DiagnosticBuffer>& DiagnosticBuffer = Device->GetQueue(QueueType).DiagnosticBuffer;
+
+	if (!DiagnosticBuffer)
+		return false;
+
+	FD3D12Payload* Payload = GetPayload(EPhase::Execute);
+	if (Payload->BreadcrumbStacks.IsEmpty() || !BreadcrumbStack.IsValid())
+	{
+		if (!BreadcrumbStack.IsValid())
+		{
+			BreadcrumbStack = MakeShared<FBreadcrumbStack>();
+			BreadcrumbStack->Queue = &Device->GetQueue(QueueType);
+			BreadcrumbStack->Initialize(DiagnosticBuffer);
+		}
+
+		Payload->BreadcrumbStacks.Add(BreadcrumbStack);
+	}
+
+	return true;
+}
+
+void FD3D12ContextCommon::WriteGPUEventStackToBreadCrumbData(const TCHAR* Name, int32 CRC)
+{
+	if (!InitPayloadBreadcrumbs())
+		return;
+
+	FBreadcrumbStack::FScope NewScope;
+	NewScope.NameCRC = CRC;
+	NewScope.MarkerIndex = (BreadcrumbStack->NextIdx++);
+	NewScope.Sibling = 0;
+	NewScope.Child = 0;
+
+	const uint32 ThisScopeIndex = BreadcrumbStack->Scopes.Num();
+
+	if (!BreadcrumbStack->ScopeStack.IsEmpty())
+	{
+		auto& TopScope = BreadcrumbStack->Scopes[BreadcrumbStack->ScopeStack.Last()];
+		if (BreadcrumbStack->bTopIsOpen)
+		{
+			TopScope.Child = ThisScopeIndex;
+		}
+		else
+		{
+			TopScope.Sibling = ThisScopeIndex;
+			BreadcrumbStack->ScopeStack.Pop();
+		}
+	}
+	BreadcrumbStack->Scopes.Add(NewScope);
+	BreadcrumbStack->ScopeStack.Add(ThisScopeIndex);
+
+	BreadcrumbStack->bTopIsOpen = true;
+
+	if (NewScope.MarkerIndex < BreadcrumbStack->MaxMarkers)
+	{
+		WriteGPUEventToBreadCrumbData(BreadcrumbStack.Get(), NewScope.MarkerIndex, true);
+	}
+}
+
+void FD3D12ContextCommon::PopGPUEventStackFromBreadCrumbData()
+{
+	if (!InitPayloadBreadcrumbs())
+		return;
+
+	if (BreadcrumbStack->ScopeStack.IsEmpty())
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("Cannot end block when stack is empty"));
+	}
+	else
+	{
+		// If top of scope stack isn't open, then our last child is there, and we need to pop that off.
+		{
+			if (!BreadcrumbStack->bTopIsOpen)
+			{
+				if (BreadcrumbStack->ScopeStack.Num() <= 1)
+				{
+					UE_LOG(LogD3D12RHI, Log, TEXT("Cannot end block when stack is empty"));
+				}
+				else
+				{
+					BreadcrumbStack->ScopeStack.Pop();
+				}
+			}
+		}
+
+		{
+			const FBreadcrumbStack::FScope& ThisScope = BreadcrumbStack->Scopes[BreadcrumbStack->ScopeStack.Last()];
+			checkf(ThisScope.Sibling == 0, TEXT("Shouldn't have a sibling already"));
+
+			if (ThisScope.MarkerIndex < BreadcrumbStack->MaxMarkers)
+			{
+				WriteGPUEventToBreadCrumbData(BreadcrumbStack.Get(), ThisScope.MarkerIndex, false);
+			}
+		}
+
+		if (BreadcrumbStack->ScopeStack.Num() == 1 && BreadcrumbStack->Scopes.Num() > 100)
+		{
+			BreadcrumbStack->ScopeStack.Reset();
+			BreadcrumbStack.Reset();
+		}
+		else
+		{
+			// Don't remove ourselves from the stack, we stay there for any siblings.
+			BreadcrumbStack->bTopIsOpen = false;
+		}
+	}
+}
+
+void FD3D12ContextCommon::WriteGPUEventToBreadCrumbData(FBreadcrumbStack* Breadcrumbs, uint32 MarkerIndex, bool bBeginEvent)
+{
+	if (!GraphicsCommandList2())
+		return;
+
+	// Find the max parameter count from the resource
+	const int32 MaxParameterCount = Breadcrumbs->MaxMarkers;
+
+	if (static_cast<int32>(MarkerIndex) > MaxParameterCount)
+	{
+		UE_LOG(LogD3D12RHI, Log, TEXT("Breadcrumbs parameter overflow: %u"), MarkerIndex);
+		return;
+	}
+
+	D3D12_WRITEBUFFERIMMEDIATE_PARAMETER Parameter;
+	Parameter.Dest = Breadcrumbs->WriteAddress + MarkerIndex * sizeof(uint32);
+	Parameter.Value = bBeginEvent ? 1 : 2;
+	D3D12_WRITEBUFFERIMMEDIATE_MODE Mode;
+	Mode = bBeginEvent ? D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN : D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT;
+
+	GraphicsCommandList2()->WriteBufferImmediate(1, &Parameter, &Mode);
 }
 
 void FD3D12ContextCommon::FlushCommands(ED3D12FlushFlags FlushFlags)
@@ -712,10 +773,10 @@ void FD3D12CommandContextBase::UpdateMemoryStats()
 
 #if CSV_PROFILER
 	{
-		CSV_CUSTOM_STAT(GPUMem, Total, double(MemoryInfo.LocalMemoryInfo.Budget), ECsvCustomStatOp::Set);
-		CSV_CUSTOM_STAT(GPUMem, Used, double(MemoryInfo.LocalMemoryInfo.CurrentUsage), ECsvCustomStatOp::Set);
-		CSV_CUSTOM_STAT(GPUMem, Available, double(MemoryInfo.AvailableLocalMemory), ECsvCustomStatOp::Set);
-		CSV_CUSTOM_STAT(GPUMem, Demoted, double(MemoryInfo.DemotedLocalMemory), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, TotalMB, float(MemoryInfo.LocalMemoryInfo.Budget / 1024.0 / 1024.0), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, UsedMB, float(MemoryInfo.LocalMemoryInfo.CurrentUsage / 1024.0 / 1024.0), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, AvailableMB, float(MemoryInfo.AvailableLocalMemory / 1024.0 / 1024.0), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, DemotedMB, float(MemoryInfo.DemotedLocalMemory / 1024.0 / 1024.0), ECsvCustomStatOp::Set);
 	}
 #endif // CSV_PROFILER
 
@@ -876,9 +937,9 @@ FD3D12CommandContextRedirector::FD3D12CommandContextRedirector(class FD3D12Adapt
 		Context = nullptr;
 }
 
-void FD3D12CommandContextRedirector::RHITransferResources(const TArrayView<const FTransferResourceParams> Params)
-{
 #if WITH_MGPU
+void FD3D12CommandContextRedirector::RHITransferResources(TConstArrayView<FTransferResourceParams> Params)
+{
 	if (Params.Num() == 0)
 		return;
 
@@ -1094,10 +1155,9 @@ void FD3D12CommandContextRedirector::RHITransferResources(const TArrayView<const
 		// The dest waits for the src to be at this place in the frame before using the data.
 		MGPUSync(SrcMask, DstMask);
 	}
-#endif // WITH_MGPU
 }
 
-void FD3D12CommandContextRedirector::RHITransferResourceSignal(const TArrayView<FTransferResourceFenceData* const> FenceDatas, FRHIGPUMask SrcGPUMask)
+void FD3D12CommandContextRedirector::RHITransferResourceSignal(TConstArrayView<FTransferResourceFenceData*> FenceDatas, FRHIGPUMask SrcGPUMask)
 {
 	check(FenceDatas.Num() == SrcGPUMask.GetNumActive());
 
@@ -1115,9 +1175,8 @@ void FD3D12CommandContextRedirector::RHITransferResourceSignal(const TArrayView<
 	}
 }
 
-void FD3D12CommandContextRedirector::RHITransferResourceWait(const TArrayView<FTransferResourceFenceData* const> FenceDatas)
+void FD3D12CommandContextRedirector::RHITransferResourceWait(TConstArrayView<FTransferResourceFenceData*> FenceDatas)
 {
-#if WITH_MGPU
 	FRHIGPUMask AllMasks;
 	for (int32 Index = 0; Index < FenceDatas.Num(); ++Index)
 	{
@@ -1152,6 +1211,154 @@ void FD3D12CommandContextRedirector::RHITransferResourceWait(const TArrayView<FT
 
 		delete FenceData;
 	}
+}
+
+void FD3D12CommandContextRedirector::RHICrossGPUTransfer(TConstArrayView<FTransferResourceParams> Params, TConstArrayView<FCrossGPUTransferFence*> PreTransfer, TConstArrayView<FCrossGPUTransferFence*> PostTransfer)
+{
+	if (Params.Num() == 0)
+		return;
+
+	for (const FTransferResourceParams& Param : Params)
+	{
+		FD3D12CommandContext* SrcContext = PhysicalContexts[Param.SrcGPUIndex];
+		check(SrcContext);
+
+		FD3D12Resource* SrcResource;
+
+		if (Param.Texture)
+		{
+			check(Param.Buffer == nullptr);
+
+			SrcResource = FD3D12CommandContext::RetrieveTexture(Param.Texture, Param.SrcGPUIndex )->GetResource();
+		}
+		else
+		{
+			check(Param.Buffer != nullptr);
+
+			SrcResource = FD3D12DynamicRHI::ResourceCast(Param.Buffer.GetReference(), Param.SrcGPUIndex )->GetResource();
+		}
+
+		// Destination GPU resources are transitioned in RHICrossGPUTransferSignal, potentially allowing them to be transitioned earlier
+		// in the timeline, reducing the likelihood of the source GPU needing to wait to start the transfer.
+		SrcContext->TransitionResource(SrcResource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_COPY_SOURCE, 0);
+	}
+
+	// Wait on any pre-transfer fences first
+	for (FCrossGPUTransferFence* PreTransferSyncPoint : PreTransfer)
+	{
+		FD3D12SyncPoint* SyncPoint = static_cast<FD3D12SyncPoint*>(PreTransferSyncPoint->SyncPoint);
+
+		PhysicalContexts[PreTransferSyncPoint->WaitGPUIndex]->WaitSyncPoint(SyncPoint);
+
+		SyncPoint->Release();
+
+		delete PreTransferSyncPoint;
+	}
+	
+	// Enqueue the copy work
+	for (const FTransferResourceParams& Param : Params)
+	{
+		FD3D12CommandContext* SrcContext = PhysicalContexts[Param.SrcGPUIndex];
+
+		if (Param.Texture)
+		{
+			FD3D12Texture* SrcTexture = FD3D12CommandContext::RetrieveTexture(Param.Texture, Param.SrcGPUIndex);
+			FD3D12Texture* DstTexture = FD3D12CommandContext::RetrieveTexture(Param.Texture, Param.DestGPUIndex);
+
+			// If the texture size is zero (Max.Z == 0, set in the constructor), copy the whole resource
+			if (Param.Max.Z == 0)
+			{
+				SrcContext->GraphicsCommandList()->CopyResource(DstTexture->GetResource()->GetResource(), SrcTexture->GetResource()->GetResource());
+			}
+			else
+			{
+				// Must be a 2D texture for this code path
+				check(Param.Texture->GetTexture2D() != nullptr);
+
+				ensureMsgf(
+					Param.Min.X >= 0 && Param.Min.Y >= 0 && Param.Min.Z >= 0 &&
+					Param.Max.X >= 0 && Param.Max.Y >= 0 && Param.Max.Z >= 0,
+					TEXT("Invalid rect for texture transfer: %i, %i, %i, %i"), Param.Min.X, Param.Min.Y, Param.Min.Z, Param.Max.X, Param.Max.Y, Param.Max.Z);
+
+				D3D12_BOX Box = { (UINT)Param.Min.X, (UINT)Param.Min.Y, (UINT)Param.Min.Z, (UINT)Param.Max.X, (UINT)Param.Max.Y, (UINT)Param.Max.Z };
+
+				CD3DX12_TEXTURE_COPY_LOCATION SrcLocation(SrcTexture->GetResource()->GetResource(), 0);
+				CD3DX12_TEXTURE_COPY_LOCATION DstLocation(DstTexture->GetResource()->GetResource(), 0);
+
+				SrcContext->GraphicsCommandList()->CopyTextureRegion(&DstLocation, Box.left, Box.top, Box.front, &SrcLocation, &Box);
+			}
+		}
+		else
+		{
+			FD3D12Resource* SrcResource = FD3D12DynamicRHI::ResourceCast(Param.Buffer.GetReference(), Param.SrcGPUIndex)->GetResource();
+			FD3D12Resource* DstResource = FD3D12DynamicRHI::ResourceCast(Param.Buffer.GetReference(), Param.DestGPUIndex)->GetResource();
+
+			SrcContext->GraphicsCommandList()->CopyResource(DstResource->GetResource(), SrcResource->GetResource());
+		}
+	}
+
+	// Post-copy synchronization
+	FD3D12SyncPointRef SyncPoint = FD3D12SyncPoint::Create(ED3D12SyncPointType::GPUOnly);
+	PhysicalContexts[Params[0].SrcGPUIndex]->SignalSyncPoint(SyncPoint);
+
+	for (FCrossGPUTransferFence* PostTransferSyncPoint : PostTransfer)
+	{
+		// Copy the sync points into the delayed fence struct. These will be awaited later in RHITransferResourceWait().
+		SyncPoint->AddRef();
+		PostTransferSyncPoint->SyncPoint = SyncPoint.GetReference();
+	}
+}
+
+void FD3D12CommandContextRedirector::RHICrossGPUTransferSignal(TConstArrayView<FTransferResourceParams> Params, TConstArrayView<FCrossGPUTransferFence*> PreTransfer)
+{
+	for (const FTransferResourceParams& Param : Params)
+	{
+		FD3D12CommandContext* DstContext = PhysicalContexts[Param.DestGPUIndex];
+		check(DstContext);
+
+		FD3D12Resource* DstResource;
+
+		if (Param.Texture)
+		{
+			check(Param.Buffer == nullptr);
+
+			DstResource = FD3D12CommandContext::RetrieveTexture(Param.Texture, Param.DestGPUIndex)->GetResource();
+		}
+		else
+		{
+			check(Param.Buffer != nullptr);
+
+			DstResource = FD3D12DynamicRHI::ResourceCast(Param.Buffer.GetReference(), Param.DestGPUIndex)->GetResource();
+		}
+
+		DstContext->TransitionResource(DstResource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_COPY_DEST, 0);
+	}
+
+	for (FCrossGPUTransferFence* TransferSyncPoint : PreTransfer)
+	{
+		FD3D12SyncPointRef SyncPoint = FD3D12SyncPoint::Create(ED3D12SyncPointType::GPUOnly);
+		SyncPoint->AddRef();
+
+		PhysicalContexts[TransferSyncPoint->SignalGPUIndex]->SignalSyncPoint(SyncPoint);
+
+		TransferSyncPoint->SyncPoint = SyncPoint;
+	}
+}
+
+void FD3D12CommandContextRedirector::RHICrossGPUTransferWait(TConstArrayView<FCrossGPUTransferFence*> PostTransfer)
+{
+	for (FCrossGPUTransferFence* TransferSyncPoint : PostTransfer)
+	{
+		if (TransferSyncPoint->SyncPoint)
+		{
+			FD3D12SyncPoint* SyncPoint = static_cast<FD3D12SyncPoint*>(TransferSyncPoint->SyncPoint);
+			PhysicalContexts[TransferSyncPoint->WaitGPUIndex]->WaitSyncPoint(SyncPoint);
+
+			SyncPoint->Release();
+		}
+
+		delete TransferSyncPoint;
+	}
+}
 
 #endif // WITH_MGPU
-}

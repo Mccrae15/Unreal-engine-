@@ -8,6 +8,8 @@
 #include "GameFramework/WorldSettings.h"
 #include "EnhancedInputDeveloperSettings.h"
 #include "InputMappingContext.h"
+#include "UserSettings/EnhancedInputUserSettings.h"
+#include "EnhancedInputModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EnhancedPlayerInput)
 
@@ -29,6 +31,8 @@ namespace UE
 
 UEnhancedPlayerInput::UEnhancedPlayerInput()
 	: Super()
+	, bIsFlushingInputThisFrame(false)
+	, CurrentlyInUseAnyKeySubstitute(NAME_None)
 {
 	if (UE::Input::EnableDefaultMappingContexts)
 	{
@@ -186,13 +190,16 @@ void UEnhancedPlayerInput::ProcessActionMappingEvent(TObjectPtr<const UInputActi
 		// Apply modifications to the raw value
 		EInputActionValueType ValueType = ActionData.Value.GetValueType();
 		FInputActionValue ModifiedValue = ApplyModifiers(Modifiers, FInputActionValue(ValueType, RawKeyValue.Get<FVector>()), DeltaTime);
-		//UE_CLOG(RawKeyValue.GetMagnitudeSq(), LogTemp, Warning, TEXT("Modified %s -> %s"), *RawKeyValue.ToString(), *ModifiedValue.ToString());
+		//UE_CLOG(RawKeyValue.GetMagnitudeSq(), LogEnhancedInput, Warning, TEXT("Modified %s -> %s"), *RawKeyValue.ToString(), *ModifiedValue.ToString());
 
 		// Derive an initial trigger state for this mapping using all applicable triggers
 		ETriggerState CalcedState = TriggerStateTracker.EvaluateTriggers(this, Triggers, ModifiedValue, DeltaTime);
 		// Do this only for no triggers?
 		TriggerStateTracker.SetStateForNoTriggers(ModifiedValue.IsNonZero() ? ETriggerState::Triggered : ETriggerState::None);	
 		bMappingTriggersApplied = Triggers.Num() > 0;
+
+		const EInputActionAccumulationBehavior AccumulationBehavior = ActionData.GetSourceAction()->AccumulationBehavior;
+
 		// Combine values for active events only, selecting the input with the greatest magnitude for each component in each tick.
 		if(ModifiedValue.GetMagnitudeSq())
 		{
@@ -201,10 +208,27 @@ void UEnhancedPlayerInput::ProcessActionMappingEvent(TObjectPtr<const UInputActi
 			FVector Merged = ActionData.Value.Get<FVector>();
 			for (int32 Component = 0; Component < NumComponents; ++Component)
 			{
-				if (FMath::Abs(Modified[Component]) >= FMath::Abs(Merged[Component]))
+				switch (AccumulationBehavior)
 				{
-					Merged[Component] = Modified[Component];
+				// Sometimes you may want to cumulatively merge input. This would allow you to, for example, map WASD to movement and have pressing W and S at the same time
+				// completely cancel out input because "W" is a value of +1.0, and "S" is a value of -1.0
+				case EInputActionAccumulationBehavior::Cumulative:
+				{
+					Merged[Component] += Modified[Component];
+				}										
+				break;
+
+				// By default, we will accept the input with the highest absolute value
+				case EInputActionAccumulationBehavior::TakeHighestAbsoluteValue:
+				default:
+				{
+					if (FMath::Abs(Modified[Component]) >= FMath::Abs(Merged[Component]))
+					{
+						Merged[Component] = Modified[Component];
+					}
 				}
+				break;
+				}			
 			}
 			ActionData.Value = FInputActionValue(ValueType, Merged);
 		}
@@ -253,26 +277,48 @@ float UEnhancedPlayerInput::GetEffectiveTimeDilation() const
 	return 1.0f;
 }
 
-void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputComponentStack, const float DeltaTime, const bool bGamePaused)
+void UEnhancedPlayerInput::EvaluateKeyMapState(const float DeltaTime, const bool bGamePaused, OUT TArray<TPair<FKey, FKeyState*>>& KeysWithEvents)
 {
-	// We need to grab the down states of all keys before calling Super::ProcessInputStack as it will leave bDownPrevious in the same state as bDown (i.e. this frame, not last).
-	static TMap<FKey, bool> KeyDownPrevious;
+	TRACE_CPUPROFILER_EVENT_SCOPE(EnhPIS_KeyDownPrev);
+
+	const UEnhancedInputDeveloperSettings* Settings = GetDefault<UEnhancedInputDeveloperSettings>();
+	bool bWasAnyKeyDownLastFrame = false;
+
+	KeyDownPrevious.Reset();
+	KeyDownPrevious.Reserve(GetKeyStateMap().Num());
+	for (TPair<FKey, FKeyState>& KeyPair : GetKeyStateMap())
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(EnhPIS_KeyDownPrev);
-		KeyDownPrevious.Reset();
-		KeyDownPrevious.Reserve(GetKeyStateMap().Num());
-		for (TPair<FKey, FKeyState>& KeyPair : GetKeyStateMap())
-		{
-			const FKeyState& KeyState = KeyPair.Value;
-			// TODO: Can't just use bDownPrevious as paired axis event edges may not fire due to axial deadzoning/missing axis properties. Need to change how this is detected in PlayerInput.cpp.
-			bool bWasDown = KeyState.bDownPrevious || KeyState.EventCounts[IE_Pressed].Num() || KeyState.EventCounts[IE_Repeat].Num();
-			bWasDown |= KeyPair.Key.IsAnalog() && KeyState.RawValue.SizeSquared() != 0;	// Analog inputs should pulse every (non-zero) tick to retain compatibility with UE4.
-			KeyDownPrevious.Emplace(KeyPair.Key, bWasDown);
-		}
+		const FKeyState& KeyState = KeyPair.Value;
+		// TODO: Can't just use bDownPrevious as paired axis event edges may not fire due to axial deadzoning/missing axis properties. Need to change how this is detected in PlayerInput.cpp.
+		bool bWasDown = KeyState.bDownPrevious || KeyState.EventCounts[IE_Pressed].Num() || KeyState.EventCounts[IE_Repeat].Num();
+		bWasDown |= KeyPair.Key.IsAnalog() && KeyState.RawValue.SizeSquared() != 0;	// Analog inputs should pulse every (non-zero) tick to retain compatibility with UE4.
+
+		// When UPlayerInput::FlushPressedKeys is called any keys that are down will have their RawValue set to 0, and their bDown/bDownPrevious state will be reset to false.
+		// However, their "Value" will not be reset until UPlayerInput::ProcessInputStack. We need to detect if this key was down previously after a flush
+		// so that the Enhanced Input action will correctly fire the triggered values.
+		const bool bKeyWasJustFlushed = 
+			bIsFlushingInputThisFrame && 
+			Settings->bSendTriggeredEventsWhenInputIsFlushed && 
+			!KeyState.Value.IsZero() && 
+			KeyState.RawValue.IsZero() && 
+			!KeyState.bDown;
+
+		bWasDown |= bKeyWasJustFlushed;
+			
+		// Keep track of the state of every key so that when we are done iterating we can have a meaningful value for EKeys::AnyKey
+		bWasAnyKeyDownLastFrame |= bWasDown;
+
+		KeyDownPrevious.Emplace(KeyPair.Key, bWasDown);
 	}
 
-	Super::ProcessInputStack(InputComponentStack, DeltaTime, bGamePaused);
+	KeyDownPrevious.Emplace(EKeys::AnyKey, bWasAnyKeyDownLastFrame);
+	
+	
+	Super::EvaluateKeyMapState(DeltaTime, bGamePaused, KeysWithEvents);
+}
 
+void UEnhancedPlayerInput::EvaluateInputDelegates(const TArray<UInputComponent*>& InputComponentStack, const float DeltaTime, const bool bGamePaused, const TArray<TPair<FKey, FKeyState*>>& KeysWithEvents)
+{
 	TRACE_CPUPROFILER_EVENT_SCOPE(EnhPIS_Main);
 
 	// Process Action bindings
@@ -300,9 +346,50 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 			continue;
 		}
 
-		FKeyState* KeyState = GetKeyState(Mapping.Key);
+		FKeyState* KeyState = nullptr;
+
+		// If the mapping was to AnyKey, then it won't be in the KeyStateMap and we need to handle it specially. 
+		if (Mapping.Key == EKeys::AnyKey)
+		{
+			// We can just get the first value in the key state map that has been pressed or released, that's what we really care about with this key type
+			for (TPair<FKey, FKeyState>& KeyStatePair : KeyStateMap)
+			{
+				// EKeys::AnyKey will only use non-analog keys. the same as the legacy system.
+				if (!KeyStatePair.Key.IsDigital())
+				{
+					continue;
+				}
+
+				// If we have no Substitute key, then we can simply use the key state of the first available key with pressed events.
+				if (CurrentlyInUseAnyKeySubstitute == NAME_None && KeyStatePair.Value.EventCounts[IE_Pressed].Num() > 0)
+				{
+					KeyState = &KeyStatePair.Value;
+					CurrentlyInUseAnyKeySubstitute = KeyStatePair.Key.GetFName();
+					break;
+				}
+
+				// If we have a substitute key already, then we can just look for the key of this name in the map
+				else if (KeyStatePair.Key.GetFName() == CurrentlyInUseAnyKeySubstitute)
+				{
+					// If the substitute key was just released, then we can reset our currently in 
+					// use substitute key so that it can be replaced by something else on the next key press.					
+					if (KeyStatePair.Value.EventCounts[IE_Released].Num() > 0)
+					{
+						CurrentlyInUseAnyKeySubstitute = NAME_None;
+					}
+
+					KeyState = &KeyStatePair.Value;
+					break;
+				}
+			}
+		}
+		else
+		{
+			KeyState = GetKeyState(Mapping.Key);
+		}
+		
 		FVector RawKeyValue = KeyState ? KeyState->RawValue : FVector::ZeroVector;
-		//UE_CLOG(RawKeyValue.SizeSquared(), LogTemp, Warning, TEXT("Key %s - state %s"), *Mapping.Key.GetDisplayName().ToString(), *RawKeyValue.ToString());
+		//UE_CLOG(RawKeyValue.SizeSquared(), LogEnhancedInput, Warning, TEXT("Key %s - state %s"), *Mapping.Key.GetDisplayName().ToString(), *RawKeyValue.ToString());
 
 		// Should this key be ignored because it was down during a context switch?
 		// If so, check if it is back up, otherwise ignore it.
@@ -500,12 +587,11 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 				{
 					if (DepAction.DependantAction && DepAction.DependantAction == DelegateAction)
 					{
-						bCanTrigger = !TriggeredActionsThisTick.Contains(DepAction.SourceAction);
+						bCanTrigger &= !TriggeredActionsThisTick.Contains(DepAction.SourceAction);
 						if(!bCanTrigger)
 						{
-							UE_LOG(LogTemp, Warning, TEXT("'%s' action was cancelled, its dependant on '%s'"), *DelegateAction->GetName(), *DepAction.SourceAction->GetName());
+							UE_LOG(LogEnhancedInput, Warning, TEXT("'%s' action was cancelled, its dependant on '%s'"), *DelegateAction->GetName(), *DepAction.SourceAction->GetName());
 						}
-						break;
 					}
 				}
 			}
@@ -515,6 +601,18 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 				// Search for the action instance data a second time as a previous delegate call may have deleted it.
 				if (const FInputActionInstance* ActionData = FindActionInstanceData(DelegateAction))
 				{
+					// If this enhanced input delegate has triggered and is flagged to consume legacy keys, then mark it as such.
+					if (const FKeyConsumptionOptions* ConsumptionData = KeyConsumptionData.Find(ActionData->GetSourceAction()))
+					{
+						if (static_cast<uint8>(ConsumptionData->EventsToCauseConsumption & Delegate->GetTriggerEvent()) != 0)
+						{
+							// Consume all keys that are mapped to this input action with the proper trigger values
+							for (const FKey& KeyToConsume : ConsumptionData->KeysToConsume)
+							{
+								ConsumeKey(KeyToConsume);	
+							}
+						}
+					}
 					Delegate->Execute(*ActionData);
 				}
 			}
@@ -525,10 +623,19 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 		// Update action value bindings
 		for (const FEnhancedInputActionValueBinding& Binding : IC->GetActionValueBindings())
 		{
-			// PERF: Lots of map lookups! Group EnhancedActionBindings by Action?
-			if (const FInputActionInstance* ActionData = FindActionInstanceData(Binding.GetAction()))
+			if (const UInputAction* Action = Binding.GetAction())
 			{
-				Binding.CurrentValue = ActionData->GetValue();
+				// PERF: Lots of map lookups! Group EnhancedActionBindings by Action?
+				if (const FInputActionInstance* ActionData = FindActionInstanceData(Action))
+				{
+					Binding.CurrentValue = ActionData->GetValue();
+				}
+				// If there is no action instance data related to this action, then reset the binding's value to zero
+				// to ensure that it gets its Completed state sent to any listeners
+				else
+				{
+					Binding.CurrentValue = FInputActionValue(Action->ValueType, FVector::ZeroVector);
+				}
 			}
 		}
 
@@ -623,6 +730,21 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 
 	LastFrameTime = CurrentTime;
 	KeysPressedThisTick.Reset();
+	bIsFlushingInputThisFrame = false;
+
+	Super::EvaluateInputDelegates(InputComponentStack, DeltaTime, bGamePaused, KeysWithEvents);
+}
+
+void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputComponentStack, const float DeltaTime, const bool bGamePaused)
+{
+	Super::ProcessInputStack(InputComponentStack, DeltaTime, bGamePaused);
+}
+
+void UEnhancedPlayerInput::FlushPressedKeys()
+{
+	Super::FlushPressedKeys();
+
+	bIsFlushingInputThisFrame = true;
 }
 
 FInputActionValue UEnhancedPlayerInput::GetActionValue(TObjectPtr<const UInputAction> ForAction) const

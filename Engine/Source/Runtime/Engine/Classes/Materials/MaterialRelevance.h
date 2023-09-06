@@ -9,7 +9,7 @@ struct FPrimitiveViewRelevance;
 
 // the class is only storing bits, initialized to 0 and has an |= operator
 // to provide a combined set of multiple materials (component / mesh)
-struct ENGINE_API FMaterialRelevance
+struct FMaterialRelevance
 {
 	// bits that express which EMaterialShadingModel are used
 	union
@@ -19,6 +19,7 @@ struct ENGINE_API FMaterialRelevance
 			uint16 ShadingModelMask;
 			uint8 StrataUintPerPixel;
 			uint8 StrataBSDFCountMask;
+			uint8 bUsesComplexSpecialRenderPath : 1;
 			uint8 bOpaque : 1;
 			uint8 bMasked : 1;
 			uint8 bDistortion : 1;
@@ -32,6 +33,7 @@ struct ENGINE_API FMaterialRelevance
 			uint8 bOutputsTranslucentVelocity : 1;
 			uint8 bUsesGlobalDistanceField : 1;
 			uint8 bUsesWorldPositionOffset : 1;
+			uint8 bUsesDisplacement : 1;
 			uint8 bUsesPixelDepthOffset : 1;
 			uint8 bDecal : 1;
 			uint8 bTranslucentSurfaceLighting : 1;
@@ -63,7 +65,7 @@ struct ENGINE_API FMaterialRelevance
 	}
 
 	/** Copies the material's relevance flags to a primitive's view relevance flags. */
-	void SetPrimitiveViewRelevance(FPrimitiveViewRelevance& OutViewRelevance) const;
+	ENGINE_API void SetPrimitiveViewRelevance(FPrimitiveViewRelevance& OutViewRelevance) const;
 };
 
 static_assert(sizeof(FMaterialRelevance) == sizeof(FMaterialRelevance::Raw), "Union Raw type is too small");

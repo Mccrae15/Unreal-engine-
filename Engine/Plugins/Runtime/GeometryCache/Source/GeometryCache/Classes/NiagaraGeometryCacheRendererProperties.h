@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include "NiagaraDataSetAccessor.h"
 #include "NiagaraRendererProperties.h"
 #include "NiagaraGeometryCacheRendererProperties.generated.h"
 
+class UMaterialInstanceConstant;
 class UGeometryCache;
 struct FNiagaraVariable;
 struct FVersionedNiagaraEmitter;
@@ -13,12 +15,26 @@ class FNiagaraEmitterInstance;
 class SWidget;
 
 USTRUCT()
+struct FNiagaraGeometryCacheMICOverride
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInterface> OriginalMaterial;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceConstant> ReplacementMaterial;
+};
+
+USTRUCT()
 struct FNiagaraGeometryCacheReference
 {
 	GENERATED_USTRUCT_BODY()
-public:
+
 	FNiagaraGeometryCacheReference();
-	
+
+	UMaterialInterface* ResolveMaterial(UGeometryCache* ResolvedCache, int32 MaterialIndex) const;
+
 	/** Reference to the geometry cache asset to use (if the user parameter binding is not set) */
 	UPROPERTY(EditAnywhere, Category = "GeometryCache")
 	TObjectPtr<UGeometryCache> GeometryCache;
@@ -30,6 +46,9 @@ public:
 	/** The materials to be used instead of the GeometryCache's materials. If the GeometryCache requires more materials than exist in this array or any entry in this array is set to None, we will use the GeometryCache's existing material instead.*/
 	UPROPERTY(EditAnywhere, Category = "GeometryCache")
 	TArray<TObjectPtr<UMaterialInterface>> OverrideMaterials;
+
+	UPROPERTY()
+	TArray<FNiagaraGeometryCacheMICOverride> MICOverrideMaterials;
 };
 
 UCLASS(editinlinenew, MinimalAPI, meta = (DisplayName = "Geometry Cache Renderer"))
@@ -43,6 +62,9 @@ public:
 	//UObject Interface
 	virtual void PostLoad() override;
 	virtual void PostInitProperties() override;
+#if WITH_EDITORONLY_DATA
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif// WITH_EDITORONLY_DATA
 	//UObject Interface END
 
 	static void InitCDOPropertiesAfterModuleStartup();
@@ -52,19 +74,34 @@ public:
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override { return nullptr; }
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return InSimTarget == ENiagaraSimTarget::CPUSim; };
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
+	virtual void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit = false) override;
+	virtual ENiagaraRendererSourceDataMode GetCurrentSourceMode() const override { return SourceMode; }
 	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)  override;
+	virtual bool NeedsMIDsForMaterials() const { return MaterialParameters.HasAnyBindings(); }
+	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
 
 #if WITH_EDITORONLY_DATA
 	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual const FSlateBrush* GetStackIcon() const override;
 	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
-	virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
+	virtual void GetRendererFeedback(const FVersionedNiagaraEmitter& InEmitter, TArray<FNiagaraRendererFeedback>& OutErrors, TArray<FNiagaraRendererFeedback>& OutWarnings, TArray<FNiagaraRendererFeedback>& OutInfo) const override;
+	virtual TArray<FNiagaraVariable> GetBoundAttributes() const override;
+	virtual void RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter) override;
+	virtual void RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter) override;
 #endif // WITH_EDITORONLY_DATA
+
+	void UpdateMICs();
+
+	static UGeometryCache* ResolveGeometryCache(const FNiagaraGeometryCacheReference& Entry, const FNiagaraEmitterInstance* Emitter);
 
 	/** Reference to the geometry cache assets to use. If ArrayIndexBinding is not set, a random element is used for each particle. */
 	UPROPERTY(EditAnywhere, Category = "GeometryCache")
 	TArray<FNiagaraGeometryCacheReference> GeometryCaches;
+
+	/** Whether or not to draw a single element for the Emitter or to draw the particles.*/
+	UPROPERTY(EditAnywhere, Category = "GeometryCache")
+	ENiagaraRendererSourceDataMode SourceMode = ENiagaraRendererSourceDataMode::Particles;
 
 	/** If true, then the geometry cache keeps playing in a loop */
 	UPROPERTY(EditAnywhere, Category = "GeometryCache")
@@ -110,6 +147,19 @@ public:
 	* Disabling this option is faster, but a particle can get a different component each tick, which can lead to problems with for example motion blur. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "GeometryCache")
 	bool bAssignComponentsOnParticleID = true;
+
+	/** If this array has entries, we will create a MaterialInstanceDynamic per Emitter instance from Material and set the Material parameters using the Niagara simulation variables listed.*/
+	UPROPERTY(EditAnywhere, Category = "Bindings")
+	FNiagaraRendererMaterialParameters MaterialParameters;
+
+	FNiagaraDataSetAccessor<FNiagaraPosition>	PositionAccessor;
+	FNiagaraDataSetAccessor<FVector3f>			RotationAccessor;
+	FNiagaraDataSetAccessor<FVector3f>			ScaleAccessor;
+	FNiagaraDataSetAccessor<float>				ElapsedTimeAccessor;
+	FNiagaraDataSetAccessor<FNiagaraBool>		EnabledAccessor;
+	FNiagaraDataSetAccessor<int32>				ArrayIndexAccessor;
+	FNiagaraDataSetAccessor<int32>				VisTagAccessor;
+	FNiagaraDataSetAccessor<int32>				UniqueIDAccessor;
 
 	virtual bool NeedsSystemPostTick() const override { return true; }
 	virtual bool NeedsSystemCompletion() const override { return true; }

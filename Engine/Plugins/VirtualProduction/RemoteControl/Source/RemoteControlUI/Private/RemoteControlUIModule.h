@@ -22,7 +22,7 @@ class URemoteControlPreset;
 class FRemoteControlUIModule : public IRemoteControlUIModule
 {
 public:
-	
+
 	FRemoteControlUIModule()
 		: RemoteControlAssetCategoryBit(EAssetTypeCategories::Misc)
 	{
@@ -47,6 +47,9 @@ public:
 
 	//~ Begin IRemoteControlUIModule interface
 	virtual FOnGenerateExtensions& GetExtensionGenerators() override { return ExtensionsGenerator; }
+	virtual FOnRemoteControlPresetOpened& OnRemoteControlPresetOpened() override { return RemoteControlPresetOpenedDelegate; }
+	virtual FOnGenerateControllerExtensionsWidgets& OnGenerateControllerExtensionsWidgets() override { return GenerateControllerExtensionsWidgetsDelegate; }
+	virtual FOnAddControllerExtensionColumn& OnAddControllerExtensionColumn() override { return OnAddControllerExtensionColumnDelegate; }
 	virtual FDelegateHandle AddPropertyFilter(FOnDisplayExposeIcon OnDisplayExposeIcon) override;
 	virtual void RemovePropertyFilter(const FDelegateHandle& FilterDelegateHandle) override;
 	virtual void RegisterMetadataCustomization(FName MetadataKey, FOnCustomizeMetadataEntry OnCustomizeCallback) override;
@@ -57,6 +60,7 @@ public:
 	virtual void UnregisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType) override;
 	virtual void HighlightPropertyInDetailsPanel(const FPropertyPath& Path) const override;
 	virtual void SelectObjects(const TArray<UObject*>& Objects) const override;
+	virtual TSharedPtr<SWidget> CreateCustomControllerWidget(URCVirtualPropertyBase* InController) const override;
 	//~ End IRemoteControlUIModule interface
 
 	/**
@@ -104,7 +108,7 @@ private:
 	//~ Context menu extenders
 	void RegisterContextMenuExtender();
 	void UnregisterContextMenuExtender();
-	
+
 	//~ Detail row extensions
 	void RegisterDetailRowExtension();
 	void UnregisterDetailRowExtension();
@@ -135,6 +139,26 @@ private:
 
 	/** Handle clicking the expose button. */
 	void OnToggleExposeProperty(const FRCExposesPropertyArgs InArgs);
+
+	/** Handle clicking the expose SubProperty button. */
+	void OnToggleExposeSubProperty(const FRCExposesPropertyArgs InArgs, const FString InDesiredName = TEXT("")) const;
+
+	void OnToggleExposePropertyWithChild(const FRCExposesPropertyArgs InArgs);
+
+	/** Store the information to expose/unexpose all properties from the parent one */
+	struct FRCExposesAllPropertiesArgs
+	{
+		FRCExposesPropertyArgs PropertyArgs;
+		FText PropName;
+		FString DesiredName;
+		FText ExposedPropertyLabel;
+		TAttribute<FText> ToolTip;
+	};
+	/** Handle clicking the expose all in the SubProperty menu */
+	void OnExposeAll(const TArray<FRCExposesAllPropertiesArgs> InExposeAllArgs) const;
+
+	/** Handle clicking the expose all in the SubProperty menu */
+	void OnUnexposeAll(const TArray<FRCExposesAllPropertiesArgs> InExposeAllArgs) const;
 
 	/** Returns whether a property is exposed, unexposed or unexposable. */
 	EPropertyExposeStatus GetPropertyExposeStatus(const FRCExposesPropertyArgs& InArgs) const;
@@ -175,7 +199,7 @@ private:
 
 	/** Returns expose button text based on exposed state */
 	FText GetExposePropertyButtonText(const FRCExposesPropertyArgs InArgs) const;
-	
+
 	/** Attempts to replace the static or skeletal materials with their corressponding overrides. */
 	void TryOverridingMaterials(const FRCExposesPropertyArgs InArgs);
 
@@ -185,6 +209,19 @@ private:
 	/** Attempts to refresh the details panel. */
 	void RefreshPanels();
 
+	/** Check if a sub menu should be created when ctrl+click on the eyeball icon in the details view */
+	bool ShouldCreateSubMenuForChildProperties(const FRCExposesPropertyArgs InPropertyArgs) const;
+
+	/** Check if the property has child properties that can be exposed */
+	bool HasChildProperties(const FProperty* InProperty) const;
+
+	/** Create a sub menu for each sub property */
+	void CreateSubMenuForChildProperties(const FRCExposesPropertyArgs InPropertyArgs) const;
+
+	/** Check if any sub-property is exposed */
+	bool HasChildPropertiesExposed(const FRCExposesPropertyArgs& InPropertyArgs) const;
+
+	void GetAllExposableSubPropertyFromStruct(const FRCExposesPropertyArgs InPropertyArgs, TArray<FRCExposesAllPropertiesArgs>& OutAllProperty) const;
 private:
 	/** The custom actions added to the actor context menu. */
 	TSharedPtr<class FRemoteControlPresetActions> RemoteControlPresetActions;
@@ -197,15 +234,24 @@ private:
 
 	/** Holds a weak ptr to the active control panel. */
 	TWeakPtr<SRemoteControlPanel> WeakActivePanel;
-	
+
 	/** Holds a weak ptr to the owner tree node of the active details panel. */
 	TWeakPtr<IDetailTreeNode> WeakDetailsTreeNode;
-	
+
 	/** Holds a shared ptr to the global details panel. */
 	TSharedPtr<IDetailsView> SharedDetailsPanel;
 
 	/** Delegate called to gather extensions added externally to the panel. */
 	FOnGenerateExtensions ExtensionsGenerator;
+
+	/** Delegate called when a Remote Control Preset panel is created for the specified Remote Control Preset */
+	FOnRemoteControlPresetOpened RemoteControlPresetOpenedDelegate;
+
+	/** Called when setting up/resetting the Controller panel list. Register to add custom column. */
+	FOnAddControllerExtensionColumn OnAddControllerExtensionColumnDelegate;
+	
+	/** Delegate called when a Remote Control Preset panel is created/opened for the specified Remote Control Preset */
+	FOnGenerateControllerExtensionsWidgets GenerateControllerExtensionsWidgetsDelegate;
 
 	/** Filters added by other plugins queried to determine if a property should display an expose icon. */
 	TMap<FDelegateHandle, FOnDisplayExposeIcon> ExternalFilterDelegates;

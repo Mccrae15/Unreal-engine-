@@ -12,8 +12,8 @@
 /**
  * Column that stores a local transform. 
  */
-USTRUCT()
-struct FTypedElementLocalTransformColumn : public FTypedElementDataStorageColumn
+USTRUCT(meta = (DisplayName = "Local Transform"))
+struct FTypedElementLocalTransformColumn final : public FTypedElementDataStorageColumn
 {
 	GENERATED_BODY()
 
@@ -21,5 +21,6 @@ struct FTypedElementLocalTransformColumn : public FTypedElementDataStorageColumn
 	// Transfrom will be updated the first and following ticks after it's creation. If this
 	// isn't initialized at the correct time, then the sync from source or the true initialization
 	// need to be moved to an earlier phase or group.
+	UPROPERTY(meta = (IgnoreForMemberInitializationTest))
 	FTransform Transform { NoInit };
 };

@@ -5,7 +5,7 @@
 =============================================================================*/
 
 // Update this GUID to improve shader recompilation for Vulkan only shaders
-// GUID = 93BF8713-DDDD-46C1-A972-1C3534563925
+// GUID = EEA3F6F8-2405-4093-9A65-5072C38494AC
 
 #pragma once
 
@@ -49,9 +49,10 @@ void ImageInterlockedMaxUInt64(RWTexture2D<UlongType> Dest, uint2 Coord, UlongTy
 	#define UB_RESOURCE_MEMBER_RESOURCE(Type, Name) typedef Type SafeType##Name; SafeType##Name VULKAN_RESOURCE_HEAP(SafeType##Name)[]; static const Type Name = VULKAN_RESOURCE_HEAP(SafeType##Name)[BindlessResource_##Name]
 
 	// bindless sampler heaps (specify a register so AUTO_BINDLESS macros aren't applied on them)
-	SamplerState VULKAN_SAMPLER_HEAP(SamplerState)[] : register(s0, space1000);
-	SamplerComparisonState VULKAN_SAMPLER_HEAP(SamplerComparisonState)[] : register(s0, space1000);
-	COMPILER_DEFINE GetSamplerFromHeap(Type, Index) VULKAN_SAMPLER_HEAP(Type)[Index]
+	COMPILER_DEFINE GetSamplerFromHeap(Type, Index)  /* filled by compiler */
+
+	// Override the UB_RESOURCE_MEMBER_SAMPLER to use the Vulkan sampler heaps
+	#define UB_RESOURCE_MEMBER_SAMPLER(Type, Name) typedef Type SafeType##Name; SafeType##Name VULKAN_SAMPLER_HEAP(SafeType##Name)[]; static const Type Name = VULKAN_SAMPLER_HEAP(SafeType##Name)[BindlessSampler_##Name]
 #endif
 
 #if VULKAN_SUPPORTS_SUBGROUP_SIZE_CONTROL

@@ -14,7 +14,6 @@
 #include "Engine/StaticMeshActor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/Change.h"
-#include "ChangeTransactor.h"
 
 #include "FractureModeSettings.h"
 
@@ -56,7 +55,16 @@
 #define LOCTEXT_NAMESPACE "FractureToolGenerators"
 
 
+namespace
+{
+	FString GetActiveContentBrowserFolderPath()
+	{
+		IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
+		const FContentBrowserItemPath CurrentPath = ContentBrowser.GetCurrentPath();
+		return CurrentPath.HasInternalPath() ? CurrentPath.GetInternalPathString() : FString();
+	}
 
+}
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -88,7 +96,7 @@ public:
 	SLATE_ARGUMENT(FText, DefaultNameOverride)
 
 	SLATE_ARGUMENT(bool, bSplitIslands)
-	SLATE_ARGUMENT(bool, bAddInternalMaterials)
+	SLATE_ARGUMENT(bool, bReimportToMeshOutput)
 
 	/** Action to perform when create clicked */
 	SLATE_EVENT(FOnPathChosen, OnCreateAssetAction)
@@ -143,8 +151,8 @@ private:
 	/** Whether to split out each connected components into separate geometry */
 	bool bSplitIslands = false;
 
-	/** Whether to duplicate materials to create internal materials when creating from a static mesh */
-	bool bAddInternalMaterials = true;
+	/** Whether static mesh inputs were created by the 'ToMesh' tool in Fracture Mode */
+	bool bFromToMeshTool = false;
 
 	/** Filename textbox widget */
 	TSharedPtr<SEditableTextBox> FileNameWidget;
@@ -274,8 +282,8 @@ void SCreateGeometryCollectionFromObject::Construct(const FArguments& InArgs, TS
 					.VAlign(VAlign_Center)
 					[
 						SNew(STextBlock)
-						.Text(LOCTEXT("AddInternalsLabel", "Add Internal Materials"))
-						.ToolTipText(LOCTEXT("InternalMatsToolTip", "If checked, static mesh materials will be duplicated to create materials for internal surfaces. Does not apply if creating from a Geometry Collection source."))
+						.Text(LOCTEXT("ReimportToMeshLabel", "Reimport From 'ToMesh'"))
+						.ToolTipText(LOCTEXT("FromToMeshToolTip", "Only check for meshes that were created by the ToMesh tool in Fracture Mode. Does not apply if creating from a Geometry Collection source."))
 					]
 
 				+ SHorizontalBox::Slot()
@@ -284,7 +292,7 @@ void SCreateGeometryCollectionFromObject::Construct(const FArguments& InArgs, TS
 						SNew(SCheckBox)
 						.IsChecked_Lambda([this]()->ECheckBoxState
 							{
-								return bAddInternalMaterials ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+								return bFromToMeshTool ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 							})
 						.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
 							{
@@ -292,9 +300,9 @@ void SCreateGeometryCollectionFromObject::Construct(const FArguments& InArgs, TS
 								{
 									return;
 								}
-								bAddInternalMaterials = NewState == ECheckBoxState::Checked;
+								bFromToMeshTool = NewState == ECheckBoxState::Checked;
 							})
-						.ToolTipText(LOCTEXT("InternalMatsToolTip", "If checked, static mesh materials will be duplicated to create materials for internal surfaces. Does not apply if creating from a Geometry Collection source."))
+						.ToolTipText(LOCTEXT("FromToMeshToolTip", "Only check for meshes that were created by the ToMesh tool in Fracture Mode. Does not apply if creating from a Geometry Collection source."))
 					]
 				]
 				+ SVerticalBox::Slot()
@@ -306,8 +314,8 @@ void SCreateGeometryCollectionFromObject::Construct(const FArguments& InArgs, TS
 					.VAlign(VAlign_Center)
 					[
 						SNew(STextBlock)
-						.Text(LOCTEXT("SplitComponentsLabel", "Split Components"))
-						.ToolTipText(LOCTEXT("SplitComponentsToolTip", "If checked, triangles that are not topologically connected will be assigned separate bones on import."))
+						.Text(LOCTEXT("SplitMeshesLabel", "Split Meshes"))
+						.ToolTipText(LOCTEXT("SplitComponentsToolTip", "If checked, triangles that are not topologically connected will be assigned separate bones on import. Does not apply if creating from a Geometry Collection source."))
 					]
 
 				+ SHorizontalBox::Slot()
@@ -326,7 +334,7 @@ void SCreateGeometryCollectionFromObject::Construct(const FArguments& InArgs, TS
 							}
 							bSplitIslands = NewState == ECheckBoxState::Checked;
 						})
-						.ToolTipText(LOCTEXT("SplitComponentsToolTip", "If checked, triangles that are not topologically connected will be assigned separate bones on import."))
+						.ToolTipText(LOCTEXT("SplitComponentsToolTip", "If checked, triangles that are not topologically connected will be assigned separate bones on import. Does not apply if creating from a Geometry Collection source."))
 					]
 				]
 			]
@@ -375,7 +383,7 @@ void SCreateGeometryCollectionFromObject::RequestDestroyParentWindow()
 FReply SCreateGeometryCollectionFromObject::OnCreateAssetFromActorClicked()
 {
 	RequestDestroyParentWindow();
-	OnCreateAssetAction.ExecuteIfBound(AssetPath / FileNameWidget->GetText().ToString(), bAddInternalMaterials, bSplitIslands);
+	OnCreateAssetAction.ExecuteIfBound(AssetPath / FileNameWidget->GetText().ToString(), bFromToMeshTool, bSplitIslands);
 	return FReply::Handled();
 }
 
@@ -433,27 +441,6 @@ bool SCreateGeometryCollectionFromObject::IsCreateAssetFromActorEnabled() const
 	return !bIsReportingError;
 }
 
-// Creates an undo/redo action that (un)registers and object with the Asset Registry.
-// Upon undo this causes the object to be unregistered and as a result be removed from
-// Content Browsers.
-class FAssetRegistrationChange final : public FCommandChange
-{
-public:
-	void Apply(UObject* Object) override
-	{
-		FAssetRegistryModule::AssetCreated(Object);
-	}
-	void Revert(UObject* Object) override
-	{
-		FAssetRegistryModule::AssetDeleted(Object);
-	}
-
-	FString ToString() const override
-	{
-		return TEXT("Asset registry from " LOCTEXT_NAMESPACE);
-	}
-};
-
 FText UFractureToolGenerateAsset::GetDisplayText() const
 {
 	return FText(NSLOCTEXT("Fracture", "FractureToolGenerateAsset", "New"));
@@ -496,6 +483,79 @@ void UFractureToolGenerateAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> In
 	// Note: Transaction for undo history is created after the user completes the UI dialog; see OnGenerateAssetPathChosen()
 }
 
+FString UFractureToolGenerateAsset::GetDefaultAssetPath(const TArray<AActor*>& Actors) const
+{
+	FString UseAssetPath;
+
+	const UFractureModeSettings* Settings = GetDefault<UFractureModeSettings>();
+	bool bFailedToFindContentBrowser = false, bFailedToFindLastUsedFolder = false;
+	if (Settings->NewAssetLocation == EFractureModeNewAssetLocation::ContentBrowserFolder)
+	{
+		FString ActiveContentFolder = GetActiveContentBrowserFolderPath();
+		if (ActiveContentFolder.IsEmpty())
+		{
+			bFailedToFindContentBrowser = true;
+		}
+		else
+		{
+			UseAssetPath = ActiveContentFolder;
+		}
+	}
+	if (bFailedToFindContentBrowser || Settings->NewAssetLocation == EFractureModeNewAssetLocation::LastUsedFolder)
+	{
+		if (AssetPath.IsEmpty())
+		{
+			bFailedToFindLastUsedFolder = true;
+		}
+		else
+		{
+			UseAssetPath = AssetPath;
+		}
+	}
+	if (bFailedToFindLastUsedFolder || Settings->NewAssetLocation == EFractureModeNewAssetLocation::SourceAssetFolder)
+	{
+		for (const AActor* Actor : Actors)
+		{
+			// Find the asset folder of any selected static mesh
+			TArray<UStaticMeshComponent*> StaticMeshComponents;
+			Actor->GetComponents(StaticMeshComponents, true);
+			const UStaticMesh* FoundMeshAsset = nullptr;
+			for (UStaticMeshComponent* StaticMeshComponent : StaticMeshComponents)
+			{
+				FoundMeshAsset = StaticMeshComponent ? StaticMeshComponent->GetStaticMesh() : nullptr;
+				if (FoundMeshAsset)
+				{
+					break;
+				}
+			}
+			if (FoundMeshAsset)
+			{
+				UseAssetPath = FoundMeshAsset->GetPathName();
+				break;
+			}
+			// Find the asset folder of any selected geometry collection
+			TArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
+			Actor->GetComponents(GeometryCollectionComponents, true);
+			const UGeometryCollection* FoundRestAsset = nullptr;
+			for (UGeometryCollectionComponent* GCComp : GeometryCollectionComponents)
+			{
+				FoundRestAsset = GCComp ? GCComp->GetRestCollection() : nullptr;
+				if (FoundRestAsset)
+				{
+					break;
+				}
+			}
+			if (FoundRestAsset)
+			{
+				UseAssetPath = FoundRestAsset->GetPathName();
+				break;
+			}
+		}
+	}
+	return UseAssetPath;
+}
+
+
 void UFractureToolGenerateAsset::OpenGenerateAssetDialog(TArray<AActor*>& Actors)
 {
 	TSharedPtr<SWindow> PickAssetPathWindow;
@@ -504,6 +564,8 @@ void UFractureToolGenerateAsset::OpenGenerateAssetDialog(TArray<AActor*>& Actors
 		.Title(LOCTEXT("SelectPath", "Select Path"))
 		.ToolTipText(LOCTEXT("SelectPathTooltip", "Select the asset path for your new Geometry Collection"))
 		.ClientSize(FVector2D(500, 500));
+
+	AssetPath = GetDefaultAssetPath(Actors);
 
 	// NOTE - the parent window has to completely exist before this one does so the parent gets set properly.
 	// This is why we do not just put this in the Contents()[ ... ] of the Window above.
@@ -529,10 +591,8 @@ void UFractureToolGenerateAsset::OpenGenerateAssetDialog(TArray<AActor*>& Actors
 
 }
 
-void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAssetPath, bool bAddInternalMaterials, bool bSplitComponents, TArray<AActor*> Actors)
+void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAssetPath, bool bFromToMeshTool, bool bSplitComponents, TArray<AActor*> Actors)
 {	
-	FScopedTransaction Transaction(LOCTEXT("GenerateAsset", "Generate Geometry Collection Asset"));
-
 	//Record the path
 	int32 LastSlash = INDEX_NONE;
 	if (InAssetPath.FindLastChar('/', LastSlash))
@@ -548,7 +608,7 @@ void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAsse
 
 		AGeometryCollectionActor* GeometryCollectionActor = Cast<AGeometryCollectionActor>(FirstActor);
 		
-		GeometryCollectionActor = ConvertActorsToGeometryCollection(InAssetPath, bAddInternalMaterials, bSplitComponents, Actors);
+		GeometryCollectionActor = ConvertActorsToGeometryCollection(InAssetPath, false/*bAddInternalMaterials*/, bSplitComponents, Actors, bFromToMeshTool);
 
 		GeometryCollectionComponent = GeometryCollectionActor->GetGeometryCollectionComponent();
 
@@ -582,6 +642,10 @@ void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAsse
 		GeometryCollectionComponent->MarkRenderDynamicDataDirty();
 		GeometryCollectionComponent->MarkRenderStateDirty();
 
+
+
+		FScopedTransaction Transaction(LOCTEXT("RemoveSourceActors", "Remove Source Actors"));
+
 		for (AActor* Actor : Actors)
 		{
 			Actor->Modify();
@@ -590,8 +654,9 @@ void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAsse
 	}
 }
 
-AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCollection(const FString& InAssetPath, bool bAddInternalMaterials, bool bSplitComponents, TArray<AActor*>& Actors)
+AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCollection(const FString& InAssetPath, bool bAddInternalMaterials, bool bSplitComponents, TArray<AActor*>& Actors, bool bFromToMeshTool)
 {
+	ensure(!bAddInternalMaterials); // we should not use the 'add internal materials' path anymore, as we move away from the odd-numbered-internal-material convention
 	ensure(Actors.Num() > 0);
 	AActor* FirstActor = Actors[0];
 	const FString& Name = FirstActor->GetActorLabel();
@@ -621,7 +686,7 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCol
 				if (ComponentStaticMesh != nullptr)
 				{
 					// If any of the static meshes have Nanite enabled, also enable on the new geometry collection asset for convenience.
-					FracturedGeometryCollection->EnableNanite |= ComponentStaticMesh->NaniteSettings.bEnabled;
+					FracturedGeometryCollection->EnableNanite |= ComponentStaticMesh->IsNaniteEnabled();
 				}
 
 				FTransform ComponentTransform(StaticMeshComponent->GetComponentTransform());
@@ -630,9 +695,11 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCol
 				// Record the contributing source on the asset.
 				FSoftObjectPath SourceSoftObjectPath(ComponentStaticMesh);
 				decltype(FGeometryCollectionSource::SourceMaterial) SourceMaterials(StaticMeshComponent->GetMaterials());
-				FracturedGeometryCollection->GeometrySource.Add({ SourceSoftObjectPath, ComponentTransform, SourceMaterials, bAddInternalMaterials, bSplitComponents });
-
-				FGeometryCollectionEngineConversion::AppendStaticMesh(ComponentStaticMesh, SourceMaterials, ComponentTransform, FracturedGeometryCollection, false, bAddInternalMaterials, bSplitComponents);
+				bool bSetInternalFromMaterialIndex = bFromToMeshTool;
+				
+				FracturedGeometryCollection->GeometrySource.Emplace(SourceSoftObjectPath, ComponentTransform, SourceMaterials, bSplitComponents, bSetInternalFromMaterialIndex);
+				
+				FGeometryCollectionEngineConversion::AppendStaticMesh(ComponentStaticMesh, SourceMaterials, ComponentTransform, FracturedGeometryCollection, false/*bReindexMaterials*/, bAddInternalMaterials, bSplitComponents, bSetInternalFromMaterialIndex);
 			}
 		}
 
@@ -664,25 +731,21 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCol
 				{
 					SourceMaterials[MaterialIndex] = GeometryCollectionComponent->GetMaterial(MaterialIndex);
 				}
-				FracturedGeometryCollection->GeometrySource.Add({ SourceSoftObjectPath, ComponentTransform, SourceMaterials });
+				constexpr bool bSplitCollectionComponents = false, bSetInternalFromMaterialIndex = false;
+				FracturedGeometryCollection->GeometrySource.Emplace(SourceSoftObjectPath, ComponentTransform, SourceMaterials, bSplitCollectionComponents, bSetInternalFromMaterialIndex);
 
-				FGeometryCollectionEngineConversion::AppendGeometryCollection(RestCollection, GeometryCollectionComponent, ComponentTransform, FracturedGeometryCollection, false);
+				FGeometryCollectionEngineConversion::AppendGeometryCollection(RestCollection, GeometryCollectionComponent, ComponentTransform, FracturedGeometryCollection, false /*bReindexMaterials*/);
 
 			}
 		}
 	}
 
-	FracturedGeometryCollection->InitializeMaterials();
+	FracturedGeometryCollection->InitializeMaterials(bAddInternalMaterials);
 
 	AddSingleRootNodeIfRequired(FracturedGeometryCollection);
 
-	if (FracturedGeometryCollection->EnableNanite)
-	{
-		FracturedGeometryCollection->InvalidateCollection();
-		FracturedGeometryCollection->EnsureDataIsCooked(true /* init resources */);
-	}
-
-	NewActor->GetGeometryCollectionComponent()->MarkRenderStateDirty();
+	FracturedGeometryCollection->InvalidateCollection();
+	FracturedGeometryCollection->RebuildRenderData();
 
 	// Add and initialize guids
 	::GeometryCollection::GenerateTemporaryGuids(FracturedGeometryCollection->GetGeometryCollection().Get(), 0 , true);
@@ -704,12 +767,6 @@ class AGeometryCollectionActor* UFractureToolGenerateAsset::CreateNewGeometryAct
 	UPackage* Package = CreatePackage(*UniquePackageName);
 	UGeometryCollection* InGeometryCollection = static_cast<UGeometryCollection*>(NewObject<UGeometryCollection>(Package, UGeometryCollection::StaticClass(), FName(*UniqueAssetName), RF_Transactional | RF_Public | RF_Standalone));
 	if(!InGeometryCollection->SizeSpecificData.Num()) InGeometryCollection->SizeSpecificData.Add(FGeometryCollectionSizeSpecificData());
-
-	// Record the creation of the geometry collection so it's removed from the Asset Registry and the Content Browser when undo is called.
-	UE::FChangeTransactor Transactor(InGeometryCollection);
-	Transactor.OpenTransaction(LOCTEXT("GeometryCollectionAssetRegistration", "Geometry Collection Asset Registration"));
-	Transactor.AddTransactionChange<FAssetRegistrationChange>();
-	Transactor.CloseTransaction();
 
 	// Create the new Geometry Collection actor
 	AGeometryCollectionActor* NewActor = Cast<AGeometryCollectionActor>(AddActor(GetSelectedLevel(), AGeometryCollectionActor::StaticClass()));
@@ -845,7 +902,8 @@ void UFractureToolResetAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 					const UObject* SourceMesh = Source.SourceGeometryObject.TryLoad();
 					if (const UStaticMesh* SourceStaticMesh = Cast<UStaticMesh>(SourceMesh))
 					{
-						FGeometryCollectionEngineConversion::AppendStaticMesh(SourceStaticMesh, Source.SourceMaterial, Source.LocalTransform, GeometryCollectionObject, false, Source.bAddInternalMaterials, Source.bSplitComponents);
+						bool bLegacyAddInternal = Source.bAddInternalMaterials;
+						FGeometryCollectionEngineConversion::AppendStaticMesh(SourceStaticMesh, Source.SourceMaterial, Source.LocalTransform, GeometryCollectionObject, false, bLegacyAddInternal, Source.bSplitComponents, Source.bSetInternalFromMaterialIndex);
 					}
 					else if (const USkeletalMesh* SourceSkeletalMesh = Cast<USkeletalMesh>(SourceMesh))
 					{
@@ -858,20 +916,17 @@ void UFractureToolResetAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 					}
 				}
 
-				GeometryCollectionObject->InitializeMaterials();
+				constexpr bool bHasInternalMaterials = false;
+				GeometryCollectionObject->InitializeMaterials(bHasInternalMaterials);
 
-				if (bKeepPreviousMaterials)
+				// attempt to keep previously-set materials (as long as the source doesn't have even more materials)
+				int32 NewMatNum = GeometryCollectionObject->Materials.Num(), OldMatNum = OldMaterials.Num();
+				if (bKeepPreviousMaterials && NewMatNum <= OldMatNum)
 				{
-					int32 NewMatNum = GeometryCollectionObject->Materials.Num(), OldMatNum = OldMaterials.Num();
-					// if the source asset was changed, number of materials might have changed; only copy to the extent the two arrays match
-					int32 NumToCopy = FMath::Min(NewMatNum, OldMatNum);
-					for (int32 MatIdx = 0; MatIdx + 1 < NumToCopy; MatIdx++)
+					GeometryCollectionObject->Materials.SetNum(OldMatNum);
+					for (int32 MatIdx = 0; MatIdx < OldMatNum; MatIdx++)
 					{
 						GeometryCollectionObject->Materials[MatIdx] = OldMaterials[MatIdx];
-					}
-					if (NumToCopy > 0) // copy the selection material
-					{
-						GeometryCollectionObject->Materials[NewMatNum - 1] = OldMaterials[OldMatNum - 1];
 					}
 				}
 
@@ -880,8 +935,8 @@ void UFractureToolResetAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 
 				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollection, -1);
 				AddSingleRootNodeIfRequired(GeometryCollectionObject);
-				GeometryCollectionComponent->MarkRenderDynamicDataDirty();
-				GeometryCollectionComponent->MarkRenderStateDirty();
+
+				GeometryCollectionObject->RebuildRenderData();
 			}
 
 			GeometryCollectionObject->MarkPackageDirty();

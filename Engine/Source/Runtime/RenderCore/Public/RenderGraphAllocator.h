@@ -17,11 +17,30 @@
 #define RDG_USE_MALLOC USING_ADDRESS_SANITISER
 
 /** Private allocator used by RDG to track its internal memory. All memory is released after RDG builder execution. */
-class RENDERCORE_API FRDGAllocator final
+class FRDGAllocator final
 {
 public:
-	static FRDGAllocator& Get();
-	~FRDGAllocator();
+	class FObject
+	{
+	public:
+		virtual ~FObject() = default;
+	};
+
+	template <typename T>
+	class TObject final : FObject
+	{
+		friend class FRDGAllocator;
+	private:
+		template <typename... TArgs>
+		FORCEINLINE TObject(TArgs&&... Args)
+			: Alloc(Forward<TArgs&&>(Args)...)
+		{}
+
+		T Alloc;
+	};
+
+	static RENDERCORE_API FRDGAllocator& Get();
+	RENDERCORE_API ~FRDGAllocator();
 
 	/** Allocates raw memory. */
 	FORCEINLINE void* Alloc(uint64 SizeInBytes, uint32 AlignInBytes)
@@ -48,13 +67,13 @@ public:
 	{
 		FContext& LocalContext = GetContext();
 	#if RDG_USE_MALLOC
-		TTrackedAlloc<T>* TrackedAlloc = new TTrackedAlloc<T>(Forward<TArgs&&>(Args)...);
+		TObject<T>* Object = new TObject<T>(Forward<TArgs&&>(Args)...);
 	#else
-		TTrackedAlloc<T>* TrackedAlloc = new(LocalContext.MemStack) TTrackedAlloc<T>(Forward<TArgs&&>(Args)...);
+		TObject<T>* Object = new(LocalContext.MemStack) TObject<T>(Forward<TArgs&&>(Args)...);
 	#endif
-		check(TrackedAlloc);
-		LocalContext.TrackedAllocs.Add(TrackedAlloc);
-		return &TrackedAlloc->Alloc;
+		check(Object);
+		LocalContext.Objects.Add(Object);
+		return &Object->Alloc;
 	}
 
 	/** Allocates a C++ object with no destructor tracking (dangerous!). */
@@ -82,23 +101,7 @@ private:
 	FRDGAllocator(FRDGAllocator&&) = default;
 	FRDGAllocator& operator = (FRDGAllocator&&) = default;
 
-	void ReleaseAll();
-
-	struct FTrackedAlloc
-	{
-		virtual ~FTrackedAlloc() = default;
-	};
-
-	template <typename T>
-	struct TTrackedAlloc final : FTrackedAlloc
-	{
-		template <typename... TArgs>
-		FORCEINLINE TTrackedAlloc(TArgs&&... Args)
-			: Alloc(Forward<TArgs&&>(Args)...)
-		{}
-
-		T Alloc;
-	};
+	RENDERCORE_API void ReleaseAll();
 
 	struct FContext
 	{
@@ -107,7 +110,7 @@ private:
 #else
 		FMemStackBase MemStack;
 #endif
-		TArray<FTrackedAlloc*> TrackedAllocs;
+		TArray<FObject*> Objects;
 
 		void ReleaseAll();
 	};
@@ -126,15 +129,17 @@ private:
 	friend class FRDGAllocatorScope;
 };
 
+#define RDG_FRIEND_ALLOCATOR_FRIEND(Type) friend class FRDGAllocator::TObject<Type>
+
 /** Base class for RDG builder which scopes the allocations and releases them in the destructor. */
-class RENDERCORE_API FRDGAllocatorScope
+class FRDGAllocatorScope
 {
 public:
 	FRDGAllocatorScope()
 		: Allocator(FRDGAllocator::Get())
 	{}
 
-	~FRDGAllocatorScope();
+	RENDERCORE_API ~FRDGAllocatorScope();
 
 protected:
 	FRDGAllocator& Allocator;
@@ -147,6 +152,11 @@ protected:
 private:
 	TUniqueFunction<void()> AsyncDeleteFunction;
 };
+
+namespace UE::RenderCore::Private
+{
+	[[noreturn]] RENDERCORE_API void OnInvalidRDGAllocatorNum(int32 NewNum, SIZE_T NumBytesPerElement);
+}
 
 /** A container allocator that allocates from a global RDG allocator instance. */
 template<uint32 Alignment = DEFAULT_ALIGNMENT>
@@ -182,6 +192,14 @@ public:
 			void* OldData = Data;
 			if (NumElements)
 			{
+				static_assert(sizeof(int32) <= sizeof(SIZE_T), "SIZE_T is expected to be larger than int32");
+
+				// Check for under/overflow
+				if (UNLIKELY(NumElements < 0 || NumBytesPerElement < 1 || NumBytesPerElement > (SIZE_T)MAX_int32))
+				{
+					UE::RenderCore::Private::OnInvalidRDGAllocatorNum(NumElements, NumBytesPerElement);
+				}
+
 				// Allocate memory from the allocator.
 				const int32 AllocSize = (int32)(NumElements * NumBytesPerElement);
 				const int32 AllocAlignment = FMath::Max(Alignment, (uint32)alignof(ElementType));

@@ -2,8 +2,8 @@
 #pragma once
 
 #include "Chaos/Collision/CollisionConstraintAllocator.h"
-#include "Chaos/Collision/CollisionConstraintFlags.h"
 #include "Chaos/Collision/CollisionContext.h"
+#include "Chaos/Collision/CollisionFilter.h"
 #include "Chaos/Collision/StatsData.h"
 #include "Chaos/ISpatialAccelerationCollection.h"
 #include "Chaos/ParticleHandleFwd.h"
@@ -15,6 +15,11 @@
 #include "Chaos/GeometryParticlesfwd.h"
 #include "Chaos/AABBTree.h"
 
+// Set to 1 to enable some sanity chacks on the filtered broadphase results
+#ifndef CHAOS_CHECK_BROADPHASE
+#define CHAOS_CHECK_BROADPHASE 0
+#endif
+
 namespace Chaos
 {
 	template <typename TPayloadType, typename T, int d>
@@ -23,14 +28,20 @@ namespace Chaos
 
 	namespace Private
 	{
+
 		/**
 		 * Check whether the two particles are allowed to collide, and also whether we should flip their order.
 		 */
-		inline bool ParticlePairCollisionAllowed(const FGeometryParticleHandle* Particle1, const FGeometryParticleHandle* Particle2, const FIgnoreCollisionManager& IgnoreCollisionManager, const bool bIsResimming,  bool& bOutSwapOrder)
+		inline bool ParticlePairCollisionAllowed(
+			const FGeometryParticleHandle* Particle1, 
+			const FGeometryParticleHandle* Particle2, 
+			const FIgnoreCollisionManager& IgnoreCollisionManager, 
+			const bool bIsResimming,  
+			bool& bOutSwapOrder)
 		{
 			bOutSwapOrder = false;
 
-			if (Particle1 == Particle2)
+			if (!ParticlePairBroadPhaseFilter(Particle1, Particle2, &IgnoreCollisionManager))
 			{
 				return false;
 			}
@@ -38,71 +49,23 @@ namespace Chaos
 			bool bIsKinematic1 = true;
 			bool bIsDynamicAwake1 = false;
 			bool bIsDynamicAsleep1 = false;
-			bool bUseIgnoreCollisionManager1 = false;
-			bool bDisabled1 = false;
-			int32 CollisionGroup1 = 0;
 			const FPBDRigidParticleHandle* Rigid1 = Particle1->CastToRigidParticle();
 			if (Rigid1 != nullptr)
 			{
 				bIsKinematic1 = Rigid1->IsKinematic();
 				bIsDynamicAsleep1 = !bIsKinematic1 && Rigid1->IsSleeping();
 				bIsDynamicAwake1 = !bIsKinematic1 && !bIsDynamicAsleep1;
-				bUseIgnoreCollisionManager1 = Rigid1->UseIgnoreCollisionManager();
-				bDisabled1 = Rigid1->Disabled();
-				CollisionGroup1 = Rigid1->CollisionGroup();
 			}
 
 			bool bIsKinematic2 = true;
 			bool bIsDynamicAwake2 = false;
 			bool bIsDynamicAsleep2 = false;
-			bool bUseIgnoreCollisionManager2 = false;
-			bool bDisabled2 = false;
-			int32 CollisionGroup2 = 0;
 			const FPBDRigidParticleHandle* Rigid2 = Particle2->CastToRigidParticle();
 			if (Rigid2 != nullptr)
 			{
 				bIsKinematic2 = Rigid2->IsKinematic();
 				bIsDynamicAsleep2 = !bIsKinematic2 && Rigid2->IsSleeping();
 				bIsDynamicAwake2 = !bIsKinematic2 && !bIsDynamicAsleep2;
-				bUseIgnoreCollisionManager2 = Rigid2->UseIgnoreCollisionManager();
-				bDisabled2 = Rigid2->Disabled();
-				CollisionGroup2 = Rigid2->CollisionGroup();
-			}
-
-			// @todo(chaos): This should not be happening if the disabled particles are removed from the active particles list, but GeometryCollection may leave them there
-			//check(!bDisabled2);
-			if (bDisabled1 || bDisabled2)
-			{
-				return false;
-			}
-
-			// At least one particle needs to be dynamic to generate a collision response
-			if (bIsKinematic1 && bIsKinematic2)
-			{
-				return false;
-			}
-			check((Rigid1 != nullptr) || (Rigid2 != nullptr));
-
-			// Is this particle interaction governed by the IgnoreCollisionManager? If so, check to see if interaction is allowed
-			if (bUseIgnoreCollisionManager1 || bUseIgnoreCollisionManager2)
-			{
-				if (IgnoreCollisionManager.IgnoresCollision(Particle1, Particle2))
-				{
-					return false;
-				}
-			}
-
-			// CollisionGroups are used by geometry collections for high-level collision filtering
-			// CollisionGroup == 0 : Collide_With_Everything
-			// CollisionGroup == INDEX_NONE : Disabled collisions
-			// CollisionGroup1 != CollisionGroup2 : Disabled collisions (if other conditions not met)
-			if (CollisionGroup1 == INDEX_NONE || CollisionGroup2 == INDEX_NONE)
-			{
-				return false;
-			}
-			if ((CollisionGroup1 != 0) && (CollisionGroup2 != 0) && (CollisionGroup1 != CollisionGroup2))
-			{
-				return false;
 			}
 
 			// In both cases (resim or not) we will generate (1) dynamic-(sleeping,kinematic(steady+moving),static) pairs + (2) sleeping-moving kinematic ones
@@ -329,7 +292,7 @@ namespace Chaos
 		}
 
 		/**
-		 * Generate all overlapping pairs and spawn a misphase object to handle collisions for each of them
+		 * Generate all overlapping pairs and spawn a midphase object to handle collisions for each of them
 		 */
 		void ProduceOverlaps(
 			FReal Dt, 
@@ -337,7 +300,6 @@ namespace Chaos
 			const FCollisionDetectorSettings& Settings,
 			IResimCacheBase* ResimCache)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Collisions_SpatialBroadPhase);
 
 			if (!ensure(SpatialAcceleration))
 			{
@@ -347,33 +309,42 @@ namespace Chaos
 
 			bNeedsResim = ResimCache && ResimCache->IsResimming();
 
-			if (const auto AABBTree = SpatialAcceleration->template As<TAABBTree<FAccelerationStructureHandle, TAABBTreeLeafArray<FAccelerationStructureHandle>>>())
 			{
-				ProduceOverlaps(Dt, *AABBTree, Allocator, Settings, ResimCache);
-			}
-			else if (const auto BV = SpatialAcceleration->template As<TBoundingVolume<FAccelerationStructureHandle>>())
-			{
-				ProduceOverlaps(Dt, *BV, Allocator, Settings, ResimCache);
-			}
-			else if (const auto AABBTreeBV = SpatialAcceleration->template As<TAABBTree<FAccelerationStructureHandle, TBoundingVolume<FAccelerationStructureHandle>>>())
-			{
-				ProduceOverlaps(Dt, *AABBTreeBV, Allocator, Settings, ResimCache);
-			}
-			else if (const auto Collection = SpatialAcceleration->template As<ISpatialAccelerationCollection<FAccelerationStructureHandle, FReal, 3>>())
-			{
-				Collection->PBDComputeConstraintsLowLevel(Dt, *this, Allocator, Settings, ResimCache);
-			}
-			else
-			{
-				check(false);  //question: do we want to support a dynamic dispatch version?
+				SCOPE_CYCLE_COUNTER(STAT_Collisions_SpatialBroadPhase);
+
+				if (const auto AABBTree = SpatialAcceleration->template As<TAABBTree<FAccelerationStructureHandle, TAABBTreeLeafArray<FAccelerationStructureHandle>>>())
+				{
+					ProduceOverlaps(Dt, *AABBTree, Allocator, Settings, ResimCache);
+				}
+				else if (const auto BV = SpatialAcceleration->template As<TBoundingVolume<FAccelerationStructureHandle>>())
+				{
+					ProduceOverlaps(Dt, *BV, Allocator, Settings, ResimCache);
+				}
+				else if (const auto AABBTreeBV = SpatialAcceleration->template As<TAABBTree<FAccelerationStructureHandle, TBoundingVolume<FAccelerationStructureHandle>>>())
+				{
+					ProduceOverlaps(Dt, *AABBTreeBV, Allocator, Settings, ResimCache);
+				}
+				else if (const auto Collection = SpatialAcceleration->template As<ISpatialAccelerationCollection<FAccelerationStructureHandle, FReal, 3>>())
+				{
+					Collection->PBDComputeConstraintsLowLevel(Dt, *this, Allocator, Settings, ResimCache);
+				}
+				else
+				{
+					check(false);  //question: do we want to support a dynamic dispatch version?
+				}
 			}
 
 			{
+				SCOPE_CYCLE_COUNTER(STAT_Collisions_MidPhase);
 				CSV_SCOPED_TIMING_STAT(PhysicsVerbose, DetectCollisions_AssignMidPhases);
 
+				FChaosVDContextWrapper CVDContext;
+				CVD_GET_WRAPPED_CURRENT_CONTEXT(CVDContext);
+
 				// Find or assign a midphase to each overlapping particle pair
-				const auto& AssignMidPhasesWorker = [this, Dt](const int32 ContextIndex)
+				const auto& AssignMidPhasesWorker = [this, Dt, &CVDContext](const int32 ContextIndex)
 				{
+					CVD_SCOPE_CONTEXT(CVDContext.Context);
 					AssignMidPhases(BroadphaseContexts[ContextIndex]);
 				};
 				PhysicsParallelFor(NumActiveBroadphaseContexts, AssignMidPhasesWorker, bDisableCollisionParallelFor);
@@ -381,6 +352,10 @@ namespace Chaos
 				// Merge all the midphases from each worker into the primary allocator
 				Allocator->ProcessNewMidPhases();
 			}
+
+			// Run some error checks in non-shipping builds
+			// NOTE: This must come after MidPhase assignment for now because that's where the filter is applied
+			CheckOverlapResults();
 		}
 
 		/**
@@ -388,9 +363,15 @@ namespace Chaos
 		*/
 		void ProduceCollisions(FReal Dt)
 		{
+			SCOPE_CYCLE_COUNTER(STAT_Collisions_NarrowPhase);
 			CSV_SCOPED_TIMING_STAT(PhysicsVerbose, DetectCollisions_MidPhase);
-			const auto& ProcessMidPhasesWorker = [this, Dt](const int32 ContextIndex)
+
+			FChaosVDContextWrapper CVDContext;
+			CVD_GET_WRAPPED_CURRENT_CONTEXT(CVDContext);
+	
+			const auto& ProcessMidPhasesWorker = [this, Dt, &CVDContext](const int32 ContextIndex)
 			{
+				CVD_SCOPE_CONTEXT(CVDContext.Context);
 				ProcessMidPhases(Dt, BroadphaseContexts[ContextIndex]);
 			};
 			PhysicsParallelFor(NumActiveBroadphaseContexts, ProcessMidPhasesWorker, bDisableCollisionParallelFor);
@@ -482,7 +463,7 @@ namespace Chaos
 			if(!bNeedsResim)
 			{
 				const TParticleView<TPBDRigidParticles<FReal, 3>>& DynamicSleepingView = Particles.GetNonDisabledDynamicView();
-				const TParticleView<TKinematicGeometryParticles<FReal, 3>>& DynamicMovingKinematicView = Particles.GetActiveDynamicMovingKinematicParticlesView();
+				const TParticleView<TPBDRigidParticles<FReal, 3>>& DynamicMovingKinematicView = Particles.GetActiveDynamicMovingKinematicParticlesView();
 
 				// Usually we ignore sleeping particles in the outer loop and iterate over awake-dynamics and moving-kinematics. 
 				// However, for scenes with a very large number of moving kinematics, it is faster to loop over awake-dynamics
@@ -547,7 +528,6 @@ namespace Chaos
 			const bool bBody1Bounded = Particle1->HasBounds();
 			if (bBody1Bounded)
 			{
-				//SCOPE_CYCLE_COUNTER(STAT_Collisions_AABBTree);
 				// @todo(chaos): cache this on the particle?
 				FCollisionFilterData ParticleSimData;
 				FAccelerationStructureHandle::ComputeParticleSimFilterDataFromShapes(*Particle1, ParticleSimData);
@@ -562,7 +542,6 @@ namespace Chaos
 			}
 			else
 			{
-				//SCOPE_CYCLE_COUNTER(STAT_Collisions_AABBTree);
 				const auto& GlobalElems = InSpatialAcceleration.GlobalObjects();
 				Context.Overlaps.Reserve(GlobalElems.Num());
 
@@ -580,6 +559,8 @@ namespace Chaos
 		// @todo(chaos): optimize
 		void AssignMidPhases(Private::FBroadPhaseContext& BroadphaseContext)
 		{
+			SCOPE_CYCLE_COUNTER(STAT_Collisions_AssignMidPhases);
+
 			Private::FCollisionContextAllocator* ContextAllocator = BroadphaseContext.CollisionContext.GetAllocator();
 
 			BroadphaseContext.MidPhases.SetNum(BroadphaseContext.Overlaps.Num());
@@ -598,6 +579,9 @@ namespace Chaos
 					// Get the midphase for this pair
 					FParticlePairMidPhase* MidPhase = ContextAllocator->GetMidPhase(Overlap.Particles[0], Overlap.Particles[1], Overlap.Particles[Overlap.SearchParticleIndex], BroadphaseContext.CollisionContext);
 					BroadphaseContext.MidPhases[MidPhaseIndex] = MidPhase;
+
+					CVD_TRACE_MID_PHASE(MidPhase);
+
 					++MidPhaseIndex;
 				}
 			}
@@ -608,6 +592,8 @@ namespace Chaos
 		// Process all the midphases: generate constraints and execute the narrowphase
 		void ProcessMidPhases(const FReal Dt, const Private::FBroadPhaseContext& BroadphaseContext)
 		{
+			SCOPE_CYCLE_COUNTER(STAT_Collisions_GenerateCollisions);
+			
 			// Prefetch initial set of MidPhases
 			const int32 PrefetchLookahead = 4;
 			const int32 NumMidPhases = BroadphaseContext.MidPhases.Num();
@@ -626,9 +612,41 @@ namespace Chaos
 
 				// Run MidPhase + NarrowPhase
 				BroadphaseContext.MidPhases[Index]->GenerateCollisions(BroadphaseContext.CollisionContext.GetSettings().BoundsExpansion, Dt, BroadphaseContext.CollisionContext);
+
+				CVD_TRACE_MID_PHASE(BroadphaseContext.MidPhases[Index]);
 			}
 
 			PHYSICS_CSV_CUSTOM_EXPENSIVE(PhysicsCounters, NumFromBroadphase, NumPotentials, ECsvCustomStatOp::Accumulate);
+		}
+
+		void CheckOverlapResults()
+		{
+#if CHAOS_CHECK_BROADPHASE
+			// Make sure that no particle pair is in the overlap lists twice which will cause a race condition
+			// in the narrow phase as multiple threads will attempt to build the same constraint(s) leading to
+			// buffer overruns and who knows what other craziness.
+			TSet<uint64> ParticlePairKeys;
+			for (int32 ContextIndex = 0; ContextIndex < NumActiveBroadphaseContexts; ++ContextIndex)
+			{
+				for (const Private::FBroadPhaseOverlap& Overlap : BroadphaseContexts[ContextIndex].Overlaps)
+				{
+					if (Overlap.bCollisionsEnabled)
+					{
+						const FCollisionParticlePairKey PairKey = FCollisionParticlePairKey(Overlap.Particles[0], Overlap.Particles[1]);
+						const bool bIsInSet = ParticlePairKeys.Contains(PairKey.GetKey());
+						if (ensure(!bIsInSet))
+						{
+							ParticlePairKeys.Add(PairKey.GetKey());
+						}
+						else
+						{
+							// Last time this happened it was because a particle was in multiple views that should be mutually exclusive
+							UE_LOG(LogChaos, Fatal, TEXT("Broadphase overlaps generated the same particle pair twice"));
+						}
+					}
+				}
+			}
+#endif
 		}
 
 		const FPBDRigidsSOAs& Particles;

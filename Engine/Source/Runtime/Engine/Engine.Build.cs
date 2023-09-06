@@ -18,26 +18,27 @@ public class Engine : ModuleRules
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
 				"AnimationCore",
+				"AudioExtensions",
 				"AudioMixer", 
 				"AudioMixerCore",
+				"InputCore",
 				"MovieSceneCapture", 
 				"PacketHandler", 
-				"Renderer", 
+				"Renderer",
+				"RHI",
 			}
 		);
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
 				Path.Combine(GetModuleDirectory("NetCore"), "Private"),
-				Path.Combine(GetModuleDirectory("Renderer"), "Private"),
-				Path.Combine(GetModuleDirectory("SynthBenchmark"), "Private"),
-				Path.Combine(GetModuleDirectory("Virtualization"), "Private"),
 			}
 		);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"DerivedDataCache",
+				"DesktopPlatform",
 				"DistributedBuildInterface",
 				"TargetPlatform",
 				"ImageWrapper",
@@ -46,10 +47,7 @@ public class Engine : ModuleRules
 				"EyeTracker",
 				"MRMesh",
 				"Advertising",
-				"MovieSceneCapture",
 				"AutomationWorker",
-				"MovieSceneCapture",
-				"DesktopPlatform"
 			}
 		);
 
@@ -80,8 +78,8 @@ public class Engine : ModuleRules
 				"Core",
 				"CoreOnline",
 				"CoreUObject",
+				"FieldNotification",
 				"NetCore",
-				"ApplicationCore",
 				"ImageCore",
 				"Json",
 				"JsonUtilities",
@@ -111,9 +109,15 @@ public class Engine : ModuleRules
 				"AudioExtensions",
 				"DeveloperSettings",
 				"AudioLinkCore",
-				"CookOnTheFly"
+				"CookOnTheFly",
+				"IoStoreOnDemand"
 			}
 		);
+
+		if (Target.bCompileAgainstApplicationCore)
+		{
+			PublicDependencyModuleNames.Add("ApplicationCore");
+		}
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
@@ -127,6 +131,7 @@ public class Engine : ModuleRules
 				"ChaosCore",
 				"DeveloperSettings",
 				"NetCommon",
+				"Slate",
 				"Sockets",
 				"MeshDescription"
 			}
@@ -149,13 +154,11 @@ public class Engine : ModuleRules
 				"Analytics",
 				"AudioMixer",
 				"AudioMixerCore",
-				"SignalProcessing",
 				"IntelISPC",
 				"TraceLog",
 				"ColorManagement",
 				"Icmp",
 				"XmlParser",
-				"AudioExtensions"
 			}
 		);
 
@@ -187,7 +190,8 @@ public class Engine : ModuleRules
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
-					"TextureBuildUtilities"
+					"TextureBuildUtilities",
+					"Horde"
 				}
 			);
 
@@ -361,12 +365,35 @@ public class Engine : ModuleRules
 
 		if (Target.bBuildEditor == true)
 		{
-			PublicDependencyModuleNames.AddRange(
+			PublicIncludePathModuleNames.AddRange(
 				new string[] {
+					"InterchangeCore",
+					"Kismet",
+					"ToolMenus",
 					"UnrealEd",
-					"Kismet"
 				}
-			);  // @todo api: Only public because of WITH_EDITOR and UNREALED_API
+			);
+
+			PrivateIncludePathModuleNames.AddRange(
+				new string[] {
+					"AssetTools",
+					"AssetDefinition",
+					"Documentation",
+					"HierarchicalLODUtilities",
+					"MeshBuilder",
+					"NaniteBuilder",
+					"PIEPreviewDeviceProfileSelector",
+				}
+			);
+
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+					"DerivedDataCache",
+					"Kismet",
+					"TextureCompressor",
+					"UnrealEd"
+				}
+			);
 
 			CircularlyReferencedDependentModules.AddRange(
 				new string[] {
@@ -374,27 +401,17 @@ public class Engine : ModuleRules
 					"Kismet"
 				}
 			);
+			
 
-			PrivateDependencyModuleNames.Add("DerivedDataCache");
-			PrivateDependencyModuleNames.Add("TextureCompressor");
-
-			PrivateIncludePathModuleNames.Add("TextureCompressor");
-			PrivateIncludePaths.Add("Developer/TextureCompressor/Public");
-
-			PrivateIncludePathModuleNames.Add("HierarchicalLODUtilities");
-			DynamicallyLoadedModuleNames.Add("HierarchicalLODUtilities");
-
-			DynamicallyLoadedModuleNames.Add("AnimationModifiers");
-
-			PrivateIncludePathModuleNames.Add("AssetTools");
-			DynamicallyLoadedModuleNames.Add("AssetTools");
-
-			PrivateIncludePathModuleNames.Add("PIEPreviewDeviceProfileSelector");
-
-			PrivateIncludePathModuleNames.Add("NaniteBuilder");
-			DynamicallyLoadedModuleNames.Add("NaniteBuilder");
-
-			DynamicallyLoadedModuleNames.Add("LevelInstanceEditor");
+			DynamicallyLoadedModuleNames.AddRange(
+				new string[] {
+					"AnimationModifiers",
+					"AssetTools",
+					"HierarchicalLODUtilities",
+					"LevelInstanceEditor",
+					"NaniteBuilder"
+				}
+			);
 		}
 
 		SetupModulePhysicsSupport(Target);
@@ -438,11 +455,7 @@ public class Engine : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 		{
-			PublicIncludePaths.AddRange(
-            	new string[] {
-               		"Runtime/IOS/IOSPlatformFeatures/Public"
-                });
-
+			PublicIncludePathModuleNames.Add("IOSPlatformFeatures");
 			PrivateIncludePathModuleNames.Add("IOSRuntimeSettings");
 		}
 

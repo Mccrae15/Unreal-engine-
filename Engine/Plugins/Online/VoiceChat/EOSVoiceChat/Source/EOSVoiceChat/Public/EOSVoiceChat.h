@@ -28,9 +28,6 @@ public:
 	/** Delegate called when the status of the audio device has changed. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnAudioInputDeviceStatusChanged, FString /*PlayerName*/, EOS_ERTCAudioInputStatus /*Status*/);
 	static FOnAudioInputDeviceStatusChanged OnAudioInputDeviceStatusChanged;
-	/** Delegate called when the "connection state" changes (happens when a sidekick device toggles it's "mode" on/off) **/
-	DECLARE_MULTICAST_DELEGATE_FourParams(FOnVoiceChatChannelConnectionStateDelegate, const FString& /*PlayerName*/, const FString& /* ChannelName */, bool /* bIsChannelEnabled */, bool /* bSendAudioEnabled */);
-	static FOnVoiceChatChannelConnectionStateDelegate OnVoiceChatChannelConnectionStateChanged;
 	/** Delegate called when ParticipantMetadata is included in the player joined event **/
 	DECLARE_MULTICAST_DELEGATE_FourParams(FOnVoiceChatPlayerAddedMetadataDelegate, const FString& /*LoginPlayerName*/, const FString& /* ChannelName */, const FString& /*PlayerName*/, const TArray<FVoiceChatMetadataItem>& /* PlayerMetadata */);
 	static FOnVoiceChatPlayerAddedMetadataDelegate OnVoiceChatPlayerAddedMetadata;
@@ -126,9 +123,9 @@ public:
 	virtual FOnVoiceChatPlayerVolumeUpdatedDelegate& OnVoiceChatPlayerVolumeUpdated() override;
 	virtual void TransmitToAllChannels() override;
 	virtual void TransmitToNoChannels() override;
-	virtual void TransmitToSpecificChannel(const FString& ChannelName) override;
+	virtual void TransmitToSpecificChannels(const TSet<FString>& ChannelNames) override;
 	virtual EVoiceChatTransmitMode GetTransmitMode() const override;
-	virtual FString GetTransmitChannel() const override;
+	virtual TSet<FString> GetTransmitChannels() const override;
 	virtual FDelegateHandle StartRecording(const FOnVoiceChatRecordSamplesAvailableDelegate::FDelegate& Delegate) override;
 	virtual void StopRecording(FDelegateHandle Handle) override;
 	virtual FDelegateHandle RegisterOnVoiceChatAfterCaptureAudioReadDelegate(const FOnVoiceChatAfterCaptureAudioReadDelegate::FDelegate& Delegate) override;
@@ -209,6 +206,8 @@ protected:
 	FOnVoiceChatAvailableAudioDevicesChangedDelegate OnVoiceChatAvailableAudioDevicesChangedDelegate;
 
 	TArray<FEOSVoiceChatUserRef> VoiceChatUsers;
+	TArray<FEOSVoiceChatUserRef> ReleasedVoiceChatUsers;
+	void ScheduleReleaseUser(IVoiceChatUser* User);
 
 	FEOSVoiceChatUser& GetVoiceChatUser();
 	FEOSVoiceChatUser& GetVoiceChatUser() const;

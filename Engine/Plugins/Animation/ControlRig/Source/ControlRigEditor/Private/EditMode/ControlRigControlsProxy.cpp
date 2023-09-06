@@ -3,7 +3,7 @@
 #include "EditMode/ControlRigControlsProxy.h"
 #include "EditorModeManager.h"
 #include "EditMode/ControlRigEditMode.h"
-#include "Sequencer/ControlRigSequence.h"
+#include "ControlRig.h"
 #include "Rigs/RigHierarchy.h"
 
 #include "Components/SkeletalMeshComponent.h"
@@ -19,6 +19,7 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
 #include "SEnumCombo.h"
+#include "ControlRig.h"
 
 
 void UControlRigControlsProxy::SetIsMultiple(bool bIsVal)
@@ -102,9 +103,9 @@ void UControlRigControlsProxy::SelectionChanged(bool bInSelected)
 	}
 }
 
-void UControlRigControlsProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigControlsProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigControlsProxy, bSelected))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
@@ -115,6 +116,57 @@ void UControlRigControlsProxy::PostEditChangeProperty(struct FPropertyChangedEve
 			ControlRig->Evaluate_AnyThread();
 		}
 	}
+#if WITH_EDITOR
+	if (PropertyChangedEvent.Property)
+	{
+		FRigControlElement* ControlElement = GetControlElement();
+		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Interactive)
+		{
+			EControlRigInteractionType Type = EControlRigInteractionType::None;
+			FProperty* Owner = PropertyChangedEvent.Property->GetOwnerProperty();
+			if (FEditPropertyChain::TDoubleLinkedListNode* MemberNode = PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+			{
+				if (FProperty* MemberProperty = MemberNode->GetValue())
+				{
+					if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformControlProxy, Transform))
+					{
+						if (FEditPropertyChain::TDoubleLinkedListNode* NextNode = MemberNode->GetNextNode())
+						{
+							if (FProperty* SubMemberProperty = NextNode->GetValue())
+							{
+								if (SubMemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Location))
+								{
+									Type = EControlRigInteractionType::Translate;
+								}
+								else if (SubMemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Rotation))
+								{
+									Type = EControlRigInteractionType::Rotate;
+								}
+								else if (SubMemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FEulerTransform, Scale))
+								{
+									Type = EControlRigInteractionType::Scale;
+								}
+							}
+						}
+					}
+				}
+			}
+			FControlRigInteractionScope* InteractionScope = new FControlRigInteractionScope(ControlRig.Get(), ControlElement->GetKey(), Type);
+			InteractionScopes.Add(InteractionScope);
+		}
+		else
+		{
+			for (FControlRigInteractionScope* Scope : InteractionScopes)
+			{
+				if (Scope)
+				{
+					delete Scope; 
+				}
+			}
+			InteractionScopes.Reset();
+		}
+	}
+#endif
 }
 
 #if WITH_EDITOR
@@ -137,20 +189,27 @@ FRigControlElement* UControlRigControlsProxy::GetControlElement() const
 	return nullptr;
 }
 
-void UControlRigTransformControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigTransformControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	if ((PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformControlProxy, Transform))
-		|| (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformControlProxy, Transform)))
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+	FProperty* Property = PropertyChangedEvent.Property;
+	FProperty* MemberProperty = nullptr;
+	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	{
+		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+	}
+
+	if ((Property && Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformControlProxy, Transform))
+		|| (MemberProperty && MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformControlProxy, Transform)))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			const FTransform RealTransform = Transform.ToFTransform(); //Transform is FEulerTransform
 			ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, EControlRigSetKey::DoNotCare,false);
-			ControlRig->GetHierarchy()->SetControlPreferredRotator(ControlElement, Transform.Rotation);
+			FVector EulerAngle(Transform.Rotation.Roll, Transform.Rotation.Pitch, Transform.Rotation.Yaw);
+			ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
 			ControlRig->Evaluate_AnyThread();
 
 		}
@@ -181,7 +240,8 @@ void UControlRigTransformControlProxy::PostEditUndo()
 		ControlRig->SelectControl(ControlName, bSelected);
 		const FTransform RealTransform = Transform.ToFTransform(); //Transform is FEulerTransform
 		ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, EControlRigSetKey::Never,false);
-		ControlRig->GetHierarchy()->SetControlPreferredRotator(ControlElement, Transform.Rotation);
+		FVector EulerAngle(Transform.Rotation.Roll, Transform.Rotation.Pitch, Transform.Rotation.Yaw);
+		ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
 	}
 }
 #endif
@@ -207,21 +267,28 @@ void UControlRigTransformControlProxy::SetKey(const IPropertyHandle& KeyedProper
 		}
 		const FTransform RealTransform = Transform.ToFTransform(); //Transform is FEulerTransform
 		ControlRig->SetControlValue<FRigControlValue::FTransform_Float>(ControlName, RealTransform, true, Context, false);
-		ControlRig->GetHierarchy()->SetControlPreferredRotator(ControlElement, Transform.Rotation);
+		FVector EulerAngle(Transform.Rotation.Roll, Transform.Rotation.Pitch, Transform.Rotation.Yaw);
+		ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
 	}
 }
 
-void UControlRigTransformNoScaleControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigTransformNoScaleControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	if ((PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformNoScaleControlProxy, Transform))
-		|| (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformNoScaleControlProxy, Transform)))
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+	FProperty* Property = PropertyChangedEvent.Property;
+	FProperty* MemberProperty = nullptr;
+	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	{
+		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+	}
+
+	if ((Property && Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformNoScaleControlProxy, Transform))
+		|| (MemberProperty && MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigTransformNoScaleControlProxy, Transform)))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<FRigControlValue::FTransformNoScale_Float>(ControlName, Transform, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -274,18 +341,31 @@ void UControlRigTransformNoScaleControlProxy::SetKey(const IPropertyHandle& Keye
 }
 
 
-void UControlRigEulerTransformControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigEulerTransformControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	if ((PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigEulerTransformControlProxy, Transform))
-		|| (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigEulerTransformControlProxy, Transform)))
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+
+	FProperty* Property = PropertyChangedEvent.Property;
+	FProperty* MemberProperty = nullptr;
+	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	{
+		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+	}
+
+	if ((Property && Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigEulerTransformControlProxy, Transform))
+		|| (MemberProperty && MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigEulerTransformControlProxy, Transform)))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
-			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
-			ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, EControlRigSetKey::DoNotCare,false);
+			FVector EulerAngle(Transform.Rotation.Roll, Transform.Rotation.Pitch, Transform.Rotation.Yaw);
+			FQuat Quat = ControlRig->GetHierarchy()->GetControlQuaternion(ControlElement, EulerAngle);
+			ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
+			FRotator UERotator(Quat);
+			FEulerTransform UETransform = Transform;
+			UETransform.Rotation = UERotator;
+
+			ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, UETransform, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
 		}
@@ -300,8 +380,8 @@ void UControlRigEulerTransformControlProxy::ValueChanged()
 		Modify();
 		const FName PropertyName("Transform");
 		FTrackInstancePropertyBindings Binding(PropertyName, PropertyName.ToString());
-		const FEulerTransform NewTransform = ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FEulerTransform_Float>().ToTransform();
-
+		FEulerTransform NewTransform = ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FRigControlValue::FEulerTransform_Float>().ToTransform();
+		NewTransform.Rotation = ControlRig->GetHierarchy()->GetControlPreferredRotator(ControlElement);
 		Binding.CallFunction<FEulerTransform>(*this, NewTransform);
 
 	}
@@ -315,6 +395,8 @@ void UControlRigEulerTransformControlProxy::PostEditUndo()
 	{
 		ControlRig->SelectControl(ControlName, bSelected);
 		ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, EControlRigSetKey::Never,false);
+		FVector EulerAngle(Transform.Rotation.Roll, Transform.Rotation.Pitch, Transform.Rotation.Yaw);
+		ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
 	}
 }
 #endif
@@ -339,19 +421,20 @@ void UControlRigEulerTransformControlProxy::SetKey(const IPropertyHandle& KeyedP
 			Context.KeyMask = (uint32)EControlRigContextChannelToKey::Scale;
 		}
 		ControlRig->SetControlValue<FRigControlValue::FEulerTransform_Float>(ControlName, Transform, true, Context,false);
+		FVector EulerAngle(Transform.Rotation.Roll, Transform.Rotation.Pitch, Transform.Rotation.Yaw);
+		ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, EulerAngle);
 	}
 }
 
-void UControlRigFloatControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigFloatControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigFloatControlProxy, Float))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<float>(ControlName, Float, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -394,16 +477,15 @@ void UControlRigFloatControlProxy::SetKey(const IPropertyHandle& KeyedPropertyHa
 	}
 }
 
-void UControlRigIntegerControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigIntegerControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigIntegerControlProxy, Integer))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<int32>(ControlName, Integer, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 		}
@@ -444,16 +526,15 @@ void UControlRigIntegerControlProxy::SetKey(const IPropertyHandle& KeyedProperty
 	}
 }
 
-void UControlRigEnumControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigEnumControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigEnumControlProxy, Enum))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<int32>(ControlName, Enum.EnumIndex, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -499,17 +580,28 @@ void UControlRigEnumControlProxy::SetKey(const IPropertyHandle& KeyedPropertyHan
 	}
 }
 
-void UControlRigVectorControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigVectorControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	if ((PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVectorControlProxy, Vector))
-		|| (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVectorControlProxy, Vector)))
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+	FProperty* Property = PropertyChangedEvent.Property;
+	FProperty* MemberProperty = nullptr;
+	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	{
+		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+	}
+
+	if ((Property && Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVectorControlProxy, Vector))
+		|| (MemberProperty && MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVectorControlProxy, Vector)))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
+			if (ControlElement->Settings.ControlType == ERigControlType::Rotator)
+			{
+				FVector DVector(Vector.X, Vector.Y, Vector.Z);
+				ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, DVector);
+			}
 			ControlRig->SetControlValue<FVector3f>(ControlName, Vector, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -525,7 +617,12 @@ void UControlRigVectorControlProxy::ValueChanged()
 		Modify();
 		const FName PropertyName("Vector");
 		FTrackInstancePropertyBindings Binding(PropertyName, PropertyName.ToString());
-		const FVector3f Val = ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FVector3f>();
+		FVector3f Val = ControlRig.Get()->GetHierarchy()->GetControlValue(ControlElement, ERigControlValueType::Current).Get<FVector3f>();
+		if (ControlElement->Settings.ControlType == ERigControlType::Rotator)
+		{ 
+			FVector DVector = ControlRig->GetHierarchy()->GetControlSpecifiedEulerAngle(ControlElement);
+			Val = FVector3f(DVector.X, DVector.Y, DVector.Z);
+		}
 		Binding.CallFunction<FVector3f>(*this, Val);
 	}
 }
@@ -537,6 +634,11 @@ void UControlRigVectorControlProxy::PostEditUndo()
 	if (ControlElement && ControlRig.IsValid() && ControlRig->GetHierarchy()->Contains(FRigElementKey(ControlName, ERigElementType::Control)))
 	{
 		ControlRig->SelectControl(ControlName, bSelected);
+		if (ControlElement && ControlElement->Settings.ControlType == ERigControlType::Rotator)
+		{
+			FVector DVector(Vector.X, Vector.Y, Vector.Z);
+			ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, DVector);
+		}
 		ControlRig->SetControlValue<FVector3f>(ControlName, (FVector3f)Vector, true, EControlRigSetKey::Never,false);
 	}
 }
@@ -595,21 +697,32 @@ void UControlRigVectorControlProxy::SetKey(const IPropertyHandle& KeyedPropertyH
 				break;
 			}
 		}
+		if (ControlElement->Settings.ControlType == ERigControlType::Rotator)
+		{
+			FVector DVector(Vector.X, Vector.Y, Vector.Z);
+			ControlRig->GetHierarchy()->SetControlSpecifiedEulerAngle(ControlElement, DVector);
+		}
 		ControlRig->SetControlValue<FVector3f>(ControlName, (FVector3f)Vector, true, Context,false);
 	}
 }
 
-void UControlRigVector2DControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigVector2DControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	if ((PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVector2DControlProxy, Vector2D))
-		|| ((PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVector2DControlProxy, Vector2D))))
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+	FProperty* Property = PropertyChangedEvent.Property;
+	FProperty* MemberProperty = nullptr;
+	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	{
+		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+	}
+
+	if ((Property && Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVector2DControlProxy, Vector2D))
+		|| (MemberProperty && MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigVector2DControlProxy, Vector2D)))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<FVector3f>(ControlName, FVector3f(Vector2D.X, Vector2D.Y, 0.f), true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 
@@ -664,16 +777,15 @@ void UControlRigVector2DControlProxy::SetKey(const IPropertyHandle& KeyedPropert
 }
 
 
-void UControlRigBoolControlProxy::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+void UControlRigBoolControlProxy::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRigBoolControlProxy, Bool))
 	{
 		FRigControlElement* ControlElement = GetControlElement();
 		if (ControlElement && ControlRig.IsValid())
 		{
 			//MUST set through ControlRig
-			FControlRigInteractionScope InteractionScope(ControlRig.Get(), ControlElement->GetKey());
 			ControlRig->SetControlValue<bool>(ControlName, Bool, true, EControlRigSetKey::DoNotCare,false);
 			ControlRig->Evaluate_AnyThread();
 		}

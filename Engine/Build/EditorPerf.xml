@@ -22,12 +22,14 @@
 
 	<!-- Platform Options -->
 	<Option Name="Platforms" DefaultValue="Win64" Description="The list of platforms to profile"/>
-	<Property Name="Win64CompileAgentType" Value="Win64"/>
+	<Property Name="Win64CompileAgentType" Value="Win64Compile;Win64"/>
 	<Property Name="MacCompileAgentType" Value="TestMac"/>
+	<Property Name="LinuxCompileAgentType" Value="Linux"/>
 	<Error Message="No platforms specified" If="'$(Platforms)' == ''"/>
 
 	<!-- Build Options -->
 	<Option Name="NoDebugInfo" Restrict="true|false" DefaultValue="false" Description="Compile without including debug info"/>
+	<Option Name="WithTSAN" Restrict="true|false" DefaultValue="false" Description="Compile using TSAN"/>
 	<Property Name="ExtraPluginsCommaDelims" Value="EditorTests"/>
 	<Property Name="ExtraPluginsPlusDelims" Value=""/> <!-- populated programmatically -->
 	<ForEach Name="Plugin" Values="$(ExtraPluginsCommaDelims)">
@@ -38,6 +40,7 @@
 	<Property Name="EditorCompileArgs" Value=""/>
 	<Property Name="EditorCompileArgs" Value="-BuildPlugin=$(ExtraPluginsPlusDelims)" If="'$(ExtraPluginsPlusDelims)' != ''"/>
 	<Property Name="EditorCompileArgs" Value="$(EditorCompileArgs) -nodebuginfo" If="$(NoDebugInfo)"/>
+	<Property Name="EditorCompileArgs" Value="$(EditorCompileArgs) -EnableTSAN -Monolithic" If="$(WithTSAN)"/>
 
 	<!-- Automation uses its own network output directory -->
 	<Property Name="AutomationNetworkRootDir" Value="\\epicgames.net\root\Builds\Automation\Reports\EditorPerf"/>
@@ -72,15 +75,14 @@
 	<Option Name="Iterations" DefaultValue="1" Description="The list of iteration numbers to run. For example '1;2;3' for three iterations"/>
 
 	<!-- Full Map Asset Path to run for tests per project -->
-	<Option Name="MapAssetPerProjects" DefaultValue="" Description="Comma separated pair of project and map asset to load for it (i.e. 'FortniteGame,/Game/MyMap') "/>
+	<Option Name="MapAssetPerProjects" DefaultValue="" Description="Comma separated pair of project and map asset to load for it (i.e. 'FortniteGame,/Game/MyMap'), each pair are semicolon separated "/>
 
-	<!-- Project Map Args - do to not being able to export property in an outer scope, these needs to be predefined -->
-	<Property Name="AncientGameMapArgs" Value=""/>
-	<Property Name="CitySampleMapArgs" Value=""/>
-	<Property Name="EngineTestMapArgs" Value=""/>
-	<Property Name="FortniteGameMapArgs" Value=""/>
-	<Property Name="LyraMapArgs" Value=""/>
-	<Property Name="ShooterGameMapArgs" Value=""/>
+	<!-- Full Map Asset Path to run for tests per project -->
+	<Option Name="SpecificArgsPerProjects" DefaultValue="" Description="Hat (^) separated pair of project and commandline arg for it (i.e. 'Juno^-TargetFortReleaseVersion=26.00'), each pair are semicolon separated "/>
+
+	<!-- Inject internal projects default argument at the global scope -->
+	<Option Name="IsLicensee" Restrict="true|false" DefaultValue="false" Description="Define to true if this script is used externally."/>
+	<Include Script="../Restricted/NotForLicensees/Build/EditorPerfInternalArgs.xml" If="!$(IsLicensee)" />
 	
 	<!-- Set Project Map Args based on MapAssetPerProjects list -->
 	<ForEach Name="ProjectPair" Values="$(MapAssetPerProjects)" Separator=";">
@@ -89,8 +91,20 @@
 		<Property Name="MapAsset" Value=""/>
 		<Regex Pattern="(.*),(.*)" Capture="Project;MapAsset" Input="$(ProjectPair)" />
 
-		<Property Name="$(Project)MapArgs" Value=""/>
-		<Property Name="$(Project)MapArgs" Value="-ini:Engine:[/Script/Engine.AutomationTestSettings]:MapsToPIETest=&quot;$(MapAsset)&quot;" If="'$(MapAsset)' != ''" />
+		<Property Name="$(Project)MapArgs" Value="-ini:Engine:[/Script/Engine.AutomationTestSettings]:MapsToPIETest=\&quot;$(MapAsset)\&quot;" If="'$(MapAsset)' != ''" />
+	</ForEach>
+	
+	<!-- Options for extra runtime args -->
+	<Option Name="AdditionalRuntimeArgs" DefaultValue="" Description="Additional Arguments to pass to RunTest"/>
+
+	<!-- Set Project Specific Args based on SpecificArgsPerProjects list -->
+	<ForEach Name="ProjectPair" Values="$(SpecificArgsPerProjects)" Separator=";">
+		<!-- Split the Pair -->
+		<Property Name="Project" Value=""/>
+		<Property Name="SpecificArgs" Value=""/>
+		<Regex Pattern="(.*)^(.*)" Capture="Project;SpecificArgs" Input="$(ProjectPair)" />
+
+		<Property Name="$(Project)SpecificArgs" Value="$(SpecificArgs)" If="'$(SpecificArgs)' != ''" />
 	</ForEach>
 
 	<!-- Options for extra Zen Loader tests -->
@@ -100,17 +114,17 @@
 
 	<!-- Zen Loader tests specifc arguments -->
 	<Property Name="ZenLoaderTestArgs" Value="-zenloader"/>
-	<Property Name="ZenLoaderAsyncTestArgs" Value="$(ZenLoaderTestArgs),-asyncloadingthread" />
+	<Property Name="ZenLoaderAsyncTestArgs" Value="$(ZenLoaderTestArgs) -asyncloadingthread" />
 	
-	<Property Name="ZenLoaderTestArgs" Value="$(ZenLoaderTestArgs),-noeditordomain" If="$(EnableZenTestsWithoutEditorDomain)" />
-	<Property Name="ZenLoaderAsyncTestArgs" Value="$(ZenLoaderAsyncTestArgs),-noeditordomain" If="$(EnableZenTestsWithoutEditorDomain)" />
+	<Property Name="ZenLoaderTestArgs" Value="$(ZenLoaderTestArgs) -noeditordomain" If="$(EnableZenTestsWithoutEditorDomain)" />
+	<Property Name="ZenLoaderAsyncTestArgs" Value="$(ZenLoaderAsyncTestArgs) -noeditordomain" If="$(EnableZenTestsWithoutEditorDomain)" />
 
 	<!-- Options for extra Zen Store tests -->
 	<Option Name="EnableZenStoreDDCTest" DefaultValue="false" Description="Enable additional test on warm phase that uses the Zen Store DDC."/>
 
 	<!-- Zen Store tests specific arguments -->
 	<Property Name="ZenServerCache" Value="$(RootDir)\ZenCache" />
-	<Property Name="ZenStoreCommonArgs" Value="-ini:Engine:[Zen.AutoLaunch]:LimitProcessLifetime=true,-ZenDataPath=$(ZenServerCache) "/>
+	<Property Name="ZenStoreCommonArgs" Value="-ini:Engine:[Zen.AutoLaunch]:LimitProcessLifetime=true -ZenDataPath=$(ZenServerCache) "/>
 	<Property Name="ZenStoreDDCPhaseArgs" Value="-ddc=ZenDDC"/>
 	<Property Name="ZenStoreDDCTestArgs" Value="$(ZenStoreCommonArgs)"/>
 
@@ -120,7 +134,7 @@
 	
 	<!-- LazyLoad tests specific arguments -->
 	<Property Name="LazyLoadTestArgs" Value="-LazyLoadImports"/>
-	<Property Name="LazyLoadZenTestArgs" Value="$(LazyLoadTestArgs),-zenloader" />
+	<Property Name="LazyLoadZenTestArgs" Value="$(LazyLoadTestArgs) -zenloader" />
 
 	<!-- Gauntlet arguments for all runs -->
 	<Property Name="GauntletArgs" Value="-build=editor -UseEditor -verbose -tempdir=&quot;$(RootDir)/Tests&quot;"/>
@@ -135,6 +149,9 @@
 	<Property Name="ProfileArgs" Value="$(ProfileArgs) -NoLoadLevelAtStartup -Benchmarking -NODDCCLEANUP"/>
 	<Property Name="ProfileArgs" Value="$(ProfileArgs) -NoShaderDistrib -VerboseShaderLogging"/>
 
+	<!-- options for summarize runs -->
+	<Option Name="RunTraceSummary" DefaultValue="false" Description="Summarize the insights trace after the run"/>
+
 	<!-- Gauntlet arguments for commandlet, summarize runs -->
 	<Property Name="CommandletArgs" Value="-notraceserver"/>
 	<Property Name="SummarizeArgs" Value=""/>
@@ -142,45 +159,49 @@
 
 	<!-- Publish telemetry options -->
 	<Option Name="TelemetryConfig" DefaultValue="" Description="The configuration to use when publishing telemetry data to a database"/>
-	<Property Name="TelemetryConfig" Value="UETelemetryStaging" If="$(IsBuildMachine) And $(IsPreflight) And '$(TelemetryConfig)' == ''"/>
-	<Property Name="TelemetryConfig" Value="UETelemetry" If="$(IsBuildMachine) And '$(TelemetryConfig)' == ''"/>
+	<Property Name="TelemetryConfig" Value="UETelemetryStaging" If="$(IsBuildMachine) And $(IsPreflight) And '$(TelemetryConfig)' == '' And $(RunTraceSummary)"/>
+	<Property Name="TelemetryConfig" Value="UETelemetry" If="$(IsBuildMachine) And '$(TelemetryConfig)' == '' And $(RunTraceSummary)"/>
 
 	<!-- The main test running macro logic that is expanded with platform and dependency node names -->
-	<Macro Name="RunTest" Arguments="TestNameSuffix;Platform;Project;NodeName;Phase;Iteration;Args;EditorArgs">
-
+	<Macro Name="RunTest" Arguments="TestNameSuffix;Platform;ProjectName;ProjectTarget;NodeName;Phase;Iteration;Args;EditorArgs">
 		<Property Name="TestName" Value="EditorPerf$(Phase)$(TestNameSuffix)"/>
 		<Property Name="IterationSuffix" Value=""/>
 		<Property Name="IterationSuffix" Value="$(Iteration)" If="'$(Iteration)' != '1'"/>
 
-		<Property Name="TestOutputDir" Value="$(AutomationOutputDir)/$(Project)$(Platform)EditorPerf"/>
+		<Property Name="TestOutputDir" Value="$(AutomationOutputDir)/$(ProjectName)$(Platform)EditorPerf"/>
 
-		<Property Name="IterationName" Value="$(Project)$(Platform)$(TestName)$(IterationSuffix)"/>
+		<Property Name="IterationName" Value="$(ProjectName)$(Platform)$(TestName)$(IterationSuffix)"/>
 		<Property Name="TraceFilePath" Value="$(TraceDir)/$(IterationName).utrace"/>
 		<Property Name="TelemetryFileName" Value="$(IterationName)Telemetry.csv"/>
 		<Property Name="TelemetryFilePath" Value="$(TraceDir)/$(TelemetryFileName)"/>
+
 		<Property Name="LogOutputParams" Value="-logdir=&quot;$(TestOutputDir)&quot;"/>
 		<Property Name="ReportParams" Value="-WriteTestResultsForHorde -HordeTestDataKey=&quot;$(NodeName)$(PreflightSuffix)&quot;"/>
 		<Property Name="ArtifactName" Value="$(Phase)$(IterationSuffix)$(TestNameSuffix)"/>
-		<Property Name="AllGauntletArgs" Value="-Project=$(Project) -Platform=$(Platform) $(GauntletArgs) $(ReportParams) $(LogOutputParams) -artifactname=&quot;$(ArtifactName)&quot;"/>
+		<Property Name="AllGauntletArgs" Value="-Project=$(ProjectTarget) -Platform=$(Platform) $(GauntletArgs) $(ReportParams) $(LogOutputParams) -artifactname=&quot;$(ArtifactName)&quot;"/>
 		<Property Name="RunArgs" Value="$(Args) -editorargs=&quot;$(EditorArgs)&quot;"/>
 
 		<!-- Do DDC cleanup outside the editor process, handles Cold cleanup without changing stats -->
-		<Commandlet Project="$(Project)" Name="DDCCleanup" Arguments="$(Args) $(CommandletArgs)"/>
+		<!-- <Commandlet Project="$(ProjectTarget)" Name="DDCCleanup" Arguments="$(Args) $(CommandletArgs)"/> -->
 
 		<!-- Run the Gauntlet EditorPerf Tests -->
 		<Command Name="RunUnreal" Arguments="$(AllGauntletArgs) $(ProfileArgs) $(RunArgs) -sessionlabel=&quot;$(TestName)&quot; -tracefile=&quot;$(TraceFilePath)&quot;"/>
 
 		<!-- Translate the utrace file into csv data -->
-		<Commandlet Project="$(Project)" Name="SummarizeTrace" Arguments="-inputfile=&quot;$(TraceFilePath)&quot; -testname=&quot;$(TestName)&quot; $(SummarizeArgs) $(CommandletArgs)"/>
-
-		<!-- Save all files named for this run in the trace directory -->
-		<Copy From="$(TraceDir)/$(IterationName)*.*" To="$(TestOutputDir)"/>
-
+		<Do If="$(RunTraceSummary)">
+			<Commandlet Project="$(ProjectTarget)" Name="SummarizeTrace" Arguments="-inputfile=&quot;$(TraceFilePath)&quot; -testname=&quot;$(TestName)&quot; $(SummarizeArgs) $(CommandletArgs)"/>
+		</Do>
+		
 		<Do If="'$(TelemetryConfig)' != ''">
 			<!-- Publish telemetry to the db -->
 			<Command Name="PublishUnrealAutomationTelemetry" Arguments="-CSVFile=&quot;$(TelemetryFilePath)&quot; -project=$(Project) -changelist=$(Change) -branch=$(Branch) -TelemetryConfig=$(TelemetryConfig)"/>
-		</Do>
-
+		</Do>		
+	</Macro>
+	
+	<Macro Name="UploadTestTraces" Arguments="Platform;ProjectName">		
+		<!-- Save all files named for this project in the trace directory -->
+		<Property Name="TestOutputDir" Value="$(AutomationOutputDir)/$(ProjectName)$(Platform)EditorPerf"/>
+		<Copy From="$(TraceDir)/$(ProjectName)$(Platform)EditorPerf*.*" To="$(TestOutputDir)"/>
 	</Macro>
 
 	<!-- This will be set to the names of all nodes we want to execute based on specified platforms/options -->
@@ -212,8 +233,12 @@
 			<Property Name="EditorTarget" Value="$(Project)Editor"/>
 			<Regex Pattern="(.*)\[(.*)\]" Capture="Project;EditorTarget" Input="$(Project)" Optional="true"/>
 
+			<!-- We parse the Project target name from within {} in case it's not $(Project) (i.e. Fortnite plugins projects: Juno, DelMar ) -->
+			<Property Name="ProjectTarget" Value="$(Project)"/>
+			<Regex Pattern="(.*)\{(.*)\}" Capture="Project;ProjectTarget" Input="$(Project)" Optional="true"/>
+
 			<!-- Project Map Args-->
-			<Property Name="ProjectMapArgs" Value="$($(Project)MapArgs)"/>
+			<Property Name="ProjectCombinedArgs" Value="$($(Project)SpecificArgs) $($(Project)MapArgs) $(AdditionalRuntimeArgs)"/>
 
 			<!-- Use as base string for directories and key for node names -->
 			<Property Name="OutputName" Value="$(Project)$(Platform)EditorPerf"/>
@@ -226,8 +251,8 @@
 				<Node Name="$(CompileNodeName)">
 					<SetVersion Change="$(Change)" Branch="$(EscapedBranch)" If="$(IsBuildMachine)"/>
 					<Compile Target="ShaderCompileWorker" Platform="$(Platform)" Configuration="Development"/>
-					<Compile Target="CrashReportClientEditor" Platform="$(Platform)" Project="$(Project)" Configuration="Shipping"/>
-					<Compile Target="$(EditorTarget)" Platform="$(Platform)" Project="$(Project)" Configuration="Development" Arguments="$(EditorCompileArgs)"/>
+					<Compile Target="CrashReportClientEditor" Platform="$(Platform)" Project="$(ProjectTarget)" Configuration="Shipping"/>
+					<Compile Target="$(EditorTarget)" Platform="$(Platform)" Project="$(ProjectTarget)" Configuration="Development" Arguments="$(EditorCompileArgs)"/>
 				</Node>
 			</Agent>
 			<Label Category="$(CompileCategory)" Name="$(Project) Editor Compile" Requires="$(CompileNodeName)"/>
@@ -235,6 +260,7 @@
 			<!-- Run the Tests -->
 			<Property Name="RunNodeRequires" Value="$(CompileNodeName)"/>
 			<Property Name="RunNodeList" Value=""/> <!-- Each node in this the nested loops below, they need to depend on predecessors -->
+			<Property Name="UploadNodeList" Value=""/>
 			<Agent Name="EditorPerf Agent $(Platform) $(Project)" Type="EditorPerf$(Platform)">
 				<ForEach Name="Phase" Values="$(Phases)">
 					<Do If="$(EnableBasePhaseTests)">
@@ -245,7 +271,7 @@
 								<Property Name="IterationSuffix" Value="$(Iteration)" If="'$(Iteration)' != '1'"/>
 								<Property Name="RunNodeName" Value="Run $(OutputName) $(Phase)$(IterationSuffix)"/>
 								<Node Name="$(RunNodeName)" Requires="$(RunNodeRequires);$(RunNodeList)">
-									<Expand Name="RunTest" TestNameSuffix="" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeName)" Phase="$(Phase)" Iteration="$(Iteration)" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs)"/>
+									<Expand Name="RunTest" TestNameSuffix="" Platform="$(Platform)" ProjectName="$(Project)" ProjectTarget="$(ProjectTarget)" NodeName="$(RunNodeName)" Phase="$(Phase)" Iteration="$(Iteration)" Args="$($(Phase)Args)" EditorArgs="$(ProjectCombinedArgs)"/>
 								</Node>
 								<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeName)"/>
 							</Do>
@@ -256,20 +282,20 @@
 						<!-- Zen Loader TestRun if enabled -->
 						<Property Name="RunNodeZenName" Value="Run $(OutputName) $(Phase) Zen"/>
 						<Node Name="$(RunNodeZenName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableZenLoaderTest)">
-							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeZenName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(ZenLoaderTestArgs)"/>
+							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" ProjectName="$(Project)" ProjectTarget="$(ProjectTarget)" NodeName="$(RunNodeZenName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectCombinedArgs) $(ZenLoaderTestArgs)"/>
 						</Node>
 						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeZenName)" If="$(EnableZenLoaderTest)"/>
 						<!-- Zen Loader Async TestRun if enabled -->
 						<Property Name="RunNodeZenAsyncName" Value="Run $(OutputName) $(Phase) Zen Async"/>
 						<Node Name="$(RunNodeZenAsyncName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableZenAsyncThreadTest)">
-							<Expand Name="RunTest" TestNameSuffix="ZenAsync" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeZenAsyncName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(ZenLoaderAsyncTestArgs)"/>
+							<Expand Name="RunTest" TestNameSuffix="ZenAsync" Platform="$(Platform)" ProjectName="$(Project)" ProjectTarget="$(ProjectTarget)" NodeName="$(RunNodeZenAsyncName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectCombinedArgs) $(ZenLoaderAsyncTestArgs)"/>
 						</Node>
 						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeZenAsyncName)" If="$(EnableZenAsyncThreadTest)"/>
 					
 						<!-- Zen Store DDC TestRun if enabled -->
 						<Property Name="RunNodeZenStoreDDCName" Value="Run $(OutputName) $(Phase) Zen Store DDC"/>
 						<Node Name="$(RunNodeZenStoreDDCName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableZenStoreDDCTest)">
-							<Expand Name="RunTest" TestNameSuffix="ZenAsync" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeZenStoreDDCName)" Phase="$(Phase)" Iteration="1" Args="$(ZenStoreDDCPhaseArgs)" EditorArgs="$(ProjectMapArgs),$(ZenStoreDDCTestArgs)"/>
+							<Expand Name="RunTest" TestNameSuffix="ZenAsync" Platform="$(Platform)" ProjectName="$(Project)" ProjectTarget="$(ProjectTarget)" NodeName="$(RunNodeZenStoreDDCName)" Phase="$(Phase)" Iteration="1" Args="$(ZenStoreDDCPhaseArgs)" EditorArgs="$(ProjectCombinedArgs) $(ZenStoreDDCTestArgs)"/>
 						</Node>
 						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeZenStoreDDCName)" If="$(EnableZenStoreDDCTest)"/>
 					</Do>
@@ -278,20 +304,25 @@
 						<!-- Legacy LazyLoad TestRun if enabled -->
 						<Property Name="RunNodeLazyLoadName" Value="Run $(OutputName) $(Phase) LazyLoad"/>
 						<Node Name="$(RunNodeLazyLoadName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableLazyLoadTest)">
-							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeLazyLoadName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(LazyLoadTestArgs)"/>
+							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" ProjectName="$(Project)" ProjectTarget="$(ProjectTarget)" NodeName="$(RunNodeLazyLoadName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectCombinedArgs) $(LazyLoadTestArgs)"/>
 						</Node>
 						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeLazyLoadName)" If="$(EnableLazyLoadTest)"/>
 						<!-- Zen LazyLoad TestRun if enabled -->
 						<Property Name="RunNodeLazyLoadZenName" Value="Run $(OutputName) $(Phase) LazyLoad Zen"/>
 						<Node Name="$(RunNodeLazyLoadZenName)" Requires="$(RunNodeRequires);$(RunNodeList)" If="$(EnableLazyLoadZenTest)">
-							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" Project="$(Project)" NodeName="$(RunNodeLazyLoadZenName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectMapArgs),$(LazyLoadZenTestArgs)"/>
+							<Expand Name="RunTest" TestNameSuffix="Zen" Platform="$(Platform)" ProjectName="$(Project)" ProjectTarget="$(ProjectTarget)" NodeName="$(RunNodeLazyLoadZenName)" Phase="$(Phase)" Iteration="1" Args="$($(Phase)Args)" EditorArgs="$(ProjectCombinedArgs) $(LazyLoadZenTestArgs)"/>
 						</Node>
 						<Property Name="RunNodeList" Value="$(RunNodeList);$(RunNodeLazyLoadZenName)" If="$(EnableLazyLoadZenTest)"/>
 					</Do>
 				</ForEach>
+				<Property Name="RunNodeUploadPhaseTraces" Value="Upload $(OutputName) Traces"/>
+				<Node Name="$(RunNodeUploadPhaseTraces)">
+					<Expand Name="UploadTestTraces" Platform="$(Platform)" ProjectName="$(Project)"/>
+				</Node>
+				<Property Name="UploadNodeList" Value="$(RunNodeUploadPhaseTraces)"/>
 			</Agent>
-			<Label Category="$(RunCategory)" Name="$(Project) Editor Run" Requires="$(RunNodeRequires);$(RunNodeList)" UgsBadge="$(Project) Editor Run"/>
-			<Property Name="RunGraphNodes" Value="$(RunGraphNodes);$(RunNodeList)"/>
+			<Label Category="$(RunCategory)" Name="$(Project) Editor Run" Requires="$(RunNodeRequires);$(RunNodeList);$(UploadNodeList)" UgsBadge="$(Project) Editor Run"/>
+			<Property Name="RunGraphNodes" Value="$(RunGraphNodes);$(RunNodeList);$(UploadNodeList)"/>
 
 			<!-- Baseline the Results -->
 			<Property Name="BaselineNodeName" Value="Baseline $(OutputName)"/>

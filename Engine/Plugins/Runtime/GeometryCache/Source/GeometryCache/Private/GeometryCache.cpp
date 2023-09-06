@@ -2,6 +2,7 @@
 
 #include "GeometryCache.h"
 #include "EditorFramework/AssetImportData.h"
+#include "Engine/AssetUserData.h"
 #include "GeometryCacheMeshData.h"
 #include "GeometryCacheTrack.h"
 #include "UObject/FrameworkObjectVersion.h"
@@ -106,6 +107,19 @@ void UGeometryCache::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) co
 #endif
 
 	Super::GetAssetRegistryTags(OutTags);
+}
+
+void UGeometryCache::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	for(TObjectPtr<UGeometryCacheTrack> Track : Tracks)
+	{
+		if (Track)
+		{
+			Track->GetResourceSizeEx(CumulativeResourceSize);
+		}
+	}
 }
 
 void UGeometryCache::BeginDestroy()
@@ -225,6 +239,50 @@ FString UGeometryCache::GetHash() const
 	HashFrame(CalculateDuration());
 
 	return LexToString(TmpHash);
+}
+
+void UGeometryCache::AddAssetUserData(UAssetUserData* InUserData)
+{
+	if (InUserData != nullptr)
+	{
+		UAssetUserData* ExistingData = GetAssetUserDataOfClass(InUserData->GetClass());
+		if (ExistingData != nullptr)
+		{
+			AssetUserData.Remove(ExistingData);
+		}
+		AssetUserData.Add(InUserData);
+	}
+}
+
+UAssetUserData* UGeometryCache::GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
+{
+	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if (Datum != nullptr && Datum->IsA(InUserDataClass))
+		{
+			return Datum;
+		}
+	}
+	return nullptr;
+}
+
+void UGeometryCache::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
+{
+	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
+	{
+		UAssetUserData* Datum = AssetUserData[DataIdx];
+		if (Datum != nullptr && Datum->IsA(InUserDataClass))
+		{
+			AssetUserData.RemoveAt(DataIdx);
+			return;
+		}
+	}
+}
+
+const TArray<UAssetUserData*>* UGeometryCache::GetAssetUserDataArray() const
+{
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }
 
 #undef LOCTEXT_NAMESPACE // "GeometryCache"

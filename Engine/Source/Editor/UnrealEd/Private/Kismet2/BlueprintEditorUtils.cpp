@@ -3,6 +3,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Algo/AnyOf.h"
 #include "Algo/Copy.h"
+#include "Algo/RemoveIf.h"
 #include "Algo/Transform.h"
 #include "BlueprintCompilationManager.h"
 #include "UObject/Interface.h"
@@ -133,6 +134,7 @@
 #include "Elements/Interfaces/TypedElementObjectInterface.h"
 #include "Misc/MessageDialog.h"
 #include "UObject/FastReferenceCollector.h"
+#include "INotifyFieldValueChanged.h"
 
 #define LOCTEXT_NAMESPACE "Blueprint"
 
@@ -944,118 +946,6 @@ void FBlueprintEditorUtils::RemoveAllLocalBookmarks(const UBlueprint* ForBluepri
 	}
 }
 
-/** 
- * Check FKismetCompilerContext::SetCanEverTickForActor
- */
-struct FSaveActorFlagsHelper
-{
-	bool bOverride;
-	bool bCanEverTick;
-	UClass * Class;
-
-	FSaveActorFlagsHelper(UClass * InClass) : Class(InClass)
-	{
-		bOverride = (AActor::StaticClass() == FBlueprintEditorUtils::FindFirstNativeClass(Class));
-		if(Class && bOverride)
-		{
-			AActor* CDActor = Cast<AActor>(Class->GetDefaultObject());
-			if(CDActor)
-			{
-				bCanEverTick = CDActor->PrimaryActorTick.bCanEverTick;
-			}
-		}
-	}
-
-	~FSaveActorFlagsHelper()
-	{
-		if(Class && bOverride)
-		{
-			AActor* CDActor = Cast<AActor>(Class->GetDefaultObject());
-			if(CDActor)
-			{
-				CDActor->PrimaryActorTick.bCanEverTick = bCanEverTick;
-			}
-		}
-	}
-};
-
-//////////////////////////////////////////////////////////////////////////
-
-/**
- * Archive built to go through and find any references to objects in the transient package, and then NULL those references
- */
-class FArchiveMoveSkeletalRefs : public FArchiveUObject
-{
-public:
-	FArchiveMoveSkeletalRefs(UBlueprint* TargetBP)
-		: TargetBlueprint(TargetBP)
-	{
-		ArIsObjectReferenceCollector = true;
-		this->SetIsPersistent(false);
-		ArIgnoreArchetypeRef = false;
-	}
-
-	void UpdateReferences()
-	{
-		if( TargetBlueprint != nullptr && (TargetBlueprint->BlueprintType != BPTYPE_MacroLibrary) )
-		{
-			if( ensureMsgf(TargetBlueprint->SkeletonGeneratedClass, TEXT("Blueprint %s is missing its skeleton generated class - known possible for assets on revision 1 older than 2088505"), *TargetBlueprint->GetName() ) )
-			{
-				TargetBlueprint->SkeletonGeneratedClass->GetDefaultObject()->Serialize(*this);
-			}
-			check(TargetBlueprint->GeneratedClass);
-			TargetBlueprint->GeneratedClass->GetDefaultObject()->Serialize(*this);
-
-			TArray<UObject*> SubObjs;
-			GetObjectsWithOuter(TargetBlueprint, SubObjs, true);
-
-			for (UObject* SubObj : SubObjs)
-			{
-				SubObj->Serialize(*this);
-			}
-
-			TargetBlueprint->bLegacyNeedToPurgeSkelRefs = false;
-		}
-	}
-
-protected:
-	UBlueprint* TargetBlueprint;
-
-	/** 
-	 * UObject serialize operator implementation
-	 *
-	 * @param Object	reference to Object reference
-	 * @return reference to instance of this class
-	 */
-	FArchive& operator<<( UObject*& Object )
-	{
-		// Check if this is a reference to an object existing in the transient package, and if so, NULL it.
-		if (Object != nullptr )
-		{
-			if( UClass* RefClass = Cast<UClass>(Object) )
-			{
-				const bool bIsValidBPGeneratedClass = RefClass->HasAnyClassFlags(CLASS_CompiledFromBlueprint) && RefClass->ClassGeneratedBy;
-				if (bIsValidBPGeneratedClass)
-				{
-					UClass* AuthClass = RefClass->GetAuthoritativeClass();
-					if (RefClass != AuthClass)
-					{
-						Object = AuthClass;
-					}
-				}
-			}
-		}
-
-		return *this;
-	}
-
-private:
-	// Want to make them HAVE to use a blueprint, so we can control what we replace refs on
-	FArchiveMoveSkeletalRefs()
-	{
-	}
-};
-
 //////////////////////////////////////////////////////////////////////////
 
 struct FRegenerationHelper
@@ -1339,249 +1229,6 @@ void FBlueprintEditorUtils::PreloadBlueprintSpecificData(UBlueprint* Blueprint)
 	{
 		K2Node->PreloadRequiredAssets();
 	}
-}
-
-UClass* FBlueprintEditorUtils::RegenerateBlueprintClass(UBlueprint* Blueprint, UClass* ClassToRegenerate, UObject* PreviousCDO)
-{
-	bool bRegenerated = false;
-
-	// Cache off the dirty flag for the package, so we can restore it later
-	UPackage* Package = Blueprint->GetOutermost();
-	bool bIsPackageDirty = Package ? Package->IsDirty() : false;
-
-	// Preload the blueprint and all its parts before refreshing nodes. 
-	// Otherwise, the nodes might not maintain their proper linkages... 
-	//
-	// This all should also happen here, first thing, before 
-	// bIsRegeneratingOnLoad is set, so that we can re-enter this function for 
-	// the same class further down the callstack (presumably from 
-	// PreloadInterfaces() or some other dependency load). This is here to 
-	// handle circular dependencies, where pre-loading a member here sets off a  
-	// subsequent load that in turn, relies on this class and requires this  
-	// class to be fully generated... A second call to this function with the 
-	// same class will continue to preload all it's members (from where it left
-	// off, since they're gated by a RF_NeedLoad check) and then fall through to
-	// finish compiling the class (while it's still technically pre-loading a
-	// member further up the stack).
-	if (!Blueprint->bHasBeenRegenerated)
-	{
-		UBlueprint::ForceLoadMetaData(Blueprint);
-		if (ensure(PreviousCDO))
-		{
-			UBlueprint::ForceLoadMembers(PreviousCDO);
-		}
-		UBlueprint::ForceLoadMembers(Blueprint);
-	}
-
-	if( ShouldRegenerateBlueprint(Blueprint) && !Blueprint->bHasBeenRegenerated )
-	{
-		Blueprint->bCachedDependenciesUpToDate = false;
-		Blueprint->bIsRegeneratingOnLoad = true;
-
-		// Cache off the linker index, if needed
-		FName GeneratedName, SkeletonName;
-		Blueprint->GetBlueprintCDONames(GeneratedName, SkeletonName);
-		int32 OldSkelLinkerIdx = INDEX_NONE;
-		int32 OldGenLinkerIdx = INDEX_NONE;
-		FLinkerLoad* OldLinker = Blueprint->GetLinker();
-		for( int32 i = 0; i < OldLinker->ExportMap.Num(); i++ )
-		{
-			FObjectExport& ThisExport = OldLinker->ExportMap[i];
-			if( ThisExport.ObjectName == SkeletonName )
-			{
-				OldSkelLinkerIdx = i;
-			}
-			else if( ThisExport.ObjectName == GeneratedName )
-			{
-				OldGenLinkerIdx = i;
-			}
-
-			if( OldSkelLinkerIdx != INDEX_NONE && OldGenLinkerIdx != INDEX_NONE )
-			{
-				break;
-			}
-		}
-
-		// Make sure the simple construction script is loaded, since the outer hierarchy isn't compatible with PreloadMembers past the root node
-		FBlueprintEditorUtils::PreloadConstructionScript(Blueprint);
-
-		// Preload Overridden Components
-		if (Blueprint->InheritableComponentHandler)
-		{
-			Blueprint->InheritableComponentHandler->PreloadAll();
-		}
-
-		// Purge any NULL graphs
-		FBlueprintEditorUtils::PurgeNullGraphs(Blueprint);
-
-		// Now that things have been preloaded, see what work needs to be done to refresh this blueprint
-		const bool bIsMacro = (Blueprint->BlueprintType == BPTYPE_MacroLibrary);
-		const bool bHasCode = !FBlueprintEditorUtils::IsDataOnlyBlueprint(Blueprint) && !bIsMacro;
-
-		// Make sure all used external classes/functions/structures/macros/etc are loaded and linked
-		FRegenerationHelper::LinkExternalDependencies(Blueprint);
-
-		bool bSkeletonUpToDate = FKismetEditorUtilities::GenerateBlueprintSkeleton(Blueprint);
-
-		const bool bDataOnlyClassThatMustBeRecompiled = !bHasCode && !bIsMacro
-			&& (!ClassToRegenerate || (Blueprint->ParentClass != ClassToRegenerate->GetSuperClass()));
-
-		UBlueprintGeneratedClass* BPGClassToRegenerate = Cast<UBlueprintGeneratedClass>(ClassToRegenerate);
-#if USE_UBER_GRAPH_PERSISTENT_FRAME
-		const bool bHasPendingUberGraphFrame = BPGClassToRegenerate
-			&& (BPGClassToRegenerate->UberGraphFramePointerProperty || BPGClassToRegenerate->UberGraphFunction);
-#else 
-		const bool bHasPendingUberGraphFrame = false;
-#endif //USE_UBER_GRAPH_PERSISTENT_FRAME
-
-		const bool bDefaultComponentMustBeAdded = !bHasCode 
-			&& BPGClassToRegenerate
-			&& SupportsConstructionScript(Blueprint) 
-			&& BPGClassToRegenerate->SimpleConstructionScript
-			&& (nullptr == BPGClassToRegenerate->SimpleConstructionScript->GetSceneRootComponentTemplate(true));
-		const bool bShouldBeRecompiled = bHasCode || bDataOnlyClassThatMustBeRecompiled || bHasPendingUberGraphFrame || bDefaultComponentMustBeAdded;
-
-		if (bShouldBeRecompiled)
-		{
-			// Make sure parent function calls are up to date
-			FBlueprintEditorUtils::ConformCallsToParentFunctions(Blueprint);
-
-			// Make sure events are up to date
-			FBlueprintEditorUtils::ConformImplementedEvents(Blueprint);
-			
-			// Make sure interfaces are up to date
-			FBlueprintEditorUtils::ConformImplementedInterfaces(Blueprint);
-
-			// Reconstruct all nodes, this will call AllocateDefaultPins, which ensures
-			// that nodes have a chance to create all the pins they'll expect when they compile.
-			// A good example of why this is necessary is UK2Node_BaseAsyncTask::AllocateDefaultPins
-			// and it's companion function UK2Node_BaseAsyncTask::ExpandNode.
-			FBlueprintEditorUtils::ReconstructAllNodes(Blueprint);
-
-			FBlueprintEditorUtils::ReplaceDeprecatedNodes(Blueprint);
-
-			// Compile the actual blueprint
-			EBlueprintCompileOptions Options = EBlueprintCompileOptions::IsRegeneratingOnLoad;
-			if(bSkeletonUpToDate)
-			{
-				Options |= EBlueprintCompileOptions::SkeletonUpToDate;
-			}
-			FKismetEditorUtilities::CompileBlueprint(Blueprint, Options, nullptr);
-		}
-		else if( bIsMacro )
-		{
-			// Just refresh all nodes in macro blueprints, but don't recompile
-			FBlueprintEditorUtils::RefreshAllNodes(Blueprint);
-
-			FBlueprintEditorUtils::ReplaceDeprecatedNodes(Blueprint);
-
-			if (ClassToRegenerate != nullptr)
-			{
-				UClass* OldSuperClass = ClassToRegenerate->GetSuperClass();
-				if ((OldSuperClass != nullptr) && OldSuperClass->HasAnyClassFlags(CLASS_NewerVersionExists))
-				{
-					UClass* NewSuperClass = OldSuperClass->GetAuthoritativeClass();
-					ensure(NewSuperClass == Blueprint->ParentClass);
-
-					// in case the macro's super class was re-instanced (it 
-					// would have re-parented this to a REINST_ class), for non-
-					// macro blueprints this would normally be reset in 
-					// CompileBlueprint (but since we don't compile macros, we 
-					// need to fix this up here)
-					ClassToRegenerate->SetSuperStruct(NewSuperClass);
-				}
-			}
-
-			// Flag macro blueprints as being up-to-date
-			Blueprint->Status = BS_UpToDate;
-		}
-		else
-		{
-			if (Blueprint->GeneratedClass != nullptr)
-			{
-				RemoveStaleFunctions(Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass), Blueprint);
-			}
-
-			// No actual compilation work to be done, but try to conform the class and fix up anything that might need to be updated if the native base class has changed in any way
-			FKismetEditorUtilities::ConformBlueprintFlagsAndComponents(Blueprint);
-
-			if (Blueprint->GeneratedClass)
-			{
-				FBlueprintEditorUtils::RecreateClassMetaData(Blueprint, Blueprint->GeneratedClass, true);
-				Blueprint->GeneratedClass->ClassFlags &= ~CLASS_ReplicationDataIsSetUp;
-				Blueprint->GeneratedClass->SetUpRuntimeReplicationData();
-			}
-
-			// Flag data only blueprints as being up-to-date
-			Blueprint->Status = BS_UpToDate;
-		}
-		
-		// Patch the new CDOs to the old indices in the linker
-		if( Blueprint->SkeletonGeneratedClass )
-		{
-			PatchNewCDOIntoLinker(Blueprint->SkeletonGeneratedClass->GetDefaultObject(), OldLinker, OldSkelLinkerIdx, nullptr);
-		}
-		if( Blueprint->GeneratedClass )
-		{
-			PatchNewCDOIntoLinker(Blueprint->GeneratedClass->GetDefaultObject(), OldLinker, OldGenLinkerIdx, nullptr);
-		}
-
-		// Success or failure, there's no point in trying to recompile this class again when other objects reference it
-		// redo data only blueprints later, when we actually have a generated class
-		Blueprint->bHasBeenRegenerated = !FBlueprintEditorUtils::IsDataOnlyBlueprint(Blueprint) || Blueprint->GeneratedClass != nullptr; 
-
-		Blueprint->bIsRegeneratingOnLoad = false;
-
-		bRegenerated = bShouldBeRecompiled;
-
-		if (!FKismetEditorUtilities::IsClassABlueprintSkeleton(ClassToRegenerate))
-		{
-			if (!Blueprint->bRecompileOnLoad)
-			{
-				// If we didn't recompile, we still need to propagate flags, and instance components
-				FKismetEditorUtilities::ConformBlueprintFlagsAndComponents(Blueprint);
-			}
-
-			// Now that the CDO is valid, update the OwnedComponents, in case we've added or removed native components
-			if (AActor* MyActor = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject()))
-			{
-				MyActor->ResetOwnedComponents();
-			}
-		}
-	}
-	else
-	{
-		if (Blueprint->GeneratedClass && !Blueprint->bHasBeenRegenerated && !Blueprint->bIsRegeneratingOnLoad)
-		{
-			FObjectDuplicationParameters Params(Blueprint->GeneratedClass, Blueprint->GeneratedClass->GetOuter());
-			Params.ApplyFlags = RF_Transient;
-			Params.DestName = *(FString("SKEL_COPY_") + Blueprint->GeneratedClass->GetName());
-			Blueprint->SkeletonGeneratedClass = (UClass*)StaticDuplicateObjectEx(Params);
-		}
-	}
-
-	if ( bRegenerated )
-	{		
-		// Fix any invalid metadata
-		UPackage* GeneratedClassPackage = Blueprint->GeneratedClass->GetOuterUPackage();
-		GeneratedClassPackage->GetMetaData()->RemoveMetaDataOutsidePackage();
-	}
-
-	bool const bNeedsSkelRefRemoval = !FKismetEditorUtilities::IsClassABlueprintSkeleton(ClassToRegenerate) && (Blueprint->SkeletonGeneratedClass != nullptr);
-	if (bNeedsSkelRefRemoval && Blueprint->bLegacyNeedToPurgeSkelRefs)
-	{
-		// Remove any references to the skeleton class, replacing them with refs to the generated class instead
-		FArchiveMoveSkeletalRefs SkelRefArchiver(Blueprint);
-		SkelRefArchiver.UpdateReferences();
-	}
-
-	// Restore the dirty flag
-	if( Package )
-	{
-		Package->SetDirtyFlag(bIsPackageDirty);
-	}
-
-	return bRegenerated ? Blueprint->GeneratedClass : nullptr;
 }
 
 void FBlueprintEditorUtils::LinkExternalDependencies(UBlueprint* Blueprint)
@@ -2074,6 +1721,24 @@ void FBlueprintEditorUtils::PostDuplicateBlueprint(UBlueprint* Blueprint, bool b
 			UObject* NewCDO = Blueprint->GeneratedClass->GetDefaultObject();
 			check(NewCDO != nullptr);
 			UEditorEngine::CopyPropertiesForUnrelatedObjects(OldCDO, NewCDO);
+
+			// copy sparse data over to the new class sparse data, if any:
+			const TObjectPtr<UScriptStruct> SparseData = Blueprint->GeneratedClass->GetSparseClassDataStruct();
+			if (SparseData && OldBPGC->bIsSparseClassDataSerializable)
+			{
+				void* SparseDataInstance = Blueprint->GeneratedClass->GetOrCreateSparseClassData();
+
+				const TObjectPtr<UScriptStruct> OldSparseData = OldBPGC->GetSparseClassDataStruct();
+				if (ensure(OldSparseData == SparseData))
+				{
+					const void* OldSparseDataInstance = OldBPGC->GetSparseClassData(EGetSparseClassDataMethod::ReturnIfNull);
+					if (OldSparseDataInstance && ensure(OldSparseDataInstance != SparseDataInstance))
+					{
+						SparseData->CopyScriptStruct(SparseDataInstance, OldSparseDataInstance);
+					}
+				}
+				NewBPGC->bIsSparseClassDataSerializable = true; // match the object we're being duplicated from
+			}
 
 			FBlueprintEditorUtils::ReconstructAllNodes(Blueprint);
 
@@ -2578,6 +2243,24 @@ void FBlueprintEditorUtils::FindImplementedInterfaces(const UBlueprint* Blueprin
 	}
 }
 
+bool FBlueprintEditorUtils::ImplementsInterface(const UBlueprint* Blueprint, bool bIncludeInherited, UClass* InterfaceClass)
+{
+	// First test this blueprint
+	if (Blueprint->ImplementedInterfaces.ContainsByPredicate([InterfaceClass](const FBPInterfaceDescription& ImplementedInterface){ return ImplementedInterface.Interface->IsChildOf(InterfaceClass); }))
+	{
+		return true;
+	}
+
+	if (bIncludeInherited)
+	{
+		if (UClass* BlueprintParent = Blueprint->ParentClass)
+		{
+			return BlueprintParent->ImplementsInterface(InterfaceClass);
+		}
+	}
+	return false;
+}
+
 UClass* const FBlueprintEditorUtils::GetOverrideFunctionClass(UBlueprint* Blueprint, const FName FuncName, UFunction** OutFunction)
 {
 	if (!Blueprint->SkeletonGeneratedClass)
@@ -2693,6 +2376,28 @@ void FBlueprintEditorUtils::RemoveGraphs( UBlueprint* Blueprint, const TArray<cl
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 }
 
+namespace UE::Private
+{
+	// Given a function graph, check if it's field notify and remove its name from the meta data of all field notify variables.
+	static void RemoveFieldNotifyFunctionFromAllMetaData(UBlueprint* Blueprint, class UEdGraph* FunctionGraphToRemove)
+	{
+		if (Blueprint->FunctionGraphs.Contains(FunctionGraphToRemove) && FBlueprintEditorUtils::ImplementsInterface(Blueprint, true, UNotifyFieldValueChanged::StaticClass()))
+		{
+			for (UEdGraphNode* Node : FunctionGraphToRemove->Nodes)
+			{
+				if (UK2Node_FunctionEntry* NodeFunctionEntry = Cast<UK2Node_FunctionEntry>(Node))
+				{
+					if (NodeFunctionEntry->MetaData.HasMetaData(FBlueprintMetadata::MD_FieldNotify))
+					{
+						FBlueprintEditorUtils::RemoveFieldNotifyFromAllMetadata(Blueprint, FunctionGraphToRemove->GetFName());
+					}
+					break;
+				}
+			}
+		}
+	}
+}
+
 // Removes the supplied graph from the Blueprint.
 void FBlueprintEditorUtils::RemoveGraph(UBlueprint* Blueprint, class UEdGraph* GraphToRemove, EGraphRemoveFlags::Type Flags /*= Transient | Recompile */)
 {
@@ -2702,6 +2407,8 @@ void FBlueprintEditorUtils::RemoveGraph(UBlueprint* Blueprint, class UEdGraph* G
 	{
 		if (TestOuter == Blueprint)
 		{
+			UE::Private::RemoveFieldNotifyFunctionFromAllMetaData(Blueprint, GraphToRemove);
+
 			Blueprint->DelegateSignatureGraphs.Remove( GraphToRemove );
 			Blueprint->FunctionGraphs.Remove( GraphToRemove );
 			Blueprint->UbergraphPages.Remove( GraphToRemove );
@@ -3124,7 +2831,7 @@ void FBlueprintEditorUtils::GatherDependencies(const UBlueprint* InBlueprint, TS
 	OutUDSDependencies.Empty();
 
 	// If the Blueprint's GeneratedClass was not generated by the Blueprint, it's either corrupt or a PIE version of the BP
-	if (InBlueprint->GeneratedClass && InBlueprint->GeneratedClass->ClassGeneratedBy != InBlueprint)
+	if (InBlueprint->GeneratedClass && InBlueprint->GeneratedClass->ClassGeneratedBy.Get() != InBlueprint)
 	{
 		// Dependencies do not matter for PIE duplicated Blueprints
 		return;
@@ -3603,8 +3310,8 @@ bool FBlueprintEditorUtils::DoesSupportTimelines(const UBlueprint* Blueprint)
 
 bool FBlueprintEditorUtils::DoesSupportEventGraphs(const UBlueprint* Blueprint)
 {
-	return Blueprint->BlueprintType == BPTYPE_Normal 
-		|| Blueprint->BlueprintType == BPTYPE_LevelScript;
+	return Blueprint->BlueprintType == BPTYPE_Normal
+			|| Blueprint->BlueprintType == BPTYPE_LevelScript;
 }
 
 /** Returns whether or not the blueprint supports implementing interfaces */
@@ -4902,9 +4609,43 @@ void FBlueprintEditorUtils::RemoveMemberVariable(UBlueprint* Blueprint, const FN
 	const int32 VarIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, VarName);
 	if (VarIndex != INDEX_NONE)
 	{
+		if ( Blueprint->NewVariables[VarIndex].HasMetaData(FBlueprintMetadata::MD_FieldNotify) && FBlueprintEditorUtils::ImplementsInterface(Blueprint, true, UNotifyFieldValueChanged::StaticClass()) )
+		{
+			RemoveFieldNotifyFromAllMetadata(Blueprint, VarName);
+		}
 		Blueprint->NewVariables.RemoveAt(VarIndex);
 		FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, VarName);
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+}
+
+// Removes the field name from the field notify metadata of all functions and variables
+void FBlueprintEditorUtils::RemoveFieldNotifyFromAllMetadata(UBlueprint* Blueprint, const FName FieldName)
+{
+	// Go through all field notify variables and remove FieldName from their metadata.
+	for (int32 i = 0; i < Blueprint->NewVariables.Num(); ++i)
+	{
+		FBPVariableDescription& Variable = Blueprint->NewVariables[i];
+		if (Variable.HasMetaData(FBlueprintMetadata::MD_FieldNotify))
+		{
+			FString FieldNotifyValues = Variable.GetMetaData(FBlueprintMetadata::MD_FieldNotify);
+			TArray<FString> ListOfFieldNotifies;
+			const TCHAR* Delimiter = TEXT("|");
+
+			FieldNotifyValues.ParseIntoArray(ListOfFieldNotifies, Delimiter);
+			if (ListOfFieldNotifies.Contains(FieldName.ToString()))
+			{
+				ListOfFieldNotifies.Remove(FieldName.ToString());
+				if (ListOfFieldNotifies.Num() > 0)
+				{
+					FBlueprintEditorUtils::SetBlueprintVariableMetaData(Blueprint, Variable.VarName, NULL, FBlueprintMetadata::MD_FieldNotify, FString::Join(ListOfFieldNotifies, Delimiter));
+				}
+				else
+				{
+					FBlueprintEditorUtils::SetBlueprintVariableMetaData(Blueprint, Variable.VarName, NULL, FBlueprintMetadata::MD_FieldNotify, TEXT(""));
+				}
+			}
+		}
 	}
 }
 
@@ -6031,6 +5772,7 @@ namespace UE::Blueprint::Private
 
 		return false;
 	}
+
 }
 
 bool FBlueprintEditorUtils::IsVariableUsed(const UBlueprint* Blueprint, const FName& VariableName, const UEdGraph* LocalGraphScope /* = nullptr */)
@@ -6416,7 +6158,7 @@ void FBlueprintEditorUtils::MarkBlueprintChildrenAsModified(UBlueprint* InBluepr
 		{
 			FText Message = FText::Format(LOCTEXT("LoadChildrenPopupMessage", "Load {0} unloaded child blueprints to fix up phantom references?"), FText::FromString(LexToString(Unloaded)));
 			FText Title = LOCTEXT("LoadChildrenPopupTitle", "Load Unloaded Children?");
-			DialogResponse = FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title);
+			DialogResponse = FMessageDialog::Open(EAppMsgType::YesNo, Message, Title);
 		}
 
 		// Conditionally Load Children and mark as modified 
@@ -6770,7 +6512,7 @@ void FBlueprintEditorUtils::RemoveInterface(UBlueprint* Blueprint, const FName& 
 
 bool FBlueprintEditorUtils::RemoveInterfaceFunction(UBlueprint* Blueprint, FBPInterfaceDescription& Interface, UFunction* Function, bool bPreserveFunction)
 {
-	for (TArray<UEdGraph*>::TIterator it(Interface.Graphs); it; ++it)
+	for (auto it = Interface.Graphs.CreateIterator(); it; ++it)
 	{
 		UEdGraph* CurrentGraph = *it;
 		if (Function->GetFName() == CurrentGraph->GetFName())
@@ -6884,12 +6626,10 @@ void FBlueprintEditorUtils::CleanNullGraphReferencesInArray(UBlueprint* Blueprin
 
 void FBlueprintEditorUtils::PurgeNullGraphs(UBlueprint* Blueprint)
 {
-	CleanNullGraphReferencesInArray(Blueprint, Blueprint->UbergraphPages);
-	CleanNullGraphReferencesInArray(Blueprint, Blueprint->FunctionGraphs);
-	CleanNullGraphReferencesInArray(Blueprint, Blueprint->DelegateSignatureGraphs);
-	CleanNullGraphReferencesInArray(Blueprint, Blueprint->MacroGraphs);
-
-	Blueprint->LastEditedDocuments.RemoveAll([](const FEditedDocumentInfo& TestDoc) { return TestDoc.EditedObjectPath.ResolveObject() == nullptr; });
+	CleanNullGraphReferencesInArray(Blueprint, MutableView(Blueprint->UbergraphPages));
+	CleanNullGraphReferencesInArray(Blueprint, MutableView(Blueprint->FunctionGraphs));
+	CleanNullGraphReferencesInArray(Blueprint, MutableView(Blueprint->DelegateSignatureGraphs));
+	CleanNullGraphReferencesInArray(Blueprint, MutableView(Blueprint->MacroGraphs));
 }
 
 struct FConformCallsToParentFunctionUtils
@@ -7574,6 +7314,17 @@ void FBlueprintEditorUtils::ConformImplementedInterfaces(UBlueprint* Blueprint)
 	}
 }
 
+void FBlueprintEditorUtils::ConformDelegateSignatureGraphs(UBlueprint* Blueprint)
+{
+	Blueprint->DelegateSignatureGraphs.SetNum( Algo::RemoveIf(Blueprint->DelegateSignatureGraphs, 
+		[Blueprint](UEdGraph* Graph)
+		{
+			const int32 VarIndex = FBlueprintEditorUtils::FindNewVariableIndex(Blueprint, Graph->GetFName());
+			return VarIndex == INDEX_NONE;
+		}
+	));
+}
+
 void FBlueprintEditorUtils::ConformAllowDeletionFlag(UBlueprint* Blueprint)
 {
 	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
@@ -7951,6 +7702,21 @@ FBlueprintMacroCosmeticInfo FBlueprintEditorUtils::GetCosmeticInfoForMacro(UEdGr
 	return FBlueprintMacroCosmeticInfo();
 }
 
+void FBlueprintEditorUtils::ReplaceInvalidBlueprintNameCharacters(FString& InBaseName)
+{
+	for (TCHAR& TestChar : InBaseName)
+	{
+		for (TCHAR BadChar : UE_BLUEPRINT_INVALID_NAME_CHARACTERS)
+		{
+			if (TestChar == BadChar)
+			{
+				TestChar = TEXT('_');
+				break;
+			}
+		}
+	}
+}
+
 FName FBlueprintEditorUtils::FindUniqueKismetName(const UBlueprint* InBlueprint, const FString& InBaseName, UStruct* InScope/* = nullptr*/)
 {
 	int32 Count = 0;
@@ -7965,17 +7731,7 @@ FName FBlueprintEditorUtils::FindUniqueKismetName(const UBlueprint* InBlueprint,
 	// Clean up BaseName to not contain any invalid characters, which will mean we can never find a legal name no matter how many numbers we add
 	if (Result == EValidatorResult::ContainsInvalidCharacters)
 	{
-		for (TCHAR& TestChar : BaseName)
-		{
-			for (TCHAR BadChar : UE_BLUEPRINT_INVALID_NAME_CHARACTERS)
-			{
-				if (TestChar == BadChar)
-				{
-					TestChar = TEXT('_');
-					break;
-				}
-			}
-		}
+		ReplaceInvalidBlueprintNameCharacters(BaseName);
 		KismetName = BaseName;
 		Result = NameValidator->IsValid(KismetName);
 	}
@@ -8769,7 +8525,23 @@ TSharedRef<SWidget> FBlueprintEditorUtils::ConstructBlueprintParentClassPicker( 
 		else
 		{
 			// Don't allow conversion outside of the Actor hierarchy
-			Filter->AllowedChildrenOfClasses.Add( AActor::StaticClass() );
+			{
+				bool bHasAllowedActorClasses = false;
+				for (const UClass* Class : Filter->AllowedChildrenOfClasses)
+				{
+					if (Class && Class->IsChildOf(AActor::StaticClass()))
+					{
+						// This blueprint has already defined explicit actor classes to use
+						bHasAllowedActorClasses = true;
+						break;
+					}
+				}
+			
+				if (!bHasAllowedActorClasses)
+				{
+					Filter->AllowedChildrenOfClasses.Add( AActor::StaticClass() );
+				}
+			}
 
 			// Don't allow non-LevelScriptActor->LevelScriptActor conversion
 			Filter->DisallowedChildrenOfClasses.Add( ALevelScriptActor::StaticClass() );
@@ -9026,7 +8798,7 @@ FBlueprintEditorUtils::EPropertyWritableState FBlueprintEditorUtils::IsPropertyW
 		if (Property->GetBoolMetaData(FBlueprintMetadata::MD_Private))
 		{
 			const UClass* OwningClass = Property->GetOwnerChecked<UClass>();
-			if (OwningClass->ClassGeneratedBy != Blueprint)
+			if (OwningClass->ClassGeneratedBy.Get() != Blueprint)
 			{
 				return EPropertyWritableState::Private;
 			}
@@ -9046,7 +8818,7 @@ FBlueprintEditorUtils::EPropertyReadableState FBlueprintEditorUtils::IsPropertyR
 		if (Property->GetBoolMetaData(FBlueprintMetadata::MD_Private))
 		{
 			const UClass* OwningClass = Property->GetOwnerChecked<UClass>();
-			if (OwningClass->ClassGeneratedBy != Blueprint)
+			if (OwningClass->ClassGeneratedBy.Get() != Blueprint)
 			{
 				return EPropertyReadableState::Private;
 			}
@@ -10610,6 +10382,133 @@ bool FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(const UFuncti
 	}
 	
 	return false;
+}
+
+bool FBlueprintEditorUtils::HasRestrictedNodes(const UBlueprint* BP, TArray<UEdGraphNode*>* OutRestrictedNodes /* = nullptr */)
+{
+	if (!BP)
+	{
+		return false;
+	}
+
+	UBlueprintEditorSettings* BlueprintEditorSettings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(BlueprintEditorSettings);
+
+	// No need to continue if we're not restricting anything.
+	if (!BlueprintEditorSettings->HasClassFiltering()
+		&& !BlueprintEditorSettings->GetFunctionPermissions().HasFiltering())
+	{
+		return false;
+	}
+
+	if (OutRestrictedNodes)
+	{
+		OutRestrictedNodes->Reset();
+	}
+
+	// Check for any disallowed node types.
+	auto IsRestrictedNodeType = [BlueprintEditorSettings](const UEdGraphNode* InNode) -> bool
+	{
+		return !BlueprintEditorSettings->IsClassAllowed(InNode->GetClass());
+	};
+
+	// Check for any disallowed event graph implementations. The event node is considered restricted in this case.
+	auto IsRestrictedEventGraph = [BP, BlueprintEditorSettings](const UEdGraphNode* InNode) -> bool
+	{
+		const UK2Node_Event* EventNode = Cast<UK2Node_Event>(InNode);
+		return EventNode && !BlueprintEditorSettings->IsFunctionAllowed(BP, EventNode->EventReference.GetMemberName());
+	};
+
+	// Check for any disallowed function override graphs. Its entry node is considered to be restricted in this case.
+	auto IsRestrictedFunctionGraph = [BP, BlueprintEditorSettings](const UEdGraphNode* InNode) -> bool
+	{
+		const UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(InNode);
+		return EntryNode && !BlueprintEditorSettings->IsFunctionAllowed(BP, EntryNode->FunctionReference.GetMemberName());
+	};
+
+	TArray<UEdGraphNode*> AllNodes;
+	GetAllNodesOfClass(BP, AllNodes);
+	for (UEdGraphNode* Node : AllNodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		if (IsRestrictedNodeType(Node)
+			|| IsRestrictedEventGraph(Node)
+			|| IsRestrictedFunctionGraph(Node))
+		{
+			if (OutRestrictedNodes)
+			{
+				OutRestrictedNodes->Add(Node);
+			}
+			else
+			{
+				// We found a restricted node and/or graph entry point, so we can return immediately since we're not populating the output list.
+				return true;
+			}
+		}
+	}
+
+	if (OutRestrictedNodes && OutRestrictedNodes->Num() > 0)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+void FBlueprintEditorUtils::SanitizeRestrictedContent(UBlueprint* BP)
+{
+	TArray<UEdGraphNode*> RestrictedNodes;
+	if (HasRestrictedNodes(BP, &RestrictedNodes))
+	{
+		// Remove any restricted nodes and/or graphs (note: in restricted mode, it is implied that
+		// restricted items are not also user-facing, so any removals here should be opaque to users).
+		TSet<UEdGraph*> NodeSubgraphs;
+		TSet<UEdGraph*> GraphsToRemove;
+		for (UEdGraphNode* Node : RestrictedNodes)
+		{
+			// If we've already handled the node's graph/subgraph, no need to remove it again here.
+			const UEdGraph* NodeGraph = Node->GetGraph();
+			if (GraphsToRemove.Contains(NodeGraph)
+				|| NodeSubgraphs.Contains(NodeGraph))
+			{
+				continue;
+			}
+
+			// Remove the entire graph if this node represents an entry point for an event/function.
+			if (Node->IsA<UK2Node_Event>()
+				|| Node->IsA<UK2Node_FunctionEntry>())
+			{
+				GraphsToRemove.Add(Node->GetGraph());
+			}
+			else
+			{
+				// This may remove a subset of restricted nodes, so keep track of removed subgraphs.
+				NodeSubgraphs.Append(Node->GetSubGraphs());
+
+				// Defer updating the skeleton class since we're going to do a full recompile below.
+				RemoveNode(BP, Node, /*bDontRecompile =*/ true);
+
+				// Exclude any subgraphs that were not removed above from the set that we're tracking.
+				for (UEdGraph* SubGraph : Node->GetSubGraphs())
+				{
+					NodeSubgraphs.Remove(SubGraph);
+				}
+			}
+		}
+
+		// Note: On removal, graphs will be renamed and outered to the package containing the Blueprint.
+		for (UEdGraph* Graph : GraphsToRemove)
+		{
+			RemoveGraph(BP, Graph, EGraphRemoveFlags::MarkTransient);
+		}
+
+		// Do a full recompile to bring everything back up-to-date and to sanitize any generated bytecode.
+		FKismetEditorUtilities::CompileBlueprint(BP, EBlueprintCompileOptions::SkipGarbageCollection);
+	}
 }
 
 bool FBlueprintEditorUtils::ShouldOpenWithDataOnlyEditor(const UBlueprint* Blueprint)

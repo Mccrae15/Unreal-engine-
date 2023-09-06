@@ -83,7 +83,7 @@ void FD3D12Viewport::Init()
 		static bool bCustomSwapchainLogged = false;
 		if (!bCustomSwapchainLogged)
 		{
-			UE_LOG(LogD3D12RHI, Log, TEXT("Found a custom swapchain provider: '%s'."), DXGISwapchainProvider->GetName());
+			UE_LOG(LogD3D12RHI, Log, TEXT("Found a custom swapchain provider: '%s'."), DXGISwapchainProvider->GetProviderName());
 			bCustomSwapchainLogged = true;
 		}
 	}
@@ -114,36 +114,6 @@ void FD3D12Viewport::Init()
 	ID3D12CommandQueue* CommandQueue = Adapter->GetDevice(0)->GetQueue(ED3D12QueueType::Direct).D3DCommandQueue;
 
 	// Create the swapchain.
-#if PLATFORM_HOLOLENS
-	{
-		// MSAA Sample count
-		DXGI_SWAP_CHAIN_DESC1 SwapChainDesc{};
-		SwapChainDesc.SampleDesc.Count = 1;
-		SwapChainDesc.SampleDesc.Quality = 0;
-		SwapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
-		SwapChainDesc.Width = BufferDesc.Width;
-		SwapChainDesc.Height = BufferDesc.Height;
-		SwapChainDesc.Format = BufferDesc.Format;
-		// 1:single buffering, 2:double buffering, 3:triple buffering
-		SwapChainDesc.BufferCount = NumBackBuffers;
-		SwapChainDesc.Scaling = DXGI_SCALING_NONE;
-		SwapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-		// DXGI_SWAP_EFFECT_DISCARD / DXGI_SWAP_EFFECT_SEQUENTIAL
-		SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-		SwapChainDesc.Flags = SwapChainFlags;
-
-		IDXGIFactory4* Factory4 = Adapter->GetDXGIFactory4();
-		check(Factory4);
-
-		VERIFYD3D12RESULT(Factory4->CreateSwapChainForCoreWindow(
-			CommandQueue,
-			reinterpret_cast<IUnknown*>(Windows::UI::Core::CoreWindow::GetForCurrentThread()),
-			&SwapChainDesc,
-			NULL,
-			SwapChain1.GetInitReference()
-		));
-	}
-#else
 
 	extern bool bNeedSwapChain;
 
@@ -217,7 +187,7 @@ void FD3D12Viewport::Init()
 				UE_LOG(LogD3D12RHI, Warning, TEXT("\tWindows handle: 0x%x (IsWindow: %s)"), WindowHandle, IsWindow(WindowHandle) ? TEXT("true") : TEXT("false"));
 				UE_LOG(LogD3D12RHI, Warning, TEXT("\tFullscreen: %s"), bIsFullscreen ? TEXT("true") : TEXT("false"));
 				UE_LOG(LogD3D12RHI, Warning, TEXT("\tSwapchain flags: %d"), SwapChainFlags);
-				UE_LOG(LogD3D12RHI, Warning, TEXT("\tCustom swapchain provider: %s"), DXGISwapchainProvider ? DXGISwapchainProvider->GetName() : TEXT("none"));
+				UE_LOG(LogD3D12RHI, Warning, TEXT("\tCustom swapchain provider: %s"), DXGISwapchainProvider ? DXGISwapchainProvider->GetProviderName() : TEXT("none"));
 
 				VERIFYD3D12RESULT(hr);
 			}
@@ -225,7 +195,6 @@ void FD3D12Viewport::Init()
 			VERIFYD3D12RESULT(SwapChain->QueryInterface(IID_PPV_ARGS(SwapChain1.GetInitReference())));
 		}
 	}
-#endif
 
 	if (SwapChain1)
 	{
@@ -249,11 +218,9 @@ void FD3D12Viewport::Init()
 	// Resize to setup mGPU correctly.
 	Resize(BufferDesc.Width, BufferDesc.Height, bIsFullscreen, PixelFormat);
 
-#if !PLATFORM_HOLOLENS
 	// Tell the window to redraw when they can.
 	// @todo: For Slate viewports, it doesn't make sense to post WM_PAINT messages (we swallow those.)
 	::PostMessageW(WindowHandle, WM_PAINT, 0, 0);
-#endif
 }
 
 void FD3D12Viewport::FinalDestroyInternal()
@@ -276,13 +243,11 @@ void FD3D12Viewport::ConditionalResetSwapChain(bool bIgnoreFocus)
 		}
 		else
 		{
-#if !PLATFORM_HOLOLENS
 			// Check if the viewport's window is focused before resetting the swap chain's fullscreen state.
 			HWND FocusWindow = ::GetFocus();
 			const bool bIsFocused = FocusWindow == WindowHandle;
 			const bool bIsIconic = !!::IsIconic(WindowHandle);
 			if (bIgnoreFocus || (bIsFocused && !bIsIconic))
-#endif
 			{
 				FlushRenderingCommands();
 
@@ -376,7 +341,7 @@ void FD3D12Viewport::ResizeInternal()
 	{
 		if (SwapChain1)
 		{
-			auto Lambda = [=]() -> FString
+			auto Lambda = [this, SwapChainFlags]() -> FString
 			{
 				return FString::Printf(TEXT("Num=%d, Size=(%d,%d), PF=%d, DXGIFormat=0x%x, Flags=0x%x"), NumBackBuffers, SizeX, SizeY, (int32)PixelFormat, (int32)GetRenderTargetFormat(PixelFormat), SwapChainFlags);
 			};
@@ -570,15 +535,6 @@ FD3D12Texture* FD3D12Viewport::GetBackBuffer_RenderThread() const
 bool FD3D12Viewport::IsPresentAllowed()
 {
 	return !FD3D12DynamicRHI::GetD3DRHI()->RHIIsRenderingSuspended();
-}
-
-/**
-  * RHIEndDrawingViewport flushes commands internally, so we don't need to flush before calling it.
-  * Avoids wasteful issuing of another entire command list with just a few commands.
-  */
-bool FD3D12Viewport::NeedFlushBeforeEndDrawing()
-{
-	return false;
 }
 
 void FD3D12DynamicRHI::RHIGetDisplaysInformation(FDisplayInformationArray& OutDisplayInformation)

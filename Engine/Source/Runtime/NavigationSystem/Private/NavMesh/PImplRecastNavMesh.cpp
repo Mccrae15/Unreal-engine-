@@ -5,11 +5,8 @@
 
 #if WITH_RECAST
 
-// recast includes
 #include "NavMesh/RecastHelpers.h"
 #include "NavMesh/RecastVersion.h"
-
-// recast includes
 #include "Detour/DetourNode.h"
 #include "Detour/DetourNavMesh.h"
 #include "Recast/RecastAlloc.h"
@@ -22,6 +19,7 @@
 
 #include "Misc/LargeWorldCoordinates.h"
 #include "DebugUtils/DebugDrawLargeWorldCoordinates.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 
 //----------------------------------------------------------------------//
 // bunch of compile-time checks to assure types used by Recast and our
@@ -426,9 +424,9 @@ uint16 FRecastQueryFilter::GetExcludeFlags() const
 	return getExcludeFlags();
 }
 
-bool FRecastSpeciaLinkFilter::isLinkAllowed(const int32 UserId) const
+bool FRecastSpeciaLinkFilter::isLinkAllowed(const uint64 UserId) const
 {
-	const INavLinkCustomInterface* CustomLink = NavSys ? NavSys->GetCustomLink(UserId) : NULL;
+	const INavLinkCustomInterface* CustomLink = NavSys ? NavSys->GetCustomLink(FNavLinkId(UserId)) : nullptr;
 	return (CustomLink != NULL) && CustomLink->IsLinkPathfindingAllowed(CachedOwnerOb);
 }
 
@@ -584,7 +582,7 @@ void FPImplRecastNavMesh::Serialize( FArchive& Ar, int32 NavMeshVersion )
 	{
 		Params.walkableHeight = NavMeshOwner->AgentHeight;
 		Params.walkableRadius = NavMeshOwner->AgentRadius;
-		Params.walkableClimb = NavMeshOwner->AgentMaxStepHeight;
+		Params.walkableClimb = NavMeshOwner->GetAgentMaxStepHeight(ENavigationDataResolution::Default);
 		const float DefaultQuantFactor =  1.f / NavMeshOwner->GetCellSize(ENavigationDataResolution::Default);
 		for(uint8 Index = 0; Index < (uint8)ENavigationDataResolution::MAX; Index++)
 		{
@@ -908,7 +906,19 @@ void FPImplRecastNavMesh::SerializeRecastMeshTile(FArchive& Ar, int32 NavMeshVer
 		{
 			dtOffMeshConnection& Conn = OffMeshCons[ConnIdx];
 			Ar << Conn.pos[0] << Conn.pos[1] << Conn.pos[2] << Conn.pos[3] << Conn.pos[4] << Conn.pos[5];
-			Ar << Conn.rad << Conn.poly << Conn.flags << Conn.side << Conn.userId;
+			Ar << Conn.rad << Conn.poly << Conn.flags << Conn.side;
+
+			if (Ar.IsLoading() && Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::NavigationLinkID32To64)
+			{
+				uint32 Id;
+
+				Ar << Id;
+				Conn.userId = Id;
+			}
+			else
+			{
+				Ar << Conn.userId;
+			}
 		}
 
 		if (NavMeshVersion >= NAVMESHVER_OFFMESH_HEIGHT_BUG)
@@ -1039,7 +1049,7 @@ void FPImplRecastNavMesh::SerializeCompressedTileCacheData(FArchive& Ar, int32 N
 		Ar << Header->bmin[i];
 		Ar << Header->bmax[i];
 	}
-	Ar << Header->hmin;
+	Ar << Header->hmin;	// @todo: remove
 	Ar << Header->hmax;
 	Ar << Header->width;
 	Ar << Header->height;
@@ -1122,14 +1132,6 @@ void FPImplRecastNavMesh::Raycast(const FVector& StartLoc, const FVector& EndLoc
 		RaycastResult.HitTime = 0.f;
 		RaycastResult.HitNormal = (StartLoc - EndLoc).GetSafeNormal();
 	}
-}
-
-// DEPRECATED
-ENavigationQueryResult::Type FPImplRecastNavMesh::FindPath(const FVector& StartLoc, const FVector& EndLoc, FNavMeshPath& Path, const FNavigationQueryFilter& Filter, const UObject* Owner) const
-{
-	constexpr FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max();
-	constexpr bool bRequireNavigableEndLocation = true; 
-	return FindPath(StartLoc, EndLoc, CostLimit, bRequireNavigableEndLocation, Path, Filter, Owner);
 }
 
 // DEPRECATED
@@ -1470,7 +1472,7 @@ void FPImplRecastNavMesh::PostProcessPath(dtStatus FindPathStatus, FNavMeshPath&
 				const dtOffMeshConnection* OffMeshCon = DetourNavMesh->getOffMeshConnectionByRef(Path.PathCorridor[Idx]);
 				if (OffMeshCon)
 				{
-					Path.CustomLinkIds.Add(OffMeshCon->userId);
+					Path.CustomNavLinkIds.Add(FNavLinkId(OffMeshCon->userId));
 				}
 			}
 		}
@@ -1484,7 +1486,7 @@ void FPImplRecastNavMesh::PostProcessPath(dtStatus FindPathStatus, FNavMeshPath&
 	}
 }
 
-bool FPImplRecastNavMesh::FindStraightPath(const FVector& StartLoc, const FVector& EndLoc, const TArray<NavNodeRef>& PathCorridor, TArray<FNavPathPoint>& PathPoints, TArray<uint32>* CustomLinks) const
+bool FPImplRecastNavMesh::FindStraightPath(const FVector& StartLoc, const FVector& EndLoc, const TArray<NavNodeRef>& PathCorridor, TArray<FNavPathPoint>& PathPoints, TArray<FNavLinkId>* CustomLinks) const
 {
 	INITIALIZE_NAVQUERY_SIMPLE(NavQuery, RECAST_MAX_SEARCH_NODES);
 
@@ -1530,8 +1532,8 @@ bool FPImplRecastNavMesh::FindStraightPath(const FVector& StartLoc, const FVecto
 				const dtOffMeshConnection* OffMeshCon = DetourNavMesh->getOffMeshConnectionByRef(CurVert->NodeRef);
 				if (OffMeshCon)
 				{
-					CurVert->CustomLinkId = OffMeshCon->userId;
-					CustomLinks->Add(OffMeshCon->userId);
+					CurVert->CustomNavLinkId.SetId(OffMeshCon->userId);
+					CustomLinks->Add(FNavLinkId(OffMeshCon->userId));
 				}
 			}
 
@@ -2087,11 +2089,11 @@ bool FPImplRecastNavMesh::GetPolysWithinPathingDistance(FVector const& StartLoc,
 	return FoundPolys.Num() > 0;
 }
 
-void FPImplRecastNavMesh::UpdateNavigationLinkArea(int32 UserId, uint8 AreaType, uint16 PolyFlags) const
+void FPImplRecastNavMesh::UpdateNavigationLinkArea(FNavLinkId UserId, uint8 AreaType, uint16 PolyFlags) const
 {
 	if (DetourNavMesh)
 	{
-		DetourNavMesh->updateOffMeshConnectionByUserId(UserId, AreaType, PolyFlags);
+		DetourNavMesh->updateOffMeshConnectionByUserId(UserId.GetId(), AreaType, PolyFlags);
 	}
 }
 
@@ -2386,19 +2388,11 @@ bool FPImplRecastNavMesh::GetClosestPointOnPoly(NavNodeRef PolyID, const FVector
 	return false;
 }
 
-uint32 FPImplRecastNavMesh::GetLinkUserId(NavNodeRef LinkPolyID) const
+FNavLinkId FPImplRecastNavMesh::GetNavLinkUserId(NavNodeRef LinkPolyID) const
 {
-	uint32 UserID = 0;
-	if (DetourNavMesh)
-	{
-		const dtOffMeshConnection* offmeshCon = DetourNavMesh->getOffMeshConnectionByRef(LinkPolyID);
-		if (offmeshCon)
-		{
-			UserID = offmeshCon->userId;
-		}
-	}
+	const dtOffMeshConnection* offmeshCon = DetourNavMesh ? DetourNavMesh->getOffMeshConnectionByRef(LinkPolyID) : nullptr;
 
-	return UserID;
+	return offmeshCon ? FNavLinkId(offmeshCon->userId) : FNavLinkId::Invalid;
 }
 
 bool FPImplRecastNavMesh::GetLinkEndPoints(NavNodeRef LinkPolyID, FVector& PointA, FVector& PointB) const
@@ -2425,7 +2419,7 @@ bool FPImplRecastNavMesh::IsCustomLink(NavNodeRef PolyRef) const
 	if (DetourNavMesh)
 	{
 		const dtOffMeshConnection* offMeshCon = DetourNavMesh->getOffMeshConnectionByRef(PolyRef);
-		return offMeshCon && offMeshCon->userId;
+		return offMeshCon && FNavLinkId(offMeshCon->userId) != FNavLinkId::Invalid;
 	}
 
 	return false;

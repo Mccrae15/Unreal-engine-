@@ -69,6 +69,23 @@ void UCustomizableObjectNodeTextureLayer::AllocateDefaultPins(UCustomizableObjec
 }
 
 
+void UCustomizableObjectNodeTextureLayer::BackwardsCompatibleFixup()
+{
+	Super::BackwardsCompatibleFixup();
+
+	const int32 CustomizableObjectCustomVersion = GetLinkerCustomVersion(FCustomizableObjectCustomVersion::GUID);
+
+	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::FixPinsNamesImageToTexture2)
+	{
+		if (UEdGraphPin* TexturePin = FindPin(TEXT("Image")))
+		{
+			TexturePin->PinName = TEXT("Texture");
+			UCustomizableObjectNode::ReconstructNode();
+		}
+	}
+}
+
+
 FText UCustomizableObjectNodeTextureLayer::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
 	return LOCTEXT("Texture_Layer", "Texture Layer");
@@ -120,8 +137,8 @@ bool UCustomizableObjectNodeTextureLayer::CanConnect(const UEdGraphPin* InOwnedI
 	{
 		if (LayerPin(LayerIndex) == InOwnedInputPin )
 		{
-			return (InOutputPin->PinType.PinCategory==Helper_GetPinCategory(Schema->PC_Image))
-				|| (InOutputPin->PinType.PinCategory==Helper_GetPinCategory(Schema->PC_Color));
+			return (InOutputPin->PinType.PinCategory==Schema->PC_Image)
+				|| (InOutputPin->PinType.PinCategory==Schema->PC_Color);
 		}
 	}
 

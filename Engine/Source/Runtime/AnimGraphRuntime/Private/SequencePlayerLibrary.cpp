@@ -4,6 +4,8 @@
 
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimNode_SequencePlayer.h"
+#include "Animation/AnimTrace.h"
+#include "Animation/AnimInstanceProxy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SequencePlayerLibrary)
 
@@ -91,7 +93,14 @@ FSequencePlayerReference USequencePlayerLibrary::SetSequenceWithInertialBlending
 				{
 					if (UE::Anim::IInertializationRequester* InertializationRequester = AnimationUpdateContext->GetMessage<UE::Anim::IInertializationRequester>())
 					{
-						InertializationRequester->RequestInertialization(BlendTime);
+						FInertializationRequest Request;
+						Request.Duration = BlendTime;
+#if ANIM_TRACE_ENABLED
+						Request.NodeId = AnimationUpdateContext->GetCurrentNodeId();
+						Request.AnimInstance = AnimationUpdateContext->AnimInstanceProxy->GetAnimInstanceObject();
+#endif
+
+						InertializationRequester->RequestInertialization(Request);
 					}
 				}
 				else
@@ -176,7 +185,7 @@ bool USequencePlayerLibrary::GetLoopAnimation(const FSequencePlayerReference& Se
 		TEXT("GetLoopAnimation"),
 		[&bLoopAnimation](FAnimNode_SequencePlayer& InSequencePlayer)
 		{
-			bLoopAnimation = InSequencePlayer.GetLoopAnimation();
+			bLoopAnimation = InSequencePlayer.IsLooping();
 		});
 
 	return bLoopAnimation;

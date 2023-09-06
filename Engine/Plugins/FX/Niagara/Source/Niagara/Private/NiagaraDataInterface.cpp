@@ -1,28 +1,97 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterface.h"
-#include "Curves/CurveVector.h"
-#include "Curves/CurveLinearColor.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraTypes.h"
-#include "ShaderParameterUtils.h"
 #include "NiagaraGPUSystemTick.h"
 #include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraShader.h"
 #include "NiagaraSystem.h"
 #include "NiagaraComponent.h"
+#include "NiagaraSystemGpuComputeProxy.h"
 #include "ShaderCompilerCore.h"
 #include "NiagaraDataInterfaceUtilities.h"
+#include "NiagaraSystemInstance.h"
+
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterface)
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterface"
 
+void FNDIStageTickHandler::Init(UNiagaraScript* Script, FNiagaraSystemInstance* Instance)
+{
+	check(Script);
+	check(Instance);
+	Usage = Script->GetUsage();
+	PreStageTickList.Empty();
+	PostStageTickList.Empty();
+	for (auto& ResolvedDIInfo : Script->GetResolvedDataInterfaces())
+	{
+		if (ResolvedDIInfo.ResolvedDataInterface)
+		{
+			bool bPreStage = ResolvedDIInfo.ResolvedDataInterface->HasPreStageTick(Usage);
+			bool bPostStage = ResolvedDIInfo.ResolvedDataInterface->HasPostStageTick(Usage);
+			if (bPreStage || bPostStage)
+			{
+				int32 InstDataIdx = Instance->FindDataInterfaceInstanceDataIndex(ResolvedDIInfo.ResolvedDataInterface);
+				if (InstDataIdx != INDEX_NONE)
+				{
+					if (bPreStage)
+					{
+						PreStageTickList.Add(InstDataIdx);
+					}
+					if (bPostStage)
+					{
+						PostStageTickList.Add(InstDataIdx);
+					}
+				}
+			}
+		}
+	}
+}
+
+void FNDIStageTickHandler::PreStageTick(FNiagaraSystemInstance* Instance, float DeltaSeconds)
+{
+	FNDICpuPreStageContext Context;
+	Context.SystemInstance = Instance;
+	Context.DeltaSeconds = DeltaSeconds;
+	Context.Usage = Usage;
+	for (int32 DIInstDataIndex : PreStageTickList)
+	{
+		UNiagaraDataInterface* Interface = nullptr;
+		Instance->GetDataInterfaceInstanceDataInfo(DIInstDataIndex, Interface, Context.PerInstanceData);
+		if (Interface && Context.PerInstanceData)
+		{			
+			Interface->PreStageTick(Context);
+		}
+	}
+}
+
+void FNDIStageTickHandler::PostStageTick(FNiagaraSystemInstance* Instance, float DeltaSeconds)
+{
+	FNDICpuPostStageContext Context;
+	Context.SystemInstance = Instance;
+	Context.DeltaSeconds = DeltaSeconds;
+	Context.Usage = Usage;
+	for (int32 DIInstDataIndex : PostStageTickList)
+	{
+		UNiagaraDataInterface* Interface = nullptr;
+		Instance->GetDataInterfaceInstanceDataInfo(DIInstDataIndex, Interface, Context.PerInstanceData);
+		if (Interface && Context.PerInstanceData)
+		{
+			Interface->PostStageTick(Context);
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+
 UNiagaraDataInterface::UNiagaraDataInterface(FObjectInitializer const& ObjectInitializer)
 {
 	bRenderDataDirty = false;
-	bUsedByCPUEmitter = false;
-	bUsedByGPUEmitter = false;
+	bUsedWithCPUScript = false;
+	bUsedWithGPUScript = false;
 }
 
 UNiagaraDataInterface::~UNiagaraDataInterface()
@@ -124,16 +193,6 @@ bool UNiagaraDataInterface::Equals(const UNiagaraDataInterface* Other) const
 		return false;
 	}
 	return true;
-}
-
-bool UNiagaraDataInterface::IsUsedWithCPUEmitter() const
-{
-	return bUsedByCPUEmitter;
-}
-
-bool UNiagaraDataInterface::IsUsedWithGPUEmitter() const
-{
-	return bUsedByGPUEmitter;
 }
 
 bool UNiagaraDataInterface::IsDataInterfaceType(const FNiagaraTypeDefinition& TypeDef)
@@ -392,6 +451,20 @@ bool FNiagaraDataInterfaceSetShaderParametersContext::IsIterationStage() const
 {
 	return ComputeInstanceData.IsIterationStage(DataInterfaceProxy, SimStageData.StageIndex);
 }
+
+#if WITH_NIAGARA_DEBUG_EMITTER_NAME
+FString FNiagaraDataInterfaceSetShaderParametersContext::GetDebugString() const
+{
+	TStringBuilder<128> Builder;
+	Builder.Append(ComputeInstanceData.Context ? ComputeInstanceData.Context->GetDebugSimName() : TEXT("Unknown"));
+	if (SimStageData.StageMetaData)
+	{
+		Builder.AppendChar(TEXT(','));
+		SimStageData.StageMetaData->SimulationStageName.AppendString(Builder);
+	}
+	return Builder.ToString();
+}
+#endif
 
 #undef LOCTEXT_NAMESPACE
 

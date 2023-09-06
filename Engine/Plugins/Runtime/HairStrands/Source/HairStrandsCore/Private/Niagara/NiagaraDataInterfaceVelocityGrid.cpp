@@ -53,14 +53,14 @@ void FNDIVelocityGridBuffer::Initialize(const FIntVector InGridSize, const int32
 	NumAttributes = InNumAttributes;
 }
 
-void FNDIVelocityGridBuffer::InitRHI()
+void FNDIVelocityGridBuffer::InitRHI(FRHICommandListBase&)
 {
 	if (GridSize.X != 0 && GridSize.Y != 0 && GridSize.Z != 0)
 	{
 		static const uint32 NumComponents = NumAttributes;
 
 		FMemMark MemMark(FMemStack::Get());
-		FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
+		FRDGBuilder GraphBuilder(FRHICommandListImmediate::Get());
 		GridDataBuffer.Initialize(GraphBuilder, TEXT("FNDIVelocityGridBuffer"), EPixelFormat::PF_R32_SINT, sizeof(int32), (GridSize.X + 1) * NumComponents * (GridSize.Y + 1) * (GridSize.Z + 1));
 		GridDataBuffer.EndGraphUsage();
 		GraphBuilder.Execute();
@@ -739,14 +739,12 @@ void FNDIVelocityGridProxy::ResetData(const FNDIGpuComputeResetContext& Context)
 	}
 }
 
-// Get the element count for this instance
-FIntVector FNDIVelocityGridProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNDIVelocityGridProxy::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
 {
-	if  ( const FNDIVelocityGridData* ProxyData = SystemInstancesToProxyData.Find(SystemInstanceID) )
+	if  ( const FNDIVelocityGridData* ProxyData = SystemInstancesToProxyData.Find(Context.GetSystemInstanceID()) )
 	{
-		return FIntVector(ProxyData->GridSize.X + 1, ProxyData->GridSize.Y + 1, ProxyData->GridSize.Z + 1);
+		Context.SetDirect(FIntVector(ProxyData->GridSize.X + 1, ProxyData->GridSize.Y + 1, ProxyData->GridSize.Z + 1));
 	}
-	return FIntVector::ZeroValue;
 }
 
 #undef LOCTEXT_NAMESPACE

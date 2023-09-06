@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerModule.h"
 #include "UObject/ObjectPtr.h"
 #include "RenderCommandFence.h"
@@ -36,6 +36,7 @@ public:
 
 	// UObject overrides.
 	virtual void BeginDestroy() override;
+	virtual bool IsReadyForFinishDestroy() override;
 	// ~END UObject overrides.
 	
 	/**
@@ -57,7 +58,8 @@ public:
 	 * Release all built lookup tables etc.
 	 * Also call this base class method if you override this method.
 	 */
-	virtual void Release();
+	UE_DEPRECATED(5.3, "This functionality was moved to BeginDestroy() and IsReadyForFinishDestroy(). Most probably you don't need to call this method anymore. If you've been overriding it, please move the logic to BeginDestroy() and IsReadyForFinishDestroy() in a similar manner.")
+	virtual void Release() {}
 
 	/**
 	 * Update the deformer instance.
@@ -116,6 +118,7 @@ public:
 	 * Get the neural network inference handle.
 	 * @return Returns the handle. This is -1 for an invalid handle.
 	 */
+	UE_DEPRECATED(5.3, "The NNI API has been removed - please use NNE instead")
 	int32 GetNeuralNetworkInferenceHandle() const;
 
 	/** Set whether we had a successful call to UMLDeformerModel::PostMLDeformerComponentInit. */
@@ -225,9 +228,6 @@ protected:
 
 	/** The compatibility error text, in case bIsCompatible is false. */
 	FString ErrorText;
-
-	/** Inference handle for neural network inference. */
-	int32 NeuralNetworkInferenceHandle = -1;
 
 	/** Are the deformer asset and the used skeletal mesh component compatible? */
 	bool bIsCompatible = false;

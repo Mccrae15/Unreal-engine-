@@ -19,6 +19,8 @@
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogDemo, Log, All);
 
 class UNetConnection;
+enum class EChannelCloseReason : uint8;
+enum ELifetimeCondition : int;
 
 enum class EReplayHeaderFlags : uint32
 {
@@ -118,7 +120,7 @@ enum UE_DEPRECATED(5.2, "Using custom versions instead going forward, see FRepla
 	HISTORY_LATEST = HISTORY_PLUS_ONE - 1
 };
 
-struct ENGINE_API FReplayCustomVersion
+struct FReplayCustomVersion
 {
 	enum Type
 	{
@@ -154,7 +156,7 @@ struct ENGINE_API FReplayCustomVersion
 	};
 
 	// The GUID for this custom version number
-	const static FGuid Guid;
+	ENGINE_API const static FGuid Guid;
 
 	FReplayCustomVersion() = delete;
 };
@@ -172,7 +174,7 @@ inline static const uint32 NETWORK_DEMO_METADATA_MAGIC = 0x3D06B24E;
 UE_DEPRECATED(5.2, "No longer used.")
 inline static const uint32 NETWORK_DEMO_METADATA_VERSION = 0;
 
-struct ENGINE_API FNetworkDemoHeader
+struct FNetworkDemoHeader
 {
 	uint32	Magic;									// Magic to ensure we're opening the right file.
 	
@@ -208,9 +210,9 @@ struct ENGINE_API FNetworkDemoHeader
 	FPackageFileVersion PackageVersionUE;			// Engine package version on which the replay was recorded
 	int32 PackageVersionLicenseeUE;					// Licensee package version on which the replay was recorded
 
-	FNetworkDemoHeader();
+	ENGINE_API FNetworkDemoHeader();
 
-	void SetDefaultNetworkVersions();
+	ENGINE_API void SetDefaultNetworkVersions();
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FNetworkDemoHeader(const FNetworkDemoHeader&) = default;
@@ -221,9 +223,9 @@ struct ENGINE_API FNetworkDemoHeader
 
 	ENGINE_API friend FArchive& operator << (FArchive& Ar, FNetworkDemoHeader& Header);
 
-	void CountBytes(FArchive& Ar) const;
+	ENGINE_API void CountBytes(FArchive& Ar) const;
 
-	uint32 GetCustomVersion(const FGuid& VersionGuid) const;
+	ENGINE_API uint32 GetCustomVersion(const FGuid& VersionGuid) const;
 };
 
 // The type we use to store offsets in the archive
@@ -505,7 +507,7 @@ public:
 typedef TIndirectArray<FReplayExternalData> FReplayExternalDataArray;
 
 // Can be used to override Version Data in a Replay's Header either Right Before Writing a Replay Header or Right After Reading a Replay Header.
-struct ENGINE_API FOverridableReplayVersionData
+struct FOverridableReplayVersionData
 {
 public:
 	UE_DEPRECATED(5.2, "No longer used in favor of CustomVersions")
@@ -521,6 +523,11 @@ public:
 	int32 PackageVersionLicenseeUE;       // Licensee package version on which the replay was recorded
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FOverridableReplayVersionData(FOverridableReplayVersionData&&) = default;
+	FOverridableReplayVersionData(const FOverridableReplayVersionData&) = default;
+	FOverridableReplayVersionData& operator=(FOverridableReplayVersionData&&) = default;
+	FOverridableReplayVersionData& operator=(const FOverridableReplayVersionData&) = default;
+
 	// Init with Demo Header Version Data
 	FOverridableReplayVersionData(const FNetworkDemoHeader& DemoHeader)
 		: Version                     (DemoHeader.Version)
@@ -544,7 +551,7 @@ public:
 		DemoHeader.PackageVersionUE             = PackageVersionUE;
 		DemoHeader.PackageVersionLicenseeUE     = PackageVersionLicenseeUE;
 	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ENGINE_API PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	uint32 GetCustomVersion(const FGuid& VersionGuid) const;
 };

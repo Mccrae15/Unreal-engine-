@@ -33,7 +33,7 @@ struct FInitializeAttachParentsTask
 {
 	FInstanceRegistry* InstanceRegistry;
 
-	void ForEachEntity(UE::MovieScene::FInstanceHandle InstanceHandle, const FMovieSceneObjectBindingID& BindingID, const UE::MovieScene::FAttachmentComponent& AttachComponent, USceneComponent*& OutAttachedParent)
+	void ForEachEntity(UE::MovieScene::FInstanceHandle InstanceHandle, const FMovieSceneObjectBindingID& BindingID, const UE::MovieScene::FAttachmentComponent& AttachComponent, TWeakObjectPtr<USceneComponent>& OutAttachedParent)
 	{
 		const FSequenceInstance& TargetInstance = InstanceRegistry->GetInstance(InstanceHandle);
 
@@ -63,9 +63,9 @@ struct FAttachmentHandler
 		TrackComponents = FMovieSceneTracksComponentTypes::Get();
 	}
 
-	void InitializeOutput(UObject* Object, TArrayView<const FMovieSceneEntityID> Inputs, FPreAnimAttachment* Output, FEntityOutputAggregate Aggregate)
+	void InitializeOutput(FObjectKey Object, TArrayView<const FMovieSceneEntityID> Inputs, FPreAnimAttachment* Output, FEntityOutputAggregate Aggregate)
 	{
-		USceneComponent* AttachChild = CastChecked<USceneComponent>(Object);
+		USceneComponent* AttachChild = CastChecked<USceneComponent>(Object.ResolveObjectPtr());
 
 		Output->OldAttachParent = AttachChild->GetAttachParent();
 		Output->OldAttachSocket = AttachChild->GetAttachSocketName();
@@ -73,17 +73,17 @@ struct FAttachmentHandler
 		UpdateOutput(Object, Inputs, Output, Aggregate);
 	}
 
-	void UpdateOutput(UObject* Object, TArrayView<const FMovieSceneEntityID> Inputs, FPreAnimAttachment* Output, FEntityOutputAggregate Aggregate)
+	void UpdateOutput(FObjectKey Object, TArrayView<const FMovieSceneEntityID> Inputs, FPreAnimAttachment* Output, FEntityOutputAggregate Aggregate)
 	{
-		USceneComponent* AttachChild = CastChecked<USceneComponent>(Object);
+		USceneComponent* AttachChild = CastChecked<USceneComponent>(Object.ResolveObjectPtr());
 
 		for (FMovieSceneEntityID Entity : Inputs)
 		{
-			TOptionalComponentReader<USceneComponent*>     AttachParentComponent = EntityManager->ReadComponent(Entity, TrackComponents->AttachParent);
-			TOptionalComponentReader<FAttachmentComponent> AttachmentComponent   = EntityManager->ReadComponent(Entity, TrackComponents->AttachComponent);
+			TOptionalComponentReader<TWeakObjectPtr<USceneComponent>> AttachParentComponent = EntityManager->ReadComponent(Entity, TrackComponents->AttachParent);
+			TOptionalComponentReader<FAttachmentComponent>            AttachmentComponent   = EntityManager->ReadComponent(Entity, TrackComponents->AttachComponent);
 			if (AttachParentComponent && AttachmentComponent)
 			{
-				if (USceneComponent* AttachParent = *AttachParentComponent)
+				if (USceneComponent* AttachParent = AttachParentComponent->Get())
 				{
 					Output->DetachParams = AttachmentComponent->DetachParams;
 					AttachmentComponent->AttachParams.ApplyAttach(AttachChild, AttachParent, AttachmentComponent->Destination.SocketName);
@@ -95,9 +95,10 @@ struct FAttachmentHandler
 		}
 	}
 
-	void DestroyOutput(UObject* Object, FPreAnimAttachment* Output, FEntityOutputAggregate Aggregate)
+	void DestroyOutput(FObjectKey ObjectKey, FPreAnimAttachment* Output, FEntityOutputAggregate Aggregate)
 	{
-		if (Aggregate.bNeedsRestoration)
+		UObject* Object = ObjectKey.ResolveObjectPtr();
+		if (Aggregate.bNeedsRestoration && Object != nullptr)
 		{
 			USceneComponent* AttachChild = CastChecked<USceneComponent>(Object);
 			AttachmentSystem->AddPendingDetach(AttachChild, *Output);
@@ -228,7 +229,7 @@ void UMovieSceneComponentAttachmentSystem::OnRun(FSystemTaskPrerequisites& InPre
 	FEntityComponentFilter Filter;
 	Filter.All({ TrackComponents->AttachComponent });
 
-	AttachmentTracker.Update(Linker, FBuiltInComponentTypes::Get()->BoundObject, Filter);
+	AttachmentTracker.UpdateFromComponents(Linker, Filter, FBuiltInComponentTypes::Get()->BoundObject);
 	AttachmentTracker.ProcessInvalidatedOutputs(Linker, FAttachmentHandler(this));
 }
 
@@ -257,6 +258,8 @@ void UMovieSceneComponentAttachmentSystem::SavePreAnimatedState(const FPreAnimat
 		FilterMask.Set(BuiltInComponents->Tags.NeedsLink);
 	}
 
+	FComponentMask ExcludeMask({ BuiltInComponents->Tags.NeedsUnlink, BuiltInComponents->Tags.Finished, BuiltInComponents->Tags.Ignored });
+
 	// Attachments change transforms
 	FPreAnimatedEntityCaptureSource* EntityMetaData = InParameters.CacheExtension->GetOrCreateEntityMetaData();
 	TSharedPtr<FPreAnimatedComponentTransformStorage>  ComponentTransformStorage  = InParameters.CacheExtension->GetOrCreateStorage<FPreAnimatedComponentTransformStorage>();
@@ -267,11 +270,25 @@ void UMovieSceneComponentAttachmentSystem::SavePreAnimatedState(const FPreAnimat
 	.ReadEntityIDs()
 	.Read(BuiltInComponents->RootInstanceHandle)
 	.Read(BuiltInComponents->BoundObject)
+	.Read(TrackComponents->AttachComponent)
 	.FilterAll(FilterMask)
+	.FilterNone(ExcludeMask)
 	.Iterate_PerAllocation(&Linker->EntityManager,
-		[EntityMetaData, ComponentTransformStorage, ComponentAttachmentStorage](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FRootInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects)
+		[EntityMetaData, ComponentTransformStorage, ComponentAttachmentStorage](FEntityAllocationIteratorItem Item, TRead<FMovieSceneEntityID> EntityIDs, TRead<FRootInstanceHandle> InstanceHandles, TRead<UObject*> BoundObjects, TRead<FAttachmentComponent> AttachComponents)
 		{
 			TArrayView<UObject* const> BoundObjectArray = BoundObjects.AsArray(Item.GetAllocation()->Num());
+
+			auto ShouldCacheTransform = [AttachComponents](int32 Index)
+			{
+				FAttachmentComponent Component = AttachComponents[Index];
+				// Only cache persistent preanimated transforms if we're not using a keep relative attachment
+				return Component.AttachParams.AttachmentLocationRule != EAttachmentRule::KeepRelative
+					|| Component.AttachParams.AttachmentRotationRule != EAttachmentRule::KeepRelative
+					|| Component.AttachParams.AttachmentScaleRule    != EAttachmentRule::KeepRelative
+					|| Component.DetachParams.DetachmentLocationRule != EDetachmentRule::KeepRelative
+					|| Component.DetachParams.DetachmentRotationRule != EDetachmentRule::KeepRelative
+					|| Component.DetachParams.DetachmentScaleRule    != EDetachmentRule::KeepRelative;
+			};
 
 			// Order is important here - always cache the transforms first so that they are restored last
 
@@ -280,7 +297,7 @@ void UMovieSceneComponentAttachmentSystem::SavePreAnimatedState(const FPreAnimat
 			// state regardless of the detach rules used during normal playback.
 			FCachePreAnimatedValueParams ForcePersistParams;
 			ForcePersistParams.bForcePersist = true;
-			ComponentTransformStorage->CachePreAnimatedTransforms(ForcePersistParams, BoundObjectArray);
+			ComponentTransformStorage->CachePreAnimatedTransforms(ForcePersistParams, BoundObjectArray, TFunctionRef<bool(int32)>(ShouldCacheTransform));
 
 			FPreAnimatedTrackerParams AttachmentParams(Item);
 			AttachmentParams.bWantsRestoreState = false;

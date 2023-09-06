@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/IntrusiveUnsetOptionalState.h"
 #include "HAL/UnrealMemory.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/ChooseClass.h"
@@ -21,10 +22,12 @@
 
 
 // Disable visualization hack for shipping or test builds.
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	#define ENABLE_TFUNCTIONREF_VISUALIZATION 1
-#else
-	#define ENABLE_TFUNCTIONREF_VISUALIZATION 0
+#ifndef UE_ENABLE_TFUNCTIONREF_VISUALIZATION
+	#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		#define UE_ENABLE_TFUNCTIONREF_VISUALIZATION 1
+	#else
+		#define UE_ENABLE_TFUNCTIONREF_VISUALIZATION 0
+	#endif
 #endif
 
 #if defined(_WIN32) && !defined(_WIN64) && (!defined(ALLOW_TFUNCTION_INLINE_ALLOCATORS_ON_WIN32) || !ALLOW_TFUNCTION_INLINE_ALLOCATORS_ON_WIN32)
@@ -291,6 +294,8 @@ namespace UE::Core::Private::Function
 
 	struct FFunctionStorage
 	{
+		constexpr static bool bCanBeNull = true;
+
 		FFunctionStorage()
 			: HeapAllocation(nullptr)
 		{
@@ -431,7 +436,7 @@ namespace UE::Core::Private::Function
 		return &NewOwned->Obj;
 	}
 
-	#if ENABLE_TFUNCTIONREF_VISUALIZATION
+	#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
 		/**
 		 * Helper classes to help debugger visualization.
 		 */
@@ -487,18 +492,17 @@ namespace UE::Core::Private::Function
 		template <typename OtherStorageType, typename OtherFuncType>
 		friend struct TFunctionRefBase;
 
-		TFunctionRefBase()
-			: Callable(nullptr)
-		{
-		}
+		TFunctionRefBase() = default;
 
 		TFunctionRefBase(TFunctionRefBase&& Other)
 			: Callable(Other.Callable)
 			, Storage (MoveTemp(Other.Storage))
 		{
+			static_assert(StorageType::bCanBeNull, "Unable to move non-nullable storage");
+
 			if (Callable)
 			{
-				#if ENABLE_TFUNCTIONREF_VISUALIZATION
+				#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
 					// Use Memcpy to copy the other DebugPtrStorage, including vptr (because we don't know the bound type
 					// here), and then reseat the underlying pointer.  Possibly even more evil than the Set code.
 					FMemory::Memcpy(&DebugPtrStorage, &Other.DebugPtrStorage, sizeof(DebugPtrStorage)); //-V598
@@ -514,9 +518,12 @@ namespace UE::Core::Private::Function
 			: Callable(Other.Callable)
 			, Storage (MoveTemp(Other.Storage))
 		{
+			static_assert(OtherStorage::bCanBeNull, "Unable to move from non-nullable storage");
+			static_assert(StorageType::bCanBeNull,  "Unable to move into non-nullable storage");
+
 			if (Callable)
 			{
-				#if ENABLE_TFUNCTIONREF_VISUALIZATION
+				#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
 					// Use Memcpy to copy the other DebugPtrStorage, including vptr (because we don't know the bound type
 					// here), and then reseat the underlying pointer.  Possibly even more evil than the Set code.
 					FMemory::Memcpy(&DebugPtrStorage, &Other.DebugPtrStorage, sizeof(DebugPtrStorage)); //-V598
@@ -531,86 +538,124 @@ namespace UE::Core::Private::Function
 		TFunctionRefBase(const TFunctionRefBase<OtherStorage, Ret (ParamTypes...)>& Other)
 			: Callable(Other.Callable)
 		{
-			if (Callable)
+			if constexpr (OtherStorage::bCanBeNull)
 			{
-				void* NewPtr = Storage.BindCopy(Other.Storage);
+				static_assert(StorageType::bCanBeNull, "Unable to copy from nullable storage into non-nullable storage");
 
-				#if ENABLE_TFUNCTIONREF_VISUALIZATION
-					// Use Memcpy to copy the other DebugPtrStorage, including vptr (because we don't know the bound type
-					// here), and then reseat the underlying pointer.  Possibly even more evil than the Set code.
-					FMemory::Memcpy(&DebugPtrStorage, &Other.DebugPtrStorage, sizeof(DebugPtrStorage)); //-V598
-					DebugPtrStorage.Ptr = NewPtr;
-				#endif
+				if (!Callable)
+				{
+					return;
+				}
 			}
+
+			void* NewPtr = Storage.BindCopy(Other.Storage);
+
+			#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
+				// Use Memcpy to copy the other DebugPtrStorage, including vptr (because we don't know the bound type
+				// here), and then reseat the underlying pointer.  Possibly even more evil than the Set code.
+				FMemory::Memcpy(&DebugPtrStorage, &Other.DebugPtrStorage, sizeof(DebugPtrStorage)); //-V598
+				DebugPtrStorage.Ptr = NewPtr;
+			#endif
 		}
 
 		TFunctionRefBase(const TFunctionRefBase& Other)
 			: Callable(Other.Callable)
 		{
-			if (Callable)
+			if constexpr (StorageType::bCanBeNull)
 			{
-				void* NewPtr = Storage.BindCopy(Other.Storage);
-
-				#if ENABLE_TFUNCTIONREF_VISUALIZATION
-					// Use Memcpy to copy the other DebugPtrStorage, including vptr (because we don't know the bound type
-					// here), and then reseat the underlying pointer.  Possibly even more evil than the Set code.
-					FMemory::Memcpy(&DebugPtrStorage, &Other.DebugPtrStorage, sizeof(DebugPtrStorage)); //-V598
-					DebugPtrStorage.Ptr = NewPtr;
-				#endif
+				if (!Callable)
+				{
+					return;
+				}
 			}
+
+			void* NewPtr = Storage.BindCopy(Other.Storage);
+
+			#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
+				// Use Memcpy to copy the other DebugPtrStorage, including vptr (because we don't know the bound type
+				// here), and then reseat the underlying pointer.  Possibly even more evil than the Set code.
+				FMemory::Memcpy(&DebugPtrStorage, &Other.DebugPtrStorage, sizeof(DebugPtrStorage)); //-V598
+				DebugPtrStorage.Ptr = NewPtr;
+			#endif
 		}
 
 		template <
-			typename FunctorType,
-			typename = typename TEnableIf<
-				!std::is_same_v<TFunctionRefBase, typename TDecay<FunctorType>::Type>
-			>::Type
+			typename FunctorType
+			UE_REQUIRES(!std::is_same_v<TFunctionRefBase, std::decay_t<FunctorType>>)
 		>
 		TFunctionRefBase(FunctorType&& InFunc)
 		{
-			if (auto* Binding = Storage.Bind(Forward<FunctorType>(InFunc)))
+			auto* Binding = Storage.Bind(Forward<FunctorType>(InFunc));
+
+			if constexpr (StorageType::bCanBeNull)
 			{
-				using DecayedFunctorType = typename TRemovePointer<decltype(Binding)>::Type;
-
-				Callable = &TFunctionRefCaller<DecayedFunctorType, Ret (ParamTypes...)>::Call;
-
-				#if ENABLE_TFUNCTIONREF_VISUALIZATION
-					// We placement new over the top of the same object each time.  This is illegal,
-					// but it ensures that the vptr is set correctly for the bound type, and so is
-					// visualizable.  We never depend on the state of this object at runtime, so it's
-					// ok.
-					new ((void*)&DebugPtrStorage) TDebugHelper<DecayedFunctorType>;
-					DebugPtrStorage.Ptr = (void*)Binding;
-				#endif
+				if (!Binding)
+				{
+					return;
+				}
 			}
+
+			using DecayedFunctorType = typename TRemovePointer<decltype(Binding)>::Type;
+
+			Callable = &TFunctionRefCaller<DecayedFunctorType, Ret (ParamTypes...)>::Call;
+
+			#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
+				// We placement new over the top of the same object each time.  This is illegal,
+				// but it ensures that the vptr is set correctly for the bound type, and so is
+				// visualizable.  We never depend on the state of this object at runtime, so it's
+				// ok.
+				new ((void*)&DebugPtrStorage) TDebugHelper<DecayedFunctorType>;
+				DebugPtrStorage.Ptr = (void*)Binding;
+			#endif
 		}
 
 		TFunctionRefBase& operator=(TFunctionRefBase&&) = delete;
 		TFunctionRefBase& operator=(const TFunctionRefBase&) = delete;
 
 		// Move all of the assert code out of line
-		void CheckCallable() const
+		FORCENOINLINE void CheckCallable() const
 		{
 			checkf(Callable, TEXT("Attempting to call an unbound TFunction!"));
 		}
 
 		Ret operator()(ParamTypes... Params) const
 		{
-			CheckCallable();
+#if DO_CHECK
+			if constexpr (StorageType::bCanBeNull)
+			{
+				CheckCallable();
+			}
+#endif
 			return Callable(Storage.GetPtr(), Params...);
 		}
 
 		~TFunctionRefBase()
 		{
+			if constexpr (StorageType::bCanBeNull)
+			{
+				if (!Callable)
+				{
+					return;
+				}
+			}
+			Storage.Unbind();
+		}
+
+		void Reset()
+		{
 			if (Callable)
 			{
 				Storage.Unbind();
+				Callable = nullptr;
 			}
 		}
 
 	protected:
 		bool IsSet() const
 		{
+			// Normally we'd assert that bCanBeNull here because it should always be true, but we reuse this
+			// function to test that a `TOptional<TFunctionRef>` with an intrusive state is unset.
+
 			return !!Callable;
 		}
 
@@ -620,7 +665,7 @@ namespace UE::Core::Private::Function
 
 		StorageType Storage;
 
-		#if ENABLE_TFUNCTIONREF_VISUALIZATION
+		#if UE_ENABLE_TFUNCTIONREF_VISUALIZATION
 			// To help debug visualizers
 			TDebugHelper<void> DebugPtrStorage;
 		#endif
@@ -676,6 +721,8 @@ namespace UE::Core::Private::Function
 
 	struct FFunctionRefStoragePolicy
 	{
+		constexpr static bool bCanBeNull = false;
+
 		template <typename FunctorType>
 		typename TRemoveReference<FunctorType>::Type* Bind(FunctorType&& InFunc)
 		{
@@ -766,7 +813,7 @@ namespace UE::Core::Private::Function
  * }
  */
 template <typename FuncType>
-class TFunctionRef : public UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::FFunctionRefStoragePolicy, FuncType>
+class TFunctionRef final : public UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::FFunctionRefStoragePolicy, FuncType>
 {
 	using Super = UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::FFunctionRefStoragePolicy, FuncType>;
 
@@ -788,6 +835,27 @@ public:
 	{
 		// This constructor is disabled for TFunctionRef types so it isn't incorrectly selected as copy/move constructors.
 	}
+
+	/////////////////////////////////////////////////////
+	// Start - intrusive TOptional<TFunctionRef> state //
+	/////////////////////////////////////////////////////
+	constexpr static bool bHasIntrusiveUnsetOptionalState = true;
+	using IntrusiveUnsetOptionalStateType = TFunctionRef;
+
+	explicit TFunctionRef(FIntrusiveUnsetOptionalState)
+	{
+	}
+	void operator=(FIntrusiveUnsetOptionalState)
+	{
+		Super::Reset();
+	}
+	bool operator==(FIntrusiveUnsetOptionalState) const
+	{
+		return !Super::IsSet();
+	}
+	///////////////////////////////////////////////////
+	// End - intrusive TOptional<TFunctionRef> state //
+	///////////////////////////////////////////////////
 
 	TFunctionRef(const TFunctionRef&) = default;
 

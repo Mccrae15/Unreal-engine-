@@ -4049,7 +4049,7 @@ void SSCSEditor::Construct( const FArguments& InArgs )
 	[
 		SNew(SComponentClassCombo)
 		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Actor.AddComponent")))
-		.Visibility(HideComponentClassCombo.Get() ? EVisibility::Hidden : EVisibility::Visible)
+		.Visibility(this, &SSCSEditor::GetComponentClassComboButtonVisibility)
 		.OnComponentClassSelected(this, &SSCSEditor::PerformComboAddClass)
 		.ToolTipText(LOCTEXT("AddComponent_Tooltip", "Adds a new component to this actor"))
 		.IsEnabled(AllowEditing)
@@ -7148,7 +7148,7 @@ void SSCSEditor::OnApplyChangesToBlueprint() const
 	AActor* Actor = GetActorContext();
 	const UBlueprint* const Blueprint = (Actor != nullptr) ? Cast<UBlueprint>(Actor->GetClass()->ClassGeneratedBy) : nullptr;
 
-	if (Actor != NULL && Blueprint != NULL && Actor->GetClass()->ClassGeneratedBy == Blueprint)
+	if (Actor != NULL && Blueprint != NULL && Actor->GetClass()->ClassGeneratedBy.Get() == Blueprint)
 	{
 		const FString ActorLabel = Actor->GetActorLabel();
 		int32 NumChangedProperties = FKismetEditorUtilities::ApplyInstanceChangesToBlueprint(Actor);

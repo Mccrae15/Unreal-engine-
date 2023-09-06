@@ -74,7 +74,7 @@ public:
 	ENGINE_API void EndReplicationForActorComponent(UActorComponent* ActorComponent, EEndReplicationFlags EndReplicationFlags = EEndReplicationFlags::None);
 	
 	/** Get object reference packagemap. Used in special cases where serialization hasn't been converted to use NetSerializers.  */
-	ENGINE_API UIrisObjectReferencePackageMap* GetObjectReferencePackageMap() const { return ObjectReferencePackageMap; }
+	UIrisObjectReferencePackageMap* GetObjectReferencePackageMap() const { return ObjectReferencePackageMap; }
 	
 	using UObjectReplicationBridge::EndReplication;
 
@@ -93,16 +93,20 @@ protected:
 	virtual bool ObjectLevelHasFinishedLoading(UObject* Object) const override;
 	virtual bool IsAllowedToDestroyInstance(const UObject* Instance) const override;
 
+	virtual float GetPollFrequencyOfRootObject(const UObject* ReplicatedObject) const override;
+
 private:
 	void GetActorCreationHeader(const AActor* Actor, UE::Net::Private::FActorCreationHeader& Header) const;
 	void GetSubObjectCreationHeader(const UObject* Object, UE::Net::Private::FSubObjectCreationHeader& Header) const;
 
-	uint32 GetPollFramePeriod(float PollFrequency) const;
-	float GetMinSupportedNetUpdateFrequency() const;
+	void OnMaxTickRateChanged(UNetDriver* InNetDriver, int32 NewMaxTickRate, int32 OldMaxTickRate);
 
+private:
 	UNetDriver* NetDriver;
-	float MaxPollFrequency;
 
 	UIrisObjectReferencePackageMap* ObjectReferencePackageMap;
+
+	uint32 SpawnInfoFlags;
+
 #endif // UE_WITH_IRIS
 };

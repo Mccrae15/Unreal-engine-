@@ -19,8 +19,7 @@
 
 #include "GoogleARCoreAPI.generated.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogGoogleARCoreAPI, Log, All);
-
+DECLARE_LOG_CATEGORY_EXTERN(LogGoogleARCoreAPI, Log, All);
 class UARCoreDepthTexture;
 
 enum class EGoogleARCoreAPIStatus : int
@@ -206,13 +205,13 @@ public:
 	UARTrackedGeometry* RemoveTrackable(FARCorePointer Pointer);
 
 #if PLATFORM_ANDROID
-	const FTrackedGeometryGroup& GetBaseTrackableFromHandle(ArTrackable* TrackableHandle, FGoogleARCoreSession* Session);
+	const FTrackedGeometryGroup* GetBaseTrackableFromHandle(ArTrackable* TrackableHandle, FGoogleARCoreSession* Session);
 	
 	template<class T>
 	T* GetTrackableFromHandle(ArTrackable* TrackableHandle, FGoogleARCoreSession* Session)
 	{
-		const auto& Group = GetBaseTrackableFromHandle(TrackableHandle, Session);
-		return CastChecked<T>(Group.TrackedGeometry);
+		const FTrackedGeometryGroup* Group = GetBaseTrackableFromHandle(TrackableHandle, Session);
+		return Group ? CastChecked<T>(Group->TrackedGeometry) : nullptr;
 	}
 	
 	void DumpTrackableHandleMap(const ArSession* SessionHandle);
@@ -248,9 +247,9 @@ class FGoogleARCoreSession : public TSharedFromThis<FGoogleARCoreSession>, publi
 {
 
 public:
-	static TSharedPtr<FGoogleARCoreSession> CreateARCoreSession(bool bUseFrontCamera);
+	static TSharedPtr<FGoogleARCoreSession> CreateARCoreSession();
 
-	FGoogleARCoreSession(bool bUseFrontCamera);
+	FGoogleARCoreSession();
 	~FGoogleARCoreSession();
 
 	// Properties
@@ -267,7 +266,7 @@ public:
 	bool IsConfigSupported(const UARSessionConfig& Config);
 	EGoogleARCoreAPIStatus ConfigSession(const UARSessionConfig& Config);
 	const UARSessionConfig* GetCurrentSessionConfig();
-	TArray<FGoogleARCoreCameraConfig> GetSupportedCameraConfig();
+	TArray<FGoogleARCoreCameraConfig> GetSupportedCameraConfig(EGoogleARCoreCameraFacing CameraFacing);
 	EGoogleARCoreAPIStatus SetCameraConfig(FGoogleARCoreCameraConfig CameraConfig);
 	void GetARCameraConfig(FGoogleARCoreCameraConfig& OutCurrentCameraConfig);
 	int AddRuntimeAugmentedImage(UGoogleARCoreAugmentedImageDatabase* TargetImageDatabase, const TArray<uint8>& ImageGrayscalePixels,
@@ -303,9 +302,9 @@ private:
 	}
 
 	EGoogleARCoreAPIStatus SessionCreateStatus;
-	const UARSessionConfig* SessionConfig;
+	TObjectPtr<const UARSessionConfig> SessionConfig;
 	FGoogleARCoreFrame* LatestFrame;
-	UGoogleARCoreUObjectManager* UObjectManager;
+	TObjectPtr<UGoogleARCoreUObjectManager> UObjectManager;
 	float CachedWorldToMeterScale;
 	uint32 FrameNumber;
 
@@ -359,7 +358,6 @@ public:
 	uint32 GetCameraTextureId() const { return CameraTextureId; }
 	
 #if PLATFORM_ANDROID
-	EGoogleARCoreAPIStatus GetCameraMetadata(const ACameraMetadata*& OutCameraMetadata) const;
 	ArFrame* GetHandle() { return FrameHandle; };
 	static TArray<ArTrackable*> GetTrackables(const ArSession* SessionHandle, ArTrackableList* ListHandle, bool bRemoveSubsumedPlanes);
 #endif
@@ -413,8 +411,10 @@ void FGoogleARCoreFrame::GetUpdatedTrackables(TArray<T*>& OutARCoreTrackableList
 	for (auto TrackableHandle : Trackables)
 	{
 		T* TrackableObject = Session->GetUObjectManager()->template GetTrackableFromHandle<T>(TrackableHandle, Session);
-
-		OutARCoreTrackableList.Add(TrackableObject);
+		if (TrackableObject)
+		{
+			OutARCoreTrackableList.Add(TrackableObject);
+		}
 	}
 	ArTrackableList_destroy(TrackableListHandle);
 #endif
@@ -445,7 +445,10 @@ void FGoogleARCoreSession::GetAllTrackables(TArray<T*>& OutARCoreTrackableList)
 	for (auto TrackableHandle : Trackables)
 	{
 		T* TrackableObject = UObjectManager->template GetTrackableFromHandle<T>(TrackableHandle, this);
-		OutARCoreTrackableList.Add(TrackableObject);
+		if (TrackableObject)
+		{
+			OutARCoreTrackableList.Add(TrackableObject);
+		}
 	}
 	ArTrackableList_destroy(TrackableListHandle);
 #endif

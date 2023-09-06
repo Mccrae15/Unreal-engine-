@@ -7,7 +7,7 @@
 namespace Chaos::Softs
 {
 
-class CHAOS_API FPBDBendingConstraints : public FPBDBendingConstraintsBase
+class FPBDBendingConstraints : public FPBDBendingConstraintsBase
 {
 	typedef FPBDBendingConstraintsBase Base;
 
@@ -18,8 +18,40 @@ public:
 	}
 
 	FPBDBendingConstraints(const FSolverParticles& InParticles,
-		int32 ParticleOffset,
-		int32 ParticleCount,
+		int32 InParticleOffset,
+		int32 InParticleCount,
+		TArray<TVec4<int32>>&& InConstraints,
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		bool bTrimKinematicConstraints = false)
+		: Base(
+			InParticles,
+			InParticleOffset,
+			InParticleCount,
+			MoveTemp(InConstraints),
+			WeightMaps.FindRef(GetBendingElementStiffnessString(PropertyCollection, BendingElementStiffnessName.ToString())),
+			WeightMaps.FindRef(GetBucklingStiffnessString(PropertyCollection, BucklingStiffnessName.ToString())),
+			GetRestAngleMapFromCollection(WeightMaps, PropertyCollection),
+			FSolverVec2(GetWeightedFloatBendingElementStiffness(PropertyCollection, 1.f)),
+			(FSolverReal)GetBucklingRatio(PropertyCollection, 0.f),  // BucklingRatio is clamped in base class
+			FSolverVec2(GetWeightedFloatBucklingStiffness(PropertyCollection, 1.f)),
+			GetRestAngleValueFromCollection(PropertyCollection),
+			(ERestAngleConstructionType)GetRestAngleType(PropertyCollection, (int32)ERestAngleConstructionType::Use3DRestAngles),
+			bTrimKinematicConstraints)
+		, BendingElementStiffnessIndex(PropertyCollection)
+		, BucklingRatioIndex(PropertyCollection)
+		, BucklingStiffnessIndex(PropertyCollection)
+		, FlatnessRatioIndex(PropertyCollection)
+		, RestAngleIndex(PropertyCollection)
+		, RestAngleTypeIndex(PropertyCollection)
+	{
+		InitColor(InParticles);
+	}
+
+	UE_DEPRECATED(5.3, "Use weight map constructor instead.")
+	FPBDBendingConstraints(const FSolverParticles& InParticles,
+		int32 InParticleOffset,
+		int32 InParticleCount,
 		TArray<TVec4<int32>>&& InConstraints,
 		const TConstArrayView<FRealSingle>& StiffnessMultipliers,
 		const TConstArrayView<FRealSingle>& BucklingStiffnessMultipliers,
@@ -27,8 +59,8 @@ public:
 		bool bTrimKinematicConstraints = false)
 		: Base(
 			InParticles,
-			ParticleOffset,
-			ParticleCount,
+			InParticleOffset,
+			InParticleCount,
 			MoveTemp(InConstraints),
 			StiffnessMultipliers,
 			BucklingStiffnessMultipliers,
@@ -36,8 +68,14 @@ public:
 			(FSolverReal)GetBucklingRatio(PropertyCollection, 0.f),  // BucklingRatio is clamped in base class
 			FSolverVec2(GetWeightedFloatBucklingStiffness(PropertyCollection, 1.f)),
 			bTrimKinematicConstraints) 
+		, BendingElementStiffnessIndex(PropertyCollection)
+		, BucklingRatioIndex(PropertyCollection)
+		, BucklingStiffnessIndex(PropertyCollection)
+		, FlatnessRatioIndex(PropertyCollection)
+		, RestAngleIndex(PropertyCollection)
+		, RestAngleTypeIndex(PropertyCollection)
 	{
-		InitColor(InParticles, ParticleOffset, ParticleCount);
+		InitColor(InParticles);
 	}
 
 	FPBDBendingConstraints(const FSolverParticles& InParticles,
@@ -60,13 +98,19 @@ public:
 			InStiffness,
 			InBucklingRatio,
 			InBucklingStiffness,
-			bTrimKinematicConstraints) 
+			bTrimKinematicConstraints)
+		, BendingElementStiffnessIndex(ForceInit)
+		, BucklingRatioIndex(ForceInit)
+		, BucklingStiffnessIndex(ForceInit)
+		, FlatnessRatioIndex(ForceInit)
+		, RestAngleIndex(ForceInit)
+		, RestAngleTypeIndex(ForceInit)
 	{
-		InitColor(InParticles, ParticleOffset, ParticleCount);
+		InitColor(InParticles);
 	}
 
 	UE_DEPRECATED(5.2, "Use one of the other constructors instead.")
-	FPBDBendingConstraints(
+	CHAOS_API FPBDBendingConstraints(
 		const FSolverParticles& InParticles,
 		TArray<TVec4<int32>>&& InConstraints,
 		const FSolverReal InStiffness = (FSolverReal)1.)
@@ -78,29 +122,61 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	using Base::SetProperties;
 
+	CHAOS_API void SetProperties(
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps);
+
+	UE_DEPRECATED(5.3, "Use SetProperties(const FCollectionPropertyConstFacade&, const TMap<FString, TConstArrayView<FRealSingle>>&, FSolverReal) instead.")
 	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
 	{
-		if (IsBendingElementStiffnessMutable(PropertyCollection))
+		SetProperties(PropertyCollection, TMap<FString, TConstArrayView<FRealSingle>>());
+	}
+
+	CHAOS_API void Apply(FSolverParticles& InParticles, const FSolverReal Dt) const;
+
+	const TArray<int32>& GetConstraintsPerColorStartIndex() const { return ConstraintsPerColorStartIndex; }
+
+private:
+	CHAOS_API void InitColor(const FSolverParticles& InParticles);
+	CHAOS_API void ApplyHelper(FSolverParticles& InParticles, const FSolverReal Dt, const int32 ConstraintIndex, const FSolverReal ExpStiffnessValue, const FSolverReal ExpBucklingValue) const;
+
+	TConstArrayView<FRealSingle> GetRestAngleMapFromCollection(
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+		const FCollectionPropertyConstFacade& PropertyCollection)
+	{
+		const ERestAngleConstructionType ConstructionType = (ERestAngleConstructionType)GetRestAngleType(PropertyCollection, (int32)ERestAngleConstructionType::Use3DRestAngles);
+
+		switch (ConstructionType)
 		{
-			Stiffness.SetWeightedValue(FSolverVec2(GetWeightedFloatBendingElementStiffness(PropertyCollection)));
-		}
-		if (IsBucklingRatioMutable(PropertyCollection))
-		{
-			BucklingRatio = (FSolverReal)FMath::Clamp(GetBucklingRatio(PropertyCollection), 0.f, 1.);
-		}
-		if (IsBucklingStiffnessMutable(PropertyCollection))
-		{
-			BucklingStiffness.SetWeightedValue(FSolverVec2(GetWeightedFloatBucklingStiffness(PropertyCollection)));
+		default:
+		case ERestAngleConstructionType::Use3DRestAngles:
+			return TConstArrayView<FRealSingle>(); // Unused
+		case ERestAngleConstructionType::FlatnessRatio:
+			return WeightMaps.FindRef(GetFlatnessRatioString(PropertyCollection, FlatnessRatioName.ToString()));
+		case ERestAngleConstructionType::ExplicitRestAngles:
+			return WeightMaps.FindRef(GetRestAngleString(PropertyCollection, RestAngleName.ToString()));
 		}
 	}
 
-	void Apply(FSolverParticles& InParticles, const FSolverReal Dt) const;
+	FSolverVec2 GetRestAngleValueFromCollection(const FCollectionPropertyConstFacade& PropertyCollection)
+	{
+		const ERestAngleConstructionType ConstructionType = (ERestAngleConstructionType)GetRestAngleType(PropertyCollection, (int32)ERestAngleConstructionType::Use3DRestAngles);
 
-private:
-	void InitColor(const FSolverParticles& InParticles, const int32 ParticleOffset, const int32 ParticleCount);
-	void ApplyHelper(FSolverParticles& InParticles, const FSolverReal Dt, const int32 ConstraintIndex, const FSolverReal ExpStiffnessValue, const FSolverReal ExpBucklingValue) const;
+		switch (ConstructionType)
+		{
+		default:
+		case ERestAngleConstructionType::Use3DRestAngles:
+			return FSolverVec2(0.f); // Unused
+		case ERestAngleConstructionType::FlatnessRatio:
+			return FSolverVec2(GetWeightedFloatFlatnessRatio(PropertyCollection, 0.f));
+		case ERestAngleConstructionType::ExplicitRestAngles:
+			return FSolverVec2(GetWeightedFloatRestAngle(PropertyCollection, 0.f));
+		}
+	}
 
 	using Base::Constraints;
+	using Base::ParticleOffset;
+	using Base::ParticleCount;
 	using Base::Stiffness;
 	using Base::BucklingRatio;
 	using Base::BucklingStiffness;
@@ -110,6 +186,9 @@ private:
 	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(BendingElementStiffness, float);
 	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(BucklingRatio, float);
 	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(BucklingStiffness, float);
+	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(FlatnessRatio, float);
+	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(RestAngle, float);
+	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(RestAngleType, int32);
 };
 
 }  // End namespace Chaos::Softs

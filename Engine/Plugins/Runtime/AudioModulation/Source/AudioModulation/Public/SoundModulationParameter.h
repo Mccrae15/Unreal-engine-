@@ -16,13 +16,7 @@ struct AUDIOMODULATION_API FSoundModulationParameterSettings
 {
 	GENERATED_USTRUCT_BODY()
 
-	/** 
-	  * Normalized, unitless default value of modulator. To ensure bypass functionality of mixing, patching, and modulating 
-	  * functions as anticipated, value should be selected such that GetMixFunction (see USoundModulationParameter)
-	  * reduces to an identity function (i.e. function acts as a "pass-through" for all values in the range [0.0, 1.0]).
-	  * If GetMixFunction performs the mathematical operation f(x1, x2), then the default ValueNormalized should result in
-	  * f(x1, d) = x1 where d is ValueNormalized.
-	  */
+	/** Default value of modulator (unitless) */
 	UPROPERTY(EditAnywhere, Category = General, BlueprintReadOnly, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ValueNormalized = 1.0f;
 
@@ -31,7 +25,12 @@ struct AUDIOMODULATION_API FSoundModulationParameterSettings
 	UPROPERTY(EditAnywhere, Category = General)
 	FText UnitDisplayName;
 
-	/** Default value of modulator in units (editor only) */
+	/**
+	  * Default value of the modulator. To ensure bypass functionality of mixing, patching, and modulating
+	  * functions as anticipated, value should be selected such that GetMixFunction (see USoundModulationParameter)
+	  * reduces to an identity function (i.e. function acts as a "pass-through" for all values in the range [0.0, 1.0]).
+	  * That is to say, this should be set to the value which has no effect on the sound.
+	  */
 	UPROPERTY(Transient, EditAnywhere, Category = General)
 	float ValueUnit = 1.0f;
 #endif // WITH_EDITORONLY_DATA
@@ -204,6 +203,7 @@ class USoundModulationParameterLPFFrequency : public USoundModulationParameterFi
 
 public:
 	virtual Audio::FModulationMixFunction GetMixFunction() const override;
+	static Audio::FModulationParameter CreateDefaultParameter();
 };
 
 // Modulation Parameter that scales normalized, unitless value to logarithmic frequency unit space with standard filter min and max frequency set.
@@ -215,6 +215,7 @@ class USoundModulationParameterHPFFrequency : public USoundModulationParameterFi
 
 public:
 	virtual Audio::FModulationMixFunction GetMixFunction() const override;
+	static Audio::FModulationParameter CreateDefaultParameter();
 };
 
 // Modulation Parameter that scales normalized, unitless value to bipolar range. Mixes multiplicatively.
@@ -234,6 +235,7 @@ public:
 	virtual Audio::FModulationNormalizedConversionFunction GetNormalizedConversionFunction() const override;
 	virtual float GetUnitMax() const override;
 	virtual float GetUnitMin() const override;
+	static Audio::FModulationParameter CreateDefaultParameter(float UnitRange = 2.0f);
 };
 
 UCLASS(BlueprintType, MinimalAPI)
@@ -251,6 +253,7 @@ public:
 	virtual Audio::FModulationNormalizedConversionFunction GetNormalizedConversionFunction() const override;
 	virtual float GetUnitMin() const override;
 	virtual float GetUnitMax() const override;
+	static Audio::FModulationParameter CreateDefaultParameter(float MinUnitVolume = -100.0f);
 };
 
 namespace AudioModulation

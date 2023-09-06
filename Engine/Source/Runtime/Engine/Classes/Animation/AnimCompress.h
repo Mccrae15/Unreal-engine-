@@ -186,16 +186,16 @@ private:
 	FName AnimName;
 };
 
-class ENGINE_API FCompressionMemorySummary
+class FCompressionMemorySummary
 {
 public:
-	FCompressionMemorySummary(bool bInEnabled);
+	ENGINE_API FCompressionMemorySummary(bool bInEnabled);
 
-	void GatherPreCompressionStats(int32 RawSize, int32 PreviousCompressionSize);
+	ENGINE_API void GatherPreCompressionStats(int32 RawSize, int32 PreviousCompressionSize);
 
-	void GatherPostCompressionStats(const FCompressedAnimSequence& CompressedData, const TArray<FBoneData>& BoneData, const FName AnimFName, double CompressionTime, bool bInPerformedCompression);
+	ENGINE_API void GatherPostCompressionStats(const FCompressedAnimSequence& CompressedData, const TArray<FBoneData>& BoneData, const FName AnimFName, double CompressionTime, bool bInPerformedCompression);
 
-	~FCompressionMemorySummary();
+	ENGINE_API ~FCompressionMemorySummary();
 
 private:
 	bool bEnabled;
@@ -226,7 +226,7 @@ private:
 // animation compression
 
 struct UE_DEPRECATED(5.2, "FAnimCompressContext has been deprecated") FAnimCompressContext;
-struct ENGINE_API FAnimCompressContext
+struct FAnimCompressContext
 {
 private:
 	FCompressionMemorySummary	CompressionSummary;
@@ -254,6 +254,9 @@ public:
 		, bOutput(Rhs.bOutput)
 	{}
 
+	// Unlike the copy constructor, this will copy the CompressionSummary, but the class is deprecated anyway
+	FAnimCompressContext& operator=(const FAnimCompressContext&) = default;
+
 	friend class FAnimationUtils;
 	friend class FDerivedDataAnimationCompression;
 	friend class UAnimSequence;
@@ -269,9 +272,9 @@ namespace UE
 			// This is a version string that mimics the old versioning scheme. If you
 			// want to bump this version, generate a new guid using VS->Tools->Create GUID and
 			// return it here. Ex.
-			static FString AnimationCompressionVersionString = TEXT("FB8D0FF1ED0C4848951601EB6BB028F6");
+			static FString AnimationCompressionVersionString = TEXT("55AC7D7DCC1F46C2A8B121A56FA37296");
 			
-			struct ENGINE_API FAnimationCompressionMemorySummaryScope
+			struct FAnimationCompressionMemorySummaryScope
 			{
 				FAnimationCompressionMemorySummaryScope()
 				{
@@ -298,8 +301,8 @@ namespace UE
 					return *CompressionSummary.Get();
 				}
 
-				static std::atomic<bool> ScopeExists;
-				static TUniquePtr<FCompressionMemorySummary> CompressionSummary;
+				static ENGINE_API std::atomic<bool> ScopeExists;
+				static ENGINE_API TUniquePtr<FCompressionMemorySummary> CompressionSummary;
 			};
 		}
 	}

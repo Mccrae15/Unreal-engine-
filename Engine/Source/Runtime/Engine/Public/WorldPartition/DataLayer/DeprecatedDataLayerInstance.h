@@ -2,7 +2,7 @@
 #pragma once
 
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
-
+#include "WorldPartition/DataLayer/ActorDataLayer.h"
 #include "DeprecatedDataLayerInstance.generated.h"
 
 class UDEPRECATED_DataLayer;
@@ -10,8 +10,8 @@ class UDEPRECATED_DataLayer;
 // Class used for Runtime Conversion of the Deprecated UDataLayer Class to UDataLayerInstance + UDataLayerAsset.
 // This class is not to be inherited. It is solely used by AWorldDatalayers to convert UDataLayers to UDataLayerInstances on Level Boot.
 // You will need to run the DataLayerToAsset CommandLet to convert the deprecated datalayers to UDataLayerAssets and UDataLayerInstanceWithAsset.
-UCLASS(Config = Engine, PerObjectConfig, Within = WorldDataLayers, AutoCollapseCategories = ("Data Layer|Advanced"), AutoExpandCategories = ("Data Layer|Editor", "Data Layer|Advanced|Runtime"))
-class ENGINE_API UDeprecatedDataLayerInstance final : public UDataLayerInstance
+UCLASS(Config = Engine, PerObjectConfig, Within = WorldDataLayers, AutoCollapseCategories = ("Data Layer|Advanced"), AutoExpandCategories = ("Data Layer|Editor", "Data Layer|Advanced|Runtime"), MinimalAPI)
+class UDeprecatedDataLayerInstance final : public UDataLayerInstance
 {
 	static_assert(DATALAYER_TO_INSTANCE_RUNTIME_CONVERSION_ENABLED, "UDeprecatedDataLayerInstance is deprecated and needs to be deleted.");
 
@@ -24,32 +24,33 @@ class ENGINE_API UDeprecatedDataLayerInstance final : public UDataLayerInstance
 
 #if WITH_EDITOR
 	//~ Begin UObject Interface
-	virtual void PostLoad() override;
+	ENGINE_API virtual void PostLoad() override;
 	//~ End UObject Interface
 #endif
 
 public:
 #if WITH_EDITOR
-	static FName MakeName();
-	void OnCreated();
+	static ENGINE_API FName MakeName();
+	ENGINE_API void OnCreated();
+	FActorDataLayer GetActorDataLayer() const;
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	ENGINE_API PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	static FName MakeName(const UDEPRECATED_DataLayer* DeprecatedDataLayer);
-	void OnCreated(const UDEPRECATED_DataLayer* DeprecatedDataLayer);
+	ENGINE_API void OnCreated(const UDEPRECATED_DataLayer* DeprecatedDataLayer);
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	void SetDataLayerLabel(FName InDataLayerLabel);
 #endif
 	
 	FName GetDataLayerLabel() const { return Label; }
 
 private:
 #if WITH_EDITOR
-	virtual bool AddActor(AActor* Actor) const override;
-	virtual bool RemoveActor(AActor* Actor) const override;
+	ENGINE_API virtual bool PerformAddActor(AActor* InActor) const override;
+	ENGINE_API virtual bool PerformRemoveActor(AActor* InActor) const override;
 
 	virtual bool SupportRelabeling() const override { return true; }
-	virtual bool RelabelDataLayer(FName NewDataLayerLabel) override;
+	ENGINE_API virtual bool RelabelDataLayer(FName NewDataLayerLabel) override;
+	virtual bool CanEditDataLayerShortName() const override { return true; }
+	virtual void PerformSetDataLayerShortName(const FString& InNewShortName) { Label = *InNewShortName; }
 #endif
 
 	virtual FName GetDataLayerFName() const override { return !DeprecatedDataLayerFName.IsNone() ? DeprecatedDataLayerFName : Super::GetDataLayerFName(); }

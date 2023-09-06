@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Types/AttributeStorage.h"
 #include "UObject/Class.h"
+#include "UObject/Package.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 
@@ -23,6 +24,18 @@ namespace UE
 		const FAttributeKey& FFactoryBaseNodeStaticData::ReimportStrategyFlagsKey()
 		{
 			static FAttributeKey AttributeKey(TEXT("__Reimport_Strategy_Flags_Key__"));
+			return AttributeKey;
+		}
+
+		const FAttributeKey& FFactoryBaseNodeStaticData::SkipNodeImportKey()
+		{
+			static FAttributeKey AttributeKey(TEXT("__Internal_Task_Skip_Node__"));
+			return AttributeKey;
+		}
+
+		const FAttributeKey& FFactoryBaseNodeStaticData::ForceNodeReimportKey()
+		{
+			static FAttributeKey AttributeKey(TEXT("__Internal_Task_Force_Node_Reimport__"));
 			return AttributeKey;
 		}
 
@@ -106,6 +119,43 @@ bool UInterchangeFactoryBaseNode::SetReimportStrategyFlags(const EReimportStrate
 	{
 		UE::Interchange::FAttributeStorage::TAttributeHandle<uint8> Handle = Attributes->GetAttributeHandle<uint8>(UE::Interchange::FFactoryBaseNodeStaticData::ReimportStrategyFlagsKey());
 		return Handle.IsValid();
+	}
+	return false;
+}
+
+bool UInterchangeFactoryBaseNode::ShouldSkipNodeImport() const
+{
+	if (!Attributes->ContainAttribute(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey()))
+	{
+		return false;
+	}
+	bool bShouldSkipNodeImport = false;
+	Attributes->GetAttributeHandle<bool>(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey()).Get(bShouldSkipNodeImport);
+	return bShouldSkipNodeImport;
+}
+
+bool UInterchangeFactoryBaseNode::SetSkipNodeImport()
+{
+	UE::Interchange::EAttributeStorageResult Result = Attributes->RegisterAttribute(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey(), true);
+	if (IsAttributeStorageResultSuccess(Result))
+	{
+		UE::Interchange::FAttributeStorage::TAttributeHandle<bool> Handle = Attributes->GetAttributeHandle<bool>(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey());
+		return Handle.IsValid();
+	}
+	return false;
+}
+
+bool UInterchangeFactoryBaseNode::UnsetSkipNodeImport()
+{
+	if (!Attributes->ContainAttribute(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey()))
+	{
+		return true;
+	}
+	UE::Interchange::EAttributeStorageResult Result = Attributes->UnregisterAttribute(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey());
+	if (IsAttributeStorageResultSuccess(Result))
+	{
+		UE::Interchange::FAttributeStorage::TAttributeHandle<bool> Handle = Attributes->GetAttributeHandle<bool>(UE::Interchange::FFactoryBaseNodeStaticData::SkipNodeImportKey());
+		return !Handle.IsValid();
 	}
 	return false;
 }
@@ -194,4 +244,52 @@ void UInterchangeFactoryBaseNode::FillAllCustomAttributeFromObject(UObject* Obje
 			}
 		}
 	}
+}
+
+UInterchangeFactoryBaseNode* UInterchangeFactoryBaseNode::DuplicateWithObject(const UInterchangeFactoryBaseNode* SourceNode, UObject* Object)
+{
+	UInterchangeFactoryBaseNode* CurrentNode = NewObject<UInterchangeFactoryBaseNode>(GetTransientPackage(), SourceNode->GetClass());
+
+	CurrentNode->CopyWithObject(SourceNode, Object);
+
+	CurrentNode->FillAllCustomAttributeFromObject(Object);
+
+	return CurrentNode;
+}
+
+bool UInterchangeFactoryBaseNode::ShouldForceNodeReimport() const
+{
+	if (!Attributes->ContainAttribute(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey()))
+	{
+		return false;
+	}
+	bool bShouldForceNodeReimport = false;
+	Attributes->GetAttributeHandle<bool>(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey()).Get(bShouldForceNodeReimport);
+	return bShouldForceNodeReimport;
+}
+
+bool UInterchangeFactoryBaseNode::SetForceNodeReimport()
+{
+	UE::Interchange::EAttributeStorageResult Result = Attributes->RegisterAttribute(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey(), true);
+	if (IsAttributeStorageResultSuccess(Result))
+	{
+		UE::Interchange::FAttributeStorage::TAttributeHandle<bool> Handle = Attributes->GetAttributeHandle<bool>(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey());
+		return Handle.IsValid();
+	}
+	return false;
+}
+
+bool UInterchangeFactoryBaseNode::UnsetForceNodeReimport()
+{
+	if (!Attributes->ContainAttribute(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey()))
+	{
+		return true;
+	}
+	UE::Interchange::EAttributeStorageResult Result = Attributes->UnregisterAttribute(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey());
+	if (IsAttributeStorageResultSuccess(Result))
+	{
+		UE::Interchange::FAttributeStorage::TAttributeHandle<bool> Handle = Attributes->GetAttributeHandle<bool>(UE::Interchange::FFactoryBaseNodeStaticData::ForceNodeReimportKey());
+		return !Handle.IsValid();
+	}
+	return false;
 }

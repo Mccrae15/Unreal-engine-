@@ -94,6 +94,25 @@ TOnlineAsyncOpHandle<FUpdateStats> FStatsNull::UpdateStats(FUpdateStats::Params&
 	return Op->GetHandle();
 }
 
+void FStatsNull::ReadStatsFromCache(const FUserStats* ExistingUserStats, const TArray<FString>& StatNames, TMap<FString, FStatValue>& OutStats)
+{
+	for (const FString& StatName : StatNames)
+	{
+		if (ExistingUserStats)
+		{
+			if (const FStatValue* StatValue = ExistingUserStats->Stats.Find(StatName))
+			{
+				OutStats.Add(StatName, *StatValue);
+				continue;
+			}
+		}
+
+		const FStatDefinition* StatDefinition = GetStatDefinition(StatName);
+		check(StatDefinition);
+		OutStats.Add(StatName, StatDefinition->DefaultValue);
+	}
+}
+
 TOnlineAsyncOpHandle<FQueryStats> FStatsNull::QueryStats(FQueryStats::Params&& Params)
 {
 	TOnlineAsyncOpRef<FQueryStats> Op = GetOp<FQueryStats>(MoveTemp(Params));
@@ -108,10 +127,8 @@ TOnlineAsyncOpHandle<FQueryStats> FStatsNull::QueryStats(FQueryStats::Params&& P
 	{
 		FQueryStats::Result Result;
 
-		if (FUserStats* ExistingUserStats = UsersStats.FindByPredicate(FFindUserStatsByAccountId(InAsyncOp.GetParams().TargetAccountId)))
-		{
-			Result.Stats = ExistingUserStats->Stats;
-		}
+		FUserStats* ExistingUserStats = UsersStats.FindByPredicate(FFindUserStatsByAccountId(InAsyncOp.GetParams().TargetAccountId));
+		ReadStatsFromCache(ExistingUserStats, InAsyncOp.GetParams().StatNames, Result.Stats);
 
 		InAsyncOp.SetResult(MoveTemp(Result));
 	})
@@ -135,10 +152,10 @@ TOnlineAsyncOpHandle<FBatchQueryStats> FStatsNull::BatchQueryStats(FBatchQuerySt
 
 		for (const FAccountId& TargetAccountId : InAsyncOp.GetParams().TargetAccountIds)
 		{
-			if (FUserStats* ExistingUserStats = UsersStats.FindByPredicate(FFindUserStatsByAccountId(TargetAccountId)))
-			{
-				Result.UsersStats.Emplace(*ExistingUserStats);
-			}
+			FUserStats& UserStats = Result.UsersStats.Emplace_GetRef();
+			UserStats.AccountId = TargetAccountId;
+			FUserStats* ExistingUserStats = UsersStats.FindByPredicate(FFindUserStatsByAccountId(TargetAccountId));
+			ReadStatsFromCache(ExistingUserStats, InAsyncOp.GetParams().StatNames, UserStats.Stats);
 		}
 
 		InAsyncOp.SetResult(MoveTemp(Result));

@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Linq;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
@@ -13,6 +13,9 @@ namespace UnrealBuildTool
 	abstract class UEToolChain
 	{
 		protected readonly ILogger Logger;
+
+		// Return the extension for response files
+		public static string ResponseExt => ".rsp";
 
 		public UEToolChain(ILogger InLogger)
 		{
@@ -42,12 +45,22 @@ namespace UnrealBuildTool
 			return null;
 		}
 
+		public virtual FileItem? CopyDebuggerVisualizer(FileItem SourceFile, DirectoryReference IntermediateDirectory, IActionGraphBuilder Graph)
+		{
+			return null;
+		}
+
+		public virtual FileItem? LinkDebuggerVisualizer(FileItem SourceFile, DirectoryReference IntermediateDirectory)
+		{
+			return null;
+		}
+
 		protected abstract CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph);
-		 
+
 		public CPPOutput CompileAllCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
 			CPPOutput Result;
-			
+
 			UnrealArchitectureConfig ArchConfig = UnrealArchitectureConfig.ForPlatform(CompileEnvironment.Platform);
 			// compile architectures separately if needed
 			if (ArchConfig.Mode == UnrealArchitectureMode.SingleTargetCompileSeparately || ArchConfig.Mode == UnrealArchitectureMode.SingleTargetLinkSeparately)
@@ -58,7 +71,7 @@ namespace UnrealBuildTool
 					// determine the output location of intermediates (so, if OutputDir had the arch name in it, like Intermediate/x86+arm64, we would replace it with either emptry string
 					// or a single arch name depending on if the platform uses architecture directories for the architecture)
 					// @todo Add ArchitectureConfig.RequiresArchitectureFilenames but for directory -- or can we just use GetFolderNameForArch?!?!?
-//					string ArchReplacement = (Arch == ArchitectureWithoutMarkup()) ? "" : ArchConfig.GetFolderNameForArchitecture(Arch);
+					//					string ArchReplacement = (Arch == ArchitectureWithoutMarkup()) ? "" : ArchConfig.GetFolderNameForArchitecture(Arch);
 
 					string PlatformArchitecturesString = ArchConfig.GetFolderNameForArchitectures(CompileEnvironment.Architectures);
 					DirectoryReference ArchOutputDir = new(OutputDir.FullName.Replace(PlatformArchitecturesString, ArchConfig.GetFolderNameForArchitecture(Arch)));
@@ -123,7 +136,7 @@ namespace UnrealBuildTool
 				foreach (UnrealArch Arch in LinkEnvironment.Architectures.Architectures)
 				{
 					LinkEnvironment ArchEnvironment = new LinkEnvironment(LinkEnvironment, Arch);
-						
+
 					// determine the output location of intermediates (so, if OutputDir had the arch name in it, like Intermediate/x86+arm64, we would replace it with either emptry string
 					// or a single arch name
 					//string ArchReplacement = Arch == ArchitectureWithoutMarkup() ? "" : ArchConfig.GetFolderNameForArchitecture(Arch);
@@ -149,6 +162,27 @@ namespace UnrealBuildTool
 			return Result.ToArray();
 		}
 
+		public virtual CppCompileEnvironment CreateSharedResponseFile(CppCompileEnvironment CompileEnvironment, FileReference OutResponseFile, IActionGraphBuilder Graph)
+		{
+			return CompileEnvironment;
+		}
+
+		public virtual void CreateSpecificFileAction(CppCompileEnvironment CompileEnvironment, DirectoryReference SourceDir, DirectoryReference OutputDir, IActionGraphBuilder Graph)
+		{
+		}
+
+		/// <summary>
+		/// Get the name of the response file for the current compile environment and output file
+		/// </summary>
+		/// <param name="CompileEnvironment"></param>
+		/// <param name="OutputFile"></param>
+		/// <returns></returns>
+		public static FileReference GetResponseFileName(CppCompileEnvironment CompileEnvironment, FileItem OutputFile)
+		{
+			// Construct a relative path for the intermediate response file
+			return OutputFile.Location.ChangeExtension(OutputFile.Location.GetExtension() + ResponseExt);
+		}
+
 		/// <summary>
 		/// Get the name of the response file for the current linker environment and output file
 		/// </summary>
@@ -158,18 +192,18 @@ namespace UnrealBuildTool
 		public static FileReference GetResponseFileName(LinkEnvironment LinkEnvironment, FileItem OutputFile)
 		{
 			// Construct a relative path for the intermediate response file
-			return FileReference.Combine(LinkEnvironment.IntermediateDirectory!, OutputFile.Location.GetFileName() + ".response");
+			return FileReference.Combine(LinkEnvironment.IntermediateDirectory!, OutputFile.Location.GetFileName() + ResponseExt);
 		}
 
-		public virtual ICollection<FileItem> PostBuild(FileItem Executable, LinkEnvironment ExecutableLinkEnvironment, IActionGraphBuilder Graph)
+		public virtual ICollection<FileItem> PostBuild(ReadOnlyTargetRules Target, FileItem Executable, LinkEnvironment ExecutableLinkEnvironment, IActionGraphBuilder Graph)
 		{
 			return new List<FileItem>();
 		}
 
-		public virtual ICollection<FileItem> PostBuild(FileItem[] Executables, LinkEnvironment ExecutableLinkEnvironment, IActionGraphBuilder Graph)
+		public virtual ICollection<FileItem> PostBuild(ReadOnlyTargetRules Target, FileItem[] Executables, LinkEnvironment ExecutableLinkEnvironment, IActionGraphBuilder Graph)
 		{
 			// by default, run PostBuild for exe Exe and merge results
-			return Executables.SelectMany(x => PostBuild(x, ExecutableLinkEnvironment, Graph)).ToList();
+			return Executables.SelectMany(x => PostBuild(Target, x, ExecutableLinkEnvironment, Graph)).ToList();
 		}
 
 		public virtual void SetUpGlobalEnvironment(ReadOnlyTargetRules Target)
@@ -180,7 +214,7 @@ namespace UnrealBuildTool
 		{
 		}
 
-		public virtual void ModifyTargetReceipt(TargetReceipt Receipt)
+		public virtual void ModifyTargetReceipt(ReadOnlyTargetRules Target, TargetReceipt Receipt)
 		{
 		}
 
@@ -208,7 +242,7 @@ namespace UnrealBuildTool
 			return OutputFile.ChangeExtension(DebugExtension);
 		}
 
-		public virtual void SetupBundleDependencies(List<UEBuildBinary> Binaries, string GameName)
+		public virtual void SetupBundleDependencies(ReadOnlyTargetRules Target, List<UEBuildBinary> Binaries, string GameName)
 		{
 		}
 
@@ -228,7 +262,7 @@ namespace UnrealBuildTool
 		{
 			string ProcessOutput = Utils.RunLocalProcessAndReturnStdOut(Command.FullName, ToolArg, Logger);
 
-			if (string.IsNullOrEmpty(Expression))
+			if (String.IsNullOrEmpty(Expression))
 			{
 				return ProcessOutput;
 			}

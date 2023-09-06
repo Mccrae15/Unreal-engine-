@@ -1,11 +1,31 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ODSCThread.h"
+#include "CookOnTheFly.h"
 #include "ODSCLog.h"
 #include "HAL/FileManager.h"
+#include "Modules/ModuleManager.h"
 
-FODSCRequestPayload::FODSCRequestPayload(EShaderPlatform InShaderPlatform, ERHIFeatureLevel::Type InFeatureLevel, EMaterialQualityLevel::Type InQualityLevel, const FString& InMaterialName, const FString& InVertexFactoryName, const FString& InPipelineName, const TArray<FString>& InShaderTypeNames, const FString& InRequestHash)
-	: ShaderPlatform(InShaderPlatform), FeatureLevel(InFeatureLevel), QualityLevel(InQualityLevel), MaterialName(InMaterialName), VertexFactoryName(InVertexFactoryName), PipelineName(InPipelineName), ShaderTypeNames(std::move(InShaderTypeNames)), RequestHash(InRequestHash)
+FODSCRequestPayload::FODSCRequestPayload(
+	EShaderPlatform InShaderPlatform,
+	ERHIFeatureLevel::Type InFeatureLevel,
+	EMaterialQualityLevel::Type InQualityLevel,
+	const FString& InMaterialName,
+	const FString& InVertexFactoryName,
+	const FString& InPipelineName,
+	const TArray<FString>& InShaderTypeNames,
+	int32 InPermutationId,
+	const FString& InRequestHash
+)
+: ShaderPlatform(InShaderPlatform)
+, FeatureLevel(InFeatureLevel)
+, QualityLevel(InQualityLevel)
+, MaterialName(InMaterialName)
+, VertexFactoryName(InVertexFactoryName)
+, PipelineName(InPipelineName)
+, ShaderTypeNames(std::move(InShaderTypeNames))
+, PermutationId(InPermutationId)
+, RequestHash(InRequestHash)
 {
 
 }
@@ -80,11 +100,25 @@ bool FODSCMessageHandler::ReloadGlobalShaders() const
 	return RecompileCommandType == ODSCRecompileCommand::Global;
 }
 
-FODSCThread::FODSCThread()
+FODSCThread::FODSCThread(const FString& HostIP)
 	: Thread(nullptr),
 	  WakeupEvent(FPlatformProcess::GetSynchEventFromPool(true))
 {
 	UE_LOG(LogODSC, Log, TEXT("ODSC Thread active."));
+
+	// Attempt to get a default connection to the COTF server (which cooks assets).
+	UE::Cook::ICookOnTheFlyModule& CookOnTheFlyModule = FModuleManager::LoadModuleChecked<UE::Cook::ICookOnTheFlyModule>(TEXT("CookOnTheFly"));
+	if (!CookOnTheFlyModule.GetDefaultServerConnection())
+	{
+		// If we don't have a default connection make a specific connection to the HostIP provided.
+		UE::Cook::FCookOnTheFlyHostOptions CookOnTheFlyHostOptions;
+		CookOnTheFlyHostOptions.Hosts.Add(HostIP);
+		CookOnTheFlyServerConnection = CookOnTheFlyModule.ConnectToServer(CookOnTheFlyHostOptions);
+		if (!CookOnTheFlyServerConnection)
+		{
+			UE_LOG(LogODSC, Warning, TEXT("Failed to connect to cook on the fly server."));
+		}
+	}
 }
 
 FODSCThread::~FODSCThread()
@@ -120,8 +154,21 @@ void FODSCThread::AddRequest(const TArray<FString>& MaterialsToCompile, const FS
 	PendingMaterialThreadedRequests.Enqueue(new FODSCMessageHandler(MaterialsToCompile, ShaderTypesToLoad, ShaderPlatform, FeatureLevel, QualityLevel, RecompileCommandType));
 }
 
-void FODSCThread::AddShaderPipelineRequest(EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const FString& MaterialName, const FString& VertexFactoryName, const FString& PipelineName, const TArray<FString>& ShaderTypeNames)
+void FODSCThread::AddShaderPipelineRequest(
+	EShaderPlatform ShaderPlatform,
+	ERHIFeatureLevel::Type FeatureLevel,
+	EMaterialQualityLevel::Type QualityLevel,
+	const FString& MaterialName,
+	const FString& VertexFactoryName,
+	const FString& PipelineName,
+	const TArray<FString>& ShaderTypeNames,
+	int32 PermutationId
+)
 {
+	// TODO: Requests for individual permutations come in here, but a single coalesced payload is submitted to the server since 
+	// we compile all material shader permutations encountered for the moment. Consider batching up requested permutations and 
+	// have the server skip compiling those not in the list. Ensure that DDC key and shader map assumptions are correct!
+
 	FString RequestString = (MaterialName + VertexFactoryName + PipelineName);
 	for (const auto& ShaderTypeName : ShaderTypeNames)
 	{
@@ -132,7 +179,7 @@ void FODSCThread::AddShaderPipelineRequest(EShaderPlatform ShaderPlatform, ERHIF
 	FScopeLock Lock(&RequestHashCriticalSection);
 	if (!RequestHashes.Contains(RequestHash))
 	{
-		PendingMeshMaterialThreadedRequests.Enqueue(FODSCRequestPayload(ShaderPlatform, FeatureLevel, QualityLevel, MaterialName, VertexFactoryName, PipelineName, ShaderTypeNames, RequestHash));
+		PendingMeshMaterialThreadedRequests.Enqueue(FODSCRequestPayload(ShaderPlatform, FeatureLevel, QualityLevel, MaterialName, VertexFactoryName, PipelineName, ShaderTypeNames, PermutationId, RequestHash));
 		RequestHashes.Add(RequestHash);
 	}
 }
@@ -210,7 +257,7 @@ void FODSCThread::Process()
 	for (FODSCMessageHandler* NextRequest : RequestsToStart)
 	{
 		// send the info, the handler will process the response (and update shaders, etc)
-		IFileManager::Get().SendMessageToServer(TEXT("RecompileShaders"), NextRequest);
+		SendMessageToServer(NextRequest);
 
 		CompletedThreadedRequests.Enqueue(NextRequest);
 	}
@@ -225,10 +272,36 @@ void FODSCThread::Process()
 		}
 
 		// send the info, the handler will process the response (and update shaders, etc)
-		IFileManager::Get().SendMessageToServer(TEXT("RecompileShaders"), RequestHandler);
+		SendMessageToServer(RequestHandler);
 
 		CompletedThreadedRequests.Enqueue(RequestHandler);
 	}
 
 	WakeupEvent->Reset();
+}
+
+void FODSCThread::SendMessageToServer(IPlatformFile::IFileServerMessageHandler* Handler)
+{
+	// If we have a default connection that already exists, send directly to that.
+	if ((CookOnTheFlyServerConnection == nullptr) || (!CookOnTheFlyServerConnection->IsConnected()))
+	{
+		IFileManager::Get().SendMessageToServer(TEXT("RecompileShaders"), Handler);
+		return;
+	}
+
+	// We don't have a default COTF connection so use our specific connection to send our command.
+	UE::Cook::FCookOnTheFlyRequest Request(UE::Cook::ECookOnTheFlyMessage::RecompileShaders);
+	{
+		TUniquePtr<FArchive> Ar = Request.WriteBody();
+		Handler->FillPayload(*Ar);
+	}
+
+	UE::Cook::FCookOnTheFlyResponse Response = CookOnTheFlyServerConnection->SendRequest(Request).Get();
+	if (Response.IsOk())
+	{
+		TUniquePtr<FArchive> Ar = Response.ReadBody();
+		Handler->ProcessResponse(*Ar);
+	}
+
+	check(Response.IsOk());
 }

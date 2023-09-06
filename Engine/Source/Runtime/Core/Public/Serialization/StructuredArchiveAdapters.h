@@ -9,20 +9,20 @@
 #include "Serialization/StructuredArchiveSlots.h"
 #include "Templates/UniqueObj.h"
 
-class CORE_API FStructuredArchiveFromArchive
+class FStructuredArchiveFromArchive
 {
 	UE_NONCOPYABLE(FStructuredArchiveFromArchive)
 
-	static constexpr uint32 ImplSize = 400;
-	static constexpr uint32 ImplAlignment = 8;
+	static constexpr inline uint32 ImplSize = 400;
+	static constexpr inline uint32 ImplAlignment = 8;
 
 	struct FImpl;
 
 public:
-	explicit FStructuredArchiveFromArchive(FArchive& Ar);
-	~FStructuredArchiveFromArchive();
+	CORE_API explicit FStructuredArchiveFromArchive(FArchive& Ar);
+	CORE_API ~FStructuredArchiveFromArchive();
 
-	FStructuredArchiveSlot GetSlot();
+	CORE_API FStructuredArchiveSlot GetSlot();
 
 private:
 	// Implmented as a pimpl in order to reduce dependencies, but an inline one to avoid heap allocations
@@ -31,41 +31,41 @@ private:
 
 #if WITH_TEXT_ARCHIVE_SUPPORT
 
-class CORE_API FArchiveFromStructuredArchiveImpl : public FArchiveProxy
+class FArchiveFromStructuredArchiveImpl : public FArchiveProxy
 {
 	UE_NONCOPYABLE(FArchiveFromStructuredArchiveImpl)
 
 		struct FImpl;
 
 public:
-	explicit FArchiveFromStructuredArchiveImpl(FStructuredArchiveSlot Slot);
-	virtual ~FArchiveFromStructuredArchiveImpl();
+	CORE_API explicit FArchiveFromStructuredArchiveImpl(FStructuredArchiveSlot Slot);
+	CORE_API virtual ~FArchiveFromStructuredArchiveImpl();
 
-	virtual void Flush() override;
-	virtual bool Close() override;
+	CORE_API virtual void Flush() override;
+	CORE_API virtual bool Close() override;
 
-	virtual int64 Tell() override;
-	virtual int64 TotalSize() override;
-	virtual void Seek(int64 InPos) override;
-	virtual bool AtEnd() override;
+	CORE_API virtual int64 Tell() override;
+	CORE_API virtual int64 TotalSize() override;
+	CORE_API virtual void Seek(int64 InPos) override;
+	CORE_API virtual bool AtEnd() override;
 
 	using FArchive::operator<<; // For visibility of the overloads we don't override
 
 	//~ Begin FArchive Interface
-	virtual FArchive& operator<<(class FName& Value) override;
-	virtual FArchive& operator<<(class UObject*& Value) override;
-	virtual FArchive& operator<<(class FText& Value) override;
+	CORE_API virtual FArchive& operator<<(class FName& Value) override;
+	CORE_API virtual FArchive& operator<<(class UObject*& Value) override;
+	CORE_API virtual FArchive& operator<<(class FText& Value) override;
 	//~ End FArchive Interface
 
-	virtual void Serialize(void* V, int64 Length) override;
+	CORE_API virtual void Serialize(void* V, int64 Length) override;
 
-	virtual FArchive* GetCacheableArchive() override;
+	CORE_API virtual FArchive* GetCacheableArchive() override;
 
-	bool ContainsData() const;
+	CORE_API bool ContainsData() const;
 
 protected:
-	virtual bool Finalize(FStructuredArchiveRecord Record);
-	void OpenArchive();
+	CORE_API virtual bool Finalize(FStructuredArchiveRecord Record);
+	CORE_API void OpenArchive();
 
 private:
 	void Commit();
@@ -120,11 +120,9 @@ private:
  *
  * @return  A reference to the same archive as Ar.
  */
-template <typename T>
-typename TEnableIf<
-	!TModels<CInsertable<FArchive&>, T>::Value&& TModels<CInsertable<FStructuredArchiveSlot>, T>::Value,
-	FArchive&
->::Type operator<<(FArchive& Ar, T& Obj)
+template <typename T,
+	std::enable_if_t<!TModels_V<CInsertable<FArchive&>, T> && TModels_V<CInsertable<FStructuredArchiveSlot>, T>, int> = 0>
+FArchive& operator<<(FArchive& Ar, T& Obj)
 {
 	FStructuredArchiveFromArchive ArAdapt(Ar);
 	ArAdapt.GetSlot() << Obj;
@@ -137,11 +135,9 @@ typename TEnableIf<
  * @param  Slot  The slot to read from or write to.
  * @param  Obj   The object to read or write.
  */
-template <typename T>
-typename TEnableIf<
-	TModels<CInsertable<FArchive&>, T>::Value &&
-	!TModels<CInsertable<FStructuredArchiveSlot>, T>::Value
->::Type operator<<(FStructuredArchiveSlot Slot, T& Obj)
+template <typename T,
+	std::enable_if_t<TModels_V<CInsertable<FArchive&>, T> && !TModels_V<CInsertable<FStructuredArchiveSlot>, T>, int> = 0>
+void operator<<(FStructuredArchiveSlot Slot, T& Obj)
 {
 #if WITH_TEXT_ARCHIVE_SUPPORT
 	FArchiveFromStructuredArchive Adapter(Slot);

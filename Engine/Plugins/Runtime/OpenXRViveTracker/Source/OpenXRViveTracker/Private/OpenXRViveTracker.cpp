@@ -267,19 +267,27 @@ bool FOpenXRViveTracker::GetControllerOrientationAndPosition(const int32 Control
 	return false;
 }
 
-bool FOpenXRViveTracker::GetControllerOrientationAndPositionForTime(const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& OutTimeWasUsed, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityRadPerSec, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
+bool FOpenXRViveTracker::GetControllerOrientationAndPosition(const int32 ControllerIndex, const FName MotionSource, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityAsAxisAndLength, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
+{
+	// FTimespan initializes to 0 and GetControllerOrientationAndPositionForTime with time 0 will return the latest data.
+	FTimespan Time;
+	bool OutTimeWasUsed = false;
+	return GetControllerOrientationAndPositionForTime(ControllerIndex, MotionSource, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+}
+
+bool FOpenXRViveTracker::GetControllerOrientationAndPositionForTime(const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& OutTimeWasUsed, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityAsAxisAndLength, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
 {
 	if (ControllerIndex == DeviceIndex && MotionSourceToEControllerHandMap.Contains(MotionSource))
 	{
 		FQuat Orientation;
-		bool Success = OpenXRHMD->GetPoseForTime(GetDeviceIDForMotionSource(MotionSource), Time, OutTimeWasUsed, Orientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+		bool Success = OpenXRHMD->GetPoseForTime(GetDeviceIDForMotionSource(MotionSource), Time, OutTimeWasUsed, Orientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		OutOrientation = FRotator(Orientation);
 		return Success;
 	}
 	return false;
 }
 
-ETrackingStatus FOpenXRViveTracker::GetControllerTrackingStatus(const int32 ControllerIndex, const EControllerHand DeviceHand) const
+ETrackingStatus FOpenXRViveTracker::GetControllerTrackingStatus(const int32 ControllerIndex, const FName MotionSource) const
 {
 	if (!bActionsAttached || OpenXRHMD == nullptr)
 	{
@@ -291,6 +299,13 @@ ETrackingStatus FOpenXRViveTracker::GetControllerTrackingStatus(const int32 Cont
 	{
 		return ETrackingStatus::NotTracked;
 	}
+
+	if (!(ControllerIndex == DeviceIndex && MotionSourceToEControllerHandMap.Contains(MotionSource)))
+	{
+		return ETrackingStatus::NotTracked;
+	}
+
+	const EControllerHand DeviceHand = MotionSourceToEControllerHandMap.FindChecked(MotionSource);
 
 	const FViveTracker* Tracker = Trackers.Find(DeviceHand);
 	if (!Tracker)

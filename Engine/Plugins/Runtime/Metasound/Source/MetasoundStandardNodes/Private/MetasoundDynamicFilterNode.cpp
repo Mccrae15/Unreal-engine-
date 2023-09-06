@@ -123,36 +123,48 @@ namespace Metasound
 			return Metadata;
 		}
 
-		virtual FDataReferenceCollection GetInputs() const override
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace DynamicFilterNode;
 
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputSidechain), SidechainInput);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputFilterType), FilterType);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputFrequency), Frequency);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputQ), Q);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputThreshold), ThresholdDB);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputRatio), Ratio);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputKnee), KneeDB);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputRange), Range);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputGain), GainDB);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAttackTime), AttackTime);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputReleaseTime), ReleaseTime);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputEnvelopeMode), EnvelopeMode);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAnalogMode), bAnalogMode);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputSidechain), SidechainInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputFilterType), FilterType);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputFrequency), Frequency);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputQ), Q);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputThreshold), ThresholdDB);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputRatio), Ratio);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputKnee), KneeDB);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputRange), Range);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputGain), GainDB);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAttackTime), AttackTime);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputReleaseTime), ReleaseTime);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputEnvelopeMode), EnvelopeMode);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAnalogMode), bAnalogMode);
+		}
 
-			return InputDataReferences;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace DynamicFilterNode;
+
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace DynamicFilterNode;
-
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOutput);
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		static const FVertexInterface& DeclareVertexInterface()
@@ -177,7 +189,7 @@ namespace Metasound
 					}, 0.0f),
 					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAttackTime), 0.01f),
 					TInputDataVertex<FTime>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputReleaseTime), 0.1f),
-					TInputDataVertex<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputEnvelopeMode), 1.0f),
+					TInputDataVertex<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputEnvelopeMode), (int32)EEnvelopePeakMode::MeanSquared),
 					TInputDataVertex<bool>(METASOUND_GET_PARAM_NAME_AND_METADATA(InputAnalogMode), true)
 				),
 				FOutputVertexInterface(
@@ -207,7 +219,7 @@ namespace Metasound
 			FFloatReadRef GainIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputGain), InParams.OperatorSettings);
 			FTimeReadRef AttackTimeIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InputAttackTime), InParams.OperatorSettings);
 			FTimeReadRef ReleaseTimeIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<FTime>(InputInterface, METASOUND_GET_PARAM_NAME(InputReleaseTime), InParams.OperatorSettings);
-			FEnvelopePeakModeReadRef EnvelopeModeIn = Inputs.GetDataReadReferenceOrConstruct<FEnumEnvelopePeakMode>(METASOUND_GET_PARAM_NAME(InputEnvelopeMode));
+			FEnvelopePeakModeReadRef EnvelopeModeIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<FEnumEnvelopePeakMode>(InputInterface, METASOUND_GET_PARAM_NAME(InputEnvelopeMode), InParams.OperatorSettings);
 			FBoolReadRef bAnalogIn = Inputs.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, METASOUND_GET_PARAM_NAME(InputAnalogMode), InParams.OperatorSettings);
 
 			bool bIsSidechainConnected = Inputs.ContainsDataReadReference<FAudioBuffer>(METASOUND_GET_PARAM_NAME(InputSidechain));
@@ -245,6 +257,13 @@ namespace Metasound
 				Filter.SetEnvMode(Audio::EPeakMode::Peak);
 				break;
 			}
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			AudioOutput->Zero();
+			Filter.Reset();
+			UpdateFilterSettings();
 		}
 
 		void Execute()

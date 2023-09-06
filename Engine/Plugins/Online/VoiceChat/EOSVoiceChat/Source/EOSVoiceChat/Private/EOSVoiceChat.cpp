@@ -42,7 +42,6 @@ const TCHAR* LexToString(EOS_ERTCAudioInputStatus Status)
 }
 
 FEOSVoiceChatDelegates::FOnAudioInputDeviceStatusChanged FEOSVoiceChatDelegates::OnAudioInputDeviceStatusChanged;
-FEOSVoiceChatDelegates::FOnVoiceChatChannelConnectionStateDelegate FEOSVoiceChatDelegates::OnVoiceChatChannelConnectionStateChanged;
 FEOSVoiceChatDelegates::FOnVoiceChatPlayerAddedMetadataDelegate FEOSVoiceChatDelegates::OnVoiceChatPlayerAddedMetadata;
 FEOSVoiceChatDelegates::FOnAudioStatusChanged FEOSVoiceChatDelegates::OnAudioStatusChanged;
 
@@ -103,8 +102,7 @@ void FEOSVoiceChat::Initialize(const FOnVoiceChatInitializeCompleteDelegate& Ini
 
 			if (!EosPlatformHandle)
 			{
-				EOS_EResult EosResult = SDKManager.Initialize();
-				if (EosResult == EOS_EResult::EOS_Success)
+				if (SDKManager.IsInitialized())
 				{
 					FString ConfigProductId;
 					FString ConfigSandboxId;
@@ -168,7 +166,7 @@ void FEOSVoiceChat::Initialize(const FOnVoiceChatInitializeCompleteDelegate& Ini
 				}
 				else
 				{
-					UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize SDKManager.Initialize failed"));
+					UE_LOG(LogEOSVoiceChat, Warning, TEXT("FEOSVoiceChat::Initialize SDKManager not initialized"));
 					Result = FVoiceChatResult(EVoiceChatResult::ImplementationError);
 				}
 			}
@@ -311,20 +309,12 @@ void FEOSVoiceChat::ReleaseUser(IVoiceChatUser* User)
 					UE_LOG(LogEOSVoiceChat, Warning, TEXT("ReleaseUser User=[%p] Logout failed, Result=[%s]"), User, *LexToString(Result))
 				}
 
-				UE_LOG(LogEOSVoiceChat, Log, TEXT("ReleaseUser User=[%p] Removing"), User);
-				VoiceChatUsers.RemoveAll([User](const FEOSVoiceChatUserRef& OtherUser)
-				{
-					return User == &OtherUser.Get();
-				});
+				ScheduleReleaseUser(User);
 			}));
 		}
 		else
 		{
-			UE_LOG(LogEOSVoiceChat, Log, TEXT("ReleaseUser User=[%p] Removing"), User);
-			VoiceChatUsers.RemoveAll([User](const FEOSVoiceChatUserRef& OtherUser)
-			{
-				return User == &OtherUser.Get();
-			});
+			ScheduleReleaseUser(User);
 		}
 	}
 }
@@ -383,7 +373,7 @@ bool FEOSVoiceChat::GetAudioOutputDeviceMuted() const
 
 TArray<FVoiceChatDeviceInfo> FEOSVoiceChat::GetAvailableInputDeviceInfos() const
 {
-	return GetVoiceChatUser().GetAvailableOutputDeviceInfos();
+	return GetVoiceChatUser().GetAvailableInputDeviceInfos();
 }
 
 TArray<FVoiceChatDeviceInfo> FEOSVoiceChat::GetAvailableOutputDeviceInfos() const
@@ -704,9 +694,9 @@ void FEOSVoiceChat::TransmitToNoChannels()
 	GetVoiceChatUser().TransmitToNoChannels();
 }
 
-void FEOSVoiceChat::TransmitToSpecificChannel(const FString& ChannelName)
+void FEOSVoiceChat::TransmitToSpecificChannels(const TSet<FString>& ChannelNames)
 {
-	GetVoiceChatUser().TransmitToSpecificChannel(ChannelName);
+	GetVoiceChatUser().TransmitToSpecificChannels(ChannelNames);
 }
 
 EVoiceChatTransmitMode FEOSVoiceChat::GetTransmitMode() const
@@ -714,9 +704,9 @@ EVoiceChatTransmitMode FEOSVoiceChat::GetTransmitMode() const
 	return GetVoiceChatUser().GetTransmitMode();
 }
 
-FString FEOSVoiceChat::GetTransmitChannel() const
+TSet<FString> FEOSVoiceChat::GetTransmitChannels() const
 {
-	return GetVoiceChatUser().GetTransmitChannel();
+	return GetVoiceChatUser().GetTransmitChannels();
 }
 
 FDelegateHandle FEOSVoiceChat::StartRecording(const FOnVoiceChatRecordSamplesAvailableDelegate::FDelegate& Delegate)
@@ -835,6 +825,24 @@ void FEOSVoiceChat::OnAudioDevicesChanged()
 
 		StrongThis->OnVoiceChatAvailableAudioDevicesChangedDelegate.Broadcast();
 	}));
+}
+
+void FEOSVoiceChat::ScheduleReleaseUser(IVoiceChatUser* User)
+{
+	FEOSVoiceChatUserRef UserRef = static_cast<FEOSVoiceChatUser*>(User)->AsShared();
+	ReleasedVoiceChatUsers.Add(UserRef);
+	VoiceChatUsers.Remove(UserRef);
+
+	AsyncTask(ENamedThreads::GameThread, [this, WeakThis = AsWeak()]()
+	{
+		CHECKPIN();
+
+		while (ReleasedVoiceChatUsers.Num() > 0)
+		{
+			UE_LOG(LogEOSVoiceChat, Log, TEXT("Releasing User=[%p]"), &ReleasedVoiceChatUsers[0].Get());
+			ReleasedVoiceChatUsers.RemoveAtSwap(0);
+		}
+	});
 }
 
 FEOSVoiceChatUser& FEOSVoiceChat::GetVoiceChatUser()

@@ -11,6 +11,9 @@
 #include "Materials/MaterialRenderProxy.h"
 #include "Materials/Material.h"
 #include "MaterialDomain.h"
+#include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
+#include "UnifiedBuffer.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceDynamicMesh)
 
@@ -394,7 +397,7 @@ namespace NDIDynamicMeshLocal
 			ReleaseData();
 		}
 
-		void UpdateData(FGameToRenderData& GameToRenderData)
+		void UpdateData(FRHICommandListImmediate& RHICmdList, FGameToRenderData& GameToRenderData)
 		{
 			ReleaseData();
 
@@ -412,8 +415,7 @@ namespace NDIDynamicMeshLocal
 			VertexStride				= GameToRenderData.VertexStride;
 
 			{
-				FMemMark MemMark(FMemStack::Get());
-				FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
+				FRDGBuilder GraphBuilder(RHICmdList);
 
 				FRDGBufferDesc IndexBufferDesc = FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), FMath::Max(NumTriangles * 3u, 1u));
 				IndexBufferDesc.Usage = (IndexBufferDesc.Usage & ~EBufferUsageFlags::VertexBuffer) | EBufferUsageFlags::IndexBuffer;
@@ -469,27 +471,27 @@ namespace NDIDynamicMeshLocal
 			{
 				bNeedsClearIndexBuffer = GameToRenderData.IndexData.Num() == 0;
 
-				IndexBuffer.InitResource();
+				IndexBuffer.InitResource(RHICmdList);
 				IndexBuffer.IndexBufferRHI = IndexPooledBuffer->GetRHI();
-				IndexBufferSRV = RHICreateShaderResourceView(IndexBuffer.IndexBufferRHI, sizeof(uint32), EPixelFormat::PF_R32_UINT);
+				IndexBufferSRV = RHICmdList.CreateShaderResourceView(IndexBuffer.IndexBufferRHI, sizeof(uint32), EPixelFormat::PF_R32_UINT);
 			}
 
 			if (NumVertices > 0)
 			{
-				VertexBuffer.InitResource();
+				VertexBuffer.InitResource(RHICmdList);
 				VertexBuffer.VertexBufferRHI = VertexPooledBuffer->GetRHI();
-				VertexBufferPositionSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatPosition, PositionOffset, NumVertices * 3));
+				VertexBufferPositionSRV = RHICmdList.CreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatPosition, PositionOffset, NumVertices * 3));
 				if (TangentBasisOffset != INDEX_NONE)
 				{
-					VertexBufferTangentBasisSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatTangentBasis, TangentBasisOffset, NumVertices * 2));
+					VertexBufferTangentBasisSRV = RHICmdList.CreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatTangentBasis, TangentBasisOffset, NumVertices * 2));
 				}
 				if (TexCoordOffset != INDEX_NONE)
 				{
-					VertexBufferTexCoordSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatTexCoord, TexCoordOffset, NumVertices * NumTexCoords));
+					VertexBufferTexCoordSRV = RHICmdList.CreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatTexCoord, TexCoordOffset, NumVertices * NumTexCoords));
 				}
 				if (ColorOffset != INDEX_NONE)
 				{
-					VertexBufferColorSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatColor, ColorOffset, NumVertices));
+					VertexBufferColorSRV = RHICmdList.CreateShaderResourceView(FShaderResourceViewInitializer(VertexBuffer.VertexBufferRHI, PixelFormatColor, ColorOffset, NumVertices));
 				}
 			}
 		}
@@ -1046,7 +1048,7 @@ bool UNiagaraDataInterfaceDynamicMesh::InitPerInstanceData(void* PerInstanceData
 	FNDIInstanceData_GameThread* InstanceData = new(PerInstanceData) FNDIInstanceData_GameThread();
 	InstanceData->SystemInstanceID = SystemInstance->GetId();
 	InstanceData->bClearTrianglesPerFrame = bClearTrianglesPerFrame;
-	InstanceData->bGpuUsesDynamicAllocation = IsUsedWithGPUEmitter();		//-OPT: We can improve this by looking for used functions
+	InstanceData->bGpuUsesDynamicAllocation = IsUsedWithGPUScript();		//-OPT: We can improve this by looking for used functions
 	InstanceData->LocalBounds = DefaultBounds;
 
 	InstanceData->Sections.SetNum(Sections.Num());
@@ -1135,7 +1137,7 @@ bool UNiagaraDataInterfaceDynamicMesh::PerInstanceTickPostSimulate(void* PerInst
 			[RT_Proxy=GetProxyAs<FNDIProxy>(), RT_SystemInstanceID=InstanceData->SystemInstanceID, RT_GameToRenderData=FGameToRenderData(*InstanceData)](FRHICommandListImmediate& RHICmdList) mutable
 			{
 				FNDIInstanceData_RenderThread& InstanceData_RT = RT_Proxy->InstanceData_RT.FindOrAdd(RT_SystemInstanceID);
-				InstanceData_RT.UpdateData(RT_GameToRenderData);
+				InstanceData_RT.UpdateData(RHICmdList, RT_GameToRenderData);
 			}
 		);
 	}

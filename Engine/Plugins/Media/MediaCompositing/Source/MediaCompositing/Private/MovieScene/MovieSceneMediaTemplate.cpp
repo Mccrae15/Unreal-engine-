@@ -76,20 +76,12 @@ struct FMediaSectionPreRollExecutionToken
 
 		FMovieSceneMediaData& SectionData = PersistentData.GetSectionData<FMovieSceneMediaData>();
 		UMediaPlayer* MediaPlayer = SectionData.GetMediaPlayer();
-		UObject* PlayerProxy = SectionData.GetPlayerProxy();
+		IMediaPlayerProxyInterface* PlayerProxyInterface = Cast<IMediaPlayerProxyInterface>(SectionData.GetPlayerProxy());
 		UMediaSource* MediaSource = GetMediaSource(Player, Operand.SequenceID);
 
 		if (MediaPlayer == nullptr || MediaSource == nullptr)
 		{
 			return;
-		}
-
-		// Do we have a player proxy?
-		IMediaPlayerProxyInterface* PlayerProxyInterface = nullptr;
-		if (PlayerProxy != nullptr)
-		{
-			PlayerProxyInterface = Cast<IMediaPlayerProxyInterface>
-				(PlayerProxy);
 		}
 
 		// open the media source if necessary
@@ -114,12 +106,13 @@ private:
 struct FMediaSectionExecutionToken
 	: FMediaSectionBaseExecutionToken
 {
-	FMediaSectionExecutionToken(UMediaSource* InMediaSource, FMovieSceneObjectBindingID InMediaSourceProxy, int32 InMediaSourceProxyIndex, float InProxyTextureBlend, FTimespan InCurrentTime, FTimespan InFrameDuration)
+	FMediaSectionExecutionToken(UMediaSource* InMediaSource, FMovieSceneObjectBindingID InMediaSourceProxy, int32 InMediaSourceProxyIndex, float InProxyTextureBlend, bool bInCanPlayerBeOpen, FTimespan InCurrentTime, FTimespan InFrameDuration)
 		: FMediaSectionBaseExecutionToken(InMediaSource, InMediaSourceProxy, InMediaSourceProxyIndex)
 		, CurrentTime(InCurrentTime)
 		, FrameDuration(InFrameDuration)
 		, PlaybackRate(1.0f)
 		, ProxyTextureBlend(InProxyTextureBlend)
+		, bCanPlayerBeOpen(bInCanPlayerBeOpen)
 	{ }
 
 	virtual void Execute(const FMovieSceneContext& Context, const FMovieSceneEvaluationOperand& Operand, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player) override
@@ -135,32 +128,44 @@ struct FMediaSectionExecutionToken
 		}
 
 		// Do we have a player proxy?
-		IMediaPlayerProxyInterface* PlayerProxyInterface = nullptr;
-		if (PlayerProxy != nullptr)
+		IMediaPlayerProxyInterface* PlayerProxyInterface = Cast<IMediaPlayerProxyInterface>(PlayerProxy);
+		if (PlayerProxyInterface != nullptr)
 		{
-			PlayerProxyInterface = Cast<IMediaPlayerProxyInterface>
-				(PlayerProxy);
-			if (PlayerProxyInterface != nullptr)
+			PlayerProxyInterface->ProxySetTextureBlend(SectionData.GetProxyLayerIndex(), SectionData.GetProxyTextureIndex(), ProxyTextureBlend);
+			// Can we control the player?
+			if (PlayerProxyInterface->IsExternalControlAllowed() == false)
 			{
-				PlayerProxyInterface->ProxySetTextureBlend(SectionData.GetProxyLayerIndex(), SectionData.GetProxyTextureIndex(), ProxyTextureBlend);
-				// Can we control the player?
-				if (PlayerProxyInterface->IsExternalControlAllowed() == false)
-				{
-					return;
-				}
+				return;
+			}
 
-				if (SectionData.bIsAspectRatioSet == false)
+			if (SectionData.bIsAspectRatioSet == false)
+			{
+				if (PlayerProxyInterface->ProxySetAspectRatio(MediaPlayer))
 				{
-					if (PlayerProxyInterface->ProxySetAspectRatio(MediaPlayer))
-					{
-						SectionData.bIsAspectRatioSet = true;
-					}
+					SectionData.bIsAspectRatioSet = true;
 				}
 			}
 		}
 
+		// Can we be open?
+		if (bCanPlayerBeOpen == false)
+		{
+			if (MediaPlayer->IsClosed() == false)
+			{
+				MediaPlayer->Close();
+			}
+			return;
+		}
+
+		bool bCacheSettingsChanged = false;
+		FMediaSourceCacheSettings CurrentCacheSettings;
+		if (PlayerProxyInterface != nullptr && MediaSource->GetCacheSettings(CurrentCacheSettings))
+		{
+			bCacheSettingsChanged = (CurrentCacheSettings != PlayerProxyInterface->GetCacheSettings());
+		}
+
 		// open the media source if necessary
-		if (MediaPlayer->GetUrl().IsEmpty())
+		if (MediaPlayer->GetUrl().IsEmpty() || bCacheSettingsChanged)
 		{
 			if (PlayerProxyInterface != nullptr)
 			{
@@ -196,17 +201,7 @@ struct FMediaSectionExecutionToken
 		//
 
 		// Setup media time (used for seeks)
-		FTimespan MediaTime;
-		if (!MediaPlayer->IsLooping())
-		{
-			// note: we use a small offset at the end to make sure we can indeed seek to it (exclusive end type range)
-			MediaTime = FMath::Clamp(CurrentTime, FTimespan::Zero(), MediaDuration - FrameDuration * 0.5);
-		}
-		else
-		{
-			// one always seeks into the original media time-range, hence: modulo the time
-			MediaTime = CurrentTime % MediaDuration;
-		}
+		FTimespan MediaTime = CurrentTime;
 
 		#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
 			GLog->Logf(ELogVerbosity::Log, TEXT("Executing time %s, MediaTime %s"), *CurrentTime.ToString(TEXT("%h:%m:%s.%t")), *MediaTime.ToString(TEXT("%h:%m:%s.%t")));
@@ -222,9 +217,10 @@ struct FMediaSectionExecutionToken
 				//  the direction is taken into account as hint for internal operation of the player)
 				if (!MediaPlayer->SetRate((Context.GetDirection() == EPlayDirection::Forwards) ? 1.0f : -1.0f))
 				{
-					// Failed to set needed rate: better switch off blocking and bail...
-					MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>::Empty());
-					return;
+					// Failed to set needed rate. Keep things blocked, as this means the player will still not be playing, this will
+					// trigger a seek to each and every frame. A potentially very SLOW method of approximating backwards playback, but better
+					// than nothing.
+					// -> nothing to do
 				}
 			}
 			else
@@ -239,18 +235,20 @@ struct FMediaSectionExecutionToken
 				{
 					if (!MediaPlayer->SetRate(1.0f))
 					{
-						// Failed to set needed rate: better switch off blocking and bail...
-						MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>::Empty());
-						return;
+					// Failed to set needed rate. Keep things blocked, as this means the player will still be returning the old rate, we will get here repeatedly
+					// and each time trigger a seek. A potentially very SLOW method of approximating backwards playback, but better
+					// than nothing.
+					MediaPlayer->Seek(MediaTime);
 					}
 				}
 				else if (Context.GetDirection() == EPlayDirection::Backwards && CurrentPlayerRate > 0.0f)
 				{
 					if (!MediaPlayer->SetRate(-1.0f))
 					{
-						// Failed to set needed rate: better switch off blocking and bail...
-						MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>::Empty());
-						return;
+					// Failed to set needed rate. Keep things blocked, as this means the player will still be returning the old rate, we will get here repeatedly
+					// and each time trigger a seek. A potentially very SLOW method of approximating backwards playback, but better
+					// than nothing.
+					MediaPlayer->Seek(MediaTime);
 					}
 				}
 			}
@@ -265,8 +263,8 @@ struct FMediaSectionExecutionToken
 			MediaPlayer->Seek(MediaTime);
 		}
 
-	// Set blocking range / time-range to display
-	// (we always use the full current time for this, any adjustments to player timestamps are done internally)
+		// Set blocking range / time-range to display
+		// (we always use the full current time for this, any adjustments to player timestamps are done internally)
 		MediaPlayer->SetBlockOnTimeRange(TRange<FTimespan>(CurrentTime, CurrentTime + FrameDuration));
 	}
 
@@ -276,6 +274,7 @@ private:
 	FTimespan FrameDuration;
 	float PlaybackRate;
 	float ProxyTextureBlend;
+	bool bCanPlayerBeOpen;
 };
 
 
@@ -330,7 +329,7 @@ void FMovieSceneMediaSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 		const FFrameNumber StartFrame = Context.HasPreRollEndTime() ? Context.GetPreRollEndFrame() - Params.SectionStartFrame + Params.StartFrameOffset : Params.StartFrameOffset;
 
 		const double StartFrameInSeconds = FrameRate.AsSeconds(StartFrame);
-		const int64 StartTicks = StartFrameInSeconds * ETimespan::TicksPerSecond;
+		const int64 StartTicks = static_cast<int64>(StartFrameInSeconds * ETimespan::TicksPerSecond);
 
 		ExecutionTokens.Add(FMediaSectionPreRollExecutionToken(MediaSource, Params.MediaSourceProxy, Params.MediaSourceProxyIndex, FTimespan(StartTicks)));
 	}
@@ -340,13 +339,15 @@ void FMovieSceneMediaSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 		const FFrameTime FrameTime(Context.GetTime().FrameNumber - Params.SectionStartFrame + Params.StartFrameOffset);
 
 		const double FrameTimeInSeconds = FrameRate.AsSeconds(FrameTime);
-		const int64 FrameTicks = FrameTimeInSeconds * ETimespan::TicksPerSecond;
+		const int64 FrameTicks = static_cast<int64>(FrameTimeInSeconds * ETimespan::TicksPerSecond);
 
 		// With zero-length frames (which can occur occasionally), we use the fixed frame time, matching previous behavior.
 		const double FrameDurationInSeconds = FMath::Max(FrameRate.AsSeconds(FFrameTime(1)), (Context.GetRange().Size<FFrameTime>()) / Context.GetFrameRate());
-		const int64 FrameDurationTicks = FrameDurationInSeconds * ETimespan::TicksPerSecond;
+		const int64 FrameDurationTicks = static_cast<int64>(FrameDurationInSeconds * ETimespan::TicksPerSecond);
 
 		float ProxyTextureBlend = MediaSection->EvaluateEasing(Context.GetTime());
+		bool bCanPlayerBeOpen = true;
+		MediaSection->ChannelCanPlayerBeOpen.Evaluate(Context.GetTime(), bCanPlayerBeOpen);
 
 		#if MOVIESCENEMEDIATEMPLATE_TRACE_EVALUATION
 			GLog->Logf(ELogVerbosity::Log, TEXT("Evaluating frame %i+%f, FrameRate %i/%i, FrameTicks %d, FrameDurationTicks %d"),
@@ -359,7 +360,7 @@ void FMovieSceneMediaSectionTemplate::Evaluate(const FMovieSceneEvaluationOperan
 			);
 		#endif
 
-		ExecutionTokens.Add(FMediaSectionExecutionToken(MediaSource, Params.MediaSourceProxy, Params.MediaSourceProxyIndex, ProxyTextureBlend, FTimespan(FrameTicks), FTimespan(FrameDurationTicks)));
+		ExecutionTokens.Add(FMediaSectionExecutionToken(MediaSource, Params.MediaSourceProxy, Params.MediaSourceProxyIndex, ProxyTextureBlend, bCanPlayerBeOpen, FTimespan(FrameTicks), FTimespan(FrameDurationTicks)));
 	}
 }
 

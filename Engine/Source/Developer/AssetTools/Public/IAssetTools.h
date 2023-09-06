@@ -44,6 +44,10 @@ enum class EAssetClassAction : uint8
 	CreateAsset,
 	/** Whether an asset can be viewed in the content browser */
 	ViewAsset,
+	/** Whether an asset can be imported */
+	ImportAsset,
+	/** Whether an asset can be exported */
+	ExportAsset,
 	AllAssetActions
 };
 
@@ -242,6 +246,8 @@ class IAssetTools
 public:
 	ASSETTOOLS_API static IAssetTools& Get();
 
+	DECLARE_DELEGATE(FOnAssetsDiscovered);
+
 	/** Registers an asset type actions object so it can provide information about and actions for asset types. */
 	virtual void RegisterAssetTypeActions(const TSharedRef<IAssetTypeActions>& NewActions) = 0;
 
@@ -350,6 +356,12 @@ public:
 	/** Gets whether assets are being made externally referenceable or not */
 	virtual bool GetCreateAssetsAsExternallyReferenceable() = 0;
 
+	/** Gets whether assets registry is still loading assets or not */
+	virtual bool IsDiscoveringAssetsInProgress() const = 0;
+
+	/** Opens a dialog asking the user to wait while assets are being discovered */
+	virtual void OpenDiscoveringAssetsDialog(const FOnAssetsDiscovered& InOnAssetsDiscovered) = 0;
+
 	/** Renames assets using the specified names. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual bool RenameAssets(const TArray<FAssetRenameData>& AssetsAndNames) = 0;
@@ -457,6 +469,14 @@ public:
 	 */
 	virtual void ExportAssetsWithDialog(const TArray<UObject*>& AssetsToExport, bool bPromptForIndividualFilenames) = 0;
 
+	/**
+	 * Check if specified assets can be exported.
+	 *
+	 * @param	AssetsToExport					List of assets to export
+	 * @return true if all assets specified can be exported
+	 */
+	virtual bool CanExportAssets(const TArray<FAssetData>& AssetsToExport) const = 0;
+
 	/** Creates a unique package and asset name taking the form InBasePackageName+InSuffix */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
 	virtual void CreateUniqueAssetName(const FString& InBasePackageName, const FString& InSuffix, FString& OutPackageName, FString& OutAssetName) = 0;
@@ -496,7 +516,7 @@ public:
 	virtual void MigratePackages(const TArray<FName>& PackageNamesToMigrate) const = 0;
 
 	/* Migrate packages and dependencies to another folder */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools", BlueprintPure = false)
 	virtual void MigratePackages(const TArray<FName>& PackageNamesToMigrate, const FString& DestinationPath, const struct FMigrationOptions& Options = FMigrationOptions()) const = 0;
 
 	/**
@@ -567,6 +587,11 @@ public:
 
 	/** Get asset class permission list for content browser and other systems */
 	virtual const TSharedRef<FPathPermissionList>& GetAssetClassPathPermissionList(EAssetClassAction AssetClassAction) const = 0;
+
+	/** Get extension permission list allowed for importer */
+	virtual const TSharedRef<FNamePermissionList>& GetImportExtensionPermissionList() const = 0;
+
+	virtual bool IsImportExtensionAllowed(const FString& Extension) const = 0;
 
 	/** Which BlueprintTypes are allowed to be created. An empty list should allow everything. */
 	virtual TSet<EBlueprintType>& GetAllowedBlueprintTypes() = 0;

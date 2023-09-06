@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using EpicGames.Core;
+using EpicGames.OIDC;
 using EpicGames.Perforce;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
@@ -10,7 +12,6 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -41,11 +42,11 @@ namespace UnrealGameSync
 			{
 				if (engineDir != null)
 				{
-					expandedLine = expandedLine.Replace("$(EngineDir)", engineDir.FullName);
+					expandedLine = expandedLine.Replace("$(EngineDir)", engineDir.FullName, StringComparison.OrdinalIgnoreCase);
 				}
 				if (projectDir != null)
 				{
-					expandedLine = expandedLine.Replace("$(ProjectDir)", projectDir.FullName);
+					expandedLine = expandedLine.Replace("$(ProjectDir)", projectDir.FullName, StringComparison.OrdinalIgnoreCase);
 				}
 			}
 			return expandedLine;
@@ -142,6 +143,103 @@ namespace UnrealGameSync
 				}
 			}
 			return projectConfig;
+		}
+
+		public static async Task<List<string[]>> ReadConfigFiles(IPerforceConnection perforce, IEnumerable<string> depotPaths, List<KeyValuePair<FileReference, DateTime>> localFiles, DirectoryReference cacheFolder, ILogger logger, CancellationToken cancellationToken)
+		{
+			List<string[]> contents = new List<string[]>();
+
+			List<PerforceResponse<FStatRecord>> responses = await perforce.TryFStatAsync(FStatOptions.IncludeFileSizes, depotPaths.ToArray(), cancellationToken).ToListAsync(cancellationToken);
+			foreach (PerforceResponse<FStatRecord> response in responses)
+			{
+				if (response.Succeeded)
+				{
+					string[]? lines = null;
+
+					// Skip file records which are still in the workspace, but were synced from a different branch. For these files, the action seems to be empty, so filter against that.
+					FStatRecord fileRecord = response.Data;
+					if (fileRecord.HeadAction == FileAction.None)
+					{
+						continue;
+					}
+
+					// If this file is open for edit, read the local version
+					string? localFileName = fileRecord.ClientFile;
+					if (localFileName != null && File.Exists(localFileName) && (File.GetAttributes(localFileName) & FileAttributes.ReadOnly) == 0)
+					{
+						try
+						{
+							DateTime lastModifiedTime = File.GetLastWriteTimeUtc(localFileName);
+							localFiles.Add(new KeyValuePair<FileReference, DateTime>(new FileReference(localFileName), lastModifiedTime));
+							lines = await File.ReadAllLinesAsync(localFileName, cancellationToken);
+						}
+						catch (Exception ex)
+						{
+							logger.LogInformation(ex, "Failed to read local config file for {Path}", localFileName);
+						}
+					}
+
+					// Otherwise try to get it from perforce
+					if (lines == null && fileRecord.DepotFile != null)
+					{
+						lines = await Utility.TryPrintFileUsingCacheAsync(perforce, fileRecord.DepotFile, cacheFolder, fileRecord.Digest, logger, cancellationToken);
+					}
+
+					// Merge the text with the config file
+					if (lines != null)
+					{
+						contents.Add(lines);
+					}
+				}
+			}
+
+			return contents;
+		}
+
+		public static async Task<OidcTokenClient?> CreateOidcTokenClientAsync(OidcTokenManager oidcTokenManager, ConfigFile projectConfigFile, string projectIdentifier, IPerforceConnection perforce, string clientRoot, string? clientProjectFile, List<KeyValuePair<FileReference, DateTime>> localFiles, DirectoryReference cacheFolder, ILogger logger, CancellationToken cancellationToken)
+		{
+			OidcTokenClient? oidcTokenClient = null;
+
+			string? oidcProvider;
+			if (TryGetProjectSetting(projectConfigFile, projectIdentifier, "OidcProvider", out oidcProvider))
+			{
+				List<string> configFiles = new List<string>();
+				configFiles.AddRange(ProviderConfigurationFactory.ConfigPaths.Select(x => $"{clientRoot.TrimEnd('/')}/Engine/{x}"));
+
+				if (clientProjectFile != null && clientProjectFile.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
+				{
+					string clientProjectPath = clientProjectFile.Substring(0, clientProjectFile.LastIndexOf('/'));
+					configFiles.AddRange(ProviderConfigurationFactory.ConfigPaths.Select(x => $"{clientProjectPath.TrimEnd('/')}/{x}"));
+				}
+
+				List<string[]> latestOidcConfigFiles = await ConfigUtils.ReadConfigFiles(perforce, configFiles, localFiles, cacheFolder, logger, cancellationToken);
+
+				ConfigurationBuilder configBuilder = new ConfigurationBuilder();
+				foreach (string[] configFile in latestOidcConfigFiles)
+				{
+#pragma warning disable CA2000
+					MemoryStream configStream = new MemoryStream(Encoding.UTF8.GetBytes(String.Join("\n", configFile)));
+					configBuilder.AddJsonStream(configStream);
+#pragma warning restore CA2000
+				}
+
+				IConfigurationRoot config = configBuilder.Build();
+				OidcTokenOptions oidcOptions = OidcTokenOptions.Bind(config);
+
+				if (oidcOptions.Providers.TryGetValue(oidcProvider, out ProviderInfo? providerInfo))
+				{
+					oidcTokenClient = oidcTokenManager.FindOrAddClient(oidcProvider, providerInfo);
+
+					// Trigger an update of the access token if necessary, just to make sure we have the most current state
+					try
+					{
+						await oidcTokenClient.GetAccessTokenAsync(cancellationToken);
+					}
+					catch { }
+				}
+			}
+
+			return oidcTokenClient;
 		}
 
 		public static FileReference GetEditorTargetFile(ProjectInfo projectInfo, ConfigFile projectConfig)
@@ -249,7 +347,7 @@ namespace UnrealGameSync
 			if (TryGetProjectSetting(projectConfig, projectInfo.ProjectIdentifier, "UseSharedEditor", out setting))
 			{
 				bool value;
-				if (bool.TryParse(setting, out value))
+				if (Boolean.TryParse(setting, out value))
 				{
 					return value;
 				}
@@ -327,7 +425,7 @@ namespace UnrealGameSync
 			return defaultBuildSteps.ToDictionary(x => x.UniqueId, x => x.ToConfigObject());
 		}
 
-		public static Dictionary<string, string> GetWorkspaceVariables(ProjectInfo projectInfo, int changeNumber, int codeChangeNumber, TargetReceipt? editorTarget, ConfigFile? projectConfigFile)
+		public static Dictionary<string, string> GetWorkspaceVariables(ProjectInfo projectInfo, int changeNumber, int codeChangeNumber, TargetReceipt? editorTarget, ConfigFile? projectConfigFile, IPerforceSettings perforceSettings)
 		{
 			Dictionary<string, string> variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -351,7 +449,7 @@ namespace UnrealGameSync
 			string editorLaunch = editorTarget?.Launch ?? String.Empty;
 			variables.Add("EditorExe", editorLaunch);
 
-			string editorLaunchCmd = editorTarget?.LaunchCmd ?? editorLaunch.Replace(".exe", "-Cmd.exe");
+			string editorLaunchCmd = editorTarget?.LaunchCmd ?? editorLaunch.Replace(".exe", "-Cmd.exe", StringComparison.OrdinalIgnoreCase);
 			variables.Add("EditorCmdExe", editorLaunchCmd);
 
 			// Legacy
@@ -368,12 +466,19 @@ namespace UnrealGameSync
 				}
 			}
 
+			variables.Add("PerforceServerAndPort", perforceSettings.ServerAndPort);
+			variables.Add("PerforceUserName", perforceSettings.UserName);
+			if (perforceSettings.ClientName != null)
+			{
+				variables.Add("PerforceClientName", perforceSettings.ClientName);
+			}
+
 			return variables;
 		}
 
-		public static Dictionary<string, string> GetWorkspaceVariables(ProjectInfo projectInfo, int changeNumber, int codeChangeNumber, TargetReceipt? editorTarget, ConfigFile? projectConfigFile, IEnumerable<KeyValuePair<string, string>> additionalVariables)
+		public static Dictionary<string, string> GetWorkspaceVariables(ProjectInfo projectInfo, int changeNumber, int codeChangeNumber, TargetReceipt? editorTarget, ConfigFile? projectConfigFile, IPerforceSettings perforceSettings, IEnumerable<KeyValuePair<string, string>> additionalVariables)
 		{
-			Dictionary<string, string> variables = GetWorkspaceVariables(projectInfo, changeNumber, codeChangeNumber, editorTarget, projectConfigFile);
+			Dictionary<string, string> variables = GetWorkspaceVariables(projectInfo, changeNumber, codeChangeNumber, editorTarget, projectConfigFile, perforceSettings);
 			foreach ((string key, string value) in additionalVariables)
 			{
 				variables[key] = value;
@@ -386,7 +491,7 @@ namespace UnrealGameSync
 			string path = selectedProjectIdentifier;
 			for (; ; )
 			{
-				ConfigSection projectSection = projectConfigFile.FindSection(path);
+				ConfigSection? projectSection = projectConfigFile.FindSection(path);
 				if (projectSection != null)
 				{
 					string? newValue = projectSection.GetValue(name, null);
@@ -406,7 +511,7 @@ namespace UnrealGameSync
 				path = path.Substring(0, lastSlash);
 			}
 
-			ConfigSection defaultSection = projectConfigFile.FindSection("Default");
+			ConfigSection? defaultSection = projectConfigFile.FindSection("Default");
 			if (defaultSection != null)
 			{
 				string? newValue = defaultSection.GetValue(name, null);
@@ -421,12 +526,39 @@ namespace UnrealGameSync
 			return false;
 		}
 
+		public static void GetProjectSettings(ConfigFile projectConfigFile, string selectedProjectIdentifier, string name, List<string> values)
+		{
+			string path = selectedProjectIdentifier;
+			for (; ; )
+			{
+				ConfigSection? projectSection = projectConfigFile.FindSection(path);
+				if (projectSection != null)
+				{
+					values.AddRange(projectSection.GetValues(name, Array.Empty<string>()));
+				}
+
+				int lastSlash = path.LastIndexOf('/');
+				if (lastSlash < 2)
+				{
+					break;
+				}
+
+				path = path.Substring(0, lastSlash);
+			}
+
+			ConfigSection? defaultSection = projectConfigFile.FindSection("Default");
+			if (defaultSection != null)
+			{
+				values.AddRange(defaultSection.GetValues(name, Array.Empty<string>()));
+			}
+		}
+
 		public static Dictionary<Guid, WorkspaceSyncCategory> GetSyncCategories(ConfigFile projectConfigFile)
 		{
 			Dictionary<Guid, WorkspaceSyncCategory> uniqueIdToCategory = new Dictionary<Guid, WorkspaceSyncCategory>();
 			if (projectConfigFile != null)
 			{
-				string[] categoryLines = projectConfigFile.GetValues("Options.SyncCategory", new string[0]);
+				string[] categoryLines = projectConfigFile.GetValues("Options.SyncCategory", Array.Empty<string>());
 				foreach (string categoryLine in categoryLines)
 				{
 					ConfigObject obj = new ConfigObject(categoryLine);
@@ -443,15 +575,22 @@ namespace UnrealGameSync
 
 						if (obj.GetValue("Clear", false))
 						{
-							category.Paths = new string[0];
-							category.Requires = new Guid[0];
+							category.Paths.Clear();
+							category.Requires.Clear();
 						}
 
 						category.Name = obj.GetValue("Name", category.Name);
 						category.Enable = obj.GetValue("Enable", category.Enable);
-						category.Paths = Enumerable.Concat(category.Paths, obj.GetValue("Paths", "").Split(';').Select(x => x.Trim())).Where(x => x.Length > 0).Distinct().OrderBy(x => x).ToArray();
+
+						string[] paths = Enumerable.Concat(category.Paths, obj.GetValue("Paths", "").Split(';').Select(x => x.Trim())).Where(x => x.Length > 0).Distinct().OrderBy(x => x).ToArray();
+						category.Paths.Clear();
+						category.Paths.AddRange(paths);
+
 						category.Hidden = obj.GetValue("Hidden", category.Hidden);
-						category.Requires = Enumerable.Concat(category.Requires, ParseGuids(obj.GetValue("Requires", "").Split(';'))).Distinct().OrderBy(x => x).ToArray();
+
+						Guid[] requires = Enumerable.Concat(category.Requires, ParseGuids(obj.GetValue("Requires", "").Split(';'))).Distinct().OrderBy(x => x).ToArray();
+						category.Requires.Clear();
+						category.Requires.AddRange(requires);
 					}
 				}
 			}

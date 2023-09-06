@@ -22,9 +22,10 @@ template <typename T> struct TIsPODType;
 template <typename T> struct TIsWeakPointerType;
 
 /**
- * Wrapper structure for a GUID that uniquely identifies a UObject
+ * Wrapper structure for a GUID that uniquely identifies registered UObjects.
+ * The actual GUID is stored in an object annotation that is updated when a new reference is made.
  */
-struct COREUOBJECT_API FUniqueObjectGuid
+struct FUniqueObjectGuid
 {
 	FUniqueObjectGuid()
 	{}
@@ -40,23 +41,23 @@ struct COREUOBJECT_API FUniqueObjectGuid
 	}
 
 	/** Construct from an existing object */
-	explicit FUniqueObjectGuid(const class UObject* InObject);
+	COREUOBJECT_API explicit FUniqueObjectGuid(const class UObject* InObject);
 
 	/** Converts into a string */
-	FString ToString() const;
+	COREUOBJECT_API FString ToString() const;
 
 	/** Converts from a string */
-	void FromString(const FString& From);
+	COREUOBJECT_API void FromString(const FString& From);
 
 	/** Fixes up this UniqueObjectID to add or remove the PIE prefix depending on what is currently active */
-	FUniqueObjectGuid FixupForPIE(int32 PlayInEditorID = GPlayInEditorID) const;
+	COREUOBJECT_API FUniqueObjectGuid FixupForPIE(int32 PlayInEditorID = GPlayInEditorID) const;
 
 	/**
 	 * Attempts to find a currently loaded object that matches this object ID
 	 *
 	 * @return Found UObject, or nullptr if not currently loaded
 	 */
-	class UObject *ResolveObject() const;
+	COREUOBJECT_API class UObject *ResolveObject() const;
 
 	/** Test if this can ever point to a live UObject */
 	FORCEINLINE bool IsValid() const
@@ -102,35 +103,34 @@ struct COREUOBJECT_API FUniqueObjectGuid
 		Slot << ObjectGuid.Guid;
 	}
 
-	/** Code needed by FLazyPtr internals */
+	/** These will be deprecated in a followup change as they are no longer in use */
 	static int32 GetCurrentTag()
 	{
-		return CurrentAnnotationTag.GetValue();
+		return 0;
 	}
 	static int32 InvalidateTag()
 	{
-		return CurrentAnnotationTag.Increment();
+		return 0;
 	}
 
-	static FUniqueObjectGuid GetOrCreateIDForObject(const class UObject *Object);
+	static COREUOBJECT_API FUniqueObjectGuid GetOrCreateIDForObject(const class UObject *Object);
 
 private:
 	/** Guid representing the object, should be unique */
 	FGuid Guid;
-
-	/** Global counter that determines when we need to re-search for GUIDs because more objects have been loaded **/
-	static FThreadSafeCounter CurrentAnnotationTag;
 };
 
 template<> struct TIsPODType<FUniqueObjectGuid> { enum { Value = true }; };
 
 /**
  * FLazyObjectPtr is a type of weak pointer to a UObject that uses a GUID created at save time.
+ * Objects will only have consistent GUIDs if they are referenced by a lazy pointer and then saved.
  * It will change back and forth between being valid or pending as the referenced object loads or unloads.
  * It has no impact on if the object is garbage collected or not.
  * It can't be directly used across a network.
  *
- * This is useful for cross level references or places where you need to point to an object whose name changes often.
+ * NOTE: Because this only stores a GUID, it does not know how to load the destination object and does not work with Play In Editor.
+ * This will be deprecated in a future engine version and new features should use FSoftObjectPtr instead.
  */
 struct FLazyObjectPtr : public TPersistentObjectPtr<FUniqueObjectGuid>
 {
@@ -158,7 +158,7 @@ public:
 		TPersistentObjectPtr<FUniqueObjectGuid>::operator=(InObjectID);
 	}
 
-	/** Fixes up this FLazyObjectPtr to target the right UID as set in PIEGuidMap */
+	/** Fixes up this FLazyObjectPtr to target the right UID as set in PIEGuidMap, this only works for directly serialized pointers */
 	FORCEINLINE void FixupForPIE(int32 PIEInstance)
 	{
 		*this = GetUniqueID().FixupForPIE(PIEInstance);
@@ -175,7 +175,8 @@ template <> struct TIsPODType<FLazyObjectPtr> { enum { Value = TIsPODType<TPersi
 template <> struct TIsWeakPointerType<FLazyObjectPtr> { enum { Value = TIsWeakPointerType<TPersistentObjectPtr<FUniqueObjectGuid> >::Value }; };
 
 /**
- * TLazyObjectPtr is templatized version of the generic FLazyObjectPtr
+ * TLazyObjectPtr is the templatized version of the generic FLazyObjectPtr.
+ * NOTE: This will be deprecated in a future engine version and new features should use TSoftObjectPtr instead.
  */
 template<class T=UObject>
 struct TLazyObjectPtr : private FLazyObjectPtr

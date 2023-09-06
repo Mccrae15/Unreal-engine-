@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenIrradianceFieldGather.cpp
-=============================================================================*/
-
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "SceneUtils.h"
@@ -15,6 +11,7 @@
 #include "ScreenSpaceDenoise.h"
 #include "LumenRadianceCache.h"
 #include "LumenTracingUtils.h"
+#include "LumenReflections.h"
 
 int32 GLumenIrradianceFieldGather = 0;
 FAutoConsoleVariableRef CVarLumenIrradianceFieldGather(
@@ -139,7 +136,7 @@ namespace LumenIrradianceFieldGather
 		Parameters.RadianceProbeClipmapResolution = FMath::Clamp(GLumenIrradianceFieldGridResolution, 1, 256);
 		Parameters.ProbeAtlasResolutionInProbes = FIntPoint(GLumenIrradianceFieldProbeAtlasResolutionInProbes, GLumenIrradianceFieldProbeAtlasResolutionInProbes);
 		Parameters.NumRadianceProbeClipmaps = FMath::Clamp(GLumenIrradianceFieldNumClipmaps, 1, LumenRadianceCache::MaxClipmaps);
-		Parameters.RadianceProbeResolution = GLumenIrradianceFieldProbeResolution;
+		Parameters.RadianceProbeResolution = FMath::Max(GLumenIrradianceFieldProbeResolution, LumenRadianceCache::MinRadianceProbeResolution);
 		Parameters.FinalProbeResolution = GLumenIrradianceFieldProbeResolution + 2 * (1 << (GLumenIrradianceFieldNumMipmaps - 1));
 		Parameters.FinalRadianceAtlasMaxMip = GLumenIrradianceFieldNumMipmaps - 1;
 		Parameters.CalculateIrradiance = 1;

@@ -17,7 +17,13 @@
 #include "Dataflow/GeometryCollectionUtilityNodes.h"
 #include "Dataflow/GeometryCollectionMaterialNodes.h"
 #include "Dataflow/GeometryCollectionFieldNodes.h"
+#include "Dataflow/GeometryCollectionOverrideNodes.h"
+#include "Dataflow/GeometryCollectionMakeNodes.h"
+#include "Dataflow/GeometryCollectionMathNodes.h"
+#include "Dataflow/GeometryCollectionConversionNodes.h"
 #include "Dataflow/GeometryCollectionVerticesNodes.h"
+#include "Dataflow/GeometryCollectionArrayNodes.h"
+#include "Dataflow/GeometryCollectionDebugNodes.h"
 
 #define LOCTEXT_NAMESPACE "DataflowNodes"
 
@@ -36,7 +42,13 @@ void IGeometryCollectionNodesPlugin::StartupModule()
 	Dataflow::GeometryCollectionUtilityNodes();
 	Dataflow::GeometryCollectionMaterialNodes();
 	Dataflow::GeometryCollectionFieldNodes();
+	Dataflow::GeometryCollectionOverrideNodes();
+	Dataflow::GeometryCollectionMakeNodes();
+	Dataflow::GeometryCollectionMathNodes();
+	Dataflow::GeometryCollectionConversionNodes();
 	Dataflow::GeometryCollectionVerticesNodes();
+	Dataflow::GeometryCollectionArrayNodes();
+	Dataflow::GeometryCollectionDebugNodes();
 }
 
 void IGeometryCollectionNodesPlugin::ShutdownModule()

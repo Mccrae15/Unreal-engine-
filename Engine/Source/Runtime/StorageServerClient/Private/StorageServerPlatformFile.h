@@ -111,7 +111,8 @@ private:
 #if WITH_COTF
 	void OnCookOnTheFlyMessage(const UE::Cook::FCookOnTheFlyMessage& Message);
 #endif
-	
+	TUniquePtr<FArchive> TryFindProjectStoreMarkerFile(IPlatformFile* Inner) const;
+
 	IPlatformFile* LowerLevel = nullptr;
 	FStringView ServerEngineDirView = FStringView(TEXT("/{engine}/"));
 	FStringView ServerProjectDirView = FStringView(TEXT("/{project}/"));
@@ -123,6 +124,7 @@ private:
 	FString ServerProject;
 	FString ServerPlatform;
 	mutable TArray<FString> HostAddrs;
+	mutable uint16 HostPort = 1337;
 };
 
 #endif

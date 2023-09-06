@@ -2,9 +2,10 @@
 
 #include "Components/DMXPixelMappingScreenComponent.h"
 
+#include "DMXPixelMappingRuntimeLog.h"
+#include "DMXPixelMappingTypes.h"
 #include "DMXPixelMappingUtils.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
-#include "IDMXPixelMappingRenderer.h"
 #include "IO/DMXOutputPort.h"
 #include "IO/DMXOutputPortReference.h"
 #include "IO/DMXPortManager.h"
@@ -156,7 +157,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 const FName& UDMXPixelMappingScreenComponent::GetNamePrefix()
 {
-	static FName NamePrefix = TEXT("DMX Screen");
+	static FName NamePrefix = TEXT("DEPRECATED DMX Screen");
 	return NamePrefix;
 }
 
@@ -265,16 +266,13 @@ UDMXPixelMappingRendererComponent* UDMXPixelMappingScreenComponent::GetRendererC
 
 void UDMXPixelMappingScreenComponent::ResetDMX()
 {
-	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
-	if (ensure(RendererComponent))
-	{
-	RendererComponent->ResetColorDownsampleBufferPixels(PixelDownsamplePositionRange.Key, PixelDownsamplePositionRange.Value);
 	SendDMX();
-}
 }
 
 void UDMXPixelMappingScreenComponent::SendDMX()
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 	SCOPE_CYCLE_COUNTER(STAT_DMXPixelMaping_SendScreen);
 
 	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
@@ -372,10 +370,15 @@ void UDMXPixelMappingScreenComponent::SendDMX()
 			SendDMXIndex++;
 		}
 	}
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UDMXPixelMappingScreenComponent::QueueDownsample()
 {
+	// DEPRECATED 5.3
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 	// Queue pixels into the downsample rendering
 	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
 	if (!ensure(RendererComponent))
@@ -383,7 +386,7 @@ void UDMXPixelMappingScreenComponent::QueueDownsample()
 		return;
 	}
 
-	UTexture* InputTexture = RendererComponent->GetRendererInputTexture();
+	UTexture* InputTexture = RendererComponent->GetRenderedInputTexture();
 	if (!ensure(InputTexture))
 	{
 		return;
@@ -427,15 +430,13 @@ void UDMXPixelMappingScreenComponent::QueueDownsample()
 
 	// End of downsample index
 	PixelDownsamplePositionRange.Value = PixelDownsamplePositionRange.Key + IterationCount;
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UDMXPixelMappingScreenComponent::RenderWithInputAndSendDMX()
 {
-	if (UDMXPixelMappingRendererComponent* RendererComponent = GetFirstParentByClass<UDMXPixelMappingRendererComponent>(this))
-	{
-		RendererComponent->RendererInputTexture();
-	}
-
+	// DEPRECATED 5.3
 	RenderAndSendDMX();
 }
 

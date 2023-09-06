@@ -9,10 +9,14 @@
 #include "TUniqueTechSoftObj.h"
 
 #include "HAL/FileManager.h"
+#include "HAL/PlatformTime.h"
+
 #ifndef CADKERNEL_DEV
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "Tasks/Task.h"
 #endif
+
 #include "Templates/UnrealTemplate.h"
 
 namespace CADLibrary
@@ -216,7 +220,7 @@ void SetIOOption(A3DImport& Importer)
 	Importer.m_sLoadData.m_sGeneral.m_bReadWireframes = A3D_FALSE;
 	Importer.m_sLoadData.m_sGeneral.m_bReadPmis = A3D_FALSE;
 	Importer.m_sLoadData.m_sGeneral.m_bReadAttributes = A3D_TRUE;
-	Importer.m_sLoadData.m_sGeneral.m_bReadHiddenObjects = A3D_FALSE;
+	Importer.m_sLoadData.m_sGeneral.m_bReadHiddenObjects = A3D_TRUE;
 	Importer.m_sLoadData.m_sGeneral.m_bReadConstructionAndReferences = A3D_FALSE;
 	Importer.m_sLoadData.m_sGeneral.m_bReadActiveFilter = A3D_FALSE;
 	Importer.m_sLoadData.m_sGeneral.m_eReadingMode2D3D = kA3DRead_3D;
@@ -254,12 +258,13 @@ void UpdateIOOptionAccordingToFormat(const CADLibrary::ECADFormat Format, A3DImp
 
 	case CADLibrary::ECADFormat::JT:
 	{
+		Importer.m_sLoadData.m_sIncremental.m_bLoadNoDependencies = false;
 		if (FImportParameters::bGPreferJtFileEmbeddedTessellation)
 		{
 			Importer.m_sLoadData.m_sGeneral.m_eReadGeomTessMode = kA3DReadTessOnly;
 			Importer.m_sLoadData.m_sSpecifics.m_sJT.m_eReadTessellationLevelOfDetail = A3DEJTReadTessellationLevelOfDetail::kA3DJTTessLODHigh;
-			break;
 		}
+		break;
 	}
 
 	case CADLibrary::ECADFormat::N_X:
@@ -285,7 +290,7 @@ void UpdateIOOptionAccordingToFormat(const CADLibrary::ECADFormat Format, A3DImp
 double ExtractUniformScale(FVector3d& Scale)
 {
 	double UniformScale = (Scale.X + Scale.Y + Scale.Z) / 3.;
-	double Tolerance = UniformScale * KINDA_SMALL_NUMBER;
+	double Tolerance = UniformScale * DOUBLE_KINDA_SMALL_NUMBER;
 
 	if (!FMath::IsNearlyEqual(UniformScale, Scale.X, Tolerance) && !FMath::IsNearlyEqual(UniformScale, Scale.Y, Tolerance))
 	{
@@ -309,7 +314,7 @@ double ExtractUniformScale(FVector3d& Scale)
 	return UniformScale;
 }
 
-} // ns TechSoftFileParserImpl
+} // namespace TechSoftFileParserImpl
 
 #endif
 
@@ -324,7 +329,20 @@ FTechSoftFileParser::FTechSoftFileParser(FCADFileData& InCADData, const FString&
 #ifdef USE_TECHSOFT_SDK
 ECADParsingResult FTechSoftFileParser::Process()
 {
+	bProcessIsRunning = true;
+#ifndef CADKERNEL_DEV
+	TArray<UE::Tasks::FTask> Checkers;
+	if(FImportParameters::bValidationProcess)
+	{
+		Checkers.Emplace(UE::Tasks::Launch(TEXT("MemoryChecker"), [&]() { CheckMemory(); }));
+	}
+#endif
+
+	//FPlatformMemoryStats StartMem = FPlatformMemory::GetStats();
+	uint64 StartTime = FPlatformTime::Cycles64();
+
 	const FFileDescriptor& File = CADFileData.GetCADFileDescription();
+	FImportRecord& ProcessReport = CADFileData.GetRecord();
 
 	if (File.GetPathOfFileToLoad().IsEmpty())
 	{
@@ -341,6 +359,7 @@ ECADParsingResult FTechSoftFileParser::Process()
 
 	A3DStatus LoadStatus = A3DStatus::A3D_SUCCESS;
 	ModelFile = TechSoftInterface::LoadModelFileFromFile(Import, LoadStatus);
+	ProcessReport.ImportTime += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartTime);
 
 	if (!ModelFile.IsValid())
 	{
@@ -386,41 +405,56 @@ ECADParsingResult FTechSoftFileParser::Process()
 			return ECADParsingResult::ProcessFailed;
 		}
 
-		ModellerType = (EModellerType)ModelFileData->m_eModellerType;
+		ModelerType = (EModelerType) ModelFileData->m_eModellerType;
 		FileUnit = TechSoftInterface::GetModelFileUnit(ModelFile.Get());
 	}
 
 	// save the file for the next load
 	if (CADFileData.IsCacheDefined())
 	{
+		uint64 StartSaveTime = FPlatformTime::Cycles64();
 		FString CacheFilePath = CADFileData.GetCADCachePath();
 		if (CacheFilePath != File.GetPathOfFileToLoad())
 		{
 			TechSoftUtils::SaveModelFileToPrcFile(ModelFile.Get(), CacheFilePath);
 		}
+		ProcessReport.SavePrcTime = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartSaveTime);
 	}
 
 	// Adapt BRep to UE::CADKernel
-	if (AdaptBRepModel() != A3D_SUCCESS)
 	{
-		return ECADParsingResult::ProcessFailed;
+		uint64 StartAdaptTime = FPlatformTime::Cycles64();
+		if (AdaptBRepModel() != A3D_SUCCESS)
+		{
+			return ECADParsingResult::ProcessFailed;
+		}
+		ProcessReport.AdaptBRepTime = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartAdaptTime);
 	}
 
 	// Some formats (like IGES) require a sew all the time. In this case, bForceSew = true
 	if (bForceSew || CADFileData.GetImportParameters().GetStitchingTechnique() == StitchingSew)
 	{
+		uint64 StartSewTime = FPlatformTime::Cycles64();
 		SewModel();
+		ProcessReport.SewTime = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartSewTime);
 	}
 
+	uint64 StartTraversTime = FPlatformTime::Cycles64();
+
 	ReserveCADFileData();
-
 	ReadMaterialsAndColors();
-
 	ECADParsingResult Result = TraverseModel();
+
+	ProcessReport.ImportTime += FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartTraversTime);
+
 
 	if (Result == ECADParsingResult::ProcessOk)
 	{
 		GenerateBodyMeshes();
+		if (bConvertionFailed)
+		{
+			Result = ECADParsingResult::ProcessFailed;
+		}
 
 		FString TechSoftVersion = TechSoftInterface::GetTechSoftVersion();
 		if (!TechSoftVersion.IsEmpty())
@@ -431,6 +465,14 @@ ECADParsingResult FTechSoftFileParser::Process()
 	}
 
 	ModelFile.Reset();
+
+	ProcessReport.LoadProcessTime = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartTime);
+
+	bProcessIsRunning = false;
+
+#ifndef CADKERNEL_DEV
+	UE::Tasks::Wait(Checkers);
+#endif
 
 	return Result;
 }
@@ -446,12 +488,26 @@ void FTechSoftFileParser::SewModel()
 
 void FTechSoftFileParser::GenerateBodyMeshes()
 {
+	uint64 StartGenerateBodyMeshesTime = FPlatformTime::Cycles64();
 	for (TPair<A3DRiRepresentationItem*, FCadId>& Entry : RepresentationItemsCache)
 	{
 		A3DRiRepresentationItem* RepresentationItemPtr = Entry.Key;
 		FArchiveBody& Body = SceneGraph.GetBody(Entry.Value);
-		GenerateBodyMesh(RepresentationItemPtr, Body);
+		if (!Body.bIsFromCad)
+		{
+			FTechSoftFileParser::GenerateBodyMesh(RepresentationItemPtr, Body);
+		}
+		else
+		{
+			GenerateBodyMesh(RepresentationItemPtr, Body);
+		}
+
+		if (bConvertionFailed)
+		{
+			return;
+		}
 	}
+	CADFileData.GetRecord().MeshTime = FPlatformTime::ToMilliseconds64(FPlatformTime::Cycles64() - StartGenerateBodyMeshesTime);
 }
 
 void FTechSoftFileParser::GenerateBodyMesh(A3DRiRepresentationItem* Representation, FArchiveBody& Body)
@@ -591,6 +647,7 @@ void FTechSoftFileParser::CountUnderModel()
 		else
 		{
 			CountUnderOccurrence(ModelFileData->m_ppPOccurrences[Index]);
+			CountUnderOverrideOccurrence(ModelFileData->m_ppPOccurrences[Index]);
 		}
 	}
 
@@ -686,7 +743,7 @@ void FTechSoftFileParser::TraverseConfigurationSet(const A3DAsmProductOccurrence
 
 	if (ConfigurationToLoad.IsEmpty())
 	{
-		// no default configuration, traverse the first occurence
+		// no default configuration, traverse the first occurrence
 		for (unsigned int Index = 0; Index < ConfigurationSetData->m_uiPOccurrencesSize; ++Index)
 		{
 			ConfigurationData.FillFrom(ConfigurationSetData->m_ppPOccurrences[Index]);
@@ -742,6 +799,7 @@ void FTechSoftFileParser::CountUnderConfigurationSet(const A3DAsmProductOccurren
 			if (bIsConfigurationToLoad)
 			{
 				CountUnderOccurrence(ConfigurationSetData->m_ppPOccurrences[Index]);
+				CountUnderOverrideOccurrence(ConfigurationSetData->m_ppPOccurrences[Index]);
 				return;
 			}
 		}
@@ -761,6 +819,7 @@ void FTechSoftFileParser::CountUnderConfigurationSet(const A3DAsmProductOccurren
 			if (ConfigurationData->m_uiProductFlags & A3D_PRODUCT_FLAG_CONFIG)
 			{
 				CountUnderOccurrence(ConfigurationSetData->m_ppPOccurrences[Index]);
+				CountUnderOverrideOccurrence(ConfigurationSetData->m_ppPOccurrences[Index]);
 			}
 		}
 	}
@@ -820,7 +879,7 @@ void FTechSoftFileParser::ProcessUnloadedReference(const FArchiveInstance& Insta
 
 void FTechSoftFileParser::TraverseOccurrence(const A3DAsmProductOccurrence* OccurrencePtr, FArchiveReference& ParentReference)
 {
-	// first product occurence with m_pPart != nullptr || m_uiPOccurrencesSize > 0
+	// first product occurrence with m_pPart != nullptr || m_uiPOccurrencesSize > 0
 	const A3DAsmProductOccurrence* CachedOccurrencePtr = OccurrencePtr;
 	TUniqueTSObj<A3DAsmProductOccurrenceData> OccurrenceData(OccurrencePtr);
 	if (!OccurrenceData.IsValid())
@@ -841,7 +900,7 @@ void FTechSoftFileParser::TraverseOccurrence(const A3DAsmProductOccurrence* Occu
 	ExtractMetaData(OccurrencePtr, Instance);
 	Instance.DefineGraphicsPropertiesFromNoOverwrite(ParentReference);
 
-	if (Instance.bIsRemoved || !Instance.bShow)
+	if (Instance.bIsRemoved)
 	{
 		SceneGraph.RemoveLastInstance();
 		return;
@@ -929,6 +988,48 @@ void FTechSoftFileParser::TraverseOccurrence(const A3DAsmProductOccurrence* Occu
 	if(ReferencePtr)
 	{
 		ReferenceCache.Add(ReferencePtr, Instance.ReferenceNodeId);
+	}
+
+	for (uint32 Index = 0; Index < OccurrenceData->m_uiPOccurrencesSize; ++Index)
+	{
+		ExtractOverrideOccurrenceSubtree(OccurrenceData->m_ppPOccurrences[Index], Instance);
+	}
+}
+
+void FTechSoftFileParser::ExtractOverrideOccurrenceSubtree(const A3DAsmProductOccurrence* OccurrencePtr, FArchiveWithOverridenChildren& Parent)
+{
+	TUniqueTSObj<A3DAsmProductOccurrenceData> OccurrenceData(OccurrencePtr);
+
+	FArchiveOverrideOccurrence& OverrideOccurrence = SceneGraph.AddOverrideOccurrence(Parent);
+	ExtractMetaData(OccurrencePtr, OverrideOccurrence);
+
+	Parent.AddOverridenChild(OverrideOccurrence.Id);
+
+	FArchiveReference Reference;
+	BuildInstanceName(OverrideOccurrence, Reference);
+
+	A3DMiscTransformation* Transform = OccurrenceData->m_pLocation;
+	ExtractTransformation(Transform, OverrideOccurrence);
+
+	for (uint32 Index = 0; Index < OccurrenceData->m_uiPOccurrencesSize; ++Index)
+	{
+		ExtractOverrideOccurrenceSubtree(OccurrenceData->m_ppPOccurrences[Index], OverrideOccurrence);
+	}
+}
+
+void FTechSoftFileParser::CountUnderOverrideOccurrence(const A3DAsmProductOccurrence* Occurrence)
+{
+	TUniqueTSObj<A3DAsmProductOccurrenceData> OccurrenceData(Occurrence);
+	if (Occurrence && OccurrenceData.IsValid())
+	{
+		ComponentCount[EComponentType::OverriddeOccurence]++;
+
+		uint32 ChildrenCount = OccurrenceData->m_uiPOccurrencesSize;
+		A3DAsmProductOccurrence** Children = OccurrenceData->m_ppPOccurrences;
+		for (uint32 Index = 0; Index < ChildrenCount; ++Index)
+		{
+			CountUnderOverrideOccurrence(Children[Index]);
+		}
 	}
 }
 
@@ -1035,6 +1136,7 @@ void FTechSoftFileParser::CountUnderOccurrence(const A3DAsmProductOccurrence* Oc
 		for (uint32 Index = 0; Index < ChildrenCount; ++Index)
 		{
 			CountUnderOccurrence(Children[Index]);
+			CountUnderOverrideOccurrence(Children[Index]);
 		}
 	}
 }
@@ -1214,7 +1316,7 @@ void FTechSoftFileParser::TraverseRepresentationSet(const A3DRiSet* Representati
 	}
 
 	FCadId RepresentationSetId = 0;
-	FArchiveReference& RepresentationSet = SceneGraph.AddOccurence(Parent);
+	FArchiveReference& RepresentationSet = SceneGraph.AddOccurrence(Parent);
 	ExtractMetaData(RepresentationSetPtr, RepresentationSet);
 	RepresentationSet.DefineGraphicsPropertiesFromNoOverwrite(Parent);
 	BuildRepresentationSetName(RepresentationSet, Parent);
@@ -1222,7 +1324,7 @@ void FTechSoftFileParser::TraverseRepresentationSet(const A3DRiSet* Representati
 	if (RepresentationSet.bIsRemoved || !RepresentationSet.bShow)
 	{
 		Parent.RemoveLastChild();
-		SceneGraph.RemoveLastOccurence();
+		SceneGraph.RemoveLastOccurrence();
 		return;
 	}
 
@@ -1249,7 +1351,7 @@ void FTechSoftFileParser::CountUnderRepresentationSet(const A3DRiSet* Representa
 
 void FTechSoftFileParser::TraverseBRepModel(A3DRiBrepModel* BRepModelPtr, FArchiveReference& Parent)
 {
-	FArchiveBody& BRep = SceneGraph.AddBody(Parent);
+	FArchiveBody& BRep = SceneGraph.AddBody(Parent, CADFileData.GetImportParameters().GetMesher());
 	ExtractMetaData(BRepModelPtr, BRep);
 	BRep.DefineGraphicsPropertiesFromNoOverwrite(Parent);
 
@@ -1274,7 +1376,7 @@ void FTechSoftFileParser::TraverseBRepModel(A3DRiBrepModel* BRepModelPtr, FArchi
 
 void FTechSoftFileParser::TraversePolyBRepModel(A3DRiPolyBrepModel* PolygonalPtr, FArchiveReference& Parent)
 {
-	FArchiveBody& BRep = SceneGraph.AddBody(Parent);
+	FArchiveBody& BRep = SceneGraph.AddBody(Parent, EMesher::TechSoft);
 	BRep.bIsFromCad = false;
 
 	ExtractMetaData(PolygonalPtr, BRep);
@@ -1377,7 +1479,7 @@ void FTechSoftFileParser::BuildReferenceName(FArchiveCADObject& ReferenceData)
 	}
 }
 
-void FTechSoftFileParser::BuildInstanceName(FArchiveInstance& InstanceData, const FArchiveReference& Parent)
+void FTechSoftFileParser::BuildInstanceName(FArchiveCADObject& InstanceData, const FArchiveReference& Parent)
 {
 	TMap<FString, FString>& MetaData = InstanceData.MetaData;
 
@@ -1483,9 +1585,9 @@ void FTechSoftFileParser::BuildRepresentationSetName(FArchiveCADObject& Occurren
 void FTechSoftFileParser::ExtractSpecificMetaData(const A3DAsmProductOccurrence* Occurrence, FArchiveCADObject& OutMetaData)
 {
 	//----------- Export Specific information per CAD format -----------
-	switch (ModellerType)
+	switch (ModelerType)
 	{
-	case ModellerSlw:
+	case ModelerSlw:
 	{
 		TUniqueTSObj<A3DAsmProductOccurrenceDataSLW> SolidWorksSpecificData(Occurrence);
 		if (SolidWorksSpecificData.IsValid())
@@ -1500,7 +1602,7 @@ void FTechSoftFileParser::ExtractSpecificMetaData(const A3DAsmProductOccurrence*
 		}
 		break;
 	}
-	case ModellerUnigraphics:
+	case ModelerUnigraphics:
 	{
 #ifdef WIP
 		TUniqueTSObj<A3DAsmProductOccurrenceDataUg> UnigraphicsSpecificData(Occurrence);
@@ -1570,7 +1672,7 @@ void FTechSoftFileParser::ExtractSpecificMetaData(const A3DAsmProductOccurrence*
 		break;
 	}
 
-	case ModellerCatiaV5:
+	case ModelerCatiaV5:
 	{
 		TUniqueTSObj<A3DAsmProductOccurrenceDataCV5> CatiaV5SpecificData(Occurrence);
 		if (CatiaV5SpecificData.IsValid())
@@ -1782,10 +1884,10 @@ void FTechSoftFileParser::ExtractGeneralTransformation(const A3DMiscTransformati
 
 		FTransform3d Transform(Matrix);
 		FVector3d Scale = Transform.GetScale3D();
-		if (Scale.Equals(FVector3d::OneVector, KINDA_SMALL_NUMBER))
+		if (Scale.Equals(FVector3d::OneVector, DOUBLE_KINDA_SMALL_NUMBER))
 		{
 			const double TranslationScale = Component.Unit * FImportParameters::GUnitScale;
-			for (Index = 0; Index < 3; ++Index, ++Index)
+			for (Index = 0; Index < 3; ++Index)
 			{
 				Matrix.M[3][Index] *= TranslationScale;
 			}
@@ -1793,17 +1895,17 @@ void FTechSoftFileParser::ExtractGeneralTransformation(const A3DMiscTransformati
 		}
 		else
 		{
-		FVector3d Translation = Transform.GetTranslation();
-		Translation *= FImportParameters::GUnitScale;
+			FVector3d Translation = Transform.GetTranslation();
+			Translation *= Component.Unit * FImportParameters::GUnitScale;
 
-		double UniformScale = TechSoftFileParserImpl::ExtractUniformScale(Scale);
+			double UniformScale = TechSoftFileParserImpl::ExtractUniformScale(Scale);
 			Component.Unit *= UniformScale;
 
-		FQuat4d Rotation = Transform.GetRotation();
+			FQuat4d Rotation = Transform.GetRotation();
 
-		FTransform3d NewTransform;
-		NewTransform.SetScale3D(Scale);
-		NewTransform.SetRotation(Rotation);
+			FTransform3d NewTransform;
+			NewTransform.SetScale3D(Scale);
+			NewTransform.SetRotation(Rotation);
 
 			Component.TransformMatrix = NewTransform.ToMatrixWithScale();
 			Component.TransformMatrix.SetOrigin(Translation);
@@ -1840,7 +1942,7 @@ void FTechSoftFileParser::ExtractCoordinateSystem(const A3DRiCoordinateSystem* C
 	TUniqueTSObj<A3DRiCoordinateSystemData> CoordinateSystemData(CoordinateSystem);
 	if (CoordinateSystemData.IsValid())
 	{
-		ExtractTransformation3D(CoordinateSystemData->m_pTransformation, OutMetaData);
+		ExtractTransformation(CoordinateSystemData->m_pTransformation, OutMetaData);
 	}
 	else
 	{
@@ -1850,13 +1952,24 @@ void FTechSoftFileParser::ExtractCoordinateSystem(const A3DRiCoordinateSystem* C
 
 bool FTechSoftFileParser::IsConfigurationSet(const A3DAsmProductOccurrence* Occurrence)
 {
-	TUniqueTSObj<A3DAsmProductOccurrenceData> OccurrenceData(Occurrence);
-	if (!OccurrenceData.IsValid())
+	switch (Format)
 	{
-		return false;
+	case ECADFormat::CATIAV4:
+	case ECADFormat::N_X:
+	case ECADFormat::SOLIDWORKS:
+	{
+		TUniqueTSObj<A3DAsmProductOccurrenceData> OccurrenceData(Occurrence);
+		if (!OccurrenceData.IsValid())
+		{
+			return false;
+		}
+
+		return OccurrenceData->m_uiProductFlags & A3D_PRODUCT_FLAG_CONTAINER;
 	}
 
-	return OccurrenceData->m_uiProductFlags & A3D_PRODUCT_FLAG_CONTAINER;
+	default : 
+		return false;
+	}
 }
 
 uint32 FTechSoftFileParser::CountColorAndMaterial()
@@ -1965,6 +2078,23 @@ void FTechSoftFileParser::ReadMaterialsAndColors()
 		}
 	}
 }
+
+#ifndef CADKERNEL_DEV
+void FTechSoftFileParser::CheckMemory()
+{
+	CADFileData.GetRecord().StartMemoryUsed = FPlatformMemory::GetStats().UsedPhysical;
+	uint64& MaxMemoryUsed = CADFileData.GetRecord().MaxMemoryUsed;
+	while (bProcessIsRunning)
+	{
+		FPlatformProcess::Sleep(0.1);
+		const uint64 MemoryUsed = FPlatformMemory::GetStats().UsedPhysical;
+		if (MaxMemoryUsed < MemoryUsed)
+		{
+			MaxMemoryUsed = MemoryUsed;
+		}
+	}
+}
+#endif  
 
 #endif  
 

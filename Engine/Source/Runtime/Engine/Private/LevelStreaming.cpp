@@ -17,6 +17,7 @@
 #include "LevelUtils.h"
 #include "EngineUtils.h"
 #include "UObject/UObjectAnnotation.h"
+#include "UObject/ReferenceChainSearch.h"
 #if WITH_EDITOR
 	#include "Framework/Notifications/NotificationManager.h"
 	#include "Widgets/Notifications/SNotificationList.h"
@@ -31,6 +32,7 @@
 #include "Serialization/LoadTimeTrace.h"
 #include "Streaming/LevelStreamingDelegates.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "WorldPartition/WorldPartition.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelStreaming)
 
@@ -387,6 +389,7 @@ ULevelStreaming::ULevelStreaming(const FObjectInitializer& ObjectInitializer)
 	CurrentState = ELevelStreamingState::Removed;
 	bSkipClientUseMakingInvisibleTransactionRequest = false;
 	bSkipClientUseMakingVisibleTransactionRequest = false;
+	bGarbageCollectionClusteringEnabled = true;
 }
 
 void ULevelStreaming::PostLoad()
@@ -716,13 +719,11 @@ void ULevelStreaming::ServerUpdateLevelVisibility(bool bIsVisible, bool bTryMake
 	}
 }
 
-bool ULevelStreaming::ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest InRequestType, bool bInShouldBeVisible)
+bool ULevelStreaming::ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest InRequestType)
 {
 	if (IsWaitingForNetVisibilityTransactionAck(InRequestType))
 	{
-		const bool bTargetShouldBeVisible = (NetVisibilityState.PendingRequestType == ENetLevelVisibilityRequest::MakingVisible);
-		const bool bTargetStateMatches = (bInShouldBeVisible == bTargetShouldBeVisible);
-		if (bTargetStateMatches && NetVisibilityState.bHasClientPendingRequest)
+		if (NetVisibilityState.bHasClientPendingRequest)
 		{
 			// We have a pending request, IncrementTransactionIndex and send ServerUpdateLevelVisibility request to server
 			FNetLevelVisibilityTransactionId TransactionId;
@@ -750,23 +751,72 @@ bool ULevelStreaming::ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLe
 	return false;
 };
 
+bool ULevelStreaming::RequestVisibilityChange(bool bVisible)
+{
+	return true;
+}
+
 bool ULevelStreaming::CanMakeInvisible()
 {
+	// Once the Level becomes the current pending invisibility level, this function must return true or else it could
+	// block indefinitely if called inside UWorld::BlockTillLevelStreamingCompleted
+	//
+	// Here's one example of why this could go wrong :
+	//      - The first call to CanMakeInvisible for a level returns true (when normally it would return false)
+	//			ShouldWaitForServerAckBeforeChangingVisibilityState would normally return true but
+	//			IsWaitingForNetVisibilityTransactionAck returns false only because ServerConnection is different than USOCK_Open 
+	//			and IsConcernedByNetVisibilityTransactionAck returns false
+	//		- RemoveFromWorld is called on this level and sets CurrentLevelPendingInvisibility
+	//		- Because time limit is exceeded, RemoveFromWorld exists with World's CurrentLevelPendingInvisibility 
+	//		  still set to this level streaming loaded level
+	//		- Since we are inside UWorld::BlockTillLevelStreamingCompleted, IsVisibilityRequestPending returns true because CurrentLevelPendingInvisibility is valid
+	//		- UpdateStreamingState is called again
+	//		- All future calls to CanMakeInvisible return false (ServerConnection is USOCK_Open) and we are waiting for server ack
+	//
+	// This is one hypothetical example. Detecting this will prevent any future case that could trigger an infinte loop in BlockTillLevelStreamingCompleted.
+	//
+	UWorld* World = GetWorld();
+	if (World && World->IsGameWorld() && LoadedLevel && (LoadedLevel == World->GetCurrentLevelPendingInvisibility()))
+	{
+		return true;
+	}
+
+	const bool bCanMakeInvisible = RequestVisibilityChange(false);
+
 	if (ShouldClientUseMakingInvisibleTransactionRequest())
 	{
-		if (ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest::MakingInvisible, bShouldBeVisible))
+		if (ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest::MakingInvisible))
 		{
 			return false;
 		}
 	}
-	return true;
+
+	return bCanMakeInvisible;
 }
 
 bool ULevelStreaming::CanMakeVisible()
 {
+	UWorld* World = GetWorld();
+	if (World && World->IsGameWorld() && LoadedLevel)
+	{
+		// Once the Level becomes the current pending visibility level, this function must return true or else it could
+		// block indefinitely if called inside UWorld::BlockTillLevelStreamingCompleted (same reason as CanMakeInvisible but with World's CurrentLevelPendingVisibility)
+		if (LoadedLevel == World->GetCurrentLevelPendingVisibility())
+		{
+			return true;
+		}
+		// Delay AddToWorld of a partition world if this same partitioned world hasn't finished removing it's sub-levels triggered by a prior RemoveFromWorld
+		else if (const UWorldPartition* WorldPartition = LoadedLevel->GetWorldPartition(); WorldPartition && !WorldPartition->CanInitialize(World))
+		{
+			return false;
+		}
+	}
+
+	const bool bCanMakeVisible = RequestVisibilityChange(true);
+
 	if (ShouldClientUseMakingVisibleTransactionRequest())
 	{
-		if (ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest::MakingVisible, true))
+		if (ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest::MakingVisible))
 		{
 			return false;
 		}
@@ -779,7 +829,8 @@ bool ULevelStreaming::CanMakeVisible()
 			return false;
 		}
 	}
-	return true;
+
+	return bCanMakeVisible;
 }
 
 void ULevelStreaming::UpdateNetVisibilityTransactionState(bool bInShouldBeVisible, FNetLevelVisibilityTransactionId TransactionId)
@@ -906,10 +957,7 @@ void ULevelStreaming::UpdateStreamingState(bool& bOutUpdateAgain, bool& bOutRede
 			{
 				// Only respond with ServerTransactionId if the is the target visibility state is supposed to be visible
 				FNetLevelVisibilityTransactionId TransactionId;
-				if (bShouldBeVisible)
-				{
-					TransactionId.SetTransactionIndex(NetVisibilityState.ServerRequestIndex);
-				}
+				TransactionId.SetTransactionIndex(NetVisibilityState.ServerRequestIndex);
 
 				// Calling CanMakeVisible will trigger a request for visibility if necessary
 				if (!CanMakeVisible())
@@ -961,11 +1009,7 @@ void ULevelStreaming::UpdateStreamingState(bool& bOutUpdateAgain, bool& bOutRede
 			}
 
 			FNetLevelVisibilityTransactionId TransactionId;
-			// Only respond with ServerTransactionId if the is the target visibility state is supposed to be not visible
-			if (bShouldBeVisible == false)
-			{
-				TransactionId.SetTransactionIndex(NetVisibilityState.ServerRequestIndex);
-			}
+			TransactionId.SetTransactionIndex(NetVisibilityState.ServerRequestIndex);
 
 			// Hide loaded level, incrementally if necessary
 			World->RemoveFromWorld(LoadedLevel, !ShouldBlockOnUnload() && World->IsGameWorld(), TransactionId, this);
@@ -1013,6 +1057,14 @@ void ULevelStreaming::UpdateStreamingState(bool& bOutUpdateAgain, bool& bOutRede
 				bOutRedetermineTarget = true;
 				break;
 
+			case ELevelStreamingTargetState::Unloaded:
+				// This is to support the case where a request to load is followed by another to unload the same level
+				// We set bOutRedetermineTarget to true so that FStreamingLevelPrivateAccessor::UpdateTargetState 
+				// gets called by UWorld::UpdateLevelStreaming which will return false so that the streaming level
+				// gets removed from StreamingLevelsToConsider.
+				bOutRedetermineTarget = true;
+				break;
+
 			default:
 				ensure(false);
 		}
@@ -1025,7 +1077,7 @@ void ULevelStreaming::UpdateStreamingState(bool& bOutUpdateAgain, bool& bOutRede
 			SetCurrentState(ELevelStreamingState::MakingVisible);
 			// Make sure client pending visibility request (if any) matches current state
 			NetVisibilityState.InvalidateClientPendingRequest();
-			BeginClientNetVisibilityRequest(ShouldBeVisible());
+			BeginClientNetVisibilityRequest(true);
 			bOutUpdateAgain = true;
 			break;
 
@@ -1073,7 +1125,7 @@ void ULevelStreaming::UpdateStreamingState(bool& bOutUpdateAgain, bool& bOutRede
 			SetCurrentState(ELevelStreamingState::MakingInvisible);
 			// Make sure client pending visibility request (if any) matches current state
 			NetVisibilityState.InvalidateClientPendingRequest();
-			BeginClientNetVisibilityRequest(ShouldBeVisible());
+			BeginClientNetVisibilityRequest(false);
 			bOutUpdateAgain = true;
 			break;
 
@@ -1312,6 +1364,8 @@ void ULevelStreaming::PrepareLoadedLevel(ULevel* InLevel, UPackage* InLevelPacka
 	check(InLevel);
 	UWorld* LevelOwningWorld = InLevel->OwningWorld;
 
+	InLevel->bGarbageCollectionClusteringEnabled = bGarbageCollectionClusteringEnabled;
+
 	if (ensure(LevelOwningWorld))
 	{
 		ULevel* PendingLevelVisOrInvis = (LevelOwningWorld->GetCurrentLevelPendingVisibility() ? LevelOwningWorld->GetCurrentLevelPendingVisibility() : LevelOwningWorld->GetCurrentLevelPendingInvisibility());
@@ -1529,7 +1583,7 @@ bool ULevelStreaming::RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoad
 				UE_LOG(LogLevelStreaming, Error, TEXT("World exists but PersistentLevel doesn't for %s, most likely caused by reference to world of unloaded level and GC setting reference to null while keeping world object"), *World->GetOutermost()->GetName());
 				UE_LOG(LogLevelStreaming, Error, TEXT("Most likely caused by reference to world of unloaded level and GC setting reference to null while keeping world object. Referenced by:"));
 
-				UEngine::FindAndPrintStaleReferencesToObject(World, UObjectBaseUtility::IsPendingKillEnabled() ? EPrintStaleReferencesOptions::Fatal : (EPrintStaleReferencesOptions::Error | EPrintStaleReferencesOptions::Ensure));
+				FReferenceChainSearch::FindAndPrintStaleReferencesToObject(World, UObjectBaseUtility::IsPendingKillEnabled() ? EPrintStaleReferencesOptions::Fatal : (EPrintStaleReferencesOptions::Error | EPrintStaleReferencesOptions::Ensure));
 
 				return false;
 			}
@@ -1560,7 +1614,7 @@ bool ULevelStreaming::RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoad
 		if (FPackageName::DoesPackageExist(PackagePath, &PackagePath))
 		{
 			SetCurrentState(ELevelStreamingState::Loading);
-			FWorldNotifyStreamingLevelLoading::Started(PersistentWorld);
+			OnLoadingStarted();
 			
 			ULevel::StreamedLevelsOwningWorld.Add(DesiredPackageName, PersistentWorld);
 			UWorld::WorldTypePreLoadMap.FindOrAdd(DesiredPackageName) = PersistentWorld->WorldType;
@@ -1627,13 +1681,7 @@ void ULevelStreaming::AsyncLevelLoadComplete(const FName& InPackageName, UPackag
 {
 	// TODO: Should not set state here so that observers will have access to LoadedLevel
 	SetCurrentState(ELevelStreamingState::LoadedNotVisible);
-	if (UWorld* World = GetWorld())
-	{
-		if (World->GetStreamingLevels().Contains(this))
-		{
-			FWorldNotifyStreamingLevelLoading::Finished(World);
-		}
-	}
+	OnLoadingFinished();
 
 	if (InLoadedPackage)
 	{
@@ -1937,6 +1985,27 @@ FName ULevelStreaming::GetLoadedLevelPackageName() const
 	return CachedLoadedLevelPackageName;
 }
 
+void ULevelStreaming::OnLoadingStarted()
+{
+	UWorld* World = GetWorld();
+	if (World && World->IsGameWorld())
+	{
+		FWorldNotifyStreamingLevelLoading::Started(World);
+	}
+}
+
+void ULevelStreaming::OnLoadingFinished()
+{
+	UWorld* World = GetWorld();
+	if (World && World->IsGameWorld())
+	{
+		if (World->GetStreamingLevels().Contains(this))
+		{
+			FWorldNotifyStreamingLevelLoading::Finished(World);
+		}
+	}
+}
+
 void ULevelStreaming::SetWorldAssetByPackageName(FName InPackageName)
 {
 	// Need to strip PIE prefix from object name, only the package has it
@@ -2180,10 +2249,21 @@ bool ULevelStreaming::IsValidStreamingLevel() const
 				 */
 				return FPackageName::DoesPackageExist(Linker->GetPackagePath());
 			}
+		} 
+		
+		// Handle unloaded instanced package
+		if (PackageNameToLoad != NAME_None && WorldPackageName != PackageNameToLoad)
+		{
+			WorldPackageName = PackageNameToLoad;
 		}
 
 		FPackagePath WorldPackagePath;
-		return FPackagePath::TryFromPackageName(WorldPackageName, /* Out*/ WorldPackagePath) && FPackageName::DoesPackageExist(WorldPackagePath);
+		if (!FPackagePath::TryFromPackageName(WorldPackageName, /* Out*/ WorldPackagePath))
+		{
+			return false;
+		}
+				
+		return FPackageName::DoesPackageExist(WorldPackagePath);
 	}
 	return true;
 }
@@ -2426,7 +2506,6 @@ ULevelStreamingDynamic* ULevelStreamingDynamic::LoadLevelInstance(const FLoadLev
 	return LoadLevelInstance_Internal(Params, bOutSuccess);
 }
 
-
 ULevelStreamingDynamic* ULevelStreamingDynamic::LoadLevelInstance_Internal(const FLoadLevelInstanceParams& Params, bool& bOutSuccess)
 {
 	const FString PackagePath = FPackageName::GetLongPackagePath(Params.LongPackageName);
@@ -2442,29 +2521,10 @@ ULevelStreamingDynamic* ULevelStreamingDynamic::LoadLevelInstance_Internal(const
 	const FString OnDiskPackageName = PackagePath + TEXT("/") + ShortPackageName;
 
 	// Determine loaded package name
-	TStringBuilder<512> LevelPackageNameStrBuilder;
-	if (Params.bLoadAsTempPackage)
-	{
-		LevelPackageNameStrBuilder.Append(TEXT("/Temp"));
-	}
-	LevelPackageNameStrBuilder.Append(PackagePath);
-	LevelPackageNameStrBuilder.Append(TEXT("/"));
-		
-	bool bNeedsUniqueTest = false;
-	if (Params.OptionalLevelNameOverride)
-	{
-		// Use the supplied suffix, which is expected to result in a unique package name but we have to check if it is not.
-		LevelPackageNameStrBuilder.Append(*Params.OptionalLevelNameOverride);
-		bNeedsUniqueTest = true;
-	}
-	else
-	{
-		LevelPackageNameStrBuilder.Append(ShortPackageName);
-		LevelPackageNameStrBuilder.Append(TEXT("_LevelInstance_"));
-		LevelPackageNameStrBuilder.Append(FString::FromInt(++UniqueLevelInstanceId));
-	}
+	const FString LevelPackageNameStr(GetLevelInstancePackageName(Params));
 
-	const FString LevelPackageNameStr(LevelPackageNameStrBuilder.ToString());
+	const bool bNeedsUniqueTest = Params.OptionalLevelNameOverride != nullptr;
+
 	const FName UnmodifiedLevelPackageName = FName(*LevelPackageNameStr);
 #if WITH_EDITOR
 	const bool bIsPlayInEditor = Params.World->IsPlayInEditor();
@@ -2521,6 +2581,43 @@ ULevelStreamingDynamic* ULevelStreamingDynamic::LoadLevelInstance_Internal(const
 	bOutSuccess = true;
     return StreamingLevel;
 }	
+
+FString ULevelStreamingDynamic::GetLevelInstancePackageName(const FLoadLevelInstanceParams& Params)
+{
+	const FString PackagePath = FPackageName::GetLongPackagePath(Params.LongPackageName);
+	FString ShortPackageName = FPackageName::GetShortName(Params.LongPackageName);
+
+	if (ShortPackageName.StartsWith(Params.World->StreamingLevelsPrefix))
+	{
+		ShortPackageName.RightChopInline(Params.World->StreamingLevelsPrefix.Len(), false);
+	}
+
+	// Remove PIE prefix if it's there before we actually load the level
+	const FString OnDiskPackageName = PackagePath + TEXT("/") + ShortPackageName;
+
+	// Determine loaded package name
+	TStringBuilder<512> LevelPackageNameStrBuilder;
+	if (Params.bLoadAsTempPackage)
+	{
+		LevelPackageNameStrBuilder.Append(TEXT("/Temp"));
+	}
+	LevelPackageNameStrBuilder.Append(PackagePath);
+	LevelPackageNameStrBuilder.Append(TEXT("/"));
+		
+	if (Params.OptionalLevelNameOverride)
+	{
+		// Use the supplied suffix, which is expected to result in a unique package name but we have to check if it is not.
+		LevelPackageNameStrBuilder.Append(*Params.OptionalLevelNameOverride);
+	}
+	else
+	{
+		LevelPackageNameStrBuilder.Append(ShortPackageName);
+		LevelPackageNameStrBuilder.Append(TEXT("_LevelInstance_"));
+		LevelPackageNameStrBuilder.Append(FString::FromInt(++UniqueLevelInstanceId));
+	}
+
+	return LevelPackageNameStrBuilder.ToString();
+}
 
 /*-----------------------------------------------------------------------------
 	ULevelStreamingAlwaysLoaded implementation.

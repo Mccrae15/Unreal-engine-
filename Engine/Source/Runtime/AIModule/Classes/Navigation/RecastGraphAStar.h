@@ -32,6 +32,7 @@ struct dtMeshTile;
 struct dtLink;
 class dtNavMesh;
 
+#if WITH_RECAST
 struct AIMODULE_API FRecastNeighbour
 {
 	friend FRecastGraphWrapper;
@@ -52,7 +53,7 @@ public:
 	unsigned char Side;
 };
 
-struct AIMODULE_API FRecastAStarResult : public dtQueryResult
+struct FRecastAStarResult : public dtQueryResult
 {
 	void Reset(const int32 PathLength)
 	{
@@ -63,22 +64,24 @@ struct AIMODULE_API FRecastAStarResult : public dtQueryResult
 		data.resize(PathLength);
 	}
 
-	dtPolyRef SetPathInfo(const int32 Index, const FRecastAStarSearchNode& SearchNode);
+	AIMODULE_API dtPolyRef SetPathInfo(const int32 Index, const FRecastAStarSearchNode& SearchNode);
 };
+#endif // WITH_RECAST
 
 USTRUCT()
-struct AIMODULE_API FRecastGraphWrapper
+struct FRecastGraphWrapper
 {
 	GENERATED_BODY()
 
 public:
 	FRecastGraphWrapper() {}
 
+#if WITH_RECAST
 	/** Initialization of the wrapper from the RecastNavMesh pointer */
-	void Initialize(const ARecastNavMesh* InRecastNavMeshActor);
+	AIMODULE_API void Initialize(const ARecastNavMesh* InRecastNavMeshActor);
 
 	/** Implementation that converts EGraphAStarResult into a dtStatus */
-	dtStatus ConvertToRecastStatus(const FRecastAStar& Algo, const FRecastGraphAStarFilter& Filter, const EGraphAStarResult AStarResult) const;
+	AIMODULE_API dtStatus ConvertToRecastStatus(const FRecastAStar& Algo, const FRecastGraphAStarFilter& Filter, const EGraphAStarResult AStarResult) const;
 
 	//////////////////////////////////////////////////////////////////////////
 	// FGraphAStar: TGraph
@@ -88,7 +91,7 @@ public:
 	{
 		return NodeRef != INVALID_NAVNODEREF;
 	}
-	FRecastNeighbour GetNeighbour(const FRecastAStarSearchNode& Node, const int32 NeighbourIndex) const;
+	AIMODULE_API FRecastNeighbour GetNeighbour(const FRecastAStarSearchNode& Node, const int32 NeighbourIndex) const;
 	//////////////////////////////////////////////////////////////////////////
 
 	FORCEINLINE const dtNavMeshQuery& GetRecastQuery() const { return RecastQuery; }
@@ -100,20 +103,24 @@ protected:
 
 	FORCEINLINE const ARecastNavMesh* GetRecastNavMeshActor() const { checkSlow(RecastNavMeshActor);  return RecastNavMeshActor; }
 	FORCEINLINE const dtNavMesh* GetDetourNavMesh() const { checkSlow(DetourNavMesh); return DetourNavMesh; }
-	void BindFilter(FRecastGraphAStarFilter& AStarFilter);
+	AIMODULE_API void BindFilter(FRecastGraphAStarFilter& AStarFilter);
+#endif // WITH_RECAST
 
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<const ARecastNavMesh> RecastNavMeshActor = nullptr;
 
+#if WITH_RECAST
 	const dtNavMesh* DetourNavMesh = nullptr;
 
 	dtNavMeshQuery RecastQuery;
 
 	mutable unsigned int CachedNextLink = DT_NULL_LINK;
+#endif // WITH_RECAST
 };
 
-struct AIMODULE_API FRecastAStarSearchNode : public FGraphAStarDefaultNode<FRecastGraphWrapper>
+#if WITH_RECAST
+struct FRecastAStarSearchNode : public FGraphAStarDefaultNode<FRecastGraphWrapper>
 {
 	typedef FGraphAStarDefaultNode<FRecastGraphWrapper> Super;
 
@@ -157,7 +164,7 @@ struct AIMODULE_API FRecastAStarSearchNode : public FGraphAStarDefaultNode<FReca
 	}
 };
 
-struct AIMODULE_API FRecastAStar : public FGraphAStar<FRecastGraphWrapper, FRecastGraphPolicy, FRecastAStarSearchNode>
+struct FRecastAStar : public FGraphAStar<FRecastGraphWrapper, FRecastGraphPolicy, FRecastAStarSearchNode>
 {
 	typedef FGraphAStar<FRecastGraphWrapper, FRecastGraphPolicy, FRecastAStarSearchNode> Super;
 	FRecastAStar(const FRecastGraphWrapper& Graph)
@@ -165,9 +172,9 @@ struct AIMODULE_API FRecastAStar : public FGraphAStar<FRecastGraphWrapper, FReca
 	{}
 };
 
-struct AIMODULE_API FRecastGraphAStarFilter
+struct FRecastGraphAStarFilter
 {
-	FRecastGraphAStarFilter(FRecastGraphWrapper& InRecastGraphWrapper, const FRecastQueryFilter& InFilter, uint32 InMaxSearchNodes, const FVector::FReal InCostLimit, const UObject* Owner);
+	AIMODULE_API FRecastGraphAStarFilter(FRecastGraphWrapper& InRecastGraphWrapper, const FRecastQueryFilter& InFilter, uint32 InMaxSearchNodes, const FVector::FReal InCostLimit, const UObject* Owner);
 
 	FORCEINLINE bool WantsPartialSolution() const
 	{ 
@@ -245,3 +252,4 @@ private:
 	uint32 MaxSearchNodes;
 	FVector::FReal CostLimit;
 };
+#endif // WITH_RECAST

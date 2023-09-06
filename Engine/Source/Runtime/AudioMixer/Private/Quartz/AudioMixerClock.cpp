@@ -4,6 +4,7 @@
 #include "Quartz/AudioMixerClockManager.h"
 #include "AudioMixerSourceManager.h"
 #include "Sound/QuartzSubscription.h"
+#include "HAL/UnrealMemory.h" // Memcpy
 
 
 static float HeadlessClockSampleRateCvar = 100000.f;
@@ -55,6 +56,18 @@ namespace Audio
 		}
 
 		return ClockPtr->GetDurationOfQuantizationTypeInSeconds(QuantizationType, Multiplier);
+	}
+
+	float FQuartzClockProxy::GetBeatProgressPercent(
+		const EQuartzCommandQuantization& QuantizationType) const
+	{
+		TSharedPtr<FQuartzClock, ESPMode::ThreadSafe> ClockPtr = ClockWeakPtr.Pin();
+		if (!ClockPtr)
+		{
+			return 0.f;
+		}
+
+		return ClockPtr->GetBeatProgressPercent(QuantizationType);
 	}
 
 	Audio::FQuartzClockTickRate FQuartzClockProxy::GetTickRate() const
@@ -276,7 +289,6 @@ namespace Audio
 		
 		PreTickCommands->PumpCommandQueue(this);
 
-		TRACE_CPUPROFILER_EVENT_SCOPE(QuartzClock::TickInternal);
 		if (!bIsRunning)
 		{
 			return;
@@ -289,22 +301,19 @@ namespace Audio
 		}
 
 		const int32 FramesOfLatency = (ThreadLatencyInMilliseconds / 1000) * Metronome.GetTickRate().GetSampleRate();
+		int32 FramesToTick = InNumFramesUntilNextTick - TickDelayLengthInFrames;
 
-		if (TickDelayLengthInFrames == 0)
-		{
-			TickInternal(InNumFramesUntilNextTick, ClockAlteringPendingCommands, FramesOfLatency); // (process things like BPM changes first)
-			TickInternal(InNumFramesUntilNextTick, PendingCommands, FramesOfLatency);
-		}
-		else
-		{
-			TickInternal(TickDelayLengthInFrames, ClockAlteringPendingCommands, FramesOfLatency);
-			TickInternal(TickDelayLengthInFrames, PendingCommands, FramesOfLatency);
+        // commands executed in TickInternal may alter "TickDelayLengthInFrames" for the metronome's benefit
+        // for the 2nd TickInternal() call we want to use the unmodified value (OriginalTickDelayLengthInFrames).
+        const int32 OriginalTickDelayLengthInFrames = TickDelayLengthInFrames;
+        TickInternal(FramesToTick, ClockAlteringPendingCommands, FramesOfLatency, OriginalTickDelayLengthInFrames);
+        TickInternal(FramesToTick, PendingCommands, FramesOfLatency, OriginalTickDelayLengthInFrames);
 
-			TickInternal(InNumFramesUntilNextTick - TickDelayLengthInFrames, ClockAlteringPendingCommands, FramesOfLatency, TickDelayLengthInFrames);
-			TickInternal(InNumFramesUntilNextTick - TickDelayLengthInFrames, PendingCommands, FramesOfLatency, TickDelayLengthInFrames);
-		}
+		// FramesToTick may have been updated by TickInternal, recalculate
+		FramesToTick = InNumFramesUntilNextTick - TickDelayLengthInFrames;
+		Metronome.Tick(FramesToTick, FramesOfLatency);
 
-		Metronome.Tick(InNumFramesUntilNextTick, FramesOfLatency);
+		TickDelayLengthInFrames = 0;
 
 		UpdateCachedState();
 	}
@@ -321,6 +330,7 @@ namespace Audio
 
 	void FQuartzClock::TickInternal(int32 InNumFramesUntilNextTick, TArray<PendingCommand>& CommandsToTick, int32 FramesOfLatency, int32 FramesOfDelay)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(QuartzClock::TickInternal);
 		bool bHaveCommandsToRemove = false;
 
 		// Update all pending commands
@@ -367,6 +377,23 @@ namespace Audio
 		CachedClockState.TickRate = Metronome.GetTickRate();
 		CachedClockState.TimeStamp = Metronome.GetTimeStamp();
 		CachedClockState.RunTimeInSeconds = (float)Metronome.GetTimeSinceStart();
+
+		const uint64 TempLastCacheTimestamp = CachedClockState.LastCacheTickCpuCycles64;
+		CachedClockState.LastCacheTickCpuCycles64 = Metronome.GetLastTickCpuCycles64();
+		CachedClockState.LastCacheTickDeltaCpuCycles64 = CachedClockState.LastCacheTickCpuCycles64 - TempLastCacheTimestamp;
+
+		// copy previous phases (as temp values)
+		FMemory::Memcpy(CachedClockState.MusicalDurationPhaseDeltas, CachedClockState.MusicalDurationPhases);
+		
+		// update current phases
+		Metronome.CalculateDurationPhases(CachedClockState.MusicalDurationPhases);
+		
+		// convert temp copy to deltas
+		constexpr int32 NumDurations = static_cast<int32>(EQuartzCommandQuantization::Count);
+		for(int32 i = 0; i < NumDurations; ++i)
+		{
+			CachedClockState.MusicalDurationPhaseDeltas[i] = FMath::Wrap(CachedClockState.MusicalDurationPhases[i] - CachedClockState.MusicalDurationPhaseDeltas[i], 0.f, 1.f);
+		}
 	}
 
 	void FQuartzClock::SetSampleRate(float InNewSampleRate)
@@ -411,6 +438,7 @@ namespace Audio
 	{
 		Metronome.UnsubscribeFromAllTimeDivisions(InSubscriber);
 	}
+
 
 	void FQuartzClock::AddQuantizedCommand(FQuartzQuantizationBoundary InQuantizationBondary, TSharedPtr<IQuartzQuantizedCommand> InNewEvent)
 	{
@@ -540,6 +568,22 @@ namespace Audio
 		}
 	}
 
+	float FQuartzClock::GetBeatProgressPercent(const EQuartzCommandQuantization& QuantizationType) const
+	{
+		if(CachedClockState.LastCacheTickDeltaCpuCycles64 == 0)
+		{
+			return CachedClockState.MusicalDurationPhases[static_cast<int32>(QuantizationType)];
+		}
+
+		// anticipate beat progress based on the amount of wall clock time that has passed since the last audio engine update
+		const float LastPhase = CachedClockState.MusicalDurationPhases[static_cast<int32>(QuantizationType)];
+		const float PhaseDelta = CachedClockState.MusicalDurationPhaseDeltas[static_cast<int32>(QuantizationType)];
+		const uint64 CyclesSinceLastTick = FPlatformTime::Cycles64() - CachedClockState.LastCacheTickCpuCycles64;
+		const float EstimatedPercentToNextTick = static_cast<float>(CyclesSinceLastTick) / static_cast<float>(CachedClockState.LastCacheTickDeltaCpuCycles64);
+
+		return LastPhase + PhaseDelta * EstimatedPercentToNextTick;
+	}
+
 	FQuartzTransportTimeStamp FQuartzClock::GetCurrentTimestamp()
 	{
 		FScopeLock ScopeLock(&CachedClockStateCritSec);
@@ -561,6 +605,18 @@ namespace Audio
 		}
 
 		return nullptr;
+	}
+
+	void FQuartzClock::AddQuantizedCommand(FQuartzQuantizedRequestData& InQuantizedRequestData)
+	{
+		float SampleRate = HeadlessClockSampleRateCvar;
+		if (FMixerDevice* MixerDevice = GetMixerDevice())
+		{
+			SampleRate = MixerDevice->GetSampleRate();
+		}
+
+		FQuartzQuantizedCommandInitInfo Info(InQuantizedRequestData, SampleRate);
+		AddQuantizedCommand(Info);
 	}
 
 	void FQuartzClock::AddQuantizedCommand(FQuartzQuantizedCommandInitInfo& InQuantizationCommandInitInfo)
@@ -625,8 +681,13 @@ namespace Audio
 		return nullptr;
 	}
 
-	void FQuartzClock::ResetTransport()
+	void FQuartzClock::ResetTransport(const int32 NumFramesToTickBeforeReset)
 	{
+		if (NumFramesToTickBeforeReset != 0)
+		{
+			Metronome.Tick(NumFramesToTickBeforeReset);
+		}
+		
 		Metronome.ResetTransport();
 	}
 

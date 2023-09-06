@@ -2,11 +2,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
-using EpicGames.Core;
-using UnrealBuildBase;
-using Microsoft.Extensions.Logging;
 using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using EpicGames.Core;
+using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -70,7 +71,7 @@ namespace UnrealBuildTool
 				if (State != null)
 				{
 					string? LogText = State.ToString();
-					if (!string.IsNullOrEmpty(LogText))
+					if (!String.IsNullOrEmpty(LogText))
 					{
 						// Console.WriteLine(LogText);
 						Match ExecutorTimingMatch = ExecutorTimingRegex.Match(LogText);
@@ -94,7 +95,7 @@ namespace UnrealBuildTool
 						Match NumFilesMatch = NumFilesRegex.Match(LogText);
 						if (NumFilesMatch.Success)
 						{
-							if (!int.TryParse(NumFilesMatch.Groups[1].Value, out TimingData.NumFiles))
+							if (!Int32.TryParse(NumFilesMatch.Groups[1].Value, out TimingData.NumFiles))
 							{
 								Console.WriteLine($"Failed to parse '{LogText}'");
 							}
@@ -110,7 +111,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override async Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 
@@ -134,7 +135,7 @@ namespace UnrealBuildTool
 			UEBuildModuleCPP.bForceAddGeneratedCodeIncludePath = true;
 
 			// Parse all the target descriptors
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration, Logger);
 
 			foreach (TargetDescriptor TargetDescriptor in TargetDescriptors)
 			{
@@ -144,7 +145,7 @@ namespace UnrealBuildTool
 
 				// Create a makefile for the target
 				TimingLogger TimingLogger = new(Logger);
-				UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, TimingLogger);
+				UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration, TimingLogger);
 				UEToolChain TargetToolChain = Target.CreateToolchain(Target.Platform);
 
 				CppCompileEnvironment GlobalCompileEnvironment = Target.CreateCompileEnvironmentForProjectFiles(TimingLogger);
@@ -167,8 +168,8 @@ namespace UnrealBuildTool
 				// build each Module
 				ModuleList.SortBy(module => module.Name);
 				foreach (UEBuildModule Module in ModuleList)
-				{					
-					CompileModule(BuildConfiguration, TargetDescriptor, Target, Module, Logger);
+				{
+					await CompileModuleAsync(BuildConfiguration, TargetDescriptor, Target, Module, Logger);
 				}
 			}
 
@@ -178,7 +179,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Compile the module multiple times looking for the best unity size 
 		/// </summary>
-		private void CompileModule(BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, UEBuildTarget Target, UEBuildModule Module, ILogger Logger)
+		private async Task CompileModuleAsync(BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, UEBuildTarget Target, UEBuildModule Module, ILogger Logger)
 		{
 			TargetDescriptor.OnlyModuleNames.Clear();
 			TargetDescriptor.OnlyModuleNames.Add(Module.Name);
@@ -192,16 +193,16 @@ namespace UnrealBuildTool
 			int TargetUnitySize = Target.Rules.NumIncludedBytesPerUnityCPP;
 
 			int BuildNum = 1;
-			CompileModule($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, CurrentModuleUnitySize, true, false);
-			
-			TimingData CurrentCompileTime = GetBestCompileModuleTime($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, CurrentModuleUnitySize, false, false);
+			await CompileModuleAsync($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, CurrentModuleUnitySize, true, false);
+
+			TimingData CurrentCompileTime = await GetBestCompileModuleTimeAsync($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, CurrentModuleUnitySize, false, false);
 			if (!CurrentCompileTime.IsValid())
 			{
 				Logger.LogInformation($"Skipping module because it doesn't compile with current settings.");
 				return;
 			}
 
-			TimingData DisableUnityCompileTime = GetBestCompileModuleTime($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, TargetUnitySize, false, true);
+			TimingData DisableUnityCompileTime = await GetBestCompileModuleTimeAsync($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, TargetUnitySize, false, true);
 
 			int MaxUnitySize = TargetUnitySize * 2;
 			List<TimingData> Timings = new();
@@ -209,7 +210,7 @@ namespace UnrealBuildTool
 			int CurrentUnitySize = UnitySizeInc;
 			for (int UnitySizeIndex = 0; UnitySizeIndex < UnitySizeDivision; UnitySizeIndex++)
 			{
-				TimingData NewTiming = GetBestCompileModuleTime($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, CurrentUnitySize, false, false);
+				TimingData NewTiming = await GetBestCompileModuleTimeAsync($"  [{BuildNum++}/{TotalBuilds}] ", BuildConfiguration, TargetDescriptor, Module, Logger, CurrentUnitySize, false, false);
 				Timings.Add(NewTiming);
 				CurrentUnitySize += UnitySizeInc;
 
@@ -270,13 +271,13 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Returns best compile timings after building the module times
 		/// </summary>
-		private TimingData GetBestCompileModuleTime(string LogPrefix, BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, UEBuildModule Module, ILogger Logger, int UnitySize, bool bPriming, bool bDisableUnity)
+		private async Task<TimingData> GetBestCompileModuleTimeAsync(string LogPrefix, BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, UEBuildModule Module, ILogger Logger, int UnitySize, bool bPriming, bool bDisableUnity)
 		{
 			const int CompileCount = 3;
 			List<TimingData> AllTimingData = new();
 			for (int CompileIndex = 0; CompileIndex < CompileCount; CompileIndex++)
 			{
-				TimingData NewTimingData = CompileModule(LogPrefix, BuildConfiguration, TargetDescriptor, Module, Logger, UnitySize, bPriming, bDisableUnity);
+				TimingData NewTimingData = await CompileModuleAsync(LogPrefix, BuildConfiguration, TargetDescriptor, Module, Logger, UnitySize, bPriming, bDisableUnity);
 				if (!NewTimingData.IsValid())
 				{
 					return NewTimingData;
@@ -292,11 +293,10 @@ namespace UnrealBuildTool
 			return BestTimingData;
 		}
 
-
 		/// <summary>
 		/// Compiles the module and returns the timing information
 		/// </summary>
-		private TimingData CompileModule(string LogPrefix, BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, UEBuildModule Module, ILogger Logger, int UnitySize, bool bPriming, bool bDisableUnity)
+		private async Task<TimingData> CompileModuleAsync(string LogPrefix, BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, UEBuildModule Module, ILogger Logger, int UnitySize, bool bPriming, bool bDisableUnity)
 		{
 			// Store the old arguments
 			string[] OldArgs = TargetDescriptor.AdditionalArguments.GetRawArray();
@@ -310,7 +310,7 @@ namespace UnrealBuildTool
 					Logger.LogInformation($"{LogPrefix}Deleting intermediate directory...");
 					try
 					{
-						var IntermDir = DirectoryItem.GetItemByDirectoryReference(Module.IntermediateDirectory);
+						DirectoryItem IntermDir = DirectoryItem.GetItemByDirectoryReference(Module.IntermediateDirectory);
 						IntermDir.CacheFiles();
 						IntermDir.ResetCachedInfo();
 						DirectoryReference.Delete(Module.IntermediateDirectory, true);
@@ -322,11 +322,7 @@ namespace UnrealBuildTool
 
 					// Add the module name to the cmdline
 					TargetDescriptor.AdditionalArguments = TargetDescriptor.AdditionalArguments.Append(new string[] { $"-BytesPerUnityCPP={UnitySize}", "-DisableModuleNumIncludedBytesPerUnityCPPOverride" });
-
-					if (bDisableUnity)
-					{
-						TargetDescriptor.AdditionalArguments = TargetDescriptor.AdditionalArguments.Append(new string[] { $"-DisableUnity" });
-					}
+					TargetDescriptor.bUseUnityBuild = !bDisableUnity;
 				}
 
 				using (ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet())
@@ -345,7 +341,7 @@ namespace UnrealBuildTool
 					}
 
 					TimingLogger NewTimingLogger = new(Logger);
-					BuildMode.Build(new List<TargetDescriptor>() { TargetDescriptor }, BuildConfiguration, WorkingSet, BuildOptions.None, null, NewTimingLogger);
+					await BuildMode.BuildAsync(new List<TargetDescriptor>() { TargetDescriptor }, BuildConfiguration, WorkingSet, BuildOptions.None, null, NewTimingLogger);
 					NewTimingData = NewTimingLogger.TimingData;
 				}
 			}

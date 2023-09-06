@@ -2,14 +2,17 @@
 
 #include "Components/DMXPixelMappingMatrixCellComponent.h"
 
-#include "DMXPixelMappingTypes.h"
-#include "IDMXPixelMappingRenderer.h"
 #include "ColorSpace/DMXPixelMappingColorSpace.h"
 #include "Components/DMXPixelMappingFixtureGroupComponent.h"
 #include "Components/DMXPixelMappingMatrixComponent.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
+#include "DMXConversions.h"
+#include "DMXPixelMappingRenderElement.h"
+#include "DMXPixelMappingTypes.h"
+#include "Engine/Texture.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXEntityFixtureType.h"
+#include "TextureResource.h"
 
 #if WITH_EDITOR
 #include "DMXPixelMappingComponentWidget.h"
@@ -17,21 +20,50 @@
 #include "SDMXPixelMappingComponentLabel.h"
 #endif // WITH_EDITOR
 
-#include "TextureResource.h"
-#include "Engine/Texture.h"
-
-
-DECLARE_CYCLE_STAT(TEXT("Send Matrix Cell"), STAT_DMXPixelMaping_SendMatrixCell, STATGROUP_DMXPIXELMAPPING);
 
 #define LOCTEXT_NAMESPACE "DMXPixelMappingMatrixPixelComponent"
+
 
 UDMXPixelMappingMatrixCellComponent::UDMXPixelMappingMatrixCellComponent()
 	: DownsamplePixelIndex(0)
 {
 #if WITH_EDITORONLY_DATA
 	bLockInDesigner = true;
-	EditorColor = FLinearColor::White.CopyWithNewOpacity(.4f);
+	EditorColor = FLinearColor::White.CopyWithNewOpacity(.25f);
 #endif // WITH_EDITORONLY_DATA
+}
+
+void UDMXPixelMappingMatrixCellComponent::PostInitProperties()
+{
+	Super::PostInitProperties();
+	if (IsTemplate())
+	{
+		return;
+	}
+
+	UpdateRenderElement();
+}
+
+void UDMXPixelMappingMatrixCellComponent::PostLoad()
+{
+	Super::PostLoad();
+	if (IsTemplate())
+	{
+		return;
+	}
+
+	UpdateRenderElement();
+}
+
+void UDMXPixelMappingMatrixCellComponent::BeginDestroy()
+{
+	Super::BeginDestroy();
+	if (IsTemplate())
+	{
+		return;
+	}
+
+	PixelMapRenderElement.Reset();
 }
 
 #if WITH_EDITOR
@@ -39,6 +71,8 @@ void UDMXPixelMappingMatrixCellComponent::PostEditChangeProperty(FPropertyChange
 {
 	// Call the parent at the first place
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	UpdateRenderElement();
 
 	FName PropertyName = PropertyChangedEvent.GetPropertyName();
 
@@ -67,6 +101,8 @@ void UDMXPixelMappingMatrixCellComponent::PostEditChangeProperty(FPropertyChange
 		}
 	}
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	InvalidatePixelMapRenderer();
 }
 #endif // WITH_EDITOR
 
@@ -193,33 +229,38 @@ const FName& UDMXPixelMappingMatrixCellComponent::GetNamePrefix()
 
 void UDMXPixelMappingMatrixCellComponent::ResetDMX()
 {
-	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
-	if (RendererComponent)
+	UDMXPixelMappingMatrixComponent* ParentMatrix = Cast<UDMXPixelMappingMatrixComponent>(GetParent());
+	if (!ParentMatrix)
 	{
-		RendererComponent->ResetColorDownsampleBufferPixel(DownsamplePixelIndex);
+		return;
 	}
+
+	UDMXPixelMappingColorSpace* ColorSpace = ParentMatrix->ColorSpace;
+	ColorSpace->SetRGBA(FLinearColor::Black);
 
 	// No need to send dmx, that is done by the parent matrix
 }
 
-FString UDMXPixelMappingMatrixCellComponent::GetUserFriendlyName() const
+FString UDMXPixelMappingMatrixCellComponent::GetUserName() const
 {
-	if (UDMXPixelMappingMatrixComponent* MatrixComponent = Cast<UDMXPixelMappingMatrixComponent>(GetParent()))
+	UDMXPixelMappingMatrixComponent* MatrixComponent = Cast<UDMXPixelMappingMatrixComponent>(GetParent());
+	UDMXEntityFixturePatch* FixturePatch = MatrixComponent ? MatrixComponent->FixturePatchRef.GetFixturePatch() : nullptr;
+	if (FixturePatch && UserName.IsEmpty())
 	{
-		UDMXEntityFixturePatch* FixturePatch = MatrixComponent->FixturePatchRef.GetFixturePatch();
-		
-		if (FixturePatch)
-		{
-			return FString::Printf(TEXT("%s: Cell %d"), *FixturePatch->GetDisplayName(), CellID);
-		}
+		return FString::Printf(TEXT("%s: Cell %d"), *FixturePatch->GetDisplayName(), CellID);
 	}
-
-	return FString(TEXT("Invalid Patch"));
+	else
+	{
+		return FString::Printf(TEXT("%s: Cell %d"), *UserName, CellID);
+	}
 }
 
 void UDMXPixelMappingMatrixCellComponent::QueueDownsample()
 {
+	// DEPRECATED 5.3
+
 	// Queue pixels into the downsample rendering
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UDMXPixelMappingMatrixComponent* MatrixComponent = Cast<UDMXPixelMappingMatrixComponent>(GetParent());
 	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
 
@@ -233,7 +274,7 @@ void UDMXPixelMappingMatrixCellComponent::QueueDownsample()
 		return;
 	}
 
-	UTexture* InputTexture = RendererComponent->GetRendererInputTexture();
+	UTexture* InputTexture = RendererComponent->GetRenderedInputTexture();
 	if (!ensure(InputTexture))
 	{
 		return;
@@ -257,11 +298,12 @@ void UDMXPixelMappingMatrixCellComponent::QueueDownsample()
 		UV,
 		UVSize,
 		UVCellSize,
-		CellBlendingQuality,
+		MatrixComponent->CellBlendingQuality,
 		bStaticCalculateUV
 	};
 
 	RendererComponent->AddPixelToDownsampleSet(MoveTemp(DownsamplePixelParam));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UDMXPixelMappingMatrixCellComponent::SetCellCoordinate(FIntPoint InCellCoordinate)
@@ -269,19 +311,47 @@ void UDMXPixelMappingMatrixCellComponent::SetCellCoordinate(FIntPoint InCellCoor
 	CellCoordinate = InCellCoordinate;
 }
 
-void UDMXPixelMappingMatrixCellComponent::RenderWithInputAndSendDMX()
-{
-	if (UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent())
-	{
-		RendererComponent->RendererInputTexture();
-	}
-
-	RenderAndSendDMX();
-}
-
 bool UDMXPixelMappingMatrixCellComponent::CanBeMovedTo(const UDMXPixelMappingBaseComponent* OtherComponent) const
 {
 	return OtherComponent && OtherComponent == GetParent();
+}
+
+TSharedRef<UE::DMXPixelMapping::Rendering::FPixelMapRenderElement> UDMXPixelMappingMatrixCellComponent::GetOrCreatePixelMapRenderElement()
+{
+	UpdateRenderElement();
+	return PixelMapRenderElement.ToSharedRef();
+}
+
+void UDMXPixelMappingMatrixCellComponent::UpdateRenderElement()
+{
+	using namespace UE::DMXPixelMapping::Rendering;
+	
+	UDMXPixelMappingMatrixComponent* MatrixComponent = Cast<UDMXPixelMappingMatrixComponent>(GetParent());
+	if (!MatrixComponent)
+	{
+		return;
+	}
+
+	const UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
+	const UTexture* InputTexture = RendererComponent ? RendererComponent->GetRenderedInputTexture() : nullptr;
+	const double InputTextureWidth = InputTexture ? InputTexture->GetSurfaceWidth() : 1.0;
+	const double InputTextureHeight = InputTexture ? InputTexture->GetSurfaceHeight() : 1.0;
+
+	FPixelMapRenderElementParameters Parameters;
+	Parameters.UV = FVector2D(GetPosition().X / InputTextureWidth, GetPosition().Y / InputTextureHeight);
+	Parameters.UVSize = FVector2D(GetSize().X / InputTextureWidth, GetSize().Y / InputTextureHeight);
+	Parameters.UVCellSize = Parameters.UVSize / 2.f;
+	Parameters.CellBlendingQuality = MatrixComponent->CellBlendingQuality;
+	Parameters.bStaticCalculateUV = true;
+
+	if (!PixelMapRenderElement.IsValid())
+	{
+		PixelMapRenderElement = MakeShared<FPixelMapRenderElement>(Parameters);
+	}
+	else
+	{
+		PixelMapRenderElement->SetParameters(Parameters);
+	}
 }
 
 UDMXPixelMappingRendererComponent* UDMXPixelMappingMatrixCellComponent::GetRendererComponent() const
@@ -296,37 +366,9 @@ UDMXPixelMappingRendererComponent* UDMXPixelMappingMatrixCellComponent::GetRende
 	return nullptr;
 }
 
-TMap<FDMXAttributeName, float> UDMXPixelMappingMatrixCellComponent::CreateAttributeValues() const
+FLinearColor UDMXPixelMappingMatrixCellComponent::GetPixelMapColor() const
 {
-	TMap<FDMXAttributeName, float> AttributeToNormalizedValueMap;
-
-	UDMXPixelMappingMatrixComponent* ParentMatrix = Cast<UDMXPixelMappingMatrixComponent>(GetParent());
-	if (!ParentMatrix)
-	{
-		return AttributeToNormalizedValueMap;
-	}
-
-	UDMXPixelMappingColorSpace* ColorSpace = ParentMatrix->ColorSpace;
-	if (!ColorSpace)
-	{
-		return AttributeToNormalizedValueMap;
-	}
-
-	UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent();
-	if (!RendererComponent)
-	{
-		return AttributeToNormalizedValueMap;
-	}
-
-	// Get the color data from the rendered component
-	FLinearColor PixelColor;
-	if (RendererComponent->GetDownsampleBufferPixel(DownsamplePixelIndex, PixelColor))
-	{
-		ColorSpace->SetRGBA(PixelColor);
-		AttributeToNormalizedValueMap = ColorSpace->GetAttributeNameToValueMap();
-	}
-
-	return AttributeToNormalizedValueMap;
+	return PixelMapRenderElement->GetColor();
 }
 
 #undef LOCTEXT_NAMESPACE

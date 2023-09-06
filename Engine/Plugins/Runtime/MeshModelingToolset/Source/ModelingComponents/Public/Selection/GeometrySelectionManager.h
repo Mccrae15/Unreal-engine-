@@ -125,6 +125,12 @@ public:
 	 */
 	bool AddActiveTarget(FGeometryIdentifier Target);
 
+
+	bool GetAnyCurrentTargetsLockable() const;
+	bool GetAnyCurrentTargetsLocked() const;
+	void SetCurrentTargetsLockState(bool bLocked);
+
+
 	/**
 	 * Update the current active target set based on DesiredActiveSet, assuming that a valid IGeometrySelectorFactory
 	 * can be found for each identifier. 
@@ -256,6 +262,11 @@ public:
 public:
 	/** @return true if there is an active element selection */
 	virtual bool HasSelection() const;
+
+	/** 
+	 * Get avaialble information about the active selection/state
+	 */
+	virtual void GetActiveSelectionInfo(EGeometryTopologyType& TopologyTypeOut, EGeometryElementType& ElementTypeOut, int& NumTargetsOut, bool& bIsEmpty) const;
 
 	/** @return a world-space bounding box for the active element selection */
 	virtual bool GetSelectionBounds(FGeometrySelectionBounds& BoundsOut) const;
@@ -395,13 +406,16 @@ protected:
 	TMap<FGeometryIdentifier, TSharedPtr<FGeometrySelectionTarget>> ActiveTargetMap;
 
 
+	TArray<FGeometryIdentifier> UnlockedTargets;
+
+
 	//
 	// Support for cached FGeometrySelectionTarget / IGeometrySelectors. 
 	// The intention here is to reduce the overhead on selection changes.
 	// Functional, but needs to be smarter.
 	//
 	TMap<FGeometryIdentifier, TSharedPtr<FGeometrySelectionTarget>> TargetCache;
-	void SleepOrShutdownTarget(FGeometrySelectionTarget* Target, bool bForceShutdown);
+	void SleepOrShutdownTarget(TSharedPtr<FGeometrySelectionTarget> Target, bool bForceShutdown);
 	TSharedPtr<FGeometrySelectionTarget> GetCachedTarget(FGeometryIdentifier Identifier, const IGeometrySelectorFactory* UseFactory);
 	void ResetTargetCache();
 	void SetTargetsOnUndoRedo(TArray<FGeometryIdentifier> NewTargets);
@@ -432,6 +446,9 @@ protected:
 
 	friend class FGeometrySelectionManager_SelectionTypeChange;
 	friend class FGeometrySelectionManager_ActiveTargetsChange;
+	
+	friend class FGeometrySelectionManager_TargetLockStateChange;
+	void SetTargetLockStateOnUndoRedo(FGeometryIdentifier TargetIdentifier, bool bLocked);
 
 
 	// support for complex selection changes that are driven externally

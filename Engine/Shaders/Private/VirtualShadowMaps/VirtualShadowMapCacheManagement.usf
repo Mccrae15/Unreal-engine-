@@ -17,11 +17,7 @@
 
 #include "../InstanceCulling/InstanceCullingLoadBalancer.ush"
 
-RWStructuredBuffer<FPhysicalPageMetaData> PrevPhysicalPageMetaDataOut;
-
-uint InstanceSceneDataSOAStride;
-uint GPUSceneNumAllocatedInstances;
-uint GPUSceneNumAllocatedPrimitives;
+RWStructuredBuffer<FPhysicalPageMetaData> PhysicalPageMetaDataOut;
 
 #if ENABLE_DEBUG_MODE
 uint bDrawBounds;
@@ -86,10 +82,10 @@ void VirtualSmInvalidateInstancePagesCS(
 	uint InstanceId = WorkSetup.Item.InstanceDataOffset + uint(WorkSetup.LocalItemIndex);
 
 	{
-		checkSlow(InstanceId >= 0 && InstanceId < InstanceSceneDataSOAStride);
-		checkSlow(InstanceId >= 0 && InstanceId < GPUSceneNumAllocatedInstances);
+		checkSlow(InstanceId >= 0 && InstanceId < Scene.GPUScene.InstanceDataSOAStride);
+		checkSlow(InstanceId >= 0 && InstanceId < Scene.GPUScene.NumInstances);
 
-		FInstanceSceneData InstanceSceneData = GetInstanceSceneData(InstanceId, InstanceSceneDataSOAStride);
+		FInstanceSceneData InstanceSceneData = GetInstanceSceneData(InstanceId, Scene.GPUScene.InstanceDataSOAStride);
 
 		if (!InstanceSceneData.ValidInstance)
 		{
@@ -132,9 +128,6 @@ void VirtualSmInvalidateInstancePagesCS(
 					}
 				}
 
-				bool bInvalidateStaticPage = bForceInvalidateStaticPage || ShouldCacheInstanceAsStatic(InstanceSceneData, ProjectionData.bUnCached);
-				uint InvalidationFlags = (bInvalidateStaticPage ? VSM_STATIC_UNCACHED_FLAG : VSM_DYNAMIC_UNCACHED_FLAG) << VSM_PHYSICAL_PAGE_INVALIDATION_FLAGS_SHIFT;
-
 				// Go back to clip space
 				float4x4 UVToClip;
 				UVToClip[0] = float4(2, 0, 0, 0);
@@ -144,16 +137,25 @@ void VirtualSmInvalidateInstancePagesCS(
 
 				const bool bIsOrtho = bDirectionalLight;
 				const bool bNearClip = !bDirectionalLight;
-				FFrustumCullData Cull = BoxCullFrustum(InstanceSceneData.LocalBoundsCenter, InstanceSceneData.LocalBoundsExtent, LocalToTranslatedWorld, mul(ProjectionData.TranslatedWorldToShadowUVMatrix, UVToClip), bIsOrtho, bNearClip, false);
+
+				FFrustumCullData Cull = BoxCullFrustum(
+					InstanceSceneData.LocalBoundsCenter,
+					InstanceSceneData.LocalBoundsExtent,
+					LocalToTranslatedWorld,
+					mul(ProjectionData.TranslatedWorldToShadowUVMatrix, UVToClip),
+					ProjectionData.ShadowViewToClipMatrix, bIsOrtho, bNearClip, false);
+
 				float PixelEstRadius = CalcClipSpaceRadiusEstimate(bIsOrtho, InstanceSceneData, LocalToTranslatedWorld, ProjectionData.ShadowViewToClipMatrix) * float(VSM_VIRTUAL_MAX_RESOLUTION_XY);
 
 				if (Cull.bIsVisible)
 				{
 					bool bShouldCacheAsStatic = ShouldCacheInstanceAsStatic(InstanceSceneData, ProjectionData.bUnCached);
+					bool bInvalidateStaticPage = bForceInvalidateStaticPage || bShouldCacheAsStatic;
+					uint InvalidationFlags = (bInvalidateStaticPage ? VSM_STATIC_UNCACHED_FLAG : VSM_DYNAMIC_UNCACHED_FLAG) << VSM_PHYSICAL_PAGE_INVALIDATION_FLAGS_SHIFT;
 
 					// 2. figure out overlap and all that
 					// case #1 mip-map VSM - loop all mip levels, case #2 clipmap, just one 'mip level'
-					int NumMipLevels = (ProjectionData.ClipmapLevelCount <= 0) ? VSM_MAX_MIP_LEVELS : 1;
+					int NumMipLevels = (ProjectionData.ClipmapLevelCountRemaining <= 0) ? VSM_MAX_MIP_LEVELS : 1;
 					{
 						for (int MipLevel = 0; MipLevel < NumMipLevels; ++MipLevel)
 						{
@@ -200,7 +202,7 @@ void VirtualSmInvalidateInstancePagesCS(
 											// TODO: Wave version
 											uint2 PhysicalAddress = ShadowGetPhysicalPage(PageFlagOffset).PhysicalAddress;
 											uint PhysicalPageIndex = VSMPhysicalPageAddressToIndex(PhysicalAddress);
-											InterlockedOr(PrevPhysicalPageMetaDataOut[PhysicalPageIndex].Flags, InvalidationFlags);
+											InterlockedOr(PhysicalPageMetaDataOut[PhysicalPageIndex].Flags, InvalidationFlags);
 #if ENABLE_DEBUG_MODE
 											++PageInvalidationCount;
 #endif

@@ -17,13 +17,10 @@ class ALevelSequenceActor;
 #if WITH_EDITOR
 
 class ISequencer;
+class FConcertClientSequencePreloader;
 class FConcertClientWorkspace;
 struct FSequencerInitParams;
-
-struct FSequencePlayer
-{
-	TWeakObjectPtr<ALevelSequenceActor> Actor;
-};
+class ULevelSequence;
 
 /**
  * Sequencer manager that is held by the client sync module that keeps track of open sequencer UIs, regardless of whether a session is open or not
@@ -231,7 +228,7 @@ private:
 	 *
 	 * @param SequenceObjectPath	The sequence to open
 	 */
-	void ApplyOpenEvent(const FString& SequenceObjectPath);
+	void ApplyOpenEvent(const FConcertSequencerOpenEvent& InOpenEvent);
 
 	/**
 	 * Create a new sequence player to be used in -game instances.
@@ -320,7 +317,7 @@ private:
 
 private:
 	/** Destroy the given sequence player with corresponding actor. */
-	void DestroyPlayer(FSequencePlayer& Player, ALevelSequenceActor* LevelSequenceActor);
+	void DestroyPlayer(ALevelSequenceActor* LevelSequenceActor);
 
 	/** Indicates if this sequence player can be closed. */
 	bool CanClose(const FConcertSequencerCloseEvent& InEvent) const;
@@ -332,7 +329,7 @@ private:
 	TArray<FConcertSequencerState> PendingSequencerEvents;
 
 	/** List of pending sequencer open events to apply at end of frame. */
-	TArray<FString> PendingSequenceOpenEvents;
+	TArray<FConcertSequencerOpenEvent> PendingSequenceOpenEvents;
 
 	/** List of pending sequencer open events to apply at end of frame. */
 	TArray<FConcertSequencerCloseEvent> PendingSequenceCloseEvents;
@@ -357,7 +354,10 @@ private:
 	TArray<FOpenSequencerData> OpenSequencers;
 
 	/** Map of opened sequence players, if not in editor mode. */
-	TMap<FName, FSequencePlayer> SequencePlayers;
+	TMap<FName, TObjectPtr<ALevelSequenceActor>> SequencePlayers;
+
+	/** Handle preload requests from the server, asynchronously loading and maintaining GC references to sequence assets. */
+	TSharedRef<FConcertClientSequencePreloader> Preloader;
 
 	/** Boolean that is set when we are handling any transport event to prevent re-entrancy */
 	bool bRespondingToTransportEvent;

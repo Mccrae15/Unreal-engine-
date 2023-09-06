@@ -6,6 +6,7 @@
 #include "SceneManagement.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "AnimationCoreLibrary.h"
 #include "Engine/Engine.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -81,6 +82,8 @@ float FAnimNode_LookAt::AlphaToBlendType(float InAlpha, EInterpolationBlend::Typ
 void FAnimNode_LookAt::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(LookAt, !IsInGameThread());
+
 	check(OutBoneTransforms.Num() == 0);
 
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
@@ -275,13 +278,13 @@ void FAnimNode_LookAt::Initialize_AnyThread(const FAnimationInitializeContext& C
 	LookUp_Axis.Initialize();
 	if (LookUp_Axis.Axis.IsZero())
 	{
-		UE_LOG(LogAnimation, Warning, TEXT("Zero-length look-up axis specified in LookAt node. Reverting to default."));
+		UE_LOG(LogAnimation, Warning, TEXT("Zero-length look-up axis specified in LookAt node. Reverting to default. Instance:%s"), *GetFullNameSafe(Context.GetAnimInstanceObject()));
 		LookUp_Axis.Axis = DefaultLookUpAxis;
 	}
 	LookAt_Axis.Initialize();
 	if (LookAt_Axis.Axis.IsZero())
 	{
-		UE_LOG(LogAnimation, Warning, TEXT("Zero-length look-at axis specified in LookAt node. Reverting to default."));
+		UE_LOG(LogAnimation, Warning, TEXT("Zero-length look-at axis specified in LookAt node. Reverting to default. Instance:%s"), *GetFullNameSafe(Context.GetAnimInstanceObject()));
 		LookAt_Axis.Axis = DefaultLookAtAxis;
 	}
 }

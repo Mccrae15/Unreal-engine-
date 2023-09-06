@@ -11,6 +11,19 @@ ImageUtils.h: Image/Textures utility functions
 #include "ImageCore.h"
 #include "Engine/Texture.h"
 
+/*
+
+NOTE: Please prefer to work with images through ImageCore FImage/FImageView
+(not TextureSource/TextureSourceFormat or raw arrays of bytes)
+
+Use FImageUtils::CompressImage/DecompressImage
+
+The easiest way to load/save an image is FImageUtils::LoadImage/SaveImageByExtension
+
+Typically let the user's filename choose the image format, don't hard-code them in code.
+
+*/
+
 class UTexture2D;
 class UTexture2DArray;
 class UTextureCube;
@@ -247,7 +260,7 @@ public:
 	ENGINE_API static void ThumbnailCompressImageArray( int32 ImageWidth, int32 ImageHeight, const TArray<FColor> &SrcData, TArray<uint8> &DstData );
 
 	UE_DEPRECATED(5.1, "Please use PNGCompressImageArray or ThumbnailCompressImageArray")
-	ENGINE_API static void CompressImageArray( int32 ImageWidth, int32 ImageHeight, const TArray<FColor> &SrcData, TArray<uint8> &DstData )
+	static void CompressImageArray( int32 ImageWidth, int32 ImageHeight, const TArray<FColor> &SrcData, TArray<uint8> &DstData )
 	{
 		ThumbnailCompressImageArray(ImageWidth,ImageHeight,SrcData,DstData);
 	}

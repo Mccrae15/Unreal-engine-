@@ -22,13 +22,32 @@ enum class EWeightMapTargetCommon : uint8
  * is then later applied to a phys mesh
  */
 USTRUCT()
-struct CLOTHINGSYSTEMRUNTIMECOMMON_API FPointWeightMap
+struct FPointWeightMap
 {
 	GENERATED_BODY();
 
 	FPointWeightMap()
 #if WITH_EDITORONLY_DATA
 		: Name(NAME_None)
+		, CurrentTarget((uint8)EWeightMapTargetCommon::None)
+		, bEnabled(false)
+#endif
+	{}
+
+	explicit FPointWeightMap(int32 NumPoints, float Value = 0.f)
+#if WITH_EDITORONLY_DATA
+		: Name(NAME_None)
+		, CurrentTarget((uint8)EWeightMapTargetCommon::None)
+		, bEnabled(false)
+#endif
+	{
+		Values.Init(Value, NumPoints);
+	}
+
+	explicit FPointWeightMap(const TConstArrayView<float>& InValues)
+		: Values(InValues)
+#if WITH_EDITORONLY_DATA
+		, Name(NAME_None)
 		, CurrentTarget((uint8)EWeightMapTargetCommon::None)
 		, bEnabled(false)
 #endif

@@ -6,6 +6,7 @@
 #include "Templates/NonNullPointer.h"
 #include "UIFModule.h"
 #include "Types/UIFWidgetOwner.h"
+#include "UIFLocalSettings.h"
 #include "UIFPresenter.h"
 #include "UIFWidget.h"
 
@@ -106,6 +107,10 @@ void UUIFrameworkPlayerComponent::InitializeComponent()
 	{
 		WidgetTree.AuthorityAddAllWidgetsFromActorChannel();
 	}
+	else
+	{
+		GetDefault<UUIFrameworkLocalSettings>()->LoadResources();
+	}
 }
 
 void UUIFrameworkPlayerComponent::UninitializeComponent()
@@ -141,9 +146,12 @@ void UUIFrameworkPlayerComponent::GetLifetimeReplicatedProps(TArray< FLifetimePr
 
 bool UUIFrameworkPlayerComponent::ReplicateSubobjects(UActorChannel* Channel, class FOutBunch* Bunch, FReplicationFlags* RepFlags)
 {
-	bool WroteSomething = Super::ReplicateSubobjects(Channel, Bunch, RepFlags);
-	WroteSomething |= WidgetTree.ReplicateSubWidgets(Channel, Bunch, RepFlags);
-	return WroteSomething;
+	bool bWroteSomething = Super::ReplicateSubobjects(Channel, Bunch, RepFlags);
+	if (!bReplicateUsingRegisteredSubObjectList)
+	{
+		bWroteSomething |= WidgetTree.ReplicateSubWidgets(Channel, Bunch, RepFlags);
+	}
+	return bWroteSomething;
 }
 
 void UUIFrameworkPlayerComponent::AddWidget(FUIFrameworkGameLayerSlot InEntry)
@@ -194,6 +202,11 @@ void UUIFrameworkPlayerComponent::AuthorityRemoveChild(UUIFrameworkWidget* Widge
 	RootList.RemoveEntry(Widget);
 }
 
+FOnPendingReplicationProcessed& UUIFrameworkPlayerComponent::GetOnPendingReplicationProcessed()
+{
+	return OnPendingReplicationProcessed;
+}
+
 FUIFrameworkWidgetTree& UUIFrameworkPlayerComponent::GetWidgetTree()
 {
 	return WidgetTree;
@@ -240,6 +253,8 @@ void UUIFrameworkPlayerComponent::TickComponent(float DeltaTime, enum ELevelTick
 		NetReplicationPending.Empty();
 		AddPending.Empty();
 		ClassesToLoad.Empty();
+
+		OnPendingReplicationProcessed.Broadcast();
 
 		PrimaryComponentTick.SetTickFunctionEnable(false);
 	}
@@ -381,7 +396,8 @@ void UUIFrameworkPlayerComponent::LocalOnClassLoaded(TSoftClassPtr<UWidget> Widg
 		}
 		else
 		{
-			ensureMsgf(false, TEXT("Load request failed"));
+			UE_LOG(LogUIFramework, Error, TEXT("Failed to load widget class %s."), *WidgetClass.ToString());
+			ensure(false);
 		}
 	}
 	else

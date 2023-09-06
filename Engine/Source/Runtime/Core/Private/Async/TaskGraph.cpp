@@ -1037,7 +1037,7 @@ private:
 	**/
 	uint64 ProcessTasks()
 	{
-		LLM_SCOPE(ELLMTag::TaskGraphTasksMisc);
+		LLM_SCOPE_BYNAME(TEXT("Tasks/AnyThread/ProcessTasks"));
 
 		TStatId StallStatId;
 		bool bCountAsStall = true;
@@ -1951,6 +1951,8 @@ public:
 private:
 	void QueueTask(class FBaseGraphTask* Task, bool bWakeUpWorker, ENamedThreads::Type InThreadToExecuteOn, ENamedThreads::Type InCurrentThreadIfKnown) override
 	{
+		LLM_SCOPE_BYNAME(TEXT("Tasks/Scheduler/QueueTask"));
+
 		if (ENamedThreads::GetThreadIndex(InThreadToExecuteOn) == ENamedThreads::AnyThread)
 		{
 #if TASKGRAPH_NEW_FRONTEND
@@ -2310,6 +2312,7 @@ private:
 
 	void StartReserveWorkers()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(StartReserveWorkers);
 		if (bReserveWorkersEnabled)
 		{
 			return; // once enabled, reserve workers can't be disabled
@@ -2400,7 +2403,12 @@ bool FTaskGraphInterface::IsMultithread()
 
 #if TASKGRAPH_NEW_FRONTEND
 
-FGraphEventImplAllocator GraphEventImplAllocator;
+FGraphEventImplAllocator& GetGraphEventImplAllocator()
+{
+	static FGraphEventImplAllocator Singleton;
+	return Singleton;
+}
+
 FGraphTaskAllocator SmallTaskAllocator;
 
 #else
@@ -2422,6 +2430,7 @@ static TLockFreeClassAllocator_TLSCache<FGraphEvent, PLATFORM_CACHE_LINE_SIZE>& 
 
 FGraphEventRef FGraphEvent::CreateGraphEvent()
 {
+	LLM_SCOPE_BYNAME(TEXT("Tasks/FGraphEvent/CreateGraphEvent"));
 	FGraphEvent* Instance = new(GetGraphEventAllocator().Allocate()) FGraphEvent{};
 	return Instance;
 }
@@ -2437,7 +2446,7 @@ void FGraphEvent::DispatchSubsequents(ENamedThreads::Type CurrentThreadIfKnown)
 	DispatchSubsequents(NewTasks, CurrentThreadIfKnown);
 }
 
-void FGraphEvent::DispatchSubsequents(TArray<FBaseGraphTask*>& NewTasks, ENamedThreads::Type CurrentThreadIfKnown)
+void FGraphEvent::DispatchSubsequents(TArray<FBaseGraphTask*>& NewTasks, ENamedThreads::Type CurrentThreadIfKnown, bool bInternal/* = false */)
 {
 	if (EventsToWaitFor.Num())
 	{
@@ -2476,10 +2485,10 @@ void FGraphEvent::DispatchSubsequents(TArray<FBaseGraphTask*>& NewTasks, ENamedT
 				}
 			}
 
-#if UE_TASK_TRACE_ENABLED
-			// regenerate TraceId as we're going to use the same event with another task
-			TraceId = TaskTrace::GenerateTaskId();
-#endif
+//#if UE_TASK_TRACE_ENABLED
+//			// regenerate TraceId as we're going to use the same event with another task
+//			TraceId = TaskTrace::GenerateTaskId();
+//#endif
 			TGraphTask<FNullGraphTask>::CreateTask(FGraphEventRef(this), &TempEventsToWaitFor, CurrentThreadIfKnown).ConstructAndDispatchWhenReady(GET_STATID(STAT_FNullGraphTask_DontCompleteUntil), LocalThreadToDoGatherOn);
 			return;
 		}
@@ -2488,13 +2497,16 @@ void FGraphEvent::DispatchSubsequents(TArray<FBaseGraphTask*>& NewTasks, ENamedT
 	bool bWakeUpWorker = false;
 	TArray<FBaseGraphTask*> PoppedTasks;
 	SubsequentList.PopAllAndClose(PoppedTasks);
-	for (int32 Index = PoppedTasks.Num() - 1; Index >= 0 ; Index--) // reverse the order since PopAll is implicitly backwards
+	for (FBaseGraphTask* NewTask : ReverseIterate(PoppedTasks)) // reverse the order since PopAll is implicitly backwards
 	{
-		FBaseGraphTask* NewTask = PoppedTasks[Index];
 		checkThreadGraph(NewTask);
 		NewTask->ConditionalQueueTask(CurrentThreadIfKnown, bWakeUpWorker);
 	}
 
+	if (!bInternal)
+	{
+		TaskTrace::Launched(GetTraceId(), TEXT("Standalone graph event"), true, ENamedThreads::AnyThread, sizeof(FGraphEvent));
+	}
 	TaskTrace::Completed(GetTraceId());
 }
 

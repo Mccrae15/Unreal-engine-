@@ -69,9 +69,10 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	//! Reference version
 	//---------------------------------------------------------------------------------------------
-	inline MeshPtr MeshClipMorphPlane(const Mesh* pBase, const vec3f& origin, const vec3f& normal, float dist, float factor, float radius,
-		float radius2, float angle, const FShape& selectionShape, const mu::string& boneName = mu::string(), float vertexSelectionBoneMaxRadius = -1.f)
+	inline void MeshClipMorphPlane(Mesh* Result, const Mesh* pBase, const vec3f& origin, const vec3f& normal, float dist, float factor, float radius,
+		float radius2, float angle, const FShape& selectionShape, bool& bOutSuccess, const int32 BoneId = INDEX_NONE, float vertexSelectionBoneMaxRadius = -1.f)
 	{
+		bOutSuccess = true;
 		//float radius = 8.f;
 		//float radius2 = 4.f;
 		//float factor = 1.f;
@@ -87,42 +88,40 @@ namespace mu
 		vec3f origin_radius_vector = cross(normal, aux_base);		// PERPENDICULAR VECTOR TO THE PLANE normal and aux base
 		check(fabs(dot(normal, origin_radius_vector)) < 0.05f);
 
-		MeshPtr pDest = pBase->Clone();
-
         uint32 vcount = pBase->GetVertexBuffers().GetElementCount();
 
 		if (!vcount)
 		{
-			return pDest;
+			bOutSuccess = false;
+			return;
 		}
 
-		TArray<bool> bone_is_affected;
+		TArray<bool> AffectedBones;
 		TArray<vertex_bone_info> vertex_info;
 
-        auto pBaseSkeleton = pBase->GetSkeleton();
-        if (!boneName.empty() && pBaseSkeleton )
+        Ptr<const Skeleton> BaseSkeleton = pBase->GetSkeleton();
+
+		const int32 BaseBoneIndex = BaseSkeleton ? BaseSkeleton->FindBone(BoneId) : INDEX_NONE;
+        if (BaseBoneIndex != INDEX_NONE)
 		{
-            bone_is_affected.SetNum(pBaseSkeleton->GetBoneCount());
+			AffectedBones.SetNum(BaseSkeleton->GetBoneCount());
+			AffectedBones[BaseBoneIndex] = true;
 
-            for (int32 bone_idx = 0; bone_idx < pBaseSkeleton->GetBoneCount(); ++bone_idx)
+            for (int32 BoneIndex = 0; BoneIndex < BaseSkeleton->GetBoneCount(); ++BoneIndex)
 			{
-				int32 current_idx = bone_idx;
-				bool found_bone = false;
-
-				while (current_idx >= 0)
+				int32 CurrentBoneIndex = BoneIndex;
+				while (CurrentBoneIndex >= 0)
 				{
-                    if (pBaseSkeleton->GetBoneName(current_idx) == boneName)
+                    if (BaseSkeleton->GetBoneId(CurrentBoneIndex) == BaseBoneIndex)
 					{
-						found_bone = true;
+						AffectedBones[BoneIndex] = true;
 						break;
 					}
 					else
 					{
-                        current_idx = pBaseSkeleton->GetBoneParent(current_idx);
+						CurrentBoneIndex = BaseSkeleton->GetBoneParent(CurrentBoneIndex);
 					}
 				}
-
-				bone_is_affected[bone_idx] = found_bone;
 			}
 
 			// Look for affected vertex indices
@@ -275,11 +274,13 @@ namespace mu
 			}
 		}
 
+		Result->CopyFrom(*pBase);
+
 		// TODO: Replace with an array of bools?
         TArray<bool> RemovedVertices;
-		RemovedVertices.Init(false,pDest->GetVertexCount());
+		RemovedVertices.Init(false, Result->GetVertexCount());
 
-		const FMeshBufferSet& MBSPriv = pDest->GetVertexBuffers();
+		const FMeshBufferSet& MBSPriv = Result->GetVertexBuffers();
 		for (int32 b = 0; b < MBSPriv.m_buffers.Num(); ++b)
 		{
 			for (int32 c = 0; c < MBSPriv.m_buffers[b].m_channels.Num(); ++c)
@@ -287,7 +288,7 @@ namespace mu
 				MESH_BUFFER_SEMANTIC sem = MBSPriv.m_buffers[b].m_channels[c].m_semantic;
 				int semIndex = MBSPriv.m_buffers[b].m_channels[c].m_semanticIndex;
 
-				UntypedMeshBufferIterator it(pDest->GetVertexBuffers(), sem, semIndex);
+				UntypedMeshBufferIterator it(Result->GetVertexBuffers(), sem, semIndex);
 
 				switch (sem)
 				{
@@ -301,8 +302,8 @@ namespace mu
 						}
 
 						if (
-							(  !boneName.empty() && VertexIsAffectedByBone(v, bone_is_affected, vertex_info) && VertexIsInMaxRadius(vertex, origin, vertexSelectionBoneMaxRadius))
-                            || (boneName.empty() && selectionShape.type == (uint8_t)FShape::Type::None)
+							(  BaseBoneIndex != INDEX_NONE && VertexIsAffectedByBone(v, AffectedBones, vertex_info) && VertexIsInMaxRadius(vertex, origin, vertexSelectionBoneMaxRadius))
+                            || (BaseBoneIndex == INDEX_NONE && selectionShape.type == (uint8_t)FShape::Type::None)
                             || (selectionShape.type == (uint8_t)FShape::Type::AABox && PointInBoundingBox(vertex, selectionShape))
 							)
 						{
@@ -367,11 +368,11 @@ namespace mu
 		}
 
 		// Now remove all the faces from the result mesh that have all vertices removed
-		UntypedMeshBufferIteratorConst itBase(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
-		UntypedMeshBufferIterator itDest(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
-		int aFaceCount = pDest->GetFaceCount();
+		UntypedMeshBufferIteratorConst itBase(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
+		UntypedMeshBufferIterator itDest(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
+		int aFaceCount = Result->GetFaceCount();
 
-		UntypedMeshBufferIteratorConst ito(pDest->GetIndexBuffers(), MBS_VERTEXINDEX);
+		UntypedMeshBufferIteratorConst ito(Result->GetIndexBuffers(), MBS_VERTEXINDEX);
 		for (int f = 0; f < aFaceCount; ++f)
 		{
             vec3<uint32> ov;
@@ -397,21 +398,19 @@ namespace mu
 		std::size_t removedIndices = itBase - itDest;
 		check(removedIndices % 3 == 0);
 
-		pDest->GetFaceBuffers().SetElementCount(aFaceCount - (int)removedIndices / 3);
-		pDest->GetIndexBuffers().SetElementCount(aFaceCount * 3 - (int)removedIndices);
+		Result->GetFaceBuffers().SetElementCount(aFaceCount - (int)removedIndices / 3);
+		Result->GetIndexBuffers().SetElementCount(aFaceCount * 3 - (int)removedIndices);
 
 		// TODO: Should redo/reorder the face buffer before SetElementCount since some deleted faces could be left and some remaining faces deleted.
 
         // Fix the surface data if present.
-        if (pDest->m_surfaces.Num())
+        if (Result->m_surfaces.Num())
         {
             // We assume there will be only one.
-            check(pDest->m_surfaces.Num()==1);
+            check(Result->m_surfaces.Num()==1);
 
-            pDest->m_surfaces[0].m_indexCount -= (int32)removedIndices;
+            Result->m_surfaces[0].m_indexCount -= (int32)removedIndices;
         }
-
-		return pDest;
 	}
 
 }

@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "UdpMessageProcessor.h"
+#include "Transport/UdpMessageProcessor.h"
 
 #include "MessageBridgeBuilder.h"
 #include "Misc/CoreDelegates.h"
@@ -33,11 +33,11 @@ class FUdpMessagingModule
 	, public INetworkMessagingExtension
 	, public IModuleInterface
 {
-public:
+protected:
 
 	//~ FSelfRegisteringExec interface
 
-	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override
+	virtual bool Exec_Runtime(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override
 	{
 		if (!FParse::Command(&Cmd, TEXT("UDPMESSAGING")))
 		{
@@ -621,6 +621,7 @@ protected:
 		{
 			// Parse value overrides (if present)
 			FParse::Bool(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_ENABLE="), Settings->EnableTransport);
+			FParse::Bool(CommandLine, TEXT("-UDPMESSAGING_SHARE_KNOWN_NODES="), Settings->bShareKnownNodesWithActiveConnections);
 			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_UNICAST="), Settings->UnicastEndpoint);
 			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_TRANSPORT_MULTICAST="), Settings->MulticastEndpoint);
 			FParse::Value(CommandLine, TEXT("-UDPMESSAGING_WORK_QUEUE_SIZE="), Settings->WorkQueueSize);
@@ -632,6 +633,11 @@ protected:
 			for (const FString& CmdStaticEndpoint : CommandLineStaticEndpoints)
 			{
 				Settings->StaticEndpoints.AddUnique(CmdStaticEndpoint);
+			}
+
+			if (Settings->bShareKnownNodesWithActiveConnections)
+			{
+				UE_LOG(LogUdpMessaging, Display, TEXT("Sharing known nodes with endpoints is enabled."));
 			}
 		}
 	}

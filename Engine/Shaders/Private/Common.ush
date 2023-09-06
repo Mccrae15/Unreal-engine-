@@ -7,6 +7,9 @@
 #pragma once
 
 #include "/Engine/Public/Platform.ush"
+
+#include "PackUnpack.ush"
+
 // These types are used for material translator generated code, or any functions the translated code can call
 #if PIXELSHADER && !FORCE_MATERIAL_FLOAT_FULL_PRECISION
 	#define MaterialFloat half
@@ -26,6 +29,10 @@
 	#define MaterialFloat3x3 float3x3
 	#define MaterialFloat4x4 float4x4 
 	#define MaterialFloat4x3 float4x3 
+#endif
+
+#ifndef COMPUTE_SHADED
+#define COMPUTE_SHADED 0
 #endif
 
 struct FloatDeriv
@@ -152,6 +159,9 @@ const static float3 Max111110BitsFloat3 = float3(Max11BitsFloat, Max11BitsFloat,
 // * USE_FORCE_TEXTURE_MIP : enable/disable manual MIP level selection
 // * FORCED_TEXTURE_MIP    : force a specific MIP level
 //
+#if COMPUTE_SHADED && !defined(USE_FORCE_TEXTURE_MIP)
+	#define USE_FORCE_TEXTURE_MIP 0
+#endif
 #if !PIXELSHADER && !defined(USE_FORCE_TEXTURE_MIP)
 	#define USE_FORCE_TEXTURE_MIP 1
 #endif
@@ -891,34 +901,6 @@ float4 ConvertTangentSnormToUnorm16(float4 Input)
 #define TangentBias(X)		(X)
 #define TangentUnbias(X)	(X)
 
-uint PackUnorm2x16(float2 v)
-{
-	uint2 sv = uint2(round(clamp(v, 0.0, 1.0) * 65535.0));
-	return (sv.x | (sv.y << 16u));
-}
-
-uint PackSnorm2x16(float2 v)
-{
-	uint2 sv = uint2(round(clamp(v, -1.0, 1.0) * 32767.0) + 32767.0);
-	return (sv.x | (sv.y << 16u));
-}
-
-float2 UnpackUnorm2x16(uint p)
-{
-	float2 Ret;
-	Ret.x = (p & 0xffff) * rcp(65535.0f);
-	Ret.y = (p >> 16u) * rcp(65535.0f);
-	return Ret;
-}
-
-float2 UnpackSnorm2x16(uint p)
-{
-	float2 Ret;
-	Ret.x = clamp((float(p & 0xffff) - 32767.0f) * rcp(32767.0f), -1.0, 1.0);
-	Ret.y = clamp((float(p >> 16u) - 32767.0f) * rcp(32767.0f), -1.0, 1.0);
-	return Ret;
-}
-
 float Square( float x )
 {
 	return x*x;
@@ -1201,9 +1183,16 @@ float ConvertFromDeviceZ(float DeviceZ)
 }
 
 // Returns whether or not the given projection matrix is orthographic
+// Utilises asuint call to reduce compare to 1ALU cost
 bool IsOrthoProjection(float4x4 ViewToClip)
 {
-	return ViewToClip[3][3] >= 1.0f;
+	return asuint(ViewToClip._44);
+}
+
+// Returns whether or not the default view is orthographic
+bool IsOrthoProjection()
+{
+	return IsOrthoProjection(View.ViewToClip);
 }
 
 // inverse operation of ConvertFromDeviceZ()
@@ -1212,7 +1201,7 @@ bool IsOrthoProjection(float4x4 ViewToClip)
 float ConvertToDeviceZ(float SceneDepth)
 {
 	FLATTEN
-	if (IsOrthoProjection(View.ViewToClip))
+	if (IsOrthoProjection())
 	{
 		// Ortho
 		return SceneDepth * View.ViewToClip[2][2] + View.ViewToClip[3][2];
@@ -1224,9 +1213,37 @@ float ConvertToDeviceZ(float SceneDepth)
 	}
 }
 
+float3 GetCameraVectorFromWorldPosition(float3 WorldPosition)
+{
+	if (IsOrthoProjection())
+	{
+		// CameraVector is just ViewForward in an ortho mode
+		return View.ViewForward;
+	}
+	else
+	{
+		return normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin));
+	}
+}
+
 float2 ScreenPositionToBufferUV(float4 ScreenPosition)
 {
 	return float2(ScreenPosition.xy / ScreenPosition.w * ResolvedView.ScreenPositionScaleBias.xy + ResolvedView.ScreenPositionScaleBias.wz);
+}
+
+float3 ScreenVectorFromScreenRect(float4 Position)
+{
+	//Screen rect does not include scene depth. Perspective projection requires ScreenToTranslated world matrix
+	//Ortho Screen to View in this context is 1:1 so uses the ViewToTranslatedMatrix only
+	return select(IsOrthoProjection(), mul(Position, View.ViewToTranslatedWorld), mul(Position,View.ScreenToTranslatedWorld)).xyz;
+}
+
+// Returns the screen position for projection matrix calculations depending on the type of projection the view is using
+float2 GetScreenPositionForProjectionType(float2 ScreenPosition, float SceneDepth)
+{
+	// For perspective projection matrix, the scene depth is required as part of the clip to view calculations
+	// For orthogonal projection matrix, scene depth should not be used
+	return select(IsOrthoProjection(), ScreenPosition, ScreenPosition * SceneDepth);
 }
 
 float2 SvPositionToBufferUV(float4 SvPosition)
@@ -1301,9 +1318,9 @@ void SvPositionToResolvedScreenPositionDeriv(float4 SvPosition, float2 PPZ_DDX_D
 float2 SvPositionToViewportUV(float4 SvPosition)
 {
 	// can be optimized from 2SUB+2MUL to 2MAD
-	float2 PixelPos = SvPosition.xy - View.ViewRectMin.xy;	
+	float2 PixelPos = SvPosition.xy - ResolvedView.ViewRectMin.xy;	
 
-	return PixelPos.xy * View.ViewSizeAndInvSize.zw;
+	return PixelPos.xy * ResolvedView.ViewSizeAndInvSize.zw;
 }
 
 float2 BufferUVToViewportUV(float2 BufferUV)
@@ -1337,7 +1354,7 @@ float3 ScreenToViewPos(float2 ViewportUV, float SceneDepth)
 
 	ProjViewPos.x =  ViewportUV.x * View.ScreenToViewSpace.x  + View.ScreenToViewSpace.z;
 	ProjViewPos.y =  ViewportUV.y * View.ScreenToViewSpace.y  + View.ScreenToViewSpace.w;
-	return float3(ProjViewPos * SceneDepth, SceneDepth);
+	return float3(GetScreenPositionForProjectionType(ProjViewPos, SceneDepth), SceneDepth);
 }
 
 // ----------------------------
@@ -1374,6 +1391,8 @@ MaterialFloat4 UnpackNormalMap( MaterialFloat4 TextureSample )
 {
 	#if DXT5_NORMALMAPS
 		MaterialFloat2 NormalXY = TextureSample.ag;
+	#elif LA_NORMALMAPS
+		MaterialFloat2 NormalXY = TextureSample.ra;
 	#else
 		MaterialFloat2 NormalXY = TextureSample.rg;
 	#endif
@@ -1897,28 +1916,34 @@ IsAndMakeFinite_Def(float2, bool2)
 IsAndMakeFinite_Def(float3, bool3)
 IsAndMakeFinite_Def(float4, bool4)
 
+// NOTE: The raytraced implementation of the ShadowPassSwitch node is kept in RayTracingShaderUtils.ush as it needs to access per ray information.
+#if RAYHITGROUPSHADER == 0
 // Experimental way to allow adjusting the OpacityMask for shadow map rendering of masked materials.
-// Can be accessed with a Custom material node. If this turns out to be very useful we can expose as MaterialFunction
+// This is exposed via the ShadowPassSwitch material node. This can also be accessed with a Custom
+// material node. If this turns out to be very useful we can expose as MaterialFunction
 // and potentially expose other queries as well (e.g. SkeletalMesh, HitProxy, ).
 // @return 0:no, 1:yes
 bool GetShadowReplaceState()
 {
-#ifdef SHADOW_DEPTH_SHADER
+#if SHADOW_DEPTH_SHADER
 	return true;
 #else
 	return false;
 #endif
 }
 
+float IsShadowDepthShader()
+{
+	return GetShadowReplaceState() ? 1.0f : 0.0f;
+}
+
+#endif // RAYHITGROUPSHADER == 0
+
 bool GetReflectionCapturePassSwitchState()
 {
 	return View.RenderingReflectionCaptureMask > 0.0f;
 }
 
-float IsShadowDepthShader()
-{
-	return GetShadowReplaceState() ? 1.0f : 0.0f;
-}
 
 #define TERRAIN_ZSCALE (1.0f/128.0f)
 
@@ -2011,6 +2036,16 @@ uint DivideAndRoundUp(uint Dividend, uint Divisor, uint DivisorAsBitShift)
 	return (Dividend + Divisor - 1) >> DivisorAsBitShift;
 }
 
+float UNorm16ToF32(uint UNorm)
+{
+	return (UNorm & 0xFFFFu) / 65535.0f;
+}
+
+float SNorm16ToF32(uint SNorm)
+{
+	return UNorm16ToF32(SNorm) * 2.0f - 1.0f;
+}
+
 // see PixelShaderOutputCommon
 struct FPixelShaderIn
 {
@@ -2040,6 +2075,17 @@ struct FPixelShaderOut
 	float Depth;
 };
 
+
+#define SwapGeneric(T) void Swap(inout T A, inout T B) { T Temp = A; A = B; B = Temp; }
+SwapGeneric(uint)
+SwapGeneric(uint2)
+SwapGeneric(uint3)
+SwapGeneric(uint4)
+
+SwapGeneric(float)
+SwapGeneric(float2)
+SwapGeneric(float3)
+SwapGeneric(float4)
 
 // ---------------------------------------------------- Global samplers.
 

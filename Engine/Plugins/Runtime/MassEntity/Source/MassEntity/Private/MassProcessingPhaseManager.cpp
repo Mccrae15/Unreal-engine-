@@ -58,7 +58,7 @@ void FMassProcessingPhase::ExecuteTick(float DeltaTime, ELevelTick TickType, ENa
 
 	checkf(PhaseManager, TEXT("Manager is null which is not a supported case. Either this FMassProcessingPhase has not been initialized properly or it's been left dangling after the FMassProcessingPhase owner got destroyed."));
 
-	TRACE_CPUPROFILER_EVENT_SCOPE_STR(*FString::Printf(TEXT("FMassProcessingPhase::ExecuteTick %s"), *UEnum::GetValueAsString(Phase)));
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("FMassProcessingPhase::ExecuteTick %s"), *UEnum::GetValueAsString(Phase)));
 
 	PhaseManager->OnPhaseStart(*this);
 	{
@@ -139,7 +139,7 @@ void FMassProcessingPhase::Initialize(FMassProcessingPhaseManager& InPhaseManage
 //----------------------------------------------------------------------//
 // FPhaseProcessorConfigurator
 //----------------------------------------------------------------------//
-void FMassPhaseProcessorConfigurationHelper::Configure(TArrayView<UMassProcessor*> DynamicProcessors,
+void FMassPhaseProcessorConfigurationHelper::Configure(TArrayView<UMassProcessor* const> DynamicProcessors,
 	const TSharedPtr<FMassEntityManager>& EntityManager, FMassProcessorDependencySolver::FResult* OutOptionalResult)
 {
 	FMassRuntimePipeline TmpPipeline;
@@ -295,7 +295,7 @@ void FMassProcessingPhaseManager::AddReferencedObjects(FReferenceCollector& Coll
 		}
 	}
 
-	for (UMassProcessor* DynamicProcessor : DynamicProcessors)
+	for (auto& DynamicProcessor : DynamicProcessors)
 	{
 		if (DynamicProcessor)
 		{

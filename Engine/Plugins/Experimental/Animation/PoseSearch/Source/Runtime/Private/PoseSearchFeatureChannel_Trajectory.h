@@ -6,8 +6,6 @@
 #include "UObject/ObjectSaveContext.h"
 #include "PoseSearchFeatureChannel_Trajectory.generated.h"
 
-struct FTrajectorySampleRange;
-
 UENUM(meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
 enum class EPoseSearchTrajectoryFlags : uint32
 {
@@ -32,14 +30,15 @@ struct POSESEARCH_API FPoseSearchTrajectorySample
 	UPROPERTY(EditAnywhere, Category = Config)
 	float Offset = 0.f; // offset in time or distance depending on UPoseSearchFeatureChannel_Trajectory.Domain
 
+	// This allows the user to define what information from the channel you want to compare to.
 	UPROPERTY(EditAnywhere, meta = (Bitmask, BitmaskEnum = "/Script/PoseSearch.EPoseSearchTrajectoryFlags"), Category = Config)
 	int32 Flags = int32(EPoseSearchTrajectoryFlags::Position);
 
 	UPROPERTY(EditAnywhere, Category = Config)
 	float Weight = 1.f;
 
-	UPROPERTY(EditAnywhere, Category = Config, meta = (ExcludeFromHash))
-	int32 ColorPresetIndex = 0;
+	UPROPERTY(EditAnywhere, Category = Config, meta = (ExcludeFromHash, DisplayPriority = 0))
+	FLinearColor DebugColor = FLinearColor::Blue;
 };
 UCLASS(BlueprintType, EditInlineNew, meta = (DisplayName = "Trajectory Channel"), CollapseCategories)
 class POSESEARCH_API UPoseSearchFeatureChannel_Trajectory : public UPoseSearchFeatureChannel_GroupBase
@@ -56,18 +55,21 @@ public:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UPoseSearchFeatureChannel>> SubChannels;
 
+	UPoseSearchFeatureChannel_Trajectory();
+
 	// UPoseSearchFeatureChannel_GroupBase interface
 	virtual TArrayView<TObjectPtr<UPoseSearchFeatureChannel>> GetSubChannels() override { return SubChannels; }
 	virtual TConstArrayView<TObjectPtr<UPoseSearchFeatureChannel>> GetSubChannels() const override { return SubChannels; }
 
-	// UObject interface
-	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
-
 	// UPoseSearchFeatureChannel interface
 	virtual void Finalize(UPoseSearchSchema* Schema) override;
+
+#if ENABLE_DRAW_DEBUG
 	virtual void DebugDraw(const UE::PoseSearch::FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector) const override;
+#endif // ENABLE_DRAW_DEBUG
+
 #if WITH_EDITOR
-	virtual FString GetLabel() const;
+	virtual FString GetLabel() const override;
 #endif
 
 	float GetEstimatedSpeedRatio(TConstArrayView<float> QueryVector, TConstArrayView<float> PoseVector) const;

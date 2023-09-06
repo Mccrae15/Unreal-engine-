@@ -7,12 +7,6 @@ public class SwarmInterface : ModuleRules
 {
 	public SwarmInterface(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PublicIncludePaths.AddRange(
-			new string[] {
-				"Editor/SwarmInterface/Public"
-			}
-		);
-
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -35,7 +29,7 @@ public class SwarmInterface : ModuleRules
 				throw new BuildException("Could not find NetFxSDK install dir; this will prevent SwarmInterface from installing.  Install a version of .NET Framework SDK at 4.6.0 or higher.");
 			}
 
-			string ArchFolder = Target.WindowsPlatform.Architecture.WindowsName;
+			string ArchFolder = Target.WindowsPlatform.Architecture.WindowsLibDir;
 
 			PrivateIncludePaths.Add(Path.Combine(NetFxSdkDir, "include", "um"));
 			PublicSystemLibraryPaths.Add(Path.Combine(NetFxSdkDir, "lib", "um", ArchFolder));

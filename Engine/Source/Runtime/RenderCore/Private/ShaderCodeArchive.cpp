@@ -5,17 +5,19 @@
 #include "Async/ParallelFor.h"
 #include "Compression/OodleDataCompression.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "Misc/Compression.h"
 #include "Misc/FileHelper.h"
 #include "Misc/MemStack.h"
 #include "Misc/ScopeRWLock.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
-#include "ProfilingDebugging/LoadTimeTracker.h"
+#include "RHI.h"
 #include "RenderUtils.h"
-#include "RHIShaderFormatDefinitions.inl"
+#include "RHICommandList.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "ShaderCodeLibrary.h"
+#include "ShaderCore.h"
 #include "Stats/Stats.h"
 
 #if WITH_EDITOR
@@ -158,6 +160,16 @@ bool FSerializedShaderArchive::FindOrAddShader(const FSHAHash& Hash, int32& OutI
 	}
 
 	return false;
+}
+
+void FSerializedShaderArchive::RemoveLastAddedShader()
+{
+	check(!ShaderEntries.IsEmpty() && ShaderEntries.Num() == ShaderHashes.Num());
+	int32 ShaderIndex = ShaderEntries.Num() - 1;
+	const uint32 Key = GetTypeHash(ShaderHashes[ShaderIndex]);
+	ShaderHashTable.Remove(Key, ShaderIndex);
+	ShaderHashes.RemoveAt(ShaderIndex);
+	ShaderEntries.RemoveAt(ShaderIndex);
 }
 
 #if WITH_EDITOR
@@ -346,47 +358,49 @@ void FShaderUsageVisualizer::SaveShaderUsageBitmap(const FString& Name, EShaderP
 }
 #endif
 
-void ShaderCodeArchive::DecompressShader(uint8* OutDecompressedShader, int64 UncompressedSize, const uint8* CompressedShaderCode, int64 CompressedSize)
+void ShaderCodeArchive::DecompressShaderWithOodle(uint8* OutDecompressedShader, int64 UncompressedSize, const uint8* CompressedShaderCode, int64 CompressedSize)
 {
-	bool bSucceed = FCompression::UncompressMemory(GetShaderCompressionFormat(), OutDecompressedShader, UncompressedSize, CompressedShaderCode, CompressedSize);
+	// Iostore always compresses with Oodle.
+	bool bSucceed = FCompression::UncompressMemory(NAME_Oodle, OutDecompressedShader, UncompressedSize, CompressedShaderCode, CompressedSize);
 	if (!bSucceed)
 	{
-		UE_LOG(LogShaderLibrary, Fatal, TEXT("ShaderCodeArchive::DecompressShader(): Could not decompress shader (GetShaderCompressionFormat=%s)"), *GetShaderCompressionFormat().ToString());
+		UE_LOG(LogShaderLibrary, Fatal, TEXT("ShaderCodeArchive::DecompressShader(): Could not decompress shader with Oodle"));
 	}
 }
 
-bool ShaderCodeArchive::CompressShaderUsingCurrentSettings(uint8* OutCompressedShader, int64& OutCompressedSize, const uint8* UncompressedShaderCode, int64 UncompressedSize)
+namespace
 {
-	// see FShaderCode::Compress - while this doesn't have to match exactly, it should match at least the parameters used there
-	const FName ShaderCompressionFormat = GetShaderCompressionFormat();
-
-	bool bCompressed = false;
-	if (ShaderCompressionFormat != NAME_Oodle)
+	void DecompressShadergroupWithOodleAndExtraLogging(const int32 GroupIndex, const FIoChunkId& GroupHash, FIoStoreShaderGroupEntry& Entry, const int32 ShaderIndex, const uint64 ShaderInGroupIndex, const FSHAHash& ShaderHash, uint8* OutDecompressedShader, int64 UncompressedSize, const uint8* CompressedShaderCode, int64 CompressedSize)
 	{
-		int32 CompressedSize32 = static_cast<int32>(OutCompressedSize);
-		checkf(static_cast<int64>(CompressedSize32) == OutCompressedSize, TEXT("CompressedSize is too large (%lld) for an old API that takes int32"), OutCompressedSize);
-		bCompressed = FCompression::CompressMemory(ShaderCompressionFormat, OutCompressedShader, CompressedSize32, UncompressedShaderCode, UncompressedSize, COMPRESS_BiasSize);
-		OutCompressedSize = static_cast<int64>(CompressedSize32);
+		bool bSucceed = FCompression::UncompressMemory(NAME_Oodle, OutDecompressedShader, UncompressedSize, CompressedShaderCode, CompressedSize);
+		if (!bSucceed)
+		{
+			UE_LOG(LogShaderLibrary, Fatal, TEXT("DecompressShaderWithOodleAndExtraLogging(): Could not decompress shader group with Oodle. Group Index: %d Group IoStoreHash:%s Group NumShaders: %d Shader Index: %d Shader In-group Index: %d Shader Hash: %s"),
+				GroupIndex,
+				*LexToString(GroupHash),
+				Entry.NumShaders,
+				ShaderIndex,
+				ShaderInGroupIndex,
+				*LexToString(ShaderHash)
+				);
+		}
+	}
+}
+
+bool ShaderCodeArchive::CompressShaderWithOodle(uint8* OutCompressedShader, int64& OutCompressedSize, const uint8* InUncompressedShaderCode, int64 InUncompressedSize, FOodleDataCompression::ECompressor InOodleCompressor, FOodleDataCompression::ECompressionLevel InOodleLevel)
+{
+	if (OutCompressedShader)
+	{
+		OutCompressedSize = FOodleDataCompression::Compress(OutCompressedShader, OutCompressedSize, InUncompressedShaderCode, InUncompressedSize, InOodleCompressor, InOodleLevel);
+		check(OutCompressedSize != 0);
+		return OutCompressedSize != 0;
 	}
 	else
 	{
-		FOodleDataCompression::ECompressor OodleCompressor;
-		FOodleDataCompression::ECompressionLevel OodleLevel;
-		GetShaderCompressionOodleSettings(OodleCompressor, OodleLevel);
-
-		// don't pass a nullptr to Oodle if we're only requesting an estimate
-		OutCompressedSize = OutCompressedShader ? FOodleDataCompression::Compress(OutCompressedShader, OutCompressedSize, UncompressedShaderCode, UncompressedSize, OodleCompressor, OodleLevel) : 0;
-		bCompressed = OutCompressedSize != 0;
-
-		// Oodle needs to return an estimate
-		if (!bCompressed)
-		{
-			// for Oodle, there is a separate estimation functon
-			OutCompressedSize = FOodleDataCompression::CompressedBufferSizeNeeded(UncompressedSize);
-		}	
-	}
-
-	return bCompressed;
+		// Just requesting an estimate.
+		OutCompressedSize = FOodleDataCompression::CompressedBufferSizeNeeded(InUncompressedSize);
+		return false;
+	}	
 }
 
 void FSerializedShaderArchive::DecompressShader(int32 Index, const TArray<TArray<uint8>>& ShaderCode, TArray<uint8>& OutDecompressedShader) const
@@ -399,7 +413,7 @@ void FSerializedShaderArchive::DecompressShader(int32 Index, const TArray<TArray
 	}
 	else
 	{
-		ShaderCodeArchive::DecompressShader(OutDecompressedShader.GetData(), Entry.UncompressedSize, ShaderCode[Index].GetData(), Entry.Size);
+		ShaderCodeArchive::DecompressShaderWithOodle(OutDecompressedShader.GetData(), Entry.UncompressedSize, ShaderCode[Index].GetData(), Entry.Size);
 	}
 }
 
@@ -502,13 +516,26 @@ void FSerializedShaderArchive::SaveAssetInfo(FArchive& Ar)
 
 			Writer->WriteValue(TEXT("AssetInfoVersion"), static_cast<int32>(EAssetInfoVersion::CurrentVersion));
 
+			TArray<const TPair<FSHAHash, FShaderMapAssetPaths>*> SortedData;
+			SortedData.Reserve(ShaderCodeToAssets.Num());
+			for (TPair<FSHAHash, FShaderMapAssetPaths>& Pair : ShaderCodeToAssets)
+			{
+				SortedData.Add(&Pair);
+				Pair.Value.Sort(FNameLexicalLess());
+			}
+			Algo::Sort(SortedData, [](const TPair<FSHAHash, FShaderMapAssetPaths>* const a, const TPair<FSHAHash, FShaderMapAssetPaths>* const b)
+				{
+					return GetTypeHash(a->Key) < GetTypeHash(b->Key);
+				});
+
 			Writer->WriteArrayStart(TEXT("ShaderCodeToAssets"));
-			for (TMap<FSHAHash, FShaderMapAssetPaths>::TConstIterator Iter(ShaderCodeToAssets); Iter; ++Iter)
+			for (const TPair<FSHAHash, FShaderMapAssetPaths>* Pair : SortedData)
 			{
 				Writer->WriteObjectStart();
-				const FSHAHash& Hash = Iter.Key();
+				const FSHAHash& Hash = Pair->Key;
 				Writer->WriteValue(TEXT("ShaderMapHash"), Hash.ToString());
-				const FShaderMapAssetPaths& Assets = Iter.Value();
+				const FShaderMapAssetPaths& Assets = Pair->Value;
+
 				Writer->WriteArrayStart(TEXT("Assets"));
 				for (FShaderMapAssetPaths::TConstIterator AssetIter(Assets); AssetIter; ++AssetIter)
 				{
@@ -1231,7 +1258,7 @@ TRefCountPtr<FRHIShader> FShaderCodeArchive::CreateShader(int32 Index)
 	if (ShaderEntry.UncompressedSize != ShaderEntry.Size)
 	{
 		uint8* UncompressedCode = reinterpret_cast<uint8*>(MemStack.Alloc(ShaderEntry.UncompressedSize, 16));
-		ShaderCodeArchive::DecompressShader(UncompressedCode, ShaderEntry.UncompressedSize, ShaderCode, ShaderEntry.Size);
+		ShaderCodeArchive::DecompressShaderWithOodle(UncompressedCode, ShaderEntry.UncompressedSize, ShaderCode, ShaderEntry.Size);
 		ShaderCode = (uint8*)UncompressedCode;
 	}
 
@@ -1324,6 +1351,7 @@ void FIoStoreShaderCodeArchive::CreateIoStoreShaderCodeArchiveHeader(const FName
 	// (to avoid too large groups that will take too much time to decompress - this is regulated by r.ShaderCodeLibrary.MaxShaderGroupSize). The results of that process (note, it can still be
 	// a single group) is added to the header.
 	// Each group's indices, like in case of shadermaps, are stored in ShaderIndices array. Before we append a new group's indices however, we look if we can find an existing range that we can reuse.
+	const bool bSeparateRaytracingShaders = (Format == FName("PCD3D_SM5"));
 
 	TArray<TPair<uint32, TArray<int32>>> ShaderToShadermapsArray;
 	{
@@ -1417,7 +1445,21 @@ void FIoStoreShaderCodeArchive::CreateIoStoreShaderCodeArchiveHeader(const FName
 		ShaderIndicesInGroup.Sort(
 			[&SerializedShaders](const int32 ShaderIndexA, const int32 ShaderIndexB)
 			{
-				return SerializedShaders.ShaderEntries[ShaderIndexA].UncompressedSize < SerializedShaders.ShaderEntries[ShaderIndexB].UncompressedSize;
+				const FShaderCodeEntry& ShaderEntryA = SerializedShaders.ShaderEntries[ShaderIndexA];
+				const FShaderCodeEntry& ShaderEntryB = SerializedShaders.ShaderEntries[ShaderIndexB];
+				if (ShaderEntryA.UncompressedSize != ShaderEntryB.UncompressedSize)
+				{
+					return ShaderEntryA.UncompressedSize < ShaderEntryB.UncompressedSize;
+				}
+				if (ShaderEntryA.Size != ShaderEntryB.Size)
+				{
+					return ShaderEntryA.Size < ShaderEntryB.Size;
+				}
+				if (ShaderEntryA.Frequency != ShaderEntryB.Frequency)
+				{
+					return ShaderEntryA.Frequency < ShaderEntryB.Frequency;
+				}
+				return ShaderEntryA.Offset < ShaderEntryB.Offset;
 			}
 		);
 
@@ -1488,7 +1530,21 @@ void FIoStoreShaderCodeArchive::CreateIoStoreShaderCodeArchiveHeader(const FName
 			CurrentShaderGroup.Sort(
 				[&SerializedShaders](const int32 ShaderIndexA, const int32 ShaderIndexB)
 				{
-					return SerializedShaders.ShaderEntries[ShaderIndexA].UncompressedSize > SerializedShaders.ShaderEntries[ShaderIndexB].UncompressedSize;
+					const FShaderCodeEntry& ShaderEntryA = SerializedShaders.ShaderEntries[ShaderIndexA];
+					const FShaderCodeEntry& ShaderEntryB = SerializedShaders.ShaderEntries[ShaderIndexB];
+					if (ShaderEntryA.UncompressedSize != ShaderEntryB.UncompressedSize)
+					{
+						return ShaderEntryA.UncompressedSize > ShaderEntryB.UncompressedSize;
+					}
+					if (ShaderEntryA.Size != ShaderEntryB.Size)
+					{
+						return ShaderEntryA.Size > ShaderEntryB.Size;
+					}
+					if (ShaderEntryA.Frequency != ShaderEntryB.Frequency)
+					{
+						return ShaderEntryA.Frequency > ShaderEntryB.Frequency;
+					}
+					return ShaderEntryA.Offset > ShaderEntryB.Offset;
 				}
 			);
 
@@ -1534,32 +1590,39 @@ void FIoStoreShaderCodeArchive::CreateIoStoreShaderCodeArchiveHeader(const FName
 	};
 
 	/** First stage of processing a streak of shaders all referenced by the same set of shadermaps. We begin with separating raytracing and non-raytracing shaders, so we can avoid preloading RTX in non-RT runs. */
-	auto ProcessShaderGroup_SplitRaytracing = [&OutHeader, &ProcessShaderGroup_SplitBySize](TArray<uint32>& CurrentShaderGroup)
+	auto ProcessShaderGroup_SplitRaytracing = [&bSeparateRaytracingShaders, &OutHeader, &ProcessShaderGroup_SplitBySize](TArray<uint32>& CurrentShaderGroup)
 	{
-		// The streak changed. Create the group, but first, determine if the group needs to be split in two because of the raytracing shaders.
-		// We want to isolate them into separate groups so their preload can be skipped if raytracing is off.
-		TArray<uint32> RaytracingShaders;
-		TArray<uint32> NonraytracingShaders;
-		for (int32 ShaderIndex : CurrentShaderGroup)
+		if (!bSeparateRaytracingShaders)
 		{
-			if (LIKELY(!IsRayTracingShaderFrequency(static_cast<EShaderFrequency>(OutHeader.ShaderEntries[ShaderIndex].Frequency))))
-			{
-				NonraytracingShaders.Add(ShaderIndex);
-			}
-			else
-			{
-				RaytracingShaders.Add(ShaderIndex);
-			}
+			ProcessShaderGroup_SplitBySize(CurrentShaderGroup);
 		}
-		check(CurrentShaderGroup.Num() == NonraytracingShaders.Num() + RaytracingShaders.Num());
+		else
+		{
+			// The streak changed. Create the group, but first, determine if the group needs to be split in two because of the raytracing shaders.
+			// We want to isolate them into separate groups so their preload can be skipped if raytracing is off.
+			TArray<uint32> RaytracingShaders;
+			TArray<uint32> NonraytracingShaders;
+			for (int32 ShaderIndex : CurrentShaderGroup)
+			{
+				if (LIKELY(!IsRayTracingShaderFrequency(static_cast<EShaderFrequency>(OutHeader.ShaderEntries[ShaderIndex].Frequency))))
+				{
+					NonraytracingShaders.Add(ShaderIndex);
+				}
+				else
+				{
+					RaytracingShaders.Add(ShaderIndex);
+				}
+			}
+			check(CurrentShaderGroup.Num() == NonraytracingShaders.Num() + RaytracingShaders.Num());
 
-		if (LIKELY(!NonraytracingShaders.IsEmpty()))
-		{
-			ProcessShaderGroup_SplitBySize(NonraytracingShaders);
-		}
-		if (UNLIKELY(!RaytracingShaders.IsEmpty()))
-		{
-			ProcessShaderGroup_SplitBySize(RaytracingShaders);
+			if (LIKELY(!NonraytracingShaders.IsEmpty()))
+			{
+				ProcessShaderGroup_SplitBySize(NonraytracingShaders);
+			}
+			if (UNLIKELY(!RaytracingShaders.IsEmpty()))
+			{
+				ProcessShaderGroup_SplitBySize(RaytracingShaders);
+			}
 		}
 	};
 
@@ -1766,7 +1829,13 @@ void FIoStoreShaderCodeArchive::Teardown()
 	{
 		FShaderGroupPreloadEntry* PreloadEntry = Iter.Value();
 
-		checkf(PreloadEntry->NumRefs == 0, TEXT("Group %d has still %d references on deletion"), Iter.Key(), PreloadEntry->NumRefs);
+#if UE_SCA_DEBUG_PRELOADING
+		checkf(PreloadEntry->NumRefs == 0, TEXT("Group %d has still %d references on deletion. Group extended debug info: \n%s"), Iter.Key(), PreloadEntry->NumRefs,
+			*PreloadEntry->DebugInfo);
+#else
+		checkf(PreloadEntry->NumRefs == 0, TEXT("Group %d has still %d references on deletion. Group extended debug info: \n%s"), Iter.Key(), PreloadEntry->NumRefs,
+			TEXT("Not compiled in (set UE_SCA_DEBUG_PRELOADING to 1 in ShaderCodeArchive.h and recompile the game binary)"));
+#endif
 
 		const FIoStoreShaderGroupEntry& GroupEntry = Header.ShaderGroupEntries[Iter.Key()];
 		DEC_DWORD_STAT_BY(STAT_Shaders_ShaderPreloadMemory, (GroupEntry.CompressedSize + sizeof(FShaderGroupPreloadEntry)));
@@ -1791,7 +1860,11 @@ void FIoStoreShaderCodeArchive::SetupPreloadEntryForLoading(int32 ShaderGroupInd
 #endif // UE_SCA_VISUALIZE_SHADER_USAGE
 }
 
-bool FIoStoreShaderCodeArchive::PreloadShaderGroup(int32 ShaderGroupIndex, FGraphEventArray& OutCompletionEvents, FCoreDelegates::FAttachShaderReadRequestFunc* AttachShaderReadRequestFuncPtr)
+bool FIoStoreShaderCodeArchive::PreloadShaderGroup(int32 ShaderGroupIndex, FGraphEventArray& OutCompletionEvents, 
+#if UE_SCA_DEBUG_PRELOADING
+	const FString& CallsiteInfo,
+#endif
+	FCoreDelegates::FAttachShaderReadRequestFunc* AttachShaderReadRequestFuncPtr)
 {
 	// should be called within LLMTag::Shaders scope
 	FWriteScopeLock Lock(PreloadedShaderGroupsLock);
@@ -1799,6 +1872,12 @@ bool FIoStoreShaderCodeArchive::PreloadShaderGroup(int32 ShaderGroupIndex, FGrap
 	checkf(!PreloadEntry.bNeverToBePreloaded, TEXT("We are preloading a shader group (index=%d) that shouldn't be preloaded in this run (e.g. raytracing shaders on D3D11)."), ShaderGroupIndex);
 
 	const uint32 NumRefs = PreloadEntry.NumRefs++;
+#if UE_SCA_DEBUG_PRELOADING
+	FString AppendInfo = FString::Printf(TEXT("PreloadShaderGroup: NumRefs %d -> %d    CallsiteInfo: %s\n"),
+		NumRefs, PreloadEntry.NumRefs, *CallsiteInfo
+	);
+	PreloadEntry.DebugInfo.Append(AppendInfo);
+#endif
 	if (NumRefs == 0u)
 	{
 		SetupPreloadEntryForLoading(ShaderGroupIndex, PreloadEntry);
@@ -1825,12 +1904,22 @@ bool FIoStoreShaderCodeArchive::PreloadShaderGroup(int32 ShaderGroupIndex, FGrap
 	return true;
 }
 
-void FIoStoreShaderCodeArchive::MarkPreloadEntrySkipped(int32 ShaderGroupIndex)
+void FIoStoreShaderCodeArchive::MarkPreloadEntrySkipped(int32 ShaderGroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+	, const FString& CallsiteInfo
+#endif
+)
 {
 	// should be called within LLMTag::Shaders scope
 	FWriteScopeLock Lock(PreloadedShaderGroupsLock);
 	FShaderGroupPreloadEntry& PreloadEntry = *FindOrAddPreloadEntry(ShaderGroupIndex);
 	const uint32 NumRefs = PreloadEntry.NumRefs++;
+#if UE_SCA_DEBUG_PRELOADING
+	FString AppendInfo = FString::Printf(TEXT("MarkPreloadEntrySkipped: NumRefs %d -> %d    CallsiteInfo: %s\n"),
+		NumRefs, PreloadEntry.NumRefs, *CallsiteInfo
+	);
+	PreloadEntry.DebugInfo.Append(AppendInfo);
+#endif
 	if (NumRefs == 0u)
 	{
 		PreloadEntry.bNeverToBePreloaded = 1;
@@ -1842,7 +1931,11 @@ bool FIoStoreShaderCodeArchive::PreloadShader(int32 ShaderIndex, FGraphEventArra
 {
 	LLM_SCOPE(ELLMTag::Shaders);
 	DebugVisualizer.MarkExplicitlyPreloadedForVisualization(ShaderIndex);
-	return PreloadShaderGroup(GetGroupIndexForShader(ShaderIndex), OutCompletionEvents);
+	return PreloadShaderGroup(GetGroupIndexForShader(ShaderIndex), OutCompletionEvents
+#if UE_SCA_DEBUG_PRELOADING
+		, FString::Printf(TEXT("PreloadShader %d"), ShaderIndex)
+#endif
+	);
 }
 
 bool FIoStoreShaderCodeArchive::GroupOnlyContainsRaytracingShaders(int32 ShaderGroupIndex)
@@ -1865,6 +1958,9 @@ bool FIoStoreShaderCodeArchive::PreloadShaderMap(int32 ShaderMapIndex, FGraphEve
 	LLM_SCOPE(ELLMTag::Shaders);
 	const FIoStoreShaderMapEntry& ShaderMapEntry = Header.ShaderMapEntries[ShaderMapIndex];
 
+#if UE_SCA_DEBUG_PRELOADING
+	FString Callsite = FString::Printf(TEXT("PreloadShaderMap %d"), ShaderMapIndex);
+#endif
 	for (uint32 i = 0u; i < ShaderMapEntry.NumShaders; ++i)
 	{
 		const int32 ShaderIndex = Header.ShaderIndices[ShaderMapEntry.ShaderIndicesOffset + i];
@@ -1873,14 +1969,22 @@ bool FIoStoreShaderCodeArchive::PreloadShaderMap(int32 ShaderMapIndex, FGraphEve
 #if RHI_RAYTRACING
 		if (!IsRayTracingAllowed() && !IsCreateShadersOnLoadEnabled() && GroupOnlyContainsRaytracingShaders(ShaderGroupIndex))
 		{
-			MarkPreloadEntrySkipped(ShaderGroupIndex);
+			MarkPreloadEntrySkipped(ShaderGroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+				, Callsite
+#endif
+			);
 			continue;
 		}
 #endif
 
 		// only shaders we actually want to preload should be marked as such, not just everything in the group
 		DebugVisualizer.MarkExplicitlyPreloadedForVisualization(ShaderIndex);
-		PreloadShaderGroup(ShaderGroupIndex, OutCompletionEvents);
+		PreloadShaderGroup(ShaderGroupIndex, OutCompletionEvents
+#if UE_SCA_DEBUG_PRELOADING
+			, Callsite
+#endif
+		);
 	}
 
 	return true;
@@ -1892,6 +1996,9 @@ bool FIoStoreShaderCodeArchive::PreloadShaderMap(int32 ShaderMapIndex, FCoreDele
 	const FIoStoreShaderMapEntry& ShaderMapEntry = Header.ShaderMapEntries[ShaderMapIndex];
 
 	FGraphEventArray Dummy;
+#if UE_SCA_DEBUG_PRELOADING
+	FString Callsite = FString::Printf(TEXT("PreloadShaderMap(AttachShaderReadRequestFunc) %d"), ShaderMapIndex);
+#endif
 	for (uint32 i = 0u; i < ShaderMapEntry.NumShaders; ++i)
 	{
 		const int32 ShaderIndex = Header.ShaderIndices[ShaderMapEntry.ShaderIndicesOffset + i];
@@ -1900,20 +2007,32 @@ bool FIoStoreShaderCodeArchive::PreloadShaderMap(int32 ShaderMapIndex, FCoreDele
 #if RHI_RAYTRACING
 		if (!IsRayTracingAllowed() && !IsCreateShadersOnLoadEnabled() && GroupOnlyContainsRaytracingShaders(ShaderGroupIndex))
 		{
-			MarkPreloadEntrySkipped(ShaderGroupIndex);
+			MarkPreloadEntrySkipped(ShaderGroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+				, Callsite
+#endif
+			);
 			continue;
 		}
 #endif
 
 		// only shaders we actually want to preload should be marked as such, not just everything in the group
 		DebugVisualizer.MarkExplicitlyPreloadedForVisualization(ShaderIndex);
-		PreloadShaderGroup(ShaderGroupIndex, Dummy, &AttachShaderReadRequestFunc);
+		PreloadShaderGroup(ShaderGroupIndex, Dummy, 
+#if UE_SCA_DEBUG_PRELOADING
+			Callsite,
+#endif
+			&AttachShaderReadRequestFunc);
 	}
 
 	return true;
 }
 
-void FIoStoreShaderCodeArchive::ReleasePreloadEntry(int32 ShaderGroupIndex)
+void FIoStoreShaderCodeArchive::ReleasePreloadEntry(int32 ShaderGroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+	, const FString& CallsiteInfo
+#endif
+)
 {
 	FWriteScopeLock Lock(PreloadedShaderGroupsLock);
 	FShaderGroupPreloadEntry** ExistingEntry = PreloadedShaderGroups.Find(ShaderGroupIndex);
@@ -1924,6 +2043,14 @@ void FIoStoreShaderCodeArchive::ReleasePreloadEntry(int32 ShaderGroupIndex)
 
 		const uint32 ShaderNumRefs = PreloadEntry->NumRefs--;
 		check(ShaderNumRefs > 0u);
+
+#if UE_SCA_DEBUG_PRELOADING
+		FString AppendInfo = FString::Printf(TEXT("ReleasePreloadEntry: NumRefs %d -> %d    CallsiteInfo: %s\n"),
+			ShaderNumRefs, PreloadEntry->NumRefs, *CallsiteInfo
+			);
+		PreloadEntry->DebugInfo.Append(AppendInfo);
+#endif
+
 		if (ShaderNumRefs == 1u)
 		{
 			if (!PreloadEntry->bNeverToBePreloaded)
@@ -1938,6 +2065,14 @@ void FIoStoreShaderCodeArchive::ReleasePreloadEntry(int32 ShaderGroupIndex)
 				DEC_DWORD_STAT_BY(STAT_Shaders_ShaderPreloadMemory, sizeof(FShaderGroupPreloadEntry));
 			}
 
+#if UE_SCA_DEBUG_PRELOADING
+			if (0)	// use this if you need comparison with all other groups
+			{
+				UE_LOG(LogInit, Log, TEXT("Group %d has still %d references on deletion. Group extended debug info: \n%s"), ShaderGroupIndex, PreloadEntry->NumRefs,
+					*PreloadEntry->DebugInfo);
+			}
+#endif
+
 			delete PreloadEntry;
 			PreloadedShaderGroups.Remove(ShaderGroupIndex);
 		}
@@ -1946,7 +2081,11 @@ void FIoStoreShaderCodeArchive::ReleasePreloadEntry(int32 ShaderGroupIndex)
 
 void FIoStoreShaderCodeArchive::ReleasePreloadedShader(int32 ShaderIndex)
 {
-	ReleasePreloadEntry(GetGroupIndexForShader(ShaderIndex));
+	ReleasePreloadEntry(GetGroupIndexForShader(ShaderIndex)
+#if UE_SCA_DEBUG_PRELOADING
+		, FString::Printf(TEXT("ReleasePreloadedShader %d"), ShaderIndex)
+#endif
+	);
 }
 
 int32 FIoStoreShaderCodeArchive::FindShaderMapIndex(const FSHAHash& Hash)
@@ -1999,7 +2138,14 @@ TRefCountPtr<FRHIShader> FIoStoreShaderCodeArchive::CreateShader(int32 ShaderInd
 
 	// Preload shader group if it wasn't yet. This will also addref it so we can be sure it will exist.
 	FGraphEventArray Dummy;
-	PreloadShaderGroup(GroupIndex, Dummy);
+#if UE_SCA_DEBUG_PRELOADING
+	FString Callsite = FString::Printf(TEXT("CreateShader %d"), ShaderIndex);
+#endif
+	PreloadShaderGroup(GroupIndex, Dummy
+#if UE_SCA_DEBUG_PRELOADING
+		, Callsite
+#endif
+	);
 
 	FShaderGroupPreloadEntry* PreloadEntryPtr;
 	{
@@ -2035,11 +2181,11 @@ TRefCountPtr<FRHIShader> FIoStoreShaderCodeArchive::CreateShader(int32 ShaderInd
 	FMemStackBase& MemStack = FMemStack::Get();
 	FMemMark Mark(MemStack);
 	FIoStoreShaderGroupEntry& GroupEntry = Header.ShaderGroupEntries[GroupIndex];
-	ensureMsgf(GroupEntry.CompressedSize == PreloadEntryPtr->IoRequest.GetResultOrDie().DataSize(), TEXT("Shader archive header does not match the actual IoStore buffer size, decompression failure likely imminent."));
+	uint32 CompressedSize = PreloadEntryPtr->IoRequest.GetResultOrDie().DataSize();
 	if (GroupEntry.IsGroupCompressed())
 	{
 		uint8* UncompressedCode = reinterpret_cast<uint8*>(MemStack.Alloc(GroupEntry.UncompressedSize, 16));
-		ShaderCodeArchive::DecompressShader(UncompressedCode, GroupEntry.UncompressedSize, ShaderCode, GroupEntry.CompressedSize);
+		DecompressShadergroupWithOodleAndExtraLogging(GroupIndex, Header.ShaderGroupIoHashes[GroupIndex], GroupEntry, ShaderIndex, ShaderEntry.ShaderGroupIndex, Header.ShaderHashes[ShaderIndex], UncompressedCode, GroupEntry.UncompressedSize, ShaderCode, CompressedSize);
 		ShaderCode = reinterpret_cast<uint8*>(UncompressedCode) + ShaderEntry.UncompressedOffsetInGroup;
 
 #if UE_SCA_VISUALIZE_SHADER_USAGE
@@ -2077,7 +2223,11 @@ TRefCountPtr<FRHIShader> FIoStoreShaderCodeArchive::CreateShader(int32 ShaderInd
 	DebugVisualizer.MarkCreatedForVisualization(ShaderIndex);
 
 	PreloadEntryPtr = nullptr;
-	ReleasePreloadEntry(GroupIndex);
+	ReleasePreloadEntry(GroupIndex
+#if UE_SCA_DEBUG_PRELOADING
+		, Callsite
+#endif
+	);
 
 	if (Shader)
 	{

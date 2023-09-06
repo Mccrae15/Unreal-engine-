@@ -52,6 +52,9 @@
 	#define STRATA_SINGLEPATH 1
   #elif STRATA_TILETYPE == 2
 	// COMPLEX PATH
+  #elif STRATA_TILETYPE == 3
+	// COMPLEX PATH
+	#define STRATA_COMPLEXSPECIALPATH 1
   #else
 	#error Strata tile type non-implemented
   #endif
@@ -112,6 +115,11 @@ Texture2D DiffuseIndirect_Textures_2;
 Texture2D DiffuseIndirect_Textures_3;
 #else
 #define DiffuseIndirect_Textures_3 DiffuseIndirect_Textures_0
+#endif
+
+#if !ENABLE_DUAL_SRC_BLENDING
+Texture2D SceneColorTexture;
+SamplerState SceneColorSampler;
 #endif
 
 RWTexture2D<float4> PassDebugOutput;
@@ -272,7 +280,7 @@ FStrataDeferredLighting StrataIndirectLighting(
 		
 		const float3 DiffuseColor = StrataGetBSDFDiffuseColor(BSDF);
 		const float  Roughness = StrataGetBSDFRoughness(BSDF);
-		const bool bHasBackfaceDiffuse = StrataGetBSDFType(BSDF) == STRATA_BSDF_TYPE_SLAB && BSDF_GETSSSTYPE(BSDF) != SSS_TYPE_INVALID;
+		const bool bHasBackfaceDiffuse = StrataGetBSDFType(BSDF) == STRATA_BSDF_TYPE_SLAB && BSDF.HasBackScattering();
 		const FShadingOcclusion Occlusion = GetShadingOcclusion(PixelPos, V, StrataBSDFContext.N, Roughness, DiffuseColor, InAO);
 
 		const float3 InGlossyLighting = MixSpecularAndRoughReflections(Roughness, bHasBackfaceDiffuse, InSpecularLighting, InRoughSpecularLighting);
@@ -315,8 +323,12 @@ FStrataDeferredLighting StrataIndirectLighting(
 void MainPS(
 	float4 SvPosition : SV_POSITION
 #if DIM_APPLY_DIFFUSE_INDIRECT
+#if ENABLE_DUAL_SRC_BLENDING
 	, out float4 OutAddColor      DUAL_SOURCE_BLENDING_SLOT(0) : SV_Target0
 	, out float4 OutMultiplyColor DUAL_SOURCE_BLENDING_SLOT(1) : SV_Target1
+#else
+	, out float4 OutColor 		  : SV_Target0
+#endif
 #else
 	, out float4 OutMultiplyColor : SV_Target0
 #endif
@@ -326,17 +338,29 @@ void MainPS(
 	const float2 SceneBufferUV = SvPositionToBufferUV(SvPosition);
 	const float2 ScreenPosition = SvPositionToScreenPosition(SvPosition).xy;
 
+	#if !ENABLE_DUAL_SRC_BLENDING && DIM_APPLY_DIFFUSE_INDIRECT
+	float4 OutAddColor = float4(0.0, 0.0, 0.0, 0.0);
+	float4 OutMultiplyColor;
+
+	const float4 SceneColor = SceneColorTexture.SampleLevel(SceneColorSampler, SceneBufferUV, 0);
+	#endif
+
 	// Sample scene textures.
 	const FLumenMaterialData Material = ReadMaterialData(PixelPos, SceneBufferUV);
 
 	// Sample the ambient occlusion that is dynamically generated every frame.
 	const float DynamicAmbientOcclusion = AmbientOcclusionTexture.SampleLevel(AmbientOcclusionSampler, SceneBufferUV, 0).r;
 
-	// Compute the final ambient occlusion to be applied.
-	const float AOMask = IsValid(Material);
-	const float FinalAmbientOcclusion = lerp(1.0f, Material.MaterialAO * DynamicAmbientOcclusion, AOMask * AmbientOcclusionStaticFraction);
+	// Compute the final ambient occlusion to be applied. Lumen handles material AO internally.
+	float FinalAmbientOcclusion = 1.0f;
+	#if DIM_APPLY_DIFFUSE_INDIRECT != DIM_APPLY_DIFFUSE_INDIRECT_SCREEN_PROBE_GATHER
+	{
+		float AOMask = IsValid(Material);
+		FinalAmbientOcclusion = lerp(1.0f, Material.MaterialAO * DynamicAmbientOcclusion, AOMask * AmbientOcclusionStaticFraction);
+	}
+	#endif
 
-	const float3 TranslatedWorldPosition = mul(float4(ScreenPosition * Material.SceneDepth, Material.SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+	const float3 TranslatedWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, Material.SceneDepth), Material.SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 
 	const float3 N = Material.WorldNormal;
 	const float3 V = normalize(View.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
@@ -441,10 +465,10 @@ void MainPS(
 			#endif
 
 			#if STRATA_ENABLED
-			{			
+			{
 				FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
-				const FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
-				if (GetMaterialMode(StrataPixelHeader) > HEADER_MATERIALMODE_NONE)
+				FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+				if (StrataPixelHeader.GetMaterialMode() > HEADER_MATERIALMODE_NONE)
 				{
 					const FStrataDeferredLighting IndirectLighting_Strata = StrataIndirectLighting(
 						PixelPos,
@@ -554,4 +578,8 @@ void MainPS(
 	#endif
 
 	OutMultiplyColor = FinalAmbientOcclusion;
+
+	#if !ENABLE_DUAL_SRC_BLENDING && DIM_APPLY_DIFFUSE_INDIRECT
+	OutColor = SceneColor * OutMultiplyColor + OutAddColor;
+	#endif
 }

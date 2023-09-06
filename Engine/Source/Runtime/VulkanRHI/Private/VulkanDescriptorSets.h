@@ -882,14 +882,14 @@ public:
 		return NumWrites;
 	}
 
-	bool WriteUniformBuffer(uint32 DescriptorIndex, const FVulkanAllocation& Allocation, VkDeviceSize Offset, VkDeviceSize Range)
+	bool WriteUniformBuffer(uint32 DescriptorIndex, VkBuffer BufferHandle, uint32 HandleId, VkDeviceSize Offset, VkDeviceSize Range)
 	{
-		return WriteBuffer<VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER>(DescriptorIndex, Allocation, Offset, Range);
+		return WriteBuffer<VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER>(DescriptorIndex, BufferHandle, HandleId, Offset, Range);
 	}
 
-	bool WriteDynamicUniformBuffer(uint32 DescriptorIndex, const FVulkanAllocation& Allocation, VkDeviceSize Offset, VkDeviceSize Range, uint32 DynamicOffset)
+	bool WriteDynamicUniformBuffer(uint32 DescriptorIndex, VkBuffer BufferHandle, uint32 HandleId, VkDeviceSize Offset, VkDeviceSize Range, uint32 DynamicOffset)
 	{
-		return WriteBuffer<VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC>(DescriptorIndex, Allocation, Offset, Range, DynamicOffset);
+		return WriteBuffer<VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC>(DescriptorIndex, BufferHandle, HandleId, Offset, Range, DynamicOffset);
 	}
 
 	bool WriteSampler(uint32 DescriptorIndex, const FVulkanSamplerState& Sampler)
@@ -920,32 +920,32 @@ public:
 		return bChanged;
 	}
 
-	bool WriteImage(uint32 DescriptorIndex, const FVulkanTextureView& TextureView, VkImageLayout Layout)
+	bool WriteImage(uint32 DescriptorIndex, const FVulkanView::FTextureView& TextureView, VkImageLayout Layout)
 	{
 		return WriteTextureView<VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE>(DescriptorIndex, TextureView, Layout);
 	}
 
-	bool WriteInputAttachment(uint32 DescriptorIndex, const FVulkanTextureView& TextureView, VkImageLayout Layout)
+	bool WriteInputAttachment(uint32 DescriptorIndex, const FVulkanView::FTextureView& TextureView, VkImageLayout Layout)
 	{
 		return WriteTextureView<VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT>(DescriptorIndex, TextureView, Layout);
 	}
 
-	bool WriteStorageImage(uint32 DescriptorIndex, const FVulkanTextureView& TextureView, VkImageLayout Layout)
+	bool WriteStorageImage(uint32 DescriptorIndex, const FVulkanView::FTextureView& TextureView, VkImageLayout Layout)
 	{
 		return WriteTextureView<VK_DESCRIPTOR_TYPE_STORAGE_IMAGE>(DescriptorIndex, TextureView, Layout);
 	}
 
-	bool WriteStorageTexelBuffer(uint32 DescriptorIndex, const FVulkanBufferView* View)
+	bool WriteStorageTexelBuffer(uint32 DescriptorIndex, const FVulkanView::FTypedBufferView& View)
 	{
 		return WriteBufferView<VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER>(DescriptorIndex, View);
 	}
 
-	bool WriteStorageBuffer(uint32 DescriptorIndex, const FVulkanAllocation& Allocation, VkDeviceSize Offset, VkDeviceSize Range)
+	bool WriteStorageBuffer(uint32 DescriptorIndex, const FVulkanView::FStructuredBufferView& View)
 	{
-		return WriteBuffer<VK_DESCRIPTOR_TYPE_STORAGE_BUFFER>(DescriptorIndex, Allocation, Offset, Range);
+		return WriteBuffer<VK_DESCRIPTOR_TYPE_STORAGE_BUFFER>(DescriptorIndex, View.Buffer, View.HandleId, View.Offset, View.Size);
 	}
 
-	bool WriteUniformTexelBuffer(uint32 DescriptorIndex, const FVulkanBufferView* View)
+	bool WriteUniformTexelBuffer(uint32 DescriptorIndex, const FVulkanView::FTypedBufferView& View)
 	{
 		return WriteBufferView<VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER>(DescriptorIndex, View);
 	}
@@ -988,11 +988,6 @@ public:
 	}
 #endif // VULKAN_RHI_RAYTRACING
 
-	void ClearBufferView(uint32 DescriptorIndex)
-	{
-		BufferViewReferences[DescriptorIndex] = nullptr;
-	}
-
 	void SetDescriptorSet(VkDescriptorSet DescriptorSet)
 	{
 		for (uint32 Index = 0; Index < NumWrites; ++Index)
@@ -1003,7 +998,7 @@ public:
 
 protected:
 	template <VkDescriptorType DescriptorType>
-	bool WriteBuffer(uint32 DescriptorIndex, const FVulkanAllocation& Allocation, VkDeviceSize Offset, VkDeviceSize Range, uint32 DynamicOffset = 0)
+	bool WriteBuffer(uint32 DescriptorIndex, VkBuffer BufferHandle, uint32 HandleId, VkDeviceSize Offset, VkDeviceSize Range, uint32 DynamicOffset = 0)
 	{
 		check(DescriptorIndex < NumWrites);
 		SetWritten(DescriptorIndex);		
@@ -1026,11 +1021,11 @@ protected:
 		if (UseVulkanDescriptorCache())
 		{
 			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
-			check(Allocation.HandleId > 0);
-			if (HashableInfo.Buffer.Id != Allocation.HandleId)
+			check(HandleId > 0);
+			if (HashableInfo.Buffer.Id != HandleId)
 			{
-				HashableInfo.Buffer.Id = Allocation.HandleId;
-				BufferInfo->buffer = (VkBuffer)Allocation.VulkanHandle;
+				HashableInfo.Buffer.Id = HandleId;
+				BufferInfo->buffer = BufferHandle;
 				bChanged = true;
 			}
 			if (HashableInfo.Buffer.Offset != static_cast<uint32>(Offset))
@@ -1049,7 +1044,7 @@ protected:
 		}
 		else
 		{
-			bChanged = CopyAndReturnNotEqual(BufferInfo->buffer, Allocation.GetBufferHandle());
+			bChanged = CopyAndReturnNotEqual(BufferInfo->buffer, BufferHandle);
 			bChanged |= CopyAndReturnNotEqual(BufferInfo->offset, Offset);
 			bChanged |= CopyAndReturnNotEqual(BufferInfo->range, Range);
 		}
@@ -1063,7 +1058,7 @@ protected:
 	}
 
 	template <VkDescriptorType DescriptorType>
-	bool WriteTextureView(uint32 DescriptorIndex, const FVulkanTextureView& TextureView, VkImageLayout Layout)
+	bool WriteTextureView(uint32 DescriptorIndex, const FVulkanView::FTextureView& TextureView, VkImageLayout Layout)
 	{
 		check(DescriptorIndex < NumWrites);
 		SetWritten(DescriptorIndex);
@@ -1119,16 +1114,16 @@ protected:
 	}
 
 	template <VkDescriptorType DescriptorType>
-	bool WriteBufferView(uint32 DescriptorIndex, const FVulkanBufferView* View)
+	bool WriteBufferView(uint32 DescriptorIndex, const FVulkanView::FTypedBufferView& View)
 	{
 		check(DescriptorIndex < NumWrites);
 		checkf(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType, 
-			TEXT("DescriptorType mismatch at index %d: called WriteBufferView<%d> and was expecting %d."), 
-			DescriptorIndex, (uint32)DescriptorType, (uint32)WriteDescriptors[DescriptorIndex].descriptorType);
+			TEXT("DescriptorType mismatch at index %d: called WriteBufferView<%s> and was expecting %s."), 
+			DescriptorIndex, VK_TYPE_TO_STRING(VkDescriptorType, DescriptorType), VK_TYPE_TO_STRING(VkDescriptorType, WriteDescriptors[DescriptorIndex].descriptorType));
 		SetWritten(DescriptorIndex);
-		WriteDescriptors[DescriptorIndex].pTexelBufferView = &View->View;
-		BufferViewReferences[DescriptorIndex] = View;
-		const bool bVolatile = View->bVolatile;
+		WriteDescriptors[DescriptorIndex].pTexelBufferView = &View.View;
+
+		const bool bVolatile = View.bVolatile;
 
 		bHasVolatileResources|= bVolatile;
 				
@@ -1136,10 +1131,10 @@ protected:
 		{
 			bool bChanged = false;
 			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
-			check(View->ViewId > 0);
-			if (HashableInfo.BufferView.Id != View->ViewId)
+			check(View.ViewId > 0);
+			if (HashableInfo.BufferView.Id != View.ViewId)
 			{
-				HashableInfo.BufferView.Id = View->ViewId;
+				HashableInfo.BufferView.Id = View.ViewId;
 				bChanged = true;
 			}
 			bIsKeyDirty |= bChanged;
@@ -1162,7 +1157,6 @@ protected:
 	uint32* DynamicOffsets;
 
 	uint32 NumWrites;
-	TArray<TRefCountPtr<const FVulkanBufferView>> BufferViewReferences;
 
 	FVulkanHashableDescriptorInfo* HashableDescriptorInfos;
 	mutable FVulkanDSetKey Key;
@@ -1177,11 +1171,12 @@ protected:
 		VkWriteDescriptorSetAccelerationStructureKHR* InAccelerationStructuresWriteDescriptors,
 		VkAccelerationStructureKHR* InAccelerationStructures,
 #endif // VULKAN_RHI_RAYTRACING
-		const FVulkanSamplerState& DefaultSampler, const FVulkanTextureView& DefaultImageView);
+		const FVulkanSamplerState& DefaultSampler, const FVulkanView::FTextureView& DefaultImageView);
 
 	friend class FVulkanCommonPipelineDescriptorState;
 	friend class FVulkanComputePipelineDescriptorState;
 	friend class FVulkanGraphicsPipelineDescriptorState;
+	friend class FVulkanDescriptorSetCache;
 
 #if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
 	TArray<uint32, TInlineAllocator<2> > WrittenMask;
@@ -1221,16 +1216,19 @@ public:
 
 	void BindDescriptorBuffers(VkCommandBuffer CommandBuffer, VkPipelineStageFlags SupportedStages);
 
-	FRHIDescriptorHandle RegisterSampler(VkSampler VulkanSampler);
-	FRHIDescriptorHandle RegisterImage(VkImageView VulkanImage, VkDescriptorType DescriptorType, bool bIsDepthStencil);
-	FRHIDescriptorHandle RegisterBuffer(VkBuffer VulkanBuffer, VkDeviceSize BufferOffset, VkDeviceSize BufferSize, VkDescriptorType DescriptorType);
-	FRHIDescriptorHandle RegisterTexelBuffer(const VkBufferViewCreateInfo& ViewInfo, VkDescriptorType DescriptorType);
-	FRHIDescriptorHandle RegisterAccelerationStructure(VkAccelerationStructureKHR AccelerationStructure);
+	FRHIDescriptorHandle ReserveDescriptor(VkDescriptorType DescriptorType);
+
+	void UpdateSampler(FRHIDescriptorHandle DescriptorHandle, VkSampler VulkanSampler);
+	void UpdateImage(FRHIDescriptorHandle DescriptorHandle, VkImageView VulkanImage, bool bIsDepthStencil, bool bImmediateUpdate = true);
+	void UpdateBuffer(FRHIDescriptorHandle DescriptorHandle, VkBuffer VulkanBuffer, VkDeviceSize BufferOffset, VkDeviceSize BufferSize, bool bImmediateUpdate = true);
+	void UpdateBuffer(FRHIDescriptorHandle DescriptorHandle, VkDeviceAddress BufferAddress, VkDeviceSize BufferSize, bool bImmediateUpdate = true);
+	void UpdateTexelBuffer(FRHIDescriptorHandle DescriptorHandle, const VkBufferViewCreateInfo& ViewInfo, bool bImmediateUpdate = true);
+	void UpdateAccelerationStructure(FRHIDescriptorHandle DescriptorHandle, VkAccelerationStructureKHR AccelerationStructure, bool bImmediateUpdate = true);
+
 	void RegisterUniformBuffers(VkCommandBuffer CommandBuffer, VkPipelineBindPoint BindPoint, const FUniformBufferDescriptorArrays& StageUBs);
 
 	void Unregister(FRHIDescriptorHandle DescriptorHandle);
 
-	void CopyDescriptor(VkCommandBuffer CommandBuffer, FRHIDescriptorHandle DstHandle, const FRHIDescriptorHandle SrcHandle);
 
 private:
 	const bool bIsSupported;
@@ -1256,15 +1254,16 @@ private:
 	};
 	BindlessSetState BindlessSetStates[VulkanBindless::NumBindlessSets];
 
-	BindlessSetState BindlessUniformBufferSetState;
-	std::atomic<uint32> UniformBlockIndex = 0;
+	std::atomic<uint32> CurrentUniformBufferDescriptorIndex = 0;
 
-	VkDescriptorBufferBindingInfoEXT BufferBindingInfo[VulkanBindless::NumBindlessSets + 1];
-	uint32_t BufferIndices[VulkanBindless::MaxNumSets];
+	VkDescriptorBufferBindingInfoEXT BufferBindingInfo[VulkanBindless::NumBindlessSets];
+	uint32_t BufferIndices[VulkanBindless::NumBindlessSets];
 
 	VkPipelineLayout BindlessPipelineLayout = VK_NULL_HANDLE;
 
 	uint32 GetFreeResourceIndex(BindlessSetState& Desc);
+	void UpdateStatsForHandle(FRHIDescriptorHandle DescriptorHandle);
+	void UpdateDescriptor(FRHIDescriptorHandle DescriptorHandle, VkDescriptorDataEXT DescriptorData, bool bImmediateUpdate);
 };
 
 
@@ -1298,7 +1297,7 @@ public:
 		return DescriptorSetLayout.GetHash();
 	}
 
-	void PatchSpirvBindings(FVulkanShader::FSpirvCode& SpirvCode, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader, VkShaderStageFlagBits InStageFlag) const;
+	void PatchSpirvBindings(FVulkanShader::FSpirvCode& SpirvCode, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader) const;
 
 protected:
 	FVulkanDescriptorSetsLayout	DescriptorSetLayout;
@@ -1378,22 +1377,6 @@ protected:
 	FVulkanComputePipelineDescriptorInfo		ComputePipelineDescriptorInfo;
 	friend class FVulkanPipelineStateCacheManager;
 };
-
-#if VULKAN_RHI_RAYTRACING
-class FVulkanRayTracingLayout : public FVulkanLayout
-{
-public:
-	FVulkanRayTracingLayout(FVulkanDevice* InDevice)
-		: FVulkanLayout(InDevice)
-	{
-	}
-
-	virtual bool IsGfxLayout() const final override
-	{
-		return false;
-	}
-};
-#endif // VULKAN_RHI_RAYTRACING
 
 
 

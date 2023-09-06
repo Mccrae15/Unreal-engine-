@@ -15,7 +15,7 @@ enum class EStageMonitorNodeStatus
 	LoadingMap,
 	Ready,
 	HotReload,
-	ShaderCompiling
+	AssetCompiling
 };
 
 
@@ -32,16 +32,20 @@ public:
 
 	FFramePerformanceProviderMessage() = default;
 
-	UE_DEPRECATED(5.1, "FFramePerformanceProviderMessage constructor is deprecated, please use updated constructor.")
-	FFramePerformanceProviderMessage(float GameThreadTime, float RenderThreadTime, float GPUTime, float IdleTime)
-		: GameThreadMS(GameThreadTime), RenderThreadMS(RenderThreadTime), GPU_MS(GPUTime), IdleTimeMS(IdleTime), ShadersToCompile(0)
-	{
-		extern ENGINE_API float GAverageFPS;
-		AverageFPS = GAverageFPS;
-	}
-
-	FFramePerformanceProviderMessage(EStageMonitorNodeStatus InStatus, float GameThreadTime, float RenderThreadTime, float GPUTime, float IdleTime, int32 InShadersToCompile)
-	: Status(InStatus), GameThreadMS(GameThreadTime), RenderThreadMS(RenderThreadTime), GPU_MS(GPUTime), IdleTimeMS(IdleTime), ShadersToCompile(InShadersToCompile)
+	FFramePerformanceProviderMessage(EStageMonitorNodeStatus InStatus,
+									 float GameThreadTime, float GameThreadWaitTime,
+									 float RenderThreadTime, float RenderThreadWaitTime,
+									 float GPUTime, float IdleTime, uint64 CPUMem, uint64 GPUMem, int32 InAssetsToCompile)
+		: Status(InStatus)
+		, GameThreadMS(GameThreadTime)
+		, GameThreadWaitMS(GameThreadWaitTime)
+		, RenderThreadMS(RenderThreadTime)
+		, RenderThreadWaitMS(RenderThreadWaitTime)
+		, GPU_MS(GPUTime)
+		, IdleTimeMS(IdleTime)
+		, CPU_MEM(CPUMem)
+		, GPU_MEM(GPUMem)
+		, CompilationTasksRemaining(InAssetsToCompile)
 	{
 		extern ENGINE_API float GAverageFPS;
 		AverageFPS = GAverageFPS;
@@ -63,9 +67,17 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Performance", meta = (Unit = "ms"))
 	float GameThreadMS = 0.f;
 
+	/** Current GameThread wait time read from GGameThreadWaitTime in milliseconds */
+	UPROPERTY(VisibleAnywhere, Category = "Performance", meta = (Unit = "ms"))
+	float GameThreadWaitMS = 0.f;
+
 	/** Current RenderThread time read from GRenderThreadTime in milliseconds */
 	UPROPERTY(VisibleAnywhere, Category = "Performance", meta = (Unit = "ms"))
 	float RenderThreadMS = 0.f;
+
+	/** Current RenderThread wait time read from GRenderThreadWaitTime in milliseconds */
+	UPROPERTY(VisibleAnywhere, Category = "Performance", meta = (Unit = "ms"))
+	float RenderThreadWaitMS = 0.f;
 
 	/** Current GPU time read from GGPUFrameTime in milliseconds */
 	UPROPERTY(VisibleAnywhere, Category = "Performance", meta = (Unit = "ms"))
@@ -75,9 +87,17 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Performance", meta = (Unit = "ms"))
 	float IdleTimeMS = 0.f;
 
-	/** Number of shaders currently being compiled. */
+	/** Current CPU Memory Usage (Physical) in bytes */
 	UPROPERTY(VisibleAnywhere, Category = "Performance")
-	int32 ShadersToCompile = 0;
+	uint64 CPU_MEM = 0;
+
+	/** Current GPU Memory Usage (Physical) in bytes */
+	UPROPERTY(VisibleAnywhere, Category = "Performance")
+	uint64 GPU_MEM = 0;
+
+	/** Number of asynchronous compilation tasks currently in progress. */
+	UPROPERTY(VisibleAnywhere, Category = "Performance")
+	int32 CompilationTasksRemaining = 0;
 };
 
 

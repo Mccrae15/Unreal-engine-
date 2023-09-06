@@ -2,13 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
-#include "Experimental/NiagaraMeshUvMappingHandle.h"
+#include "Containers/DynamicRHIResourceArray.h"
+#include "Math/Vector.h"
 #include "NiagaraUvQuadTree.h"
 #include "RenderResource.h"
-#include "RHI.h"
-#include "Containers/DynamicRHIResourceArray.h"
+#include "RHIResources.h"
+
+struct FMeshUvMappingUsage;
 
 struct FMeshUvMapping;
 class FNiagaraUvQuadTree;
@@ -180,7 +180,7 @@ class FMeshUvMappingBufferProxy : public FRenderResource
 public:
 	void Initialize(const FMeshUvMapping& UvMappingData);
 
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseRHI() override;
 
 	FShaderResourceViewRHIRef GetSrv() const { return UvMappingSrv; }

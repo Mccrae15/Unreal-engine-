@@ -28,7 +28,7 @@ class USkeleton;
 struct FFrame;
 struct FObjectKey;
 
-UCLASS(Blueprintable, Experimental, config = Editor, defaultconfig)
+UCLASS(Blueprintable, config = Editor, defaultconfig)
 class ANIMATIONMODIFIERS_API UAnimationModifier : public UObject
 {
 	GENERATED_BODY()
@@ -83,6 +83,7 @@ public:
 	bool bReapplyPostOwnerChange = false;
 
 	/** Whether or not this modifier is in the process of being applied to an Animation Asset */
+	UE_DEPRECATED(5.2, "IsCurrentlyApplyingModifier has been deprecated, can check for modifiers being applied with UE::Anim::FApplyModifiersScope::IsScopePending")
 	bool IsCurrentlyApplyingModifier() const { return CurrentAnimSequence != nullptr || CurrentSkeleton != nullptr; };
 
 protected:
@@ -188,12 +189,13 @@ namespace UE
 				Close();
 			}
 
+			static bool IsScopePending() { return !ScopeModeStack.IsEmpty(); }
 protected:
 			/** Determine how to handle an Animation Modifier error, and execute accordingly */
-			static void HandleError(const UAnimationModifier* Modifier, const FText& Message, const FText* OptTitle = nullptr);
+			static void HandleError(const UAnimationModifier* Modifier, const FText& Message, const FText& Title);
 
 			/** Determine how to handle an Animation Modifier warning, and execute accordingly. Returns whether or not the warning was handled (true) or warrants reverting the applied Animation Modifier (false) */
-			static bool HandleWarning(const UAnimationModifier* Modifier, const FText& Message, const FText* OptTitle = nullptr);
+			static bool HandleWarning(const UAnimationModifier* Modifier, const FText& Message, const FText& Title);
 
 private:
 			// Open a scope to control error handling when batch applying animation modifiers

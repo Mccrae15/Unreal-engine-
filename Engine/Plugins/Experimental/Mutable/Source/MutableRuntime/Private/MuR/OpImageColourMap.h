@@ -8,23 +8,27 @@
 namespace mu
 {
 
-	inline ImagePtr ImageColourMap( const Image* pSource, const Image* pMask, const Image* pMap )
+	inline void ImageColourMap( Image* pDest, const Image* pSource, const Image* pMask, const Image* pMap, bool bOnlyOneMip )
 	{
 		check( pSource->GetSizeX() == pMask->GetSizeX() );
 		check( pSource->GetSizeY() == pMask->GetSizeY() );
-        check( pMask->GetFormat() == EImageFormat::IF_L_UBYTE );
-
-		ImagePtr pDest = new Image( pSource->GetSizeX(),
-									pSource->GetSizeY(),
-                                    pSource->GetLODCount(),
-									pSource->GetFormat() );
+		check( pSource->GetLODCount() == pMask->GetLODCount() || bOnlyOneMip );
+		check( pMask->GetFormat() == EImageFormat::IF_L_UBYTE );
 
         uint8* pDestBuf = pDest->GetData();
         const uint8* pSourceBuf = pSource->GetData();
         const uint8* pMaskBuf = pMask->GetData();
 
 		// Generic implementation
-		int pixelCount = (int)pSource->CalculatePixelCount();
+		int32 PixelCount = 0;
+		if (bOnlyOneMip)
+		{
+			PixelCount = pSource->CalculatePixelCount(0);
+		}
+		else
+		{
+			PixelCount = pSource->CalculatePixelCount();
+		}
 
 		// Make a palette for faster conversion
         uint8 palette[256][4];
@@ -41,7 +45,7 @@ namespace mu
 		{
 		case EImageFormat::IF_L_UBYTE:
 		{
-			for ( int i=0; i<pixelCount; ++i )
+			for ( int i=0; i< PixelCount; ++i )
 			{
                 uint8 m_8 = pMaskBuf[i];
 				if (m_8>127)
@@ -58,7 +62,7 @@ namespace mu
 
 		case EImageFormat::IF_RGB_UBYTE:
 		{
-			for ( int i=0; i<pixelCount; ++i )
+			for ( int i=0; i< PixelCount; ++i )
 			{
                 uint8 m_8 = pMaskBuf[i];
 				if (m_8>127)
@@ -79,7 +83,7 @@ namespace mu
 
         case EImageFormat::IF_RGBA_UBYTE:
         {
-            for ( int i=0; i<pixelCount; ++i )
+            for ( int i=0; i< PixelCount; ++i )
             {
                 uint8 m_8 = pMaskBuf[i];
                 if (m_8>127)
@@ -102,7 +106,7 @@ namespace mu
 
         case EImageFormat::IF_BGRA_UBYTE:
         {
-            for ( int i=0; i<pixelCount; ++i )
+            for ( int i=0; i< PixelCount; ++i )
             {
                 uint8 m_8 = pMaskBuf[i];
                 if (m_8>127)
@@ -126,8 +130,6 @@ namespace mu
 		default:
 			check(false);
 		}
-
-		return pDest;
 	}
 
 }

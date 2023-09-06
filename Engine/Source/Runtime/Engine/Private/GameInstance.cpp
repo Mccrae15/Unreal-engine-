@@ -30,7 +30,6 @@
 #include "Settings/LevelEditorPlayNetworkEmulationSettings.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/EditorEngine.h"
-#include "StudioAnalytics.h"
 #else
 #include "TimerManager.h"
 #include "UObject/Package.h"
@@ -277,7 +276,7 @@ static ENetMode GetNetModeFromPlayNetMode(const EPlayNetMode InPlayNetMode, cons
 
 FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanceIndex, const FGameInstancePIEParameters& Params)
 {
-	PIEStartTime = Params.PIEStartTime;
+	FWorldDelegates::OnPIEStarted.Broadcast(this);
 
 	UEditorEngine* const EditorEngine = CastChecked<UEditorEngine>(GetEngine());
 
@@ -325,7 +324,7 @@ FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanc
 			UWorld* WorldToDuplicate = Cast<UWorld>(TargetWorld.TryLoad());
 			if (WorldToDuplicate)
 			{
-				WorldToDuplicate->ChangeFeatureLevel(EditorEngine->EditorWorld->FeatureLevel, false);
+				WorldToDuplicate->ChangeFeatureLevel(EditorEngine->EditorWorld->GetFeatureLevel(), false);
 				NewWorld = EditorEngine->CreatePIEWorldByDuplication(*WorldContext, WorldToDuplicate, PIEMapName);
 			}
 		}
@@ -351,16 +350,18 @@ FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanc
 	WorldContext->AddRef(static_cast<UWorld*&>(EditorEngine->PlayWorld));	// Tie this context to this UEngine::PlayWorld*		// @fixme, needed still?
 	NewWorld->bKismetScriptError = Params.bAnyBlueprintErrors;
 
-	// Initialize the world after setting world context to be consistent with normal loads
-	EditorEngine->PostCreatePIEWorld(NewWorld);
-
 	// Do a GC pass if necessary to remove any potentially unreferenced objects
 	if(bNeedsGarbageCollection)
 	{
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 	}
 
+	// This creates the game instance subsystems
 	Init();
+	
+	// Initialize the world after setting world context and initializing the game instance to be consistent with normal loads.
+	// This creates the world subsystems and prepares to begin play
+	EditorEngine->PostCreatePIEWorld(NewWorld);
 
 	// Games can override this to return failure if PIE is not allowed for some reason
 	return FGameInstancePIEResult::Success();
@@ -375,6 +376,7 @@ void UGameInstance::ReportPIEStartupTime()
 		static bool bHasRunPIEThisSession = false;
 
 		bool bReportFirstTime = false;
+		
 		if (!bHasRunPIEThisSession)
 		{
 			bReportFirstTime = true;
@@ -382,12 +384,9 @@ void UGameInstance::ReportPIEStartupTime()
 		}
 
 		bReportedPIEStartupTime = true;
-		const double TimeToStartPIE = FStudioAnalytics::GetAnalyticSeconds() - PIEStartTime;
-		FStudioAnalytics::FireEvent_Loading(TEXT("PIE.TotalStartupTime"), TimeToStartPIE, {
-			FAnalyticsEventAttribute(TEXT("MapName"), UWorld::RemovePIEPrefix(FPackageName::GetShortName(PIEMapName))),
-			FAnalyticsEventAttribute(TEXT("FirstTime"), bReportFirstTime)
-			});
 	}
+
+	FWorldDelegates::OnPIEReady.Broadcast(this);
 #endif
 }
 
@@ -514,7 +513,7 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 		SlowTask.EnterProgressFrame(10, NSLOCTEXT("UnrealEd", "PIEInitializingActors", "Starting PIE (Initializing Actors)..."));
 		PlayWorld->InitializeActorsForPlay(URL);
 		// calling it after InitializeActorsForPlay has been called to have all potential bounding boxed initialized
-		FNavigationSystem::AddNavigationSystemToWorld(*PlayWorld, LocalPlayers.Num() > 0 ? FNavigationSystemRunMode::PIEMode : FNavigationSystemRunMode::SimulationMode);
+		FNavigationSystem::AddNavigationSystemToWorld(*PlayWorld, FNavigationSystemRunMode::PIEMode);
 
 		// @todo, just use WorldContext.GamePlayer[0]?
 		if (LocalPlayer)
@@ -654,7 +653,7 @@ void UGameInstance::StartGameInstance()
 				&& FMessageDialog::Open(EAppMsgType::OkCancel, Message) != EAppReturnType::Ok)
 			{
 				// user canceled (maybe a typo while attempting to run a commandlet)
-				FPlatformMisc::RequestExit(false);
+				FPlatformMisc::RequestExit(false, TEXT("UGameInstance::StartGameInstance.Cancelled"));
 				return;
 			}
 			else
@@ -666,7 +665,7 @@ void UGameInstance::StartGameInstance()
 		{
 			const FText Message = FText::Format(NSLOCTEXT("Engine", "MapNotFoundNoFallback", "The map specified on the commandline '{0}' could not be found. Exiting."), FText::FromString(URL.Map));
 			FMessageDialog::Open(EAppMsgType::Ok, Message);
-			FPlatformMisc::RequestExit(false);
+			FPlatformMisc::RequestExit(false, TEXT("UGameInstance::StartGameInstance.MapNotFound"));
 			return;
 		}
 	}
@@ -677,7 +676,7 @@ void UGameInstance::StartGameInstance()
 		UE_LOG(LogLoad, Error, TEXT("%s"), *FString::Printf(TEXT("Failed to enter %s: %s. Please check the log for errors."), *DefaultMap, *Error));
 		const FText Message = FText::Format(NSLOCTEXT("Engine", "DefaultMapNotFound", "The default map '{0}' could not be found. Exiting."), FText::FromString(DefaultMap));
 		FMessageDialog::Open(EAppMsgType::Ok, Message);
-		FPlatformMisc::RequestExit(false);
+		FPlatformMisc::RequestExit(false, TEXT("UGameInstance::StartGameInstance.BrowseFailure"));
 		return;
 	}
 
@@ -755,6 +754,7 @@ bool UGameInstance::HandleTravelCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWo
 	return Engine->HandleTravelCommand(Cmd, Ar, InWorld);
 }
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool UGameInstance::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 	// @todo a bunch of stuff in UEngine probably belongs here as well
@@ -777,6 +777,7 @@ bool UGameInstance::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 
 	return false;
 }
+#endif // UE_ALLOW_EXEC_COMMANDS
 
 ULocalPlayer* UGameInstance::CreateInitialPlayer(FString& OutError)
 {
@@ -822,6 +823,14 @@ ULocalPlayer* UGameInstance::CreateLocalPlayer(FPlatformUserId UserId, FString& 
 		{
 			for (int32 Id = 0; Id < MaxSplitscreenPlayers; ++Id)
 			{
+				// Iterate until we find a null player. We want the next available platform user ID
+				FPlatformUserId DummyId = IPlatformInputDeviceMapper::Get().GetPlatformUserForUserIndex(Id);
+
+				if (DummyId.IsValid())
+				{
+					UserId = DummyId;
+				}
+				
 				if (FindLocalPlayerFromControllerId(Id) == nullptr)
 				{
 					break;
@@ -984,14 +993,14 @@ void UGameInstance::DebugCreatePlayer(int32 ControllerId)
 {
 #if !UE_BUILD_SHIPPING
 	FString Error;
-	CreateLocalPlayer(ControllerId, Error, true);
-	if (Error.Len() > 0)
+	const ULocalPlayer* LP = CreateLocalPlayer(ControllerId, Error, true);
+	if (Error.Len() > 0 || !LP)
 	{
 		UE_LOG(LogPlayerManagement, Error, TEXT("Failed to DebugCreatePlayer: %s"), *Error);
 	}
 	else
 	{
-		FPlatformUserId UserId = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+		FPlatformUserId UserId = LP->GetPlatformUserId();
 		FInputDeviceId InputDevice = INPUTDEVICEID_NONE;
 		IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
 		DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, UserId, InputDevice);
@@ -1288,9 +1297,9 @@ bool UGameInstance::EnableListenServer(bool bEnable, int32 PortOverride /*= 0*/)
 
 	ENetMode ExistingMode = World->GetNetMode();
 
-	if (ExistingMode == NM_Client || ExistingMode == NM_DedicatedServer)
+	if (ExistingMode == NM_Client)
 	{
-		// Clients and dedicated servers cannot change to listen!
+		// Clients cannot change to listen!
 		return false;
 	}
 
@@ -1304,7 +1313,7 @@ bool UGameInstance::EnableListenServer(bool bEnable, int32 PortOverride /*= 0*/)
 		}
 		WorldContext->LastURL.AddOption(TEXT("Listen"));
 
-		if (ExistingMode == NM_Standalone)
+		if (!World->GetNetDriver())
 		{
 			// This actually opens the port
 			FURL ListenURL = WorldContext->LastURL;
@@ -1318,13 +1327,19 @@ bool UGameInstance::EnableListenServer(bool bEnable, int32 PortOverride /*= 0*/)
 	}
 	else
 	{
+		if (ExistingMode == NM_DedicatedServer)
+		{
+			UE_LOG(LogGameSession, Warning, TEXT("EnableListenServer: Dedicated servers always listen for connections"));
+			return false;
+		}
+
 		WorldContext->LastURL.RemoveOption(TEXT("Listen"));
 		WorldContext->LastURL.Port = FURL::UrlConfig.DefaultPort;
 
 		if (ExistingMode == NM_ListenServer)
 		{
 			// What to do in this case is very game-specific
-			UE_LOG(LogGameSession, Warning, TEXT("Disabling a listen server with active connections does not disconnect existing players by default"));
+			UE_LOG(LogGameSession, Warning, TEXT("EnableListenServer: Disabling a listen server with active connections does not disconnect existing players by default"));
 		}
 
 		return true;

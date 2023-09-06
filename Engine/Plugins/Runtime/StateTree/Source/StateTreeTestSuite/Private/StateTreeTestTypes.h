@@ -117,6 +117,7 @@ struct FTestEval_A : public FStateTreeEvaluatorBase
 	using FInstanceDataType = FTestEval_AInstanceData;
 
 	FTestEval_A() = default;
+	FTestEval_A(const FName InName) { Name = InName; }
 	virtual ~FTestEval_A() override {}
 
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
@@ -149,6 +150,54 @@ struct FTestTask_B : public FStateTreeTaskBase
 	
 	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
 };
+
+USTRUCT()
+struct FTestTask_PrintValueInstanceData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Parameter")
+	int32 Value = 0;
+};
+
+USTRUCT()
+struct FTestTask_PrintValue : public FStateTreeTaskBase
+{
+	GENERATED_BODY()
+
+	using FInstanceDataType = FTestTask_PrintValueInstanceData;
+
+	FTestTask_PrintValue() = default;
+	FTestTask_PrintValue(const FName InName) { Name = InName; }
+	virtual ~FTestTask_PrintValue() override {}
+	
+	virtual const UStruct* GetInstanceDataType() const override { return FInstanceDataType::StaticStruct(); }
+
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const override
+	{
+		FTestStateTreeExecutionContext& TestContext = static_cast<FTestStateTreeExecutionContext&>(Context);
+		const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+		TestContext.Log(Name,  FString::Printf(TEXT("EnterState%d"), InstanceData.Value));
+		return EStateTreeRunStatus::Running;
+	}
+
+	virtual void ExitState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const override
+	{
+		FTestStateTreeExecutionContext& TestContext = static_cast<FTestStateTreeExecutionContext&>(Context);
+		const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+		TestContext.Log(Name,  FString::Printf(TEXT("ExitState%d"), InstanceData.Value));
+	}
+
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const override
+	{
+		FTestStateTreeExecutionContext& TestContext = static_cast<FTestStateTreeExecutionContext&>(Context);
+		const FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
+		TestContext.Log(Name,  FString::Printf(TEXT("Tick%d"), InstanceData.Value));
+		
+		return EStateTreeRunStatus::Running;
+	};
+};
+
 
 USTRUCT()
 struct FTestTask_StandInstanceData
@@ -189,6 +238,20 @@ struct FTestTask_Stand : public FStateTreeTaskBase
 	virtual void ExitState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const override
 	{
 		FTestStateTreeExecutionContext& TestContext = static_cast<FTestStateTreeExecutionContext&>(Context);
+
+		if (Transition.CurrentRunStatus == EStateTreeRunStatus::Succeeded)
+		{
+			TestContext.Log(Name, TEXT("ExitSucceeded"));
+		}
+		else if (Transition.CurrentRunStatus == EStateTreeRunStatus::Failed)
+		{
+			TestContext.Log(Name, TEXT("ExitFailed"));
+		}
+		else if (Transition.CurrentRunStatus == EStateTreeRunStatus::Stopped)
+		{
+			TestContext.Log(Name, TEXT("ExitStopped"));
+		}
+		
 		TestContext.Log(Name, TEXT("ExitState"));
 	}
 
@@ -207,14 +270,14 @@ struct FTestTask_Stand : public FStateTreeTaskBase
 		
 		InstanceData.CurrentTick++;
 		
-		return (InstanceData.CurrentTick >= TicksToCompletion) ? TickResult : EStateTreeRunStatus::Running;
+		return (InstanceData.CurrentTick >= TicksToCompletion) ? TickCompletionResult : EStateTreeRunStatus::Running;
 	};
 
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	int32 TicksToCompletion = 1;
 
 	UPROPERTY(EditAnywhere, Category = Parameter)
-	EStateTreeRunStatus TickResult = EStateTreeRunStatus::Succeeded;
+	EStateTreeRunStatus TickCompletionResult = EStateTreeRunStatus::Succeeded;
 
 	UPROPERTY(EditAnywhere, Category = Parameter)
 	EStateTreeRunStatus EnterStateResult = EStateTreeRunStatus::Running;
@@ -254,3 +317,93 @@ struct FStateTreeTestRunContext
 	int32 Count = 0;
 };
 
+
+USTRUCT()
+struct FStateTreeTest_PropertyStructB
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "")
+	int32 B = 0;
+};
+
+USTRUCT()
+struct FStateTreeTest_PropertyStruct
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "")
+	int32 A = 0;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	int32 B = 0;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	FStateTreeTest_PropertyStructB StructB;
+};
+
+UCLASS(HideDropdown)
+class UStateTreeTest_PropertyObjectInstanced : public UObject
+{
+	GENERATED_BODY()
+public:
+
+	UPROPERTY(EditAnywhere, Category = "")
+	int32 A = 0;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	FInstancedStruct InstancedStruct;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	TArray<FGameplayTag> ArrayOfTags;
+};
+
+UCLASS(HideDropdown)
+class UStateTreeTest_PropertyObjectInstancedWithB : public UStateTreeTest_PropertyObjectInstanced
+{
+	GENERATED_BODY()
+public:
+
+	UPROPERTY(EditAnywhere, Category = "")
+	int32 B = 0;
+};
+
+UCLASS(HideDropdown)
+class UStateTreeTest_PropertyObject : public UObject
+{
+	GENERATED_BODY()
+public:
+	
+	UPROPERTY(EditAnywhere, Instanced, Category = "")
+	TObjectPtr<UStateTreeTest_PropertyObjectInstanced> InstancedObject;
+
+	UPROPERTY(EditAnywhere, Instanced, Category = "")
+	TArray<TObjectPtr<UStateTreeTest_PropertyObjectInstanced>> ArrayOfInstancedObjects;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	TArray<int32> ArrayOfInts;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	FInstancedStruct InstancedStruct;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	TArray<FInstancedStruct> ArrayOfInstancedStructs;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	FStateTreeTest_PropertyStruct Struct;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	TArray<FStateTreeTest_PropertyStruct> ArrayOfStruct;
+};
+
+USTRUCT()
+struct FStateTreeTest_PropertyCopy
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "")
+	FStateTreeTest_PropertyStruct Item;
+
+	UPROPERTY(EditAnywhere, Category = "")
+	TArray<FStateTreeTest_PropertyStruct> Array;
+};

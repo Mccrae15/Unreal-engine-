@@ -25,6 +25,21 @@ static FName ProviderName("Perforce");
 
 #define LOCTEXT_NAMESPACE "PerforceSourceControl"
 
+namespace 
+{
+	/** Amount of seconds an idle persistent connection can remain open before the provider closes it.
+	 * This lowers the number of open connections to a perforce server across a studio
+	 * to conserve memory usage of the server.
+	 */
+	float IdleConnectionDisconnectSeconds = 60 * 60.0; // 1 hour
+
+	static FAutoConsoleVariableRef CVarIdleConnectionDisconnectSeconds(
+		TEXT("SourceControl.Perforce.IdleConnectionDisconnectSeconds"),
+		IdleConnectionDisconnectSeconds,
+		TEXT("The number of seconds a perforce connection will be kept open without activity before being automatically disconnected"),
+		ECVF_Default);
+}
+
 FPerforceSourceControlProvider::FPerforceSourceControlProvider()
 	: PerforceSCCSettings(*this, FStringView())
 	, InitialSettings(FSourceControlInitSettings::EBehavior::OverrideExisting)
@@ -144,6 +159,18 @@ FText FPerforceSourceControlProvider::GetStatusText() const
 	Args.Add( TEXT("ErrorText"), FormattedError);
 
 	return FText::Format( LOCTEXT("PerforceStatusText", "{ErrorText}Enabled: {IsEnabled}\nConnected: {IsConnected}\n\nPort: {PortNumber}\nUser name: {UserName}\nClient name: {ClientSpecName}"), Args );
+}
+
+TMap<ISourceControlProvider::EStatus, FString> FPerforceSourceControlProvider::GetStatus() const
+{
+	const FPerforceSourceControlSettings& Settings = AccessSettings();
+	TMap<EStatus, FString> Result;
+	Result.Add(EStatus::Enabled, IsEnabled() ? TEXT("Yes") : TEXT("No") );
+	Result.Add(EStatus::Connected, (IsEnabled() && IsAvailable()) ? TEXT("Yes") : TEXT("No") );
+	Result.Add(EStatus::Port, Settings.GetPort());
+	Result.Add(EStatus::User, Settings.GetUserName());
+	Result.Add(EStatus::Client, Settings.GetWorkspace());
+	return Result;
 }
 
 bool FPerforceSourceControlProvider::IsEnabled() const
@@ -446,6 +473,12 @@ ECommandResult::Type FPerforceSourceControlProvider::Execute( const FSourceContr
 	}
 }
 
+bool FPerforceSourceControlProvider::CanExecuteOperation( const FSourceControlOperationRef& InOperation ) const
+{
+	FPerforceSourceControlProvider* NonConstThis = const_cast<FPerforceSourceControlProvider*>(this);
+	return IPerforceSourceControlWorker::CreateWorker(InOperation->GetName(), *NonConstThis).IsValid();
+}
+
 bool FPerforceSourceControlProvider::CanCancelOperation( const FSourceControlOperationRef& InOperation ) const
 {
 	for (int32 CommandIndex = 0; CommandIndex < CommandQueue.Num(); ++CommandIndex)
@@ -605,11 +638,27 @@ void FPerforceSourceControlProvider::Tick()
 			break;
 		}
 	}
-
+	
 	if(bStatesUpdated)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FPerforceSourceControlProvider::Tick::BroadcastStateUpdate);
 		OnSourceControlStateChanged.Broadcast();
+	}
+
+	if (PersistentConnection)
+	{
+		const double Now = FPlatformTime::Seconds();
+
+		const double ElapsedSinceLastComm = Now - PersistentConnection->GetLatestCommuncationTime();
+		
+		if (ElapsedSinceLastComm > IdleConnectionDisconnectSeconds)
+		{
+			UE_LOG(LogSourceControl, Display,
+				TEXT("Persistent perforce connection has not been used in %0.f seconds. Dropping connection"),
+				ElapsedSinceLastComm);
+
+			Close();
+		}
 	}
 }
 
@@ -730,6 +779,16 @@ bool FPerforceSourceControlProvider::TryToDownloadFileFromBackgroundThread(const
 	// Sanity check to make sure we are not running a command that modifies the cached states from a background thread
 	check(Command.Worker->UpdateStates() == false);
 
+	if (!Command.bConnectionWasSuccessful && !Command.bCancelled)
+	{
+		Command.ResultInfo.OnConnectionFailed();
+		
+	}
+	else if (Command.bConnectionDropped)
+	{
+		Command.ResultInfo.OnConnectionDroped();
+	}
+
 	OutputCommandMessages(Command);
 
 	if (!Command.bCancelledWhileTryingToConnect)
@@ -805,7 +864,7 @@ ECommandResult::Type FPerforceSourceControlProvider::SwitchWorkspace(FStringView
 		P4Settings.SetWorkspace(WorkspaceName);
 	}
 
-	UE_LOG(LogSourceControl, Log, TEXT("Switched workspaces from '%s' to '%s%'"), *OldWorkspaceName, *WorkspaceName);
+	UE_LOG(LogSourceControl, Log, TEXT("Switched workspaces from '%s' to '%s%%'"), *OldWorkspaceName, *WorkspaceName);
 
 	return ECommandResult::Succeeded;
 }

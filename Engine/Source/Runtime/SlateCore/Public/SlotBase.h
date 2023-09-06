@@ -10,16 +10,16 @@ class FChildren;
 class SWidget;
 
 /** Slot are a container of a SWidget used by the FChildren. */
-class SLATECORE_API FSlotBase
+class FSlotBase
 {
 public:
-	FSlotBase();
-	FSlotBase(const FChildren& InParent);
-	FSlotBase(const TSharedRef<SWidget>& InWidget);
+	SLATECORE_API FSlotBase();
+	SLATECORE_API FSlotBase(const FChildren& InParent);
+	SLATECORE_API FSlotBase(const TSharedRef<SWidget>& InWidget);
 	FSlotBase& operator=(const FSlotBase&) = delete;
 	FSlotBase(const FSlotBase&) = delete;
 
-	virtual ~FSlotBase();
+	SLATECORE_API virtual ~FSlotBase();
 
 public:
 	struct FSlotArguments {};
@@ -38,20 +38,23 @@ public:
 	 * Access the widget that own the slot.
 	 * The owner can be invalid when the slot is not attached.
 	 */
-	SWidget* GetOwnerWidget() const;
+	SLATECORE_API SWidget* GetOwnerWidget() const;
 
 	/**
 	 * Set the owner of the slot.
 	 * Slots cannot be reassigned to different parents.
 	 */
-	void SetOwner(const FChildren& Children);
+	SLATECORE_API void SetOwner(const FChildren& Children);
 
 	/** Attach the child widget the slot now owns. */
+	FORCEINLINE_DEBUGGABLE void AttachWidget(TSharedRef<SWidget>&& InWidget)
+	{
+		DetatchParentFromContent();
+		Widget = MoveTemp(InWidget);
+		AfterContentOrOwnerAssigned();
+	}
 	FORCEINLINE_DEBUGGABLE void AttachWidget( const TSharedRef<SWidget>& InWidget )
 	{
-		// TODO: If we don't hold a reference here, ~SWidget() could called on the old widget before the assignment takes place
-		// The behavior of TShareRef is going to change in the near future to avoid this issue and this should then be reverted.
-		TSharedRef<SWidget> LocalWidget = Widget;
 		DetatchParentFromContent();
 		Widget = InWidget;
 		AfterContentOrOwnerAssigned();
@@ -72,10 +75,10 @@ public:
 	 * The removed widget is returned so that operations could be performed on it.
 	 * If the null widget was being stored, an invalid shared ptr is returned instead.
 	 */
-	const TSharedPtr<SWidget> DetachWidget();
+	SLATECORE_API const TSharedPtr<SWidget> DetachWidget();
 
 	/** Invalidate the widget's owner. */
-	void Invalidate(EInvalidateWidgetReason InvalidateReason);
+	SLATECORE_API void Invalidate(EInvalidateWidgetReason InvalidateReason);
 
 protected:
 	/**
@@ -105,8 +108,8 @@ protected:
 	}
 
 private:
-	void DetatchParentFromContent();
-	void AfterContentOrOwnerAssigned();
+	SLATECORE_API void DetatchParentFromContent();
+	SLATECORE_API void AfterContentOrOwnerAssigned();
 
 private:
 	/** The children that own the slot. */
@@ -130,6 +133,11 @@ class TSlotBase : public FSlotBase
 public:
 	using FSlotBase::FSlotBase;
 
+	SlotType& operator[](TSharedRef<SWidget>&& InChildWidget)
+	{
+		this->AttachWidget(MoveTemp(InChildWidget));
+		return static_cast<SlotType&>(*this);
+	}
 	SlotType& operator[]( const TSharedRef<SWidget>& InChildWidget )
 	{
 		this->AttachWidget(InChildWidget);
@@ -164,6 +172,11 @@ public:
 
 	public:
 		/** Attach the child widget the slot will own. */
+		typename SlotType::FSlotArguments& operator[](TSharedRef<SWidget>&& InChildWidget)
+		{
+			ChildWidget = MoveTemp(InChildWidget);
+			return Me();
+		}
 		typename SlotType::FSlotArguments& operator[](const TSharedRef<SWidget>& InChildWidget)
 		{
 			ChildWidget = InChildWidget;

@@ -294,11 +294,13 @@ namespace Metasound
 						Edge->FromNodeID = InController.GetOwningNodeID();
 						Edge->FromVertexID = InController.GetID();
 
+						ClearConnectedObjectLiterals();
+
 						return true;
 					}
 					else
 					{
-						UE_LOG(LogMetaSound, Error, TEXT("Cannot connect incompatible vertex access types (Input)%s and (Output)%s."), *LexToString(GetVertexAccessType()), *LexToString(InController.GetVertexAccessType()));
+						UE_LOG(LogMetaSound, Error, TEXT("Cannot connect incompatible vertex access types (Input)%s and (Output)%s."), LexToString(GetVertexAccessType()), LexToString(InController.GetVertexAccessType()));
 					}
 				}
 				else
@@ -388,6 +390,21 @@ namespace Metasound
 			}
 
 			return false;
+		}
+		
+		void FBaseInputController::ClearConnectedObjectLiterals()
+		{
+			FDataTypeRegistryInfo DataTypeInfo;
+			if (IsConnected())
+			{
+				if (IDataTypeRegistry::Get().GetDataTypeInfo(GetDataType(), DataTypeInfo))
+				{
+					if (DataTypeInfo.IsDataTypeProxyParsable())
+					{
+						ClearLiteral();
+					}
+				}
+			}
 		}
 
 		const FMetasoundFrontendEdge* FBaseInputController::FindEdge() const

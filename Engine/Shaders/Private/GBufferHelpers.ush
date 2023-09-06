@@ -332,7 +332,7 @@ void GBufferPreEncode(inout FGBufferData GBuffer, bool bChecker, float Geometric
 
 // should move this
 #if GBUFFER_HAS_DIFFUSE_SAMPLE_OCCLUSION
-		GBuffer.GenericAO = float(GBuffer.DiffuseIndirectSampleOcclusion) * rcp(255) + (0.5 / 255.0);
+		GBuffer.GenericAO = float(GBuffer.DiffuseIndirectSampleOcclusion) * (1.0f / 255.0f);
 #elif ALLOW_STATIC_LIGHTING
 		// No space for AO. Multiply IndirectIrradiance by AO instead of storing.
 		GBuffer.GenericAO = EncodeIndirectIrradiance(GBuffer.IndirectIrradiance * GBuffer.GBufferAO) + QuantizationBias * (1.0 / 255.0);
@@ -374,10 +374,10 @@ void AdjustBaseColorAndSpecularColorForSubsurfaceProfileLightingCopyHack(inout f
 
 void GBufferPostDecode(inout FGBufferData Ret, bool bChecker, bool bGetNormalizedNormal)
 {
-	Ret.CustomData = HasCustomGBufferData(Ret.ShadingModelID) ? Ret.CustomData : 0.0f;
+	Ret.CustomData = HasCustomGBufferData(Ret.ShadingModelID) ? Ret.CustomData : half(0.0f);
 
-	Ret.PrecomputedShadowFactors = !(Ret.SelectiveOutputMask & 0x2) ? Ret.PrecomputedShadowFactors : ((Ret.SelectiveOutputMask & 0x4) ? 0.0f : 1.0f);
-	Ret.Velocity = !(Ret.SelectiveOutputMask & 0x8) ? Ret.Velocity : 0.0f;
+	Ret.PrecomputedShadowFactors = !(Ret.SelectiveOutputMask & 0x2) ? Ret.PrecomputedShadowFactors : ((Ret.SelectiveOutputMask & 0x4) ? half(0.0f) : half(1.0f));
+	Ret.Velocity = !(Ret.SelectiveOutputMask & 0x8) ? Ret.Velocity : half(0.0f);
 	bool bHasAnisotropy = (Ret.SelectiveOutputMask & 0x1);
 
 	Ret.StoredBaseColor = Ret.BaseColor;
@@ -391,7 +391,7 @@ void GBufferPostDecode(inout FGBufferData Ret, bool bChecker, bool bGetNormalize
 #elif ALLOW_STATIC_LIGHTING
 	Ret.GBufferAO = 1;
 	Ret.DiffuseIndirectSampleOcclusion = 0x0;
-	Ret.IndirectIrradiance = DecodeIndirectIrradiance(Ret.GenericAO.x);
+	Ret.IndirectIrradiance = half(DecodeIndirectIrradiance(Ret.GenericAO.x));
 #else
 	Ret.GBufferAO = Ret.GenericAO;
 	Ret.DiffuseIndirectSampleOcclusion = 0x0;
@@ -434,8 +434,8 @@ void GBufferPostDecode(inout FGBufferData Ret, bool bChecker, bool bGetNormalize
 	
 	if (bHasAnisotropy)
 	{
-		Ret.WorldTangent = DecodeNormal(Ret.WorldTangent);
-		Ret.Anisotropy = Ret.Anisotropy * 2.0f - 1.0f;
+		Ret.WorldTangent = half3(DecodeNormal(Ret.WorldTangent));
+		Ret.Anisotropy = half(Ret.Anisotropy * 2.0f - 1.0f);
 	
 		if(bGetNormalizedNormal)
 		{

@@ -15,7 +15,43 @@
 #include "Misc/DisplayClusterGlobals.h"
 #include "Misc/Parse.h"
 #include "DisplayClusterEnums.h"
+#include "Version/DisplayClusterICVFXCameraCustomVersion.h"
 
+
+void UDisplayClusterICVFXCameraComponent::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+	Ar.UsingCustomVersion(FDisplayClusterICVFXCameraCustomVersion::GUID);
+}
+
+void UDisplayClusterICVFXCameraComponent::PostLoad()
+{
+	Super::PostLoad();
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	const int32 CustomVersion = GetLinkerCustomVersion(FDisplayClusterICVFXCameraCustomVersion::GUID);
+	if (CustomVersion < FDisplayClusterICVFXCameraCustomVersion::UpdateChromakeyConfig)
+	{
+		const bool bHasCustomArchetype = GetArchetype() != StaticClass()->ClassDefaultObject;
+		const int32 ArchetypeVersion = GetArchetype()->GetLinkerCustomVersion(FDisplayClusterICVFXCameraCustomVersion::GUID);
+
+		// UE-184291: If this camera component has a user-defined archetype and that archetype has been updated already, do not
+		// attempt to update the component's properties; the new properties will already be set to the correct values from the
+		// archetype and overriding them to these "default" values can cause bad things to happen. 
+		if (!bHasCustomArchetype || ArchetypeVersion < FDisplayClusterICVFXCameraCustomVersion::UpdateChromakeyConfig)
+		{
+			const bool bCustomChromakey = CameraSettings.Chromakey.ChromakeyRenderTexture.bEnable_DEPRECATED;
+			CameraSettings.Chromakey.ChromakeyType = bCustomChromakey ? 
+				EDisplayClusterConfigurationICVFX_ChromakeyType::CustomChromakey :
+				EDisplayClusterConfigurationICVFX_ChromakeyType::InnerFrustum;
+
+			// New ICVFX cameras default to the global chromakey settings, but for pre 5.3 cameras, the source must be set to the ICVFX camera
+			CameraSettings.Chromakey.ChromakeySettingsSource = EDisplayClusterConfigurationICVFX_ChromakeySettingsSource::ICVFXCamera;
+		}
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
 
 void UDisplayClusterICVFXCameraComponent::GetDesiredView(FMinimalViewInfo& DesiredView)
 {
@@ -52,7 +88,7 @@ bool UDisplayClusterICVFXCameraComponent::IsICVFXEnabled() const
 		static const FString NodeId = GDisplayCluster->GetPrivateClusterMgr()->GetNodeId();
 
 		// First condition to render offscreen: it has media output assigned
-		const bool bUsesMediaOutput = CameraSettings.RenderSettings.Media.bEnable ? !!CameraSettings.RenderSettings.Media.GetMediaOutput(NodeId) : false;
+		const bool bUsesMediaOutput = (CameraSettings.RenderSettings.Media.bEnable && CameraSettings.RenderSettings.Media.IsMediaOutputAssigned(NodeId));
 
 		// Get backbuffer media settings
 		const FDisplayClusterConfigurationMedia* BackbufferMediaSettings = nullptr;
@@ -69,7 +105,9 @@ bool UDisplayClusterICVFXCameraComponent::IsICVFXEnabled() const
 
 		// Second condition to render offscreen: the backbuffer has media output assigned.
 		// This means the whole frame including ICVFX cameras need to be rendered.
-		const bool bIsBackbufferBeingCaptured = BackbufferMediaSettings ? !!BackbufferMediaSettings->MediaOutput : false;
+		const bool bIsBackbufferBeingCaptured = BackbufferMediaSettings ?
+			BackbufferMediaSettings->bEnable && BackbufferMediaSettings->IsMediaOutputAssigned() :
+			false;
 
 		// Finally make a decision if the camera should be rendered
 		return CameraSettings.bEnable && (bUsesMediaOutput || bIsBackbufferBeingCaptured);
@@ -110,14 +148,13 @@ void UDisplayClusterICVFXCameraComponent::UpdateOverscanEstimatedFrameSize()
 		return;
 	}
 
-	float InnerFrustumResolutionWidth = RootActor->GetStageSettings().DefaultFrameSize.Width * CameraSettings.BufferRatio;
-	float InnerFrustumResolutionHeight = RootActor->GetStageSettings().DefaultFrameSize.Height * CameraSettings.BufferRatio;
+	const FDisplayClusterConfigurationICVFX_StageSettings& StageSettings = RootActor->GetStageSettings();
 
-	if (CameraSettings.RenderSettings.CustomFrameSize.bUseCustomSize)
-	{
-		InnerFrustumResolutionWidth = CameraSettings.RenderSettings.CustomFrameSize.CustomWidth * CameraSettings.BufferRatio;
-		InnerFrustumResolutionHeight = CameraSettings.RenderSettings.CustomFrameSize.CustomHeight * CameraSettings.BufferRatio;
-	}
+	const float CameraBufferRatio = CameraSettings.GetCameraBufferRatio(StageSettings);
+	const FIntPoint InnerFrustumSize = CameraSettings.GetCameraFrameSize(StageSettings);
+
+	float InnerFrustumResolutionWidth = InnerFrustumSize.X * CameraBufferRatio;
+	float InnerFrustumResolutionHeight = InnerFrustumSize.Y * CameraBufferRatio;
 
 	float EstimatedOverscanResolutionWidth = InnerFrustumResolutionWidth;
 	float EstimatedOverscanResolutionHeight = InnerFrustumResolutionHeight;

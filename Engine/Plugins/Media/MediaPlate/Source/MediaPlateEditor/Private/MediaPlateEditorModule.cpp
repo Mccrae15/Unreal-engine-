@@ -2,7 +2,6 @@
 
 #include "MediaPlateEditorModule.h"
 
-#include "AssetTools/MediaPlateActions.h"
 #include "Editor.h"
 #include "IPlacementModeModule.h"
 #include "ISequencerModule.h"
@@ -27,13 +26,13 @@
 
 DEFINE_LOG_CATEGORY(LogMediaPlateEditor);
 
+TSharedPtr<FMediaPlateEditorStyle> FMediaPlateEditorStyle::Singleton;
+
 void FMediaPlateEditorModule::StartupModule()
 {
-	Style = MakeShareable(new FMediaPlateEditorStyle());
+	FMediaPlateEditorStyle::Get();
 
 	FMediaPlateEditorCommands::Register();
-
-	RegisterAssetTools();
 	RegisterPlacementModeItems();
 	RegisterSectionMappings();
 
@@ -75,9 +74,7 @@ void FMediaPlateEditorModule::ShutdownModule()
 	{
 		SequencerModulePtr->UnRegisterTrackEditor(TrackEditorBindingHandle);
 	}
-
 	UnregisterPlacementModeItems();
-	UnregisterAssetTools();
 
 	// Unregister customizations.
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -153,7 +150,9 @@ const FPlacementCategoryInfo* FMediaPlateEditorModule::GetMediaCategoryRegistere
 	{
 		return RegisteredInfo;
 	}
-	else if (Style != nullptr)
+
+	const ISlateStyle* Style = &FMediaPlateEditorStyle::Get().Get();
+	if (Style != nullptr)
 	{
 		FPlacementCategoryInfo Info(
 			LOCTEXT("MediaPlateCategoryName", "Media Plate"),
@@ -171,19 +170,6 @@ const FPlacementCategoryInfo* FMediaPlateEditorModule::GetMediaCategoryRegistere
 	{
 		return nullptr;
 	}
-}
-
-void FMediaPlateEditorModule::RegisterAssetTools()
-{
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-
-	RegisterAssetTypeAction(AssetTools, MakeShareable(new FMediaPlateActions(Style.ToSharedRef())));
-}
-
-void FMediaPlateEditorModule::RegisterAssetTypeAction(IAssetTools& AssetTools, TSharedRef<IAssetTypeActions> Action)
-{
-	AssetTools.RegisterAssetTypeActions(Action);
-	RegisteredAssetTypeActions.Add(Action);
 }
 
 void FMediaPlateEditorModule::RegisterPlacementModeItems()
@@ -237,22 +223,6 @@ void FMediaPlateEditorModule::RegisterSectionMappings()
 	Section->AddCategory("Control");
 	Section->AddCategory("MediaPlate");
 }
-
-void FMediaPlateEditorModule::UnregisterAssetTools()
-{
-	FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools");
-
-	if (AssetToolsModule != nullptr)
-	{
-		IAssetTools& AssetTools = AssetToolsModule->Get();
-
-		for (TSharedRef<IAssetTypeActions>& Action : RegisteredAssetTypeActions)
-		{
-			AssetTools.UnregisterAssetTypeActions(Action);
-		}
-	}
-}
-
 
 void FMediaPlateEditorModule::UnregisterPlacementModeItems()
 {

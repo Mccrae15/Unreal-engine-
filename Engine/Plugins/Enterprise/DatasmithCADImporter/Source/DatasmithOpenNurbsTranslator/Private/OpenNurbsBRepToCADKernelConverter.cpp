@@ -20,7 +20,6 @@
 
 #include "CADKernel/Math/Boundary.h"
 #include "CADKernel/Math/Point.h"
-#include "CADKernel/Mesh/Meshers/ParametricMesher.h"
 #include "CADKernel/Mesh/Structure/ModelMesh.h"
 
 #include "CADKernel/Topo/Body.h"
@@ -289,6 +288,15 @@ TSharedPtr<UE::CADKernel::FTopologicalFace> FOpenNurbsBRepToCADKernelConverter::
 			Face->AddLoop(Loop);
 			bIsExternal = false;
 		}
+	}
+
+	if (Face->GetLoops().Num() == 0)
+	{
+		Face->SetAsDegenerated();
+		Face->Delete();
+
+		FMessage::Printf(EVerboseLevel::Log, TEXT("A Face is degenerate, this face is ignored\n"));
+		return TSharedPtr<FTopologicalFace>();
 	}
 
 	return Face;

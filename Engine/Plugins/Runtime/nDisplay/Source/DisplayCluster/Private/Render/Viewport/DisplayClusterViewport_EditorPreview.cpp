@@ -65,7 +65,7 @@ void FDisplayClusterViewport::CleanupViewState()
 
 FSceneViewStateInterface* FDisplayClusterViewport::GetViewState(uint32 ViewIndex)
 {
-	if (GDisplayClusterPreviewEnableViewState == 0 || (GDisplayClusterPreviewEnableConfiguratorViewState == 0 && Owner.IsEditorPreviewWorld()))
+	if (GDisplayClusterPreviewEnableViewState == 0 || (GDisplayClusterPreviewEnableConfiguratorViewState == 0 && IsCurrentWorldHasAnyType(EWorldType::EditorPreview)))
 	{
 		// Disable ViewState
 		ViewStates.Empty();
@@ -86,8 +86,8 @@ FSceneViewStateInterface* FDisplayClusterViewport::GetViewState(uint32 ViewIndex
 
 	if (ViewStates[ViewIndex]->GetReference() == NULL)
 	{
-		const UWorld* CurrentWorld = Owner.GetCurrentWorld();
-		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+		const UWorld* CurrentWorld = GetCurrentWorld();
+		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->GetFeatureLevel() : GMaxRHIFeatureLevel;
 
 		ViewStates[ViewIndex]->Allocate(FeatureLevel);
 	}
@@ -147,9 +147,12 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 
 		ViewInitOptions.BackgroundColor = FLinearColor::Black;
 
-		if (Owner.GetRenderFrameSettings().bPreviewEnablePostProcess == false)
+		if (const FDisplayClusterRenderFrameSettings* RenderFrameSettings = GetRenderFrameSettings())
 		{
-			ViewInitOptions.OverlayColor = FLinearColor::Black;
+			if (RenderFrameSettings->bPreviewEnablePostProcess == false)
+			{
+				ViewInitOptions.OverlayColor = FLinearColor::Black;
+			}
 		}
 
 		ViewInitOptions.bSceneCaptureUsesRayTracing = false;
@@ -204,107 +207,22 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 	return nullptr;
 }
 
-enum EDisplayClusterEyeType
-{
-	StereoLeft = 0,
-	Mono = 1,
-	StereoRight = 2,
-	COUNT
-};
-
 bool FDisplayClusterViewport::ImplPreview_CalculateStereoViewOffset(const uint32 InContextNum, FRotator& ViewRotation, const float WorldToMeters, FVector& ViewLocation)
 {
 	check(IsInGameThread());
 	check(WorldToMeters > 0.f);
 
-	if (!GetOwner().IsSceneOpened())
+	// Obtaining the internal viewpoint for a given viewport with stereo eye offset distance.
+	FMinimalViewInfo ViewInfo;
+	if (!SetupViewPoint(ViewInfo))
 	{
 		return false;
 	}
 
-	// Get root actor from viewport
-	ADisplayClusterRootActor* const RootActor = GetOwner().GetRootActor();
-	if (!RootActor)
-	{
-		// No root actor found in game manager.
-		return false;
-	}
+	ViewLocation = ViewInfo.Location;
+	ViewRotation = ViewInfo.Rotation;
 
-	const FDisplayClusterViewport_Context& ViewportContext = Contexts[InContextNum];
-
-	UE_LOG(LogDisplayClusterViewport, VeryVerbose, TEXT("OLD ViewLoc: %s, ViewRot: %s"), *ViewLocation.ToString(), *ViewRotation.ToString());
-	UE_LOG(LogDisplayClusterViewport, VeryVerbose, TEXT("WorldToMeters: %f"), WorldToMeters);
-
-
-	// Get camera ID assigned to the viewport
-	const FString& CameraId = RenderSettings.CameraId;
-
-	// Get camera component assigned to the viewport (or default camera if nothing assigned)
-	UDisplayClusterCameraComponent* const ViewCamera = (CameraId.IsEmpty() ?
-		RootActor->GetDefaultCamera() :
-		RootActor->GetComponentByName<UDisplayClusterCameraComponent>(CameraId));
-
-	if (ViewCamera)
-	{
-		// View base location
-		ViewLocation = ViewCamera->GetComponentLocation();
-		ViewRotation = ViewCamera->GetComponentRotation();
-	}
-	else
-	{
-		UE_LOG(LogDisplayClusterViewport, Warning, TEXT("No camera found for viewport '%s'"), *GetId());
-	}
-
-	if (CameraId.Len() > 0)
-	{
-		UE_LOG(LogDisplayClusterViewport, Verbose, TEXT("Viewport '%s' has assigned camera '%s'"), *GetId(), *CameraId);
-	}
-
-	// Get the actual camera settings
-	const float CfgEyeDist  = ViewCamera ? ViewCamera->GetInterpupillaryDistance() : 6.4f;
-	const bool  bCfgEyeSwap = ViewCamera ? ViewCamera->GetSwapEyes() : false;
-	const float CfgNCP = GNearClippingPlane;
-
-	const EDisplayClusterEyeStereoOffset CfgEyeOffset = ViewCamera ? ViewCamera->GetStereoOffset() : EDisplayClusterEyeStereoOffset::None;
-
-	// Calculate eye offset considering the world scale
-	const float EyeOffset = CfgEyeDist / 2.f;
-	const float EyeOffsetValues[] = { -EyeOffset, 0.f, EyeOffset };
-
-	// Decode current eye type	
-	// Decode current eye type
-	EDisplayClusterEyeType EyeType = EDisplayClusterEyeType::Mono;
-	if (Contexts.Num() > 1)
-	{
-		// Support stereo:
-		EyeType = (InContextNum == 0) ? EDisplayClusterEyeType::StereoLeft : EDisplayClusterEyeType::StereoRight;
-	}
-
-	const int32 EyeIndex = (int32)EyeType;
-
-	float PassOffset = 0.f;
-	float PassOffsetSwap = 0.f;
-
-	if (EyeType == EDisplayClusterEyeType::Mono)
-	{
-		// For monoscopic camera let's check if the "force offset" feature is used
-		// * Force left (-1) ==> 0 left eye
-		// * Force right (1) ==> 2 right eye
-		// * Default (0) ==> 1 mono
-		const int32 EyeOffsetIdx =
-			(CfgEyeOffset == EDisplayClusterEyeStereoOffset::None ? 0 :
-				(CfgEyeOffset == EDisplayClusterEyeStereoOffset::Left ? -1 : 1));
-
-		PassOffset = EyeOffsetValues[EyeOffsetIdx + 1];
-		// Eye swap is not available for monoscopic so just save the value
-		PassOffsetSwap = PassOffset;
-	}
-	else
-	{
-		// For stereo camera we can only swap eyes if required (no "force offset" allowed)
-		PassOffset = EyeOffsetValues[EyeIndex];
-		PassOffsetSwap = (bCfgEyeSwap ? -PassOffset : PassOffset);
-	}
+	const float PassOffsetSwap = GetStereoEyeOffsetDistance(InContextNum);
 
 	FVector ViewOffset = FVector::ZeroVector;
 
@@ -314,6 +232,7 @@ bool FDisplayClusterViewport::ImplPreview_CalculateStereoViewOffset(const uint32
 	ViewLocation += ViewOffset;
 
 	// Perform view calculations on a policy side
+	const float CfgNCP = GNearClippingPlane;
 	if (!CalculateView(InContextNum, ViewLocation, ViewRotation, ViewOffset, WorldToMeters, CfgNCP, CfgNCP))
 	{
 		if (!bProjectionPolicyCalculateViewWarningOnce)
@@ -337,7 +256,7 @@ FMatrix FDisplayClusterViewport::ImplPreview_GetStereoProjectionMatrix(const uin
 
 	FMatrix PrjMatrix = FMatrix::Identity;
 
-	if (GetOwner().IsSceneOpened())
+	if (IsSceneOpened())
 	{
 		if (GetProjectionMatrix(InContextNum, PrjMatrix) == false)
 		{

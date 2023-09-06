@@ -9,6 +9,7 @@
 #include "Android/AndroidApplication.h"
 #include "Android/AndroidWindow.h"
 #include "Android/AndroidJava.h"
+#include "Misc/ConfigCacheIni.h"
 
 #include <jni.h>
 
@@ -34,6 +35,23 @@ FAndroidWebBrowserWindow::FAndroidWebBrowserWindow(FString InUrl, TOptional<FStr
 	, bIsVisible(true)
 	, bTickedLastFrame(true)
 {
+	// Deal with optional texture resolution override
+	FString WebViewTextureSize;
+	if (GConfig->GetString(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("WebViewTextureSize"), WebViewTextureSize, GEngineIni))
+	{
+		TArray<FString> ResolutionVector;
+		int ParseCount = WebViewTextureSize.ParseIntoArray(ResolutionVector, TEXT(","), false);
+		ensureMsgf(ParseCount == 2, TEXT("WebViewTextureSize variable not properly formatted."));
+
+		if (ParseCount == 2)
+		{
+			int32 Width = FCString::Atof(*ResolutionVector[0]);
+			int32 Height = FCString::Atof(*ResolutionVector[1]);
+
+			AndroidWindowSize.X = FMath::Max(1, Width);
+			AndroidWindowSize.Y = FMath::Max(1, Height);
+		}
+	}
 }
 
 FAndroidWebBrowserWindow::~FAndroidWebBrowserWindow()
@@ -113,17 +131,20 @@ FString FAndroidWebBrowserWindow::GetUrl() const
 
 bool FAndroidWebBrowserWindow::OnKeyDown(const FKeyEvent& InKeyEvent)
 {
-	return BrowserWidget->OnKeyDown(FGeometry(), InKeyEvent).IsEventHandled();
+//	return BrowserWidget->OnKeyDown(FGeometry(), InKeyEvent).IsEventHandled();
+	return false;
 }
 
 bool FAndroidWebBrowserWindow::OnKeyUp(const FKeyEvent& InKeyEvent)
 {
-	return BrowserWidget->OnKeyUp(FGeometry(), InKeyEvent).IsEventHandled();
+//	return BrowserWidget->OnKeyUp(FGeometry(), InKeyEvent).IsEventHandled();
+	return false;
 }
 
 bool FAndroidWebBrowserWindow::OnKeyChar(const FCharacterEvent& InCharacterEvent)
 {
-	return BrowserWidget->OnKeyChar(FGeometry(), InCharacterEvent).IsEventHandled();
+//	return BrowserWidget->OnKeyChar(FGeometry(), InCharacterEvent).IsEventHandled();
+	return false;
 }
 
 FVector2D FAndroidWebBrowserWindow::ConvertMouseEventToLocal(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
@@ -139,7 +160,7 @@ FVector2D FAndroidWebBrowserWindow::ConvertMouseEventToLocal(const FGeometry& My
 FReply FAndroidWebBrowserWindow::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-
+/*
 	FKey Button = MouseEvent.GetEffectingButton();
 	bool bSupportedButton = (Button == EKeys::LeftMouseButton); // || Button == EKeys::RightMouseButton || Button == EKeys::MiddleMouseButton);
 
@@ -148,14 +169,14 @@ FReply FAndroidWebBrowserWindow::OnMouseButtonDown(const FGeometry& MyGeometry, 
 		Reply = FReply::Handled();
 		BrowserWidget->SendTouchDown(ConvertMouseEventToLocal(MyGeometry, MouseEvent, bIsPopup));
 	}
-
+*/
 	return Reply;
 }
 
 FReply FAndroidWebBrowserWindow::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-
+/*
 	FKey Button = MouseEvent.GetEffectingButton();
 	bool bSupportedButton = (Button == EKeys::LeftMouseButton); // || Button == EKeys::RightMouseButton || Button == EKeys::MiddleMouseButton);
 
@@ -164,7 +185,7 @@ FReply FAndroidWebBrowserWindow::OnMouseButtonUp(const FGeometry& MyGeometry, co
 		Reply = FReply::Handled();
 		BrowserWidget->SendTouchUp(ConvertMouseEventToLocal(MyGeometry, MouseEvent, bIsPopup));
 	}
-
+*/
 	return Reply;
 }
 
@@ -176,7 +197,7 @@ FReply FAndroidWebBrowserWindow::OnMouseButtonDoubleClick(const FGeometry& MyGeo
 FReply FAndroidWebBrowserWindow::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, bool bIsPopup)
 {
 	FReply Reply = FReply::Unhandled();
-
+/*
 	FKey Button = MouseEvent.GetEffectingButton();
 	bool bSupportedButton = (Button == EKeys::LeftMouseButton); // || Button == EKeys::RightMouseButton || Button == EKeys::MiddleMouseButton);
 
@@ -185,7 +206,7 @@ FReply FAndroidWebBrowserWindow::OnMouseMove(const FGeometry& MyGeometry, const 
 		Reply = FReply::Handled();
 		BrowserWidget->SendTouchMove(ConvertMouseEventToLocal(MyGeometry, MouseEvent, bIsPopup));
 	}
-
+*/
 	return Reply;
 }
 

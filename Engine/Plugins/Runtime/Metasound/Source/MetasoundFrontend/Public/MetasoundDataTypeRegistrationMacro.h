@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "Templates/Casts.h"
 
 #include "IAudioProxyInitializer.h"
 #include "MetasoundArrayNodesRegistration.h"
@@ -25,6 +24,9 @@
 #include "MetasoundSendNode.h"
 #include "MetasoundTransmissionRegistration.h"
 #include "MetasoundVariableNodes.h"
+#include "MetasoundParameterPackFixedArray.h"
+
+#include "Templates/Casts.h"
 
 #include <type_traits>
 
@@ -40,6 +42,26 @@ namespace Metasound
 				static constexpr bool bIsParsableWithSharedProxyPtr = TIsParsable<DataType, TSharedPtr<Audio::IProxyData>>::Value;
 			public:
 				static constexpr bool bOnlySupportsDeprecatedProxyPtr = bIsParsableWithDeprecatedPtr && !bIsParsableWithSharedProxyPtr;
+		};
+
+		// ExecutableDataTypes are deprecated in 5.3 in favor of TPostExecutableDataTypes.
+		// This class triggers a deprecation warning when a TExecutableDataType
+		// is registered. 
+		template<typename DataType>
+		struct TExecutableDataTypeDeprecation
+		{
+			TExecutableDataTypeDeprecation()
+			{
+				if constexpr (TExecutableDataType<DataType>::bIsExecutable)
+				{
+					TriggerDeprecationMessage();
+				}
+			}
+
+			void TriggerDeprecationMessage() 
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("TExecutableDataType<> is deprecated in favor of TPostExecutableDataType<>. Please update your code for data type (%s) as TExecutableDataType<> will be removed in future releases"), *GetMetasoundDataTypeString<DataType>())
+			}
 		};
 
 		// Returns the Array version of a literal type if it exists.
@@ -195,6 +217,7 @@ namespace Metasound
 			RegistryInfo.bIsUniquePtrProxyArrayParsable_DEPRECATED = TIsParsable<TDataType, const TArray<TUniquePtr<Audio::IProxyData>>& >::Value;
 
 			RegistryInfo.bIsEnum = TEnumTraits<TDataType>::bIsEnum;
+			RegistryInfo.bIsExplicit = TIsExplicit<TDataType>::Value;
 			RegistryInfo.bIsVariable = TIsVariable<TDataType>::Value;
 			RegistryInfo.bIsTransmittable = TIsTransmittable<TDataType>::Value;
 			RegistryInfo.bIsConstructorType = TIsConstructorVertexSupported<TDataType>::Value;
@@ -309,64 +332,24 @@ namespace Metasound
 				// data type constructor. 
 				UE_LOG(LogMetaSound, Warning, TEXT("MetaSound data type \"%s\" supports construction from deprecated TUniquePtr<Audio::IProxyData>. Please update the constructor to accept a \"const TSharedPtr<Audio::IProxyData>& \""), TDataReferenceTypeInfo<TDataType>::TypeName);
 			}
+			
+			// TExecutableDataTypes are deprecated as of 5.3. This call triggers
+			// a deprecation warning in case the TExecutableDataType<> template
+			// was specialized.
+			MetasoundDataTypeRegistrationPrivate::TExecutableDataTypeDeprecation<TDataType>();
 
 			bAlreadyRegisteredThisDataType = true;
 
 			// Define registry entry class for this data type.
-			class FDataTypeRegistryEntry : public Frontend::IDataTypeRegistryEntry
+			class FDataTypeRegistryEntryBase : public Frontend::IDataTypeRegistryEntry
 			{
 			public:
-
-				FDataTypeRegistryEntry()
-					: Info(CreateDataTypeInfo<TDataType, PreferredArgType, UClassToUse>())
-					, EnumInterface(GetEnumDataTypeInterface<TDataType>())
+				FDataTypeRegistryEntryBase(const Frontend::FDataTypeRegistryInfo& Info, const TSharedPtr<Frontend::IEnumDataTypeInterface>& EnumInterface)
+					: Info(Info), EnumInterface(EnumInterface)
 				{
-					if constexpr (HasRawParameterAssignmentOp<TDataType>().value)
-					{
-						RawAssignmentFunction = [](const void* src, void* dest) { reinterpret_cast<TDataType*>(dest)->AssignRawParameter(src); };
-					}
-					else if constexpr (std::is_copy_assignable_v<TDataType>)
-					{
-						RawAssignmentFunction = [](const void* src, void* dest) { *(reinterpret_cast<TDataType*>(dest)) = *(reinterpret_cast<const TDataType*>(src)); };
-					}
-
-					// Create class info using prototype node
-					// TODO: register nodes with static class info instead of prototype instance.
-
-					if constexpr (bIsParsable)
-					{
-						TInputNode<TDataType, EVertexAccessType::Reference> InputPrototype(FInputNodeConstructorParams { });
-						InputClass = Metasound::Frontend::GenerateClass(InputPrototype.GetMetadata(), EMetasoundFrontendClassType::Input);
-
-						TOutputNode<TDataType, EVertexAccessType::Reference> OutputPrototype(TEXT(""), FGuid(), TEXT(""));
-						OutputClass = Metasound::Frontend::GenerateClass(OutputPrototype.GetMetadata(), EMetasoundFrontendClassType::Output);
-
-						TLiteralNode<TDataType> LiteralPrototype(TEXT(""), FGuid(), FLiteral());
-						LiteralClass = Metasound::Frontend::GenerateClass(LiteralPrototype.GetMetadata(), EMetasoundFrontendClassType::Literal);
-
-						TVariableNode<TDataType> VariablePrototype(TEXT(""), FGuid(), FLiteral());
-						VariableClass = Metasound::Frontend::GenerateClass(VariablePrototype.GetMetadata(), EMetasoundFrontendClassType::Variable);
-
-						TVariableMutatorNode<TDataType> VariableMutatorPrototype(TEXT(""), FGuid());
-						VariableMutatorClass = Metasound::Frontend::GenerateClass(VariableMutatorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableMutator);
-
-						TVariableAccessorNode<TDataType> VariableAccessorPrototype(TEXT(""), FGuid());
-						VariableAccessorClass = Metasound::Frontend::GenerateClass(VariableAccessorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableAccessor);
-
-						TVariableDeferredAccessorNode<TDataType> VariableDeferredAccessorPrototype(TEXT(""), FGuid());
-						VariableDeferredAccessorClass = Metasound::Frontend::GenerateClass(VariableDeferredAccessorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableDeferredAccessor);
-
-						if constexpr (bIsConstructorType)
-						{
-							TInputNode<TDataType, EVertexAccessType::Value> ConstructorInputPrototype(FInputNodeConstructorParams { });
-							ConstructorInputClass = Metasound::Frontend::GenerateClass(ConstructorInputPrototype.GetMetadata(), EMetasoundFrontendClassType::Input);
-							TOutputNode<TDataType, EVertexAccessType::Value> ConstructorOutputPrototype(TEXT(""), FGuid(), TEXT(""));
-							ConstructorOutputClass = Metasound::Frontend::GenerateClass(ConstructorOutputPrototype.GetMetadata(), EMetasoundFrontendClassType::Output);
-						}
-					}
 				}
 
-				virtual ~FDataTypeRegistryEntry() {}
+				virtual ~FDataTypeRegistryEntryBase() {}
 
 				virtual const Frontend::FDataTypeRegistryInfo& GetDataTypeInfo() const override
 				{
@@ -423,6 +406,130 @@ namespace Metasound
 					return VariableDeferredAccessorClass;
 				}
 
+				virtual TUniquePtr<IDataTypeRegistryEntry> Clone() const = 0;
+
+				virtual const Frontend::IParameterAssignmentFunction& GetRawAssignmentFunction() const override
+				{
+					return RawAssignmentFunction;
+				}
+
+				virtual Frontend::FLiteralAssignmentFunction GetLiteralAssignmentFunction() const override
+				{
+					return LiteralAssignmentFunction;
+				}
+
+			protected:
+				Frontend::FDataTypeRegistryInfo Info;
+				FMetasoundFrontendClass InputClass;
+				FMetasoundFrontendClass ConstructorInputClass;
+				FMetasoundFrontendClass OutputClass;
+				FMetasoundFrontendClass ConstructorOutputClass;
+				FMetasoundFrontendClass LiteralClass;
+				FMetasoundFrontendClass VariableClass;
+				FMetasoundFrontendClass VariableMutatorClass;
+				FMetasoundFrontendClass VariableAccessorClass;
+				FMetasoundFrontendClass VariableDeferredAccessorClass;
+				TSharedPtr<Frontend::IEnumDataTypeInterface> EnumInterface;
+				Frontend::IParameterAssignmentFunction RawAssignmentFunction;
+				Frontend::FLiteralAssignmentFunction LiteralAssignmentFunction = nullptr;
+			};
+
+			class FDataTypeRegistryEntry : public FDataTypeRegistryEntryBase
+			{
+				void InitRawAssignmentFunction()
+				{
+					if constexpr (HasRawParameterAssignmentOp<TDataType>().value)
+					{
+						this->RawAssignmentFunction = [](const void* src, void* dest) { reinterpret_cast<TDataType*>(dest)->AssignRawParameter(src); };
+					}
+					else if constexpr (std::is_copy_assignable_v<TDataType>)
+					{
+						if constexpr (!TIsArrayType<TDataType>::Value)
+						{
+							this->RawAssignmentFunction = [](const void* Src, void* Dest)
+								{
+									*(reinterpret_cast<TDataType*>(Dest)) = *(reinterpret_cast<const TDataType*>(Src)); 
+								};
+						}
+						else
+						{
+							this->RawAssignmentFunction = [](const void* Src, void* Dest)
+								{
+									//***********************************************************************************************************
+									// sanity check to be sure memory layout is the same regardless of number of elements in the fixed array...
+									using FSmallFixedArray = TParamPackFixedArray<typename TDataType::ElementType, 1>;
+									using FLargeFixedArray = TParamPackFixedArray<typename TDataType::ElementType, 200>;
+									static_assert(offsetof(FSmallFixedArray,InlineData) > offsetof(FSmallFixedArray, NumValidElements));
+									static_assert(offsetof(FSmallFixedArray,InlineData) == offsetof(FLargeFixedArray,InlineData));
+									//***********************************************************************************************************
+									TDataType& DestinationArray = *(reinterpret_cast<TDataType*>(Dest));
+									const FSmallFixedArray& SourceArray = *(reinterpret_cast<const FSmallFixedArray*>(Src));
+									SourceArray.CopyToArray(DestinationArray);
+								};
+						}
+					}
+				}
+
+				void InitLiteralAssignmentFunction()
+				{
+					if constexpr (std::is_copy_assignable_v<TDataType> && bIsParsable)
+					{
+						this->LiteralAssignmentFunction = [](const FOperatorSettings& InOperatorSettings, const FLiteral& InLiteral, const FAnyDataReference& OutDataRef)
+						{
+							*OutDataRef.GetWritableValue<TDataType>() = TDataTypeLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral);
+						};
+					}
+				}
+
+				void InitFrontendNodeClasses()
+				{
+					// Create class info using prototype node
+					// TODO: register nodes with static class info instead of prototype instance.
+
+					if constexpr (bIsParsable)
+					{
+						TInputNode<TDataType, EVertexAccessType::Reference> InputPrototype(FInputNodeConstructorParams{ });
+						this->InputClass = Metasound::Frontend::GenerateClass(InputPrototype.GetMetadata(), EMetasoundFrontendClassType::Input);
+
+						TOutputNode<TDataType, EVertexAccessType::Reference> OutputPrototype(TEXT(""), FGuid(), TEXT(""));
+						this->OutputClass = Metasound::Frontend::GenerateClass(OutputPrototype.GetMetadata(), EMetasoundFrontendClassType::Output);
+
+						TLiteralNode<TDataType> LiteralPrototype(TEXT(""), FGuid(), FLiteral());
+						this->LiteralClass = Metasound::Frontend::GenerateClass(LiteralPrototype.GetMetadata(), EMetasoundFrontendClassType::Literal);
+
+						TVariableNode<TDataType> VariablePrototype(TEXT(""), FGuid(), FLiteral());
+						this->VariableClass = Metasound::Frontend::GenerateClass(VariablePrototype.GetMetadata(), EMetasoundFrontendClassType::Variable);
+
+						TVariableMutatorNode<TDataType> VariableMutatorPrototype(TEXT(""), FGuid());
+						this->VariableMutatorClass = Metasound::Frontend::GenerateClass(VariableMutatorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableMutator);
+
+						TVariableAccessorNode<TDataType> VariableAccessorPrototype(TEXT(""), FGuid());
+						this->VariableAccessorClass = Metasound::Frontend::GenerateClass(VariableAccessorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableAccessor);
+
+						TVariableDeferredAccessorNode<TDataType> VariableDeferredAccessorPrototype(TEXT(""), FGuid());
+						this->VariableDeferredAccessorClass = Metasound::Frontend::GenerateClass(VariableDeferredAccessorPrototype.GetMetadata(), EMetasoundFrontendClassType::VariableDeferredAccessor);
+
+						if constexpr (bIsConstructorType)
+						{
+							TInputNode<TDataType, EVertexAccessType::Value> ConstructorInputPrototype(FInputNodeConstructorParams{ });
+							this->ConstructorInputClass = Metasound::Frontend::GenerateClass(ConstructorInputPrototype.GetMetadata(), EMetasoundFrontendClassType::Input);
+							TOutputNode<TDataType, EVertexAccessType::Value> ConstructorOutputPrototype(TEXT(""), FGuid(), TEXT(""));
+							this->ConstructorOutputClass = Metasound::Frontend::GenerateClass(ConstructorOutputPrototype.GetMetadata(), EMetasoundFrontendClassType::Output);
+						}
+					}
+				}
+
+
+			public:
+
+				FDataTypeRegistryEntry()
+					: FDataTypeRegistryEntryBase(CreateDataTypeInfo<TDataType, PreferredArgType, UClassToUse>(), GetEnumDataTypeInterface<TDataType>())
+				{
+					InitRawAssignmentFunction();
+					InitLiteralAssignmentFunction();
+					InitFrontendNodeClasses();
+				}
+
 				virtual TUniquePtr<INode> CreateInputNode(FInputNodeConstructorParams&& InParams) const override
 				{
 					if constexpr (bIsParsable)
@@ -439,7 +546,6 @@ namespace Metasound
 				{
 					if constexpr (bIsParsable && bIsConstructorType)
 					{
-						checkf(!InParams.bEnableTransmission, TEXT("Cannot enable transmission on a constructor input."));
 						return MakeUnique<TInputNode<TDataType, EVertexAccessType::Value>>(MoveTemp(InParams));
 					}
 					else
@@ -568,21 +674,21 @@ namespace Metasound
 
 				virtual TOptional<FAnyDataReference> CreateDataReference(EDataReferenceAccessType InAccessType, const FLiteral& InLiteral, const FOperatorSettings& InOperatorSettings) const override
 				{
-					if constexpr(bIsParsable)
+					if constexpr (bIsParsable)
 					{
 						switch (InAccessType)
 						{
-							case EDataReferenceAccessType::Read:
-								return FAnyDataReference{TDataReadReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral)};
+						case EDataReferenceAccessType::Read:
+							return FAnyDataReference{ TDataReadReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral) };
 
-							case EDataReferenceAccessType::Write:
-								return FAnyDataReference{TDataWriteReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral)};
+						case EDataReferenceAccessType::Write:
+							return FAnyDataReference{ TDataWriteReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral) };
 
-							case EDataReferenceAccessType::Value:
-								return FAnyDataReference{TDataValueReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral)};
+						case EDataReferenceAccessType::Value:
+							return FAnyDataReference{ TDataValueReferenceLiteralFactory<TDataType>::CreateExplicitArgs(InOperatorSettings, InLiteral) };
 
-							default:
-								break;
+						default:
+							break;
 						}
 					}
 					return TOptional<FAnyDataReference>();
@@ -600,29 +706,10 @@ namespace Metasound
 					}
 				}
 
-				virtual TUniquePtr<IDataTypeRegistryEntry> Clone() const override
+				virtual TUniquePtr<Frontend::IDataTypeRegistryEntry> Clone() const override
 				{
 					return MakeUnique<FDataTypeRegistryEntry>();
 				}
-
-				virtual const Frontend::IParameterAssignmentFunction& GetRawAssignmentFunction() const override
-				{
-					return RawAssignmentFunction;
-				}
-
-			private:
-				Frontend::FDataTypeRegistryInfo Info;
-				FMetasoundFrontendClass InputClass;
-				FMetasoundFrontendClass ConstructorInputClass;
-				FMetasoundFrontendClass OutputClass;
-				FMetasoundFrontendClass ConstructorOutputClass;
-				FMetasoundFrontendClass LiteralClass;
-				FMetasoundFrontendClass VariableClass;
-				FMetasoundFrontendClass VariableMutatorClass;
-				FMetasoundFrontendClass VariableAccessorClass;
-				FMetasoundFrontendClass VariableDeferredAccessorClass;
-				TSharedPtr<Frontend::IEnumDataTypeInterface> EnumInterface;
-				Frontend::IParameterAssignmentFunction RawAssignmentFunction;
 			};
 
 			bool bSucceeded = Frontend::IDataTypeRegistry::Get().RegisterDataType(MakeUnique<FDataTypeRegistryEntry>());
@@ -714,15 +801,6 @@ namespace Metasound
 	};
 }
 
-// This should be used to expose a datatype as a potential input or output for a metasound graph.
-// The first argument to the macro is the class to expose.
-// the second argument is the display name of that type in the Metasound editor.
-// Optionally, a Metasound::ELiteralType can be passed in to designate a preferred literal type-
-// For example, if Metasound::ELiteralType::Float is passed in, we will default to using a float parameter to create this datatype.
-// If no argument is passed in, we will infer a literal type to use.
-// If 
-// Metasound::ELiteralType::Invalid can be used to enforce that we don't provide space for a literal, in which case you should have a default constructor or a constructor that takes [const FOperatorSettings&] implemented.
-// If you pass in a preferred arg type, please make sure that the passed in datatype has a matching constructor, since we won't check this until runtime.
 
 #define CANNOT_REGISTER_METASOUND_DATA_TYPE_ASSERT_STRING(DataType) \
 "To register " #DataType " to be used as a Metasounds input or output type, it needs a default constructor or one of the following constructors must be implemented:  " \
@@ -741,8 +819,20 @@ namespace Metasound
 #DataType "(const ::Metasound::FOperatorSettings& InSettings, const Audio::IProxyDataPtr& InData),  or " \
 #DataType "(const ::Metasound::FOperatorSettings& InSettings, const TArray<Audio::IProxyDataPtr>& InProxyArray)."
 
-#define REGISTER_METASOUND_DATATYPE(DataType, DataTypeName, ...) \
-	DEFINE_METASOUND_DATA_TYPE(DataType, DataTypeName); \
+#define ENQUEUE_METASOUND_DATATYPE_REGISTRATION_COMMAND(DataType, DataTypeName, ...) \
 	static_assert(::Metasound::TMetasoundDataTypeRegistration<DataType>::bCanRegister, CANNOT_REGISTER_METASOUND_DATA_TYPE_ASSERT_STRING(DataType)); \
 	template<> const bool ::Metasound::TMetasoundDataTypeRegistration<DataType>::bSuccessfullyRegistered = ::FMetasoundFrontendRegistryContainer::Get()->EnqueueInitCommand([](){ ::Metasound::RegisterDataTypeWithFrontend<DataType, ##__VA_ARGS__>(); }); // This static bool is useful for debugging, but also is the only way the compiler will let us call this function outside of an expression.
+
+// This should be used to expose a datatype as a potential input or output for a metasound graph.
+// The first argument to the macro is the class to expose.
+// the second argument is the display name of that type in the Metasound editor.
+// Optionally, a Metasound::ELiteralType can be passed in to designate a preferred literal type-
+// For example, if Metasound::ELiteralType::Float is passed in, we will default to using a float parameter to create this datatype.
+// If no argument is passed in, we will infer a literal type to use.
+// If 
+// Metasound::ELiteralType::Invalid can be used to enforce that we don't provide space for a literal, in which case you should have a default constructor or a constructor that takes [const FOperatorSettings&] implemented.
+// If you pass in a preferred arg type, please make sure that the passed in datatype has a matching constructor, since we won't check this until runtime.
+#define REGISTER_METASOUND_DATATYPE(DataType, DataTypeName, ...) \
+	DEFINE_METASOUND_DATA_TYPE(DataType, DataTypeName); \
+	ENQUEUE_METASOUND_DATATYPE_REGISTRATION_COMMAND(DataType, DataTypeName, ##__VA_ARGS__)
 

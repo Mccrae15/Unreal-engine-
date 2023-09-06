@@ -9,7 +9,7 @@
 
 namespace UE::Chaos::ClothAsset
 {
-	void FClothSimulationContext::Fill(const UChaosClothComponent& ClothComponent, float InDeltaTime, float MaxDeltaTime, bool bIsInitialization)
+	void FClothSimulationContext::Fill(const UChaosClothComponent& ClothComponent, float InDeltaTime, float MaxDeltaTime, bool bIsInitialization, FClothingSimulationCacheData* InCacheData)
 	{
 		// Set the time
 		DeltaTime = FMath::Min(InDeltaTime, MaxDeltaTime);
@@ -18,7 +18,7 @@ namespace UE::Chaos::ClothAsset
 		LodIndex = ClothComponent.GetPredictedLODLevel();
 
 		// Set the teleport mode
-		const IConsoleVariable* const CVarMaxDeltaTimeTeleportMultiplier = IConsoleManager::Get().FindConsoleVariable(TEXT("p.Cloth.MaxDeltaTimeTeleportMultiplier"));
+		static const IConsoleVariable* const CVarMaxDeltaTimeTeleportMultiplier = IConsoleManager::Get().FindConsoleVariable(TEXT("p.Cloth.MaxDeltaTimeTeleportMultiplier"));
 		constexpr float MaxDeltaTimeTeleportMultiplierDefault = 1.5f;
 		const float MaxDeltaTimeTeleportMultiplier = CVarMaxDeltaTimeTeleportMultiplier ? CVarMaxDeltaTimeTeleportMultiplier->GetFloat() : MaxDeltaTimeTeleportMultiplierDefault;
 
@@ -92,13 +92,13 @@ namespace UE::Chaos::ClothAsset
 		}
 
 		// Update bone matrices
+		RefToLocalMatrices.Reset(NumBones);
 		if (!bIsInitialization)
 		{
 			ClothComponent.GetCurrentRefToLocalMatrices(RefToLocalMatrices, LodIndex);
 		}
 		else
 		{
-			RefToLocalMatrices.Reset(NumBones);
 			RefToLocalMatrices.AddUninitialized(NumBones);
 
 			for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
@@ -106,7 +106,7 @@ namespace UE::Chaos::ClothAsset
 				RefToLocalMatrices[BoneIndex] = FMatrix44f::Identity;
 			}
 		}
-
+		
 		// Update gravity
 		const UWorld* const World = ClothComponent.GetWorld();
 		constexpr float EarthGravity = -981.f;
@@ -127,6 +127,15 @@ namespace UE::Chaos::ClothAsset
 		else
 		{
 			WindVelocity = FVector::ZeroVector;
+		}
+
+		if (InCacheData)
+		{
+			CacheData = MoveTemp(*InCacheData);
+		}
+		else
+		{
+			CacheData.Reset();
 		}
 	}
 }  // End namespace UE::Chaos::ClothAsset

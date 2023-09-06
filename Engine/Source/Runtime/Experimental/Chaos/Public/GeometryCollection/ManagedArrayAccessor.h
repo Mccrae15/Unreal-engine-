@@ -54,10 +54,23 @@ public:
 
 	bool IsPersistent() const { return ConstCollection.IsAttributePersistent(Name, Group); }
 
+	bool IsValidIndex(int32 Index) const 
+	{ 
+		check(IsValid());
+		return (Index >= 0) && (Index < ConstAttributeArray->Num());
+	}
+
 	int32 AddElements(int32 NumElements) const 
 	{ 
 		check(!IsConst());
 		return Collection->AddElements(NumElements, Group);
+	}
+
+	/** array style accessor */
+	const T& operator[](int32 Index) const
+	{
+		check(IsValid());
+		return (*ConstAttributeArray)[Index];
 	}
 
 	/** get the attribute for read only */
@@ -79,6 +92,14 @@ public:
 		check(AttributeArray!=nullptr && !IsConst());
 		AttributeArray->MarkDirty();
 		return *AttributeArray;
+	}
+
+	/** per index modification */
+	void ModifyAt(int32 Index, const T& NewValue)
+	{
+		check(AttributeArray != nullptr && !IsConst());
+		AttributeArray->MarkDirty();
+		(*AttributeArray)[Index] = NewValue;
 	}
 
 	/** add the attribute if it does not exists yet */
@@ -155,8 +176,7 @@ public:
 
 private:
 
-	// const collection will be a null pointer, 
-	// while non-const will be valid.
+	// the non-const Collection will be null if the accessor is const, while ConstCollection is always set
 	const FManagedArrayCollection& ConstCollection;
 	FManagedArrayCollection* Collection = nullptr;
 

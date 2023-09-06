@@ -9,6 +9,7 @@
 #include "Animation/AnimStreamable.h"
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Animation/AnimationPoseData.h"
+#include "Animation/AnimCurveUtils.h"
 #include "Animation/AnimSyncScope.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimSingleNodeInstanceProxy)
@@ -61,18 +62,11 @@ const UMirrorDataTable* FAnimSingleNodeInstanceProxy::GetMirrorDataTable()
 void FAnimSingleNodeInstanceProxy::PropagatePreviewCurve(FPoseContext& Output) 
 {
 	USkeleton* MySkeleton = GetSkeleton();
-	for (auto Iter = PreviewCurveOverride.CreateConstIterator(); Iter; ++Iter)
-	{
-		const FName& Name = Iter.Key();
-		const float Value = Iter.Value();
 
-		FSmartName PreviewCurveName;
+	FBlendedCurve Curve;
+	UE::Anim::FCurveUtils::BuildUnsorted(Curve, PreviewCurveOverride);
 
-		if (MySkeleton->GetSmartNameByName(USkeleton::AnimCurveMappingName, Name, PreviewCurveName))
-		{
-			Output.Curve.Set(PreviewCurveName.UID, Value);
-		}
-	}
+	Output.Curve.Combine(Curve);
 }
 #endif // WITH_EDITORONLY_DATA
 
@@ -218,6 +212,7 @@ void FAnimSingleNodeInstanceProxy::SetAnimationAsset(class UAnimationAsset* NewA
 	BlendSpacePosition = FVector::ZeroVector;
 	BlendSampleData.Reset();
 	MarkerTickRecord.Reset();
+	ResetSync();
 	UpdateBlendspaceSamples(BlendSpacePosition);
 
 #if WITH_EDITORONLY_DATA
@@ -475,7 +470,7 @@ void FAnimNode_SingleNode::Evaluate_AnyThread(FPoseContext& Output)
 		{
 			if (PoseAsset->GetSkeleton() != nullptr)
 			{
-				const TArray<FSmartName>& PoseNames = PoseAsset->GetPoseNames();
+				const TArray<FName>& PoseNames = PoseAsset->GetPoseFNames();
 
 				int32 TotalPoses = PoseNames.Num();
 				FAnimExtractContext ExtractContext;
@@ -483,12 +478,9 @@ void FAnimNode_SingleNode::Evaluate_AnyThread(FPoseContext& Output)
 
 				for (int32 PoseIndex = 0; PoseIndex <PoseNames.Num(); ++PoseIndex)
 				{
-					const FSmartName& PoseName = PoseNames[PoseIndex];
-					if (PoseName.UID != SmartName::MaxUID)
-					{
-						ExtractContext.PoseCurves[PoseIndex].PoseIndex = PoseIndex;
-						ExtractContext.PoseCurves[PoseIndex].Value = Output.Curve.Get(PoseName.UID);
-					}
+					const FName& PoseName = PoseNames[PoseIndex];
+					ExtractContext.PoseCurves[PoseIndex].PoseIndex = PoseIndex;
+					ExtractContext.PoseCurves[PoseIndex].Value = Output.Curve.Get(PoseName);
 				}
 
 				if (PoseAsset->IsValidAdditive())

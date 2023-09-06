@@ -98,7 +98,7 @@ bool UNiagaraNodeReadDataSet::CanAddToGraph(UNiagaraGraph* TargetGraph, FString&
 	return true;
 }
 
-void UNiagaraNodeReadDataSet::Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
+void UNiagaraNodeReadDataSet::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {
 	TArray<int32> Inputs;
 	CompileInputPins(Translator, Inputs);

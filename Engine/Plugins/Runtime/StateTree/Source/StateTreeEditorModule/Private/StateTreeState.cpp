@@ -26,6 +26,17 @@ FStateTreeTransition::FStateTreeTransition(const EStateTreeTransitionTrigger InT
 	State = InState ? InState->GetLinkToState() : FStateTreeStateLink(InType);
 }
 
+void FStateTreeTransition::PostSerialize(const FArchive& Ar)
+{
+#if WITH_EDITORONLY_DATA
+	const int32 CurrentVersion = Ar.CustomVer(FStateTreeCustomVersion::GUID);
+	if (CurrentVersion < FStateTreeCustomVersion::AddedTransitionIds)
+	{
+		ID = FGuid::NewGuid();
+	}
+#endif // WITH_EDITORONLY_DAT
+}
+
 
 //////////////////////////////////////////////////////////////////////////
 // UStateTreeState
@@ -62,12 +73,14 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 	
 	static const FStateTreeEditPropertyPath StateNamePath(UStateTreeState::StaticClass(), TEXT("Name"));
 	static const FStateTreeEditPropertyPath StateTypePath(UStateTreeState::StaticClass(), TEXT("Type"));
+	static const FStateTreeEditPropertyPath SelectionBehaviorPath(UStateTreeState::StaticClass(), TEXT("SelectionBehavior"));
 	static const FStateTreeEditPropertyPath StateLinkedSubtreePath(UStateTreeState::StaticClass(), TEXT("LinkedSubtree"));
 	static const FStateTreeEditPropertyPath StateParametersPath(UStateTreeState::StaticClass(), TEXT("Parameters"));
 	static const FStateTreeEditPropertyPath StateTasksPath(UStateTreeState::StaticClass(), TEXT("Tasks"));
 	static const FStateTreeEditPropertyPath StateEnterConditionsPath(UStateTreeState::StaticClass(), TEXT("EnterConditions"));
 	static const FStateTreeEditPropertyPath StateTransitionsPath(UStateTreeState::StaticClass(), TEXT("Transitions"));
 	static const FStateTreeEditPropertyPath StateTransitionsConditionsPath(UStateTreeState::StaticClass(), TEXT("Transitions.Conditions"));
+	static const FStateTreeEditPropertyPath StateTransitionsIDPath(UStateTreeState::StaticClass(), TEXT("Transitions.ID"));
 
 
 	// Broadcast name changes so that the UI can update.
@@ -80,6 +93,16 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 		}
 	}
 
+	// Broadcast selection type changes so that the UI can update.
+	if (SelectionBehaviorPath.IsPathExact(StateTypePath))
+	{
+		const UStateTree* StateTree = GetTypedOuter<UStateTree>();
+		if (ensure(StateTree))
+		{
+			UE::StateTree::Delegates::OnIdentifierChanged.Broadcast(*StateTree);
+		}
+	}
+	
 	if (ChangePropertyPath.IsPathExact(StateTypePath))
 	{
 		// Remove any tasks and evaluators when they are not used.
@@ -99,6 +122,7 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 			// Linked parameter layout is fixed, and copied from the linked target state.
 			Parameters.bFixedLayout = true;
 			UpdateParametersFromLinkedSubtree();
+			SelectionBehavior = EStateTreeStateSelectionBehavior::TrySelectChildrenInOrder;
 		}
 		else if (Type == EStateTreeStateType::Subtree)
 		{
@@ -184,6 +208,25 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 			}
 		}
 
+		// Transitions
+		if (ChangePropertyPath.IsPathExact(StateTransitionsPath))
+		{
+			const int32 TransitionsIndex = ChangePropertyPath.GetPropertyArrayIndex(StateTransitionsPath);
+			if (Transitions.IsValidIndex(TransitionsIndex))
+			{
+				FStateTreeTransition& Transition = Transitions[TransitionsIndex];
+				Transition.ID = FGuid::NewGuid();
+
+				// Update conditions
+				for (FStateTreeEditorNode& Condition : Transition.Conditions)
+				{
+					const FGuid OldStructID = Condition.ID;
+					Condition.ID = FGuid::NewGuid();
+					CopyBindings(OldStructID, Condition.ID);
+				}
+			}
+		}
+
 		// Transition conditions
 		if (ChangePropertyPath.IsPathExact(StateTransitionsConditionsPath))
 		{
@@ -207,7 +250,7 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 		}
 	}
 	
-	// Set default state to root on new transitions.
+	// Set default state to root and Id on new transitions.
 	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd)
 	{
 		if (ChangePropertyPath.IsPathExact(StateTransitionsPath))
@@ -219,6 +262,7 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 				Transition.Trigger = EStateTreeTransitionTrigger::OnStateCompleted;
 				const UStateTreeState* RootState = GetRootState();
 				Transition.State = RootState->GetLinkToState();
+				Transition.ID = FGuid::NewGuid();
 			}
 		}
 	}
@@ -235,9 +279,9 @@ void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pr
 				TreeData->Modify();
 				FStateTreeEditorPropertyBindings* Bindings = TreeData->GetPropertyEditorBindings();
 				check(Bindings);
-				TMap<FGuid, const UStruct*> AllStructIDs;
-				TreeData->GetAllStructIDs(AllStructIDs);
-				Bindings->RemoveUnusedBindings(AllStructIDs);
+				TMap<FGuid, const FStateTreeDataView> AllStructValues;
+				TreeData->GetAllStructValues(AllStructValues);
+				Bindings->RemoveUnusedBindings(AllStructValues);
 			}
 		}
 	}
@@ -303,13 +347,42 @@ const UStateTreeState* UStateTreeState::GetNextSiblingState() const
 		if (Parent->Children[ChildIdx] == this)
 		{
 			const int NextIdx = ChildIdx + 1;
-			if (NextIdx < Parent->Children.Num())
+
+			// Select the next enabled sibling
+			if (NextIdx < Parent->Children.Num() && Parent->Children[NextIdx]->bEnabled)
 			{
 				return Parent->Children[NextIdx];
 			}
 			break;
 		}
 	}
+	return nullptr;
+}
+
+const UStateTreeState* UStateTreeState::GetNextSelectableSiblingState() const
+{
+	if (!Parent)
+	{
+		return nullptr;
+	}
+
+	const int32 StartChildIndex = Parent->Children.IndexOfByKey(this);
+	if (StartChildIndex == INDEX_NONE)
+	{
+		return nullptr;
+	}
+	
+	for (int32 ChildIdx = StartChildIndex + 1; ChildIdx < Parent->Children.Num(); ChildIdx++)
+	{
+		// Select the next enabled and selectable sibling
+		const UStateTreeState* State =Parent->Children[ChildIdx];
+		if (State->SelectionBehavior != EStateTreeStateSelectionBehavior::None
+			&& State->bEnabled)
+		{
+			return State;
+		}
+	}
+	
 	return nullptr;
 }
 

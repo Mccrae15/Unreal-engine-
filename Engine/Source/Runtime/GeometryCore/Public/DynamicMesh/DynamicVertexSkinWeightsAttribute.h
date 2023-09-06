@@ -7,7 +7,7 @@
 
 #include "BoneWeights.h"
 #include "HAL/UnrealMemory.h"
-
+#include "Misc/MemStack.h"
 
 namespace UE
 {
@@ -48,6 +48,7 @@ class TDynamicVertexSkinWeightsAttribute final :
 {
 public:
 	using FBoneWeights = UE::AnimationCore::FBoneWeights;
+	using FBoneWeight  = UE::AnimationCore::FBoneWeight;
 
 protected:
 	friend class FDynamicMeshAttributeSet;
@@ -158,7 +159,98 @@ public:
 		VertexBoneWeights.InsertAt(InBoneWeights, InNewVertexID);
 	}
 
+	
+	/** 
+	 * Re-index bone indices of the skin weights from one reference skeleton (represented by an array of bone names) 
+	 * to another.
+	 * 
+	 * @param FromRefSkeleton The reference skeleton that the current skin weights are indexed against.
+	 * @param ToRefSkeleton The new reference skeleton that should be used to reindex the weights.
+	 * 
+	 * @return true on success, false otherwise
+	 * 
+	 * @note Reasons for failure are:
+	 * 		 - bone index of one of the bone weights is larger than the number of bones in FromRefSkeleton, meaning
+	 * 		   the weights most likely were not computed with respect to the FromRefSkeleton.
+	 * 		 - one of the bone weights references a bone in FromRefSkeleton that doesn't exist in ToRefSkeleton.
+	 * 		 - ToRefSkeleton contains duplicates.
+	 *
+	 * @note FromRefSkeleton can contain bones that are not present in ToRefSkeleton as long as those bones are not 
+			 referenced by any of the weights.
+	 */
+	bool ReindexBoneIndicesToSkeleton(const TArray<FName>& FromRefSkeleton, const TArray<FName>& ToRefSkeleton)
+	{	
+		if (VertexBoneWeights.Num() == 0)
+		{
+			return true; // empty weights, nothing to do
+		}
 
+		if (FromRefSkeleton == ToRefSkeleton)
+		{
+			return true; // skeletons are the same, nothing to do
+		}
+
+		// Create a map from bone name to bone index for the ToRefSkeleton so we can
+		// check if bone with a given name in FromRefSkeleton exists in ToRefSkeleton 
+		// and at what index
+		TMap<FName, int32> NameToIndex;
+		NameToIndex.Reserve(ToRefSkeleton.Num());
+		for (int BoneID = 0; BoneID < ToRefSkeleton.Num(); ++BoneID)
+		{
+			const FName& BoneName = ToRefSkeleton[BoneID];
+			if (NameToIndex.Contains(BoneName))
+			{
+				return false; // there should be no duplicates in ToRefSkeleton
+			}
+			NameToIndex.Add(BoneName, BoneID);
+		}
+
+		// Store temporary results of reindexing in a new dynamic vector
+		TDynamicVector<FBoneWeights> NewVertexBoneWeights;
+		NewVertexBoneWeights.Resize(VertexBoneWeights.Num());
+
+		// Since we are only changing indicies, make sure we don't do any re-normalization on the weights
+		UE::AnimationCore::FBoneWeightsSettings BoneSettings;
+		BoneSettings.SetNormalizeType(UE::AnimationCore::EBoneWeightNormalizeType::None); 
+
+		// Iterate over every skin weight of every vertex and remap it's bone index from FromRefSkeleton to ToRefSkeleton
+		for (int VertexID = 0; VertexID < VertexBoneWeights.Num(); ++VertexID)
+		{
+			FBoneWeights BoneWeights = VertexBoneWeights[VertexID];
+			if (BoneWeights.Num() == 0)
+			{
+				continue; // vertex has no weights
+			}
+
+			FBoneWeights NewWeights;
+			for (int32 Idx = 0; Idx < BoneWeights.Num(); ++Idx)
+			{
+				const FBoneWeight& BoneWeight = BoneWeights[Idx];
+				if (BoneWeight.GetBoneIndex() >= FromRefSkeleton.Num())
+				{
+					return false; // invalid FromRefSkeleton
+				}
+				
+				const FName& FromName = FromRefSkeleton[BoneWeight.GetBoneIndex()];
+				const uint16 FromWeight = BoneWeight.GetRawWeight();
+
+				const int32* ToIdx = NameToIndex.Find(FromName);
+				if (ToIdx)
+				{
+					NewWeights.SetBoneWeight(FBoneWeight(static_cast<FBoneIndexType>(*ToIdx), FromWeight), BoneSettings);
+					NewVertexBoneWeights[VertexID] = NewWeights;
+				}
+				else
+				{
+					return false; // ToRefSkeleton must be a superset of all the bones referenced in FromRefSkeleton by the skinning weights
+				}
+			}
+		}
+
+		VertexBoneWeights = MoveTemp(NewVertexBoneWeights);
+
+		return true;
+	}
 
 	//
 	// Accessors/Queries
@@ -216,6 +308,27 @@ public:
 		Data = VertexBoneWeights[VertexID];
 	}
 
+	/** 
+	 * Get the element at a given index via a pair of bone index and weight arrays. 
+	 * The number of influences is equal to the array size. 
+	 */
+	template<typename BoneIndexType, typename BoneFloatWeightType>
+	void GetValue(int VertexID, TArray<BoneIndexType>& OutBones, TArray<BoneFloatWeightType>& OutWeights) const
+	{
+		FBoneWeights BoneWeights;
+		GetValue(VertexID, BoneWeights);
+
+		const int32 NumEntries = BoneWeights.Num();
+
+		OutBones.SetNum(NumEntries);
+		OutWeights.SetNum(NumEntries);
+
+		for (int32 BoneIdx = 0; BoneIdx < NumEntries; ++BoneIdx)
+		{
+			OutBones[BoneIdx] = static_cast<BoneIndexType>(BoneWeights[BoneIdx].GetBoneIndex());
+			OutWeights[BoneIdx] = static_cast<BoneFloatWeightType>(BoneWeights[BoneIdx].GetWeight());
+		}
+	}
 
 	/** Set the element at a given index */
 	void SetValue(int VertexID, const FBoneWeights& Data)
@@ -228,6 +341,27 @@ public:
 	void SetValue(int VertexID, const UE::AnimationCore::TBoneWeights<ContainerAdapter>& Data)
 	{
 		VertexBoneWeights[VertexID] = FBoneWeights::Create(Data);
+	}
+
+	/** Set the element at a given index */
+	template<typename BoneIndexType, typename BoneFloatWeightType>
+	void SetValue(int VertexID, const TArray<BoneIndexType>& InBones, const TArray<BoneFloatWeightType>& InWeights, int32 InNumEntries)
+	{
+		checkSlow(InBones.Num() == InNumEntries && InWeights.Num() == InNumEntries);
+		
+		TArray<FBoneIndexType, TMemStackAllocator<>> Bones;
+		TArray<float, TMemStackAllocator<>> Weights;
+ 
+		Bones.SetNumUninitialized(InNumEntries);
+		Weights.SetNumUninitialized(InNumEntries);
+
+		for (int32 Idx = 0; Idx < InNumEntries; ++Idx)
+		{
+			Bones[Idx] = static_cast<FBoneIndexType>(InBones[Idx]);
+			Weights[Idx] = static_cast<float>(InWeights[Idx]);
+		}
+
+		VertexBoneWeights[VertexID] = FBoneWeights::Create(Bones.GetData(), Weights.GetData(), InNumEntries);
 	}
 
 	/**

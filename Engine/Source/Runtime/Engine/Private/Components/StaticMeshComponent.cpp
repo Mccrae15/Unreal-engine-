@@ -13,7 +13,7 @@
 #include "SceneInterface.h"
 #include "UObject/Package.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
-#include "UObject/FortniteNCBranchObjectVersion.h"
+#include "UObject/FortniteSeasonBranchObjectVersion.h"
 #include "Engine/CollisionProfile.h"
 #include "ContentStreaming.h"
 #include "ComponentReregisterContext.h"
@@ -43,6 +43,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Engine/StaticMesh.h"
+#include "MaterialDomain.h"
+#include "Rendering/NaniteResources.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StaticMeshComponent)
 
@@ -197,9 +199,11 @@ UStaticMeshComponent::UStaticMeshComponent(const FObjectInitializer& ObjectIniti
 	bOverrideNavigationExport = false;
 	bForceNavigationObstacle = true;
 	bDisallowMeshPaintPerInstance = false;
+	bForceNaniteForMasked = false;
 	bDisallowNanite = false;
 	bForceDisableNanite = false;
 	bEvaluateWorldPositionOffset = true;
+	bWorldPositionOffsetWritesVelocity = true;
 	bEvaluateWorldPositionOffsetInRayTracing = false;
 	bInitialEvaluateWorldPositionOffset = false;
 	DistanceFieldIndirectShadowMinVisibility = .1f;
@@ -312,10 +316,10 @@ void UStaticMeshComponent::Serialize(FArchive& Ar)
 	LLM_SCOPE(ELLMTag::StaticMesh);
 
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
-	Ar.UsingCustomVersion(FFortniteNCBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteSeasonBranchObjectVersion::GUID);
 	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
 
-	const bool bBeforeRemappedEvaluateWorldPositionOffset = (Ar.CustomVer(FFortniteNCBranchObjectVersion::GUID) < FFortniteNCBranchObjectVersion::RemappedEvaluateWorldPositionOffsetInRayTracing
+	const bool bBeforeRemappedEvaluateWorldPositionOffset = (Ar.CustomVer(FFortniteSeasonBranchObjectVersion::GUID) < FFortniteSeasonBranchObjectVersion::RemappedEvaluateWorldPositionOffsetInRayTracing
 		&& Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::RemappedEvaluateWorldPositionOffsetInRayTracing);
 
 	// When bEvaluateWorldPositionOffsetInRayTracing was named bEvaluateWorldPositionOffset the default value was false and now it is true. 
@@ -401,6 +405,11 @@ void UStaticMeshComponent::Serialize(FArchive& Ar)
 		UpdateCollisionFromStaticMesh();
 		BodyInstance.FixupData(this);
 	}
+
+	if (Ar.IsLoading())
+	{
+		bInitialEvaluateWorldPositionOffset = bEvaluateWorldPositionOffset;
+	}
 }
 
 void UStaticMeshComponent::PostApplyToComponent()
@@ -415,6 +424,8 @@ void UStaticMeshComponent::PostReinitProperties()
 	NotifyIfStaticMeshChanged();
 
 	Super::PostReinitProperties();
+
+	bInitialEvaluateWorldPositionOffset = bEvaluateWorldPositionOffset;
 }
 
 void UStaticMeshComponent::PostInitProperties()
@@ -427,6 +438,8 @@ void UStaticMeshComponent::PostInitProperties()
 	{
 		LODData[LODIndex].OwningComponent = this;
 	}
+
+	bInitialEvaluateWorldPositionOffset = bEvaluateWorldPositionOffset;
 }
 
 bool UStaticMeshComponent::AreNativePropertiesIdenticalTo( UObject* Other ) const
@@ -477,7 +490,7 @@ void UStaticMeshComponent::CheckForErrors()
 		OwnerName = Owner->GetName();
 	}
 
-	if (GetStaticMesh() != nullptr && GetStaticMesh()->NaniteSettings.bEnabled != 0)
+	if (GetStaticMesh() != nullptr && GetStaticMesh()->IsNaniteEnabled() != 0)
 	{
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Enable"));
 		if (CVar->GetInt() == 0)
@@ -502,7 +515,7 @@ void UStaticMeshComponent::CheckForErrors()
 			for (int32 SectionIndex = 0; SectionIndex < MeshLODData.Sections.Num(); SectionIndex++)
 			{
 				FStaticMeshSection& Element = MeshLODData.Sections[SectionIndex];
-				if (Element.NumTriangles == 0 && !GetStaticMesh()->NaniteSettings.bEnabled)
+				if (Element.NumTriangles == 0 && !GetStaticMesh()->IsNaniteEnabled())
 				{
 					ZeroTriangleElements++;
 				}
@@ -769,8 +782,6 @@ void UStaticMeshComponent::OnUnregister()
 
 void UStaticMeshComponent::BeginPlay()
 {
-	bInitialEvaluateWorldPositionOffset = bEvaluateWorldPositionOffset;
-
 	Super::BeginPlay();
 }
 
@@ -1519,24 +1530,73 @@ void UStaticMeshComponent::InitResources()
 	}
 }
 
-void UStaticMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams)
+void InitStaticMeshVertexFactoryComponents(
+	const FStaticMeshVertexBuffers& VertexBuffers,
+	FLocalVertexFactory* VertexFactory,
+	int32 LightMapCoordinateIndex,
+	bool bOverrideColorVertexBuffer,
+	FLocalVertexFactory::FDataType& OutData)
 {
-	if (StaticMesh == nullptr || StaticMesh->GetRenderData() == nullptr)
+	VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(VertexFactory, OutData);
+	VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(VertexFactory, OutData);
+	VertexBuffers.StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(VertexFactory, OutData);
+	VertexBuffers.StaticMeshVertexBuffer.BindLightMapVertexBuffer(VertexFactory, OutData, LightMapCoordinateIndex);
+	if (bOverrideColorVertexBuffer)
 	{
-		return;
+		FColorVertexBuffer::BindDefaultColorVertexBuffer(VertexFactory, OutData, FColorVertexBuffer::NullBindStride::FColorSizeForComponentOverride);
 	}
+	else
+	{
+		VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(VertexFactory, OutData);
+	}
+}
+
+void UStaticMeshComponent::CollectPSOPrecacheDataImpl(
+	const FVertexFactoryType* VFType, 
+	const FPSOPrecacheParams& BasePrecachePSOParams, 
+	GetPSOVertexElementsFn GetVertexElements,
+	FComponentPSOPrecacheParamsList& OutParams) const
+{
+	check(StaticMesh != nullptr && StaticMesh->GetRenderData() != nullptr);
 
 	UWorld* World = GetWorld();
-	ERHIFeatureLevel::Type FeatureLevel = World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+	ERHIFeatureLevel::Type FeatureLevel = World ? World->GetFeatureLevel() : GMaxRHIFeatureLevel;
 
+	bool bSupportsManualVertexFetch = VFType->SupportsManualVertexFetch(GMaxRHIFeatureLevel);
 	bool bAnySectionCastsShadows = false;
-	TArray<int16, TInlineAllocator<2>> UsedMaterialIndices;
-	for (FStaticMeshLODResources& LODRenderData : StaticMesh->GetRenderData()->LODResources)
+
+	FPSOPrecacheVertexFactoryDataPerMaterialIndexList VFTypesPerMaterialIndex;
+	FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->GetRenderData()->LODResources;
+	for (int32 LODIndex = 0; LODIndex < LODResources.Num(); ++LODIndex)
 	{
+		FStaticMeshLODResources& LODRenderData = LODResources[LODIndex];
+		FVertexDeclarationElementList VertexElements;
+		if (!bSupportsManualVertexFetch)
+		{
+			GetVertexElements(LODRenderData, LODIndex, bSupportsManualVertexFetch, VertexElements);
+		}
+
 		for (FStaticMeshSection& RenderSection : LODRenderData.Sections)
 		{
-			UsedMaterialIndices.AddUnique(RenderSection.MaterialIndex);
 			bAnySectionCastsShadows |= RenderSection.bCastShadow;
+
+			int16 MaterialIndex = RenderSection.MaterialIndex;
+			FPSOPrecacheVertexFactoryDataPerMaterialIndex* VFsPerMaterial = VFTypesPerMaterialIndex.FindByPredicate(
+				[MaterialIndex](const FPSOPrecacheVertexFactoryDataPerMaterialIndex& Other) { return Other.MaterialIndex == MaterialIndex; });
+			if (VFsPerMaterial == nullptr)
+			{
+				VFsPerMaterial = &VFTypesPerMaterialIndex.AddDefaulted_GetRef();
+				VFsPerMaterial->MaterialIndex = RenderSection.MaterialIndex;
+			}
+
+			if (bSupportsManualVertexFetch)
+			{
+				VFsPerMaterial->VertexFactoryDataList.AddUnique(FPSOPrecacheVertexFactoryData(VFType));
+			}
+			else
+			{	
+				VFsPerMaterial->VertexFactoryDataList.AddUnique(FPSOPrecacheVertexFactoryData(VFType, VertexElements));
+			}			
 		}
 	}
 
@@ -1547,22 +1607,55 @@ void UStaticMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& Base
 	PrecachePSOParams.bReverseCulling = bReverseCulling != bIsLocalToWorldDeterminantNegative;
 	PrecachePSOParams.bForceLODModel = ForcedLodModel > 0;
 
-	const FVertexFactoryType* VFType = ShouldCreateNaniteProxy() ? &Nanite::FVertexFactory::StaticType :  &FLocalVertexFactory::StaticType;
-
-	for (uint16 MaterialIndex : UsedMaterialIndices)
+	for (FPSOPrecacheVertexFactoryDataPerMaterialIndex& VFsPerMaterial : VFTypesPerMaterialIndex)
 	{
-		UMaterialInterface* MaterialInterface = GetMaterial(MaterialIndex);
-		if (MaterialInterface)
+		UMaterialInterface* MaterialInterface = GetMaterial(VFsPerMaterial.MaterialIndex);
+		if (MaterialInterface == nullptr)
 		{
-			PrecachePSOParams.bHasWorldPositionOffsetVelocity = SupportsWorldPositionOffsetVelocity()
-				&& MaterialInterface->GetRelevance_Concurrent(FeatureLevel).bUsesWorldPositionOffset;
-
-			FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
-			ComponentParams.MaterialInterface = MaterialInterface;
-			ComponentParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(VFType));
-			ComponentParams.PSOPrecacheParams = PrecachePSOParams;
+			MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
+
+		FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+		ComponentParams.MaterialInterface = MaterialInterface;
+		ComponentParams.VertexFactoryDataList = VFsPerMaterial.VertexFactoryDataList;
+		ComponentParams.PSOPrecacheParams = PrecachePSOParams;
 	}
+
+	UMaterialInterface* OverlayMaterialInterface = GetOverlayMaterial();
+	if (OverlayMaterialInterface && VFTypesPerMaterialIndex.Num() != 0)
+	{
+		// Overlay is rendered with the same set of VFs
+		FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+		
+		ComponentParams.MaterialInterface = OverlayMaterialInterface;
+		ComponentParams.VertexFactoryDataList = VFTypesPerMaterialIndex[0].VertexFactoryDataList;
+		ComponentParams.PSOPrecacheParams = PrecachePSOParams;
+		ComponentParams.PSOPrecacheParams.bCastShadow = false;
+	}
+}
+
+void UStaticMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams)
+{
+	if (StaticMesh == nullptr || StaticMesh->GetRenderData() == nullptr)
+	{
+		return;
+	}
+
+	const FVertexFactoryType* VFType = ShouldCreateNaniteProxy() ? &Nanite::FVertexFactory::StaticType : &FLocalVertexFactory::StaticType;
+	int32 LightMapCoordinateIndex = StaticMesh->GetLightMapCoordinateIndex();
+	// FIXME: Need a precise per-LOD test
+	bool bOverrideColorVertexBuffer = LODData.Num() != 0 && LODData[0].OverrideVertexColors != nullptr;
+	
+	auto SMC_GetElements = [LightMapCoordinateIndex, bOverrideColorVertexBuffer](const FStaticMeshLODResources& LODRenderData, int32 LODIndex, bool bSupportsManualVertexFetch, FVertexDeclarationElementList& Elements)
+	{
+		int32 NumTexCoords = (int32)LODRenderData.VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords();
+		int32 LODLightMapCoordinateIndex = LightMapCoordinateIndex < NumTexCoords ? LightMapCoordinateIndex : NumTexCoords - 1;
+		FLocalVertexFactory::FDataType Data;
+		InitStaticMeshVertexFactoryComponents(LODRenderData.VertexBuffers, nullptr /*VertexFactory*/, LODLightMapCoordinateIndex, bOverrideColorVertexBuffer, Data);
+		FLocalVertexFactory::GetVertexElements(GMaxRHIFeatureLevel, EVertexInputStreamType::Default, bSupportsManualVertexFetch, Data, Elements);
+	};
+	
+	CollectPSOPrecacheDataImpl(VFType, BasePrecachePSOParams, SMC_GetElements, OutParams);
 }
 
 #if WITH_EDITOR
@@ -1687,7 +1780,7 @@ void UStaticMeshComponent::UpdatePreCulledData(int32 LODIndex, const TArray<uint
 		check(IsInRenderingThread());
 		LODData[LODIndex].PreCulledIndexBuffer.ReleaseResource();
 		LODData[LODIndex].PreCulledIndexBuffer.SetIndices(PreCulledData, EIndexBufferStride::AutoDetect);
-		LODData[LODIndex].PreCulledIndexBuffer.InitResource();
+		LODData[LODIndex].PreCulledIndexBuffer.InitResource(FRHICommandListImmediate::Get());
 
 		INC_DWORD_STAT_BY(STAT_StaticMeshPreCulledIndexMemory, LODData[LODIndex].PreCulledIndexBuffer.GetAllocatedSize());
 		LODData[LODIndex].PreCulledSections.Empty(StaticMeshLODResources.Sections.Num());
@@ -1711,25 +1804,6 @@ void UStaticMeshComponent::UpdatePreCulledData(int32 LODIndex, const TArray<uint
 		LODData[LODIndex].PreCulledIndexBuffer.SetIndices(EmptyIndices, EIndexBufferStride::AutoDetect);
 		LODData[LODIndex].PreCulledSections.Empty(StaticMeshLODResources.Sections.Num());
 	}
-}
-
-bool UStaticMeshComponent::ShouldCreateNaniteProxy() const
-{
-	if (bDisallowNanite || bForceDisableNanite)
-	{
-		// Regardless of the static mesh asset supporting Nanite, this component does not want Nanite to be used
-		return false;
-	}
-
-	// Whether or not to allow Nanite for this component
-#if WITH_EDITORONLY_DATA
-	const bool bAllowNanite = !bDisplayNaniteFallbackMesh;
-#else
-	const bool bAllowNanite = true;
-#endif
-
-	EShaderPlatform ShaderPlatform = GetScene() ? GetScene()->GetShaderPlatform() : GMaxRHIShaderPlatform;
-	return bAllowNanite && UseNanite(ShaderPlatform) && HasValidNaniteData();
 }
 
 void UStaticMeshComponent::ReleaseResources()
@@ -2062,7 +2136,7 @@ void UStaticMeshComponent::PostLoad()
 		if (GetStaticMesh()->HasValidRenderData()
 			&& GetStaticMesh()->GetRenderData()->MaterialIndexToImportIndex.Num())
 		{
-			TArray<UMaterialInterface*> OldMaterials;
+			TArray<TObjectPtr<UMaterialInterface>> OldMaterials;
 			const TArray<int32>& MaterialIndexToImportIndex = GetStaticMesh()->GetRenderData()->MaterialIndexToImportIndex;
 
 			Exchange(OverrideMaterials, OldMaterials);
@@ -2251,7 +2325,7 @@ const Nanite::FResources* UStaticMeshComponent::GetNaniteResources() const
 	}
 	else if (GetStaticMesh() && GetStaticMesh()->GetRenderData())
 	{
-		return &GetStaticMesh()->GetRenderData()->NaniteResources;
+		return GetStaticMesh()->GetRenderData()->NaniteResourcesPtr.Get();
 	}
 
 	return nullptr;
@@ -2259,14 +2333,19 @@ const Nanite::FResources* UStaticMeshComponent::GetNaniteResources() const
 
 bool UStaticMeshComponent::HasValidNaniteData() const
 {
-	const Nanite::FResources* NaniteResources = GetNaniteResources();
-	return NaniteResources ? NaniteResources->PageStreamingStates.Num() > 0 : false;
+	const Nanite::FResources* NaniteResources = UStaticMeshComponent::GetNaniteResources();
+	return NaniteResources != nullptr ? NaniteResources->PageStreamingStates.Num() > 0 : false;
+}
+
+bool UStaticMeshComponent::UseNaniteOverrideMaterials(bool bDoingMaterialAudit) const
+{
+	// Check for valid data on this SMC and support for Nanite material overrides
+	return (bDoingMaterialAudit || ShouldCreateNaniteProxy()) && GEnableNaniteMaterialOverrides != 0;
 }
 
 bool UStaticMeshComponent::UseNaniteOverrideMaterials() const
 {
-	// Check for valid data on this SMC and support for Nanite material overrides
-	return ShouldCreateNaniteProxy() && GEnableNaniteMaterialOverrides != 0;
+	return UseNaniteOverrideMaterials(false);
 }
 
 void UStaticMeshComponent::SetForcedLodModel(int32 NewForcedLodModel)
@@ -2354,6 +2433,23 @@ void UStaticMeshComponent::SetEvaluateWorldPositionOffset(bool NewValue)
 		bEvaluateWorldPositionOffset = NewValue;
 		// Update render thread data
 		SceneProxy->SetEvaluateWorldPositionOffset_GameThread(NewValue);
+	}
+}
+
+void UStaticMeshComponent::SetWorldPositionOffsetDisableDistance(int32 NewValue)
+{
+	// Skip when this doesn't have a valid static mesh or a valid scene
+	if (!GetStaticMesh() || GetScene() == nullptr || SceneProxy == nullptr)
+	{
+		return;
+	}
+
+	if (WorldPositionOffsetDisableDistance != NewValue)
+	{
+		// Update game thread data
+		WorldPositionOffsetDisableDistance = NewValue;
+		// Update render thread data
+		SceneProxy->SetWorldPositionOffsetDisableDistance_GameThread(NewValue);
 	}
 }
 
@@ -2553,7 +2649,7 @@ void UStaticMeshComponent::GetTextureLightAndShadowMapMemoryUsage(int32 InWidth,
 	OutShadowMapMemoryUsage = FMath::TruncToInt(MIP_FACTOR * InWidth * InHeight); // G8
 
 	UWorld* World = GetWorld();
-	ERHIFeatureLevel::Type FeatureLevel = World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+	ERHIFeatureLevel::Type FeatureLevel = World ? World->GetFeatureLevel() : GMaxRHIFeatureLevel;
 
 	if (AllowHighQualityLightmaps(FeatureLevel))
 	{
@@ -2665,7 +2761,7 @@ bool UStaticMeshComponent::IsMaterialSlotNameValid(FName MaterialSlotName) const
 	return GetMaterialIndex(MaterialSlotName) >= 0;
 }
 
-UMaterialInterface* UStaticMeshComponent::GetMaterial(int32 MaterialIndex) const
+UMaterialInterface* UStaticMeshComponent::GetMaterial(int32 MaterialIndex, bool bDoingNaniteMaterialAudit) const
 {
 	UMaterialInterface* OutMaterial = nullptr;
 
@@ -2680,14 +2776,31 @@ UMaterialInterface* UStaticMeshComponent::GetMaterial(int32 MaterialIndex) const
 		OutMaterial = GetStaticMesh()->GetMaterial(MaterialIndex);
 	}
 
-	// If we have a nanite override, use that
-	if (OutMaterial != nullptr && UseNaniteOverrideMaterials())
+	if (OutMaterial)
 	{
-		UMaterialInterface* NaniteOverride = OutMaterial->GetNaniteOverride();
-		OutMaterial = NaniteOverride != nullptr ? NaniteOverride : OutMaterial;
+		//@note FH: temporary preemptive PostLoad until zenloader load ordering improvements
+		OutMaterial->ConditionalPostLoad();
+
+		// If we have a nanite override, use that
+		if (UseNaniteOverrideMaterials(bDoingNaniteMaterialAudit))
+		{
+			UMaterialInterface* NaniteOverride = OutMaterial->GetNaniteOverride();
+			OutMaterial = NaniteOverride != nullptr ? NaniteOverride : OutMaterial;
+		}
+
 	}
 
 	return OutMaterial;
+}
+
+UMaterialInterface* UStaticMeshComponent::GetMaterial(int32 MaterialIndex) const
+{
+	return GetMaterial(MaterialIndex, false);
+}
+
+UMaterialInterface* UStaticMeshComponent::GetNaniteAuditMaterial(int32 MaterialIndex) const
+{
+	return GetMaterial(MaterialIndex, true);
 }
 
 UMaterialInterface* UStaticMeshComponent::GetEditorMaterial(int32 MaterialIndex) const
@@ -2738,9 +2851,10 @@ void UStaticMeshComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMate
 				OutMaterials.Add(GetMaterial(MaterialIndex));
 			}
 
-			if (OverlayMaterial != nullptr)
+			UMaterialInterface* OverlayMaterialInterface = GetOverlayMaterial();
+			if (OverlayMaterialInterface != nullptr)
 			{
-				OutMaterials.Add(OverlayMaterial);
+				OutMaterials.Add(OverlayMaterialInterface);
 			}
 		}
 	}
@@ -2854,6 +2968,11 @@ void UStaticMeshComponent::ApplyComponentInstanceData(FStaticMeshComponentInstan
 
 bool UStaticMeshComponent::IsHLODRelevant() const
 {
+	if (HasAnyFlags(RF_Transient))
+	{
+		return false;
+	}
+
 	if (!GetStaticMesh())
 	{
 		return false;
@@ -3022,6 +3141,48 @@ void UStaticMeshComponent::PostStaticMeshCompilation()
 	}
 }
 
+namespace ComponentIsTouchingSelectionHelpers
+{
+
+const FStaticMeshLODResources* GetRenderLOD(const UStaticMesh& StaticMesh)
+{
+	// Get the lowest available render LOD.
+	// If the Minimum LOD index is not zero, their might be a lower LOD available, but it will not be used for rendering in the viewport.
+	const int32 MinLODIdx = StaticMesh.GetMinLODIdx();
+	return StaticMesh.GetRenderData()->GetCurrentFirstLOD(MinLODIdx);
+}
+
+enum class ECheckSectionBoundsResult
+{
+	Valid,           // Section data is available, continue with triangle tests.
+	InvalidContinue, // Section data is not available, but continue checking the other sections.
+	InvalidFail      // Section data is not available, and the selection test needs to fail because of it.
+};
+
+ECheckSectionBoundsResult CheckSectionBounds(const FStaticMeshSection& Section, const FIndexArrayView& Indices, const FPositionVertexBuffer& Vertices,
+                                             const bool bMustEncompassEntireComponent)
+{
+	// Not sure if empty sections are valid, but if they are then we need to ignore them for the triangle tests.
+	// Otherwise the checks for encompassing the entire component are producing false negatives and/or positives.
+	if (Section.NumTriangles == 0)
+	{
+		return ECheckSectionBoundsResult::InvalidContinue;
+	}
+
+	// Vertex and Index buffers are not guaranteed to be present and/or complete.
+	// Thus, we need to check their bounds before we use them to test triangle intersections.
+	if (static_cast<int32>(Section.FirstIndex + Section.NumTriangles * 3) > Indices.Num() || Section.MaxVertexIndex >= Vertices.GetNumVertices())
+	{
+		// If the entire component must to be encompassed, not having data for a section means we cannot verify that the section is included, and
+		// this entire selection test fails. Otherwise, we just continue and check the other sections.
+		return bMustEncompassEntireComponent ? ECheckSectionBoundsResult::InvalidFail : ECheckSectionBoundsResult::InvalidContinue;
+	}
+
+	return ECheckSectionBoundsResult::Valid;
+}
+
+} // namespace StaticMeshComponent_SelectionHelpers
+
 bool UStaticMeshComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const
 {
 	if (!bConsiderOnlyBSP && GetStaticMesh() != nullptr && GetStaticMesh()->HasValidRenderData())
@@ -3035,34 +3196,53 @@ bool UStaticMeshComponent::ComponentIsTouchingSelectionBox(const FBox& InSelBBox
 		// Check if we are even inside it's bounding box, if we are not, there is no way we colliding via the more advanced checks we will do.
 		if (Super::ComponentIsTouchingSelectionBox(InSelBBox, bConsiderOnlyBSP, false))
 		{
-			TArray<FVector> Vertex;
+			TArray<FVector> TriVertices;
+			TriVertices.SetNumUninitialized(3);
 
-			FStaticMeshLODResources& LODModel = GetStaticMesh()->GetRenderData()->LODResources[0];
-			FIndexArrayView Indices = LODModel.IndexBuffer.GetArrayView();
-
-			for (const FStaticMeshSection& Section : LODModel.Sections)
+			const FStaticMeshLODResources* LOD = ComponentIsTouchingSelectionHelpers::GetRenderLOD(*GetStaticMesh());
+			if (!LOD)
 			{
-				// Iterate over each triangle.
-				for (int32 TriangleIndex = 0; TriangleIndex < (int32)Section.NumTriangles; TriangleIndex++)
-				{
-					Vertex.Empty(3);
+				return false;
+			}
 
-					int32 FirstIndex = TriangleIndex * 3 + Section.FirstIndex;
+			const FIndexArrayView Indices = LOD->IndexBuffer.GetArrayView();
+			const FPositionVertexBuffer& Vertices = LOD->VertexBuffers.PositionVertexBuffer;
+
+			for (const FStaticMeshSection& Section : LOD->Sections)
+			{
+				switch (ComponentIsTouchingSelectionHelpers::CheckSectionBounds(Section, Indices, Vertices, bMustEncompassEntireComponent))
+				{
+				case ComponentIsTouchingSelectionHelpers::ECheckSectionBoundsResult::Valid:
+					/* Proceed with triangle tests. */
+					break;
+				case ComponentIsTouchingSelectionHelpers::ECheckSectionBoundsResult::InvalidContinue:
+					/* Skip this mesh section, and continue with next one. */
+					continue;
+				case ComponentIsTouchingSelectionHelpers::ECheckSectionBoundsResult::InvalidFail:
+					/* Invalid data; fail test. */
+					return false;
+				}
+
+				// Iterate over each triangle.
+				const int32 SectionIndicesEnd = static_cast<int32>(Section.FirstIndex + Section.NumTriangles * 3);
+				for (int32 TriFirstVertexIndex = Section.FirstIndex; TriFirstVertexIndex < SectionIndicesEnd; TriFirstVertexIndex += 3)
+				{
 					for (int32 i = 0; i < 3; i++)
 					{
-						int32 VertexIndex = Indices[FirstIndex + i];
-						FVector LocalPosition(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex));
-						Vertex.Emplace(GetComponentTransform().TransformPosition(LocalPosition));
+						const int32 VertexIndex = Indices[TriFirstVertexIndex + i];
+						const FVector LocalPosition(Vertices.VertexPosition(VertexIndex));
+						TriVertices[i] = GetComponentTransform().TransformPosition(LocalPosition);
 					}
 
 					// Check if the triangle is colliding with the bounding box.
-					FSeparatingAxisPointCheck ThePointCheck(Vertex, InSelBBox.GetCenter(), InSelBBox.GetExtent(), false);
+					const FSeparatingAxisPointCheck ThePointCheck(TriVertices, InSelBBox.GetCenter(), InSelBBox.GetExtent(), false);
+
 					if (!bMustEncompassEntireComponent && ThePointCheck.bHit)
 					{
 						// Needn't encompass entire component: any intersection, we consider as touching
 						return true;
 					}
-					else if (bMustEncompassEntireComponent && !ThePointCheck.bHit)
+					if (bMustEncompassEntireComponent && !ThePointCheck.bHit)
 					{
 						// Must encompass entire component: any non intersection, we consider as not touching
 						return false;
@@ -3094,20 +3274,38 @@ bool UStaticMeshComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolu
 				return true;
 			}
 
-			FStaticMeshLODResources& LODModel = GetStaticMesh()->GetRenderData()->LODResources[0];
-			FIndexArrayView Indices = LODModel.IndexBuffer.GetArrayView();
+			const FStaticMeshLODResources* LOD = ComponentIsTouchingSelectionHelpers::GetRenderLOD(*GetStaticMesh());
+			if (!LOD)
+			{
+				return false;
+			}
+
+			const FIndexArrayView Indices = LOD->IndexBuffer.GetArrayView();
+			const FPositionVertexBuffer& Vertices = LOD->VertexBuffers.PositionVertexBuffer;
 
 			const FTransform& TransformToWorld = GetComponentTransform();
-			for (const FStaticMeshSection& Section : LODModel.Sections)
+			for (const FStaticMeshSection& Section : LOD->Sections)
 			{
-				// Iterate over each triangle.
-				for (int32 TriangleIndex = 0; TriangleIndex < (int32)Section.NumTriangles; TriangleIndex++)
+				switch (ComponentIsTouchingSelectionHelpers::CheckSectionBounds(Section, Indices, Vertices, bMustEncompassEntireComponent))
 				{
-					int32 Index = TriangleIndex * 3 + Section.FirstIndex;
-				
-					FVector PointA(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index]));
-					FVector PointB(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index + 1]));
-					FVector PointC(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(Indices[Index + 2]));
+				case ComponentIsTouchingSelectionHelpers::ECheckSectionBoundsResult::Valid:
+					/* Proceed with triangle tests. */
+					break;
+				case ComponentIsTouchingSelectionHelpers::ECheckSectionBoundsResult::InvalidContinue:
+					/* Skip this mesh section, and continue with next one. */
+					continue;
+				case ComponentIsTouchingSelectionHelpers::ECheckSectionBoundsResult::InvalidFail:
+					/* Invalid data; fail test. */
+					return false;
+				}
+
+				// Iterate over each triangle.
+				const int32 SectionIndicesEnd = static_cast<int32>(Section.FirstIndex + Section.NumTriangles * 3);
+				for (int32 TriFirstVertexIndex = Section.FirstIndex; TriFirstVertexIndex < SectionIndicesEnd; TriFirstVertexIndex += 3)
+				{
+					FVector PointA(Vertices.VertexPosition(Indices[TriFirstVertexIndex]));
+					FVector PointB(Vertices.VertexPosition(Indices[TriFirstVertexIndex + 1]));
+					FVector PointC(Vertices.VertexPosition(Indices[TriFirstVertexIndex + 2]));
 
 					PointA = TransformToWorld.TransformPosition(PointA);
 					PointB = TransformToWorld.TransformPosition(PointB);
@@ -3119,14 +3317,14 @@ bool UStaticMeshComponent::ComponentIsTouchingSelectionFrustum(const FConvexVolu
 					if (!bMustEncompassEntireComponent && bIntersect)
 					{
 						// Needn't encompass entire component: any intersection, we consider as touching
-					return true;
-				}
-					else if (bMustEncompassEntireComponent && !bFullyContained)
-				{
+						return true;
+					}
+					if (bMustEncompassEntireComponent && !bFullyContained)
+					{
 						// Must encompass entire component: any non intersection, we consider as not touching
-					return false;
+						return false;
+					}
 				}
-			}
 			}
 
 			// Either:

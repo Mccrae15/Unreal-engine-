@@ -84,8 +84,8 @@ namespace Metasound
 					PluginAuthor,
 					PluginNodeMissingPrompt,
 					GetDefaultInterface(),
-					{ NodeCategories::Envelopes },
-					{ METASOUND_LOCTEXT("WaveTableEnvelopeSynthesisKeyword", "Synthesis")},
+					{ NodeCategories::WaveTables },
+					{ NodeCategories::Generators, METASOUND_LOCTEXT("WaveTableEnvelopeSynthesisKeyword", "Synthesis")},
 					{ }
 				};
 
@@ -134,48 +134,43 @@ namespace Metasound
 			, OutWriteRef(TDataWriteReferenceFactory<float>::CreateAny(InParams.OperatorSettings))
 			, SampleRate(InParams.OperatorSettings.GetSampleRate())
 		{
-			{
-				using namespace WaveTable;
-				FWaveTableSampler::FSettings Settings;
-				Settings.Freq = 0.0f; // Sampler phase is manually progressed via this node
-				Sampler = FWaveTableSampler(MoveTemp(Settings));
-			}
-
-			{
-				const float BlockRate = InParams.OperatorSettings.GetActualBlockRate();
-				check(BlockRate > 0.0f && !FMath::IsNearlyZero(BlockRate));
-				SecondsPerBlock = 1.0f / BlockRate;
-			}
-
-			{
-				BlockSize = InParams.OperatorSettings.GetNumFramesPerBlock();
-				check(BlockSize > 0);
-			}
+			Reset(InParams);
 		}
 
 		virtual ~FMetasoundWaveTableEnvelopeNodeOperator() = default;
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			
+			InOutVertexData.BindReadVertex("WaveTable", WaveTableReadRef);
+			InOutVertexData.BindReadVertex("Play", PlayReadRef);
+			InOutVertexData.BindReadVertex("Stop", StopReadRef);
+			InOutVertexData.BindReadVertex("Pause", PauseReadRef);
+			InOutVertexData.BindReadVertex("Duration", DurationReadRef);
+			InOutVertexData.BindReadVertex("Mode", ModeReadRef);
+			InOutVertexData.BindReadVertex("Interpolation", InterpModeReadRef);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex("OnFinished", OnFinishedWriteRef);
+			InOutVertexData.BindReadVertex("Out", OutWriteRef);
+		}
+
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference("WaveTable", WaveTableReadRef);
-			Inputs.AddDataReadReference("Play", PlayReadRef);
-			Inputs.AddDataReadReference("Stop", StopReadRef);
-			Inputs.AddDataReadReference("Pause", PauseReadRef);
-			Inputs.AddDataReadReference("Duration", DurationReadRef);
-			Inputs.AddDataReadReference("Mode", ModeReadRef);
-
-
-			return Inputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference("OnFinished", TDataReadReference<FTrigger>(OnFinishedWriteRef));
-			Outputs.AddDataReadReference("Out", TDataReadReference<float>(OutWriteRef));
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		float GetStopValue(WaveTable::FWaveTableSampler::ESingleSampleMode InSampleMode) const
@@ -309,6 +304,33 @@ namespace Metasound
 			}
 
 			*OutWriteRef = NextValue;
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			{
+				using namespace WaveTable;
+				FWaveTableSampler::FSettings Settings;
+				Settings.Freq = 0.0f; // Sampler phase is manually progressed via this node
+				Sampler = FWaveTableSampler(MoveTemp(Settings));
+			}
+
+			{
+				const float BlockRate = InParams.OperatorSettings.GetActualBlockRate();
+				check(BlockRate > 0.0f && !FMath::IsNearlyZero(BlockRate));
+				SecondsPerBlock = 1.0f / BlockRate;
+			}
+
+			{
+				BlockSize = InParams.OperatorSettings.GetNumFramesPerBlock();
+				check(BlockSize > 0);
+			}
+
+			OnFinishedWriteRef->Reset();
+			*OutWriteRef = 0.f;
+
+			Elapsed = -1.0f;
+			bPaused = false;
 		}
 
 	private:

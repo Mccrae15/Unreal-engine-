@@ -11,6 +11,8 @@
 #include "RenderingThread.h"
 #include "Containers/ResourceArray.h"
 
+const static FLazyName Texture2DResourceName(TEXT("FTexture2DResource"));
+
 // TODO Only adding this setting to allow backwards compatibility to be forced.  The default
 // behavior is to NOT do this.  This variable should be removed in the future.  #ADDED 4.13
 static TAutoConsoleVariable<int32> CVarForceHighestMipOnUITexturesEnabled(
@@ -31,7 +33,14 @@ FTexture2DResource::FTexture2DResource(UTexture2D* InOwner, const FStreamableRen
 {
 	// Retrieve initial mip data.
 	MipData.AddZeroed(State.MaxNumLODs);
-	InOwner->GetMipData(State.LODCountToAssetFirstLODIdx(State.NumRequestedLODs), MipData.GetData() + State.LODCountToFirstLODIdx(State.NumRequestedLODs));
+	MipDataSize.AddZeroed(State.MaxNumLODs);
+
+	int32 AssetFirstMipToLoad = State.LODCountToAssetFirstLODIdx(State.NumRequestedLODs);	// takes lod bias into account
+	int32 LocalFirstMipToLoad = State.LODCountToFirstLODIdx(State.NumRequestedLODs);		// ignores bias
+	InOwner->GetInitialMipData(
+		AssetFirstMipToLoad,
+		TArrayView<void*>(MipData).RightChop(LocalFirstMipToLoad),
+		TArrayView<int64>(MipDataSize).RightChop(LocalFirstMipToLoad));
 
 	CacheSamplerStateInitializer(InOwner);
 }
@@ -69,6 +78,7 @@ FTexture2DResource::~FTexture2DResource()
 			FMemory::Free( MipData[MipIndex] );
 		}
 		MipData[MipIndex] = NULL;
+		MipDataSize[MipIndex] = 0;
 	}
 }
 
@@ -86,7 +96,7 @@ void FTexture2DResource::CacheSamplerStateInitializer(const UTexture2D* InOwner)
 	MipBias = UTexture2D::GetGlobalMipMapLODBias() + DefaultMipBias;
 }
 
-void FTexture2DResource::InitRHI()
+void FTexture2DResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	if (ProxiedResource)
 	{
@@ -97,7 +107,7 @@ void FTexture2DResource::InitRHI()
 	}
 	else
 	{
-		FStreamableTextureResource::InitRHI();
+		FStreamableTextureResource::InitRHI(RHICmdList);
 	}
 }
 
@@ -112,7 +122,9 @@ void FTexture2DResource::CreateTexture()
 		.SetNumMips(State.NumRequestedLODs)
 		.SetFlags(CreationFlags)
 		.SetExtData(PlatformData->GetExtData())
-		.SetBulkData(ResourceMem);
+		.SetBulkData(ResourceMem)
+		.SetClassName(Texture2DResourceName)
+		.SetOwnerName(GetOwnerName());
 
 	TextureRHI = RHICreateTexture(Desc);
 
@@ -125,6 +137,7 @@ void FTexture2DResource::CreateTexture()
 		for( int32 MipIndex=0; MipIndex < MipData.Num(); MipIndex++ )
 		{
 			MipData[MipIndex] = nullptr;
+			MipDataSize[MipIndex] = 0;
 		}
 	}
 	else
@@ -136,8 +149,11 @@ void FTexture2DResource::CreateTexture()
 			if (MipData[ResourceMipIdx])
 			{
 				uint32 DestPitch = -1;
-				void* TheMipData = RHILockTexture2D(TextureRHI, RHIMipIdx, RLM_WriteOnly, DestPitch, false );
-				GetData( ResourceMipIdx, TheMipData, DestPitch );
+				uint64 Size = ~0ULL;
+				void* TheMipData = RHILockTexture2D(TextureRHI, RHIMipIdx, RLM_WriteOnly, DestPitch, false /* bLockWithinMiptail */, true /* bFlushRHIThread */, &Size);
+				//check(Size != ~0ULL);
+
+				GetData( ResourceMipIdx, TheMipData, DestPitch, Size );
 				RHIUnlockTexture2D(TextureRHI, RHIMipIdx, false );
 			}
 		}
@@ -155,7 +171,9 @@ void FTexture2DResource::CreatePartiallyResidentTexture()
 		.SetNumMips(State.MaxNumLODs)
 		.SetFlags(CreationFlags | ETextureCreateFlags::Virtual)
 		.SetExtData(PlatformData->GetExtData())
-		.SetBulkData(ResourceMem);
+		.SetBulkData(ResourceMem)
+		.SetClassName(Texture2DResourceName)
+		.SetOwnerName(GetOwnerName());
 
 	TextureRHI = RHICreateTexture(Desc);
 
@@ -170,8 +188,11 @@ void FTexture2DResource::CreatePartiallyResidentTexture()
 		if ( MipData[MipIndex] != NULL )
 		{
 			uint32 DestPitch = -1;
-			void* TheMipData = RHILockTexture2D(TextureRHI, MipIndex, RLM_WriteOnly, DestPitch, false );
-			GetData( MipIndex, TheMipData, DestPitch );
+			uint64 Size = ~0ULL;
+			void* TheMipData = RHILockTexture2D(TextureRHI, MipIndex, RLM_WriteOnly, DestPitch, false /* bLockWithinMiptail */, true /* bFlushRHIThread */, &Size);
+			//check(Size != ~0ULL);
+
+			GetData( MipIndex, TheMipData, DestPitch, Size);
 			RHIUnlockTexture2D(TextureRHI, MipIndex, false );
 		}
 	}
@@ -242,8 +263,9 @@ void FTexture2DResource::WarnRequiresTightPackedMip(int32 SizeX,int32 SizeY,EPix
  * @param MipIndex		Index of the mip-level to read.
  * @param Dest			Address of the destination buffer to receive the mip-level's data.
  * @param DestPitch		Number of bytes per row
+ * @param DestSize		Number of bytes locked by RHILockTexture2D.
  */
-void FTexture2DResource::GetData( uint32 MipIndex, void* Dest, uint32 DestPitch )
+void FTexture2DResource::GetData( uint32 MipIndex, void* Dest, uint32 DestPitch, uint64 DestSize )
 {
 	const FTexture2DMipMap& MipMap = *GetPlatformMip(MipIndex);
 	check( MipData[MipIndex] != nullptr );
@@ -251,20 +273,26 @@ void FTexture2DResource::GetData( uint32 MipIndex, void* Dest, uint32 DestPitch 
 	uint32 SrcPitch;
 	uint32 EffectiveSize = CalculateTightPackedMipSize(MipMap.SizeX,MipMap.SizeY,PixelFormat,SrcPitch);
 
-	int64 BulkDataSize = MipMap.BulkData.GetBulkDataSize();
+	int64 DataSize = MipDataSize[MipIndex];
 
-	UE_LOG(LogTextureUpload,Verbose,TEXT("Size: %dx%d , EffectiveSize=%d BulkDataSize=%d , SrcPitch=%d DestPitch=%d"),
+	UE_LOG(LogTextureUpload,Verbose,TEXT("Size: %dx%d , EffectiveSize=%d BulkDataSize=%lld , SrcPitch=%d DestPitch=%d Format=%d, DestSize=%lld"),
 		MipMap.SizeX,MipMap.SizeY,
-		EffectiveSize,(int)BulkDataSize,
-		SrcPitch,DestPitch);
+		EffectiveSize,DataSize,
+		SrcPitch,DestPitch, PixelFormat, DestSize);
+
+	if ((uint64)DataSize > DestSize)
+	{
+		UE_LOG(LogTextureUpload, Warning, TEXT("DestSize is reported smaller than BulkDataSize in upload! Either RHI is reporting wrong sizes or we are stomping memory! Size: %dx%d, EffectiveSize=%d, BulkDataSize=%lld, SrcPitch=%d, DestPitch=%d, Format=%d, DestSize=%lld"),
+			MipMap.SizeX,MipMap.SizeY,
+			EffectiveSize,DataSize,
+			SrcPitch,DestPitch, PixelFormat, DestSize);
+	}
 
 	// for platforms that returned 0 pitch from Lock, we need to just use the bulk data directly, never do 
 	// runtime block size checking, conversion, or the like
 	if (DestPitch == 0)
 	{
-		// check( BulkDataSize >= EffectiveSize );
-
-		FMemory::Memcpy(Dest, MipData[MipIndex], BulkDataSize);
+		FMemory::Memcpy(Dest, MipData[MipIndex], DataSize);
 	}
 	else
 	{
@@ -272,17 +300,17 @@ void FTexture2DResource::GetData( uint32 MipIndex, void* Dest, uint32 DestPitch 
 		// in Editor, Mip doesn't come from BulkData, it may be null
 		// MipData[] was set from Editor data
 		// would be nice to check MipData[MipIndex] size ! but it's not stored
-		if ( BulkDataSize == 0 )
+		if (DataSize == 0)
 		{
-			BulkDataSize = EffectiveSize;
+			DataSize = EffectiveSize;
 		}
 		#endif
 
 	#if !WITH_EDITORONLY_DATA
 		// only checking when !WITH_EDITORONLY_DATA ? because in Editor BulkDataSize == 0 , so not possible to check
-		checkf((int64)EffectiveSize == BulkDataSize, 
-			TEXT("Texture '%s', mip %d, has a BulkDataSize [%d] that doesn't match calculated size [%d]. Texture size %dx%d, format %d"),
-			*TextureName.ToString(), MipIndex, BulkDataSize, EffectiveSize, GetSizeX(), GetSizeY(), (int32)PixelFormat);
+		checkf((int64)EffectiveSize == DataSize, 
+			TEXT("Texture '%s', mip %d, has a DataSize [%d] that doesn't match calculated size [%d]. Texture size %dx%d, format %d"),
+			*TextureName.ToString(), MipIndex, DataSize, EffectiveSize, GetSizeX(), GetSizeY(), (int32)PixelFormat);
 	#endif
 
 		// for platforms that returned 0 pitch from Lock, we need to just use the bulk data directly, never do 
@@ -290,7 +318,7 @@ void FTexture2DResource::GetData( uint32 MipIndex, void* Dest, uint32 DestPitch 
 		if (DestPitch == 0 || DestPitch == SrcPitch )
 		{
 			// checking Dest size before we memcpy would be nice!
-			FMemory::Memcpy(Dest, MipData[MipIndex], BulkDataSize);
+			FMemory::Memcpy(Dest, MipData[MipIndex], DataSize);
 		}
 		else
 		{
@@ -302,4 +330,5 @@ void FTexture2DResource::GetData( uint32 MipIndex, void* Dest, uint32 DestPitch 
 	// Free data retrieved via GetCopy inside constructor.
 	FMemory::Free(MipData[MipIndex]);
 	MipData[MipIndex] = NULL;
+	MipDataSize[MipIndex] = 0;
 }

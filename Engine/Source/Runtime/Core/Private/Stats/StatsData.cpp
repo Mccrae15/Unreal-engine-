@@ -202,7 +202,7 @@ void FRawStatStackNode::AddNameHierarchy(int32 CurrentPrefixDepth)
 			for (int32 Index = 0; Index < ChildArray.Num(); Index++)
 			{
 				FRawStatStackNode& Child = *ChildArray[Index];
-				new (ChildNames) TArray<FName>();
+				ChildNames.AddDefaulted();
 				TArray<FName>& ParsedNames = ChildNames[Index];
 
 				TArray<FString> Parts;
@@ -210,7 +210,7 @@ void FRawStatStackNode::AddNameHierarchy(int32 CurrentPrefixDepth)
 				if (Name.StartsWith(TEXT("//")))
 				{
 					// we won't add hierarchy for grouped stats
-					new (ParsedNames) FName(Child.Meta.NameAndInfo.GetRawName());
+					ParsedNames.Add(Child.Meta.NameAndInfo.GetRawName());
 				}
 				else
 				{
@@ -220,7 +220,7 @@ void FRawStatStackNode::AddNameHierarchy(int32 CurrentPrefixDepth)
 					ParsedNames.Empty(Parts.Num());
 					for (int32 PartIndex = 0; PartIndex < Parts.Num(); PartIndex++)
 					{
-						new (ParsedNames) FName(*Parts[PartIndex]);
+						ParsedNames.Add(*Parts[PartIndex]);
 					}
 				}
 			}
@@ -427,10 +427,10 @@ void FRawStatStackNode::DebugPrintLeafFilterInner(TCHAR const* Filter, int32 Dep
 
 void FRawStatStackNode::Encode(TArray<FStatMessage>& OutStats) const
 {
-	FStatMessage* NewStat = new (OutStats) FStatMessage(Meta);
+	FStatMessage& NewStat = OutStats.Add_GetRef(Meta);
 	if (Children.Num())
 	{
-		NewStat->NameAndInfo.SetField<EStatOperation>(EStatOperation::ChildrenStart);
+		NewStat.NameAndInfo.SetField<EStatOperation>(EStatOperation::ChildrenStart);
 		for (TMap<FName, FRawStatStackNode*>::TConstIterator It(Children); It; ++It)
 		{
 			FRawStatStackNode const* Child = It.Value();
@@ -441,7 +441,7 @@ void FRawStatStackNode::Encode(TArray<FStatMessage>& OutStats) const
 	}
 	else
 	{
-		NewStat->NameAndInfo.SetField<EStatOperation>(EStatOperation::Leaf);
+		NewStat.NameAndInfo.SetField<EStatOperation>(EStatOperation::Leaf);
 	}
 }
 
@@ -845,26 +845,32 @@ void FStatsThreadState::ProcessNonFrameStats(FStatMessagesArray& Data, TSet<FNam
 			{
 				UE_LOG(LogStats, Fatal, TEXT( "Stat %s was not cleared every frame, but was used with a scope cycle counter." ), *Item.NameAndInfo.GetRawName().ToString() );
 			}
+#if UE_STATS_MEMORY_PROFILER_ENABLED
+			else if (Op == EStatOperation::Memory)
+			{
+				// Ignore any memory messages, they shouldn't be treated as regular stats messages.
+			}
+#endif //UE_STATS_MEMORY_PROFILER_ENABLED
+			else if (Op == EStatOperation::SpecialMessageMarker)
+			{
+				// Ignore special messages, they shouldn't be treated as regular stats messages.
+			}
 			else
 			{
-				// Ignore any memory or special messages, they shouldn't be treated as regular stats messages.
-				if( Op != EStatOperation::Memory && Op != EStatOperation::SpecialMessageMarker )
+				FStatMessage* Result = NotClearedEveryFrame.Find(Item.NameAndInfo.GetRawName());
+				if (!Result)
 				{
-					FStatMessage* Result = NotClearedEveryFrame.Find(Item.NameAndInfo.GetRawName());
-					if (!Result)
+					UE_LOG(LogStats, Error, TEXT( "Stat %s was cleared every frame, but we don't have metadata for it. Data loss." ), *Item.NameAndInfo.GetRawName().ToString() );
+				}
+				else
+				{
+					if (NonFrameStatsFound)
 					{
-						UE_LOG(LogStats, Error, TEXT( "Stat %s was cleared every frame, but we don't have metadata for it. Data loss." ), *Item.NameAndInfo.GetRawName().ToString() );
+						NonFrameStatsFound->Add(Item.NameAndInfo.GetRawName());
 					}
-					else
-					{
-						if (NonFrameStatsFound)
-						{
-							NonFrameStatsFound->Add(Item.NameAndInfo.GetRawName());
-						}
-						FStatsUtils::AccumulateStat(*Result, Item);
-						Item = *Result; // now just write the accumulated value back into the stream
-						check(Item.NameAndInfo.GetField<EStatOperation>() == EStatOperation::Set);
-					}
+					FStatsUtils::AccumulateStat(*Result, Item);
+					Item = *Result; // now just write the accumulated value back into the stream
+					check(Item.NameAndInfo.GetField<EStatOperation>() == EStatOperation::Set);
 				}
 			}
 		}
@@ -1514,10 +1520,12 @@ void FStatsThreadState::GetRawStackStats(int64 TargetFrame, FRawStatStackNode& R
 
 					}
 				}
-				else if( Op == EStatOperation::Memory )
+#if UE_STATS_MEMORY_PROFILER_ENABLED
+				else if (Op == EStatOperation::Memory)
 				{
 					// Should never happen.
 				}
+#endif //UE_STATS_MEMORY_PROFILER_ENABLED
 				else if (OutNonStackStats)
 				{
 					FStatsUtils::AddNonStackStats( LongName, Item, Op, ThisFrameNonStackStats );
@@ -1539,7 +1547,7 @@ void FStatsThreadState::GetRawStackStats(int64 TargetFrame, FRawStatStackNode& R
 	{
 		for (TMap<FName, FStatMessage>::TConstIterator It(ThisFrameNonStackStats); It; ++It)
 		{
-			new (*OutNonStackStats) FStatMessage(It.Value());
+			OutNonStackStats->Add(It.Value());
 		}
 	}
 }
@@ -1704,8 +1712,8 @@ FName FStatsThreadState::GetStatThreadName( const FStatPacket& Packet ) const
 
 void FStatsThreadState::Condense(int64 TargetFrame, TArray<FStatMessage>& OutStats) const
 {
-	new (OutStats) FStatMessage(FStatConstants::AdvanceFrame.GetEncodedName(), EStatOperation::AdvanceFrameEventGameThread, TargetFrame, false);
-	new (OutStats) FStatMessage(FStatConstants::AdvanceFrame.GetEncodedName(), EStatOperation::AdvanceFrameEventRenderThread, TargetFrame, false);
+	OutStats.Emplace(FStatConstants::AdvanceFrame.GetEncodedName(), EStatOperation::AdvanceFrameEventGameThread, TargetFrame, false);
+	OutStats.Emplace(FStatConstants::AdvanceFrame.GetEncodedName(), EStatOperation::AdvanceFrameEventRenderThread, TargetFrame, false);
 	FRawStatStackNode Root;
 	GetRawStackStats(TargetFrame, Root, &OutStats);
 	TArray<FStatMessage> StackStats;
@@ -1785,7 +1793,7 @@ void FStatsThreadState::AddMissingStats(TArray<FStatMessage>& Dest, TSet<FName> 
 		FStatMessage const* Zero = ShortNameToLongName.Find(*It);
 		if (Zero)
 		{
-			new (Dest) FStatMessage(*Zero);
+			Dest.Add(*Zero);
 		}
 	}
 }
@@ -2030,9 +2038,11 @@ void FStatsUtils::AccumulateStat(FStatMessage& Dest, FStatMessage const& Item, E
 					StatOpMaxVal_Int64( Dest.NameAndInfo, Dest.GetValue_int64(), Item.GetValue_int64() );
 					break;
 
+#if UE_STATS_MEMORY_PROFILER_ENABLED
 				// Nothing here at this moment.
 				case EStatOperation::Memory:
 					break;
+#endif //UE_STATS_MEMORY_PROFILER_ENABLED
 
 				default:
 					check(0);
@@ -2058,9 +2068,11 @@ void FStatsUtils::AccumulateStat(FStatMessage& Dest, FStatMessage const& Item, E
 					Dest.GetValue_double() = FMath::Max<double>(Dest.GetValue_double(), Item.GetValue_double());
 					break;
 
+#if UE_STATS_MEMORY_PROFILER_ENABLED
 				// Nothing here at this moment.
 				case EStatOperation::Memory:
 					break;
+#endif //UE_STATS_MEMORY_PROFILER_ENABLED
 
 				default:
 					check(0);

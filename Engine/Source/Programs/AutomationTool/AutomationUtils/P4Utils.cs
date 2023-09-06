@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.Core;
 using EpicGames.Perforce;
 using System;
 using System.Collections.Generic;
@@ -12,13 +13,22 @@ using System.Text.RegularExpressions;
 using System.Reflection;
 using System.Collections;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
+	/// <summary>
+	/// Declares that the command type requires P4Environment.
+	/// </summary>
 	public class RequireP4Attribute : Attribute
 	{
 	}
 
+	/// <summary>
+	/// Declares that the command type does not access Changelist or CodeChangelist from P4Environment.
+	/// </summary>
 	public class DoesNotNeedP4CLAttribute : Attribute
 	{
 	}
@@ -68,6 +78,8 @@ namespace AutomationTool
         Locked = 512,
         ModTime = 1024,
         RmDir = 2048,
+        NoAltSync = 4096,
+        AltSync = 8192,
     }
 
 	public class P4ClientInfo
@@ -1074,7 +1086,7 @@ namespace AutomationTool
 			// Init AllowSubmit
 			// If we do not specify on the commandline if submitting is allowed or not, this is 
 			// depending on whether we run locally or on a build machine.
-			LogVerbose("Initializing AllowSubmit.");
+			Logger.LogDebug("Initializing AllowSubmit.");
 			if (GlobalCommandLine.Submit || GlobalCommandLine.NoSubmit)
 			{
 				AllowSubmit = GlobalCommandLine.Submit;
@@ -1083,10 +1095,10 @@ namespace AutomationTool
 			{
 				AllowSubmit = Automation.IsBuildMachine;
 			}
-			LogVerbose("AllowSubmit={0}", AllowSubmit);
+			Logger.LogDebug("AllowSubmit={AllowSubmit}", AllowSubmit);
 
 			// Init P4Enabled
-			LogVerbose("Initializing P4Enabled.");
+			Logger.LogDebug("Initializing P4Enabled.");
 			if (Automation.IsBuildMachine)
 			{
 				P4Enabled = !GlobalCommandLine.NoP4;
@@ -1101,8 +1113,8 @@ namespace AutomationTool
 				P4Enabled = GlobalCommandLine.P4 || bRequireP4;
 				P4CLRequired = GlobalCommandLine.P4 || bRequireCL;
 			}
-			LogVerbose("P4Enabled={0}", P4Enabled);
-			LogVerbose("P4CLRequired={0}", P4CLRequired);
+			Logger.LogDebug("P4Enabled={P4Enabled}", P4Enabled);
+			Logger.LogDebug("P4CLRequired={P4CLRequired}", P4CLRequired);
 		}
 
 		/// <summary>
@@ -1125,7 +1137,7 @@ namespace AutomationTool
 					{
 						if(!GlobalCommandLine.P4)
 						{
-							LogInformation("Command {0} requires P4 functionality.", Command.Name);
+							Logger.LogInformation("Command {CommandName} requires P4 functionality.", Command.Name);
 						}
 						bRequireP4 = true;
 
@@ -1374,7 +1386,7 @@ namespace AutomationTool
 
 			if (String.IsNullOrEmpty(LogPath))
 			{
-				CommandUtils.LogError("P4Utils.SetupP4() must be called before issuing Peforce commands");
+				Logger.LogError("P4Utils.SetupP4() must be called before issuing Peforce commands");
 				return false;
 			}
 
@@ -1529,8 +1541,13 @@ namespace AutomationTool
 			string AuthenticationToken = null;
 
 			string Output;
-            string P4Passwd = InternalUtils.GetEnvironmentVariable("uebp_PASS", "", true) + '\n';
-            P4Output(out Output, "", "login -a -p", P4Passwd);
+            string P4Passwd = InternalUtils.GetEnvironmentVariable("uebp_PASS", "", true);
+			if (Automation.IsBuildMachine && string.IsNullOrEmpty(P4Passwd))
+			{
+				return AuthenticationToken;
+			}
+
+            P4Output(out Output, "", "login -a -p", P4Passwd + '\n');
 
 			// Validate output.
 			const string PasswordPromptString = "Enter password: \r\n";
@@ -1590,7 +1607,7 @@ namespace AutomationTool
             }
             if (Result == "")
             {
-				CommandUtils.LogWarning("Could not find email for P4 user {0}", User);
+				Logger.LogWarning("Could not find email for P4 user {User}", User);
             }
             UserToEmailCache.Add(User, Result);
             return Result;
@@ -1723,8 +1740,8 @@ namespace AutomationTool
             }
 			catch (Exception Ex)
             {
-				CommandUtils.LogWarning("Unable to get P4 changes with {0}", CommandLine);
-				CommandUtils.LogWarning(" Exception was {0}", LogUtils.FormatException(Ex));
+				Logger.LogWarning("Unable to get P4 changes with {CommandLine}", CommandLine);
+				Logger.LogWarning(" Exception was {Arg0}", LogUtils.FormatException(Ex));
                 return false;
             }
             ChangeRecords.Sort((A, B) => ChangeRecord.Compare(A, B));
@@ -2050,8 +2067,8 @@ namespace AutomationTool
 			}
 			catch (Exception Ex)
 			{
-				CommandUtils.LogWarning("Unable to preview sync P4 changes with {0}", CommandLine);
-				CommandUtils.LogWarning(" Exception was {0}", LogUtils.FormatException(Ex));
+				Logger.LogWarning("Unable to preview sync P4 changes with {CommandLine}", CommandLine);
+				Logger.LogWarning(" Exception was {Arg0}", LogUtils.FormatException(Ex));
 				return false;
 			}
 
@@ -2346,7 +2363,7 @@ namespace AutomationTool
                 bool isClPending = false;
                 if (ChangeFiles(CL, out isClPending, false).Count == 0)
                 {
-					CommandUtils.LogInformation("No edits left to commit after brutal submit resolve. Assuming another build committed same changes already and exiting as success.");
+					Logger.LogInformation("No edits left to commit after brutal submit resolve. Assuming another build committed same changes already and exiting as success.");
                     DeleteChange(CL);
                     // No changes to submit, no need to retry.
                     return;
@@ -2358,7 +2375,7 @@ namespace AutomationTool
 					{
 						throw new P4Exception("Change {0} failed to submit.\n{1}", CL, CmdOutput);
 					}
-					CommandUtils.LogInformation("**** P4 Returned\n{0}\n*******", CmdOutput);
+					Logger.LogInformation("**** P4 Returned\n{CmdOutput}\n*******", CmdOutput);
 
 					LastCmdOutput = CmdOutput;
 					bool DidSomething = false;
@@ -2421,7 +2438,7 @@ namespace AutomationTool
                                 {
                                     continue;
                                 }
-								CommandUtils.LogInformation("Brutal 'resolve' on {0} to force submit.\n", File);
+								Logger.LogInformation("Brutal 'resolve' on {File} to force submit.\n", File);
 								Revert(CL, "-k " + CommandUtils.MakePathSafeToUseWithCommandLine(File));  // revert the file without overwriting the local one
 								Sync("-f -k " + CommandUtils.MakePathSafeToUseWithCommandLine(File + "#head"), false); // sync the file without overwriting local one
 								ReconcileNoDeletes(CL, CommandUtils.MakePathSafeToUseWithCommandLine(File));  // re-check out, if it changed, or add
@@ -2432,7 +2449,7 @@ namespace AutomationTool
                     }
 					if (!DidSomething)
 					{
-						CommandUtils.LogInformation("Change {0} failed to submit for reasons we do not recognize.\n{1}\nWaiting and retrying.", CL, CmdOutput);
+						Logger.LogInformation("Change {CL} failed to submit for reasons we do not recognize.\n{CmdOutput}\nWaiting and retrying.", CL, CmdOutput);
 					}
 					System.Threading.Thread.Sleep(30000);
 				}
@@ -2451,7 +2468,7 @@ namespace AutomationTool
 					if (SubmitMatch.Success)
 					{
 						SubmittedCL = int.Parse(SubmitMatch.Groups["number"].Value);
-						CommandUtils.LogInformation("Submitted CL {0} which became CL {1}\n", CL, SubmittedCL);
+						Logger.LogInformation("Submitted CL {CL} which became CL {SubmittedCL}\n", CL, SubmittedCL);
 					}
 
 					if (SubmittedCL < CL)
@@ -2465,9 +2482,9 @@ namespace AutomationTool
 			}
 			if (RevertIfFail)
 			{
-				CommandUtils.LogError("Submit CL {0} failed, reverting files\n", CL);
+				Logger.LogError("Submit CL {CL} failed, reverting files\n", CL);
 				RevertAll(CL);
-				CommandUtils.LogError("Submit CL {0} failed, reverting files\n", CL);
+				Logger.LogError("Submit CL {CL} failed, reverting files\n", CL);
 			}
 			throw new P4Exception("Change {0} failed to submit after 48 retries??.\n{1}", CL, LastCmdOutput);
 		}
@@ -2495,7 +2512,7 @@ namespace AutomationTool
 			int CL = 0;
 			if(AllowSpew)
 			{
-				CommandUtils.LogInformation("Creating Change\n {0}\n", ChangeSpec);
+				Logger.LogInformation("Creating Change\n {ChangeSpec}\n", ChangeSpec);
 			}
 			if (LogP4Output(out CmdOutput, "", "change -i", Input: ChangeSpec, AllowSpew: AllowSpew))
 			{
@@ -2514,7 +2531,7 @@ namespace AutomationTool
 			}
 			else if(AllowSpew)
 			{
-				CommandUtils.LogInformation("Returned CL {0}\n", CL);
+				Logger.LogInformation("Returned CL {CL}\n", CL);
 			}
 			return CL;
 		}
@@ -2657,7 +2674,7 @@ namespace AutomationTool
 				{
 					if (AllowSpew)
 					{
-						CommandUtils.LogInformation("Change {0} does not exist", CL);
+						Logger.LogInformation("Change {CL} does not exist", CL);
 					}
 					return false;
 				}
@@ -2667,19 +2684,19 @@ namespace AutomationTool
 
 				if (StatusOffset < 1)
 				{
-					CommandUtils.LogError("Change {0} could not be parsed\n{1}", CL, CmdOutput);
+					Logger.LogError("Change {CL} could not be parsed\n{CmdOutput}", CL, CmdOutput);
 					return false;
 				}
 
 				string Status = CmdOutput.Substring(StatusOffset + StatusStr.Length).TrimStart().Split('\n')[0].TrimEnd();
 				if (AllowSpew)
 				{
-					CommandUtils.LogInformation("Change {0} exists ({1})", CL, Status);
+					Logger.LogInformation("Change {CL} exists ({Status})", CL, Status);
 				}
 				Pending = (Status == "pending");
 				return true;
 			}
-			CommandUtils.LogError("Change exists failed {0} no output?", CL, CmdOutput);
+			Logger.LogError("Change exists failed {CL} no output?", CL);
 			return false;
 		}
 
@@ -2764,7 +2781,7 @@ namespace AutomationTool
 			string Output;
 			if (!LogP4Output(out Output, "", CommandLine, null, AllowSpew))
 			{
-				CommandUtils.LogInformation("Couldn't delete label '{0}'.  It may not have existed in the first place.", LabelName);
+				Logger.LogInformation("Couldn't delete label '{LabelName}'.  It may not have existed in the first place.", LabelName);
 			}
 		}
 
@@ -2795,7 +2812,7 @@ namespace AutomationTool
 			LabelSpec += "View: \n";
 			LabelSpec += " " + View;
 
-			CommandUtils.LogInformation("Creating Label\n {0}\n", LabelSpec);
+			Logger.LogInformation("Creating Label\n {LabelSpec}\n", LabelSpec);
 			LogP4("", "label -i", Input: LabelSpec);
 		}
 
@@ -3290,7 +3307,7 @@ namespace AutomationTool
 		/// <param name="Attributes">Attributes to set.</param>
 		public void ChangeFileType(string Filename, P4FileAttributes Attributes, string Changelist = null)
 		{
-			CommandUtils.LogLog("ChangeFileType({0}, {1}, {2})", Filename, Attributes, String.IsNullOrEmpty(Changelist) ? "null" : Changelist);
+			Logger.LogDebug("ChangeFileType({Filename}, {Attributes}, {Arg2})", Filename, Attributes, String.IsNullOrEmpty(Changelist) ? "null" : Changelist);
 
 			var Stat = FStat(Filename);
 			if (String.IsNullOrEmpty(Changelist))
@@ -3398,7 +3415,7 @@ namespace AutomationTool
 		{
 			if(!Quiet)
 			{
-				CommandUtils.LogLog("Checking if client {0} exists", ClientName);
+				Logger.LogDebug("Checking if client {ClientName} exists", ClientName);
 			}
 
             var P4Result = P4(String.Format("-c {0}", ClientName), "where //...", Input: null, AllowSpew: false, WithClient: false);
@@ -3414,7 +3431,7 @@ namespace AutomationTool
 		{
 			if(!Quiet)
 			{
-				CommandUtils.LogLog("Getting info for client {0}", ClientName);
+				Logger.LogDebug("Getting info for client {ClientName}", ClientName);
 			}
 			if (!DoesClientExist(ClientName, Quiet))
 			{
@@ -3618,7 +3635,7 @@ namespace AutomationTool
 					SpecInput += "\t" + Mapping.Key + " //" + ClientSpec.Name + Mapping.Value + Environment.NewLine;
 				}
 			}
-			CommandUtils.LogLog(SpecInput);
+			Logger.LogDebug("{Text}", SpecInput);
             LogP4("", "client -i", SpecInput, AllowSpew: AllowSpew, WithClient: false);
             return ClientSpec;
         }

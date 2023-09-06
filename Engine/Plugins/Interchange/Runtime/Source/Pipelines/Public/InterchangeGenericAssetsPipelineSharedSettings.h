@@ -7,6 +7,7 @@
 #include "Math/Rotator.h"
 #include "Math/Vector.h"
 #include "Nodes/InterchangeBaseNode.h"
+#include "Nodes/InterchangeBaseNodeContainer.h"
 #include "UObject/Class.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
@@ -14,6 +15,7 @@
 
 #include "InterchangeGenericAssetsPipelineSharedSettings.generated.h"
 
+class UInterchangeSkeletonFactoryNode;
 class USkeleton;
 
 /** Force mesh type, if user want to import all meshes as one type*/
@@ -125,6 +127,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Common Skeletal Meshes and Animations")
 	bool bUseT0AsRefPose = false;
 
+	/** Allow to convert static mesh using morph target to skeletal mesh" */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Static Meshes")
+	bool bConvertStaticsWithMorphTargetsToSkeletals = false;
+
 	virtual bool IsSettingsAreValid(TOptional<FText>& OutInvalidReason) const override
 	{
 		if (bImportOnlyAnimations && !Skeleton.IsValid())
@@ -134,4 +140,7 @@ public:
 		}
 		return Super::IsSettingsAreValid(OutInvalidReason);
 	}
+
+	/** Create a UInterchangeSkeletonFactorynode */
+	UInterchangeSkeletonFactoryNode* CreateSkeletonFactoryNode(UInterchangeBaseNodeContainer* BaseNodeContainer, const FString& RootJointUid);
 };

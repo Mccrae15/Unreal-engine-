@@ -33,6 +33,8 @@
 #include "InterchangeTexture2DNode.h"
 #include "InterchangeVariantSetNode.h"
 
+#include "StaticMeshOperations.h"
+
 #include "Misc/App.h"
 
 #define LOCTEXT_NAMESPACE "DatasmithInterchange"
@@ -199,7 +201,7 @@ bool UInterchangeDatasmithTranslator::Translate(UInterchangeBaseNodeContainer& B
 				const FString DisplayLabel = StaticMeshNameProvider.GenerateUniqueName(MeshElement->GetLabel());
 
 				MeshNode->InitializeNode(MeshNodeUid, DisplayLabel, EInterchangeNodeContainerType::TranslatedAsset);
-				MeshNode->SetPayLoadKey(LexToString(MeshIndex));
+				MeshNode->SetPayLoadKey(LexToString(MeshIndex), EInterchangeMeshPayLoadType::STATIC);
 				MeshNode->SetSkinnedMesh(false);
 				MeshNode->SetCustomHasVertexNormal(true);
 				// TODO: Interchange expect each LOD to have its own mesh node and to declare the number of vertices, however we don't know the content of a datasmith mesh until its bulk data is loaded.
@@ -381,7 +383,7 @@ void UInterchangeDatasmithTranslator::HandleDatasmithActor(UInterchangeBaseNodeC
 		TSharedRef<IDatasmithCameraActorElement> CameraActor = StaticCastSharedRef<IDatasmithCameraActorElement>(ActorElement);
 
 		// We need to add camera asset node and then instance it in the scene node.
-		UInterchangeCameraNode* CameraNode = AddCameraNode(BaseNodeContainer, CameraActor);
+		UInterchangePhysicalCameraNode* CameraNode = AddCameraNode(BaseNodeContainer, CameraActor);
 		InterchangeSceneNode->SetCustomAssetInstanceUid(CameraNode->GetUniqueID());
 	}
 	else if (ActorElement->IsA(EDatasmithElementType::Light))
@@ -402,11 +404,11 @@ void UInterchangeDatasmithTranslator::HandleDatasmithActor(UInterchangeBaseNodeC
 	}
 }
 
-UInterchangeCameraNode* UInterchangeDatasmithTranslator::AddCameraNode(UInterchangeBaseNodeContainer& BaseNodeContainer, const TSharedRef<IDatasmithCameraActorElement>& CameraActor) const
+UInterchangePhysicalCameraNode* UInterchangeDatasmithTranslator::AddCameraNode(UInterchangeBaseNodeContainer& BaseNodeContainer, const TSharedRef<IDatasmithCameraActorElement>& CameraActor) const
 {
 	using namespace UE::DatasmithInterchange;
 
-	UInterchangeCameraNode* CameraNode = NewObject<UInterchangeCameraNode>(&BaseNodeContainer);
+	UInterchangePhysicalCameraNode* CameraNode = NewObject<UInterchangePhysicalCameraNode>(&BaseNodeContainer);
 	const FString CameraUid = NodeUtils::CameraPrefix + CameraActor->GetName();
 	CameraNode->InitializeNode(CameraUid, CameraActor->GetLabel(), EInterchangeNodeContainerType::TranslatedAsset);
 	BaseNodeContainer.AddNode(CameraNode);
@@ -438,6 +440,7 @@ UInterchangeBaseLightNode* UInterchangeDatasmithTranslator::AddLightNode(UInterc
 	static_assert(FCommonLightUnits(EInterchangeLightUnits::Unitless) == FCommonLightUnits(EDatasmithLightUnits::Unitless), "EDatasmithLightUnits::Unitless differs from EInterchangeLightUnits::Unitless");
 	static_assert(FCommonLightUnits(EInterchangeLightUnits::Lumens) == FCommonLightUnits(EDatasmithLightUnits::Lumens), "EDatasmithLightUnits::Lumens differs from EInterchangeLightUnits::Lumens");
 	static_assert(FCommonLightUnits(EInterchangeLightUnits::Candelas) == FCommonLightUnits(EDatasmithLightUnits::Candelas), "EDatasmithLightUnits::Candelas differs from EInterchangeLightUnits::Candelas");
+	static_assert(FCommonLightUnits(EInterchangeLightUnits::EV) == FCommonLightUnits(EDatasmithLightUnits::EV), "EDatasmithLightUnits::EV differs from EInterchangeLightUnits::EV");
 
 	// TODO Add properties currently missing from the UInterchangeLightNode: everything
 	UInterchangeBaseLightNode* LightNode = nullptr;
@@ -507,7 +510,7 @@ UInterchangeBaseLightNode* UInterchangeDatasmithTranslator::AddLightNode(UInterc
 	return LightNode;
 }
 
-TOptional<UE::Interchange::FImportImage> UInterchangeDatasmithTranslator::GetTexturePayloadData(const UInterchangeSourceData* InPayloadSourceData, const FString& PayloadKey) const
+TOptional<UE::Interchange::FImportImage> UInterchangeDatasmithTranslator::GetTexturePayloadData(const FString& PayloadKey, TOptional<FString>& AlternateTexturePath) const
 {
 	if (!LoadedExternalSource || !LoadedExternalSource->GetDatasmithScene())
 	{
@@ -544,13 +547,17 @@ TOptional<UE::Interchange::FImportImage> UInterchangeDatasmithTranslator::GetTex
 		return TOptional<UE::Interchange::FImportImage>();
 	}
 
-	return TextureTranslator->GetTexturePayloadData(PayloadSourceData, TextureElement->GetFile());
+	SourceTranslator->SetResultsContainer(Results);
+
+	AlternateTexturePath = TextureElement->GetFile();
+
+	return TextureTranslator->GetTexturePayloadData(PayloadKey, AlternateTexturePath);
 }
 
-TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> UInterchangeDatasmithTranslator::GetStaticMeshPayloadData(const FString& PayloadKey) const
+TFuture<TOptional<UE::Interchange::FMeshPayloadData>> UInterchangeDatasmithTranslator::GetMeshPayloadData(const FInterchangeMeshPayLoadKey& PayLoadKey, const FTransform& MeshGlobalTransform) const
 {
-	TPromise<TOptional<UE::Interchange::FStaticMeshPayloadData>> EmptyPromise;
-	EmptyPromise.SetValue(TOptional<UE::Interchange::FStaticMeshPayloadData>());
+	TPromise<TOptional<UE::Interchange::FMeshPayloadData>> EmptyPromise;
+	EmptyPromise.SetValue(TOptional<UE::Interchange::FMeshPayloadData>());
 
 	if (!LoadedExternalSource || !LoadedExternalSource->GetDatasmithScene())
 	{
@@ -558,7 +565,7 @@ TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> UInterchangeDatasmit
 	}
 
 	int32 MeshIndex = 0;
-	LexFromString(MeshIndex, *PayloadKey);
+	LexFromString(MeshIndex, *PayLoadKey.UniqueId);
 	TSharedPtr<IDatasmithScene> DatasmithScene = LoadedExternalSource->GetDatasmithScene();
 	if (MeshIndex < 0 || MeshIndex >= DatasmithScene->GetMeshesCount())
 	{
@@ -571,18 +578,22 @@ TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> UInterchangeDatasmit
 		return EmptyPromise.GetFuture();
 	}
 
-	return Async(EAsyncExecution::TaskGraph, [this, MeshElement = MoveTemp(MeshElement)]
+	return Async(EAsyncExecution::TaskGraph, [this, MeshElement = MoveTemp(MeshElement), MeshGlobalTransform]
 		{
-			TOptional<UE::Interchange::FStaticMeshPayloadData> Result;
+			TOptional<UE::Interchange::FMeshPayloadData> Result;
 
 			FDatasmithMeshElementPayload DatasmithMeshPayload;
 			if (LoadedExternalSource->GetAssetTranslator()->LoadStaticMesh(MeshElement.ToSharedRef(), DatasmithMeshPayload))
 			{
 				if (DatasmithMeshPayload.LodMeshes.Num() > 0)
 				{
-					UE::Interchange::FStaticMeshPayloadData StaticMeshPayloadData;
+					UE::Interchange::FMeshPayloadData StaticMeshPayloadData;
 					StaticMeshPayloadData.MeshDescription = MoveTemp(DatasmithMeshPayload.LodMeshes[0]);
-
+					// Bake the payload mesh, with the provided transform
+					if (!MeshGlobalTransform.Equals(FTransform::Identity))
+					{
+						FStaticMeshOperations::ApplyTransform(StaticMeshPayloadData.MeshDescription, MeshGlobalTransform);
+					}
 					Result.Emplace(MoveTemp(StaticMeshPayloadData));
 				}
 			}
@@ -592,20 +603,75 @@ TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> UInterchangeDatasmit
 	);
 }
 
-TFuture<TOptional<UE::Interchange::FAnimationCurvePayloadData>> UInterchangeDatasmithTranslator::GetAnimationCurvePayloadData(const FString& PayLoadKey) const
+TFuture<TOptional<UE::Interchange::FAnimationPayloadData>> UInterchangeDatasmithTranslator::GetAnimationPayloadData(const FInterchangeAnimationPayLoadKey& PayLoadKey, const double BakeFrequency, const double RangeStartSecond, const double RangeStopSecond) const
 {
-	return GetAnimationPayloadDataAsCurve<UE::Interchange::FAnimationCurvePayloadData>(PayLoadKey);
-}
+	UE::Interchange::FAnimationPayloadData TransformPayloadData(PayLoadKey.Type);
 
-TFuture<TOptional<UE::Interchange::FAnimationStepCurvePayloadData>> UInterchangeDatasmithTranslator::GetAnimationStepCurvePayloadData(const FString& PayLoadKey) const
-{
-	return GetAnimationPayloadDataAsCurve<UE::Interchange::FAnimationStepCurvePayloadData>(PayLoadKey);
-}
+	TPromise<TOptional<UE::Interchange::FAnimationPayloadData>> EmptyPromise;
+	EmptyPromise.SetValue(TOptional<UE::Interchange::FAnimationPayloadData>());
+	
 
-TFuture<TOptional<UE::Interchange::FAnimationBakeTransformPayloadData>> UInterchangeDatasmithTranslator::GetAnimationBakeTransformPayloadData(const FString& PayLoadKey, const double BakeFrequency, const double RangeStartSecond, const double RangeStopSecond) const
-{
-	TPromise<TOptional<UE::Interchange::FAnimationBakeTransformPayloadData>> EmptyPromise;
-	EmptyPromise.SetValue(TOptional<UE::Interchange::FAnimationBakeTransformPayloadData>());
+	if (!LoadedExternalSource || !LoadedExternalSource->GetDatasmithScene())
+	{
+		return EmptyPromise.GetFuture();
+	}
+
+	TSharedPtr<IDatasmithBaseAnimationElement> AnimationElement;
+	float FrameRate = 0.f;
+	if (UE::DatasmithInterchange::AnimUtils::FAnimationPayloadDesc* PayloadDescPtr = AnimationPayLoadMapping.Find(PayLoadKey.UniqueId))
+	{
+		AnimationElement = PayloadDescPtr->Value;
+		if (!ensure(AnimationElement))
+		{
+			// #ueent_logwarning:
+			return EmptyPromise.GetFuture();
+		}
+
+		FrameRate = PayloadDescPtr->Key;
+	}
+
+	switch (PayLoadKey.Type)
+	{
+	case EInterchangeAnimationPayLoadType::CURVE:
+	case EInterchangeAnimationPayLoadType::MORPHTARGETCURVE:
+		{
+			return Async(EAsyncExecution::TaskGraph, [this, AnimationElement = MoveTemp(AnimationElement), FrameRate, &TransformPayloadData]
+				{
+					
+					TOptional<UE::Interchange::FAnimationPayloadData> Result;
+
+					if (UE::DatasmithInterchange::AnimUtils::GetAnimationPayloadData(*AnimationElement, FrameRate, TransformPayloadData.Curves))
+					{
+						Result.Emplace(MoveTemp(TransformPayloadData));
+					}
+
+					return Result;
+					}
+				);
+		}
+		break;
+	case EInterchangeAnimationPayLoadType::STEPCURVE:
+		{
+			return Async(EAsyncExecution::TaskGraph, [this, AnimationElement = MoveTemp(AnimationElement), FrameRate, &TransformPayloadData]
+				{
+					TOptional<UE::Interchange::FAnimationPayloadData> Result;
+
+					if (UE::DatasmithInterchange::AnimUtils::GetAnimationPayloadData(*AnimationElement, FrameRate, TransformPayloadData.StepCurves))
+					{
+						Result.Emplace(MoveTemp(TransformPayloadData));
+					}
+
+					return Result;
+				}
+			);
+		}
+		break;
+	case EInterchangeAnimationPayLoadType::BAKED:
+	case EInterchangeAnimationPayLoadType::NONE:
+	default:
+		break;
+	}
+
 	return EmptyPromise.GetFuture();
 }
 

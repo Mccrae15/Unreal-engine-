@@ -30,10 +30,13 @@ namespace Metasound
 		static const FVertexInterface& GetVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
-		FDopplerPitchShiftOperator(const FOperatorSettings& InSettings, const FAudioBufferReadRef& InAudioInput, const FFloatReadRef& InPitchShift, const FFloatReadRef& InDelayLength);
+		FDopplerPitchShiftOperator(const FCreateOperatorParams& InParams, const FAudioBufferReadRef& InAudioInput, const FFloatReadRef& InPitchShift, const FFloatReadRef& InDelayLength);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -45,7 +48,7 @@ namespace Metasound
 		Audio::FTapDelayPitchShifter DelayPitchShifter;
 	};
 
-	FDopplerPitchShiftOperator::FDopplerPitchShiftOperator(const FOperatorSettings& InSettings,
+	FDopplerPitchShiftOperator::FDopplerPitchShiftOperator(const FCreateOperatorParams& InParams,
 		const FAudioBufferReadRef& InAudioInput,
 		const FFloatReadRef& InPitchShift,
 		const FFloatReadRef& InDelayLength)
@@ -53,31 +56,46 @@ namespace Metasound
 		: AudioInput(InAudioInput)
 		, PitchShift(InPitchShift)
 		, DelayLength(InDelayLength)
-		, AudioOutput(FAudioBufferWriteRef::CreateNew(InSettings))
+		, AudioOutput(FAudioBufferWriteRef::CreateNew(InParams.OperatorSettings))
 	{
-		DelayBuffer.Init(InSettings.GetSampleRate(), 0.001f * Audio::FTapDelayPitchShifter::MaxDelayLength);
-		DelayPitchShifter.Init(InSettings.GetSampleRate(), *PitchShift, *DelayLength);
+		Reset(InParams);
+	}
+
+	void FDopplerPitchShiftOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace DopplerPitchShift;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamAudioInput), AudioInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamPitchShift), PitchShift);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InParamDelayLength), DelayLength);
+	}
+
+	void FDopplerPitchShiftOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace DopplerPitchShift;
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParamAudio), AudioOutput);
 	}
 
 	FDataReferenceCollection FDopplerPitchShiftOperator::GetInputs() const
 	{
-		using namespace DopplerPitchShift;
-
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamAudioInput), FAudioBufferReadRef(AudioInput));
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamPitchShift), FFloatReadRef(PitchShift));
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InParamDelayLength), FFloatReadRef(DelayLength));
-
-		return InputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FDopplerPitchShiftOperator::GetOutputs() const
 	{
-		using namespace DopplerPitchShift;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
 
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutParamAudio), FAudioBufferReadRef(AudioOutput));
-		return OutputDataReferences;
+	void FDopplerPitchShiftOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		AudioOutput->Zero();
+		DelayBuffer.Init(InParams.OperatorSettings.GetSampleRate(), 0.001f * Audio::FTapDelayPitchShifter::MaxDelayLength);
+		DelayPitchShifter.Init(InParams.OperatorSettings.GetSampleRate(), *PitchShift, *DelayLength);
 	}
 
 	void FDopplerPitchShiftOperator::Execute()
@@ -138,7 +156,7 @@ namespace Metasound
 		FFloatReadRef PitchShift = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InParamPitchShift), InParams.OperatorSettings);
 		FFloatReadRef DelayLength = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InParamDelayLength), InParams.OperatorSettings);
 
-		return MakeUnique<FDopplerPitchShiftOperator>(InParams.OperatorSettings, AudioIn, PitchShift, DelayLength);
+		return MakeUnique<FDopplerPitchShiftOperator>(InParams, AudioIn, PitchShift, DelayLength);
 	}
 
 	class FDopperPitchShiftNode : public FNodeFacade

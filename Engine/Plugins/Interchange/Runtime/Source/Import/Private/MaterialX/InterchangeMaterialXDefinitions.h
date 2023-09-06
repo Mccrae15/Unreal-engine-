@@ -6,6 +6,8 @@
 #if WITH_EDITOR
 
 #include "Math/Color.h"
+#include "Math/MathFwd.h"
+#include "Math/Vector.h"
 
 THIRD_PARTY_INCLUDES_START
 #include "MaterialXCore/Library.h"
@@ -115,6 +117,82 @@ MATERIALX_NAMESPACE_BEGIN
 				constexpr FLinearColor CoatColor{ 1, 1, 1 };
 				constexpr FLinearColor EmissionColor{ 1, 1, 1 };
 				constexpr FLinearColor Opacity{ 1, 1, 1 };
+			}
+		}
+	}
+
+	namespace SurfaceUnlit
+	{
+		namespace Input
+		{
+			static constexpr const char* Emission = "emission";
+			static constexpr const char* EmissionColor = "emission_color";
+			static constexpr const char* Transmission = "transmission";
+			static constexpr const char* TransmissionColor = "transmission_color";
+			static constexpr const char* Opacity = "opacity";
+		}
+
+		namespace DefaultValue
+		{
+			namespace Float
+			{
+				constexpr float Emission = 1.f;
+				constexpr float Transmission = 0.f;
+				constexpr float Opacity = 1.f;
+			}
+
+			namespace Color3
+			{
+				constexpr FLinearColor EmissionColor{ 1, 1, 1 };
+				constexpr FLinearColor TransmissionColor{ 1, 1, 1 };
+			}
+		}
+	}
+
+	namespace UsdPreviewSurface
+	{
+		namespace Input
+		{
+			static constexpr const char* DiffuseColor = "diffuseColor";
+			static constexpr const char* EmissiveColor = "emissiveColor";
+			static constexpr const char* SpecularColor = "specularColor";
+			static constexpr const char* Metallic = "metallic";
+			static constexpr const char* Roughness = "roughness";
+			static constexpr const char* Clearcoat = "clearcoat";
+			static constexpr const char* ClearcoatRoughness = "clearcoatRoughness";
+			static constexpr const char* Opacity = "opacity";
+			static constexpr const char* OpacityThreshold = "opacityThreshold";
+			static constexpr const char* IOR = "ior";
+			static constexpr const char* Normal = "normal";
+			static constexpr const char* Displacement = "displacement";
+			static constexpr const char* Occlusion = "occlusion";
+		}
+
+		namespace DefaultValue
+		{
+			namespace Float
+			{
+				constexpr float Metallic = 0.f;
+				constexpr float Roughness = 0.5f;
+				constexpr float Clearcoat = 0.f;
+				constexpr float ClearcoatRoughness = 0.01f;
+				constexpr float Opacity = 1.f;
+				constexpr float OpacityThreshold = 0.f;
+				constexpr float IOR = 1.5f;
+				constexpr float Displacement = 0.f;
+				constexpr float Occlusion = 1.f;
+			}
+
+			namespace Color3
+			{
+				constexpr FLinearColor DiffuseColor{ 0.18f, 0.18f, 0.18f };
+				constexpr FLinearColor EmissiveColor{ 0, 0, 0 };
+				constexpr FLinearColor SpecularColor{ 0, 0, 0 };
+			}
+			
+			namespace Vector3
+			{
+				static const FVector3f Normal{ 0.f, 0.f, 1.f };
 			}
 		}
 	}
@@ -240,9 +318,11 @@ MATERIALX_NAMESPACE_BEGIN
 		static constexpr const char* Separate2 = "separate2";
 		static constexpr const char* Separate3 = "separate3";
 		static constexpr const char* Separate4 = "separate4";
+		static constexpr const char* Swizzle = "swizzle";
 		// Procedural nodes 
 		static constexpr const char* Constant = "constant";
 		// Procedural2D nodes 
+		static constexpr const char* Ramp4 = "ramp4";
 		static constexpr const char* RampLR = "ramplr";
 		static constexpr const char* RampTB = "ramptb";
 		static constexpr const char* SplitLR = "splitlr";
@@ -278,12 +358,23 @@ MATERIALX_NAMESPACE_BEGIN
 		// Application
 		static constexpr const char* Time= "time";
 		// PBR
+		static constexpr const char* GltfPbr = "gltf_pbr";
+		static constexpr const char* DisneyBSDF2012 = "disney_brdf_2012";
+		static constexpr const char* DisneyBSDF2015 = "disney_bsdf_2015";
 		static constexpr const char* StandardSurface = "standard_surface";
+		static constexpr const char* UsdPreviewSurface = "UsdPreviewSurface";
+		// Shader
+		static constexpr const char* SurfaceUnlit = "surface_unlit";
+		// Convolution
+		static constexpr const char* Blur = "blur";
+		static constexpr const char* HeightToNormal = "heighttonormal";
 	}
 
 	namespace NodeDefinition
 	{
 		static constexpr const char* StandardSurface = "ND_standard_surface_surfaceshader";
+		static constexpr const char* SurfaceUnlit = "ND_surface_unlit";
+		static constexpr const char* UsdPreviewSurface = "ND_UsdPreviewSurface_surfaceshader";
 		static constexpr const char* PointLight = "ND_point_light";
 		static constexpr const char* DirectionalLight = "ND_directional_light";
 		static constexpr const char* SpotLight = "ND_spot_light";

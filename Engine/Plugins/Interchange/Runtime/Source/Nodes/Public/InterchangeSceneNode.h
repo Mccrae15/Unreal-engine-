@@ -23,6 +23,7 @@ namespace UE
 			static const FString& GetJointSpecializeTypeString();
 			static const FString& GetLodGroupSpecializeTypeString();
 			static const FString& GetSlotMaterialDependenciesString();
+			static const FString& GetMorphTargetCurveWeightsKey();
 		};
 
 	}//ns Interchange
@@ -30,7 +31,6 @@ namespace UE
 
 /**
  * The scene node represent a transform node in the scene
- * Scene node can have animations: Use UInterchangeAnimationAPI to get\set animation datas
  * Scene node can have user defined attribute. Use UInterchangeUserDefinedAttributesAPI to get\set user define attribute data
  */
 UCLASS(BlueprintType, Experimental)
@@ -196,6 +196,22 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | Meshes")
 	bool RemoveSlotMaterialDependencyUid(const FString& SlotName);
 
+	/** Set MorphTarget with given weight. */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool SetMorphTargetCurveWeight(const FString& MorphTargetName, const float& Weight);
+
+	/** Get MorphTargets and their weights. */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	void GetMorphTargetCurveWeights(TMap<FString, float>& OutMorphTargetCurveWeights) const;
+
+
+	/** Set the Animation Asset To Play by this Scene Node. (only relevant for SkeletalMeshActors (SceneNodes that are instantiating Skeletal Meshes)) */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool SetCustomAnimationAssetUidToPlay(const FString& AttributeValue);
+	/** Get the Animation Asset To Play by this Scene Node. */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool GetCustomAnimationAssetUidToPlay(FString& AttributeValue) const;
+
 private:
 
 	bool GetGlobalTransformInternal(const UE::Interchange::FAttributeKey LocalTransformKey
@@ -225,6 +241,12 @@ private:
 
 	//A scene node can have is own set of materials for the mesh it reference.
 	UE::Interchange::TMapAttributeHelper<FString, FString> SlotMaterialDependencies;
+
+	//A scene node can have different MorphTarget curve settings:
+	UE::Interchange::TMapAttributeHelper<FString, float> MorphTargetCurveWeights;
+
+	//A scene node can reference an animation asset on top of base asset:
+	const UE::Interchange::FAttributeKey Macro_CustomAnimationAssetUidToPlayKey = UE::Interchange::FAttributeKey(TEXT("AnimationAssetUidToPlay"));
 
 	//mutable caches for global transforms
 	mutable TOptional<FTransform> CacheGlobalTransform;

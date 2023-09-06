@@ -32,7 +32,7 @@ enum EMemOned
 };
 
 
-class CORE_API FPageAllocator
+class FPageAllocator
 {
 public:
 	enum
@@ -46,16 +46,16 @@ public:
 	typedef TLockFreeFixedSizeAllocator<PageSize, PLATFORM_CACHE_LINE_SIZE, FThreadSafeCounter> TPageAllocator;
 #endif
 
-	static FPageAllocator& Get();
+	static CORE_API FPageAllocator& Get();
 
-	~FPageAllocator();
-	void* Alloc();
-	void Free(void* Mem);
-	void* AllocSmall();
-	void FreeSmall(void* Mem);
-	uint64 BytesUsed();
-	uint64 BytesFree();
-	void LatchProtectedMode();
+	CORE_API ~FPageAllocator();
+	CORE_API void* Alloc();
+	CORE_API void Free(void* Mem);
+	CORE_API void* AllocSmall();
+	CORE_API void FreeSmall(void* Mem);
+	CORE_API uint64 BytesUsed();
+	CORE_API uint64 BytesFree();
+	CORE_API void LatchProtectedMode();
 private:
 
 	static FPageAllocator* Instance;
@@ -74,11 +74,11 @@ private:
  * Items are allocated via PushBytes() or the specialized operator new()s.
  * Items are freed en masse by using FMemMark to Pop() them.
  **/
-class CORE_API FMemStackBase //-V1062
+class FMemStackBase //-V1062
 {
 public:
 
-	FMemStackBase();
+	CORE_API FMemStackBase();
 
 	FMemStackBase(const FMemStackBase&) = delete;
 	FMemStackBase(FMemStackBase&& Other)
@@ -157,10 +157,10 @@ public:
 		return NumMarks;
 	}
 	/** @return the number of bytes allocated for this FMemStack that are currently in use. */
-	int32 GetByteCount() const;
+	CORE_API int32 GetByteCount() const;
 
 	// Returns true if the pointer was allocated using this allocator
-	bool ContainsPointer(const void* Pointer) const;
+	CORE_API bool ContainsPointer(const void* Pointer) const;
 
 	// Friends.
 	friend class FMemMark;
@@ -195,10 +195,10 @@ private:
 	 * Allocate a new chunk of memory of at least MinSize size,
 	 * updates the memory stack's Chunks table and ActiveChunks counter.
 	 */
-	void AllocateNewChunk( int32 MinSize );
+	CORE_API void AllocateNewChunk( int32 MinSize );
 
 	/** Frees the chunks above the specified chunk on the stack. */
-	void FreeChunks( FTaggedMemory* NewTopChunk );
+	CORE_API void FreeChunks( FTaggedMemory* NewTopChunk );
 
 	// Variables.
 	uint8*			Top;				// Top of current chunk (Top<=End).
@@ -356,6 +356,10 @@ inline void* operator new[](size_t Size, std::align_val_t Align, FMemStackBase& 
 	return Result;
 }
 
+namespace UE::Core::Private
+{
+	[[noreturn]] CORE_API void OnInvalidMemStackAllocatorNum(int32 NewNum, SIZE_T NumBytesPerElement);
+}
 
 /** A container allocator that allocates from a mem-stack. */
 template<uint32 Alignment = DEFAULT_ALIGNMENT>
@@ -402,6 +406,14 @@ public:
 			void* OldData = Data;
 			if( NumElements )
 			{
+				static_assert(sizeof(int32) <= sizeof(SIZE_T), "SIZE_T is expected to be larger than int32");
+
+				// Check for under/overflow
+				if (UNLIKELY(NumElements < 0 || NumBytesPerElement < 1 || NumBytesPerElement > (SIZE_T)MAX_int32))
+				{
+					UE::Core::Private::OnInvalidMemStackAllocatorNum(NumElements, NumBytesPerElement);
+				}
+
 				// Allocate memory from the stack.
 				Data = (ElementType*)FMemStack::Get().PushBytes(
 					(int32)(NumElements * NumBytesPerElement),

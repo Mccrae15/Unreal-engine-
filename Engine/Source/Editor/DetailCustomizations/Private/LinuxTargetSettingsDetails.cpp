@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LinuxTargetSettingsDetails.h"
+#include "Engine/Engine.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/App.h"
@@ -55,7 +56,7 @@ static FText GetFriendlyNameFromLinuxShaderFormat(const FName InShaderFormat)
 
 	if (InShaderFormat == NAME_GLSL_150_ES31)
 	{
-		FriendlyRHIName = LOCTEXT("OpenGL3ES31", "OpenGL 3 (ES3.1, Experimental)");
+		FriendlyRHIName = LOCTEXT("OpenGL3ES31", "OpenGL 3 (Mobile, Experimental)");
 	}
 	else if (InShaderFormat == NAME_VULKAN_ES3_1_ANDROID || InShaderFormat == NAME_VULKAN_ES3_1)
 	{
@@ -64,6 +65,10 @@ static FText GetFriendlyNameFromLinuxShaderFormat(const FName InShaderFormat)
 	else if (InShaderFormat == NAME_VULKAN_SM5)
 	{
 		FriendlyRHIName = LOCTEXT("VulkanSM5", "Vulkan Desktop (SM5)");
+	}
+	else if (InShaderFormat == NAME_VULKAN_SM6)
+	{
+		FriendlyRHIName = LOCTEXT("VulkanSM6", "Vulkan Desktop (SM6)");
 	}
 	else if (InShaderFormat == TEXT("GLSL_430"))
 	{

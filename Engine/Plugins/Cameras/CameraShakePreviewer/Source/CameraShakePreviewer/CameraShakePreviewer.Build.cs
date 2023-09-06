@@ -8,9 +8,6 @@ public class CameraShakePreviewer : ModuleRules
 	{
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"AssetTools",
-				"AssetRegistry",
-				"ContentBrowser",
 				"WorkspaceMenuStructure",
 				}
 		);
@@ -22,6 +19,8 @@ public class CameraShakePreviewer : ModuleRules
 				"AppFramework",
 				"GameplayCameras",
 				"LevelEditor",
+				"MovieScene",
+				"MovieSceneTracks",
 				"PropertyEditor",
 				"Slate",
 				"ToolMenus",

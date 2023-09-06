@@ -20,15 +20,20 @@ public class UEOgg : ModuleRules
 
 		string LibDir;
 
-		if (Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
+			string BinDir = "$(EngineDir)/Binaries/ThirdParty/Ogg/Win64/VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
 			LibDir = Path.Combine(OggLibPath, "Win64", "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
 
-			PublicAdditionalLibraries.Add(Path.Combine(LibDir, "libogg_64.lib"));
+			if (Target.WindowsPlatform.Architecture == UnrealArch.Arm64)
+			{
+				LibDir = Path.Combine(LibDir, Target.Architecture.WindowsLibDir);
+				BinDir = BinDir + "/" + Target.Architecture.WindowsLibDir;
+			}
 
 			PublicDelayLoadDLLs.Add("libogg_64.dll");
-
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Ogg/Win64/VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName() + "/libogg_64.dll");
+			PublicAdditionalLibraries.Add(Path.Combine(LibDir, "libogg_64.lib"));
+			RuntimeDependencies.Add(BinDir + "/libogg_64.dll");
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -48,13 +53,14 @@ public class UEOgg : ModuleRules
 				: "_fPIC";
 			PublicAdditionalLibraries.Add(Path.Combine(OggLibPath, "Unix", Target.Architecture.LinuxName, "libogg" + fPIC + ".a"));
 		}
-		else if (Target.Platform == UnrealTargetPlatform.IOS)
-        {
-            PublicAdditionalLibraries.Add(Path.Combine(OggLibPath, "ios", "libogg.a"));
-        }
         else if (Target.Platform == UnrealTargetPlatform.TVOS)
         {
             PublicAdditionalLibraries.Add(Path.Combine(OggLibPath, "tvos", "libogg.a"));
+        }
+		else if (Target.Platform == UnrealTargetPlatform.IOS)
+        {
+			string LibName = (Target.Architecture == UnrealArch.IOSSimulator) ? "libogg.sim.a" : "libogg.a";
+			PublicAdditionalLibraries.Add(Path.Combine(OggLibPath, "ios", LibName));
         }
     }
 }

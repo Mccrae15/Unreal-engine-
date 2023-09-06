@@ -23,7 +23,7 @@ DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Total RayTracing Pipeline State Coun
  */
 #define PSO_COOKONLY_DATA (WITH_EDITOR || IS_PROGRAM)
 
-struct RHI_API FPipelineFileCacheRasterizerState
+struct FPipelineFileCacheRasterizerState
 {
 	FPipelineFileCacheRasterizerState() { FMemory::Memzero(*this); }
 	FPipelineFileCacheRasterizerState(FRasterizerStateInitializerRHI const& Other) { operator=(Other); }
@@ -54,7 +54,7 @@ struct RHI_API FPipelineFileCacheRasterizerState
 		return Initializer;
 	}
 	
-	friend RHI_API FArchive& operator<<(FArchive& Ar,FPipelineFileCacheRasterizerState& RasterizerStateInitializer)
+	friend FArchive& operator<<(FArchive& Ar,FPipelineFileCacheRasterizerState& RasterizerStateInitializer)
 	{
 		Ar << RasterizerStateInitializer.DepthBias;
 		Ar << RasterizerStateInitializer.SlopeScaleDepthBias;
@@ -66,7 +66,7 @@ struct RHI_API FPipelineFileCacheRasterizerState
 		return Ar;
 	}
 
-	friend RHI_API uint32 GetTypeHash(const FPipelineFileCacheRasterizerState &Key)
+	friend uint32 GetTypeHash(const FPipelineFileCacheRasterizerState &Key)
 	{
 		uint32 KeyHash = (*((uint32*)&Key.DepthBias) ^ *((uint32*)&Key.SlopeScaleDepthBias));
 		KeyHash ^= (Key.FillMode << 8);
@@ -76,8 +76,8 @@ struct RHI_API FPipelineFileCacheRasterizerState
 		KeyHash ^= Key.bEnableLineAA ? 0x48271d01 : 0; // crc32 "bEnableLineAA"
 		return KeyHash;
 	}
-	FString ToString() const;
-	void FromString(const FStringView& Src);
+	RHI_API FString ToString() const;
+	RHI_API void FromString(const FStringView& Src);
 };
 
 class FRayTracingPipelineStateInitializer;
@@ -87,7 +87,7 @@ enum class ERayTracingPipelineCacheFlags : uint8;
 /**
  * Tracks stats for the current session between opening & closing the file-cache.
  */
-struct RHI_API FPipelineStateStats
+struct FPipelineStateStats
 {
 	FPipelineStateStats()
 	: FirstFrameUsed(-1)
@@ -102,9 +102,9 @@ struct RHI_API FPipelineStateStats
 	{
 	}
 
-	static void UpdateStats(FPipelineStateStats* Stats);
+	RHI_API static void UpdateStats(FPipelineStateStats* Stats);
 	
-	friend RHI_API FArchive& operator<<( FArchive& Ar, FPipelineStateStats& Info );
+	friend FArchive& operator<<( FArchive& Ar, FPipelineStateStats& Info );
 
 	int64 FirstFrameUsed;
 	int64 LastFrameUsed;
@@ -113,20 +113,20 @@ struct RHI_API FPipelineStateStats
 	uint32 PSOHash;
 };
 
-struct RHI_API FPipelineCacheFileFormatPSO
+struct FPipelineCacheFileFormatPSO
 {
 	using TReadableStringBuilder = TStringBuilder<1024>;
 
-	struct RHI_API ComputeDescriptor
+	struct ComputeDescriptor
 	{
 		FSHAHash ComputeShader;
 
-		FString ToString() const;
+		RHI_API FString ToString() const;
 		void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
 		static FString HeaderLine();
-		void FromString(const FStringView& Src);
+		RHI_API void FromString(const FStringView& Src);
 	};
-	struct RHI_API GraphicsDescriptor
+	struct GraphicsDescriptor
 	{
 		FSHAHash VertexShader;
 		FSHAHash FragmentShader;
@@ -159,44 +159,46 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		uint8	MultiViewCount;
 		bool	bHasFragmentDensityAttachment;
 		
-		FString ToString() const;
-		void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
-		static FString HeaderLine();
-		bool FromString(const FStringView& Src);
+		RHI_API FString ToString() const;
+		RHI_API void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
+		RHI_API static FString HeaderLine();
+		RHI_API bool FromString(const FStringView& Src);
 
-		FString ShadersToString() const;
-		void AddShadersToReadableString(TReadableStringBuilder& OutBuilder) const;
+		RHI_API FString ShadersToString() const;
+		RHI_API void AddShadersToReadableString(TReadableStringBuilder& OutBuilder) const;
 
-		static FString ShaderHeaderLine();
-		void ShadersFromString(const FStringView& Src);
+		RHI_API static FString ShaderHeaderLine();
+		RHI_API void ShadersFromString(const FStringView& Src);
 
-		FString StateToString() const;
-		void AddStateToReadableString(TReadableStringBuilder& OutBuilder) const;
-		static FString StateHeaderLine();
-		bool StateFromString(const FStringView& Src);
+		RHI_API FString StateToString() const;
+		RHI_API void AddStateToReadableString(TReadableStringBuilder& OutBuilder) const;
+		RHI_API static FString StateHeaderLine();
+		RHI_API bool StateFromString(const FStringView& Src);
 
 		/** Not all RT flags make sense for the replayed PSO, only those that can influence the RT formats */
 		static ETextureCreateFlags ReduceRTFlags(ETextureCreateFlags InFlags);
+
+		/** Not all DepthStencil flags make sense for the replayed PSO, only those that can influence the actual format */
+		static ETextureCreateFlags ReduceDSFlags(ETextureCreateFlags InFlags);
 	};
-	struct RHI_API FPipelineFileCacheRayTracingDesc
+	struct FPipelineFileCacheRayTracingDesc
 	{
 		FSHAHash ShaderHash;
-		uint32 MaxPayloadSizeInBytes = 0;
+		uint32 DeprecatedMaxPayloadSizeInBytes = 0;
 		EShaderFrequency Frequency = SF_RayGen;
 		bool bAllowHitGroupIndexing = true;
 
 		FPipelineFileCacheRayTracingDesc() = default;
 		FPipelineFileCacheRayTracingDesc(const FRayTracingPipelineStateInitializer& Initializer, const FRHIRayTracingShader* ShaderRHI);
 
-		FString ToString() const;
+		RHI_API FString ToString() const;
 		void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
 		FString HeaderLine() const;
-		void FromString(const FString& Src);
+		RHI_API void FromString(const FString& Src);
 
 		friend uint32 GetTypeHash(const FPipelineFileCacheRayTracingDesc& Desc)
 		{
 			return GetTypeHash(Desc.ShaderHash) ^
-				GetTypeHash(Desc.MaxPayloadSizeInBytes) ^
 				GetTypeHash(Desc.Frequency) ^
 				GetTypeHash(Desc.bAllowHitGroupIndexing);
 		}
@@ -204,7 +206,6 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		bool operator == (const FPipelineFileCacheRayTracingDesc& Other) const
 		{
 			return ShaderHash == Other.ShaderHash &&
-				MaxPayloadSizeInBytes == Other.MaxPayloadSizeInBytes &&
 				Frequency == Other.Frequency &&
 				bAllowHitGroupIndexing == Other.bAllowHitGroupIndexing;
 		}
@@ -221,20 +222,18 @@ struct RHI_API FPipelineCacheFileFormatPSO
 	GraphicsDescriptor GraphicsDesc;
 	FPipelineFileCacheRayTracingDesc RayTracingDesc;
 
-	mutable volatile uint32 Hash;
-	
 #if PSO_COOKONLY_DATA
 	uint64 UsageMask;
 	int64 BindCount;
 #endif
 	
-	FPipelineCacheFileFormatPSO();
-	~FPipelineCacheFileFormatPSO();
+	RHI_API FPipelineCacheFileFormatPSO();
+	RHI_API ~FPipelineCacheFileFormatPSO();
 	
-	FPipelineCacheFileFormatPSO& operator=(const FPipelineCacheFileFormatPSO& Other);
-	FPipelineCacheFileFormatPSO(const FPipelineCacheFileFormatPSO& Other);
+	RHI_API FPipelineCacheFileFormatPSO& operator=(const FPipelineCacheFileFormatPSO& Other);
+	RHI_API FPipelineCacheFileFormatPSO(const FPipelineCacheFileFormatPSO& Other);
 	
-	bool operator==(const FPipelineCacheFileFormatPSO& Other) const;
+	RHI_API bool operator==(const FPipelineCacheFileFormatPSO& Other) const;
 
 	friend RHI_API uint32 GetTypeHash(const FPipelineCacheFileFormatPSO &Key);
 	friend RHI_API FArchive& operator<<( FArchive& Ar, FPipelineCacheFileFormatPSO& Info );
@@ -243,18 +242,18 @@ struct RHI_API FPipelineCacheFileFormatPSO
 	static bool Init(FPipelineCacheFileFormatPSO& PSO, FGraphicsPipelineStateInitializer const& Init);
 	static bool Init(FPipelineCacheFileFormatPSO & PSO, FPipelineFileCacheRayTracingDesc const& Desc);
 
-	FString CommonToString() const;
-	static FString CommonHeaderLine();
-	void CommonFromString(const FStringView& Src);
+	RHI_API FString CommonToString() const;
+	RHI_API static FString CommonHeaderLine();
+	RHI_API void CommonFromString(const FStringView& Src);
 
 	/** Prints out human-readable representation of the PSO, for any type */
-	FString ToStringReadable();
+	RHI_API FString ToStringReadable() const;
 	
 	// Potential cases for seperating verify logic if requiired: RunTime-Logging, RunTime-UserCaching, RunTime-PreCompile, CommandLet-Cooking
-	bool Verify() const;
+	RHI_API bool Verify() const;
 };
 
-struct RHI_API FPipelineCacheFileFormatPSORead
+struct FPipelineCacheFileFormatPSORead
 {	
 	FPipelineCacheFileFormatPSORead()
 	: Ar(nullptr)
@@ -285,7 +284,7 @@ struct RHI_API FPipelineCacheFileFormatPSORead
 	TSharedPtr<class IAsyncReadRequest, ESPMode::ThreadSafe> ReadRequest;
 };
 
-struct RHI_API FPipelineCachePSOHeader
+struct FPipelineCachePSOHeader
 {
 	TSet<FSHAHash> Shaders;
 	uint32 Hash;
@@ -316,7 +315,7 @@ struct FPSOUsageData
 	uint16 EngineFlags;
 };
 
-class RHI_API FPipelineFileCacheManager
+class FPipelineFileCacheManager
 {
     friend class FPipelineCacheFile;
 public:
@@ -335,40 +334,40 @@ public:
 
 public:
 	
-	static void Initialize(uint32 GameVersion);
-	static void Shutdown();
+	RHI_API static void Initialize(uint32 GameVersion);
+	RHI_API static void Shutdown();
 	
-	static bool LoadPipelineFileCacheInto(FString const& Path, TSet<FPipelineCacheFileFormatPSO>& PSOs);
-	static bool SavePipelineFileCacheFrom(uint32 GameVersion, EShaderPlatform Platform, FString const& Path, const TSet<FPipelineCacheFileFormatPSO>& PSOs);
-	static bool MergePipelineFileCaches(FString const& PathA, FString const& PathB, FPipelineFileCacheManager::PSOOrder Order, FString const& OutputPath);
+	RHI_API static bool LoadPipelineFileCacheInto(FString const& Path, TSet<FPipelineCacheFileFormatPSO>& PSOs);
+	RHI_API static bool SavePipelineFileCacheFrom(uint32 GameVersion, EShaderPlatform Platform, FString const& Path, const TSet<FPipelineCacheFileFormatPSO>& PSOs);
+	RHI_API static bool MergePipelineFileCaches(FString const& PathA, FString const& PathB, FPipelineFileCacheManager::PSOOrder Order, FString const& OutputPath);
 																				
 	/* Open the pipeline file cache for the specfied name and platform. If successful, the GUID of the game file will be returned in OutGameFileGuid */
-	static bool OpenPipelineFileCache(const FString& Key, const FString& CacheName, EShaderPlatform Platform, FGuid& OutGameFileGuid);
+	RHI_API static bool OpenPipelineFileCache(const FString& Key, const FString& CacheName, EShaderPlatform Platform, FGuid& OutGameFileGuid);
 
 	/* Open the user pipeline file cache for the specified name and platform. The user cache is always created even if the file was not present when opened.
 	* Name is the name used when opening the file, the key value for the user cache is held within UserCacheName.
 	* returns true if the file was opened.
 	*/
-	static bool OpenUserPipelineFileCache(const FString& Key, const FString& CacheName, EShaderPlatform Platform, FGuid& OutGameFileGuid);
+	RHI_API static bool OpenUserPipelineFileCache(const FString& Key, const FString& CacheName, EShaderPlatform Platform, FGuid& OutGameFileGuid);
 
-	static bool SavePipelineFileCache(SaveMode Mode);
+	RHI_API static bool SavePipelineFileCache(SaveMode Mode);
 
-	static void CloseUserPipelineFileCache();
+	RHI_API static void CloseUserPipelineFileCache();
 
-	static void CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer);
-	static void CacheComputePSO(uint32 RunTimeHash, FRHIComputeShader const* Initializer);
-	static void CacheRayTracingPSO(const FRayTracingPipelineStateInitializer& Initializer, ERayTracingPipelineCacheFlags Flags);
+	RHI_API static void CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer, bool bWasPSOPrecached);
+	RHI_API static void CacheComputePSO(uint32 RunTimeHash, FRHIComputeShader const* Initializer);
+	RHI_API static void CacheRayTracingPSO(const FRayTracingPipelineStateInitializer& Initializer, ERayTracingPipelineCacheFlags Flags);
 
 	// true if the named PSOFC is currently open.
-	static bool HasPipelineFileCache(const FString& PSOCacheKey);
+	RHI_API static bool HasPipelineFileCache(const FString& PSOCacheKey);
 
-	static FPipelineStateStats* RegisterPSOStats(uint32 RunTimeHash);
+	RHI_API static FPipelineStateStats* RegisterPSOStats(uint32 RunTimeHash);
 	
 	/*
 	 * This PSO has failed compile and is invalid - this cache should not return this invalid PSO from subsequent calls for PreCompile requests.
 	 * Note: Not implementated for Compute that has no flag to say it came from this cache - don't want to consume failures that didn't propagate from this cache.
 	 */
-	static void RegisterPSOCompileFailure(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer);
+	RHI_API static void RegisterPSOCompileFailure(uint32 RunTimeHash, FGraphicsPipelineStateInitializer const& Initializer);
 	
 	/**
 	 * Event signature for being notified that a new PSO has been logged
@@ -378,20 +377,20 @@ public:
 	/**
 	 * Gets the event delegate to register for pipeline state logging events.
 	 */
-	static FPipelineStateLoggedEvent& OnPipelineStateLogged();
+	RHI_API static FPipelineStateLoggedEvent& OnPipelineStateLogged();
 	
-	static void GetOrderedPSOHashes(const FString& PSOCacheKey, TArray<FPipelineCachePSOHeader>& PSOHashes, PSOOrder Order, int64 MinBindCount, TSet<uint32> const& AlreadyCompiledHashes);
-	static void FetchPSODescriptors(const FString& PSOCacheKey, TDoubleLinkedList<FPipelineCacheFileFormatPSORead*>& LoadedBatch);
+	RHI_API static void GetOrderedPSOHashes(const FString& PSOCacheKey, TArray<FPipelineCachePSOHeader>& PSOHashes, PSOOrder Order, int64 MinBindCount, TSet<uint32> const& AlreadyCompiledHashes);
+	RHI_API static void FetchPSODescriptors(const FString& PSOCacheKey, TDoubleLinkedList<FPipelineCacheFileFormatPSORead*>& LoadedBatch);
 
-	static int32 GetTotalPSOCount(const FString& PSOCacheKey);
+	RHI_API static int32 GetTotalPSOCount(const FString& PSOCacheKey);
 
-	static uint32 NumPSOsLogged();
+	RHI_API static uint32 NumPSOsLogged();
 	
-	static bool IsPipelineFileCacheEnabled();
-	static bool LogPSOtoFileCache();
-    static bool ReportNewPSOs();
+	RHI_API static bool IsPipelineFileCacheEnabled();
+	RHI_API static bool LogPSOtoFileCache();
+	RHI_API static bool ReportNewPSOs();
 	/* Report additional data about new PSOs to the log. */
-	static bool LogPSODetails();
+	RHI_API static bool LogPSODetails();
 	
 	/**
 	 * Define the Current Game Usage Mask and a comparison function to compare this mask against the recorded mask in each PSO
@@ -399,10 +398,16 @@ public:
 	 * @param InComparisonFnPtr Pointer to the comparsion function - see above FPSOMaskComparisonFn definition for details
 	 * @returns the old mask
 	 */
-	static uint64 SetGameUsageMaskWithComparison(uint64 GameUsageMask, FPSOMaskComparisonFn InComparisonFnPtr);
-	static uint64 GetGameUsageMask()	{ return GameUsageMask;}
+	RHI_API static uint64 SetGameUsageMaskWithComparison(uint64 GameUsageMask, FPSOMaskComparisonFn InComparisonFnPtr);
+	RHI_API static uint64 GetGameUsageMask() { return GameUsageMask; }
+	RHI_API static bool IsGameUsageMaskSet() { return GameUsageMaskSet; }
 	
-	static void PreCompileComplete();
+	RHI_API static void PreCompileComplete();
+
+	/*
+	 * Enable or disable the logging of new PSOs (PSOs that were needed but not found in the file cache) to console and CSV.
+	 */
+	RHI_API static void SetNewPSOConsoleAndCSVLogging(bool bEnabled) { LogNewPSOsToConsoleAndCSV = bEnabled; }
 private:
 	
 	static void RegisterPSOUsageDataUpdateForNextSave(FPSOUsageData& UsageData);
@@ -411,6 +416,10 @@ private:
 	
 	static bool IsBSSEquivalentPSOEntryCached(FPipelineCacheFileFormatPSO const& NewEntry);
 	static bool IsPSOEntryCached(FPipelineCacheFileFormatPSO const& NewEntry, FPSOUsageData* EntryData = nullptr);
+
+	static void LogNewGraphicsPSOToConsoleAndCSV(FPipelineCacheFileFormatPSO& PSO, uint32 PSOHash, bool bWasPSOPrecached);
+	static void LogNewComputePSOToConsoleAndCSV(FPipelineCacheFileFormatPSO& PSO, uint32 PSOHash);
+	static void LogNewRaytracingPSOToConsole(FPipelineCacheFileFormatPSO& PSO, uint32 PSOHash, bool bIsNonBlockingPSO);
 private:
 	static FRWLock FileCacheLock;
 
@@ -438,6 +447,9 @@ private:
 	static PSOOrder RequestedOrder;
 	static bool FileCacheEnabled;
 	static FPipelineStateLoggedEvent PSOLoggedEvent;
-	static uint64 GameUsageMask;
-	static FPSOMaskComparisonFn MaskComparisonFn;
+	RHI_API static uint64 GameUsageMask;
+	RHI_API static bool GameUsageMaskSet;
+	static FPSOMaskComparisonFn MaskComparisonFn;	
+
+	RHI_API static bool LogNewPSOsToConsoleAndCSV; // Whether to log new PSOs to the log file and CSV.
 };

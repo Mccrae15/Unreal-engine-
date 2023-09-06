@@ -71,7 +71,7 @@ static FName GSupportedTextureFormatNames[] =
  */
 struct FNVOutputHandler : public nvtt::OutputHandler
 {
-	explicit FNVOutputHandler( uint8* InBuffer, int32 InBufferSize )
+	explicit FNVOutputHandler( uint8* InBuffer, int64 InBufferSize )
 		: Buffer(InBuffer)
 		, BufferEnd(InBuffer + InBufferSize)
 	{
@@ -142,7 +142,7 @@ public:
 		bool bSRGB,
 		bool bIsNormalMap,
 		uint8* OutBuffer,
-		int32 BufferSize, 
+		int64 BufferSize, 
 		bool bPreview = false)
 		: OutputHandler(OutBuffer, BufferSize)
 	{
@@ -487,10 +487,12 @@ public:
 	}
 
 	virtual bool CompressImage(
-		FImage& InImage,
+		const FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
 		const FIntVector3& InMip0Dimensions,
 		int32 InMip0NumSlicesNoDepth,
+		int32 InMipIndex,
+		int32 InMipCount,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage

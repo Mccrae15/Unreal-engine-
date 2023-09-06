@@ -25,6 +25,7 @@ int32 GLevelStreamingAllowLevelRequestsWhileAsyncLoadingInMatch = 1;
 int32 GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch = 0;
 int32 GLevelStreamingForceVerifyLevelsGotRemovedByGC = 0;
 int32 GLevelStreamingForceRouteActorInitializeNextFrame = 0;
+int32 GLevelStreamingLowMemoryPendingPurgeCount = MAX_int32;
 
 static FAutoConsoleVariableRef CVarUseBackgroundLevelStreaming(
 	TEXT("s.UseBackgroundLevelStreaming"),
@@ -145,6 +146,14 @@ static FAutoConsoleVariableRef CVarMaxLevelRequestsAtOnceWhileInMatch(
 	ECVF_Default
 );
 
+static FAutoConsoleVariableRef CVarLevelStreamingLowMemoryPendingPurgeCount(
+	TEXT("s.LevelStreamingLowMemoryPendingPurgeCount"),
+	GLevelStreamingLowMemoryPendingPurgeCount,
+	TEXT("When system is in low memory state, if the number of streaming levels to purge meets or exceeds this value, perform a 'soft' GC."),
+	ECVF_Default
+);
+
+
 UStreamingSettings::UStreamingSettings()
 	: Super()
 {
@@ -200,11 +209,10 @@ UGarbageCollectionSettings::UGarbageCollectionSettings()
 	MinGCClusterSize = 5;
 	AssetClusteringEnabled = true;
 	ActorClusteringEnabled = true;
-	BlueprintClusteringEnabled = false;
 	UseDisregardForGCOnDedicatedServers = false;
-	VerifyGCObjectNames = true;
 	VerifyUObjectsAreNotFGCObjects = true;
 	PendingKillEnabled = false;
+	DumpObjectCountsToLogWhenMaxObjectLimitExceeded = false;
 }
 
 void UGarbageCollectionSettings::PostInitProperties()

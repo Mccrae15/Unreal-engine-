@@ -231,6 +231,7 @@ struct FOpenGLES : public FOpenGLBase
 
 	static FORCEINLINE bool HasBinaryProgramRetrievalFailed() { return bBinaryProgramRetrievalFailed; }
 	static FORCEINLINE bool RequiresDisabledEarlyFragmentTests() { return bRequiresDisabledEarlyFragmentTests; }
+	static FORCEINLINE bool RequiresReadOnlyBuffersWorkaround() { return bRequiresReadOnlyBuffersWorkaround; }
 	static FORCEINLINE bool RequiresARMShaderFramebufferFetchDepthStencilUndef() { return bRequiresARMShaderFramebufferFetchDepthStencilUndef; }
 
 	// Adreno doesn't support HALF_FLOAT
@@ -315,7 +316,7 @@ struct FOpenGLES : public FOpenGLBase
 			Access = GL_MAP_READ_BIT;
 			break;
 		case EResourceLockMode::RLM_ReadOnlyPersistent:
-			Access = (GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);;
+			Access = (GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
 			break;
 		case EResourceLockMode::RLM_WriteOnly:
 			Access = (GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
@@ -858,6 +859,9 @@ public:
 	/* Some Mali devices do not work correctly with early_fragment_test enabled */
 	static bool bRequiresDisabledEarlyFragmentTests;
 		
+	/* This is a workaround for a Mali bug where read-only buffers do not work when passed to functions*/
+	static bool bRequiresReadOnlyBuffersWorkaround;
+
 	/* This is to avoid a bug in Adreno drivers that define GL_ARM_shader_framebuffer_fetch_depth_stencil even when device does not support this extension  */
 	static bool bRequiresARMShaderFramebufferFetchDepthStencilUndef;
 

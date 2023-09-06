@@ -13,12 +13,12 @@ namespace Electra
 
 		enum class EFacility
 		{
-			// NOTE: Never change this order even if adding new elements mean they go at the end!
 			Unknown,
 			Utility,
 			Player,
 			ABR,
 			HTTPReader,
+			BufferedDataReader,
 			HLSPlaylistReader,
 			HLSPlaylistBuilder,
 			HLSManifest,
@@ -27,21 +27,24 @@ namespace Electra
 			VideoRenderer,
 			AudioRenderer,
 			SubtitleRenderer,
-			AACDecoder,
-			H264Decoder,
 			MP4PlaylistReader,
 			MP4Playlist,
 			MP4StreamReader,
+			MKVPlaylistReader,
+			MKVPlaylist,
+			MKVStreamReader,
+			MKVParser,
 			LicenseKey,
 			DASHMPDReader,
 			DASHMPDParser,
 			DASHMPDBuilder,
 			DASHManifest,
-			DASHFMP4Reader,
+			DASHStreamReader,
 			EntityCache,
 			DRM,
-			H265Decoder,
 			SubtitleDecoder,
+			AudioDecoder,
+			VideoDecoder,
 			LastEntry = 255
 		};
 
@@ -61,6 +64,8 @@ namespace Electra
 					return TEXT("ABR");
 				case EFacility::HTTPReader:
 					return TEXT("HTTP reader");
+				case EFacility::BufferedDataReader:
+					return TEXT("Buffered data reader");
 				case EFacility::HLSPlaylistReader:
 					return TEXT("HLS playlist reader");
 				case EFacility::HLSPlaylistBuilder:
@@ -77,10 +82,6 @@ namespace Electra
 					return TEXT("Audio renderer");
 				case EFacility::SubtitleRenderer:
 					return TEXT("Subtitle renderer");
-				case EFacility::AACDecoder:
-					return TEXT("AAC decoder");
-				case EFacility::H264Decoder:
-					return TEXT("H.264 decoder");
 				case EFacility::MP4PlaylistReader:
 					return TEXT("MP4 playlist reader");
 				case EFacility::MP4Playlist:
@@ -97,16 +98,26 @@ namespace Electra
 					return TEXT("DASH MPD builder");
 				case EFacility::DASHManifest:
 					return TEXT("DASH manifest");
-				case EFacility::DASHFMP4Reader:
-					return TEXT("DASH fmp4 reader");
+				case EFacility::DASHStreamReader:
+					return TEXT("DASH stream reader");
 				case EFacility::EntityCache:
 					return TEXT("Entity cache");
 				case EFacility::DRM:
 					return TEXT("DRM");
-				case EFacility::H265Decoder:
-					return TEXT("H.265 decoder");
 				case EFacility::SubtitleDecoder:
 					return TEXT("Subtitle decoder");
+				case EFacility::AudioDecoder:
+					return TEXT("Audio decoder");
+				case EFacility::VideoDecoder:
+					return TEXT("Video decoder");
+				case EFacility::MKVPlaylistReader:
+					return TEXT("MKV playlist reader");
+				case EFacility::MKVPlaylist:
+					return TEXT("MKV playlist");
+				case EFacility::MKVStreamReader:
+					return TEXT("MKV reader");
+				case EFacility::MKVParser:
+					return TEXT("MKV parser");
 			}
 			return TEXT("???");
 		}

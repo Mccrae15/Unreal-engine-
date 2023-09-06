@@ -66,11 +66,8 @@ UTexture2DArray* UTexture2DArray::CreateTransient(int32 InSizeX, int32 InSizeY, 
 		// Allocate first mipmap.
 		int32 NumBlocksX = InSizeX / GPixelFormats[InFormat].BlockSizeX;
 		int32 NumBlocksY = InSizeY / GPixelFormats[InFormat].BlockSizeY;
-		FTexture2DMipMap* Mip = new FTexture2DMipMap();
+		FTexture2DMipMap* Mip = new FTexture2DMipMap(InSizeX, InSizeY, InArraySize);
 		NewTexture->GetPlatformData()->Mips.Add(Mip);
-		Mip->SizeX = InSizeX;
-		Mip->SizeY = InSizeY;
-		Mip->SizeZ = InArraySize;
 		Mip->BulkData.Lock(LOCK_READ_WRITE);
 		Mip->BulkData.Realloc((int64)GPixelFormats[InFormat].BlockBytes * NumBlocksX * NumBlocksY * InArraySize);
 		Mip->BulkData.Unlock();
@@ -332,7 +329,7 @@ ENGINE_API bool UTexture2DArray::CheckArrayTexturesCompatibility()
 {
 	for (UTexture2D* SourceTexture : SourceTextures)
 	{
-		if (!SourceTexture)
+		if (!SourceTexture || !SourceTexture->Source.IsValid())
 		{
 			// Do not create array till all texture slots are filled.
 			return false;
@@ -435,7 +432,7 @@ ENGINE_API bool UTexture2DArray::UpdateSourceFromSourceTextures(bool bCreatingNe
 			void* DestSliceData = DestMipData + MipSizeBytes * SourceTexIndex;
 			if (TextureSource.SizeX == SizeX && TextureSource.SizeY == SizeY && TextureSource.Format == Format)
 			{
-				void* SourceData = TextureSource.LockMip(0);
+				const uint8* SourceData = TextureSource.LockMipReadOnly(0);
 				check(TextureSource.CalcMipSize(0) == MipSizeBytes);
 				FMemory::Memcpy(DestSliceData, SourceData, MipSizeBytes);
 				TextureSource.UnlockMip(0);
@@ -583,6 +580,17 @@ ENGINE_API void UTexture2DArray::PostEditChangeProperty(FPropertyChangedEvent & 
 	
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UTexture2DArray, SourceTextures))
 	{
+
+		for (int i=0;i<SourceTextures.Num();i++)
+		{
+			UTexture2D * SourceTexture = SourceTextures[i];
+			if (SourceTexture && !SourceTexture->Source.IsValid())
+			{
+				UE_LOG(LogTexture, Warning, TEXT("Texture has no Source, cannot be used [%s]"), *SourceTexture->GetFullName());
+				SourceTextures[i] = nullptr;
+			}
+		}		
+
 		// Empty SourceTextures, remove any resources if present.
 		if (SourceTextures.Num() == 0) 
 		{

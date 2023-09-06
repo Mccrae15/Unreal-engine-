@@ -202,8 +202,8 @@ void FMeshMergeHelpers::ExpandInstances(const UInstancedStaticMeshComponent* InI
 	FMeshDescription CombinedMeshDescription;
 	FStaticMeshAttributes(CombinedMeshDescription).Register();
 
-	FTransform ComponentTransform = InInstancedStaticMeshComponent->GetComponentTransform();
-	FTransform ComponentTransformInv = ComponentTransform.Inverse();
+	FMatrix ComponentToWorld = InInstancedStaticMeshComponent->GetComponentTransform().ToMatrixWithScale();
+	FMatrix WorldToComponent = ComponentToWorld.Inverse();
 
 	// Reserve memory upfront
 	int32 NumInstances = InInstancedStaticMeshComponent->GetInstanceCount();
@@ -220,10 +220,10 @@ void FMeshMergeHelpers::ExpandInstances(const UInstancedStaticMeshComponent* InI
 	}
 
 	FMeshDescription InstanceMeshDescription;
-	for(const FInstancedStaticMeshInstanceData& InstanceData : InInstancedStaticMeshComponent->PerInstanceSMData)
+	for (const FInstancedStaticMeshInstanceData& InstanceData : InInstancedStaticMeshComponent->PerInstanceSMData)
 	{
 		InstanceMeshDescription = InOutMeshDescription;
-		FStaticMeshOperations::ApplyTransform(InstanceMeshDescription, ComponentTransformInv * FTransform(InstanceData.Transform) * ComponentTransform);
+		FStaticMeshOperations::ApplyTransform(InstanceMeshDescription, WorldToComponent * InstanceData.Transform * ComponentToWorld);
 		FStaticMeshOperations::AppendMeshDescription(InstanceMeshDescription, CombinedMeshDescription, AppendSettings);
 	}
 
@@ -1162,19 +1162,19 @@ void FMeshMergeHelpers::MergeImpostersToMesh(TArray<const UStaticMeshComponent*>
 			TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = ImposterMeshAttributes.GetVertexInstanceUVs();
 			VertexInstanceUVs.SetNumChannels(UVTwoIndex + 1);
 			const int32 NumIndices = ImposterMesh.VertexInstances().Num();
-			const FTransform& ActorToWorld = Component->GetOwner()->GetActorTransform();
-			const FVector ActorPosition = ActorToWorld.TransformPosition(FVector::ZeroVector) - InPivot;
+			const FTransform& ComponentToWorld = Component->GetComponentTransform();
+			const FVector ComponentPosition = ComponentToWorld.TransformPosition(FVector::ZeroVector) - InPivot;
 			for (const FVertexInstanceID VertexInstanceID : ImposterMesh.VertexInstances().GetElementIDs())
 			{
 				FVector2D UVOne;
 				FVector2D UVTwo;
 
-				UVOne.X = ActorPosition.X;
-				UVOne.Y = ActorPosition.Y;
+				UVOne.X = ComponentPosition.X;
+				UVOne.Y = ComponentPosition.Y;
 				VertexInstanceUVs.Set(VertexInstanceID, UVOneIndex, FVector2f(UVOne));	// LWC_TODO: Precision loss
 
-				UVTwo.X = ActorPosition.Z;
-				UVTwo.Y = FMath::Abs(ActorToWorld.GetScale3D().X);
+				UVTwo.X = ComponentPosition.Z;
+				UVTwo.Y = FMath::Abs(ComponentToWorld.GetScale3D().X);
 				VertexInstanceUVs.Set(VertexInstanceID, UVTwoIndex, FVector2f(UVTwo));	// LWC_TODO: Precision loss
 			}
 		}

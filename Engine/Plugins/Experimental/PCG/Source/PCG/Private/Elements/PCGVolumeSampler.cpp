@@ -100,7 +100,7 @@ namespace PCGVolumeSampler
 			}
 		}
 
-		FPCGAsync::AsyncPointProcessing(InContext, NumIterations, Points, [InVolume, InBoundingShape, VoxelSize, MinX, MaxX, MinY, MaxY, MinZ, MaxZ](int32 Index, FPCGPoint& OutPoint)
+		FPCGAsync::AsyncPointProcessing(InContext, NumIterations, Points, [InVolume, InBoundingShape, PointSteepness = InSamplerSettings.PointSteepness, VoxelSize, MinX, MaxX, MinY, MaxY, MinZ](int32 Index, FPCGPoint& OutPoint)
 		{
 			const int X = MinX + (Index % (MaxX - MinX));
 			const int Y = MinY + (Index / (MaxX - MinX) % (MaxY - MinY));
@@ -126,6 +126,7 @@ namespace PCGVolumeSampler
 				}
 
 				OutPoint.Seed = PCGHelpers::ComputeSeed(X, Y, Z);
+				OutPoint.Steepness = PointSteepness;
 				return true;
 			}
 			else
@@ -181,6 +182,7 @@ bool FPCGVolumeSamplerElement::ExecuteInternal(FPCGContext* Context) const
 
 	PCGVolumeSampler::FVolumeSamplerSettings SamplerSettings;
 	SamplerSettings.VoxelSize = VoxelSize;
+	SamplerSettings.PointSteepness = Settings->PointSteepness;
 
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 

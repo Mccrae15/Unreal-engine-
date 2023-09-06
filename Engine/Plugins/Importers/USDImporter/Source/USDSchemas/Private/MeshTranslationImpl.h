@@ -16,9 +16,10 @@ PXR_NAMESPACE_OPEN_SCOPE
 PXR_NAMESPACE_CLOSE_SCOPE
 
 class FUsdInfoCache;
-class UUsdAssetCache2;
 class UMaterialInterface;
 class UMeshComponent;
+class UUsdAssetCache2;
+class UUsdMeshAssetUserData;
 namespace UsdUtils
 {
 	struct FUsdPrimMaterialSlot;
@@ -54,6 +55,11 @@ namespace MeshTranslationImpl
 		const FName& MaterialPurpose
 	);
 
+	void RecordSourcePrimsForMaterialSlots(
+		const TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo>& LODIndexToMaterialInfo,
+		UUsdMeshAssetUserData* UserData
+	);
+
 	enum class EUsdReferenceMaterialProperties
 	{
 		None = 0,
@@ -82,6 +88,10 @@ namespace MeshTranslationImpl
 	// Example: Receives UsdPreviewSurfaceTwoSidedTranslucent -> Returns UsdPreviewSurfaceTwoSidedTranslucent
 	// Example: Receives SomeOtherReferenceMaterial -> Returns nullptr
 	UMaterialInterface* GetTwoSidedVersionOfReferencePreviewSurfaceMaterial( UMaterialInterface* ReferenceMaterial );
+
+	// Returns whether the Material is one of the UsdPreviewSurface reference materials (which can be reassigned by the
+	// user on a per project basis)
+	bool IsReferencePreviewSurfaceMaterial(UMaterialInterface* Material);
 }
 
 #endif // #if USE_USD_SDK

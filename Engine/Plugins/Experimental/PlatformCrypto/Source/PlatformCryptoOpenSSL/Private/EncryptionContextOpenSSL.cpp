@@ -3,13 +3,21 @@
 #include "EncryptionContextOpenSSL.h"
 #include "PlatformCryptoAesEncryptorsOpenSSL.h"
 #include "PlatformCryptoAesDecryptorsOpenSSL.h"
+#include "PlatformCryptoUtilsOpenSSL.h"
 
+#include "Containers/StringConv.h"
+
+THIRD_PARTY_INCLUDES_START
 #include <openssl/bn.h>
 #include <openssl/obj_mac.h>
 #include <openssl/opensslv.h>
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
 #include <openssl/sha.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
+THIRD_PARTY_INCLUDES_END
+
 
 DEFINE_LOG_CATEGORY(LogPlatformCryptoOpenSSL);
 
@@ -350,26 +358,18 @@ bool FEncryptionContextOpenSSL::DigestVerify_PS256(const TArrayView<const char> 
 
 bool FEncryptionContextOpenSSL::DigestVerify_RS256(const TArrayView<const uint8> Message, const TArrayView<const uint8> Signature, FRSAKeyHandle Key)
 {
-	return RSA_verify(NID_sha256, Message.GetData(), Message.Num(), Signature.GetData(), Signature.Num(), (RSA*)Key) == 1;
+	const int VerifyResult = RSA_verify(NID_sha256, Message.GetData(), Message.Num(), Signature.GetData(), Signature.Num(), (RSA*)Key);
+
+	if (VerifyResult != 1)
+	{
+		UE_LOG(LogPlatformCryptoOpenSSL, Error,
+			TEXT("[FEncryptionContextOpenSSL::DigestVerify_RS256] Signature is invalid: (%u): %s."),
+				ERR_get_error(), UTF8_TO_TCHAR(ERR_error_string(ERR_get_error(), nullptr)));
+	}
+
+	return VerifyResult == 1;
 }
 
-// Some platforms were upgraded to OpenSSL 1.1.1 while the others were left on a previous version. There are some minor differences we have to account for
-// in the older version, so declare a handy define that we can use to gate the code
-#if !defined(OPENSSL_VERSION_NUMBER) || OPENSSL_VERSION_NUMBER < 0x10100000L
-#define USE_LEGACY_OPENSSL 1
-#else
-#define USE_LEGACY_OPENSSL 0
-#endif
-
-void BigNumToArray(const int32 InKeySize, const BIGNUM* InNum, TArray<uint8>& OutBytes)
-{
-	int32 NumBytes = BN_num_bytes(InNum);
-	check(NumBytes <= InKeySize);
-	OutBytes.SetNumZeroed(NumBytes);
-
-	BN_bn2bin(InNum, OutBytes.GetData());
-	Algo::Reverse(OutBytes);
-}
 
 bool FEncryptionContextOpenSSL::GenerateKey_RSA(const int32 InNumKeyBits, TArray<uint8>& OutPublicExponent, TArray<uint8>& OutPrivateExponent, TArray<uint8>& OutModulus)
 {
@@ -380,7 +380,6 @@ bool FEncryptionContextOpenSSL::GenerateKey_RSA(const int32 InNumKeyBits, TArray
 	}
 
 	int32 KeySize = InNumKeyBits;
-	int32 KeySizeInBytes = InNumKeyBits / 8;
 
 	RSA* RSAKey = RSA_new();
 	BIGNUM* E = BN_new();
@@ -397,24 +396,13 @@ bool FEncryptionContextOpenSSL::GenerateKey_RSA(const int32 InNumKeyBits, TArray
 	const BIGNUM* PrivateExponent = RSA_get0_d(RSAKey);
 #endif
 
-	BigNumToArray(KeySizeInBytes, PublicModulus, OutModulus);
-	BigNumToArray(KeySizeInBytes, PublicExponent, OutPublicExponent);
-	BigNumToArray(KeySizeInBytes, PrivateExponent, OutPrivateExponent);
+	FPlatformCryptoUtilsOpenSSL::BigNumToArray(PublicModulus, OutModulus);
+	FPlatformCryptoUtilsOpenSSL::BigNumToArray(PublicExponent, OutPublicExponent);
+	FPlatformCryptoUtilsOpenSSL::BigNumToArray(PrivateExponent, OutPrivateExponent);
 
 	RSA_free(RSAKey);
 
 	return true;
-}
-
-static void LoadBinaryIntoBigNum(const uint8* InData, int64 InDataSize, BIGNUM* InBigNum)
-{
-#if USE_LEGACY_OPENSSL
-	TArray<uint8> Bytes(InData, InDataSize);
-	Algo::Reverse(Bytes);
-	BN_bin2bn(Bytes.GetData(), Bytes.Num(), InBigNum);
-#else
-	BN_lebin2bn(InData, InDataSize, InBigNum);
-#endif
 }
 
 FRSAKeyHandle FEncryptionContextOpenSSL::CreateKey_RSA(const TArrayView<const uint8> PublicExponent, const TArrayView<const uint8> PrivateExponent, const TArrayView<const uint8> Modulus)
@@ -427,15 +415,19 @@ FRSAKeyHandle FEncryptionContextOpenSSL::CreateKey_RSA(const TArrayView<const ui
 
 	if (PublicExponent.Num())
 	{
-		LoadBinaryIntoBigNum(PublicExponent.GetData(), PublicExponent.Num(), BN_PublicExponent);
+		FPlatformCryptoUtilsOpenSSL::LoadBinaryIntoBigNum(
+			PublicExponent.GetData(), PublicExponent.Num(), BN_PublicExponent);
 	}
 
 	if (PrivateExponent.Num())
 	{
-		LoadBinaryIntoBigNum(PrivateExponent.GetData(), PrivateExponent.Num(), BN_PrivateExponent);
+		FPlatformCryptoUtilsOpenSSL::LoadBinaryIntoBigNum(
+			PrivateExponent.GetData(), PrivateExponent.Num(), BN_PrivateExponent);
 	}
 
-	LoadBinaryIntoBigNum(Modulus.GetData(), Modulus.Num(), BN_Modulus);
+	FPlatformCryptoUtilsOpenSSL::LoadBinaryIntoBigNum(
+		Modulus.GetData(), Modulus.Num(), BN_Modulus);
+
 #if USE_LEGACY_OPENSSL
 	NewKey->n = BN_Modulus;
 	NewKey->e = BN_PublicExponent;
@@ -445,6 +437,18 @@ FRSAKeyHandle FEncryptionContextOpenSSL::CreateKey_RSA(const TArrayView<const ui
 #endif
 
 	return NewKey;
+}
+
+FRSAKeyHandle FEncryptionContextOpenSSL::GetPublicKey_RSA(const FStringView PemSource)
+{
+	auto ConvertedSource = StringCast<UTF8CHAR>(PemSource.GetData());
+
+	BIO* KeyBuf = BIO_new_mem_buf(ConvertedSource.Get(), ConvertedSource.Length());
+	RSA* Key = PEM_read_bio_RSA_PUBKEY(KeyBuf, 0, 0, 0);
+
+	BIO_free(KeyBuf);
+
+	return Key;
 }
 
 void FEncryptionContextOpenSSL::DestroyKey_RSA(FRSAKeyHandle Key)
@@ -531,4 +535,38 @@ EPlatformCryptoResult FEncryptionContextOpenSSL::CreatePseudoRandomBytes(const T
 FSHA256Hasher FEncryptionContextOpenSSL::CreateSHA256Hasher()
 {
 	return FSHA256Hasher();
+}
+
+bool FEncryptionContextOpenSSL::CalcSHA256(const TArrayView<const uint8> Source, TArray<uint8>& OutHash)
+{
+	FSHA256Hasher Hasher = CreateSHA256Hasher();
+
+	if (Hasher.Init() != EPlatformCryptoResult::Success)
+	{
+		UE_LOG(LogPlatformCryptoOpenSSL, Verbose,
+			TEXT("[FEncryptionContextOpenSSL::CalcSHA256] Failed to create SHA256Hasher."));
+
+		return false;
+	}
+
+	if (Hasher.Update(Source) != EPlatformCryptoResult::Success)
+	{
+		UE_LOG(LogPlatformCryptoOpenSSL, Verbose,
+			TEXT("[FEncryptionContextOpenSSL::CalcSHA256] Failed to update SHA256Hasher."));
+
+		return false;
+	}
+
+	OutHash.Empty();
+	OutHash.AddUninitialized(FSHA256Hasher::OutputByteLength);
+
+	if (Hasher.Finalize(OutHash) != EPlatformCryptoResult::Success)
+	{
+		UE_LOG(LogPlatformCryptoOpenSSL, Verbose,
+			TEXT("[FEncryptionContextOpenSSL::CalcSHA256] Failed to finalize SHA256Hasher."));
+
+		return false;
+	}
+
+	return true;
 }

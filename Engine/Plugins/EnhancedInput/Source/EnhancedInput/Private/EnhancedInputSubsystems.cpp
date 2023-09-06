@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EnhancedInputSubsystems.h"
-
+#include "EnhancedInputModule.h"
 #include "Components/InputComponent.h"
 #include "Engine/LocalPlayer.h"
 #include "EnhancedInputDeveloperSettings.h"
@@ -11,6 +11,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
 #include "InputMappingContext.h"
+#include "UserSettings/EnhancedInputUserSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EnhancedInputSubsystems)
 
@@ -22,13 +23,76 @@ DEFINE_LOG_CATEGORY(LogWorldSubsystemInput);
 // *
 // **************************************************************************************************
 
-UEnhancedPlayerInput* UEnhancedInputLocalPlayerSubsystem::GetPlayerInput() const
-{	
-	if (APlayerController* PlayerController = GetLocalPlayer()->GetPlayerController(GetWorld()))
+void UEnhancedInputLocalPlayerSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	
+	if (GetDefault<UEnhancedInputDeveloperSettings>()->bEnableUserSettings)
 	{
-		return Cast<UEnhancedPlayerInput>(PlayerController->PlayerInput);
+		InitalizeUserSettings();
 	}
+}
+
+void UEnhancedInputLocalPlayerSubsystem::PlayerControllerChanged(APlayerController* NewPlayerController)
+{
+	Super::PlayerControllerChanged(NewPlayerController);
+	
+	if (GetDefault<UEnhancedInputDeveloperSettings>()->bEnableUserSettings)
+	{
+		InitalizeUserSettings();
+	}
+}
+
+UEnhancedPlayerInput* UEnhancedInputLocalPlayerSubsystem::GetPlayerInput() const
+{
+	if (ULocalPlayer* LP = GetLocalPlayer())
+	{
+		if (APlayerController* PlayerController = LP->GetPlayerController(GetWorld()))
+		{
+			return Cast<UEnhancedPlayerInput>(PlayerController->PlayerInput);	
+		}
+	}
+	
 	return nullptr;
+}
+
+UEnhancedInputUserSettings* UEnhancedInputLocalPlayerSubsystem::GetUserSettings() const
+{
+	return UserSettings;
+}
+
+void UEnhancedInputLocalPlayerSubsystem::InitalizeUserSettings()
+{
+	ULocalPlayer* LP = GetLocalPlayer();
+
+	if (!LP)
+	{
+		UE_LOG(LogEnhancedInput, Error, TEXT("Failed to initalize user settings, there is no valid local player!"));
+		return;
+	}
+	
+	// If the user settings are already created then we just want to update it's pointer to the 
+	// local player object, as that may have changed with a new player controller.
+	if (UserSettings)
+	{
+		UserSettings->Initialize(LP);
+		return;
+	}
+
+	if (!GetDefault<UEnhancedInputDeveloperSettings>()->bEnableUserSettings)
+	{
+		UE_LOG(LogEnhancedInput, Verbose, TEXT("bEnableUserSettings is set to false, skipping creation of UEnhancedInputUserSettings!"));
+		return;
+	}
+	
+	UserSettings = UEnhancedInputUserSettings::LoadOrCreateSettings(LP);
+
+	// Bind delegates to the user settings if it was successfully created
+	if (ensure(UserSettings))
+	{
+		BindUserSettingDelegates();
+		UE_LOG(LogEnhancedInput, Log, TEXT("Enhanced Input local player subsystem has initalized the user settings!"));
+	}
 }
 
 void UEnhancedInputLocalPlayerSubsystem::ControlMappingsRebuiltThisFrame()

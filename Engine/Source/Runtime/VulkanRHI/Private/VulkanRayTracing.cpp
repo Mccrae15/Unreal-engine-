@@ -28,6 +28,39 @@ static FAutoConsoleVariableRef CVarVulkanRayTracingMaxBatchedCompaction(
 	ECVF_ReadOnly
 );
 
+static bool GVulkanRayTracingTLASPreferFastTrace = true;
+static FAutoConsoleVariableRef CVarVulkanRayTracingTLASPreferFastTraceTLAS(
+	TEXT("r.Vulkan.RayTracing.TLASPreferFastTraceTLAS"),
+	GVulkanRayTracingTLASPreferFastTrace,
+	TEXT("Prefer fast trace for TLAS build (default = true)\n"),
+	ECVF_ReadOnly
+);
+
+// Ray tracing stat counters
+
+DECLARE_STATS_GROUP(TEXT("Vulkan: Ray Tracing"), STATGROUP_VulkanRayTracing, STATCAT_Advanced);
+
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Created pipelines (total)"), STAT_VulkanRayTracingCreatedPipelines, STATGROUP_VulkanRayTracing);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Compiled shaders (total)"), STAT_VulkanRayTracingCompiledShaders, STATGROUP_VulkanRayTracing);
+
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Allocated bottom level acceleration structures"), STAT_VulkanRayTracingAllocatedBLAS, STATGROUP_VulkanRayTracing);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Allocated top level acceleration structures"), STAT_VulkanRayTracingAllocatedTLAS, STATGROUP_VulkanRayTracing);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("Triangles in all BL acceleration structures"), STAT_VulkanRayTracingTrianglesBLAS, STATGROUP_VulkanRayTracing);
+
+DECLARE_DWORD_COUNTER_STAT(TEXT("Built BL AS (per frame)"), STAT_VulkanRayTracingBuiltBLAS, STATGROUP_VulkanRayTracing);
+DECLARE_DWORD_COUNTER_STAT(TEXT("Updated BL AS (per frame)"), STAT_VulkanRayTracingUpdatedBLAS, STATGROUP_VulkanRayTracing);
+DECLARE_DWORD_COUNTER_STAT(TEXT("Built TL AS (per frame)"), STAT_VulkanRayTracingBuiltTLAS, STATGROUP_VulkanRayTracing);
+
+DECLARE_MEMORY_STAT(TEXT("Total BL AS Memory"), STAT_VulkanRayTracingBLASMemory, STATGROUP_VulkanRayTracing);
+DECLARE_MEMORY_STAT(TEXT("Static BL AS Memory"), STAT_VulkanRayTracingStaticBLASMemory, STATGROUP_VulkanRayTracing);
+DECLARE_MEMORY_STAT(TEXT("Dynamic BL AS Memory"), STAT_VulkanRayTracingDynamicBLASMemory, STATGROUP_VulkanRayTracing);
+DECLARE_MEMORY_STAT(TEXT("TL AS Memory"), STAT_VulkanRayTracingTLASMemory, STATGROUP_VulkanRayTracing);
+DECLARE_MEMORY_STAT(TEXT("Total Used Video Memory"), STAT_VulkanRayTracingUsedVideoMemory, STATGROUP_VulkanRayTracing);
+
+DECLARE_CYCLE_STAT(TEXT("RTPSO Compile Shader"), STAT_RTPSO_CompileShader, STATGROUP_VulkanRayTracing);
+DECLARE_CYCLE_STAT(TEXT("RTPSO Create Pipeline"), STAT_RTPSO_CreatePipeline, STATGROUP_VulkanRayTracing);
+
+
 #if PLATFORM_WINDOWS
 #pragma warning(push)
 #pragma warning(disable : 4191) // warning C4191: 'type cast': unsafe conversion
@@ -54,19 +87,6 @@ enum class EBLASBuildDataUsage
 	Size = 1
 };
 
-static VkDeviceAddress GetDeviceAddress(VkDevice Device, VkBuffer Buffer)
-{
-	VkBufferDeviceAddressInfoKHR DeviceAddressInfo;
-	ZeroVulkanStruct(DeviceAddressInfo, VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO);
-	DeviceAddressInfo.buffer = Buffer;
-	return VulkanDynamicAPI::vkGetBufferDeviceAddressKHR(Device, &DeviceAddressInfo);
-}
-
-VkDeviceAddress FVulkanResourceMultiBuffer::GetDeviceAddress() const
-{
-	return ::GetDeviceAddress(Device->GetInstanceHandle(), GetHandle()) + GetOffset();
-}
-
 // Temporary brute force allocation helper, this should be handled by the memory sub-allocator
 static uint32 FindMemoryType(VkPhysicalDevice Gpu, uint32 Filter, VkMemoryPropertyFlags RequestedProperties)
 {
@@ -89,52 +109,18 @@ static uint32 FindMemoryType(VkPhysicalDevice Gpu, uint32 Filter, VkMemoryProper
 	return Result;
 }
 
-// Temporary brute force allocation
-void FVulkanRayTracingAllocator::Allocate(FVulkanDevice* Device, VkDeviceSize Size, VkBufferUsageFlags UsageFlags, VkMemoryPropertyFlags MemoryFlags, FVkRtAllocation& Result)
-{
-	VkMemoryRequirements MemoryRequirements;
-	Result.Buffer = VulkanRHI::CreateBuffer(Device, Size, UsageFlags, MemoryRequirements);
-
-	VkDevice DeviceHandle = Device->GetInstanceHandle();
-	VkPhysicalDevice Gpu = Device->GetPhysicalHandle();
-
-	VkMemoryAllocateFlagsInfo MemoryAllocateFlagsInfo;
-	ZeroVulkanStruct(MemoryAllocateFlagsInfo, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO);
-	MemoryAllocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
-
-	VkMemoryAllocateInfo MemoryAllocateInfo;
-	ZeroVulkanStruct(MemoryAllocateInfo, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
-	MemoryAllocateInfo.pNext = &MemoryAllocateFlagsInfo;
-	MemoryAllocateInfo.allocationSize = MemoryRequirements.size;
-	MemoryAllocateInfo.memoryTypeIndex = FindMemoryType(Gpu, MemoryRequirements.memoryTypeBits, MemoryFlags);
-	VERIFYVULKANRESULT(VulkanRHI::vkAllocateMemory(DeviceHandle, &MemoryAllocateInfo, VULKAN_CPU_ALLOCATOR, &Result.Memory));
-	VERIFYVULKANRESULT(VulkanRHI::vkBindBufferMemory(DeviceHandle, Result.Buffer, Result.Memory, 0));
-
-	Result.Device = DeviceHandle;
-}
-
-// Temporary brute force deallocation
-void FVulkanRayTracingAllocator::Free(FVkRtAllocation& Allocation)
-{
-	if (Allocation.Buffer != VK_NULL_HANDLE)
-	{
-		VulkanRHI::vkDestroyBuffer(Allocation.Device, Allocation.Buffer, VULKAN_CPU_ALLOCATOR);
-		Allocation.Buffer = VK_NULL_HANDLE;
-	}
-	if (Allocation.Memory != VK_NULL_HANDLE)
-	{
-		VulkanRHI::vkFreeMemory(Allocation.Device, Allocation.Memory, VULKAN_CPU_ALLOCATOR);
-		Allocation.Memory = VK_NULL_HANDLE;
-	}
-}
-
 static void AddAccelerationStructureBuildBarrier(VkCommandBuffer CommandBuffer)
 {
 	VkMemoryBarrier Barrier;
 	ZeroVulkanStruct(Barrier, VK_STRUCTURE_TYPE_MEMORY_BARRIER);
 	Barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 	Barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-	VulkanRHI::vkCmdPipelineBarrier(CommandBuffer, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &Barrier, 0, nullptr, 0, nullptr);
+    
+    // TODO: Revisit the compute stages here as we don't always need barrier to compute
+    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    
+	VulkanRHI::vkCmdPipelineBarrier(CommandBuffer, srcStage, dstStage, 0, 1, &Barrier, 0, nullptr, 0, nullptr);
 }
 
 static bool ShouldCompactAfterBuild(ERayTracingAccelerationStructureFlags BuildFlags)
@@ -180,8 +166,6 @@ static void GetBLASBuildData(
 	const EBLASBuildDataUsage Usage,
 	FVkRtBLASBuildData& BuildData)
 {
-	static constexpr uint32 IndicesPerPrimitive = 3; // Only triangle meshes are supported
-
 	FVulkanResourceMultiBuffer* const IndexBuffer = ResourceCast(IndexBufferRHI.GetReference());
 	VkDeviceOrHostAddressConstKHR IndexBufferDeviceAddress = {};
 	
@@ -257,13 +241,13 @@ static void GetBLASBuildData(
 				{
 					SegmentGeometry.geometry.triangles.indexType = (IndexStrideInBytes == 2) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
 					// offset in bytes into the index buffer where primitive data for the current segment is defined
-					PrimitiveOffset = Segment.FirstPrimitive * IndicesPerPrimitive * IndexStrideInBytes;
+					PrimitiveOffset = Segment.FirstPrimitive * FVulkanRayTracingGeometry::IndicesPerPrimitive * IndexStrideInBytes;
 				}
 				else
 				{
 					SegmentGeometry.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
 					// for non-indexed geometry, primitiveOffset is applied when reading from vertex buffer
-					PrimitiveOffset = Segment.FirstPrimitive * IndicesPerPrimitive * Segment.VertexBufferStride;
+					PrimitiveOffset = Segment.FirstPrimitive * FVulkanRayTracingGeometry::IndicesPerPrimitive * Segment.VertexBufferStride;
 				}
 
 				break;
@@ -325,9 +309,14 @@ static void GetBLASBuildData(
 FVulkanRayTracingGeometry::FVulkanRayTracingGeometry(ENoInit)
 {}
 
-FVulkanRayTracingGeometry::FVulkanRayTracingGeometry(const FRayTracingGeometryInitializer& InInitializer, FVulkanDevice* InDevice)
+FVulkanRayTracingGeometry::FVulkanRayTracingGeometry(FRHICommandListBase& RHICmdList, const FRayTracingGeometryInitializer& InInitializer, FVulkanDevice* InDevice)
 	: FRHIRayTracingGeometry(InInitializer), Device(InDevice)
 {
+	INC_DWORD_STAT(STAT_VulkanRayTracingAllocatedBLAS);
+
+	DebugName = !Initializer.DebugName.IsNone() ? Initializer.DebugName : FDebugName(FName(TEXT("BLAS")));
+	OwnerName = Initializer.OwnerName;
+
 	uint32 IndexBufferStride = 0;
 	if (Initializer.IndexBuffer)
 	{
@@ -351,7 +340,7 @@ FVulkanRayTracingGeometry::FVulkanRayTracingGeometry(const FRayTracingGeometryIn
 
 	FString DebugNameString = Initializer.DebugName.ToString();
 	FRHIResourceCreateInfo BlasBufferCreateInfo(*DebugNameString);
-	AccelerationStructureBuffer = ResourceCast(RHICreateBuffer(SizeInfo.ResultSize, BUF_AccelerationStructure, 0, ERHIAccess::BVHWrite, BlasBufferCreateInfo).GetReference());
+	AccelerationStructureBuffer = ResourceCast(RHICmdList.CreateBuffer(SizeInfo.ResultSize, BUF_AccelerationStructure, 0, ERHIAccess::BVHWrite, BlasBufferCreateInfo).GetReference());
 
 	VkDevice NativeDevice = Device->GetInstanceHandle();
 
@@ -363,18 +352,49 @@ FVulkanRayTracingGeometry::FVulkanRayTracingGeometry(const FRayTracingGeometryIn
 	CreateInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 	VERIFYVULKANRESULT(VulkanDynamicAPI::vkCreateAccelerationStructureKHR(NativeDevice, &CreateInfo, VULKAN_CPU_ALLOCATOR, &Handle));
 	
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, SizeInfo.ResultSize);
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingBLASMemory, SizeInfo.ResultSize);
+	if (Initializer.bAllowUpdate)
+	{
+		INC_MEMORY_STAT_BY(STAT_VulkanRayTracingDynamicBLASMemory, SizeInfo.ResultSize);
+	}
+	else
+	{
+		INC_MEMORY_STAT_BY(STAT_VulkanRayTracingStaticBLASMemory, SizeInfo.ResultSize);
+	}
+
 	VkAccelerationStructureDeviceAddressInfoKHR DeviceAddressInfo;
 	ZeroVulkanStruct(DeviceAddressInfo, VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR);
 	DeviceAddressInfo.accelerationStructure = Handle;
 	Address = VulkanDynamicAPI::vkGetAccelerationStructureDeviceAddressKHR(NativeDevice, &DeviceAddressInfo);
+
+	INC_DWORD_STAT_BY(STAT_VulkanRayTracingTrianglesBLAS, Initializer.TotalPrimitiveCount);
 }
 
 FVulkanRayTracingGeometry::~FVulkanRayTracingGeometry()
 {
+	ReleaseBindlessHandles();
+
+	DEC_DWORD_STAT(STAT_VulkanRayTracingAllocatedBLAS);
+	DEC_DWORD_STAT_BY(STAT_VulkanRayTracingTrianglesBLAS, Initializer.TotalPrimitiveCount);
 	if (Handle != VK_NULL_HANDLE)
 	{
+		DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
+		DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingBLASMemory, AccelerationStructureBuffer->GetSize());
+
+		ERayTracingAccelerationStructureFlags BuildFlags = GetRayTracingAccelerationStructureBuildFlags(Initializer);
+		if (EnumHasAllFlags(BuildFlags, ERayTracingAccelerationStructureFlags::AllowUpdate))
+		{
+			DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingDynamicBLASMemory, AccelerationStructureBuffer->GetSize());
+		}
+		else
+		{
+			DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingStaticBLASMemory, AccelerationStructureBuffer->GetSize());
+		}
+
 		Device->GetDeferredDeletionQueue().EnqueueResource(VulkanRHI::FDeferredDeletionQueue2::EType::AccelerationStructure, Handle);
-	}
+	}	
+
 	RemoveCompactionRequest();
 }
 
@@ -419,14 +439,23 @@ void FVulkanRayTracingGeometry::CompactAccelerationStructure(FVulkanCmdBuffer& C
 		return;
 	}
 
+	DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
+	DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingBLASMemory, AccelerationStructureBuffer->GetSize());
+	DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingStaticBLASMemory, AccelerationStructureBuffer->GetSize());
+
 	// Move old AS into this temporary variable which gets released when this function returns	
 	TRefCountPtr<FVulkanResourceMultiBuffer> OldAccelerationStructure = AccelerationStructureBuffer;
 	VkAccelerationStructureKHR OldHandle = Handle;
 
 	FString DebugNameString = Initializer.DebugName.ToString();
 	FRHIResourceCreateInfo BlasBufferCreateInfo(*DebugNameString);
-	AccelerationStructureBuffer = new FVulkanResourceMultiBuffer(Device, InSizeAfterCompaction, BUF_AccelerationStructure, 0, BlasBufferCreateInfo);
+	AccelerationStructureBuffer = new FVulkanResourceMultiBuffer(Device, FRHIBufferDesc(InSizeAfterCompaction, 0, BUF_AccelerationStructure), BlasBufferCreateInfo);
 	
+
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingBLASMemory, AccelerationStructureBuffer->GetSize());
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingStaticBLASMemory, AccelerationStructureBuffer->GetSize());
+
 	VkDevice NativeDevice = Device->GetInstanceHandle();
 
 	VkAccelerationStructureCreateInfoKHR CreateInfo;
@@ -457,6 +486,69 @@ void FVulkanRayTracingGeometry::CompactAccelerationStructure(FVulkanCmdBuffer& C
 	Device->GetDeferredDeletionQueue().EnqueueResource(VulkanRHI::FDeferredDeletionQueue2::EType::AccelerationStructure, OldHandle);
 }
 
+
+void FVulkanRayTracingGeometry::SetupHitGroupSystemParameters()
+{
+	const bool bIsTriangles = (Initializer.GeometryType == RTGT_Triangles);
+
+	FVulkanBindlessDescriptorManager* BindlessDescriptorManager = Device->GetBindlessDescriptorManager();
+	auto GetBindlessHandle = [BindlessDescriptorManager](FVulkanResourceMultiBuffer* Buffer, uint32 ExtraOffset) 
+	{
+		if (Buffer)
+		{
+			FRHIDescriptorHandle BindlessHandle = BindlessDescriptorManager->ReserveDescriptor(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+			BindlessDescriptorManager->UpdateBuffer(BindlessHandle, Buffer->GetHandle(), Buffer->GetOffset() + ExtraOffset, Buffer->GetCurrentSize() - ExtraOffset);
+			return BindlessHandle;
+		}
+		return FRHIDescriptorHandle();
+	};
+
+	ReleaseBindlessHandles();
+
+	HitGroupSystemParameters.Reset(Initializer.Segments.Num());
+
+	FVulkanResourceMultiBuffer* IndexBuffer = ResourceCast(Initializer.IndexBuffer.GetReference());
+	const uint32 IndexStride = IndexBuffer ? IndexBuffer->GetStride() : 0;
+	HitGroupSystemIndexView = GetBindlessHandle(IndexBuffer, 0);
+
+	for (const FRayTracingGeometrySegment& Segment : Initializer.Segments)
+	{
+		FVulkanResourceMultiBuffer* VertexBuffer = ResourceCast(Segment.VertexBuffer.GetReference());
+		const FRHIDescriptorHandle VBHandle = GetBindlessHandle(VertexBuffer, Segment.VertexBufferOffset);
+		HitGroupSystemVertexViews.Add(VBHandle);
+
+		FVulkanHitGroupSystemParameters SystemParameters = {};
+		SystemParameters.RootConstants.SetVertexAndIndexStride(Segment.VertexBufferStride, IndexStride);
+		SystemParameters.BindlessHitGroupSystemVertexBuffer = VBHandle.GetIndex();
+
+		if (bIsTriangles && (IndexBuffer != nullptr))
+		{
+			SystemParameters.BindlessHitGroupSystemIndexBuffer = HitGroupSystemIndexView.GetIndex();
+			SystemParameters.RootConstants.IndexBufferOffsetInBytes = Initializer.IndexBufferOffset + IndexStride * Segment.FirstPrimitive * FVulkanRayTracingGeometry::IndicesPerPrimitive;
+			SystemParameters.RootConstants.FirstPrimitive = Segment.FirstPrimitive;
+		}
+
+		HitGroupSystemParameters.Add(SystemParameters);
+	}
+}
+
+void FVulkanRayTracingGeometry::ReleaseBindlessHandles()
+{
+	FVulkanBindlessDescriptorManager* BindlessDescriptorManager = Device->GetBindlessDescriptorManager();
+
+	for (FRHIDescriptorHandle BindlesHandle : HitGroupSystemVertexViews)
+	{
+		BindlessDescriptorManager->Unregister(BindlesHandle);
+	}
+	HitGroupSystemVertexViews.Reset(Initializer.Segments.Num());
+
+	if (HitGroupSystemIndexView.IsValid())
+	{
+		BindlessDescriptorManager->Unregister(HitGroupSystemIndexView);
+		HitGroupSystemIndexView = FRHIDescriptorHandle();
+	}
+}
+
 static void GetTLASBuildData(
 	const VkDevice Device,
 	const uint32 NumInstances,
@@ -473,7 +565,9 @@ static void GetTLASBuildData(
 
 	BuildData.GeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 	BuildData.GeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-	BuildData.GeometryInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	BuildData.GeometryInfo.flags = GVulkanRayTracingTLASPreferFastTrace ? 
+										VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR :
+										VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
 	BuildData.GeometryInfo.geometryCount = 1;
 	BuildData.GeometryInfo.pGeometries = &BuildData.Geometry;
 
@@ -534,8 +628,12 @@ struct FVulkanRayTracingGeometryParameters
 };
 
 FVulkanRayTracingScene::FVulkanRayTracingScene(FRayTracingSceneInitializer2 InInitializer, FVulkanDevice* InDevice)
-	: Device(InDevice), Initializer(MoveTemp(InInitializer))
+	: FDeviceChild(InDevice)
+	, Initializer(MoveTemp(InInitializer))
+
 {
+	INC_DWORD_STAT(STAT_VulkanRayTracingAllocatedTLAS);
+
 	const ERayTracingAccelerationStructureFlags BuildFlags = ERayTracingAccelerationStructureFlags::FastTrace; // #yuriy_todo: pass this in
 
 	SizeInfo = {};
@@ -561,14 +659,23 @@ FVulkanRayTracingScene::FVulkanRayTracingScene(FRayTracingSceneInitializer2 InIn
 	const uint32 ParameterBufferSize = FMath::Max<uint32>(1, Initializer.NumTotalSegments) * sizeof(FVulkanRayTracingGeometryParameters);
 	FRHIResourceCreateInfo ParameterBufferCreateInfo(TEXT("RayTracingSceneMetadata"));
 	PerInstanceGeometryParameterBuffer = new FVulkanResourceMultiBuffer(Device,
-		ParameterBufferSize, BUF_StructuredBuffer | BUF_ShaderResource, sizeof(FVulkanRayTracingGeometryParameters),
+		FRHIBufferDesc(ParameterBufferSize, sizeof(FVulkanRayTracingGeometryParameters), BUF_StructuredBuffer | BUF_ShaderResource),
 		ParameterBufferCreateInfo);
-
-	PerInstanceGeometryParameterSRV = new FVulkanShaderResourceView(Device, PerInstanceGeometryParameterBuffer, 0);
 }
 
 FVulkanRayTracingScene::~FVulkanRayTracingScene()
 {
+	for (auto& Item : ShaderTables)
+	{
+		delete Item.Value;
+	}
+
+	if (AccelerationStructureBuffer)
+	{
+		DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
+		DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingTLASMemory, AccelerationStructureBuffer->GetSize());
+	}
+	DEC_DWORD_STAT(STAT_VulkanRayTracingAllocatedTLAS);
 }
 
 void FVulkanRayTracingScene::BindBuffer(FRHIBuffer* InBuffer, uint32 InBufferOffset)
@@ -577,16 +684,30 @@ void FVulkanRayTracingScene::BindBuffer(FRHIBuffer* InBuffer, uint32 InBufferOff
 
 	check(SizeInfo.ResultSize + InBufferOffset <= InBuffer->GetSize());
 	
+	if (AccelerationStructureBuffer)
+	{
+		DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
+		DEC_MEMORY_STAT_BY(STAT_VulkanRayTracingTLASMemory, AccelerationStructureBuffer->GetSize());
+	}
+
 	AccelerationStructureBuffer = ResourceCast(InBuffer);
+
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingUsedVideoMemory, AccelerationStructureBuffer->GetSize());
+	INC_MEMORY_STAT_BY(STAT_VulkanRayTracingTLASMemory, AccelerationStructureBuffer->GetSize());
 
 	for (auto& Layer : Layers)
 	{
-		checkf(Layer.ShaderResourceView == nullptr, TEXT("Binding multiple buffers is not currently supported."));
+		checkf(!Layer.View.IsValid(), TEXT("Binding multiple buffers is not currently supported."));
 
 		const uint32 LayerOffset = InBufferOffset + Layer.BufferOffset;
 		check(LayerOffset % GRHIRayTracingAccelerationStructureAlignment == 0);
 
-		Layer.ShaderResourceView = new FVulkanShaderResourceView(Device, AccelerationStructureBuffer, LayerOffset);
+		Layer.View = MakeUnique<FVulkanView>(*Device, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+		Layer.View->InitAsAccelerationStructureView(
+			AccelerationStructureBuffer
+			, LayerOffset
+			, InBuffer->GetSize() - LayerOffset
+		);
 	}
 }
 
@@ -606,8 +727,9 @@ void FVulkanRayTracingScene::BuildAccelerationStructure(
 
 	if (InScratchBuffer == nullptr)
 	{
+		TRHICommandList_RecursiveHazardous<FVulkanCommandListContext> RHICmdList(&CommandContext);
 		FRHIResourceCreateInfo ScratchBufferCreateInfo(TEXT("BuildScratchTLAS"));
-		ScratchBuffer = ResourceCast(RHICreateBuffer(SizeInfo.BuildScratchSize, BUF_StructuredBuffer | BUF_RayTracingScratch, 0, ERHIAccess::UAVCompute, ScratchBufferCreateInfo).GetReference());
+		ScratchBuffer = ResourceCast(RHICmdList.CreateBuffer(SizeInfo.BuildScratchSize, BUF_StructuredBuffer | BUF_RayTracingScratch, 0, ERHIAccess::UAVCompute, ScratchBufferCreateInfo).GetReference());
 		InScratchBuffer = ScratchBuffer.GetReference();
 		InScratchOffset = 0;
 	}
@@ -637,8 +759,8 @@ void FVulkanRayTracingScene::BuildAccelerationStructure(
 		FVkRtTLASBuildData& BuildData = BuildDatas[LayerIndex];
 		GetTLASBuildData(Device->GetInstanceHandle(), Initializer.NumNativeInstancesPerLayer[LayerIndex], InstanceBufferAddress, BuildData);
 
-		checkf(Layer.ShaderResourceView, TEXT("A buffer must be bound to the ray tracing scene before it can be built."));
-		BuildData.GeometryInfo.dstAccelerationStructure = Layer.ShaderResourceView->AccelerationStructureHandle;
+		checkf(Layer.View.IsValid(), TEXT("A buffer must be bound to the ray tracing scene before it can be built."));
+		BuildData.GeometryInfo.dstAccelerationStructure = Layer.View->GetAccelerationStructureView().Handle;
 		BuildData.GeometryInfo.scratchData.deviceAddress = InScratchBuffer->GetDeviceAddress() + InScratchOffset + Layer.ScratchBufferOffset;
 
 		GeometryInfos[LayerIndex] = BuildData.GeometryInfo;
@@ -650,6 +772,8 @@ void FVulkanRayTracingScene::BuildAccelerationStructure(
 		TLASBuildRangeInfo.firstVertex = 0;
 
 		pBuildRanges[LayerIndex] = &TLASBuildRangeInfo;
+
+		INC_DWORD_STAT(STAT_VulkanRayTracingBuiltTLAS);
 
 		InstanceBaseOffset += Initializer.NumNativeInstancesPerLayer[LayerIndex];
 	}
@@ -667,6 +791,8 @@ void FVulkanRayTracingScene::BuildAccelerationStructure(
 
 	CommandBufferManager.SubmitActiveCmdBuffer();
 	CommandBufferManager.PrepareForNewActiveCommandBuffer();
+
+	bBuilt = true;
 }
 
 void FVulkanRayTracingScene::BuildPerInstanceGeometryParameterBuffer(FVulkanCommandListContext& CommandContext)
@@ -724,6 +850,142 @@ void FVulkanRayTracingScene::BuildPerInstanceGeometryParameterBuffer(FVulkanComm
 	check(ParameterIndex == Initializer.NumTotalSegments);
 
 	PerInstanceGeometryParameterBuffer->Unlock(CommandContext);
+}
+
+
+FVulkanRayTracingShaderTable::FVulkanRayTracingShaderTable(FVulkanDevice* Device)
+	: FDeviceChild(Device)
+	, HandleSize(Device->GetOptionalExtensionProperties().RayTracingPipelineProps.shaderGroupHandleSize)
+	, HandleSizeAligned(Align(HandleSize, Device->GetOptionalExtensionProperties().RayTracingPipelineProps.shaderGroupHandleAlignment))
+{
+}
+
+FVulkanRayTracingShaderTable::~FVulkanRayTracingShaderTable()
+{
+	auto FreeAlloc = [Device = Device](FVulkanShaderTableAllocation& Alloc) {
+		if (Alloc.Buffer != VK_NULL_HANDLE)
+		{
+			VulkanRHI::vkDestroyBuffer(Device->GetInstanceHandle(), Alloc.Buffer, VULKAN_CPU_ALLOCATOR);
+			Alloc.Buffer = VK_NULL_HANDLE;
+		}
+
+		if (Alloc.Allocation.IsValid())
+		{
+			Device->GetMemoryManager().FreeVulkanAllocation(Alloc.Allocation);
+		}
+	};
+
+	FreeAlloc(Raygen);
+	FreeAlloc(Miss);
+	FreeAlloc(HitGroup);
+	FreeAlloc(Callable);
+}
+
+void FVulkanRayTracingShaderTable::Init(const FVulkanRayTracingScene* Scene, const FVulkanRayTracingPipelineState* Pipeline)
+{
+	auto InitAlloc = [Device = Device, HandleSize = HandleSize, HandleSizeAligned = HandleSizeAligned](FVulkanShaderTableAllocation& Alloc, uint32 InHandleCount, bool InUseLocalRecord) {
+
+		Alloc.HandleCount = InHandleCount;
+		Alloc.bUseLocalRecord = InUseLocalRecord;
+
+		if (Alloc.HandleCount > 0)
+		{
+			VkDevice DeviceHandle = Device->GetInstanceHandle();
+			VkPhysicalDevice Gpu = Device->GetPhysicalHandle();
+
+			const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& RayTracingPipelineProps = Device->GetOptionalExtensionProperties().RayTracingPipelineProps;
+			Alloc.Region.stride = InUseLocalRecord ? FMath::Min<VkDeviceSize>(RayTracingPipelineProps.maxShaderGroupStride, 4096) : HandleSizeAligned; // :todo-jn: shrink stride to necessary amount
+			Alloc.Region.size = Alloc.HandleCount * Alloc.Region.stride;
+
+			{
+				VkBufferCreateInfo BufferCreateInfo;
+				ZeroVulkanStruct(BufferCreateInfo, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+				BufferCreateInfo.size = Alloc.Region.size;
+				BufferCreateInfo.usage = VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;;
+				VERIFYVULKANRESULT(VulkanRHI::vkCreateBuffer(DeviceHandle, &BufferCreateInfo, VULKAN_CPU_ALLOCATOR, &Alloc.Buffer));
+			}
+
+			const EVulkanAllocationFlags AllocFlags = EVulkanAllocationFlags::HostVisible | EVulkanAllocationFlags::AutoBind | EVulkanAllocationFlags::Dedicated; // :todo-jn: Dedicated for now... preferBAR?
+			Device->GetMemoryManager().AllocateBufferMemory(Alloc.Allocation, Alloc.Buffer, AllocFlags, TEXT("FVulkanShaderTableAllocation"), RayTracingPipelineProps.shaderGroupBaseAlignment);
+
+			VkMemoryAllocateFlagsInfo MemoryAllocateFlagsInfo;
+			ZeroVulkanStruct(MemoryAllocateFlagsInfo, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO);
+			MemoryAllocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
+
+			VkBufferDeviceAddressInfoKHR DeviceAddressInfo;
+			ZeroVulkanStruct(DeviceAddressInfo, VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO);
+			DeviceAddressInfo.buffer = Alloc.Buffer;
+			Alloc.Region.deviceAddress = VulkanRHI::vkGetBufferDeviceAddressKHR(DeviceHandle, &DeviceAddressInfo);
+
+			Alloc.MappedBufferMemory = (uint8*)Alloc.Allocation.GetMappedPointer(Device);
+		}
+	};
+
+	const FRayTracingSceneInitializer2& SceneInitializer = Scene->GetInitializer();
+
+	InitAlloc(Raygen, 1, false);
+	InitAlloc(Miss, SceneInitializer.NumMissShaderSlots, true);
+	InitAlloc(HitGroup, Pipeline->bAllowHitGroupIndexing ? SceneInitializer.NumTotalSegments * SceneInitializer.ShaderSlotsPerGeometrySegment : 1, true);
+	InitAlloc(Callable, SceneInitializer.NumCallableShaderSlots, true);
+}
+
+FVulkanRayTracingShaderTable::FVulkanShaderTableAllocation& FVulkanRayTracingShaderTable::GetAlloc(EShaderFrequency Frequency)
+{
+	switch (Frequency)
+	{
+	case SF_RayGen:       return Raygen;
+	case SF_RayMiss:      return Miss;
+	case SF_RayHitGroup:  return HitGroup;
+	case SF_RayCallable:  return Callable;
+
+	default:
+		checkf(false, TEXT("Only usable with RayTracing shaders."));
+		break;
+	}
+
+	static FVulkanShaderTableAllocation EmptyAlloc;
+	return EmptyAlloc;
+}
+
+const VkStridedDeviceAddressRegionKHR* FVulkanRayTracingShaderTable::GetRegion(EShaderFrequency Frequency)
+{
+	return &GetAlloc(Frequency).Region;
+}
+
+void FVulkanRayTracingShaderTable::SetSlot(EShaderFrequency Frequency, uint32 DstSlot, uint32 SrcHandleIndex, TConstArrayView<uint8> SrcHandleData)
+{
+	FVulkanShaderTableAllocation& Alloc = GetAlloc(Frequency);
+	FMemory::Memcpy(&Alloc.MappedBufferMemory[DstSlot * Alloc.Region.stride], &SrcHandleData[SrcHandleIndex * HandleSize], HandleSize);
+}
+
+void FVulkanRayTracingShaderTable::SetLocalShaderParameters(EShaderFrequency Frequency, uint32 RecordIndex, uint32 OffsetWithinRecord, const void* InData, uint32 InDataSize)
+{
+	FVulkanShaderTableAllocation& Alloc = GetAlloc(Frequency);
+
+	checkfSlow(OffsetWithinRecord % 4 == 0, TEXT("SBT record parameters must be written on DWORD-aligned boundary"));
+	checkfSlow(InDataSize % 4 == 0, TEXT("SBT record parameters must be DWORD-aligned"));
+	checkf(OffsetWithinRecord + InDataSize <= Alloc.Region.size, TEXT("SBT record write request is out of bounds"));
+
+	const uint32 WriteOffset = HandleSizeAligned + (Alloc.Region.stride * RecordIndex) + OffsetWithinRecord;
+	FMemory::Memcpy(Alloc.MappedBufferMemory + WriteOffset, InData, InDataSize);
+}
+
+FVulkanRayTracingShaderTable* FVulkanRayTracingScene::FindOrCreateShaderTable(const FVulkanRayTracingPipelineState* Pipeline)
+{
+	// Find existing table
+	{
+		FVulkanRayTracingShaderTable* const* FoundShaderTable = ShaderTables.Find(Pipeline);
+		if (FoundShaderTable)
+		{
+			return *FoundShaderTable;
+		}
+	}
+
+	// Create new table
+	FVulkanRayTracingShaderTable* CreatedShaderTable = new FVulkanRayTracingShaderTable(Device);
+	CreatedShaderTable->Init(this, Pipeline);
+	ShaderTables.Add(Pipeline, CreatedShaderTable);
+	return CreatedShaderTable;
 }
 
 void FVulkanDynamicRHI::RHITransferRayTracingGeometryUnderlyingResource(FRHIRayTracingGeometry* DestGeometry, FRHIRayTracingGeometry* SrcGeometry)
@@ -784,9 +1046,14 @@ FRayTracingSceneRHIRef FVulkanDynamicRHI::RHICreateRayTracingScene(FRayTracingSc
 	return new FVulkanRayTracingScene(MoveTemp(Initializer), GetDevice());
 }
 
-FRayTracingGeometryRHIRef FVulkanDynamicRHI::RHICreateRayTracingGeometry(const FRayTracingGeometryInitializer& Initializer)
+FRayTracingGeometryRHIRef FVulkanDynamicRHI::RHICreateRayTracingGeometry(FRHICommandListBase& RHICmdList, const FRayTracingGeometryInitializer& Initializer)
 {
-	return new FVulkanRayTracingGeometry(Initializer, GetDevice());
+	return new FVulkanRayTracingGeometry(RHICmdList, Initializer, GetDevice());
+}
+
+FRayTracingPipelineStateRHIRef FVulkanDynamicRHI::RHICreateRayTracingPipelineState(const FRayTracingPipelineStateInitializer& Initializer)
+{
+	return new FVulkanRayTracingPipelineState(GetDevice(), Initializer);
 }
 
 void FVulkanCommandListContext::RHIClearRayTracingBindings(FRHIRayTracingScene* Scene)
@@ -851,6 +1118,15 @@ void FVulkanCommandListContext::RHIBuildAccelerationStructures(const TArrayView<
 		FVulkanRayTracingGeometry* const Geometry = ResourceCast(P.Geometry.GetReference());
 		const bool bIsUpdate = P.BuildMode == EAccelerationStructureBuildMode::Update;
 
+		if (bIsUpdate)
+		{
+			INC_DWORD_STAT(STAT_VulkanRayTracingUpdatedBLAS);
+		}
+		else
+		{
+			INC_DWORD_STAT(STAT_VulkanRayTracingBuiltBLAS);
+		}
+
 		uint64 ScratchBufferRequiredSize = bIsUpdate ? Geometry->SizeInfo.UpdateScratchSize : Geometry->SizeInfo.BuildScratchSize;
 		checkf(ScratchBufferRequiredSize + ScratchBufferOffset <= ScratchBufferSize,
 			TEXT("BLAS scratch buffer size is %ld bytes with offset %ld (%ld bytes available), but the build requires %lld bytes. "),
@@ -886,6 +1162,8 @@ void FVulkanCommandListContext::RHIBuildAccelerationStructures(const TArrayView<
 
 		BuildGeometryInfos.Add(BuildData.GeometryInfo);
 		BuildRangeInfos.Add(pBuildRanges);
+
+		Geometry->SetupHitGroupSystemParameters();
 	}
 	
 	FVulkanCmdBuffer* const CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
@@ -940,63 +1218,35 @@ void FVulkanDevice::CleanUpRayTracing()
 {
 }
 
-static uint32 GetAlignedSize(uint32 Value, uint32 Alignment)
-{
-	return (Value + Alignment - 1) & ~(Alignment - 1);
-}
 
 FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* const InDevice, const FRayTracingPipelineStateInitializer& Initializer)
-{	
-	check(Layout == nullptr);
+	: FDeviceChild(InDevice)
+{
+	checkf(InDevice->SupportsBindless(), TEXT("Vulkan ray tracing pipelines are only supported in bindless."));
 
 	TArrayView<FRHIRayTracingShader*> InitializerRayGenShaders = Initializer.GetRayGenTable();
 	TArrayView<FRHIRayTracingShader*> InitializerMissShaders = Initializer.GetMissTable();
 	TArrayView<FRHIRayTracingShader*> InitializerHitGroupShaders = Initializer.GetHitGroupTable();
-	// vkrt todo: Callable shader support
-
-	FVulkanDescriptorSetsLayoutInfo DescriptorSetLayoutInfo;
-	FUniformBufferGatherInfo UBGatherInfo;
-	
-	for (FRHIRayTracingShader* RayGenShader : InitializerRayGenShaders)
-	{
-		const FVulkanShaderHeader& Header = static_cast<FVulkanRayGenShader*>(RayGenShader)->GetCodeHeader();
-		DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_RAYGEN_BIT_KHR, ShaderStage::RayGen, Header, UBGatherInfo);
-	}
-
-	for (FRHIRayTracingShader* MissShader : InitializerMissShaders)
-	{
-		const FVulkanShaderHeader& Header = static_cast<FVulkanRayMissShader*>(MissShader)->GetCodeHeader();
-		DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_MISS_BIT_KHR, ShaderStage::RayMiss, Header, UBGatherInfo);
-	}
-
-	for (FRHIRayTracingShader* HitGroupShader : InitializerHitGroupShaders)
-	{
-		const FVulkanShaderHeader& Header = static_cast<FVulkanRayHitGroupShader*>(HitGroupShader)->GetCodeHeader();
-		DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, ShaderStage::RayHitGroup, Header, UBGatherInfo);
-		// vkrt todo: How to handle any hit for hit group?
-	}
-
-	DescriptorSetLayoutInfo.FinalizeBindings<false>(*InDevice, UBGatherInfo, TArrayView<FRHISamplerState*>());
-
-	Layout = new FVulkanRayTracingLayout(InDevice);
-	Layout->DescriptorSetLayout.CopyFrom(DescriptorSetLayoutInfo);
-	FVulkanDescriptorSetLayoutMap DSetLayoutMap;
-	Layout->Compile(DSetLayoutMap);
+	TArrayView<FRHIRayTracingShader*> InitializerCallableShaders = Initializer.GetCallableTable();
 
 	TArray<VkPipelineShaderStageCreateInfo> ShaderStages;
 	TArray<VkRayTracingShaderGroupCreateInfoKHR> ShaderGroups;
 	TArray<ANSICHAR*> EntryPointNames;
 	const uint32 EntryPointNameMaxLength = 24;
 
+	RayGen.Shaders.Reserve(InitializerRayGenShaders.Num());
 	for (FRHIRayTracingShader* const RayGenShaderRHI : InitializerRayGenShaders)
 	{
+		checkSlow(RayGenShaderRHI->GetFrequency() == SF_RayGen);
+		FVulkanRayTracingShader* const RayGenShader = ResourceCast(RayGenShaderRHI);
+
 		VkPipelineShaderStageCreateInfo ShaderStage;
 		ZeroVulkanStruct(ShaderStage, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
-		ShaderStage.module = static_cast<FVulkanRayGenShader*>(RayGenShaderRHI)->GetOrCreateHandle(Layout, Layout->GetDescriptorSetLayoutHash())->GetVkShaderModule();
+		ShaderStage.module = RayGenShader->GetOrCreateHandle()->GetVkShaderModule();
 		ShaderStage.stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 			
 		ANSICHAR* const EntryPoint = new ANSICHAR[EntryPointNameMaxLength];
-		static_cast<FVulkanRayGenShader*>(RayGenShaderRHI)->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
+		RayGenShader->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
 		EntryPointNames.Add(EntryPoint);
 		ShaderStage.pName = EntryPoint;
 		ShaderStages.Add(ShaderStage);
@@ -1009,17 +1259,23 @@ FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* co
 		ShaderGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
 		ShaderGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
 		ShaderGroups.Add(ShaderGroup);
+
+		RayGen.Shaders.Add(RayGenShader);
 	}
 
+	Miss.Shaders.Reserve(InitializerMissShaders.Num());
 	for (FRHIRayTracingShader* const MissShaderRHI : InitializerMissShaders)
 	{
+		checkSlow(MissShaderRHI->GetFrequency() == SF_RayMiss);
+		FVulkanRayTracingShader* const MissShader = ResourceCast(MissShaderRHI);
+
 		VkPipelineShaderStageCreateInfo ShaderStage;
 		ZeroVulkanStruct(ShaderStage, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
-		ShaderStage.module = static_cast<FVulkanRayMissShader*>(MissShaderRHI)->GetOrCreateHandle(Layout, Layout->GetDescriptorSetLayoutHash())->GetVkShaderModule();
+		ShaderStage.module = MissShader->GetOrCreateHandle()->GetVkShaderModule();
 		ShaderStage.stage = VK_SHADER_STAGE_MISS_BIT_KHR;
 
 		ANSICHAR* const EntryPoint = new char[EntryPointNameMaxLength];
-		static_cast<FVulkanRayGenShader*>(MissShaderRHI)->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
+		MissShader->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
 		EntryPointNames.Add(EntryPoint);
 		ShaderStage.pName = EntryPoint;
 		ShaderStages.Add(ShaderStage);
@@ -1032,17 +1288,23 @@ FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* co
 		ShaderGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
 		ShaderGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
 		ShaderGroups.Add(ShaderGroup);
+
+		Miss.Shaders.Add(MissShader);
 	}
 
+	HitGroup.Shaders.Reserve(InitializerHitGroupShaders.Num());
 	for (FRHIRayTracingShader* const HitGroupShaderRHI : InitializerHitGroupShaders)
 	{
+		checkSlow(HitGroupShaderRHI->GetFrequency() == SF_RayHitGroup);
+		FVulkanRayTracingShader* const HitGroupShader = ResourceCast(HitGroupShaderRHI);
+
 		VkPipelineShaderStageCreateInfo ShaderStage;
 		ZeroVulkanStruct(ShaderStage, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
-		ShaderStage.module = static_cast<FVulkanRayHitGroupShader*>(HitGroupShaderRHI)->GetOrCreateHandle(Layout, Layout->GetDescriptorSetLayoutHash())->GetVkShaderModule();
+		ShaderStage.module = HitGroupShader->GetOrCreateHandle()->GetVkShaderModule();
 		ShaderStage.stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
 		ANSICHAR* const EntryPoint = new char[EntryPointNameMaxLength];
-		static_cast<FVulkanRayHitGroupShader*>(HitGroupShaderRHI)->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
+		HitGroupShader->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
 		EntryPointNames.Add(EntryPoint);
 		ShaderStage.pName = EntryPoint;
 		ShaderStages.Add(ShaderStage);
@@ -1055,6 +1317,37 @@ FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* co
 		ShaderGroup.anyHitShader = VK_SHADER_UNUSED_KHR; // vkrt: todo
 		ShaderGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
 		ShaderGroups.Add(ShaderGroup);
+
+		HitGroup.Shaders.Add(HitGroupShader);
+	}
+
+	Callable.Shaders.Reserve(InitializerCallableShaders.Num());
+	for (FRHIRayTracingShader* const CallableShaderRHI : InitializerCallableShaders)
+	{
+		checkSlow(CallableShaderRHI->GetFrequency() == SF_RayCallable);
+		FVulkanRayTracingShader* const CallableShader = ResourceCast(CallableShaderRHI);
+
+		VkPipelineShaderStageCreateInfo ShaderStage;
+		ZeroVulkanStruct(ShaderStage, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+		ShaderStage.module = CallableShader->GetOrCreateHandle()->GetVkShaderModule();
+		ShaderStage.stage = VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+
+		ANSICHAR* const EntryPoint = new char[EntryPointNameMaxLength];
+		CallableShader->GetEntryPoint(EntryPoint, EntryPointNameMaxLength);
+		EntryPointNames.Add(EntryPoint);
+		ShaderStage.pName = EntryPoint;
+		ShaderStages.Add(ShaderStage);
+
+		VkRayTracingShaderGroupCreateInfoKHR ShaderGroup;
+		ZeroVulkanStruct(ShaderGroup, VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR);
+		ShaderGroup.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+		ShaderGroup.generalShader = ShaderStages.Num() - 1;
+		ShaderGroup.closestHitShader = VK_SHADER_UNUSED_KHR;
+		ShaderGroup.anyHitShader = VK_SHADER_UNUSED_KHR;
+		ShaderGroup.intersectionShader = VK_SHADER_UNUSED_KHR;
+		ShaderGroups.Add(ShaderGroup);
+
+		Callable.Shaders.Add(CallableShader);
 	}
 
 	VkRayTracingPipelineCreateInfoKHR RayTracingPipelineCreateInfo;
@@ -1064,7 +1357,8 @@ FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* co
 	RayTracingPipelineCreateInfo.groupCount = ShaderGroups.Num();
 	RayTracingPipelineCreateInfo.pGroups = ShaderGroups.GetData();
 	RayTracingPipelineCreateInfo.maxPipelineRayRecursionDepth = 1;
-	RayTracingPipelineCreateInfo.layout = Layout->GetPipelineLayout();
+	RayTracingPipelineCreateInfo.layout = InDevice->GetBindlessDescriptorManager()->GetPipelineLayout();
+	RayTracingPipelineCreateInfo.flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 	
 	VERIFYVULKANRESULT(VulkanDynamicAPI::vkCreateRayTracingPipelinesKHR(
 		InDevice->GetInstanceHandle(), 
@@ -1080,49 +1374,98 @@ FVulkanRayTracingPipelineState::FVulkanRayTracingPipelineState(FVulkanDevice* co
 		delete[] EntryPoint;
 	}
 
-	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& RayTracingPipelineProps = InDevice->GetOptionalExtensionProperties().RayTracingPipelineProps;
-	const uint32 HandleSize = RayTracingPipelineProps.shaderGroupHandleSize;
-	const uint32 HandleSizeAligned = GetAlignedSize(HandleSize, RayTracingPipelineProps.shaderGroupHandleAlignment);
-	const uint32 GroupCount = ShaderGroups.Num();
-	const uint32 SBTSize = GroupCount * HandleSizeAligned;
-
-	TArray<uint8> ShaderHandleStorage;
-	ShaderHandleStorage.AddUninitialized(SBTSize);
-	VERIFYVULKANRESULT(VulkanDynamicAPI::vkGetRayTracingShaderGroupHandlesKHR(InDevice->GetInstanceHandle(), Pipeline, 0, GroupCount, SBTSize, ShaderHandleStorage.GetData()));
-
-	auto CopyHandlesToSBT = [InDevice, HandleSize, ShaderHandleStorage](FVkRtAllocation& Allocation, uint32 Offset)
+	// Grab all shader handles for each stage
 	{
-		FVulkanRayTracingAllocator::Allocate(
-			InDevice,
-			HandleSize,
-			VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			Allocation);
+		const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& RayTracingPipelineProps = InDevice->GetOptionalExtensionProperties().RayTracingPipelineProps;
+		const uint32 HandleSize = RayTracingPipelineProps.shaderGroupHandleSize;
 
-		void* pMappedBufferMemory = nullptr;
-		VERIFYVULKANRESULT(VulkanRHI::vkMapMemory(InDevice->GetInstanceHandle(), Allocation.Memory, 0, VK_WHOLE_SIZE, 0, &pMappedBufferMemory));
+		uint32 HandleOffset = 0;
+		auto FetchShaderHandles = [&HandleOffset, HandleSize, InDevice](VkPipeline RTPipeline, uint32 HandleCount) 
 		{
-			FMemory::Memcpy(pMappedBufferMemory, ShaderHandleStorage.GetData() + Offset, HandleSize);
-		}
-		VulkanRHI::vkUnmapMemory(InDevice->GetInstanceHandle(), Allocation.Memory);
-	};
+			TArray<uint8> OutHandleStorage;
 
-	CopyHandlesToSBT(RayGenShaderBindingTable, 0);
-	CopyHandlesToSBT(MissShaderBindingTable, HandleSizeAligned);
-	CopyHandlesToSBT(HitShaderBindingTable, HandleSizeAligned * 2);
+			if (HandleCount)
+			{
+				const uint32 ShaderHandleStorageSize = HandleCount * HandleSize;
+				OutHandleStorage.AddUninitialized(ShaderHandleStorageSize);
+
+				VERIFYVULKANRESULT(VulkanDynamicAPI::vkGetRayTracingShaderGroupHandlesKHR(InDevice->GetInstanceHandle(), RTPipeline, HandleOffset, HandleCount, ShaderHandleStorageSize, OutHandleStorage.GetData()));
+
+				HandleOffset += HandleCount;
+			}
+
+			return OutHandleStorage;
+		};
+
+		// NOTE: Must be filled in the same order as created above
+		RayGen.ShaderHandles = FetchShaderHandles(Pipeline, InitializerRayGenShaders.Num());
+		Miss.ShaderHandles = FetchShaderHandles(Pipeline, InitializerMissShaders.Num());
+		HitGroup.ShaderHandles = FetchShaderHandles(Pipeline, InitializerHitGroupShaders.Num());
+		Callable.ShaderHandles = FetchShaderHandles(Pipeline, InitializerCallableShaders.Num());
+	}
+
+	// If no custom hit groups were provided, then disable SBT indexing and force default shader on all primitives
+	bAllowHitGroupIndexing = Initializer.GetHitGroupTable().Num() ? Initializer.bAllowHitGroupIndexing : false;
+
+	INC_DWORD_STAT(STAT_VulkanRayTracingCreatedPipelines);
+	INC_DWORD_STAT_BY(STAT_VulkanRayTracingCompiledShaders, 1);
 }
 
 FVulkanRayTracingPipelineState::~FVulkanRayTracingPipelineState()
 {
-	FVulkanRayTracingAllocator::Free(RayGenShaderBindingTable);
-	FVulkanRayTracingAllocator::Free(MissShaderBindingTable);
-	FVulkanRayTracingAllocator::Free(HitShaderBindingTable);
-
-	if (Layout != nullptr)
+	if (Pipeline != VK_NULL_HANDLE)
 	{
-		delete Layout;
-		Layout = nullptr;
+		VulkanRHI::vkDestroyPipeline(Device->GetInstanceHandle(), Pipeline, VULKAN_CPU_ALLOCATOR);
+		Pipeline = VK_NULL_HANDLE;
 	}
+}
+
+const FVulkanRayTracingPipelineState::ShaderData& FVulkanRayTracingPipelineState::GetShaderData(EShaderFrequency Frequency) const
+{
+	switch (Frequency)
+	{
+	case SF_RayGen:
+		return RayGen;
+	case SF_RayMiss:
+		return Miss;
+	case SF_RayHitGroup:
+		return HitGroup;
+	case SF_RayCallable:
+		return Callable;
+
+	default:
+		checkf(false, TEXT("Only usable with RayTracing shaders."));
+	};
+
+	static ShaderData EmptyShaderData;
+	return EmptyShaderData;
+}
+
+int32 FVulkanRayTracingPipelineState::GetShaderIndex(const FVulkanRayTracingShader* Shader) const
+{
+	const FSHAHash Hash = Shader->GetHash();
+
+	const TArray<TRefCountPtr<FVulkanRayTracingShader>>& ShaderArray = GetShaderData(Shader->GetFrequency()).Shaders;
+	for (int32 Index = 0; Index < ShaderArray.Num(); ++Index)
+	{
+		if (Hash == ShaderArray[Index]->GetHash())
+		{
+			return Index;
+		}
+	}
+
+	checkf(false, TEXT("RayTracing shader is not present in the given ray tracing pipeline. "));
+	return INDEX_NONE;
+}
+
+const FVulkanRayTracingShader* FVulkanRayTracingPipelineState::GetShader(EShaderFrequency Frequency, int32 ShaderIndex) const
+{
+	return GetShaderData(Frequency).Shaders[ShaderIndex].GetReference();
+}
+
+const TArray<uint8>& FVulkanRayTracingPipelineState::GetShaderHandles(EShaderFrequency Frequency) const
+{
+	return GetShaderData(Frequency).ShaderHandles;
 }
 
 void FVulkanRayTracingCompactedSizeQueryPool::EndBatch(FVulkanCmdBuffer* InCmdBuffer)
@@ -1269,6 +1612,139 @@ void FVulkanRayTracingCompactionRequestHandler::Update(FVulkanCommandListContext
 
 		QueryPool->EndBatch(CmdBuffer);
 	}
+}
+
+
+
+
+FVulkanBindlessDescriptorManager::FUniformBufferDescriptorArrays GetStageUBs(FVulkanDevice* Device, const FRayTracingShaderBindings& InGlobalResourceBindings)
+{
+	FVulkanBindlessDescriptorManager::FUniformBufferDescriptorArrays StageUBs;
+	for (uint32 UBIndex = 0; UBIndex < 16; ++UBIndex)
+	{
+		const FVulkanUniformBuffer* UniformBuffer = ResourceCast(InGlobalResourceBindings.UniformBuffers[UBIndex]);
+		if (UniformBuffer)
+		{
+			VkDescriptorAddressInfoEXT& DescriptorAddressInfo = StageUBs[ShaderStage::EStage::RayGen].AddZeroed_GetRef();
+			DescriptorAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+			DescriptorAddressInfo.address = UniformBuffer->GetDeviceAddress();
+			DescriptorAddressInfo.range = UniformBuffer->GetSize();
+		}
+		else
+		{
+			break;
+		}
+	}
+	return StageUBs;
+}
+
+
+void FVulkanCommandListContext::RHIRayTraceDispatch(
+	FRHIRayTracingPipelineState* InRayTracingPipelineState, 
+	FRHIRayTracingShader* InRayGenShader,
+	FRHIRayTracingScene* InScene,
+	const FRayTracingShaderBindings& InGlobalResourceBindings, // :todo-jn:
+	uint32 InWidth, uint32 InHeight)
+{
+	const FVulkanRayTracingPipelineState* Pipeline = ResourceCast(InRayTracingPipelineState);
+	FVulkanRayTracingScene* Scene = ResourceCast(InScene);
+	FVulkanRayTracingShader* RayGenShader = ResourceCast(InRayGenShader);
+	FVulkanRayTracingShaderTable* ShaderTable = Scene->FindOrCreateShaderTable(Pipeline);
+
+	FVulkanCmdBuffer* const CmdBuffer = GetCommandBufferManager()->GetActiveCmdBuffer();
+	VulkanRHI::vkCmdBindPipeline(CmdBuffer->GetHandle(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, Pipeline->GetPipeline());
+
+	// :todo-jn: set real uniform buffers, check for gaps, process all stages
+	FVulkanBindlessDescriptorManager::FUniformBufferDescriptorArrays StageUBs = GetStageUBs(Device, InGlobalResourceBindings);
+	Device->GetBindlessDescriptorManager()->RegisterUniformBuffers(CmdBuffer->GetHandle(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, StageUBs);
+
+	ShaderTable->SetSlot(InRayGenShader->GetFrequency(), 0, Pipeline->GetShaderIndex(RayGenShader), Pipeline->GetShaderHandles(SF_RayGen));
+
+	VulkanRHI::vkCmdTraceRaysKHR(
+		CmdBuffer->GetHandle(),
+		ShaderTable->GetRegion(SF_RayGen),
+		ShaderTable->GetRegion(SF_RayMiss),
+		ShaderTable->GetRegion(SF_RayHitGroup),
+		ShaderTable->GetRegion(SF_RayCallable),
+		InWidth, InHeight, 1);
+}
+
+void FVulkanCommandListContext::RHIRayTraceDispatchIndirect(
+	FRHIRayTracingPipelineState* InRayTracingPipelineState, 
+	FRHIRayTracingShader* InRayGenShader,
+	FRHIRayTracingScene* InScene,
+	const FRayTracingShaderBindings& InGlobalResourceBindings, // :todo-jn:
+	FRHIBuffer* InArgumentBuffer, uint32 InArgumentOffset)
+{
+	checkf(GRHISupportsRayTracingDispatchIndirect, TEXT("RHIRayTraceDispatchIndirect may not be used because it is not supported on this machine."));
+
+	const FVulkanRayTracingPipelineState* Pipeline = ResourceCast(InRayTracingPipelineState);
+	FVulkanRayTracingScene* Scene = ResourceCast(InScene);
+	FVulkanRayTracingShader* RayGenShader = ResourceCast(InRayGenShader);
+	FVulkanRayTracingShaderTable* ShaderTable = Scene->FindOrCreateShaderTable(Pipeline);
+
+	FVulkanCmdBuffer* const CmdBuffer = GetCommandBufferManager()->GetActiveCmdBuffer();
+	VulkanRHI::vkCmdBindPipeline(CmdBuffer->GetHandle(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, Pipeline->GetPipeline());
+
+	// :todo-jn: set real uniform buffers
+	FVulkanBindlessDescriptorManager::FUniformBufferDescriptorArrays StageUBs = GetStageUBs(Device, InGlobalResourceBindings);
+	Device->GetBindlessDescriptorManager()->RegisterUniformBuffers(CmdBuffer->GetHandle(), VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, StageUBs);
+
+	FVulkanResourceMultiBuffer* ArgumentBuffer = ResourceCast(InArgumentBuffer);
+	const VkDeviceAddress IndirectDeviceAddress = ArgumentBuffer->GetDeviceAddress() + InArgumentOffset;
+
+	ShaderTable->SetSlot(InRayGenShader->GetFrequency(), 0, Pipeline->GetShaderIndex(RayGenShader), Pipeline->GetShaderHandles(SF_RayGen));
+
+	VulkanRHI::vkCmdTraceRaysIndirectKHR(
+		CmdBuffer->GetHandle(),
+		ShaderTable->GetRegion(SF_RayGen),
+		ShaderTable->GetRegion(SF_RayMiss),
+		ShaderTable->GetRegion(SF_RayHitGroup),
+		ShaderTable->GetRegion(SF_RayCallable),
+		IndirectDeviceAddress);
+}
+
+void FVulkanCommandListContext::RHISetRayTracingHitGroup(
+	FRHIRayTracingScene* InScene, uint32 InstanceIndex, uint32 SegmentIndex, uint32 ShaderSlot,
+	FRHIRayTracingPipelineState* InPipeline, uint32 HitGroupIndex,
+	uint32 NumUniformBuffers, FRHIUniformBuffer* const* UniformBuffers,
+	uint32 LooseParameterDataSize, const void* LooseParameterData,
+	uint32 UserData)
+{
+	checkNoEntry();
+}
+
+void FVulkanCommandListContext::RHISetRayTracingCallableShader(
+	FRHIRayTracingScene* InScene, uint32 ShaderSlotInScene,
+	FRHIRayTracingPipelineState* InPipeline, uint32 ShaderIndexInPipeline,
+	uint32 NumUniformBuffers, FRHIUniformBuffer* const* UniformBuffers,
+	uint32 UserData)
+{
+	checkNoEntry();
+}
+
+void FVulkanCommandListContext::RHISetRayTracingMissShader(
+	FRHIRayTracingScene* InScene, uint32 ShaderSlotInScene,
+	FRHIRayTracingPipelineState* InPipeline, uint32 ShaderIndexInPipeline,
+	uint32 NumUniformBuffers, FRHIUniformBuffer* const* UniformBuffers,
+	uint32 UserData)
+{
+	checkNoEntry();
+}
+
+
+void FVulkanCommandListContext::RHISetRayTracingBindings(
+	FRHIRayTracingScene* InScene, FRHIRayTracingPipelineState* InPipeline,
+	uint32 NumBindings, const FRayTracingLocalShaderBindings* Bindings,
+	ERayTracingBindingType BindingType)
+{
+	FVulkanRayTracingScene* Scene = ResourceCast(InScene);
+	FVulkanRayTracingPipelineState* Pipeline = ResourceCast(InPipeline);
+	FVulkanRayTracingShaderTable* ShaderTable = Scene->FindOrCreateShaderTable(Pipeline);
+
+	checkf(Scene->IsBuilt(), TEXT("Ray tracing scene must be built before any shaders can be bound to it. Make sure that RHIBuildAccelerationStructure() command has been executed."));
+
+	checkNoEntry();
 }
 
 #endif // VULKAN_RHI_RAYTRACING

@@ -11,7 +11,6 @@ class IStageMonitorSession;
 
 using FDataProviderTableRowDataPtr = TSharedPtr<FDataProviderTableRowData>;
 
-
 /**
  *
  */
@@ -22,14 +21,11 @@ class SDataProviderTableRow : public SMultiColumnTableRow<FDataProviderTableRowD
 public:
 	SLATE_BEGIN_ARGS(SDataProviderTableRow) { }
 		SLATE_ARGUMENT(FDataProviderTableRowDataPtr, Item)
+		SLATE_ARGUMENT(float, Padding)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& Args, const TSharedRef<STableViewBase>& OwerTableView);
 
-private:
-
-	/** Handles creation of each columns widget */
-	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override;
 
 	/** Getters to populate the UI */
 	FText GetStateGlyphs() const;
@@ -42,13 +38,21 @@ private:
 	FText GetStageName() const;
 	FText GetRoles() const;
 	FText GetAverageFPS() const;
+	FText GetEstimatedMaxFPS() const;
 	FText GetIdleTime() const;
 	FText GetGameThreadTiming() const;
+	FText GetGameThreadWaitTiming() const;
 	FText GetRenderThreadTiming() const;
+	FText GetRenderThreadWaitTiming() const;
 	FText GetGPUTiming() const;
-	FText GetShadersLeftToCompile() const;
+	FText GetGPUMem() const;
+	FText GetCPUMem() const;
+	FText GetAssetsLeftToCompile() const;
+	FText GetToolTipText() const;
 
 private:
+	/** Handles creation of each columns widget */
+	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override;
 
 	/** Item to display */
 	FDataProviderTableRowDataPtr Item;
@@ -105,6 +109,9 @@ private:
 
 private:
 
+	/** Set the default column visibility state. */
+	void SetDefaultColumnVisibilities();
+
 	/** Widget and data containing info about what's shown in the listview */
 	TArray<FDataProviderTableRowDataPtr> ListItemsSource;
 	TArray<TWeakPtr<SDataProviderTableRow>> ListRowWidgets;
@@ -126,5 +133,8 @@ private:
 
 	/** Cache of stringified roles to array of roles to avoid parsing into array constantly */
 	TMap<FString, TArray<FString>> CachedRoleStringToArray;
+
+	/** Boolean guard to prevent reentrant updates to the column visibility state. */
+	bool bUpdatingColumnVisibility = false;
 };
 

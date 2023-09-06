@@ -16,6 +16,7 @@
 #include "Particles/ParticlePerfStatsManager.h"
 #include "NiagaraPerfBaseline.h"
 
+class FNiagaraSystemViewModel;
 class UNiagaraComponent;
 class FNiagaraSystemEditorViewportClient;
 class FNiagaraSystemInstance;
@@ -36,7 +37,7 @@ public:
 		SLATE_ARGUMENT(TWeakPtr<ISequencer>, Sequencer)
 	SLATE_END_ARGS()
 	
-	void Construct(const FArguments& InArgs);
+	void Construct(const FArguments& InArgs, TSharedRef<FNiagaraSystemViewModel> InSystemViewModel);
 	~SNiagaraSystemViewport();
 	
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
@@ -53,14 +54,12 @@ public:
 	
 	void ToggleRealtime();
 	
-	/** @return The list of commands known by the niagara editor */
-	TSharedRef<FUICommandList> GetNiagaraSystemEditorCommands() const;
-	
 	/** If true, render background object in the preview scene. */
 	bool bShowBackground;
 
 	TSharedRef<class FAdvancedPreviewScene> GetPreviewScene() { return AdvancedPreviewScene.ToSharedRef(); }
-
+	TWeakPtr<FNiagaraSystemViewModel> GetSystemViewModel() { return SystemViewModel; }
+	
 	/** The material editor has been added to a tab */
 	void OnAddedToTab( const TSharedRef<SDockTab>& OwnerTab );
 	
@@ -80,22 +79,32 @@ public:
 	/** Draw flag types */
 	enum EDrawElements
 	{
-		Bounds = 0x020,
-		InstructionCounts = 0x040,
-		ParticleCounts = 0x080,
-		EmitterExecutionOrder = 0x100,
-		GpuTickInformation = 0x200,
+		Bounds					= 0x020,
+		InstructionCounts		= 0x040,
+		ParticleCounts			= 0x080,
+		EmitterExecutionOrder	= 0x100,
+		GpuTickInformation		= 0x200,
+		MemoryInfo				= 0x400,
 	};
 
 	bool GetDrawElement(EDrawElements Element) const;
 	void ToggleDrawElement(EDrawElements Element);
 	void CreateThumbnail(UObject* InScreenShotOwner);
 
-
 	bool IsToggleOrbitChecked() const;
 	void ToggleOrbit();
 
-protected:
+	bool IsMotionEnabled() const;
+	void ToggleMotion();
+
+	float GetMotionRate() const { return MotionRate; }
+	void SetMotionRate(float Rate) { MotionRate = Rate; }
+
+	float GetMotionRadius() const { return MotionRadius; }
+	void SetMotionRadius(float Radius) { MotionRadius = Radius; }
+
+
+protected:	
 	/** SEditorViewport interface */
 	virtual TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override;
 	virtual TSharedPtr<SWidget> MakeViewportToolbar() override;
@@ -107,7 +116,6 @@ protected:
 
 private:
 	bool IsVisible() const override;
-
 	void OnScreenShotCaptured(UTexture2D* ScreenShot);
 
 private:
@@ -115,6 +123,8 @@ private:
 	TWeakPtr<SDockTab> ParentTab;
 
 	TWeakPtr<ISequencer> Sequencer = nullptr;
+
+	TWeakPtr<FNiagaraSystemViewModel> SystemViewModel;
 	
 	/** Preview Scene - uses advanced preview settings */
 	TSharedPtr<class FAdvancedPreviewScene> AdvancedPreviewScene;
@@ -124,7 +134,7 @@ private:
 	/** Pointer back to the material editor tool that owns us */
 	//TWeakPtr<INiagaraSystemEditor> SystemEditorPtr;
 	
-	class UNiagaraComponent* PreviewComponent;
+	TObjectPtr<class UNiagaraComponent> PreviewComponent;
 	
 	/** Level viewport client */
 	TSharedPtr<class FNiagaraSystemViewportClient> SystemViewportClient;
@@ -138,6 +148,11 @@ private:
 
 	/** True if orbit mode was active before we started a view transition. Used to restore orbit mode at the the end of the transition */
 	bool bShouldActivateOrbitAfterTransitioning = false;
+
+	/** Motion Parameters */
+	bool bMotionEnabled = false;
+	float MotionRate = 90.0f;
+	float MotionRadius = 200.0f;
 
 	FDelegateHandle OnPreviewFeatureLevelChangedHandle;
 };

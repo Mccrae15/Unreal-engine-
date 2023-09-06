@@ -20,27 +20,6 @@ static TAutoConsoleVariable<int32> CVarEmitMaterialPerformanceWarnings(
 namespace Nanite
 {
 
-class FNaniteFeedbackStatusCS : public FNaniteGlobalShader
-{
-	DECLARE_GLOBAL_SHADER(FNaniteFeedbackStatusCS);
-	SHADER_USE_PARAMETER_STRUCT(FNaniteFeedbackStatusCS, FNaniteGlobalShader);
-	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FQueueState>, OutQueueState)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, InMainRasterizerArgsSWHW)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, InPostRasterizerArgsSWHW)
-
-		SHADER_PARAMETER_STRUCT_INCLUDE(GPUMessage::FParameters, GPUMessageParams)
-		SHADER_PARAMETER(uint32, StatusMessageId)
-		SHADER_PARAMETER(uint32, RenderFlags)
-	END_SHADER_PARAMETER_STRUCT()
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FNaniteGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-};
-IMPLEMENT_GLOBAL_SHADER(FNaniteFeedbackStatusCS, "/Engine/Private/Nanite/NaniteClusterCulling.usf", "FeedbackStatus", SF_Compute);
-
 #if !UE_BUILD_SHIPPING
 FFeedbackManager::FFeedbackManager()
 {
@@ -162,50 +141,30 @@ bool FFeedbackManager::FBufferState::Update(const uint32 Peak, const uint32 Capa
 	return bNewHighWaterMark;
 }
 
-void FFeedbackManager::Update(FRDGBuilder& GraphBuilder, const FSharedContext& SharedContext, FCullingContext& CullingContext)
-{
-	FNaniteFeedbackStatusCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FNaniteFeedbackStatusCS::FParameters>();
-	PassParameters->OutQueueState = GraphBuilder.CreateUAV(CullingContext.QueueState);
-	PassParameters->InMainRasterizerArgsSWHW = GraphBuilder.CreateSRV(CullingContext.MainRasterizeArgsSWHW);
-	PassParameters->InPostRasterizerArgsSWHW = GraphBuilder.CreateSRV(CullingContext.Configuration.bTwoPassOcclusion ? CullingContext.PostRasterizeArgsSWHW : CullingContext.MainRasterizeArgsSWHW);	// Avoid permutation by doing Post=Main for single pass
-	PassParameters->GPUMessageParams = GPUMessage::GetShaderParameters(GraphBuilder);
-	PassParameters->StatusMessageId = StatusFeedbackSocket.GetMessageId().GetIndex();
-	PassParameters->RenderFlags = CullingContext.RenderFlags;
-
-	auto ComputeShader = SharedContext.ShaderMap->GetShader<FNaniteFeedbackStatusCS>();
-
-	FComputeShaderUtils::AddPass(
-		GraphBuilder,
-		RDG_EVENT_NAME("NaniteFeedbackStatus"),
-		ComputeShader,
-		PassParameters,
-		FIntVector(1, 1, 1)
-	);
-}
-
-
 void FFeedbackManager::ReportMaterialPerformanceWarning(const FString &MaterialName)
 {
-	if (CVarEmitMaterialPerformanceWarnings.GetValueOnRenderThread() != 0)
+	bool bShouldLogNow = false;
 	{
-		bool bShouldLogNow = false;
-		{
-			FScopeLock Lock(&DelgateCallbackCS);
-			FMaterialWarningItem& Item = MaterialWarningItems.FindOrAdd(MaterialName);
-			const double CurrentTime = FPlatformTime::Seconds();
-			bShouldLogNow = CurrentTime - Item.LastTimeLogged > 5.0f;
-			Item.LastTimeSeen = CurrentTime;
-			if (bShouldLogNow)
-			{
-				Item.LastTimeLogged = CurrentTime;
-			}
-		}
-		// Keep logging outside critical section
+		FScopeLock Lock(&DelgateCallbackCS);
+		FMaterialWarningItem& Item = MaterialWarningItems.FindOrAdd(MaterialName);
+		const double CurrentTime = FPlatformTime::Seconds();
+		bShouldLogNow = CurrentTime - Item.LastTimeLogged > 5.0f;
+		Item.LastTimeSeen = CurrentTime;
 		if (bShouldLogNow)
 		{
-			UE_LOG(LogRenderer, Log, TEXT("Performance Warning: Programmable Nanite material uses PDO or is Masked, %s"), *MaterialName);
+			Item.LastTimeLogged = CurrentTime;
 		}
 	}
+	// Keep logging outside critical section
+	if (bShouldLogNow)
+	{
+		UE_LOG(LogRenderer, Log, TEXT("Performance Warning: Programmable Nanite material uses PDO or is Masked, %s"), *MaterialName);
+	}
+}
+
+bool ShouldReportFeedbackMaterialPerformanceWarning()
+{
+	return CVarEmitMaterialPerformanceWarnings.GetValueOnRenderThread() != 0;
 }
 
 

@@ -11,6 +11,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "CameraAnimationSequenceSubsystem.h"
 #include "MovieScene.h"
+#include "MovieSceneTimeHelpers.h"
 #include "MovieSceneTracksComponentTypes.h"
 #include "MovieSceneSpawnable.h"
 #include "TemplateSequence.h"
@@ -294,12 +295,17 @@ void UCameraAnimationSequencePlayer::SetBoundObjectOverride(UObject* InObject)
 	SpawnRegister.SetSpawnedObject(InObject);
 }
 
-FFrameNumber UCameraAnimationSequencePlayer::GetDuration() const
+FFrameTime UCameraAnimationSequencePlayer::GetDuration() const
 {
-	return ConvertFrameTime(DurationFrames, PlayPosition.GetOutputRate(), PlayPosition.GetInputRate()).FloorToFrame();
+	return DurationFrames;
 }
 
-void UCameraAnimationSequencePlayer::Initialize(UMovieSceneSequence* InSequence)
+FFrameTime UCameraAnimationSequencePlayer::GetCurrentPosition() const
+{
+	return PlayPosition.GetCurrentPosition();
+}
+
+void UCameraAnimationSequencePlayer::Initialize(UMovieSceneSequence* InSequence, int32 StartOffset)
 {
 	checkf(InSequence, TEXT("Invalid sequence given to player"));
 	
@@ -320,13 +326,29 @@ void UCameraAnimationSequencePlayer::Initialize(UMovieSceneSequence* InSequence)
 		PlayPosition.SetTimeBase(DisplayRate, TickResolution, EvaluationType);
 
 		const TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
-		StartFrame = UE::MovieScene::DiscreteInclusiveLower(PlaybackRange);
-		DurationFrames = PlaybackRange.Size<FFrameNumber>();
+
+		const FFrameNumber StartTick = UE::MovieScene::DiscreteInclusiveLower(PlaybackRange);
+		const FFrameTime StartTime = ConvertFrameTime(StartTick, TickResolution, DisplayRate);
+
+		const FFrameNumber EndTick = UE::MovieScene::DiscreteExclusiveUpper(PlaybackRange);
+		const FFrameTime EndTime = ConvertFrameTime(EndTick, TickResolution, DisplayRate);
+
+		// Level sequences round starting time to a frame so let's do the same.
+		if (StartOffset > 0)
+		{
+			StartFrame = StartTime.FloorToFrame() + StartOffset;
+		}
+		else
+		{
+			StartFrame = StartTime.FloorToFrame();
+		}
+
+		DurationFrames = (EndTime - StartFrame);
 	}
 	else
 	{
 		StartFrame = FFrameNumber(0);
-		DurationFrames = 0;
+		DurationFrames = FFrameTime(0);
 	}
 
 	PlayPosition.Reset(StartFrame);
@@ -347,11 +369,7 @@ void UCameraAnimationSequencePlayer::Play(bool bLoop, bool bRandomStartTime)
 	// Move the playback position randomly in our playback range if we want a random start time.
 	if (bRandomStartTime)
 	{
-		UMovieScene* MovieScene = Sequence->GetMovieScene();
-
-		const TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
-		
-		const int32 RandomStartFrameOffset = FMath::RandHelper(DurationFrames.Value);
+		const int32 RandomStartFrameOffset = FMath::RandHelper(DurationFrames.FrameNumber.Value);
 		PlayPosition.Reset(StartFrame + RandomStartFrameOffset);
 	}
 
@@ -365,7 +383,7 @@ void UCameraAnimationSequencePlayer::Play(bool bLoop, bool bRandomStartTime)
 
 void UCameraAnimationSequencePlayer::Update(FFrameTime NewPosition)
 {
-	check(Status == EMovieScenePlayerStatus::Playing || Status == EMovieScenePlayerStatus::Scrubbing);
+	check(Status == EMovieScenePlayerStatus::Playing);
 	check(RootTemplateInstance.IsValid());
 
 	bool bShouldStop = false;
@@ -378,18 +396,18 @@ void UCameraAnimationSequencePlayer::Update(FFrameTime NewPosition)
 		// Arguably we could have some cumulative animation mode running on some properties but let's call
 		// this a limitation for now.
 		//
-		while (NewPosition.FrameNumber >= StartFrame + DurationFrames)
+		while (NewPosition >= StartFrame + DurationFrames)
 		{
-			NewPosition.FrameNumber -= DurationFrames;
+			NewPosition -= DurationFrames;
 			PlayPosition.Reset(StartFrame);
 		}
 	}
 	else
 	{
 		// If we are reaching the end, update the sequence at the end time and stop.
-		if (NewPosition.FrameNumber >= StartFrame + DurationFrames)
+		if (NewPosition >= StartFrame + DurationFrames)
 		{
-			NewPosition = FFrameTime(DurationFrames);
+			NewPosition = FFrameTime(StartFrame + DurationFrames);
 			bShouldStop = true;
 		}
 	}
@@ -418,16 +436,19 @@ void UCameraAnimationSequencePlayer::Jump(FFrameTime NewPosition)
 
 void UCameraAnimationSequencePlayer::Stop()
 {
-	Status = EMovieScenePlayerStatus::Stopped;
-
-	PlayPosition.Reset(StartFrame);
-
-	if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = RootTemplateInstance.GetRunner())
+	if (Status != EMovieScenePlayerStatus::Stopped)
 	{
-		if (Runner->QueueFinalUpdate(RootTemplateInstance.GetRootInstanceHandle()))
+		Status = EMovieScenePlayerStatus::Stopped;
+
+		PlayPosition.Reset(StartFrame);
+
+		if (TSharedPtr<FMovieSceneEntitySystemRunner> Runner = RootTemplateInstance.GetRunner())
 		{
-			// @todo: we should really only call flush _once_ for all camera anim sequences
-			Runner->Flush();
+			if (Runner->QueueFinalUpdate(RootTemplateInstance.GetRootInstanceHandle()))
+			{
+				// @todo: we should really only call flush _once_ for all camera anim sequences
+				Runner->Flush();
+			}
 		}
 	}
 }
@@ -443,5 +464,4 @@ void UCameraAnimationSequencePlayer::EndScrubbing()
 	ensure(Status == EMovieScenePlayerStatus::Scrubbing);
 	Status = EMovieScenePlayerStatus::Playing;
 }
-
 

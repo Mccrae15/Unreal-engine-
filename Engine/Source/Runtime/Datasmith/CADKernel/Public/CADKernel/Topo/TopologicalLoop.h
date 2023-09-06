@@ -26,11 +26,6 @@ public:
 	{
 	}
 
-	FOrientedEdge(const FOrientedEdge& OrientiredEntity)
-		: TOrientedEntity(OrientiredEntity)
-	{
-	}
-
 	FOrientedEdge()
 		: TOrientedEntity()
 	{
@@ -114,7 +109,7 @@ public:
 		SpawnIdentOnEntities((TArray<TOrientedEntity<FEntity>>&) Edges, Database);
 	}
 
-	virtual void ResetMarkersRecursively() override
+	virtual void ResetMarkersRecursively() const override
 	{
 		ResetMarkers();
 		ResetMarkersRecursivelyOnEntities((TArray<TOrientedEntity<FEntity>>&) Edges);
@@ -129,6 +124,8 @@ public:
 		return EEntity::TopologicalLoop;
 	}
 
+	double Length() const;
+	
 	const int32 EdgeCount() const
 	{
 		return Edges.Num();

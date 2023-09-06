@@ -351,7 +351,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FSSRPassCommonParameters, )
 	SHADER_PARAMETER(FVector4f, PrevScreenPositionScaleBias)
 	SHADER_PARAMETER(float, PrevSceneColorPreExposureCorrection)
 	SHADER_PARAMETER(uint32, ShouldReflectOnlyWater)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColor)
+	SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, SceneColor)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorSampler)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HZB)
 	SHADER_PARAMETER_SAMPLER(SamplerState, HZBSampler)
@@ -396,7 +396,7 @@ class FSSRTPrevFrameReductionCS : public FGlobalShader
 		SHADER_PARAMETER(float, HigherMipDownScaleFactor)
 		SHADER_PARAMETER(float, SkyDistance)
 		
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PrevSceneColor)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, PrevSceneColor)
 		SHADER_PARAMETER_SAMPLER(SamplerState, PrevSceneColorSampler)
 
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, PrevSceneDepth)
@@ -524,6 +524,7 @@ class FScreenSpaceReflectionsTileVS : public FGlobalShader
 	{
 		OutEnvironment.SetDefine(TEXT("TILE_VERTEX_SHADER"), 1.0f);
 		OutEnvironment.SetDefine(TEXT("WORK_TILE_SIZE"), 8);
+		OutEnvironment.SetDefine(TEXT("PERMUTATION_TILE_ENCODING"), 0); // Use generic 16 bits tile coords
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	}
 };
@@ -742,7 +743,8 @@ FPrevSceneColorMip ReducePrevSceneColorMip(
 			ViewportOffset = View.PrevViewInfo.ViewRect.Min;
 			ViewportExtent = View.PrevViewInfo.ViewRect.Size();
 
-			PassParameters->PrevSceneColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.ScreenSpaceRayTracingInput);
+			PassParameters->PrevSceneColor = GraphBuilder.CreateSRV(FRDGTextureSRVDesc(
+				GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.ScreenSpaceRayTracingInput)));
 			PassParameters->PrevSceneColorSampler = TStaticSamplerState<SF_Point>::GetRHI();
 
 			PassParameters->PrevSceneDepth = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.DepthBuffer);
@@ -754,8 +756,11 @@ FPrevSceneColorMip ReducePrevSceneColorMip(
 			ViewportOffset = View.PrevViewInfo.TemporalAAHistory.ViewportRect.Min;
 			ViewportExtent = View.PrevViewInfo.TemporalAAHistory.ViewportRect.Size();
 
-			PassParameters->PrevSceneColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TemporalAAHistory.RT[0]);
+			FRDGTextureRef TemporalAAHistoryTexture = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TemporalAAHistory.RT[0]);
 			PassParameters->PrevSceneColorSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+			PassParameters->PrevSceneColor = GraphBuilder.CreateSRV(TemporalAAHistoryTexture->Desc.IsTextureArray()
+				? FRDGTextureSRVDesc::CreateForSlice(TemporalAAHistoryTexture, View.PrevViewInfo.TemporalAAHistory.OutputSliceIndex)
+				: FRDGTextureSRVDesc(TemporalAAHistoryTexture));
 		}
 
 		float InvBufferSizeX = 1.f / float(BufferSize.X);
@@ -940,20 +945,25 @@ void RenderScreenSpaceReflections(
 	bool bSingleLayerWater,
 	FTiledReflection* TiledScreenSpaceReflection)
 {
-	FRDGTextureRef InputColor = CurrentSceneColor;
+	FRDGTextureSRVRef InputColor = GraphBuilder.CreateSRV(FRDGTextureSRVDesc(CurrentSceneColor));
 	if (SSRQuality != ESSRQuality::VisualizeSSR)
 	{
 		if (View.PrevViewInfo.CustomSSRInput.IsValid())
 		{
-			InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.CustomSSRInput.RT[0]);
+			InputColor = GraphBuilder.CreateSRV(FRDGTextureSRVDesc(
+				GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.CustomSSRInput.RT[0])));
 		}
 		else if (GSSRHalfResSceneColor && View.PrevViewInfo.HalfResTemporalAAHistory.IsValid())
 		{
-			InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.HalfResTemporalAAHistory);
+			InputColor = GraphBuilder.CreateSRV(FRDGTextureSRVDesc(
+				GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.HalfResTemporalAAHistory)));
 		}
 		else if (View.PrevViewInfo.TemporalAAHistory.IsValid())
 		{
-			InputColor = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TemporalAAHistory.RT[0]);
+			FRDGTextureRef TemporalAAHistoryTexture = GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.TemporalAAHistory.RT[0]);
+			InputColor = GraphBuilder.CreateSRV(TemporalAAHistoryTexture->Desc.IsTextureArray()
+				? FRDGTextureSRVDesc::CreateForSlice(TemporalAAHistoryTexture, View.PrevViewInfo.TemporalAAHistory.OutputSliceIndex)
+				: FRDGTextureSRVDesc(TemporalAAHistoryTexture));
 		}
 	}
 
@@ -985,7 +995,7 @@ void RenderScreenSpaceReflections(
 	CommonParameters.ViewUniformBuffer = View.ViewUniformBuffer;
 	CommonParameters.SceneTextures = SceneTextures;
 	// Pipe down a mid grey texture when not using TAA's history to avoid wrongly reprojecting current scene color as if previous frame's TAA history.
-	if (InputColor == CurrentSceneColor || !CommonParameters.SceneTextures.GBufferVelocityTexture)
+	if (InputColor->Desc.Texture == CurrentSceneColor || !CommonParameters.SceneTextures.GBufferVelocityTexture)
 	{
 		// Technically should be 32767.0f / 65535.0f to perfectly null out DecodeVelocityFromTexture(), but 0.5f is good enough.
 		CommonParameters.SceneTextures.GBufferVelocityTexture = GraphBuilder.RegisterExternalTexture(GSystemTextures.MidGreyDummy);
@@ -1087,7 +1097,7 @@ void RenderScreenSpaceReflections(
 
 			PassParameters->ScreenSpaceRayTracingDebugOutput = CreateScreenSpaceRayTracingDebugUAV(GraphBuilder, DenoiserInputs->Color->Desc, TEXT("DebugSSR"), true);
 		}
-		PassParameters->PrevSceneColorPreExposureCorrection = InputColor != CurrentSceneColor ? View.PreExposure / View.PrevViewInfo.SceneColorPreExposure : 1.0f;
+		PassParameters->PrevSceneColorPreExposureCorrection = InputColor->Desc.Texture != CurrentSceneColor ? View.PreExposure / View.PrevViewInfo.SceneColorPreExposure : 1.0f;
 		PassParameters->ShouldReflectOnlyWater = bSingleLayerWater ? 1u : 0u;
 		
 		PassParameters->SceneColor = InputColor;
@@ -1106,7 +1116,7 @@ void RenderScreenSpaceReflections(
 	SetSSRParameters(&PassParameters->SSRPassCommonParameter);
 	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 	PassParameters->RenderTargets = RenderTargets;
-	PassParameters->RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::SSR, nullptr);
+	PassParameters->RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::SSR);
 
 	TShaderMapRef<FScreenSpaceReflectionsPS> PixelShader(View.ShaderMap, PermutationVector);
 

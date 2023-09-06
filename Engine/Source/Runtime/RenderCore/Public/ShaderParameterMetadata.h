@@ -26,6 +26,8 @@
 #include "Templates/SharedPointer.h"
 
 using FThreadSafeSharedStringPtr = TSharedPtr<FString, ESPMode::ThreadSafe>;
+using FThreadSafeNameBufferPtr = TSharedPtr<TArray<TCHAR>, ESPMode::ThreadSafe>;
+struct FShaderResourceTableMap;
 
 namespace EShaderPrecisionModifier
 {
@@ -33,7 +35,8 @@ namespace EShaderPrecisionModifier
 	{
 		Float,
 		Half,
-		Fixed
+		Fixed,
+		Invalid
 	};
 };
 
@@ -41,13 +44,24 @@ namespace EShaderPrecisionModifier
 bool SupportShaderPrecisionModifier(EShaderPlatform Platform);
 
 /** Each entry in a resource table is provided to the shader compiler for creating mappings. */
-struct FResourceTableEntry
+struct FUniformResourceEntry
 {
-	/** The name of the uniform buffer in which this resource exists. */
-	FString UniformBufferName;
+	/** The name of the uniform buffer member for this resource. */
+	const TCHAR* UniformBufferMemberName;
+	/** The Uniform Buffer's name is a prefix of this length at the start of UniformBufferMemberName. */
+	uint8 UniformBufferNameLength{};
 	/** The type of the resource (EUniformBufferBaseType). */
-	uint16 Type{};
+	uint8 Type{};
 	/** The index of the resource in the table. */
+	uint16 ResourceIndex{};
+
+	FORCEINLINE FStringView GetUniformBufferName() const { return FStringView(UniformBufferMemberName, UniformBufferNameLength); }
+};
+
+struct UE_DEPRECATED(5.3, "Deprecated structure -- replaced with FUniformResourceEntry.") FResourceTableEntry
+{
+	FString UniformBufferName;
+	uint16 Type{};
 	uint16 ResourceIndex{};
 };
 
@@ -62,6 +76,8 @@ struct FUniformBufferEntry
 	EUniformBufferBindingFlags BindingFlags{ EUniformBufferBindingFlags::Shader };
 	/** Whether to force a real uniform buffer when using emulated uniform buffers */
 	bool bNoEmulatedUniformBuffer;
+	/** Storage for member names for this uniform buffer (pointed to by FUniformResourceEntry::UniformBufferMemberName)  */
+	FThreadSafeNameBufferPtr MemberNameBuffer;
 };
 
 /** Parse the shader resource binding from the binding type used in shader code. */
@@ -71,19 +87,19 @@ const TCHAR* GetShaderCodeResourceBindingTypeName(EShaderCodeResourceBindingType
 
 
 /** Simple class that registers a uniform buffer static slot in the constructor. */
-class RENDERCORE_API FUniformBufferStaticSlotRegistrar
+class FUniformBufferStaticSlotRegistrar
 {
 public:
-	FUniformBufferStaticSlotRegistrar(const TCHAR* InName);
+	RENDERCORE_API FUniformBufferStaticSlotRegistrar(const TCHAR* InName);
 };
 
 /** Registry for uniform buffer static slots. */
-class RENDERCORE_API FUniformBufferStaticSlotRegistry
+class FUniformBufferStaticSlotRegistry
 {
 public:
-	static FUniformBufferStaticSlotRegistry& Get();
+	static RENDERCORE_API FUniformBufferStaticSlotRegistry& Get();
 
-	void RegisterSlot(FName SlotName);
+	RENDERCORE_API void RegisterSlot(FName SlotName);
 
 	inline int32 GetSlotCount() const
 	{
@@ -119,7 +135,7 @@ private:
 };
 
 /** A uniform buffer struct. */
-class RENDERCORE_API FShaderParametersMetadata
+class FShaderParametersMetadata
 {
 public:
 	/** The use case of the uniform buffer structures. */
@@ -151,7 +167,7 @@ public:
 	static constexpr int32 kRootCBufferBindingIndex = 0;
 
 	/** A member of a shader parameter structure. */
-	class RENDERCORE_API FMember
+	class FMember
 	{
 	public:
 
@@ -212,10 +228,18 @@ public:
 		/** Returns the metadata of the struct. */
 		const FShaderParametersMetadata* GetStructMetadata() const { return Struct; }
 
+		inline bool IsVariableNativeType() const
+		{
+			return 
+				BaseType == UBMT_INT32 ||
+				BaseType == UBMT_UINT32 ||
+				BaseType == UBMT_FLOAT32;
+		}
+
 		/** Returns the size of the member. */
 		inline uint32 GetMemberSize() const
 		{
-			check(BaseType == UBMT_FLOAT32 || BaseType == UBMT_INT32 || BaseType == UBMT_UINT32);
+			check(IsVariableNativeType());
 			uint32 ElementSize = sizeof(uint32) * NumRows * NumColumns;
 
 			/** If this an array, the alignment of the element are changed. */
@@ -226,8 +250,16 @@ public:
 			return ElementSize;
 		}
 
-		void GenerateShaderParameterType(FString& Result, bool bSupportsPrecisionModifier) const;
-		void GenerateShaderParameterType(FString& Result, EShaderPlatform ShaderPlatform) const;
+		static RENDERCORE_API void GenerateShaderParameterType(
+			FString& Result,
+			bool bSupportsPrecisionModifier,
+			EUniformBufferBaseType BaseType,
+			EShaderPrecisionModifier::Type PrecisionModifier,
+			uint32 NumRows,
+			uint32 NumColumns
+		);
+		RENDERCORE_API void GenerateShaderParameterType(FString& Result, bool bSupportsPrecisionModifier) const;
+		RENDERCORE_API void GenerateShaderParameterType(FString& Result, EShaderPlatform ShaderPlatform) const;
 
 	private:
 
@@ -250,7 +282,7 @@ public:
 	 * traversal. bForceCompleteInitialization force to ignore the list for EUseCase::UniformBuffer and instead handle it like a standalone non
 	 * globally listed EUseCase::ShaderParameterStruct. This is required for the ShaderCompileWorker to deserialize them without side global effects.
 	 */
-	FShaderParametersMetadata(
+	RENDERCORE_API FShaderParametersMetadata(
 		EUseCase UseCase,
 		EUniformBufferBindingFlags InBindingFlags,
 		const TCHAR* InLayoutName,
@@ -265,12 +297,17 @@ public:
 		FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr,
 		uint32 InUsageFlags = 0);
 
-	virtual ~FShaderParametersMetadata();
+	RENDERCORE_API virtual ~FShaderParametersMetadata();
 
-	void GetNestedStructs(TArray<const FShaderParametersMetadata*>& OutNestedStructs) const;
+	RENDERCORE_API void GetNestedStructs(TArray<const FShaderParametersMetadata*>& OutNestedStructs) const;
 
 #if WITH_EDITOR
-	void AddResourceTableEntries(TMap<FString, FResourceTableEntry>& ResourceTableMap, TMap<FString, FUniformBufferEntry>& UniformBufferMap) const;
+	RENDERCORE_API void AddResourceTableEntries(FShaderResourceTableMap& ResourceTableMap, TMap<FString, FUniformBufferEntry>& UniformBufferMap) const;
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.3, "Resource table entries are now stored in FShaderResourceTableMap, rather than a TMap.")
+	RENDERCORE_API void AddResourceTableEntries(TMap<FString, FResourceTableEntry>& ResourceTableMap, TMap<FString, FUniformBufferEntry>& UniformBufferMap) const;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif
 
 	const TCHAR* GetStructTypeName() const { return StructTypeName; }
@@ -317,24 +354,27 @@ public:
 	inline bool IsUniformBufferDeclarationInitialized() const { return UniformBufferDeclaration.IsValid(); }
 	FThreadSafeSharedStringPtr GetUniformBufferDeclarationPtr() const { return UniformBufferDeclaration; }
 	const FString& GetUniformBufferDeclaration() const { return *UniformBufferDeclaration; }
+	FORCEINLINE const FString& GetUniformBufferPath() const { return UniformBufferPath; }
+	FORCEINLINE const FString& GetUniformBufferInclude() const { return UniformBufferInclude; }
+	FORCEINLINE uint32 GetUniformBufferPathHash() const { return UniformBufferPathHash; }
 #endif // WITH_EDITOR
 
 	/** Find a member for a given offset. */
-	void FindMemberFromOffset(
+	RENDERCORE_API void FindMemberFromOffset(
 		uint16 MemberOffset,
 		const FShaderParametersMetadata** OutContainingStruct,
 		const FShaderParametersMetadata::FMember** OutMember,
 		int32* ArrayElementId, FString* NamePrefix) const;
 
 	/** Returns the full C++ member name from it's byte offset in the structure. */
-	FString GetFullMemberCodeName(uint16 MemberOffset) const;
+	RENDERCORE_API FString GetFullMemberCodeName(uint16 MemberOffset) const;
 
-	static TLinkedList<FShaderParametersMetadata*>*& GetStructList();
+	static RENDERCORE_API TLinkedList<FShaderParametersMetadata*>*& GetStructList();
 	/** Speed up finding the uniform buffer by its name */
-	static TMap<FHashedName, FShaderParametersMetadata*>& GetNameStructMap();
+	static RENDERCORE_API TMap<FHashedName, FShaderParametersMetadata*>& GetNameStructMap();
 
 	/** Initialize all the global shader parameter structs. */
-	static void InitializeAllUniformBufferStructs();
+	static RENDERCORE_API void InitializeAllUniformBufferStructs();
 
 	/** Returns a hash about the entire layout of the structure. */
 	uint32 GetLayoutHash() const
@@ -399,6 +439,18 @@ private:
 #if WITH_EDITOR
 	/** Uniform buffer declaration, created once */
 	FThreadSafeSharedStringPtr UniformBufferDeclaration;
+
+	/** Cache of uniform buffer resource table, and storage for member names used by the table, created once */
+	TArray<FUniformResourceEntry> ResourceTableCache;
+	FThreadSafeNameBufferPtr MemberNameBuffer;
+
+	/** Strings for uniform buffer generated path and include, created once */
+	FString UniformBufferPath;		// Format:  "/Engine/Generated/UniformBuffers/%s.ush"
+	FString UniformBufferInclude;	// Format:  "#include \"/Engine/Generated/UniformBuffers/%s.ush\"" LINE_TERMINATOR
+
+	/** Hashes for frequently used strings */
+	uint32 UniformBufferPathHash;
+	uint32 ShaderVariableNameHash;
 #endif
 
 	/** Shackle elements in global link list of globally named shader parameters. */
@@ -410,9 +462,9 @@ private:
 	/** Additional flags for how to use the buffer */
 	uint32 UsageFlags = 0;
 
-	void InitializeLayout(FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr);
+	RENDERCORE_API void InitializeLayout(FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr);
 
 #if WITH_EDITOR
-	void InitializeUniformBufferDeclaration();
+	RENDERCORE_API void InitializeUniformBufferDeclaration();
 #endif
 };

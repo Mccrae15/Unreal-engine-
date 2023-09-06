@@ -4,13 +4,13 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Mime;
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.AspNet;
@@ -19,6 +19,7 @@ using EpicGames.Horde.Storage;
 using EpicGames.Serialization;
 using Jupiter.Implementation;
 using JetBrains.Annotations;
+using Jupiter.Common;
 using Jupiter.Common.Implementation;
 using Jupiter.Utils;
 using Microsoft.AspNetCore.Authorization;
@@ -27,7 +28,6 @@ using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
 using OpenTelemetry.Trace;
 
 using ContentHash = Jupiter.Implementation.ContentHash;
@@ -49,6 +49,7 @@ namespace Jupiter.Controllers
         private readonly FormatResolver _formatResolver;
         private readonly BufferedPayloadFactory _bufferedPayloadFactory;
         private readonly IReferenceResolver _referenceResolver;
+        private readonly NginxRedirectHelper _nginxRedirectHelper;
         private readonly RequestHelper _requestHelper;
         private readonly Tracer _tracer;
 
@@ -56,7 +57,7 @@ namespace Jupiter.Controllers
         private readonly IObjectService _objectService;
         private readonly IBlobService _blobStore;
 
-        public ReferencesController(IObjectService objectService, IBlobService blobStore, IDiagnosticContext diagnosticContext, FormatResolver formatResolver, BufferedPayloadFactory bufferedPayloadFactory, IReferenceResolver referenceResolver, RequestHelper requestHelper, Tracer tracer, ILogger<ReferencesController> logger)
+        public ReferencesController(IObjectService objectService, IBlobService blobStore, IDiagnosticContext diagnosticContext, FormatResolver formatResolver, BufferedPayloadFactory bufferedPayloadFactory, IReferenceResolver referenceResolver, NginxRedirectHelper nginxRedirectHelper, RequestHelper requestHelper, Tracer tracer, ILogger<ReferencesController> logger)
         {
             _objectService = objectService;
             _blobStore = blobStore;
@@ -64,6 +65,7 @@ namespace Jupiter.Controllers
             _formatResolver = formatResolver;
             _bufferedPayloadFactory = bufferedPayloadFactory;
             _referenceResolver = referenceResolver;
+            _nginxRedirectHelper = nginxRedirectHelper;
             _requestHelper = requestHelper;
             _tracer = tracer;
             _logger = logger;
@@ -160,7 +162,7 @@ namespace Jupiter.Controllers
                 }
 
                 string responseType = _formatResolver.GetResponseType(Request, format, CustomMediaTypeNames.UnrealCompactBinary);
-
+                Tracer.CurrentSpan.SetAttribute("response-type", responseType);
                 switch (responseType)
                 {
                     case CustomMediaTypeNames.UnrealCompactBinary:
@@ -202,6 +204,11 @@ namespace Jupiter.Controllers
                             IoHash hash = binaryAttachmentField.AsBinaryAttachment();
 
                             BlobContents referencedBlobContents = await _blobStore.GetObject(ns, BlobIdentifier.FromIoHash(hash));
+
+                            if (_nginxRedirectHelper.CanRedirect(Request, referencedBlobContents))
+                            {
+                                return _nginxRedirectHelper.CreateActionResult(referencedBlobContents, MediaTypeNames.Application.Octet);
+                            }
                             await WriteBody(referencedBlobContents, MediaTypeNames.Application.Octet);
                             break;
                         }
@@ -215,7 +222,7 @@ namespace Jupiter.Controllers
                     {
                         byte[] blobMemory;
                         {
-                            using TelemetrySpan scope = _tracer.StartActiveSpan("json.readblob").SetAttribute("operation.name", "authorize");
+                            using TelemetrySpan scope = _tracer.StartActiveSpan("json.readblob").SetAttribute("operation.name", "json.readblob");
                             blobMemory = await blob.Stream.ToByteArray();
                         }
                         CbObject cb = new CbObject(blobMemory);
@@ -227,15 +234,16 @@ namespace Jupiter.Controllers
                     }
                     case CustomMediaTypeNames.UnrealCompactBinaryPackage:
                     {
+                        using TelemetrySpan packageScope = _tracer.StartActiveSpan("cbpackage.fetch").SetAttribute("operation.name", "cbpackage.fetch");
                         byte[] blobMemory = await blob.Stream.ToByteArray();
                         CbObject cb = new CbObject(blobMemory);
 
                         IAsyncEnumerable<Attachment> attachments = _referenceResolver.GetAttachments(ns, cb);
 
                         using CbPackageBuilder writer = new CbPackageBuilder();
-                        await writer.AddAttachment(objectRecord.BlobIdentifier.AsIoHash(), CbPackageAttachmentFlags.IsObject, blobMemory);
+                        writer.AddAttachment(objectRecord.BlobIdentifier.AsIoHash(), CbPackageAttachmentFlags.IsObject, blobMemory);
 
-                        await foreach (Attachment attachment in attachments)
+                        await Parallel.ForEachAsync(attachments, async (attachment, token) =>
                         {
                             IoHash attachmentHash = attachment.AsIoHash();
                             CbPackageAttachmentFlags flags = 0;
@@ -250,7 +258,7 @@ namespace Jupiter.Controllers
                                 }
                                 else if (attachment is ObjectAttachment objectAttachment)
                                 {
-                                    flags &= CbPackageAttachmentFlags.IsObject;
+                                    flags |= CbPackageAttachmentFlags.IsObject;
                                     BlobIdentifier referencedBlob = objectAttachment.Identifier;
                                     attachmentContents = await _blobStore.GetObject(ns, referencedBlob);
                                 }
@@ -261,7 +269,7 @@ namespace Jupiter.Controllers
                                     (attachmentContents, string mime) = await _blobStore.GetCompressedObject(ns, contentId, HttpContext.RequestServices);
                                     if (mime == CustomMediaTypeNames.UnrealCompressedBuffer)
                                     {
-                                        flags &= CbPackageAttachmentFlags.IsCompressed;
+                                        flags |= CbPackageAttachmentFlags.IsCompressed;
                                     }
                                     else
                                     {
@@ -275,15 +283,23 @@ namespace Jupiter.Controllers
                                     throw new NotSupportedException($"Unknown attachment type {attachment.GetType()}");
                                 }
 
-                                await writer.AddAttachment(attachmentHash, flags, attachmentContents.Stream, (ulong)attachmentContents.Length);
+                                writer.AddAttachment(attachmentHash, flags, attachmentContents.Stream, (ulong)attachmentContents.Length);
                             }
                             catch (Exception e)
                             {
                                 (CbObject errorObject, HttpStatusCode _) = ToErrorResult(e);
-                                await writer.AddAttachment(attachmentHash, CbPackageAttachmentFlags.IsError | CbPackageAttachmentFlags.IsObject, errorObject.GetView().ToArray());
+                                writer.AddAttachment(attachmentHash,
+                                    CbPackageAttachmentFlags.IsError | CbPackageAttachmentFlags.IsObject,
+                                    errorObject.GetView().ToArray());
                             }
+                        });
+
+                        byte[] packageBytes;
+                        {
+                            using TelemetrySpan _ = _tracer.StartActiveSpan("cbpackage.buffer").SetAttribute("operation.name", "cbpackage.buffer");
+                            packageBytes = await writer.ToByteArray();
                         }
-                        await using BlobContents contents = new BlobContents(writer.ToByteArray());
+                        await using BlobContents contents = new BlobContents(packageBytes);
                         await WriteBody(contents, CustomMediaTypeNames.UnrealCompactBinaryPackage);
                         break;
                     }
@@ -342,6 +358,10 @@ namespace Jupiter.Controllers
                                     BlobContents referencedBlobContents = await _blobStore.GetObject(ns, attachmentToSend);
                                     Response.Headers[CommonHeaders.InlinePayloadHash] = attachmentToSend.ToString();
 
+                                    if (_nginxRedirectHelper.CanRedirect(Request, referencedBlobContents))
+                                    {
+                                        return _nginxRedirectHelper.CreateActionResult(referencedBlobContents, CustomMediaTypeNames.JupiterInlinedPayload);
+                                    }
                                     await WriteBody(referencedBlobContents, CustomMediaTypeNames.JupiterInlinedPayload);
                                 }
                                 catch (BlobNotFoundException)
@@ -707,7 +727,8 @@ namespace Jupiter.Controllers
 
             _diagnosticContext.Set("Content-Length", Request.ContentLength ?? -1);
 
-            CbPackageReader packageReader = await CbPackageReader.Create(Request.Body);
+            byte[] b = await RequestUtil.ReadRawBody(Request);
+            CbPackageReader packageReader = await CbPackageReader.Create(new MemoryStream(b));
 
             try
             {
@@ -773,6 +794,10 @@ namespace Jupiter.Controllers
             catch (ObjectHashMismatchException e)
             {
                 return BadRequest(e.Message);
+            }
+            catch (ObjectNotFoundException e)
+            {
+                return NotFound(e.Message);
             }
         }
 
@@ -1266,9 +1291,9 @@ namespace Jupiter.Controllers
 
     public class ExistCheckMultipleRefsResponse
     {
-        public ExistCheckMultipleRefsResponse(List<(BucketId,IoHashKey)> missingNames)
+        public ExistCheckMultipleRefsResponse(List<(BucketId,IoHashKey)> missing)
         {
-            Missing = missingNames.Select(pair =>
+            Missing = missing.Select(pair =>
             {
                 (BucketId bucketId, IoHashKey ioHashKey) = pair;
                 return new MissingReference()
@@ -1280,9 +1305,9 @@ namespace Jupiter.Controllers
         }
 
         [JsonConstructor]
-        public ExistCheckMultipleRefsResponse(List<MissingReference> missingNames)
+        public ExistCheckMultipleRefsResponse(List<MissingReference> missing)
         {
-            Missing = missingNames;
+            Missing = missing;
         }
 
         [CbField("missing")]

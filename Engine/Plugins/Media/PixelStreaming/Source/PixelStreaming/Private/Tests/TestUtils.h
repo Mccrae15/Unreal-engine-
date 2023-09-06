@@ -22,18 +22,22 @@ namespace UE::PixelStreaming
 		, Callback(InCallback)
 		, bComplete(InbComplete)
 		{
-			Player->OnMessageReceived.AddLambda([this](uint8 Type, const webrtc::DataBuffer& RawBuffer) {
+			MessageReceivedHandle = Player->OnMessageReceived.AddLambda([this](uint8 Type, const webrtc::DataBuffer& RawBuffer) {
 				(Callback)(Type, RawBuffer);
 			});
 		}
 
-		virtual ~FWaitForDataChannelMessageOrTimeout() {}
+		virtual ~FWaitForDataChannelMessageOrTimeout() 
+		{
+			Player->OnMessageReceived.Remove(MessageReceivedHandle);
+		}
 		virtual bool Update() override; 
 	private:
 		double TimeoutSeconds;
 		TSharedPtr<FMockPlayer> Player;
 		TFunction<void(uint8, const webrtc::DataBuffer&)> Callback;
 		TSharedPtr<bool> bComplete;
+		FDelegateHandle MessageReceivedHandle;
 	};
 
 	DEFINE_LATENT_AUTOMATION_COMMAND_THREE_PARAMETER(FSendDataChannelMessageToPlayer, TSharedPtr<IPixelStreamingStreamer>, Streamer, uint8, Id, const FString, Body);
@@ -42,6 +46,7 @@ namespace UE::PixelStreaming
 	DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(FSendSolidColorFrame, TSharedPtr<FPixelStreamingVideoInputI420>, VideoInput, FMockVideoFrameConfig, FrameConfig);
 	DEFINE_LATENT_AUTOMATION_COMMAND_THREE_PARAMETER(FWaitForFrameReceived, double, TimeoutSeconds, TSharedPtr<FMockVideoSink>, VideoSink, FMockVideoFrameConfig, FrameConfig);
 	DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(FWaitForICEConnectedOrTimeout, double, TimeoutSeconds, TSharedPtr<FMockPlayer>, OutPlayer);
+	DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(FWaitForDataChannelOrTimeout, double, TimeoutSeconds, TSharedPtr<FMockPlayer>, OutPlayer);
 	DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(FWaitForStreamerConnectedOrTimeout, double, TimeoutSeconds, TSharedPtr<IPixelStreamingStreamer>, OutStreamer);
 	DEFINE_LATENT_AUTOMATION_COMMAND_FOUR_PARAMETER(FConnectPlayerAfterStreamerConnectedOrTimeout, double, TimeoutSeconds, TSharedPtr<IPixelStreamingStreamer>, OutStreamer, TSharedPtr<FMockPlayer>, OutPlayer, int, PlayerPort);
 	DEFINE_LATENT_AUTOMATION_COMMAND_THREE_PARAMETER(FWaitForPlayerConnectedOrTimeout, double, TimeoutSeconds, TSharedPtr<FMockPlayer>, OutPlayer, int, PlayerPort);

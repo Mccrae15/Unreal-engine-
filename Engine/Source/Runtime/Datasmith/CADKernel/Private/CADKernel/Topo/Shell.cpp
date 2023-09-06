@@ -58,13 +58,32 @@ void FShell::RemoveFaces()
 	TopologicalFaces.Empty();
 }
 
+void FShell::RemoveDeletedOrDegeneratedFaces()
+{
+	TArray<FOrientedFace> NewTopologicalFaces;
+	NewTopologicalFaces.Reserve(TopologicalFaces.Num());
+
+	for (FOrientedFace& Face : TopologicalFaces)
+	{
+		if (!Face.Entity->IsDeletedOrDegenerated())
+		{
+			NewTopologicalFaces.Emplace(Face);
+		}
+		else
+		{
+			Face.Entity->ResetHost();
+		}
+	}
+	TopologicalFaces = MoveTemp(NewTopologicalFaces);
+}
+
 void FShell::Empty()
 {
 	RemoveFaces();
 	FTopologicalShapeEntity::Empty();
 }
 
-void FShell::Add(TArray<FTopologicalFace*> Faces)
+void FShell::Add(TArray<FTopologicalFace*>& Faces)
 {
 	TopologicalFaces.Reserve(TopologicalFaces.Num() + Faces.Num());
 
@@ -92,7 +111,10 @@ void FShell::Remove(const FTopologicalShapeEntity* FaceToRemove)
 	}
 
 	int32 Index = TopologicalFaces.IndexOfByPredicate([&](const FOrientedFace& Face) { return (Face.Entity.Get() == FaceToRemove); });
-	TopologicalFaces.RemoveAt(Index);
+	if(Index >= 0)
+	{
+		TopologicalFaces.RemoveAt(Index);
+	}
 }
 
 #ifdef CADKERNEL_DEV
@@ -124,24 +146,38 @@ void FShell::Merge(TSharedPtr<FShell>& Shell)
 }
 
 
-void FShell::SpreadBodyOrientation()
+void FShell::PropagateBodyOrientation()
 {
-	bool bIsOutter = IsOutter();
+	const bool bIsOuter = IsOuter();
 	for (FOrientedFace& Face : TopologicalFaces)
 	{
-		if (bIsOutter != (Face.Direction == EOrientation::Front))
+		if (bIsOuter != (Face.Direction == EOrientation::Front))
 		{
 			Face.Entity->SetBackOriented();
+		}
+		else
+		{
+			Face.Entity->ResetBackOriented();
 		}
 	}
 }
 
-void FShell::UpdateShellOrientation()
+void FShell::CompleteMetaData()
 {
-	bool bIsOutter = IsOutter();
+	CompleteMetaDataWithHostMetaData();
 	for (FOrientedFace& Face : TopologicalFaces)
 	{
-		if (Face.Entity->IsBackOriented())
+		Face.Entity->CompleteMetaData();
+	}
+}
+
+
+void FShell::UpdateShellOrientation()
+{
+	const bool bIsOuter = IsOuter();
+	for (FOrientedFace& Face : TopologicalFaces)
+	{
+		if (bIsOuter == Face.Entity->IsBackOriented())
 		{
 			Face.Direction = EOrientation::Back;
 		}
@@ -230,7 +266,7 @@ void FShell::CheckTopology(TArray<FFaceSubset>& Subshells)
 		}
 	};
 	
-	TFunction<void(FFaceSubset&)> SpreadFront = [&](FFaceSubset& Shell)
+	TFunction<void(FFaceSubset&)> PropagateFront = [&](FFaceSubset& Shell)
 	{
 		while (Front.Num())
 		{
@@ -256,7 +292,7 @@ void FShell::CheckTopology(TArray<FFaceSubset>& Subshells)
 		Front.Empty(TopologicalFaceCount);
 		Face->SetMarker1();
 		Front.Add(Face);
-		SpreadFront(Shell);
+		PropagateFront(Shell);
 		ProcessFaceCount += Shell.Faces.Num();
 
 		if (ProcessFaceCount == TopologicalFaceCount)
@@ -304,12 +340,7 @@ int32 FShell::Orient()
 			for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
 			{
 				const TSharedPtr<FTopologicalEdge>& Edge = OrientedEdge.Entity;
-				if (Edge->HasMarker1())
-				{
-					continue;
-				}
-				Edge->SetMarker1();
-
+	
 				if ((Edge->GetTwinEntityCount() != 2) || Edge->IsDegenerated())
 				{
 					if (Edge->GetTwinEntityCount() == 1)
@@ -319,17 +350,7 @@ int32 FShell::Orient()
 					continue;
 				}
 
-				FTopologicalEdge* NeighboringEdge = nullptr;
-				for (FTopologicalEdge* NextEdge : Edge->GetTwinEntities())
-				{
-					if (NextEdge == Edge.Get())
-					{
-						continue;
-					}
-					NeighboringEdge = NextEdge;
-					break;
-				}
-
+				FTopologicalEdge* NeighboringEdge = Edge->GetTwinEdge();
 				if (NeighboringEdge == nullptr)
 				{
 					continue;
@@ -347,12 +368,12 @@ int32 FShell::Orient()
 					continue;
 				}
 
-				if (NeighboringFace->HasMarker1())
+				if (NeighboringFace->IsNotToOrAlreadyProcess())
 				{
 					continue;
 				}
 
-				NeighboringFace->SetMarker1();
+				NeighboringFace->SetProcessedMarker();
 				Front.Add(NeighboringFace);
 
 				const FOrientedEdge* OrientedNeighboringEdge = NeighboringLoop->GetOrientedEdge(NeighboringEdge);
@@ -361,8 +382,8 @@ int32 FShell::Orient()
 					continue;
 				}
 
-				bool EdgesAreWellOriented = (Edge->IsSameDirection(*NeighboringEdge) == (OrientedNeighboringEdge->Direction != OrientedEdge.Direction));
-				bool FacesHaveSameOrientation = Face.IsBackOriented() == NeighboringFace->IsBackOriented();
+				const bool EdgesAreWellOriented = (Edge->IsSameDirection(*NeighboringEdge) == (OrientedNeighboringEdge->Direction != OrientedEdge.Direction));
+				const bool FacesHaveSameOrientation = Face.IsBackOriented() == NeighboringFace->IsBackOriented();
 
 				if (EdgesAreWellOriented != FacesHaveSameOrientation)
 				{
@@ -373,7 +394,7 @@ int32 FShell::Orient()
 		}
 	};
 
-	TFunction<void()> SpreadFront = [&]()
+	TFunction<void()> PropagateFront = [&]()
 	{
 		while (Front.Num())
 		{
@@ -400,10 +421,6 @@ int32 FShell::Orient()
 
 		for (FTopologicalFace* Face : Subshell)
 		{
-			if (Face == nullptr || Face->IsDeleted())
-			{
-				continue;
-			}
 			Face->UpdateBBox(3, ApproximationFactor, BBox);
 		}
 
@@ -431,10 +448,6 @@ int32 FShell::Orient()
 	{
 		for (FTopologicalFace* Face : Subshell)
 		{
-			if (Face == nullptr)
-			{
-				continue;
-			}
 			Face->SwapOrientation();
 		}
 	};
@@ -497,24 +510,19 @@ int32 FShell::Orient()
 		}
 	};
 
-	SpreadBodyOrientation();
-
 	for (FOrientedFace& Face : GetFaces())
 	{
 		Face.Entity->ResetMarkers();
-		for (const TSharedPtr<FTopologicalLoop>& Loop : Face.Entity->GetLoops())
+		if(!Face.Entity->IsDeletedOrDegenerated())
 		{
-			for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
-			{
-				OrientedEdge.Entity->ResetMarkers();
-			}
+			Face.Entity->SetToProcessMarker();
 		}
 	}
 
 	int32 ProcessFaceCount = 0;
 	for (FOrientedFace& Face : GetFaces())
 	{
-		if (Face.Entity->HasMarker1())
+		if (Face.Entity->IsNotToOrAlreadyProcess())
 		{
 			continue;
 		}
@@ -526,10 +534,10 @@ int32 FShell::Orient()
 		Subshell.Empty(TopologicalFaceCount);
 		Front.Empty(TopologicalFaceCount);
 
-		Face.Entity->SetMarker1();
+		Face.Entity->SetProcessedMarker();
 		Front.Add(Face.Entity.Get());
 
-		SpreadFront();
+		PropagateFront();
 
 		CheckAndFixSubshellMainOrientation();
 
@@ -543,9 +551,91 @@ int32 FShell::Orient()
 
 	UpdateShellOrientation();
 
-	ResetMarkersRecursively();
+	for (FOrientedFace& Face : GetFaces())
+	{
+		Face.Entity->ResetMarkers();
+	}
 
 	return ShellSwappedFaceCount;
 }
+
+namespace ShellTools
+{
+
+void UnlinkFromOther(TArray<FTopologicalFace*>& Faces, TArray<FTopologicalVertex*>& VerticesToLink)
+{
+	for (FTopologicalFace* Face : Faces)
+	{
+		Face->SetToProcessMarker();
+	}
+
+	VerticesToLink.Reserve(100);
+
+	for (FTopologicalFace* Face : Faces)
+	{
+		TFunction<void(FTopologicalVertex&)> AddTwinVertex = [&Face, &VerticesToLink](FTopologicalVertex& Vertex)
+		{
+			for (FTopologicalVertex* TwinVertex : Vertex.GetTwinEntities())
+			{
+				if (!TwinVertex->IsProcessed() && TwinVertex->GetFace() == Face)
+				{
+					VerticesToLink.Add(TwinVertex);
+					TwinVertex->SetProcessedMarker();
+				}
+			}
+		};
+
+		for (const TSharedPtr<FTopologicalLoop>& Loop : Face->GetLoops())
+		{
+			for (const FOrientedEdge& OrientedEdge : Loop->GetEdges())
+			{
+				FTopologicalEdge* Edge = OrientedEdge.Entity.Get();
+				if (!Edge)
+				{
+					continue;
+				}
+
+				for (FTopologicalEdge* TwinEdge : Edge->GetTwinEntities())
+				{
+					if (!TwinEdge || TwinEdge == Edge)
+					{
+						continue;
+					}
+
+					FTopologicalFace* NeighborFace = TwinEdge->GetFace();
+					if (!NeighborFace)
+					{
+						continue;
+					}
+
+					if (!NeighborFace->IsToProcess())
+					{
+						FTopologicalVertex& StartVertex = Edge->GetStartVertex().Get();
+						AddTwinVertex(StartVertex);
+
+						FTopologicalVertex& EndVertex = Edge->GetEndVertex().Get();
+						AddTwinVertex(EndVertex);
+
+						Edge->Unlink();
+
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	for (FTopologicalFace* Face : Faces)
+	{
+		Face->ResetToProcessMarker();
+	}
+
+	for (FTopologicalVertex* Vertex : VerticesToLink)
+	{
+		Vertex->ResetProcessedMarker();
+	}
+}
+}
+
 
 }

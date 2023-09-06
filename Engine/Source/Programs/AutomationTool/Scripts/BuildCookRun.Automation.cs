@@ -8,6 +8,7 @@ using AutomationTool;
 using AutomationScripts;
 using UnrealBuildTool;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 
 [Help(@"Builds/Cooks/Runs a project.
 
@@ -20,7 +21,7 @@ If no DefaultMap can be found, the command falls back to /Engine/Maps/Entry.")]
 [Help(typeof(ProjectParams))]
 [Help(typeof(UnrealBuild))]
 [Help(typeof(CodeSign))]
-public class BuildCookRun : BuildCommand
+public class BuildCookRun : BuildCommand, IProjectParamsHelpers
 {
 	public override void ExecuteBuild()
 	{
@@ -41,12 +42,12 @@ public class BuildCookRun : BuildCommand
 
 		DoBuildCookRun(Params);
 
-		LogInformation("BuildCookRun time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
+		Logger.LogInformation("BuildCookRun time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
 	}
 
 	protected ProjectParams SetupParams()
 	{
-		LogInformation("Setting up ProjectParams for {0}", ProjectPath);
+		Logger.LogInformation("Setting up ProjectParams for {ProjectPath}", ProjectPath);
 
 		var Params = new ProjectParams
 		(
@@ -107,6 +108,19 @@ public class BuildCookRun : BuildCommand
 			}
 		}
 
+		List<string> PluginsToEnable = new List<string>();
+		string EnablePlugins = ParseParamValue("EnablePlugins", null);
+		if (!string.IsNullOrEmpty(EnablePlugins))
+		{
+			PluginsToEnable.AddRange(EnablePlugins.Split(new[] { ',', '+' }, StringSplitOptions.RemoveEmptyEntries));
+		}
+
+		if (PluginsToEnable.Count > 0)
+		{
+			Params.AdditionalCookerOptions += " -EnablePlugins=\"" + string.Join(",", PluginsToEnable) + "\"";
+			Params.AdditionalBuildOptions += " -EnablePlugins=\"" + string.Join(",", PluginsToEnable) + "\"";
+		}
+
 		Params.ValidateAndLog();
 		return Params;
 	}
@@ -144,13 +158,13 @@ public class BuildCookRun : BuildCommand
 	private string GetDefaultMap(ProjectParams Params)
 	{
 		const string EngineEntryMap = "/Engine/Maps/Entry";
-		LogInformation("Trying to find DefaultMap in ini files");
+		Logger.LogInformation("Trying to find DefaultMap in ini files");
 		string DefaultMap = null;
 		var ProjectFolder = GetDirectoryName(Params.RawProjectPath.FullName);
 		var DefaultGameEngineConfig = CombinePaths(ProjectFolder, "Config", "DefaultEngine.ini");
 		if (FileExists(DefaultGameEngineConfig))
 		{
-			LogInformation("Looking for DefaultMap in {0}", DefaultGameEngineConfig);
+			Logger.LogInformation("Looking for DefaultMap in {DefaultGameEngineConfig}", DefaultGameEngineConfig);
 			DefaultMap = GetDefaultMapFromIni(DefaultGameEngineConfig, Params.DedicatedServer);
 			if (DefaultMap == null && Params.DedicatedServer)
 			{
@@ -162,7 +176,7 @@ public class BuildCookRun : BuildCommand
 			var BaseEngineConfig = CombinePaths(CmdEnv.LocalRoot, "Config", "BaseEngine.ini");
 			if (FileExists(BaseEngineConfig))
 			{
-				LogInformation("Looking for DefaultMap in {0}", BaseEngineConfig);
+				Logger.LogInformation("Looking for DefaultMap in {BaseEngineConfig}", BaseEngineConfig);
 				DefaultMap = GetDefaultMapFromIni(BaseEngineConfig, Params.DedicatedServer);
 				if (DefaultMap == null && Params.DedicatedServer)
 				{
@@ -173,12 +187,12 @@ public class BuildCookRun : BuildCommand
 		// We check for null here becase null == not found
 		if (DefaultMap == null)
 		{
-			LogInformation("No DefaultMap found, assuming: {0}", EngineEntryMap);
+			Logger.LogInformation("No DefaultMap found, assuming: {EngineEntryMap}", EngineEntryMap);
 			DefaultMap = EngineEntryMap;
 		}
 		else
 		{
-			LogInformation("Found DefaultMap={0}", DefaultMap);
+			Logger.LogInformation("Found DefaultMap={DefaultMap}", DefaultMap);
 		}
 		return DefaultMap;
 	}
@@ -246,7 +260,7 @@ public class BuildCookRun : BuildCommand
 		}
 
 		var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue\foreign\", DestSample + "_ _Dir"));
-		LogInformation("Make a foreign sample {0} -> {1}", Src, Dest);
+		Logger.LogInformation("Make a foreign sample {Src} -> {Dest}", Src, Dest);
 
 		CloneDirectory(Src, Dest);
 
@@ -272,7 +286,7 @@ public class BuildCookRun : BuildCommand
 		}
 
 		var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue\foreign\", DestSample + "_ _Dir"));
-		LogInformation("Make a foreign sample {0} -> {1}", Src, Dest);
+		Logger.LogInformation("Make a foreign sample {Src} -> {Dest}", Src, Dest);
 
 		CloneDirectory(Src, Dest);
 		DeleteDirectory_NoExceptions(CombinePaths(Dest, "Intermediate"));

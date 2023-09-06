@@ -12,7 +12,7 @@
 
 class FUICommandInfo;
 
-class FSequencerCommands : public TCommands<FSequencerCommands>
+class SEQUENCER_API FSequencerCommands : public TCommands<FSequencerCommands>
 {
 
 public:
@@ -208,6 +208,9 @@ public:
 	/** Sets a key at the current time for the selected actor */
 	TSharedPtr< FUICommandInfo > SetKey;
 
+	/** Sets the interp tangent mode for the selected keys to smart auto */
+	TSharedPtr< FUICommandInfo > SetInterpolationCubicSmartAuto;
+
 	/** Sets the interp tangent mode for the selected keys to auto */
 	TSharedPtr< FUICommandInfo > SetInterpolationCubicAuto;
 
@@ -288,6 +291,9 @@ public:
 
 	/** Step to previous mark */
 	TSharedPtr< FUICommandInfo > StepToPreviousMark;
+
+	/** Toggle locking marks */
+	TSharedPtr< FUICommandInfo > ToggleMarksLocked;
 
 	/** Rotates through the supported formats for displaying times/frames/timecode. */
 	TSharedPtr< FUICommandInfo > ChangeTimeDisplayFormat;
@@ -423,12 +429,6 @@ public:
 
 	/** Rebinds all possessable references with their current bindings. */
 	TSharedPtr< FUICommandInfo > RebindPossessableReferences;
-
-	/** Imports animation from fbx. */
-	TSharedPtr< FUICommandInfo > ImportFBX;
-
-	/** Exports animation to fbx. */
-	TSharedPtr< FUICommandInfo > ExportFBX;
 
 	/** Toggle whether we should evaluate sub sequences in isolation */
 	TSharedPtr< FUICommandInfo > ToggleEvaluateSubSequencesInIsolation;

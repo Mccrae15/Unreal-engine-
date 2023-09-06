@@ -4,27 +4,18 @@
 
 #if WITH_EDITOR
 
-#include "CoreMinimal.h"
 #include "Engine/EngineTypes.h"
 #include "BoneIndices.h"
-#include "SkeletalMeshTypes.h"
 #include "Serialization/BulkData.h"
 #include "Components.h"
 #include "Math/GenericOctree.h"
 #include "Animation/MorphTarget.h"
 #include "Templates/DontCopy.h"
 
-#include "SkeletalMeshLODImporterData.generated.h"
-
 struct FMeshDescription;
 class FSkeletalMeshLODModel;
 
-#endif
 
-//////////////////////////////////////////////////////////////////////////
-//uenum class cannot be inside a preprocessor like #if WITH_EDITOR
-
-UENUM()
 enum class ESkeletalMeshGeoImportVersions : uint8
 {
 	Before_Versionning = 0,
@@ -35,7 +26,6 @@ enum class ESkeletalMeshGeoImportVersions : uint8
 	LatestVersion = VersionPlusOne - 1
 };
 
-UENUM()
 enum class ESkeletalMeshSkinningImportVersions : uint8
 {
 	Before_Versionning = 0,
@@ -46,10 +36,6 @@ enum class ESkeletalMeshSkinningImportVersions : uint8
 	LatestVersion = VersionPlusOne - 1
 };
 
-// End of enum declaration
-//////////////////////////////////////////////////////////////////////////
-
-#if WITH_EDITOR
 
 namespace SkeletalMeshImportData
 {
@@ -130,29 +116,6 @@ namespace SkeletalMeshImportData
 		FVector3f	TangentY[3];
 		FVector3f	TangentZ[3];
 
-
-		FTriangle& operator=(const FTriangle& Other)
-		{
-			this->AuxMatIndex = Other.AuxMatIndex;
-			this->MatIndex = Other.MatIndex;
-			this->SmoothingGroups = Other.SmoothingGroups;
-			this->WedgeIndex[0] = Other.WedgeIndex[0];
-			this->WedgeIndex[1] = Other.WedgeIndex[1];
-			this->WedgeIndex[2] = Other.WedgeIndex[2];
-			this->TangentX[0] = Other.TangentX[0];
-			this->TangentX[1] = Other.TangentX[1];
-			this->TangentX[2] = Other.TangentX[2];
-
-			this->TangentY[0] = Other.TangentY[0];
-			this->TangentY[1] = Other.TangentY[1];
-			this->TangentY[2] = Other.TangentY[2];
-
-			this->TangentZ[0] = Other.TangentZ[0];
-			this->TangentZ[1] = Other.TangentZ[1];
-			this->TangentZ[2] = Other.TangentZ[2];
-
-			return *this;
-		}
 
 		friend FArchive &operator<<(FArchive& Ar, FTriangle& F)
 		{
@@ -328,6 +291,26 @@ namespace SkeletalMeshImportData
 		}
 	};
 
+	struct FVertexAttribute
+	{
+		FVertexAttribute() = default;
+		FVertexAttribute(TArray<float>&& InAttributeValues, int32 InComponentCount) :
+			AttributeValues(InAttributeValues), ComponentCount(InComponentCount)
+		{}
+		FVertexAttribute(const FVertexAttribute&) = default;
+		FVertexAttribute(FVertexAttribute&&) = default;
+		
+		TArray<float> AttributeValues;
+		int32 ComponentCount;
+		
+		friend FArchive &operator<<(FArchive& Ar, FVertexAttribute& A)
+		{
+			Ar << A.AttributeValues;
+			Ar << A.ComponentCount;
+
+			return Ar;
+		}
+	};
 }
 
 template <> struct TIsPODType<SkeletalMeshImportData::FMeshWedge> { enum { Value = true }; };
@@ -339,7 +322,7 @@ template <> struct TIsPODType<SkeletalMeshImportData::FVertInfluence> { enum { V
 /**
 * Container and importer for skeletal mesh (FBX file) data
 **/
-class ENGINE_API FSkeletalMeshImportData
+class FSkeletalMeshImportData
 {
 public:
 	TArray <SkeletalMeshImportData::FMaterial> Materials;
@@ -357,6 +340,7 @@ public:
 	bool bHasTangents; // If true there are tangents in the imported file
 	bool bUseT0AsRefPose; // If true, then the pose at time=0 will be used instead of the ref pose
 	bool bDiffPose; // If true, one of the bones has a different pose at time=0 vs the ref pose
+	bool bKeepSectionsSeparate; // If true, sections with matching materials are kept separate and will not get combined
 
 	// Morph targets imported(i.e. FBX) data. The name is the morph target name
 	TArray<FSkeletalMeshImportData> MorphTargets;
@@ -367,6 +351,8 @@ public:
 	TArray<FSkeletalMeshImportData> AlternateInfluences;
 	TArray<FString> AlternateInfluenceProfileNames;
 	
+	TArray<SkeletalMeshImportData::FVertexAttribute> VertexAttributes;
+	TArray<FString> VertexAttributeNames;
 
 	//////////////////////////////////////////////////////////////////////////
 
@@ -378,6 +364,7 @@ public:
 		, bHasTangents(false)
 		, bUseT0AsRefPose(false)
 		, bDiffPose(false)
+		, bKeepSectionsSeparate(false)
 	{
 
 	}
@@ -385,13 +372,13 @@ public:
 	/*
 	 * Copy only unnecessary array data from the structure to build the morph target (this will save a lot of memory)
 	 */
-	void CopyDataNeedByMorphTargetImport(FSkeletalMeshImportData& Other) const;
+	ENGINE_API void CopyDataNeedByMorphTargetImport(FSkeletalMeshImportData& Other) const;
 
 	/*
 	 * Remove all unnecessary array data from the structure (this will save a lot of memory)
 	 * We only need Points, Influences and RefBonesBinary arrays
 	 */
-	void KeepAlternateSkinningBuildDataOnly();
+	ENGINE_API void KeepAlternateSkinningBuildDataOnly();
 
 	/**
 	* Copy mesh data for importing a single LOD
@@ -401,14 +388,14 @@ public:
 	* @param LODFaces - triangle/ face data to static LOD level.
 	* @param LODInfluences - weights/ influences to static LOD level.
 	*/
-	void CopyLODImportData(
+	ENGINE_API void CopyLODImportData(
 		TArray<FVector3f>& LODPoints,
 		TArray<SkeletalMeshImportData::FMeshWedge>& LODWedges,
 		TArray<SkeletalMeshImportData::FMeshFace>& LODFaces,
 		TArray<SkeletalMeshImportData::FVertInfluence>& LODInfluences,
 		TArray<int32>& LODPointToRawMap) const;
 
-	static FString FixupBoneName(FString InBoneName);
+	static ENGINE_API FString FixupBoneName(FString InBoneName);
 
 	/**
 	* Removes all import data
@@ -425,27 +412,32 @@ public:
 		MeshInfos.Empty();
 	}
 
-	static bool ReplaceSkeletalMeshGeometryImportData(const USkeletalMesh* SkeletalMesh, FSkeletalMeshImportData* ImportData, int32 LodIndex);
-	static bool ReplaceSkeletalMeshRigImportData(const USkeletalMesh* SkeletalMesh, FSkeletalMeshImportData* ImportData, int32 LodIndex);
+	static ENGINE_API bool ReplaceSkeletalMeshGeometryImportData(const USkeletalMesh* SkeletalMesh, FSkeletalMeshImportData* ImportData, int32 LodIndex);
+	static ENGINE_API bool ReplaceSkeletalMeshRigImportData(const USkeletalMesh* SkeletalMesh, FSkeletalMeshImportData* ImportData, int32 LodIndex);
 
 	//Fit another rig data on this one
-	bool ApplyRigToGeo(FSkeletalMeshImportData& Other);
+	ENGINE_API bool ApplyRigToGeo(FSkeletalMeshImportData& Other);
 
 	/*
 	 * Use the faces corner normals to create the face smooth groups data
 	 */
-	void ComputeSmoothGroupFromNormals();
+	ENGINE_API void ComputeSmoothGroupFromNormals();
 
 	/**
 	 * Returns a mesh description from the import data
 	 */
-	bool GetMeshDescription(FMeshDescription &OutMeshDescription) const;
+	ENGINE_API bool GetMeshDescription(FMeshDescription &OutMeshDescription) const;
 
-	static FSkeletalMeshImportData CreateFromMeshDescription(const FMeshDescription &InMeshDescription);
+	/**
+	 * @note MeshDescription always contains color, normal and tangent data by default. Therefore, while iterating
+	 * over the vertices, we check if at least one normal/tangent vector is not a zero vector and the color is
+	 * not white, then we set the corresponding bHasNormals/bHasTangent/bHasVertexColors flags to true.
+	 */
+	static ENGINE_API FSkeletalMeshImportData CreateFromMeshDescription(const FMeshDescription &InMeshDescription);
 
 private:
-	void CleanUpUnusedMaterials();
-	void SplitVerticesBySmoothingGroups();
+	ENGINE_API void CleanUpUnusedMaterials();
+	ENGINE_API void SplitVerticesBySmoothingGroups();
 };
 
 /**
@@ -489,10 +481,10 @@ public:
 	/** Return the number of vertices and triangles store in this bulk data. */
 	ENGINE_API void GetGeometryInfo(uint32& LODVertexNumber, uint32& LODTriNumber, UObject* Owner);
 
-	ENGINE_API FByteBulkData& GetBulkData() { return BulkData; }
+	FByteBulkData& GetBulkData() { return BulkData; }
 
 	/** Empty the bulk data. */
-	ENGINE_API void EmptyBulkData() { BulkData.RemoveBulkData(); }
+	void EmptyBulkData() { BulkData.RemoveBulkData(); }
 
 	/** Returns true if no bulk data is available for this mesh. */
 	FORCEINLINE bool IsEmpty() const { return BulkData.GetBulkDataSize() == 0; }
@@ -582,7 +574,7 @@ public:
 	ENGINE_API const FByteBulkData& GetBulkData() const;
 	
 	/** Empty the bulk data. */
-	ENGINE_API void EmptyBulkData()
+	void EmptyBulkData()
 	{
 		//Clear all the data
 		BulkData.RemoveBulkData();
@@ -598,7 +590,7 @@ public:
 	FORCEINLINE bool IsEmpty() const { return BulkData.GetBulkDataSize() == 0; }
 
 	/** Returns true if the last import version is enough to use the new build system. WE cannot rebuild asset if we did not previously store the data*/
-	ENGINE_API bool IsBuildDataAvailable() const
+	bool IsBuildDataAvailable() const
 	{
 		return GeoImportVersion >= ESkeletalMeshGeoImportVersions::SkeletalMeshBuildRefactor &&
 			SkinningImportVersion >= ESkeletalMeshSkinningImportVersions::SkeletalMeshBuildRefactor;

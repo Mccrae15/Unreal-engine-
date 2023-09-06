@@ -7,16 +7,52 @@
 #include "MetasoundBuildError.h"
 #include "MetasoundBuilderInterface.h"
 #include "MetasoundBuildError.h"
+#include "MetasoundDynamicOperator.h"
+#include "MetasoundDynamicOperatorTransactor.h"
 #include "MetasoundGraphAlgo.h"
+#include "MetasoundGraphAlgoPrivate.h"
 #include "MetasoundGraphLinter.h"
 #include "MetasoundGraphOperator.h"
 #include "MetasoundOperatorInterface.h"
+#include "MetasoundRebindableGraphOperator.h"
 #include "MetasoundThreadLocalDebug.h"
+#include "MetasoundTrace.h"
 #include "Templates/PimplPtr.h"
 
 
 namespace Metasound
 {
+	namespace OperatorBuilder
+	{
+		// Shared context used in the builder to maintain state of current build.
+		struct FBuildContext
+		{
+			const IGraph& Graph;
+			const FDirectedGraphAlgoAdapter& AlgoAdapter;
+			const FOperatorSettings& Settings;
+			const FMetasoundEnvironment& Environment;
+			
+			FBuildResults& Results;
+			TUniquePtr<DirectedGraphAlgo::FGraphOperatorData> GraphOperatorData;
+
+			FBuildContext(
+				const IGraph& InGraph,
+				const FDirectedGraphAlgoAdapter& InAlgoAdapter,
+				const FOperatorSettings& InSettings,
+				const FMetasoundEnvironment& InEnvironment,
+				FBuildResults& OutResults)
+			: Graph(InGraph)
+			, AlgoAdapter(InAlgoAdapter)
+			, Settings(InSettings)
+			, Environment(InEnvironment)
+			, Results(OutResults)
+			, GraphOperatorData(MakeUnique<DirectedGraphAlgo::FGraphOperatorData>(InSettings))
+			{
+				GraphOperatorData->VertexData = FVertexInterfaceData(InGraph.GetVertexInterface());
+			}
+		};
+	}
+
 	namespace OperatorBuilderPrivate
 	{
 		using FBuildErrorPtr = TUniquePtr<IOperatorBuildError>;
@@ -29,7 +65,6 @@ namespace Metasound
 				AddBuildError<FInternalError>(OutErrors, __FILE__, __LINE__);
 			}
 		}
-
 	}
 
 	FOperatorBuilder::FOperatorBuilder(const FOperatorBuilderSettings& InBuilderSettings)
@@ -43,7 +78,37 @@ namespace Metasound
 
 	TUniquePtr<IOperator> FOperatorBuilder::BuildGraphOperator(const FBuildGraphOperatorParams& InParams, FBuildResults& OutResults) const
 	{
+		TUniquePtr<DirectedGraphAlgo::FGraphOperatorData> GraphData = BuildGraphOperatorData(InParams, OutResults);
+
+		if (GraphData.IsValid())
+		{
+			// Create graph operator from collection of node operators.
+			return CreateGraphOperator(MoveTemp(GraphData));
+		}
+
+		return TUniquePtr<IOperator>(nullptr);
+	}
+
+	TUniquePtr<IOperator> FOperatorBuilder::BuildDynamicGraphOperator(const FBuildDynamicGraphOperatorParams& InParams, FBuildResults& OutResults)
+	{
+		using namespace DynamicGraph;
+
+		TUniquePtr<DirectedGraphAlgo::FGraphOperatorData> GraphData = BuildGraphOperatorData(InParams, OutResults);
+
+		if (GraphData.IsValid())
+		{
+			return MakeUnique<FDynamicOperator>(MoveTemp(*GraphData), InParams.TransformQueue, InParams.OperatorUpdateCallbacks);
+		}
+
+		return TUniquePtr<IOperator>(nullptr);
+	}
+
+	TUniquePtr<DirectedGraphAlgo::FGraphOperatorData> FOperatorBuilder::BuildGraphOperatorData(const FBuildGraphOperatorParams& InParams, FBuildResults& OutResults) const
+	{
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::BuildGraphOperator);
+
 		using namespace OperatorBuilderPrivate;
+		using namespace DirectedGraphAlgo;
 
 		FBuildStatus BuildStatus = FBuildStatus::NoError;
 
@@ -78,19 +143,19 @@ namespace Metasound
 		// Possible early exit if edge validation fails.
 		if (BuildStatus > GetMaxErrorLevel())
 		{
-			return TUniquePtr<IOperator>(nullptr);
+			return TUniquePtr<FGraphOperatorData>(nullptr);
 		}
 
 		// Create algo adapter view of graph to cache graph operations.
-		TPimplPtr<FDirectedGraphAlgoAdapter> AlgoAdapter = FDirectedGraphAlgo::CreateDirectedGraphAlgoAdapter(InParams.Graph);
+		TPimplPtr<FDirectedGraphAlgoAdapter> AlgoAdapter = DirectedGraphAlgo::CreateDirectedGraphAlgoAdapter(InParams.Graph);
 		
 		if (!AlgoAdapter.IsValid())
 		{
 			AddBuildError<FInternalError>(OutResults.Errors, __FILE__, __LINE__);
-			return TUniquePtr<IOperator>(nullptr);
+			return TUniquePtr<FGraphOperatorData>(nullptr);
 		}
 
-		FBuildContext BuildContext(InParams.Graph, *AlgoAdapter, InParams.OperatorSettings, InParams.Environment, BuilderSettings, OutResults);
+		OperatorBuilder::FBuildContext BuildContext(InParams.Graph, *AlgoAdapter, InParams.OperatorSettings, InParams.Environment, OutResults);
 
 		TArray<const INode*> SortedNodes;
 
@@ -98,13 +163,25 @@ namespace Metasound
 		BuildStatus |= DepthFirstTopologicalSort(BuildContext, SortedNodes);
 
 		// TODO: Add FindReachableNodesFromVariables in Prune.
+		// TODO: will need to prune edges as well.
 		// Otherwise, subgraphs incorrectly get pruned.
 		// BuildStatus |= PruneNodges(BuildContext, SortedNodes);
 
 		// Check build status in case build routine should be exited early.
 		if (BuildStatus > GetMaxErrorLevel())
 		{
-			return TUniquePtr<IOperator>(nullptr);
+			return TUniquePtr<FGraphOperatorData>(nullptr);
+		}
+
+		InitializeOperatorInfo(InParams.Graph, SortedNodes, *BuildContext.GraphOperatorData);
+
+		// Assign external inputs to various vertex interfaces.
+		BuildStatus |= FOperatorBuilder::GatherExternalInputDataReferences(BuildContext, InParams.InputData);
+
+		// Check build status in case build routine should be exited early.
+		if (BuildStatus > GetMaxErrorLevel())
+		{
+			return TUniquePtr<FGraphOperatorData>(nullptr);
 		}
 
 		// Create node operators from factories.
@@ -112,18 +189,31 @@ namespace Metasound
 
 		if (BuildStatus > GetMaxErrorLevel())
 		{
-			return TUniquePtr<IOperator>(nullptr);
+			return TUniquePtr<FGraphOperatorData>(nullptr);
 		}
 
-		// Create graph operator from collection of node operators.
-		return CreateGraphOperator(BuildContext);
+		if (BuilderSettings.bPopulateInternalDataReferences)
+		{
+			GatherInternalGraphDataReferences(BuildContext, SortedNodes, BuildContext.Results.InternalDataReferences);
+		}
+
+		// Gather the inputs for the graph data. 
+		BuildStatus |= GatherGraphDataReferences(BuildContext, BuildContext.GraphOperatorData->VertexData);
+
+		if (BuildStatus > GetMaxErrorLevel())
+		{
+			return TUniquePtr<FGraphOperatorData>(nullptr);
+		}
+
+		return MoveTemp(BuildContext.GraphOperatorData);
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::DepthFirstTopologicalSort(FBuildContext& InOutContext, TArray<const INode*>& OutNodes) const
+	FOperatorBuilder::FBuildStatus FOperatorBuilder::DepthFirstTopologicalSort(OperatorBuilder::FBuildContext& InOutContext, TArray<const INode*>& OutNodes) const
 	{
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::DepthFirstTopologicalSort);
 		using namespace OperatorBuilderPrivate;
 
-		bool bSuccess = FDirectedGraphAlgo::DepthFirstTopologicalSort(InOutContext.AlgoAdapter, OutNodes);
+		bool bSuccess = DirectedGraphAlgo::DepthFirstTopologicalSort(InOutContext.AlgoAdapter, OutNodes);
 
 		if (!bSuccess)
 		{
@@ -136,11 +226,12 @@ namespace Metasound
 		return FBuildStatus::NoError;
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::KahnsTopologicalSort(FBuildContext& InOutContext, TArray<const INode*>& OutNodes) const
+	FOperatorBuilder::FBuildStatus FOperatorBuilder::KahnsTopologicalSort(OperatorBuilder::FBuildContext& InOutContext, TArray<const INode*>& OutNodes) const
 	{
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::KahnsTopologicalSort);
 		using namespace OperatorBuilderPrivate;
 
-		bool bSuccess = FDirectedGraphAlgo::KahnTopologicalSort(InOutContext.AlgoAdapter, OutNodes);
+		bool bSuccess = DirectedGraphAlgo::KahnTopologicalSort(InOutContext.AlgoAdapter, OutNodes);
 
 		if (!bSuccess)
 		{
@@ -153,8 +244,9 @@ namespace Metasound
 		return FBuildStatus::NoError;
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::PruneNodes(FBuildContext& InOutContext, TArray<const INode*>& InOutNodes) const
+	FOperatorBuilder::FBuildStatus FOperatorBuilder::PruneNodes(OperatorBuilder::FBuildContext& InOutContext, TArray<const INode*>& InOutNodes) const
 	{
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::PruneNodes);
 		using namespace OperatorBuilderPrivate;
 
 		FBuildStatus BuildStatus = FBuildStatus::NoError;
@@ -164,15 +256,15 @@ namespace Metasound
 		switch (BuilderSettings.PruningMode)
 		{
 			case EOperatorBuilderNodePruning::PruneNodesWithoutExternalDependency:
-				FDirectedGraphAlgo::FindReachableNodes(InOutContext.AlgoAdapter, ReachableNodes);
+				DirectedGraphAlgo::FindReachableNodes(InOutContext.AlgoAdapter, ReachableNodes);
 				break;
 
 			case EOperatorBuilderNodePruning::PruneNodesWithoutOutputDependency:
-				FDirectedGraphAlgo::FindReachableNodesFromOutput(InOutContext.AlgoAdapter, ReachableNodes);
+				DirectedGraphAlgo::FindReachableNodesFromOutput(InOutContext.AlgoAdapter, ReachableNodes);
 				break;
 
 			case EOperatorBuilderNodePruning::PruneNodesWithoutInputDependency:
-				FDirectedGraphAlgo::FindReachableNodesFromInput(InOutContext.AlgoAdapter, ReachableNodes);
+				DirectedGraphAlgo::FindReachableNodesFromInput(InOutContext.AlgoAdapter, ReachableNodes);
 				break;
 
 			case EOperatorBuilderNodePruning::None:
@@ -229,87 +321,69 @@ namespace Metasound
 		return BuildStatus;
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::GatherInputDataReferences(FBuildContext& InOutContext, const INode* InNode, const FNodeEdgeMultiMap& InEdgeMap, FInputVertexInterfaceData& OutVertexData) const
+	void FOperatorBuilder::InitializeOperatorInfo(const IGraph& InGraph, TArray<const INode*>& InSortedNodes, DirectedGraphAlgo::FGraphOperatorData& InOutGraphOperatorData) const
 	{
-		using namespace OperatorBuilderPrivate;
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::InitializeOperatorInfo);
+		using namespace DirectedGraphAlgo;
 
-		FBuildStatus BuildStatus;
+		// Create FOperatorInfos from Nodes
+		TSortedMap<FOperatorID, FGraphOperatorData::FOperatorInfo>& OperatorMap = InOutGraphOperatorData.OperatorMap;
+		TArray<FOperatorID>& OperatorOrder = InOutGraphOperatorData.OperatorOrder;
 
-		// Find all input edges associated with this node. 
-		TArray<const FDataEdge*> Edges;
-		InEdgeMap.MultiFind(InNode, Edges);
-
-		// Add parameters to collection based on edge description
-		for (const FDataEdge* Edge : Edges)
+		for (const INode* Node : InSortedNodes)
 		{
-			if (!InOutContext.DataReferences.Contains(Edge->From.Node))
-			{
-				// This is likely due to a failed topological sort and is more of an internal error
-				// than a user error.
-				AddBuildError<FInternalError>(InOutContext.Results.Errors, TEXT(__FILE__), __LINE__);
-
-				return FBuildStatus::NonFatalError;
-			}
-
-			const FOutputVertexInterfaceData& FromData = InOutContext.DataReferences[Edge->From.Node].GetOutputs();
-
-			if (const FAnyDataReference* DataReference = FromData.FindDataReference(Edge->From.Vertex.VertexName))
-			{
-				check(DataReference->GetDataTypeName() == Edge->From.Vertex.DataTypeName);
-				check(DataReference->GetDataTypeName() == Edge->To.Vertex.DataTypeName);
-				OutVertexData.BindVertex(Edge->To.Vertex.VertexName, FAnyDataReference{*DataReference});
-			}
-			else 
-			{
-				// Does not contain any reference
-				// This is likely a node programming error where the edges reported by the INode interface
-				// did not match the readable parameter refs created by the operators outputs. Or, the edge description is invalid.
-
-				AddBuildError<FMissingOutputDataReferenceError>(InOutContext.Results.Errors, Edge->From);
-
-				BuildStatus |= FBuildStatus::NonFatalError;
-				continue;
-			}
+			FOperatorID OperatorID = GetOperatorID(Node);
+			OperatorOrder.Add(OperatorID);
+			OperatorMap.Add(OperatorID, FGraphOperatorData::FOperatorInfo{nullptr, Node->GetVertexInterface()});
 		}
 
-		return BuildStatus;
+		// Set the output destinations on operator infos
+		for (const FDataEdge& Edge : InGraph.GetDataEdges())
+		{
+			const FOperatorID FromOperatorID = GetOperatorID(Edge.From.Node);
+			FGraphOperatorData::FOperatorInfo& OperatorInfo = OperatorMap.FindChecked(FromOperatorID);
+
+			OperatorInfo.OutputConnections.FindOrAdd(Edge.From.Vertex.VertexName).Add(FGraphOperatorData::FVertexDestination{GetOperatorID(Edge.To.Node), Edge.To.Vertex.VertexName});
+		}
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::GatherExternalInputDataReferences(FBuildContext& InOutContext, const INode* InNode, const FNodeDestinationMap& InNodeDestinationMap, const FInputVertexInterfaceData& InExternalInputData, FInputVertexInterfaceData& OutVertexData) const
+	FOperatorBuilder::FBuildStatus FOperatorBuilder::GatherExternalInputDataReferences(OperatorBuilder::FBuildContext& InOutContext, const FInputVertexInterfaceData& InExternalInputData) const
 	{
-		using namespace OperatorBuilderPrivate;
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::GatherExternalInputDataReferences);
+		using namespace DirectedGraphAlgo;
 
 		FBuildStatus BuildStatus;
-
-		// Check if there are any graph inputs connected to the node's inputs.
-		if (const FInputDataDestination* const* DestinationPtr = InNodeDestinationMap.Find(InNode))
+		// Gather external input data to graph destinations
+		for (const TPair<FNodeDataVertexKey, FInputDataDestination>& InputDestinationKV : InOutContext.Graph.GetInputDataDestinations())
 		{
-			if (const FInputDataDestination* Destination = *DestinationPtr)
-			{
-				if (const FAnyDataReference* DataReference = InExternalInputData.FindDataReference(Destination->Vertex.VertexName))
-				{
-					if (DataReference->GetDataTypeName() == Destination->Vertex.DataTypeName)
-					{
-						OutVertexData.BindVertex(Destination->Vertex.VertexName, FAnyDataReference{*DataReference});
-					}
-					else
-					{
-						// Mismatch in datatypes. This likely corresponds to a corrupt 
-						// Metasound Graph. The graph's inputs should route directly
-						// to TInputNode<>s with matching data types. 
-						
-						// Create source for reporting connection since external inputs do not have nodes. 
-						const FInputDataVertex& GraphVertex = InExternalInputData.GetVertex(Destination->Vertex.VertexName);
+			const FInputDataDestination& Destination = InputDestinationKV.Value;
 
-						FOutputDataSource Source;
-						Source.Vertex.VertexName = GraphVertex.VertexName; 
-						Source.Vertex.DataTypeName = GraphVertex.DataTypeName;
+			FOperatorID OperatorID = GetOperatorID(Destination.Node);
+			FGraphOperatorData::FOperatorInfo& OperatorInfo = InOutContext.GraphOperatorData->OperatorMap.FindChecked(OperatorID);
+
+			if (const FAnyDataReference* DataReference = InExternalInputData.FindDataReference(Destination.Vertex.VertexName))
+			{
+				if (DataReference->GetDataTypeName() == Destination.Vertex.DataTypeName)
+				{
+					OperatorInfo.VertexData.GetInputs().SetVertex(Destination.Vertex.VertexName, *DataReference);
+				}
+				else
+				{
+					// Mismatch in datatypes. This likely corresponds to a corrupt 
+					// Metasound Graph. The graph's inputs should route directly
+					// to TInputNode<>s with matching data types. 
+					
+					// Create source for reporting connection since external inputs do not have nodes. 
+					const FInputDataVertex& GraphVertex = InExternalInputData.GetVertex(Destination.Vertex.VertexName);
+
+					FOutputDataSource Source;
+					Source.Vertex.VertexName = GraphVertex.VertexName; 
+					Source.Vertex.DataTypeName = GraphVertex.DataTypeName;
 #if WITH_EDITORONLY_DATA
-						Source.Vertex.Metadata = GraphVertex.Metadata;
+					Source.Vertex.Metadata = GraphVertex.Metadata;
 #endif
 
-						AddBuildError<FInvalidConnectionDataTypeError>(InOutContext.Results.Errors, FDataEdge{Source, *Destination});
-					}
+					AddBuildError<FInvalidConnectionDataTypeError>(InOutContext.Results.Errors, FDataEdge{Source, Destination});
 				}
 			}
 		}
@@ -317,19 +391,25 @@ namespace Metasound
 		return BuildStatus;
 	}
 
-	void FOperatorBuilder::GatherInternalGraphDataReferences(FBuildContext& InOutContext, TMap<FGuid, FDataReferenceCollection>& OutNodeVertexData) const
+	void FOperatorBuilder::GatherInternalGraphDataReferences(OperatorBuilder::FBuildContext& InOutContext, const TArray<const INode*>& InNodes, TMap<FGuid, FDataReferenceCollection>& OutNodeVertexData) const
 	{
-		for (TPair<const INode*, FVertexInterfaceData>& ReferencePair : InOutContext.DataReferences)
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::GatherInternalGraphDataReferences);
+		using namespace DirectedGraphAlgo;
+
+		for (const INode* NodePtr : InNodes)
 		{
-			const INode* Node = ReferencePair.Key;
-			check(Node);
-			OutNodeVertexData.Emplace(Node->GetInstanceID(), ReferencePair.Value.GetOutputs().ToDataReferenceCollection());
+			check(NodePtr);
+			if (const FGraphOperatorData::FOperatorInfo* OpInfo = InOutContext.GraphOperatorData->OperatorMap.Find(GetOperatorID(NodePtr)))
+			{
+				OutNodeVertexData.Emplace(NodePtr->GetInstanceID(), OpInfo->VertexData.GetOutputs().ToDataReferenceCollection());
+			}
 		}
 	}
 
 	FOperatorBuilder::FBuildStatus FOperatorBuilder::ValidateOperatorOutputsAreBound(const INode& InNode, const FOutputVertexInterfaceData& InVertexData) const
 	{
-		using FOutputVertexBinding = MetasoundVertexDataPrivate::TBinding<FOutputDataVertex>;
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::ValidateOperatorOutputsAreBound);
+		using FOutputVertexBinding = MetasoundVertexDataPrivate::FOutputBinding;
 
 		FBuildStatus BuildStatus = FBuildStatus::NoError;
 		bool bFoundUnboundVertex = false;
@@ -351,84 +431,85 @@ namespace Metasound
 		return BuildStatus;
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::CreateOperators(FBuildContext& InOutContext, const TArray<const INode*>& InSortedNodes, const FInputVertexInterfaceData& InExternalInputData) const
+	FOperatorBuilder::FBuildStatus FOperatorBuilder::CreateOperators(OperatorBuilder::FBuildContext& InOutContext, const TArray<const INode*>& InSortedNodes, const FInputVertexInterfaceData& InExternalInputData) const
 	{
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::CreateOperators);
+		METASOUND_DEBUG_DECLARE_SCOPE;
+
+		using namespace DirectedGraphAlgo;
+
 		FBuildStatus BuildStatus;
 
-		FNodeEdgeMultiMap NodeInputEdges;
-
-		// Gather input edges for each node.
-		for (const FDataEdge& Edge : InOutContext.Graph.GetDataEdges())
-		{
-			NodeInputEdges.Add(Edge.To.Node, &Edge);
-		}
-
-		// Map input nodes to graph destinations
-		FNodeDestinationMap NodeDestinations;
-		for (const auto& InputDestinationKV : InOutContext.Graph.GetInputDataDestinations())
-		{
-			const FInputDataDestination& Destination = InputDestinationKV.Value;
-			NodeDestinations.Add(Destination.Node, &Destination);
-		}
+		// Create FOperatorInfos from Nodes
+		TSortedMap<FOperatorID, FGraphOperatorData::FOperatorInfo>& OperatorMap = InOutContext.GraphOperatorData->OperatorMap;
 
 		// Call operator factory for each node.
 		for (const INode* Node : InSortedNodes)
 		{
-			ThreadLocalDebug::SetActiveNodeClass(Node->GetMetadata());
+			METASOUND_DEBUG_SET_ACTIVE_NODE_SCOPE(Node);
 
-			const FVertexInterface& NodeInterface = Node->GetVertexInterface();
-			FInputVertexInterfaceData InputData(NodeInterface.GetInputInterface());
+			FOperatorID OperatorID = GetOperatorID(Node);
+			FGraphOperatorData::FOperatorInfo& OperatorInfo = OperatorMap.FindChecked(OperatorID);
 
-			// Gather the input parameters for this IOperator from the output parameters of already created IOperators. 
-			BuildStatus |= GatherInputDataReferences(InOutContext, Node, NodeInputEdges, InputData);
-			// Gather the input parameters for this IOperator from the graph inputs.
-			BuildStatus |= GatherExternalInputDataReferences(InOutContext, Node, NodeDestinations, InExternalInputData, InputData);
-
-			if (BuildStatus >= FBuildStatus::FatalError)
 			{
-				return BuildStatus;
+				METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::CreateOperators::CreateAndBind);
+				FBuildOperatorParams CreateParams{*Node, InOutContext.Settings, OperatorInfo.VertexData.GetInputs(), InOutContext.Environment, this};
+				FOperatorFactorySharedRef Factory = Node->GetDefaultOperatorFactory();
+				OperatorInfo.Operator = Factory->CreateOperator(CreateParams, InOutContext.Results);
+
+				if (!OperatorInfo.Operator.IsValid())
+				{
+					return FBuildStatus::FatalError;
+				}
+
+				// Bind vertex to operator data
+				OperatorInfo.Operator->BindInputs(OperatorInfo.VertexData.GetInputs());
+				OperatorInfo.Operator->BindOutputs(OperatorInfo.VertexData.GetOutputs());
+				
+				// Check if outputs are bound correctly.
+				if (BuilderSettings.bValidateOperatorOutputsAreBound)
+				{
+					BuildStatus |= ValidateOperatorOutputsAreBound(*Node, OperatorInfo.VertexData.GetOutputs());
+				}
 			}
 
-			FOperatorFactorySharedRef Factory = Node->GetDefaultOperatorFactory();
 
-			// This is here to handle the deprecated field FCreateOperator::InputDataReferences.
-			// It can be removed once the deprecated member is removed.
-			FDataReferenceCollection InputCollection = InputData.ToDataReferenceCollection();
-
-			FBuildOperatorParams CreateParams{*Node, InOutContext.Settings, InputData, InOutContext.Environment, this};
-
-			FOperatorPtr Operator = Factory->CreateOperator(CreateParams, InOutContext.Results);
-
-			if (!Operator.IsValid())
+			// Route outputs of operator to downstream operators' VertexData
 			{
-				return FBuildStatus::FatalError;
+				METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::CreateOperators::RouteOutputs);
+				for (const TPair<FVertexName, TArray<FGraphOperatorData::FVertexDestination>>& OutputRouting : OperatorInfo.OutputConnections)
+				{
+					const FVertexName& VertexName = OutputRouting.Key;
+
+					if (const FAnyDataReference* Ref = OperatorInfo.VertexData.GetOutputs().FindDataReference(VertexName))
+					{
+						for (const FGraphOperatorData::FVertexDestination& Destination : OutputRouting.Value)
+						{
+							OperatorMap.FindChecked(Destination.OperatorID).VertexData.GetInputs().SetVertex(Destination.VertexName, *Ref);
+						}
+					}
+					else
+					{
+						// Does not contain any reference
+						// This is likely a node programming error where the edges reported by the INode interface
+						// did not match the readable parameter refs created by the operators outputs. Or, the edge description is invalid.
+
+						AddBuildError<FMissingOutputDataReferenceError>(InOutContext.Results.Errors, FOutputDataSource{*Node, Node->GetVertexInterface().GetOutputVertex(VertexName)});
+
+						BuildStatus |= FBuildStatus::NonFatalError;
+					}
+				}
 			}
-
-			// Bind vertex to operator data
-			FVertexInterfaceData BoundOperatorData(NodeInterface);
-			Operator->Bind(BoundOperatorData);
-			
-			// Check if outputs are bound correctly.
-			if (BuilderSettings.bValidateOperatorOutputsAreBound)
-			{
-				BuildStatus |= ValidateOperatorOutputsAreBound(*Node, BoundOperatorData.GetOutputs());
-			}
-
-			// Store bound interface for later use.
-			InOutContext.DataReferences.Emplace(Node, MoveTemp(BoundOperatorData));
-
-			// Add operator to operator array
-			InOutContext.Operators.Add(MoveTemp(Operator));
-
-			ThreadLocalDebug::ResetActiveNodeClass();
 		}
 
 		return BuildStatus;
 	}
 
-	FOperatorBuilder::FBuildStatus FOperatorBuilder::GatherGraphDataReferences(FBuildContext& InOutContext, FVertexInterfaceData& OutVertexData) const
+	FOperatorBuilder::FBuildStatus FOperatorBuilder::GatherGraphDataReferences(OperatorBuilder::FBuildContext& InOutContext, FVertexInterfaceData& OutVertexData) const
 	{
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::GatherGraphDataReferences);
 		using namespace OperatorBuilderPrivate;
+		using namespace DirectedGraphAlgo;
 		using FDestinationElement = FInputDataDestinationCollection::ElementType;
 		using FSourceElement = FOutputDataSourceCollection::ElementType;
 
@@ -440,17 +521,19 @@ namespace Metasound
 			bool bFoundDataReference = false;
 			const FInputDataDestination& InputDestination = Element.Value;
 
-			if (const FVertexInterfaceData* VertexData = InOutContext.DataReferences.Find(InputDestination.Node))
+			const FOperatorID OperatorID = GetOperatorID(InputDestination.Node);
+			if (const FGraphOperatorData::FOperatorInfo* OperatorInfo = InOutContext.GraphOperatorData->OperatorMap.Find(OperatorID))
 			{
-				const FInputVertexInterfaceData& NodeInputData = VertexData->GetInputs();
+				const FInputVertexInterfaceData& NodeInputData = OperatorInfo->VertexData.GetInputs();
 				if (const FAnyDataReference* DataReference = NodeInputData.FindDataReference(InputDestination.Vertex.VertexName))
 				{
 					if (DataReference->GetDataTypeName() == InputDestination.Vertex.DataTypeName)
 					{
 						bFoundDataReference = true;
-						OutVertexData.GetInputs().BindVertex(InputDestination.Vertex.VertexName, *DataReference);
+						OutVertexData.GetInputs().SetVertex(InputDestination.Vertex.VertexName, *DataReference);
 					}
 				}
+				InOutContext.GraphOperatorData->InputVertexMap.Emplace(InputDestination.Vertex.VertexName, OperatorID);
 			}
 
 			if (!bFoundDataReference)
@@ -466,17 +549,19 @@ namespace Metasound
 			bool bFoundDataReference = false;
 			const FOutputDataSource& OutputSource = Element.Value;
 
-			if (const FVertexInterfaceData* VertexData = InOutContext.DataReferences.Find(OutputSource.Node))
+			const FOperatorID OperatorID = GetOperatorID(OutputSource.Node);
+			if (const FGraphOperatorData::FOperatorInfo* OperatorInfo = InOutContext.GraphOperatorData->OperatorMap.Find(OperatorID))
 			{
-				const FOutputVertexInterfaceData& NodeOutputData = VertexData->GetOutputs();
+				const FOutputVertexInterfaceData& NodeOutputData = OperatorInfo->VertexData.GetOutputs();
 				if (const FAnyDataReference* DataReference = NodeOutputData.FindDataReference(OutputSource.Vertex.VertexName))
 				{
 					if (DataReference->GetDataTypeName() == OutputSource.Vertex.DataTypeName)
 					{
 						bFoundDataReference = true;
-						OutVertexData.GetOutputs().BindVertex(OutputSource.Vertex.VertexName, FAnyDataReference{*DataReference});
+						OutVertexData.GetOutputs().SetVertex(OutputSource.Vertex.VertexName, FAnyDataReference{*DataReference});
 					}
 				}
+				InOutContext.GraphOperatorData->OutputVertexMap.Emplace(OutputSource.Vertex.VertexName, OperatorID);
 			}
 
 			if (!bFoundDataReference)
@@ -489,32 +574,22 @@ namespace Metasound
 		return BuildStatus;
 	}
 
-	TUniquePtr<IOperator> FOperatorBuilder::CreateGraphOperator(FBuildContext& InOutContext) const
+	TUniquePtr<IOperator> FOperatorBuilder::CreateGraphOperator(TUniquePtr<DirectedGraphAlgo::FGraphOperatorData>&& InGraphOperatorData) const
 	{
-		FVertexInterfaceData BoundGraphData(InOutContext.Graph.GetVertexInterface());
+		METASOUND_TRACE_CPUPROFILER_EVENT_SCOPE(Metasound::FOperatorBuilder::CreateGraphOperator);
 
-		FBuildStatus BuildStatus = GatherGraphDataReferences(InOutContext, BoundGraphData);
+		TUniquePtr<IOperator> GraphOperator;
 
-		if (BuildStatus > GetMaxErrorLevel())
+		if (BuilderSettings.bEnableOperatorRebind)
 		{
-			return TUniquePtr<IOperator>(nullptr);
+			 GraphOperator = MakeUnique<FRebindableGraphOperator>(MoveTemp(*InGraphOperatorData));
+		}
+		else
+		{
+			 GraphOperator = MakeUnique<FGraphOperator>(MoveTemp(InGraphOperatorData));
 		}
 
-		TUniquePtr<FGraphOperator> GraphOperator = MakeUnique<FGraphOperator>();
-
-		GraphOperator->SetVertexInterfaceData(MoveTemp(BoundGraphData));
-		
-		if (BuilderSettings.bPopulateInternalDataReferences)
-		{
-			GatherInternalGraphDataReferences(InOutContext, InOutContext.Results.InternalDataReferences);
-		}
-
-		for (FOperatorPtr& Ptr : InOutContext.Operators)
-		{
-			GraphOperator->AppendOperator(MoveTemp(Ptr));
-		}
-
-		return MoveTemp(GraphOperator);
+		return GraphOperator;
 	}
 
 	FOperatorBuilder::FBuildStatus::EStatus FOperatorBuilder::GetMaxErrorLevel() const

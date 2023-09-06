@@ -506,6 +506,24 @@ CORE_API void Initialize(EInitializationFlags Flags);
 CORE_API void Initialize(const FInitParams& InitParams, EInitializationFlags Flags);
 
 /**
+ * Returns if the system should be initialized before the slate system has been initialized or not.
+ * 
+ * Originally the VA system would be initialized as early as possible, but this would occur before
+ * slate has been set up and prevents us from initiating interactive dialogs. Now that we have
+ * the firm rule that engine content cannot be virtualized it should be safe for us to initialize
+ * the system after slate allowing dialogs.
+ * 
+ * This function exists so that a project could opt into the original behavior by setting the 
+ * config file value "engine.ini:[Core.ContentVirtualization]:InitPreSlate=true"
+ * This is only provided as a way for teams to quickly fix any issue that the later initialization
+ * might cause and is not a long term feature. This will be deprecated and removed in future releases.
+ * 
+ * Note that this is only really supported in the editor as we use the global config file, not one
+ * provided. Standalone programs should just initialize the system as needed.
+ */
+CORE_API bool ShouldInitializePreSlate();
+
+/**
  * Shutdowns the global IVirtualizationSystem if it exists. 
  * Calling this is optional as the system will shut itself down along with the rest of the engine.
  */
@@ -525,7 +543,7 @@ CORE_API void Shutdown();
  *							in failure and IsEnabled will always return false.
  * SystemName=Default	-	This will cause the default Epic implementation to be used @see VirtualizationManager
  */
-class CORE_API IVirtualizationSystem
+class IVirtualizationSystem
 {
 public:
 	IVirtualizationSystem() = default;
@@ -547,13 +565,13 @@ public:
 	virtual bool Initialize(const FInitParams& InitParams) = 0;
 
 	/** Returns true if a virtualization system has been initialized and false if not */
-	static bool IsInitialized();
+	CORE_API static bool IsInitialized();
 
 	/** 
 	 * Gain access to the current virtualization system active for the project. If the system has not yet been 
 	 * initialized then calling this method will initialize it.
 	 */
-	static IVirtualizationSystem& Get();
+	CORE_API static IVirtualizationSystem& Get();
 
 	/** Poll to see if content virtualization is enabled or not. */
 	virtual bool IsEnabled() const = 0;
@@ -720,6 +738,11 @@ public:
 	/**
 	 * Runs the virtualization process on a set of packages. All of the packages will be parsed and any found to be containing locally stored
 	 * payloads will have them removed but before they are removed they will be pushed to persistent storage.
+	 * 
+	 * Note that if errors occur some or all of the payloads could still get pushed to persistent storage, usually if the errors occur when
+	 * trying to remove the now virtualized payload from the packages on disk.
+	 * In addition, if errors do occur when removing the virtualized payloads, some packages may be virtualized successfully. In any case the
+	 * packages should still be usable and safe to checkin after the process has run, even with failure cases.
 	 *
 	 * @param PackagePaths			An array of file paths to packages that should be virtualized. If a path resolves to a file that is not
 	 *								a valid package then it will be silently skipped and will not be considered an error.
@@ -799,7 +822,7 @@ public:
 	};
 
 	/** Declare delegate for notifications*/
-	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNotification, ENotification, const FIoHash&);
+	using FOnNotification = TTSMulticastDelegate<void(ENotification, const FIoHash&)>;
 
 	virtual FOnNotification& GetNotificationEvent() = 0;
 };

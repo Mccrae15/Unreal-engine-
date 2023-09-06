@@ -3,12 +3,7 @@
 using EpicGames.Core;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Forms.VisualStyles;
 
@@ -16,12 +11,12 @@ namespace UnrealGameSync
 {
 	partial class ModifyBuildStepsWindow : Form
 	{
-		List<string> _targetNames;
-		List<BuildStep> _steps;
-		HashSet<Guid> _projectSteps;
-		DirectoryReference _baseDirectory;
+		readonly List<string> _targetNames;
+		readonly List<BuildStep> _steps;
+		readonly HashSet<Guid> _projectSteps;
+		readonly DirectoryReference _baseDirectory;
 		ListViewItem.ListViewSubItem? _mouseDownSubItem = null;
-		IReadOnlyDictionary<string, string> _variables;
+		readonly IReadOnlyDictionary<string, string> _variables;
 
 		public ModifyBuildStepsWindow(List<string> inTargetNames, List<BuildStep> inSteps, HashSet<Guid> inProjectSteps, DirectoryReference inBaseDirectory, IReadOnlyDictionary<string, string> inVariables)
 		{
@@ -32,15 +27,12 @@ namespace UnrealGameSync
 			_variables = inVariables;
 
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			using(Graphics graphics = Graphics.FromHwnd(IntPtr.Zero))
-			{
-				float dpiScaleX = graphics.DpiX / 96.0f;
-
-				NormalSyncColumn.Width = (int)(104 * dpiScaleX);
-				ScheduledSyncColumn.Width = (int)(104 * dpiScaleX);
-				DescriptionColumn.Width = BuildStepList.ClientSize.Width - NormalSyncColumn.Width - ScheduledSyncColumn.Width - 10;
-			}
+			float dpiScaleX = DeviceDpi / 96.0f;
+			NormalSyncColumn.Width = (int)(104 * dpiScaleX);
+			ScheduledSyncColumn.Width = (int)(104 * dpiScaleX);
+			DescriptionColumn.Width = BuildStepList.ClientSize.Width - NormalSyncColumn.Width - ScheduledSyncColumn.Width - 10;
 
 			BuildStepList.Font = SystemFonts.IconTitleFont;
 		}
@@ -69,7 +61,7 @@ namespace UnrealGameSync
 			newStep.Description = "Untitled Task";
 			newStep.EstimatedDuration = 1;
 
-			BuildStepWindow newStepWindow = new BuildStepWindow(newStep, _targetNames, _baseDirectory, _variables);
+			using BuildStepWindow newStepWindow = new BuildStepWindow(newStep, _targetNames, _baseDirectory, _variables);
 			if(newStepWindow.ShowDialog() == DialogResult.OK)
 			{
 				AddTask(newStep);
@@ -82,7 +74,7 @@ namespace UnrealGameSync
 			{
 				if (item != null)
 				{
-					BuildStepWindow editStep = new BuildStepWindow((BuildStep)item.Tag, _targetNames, _baseDirectory, _variables);
+					using BuildStepWindow editStep = new BuildStepWindow((BuildStep)item.Tag, _targetNames, _baseDirectory, _variables);
 					editStep.ShowDialog();
 					item.Text = ((BuildStep)item.Tag).Description;
 					break;
@@ -142,10 +134,9 @@ namespace UnrealGameSync
 
 		private void BuildStepList_DrawSubItem(object sender, DrawListViewSubItemEventArgs e)
 		{
-			if(e.ColumnIndex == 0)
+			if(e.ColumnIndex == 0 || e.Item == null)
 			{
 				e.DrawDefault = true;
-				return;
 			}
 			else
 			{

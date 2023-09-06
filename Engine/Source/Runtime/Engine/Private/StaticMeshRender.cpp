@@ -39,6 +39,7 @@
 #include "NaniteSceneProxy.h"
 #include "RenderCore.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "EngineModule.h"
 
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
@@ -93,10 +94,9 @@ static FAutoConsoleCommand GToggleReversedIndexBuffersCmd(
 	);
 
 // TODO: Should move this outside of SM, since Nanite can be used for multiple primitive types
-int32 GRenderNaniteMeshes = 1;
-FAutoConsoleVariableRef CVarRenderNaniteMeshes(
+TAutoConsoleVariable<int32> CVarRenderNaniteMeshes(
 	TEXT("r.Nanite"),
-	GRenderNaniteMeshes,
+	1,
 	TEXT("Render static meshes using Nanite."),
 	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
 	{
@@ -122,9 +122,9 @@ int32 GNaniteProxyRenderMode = 0;
 FAutoConsoleVariableRef CVarNaniteProxyRenderMode(
 	TEXT("r.Nanite.ProxyRenderMode"),
 	GNaniteProxyRenderMode,
-	TEXT("Render proxy meshes if Nanite is unsupported.")
-	TEXT(" 0: Fall back to rendering Nanite proxy meshes if Nanite is unsupported. (default)")
-	TEXT(" 1: Disable rendering if Nanite is enabled on a mesh but is unsupported.")
+	TEXT("Render proxy meshes if Nanite is unsupported.\n")
+	TEXT(" 0: Fall back to rendering Nanite proxy meshes if Nanite is unsupported. (default)\n")
+	TEXT(" 1: Disable rendering if Nanite is enabled on a mesh but is unsupported.\n")
 	TEXT(" 2: Disable rendering if Nanite is enabled on a mesh but is unsupported, except for static mesh editor toggle."),
 	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
 	{
@@ -157,10 +157,10 @@ static TAutoConsoleVariable<int32> CVarRayTracingStaticMeshes(
 static TAutoConsoleVariable<int32> CVarRayTracingStaticMeshesWPO(
 	TEXT("r.RayTracing.Geometry.StaticMeshes.WPO"),
 	1,
-	TEXT("World position offset evaluation for static meshes with EvaluateWPO enabled in ray tracing effects")
-	TEXT(" 0: static meshes with world position offset hidden in ray tracing")
-	TEXT(" 1: static meshes with world position offset visible in ray tracing, WPO evaluation enabled (default)")
-	TEXT(" 2: static meshes with world position offset visible in ray tracing, WPO evaluation disabled")
+	TEXT("World position offset evaluation for static meshes with EvaluateWPO enabled in ray tracing effects.\n")
+	TEXT(" 0: static meshes with world position offset hidden in ray tracing.\n")
+	TEXT(" 1: static meshes with world position offset visible in ray tracing, WPO evaluation enabled (default).\n")
+	TEXT(" 2: static meshes with world position offset visible in ray tracing, WPO evaluation disabled.")
 );
 
 FAutoConsoleVariableSink CVarRayTracingStaticMeshesWPOSink(FConsoleCommandDelegate::CreateLambda([]()
@@ -200,12 +200,13 @@ static TAutoConsoleVariable<float> CVarRayTracingStaticMeshesWPOCullingRadius(
 FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, bool bForceLODsShareStaticLighting)
 	: FPrimitiveSceneProxy(InComponent, InComponent->GetStaticMesh()->GetFName())
 	, RenderData(InComponent->GetStaticMesh()->GetRenderData())
-	, OverlayMaterial(InComponent->OverlayMaterial)
-	, OverlayMaterialMaxDrawDistance(InComponent->OverlayMaterialMaxDrawDistance)
+	, OverlayMaterial(InComponent->GetOverlayMaterial())
+	, OverlayMaterialMaxDrawDistance(InComponent->GetOverlayMaterialMaxDrawDistance())
 	, ForcedLodModel(InComponent->ForcedLodModel)
 	, bCastShadow(InComponent->CastShadow)
 	, bReverseCulling(InComponent->bReverseCulling)
 	, MaterialRelevance(InComponent->GetMaterialRelevance(GetScene().GetFeatureLevel()))
+	, WPODisableDistance(InComponent->WorldPositionOffsetDisableDistance)
 #if WITH_EDITORONLY_DATA
 	, StreamingDistanceMultiplier(FMath::Max(0.0f, InComponent->StreamingDistanceMultiplier))
 	, StreamingTransformScale(InComponent->GetTextureStreamingTransformScale())
@@ -264,6 +265,8 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 	}
 #endif
 
+	bool bForceDefaultMaterial = InComponent->ShouldRenderProxyFallbackToDefaultMaterial();
+
 	// Find the first LOD with any vertices (ie that haven't been stripped)
 	int FirstAvailableLOD = 0;
 	for (; FirstAvailableLOD < RenderData->LODResources.Num(); FirstAvailableLOD++)
@@ -274,10 +277,12 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 		}
 	}
 
-	if (GForceDefaultMaterial)
+	if (bForceDefaultMaterial || GForceDefaultMaterial)
 	{
 		MaterialRelevance |= UMaterial::GetDefaultMaterial(MD_Surface)->GetRelevance(FeatureLevel);
 	}
+
+	check(FirstAvailableLOD < RenderData->LODResources.Num())
 
 	ClampedMinLOD = FMath::Clamp(EffectiveMinLOD, FirstAvailableLOD, RenderData->LODResources.Num() - 1);
 
@@ -302,23 +307,30 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 #if RHI_RAYTRACING
 	bSupportRayTracing = InComponent->GetStaticMesh()->bSupportRayTracing;
 	bDynamicRayTracingGeometry = false;
+	bNeedsDynamicRayTracingGeometries = false;
 	
 	if (IsRayTracingAllowed() && bSupportRayTracing)
 	{
-		if (CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() > 0)
-		{
-			bDynamicRayTracingGeometry = MaterialRelevance.bUsesWorldPositionOffset;
-
-			if (CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() == 1)
-			{
-				bDynamicRayTracingGeometry &= InComponent->bEvaluateWorldPositionOffsetInRayTracing;
-			}
-		}
-
 		RayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
 		for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
 		{
 			RayTracingGeometries[LODIndex] = &RenderData->LODResources[LODIndex].RayTracingGeometry;
+		}
+		
+		const bool bWantsRayTracingWPO = MaterialRelevance.bUsesWorldPositionOffset && InComponent->bEvaluateWorldPositionOffsetInRayTracing;
+
+		// r.RayTracing.Geometry.StaticMeshes.WPO is handled in the following way:
+		// 0 - mark ray tracing geometry as dynamic but don't create any dynamic geometries since it won't be included in ray tracing scene
+		// 1 - mark ray tracing geometry as dynamic and create dynamic geometries
+		// 2 - don't mark ray tracing geometry as dynamic nor create any dynamic geometries since WPO evaluation is disabled
+
+		// if r.RayTracing.Geometry.StaticMeshes.WPO == 2, WPO evaluation is disabled so don't need to mark geometry as dynamic
+		if (bWantsRayTracingWPO && CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() != 2)
+		{
+			bDynamicRayTracingGeometry = true;
+
+			// only need dynamic geometries when r.RayTracing.Geometry.StaticMeshes.WPO == 1
+			bNeedsDynamicRayTracingGeometries = CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() == 1;
 		}
 	}
 #endif
@@ -339,13 +351,13 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 				MaterialRelevance |= UMaterial::GetDefaultMaterial(MD_Surface)->GetRelevance(FeatureLevel);
 			}
 
-			MaxWPODisplacement = FMath::Max(MaxWPODisplacement, SectionInfo.Material->GetMaxWorldPositionOffsetDisplacement());
+			MaxWPOExtent = FMath::Max(MaxWPOExtent, SectionInfo.Material->GetMaxWorldPositionOffsetDisplacement());
 		}
 	}
 
 	// WPO is typically used for ambient animations, so don't include in cached shadowmaps
 	// Note mesh animation can also come from PDO or Tessellation but they are typically static uses so we ignore them for cached shadowmaps
-	bGoodCandidateForCachedShadowmap = CacheShadowDepthsFromPrimitivesUsingWPO() || !MaterialRelevance.bUsesWorldPositionOffset;
+	bGoodCandidateForCachedShadowmap = CacheShadowDepthsFromPrimitivesUsingWPO() || (!MaterialRelevance.bUsesWorldPositionOffset && !MaterialRelevance.bUsesDisplacement);
 
 	// Disable shadow casting if no section has it enabled.
 	bCastShadow = bCastShadow && bAnySectionCastsShadows;
@@ -427,67 +439,42 @@ FStaticMeshSceneProxy::FStaticMeshSceneProxy(UStaticMeshComponent* InComponent, 
 void FStaticMeshSceneProxy::SetEvaluateWorldPositionOffsetInRayTracing(bool NewValue)
 {
 #if RHI_RAYTRACING
-	// Skip this code if the cvar settings are forcing WPO evaluation on/off
-	if (CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() != 1)
+	if (!IsRayTracingAllowed() || !bSupportRayTracing)
+	{
 		return;
+	}
 
-	NewValue &= MaterialRelevance.bUsesWorldPositionOffset;
+	// if r.RayTracing.Geometry.StaticMeshes.WPO == 2, WPO evaluation is disabled so don't need to mark geometry as dynamic
+	NewValue &= MaterialRelevance.bUsesWorldPositionOffset && CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() != 2;
+
 	if (NewValue && !bDynamicRayTracingGeometry)
 	{
 		bDynamicRayTracingGeometry = true;
-		if (IsRayTracingAllowed())
+
+		// only need dynamic geometries when r.RayTracing.Geometry.StaticMeshes.WPO == 1
+		bNeedsDynamicRayTracingGeometries = CVarRayTracingStaticMeshesWPO.GetValueOnAnyThread() == 1;
+
+		if (GetPrimitiveSceneInfo())
 		{
-			DynamicRayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
+			GetPrimitiveSceneInfo()->bIsRayTracingStaticRelevant = IsRayTracingStaticRelevant();
+		}
 
-			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
-			{
-				auto& Initializer = DynamicRayTracingGeometries[LODIndex].Initializer;
-				Initializer = RenderData->LODResources[LODIndex].RayTracingGeometry.Initializer;
-				for (FRayTracingGeometrySegment& Segment : Initializer.Segments)
-				{
-					Segment.VertexBuffer = nullptr;
-				}
-				Initializer.bAllowUpdate = true;
-				Initializer.bFastBuild = true;
-				Initializer.Type = ERayTracingGeometryInitializerType::Rendering;
-			}
-
-			for (int32 i = 0; i < DynamicRayTracingGeometries.Num(); i++)
-			{
-				auto& Geometry = DynamicRayTracingGeometries[i];
-				Geometry.InitResource();
-			}
-
-			if (GetPrimitiveSceneInfo())
-			{
-				GetPrimitiveSceneInfo()->bIsRayTracingStaticRelevant = IsRayTracingStaticRelevant();
-			}
+		if (bNeedsDynamicRayTracingGeometries)
+		{
+			CreateDynamicRayTracingGeometries();
 		}
 	}
 	else if (!NewValue && bDynamicRayTracingGeometry)
 	{
 		bDynamicRayTracingGeometry = false;
-		if (IsRayTracingAllowed())
+		bNeedsDynamicRayTracingGeometries = false;
+
+		if (GetPrimitiveSceneInfo())
 		{
-			for (auto& Geometry : DynamicRayTracingGeometries)
-			{
-				Geometry.ReleaseResource();
-			}
-
-			DynamicRayTracingGeometries.Empty();
-
-			for (auto& Buffer : DynamicRayTracingGeometryVertexBuffers)
-			{
-				Buffer.Release();
-			}
-
-			DynamicRayTracingGeometryVertexBuffers.Empty();
-
-			if (GetPrimitiveSceneInfo())
-			{
-				GetPrimitiveSceneInfo()->bIsRayTracingStaticRelevant = IsRayTracingStaticRelevant();
-			}
+			GetPrimitiveSceneInfo()->bIsRayTracingStaticRelevant = IsRayTracingStaticRelevant();
 		}
+
+		ReleaseDynamicRayTracingGeometries();
 	}
 #endif
 }
@@ -498,18 +485,16 @@ int32 FStaticMeshSceneProxy::GetLightMapCoordinateIndex() const
 	return LightMapCoordinateIndex;
 }
 
+bool FStaticMeshSceneProxy::GetInstanceWorldPositionOffsetDisableDistance(float& OutWPODisableDistance) const
+{
+	OutWPODisableDistance = WPODisableDistance;
+	return WPODisableDistance > 0.0f;
+}
+
 FStaticMeshSceneProxy::~FStaticMeshSceneProxy()
 {
 #if RHI_RAYTRACING
-	for (auto& Buffer : DynamicRayTracingGeometryVertexBuffers)
-	{
-		Buffer.Release();
-	}
-
-	for (auto& Geometry: DynamicRayTracingGeometries)
-	{
-		Geometry.ReleaseResource();
-	}
+	ReleaseDynamicRayTracingGeometries();
 #endif
 }
 
@@ -749,33 +734,55 @@ bool FStaticMeshSceneProxy::GetMeshElement(
 	}
 }
 
+#if RHI_RAYTRACING
+void FStaticMeshSceneProxy::CreateDynamicRayTracingGeometries()
+{
+	check(DynamicRayTracingGeometries.IsEmpty());
+
+	DynamicRayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
+
+	for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
+	{
+		auto& Initializer = DynamicRayTracingGeometries[LODIndex].Initializer;
+		Initializer = RenderData->LODResources[LODIndex].RayTracingGeometry.Initializer;
+		for (FRayTracingGeometrySegment& Segment : Initializer.Segments)
+		{
+			Segment.VertexBuffer = nullptr;
+		}
+		Initializer.bAllowUpdate = true;
+		Initializer.bFastBuild = true;
+		Initializer.Type = ERayTracingGeometryInitializerType::Rendering;
+	}
+
+	for (int32 i = 0; i < DynamicRayTracingGeometries.Num(); i++)
+	{
+		auto& Geometry = DynamicRayTracingGeometries[i];
+		Geometry.InitResource(FRHICommandListImmediate::Get());
+	}
+}
+
+void FStaticMeshSceneProxy::ReleaseDynamicRayTracingGeometries()
+{
+	for (auto& Geometry : DynamicRayTracingGeometries)
+	{
+		Geometry.ReleaseResource();
+	}
+
+	DynamicRayTracingGeometries.Empty();
+}
+#endif
+
 void FStaticMeshSceneProxy::CreateRenderThreadResources()
 {
 #if RHI_RAYTRACING
-	if(IsRayTracingAllowed() && bSupportRayTracing)
+	if(IsRayTracingAllowed() && bNeedsDynamicRayTracingGeometries)
 	{
-		if (bDynamicRayTracingGeometry)
-		{
-			DynamicRayTracingGeometries.AddDefaulted(RenderData->LODResources.Num());
-			for (int32 LODIndex = 0; LODIndex < RenderData->LODResources.Num(); LODIndex++)
-			{
-				auto& Initializer = DynamicRayTracingGeometries[LODIndex].Initializer;
-				Initializer = RenderData->LODResources[LODIndex].RayTracingGeometry.Initializer;
-				for (FRayTracingGeometrySegment& Segment : Initializer.Segments)
-				{
-					Segment.VertexBuffer = nullptr;
-				}
-				Initializer.bAllowUpdate = true;
-				Initializer.bFastBuild = true;
-				Initializer.Type = ERayTracingGeometryInitializerType::Rendering;
-			}
-		}
-
-		for(int32 i = 0; i < DynamicRayTracingGeometries.Num(); i++)
-		{
-			auto& Geometry = DynamicRayTracingGeometries[i];
-			Geometry.InitResource();
-		}
+		check(bDynamicRayTracingGeometry);
+		CreateDynamicRayTracingGeometries();
+	}
+	else
+	{
+		checkf(DynamicRayTracingGeometries.IsEmpty(), TEXT("Proxy shouldn't have entries in DynamicRayTracingGeometries."));
 	}
 #endif
 }
@@ -1359,7 +1366,8 @@ void FStaticMeshSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PD
 								PDI->DrawMesh(MeshBatch, ScreenSize);
 							}
 
-							if (OverlayMaterial != nullptr)
+							// negative cull distance disables overlay rendering
+							if (OverlayMaterial != nullptr && OverlayMaterialMaxDrawDistance >= 0.f)
 							{
 								FMeshBatch OverlayMeshBatch(BaseMeshBatch);
 								OverlayMeshBatch.bOverlayMaterial = true;
@@ -1408,6 +1416,15 @@ bool FStaticMeshSceneProxy::IsCollisionView(const FEngineShowFlags& EngineShowFl
 uint8 FStaticMeshSceneProxy::GetCurrentFirstLODIdx_Internal() const
 {
 	return RenderData->CurrentFirstLODIdx;
+}
+
+void FStaticMeshSceneProxy::OnEvaluateWorldPositionOffsetChanged_RenderThread()
+{
+	if (ShouldOptimizedWPOAffectNonNaniteShaderSelection())
+	{
+		// Re-cache draw commands
+		GetRendererModule().RequestStaticMeshUpdate(GetPrimitiveSceneInfo());
+	}
 }
 
 void FStaticMeshSceneProxy::GetMeshDescription(int32 LODIndex, TArray<FMeshBatch>& OutMeshElements) const
@@ -1581,7 +1598,7 @@ void FStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 
 	#endif // WITH_EDITOR
 
-										if (!bDebugMaterialRenderProxySet && bProxyIsSelected && EngineShowFlags.VertexColors && AllowDebugViewmodes())
+										if (!bDebugMaterialRenderProxySet && bProxyIsSelected && EngineShowFlags.VertexColors && AllowDebugViewmodes() && ShouldProxyUseVertexColorVisualization(GetOwnerName()))
 										{
 											// Override the mesh's material with our material that draws the vertex colors
 											UMaterial* VertexColorVisualizationMaterial = NULL;
@@ -1608,12 +1625,55 @@ void FStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView
 												break;
 											}
 											check( VertexColorVisualizationMaterial != NULL );
+											FMaterialRenderProxy* VertexColorVisualizationMaterialInstance = nullptr;
+#if WITH_EDITORONLY_DATA
+											if (!GVertexViewModeOverrideTexture.IsValid())
+#endif
+											{
+												VertexColorVisualizationMaterialInstance = new FColoredMaterialRenderProxy(
+													VertexColorVisualizationMaterial->GetRenderProxy(),
+													GetSelectionColor(FLinearColor::White, bSectionIsSelected, IsHovered()));
+											}
+#if WITH_EDITORONLY_DATA
+											else
+											{
+												FLinearColor MaterialColor = FLinearColor::White;
 
-											auto VertexColorVisualizationMaterialInstance = new FColoredMaterialRenderProxy(
-												VertexColorVisualizationMaterial->GetRenderProxy(),
-												GetSelectionColor( FLinearColor::White, bSectionIsSelected, IsHovered() )
-												);
+												switch (GVertexColorViewMode)
+												{
+												case EVertexColorViewMode::Color:
+													MaterialColor = FLinearColor(1.0f, 1.0f, 1.0f, 0.0f);
+													break;
 
+												case EVertexColorViewMode::Alpha:
+													MaterialColor = FLinearColor(0.0f, 0.0f, 0.0f, 1.0f);
+													break;
+
+												case EVertexColorViewMode::Red:
+													MaterialColor = FLinearColor(1.0f, 0.0f, 0.0f, 0.0f);
+													break;
+
+												case EVertexColorViewMode::Green:
+													MaterialColor = FLinearColor(0.0f, 1.0f, 0.0f, 0.0f);
+													break;
+
+												case EVertexColorViewMode::Blue:
+													MaterialColor = FLinearColor(0.0f, 0.0f, 1.0f, 0.0f);
+													break;
+												}
+												FColoredTexturedMaterialRenderProxy* NewVertexColorVisualizationMaterialInstance = new FColoredTexturedMaterialRenderProxy(
+													GEngine->TexturePaintingMaskMaterial->GetRenderProxy(),
+													MaterialColor,
+													NAME_Color,
+													GVertexViewModeOverrideTexture.Get(),
+													NAME_LinearColor);
+													
+												NewVertexColorVisualizationMaterialInstance->UVChannel = GVertexViewModeOverrideUVChannel;
+												NewVertexColorVisualizationMaterialInstance->UVChannelParamName = FName(TEXT("UVChannel"));
+
+												VertexColorVisualizationMaterialInstance = NewVertexColorVisualizationMaterialInstance;
+											}
+#endif
 											Collector.RegisterOneFrameMaterialProxy(VertexColorVisualizationMaterialInstance);
 											MeshElement.MaterialRenderProxy = VertexColorVisualizationMaterialInstance;
 
@@ -1806,10 +1866,13 @@ bool FStaticMeshSceneProxy::HasRayTracingRepresentation() const
 
 void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances )
 {
-	if (DynamicRayTracingGeometries.Num() <= 0 || CVarRayTracingStaticMeshes.GetValueOnRenderThread() == 0)
+	if (DynamicRayTracingGeometries.IsEmpty() || CVarRayTracingStaticMeshes.GetValueOnRenderThread() == 0)
 	{
 		return;
 	}
+
+	checkf(CVarRayTracingStaticMeshesWPO.GetValueOnRenderThread() == 1,
+		TEXT("Proxy should only have entries in DynamicRayTracingGeometries when WPO evaluation is enabled"));
 
 	if (!ensureMsgf(IsRayTracingRelevant(),
 		TEXT("GetDynamicRayTracingInstances() is only expected to be called for scene proxies that are compatible with ray tracing. ")
@@ -1921,12 +1984,8 @@ void FStaticMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGat
 
 		if (bEvaluateWPO && RenderData->LODVertexFactories[LODIndex].VertexFactory.GetType()->SupportsRayTracingDynamicGeometry())
 		{
-			// Use the internal vertex buffer only when initialized otherwise used the shared vertex buffer - needs to be updated every frame
+			// Use the shared vertex buffer - needs to be updated every frame
 			FRWBuffer* VertexBuffer = nullptr;
-			if (DynamicRayTracingGeometryVertexBuffers.Num() > (int32)LODIndex && DynamicRayTracingGeometryVertexBuffers[LODIndex].NumBytes > 0)
-			{
-				VertexBuffer = &DynamicRayTracingGeometryVertexBuffers[LODIndex];
-			}
 
 			Context.DynamicRayTracingGeometriesToUpdate.Add(
 				FRayTracingDynamicGeometryUpdateParams
@@ -2139,7 +2198,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 	, PreCulledIndexBuffer(nullptr)
 	, bUsesMeshModifyingMaterials(false)
 {
-	const auto FeatureLevel = InComponent->GetWorld()->FeatureLevel;
+	const auto FeatureLevel = InComponent->GetWorld()->GetFeatureLevel();
 
 	FStaticMeshRenderData* MeshRenderData = InComponent->GetStaticMesh()->GetRenderData();
 	FStaticMeshLODResources& LODModel = MeshRenderData->LODResources[LODIndex];
@@ -2149,6 +2208,8 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 	{
 		SetGlobalVolumeLightmap(true);
 	}
+
+	bool bForceDefaultMaterial = InComponent->ShouldRenderProxyFallbackToDefaultMaterial();
 
 	bool bMeshMapBuildDataOverriddenByLightmapPreview = false;
 
@@ -2270,7 +2331,7 @@ FStaticMeshSceneProxy::FLODInfo::FLODInfo(const UStaticMeshComponent* InComponen
 		SectionInfo.MaterialIndex = Section.MaterialIndex;
 #endif
 
-		if (GForceDefaultMaterial && SectionInfo.Material && !IsTranslucentBlendMode(*SectionInfo.Material))
+		if (bForceDefaultMaterial || (GForceDefaultMaterial && SectionInfo.Material && !IsTranslucentBlendMode(*SectionInfo.Material)))
 		{
 			SectionInfo.Material = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
@@ -2470,6 +2531,66 @@ FLODMask FStaticMeshSceneProxy::GetLODMask(const FSceneView* View) const
 	return Result;
 }
 
+bool UStaticMeshComponent::ShouldCreateNaniteProxy(Nanite::FMaterialAudit* OutNaniteMaterials) const
+{
+	// Whether or not to allow Nanite for this component
+#if WITH_EDITORONLY_DATA
+	const bool bForceFallback = bDisplayNaniteFallbackMesh;
+#else
+	const bool bForceFallback = false;
+#endif
+
+	if (bForceFallback || bDisallowNanite || bForceDisableNanite)
+	{
+		// Regardless of the static mesh asset supporting Nanite, this component does not want Nanite to be used
+		return false;
+	}
+
+	const EShaderPlatform ShaderPlatform = GetScene() ? GetScene()->GetShaderPlatform() : GMaxRHIShaderPlatform;
+	
+	if (!UseNanite(ShaderPlatform) || !HasValidNaniteData())
+	{
+		return false;
+	}
+
+	{
+		Nanite::FMaterialAudit NaniteMaterials{};
+		Nanite::AuditMaterials(this, NaniteMaterials);
+
+		const bool bIsMaskingAllowed = Nanite::IsMaskingAllowed(GetWorld(), bForceNaniteForMasked);
+		if (!NaniteMaterials.IsValid(bIsMaskingAllowed))
+		{
+			return false;
+		}
+
+		if (OutNaniteMaterials)
+		{
+			*OutNaniteMaterials = MoveTemp(NaniteMaterials);
+		}
+	}
+
+	return true;
+}
+
+FPrimitiveSceneProxy* UStaticMeshComponent::CreateStaticMeshSceneProxy(Nanite::FMaterialAudit& NaniteMaterials, bool bCreateNanite)
+{
+	// Default implementation: Nanite::FSceneProxy or FStaticMeshSceneProxy
+
+	LLM_SCOPE(ELLMTag::StaticMesh);
+
+	if (bCreateNanite)
+	{
+		return ::new Nanite::FSceneProxy(NaniteMaterials, this);
+	}
+	
+	auto* Proxy = ::new FStaticMeshSceneProxy(this, false);
+#if STATICMESH_ENABLE_DEBUG_RENDERING
+	SendRenderDebugPhysics(Proxy);
+#endif
+
+	return Proxy;
+}
+
 FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 {
 	if (GetStaticMesh() == nullptr)
@@ -2497,27 +2618,26 @@ FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 		return nullptr;
 	}
 
-	if (IsPSOPrecaching())
+	if (CheckPSOPrecachingAndBoostPriority() && GetPSOPrecacheProxyCreationStrategy() == EPSOPrecacheProxyCreationStrategy::DelayUntilPSOPrecached)
 	{
 		UE_LOG(LogStaticMesh, Verbose, TEXT("Skipping CreateSceneProxy for StaticMeshComponent %s (Static mesh component PSOs are still compiling)"), *GetFullName());
 		return nullptr;
 	}
 
+	const bool bIsMaskingAllowed = Nanite::IsMaskingAllowed(GetWorld(), bForceNaniteForMasked);
+
+	Nanite::FMaterialAudit NaniteMaterials{};
+
 	// Is Nanite supported, and is there built Nanite data for this static mesh?
-	if (ShouldCreateNaniteProxy() 
-	#if WITH_EDITORONLY_DATA
-		&& !bDisplayNaniteFallbackMesh
-	#endif
-	)
+	const bool bUseNanite = ShouldCreateNaniteProxy(&NaniteMaterials);
+
+	if (bUseNanite)
 	{
-		LLM_SCOPE(ELLMTag::StaticMesh);
-
 		// Nanite is fully supported
-		return ::new Nanite::FSceneProxy(this);
+		return CreateStaticMeshSceneProxy(NaniteMaterials, true);
 	}
-
 	// If we didn't get a proxy, but Nanite was enabled on the asset when it was built, evaluate proxy creation
-	if (HasValidNaniteData())
+	else if (HasValidNaniteData() && NaniteMaterials.IsValid(bIsMaskingAllowed))
 	{
 		const bool bAllowProxyRender = GNaniteProxyRenderMode == 0
 	#if WITH_EDITORONLY_DATA
@@ -2535,6 +2655,7 @@ FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 		// Fall back to rendering Nanite proxy meshes with traditional static mesh scene proxies
 	}
 
+	// Validate the LOD resources here
 	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->GetRenderData()->LODResources;
 	const int32 SMCurrentMinLOD = GetStaticMesh()->GetMinLODIdx();
 	const int32 EffectiveMinLOD = bOverrideMinLOD ? MinLOD : SMCurrentMinLOD;
@@ -2544,14 +2665,7 @@ FPrimitiveSceneProxy* UStaticMeshComponent::CreateSceneProxy()
 		return nullptr;
 	}
 
-	LLM_SCOPE(ELLMTag::StaticMesh);
-
-	FPrimitiveSceneProxy* Proxy = ::new FStaticMeshSceneProxy(this, false);
-#if STATICMESH_ENABLE_DEBUG_RENDERING
-	SendRenderDebugPhysics(Proxy);
-#endif
-
-	return Proxy;
+	return CreateStaticMeshSceneProxy(NaniteMaterials, false);
 }
 
 bool UStaticMeshComponent::ShouldRecreateProxyOnUpdateTransform() const

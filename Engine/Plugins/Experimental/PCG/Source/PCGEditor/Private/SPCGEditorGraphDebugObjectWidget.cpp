@@ -2,37 +2,71 @@
 
 #include "SPCGEditorGraphDebugObjectWidget.h"
 
-#include "Framework/Views/TableViewMetadata.h"
 #include "PCGComponent.h"
 #include "PCGEditor.h"
 #include "PCGEditorGraph.h"
 
-#include "Editor/UnrealEdEngine.h"
 #include "PropertyCustomizationHelpers.h"
+#include "Selection.h"
 #include "UnrealEdGlobals.h"
+#include "Editor/UnrealEdEngine.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
 
 #define LOCTEXT_NAMESPACE "PCGEditorGraphDebugObjectWidget"
 
-namespace PCGEditorGraphDebugObjectWidget
+FPCGEditorGraphDebugObjectInstance::FPCGEditorGraphDebugObjectInstance()
+	: Label(LOCTEXT("NoDebugObject", "No debug object selected"))
 {
-	const FString NoObjectString = TEXT("No debug object selected");
-	const FString SelectionString = TEXT(" (selected)");
-	const FString SeparatorString = TEXT(" / ");
+}
+
+FPCGEditorGraphDebugObjectInstance::FPCGEditorGraphDebugObjectInstance(TWeakObjectPtr<UPCGComponent> InPCGComponent, const FPCGStack& InPCGStack)
+	: PCGComponent(InPCGComponent)
+	, PCGStack(InPCGStack)
+{
+	FString PathLabel = InPCGComponent->GetOwner()->GetActorNameOrLabel() / InPCGComponent->GetName();
+
+	for (const FPCGStackFrame& StackFrame : PCGStack.GetStackFrames())
+	{
+		if (StackFrame.Object.IsValid())
+		{
+			PathLabel /= StackFrame.Object->GetName();
+		}
+		else
+		{
+			PathLabel /= FString::Format(TEXT("{0}"), { StackFrame.LoopIndex });
+		}
+	}
+
+	Label = FText::FromString(PathLabel);
 }
 
 void SPCGEditorGraphDebugObjectWidget::Construct(const FArguments& InArgs, TSharedPtr<FPCGEditor> InPCGEditor)
 {
 	PCGEditorPtr = InPCGEditor;
+	
+	if (UPCGComponent* PCGComponent = InPCGEditor->GetPCGComponentBeingInspected())
+	{
+		const FPCGStack& PCGStack = InPCGEditor->GetStackBeingInspected();
+		DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, PCGStack));
+	}
+	else
+	{
+		DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>());
+	}
 
-	DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGEditorGraphDebugObjectWidget::NoObjectString));
+	const TSharedRef<SWidget> SetButton = PropertyCustomizationHelpers::MakeUseSelectedButton(
+		FSimpleDelegate::CreateSP(this, &SPCGEditorGraphDebugObjectWidget::SetDebugObjectFromSelection_OnClicked),
+		LOCTEXT("SetDebugObject", "Set debug object from Level Editor selection."),
+		TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SPCGEditorGraphDebugObjectWidget::IsSetDebugObjectFromSelectionButtonEnabled))
+	);
 
 	const TSharedRef<SWidget> BrowseButton = PropertyCustomizationHelpers::MakeBrowseButton(
 		FSimpleDelegate::CreateSP(this, &SPCGEditorGraphDebugObjectWidget::SelectedDebugObject_OnClicked),
 		LOCTEXT("DebugSelectActor", "Select and frame the debug actor in the Level Editor."),
 		TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SPCGEditorGraphDebugObjectWidget::IsSelectDebugObjectButtonEnabled))
 	);
-	
+
 	DebugObjectsComboBox = SNew(SComboBox<TSharedPtr<FPCGEditorGraphDebugObjectInstance>>)
 		.OptionsSource(&DebugObjects)
 		.InitiallySelectedItem(DebugObjects[0])
@@ -58,57 +92,53 @@ void SPCGEditorGraphDebugObjectWidget::Construct(const FArguments& InArgs, TShar
 		.VAlign(VAlign_Center)
 		.Padding(4.0f)
 		[
+			SetButton
+		]
+		+SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(4.0f)
+		[
 			BrowseButton
 		]
 	];
 }
 
-void SPCGEditorGraphDebugObjectWidget::OnComboBoxOpening()
+void SPCGEditorGraphDebugObjectWidget::RefreshDebugObjects()
 {
 	DebugObjects.Empty();
 	DebugObjectsComboBox->RefreshOptions();
-	
-	if (!PCGEditorPtr.IsValid())
-	{
-		return;
-	}
 
-	UPCGEditorGraph* PCGEditorGraph = PCGEditorPtr.Pin()->GetPCGEditorGraph();
-	if (!PCGEditorGraph)
-	{
-		return;
-	}
-
-	const UPCGGraph* PCGGraph = PCGEditorGraph->GetPCGGraph();
+	const UPCGGraph* PCGGraph = GetPCGGraph();
 	if (!PCGGraph)
 	{
 		return;
 	}
 
-	TSharedPtr<FPCGEditorGraphDebugObjectInstance> SelectedItem = DebugObjectsComboBox->GetSelectedItem();
+	const TSharedPtr<FPCGEditorGraphDebugObjectInstance> SelectedItem = DebugObjectsComboBox->GetSelectedItem();
 
-	DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGEditorGraphDebugObjectWidget::NoObjectString));
+	DebugObjects.Add(MakeShared<FPCGEditorGraphDebugObjectInstance>());
 
-	if (!SelectedItem.IsValid() || SelectedItem->PCGComponent == nullptr)
+	if (!SelectedItem.IsValid() || !SelectedItem->GetPCGComponent().IsValid())
 	{
 		DebugObjectsComboBox->SetSelectedItem(DebugObjects[0]);
 	}
-	
+
 	TArray<UObject*> PCGComponents;
-	GetObjectsOfClass(UPCGComponent::StaticClass(), PCGComponents, true);
+	GetObjectsOfClass(UPCGComponent::StaticClass(), PCGComponents, /*bIncludeDerivedClasses=*/ true);
 	for (UObject* PCGComponentObject : PCGComponents)
 	{
 		if (!IsValid(PCGComponentObject))
 		{
 			continue;
 		}
-		
+
 		UPCGComponent* PCGComponent = Cast<UPCGComponent>(PCGComponentObject);
 		if (!PCGComponent)
 		{
 			continue;
 		}
-		
+
 		const AActor* Actor = PCGComponent->GetOwner();
 		if (!Actor)
 		{
@@ -121,47 +151,78 @@ void SPCGEditorGraphDebugObjectWidget::OnComboBoxOpening()
 			continue;
 		}
 
-		if (PCGComponentGraph == PCGGraph)
+		FPCGStackContext StackContext = FPCGStackContext::CreateStackContextFromGraph(PCGComponentGraph);
+
+		for (const FPCGStack& Stack : StackContext.GetStacks())
 		{
-			FString ActorNameOrLabel = Actor->GetActorNameOrLabel();
-			if (Actor->IsSelected())
+			const FPCGStackFrame& StackFrame = Stack.GetStackFrames().Top();
+			if (const UPCGGraph* StackGraph = Cast<const UPCGGraph>(StackFrame.Object))
 			{
-				ActorNameOrLabel.Append(PCGEditorGraphDebugObjectWidget::SelectionString);
-			}
-			
-			FString ComponentName = PCGComponent->GetFName().ToString();
-			if (PCGComponent->IsSelected())
-			{
-				ComponentName.Append(PCGEditorGraphDebugObjectWidget::SelectionString);
-			}
+				if (StackGraph == PCGGraph)
+				{
+					const TSharedPtr<FPCGEditorGraphDebugObjectInstance> DebugInstance = MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, Stack);
+					DebugObjects.Add(DebugInstance);
 
-			const FString Label = ActorNameOrLabel + PCGEditorGraphDebugObjectWidget::SeparatorString + ComponentName;
-			TSharedPtr<FPCGEditorGraphDebugObjectInstance> DebugInstance = MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, Label);
-			DebugObjects.Add(DebugInstance);
+					if (SelectedItem.IsValid() && SelectedItem->GetPCGComponent() == PCGComponent && SelectedItem->GetStack() == Stack)
+					{
+						DebugObjectsComboBox->SetSelectedItem(DebugInstance);
+					}
+				}
+			}
+		}
 
-			if (SelectedItem.IsValid() && SelectedItem->PCGComponent == PCGComponent)
+		if (const TArray<FPCGStack>* DynamicStacks = DynamicInvocationStacks.Find(PCGComponent))
+		{
+			for (const FPCGStack& Stack : *DynamicStacks)
 			{
-				DebugObjectsComboBox->SetSelectedItem(DebugInstance);
+				const TSharedPtr<FPCGEditorGraphDebugObjectInstance> DebugInstance = MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, Stack);
+				DebugObjects.Add(DebugInstance);
+
+				if (SelectedItem.IsValid() && SelectedItem->GetPCGComponent() == PCGComponent && SelectedItem->GetStack() == Stack)
+				{
+					DebugObjectsComboBox->SetSelectedItem(DebugInstance);
+				}
 			}
 		}
 	}
+}
+
+void SPCGEditorGraphDebugObjectWidget::OnComboBoxOpening()
+{
+	RefreshDebugObjects();
 }
 
 void SPCGEditorGraphDebugObjectWidget::OnSelectionChanged(TSharedPtr<FPCGEditorGraphDebugObjectInstance> NewSelection, ESelectInfo::Type SelectInfo) const
 {
 	if (NewSelection.IsValid())
 	{
-		UPCGComponent* PCGComponent = NewSelection->PCGComponent.Get();
-		PCGEditorPtr.Pin()->SetPCGComponentBeingDebugged(PCGComponent);
+		UPCGComponent* PCGComponent = NewSelection->GetPCGComponent().Get();
+		PCGEditorPtr.Pin()->SetComponentAndStackBeingInspected(PCGComponent, NewSelection->GetStack());
 	}
 }
 
 TSharedRef<SWidget> SPCGEditorGraphDebugObjectWidget::OnGenerateWidget(TSharedPtr<FPCGEditorGraphDebugObjectInstance> InDebugObjectInstance) const
 {
-	const FString ItemString = InDebugObjectInstance->Label;
+	const FText ItemText = InDebugObjectInstance->GetDebugObjectText();
 
 	return SNew(STextBlock)
-		.Text(FText::FromString(*ItemString));
+		.Text(ItemText);
+}
+
+UPCGGraph* SPCGEditorGraphDebugObjectWidget::GetPCGGraph() const
+{
+	if (!PCGEditorPtr.IsValid())
+	{
+		return nullptr;
+	}
+
+	const UPCGEditorGraph* PCGEditorGraph = PCGEditorPtr.Pin()->GetPCGEditorGraph();
+	if (!PCGEditorGraph)
+	{
+		return nullptr;
+	}
+
+	return PCGEditorGraph->GetPCGGraph();
 }
 
 FText SPCGEditorGraphDebugObjectWidget::GetSelectedDebugObjectText() const
@@ -176,7 +237,7 @@ FText SPCGEditorGraphDebugObjectWidget::GetSelectedDebugObjectText() const
 
 void SPCGEditorGraphDebugObjectWidget::SelectedDebugObject_OnClicked() const
 {
-	if (UPCGComponent* PCGComponent = PCGEditorPtr.Pin()->GetPCGComponentBeingDebugged())
+	if (UPCGComponent* PCGComponent = PCGEditorPtr.Pin()->GetPCGComponentBeingInspected())
 	{
 		if (AActor* Actor = PCGComponent->GetOwner())
 		{
@@ -190,7 +251,169 @@ void SPCGEditorGraphDebugObjectWidget::SelectedDebugObject_OnClicked() const
 
 bool SPCGEditorGraphDebugObjectWidget::IsSelectDebugObjectButtonEnabled() const
 {
-	return PCGEditorPtr.IsValid() && (PCGEditorPtr.Pin()->GetPCGComponentBeingDebugged() != nullptr);
+	return PCGEditorPtr.IsValid() && (PCGEditorPtr.Pin()->GetPCGComponentBeingInspected() != nullptr);
+}
+
+void SPCGEditorGraphDebugObjectWidget::SetDebugObjectFromSelection_OnClicked()
+{
+	const UPCGGraph* PCGGraph = GetPCGGraph();
+	if (!PCGGraph)
+	{
+		return;
+	}
+
+	USelection* SelectedActors = GEditor->GetSelectedActors();
+	if (!IsValid(SelectedActors))
+	{
+		return;
+	}
+
+	for (FSelectionIterator It(*SelectedActors); It; ++It)
+	{
+		const AActor* SelectedActor = Cast<AActor>(*It);
+		if (!IsValid(SelectedActor))
+		{
+			continue;
+		}
+
+		UPCGComponent* PCGComponent = SelectedActor->GetComponentByClass<UPCGComponent>();
+		if (!IsValid(PCGComponent))
+		{
+			continue;
+		}
+
+		FPCGStackContext StackContext = FPCGStackContext::CreateStackContextFromGraph(PCGComponent->GetGraph());
+
+		for (const FPCGStack& Stack : StackContext.GetStacks())
+		{
+			const FPCGStackFrame& StackFrame = Stack.GetStackFrames().Top();
+			if (const UPCGGraph* StackGraph = Cast<const UPCGGraph>(StackFrame.Object))
+			{
+				if (StackGraph == PCGGraph)
+				{
+					DebugObjects.Empty();
+					DebugObjectsComboBox->RefreshOptions();
+
+					const TSharedPtr<FPCGEditorGraphDebugObjectInstance> DebugInstance = MakeShared<FPCGEditorGraphDebugObjectInstance>(PCGComponent, Stack);
+					DebugObjects.Add(DebugInstance);
+					DebugObjectsComboBox->SetSelectedItem(DebugInstance);
+					PCGEditorPtr.Pin()->SetComponentAndStackBeingInspected(PCGComponent, Stack);
+					break;
+				}
+			}
+		}
+	}
+}
+
+bool SPCGEditorGraphDebugObjectWidget::IsSetDebugObjectFromSelectionButtonEnabled() const
+{
+	const UPCGGraph* PCGGraph = GetPCGGraph();
+	if (!PCGGraph)
+	{
+		return false;
+	}
+
+	USelection* SelectedActors = GEditor->GetSelectedActors();
+	if (!IsValid(SelectedActors))
+	{
+		return false;
+	}
+
+	for (FSelectionIterator It(*SelectedActors); It; ++It)
+	{
+		const AActor* SelectedActor = Cast<AActor>(*It);
+		if (!IsValid(SelectedActor))
+		{
+			continue;
+		}
+		
+		const UPCGComponent* PCGComponent = SelectedActor->GetComponentByClass<UPCGComponent>();
+		if (!IsValid(PCGComponent))
+		{
+			continue;
+		}
+
+		FPCGStackContext StackContext = FPCGStackContext::CreateStackContextFromGraph(PCGComponent->GetGraph());
+		for (const FPCGStack& Stack : StackContext.GetStacks())
+		{
+			const FPCGStackFrame& StackFrame = Stack.GetStackFrames().Top();
+			if (const UPCGGraph* StackGraph = Cast<const UPCGGraph>(StackFrame.Object))
+			{
+				if (StackGraph == PCGGraph)
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+void SPCGEditorGraphDebugObjectWidget::OnLevelActorDeleted(const AActor* InActor)
+{
+	// Iterate over all PCG components on the deleted actor and remove them from the debug objects list. If
+	// the currently-selected debug object is deleted, reset the selection to item 0.
+	if (!ensure(InActor))
+	{
+		return;
+	}
+
+	TInlineComponentArray<const UPCGComponent*, 2> PCGComponents;
+	InActor->GetComponents(PCGComponents);
+	if (PCGComponents.IsEmpty())
+	{
+		return;
+	}
+
+	const TSharedPtr<FPCGEditorGraphDebugObjectInstance> SelectedItem = DebugObjectsComboBox->GetSelectedItem();
+
+	bool bDebugObjectWasRemoved = false;
+	bool bSelectedDebugObjectWasRemoved = false;
+	for (const UPCGComponent* DeletedComponent : PCGComponents)
+	{
+		if (!DeletedComponent)
+		{
+			continue;
+		}
+
+		if (SelectedItem && SelectedItem->GetPCGComponent().Get() == DeletedComponent)
+		{
+			bSelectedDebugObjectWasRemoved = true;
+		}
+
+		// First item is always "No debug object selected" item, so decrement down to index 1.
+		for (int i = DebugObjects.Num() - 1; i >= 1; --i)
+		{
+			const UPCGComponent* DebugObjectComponent = DebugObjects[i]->GetPCGComponent().Get();
+			if (DebugObjectComponent == DeletedComponent)
+			{
+				DebugObjects.RemoveAt(i);
+				bDebugObjectWasRemoved = true;
+			}
+		}
+	}
+
+	if (bSelectedDebugObjectWasRemoved && ensure(DebugObjects.Num() > 0))
+	{
+		DebugObjectsComboBox->SetSelectedItem(DebugObjects[0]);
+	}
+
+	if (bDebugObjectWasRemoved)
+	{
+		DebugObjectsComboBox->RefreshOptions();
+	}
+}
+
+void SPCGEditorGraphDebugObjectWidget::AddDynamicStack(const TWeakObjectPtr<UPCGComponent> InComponent, const FPCGStack& InvocationStack)
+{
+	TArray<FPCGStack>& Stacks = DynamicInvocationStacks.FindOrAdd(InComponent);
+
+	if (!Stacks.Contains(InvocationStack))
+	{
+		Stacks.Add(InvocationStack);
+		RefreshDebugObjects();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

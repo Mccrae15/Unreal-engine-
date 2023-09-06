@@ -16,6 +16,7 @@ protocol SignalClientDelegate: AnyObject {
     func signalClient(_ signalClient: SignalingClient, didReceiveRemoteSdp sdp: RTCSessionDescription)
     func signalClient(_ signalClient: SignalingClient, didReceiveCandidate candidate: RTCIceCandidate)
     func signalClient(_ signalClient: SignalingClient, didReceiveConfig config: RTCConfiguration)
+    func signalClient(_ signalClient: SignalingClient, didReceiveStreamerList streamerList: Array<String>)
 }
 
 final class SignalingClient {
@@ -24,6 +25,7 @@ final class SignalingClient {
     private let encoder = JSONEncoder()
     private let webSocket: WebSocketProvider
     private var shouldReconnect : Bool = true
+    var isReconnecting : Bool = false
     weak var delegate: SignalClientDelegate?
     
     init(webSocket: WebSocketProvider) {
@@ -63,6 +65,27 @@ final class SignalingClient {
             debugPrint("Warning: Could not encode candidate: \(error)")
         }
     }
+    func sendRequestStreamerList() {
+        let message = Message.requestStreamerList
+        do {
+            let dataMessage = try self.encoder.encode(message)
+            self.webSocket.send(data: dataMessage)
+        }
+        catch {
+            debugPrint("Warning: Could not encode: \(error)")
+        }
+    }
+    
+    func subscribe(_ streamerId : String) {
+        let message = Message.subscribe(streamerId)
+        do {
+            let dataMessage = try self.encoder.encode(message)
+            self.webSocket.send(data: dataMessage)
+        }
+        catch {
+            debugPrint("Warning: Could not encode: \(error)")
+        }
+    }
 }
 
 
@@ -79,6 +102,7 @@ extension SignalingClient: WebSocketProviderDelegate {
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
             if self.shouldReconnect {
                 debugPrint("Trying to reconnect to signaling server...")
+                self.isReconnecting = true
                 self.webSocket.connect()
             }
         }
@@ -114,6 +138,12 @@ extension SignalingClient: WebSocketProviderDelegate {
             self.delegate?.signalClient(self, didReceiveRemoteSdp: sessionDescription.rtcSessionDescription)
         case .playerCount(let playerCount):
             print("Got player count=\(playerCount)")
+        case .streamerList(let streamerList):
+            self.delegate?.signalClient(self, didReceiveStreamerList: streamerList)
+        case .requestStreamerList:
+            break
+        case .subscribe(let streamerId):
+            break
         }
     }
     

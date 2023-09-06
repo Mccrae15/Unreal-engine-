@@ -9,26 +9,26 @@
 #include "Serialization/ObjectWriter.h"
 #include "UObject/Package.h"
 
-static const FName SkipAssetsMarker = TEXT("SKIPASSETS");
+static const FSoftObjectPath SkipAssetsMarker = FSoftObjectPath(TEXT("/Engine/Transient.__CONCERT_SKIP_ASSETS__"));
 
 namespace ConcertSyncUtil
 {
 
 bool CanExportProperty(const FProperty* Property, const bool InIncludeEditorOnlyData)
 {
-	auto CanExportTransientProperty = [Property]()
+	auto PropertyIsInList = [Property](const TArray<TFieldPath<FProperty>>& PropertyList)
 	{
-		const UConcertSyncConfig* SyncConfig = GetDefault<UConcertSyncConfig>();
-		return SyncConfig->AllowedTransientProperties.ContainsByPredicate([Property](const TFieldPath<FProperty>& TransactionProperty)
+		return PropertyList.ContainsByPredicate([Property](const TFieldPath<FProperty>& PropertyFieldPath)
 		{
-			FProperty* FilterProperty = TransactionProperty.Get();
+			FProperty* FilterProperty = PropertyFieldPath.Get();
 			return Property == FilterProperty;
 		});
 	};
-
+	const UConcertSyncConfig* SyncConfig = GetDefault<UConcertSyncConfig>();
 	return (!Property->IsEditorOnlyProperty() || InIncludeEditorOnlyData)
 		&& (!Property->HasAnyPropertyFlags(CPF_NonTransactional))
-		&& (!Property->HasAnyPropertyFlags(CPF_Transient) || CanExportTransientProperty());
+		&& (!Property->HasAnyPropertyFlags(CPF_Transient) || PropertyIsInList(SyncConfig->AllowedTransientProperties))
+		&& (!PropertyIsInList(SyncConfig->ExcludedProperties));
 }
 
 void GatherDefaultSubobjectPaths(const UObject* Obj, TSet<FSoftObjectPath>& OutSubobjects)
@@ -238,8 +238,27 @@ FConcertSyncObjectWriter::FConcertSyncObjectWriter(FConcertLocalIdentifierTable*
 {
 }
 
-void FConcertSyncObjectWriter::SerializeObject(const UObject* InObject, const TArray<const FProperty*>* InPropertiesToWrite)
+void FConcertSyncObjectWriter::SerializeObject(const UObject* InObject, const TArray<const FProperty*>* InPropertiesToWrite, bool bAllowOuters /*= false*/)
 {
+	PackageName = InObject->GetPackage()->GetPathName();
+
+	if (bSerializeNestedObjects && !bAllowOuters)
+	{
+		// When serializing nested objects, we need to know when to stop
+		// capturing. A property can point to outer or this package and those
+		// should not be included in the serialization. So we make note of them
+		// here to stop the serialization when those objects are encountered and
+		// only store the FSoftObjectPath
+		CollectedObjects.Add(InObject->GetPackage()->GetPathName());
+		CollectedObjects.Add(InObject->GetPathName());
+		UObject* Outer = InObject->GetOuter();
+		while (	Outer )
+		{
+			CollectedObjects.Add(Outer->GetPathName());
+			Outer = Outer->GetOuter();
+		}
+	}
+
 	if (InPropertiesToWrite)
 	{
 		ShouldSkipPropertyFunc = [InObject, InPropertiesToWrite](const FProperty* InProperty) -> bool
@@ -267,7 +286,8 @@ void FConcertSyncObjectWriter::SerializeProperty(const FProperty* InProp, const 
 
 FArchive& FConcertSyncObjectWriter::operator<<(UObject*& Obj)
 {
-	FName ObjPath;
+	bool bCanSerializeObject = false;
+	FSoftObjectPath ObjPath;
 	if (Obj)
 	{
 		if (bSkipAssets && Obj->IsAsset())
@@ -277,12 +297,42 @@ FArchive& FConcertSyncObjectWriter::operator<<(UObject*& Obj)
 		else
 		{
 			FString ObjectPathString = Obj->GetPathName();
+
+			// Check to see if we can serialize before we perform the remapping.
+			bCanSerializeObject = !CollectedObjects.Contains(ObjectPathString);
+
 			RemapObjectPathDelegate.ExecuteIfBound(ObjectPathString);
-			ObjPath = FName(ObjectPathString);
+			ObjPath.SetPath(ObjectPathString);
 		}
 	}
+	ObjPath.SerializePath(*this);
 
-	*this << ObjPath;
+	bool bDoSerializeObject = bCanSerializeObject
+		&& bSerializeNestedObjects
+		&& Obj && Obj->GetPackage()
+		&& PackageName == Obj->GetPackage()->GetPathName()
+		&& !Obj->IsA<UPackage>();
+
+	if (bSerializeNestedObjects)
+	{
+		*this << bDoSerializeObject;
+	}
+
+	if (bDoSerializeObject)
+	{
+
+		// To prevent stack overflow we need to add to the collected objects first.
+		CollectedObjects.Add(ObjPath.ToString());
+
+		check(Obj && Obj->GetClass());
+
+		FString ClassName = Obj->GetClass()->GetPathName();
+		int32 OutFlags = static_cast<int32>(Obj->GetFlags());
+		*this << ClassName;
+		*this << OutFlags;
+
+		SerializeObject(Obj, nullptr, true);
+	}
 	return *this;
 }
 
@@ -311,7 +361,7 @@ FArchive& FConcertSyncObjectWriter::operator<<(FSoftObjectPtr& AssetPtr)
 
 FArchive& FConcertSyncObjectWriter::operator<<(FSoftObjectPath& AssetPtr)
 {
-	FName ObjPath;
+	FSoftObjectPath ObjPath;
 	if (bSkipAssets)
 	{
 		ObjPath = SkipAssetsMarker;
@@ -320,9 +370,9 @@ FArchive& FConcertSyncObjectWriter::operator<<(FSoftObjectPath& AssetPtr)
 	{
 		FString ObjectPathString = AssetPtr.ToString();
 		RemapObjectPathDelegate.ExecuteIfBound(ObjectPathString);
-		ObjPath = FName(ObjectPathString);
+		ObjPath.SetPath(ObjectPathString);
 	}
-	*this << ObjPath;
+	ObjPath.SerializePath(*this);
 	return *this;
 }
 
@@ -344,36 +394,47 @@ bool FConcertSyncObjectWriter::ShouldSkipProperty(const FProperty* InProperty) c
 		|| (!ConcertSyncUtil::CanExportProperty(InProperty, !IsFilterEditorOnly()));
 }
 
-FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const TArray<uint8>& InBytes, const FConcertSyncEncounteredMissingObject& InEncounteredMissingObjectDelegate)
-	: FConcertIdentifierReader(InLocalIdentifierTable, InBytes, /*bIsPersistent*/false)
-	, WorldRemapper(MoveTemp(InWorldRemapper))
-	, EncounteredMissingObjectDelegate(InEncounteredMissingObjectDelegate)
+
+namespace UE::Concert::Private::ConcertSyncArchiveUtil
 {
-	ArIgnoreClassRef = false;
-	ArIgnoreArchetypeRef = false;
-	ArNoDelta = true;
-	//SetWantBinaryPropertySerialization(true);
+
+void InitReaderArchive(FArchive& Ar, const FConcertSessionVersionInfo* InVersionInfo)
+{
+	Ar.ArIgnoreClassRef = false;
+	Ar.ArIgnoreArchetypeRef = false;
+	Ar.ArNoDelta = true;
+	//Ar.SetWantBinaryPropertySerialization(true);
 
 	if (InVersionInfo)
 	{
 		FPackageFileVersion UEVersion(InVersionInfo->FileVersion.FileVersion, (EUnrealEngineObjectUE5Version)InVersionInfo->FileVersion.FileVersionUE5);
 
-		SetUEVer(UEVersion);
-		SetLicenseeUEVer(InVersionInfo->FileVersion.FileVersionLicensee);
-		SetEngineVer(FEngineVersionBase(InVersionInfo->EngineVersion.Major, InVersionInfo->EngineVersion.Minor, InVersionInfo->EngineVersion.Patch, InVersionInfo->EngineVersion.Changelist));
+		Ar.SetUEVer(UEVersion);
+		Ar.SetLicenseeUEVer(InVersionInfo->FileVersion.FileVersionLicensee);
+		Ar.SetEngineVer(FEngineVersionBase(InVersionInfo->EngineVersion.Major, InVersionInfo->EngineVersion.Minor, InVersionInfo->EngineVersion.Patch, InVersionInfo->EngineVersion.Changelist));
 
 		FCustomVersionContainer EngineCustomVersions;
 		for (const FConcertCustomVersionInfo& CustomVersion : InVersionInfo->CustomVersions)
 		{
 			EngineCustomVersions.SetVersion(CustomVersion.Key, CustomVersion.Version, CustomVersion.FriendlyName);
 		}
-		SetCustomVersions(EngineCustomVersions);
+		Ar.SetCustomVersions(EngineCustomVersions);
 	}
 
 	// This is conditional on WITH_EDITORONLY_DATA because the transaction flag is ignored in builds without it and IsTransacting always returns false. So
-	// the writer should only be sending non-editor only properties if the reader does not use editor oly data.
-	SetIsTransacting(WITH_EDITORONLY_DATA);
-	SetFilterEditorOnly(!WITH_EDITORONLY_DATA);
+	// the writer should only be sending non-editor only properties if the reader does not use editor only data.
+	Ar.SetIsTransacting(WITH_EDITORONLY_DATA);
+	Ar.SetFilterEditorOnly(!WITH_EDITORONLY_DATA);
+}
+
+} // namespace UE::Concert::Private::ConcertSyncArchiveUtil
+
+FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertSyncWorldRemapper InWorldRemapper, const FConcertSessionVersionInfo* InVersionInfo, UObject* InObj, const TArray<uint8>& InBytes, const FConcertSyncEncounteredMissingObject& InEncounteredMissingObjectDelegate)
+	: FConcertIdentifierReader(InLocalIdentifierTable, InBytes, /*bIsPersistent*/false)
+	, WorldRemapper(MoveTemp(InWorldRemapper))
+	, EncounteredMissingObjectDelegate(InEncounteredMissingObjectDelegate)
+{
+	UE::Concert::Private::ConcertSyncArchiveUtil::InitReaderArchive(*this, InVersionInfo);
 
 #if USE_STABLE_LOCALIZATION_KEYS
 	if (GIsEditor && !(ArPortFlags & PPF_DuplicateForPIE))
@@ -390,6 +451,7 @@ FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifier
 
 void FConcertSyncObjectReader::SerializeObject(UObject* InObject)
 {
+	CurrentOuter = InObject;
 	InObject->Serialize(*this);
 }
 
@@ -403,16 +465,23 @@ void FConcertSyncObjectReader::SerializeProperty(const FProperty* InProp, UObjec
 
 FArchive& FConcertSyncObjectReader::operator<<(UObject*& Obj)
 {
-	FName ObjPath;
-	*this << ObjPath;
+	FSoftObjectPath ObjPath;
+	ObjPath.SerializePath(*this);
 
-	if (ObjPath.IsNone())
+	bool bDidSerializeObject = false;
+	if (bSerializeNestedObjects)
+	{
+		*this << bDidSerializeObject;
+	}
+
+	if (ObjPath.IsNull())
 	{
 		Obj = nullptr;
 	}
 	else if (ObjPath != SkipAssetsMarker)
 	{
 		const FString ResolvedObjPath = WorldRemapper.RemapObjectPathName(ObjPath.ToString());
+		OnObjectSerialized(FSoftObjectPath(ObjPath));
 
 		// Always attempt to find an in-memory object first as we may be calling this function while a load is taking place
 		Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ResolvedObjPath);
@@ -440,6 +509,25 @@ FArchive& FConcertSyncObjectReader::operator<<(UObject*& Obj)
 			{
 				EncounteredMissingObjectDelegate.Execute(FStringView(ResolvedObjPath));
 			}
+		}
+
+		if (bDidSerializeObject)
+		{
+			FString ClassName;
+			int32  CapturedObjectCreationFlags;
+			*this << ClassName;
+			*this << CapturedObjectCreationFlags;
+			EObjectFlags ObjectCreationFlags = static_cast<EObjectFlags>(CapturedObjectCreationFlags);
+
+			if (!Obj)
+			{
+				UClass* InClass = FindObject<UClass>(nullptr, *ClassName);
+				check(InClass);
+				Obj = NewObject<UObject>(CurrentOuter, InClass, NAME_None, ObjectCreationFlags);
+			}
+
+			check(Obj);
+			SerializeObject(Obj);
 		}
 	}
 
@@ -481,13 +569,15 @@ FArchive& FConcertSyncObjectReader::operator<<(FSoftObjectPtr& AssetPtr)
 
 FArchive& FConcertSyncObjectReader::operator<<(FSoftObjectPath& AssetPtr)
 {
-	FName ObjPath;
-	*this << ObjPath;
+	FSoftObjectPath ObjPath;
+	ObjPath.SerializePath(*this);
 
 	if (ObjPath != SkipAssetsMarker)
 	{
 		const FString ResolvedObjPath = WorldRemapper.RemapObjectPathName(ObjPath.ToString());
 		AssetPtr.SetPath(ResolvedObjPath);
+
+		OnObjectSerialized(AssetPtr);
 	}
 
 	return *this;
@@ -504,4 +594,117 @@ FArchive& FConcertSyncObjectReader::operator<<(FWeakObjectPtr& Value)
 FString FConcertSyncObjectReader::GetArchiveName() const
 {
 	return TEXT("FConcertSyncObjectReader");
+}
+
+
+FConcertSyncObjectRewriter::FConcertSyncObjectRewriter(const FConcertLocalIdentifierTable* InLocalIdentifierTable, FConcertLocalIdentifierTable* InRewriteIdentifierTable, const FConcertSessionVersionInfo* InVersionInfo, TArray<uint8>& InBytes)
+	: FConcertIdentifierRewriter(InLocalIdentifierTable, InRewriteIdentifierTable, InBytes, /*bIsPersistent*/false)
+{
+	UE::Concert::Private::ConcertSyncArchiveUtil::InitReaderArchive(*this, InVersionInfo);
+}
+
+void FConcertSyncObjectRewriter::RewriteObject(const UClass* InClass)
+{
+	// Allocate a temporary object to read into while rewriting the data
+	// TODO: This should probably use a pool of some kind
+	UObject* TmpObject = NewObject<UObject>(GetTransientPackage(), InClass);
+	TmpObject->Serialize(*this);
+}
+
+void FConcertSyncObjectRewriter::RewriteProperty(const FProperty* InProp)
+{
+	// Allocate a temporary property to read into while rewriting the data
+	void* TmpPropData = FMemory_Alloca_Aligned(InProp->GetSize(), InProp->GetMinAlignment());
+	InProp->InitializeValue(TmpPropData);
+
+	for (int32 Idx = 0; Idx < InProp->ArrayDim; ++Idx)
+	{
+		InProp->SerializeItem(FStructuredArchiveFromArchive(*this).GetSlot(), (uint8*)TmpPropData + (InProp->ElementSize * Idx));
+	}
+
+	InProp->DestroyValue(TmpPropData);
+}
+
+FArchive& FConcertSyncObjectRewriter::operator<<(UObject*& Obj)
+{
+	FSoftObjectPath ObjPath;
+	const int64 OffsetBeforeObjectRead = Offset;
+	ObjPath.SerializePath(*this);
+	const int64 OffsetAfterObjectRead = Offset;
+
+	if (ObjPath.IsNull())
+	{
+		Obj = nullptr;
+	}
+	else if (ObjPath != SkipAssetsMarker)
+	{
+		OnObjectSerialized(ObjPath);
+		RewriteData(OffsetBeforeObjectRead, OffsetAfterObjectRead - OffsetBeforeObjectRead, ObjPath);
+		Obj = StaticFindObject(UObject::StaticClass(), nullptr, *ObjPath.ToString());
+	}
+
+	return *this;
+}
+
+FArchive& FConcertSyncObjectRewriter::operator<<(FLazyObjectPtr& LazyObjectPtr)
+{
+	UObject* Obj = nullptr;
+	FUniqueObjectGuid SavedObjectGuid;
+	*this << Obj;
+	*this << SavedObjectGuid;
+
+	// if the resolved object already has an associated Guid, use that instead of the saved one
+	// otherwise used the saved guid since it should refer to the Obj path once its state get applied.
+	FUniqueObjectGuid ObjectGuid = Obj != nullptr ? FUniqueObjectGuid(Obj) : FUniqueObjectGuid();
+	LazyObjectPtr = ObjectGuid.IsValid() ? ObjectGuid : SavedObjectGuid;
+	// technically the saved object guid should be the same as the resolved object guid if any.
+	ensure(!ObjectGuid.IsValid() || ObjectGuid == SavedObjectGuid);
+
+	return *this;
+}
+
+FArchive& FConcertSyncObjectRewriter::operator<<(FObjectPtr& Obj)
+{
+	UObject* RawObj = Obj.Get();
+	*this << RawObj;
+	Obj = RawObj;
+	return *this;
+}
+
+FArchive& FConcertSyncObjectRewriter::operator<<(FSoftObjectPtr& AssetPtr)
+{
+	FSoftObjectPath Obj;
+	*this << Obj;
+	AssetPtr = Obj;
+	return *this;
+}
+
+FArchive& FConcertSyncObjectRewriter::operator<<(FSoftObjectPath& AssetPtr)
+{
+	FSoftObjectPath ObjPath;
+	const int64 OffsetBeforeObjectRead = Offset;
+	ObjPath.SerializePath(*this);
+	const int64 OffsetAfterObjectRead = Offset;
+
+	if (ObjPath != SkipAssetsMarker)
+	{
+		OnObjectSerialized(ObjPath);
+		RewriteData(OffsetBeforeObjectRead, OffsetAfterObjectRead - OffsetBeforeObjectRead, ObjPath);
+		AssetPtr = ObjPath;
+	}
+
+	return *this;
+}
+
+FArchive& FConcertSyncObjectRewriter::operator<<(FWeakObjectPtr& Value)
+{
+	UObject* Obj = nullptr;
+	*this << Obj;
+	Value = Obj;
+	return *this;
+}
+
+FString FConcertSyncObjectRewriter::GetArchiveName() const
+{
+	return TEXT("FConcertSyncObjectRewriter");
 }

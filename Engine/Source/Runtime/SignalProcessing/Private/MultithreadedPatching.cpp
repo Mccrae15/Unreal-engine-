@@ -5,6 +5,7 @@
 #include "DSP/FloatArrayMath.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "HAL/Event.h"
 
 static int32 MultithreadedPatchingPushCallsPerOutputCleanupCheckCVar = 256;
@@ -25,8 +26,7 @@ namespace Audio
 		, PreviousGain(InGain)
 		, PatchID(++PatchIDCounter)
 		, NumAliveInputs(0)
-		, SamplesFilledEvent(nullptr)
-		, NumSamplesToWaitFor(0)
+		, SamplesPushedEvent(nullptr)
 	{
 
 	}
@@ -38,17 +38,15 @@ namespace Audio
 		, PreviousGain(0.0f)
 		, PatchID(INDEX_NONE)
 		, NumAliveInputs(0)
-		, SamplesFilledEvent(nullptr)
-		, NumSamplesToWaitFor(0)
+		, SamplesPushedEvent(nullptr)
 	{
 	}
 
 	FPatchOutput::~FPatchOutput()
 	{
-		if (SamplesFilledEvent)
+		if (FEvent* Event = SamplesPushedEvent.exchange(nullptr, std::memory_order_acq_rel))
 		{
-			FPlatformProcess::ReturnSynchEventToPool(SamplesFilledEvent);
-			SamplesFilledEvent = nullptr;
+			FPlatformProcess::ReturnSynchEventToPool(Event);
 		}
 	}
 
@@ -88,18 +86,17 @@ namespace Audio
 
 	bool FPatchOutput::IsInputStale() const
 	{
-		return NumAliveInputs == 0;
+		return NumAliveInputs.load(std::memory_order_relaxed) == 0;
 	}
 
 	int32 FPatchOutput::PushAudioToInternalBuffer(const float* InBuffer, int32 NumSamples)
 	{
-		const int32 NumSamplesPushed = InternalBuffer.Push(InBuffer, NumSamples);
+		const int32 NumSamplesPushed = InBuffer ? InternalBuffer.Push(InBuffer, NumSamples) : InternalBuffer.PushZeros(NumSamples);
 
 		// Check to see if we need to notify anybody waiting on this patch output getting filled
-		if (SamplesFilledEvent && NumSamplesToWaitFor > 0 && GetNumSamplesAvailable() >= NumSamplesToWaitFor)
+		if (FEvent* Event = SamplesPushedEvent.load(std::memory_order_acquire))
 		{
-			SamplesFilledEvent->Trigger();
-			NumSamplesToWaitFor = 0;
+			Event->Trigger();
 		}
 
 		const int32 CurrSamplesAvailable = GetNumSamplesAvailable();
@@ -155,19 +152,69 @@ namespace Audio
 
 	bool FPatchOutput::WaitUntilNumSamplesAvailable(int32 InNumSamplesToWaitFor, uint32 TimeOutMilliseconds)
 	{
-		// No need to wait if we have that many available already
-		if (GetNumSamplesAvailable() >= InNumSamplesToWaitFor)
+		// Samples are ready if there are enough of them available, or the input is stale.
+		// Conceptually, a stale input contributes silence, so its samples are known.
+		if (IsInputStale() || GetNumSamplesAvailable() >= InNumSamplesToWaitFor)
 		{
 			return true;
 		}
-		NumSamplesToWaitFor = InNumSamplesToWaitFor;
-		
-		if (!SamplesFilledEvent)
+
+		// Samples are not ready if the timeout is zero or the
+		// internal buffer can't hold the number of requested samples.
+		if (!TimeOutMilliseconds || InternalBuffer.GetCapacity() < uint32(InNumSamplesToWaitFor))
 		{
-			SamplesFilledEvent = FPlatformProcess::GetSynchEventFromPool(false);
+			return false;
 		}
-	
-		return SamplesFilledEvent->Wait(TimeOutMilliseconds);
+
+		// Determine if an event is ready to signal when
+		// samples are submitted.  Provide one if not.
+		FEvent* Event = SamplesPushedEvent.load(std::memory_order_acquire);
+		if (!Event)
+		{
+			FEvent* NewEvent = FPlatformProcess::GetSynchEventFromPool(false);
+			if (SamplesPushedEvent.compare_exchange_strong(Event, NewEvent, std::memory_order_release, std::memory_order_acquire))
+			{
+				// Use the new event.
+				Event = NewEvent;
+			}
+			else
+			{
+				// Use the existing event and return the new one.
+				FPlatformProcess::ReturnSynchEventToPool(NewEvent);
+			}
+		}
+
+		// Calculate when the timeout period will end.
+		double CurrentTime = FPlatformTime::Seconds();
+		double WaitStopTime = CurrentTime + 0.001 * TimeOutMilliseconds;
+
+		// First determine if samples are available.
+		// They might have become available before the event was ready to signal.
+		while (!IsInputStale() && GetNumSamplesAvailable() < InNumSamplesToWaitFor)
+		{
+			// Wait for the next sample submission.
+			Event->Wait(TimeOutMilliseconds);
+
+			// If the timeout is not infinite, update it.
+			if (TimeOutMilliseconds != MAX_uint32)
+			{
+				CurrentTime = FPlatformTime::Seconds();
+
+				// Return if no time remains, indicating whether samples are ready.
+				double TimeOutRemainder = (WaitStopTime - CurrentTime) * 1000.;
+				if (!(TimeOutRemainder > 0.))
+				{
+					return IsInputStale() || GetNumSamplesAvailable() >= InNumSamplesToWaitFor;
+				}
+
+				// Truncating to an integer will cause a spin-wait
+				// when there's less than a millisecond remaining.
+				TimeOutMilliseconds = uint32(TimeOutRemainder);
+			}
+		}
+
+		// Samples are ready.
+		return true;
 	}
 
 	FPatchInput::FPatchInput(const FPatchOutputStrongPtr& InOutput)
@@ -175,7 +222,7 @@ namespace Audio
 	{
 		if (OutputHandle.IsValid())
 		{
-			OutputHandle->NumAliveInputs++;
+			OutputHandle->NumAliveInputs.fetch_add(1, std::memory_order_relaxed);
 		}
 	}
 
@@ -184,7 +231,7 @@ namespace Audio
 	{
 		if (OutputHandle.IsValid())
 		{
-			OutputHandle->NumAliveInputs++;
+			OutputHandle->NumAliveInputs.fetch_add(1, std::memory_order_relaxed);
 		}
 	}
 
@@ -197,24 +244,15 @@ namespace Audio
 
 	FPatchInput& FPatchInput::operator=(const FPatchInput& Other)
 	{
-		OutputHandle = Other.OutputHandle;
-		PushCallsCounter = 0;
-		
-		if (OutputHandle.IsValid())
-		{
-			OutputHandle->NumAliveInputs++;
-		}
-
+		FPatchInput NewPatchInput(Other);
+		Swap(NewPatchInput, *this);
 		return *this;
 	}
 
 	FPatchInput& FPatchInput::operator=(FPatchInput&& Other)
 	{
-		OutputHandle = MoveTemp(Other.OutputHandle);
-
-		PushCallsCounter = Other.PushCallsCounter;
-		Other.PushCallsCounter = 0;
-
+		FPatchInput NewPatchInput(MoveTemp(Other));
+		Swap(NewPatchInput, *this);
 		return *this;
 	}
 
@@ -222,7 +260,14 @@ namespace Audio
 	{
 		if (OutputHandle.IsValid())
 		{
-			OutputHandle->NumAliveInputs--;
+			if (OutputHandle->NumAliveInputs.fetch_sub(1, std::memory_order_relaxed) == 1)
+			{
+				if (FEvent* Event = OutputHandle->SamplesPushedEvent.load(std::memory_order_acquire))
+				{
+					// Signal that the sample status should be checked.
+					Event->Trigger();
+				}
+			}
 		}
 	}
 
@@ -263,9 +308,19 @@ namespace Audio
 		OutputHandle->TargetGain = InGain;
 	}
 
-	bool FPatchInput::IsOutputStillActive()
+	bool FPatchInput::IsOutputStillActive() const
 	{
 		return OutputHandle.IsValid() && !OutputHandle.IsUnique();
+	}
+
+	bool FPatchInput::IsValid() const
+	{
+		return OutputHandle.IsValid();
+	}
+
+	void FPatchInput::Reset()
+	{
+		OutputHandle.Reset();
 	}
 
 	FPatchInput FPatchMixer::AddNewInput(int32 InMaxLatencyInSamples, float InGain)
@@ -322,6 +377,10 @@ namespace Audio
 	int32 FPatchMixer::Num()
 	{
 		FScopeLock ScopeLock(&CurrentPatchesCriticalSection);
+
+		CleanUpDisconnectedPatches();
+		ConnectNewPatches();
+
 		return CurrentInputs.Num();
 	}
 
@@ -349,6 +408,53 @@ namespace Audio
 		}
 
 		return SmallestNumSamplesBuffered;
+	}
+
+	bool FPatchMixer::WaitUntilNumSamplesAvailable(int32 NumSamples, uint32 TimeOutMilliseconds)
+	{
+		FScopeLock ScopeLock(&CurrentPatchesCriticalSection);
+
+		CleanUpDisconnectedPatches();
+		ConnectNewPatches();
+
+		if (CurrentInputs.IsEmpty())
+		{
+			// Samples are ready if there are enough of them available, or the input is stale.
+			// Conceptually, a stale input contributes silence, so its samples are known.
+			return true;
+		}
+
+		// Calculate when the timeout period will end.
+		double CurrentTime = FPlatformTime::Seconds();
+		double WaitStopTime = CurrentTime + 0.001 * TimeOutMilliseconds;
+		for (FPatchOutputStrongPtr& Output : CurrentInputs)
+		{
+			bool bSamplesAvailable;
+			do
+			{
+				bSamplesAvailable = Output->WaitUntilNumSamplesAvailable(NumSamples, TimeOutMilliseconds);
+
+				// If the timeout is not infinite, update it.
+				if (TimeOutMilliseconds != MAX_uint32)
+				{
+					CurrentTime = FPlatformTime::Seconds();
+
+					// Return if no time remains and samples are not ready.
+					double TimeOutRemainder = (WaitStopTime - CurrentTime) * 1000.;
+					if (!bSamplesAvailable && !(TimeOutRemainder > 0.))
+					{
+						return false;
+					}
+
+					// If samples were ready, but the timeout has expired,
+					// the wait could still succeed if all the subsequent inputs are ready.
+					TimeOutMilliseconds = TimeOutRemainder > 0. ? uint32(TimeOutRemainder) : 0;
+				}
+			}
+			while (!bSamplesAvailable);
+		}
+
+		return true;
 	}
 
 	void FPatchMixer::DisconnectAllInputs()

@@ -11,6 +11,7 @@
 
 #include "Async/Async.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "NiagaraShader.h"
 #include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
@@ -147,12 +148,13 @@ namespace NiagaraScriptStatsLocal
 						NiagaraEmitter.GetEmitterData()->ForEachScript(
 							[&](UNiagaraScript* NiagaraScript)
 							{
-								TArray<FNiagaraShaderScript*> NewResources;
+								TArray<TUniquePtr<FNiagaraShaderScript>> NewResources;
 								NiagaraScript->CacheResourceShadersForCooking(ShaderPlatform, NewResources);
 								if (NewResources.Num() > 0)
 								{
 									ensure(NewResources.Num() == 1);
-									ShaderScripts.Emplace(NewResources[0]);
+									FNiagaraShaderScript* ShaderScript = NewResources[0].Release();
+									ShaderScripts.Emplace(ShaderScript);
 								}
 							}
 						);
@@ -240,7 +242,7 @@ namespace NiagaraScriptStatsLocal
 		bool bIsGPU = false;
 		bool bHasError = false;
 		FString ResultsString;
-		TArray<TUniquePtr<class FNiagaraShaderScript, FNiagaraScriptSafeDelete>> ShaderScripts;
+		TArray<TUniquePtr<FNiagaraShaderScript, FNiagaraScriptSafeDelete>> ShaderScripts;
 	};
 }
 
@@ -767,10 +769,12 @@ void FNiagaraScriptStatsViewModel::BuildShaderPlatformDetails()
 	TArray<EShaderPlatform, TInlineAllocator<SP_StaticPlatform_Last + 1>> StaticShaderPlatforms;
 	StaticShaderPlatforms.Add(SP_PCD3D_SM5);
 	StaticShaderPlatforms.Add(SP_VULKAN_SM5);
+	StaticShaderPlatforms.Add(SP_VULKAN_SM6);
 	StaticShaderPlatforms.Add(SP_OPENGL_ES3_1_ANDROID); 
 	StaticShaderPlatforms.Add(SP_VULKAN_ES3_1_ANDROID);
 	StaticShaderPlatforms.Add(SP_VULKAN_SM5_ANDROID);
 	StaticShaderPlatforms.Add(SP_METAL_SM5);
+    StaticShaderPlatforms.Add(SP_METAL_SM6);
 	StaticShaderPlatforms.Add(SP_METAL);
 	StaticShaderPlatforms.Add(SP_METAL_MRT);
 

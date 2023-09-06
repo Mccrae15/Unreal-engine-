@@ -11,6 +11,8 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/SWindow.h"
 
+#include "Misc/Optional.h"
+
 class FAssetEditorToolkit;
 class FNotifyHook;
 class IPropertyHandle;
@@ -59,6 +61,7 @@ namespace FPropertyAccess
 
 
 class IPropertyHandle;
+class IPropertyTableCell;
 class SPropertyTreeViewImpl;
 class SWindow;
 class IPropertyTableCellPresenter;
@@ -210,6 +213,12 @@ private:
 };
 
 
+struct FRegisterCustomClassLayoutParams
+{
+	/* Optional order to register this class layout with. Registration order is used when not specified. Lower values are added first */
+	TOptional<int32> OptionalOrder;
+};
+
 class FPropertyEditorModule : public IModuleInterface
 {
 public:
@@ -256,7 +265,7 @@ public:
 	 * @param ClassName	The name of the class that the custom detail layout is for
 	 * @param DetailLayoutDelegate	The delegate to call when querying for custom detail layouts for the classes properties
 	 */
-	virtual void RegisterCustomClassLayout( FName ClassName, FOnGetDetailCustomizationInstance DetailLayoutDelegate );
+	virtual void RegisterCustomClassLayout( FName ClassName, FOnGetDetailCustomizationInstance DetailLayoutDelegate, FRegisterCustomClassLayoutParams Params = FRegisterCustomClassLayoutParams());
 
 	/**
 	 * Unregisters a custom detail layout delegate for a specific class name
@@ -375,7 +384,7 @@ public:
 	virtual TSharedRef< class IPropertyTableWidgetHandle > CreatePropertyTableWidgetHandle( const TSharedRef< IPropertyTable >& PropertyTable, const TArray< TSharedRef< class IPropertyTableCustomColumn > >& Customizations );
 
 	virtual TSharedRef< IPropertyTableCellPresenter > CreateTextPropertyCellPresenter( const TSharedRef< class FPropertyNode >& InPropertyNode, const TSharedRef< class IPropertyTableUtilities >& InPropertyUtilities, 
-		const FSlateFontInfo* InFontPtr = NULL);
+		const FSlateFontInfo* InFontPtr = NULL, const TSharedPtr< IPropertyTableCell >& InCell = nullptr);
 
 	/**
 	 * Register a floating struct on scope so that the details panel may use it as a property

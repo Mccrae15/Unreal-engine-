@@ -4,6 +4,7 @@
 
 #include "OpenColorIOColorSpaceCustomization.h"
 #include "OpenColorIOConfiguration.h"
+#include "OpenColorIOWrapper.h"
 #include "Containers/StringConv.h"
 #include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
@@ -46,19 +47,23 @@ void FOpenColorIOConfigurationCustomization::CustomizeDetails(IDetailLayoutBuild
 			{
 				if(UOpenColorIOConfiguration* OpenColorIOConfig = Cast<UOpenColorIOConfiguration>(Objects[0].Get()))
 				{
+					OpenColorIOWrapper::ClearAllCaches();
+
 					OpenColorIOConfig->ReloadExistingColorspaces();
 				}
 				return FReply::Handled();
 			})
 		];
 
+	TSharedPtr<IPropertyHandle> ConfigurationObjectHandle = ConfigurationFileProperty->GetParentHandle();
+
 	DetailBuilder.RegisterInstancedCustomPropertyTypeLayout(
 			FOpenColorIOColorSpace::StaticStruct()->GetFName(),
-			FOnGetPropertyTypeCustomizationInstance::CreateLambda([] { return MakeShared<FOpenColorIOColorSpaceCustomization>(); }));
+			FOnGetPropertyTypeCustomizationInstance::CreateLambda([ConfigurationObjectHandle] { return FOpenColorIOColorSpaceCustomization::MakeInstance(ConfigurationObjectHandle); }));
 
 	DetailBuilder.RegisterInstancedCustomPropertyTypeLayout(
 		FOpenColorIODisplayView::StaticStruct()->GetFName(),
-		FOnGetPropertyTypeCustomizationInstance::CreateLambda([] { return MakeShared<FOpenColorIODisplayViewCustomization>(); }));
+		FOnGetPropertyTypeCustomizationInstance::CreateLambda([ConfigurationObjectHandle] { return FOpenColorIODisplayViewCustomization::MakeInstance(ConfigurationObjectHandle); }));
 }
 
 #undef LOCTEXT_NAMESPACE

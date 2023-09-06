@@ -2,6 +2,10 @@
 
 #include "DMXControlConsoleFaderGroup.h"
 
+#include "Algo/AnyOf.h"
+#include "Algo/Find.h"
+#include "Algo/ForEach.h"
+#include "Algo/Sort.h"
 #include "DMXAttribute.h"
 #include "DMXControlConsoleFaderBase.h"
 #include "DMXControlConsoleFaderGroupRow.h"
@@ -13,9 +17,6 @@
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXLibrary.h"
-
-#include "Algo/Find.h"
-#include "Algo/Sort.h"
 
 
 #define LOCTEXT_NAMESPACE "DMXControlConsoleFaderGroup"
@@ -29,7 +30,10 @@ UDMXControlConsoleRawFader* UDMXControlConsoleFaderGroup::AddRawFader()
 	UDMXControlConsoleRawFader* Fader = NewObject<UDMXControlConsoleRawFader>(this, NAME_None, RF_Transactional);
 	Fader->SetUniverseID(Universe);
 	Fader->SetAddressRange(Address);
+	Fader->SetFaderName(FString::FromInt(Elements.Num() + 1));
 	Elements.Add(Fader);
+
+	OnElementAdded.Broadcast(Fader);
 
 	return Fader;
 }
@@ -40,6 +44,8 @@ UDMXControlConsoleFixturePatchFunctionFader* UDMXControlConsoleFaderGroup::AddFi
 	Fader->SetPropertiesFromFixtureFunction(FixtureFunction, InUniverseID, StartingChannel);
 	Elements.Add(Fader);
 
+	OnElementAdded.Broadcast(Fader);
+
 	return Fader;
 }
 
@@ -48,6 +54,8 @@ UDMXControlConsoleFixturePatchMatrixCell* UDMXControlConsoleFaderGroup::AddFixtu
 	UDMXControlConsoleFixturePatchMatrixCell* MatrixCell = NewObject<UDMXControlConsoleFixturePatchMatrixCell>(this, NAME_None, RF_Transactional);
 	MatrixCell->SetPropertiesFromCell(Cell, InUniverseID, StartingChannel);
 	Elements.Add(MatrixCell);
+
+	OnElementAdded.Broadcast(MatrixCell);
 
 	return MatrixCell;
 }
@@ -65,11 +73,38 @@ void UDMXControlConsoleFaderGroup::DeleteElement(const TScriptInterface<IDMXCont
 	}
 
 	Elements.Remove(Element);
+
+	OnElementRemoved.Broadcast(Element.GetInterface());
 }
 
 void UDMXControlConsoleFaderGroup::ClearElements()
 {
 	Elements.Reset();
+}
+
+TArray<TScriptInterface<IDMXControlConsoleFaderGroupElement>> UDMXControlConsoleFaderGroup::GetElements(bool bSortByUniverseAndAddress) const
+{
+	TArray<TScriptInterface<IDMXControlConsoleFaderGroupElement>> ElementsArray = Elements;
+	if (bSortByUniverseAndAddress)
+	{
+		auto SortElementsLambda = [](const TScriptInterface<IDMXControlConsoleFaderGroupElement>& ItemA, const TScriptInterface<IDMXControlConsoleFaderGroupElement>& ItemB)
+			{
+				const int32 UniverseIDA = ItemA->GetUniverseID();
+				const int32 UniverseIDB = ItemB->GetUniverseID();
+
+				const int32 StartingChannelA = ItemA->GetStartingAddress();
+				const int32 StartingChannelB = ItemB->GetStartingAddress();
+
+				const int64 AbsoluteChannelA = (UniverseIDA - 1) * DMX_MAX_ADDRESS + StartingChannelA;
+				const int64 AbsoluteChannelB = (UniverseIDB - 1) * DMX_MAX_ADDRESS + StartingChannelB;
+
+				return AbsoluteChannelA < AbsoluteChannelB;
+			};
+
+		Algo::Sort(ElementsArray, SortElementsLambda);
+	}
+
+	return ElementsArray;
 }
 
 TArray<UDMXControlConsoleFaderBase*> UDMXControlConsoleFaderGroup::GetAllFaders() const
@@ -164,8 +199,7 @@ void UDMXControlConsoleFaderGroup::GenerateFromFixturePatch(UDMXEntityFixturePat
 	};
 
 	Algo::Sort(Elements, SortElementsByEndingAddressLambda);
-
-	bForceRefresh = true;
+	OnFixturePatchChangedDelegate.Broadcast(this, InFixturePatch);
 }
 
 bool UDMXControlConsoleFaderGroup::HasFixturePatch() const
@@ -289,9 +323,13 @@ TMap<FIntPoint, TMap<FDMXAttributeName, float>> UDMXControlConsoleFaderGroup::Ge
 
 			const UDMXControlConsoleFixturePatchCellAttributeFader* CellAttributeFader = CastChecked<UDMXControlConsoleFixturePatchCellAttributeFader>(Fader);
 			const FDMXAttributeName& AttributeName = CellAttributeFader->GetAttributeName();
-			const float ValueRange = CellAttributeFader->GetMaxValue() - CellAttributeFader->GetMinValue();
+
+			const EDMXFixtureSignalFormat DataType = CellAttributeFader->GetDataType();
+			const uint8 NumChannels = static_cast<uint8>(DataType) + 1;
+			const float ValueRange = FMath::Pow(2.f, 8.f * NumChannels) - 1;
+
 			const uint32 Value = CellAttributeFader->GetValue();
-			const float RelativeValue = (Value - CellAttributeFader->GetMinValue()) / ValueRange;
+			const float RelativeValue = Value / ValueRange;
 
 			AttributeValueMapRef.FindOrAdd(AttributeName) = RelativeValue;
 		}
@@ -300,7 +338,21 @@ TMap<FIntPoint, TMap<FDMXAttributeName, float>> UDMXControlConsoleFaderGroup::Ge
 	return CoordinateToMatrixAttributeMap;
 }
 
-void UDMXControlConsoleFaderGroup::Reset()
+void UDMXControlConsoleFaderGroup::Duplicate() const
+{
+	if (HasFixturePatch())
+	{
+		return;
+	}
+
+	UDMXControlConsoleFaderGroupRow& FaderGroupRow = GetOwnerFaderGroupRowChecked();
+	const int32 Index = GetIndex();
+
+	FaderGroupRow.Modify();
+	FaderGroupRow.DuplicateFaderGroup(Index);
+}
+
+void UDMXControlConsoleFaderGroup::Clear()
 {
 	FaderGroupName = GetName();
 
@@ -312,6 +364,22 @@ void UDMXControlConsoleFaderGroup::Reset()
 #endif 
 
 	ClearElements();
+
+	OnFixturePatchChangedDelegate.Broadcast(this, nullptr);
+}
+
+void UDMXControlConsoleFaderGroup::ResetToDefault()
+{
+	const TArray<UDMXControlConsoleFaderBase*> AllFaders = GetAllFaders();
+	for (UDMXControlConsoleFaderBase* Fader : AllFaders)
+	{
+		if (!Fader)
+		{
+			continue;
+		}
+
+		Fader->ResetToDefault();
+	}
 }
 
 void UDMXControlConsoleFaderGroup::Destroy()
@@ -329,10 +397,64 @@ void UDMXControlConsoleFaderGroup::Destroy()
 #endif // WITH_EDITOR
 }
 
-void UDMXControlConsoleFaderGroup::ForceRefresh()
+bool UDMXControlConsoleFaderGroup::IsLocked() const
 {
-	bForceRefresh = false;
+	const TArray<UDMXControlConsoleFaderBase*> AllFaders = GetAllFaders();
+	const bool bIsAnyFaderUnlocked = Algo::AnyOf(AllFaders, [this](UDMXControlConsoleFaderBase* Fader)
+		{
+			return Fader && !Fader->IsLocked();
+		});
+
+	return !AllFaders.IsEmpty() && !bIsAnyFaderUnlocked;
 }
+
+void UDMXControlConsoleFaderGroup::SetLock(bool bLock)
+{
+	const TArray<UDMXControlConsoleFaderBase*> AllFaders = GetAllFaders();
+	for (UDMXControlConsoleFaderBase* Fader : AllFaders)
+	{
+		if (Fader)
+		{
+			Fader->SetLock(bLock);
+		}
+	}
+}
+
+void UDMXControlConsoleFaderGroup::ToggleLock()
+{
+	SetLock(!IsLocked());
+}
+
+#if WITH_EDITOR
+void UDMXControlConsoleFaderGroup::SetIsExpanded(bool bExpanded, bool bNotify)
+{
+	bIsExpanded = bExpanded;
+	if (bNotify)
+	{
+		OnFaderGroupExpanded.Broadcast();
+	}
+}
+#endif // WITH_EDITOR
+
+#if WITH_EDITOR
+void UDMXControlConsoleFaderGroup::ShowAllElementsInEditor()
+{
+	for (const TScriptInterface<IDMXControlConsoleFaderGroupElement>& Element : Elements)
+	{
+		if (!Element.GetInterface())
+		{
+			continue;
+		}
+
+		Element.GetInterface()->SetIsMatchingFilter(true);
+
+		if (UDMXControlConsoleFixturePatchMatrixCell* MatrixCell = Cast<UDMXControlConsoleFixturePatchMatrixCell>(Element.GetObject()))
+		{
+			MatrixCell->ShowAllFadersInEditor();
+		}
+	}
+}
+#endif
 
 void UDMXControlConsoleFaderGroup::PostInitProperties()
 {
@@ -359,7 +481,7 @@ void UDMXControlConsoleFaderGroup::PostLoad()
 	else
 	{
 		Modify();
-		Reset();
+		Clear();
 	}
 }
 
@@ -395,7 +517,7 @@ void UDMXControlConsoleFaderGroup::OnFixturePatchRemovedFromLibrary(UDMXLibrary*
 	}
 
 	Modify();
-	Reset();
+	Clear();
 }
 
 void UDMXControlConsoleFaderGroup::OnFixturePatchChanged(const UDMXEntityFixturePatch* InFixturePatch)
@@ -433,8 +555,7 @@ void UDMXControlConsoleFaderGroup::UpdateFaderGroupFromFixturePatch(UDMXEntityFi
 	};
 
 	Algo::Sort(Elements, SortElementsByEndingAddressLambda);
-
-	bForceRefresh = true;
+	OnFixturePatchChangedDelegate.Broadcast(this, InFixturePatch);
 }
 
 void UDMXControlConsoleFaderGroup::UpdateFixturePatchFunctionFaders(UDMXEntityFixturePatch* InFixturePatch)

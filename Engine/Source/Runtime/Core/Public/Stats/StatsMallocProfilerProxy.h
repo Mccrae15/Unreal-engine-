@@ -7,16 +7,16 @@
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/Build.h"
 
+#if STATS && UE_STATS_MEMORY_PROFILER_ENABLED
+
 class FOutputDevice;
 class UWorld;
 struct FGenericMemoryStats;
 
-#if STATS
-
 /**
  * Malloc proxy for gathering memory messages.
  */
-class FStatsMallocProfilerProxy : public FMalloc
+class UE_DEPRECATED(5.3, "Use Trace/MemoryInsights and/or LLM for memory profiling.") FStatsMallocProfilerProxy : public FMalloc
 {
 private:
 	/** Malloc we're based on. */
@@ -118,10 +118,12 @@ public:
 		return UsedMalloc->ValidateHeap();
 	}
 
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar ) override
 	{
 		return UsedMalloc->Exec( InWorld, Cmd, Ar);
 	}
+#endif
 
 	virtual bool GetAllocationSize(void *Original, SIZE_T &SizeOut) override
 	{
@@ -149,5 +151,4 @@ public:
 	}
 };
 
-
-#endif //STATS
+#endif //STATS && UE_STATS_MEMORY_PROFILER_ENABLED

@@ -119,12 +119,32 @@ void FAnimNode_LinkedAnimGraph::Update_AnyThread(const FAnimationUpdateContext& 
 			// Issue the pending inertialization requests (which will get merged together by the inertialization node itself)
 			if (PendingBlendOutDuration >= 0.0f)
 			{
-				InertializationRequester->RequestInertialization(PendingBlendOutDuration, PendingBlendOutProfile);
+				FInertializationRequest Request;
+				Request.Duration = PendingBlendOutDuration;
+				Request.BlendProfile = PendingBlendOutProfile;
+#if ANIM_TRACE_ENABLED
+				Request.Description = NSLOCTEXT("AnimNode_LinkedAnimGraph", "InertializationRequestDescriptionOut", "Out");
+				Request.NodeId = InContext.GetCurrentNodeId();
+				Request.AnimInstance = InContext.AnimInstanceProxy->GetAnimInstanceObject();
+#endif
+
+				InertializationRequester->RequestInertialization(Request);
 			}
+
 			if (PendingBlendInDuration >= 0.0f)
 			{
-				InertializationRequester->RequestInertialization(PendingBlendInDuration, PendingBlendInProfile);
+				FInertializationRequest Request;
+				Request.Duration = PendingBlendInDuration;
+				Request.BlendProfile = PendingBlendInProfile;
+#if ANIM_TRACE_ENABLED
+				Request.Description = NSLOCTEXT("AnimNode_LinkedAnimGraph", "InertializationRequestDescriptionIn", "In");
+				Request.NodeId = InContext.GetCurrentNodeId();
+				Request.AnimInstance = InContext.AnimInstanceProxy->GetAnimInstanceObject();
+#endif
+
+				InertializationRequester->RequestInertialization(Request);
 			}
+
 			InertializationRequester->AddDebugRecord(*InContext.AnimInstanceProxy, InContext.GetCurrentNodeId());
 		}
 		else if ((PendingBlendOutDuration != 0.0f) && (PendingBlendInDuration != 0.0f) && (InputPoses.Num() > 0))
@@ -143,6 +163,11 @@ void FAnimNode_LinkedAnimGraph::Update_AnyThread(const FAnimationUpdateContext& 
 
 void FAnimNode_LinkedAnimGraph::Evaluate_AnyThread(FPoseContext& Output)
 {
+#if	ANIMNODE_STATS_VERBOSE
+	// Record name of linked graph we are updating
+	FScopeCycleCounter LinkedAnimGraphNameCycleCounter(StatID);
+#endif // ANIMNODE_STATS_VERBOSE
+
 	UAnimInstance* InstanceToRun = GetTargetInstance<UAnimInstance>();
 	if(InstanceToRun && LinkedRoot)
 	{
@@ -492,9 +517,25 @@ void FAnimNode_LinkedAnimGraph::HandleObjectsReinstanced_Impl(UObject* InSourceO
 		USkeletalMeshComponent* MeshComponent = SourceAnimInstance->GetSkelMeshComponent();
 		if(MeshComponent && MeshComponent->GetSkeletalMeshAsset())
 		{
+			SourceAnimInstance->RecalcRequiredBones();
+
 			FAnimationInitializeContext Context(&SourceProxy);
 			InitializeSubGraph_AnyThread(Context);
 		}
 	}
 }
 #endif
+
+#if ANIMNODE_STATS_VERBOSE
+void FAnimNode_LinkedAnimGraph::InitializeStatID()
+{
+	if (GetTargetInstance<UAnimInstance>())
+	{
+		StatID = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_Anim>(GetTargetInstance<UAnimInstance>()->GetClass()->GetName());
+	}
+	else
+	{
+		Super::InitializeStatID();
+	}
+}
+#endif // ANIMNODE_STATS_VERBOSE

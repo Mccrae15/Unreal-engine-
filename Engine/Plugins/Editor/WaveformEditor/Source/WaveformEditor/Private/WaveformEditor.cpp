@@ -3,23 +3,27 @@
 #include "WaveformEditor.h"
 
 #include "AudioDevice.h"
+#include "AssetDefinitionRegistry.h"
 #include "Components/AudioComponent.h"
+#include "EditorReimportHandler.h"
 #include "Misc/TransactionObjectEvent.h"
 #include "PropertyEditorModule.h"
 #include "Sound/SoundWave.h"
+#include "SparseSampledSequenceTransportCoordinator.h"
+#include "STransformedWaveformViewPanel.h"
 #include "Styling/AppStyle.h"
-#include "SWaveformPanel.h"
 #include "SWaveformTransformationsOverlay.h"
 #include "ToolMenus.h"
+#include "TransformedWaveformView.h"
+#include "TransformedWaveformViewFactory.h"
 #include "WaveformEditorCommands.h"
 #include "WaveformEditorDetailsCustomization.h"
 #include "WaveformEditorLog.h"
-#include "WaveformEditorRenderData.h"
+#include "WaveformEditorSequenceDataProvider.h"
 #include "WaveformEditorStyle.h"
 #include "WaveformEditorToolMenuContext.h"
 #include "WaveformEditorTransformationsSettings.h"
 #include "WaveformEditorWaveWriter.h"
-#include "WaveformTransformationsRenderManager.h"
 #include "Widgets/Docking/SDockTab.h"
 
 #define LOCTEXT_NAMESPACE "WaveformEditor"
@@ -31,6 +35,7 @@ const FName FWaveformEditor::WaveformDisplayTabId("WaveformEditor_Display");
 const FName FWaveformEditor::EditorName("Waveform Editor");
 const FName FWaveformEditor::ToolkitFName("WaveformEditor");
 
+
 bool FWaveformEditor::Init(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, USoundWave* SoundWaveToEdit)
 {
 	checkf(SoundWaveToEdit, TEXT("Tried to open a Soundwave Editor from a null soundwave"));
@@ -41,12 +46,15 @@ bool FWaveformEditor::Init(const EToolkitMode::Type Mode, const TSharedPtr<ITool
 
 	bool bIsInitialized = true;
 	
-	bIsInitialized &= SetUpDetailsViews();
-	bIsInitialized &= SetUpWaveformPanel();
-	bIsInitialized &= SetupAudioComponent();
-	bIsInitialized &= SetUpTransportController();
-	bIsInitialized &= SetUpWaveWriter();
+	bIsInitialized &= CreateDetailsViews();
+	bIsInitialized &= CreateTransportCoordinator();
+	bIsInitialized &= InitializeZoom();
+	bIsInitialized &= CreateWaveformView();
+	bIsInitialized &= InitializeAudioComponent();
+	bIsInitialized &= CreateTransportController();
+	bIsInitialized &= CreateWaveWriter();
 	bIsInitialized &= BindDelegates();
+	bIsInitialized &= SetUpAssetReimport();
 
 	bIsInitialized &= RegisterToolbar();
 	bIsInitialized &= BindCommands();
@@ -75,6 +83,14 @@ bool FWaveformEditor::Init(const EToolkitMode::Type Mode, const TSharedPtr<ITool
 	}
 
 	return bIsInitialized;
+}
+
+FWaveformEditor::~FWaveformEditor()
+{
+	if (FReimportManager::Instance())
+	{
+		FReimportManager::Instance()->OnPostReimport().RemoveAll(this);
+	}
 }
 
 void FWaveformEditor::AddDefaultTransformations()
@@ -111,7 +127,7 @@ void FWaveformEditor::AddDefaultTransformations()
 	}
 }
 
-bool FWaveformEditor::SetupAudioComponent()
+bool FWaveformEditor::InitializeAudioComponent()
 {
 	if (!ensure(SoundWave))
 	{
@@ -145,7 +161,7 @@ bool FWaveformEditor::SetupAudioComponent()
 	return true;
 }
 
-bool FWaveformEditor::SetUpTransportController()
+bool FWaveformEditor::CreateTransportController()
 {
 	if (!ensure(AudioComponent))
 	{
@@ -157,9 +173,13 @@ bool FWaveformEditor::SetUpTransportController()
 	return TransportController != nullptr;
 }
 
-bool FWaveformEditor::SetUpZoom()
+bool FWaveformEditor::InitializeZoom()
 {
 	ZoomManager = MakeShared<FWaveformEditorZoomController>();
+
+	check(TransportCoordinator)
+	ZoomManager->OnZoomRatioChanged.AddSP(TransportCoordinator.ToSharedRef(), &FSparseSampledSequenceTransportCoordinator::SetZoomRatio);
+
 	return ZoomManager != nullptr;
 }
 
@@ -173,8 +193,33 @@ bool FWaveformEditor::BindDelegates()
 
 	AudioComponent->OnAudioPlaybackPercentNative.AddSP(this, &FWaveformEditor::HandlePlaybackPercentageChange);
 	AudioComponent->OnAudioPlayStateChangedNative.AddSP(this, &FWaveformEditor::HandleAudioComponentPlayStateChanged);
-	TransportCoordinator->OnPlayheadScrubUpdate.AddSP(this, &FWaveformEditor::HandlePlayheadScrub);
+	TransportCoordinator->OnFocusPointScrubUpdate.AddSP(this, &FWaveformEditor::HandlePlayheadScrub);
 	return true;
+}
+
+bool FWaveformEditor::SetUpAssetReimport()
+{
+	if (!FReimportManager::Instance())
+	{
+		return false;
+	}
+
+	FReimportManager::Instance()->OnPostReimport().AddSP(this, &FWaveformEditor::OnAssetReimport);
+	return true;
+}
+
+void FWaveformEditor::ExecuteReimport()
+{
+	if (!CanExecuteReimport())
+	{
+		return;
+	}
+
+	const bool bSelectNewAsset = ReimportMode == EWaveEditorReimportMode::SelectFile;
+
+	TArray<UObject*> CopyOfSelectedAssets;
+	CopyOfSelectedAssets.Add(SoundWave);
+	FReimportManager::Instance()->ValidateAllSourceFileAndReimport(CopyOfSelectedAssets, true, -1, bSelectNewAsset);
 }
 
 void FWaveformEditor::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager)
@@ -278,16 +323,26 @@ bool FWaveformEditor::RegisterToolbar()
 		FToolMenuInsert InsertAfterZoomSection("Zoom Controls", EToolMenuInsertType::After);
 		FToolMenuSection& ExportSection = ToolBar->AddSection("Export Controls", TAttribute<FText>(), InsertAfterZoomSection);
 
-		FToolMenuEntry ExportEntry = FToolMenuEntry::InitToolBarButton(
-			Commands.ExportWaveform,
-			LOCTEXT("WaveformEditorRender", ""),
-			LOCTEXT("WaveformEditorRenderButtonTooltip", "Exports the edited waveform to a USoundWave asset"),
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.ExportAll")
-		);	
 
-		ExportSection.AddEntry(ExportEntry);
+		ExportSection.AddDynamicEntry("ExportButton", FNewToolMenuSectionDelegate::CreateLambda([this, Commands](FToolMenuSection& InSection) 
+		{
+			UWaveformEditorToolMenuContext* Context = InSection.FindContext<UWaveformEditorToolMenuContext>();
 
-		ExportSection.AddDynamicEntry("ExportOptions", FNewToolMenuSectionDelegate::CreateLambda([this](FToolMenuSection& InSection) {
+			if (Context && Context->WaveformEditor.IsValid())
+			{
+				FToolMenuEntry ExportEntry = FToolMenuEntry::InitToolBarButton(
+					Commands.ExportWaveform,
+					LOCTEXT("WaveformEditorRender", ""),
+					TAttribute< FText >::CreateRaw(Context->WaveformEditor.Pin().Get(), &FWaveformEditor::GetExportButtonToolTip),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.ExportAll")
+				);
+
+				InSection.AddEntry(ExportEntry);
+			}
+		}));
+
+		ExportSection.AddDynamicEntry("ExportOptions", FNewToolMenuSectionDelegate::CreateLambda([this](FToolMenuSection& InSection) 
+		{
 				UWaveformEditorToolMenuContext* Context = InSection.FindContext<UWaveformEditorToolMenuContext>();
 				
 				if (Context && Context->WaveformEditor.IsValid())
@@ -304,9 +359,44 @@ bool FWaveformEditor::RegisterToolbar()
 
 					InSection.AddEntry(ExportOptionsEntry);
 				}				
-			}
-		));
+		}));
 
+		ExportSection.AddDynamicEntry("ImportButton", FNewToolMenuSectionDelegate::CreateLambda([this, Commands](FToolMenuSection& InSection)
+		{
+			UWaveformEditorToolMenuContext* Context = InSection.FindContext<UWaveformEditorToolMenuContext>();
+
+			if (Context && Context->WaveformEditor.IsValid())
+			{
+				FToolMenuEntry ReimportEntry = FToolMenuEntry::InitToolBarButton(
+					Commands.ReimportAsset,
+					LOCTEXT("WaveformEditorReimport", ""),
+					TAttribute< FText >::CreateRaw(Context->WaveformEditor.Pin().Get(), &FWaveformEditor::GetReimportButtonToolTip),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import"));
+
+				InSection.AddEntry(ReimportEntry);
+			}
+		}));
+
+		ExportSection.AddDynamicEntry("ReimportOptions", FNewToolMenuSectionDelegate::CreateLambda([this](FToolMenuSection& InSection) 
+		{
+			UWaveformEditorToolMenuContext* Context = InSection.FindContext<UWaveformEditorToolMenuContext>();
+
+			if (Context && Context->WaveformEditor.IsValid())
+			{
+				FToolMenuEntry ReimportOptionsEntry = FToolMenuEntry::InitComboButton(
+					"ReimportOptionsCombo",
+					FToolUIActionChoice(FUIAction()),
+					FNewToolMenuChoice(FOnGetContent::CreateSP(Context->WaveformEditor.Pin().Get(), &FWaveformEditor::GenerateImportOptionsMenu)),
+					LOCTEXT("ReimportOptions_Label", "Reimport Options"),
+					LOCTEXT("ReimportOptions_ToolTip", "Reimport options for this USoundWave"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import"),
+					true
+				);
+
+				InSection.AddEntry(ReimportOptionsEntry);
+			}
+
+		}));
 	}
 
 	return true;
@@ -325,6 +415,31 @@ TSharedRef<SWidget> FWaveformEditor::GenerateExportOptionsMenu()
 	MenuBuilder.EndSection();
 
 	return MenuBuilder.MakeWidget();
+}
+
+TSharedRef<SWidget> FWaveformEditor::GenerateImportOptionsMenu()
+{
+	const bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, GetToolkitCommands());
+
+	MenuBuilder.BeginSection(NAME_None, LOCTEXT("ReimportMode_Label", "Reimport Mode"));
+	{
+		MenuBuilder.AddMenuEntry(FWaveformEditorCommands::Get().ReimportModeSameFile);
+		MenuBuilder.AddMenuEntry(FWaveformEditorCommands::Get().ReimportModeNewFile);
+	}
+	MenuBuilder.EndSection();
+
+	return MenuBuilder.MakeWidget();
+}
+
+bool FWaveformEditor::CanExecuteReimport() const
+{
+	if (FReimportManager::Instance() == nullptr)
+	{
+		return false;
+	}
+
+	return FReimportManager::Instance()->CanReimport(SoundWave);
 }
 
 bool FWaveformEditor::BindCommands()
@@ -377,6 +492,23 @@ bool FWaveformEditor::BindCommands()
 		FCanExecuteAction::CreateLambda([this] {return WaveWriter.IsValid(); }),
 		FIsActionChecked::CreateLambda([this] {return WaveWriter->GetExportChannelsFormat() == WaveformEditorWaveWriter::EChannelFormat::Stereo; }));
 
+	ToolkitCommands->MapAction(
+		Commands.ReimportAsset,
+		FExecuteAction::CreateSP(this, &FWaveformEditor::ExecuteReimport),
+		FCanExecuteAction::CreateSP(this, &FWaveformEditor::CanExecuteReimport));
+
+	ToolkitCommands->MapAction(
+		Commands.ReimportModeSameFile,
+		FExecuteAction::CreateLambda([this] { ReimportMode = EWaveEditorReimportMode::SameFile; ExecuteReimport(); }),
+		FCanExecuteAction::CreateLambda([this] { return CanExecuteReimport(); }),
+		FIsActionChecked::CreateLambda([this] {return ReimportMode == EWaveEditorReimportMode::SameFile; }));
+
+	ToolkitCommands->MapAction(
+		Commands.ReimportModeNewFile,
+		FExecuteAction::CreateLambda([this] { ReimportMode = EWaveEditorReimportMode::SelectFile; ExecuteReimport(); }),
+		FCanExecuteAction::CreateLambda([this] { return CanExecuteReimport(); }),
+		FIsActionChecked::CreateLambda([this] {return ReimportMode == EWaveEditorReimportMode::SelectFile; }));
+
 	return true;
 }
 
@@ -404,6 +536,22 @@ FString FWaveformEditor::GetWorldCentricTabPrefix() const
 FLinearColor FWaveformEditor::GetWorldCentricTabColorScale() const
 {
 	return FLinearColor(0.0f, 0.0f, 0.2f, 0.5f);
+}
+
+void FWaveformEditor::OnAssetReimport(UObject* ReimportedObject, bool bSuccessfullReimport)
+{
+	if (!bSuccessfullReimport)
+	{
+		return;
+	}
+
+	if (ReimportedObject->IsA<USoundWave>() && ReimportedObject->GetPathName() == SoundWave->GetPathName())
+	{
+		CreateWaveformView();
+		WaveformView.DataProvider->RequestSequenceView(TransportCoordinator->GetDisplayRange());
+		WaveformView.ViewWidget->SetPlayheadRatio(TransportCoordinator->GetFocusPoint());
+		this->TabManager->FindExistingLiveTab(WaveformDisplayTabId)->SetContent(WaveformView.ViewWidget.ToSharedRef());
+	}
 }
 
 void FWaveformEditor::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, class FEditPropertyChain* PropertyThatChanged)
@@ -469,10 +617,10 @@ void FWaveformEditor::NotifyPostChange(const FPropertyChangedEvent& PropertyChan
 
 	if (bUpdateTransformationChain)
 	{
-		TransformationsRenderManager->GenerateLayersChain();
+		WaveformView.DataProvider->GenerateLayersChain();
 	}
 
-	TransformationsRenderManager->UpdateRenderElements();
+	WaveformView.DataProvider->UpdateRenderElements();
 	TransformationChainConfig = SoundWave->GetTransformationChainConfig();
 }
 
@@ -482,8 +630,8 @@ void FWaveformEditor::PostUndo(bool bSuccess)
 {
 	if (bSuccess)
 	{
-		TransformationsRenderManager->GenerateLayersChain();
-		TransformationsRenderManager->UpdateRenderElements();
+		WaveformView.DataProvider->GenerateLayersChain();
+		WaveformView.DataProvider->UpdateRenderElements();
 	}
 }
 
@@ -518,7 +666,7 @@ void FWaveformEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 	MenuContext.AddObject(Context);
 }
 
-bool FWaveformEditor::SetUpDetailsViews()
+bool FWaveformEditor::CreateDetailsViews()
 {
 	if (!ensure(SoundWave)) 
 	{
@@ -543,9 +691,6 @@ bool FWaveformEditor::SetUpDetailsViews()
 	TransformationsDetails->RegisterInstancedCustomPropertyLayout(SoundWave->GetClass(), TransformationsDetailsCustomizationInstance);
 	TransformationsDetails->SetObject(SoundWave);
 
-	TransformationsPropertiesPropagator = PropertyModule.CreateDetailView(Args);
-	TransformationsPropertiesPropagator->SetObject(SoundWave);
-	
 	return true;
 }
 
@@ -556,7 +701,7 @@ TSharedRef<SDockTab> FWaveformEditor::SpawnTab_WaveformDisplay(const FSpawnTabAr
 	return SNew(SDockTab)
 		.Label(LOCTEXT("WaveformDisplayTitle", "Waveform Display"))
 		[
-			WaveformPanel.ToSharedRef()
+			WaveformView.ViewWidget.ToSharedRef()
 		];
 }
 
@@ -612,60 +757,56 @@ TSharedRef<SDockTab> FWaveformEditor::SpawnTab_Transformations(const FSpawnTabAr
 			TransformationsDetails.ToSharedRef()
 		];
 }
-bool FWaveformEditor::SetUpWaveformPanel()
+
+bool FWaveformEditor::CreateWaveformView()
 {
 	if (!ensure(SoundWave))
 	{
 		UE_LOG(LogWaveformEditor, Warning, TEXT("Trying to setup waveform panel from a null SoundWave"));
 		return false;
 	}
-
-	if (!SetUpZoom())
+	
+	if (WaveformView.IsValid())
 	{
-		UE_LOG(LogWaveformEditor, Warning, TEXT("Failed to Init Zoom Manager while setting up waveform panel"));
-		return false;
+		RemoveWaveformViewDelegates(*WaveformView.DataProvider, *WaveformView.ViewWidget);
 	}
 
-	TSharedPtr<FWaveformEditorRenderData> RenderData = MakeShared<FWaveformEditorRenderData>();
-	
-	TransportCoordinator = MakeShared<FWaveformEditorTransportCoordinator>(RenderData.ToSharedRef());
-	RenderData->OnRenderDataUpdated.AddSP(TransportCoordinator.Get(), &FWaveformEditorTransportCoordinator::HandleRenderDataUpdate);
-	
-	FOnTransformationsPropertiesRequired OnTransformationPropertiesRequired = FOnTransformationsPropertiesRequired::CreateLambda([this](FTransformationsToPropertiesArray& InObjToPropsMap)
-	{
-		TSharedPtr<FWaveformTransformationsDetailsProvider> TransformationsDetailsProvider = MakeShared<FWaveformTransformationsDetailsProvider>();
+	WaveformView = FTransformedWaveformViewFactory::Get().GetTransformedView(SoundWave, TransportCoordinator.ToSharedRef(), this, ZoomManager);
 
-		FOnGetDetailCustomizationInstance ProviderInstance = FOnGetDetailCustomizationInstance::CreateLambda( [&]() 
-			{
-				return TransformationsDetailsProvider.ToSharedRef();
-			}
-		);
+	check(ZoomManager)
 
-		TransformationsPropertiesPropagator->RegisterInstancedCustomPropertyLayout(SoundWave->GetClass(), ProviderInstance);
-		TransformationsPropertiesPropagator->ForceRefresh();
+	BindWaveformViewDelegates(*WaveformView.DataProvider, *WaveformView.ViewWidget);
 
-		for (FTransformationToPropertiesPair& ObjToPropsPair : InObjToPropsMap)
-		{
-			TransformationsDetailsProvider->GetHandlesForUObjectProperties(ObjToPropsPair.Key, ObjToPropsPair.Value);
-		}
+	ZoomManager->OnZoomRatioChanged.AddSP(TransportCoordinator.ToSharedRef(), &FSparseSampledSequenceTransportCoordinator::SetZoomRatio);
+	TransportCoordinator->OnDisplayRangeUpdated.AddSP(this, &FWaveformEditor::HandleDisplayRangeUpdate);
 
-		TransformationsDetailsProvider.Reset();
-	});
-
-	TransformationsRenderManager = MakeShared<FWaveformTransformationsRenderManager>(SoundWave, OnTransformationPropertiesRequired);
-	TransformationsRenderManager->OnRenderDataGenerated.AddSP(RenderData.Get(), &FWaveformEditorRenderData::UpdateRenderData);
-
-	TSharedPtr<SWaveformTransformationsOverlay> TransformationsOverlay = SNew(SWaveformTransformationsOverlay, TransformationsRenderManager->GetTransformLayers(), TransportCoordinator.ToSharedRef());
-
-	TransformationsRenderManager->OnLayersChainGenerated.AddSP(TransformationsOverlay.Get(), &SWaveformTransformationsOverlay::OnLayerChainGenerated);
-	TransformationsRenderManager->OnRenderElementsUpdated.AddSP(TransformationsOverlay.Get(), &SWaveformTransformationsOverlay::UpdateLayerConstraints);
-	TransportCoordinator->OnDisplayRangeUpdated.AddSP(TransformationsOverlay.Get(), &SWaveformTransformationsOverlay::OnNewWaveformDisplayRange);
-	TransformationsRenderManager->UpdateRenderElements();
-
-	WaveformPanel = SNew(SWaveformPanel, RenderData.ToSharedRef(), TransportCoordinator.ToSharedRef(), ZoomManager.ToSharedRef(), TransformationsOverlay);
-
-	return WaveformPanel != nullptr;
+	return WaveformView.IsValid();
 }
+
+void FWaveformEditor::BindWaveformViewDelegates(FWaveformEditorSequenceDataProvider& ViewDataProvider, STransformedWaveformViewPanel& ViewWidget)
+{
+	check(TransportCoordinator)
+
+	ViewDataProvider.OnRenderElementsUpdated.AddSP(this, &FWaveformEditor::HandleRenderDataUpdate);
+	TransportCoordinator->OnFocusPointMoved.AddSP(&ViewWidget, &STransformedWaveformViewPanel::SetPlayheadRatio);
+}
+
+void FWaveformEditor::RemoveWaveformViewDelegates(FWaveformEditorSequenceDataProvider& ViewDataProvider, STransformedWaveformViewPanel& ViewWidget)
+{
+	check(TransportCoordinator)
+
+	ViewDataProvider.OnRenderElementsUpdated.RemoveAll(this);
+	TransportCoordinator->OnFocusPointMoved.RemoveAll(&ViewWidget);
+}
+
+bool FWaveformEditor::CreateTransportCoordinator()
+{
+	TransportCoordinator = MakeShared<FSparseSampledSequenceTransportCoordinator>();
+	TransportCoordinator->OnDisplayRangeUpdated.AddSP(this, &FWaveformEditor::HandleDisplayRangeUpdate);
+
+	return TransportCoordinator != nullptr;
+}
+
 void FWaveformEditor::HandlePlaybackPercentageChange(const UAudioComponent* InComponent, const USoundWave* InSoundWave, const float InPlaybackPercentage)
 {
 	const bool bIsStopped = AudioComponent->GetPlayState() == EAudioComponentPlayState::Stopped;
@@ -678,7 +819,7 @@ void FWaveformEditor::HandlePlaybackPercentageChange(const UAudioComponent* InCo
 		if (TransportCoordinator.IsValid())
 		{
 			const float ClampedPlayBackPercentage = FGenericPlatformMath::Fmod(InPlaybackPercentage, 1.f);
-			TransportCoordinator->ReceivePlayBackRatio(ClampedPlayBackPercentage);
+			TransportCoordinator->SetProgressRatio(ClampedPlayBackPercentage);
 		}
 	}
 }
@@ -707,7 +848,21 @@ void FWaveformEditor::HandleAudioComponentPlayStateChanged(const UAudioComponent
 	}
 }
 
-void FWaveformEditor::HandlePlayheadScrub(const uint32 SelectedSample, const uint32 TotalSampleLength, const bool bIsMoving)
+void FWaveformEditor::HandleRenderDataUpdate()
+{
+	if (TransportCoordinator != nullptr)
+	{
+		TransportCoordinator->UpdatePlaybackRange(WaveformView.DataProvider->GetTransformedWaveformBounds());
+		WaveformView.DataProvider->RequestSequenceView(TransportCoordinator->GetDisplayRange());
+	}
+}
+
+void FWaveformEditor::HandleDisplayRangeUpdate(const TRange<double> NewRange)
+{
+	WaveformView.DataProvider->RequestSequenceView(NewRange);
+}
+
+void FWaveformEditor::HandlePlayheadScrub(const float InTargetPlayBackRatio, const bool bIsMoving)
 {
 	if (bIsMoving)
 	{
@@ -719,15 +874,14 @@ void FWaveformEditor::HandlePlayheadScrub(const uint32 SelectedSample, const uin
 	}
 	else
 	{
-		const float PlayBackRatio = SelectedSample / (float)TotalSampleLength;
-		const float NewTime = PlayBackRatio * SoundWave->Duration;
+		const float NewTime = InTargetPlayBackRatio * SoundWave->Duration;
 
 		if (TransportController->IsPlaying())
 		{
 			TransportController->Seek(NewTime);
 			return;
 		}
-			
+
 		if (bWasPlayingBeforeScrubbing)
 		{
 			TransportController->Play(NewTime);
@@ -737,7 +891,7 @@ void FWaveformEditor::HandlePlayheadScrub(const uint32 SelectedSample, const uin
 		{
 			TransportController->CacheStartTime(NewTime);
 		}
-		
+
 	}
 }
 
@@ -757,7 +911,7 @@ bool FWaveformEditor::CanPressPlayButton() const
 	return TransportController->CanPlay() && (TransportController->IsPaused() || !TransportController->IsPlaying());
 }
 
-bool FWaveformEditor::SetUpWaveWriter()
+bool FWaveformEditor::CreateWaveWriter()
 {
 	if (!ensure(SoundWave))
 	{
@@ -780,6 +934,51 @@ const UWaveformEditorTransformationsSettings* FWaveformEditor::GetWaveformEditor
 	check(WaveformEditorTransformationsSettings)
 
 	return WaveformEditorTransformationsSettings;
+}
+
+FText FWaveformEditor::GetReimportButtonToolTip() const
+{
+	FText ReimportModeText;
+
+	switch (ReimportMode)
+	{
+	case(EWaveEditorReimportMode::SelectFile):
+		ReimportModeText = LOCTEXT("SelectFile", "Reimport from new file");
+		break;
+	case(EWaveEditorReimportMode::SameFile):
+		ReimportModeText = LOCTEXT("SameFile", "Reimport from same file");
+		break;
+	default:
+		static_assert(static_cast<int32>(EWaveEditorReimportMode::COUNT) == 2, "Possible missing switch case coverage for 'EWaveEditorReimportMode'");
+		break;
+	}
+
+	return FText::Format(LOCTEXT("WaveformEditorReimportButtonTooltip", "{0}."), ReimportModeText);
+}
+
+FText FWaveformEditor::GetExportButtonToolTip() const
+{
+
+	FText ExportModeText;
+
+	if (!WaveWriter)
+	{
+		return ExportModeText;
+	}
+
+	switch (WaveWriter->GetExportChannelsFormat())
+	{
+	case(WaveformEditorWaveWriter::EChannelFormat::Stereo):
+		ExportModeText = LOCTEXT("ExportModeStereo", "stereo");
+		break;
+	case(WaveformEditorWaveWriter::EChannelFormat::Mono):
+		ExportModeText = LOCTEXT("ExportModeMono", "mono");
+		break;
+	default:
+		break;
+	}
+
+	return FText::Format(LOCTEXT("WaveformEditorExportButtonTooltip", "Exports the edited waveform to a {0} USoundWave asset."), ExportModeText);
 }
 
 #undef LOCTEXT_NAMESPACE

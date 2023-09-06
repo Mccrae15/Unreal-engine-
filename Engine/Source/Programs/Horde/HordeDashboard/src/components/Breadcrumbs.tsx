@@ -2,8 +2,9 @@
 
 import { mergeStyleSets, MessageBar, MessageBarType, Separator, Spinner, SpinnerSize, Stack, Text } from '@fluentui/react';
 import { observer } from 'mobx-react-lite';
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import dashboard from '../backend/Dashboard';
 import notices from '../backend/Notices';
 import { modeColors } from '../styles/Styles';
 
@@ -32,7 +33,9 @@ export const classes = mergeStyleSets({
 
 
 
-export const Breadcrumbs: React.FC<{ items: BreadcrumbItem[], title?: string, suppressHome?: boolean, spinner?: boolean }> = observer((({ items : itemsIn, title, suppressHome, spinner }) => {
+export const Breadcrumbs: React.FC<{ items: BreadcrumbItem[], title?: string, suppressHome?: boolean, spinner?: boolean }> = observer((({ items: itemsIn, title, suppressHome, spinner }) => {
+
+   const [hideAlert, setHideAlert] = useState(false);
 
    if (notices.updated) { }
 
@@ -70,7 +73,20 @@ export const Breadcrumbs: React.FC<{ items: BreadcrumbItem[], title?: string, su
       </Link>;
    });
 
-   const bottomElement = <Text className={classes.crumb} styles={{ root: { color: modeColors.text, fontSize: 28 } }}>{last.text}</Text>;
+   const bottomLength = last.text?.length ?? 0;
+   let bottomFontSize = 28;
+
+   if (bottomLength > 32) {
+      bottomFontSize = 24;
+   }
+   if (bottomLength > 48) {
+      bottomFontSize = 22;
+   }
+   if (bottomLength > 64) {
+      bottomFontSize = 20;
+   }
+
+   const bottomElement = <Text className={classes.crumb} styles={{ root: { color: modeColors.text, fontSize: bottomFontSize } }}>{last.text}</Text>;
 
    const alert = notices.alertText;
 
@@ -79,10 +95,10 @@ export const Breadcrumbs: React.FC<{ items: BreadcrumbItem[], title?: string, su
       <Stack>
          <Stack styles={{ root: { userInput: 'all' } }}>
             <Stack tokens={{ childrenGap: 4 }} styles={{ root: { height: 88, padding: 0, paddingLeft: 24, paddingBottom: 8, paddingTop: 8, backgroundColor: modeColors.crumbs, userSelect: 'text' } }}>
-               <Stack tokens={{ childrenGap: 0 }} disableShrink={true} styles={{ root: { margin: "auto", width: "100%", maxWidth: 1800 } }}>
+               <Stack tokens={{ childrenGap: 0 }} disableShrink={true} styles={{ root: { margin: "auto", width: "100%", maxWidth: 1464 } }}>
                   <Stack horizontal tokens={{ childrenGap: 8, padding: 0 }}>{topElements}</Stack>
                   {
-                     <Stack horizontal tokens={{childrenGap: 18}}>
+                     <Stack horizontal tokens={{ childrenGap: 18 }}>
                         <Stack>{bottomElement}</Stack>
                         {!!spinner && <Spinner size={SpinnerSize.large} />}
                      </Stack>
@@ -90,18 +106,29 @@ export const Breadcrumbs: React.FC<{ items: BreadcrumbItem[], title?: string, su
                </Stack>
             </Stack>
          </Stack>
-         {!!alert && <Stack horizontalAlign="center" disableShrink={true} style={{ position: "absolute", width: "100%", pointerEvents: "none" }} >
-               <Stack horizontal>
-                  <Stack grow />
-                  <Stack>
-                     <MessageBar
-                        messageBarType={MessageBarType.severeWarning} isMultiline={false} >
-                        <Text variant={"small"} style={{ fontFamily: "Horde Open Sans Bold" }}>{alert}</Text>
-                     </MessageBar>
-                  </Stack>
-                  <Stack grow />
+         {!alert && !!dashboard.preview && <Stack horizontalAlign="center" disableShrink={true} style={{ position: "absolute", width: "100%", pointerEvents: "none" }} >
+            <Stack style={{ paddingTop: 22 }}>
+               <Text variant="large" style={{ fontFamily: "Horde Open Sans Light", opacity: 0.33 }}>Horde Preview</Text>
+            </Stack>
+         </Stack>}
+         {!alert && !!dashboard.development && <Stack horizontalAlign="center" disableShrink={true} style={{ position: "absolute", width: "100%", pointerEvents: "none" }} >
+            <Stack style={{ paddingTop: 22 }}>
+               <Text variant="large" style={{ fontFamily: "Horde Open Sans Light", opacity: 0.33 }}>Horde Development</Text>
+            </Stack>
+         </Stack>}
+
+         {!!alert && dashboard.alertSquelch !== alert && <Stack horizontalAlign="center" disableShrink={true} style={{ position: "absolute", width: "100%" }} >
+            <Stack horizontal>
+               <Stack grow />
+               <Stack>
+                  <MessageBar onDismiss={() => { dashboard.alertSquelch = alert; setHideAlert(true) }}
+                     messageBarType={MessageBarType.severeWarning} isMultiline={false} >
+                     <Text variant={"small"} style={{ fontFamily: "Horde Open Sans Bold" }}>{alert}</Text>
+                  </MessageBar>
                </Stack>
-            </Stack>}
+               <Stack grow />
+            </Stack>
+         </Stack>}
       </Stack>
    </Stack>
    );

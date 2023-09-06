@@ -36,6 +36,8 @@ public:
 	void AddIntegerInputPin();
 	void RemoveIntegerInputPin();
 
+	virtual TArray<int32> GetOptionValues() const override;
+
 private:
 	/** UObject interface */
 	virtual void PostInitProperties() override;
@@ -52,7 +54,7 @@ private:
 	virtual void GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const override;
 
 	/** UNiagaraNode interface */
-	virtual void Compile(FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs) override;
+	virtual void Compile(FTranslator* Translator, TArray<int32>& Outputs) const override;
 	virtual bool AllowExternalPinTypeChanges(const UEdGraphPin* InGraphPin) const override;
 	virtual bool AllowNiagaraTypeForPinTypeChange(const FNiagaraTypeDefinition& InType, UEdGraphPin* Pin) const override;
 	virtual bool OnNewPinTypeRequested(UEdGraphPin* PinToChange, FNiagaraTypeDefinition NewType) override;
@@ -77,7 +79,6 @@ private:
 
 	/** Checks if the pin is one of the 'static' pins (selector or output) */
 	bool IsPinStatic(const UEdGraphPin* Pin) const;
-	virtual TArray<int32> GetOptionValues() const override;
 	FName GetSelectorPinName() const;
 	
 	FText GetIntegerAddButtonTooltipText() const;

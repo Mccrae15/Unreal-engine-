@@ -26,6 +26,7 @@
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "OutputLogSettings.h"
 #include "SOneTimeIndustryQuery.h"
+#include "Types/SlateAttributeMetaData.h"
 
 #define LOCTEXT_NAMESPACE "StatusBar"
 
@@ -439,6 +440,8 @@ bool UStatusBarSubsystem::ToggleContentBrowser(TSharedRef<SWindow> ParentWindow)
 
 TSharedRef<SWidget> UStatusBarSubsystem::MakeStatusBarWidget(FName StatusBarName, const TSharedRef<SDockTab>& InParentTab)
 {
+	LLM_SCOPE(ELLMTag::UI);
+
 	CreateContentBrowserIfNeeded();
 
 	TSharedRef<SStatusBar> StatusBar =
@@ -462,19 +465,36 @@ TSharedRef<SWidget> UStatusBarSubsystem::MakeStatusBarWidget(FName StatusBarName
 	FSimpleDelegate OnConsoleCommandExecuted;
 
 	TSharedPtr<SMultiLineEditableTextBox> ConsoleEditBox;
-	TSharedRef<SWidget> OutputLog = 
+	TSharedPtr<SWidget> OutputLog;
+	{
+		TSharedRef<SWidget> ConsoleInputBox = OutputLogModule.MakeConsoleInputBox(ConsoleEditBox, OnConsoleClosed, OnConsoleCommandExecuted);
+
+		auto IsConsoleInputBoxBorderVisible = [ConsoleInputBoxWeak = ConsoleInputBox.ToWeakPtr()]()
+		{
+			if (TSharedPtr<SWidget> ConsoleInputBox = ConsoleInputBoxWeak.Pin())
+			{
+				FSlateAttributeMetaData::UpdateOnlyVisibilityAttributes(*ConsoleInputBox, FSlateAttributeMetaData::EInvalidationPermission::AllowInvalidationIfConstructed);
+				if (ConsoleInputBox->GetVisibility() == EVisibility::Collapsed)
+				{
+					return EVisibility::Collapsed;
+				}
+			}
+			return EVisibility::Visible;
+		};
+
+		OutputLog =
 			SNew(SBorder)
 			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
 			.VAlign(VAlign_Center)
 			.Padding(FMargin(6.0f, 0.0f))
+			.Visibility(MakeAttributeLambda(IsConsoleInputBoxBorderVisible))
 			[
 				SNew(SBox)
-				.WidthOverride(350.f)
 				[
-					OutputLogModule.MakeConsoleInputBox(ConsoleEditBox, OnConsoleClosed, OnConsoleCommandExecuted)
+					ConsoleInputBox
 				]
 			];
-	
+	}
 
 	FWidgetDrawerConfig OutputLogDrawer(StatusBarDrawerIds::OutputLog);
 
@@ -561,6 +581,14 @@ void UStatusBarSubsystem::RegisterDrawer(FName StatusBarName, FWidgetDrawerConfi
 	}
 }
 
+void UStatusBarSubsystem::UnregisterDrawer(FName StatusBarName, FName DrawerId)
+{
+	if (TSharedPtr<SStatusBar> StatusBar = GetStatusBar(StatusBarName))
+	{
+		StatusBar->UnregisterDrawer(DrawerId);
+	}
+}
+
 FStatusBarMessageHandle UStatusBarSubsystem::PushStatusBarMessage(FName StatusBarName, const TAttribute<FText>& InMessage, const TAttribute<FText>& InHintText)
 {
 	if (TSharedPtr<SStatusBar> StatusBar = GetStatusBar(StatusBarName))
@@ -598,24 +626,28 @@ void UStatusBarSubsystem::ClearStatusBarMessages(FName StatusBarName)
 
 void UStatusBarSubsystem::StartProgressNotification(FProgressNotificationHandle Handle, FText DisplayText, int32 TotalWorkToDo)
 {
-	// Get the active window, if one is not active a notification was started when the application was deactivated so use the focus path to find a window or just use the root window if there is no keyboard focus
-	TSharedPtr<SWindow> ActiveWindow = FSlateApplication::Get().GetActiveTopLevelRegularWindow();
-	if (!ActiveWindow)
+	// Avoid crashing when starting progress notification while slate is still uninitialized. (i.e. commandlet)
+	if (FSlateApplication::IsInitialized())
 	{
-		TSharedPtr<SWidget> FocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
-		ActiveWindow = FocusedWidget ? FSlateApplication::Get().FindWidgetWindow(FocusedWidget.ToSharedRef()) : FGlobalTabmanager::Get()->GetRootWindow();
-	}
-
-	// Find the active status bar to display the progress in
-	for (auto StatusBar : StatusBars)
-	{
-		if (TSharedPtr<SStatusBar> StatusBarPinned = StatusBar.Value.StatusBarWidget.Pin())
+		// Get the active window, if one is not active a notification was started when the application was deactivated so use the focus path to find a window or just use the root window if there is no keyboard focus
+		TSharedPtr<SWindow> ActiveWindow = FSlateApplication::Get().GetActiveTopLevelRegularWindow();
+		if (!ActiveWindow)
 		{
-			TSharedPtr<SDockTab> ParentTab = StatusBarPinned->GetParentTab();
-			if (ParentTab && ParentTab->IsForeground() && ParentTab->GetParentWindow() == ActiveWindow)
+			TSharedPtr<SWidget> FocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
+			ActiveWindow = FocusedWidget ? FSlateApplication::Get().FindWidgetWindow(FocusedWidget.ToSharedRef()) : FGlobalTabmanager::Get()->GetRootWindow();
+		}
+
+		// Find the active status bar to display the progress in
+		for (auto StatusBar : StatusBars)
+		{
+			if (TSharedPtr<SStatusBar> StatusBarPinned = StatusBar.Value.StatusBarWidget.Pin())
 			{
-				StatusBarPinned->StartProgressNotification(Handle, DisplayText, TotalWorkToDo);
-				break;
+				TSharedPtr<SDockTab> ParentTab = StatusBarPinned->GetParentTab();
+				if (ParentTab && ParentTab->IsForeground() && ParentTab->GetParentWindow() == ActiveWindow)
+				{
+					StatusBarPinned->StartProgressNotification(Handle, DisplayText, TotalWorkToDo);
+					break;
+				}
 			}
 		}
 	}

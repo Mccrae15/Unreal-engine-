@@ -308,10 +308,18 @@ public:
 	 *
 	 * @return	 Pointer to the plugin's information, or nullptr.
 	 */
-	virtual PROJECTS_API TSharedPtr<IPlugin> FindPlugin(const FStringView Name) = 0;
-	virtual PROJECTS_API TSharedPtr<IPlugin> FindPlugin(const ANSICHAR* Name) = 0;
+	virtual TSharedPtr<IPlugin> FindPlugin(const FStringView Name) = 0;
+	virtual TSharedPtr<IPlugin> FindPlugin(const ANSICHAR* Name) = 0;
 
-	virtual PROJECTS_API TSharedPtr<IPlugin> FindPluginFromPath(const FString& PluginPath) = 0;
+	virtual TSharedPtr<IPlugin> FindPluginFromPath(const FString& PluginPath) = 0;
+	virtual TSharedPtr<IPlugin> FindPluginFromDescriptor(const FPluginReferenceDescriptor& PluginDesc) = 0;
+
+	/** 
+	 * Finds all plugin descriptors underneath a given directory (recursively)
+	 * @param Directory Search folder
+	 * @param OutPluginFilePaths Receives found plugin descriptor file paths
+	 */
+	virtual void FindPluginsUnderDirectory(const FString& Directory, TArray<FString>& OutPluginFilePaths) = 0;
 
 	/**
 	 * Gets an array of all the enabled plugins.
@@ -350,12 +358,12 @@ public:
 	/**
 	 * Returns the set of built-in plugin names
 	 */
-	PROJECTS_API virtual const TSet<FString>& GetBuiltInPluginNames() const = 0;
+	virtual const TSet<FString>& GetBuiltInPluginNames() const = 0;
 
 	/**
 	 * Returns the plugin that owns the specified module, if any
 	 */
-	PROJECTS_API virtual TSharedPtr<IPlugin> GetModuleOwnerPlugin(FName ModuleName) const = 0;
+	virtual TSharedPtr<IPlugin> GetModuleOwnerPlugin(FName ModuleName) const = 0;
 #endif //WITH_EDITOR
 
 	/**
@@ -423,6 +431,13 @@ public:
 	virtual bool UnmountExplicitlyLoadedPlugin(const FString& PluginName, FText* OutReason) = 0;
 
 	/**
+	 * Tries to get a list of plugin dependencies for a given plugin. Returns false if the plugin provided was not found
+	 */
+	virtual bool GetPluginDependencies(const FString& PluginName, TArray<FPluginReferenceDescriptor>& PluginDependencies) = 0;
+	virtual bool GetPluginDependencies_FromFileName(const FString& PluginFileName, TArray<FPluginReferenceDescriptor>& PluginDependencies) = 0;
+	virtual bool GetPluginDependencies_FromDescriptor(const FPluginReferenceDescriptor& PluginDescriptor, TArray<FPluginReferenceDescriptor>& PluginDependencies) = 0;
+
+	/**
 	* Does a reverse lookup to try to figure out what the UObject package name is for a plugin
 	*/
 	virtual FName PackageNameFromModuleName(FName ModuleName) = 0;
@@ -456,6 +471,18 @@ public:
 	 * @param StagedPluginsFile A path to a file that contains all plugins that have been staged, and should be evaluated
 	 */
 	virtual bool IntegratePluginsIntoConfig(FConfigCacheIni& ConfigSystem, const TCHAR* EngineIniName, const TCHAR* PlatformName, const TCHAR* StagedPluginsFile) = 0;
+
+	/**
+	* Set root directories for where to find binaries for plugins.
+	*/
+	virtual void SetBinariesRootDirectories(const FString& EngineBinariesRootDir, const FString& ProjectBinariesRootDir) = 0;
+
+	/**
+	* If preload binaries is set all plugin binaries will be loaded in an early Loading phase.
+	* This is a temporary solution to work around issues with pak/iostore for modular builds
+	*/ 
+	virtual void SetPreloadBinaries() = 0;
+	virtual bool GetPreloadBinaries() = 0;
 
 public:
 

@@ -26,7 +26,7 @@
 #include "Rendering/NaniteResources.h"
 #include "NaniteSceneProxy.h"
 #include "Lumen/LumenSceneData.h"
-#include "Lumen/LumenSceneRendering.h"
+#include "Lumen/LumenSceneCardCapture.h"
 #include "RayTracingDefinitions.h"
 #include "RenderCore.h"
 #include "Materials/MaterialRenderProxy.h"
@@ -170,12 +170,24 @@ FPrimitiveSceneInfo::FPrimitiveSceneInfo(UPrimitiveComponent* InComponent, FScen
 	IndirectLightingCacheAllocation(NULL),
 	CachedPlanarReflectionProxy(NULL),
 	CachedReflectionCaptureProxy(NULL),
-	bNeedsCachedReflectionCaptureUpdate(true),
 	DefaultDynamicHitProxy(NULL),
-	LightList(NULL),
 	LastRenderTime(-FLT_MAX),
+	LightList(NULL),
 	Scene(InScene),
 	NumMobileDynamicLocalLights(0),
+	PackedIndex(INDEX_NONE),
+	PersistentIndex(FPersistentPrimitiveIndex{ INDEX_NONE }),
+	ComponentForDebuggingOnly(InComponent),
+	bNeedsUniformBufferUpdate(false),
+	bIndirectLightingCacheBufferDirty(false),
+	bRegisteredVirtualTextureProducerCallback(false),
+	bRegisteredWithVelocityData(false),
+	bCacheShadowAsStatic((InComponent->Mobility != EComponentMobility::Movable && InComponent->ShadowCacheInvalidationBehavior != EShadowCacheInvalidationBehavior::Always) || InComponent->ShadowCacheInvalidationBehavior == EShadowCacheInvalidationBehavior::Static),
+	bNaniteRasterBinsRenderCustomDepth(false),
+	bPendingAddToScene(false),
+	bPendingAddStaticMeshes(false),
+	bPendingFlushVirtualTexture(false),
+	bNeedsCachedReflectionCaptureUpdate(true),
 	bShouldRenderInMainPass(InComponent->SceneProxy->ShouldRenderInMainPass()),
 	bVisibleInRealTimeSkyCapture(InComponent->SceneProxy->IsVisibleInRealTimeSkyCaptures()),
 #if RHI_RAYTRACING
@@ -189,18 +201,6 @@ FPrimitiveSceneInfo::FPrimitiveSceneInfo(UPrimitiveComponent* InComponent, FScen
 	bCachedRaytracingDataDirty(false),
 	CoarseMeshStreamingHandle(INDEX_NONE),
 #endif
-	PackedIndex(INDEX_NONE),
-	PersistentIndex(FPersistentPrimitiveIndex{ INDEX_NONE }),
-	ComponentForDebuggingOnly(InComponent),
-	bNeedsStaticMeshUpdateWithoutVisibilityCheck(false),
-	bNeedsUniformBufferUpdate(false),
-	bIndirectLightingCacheBufferDirty(false),
-	bRegisteredVirtualTextureProducerCallback(false),
-	bRegisteredWithVelocityData(false),
-	bCacheShadowAsStatic(InComponent->Mobility != EComponentMobility::Movable),
-	bNaniteRasterBinsRenderCustomDepth(false),
-	bPendingAddToScene(false),
-	bPendingFlushVirtualTexture(false),
 	LevelUpdateNotificationIndex(INDEX_NONE),
 	InstanceSceneDataOffset(INDEX_NONE),
 	NumInstanceSceneDataEntries(0),
@@ -451,7 +451,7 @@ void FPrimitiveSceneInfo::CacheMeshDrawCommands(FScene* Scene, TArrayView<FPrimi
 				FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
 				DoWorkLambda(DrawListContexts[Index], Index);
 			},
-			EParallelForFlags::PumpRenderingThread | EParallelForFlags::Unbalanced
+			EParallelForFlags::Unbalanced
 		);
 
 		if (NumBatches > 0)
@@ -575,7 +575,7 @@ void FPrimitiveSceneInfo::CacheNaniteDrawCommands(FScene* Scene, const TArrayVie
 				SceneInfos.Num(),
 				[Scene, &SceneInfos](FNaniteDrawListContext& Context, int32 Index)
 				{
-					FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+					FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
 					BuildNaniteDrawCommands(Scene, SceneInfos[Index], Context);
 				}
 			);
@@ -657,12 +657,14 @@ void BuildNaniteDrawCommands(FScene* Scene, FPrimitiveSceneInfo* PrimitiveSceneI
 						FNaniteRasterPipeline& RasterPipeline = PipelinesCommand.RasterPipelines.Emplace_GetRef();
 						RasterPipeline.RasterMaterial = MaterialSection.RasterMaterialProxy;
 						RasterPipeline.bIsTwoSided = !!MaterialSection.MaterialRelevance.bTwoSided;
+						RasterPipeline.bSplineMesh = NaniteProxy->IsSplineMesh();
 						RasterPipeline.bPerPixelEval = MaterialSection.MaterialRelevance.bMasked ||
 													   MaterialSection.MaterialRelevance.bUsesPixelDepthOffset;
 
 						float WPODisableDistance;
 						RasterPipeline.bWPODisableDistance =
 							MaterialSection.MaterialRelevance.bUsesWorldPositionOffset &&
+							!MaterialSection.bAlwaysEvaluateWPO &&
 							NaniteProxy->GetInstanceWorldPositionOffsetDisableDistance(WPODisableDistance);
 
 						if (bAllowComputeMaterials)
@@ -684,7 +686,7 @@ void BuildNaniteDrawCommands(FScene* Scene, FPrimitiveSceneInfo* PrimitiveSceneI
 			}
 
 			// ENaniteMeshPass::LumenCardCapture
-			if (Lumen::HasPrimitiveNaniteMeshBatches(Proxy) && DoesPlatformSupportLumenGI(GetFeatureLevelShaderPlatform(Scene->GetFeatureLevel())))
+			if (LumenScene::HasPrimitiveNaniteMeshBatches(Proxy) && DoesPlatformSupportLumenGI(GetFeatureLevelShaderPlatform(Scene->GetFeatureLevel())))
 			{
 				FMeshPassProcessor* NaniteMeshProcessor = CreateLumenCardNaniteMeshProcessor(Scene->GetFeatureLevel(), Scene, nullptr, &DrawListContext);
 				PassBody(ENaniteMeshPass::LumenCardCapture, NaniteMeshProcessor);
@@ -797,6 +799,7 @@ void FPrimitiveSceneInfo::UpdateCachedRayTracingInstances(FScene* Scene, const T
 {
 	if (IsRayTracingEnabled())
 	{
+		SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_UpdateCachedRayTracingInstances, FColor::Turquoise);
 		checkf(GRHISupportsMultithreadedShaderCreation, TEXT("Raytracing code needs the ability to create shaders from task threads."));
 
 		for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
@@ -1130,6 +1133,7 @@ void FPrimitiveSceneInfo::AddStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSc
 			SceneInfo->Proxy->DrawStaticElements(&BatchingSPDI);
 			SceneInfo->StaticMeshes.Shrink();
 			SceneInfo->StaticMeshRelevances.Shrink();
+			SceneInfo->bPendingAddStaticMeshes = false;
 
 			check(SceneInfo->StaticMeshRelevances.Num() == SceneInfo->StaticMeshes.Num());
 		});
@@ -1137,6 +1141,7 @@ void FPrimitiveSceneInfo::AddStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSc
 
 	{
 		const ERHIFeatureLevel::Type FeatureLevel = Scene->GetFeatureLevel();
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 		SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddStaticMeshes_UpdateSceneArrays, FColor::Blue);
 		for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
@@ -1157,7 +1162,7 @@ void FPrimitiveSceneInfo::AddStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSc
 
 				if (bAllocateSortedTriangles && OIT::IsCompatible(Mesh, FeatureLevel))
 				{
-					FSortedTriangleData Allocation = Scene->OITSceneData.Allocate(Mesh.Elements[0].IndexBuffer, EPrimitiveType(Mesh.Type), Mesh.Elements[0].FirstIndex, Mesh.Elements[0].NumPrimitives);
+					FSortedTriangleData Allocation = Scene->OITSceneData.Allocate(RHICmdList, Mesh.Elements[0].IndexBuffer, EPrimitiveType(Mesh.Type), Mesh.Elements[0].FirstIndex, Mesh.Elements[0].NumPrimitives);
 					OIT::ConvertSortedIndexToDynamicIndex(&Allocation, &Mesh.Elements[0].DynamicIndexBuffer);
 				}
 			}
@@ -1362,9 +1367,10 @@ void FPrimitiveSceneInfo::FreeGPUSceneInstances()
 	}
 }
 
-void FPrimitiveSceneInfo::AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, EPrimitiveAddToSceneOps Ops)
+void FPrimitiveSceneInfo::AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos)
 {
 	check(IsInRenderingThread());
+	SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddToScene, FColor::Turquoise);
 
 	{
 		SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddToScene_IndirectLightingCacheUniformBuffer, FColor::Turquoise);
@@ -1452,14 +1458,6 @@ void FPrimitiveSceneInfo::AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneIn
 			{
 				SceneInfo->CacheReflectionCaptures();
 			}
-		}
-	}
-
-	{
-		SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddToScene_AddStaticMeshes, FColor::Magenta);
-		if (EnumHasAnyFlags(Ops, EPrimitiveAddToSceneOps::AddStaticMeshes))
-		{
-			AddStaticMeshes(Scene, SceneInfos, EnumHasAnyFlags(Ops, EPrimitiveAddToSceneOps::CacheMeshDrawCommands));
 		}
 	}
 
@@ -1559,40 +1557,6 @@ void FPrimitiveSceneInfo::AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneIn
 	}
 
 	{
-		SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddToScene_UpdateVirtualTexture, FColor::Emerald);
-		for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
-		{
-			FPrimitiveSceneProxy* Proxy = SceneInfo->Proxy;
-			// Store the runtime virtual texture flags.
-			SceneInfo->UpdateRuntimeVirtualTextureFlags();
-			Scene->PrimitiveVirtualTextureFlags[SceneInfo->PackedIndex] = SceneInfo->RuntimeVirtualTextureFlags;
-
-			// Store the runtime virtual texture Lod info.
-			if (SceneInfo->RuntimeVirtualTextureFlags.bRenderToVirtualTexture)
-			{
-				int8 MinLod, MaxLod;
-				GetRuntimeVirtualTextureLODRange(SceneInfo->StaticMeshRelevances, MinLod, MaxLod);
-
-				FPrimitiveVirtualTextureLodInfo& LodInfo = Scene->PrimitiveVirtualTextureLod[SceneInfo->PackedIndex];
-				LodInfo.MinLod = FMath::Clamp((int32)MinLod, 0, 15);
-				LodInfo.MaxLod = FMath::Clamp((int32)MaxLod, 0, 15);
-				LodInfo.LodBias = FMath::Clamp(Proxy->GetVirtualTextureLodBias() + FPrimitiveVirtualTextureLodInfo::LodBiasOffset, 0, 15);
-				LodInfo.CullMethod = Proxy->GetVirtualTextureMinCoverage() == 0 ? 0 : 1;
-				LodInfo.CullValue = LodInfo.CullMethod == 0 ? Proxy->GetVirtualTextureCullMips() : Proxy->GetVirtualTextureMinCoverage();
-			}
-		}
-	}
-
-	// Find lights that affect the primitive in the light octree.
-	if (EnumHasAnyFlags(Ops, EPrimitiveAddToSceneOps::CreateLightPrimitiveInteractions))
-	{
-		for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
-		{
-			Scene->CreateLightPrimitiveInteractionsForPrimitive(SceneInfo);
-		}
-	}
-
-	{
 		SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddToScene_LevelNotifyPrimitives, FColor::Blue);
 		for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
 		{
@@ -1602,6 +1566,32 @@ void FPrimitiveSceneInfo::AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneIn
 				SceneInfo->LevelUpdateNotificationIndex = LevelNotifyPrimitives.Num();
 				LevelNotifyPrimitives.Add(SceneInfo);
 			}
+		}
+	}
+}
+
+void FPrimitiveSceneInfo::UpdateVirtualTextures(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos)
+{
+	SCOPED_NAMED_EVENT(FPrimitiveSceneInfo_AddToScene_UpdateVirtualTexture, FColor::Emerald);
+	for (FPrimitiveSceneInfo* SceneInfo : SceneInfos)
+	{
+		FPrimitiveSceneProxy* Proxy = SceneInfo->Proxy;
+		// Store the runtime virtual texture flags.
+		SceneInfo->UpdateRuntimeVirtualTextureFlags();
+		Scene->PrimitiveVirtualTextureFlags[SceneInfo->PackedIndex] = SceneInfo->RuntimeVirtualTextureFlags;
+
+		// Store the runtime virtual texture Lod info.
+		if (SceneInfo->RuntimeVirtualTextureFlags.bRenderToVirtualTexture)
+		{
+			int8 MinLod, MaxLod;
+			GetRuntimeVirtualTextureLODRange(SceneInfo->StaticMeshRelevances, MinLod, MaxLod);
+
+			FPrimitiveVirtualTextureLodInfo& LodInfo = Scene->PrimitiveVirtualTextureLod[SceneInfo->PackedIndex];
+			LodInfo.MinLod = FMath::Clamp((int32)MinLod, 0, 15);
+			LodInfo.MaxLod = FMath::Clamp((int32)MaxLod, 0, 15);
+			LodInfo.LodBias = FMath::Clamp(Proxy->GetVirtualTextureLodBias() + FPrimitiveVirtualTextureLodInfo::LodBiasOffset, 0, 15);
+			LodInfo.CullMethod = Proxy->GetVirtualTextureMinCoverage() == 0 ? 0 : 1;
+			LodInfo.CullValue = LodInfo.CullMethod == 0 ? Proxy->GetVirtualTextureCullMips() : Proxy->GetVirtualTextureMinCoverage();
 		}
 	}
 }
@@ -1673,13 +1663,6 @@ void FPrimitiveSceneInfo::RemoveFromScene(bool bUpdateStaticDrawLists)
 			Scene->PrimitivesNeedingStaticMeshUpdate[PackedIndex] = false;
 		}
 
-		if (bNeedsStaticMeshUpdateWithoutVisibilityCheck)
-		{
-			Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck.Remove(this);
-
-			bNeedsStaticMeshUpdateWithoutVisibilityCheck = false;
-		}
-
 		// IndirectLightingCacheUniformBuffer may be cached inside cached mesh draw commands, so we 
 		// can't delete it unless we also update cached mesh command.
 		IndirectLightingCacheUniformBuffer.SafeRelease();
@@ -1745,11 +1728,6 @@ void FPrimitiveSceneInfo::UpdateRuntimeVirtualTextureFlags()
 	}
 }
 
-bool FPrimitiveSceneInfo::NeedsUpdateStaticMeshes()
-{
-	return Scene->PrimitivesNeedingStaticMeshUpdate[PackedIndex];
-}
-
 void FPrimitiveSceneInfo::UpdateStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, EUpdateStaticMeshFlags UpdateFlags, bool bReAddToDrawLists)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FPrimitiveSceneInfo_UpdateStaticMeshes);
@@ -1764,13 +1742,6 @@ void FPrimitiveSceneInfo::UpdateStaticMeshes(FScene* Scene, TArrayView<FPrimitiv
 	{
 		FPrimitiveSceneInfo* SceneInfo = SceneInfos[Index];
 		Scene->PrimitivesNeedingStaticMeshUpdate[SceneInfo->PackedIndex] = bNeedsStaticMeshUpdate;
-
-		if (!bNeedsStaticMeshUpdate && SceneInfo->bNeedsStaticMeshUpdateWithoutVisibilityCheck)
-		{
-			Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck.Remove(SceneInfo);
-
-			SceneInfo->bNeedsStaticMeshUpdateWithoutVisibilityCheck = false;
-		}
 
 		if (EnumHasAnyFlags(UpdateFlags, EUpdateStaticMeshFlags::RasterCommands))
 		{
@@ -1829,16 +1800,7 @@ void FPrimitiveSceneInfo::UpdateCachedRaytracingData(FScene* Scene, const TArray
 }
 #endif //RHI_RAYTRACING
 
-void FPrimitiveSceneInfo::UpdateUniformBuffer(FRHICommandListImmediate& RHICmdList)
-{
-	checkSlow(bNeedsUniformBufferUpdate);
-	bNeedsUniformBufferUpdate = false;
-	Proxy->UpdateUniformBuffer();
-	// TODO: Figure out when and why this is called
-	Scene->GPUScene.AddPrimitiveToUpdate(PackedIndex, EPrimitiveDirtyState::ChangedAll);
-}
-
-void FPrimitiveSceneInfo::BeginDeferredUpdateStaticMeshes()
+void FPrimitiveSceneInfo::RequestStaticMeshUpdate()
 {
 	// Set a flag which causes InitViews to update the static meshes the next time the primitive is visible.
 	if (IsIndexValid()) // PackedIndex
@@ -1847,14 +1809,14 @@ void FPrimitiveSceneInfo::BeginDeferredUpdateStaticMeshes()
 	}
 }
 
-void FPrimitiveSceneInfo::BeginDeferredUpdateStaticMeshesWithoutVisibilityCheck()
+bool FPrimitiveSceneInfo::RequestUniformBufferUpdate()
 {
-	if (NeedsUpdateStaticMeshes() && !bNeedsStaticMeshUpdateWithoutVisibilityCheck)
+	if (IsIndexValid()) // PackedIndex
 	{
-		bNeedsStaticMeshUpdateWithoutVisibilityCheck = true;
-
-		Scene->PrimitivesNeedingStaticMeshUpdateWithoutVisibilityCheck.Add(this);
+		Scene->PrimitivesNeedingUniformBufferUpdate[PackedIndex] = true;
+		return true;
 	}
+	return false;
 }
 
 void FPrimitiveSceneInfo::FlushRuntimeVirtualTexture()
@@ -2098,6 +2060,7 @@ void FPrimitiveSceneInfo::ApplyWorldOffset(FVector InOffset)
 }
 
 void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer(
+	FRHICommandListBase& RHICmdList,
 	const FIndirectLightingCache* LightingCache,
 	const FIndirectLightingCacheAllocation* LightingAllocation,
 	FVector VolumetricLightmapLookupPosition,
@@ -2117,11 +2080,11 @@ void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer(
 
 	if (IndirectLightingCacheUniformBuffer)
 	{
-		IndirectLightingCacheUniformBuffer.UpdateUniformBufferImmediate(Parameters);
+		IndirectLightingCacheUniformBuffer.UpdateUniformBufferImmediate(RHICmdList, Parameters);
 	}
 }
 
-void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer()
+void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer(FRHICommandListBase& RHICmdList)
 {
 	if (bIndirectLightingCacheBufferDirty)
 	{
@@ -2133,6 +2096,7 @@ void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer()
 			&& Proxy->WillEverBeLit())
 		{
 			UpdateIndirectLightingCacheBuffer(
+				RHICmdList,
 				nullptr, 
 				nullptr,
 				Proxy->GetBounds().Origin,
@@ -2143,6 +2107,7 @@ void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer()
 		else if (IndirectLightingCacheAllocation && (Scene->IndirectLightingCache.IsInitialized() && IndirectLightingCacheAllocation->bHasEverUpdatedSingleSample))
 		{
 			UpdateIndirectLightingCacheBuffer(
+				RHICmdList,
 				&Scene->IndirectLightingCache,
 				IndirectLightingCacheAllocation,
 				FVector(0, 0, 0),
@@ -2152,7 +2117,7 @@ void FPrimitiveSceneInfo::UpdateIndirectLightingCacheBuffer()
 		else
 		{
 			// Fallback to the global empty buffer parameters
-			UpdateIndirectLightingCacheBuffer(nullptr, nullptr, FVector(0.0f, 0.0f, 0.0f), 0, nullptr);
+			UpdateIndirectLightingCacheBuffer(RHICmdList, nullptr, nullptr, FVector(0.0f, 0.0f, 0.0f), 0, nullptr);
 		}
 
 		bIndirectLightingCacheBufferDirty = false;
@@ -2211,6 +2176,7 @@ void FPrimitiveSceneInfo::RemoveCachedReflectionCaptures()
 	CachedPlanarReflectionProxy = nullptr;
 	FMemory::Memzero(CachedReflectionCaptureProxies);
 	bNeedsCachedReflectionCaptureUpdate = true;
+	MarkGPUStateDirty(EPrimitiveDirtyState::ChangedAll);
 }
 
 void FPrimitiveSceneInfo::UpdateComponentLastRenderTime(float CurrentWorldTime, bool bUpdateLastRenderTimeOnScreen) const

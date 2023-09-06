@@ -437,7 +437,7 @@ void FCurveEditorTree::SortTreeItems(FSortedCurveEditorTreeItems& TreeItemIDsToS
 	// If there is more than one item, sort the items and then repopulate the ChildIDs from the sorted list of items.
 	if (TreeItemIDsToSort.bRequiresSort && TreeItemsToSort.Num() > 1)
 	{
-		TreeItemsToSort.Sort([=](const FCurveEditorTreeItem& ItemA, const FCurveEditorTreeItem& ItemB) { return SortPredicate.Execute(ItemA.GetItem().Get(), ItemB.GetItem().Get()); });
+		TreeItemsToSort.Sort([this](const FCurveEditorTreeItem& ItemA, const FCurveEditorTreeItem& ItemB) { return SortPredicate.Execute(ItemA.GetItem().Get(), ItemB.GetItem().Get()); });
 		for (int32 i = 0; i < TreeItemsToSort.Num(); ++i)
 		{
 			TreeItemIDsToSort.ChildIDs[i] = TreeItemsToSort[i]->GetID();
@@ -492,7 +492,7 @@ void FCurveEditorTree::SetDirectSelection(TArray<FCurveEditorTreeItemID>&& TreeI
 			}
 		}
 	}
-
+	InCurveEditor->ResetMinMaxes();
 	for (TTuple<FCurveEditorTreeItemID, ECurveEditorTreeSelectionState> OldItem : PreviousSelection)
 	{
 		const ECurveEditorTreeSelectionState* NewState = Selection.Find(OldItem.Key);
@@ -541,6 +541,19 @@ void FCurveEditorTree::RemoveFromSelection(TArrayView<const FCurveEditorTreeItem
 	if (bAnyRemoved)
 	{
 		++Events.OnSelectionChanged.SerialNumber;
+	}
+}
+
+ void  FCurveEditorTree::RecreateModelsFromExistingSelection(FCurveEditor* CurveEditor)
+{
+	// Ensure the new selection has valid curve models
+	for (TTuple<FCurveEditorTreeItemID, ECurveEditorTreeSelectionState> NewItem : Selection)
+	{
+		if (NewItem.Value != ECurveEditorTreeSelectionState::None)
+		{
+			GetItem(NewItem.Key).DestroyCurves(CurveEditor);
+			GetItem(NewItem.Key).GetOrCreateCurves(CurveEditor);
+		}
 	}
 }
 

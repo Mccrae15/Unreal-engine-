@@ -2,14 +2,15 @@
 
 #include "SWaveformTransformationsOverlay.h"
 
-#include "Widgets/SOverlay.h"
-#include "WaveformEditorTransportCoordinator.h"
+#include "AudioWidgetsUtils.h"
 #include "SWaveformTransformationRenderLayer.h"
+#include "SparseSampledSequenceTransportCoordinator.h"
+#include "Widgets/SOverlay.h"
 
-void SWaveformTransformationsOverlay::Construct(const FArguments& InArgs, TArrayView<const FTransformationLayerRenderInfo> InTransformationRenderers, TSharedRef<FWaveformEditorTransportCoordinator> InTransportCoordinator)
+void SWaveformTransformationsOverlay::Construct(const FArguments& InArgs, TArrayView<const FTransformationLayerRenderInfo> InTransformationRenderers)
 {
 	TransformationRenderers = InTransformationRenderers;
-	TransportCoordinator = InTransportCoordinator;
+	AnchorsRatioConverter = InArgs._AnchorsRatioConverter;
 	CreateLayout();
 }
 
@@ -29,11 +30,11 @@ void SWaveformTransformationsOverlay::CreateLayout()
 	for (int32 i = 0; i < NumLayers; ++i)
 	{
 		const FTransformationLayerRenderInfo& LayerRenderInfo = TransformationRenderers[i];
-
+		
 		if (LayerRenderInfo.Key)
 		{
-			float LeftAnchor = TransportCoordinator->ConvertAbsoluteRatioToZoomed(LayerRenderInfo.Value.Key);
-			float RightAnchor = TransportCoordinator->ConvertAbsoluteRatioToZoomed(LayerRenderInfo.Value.Value);
+			float LeftAnchor = AnchorsRatioConverter(LayerRenderInfo.Value.Key);
+			float RightAnchor = AnchorsRatioConverter(LayerRenderInfo.Value.Value);
 
 			SConstraintCanvas::FSlot* SlotPtr = nullptr;
 
@@ -61,7 +62,6 @@ void SWaveformTransformationsOverlay::CreateLayout()
 	}
 }
 
-
 void SWaveformTransformationsOverlay::UpdateAnchors()
 {
 	check(TransformationRenderers.Num() == LayersSlots.Num())
@@ -72,35 +72,12 @@ void SWaveformTransformationsOverlay::UpdateAnchors()
 
 		if (Layer.Key)
 		{
-			float LeftAnchor = TransportCoordinator->ConvertAbsoluteRatioToZoomed(Layer.Value.Key);
-			float RightAnchor = TransportCoordinator->ConvertAbsoluteRatioToZoomed(Layer.Value.Value);
+			float LeftAnchor = AnchorsRatioConverter(Layer.Value.Key);
+			float RightAnchor = AnchorsRatioConverter(Layer.Value.Value);
 
 			LayersSlots[i]->SetAnchors(FAnchors(LeftAnchor, 0.f, RightAnchor, 1.f));
 		}
 	}
-}
-
-FReply SWaveformTransformationsOverlay::RouteMouseInput(WidgetMouseInputFunction InputFunction, const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-{
-	FReply TransformationInteraction = FReply::Unhandled();
-
-	//input is propagated from topmost transformation to lowermost
-	for (int32 i = TransformationLayers.Num() - 1; i >= 0; i--)
-	{
-		const TSharedPtr<SWaveformTransformationRenderLayer> LayerWidget = TransformationLayers[i];
-
-		if (LayerWidget)
-		{
-			TransformationInteraction = (LayerWidget.Get()->*InputFunction)(LayerWidget->GetTickSpaceGeometry(), MouseEvent);
-
-			if (TransformationInteraction.IsEventHandled())
-			{
-				return TransformationInteraction;
-			}
-		}
-	}
-		
-	return TransformationInteraction;
 }
 
 void SWaveformTransformationsOverlay::OnLayerChainGenerated(FTransformationLayerRenderInfo* FirstLayerPtr, const int32 NLayers)
@@ -114,54 +91,27 @@ void SWaveformTransformationsOverlay::UpdateLayerConstraints()
 	UpdateAnchors();
 }
 
-void SWaveformTransformationsOverlay::OnNewWaveformDisplayRange(const TRange<float> NewDisplayRange)
-{
-	UpdateAnchors();
-}
-
 FReply SWaveformTransformationsOverlay::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	return RouteMouseInput(&SWidget::OnMouseButtonDown, MyGeometry, MouseEvent);
+	return AudioWidgetsUtils::RouteMouseInput(&SWidget::OnMouseButtonDown, MouseEvent, MakeArrayView(TransformationLayers.GetData(), TransformationLayers.Num()), true);
 }
 
 FReply SWaveformTransformationsOverlay::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	return RouteMouseInput(&SWidget::OnMouseButtonUp, MyGeometry, MouseEvent);
+	return AudioWidgetsUtils::RouteMouseInput(&SWidget::OnMouseButtonUp, MouseEvent, MakeArrayView(TransformationLayers.GetData(), TransformationLayers.Num()), true);
 }
 
 FReply SWaveformTransformationsOverlay::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	return RouteMouseInput(&SWidget::OnMouseMove, MyGeometry, MouseEvent);
+	return AudioWidgetsUtils::RouteMouseInput(&SWidget::OnMouseMove, MouseEvent, MakeArrayView(TransformationLayers.GetData(), TransformationLayers.Num()), true);
 }
 
 FReply SWaveformTransformationsOverlay::OnMouseWheel(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
-	return RouteMouseInput(&SWidget::OnMouseWheel, MyGeometry, MouseEvent);
+	return AudioWidgetsUtils::RouteMouseInput(&SWidget::OnMouseWheel, MouseEvent, MakeArrayView(TransformationLayers.GetData(), TransformationLayers.Num()), true);
 }
 
 FCursorReply SWaveformTransformationsOverlay::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
 {
-	return RouteCursorQuery(MyGeometry, CursorEvent);
-}
-
-FCursorReply SWaveformTransformationsOverlay::RouteCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
-{
-	FCursorReply CursorReply = FCursorReply::Unhandled();
-
-	for (int32 i = TransformationLayers.Num() - 1; i >= 0; i--)
-	{
-		const TSharedPtr<SWaveformTransformationRenderLayer> LayerWidget = TransformationLayers[i];
-
-		if (LayerWidget)
-		{
-			CursorReply = LayerWidget->OnCursorQuery(LayerWidget->GetTickSpaceGeometry(), CursorEvent);
-
-			if (CursorReply.IsEventHandled())
-			{
-				return CursorReply;
-			}
-		}
-	}
-
-	return CursorReply;
+	return AudioWidgetsUtils::RouteCursorQuery(CursorEvent, MakeArrayView(TransformationLayers.GetData(), TransformationLayers.Num()), true);
 }

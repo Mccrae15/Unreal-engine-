@@ -4,8 +4,6 @@
 #include "Containers/Map.h"
 #include "Net/Core/Trace/NetDebugName.h"
 #include "Net/Core/Trace/Reporters/NetTraceReporter.h"
-#include "HAL/PlatformTLS.h"
-#include "HAL/TlsAutoCleanup.h"
 #include "Hash/CityHash.h"
 #include "Trace/Trace.h"
 #include "UObject/NameTypes.h"
@@ -35,9 +33,10 @@ struct FNetTraceInternal
 		ENetTraceVersion_Initial = 1,
 		ENetTraceVersion_BunchChannelIndex = 2,
 		ENetTraceVersion_BunchChannelInfo = 3,
+		ENetTraceVersion_FixedBunchSizeEncoding = 4,		
 	};
 
-	struct FThreadBuffer : public FTlsAutoCleanup
+	struct FThreadBuffer
 	{
 		// Map FName to NameId, used to know what FNames we have traced
 		TMap<FName, UE::Net::FNetDebugNameId> DynamicFNameToNameIdMap;
@@ -47,26 +46,21 @@ struct FNetTraceInternal
 	};
 
 	// Get next NameId used to track what we already have traced
-	uint32 static GetNextNameId();
+	UE::Net::FNetDebugNameId static GetNextNameId();
 
-	FORCENOINLINE static FThreadBuffer* CreateThreadBuffer();
+	static inline FThreadBuffer* CreateThreadBuffer();
 
-	static thread_local FThreadBuffer* ThreadBuffer;
-	static constexpr ENetTraceVersion NetTraceVersion = ENetTraceVersion::ENetTraceVersion_BunchChannelInfo;
+	static inline thread_local TUniquePtr<FThreadBuffer> ThreadBuffer;
+	static constexpr ENetTraceVersion NetTraceVersion = ENetTraceVersion::ENetTraceVersion_FixedBunchSizeEncoding;
 };
-
-thread_local FNetTraceInternal::FThreadBuffer* FNetTraceInternal::ThreadBuffer = nullptr;
-
 
 FNetTraceInternal::FThreadBuffer* FNetTraceInternal::CreateThreadBuffer()
 {
-	ThreadBuffer = new FThreadBuffer();
-	ThreadBuffer->Register();
-
-	return ThreadBuffer;
+	ThreadBuffer = MakeUnique<FThreadBuffer>();
+	return ThreadBuffer.Get();
 }
 
-uint32 FNetTraceInternal::GetNextNameId()
+UE::Net::FNetDebugNameId FNetTraceInternal::GetNextNameId()
 {
 	static std::atomic<UE::Net::FNetDebugNameId> NextNameId(1);
 
@@ -91,8 +85,7 @@ void FNetTrace::SetTraceVerbosity(uint32 Verbosity)
 		{
 			UE::Trace::ToggleChannel(TEXT("NetChannel"), false);
 
-			delete FNetTraceInternal::ThreadBuffer;
-			FNetTraceInternal::ThreadBuffer = nullptr;
+			FNetTraceInternal::ThreadBuffer.Reset();
 		}		
 	}
 
@@ -389,7 +382,7 @@ void FNetTrace::PopSendBunch(FNetTraceCollector& Collector)
 void FNetTrace::TraceCollectedEvents(FNetTraceCollector& Collector, uint32 GameInstanceId, uint32 ConnectionId, ENetTracePacketType PacketType)
 {
 	FNetTracePacketInfo PacketInfo;
-	PacketInfo.ConnectionId = ConnectionId;
+	PacketInfo.ConnectionId = (uint16)ConnectionId;
 	PacketInfo.GameInstanceId = GameInstanceId;
 	PacketInfo.PacketSequenceNumber = 0;
 	PacketInfo.PacketType = PacketType;
@@ -405,7 +398,7 @@ void FNetTrace::TracePacketDropped(uint32 GameInstanceId, uint32 ConnectionId, u
 	if (GNetTraceRuntimeVerbosity)
 	{
 		FNetTracePacketInfo PacketInfo;
-		PacketInfo.ConnectionId = ConnectionId;
+		PacketInfo.ConnectionId = (uint16)ConnectionId;
 		PacketInfo.GameInstanceId = GameInstanceId;
 		PacketInfo.PacketSequenceNumber = PacketSequenceNumber;
 		PacketInfo.PacketType = PacketType;
@@ -419,7 +412,7 @@ void FNetTrace::TracePacket(uint32 GameInstanceId, uint32 ConnectionId, uint32 P
 	if (GNetTraceRuntimeVerbosity)
 	{
 		FNetTracePacketInfo PacketInfo;
-		PacketInfo.ConnectionId = ConnectionId;
+		PacketInfo.ConnectionId = (uint16)ConnectionId;
 		PacketInfo.GameInstanceId = GameInstanceId;
 		PacketInfo.PacketSequenceNumber = PacketSequenceNumber;
 		PacketInfo.PacketType = PacketType;
@@ -430,7 +423,7 @@ void FNetTrace::TracePacket(uint32 GameInstanceId, uint32 ConnectionId, uint32 P
 	}
 }
 
-void FNetTrace::TraceObjectCreated(uint32 GameInstanceId, uint32 NetObjectId, const UE::Net::FNetDebugName* DebugName, uint64 TypeIdentifier, uint32 OwnerId)
+void FNetTrace::TraceObjectCreated(uint32 GameInstanceId, uint64 NetObjectId, const UE::Net::FNetDebugName* DebugName, uint64 TypeIdentifier, uint32 OwnerId)
 {
 	if (!GNetTraceRuntimeVerbosity)
 	{
@@ -444,7 +437,7 @@ void FNetTrace::TraceObjectCreated(uint32 GameInstanceId, uint32 NetObjectId, co
 	FNetTraceInternal::Reporter::ReportObjectCreated(GameInstanceId, NetObjectId, DebugName->DebugNameId, TypeIdentifier, OwnerId);
 }
 
-void FNetTrace::TraceObjectCreated(uint32 GameInstanceId, uint32 NetObjectId, const FName ObjectName, uint64 TypeIdentifier, uint32 OwnerId)
+void FNetTrace::TraceObjectCreated(uint32 GameInstanceId, uint64 NetObjectId, const FName ObjectName, uint64 TypeIdentifier, uint32 OwnerId)
 {
 	if (!GNetTraceRuntimeVerbosity)
 	{
@@ -454,7 +447,7 @@ void FNetTrace::TraceObjectCreated(uint32 GameInstanceId, uint32 NetObjectId, co
 	FNetTraceInternal::Reporter::ReportObjectCreated(GameInstanceId, NetObjectId, FNetTrace::TraceName(ObjectName), TypeIdentifier, OwnerId);
 }
 
-void FNetTrace::TraceObjectDestroyed(uint32 GameInstanceId, uint32 NetObjectId)
+void FNetTrace::TraceObjectDestroyed(uint32 GameInstanceId, uint64 NetObjectId)
 {
 	if (GNetTraceRuntimeVerbosity)
 	{
@@ -518,7 +511,7 @@ UE::Net::FNetDebugNameId FNetTrace::TraceName(const TCHAR* Name)
 	}
 
 	// Get Thread buffer
-	FNetTraceInternal::FThreadBuffer* ThreadBuffer = FNetTraceInternal::ThreadBuffer;
+	FNetTraceInternal::FThreadBuffer* ThreadBuffer = FNetTraceInternal::ThreadBuffer.Get();
 	if (!ThreadBuffer)
 	{
 		ThreadBuffer = FNetTraceInternal::CreateThreadBuffer();
@@ -552,7 +545,7 @@ UE::Net::FNetDebugNameId FNetTrace::TraceName(FName Name)
 	}
 
 	// Get Thread buffer
-	FNetTraceInternal::FThreadBuffer* ThreadBuffer = FNetTraceInternal::ThreadBuffer;
+	FNetTraceInternal::FThreadBuffer* ThreadBuffer = FNetTraceInternal::ThreadBuffer.Get();
 	if (!ThreadBuffer)
 	{
 		ThreadBuffer = FNetTraceInternal::CreateThreadBuffer();

@@ -108,6 +108,72 @@ bool FCommandLine::IsCommandLineLoggingFiltered()
 #endif
 }
 
+bool FCommandLine::FilterCLIUsingGrammarBasedParser(TCHAR* OutLine, int32 MaxLen, const TCHAR* InLine, const TArrayView<FString>& AllowedList)
+{
+	if (MaxLen == 0)
+	{
+		return false;
+	}
+	check(OutLine && MaxLen > 0);
+
+	// If nothing is allowed, then the output is an empty string
+	if (AllowedList.Num() == 0)
+	{
+		*OutLine = TCHAR(0);
+		return true;
+	}
+
+	TCHAR* Write = OutLine;
+	bool bOutOfSpace = false;
+
+	auto OnCmd = [OutLine, MaxLen, &bOutOfSpace , &Write, &AllowedList] (FStringView Key, FStringView Value) mutable
+	{
+		// Filter
+		// Trim the first leading '-'
+		// This brings the behaviour inline with FCommandLine::Parse
+		FStringView ToTest = Key.StartsWith(TEXT("-")) ? Key.RightChop(1) : Key;
+
+		if (!AllowedList.Contains(ToTest))
+		{
+			return;
+		}
+
+		// Destination Accounting
+		int32 WriteLength = Key.Len() + Value.Len() + (Write != OutLine);
+		bOutOfSpace |= (WriteLength >= MaxLen);
+		if (bOutOfSpace)
+		{
+			return;
+		}
+		MaxLen -= WriteLength;
+
+		// Append
+		if (Write != OutLine)
+		{
+			*Write++ = TCHAR(' ');
+		}
+
+		FMemory::Memmove(Write, Key.GetData(), sizeof(TCHAR) * Key.Len());
+		Write += Key.Len();
+		if (!Value.IsEmpty())
+		{
+			*Write++ = TCHAR('=');
+			FMemory::Memmove(Write, Value.GetData(), sizeof(TCHAR) * Value.Len());
+			Write += Value.Len();
+		}
+	};
+	
+	FParse::GrammarBasedCLIParse(InLine, OnCmd, FParse::EGrammarBasedParseFlags::AllowQuotedCommands);
+
+	if (bOutOfSpace)
+	{
+		return false;
+	}
+
+	*Write = TCHAR(0);
+	return true;
+}
+
 #if UE_COMMAND_LINE_USES_ALLOW_LIST
 TArray<FString> FCommandLine::ApprovedArgs;
 TArray<FString> FCommandLine::FilterArgsForLogging;
@@ -159,17 +225,13 @@ void FCommandLine::ApplyCommandLineAllowList()
 		FCommandLine::Parse(FilterForLoggingList, FilterArgsForLogging, Ignored);
 	}
 	// Process the original command line
-	TArray<FString> OriginalList = FilterCommandLine(OriginalCmdLine);
-	BuildCommandLineAllowList(OriginalCmdLine, UE_ARRAY_COUNT(OriginalCmdLine), OriginalList);
+	FilterCLIUsingGrammarBasedParser(OriginalCmdLine, UE_ARRAY_COUNT(OriginalCmdLine), OriginalCmdLine, ApprovedArgs);
 	// Process the current command line
-	TArray<FString> CmdList = FilterCommandLine(CmdLine);
-	BuildCommandLineAllowList(CmdLine, UE_ARRAY_COUNT(CmdLine), CmdList);
+	FilterCLIUsingGrammarBasedParser(CmdLine, UE_ARRAY_COUNT(CmdLine), CmdLine, ApprovedArgs);
 	// Process the command line for logging purposes
-	TArray<FString> LoggingCmdList = FilterCommandLineForLogging(LoggingCmdLine);
-	BuildCommandLineAllowList(LoggingCmdLine, UE_ARRAY_COUNT(LoggingCmdLine), LoggingCmdList);
+	FilterCLIUsingGrammarBasedParser(LoggingCmdLine, UE_ARRAY_COUNT(LoggingCmdLine), LoggingCmdLine, FilterArgsForLogging);
 	// Process the original command line for logging purposes
-	TArray<FString> LoggingOriginalCmdList = FilterCommandLineForLogging(LoggingOriginalCmdLine);
-	BuildCommandLineAllowList(LoggingOriginalCmdLine, UE_ARRAY_COUNT(LoggingOriginalCmdLine), LoggingOriginalCmdList);
+	FilterCLIUsingGrammarBasedParser(LoggingOriginalCmdLine, UE_ARRAY_COUNT(LoggingOriginalCmdLine), LoggingOriginalCmdLine, FilterArgsForLogging);
 }
 
 TArray<FString> FCommandLine::FilterCommandLine(TCHAR* CommandLine)
@@ -307,18 +369,18 @@ void FCommandLine::Parse(const TCHAR* InCmdLine, TArray<FString>& Tokens, TArray
 	{
 		if ((**NextToken == TCHAR('-')))
 		{
-			new(Switches) FString(NextToken.Mid(1));
-			new(Tokens) FString(NextToken.Right(NextToken.Len() - 1));
+			Switches.Add(NextToken.Mid(1));
+			Tokens.Add(NextToken.Right(NextToken.Len() - 1));
 		}
 		else
 		{
-			new(Tokens) FString(NextToken);
+			Tokens.Add(MoveTemp(NextToken));
 		}
 	}
 }
 
-
-FString FCommandLine::BuildFromArgV(const TCHAR* Prefix, int32 ArgC, TCHAR* ArgV[], const TCHAR* Suffix)
+template<typename CharType>
+FString BuildFromArgVImpl(const CharType* Prefix, int32 ArgC, CharType* ArgV[], const CharType* Suffix)
 {
 	FString Result;
 
@@ -351,13 +413,23 @@ FString FCommandLine::BuildFromArgV(const TCHAR* Prefix, int32 ArgC, TCHAR* ArgV
 	// add the prefix and suffix if provided
 	if (Prefix)
 	{
-		Result = FString::Printf(TEXT("%s %s"), Prefix, *Result);
+		Result = FString::Printf(TEXT("%s %s"), StringCast<TCHAR>(Prefix).Get(), *Result);
 	}
 
 	if (Suffix)
 	{
-		Result = FString::Printf(TEXT("%s %s"), *Result, Suffix);
+		Result = FString::Printf(TEXT("%s %s"), *Result, StringCast<TCHAR>(Suffix).Get());
 	}
 
 	return Result;
+}
+
+FString FCommandLine::BuildFromArgV(const WIDECHAR* Prefix, int32 ArgC, WIDECHAR* ArgV[], const WIDECHAR* Suffix)
+{
+	return BuildFromArgVImpl(Prefix, ArgC, ArgV, Suffix);
+}
+
+FString FCommandLine::BuildFromArgV(const ANSICHAR* Prefix, int32 ArgC, ANSICHAR* ArgV[], const ANSICHAR* Suffix)
+{
+	return BuildFromArgVImpl(Prefix, ArgC, ArgV, Suffix);
 }

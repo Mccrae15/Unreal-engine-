@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RendererUtils.h"
+#include "RendererPrivateUtils.h"
 #include "RenderTargetPool.h"
 #include "RHIDefinitions.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "VisualizeTexture.h"
 #include "ScenePrivate.h"
 #include "SystemTextures.h"
+#include "UnifiedBuffer.h"
 
 class FRTWriteMaskDecodeCS : public FGlobalShader
 {
@@ -60,9 +62,9 @@ public:
 	}
 
 	// Shader parameter structs don't have a way to push variable sized data yet. So the we use the old shader parameter API.
-	void SetPlatformData(FRHIComputeCommandList& RHICmdList, const void* PlatformDataPtr, uint32 PlatformDataSize)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const void* PlatformDataPtr, uint32 PlatformDataSize)
 	{
-		RHICmdList.SetShaderParameter(RHICmdList.GetBoundComputeShader(), PlatformDataParam.GetBufferIndex(), PlatformDataParam.GetBaseIndex(), PlatformDataSize, PlatformDataPtr);
+		BatchedParameters.SetShaderParameter(PlatformDataParam.GetBufferIndex(), PlatformDataParam.GetBaseIndex(), PlatformDataSize, PlatformDataPtr);
 	}
 
 private:
@@ -158,8 +160,8 @@ void FRenderTargetWriteMask::Decode(
 		}
 
 		SetComputePipelineState(RHICmdList, DecodeCS.GetComputeShader());
-		SetShaderParameters(RHICmdList, DecodeCS, DecodeCS.GetComputeShader(), *PassParameters);
-		DecodeCS->SetPlatformData(RHICmdList, PlatformDataPtr, PlatformDataSize);
+
+		SetShaderParametersMixedCS(RHICmdList, DecodeCS, *PassParameters, PlatformDataPtr, PlatformDataSize);
 
 		RHICmdList.DispatchComputeShader(
 			FMath::DivideAndRoundUp((uint32)RTWriteMaskDims.X, FRTWriteMaskDecodeCS::ThreadGroupSizeX),
@@ -223,4 +225,47 @@ namespace Strata
 
 		return nullptr;
 	}
+}
+
+FPersistentStructuredBuffer::FPersistentStructuredBuffer(int32 InMinimumNumElementsReserved, const TCHAR *InName, bool bInRoundUpToPOT)
+	: MinimumNumElementsReserved(InMinimumNumElementsReserved)
+	, Name(InName)
+	, bRoundUpToPOT(bInRoundUpToPOT)
+{
+}
+
+FRDGBuffer* FPersistentStructuredBuffer::ResizeBufferIfNeeded(FRDGBuilder& GraphBuilder, int32 InNewMinNumElements, int32 BytesPerElement)
+{
+	int32 NewMinNumElements = FMath::Max(MinimumNumElementsReserved, bRoundUpToPOT ? int32(FMath::RoundUpToPowerOfTwo(InNewMinNumElements)) : InNewMinNumElements);
+	FRDGBuffer* BufferRDG = ::ResizeBufferIfNeeded(GraphBuilder, PooledBuffer, FRDGBufferDesc::CreateStructuredDesc(BytesPerElement, NewMinNumElements), Name);
+	return BufferRDG;
+}
+
+FRDGBuffer* FPersistentStructuredBuffer::Register(FRDGBuilder& GraphBuilder) 
+{ 
+	return GraphBuilder.RegisterExternalBuffer(PooledBuffer); 
+}
+
+void FPersistentStructuredBuffer::Empty()
+{
+	PooledBuffer.SafeRelease();
+}
+
+void FStructuredBufferScatterUploader::UploadTo(FRDGBuilder& GraphBuilder, FRDGBuffer *DestBuffer, FRDGBuffer *ScatterOffsets, FRDGBuffer *Values, uint32 NumScatters, uint32 NumBytesPerElement, uint32 NumValuesPerScatter)
+{
+	FScatterCopyParams ScatterCopyParams { NumScatters, NumBytesPerElement, NumValuesPerScatter };
+	ScatterCopyResource(GraphBuilder, DestBuffer, GraphBuilder.CreateSRV(ScatterOffsets), GraphBuilder.CreateSRV(Values), ScatterCopyParams);
+}
+
+TGlobalResource<FTileTexCoordVertexBuffer> GOneTileQuadVertexBuffer(1);
+TGlobalResource<FTileIndexBuffer> GOneTileQuadIndexBuffer(1);
+
+RENDERER_API FBufferRHIRef& GetOneTileQuadVertexBuffer()
+{
+	return GOneTileQuadVertexBuffer.VertexBufferRHI;
+}
+
+RENDERER_API FBufferRHIRef& GetOneTileQuadIndexBuffer()
+{
+	return GOneTileQuadIndexBuffer.IndexBufferRHI;
 }

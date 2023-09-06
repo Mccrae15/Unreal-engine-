@@ -54,7 +54,7 @@ namespace UnrealVS
 		private IVsOutputWindowPane P4OutputPane;
 		private string P4WorkingDirectory;
 		private bool bPullWorkingDirectorFromP4 = true;
-		private static Mutex bPullWorkingDirectorFromP4Mutex = new Mutex();
+		private static object bPullWorkingDirectorFromP4Lock = new object();
 
 		// Exe paths
 		private string P4Exe = "C:\\Program Files\\Perforce\\p4.exe";
@@ -913,20 +913,26 @@ namespace UnrealVS
 			bool bSuccess = false;
 
 			string[] lines = CaptureP4Output.Split('\n');
-			foreach(string Line in lines)
+			foreach (string Line in lines)
 			{
-				System.Text.RegularExpressions.Match Match = Regex.Match(Line, @"^P4CONFIG\s*=.*'([^']+)'\)$");
+				string TrimLine = Line.Trim();
+
+				// Match this in https://regex101.com/ to debug it. Basically it's words=anything(anything'path-to-config-file'anything).
+				System.Text.RegularExpressions.Match Match = Regex.Match(TrimLine, @"^\w+=.*\(.*'(.*)'.*\)$");
 				if (Match.Success)
 				{
 					WorkingDirectory = Path.GetDirectoryName(Match.Groups[1].Value);
-					bSuccess = true;
-					break;
+					if (Directory.Exists(WorkingDirectory))
+					{
+						bSuccess = true;
+						break;
+					}
 				}
 			}
 
 			if (!bSuccess)
 			{
-				P4OutputPane.OutputStringThreadSafe($"attempt to pull P4CONFIG info failed{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"Attempt to pull the P4WorkingDirectory from 'p4 set' failed.  Have you run 'RunUAT P4WriteConfig' in your root directory?{Environment.NewLine}");
 			}
 
 			return WorkingDirectory;
@@ -963,9 +969,8 @@ namespace UnrealVS
 		{
 			ThreadHelper.ThrowIfNotOnUIThread();
 
-			bPullWorkingDirectorFromP4Mutex.WaitOne();
-			try
-			{
+			lock(bPullWorkingDirectorFromP4Lock)
+			{ 
 				if (IsSolutionLoaded() && (P4WorkingDirectory == null || P4WorkingDirectory.Length < 2))
 				{
 					DTE DTE = UnrealVSPackage.Instance.DTE;
@@ -995,10 +1000,6 @@ namespace UnrealVS
 						P4OutputPane.OutputStringThreadSafe($"P4WorkingDirectory set failed {Environment.NewLine}");
 					}
 				}
-			}
-			finally
-			{
-				bPullWorkingDirectorFromP4Mutex.ReleaseMutex();
 			}
 		}
 

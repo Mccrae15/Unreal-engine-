@@ -6,13 +6,15 @@
 
 #include "UsdWrappers/SdfPath.h"
 #include "UsdWrappers/UsdAttribute.h"
+#include "UsdWrappers/UsdPayloads.h"
+#include "UsdWrappers/UsdReferences.h"
 #include "UsdWrappers/UsdStage.h"
+#include "UsdWrappers/UsdVariantSets.h"
 
 #if USE_USD_SDK
 
 #include "USDIncludesStart.h"
 	#include "pxr/usd/sdf/schema.h"
-	#include "pxr/usd/usd/schemaRegistry.h"
 	#include "pxr/usd/usd/attribute.h"
 	#include "pxr/usd/usd/prim.h"
 	#include "pxr/usd/usd/schemaBase.h"
@@ -242,37 +244,154 @@ namespace UE
 		return AppliedSchemas;
 	}
 
-	bool FUsdPrim::IsA( FName SchemaType ) const
+	bool FUsdPrim::IsA( FName SchemaIdentifier ) const
 	{
 #if USE_USD_SDK
 		FScopedUsdAllocs Allocs;
 
-		pxr::TfType Type = pxr::UsdSchemaRegistry::GetTypeFromName( pxr::TfToken( TCHAR_TO_ANSI( *SchemaType.ToString() ) ) );
-		if ( Type.IsUnknown() )
-		{
-			return false;
-		}
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
 
-		return Impl->PxrUsdPrim.Get().IsA( Type );
+		return Impl->PxrUsdPrim.Get().IsA( UsdSchemaIdentifier );
 #else
 		return false;
 #endif // #if USE_USD_SDK
 	}
 
-	bool FUsdPrim::HasAPI( FName SchemaType, TOptional<FName> InstanceName ) const
+	bool FUsdPrim::HasAPI( FName SchemaIdentifier ) const
 	{
 #if USE_USD_SDK
 		FScopedUsdAllocs Allocs;
 
-		pxr::TfType Type = pxr::UsdSchemaRegistry::GetTypeFromName( pxr::TfToken( TCHAR_TO_ANSI( *SchemaType.ToString() ) ) );
-		if ( Type.IsUnknown() )
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+
+		return Impl->PxrUsdPrim.Get().HasAPI( UsdSchemaIdentifier );
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FUsdPrim::HasAPI( FName SchemaIdentifier, FName InstanceName ) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+		const pxr::TfToken UsdInstanceName( TCHAR_TO_ANSI( *InstanceName.ToString() ) );
+
+		return Impl->PxrUsdPrim.Get().HasAPI( UsdSchemaIdentifier, UsdInstanceName );
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	// Deprecated in 5.3
+	bool FUsdPrim::HasAPI( FName SchemaType, TOptional<FName> InstanceName ) const
+	{
+		if ( InstanceName.IsSet() )
 		{
-			return false;
+			return HasAPI( SchemaType, InstanceName.GetValue() );
 		}
 
-		pxr::TfToken UsdInstanceName = InstanceName.IsSet() ? pxr::TfToken( TCHAR_TO_ANSI( *InstanceName.GetValue().ToString() ) ) : pxr::TfToken();
+		return HasAPI( SchemaType );
+	}
 
-		return Impl->PxrUsdPrim.Get().HasAPI( Type, UsdInstanceName );
+	bool FUsdPrim::CanApplyAPI( FName SchemaIdentifier, FString* OutWhyNot ) const
+	{
+		bool bResult = false;
+
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+
+		std::string WhyNot;
+		bResult = Impl->PxrUsdPrim.Get().CanApplyAPI(
+			UsdSchemaIdentifier,
+			OutWhyNot != nullptr ? &WhyNot : nullptr );
+
+		if ( !bResult && OutWhyNot != nullptr )
+		{
+			*OutWhyNot = ANSI_TO_TCHAR( WhyNot.c_str() );
+		}
+#endif // #if USE_USD_SDK
+
+		return bResult;
+	}
+
+	bool FUsdPrim::CanApplyAPI( FName SchemaIdentifier, FName InstanceName, FString* OutWhyNot ) const
+	{
+		bool bResult = false;
+
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+		const pxr::TfToken UsdInstanceName( TCHAR_TO_ANSI( *InstanceName.ToString() ) );
+
+		std::string WhyNot;
+		bResult = Impl->PxrUsdPrim.Get().CanApplyAPI(
+			UsdSchemaIdentifier,
+			UsdInstanceName,
+			OutWhyNot != nullptr ? &WhyNot : nullptr);
+
+		if ( !bResult && OutWhyNot != nullptr )
+		{
+			*OutWhyNot = ANSI_TO_TCHAR( WhyNot.c_str() );
+		}
+#endif // #if USE_USD_SDK
+
+		return bResult;
+	}
+
+	bool FUsdPrim::ApplyAPI( FName SchemaIdentifier ) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+
+		return Impl->PxrUsdPrim.Get().ApplyAPI( UsdSchemaIdentifier );
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FUsdPrim::ApplyAPI( FName SchemaIdentifier, FName InstanceName ) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+		const pxr::TfToken UsdInstanceName( TCHAR_TO_ANSI( *InstanceName.ToString() ) );
+
+		return Impl->PxrUsdPrim.Get().ApplyAPI( UsdSchemaIdentifier, UsdInstanceName );
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FUsdPrim::RemoveAPI( FName SchemaIdentifier ) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+
+		return Impl->PxrUsdPrim.Get().RemoveAPI( UsdSchemaIdentifier );
+#else
+		return false;
+#endif // #if USE_USD_SDK
+	}
+
+	bool FUsdPrim::RemoveAPI( FName SchemaIdentifier, FName InstanceName ) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		const pxr::TfToken UsdSchemaIdentifier( TCHAR_TO_ANSI( *SchemaIdentifier.ToString() ) );
+		const pxr::TfToken UsdInstanceName( TCHAR_TO_ANSI( *InstanceName.ToString() ) );
+
+		return Impl->PxrUsdPrim.Get().RemoveAPI( UsdSchemaIdentifier, UsdInstanceName );
 #else
 		return false;
 #endif // #if USE_USD_SDK
@@ -366,6 +485,28 @@ namespace UE
 		return Children;
 	}
 
+	FUsdVariantSets FUsdPrim::GetVariantSets() const
+	{
+#if USE_USD_SDK
+		return FUsdVariantSets(Impl->PxrUsdPrim.Get());
+#else
+		return FUsdVariantSets{};
+#endif // #if USE_USD_SDK
+	}
+
+	FUsdVariantSet FUsdPrim::GetVariantSet(const FString& VariantSetName) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs UsdAllocs;
+
+		const std::string UsdVariantSetName(TCHAR_TO_ANSI(*VariantSetName));
+
+		return FUsdVariantSet(Impl->PxrUsdPrim.Get(), UsdVariantSetName);
+#else
+		return FUsdVariantSet{};
+#endif // #if USE_USD_SDK
+	}
+
 	bool FUsdPrim::HasVariantSets() const
 	{
 #if USE_USD_SDK
@@ -375,22 +516,28 @@ namespace UE
 #endif // #if USE_USD_SDK
 	}
 
-	bool FUsdPrim::HasAuthoredReferences() const
+	FUsdPayloads FUsdPrim::GetPayloads() const
 	{
 #if USE_USD_SDK
-		return Impl->PxrUsdPrim.Get().HasAuthoredReferences();
+		return FUsdPayloads(Impl->PxrUsdPrim.Get());
+#else
+		return FUsdPayloads{};
+#endif // #if USE_USD_SDK
+	}
+
+	bool FUsdPrim::HasAuthoredPayloads() const
+	{
+#if USE_USD_SDK
+		return Impl->PxrUsdPrim.Get().HasAuthoredPayloads();
 #else
 		return false;
 #endif // #if USE_USD_SDK
 	}
 
+	// Deprecated in 5.3
 	bool FUsdPrim::HasPayload() const
 	{
-#if USE_USD_SDK
-		return Impl->PxrUsdPrim.Get().HasPayload();
-#else
-		return false;
-#endif // #if USE_USD_SDK
+		return HasAuthoredPayloads();
 	}
 
 	bool FUsdPrim::IsLoaded() const
@@ -402,10 +549,13 @@ namespace UE
 #endif // #if USE_USD_SDK
 	}
 
-	void FUsdPrim::Load()
+	void FUsdPrim::Load( EUsdLoadPolicy Policy )
 	{
 #if USE_USD_SDK
-		Impl->PxrUsdPrim.Get().Load();
+		static_assert( ( int32 ) EUsdLoadPolicy::UsdLoadWithDescendants == ( int32 ) pxr::UsdLoadWithDescendants, "EUsdLoadPolicy enum doesn't match USD!" );
+		static_assert( ( int32 ) EUsdLoadPolicy::UsdLoadWithoutDescendants == ( int32 ) pxr::UsdLoadWithoutDescendants, "EUsdLoadPolicy enum doesn't match USD!" );
+
+		Impl->PxrUsdPrim.Get().Load( static_cast< pxr::UsdLoadPolicy > ( Policy ) );
 #endif // #if USE_USD_SDK
 	}
 
@@ -430,6 +580,24 @@ namespace UE
 #endif // #if USE_USD_SDK
 
 		return Attributes;
+	}
+
+	FUsdReferences FUsdPrim::GetReferences() const
+	{
+#if USE_USD_SDK
+		return FUsdReferences( Impl->PxrUsdPrim.Get() );
+#else
+		return FUsdReferences{};
+#endif // #if USE_USD_SDK
+	}
+
+	bool FUsdPrim::HasAuthoredReferences() const
+	{
+#if USE_USD_SDK
+		return Impl->PxrUsdPrim.Get().HasAuthoredReferences();
+#else
+		return false;
+#endif // #if USE_USD_SDK
 	}
 
 	FUsdAttribute FUsdPrim::GetAttribute(const TCHAR* AttrName) const
@@ -477,4 +645,144 @@ namespace UE
 		return false;
 #endif // #if USE_USD_SDK
 	}
-}
+
+	bool FUsdPrim::IsInstanceable() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().IsInstanceable();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::SetInstanceable(bool bInstanceable) const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().SetInstanceable(bInstanceable);
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::ClearInstanceable() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().ClearInstanceable();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::HasAuthoredInstanceable() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().HasAuthoredInstanceable();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::IsInstance() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().IsInstance();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::IsInstanceProxy() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().IsInstanceProxy();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::IsPrototype() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().IsPrototype();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::IsInPrototype() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return Impl->PxrUsdPrim.Get().IsInPrototype();
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	FUsdPrim FUsdPrim::GetPrototype() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return UE::FUsdPrim{Impl->PxrUsdPrim.Get().GetPrototype()};
+#else
+		return {};
+#endif	  // USE_USD_SDK
+	}
+
+	FUsdPrim FUsdPrim::GetPrimInPrototype() const
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return UE::FUsdPrim{Impl->PxrUsdPrim.Get().GetPrimInPrototype()};
+#else
+		return {};
+#endif	  // USE_USD_SDK
+	}
+
+	TArray<FUsdPrim> FUsdPrim::GetInstances() const
+	{
+		TArray<FUsdPrim> Result;
+
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+
+		std::vector<pxr::UsdPrim> Instances = Impl->PxrUsdPrim.Get().GetInstances();
+		Result.Reserve(Instances.size());
+
+		for (const pxr::UsdPrim& Instance : Instances)
+		{
+			Result.Emplace(Instance);
+		}
+#endif	  // USE_USD_SDK
+
+		return Result;
+	}
+
+	bool FUsdPrim::IsPrototypePath(const FSdfPath& Path)
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return pxr::UsdPrim::IsPrototypePath(Path);
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+	bool FUsdPrim::IsPathInPrototype(const FSdfPath& Path)
+	{
+#if USE_USD_SDK
+		FScopedUsdAllocs Allocs;
+		return pxr::UsdPrim::IsPathInPrototype(Path);
+#else
+		return false;
+#endif	  // USE_USD_SDK
+	}
+
+}	 // namespace UE

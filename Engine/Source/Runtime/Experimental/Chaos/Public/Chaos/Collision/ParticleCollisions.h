@@ -17,7 +17,7 @@ namespace Chaos
 	 * when Islands are woken to restore the collisions.
 	 * 
 	*/
-	class CHAOS_API FParticleCollisions
+	class FParticleCollisions
 	{
 	public:
 		// In a mostly stationary scene the choice of container doesn't matter much. In a highly dynamic
@@ -29,8 +29,8 @@ namespace Chaos
 		// that should not have too many contacts. 
 		using FContainerType = TArray<TPair<uint64, FParticlePairMidPhase*>>;
 
-		FParticleCollisions();
-		~FParticleCollisions();
+		CHAOS_API FParticleCollisions();
+		CHAOS_API ~FParticleCollisions();
 
 		inline int32 Num() const 
 		{ 
@@ -51,12 +51,12 @@ namespace Chaos
 		 * on the midphase that we want to retrieve, and it has one cookie per particle. 
 		 * This could probably be cleaned up a bit...
 		*/
-		void AddMidPhase(FGeometryParticleHandle* InParticle, FParticlePairMidPhase* InMidPhase);
+		CHAOS_API void AddMidPhase(FGeometryParticleHandle* InParticle, FParticlePairMidPhase* InMidPhase);
 
 		/**
 		 * @brief Remove a mid phase
 		*/
-		void RemoveMidPhase(FGeometryParticleHandle* InParticle, FParticlePairMidPhase* InMidPhase);
+		CHAOS_API void RemoveMidPhase(FGeometryParticleHandle* InParticle, FParticlePairMidPhase* InMidPhase);
 
 		/**
 		 * @brief Get a midphase by its index
@@ -107,7 +107,7 @@ namespace Chaos
 
 		/**
 		 * @brief Visit all the collisions on this particle
-		 * @tparam TLambda visitor type with signature void(FPBDCollisionParticle&)
+		 * @tparam TLambda visitor type with signature void(FPBDCollisionConstraint&)
 		 * 
 		 * @note do not delete constraint from the lambda. You may disable them though.
 		*/
@@ -116,7 +116,7 @@ namespace Chaos
 
 		/**
 		 * @brief Visit all the collisions on this particle
-		 * @tparam TLambda visitor type with signature void(const FPBDCollisionParticle&)
+		 * @tparam TLambda visitor type with signature void(const FPBDCollisionConstraint&)
 		 * 
 		 * @note do not delete constraint from the lambda. You may disable them though.
 		*/

@@ -9,15 +9,14 @@ public class DX11Audio : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicSystemIncludePaths.Add(DirectX.GetIncludeDir(Target));
+			PublicDependencyModuleNames.Add("DirectX");
 
 			string DirectXLibDir = DirectX.GetLibDir(Target);
 			PublicAdditionalLibraries.AddRange(
 				new string[] 
 				{
 					DirectXLibDir + "dxguid.lib",
-					DirectXLibDir + "xapobase.lib",
-					DirectXLibDir + "XAPOFX.lib"
+					DirectXLibDir + "xapobase.lib"
 				}
 			);
 		}

@@ -9,6 +9,7 @@
 #include "InputState.h"
 #include "ToolContextInterfaces.h"
 
+class IToolsContextRenderAPI;
 class IToolsContextTransactionsAPI;
 
 
@@ -61,9 +62,7 @@ struct MODELINGCOMPONENTS_API FGeometryIdentifier
 	 */
 	TWeakObjectPtr<UObject> TargetObject = nullptr;
 
-
 	FGeometryIdentifier() = default;
-	FGeometryIdentifier(const FGeometryIdentifier& Other) = default;
 
 	/**
 	 * @return true if TargetObject is defined and still exists
@@ -184,6 +183,11 @@ public:
 	virtual void UpdateTransform( TFunctionRef<FVector3d(int VertexID, const FVector3d& InitialPosition, const FTransform& WorldTransform)> VertexTransformFunc ) = 0;
 
 	/**
+	 * Optional function called per-frame to visualize the active Transformation
+	 */
+	virtual void PreviewRender(IToolsContextRenderAPI* RenderAPI) { }
+
+	/**
 	 * Finish a transform (eg called on mouse-up during 3D gizmo interaction). 
 	 * The caller provides a TransactionsAPI implementation which the Transformer/Selector can use to emit change events
 	 */
@@ -261,6 +265,20 @@ public:
 	 * @return a FGeometryIdentifier for this Selector. 
 	 */
 	virtual FGeometryIdentifier GetIdentifier() const = 0;
+
+
+	//
+	// Locking support. When a Selector is locked, it will not allow selection changes.
+	// The primary use of this is to support configurable enable/disable of selection on 
+	// certain types of objects (eg on static meshes). Although it could potentially be
+	// supported at a higher level, this adds a lot of complications to state management
+	// that are avoided if the Selector is always created.
+	//
+
+	virtual bool IsLockable() const { return false; }
+	virtual bool IsLocked() const { return false; }
+	virtual void SetLockedState(bool bLocked) { }
+
 
 
 	enum class EInitializeSelectionMode
@@ -441,6 +459,7 @@ public:
 	 */
 	virtual TUniquePtr<IGeometrySelector> BuildForTarget(FGeometryIdentifier TargetIdentifier) const = 0;
 };
+
 
 
 

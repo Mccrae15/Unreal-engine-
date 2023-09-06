@@ -12,6 +12,7 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/Build.h"
 #include "Misc/VarArgs.h"
+#include "String/FormatStringSan.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/EnableIf.h"
 #include "Templates/IsArrayOrRefOfTypeByPredicate.h"
@@ -196,32 +197,23 @@ CORE_API void BasicFatalLog(const FLogCategoryBase& Category, const FStaticBasic
 	#define DEFINE_LOG_CATEGORY_STATIC(...)
 	#define DECLARE_LOG_CATEGORY_CLASS(...)
 	#define DEFINE_LOG_CATEGORY_CLASS(...)
-	#define UE_SECURITY_LOG(...) DEPRECATED_MACRO(5.1, "UE_SECURITY_LOG has been deprecated in favor of UE_LOG")
 
 #else
 
 	namespace UEAsserts_Private
 	{
 		template <int32 VerbosityToCheck, typename CategoryType>
-		FORCEINLINE
-			typename TEnableIf<
-				((VerbosityToCheck & ELogVerbosity::VerbosityMask) <= CategoryType::CompileTimeVerbosity &&
-				(VerbosityToCheck & ELogVerbosity::VerbosityMask) <= ELogVerbosity::COMPILED_IN_MINIMUM_VERBOSITY),
-				bool>::Type
-			IsLogActive(const CategoryType& Category)
+		FORCEINLINE bool IsLogActive(const CategoryType& Category)
 		{
-			return !Category.IsSuppressed((ELogVerbosity::Type)VerbosityToCheck);
-		}
-
-		template <int32 VerbosityToCheck, typename CategoryType>
-		FORCEINLINE
-			typename TEnableIf<
-				!((VerbosityToCheck & ELogVerbosity::VerbosityMask) <= CategoryType::CompileTimeVerbosity &&
-				(VerbosityToCheck & ELogVerbosity::VerbosityMask) <= ELogVerbosity::COMPILED_IN_MINIMUM_VERBOSITY),
-				bool>::Type
-			IsLogActive(const CategoryType& Category)
-		{
-			return false;
+			if constexpr (((VerbosityToCheck & ELogVerbosity::VerbosityMask) <= CategoryType::CompileTimeVerbosity &&
+				(VerbosityToCheck & ELogVerbosity::VerbosityMask) <= ELogVerbosity::COMPILED_IN_MINIMUM_VERBOSITY))
+			{
+				return !Category.IsSuppressed((ELogVerbosity::Type)VerbosityToCheck);
+			}
+			else
+			{
+				return false;
+			}
 		}
 	}
 
@@ -238,8 +230,8 @@ CORE_API void BasicFatalLog(const FLogCategoryBase& Category, const FStaticBasic
 	#define UE_SET_LOG_VERBOSITY(CategoryName, Verbosity) \
 		CategoryName.SetVerbosity(ELogVerbosity::Verbosity);
 
-	#if UE_VALIDATE_FORMAT_STRINGS && defined(_MSC_VER)
-		#define UE_VALIDATE_FORMAT_STRING(Format, ...) do { if (false) { wprintf(Format, ##__VA_ARGS__); } } while(false)
+	#if UE_VALIDATE_FORMAT_STRINGS
+		#define UE_VALIDATE_FORMAT_STRING UE_CHECK_FORMAT_STRING
 	#else
 		#define UE_VALIDATE_FORMAT_STRING(Format, ...)
 	#endif
@@ -270,26 +262,6 @@ CORE_API void BasicFatalLog(const FLogCategoryBase& Category, const FStaticBasic
 	#define UE_LOG_CLINKAGE UE_LOG
 
 	/**
-	* A  macro that outputs a formatted message to the log specifically used for security events
-	* @param NetConnection, a valid UNetConnection
-	* @param SecurityEventType, a security event type (ESecurityEvent::Type)
-	* @param Format, format text
-	***/
-	#define UE_SECURITY_LOG(NetConnection, SecurityEventType, Format, ...) \
-	{ \
-		DEPRECATED_MACRO(5.1, "UE_SECURITY_LOG has been deprecated in favor of UE_LOG") \
-		static_assert(TIsArrayOrRefOfTypeByPredicate<decltype(Format), TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array."); \
-		check(NetConnection != nullptr); \
-		CA_CONSTANT_IF((ELogVerbosity::Warning & ELogVerbosity::VerbosityMask) <= ELogVerbosity::COMPILED_IN_MINIMUM_VERBOSITY && (ELogVerbosity::Warning & ELogVerbosity::VerbosityMask) <= FLogCategoryLogSecurity::CompileTimeVerbosity) \
-		{ \
-			if (!LogSecurity.IsSuppressed(ELogVerbosity::Warning)) \
-			{ \
-				FMsg::Logf_Internal(UE_LOG_SOURCE_FILE(__FILE__), __LINE__, LogSecurity.GetCategoryName(), ELogVerbosity::Warning, TEXT("%s: %s: %s"), *(NetConnection->RemoteAddressToString()), ToString(SecurityEventType), *FString::Printf(Format, ##__VA_ARGS__)); \
-			} \
-		} \
-	}
-
-	/**
 	 * A macro that conditionally logs a formatted message if the log category is active at the requested verbosity level.
 	 *
 	 * @note The condition is not evaluated unless the log category is active at the requested verbosity level.
@@ -309,7 +281,7 @@ CORE_API void BasicFatalLog(const FLogCategoryBase& Category, const FStaticBasic
 		static_assert(TIsArrayOrRefOfTypeByPredicate<decltype(Format), TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array."); \
 		UE_VALIDATE_FORMAT_STRING(Format, ##__VA_ARGS__); \
 		static ::UE::Logging::Private::FStaticBasicLogDynamicData LOG_Dynamic; \
-		static constexpr ::UE::Logging::Private::FStaticBasicLogRecord LOG_Static(Format, __FILE__, __LINE__, ::ELogVerbosity::Verbosity, LOG_Dynamic); \
+		static constexpr ::UE::Logging::Private::FStaticBasicLogRecord LOG_Static(Format, __builtin_FILE(), __builtin_LINE(), ::ELogVerbosity::Verbosity, LOG_Dynamic); \
 		static_assert((::ELogVerbosity::Verbosity & ::ELogVerbosity::VerbosityMask) < ::ELogVerbosity::NumVerbosity && ::ELogVerbosity::Verbosity > 0, "Verbosity must be constant and in range."); \
 		if constexpr ((::ELogVerbosity::Verbosity & ELogVerbosity::VerbosityMask) == ::ELogVerbosity::Fatal) \
 		{ \
@@ -409,31 +381,6 @@ CORE_API void BasicFatalLog(const FLogCategoryBase& Category, const FStaticBasic
 #define NOTIFY_CLIENT_OF_SECURITY_EVENT_IF_NOT_SHIPPING(NetConnection, SecurityPrint) \
 	FNetControlMessage<NMT_SecurityViolation>::Send(NetConnection, SecurityPrint); \
 	NetConnection->FlushNet(true)
-#endif
-
-/**
-	* A  macro that closes the connection and logs the security event on the server and the client
-	* @param NetConnection, a valid UNetConnection
-	* @param SecurityEventType, a security event type (ESecurityEvent::Type)
-	* @param Format, format text
-***/
-#define CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION_INNER(NetConnection, SecurityEventType, Format, ...) \
-{ \
-	DEPRECATED_MACRO(5.1, "CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION has been deprecated") \
-	static_assert(TIsArrayOrRefOfTypeByPredicate<decltype(Format), TIsCharEncodingCompatibleWithTCHAR>::Value, "Formatting string must be a TCHAR array."); \
-	check(NetConnection != nullptr); \
-	FString SecurityPrint = FString::Printf(Format, ##__VA_ARGS__); \
-	UE_LOG(LogSecurity, Warning, TEXT("%s: %s: %s"), *(NetConnection)->RemoteAddressToString(), ToString(SecurityEventType), SecurityEventType, *SecurityPrint); \
-	UE_LOG(LogSecurity, Warning, TEXT("%s: Closed: Connection closed"), *(NetConnection)->RemoteAddressToString()); \
-	NetConnection->Close({FromSecurityEvent(SecurityEventType), SecurityPrint}); \
-}
-#if USE_SERVER_PERF_COUNTERS
-#define CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION(NetConnection, SecurityEventType, Format, ...) \
-	CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION_INNER(NetConnection, SecurityEventType, Format, ##__VA_ARGS__) \
-	PerfCountersIncrement(TEXT("ClosedConnectionsDueToSecurityViolations"));
-#else
-#define CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION(NetConnection, SecurityEventType, Format, ...) \
-	CLOSE_CONNECTION_DUE_TO_SECURITY_VIOLATION_INNER(NetConnection, SecurityEventType, Format, ##__VA_ARGS__)
 #endif
 
 extern CORE_API int32 GEnsureOnNANDiagnostic;

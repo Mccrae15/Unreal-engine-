@@ -20,6 +20,7 @@
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
 #include "TargetInterfaces/StaticMeshBackedTarget.h"
 #include "ModelingToolTargetUtil.h"
+#include "ToolTargetManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MeshTangentsTool)
 
@@ -45,6 +46,13 @@ const FToolTargetTypeRequirements& UMeshTangentsToolBuilder::GetTargetRequiremen
 USingleSelectionMeshEditingTool* UMeshTangentsToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
 	return NewObject<UMeshTangentsTool>(SceneState.ToolManager);
+}
+
+bool UMeshTangentsToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
+{
+	return USingleSelectionMeshEditingToolBuilder::CanBuildTool(SceneState) &&
+		SceneState.TargetManager->CountSelectedAndTargetableWithPredicate(SceneState, GetTargetRequirements(),
+			[](UActorComponent& Component) { return !ToolBuilderUtil::IsVolume(Component); }) >= 1;
 }
 
 /*
@@ -102,6 +110,23 @@ void UMeshTangentsTool::Setup()
 
 	Compute = MakeUnique<TGenericDataBackgroundCompute<FMeshTangentsd>>();
 	Compute->Setup(this);
+	Compute->OnOpCompleted.AddLambda([this](const UE::Geometry::TGenericDataOperator<UE::Geometry::FMeshTangentsd>* Op)
+		{
+			if (((FCalculateTangentsOp*)(Op))->bNoAttributesError)
+			{
+				bHasDisplayedNoAttributeError = true;
+				GetToolManager()->DisplayMessage(
+					LOCTEXT("TangentsNoAttributesError", "Error: Source mesh did not have tangents."),
+					EToolMessageLevel::UserWarning);
+			}
+			else if (bHasDisplayedNoAttributeError)
+			{
+				bHasDisplayedNoAttributeError = false;
+				GetToolManager()->DisplayMessage(
+					FText(),
+					EToolMessageLevel::UserWarning);
+			}
+		});
 	Compute->OnResultUpdated.AddLambda( [this](const TUniquePtr<FMeshTangentsd>& NewResult) { OnTangentsUpdated(NewResult); } );
 	Compute->InvalidateResult();
 

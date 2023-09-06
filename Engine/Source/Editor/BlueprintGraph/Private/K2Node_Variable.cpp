@@ -106,7 +106,7 @@ bool UK2Node_Variable::CreatePinForVariable(EEdGraphPinDirection Direction, FNam
 			// class (the blueprint has not be compiled with it yet), so let's 
 			// check the skeleton class as well, see if we can pull pin data 
 			// from there...
-			UBlueprint* VariableBlueprint = CastChecked<UBlueprint>(BpClassOwner->ClassGeneratedBy, ECastCheckedType::NullAllowed);
+			UBlueprint* VariableBlueprint = CastChecked<UBlueprint>(BpClassOwner->ClassGeneratedBy.Get(), ECastCheckedType::NullAllowed);
 			if (VariableBlueprint)
 			{
 				if (FProperty* SkelProperty = GetPropertyForVariableFromSkeleton())
@@ -175,6 +175,16 @@ void UK2Node_Variable::CreatePinForSelf()
 					if (OwnerClass)
 					{
 						TargetClass = OwnerClass->GetAuthoritativeClass();
+					}
+					else if(TargetClass)
+					{
+						// check if it's a sparse member, sparse members are accessed via the authoritative
+						// class - this matches the convention defined in BlueprintActionDatabaseImpl::AddClassDataObjectActions:
+						UClass* AuthClass = TargetClass->GetAuthoritativeClass();
+						if (AuthClass->GetSparseClassDataStruct()->IsChildOf(Property->GetOwnerStruct()) )
+						{
+							TargetClass = AuthClass;
+						}
 					}
 				}
 				else if (GetBlueprint()->SkeletonGeneratedClass)
@@ -272,7 +282,7 @@ FString UK2Node_Variable::GetFindReferenceSearchString() const
 	return ResultSearchString;
 }
 
-UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction( const UEdGraphPin* NewPin, int32 NewPinIndex, const UEdGraphPin* OldPin, int32 OldPinIndex ) const 
+UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction(const UEdGraphPin* NewPin, int32 NewPinIndex, const UEdGraphPin* OldPin, int32 OldPinIndex) const 
 {
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 	if( OldPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec )
@@ -281,8 +291,25 @@ UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction( const UEd
 	}
 
 	const bool bPinNamesMatch = (OldPin->PinName == NewPin->PinName);
-	const bool bCanMatchSelfs = bPinNamesMatch || ((OldPin->PinName == UEdGraphSchema_K2::PN_Self) == (NewPin->PinName == UEdGraphSchema_K2::PN_Self));
+	const bool bCanMatchSelfs = bPinNamesMatch || ((OldPin->PinName == UEdGraphSchema_K2::PN_Self) && (NewPin->PinName == UEdGraphSchema_K2::PN_Self));
 	const bool bTheSameDirection = (NewPin->Direction == OldPin->Direction);
+
+	const bool bNewPinIsObject = (NewPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object);
+	const bool bNewPinIsInterface = (NewPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Interface);
+	const bool bNewIsClass = (NewPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class);
+	const bool bNewPinIsObjectType = 
+		bNewPinIsObject ||
+		bNewPinIsInterface ||
+		bNewIsClass
+	;
+	
+	const FEdGraphPinType& InputType = (OldPin->Direction == EGPD_Output) ? OldPin->PinType : NewPin->PinType;
+	const FEdGraphPinType& OutputType = (OldPin->Direction == EGPD_Output) ? NewPin->PinType : OldPin->PinType;
+	
+	const bool bHasIncompatibleObjectType =
+		bNewPinIsObjectType &&
+		!K2Schema->ArePinTypesCompatible(OutputType, InputType)
+	;
 
 	if (bCanMatchSelfs && bTheSameDirection)
 	{
@@ -297,8 +324,6 @@ UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction( const UEd
 		// variable has been altered to be a sub-class ref (meaning we should 
 		// treat the NewPin as an output)... the opposite applies if the pins 
 		// are inputs
-		const FEdGraphPinType& InputType  = (OldPin->Direction == EGPD_Output) ? OldPin->PinType : NewPin->PinType;
-		const FEdGraphPinType& OutputType = (OldPin->Direction == EGPD_Output) ? NewPin->PinType : OldPin->PinType;
 
 		if (NewPin->ParentPin)
 		{
@@ -339,20 +364,14 @@ UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction( const UEd
 
 			return ERedirectType_Name;
 		}
-		else if (K2Schema->ArePinTypesCompatible(OutputType, InputType))
+		else if (bHasIncompatibleObjectType)
 		{
-			return ERedirectType_Name;
-		}
-		else
-		{
-			const bool bNewPinIsObject = (NewPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Object);
-
 			// Special Case: If we had a pin match, and the class isn't loaded 
 			//               yet because of a cyclic dependency, temporarily 
 			//               cast away the const, and fix up.
 			if ( bPinNamesMatch &&
-				(bNewPinIsObject || (NewPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)) &&
-				(NewPin->PinType.PinSubCategoryObject == NULL) )
+				(bNewPinIsObject || bNewPinIsInterface) &&
+				(NewPin->PinType.PinSubCategoryObject == nullptr) )
 			{
 				// @TODO:  Fix this up to be less hacky
 				UBlueprintGeneratedClass* TypeClass = Cast<UBlueprintGeneratedClass>(OldPin->PinType.PinSubCategoryObject.Get());
@@ -393,7 +412,6 @@ UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction( const UEd
 			{
 				const UClass* PSCOClass = Cast<UClass>(OldPin->PinType.PinSubCategoryObject.Get());
 				const bool bOldIsBlueprint = PSCOClass && PSCOClass->IsChildOf(UBlueprint::StaticClass());
-				const bool bNewIsClass     = (NewPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class);
 				// Special Case: If we're migrating from old blueprint references 
 				//               to class references, allow pins to be reconnected if coerced
 				if (bNewIsClass && bOldIsBlueprint)
@@ -403,6 +421,14 @@ UK2Node::ERedirectType UK2Node_Variable::DoPinsMatchForReconstruction( const UEd
 					return ERedirectType_Name;
 				}
 			}
+		}
+		else
+		{
+			// By default, we allow the redirect if direction and name match.
+			// The type may not match, but we defer that check to ValidateLinkedPinTypes,
+			// which attempts to address the incompatibility by inserting a conversion node.
+			// This behavior is consistent with how UK2Node operates.
+			return ERedirectType_Name;
 		}
 	}
 

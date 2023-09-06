@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
 using EpicGames.Perforce;
 using Microsoft.Extensions.Logging;
 using System;
@@ -10,10 +9,8 @@ using System.Threading.Tasks;
 
 namespace UnrealGameSync
 {
-
 	static class P4Automation
 	{
-
 		public static IPerforceSettings GetConnectionSettings()
 		{
 			// Read the settings
@@ -25,18 +22,16 @@ namespace UnrealGameSync
 			GlobalPerforceSettings.ReadGlobalPerforceSettings(ref serverAndPort, ref userName, ref depotPathSettings, ref preview);
 
 			return Utility.OverridePerforceSettings(PerforceSettings.Default, serverAndPort, userName);
-
 		}
 
 		public static Task<string> PrintToTempFile(IPerforceConnection? connection, string depotPath, ILogger logger)
 		{
-			return PrintToTempFileAsync(connection, depotPath, CancellationToken.None, logger);
+			return PrintToTempFileAsync(connection, depotPath, logger, CancellationToken.None);
 		}
 
-		public static async Task<string> PrintToTempFileAsync(IPerforceConnection? connection, string depotPath, CancellationToken cancellationToken, ILogger logger)
+		public static async Task<string> PrintToTempFileAsync(IPerforceConnection? connection, string depotPath, ILogger logger, CancellationToken cancellationToken)
 		{
 			bool createNewConnection = (connection == null);
-
 			try
 			{
 				if (connection == null)
@@ -48,16 +43,16 @@ namespace UnrealGameSync
 				string depotFileName = Path.GetFileName(depotPath);
 
 				// Reorder CL and extension
-				int index = depotFileName.IndexOf('@');
+				int index = depotFileName.IndexOf('@', StringComparison.Ordinal);
 				if (index == -1)
 				{
 					depotFileName += "@Latest";
-					index = depotFileName.IndexOf('@');
+					index = depotFileName.IndexOf('@', StringComparison.Ordinal);
 				}
 
 				string cl = depotFileName.Substring(index + 1);
 				string fileName = depotFileName.Substring(0, index);
-				string tempFileName = string.Format("{0}@{1}{2}", Path.GetFileNameWithoutExtension(fileName), cl, Path.GetExtension(fileName));
+				string tempFileName = String.Format("{0}@{1}{2}", Path.GetFileNameWithoutExtension(fileName), cl, Path.GetExtension(fileName));
 
 				tempFileName = Path.Combine(Path.GetTempPath(), tempFileName);
 				await connection.PrintAsync(tempFileName, depotFileName, cancellationToken);
@@ -70,11 +65,8 @@ namespace UnrealGameSync
 				if (createNewConnection)
 				{
 					connection?.Dispose();
-					connection = null;
 				}
 			}
 		}
-
 	}
-
 }

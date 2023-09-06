@@ -78,7 +78,6 @@ namespace CrossCompiler
 		/** Enable a pass that converts floating point MUL+ADD pairs into FMAs to avoid re-association. */
 		bool bEnableFMAPass = false;
 
-
 		/** Disables scalar block layout for structured buffers. True for Vulkan mobile due to low coverage of 'VK_EXT_scalar_block_layout' extension. */
 		bool bDisableScalarBlockLayout = false;
 
@@ -88,16 +87,21 @@ namespace CrossCompiler
 		/** Enables re-mapping of input/output attribute locations to include padding for arrays. */
 		bool bRemapAttributeLocations = false;
 
+		/** Decorate SV_Position implicitly as invariant. This can drastically reduce Z-fighting but also prevent certain optimizations. */
+		bool bSvPositionImplicitInvariant = true;
+
 		/** Preserve storage inputs used for OpenGL */
 		bool bPreserveStorageInput = false;
+        bool bForceStorageImageFormat = false;
 
 		enum class ETargetEnvironment
 		{
 			Vulkan_1_0,
 			Vulkan_1_1,
 			Vulkan_1_2,
+			Vulkan_1_3,
 		};
-		ETargetEnvironment TargetEnvironment = ETargetEnvironment::Vulkan_1_0;
+		ETargetEnvironment TargetEnvironment = ETargetEnvironment::Vulkan_1_1;
 
 		/** Shader model version of the input language. By default SM6.2. */
 		FHlslShaderModel ShaderModel = { 6, 2 };

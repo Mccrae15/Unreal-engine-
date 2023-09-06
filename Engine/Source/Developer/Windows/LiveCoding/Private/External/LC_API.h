@@ -2,6 +2,9 @@
 
 #pragma once
 
+// BEGIN EPIC MOD
+#include "stddef.h"
+// END EPIC MOD
 #include "LPP_API.h"
 
 
@@ -43,6 +46,7 @@ LPP_DLL_API(void) LppSetBuildArguments(const wchar_t* arguments);
 LPP_DLL_API(void*) LppEnableLazyLoadedModule(const wchar_t* nameOfExeOrDll);
 LPP_DLL_API(void) LppSetReinstancingFlow(bool enable);
 LPP_DLL_API(void) LppDisableCompileFinishNotification();
+LPP_DLL_API(void*) LppEnableModulesEx(const wchar_t* moduleNames[], unsigned int moduleCount, const wchar_t* lazyLoadModuleNames[], unsigned int lazyLoadModuleCount, const uintptr_t* reservedPages, unsigned int reservedPagesCount);
 // END EPIC MOD
 LPP_DLL_API(void) LppApplySettingBool(const char* settingName, int value);
 LPP_DLL_API(void) LppApplySettingInt(const char* settingName, int value);

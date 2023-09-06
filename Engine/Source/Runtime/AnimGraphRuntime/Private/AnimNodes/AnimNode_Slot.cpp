@@ -3,6 +3,7 @@
 #include "AnimNodes/AnimNode_Slot.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimMontage.h"
+#include "Animation/AnimStats.h"
 #include "Animation/AnimTrace.h"
 #include "Animation/AnimNode_Inertialization.h"
 
@@ -48,7 +49,15 @@ void FAnimNode_Slot::Update_AnyThread(const FAnimationUpdateContext& Context)
 		UE::Anim::IInertializationRequester* InertializationRequester = Context.GetMessage<UE::Anim::IInertializationRequester>();
 		if (InertializationRequester)
 		{
-			InertializationRequester->RequestInertialization(InertializationRequest.Get<0>(), InertializationRequest.Get<1>());
+			FInertializationRequest Request;
+			Request.Duration = InertializationRequest.Get<0>();
+			Request.BlendProfile = InertializationRequest.Get<1>();
+#if ANIM_TRACE_ENABLED
+			Request.NodeId = Context.GetCurrentNodeId();
+			Request.AnimInstance = Context.AnimInstanceProxy->GetAnimInstanceObject();
+#endif
+
+			InertializationRequester->RequestInertialization(Request);
 		}
 		else
 		{
@@ -76,6 +85,8 @@ void FAnimNode_Slot::Update_AnyThread(const FAnimationUpdateContext& Context)
 void FAnimNode_Slot::Evaluate_AnyThread(FPoseContext & Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(Slot, !IsInGameThread());
+
 	// If not playing a montage, just pass through
 	if (WeightData.SlotNodeWeight <= ZERO_ANIMWEIGHT_THRESH)
 	{

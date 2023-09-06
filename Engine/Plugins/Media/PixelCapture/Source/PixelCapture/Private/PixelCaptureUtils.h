@@ -7,6 +7,7 @@
 #include "RHI.h"
 #include "ScreenPass.h"
 #include "ScreenRendering.h"
+#include "RenderGraphUtils.h"
 
 /*
     * Copy from one texture to another.
@@ -54,7 +55,7 @@ inline void CopyTexture(FRHICommandList& RHICmdList, FTextureRHIRef SourceTextur
             GraphicsPSOInit.PrimitiveType = PT_TriangleList;
             SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-            PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
+			SetShaderParametersLegacyPS(RHICmdList, PixelShader, TStaticSamplerState<SF_Point>::GetRHI(), SourceTexture);
 
             FIntPoint TargetBufferSize(DestTexture->GetDesc().Extent.X, DestTexture->GetDesc().Extent.Y);
             RendererModule->DrawRectangle(RHICmdList, 0, 0, // Dest X, Y
@@ -130,39 +131,21 @@ inline void CopyTextureRDG(FRHICommandListImmediate& RHICmdList, FTextureRHIRef 
 		// Rectangle area to use from source
 		const FIntRect ViewRect(FIntPoint(0, 0), InputTexture->Desc.Extent);
 
-		//Dummy ViewFamily/ViewInfo created to use built in Draw Screen/Texture Pass
-		FSceneViewFamily ViewFamily(FSceneViewFamily::ConstructionValues(nullptr, nullptr, FEngineShowFlags(ESFIM_Game))
-			.SetTime(FGameTime())
-			.SetGammaCorrection(1.0f));
-		FSceneViewInitOptions ViewInitOptions;
-		ViewInitOptions.ViewFamily = &ViewFamily;
-		ViewInitOptions.SetViewRectangle(ViewRect);
-		ViewInitOptions.ViewOrigin = FVector::ZeroVector;
-		ViewInitOptions.ViewRotationMatrix = FMatrix::Identity;
-		ViewInitOptions.ProjectionMatrix = FMatrix::Identity;
-		TSharedPtr<FViewInfo> View = MakeShared<FViewInfo>(ViewInitOptions);
-
 		TShaderMapRef<FModifyAlphaSwizzleRgbaPS> PixelShader(GlobalShaderMap, PermutationVector);
 		FModifyAlphaSwizzleRgbaPS::FParameters* PixelShaderParameters = PixelShader->AllocateAndSetParameters(GraphBuilder, InputTexture, OutputTexture);
 		
 		FRHIBlendState* BlendState = FScreenPassPipelineState::FDefaultBlendState::GetRHI();
 		FRHIDepthStencilState* DepthStencilState = FScreenPassPipelineState::FDefaultDepthStencilState::GetRHI();
 
-		ClearUnusedGraphResources(PixelShader, PixelShaderParameters);
-
-		const FScreenPassPipelineState PipelineState(VertexShader, PixelShader, BlendState, DepthStencilState);
-
-		GraphBuilder.AddPass(
+		AddDrawScreenPass(
+			GraphBuilder,
 			RDG_EVENT_NAME("PixelCapturerSwizzle"),
-			PixelShaderParameters,
-			ERDGPassFlags::Raster,
-			[View, OutputViewport, InputViewport, PipelineState, PixelShader, PixelShaderParameters](FRHICommandList& RHICmdList)
-		{
-			DrawScreenPass(RHICmdList, *View, OutputViewport, InputViewport, PipelineState, EScreenPassDrawFlags::None, [&](FRHICommandList&)
-			{
-				SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PixelShaderParameters);
-			});
-		});
+			FScreenPassViewInfo(),
+			OutputViewport,
+			InputViewport,
+			VertexShader,
+			PixelShader,
+			PixelShaderParameters);
 	}
 	GraphBuilder.Execute();
 }

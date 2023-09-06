@@ -3,11 +3,16 @@
 #pragma once
 
 #include "Async/TaskGraphInterfaces.h"
-#include "TraceServices/Model/AnalysisSession.h"
+#include "HAL/Platform.h"
+#include "Templates/Function.h"
 #include "Templates/UnrealTemplate.h"
+#include "TraceServices/Model/AnalysisSession.h"
+#include "UObject/NameTypes.h"
+
 #include <atomic>
 
-namespace TraceServices {
+namespace TraceServices
+{
 
 ////////////////////////////////////////////////////////////////////////////////
 /**
@@ -16,7 +21,7 @@ namespace TraceServices {
   */
 enum class ESymbolQueryResult : uint8
 {
-	Pending,		// Symbol is pending resolution
+	Pending,	// Symbol is pending resolution
 	OK,			// Symbol has been correctly resolved
 	NotLoaded,	// Module debug data could not be loaded or found
 	Mismatch,	// Module debug data could not be loaded because debug data did not match traced binary
@@ -154,7 +159,9 @@ struct FModule
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-class IModuleProvider : public IEditableProvider
+class IModuleProvider
+	: public IProvider
+	, public IEditableProvider
 {
 public:
 	struct FStats

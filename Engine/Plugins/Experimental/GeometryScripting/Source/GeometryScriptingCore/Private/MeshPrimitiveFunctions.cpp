@@ -29,6 +29,35 @@ using namespace UE::Geometry;
 #define LOCTEXT_NAMESPACE "UGeometryScriptLibrary_MeshPrimitiveFunctions"
 
 
+static void ApplyPrimitiveOptionsToMesh(FDynamicMesh3& Mesh, const FTransform& Transform, FGeometryScriptPrimitiveOptions PrimitiveOptions, FVector3d PreTranslate = FVector3d::Zero())
+{
+	if (PreTranslate.SquaredLength() > 0)
+	{
+		MeshTransforms::Translate(Mesh, PreTranslate);
+	}
+
+	MeshTransforms::ApplyTransform(Mesh, (FTransformSRT3d)Transform, true);
+	if (PrimitiveOptions.PolygroupMode == EGeometryScriptPrimitivePolygroupMode::SingleGroup)
+	{
+		for (int32 tid : Mesh.TriangleIndicesItr())
+		{
+			Mesh.SetTriangleGroup(tid, 0);
+		}
+	}
+	if (PrimitiveOptions.bFlipOrientation)
+	{
+		Mesh.ReverseOrientation(true);
+		if (Mesh.HasAttributes())
+		{
+			FDynamicMeshNormalOverlay* Normals = Mesh.Attributes()->PrimaryNormals();
+			for (int elemid : Normals->ElementIndicesItr())
+			{
+				Normals->SetElement(elemid, -Normals->GetElement(elemid));
+			}
+		}
+	}
+}
+
 static void AppendPrimitive(
 	UDynamicMesh* TargetMesh, 
 	FMeshShapeGenerator* Generator, 
@@ -36,53 +65,63 @@ static void AppendPrimitive(
 	FGeometryScriptPrimitiveOptions PrimitiveOptions,
 	FVector3d PreTranslate = FVector3d::Zero())
 {
-	auto ApplyOptionsToMesh = [&Transform, &PrimitiveOptions, PreTranslate](FDynamicMesh3& Mesh)
-	{
-		if (PreTranslate.SquaredLength() > 0)
-		{
-			MeshTransforms::Translate(Mesh, PreTranslate);
-		}
-
-		MeshTransforms::ApplyTransform(Mesh, (FTransformSRT3d)Transform, true);
-		if (PrimitiveOptions.PolygroupMode == EGeometryScriptPrimitivePolygroupMode::SingleGroup)
-		{
-			for (int32 tid : Mesh.TriangleIndicesItr())
-			{
-				Mesh.SetTriangleGroup(tid, 0);
-			}
-		}
-		if (PrimitiveOptions.bFlipOrientation)
-		{
-			Mesh.ReverseOrientation(true);
-			if (Mesh.HasAttributes())
-			{
-				FDynamicMeshNormalOverlay* Normals = Mesh.Attributes()->PrimaryNormals();
-				for (int elemid : Normals->ElementIndicesItr())
-				{
-					Normals->SetElement(elemid, -Normals->GetElement(elemid));
-				}
-			}
-		}
-	};
-
 	if (TargetMesh->IsEmpty())
 	{
 		TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
 		{
 			EditMesh.Copy(Generator);
-			ApplyOptionsToMesh(EditMesh);
+			ApplyPrimitiveOptionsToMesh(EditMesh, Transform, PrimitiveOptions, PreTranslate);
 		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 	}
 	else
 	{
 		FDynamicMesh3 TempMesh(Generator);
-		ApplyOptionsToMesh(TempMesh);
+		ApplyPrimitiveOptionsToMesh(TempMesh, Transform, PrimitiveOptions, PreTranslate);
 		TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
 		{
 			FMeshIndexMappings TmpMappings;
 			FDynamicMeshEditor Editor(&EditMesh);
 			Editor.AppendMesh(&TempMesh, TmpMappings);
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+	}
+}
 
+static void AppendPrimitiveWithVertexIndexMap(
+	UDynamicMesh* TargetMesh,
+	TArray<int32>& OutVertexIndexMap,
+	FMeshShapeGenerator* Generator,
+	FTransform Transform,
+	FGeometryScriptPrimitiveOptions PrimitiveOptions,
+	FVector3d PreTranslate = FVector3d::Zero())
+{
+	if (TargetMesh->IsEmpty())
+	{
+		TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+		{
+			EditMesh.Copy(Generator);
+			ApplyPrimitiveOptionsToMesh(EditMesh, Transform, PrimitiveOptions, PreTranslate);
+			// For a clean/empty mesh, the vertex map is just an identity map
+			OutVertexIndexMap.SetNum(EditMesh.VertexCount());
+			for (int32 Idx = 0; Idx < OutVertexIndexMap.Num(); ++Idx)
+			{
+				OutVertexIndexMap[Idx] = Idx;
+			}
+		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
+	}
+	else
+	{
+		FDynamicMesh3 TempMesh(Generator);
+		ApplyPrimitiveOptionsToMesh(TempMesh, Transform, PrimitiveOptions, PreTranslate);
+		TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+		{
+			FMeshIndexMappings TmpMappings;
+			FDynamicMeshEditor Editor(&EditMesh);
+			Editor.AppendMesh(&TempMesh, TmpMappings);
+			OutVertexIndexMap.Init(INDEX_NONE, Generator->Vertices.Num());
+			for (TPair<int32, int32> IndexToID : TmpMappings.GetVertexMap().GetForwardMap())
+			{
+				OutVertexIndexMap[IndexToID.Key] = IndexToID.Value;
+			}
 		}, EDynamicMeshChangeType::GeneralEdit, EDynamicMeshAttributeChangeFlags::Unknown, false);
 	}
 }
@@ -181,6 +220,36 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBox(
 
 	FVector3d OriginShift = (Origin == EGeometryScriptPrimitiveOriginMode::Center) ? FVector3d(0, 0, -DimensionZ/2) : FVector3d::Zero();
 	AppendPrimitive(TargetMesh, &GridBoxGenerator, Transform, PrimitiveOptions, OriginShift);
+
+	return TargetMesh;
+}
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendBoundingBox(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptPrimitiveOptions PrimitiveOptions,
+	FTransform Transform,
+	FBox Box,
+	int32 StepsX,
+	int32 StepsY,
+	int32 StepsZ,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendBoundingBox", "AppendBoundingBox: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	// todo: if Steps X/Y/Z are zero, can use trivial box generator
+
+	FGridBoxMeshGenerator GridBoxGenerator;
+	GridBoxGenerator.Box = UE::Geometry::FOrientedBox3d( UE::Geometry::FAxisAlignedBox3d(Box) );
+	GridBoxGenerator.EdgeVertices = FIndex3i(FMath::Max(0, StepsX), FMath::Max(0, StepsY), FMath::Max(0, StepsZ));
+	GridBoxGenerator.bPolygroupPerQuad = (PrimitiveOptions.PolygroupMode == EGeometryScriptPrimitivePolygroupMode::PerQuad);
+	GridBoxGenerator.Generate();
+
+	AppendPrimitive(TargetMesh, &GridBoxGenerator, Transform, PrimitiveOptions, FVector3d::Zero());
 
 	return TargetMesh;
 }
@@ -928,7 +997,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendDisc(
 	UseGenerator->Radius = FMath::Max(FMathf::ZeroTolerance, Radius);
 	UseGenerator->Normal = FVector3f::UnitZ();
 	UseGenerator->AngleSamples = FMath::Max(3, AngleSteps);
-	UseGenerator->RadialSamples = FMath::Max(3, SpokeSteps);
+	UseGenerator->RadialSamples = FMath::Max(1, SpokeSteps);
 	UseGenerator->StartAngle = StartAngle;
 	UseGenerator->EndAngle = EndAngle;
 	UseGenerator->bSinglePolygroup = (PrimitiveOptions.PolygroupMode != EGeometryScriptPrimitivePolygroupMode::PerQuad);
@@ -1088,7 +1157,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendVoronoiDiagra
 {
 	if (TargetMesh == nullptr)
 	{
-		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendVoronoiDiagram2D_NullTarget", "AppendVoronoiDiagram3d: TargetMesh is Null"));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendVoronoiDiagram2D_NullTarget", "AppendVoronoiDiagram2D: TargetMesh is Null"));
 		return TargetMesh;
 	}
 
@@ -1103,7 +1172,7 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendVoronoiDiagra
 
 	if (!bTriSuccess)
 	{
-		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendVoronoiDiagram2D_GenFailed", "AppendVoronoiDiagram2D: Voronoi diagram generation failed"));
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::OperationFailed, LOCTEXT("PrimitiveFunctions_AppendVoronoiDiagram2D_GenFailed", "AppendVoronoiDiagram2D: Voronoi diagram generation failed"));
 		return TargetMesh;
 	}
 
@@ -1165,6 +1234,171 @@ UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendVoronoiDiagra
 	return TargetMesh;
 }
 
+
+
+UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendDelaunayTriangulation2D(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptPrimitiveOptions PrimitiveOptions,
+	FTransform Transform,
+	const TArray<FVector2D>& VertexPositions,
+	const TArray<FIntPoint>& ConstrainedEdges,
+	FGeometryScriptConstrainedDelaunayTriangulationOptions TriangulationOptions,
+	TArray<int32>& PositionsToVertexIDs,
+	bool& bHasDuplicateVertices,
+	UGeometryScriptDebug* Debug)
+{
+	bHasDuplicateVertices = false;
+	PositionsToVertexIDs.Reset();
+
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendDelaunayTriangulation2D_NullTarget", "AppendDelaunayTriangulation2D: TargetMesh is Null"));
+		return TargetMesh;
+	}
+
+	if (VertexPositions.Num() < 3)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendDelaunayTriangulation2D_TooFewVertices", "AppendDelaunayTriangulation2D: VertexPositions array requires at least 3 positions"));
+		return TargetMesh;
+	}
+
+	UE::Geometry::FDelaunay2 Delaunay;
+	TArray<FIndex2i> ConvertedEdges;
+	if (!ConstrainedEdges.IsEmpty())
+	{
+		ConvertedEdges.Reserve(ConstrainedEdges.Num());
+		for (FIntPoint Pt : ConstrainedEdges)
+		{
+			if (VertexPositions.IsValidIndex(Pt.X) && VertexPositions.IsValidIndex(Pt.Y))
+			{
+				ConvertedEdges.Emplace(Pt.X, Pt.Y);
+			}
+			else if (TriangulationOptions.bValidateEdgesInResult)
+			{
+				UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendDelaunayTriangulation2D_InvalidEdges", "AppendDelaunayTriangulation2D: Constrained Edges must only contain valid indices into Vertex Positions"));
+				return TargetMesh;
+			}
+		}
+		Delaunay.bValidateEdges = TriangulationOptions.bValidateEdgesInResult;
+		Delaunay.bAutomaticallyFixEdgesToDuplicateVertices = true;
+	}
+	else
+	{
+		Delaunay.bAutomaticallyFixEdgesToDuplicateVertices = TriangulationOptions.bRemoveDuplicateVertices;
+	}
+	bool bTriSuccess = Delaunay.Triangulate(VertexPositions, ConvertedEdges);
+
+	if (!bTriSuccess)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::OperationFailed, LOCTEXT("PrimitiveFunctions_AppendDelaunayTriangulation2D_GenFailed", "AppendDelaunayTriangulation2D: Delaunay triangulation failed"));
+		return TargetMesh;
+	}
+	
+	bHasDuplicateVertices = Delaunay.HasDuplicates();
+
+	FFlatTriangulationMeshGenerator TriangulationMeshGen;
+	TriangulationMeshGen.bReverseOrientation = true; // because FDelaunay2 generates triangles with reversed orientation vs what we want
+	TriangulationMeshGen.Vertices2D = VertexPositions;
+	if (ConstrainedEdges.IsEmpty() || TriangulationOptions.ConstrainedEdgesFillMode == EGeometryScriptPolygonFillMode::All)
+	{
+		TriangulationMeshGen.Triangles2D = Delaunay.GetTriangles();
+	}
+	else
+	{
+		// Convert FillMode enum to the GeometryCore library equivalent.  Note the "All" case is handled above.
+		EGeometryScriptPolygonFillMode GeometryScriptFillMode = TriangulationOptions.ConstrainedEdgesFillMode;
+		FDelaunay2::EFillMode GeometryCoreFillMode =
+			GeometryScriptFillMode == EGeometryScriptPolygonFillMode::Solid ? FDelaunay2::EFillMode::Solid :
+			GeometryScriptFillMode == EGeometryScriptPolygonFillMode::PositiveWinding ? FDelaunay2::EFillMode::PositiveWinding :
+			GeometryScriptFillMode == EGeometryScriptPolygonFillMode::NonZeroWinding ? FDelaunay2::EFillMode::NonZeroWinding :
+			GeometryScriptFillMode == EGeometryScriptPolygonFillMode::NegativeWinding ? FDelaunay2::EFillMode::NegativeWinding :
+			FDelaunay2::EFillMode::OddWinding;
+		TriangulationMeshGen.Triangles2D = Delaunay.GetFilledTriangles(ConvertedEdges, GeometryCoreFillMode);
+	}
+
+	if (TriangulationMeshGen.Vertices2D.Num() > 2 && TriangulationMeshGen.Triangles2D.Num() > 0)
+	{
+		AppendPrimitiveWithVertexIndexMap(TargetMesh, PositionsToVertexIDs, &TriangulationMeshGen.Generate(), Transform, PrimitiveOptions);
+		
+		// If requested, remove duplicate vertices from the final mesh
+		if (TriangulationOptions.bRemoveDuplicateVertices && bHasDuplicateVertices)
+		{
+			TargetMesh->EditMesh([&](FDynamicMesh3& EditMesh)
+			{
+				for (int32 Idx = 0; Idx < PositionsToVertexIDs.Num(); ++Idx)
+				{
+					int32 RemapIdx = Delaunay.RemapIfDuplicate(Idx);
+					if (Idx != RemapIdx)
+					{
+						int32 DupID = PositionsToVertexIDs[Idx];
+						checkSlow(!EditMesh.IsReferencedVertex(DupID));
+						EditMesh.RemoveVertex(DupID);
+						PositionsToVertexIDs[Idx] = INDEX_NONE;
+					}
+				}
+			});
+		}
+	}
+
+	return TargetMesh;
+}
+
+UDynamicMesh* UGeometryScriptLibrary_MeshPrimitiveFunctions::AppendPolygonListTriangulation(
+	UDynamicMesh* TargetMesh,
+	FGeometryScriptPrimitiveOptions PrimitiveOptions,
+	FTransform Transform,
+	FGeometryScriptGeneralPolygonList PolygonList,
+	FGeometryScriptPolygonsTriangulationOptions TriangulationOptions,
+	bool& bTriangulationError,
+	UGeometryScriptDebug* Debug)
+{
+	if (TargetMesh == nullptr)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendPolygonListTriangulation_NullTarget", "AppendDelaunayTriangulation2D: TargetMesh is Null"));
+		return TargetMesh;
+	}
+	if (!PolygonList.Polygons)
+	{
+		UE::Geometry::AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("PrimitiveFunctions_AppendPolygonListTriangulation_NullPolygonList", "AppendPolygonListTriangulation: Polygon List is not set"));
+		return TargetMesh;
+	}
+
+
+	FFlatTriangulationMeshGenerator TriangulationMeshGen;
+	TriangulationMeshGen.bReverseOrientation = true; // because FDelaunay2 generates triangles with reversed orientation vs what we want
+
+	// Triangulate and append each polygon separately
+	bTriangulationError = false;
+	for (const UE::Geometry::FGeneralPolygon2d& Polygon : *PolygonList.Polygons)
+	{
+		UE::Geometry::FDelaunay2 Delaunay;
+		Delaunay.bAutomaticallyFixEdgesToDuplicateVertices = true;
+		TArray<FIndex3i> Triangles;
+		TArray<FVector2d> Vertices;
+		const bool bSuccess = Delaunay.Triangulate(Polygon, &Triangles, &Vertices, true);
+		if (!bSuccess)
+		{
+			bTriangulationError = true;
+			if (!TriangulationOptions.bStillAppendOnTriangulationError)
+			{
+				return TargetMesh;
+			}
+		}
+		int32 VertStart = TriangulationMeshGen.Vertices2D.Num();
+		TriangulationMeshGen.Vertices2D.Append(Vertices);
+		TriangulationMeshGen.Triangles2D.Reserve(TriangulationMeshGen.Triangles2D.Num() + Triangles.Num());
+		for (const FIndex3i& Tri : Triangles)
+		{
+			TriangulationMeshGen.Triangles2D.Emplace(Tri.A + VertStart, Tri.B + VertStart, Tri.C + VertStart);
+		}
+	}
+	if (TriangulationMeshGen.Vertices2D.Num() > 2 && TriangulationMeshGen.Triangles2D.Num() > 0)
+	{
+		AppendPrimitive(TargetMesh, &TriangulationMeshGen.Generate(), Transform, PrimitiveOptions);
+	}
+
+	return TargetMesh;
+}
 
 
 #undef LOCTEXT_NAMESPACE

@@ -14,7 +14,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
 #include "K2Node_VariableGet.h"
-#include "ControlRigBlueprintUtils.h"
+#include "RigVMBlueprintUtils.h"
 #include "ControlRigHierarchyCommands.h"
 #include "ControlRigBlueprint.h"
 #include "Graph/ControlRigGraph.h"
@@ -29,7 +29,6 @@
 #include "HelperUtil.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "ControlRig.h"
-#include "ControlRigEditorStyle.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "HAL/PlatformTime.h"
 #include "Dialogs/Dialogs.h"
@@ -42,7 +41,6 @@
 #include "Editor/ControlRigContextMenuContext.h"
 #include "Editor/SRigSpacePickerWidget.h"
 #include "Settings/ControlRigSettings.h"
-#include "Widgets/Views/SListPanel.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Styling/AppStyle.h"
@@ -51,6 +49,7 @@
 #include "Algo/MinElement.h"
 #include "Algo/MaxElement.h"
 #include "RigVMFunctions/Math/RigVMMathLibrary.h"
+#include "Preferences/PersonaOptions.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SRigHierarchy)
 
@@ -90,6 +89,9 @@ FString FRigElementHierarchyDragDropOp::GetJoinedElementNames() const
 }
 
 ///////////////////////////////////////////////////////////
+
+const FName SRigHierarchy::ContextMenuName = TEXT("ControlRigEditor.RigHierarchy.ContextMenu");
+const FName SRigHierarchy::DragDropMenuName = TEXT("ControlRigEditor.RigHierarchy.DragDropMenu");
 
 SRigHierarchy::~SRigHierarchy()
 {
@@ -265,14 +267,14 @@ void SRigHierarchy::Construct(const FArguments& InArgs, TSharedRef<FControlRigEd
 		});
 		ControlRigEditor.Pin()->OnGetViewportContextMenu().BindSP(this, &SRigHierarchy::GetContextMenu);
 		ControlRigEditor.Pin()->OnViewportContextMenuCommands().BindSP(this, &SRigHierarchy::GetContextMenuCommands);
-		ControlRigEditor.Pin()->OnControlRigEditorClosed().AddSP(this, &SRigHierarchy::OnEditorClose);
+		ControlRigEditor.Pin()->OnEditorClosed().AddSP(this, &SRigHierarchy::OnEditorClose);
 	}
 	
 	CreateContextMenu();
 	CreateDragDropMenu();
 }
 
-void SRigHierarchy::OnEditorClose(const FControlRigEditor* InEditor, UControlRigBlueprint* InBlueprint)
+void SRigHierarchy::OnEditorClose(const FRigVMEditor* InEditor, URigVMBlueprint* InBlueprint)
 {
 	if (InEditor)
 	{
@@ -282,10 +284,11 @@ void SRigHierarchy::OnEditorClose(const FControlRigEditor* InEditor, UControlRig
 		Editor->OnViewportContextMenuCommands().Unbind();
 	}
 
-	if (InBlueprint)
+	if (UControlRigBlueprint* BP = Cast<UControlRigBlueprint>(InBlueprint))
 	{
-		InBlueprint->Hierarchy->OnModified().RemoveAll(this);
+		BP->Hierarchy->OnModified().RemoveAll(this);
 		InBlueprint->OnRefreshEditor().RemoveAll(this);
+		InBlueprint->OnSetObjectBeingDebugged().RemoveAll(this);
 	}
 	
 	ControlRigEditor.Reset();
@@ -523,7 +526,7 @@ void SRigHierarchy::RefreshTreeView(bool bRebuildContent)
 	bool* SuspensionFlagPtr = &bDummySuspensionFlag;
 	if (ControlRigEditor.IsValid())
 	{
-		SuspensionFlagPtr = &ControlRigEditor.Pin()->bSuspendDetailsPanelRefresh;
+		SuspensionFlagPtr = &ControlRigEditor.Pin()->GetSuspendDetailsPanelRefreshFlag();
 	}
 	TGuardValue<bool> SuspendDetailsPanelRefreshGuard(*SuspensionFlagPtr, true);
 	TGuardValue<bool> GuardRigHierarchyChanges(bIsChangingRigHierarchy, true);
@@ -571,7 +574,7 @@ void SRigHierarchy::OnSelectionChanged(TSharedPtr<FRigTreeElement> Selection, ES
 		bool* SuspensionFlagPtr = &bDummySuspensionFlag;
 		if (ControlRigEditor.IsValid())
 		{
-			SuspensionFlagPtr = &ControlRigEditor.Pin()->bSuspendDetailsPanelRefresh;
+			SuspensionFlagPtr = &ControlRigEditor.Pin()->GetSuspendDetailsPanelRefreshFlag();
 		}
 
 		TGuardValue<bool> SuspendDetailsPanelRefreshGuard(*SuspensionFlagPtr, true);
@@ -819,7 +822,7 @@ void SRigHierarchy::OnHierarchyModified_AnyThread(ERigHierarchyNotification InNo
 	}
 }
 
-void SRigHierarchy::HandleRefreshEditorFromBlueprint(UControlRigBlueprint* InBlueprint)
+void SRigHierarchy::HandleRefreshEditorFromBlueprint(URigVMBlueprint* InBlueprint)
 {
 	if (bIsChangingRigHierarchy)
 	{
@@ -851,8 +854,11 @@ void SRigHierarchy::HandleSetObjectBeingDebugged(UObject* InObject)
 	if(UControlRig* ControlRig = Cast<UControlRig>(InObject))
 	{
 		ControlRigBeingDebuggedPtr = ControlRig;
-		ControlRig->GetHierarchy()->OnModified().RemoveAll(this);
-		ControlRig->GetHierarchy()->OnModified().AddSP(this, &SRigHierarchy::OnHierarchyModified_AnyThread);
+		if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+		{
+			Hierarchy->OnModified().RemoveAll(this);
+			Hierarchy->OnModified().AddSP(this, &SRigHierarchy::OnHierarchyModified_AnyThread);
+		}
 		ControlRig->OnPreConstructionForUI_AnyThread().RemoveAll(this);
 		ControlRig->OnPreConstructionForUI_AnyThread().AddSP(this, &SRigHierarchy::OnPreConstruction_AnyThread);
 		ControlRig->OnPostConstruction_AnyThread().RemoveAll(this);
@@ -1030,8 +1036,15 @@ void SRigHierarchy::OnSetExpansionRecursive(TSharedPtr<FRigTreeElement> InItem, 
 	TreeView->SetExpansionRecursive(InItem, false, bShouldBeExpanded);
 }
 
-void SRigHierarchy::CreateDragDropMenu() const
+void SRigHierarchy::CreateDragDropMenu()
 {
+	static bool bCreatedMenu = false;
+	if(bCreatedMenu)
+	{
+		return;
+	}
+	bCreatedMenu = true;
+
 	const FName MenuName = DragDropMenuName;
 	UToolMenus* ToolMenus = UToolMenus::Get();
 
@@ -1040,10 +1053,8 @@ void SRigHierarchy::CreateDragDropMenu() const
 		return;
 	}
 
-	if (!ToolMenus->IsMenuRegistered(MenuName))
+	if (UToolMenu* Menu = ToolMenus->ExtendMenu(MenuName))
 	{
-		UToolMenu* Menu = ToolMenus->RegisterMenu(MenuName);
-
 		Menu->AddDynamicSection(NAME_None, FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
 			{
 				UToolMenus* ToolMenus = UToolMenus::Get();
@@ -1115,8 +1126,15 @@ UToolMenu* SRigHierarchy::GetDragDropMenu(const TArray<FRigElementKey>& DraggedK
 	return Menu;
 }
 
-void SRigHierarchy::CreateContextMenu() const
+void SRigHierarchy::CreateContextMenu()
 {
+	static bool bCreatedMenu = false;
+	if(bCreatedMenu)
+	{
+		return;
+	}
+	bCreatedMenu = true;
+	
 	const FName MenuName = ContextMenuName;
 
 	UToolMenus* ToolMenus = UToolMenus::Get();
@@ -1125,12 +1143,10 @@ void SRigHierarchy::CreateContextMenu() const
 	{
 		return;
 	}
-	
-	if (!ToolMenus->IsMenuRegistered(MenuName))
+
+	if (UToolMenu* Menu = ToolMenus->ExtendMenu(MenuName))
 	{
-		UToolMenu* Menu = ToolMenus->RegisterMenu(MenuName);
-		
-		Menu->AddDynamicSection(NAME_None, FNewToolMenuDelegate::CreateLambda([this](UToolMenu* InMenu)
+		Menu->AddDynamicSection(NAME_None, FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
 			{
 				UControlRigContextMenuContext* MainContext = InMenu->FindContext<UControlRigContextMenuContext>();
 				
@@ -1168,30 +1184,35 @@ void SRigHierarchy::CreateContextMenu() const
 					ElementsSection.AddMenuEntry(Commands.RenameItem);
 					ElementsSection.AddMenuEntry(Commands.MirrorItem);
 
-					if(RigHierarchyPanel->IsProceduralElementSelected() && ControlRigBlueprint.IsValid())
+					if(RigHierarchyPanel->IsProceduralElementSelected() && RigHierarchyPanel->ControlRigBlueprint.IsValid())
 					{
 						ElementsSection.AddMenuEntry(
 							"SelectSpawnerNode",
 							LOCTEXT("SelectSpawnerNode", "Select Spawner Node"),
 							LOCTEXT("SelectSpawnerNode_Tooltip", "Selects the node that spawn / added this element."),
 							FSlateIcon(),
-							FUIAction(FExecuteAction::CreateLambda([this]() {
-								const TArray<const FRigBaseElement*> Elements = GetHierarchy()->GetSelectedElements();
+							FUIAction(FExecuteAction::CreateLambda([RigHierarchyPanel]() {
+								if(!RigHierarchyPanel->ControlRigBlueprint.IsValid())
+								{
+									return;
+								}
+								const UControlRigBlueprint* CurrentControlRigBlueprint = RigHierarchyPanel->ControlRigBlueprint.Get();
+								const TArray<const FRigBaseElement*> Elements = RigHierarchyPanel->GetHierarchy()->GetSelectedElements();
 								for(const FRigBaseElement* Element : Elements)
 								{
 									if(Element->IsProcedural())
 									{
 										const int32 InstructionIndex = Element->GetCreatedAtInstructionIndex();
-										if(UControlRig* ControlRig = Cast<UControlRig>(ControlRigBlueprint->GetObjectBeingDebugged()))
+										if(const UControlRig* ControlRig = Cast<UControlRig>(CurrentControlRigBlueprint->GetObjectBeingDebugged()))
 										{
 											if(ControlRig->VM)
 											{
 												if(URigVMNode* Node = Cast<URigVMNode>(ControlRig->VM->GetByteCode().GetSubjectForInstruction(InstructionIndex)))
 												{
-													if(URigVMController* Controller = ControlRigBlueprint->GetController(Node->GetGraph()))
+													if(URigVMController* Controller = CurrentControlRigBlueprint->GetController(Node->GetGraph()))
 													{
 														Controller->SelectNode(Node);
-														Controller->RequestJumpToHyperlinkDelegate.ExecuteIfBound(Node);
+														(void)Controller->RequestJumpToHyperlinkDelegate.ExecuteIfBound(Node);
 													}
 												}
 											}
@@ -1272,6 +1293,11 @@ void SRigHierarchy::CreateContextMenu() const
 						LOCTEXT("RefreshSubMenu_ToolTip", "Refresh the existing initial transform from the selected mesh. This only updates if the node is found."),
 						FNewMenuDelegate::CreateSP(RigHierarchyPanel, &SRigHierarchy::CreateRefreshMenu)
 					);	
+
+					AssetsSection.AddSubMenu(TEXT("ResetCurves"), LOCTEXT("ResetCurvesSubMenu", "Reset Curves"),
+						LOCTEXT("ResetCurvesSubMenu_ToolTip", "Reset all curves in this rig asset to the selected mesh, Useful when if you add more morphs to the mesh but control rig does not update."),
+						FNewMenuDelegate::CreateSP(RigHierarchyPanel, &SRigHierarchy::CreateResetCurvesMenu)
+					);				
 				}
 			})
 		);
@@ -1327,14 +1353,76 @@ void SRigHierarchy::CreateRefreshMenu(FMenuBuilder& MenuBuilder)
 		[
 			SNew(SObjectPropertyEntryBox)
 			.AllowedClass(USkeletalMesh::StaticClass())
-			.OnObjectChanged(this, &SRigHierarchy::RefreshHierarchy)
+			.OnObjectChanged(this, &SRigHierarchy::RefreshHierarchy, false)
 		]
 		,
 		FText()
 	);
 }
 
-void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
+void SRigHierarchy::CreateResetCurvesMenu(FMenuBuilder& MenuBuilder)
+{
+	MenuBuilder.AddWidget(
+		SNew(SVerticalBox)
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(3)
+		[
+			SNew(STextBlock)
+			.Font(FAppStyle::GetFontStyle("ControlRig.Hierarchy.Menu"))
+			.Text(LOCTEXT("ResetMesh_Title", "Select Mesh"))
+			.ToolTipText(LOCTEXT("ResetMesh_Tooltip", "Select mesh to reset curves to."))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(3)
+		[
+			SNew(SObjectPropertyEntryBox)
+			.AllowedClass(USkeletalMesh::StaticClass())
+			.OnObjectChanged(this, &SRigHierarchy::RefreshHierarchy, true)
+		]
+		,
+		FText()
+	);
+}
+
+void SRigHierarchy::UpdateMesh(USkeletalMesh* InMesh, const bool bImport) const
+{
+	if (!InMesh || !ControlRigBlueprint.IsValid() || !ControlRigEditor.IsValid())
+	{
+		return;
+	}
+
+	const bool bUpdateMesh = bImport ? ControlRigBlueprint->GetPreviewMesh() == nullptr : true;
+	if (!bUpdateMesh)
+	{
+		return;
+	}
+
+	const TSharedPtr<FControlRigEditor> EditorSharedPtr = ControlRigEditor.Pin();
+	EditorSharedPtr->GetPersonaToolkit()->SetPreviewMesh(InMesh, true);
+
+	UControlRigSkeletalMeshComponent* Component = Cast<UControlRigSkeletalMeshComponent>(EditorSharedPtr->GetPersonaToolkit()->GetPreviewMeshComponent());
+	if (bImport)
+	{
+		Component->InitAnim(true);
+	}
+
+	UAnimInstance* AnimInstance = Component->GetAnimInstance();
+	if (UControlRigLayerInstance* ControlRigLayerInstance = Cast<UControlRigLayerInstance>(AnimInstance))
+	{
+		EditorSharedPtr->PreviewInstance = Cast<UAnimPreviewInstance>(ControlRigLayerInstance->GetSourceAnimInstance());
+	}
+	else
+	{
+		EditorSharedPtr->PreviewInstance = Cast<UAnimPreviewInstance>(AnimInstance);
+	}
+
+	EditorSharedPtr->Compile();
+}
+
+void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData, bool bOnlyResetCurves)
 {
 	if (bIsChangingRigHierarchy)
 	{
@@ -1362,7 +1450,7 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 		// we do this to avoid the editmode / viewport shapes to refresh recursively,
 		// which can add an extreme slowdown depending on the number of bones (n^(n-1))
 		bool bSelectBones = true;
-		if (UControlRig* CurrentRig = StrongEditor->ControlRig)
+		if (UControlRig* CurrentRig = StrongEditor->GetControlRig())
 		{
 			bSelectBones = !CurrentRig->IsConstructionModeEnabled();
 		}
@@ -1371,9 +1459,21 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 
 		URigHierarchyController* Controller = Hierarchy->GetController(true);
 		check(Controller);
-		
-		Controller->ImportBones(Mesh->GetSkeleton(), NAME_None, true, true, bSelectBones, true, true);
-		Controller->ImportCurves(Mesh->GetSkeleton(), NAME_None, false, true, true);
+
+		if(bOnlyResetCurves)
+		{
+			TArray<FRigElementKey> CurveKeys = Hierarchy->GetAllKeys(false, ERigElementType::Curve);
+			for(const FRigElementKey& CurveKey : CurveKeys)
+			{
+				Controller->RemoveElement(CurveKey, true, true);
+			}			
+			Controller->ImportCurves(Mesh->GetSkeleton(), NAME_None, false, true, true);
+		}
+		else
+		{
+			Controller->ImportBones(Mesh->GetSkeleton(), NAME_None, true, true, bSelectBones, true, true);
+			Controller->ImportCurves(Mesh->GetSkeleton(), NAME_None, false, true, true);
+		}
 	}
 
 	ControlRigBlueprint->PropagateHierarchyFromBPToInstances();
@@ -1382,24 +1482,8 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 	RefreshTreeView();
 	FSlateApplication::Get().DismissAllMenus();
 
-	if (Mesh != nullptr)
-	{
-		StrongEditor->GetPersonaToolkit()->SetPreviewMesh(Mesh, true);
-		const UControlRigSkeletalMeshComponent* EditorSkelComp = Cast<UControlRigSkeletalMeshComponent>(StrongEditor->GetPersonaToolkit()->GetPreviewMeshComponent());
-		if (UControlRigLayerInstance* ControlRigLayerInstance = Cast<UControlRigLayerInstance>(EditorSkelComp->GetAnimInstance()))
-		{
-			StrongEditor->PreviewInstance = Cast<UAnimPreviewInstance>(ControlRigLayerInstance->GetSourceAnimInstance());
-		}
-		else
-		{
-			StrongEditor->PreviewInstance = Cast<UAnimPreviewInstance>(EditorSkelComp->GetAnimInstance());
-		}
-	}
-
-	if (ControlRigEditor.IsValid())
-	{
-		StrongEditor->Compile();
-	}
+	static constexpr bool bImport = false;
+	UpdateMesh(Mesh, bImport);
 }
 
 void SRigHierarchy::CreateImportMenu(FMenuBuilder& MenuBuilder)
@@ -1435,16 +1519,22 @@ void SRigHierarchy::ImportHierarchy(const FAssetData& InAssetData)
 	{
 		return;
 	}
+
+	USkeletalMesh* Mesh = Cast<USkeletalMesh>(InAssetData.GetAsset());
+	if (!Mesh)
+	{
+		return;
+	}
+	
 	TGuardValue<bool> GuardRigHierarchyChanges(bIsChangingRigHierarchy, true);
 
 	if (!ControlRigEditor.IsValid())
 	{
 		return;
 	}
-
-	URigHierarchy* Hierarchy = GetDefaultHierarchy();
-	USkeletalMesh* Mesh = Cast<USkeletalMesh>(InAssetData.GetAsset());
-	if (Mesh && Hierarchy)
+	
+	const TSharedPtr<FControlRigEditor> EditorSharedPtr = ControlRigEditor.Pin();
+	if (URigHierarchy* Hierarchy = GetDefaultHierarchy())
 	{
 		// filter out meshes that don't contain a skeleton
 		if(Mesh->GetSkeleton() == nullptr)
@@ -1464,6 +1554,8 @@ void SRigHierarchy::ImportHierarchy(const FAssetData& InAssetData)
 			return;
 		}
 		
+		EditorSharedPtr->ClearDetailObject();
+		
 		TGuardValue<bool> SuspendBlueprintNotifs(ControlRigBlueprint->bSuspendAllNotifications, true);
 
 		FScopedTransaction Transaction(LOCTEXT("HierarchyImport", "Import Hierarchy"));
@@ -1472,7 +1564,7 @@ void SRigHierarchy::ImportHierarchy(const FAssetData& InAssetData)
 		// we do this to avoid the editmode / viewport shapes to refresh recursively,
 		// which can add an extreme slowdown depending on the number of bones (n^(n-1))
 		bool bSelectBones = true;
-		if (UControlRig* CurrentRig = ControlRigEditor.Pin()->ControlRig)
+		if (const UControlRig* CurrentRig = EditorSharedPtr->GetControlRig())
 		{
 			bSelectBones = !CurrentRig->IsConstructionModeEnabled();
 		}
@@ -1480,36 +1572,26 @@ void SRigHierarchy::ImportHierarchy(const FAssetData& InAssetData)
 		URigHierarchyController* Controller = Hierarchy->GetController(true);
 		check(Controller);
 
-		TArray<FRigElementKey> ImportedBones = Controller->ImportBones(Mesh->GetSkeleton(), NAME_None, false, false, bSelectBones, true, true);
+		const TArray<FRigElementKey> ImportedBones = Controller->ImportBones(Mesh->GetSkeleton(), NAME_None, false, false, bSelectBones, true, true);
 		Controller->ImportCurves(Mesh->GetSkeleton(), NAME_None, false, true);
 
 		ControlRigBlueprint->SourceHierarchyImport = Mesh->GetSkeleton();
 		ControlRigBlueprint->SourceCurveImport = Mesh->GetSkeleton();
 
-		if(ImportedBones.Num() > 0)
+		if (ImportedBones.Num() > 0)
 		{
-			ControlRigEditor.Pin()->GetEditMode()->FrameItems(ImportedBones);
+			EditorSharedPtr->GetEditMode()->FrameItems(ImportedBones);
 		}
 	}
 
 	ControlRigBlueprint->PropagateHierarchyFromBPToInstances();
-	ControlRigEditor.Pin()->OnHierarchyChanged();
+	EditorSharedPtr->OnHierarchyChanged();
 	ControlRigBlueprint->BroadcastRefreshEditor();
 	RefreshTreeView();
 	FSlateApplication::Get().DismissAllMenus();
 
-	if (ControlRigBlueprint->GetPreviewMesh() == nullptr &&
-		ControlRigEditor.IsValid() && 
-		Mesh != nullptr)
-	{
-		ControlRigEditor.Pin()->UpdateMeshInAnimInstance(Mesh);
-		ControlRigEditor.Pin()->GetPersonaToolkit()->SetPreviewMesh(Mesh, true);
-	}
-
-	if (ControlRigEditor.IsValid())
-	{
-		ControlRigEditor.Pin()->Compile();
-	}
+	static constexpr bool bImport = true;
+	UpdateMesh(Mesh, bImport);
 }
 
 bool SRigHierarchy::IsMultiSelected(bool bIncludeProcedural) const
@@ -1715,6 +1797,7 @@ void SRigHierarchy::HandleNewItem(ERigElementType InElementType, bool bIsAnimati
 		return;
 	}
 
+	FRigElementKey NewItemKey;
 	URigHierarchy* Hierarchy = GetDefaultHierarchy();
 	if (Hierarchy)
 	{
@@ -1726,7 +1809,6 @@ void SRigHierarchy::HandleNewItem(ERigElementType InElementType, bool bIsAnimati
 
 		FScopedTransaction Transaction(LOCTEXT("HierarchyTreeAdded", "Add new item to hierarchy"));
 
-		FRigElementKey NewItemKey;
 		FRigElementKey ParentKey;
 		FTransform ParentTransform = FTransform::Identity;
 
@@ -1803,12 +1885,18 @@ void SRigHierarchy::HandleNewItem(ERigElementType InElementType, bool bIsAnimati
 					return;
 				}
 			}
-
-			if (ControlRigBlueprint.IsValid())
-			{
-				ControlRigBlueprint->BroadcastRefreshEditor();
-			}
 		}
+	}
+
+	if (ControlRigBlueprint.IsValid())
+	{
+		ControlRigBlueprint->BroadcastRefreshEditor();
+	}
+	
+	if (Hierarchy && NewItemKey.IsValid())
+	{
+		URigHierarchyController* Controller = Hierarchy->GetController(true);
+		check(Controller);
 
 		Controller->ClearSelection();
 		Controller->SelectElement(NewItemKey);
@@ -2129,7 +2217,7 @@ URigHierarchy* SRigHierarchy::GetHierarchy() const
 	}
 	if (ControlRigEditor.IsValid())
 	{
-		if (UControlRig* CurrentRig = ControlRigEditor.Pin()->ControlRig)
+		if (UControlRig* CurrentRig = ControlRigEditor.Pin()->GetControlRig())
 		{
 			return CurrentRig->GetHierarchy();
 		}
@@ -2459,8 +2547,8 @@ bool SRigHierarchy::HandleVerifyNameChanged(const FRigElementKey& OldKey, const 
 FReply SRigHierarchy::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
 	// only allow drops onto empty space of the widget (when there's no target item under the mouse)
-	TSharedPtr<FRigTreeElement> ItemAtMouse = TreeView->FindItemAtPosition(DragDropEvent.GetScreenSpacePosition());
-	if(ItemAtMouse.IsValid())
+	const TSharedPtr<FRigTreeElement>* ItemAtMouse = TreeView->FindItemAtPosition(DragDropEvent.GetScreenSpacePosition());
+	if (ItemAtMouse && ItemAtMouse->IsValid())
 	{
 		return FReply::Unhandled();
 	}

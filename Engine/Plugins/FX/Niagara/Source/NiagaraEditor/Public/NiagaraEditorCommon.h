@@ -27,12 +27,15 @@ public:
 		, bSupportsAddedInputs(false)
 		, bNumericsCanBeIntegers(true)
 		, bNumericsCanBeFloats(true)
+		, bShowPinNamesInCompactMode(false)
 		, bSupportsStaticResolution(false)
 	{}
 
 	FName Name;
 	FText Category;
 	FText FriendlyName;
+	FText CompactName;
+	TOptional<float> CompactNameFontSizeOverride;
 	FText Description;
 	FText Keywords;
 	ENiagaraNumericOutputTypeSelectionMode NumericOuputTypeSelectionMode;
@@ -48,6 +51,9 @@ public:
 
 	/** If float pins are allowed on this op's numeric pins. */
 	bool bNumericsCanBeFloats;
+
+	/** Only applicable if CompactName is set as that will activate compact node mode. */
+	bool bShowPinNamesInCompactMode;
 
 	/** 
 	* The format that can generate the hlsl for the given number of inputs.
@@ -74,7 +80,7 @@ public:
 
 	DECLARE_DELEGATE_RetVal_OneParam(int32, FStaticVariableResolve, const TArray<int32>& );
 	DECLARE_DELEGATE_RetVal_TwoParams(bool, FInputTypeValidation, const TArray<FNiagaraTypeDefinition>&, FText& );;
-	DECLARE_DELEGATE_RetVal_OneParam(FNiagaraTypeDefinition, FCustomNumericResolve, const TArray<FNiagaraTypeDefinition>& )
+	DECLARE_DELEGATE_RetVal_OneParam(FNiagaraTypeDefinition, FCustomNumericResolve, TConstArrayView<FNiagaraTypeDefinition> )
 
 	FStaticVariableResolve StaticVariableResolveFunction;
 	FInputTypeValidation InputTypeValidationFunction;
@@ -190,7 +196,7 @@ enum class EParameterDefinitionMatchState : uint8
 
 
 USTRUCT()
-struct NIAGARAEDITOR_API FFunctionInputSummaryViewKey
+struct FFunctionInputSummaryViewKey
 {
 	GENERATED_BODY()
 
@@ -221,6 +227,10 @@ public:
 		check(!InputName.IsNone());		
 	}
 
+	FGuid GetFunctionGuid() const { return FunctionGuid; }
+	FGuid GetInputGuid() const { return InputGuid; }
+	FName GetInputName() const { return InputName; }
+	
 	bool operator==(const FFunctionInputSummaryViewKey& Other) const
 	{
 		return FunctionGuid == Other.FunctionGuid && InputGuid == Other.InputGuid && InputName == Other.InputName;
@@ -235,7 +245,7 @@ public:
 };
 
 USTRUCT()
-struct NIAGARAEDITOR_API FFunctionInputSummaryViewMetadata
+struct FFunctionInputSummaryViewMetadata
 {
 	GENERATED_BODY()
 

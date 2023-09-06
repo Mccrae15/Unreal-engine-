@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Misc/IntrusiveUnsetOptionalState.h"
 #include "Templates/PointerIsConvertibleFromTo.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
@@ -386,13 +387,13 @@ public:
 	FORCEINLINE TSharedRef& operator=( TSharedRef const& InSharedRef )
 	{
 		TSharedRef Temp = InSharedRef;
-		Swap(Temp, *this);
+		::Swap(Temp, *this);
 		return *this;
 	}
 
 	FORCEINLINE TSharedRef& operator=( TSharedRef&& InSharedRef )
 	{
-		FMemory::Memswap(this, &InSharedRef, sizeof(TSharedRef));
+		::Swap(*this, InSharedRef);
 		return *this;
 	}
 
@@ -547,6 +548,29 @@ public:
 		return SharedReferenceCount.IsUnique();
 	}
 
+	/////////////////////////////////////////////////////
+	// Start - intrusive TOptional<TSharedRef> state //
+	/////////////////////////////////////////////////////
+	constexpr static bool bHasIntrusiveUnsetOptionalState = true;
+	using IntrusiveUnsetOptionalStateType = TSharedRef;
+
+	explicit TSharedRef(FIntrusiveUnsetOptionalState)
+		: Object(nullptr)
+	{
+	}
+	void operator=(FIntrusiveUnsetOptionalState)
+	{
+		Object = nullptr;
+		SharedReferenceCount = {};
+	}
+	bool operator==(FIntrusiveUnsetOptionalState) const
+	{
+		return !IsValid();
+	}
+	/////////////////////////////////////////////////
+	// End - intrusive TOptional<TSharedRef> state //
+	/////////////////////////////////////////////////
+
 private:
 	template<class OtherType>
 	void Init(OtherType* InObject)
@@ -651,6 +675,12 @@ template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<     
 template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<const          TSharedRef<ObjectType, InMode>> = true;
 template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<      volatile TSharedRef<ObjectType, InMode>> = true;
 template <class ObjectType, ESPMode InMode> constexpr bool TIsTSharedRef_V<const volatile TSharedRef<ObjectType, InMode>> = true;
+
+template <class ObjectType, ESPMode Mode>
+struct TCallTraits<TSharedRef<ObjectType, Mode>> : public TCallTraitsBase<TSharedRef<ObjectType, Mode>>
+{
+	using ConstPointerType = TSharedRef<const ObjectType, Mode>;
+};
 
 
 /**
@@ -949,7 +979,7 @@ public:
 	FORCEINLINE TSharedPtr& operator=( TSharedPtr const& InSharedPtr )
 	{
 		TSharedPtr Temp = InSharedPtr;
-		Swap(Temp, *this);
+		::Swap(Temp, *this);
 		return *this;
 	}
 
@@ -1236,6 +1266,12 @@ DECLARE_TEMPLATE_INTRINSIC_TYPE_LAYOUT((template<class ObjectType, ESPMode Mode>
 
 template<class ObjectType, ESPMode Mode> struct TIsZeroConstructType<TSharedPtr<ObjectType, Mode>> { enum { Value = true }; };
 
+template <class ObjectType, ESPMode Mode>
+struct TCallTraits<TSharedPtr<ObjectType, Mode>> : public TCallTraitsBase<TSharedPtr<ObjectType, Mode>>
+{
+	using ConstPointerType = TSharedPtr<const ObjectType, Mode>;
+};
+
 
 /**
  * TWeakPtr is a non-intrusive reference-counted weak object pointer.  This weak pointer will be
@@ -1375,7 +1411,7 @@ public:
 	FORCEINLINE TWeakPtr& operator=( TWeakPtr const& InWeakPtr )
 	{
 		TWeakPtr Temp = InWeakPtr;
-		Swap(Temp, *this);
+		::Swap(Temp, *this);
 		return *this;
 	}
 
@@ -1541,6 +1577,12 @@ template <class ObjectType, ESPMode InMode> constexpr bool TIsTWeakPtr_V<const v
 
 template<class T, ESPMode Mode> struct TIsWeakPointerType<TWeakPtr<T, Mode> > { enum { Value = true }; };
 template<class T, ESPMode Mode> struct TIsZeroConstructType<TWeakPtr<T, Mode> > { enum { Value = true }; };
+
+template <class ObjectType, ESPMode Mode>
+struct TCallTraits<TWeakPtr<ObjectType, Mode>> : public TCallTraitsBase<TWeakPtr<ObjectType, Mode>>
+{
+	using ConstPointerType = TWeakPtr<const ObjectType, Mode>;
+};
 
 
 /**

@@ -12,6 +12,8 @@
 #include "MeshDescriptionToDynamicMesh.h"
 #include "ModelingToolTargetUtil.h"
 #include "Misc/MessageDialog.h"
+#include "PropertySets/CreateMeshObjectTypeProperties.h"
+#include "PropertySets/OnAcceptProperties.h" //UOnAcceptHandleSourcesProperties
 #include "ToolBuilderUtil.h"
 #include "ToolSetupUtil.h"
 #include "DynamicMesh/MeshTransforms.h"
@@ -39,6 +41,7 @@ namespace MirrorTool_Local
 		T.SetScale3D(TransformIn.GetScale3D());
 		return T;
 	}
+	const FString MirrorToolIdentifier = TEXT("MirrorTool");
 }
 
 // Tool builder functions
@@ -59,6 +62,7 @@ TUniquePtr<FDynamicMeshOperator> UMirrorOperatorFactory::MakeNewOperator()
 	MirrorOp->OriginalMesh = MirrorTool->MeshesToMirror[ComponentIndex]->GetMesh();
 	MirrorOp->bAppendToOriginal = MirrorTool->Settings->OperationMode == EMirrorOperationMode::MirrorAndAppend;
 	MirrorOp->bCropFirst = MirrorTool->Settings->bCropAlongMirrorPlaneFirst;
+	MirrorOp->bSimplifyAlongNewEdges = MirrorTool->Settings->bSimplifyAlongCrop;
 	MirrorOp->bWeldAlongPlane = MirrorTool->Settings->bWeldVerticesOnMirrorPlane;
 	MirrorOp->PlaneTolerance = MirrorTool->Settings->PlaneTolerance;
 	MirrorOp->bAllowBowtieVertexCreation = MirrorTool->Settings->bAllowBowtieVertexCreation;
@@ -156,11 +160,13 @@ void UMirrorTool::Render(IToolsContextRenderAPI* RenderAPI)
 
 void UMirrorTool::Setup()
 {
+	using namespace MirrorTool_Local;
+
 	UInteractiveTool::Setup();
 
 	SetToolDisplayName(LOCTEXT("ToolName", "Mirror"));
 	GetToolManager()->DisplayMessage(
-		LOCTEXT("OnStartMirrorTool", "Mirror one or more meshes across a plane. The plane can be set by using the preset buttons, moving the gizmo, or ctrl+clicking on a spot on the original mesh."),
+		LOCTEXT("OnStartMirrorTool", "Mirror one or more meshes across a plane. Ctrl+[shift+]clicking on a spot on the original mesh will place the plane there. Buttons will reset it."),
 		EToolMessageLevel::UserNotification);
 
 	// Set up the properties
@@ -168,9 +174,26 @@ void UMirrorTool::Setup()
 	Settings->RestoreProperties(this);
 	AddToolPropertySource(Settings);
 
+	OutputTypeProperties = NewObject<UCreateMeshObjectTypeProperties>(this);
+	OutputTypeProperties->InitializeDefaultWithAuto();
+	OutputTypeProperties->OutputType = UCreateMeshObjectTypeProperties::AutoIdentifier;
+	OutputTypeProperties->RestoreProperties(this, MirrorToolIdentifier);
+	OutputTypeProperties->WatchProperty(OutputTypeProperties->OutputType, [this](FString) { OutputTypeProperties->UpdatePropertyVisibility(); });
+	AddToolPropertySource(OutputTypeProperties);
+
+	HandleSourcesProperties = NewObject<UOnAcceptHandleSourcesProperties>(this);
+	HandleSourcesProperties->RestoreProperties(this, MirrorToolIdentifier);
+	AddToolPropertySource(HandleSourcesProperties);
+
 	ToolActions = NewObject<UMirrorToolActionPropertySet>(this);
 	ToolActions->Initialize(this);
 	AddToolPropertySource(ToolActions);
+
+	Settings->WatchProperty(Settings->WriteTo, [this](EMirrorSaveMode SaveMode) {
+		bool bShowOutputOptions = SaveMode == EMirrorSaveMode::NewObjects;
+		SetToolPropertySourceEnabled(OutputTypeProperties, bShowOutputOptions);
+		SetToolPropertySourceEnabled(HandleSourcesProperties, bShowOutputOptions);
+	});
 
 	CheckAndDisplayWarnings();
 
@@ -235,13 +258,7 @@ void UMirrorTool::Setup()
 		}
 		});
 
-	// Modify the Ctrl+click set plane behavior to respond to our CtrlClickBehavior property
-	PlaneMechanic->SetPlaneCtrlClickBehaviorTarget->OnClickedPositionFunc = [this](const FHitResult& Hit)
-	{
-		bool bIgnoreNormal = (Settings->CtrlClickBehavior == EMirrorCtrlClickBehavior::Reposition);
-		PlaneMechanic->SetDrawPlaneFromWorldPos((FVector3d)Hit.ImpactPoint, (FVector3d)Hit.ImpactNormal, bIgnoreNormal);
-	};
-	// Also include the original components in the ctrl+click hit testing even though we made them 
+	// Include the original components in the ctrl+click hit testing even though we made them 
 	// invisible, since we want to be able to reposition the plane onto the original mesh.
 	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
 	{
@@ -349,7 +366,11 @@ void UMirrorTool::CheckAndDisplayWarnings()
 
 void UMirrorTool::OnShutdown(EToolShutdownType ShutdownType)
 {
+	using namespace MirrorTool_Local;
+
 	Settings->SaveProperties(this);
+	OutputTypeProperties->SaveProperties(this, MirrorToolIdentifier);
+	HandleSourcesProperties->SaveProperties(this, MirrorToolIdentifier);
 
 	PlaneMechanic->Shutdown();
 
@@ -362,6 +383,8 @@ void UMirrorTool::OnShutdown(EToolShutdownType ShutdownType)
 	// Swap in results, if appropriate
 	if (ShutdownType == EToolShutdownType::Accept)
 	{
+		GetToolManager()->BeginUndoTransaction(LOCTEXT("MirrorToolTransactionName", "Mirror Tool"));
+
 		// Gather results
 		TArray<FDynamicMeshOpResult> Results;
 		for (int32 PreviewIndex = 0; PreviewIndex < Previews.Num(); ++PreviewIndex)
@@ -374,6 +397,19 @@ void UMirrorTool::OnShutdown(EToolShutdownType ShutdownType)
 
 		// Convert to output. This will also edit the selection.
 		GenerateAsset(Results);
+
+		// If we created new objects, deal with the input objects according to the user's settings.
+		if (Settings->WriteTo != EMirrorSaveMode::InputObjects)
+		{
+			TArray<AActor*> Actors;
+			for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
+			{
+				Actors.Add(UE::ToolTarget::GetTargetActor(Targets[ComponentIdx]));
+			}
+			HandleSourcesProperties->ApplyMethod(Actors, GetToolManager());
+		}
+
+		GetToolManager()->EndUndoTransaction();
 	}
 	else
 	{
@@ -391,10 +427,6 @@ void UMirrorTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 		return;
 	}
 
-	GetToolManager()->BeginUndoTransaction(LOCTEXT("MirrorToolTransactionName", "Mirror Tool"));
-
-	ensure(Results.Num() > 0);
-
 	int32 NumSourceMeshes = MeshesToMirror.Num();
 
 	// check if we entirely cut away any meshes
@@ -410,9 +442,9 @@ void UMirrorTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 	// if so ask user what to do
 	if (bWantToDestroy)
 	{
-		FText Title = LOCTEXT("MirrorDestroyTitle", "Delete mesh components?");
 		EAppReturnType::Type Ret = FMessageDialog::Open(EAppMsgType::YesNo,
-			LOCTEXT("MirrorDestroyQuestion", "The mirror plane cropping has entirely cut away at least one mesh. Do you actually want to delete these mesh components? Note that either way all actors will remain, and meshes that are not fully cut away will still be mirrored as normal."), &Title);
+			LOCTEXT("MirrorDestroyQuestion", "The mirror plane cropping has entirely cut away at least one mesh. Do you actually want to delete these mesh components? Note that either way all actors will remain, and meshes that are not fully cut away will still be mirrored as normal."), 
+			LOCTEXT("MirrorDestroyTitle", "Delete mesh components?"));
 		if (Ret == EAppReturnType::No || Ret == EAppReturnType::Cancel)
 		{
 			bWantToDestroy = false;
@@ -435,7 +467,7 @@ void UMirrorTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 			}
 			continue;
 		}
-		else if (Settings->SaveMode == EMirrorSaveMode::UpdateAssets)
+		else if (Settings->WriteTo == EMirrorSaveMode::InputObjects)
 		{
 			NewSelection.Actors.Add(UE::ToolTarget::GetTargetActor(Targets[OrigMeshIdx]));
 
@@ -457,14 +489,19 @@ void UMirrorTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 			NewMeshObjectParams.BaseName = TEXT("Mirror");
 			NewMeshObjectParams.Materials = Materials;
 			NewMeshObjectParams.SetMesh(Mesh);
+			if (OutputTypeProperties->OutputType == UCreateMeshObjectTypeProperties::AutoIdentifier)
+			{
+				UE::ToolTarget::ConfigureCreateMeshObjectParams(Targets[OrigMeshIdx], NewMeshObjectParams);
+			}
+			else
+			{
+				OutputTypeProperties->ConfigureCreateMeshObjectParams(NewMeshObjectParams);
+			}
 			FCreateMeshObjectResult Result = UE::Modeling::CreateMeshObject(GetToolManager(), MoveTemp(NewMeshObjectParams));
 			if (Result.IsOK() && Result.NewActor != nullptr)
 			{
 				NewSelection.Actors.Add(Result.NewActor);
 			}
-
-			// Remove the original actor
-			UE::ToolTarget::GetTargetComponent(Targets[OrigMeshIdx])->DestroyComponent();
 		}
 	}
 
@@ -473,8 +510,6 @@ void UMirrorTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 	{
 		GetToolManager()->RequestSelectionChange(NewSelection);
 	}
-
-	GetToolManager()->EndUndoTransaction();
 }
 
 
@@ -530,7 +565,7 @@ void UMirrorTool::ApplyAction(EMirrorToolAction ActionType)
 		}
 
 		// The user can optionally have the button change the direction only
-		if (Settings->bButtonsOnlyChangeOrientation)
+		if (ToolActions->bButtonsOnlyChangeOrientation)
 		{
 			ShiftedPlaneOrigin = MirrorPlaneOrigin;	// Keeps the same
 		}

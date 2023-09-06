@@ -1,9 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using UnrealBuildTool.Artifacts;
 
 namespace UnrealBuildTool
 {
@@ -32,16 +33,28 @@ namespace UnrealBuildTool
 		/// Constructor
 		/// </summary>
 		public HybridExecutor(List<TargetDescriptor> TargetDescriptors, int InMaxLocalActions, bool bAllCores, bool bCompactOutput, ILogger Logger, ActionExecutor? InLocalExecutor = null, ActionExecutor? InRemoteExecutor = null)
+			: base(Logger)
 		{
 			MaxLocalActions = InMaxLocalActions;
 			LocalExecutor = InLocalExecutor ?? new ParallelExecutor(MaxLocalActions, bAllCores, bCompactOutput, Logger);
-			RemoteExecutor = InRemoteExecutor ?? (XGE.IsAvailable(Logger) ? (ActionExecutor)new XGE() : new SNDBS(TargetDescriptors));
+			RemoteExecutor = InRemoteExecutor ?? (XGE.IsAvailable(Logger) ? (ActionExecutor)new XGE(Logger) : new SNDBS(TargetDescriptors, Logger));
 
 			XmlConfig.ApplyTo(this);
 
 			if (MaxLocalActions == 0)
 			{
 				MaxLocalActions = Utils.GetPhysicalProcessorCount();
+			}
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			base.Dispose(disposing);
+
+			if (disposing)
+			{
+				LocalExecutor.Dispose();
+				RemoteExecutor.Dispose();
 			}
 		}
 
@@ -59,13 +72,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		public override string Name => $"hybrid ({LocalExecutor.Name}+{RemoteExecutor.Name})";
 
-		/// <summary>
-		/// Execute the given actions
-		/// </summary>
-		/// <param name="ActionsToExecute">Actions to be executed</param>
-		/// <param name="Logger">Logger for output</param>
-		/// <returns>True if the build succeeded, false otherwise</returns>
-		public override bool ExecuteActions(IEnumerable<LinkedAction> ActionsToExecute, ILogger Logger)
+		/// <inheritdoc/>
+		public override async Task<bool> ExecuteActionsAsync(IEnumerable<LinkedAction> ActionsToExecute, ILogger Logger, IActionArtifactCache? actionArtifactCache)
 		{
 			if (!ActionsToExecute.Any())
 			{
@@ -84,7 +92,7 @@ namespace UnrealBuildTool
 
 			// Build up a set of leaf actions in several iterations, ensuring that the number of leaf actions in each 
 			HashSet<LinkedAction> LeafActions = new HashSet<LinkedAction>();
-			for (;;)
+			for (; ; )
 			{
 				// Find all the leaf actions in the graph
 				List<LinkedAction> NewLeafActions = new List<LinkedAction>();
@@ -131,13 +139,13 @@ namespace UnrealBuildTool
 			}
 
 			// Execute the remote actions
-			if (RemoteActionsToExecute.Count > 0 && !RemoteExecutor.ExecuteActions(RemoteActionsToExecute, Logger))
+			if (RemoteActionsToExecute.Count > 0 && !await RemoteExecutor.ExecuteActionsAsync(RemoteActionsToExecute, Logger, actionArtifactCache))
 			{
 				return false;
 			}
 
 			// Pass all the local actions through to the parallel executor
-			if (LocalActionsToExecute.Count > 0 && !LocalExecutor.ExecuteActions(LocalActionsToExecute, Logger))
+			if (LocalActionsToExecute.Count > 0 && !await LocalExecutor.ExecuteActionsAsync(LocalActionsToExecute, Logger, actionArtifactCache))
 			{
 				return false;
 			}

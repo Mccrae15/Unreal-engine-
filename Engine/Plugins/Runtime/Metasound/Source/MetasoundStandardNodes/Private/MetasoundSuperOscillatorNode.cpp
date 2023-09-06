@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "AudioDefines.h"
 #include "Containers/Union.h"
 #include "Misc/TVariant.h"
 #include "DSP/Dsp.h"
@@ -167,7 +168,7 @@ namespace Metasound
 		METASOUND_PARAM(EntropyPin, "Entropy", "[0,1] Controls how evenly the voices are distributed in pitch")
 		METASOUND_PARAM(FrequencyModPin, "Modulation","Modulation Frequency Input (for doing FM)")
 		METASOUND_PARAM(GlideFactorPin, "Glide", "The amount of glide to use when changing frequencies. 0.0 = no glide, 1.0 = lots of glide.")
-		METASOUND_PARAM(MaxDetunePin, "Detune", "Max pitch offset of any Oscillators in Semitones. Only oscillators 2+ are detuned")
+		METASOUND_PARAM(MaxDetunePin, "Detune", "Max pitch offset of any Oscillators in Semitones, up to four octaves. Only oscillators 2+ are detuned")
 		METASOUND_PARAM(NumVoicesPin, "Voices", "[1,16] The number of Oscillators")
 		METASOUND_PARAM(PulseWidthPin, "Pulse Width", "The Width of the square part of the wave. Only used for square waves.")
 		METASOUND_PARAM(StereoWidthPin, "Width", "[0,1] Stereo Width of the oscillators")
@@ -207,78 +208,31 @@ namespace Metasound
 			, DetuneDb(InConstructParams.DetunedVoiceVolumeDb)
 			, GlideFactor(InConstructParams.GlideFactor)
 			, PulseWidth(InConstructParams.PulseWidth)
+			, bUseModulation(InConstructParams.bUseModulation)
 			, Fm(InConstructParams.Fm)
 			, OscType(InConstructParams.OscType)
 		{
-			using namespace Generators;
 
-			const int32 NumVoicesToInit = NumVoices;
 			ScratchBuffer.SetNumZeroed(InConstructParams.Settings.GetNumFramesPerBlock());
 			
-			// init generators
-			if (InConstructParams.bUseModulation)
-			{
-				// fm generators
-				switch (OscType)
-				{
-				case ELfoWaveshapeType::Sine:
-					FillGeneratorsArray<TVoiceGenerator<FSineWaveTableWithFm>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				case ELfoWaveshapeType::Triangle:
-					FillGeneratorsArray<TVoiceGenerator<FTrianglePolysmoothWithFm>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				case ELfoWaveshapeType::Square:
-					FillGeneratorsArray<TVoiceGenerator<FSquarePolysmoothWithFm>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				case ELfoWaveshapeType::Saw:
-					FillGeneratorsArray<TVoiceGenerator<FSawPolysmoothWithFm>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				default: 
-					check(!"Unsupported Wave Shape in FSuperOscillatorOperator");
-					return;
-				}
-			}
-			else
-			{
-				//non-fm generators
-				switch (OscType)
-				{
-				case ELfoWaveshapeType::Sine:
-					FillGeneratorsArray<TVoiceGenerator<FSineWaveTable>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				case ELfoWaveshapeType::Triangle:
-					FillGeneratorsArray<TVoiceGenerator<FTrianglePolysmooth>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				case ELfoWaveshapeType::Square:
-					FillGeneratorsArray<TVoiceGenerator<FSquarePolysmooth>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				case ELfoWaveshapeType::Saw:
-					FillGeneratorsArray<TVoiceGenerator<FSawPolysmooth>>(Generators, NumVoicesToInit, SampleRate);
-					break;
-				default: 
-					check(!"Unsupported Wave Shape in FSuperOscillatorOperator");
-					return;
-				}
-			}
+			InitializeGenerators();
 		}
-		
-		virtual void Bind(FVertexInterfaceData& InVertexData) const override
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override 
 		{
-			using namespace SuperOscillatorVertexNames; 
+			using namespace SuperOscillatorVertexNames;
 
-			FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
-
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(EnabledPin), bEnabled);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(LimitOutputPin), bLimit);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(BaseFrequencyPin), BaseFrequency);
-			Inputs.SetValue(METASOUND_GET_PARAM_NAME(NumVoicesPin), NumVoices);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(MaxDetunePin), MaxDetune);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(DetuneVolumePin), DetuneDb);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(GlideFactorPin), GlideFactor);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(PulseWidthPin), PulseWidth);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(FrequencyModPin), Fm);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(EntropyPin), Entropy);
-			Inputs.SetValue(METASOUND_GET_PARAM_NAME(WaveTypePin), OscType);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(EnabledPin), bEnabled);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(LimitOutputPin), bLimit);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(BaseFrequencyPin), BaseFrequency);
+			InOutVertexData.SetValue(METASOUND_GET_PARAM_NAME(NumVoicesPin), NumVoices);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(MaxDetunePin), MaxDetune);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(DetuneVolumePin), DetuneDb);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(GlideFactorPin), GlideFactor);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(PulseWidthPin), PulseWidth);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(FrequencyModPin), Fm);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(EntropyPin), Entropy);
+			InOutVertexData.SetValue(METASOUND_GET_PARAM_NAME(WaveTypePin), OscType);
 		}
 		
 		virtual FDataReferenceCollection GetInputs() const override
@@ -300,6 +254,7 @@ namespace Metasound
 		virtual void FillOutputs(const float Gain = 1.f, const float LinearPan = 0.f) {}
 		virtual void ZeroOutputs() {}
 		virtual float GetStereoWidth() const { return 0.f; }
+		virtual void ResetLimiters() = 0;
 		
 		void SetLimiterSettings(Audio::FDynamicsProcessor& InLimiter) const
 		{
@@ -329,8 +284,11 @@ namespace Metasound
 			const float ClampedFreq = FMath::Clamp(*BaseFrequency, -Nyquist, Nyquist);
 			const float ClampedEntropy = FMath::Clamp(*Entropy, 0.f, 1.f);
 			const float ClampedGlideEase = Audio::GetLogFrequencyClamped(*GlideFactor, { 0.0f, 1.0f }, { 1.0f, 0.0001f });
-			const float DetuneRatio = Audio::GetFrequencyMultiplier(*MaxDetune);
-			const float DetuneChannelGain = Audio::ConvertToLinear(*DetuneDb);
+
+			// allow +- 4 octaves of detune
+			constexpr float DetuneClamp = 12.f * 4.f;
+			const float DetuneRatio = Audio::GetFrequencyMultiplier(FMath::Clamp(*MaxDetune, -DetuneClamp, DetuneClamp));
+			const float DetuneChannelGain = Audio::ConvertToLinear(FMath::Clamp(*DetuneDb, MIN_VOLUME_DECIBELS, 24.f));
 			const float ClampedPulsueWidth = FMath::Clamp(*PulseWidth, 0.01f, 0.99f);
 			
 			const int32 NumFrames = ScratchBuffer.Num();
@@ -379,11 +337,71 @@ namespace Metasound
 			}
 		}
 
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			ZeroOutputs();
+			ResetLimiters();
+
+			InitializeGenerators();
+		}
+
+	protected:
+
+		void InitializeGenerators()
+		{
+			using namespace Generators;
+			// init generators
+			if (bUseModulation)
+			{
+				// fm generators
+				switch (OscType)
+				{
+				case ELfoWaveshapeType::Sine:
+					FillGeneratorsArray<TVoiceGenerator<FSineWaveTableWithFm>>(Generators, NumVoices, SampleRate);
+					break;
+				case ELfoWaveshapeType::Triangle:
+					FillGeneratorsArray<TVoiceGenerator<FTrianglePolysmoothWithFm>>(Generators, NumVoices, SampleRate);
+					break;
+				case ELfoWaveshapeType::Square:
+					FillGeneratorsArray<TVoiceGenerator<FSquarePolysmoothWithFm>>(Generators, NumVoices, SampleRate);
+					break;
+				case ELfoWaveshapeType::Saw:
+					FillGeneratorsArray<TVoiceGenerator<FSawPolysmoothWithFm>>(Generators, NumVoices, SampleRate);
+					break;
+				default: 
+					check(!"Unsupported Wave Shape in FSuperOscillatorOperator");
+					return;
+				}
+			}
+			else
+			{
+				//non-fm generators
+				switch (OscType)
+				{
+				case ELfoWaveshapeType::Sine:
+					FillGeneratorsArray<TVoiceGenerator<FSineWaveTable>>(Generators, NumVoices, SampleRate);
+					break;
+				case ELfoWaveshapeType::Triangle:
+					FillGeneratorsArray<TVoiceGenerator<FTrianglePolysmooth>>(Generators, NumVoices, SampleRate);
+					break;
+				case ELfoWaveshapeType::Square:
+					FillGeneratorsArray<TVoiceGenerator<FSquarePolysmooth>>(Generators, NumVoices, SampleRate);
+					break;
+				case ELfoWaveshapeType::Saw:
+					FillGeneratorsArray<TVoiceGenerator<FSawPolysmooth>>(Generators, NumVoices, SampleRate);
+					break;
+				default: 
+					check(!"Unsupported Wave Shape in FSuperOscillatorOperator");
+					return;
+				}
+			}
+		}
+
 		float SampleRate = 1.f;
 		float Nyquist = 1.f;
 
 		// apply this gain whether we are limiting or not, to avoid large volume jumps when toggling the limiter
-		const float PreLimiterGain = 0.707f;
+		static constexpr float PreLimiterGain = 0.707f;
 
 		FBoolReadRef bEnabled;
 		FBoolReadRef bLimit;
@@ -395,6 +413,7 @@ namespace Metasound
 		FFloatReadRef GlideFactor;
 		FFloatReadRef PulseWidth;
 
+		bool bUseModulation = false;
 		FAudioBufferReadRef Fm;
 		FEnumLfoWaveshapeType OscType;
 
@@ -504,13 +523,20 @@ namespace Metasound
 			Limiter.ProcessAudio(AudioBuffer->GetData(), AudioBuffer->Num(), AudioBuffer->GetData());
 		}
 
-		virtual void Bind(FVertexInterfaceData& InVertexData) const override
+		virtual void ResetLimiters() override
+		{
+			SetLimiterSettings(Limiter);
+		}
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			Super::BindInputs(InOutVertexData);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace SuperOscillatorVertexNames;
-			Super::Bind(InVertexData);
-			
-			FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
-			Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(AudioOutPin), AudioBuffer);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(AudioOutPin), AudioBuffer);
 		}
 		
 		FAudioBufferWriteRef AudioBuffer;
@@ -617,7 +643,7 @@ namespace Metasound
 			AudioRight->Zero();
 		}
 
-		virtual float GetStereoWidth() const override { return *StereoWidth; }
+		virtual float GetStereoWidth() const override { return FMath::Clamp(*StereoWidth, 0.f, 1.f); }
 		
 		virtual void FillOutputs(const float Gain = 1.f, const float LinearPan = 0.f) final override
 		{
@@ -630,23 +656,32 @@ namespace Metasound
 			Audio::ArrayMixIn(ScratchBuffer, *AudioRight, Gain * PanRightGain * PreLimiterGain);
 		}
 
+		virtual void ResetLimiters() override
+		{
+			SetLimiterSettings(LimiterLeft);
+			SetLimiterSettings(LimiterRight);
+		}
+
 		virtual void LimitOutput() override
 		{
 			LimiterLeft.ProcessAudio(AudioLeft->GetData(), AudioLeft->Num(), AudioLeft->GetData());
 			LimiterRight.ProcessAudio(AudioRight->GetData(), AudioRight->Num(), AudioRight->GetData());
 		}
 
-		virtual void Bind(FVertexInterfaceData& InVertexData) const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			Super::BindInputs(InOutVertexData);
+			
+			using namespace SuperOscillatorVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(StereoWidthPin), StereoWidth);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace SuperOscillatorVertexNames;
-			Super::Bind(InVertexData);
-
-			FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(StereoWidthPin), StereoWidth);
 			
-			FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
-			Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(AudioLeftPin), AudioLeft);
-			Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(AudioRightPin), AudioRight);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(AudioLeftPin), AudioLeft);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(AudioRightPin), AudioRight);
 		}
 
 		FFloatReadRef StereoWidth;

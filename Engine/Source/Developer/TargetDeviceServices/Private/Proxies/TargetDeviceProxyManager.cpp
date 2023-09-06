@@ -13,6 +13,7 @@
 /** Defines the interval in seconds in which devices are being pinged by the proxy manager. */
 #define TARGET_DEVICE_SERVICES_PING_INTERVAL 2.5f
 
+LLM_DEFINE_TAG(TargetDeviceProxyManager);
 
 /* FTargetDeviceProxyManager structors
  *****************************************************************************/
@@ -165,6 +166,8 @@ void FTargetDeviceProxyManager::HandlePongMessage(const FTargetDeviceServicePong
  		return;
  	}
 
+	LLM_SCOPE_BYTAG(TargetDeviceProxyManager);
+
 	AddProxyFromPongMessage(Message, Context, false);
 
 	if (Message.Aggregated)
@@ -195,6 +198,8 @@ void FTargetDeviceProxyManager::AddProxyFromPongMessage(const FTargetDeviceServi
 
 bool FTargetDeviceProxyManager::HandleTicker(float DeltaTime)
 {
+	LLM_SCOPE_BYTAG(TargetDeviceProxyManager);
+
 	RemoveDeadProxies();
 	SendPing();
 

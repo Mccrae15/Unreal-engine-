@@ -1,14 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#if WITH_LOW_LEVEL_TESTS
+#if WITH_TESTS
 
 #include "Templates/ValueOrError.h"
 
-#include "TestHarness.h"
+#include "Tests/TestHarnessAdapter.h"
 
 #include <type_traits>
 
-TEST_CASE("Core::Templates::ValueOrError", "[Core][Templates][Smoke]")
+TEST_CASE_NAMED(FTemplatesValueOrErrorTest, "System::Core::Templates::ValueOrError", "[Core][Templates][SmokeFilter]")
 {
 	SECTION("Static")
 	{
@@ -51,6 +51,7 @@ TEST_CASE("Core::Templates::ValueOrError", "[Core][Templates][Smoke]")
 	struct FTestMoveOnly
 	{
 		FTestMoveOnly() = default;
+		FTestMoveOnly(int32 InValue) : Value(InValue) {}
 		FTestMoveOnly(const FTestMoveOnly&) = delete;
 		FTestMoveOnly(FTestMoveOnly&&) = default;
 		int Value = 0;
@@ -150,8 +151,8 @@ TEST_CASE("Core::Templates::ValueOrError", "[Core][Templates][Smoke]")
 
 	SECTION("Move-Only Value/Error")
 	{
-		TValueOrError<FTestMoveOnly, FTestMoveOnly> Value = MakeValue(FTestMoveOnly{1});
-		TValueOrError<FTestMoveOnly, FTestMoveOnly> Error = MakeError(FTestMoveOnly{1});
+		TValueOrError<FTestMoveOnly, FTestMoveOnly> Value = MakeValue(FTestMoveOnly(1));
+		TValueOrError<FTestMoveOnly, FTestMoveOnly> Error = MakeError(FTestMoveOnly(1));
 		FTestMoveOnly MovedValue = MoveTemp(Value).GetValue();
 		FTestMoveOnly MovedError = MoveTemp(Error).GetError();
 		CHECK(MovedValue.Value == 1);
@@ -232,4 +233,4 @@ TEST_CASE("Core::Templates::ValueOrError", "[Core][Templates][Smoke]")
 	CHECK(ErrorCount == 0);
 }
 
-#endif
+#endif //WITH_TESTS

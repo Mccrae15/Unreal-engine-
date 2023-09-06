@@ -9,6 +9,8 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/AnimInstance.h"
+#include "RenderingThread.h"
+#include "RenderGraphBuilder.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerModelInstance)
 
@@ -20,16 +22,15 @@ DEFINE_STAT(STAT_MLDeformerInference);
 
 void UMLDeformerModelInstance::BeginDestroy()
 {
-	Release();
+	RenderCommandFence.BeginFence();
 	Super::BeginDestroy();
 }
 
-void UMLDeformerModelInstance::Release()
+bool UMLDeformerModelInstance::IsReadyForFinishDestroy()
 {
 	// Wait for the render commands to finish, because some neural network might still be executing, using the inference handle
 	// that we are about to delete.
-	RenderCommandFence.BeginFence();
-	RenderCommandFence.Wait();
+	return Super::IsReadyForFinishDestroy() && RenderCommandFence.IsFenceComplete();
 }
 
 USkeletalMeshComponent* UMLDeformerModelInstance::GetSkeletalMeshComponent() const
@@ -54,7 +55,7 @@ UMLDeformerComponent* UMLDeformerModelInstance::GetMLDeformerComponent() const
 
 int32 UMLDeformerModelInstance::GetNeuralNetworkInferenceHandle() const
 { 
-	return NeuralNetworkInferenceHandle;
+	return -1;
 }
 
 void UMLDeformerModelInstance::SetHasPostInitialized(bool bHasInitialized)
@@ -89,6 +90,17 @@ void UMLDeformerModelInstance::Init(USkeletalMeshComponent* SkelMeshComponent)
 	if (SkelMeshComponent == nullptr)
 	{
 		AssetBonesToSkelMeshMappings.Empty();
+
+		UMLDeformerAsset* Asset = GetModel()->GetDeformerAsset();
+		if (Asset && Asset->GetModel()->GetInputInfo())
+		{
+			const FSoftObjectPath& SkelMeshPath = Asset->GetModel()->GetInputInfo()->GetSkeletalMesh();
+			if (SkelMeshPath.IsValid())
+			{
+				UE_LOG(LogMLDeformer, Error, TEXT("ML Deformer '%s' is trained on skeletal mesh '%s', which cannot be found on actor!"), *Asset->GetName(), *SkelMeshPath.ToString());
+			}
+		}
+
 		return;
 	}
 
@@ -133,10 +145,9 @@ FString UMLDeformerModelInstance::CheckCompatibility(USkeletalMeshComponent* InS
 	if (SkelMesh && !InputInfo->IsCompatible(SkelMesh) && Model->GetDeformerAsset())
 	{
 		ErrorText += InputInfo->GenerateCompatibilityErrorString(SkelMesh);
-		ErrorText += "\n";
 		if (bLogIssues)
 		{
-			UE_LOG(LogMLDeformer, Error, TEXT("ML Deformer '%s' isn't compatible with Skeletal Mesh '%s'.\nReason(s):\n%s"), 
+			UE_LOG(LogMLDeformer, Error, TEXT("ML Deformer '%s' isn't compatible with Skeletal Mesh '%s'.\nReason(s):\n%s\n"), 
 				*Model->GetDeformerAsset()->GetName(), 
 				*SkelMesh->GetName(), 
 				*ErrorText);

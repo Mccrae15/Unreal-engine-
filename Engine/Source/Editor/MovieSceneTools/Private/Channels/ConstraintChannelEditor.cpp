@@ -34,6 +34,7 @@
 #include "Styling/ISlateStyle.h"
 #include "Templates/Function.h"
 #include "TimeToPixel.h"
+#include "CurveEditorSettings.h"
 #include "UObject/NameTypes.h"
 #include "UObject/UnrealNames.h"
 #include "Widgets/SNullWidget.h"
@@ -361,7 +362,18 @@ TSharedRef<SWidget> CreateKeyEditor(
 	return SNullWidget::NullWidget;
 }
 
-TUniquePtr<FCurveModel> CreateCurveEditorModel(const TMovieSceneChannelHandle<FMovieSceneConstraintChannel>& Channel, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)
+TUniquePtr<FCurveModel> CreateCurveEditorModel(const TMovieSceneChannelHandle<FMovieSceneConstraintChannel>& ChannelHandle, UMovieSceneSection* OwningSection, TSharedRef<ISequencer> InSequencer)
 {
-	return MakeUnique<FConstraintChannelCurveModel>(Channel, OwningSection, InSequencer);
+	if (FMovieSceneConstraintChannel* Channel = ChannelHandle.Get())
+	{
+		if (Channel->GetNumKeys() > 0)
+		{
+			const UCurveEditorSettings* Settings = GetDefault<UCurveEditorSettings>();
+			if (Settings == nullptr || Settings->GetShowBars())
+			{
+				return MakeUnique<FConstraintChannelCurveModel>(ChannelHandle, OwningSection, InSequencer);
+			}
+		}
+	}
+	return nullptr;
 }

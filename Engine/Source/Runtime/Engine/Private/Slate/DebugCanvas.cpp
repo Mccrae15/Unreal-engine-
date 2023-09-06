@@ -202,7 +202,7 @@ void FDebugCanvasDrawer::InitDebugCanvas(FViewportClient* ViewportClient, UWorld
 	if (FSlateApplication::Get().IsNormalExecution())
 	{
 		const float DPIScale = bUseInternalTexture ? 1.0f : ViewportClient->GetDPIScale();
-		GameThreadCanvas = MakeShared<FCanvas, ESPMode::ThreadSafe>(RenderTarget, nullptr, InWorld, InWorld ? InWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel, FCanvas::CDM_DeferDrawing, DPIScale);
+		GameThreadCanvas = MakeShared<FCanvas, ESPMode::ThreadSafe>(RenderTarget, nullptr, InWorld, InWorld ? InWorld->GetFeatureLevel() : GMaxRHIFeatureLevel, FCanvas::CDM_DeferDrawing, DPIScale);
 
 		// Do not allow the canvas to be flushed outside of our debug rendering path
 		GameThreadCanvas->SetAllowedModes(FCanvas::Allow_DeleteOnRender);
@@ -256,7 +256,7 @@ void FDebugCanvasDrawer::DrawRenderThread(FRHICommandListImmediate& RHICmdList, 
 			if (!LayerTexture)
 			{
 				// Set TexCreate_NoFastClear because the fast CMASK clear was not working on ps4.
-				FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(RenderThreadCanvas->GetParentCanvasSize(), PF_B8G8R8A8, FClearValueBinding(), TexCreate_SRGB, TexCreate_RenderTargetable | TexCreate_NoFastClear, false));
+				FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(RenderThreadCanvas->GetParentCanvasSize(), PF_B8G8R8A8, FClearValueBinding(), ETextureCreateFlags::None, ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::NoFastClear, false));
 				Desc.DebugName = TEXT("DebugCanvasLayerTexture");
 				GRenderTargetPool.FindFreeElement(RHICmdList, Desc, LayerTexture, TEXT("DebugCanvasLayerTexture"));
 				UE_LOG(LogProfilingDebugging, Log, TEXT("Allocated a %d x %d texture for HMD canvas layer"), RenderThreadCanvas->GetParentCanvasSize().X, RenderThreadCanvas->GetParentCanvasSize().Y);

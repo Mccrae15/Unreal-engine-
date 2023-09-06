@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "UObject/UObjectArray.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/ScopeLock.h"
 #include "UObject/UObjectAllocator.h"
 #include "UObject/Class.h"
@@ -17,8 +18,8 @@ FUObjectClusterContainer GUObjectClusters;
 #if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
 void FUObjectItem::CreateStatID() const
 {
-	// @todo can we put this in a header?
-//		SCOPE_CYCLE_COUNTER(STAT_CreateStatID);
+	LLM_SCOPE_BYNAME(TEXT("Debug/CreateStatID"));
+	QUICK_SCOPE_CYCLE_COUNTER(CreateStatId);
 
 	FString LongName;
 	LongName.Reserve(255);
@@ -186,7 +187,7 @@ void FUObjectArray::DisableDisregardForGC()
 	}
 }
 
-void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, int32 AlreadyAllocatedIndex, int32 SerialNumber)
+void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, EInternalObjectFlags InitialFlags, int32 AlreadyAllocatedIndex, int32 SerialNumber)
 {
 	int32 Index = INDEX_NONE;
 	check(Object->InternalIndex == INDEX_NONE);
@@ -217,10 +218,8 @@ void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, int32 AlreadyAlloc
 		if (ObjAvailableList.Num() > 0)
 		{
 			Index = ObjAvailableList.Pop();
-#if UE_GC_TRACK_OBJ_AVAILABLE
-			const int32 AvailableCount = ObjAvailableCount.Decrement();
+			const int32 AvailableCount = ObjAvailableList.Num();
 			checkSlow(AvailableCount >= 0);
-#endif
 		}
 		else
 		{
@@ -235,7 +234,7 @@ void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, int32 AlreadyAlloc
 	UE_CLOG(ObjectItem->Object != nullptr, LogUObjectArray, Fatal, TEXT("Attempting to add %s at index %d but another object (0x%016llx) exists at that index!"), *Object->GetFName().ToString(), Index, (int64)(PTRINT)ObjectItem->Object);
 	ObjectItem->Object = Object;
 	// At this point all not-compiled-in objects are not fully constructed yet and this is the earliest we can mark them as such
-	ObjectItem->Flags = (int32)EInternalObjectFlags::PendingConstruction;
+	ObjectItem->Flags = (int32)(EInternalObjectFlags::PendingConstruction | InitialFlags);
 	ObjectItem->ClusterRootIndex = 0;
 	ObjectItem->SerialNumber = SerialNumber;
 	Object->InternalIndex = Index;
@@ -306,9 +305,6 @@ void FUObjectArray::FreeUObjectIndex(UObjectBase* Object)
 	if (Index > ObjLastNonGCIndex && !GExitPurge && bShouldRecycleObjectIndices)
 	{
 		ObjAvailableList.Add(Index);
-#if UE_GC_TRACK_OBJ_AVAILABLE
-		ObjAvailableCount.Increment();
-#endif
 	}
 }
 
@@ -442,4 +438,98 @@ void FUObjectArray::ShutdownUObjectArray()
 		}
 		UE_CLOG(UObjectCreateListeners.Num(), LogUObjectArray, Fatal, TEXT("All UObject delete listeners should be unregistered when shutting down the UObject array"));
 	}
+}
+
+void FUObjectArray::DumpUObjectCountsToLog() const
+{
+	UE_LOG(LogUObjectArray, Display, TEXT("Dumping allocated UObject counts to log:"));
+	struct FClassEntry
+	{
+		UClass* Class = nullptr;
+		int32 NumInstances = 0;
+	};
+	int32 NumClasses = 0;
+	int32 NumUObjects = 0;
+	for (int32 ObjectIndex = 0; ObjectIndex < GetObjectArrayNum(); ++ObjectIndex)
+	{
+		const FUObjectItem& ObjectItem = GetObjectItemArrayUnsafe()[ObjectIndex];
+		UObject* Object = (UObject*)ObjectItem.Object;
+		if (Object && Object->IsA(UClass::StaticClass()))
+		{
+			NumClasses++;
+		}
+	}
+
+	TMap<UClass*, FClassEntry> ClassCountMap;
+	ClassCountMap.Reserve(NumClasses);
+
+	for (int32 ObjectIndex = 0; ObjectIndex < GetObjectArrayNum(); ++ObjectIndex)
+	{
+		const FUObjectItem& ObjectItem = GetObjectItemArrayUnsafe()[ObjectIndex];
+		if (ObjectItem.Object)
+		{
+			UObject* Object = (UObject*)ObjectItem.Object;
+			UClass* ObjectClass = Object->GetClass();
+			FClassEntry& ClassEntry = ClassCountMap.FindOrAdd(ObjectClass);
+			ClassEntry.Class = ObjectClass;
+			ClassEntry.NumInstances++;
+			NumUObjects++;
+		}
+	}
+
+	TArray<FClassEntry> ClassArray;
+	ClassCountMap.GenerateValueArray(ClassArray);
+
+	ClassArray.Sort([](const FClassEntry& A, const FClassEntry& B) { return A.NumInstances > B.NumInstances; });
+
+	const int32 MinInstanceNum = 10; // Don't print classes with fewer than the specified number of instances
+	const double MaxPrintedInstancePercent = 0.95; // Finish printing when the specified percent of instances has already been printed
+	int32 NumClassesSkipped = 0;
+	int32 NumInstancesSkipped = 0;
+	int32 NumInstancesPrinted = 0;
+	double PercentOfInstancesPrinted = 0.0;
+
+	for (const FClassEntry& ClassEntry : ClassArray)
+	{		
+		if (ClassEntry.NumInstances > MinInstanceNum && PercentOfInstancesPrinted <= MaxPrintedInstancePercent)
+		{
+			UE_LOG(LogUObjectArray, Display, TEXT("%8d instances of %s"), ClassEntry.NumInstances, *ClassEntry.Class->GetPathName());
+			NumInstancesPrinted += ClassEntry.NumInstances;
+			PercentOfInstancesPrinted = (double)NumInstancesPrinted / NumUObjects;
+		}
+		else
+		{
+			NumClassesSkipped++;
+			NumInstancesSkipped += ClassEntry.NumInstances;
+		}
+	}
+	if (NumInstancesSkipped > 0)
+	{
+		if (PercentOfInstancesPrinted > MaxPrintedInstancePercent)
+		{
+			UE_LOG(LogUObjectArray, Display, TEXT("%8d instances in the remaining %.3f%% of instances of %d classes"), NumInstancesSkipped, (1.0f - PercentOfInstancesPrinted) * 100.0f, NumClassesSkipped);
+		}
+		else
+		{
+			UE_LOG(LogUObjectArray, Display, TEXT("%8d instances of %d classes with less than %d instances per class"), NumInstancesSkipped, NumClassesSkipped, MinInstanceNum);
+		}
+	}
+	UE_LOG(LogUObjectArray, Display, TEXT("%d total UObjects (%d classes)"), NumUObjects, NumClasses);
+}
+
+static int32 GVarDumpObjectCountsToLogWhenMaxObjectLimitExceeded = 0;
+static FAutoConsoleVariableRef CDumpObjectCountsToLogWhenMaxObjectLimitExceeded(
+	TEXT("gc.DumpObjectCountsToLogWhenMaxObjectLimitExceeded"),
+	GVarDumpObjectCountsToLogWhenMaxObjectLimitExceeded,
+	TEXT("If not 0 dumps UObject counts to log when maximum object count limit has been reached."),
+	ECVF_Default
+);
+
+void UE::UObjectArrayPrivate::FailMaxUObjectCountExceeded(const int32 MaxUObjects, const int32 NewUObjectCount)
+{
+	if (GVarDumpObjectCountsToLogWhenMaxObjectLimitExceeded)
+	{
+		GUObjectArray.DumpUObjectCountsToLog();
+	}
+	UE_LOG(LogUObjectArray, Fatal, TEXT("Maximum number of UObjects (%d) exceeded when trying to add %d object(s), make sure you update MaxObjectsInGame/MaxObjectsInEditor/MaxObjectsInProgram in project settings."), MaxUObjects, NewUObjectCount);
 }

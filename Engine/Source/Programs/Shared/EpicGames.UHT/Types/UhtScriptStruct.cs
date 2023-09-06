@@ -500,6 +500,11 @@ namespace EpicGames.UHT.Types
 		{
 			return (ReturnType.Length == 0 || ReturnType == "void") ? s_noPrefix : ReturnPrefixInternal;
 		}
+		/// <summary>
+		/// Whether or not this method is a predicate.
+		/// </summary>
+		/// <returns>True if this method is a predicate</returns>
+		public bool IsPredicate { get; set; } = false;
 	}
 
 	/// <summary>
@@ -923,19 +928,19 @@ namespace EpicGames.UHT.Types
 		{
 			if (RigVMStructInfo != null)
 			{
-				if (this.MetaData.TryGetValueHierarchical("ExecuteContext", out string? ExecuteContextMetadata))
+				if (MetaData.TryGetValueHierarchical("ExecuteContext", out string? executeContextMetadata))
 				{
-					RigVMStructInfo.ExecuteContextType = ExecuteContextMetadata;
+					RigVMStructInfo.ExecuteContextType = executeContextMetadata;
 				}
 
 				for (UhtStruct? current = this; current != null; current = current.SuperStruct)
 				{
 					foreach (UhtProperty property in current.Properties)
 					{
-						UhtRigVMParameter parameter = new UhtRigVMParameter(property, RigVMStructInfo.Members.Count);
+						UhtRigVMParameter parameter = new(property, RigVMStructInfo.Members.Count);
 						if (parameter.IsExecuteContext())
 						{
-							if (RigVMStructInfo.ExecuteContextMember == String.Empty)
+							if (String.IsNullOrEmpty(RigVMStructInfo.ExecuteContextMember))
 							{
 								RigVMStructInfo.ExecuteContextMember = parameter.Name;
 							}
@@ -945,14 +950,14 @@ namespace EpicGames.UHT.Types
 							}
 							else if (RigVMStructInfo.ExecuteContextType != parameter.Type)
 							{
-								this.LogError($"RigVM Struct {this.SourceName} contains properties of varying execute context type {RigVMStructInfo.ExecuteContextType} vs {parameter.Type}.");
+								this.LogError($"RigVM Struct {SourceName} contains properties of varying execute context type {RigVMStructInfo.ExecuteContextType} vs {parameter.Type}.");
 							}
 						}
 						else
 						{
 							if (parameter.IsLazy && parameter.Output)
 							{
-								this.LogError($"RigVM Struct {this.SourceName} - Member {parameter.Name} is both an output and a lazy input.");
+								this.LogError($"RigVM Struct {SourceName} - Member {parameter.Name} is both an output and a lazy input.");
 							}
 							RigVMStructInfo.Members.Add(parameter);
 						}

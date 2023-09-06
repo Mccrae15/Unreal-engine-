@@ -5,11 +5,56 @@
 #include "CommonRenderResources.h"
 #include "PixelShaderUtils.h"
 #include "ScreenRendering.h"
-#include "PostProcess/SceneFilterRendering.h"
+#include "PostProcess/DrawRectangle.h"
 
 
 namespace DisplayClusterMediaHelpers
 {
+	namespace MediaId
+	{
+		// Generate media ID for a specific entity
+		FString GenerateMediaId(EMediaDeviceType DeviceType, EMediaOwnerType OwnerType, const FString& NodeId, const FString& DCRAName, const FString& OwnerName, uint8 Index)
+		{
+			if (DeviceType == EMediaDeviceType::Input)
+			{
+				switch (OwnerType)
+				{
+				case EMediaOwnerType::Backbuffer:
+					return FString::Printf(TEXT("%s_%s_backbuffer_input"), *NodeId, *DCRAName);
+
+				case EMediaOwnerType::Viewport:
+					return FString::Printf(TEXT("%s_%s_%s_viewport_input"), *NodeId, *DCRAName, *OwnerName);
+
+				case EMediaOwnerType::ICVFXCamera:
+					return FString::Printf(TEXT("%s_%s_%s_icvfx_input"), *NodeId, *DCRAName, *OwnerName);
+
+				default:
+					unimplemented();
+				}
+			}
+			else if (DeviceType == EMediaDeviceType::Output)
+			{
+				switch (OwnerType)
+				{
+				case EMediaOwnerType::Backbuffer:
+					return FString::Printf(TEXT("%s_%s_backbuffer_capture_%u"), *NodeId, *DCRAName, Index);
+
+				case EMediaOwnerType::Viewport:
+					return FString::Printf(TEXT("%s_%s_%s_viewport_capture_%u"), *NodeId, *DCRAName, *OwnerName, Index);
+
+				case EMediaOwnerType::ICVFXCamera:
+					return FString::Printf(TEXT("%s_%s_%s_icvfx_capture_%u"), *NodeId, *DCRAName, *OwnerName, Index);
+
+				default:
+					checkNoEntry();
+				}
+			}
+
+			// Should never get here
+			return FString();
+		}
+	}
+
 	//@todo This needs to be exposed from the DisplayCluster core module after its refactoring
 	FString GenerateICVFXViewportName(const FString& ClusterNodeId, const FString& ICVFXCameraName)
 	{
@@ -51,25 +96,21 @@ namespace DisplayClusterMediaHelpers
 
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-			if (SrcRect.Size() != DstRect.Size())
-			{
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Bilinear>::GetRHI(), SrcTexture);
-			}
-			else
-			{
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), SrcTexture);
-			}
+			FRHISamplerState* SamplerState = (SrcRect.Size() != DstRect.Size()) ? TStaticSamplerState<SF_Bilinear>::GetRHI() : TStaticSamplerState<SF_Point>::GetRHI();
+
+			SetShaderParametersLegacyPS(RHICmdList, PixelShader, SamplerState, SrcTexture);
 
 			// Set up vertex uniform parameters for scaling and biasing the rectangle.
 			// Note: Use DrawRectangle in the vertex shader to calculate the correct vertex position and uv.
-			FDrawRectangleParameters Parameters;
-			Parameters.PosScaleBias = FVector4f(DstRect.Size().X, DstRect.Size().Y, DstRect.Min.X, DstRect.Min.Y);
-			Parameters.UVScaleBias = FVector4f(SrcRect.Size().X, SrcRect.Size().Y, SrcRect.Min.X, SrcRect.Min.Y);
-			Parameters.InvTargetSizeAndTextureSize = FVector4f(1.0f / DstSize.X, 1.0f / DstSize.Y, 1.0f / SrcSize.X, 1.0f / SrcSize.Y);
 
-			SetUniformBufferParameterImmediate(RHICmdList, VertexShader.GetVertexShader(), VertexShader->GetUniformBufferParameter<FDrawRectangleParameters>(), Parameters);
-
-			FPixelShaderUtils::DrawFullscreenQuad(RHICmdList, 1);
+			UE::Renderer::PostProcess::DrawRectangle(
+				RHICmdList, VertexShader,
+				DstRect.Min.X, DstRect.Min.Y,
+				DstRect.Size().X, DstRect.Size().Y,
+				SrcRect.Min.X, SrcRect.Min.Y,
+				SrcRect.Size().X, SrcRect.Size().Y,
+				DstSize, SrcSize
+			);
 		}
 
 		RHICmdList.EndRenderPass();

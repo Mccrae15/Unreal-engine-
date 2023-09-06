@@ -11,6 +11,7 @@
 #include "Misc/CompilationResult.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Optional.h"
+#include "Misc/Timespan.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 #include "RequiredProgramMainCPPInclude.h"
@@ -190,7 +191,7 @@ class FZenDashboardApp
 				FText Title = LOCTEXT("ConfirmToDeleteZenServerData_Title", "Zen Server Data Delete");
 				FText ConfirmMessage = FText::Format(LOCTEXT("ConfirmToDeleteZenServerData", "You are about to delete all local Zen Server data at:\n\n{0}\n\nThis will require you to build or download all data stored there which can take a long time. Are you sure you want to proceed?"),
 					FText::FromString(RunContext.GetDataPath()));
-				EAppReturnType::Type OkToDelete = OpenModalMessageDialog_Internal(EAppMsgType::YesNo, ConfirmMessage, Title, Window);
+				EAppReturnType::Type OkToDelete = OpenModalMessageDialog_Internal(EAppMsgCategory::Warning, EAppMsgType::YesNo, ConfirmMessage, Title, Window);
 				if (OkToDelete == EAppReturnType::No)
 				{
 					return;
@@ -226,6 +227,24 @@ class FZenDashboardApp
 		if (TSharedPtr<UE::Zen::FZenServiceInstance> ZenServiceInstance = ServiceInstanceManager->GetZenServiceInstance())
 		{
 			ZenServiceInstance->RequestGC();
+		}
+	}
+
+	void RunGCOneWeek()
+	{
+		if (TSharedPtr<UE::Zen::FZenServiceInstance> ZenServiceInstance = ServiceInstanceManager->GetZenServiceInstance())
+		{
+			uint32 CacheDuration = static_cast<uint32>(FTimespan::FromDays(7).GetTotalSeconds());
+			ZenServiceInstance->RequestGC(nullptr, &CacheDuration);
+		}
+	}
+
+	void RunGCOneDay()
+	{
+		if (TSharedPtr<UE::Zen::FZenServiceInstance> ZenServiceInstance = ServiceInstanceManager->GetZenServiceInstance())
+		{
+			uint32 CacheDuration = static_cast<uint32>(FTimespan::FromDays(1).GetTotalSeconds());
+			ZenServiceInstance->RequestGC(nullptr, &CacheDuration);
 		}
 	}
 
@@ -366,6 +385,30 @@ class FZenDashboardApp
 				NAME_None,
 				EUserInterfaceActionType::Button
 			);
+
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("FreeUnusedDiskSpaceOneWeek", "Free unused disk space (1 week age limit)"),
+				LOCTEXT("FreeUnusedDiskSpaceOneWeek_ToolTip", "Frees unused disk space by running a garbage collection process, only keeps data that was used in the past week"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateRaw(this, &FZenDashboardApp::RunGCOneWeek),
+					FCanExecuteAction()
+				),
+				NAME_None,
+				EUserInterfaceActionType::Button
+			);
+
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("FreeUnusedDiskSpaceOneDay", "Free unused disk space (1 day age limit)"),
+				LOCTEXT("FreeUnusedDiskSpaceOneDay_ToolTip", "Frees unused disk space by running a garbage collection process, only keeps data that was used in the past day"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateRaw(this, &FZenDashboardApp::RunGCOneDay),
+					FCanExecuteAction()
+				),
+				NAME_None,
+				EUserInterfaceActionType::Button
+			);
 		}
 		MenuBuilder.EndSection();
 	}
@@ -496,11 +539,11 @@ private:
 		return LOCTEXT("WindowTitle", "Zen Dashboard");
 	}
 
-	EAppReturnType::Type OnModalMessageDialog(EAppMsgType::Type InMessage, const FText& InText, const FText& InTitle)
+	EAppReturnType::Type OnModalMessageDialog(EAppMsgCategory InMessageCategory, EAppMsgType::Type InMessage, const FText& InText, const FText& InTitle)
 	{
 		if (IsInGameThread() && FSlateApplication::IsInitialized() && FSlateApplication::Get().CanAddModalWindow())
 		{
-			return OpenModalMessageDialog_Internal(InMessage, InText, InTitle, Window);
+			return OpenModalMessageDialog_Internal(InMessageCategory, InMessage, InText, InTitle, Window);
 		}
 		else
 		{
@@ -510,12 +553,12 @@ private:
 
 	void InstallMessageDialogOverride()
 	{
-		FCoreDelegates::ModalErrorMessage.BindRaw(this, &FZenDashboardApp::OnModalMessageDialog);
+		FCoreDelegates::ModalMessageDialog.BindRaw(this, &FZenDashboardApp::OnModalMessageDialog);
 	}
 
 	void RemoveMessageDialogOverride()
 	{
-		FCoreDelegates::ModalErrorMessage.Unbind();
+		FCoreDelegates::ModalMessageDialog.Unbind();
 	}
 };
 

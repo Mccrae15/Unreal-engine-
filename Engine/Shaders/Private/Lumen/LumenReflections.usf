@@ -21,6 +21,7 @@
 #endif
 
 #define FLOAT3_11_11_10_MAX float3(65024.0f, 65024.0f, 64512.0f)
+#define FLOAT_32_MAX float(+3.402823466e+38f)
 
 RWBuffer<uint> RWReflectionResolveTileIndirectArgs;
 RWBuffer<uint> RWReflectionTracingTileIndirectArgs;
@@ -322,7 +323,7 @@ void ReflectionGenerateRaysCS(
 		{
 			float2 ScreenUV = (Coord.SvPosition + .5f) * View.BufferSizeAndInvSize.zw;
 			float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, Material.SceneDepth);
-			float3 CameraVector = normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin));
+			float3 CameraVector = GetCameraVectorFromWorldPosition(WorldPosition);
 
 			float3 RayDirection;
 			float ConeAngle = 0.0f;
@@ -346,7 +347,7 @@ void ReflectionGenerateRaysCS(
 
 				// We set slabs BSDFs as having a single specular lob without haziness.
 				// This is to ensure the pdf is computed from a single lobe in order to be able to compute a matching cone angle.
-				StrataSetBSDFRoughness(BSDF, Material.TopLayerRoughness);
+				BSDF.StrataSetBSDFRoughness(Material.TopLayerRoughness);
 				if (StrataGetBSDFType(BSDF) == STRATA_BSDF_TYPE_SLAB)
 				{
 					BSDF_SETHASHAZINESS(BSDF, 0);
@@ -368,11 +369,17 @@ void ReflectionGenerateRaysCS(
 			{
 				const float2 E = GenerateRandom(ReflectionTracingCoord);
 
-				float3x3 TangentBasis = GetTangentBasis(Material.WorldNormal);
+				float3x3 TangentBasis = GetTangentBasis(Material);
 				float3 TangentV = mul(TangentBasis, -CameraVector);
 
-				//float4 GGXSample = ImportanceSampleGGX(E, Pow4(Material.TopLayerRoughness));
-				float4 GGXSample = ImportanceSampleVisibleGGX(UniformSampleDisk(E), Pow4(Material.TopLayerRoughness), TangentV);
+				float2 Alpha = Pow2(Material.TopLayerRoughness).xx;
+
+				if (HasAnisotropy(Material))
+				{
+					GetAnisotropicRoughness(Alpha.x, Material.Anisotropy, Alpha.x, Alpha.y);
+				}
+
+				float4 GGXSample = ImportanceSampleVisibleGGX(E, Alpha, TangentV);
 				float3 WorldH = mul(GGXSample.xyz, TangentBasis);
 				RayDirection = reflect(CameraVector, WorldH);
 				ConeAngle = 1.0f / max(GGXSample.w, 0.0001f);
@@ -420,6 +427,9 @@ RWTexture2D<float> RWResolveVariance;
 uint NumSpatialReconstructionSamples;
 float SpatialReconstructionKernelRadius;
 float SpatialReconstructionRoughnessScale;
+float SpatialResolveTonemapStrength;
+
+const static float DisocclusionVariance = 1.0f;
 
 float Luma(float3 Color) 
 {
@@ -427,25 +437,28 @@ float Luma(float3 Color)
 	return dot(Color, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-// Loses bright interesting features
-#define TONEMAP_DURING_RESOLVE 0
-
 float3 TonemapLighting(float3 Lighting)
 {
-#if TONEMAP_DURING_RESOLVE
-	return Lighting / (1.0f + Luma(Lighting));
-#else
-	return Lighting;
-#endif
+	float Weight = 1.0f;
+
+	if (SpatialResolveTonemapStrength > 0)
+	{
+		Weight = 1.0f / (1.0f + Luma(Lighting));
+	}
+
+	return Lighting * Weight;
 }
 
 float3 InverseTonemapLighting(float3 TonemappedLighting)
 {
-#if TONEMAP_DURING_RESOLVE
-	return TonemappedLighting / (1.0f - Luma(TonemappedLighting));
-#else
-	return TonemappedLighting;
-#endif
+	float InvertWeight = 1.0f;
+
+	if (SpatialResolveTonemapStrength > 0)
+	{
+		InvertWeight = 1.0f / (1.0f - Luma(TonemappedLighting));
+	}
+
+	return TonemappedLighting * InvertWeight;
 }
 
 [numthreads(REFLECTION_THREADGROUP_SIZE_1D, 1, 1)]
@@ -464,8 +477,6 @@ void ReflectionResolveCS(
 	float ResolveVariance = 0;
 	float DepthForReprojection = 0;
 
-	const bool bUseCenterSample = ReflectionDownsampleFactor == 1;
-
 	{
 		const FLumenMaterialData Material = ApplySmoothBias(ReadMaterialData(Coord, MaxRoughnessToTrace), true /*bTopLayerRoughness*/);
 		DepthForReprojection = Material.SceneDepth;
@@ -481,7 +492,7 @@ void ReflectionResolveCS(
 			}
 		#endif
 
-			float ClosestHitDepth = 1000000.0f;
+			float ClosestHitDepth = FLOAT_32_MAX;
 
 		#if USE_SPATIAL_RECONSTRUCTION
 			{
@@ -495,10 +506,10 @@ void ReflectionResolveCS(
 
 				const bool bHasAnisotropy = HasAnisotropy(Material);
 				const float EffectiveRoughness = clamp(Material.TopLayerRoughness * SpatialReconstructionRoughnessScale, 0.0f, 1.0f);
-				float2 ax_ay = Pow2(EffectiveRoughness);
+				float2 ax_ay = Pow2(EffectiveRoughness).xx;
 				if (bHasAnisotropy)
 				{
-					GetAnisotropicRoughness(EffectiveRoughness, Material.Anisotropy, ax_ay.x, ax_ay.y);
+					GetAnisotropicRoughness(ax_ay.x, Material.Anisotropy, ax_ay.x, ax_ay.y);
 				}
 				float a2 = ax_ay.x * ax_ay.y;
 
@@ -508,20 +519,22 @@ void ReflectionResolveCS(
 				float CenterTraceHitDistance = ClosestHitDepth;
 
 				{
-					bool bUnused;
-					CenterTraceHitDistance = DecodeRayDistance(TraceHit[ReflectionScreenCoord_Flatten].x, bUnused);
+					bool bHit;
+					CenterTraceHitDistance = DecodeRayDistance(TraceHit[ReflectionScreenCoord_Flatten].x, bHit);
 					ClosestHitDepth = CenterTraceHitDistance;
+
+					const bool bUseCenterSample = ReflectionDownsampleFactor == 1;
 
 					if (bUseCenterSample)
 					{
-						float3 TonemappedSampleRadiance = TonemapLighting(TraceRadiance[ReflectionScreenCoord_Flatten]);
-						ReflectionLighting = TonemappedSampleRadiance;
+						float3 SampleRadiance = TraceRadiance[ReflectionScreenCoord_Flatten];
+						ReflectionLighting = TonemapLighting(SampleRadiance);
 						float Weight = 1.0f;
 						TotalWeight += Weight;
 
 						#if USE_BILATERAL_FILTER
 							//https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Weighted_incremental_algorithm
-							float LumaSampleRadiance = Luma(TonemappedSampleRadiance);
+							float LumaSampleRadiance = Luma(SampleRadiance);
 							float OldMean = Mean;
 							Mean += Weight / TotalWeight * (LumaSampleRadiance - OldMean);
 							S += Weight * (LumaSampleRadiance - OldMean) * (LumaSampleRadiance - Mean);
@@ -615,13 +628,13 @@ void ReflectionResolveCS(
 
 							float Weight = NewPDF / RayData.PDF;
 							float ClampedWeight = max(1e-6, Weight);
-							float3 TonemappedSampleRadiance = TonemapLighting(TraceRadiance[NeighborTracingCoord_Flatten]);
-							ReflectionLighting += TonemappedSampleRadiance * ClampedWeight;
+							float3 SampleRadiance = TraceRadiance[NeighborTracingCoord_Flatten];
+							ReflectionLighting += TonemapLighting(SampleRadiance) * ClampedWeight;
 
 							TotalWeight += ClampedWeight;
 
 							#if USE_BILATERAL_FILTER
-								float LumaSampleRadiance = Luma(TonemappedSampleRadiance);
+								float LumaSampleRadiance = Luma(SampleRadiance);
 								float OldMean = Mean;
 								Mean += ClampedWeight / TotalWeight * (LumaSampleRadiance - OldMean);
 								S += ClampedWeight * (LumaSampleRadiance - OldMean) * (LumaSampleRadiance - Mean);
@@ -664,6 +677,8 @@ void ReflectionResolveCS(
 	RWSpecularIndirectDepth[Coord.SvPositionFlatten] = ConvertToDeviceZ(DepthForReprojection);
 
 	#if USE_BILATERAL_FILTER
+		// Clamp the variance range to not overlap with DisocclusionVariance, so the bilateral filter can detect disocclusion
+		ResolveVariance = min(ResolveVariance, DisocclusionVariance - .1f);
 		RWResolveVariance[Coord.SvPositionFlatten] = ResolveVariance;
 	#endif
 
@@ -716,6 +731,7 @@ Texture2D ResolveVarianceHistory;
 
 float HistoryDistanceThreshold;
 float MaxFramesAccumulated;
+float NeighborhoodClampExpandWithResolveVariance;
 
 float4 HistoryScreenPositionScaleBias;
 float4 HistoryUVMinMax;
@@ -864,8 +880,6 @@ bool IsValidHistoryUV(float2 UV)
 	return !(any(UV > HistoryUVMinMax.zw) || any(UV < HistoryUVMinMax.xy));
 }
 
-const static float DisocclusionVariance = 1.0f;
-
 struct FBilinear
 {
 	float2 Origin;
@@ -997,7 +1011,7 @@ void ReflectionTemporalReprojectionCS(
 	const float2 ScreenUV = (Coord.SvPosition + .5f) * View.BufferSizeAndInvSize.zw;
 	const float2 ScreenPosition = (ScreenUV.xy - View.ScreenPositionScaleBias.wz) / View.ScreenPositionScaleBias.xy;
 
-	const float3 NewSpecular = ResolvedReflections[Coord.SvPositionFlatten];
+	const float3 NewSpecular = ResolvedReflections[Coord.SvPositionFlatten].xyz;
 	const float ReflectionHitDeviceZ = ResolvedReflectionsDepth[Coord.SvPositionFlatten].x;
 
 #if FRONT_LAYER_TRANSLUCENCY
@@ -1040,7 +1054,7 @@ void ReflectionTemporalReprojectionCS(
 
 #define EXPAND_HISTORY_DISTANCE_THRESHOLD_FOR_JITTER 1
 #if EXPAND_HISTORY_DISTANCE_THRESHOLD_FOR_JITTER
-	const float3 TranslatedWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+	const float3 TranslatedWorldPosition = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, SceneDepth), SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 	const float3 V = normalize(-TranslatedWorldPosition);
 	// Raise the threshold at grazing angles to compensate for TAA jitter causing a depth mismatch dependent on the angle
 	// This also introduces some ghosting around characters, needs a better solution
@@ -1061,7 +1075,7 @@ void ReflectionTemporalReprojectionCS(
 
 	const uint2 MinScreenCoord = View.ViewRectMinAndSize.xy;
 	const uint2 MaxScreenCoord = View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw - 1;
-	const FNeighborStatistics Neighborhood = GetNeighborStatistics(Coord.SvPosition, MinScreenCoord, MaxScreenCoord, NewSpecular, Coord.TileBSDFIndex);
+	FNeighborStatistics Neighborhood = GetNeighborStatistics(Coord.SvPosition, MinScreenCoord, MaxScreenCoord, NewSpecular, Coord.TileBSDFIndex);
 
 	const float InvalidHistoryErrorThreshold = 1e6;
 	const float ErrorFromReflectHit = IsValidHistoryUV(HistoryCoordFromReflectHit.Primary) ? abs(Luma(HistoryFromReflectHit.SpecularIndirect) - Luma(Neighborhood.Mean)) : InvalidHistoryErrorThreshold;
@@ -1070,6 +1084,23 @@ void ReflectionTemporalReprojectionCS(
 	float3 HistorySpecularIndirect = ErrorFromReflectHit < ErrorFromSceneDepth
 		? HistoryFromReflectHit.SpecularIndirect 
 		: HistoryFromSceneDepth.SpecularIndirect;
+
+#if USE_BILATERAL_FILTER
+	float VarianceHistoryWeight = IsValidHistoryUV(HistoryCoordFromReflectHit.Primary) ? .9f : 0;
+	float NewResolveVariance = ResolveVariance[Coord.SvPositionFlatten];
+
+	if (dot(OcclusionWeights, 1.0f) < 1.0f)
+	{
+		VarianceHistoryWeight = 0.0f;
+		NewResolveVariance = DisocclusionVariance;
+	}
+
+	float ResolveVarianceHistoryValue = VarianceHistoryWeight > 0.0f ? Texture2DSampleLevel(ResolveVarianceHistory, GlobalBilinearClampedSampler, HistoryCoordFromReflectHit.Extended, 0).x : 0;
+	float AccumulatedResolveVariance = max(lerp(NewResolveVariance, ResolveVarianceHistoryValue, VarianceHistoryWeight), 0);
+	RWResolveVariance[Coord.SvPositionFlatten] = AccumulatedResolveVariance;
+	float AccumulatedResolveStdDev = sqrt(AccumulatedResolveVariance);
+	Neighborhood.StdDev = max(Neighborhood.StdDev, NeighborhoodClampExpandWithResolveVariance * AccumulatedResolveStdDev);
+#endif
 
 #define REPROJECTION_USE_STANDARD_DEVIATION_CLAMP 1
 #if REPROJECTION_USE_STANDARD_DEVIATION_CLAMP
@@ -1083,8 +1114,14 @@ void ReflectionTemporalReprojectionCS(
 	HistorySpecularIndirect = clamp(HistorySpecularIndirect, HistoryClampMin, HistoryClampMax);
 
 	float4 NumFramesAccumulatedNeighborhood = HistoryNumFramesAccumulated.GatherRed(GlobalPointClampedSampler, HistoryGatherUV_Extended).wzxy * MaxFramesAccumulated;
-	// Allow more aliasing through as we approach mirror to reduce the temporal reprojection diffusion error
-	float MaxFrames = lerp(2, MaxFramesAccumulated, saturate(Material.TopLayerRoughness / .05f));
+
+	float MaxFrames = MaxFramesAccumulated;
+
+	if (ReflectionDownsampleFactor == 1)
+	{
+		// Allow more aliasing through as we approach mirror to reduce the temporal reprojection diffusion error, which allows TSR to reconstruct a sharper reflection
+		MaxFrames = lerp(2, MaxFramesAccumulated, saturate(Material.TopLayerRoughness / .05f));
+	}
 
 	NumFramesAccumulatedNeighborhood = min(NumFramesAccumulatedNeighborhood + 1.0f, MaxFrames);
 	float NumFramesAccumulated = WeightedAverage(NumFramesAccumulatedNeighborhood, HistoryFromSceneDepth.Weights);
@@ -1103,20 +1140,6 @@ void ReflectionTemporalReprojectionCS(
 	const bool bValid = any(NewSpecular != FLOAT3_11_11_10_MAX);
 	RWSpecularIndirectAccumulated[Coord.SvPositionFlatten] = float4(OutReflections, bValid ? 1.0f : 0.f);
 	RWNumHistoryFramesAccumulated[Coord.SvPositionFlatten] = NewNumFramesAccumulated / MaxFramesAccumulated;
-
-#if USE_BILATERAL_FILTER
-	float VarianceHistoryWeight = IsValidHistoryUV(HistoryCoordFromReflectHit.Primary) ? .9f : 0;
-	float NewResolveVariance = ResolveVariance[Coord.SvPositionFlatten];
-
-	if (dot(OcclusionWeights, 1.0f) < 1.0f)
-	{
-		VarianceHistoryWeight = 0.0f;
-		NewResolveVariance = DisocclusionVariance;
-	}
-
-	float ResolveVarianceHistoryValue = VarianceHistoryWeight > 0.0f ? Texture2DSampleLevel(ResolveVarianceHistory, GlobalBilinearClampedSampler, HistoryCoordFromReflectHit.Extended, 0).x : 0;
-	RWResolveVariance[Coord.SvPositionFlatten] = max(lerp(NewResolveVariance, ResolveVarianceHistoryValue, VarianceHistoryWeight), 0);
-#endif
 }
 
 // Greatly reduces fireflies in disoccluded areas, doesn't change overall energy
@@ -1167,73 +1190,71 @@ void ReflectionBilateralFilterCS(
 
 	float3 OutReflections = 0;
 
-	if (SceneDepth < 1000000.0f)
+	const FLumenMaterialData Material = ApplySmoothBias(ReadMaterialData(Coord, MaxRoughnessToTrace), true /*bTopLayerRoughness*/);
+
+	if (NeedRayTracedReflections(Material.TopLayerRoughness, Material))
 	{
-		const FLumenMaterialData Material = ApplySmoothBias(ReadMaterialData(Coord, MaxRoughnessToTrace), true /*bTopLayerRoughness*/);
+		OutReflections = TonemapLightingForBilateral(SpecularIndirect[Coord.SvPositionFlatten]);
 
-		if (NeedRayTracedReflections(Material.TopLayerRoughness, Material))
+		float VarianceFromSpatialResolve = ResolveVariance[Coord.SvPositionFlatten];
+
+		float StrongBlur = VarianceFromSpatialResolve > BilateralFilterStrongBlurVarianceThreshold ? 1.0f : 0.0f;
+		float DisocclusionBlur = VarianceFromSpatialResolve > DisocclusionVariance - .1f ? 1.0f : 0.0f;
+		float MinKernelRadius = 0.0f;
+		float MaxKernelRadius = BilateralFilterSpatialKernelRadius * View.ViewSizeAndInvSize.x * lerp(1.0f, 2.0f, StrongBlur);
+		float KernelRadius = lerp(MinKernelRadius, MaxKernelRadius, saturate(Material.TopLayerRoughness * 8));
+
+		if (KernelRadius >= .5f && VarianceFromSpatialResolve > .04f)
 		{
-			OutReflections = TonemapLightingForBilateral(SpecularIndirect[Coord.SvPositionFlatten]);
+			float TotalWeight = 1.0f;
+			float GuassianNormalize = 2.0f / (KernelRadius * KernelRadius);
+			float InvSpecularLobeAngleThreshold = 1.0f / (lerp(.0001f * PI, PI, Material.Roughness * Material.Roughness) * BilateralFilterNormalAngleThresholdScale);
+			uint2 RandomSeed = Rand3DPCG16(int3(Coord.SvPosition, SCREEN_TEMPORAL_INDEX)).xy;
 
-			float VarianceFromSpatialResolve = ResolveVariance[Coord.SvPositionFlatten];
+			float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
+			float4 ScenePlane = float4(Material.WorldNormal, dot(WorldPosition, Material.WorldNormal));
 
-			bool bStrongBlur = VarianceFromSpatialResolve > BilateralFilterStrongBlurVarianceThreshold;
-			float MinKernelRadius = 0.0f;
-			float MaxKernelRadius = BilateralFilterSpatialKernelRadius * View.ViewSizeAndInvSize.x * (bStrongBlur ? 2.0f : 1.0f);
-			float KernelRadius = lerp(MinKernelRadius, MaxKernelRadius, saturate(Material.TopLayerRoughness * 8));
+			uint NumBilateralFilterSamples = min(BilateralFilterNumSamples * lerp(1, 2, StrongBlur), 16u);
 
-			if (KernelRadius >= .5f && VarianceFromSpatialResolve > .04f)
+			for (uint SampleIndex = 0; SampleIndex < NumBilateralFilterSamples; SampleIndex++)
 			{
-				float TotalWeight = 1.0f;
-				float GuassianNormalize = 2.0f / (KernelRadius * KernelRadius);
-				float InvSpecularLobeAngleThreshold = 1.0f / (lerp(.0001f * PI, PI, Material.Roughness * Material.Roughness) * BilateralFilterNormalAngleThresholdScale);
-				uint2 RandomSeed = Rand3DPCG16(int3(Coord.SvPosition, SCREEN_TEMPORAL_INDEX)).xy;
+				float2 Offset = (Hammersley16(SampleIndex, NumBilateralFilterSamples, RandomSeed) - .5f) * 2 * KernelRadius;
+				int2 NeighborSvPosition = (int2)(Coord.SvPosition + Offset);
 
-				float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
-				float4 ScenePlane = float4(Material.WorldNormal, dot(WorldPosition, Material.WorldNormal));
-
-				uint NumBilateralFilterSamples = min(BilateralFilterNumSamples * (bStrongBlur ? 2 : 1), 16u);
-
-				for (uint SampleIndex = 0; SampleIndex < NumBilateralFilterSamples; SampleIndex++)
+				if (all(and(NeighborSvPosition >= (int2)View.ViewRectMinAndSize.xy, NeighborSvPosition < (int2)(View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw))))
 				{
-					float2 Offset = (Hammersley16(SampleIndex, NumBilateralFilterSamples, RandomSeed) - .5f) * 2 * KernelRadius;
-					int2 NeighborSvPosition = (int2)(Coord.SvPosition + Offset);
+					const FLumenMaterialCoord NeighborCoord = GetLumenMaterialCoord(NeighborSvPosition, Coord.TileBSDFIndex);
 
-					if (all(and(NeighborSvPosition >= (int2)View.ViewRectMinAndSize.xy, NeighborSvPosition < (int2)(View.ViewRectMinAndSize.xy + View.ViewRectMinAndSize.zw))))
+					float2 NeighborScreenUV = (NeighborCoord.SvPosition + 0.5f) * View.BufferSizeAndInvSize.zw;
+					const FLumenMaterialData NeighborMaterial = ApplySmoothBias(ReadMaterialData(NeighborCoord, MaxRoughnessToTrace), true /*bTopLayerRoughness*/);
+					const float3 NeighborWorldPosition = GetWorldPositionFromScreenUV(NeighborScreenUV, NeighborMaterial.SceneDepth);
+
+					// Avoid reading from unprocessed tiles
+					if (NeedRayTracedReflections(NeighborMaterial.TopLayerRoughness, NeighborMaterial))
 					{
-						const FLumenMaterialCoord NeighborCoord = GetLumenMaterialCoord(NeighborSvPosition, Coord.TileBSDFIndex);
+						float PlaneDistance = abs(dot(float4(NeighborWorldPosition, -1), ScenePlane));
+						float RelativeDepthDifference = PlaneDistance / SceneDepth;
+						float DepthWeight = exp2(-BilateralFilterDepthWeightScale * (RelativeDepthDifference * RelativeDepthDifference));
+						float SpatialWeight = exp2(-GuassianNormalize * dot(Offset, Offset));
+						float AngleBetweenNormals = acosFast(saturate(dot(ScenePlane.xyz, NeighborMaterial.WorldNormal)));
+						float NormalWeight = 1.0f - saturate(AngleBetweenNormals * InvSpecularLobeAngleThreshold);
 
-						float2 NeighborScreenUV = (NeighborCoord.SvPosition + 0.5f) * View.BufferSizeAndInvSize.zw;
-						const FLumenMaterialData NeighborMaterial = ApplySmoothBias(ReadMaterialData(NeighborCoord, MaxRoughnessToTrace), true /*bTopLayerRoughness*/);
-						const float3 NeighborWorldPosition = GetWorldPositionFromScreenUV(NeighborScreenUV, NeighborMaterial.SceneDepth);
-
-						// Avoid reading from unprocessed tiles
-						if (NeedRayTracedReflections(NeighborMaterial.TopLayerRoughness, NeighborMaterial))
-						{
-							float PlaneDistance = abs(dot(float4(NeighborWorldPosition, -1), ScenePlane));
-							float RelativeDepthDifference = PlaneDistance / SceneDepth;
-							float DepthWeight = exp2(-BilateralFilterDepthWeightScale * (RelativeDepthDifference * RelativeDepthDifference));
-							float SpatialWeight = exp2(-GuassianNormalize * dot(Offset, Offset));
-							float AngleBetweenNormals = acosFast(saturate(dot(ScenePlane.xyz, NeighborMaterial.WorldNormal)));
-							float NormalWeight = 1.0f - saturate(AngleBetweenNormals * InvSpecularLobeAngleThreshold);
-
-							float SampleWeight = SpatialWeight * DepthWeight * NormalWeight;
-							OutReflections += TonemapLightingForBilateral(SpecularIndirect[NeighborCoord.SvPositionFlatten]) * SampleWeight;
-							TotalWeight += SampleWeight;
-						}
+						float SampleWeight = SpatialWeight * DepthWeight * lerp(NormalWeight, 1, DisocclusionBlur);
+						OutReflections += TonemapLightingForBilateral(SpecularIndirect[NeighborCoord.SvPositionFlatten]) * SampleWeight;
+						TotalWeight += SampleWeight;
 					}
-				}
-
-				OutReflections = OutReflections / TotalWeight;
-
-				if (bStrongBlur)
-				{
-					//OutReflections.r = 10;
 				}
 			}
 
-			OutReflections = InverseTonemapLightingForBilateral(OutReflections);
+			OutReflections = OutReflections / TotalWeight;
+
+			if (DisocclusionBlur > 0)
+			{
+				//OutReflections = float3(10, 0, 0);
+			}
 		}
+
+		OutReflections = InverseTonemapLightingForBilateral(OutReflections);
 	}
 
 	RWSpecularIndirect[Coord.SvPositionFlatten] = OutReflections;

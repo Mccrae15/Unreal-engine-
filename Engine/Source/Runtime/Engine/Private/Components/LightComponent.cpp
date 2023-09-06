@@ -27,6 +27,8 @@
 #include "Components/DirectionalLightComponent.h"
 #include "Components/BillboardComponent.h"
 #include "ComponentRecreateRenderStateContext.h"
+#include "UObject/ICookInfo.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/UnrealType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LightComponent)
@@ -35,12 +37,18 @@
 #include "Rendering/StaticLightingSystemInterface.h"
 #endif
 
-void FStaticShadowDepthMap::InitRHI()
+#if WITH_EDITOR
+static const TCHAR* GLightSpriteAssetName = TEXT("/Engine/EditorResources/LightIcons/S_LightError.S_LightError");
+#endif
+
+void FStaticShadowDepthMap::InitRHI(FRHICommandListBase&)
 {
 	if (FApp::CanEverRender() && Data && Data->ShadowMapSizeX > 0 && Data->ShadowMapSizeY > 0 && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
+		const static FLazyName ClassName(TEXT("FStaticShadowDepthMap"));
 		const FRHITextureCreateDesc Desc =
-			FRHITextureCreateDesc::Create2D(TEXT("FStaticShadowDepthMap"), Data->ShadowMapSizeX, Data->ShadowMapSizeY, PF_R16F);
+			FRHITextureCreateDesc::Create2D(TEXT("FStaticShadowDepthMap"), Data->ShadowMapSizeX, Data->ShadowMapSizeY, PF_R16F)
+			.SetClassName(ClassName);
 
 		TextureRHI = RHICreateTexture(Desc);
 
@@ -165,6 +173,15 @@ void ULightComponentBase::Serialize(FArchive& Ar)
 	{
 		CastRaytracedShadow = bCastRaytracedShadow_DEPRECATED == 0? ECastRayTracedShadow::Disabled : ECastRayTracedShadow::UseProjectSetting;
 	}
+
+#if WITH_EDITOR
+	if (Ar.IsSaving() && Ar.IsObjectReferenceCollector() && !Ar.IsCooking())
+	{
+		FSoftObjectPathSerializationScope EditorOnlyScope(ESoftObjectPathCollectType::EditorOnlyCollect);
+		FSoftObjectPath SpritePath(GLightSpriteAssetName);
+		Ar << SpritePath;
+	}
+#endif
 }
 
 /**
@@ -459,15 +476,19 @@ bool ULightComponent::IsShadowCast(UPrimitiveComponent* Primitive) const
 float ULightComponent::ComputeLightBrightness() const
 {
 	float LightBrightness = Intensity;
-
-	if(IESTexture)
+	if (IESTexture)
 	{
-		if(bUseIESBrightness)
+		// When using EV100 unit, do conversion back and force so that IES brigthness can be computed on linear value
+		const bool bEVUnit = GetLightUnits() == ELightUnits::EV;
+		if (bEVUnit) { LightBrightness = EV100ToLuminance(Intensity); }
+		
+		if (bUseIESBrightness)
 		{
 			LightBrightness = IESTexture->Brightness * IESBrightnessScale;
 		}
-
 		LightBrightness *= IESTexture->TextureMultiplier;
+
+		if (bEVUnit) { LightBrightness = LuminanceToEV100(LightBrightness); }
 	}
 
 	return LightBrightness;
@@ -478,7 +499,11 @@ void ULightComponent::SetLightBrightness(float InBrightness)
 {
 	if (IESTexture && IESTexture->TextureMultiplier > 0)
 	{
-		if(bUseIESBrightness && IESBrightnessScale > 0)
+		// When using EV100 unit, do conversion back and force so that IES brigthness can be computed on linear value
+		const bool bEVUnit = GetLightUnits() == ELightUnits::EV;
+		if (bEVUnit) { InBrightness = EV100ToLuminance(InBrightness); }
+
+		if (bUseIESBrightness && IESBrightnessScale > 0)
 		{
 			IESTexture->Brightness = InBrightness / IESBrightnessScale / IESTexture->TextureMultiplier;
 		}
@@ -486,6 +511,8 @@ void ULightComponent::SetLightBrightness(float InBrightness)
 		{
 			Intensity = InBrightness / IESTexture->TextureMultiplier;
 		}
+
+		if (bEVUnit) { Intensity = LuminanceToEV100(Intensity); }
 	}
 	else
 	{
@@ -644,7 +671,11 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 	FProperty* PropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FString PropertyName = PropertyThatChanged ? PropertyThatChanged->GetName() : TEXT("");
 
-	Intensity = FMath::Max(0.0f, Intensity);
+
+	if (GetLightUnits() != ELightUnits::EV)
+	{
+		Intensity = FMath::Max(0.0f, Intensity);
+	}
 	SpecularScale = FMath::Clamp( SpecularScale, 0.0f, 1.0f );
 
 	if (HasStaticLighting())
@@ -748,7 +779,8 @@ void ULightComponent::UpdateLightSpriteTexture()
 			(GetWorld() && !GetWorld()->IsPreviewWorld()))
 		{
 			UTexture2D* SpriteTexture = NULL;
-			SpriteTexture = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorResources/LightIcons/S_LightError.S_LightError"));
+			FCookLoadScope EditorOnlyScope(ECookLoadType::EditorOnly);
+			SpriteTexture = LoadObject<UTexture2D>(NULL, GLightSpriteAssetName);
 			SpriteComponent->SetSprite(SpriteTexture);
 			SpriteComponent->SetRelativeScale3D(FVector(0.5f));
 		}
@@ -850,6 +882,8 @@ bool ULightComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutO
 	return false;
 }
 #endif // WITH_EDITOR
+
+ELightUnits ULightComponent::GetLightUnits() const { return ELightUnits::Unitless; }
 
 /** Set brightness of the light */
 void ULightComponent::SetIntensity(float NewIntensity)
@@ -1011,16 +1045,6 @@ void ULightComponent::SetLightFunctionDisabledBrightness(float NewValue)
 		&& NewValue != DisabledBrightness)
 	{
 		DisabledBrightness = NewValue;
-		MarkRenderStateDirty();
-	}
-}
-
-void ULightComponent::SetAffectDynamicIndirectLighting(bool bNewValue)
-{
-	if (AreDynamicDataChangesAllowed()
-		&& bAffectDynamicIndirectLighting != bNewValue)
-	{
-		bAffectDynamicIndirectLighting = bNewValue;
 		MarkRenderStateDirty();
 	}
 }
@@ -1397,42 +1421,6 @@ void ULightComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* InMate
 #endif
 		LightFunctionMaterial = InMaterial;
 		MarkRenderStateDirty();
-	}
-}
-
-/** 
-* This is called when property is modified by InterpPropertyTracks
-*
-* @param PropertyThatChanged	Property that changed
-*/
-void ULightComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	static FName LightColorName(TEXT("LightColor"));
-	static FName IntensityName(TEXT("Intensity"));
-	static FName BrightnessName(TEXT("Brightness"));
-	static FName IndirectLightingIntensityName(TEXT("IndirectLightingIntensity"));
-	static FName VolumetricScatteringIntensityName(TEXT("VolumetricScatteringIntensity"));
-	static FName TemperatureName(TEXT("Temperature"));
-
-	FName PropertyName = PropertyThatChanged->GetFName();
-	if (PropertyName == LightColorName
-		|| PropertyName == IntensityName
-		|| PropertyName == BrightnessName
-		|| PropertyName == IndirectLightingIntensityName
-		|| PropertyName == TemperatureName
-		|| PropertyName == VolumetricScatteringIntensityName)
-	{
-		// Old brightness tracks will animate the deprecated value
-		if (PropertyName == BrightnessName)
-		{
-			Intensity = Brightness_DEPRECATED;
-		}
-
-		UpdateColorAndBrightness();
-	}
-	else
-	{
-		Super::PostInterpChange(PropertyThatChanged);
 	}
 }
 

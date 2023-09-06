@@ -1,21 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.  
-import { Checkbox, CommandButton, ConstrainMode, ContextualMenu, TagPicker, DefaultButton, DetailsHeader, DetailsList, DetailsListLayoutMode, Dialog, DialogType, DirectionalHint, Dropdown, FontSizes, FontWeights, getTheme, IBasePickerProps, IColumn, Icon, IconButton, IContextualMenuItem, IContextualMenuProps, IDetailsHeaderProps, IDetailsHeaderStyles, IDetailsListProps, ITag, ITagItemStyles, ITooltipHostStyles, Link as ReactLink, mergeStyles, mergeStyleSets, PrimaryButton, ProgressIndicator, ScrollablePane, ScrollbarVisibility, SearchBox, Selection, SelectionMode, Slider, Spinner, SpinnerSize, Stack, Sticky, StickyPositionType, TagItem, Text, TextField } from '@fluentui/react';
+import { Checkbox, CommandButton, ConstrainMode, ContextualMenu, DefaultButton, DetailsHeader, DetailsList, DetailsListLayoutMode, Dialog, DialogType, DirectionalHint, Dropdown, FontSizes, FontWeights, getTheme, IBasePickerProps, IColumn, Icon, IconButton, IContextualMenuItem, IContextualMenuProps, IDetailsHeaderProps, IDetailsHeaderStyles, IDetailsListProps, ITag, ITagItemStyles, ITooltipHostStyles, Link as ReactLink, mergeStyles, mergeStyleSets, PrimaryButton, ProgressIndicator, ScrollablePane, ScrollbarVisibility, SearchBox, Selection, SelectionMode, Slider, Spinner, SpinnerSize, Stack, Sticky, StickyPositionType, TagItem, TagPicker, Text, TextField } from '@fluentui/react';
 import { action, makeObservable, observable } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import moment from 'moment-timezone';
 import React, { createRef, useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import Marquee from 'react-text-marquee';
 import backend from '../backend';
 import { agentStore } from '../backend/AgentStore';
 import { AgentData, BatchUpdatePoolRequest, GetAgentResponse, LeaseState, PoolData } from '../backend/Api';
 import { copyToClipboard } from '../base/utilities/clipboard';
 import { useWindowSize } from '../base/utilities/hooks';
+import { getShortNiceTime } from '../base/utilities/timeUtils';
 import { hexToRGB, hordeClasses, linearInterpolate } from '../styles/Styles';
 import { Breadcrumbs } from './Breadcrumbs';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { HistoryModal } from './HistoryModal';
-import { useQuery } from './JobDetailCommon';
 import { TopNav } from './TopNav';
 
 
@@ -74,8 +74,10 @@ const agentStyles = mergeStyleSets({
    },
    buttonFont: {
       height: '26px',
-      font: '8pt Horde Open Sans SemiBold !important',
+      font: '7pt Horde Open Sans SemiBold !important',
       flexShrink: '0 !important',
+      paddingLeft: 6,
+      paddingRight: 6,
       selectors: {
          '.ms-Icon': {
             width: 0,
@@ -160,9 +162,9 @@ function getAgentCapability(agent: AgentData, inProp: string) {
 }
 
 function getAgentOs(agent: AgentData) {
-	const osDist = getAgentCapability(agent, "OSDistribution");
-	const osFamily = getAgentCapability(agent, "OSFamily");
-	return osDist ?? osFamily;
+   const osDist = getAgentCapability(agent, "OSDistribution");
+   const osFamily = getAgentCapability(agent, "OSFamily");
+   return osDist ?? osFamily;
 }
 
 function getTaskTime(agent: GetAgentResponse): number {
@@ -188,7 +190,13 @@ function getTaskTime(agent: GetAgentResponse): number {
 
 }
 
-
+type SearchState = {
+   agentId?: string;
+   agentSearch?: string;
+   exactSearch?: boolean;
+   filter?: string[];
+   columnMode?: string;
+}
 
 class LocalState {
 
@@ -221,8 +229,6 @@ class LocalState {
    @observable agentContextMenuOpen = false;
    contextMenuRef: any = null;
    contextMenuTargetRef: any = createRef<Element>();
-   agentContextMenuRef: any = null;
-   agentContextMenuTargetRef: any = createRef<Element>();
    @observable mouseX = 0;
    @observable mouseY = 0;
 
@@ -233,6 +239,7 @@ class LocalState {
       this.selection = new Selection({ onSelectionChanged: () => { this.setAgentsSelectedCount(this.selection.getSelectedCount()); } });
       this.currentSelection = [];
       this.deleteAgentDialogIsOpen = false;
+      this.searchState = {};
    }
 
    @action
@@ -243,18 +250,32 @@ class LocalState {
 
    @action
    setAgentFilter(filter: string) {
+      this.searchState.agentSearch = filter?.trim() ? filter.trim() : undefined;
+      this.updateSearch();
       this.agentFilter = filter;
    }
 
    @action
    setAgentStaus(filter: Set<string>) {
+      const filters = Array.from(filter);
+      this.searchState.filter = filters.length ? filters : undefined;
+      this.updateSearch();
       this.agentStatusFilter = filter;
    }
 
    @action
    setExactMatch(match: boolean) {
+      this.searchState.exactSearch = match ? true : undefined;
+      this.updateSearch();
       this.filterExactMatch = match;
    }
+
+   @action
+   setAgentId(id?: string) {
+      this.searchState.agentId = id;
+      this.updateSearch();
+   }
+
 
    @action
    private _onColumnClick(ev: React.MouseEvent<HTMLElement>, column: IColumn) {
@@ -397,11 +418,18 @@ class LocalState {
       this.columnsState.filter(colState => { return colState.isCheckable; }).forEach(colState => {
          if (colState.key === key) {
             colState.isChecked = true;
+            this.searchState.columnMode = key ? key : undefined;
+            this.updateSearch();
+
          }
          else {
             colState.isChecked = false;
          }
       });
+
+      //this.searchState.columnMode = key;
+      //this.updateSearch();
+
       this.columnMenuProps = this._updateColumnProps();
    }
 
@@ -495,13 +523,103 @@ class LocalState {
       this.headerContextMenuOpen = false;
    }
 
+
+   @observable
+   searchUpdated: number = 0;
+
+   @action
+   setSearchUpdated() {
+      this.searchUpdated++;
+   }
+
+
+   searchState: SearchState = {};
+   search: URLSearchParams = new URLSearchParams();
+
+   updateSearch(): boolean {
+
+      const state = { ...this.searchState } as SearchState;
+
+      state.filter = state.filter?.sort((a, b) => a.localeCompare(b));
+
+      const search = new URLSearchParams();
+      const csearch = this.search.toString();
+
+      if (state.agentSearch) {
+         search.append("agent", state.agentSearch);
+      }
+
+      if (state.exactSearch) {
+         search.append("exact", "true");
+      }
+
+      if (state.agentId) {
+         search.append("agentId", state.agentId);
+      }
+
+      state.filter?.forEach(f => {
+         if (f) {
+            search.append("filter", f);
+         }
+      });
+
+      if (state.columnMode) {
+         search.append("mode", state.columnMode);
+      }
+
+      if (search.toString() !== csearch) {
+         this.search = search;
+         this.setSearchUpdated();
+         return true;
+      }
+
+      return false;
+   }
+
+   stateFromSearch(search: URLSearchParams) {
+
+      const state: SearchState = {};
+
+      const filters = search.getAll("filter") ?? undefined;
+      const agentSearch = search.get("agent") ?? undefined;
+      const agentId = search.get("agentId") ?? undefined;
+      const exact = search.get("exact") ?? undefined;
+      const mode = search.get("mode") ?? undefined;
+
+      state.filter = filters?.sort((a, b) => a.localeCompare(b));
+      state.columnMode = mode?.length ? mode : undefined;
+      state.agentSearch = agentSearch?.length ? agentSearch : undefined;
+      state.exactSearch = exact?.trim() === "true" ? true : undefined;
+      state.agentId = agentId?.trim() ? agentId : undefined;
+
+      this.search = search;
+      this.searchState = state;
+
+      if (state.agentSearch) {
+         this.agentFilter = state.agentSearch;
+      }
+      if (state.exactSearch) {
+         this.filterExactMatch = true;
+      }
+
+      if (state.filter?.length) {
+         this.agentStatusFilter = new Set<string>(state.filter);
+      }
+
+      if (state.columnMode) {
+         this.setColumnItemChecked(state.columnMode);
+      }
+
+      return state;
+   }
+
    constructor() {
       makeObservable(this);
       this.columnsState = [
          {
             key: 'name',
             displayText: 'Name',
-            colSize: 175,
+            colSize: 170,
             isChecked: true,
             isCheckable: false,
             isSorted: true,
@@ -511,7 +629,7 @@ class LocalState {
          {
             key: 'pools',
             displayText: 'Pools',
-            colSize: 840,
+            colSize: 540,
             isChecked: true,
             isCheckable: false,
             isSorted: false,
@@ -1174,17 +1292,7 @@ const agentContextMenuProps: IContextualMenuItem[] = [
 const agentStatus = ["Active", "Ready", "Disabled", "Pending Conform", "Pending Shutdown", "Offline", "Offline (Autoscaler)", "Offline (Manual)", "Offline (Unexpected)"];
 
 
-export const AgentMenuBar: React.FC = observer(() => {
-
-   const [initial, setInitial] = useState(true);
-   const query = useQuery();
-   const search = query.get("search") ? query.get("search")! : "";
-
-   if (search && initial) {
-      localState.setAgentFilter(search);
-      localState.setExactMatch(true);
-      setInitial(false);
-   }
+export const AgentMenuBar: React.FC<{ agentView?: boolean }> = observer(({ agentView }) => {
 
    let selectedButton: any = <div></div>;
    if (localState.agentsSelectedCount !== 0) {
@@ -1207,7 +1315,7 @@ export const AgentMenuBar: React.FC = observer(() => {
 
 
    return (
-      <Stack horizontal horizontalAlign="space-between">
+      <Stack horizontal horizontalAlign="space-between" grow={!!agentView}>
          <Stack.Item styles={{ root: { paddingLeft: '20px' } }}>
             <Stack horizontal tokens={{ childrenGap: 12 }}>
                <Stack verticalFill={true} verticalAlign="center">
@@ -1252,8 +1360,9 @@ export const AgentMenuBar: React.FC = observer(() => {
             </Stack>
 
          </Stack.Item>
-         <Stack.Item>
-            <Stack horizontal tokens={{ childrenGap: 12 }}>
+         {!!agentView && 
+            <Stack horizontal tokens={{ childrenGap: 12 }} grow>
+               <Stack grow/>
                <PrimaryButton styles={{ root: { fontFamily: "Horde Open Sans SemiBold !important" } }} text="Download Agent" onClick={() => { backend.downloadAgentZip() }} />
                <CommandButton
                   onClick={() => { editPoolsModalState.setOpen(); }}
@@ -1265,7 +1374,7 @@ export const AgentMenuBar: React.FC = observer(() => {
                <PoolEditorModal></PoolEditorModal>
                <PoolSelectionModal></PoolSelectionModal>
             </Stack>
-         </Stack.Item>
+         }
       </Stack>
    );
 });
@@ -1477,7 +1586,7 @@ export const PoolEditorModal: React.FC = observer(() => {
                <Stack styles={{ root: { paddingTop: 10 } }}>
                   <Stack horizontal>
                      <Stack style={{ paddingLeft: 12 }}>
-                        <DefaultButton href={`/pool/${editPoolsModalState.lastSelectedPool?.pool?.id}`} target="_blank">Details</DefaultButton>
+                        <DefaultButton href={`/pools?pool=${editPoolsModalState.lastSelectedPool?.pool?.id}`} target="_blank">Details</DefaultButton>
                      </Stack>
                      <Stack grow />
                      <PrimaryButton disabled={!editPoolsModalState.isPoolValueValid} onClick={() => { editPoolsModalState.isDirectEdit ? editPoolsModalState.saveChanges() : editPoolsModalState.setEditorOpen(false, false); }} styles={{ root: { marginRight: "10px" } }}>
@@ -1598,13 +1707,29 @@ export const PoolSelectionModal: React.FC = observer(() => {
    );
 });
 
-export const AgentView: React.FC = observer(() => {
-   const { agentId } = useParams<{ agentId: string }>();
-   const navigate = useNavigate();
-   const [initAgentUpdater, setInitAgentUpdater] = useState(false);
+export const SearchUpdate: React.FC = observer(() => {
 
-   // adjust automatically to viewport changes
-   useWindowSize();
+   const [searchParams, setSearchParams] = useSearchParams();
+   const [state, setState] = useState<{ search?: string }>({ search: searchParams.toString() });
+
+   // subscribe
+   if (localState.searchUpdated) { }
+
+   const csearch = localState.search.toString();
+
+   if (state.search !== csearch) {
+      setSearchParams(csearch, { replace: true });
+      setState({ search: csearch });
+   }
+
+   return null;
+});
+
+export const AgentViewInner: React.FC<{ agentId?: string, poolId?: string, searchParams?: URLSearchParams, agentView?: boolean }> = observer(({ agentId, poolId, searchParams, agentView }) => {
+
+   poolId = poolId?.toLowerCase();
+
+   const [initAgentUpdater, setInitAgentUpdater] = useState(false);
 
    useEffect(() => {
       const interval = setInterval(() => {
@@ -1616,24 +1741,17 @@ export const AgentView: React.FC = observer(() => {
    if (!initAgentUpdater) {
       agentStore.update().then(() => {
          localState.resetState();
+         if (searchParams) {
+            localState.stateFromSearch(searchParams);
+         }
          setInitAgentUpdater(true);
       });
-      return <Stack className={hordeClasses.horde}>
-         <TopNav />
-         <Breadcrumbs items={[{ text: 'Admin' }, { text: 'Agents' }]} />
-         <Stack horizontal>
-            <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
-            <Stack tokens={{ maxWidth: 1800, childrenGap: 4 }} styles={{ root: { width: 1800, height: '100vh', backgroundColor: 'rgb(250, 249, 249)', paddingTop: 18, paddingLeft: 12 } }}>
-               <Stack className={hordeClasses.raised} styles={{ root: { paddingRight: '40px' } }}>
-                  <Stack style={{ position: "relative", height: "calc(100vh - 240px)" }} horizontalAlign="center">
-                     <Stack horizontal tokens={{ childrenGap: 24 }}>
-                        <Text variant="mediumPlus">Loading Agents</Text>
-                        <Spinner size={SpinnerSize.large} />
-                     </Stack>
-                  </Stack>
-               </Stack>
+      return <Stack>
+         <Stack style={{ position: "relative", height: "calc(100vh - 240px)" }} horizontalAlign="center">
+            <Stack horizontal tokens={{ childrenGap: 24 }}>
+               <Text variant="mediumPlus">Loading Agents</Text>
+               <Spinner size={SpinnerSize.large} />
             </Stack>
-            <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
          </Stack>
       </Stack>
    }
@@ -1796,8 +1914,8 @@ export const AgentView: React.FC = observer(() => {
                   let diskCapacity: string | number | null = getAgentCapability(agent, "DiskTotalSize");
                   toCheck = "Unknown";
                   if (diskFree !== null && diskCapacity !== null) {
-                     diskFree = Number(diskFree) / 1000000000;
-                     diskCapacity = Number(diskCapacity) / 1000000000;
+                     diskFree = Number(diskFree) / 1073741824;
+                     diskCapacity = Number(diskCapacity) / 1073741824;
                      const percentage = (diskCapacity - diskFree) / diskCapacity;
                      toCheck = (diskCapacity - (percentage * diskCapacity)).toFixed(0);
                   }
@@ -1896,10 +2014,23 @@ export const AgentView: React.FC = observer(() => {
    }
 
    function onHistoryModalDismiss() {
-      navigate('/agents');
+      localState.setAgentId(undefined);
    }
 
+   const totalPoolSize = agentStore.agents.filter((a) => {
+      if (!a.pools) {
+         return false;
+      }
+      return !poolId || a.pools.indexOf(poolId) !== -1
+   }).length;
+
    let agentItems = agentStore.agents.filter(filterAgents, localState.agentFilter).sort(sortAgents);
+
+   if (poolId) {
+      agentItems = agentItems.filter((item => {
+         return !!item.pools && item.pools.indexOf(poolId!) !== -1;
+      }))
+   }
 
    agentItems = agentItems.filter(item => {
       const filter = localState.agentStatusFilter;
@@ -1968,115 +2099,108 @@ export const AgentView: React.FC = observer(() => {
       return !filtered;
    });
 
-   return (
-      <Stack className={hordeClasses.horde}>
-         <TopNav />
-         <Breadcrumbs items={[{ text: 'Admin' }, { text: 'Agents' }]} />
-         <Stack horizontal>
-            <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
-            <Stack tokens={{ maxWidth: 1800, childrenGap: 4 }} styles={{ root: { width: 1800, height: '100vh', backgroundColor: 'rgb(250, 249, 249)', paddingTop: 18, paddingLeft: 12 } }}>
-               <Stack className={hordeClasses.raised} styles={{ root: { paddingRight: '40px' } }}>
-                  <Stack.Item>
-                     <AgentMenuBar></AgentMenuBar>
-                  </Stack.Item>
-                  <Stack style={{ position: "relative", height: "calc(100vh - 240px)" }}>
-                     <ScrollablePane scrollbarVisibility={ScrollbarVisibility.always}>
-                        <DetailsList
-                           className={agentStyles.detailsList}
-                           onItemContextMenu={onContextMenu}
-                           checkboxCellClassName={agentStyles.checkboxCell}
-                           compact={true}
-                           setKey="set"
-                           items={agentItems}
-                           columns={localState.columnsState.filter(colState => { return colState.isChecked; }).map(colState => { return colState.columnDef!; })}
-                           selection={localState.selection}
-                           onRenderDetailsHeader={onRenderDetailsHeader}
-                           onColumnHeaderContextMenu={onColumnHeaderContextMenu}
-                           onRenderItemColumn={onRenderAgentListItem}
-                           layoutMode={DetailsListLayoutMode.justified}
-                           constrainMode={ConstrainMode.horizontalConstrained}
-                           selectionMode={SelectionMode.multiple}
-                        />
-                        <ContextualMenu
-                           items={localState.columnMenuProps}
-                           onItemClick={() => localState.setHeaderContextMenuOpen(false)}
-                           onDismiss={() => localState.setHeaderContextMenuOpen(false)}
-                           isBeakVisible={true}
-                           hidden={!localState.headerContextMenuOpen}
-                           target={localState.contextMenuTargetRef}
-                           directionalHint={DirectionalHint.bottomLeftEdge}
-                           directionalHintFixed={true}
-                        />
-                        <ContextualMenu
-                           items={agentContextMenuProps}
-                           onItemClick={() => localState.setAgentContextMenuOpen(false)}
-                           onDismiss={() => localState.setAgentContextMenuOpen(false)}
-                           isBeakVisible={true}
-                           target={localState.agentContextMenuTargetRef}
-                           hidden={!localState.agentContextMenuOpen}
-                           directionalHint={DirectionalHint.bottomLeftEdge}
-                           directionalHintFixed={true}
-                        />
-                     </ScrollablePane>
-                  </Stack>
-               </Stack>
-            </Stack>
-            <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
-         </Stack>
-         <div hidden={!localState.agentContextMenuOpen} ref={localState.agentContextMenuTargetRef} style={{ position: 'absolute', width: 1, height: 1, left: localState.mouseX, top: localState.mouseY }}></div>
-         <ConfirmationDialog
-            title={`Delete Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
-            subText={`Really delete selected agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}?`}
-            isOpen={localState.deleteAgentDialogIsOpen}
-            confirmText={"Delete"}
-            cancelText={"Cancel"}
-            onConfirm={() => { localState.deleteBuilder() }}
-            onCancel={() => { localState.setDeleteBuilderDialogOpen(false) }}
-         />
-         <ConfirmationDialog
-            title={`Restart Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
-            subText={`Really restart selected agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}?`}
-            isOpen={localState.restartAgentDialogIsOpen}
-            confirmText={"Restart"}
-            cancelText={"Cancel"}
-            textBoxLabel={"Type Confirm to confirm"}
-            isTextBoxSpawned={true}
-            onConfirm={() => { localState.requestBuilderUpdate(false, true) }}
-            onCancel={() => { localState.setRestartBuilderDialogOpen(false) }}
-         />
-         <ConfirmationDialog
-            title={`Shutdown Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
-            subText={`Really shutdown selected agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}?`}
-            isOpen={localState.shutdownAgentDialogIsOpen}
-            confirmText={"Shutdown"}
-            cancelText={"Cancel"}
-            textBoxLabel={"Type Confirm to confirm"}
-            isTextBoxSpawned={true}
-            onConfirm={() => { localState.requestBuilderUpdate(false, false, false, true) }}
-            onCancel={() => { localState.setShutdownBuilderDialogOpen(false) }}
-         />
+   const height = Math.min(((totalPoolSize < 5 ? 5 : totalPoolSize) * 48) + 48, 480)
 
-         <ConfirmationDialog
-            title={`Cancel Leases`}
-            subText={`Really cancel selected agent leases?`}
-            isOpen={localState.cancelLeasesDialogIsOpen}
-            confirmText={"Yes"}
-            cancelText={"No"}
-            onConfirm={() => { localState.setCancelLeasesDialogOpen(false); localState.cancelLeases() }}
-            onCancel={() => { localState.setCancelLeasesDialogOpen(false) }}
-         />
-         <ConfirmationDialog
-            title={`Disable Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
-            isOpen={localState.disableAgentDialogIsOpen}
-            confirmText={"Disable"}
-            cancelText={"Cancel"}
-            textBoxLabel={"Enter Disable Reason"}
-            isTextBoxSpawned={true}
-            onConfirm={(textFieldText: string) => { localState.changeBuilderEnabled("disable", textFieldText) }}
-            onCancel={() => { localState.setDisableBuilderDialogOpen(false) }}
-         />
-         <HistoryModal agentId={activeAgent?.id} onDismiss={onHistoryModalDismiss}></HistoryModal>
+   return (<Stack>
+      {!!agentView && <SearchUpdate />}
+      <Stack horizontal style={{ paddingBottom: !agentView ? 18 : 0 }}>
+         {!agentView && <Stack grow />}
+         <AgentMenuBar agentView={agentView} />
       </Stack>
+      <Stack style={{ position: "relative", height: agentView ? "calc(100vh - 240px)" : height }}>
+         <ScrollablePane scrollbarVisibility={ScrollbarVisibility.always}>
+            <DetailsList
+               className={agentStyles.detailsList}
+               onItemContextMenu={onContextMenu}
+               checkboxCellClassName={agentStyles.checkboxCell}
+               compact={true}
+               setKey="set"
+               items={agentItems}
+               columns={localState.columnsState.filter(colState => { return colState.isChecked; }).map(colState => { return colState.columnDef!; })}
+               selection={localState.selection}
+               onRenderDetailsHeader={onRenderDetailsHeader}
+               onColumnHeaderContextMenu={onColumnHeaderContextMenu}
+               onRenderItemColumn={onRenderAgentListItem}
+               layoutMode={DetailsListLayoutMode.justified}
+               constrainMode={ConstrainMode.horizontalConstrained}
+               selectionMode={SelectionMode.multiple}
+            />
+            <ContextualMenu
+               items={localState.columnMenuProps}
+               onItemClick={() => localState.setHeaderContextMenuOpen(false)}
+               onDismiss={() => localState.setHeaderContextMenuOpen(false)}
+               isBeakVisible={true}
+               hidden={!localState.headerContextMenuOpen}
+               target={localState.contextMenuTargetRef}
+               directionalHint={DirectionalHint.bottomLeftEdge}
+               directionalHintFixed={true}
+            />
+            <ContextualMenu
+               items={agentContextMenuProps}
+               onItemClick={() => localState.setAgentContextMenuOpen(false)}
+               onDismiss={() => localState.setAgentContextMenuOpen(false)}
+               isBeakVisible={true}
+               target={{x: localState.mouseX, y: localState.mouseY }}
+               hidden={!localState.agentContextMenuOpen}
+               directionalHint={DirectionalHint.bottomLeftEdge}
+               directionalHintFixed={true}
+            />
+         </ScrollablePane>
+         <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
+      </Stack>
+      <ConfirmationDialog
+         title={`Delete Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
+         subText={`Really delete selected agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}?`}
+         isOpen={localState.deleteAgentDialogIsOpen}
+         confirmText={"Delete"}
+         cancelText={"Cancel"}
+         onConfirm={() => { localState.deleteBuilder() }}
+         onCancel={() => { localState.setDeleteBuilderDialogOpen(false) }}
+      />
+      <ConfirmationDialog
+         title={`Restart Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
+         subText={`Really restart selected agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}?`}
+         isOpen={localState.restartAgentDialogIsOpen}
+         confirmText={"Restart"}
+         cancelText={"Cancel"}
+         textBoxLabel={"Type Confirm to confirm"}
+         isTextBoxSpawned={true}
+         onConfirm={() => { localState.requestBuilderUpdate(false, true) }}
+         onCancel={() => { localState.setRestartBuilderDialogOpen(false) }}
+      />
+      <ConfirmationDialog
+         title={`Shutdown Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
+         subText={`Really shutdown selected agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}?`}
+         isOpen={localState.shutdownAgentDialogIsOpen}
+         confirmText={"Shutdown"}
+         cancelText={"Cancel"}
+         textBoxLabel={"Type Confirm to confirm"}
+         isTextBoxSpawned={true}
+         onConfirm={() => { localState.requestBuilderUpdate(false, false, false, true) }}
+         onCancel={() => { localState.setShutdownBuilderDialogOpen(false) }}
+      />
+
+      <ConfirmationDialog
+         title={`Cancel Leases`}
+         subText={`Really cancel selected agent leases?`}
+         isOpen={localState.cancelLeasesDialogIsOpen}
+         confirmText={"Yes"}
+         cancelText={"No"}
+         onConfirm={() => { localState.setCancelLeasesDialogOpen(false); localState.cancelLeases() }}
+         onCancel={() => { localState.setCancelLeasesDialogOpen(false) }}
+      />
+      <ConfirmationDialog
+         title={`Disable Agent${localState.selection.getSelectedCount() > 1 ? "s" : ""}`}
+         isOpen={localState.disableAgentDialogIsOpen}
+         confirmText={"Disable"}
+         cancelText={"Cancel"}
+         textBoxLabel={"Enter Disable Reason"}
+         isTextBoxSpawned={true}
+         onConfirm={(textFieldText: string) => { localState.changeBuilderEnabled("disable", textFieldText) }}
+         onCancel={() => { localState.setDisableBuilderDialogOpen(false) }}
+      />
+      <HistoryModal agentId={activeAgent?.id} onDismiss={onHistoryModalDismiss}></HistoryModal>
+   </Stack>
    );
 
 
@@ -2103,23 +2227,23 @@ export const AgentView: React.FC = observer(() => {
       return <Icon iconName="FullCircle" className={className} />;
    }
 
-	function getPropFromDevice(agent: AgentData, propKey: string, propValue: string | null = null) {
-		const unknownElement = <Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}><Stack.Item align={"center"}>Unknown</Stack.Item></Stack>;
-		let prop = propValue ?? getAgentCapability(agent, propKey);
-		if (prop === null)
-			return unknownElement;
+   function getPropFromDevice(agent: AgentData, propKey: string, propValue: string | null = null) {
+      const unknownElement = <Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}><Stack.Item align={"center"}>Unknown</Stack.Item></Stack>;
+      let prop = propValue ?? getAgentCapability(agent, propKey);
+      if (prop === null)
+         return unknownElement;
 
-		if (propKey.indexOf("RAM") !== -1) {
-			prop += " GB";
-		}
-		return (
-			<Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}>
-				<Stack.Item align={"center"} className={agentStyles.ellipsesStackItem}>
-					<Text title={prop} key={`sysInfo_${agent.id}_${propKey}`}>{`${prop}`}</Text>
-				</Stack.Item>
-			</Stack>
-		);
-	}
+      if (propKey.indexOf("RAM") !== -1) {
+         prop += " GB";
+      }
+      return (
+         <Stack styles={{ root: { height: '100%' } }} horizontal horizontalAlign={"center"}>
+            <Stack.Item align={"center"} className={agentStyles.ellipsesStackItem}>
+               <Text title={prop} key={`sysInfo_${agent.id}_${propKey}`}>{`${prop}`}</Text>
+            </Stack.Item>
+         </Stack>
+      );
+   }
 
    // when an actual item is drawn
    function onRenderAgentListItem(agent: AgentData, index?: number, column?: IColumn) {
@@ -2131,7 +2255,7 @@ export const AgentView: React.FC = observer(() => {
                      {getAgentStatusIcon(agent)}
                   </Stack.Item>
                   <Stack.Item align={"center"}>
-                     <ReactLink styles={{ root: { paddingTop: '1px' } }} title="Lease and Session History" onClick={() => { navigate(`/agents/${agent.id}`); }}>{agent.name}</ReactLink>
+                     <ReactLink styles={{ root: { paddingTop: '1px', fontSize: "12px" } }} title="Lease and Session History" onClick={() => localState.setAgentId(agent.id)}>{agent.name}</ReactLink>
                   </Stack.Item>
                </Stack>
             );
@@ -2169,7 +2293,7 @@ export const AgentView: React.FC = observer(() => {
                            key: 'agent_pool_view',
                            text: 'View Pool',
                            onClick: (ev) => {
-                              window.open(`/pool/${poolObjs[idx]?.id}`, '_blank')
+                              window.open(`/pools?pool=${poolObjs[idx]?.id}`, '_blank')
                            }
                         },
                         {
@@ -2197,15 +2321,15 @@ export const AgentView: React.FC = observer(() => {
                            text={poolObjs[idx].name}
                            primary
                            menuProps={menuProps}
-                           menuIconProps={{iconName: ""}}
-                           className={agentStyles.buttonFont}                           
-                           onClick={(ev) => { ev.preventDefault();  ev.stopPropagation()}}
+                           menuIconProps={{ iconName: "" }}
+                           className={agentStyles.buttonFont}
+                           onClick={(ev) => { ev.preventDefault(); ev.stopPropagation() }}
                            styles={{
                               root: { border: '0px', backgroundColor: color, color: textColor },
                               rootHovered: { border: '0px', backgroundColor: color, color: textColor, },
                               rootPressed: { border: '0px', backgroundColor: color, color: textColor, }
-                           }} /> 
-                        
+                           }} />
+
                      </Stack.Item>
                   );
                   poolSearchNames.push(poolObjs[idx].name);
@@ -2269,7 +2393,7 @@ export const AgentView: React.FC = observer(() => {
                let subtitle = "";
                if (!agent.online) {
                   title = `Offline - ${agent.lastShutdownReason}`;
-                  subtitle = `(Last online at ${moment.utc(agent.updateTime).local().format("YYYY-MM-DD HH:mm:ss")})`;
+                  subtitle = `Last online at ${getShortNiceTime(agent.updateTime, true, true, true)}`;
                }
                else if (agent.pendingShutdown) {
                   title = `Pending Shutdown`;
@@ -2279,7 +2403,7 @@ export const AgentView: React.FC = observer(() => {
                   if (agent.conformAttemptCount && agent.conformAttemptCount > 0) {
                      title = `${agent.pendingFullConform ? "Full " : ""}Conform failed (${agent.conformAttemptCount} attempts)`;
                      if (agent.nextConformTime) {
-                        subtitle = `Next attempt at ${moment.utc(agent.nextConformTime).local().format("YYYY-MM-DD HH:mm:ss")}`;
+                        subtitle = `Next attempt at ${getShortNiceTime(agent.nextConformTime, true, true, true)}`;
                      }
                   }
                   else {
@@ -2299,7 +2423,7 @@ export const AgentView: React.FC = observer(() => {
                leaseSearchItems.push(title);
                if (subtitle !== "") {
                   leases.push(<Stack.Item key={"itemSubtitleStatus_" + agent.id} align={"center"} className={agentStyles.ellipsesStackItem}>
-                     <Text key={"statusSubtitleText_" + agent.id}>{subtitle}</Text>
+                     <Text variant="small" key={"statusSubtitleText_" + agent.id}>{subtitle}</Text>
                   </Stack.Item>);
                   leaseSearchItems.push(subtitle);
                }
@@ -2360,13 +2484,13 @@ export const AgentView: React.FC = observer(() => {
             let descVal = "Unknown";
             let descNumber = 0;
             if (diskFree !== null && diskCapacity !== null) {
-               diskFree = Number(diskFree) / 1000000000;
-               diskCapacity = Number(diskCapacity) / 1000000000;
+               diskFree = Number(diskFree) / 1073741824;
+               diskCapacity = Number(diskCapacity) / 1073741824;
                realPercentage = (diskCapacity - diskFree) / diskCapacity;
                // nudge percentage for the progress bar length
                nudgedPercentage = realPercentage * .965;
                descNumber = (diskCapacity - (realPercentage * diskCapacity));
-               descVal = descNumber.toLocaleString(undefined, { maximumFractionDigits: 0 }) + " GB Free";
+               descVal = descNumber.toLocaleString(undefined, { maximumFractionDigits: 0 }) + " GiB Free";
             }
             localState.columnSearchState['storage'][agent.id] = descNumber;
             return <Stack horizontal horizontalAlign={"center"}>
@@ -2404,3 +2528,42 @@ export const AgentView: React.FC = observer(() => {
       }
    }
 });
+
+export const AgentPanel: React.FC<{ agentId?: string, poolId?: string, agentView?: boolean }> = observer(({ agentId, agentView, poolId }) => {
+
+   // adjust automatically to viewport changes
+   useWindowSize();
+
+   // subscribe
+   if (localState.searchUpdated) { }
+
+   return <Stack>
+      <AgentViewInner agentId={localState.searchState?.agentId} agentView={agentView} poolId={poolId} />
+   </Stack>
+
+})
+
+export const AgentView: React.FC = () => {
+
+   const [searchParams] = useSearchParams();
+
+   const agentId = searchParams.get("agentId") ? searchParams.get("agentId") : undefined;
+
+   // adjust automatically to viewport changes
+   useWindowSize();
+
+   return <Stack className={hordeClasses.horde}>
+      <TopNav />
+      <Breadcrumbs items={[{ text: 'Admin' }, { text: 'Agents' }]} />
+      <Stack horizontal>
+         <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
+         <Stack tokens={{ maxWidth: 1440, childrenGap: 4 }} styles={{ root: { width: 1440, height: '100vh', backgroundColor: 'rgb(250, 249, 249)', paddingTop: 18, paddingLeft: 12 } }}>
+            <Stack className={hordeClasses.raised} styles={{ root: { paddingRight: '40px' } }}>
+               <AgentViewInner agentView={true} agentId={agentId ? agentId : undefined} searchParams={searchParams} />
+            </Stack>
+         </Stack>
+         <Stack grow styles={{ root: { backgroundColor: 'rgb(250, 249, 249)' } }} />
+      </Stack>
+   </Stack>
+
+}

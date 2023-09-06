@@ -37,13 +37,14 @@ VertexToPixelInterpolants Main(
 	VOut.TextureCoordinates0 = InTextureCoordinates;
 
 #if USE_MATERIALS
-	FMaterialVertexParameters VertexParameters = (FMaterialVertexParameters)0;
+	FMaterialVertexParameters VertexParameters = MakeInitializedMaterialVertexParameters();
 	VertexParameters.WorldPosition = WorldPosition.xyz;
 
 	VertexParameters.VertexColor = VOut.Color;
 
 	// Init primitive flags to a good default.
 	VertexParameters.SceneData.Primitive.Flags = GetDefaultPrimitiveSceneDataFlags();
+	VertexParameters.SceneData.Primitive.VisibilityFlags = GetDefaultPrimitiveVisibilityFlags();
 
 #if NUM_MATERIAL_TEXCOORDS_VERTEX
 

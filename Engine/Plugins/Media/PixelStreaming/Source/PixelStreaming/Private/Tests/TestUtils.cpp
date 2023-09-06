@@ -49,14 +49,28 @@ namespace UE::PixelStreaming
 	bool FSendDataChannelMessageToStreamer::Update()
 	{
 		UE_LOG(LogPixelStreaming, Log, TEXT("SendDataChannelMessageToStreamer: %d, %s"), Id, *Body);
-		Player->DataChannel->SendMessage(Id, Body);
+		if (!Player->DataChannel)
+		{
+			UE_LOG(LogPixelStreaming, Error, TEXT("No DataChannel on player."));
+		}
+		else
+		{
+			Player->DataChannel->SendMessage(Id, Body);
+		}
 		return true;
 	}
 
 	bool FSendCustomMessageToStreamer::Update()
 	{
 		UE_LOG(LogPixelStreaming, Log, TEXT("SendDataChannelMessageToStreamer: %d, %d"), Id, Body);
-		Player->DataChannel->SendMessage(Id, Body);
+		if (!Player->DataChannel)
+		{
+			UE_LOG(LogPixelStreaming, Error, TEXT("No DataChannel on player."));
+		}
+		else
+		{
+			Player->DataChannel->SendMessage(Id, Body);
+		}
 		return true;
 	}
 
@@ -145,6 +159,28 @@ namespace UE::PixelStreaming
 				return true;
 			}
 			return OutPlayer->Completed;
+		}
+		return true;
+	}
+
+	bool FWaitForDataChannelOrTimeout::Update()
+	{
+		// If no signalling we can early exit.
+		if (!OutPlayer->IsSignallingConnected())
+		{
+			UE_LOG(LogPixelStreaming, Error, TEXT("Early exiting waiting for data channel as player is not connected to signalling server."));
+			return true;
+		}
+
+		if (OutPlayer)
+		{
+			double DeltaTime = FPlatformTime::Seconds() - StartTime;
+			if (DeltaTime > TimeoutSeconds)
+			{
+				UE_LOG(LogPixelStreaming, Error, TEXT("Timed out waiting for data channel between streamer and player."));
+				return true;
+			}
+			return OutPlayer->HaveDataChannel;
 		}
 		return true;
 	}

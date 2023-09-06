@@ -16,6 +16,7 @@
 #include "Stats/Stats2.h"
 #include "Templates/UnrealTemplate.h"
 
+#include <atomic>
 #include <initializer_list>
 
 class UMovieSceneSequence;
@@ -48,17 +49,23 @@ enum class ESystemPhase : uint8
 	/** Null phase which indicates that the system never runs, but still exists in the reference graph */
 	None = 0,
 
+	/**  */
+	Import = 1 << 0,
+
 	/** Expensive: Phase that is run before instantiation any time any boundary is crossed in the sequence. Used to spawn new objects and trigger pre/post-spawn events. */
-	Spawn = 1 << 0,
+	Spawn = 1 << 1,
 
 	/** Expensive: Houses any system that needs to instantiate global entities into the linker, or make meaningful changes to entity structures.. */
-	Instantiation = 1 << 1,
+	Instantiation = 1 << 2,
+
+	/**  */
+	Scheduling = 1 << 3,
 
 	/** Fast, distributed: Houses the majority of evaluation systems that compute animation data. Entity manager is locked down for the duration of this phase. */
-	Evaluation = 1 << 2,
+	Evaluation = 1 << 4,
 
 	/** Finalization phase for enything that wants to run after everything else. */
-	Finalization = 1 << 3,
+	Finalization = 1 << 5,
 };
 ENUM_CLASS_FLAGS(ESystemPhase);
 
@@ -92,6 +99,14 @@ enum class EComplexFilterMode : uint8
 };
 ENUM_CLASS_FLAGS(EComplexFilterMode);
 
+enum class EMutuallyInclusiveComponentType : uint8
+{
+	Mandatory = 1u << 0,
+	Optional  = 1u << 1,
+
+	All = Mandatory | Optional,
+};
+ENUM_CLASS_FLAGS(EMutuallyInclusiveComponentType)
 
 /**
  * Enumeration specifying the locking mechanism to use when accessing component data
@@ -279,7 +294,7 @@ struct FInterrogationInstance
 };
 
 
-struct MOVIESCENE_API FEntityComponentFilter
+struct FEntityComponentFilter
 {
 
 	void Reset()
@@ -289,9 +304,9 @@ struct MOVIESCENE_API FEntityComponentFilter
 		ComplexMasks.Reset();
 	}
 
-	bool Match(const FComponentMask& Input) const;
+	MOVIESCENE_API bool Match(const FComponentMask& Input) const;
 
-	bool IsValid() const;
+	MOVIESCENE_API bool IsValid() const;
 
 	FEntityComponentFilter& All(const FComponentMask& InComponentMask)
 	{
@@ -418,6 +433,18 @@ struct FEntityAllocationWriteContext
 		return FEntityAllocationWriteContext();
 	}
 
+	FEntityAllocationWriteContext Add(FEntityAllocationWriteContext InOther) const
+	{
+		FEntityAllocationWriteContext Context;
+		Context.SystemSerial = SystemSerial + InOther.SystemSerial;
+		return Context;
+	}
+	FEntityAllocationWriteContext Subtract(FEntityAllocationWriteContext InOther) const
+	{
+		FEntityAllocationWriteContext Context;
+		Context.SystemSerial = SystemSerial - InOther.SystemSerial;
+		return Context;
+	}
 	uint64 GetSystemSerial() const
 	{
 		return SystemSerial;
@@ -445,6 +472,8 @@ private:
 	mutable uint64 SerialNumber;
 
 public:
+
+	mutable std::atomic<int32> ScheduledAccessCount;
 
 	uint8 Sizeof;
 	FComponentTypeID ComponentType;
@@ -508,6 +537,7 @@ struct FScopedHeaderReadLock
 
 private:
 	const FComponentHeader* Header;
+	EComponentHeaderLockMode LockMode;
 };
 
 
@@ -679,6 +709,15 @@ struct FEntityAllocation
 	const FMovieSceneEntityID* GetRawEntityIDs() const
 	{
 		return EntityIDs;
+	}
+
+
+	/**
+	 * Retrieve the address of this allocation's component data. Only to be used for construction of TRelativePtrs.
+	 */
+	const void* GetComponentDataAddress() const
+	{
+		return ComponentData;
 	}
 
 
@@ -906,6 +945,17 @@ struct FEntityAllocationProxy
 	/** Gets the entity allocation component mask */
 	MOVIESCENE_API const FComponentMask& GetAllocationType() const;
 
+	static FEntityAllocationProxy MakeInstance(const FEntityManager* InManager, int32 InAllocationIndex)
+	{
+		return FEntityAllocationProxy(InManager, InAllocationIndex);
+	}
+
+	/** Return this allocation's index within the entity manager */
+	int32 GetAllocationIndex() const
+	{
+		return AllocationIndex;
+	}
+
 	/** Implicit cast to an entity allocation */
 	operator const FEntityAllocation*() const
 	{
@@ -1005,19 +1055,19 @@ inline FScopedHeaderReadLock::FScopedHeaderReadLock()
 	: Header(nullptr)
 {}
 inline FScopedHeaderReadLock::FScopedHeaderReadLock(const FComponentHeader* InHeader, EComponentHeaderLockMode InLockMode)
+	: Header(InHeader)
+	, LockMode(InLockMode)
 {
 	if (InLockMode == EComponentHeaderLockMode::Mutex)
 	{
-		Header = InHeader;
 		InHeader->ReadWriteLock.ReadLock();
 	}
-	else
-	{
-		Header = nullptr;
-	}
+
+	InHeader->ScheduledAccessCount.fetch_add(1, std::memory_order_relaxed);
 }
 inline FScopedHeaderReadLock::FScopedHeaderReadLock(FScopedHeaderReadLock&& RHS)
 	: Header(RHS.Header)
+	, LockMode(RHS.LockMode)
 {
 	RHS.Header = nullptr;
 }
@@ -1025,10 +1075,15 @@ inline FScopedHeaderReadLock& FScopedHeaderReadLock::operator=(FScopedHeaderRead
 {
 	if (Header)
 	{
-		Header->ReadWriteLock.ReadUnlock();
+		Header->ScheduledAccessCount.fetch_add(1, std::memory_order_relaxed);
+		if (LockMode == EComponentHeaderLockMode::Mutex)
+		{
+			Header->ReadWriteLock.ReadUnlock();
+		}
 	}
 
 	Header = RHS.Header;
+	LockMode = RHS.LockMode;
 	RHS.Header = nullptr;
 	return *this;
 }
@@ -1037,7 +1092,11 @@ inline FScopedHeaderReadLock::~FScopedHeaderReadLock()
 {
 	if (Header)
 	{
-		Header->ReadWriteLock.ReadUnlock();
+		Header->ScheduledAccessCount.fetch_sub(1, std::memory_order_relaxed);
+		if (LockMode == EComponentHeaderLockMode::Mutex)
+		{
+			Header->ReadWriteLock.ReadUnlock();
+		}
 	}
 }
 
@@ -1056,6 +1115,9 @@ inline FScopedHeaderWriteLock::FScopedHeaderWriteLock(const FComponentHeader* In
 	{
 		InHeader->ReadWriteLock.WriteLock();
 	}
+
+	const int32 PreviousAccessCount = InHeader->ScheduledAccessCount.fetch_add(1, std::memory_order_relaxed);
+	checkf(PreviousAccessCount == 0, TEXT("Component header is still in use when it is being opened for write!"));
 }
 
 inline FScopedHeaderWriteLock::FScopedHeaderWriteLock(FScopedHeaderWriteLock&& RHS)
@@ -1070,6 +1132,7 @@ inline FScopedHeaderWriteLock& FScopedHeaderWriteLock::operator=(FScopedHeaderWr
 	if (Header)
 	{
 		Header->PostWriteComponents(WriteContext);
+		Header->ScheduledAccessCount.fetch_sub(1, std::memory_order_relaxed);
 
 		if (LockMode == EComponentHeaderLockMode::Mutex)
 		{
@@ -1089,6 +1152,7 @@ inline FScopedHeaderWriteLock::~FScopedHeaderWriteLock()
 	if (Header)
 	{
 		Header->PostWriteComponents(WriteContext);
+		Header->ScheduledAccessCount.fetch_sub(1, std::memory_order_relaxed);
 
 		if (LockMode == EComponentHeaderLockMode::Mutex)
 		{

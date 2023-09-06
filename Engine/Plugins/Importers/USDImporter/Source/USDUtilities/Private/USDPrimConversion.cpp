@@ -2,9 +2,8 @@
 
 #include "USDPrimConversion.h"
 
-#include "Engine/SkinnedAssetCommon.h"
 #include "UnrealUSDWrapper.h"
-#include "USDAssetImportData.h"
+#include "USDAssetUserData.h"
 #include "USDAttributeUtils.h"
 #include "USDConversionUtils.h"
 #include "USDLayerUtils.h"
@@ -37,6 +36,7 @@
 #include "Components/SkinnedMeshComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
 #include "GeometryCache.h"
 #include "GeometryCacheComponent.h"
@@ -383,6 +383,44 @@ bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr:
 	}
 
 	return true;
+}
+
+void UsdToUnreal::PropagateTransform(const pxr::UsdStageRefPtr& Stage, const pxr::UsdPrim& Root, const pxr::UsdPrim& Leaf, double EvalTime, FTransform& OutTransform)
+{
+	FScopedUsdAllocs UsdAllocs;
+
+	bool bResetXformStack = false;
+	FTransform CurrentTransform = FTransform::Identity;
+	if (ConvertXformable(Stage, pxr::UsdTyped{Leaf}, CurrentTransform, EvalTime, &bResetXformStack))
+	{
+		if (!bResetXformStack)
+		{
+			OutTransform *= CurrentTransform;
+
+			if (Leaf != Root)
+			{
+				if (!Leaf.IsPseudoRoot())
+				{
+					PropagateTransform(Stage, Root, Leaf.GetParent(), EvalTime, OutTransform);
+				}
+				else
+				{
+					// Leaf was not even in Root's subtree
+					OutTransform = FTransform::Identity;
+				}
+			}
+		}
+		else
+		{
+			// The Xform stack was reset so that effectively stops the propagation
+			OutTransform = CurrentTransform;
+		}
+	}
+	else
+	{
+		// Leaf is not completely connected to Root by Xformables
+		OutTransform = FTransform::Identity;
+	}
 }
 
 bool UsdToUnreal::ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr::UsdTyped& Schema, USceneComponent& SceneComponent, double EvalTime, bool bUsePrimTransform )
@@ -1403,36 +1441,41 @@ bool UnrealToUsd::ConvertCameraComponent( const UCineCameraComponent& CameraComp
 		return false;
 	}
 
+	if (UsdUtils::NotifyIfInstanceProxy(Prim))
+	{
+		return false;
+	}
+
 	FUsdStageInfo StageInfo( Prim.GetStage() );
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateFocalLengthAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.CurrentFocalLength ), UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateFocusDistanceAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.FocusSettings.ManualFocusDistance ), UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateFStopAttr() )
 	{
 		Attr.Set<float>( CameraComponent.CurrentAperture, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateHorizontalApertureAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.Filmback.SensorWidth ), UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( pxr::UsdAttribute Attr = GeomCamera.CreateVerticalApertureAttr() )
 	{
 		Attr.Set<float>( UnrealToUsd::ConvertDistance( StageInfo, CameraComponent.Filmback.SensorHeight ), UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	return true;
@@ -1920,6 +1963,11 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 		return false;
 	}
 
+	if (UsdUtils::NotifyIfInstanceProxy(UsdPrim))
+	{
+		return false;
+	}
+
 	FScopedUsdAllocs UsdAllocs;
 
 	// Transform
@@ -1983,185 +2031,56 @@ bool UnrealToUsd::ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const
 		}
 
 		VisibilityAttr.Set<pxr::TfToken>( Value );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ VisibilityAttr } );
+		UsdUtils::NotifyIfOverriddenOpinion(VisibilityAttr);
 	}
 
 	return true;
 }
 
-bool UnrealToUsd::ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const UMeshComponent* MeshComponent, pxr::UsdPrim& UsdPrim )
+bool UnrealToUsd::ConvertMeshComponent(const pxr::UsdStageRefPtr& Stage, const UMeshComponent* MeshComponent, pxr::UsdPrim& UsdPrim)
 {
-	if ( !UsdPrim || !MeshComponent )
+	if (!UsdPrim || !MeshComponent)
 	{
 		return false;
 	}
 
-	FScopedUsdAllocs Allocs;
+	UObject* MeshAsset = nullptr;
 
-#if WITH_EDITOR
 	// Handle material overrides
-	if ( const UGeometryCacheComponent* GeometryCacheComponent = Cast<const UGeometryCacheComponent>( MeshComponent ) )
+	if (const UGeometryCacheComponent* GeometryCacheComponent = Cast<const UGeometryCacheComponent>(MeshComponent))
 	{
-		if ( const UGeometryCache* GeometryCache = GeometryCacheComponent->GetGeometryCache() )
-		{
-			const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
-			for ( int32 MatIndex = 0; MatIndex < Overrides.Num(); ++MatIndex )
-			{
-				UMaterialInterface* Override = Overrides[ MatIndex ];
-				if ( !Override )
-				{
-					continue;
-				}
-
-				UUsdMeshAssetImportData* ImportData = Cast<UUsdMeshAssetImportData>( GeometryCache->AssetImportData.Get() );
-				if ( !ImportData )
-				{
-					return false;
-				}
-
-				if ( const FUsdPrimPathList* SourcePrimPaths = ImportData->MaterialSlotToPrimPaths.Find( MatIndex ) )
-				{
-					for ( const FString& PrimPath : SourcePrimPaths->PrimPaths )
-					{
-						pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath( *PrimPath ).Get();
-						pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
-						UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
-					}
-				}
-			}
-		}
+		MeshAsset = GeometryCacheComponent->GetGeometryCache();
 	}
-	else if ( const UStaticMeshComponent* StaticMeshComponent = Cast<const UStaticMeshComponent>( MeshComponent ) )
+	else if (const UStaticMeshComponent* StaticMeshComponent = Cast<const UStaticMeshComponent>(MeshComponent))
 	{
-		if ( UStaticMesh* Mesh = StaticMeshComponent->GetStaticMesh() )
-		{
-			UUsdMeshAssetImportData* ImportData = Cast<UUsdMeshAssetImportData>( Mesh->AssetImportData.Get() );
-			if ( !ImportData )
-			{
-				return false;
-			}
-
-			const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
-			for ( int32 MatIndex = 0; MatIndex < Overrides.Num(); ++MatIndex )
-			{
-				UMaterialInterface* Override = Overrides[MatIndex];
-				if ( !Override )
-				{
-					continue;
-				}
-
-				for ( int32 LODIndex = 0; LODIndex < Mesh->GetNumLODs(); ++LODIndex )
-				{
-					int32 NumSections = Mesh->GetNumSections( LODIndex );
-					const bool bHasSubsets = NumSections > 1;
-
-					for ( int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex )
-					{
-						int32 SectionMatIndex = Mesh->GetSectionInfoMap().Get( LODIndex, SectionIndex ).MaterialIndex;
-						if ( SectionMatIndex != MatIndex )
-						{
-							continue;
-						}
-
-						if ( const FUsdPrimPathList* SourcePrimPaths = ImportData->MaterialSlotToPrimPaths.Find( SectionMatIndex ) )
-						{
-							for ( const FString& PrimPath : SourcePrimPaths->PrimPaths )
-							{
-								pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath( *PrimPath ).Get();
-								pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
-								UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
-							}
-						}
-					}
-				}
-			}
-		}
+		MeshAsset = StaticMeshComponent->GetStaticMesh();
 	}
-	else if ( const USkinnedMeshComponent* SkinnedMeshComponent = Cast<const USkinnedMeshComponent>( MeshComponent ) )
+	else if (const USkinnedMeshComponent* SkinnedMeshComponent = Cast<const USkinnedMeshComponent>(MeshComponent))
 	{
-		pxr::UsdSkelRoot SkelRoot{ UsdPrim };
-		if ( !SkelRoot )
+		FScopedUsdAllocs Allocs;
+		pxr::UsdSkelRoot SkelRoot{UsdPrim};
+		if (!SkelRoot)
 		{
 			return false;
 		}
 
-		if ( const USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>( SkinnedMeshComponent->GetSkinnedAsset() ) )
-		{
-			FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering();
-			if ( !RenderData )
-			{
-				return false;
-			}
-
-			UUsdMeshAssetImportData* ImportData = Cast<UUsdMeshAssetImportData>( SkeletalMesh->GetAssetImportData() );
-			if ( !ImportData )
-			{
-				return false;
-			}
-
-			TIndirectArray<FSkeletalMeshLODRenderData>& LodRenderData = RenderData->LODRenderData;
-			if ( LodRenderData.Num() == 0 )
-			{
-				return false;
-			}
-
-			const TArray<UMaterialInterface*>& Overrides = MeshComponent->OverrideMaterials;
-			for ( int32 MatIndex = 0; MatIndex < Overrides.Num(); ++MatIndex )
-			{
-				UMaterialInterface* Override = Overrides[ MatIndex ];
-				if ( !Override )
-				{
-					continue;
-				}
-
-				for ( int32 LODIndex = 0; LODIndex < SkeletalMesh->GetLODNum(); ++LODIndex )
-				{
-					if ( !LodRenderData.IsValidIndex( LODIndex ) )
-					{
-						continue;
-					}
-
-					const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo( LODIndex );
-
-					const TArray<FSkelMeshRenderSection>& Sections = LodRenderData[ LODIndex ].RenderSections;
-					int32 NumSections = Sections.Num();
-					const bool bHasSubsets = NumSections > 1;
-
-					for ( int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex )
-					{
-						int32 SectionMatIndex = Sections[ SectionIndex ].MaterialIndex;
-
-						// If we have a LODInfo map, we need to reroute the material index through it
-						if ( LODInfo && LODInfo->LODMaterialMap.IsValidIndex( SectionIndex ) )
-						{
-							SectionMatIndex = LODInfo->LODMaterialMap[ SectionIndex ];
-						}
-
-						if ( SectionMatIndex != MatIndex )
-						{
-							continue;
-						}
-
-						if ( const FUsdPrimPathList* SourcePrimPaths = ImportData->MaterialSlotToPrimPaths.Find( SectionMatIndex ) )
-						{
-							for ( const FString& PrimPath : SourcePrimPaths->PrimPaths )
-							{
-								pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath( *PrimPath ).Get();
-								pxr::UsdPrim MeshPrim = Stage->OverridePrim( OverridePrimPath );
-								UE::USDPrimConversionImpl::Private::AuthorMaterialOverride( MeshPrim, Override->GetPathName() );
-							}
-						}
-					}
-				}
-			}
-		}
+		MeshAsset = SkinnedMeshComponent->GetSkinnedAsset();
 	}
-#endif // WITH_EDITOR
 
-	return true;
+	// Component doesn't have any mesh so this function doesn't need to do anything
+	if (!MeshAsset)
+	{
+		return true;
+	}
+
+	return UnrealToUsd::ConvertMaterialOverrides(MeshAsset, MeshComponent->OverrideMaterials, UsdPrim);
 }
 
-bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( const UHierarchicalInstancedStaticMeshComponent* HISMComponent, pxr::UsdPrim& UsdPrim, double TimeCode )
+bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent(
+	const UHierarchicalInstancedStaticMeshComponent* HISMComponent,
+	pxr::UsdPrim& UsdPrim,
+	double TimeCode
+)
 {
 	using namespace pxr;
 
@@ -2169,6 +2088,11 @@ bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( const UHierar
 
 	UsdGeomPointInstancer PointInstancer{ UsdPrim };
 	if ( !PointInstancer || !HISMComponent )
+	{
+		return false;
+	}
+
+	if (UsdUtils::NotifyIfInstanceProxy(UsdPrim))
 	{
 		return false;
 	}
@@ -2215,26 +2139,345 @@ bool UnrealToUsd::ConvertHierarchicalInstancedStaticMeshComponent( const UHierar
 	if ( UsdAttribute Attr = PointInstancer.CreateProtoIndicesAttr() )
 	{
 		Attr.Set( ProtoIndices, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreatePositionsAttr() )
 	{
 		Attr.Set( Positions, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateOrientationsAttr() )
 	{
 		Attr.Set( Orientations, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateScalesAttr() )
 	{
 		Attr.Set( Scales, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
+
+	return true;
+}
+
+bool UnrealToUsd::ConvertMaterialOverrides(
+	const UObject* MeshAsset,
+	const TArray<UMaterialInterface*> MaterialOverrides,
+	pxr::UsdPrim& UsdPrim,
+	int32 LowestLOD,
+	int32 HighestLOD
+)
+{
+#if WITH_EDITOR
+	if (!UsdPrim)
+	{
+		return false;
+	}
+
+	FScopedUsdAllocs Allocs;
+	pxr::UsdStageRefPtr Stage = UsdPrim.GetStage();
+	FString UsdPrimPath = UsdToUnreal::ConvertPath(UsdPrim.GetPrimPath());
+
+	const bool bAllLODs = LowestLOD == INDEX_NONE && HighestLOD == INDEX_NONE;
+
+	if (const UGeometryCache* GeometryCache = Cast<const UGeometryCache>(MeshAsset))
+	{
+		for (int32 MatIndex = 0; MatIndex < MaterialOverrides.Num(); ++MatIndex)
+		{
+			UMaterialInterface* Override = MaterialOverrides[MatIndex];
+			if (!Override)
+			{
+				continue;
+			}
+
+			// If we have user data this is one of our meshes, so we know exactly the prim that corresponds to each
+			// material slot. Let's use that
+			// const_cast as there's no const access to asset user data on IInterface_AssetUserData, but we won't
+			// modify anything
+			if (const UUsdMeshAssetUserData* UserData = const_cast<UGeometryCache*>(GeometryCache)->GetAssetUserData<UUsdMeshAssetUserData>())
+			{
+				if (const FUsdPrimPathList* SourcePrimPaths = UserData->MaterialSlotToPrimPaths.Find(MatIndex))
+				{
+					for (const FString& PrimPath : SourcePrimPaths->PrimPaths)
+					{
+						// Our mesh assets are shared between multiple prims via the asset cache, and all user prims of that asset will record
+						// their source prim paths for each material slot. In here we just want to apply overrides to the prims that
+						// correspond to the modified component, and not the others
+						if (PrimPath.StartsWith(UsdPrimPath))
+						{
+							pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath(*PrimPath).Get();
+							pxr::UsdPrim MeshPrim = Stage->OverridePrim(OverridePrimPath);
+							UE::USDPrimConversionImpl::Private::AuthorMaterialOverride(MeshPrim, Override->GetPathName());
+						}
+					}
+				}
+			}
+			// If we don't, we have to fallback to writing the same prim patterns that the mesh exporters
+			// generate when exporting meshes, so that we can override its opinions. This happens when exporting
+			// geometry cache / static mesh / skeletal mesh components, for example
+			else
+			{
+				pxr::SdfPath OverridePrimPath = UsdPrim.GetPath();
+				pxr::UsdPrim MeshPrim = Stage->OverridePrim(OverridePrimPath);
+				UE::USDPrimConversionImpl::Private::AuthorMaterialOverride(MeshPrim, Override->GetPathName());
+			}
+		}
+	}
+	else if (const UStaticMesh* StaticMesh = Cast<const UStaticMesh>(MeshAsset))
+	{
+		int32 NumLODs = StaticMesh->GetNumLODs();
+		if (bAllLODs)
+		{
+			HighestLOD = NumLODs - 1;
+			LowestLOD = 0;
+		}
+		else
+		{
+			// Make sure they're both >= 0 (the options dialog slider is clamped, but this may be called directly)
+			LowestLOD = FMath::Clamp(LowestLOD, 0, NumLODs - 1);
+			HighestLOD = FMath::Clamp(HighestLOD, 0, NumLODs - 1);
+
+			// Make sure Lowest <= Highest
+			int32 Temp = FMath::Min(LowestLOD, HighestLOD);
+			HighestLOD = FMath::Max(LowestLOD, HighestLOD);
+			LowestLOD = Temp;
+
+			// Make sure there's at least one LOD
+			NumLODs = FMath::Max(HighestLOD - LowestLOD + 1, 1);
+		}
+		const bool bHasLODs = NumLODs > 1;
+
+		const UUsdMeshAssetUserData* UserData = const_cast<UStaticMesh*>(StaticMesh)->GetAssetUserData<UUsdMeshAssetUserData>();
+
+		for (int32 MatIndex = 0; MatIndex < MaterialOverrides.Num(); ++MatIndex)
+		{
+			UMaterialInterface* Override = MaterialOverrides[MatIndex];
+			if (!Override)
+			{
+				continue;
+			}
+
+			for (int32 LODIndex = LowestLOD; LODIndex <= HighestLOD; ++LODIndex)
+			{
+				int32 NumSections = StaticMesh->GetNumSections(LODIndex);
+				const bool bHasSubsets = NumSections > 1;
+
+				for (int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex)
+				{
+					int32 SectionMatIndex = StaticMesh->GetSectionInfoMap().Get(LODIndex, SectionIndex).MaterialIndex;
+					if (SectionMatIndex != MatIndex)
+					{
+						continue;
+					}
+
+					if (UserData)
+					{
+						if (const FUsdPrimPathList* SourcePrimPaths = UserData->MaterialSlotToPrimPaths.Find(SectionMatIndex))
+						{
+							for (const FString& PrimPath : SourcePrimPaths->PrimPaths)
+							{
+								// See comment on the analogue part for the geometry cache component
+								if (PrimPath.StartsWith(UsdPrimPath))
+								{
+									pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath(*PrimPath).Get();
+									pxr::UsdPrim MeshPrim = Stage->OverridePrim(OverridePrimPath);
+									UE::USDPrimConversionImpl::Private::AuthorMaterialOverride(MeshPrim, Override->GetPathName());
+								}
+							}
+						}
+					}
+					else
+					{
+						pxr::SdfPath OverridePrimPath = UsdPrim.GetPath();
+
+						// If we have only 1 LOD, the asset's DefaultPrim will be the Mesh prim directly.
+						// If we have multiple, the default prim won't have any schema, but will contain separate
+						// Mesh prims for each LOD named "LOD0", "LOD1", etc., switched via a "LOD" variant set
+						if (bHasLODs)
+						{
+							OverridePrimPath = OverridePrimPath.AppendPath(UnrealToUsd::ConvertPath(*FString::Printf(TEXT("LOD%d"), LODIndex)).Get());
+						}
+
+						// If our LOD has only one section, its material assignment will be authored directly on the Mesh prim.
+						// If it has more than one material slot, we'll author UsdGeomSubset for each LOD Section, and author the material
+						// assignment there
+						if (bHasSubsets)
+						{
+							// Assume the UE sections are in the same order as the USD ones
+							std::vector<pxr::UsdGeomSubset> GeomSubsets = pxr::UsdShadeMaterialBindingAPI(UsdPrim).GetMaterialBindSubsets();
+							if (SectionIndex < static_cast<int32>(GeomSubsets.size()))
+							{
+								OverridePrimPath = OverridePrimPath.AppendChild(GeomSubsets[SectionIndex].GetPrim().GetName());
+							}
+							else
+							{
+								OverridePrimPath = OverridePrimPath.AppendPath(
+									UnrealToUsd::ConvertPath(*FString::Printf(TEXT("Section%d"), SectionIndex)).Get()
+								);
+							}
+						}
+
+						pxr::UsdPrim MeshPrim = Stage->OverridePrim(OverridePrimPath);
+						UE::USDPrimConversionImpl::Private::AuthorMaterialOverride(MeshPrim, Override->GetPathName());
+					}
+				}
+			}
+		}
+	}
+	else if (const USkeletalMesh* SkeletalMesh = Cast<const USkeletalMesh>(MeshAsset))
+	{
+		FSkeletalMeshRenderData* RenderData = SkeletalMesh->GetResourceForRendering();
+		if (!RenderData)
+		{
+			return false;
+		}
+
+		const UUsdMeshAssetUserData* UserData = const_cast<USkeletalMesh*>(SkeletalMesh)->GetAssetUserData<UUsdMeshAssetUserData>();
+
+		TIndirectArray<FSkeletalMeshLODRenderData>& LodRenderData = RenderData->LODRenderData;
+		if (LodRenderData.Num() == 0)
+		{
+			return false;
+		}
+
+		int32 NumLODs = SkeletalMesh->GetLODNum();
+		if (bAllLODs)
+		{
+			HighestLOD = NumLODs - 1;
+			LowestLOD = 0;
+		}
+		else
+		{
+			// Make sure they're both >= 0 (the options dialog slider is clamped, but this may be called directly)
+			LowestLOD = FMath::Clamp(LowestLOD, 0, NumLODs - 1);
+			HighestLOD = FMath::Clamp(HighestLOD, 0, NumLODs - 1);
+
+			// Make sure Lowest <= Highest
+			int32 Temp = FMath::Min(LowestLOD, HighestLOD);
+			HighestLOD = FMath::Max(LowestLOD, HighestLOD);
+			LowestLOD = Temp;
+
+			// Make sure there's at least one LOD
+			NumLODs = FMath::Max(HighestLOD - LowestLOD + 1, 1);
+		}
+		const bool bHasLODs = NumLODs > 1;
+
+		FString MeshName;
+		if (!bHasLODs)
+		{
+			for (const pxr::UsdPrim& Child : UsdPrim.GetChildren())
+			{
+				if (pxr::UsdGeomMesh Mesh{Child})
+				{
+					MeshName = UsdToUnreal::ConvertToken(Child.GetName());
+					break;
+				}
+			}
+		}
+
+		for (int32 MatIndex = 0; MatIndex < MaterialOverrides.Num(); ++MatIndex)
+		{
+			UMaterialInterface* Override = MaterialOverrides[MatIndex];
+			if (!Override)
+			{
+				continue;
+			}
+
+			for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
+			{
+				if (!LodRenderData.IsValidIndex(LODIndex))
+				{
+					continue;
+				}
+
+				const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo(LODIndex);
+
+				const TArray<FSkelMeshRenderSection>& Sections = LodRenderData[LODIndex].RenderSections;
+				int32 NumSections = Sections.Num();
+				const bool bHasSubsets = NumSections > 1;
+
+				for (int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex)
+				{
+					int32 SectionMatIndex = Sections[SectionIndex].MaterialIndex;
+
+					// If we have a LODInfo map, we need to reroute the material index through it
+					if (LODInfo && LODInfo->LODMaterialMap.IsValidIndex(SectionIndex))
+					{
+						SectionMatIndex = LODInfo->LODMaterialMap[SectionIndex];
+					}
+
+					if (SectionMatIndex != MatIndex)
+					{
+						continue;
+					}
+
+					if (UserData)
+					{
+						if (const FUsdPrimPathList* SourcePrimPaths = UserData->MaterialSlotToPrimPaths.Find(SectionMatIndex))
+						{
+							for (const FString& PrimPath : SourcePrimPaths->PrimPaths)
+							{
+								// See comment on the analogue part for the geometry cache component
+								if (PrimPath.StartsWith(UsdPrimPath))
+								{
+									pxr::SdfPath OverridePrimPath = UnrealToUsd::ConvertPath(*PrimPath).Get();
+									pxr::UsdPrim MeshPrim = Stage->OverridePrim(OverridePrimPath);
+									UE::USDPrimConversionImpl::Private::AuthorMaterialOverride(MeshPrim, Override->GetPathName());
+								}
+							}
+						}
+					}
+					else
+					{
+						pxr::SdfPath OverridePrimPath = UsdPrim.GetPath();
+
+						// If we have only 1 LOD, the asset's DefaultPrim will be a SkelRoot, and the Mesh will be a subprim
+						// with the same name. If we have multiple LODS, the default prim is also the SkelRoot but will contain separate
+						// Mesh prims for each LOD named "LOD0", "LOD1", etc., switched via a "LOD" variant set
+						if (bHasLODs)
+						{
+							OverridePrimPath = OverridePrimPath.AppendPath(UnrealToUsd::ConvertPath(*FString::Printf(TEXT("LOD%d"), LODIndex)).Get());
+						}
+						else
+						{
+							OverridePrimPath = OverridePrimPath.AppendElementString(UnrealToUsd::ConvertString(*MeshName).Get());
+						}
+
+						// If our LOD has only one section, its material assignment will be authored directly on the Mesh prim.
+						// If it has more than one material slot, we'll author UsdGeomSubset for each LOD Section, and author the material
+						// assignment there
+						if (bHasSubsets)
+						{
+							// Assume the UE sections are in the same order as the USD ones
+							std::vector<pxr::UsdGeomSubset> GeomSubsets = pxr::UsdShadeMaterialBindingAPI(UsdPrim).GetMaterialBindSubsets();
+							if (SectionIndex < static_cast<int32>(GeomSubsets.size()))
+							{
+								OverridePrimPath = OverridePrimPath.AppendChild(GeomSubsets[SectionIndex].GetPrim().GetName());
+							}
+							else
+							{
+								OverridePrimPath = OverridePrimPath.AppendPath(
+									UnrealToUsd::ConvertPath(*FString::Printf(TEXT("Section%d"), SectionIndex)).Get()
+								);
+							}
+						}
+
+						pxr::UsdPrim MeshPrim = Stage->OverridePrim(OverridePrimPath);
+						UE::USDPrimConversionImpl::Private::AuthorMaterialOverride(MeshPrim, Override->GetPathName());
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		ensure(false);
+		return false;
+	}
+#endif // WITH_EDITOR
 
 	return true;
 }
@@ -2255,6 +2498,11 @@ bool UnrealToUsd::ConvertXformable( const FTransform& RelativeTransform, pxr::Us
 		return false;
 	}
 
+	if (UsdUtils::NotifyIfInstanceProxy(UsdPrim))
+	{
+		return false;
+	}
+
 	FUsdStageInfo StageInfo( UsdPrim.GetStage() );
 	pxr::GfMatrix4d UsdTransform = UnrealToUsd::ConvertTransform( StageInfo, RelativeTransform );
 
@@ -2264,8 +2512,8 @@ bool UnrealToUsd::ConvertXformable( const FTransform& RelativeTransform, pxr::Us
 	{
 		MatrixXform.Set( UsdTransform, UsdTimeCode );
 
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ MatrixXform.GetAttr() } );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ XForm.GetXformOpOrderAttr() } );
+		UsdUtils::NotifyIfOverriddenOpinion(MatrixXform.GetAttr());
+		UsdUtils::NotifyIfOverriddenOpinion(XForm.GetXformOpOrderAttr());
 	}
 
 	return true;
@@ -2338,6 +2586,11 @@ bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Ac
 
 	UsdGeomPointInstancer PointInstancer{ UsdPrim };
 	if ( !PointInstancer )
+	{
+		return false;
+	}
+
+	if (UsdUtils::NotifyIfInstanceProxy(UsdPrim))
 	{
 		return false;
 	}
@@ -2427,25 +2680,25 @@ bool UnrealToUsd::ConvertInstancedFoliageActor( const AInstancedFoliageActor& Ac
 	if ( UsdAttribute Attr = PointInstancer.CreateProtoIndicesAttr() )
 	{
 		Attr.Set( ProtoIndices, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreatePositionsAttr() )
 	{
 		Attr.Set( Positions, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateOrientationsAttr() )
 	{
 		Attr.Set( Orientations, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	if ( UsdAttribute Attr = PointInstancer.CreateScalesAttr() )
 	{
 		Attr.Set( Scales, UsdTimeCode );
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	return true;
@@ -2735,7 +2988,7 @@ bool UnrealToUsd::CreateSkeletalAnimationBaker( UE::FUsdPrim& SkelRoot, UE::FUsd
 	UnrealToUsd::ConvertJointsAttribute( RefSkeleton, JointsAttr );
 
 	// Build active morph targets array if it isn't setup already
-	TArray<UMorphTarget*>& MorphTargets = SkeletalMesh->GetMorphTargets();
+	TArray<TObjectPtr<UMorphTarget>>& MorphTargets = SkeletalMesh->GetMorphTargets();
 	if ( Component.ActiveMorphTargets.Num() != Component.MorphTargetWeights.Num() && MorphTargets.Num() != 0 )
 	{
 		for ( int32 MorphTargetIndex = 0; MorphTargetIndex < MorphTargets.Num(); ++MorphTargetIndex )
@@ -2858,206 +3111,349 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 	pxr::UsdStageRefPtr UsdStage = UsdPrim.GetStage();
 	FUsdStageInfo StageInfo{ UsdStage };
 
-	pxr::SdfChangeBlock ChangeBlock;
+	if (UsdUtils::NotifyIfInstanceProxy(Prim))
+	{
+		return Result;
+	}
 
 	pxr::UsdAttribute Attr;
-
-	const FName& PropertyPath = Track.GetPropertyPath();
-
-	// SceneComponent
 	{
-		if ( PropertyPath == UnrealIdentifiers::TransformPropertyName )
+		pxr::SdfChangeBlock ChangeBlock;
+
+		const FName& PropertyPath = Track.GetPropertyPath();
+
+		// Note that it's important that each individual case authors a spec for the relevant attribute right now,
+		// even though it returns a FPropertyTrackWriter to actually do the baking later. This will be done with
+		// CreateXformOpOrderAttr() or CreateVisibilityAttr() or CreateFocalLengthAttr(), etc.
+		// This just ensures that our check for overridden attributes at the bottom of this function call works
+		// properly.
+
+		// SceneComponent
 		{
-			if ( pxr::UsdGeomXformable Xformable{ UsdPrim } )
+			if ( PropertyPath == UnrealIdentifiers::TransformPropertyName )
 			{
-				Xformable.CreateXformOpOrderAttr();
-
-				if ( pxr::UsdGeomXformOp TransformOp = UE::USDPrimConversionImpl::Private::ForceMatrixXform( Xformable ) )
+				if ( pxr::UsdGeomXformable Xformable{ UsdPrim } )
 				{
-					Attr = TransformOp.GetAttr();
+					Xformable.CreateXformOpOrderAttr();
 
-					// Compensate different orientation for light or camera components
-					FTransform AdditionalRotation = FTransform::Identity;
-					if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.HasAPI< pxr::UsdLuxLightAPI >() )
+					if ( pxr::UsdGeomXformOp TransformOp = UE::USDPrimConversionImpl::Private::ForceMatrixXform( Xformable ) )
 					{
-						AdditionalRotation = FTransform( FRotator( 0.0f, 90.0f, 0.0f ) );
+						Attr = TransformOp.GetAttr();
 
-						if ( StageInfo.UpAxis == EUsdUpAxis::ZAxis )
+						// Compensate different orientation for light or camera components
+						FTransform AdditionalRotation = FTransform::Identity;
+						if ( UsdPrim.IsA< pxr::UsdGeomCamera >() || UsdPrim.HasAPI< pxr::UsdLuxLightAPI >() )
 						{
-							AdditionalRotation *= FTransform( FRotator( 90.0f, 0.0f, 0.0f ) );
-						}
-					}
+							AdditionalRotation = FTransform( FRotator( 0.0f, 90.0f, 0.0f ) );
 
-					// Invert compensation applied to parent if it's a light or camera component
-					if ( const USceneComponent* AttachParent = Component.GetAttachParent() )
-					{
-						if ( AttachParent->IsA( UCineCameraComponent::StaticClass() ) ||
-							AttachParent->IsA( ULightComponent::StaticClass() ) )
-						{
-							FTransform InverseCompensation = FTransform( FRotator( 0.0f, 90.f, 0.0f ) );
-
-							if ( UsdUtils::GetUsdStageUpAxis( UsdStage ) == pxr::UsdGeomTokens->z )
+							if ( StageInfo.UpAxis == EUsdUpAxis::ZAxis )
 							{
-								InverseCompensation *= FTransform( FRotator( 90.0f, 0.f, 0.0f ) );
+								AdditionalRotation *= FTransform( FRotator( 90.0f, 0.0f, 0.0f ) );
 							}
-
-							AdditionalRotation = AdditionalRotation * InverseCompensation.Inverse();
 						}
+
+						// Invert compensation applied to parent if it's a light or camera component
+						if ( const USceneComponent* AttachParent = Component.GetAttachParent() )
+						{
+							if ( AttachParent->IsA( UCineCameraComponent::StaticClass() ) ||
+								AttachParent->IsA( ULightComponent::StaticClass() ) )
+							{
+								FTransform InverseCompensation = FTransform( FRotator( 0.0f, 90.f, 0.0f ) );
+
+								if ( UsdUtils::GetUsdStageUpAxis( UsdStage ) == pxr::UsdGeomTokens->z )
+								{
+									InverseCompensation *= FTransform( FRotator( 90.0f, 0.f, 0.0f ) );
+								}
+
+								AdditionalRotation = AdditionalRotation * InverseCompensation.Inverse();
+							}
+						}
+
+						Result.TransformWriter = [&Component, AdditionalRotation, StageInfo, Attr]( const FTransform& UEValue, double UsdTimeCode )
+						{
+							FTransform FinalUETransform = AdditionalRotation * UEValue;
+							pxr::GfMatrix4d UsdTransform = UnrealToUsd::ConvertTransform( StageInfo, FinalUETransform );
+							Attr.Set< pxr::GfMatrix4d >( UsdTransform, UsdTimeCode );
+						};
 					}
-
-					Result.TransformWriter = [&Component, AdditionalRotation, StageInfo, Attr]( const FTransform& UEValue, double UsdTimeCode )
+				}
+			}
+			// bHidden is for the actor, and bHiddenInGame is for a component
+			// A component is only visible when it's not hidden and its actor is not hidden
+			// A bHidden is just handled like a bHiddenInGame for the actor's root component
+			// Whenever we handle a bHiddenInGame, we always combine it with the actor's bHidden
+			else if ( PropertyPath == UnrealIdentifiers::HiddenPropertyName || PropertyPath == UnrealIdentifiers::HiddenInGamePropertyName )
+			{
+				if ( pxr::UsdGeomImageable Imageable{ UsdPrim } )
+				{
+					Attr = Imageable.CreateVisibilityAttr();
+					if ( Attr )
 					{
-						FTransform FinalUETransform = AdditionalRotation * UEValue;
-						pxr::GfMatrix4d UsdTransform = UnrealToUsd::ConvertTransform( StageInfo, FinalUETransform );
-						Attr.Set< pxr::GfMatrix4d >( UsdTransform, UsdTimeCode );
-					};
+						Result.BoolWriter = [Imageable, Attr]( bool UEValue, double UsdTimeCode )
+						{
+							if ( UEValue )
+							{
+								// We have to do both here as MakeVisible will ensure we also flip any parent prims,
+								// and setting the attribute will ensure we write a timeSample. Otherwise if MakeVisible
+								// finds that the prim should already be visible due to a stronger opinion, it won't write anything
+								Attr.Set<pxr::TfToken>( pxr::UsdGeomTokens->inherited, UsdTimeCode );
+								Imageable.MakeVisible( UsdTimeCode );
+							}
+							else
+							{
+								Attr.Set<pxr::TfToken>( pxr::UsdGeomTokens->invisible, UsdTimeCode );
+								Imageable.MakeInvisible( UsdTimeCode );
+							}
+						};
+					}
 				}
 			}
 		}
-		// bHidden is for the actor, and bHiddenInGame is for a component
-		// A component is only visible when it's not hidden and its actor is not hidden
-		// A bHidden is just handled like a bHiddenInGame for the actor's root component
-		// Whenever we handle a bHiddenInGame, we always combine it with the actor's bHidden
-		else if ( PropertyPath == UnrealIdentifiers::HiddenPropertyName || PropertyPath == UnrealIdentifiers::HiddenInGamePropertyName )
-		{
-			if ( pxr::UsdGeomImageable Imageable{ UsdPrim } )
-			{
-				Attr = Imageable.CreateVisibilityAttr();
-				if ( Attr )
-				{
-					Result.BoolWriter = [Imageable, Attr]( bool UEValue, double UsdTimeCode )
-					{
-						if ( UEValue )
-						{
-							// We have to do both here as MakeVisible will ensure we also flip any parent prims,
-							// and setting the attribute will ensure we write a timeSample. Otherwise if MakeVisible
-							// finds that the prim should already be visible due to a stronger opinion, it won't write anything
-							Attr.Set<pxr::TfToken>( pxr::UsdGeomTokens->inherited, UsdTimeCode );
-							Imageable.MakeVisible( UsdTimeCode );
-						}
-						else
-						{
-							Attr.Set<pxr::TfToken>( pxr::UsdGeomTokens->invisible, UsdTimeCode );
-							Imageable.MakeInvisible( UsdTimeCode );
-						}
-					};
-				}
-			}
-		}
-	}
 
-	if ( pxr::UsdGeomCamera Camera{ UsdPrim } )
-	{
-		bool bConvertDistance = true;
+		if ( pxr::UsdGeomCamera Camera{ UsdPrim } )
+		{
+			bool bConvertDistance = true;
 
-		if ( PropertyPath == UnrealIdentifiers::CurrentFocalLengthPropertyName )
-		{
-			Attr = Camera.CreateFocalLengthAttr();
-		}
-		else if ( PropertyPath == UnrealIdentifiers::ManualFocusDistancePropertyName )
-		{
-			Attr = Camera.CreateFocusDistanceAttr();
-		}
-		else if ( PropertyPath == UnrealIdentifiers::CurrentAperturePropertyName )
-		{
-			bConvertDistance = false;
-			Attr = Camera.CreateFStopAttr();
-		}
-		else if ( PropertyPath == UnrealIdentifiers::SensorWidthPropertyName )
-		{
-			Attr = Camera.CreateHorizontalApertureAttr();
-		}
-		else if ( PropertyPath == UnrealIdentifiers::SensorHeightPropertyName )
-		{
-			Attr = Camera.CreateVerticalApertureAttr();
-		}
+			if ( PropertyPath == UnrealIdentifiers::CurrentFocalLengthPropertyName )
+			{
+				Attr = Camera.CreateFocalLengthAttr();
+			}
+			else if ( PropertyPath == UnrealIdentifiers::ManualFocusDistancePropertyName )
+			{
+				Attr = Camera.CreateFocusDistanceAttr();
+			}
+			else if ( PropertyPath == UnrealIdentifiers::CurrentAperturePropertyName )
+			{
+				bConvertDistance = false;
+				Attr = Camera.CreateFStopAttr();
+			}
+			else if ( PropertyPath == UnrealIdentifiers::SensorWidthPropertyName )
+			{
+				Attr = Camera.CreateHorizontalApertureAttr();
+			}
+			else if ( PropertyPath == UnrealIdentifiers::SensorHeightPropertyName )
+			{
+				Attr = Camera.CreateVerticalApertureAttr();
+			}
 
-		if ( Attr )
-		{
-			if ( bConvertDistance )
-			{
-				Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode ) mutable
-				{
-					Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
-				};
-			}
-			else
-			{
-				Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode ) mutable
-				{
-					Attr.Set( UEValue, UsdTimeCode );
-				};
-			}
-		}
-	}
-	else if ( pxr::UsdLuxLightAPI LightAPI{ Prim } )
-	{
-		if ( PropertyPath == UnrealIdentifiers::LightColorPropertyName )
-		{
-			Attr = LightAPI.GetColorAttr();
 			if ( Attr )
 			{
-				Result.ColorWriter = [Attr]( const FLinearColor& UEValue, double UsdTimeCode )
+				if ( bConvertDistance )
 				{
-					pxr::GfVec4f Vec4 = UnrealToUsd::ConvertColor( UEValue );
-					Attr.Set( pxr::GfVec3f{ Vec4[ 0 ], Vec4[ 1 ], Vec4[ 2 ] }, UsdTimeCode );
-				};
-			}
-		}
-		else if ( PropertyPath == UnrealIdentifiers::UseTemperaturePropertyName )
-		{
-			Attr = LightAPI.GetEnableColorTemperatureAttr();
-			if ( Attr )
-			{
-				Result.BoolWriter = [Attr]( bool UEValue, double UsdTimeCode )
-				{
-					Attr.Set( UEValue, UsdTimeCode );
-				};
-			}
-		}
-		else if ( PropertyPath == UnrealIdentifiers::TemperaturePropertyName )
-		{
-			Attr = LightAPI.GetColorTemperatureAttr();
-			if ( Attr )
-			{
-				Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
-				{
-					Attr.Set( UEValue, UsdTimeCode );
-				};
-			}
-		}
-
-		else if ( pxr::UsdLuxSphereLight SphereLight{ UsdPrim } )
-		{
-			if ( PropertyPath == UnrealIdentifiers::SourceRadiusPropertyName )
-			{
-				OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
-
-				Attr = SphereLight.GetRadiusAttr();
-				if ( Attr )
-				{
-					Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+					Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode ) mutable
 					{
 						Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
 					};
 				}
+				else
+				{
+					Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode ) mutable
+					{
+						Attr.Set( UEValue, UsdTimeCode );
+					};
+				}
+			}
+		}
+		else if ( pxr::UsdLuxLightAPI LightAPI{ Prim } )
+		{
+			if ( PropertyPath == UnrealIdentifiers::LightColorPropertyName )
+			{
+				Attr = LightAPI.GetColorAttr();
+				if ( Attr )
+				{
+					Result.ColorWriter = [Attr]( const FLinearColor& UEValue, double UsdTimeCode )
+					{
+						pxr::GfVec4f Vec4 = UnrealToUsd::ConvertColor( UEValue );
+						Attr.Set( pxr::GfVec3f{ Vec4[ 0 ], Vec4[ 1 ], Vec4[ 2 ] }, UsdTimeCode );
+					};
+				}
+			}
+			else if ( PropertyPath == UnrealIdentifiers::UseTemperaturePropertyName )
+			{
+				Attr = LightAPI.GetEnableColorTemperatureAttr();
+				if ( Attr )
+				{
+					Result.BoolWriter = [Attr]( bool UEValue, double UsdTimeCode )
+					{
+						Attr.Set( UEValue, UsdTimeCode );
+					};
+				}
+			}
+			else if ( PropertyPath == UnrealIdentifiers::TemperaturePropertyName )
+			{
+				Attr = LightAPI.GetColorTemperatureAttr();
+				if ( Attr )
+				{
+					Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
+					{
+						Attr.Set( UEValue, UsdTimeCode );
+					};
+				}
 			}
 
-			// Spot light
-			else if ( UsdPrim.HasAPI< pxr::UsdLuxShapingAPI >() )
+			else if ( pxr::UsdLuxSphereLight SphereLight{ UsdPrim } )
 			{
-				pxr::UsdLuxShapingAPI ShapingAPI{ UsdPrim };
-
-				if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
+				if ( PropertyPath == UnrealIdentifiers::SourceRadiusPropertyName )
 				{
-					Attr = SphereLight.GetIntensityAttr();
-					pxr::UsdAttribute RadiusAttr = SphereLight.GetRadiusAttr();
-					pxr::UsdAttribute ConeAngleAttr = ShapingAPI.GetShapingConeAngleAttr();
-					pxr::UsdAttribute ConeSoftnessAttr = ShapingAPI.GetShapingConeSoftnessAttr();
+					OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
+
+					Attr = SphereLight.GetRadiusAttr();
+					if ( Attr )
+					{
+						Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+						{
+							Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
+						};
+					}
+				}
+
+				// Spot light
+				else if ( UsdPrim.HasAPI< pxr::UsdLuxShapingAPI >() )
+				{
+					pxr::UsdLuxShapingAPI ShapingAPI{ UsdPrim };
+
+					if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
+					{
+						Attr = SphereLight.GetIntensityAttr();
+						pxr::UsdAttribute RadiusAttr = SphereLight.GetRadiusAttr();
+						pxr::UsdAttribute ConeAngleAttr = ShapingAPI.GetShapingConeAngleAttr();
+						pxr::UsdAttribute ConeSoftnessAttr = ShapingAPI.GetShapingConeSoftnessAttr();
+
+						// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
+						// is zero, as we can't manipulate something like that exposure directly from UE anyway
+						if ( pxr::UsdAttribute ExposureAttr = SphereLight.GetExposureAttr() )
+						{
+							ExposureAttr.Clear();
+						}
+
+						// For now we'll assume the light intensity units are constant and the user doesn't have any light intensity unit tracks...
+						ELightUnits Units = ELightUnits::Lumens;
+						if ( const ULocalLightComponent* LightComponent = Cast<const ULocalLightComponent>( &Component ) )
+						{
+							Units = LightComponent->IntensityUnits;
+						}
+
+						if ( Attr && RadiusAttr && ConeAngleAttr && ConeSoftnessAttr )
+						{
+							Result.FloatWriter = [Attr, RadiusAttr, ConeAngleAttr, ConeSoftnessAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
+							{
+								const float UsdConeAngle = UsdUtils::GetUsdValue< float >( ConeAngleAttr, UsdTimeCode );
+								const float UsdConeSoftness = UsdUtils::GetUsdValue< float >( ConeSoftnessAttr, UsdTimeCode );
+								const float UsdRadius = UsdUtils::GetUsdValue< float >( RadiusAttr, UsdTimeCode );
+
+								float InnerConeAngle = 0.0f;
+								const float OuterConeAngle = UsdToUnreal::ConvertConeAngleSoftnessAttr( UsdConeAngle, UsdConeSoftness, InnerConeAngle );
+								const float SourceRadius = UsdToUnreal::ConvertDistance( StageInfo, UsdRadius );
+
+								Attr.Set(
+									UnrealToUsd::ConvertSpotLightIntensityProperty( UEValue, OuterConeAngle, InnerConeAngle, SourceRadius, StageInfo, Units ),
+									UsdTimeCode
+								);
+							};
+						}
+					}
+					else if ( PropertyPath == UnrealIdentifiers::OuterConeAnglePropertyName )
+					{
+						Attr = ShapingAPI.GetShapingConeAngleAttr();
+						if ( Attr )
+						{
+							// InnerConeAngle is calculated based on ConeAngleAttr, so we need to refresh it
+							OutPropertyPathsToRefresh.Add( UnrealIdentifiers::InnerConeAnglePropertyName );
+
+							Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
+							{
+								Attr.Set( UEValue, UsdTimeCode );
+							};
+						}
+					}
+					else if ( PropertyPath == UnrealIdentifiers::InnerConeAnglePropertyName )
+					{
+						Attr = ShapingAPI.GetShapingConeSoftnessAttr();
+						pxr::UsdAttribute ConeAngleAttr = ShapingAPI.GetShapingConeAngleAttr();
+
+						if ( ConeAngleAttr && Attr )
+						{
+							Result.FloatWriter = [Attr, ConeAngleAttr]( float UEValue, double UsdTimeCode )
+							{
+								const float UsdConeAngle = UsdUtils::GetUsdValue< float >( ConeAngleAttr, UsdTimeCode );
+								const float OuterConeAngle = UsdConeAngle;
+
+								const float OutNewSoftness = UnrealToUsd::ConvertInnerConeAngleProperty( UEValue, OuterConeAngle );
+								Attr.Set( OutNewSoftness, UsdTimeCode );
+							};
+						}
+					}
+				}
+				// Just a point light
+				else
+				{
+					if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
+					{
+						Attr = SphereLight.GetIntensityAttr();
+						pxr::UsdAttribute RadiusAttr = SphereLight.GetRadiusAttr();
+
+						// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
+						// is zero, as we can't manipulate something like that exposure directly from UE anyway
+						if ( pxr::UsdAttribute ExposureAttr = SphereLight.GetExposureAttr() )
+						{
+							ExposureAttr.Clear();
+						}
+
+						// For now we'll assume the light intensity units are constant and the user doesn't have any light intensity unit tracks...
+						ELightUnits Units = ELightUnits::Lumens;
+						if ( const ULocalLightComponent* LightComponent = Cast<const ULocalLightComponent>( &Component ) )
+						{
+							Units = LightComponent->IntensityUnits;
+						}
+
+						if ( Attr && RadiusAttr )
+						{
+							Result.FloatWriter = [Attr, RadiusAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
+							{
+								const float SourceRadius = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( RadiusAttr, UsdTimeCode ) );
+								Attr.Set( UnrealToUsd::ConvertPointLightIntensityProperty( UEValue, SourceRadius, StageInfo, Units ), UsdTimeCode );
+							};
+						}
+					}
+				}
+			}
+			else if ( pxr::UsdLuxRectLight RectLight{ UsdPrim } )
+			{
+				if ( PropertyPath == UnrealIdentifiers::SourceWidthPropertyName )
+				{
+					Attr = RectLight.GetWidthAttr();
+					if ( Attr )
+					{
+						OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
+
+						Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+						{
+							Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
+						};
+					}
+				}
+				else if ( PropertyPath == UnrealIdentifiers::SourceHeightPropertyName )
+				{
+					Attr = RectLight.GetHeightAttr();
+					if ( Attr )
+					{
+						OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
+
+						Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+						{
+							Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
+						};
+					}
+				}
+				else if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
+				{
+					Attr = RectLight.GetIntensityAttr();
+					pxr::UsdAttribute WidthAttr = RectLight.GetWidthAttr();
+					pxr::UsdAttribute HeightAttr = RectLight.GetHeightAttr();
 
 					// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
 					// is zero, as we can't manipulate something like that exposure directly from UE anyway
-					if ( pxr::UsdAttribute ExposureAttr = SphereLight.GetExposureAttr() )
+					if ( pxr::UsdAttribute ExposureAttr = RectLight.GetExposureAttr() )
 					{
 						ExposureAttr.Clear();
 					}
@@ -3069,68 +3465,47 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 						Units = LightComponent->IntensityUnits;
 					}
 
-					if ( Attr && RadiusAttr && ConeAngleAttr && ConeSoftnessAttr )
+					if ( Attr && WidthAttr && HeightAttr )
 					{
-						Result.FloatWriter = [Attr, RadiusAttr, ConeAngleAttr, ConeSoftnessAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
+						Result.FloatWriter = [Attr, WidthAttr, HeightAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
 						{
-							const float UsdConeAngle = UsdUtils::GetUsdValue< float >( ConeAngleAttr, UsdTimeCode );
-							const float UsdConeSoftness = UsdUtils::GetUsdValue< float >( ConeSoftnessAttr, UsdTimeCode );
-							const float UsdRadius = UsdUtils::GetUsdValue< float >( RadiusAttr, UsdTimeCode );
+							const float Width = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( WidthAttr, UsdTimeCode ) );
+							const float Height = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( HeightAttr, UsdTimeCode ) );
 
-							float InnerConeAngle = 0.0f;
-							const float OuterConeAngle = UsdToUnreal::ConvertConeAngleSoftnessAttr( UsdConeAngle, UsdConeSoftness, InnerConeAngle );
-							const float SourceRadius = UsdToUnreal::ConvertDistance( StageInfo, UsdRadius );
-
-							Attr.Set(
-								UnrealToUsd::ConvertSpotLightIntensityProperty( UEValue, OuterConeAngle, InnerConeAngle, SourceRadius, StageInfo, Units ),
-								UsdTimeCode
-							);
-						};
-					}
-				}
-				else if ( PropertyPath == UnrealIdentifiers::OuterConeAnglePropertyName )
-				{
-					Attr = ShapingAPI.GetShapingConeAngleAttr();
-					if ( Attr )
-					{
-						// InnerConeAngle is calculated based on ConeAngleAttr, so we need to refresh it
-						OutPropertyPathsToRefresh.Add( UnrealIdentifiers::InnerConeAnglePropertyName );
-
-						Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
-						{
-							Attr.Set( UEValue, UsdTimeCode );
-						};
-					}
-				}
-				else if ( PropertyPath == UnrealIdentifiers::InnerConeAnglePropertyName )
-				{
-					Attr = ShapingAPI.GetShapingConeSoftnessAttr();
-					pxr::UsdAttribute ConeAngleAttr = ShapingAPI.GetShapingConeAngleAttr();
-
-					if ( ConeAngleAttr && Attr )
-					{
-						Result.FloatWriter = [Attr, ConeAngleAttr]( float UEValue, double UsdTimeCode )
-						{
-							const float UsdConeAngle = UsdUtils::GetUsdValue< float >( ConeAngleAttr, UsdTimeCode );
-							const float OuterConeAngle = UsdConeAngle;
-
-							const float OutNewSoftness = UnrealToUsd::ConvertInnerConeAngleProperty( UEValue, OuterConeAngle );
-							Attr.Set( OutNewSoftness, UsdTimeCode );
+							Attr.Set( UnrealToUsd::ConvertRectLightIntensityProperty( UEValue, Width, Height, StageInfo, Units ), UsdTimeCode );
 						};
 					}
 				}
 			}
-			// Just a point light
-			else
+			else if ( pxr::UsdLuxDiskLight DiskLight{ UsdPrim } )
 			{
-				if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
+				if ( PropertyPath == UnrealIdentifiers::SourceWidthPropertyName || PropertyPath == UnrealIdentifiers::SourceHeightPropertyName )
 				{
-					Attr = SphereLight.GetIntensityAttr();
-					pxr::UsdAttribute RadiusAttr = SphereLight.GetRadiusAttr();
+					Attr = DiskLight.GetRadiusAttr();
+					if ( Attr )
+					{
+						OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
+
+						// Resync the other to match this one after we bake it, effectively always enforcing the UE rect light into a square shape
+						OutPropertyPathsToRefresh.Add( PropertyPath == UnrealIdentifiers::SourceWidthPropertyName
+							? UnrealIdentifiers::SourceHeightPropertyName
+							: UnrealIdentifiers::SourceWidthPropertyName
+						);
+
+						Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+						{
+							Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue * 0.5f ), UsdTimeCode );
+						};
+					}
+				}
+				else if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
+				{
+					Attr = RectLight.GetIntensityAttr();
+					pxr::UsdAttribute RadiusAttr = DiskLight.GetRadiusAttr();
 
 					// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
 					// is zero, as we can't manipulate something like that exposure directly from UE anyway
-					if ( pxr::UsdAttribute ExposureAttr = SphereLight.GetExposureAttr() )
+					if ( pxr::UsdAttribute ExposureAttr = RectLight.GetExposureAttr() )
 					{
 						ExposureAttr.Clear();
 					}
@@ -3146,154 +3521,44 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 					{
 						Result.FloatWriter = [Attr, RadiusAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
 						{
-							const float SourceRadius = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( RadiusAttr, UsdTimeCode ) );
-							Attr.Set( UnrealToUsd::ConvertPointLightIntensityProperty( UEValue, SourceRadius, StageInfo, Units ), UsdTimeCode );
+							const float Radius = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( RadiusAttr, UsdTimeCode ) );
+
+							Attr.Set( UnrealToUsd::ConvertRectLightIntensityProperty( UEValue, Radius, StageInfo, Units ), UsdTimeCode );
 						};
 					}
 				}
 			}
-		}
-		else if ( pxr::UsdLuxRectLight RectLight{ UsdPrim } )
-		{
-			if ( PropertyPath == UnrealIdentifiers::SourceWidthPropertyName )
+			else if ( pxr::UsdLuxDistantLight DistantLight{ UsdPrim } )
 			{
-				Attr = RectLight.GetWidthAttr();
-				if ( Attr )
+				if ( PropertyPath == UnrealIdentifiers::LightSourceAnglePropertyName )
 				{
-					OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
-
-					Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+					Attr = DistantLight.GetAngleAttr();
+					if ( Attr )
 					{
-						Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
-					};
+						Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
+						{
+							Attr.Set( UEValue, UsdTimeCode );
+						};
+					}
 				}
-			}
-			else if ( PropertyPath == UnrealIdentifiers::SourceHeightPropertyName )
-			{
-				Attr = RectLight.GetHeightAttr();
-				if ( Attr )
+				else if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
 				{
-					OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
+					Attr = DistantLight.GetIntensityAttr();
 
-					Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
+					// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
+					// is zero, as we can't manipulate something like that exposure directly from UE anyway
+					if ( pxr::UsdAttribute ExposureAttr = RectLight.GetExposureAttr() )
 					{
-						Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue ), UsdTimeCode );
-					};
-				}
-			}
-			else if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
-			{
-				Attr = RectLight.GetIntensityAttr();
-				pxr::UsdAttribute WidthAttr = RectLight.GetWidthAttr();
-				pxr::UsdAttribute HeightAttr = RectLight.GetHeightAttr();
+						ExposureAttr.Clear();
+					}
 
-				// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
-				// is zero, as we can't manipulate something like that exposure directly from UE anyway
-				if ( pxr::UsdAttribute ExposureAttr = RectLight.GetExposureAttr() )
-				{
-					ExposureAttr.Clear();
-				}
-
-				// For now we'll assume the light intensity units are constant and the user doesn't have any light intensity unit tracks...
-				ELightUnits Units = ELightUnits::Lumens;
-				if ( const ULocalLightComponent* LightComponent = Cast<const ULocalLightComponent>( &Component ) )
-				{
-					Units = LightComponent->IntensityUnits;
-				}
-
-				if ( Attr && WidthAttr && HeightAttr )
-				{
-					Result.FloatWriter = [Attr, WidthAttr, HeightAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
+					if ( Attr )
 					{
-						const float Width = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( WidthAttr, UsdTimeCode ) );
-						const float Height = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( HeightAttr, UsdTimeCode ) );
-
-						Attr.Set( UnrealToUsd::ConvertRectLightIntensityProperty( UEValue, Width, Height, StageInfo, Units ), UsdTimeCode );
-					};
-				}
-			}
-		}
-		else if ( pxr::UsdLuxDiskLight DiskLight{ UsdPrim } )
-		{
-			if ( PropertyPath == UnrealIdentifiers::SourceWidthPropertyName || PropertyPath == UnrealIdentifiers::SourceHeightPropertyName )
-			{
-				Attr = DiskLight.GetRadiusAttr();
-				if ( Attr )
-				{
-					OutPropertyPathsToRefresh.Add( UnrealIdentifiers::IntensityPropertyName );
-
-					// Resync the other to match this one after we bake it, effectively always enforcing the UE rect light into a square shape
-					OutPropertyPathsToRefresh.Add( PropertyPath == UnrealIdentifiers::SourceWidthPropertyName
-						? UnrealIdentifiers::SourceHeightPropertyName
-						: UnrealIdentifiers::SourceWidthPropertyName
-					);
-
-					Result.FloatWriter = [Attr, StageInfo]( float UEValue, double UsdTimeCode )
-					{
-						Attr.Set( UnrealToUsd::ConvertDistance( StageInfo, UEValue * 0.5f ), UsdTimeCode );
-					};
-				}
-			}
-			else if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
-			{
-				Attr = RectLight.GetIntensityAttr();
-				pxr::UsdAttribute RadiusAttr = DiskLight.GetRadiusAttr();
-
-				// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
-				// is zero, as we can't manipulate something like that exposure directly from UE anyway
-				if ( pxr::UsdAttribute ExposureAttr = RectLight.GetExposureAttr() )
-				{
-					ExposureAttr.Clear();
-				}
-
-				// For now we'll assume the light intensity units are constant and the user doesn't have any light intensity unit tracks...
-				ELightUnits Units = ELightUnits::Lumens;
-				if ( const ULocalLightComponent* LightComponent = Cast<const ULocalLightComponent>( &Component ) )
-				{
-					Units = LightComponent->IntensityUnits;
-				}
-
-				if ( Attr && RadiusAttr )
-				{
-					Result.FloatWriter = [Attr, RadiusAttr, StageInfo, Units]( float UEValue, double UsdTimeCode )
-					{
-						const float Radius = UsdToUnreal::ConvertDistance( StageInfo, UsdUtils::GetUsdValue< float >( RadiusAttr, UsdTimeCode ) );
-
-						Attr.Set( UnrealToUsd::ConvertRectLightIntensityProperty( UEValue, Radius, StageInfo, Units ), UsdTimeCode );
-					};
-				}
-			}
-		}
-		else if ( pxr::UsdLuxDistantLight DistantLight{ UsdPrim } )
-		{
-			if ( PropertyPath == UnrealIdentifiers::LightSourceAnglePropertyName )
-			{
-				Attr = DistantLight.GetAngleAttr();
-				if ( Attr )
-				{
-					Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
-					{
-						Attr.Set( UEValue, UsdTimeCode );
-					};
-				}
-			}
-			else if ( PropertyPath == UnrealIdentifiers::IntensityPropertyName )
-			{
-				Attr = DistantLight.GetIntensityAttr();
-
-				// Always clear exposure because we'll put all of our "light intensity" on the intensity attr and assume exposure
-				// is zero, as we can't manipulate something like that exposure directly from UE anyway
-				if ( pxr::UsdAttribute ExposureAttr = RectLight.GetExposureAttr() )
-				{
-					ExposureAttr.Clear();
-				}
-
-				if ( Attr )
-				{
-					Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
-					{
-						Attr.Set( UnrealToUsd::ConvertLightIntensityProperty( UEValue ), UsdTimeCode );
-					};
+						Result.FloatWriter = [Attr]( float UEValue, double UsdTimeCode )
+						{
+							Attr.Set( UnrealToUsd::ConvertLightIntensityProperty( UEValue ), UsdTimeCode );
+						};
+					}
 				}
 			}
 		}
@@ -3308,7 +3573,13 @@ UnrealToUsd::FPropertyTrackWriter UnrealToUsd::CreatePropertyTrackWriter( const 
 			Attr.ClearAtTime( TimeSample );
 		}
 
-		UsdUtils::NotifyIfOverriddenOpinion( UE::FUsdAttribute{ Attr } );
+		// Note that we must do this only after the change block is destroyed!
+		// This is important because if we don't have spec for this attribute on the current edit target, we're relying
+		// on the previous code to create it, and we need to let USD emit its internal notices and fully commit the
+		// "attribute creation" spec first. This because NotifyIfOverriddenOpinion will go through the attribute's
+		// spec stack and consider our attribute overriden if it finds a stronger opinion than the one on the edit
+		// target. Well if our own spec hasn't been created yet it will misfire when it runs into any other spec
+		UsdUtils::NotifyIfOverriddenOpinion(Attr);
 	}
 
 	return Result;

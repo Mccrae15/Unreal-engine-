@@ -24,9 +24,11 @@ UCustomizableObjectLayout::UCustomizableObjectLayout()
 	Block.Max = FIntPoint(4, 4);
 	Block.Id = FGuid::NewGuid();
 	Block.Priority = 0;
+	Block.bUseSymmetry = false;
 	Blocks.Add(Block);
 
 	PackingStrategy = ECustomizableObjectTextureLayoutPackingStrategy::Resizable;
+	BlockReductionMethod = ECustomizableObjectLayoutBlockReductionMethod::Halve;
 }
 
 
@@ -72,11 +74,11 @@ void UCustomizableObjectLayout::GenerateBlocksFromUVs()
 	if (Node && Mesh)
 	{
 		//Creating a GenerationContext
-		FCustomizableObjectCompiler* Compiler = new FCustomizableObjectCompiler();
+		TUniquePtr<FCustomizableObjectCompiler> Compiler( new FCustomizableObjectCompiler() );
 		UCustomizableObject* Object = Node->GetGraphEditor()->GetCustomizableObject();
 		FCompilationOptions Options = Object->CompileOptions;
 	
-		FMutableGraphGenerationContext GenerationContext(Object, Compiler, Options);
+		FMutableGraphGenerationContext GenerationContext(Object, Compiler.Get(), Options);
 	
 		//Transforming skeletalmesh to mutable mesh
 		mu::MeshPtr	MutableMesh = nullptr;
@@ -91,7 +93,7 @@ void UCustomizableObjectLayout::GenerateBlocksFromUVs()
 			GenerationContext.MeshGenerationFlags.Push(ShapeFlags);
 
 			GenerationContext.ComponentInfos.Add(SkeletalMesh);
-			MutableMesh = ConvertSkeletalMeshToMutable(SkeletalMesh, LOD, Material, GenerationContext, Node);
+			MutableMesh = ConvertSkeletalMeshToMutable(SkeletalMesh, TSoftClassPtr<UAnimInstance>(), LOD, Material, LOD, Material, GenerationContext, Node);
 		}
 		else if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Mesh))
 		{
@@ -100,28 +102,29 @@ void UCustomizableObjectLayout::GenerateBlocksFromUVs()
 	
 		if (MutableMesh)
 		{
-			//Generating blocks with the mutable mesh
+			// Generating blocks with the mutable mesh
 			Layout = mu::NodeLayoutBlocks::GenerateLayoutBlocks(MutableMesh, UVChannel, GridSize.X, GridSize.Y);
 		}
 	
-		delete Compiler;
+		Compiler.Reset();
 	
 		if (Layout)
 		{
 			Blocks.Empty();
 		
-			//Generating the layout blocks with the mutable layout		
+			// Generating the layout blocks with the mutable layout
 			for (int i = 0; i < Layout->GetBlockCount(); ++i)
 			{
-				int minX, minY, sizeX, sizeY;
+				uint16 minX, minY, sizeX, sizeY;
 		
-				Layout->GetBlock(i, &minX, &minY, &sizeX, &sizeY);
+				Layout->GetLayout()->GetBlock(i, &minX, &minY, &sizeX, &sizeY);
 		
 				FCustomizableObjectLayoutBlock block;
 				block.Min = FIntPoint(minX, minY);
 				block.Max = FIntPoint(minX + sizeX, minY + sizeY);
 				block.Id = FGuid::NewGuid();
 				block.Priority = 0;
+				block.bUseSymmetry = false;
 				Blocks.Add(block);
 			}
 		
@@ -167,4 +170,21 @@ int32 UCustomizableObjectLayout::FindBlock(const FGuid& InId) const
 	return -1;
 }
 
+
+void UCustomizableObjectLayout::SetIgnoreVertexLayoutWarnings(bool bValue)
+{
+	bIgnoreUnassignedVertexWarning = bValue;
+}
+
+
+void UCustomizableObjectLayout::SetIgnoreWarningsLOD(int32 LODValue)
+{
+	FirstLODToIgnore = LODValue;
+}
+
+
+void UCustomizableObjectLayout::SetBlockReductionMethod(ECustomizableObjectLayoutBlockReductionMethod Method)
+{
+	BlockReductionMethod = Method;
+}
 #undef LOCTEXT_NAMESPACE

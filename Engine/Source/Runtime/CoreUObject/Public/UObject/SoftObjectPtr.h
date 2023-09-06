@@ -12,6 +12,16 @@
 #include "UObject/SoftObjectPath.h"
 
 /**
+ * TIsSoftObjectPointerType
+ * Trait for recognizing 'soft' (path-based) object pointer types
+ */
+template<typename T> 
+struct TIsSoftObjectPointerType
+{ 
+	enum { Value = false };
+};
+
+/**
  * FSoftObjectPtr is a type of weak pointer to a UObject, that also keeps track of the path to the object on disk.
  * It will change back and forth between being Valid and Pending as the referenced object loads or unloads.
  * It has no impact on if the object is garbage collected or not.
@@ -21,24 +31,18 @@
 struct FSoftObjectPtr : public TPersistentObjectPtr<FSoftObjectPath>
 {
 public:	
-	/** Default constructor, will be null */
-	FORCEINLINE FSoftObjectPtr()
-	{
-	}
+	FORCEINLINE FSoftObjectPtr() = default;
+	FORCEINLINE FSoftObjectPtr(const FSoftObjectPtr& Other) = default;
+	FORCEINLINE FSoftObjectPtr(FSoftObjectPtr&& Other) = default;
+	FORCEINLINE ~FSoftObjectPtr() = default;
+	FORCEINLINE FSoftObjectPtr& operator=(const FSoftObjectPtr& Other) = default;
+	FORCEINLINE FSoftObjectPtr& operator=(FSoftObjectPtr&& Other) = default;
 
-	/** Construct from another soft pointer */
-	FORCEINLINE FSoftObjectPtr(const FSoftObjectPtr& Other)
-	{
-		(*this)=Other;
-	}
-
-	/** Construct from a soft object path */
 	explicit FORCEINLINE FSoftObjectPtr(const FSoftObjectPath& ObjectPath)
 		: TPersistentObjectPtr<FSoftObjectPath>(ObjectPath)
 	{
 	}
 
-	/** Construct from an object already in memory */
 	explicit FORCEINLINE FSoftObjectPtr(const UObject* Object)
 	{
 		(*this)=Object;
@@ -48,7 +52,7 @@ public:
 	UObject* LoadSynchronous() const
 	{
 		UObject* Asset = Get();
-		if (Asset == nullptr && IsPending())
+		if (Asset == nullptr && !IsNull())
 		{
 			ToSoftObjectPath().TryLoad();
 			
@@ -102,6 +106,7 @@ public:
 
 template <> struct TIsPODType<FSoftObjectPtr> { enum { Value = TIsPODType<TPersistentObjectPtr<FSoftObjectPath> >::Value }; };
 template <> struct TIsWeakPointerType<FSoftObjectPtr> { enum { Value = TIsWeakPointerType<TPersistentObjectPtr<FSoftObjectPath> >::Value }; };
+template <> struct TIsSoftObjectPointerType<FSoftObjectPtr> { enum { Value = true }; };
 
 /**
  * TSoftObjectPtr is templatized wrapper of the generic FSoftObjectPtr, it can be used in UProperties
@@ -115,10 +120,12 @@ struct TSoftObjectPtr
 public:
 	using ElementType = T;
 	
-	/** Default constructor, will be null */
-	FORCEINLINE TSoftObjectPtr()
-	{
-	}
+	FORCEINLINE TSoftObjectPtr() = default;
+	FORCEINLINE TSoftObjectPtr(const TSoftObjectPtr& Other) = default;
+	FORCEINLINE TSoftObjectPtr(TSoftObjectPtr&& Other) = default;
+	FORCEINLINE ~TSoftObjectPtr() = default;
+	FORCEINLINE TSoftObjectPtr& operator=(const TSoftObjectPtr& Other) = default;
+	FORCEINLINE TSoftObjectPtr& operator=(TSoftObjectPtr&& Other) = default;
 	
 	/** Construct from another soft pointer */
 	template <class U, class = decltype(ImplicitConv<T*>((U*)nullptr))>
@@ -415,6 +422,13 @@ FArchive& operator<<(FArchive& Ar, TSoftObjectPtr<T>& Ptr)
 
 template<class T> struct TIsPODType<TSoftObjectPtr<T> > { enum { Value = TIsPODType<FSoftObjectPtr>::Value }; };
 template<class T> struct TIsWeakPointerType<TSoftObjectPtr<T> > { enum { Value = TIsWeakPointerType<FSoftObjectPtr>::Value }; };
+template<class T> struct TIsSoftObjectPointerType<TSoftObjectPtr<T>> { enum { Value = TIsSoftObjectPointerType<FSoftObjectPtr>::Value }; };
+
+template <typename T>
+struct TCallTraits<TSoftObjectPtr<T>> : public TCallTraitsBase<TSoftObjectPtr<T>>
+{
+	using ConstPointerType = TSoftObjectPtr<const T>;
+};
 
 /** Utility to create a TSoftObjectPtr without specifying the type */
 template <class T>
@@ -443,10 +457,12 @@ class TSoftClassPtr
 public:
 	using ElementType = TClass;
 	
-	/** Default constructor, will be null */
-	FORCEINLINE TSoftClassPtr()
-	{
-	}
+	FORCEINLINE TSoftClassPtr() = default;
+	FORCEINLINE TSoftClassPtr(const TSoftClassPtr& Other) = default;
+	FORCEINLINE TSoftClassPtr(TSoftClassPtr&& Other) = default;
+	FORCEINLINE ~TSoftClassPtr() = default;
+	FORCEINLINE TSoftClassPtr& operator=(const TSoftClassPtr& Other) = default;
+	FORCEINLINE TSoftClassPtr& operator=(TSoftClassPtr&& Other) = default;
 		
 	/** Construct from another soft pointer */
 	template <class TClassA, class = decltype(ImplicitConv<TClass*>((TClassA*)nullptr))>
@@ -653,6 +669,12 @@ private:
 
 template <class T> struct TIsPODType<TSoftClassPtr<T> > { enum { Value = TIsPODType<FSoftObjectPtr>::Value }; };
 template <class T> struct TIsWeakPointerType<TSoftClassPtr<T> > { enum { Value = TIsWeakPointerType<FSoftObjectPtr>::Value }; };
+
+template <typename T>
+struct TCallTraits<TSoftClassPtr<T>> : public TCallTraitsBase<TSoftClassPtr<T>>
+{
+	using ConstPointerType = TSoftClassPtr<const T>;
+};
 
 /** Utility to create a TSoftObjectPtr without specifying the type */
 template <class T>

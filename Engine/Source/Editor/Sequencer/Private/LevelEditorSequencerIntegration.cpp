@@ -13,6 +13,8 @@
 #include "ILevelEditor.h"
 #include "IAssetViewport.h"
 #include "LevelEditor.h"
+#include "SLevelViewport.h"
+#include "MovieSceneSpawnableAnnotation.h"
 #include "Framework/Application/SlateApplication.h"
 #include "IDetailsView.h"
 #include "ISequencer.h"
@@ -52,9 +54,17 @@
 #include "Editor/UnrealEdEngine.h"
 #include "EditorSupportDelegates.h"
 #include "Subsystems/UnrealEditorSubsystem.h"
-
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "LevelEditorSequencerIntegration"
+
+
+struct FPilotedSpawnable
+{
+	TWeakPtr<SLevelViewport> WeakLevelViewport;
+	FLevelViewportActorLock PreviousActorLock;
+	FMovieSceneSpawnableAnnotation Annotation;
+};
 
 class FDetailKeyframeHandlerWrapper : public IDetailKeyframeHandler
 {
@@ -77,7 +87,7 @@ public:
 		for (const TWeakPtr<ISequencer>& WeakSequencer : Sequencers)
 		{
 			TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
-			if (Sequencer.IsValid() && Sequencer->CanKeyProperty(CanKeyPropertyParams))
+			if (Sequencer.IsValid() && Sequencer->CanKeyProperty(CanKeyPropertyParams) && !Sequencer->IsReadOnly())
 			{
 				return true;
 			}
@@ -106,7 +116,8 @@ public:
 			TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
 			if (Sequencer.IsValid() && Sequencer->GetFocusedMovieSceneSequence())
 			{
-				FGuid ObjectHandle = Sequencer->GetHandleToObject(ParentObject);
+				constexpr bool bCreateHandleIfMissing = false;
+				FGuid ObjectHandle = Sequencer->GetHandleToObject(ParentObject, bCreateHandleIfMissing);
 				if (ObjectHandle.IsValid()) 
 				{
 					UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
@@ -156,6 +167,8 @@ FLevelEditorSequencerIntegration::FLevelEditorSequencerIntegration()
 {
 	KeyFrameHandler = MakeShared<FDetailKeyframeHandlerWrapper>();
 }
+
+FLevelEditorSequencerIntegration::~FLevelEditorSequencerIntegration() = default;
 
 FLevelEditorSequencerIntegration& FLevelEditorSequencerIntegration::Get()
 {
@@ -246,7 +259,16 @@ void FLevelEditorSequencerIntegration::Initialize(const FLevelEditorSequencerInt
 		AcquiredResources.Add([=]{ FCoreDelegates::OnActorLabelChanged.Remove(Handle); });
 	}
 
-	AddLevelViewportMenuExtender();
+	// Menus need to be registered in a callback to make sure the system is ready for them.
+	{
+		UToolMenus::RegisterStartupCallback(
+			FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FLevelEditorSequencerIntegration::RegisterMenus));
+		AcquiredResources.Add([this]{ 	// Clean up menu things
+			UToolMenus::UnRegisterStartupCallback(this);
+			UToolMenus::UnregisterOwner(this);
+		});
+	}
+
 	ActivateDetailHandler(Options);
 
 	{
@@ -471,6 +493,8 @@ void FLevelEditorSequencerIntegration::OnNewActorsDropped(const TArray<UObject*>
 
 void FLevelEditorSequencerIntegration::OnSequencerEvaluated()
 {
+	RestoreSpawnablePilotData();
+
 	// Redraw if not in PIE/simulate
 	const bool bIsInPIEOrSimulate = GEditor->PlayWorld != NULL || GEditor->bIsSimulatingInEditor;
 	if (bIsInPIEOrSimulate)
@@ -687,7 +711,7 @@ void FLevelEditorSequencerIntegration::OnEndPlayMap()
 	}
 	if (bAddRestoreCallback)
 	{
-		AcquiredResources.Add([=] { this->RestoreRealtimeViewports(); });
+		AcquiredResources.Add([this] { this->RestoreRealtimeViewports(); });
 	}
 
 	IterateAllSequencers(
@@ -707,26 +731,6 @@ void FLevelEditorSequencerIntegration::OnEndPlayMap()
 void FLevelEditorSequencerIntegration::OnEndPIE(bool bIsSimulating)
 {
 	OnEndPlayMap();
-}
-
-void FLevelEditorSequencerIntegration::AddLevelViewportMenuExtender()
-{
-	typedef FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors DelegateType;
-
-	FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	auto& MenuExtenders = LevelEditorModule.GetAllLevelViewportContextMenuExtenders();
-	MenuExtenders.Add(DelegateType::CreateRaw(this, &FLevelEditorSequencerIntegration::GetLevelViewportExtender));
-
-	FDelegateHandle LevelViewportExtenderHandle = MenuExtenders.Last().GetHandle();
-	AcquiredResources.Add(
-		[LevelViewportExtenderHandle]{
-			FLevelEditorModule* LevelEditorModulePtr = FModuleManager::Get().GetModulePtr<FLevelEditorModule>("LevelEditor");
-			if (LevelEditorModulePtr)
-			{
-				LevelEditorModulePtr->GetAllLevelViewportContextMenuExtenders().RemoveAll([=](const DelegateType& In){ return In.GetHandle() == LevelViewportExtenderHandle; });
-			}
-		}
-	);
 }
 
 void FindActorInSequencesRecursive(AActor* InActor, FSequencer& Sequencer, FMovieSceneSequenceIDRef SequenceID, TArray<TPair<FMovieSceneSequenceID, FSequencer*> >& FoundInSequences)
@@ -788,49 +792,67 @@ void FindActorInSequencesRecursive(AActor* InActor, FSequencer& Sequencer, FMovi
 	}
 }
 
-TSharedRef<FExtender> FLevelEditorSequencerIntegration::GetLevelViewportExtender(const TSharedRef<FUICommandList> CommandList, const TArray<AActor*> InActors)
+void FLevelEditorSequencerIntegration::RegisterMenus()
 {
-	TSharedRef<FExtender> Extender = MakeShareable(new FExtender);
+	// Allows cleanup when module unloads.
+	FToolMenuOwnerScoped OwnerScoped(this);
 
-	FText ActorName;
-	if (InActors.Num() == 1)
 	{
-		ActorName = FText::Format(LOCTEXT("ActorNameSingular", "\"{0}\""), FText::FromString(InActors[0]->GetActorLabel()));
-	}
-	else if (InActors.Num() > 1)
-	{
-		ActorName = FText::Format(LOCTEXT("ActorNamePlural", "{0} Actors"), FText::AsNumber(InActors.Num()));
-	}
-
-	TArray<TPair<FMovieSceneSequenceID, FSequencer*> > FoundInSequences;
-	IterateAllSequencers(
-		[&](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
-	{
-		FindActorInSequencesRecursive(InActors[0], In, MovieSceneSequenceID::Root, FoundInSequences);
-	});
-
-	TSharedRef<FUICommandList> LevelEditorCommandBindings  = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetGlobalLevelEditorActions();
-	Extender->AddMenuExtension("ActorUETools", EExtensionHook::After, LevelEditorCommandBindings, FMenuExtensionDelegate::CreateLambda(
-		[this, ActorName, Actor = InActors[0], FoundInSequences](FMenuBuilder& MenuBuilder) {
-		bool bCanBrowse = FoundInSequences.Num() > 0;
-		MenuBuilder.AddSubMenu(
+		UToolMenu* LevelEditorMenu = UToolMenus::Get()->ExtendMenu("LevelEditor");
+		FToolMenuSection& UEToolsSection = LevelEditorMenu->FindOrAddSection("ActorUETools");
+		UEToolsSection.AddSubMenu(
+			"BrowseToActorSubMenu",
 			LOCTEXT("BrowseToActorInSequencer", "Browse to Actor in Sequencer"),
 			FText(),
-			FNewMenuDelegate::CreateRaw(this, &FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu, Actor, FoundInSequences),
-			FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([bCanBrowse]() { return bCanBrowse; })),
-			NAME_None,
-			EUserInterfaceActionType::Button,
+			FNewToolMenuDelegate::CreateRaw(this, &FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu),
 			false,
-			FSlateIcon()
+			FSlateIcon("LevelSequenceEditorStyle", "LevelSequenceEditor.Tabs.Sequencer")
 		);
 	}
-	));
 
-	return Extender;
+	{
+		UToolMenu* ActorContextMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.ActorContextMenu");
+		FToolMenuSection& ActorTypeToolsSection = ActorContextMenu->FindOrAddSection("ActorTypeTools");
+		ActorTypeToolsSection.AddSubMenu(
+			"BrowseToActorSubMenu",
+			LOCTEXT("BrowseToActorInSequencer", "Browse to Actor in Sequencer"),
+			FText(),
+			FNewToolMenuDelegate::CreateRaw(this, &FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu),
+			false,
+			FSlateIcon("LevelSequenceEditorStyle", "LevelSequenceEditor.Tabs.Sequencer")
+		);
+	}
 }
 
-void FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu(FMenuBuilder& MenuBuilder, AActor* Actor, const TArray<TPair<FMovieSceneSequenceID, FSequencer*> > FoundInSequences)
+void FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu(UToolMenu* Menu)
 {
+	AActor* Actor = nullptr;
+	TArray<TPair<FMovieSceneSequenceID, FSequencer*> > FoundInSequences;
+
+	for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
+	{
+		// We are interested in the (unique) assets backing the actor, or else the actor
+		// itself if it is not asset backed (such as UDynamicMesh).
+		Actor = static_cast<AActor*>(*It);
+
+		IterateAllSequencers(
+			[&](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
+			{
+				FindActorInSequencesRecursive(Actor, In, MovieSceneSequenceID::Root, FoundInSequences);
+			});
+
+		if (Actor)
+		{
+			break;
+		}
+	};
+
+	if (!Actor || !FoundInSequences.Num())
+	{
+		return;
+	}
+
+	FToolMenuSection& Section = Menu->AddSection("BrowseToActorSection");
 	for (const TPair<FMovieSceneSequenceID, FSequencer*>& Sequence : FoundInSequences)
 	{
 		UMovieSceneSequence* MovieSceneSequence = nullptr;
@@ -848,7 +870,8 @@ void FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu(FMenuBui
 		{
 			FText ActorName = FText::Format(LOCTEXT("ActorNameSingular", "\"{0}\""), FText::FromString(Actor->GetActorLabel()));
 			FUIAction AddMenuAction(FExecuteAction::CreateLambda([this, Actor, Sequence]() {this->BrowseToSelectedActor(Actor, Sequence.Value, Sequence.Key); }));
-			MenuBuilder.AddMenuEntry(FText::Format(LOCTEXT("BrowseToSelectedActorText", "Browse to {0} in {1}"), ActorName, MovieSceneSequence->GetDisplayName()), FText(), FSlateIcon(), AddMenuAction);
+			FText MenuName = FText::Format(LOCTEXT("BrowseToSelectedActorText", "Browse to {0} in {1}"), ActorName, MovieSceneSequence->GetDisplayName());
+			Section.AddMenuEntry(FName(*MenuName.ToString()), MenuName, FText(), FSlateIcon(), AddMenuAction);
 		}
 	}
 }
@@ -1140,7 +1163,7 @@ void FLevelEditorSequencerIntegration::ActivateRealtimeViewports()
 		}
 	}
 
-	AcquiredResources.Add([=]{ this->RestoreRealtimeViewports(); });
+	AcquiredResources.Add([this]{ this->RestoreRealtimeViewports(); });
 }
 
 void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
@@ -1151,14 +1174,17 @@ void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 	// it anymore. It could happen that a viewport doesn't have it if that viewport is an actual Cinematic Viewport, for instance.
 	const bool bCheckMissingOverride = false;
 
-	for(FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+	if (GEditor)
 	{
-		if (LevelVC)
+		for(FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
 		{
-			// Turn off realtime when exiting.
-			if( LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() )
-			{				
-				LevelVC->RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"), bCheckMissingOverride);
+			if (LevelVC)
+			{
+				// Turn off realtime when exiting.
+				if( LevelVC->IsPerspective() && LevelVC->AllowsCinematicControl() )
+				{				
+					LevelVC->RemoveRealtimeOverride(LOCTEXT("RealtimeOverrideMessage_Sequencer", "Sequencer"), bCheckMissingOverride);
+				}
 			}
 		}
 	}
@@ -1166,6 +1192,8 @@ void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 
 void FLevelEditorSequencerIntegration::RestoreToSavedState(UWorld* World)
 {
+	BackupSpawnablePilotData();
+
 	// Restore the saved state so that the level save can save that instead of the animated state.
 	IterateAllSequencers(
 		[World](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
@@ -1201,13 +1229,6 @@ void FLevelEditorSequencerIntegration::ResetToAnimatedState(UWorld* World)
 	);
 }
 
-TSharedRef<FExtender> FLevelEditorSequencerIntegration::OnExtendLevelEditorViewMenu(const TSharedRef<FUICommandList> CommandList)
-{
-	// This would be where you added an extension to the Level Editor dropdown menus if needed.
-	TSharedRef<FExtender> Extender(new FExtender());
-	return Extender;
-}
-
 void FLevelEditorSequencerIntegration::OnTabContentChanged()
 {
 
@@ -1234,6 +1255,70 @@ void FLevelEditorSequencerIntegration::OnMapChanged(UWorld* World, EMapChangeTyp
 	}
 }
 
+void FLevelEditorSequencerIntegration::BackupSpawnablePilotData()
+{
+	if (PilotedSpawnables.Num() != 0)
+	{
+		return;
+	}
+
+	FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetFirstLevelEditor();
+	if (LevelEditor.IsValid())
+	{
+		for (TSharedPtr<SLevelViewport> LevelViewport : LevelEditor->GetViewports())
+		{
+			const FLevelViewportActorLock& ActorLock = static_cast<FLevelEditorViewportClient&>(LevelViewport->GetAssetViewportClient()).GetActorLock();
+			if (AActor* LockedActor = ActorLock.GetLockedActor())
+			{
+				TOptional<FMovieSceneSpawnableAnnotation> SpawnableAnnotation = FMovieSceneSpawnableAnnotation::Find(ActorLock.GetLockedActor());
+				if (SpawnableAnnotation)
+				{
+					FPilotedSpawnable Pilot;
+					Pilot.WeakLevelViewport = LevelViewport;
+					Pilot.PreviousActorLock = ActorLock;
+					Pilot.Annotation = SpawnableAnnotation.GetValue();
+					PilotedSpawnables.Add(Pilot);
+				}
+			}
+		}
+	}
+}
+
+void FLevelEditorSequencerIntegration::RestoreSpawnablePilotData()
+{
+	if (PilotedSpawnables.Num() == 0)
+	{
+		return;
+	}
+
+	for (const FPilotedSpawnable& PilotData : PilotedSpawnables)
+	{
+		TSharedPtr<SLevelViewport> LevelViewport = PilotData.WeakLevelViewport.Pin();
+		if (LevelViewport && static_cast<FLevelEditorViewportClient&>(LevelViewport->GetAssetViewportClient()).GetActorLock().GetLockedActor() == nullptr)
+		{
+			// Find the new spawnable
+			IterateAllSequencers(
+				[&PilotData, LevelViewport](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
+				{
+					for (TWeakObjectPtr<> WeakObject : In.FindBoundObjects(PilotData.Annotation.ObjectBindingID, PilotData.Annotation.SequenceID))
+					{
+						if (AActor* Actor = Cast<AActor>(WeakObject.Get()))
+						{
+							// Update the actor lock using the previous settings, but with the new actor
+							FLevelViewportActorLock ActorLock = PilotData.PreviousActorLock;
+							ActorLock.LockedActor = Actor;
+							static_cast<FLevelEditorViewportClient&>(LevelViewport->GetAssetViewportClient()).SetActorLock(ActorLock);
+							break;
+						}
+					}
+				}
+			);
+		}
+	}
+
+	PilotedSpawnables.Empty();
+}
 
 
 void FLevelEditorSequencerIntegration::AddSequencer(TSharedRef<ISequencer> InSequencer, const FLevelEditorSequencerIntegrationOptions& Options)

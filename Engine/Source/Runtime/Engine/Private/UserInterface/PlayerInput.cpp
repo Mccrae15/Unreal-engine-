@@ -15,6 +15,10 @@
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/InputSettings.h"
 
+#if UE_ENABLE_DEBUG_DRAWING
+#include "Engine/GameViewportClient.h"	// For grabbing some info about mouse capture for the debug display
+#endif	// UE_ENABLE_DEBUG_DRAWING
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PlayerInput)
 
 DECLARE_CYCLE_STAT(TEXT("    PC Gesture Recognition"), STAT_PC_GestureRecognition, STATGROUP_PlayerController);
@@ -32,6 +36,17 @@ const TArray<FInputActionKeyMapping> UPlayerInput::NoKeyMappings;
 const TArray<FInputAxisKeyMapping> UPlayerInput::NoAxisMappings;
 TArray<FInputActionKeyMapping> UPlayerInput::EngineDefinedActionMappings;
 TArray<FInputAxisKeyMapping> UPlayerInput::EngineDefinedAxisMappings;
+
+namespace UE
+{
+	namespace Input
+	{
+		static bool AxisEventsCanBeConsumed = true;
+		static FAutoConsoleVariableRef CVarShouldOnlyTriggerLastActionInChord(TEXT("Input.AxisEventsCanBeConsumed"),
+			AxisEventsCanBeConsumed,
+			TEXT("If true and all FKey's for a given Axis Event are consumed, then the axis delegate will not fire."));
+	}
+}
 
 /** Runtime struct that gathers up the different kinds of delegates that might be issued */
 struct FDelegateDispatchDetails
@@ -759,6 +774,16 @@ APlayerController* UPlayerInput::GetOuterAPlayerController() const
 	return Cast<APlayerController>(GetOuter());
 }
 
+ULocalPlayer* UPlayerInput::GetOwningLocalPlayer() const
+{
+	if (const APlayerController* PC = GetOuterAPlayerController())
+	{
+		return PC->GetLocalPlayer();
+	}
+
+	return nullptr;
+}
+
 void UPlayerInput::ConditionalBuildKeyMappings_Internal() const
 {
 	if (ActionKeyMap.Num() == 0)
@@ -1010,11 +1035,12 @@ void UPlayerInput::GetChordForKey(const FInputKeyBinding& KeyBinding, const bool
 	}
 }
 
-float UPlayerInput::DetermineAxisValue(const FInputAxisBinding& AxisBinding, const bool bGamePaused, TArray<FKey>& KeysToConsume)
+float UPlayerInput::DetermineAxisValue(const FInputAxisBinding& AxisBinding, const bool bGamePaused, TArray<FKey>& KeysToConsume, OUT bool& bHadAnyNonConsumedKeys) const
 {
 	ConditionalBuildKeyMappings();
 
-	float AxisValue = 0.f;
+	float AxisValue = 0.0f;
+	bHadAnyNonConsumedKeys = false;
 
 	FAxisKeyDetails* KeyDetails = AxisKeyMap.Find(AxisBinding.AxisName);
 	if (KeyDetails)
@@ -1033,6 +1059,7 @@ float UPlayerInput::DetermineAxisValue(const FInputAxisBinding& AxisBinding, con
 				{
 					KeysToConsume.AddUnique(KeyMapping.Key);
 				}
+				bHadAnyNonConsumedKeys = true;
 			}
 		}
 
@@ -1078,41 +1105,7 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 {
 	ConditionalBuildKeyMappings();
 
-	// We collect axis contributions by delegate, so we can sum up
-	// contributions from multiple bindings.
-	struct FAxisDelegateDetails
-	{
-		FInputAxisUnifiedDelegate Delegate;
-		float Value;
-
-		FAxisDelegateDetails(FInputAxisUnifiedDelegate InDelegate, const float InValue)
-			: Delegate(MoveTemp(InDelegate))
-			, Value(InValue)
-		{
-		}
-	};
-	struct FVectorAxisDelegateDetails
-	{
-		FInputVectorAxisUnifiedDelegate Delegate;
-		FVector Value;
-
-		FVectorAxisDelegateDetails(FInputVectorAxisUnifiedDelegate InDelegate, const FVector InValue)
-			: Delegate(MoveTemp(InDelegate))
-			, Value(InValue)
-		{
-		}
-	};
-
-	static TArray<FAxisDelegateDetails> AxisDelegates;
-	static TArray<FVectorAxisDelegateDetails> VectorAxisDelegates;
-	static TArray<FDelegateDispatchDetails> NonAxisDelegates;
-	static TArray<FKey> KeysToConsume;
-	static TArray<FDelegateDispatchDetails> FoundChords;
 	static TArray<TPair<FKey, FKeyState*>> KeysWithEvents;
-	static TArray<TSharedPtr<FInputActionBinding>> PotentialActions;
-
-	// must be called non-recursively and on the game thread
-	check(IsInGameThread() && !AxisDelegates.Num() && !VectorAxisDelegates.Num() && !NonAxisDelegates.Num() && !KeysToConsume.Num() && !FoundChords.Num() && !EventIndices.Num() && !KeysWithEvents.Num() && !PotentialActions.Num());
 
 	// @todo, if input is coming in asynchronously, we should buffer anything that comes in during playerinput() and not include it
 	// in this processing batch
@@ -1122,7 +1115,29 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 	{
 		PlayerController->PreProcessInput(DeltaTime, bGamePaused);
 	}
+	
+	// Evaluate the current state of the key map. This will take the event accumulators and put them into the actual values of the key state map.
+	EvaluateKeyMapState(DeltaTime, bGamePaused, OUT KeysWithEvents);
+	
+	// Determine potential delegates
+	EvaluateInputDelegates(InputComponentStack, DeltaTime, bGamePaused, KeysWithEvents);
 
+	if (PlayerController)
+	{
+		PlayerController->PostProcessInput(DeltaTime, bGamePaused);
+	}
+	
+	FinishProcessingPlayerInput();
+
+	TouchEventLocations.Reset();
+	KeysWithEvents.Reset();
+}
+
+void UPlayerInput::EvaluateKeyMapState(const float DeltaTime, const bool bGamePaused, OUT TArray<TPair<FKey, FKeyState*>>& KeysWithEvents)
+{
+	// Must be called non-recursively on the game thread
+	check(IsInGameThread() && !KeysWithEvents.Num());
+	
 	// copy data from accumulators to the real values
 	for (TMap<FKey,FKeyState>::TIterator It(KeyStateMap); It; ++It)
 	{
@@ -1196,7 +1211,35 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 		KeyState->PairSampledAxes = 0;
 	}
 	EventCount = 0;
+}
 
+void UPlayerInput::EvaluateInputDelegates(const TArray<UInputComponent*>& InputComponentStack, const float DeltaTime, const bool bGamePaused, const TArray<TPair<FKey, FKeyState*>>& KeysWithEvents)
+{
+	// We collect axis contributions by delegate, so we can sum up
+	// contributions from multiple bindings.
+	struct FAxisDelegateDetails
+	{
+		FInputAxisUnifiedDelegate Delegate;
+		float Value;
+
+		FAxisDelegateDetails(FInputAxisUnifiedDelegate InDelegate, const float InValue)
+			: Delegate(MoveTemp(InDelegate))
+			, Value(InValue)
+		{
+		}
+	};
+	struct FVectorAxisDelegateDetails
+	{
+		FInputVectorAxisUnifiedDelegate Delegate;
+		FVector Value;
+
+		FVectorAxisDelegateDetails(FInputVectorAxisUnifiedDelegate InDelegate, const FVector InValue)
+			: Delegate(MoveTemp(InDelegate))
+			, Value(InValue)
+		{
+		}
+	};
+	
 	struct FDelegateDispatchDetailsSorter
 	{
 		bool operator()( const FDelegateDispatchDetails& A, const FDelegateDispatchDetails& B ) const
@@ -1204,6 +1247,17 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 			return (A.EventIndex == B.EventIndex ? A.FoundIndex < B.FoundIndex : A.EventIndex < B.EventIndex);
 		}
 	};
+
+	
+	static TArray<FAxisDelegateDetails> AxisDelegates;
+	static TArray<FVectorAxisDelegateDetails> VectorAxisDelegates;
+	static TArray<FDelegateDispatchDetails> NonAxisDelegates;
+	static TArray<FKey> KeysToConsume;
+	static TArray<FDelegateDispatchDetails> FoundChords;	
+	static TArray<TSharedPtr<FInputActionBinding>> PotentialActions;
+
+	// must be called non-recursively and on the game thread
+	check(IsInGameThread() && !AxisDelegates.Num() && !VectorAxisDelegates.Num() && !NonAxisDelegates.Num() && !KeysToConsume.Num() && !FoundChords.Num() && !EventIndices.Num() && !PotentialActions.Num());
 
 	int32 StackIndex = InputComponentStack.Num()-1;
 
@@ -1329,11 +1383,15 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 				EventIndices.Reset();
 			}
 
+			// A flag that is set in DetermineAxisValue. If false, then all keys related to the axis binding have been consumed.
+			bool bHadAnyKeys = false;
+			
 			// Run though game axis bindings and accumulate axis values
 			for (FInputAxisBinding& AB : IC->AxisBindings)
 			{
-				AB.AxisValue = DetermineAxisValue(AB, bGamePaused, KeysToConsume);
-				if (AB.AxisDelegate.IsBound())
+				AB.AxisValue = DetermineAxisValue(AB, bGamePaused, KeysToConsume, bHadAnyKeys); 
+				
+				if ((bHadAnyKeys || !UE::Input::AxisEventsCanBeConsumed) && AB.AxisDelegate.IsBound())
 				{
 					AxisDelegates.Emplace(FAxisDelegateDetails(AB.AxisDelegate, AB.AxisValue));
 				}
@@ -1399,7 +1457,10 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 			// we do this after finishing the whole component, so we don't consume a key while there might be more bindings to it
 			for (int32 KeyIndex=0; KeyIndex<KeysToConsume.Num(); ++KeyIndex)
 			{
-				ConsumeKey(KeysToConsume[KeyIndex]);
+				if (FKeyState* KeyState = KeyStateMap.Find(KeysToConsume[KeyIndex]))
+				{
+					KeyState->bConsumed = true;	
+				}
 			}
 			KeysToConsume.Reset();
 			FoundChords.Reset();
@@ -1459,17 +1520,9 @@ void UPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputCompon
 		}
 	}
 
-	if (PlayerController)
-	{
-		PlayerController->PostProcessInput(DeltaTime, bGamePaused);
-	}
-	
-	FinishProcessingPlayerInput();
 	AxisDelegates.Reset();
 	VectorAxisDelegates.Reset();
 	NonAxisDelegates.Reset();
-	TouchEventLocations.Reset();
-	KeysWithEvents.Reset();
 }
 
 void UPlayerInput::DiscardPlayerInput()
@@ -1604,6 +1657,44 @@ void UPlayerInput::DisplayDebug(class UCanvas* Canvas, const FDebugDisplayInfo& 
 	if (Canvas)
 	{
 		FDisplayDebugManager& DisplayDebugManager = Canvas->DisplayDebugManager;
+
+#if UE_ENABLE_DEBUG_DRAWING
+		// Show the UI mode of the owning player controller if there is one. This is a very common issue with folks
+		// debugging input. Often times users will set the UI mode to "UI Only", and then never set it back so the 
+		// game can consume input again. 
+		if (const APlayerController* PlayerController = GetOuterAPlayerController())
+		{		
+			DisplayDebugManager.SetDrawColor(FColor::Orange);
+			DisplayDebugManager.DrawString(FString::Printf(TEXT("\t Player Controller Input Settings:  %s"), *GetNameSafe(PlayerController)));
+			
+			// Display whether input is enabled on the player controller or not
+			const bool bIsInputEnabled = PlayerController->InputEnabled();
+			DisplayDebugManager.SetDrawColor(bIsInputEnabled ? FColor::White : FColor::Red);
+			DisplayDebugManager.DrawString(FString::Printf(TEXT("\t PlayerController bIsInputEnabled: %s"), bIsInputEnabled ? TEXT("True") : TEXT("False")));
+
+			DisplayDebugManager.SetDrawColor(FColor::White);
+			DisplayDebugManager.DrawString(FString::Printf(TEXT("\t PlayerController Input Mode: %s"), *PlayerController->GetCurrentInputModeDebugString()));
+
+			const ULocalPlayer* LP = GetOwningLocalPlayer();
+
+			// Display some info about the viewport, all of these settings can affect the input behavior of the mouse
+			if (LP && LP->ViewportClient)
+			{
+				// Show the capture mode of the viewport
+				DisplayDebugManager.DrawString(FString::Printf(TEXT("\t ViewportClient MouseCaptureMode: %s"), *UEnum::GetValueAsString(TEXT("Engine.EMouseCaptureMode"), LP->ViewportClient->GetMouseCaptureMode())));
+				DisplayDebugManager.DrawString(FString::Printf(TEXT("\t ViewportClient MouseLockMode: %s"), *UEnum::GetValueAsString(TEXT("Engine.EMouseLockMode"), LP->ViewportClient->GetMouseLockMode())));
+				
+				const bool bIsIgnoringInput = LP->ViewportClient->IgnoreInput();
+				DisplayDebugManager.SetDrawColor(bIsIgnoringInput ? FColor::Red : FColor::White);
+				DisplayDebugManager.DrawString(FString::Printf(TEXT("\t ViewportClient bIsIgnoringInput: %s"), bIsIgnoringInput ? TEXT("True") : TEXT("False")));
+				
+				const bool bIsUsingMouseForTouch = LP->ViewportClient->GetUseMouseForTouch();
+				DisplayDebugManager.SetDrawColor(bIsUsingMouseForTouch ? FColor::Green : FColor::White);
+				DisplayDebugManager.DrawString(FString::Printf(TEXT("\t ViewportClient bIsUsingMouseForTouch: %s"), bIsUsingMouseForTouch ? TEXT("True") : TEXT("False")));
+			}
+		}
+#endif // #if UE_ENABLE_DEBUG_DRAWING
+
 		DisplayDebugManager.SetDrawColor(FColor::Red);
 		DisplayDebugManager.DrawString(FString::Printf(TEXT("INPUT %s"), *GetName()));
 
@@ -1964,11 +2055,8 @@ void UPlayerInput::Tick(float DeltaTime)
 
 void UPlayerInput::ConsumeKey(FKey Key)
 {
-	FKeyState* const KeyState = KeyStateMap.Find(Key);
-	if (KeyState)
-	{
-		KeyState->bConsumed = true;
-	}
+	FKeyState& KeyState = KeyStateMap.FindOrAdd(Key);
+	KeyState.bConsumed = true;
 }
 
 bool UPlayerInput::KeyEventOccurred(FKey Key, EInputEvent Event, TArray<uint32>& InEventIndices, const FKeyState* KeyState) const

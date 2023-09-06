@@ -803,6 +803,9 @@ class DatasmithFacadeCSharpPINVOKE {
   [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeMesh_GetName")]
   public static extern global::System.IntPtr FDatasmithFacadeMesh_GetName(global::System.Runtime.InteropServices.HandleRef jarg1);
 
+  [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeMesh_InternalCalculateHash")]
+  public static extern void FDatasmithFacadeMesh_InternalCalculateHash(global::System.Runtime.InteropServices.HandleRef jarg1, [global::System.Runtime.InteropServices.MarshalAs(global::System.Runtime.InteropServices.UnmanagedType.LPWStr)] System.Text.StringBuilder jarg2, ulong jarg3);
+
   [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeMesh_SetFacesCount")]
   public static extern void FDatasmithFacadeMesh_SetFacesCount(global::System.Runtime.InteropServices.HandleRef jarg1, int jarg2);
 
@@ -1666,6 +1669,18 @@ class DatasmithFacadeCSharpPINVOKE {
 
   [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeScene_GetAssetsOutputPath")]
   public static extern global::System.IntPtr FDatasmithFacadeScene_GetAssetsOutputPath(global::System.Runtime.InteropServices.HandleRef jarg1);
+
+  [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeScene_GetGeolocation")]
+  public static extern void FDatasmithFacadeScene_GetGeolocation(global::System.Runtime.InteropServices.HandleRef jarg1, out double jarg2, out double jarg3, out double jarg4);
+
+  [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeScene_SetGeolocationLatitude")]
+  public static extern void FDatasmithFacadeScene_SetGeolocationLatitude(global::System.Runtime.InteropServices.HandleRef jarg1, double jarg2);
+
+  [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeScene_SetGeolocationLongitude")]
+  public static extern void FDatasmithFacadeScene_SetGeolocationLongitude(global::System.Runtime.InteropServices.HandleRef jarg1, double jarg2);
+
+  [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeScene_SetGeolocationElevation")]
+  public static extern void FDatasmithFacadeScene_SetGeolocationElevation(global::System.Runtime.InteropServices.HandleRef jarg1, double jarg2);
 
   [global::System.Runtime.InteropServices.DllImport("DatasmithFacadeCSharp", EntryPoint="CSharp_FDatasmithFacadeScene_PreExport")]
   public static extern void FDatasmithFacadeScene_PreExport(global::System.Runtime.InteropServices.HandleRef jarg1);

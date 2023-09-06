@@ -16,15 +16,6 @@
 	#endif
 #include "Windows/HideWindowsPlatformTypes.h"
 
-bool D3D11RHI_ShouldCreateWithD3DDebug()
-{
-	// Use a debug device if specified on the command line.
-	return
-		FParse::Param(FCommandLine::Get(),TEXT("d3ddebug")) ||
-		FParse::Param(FCommandLine::Get(),TEXT("d3debug")) ||
-		FParse::Param(FCommandLine::Get(),TEXT("dxdebug"));
-}
-
 bool D3D11RHI_ShouldAllowAsyncResourceCreation()
 {
 	static bool bAllowAsyncResourceCreation = !FParse::Param(FCommandLine::Get(),TEXT("nod3dasync"));
@@ -270,20 +261,6 @@ void FD3D11DynamicRHI::RHIPushEvent(const TCHAR* Name, FColor Color)
 	GPUProfilingData.PushEvent(Name, Color);
 }
 
-#if PLATFORM_HOLOLENS
-void FD3D11DynamicRHI::RHISuspendRendering()
-{
-	TRefCountPtr<IDXGIDevice3> dxgiDevice;
-	if (Direct3DDevice->QueryInterface(IID_PPV_ARGS(dxgiDevice.GetInitReference())))
-	{
-		dxgiDevice->Trim();
-	}
-}
-void FD3D11DynamicRHI::RHIResumeRendering()
-{
-}
-#endif
-
 void FD3D11DynamicRHI::RHIPopEvent()
 { 
 	GPUProfilingData.PopEvent(); 
@@ -432,17 +409,17 @@ void FD3D11DynamicRHI::SetupAfterDeviceCreation()
 	{
 		FPixelFormatInfo& PixelFormatInfo = GPixelFormats[FormatIndex];
 		const DXGI_FORMAT PlatformFormat = static_cast<DXGI_FORMAT>(PixelFormatInfo.PlatformFormat);
-		const DXGI_FORMAT UAVFormat = FindUnorderedAccessDXGIFormat(PlatformFormat);
+		const DXGI_FORMAT UAVFormat = UE::DXGIUtilities::FindUnorderedAccessFormat(PlatformFormat);
 
 		EPixelFormatCapabilities Capabilities = EPixelFormatCapabilities::None;
 
 		if (PlatformFormat != DXGI_FORMAT_UNKNOWN)
 		{
 			const FFormatSupport FormatSupport    = GetFormatSupport(Direct3DDevice, PlatformFormat);
-			const FFormatSupport SRVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
-			const FFormatSupport UAVFormatSupport = GetFormatSupport(Direct3DDevice, FindUnorderedAccessDXGIFormat(PlatformFormat));
-			const FFormatSupport RTVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
-			const FFormatSupport DSVFormatSupport = GetFormatSupport(Direct3DDevice, FindDepthStencilDXGIFormat(PlatformFormat));
+			const FFormatSupport SRVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindShaderResourceFormat(PlatformFormat, false));
+			const FFormatSupport UAVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindUnorderedAccessFormat(PlatformFormat));
+			const FFormatSupport RTVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindShaderResourceFormat(PlatformFormat, false));
+			const FFormatSupport DSVFormatSupport = GetFormatSupport(Direct3DDevice, UE::DXGIUtilities::FindDepthStencilFormat(PlatformFormat));
 
 			auto ConvertCap1 = [&Capabilities](const FFormatSupport& InSupport, EPixelFormatCapabilities UnrealCap, D3D11_FORMAT_SUPPORT InFlag)
 			{
@@ -616,7 +593,7 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 		do
 		{
 			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-			NumDeletes = FRHIResource::FlushPendingDeletes(RHICmdList);
+			NumDeletes = RHICmdList.FlushPendingDeletes();
 			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 		} while (NumDeletes > 0);
 
@@ -654,7 +631,7 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 #endif // INTEL_METRICSDISCOVERY
 
 		// When running with D3D debug, clear state and flush the device to get rid of spurious live objects in D3D11's report.
-		if (D3D11RHI_ShouldCreateWithD3DDebug())
+		if (GRHIGlobals.IsDebugLayerEnabled)
 		{
 			Direct3DDeviceIMContext->ClearState();
 			Direct3DDeviceIMContext->Flush();
@@ -666,6 +643,11 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 			{
 				D3D11Debug->ReportLiveDeviceObjects(D3D11_RLDO_DETAIL);
 			}
+		}
+
+		if (ExceptionHandlerHandle != INVALID_HANDLE_VALUE)
+		{
+			RemoveVectoredExceptionHandler(ExceptionHandlerHandle);
 		}
 
 		// ORION - avoid shutdown crash that is currently present in UE
@@ -740,7 +722,7 @@ static bool CanFormatBeDisplayed(const FD3D11DynamicRHI* InD3DRHI, EPixelFormat 
 	const HRESULT FormatSupportResult = InD3DRHI->GetDevice()->CheckFormatSupport(DxgiFormat, &FormatSupport);
 	if (FAILED(FormatSupportResult))
 	{
-		const TCHAR* D3DFormatString = GetD3D11TextureFormatString(DxgiFormat);
+		const TCHAR* D3DFormatString = UE::DXGIUtilities::GetFormatString(DxgiFormat);
 		UE_LOG(LogD3D11RHI, Warning, TEXT("CheckFormatSupport(%s) failed: 0x%08x"), D3DFormatString, FormatSupportResult);
 		return false;
 	}

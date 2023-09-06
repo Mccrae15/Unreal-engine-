@@ -332,7 +332,7 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 
 void MeshOperator::ResolveTJunctions(FMeshDescription& MeshDescription, double Tolerance)
 {
-	UE::Geometry::FDynamicMesh3 DynamicMesh(UE::Geometry::EMeshComponents::FaceGroups);
+	UE::Geometry::FDynamicMesh3 DynamicMesh(UE::Geometry::EMeshComponents::All);
 	DynamicMesh.EnableAttributes();
 
 	{
@@ -373,9 +373,9 @@ void MeshOperator::ResolveTJunctions(FMeshDescription& MeshDescription, double T
 		ConversionOptions.bSetPolyGroups = true;
 		ConversionOptions.bUpdatePositions = true;
 		ConversionOptions.bUpdateNormals = true;
-		ConversionOptions.bUpdateTangents = true;
+		ConversionOptions.bUpdateTangents = false;
 		ConversionOptions.bUpdateUVs = true;
-		ConversionOptions.bUpdateVtxColors = true;
+		ConversionOptions.bUpdateVtxColors = false;
 		ConversionOptions.bTransformVtxColorsSRGBToLinear = false;
 
 		FDynamicMeshToMeshDescription ConverterToMeshDescription(ConversionOptions);

@@ -174,7 +174,7 @@ const TCHAR* FSoftObjectProperty::ImportText_Internal( const TCHAR* InBuffer, vo
 	}
 }
 
-EConvertFromTypeResult FSoftObjectProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FSoftObjectProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults)
 {
 	static FName NAME_AssetObjectProperty = "AssetObjectProperty";
 	static FName NAME_SoftObjectPath = "SoftObjectPath";
@@ -206,6 +206,7 @@ EConvertFromTypeResult FSoftObjectProperty::ConvertFromType(const FPropertyTag& 
 		FSoftObjectPtr* PropertyValue = GetPropertyValuePtr_InContainer(Data, Tag.ArrayIndex);
 		check(PropertyValue);
 
+		FSerializedPropertyScope SerializedProperty(Archive, this);
 		return PropertyValue->GetUniqueID().SerializeFromMismatchedTag(Tag, Slot) ? EConvertFromTypeResult::Converted : EConvertFromTypeResult::UseSerializeItem;
 	}
 	else if (Tag.Type == NAME_StructProperty && (Tag.StructName == NAME_SoftObjectPath || Tag.StructName == NAME_SoftClassPath || Tag.StructName == NAME_StringAssetReference || Tag.StructName == NAME_StringClassReference))
@@ -213,6 +214,7 @@ EConvertFromTypeResult FSoftObjectProperty::ConvertFromType(const FPropertyTag& 
 		// This property used to be a FSoftObjectPath but is now a TSoftObjectPtr<Foo>
 		FSoftObjectPath PreviousValue;
 		// explicitly call Serialize to ensure that the various delegates needed for cooking are fired
+		FSerializedPropertyScope SerializedProperty(Archive, this);
 		PreviousValue.Serialize(Slot);
 
 		// now copy the value into the object's address space
@@ -244,7 +246,7 @@ UObject* FSoftObjectProperty::GetObjectPropertyValue(const void* PropertyValueAd
 UObject* FSoftObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
 	UObject* Result = nullptr;
-	GetWrappedUObjectPtrValues_InContainer<FSoftObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	GetWrappedUObjectPtrValues<FSoftObjectPtr>(&Result, ContainerAddress, EPropertyMemoryAccess::InContainer, ArrayIndex, 1);
 	return Result;
 }
 
@@ -255,7 +257,7 @@ void FSoftObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UOb
 
 void FSoftObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
 {
-	SetWrappedUObjectPtrValues_InContainer<FSoftObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
+	SetWrappedUObjectPtrValues<FSoftObjectPtr>(ContainerAddress, EPropertyMemoryAccess::InContainer, &Value, ArrayIndex, 1);
 }
 
 bool FSoftObjectProperty::AllowCrossLevel() const
@@ -267,24 +269,3 @@ uint32 FSoftObjectProperty::GetValueTypeHashInternal(const void* Src) const
 {
 	return GetTypeHash(GetPropertyValue(Src));
 }
-
-void FSoftObjectProperty::CopySingleValueToScriptVM(void* Dest, void const* Src) const
-{
-	CopySingleValue(Dest, Src);
-}
-
-void FSoftObjectProperty::CopyCompleteValueToScriptVM(void* Dest, void const* Src) const
-{
-	CopyCompleteValue(Dest, Src);
-}
-
-void FSoftObjectProperty::CopySingleValueFromScriptVM(void* Dest, void const* Src) const
-{
-	CopySingleValue(Dest, Src);
-}
-
-void FSoftObjectProperty::CopyCompleteValueFromScriptVM(void* Dest, void const* Src) const
-{
-	CopyCompleteValue(Dest, Src);
-}
-

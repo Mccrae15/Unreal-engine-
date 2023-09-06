@@ -32,26 +32,24 @@ namespace Chaos
 	 */
 	FMaterialHandle ResolveMaterial(const FPerShapeData* InShape, const FPBDCollisionConstraint& InConstraint)
 	{
-		if(InShape)
-		{
-			const TArray<FMaterialHandle>& MaterialArray = InShape->GetMaterials();
+		// @todo(chaos): this does not handle PerParticleMaterials so may return the wrong value when that is used
 
+		if (InShape && (InShape->NumMaterials() > 0))
+		{
 			// Simple case, one material. All primitives (Box, convex, sphere etc.) should only have one material.
 			// Heightfield and Trimesh can have one or more and will require data from the contacts to resolve.
-			if(MaterialArray.Num() == 1)
+			if (InShape->NumMaterials() == 1)
 			{
-				return MaterialArray[0];
+				return InShape->GetMaterial(0);
 			}
-			else
+			else if (InConstraint.NumManifoldPoints() > 0)
 			{
-				// Check the manifold points, return the first valid material based on the face that the contact hit.
-				for(const FManifoldPoint& Point : InConstraint.GetManifoldPoints())
+				// We only support one material per manifold (just use the first manifold point)
+				const int32 ShapeFaceIndex = InConstraint.GetManifoldPoint(0).ContactPoint.FaceIndex;
+				const int32 ShapeMaterialIndex = InShape->GetGeometry()->GetMaterialIndex(ShapeFaceIndex);
+				if (ShapeMaterialIndex < InShape->NumMaterials())
 				{
-					const int32 PotentialMaterialIndex = InShape->GetGeometry()->GetMaterialIndex(Point.ContactPoint.FaceIndex);
-					if(MaterialArray.IsValidIndex(PotentialMaterialIndex))
-					{
-						return MaterialArray[PotentialMaterialIndex];
-					}
+					return InShape->GetMaterial(ShapeMaterialIndex);
 				}
 			}
 		}
@@ -124,15 +122,20 @@ namespace Chaos
 					{
 						for (int32 Index = StartRangeIndex; Index < EndRangeIndex; ++Index)
 						{
-							const Chaos::FPBDCollisionConstraintHandle* ContactHandle = CollisionHandles[Index];
 							ValidArray[Index] = false;
+
+							const Chaos::FPBDCollisionConstraintHandle* ContactHandle = CollisionHandles[Index];
+							if (ContactHandle == nullptr)
+							{
+								continue;
+							}
+
 							if (NumValidCollisions >= CollisionRule.NumConstraints())
 							{
 								break;
 							}
 
 							const FPBDCollisionConstraint& Constraint = ContactHandle->GetContact();
-
 							if (ensure(!Constraint.AccumulatedImpulse.ContainsNaN() && FMath::IsFinite(Constraint.GetPhi())))
 							{
 	
@@ -204,6 +207,7 @@ namespace Chaos
 								const FGeometryParticleHandle* Particle1 = Constraint.GetParticle1();
 
 								FCollidingData Data;
+								Data.SolverTime = Solver->MTime;
 								Data.Location = Constraint.CalculateWorldContactLocation();
 								Data.AccumulatedImpulse = Constraint.AccumulatedImpulse;
 								Data.Normal = Constraint.CalculateWorldContactNormal();
@@ -323,6 +327,7 @@ namespace Chaos
 			{
 				FilteredBreakingDataArray.Reset();
 				FilteredBreakingIndicesByPhysicsProxy.Reset();
+				BreakingEventData.BreakingData.bHasGlobalEvent = false;
 			}
 			BreakingEventData.BreakingData.TimeCreated = Solver->MTime;
 
@@ -340,6 +345,7 @@ namespace Chaos
 					{
 						const int32 NewIndex = FilteredBreakingDataArray.Emplace(ClusterBreaking);
 						FilteredBreakingIndicesByPhysicsProxy.FindOrAdd(ClusterBreaking.Proxy).Add(FEventManager::EncodeCollisionIndex(NewIndex, false));
+						BreakingEventData.BreakingData.bHasGlobalEvent |= (ClusterBreaking.EmitterFlag & EventEmitterFlag::GlobalDispatcher) != 0;
 					}
 				}
 			}
@@ -459,33 +465,38 @@ namespace Chaos
 
 			Chaos::FPBDRigidsSolver* NonConstSolver = const_cast<Chaos::FPBDRigidsSolver*>(Solver);
 
-			NonConstSolver->Particles.GetDynamicParticles().GetSleepDataLock().ReadLock();
-			auto& SolverSleepingData = NonConstSolver->Particles.GetDynamicParticles().GetSleepData();
-			for(const TSleepData<FReal, 3>& SleepData : SolverSleepingData)
+			const TArray<FPBDRigidParticles*> RelevantParticleArrays = {
+				&NonConstSolver->Particles.GetDynamicParticles(),
+				&NonConstSolver->Particles.GetClusteredParticles(),
+				&NonConstSolver->Particles.GetGeometryCollectionParticles()
+			};
+
+			for (FPBDRigidParticles* ParticleArray : RelevantParticleArrays)
 			{
-				if(SleepData.Particle)
+				check(ParticleArray != nullptr);
+				ParticleArray->GetSleepDataLock().ReadLock();
+				const TArray<TSleepData<FReal, 3>>& SolverSleepingData = ParticleArray->GetSleepData();
+				for (const TSleepData<FReal, 3>& SleepData : SolverSleepingData)
 				{
-					FGeometryParticle* Particle = SleepData.Particle->GTGeometryParticle();
-					if (Particle && SleepData.Particle->PhysicsProxy())
+					if (SleepData.Particle)
 					{
-						int32 NewIdx = EventSleepDataArray.Add(FSleepingData());
-						FSleepingData& SleepingDataArrayItem = EventSleepDataArray[NewIdx];
-						SleepingDataArrayItem.Proxy = SleepData.Particle->PhysicsProxy();
-						SleepingDataArrayItem.Sleeping = SleepData.Sleeping;
+						FGeometryParticle* Particle = SleepData.Particle->GTGeometryParticle();
+						if (Particle && SleepData.Particle->PhysicsProxy())
+						{
+							int32 NewIdx = EventSleepDataArray.Add(FSleepingData());
+							FSleepingData& SleepingDataArrayItem = EventSleepDataArray[NewIdx];
+							SleepingDataArrayItem.Proxy = SleepData.Particle->PhysicsProxy();
+							SleepingDataArrayItem.Sleeping = SleepData.Sleeping;
+						}
 					}
 				}
+				ParticleArray->GetSleepDataLock().ReadUnlock();
+				ParticleArray->ClearSleepData();
 			}
-			NonConstSolver->Particles.GetDynamicParticles().GetSleepDataLock().ReadUnlock();
-
-			NonConstSolver->Particles.GetDynamicParticles().ClearSleepData();
 
 			// We don't care about sleep data added to these
 			NonConstSolver->Particles.GetDynamicKinematicParticles().ClearSleepData();
 			NonConstSolver->Particles.GetDynamicDisabledParticles().ClearSleepData();
-
-			// Sleep data is not supported for these particles yet, clear the buffers here so that we don't leak memory
-			NonConstSolver->Particles.GetClusteredParticles().ClearSleepData();
-			NonConstSolver->Particles.GetGeometryCollectionParticles().ClearSleepData(); 
 		});
 	}
 
@@ -520,10 +531,8 @@ namespace Chaos
 					int32 NewIdx = AllRemovalDataArray.Add(FRemovalData());
 					FRemovalData& RemovalDataArrayItem = AllRemovalDataArray[NewIdx];
 					RemovalDataArrayItem = RemovalData;
-
 					AllRemovalIndicesByPhysicsProxy.FindOrAdd(RemovalData.Proxy).Add(FEventManager::EncodeCollisionIndex(NewIdx, false));
 				}
-			
 			});
 	}
 
@@ -543,6 +552,7 @@ namespace Chaos
 			if (bResetData)
 			{
 				CrumblingEventData.Reset();
+				CrumblingEventData.CrumblingData.bHasGlobalEvent = false;
 			}
 			CrumblingEventData.SetTimeCreated(Solver->MTime);
 
@@ -553,6 +563,7 @@ namespace Chaos
 			{
 				// todo(chaos) : implement filtering only if necessary as crumbling event should be sparser than breaking ones
 				CrumblingEventData.AddCrumbling(Crumbling);
+				CrumblingEventData.CrumblingData.bHasGlobalEvent |= (Crumbling.EmitterFlag & EventEmitterFlag::GlobalDispatcher) != 0;
 			}
 		});
 	}

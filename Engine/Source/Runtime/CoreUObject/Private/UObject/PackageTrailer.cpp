@@ -246,6 +246,12 @@ void FPackageTrailerBuilder::AddPayload(const FIoHash& Identifier, FCompressedBu
 {
 	Callbacks.Emplace(MoveTemp(Callback));
 
+	AddPayload(Identifier, Payload, FilterFlags);
+
+}
+
+void FPackageTrailerBuilder::AddPayload(const FIoHash& Identifier, FCompressedBuffer Payload, UE::Virtualization::EPayloadFilterReason FilterFlags)
+{
 	if (!Identifier.IsZero())
 	{
 		// If the payload already exists and the DisableVirtualization flag has been passed in
@@ -501,22 +507,6 @@ void FPackageTrailerBuilder::RemoveDuplicateEntries()
 			Iter.RemoveCurrent();
 		}
 	}
-}
-
-bool FPackageTrailer::IsEnabled()
-{
-	static struct FUsePackageTrailer
-	{
-		bool bEnabled = true;
-
-		FUsePackageTrailer()
-		{
-			GConfig->GetBool(TEXT("Core.System"), TEXT("UsePackageTrailer"), bEnabled, GEngineIni);
-			UE_LOG(LogSerialization, Log, TEXT("UsePackageTrailer: '%s'"), bEnabled ? TEXT("true") : TEXT("false"));
-		}
-	} UsePackageTrailer;
-
-	return UsePackageTrailer.bEnabled;
 }
 
 bool FPackageTrailer::TryLoadFromPackage(const FPackagePath& PackagePath, FPackageTrailer& OutTrailer)

@@ -109,7 +109,7 @@ struct FGuid
 public:
 
 	/** Default constructor. */
-	FGuid()
+	constexpr FGuid()
 		: A(0)
 		, B(0)
 		, C(0)
@@ -124,7 +124,7 @@ public:
 	 * @param InC The third component.
 	 * @param InD The fourth component.
 	 */
-	explicit FGuid(uint32 InA, uint32 InB, uint32 InC, uint32 InD)
+	explicit constexpr FGuid(uint32 InA, uint32 InB, uint32 InC, uint32 InD)
 		: A(InA), B(InB), C(InC), D(InD)
 	{ }
 
@@ -360,6 +360,13 @@ public:
 	 * @return A new GUID.
 	 */
 	static CORE_API FGuid NewGuid();
+
+	/**
+	 * Returns a GUID which is a combinationof the two provided ones.
+	 *
+	 * @return The combined GUID.
+	 */
+	static CORE_API FGuid Combine(const FGuid& GuidA, const FGuid& GuidB);
 
 	/**
 	 * Converts a string to a GUID.

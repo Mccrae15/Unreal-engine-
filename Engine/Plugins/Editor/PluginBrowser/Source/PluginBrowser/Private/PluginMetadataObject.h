@@ -101,6 +101,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = Details)
 	FString SupportURL;
 
+	/** Optional custom virtual path to display in editor to better organize. Inserted just before this plugin's directory in the path: /All/Plugins/EditorCustomVirtualPath/PluginName */
+	UPROPERTY(EditAnywhere, Category = Details)
+	FString EditorCustomVirtualPath;
+
 	/** Can this plugin contain content? */
 	UPROPERTY(EditAnywhere, Category = Details)
 	bool bCanContainContent;
@@ -117,9 +121,20 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = Details)
 	bool bExplicitlyLoaded;
 
+	/** If true, prevents other plugins from depending on this plugin */
+	UPROPERTY(EditAnywhere, Category = Details)
+	bool bIsSealed;
+
+	UPROPERTY(EditAnywhere, Category = Details)
+	bool bNoCode;
+
 	/** Plugins used by this plugin */
 	UPROPERTY(EditAnywhere, Category = Dependencies, meta=(TitleProperty=Name))
 	TArray<FPluginReferenceMetadata> Plugins;
+
+	/** Plugins that cannot be used by this plugin */
+	UPROPERTY(EditAnywhere, Category = Dependencies, meta=(DisplayName="Disallowed", GetOptions= GetDisallowedPluginsOptions))
+	TArray<FString> DisallowedPlugins;
 
 	/** Plugin this proxy object was constructed from */
 	TWeakPtr<IPlugin> SourcePlugin;
@@ -139,6 +154,9 @@ public:
 
 	UFUNCTION()
 	TArray<FString> GetAvailablePluginDependencies() const;
+
+	UFUNCTION()
+	TArray<FString> GetDisallowedPluginsOptions() const;
 };
 
 /**

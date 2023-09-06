@@ -29,6 +29,7 @@ struct FTraceUtils
 {
 	static void Encode7bit(uint64 Value, uint8*& BufferPtr)
 	{
+		// Writes 1 to 10 bytes for uint64 and 1 to 5 bytes for uint32.
 		do
 		{
 			uint8 HasMoreBytes = (uint8)((Value > uint64(0x7F)) << 7);
@@ -61,6 +62,9 @@ struct FMiscTrace
 		}
 	}
 
+	CORE_API static void OutputBeginRegion(const TCHAR* RegionName);
+	CORE_API static void OutputEndRegion(const TCHAR* RegionName);
+	
 	CORE_API static void OutputBeginFrame(ETraceFrameType FrameType);
 	CORE_API static void OutputEndFrame(ETraceFrameType FrameType);
 
@@ -70,6 +74,7 @@ struct FMiscTrace
 
 private:
 	CORE_API static void OutputBookmarkInternal(const void* BookmarkPoint, uint16 EncodedFormatArgsSize, uint8* EncodedFormatArgs);
+	
 };
 
 #define TRACE_BOOKMARK(Format, ...) \
@@ -80,6 +85,12 @@ private:
 		PREPROCESSOR_JOIN(__BookmarkPoint, __LINE__) = true; \
 	} \
 	FMiscTrace::OutputBookmark(&PREPROCESSOR_JOIN(__BookmarkPoint, __LINE__), ##__VA_ARGS__);
+
+#define TRACE_BEGIN_REGION(RegionName) \
+	FMiscTrace::OutputBeginRegion(RegionName);
+
+#define TRACE_END_REGION(RegionName) \
+	FMiscTrace::OutputEndRegion(RegionName);
 
 #define TRACE_BEGIN_FRAME(FrameType) \
 	FMiscTrace::OutputBeginFrame(FrameType);
@@ -99,6 +110,8 @@ private:
 #else
 
 #define TRACE_BOOKMARK(...)
+#define TRACE_BEGIN_REGION(...)
+#define TRACE_END_REGION(...)
 #define TRACE_BEGIN_FRAME(...)
 #define TRACE_END_FRAME(...)
 #define TRACE_SCREENSHOT(...)

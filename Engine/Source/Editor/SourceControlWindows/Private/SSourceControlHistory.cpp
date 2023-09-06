@@ -50,6 +50,9 @@
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
+#include "DiffUtils.h"
+#include "ToolMenu.h"
+#include "ToolMenus.h"
 
 /**
  * Wrapper around data from ISourceControlRevision
@@ -208,10 +211,10 @@ static UObject* GetAssetRevisionObject(TSharedPtr<FHistoryTreeItem> HistoryTreeI
 				TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FileRevision = FileSourceControlState->FindHistoryRevision(RevisionListItem->Revision);
 
 				FString TempPackageName;
-				if (FileRevision.IsValid() && FileRevision->Get(TempPackageName)) // grab the path to a temporary package (where the revision item will be stored)
+				if (FileRevision.IsValid())
 				{
 					// try and load the temporary package
-					AssetPackage = LoadPackage(NULL, *TempPackageName, LOAD_ForDiff|LOAD_DisableCompileOnLoad);
+					AssetPackage = DiffUtils::LoadPackageForDiff(FileRevision);
 				}
 			} // if FileSourceControlState.IsValid()
 		}
@@ -227,6 +230,10 @@ static UObject* GetAssetRevisionObject(TSharedPtr<FHistoryTreeItem> HistoryTreeI
 		// grab the asset from the package - we assume asset name matches file name
 		FString AssetName = FPaths::GetBaseFilename(FileListItem->FileName);
 		AssetObject = FindObject<UObject>(AssetPackage, *AssetName);
+		if (AssetPackage && !AssetObject)
+		{
+			AssetObject = AssetPackage->FindAssetInPackage();
+		}
 
 	} // if HistoryTreeItemIn.IsValid()
 	
@@ -643,13 +650,24 @@ public:
 
 	SLATE_END_ARGS()
 		
+	const FName SourceControlHistoryContextMenu = TEXT("RevisionControl.History.ContextMenu");
 
 	SSourceControlHistoryWidget()
 	{
 	}
 
+	static void CreateDiffMenu(UToolMenu* InToolMenu);
+
 	void Construct( const FArguments& InArgs )
 	{	
+		if (!UToolMenus::Get()->IsMenuRegistered(SourceControlHistoryContextMenu))
+		{
+			UToolMenu* ContextMenu = UToolMenus::Get()->RegisterMenu(SourceControlHistoryContextMenu);
+			ContextMenu->bShouldCloseWindowAfterMenuSelection = true;
+
+			ContextMenu->AddDynamicSection(NAME_None, FNewToolMenuDelegate::CreateStatic(&SSourceControlHistoryWidget::CreateDiffMenu));
+		}
+
 		AddHistoryInfo(InArgs._SourceControlStates.Get());
 		ParentWindow = InArgs._ParentWindow.Get();
 
@@ -1150,48 +1168,34 @@ private:
 	/** Called to create a context menu when right-clicking on a history item */
 	TSharedPtr< SWidget > OnCreateContextMenu()
 	{
-		if (CanDiff())
+		FToolMenuContext Context;
+		USourceControlHistoryWidgetContext* SourceControlHistoryWidgetContext = NewObject<USourceControlHistoryWidgetContext>();
+		SourceControlHistoryWidgetContext->HistoryWidget = SharedThis(this);
+
+		for (TSharedPtr<FHistoryTreeItem> Item : MainHistoryListView->GetSelectedItems())
 		{
-			FMenuBuilder MenuBuilder(true, NULL);
-
-			MenuBuilder.AddMenuEntry(
-				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrev", "Diff Against Previous Revision"),
-				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrevTooltip", "See changes between this revision and the previous one."),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffAgainstPreviousRev),
-					FCanExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::CanDiffAgainstPreviousRev)
-				)
-			);
-
-			MenuBuilder.AddMenuEntry(
-				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspace", "Diff Against Workspace File"),
-				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspaceTooltip", "See changes between this revision and your version of the asset."),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffAgainstWorkspace),
-					FCanExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::CanDiffAgainstWorkspace)
-				)
-			);
-
-			if (CanDiffSelected())
+			if (Item->Parent.IsValid())
 			{
-				MenuBuilder.AddMenuEntry(
-					NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelected", "Diff Selected"),
-					NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelectedTooltip", "Diff the two assets that you have selected."),
-					FSlateIcon(),
-					FUIAction(
-						FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffSelected)
-					)
-				);
-			}
+				TSharedPtr<FHistoryTreeItem> Parent = Item->Parent.Pin();
 
-			return MenuBuilder.MakeWidget();
+				USourceControlHistoryWidgetContext::SelectedItem ItemInfo;
+				if (Parent->FileListItem)
+				{
+					ItemInfo.FileName = Parent->FileListItem->FileName;
+					ItemInfo.Revision = Item->RevisionListItem->Revision;
+
+					SourceControlHistoryWidgetContext->GetSelectedItems().Add(ItemInfo);
+				}
+			}
 		}
-		else
+	
+		Context.AddObject(SourceControlHistoryWidgetContext);
+		if (UToolMenu* GeneratedContextMenu = UToolMenus::Get()->GenerateMenu(SourceControlHistoryContextMenu, Context))
 		{
-			return SNullWidget::NullWidget;
+			return UToolMenus::Get()->GenerateWidget(GeneratedContextMenu);
 		}
+
+		return SNullWidget::NullWidget;
 	}
 
 	/** See if we should enabled the 'diff against previous' option */
@@ -1417,7 +1421,7 @@ private:
 	 *
 	 * @return True if the SourceControl provider supports diffing, false if not.
 	 */
-	bool CanDiff() const
+	static bool CanDiff()
 	{
 		return ISourceControlModule::Get().GetProvider().AllowsDiffAgainstDepot();
 	}
@@ -1449,6 +1453,25 @@ private:
 			{
 				FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("SourceControl.HistoryWindow", "UnableToLoadAssets", "Unable to load assets to diff. Content may no longer be supported?"));
 			}
+		}
+	}
+
+	/** 
+	* CanDiffSelected gives a dynamic response based on a number of factors, so CreateDiffSelectedMenu ensures we are checking on each menu open event and correctly adding the related menu item(s) for each case.
+	*/
+	void CreateDiffSelectedMenu(FToolMenuSection& InSection)
+	{
+		if (CanDiffSelected())
+		{
+			InSection.AddMenuEntry(
+				TEXT("DiffSelected"),
+				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelected", "Diff Selected"),
+				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelectedTooltip", "Diff the two assets that you have selected."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffSelected)
+				)
+			);
 		}
 	}
 
@@ -1605,6 +1628,51 @@ private:
 	TWeakPtr<SWindow> ParentWindow;
 };
 
+void SSourceControlHistoryWidget::CreateDiffMenu(UToolMenu* InToolMenu)
+{
+	USourceControlHistoryWidgetContext* FoundContext = InToolMenu->FindContext<USourceControlHistoryWidgetContext>();
+	if (!FoundContext)
+	{
+		return;
+	}
+
+	TSharedPtr<SSourceControlHistoryWidget> PinnedHistoryWidget = FoundContext->HistoryWidget.Pin();
+	if (!PinnedHistoryWidget)
+	{
+		return;
+	}
+
+	if (!CanDiff())
+	{
+		return;
+	}
+
+	FToolMenuSection& DiffSection = InToolMenu->AddSection("DiffTools");
+	DiffSection.AddMenuEntry(
+		TEXT("DiffAgainstPrevious"),
+		NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrev", "Diff Against Previous Revision"),
+		NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrevTooltip", "See changes between this revision and the previous one."),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateSP(PinnedHistoryWidget.Get(), &SSourceControlHistoryWidget::OnDiffAgainstPreviousRev),
+			FCanExecuteAction::CreateSP(PinnedHistoryWidget.Get(), &SSourceControlHistoryWidget::CanDiffAgainstPreviousRev)
+		)
+	);
+
+	DiffSection.AddMenuEntry(
+		TEXT("DiffAgainstWorkspace"),
+		NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspace", "Diff Against Workspace File"),
+		NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspaceTooltip", "See changes between this revision and your version of the asset."),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateSP(PinnedHistoryWidget.Get(), &SSourceControlHistoryWidget::OnDiffAgainstWorkspace),
+			FCanExecuteAction::CreateSP(PinnedHistoryWidget.Get(), &SSourceControlHistoryWidget::CanDiffAgainstWorkspace)
+		)
+	);
+
+	DiffSection.AddDynamicEntry(NAME_None, FNewToolMenuSectionDelegate::CreateSP(PinnedHistoryWidget.Get(), &SSourceControlHistoryWidget::CreateDiffSelectedMenu));
+}
+
 void FSourceControlWindows::DisplayRevisionHistory( const TArray<FString>& InPackageNames )
 {
 	// Explicitly load the module so live coding will work with it
@@ -1737,8 +1805,9 @@ bool FSourceControlWindows::DiffAgainstShelvedFile(const FSourceControlStateRef&
 		if (Revision->Get(TempFileName))
 		{
 			// Try and load that package
-			UPackage* TempPackage = LoadPackage(nullptr, *TempFileName, LOAD_ForDiff | LOAD_DisableCompileOnLoad);
-			if (TempPackage != nullptr)
+			const FPackagePath TempPackagePath = FPackagePath::FromLocalPath(TempFileName);
+			const FPackagePath OriginalPackagePath = FPackagePath::FromLocalPath(InFileState->GetFilename());
+			if(UPackage* TempPackage = DiffUtils::LoadPackageForDiff(TempPackagePath, OriginalPackagePath))
 			{
 				// Grab the shelved asset from that package
 				UObject* ShelvedObject = FindObject<UObject>(TempPackage, *SelectedAsset->GetName());

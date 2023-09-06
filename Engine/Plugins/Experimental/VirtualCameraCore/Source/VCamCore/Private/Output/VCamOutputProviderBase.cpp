@@ -7,15 +7,19 @@
 #include "UI/VCamWidget.h"
 #include "Util/LevelViewportUtils.h"
 #include "VCamCoreCustomVersion.h"
-#include "Algo/RemoveIf.h"
 
+#include "Algo/RemoveIf.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "CoreGlobals.h"
 #include "Engine/Engine.h"
-#include "GameFramework/PlayerController.h"
 #include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
+#include "Misc/ScopeExit.h"
+#include "SceneViewExtensionContext.h"
 #include "Slate/SceneViewport.h"
 #include "UObject/UObjectBaseUtility.h"
+#include "Util/ObjectMessageAggregation.h"
 #include "Util/WidgetSnapshotUtils.h"
 #include "Util/WidgetTreeUtils.h"
 #include "ViewTargetPolicy/FocusFirstPlayerViewTargetPolicy.h"
@@ -23,6 +27,7 @@
 
 #if WITH_EDITOR
 #include "Editor.h"
+#include "EditorViewportClient.h"
 #include "IAssetViewport.h"
 #include "LevelEditorViewport.h"
 #include "SLevelViewport.h"
@@ -34,10 +39,10 @@
 
 DEFINE_LOG_CATEGORY(LogVCamOutputProvider);
 
+#define LOCTEXT_NAMESPACE "UVCamOutputProviderBase"
+
 namespace UE::VCamCore::Private
 {
-	static const FName LevelEditorName(TEXT("LevelEditor"));
-
 	static bool ValidateOverlayClassAndLogErrors(const TSubclassOf<UUserWidget>& InUMGClass)
 	{
 		// Null IS allowed and means "do not create any class"
@@ -53,6 +58,8 @@ UVCamOutputProviderBase::UVCamOutputProviderBase()
 	{
 		OnActivatedDelegate_Blueprint.Broadcast(bNewValue);
 	});
+	
+	GameplayViewTargetPolicy = CreateDefaultSubobject<UFocusFirstPlayerViewTargetPolicy>(TEXT("FocusFirstPlayerViewTargetPolicy0"));
 }
 
 void UVCamOutputProviderBase::BeginDestroy()
@@ -80,7 +87,7 @@ void UVCamOutputProviderBase::Initialize()
 		{
 			if (IsOuterComponentEnabled())
 			{
-				Activate();
+				OnActivate();
 			}
 		}
 	}
@@ -90,31 +97,26 @@ void UVCamOutputProviderBase::Deinitialize()
 {
 	if (bInitialized)
 	{
-		Deactivate();
+		OnDeactivate();
 		bInitialized = false;
 	}
 }
 
-void UVCamOutputProviderBase::Activate()
+void UVCamOutputProviderBase::OnActivate()
 {
 	ConditionallySetUpGameplayViewTargets();
+	ReapplyOverrideResolution();
 	
 	CreateUMG();
 	DisplayUMG();
 
-	if (ShouldOverrideResolutionOnActivationEvents() && bUseOverrideResolution)
-	{
-		ApplyOverrideResolutionForViewport(TargetViewport);
-	}
-	
 	OnActivatedDelegate.Broadcast(true);
 }
 
-void UVCamOutputProviderBase::Deactivate()
+void UVCamOutputProviderBase::OnDeactivate()
 {
 	CleanUpGameplayViewTargets();
-	
-	if (ShouldOverrideResolutionOnActivationEvents())
+	if (bUseOverrideResolution)
 	{
 		RestoreOverrideResolutionForViewport(TargetViewport);
 	}
@@ -136,15 +138,21 @@ void UVCamOutputProviderBase::SetActive(const bool bInActive)
 {
 	bIsActive = bInActive;
 
+	// E.g. when you drag-drop an actor into the level
+	if (HasAnyFlags(RF_Transient))
+	{
+		return;
+	}
+	
 	if (IsOuterComponentEnabled())
 	{
 		if (bIsActive)
 		{
-			Activate();
+			OnActivate();
 		}
 		else
 		{
-			Deactivate();
+			OnDeactivate();
 		}
 	}
 }
@@ -159,13 +167,12 @@ bool UVCamOutputProviderBase::IsOuterComponentEnabled() const
 	return false;
 }
 
-
 void UVCamOutputProviderBase::SetTargetCamera(const UCineCameraComponent* InTargetCamera)
 {
 	if (InTargetCamera != TargetCamera)
 	{
 		TargetCamera = InTargetCamera;
-		NotifyWidgetOfComponentChange();
+		NotifyAboutComponentChange();
 	}
 }
 
@@ -195,16 +202,74 @@ void UVCamOutputProviderBase::CreateUMG()
 		return;
 	}
 
+	// Warn the user if the viewport is not available
+	const TSharedPtr<FSceneViewport> Viewport = GetSceneViewport(TargetViewport);
+	if (!Viewport)
+	{
+		AActor* OwningActor = GetTypedOuter<AActor>();
+		check(OwningActor);
+		
+		using namespace UE::VCamCore;
+		const FString ActorName =
+#if WITH_EDITOR
+			OwningActor->GetActorLabel();
+#else
+			OwningActor->GetPathName();
+#endif
+		AddAggregatedNotification(*OwningActor,
+			{
+				NotificationKey_MissingTargetViewport,
+				FText::Format(LOCTEXT("MissingTargetViewport.Title", "Missing target viewport: {0}"), FText::FromString(ActorName)),
+				FText::Format(LOCTEXT("MissingTargetViewport.Subtext", "Edit output provider {1} or open {0} (Window > Viewports)."), FText::FromString(ViewportIdToString(TargetViewport)), FindOwnIndexInOwner())
+			});
+		return;
+	}
+
 	UMGWidget = NewObject<UVPFullScreenUserWidget>(this, UVPFullScreenUserWidget::StaticClass());
 	UMGWidget->SetDisplayTypes(DisplayType, DisplayType, DisplayType);
-	UMGWidget->PostProcessDisplayType.bReceiveHardwareInput = true;
+	if (UMGWidget->DoesDisplayTypeUsePostProcessSettings(DisplayType))
+	{
+		UMGWidget->GetPostProcessDisplayTypeSettingsFor(DisplayType)->bReceiveHardwareInput = true;
+	}
 
 #if WITH_EDITOR
-	UMGWidget->SetEditorTargetViewport(GetSceneViewport(TargetViewport));
+	// Only register in editor because editor has multiple viewports. In games, there is only one viewport (ignore split screen).
+	if (UMGWidget->GetDisplayType(GetWorld()) == EVPWidgetDisplayType::PostProcessSceneViewExtension)
+	{
+		FSceneViewExtensionIsActiveFunctor IsActiveFunctor;
+		IsActiveFunctor.IsActiveFunction = [WeakThis = TWeakObjectPtr<UVCamOutputProviderBase>(this)](const ISceneViewExtension* SceneViewExtension, const FSceneViewExtensionContext& Context) 
+		{
+			if (WeakThis.IsValid())
+			{
+				return WeakThis->GetRenderWidgetStateInContext(SceneViewExtension, Context);
+			}
+			return TOptional<bool>{};
+		};
+		UMGWidget->GetPostProcessDisplayTypeWithSceneViewExtensionsSettings().RegisterIsActiveFunctor(MoveTemp(IsActiveFunctor));
+	}
+	
+	UMGWidget->SetEditorTargetViewport(Viewport);
 #endif
 
-	UMGWidget->WidgetClass = UMGClass;
-	UE_LOG(LogVCamOutputProvider, Log, TEXT("CreateUMG widget named %s from class %s"), *UMGWidget->GetName(), *UMGWidget->WidgetClass->GetName());
+	UMGWidget->SetWidgetClass(UMGClass);
+	UE_LOG(LogVCamOutputProvider, Log, TEXT("CreateUMG widget named %s from class %s"), *UMGWidget->GetName(), *UMGWidget->GetWidgetClass()->GetName());
+}
+
+void UVCamOutputProviderBase::ReapplyOverrideResolution()
+{
+	if (!IsActiveAndOuterComponentEnabled())
+	{
+		return;
+	}
+	
+	if (bUseOverrideResolution)
+	{
+		ApplyOverrideResolutionForViewport(TargetViewport);
+	}
+	else
+	{
+		RestoreOverrideResolutionForViewport(TargetViewport);
+	}
 }
 
 void UVCamOutputProviderBase::RestoreOverrideResolutionForViewport(EVCamTargetViewportID ViewportToRestore)
@@ -223,25 +288,36 @@ void UVCamOutputProviderBase::ApplyOverrideResolutionForViewport(EVCamTargetView
 	}
 }
 
-void UVCamOutputProviderBase::ReapplyOverrideResolution(EVCamTargetViewportID Viewport)
-{
-	if (bUseOverrideResolution)
-	{
-		ApplyOverrideResolutionForViewport(Viewport);
-	}
-	else
-	{
-		RestoreOverrideResolutionForViewport(Viewport);
-	}
-}
-
 void UVCamOutputProviderBase::DisplayUMG()
 {
 	if (UMGWidget)
 	{
 		if (UWorld* ActorWorld = GetWorld())
 		{
+#if WITH_EDITOR
+			// In the editor, we override the target viewport's post process settings instead of using the cine camera
+			// because other output providers with post process output would interfer with each other...
+			UMGWidget->SetCustomPostProcessSettingsSource(this);
+
+			FLevelEditorViewportClient* Client = GetTargetLevelViewportClient();
+			UE_CLOG(DisplayType == EVPWidgetDisplayType::PostProcessWithBlendMaterial && !Client, LogVCamOutputProvider, Error, TEXT("Failed to find viewport client. The widget will not be rendered."));
+			if (DisplayType == EVPWidgetDisplayType::PostProcessWithBlendMaterial && Client)
+			{
+				ensure(!ModifyViewportPostProcessSettingsDelegateHandle.IsValid());
+				ModifyViewportPostProcessSettingsDelegateHandle = Client->ViewModifiers.AddUObject(this, &UVCamOutputProviderBase::ModifyViewportPostProcessSettings);
+				Client->bShouldApplyViewModifiers = true;
+			}
+#else
+			// ... but in games there is only one viewport so we can just use the cine camera.
 			UMGWidget->SetCustomPostProcessSettingsSource(TargetCamera.Get());
+#endif
+
+#if WITH_EDITOR
+			// Creating widgets should not be transacted because it will create a huge transaction.
+			ITransaction* UndoState = GUndo;
+			GUndo = nullptr;
+			ON_SCOPE_EXIT{ GUndo = UndoState; };
+#endif
 			if (!UMGWidget->Display(ActorWorld)
 				|| !ensureAlwaysMsgf(UMGWidget->GetWidget(), TEXT("UVPFullScreenUserWidget::Display returned true but did not create any subwidget!")))
 			{
@@ -255,7 +331,7 @@ void UVCamOutputProviderBase::DisplayUMG()
 			}
 		}
 
-		NotifyWidgetOfComponentChange();
+		NotifyAboutComponentChange();
 #if WITH_EDITOR
 		// Start registering after the initial calls to InitializeConnections to prevent unneeded snapshotting.
 		StartDetectAndSnapshotWhenConnectionsChange();
@@ -277,6 +353,14 @@ void UVCamOutputProviderBase::DestroyUMG()
 				Modify();
 				WidgetSnapshot = UE::VCamCore::WidgetSnapshotUtils::Private::TakeTreeHierarchySnapshot(*Subwidget);
 			}
+
+			FLevelEditorViewportClient* Client = GetTargetLevelViewportClient();
+			if (DisplayType == EVPWidgetDisplayType::PostProcessWithBlendMaterial && Client && ModifyViewportPostProcessSettingsDelegateHandle.IsValid())
+			{
+				Client->ViewModifiers.Remove(ModifyViewportPostProcessSettingsDelegateHandle);
+				Client->bShouldApplyViewModifiers = Client->ViewModifiers.IsBound();
+			}
+			ModifyViewportPostProcessSettingsDelegateHandle.Reset();
 #endif
 			
 			UMGWidget->Hide();
@@ -314,10 +398,10 @@ void UVCamOutputProviderBase::RestoreOutput()
 bool UVCamOutputProviderBase::NeedsForceLockToViewport() const
 {
 	// The widget is displayed via a post process material, which is applied to the camera's post process settings, hence anything will only be visible when locked.
-	return DisplayType == EVPWidgetDisplayType::PostProcess;
+	return DisplayType == EVPWidgetDisplayType::PostProcessWithBlendMaterial || DisplayType == EVPWidgetDisplayType::Composure;
 }
 
-void UVCamOutputProviderBase::NotifyWidgetOfComponentChange() const
+void UVCamOutputProviderBase::NotifyAboutComponentChange()
 {
 	if (UMGWidget && UMGWidget->IsDisplayed())
 	{
@@ -346,6 +430,39 @@ void UVCamOutputProviderBase::NotifyWidgetOfComponentChange() const
 	}
 }
 
+UVCamOutputProviderBase* UVCamOutputProviderBase::GetOtherOutputProviderByIndex(int32 Index) const
+{
+	if (Index > INDEX_NONE)
+	{
+		if (const UVCamComponent* OuterComponent = GetTypedOuter<UVCamComponent>())
+		{
+			if (UVCamOutputProviderBase* Provider = OuterComponent->GetOutputProviderByIndex(Index))
+			{
+				return Provider;
+			}
+			
+			UE_LOG(LogVCamOutputProvider, Warning, TEXT("GetOtherOutputProviderByIndex - specified index is out of range"));
+		}
+	}
+
+	return nullptr;
+}
+
+int32 UVCamOutputProviderBase::FindOwnIndexInOwner() const
+{
+	if (const UVCamComponent* OuterComponent = GetTypedOuter<UVCamComponent>())
+	{
+		for (int32 Index = 0; Index < OuterComponent->GetNumberOfOutputProviders(); ++Index)
+		{
+			if (OuterComponent->GetOutputProviderByIndex(Index) == this)
+			{
+				return Index;
+			}
+		}
+	}
+	return INDEX_NONE;
+}
+
 void UVCamOutputProviderBase::Serialize(FArchive& Ar)
 {
 	using namespace UE::VCamCore;
@@ -354,7 +471,7 @@ void UVCamOutputProviderBase::Serialize(FArchive& Ar)
 	
 	if (Ar.IsLoading() && Ar.CustomVer(FVCamCoreCustomVersion::GUID) < FVCamCoreCustomVersion::MoveTargetViewportFromComponentToOutput)
 	{
-		UVCamComponent* OuterComponent = GetTypedOuter<UVCamComponent>();
+		const UVCamComponent* OuterComponent = GetTypedOuter<UVCamComponent>();
 		TargetViewport = OuterComponent
 			? OuterComponent->TargetViewport_DEPRECATED
 			: TargetViewport;
@@ -371,26 +488,6 @@ void UVCamOutputProviderBase::PostLoad()
 		Modify();
 		SetUMGClass(nullptr);
 	}
-}
-
-UVCamOutputProviderBase* UVCamOutputProviderBase::GetOtherOutputProviderByIndex(int32 Index) const
-{
-	if (Index > INDEX_NONE)
-	{
-		if (UVCamComponent* OuterComponent = GetTypedOuter<UVCamComponent>())
-		{
-			if (UVCamOutputProviderBase* Provider = OuterComponent->GetOutputProviderByIndex(Index))
-			{
-				return Provider;
-			}
-			else
-			{
-				UE_LOG(LogVCamOutputProvider, Warning, TEXT("GetOtherOutputProviderByIndex - specified index is out of range"));
-			}
-		}
-	}
-
-	return nullptr;
 }
 
 TSharedPtr<FSceneViewport> UVCamOutputProviderBase::GetSceneViewport(EVCamTargetViewportID InTargetViewport) const
@@ -499,18 +596,6 @@ TWeakPtr<SWindow> UVCamOutputProviderBase::GetTargetInputWindow() const
 	return InputWindow;
 }
 
-void UVCamOutputProviderBase::InitViewTargetPolicyInSubclass()
-{
-	checkf(DisplayType != EVPWidgetDisplayType::Inactive, TEXT("Subclasses should set DisplayType in constructor before calling InitViewTargetPolicyInSubclass"));
-	
-	// Make UX easier for users by making the output provider set the first player controller's view target to our camera in game worlds automatically.
-	const bool bRequiresCameraToWork = DisplayType == EVPWidgetDisplayType::PostProcess || DisplayType == EVPWidgetDisplayType::Composure;
-	if (bRequiresCameraToWork)
-	{
-		GameplayViewTargetPolicy = CreateDefaultSubobject<UFocusFirstPlayerViewTargetPolicy>(TEXT("FocusFirstPlayerViewTargetPolicy0"));
-	}
-}
-
 #if WITH_EDITOR
 
 FLevelEditorViewportClient* UVCamOutputProviderBase::GetTargetLevelViewportClient() const
@@ -524,6 +609,31 @@ FLevelEditorViewportClient* UVCamOutputProviderBase::GetTargetLevelViewportClien
 TSharedPtr<SLevelViewport> UVCamOutputProviderBase::GetTargetLevelViewport() const
 {
 	return UE::VCamCore::LevelViewportUtils::Private::GetLevelViewport(TargetViewport);
+}
+
+void UVCamOutputProviderBase::PreEditUndo()
+{
+	Super::PreEditUndo();
+
+	// If bIsActive is about to be set to false, we need to deactivate here because either
+	// - UMGWidget will be null-ed, or
+	// - the UVPFullScreenWidget::CurrentDisplayType will be set to Inactive
+	// Both prevent us from removing the widget from the viewport correctly so we'll just ALWAYS disable and optionally restore in PostEditUndo.
+	OnDeactivate();
+}
+
+void UVCamOutputProviderBase::PostEditUndo()
+{
+	Super::PostEditUndo();
+
+	// Need to restore because we killed the widget in PreEditUndo
+	if (bIsActive)
+	{
+		// The transaction has overwritten our properties, e.g. UMGWidget, which would make OnActivate fail 
+		OnDeactivate();
+		// Now we're in a clean base state to re-activate
+		OnActivate();
+	}
 }
 
 void UVCamOutputProviderBase::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -547,7 +657,7 @@ void UVCamOutputProviderBase::PostEditChangeProperty(FPropertyChangedEvent& Prop
 		else if (PropertyName == NAME_UMGClass)
 		{
 			WidgetSnapshot.Reset();
-			if (bIsActive)
+			if (IsActiveAndOuterComponentEnabled())
 			{
 				// In case a child class resets UMGClass, reapply the correct value we got the PostEditChangeProperty for.
 				const TSubclassOf<UUserWidget> ProtectUMGClass = UMGClass;
@@ -563,7 +673,7 @@ void UVCamOutputProviderBase::PostEditChangeProperty(FPropertyChangedEvent& Prop
 			{
 				RestoreOverrideResolutionForViewport(static_cast<EVCamTargetViewportID>(i));
 			}
-			ReapplyOverrideResolution(TargetViewport);
+			ReapplyOverrideResolution();
 
 			if (bIsActive)
 			{
@@ -573,11 +683,29 @@ void UVCamOutputProviderBase::PostEditChangeProperty(FPropertyChangedEvent& Prop
 		}
 		else if (PropertyName == NAME_OverrideResolution || PropertyName == NAME_bUseOverrideResolution)
 		{
-			ReapplyOverrideResolution(TargetViewport);
+			ReapplyOverrideResolution();
 		}
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+
+void UVCamOutputProviderBase::ModifyViewportPostProcessSettings(FEditorViewportViewModifierParams& EditorViewportViewModifierParams)
+{
+	// The UMGWidget has put a post process material into PostProcessSettingsForWidget which causes the widget to be rendered 
+	EditorViewportViewModifierParams.AddPostProcessBlend(PostProcessSettingsForWidget, 1.f);
+}
+
+TOptional<bool> UVCamOutputProviderBase::GetRenderWidgetStateInContext(const ISceneViewExtension* SceneViewExtension, const FSceneViewExtensionContext& Context)
+{
+	const bool bWillRenderIntoTargetViewport = Context.Viewport && GetTargetLevelViewportClient() == Context.Viewport->GetClient();
+	const bool bIsGameWorld = GetWorld()->IsGameWorld();
+	return bWillRenderIntoTargetViewport
+		// Always allow rendering into game worlds
+		|| bIsGameWorld
+		// By contract we should only ever return false when it is not ok to render and return empty otherwise
+		? TOptional<bool>{}
+		: false;
 }
 
 void UVCamOutputProviderBase::StartDetectAndSnapshotWhenConnectionsChange()
@@ -674,3 +802,5 @@ void UVCamOutputProviderBase::CleanUpGameplayViewTargets()
 	PlayersWhoseViewTargetsWereSet.Reset();
 	GameplayViewTargetPolicy->UpdateViewTarget(Params);
 }
+
+#undef LOCTEXT_NAMESPACE

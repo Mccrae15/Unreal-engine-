@@ -13,7 +13,6 @@
 #include "Materials/MaterialRenderProxy.h"
 #include "MaterialDomain.h"
 #include "DataDrivenShaderPlatformInfo.h"
-#include "PostProcess/PostProcessMaterial.h"
 
 #include "ARTextures.h"
 #include "ARBlueprintLibrary.h"
@@ -22,6 +21,15 @@
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "UObject/Package.h"
+
+#include "MaterialShader.h"
+#include "Containers/DynamicRHIResourceArray.h"
+#include "CommonRenderResources.h"
+#include "ScreenPass.h"
+#include "SceneRenderTargetParameters.h"
+
+#include "PostProcess/DrawRectangle.h"
+#include "PostProcess/PostProcessMaterialInputs.h"
 
 #define CAMERA_MESSAGE_ADDRESS TEXT("/ARCamera")
 
@@ -43,10 +51,19 @@ TAutoConsoleVariable<int32> CVarJPEGGpu(
 	TEXT("1 (default) compresses on the GPU, 0 on the CPU"),
 	ECVF_Default);
 
+BEGIN_SHADER_PARAMETER_STRUCT(FRemoteSessionARCameraMaterialParameters, )
+	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, PostProcessOutput)
+	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PostProcessInput, [kPostProcessMaterialInputCountMax])
+	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PathTracingPostProcessInput, [kPathTracingPostProcessMaterialInputCountMax])
+	SHADER_PARAMETER_SAMPLER(SamplerState, PostProcessInput_BilinearSampler)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
 class FPostProcessMaterialShader : public FMaterialShader
 {
 public:
-	using FParameters = FPostProcessMaterialParameters;
+	using FParameters = FRemoteSessionARCameraMaterialParameters;
 	SHADER_USE_PARAMETER_STRUCT_WITH_LEGACY_BASE(FPostProcessMaterialShader, FMaterialShader);
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
@@ -80,10 +97,10 @@ public:
 		: FPostProcessMaterialShader(Initializer)
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View)
 	{
-		FRHIVertexShader* ShaderRHI = RHICmdList.GetBoundVertexShader();
-		FMaterialShader::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
+		UE::Renderer::PostProcess::SetDrawRectangleParameters(BatchedParameters, this, View);
+		FMaterialShader::SetViewParameters(BatchedParameters, View, View.ViewUniformBuffer);
 	}
 };
 
@@ -106,12 +123,11 @@ public:
 		: FPostProcessMaterialShader(Initializer)
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, const FMaterialRenderProxy* MaterialProxy)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, const FMaterialRenderProxy* MaterialProxy)
 	{
-		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 		const FMaterial& Material = MaterialProxy->GetMaterialWithFallback(View.GetFeatureLevel(), MaterialProxy);
-		FMaterialShader::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
-		FMaterialShader::SetParameters(RHICmdList, ShaderRHI, MaterialProxy, Material, View);
+		FMaterialShader::SetViewParameters(BatchedParameters, View, View.ViewUniformBuffer);
+		FMaterialShader::SetParameters(BatchedParameters, MaterialProxy, Material, View);
 	}
 };
 
@@ -171,6 +187,8 @@ void FARCameraSceneViewExtension::BeginRenderViewFamily(FSceneViewFamily& InView
 
 void FARCameraSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView)
 {
+	FRHICommandListBase& RHICmdList = GraphBuilder.RHICmdList;
+
 	if (VertexBufferRHI == nullptr || !VertexBufferRHI.IsValid())
 	{
 		// Setup vertex buffer
@@ -190,7 +208,7 @@ void FARCameraSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphB
 		Vertices[3].UV = FVector2f(1.f, 1.f);
 
 		FRHIResourceCreateInfo CreateInfoVB(TEXT("FARCameraSceneViewExtension"), &Vertices);
-		VertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfoVB);
+		VertexBufferRHI = RHICmdList.CreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfoVB);
 	}
 
 	if (IndexBufferRHI == nullptr || !IndexBufferRHI.IsValid())
@@ -204,7 +222,7 @@ void FARCameraSceneViewExtension::PreRenderView_RenderThread(FRDGBuilder& GraphB
 		FMemory::Memcpy(IndexBuffer.GetData(), Indices, NumIndices * sizeof(uint16));
 
 		FRHIResourceCreateInfo CreateInfoIB(TEXT("FARCameraSceneViewExtension"), &IndexBuffer);
-		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfoIB);
+		IndexBufferRHI = RHICmdList.CreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfoIB);
 	}
 
 	PPMaterial = Channel.GetPostProcessMaterial();
@@ -252,7 +270,7 @@ void FARCameraSceneViewExtension::RenderARCamera_RenderThread(FRDGBuilder& Graph
 	auto* PassParameters = GraphBuilder.AllocParameters<FRenderARCameraPassParameters>();
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(ViewFamilyTexture, ERenderTargetLoadAction::ELoad);
 	check(InView.bIsViewInfo);
-	PassParameters->SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, ((const FViewInfo&)InView).GetSceneTexturesChecked(), InView.FeatureLevel, ESceneTextureSetupMode::None);
+	PassParameters->SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, InView, ESceneTextureSetupMode::None);
 
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("ARCameraOverlay"),
@@ -282,17 +300,8 @@ void FARCameraSceneViewExtension::RenderARCamera_RenderThread(FRDGBuilder& Graph
 
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-		const FIntPoint ViewSize = InView.UnconstrainedViewRect.Size();
-		FDrawRectangleParameters Parameters;
-		Parameters.PosScaleBias = FVector4f(ViewSize.X, ViewSize.Y, 0, 0);
-		Parameters.UVScaleBias = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
-		Parameters.InvTargetSizeAndTextureSize = FVector4f(
-			1.0f / ViewSize.X, 1.0f / ViewSize.Y,
-			1.0f, 1.0f);
-
-		SetUniformBufferParameterImmediate(RHICmdList, VertexShader.GetVertexShader(), VertexShader->GetUniformBufferParameter<FDrawRectangleParameters>(), Parameters);
-		VertexShader->SetParameters(RHICmdList, InView);
-		PixelShader->SetParameters(RHICmdList, InView, MaterialProxy);
+		SetShaderParametersLegacyVS(RHICmdList, VertexShader, InView);
+		SetShaderParametersLegacyPS(RHICmdList, PixelShader, InView, MaterialProxy);
 
 		RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 		RHICmdList.DrawIndexedPrimitive(

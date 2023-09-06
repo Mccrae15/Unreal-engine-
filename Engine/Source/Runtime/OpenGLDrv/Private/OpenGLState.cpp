@@ -7,6 +7,7 @@
 #include "CoreMinimal.h"
 #include "Serialization/MemoryWriter.h"
 #include "RHI.h"
+#include "RHIUtilities.h"
 #include "OpenGLDrv.h"
 
 GLint GMaxOpenGLTextureFilterAnisotropic = 1;
@@ -222,7 +223,6 @@ static EBlendFactor TranslateBlendFactor(GLenum BlendFactor)
 
 FOpenGLSamplerState::~FOpenGLSamplerState()
 {
-	CreationFence.WaitFenceRenderThreadOnly();
 	VERIFY_GL_SCOPE();
 	FOpenGL::DeleteSamplers(1,&Resource);
 }
@@ -297,10 +297,10 @@ FSamplerStateRHIRef FOpenGLDynamicRHI::RHICreateSamplerState(const FSamplerState
 		SamplerState->Data.MinFilter = GL_LINEAR_MIPMAP_NEAREST;
 	}
 
-	SamplerState->CreationFence.Reset();
 	SamplerState->Resource = 0;
 
-	auto CreateGLSamplerState = [SamplerState]()
+	check(IsInRenderingThread());
+	FRHICommandListExecutor::GetImmediateCommandList().EnqueueLambda([SamplerState](FRHICommandListImmediate&)
 	{
 		VERIFY_GL_SCOPE();
 		FOpenGL::GenSamplers( 1, &SamplerState->Resource);
@@ -328,11 +328,7 @@ FSamplerStateRHIRef FOpenGLDynamicRHI::RHICreateSamplerState(const FSamplerState
 			FOpenGL::SetSamplerParameter(SamplerState->Resource, GL_TEXTURE_COMPARE_MODE, SamplerState->Data.CompareMode);
 			FOpenGL::SetSamplerParameter(SamplerState->Resource, GL_TEXTURE_COMPARE_FUNC, SamplerState->Data.CompareFunc);
 		}
-		SamplerState->CreationFence.WriteAssertFence();
-	};
-
-	RunOnGLRenderContextThread(MoveTemp(CreateGLSamplerState));
-	SamplerState->CreationFence.SetRHIThreadFence();
+	});
 	
 	// Manually add reference as we control the creation/destructions
 	SamplerState->AddRef();
@@ -405,44 +401,10 @@ bool FOpenGLDepthStencilState::GetInitializer(FDepthStencilStateInitializerRHI& 
 	return true;
 }
 
-bool FOpenGLBlendState::GetInitializer(FBlendStateInitializerRHI& Init)
-{
-	Init.bUseIndependentRenderTargetBlendStates = true;
-	Init.bUseAlphaToCoverage = Data.bUseAlphaToCoverage;
-	for(uint32 RenderTargetIndex = 0;RenderTargetIndex < MaxSimultaneousRenderTargets;++RenderTargetIndex)
-	{
-		FOpenGLBlendStateData::FRenderTarget const& RenderTarget = Data.RenderTargets[RenderTargetIndex];
-		FBlendStateInitializerRHI::FRenderTarget& RenderTargetInitializer = Init.RenderTargets[RenderTargetIndex];
-		
-		RenderTargetInitializer.ColorBlendOp = TranslateBlendOp(RenderTarget.ColorBlendOperation);
-		RenderTargetInitializer.ColorSrcBlend = TranslateBlendFactor(RenderTarget.ColorSourceBlendFactor);
-		RenderTargetInitializer.ColorDestBlend = TranslateBlendFactor(RenderTarget.ColorDestBlendFactor);
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.ColorBlendOp == Init.RenderTargets[0].ColorBlendOp);
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.ColorSrcBlend == Init.RenderTargets[0].ColorSrcBlend);
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.ColorDestBlend == Init.RenderTargets[0].ColorDestBlend);
-		
-		RenderTargetInitializer.AlphaBlendOp = TranslateBlendOp(RenderTarget.AlphaBlendOperation);
-		RenderTargetInitializer.AlphaSrcBlend = TranslateBlendFactor(RenderTarget.AlphaSourceBlendFactor);
-		RenderTargetInitializer.AlphaDestBlend = TranslateBlendFactor(RenderTarget.AlphaDestBlendFactor);
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.AlphaBlendOp == Init.RenderTargets[0].AlphaBlendOp);
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.AlphaSrcBlend == Init.RenderTargets[0].AlphaSrcBlend);
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.AlphaDestBlend == Init.RenderTargets[0].AlphaDestBlend);
-		
-		uint32 Mask = CW_NONE;
-		Mask |= (RenderTarget.ColorWriteMaskR) ? CW_RED : 0;
-		Mask |= (RenderTarget.ColorWriteMaskG) ? CW_GREEN : 0;
-		Mask |= (RenderTarget.ColorWriteMaskB) ? CW_BLUE : 0;
-		Mask |= (RenderTarget.ColorWriteMaskA) ? CW_ALPHA : 0;
-		RenderTargetInitializer.ColorWriteMask = (EColorWriteMask)Mask;
-		
-		Init.bUseIndependentRenderTargetBlendStates &= (RenderTargetInitializer.ColorWriteMask == Init.RenderTargets[0].ColorWriteMask);
-	}
-	return true;
-}
-
 FBlendStateRHIRef FOpenGLDynamicRHI::RHICreateBlendState(const FBlendStateInitializerRHI& Initializer)
 {
-	FOpenGLBlendState* BlendState = new FOpenGLBlendState;
+	FOpenGLBlendState* BlendState = new FOpenGLBlendState(Initializer);
+
 	BlendState->Data.bUseAlphaToCoverage = Initializer.bUseAlphaToCoverage;
 	for(uint32 RenderTargetIndex = 0;RenderTargetIndex < MaxSimultaneousRenderTargets;++RenderTargetIndex)
 	{

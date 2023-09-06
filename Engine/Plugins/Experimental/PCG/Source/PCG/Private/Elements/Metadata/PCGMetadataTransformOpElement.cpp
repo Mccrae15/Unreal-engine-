@@ -2,6 +2,7 @@
 
 #include "Elements/Metadata/PCGMetadataTransformOpElement.h"
 
+#include "Elements/Metadata/PCGMetadataElementCommon.h"
 #include "Elements/Metadata/PCGMetadataRotatorOpElement.h"
 
 #include "Math/DualQuat.h"
@@ -141,7 +142,7 @@ bool UPCGMetadataTransformSettings::IsSupportedInputType(uint16 TypeId, uint32 I
 	}
 }
 
-FPCGAttributePropertySelector UPCGMetadataTransformSettings::GetInputSource(uint32 Index) const
+FPCGAttributePropertyInputSelector UPCGMetadataTransformSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
@@ -152,13 +153,13 @@ FPCGAttributePropertySelector UPCGMetadataTransformSettings::GetInputSource(uint
 	case 2:
 		return InputSource3;
 	default:
-		return FPCGAttributePropertySelector();
+		return FPCGAttributePropertyInputSelector();
 	}
 }
 
 FName UPCGMetadataTransformSettings::AdditionalTaskName() const
 {
-	if (const UEnum* EnumPtr = FindObject<UEnum>(nullptr, TEXT("/Script/PCG.EPCGMedadataTransformOperation"), true))
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataTransformOperation>())
 	{
 		return FName(FString("Transform: ") + EnumPtr->GetNameStringByValue(static_cast<int>(Operation)));
 	}
@@ -178,7 +179,23 @@ FText UPCGMetadataTransformSettings::GetDefaultNodeTitle() const
 {
 	return NSLOCTEXT("PCGMetadataTransformSettings", "NodeTitle", "Attribute Transform Op");
 }
+
+TArray<FPCGPreConfiguredSettingsInfo> UPCGMetadataTransformSettings::GetPreconfiguredInfo() const
+{
+	return PCGMetadataElementCommon::FillPreconfiguredSettingsInfoFromEnum<EPCGMedadataTransformOperation>();
+}
 #endif // WITH_EDITOR
+
+void UPCGMetadataTransformSettings::ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfiguredInfo)
+{
+	if (const UEnum* EnumPtr = StaticEnum<EPCGMedadataTransformOperation>())
+	{
+		if (EnumPtr->IsValidEnumValue(PreconfiguredInfo.PreconfiguredIndex))
+		{
+			Operation = EPCGMedadataTransformOperation(PreconfiguredInfo.PreconfiguredIndex);
+		}
+	}
+}
 
 FPCGElementPtr UPCGMetadataTransformSettings::CreateElement() const
 {

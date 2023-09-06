@@ -50,6 +50,21 @@ enum class EGroomOverrideType : uint8
 	Disable UMETA(DisplayName = "Disable", ToolTip = "Override the asset value, and force disabled")
 };
 
+UENUM(BlueprintType)
+enum class EGroomGuideType : uint8
+{
+	Imported	UMETA(DisplayName = "Imported Guides", ToolTip = "Use imported asset guides."),
+	Generated	UMETA(DisplayName = "Generated Guides", ToolTip = "Generate guides from imported strands"),
+	Rigged 		UMETA(DisplayName = "Rigged  Guides", ToolTip = "Generated rigged guides from imported strands")
+};
+
+UENUM(BlueprintType)
+enum class EGroomLODType : uint8
+{
+	Manual 		UMETA(DisplayName = "Manual", ToolTip = "Hair strands curves & points adapt based on LOD settings"),
+	Auto		UMETA(DisplayName = "Auto (Experimental)", ToolTip = "Hair strands curves & points automatically adapt based on screen coverage. LOD settings are ignored.")
+};
+
 USTRUCT(BlueprintType)
 struct HAIRSTRANDSCORE_API FHairLODSettings
 {
@@ -121,12 +136,24 @@ struct HAIRSTRANDSCORE_API FHairInterpolationSettings
 	FHairInterpolationSettings();
 
 	/** Flag to override the imported guides with generated guides. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (ToolTip = "If checked, override imported guides with generated ones."))
-	bool bOverrideGuides;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (ToolTip = "Type of guides:\n - Imported: use imported guides\n - Generated: generate guides from strands\n - Rigged: generated rigged guides from strands."))
+	EGroomGuideType GuideType;
+
+	/** Flag to override the imported guides with generated guides. DEPRECATED */
+	UPROPERTY()
+	bool bOverrideGuides_DEPRECATED;
 
 	/** Density factor for converting hair into guide curve if no guides are provided. The value should be between 0 and 1, and can be thought as a ratio/percentage of strands used as guides.*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (ClampMin = "0", ClampMax = "1.0", UIMin = "0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (DisplayName = "Generated guide density", ClampMin = "0", ClampMax = "1.0", UIMin = "0", UIMax = "1.0", EditCondition="GuideType == EGroomGuideType::Generated"))
 	float HairToGuideDensity;
+
+	/** Number of curves to generate in the skel mesh */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "InterpolationSettings", meta = (DisplayName = "Rigged guide num. curves", ToolTip = "Number of guides that will be generated on the groom and the skeletal mesh", EditCondition="GuideType == EGroomGuideType::Rigged"))
+	int32 RiggedGuideNumCurves;
+
+	/** Number of points per curve */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "InterpolationSettings", meta = (DisplayName = "Rigged guide num. points", ToolTip = "Number of points/bones per generated guide", EditCondition="GuideType == EGroomGuideType::Rigged"))
+	int32 RiggedGuideNumPoints;
 
 	/** Interpolation data quality. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings")
@@ -153,21 +180,15 @@ struct HAIRSTRANDSCORE_API FHairDeformationSettings
 	GENERATED_USTRUCT_BODY()
 
 	FHairDeformationSettings();
-	
-	UPROPERTY(VisibleAnywhere, Category = "SkeletonGeneration")
-	bool bCanEditRigging;
 
-	/** Enable the generation of a skeletal mesh that will drive the guides deformation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SkeletonGeneration", meta = (ToolTip = "Enable the generation of a skeletal mesh that will drive the guides deformation. The total number of bones per group is for now 256 (NumCurves * NumPoints)", EditCondition = "bCanEditRigging"))
-	bool bEnableRigging;
+	UPROPERTY()
+	bool bEnableRigging_DEPRECATED;
 
-	/** Number of curves to generate in the skel mesh */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SkeletonGeneration", meta = (ToolTip = "Number of guides that will be generated on the groom and the skeletal mesh", EditCondition = "bCanEditRigging"))
-	int32 NumCurves;
+	UPROPERTY()
+	int32 NumCurves_DEPRECATED;
 
-	/** Number of points per curve */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SkeletonGeneration", meta = (ToolTip = "Number of points/bones per generated guide", EditCondition = "bCanEditRigging"))
-	int32 NumPoints;
+	UPROPERTY()
+	int32 NumPoints_DEPRECATED;
 
 	bool operator==(const FHairDeformationSettings& A) const;
 };
@@ -185,7 +206,8 @@ struct HAIRSTRANDSCORE_API FHairGroupsInterpolation
 	UPROPERTY(EditAnywhere, Category = "InterpolationSettings", meta = (ToolTip = "Interpolation settings"))
 	FHairInterpolationSettings InterpolationSettings;
 
-	UPROPERTY(EditAnywhere, Category = "SkeletonGeneration", meta = (DisplayName = "Skeleton Generation", ToolTip = "Skeleton Generation"))
+	// DEPRECATED
+	UPROPERTY()
 	FHairDeformationSettings RiggingSettings;
 
 	bool operator==(const FHairGroupsInterpolation& A) const;
@@ -198,19 +220,12 @@ struct HAIRSTRANDSCORE_API FHairGroupsLOD
 {
 	GENERATED_USTRUCT_BODY()
 
-	FHairGroupsLOD();
+	UPROPERTY(EditAnywhere, Category = "InterpolationSettings", meta = (ToolTip = "Define how LOD adapts curves & points for a given group."))
+	EGroomLODType LODType = EGroomLODType::Manual;
 
 	/** LODs  */
 	UPROPERTY(EditAnywhere, Category = "DecimationSettings", meta = (ToolTip = "Reduce the number of hair strands in a uniform manner", ClampMin = "0", UIMin = "0", UIMax = "1.0"))
 	TArray<FHairLODSettings> LODs;
-
-	/** Size of the hair clusters used for LOD decimation */
-	UPROPERTY(EditAnywhere, Category = "DecimationSettings", meta = (ToolTip = "If enable this LOD version will use cards representation"))
-	float ClusterWorldSize;
-
-	/** Size in pixel of a hair cluster when fully visible (screensize is equal to 1) */
-	UPROPERTY(EditAnywhere, Category = "DecimationSettings", meta = (ToolTip = "If enable this LOD version will use cards representation"))
-	float ClusterScreenSizeScale;
 
 	bool operator==(const FHairGroupsLOD& A) const;
 

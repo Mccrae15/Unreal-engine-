@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderTargetPool.h"
-#include "RHIStaticStates.h"
-#include "Misc/OutputDeviceRedirector.h"
 #include "Hash/CityHash.h"
+#include "Misc/CoreMisc.h"
 #include "Trace/Trace.inl"
 #include "ProfilingDebugging/CountersTrace.h"
+#include "RHI.h"
 #include "RenderCore.h"
+#include "RHICommandList.h"
 
 /** The global render targets pool. */
 TGlobalResource<FRenderTargetPool> GRenderTargetPool;
@@ -75,6 +76,10 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElement(FRHITexture
 	// We always want SRV access
 	Desc.Flags |= TexCreate_ShaderResource;
 
+	// Render target pool always forces textures into non streaming memory.
+	// UE-TODO: UE-188415 fix flags that we force in Render Target Pool
+	//Desc.Flags |= ETextureCreateFlags::ForceIntoNonStreamingMemoryTracking;
+
 	const uint32 DescHash = GetTypeHash(Desc);
 
 	for (uint32 Index = 0, Num = (uint32)PooledRenderTargets.Num(); Index < Num; ++Index)
@@ -108,8 +113,12 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElement(FRHITexture
 			<< FRenderTargetPool_CreateTexture.Name(Name);
 #endif
 
+		FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
 		const ERHIAccess AccessInitial = ERHIAccess::SRVMask;
 		FRHITextureCreateDesc CreateDesc(Desc, AccessInitial, Name);
+		const static FLazyName ClassName(TEXT("FPooledRenderTarget"));
+		CreateDesc.SetClassName(ClassName);
 
 		Found = new FPooledRenderTarget(
 			RHICreateTexture(CreateDesc),
@@ -130,12 +139,12 @@ TRefCountPtr<IPooledRenderTarget> FRenderTargetPool::FindFreeElement(FRHITexture
 					? Desc.UAVFormat
 					: Desc.Format;
 
-				Found->RenderTargetItem.UAV = RHICreateUnorderedAccessView(Found->GetRHI(), 0, (uint8)AliasFormat, 0, 0);
+				Found->RenderTargetItem.UAV = RHICmdList.CreateUnorderedAccessView(Found->GetRHI(), 0, (uint8)AliasFormat, 0, 0);
 			}
 			else
 			{
 				checkf(Desc.UAVFormat == PF_Unknown || Desc.UAVFormat == Desc.Format, TEXT("UAV aliasing is not supported by the current RHI."));
-				Found->RenderTargetItem.UAV = RHICreateUnorderedAccessView(Found->GetRHI(), 0);
+				Found->RenderTargetItem.UAV = RHICmdList.CreateUnorderedAccessView(Found->GetRHI(), 0);
 			}
 		}
 
@@ -499,7 +508,7 @@ void FRenderTargetPool::DumpMemoryUsage(FOutputDevice& OutputDevice)
 	OutputDevice.Logf(TEXT("%.3fMB Deferred total"), DeferredTotal / 1024.f);
 }
 
-void FRenderTargetPool::ReleaseDynamicRHI()
+void FRenderTargetPool::ReleaseRHI()
 {
 	check(IsInRenderingThread());
 	DeferredDeleteArray.Empty();

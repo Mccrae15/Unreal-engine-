@@ -9,11 +9,13 @@
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
 #include "Materials/MaterialExpressionExecBegin.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialFunction.h"
 #include "MaterialHLSLTree.h"
 #include "Materials/Material.h"
 #include "MaterialCachedHLSLTree.h"
 #include "Misc/MemStackUtility.h"
+#include "ParameterCollection.h"
 
 FMaterialHLSLGenerator::FMaterialHLSLGenerator(UMaterial* Material,
 	const FMaterialLayersFunctions* InLayerOverrides,
@@ -26,6 +28,11 @@ FMaterialHLSLGenerator::FMaterialHLSLGenerator(UMaterial* Material,
 	, bGeneratedResult(false)
 {
 	FunctionCallStack.Add(&RootFunctionCallEntry);
+}
+
+const UMaterial* FMaterialHLSLGenerator::GetTargetMaterial() const
+{
+	return TargetMaterial;
 }
 
 UE::HLSLTree::FTree& FMaterialHLSLGenerator::GetTree() const
@@ -378,7 +385,7 @@ int32 FMaterialHLSLGenerator::FindInputIndex(const FExpressionInput* Input) cons
 	int32 Index = INDEX_NONE;
 	if (OwnerMaterialExpression)
 	{
-		const TArray<FExpressionInput*> Inputs = OwnerMaterialExpression->GetInputs();
+		TArrayView<FExpressionInput*> Inputs = OwnerMaterialExpression->GetInputsView();
 		Index = Inputs.Find(const_cast<FExpressionInput*>(Input));
 	}
 	return Index;
@@ -424,8 +431,41 @@ const UE::HLSLTree::FExpression* FMaterialHLSLGenerator::AcquireExpression(UE::H
 	UObject* InputOwner = GetTree().GetCurrentOwner();
 	FOwnerScope OwnerScope(GetTree(), MaterialExpression, NeedToPushOwnerExpression());
 
-	const FExpression* Expression = nullptr;
-	if (MaterialExpression->GenerateHLSLExpression(*this, Scope, OutputIndex, Expression))
+	const FExpression* Expression;
+	{
+		FHasher Hasher;
+		const FScope* ScopeAddress = &Scope;
+		Hasher.AppendData(&ScopeAddress, sizeof(ScopeAddress));
+		Hasher.AppendData(&MaterialExpression, sizeof(MaterialExpression));
+		Hasher.AppendData(&OutputIndex, sizeof(OutputIndex));
+
+		// Make sure the callstack is the same because results can vary when the containing function
+		// is called at different places due to the difference in inputs
+		for (int32 Index = FunctionCallStack.Num() - 1; Index >= 0; --Index)
+		{
+			const FFunctionCallEntry* FunctionCall = FunctionCallStack[Index];
+			Hasher.AppendData(&FunctionCall->MaterialFunction, sizeof(FunctionCall->MaterialFunction)); //-V568
+			Hasher.AppendData(&FunctionCall->ParameterAssociation, sizeof(FunctionCall->ParameterAssociation));
+			Hasher.AppendData(&FunctionCall->ParameterIndex, sizeof(FunctionCall->ParameterIndex));
+
+			for (int32 FunctionInputIndex = 0; FunctionInputIndex < FunctionCall->ConnectedInputs.Num(); ++FunctionInputIndex)
+			{
+				const FExpression* InputExpression = FunctionCall->ConnectedInputs[FunctionInputIndex];
+				Hasher.AppendData(&InputExpression, sizeof(InputExpression));
+			}
+		}
+
+		const FXxHash64 KeyHash = Hasher.Finalize();
+		const FExpression** Found = GeneratedExpressionMap.Find(KeyHash);
+		Expression = Found ? *Found : nullptr;
+
+		if (!Expression && MaterialExpression->GenerateHLSLExpression(*this, Scope, OutputIndex, Expression))
+		{
+			GeneratedExpressionMap.Add(KeyHash, Expression);
+		}
+	}
+
+	if (Expression)
 	{
 		Expression = GetTree().NewSwizzle(Swizzle, Expression);
 		if (MaterialExpression == PreviewExpression &&
@@ -719,7 +759,7 @@ const UE::HLSLTree::FExpression* FMaterialHLSLGenerator::GenerateBranch(UE::HLSL
 		FXxHash64Builder Hasher;
 		Hasher.Update(&ConditionExpression, sizeof(FExpression*));
 		Hasher.Update(&TrueExpression, sizeof(FExpression*));
-		Hasher.Update(&FalseExpression, sizeof(FExpression));
+		Hasher.Update(&FalseExpression, sizeof(FExpression*));
 		Hash = Hasher.Finalize();
 	}
 
@@ -799,6 +839,54 @@ void* FMaterialHLSLGenerator::InternalFindExpressionData(const FName& Type, cons
 	const FExpressionDataKey Key(Type, MaterialExpression);
 	void** Result = ExpressionDataMap.Find(Key);
 	return Result ? *Result : nullptr;
+}
+
+int32 FMaterialHLSLGenerator::FindOrAddCustomExpressionOutputStructId(TArrayView<UE::Shader::FStructFieldInitializer> StructFields)
+{
+	FXxHash64Builder Hasher;
+	for (const UE::Shader::FStructFieldInitializer& StructField : StructFields)
+	{
+		Hasher.Update(StructField.Name.GetData(), StructField.Name.Len() * sizeof(TCHAR));
+		const UE::Shader::FType& FieldType = StructField.Type;
+		if (FieldType.IsStruct())
+		{
+			Hasher.Update(&FieldType.StructType->Hash, sizeof(FieldType.StructType->Hash));
+		}
+		else
+		{
+			Hasher.Update(&FieldType.ValueType, sizeof(FieldType.ValueType));
+		}
+	}
+	const FXxHash64 KeyHash = Hasher.Finalize();
+	int32* Found = CustomExpressionOutputStructIdMap.Find(KeyHash);
+	if (Found)
+	{
+		return *Found;
+	}
+	else
+	{
+		const int32 NewId = CustomExpressionOutputStructIdMap.Num();
+		CustomExpressionOutputStructIdMap.Add(KeyHash, NewId);
+		return NewId;
+	}
+}
+
+int32 FMaterialHLSLGenerator::FindOrAddParameterCollection(UMaterialParameterCollection* ParameterCollection)
+{
+	int32 CollectionIndex = CachedTree.ParameterCollections.Find(ParameterCollection);
+
+	if (CollectionIndex == INDEX_NONE)
+	{
+		if (CachedTree.ParameterCollections.Num() >= MaxNumParameterCollectionsPerMaterial)
+		{
+			return Error(TEXT("Material references too many MaterialParameterCollections!  A material may only reference 2 different collections."));
+		}
+
+		CachedTree.ParameterCollections.Add(ParameterCollection);
+		CollectionIndex = CachedTree.ParameterCollections.Num() - 1;
+	}
+
+	return CollectionIndex;
 }
 
 #endif // WITH_EDITOR

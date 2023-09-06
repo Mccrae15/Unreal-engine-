@@ -57,6 +57,7 @@ namespace AnimationEditorTabs
 	extern const FName CurveNamesTab;
 	extern const FName SlotNamesTab;
 	extern const FName AnimMontageSectionsTab;
+	extern const FName FindReplaceTab;
 }
 
 class FAnimationEditor : public IAnimationEditor, public FGCObject, public FTickableEditorObject
@@ -185,7 +186,7 @@ public:
 
 private:
 	/** The animation asset we are editing */
-	UAnimationAsset* AnimationAsset;
+	TObjectPtr<UAnimationAsset> AnimationAsset;
 
 	/** Toolbar extender */
 	TSharedPtr<FExtender> ToolbarExtender;

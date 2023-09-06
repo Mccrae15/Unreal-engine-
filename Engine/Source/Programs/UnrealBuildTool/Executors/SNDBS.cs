@@ -11,12 +11,13 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
-using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
+using UnrealBuildTool.Artifacts;
 
 namespace UnrealBuildTool
 {
@@ -29,7 +30,7 @@ namespace UnrealBuildTool
 
 		private static string FindDbsExe(string ExeName)
 		{
-			string InstallPath = Path.Combine(ProgramFilesx86 ?? string.Empty, "SCE", "Common", "SN-DBS", "bin", ExeName);
+			string InstallPath = Path.Combine(ProgramFilesx86 ?? String.Empty, "SCE", "Common", "SN-DBS", "bin", ExeName);
 			if (File.Exists(InstallPath))
 			{
 				return InstallPath;
@@ -37,7 +38,7 @@ namespace UnrealBuildTool
 			else
 			{
 				// Legacy install location using SCE_ROOT_DIR
-				return Path.Combine(SCERoot ?? string.Empty, "Common", "SN-DBS", "bin", ExeName);
+				return Path.Combine(SCERoot ?? String.Empty, "Common", "SN-DBS", "bin", ExeName);
 			}
 		}
 
@@ -72,7 +73,8 @@ namespace UnrealBuildTool
 
 		private List<TargetDescriptor> TargetDescriptors;
 
-		public SNDBS(List<TargetDescriptor> InTargetDescriptors)
+		public SNDBS(List<TargetDescriptor> InTargetDescriptors, ILogger Logger)
+			: base(Logger)
 		{
 			TargetDescriptors = InTargetDescriptors;
 		}
@@ -89,7 +91,7 @@ namespace UnrealBuildTool
 			{
 				string BrokerHostName = "";
 				Regex FindHost = new Regex(@"Active broker is ""(\S +)"" \((\S+)\)");
-				var LocalProcess = new Process();
+				Process LocalProcess = new Process();
 				LocalProcess.StartInfo = new ProcessStartInfo(SNDBSUtilExe, $"-connected");
 				LocalProcess.OutputDataReceived += (Sender, Args) =>
 				{
@@ -213,7 +215,13 @@ namespace UnrealBuildTool
 			return true;
 		}
 
-		public override bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
+		/// <inheritdoc/>
+		public override Task<bool> ExecuteActionsAsync(IEnumerable<LinkedAction> ActionsToExecute, ILogger Logger, IActionArtifactCache? actionArtifactCache)
+		{
+			return Task.FromResult(ExecuteActions(ActionsToExecute, Logger));
+		}
+
+		bool ExecuteActions(IEnumerable<LinkedAction> Actions, ILogger Logger)
 		{
 			if (!Actions.Any())
 			{
@@ -232,16 +240,18 @@ namespace UnrealBuildTool
 				throw new BuildException($"Failed to create directory \"{IntermediateDir}\".");
 			}
 
+			int IdCounter = 0;
 			// Build the json script file to describe all the actions and their dependencies
-			var ActionIds = Actions.ToDictionary(a => a, a => Guid.NewGuid().ToString());
+			Dictionary<LinkedAction, string> ActionIds = Actions.ToDictionary(a => a, a => new Guid(++IdCounter, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0).ToString());
 			JsonSerializerOptions JsonOption = new JsonSerializerOptions();
 			JsonOption.Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
 			File.WriteAllText(ScriptFile.FullName, JsonSerializer.Serialize(new Dictionary<string, object>()
 			{
-				["jobs"] = Actions.ToDictionary(a => ActionIds[a], a =>
+				["jobs"] = Actions.Select(a =>
 				{
-					var Job = new Dictionary<string, object>()
+					Dictionary<string, object> Job = new Dictionary<string, object>()
 					{
+						["id"] = ActionIds[a],
 						["title"] = a.StatusDescription,
 						["command"] = $"\"{a.CommandPath}\" {a.CommandArguments}",
 						["working_directory"] = a.WorkingDirectory.FullName,
@@ -249,28 +259,28 @@ namespace UnrealBuildTool
 						["run_locally"] = !(a.bCanExecuteRemotely && a.bCanExecuteRemotelyWithSNDBS)
 					};
 
-					if (a.PrerequisiteItems.Count() > 0)
+					if (a.PrerequisiteItems.Any())
 					{
-						Job["explicit_input_files"] = a.PrerequisiteItems.Where(i => !i.AbsolutePath.EndsWith(".response")).Select(i => new Dictionary<string, object>()
+						Job["explicit_input_files"] = a.PrerequisiteItems.Where(i => !(i.AbsolutePath.EndsWith(".rsp") || i.AbsolutePath.EndsWith(".response"))).Select(i => new Dictionary<string, object>()
 						{
 							["filename"] = i.AbsolutePath
 						}).ToList();
 					}
 
-					string CommandDescription = string.IsNullOrWhiteSpace(a.CommandDescription) ? a.ActionType.ToString() : a.CommandDescription;
+					string CommandDescription = String.IsNullOrWhiteSpace(a.CommandDescription) ? a.ActionType.ToString() : a.CommandDescription;
 					Job["echo"] = $"{ProgressMarkupPrefix}{CommandDescription}:{a.StatusDescription}";
 
 					return Job;
-				})
+				}).ToArray()
 			}, JsonOption));
 
 			PrepareToolTemplates();
 			bool bHasRewrites = GenerateSNDBSIncludeRewriteRules();
 
-			var ConfigList = TargetDescriptors.Select(Descriptor => $"{Descriptor.Name}|{Descriptor.Platform}|{Descriptor.Configuration}");
-			var ConfigDescription = string.Join(",", ConfigList);
+			IEnumerable<string> ConfigList = TargetDescriptors.Select(Descriptor => $"{Descriptor.Name}|{Descriptor.Platform}|{Descriptor.Configuration}");
+			string ConfigDescription = String.Join(",", ConfigList);
 
-			var StartInfo = new ProcessStartInfo(
+			ProcessStartInfo StartInfo = new ProcessStartInfo(
 				SNDBSBuildExe,
 				$"-q -p \"{ConfigDescription}\" -s \"{ScriptFile}\" -templates \"{IntermediateDir}\""
 				);
@@ -307,7 +317,7 @@ namespace UnrealBuildTool
 							Writer.Write(++NumCompletedActions, NumActions);
 
 							Text = Args.Data.Substring(ProgressMarkupPrefix.Length).Trim();
-							var ActionInfo = Text.Split(':');
+							string[] ActionInfo = Text.Split(':');
 							Logger.LogInformation("[{NumCompletedActions}/{NumActions}] {ActionInfo0} {ActionInfo1}", NumCompletedActions, NumActions, ActionInfo[0], ActionInfo[1]);
 							CurrentStatus = ActionInfo[1];
 							return;
@@ -315,7 +325,7 @@ namespace UnrealBuildTool
 						// Suppress redundant tool output of status we already printed (e.g., msvc cl prints compile unit name always)
 						if (!Text.Equals(CurrentStatus))
 						{
-							Log.TraceInformation("{0}", Text); // Need to send this through registered event parser; using old logger
+							WriteToolOutput(Text);
 						}
 					}
 				};
@@ -359,10 +369,10 @@ namespace UnrealBuildTool
 
 		private void PrepareToolTemplates()
 		{
-			foreach (var Template in ActiveTemplates)
+			foreach (KeyValuePair<string, string> Template in ActiveTemplates)
 			{
-				var TemplateFile = FileReference.Combine(IntermediateDir, $"{Template.Key}.sn-dbs-tool.ini");
-				var TemplateText = Template.Value;
+				FileReference TemplateFile = FileReference.Combine(IntermediateDir, $"{Template.Key}.sn-dbs-tool.ini");
+				string TemplateText = Template.Value;
 
 				foreach (Nullable<DictionaryEntry> Variable in Environment.GetEnvironmentVariables(EnvironmentVariableTarget.Process))
 				{
@@ -379,7 +389,7 @@ namespace UnrealBuildTool
 		private bool GenerateSNDBSIncludeRewriteRules()
 		{
 			// Get all distinct platform names being used in this build.
-			var Platforms = TargetDescriptors
+			List<string> Platforms = TargetDescriptors
 				.Select(TargetDescriptor => UEBuildPlatform.GetBuildPlatform(TargetDescriptor.Platform).GetPlatformName())
 				.Distinct()
 				.ToList();
@@ -387,22 +397,22 @@ namespace UnrealBuildTool
 			if (Platforms.Count > 0)
 			{
 				// language=regex
-				var Lines = new[]
+				string[] Lines = new[]
 				{
 					@"pattern1=^COMPILED_PLATFORM_HEADER\(\s*([^ ,]+)\s*\)",
-					$"expansions1={string.Join("|", Platforms.Select(Name => $"{Name}/{Name}$1|{Name}$1"))}",
+					$"expansions1={String.Join("|", Platforms.Select(Name => $"{Name}/{Name}$1|{Name}$1"))}",
 
 					@"pattern2=^COMPILED_PLATFORM_HEADER_WITH_PREFIX\(\s*([^ ,]+)\s*,\s*([^ ,]+)\s*\)",
-					$"expansions2={string.Join("|", Platforms.Select(Name => $"$1/{Name}/{Name}$2|$1/{Name}$2"))}",
+					$"expansions2={String.Join("|", Platforms.Select(Name => $"$1/{Name}/{Name}$2|$1/{Name}$2"))}",
 
 					@"pattern3=^[A-Z]{5}_PLATFORM_HEADER_NAME\(\s*([^ ,]+)\s*\)",
-					$"expansions3={string.Join("|", Platforms.Select(Name => $"{Name}/{Name}$1|{Name}$1"))}",
+					$"expansions3={String.Join("|", Platforms.Select(Name => $"{Name}/{Name}$1|{Name}$1"))}",
 
 					@"pattern4=^[A-Z]{5}_PLATFORM_HEADER_NAME_WITH_PREFIX\(\s*([^ ,]+)\s*,\s*([^ ,]+)\s*\)",
-					$"expansions4={string.Join("|", Platforms.Select(Name => $"$1/{Name}/{Name}$2|$1/{Name}$2"))}"
+					$"expansions4={String.Join("|", Platforms.Select(Name => $"$1/{Name}/{Name}$2|$1/{Name}$2"))}"
 				};
 
-				File.WriteAllText(IncludeRewriteRulesFile.FullName, string.Join(Environment.NewLine, new[] { "[computed-include-rules]" }.Concat(Lines)));
+				File.WriteAllText(IncludeRewriteRulesFile.FullName, String.Join(Environment.NewLine, new[] { "[computed-include-rules]" }.Concat(Lines)));
 				return true;
 			}
 			else

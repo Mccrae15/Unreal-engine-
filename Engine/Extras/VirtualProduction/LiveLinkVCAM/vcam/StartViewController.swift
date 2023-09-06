@@ -12,7 +12,6 @@ import Kronos
 import GameController
 
 class StartViewController : BaseViewController {
-
     @IBOutlet weak var headerView : HeaderView!
     @IBOutlet weak var versionLabel : UILabel!
 
@@ -36,6 +35,9 @@ class StartViewController : BaseViewController {
     private var observers = [NSKeyValueObservation]()
     
     private var gameController : GCController?
+    
+    var pickerData: [String] = [String]()
+    var selectedStreamer: String = "";
 
     var ipAddressIsDemoMode : Bool {
         self.ipAddress.text == "demo.mode"
@@ -60,8 +62,12 @@ class StartViewController : BaseViewController {
         NetUtility.triggerLocalNetworkPrivacyAlert()
         
         self.ipAddress.text = AppSettings.shared.lastConnectionAddress
+        self.ipAddress.inputAssistantItem.leadingBarButtonGroups.removeAll()
+        self.ipAddress.inputAssistantItem.trailingBarButtonGroups.removeAll()
         textFieldChanged(self.ipAddress)
         
+        self.rebuildRecentAddressesBarButtons()
+
         self.tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTap))
         self.tapGesture.cancelsTouchesInView = false
         self.tapGesture.delegate = self
@@ -165,6 +171,10 @@ class StartViewController : BaseViewController {
 
         if segue.identifier == "showVideoView" {
 
+            // connection was successful, we save the last address in our recents list
+            AppSettings.shared.addRecentConnectionAddress(AppSettings.shared.lastConnectionAddress)
+            self.rebuildRecentAddressesBarButtons()
+
             if let vc = segue.destination as? VideoViewController {
                 
                 // stop the timer locally which is sending LL identity xform
@@ -191,7 +201,7 @@ class StartViewController : BaseViewController {
         let connectButtonFrame = self.view.convert(connect.frame, from: connect.superview)
         
         if keyboardFrame.minY < connectButtonFrame.maxY {
-            self.entryViewYConstraint.constant = -(self.view.frame.height - keyboardFrame.size.height) / 2.0
+            self.entryViewYConstraint.constant = -(keyboardFrame.size.height - self.headerView.frame.height) / 2.0
         } else {
             self.entryViewYConstraint.constant = 0
         }
@@ -207,6 +217,55 @@ class StartViewController : BaseViewController {
 
             UIView.animate(withDuration: 0.2) {
                 self.view.layoutIfNeeded()
+            }
+        }
+    }
+    
+    func rebuildRecentAddressesBarButtons() {
+
+        var view : UIView?
+
+        if let addresses = AppSettings.shared.recentConnectionAddresses {
+            for address in addresses {
+                
+                if view == nil {
+                    view = UIView()
+                }
+
+                let item = UIButton(configuration: UIButton.Configuration.gray())
+                item.setTitle(address, for: .normal)
+                item.setTitleColor(UIColor.white, for: .normal)
+                item.addTarget(self, action: #selector(handleRecentAddressSelection), for: .touchUpInside)
+                
+                view!.addSubview(item)
+                item.layoutToSuperview(.centerY)
+                
+                if view!.subviews.count == 1 {
+                    item.layoutToSuperview(.left)
+                } else {
+                    item.layout(.left, to: .right, of: view!.subviews[view!.subviews.count - 2], offset: 20)
+                }
+            }
+
+        }
+        
+        if let v = view {
+            v.subviews.last?.layoutToSuperview(.right)
+            let inputView = UIInputView(frame: CGRect(x: 0, y: 0, width: 100, height: 50), inputViewStyle: .keyboard)
+            inputView.addSubview(v)
+            v.layoutToSuperview(.top, offset: 4)
+            v.layoutToSuperview(.centerX, .bottom)
+            
+            self.ipAddress.inputAccessoryView = inputView  // inputAssistantItem.leadingBarButtonGroups.append(group)
+        }
+        
+    }
+    
+    @objc func handleRecentAddressSelection(_ sender : Any?) {
+        if let btn = sender as? UIButton {
+            if let addr = btn.title(for: .normal) {
+                self.ipAddress.text = addr
+                self.ipAddress.resignFirstResponder()
             }
         }
     }
@@ -238,20 +297,28 @@ class StartViewController : BaseViewController {
             }
 
             do {
-                self.streamingConnection?.destination = self.ipAddress.text!
+                self.streamingConnection?.destination = self.ipAddress.text!.trimmed()
                 try self.streamingConnection?.connect()
                 
+            } catch StreamingConnectionError.runtimeError(let errorMessage) {
+                
+                showConnectionErrorAlert(errorMessage)
+
             } catch {
                 
-                hideConnectingAlertView() {
-
-                    let errorAlert = UIAlertController(title: Localized.titleError(), message: "Couldn't connect : \(error.localizedDescription)", preferredStyle: .alert)
-                    errorAlert.addAction(UIAlertAction(title: Localized.buttonOK(), style: .default, handler: { _ in
-                        self.hideConnectingView { }
-                    }))
-                    self.present(errorAlert, animated: true)
-                }
+                showConnectionErrorAlert("\(Localized.messageCouldntConnect()) : \(error.localizedDescription)")
             }
+        }
+    }
+    
+    func showConnectionErrorAlert(_ message : String) {
+        hideConnectingAlertView() {
+
+            let errorAlert = UIAlertController(title: Localized.titleError(), message: "\(Localized.messageCouldntConnect()) : \(message)", preferredStyle: .alert)
+            errorAlert.addAction(UIAlertAction(title: Localized.buttonOK(), style: .default, handler: { _ in
+                self.hideConnectingView { }
+            }))
+            self.present(errorAlert, animated: true)
         }
     }
     
@@ -283,7 +350,6 @@ class StartViewController : BaseViewController {
             Log.info("gameControllerDidDisconnectNotification \(gc.vendorName ?? "Unknown controller")")
         }
     }
-
 }
 
 extension StartViewController : UIGestureRecognizerDelegate {
@@ -306,3 +372,24 @@ extension StartViewController : UITextFieldDelegate {
     }
 }
 
+extension StartViewController : UIPickerViewDelegate, UIPickerViewDataSource {
+    func numberOfComponents(in pickerView: UIPickerView) -> Int {
+        // Number of columns
+        return 1;
+    }
+    
+    func pickerView(_ pickerView: UIPickerView, numberOfRowsInComponent component: Int) -> Int {
+        // Number of rows
+        return pickerData.count
+    }
+    
+    func pickerView(_ pickerView: UIPickerView, titleForRow row: Int, forComponent component: Int) -> String? {
+        return pickerData[row]
+    }
+    
+    func pickerView(_ pickerView: UIPickerView, didSelectRow row: Int, inComponent component: Int) {
+            // This method is triggered whenever the user makes a change to the picker selection.
+            // The parameter named row and component represents what was selected.
+        selectedStreamer = pickerData[row]
+    }
+}

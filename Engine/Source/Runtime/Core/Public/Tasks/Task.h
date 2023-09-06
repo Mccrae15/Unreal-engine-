@@ -14,14 +14,8 @@ namespace UE::Tasks
 	template<typename ResultType>
 	class TTask;
 
-	template<typename... TaskTypes>
-	class TPrerequisites;
-
 	template<typename TaskCollectionType>
-	void Wait(const TaskCollectionType& Tasks);
-
-	template<typename TaskCollectionType>
-	bool Wait(const TaskCollectionType& Tasks, FTimespan InTimeout);
+	bool Wait(const TaskCollectionType& Tasks, FTimespan InTimeout = FTimespan::MaxValue());
 
 	template<typename TaskCollectionType>
 	bool BusyWait(const TaskCollectionType& Tasks, FTimespan InTimeout = FTimespan::MaxValue());
@@ -39,20 +33,17 @@ namespace UE::Tasks
 			// friends to get access to `Pimpl`
 			friend FTaskBase;
 
-			template<typename... TaskTypes>
-			friend class UE::Tasks::TPrerequisites;
+			template<int32 Index, typename ArrayType, typename FirstTaskType, typename... OtherTasksTypes>
+			friend void PrerequisitesUnpacker(ArrayType& Array, FirstTaskType& FirstTask, OtherTasksTypes&... OtherTasks);
+
+			template<int32 Index, typename ArrayType, typename TaskType>
+			friend void PrerequisitesUnpacker(ArrayType& Array, TaskType& FirstTask);
 
 			template<typename TaskCollectionType>
-			friend bool TryRetractAndExecute(const TaskCollectionType& Tasks);
-
-			template<typename TaskCollectionType>
-			friend bool TryRetractAndExecute(const TaskCollectionType& Tasks, FTimespan Timeout);
+			friend bool TryRetractAndExecute(const TaskCollectionType& Tasks, FTimeout Timeout);
 
 			template<typename TaskCollectionType>
 			friend TArray<TaskTrace::FId> GetTraceIds(const TaskCollectionType& Tasks);
-
-			template<typename TaskCollectionType>
-			friend void UE::Tasks::Wait(const TaskCollectionType& Tasks);
 
 			template<typename TaskCollectionType>
 			friend bool UE::Tasks::Wait(const TaskCollectionType& Tasks, FTimespan InTimeout);
@@ -69,6 +60,8 @@ namespace UE::Tasks
 			{}
 
 		public:
+			using FTaskHandleId = void;
+
 			FTaskHandle() = default;
 
 			bool IsValid() const
@@ -82,47 +75,27 @@ namespace UE::Tasks
 				return !IsValid() || Pimpl->IsCompleted();
 			}
 
-			// waits for task's completion. Tries to retract the task and execute it in-place, if failed - blocks until the task 
-			// is completed by another thread. If timeout is zero, tries to retract the task and returns immedially after that.
-			// @return true if the task is completed
-			void Wait()
-			{
-				if (IsValid())
-				{
-					Pimpl->Wait();
-				}
-			}
-
 			// waits for task's completion with timeout. Tries to retract the task and execute it in-place, if failed - blocks until the task 
 			// is completed by another thread. If timeout is zero, tries to retract the task and returns immedially after that.
 			// @return true if the task is completed
-			bool Wait(FTimespan Timeout)
+			bool Wait(FTimespan Timeout = FTimespan::MaxValue()) const
 			{
-				return !IsValid() || Pimpl->Wait(Timeout);
-			}
-
-			// waits for task's completion while executing other tasks. Shouldn't be used inside a latency-sensitive task
-			void BusyWait()
-			{
-				if (IsValid())
-				{
-					Pimpl->BusyWait();
-				}
+				return !IsValid() || Pimpl->Wait(FTimeout{ Timeout });
 			}
 
 			// waits for task's completion for at least the specified amount of time, while executing other tasks.
 			// the call can return much later than the given timeout
 			// @return true if the task is completed
-			bool BusyWait(FTimespan Timeout)
+			bool BusyWait(FTimespan Timeout = FTimespan::MaxValue()) const
 			{
-				return !IsValid() || Pimpl->BusyWait(Timeout);
+				return !IsValid() || Pimpl->BusyWait(FTimeout{ Timeout });
 			}
 
 			// waits for task's completion or the given condition becomes true, while executing other tasks.
 			// the call can return much later than the given condition became true
 			// @return true if the task is completed
 			template<typename ConditionType>
-			bool BusyWait(ConditionType&& Condition)
+			bool BusyWait(ConditionType&& Condition) const
 			{
 				return !IsValid() || Pimpl->BusyWait(Forward<ConditionType>(Condition));
 			}
@@ -146,7 +119,7 @@ namespace UE::Tasks
 				FExecutableTask* Task = FExecutableTask::Create(DebugName, Forward<TaskBodyType>(TaskBody), Priority, ExtendedPriority);
 				// this must happen before launching, to support an ability to access the task itself from inside it
 				*Pimpl.GetInitReference() = Task;
-				Task->TryLaunch();
+				Task->TryLaunch(sizeof(*Task));
 			}
 
 			// launches a task for asynchronous execution, with prerequisites that must be completed before the task is scheduled
@@ -172,12 +145,22 @@ namespace UE::Tasks
 				Task->AddPrerequisites(Forward<PrerequisitesCollectionType>(Prerequisites));
 				// this must happen before launching, to support an ability to access the task itself from inside it
 				*Pimpl.GetInitReference() = Task;
-				Task->TryLaunch();
+				Task->TryLaunch(sizeof(*Task));
 			}
 
 			bool IsAwaitable() const
 			{
 				return IsValid() && Pimpl->IsAwaitable();
+			}
+
+			bool operator==(const FTaskHandle& Other) const
+			{
+				return Pimpl == Other.Pimpl;
+			}
+
+			bool operator!=(const FTaskHandle& Other) const
+			{
+				return Pimpl != Other.Pimpl;
 			}
 
 		protected:
@@ -198,7 +181,7 @@ namespace UE::Tasks
 		{
 			check(IsValid());
 			FTaskHandle::Wait();
-			return ((Private::TTaskWithResult<ResultType>*)Pimpl.GetReference())->GetResult();
+			return static_cast<Private::TTaskWithResult<ResultType>*>(Pimpl.GetReference())->GetResult();
 		}
 
 	private:
@@ -255,7 +238,7 @@ namespace UE::Tasks
 				// An event is not "in the system" until it's triggered, and should be kept alive only by external references. Once it's triggered it's in the system 
 				// and can outlive external references, so we need to keep it alive by holding an internal reference. It will be released when the event is signalled
 				Pimpl->AddRef();
-				Pimpl->TryLaunch();
+				Pimpl->TryLaunch(sizeof(*Pimpl));
 			}
 		}
 	};
@@ -325,66 +308,23 @@ namespace UE::Tasks
 		}
 	}
 
-	// wait for multiple tasks
-	// @param TaskCollectionType - an iterable collection of `TTask<T>`, e.g. `TArray<FTask>`
-	template<typename TaskCollectionType>
-	void Wait(const TaskCollectionType& Tasks)
+	inline void Wait(Private::FTaskHandle& Task)
 	{
-		TaskTrace::FWaitingScope WaitingScope(Private::GetTraceIds(Tasks));
-		TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::Wait);
-
-		if (Private::TryRetractAndExecute(Tasks))
-		{
-			return;
-		}
-
-		Private::FTaskBase* CurrentTask = Private::GetCurrentTask();
-		for (const auto& Task : Tasks)
-		{
-			if (Task.Pimpl == CurrentTask)
-			{
-				UE_LOG(LogTemp, Fatal, TEXT("A task waiting for itself detected"));
-				return;
-			}
-		}
-
-		FEventRef CompletionEvent;
-		auto WaitingTaskBody = [&CompletionEvent] { CompletionEvent->Trigger(); };
-		using FWaitingTask = Private::TExecutableTask<decltype(WaitingTaskBody)>;
-
-		FWaitingTask WaitingTask{ TEXT("Waiting Task"), MoveTemp(WaitingTaskBody), ETaskPriority::Default /* doesn't matter */,  EExtendedTaskPriority::Inline };
-		WaitingTask.AddPrerequisites(Tasks);
-
-		if (WaitingTask.TryLaunch())
-		{	// was executed inline
-			check(WaitingTask.IsCompleted());
-		}
-		else
-		{ 
-			CompletionEvent->Wait();
-		}
-
-		// `WaitingTask` is allocated on the stack. we need to wait until its RefCount reaches zero before leaving the function to avoid "use after destruction"
-		while (WaitingTask.GetRefCount(std::memory_order_acquire) != 1)
-		{
-			FPlatformProcess::Yield();
-		}
+		Task.Wait();
 	}
 
 	// wait for multiple tasks, with timeout
 	// @param TaskCollectionType - an iterable collection of `TTask<T>`, e.g. `TArray<FTask>`
 	template<typename TaskCollectionType>
-	bool Wait(const TaskCollectionType& Tasks, FTimespan InTimeout)
+	bool Wait(const TaskCollectionType& Tasks, FTimespan InTimeout/* = FTimespan::MaxValue()*/)
 	{
 		TaskTrace::FWaitingScope WaitingScope(Private::GetTraceIds(Tasks));
 		TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::Wait);
 
 		FTimeout Timeout{ InTimeout };
 
-		if (Private::TryRetractAndExecute(Tasks, InTimeout))
-		{
-			return true;
-		}
+		// ignore the result as we still have to make sure the task is completed upon returning from this function call
+		Private::TryRetractAndExecute(Tasks, Timeout);
 
 		// the event must be alive for the task and this function lifetime, we don't know which one will be finished first as waiting can time out
 		// before the waiting task is completed
@@ -395,32 +335,30 @@ namespace UE::Tasks
 		TRefCountPtr<FWaitingTask> WaitingTask{ FWaitingTask::Create(TEXT("Waiting Task"), MoveTemp(WaitingTaskBody), ETaskPriority::Default /* doesn't matter */, EExtendedTaskPriority::Inline), /*bAddRef=*/ false};
 		WaitingTask->AddPrerequisites(Tasks);
 
-		if (WaitingTask->TryLaunch())
+		if (WaitingTask->TryLaunch(sizeof(WaitingTask)))
 		{	// was executed inline
 			check(WaitingTask->IsCompleted());
 			return true;
 		}
 
-		return CompletionEvent->Wait((uint32)FMath::Clamp<int64>(Timeout.GetRemainingTime().GetTicks() / ETimespan::TicksPerMillisecond, 0, MAX_uint32));
+		return CompletionEvent->Wait(Timeout.GetRemainingRoundedUpMilliseconds());
 	}
 
 	// wait for multiple tasks while executing other tasks
 	template<typename TaskCollectionType>
-	bool BusyWait(const TaskCollectionType& Tasks, FTimespan TimeoutValue/* = FTimespan::MaxValue()*/)
+	bool BusyWait(const TaskCollectionType& Tasks, FTimespan InTimeout/* = FTimespan::MaxValue()*/)
 	{
 		TaskTrace::FWaitingScope WaitingScope(Private::GetTraceIds(Tasks));
 		TRACE_CPUPROFILER_EVENT_SCOPE(Tasks::BusyWait);
 
-		FTimeout Timeout{ TimeoutValue };
+		FTimeout Timeout{ InTimeout };
 
-		if (Private::TryRetractAndExecute(Tasks, TimeoutValue))
-		{
-			return true;
-		}
+		// ignore the result as we still have to make sure the task is completed upon returning from this function call
+		Private::TryRetractAndExecute(Tasks, Timeout);
 
 		for (auto& Task : Tasks)
 		{
-			if (Timeout || !Task.BusyWait(Timeout.GetRemainingTime()))
+			if (Timeout || !Task.BusyWait(Timeout))
 			{
 				return false;
 			}
@@ -431,36 +369,35 @@ namespace UE::Tasks
 
 	using FTask = Private::FTaskHandle;
 
-	// a convenient proxy collection for specifying task prerequisites that can include both tasks and task events
-	// usage: Launch(UE_SOURCE_LOCATION, [] {}, Prerequisites(Task1, Task2, TaskEvent1, ...));
-	template<typename... TaskTypes>
-	class TPrerequisites : public TStaticArray<Private::FTaskBase*, sizeof...(TaskTypes)>
+	namespace Private
 	{
-	public:
-		TPrerequisites(TaskTypes&&... Tasks)
+		template<int32 Index, typename ArrayType, typename FirstTaskType, typename... OtherTasksTypes>
+		void PrerequisitesUnpacker(ArrayType& Array, FirstTaskType& FirstTask, OtherTasksTypes&... OtherTasks)
 		{
-			Fill(0, Forward<TaskTypes>(Tasks)...);
+			Array[Index] = FirstTask.Pimpl.GetReference();
+			PrerequisitesUnpacker<Index + 1>(Array, OtherTasks...);
 		}
 
-	private:
-		template<typename FirstTaskType, typename... OtherTaskTypes>
-		void Fill(uint32 Index, FirstTaskType&& FirstTask, OtherTaskTypes&&... OtherTasks)
+		template<int32 Index, typename ArrayType, typename TaskType>
+		void PrerequisitesUnpacker(ArrayType& Array, TaskType& Task)
 		{
-			(*this)[Index] = FirstTask.Pimpl.GetReference();
-			Fill(Index + 1, Forward<OtherTaskTypes>(OtherTasks)...);
+			Array[Index] = Task.Pimpl.GetReference();
 		}
+	}
 
-		template<typename TaskType>
-		void Fill(uint32 Index, TaskType&& Task)
-		{
-			(*this)[Index] = Task.Pimpl.GetReference();
-		}
-	};
-
-	template<typename... TaskTypes>
-	TPrerequisites<TaskTypes...> Prerequisites(TaskTypes&... Tasks)
+	template<typename... TaskTypes, 
+		typename std::decay_t<decltype(std::declval<TTuple<TaskTypes...>>().template Get<0>())>::FTaskHandleId* = nullptr>
+	TStaticArray<Private::FTaskBase*, sizeof...(TaskTypes)> Prerequisites(TaskTypes&... Tasks)
 	{
-		return TPrerequisites<TaskTypes...>{ Forward<TaskTypes>(Tasks)... };
+		TStaticArray<Private::FTaskBase*, sizeof...(TaskTypes)> Res;
+		Private::PrerequisitesUnpacker<0>(Res, Tasks...);
+		return Res;
+	}
+
+	template<typename TaskCollectionType>
+	const TaskCollectionType& Prerequisites(const TaskCollectionType& Tasks)
+	{
+		return Tasks;
 	}
 
 	// Adds the nested task to the task that is being currently executed by the current thread. A parent task is not flagged completed
@@ -512,10 +449,15 @@ namespace UE::Tasks
 		ETaskPriority Priority;
 		EExtendedTaskPriority ExtendedPriority;
 	};
-}
 
-template <typename... TaskTypes>
-struct TIsContiguousContainer<UE::Tasks::TPrerequisites<TaskTypes...>>
-{
-	static constexpr bool Value = true;
-};
+	// creates and returns an already completed task holding a result value constructed from given args
+	template<typename ResultType, typename... ArgTypes>
+	TTask<ResultType> MakeCompletedTask(ArgTypes&&... Args)
+	{
+		return Launch(
+			UE_SOURCE_LOCATION,
+			[&] { return ResultType(Forward<ArgTypes>(Args)...); },
+			ETaskPriority::Default, // doesn't matter
+			EExtendedTaskPriority::Inline);
+	}
+}

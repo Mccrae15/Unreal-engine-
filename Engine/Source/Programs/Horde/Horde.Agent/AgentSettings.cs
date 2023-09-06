@@ -6,6 +6,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using EpicGames.Core;
 using EpicGames.Horde.Storage;
+using Horde.Agent.Services;
 using Microsoft.Extensions.Configuration;
 
 namespace Horde.Agent
@@ -65,11 +66,6 @@ namespace Horde.Agent
 		public List<string> Thumbprints { get; } = new List<string>();
 
 		/// <summary>
-		/// Storage settings for using this server
-		/// </summary>
-		public StorageOptions Storage { get; set; } = new StorageOptions();
-
-		/// <summary>
 		/// Checks whether the given certificate thumbprint should be trusted
 		/// </summary>
 		/// <param name="certificateThumbprint">The cert thumbprint</param>
@@ -113,6 +109,59 @@ namespace Horde.Agent
 		/// Whether to run conform jobs
 		/// </summary>
 		public bool RunConform { get; set; } = true;
+	}
+
+	/// <summary>
+	/// Flags for processes to terminate
+	/// </summary>
+	[Flags]
+	public enum TerminateCondition
+	{
+		/// <summary>
+		/// Not specified; terminate in all circumstances
+		/// </summary>
+		None = 0,
+
+		/// <summary>
+		/// When a session starts
+		/// </summary>
+		BeforeSession = 1,
+
+		/// <summary>
+		/// Before running a conform
+		/// </summary>
+		BeforeConform = 2,
+
+		/// <summary>
+		/// Before executing a batch
+		/// </summary>
+		BeforeBatch = 4,
+
+		/// <summary>
+		/// Terminate at the end of a batch
+		/// </summary>
+		AfterBatch = 8,
+
+		/// <summary>
+		/// After a step completes
+		/// </summary>
+		AfterStep = 16,
+	}
+
+	/// <summary>
+	/// Specifies a process to terminate
+	/// </summary>
+	public class ProcessToTerminate
+	{
+		/// <summary>
+		/// Name of the process
+		/// </summary>
+		public string Name { get; set; } = String.Empty;
+
+		/// <summary>
+		/// When to terminate this process
+		/// </summary>
+		public List<TerminateCondition>? When { get; init; }
 	}
 
 	/// <summary>
@@ -174,7 +223,13 @@ namespace Horde.Agent
 		/// <summary>
 		/// List of process names to terminate after a job
 		/// </summary>
+		[Obsolete("Prefer using the ProcessesToTerminate list instead")]
 		public List<string> ProcessNamesToTerminate { get; } = new List<string>();
+
+		/// <summary>
+		/// List of process names to terminate after a lease completes, but not after a job step
+		/// </summary>
+		public List<ProcessToTerminate> ProcessesToTerminate { get; } = new List<ProcessToTerminate>();
 
 		/// <summary>
 		/// Whether to write step output to the logging device
@@ -187,14 +242,19 @@ namespace Horde.Agent
 		public bool EnableAwsEc2Support { get; set; } = true;
 
 		/// <summary>
-		/// Whether to enable the new storage-API based log system 
-		/// </summary>
-		public bool EnableNewLogger { get; set; }
-
-		/// <summary>
 		/// Option to use a local storage client rather than connecting through the server. Primarily for convenience when debugging / iterating locally.
 		/// </summary>
 		public bool UseLocalStorageClient { get; set; }
+
+		/// <summary>
+		/// Incoming port for listening for compute work. Needs to be tied with a lease.
+		/// </summary>
+		public int ComputePort { get; set; } = 7000;
+		
+		/// <summary>
+		/// How often to report telemetry events to server in milliseconds
+		/// </summary>
+		public int TelemetryReportInterval { get; set; } = 30 * 1000;
 
 		/// <summary>
 		/// Key/value properties in addition to those set internally by the agent
@@ -235,7 +295,34 @@ namespace Horde.Agent
 
 			return GetServerProfile(Server);
 		}
-		
+
+		/// <summary>
+		/// Gets a lookup of process name to the circumstances in which it should be terminate
+		/// </summary>
+		public Dictionary<string, TerminateCondition> GetProcessesToTerminateMap()
+		{
+			Dictionary<string, TerminateCondition> processesToTerminate = new Dictionary<string, TerminateCondition>(StringComparer.OrdinalIgnoreCase);
+#pragma warning disable CS0618 // Type or member is obsolete
+			foreach (string processName in ProcessNamesToTerminate)
+			{
+				processesToTerminate[processName] = TerminateCondition.None;
+			}
+#pragma warning restore CS0618 // Type or member is obsolete
+			foreach (ProcessToTerminate processToTerminate in ProcessesToTerminate)
+			{
+				TerminateCondition condition = default;
+				if (processToTerminate.When != null)
+				{
+					foreach (TerminateCondition when in processToTerminate.When)
+					{
+						condition |= when;
+					}
+				}
+				processesToTerminate[processToTerminate.Name] = condition;
+			}
+			return processesToTerminate;
+		}
+
 		internal string GetAgentName()
 		{
 			return Name ?? Environment.MachineName;

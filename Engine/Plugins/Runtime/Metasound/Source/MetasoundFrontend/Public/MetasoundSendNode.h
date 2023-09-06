@@ -105,19 +105,15 @@ namespace Metasound
 					ResetSenderAndCleanupChannel();
 				}
 
-				virtual FDataReferenceCollection GetInputs() const override
+				virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 				{
 					using namespace SendVertexNames; 
-
-					FDataReferenceCollection Inputs;
-					Inputs.AddDataReadReference<FSendAddress>(METASOUND_GET_PARAM_NAME(AddressInput), SendAddress);
-					Inputs.AddDataReadReference<TDataType>(GetSendInputName(), TDataReadReference<TDataType>(InputData));
-					return Inputs;
+					InOutVertexData.BindReadVertex<FSendAddress>(METASOUND_GET_PARAM_NAME(AddressInput), SendAddress);
+					InOutVertexData.BindReadVertex<TDataType>(GetSendInputName(), InputData);
 				}
 
-				virtual FDataReferenceCollection GetOutputs() const override
+				virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
 				{
-					return {};
 				}
 
 				void Execute()
@@ -132,6 +128,15 @@ namespace Metasound
 
 					Sender->Push(*InputData);
 				}
+
+				void Reset(const IOperator::FResetParams& InParams)
+				{
+					ResetSenderAndCleanupChannel();
+					CachedSendAddress = *SendAddress;
+					Sender = CreateNewSender();
+					check(Sender.IsValid());
+				}
+
 
 			private:
 				FSendAddress GetSendAddressWithDataType(const FSendAddress& InAddress) const 
@@ -193,27 +198,11 @@ namespace Metasound
 
 			TSendNode(const FNodeInitData& InInitData)
 				: FNode(InInitData.InstanceName, InInitData.InstanceID, GetNodeInfo())
-				, Interface(DeclareVertexInterface())
 				, Factory(MakeOperatorFactoryRef<FSendOperatorFactory>())
 			{
 			}
 
 			virtual ~TSendNode() = default;
-
-			virtual const FVertexInterface& GetVertexInterface() const override
-			{
-				return Interface;
-			}
-
-			virtual bool SetVertexInterface(const FVertexInterface& InInterface) override
-			{
-				return Interface == InInterface;
-			}
-
-			virtual bool IsVertexInterfaceSupported(const FVertexInterface& InInterface) const override
-			{
-				return Interface == InInterface;
-			}
 
 			virtual FOperatorFactorySharedRef GetDefaultOperatorFactory() const override
 			{
@@ -221,7 +210,6 @@ namespace Metasound
 			}
 
 		private:
-			FVertexInterface Interface;
 			FOperatorFactorySharedRef Factory;
 	};
 }

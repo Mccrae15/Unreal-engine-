@@ -21,12 +21,6 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",
-					"MfMedia",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"MfMediaFactory/Private",
 				});
 
 			if (DoAllowHTTPSPlayback())

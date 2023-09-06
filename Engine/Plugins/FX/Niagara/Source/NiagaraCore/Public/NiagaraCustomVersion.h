@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Guid.h"
+#include "HAL/Platform.h"
+
+struct FGuid;
 
 // Custom serialization version for all packages containing Niagara asset types
 struct FNiagaraCustomVersion
@@ -186,6 +187,8 @@ struct FNiagaraCustomVersion
 
 		DynamicPinNodeFixup, // Some data fixup for NiagaraNodeWithDynamicPins.
 
+		RibbonRendererLinkOrderDefaultIsUniqueID,	// Ribbon renderer will default to unique ID rather than normalized age to make more things 'just work'
+
 		// DO NOT ADD A NEW VERSION UNLESS YOU HAVE TALKED TO THE NIAGARA LEAD. Mismanagement of these versions can lead to data loss if it is adjusted in multiple streams simultaneously.
 		// -----<new versions can be added above this line>  -------------------------------------------------
 		VersionPlusOne,
@@ -207,3 +210,8 @@ private:
 
 
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "CoreMinimal.h"
+#include "Misc/Guid.h"
+#endif

@@ -2,15 +2,14 @@
 
 #include "DMXControlConsoleFixturePatchMatrixCell.h"
 
+#include "Algo/Find.h"
+#include "Algo/Sort.h"
 #include "DMXAttribute.h"
 #include "DMXProtocolTypes.h"
 #include "DMXControlConsoleFaderGroup.h"
 #include "DMXControlConsoleFixturePatchCellAttributeFader.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXEntityFixtureType.h"
-
-#include "Algo/Find.h"
-#include "Algo/Sort.h"
 
 
 #define LOCTEXT_NAMESPACE "DMXControlConsoleFixturePatchMatrixCell"
@@ -69,6 +68,13 @@ int32 UDMXControlConsoleFixturePatchMatrixCell::GetEndingAddress() const
 	return 1;
 }
 
+#if WITH_EDITOR
+void UDMXControlConsoleFixturePatchMatrixCell::SetIsMatchingFilter(bool bMatches)
+{
+	bIsMatchingFilter = HasVisibleInEditorCellAttributeFaders();
+}
+#endif // WITH_EDITOR
+
 void UDMXControlConsoleFixturePatchMatrixCell::Destroy() 
 {
 	UDMXControlConsoleFaderGroup* Outer = Cast<UDMXControlConsoleFaderGroup>(GetOuter());
@@ -94,6 +100,9 @@ UDMXControlConsoleFixturePatchCellAttributeFader* UDMXControlConsoleFixturePatch
 	CellAttributeFader->SetPropertiesFromFixtureCellAttribute(CellAttribute, InUniverseID, StartingChannel);
 	CellAttributeFaders.Add(CellAttributeFader);
 
+	UDMXControlConsoleFaderGroup& OwnerFaderGroup = GetOwnerFaderGroupChecked();
+	OwnerFaderGroup.OnElementAdded.Broadcast(CellAttributeFader);
+
 	return CellAttributeFader;
 }
 
@@ -110,6 +119,9 @@ void UDMXControlConsoleFixturePatchMatrixCell::DeleteCellAttributeFader(UDMXCont
 	}
 
 	CellAttributeFaders.Remove(CellAttributeFader);
+
+	UDMXControlConsoleFaderGroup& OwnerFaderGroup = GetOwnerFaderGroupChecked();
+	OwnerFaderGroup.OnElementRemoved.Broadcast(CellAttributeFader);
 }
 
 void UDMXControlConsoleFixturePatchMatrixCell::SetPropertiesFromCell(const FDMXCell& Cell, const int32 InUniverseID, const int32 StartingChannel)
@@ -163,6 +175,36 @@ void UDMXControlConsoleFixturePatchMatrixCell::SetPropertiesFromCell(const FDMXC
 
 	Algo::Sort(CellAttributeFaders, SortFadersByStartingAddressLambda);
 }
+
+#if WITH_EDITOR
+bool UDMXControlConsoleFixturePatchMatrixCell::HasVisibleInEditorCellAttributeFaders() const
+{
+	for (const UDMXControlConsoleFaderBase* CellAttributeFader : CellAttributeFaders)
+	{
+		if (CellAttributeFader && CellAttributeFader->IsMatchingFilter())
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+#endif // WITH_EDITOR
+
+#if WITH_EDITOR
+void UDMXControlConsoleFixturePatchMatrixCell::ShowAllFadersInEditor()
+{
+	for (UDMXControlConsoleFaderBase* CellAttributeFader : CellAttributeFaders)
+	{
+		if (!CellAttributeFader)
+		{
+			continue;
+		}
+
+		CellAttributeFader->SetIsMatchingFilter(true);
+	}
+}
+#endif // WITH_EDITOR
 
 void UDMXControlConsoleFixturePatchMatrixCell::PostLoad()
 {

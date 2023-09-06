@@ -33,6 +33,26 @@ enum class EPhysicsControlType : uint8
 };
 
 /**
+ * Specifies how any reset to cached target should work. 
+ */
+UENUM(BlueprintType)
+enum class EResetToCachedTargetBehavior : uint8
+{
+	/** 
+	 * Reset of the associated physics bodies is done immediately, to whatever transforms are in the cache. These
+	 * will reflect the previous or the upcoming animation targets, depending on what stage of the tick this 
+	 * is called.
+	 */
+	ResetImmediately,
+	/**
+	 * Reset of the associated physics bodies will be done during the next Tick (or UpdateControls). Note that
+	 * this will reset the bodies to the updated animation targets, and then there will be a subsequent physics 
+	 * update, which will result in the final transforms.
+	 */
+	ResetDuringUpdateControls
+};
+
+/**
  * This is the main Physics Control Component class which manages Controls and Body Modifiers associated 
  * with one or more static or skeletal meshes. You can add this as a component to an actor containing a 
  * mesh and then use it to create, configure and destroy Controls/Body Modifiers:
@@ -52,6 +72,31 @@ class PHYSICSCONTROL_API UPhysicsControlComponent : public USceneComponent
 	GENERATED_UCLASS_BODY()
 
 public:
+
+	/**
+	* Allows manual ticking so that your code can run in between updating the target caches and updating 
+	* the controls. This allows you to read the targets coming from animation and use those values to 
+	* create your own controls etc.
+	* 
+	* To use this function, you should disable ticking of the Physics Control Component, and ensure that the 
+	* relevant Skeletal Mesh Component (if being used) has ticked, using a tick prerequisite. Then explicitly 
+	* call (in order) UpdateTargetCaches and UpdateControls as you process your tick.
+	*/
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void UpdateTargetCaches(float DeltaTime);
+
+	/**
+	* Allows manual ticking so that your code can run in between updating the target caches and updating
+	* the controls and body modifiers. This allows you to read the targets coming from animation and use 
+	* those values to create your own controls etc.
+	*
+	* To use this function, you should disable ticking of the Physics Control Component, and ensure that the
+	* relevant Skeletal Mesh Component (if being used) has ticked, using a tick prerequisite. Then explicitly
+	* call (in order) UpdateTargetCaches and UpdateControls as you process your tick.
+	*/
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void UpdateControls(float DeltaTime);
+
 	/**
 	 * Creates a new control for mesh components
 	 * 
@@ -504,6 +549,30 @@ public:
 		const bool     bApplyControlPointToTarget = false);
 
 	/**
+	 * Calls SetControlTargetPositionAndOrientation for each of the control names
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetControlTargetPositionsAndOrientations(
+		const TArray<FName>& Names,
+		const FVector        Position,
+		const FRotator       Orientation,
+		const float          VelocityDeltaTime,
+		const bool           bEnableControl = true,
+		const bool           bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetPositionAndOrientation for each control in the set
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetControlTargetPositionsAndOrientationsInSet(
+		const FName          SetName,
+		const FVector        Position,
+		const FRotator       Orientation,
+		const float          VelocityDeltaTime,
+		const bool           bEnableControl = true,
+		const bool           bApplyControlPointToTarget = false);
+
+	/**
 	 * Modifies an existing control target - i.e. what it is driving towards, relative to the parent object
 	 *
 	 * @param Name The name of the control to modify. 
@@ -523,6 +592,28 @@ public:
 	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
 	bool SetControlTargetPosition(
 		const FName   Name,
+		const FVector Position, 
+		const float   VelocityDeltaTime, 
+		const bool    bEnableControl = true,
+		const bool    bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetPosition for each of the control names
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetControlTargetPositions(
+		const TArray<FName>& Names,
+		const FVector        Position, 
+		const float          VelocityDeltaTime, 
+		const bool           bEnableControl = true,
+		const bool           bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetPosition for each of the controls in the set
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetControlTargetPositionsInSet(
+		const FName   SetName,
 		const FVector Position, 
 		const float   VelocityDeltaTime, 
 		const bool    bEnableControl = true,
@@ -552,6 +643,68 @@ public:
 		const float    AngularVelocityDeltaTime, 
 		const bool     bEnableControl = true,
 		const bool     bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetOrientation for each of the control names
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetControlTargetOrientations(
+		const TArray<FName>& Names,
+		const FRotator Orientation,
+		const float    AngularVelocityDeltaTime, 
+		const bool     bEnableControl = true,
+		const bool     bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetOrientation for each of the controls in the set
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetControlTargetOrientationsInSet(
+		const FName    SetName,
+		const FRotator Orientation, 
+		const float    AngularVelocityDeltaTime, 
+		const bool     bEnableControl = true,
+		const bool     bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetPosition for each element of the control names and positions. These array should match
+	 * in size.
+	 * @return true if the control/position arrays match, false if they don't.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool SetControlTargetPositionsFromArray(
+		const TArray<FName>&   Names,
+		const TArray<FVector>& Positions, 
+		const float            VelocityDeltaTime, 
+		const bool             bEnableControl = true,
+		const bool             bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetPosition for each element of the control names and positions. These array should match
+	 * in size.
+	 * @return true if the control/position arrays match, false if they don't.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool SetControlTargetOrientationsFromArray(
+		const TArray<FName>&    Names,
+		const TArray<FRotator>& Orientations, 
+		const float             VelocityDeltaTime, 
+		const bool              bEnableControl = true,
+		const bool              bApplyControlPointToTarget = false);
+
+	/**
+	 * Calls SetControlTargetPositionAndOrientation for each element of the control names, positions and orientations. 
+	 * These array should match in size.
+	 * @return true if the control/position/orientation arrays match, false if they don't.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool SetControlTargetPositionsAndOrientationsFromArray(
+		const TArray<FName>&    Names,
+		const TArray<FVector>&  Positions,
+		const TArray<FRotator>& Orientations,
+		const float             VelocityDeltaTime, 
+		const bool              bEnableControl = true,
+		const bool              bApplyControlPointToTarget = false);
 
 	/**
 	 * Calculates and sets an existing control target. This takes the "virtual" position/orientation of the parent 
@@ -750,9 +903,15 @@ public:
 	 * @param MovementType Whether to enable/disable simulation on the body
 	 * @param CollisionType Collision type to set on the body
 	 * @param GravityMultiplier The amount of gravity to apply when simulating
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from
+	 *        animation and that coming from simulation.
 	 * @param bUseSkeletalAnimation Whether the kinematic target is specified in the frame of the
-	 *                              skeletal animation, rather than world space. Only relevant if the
-	 *                              body is part of a skeletal mesh.
+	 *        skeletal animation, rather than world space. Only relevant if the body is part of 
+	 *        a skeletal mesh.
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as 
+	 *        dynamic ones.
 	 */
 	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
 	FName CreateBodyModifier(
@@ -762,7 +921,9 @@ public:
 		const EPhysicsMovementType    MovementType = EPhysicsMovementType::Simulated,
 		const ECollisionEnabled::Type CollisionType = ECollisionEnabled::QueryAndPhysics,
 		const float                   GravityMultiplier = 1.0f,
-		const bool                    bUseSkeletalAnimation = true);
+		const float                   PhysicsBlendWeight = 1.0f,
+		const bool                    bUseSkeletalAnimation = true,
+		const bool                    bUpdateKinematicFromSimulation = true);
 
 	/**
 	 * Creates a new body modifier for mesh components
@@ -775,9 +936,15 @@ public:
 	 * @param MovementType Whether to enable/disable simulation on the body
 	 * @param CollisionType Collision type to set on the body
 	 * @param GravityMultiplier The amount of gravity to apply when simulating
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from
+	 *        animation and that coming from simulation.
 	 * @param bUseSkeletalAnimation Whether the kinematic target is specified in the frame of the
-	 *                              skeletal animation, rather than world space. Only relevant if the
-	 *                              body is part of a skeletal mesh.
+	 *        skeletal animation, rather than world space. Only relevant if the body is part of 
+	 *        a skeletal mesh.
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as
+	 *        dynamic ones.
 	 */
 	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
 	bool CreateNamedBodyModifier(
@@ -788,7 +955,9 @@ public:
 		const EPhysicsMovementType    MovementType = EPhysicsMovementType::Simulated,
 		const ECollisionEnabled::Type CollisionType = ECollisionEnabled::QueryAndPhysics,
 		const float                   GravityMultiplier = 1.0f,
-		const bool                    bUseSkeletalAnimation = true);
+		const float                   PhysicsBlendWeight = 1.0f,
+		const bool                    bUseSkeletalAnimation = true,
+		const bool                    bUpdateKinematicFromSimulation = true);
 
 	/**
 	 * Creates new body modifiers for skeletal mesh components
@@ -801,9 +970,15 @@ public:
 	 * @param MovementType Whether to enable/disable simulation on the body
 	 * @param CollisionType Collision type to set on the body
 	 * @param GravityMultiplier The amount of gravity to apply when simulating
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from
+	 *        animation and that coming from simulation.
 	 * @param bUseSkeletalAnimation Whether the kinematic target is specified in the frame of the
-	 *                              skeletal animation, rather than world space. Only relevant if the
-	 *                              body is part of a skeletal mesh.
+	 *        skeletal animation, rather than world space. Only relevant if the body is part of
+	 *        a skeletal mesh.
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as
+	 *        dynamic ones.
 	 */
 	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
 	TArray<FName> CreateBodyModifiersFromSkeletalMeshBelow(
@@ -814,7 +989,9 @@ public:
 		const EPhysicsMovementType    MovementType = EPhysicsMovementType::Simulated,
 		const ECollisionEnabled::Type CollisionType = ECollisionEnabled::QueryAndPhysics,
 		const float                   GravityMultiplier = 1.0f,
-		const bool                    bUseSkeletalAnimation = true);
+		const float                   PhysicsBlendWeight = 1.0f,
+		const bool                    bUseSkeletalAnimation = true,
+		const bool                    bUpdateKinematicFromSimulation = true);
 
 
 	/**
@@ -826,10 +1003,16 @@ public:
 	 * @param MovementType Whether to enable/disable simulation on the body
 	 * @param CollisionType Collision type to set on the body
 	 * @param GravityMultiplier The amount of gravity to apply when simulating
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from
+	 *        animation and that coming from simulation.
 	 * @param bUseSkeletalAnimation Whether the kinematic target is specified in the frame of the
-	 *                              skeletal animation, rather than world space. Only relevant if the
-	 *                              body is part of a skeletal mesh.
-	 * 
+	 *        skeletal animation, rather than world space. Only relevant if the body is part of
+	 *        a skeletal mesh.
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as
+	 *        dynamic ones.
+	 *
 	 * @return A map containing the modifiers for each limb
 	 */
 	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
@@ -839,7 +1022,9 @@ public:
 		const EPhysicsMovementType                   MovementType = EPhysicsMovementType::Simulated,
 		const ECollisionEnabled::Type                CollisionType = ECollisionEnabled::QueryAndPhysics,
 		const float                                  GravityMultiplier = 1.0f,
-		const bool                                   bUseSkeletalAnimation = true);
+		const float                                  PhysicsBlendWeight = 1.0f,
+		const bool                                   bUseSkeletalAnimation = true,
+		const bool                                   bUpdateKinematicFromSimulation = true);
 
 	/**
 	 * Destroys a BodyModifier
@@ -995,6 +1180,45 @@ public:
 		const float GravityMultiplier = 1.0f);
 
 	/**
+	 * Sets the physics blend weight for a body modifier
+	 *
+	 * @param Name The name of the body modifier to access. 
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from 
+	 *        animation and that coming from simulation.
+	 * @return true if the body modifier was found, false if not
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool SetBodyModifierPhysicsBlendWeight(
+		const FName Name,
+		const float PhysicsBlendWeight = 1.0f);
+
+	/**
+	 * Sets the physics blend weight for body modifiers
+	 *
+	 * @param Names The names of the body modifiers to access. Note that if you have these in a FPhysicsControlNameArray
+	 *        then it can be split.
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from
+	 *        animation and that coming from simulation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetBodyModifiersPhysicsBlendWeight(
+		const TArray<FName>& Names,
+		const float          PhysicsBlendWeight = 1.0f);
+
+	/**
+	 * Sets the physics blend weight for body modifiers
+	 *
+	 * @param Set The set of body modifiers to modify. Standard sets will include "All" and things like
+	 *        "ArmLeft", depending on how body modifiers have been created.
+	 * @param PhysicsBlendWeight The blend weight between the body transform coming from
+	 *        animation and that coming from simulation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetBodyModifiersInSetPhysicsBlendWeight(
+		const FName Set,
+		const float PhysicsBlendWeight = 1.0f);
+
+	/**
 	 * Sets whether a body modifier should use skeletal animation for its kinematic targets
 	 *
 	 * @param Name The name of the body modifier to access. 
@@ -1036,6 +1260,51 @@ public:
 		const bool  bUseSkeletalAnimation);
 
 	/**
+	 * Sets whether a body modifier should update kinematics from the simulation results
+	 *
+	 * @param Name The name of the body modifier to access. 
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as
+	 *        dynamic ones.
+	 * @return true if the body modifier was found, false if not
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool SetBodyModifierUpdateKinematicFromSimulation(
+		const FName Name,
+		const bool  bUpdateKinematicFromSimulation);
+
+	/**
+	 * Sets whether body modifiers should update kinematics from the simulation results
+	 *
+	 * @param Names The names of the body modifiers to access. Note that if you have these in a FPhysicsControlNameArray
+	 *        then it can be split.
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as
+	 *        dynamic ones.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetBodyModifiersUpdateKinematicFromSimulation(
+		const TArray<FName>& Names,
+		const bool           bUpdateKinematicFromSimulation);
+
+	/**
+	 * Sets whether body modifiers should update kinematics from the simulation results
+	 *
+	 * @param Set The set of body modifiers to modify. Standard sets will include "All" and things like
+	 *        "ArmLeft", depending on how body modifiers have been created.
+	 * @param bUpdateKinematicFromSimulation Whether the body should be updated from the simulation when
+	 *        it is kinematic, or whether it should track the kinematic target directly. This will be most
+	 *        likely useful when using async physics, in order to make kinematic parts behave the same as
+	 *        dynamic ones.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void SetBodyModifiersInSetUpdateKinematicFromSimulation(
+		const FName Set,
+		const bool  bUpdateKinematicFromSimulation);
+
+	/**
 	 * Creates a collections of controls and body modifiers for a character, based on the description passed in. 
 	 * This makes:
 	 * - World-space controls
@@ -1065,8 +1334,9 @@ public:
 		const FPhysicsControlSettings               ParentSpaceControlSettings,
 		const bool                                  bEnableParentSpaceControls,
 		const EPhysicsMovementType                  PhysicsMovementType = EPhysicsMovementType::Static,
-		const float                                 GravityMultiplier = 1.0f
-	);
+		const float                                 GravityMultiplier = 1.0f,
+		const float                                 PhysicsBlendWeight = 1.0f
+		);
 
 	/**
 	 * Adds a Control to a Set. This will add a new set if necessary. For example, you might
@@ -1143,6 +1413,172 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
 	TArray<FName> GetSetsContainingBodyModifier(const FName Control) const;
+
+	/**
+	 * Gets the transforms of the requested bones that will be used as targets (in world space). Targets for bones 
+	 * that are not found will be set to Identity. Note that these targets will have been calculated and cached 
+	 * at the start of the Physics Control Component, so if using the built in tick, may be too old to be useful. 
+	 * If you manually update the component then you can access these target transforms prior to applying your 
+	 * own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	TArray<FTransform> GetCachedBoneTransforms(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const TArray<FName>&          BoneNames);
+
+	/**
+	 * Gets the positions of the requested bones that will be used as targets (in world space). Targets for bones 
+	 * that are not found will be set to zero. Note that these targets will have been calculated and cached 
+	 * at the start of the Physics Control Component, so if using the built in tick, may be too old to be useful. 
+	 * If you manually update the component then you can access these target transforms prior to applying your 
+	 * own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	TArray<FVector> GetCachedBonePositions(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const TArray<FName>&          BoneNames);
+
+	/**
+	 * Gets the orientations of the requested bones that will be used as targets (in world space). Targets for bones 
+	 * that are not found will be set to identity. Note that these targets will have been calculated and cached 
+	 * at the start of the Physics Control Component, so if using the built in tick, may be too old to be useful. 
+	 * If you manually update the component then you can access these target transforms prior to applying your 
+	 * own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	TArray<FRotator> GetCachedBoneOrientations(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const TArray<FName>&          BoneNames);
+
+	/**
+	 * Gets the linear velocities of the requested bones that will be used as targets (in world space). Target 
+	 * velocities for bones that are not found will be set to zero. Note that these targets will have been 
+	 * calculated and cached at the start of the Physics Control Component, so if using the built in tick, 
+	 * may be too old to be useful. If you manually update the component then you can access these target 
+	 * velocities prior to applying your own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	TArray<FVector> GetCachedBoneVelocities(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const TArray<FName>&          BoneNames);
+
+	/**
+	 * Gets the angular velocities of the requested bones that will be used as targets (in world space). Target 
+	 * velocities for bones that are not found will be set to zero. Note that these targets will have been 
+	 * calculated and cached at the start of the Physics Control Component, so if using the built in tick, 
+	 * may be too old to be useful. If you manually update the component then you can access these target 
+	 * velocities prior to applying your own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	TArray<FVector> GetCachedBoneAngularVelocities(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const TArray<FName>&          BoneNames);
+
+	/**
+	 * Gets the transforms of the requested bone that will be used as a target (in world space). Targets for bones
+	 * that are not found will be set to Identity. Note that these targets will have been calculated and cached
+	 * at the start of the Physics Control Component, so if using the built in tick, may be too old to be useful.
+	 * If you manually update the component then you can access these target transforms prior to applying your
+	 * own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	FTransform GetCachedBoneTransform(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const FName                   BoneName);
+
+	/**
+	 * Gets the position of the requested bone that will be used as a target (in world space). Targets for bones
+	 * that are not found will be set to zero. Note that these targets will have been calculated and cached
+	 * at the start of the Physics Control Component, so if using the built in tick, may be too old to be useful.
+	 * If you manually update the component then you can access these target transforms prior to applying your
+	 * own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	FVector GetCachedBonePosition(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const FName                   BoneName);
+
+	/**
+	 * Gets the orientation of the requested bone that will be used as a target (in world space). Targets for bones
+	 * that are not found will be set to Identity. Note that these targets will have been calculated and cached
+	 * at the start of the Physics Control Component, so if using the built in tick, may be too old to be useful.
+	 * If you manually update the component then you can access these target transforms prior to applying your
+	 * own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	FRotator GetCachedBoneOrientation(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const FName                   BoneName);
+
+	/**
+	 * Gets the linear velocity of the requested bone that will be used as a target (in world space). Target 
+	 * velocities for bones that are not found will be set to zero. Note that these targets will have been 
+	 * calculated and cached at the start of the Physics Control Component, so if using the built in tick, 
+	 * may be too old to be useful. If you manually update the component then you can access these target 
+	 * velocities prior to applying your own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	FVector GetCachedBoneVelocity(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const FName                   BoneName);
+
+	/**
+	 * Gets the angular velocity of the requested bone that will be used as a target (in world space). Target 
+	 * velocities for bones that are not found will be set to zero. Note that these targets will have been 
+	 * calculated and cached at the start of the Physics Control Component update, so if using the built in tick, 
+	 * may be too old to be useful. If you manually update the component then you can access these target 
+	 * velocities prior to applying your own targets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	FVector GetCachedBoneAngularVelocity(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const FName                   BoneName);
+
+	/**
+	 * This allows the caller to override the target that will have been calculated and cached at the start of 
+	 * the Physics Control Component update. This is unlikely to be useful when using the built in tick, 
+	 * but if you are manually updating the component then you may wish to call this after UpdateTargetCaches 
+	 * but before UpdateControls. 
+	 * 
+	 * @return true if successful, and false if no cached target can be found for the bone.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool SetCachedBoneData(
+		const USkeletalMeshComponent* SkeletalMeshComponent,
+		const FName                   BoneName, 
+		const FTransform&             TM,
+		const FVector                 Velocity,
+		const FVector                 AngularVelocity);
+
+	/**
+	 * This flags the body associated with the modifier to set (using teleport) its position and velocity to 
+	 * the cached animation target. This will only affect skeletal mesh component bodies. 
+	 * 
+	 * @param Name     The name of the body modifier to use to identify the body to reset.
+	 * @param Behavior When the reset should happen.
+	 * 
+	 * @return true if the body modifier is found (even if no cached target is found), and false otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	bool ResetBodyModifierToCachedBoneTransform(
+		const FName                        Name,
+		const EResetToCachedTargetBehavior Behavior = EResetToCachedTargetBehavior::ResetImmediately);
+
+	/**
+	 * Calls ResetBodyModifierToCachedTarget for each of the body modifiers
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void ResetBodyModifiersToCachedBoneTransforms(
+		const TArray<FName>&               Names,
+		const EResetToCachedTargetBehavior Behavior = EResetToCachedTargetBehavior::ResetImmediately);
+
+	/**
+	 * Calls ResetBodyModifierToCachedTarget for each of the body modifiers in the set
+	 */
+	UFUNCTION(BlueprintCallable, Category = PhysicsControl)
+	void ResetBodyModifiersInSetToCachedBoneTransforms(
+		const FName                        SetName,
+		const EResetToCachedTargetBehavior Behavior = EResetToCachedTargetBehavior::ResetImmediately);
 
 public:
 

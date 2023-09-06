@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include "PCGContext.h"
 #include "PCGElement.h"
 #include "PCGSubsystem.h"
 #include "Graph/PCGGraphCache.h"
+#include "Graph/PCGStackContext.h"
 
 #if WITH_EDITOR
 #include "AsyncCompilationHelpers.h"
@@ -16,6 +18,8 @@ class UPCGGraph;
 class UPCGNode;
 class UPCGComponent;
 class FPCGGraphCompiler;
+struct FPCGStack;
+class FPCGStackContext;
 class FTextFormat;
 
 struct FPCGGraphTaskInput
@@ -51,6 +55,16 @@ struct FPCGGraphTask
 	FPCGTaskId NodeId = InvalidPCGTaskId;
 	FPCGTaskId CompiledTaskId = InvalidPCGTaskId; // the task id as it exists when compiled
 	FPCGTaskId ParentId = InvalidPCGTaskId; // represents the parent sub object graph task, if we were called from one
+
+	// Required purely to cache across multiple frames and allow different grids to be scheduled simultaneously. Set up
+	// at schedule-time, used during execution.
+	EPCGHiGenGrid GenerationGrid = EPCGHiGenGrid::Uninitialized;
+	
+	// The generation level for this node within the graph.
+	EPCGHiGenGrid GraphGenerationGrid = EPCGHiGenGrid::Uninitialized;
+
+	int32 StackIndex = INDEX_NONE;
+	TSharedPtr<const FPCGStackContext> StackContext;
 };
 
 struct FPCGGraphScheduleTask
@@ -70,6 +84,8 @@ struct FPCGGraphActiveTask
 #if WITH_EDITOR
 	bool bIsBypassed = false;
 #endif
+	int32 StackIndex = INDEX_NONE;
+	TSharedPtr<const FPCGStackContext> StackContext;
 };
 
 class FPCGGraphExecutor
@@ -82,8 +98,8 @@ public:
 	void Compile(UPCGGraph* InGraph);
 
 	/** Schedules the execution of a given graph with specified inputs. This call is threadsafe */
-	FPCGTaskId Schedule(UPCGComponent* InComponent, const TArray<FPCGTaskId>& TaskDependency = TArray<FPCGTaskId>());
-	FPCGTaskId Schedule(UPCGGraph* Graph, UPCGComponent* InSourceComponent, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& TaskDependency);
+	FPCGTaskId Schedule(UPCGComponent* InComponent, const TArray<FPCGTaskId>& TaskDependency = TArray<FPCGTaskId>(), const FPCGStack* InFromStack = nullptr);
+	FPCGTaskId Schedule(UPCGGraph* Graph, UPCGComponent* InSourceComponent, FPCGElementPtr PreGraphElement, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& TaskDependency, const FPCGStack* InFromStack);
 
 	/** Cancels all tasks originating from the given component */
 	TArray<UPCGComponent*> Cancel(UPCGComponent* InComponent);
@@ -214,7 +230,17 @@ protected:
 class FPCGGenericElement : public FSimplePCGElement
 {
 public:
-	FPCGGenericElement(TFunction<bool(FPCGContext*)> InOperation);
+	using FContextAllocator = TFunction<FPCGContext*(const FPCGDataCollection&, TWeakObjectPtr<UPCGComponent>, const UPCGNode*)>;
+
+	FPCGGenericElement(
+		TFunction<bool(FPCGContext*)> InOperation,
+		const FContextAllocator& InContextAllocator = (FContextAllocator)[](const FPCGDataCollection&, TWeakObjectPtr<UPCGComponent>, const UPCGNode*)
+	{
+		return new FPCGContext();
+	});
+	
+	virtual FPCGContext* Initialize(const FPCGDataCollection& InputData, TWeakObjectPtr<UPCGComponent> SourceComponent, const UPCGNode* Node) override;
+
 	virtual bool IsCacheable(const UPCGSettings* InSettings) const override { return false; }
 	virtual bool CanExecuteOnlyOnMainThread(FPCGContext* Context) const override { return true; }
 
@@ -230,4 +256,26 @@ protected:
 
 private:
 	TFunction<bool(FPCGContext*)> Operation;
+
+	/** Creates a context object for this element. */
+	FContextAllocator ContextAllocator;
 };
+
+/** Context for linkage element which marshalls data across hierarchical generation grids. */
+struct FPCGGridLinkageContext : public FPCGContext
+{
+	/** If we require data from a component that is not generated, we schedule it once to see if we can get the data later. */
+	bool bScheduledGraph = false;
+};
+
+namespace PCGGraphExecutor
+{
+	/** Compares InFromGrid and InToGrid and performs data storage/retrieval as necessary to marshal data across execution grids. */
+	bool ExecuteGridLinkage(
+		EPCGHiGenGrid InFromGrid,
+		EPCGHiGenGrid InToGrid,
+		const FString& InResourceKey,
+		const FName& InOutputPinLabel,
+		const UPCGNode* InDownstreamNode,
+		FPCGGridLinkageContext* InContext);
+}

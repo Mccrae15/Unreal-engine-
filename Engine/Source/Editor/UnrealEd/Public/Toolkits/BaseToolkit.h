@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ToolkitBuilder.h"
 #include "Framework/Docking/WorkspaceItem.h"
 #include "Framework/Docking/TabManager.h"
 #include "Toolkits/IToolkit.h"
@@ -18,33 +19,34 @@ class IDetailsView;
 struct FDetailsViewArgs;
 class FAssetEditorModeUILayer;
 class SBorder;
+class UToolMenu;
 
 /**
  * Base class for all toolkits (abstract).
  */
-class UNREALED_API FBaseToolkit
+class FBaseToolkit
 	: public IToolkit
 {
 public:
 
 	/** FBaseToolkit constructor */
-	FBaseToolkit();
+	UNREALED_API FBaseToolkit();
 
 	/** Virtual destructor */
-	virtual ~FBaseToolkit();
+	UNREALED_API virtual ~FBaseToolkit();
 
 public:
 
 	// IToolkit interface
 
-	virtual FName GetToolkitContextFName() const override;
+	UNREALED_API virtual FName GetToolkitContextFName() const override;
 	virtual FText GetTabSuffix() const override { return FText::GetEmpty(); }
-	virtual bool ProcessCommandBindings(const FKeyEvent& InKeyEvent) const override;
-	virtual bool IsHosted() const override;
-	virtual const TSharedRef<IToolkitHost> GetToolkitHost() const override;
-	virtual void BringToolkitToFront() override;
-	virtual TSharedPtr<SWidget> GetInlineContent() const override;
-	virtual bool IsBlueprintEditor() const override;
+	UNREALED_API virtual bool ProcessCommandBindings(const FKeyEvent& InKeyEvent) const override;
+	UNREALED_API virtual bool IsHosted() const override;
+	UNREALED_API virtual const TSharedRef<IToolkitHost> GetToolkitHost() const override;
+	UNREALED_API virtual void BringToolkitToFront() override;
+	UNREALED_API virtual TSharedPtr<SWidget> GetInlineContent() const override;
+	UNREALED_API virtual bool IsBlueprintEditor() const override;
 	virtual TSharedRef<FWorkspaceItem> GetWorkspaceMenuCategory() const override { return WorkspaceMenuCategory.ToSharedRef(); }
 
 	virtual FEditorModeTools& GetEditorModeManager() const = 0;
@@ -52,7 +54,7 @@ public:
 public:
 
 	/** @return	Returns true if this is a world-centric asset editor.  That is, the user is editing the asset inline in a Level Editor app. */
-	bool IsWorldCentricAssetEditor() const;	
+	UNREALED_API bool IsWorldCentricAssetEditor() const;	
 
 	/** @returns Returns our toolkit command list */
 	const TSharedRef<FUICommandList> GetToolkitCommands() const
@@ -64,14 +66,14 @@ protected:
 
 	/** @return Returns the prefix string to use for tabs created for this toolkit.  In world-centric mode, tabs get a
 	    name prefix to make them distinguishable from other tabs */
-	FString GetTabPrefix() const;
+	UNREALED_API FString GetTabPrefix() const;
 
 	/** @return Returns the color to use for tabs created for this toolkit.  In world-centric mode, tabs may be colored to
 	    make them more easy to distinguish compared to other tabs. */
-	FLinearColor GetTabColorScale() const;
+	UNREALED_API FLinearColor GetTabColorScale() const;
 
 	// Creates the Editor mode manager for your class. Default is to create none, for legacy reasons.
-	virtual void CreateEditorModeManager();
+	UNREALED_API virtual void CreateEditorModeManager();
 
 protected:
 
@@ -89,47 +91,45 @@ protected:
 	TSharedPtr<FWorkspaceItem> WorkspaceMenuCategory;
 };
 
-
-
 /**
  * This FModeToolkit just creates a basic UI panel that allows various InteractiveTools to
  * be initialized, and a DetailsView used to show properties of the active Tool.
  */
-class UNREALED_API FModeToolkit
+class FModeToolkit
 	: public FBaseToolkit
 	, public TSharedFromThis<FModeToolkit>
 {
 public:
 
 	/** Initializes the mode toolkit */
-	virtual void Init(const TSharedPtr<IToolkitHost>& InitToolkitHost);
-	virtual void Init(const TSharedPtr<IToolkitHost>& InitToolkitHost, TWeakObjectPtr<UEdMode> InOwningMode);
-	~FModeToolkit();
+	UNREALED_API virtual void Init(const TSharedPtr<IToolkitHost>& InitToolkitHost);
+	UNREALED_API virtual void Init(const TSharedPtr<IToolkitHost>& InitToolkitHost, TWeakObjectPtr<UEdMode> InOwningMode);
+	UNREALED_API ~FModeToolkit();
 
 public:
-	virtual void SetModeUILayer(const TSharedPtr<FAssetEditorModeUILayer> InLayer) override;
+	UNREALED_API virtual void SetModeUILayer(const TSharedPtr<FAssetEditorModeUILayer> InLayer) override;
 
 	// FBaseToolkit overrides
 
-	virtual void RegisterTabSpawners(const TSharedRef<FTabManager>& TabManager) final;
-	virtual void UnregisterTabSpawners(const TSharedRef<FTabManager>& TabManager) final;
+	UNREALED_API virtual void RegisterTabSpawners(const TSharedRef<FTabManager>& TabManager) final;
+	UNREALED_API virtual void UnregisterTabSpawners(const TSharedRef<FTabManager>& TabManager) final;
 
 	// IToolkit interface
-	virtual FName GetToolkitFName() const override;
-	virtual FText GetBaseToolkitName() const override;
+	UNREALED_API virtual FName GetToolkitFName() const override;
+	UNREALED_API virtual FText GetBaseToolkitName() const override;
 	virtual FText GetToolkitName() const override { return GetBaseToolkitName(); }
 	virtual FText GetToolkitToolTipText() const override { return GetBaseToolkitName(); }
-	virtual FString GetWorldCentricTabPrefix() const override;
-	virtual bool IsAssetEditor() const override;
-	virtual const TArray<UObject*>* GetObjectsCurrentlyBeingEdited() const override;
-	virtual FLinearColor GetWorldCentricTabColorScale() const override;
-	virtual FEditorModeTools& GetEditorModeManager() const final;
+	UNREALED_API virtual FString GetWorldCentricTabPrefix() const override;
+	UNREALED_API virtual bool IsAssetEditor() const override;
+	UNREALED_API virtual const TArray<UObject*>* GetObjectsCurrentlyBeingEdited() const override;
+	UNREALED_API virtual FLinearColor GetWorldCentricTabColorScale() const override;
+	UNREALED_API virtual FEditorModeTools& GetEditorModeManager() const final;
 
-	virtual TWeakObjectPtr<UEdMode> GetScriptableEditorMode() const final;
-	virtual TSharedPtr<SWidget> GetInlineContent() const;
-	virtual FEdMode* GetEditorMode() const;
-	virtual	FText GetEditorModeDisplayName() const;
-	virtual FSlateIcon GetEditorModeIcon() const;
+	UNREALED_API virtual TWeakObjectPtr<UEdMode> GetScriptableEditorMode() const final;
+	UNREALED_API virtual TSharedPtr<SWidget> GetInlineContent() const;
+	UNREALED_API virtual FEdMode* GetEditorMode() const;
+	UNREALED_API virtual	FText GetEditorModeDisplayName() const;
+	UNREALED_API virtual FSlateIcon GetEditorModeIcon() const;
 	/** Returns the number of Mode specific tabs in the mode toolbar **/
 	virtual void GetToolPaletteNames(TArray<FName>& PaletteNames) const {}
 
@@ -149,7 +149,7 @@ public:
 	 * @param PaletteIndex      The index of the ToolPalette to build
 	 * @param ToolbarBuilder    The builder to use for given PaletteIndex
 	**/
-	virtual void BuildToolPalette(FName Palette, class FToolBarBuilder& ToolbarBuilder);
+	UNREALED_API virtual void BuildToolPalette(FName Palette, class FToolBarBuilder& ToolbarBuilder);
 
 	virtual FText GetActiveToolDisplayName() const { return FText(); }
 	virtual FText GetActiveToolMessage() const { return FText(); }
@@ -158,49 +158,55 @@ public:
 	FOnPaletteChanged& OnPaletteChanged() { return OnPaletteChangedDelegate; }
 
 	virtual void OnToolPaletteChanged(FName PaletteName) {};
-	void SetCurrentPalette(FName InName);
-	FName GetCurrentPalette() const;
-	void SetModeSettingsObject(UObject* InSettingsObject);
-	virtual void InvokeUI();
+	UNREALED_API void SetCurrentPalette(FName InName);
+	UNREALED_API FName GetCurrentPalette() const;
+	UNREALED_API void SetModeSettingsObject(UObject* InSettingsObject);
+	UNREALED_API virtual void InvokeUI();
+
+	/**
+	 * Override this function to extend the secondary mode toolbar (that appears below the main toolbar) for your mode by
+	 * filling in the UToolMenu that is passed in
+	 */
+	virtual void ExtendSecondaryModeToolbar(UToolMenu *InModeToolbarMenu) {}
 
 	/**
 	 * Force the Mode Toolbar/Palette to be repopulated with the current ToolPaletteNames
 	 */
-	virtual void RebuildModeToolPalette();
+	UNREALED_API virtual void RebuildModeToolPalette();
 
 protected:
-	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
-	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
+	UNREALED_API virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
+	UNREALED_API virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool);
 
 	virtual void CustomizeModeDetailsViewArgs(FDetailsViewArgs& ArgsInOut) {}
 	virtual void CustomizeDetailsViewArgs(FDetailsViewArgs& ArgsInOut) {}
 
-	virtual void RequestModeUITabs();
+	UNREALED_API virtual void RequestModeUITabs();
 
-	void OnModeIDChanged(const FEditorModeID& InID, bool bIsEntering);
-	const FEditorModeInfo* GetEditorModeInfo() const;
+	UNREALED_API void OnModeIDChanged(const FEditorModeID& InID, bool bIsEntering);
+	UNREALED_API const FEditorModeInfo* GetEditorModeInfo() const;
 
 	/**
 	 * Whether or not the mode toolbar should be shown.  If any active modes generated a toolbar this method will return true
 	 */
-	bool ShouldShowModeToolbar() const;
-	TSharedRef<SDockTab> CreatePrimaryModePanel(const FSpawnTabArgs& Args);
-	void UpdatePrimaryModePanel();
-	EVisibility GetInlineContentHolderVisibility() const;
-	EVisibility GetNoToolSelectedTextVisibility() const;
+	UNREALED_API bool ShouldShowModeToolbar() const;
+	UNREALED_API TSharedRef<SDockTab> CreatePrimaryModePanel(const FSpawnTabArgs& Args);
+	UNREALED_API void UpdatePrimaryModePanel();
+	UNREALED_API EVisibility GetInlineContentHolderVisibility() const;
+	UNREALED_API EVisibility GetNoToolSelectedTextVisibility() const;
 
 	/**
 	 * Creates the mode toolbar tab if needed
 	 */
-	TSharedRef<SDockTab> MakeModeToolbarTab(const FSpawnTabArgs& Args);
+	UNREALED_API TSharedRef<SDockTab> MakeModeToolbarTab(const FSpawnTabArgs& Args);
 
 	/**
 	 * Creates the entire tool palette widget, override to specify toolbar style
 	 */
-	virtual TSharedRef<SWidget> CreatePaletteWidget(TSharedPtr<FUICommandList> InCommandList, FName InToolbarCustomizationName, FName InPaletteName);
+	UNREALED_API virtual TSharedRef<SWidget> CreatePaletteWidget(TSharedPtr<FUICommandList> InCommandList, FName InToolbarCustomizationName, FName InPaletteName);
 
-	void SpawnOrUpdateModeToolbar();
-	void RebuildModeToolBar();
+	UNREALED_API void SpawnOrUpdateModeToolbar();
+	UNREALED_API void RebuildModeToolBar();
 
 
 protected:
@@ -254,4 +260,17 @@ protected:
 
 	/** All toolbar rows generated by active modes.  There will be one row per active mode that generates a toolbar */
 	TArray<FEdModeToolbarRow> ActiveToolBarRows;
+
+	/** a feature flag that can be set to true in order to make and use a ToolkitBuilder,
+	 *  if one is defined for a given mode. */ 
+	bool bUsesToolkitBuilder = false;
+	
+	/** The FToolkitBuilder which will build the UI for this mode, if defined */
+	TSharedPtr<FToolkitBuilder> ToolkitBuilder;
+
+	/** returns whether or not this FModeToolkit has a ToolkitBuilder defined */
+	UNREALED_API bool HasToolkitBuilder() const;
+
+	/** The sections of the toolkit, defined for the ToolkitBuilder (if present) */
+	TSharedPtr<FToolkitSections> ToolkitSections;
 };

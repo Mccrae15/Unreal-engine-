@@ -10,6 +10,13 @@ static FAutoConsoleVariableRef CVarD3D12BatchResourceBarriers(
 	GD3D12BatchResourceBarriers,
 	TEXT("Whether to allow batching resource barriers"));
 
+static int32 GD3D12ExtraDepthTransitions = 0;
+static FAutoConsoleVariableRef CVarD3D12ExtraDepthTransitions(
+	TEXT("d3d12.ExtraDepthTransitions"),
+	GD3D12ExtraDepthTransitions,
+	TEXT("Adds extra transitions for the depth buffer to fix validation issues. However, this currently breaks async compute"));
+
+
 int64 FD3D12CommandList::FState::NextCommandListID = 0;
 
 void FD3D12CommandList::UpdateResidency(TConstArrayView<FD3D12ResidencyHandle*> Handles)
@@ -140,11 +147,11 @@ void FD3D12CommandAllocator::Reset()
 	VERIFYD3D12RESULT(CommandAllocator->Reset());
 }
 
-FD3D12CommandList::FD3D12CommandList(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator)
+FD3D12CommandList::FD3D12CommandList(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator)
 	: Device(CommandAllocator->Device)
 	, QueueType(CommandAllocator->QueueType)
 	, ResidencySet(D3DX12Residency::CreateResidencySet(Device->GetResidencyManager()))
-	, State(CommandAllocator, TimestampAllocator)
+	, State(CommandAllocator, TimestampAllocator, PipelineStatsAllocator)
 {
 	switch (QueueType)
 	{
@@ -179,6 +186,15 @@ FD3D12CommandList::FD3D12CommandList(FD3D12CommandAllocator* CommandAllocator, F
 #endif
 #if D3D12_MAX_COMMANDLIST_INTERFACE >= 6
 		Interfaces.CommandList->QueryInterface(IID_PPV_ARGS(Interfaces.GraphicsCommandList6.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 7
+		Interfaces.CommandList->QueryInterface(IID_PPV_ARGS(Interfaces.GraphicsCommandList7.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 8
+		Interfaces.CommandList->QueryInterface(IID_PPV_ARGS(Interfaces.GraphicsCommandList8.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 9
+		Interfaces.CommandList->QueryInterface(IID_PPV_ARGS(Interfaces.GraphicsCommandList9.GetInitReference()));
 #endif
 #if D3D12_PLATFORM_SUPPORTS_ASSERTRESOURCESTATES
 		Interfaces.CommandList->QueryInterface(IID_PPV_ARGS(Interfaces.DebugCommandList.GetInitReference()));
@@ -220,7 +236,7 @@ FD3D12CommandList::FD3D12CommandList(FD3D12CommandAllocator* CommandAllocator, F
 #endif
 
 	D3DX12Residency::Open(ResidencySet);
-	WriteBeginTimestamp();
+	BeginLocalQueries();
 }
 
 FD3D12CommandList::~FD3D12CommandList()
@@ -240,7 +256,7 @@ FD3D12CommandList::~FD3D12CommandList()
 	DEC_DWORD_STAT(STAT_D3D12NumCommandLists);
 }
 
-void FD3D12CommandList::Reset(FD3D12CommandAllocator* NewCommandAllocator, FD3D12QueryAllocator* TimestampAllocator)
+void FD3D12CommandList::Reset(FD3D12CommandAllocator* NewCommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator)
 {
 	check(IsClosed());
 	check(NewCommandAllocator->Device == Device && NewCommandAllocator->QueueType == QueueType);
@@ -254,14 +270,14 @@ void FD3D12CommandList::Reset(FD3D12CommandAllocator* NewCommandAllocator, FD3D1
 	}
 	D3DX12Residency::Open(ResidencySet);
 
-	State = FState(NewCommandAllocator, TimestampAllocator);
-	WriteBeginTimestamp();
+	State = FState(NewCommandAllocator, TimestampAllocator, PipelineStatsAllocator);
+	BeginLocalQueries();
 }
 
 void FD3D12CommandList::Close()
 {
 	check(IsOpen());
-	WriteEndTimestamp();
+	EndLocalQueries();
 
 	if (Interfaces.CopyCommandList)
 	{
@@ -275,28 +291,46 @@ void FD3D12CommandList::Close()
 	State.IsClosed = true;
 }
 
-void FD3D12CommandList::WriteBeginTimestamp()
+void FD3D12CommandList::BeginLocalQueries()
 {
-	if (!State.bBeginTimestampWritten && State.BeginTimestamp)
+	if (!State.bLocalQueriesBegun)
 	{
-		EndQuery(State.BeginTimestamp);
-		State.bBeginTimestampWritten = true;
+		if (State.BeginTimestamp)
+		{
+			EndQuery(State.BeginTimestamp);
+		}
+
+		if (State.PipelineStats)
+		{
+			BeginQuery(State.PipelineStats);
+		}
+
+		State.bLocalQueriesBegun = true;
 	}
 }
 
-void FD3D12CommandList::WriteEndTimestamp()
+void FD3D12CommandList::EndLocalQueries()
 {
-	if (!State.bEndTimestampWritten && State.EndTimestamp)
+	if (!State.bLocalQueriesEnded)
 	{
-		EndQuery(State.EndTimestamp);
-		State.bEndTimestampWritten = true;
+		if (State.PipelineStats)
+		{
+			EndQuery(State.PipelineStats);
+		}
+
+		if (State.EndTimestamp)
+		{
+			EndQuery(State.EndTimestamp);
+		}
+
+		State.bLocalQueriesEnded = true;
 	}
 }
 
 void FD3D12CommandList::BeginQuery(FD3D12QueryLocation const& Location)
 {
 	check(Location);
-	check(Location.Heap->QueryType == D3D12_QUERY_TYPE_OCCLUSION);
+	check(Location.Heap->QueryType == D3D12_QUERY_TYPE_OCCLUSION || Location.Heap->QueryType == D3D12_QUERY_TYPE_PIPELINE_STATISTICS);
 
 	GraphicsCommandList()->BeginQuery(
 		Location.Heap->GetD3DQueryHeap(),
@@ -312,6 +346,15 @@ void FD3D12CommandList::EndQuery(FD3D12QueryLocation const& Location)
 	{
 	default:
 		checkNoEntry();
+		break;
+
+	case D3D12_QUERY_TYPE_PIPELINE_STATISTICS:
+		GraphicsCommandList()->EndQuery(
+			Location.Heap->GetD3DQueryHeap(),
+			Location.Heap->QueryType,
+			Location.Index
+		);
+		State.PipelineStatsQueries.Add(Location);
 		break;
 
 	case D3D12_QUERY_TYPE_OCCLUSION:
@@ -347,7 +390,7 @@ void FD3D12CommandList::WriteTimestamp(FD3D12QueryLocation const& Location)
 }
 #endif // D3D12RHI_PLATFORM_USES_TIMESTAMP_QUERIES
 
-FD3D12CommandList::FState::FState(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator)
+FD3D12CommandList::FState::FState(FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator)
 	: CommandAllocator(CommandAllocator)
 	, CommandListID   (FPlatformAtomics::InterlockedIncrement(&NextCommandListID))
 {
@@ -358,12 +401,17 @@ FD3D12CommandList::FState::FState(FD3D12CommandAllocator* CommandAllocator, FD3D
 		BeginTimestamp = TimestampAllocator->Allocate(ED3D12QueryType::CommandListBegin, nullptr);
 		EndTimestamp   = TimestampAllocator->Allocate(ED3D12QueryType::CommandListEnd  , nullptr);
 	}
+
+	if (PipelineStatsAllocator)
+	{
+		PipelineStats = PipelineStatsAllocator->Allocate(ED3D12QueryType::PipelineStats, nullptr);
+	}
 }
 
 void FD3D12ContextCommon::TransitionResource(FD3D12DepthStencilView* View)
 {
 	// Determine the required subresource states from the view desc
-	const D3D12_DEPTH_STENCIL_VIEW_DESC& DSVDesc = View->GetDesc();
+	const D3D12_DEPTH_STENCIL_VIEW_DESC& DSVDesc = View->GetD3DDesc();
 	const bool bDSVDepthIsWritable = (DSVDesc.Flags & D3D12_DSV_FLAG_READ_ONLY_DEPTH) == 0;
 	const bool bDSVStencilIsWritable = (DSVDesc.Flags & D3D12_DSV_FLAG_READ_ONLY_STENCIL) == 0;
 	// TODO: Check if the PSO depth stencil is writable. When this is done, we need to transition in SetDepthStencilState too.
@@ -379,20 +427,20 @@ void FD3D12ContextCommon::TransitionResource(FD3D12DepthStencilView* View)
 	FD3D12Resource* Resource = View->GetResource();
 	if (bDepthIsWritable)
 	{
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, View->GetDepthOnlyViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, View->GetDepthOnlySubset());
 	}
-	else if (bHasDepth)
+	else if (bHasDepth && GD3D12ExtraDepthTransitions)
 	{
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_READ, View->GetDepthOnlyViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_READ, View->GetDepthOnlySubset());
 	}
 
 	if (bStencilIsWritable)
 	{
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, View->GetStencilOnlyViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, View->GetStencilOnlySubset());
 	}
-	else if (bHasStencil)
+	else if (bHasStencil && GD3D12ExtraDepthTransitions)
 	{
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_READ, View->GetStencilOnlyViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_READ, View->GetStencilOnlySubset());
 	}
 }
 
@@ -400,7 +448,7 @@ void FD3D12ContextCommon::TransitionResource(FD3D12DepthStencilView* View, D3D12
 {
 	FD3D12Resource* Resource = View->GetResource();
 
-	const D3D12_DEPTH_STENCIL_VIEW_DESC& Desc = View->GetDesc();
+	const D3D12_DEPTH_STENCIL_VIEW_DESC& Desc = View->GetD3DDesc();
 	switch (Desc.ViewDimension)
 	{
 	case D3D12_DSV_DIMENSION_TEXTURE2D:
@@ -408,7 +456,7 @@ void FD3D12ContextCommon::TransitionResource(FD3D12DepthStencilView* View, D3D12
 		if (Resource->GetPlaneCount() > 1)
 		{
 			// Multiple subresources to transtion
-			TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubresourceSubset());
+			TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubset());
 		}
 		else
 		{
@@ -421,7 +469,7 @@ void FD3D12ContextCommon::TransitionResource(FD3D12DepthStencilView* View, D3D12
 	case D3D12_DSV_DIMENSION_TEXTURE2DARRAY:
 	case D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY:
 		// Multiple subresources to transtion
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubset());
 		break;
 
 	default:
@@ -434,7 +482,7 @@ void FD3D12ContextCommon::TransitionResource(FD3D12RenderTargetView* View, D3D12
 {
 	FD3D12Resource* Resource = View->GetResource();
 
-	const D3D12_RENDER_TARGET_VIEW_DESC& Desc = View->GetDesc();
+	const D3D12_RENDER_TARGET_VIEW_DESC& Desc = View->GetD3DDesc();
 	switch (Desc.ViewDimension)
 	{
 	case D3D12_RTV_DIMENSION_TEXTURE3D:
@@ -449,7 +497,7 @@ void FD3D12ContextCommon::TransitionResource(FD3D12RenderTargetView* View, D3D12
 	case D3D12_RTV_DIMENSION_TEXTURE2DARRAY:
 	case D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY:
 		// Multiple subresources to transition
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubset());
 		break;
 
 	default:
@@ -467,21 +515,21 @@ void FD3D12ContextCommon::TransitionResource(FD3D12ShaderResourceView* View, D3D
 		return;
 
 	const D3D12_RESOURCE_DESC& ResDesc = Resource->GetDesc();
-	const CViewSubresourceSubset& SubresourceSubset = View->GetViewSubresourceSubset();
+	const FD3D12ViewSubset& ViewSubset = View->GetViewSubset();
 
-	const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc = View->GetDesc();
+	const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc = View->GetD3DDesc();
 	switch (Desc.ViewDimension)
 	{
 	default:
 		// Transition the resource
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, SubresourceSubset);
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, ViewSubset);
 		break;
 
 	case D3D12_SRV_DIMENSION_BUFFER:
 		if (Resource->GetHeapType() == D3D12_HEAP_TYPE_DEFAULT)
 		{
 			// Transition the resource
-			TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, SubresourceSubset);
+			TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, ViewSubset);
 		}
 		break;
 	}
@@ -491,7 +539,7 @@ void FD3D12ContextCommon::TransitionResource(FD3D12UnorderedAccessView* View, D3
 {
 	FD3D12Resource* Resource = View->GetResource();
 
-	const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc = View->GetDesc();
+	const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc = View->GetD3DDesc();
 	switch (Desc.ViewDimension)
 	{
 	case D3D12_UAV_DIMENSION_BUFFER:
@@ -505,12 +553,12 @@ void FD3D12ContextCommon::TransitionResource(FD3D12UnorderedAccessView* View, D3
 
 	case D3D12_UAV_DIMENSION_TEXTURE2DARRAY:
 		// Multiple subresources to transtion
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubset());
 		break;
 
 	case D3D12_UAV_DIMENSION_TEXTURE3D:
 		// Multiple subresources to transtion
-		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubresourceSubset());
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, After, View->GetViewSubset());
 		break;
 
 	default:
@@ -559,7 +607,7 @@ bool FD3D12ContextCommon::TransitionResource(FD3D12Resource* Resource, D3D12_RES
 }
 
 // Transition subresources from current to a new state, using resource state tracking.
-bool FD3D12ContextCommon::TransitionResource(FD3D12Resource* Resource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After, const CViewSubresourceSubset& SubresourceSubset)
+bool FD3D12ContextCommon::TransitionResource(FD3D12Resource* Resource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After, FD3D12ViewSubset const& ViewSubset)
 {
 	check(Resource);
 	check(Resource->RequiresResourceStateTracking());
@@ -571,7 +619,7 @@ bool FD3D12ContextCommon::TransitionResource(FD3D12Resource* Resource, D3D12_RES
 
 	UpdateResidency(Resource);
 
-	const bool bIsWholeResource = SubresourceSubset.IsWholeResource();
+	const bool bIsWholeResource = ViewSubset.IsWholeResource();
 	CResourceState& ResourceState = GetCommandList().GetResourceState_OnCommandList(Resource);
 
 	bool bRequireUAVBarrier = false;
@@ -588,17 +636,14 @@ bool FD3D12ContextCommon::TransitionResource(FD3D12Resource* Resource, D3D12_RES
 		// Either way, we'll need to loop over each subresource in the view...
 
 		bool bWholeResourceWasTransitionedToSameState = bIsWholeResource;
-		for (CViewSubresourceSubset::CViewSubresourceIterator it = SubresourceSubset.begin(); it != SubresourceSubset.end(); ++it)
+		for (uint32 SubresourceIndex : ViewSubset)
 		{
-			for (uint32 SubresourceIndex = it.StartSubresource(); SubresourceIndex < it.EndSubresource(); SubresourceIndex++)
-			{
-				bool bForceInAfterState = false;
-				bRequireUAVBarrier |= TransitionResource(Resource, ResourceState, SubresourceIndex, Before, After, bForceInAfterState);
+			bool bForceInAfterState = false;
+			bRequireUAVBarrier |= TransitionResource(Resource, ResourceState, SubresourceIndex, Before, After, bForceInAfterState);
 
-				// Subresource not in the same state, then whole resource is not in the same state anymore
-				if (ResourceState.GetSubresourceState(SubresourceIndex) != After)
-					bWholeResourceWasTransitionedToSameState = false;
-			}
+			// Subresource not in the same state, then whole resource is not in the same state anymore
+			if (ResourceState.GetSubresourceState(SubresourceIndex) != After)
+				bWholeResourceWasTransitionedToSameState = false;
 		}
 
 		// If we just transtioned every subresource to the same state, lets update it's tracking so it's on a per-resource level
@@ -621,7 +666,10 @@ static inline bool IsTransitionNeeded(D3D12_RESOURCE_STATES Before, D3D12_RESOUR
 	// Depth write is actually a suitable for read operations as a "normal" depth buffer.
 	if (Before == D3D12_RESOURCE_STATE_DEPTH_WRITE && After == D3D12_RESOURCE_STATE_DEPTH_READ)
 	{
-		After = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		if (GD3D12ExtraDepthTransitions)
+		{
+			After = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		}
 		return false;
 	}
 

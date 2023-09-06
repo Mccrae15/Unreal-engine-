@@ -62,20 +62,6 @@ bool FVisualLogStatusCategory::GetDesc(int32 Index, FString& Key, FString& Value
 	return false;
 }
 
-FVisualLogEntry::FVisualLogEntry(const FVisualLogEntry& Entry)
-{
-	TimeStamp = Entry.TimeStamp;
-	Location = Entry.Location;
-	bIsLocationValid = Entry.bIsLocationValid;
-
-	Events = Entry.Events;
-	LogLines = Entry.LogLines;
-	Status = Entry.Status;
-	ElementsToDraw = Entry.ElementsToDraw;
-	HistogramSamples = Entry.HistogramSamples;
-	DataBlocks = Entry.DataBlocks;
-}
-
 FVisualLogEntry::FVisualLogEntry(const AActor* InActor, TArray<TWeakObjectPtr<UObject> >* Children)
 {
 	if (!IsValid(InActor))
@@ -558,7 +544,10 @@ FArchive& operator<<(FArchive& Ar, FVisualLogEntry& LogEntry)
 	const int32 VLogsOldVer = Ar.CustomVer(EVisualLoggerVersion::GUID);
 	const int32 VLogsStreamObjectVer = Ar.CustomVer(FUE5MainStreamObjectVersion::GUID);
 
-	if (VLogsStreamObjectVer >= FUE5MainStreamObjectVersion::VisualLoggerTimeStampAsDouble)
+	// @todo replace with FUE5MainStreamObjectVersion::VisualLoggerTimeStampAsDouble when it becomes available
+	constexpr int32 TEMPVisualLoggerTimeStampAsDouble = 98;
+
+	if (VLogsStreamObjectVer >= TEMPVisualLoggerTimeStampAsDouble)
 	{
 		Ar << LogEntry.TimeStamp;
 	}

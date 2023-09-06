@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SNewPluginWizard.h"
+#include "AssetToolsModule.h"
 #include "Brushes/SlateDynamicImageBrush.h"
 #include "Misc/Paths.h"
 #include "DetailsViewArgs.h"
 #include "Misc/MessageDialog.h"
 #include "Framework/Views/TableViewMetadata.h"
 #include "HAL/FileManager.h"
+#include "IAssetTools.h"
 #include "IDesktopPlatform.h"
 #include "Misc/App.h"
 #include "Framework/Application/SlateApplication.h"
@@ -51,6 +53,7 @@ SNewPluginWizard::SNewPluginWizard()
 	: bIsPluginPathValid(false)
 	, bIsPluginNameValid(false)
 	, bIsSelectedPathInEngine(false)
+	, bIsWaitingForAssetDiscoveryToFinish(false)
 {
 	AbsoluteGamePluginPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FPaths::ProjectPluginsDir());
 	FPaths::MakePlatformFilename(AbsoluteGamePluginPath);
@@ -187,7 +190,7 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 			SNew(SCheckBox)
 			.OnCheckStateChanged(this, &SNewPluginWizard::OnEnginePluginCheckboxChanged)
 			.IsChecked(this, &SNewPluginWizard::IsEnginePlugin)
-			.Visibility_Lambda([=]()
+			.Visibility_Lambda([this]()
 			{
 				FPluginTemplateDescription* Template = PluginWizardDefinition->GetSelectedTemplate().Get();
 				return ((Template != nullptr) && Template->bCanBePlacedInEngine) ? EVisibility::Visible : EVisibility::Collapsed;
@@ -235,7 +238,7 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 		[
 			SAssignNew(ShowPluginContentDirectoryCheckBox, SCheckBox)
 			.IsChecked(ECheckBoxState::Checked)
-			.Visibility_Lambda([=]()
+			.Visibility_Lambda([this]()
 			{
 				FPluginTemplateDescription* Template = PluginWizardDefinition->GetSelectedTemplate().Get();
 				return ((Template != nullptr) && Template->bCanContainContent) ? EVisibility::Visible : EVisibility::Collapsed;
@@ -573,7 +576,7 @@ void SNewPluginWizard::ValidateFullPluginPath()
 
 bool SNewPluginWizard::CanCreatePlugin() const
 {
-	return bIsPluginPathValid && bIsPluginNameValid && PluginWizardDefinition->HasValidTemplateSelection();
+	return bIsPluginPathValid && bIsPluginNameValid && PluginWizardDefinition->HasValidTemplateSelection() && !bIsWaitingForAssetDiscoveryToFinish;
 }
 
 FText SNewPluginWizard::GetPluginDestinationPath() const
@@ -624,6 +627,13 @@ FReply SNewPluginWizard::OnCreatePluginClicked()
 		return FReply::Unhandled();
 	}
 
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	if (AssetToolsModule.Get().IsDiscoveringAssetsInProgress())
+	{
+		bIsWaitingForAssetDiscoveryToFinish = true;
+		AssetToolsModule.Get().OpenDiscoveringAssetsDialog(IAssetTools::FOnAssetsDiscovered::CreateSP(this, &SNewPluginWizard::DiscoveringAssetsCalback));
+		return FReply::Unhandled();
+	}
 
 	const FString PluginName = PluginNameText.ToString();
 	const bool bHasModules = PluginWizardDefinition->HasModules();
@@ -691,10 +701,14 @@ FReply SNewPluginWizard::OnCreatePluginClicked()
 	}
 	else
 	{
-		const FText Title = LOCTEXT("UnableToCreatePlugin", "Unable to create plugin");
-		FMessageDialog::Open(EAppMsgType::Ok, FailReason, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, FailReason, LOCTEXT("UnableToCreatePlugin", "Unable to create plugin"));
 		return FReply::Unhandled();
 	}
+}
+
+void SNewPluginWizard::DiscoveringAssetsCalback()
+{
+	bIsWaitingForAssetDiscoveryToFinish = false;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -16,7 +16,10 @@
 #include "MediaSampleSource.h"
 
 #include "IMediaTimeSource.h"
+#include "IMediaAudioSample.h"
 #include "IMediaTextureSample.h"
+#include "IMediaBinarySample.h"
+#include "IMediaOverlaySample.h"
 
 /**
  * Template for media sample queues.
@@ -28,8 +31,8 @@ class TMediaSampleQueue
 {
 public:
 
-	/** Default constructor. */
-	TMediaSampleQueue()
+	TMediaSampleQueue(int32 InMaxSamplesInQueue = -1)
+		: MaxSamplesInQueue(InMaxSamplesInQueue)
 	{ }
 
 	/** Virtual destructor. */
@@ -119,7 +122,29 @@ public:
 		return true;
 	}
 
-	bool FetchBestSampleForTimeRange(const TRange<FMediaTimeStamp> & TimeRange, TSharedPtr<SampleType, ESPMode::ThreadSafe>& OutSample, bool bReverse)
+	bool Discard(const TRange<FMediaTimeStamp>& TimeRange, bool bReverse)
+	{
+		// Code below assumes a fully specified range, no open bounds!
+		check(TimeRange.HasLowerBound() && TimeRange.HasUpperBound());
+
+		FScopeLock Lock(&CriticalSection);
+
+		int32 FirstPossibleIndex, LastPossibleIndex, NumOldSamplesAtBegin;
+		FindRangeInQueue(TimeRange, bReverse, FirstPossibleIndex, LastPossibleIndex, NumOldSamplesAtBegin);
+
+		// Found anything?
+		if (FirstPossibleIndex >= 0)
+		{
+			check(LastPossibleIndex >= 0);
+
+			// Remove all samples indicated...
+			Samples.RemoveAt(FirstPossibleIndex, LastPossibleIndex - FirstPossibleIndex + 1);
+			return true;
+		}
+		return false;
+	}
+
+	bool FetchBestSampleForTimeRange(const TRange<FMediaTimeStamp>& TimeRange, TSharedPtr<SampleType, ESPMode::ThreadSafe>& OutSample, bool bReverse)
 	{
 		// Code below assumes a fully specified range, no open bounds!
 		check(TimeRange.HasLowerBound() && TimeRange.HasUpperBound());
@@ -128,54 +153,8 @@ public:
 
 		FScopeLock Lock(&CriticalSection);
 
-		int32 Num = Samples.Num();
-		if (Num == 0)
-		{
-			return false;
-		}
-
-		int32 FirstPossibleIndex = -1;
-		int32 LastPossibleIndex = -1;
-		int32 NumOldSamplesAtBegin = 0;
-		for (int32 Idx = 0; Idx < Num; ++Idx)
-		{
-			const TSharedPtr<SampleType, ESPMode::ThreadSafe> & Sample = Samples[Idx];
-			TRange<FMediaTimeStamp> SampleTimeRange = !bReverse ? TRange<FMediaTimeStamp>(Sample->GetTime(), Sample->GetTime() + Sample->GetDuration())
-																: TRange<FMediaTimeStamp>(Sample->GetTime() - Sample->GetDuration(), Sample->GetTime());
-
-			if (TimeRange.Overlaps(SampleTimeRange))
-			{
-				// Sample is at least partially inside the requested range, recall the range of samples we find...
-				if (FirstPossibleIndex < 0)
-				{
-					FirstPossibleIndex = Idx;
-				}
-				LastPossibleIndex = Idx;
-			}
-			else
-			{
-				if (!bReverse ? (SampleTimeRange.GetLowerBoundValue() >= TimeRange.GetUpperBoundValue()) :
-								(SampleTimeRange.GetUpperBoundValue() <= TimeRange.GetLowerBoundValue()))
-				{
-					// Sample is entirely past requested time range, we can stop
-					// (we assume monotonically increasing time stamps here)
-					break;
-				}
-
-				// If the incoming data it not monotonically increasing we migth get here after we already found the first overlapping sample
-				// -> we do not count further non-overlapping, older samples into this range
-				if (FirstPossibleIndex < 0)
-				{
-					// Sample is before time range, we will delete is later, no reason to keep it
-					++NumOldSamplesAtBegin;
-				}
-				else
-				{
-					// If we find an older non-verlapping sample after an overlapping one, we move the last possible index on to ensure these samples die ASAP
-					LastPossibleIndex = Idx;
-				}
-			}
-		}
+		int32 FirstPossibleIndex, LastPossibleIndex, NumOldSamplesAtBegin;
+		FindRangeInQueue(TimeRange, bReverse, FirstPossibleIndex, LastPossibleIndex, NumOldSamplesAtBegin);
 
 		// Found anything?
 		if (FirstPossibleIndex >= 0)
@@ -192,7 +171,7 @@ public:
 
 					// Check once more if this sample is actually overlapping as we may get non-monotonically increasing data...
 					TRange<FMediaTimeStamp> SampleTimeRange = !bReverse ? TRange<FMediaTimeStamp>(Sample->GetTime(), Sample->GetTime() + Sample->GetDuration())
-																		: TRange<FMediaTimeStamp>(Sample->GetTime() - Sample->GetDuration(), Sample->GetTime());
+						: TRange<FMediaTimeStamp>(Sample->GetTime() - Sample->GetDuration(), Sample->GetTime());
 
 					if (TimeRange.Overlaps(SampleTimeRange))
 					{
@@ -239,20 +218,20 @@ public:
 	}
 
 
-	uint32 PurgeOutdatedSamples(const FMediaTimeStamp & ReferenceTime, bool bReversed)
+	uint32 PurgeOutdatedSamples(const FMediaTimeStamp& ReferenceTime, bool bReversed, FTimespan MaxAge)
 	{
 		FScopeLock Lock(&CriticalSection);
 
 		int32 Num = Samples.Num();
 		if (Num > 0)
 		{
-			int32 Idx = 0;
+			// All samples at or beyond the reference time are good to stay
+			int32 Idx;
 			if (!bReversed)
 			{
-				for (; Idx < Num; ++Idx)
+				for (Idx = Num - 1; Idx >= 0; --Idx)
 				{
-					const TSharedPtr<SampleType, ESPMode::ThreadSafe> & Sample = Samples[Idx];
-					if ((Sample->GetTime() + Sample->GetDuration()) > ReferenceTime)
+					if (Samples[Idx]->GetTime() < ReferenceTime)
 					{
 						break;
 					}
@@ -260,22 +239,28 @@ public:
 			}
 			else
 			{
-				for (; Idx < Num; ++Idx)
+				for (Idx = Num - 1; Idx >= 0; --Idx)
 				{
-					const TSharedPtr<SampleType, ESPMode::ThreadSafe> & Sample = Samples[Idx];
-					if ((Sample->GetTime() - Sample->GetDuration()) < ReferenceTime)
+					if (Samples[Idx]->GetTime() > ReferenceTime)
 					{
 						break;
 					}
 				}
 			}
-			if (Idx > 0)
+			// Accumulate durations of samples from the reference time backwards to judge what to purge as "too old"
+			FTimespan Age = FTimespan::Zero();
+			for (; Idx >= 0; --Idx)
 			{
-				Samples.RemoveAt(0, Idx);
+				auto Duration = Samples[Idx]->GetDuration();
+				Age += Duration;
+				if (Age > MaxAge)
+				{
+					// All earlier samples, including the current one are "too old"
+					Samples.RemoveAt(0, Idx + 1);
+					return Idx + 1;
+				}
 			}
-			return Idx;
 		}
-
 		return 0;
 	}
 
@@ -287,6 +272,11 @@ public:
 	{
 		FScopeLock Lock(&CriticalSection);
 
+		if ((MaxSamplesInQueue > 0) && (Samples.Num() >= MaxSamplesInQueue))
+		{
+			return false;
+		}
+
 		Samples.Push(Sample);
 		return true;
 	}
@@ -297,9 +287,67 @@ public:
 		Samples.Empty();
 	}
 
+	virtual bool CanAcceptSamples(int32 NumSamples) const override
+	{
+		return (MaxSamplesInQueue < 0) || ((Samples.Num() + NumSamples) <= MaxSamplesInQueue);
+	}
+
 protected:
+	void FindRangeInQueue(const TRange<FMediaTimeStamp>& TimeRange, bool bReverse, int32& FirstPossibleIndex, int32& LastPossibleIndex, int32& NumOldSamplesAtBegin)
+	{
+		FirstPossibleIndex = -1;
+		LastPossibleIndex = -1;
+		NumOldSamplesAtBegin = 0;
+
+		int32 Num = Samples.Num();
+		if (Num > 0)
+		{
+			for (int32 Idx = 0; Idx < Num; ++Idx)
+			{
+				const TSharedPtr<SampleType, ESPMode::ThreadSafe>& Sample = Samples[Idx];
+				TRange<FMediaTimeStamp> SampleTimeRange = !bReverse ? TRange<FMediaTimeStamp>(Sample->GetTime(), Sample->GetTime() + Sample->GetDuration())
+					: TRange<FMediaTimeStamp>(Sample->GetTime() - Sample->GetDuration(), Sample->GetTime());
+
+				if (TimeRange.Overlaps(SampleTimeRange))
+				{
+					// Sample is at least partially inside the requested range, recall the range of samples we find...
+					if (FirstPossibleIndex < 0)
+					{
+						FirstPossibleIndex = Idx;
+					}
+					LastPossibleIndex = Idx;
+				}
+				else
+				{
+					if (!bReverse ? (SampleTimeRange.GetLowerBoundValue() >= TimeRange.GetUpperBoundValue()) :
+						(SampleTimeRange.GetUpperBoundValue() <= TimeRange.GetLowerBoundValue()))
+					{
+						// Sample is entirely past requested time range, we can stop
+						// (we assume monotonically increasing time stamps here)
+						break;
+					}
+
+					// If the incoming data it not monotonically increasing we might get here after we already found the first overlapping sample
+					// -> we do not count further non-overlapping, older samples into this range
+					if (FirstPossibleIndex < 0)
+					{
+						// Sample is before time range, we will delete is later, no reason to keep it
+						++NumOldSamplesAtBegin;
+					}
+					else
+					{
+						// If we find an older non-overlapping sample after an overlapping one, we move the last possible index on to ensure these samples die ASAP
+						LastPossibleIndex = Idx;
+					}
+				}
+			}
+		}
+
+	}
+
 	mutable FCriticalSection CriticalSection;
 	TArray<TSharedPtr<SampleType, ESPMode::ThreadSafe>> Samples;
+	int32 MaxSamplesInQueue;
 };
 
 
@@ -307,8 +355,9 @@ protected:
 class FMediaAudioSampleQueue : public TMediaSampleQueue<class IMediaAudioSample, class FMediaAudioSampleSink>
 {
 public:
-	FMediaAudioSampleQueue(int32 InMaxAudioSamplesInQueue = -1)
-		: MaxAudioSamplesInQueue(InMaxAudioSamplesInQueue) {}
+	FMediaAudioSampleQueue(uint32 MaxSamplesInQueue = -1)
+		: TMediaSampleQueue<class IMediaAudioSample, class FMediaAudioSampleSink>(MaxSamplesInQueue)
+	{ }
 
 	void SetAudioTime(const FMediaTimeStampSample & InAudioTime)
 	{
@@ -334,26 +383,7 @@ public:
 		TMediaSampleQueue<class IMediaAudioSample, class FMediaAudioSampleSink>::RequestFlush();
 		AudioTime.Invalidate();
 	}
-
-	virtual bool Enqueue(const TSharedRef<IMediaAudioSample, ESPMode::ThreadSafe>& Sample) override
-	{
-		FScopeLock Lock(&CriticalSection);
-
-		if (MaxAudioSamplesInQueue > 0 && Samples.Num() >= MaxAudioSamplesInQueue)
-		{
-			return false;
-		}
-
-		Samples.Push(Sample);
-		return true;
-	}
-
-	virtual bool CanAcceptSamples(int32 NumSamples) const
-	{
-		return (Samples.Num() + NumSamples) <= MaxAudioSamplesInQueue;
-	}
 private:
-	int32 MaxAudioSamplesInQueue;
 	FMediaTimeStampSample AudioTime;
 };
 

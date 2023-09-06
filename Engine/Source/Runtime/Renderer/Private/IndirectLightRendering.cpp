@@ -11,6 +11,7 @@
 #include "ScreenSpaceRayTracing.h"
 #include "DeferredShadingRenderer.h"
 #include "PostProcess/PostProcessSubsurface.h"
+#include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/TemporalAA.h"
 #include "CompositionLighting/PostProcessAmbientOcclusion.h"
 #include "CompositionLighting/CompositionLighting.h"
@@ -28,6 +29,7 @@
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Lumen/LumenTracingUtils.h"
 #include "Lumen/LumenSceneLighting.h"
+#include "Lumen/LumenReflections.h"
 
 // This is the project default dynamic global illumination, NOT the scalability setting (see r.Lumen.DiffuseIndirect.Allow for scalability)
 // Must match EDynamicGlobalIlluminationMethod
@@ -94,6 +96,11 @@ static TAutoConsoleVariable<bool> CVarDiffuseIndirectOffUseDepthBoundsAO(
 	TEXT("Use depth bounds when we apply the AO when DiffuseIndirect is disabled."),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<bool> CVarDiffuseIndirectForceCopyPass(
+	TEXT("r.DiffuseIndirectForceCopyPass"), false,
+	TEXT("Forces use of copy pass instead of dual source blend. (for debugging)"),
+	ECVF_RenderThreadSafe);
+
 DECLARE_GPU_STAT_NAMED(ReflectionEnvironment, TEXT("Reflection Environment"));
 DECLARE_GPU_STAT_NAMED(RayTracingReflections, TEXT("Ray Tracing Reflections"));
 DECLARE_GPU_STAT(SkyLightDiffuse);
@@ -116,9 +123,10 @@ class FDiffuseIndirectCompositePS : public FGlobalShader
 	class FApplyDiffuseIndirectDim : SHADER_PERMUTATION_INT("DIM_APPLY_DIFFUSE_INDIRECT", 4);
 	class FUpscaleDiffuseIndirectDim : SHADER_PERMUTATION_BOOL("DIM_UPSCALE_DIFFUSE_INDIRECT");
 	class FScreenBentNormal : SHADER_PERMUTATION_BOOL("DIM_SCREEN_BENT_NORMAL");
-	class FStrataTileType : SHADER_PERMUTATION_INT("STRATA_TILETYPE", 3);
+	class FStrataTileType : SHADER_PERMUTATION_INT("STRATA_TILETYPE", 4);
+	class FEnableDualSrcBlending : SHADER_PERMUTATION_BOOL("ENABLE_DUAL_SRC_BLENDING");
 
-	using FPermutationDomain = TShaderPermutationDomain<FApplyDiffuseIndirectDim, FUpscaleDiffuseIndirectDim, FScreenBentNormal, FStrataTileType>;
+	using FPermutationDomain = TShaderPermutationDomain<FApplyDiffuseIndirectDim, FUpscaleDiffuseIndirectDim, FScreenBentNormal, FStrataTileType, FEnableDualSrcBlending>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -167,6 +175,9 @@ class FDiffuseIndirectCompositePS : public FGlobalShader
 		
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, AmbientOcclusionTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState,  AmbientOcclusionSampler)
+
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorSampler)
 
 		SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGF)
 		SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
@@ -271,7 +282,8 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 	class FDynamicSkyLight : SHADER_PERMUTATION_BOOL("ENABLE_DYNAMIC_SKY_LIGHT");
 	class FSkyShadowing : SHADER_PERMUTATION_BOOL("APPLY_SKY_SHADOWING");
 	class FRayTracedReflections : SHADER_PERMUTATION_BOOL("RAY_TRACED_REFLECTIONS");
-	class FStrataTileType : SHADER_PERMUTATION_INT("STRATA_TILETYPE", 3);
+	class FLumenStandaloneReflections : SHADER_PERMUTATION_BOOL("LUMEN_STANDALONE_REFLECTIONS");
+	class FStrataTileType : SHADER_PERMUTATION_INT("STRATA_TILETYPE", 4);
 
 	using FPermutationDomain = TShaderPermutationDomain<
 		FHasBoxCaptures,
@@ -281,6 +293,7 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 		FDynamicSkyLight,
 		FSkyShadowing,
 		FRayTracedReflections,
+		FLumenStandaloneReflections,
 		FStrataTileType>;
 
 	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
@@ -302,10 +315,20 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 			PermutationVector.Set<FStrataTileType>(0);
 		}
 
+		if (PermutationVector.Get<FLumenStandaloneReflections>())
+		{
+			PermutationVector.Set<FRayTracedReflections>(false);
+		}
+
+		if (PermutationVector.Get<FRayTracedReflections>())
+		{
+			PermutationVector.Set<FLumenStandaloneReflections>(false);
+		}
+
 		return PermutationVector;
 	}
 
-	static FPermutationDomain BuildPermutationVector(const FViewInfo& View, bool bBoxCapturesOnly, bool bSphereCapturesOnly, bool bSupportDFAOIndirectOcclusion, bool bEnableSkyLight, bool bEnableDynamicSkyLight, bool bApplySkyShadowing, bool bRayTracedReflections, EStrataTileType TileType)
+	static FPermutationDomain BuildPermutationVector(const FViewInfo& View, bool bBoxCapturesOnly, bool bSphereCapturesOnly, bool bSupportDFAOIndirectOcclusion, bool bEnableSkyLight, bool bEnableDynamicSkyLight, bool bApplySkyShadowing, bool bRayTracedReflections, bool bLumenStandaloneReflections, EStrataTileType TileType)
 	{
 		FPermutationDomain PermutationVector;
 
@@ -316,10 +339,11 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 		PermutationVector.Set<FDynamicSkyLight>(bEnableDynamicSkyLight);
 		PermutationVector.Set<FSkyShadowing>(bApplySkyShadowing);
 		PermutationVector.Set<FRayTracedReflections>(bRayTracedReflections);
+		PermutationVector.Set<FLumenStandaloneReflections>(bLumenStandaloneReflections);
 		PermutationVector.Set<FStrataTileType>(0);
 		if (Strata::IsStrataEnabled())
 		{
-			check(TileType <= EStrataTileType::EComplex);
+			check(TileType <= EStrataTileType::EComplexSpecial);
 			PermutationVector.Set<FStrataTileType>(TileType);
 		}
 		return RemapPermutation(PermutationVector);
@@ -342,6 +366,7 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("MAX_CAPTURES"), GMaxNumReflectionCaptures);
 		OutEnvironment.SetDefine(TEXT("SUPPORTS_ANISOTROPIC_MATERIALS"), FDataDrivenShaderPlatformInfo::GetSupportsAnisotropicMaterials(Parameters.Platform));
 		OutEnvironment.SetDefine(TEXT("USE_HAIR_COMPLEX_TRANSMITTANCE"), IsHairStrandsSupported(EHairStrandsShaderType::All, Parameters.Platform) ? 1u : 0u);
+		OutEnvironment.SetDefine(TEXT("STRATA_GLINT_IS"), 0);
 		OutEnvironment.CompilerFlags.Add(CFLAG_StandardOptimization);
 		FForwardLightingParameters::ModifyCompilationEnvironment(Parameters.Platform, OutEnvironment);
 	}
@@ -359,8 +384,8 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, AmbientOcclusionTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, AmbientOcclusionSampler)
 
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenSpaceReflectionsTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, ScreenSpaceReflectionsSampler)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ReflectionTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, ReflectionTextureSampler)
 
 		SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGF)
 		SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
@@ -380,7 +405,8 @@ class FReflectionEnvironmentSkyLightingPS : public FGlobalShader
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, ForwardLightData)
 
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
-
+		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
+		SHADER_PARAMETER_STRUCT_REF(FBlueNoise, BlueNoise)
 	END_SHADER_PARAMETER_STRUCT()
 }; // FReflectionEnvironmentSkyLightingPS
 
@@ -397,6 +423,11 @@ IMPLEMENT_GLOBAL_SHADER(FReflectionEnvironmentSkyLightingPS, "/Engine/Private/Re
 
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FReflectionUniformParameters, "ReflectionStruct");
+
+static bool ShouldRenderPluginGlobalIllumination(const FViewInfo& View)
+{
+	return View.FinalPostProcessSettings.DynamicGlobalIlluminationMethod == EDynamicGlobalIlluminationMethod::Plugin;
+}
 
 void FDeferredShadingSceneRenderer::CommitIndirectLightingState()
 {
@@ -425,7 +456,7 @@ void FDeferredShadingSceneRenderer::CommitIndirectLightingState()
 			DiffuseIndirectMethod = EDiffuseIndirectMethod::RTGI;
 			DiffuseIndirectDenoiser = IScreenSpaceDenoiser::GetDenoiserMode(CVarDiffuseIndirectDenoiser);
 		}
-		else if (ShouldRenderPluginRayTracingGlobalIllumination(View))
+		else if (ShouldRenderPluginGlobalIllumination(View))
 		{
 			DiffuseIndirectMethod = EDiffuseIndirectMethod::Plugin;
 			DiffuseIndirectDenoiser = IScreenSpaceDenoiser::GetDenoiserMode(CVarDiffuseIndirectDenoiser);
@@ -588,7 +619,7 @@ TRDGUniformBufferRef<FReflectionUniformParameters> CreateReflectionUniformBuffer
 #if RHI_RAYTRACING
 bool ShouldRenderPluginRayTracingGlobalIllumination(const FViewInfo& View)
 {
-	if (View.FinalPostProcessSettings.DynamicGlobalIlluminationMethod != EDynamicGlobalIlluminationMethod::Plugin)
+	if (!ShouldRenderPluginGlobalIllumination(View))
 	{
 		return false;
 	}
@@ -606,7 +637,7 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingGlobalIlluminationPlugin(co
 	FGlobalIlluminationPluginDelegates::FPrepareRayTracing& Delegate = FGlobalIlluminationPluginDelegates::PrepareRayTracing();
 	Delegate.Broadcast(View, OutRayGenShaders);
 }
-#endif
+#endif // RHI_RAYTRACING
 
 static const FVector SampleArray4x4x6[96] = {
 	FVector(0.72084325551986694, -0.44043412804603577, -0.53516626358032227),
@@ -880,10 +911,11 @@ void FDeferredShadingSceneRenderer::DispatchAsyncLumenIndirectLightingWork(
 					nullptr,
 					nullptr,
 					ERDGPassFlags::AsyncCompute);
+
+				// Lumen needs its own depth history because things like Translucency velocities write to depth
+				StoreLumenDepthHistory(GraphBuilder, SceneTextures, View);
 			}
 
-			// Lumen needs its own depth history because things like Translucency velocities write to depth
-			StoreLumenDepthHistory(GraphBuilder, SceneTextures, View);
 		}
 	}
 }
@@ -1178,8 +1210,9 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 		}
 
 		// Applies diffuse indirect and ambient occlusion to the scene color.
+        // TODO: Why are we disabling Metal SM5 here?
 		const bool bApplyDiffuseIndirect = (DenoiserOutputs.Textures[0] || AmbientOcclusionMask) && (!bIsVisualizePass || ViewPipelineState.DiffuseIndirectDenoiser != IScreenSpaceDenoiser::EMode::Disabled || ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen)
-			&& !(IsMetalPlatform(ShaderPlatform) && !IsMetalSM5Platform(ShaderPlatform));
+			&& !(IsMetalPlatform(ShaderPlatform) && !IsMetalSM5Platform(ShaderPlatform) && !IsMetalSM6Platform(ShaderPlatform));
 
 		// When Lumen visualization is enabled, clear the scene color to ensure sky pixels are cleared correctly.
 		if (Strata::IsStrataEnabled() && bIsVisualizePass)
@@ -1187,8 +1220,32 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 			AddClearRenderTargetPass(GraphBuilder, SceneColorTexture, FLinearColor::Black);
 		}
 
+		bool bEnableCopyPass = (!RHISupportsDualSourceBlending(ShaderPlatform) || CVarDiffuseIndirectForceCopyPass.GetValueOnRenderThread()) 
+								&& DenoiserOutputs.Textures[0];
+
+		FRDGTextureRef SceneColorCopyTexture;
+
+		if (bEnableCopyPass)
+		{
+			FRDGTextureDesc SceneColorCopyTextureDesc = FRDGTextureDesc::Create2D(
+				SceneColorTexture->Desc.Extent,
+				SceneColorTexture->Desc.Format,
+				FClearValueBinding::None,
+				TexCreate_ShaderResource | TexCreate_RenderTargetable);
+
+			
+			SceneColorCopyTexture = GraphBuilder.CreateTexture(SceneColorCopyTextureDesc, TEXT("SceneCopyTextureCopy0"));
+		}
+
 		auto ApplyDiffuseIndirect = [&](EStrataTileType TileType)
 		{
+			if (bEnableCopyPass)
+			{
+				FRHICopyTextureInfo CopyInfo;
+				CopyInfo.Size = SceneColorTexture->Desc.GetSize();
+				AddCopyTexturePass(GraphBuilder, SceneColorTexture, SceneColorCopyTexture, CopyInfo);
+			}
+
 			FDiffuseIndirectCompositePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FDiffuseIndirectCompositePS::FParameters>();
 			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 			PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
@@ -1232,6 +1289,12 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 
 			PassParameters->AmbientOcclusionTexture = AmbientOcclusionMask;
 			PassParameters->AmbientOcclusionSampler = TStaticSamplerState<SF_Point>::GetRHI();
+
+			if (bEnableCopyPass)
+			{
+				PassParameters->SceneColorTexture = SceneColorCopyTexture;
+				PassParameters->SceneColorSampler = TStaticSamplerState<SF_Point>::GetRHI();
+			}
 			
 			if (!PassParameters->AmbientOcclusionTexture || bIsVisualizePass)
 			{
@@ -1265,6 +1328,7 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 			PermutationVector.Set<FDiffuseIndirectCompositePS::FStrataTileType>(EStrataTileType::EComplex);
 
 			bool bUpscale = false;
+			bool bApplyAOToSceneColor = true;
 
 			if (DenoiserOutputs.Textures[0])
 			{
@@ -1282,6 +1346,7 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 						PermutationVector.Set<FDiffuseIndirectCompositePS::FStrataTileType>(TileType);
 					}
 					DiffuseIndirectSampling = TEXT("ScreenProbeGather");
+					bApplyAOToSceneColor = false;
 				}
 				else
 				{
@@ -1293,11 +1358,35 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 				PermutationVector.Set<FDiffuseIndirectCompositePS::FUpscaleDiffuseIndirectDim>(bUpscale);
 			}
 
+			PermutationVector.Set<FDiffuseIndirectCompositePS::FEnableDualSrcBlending>(!bEnableCopyPass);
+			
 			TShaderMapRef<FDiffuseIndirectCompositePS> PixelShader(View.ShaderMap, PermutationVector);
 
-			FRHIBlendState* BlendState = PermutationVector.Get<FDiffuseIndirectCompositePS::FApplyDiffuseIndirectDim>() > 0 ?
-				TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_Source1Color, BO_Add, BF_One, BF_Source1Alpha>::GetRHI() :
-				TStaticBlendState<CW_RGBA, BO_Add, BF_Zero, BF_SourceColor, BO_Add, BF_Zero, BF_SourceAlpha>::GetRHI();
+			FRHIBlendState* BlendState;
+			if (!bEnableCopyPass)
+			{
+				if (PermutationVector.Get<FDiffuseIndirectCompositePS::FApplyDiffuseIndirectDim>() > 0)
+				{
+					if (bApplyAOToSceneColor)
+					{
+						// FinalColor = SceneColor * AO + Indirect;
+						BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_Source1Color, BO_Add, BF_One, BF_Source1Alpha>::GetRHI();
+					}
+					else
+					{
+						// FinalColor = SceneColor + Indirect;
+						BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI();
+					}
+				}		
+				else
+				{
+					BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_Zero, BF_SourceColor, BO_Add, BF_Zero, BF_SourceAlpha>::GetRHI();
+				}
+			}
+			else
+			{
+				BlendState = TStaticBlendState<>::GetRHI();
+			}
 
 			if (bIsVisualizePass)
 			{
@@ -1315,7 +1404,8 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 
 				if (bUseDepthBounds)
 				{
-					PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(SceneTextures.Depth.Target, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilNop);
+					PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(SceneTextures.Depth.Target, 
+						ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilRead);
 				}
 
 				GraphBuilder.AddPass(
@@ -1417,6 +1507,10 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 		{
 			if (Strata::IsStrataEnabled())
 			{
+				if (Strata::GetStrataUsesComplexSpecialPath(View))
+				{
+					ApplyDiffuseIndirect(EStrataTileType::EComplexSpecial);
+				}
 				ApplyDiffuseIndirect(EStrataTileType::EComplex);
 				ApplyDiffuseIndirect(EStrataTileType::ESingle);
 				ApplyDiffuseIndirect(EStrataTileType::ESimple);
@@ -1526,6 +1620,10 @@ void FDeferredShadingSceneRenderer::RenderDiffuseIndirectAndAmbientOcclusion(
 
 			if (Strata::IsStrataEnabled())
 			{
+				if (Strata::GetStrataUsesComplexSpecialPath(View))
+				{
+					ApplyAmbientCubemapComposite(EStrataTileType::EComplexSpecial);
+				}
 				ApplyAmbientCubemapComposite(EStrataTileType::EComplex);
 				ApplyAmbientCubemapComposite(EStrataTileType::ESingle);
 				ApplyAmbientCubemapComposite(EStrataTileType::ESimple);
@@ -1559,6 +1657,7 @@ static void AddSkyReflectionPass(
 	bool bSkyLight, 
 	bool bDynamicSkyLight, 
 	bool bApplySkyShadowing,
+	bool bLumenStandaloneReflections,
 	EStrataTileType StrataTileMaterialType)
 {
 	// Render the reflection environment with tiled deferred culling
@@ -1596,8 +1695,8 @@ static void AddSkyReflectionPass(
 		PassParameters->PS.AmbientOcclusionTexture = AmbientOcclusionTexture;
 		PassParameters->PS.AmbientOcclusionSampler = TStaticSamplerState<SF_Point>::GetRHI();
 
-		PassParameters->PS.ScreenSpaceReflectionsTexture = ReflectionsColor ? ReflectionsColor : SystemTextures.Black;
-		PassParameters->PS.ScreenSpaceReflectionsSampler = TStaticSamplerState<SF_Point>::GetRHI();
+		PassParameters->PS.ReflectionTexture = ReflectionsColor ? ReflectionsColor : SystemTextures.Black;
+		PassParameters->PS.ReflectionTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
 
 		if (Scene->HasVolumetricCloud())
 		{
@@ -1626,6 +1725,13 @@ static void AddSkyReflectionPass(
 		PassParameters->PS.ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
 
 		PassParameters->PS.Strata = Strata::BindStrataGlobalUniformParameters(View);
+		if (Strata::IsGlintEnabled())
+		{
+			FBlueNoise BlueNoise = GetBlueNoiseGlobalParameters();
+			PassParameters->PS.BlueNoise = CreateUniformBufferImmediate(BlueNoise, EUniformBufferUsage::UniformBuffer_SingleDraw);
+		}
+
+		LumenReflections::SetupCompositeParameters(PassParameters->PS.ReflectionsCompositeParameters);
 	}
 
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture.Target, ERenderTargetLoadAction::ELoad);
@@ -1647,6 +1753,7 @@ static void AddSkyReflectionPass(
 		View, bHasBoxCaptures, bHasSphereCaptures, DynamicBentNormalAO != 0.0f,
 		bSkyLight, bDynamicSkyLight, bApplySkyShadowing,
 		bRequiresSpecializedReflectionEnvironmentShader,
+		bLumenStandaloneReflections,
 		StrataTileMaterialType);
 
 	TShaderMapRef<FReflectionEnvironmentSkyLightingPS> PixelShader(View.ShaderMap, PermutationVector);
@@ -1662,7 +1769,7 @@ static void AddSkyReflectionPass(
 	const bool bStrataEnabled = Strata::IsStrataEnabled();
 	if (bStrataEnabled)
 	{
-		check(StrataTileMaterialType <= EStrataTileType::EComplex);
+		check(StrataTileMaterialType <= EStrataTileType::EComplexSpecial);
 		PassParameters->VS = Strata::SetTileParameters(GraphBuilder, View, StrataTileMaterialType, StrataTilePrimitiveType);
 		ClearUnusedGraphResources(StrataTilePassVertexShader, &PassParameters->VS);
 	}
@@ -1742,6 +1849,7 @@ static void AddSkyReflectionPass(
 void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 	FRDGBuilder& GraphBuilder,
 	const FSceneTextures& SceneTextures,
+	const FLumenSceneFrameTemporaries& LumenFrameTemporaries,
 	FRDGTextureRef DynamicBentNormalAOTexture)
 {
 	extern int32 GLumenVisualizeIndirectDiffuse;
@@ -1839,11 +1947,32 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 		const bool bComposePlanarReflections = !RayTracingReflectionOptions.bEnabled && HasDeferredPlanarReflections(View);
 
 		FRDGTextureRef ReflectionsColor = nullptr;
-		if (ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen
+		if ((ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen && ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen)
 			|| (ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen && ViewPipelineState.ReflectionsMethod == EReflectionsMethod::SSR))
 		{
 			// Specular was already comped with FDiffuseIndirectCompositePS
 			continue;
+		}
+		// Standalone Lumen Reflections using HWRT and hit lighting
+		else if (ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen)
+		{
+			FLumenMeshSDFGridParameters MeshSDFGridParameters;
+			LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters;
+
+			ReflectionsColor = RenderLumenReflections(
+				GraphBuilder,
+				View,
+				SceneTextures,
+				LumenFrameTemporaries,
+				MeshSDFGridParameters,
+				RadianceCacheParameters,
+				ELumenReflectionPass::Opaque,
+				nullptr,
+				nullptr,
+				ERDGPassFlags::Compute);
+
+			// Lumen needs its own depth history because things like Translucency velocities write to depth
+			StoreLumenDepthHistory(GraphBuilder, SceneTextures, View);
 		}
 		else if (RayTracingReflectionOptions.bEnabled || bScreenSpaceReflections)
 		{
@@ -1957,7 +2086,9 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 			RenderDeferredPlanarReflections(GraphBuilder, SceneTextureParameters, View, /* inout */ ReflectionsColor);
 		}
 
+		const bool bLumenStandaloneReflections = ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen;
 		const bool bRequiresApply = ReflectionsColor != nullptr || bSkyLight || bDynamicSkyLight || bReflectionEnv;
+
 		if (bRequiresApply)
 		{
 			RDG_GPU_STAT_SCOPE(GraphBuilder, ReflectionEnvironment);
@@ -1976,6 +2107,22 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 					bSkyLight,
 					bDynamicSkyLight,
 					bApplySkyShadowing,
+					bLumenStandaloneReflections,
+					EStrataTileType::EComplexSpecial);
+
+				AddSkyReflectionPass(
+					GraphBuilder,
+					View,
+					Scene,
+					SceneTextures,
+					DynamicBentNormalAOTexture,
+					ReflectionsColor,
+					RayTracingReflectionOptions,
+					SceneTextureParameters,
+					bSkyLight,
+					bDynamicSkyLight,
+					bApplySkyShadowing,
+					bLumenStandaloneReflections,
 					EStrataTileType::EComplex);
 
 				AddSkyReflectionPass(
@@ -1990,6 +2137,7 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 					bSkyLight,
 					bDynamicSkyLight,
 					bApplySkyShadowing,
+					bLumenStandaloneReflections,
 					EStrataTileType::ESingle);
 
 				AddSkyReflectionPass(
@@ -2004,6 +2152,7 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 					bSkyLight,
 					bDynamicSkyLight,
 					bApplySkyShadowing,
+					bLumenStandaloneReflections,
 					EStrataTileType::ESimple);
 			}
 			else
@@ -2021,6 +2170,7 @@ void FDeferredShadingSceneRenderer::RenderDeferredReflectionsAndSkyLighting(
 					bSkyLight,
 					bDynamicSkyLight,
 					bApplySkyShadowing,
+					bLumenStandaloneReflections,
 					EStrataTileType::ECount);
 			}
 		}

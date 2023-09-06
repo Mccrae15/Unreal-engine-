@@ -133,7 +133,7 @@ enum EConstructTextureFlags
 {
 	/** Compress RGBA8 to DXT */
 	CTF_Compress =				0x01,
-	/** Don't actually compress until the pacakge is saved */
+	/** Don't actually compress until the package is saved */
 	CTF_DeferCompression =		0x02,
 	/** Enable SRGB on the texture */
 	CTF_SRGB =					0x04,
@@ -145,6 +145,8 @@ enum EConstructTextureFlags
 	CTF_RemapAlphaAsMasked =	0x20,
 	/** Ensure the alpha channel of the texture is opaque white (255). */
 	CTF_ForceOpaque =			0x40,
+	/** Don't call a post edit change on the texture. */
+	CTF_SkipPostEdit =			0x80,
 
 	/** Default flags (maps to previous defaults to ConstructTexture2D) */
 	CTF_Default = CTF_Compress | CTF_SRGB,
@@ -190,26 +192,6 @@ RENDERCORE_API void CalcMipMapExtent3D( uint32 TextureSizeX, uint32 TextureSizeY
  * @param MipIndex	The index of the mip-map to compute the size of.
  */
 RENDERCORE_API FIntPoint CalcMipMapExtent( uint32 TextureSizeX, uint32 TextureSizeY, EPixelFormat Format, uint32 MipIndex );
-
-/**
- * Calculates the width of a mip, in blocks.
- *
- * @param TextureSizeX		Number of horizontal texels (for the base mip-level)
- * @param Format			Texture format
- * @param MipIndex			The index of the mip-map to compute the size of.
- */
-UE_DEPRECATED(5.1, "See GPixelFormats in PixelFormat.h for analogous functions")
-RENDERCORE_API SIZE_T CalcTextureMipWidthInBlocks(uint32 TextureSizeX, EPixelFormat Format, uint32 MipIndex);
-
-/**
- * Calculates the height of a mip, in blocks.
- *
- * @param TextureSizeY		Number of vertical texels (for the base mip-level)
- * @param Format			Texture format
- * @param MipIndex			The index of the mip-map to compute the size of.
- */
-UE_DEPRECATED(5.1, "See GPixelFormats in PixelFormat.h for analogous functions")
-RENDERCORE_API SIZE_T CalcTextureMipHeightInBlocks(uint32 TextureSizeY, EPixelFormat Format, uint32 MipIndex);
 
 /**
  * Calculates the amount of memory used for a single mip-map of a texture.
@@ -321,6 +303,10 @@ RENDERCORE_API bool MobileUsesGBufferCustomData(const FStaticShaderPlatform Plat
 
 RENDERCORE_API bool MobileBasePassAlwaysUsesCSM(const FStaticShaderPlatform Platform);
 
+RENDERCORE_API bool MobileUsesFullDepthPrepass(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool ShouldForceFullDepthPass(const FStaticShaderPlatform Platform);
+
 RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool SupportsTSR(const FStaticShaderPlatform Platform);
@@ -378,12 +364,12 @@ RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntP
 RENDERCORE_API bool UseVirtualTexturing(const EShaderPlatform InShaderPlatform, const ITargetPlatform* TargetPlatform = nullptr);
 RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const ITargetPlatform* TargetPlatform = nullptr);
 
-RENDERCORE_API bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCheckForProjectSetting = true);
-
 RENDERCORE_API bool NaniteAtomicsSupported();
-
 RENDERCORE_API bool NaniteComputeMaterialsSupported();
+RENDERCORE_API bool NaniteTessellationSupported();
+RENDERCORE_API bool NaniteSplineMeshesSupported();
 
+RENDERCORE_API bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCheckForProjectSetting = true);
 RENDERCORE_API bool DoesRuntimeSupportNanite(EShaderPlatform ShaderPlatform, bool bCheckForAtomicSupport, bool bCheckForProjectSetting);
 
 /**
@@ -438,6 +424,16 @@ RENDERCORE_API bool UseNaniteLandscapeMesh(EShaderPlatform ShaderPlatform);
 RENDERCORE_API bool ExcludeNonPipelinedShaderTypes(EShaderPlatform ShaderPlatform);
 
 /**
+ *  Checks if shader pipelines is enable for a specific platform.
+ */
+RENDERCORE_API bool UseShaderPipelines(EShaderPlatform ShaderPlatform);
+
+/**
+ *  Checks if we can strip unused interpolators for a specific platform.
+ */
+RENDERCORE_API bool UseRemoveUnsedInterpolators(EShaderPlatform ShaderPlatform);
+
+/**
  *   Checks if skin cache shaders are enabled for the platform (via r.SkinCache.CompileShaders)
  */
 RENDERCORE_API bool AreSkinCacheShadersEnabled(EShaderPlatform Platform);
@@ -482,21 +478,60 @@ namespace Strata
 {
 	RENDERCORE_API bool IsStrataEnabled();
 	RENDERCORE_API bool IsRoughDiffuseEnabled();
+	RENDERCORE_API bool IsGlintEnabled();
+	RENDERCORE_API uint32 GlintLUTIndex();
+	RENDERCORE_API float GlintLevelBias();
+	RENDERCORE_API float GlintLevelMin();
+	RENDERCORE_API bool IsSpecularProfileEnabled();
 	RENDERCORE_API bool IsBackCompatibilityEnabled();
 	RENDERCORE_API bool IsDBufferPassEnabled(EShaderPlatform InPlatform);
 	RENDERCORE_API bool IsOpaqueRoughRefractionEnabled();
 	RENDERCORE_API bool IsAdvancedVisualizationEnabled();
 	RENDERCORE_API bool Is8bitTileCoordEnabled();
-	RENDERCORE_API bool IsAccurateSRGBEnabled();
 
-	RENDERCORE_API uint32 GetRayTracingMaterialPayloadSizeInBytes();
-	RENDERCORE_API uint32 GetRayTracingMaterialPayloadSizeInBytes(EShaderPlatform InPlatform);
+	RENDERCORE_API uint32 GetRayTracingMaterialPayloadSizeInBytes(bool bFullySimplifiedMaterial);
 
 	RENDERCORE_API uint32 GetBytePerPixel();
 	RENDERCORE_API uint32 GetBytePerPixel(EShaderPlatform InPlatform);
 
 	RENDERCORE_API uint32 GetNormalQuality();
 
+	RENDERCORE_API uint32 GetSheenQuality();
+
 	RENDERCORE_API uint32 GetShadingQuality();
 	RENDERCORE_API uint32 GetShadingQuality(EShaderPlatform InPlatform);
+}
+
+// LuminanceMax is the amount of light that will cause the sensor to saturate at EV100.
+//  See also https://en.wikipedia.org/wiki/Film_speed and https://en.wikipedia.org/wiki/Exposure_value for more info.
+FORCEINLINE float EV100ToLuminance(float LuminanceMax, float EV100)
+{
+	return LuminanceMax * FMath::Pow(2.0f, EV100);
+}
+
+FORCEINLINE float EV100ToLuminance(float EV100)
+{
+	// LuminanceMax set to 1 for lighting to be unitless (1.0cd/m^2 becomes 1.0 at EV100)
+	return EV100ToLuminance(1.0f, EV100);
+}
+
+FORCEINLINE float EV100ToLog2(float LuminanceMax, float EV100)
+{
+	return EV100 + FMath::Log2(LuminanceMax);
+}
+
+FORCEINLINE float LuminanceToEV100(float LuminanceMax, float Luminance)
+{
+	return FMath::Log2(Luminance / LuminanceMax);
+}
+
+FORCEINLINE float LuminanceToEV100(float Luminance)
+{
+	// LuminanceMax set to 1 for lighting to be unitless (1.0cd/m^2 becomes 1.0 at EV100)
+	return FMath::Log2(Luminance);
+}
+
+FORCEINLINE float Log2ToEV100(float LuminanceMax, float Log2)
+{
+	return Log2 - FMath::Log2(LuminanceMax);
 }

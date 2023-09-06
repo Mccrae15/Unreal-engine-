@@ -213,7 +213,7 @@ struct FNiagaraDataSetAccessorFloat
 		if (FloatVariableIndex != INDEX_NONE)
 		{
 			bIsFloat = true;
-			ComponentIndex = DataSetCompiledData.VariableLayouts[FloatVariableIndex].FloatComponentStart;
+			ComponentIndex = DataSetCompiledData.VariableLayouts[FloatVariableIndex].GetFloatComponentStart();
 			return;
 		}
 
@@ -223,7 +223,7 @@ struct FNiagaraDataSetAccessorFloat
 			if (AlternateVariableIndex != INDEX_NONE)
 			{
 				bIsFloat = true;
-				ComponentIndex = DataSetCompiledData.VariableLayouts[AlternateVariableIndex].FloatComponentStart;
+				ComponentIndex = DataSetCompiledData.VariableLayouts[AlternateVariableIndex].GetFloatComponentStart();
 				return;
 			}
 		}
@@ -234,7 +234,7 @@ struct FNiagaraDataSetAccessorFloat
 			if (HalfVariableIndex != INDEX_NONE)
 			{
 				bIsFloat = false;
-				ComponentIndex = DataSetCompiledData.VariableLayouts[HalfVariableIndex].HalfComponentStart;
+				ComponentIndex = DataSetCompiledData.VariableLayouts[HalfVariableIndex].GetHalfComponentStart();
 			}
 		}
 	}
@@ -322,11 +322,11 @@ struct FNiagaraDataSetAccessorTypeInfo<FLinearColor>
 {
 	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FLinearColor>;
 
-	static constexpr bool bSupportsHalf = false;
+	static constexpr bool bSupportsHalf = true;
 	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 4;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetColorDef(); }
-	static const FNiagaraTypeDefinition& GetHalfType() { check(false); return FNiagaraTypeDefinition::GetHalfVec4Def(); }
+	static const FNiagaraTypeDefinition& GetHalfType() { return FNiagaraTypeDefinition::GetHalfVec4Def(); }
 	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetColorDef(); }
 };
 
@@ -478,7 +478,7 @@ struct FNiagaraDataSetAccessorInt32
 		const int32 VariableIndex = DataSetCompiledData.Variables.IndexOfByPredicate(FNiagaraVariableMatch(FNiagaraDataSetAccessorTypeInfo<TType>::GetIntType(), VariableName));
 		if (VariableIndex != INDEX_NONE)
 		{
-			ComponentIndex = DataSetCompiledData.VariableLayouts[VariableIndex].Int32ComponentStart;
+			ComponentIndex = DataSetCompiledData.VariableLayouts[VariableIndex].GetInt32ComponentStart();
 		}
 	}
 
@@ -623,8 +623,8 @@ struct FNiagaraDataSetAccessorStruct
 		if (VariableIndex != INDEX_NONE)
 		{
 			bIsValid = true;
-			FloatComponentIndex = DataSetCompiledData.VariableLayouts[VariableIndex].FloatComponentStart;
-			Int32ComponentIndex = DataSetCompiledData.VariableLayouts[VariableIndex].Int32ComponentStart;
+			FloatComponentIndex = DataSetCompiledData.VariableLayouts[VariableIndex].GetFloatComponentStart();
+			Int32ComponentIndex = DataSetCompiledData.VariableLayouts[VariableIndex].GetInt32ComponentStart();
 		}
 	}
 

@@ -12,6 +12,9 @@ using System.Runtime.CompilerServices;
 using EpicGames.Core;
 using UnrealBuildTool;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
@@ -127,16 +130,16 @@ namespace AutomationTool
 				}
 				if (!String.IsNullOrEmpty(ProcessName) && !CanBeKilled(ProcessName))
 				{
-					CommandUtils.LogLog("Ignoring process \"{0}\" because it can't be killed.", ProcessName);
+					Logger.LogDebug("Ignoring process \"{ProcessName}\" because it can't be killed.", ProcessName);
 					ProcessesToKill.RemoveAt(ProcessIndex);
 				}
 			}
 			if(ProcessesToKill.Count > 0)
 			{
-				CommandUtils.LogLog("Trying to kill {0} spawned processes.", ProcessesToKill.Count);
+				Logger.LogDebug("Trying to kill {Arg0} spawned processes.", ProcessesToKill.Count);
 				foreach (var Proc in ProcessesToKill)
 				{
-					CommandUtils.LogLog("  {0}", Proc.GetProcessName());
+					Logger.LogDebug("  {Arg0}", Proc.GetProcessName());
 				}
 				if (CommandUtils.IsBuildMachine)
 				{
@@ -150,12 +153,12 @@ namespace AutomationTool
 								if (!Proc.HasExited)
 								{
 									AllDone = false;
-									CommandUtils.LogLog("Waiting for process: {0}", Proc.GetProcessName());
+									Logger.LogDebug("Waiting for process: {Arg0}", Proc.GetProcessName());
 								}
 							}
 							catch (Exception)
 							{
-								CommandUtils.LogWarning("Exception Waiting for process");
+								Logger.LogWarning("Exception Waiting for process");
 								AllDone = false;
 							}
 						}
@@ -164,12 +167,12 @@ namespace AutomationTool
 							if (ProcessResult.HasAnyDescendants(Process.GetCurrentProcess()))
 							{
 								AllDone = false;
-								CommandUtils.LogInformation("Waiting for descendants of main process...");
+								Logger.LogInformation("Waiting for descendants of main process...");
 							}
 						}
 						catch (Exception Ex)
 						{
-							CommandUtils.LogWarning("Exception Waiting for descendants of main process. " + Ex);
+							Logger.LogWarning("{Text}", "Exception Waiting for descendants of main process. " + Ex);
 							AllDone = false;
 						}
 
@@ -187,27 +190,27 @@ namespace AutomationTool
 					{
 						if (!Proc.HasExited)
 						{
-							CommandUtils.LogLog("Killing process: {0}", ProcName);
+							Logger.LogDebug("Killing process: {ProcName}", ProcName);
 							Proc.StopProcess();
 						}
 					}
 					catch (Exception Ex)
 					{
-						CommandUtils.LogWarning("Exception while trying to kill process {0}:", ProcName);
-						CommandUtils.LogWarning(LogUtils.FormatException(Ex));
+						Logger.LogWarning("Exception while trying to kill process {ProcName}:", ProcName);
+						Logger.LogWarning("{Text}", LogUtils.FormatException(Ex));
 					}
 				}
 				try
 				{
 					if (CommandUtils.IsBuildMachine && ProcessResult.HasAnyDescendants(Process.GetCurrentProcess()))
 					{
-						CommandUtils.LogLog("current process still has descendants, trying to kill them...");
+						Logger.LogDebug("current process still has descendants, trying to kill them...");
 						ProcessResult.KillAllDescendants(Process.GetCurrentProcess());
 					}
 				}
 				catch (Exception)
 				{
-					CommandUtils.LogWarning("Exception killing descendants of main process");
+					Logger.LogWarning("Exception killing descendants of main process");
 				}
 			}
 		}
@@ -220,6 +223,7 @@ namespace AutomationTool
 		void StdOut(object sender, DataReceivedEventArgs e);
 		void StdErr(object sender, DataReceivedEventArgs e);
 		int ExitCode { get; set; }
+		bool bExitCodeSuccess { get; }
 		string Output { get; }
 		Process ProcessObject { get; }
 		string ToString();
@@ -389,6 +393,8 @@ namespace AutomationTool
 			set { ProcessExitCode = value; }
 		}
 
+		public bool bExitCodeSuccess => ExitCode == 0;
+
 		/// <summary>
 		/// Gets all std output the process generated.
 		/// </summary>
@@ -507,7 +513,7 @@ namespace AutomationTool
 				}
 				if (!(bStdOutSignalReceived && bStdErrSignalReceived))
 				{
-					CommandUtils.LogLog("Waited for a long time for output of {0}, some output may be missing; we gave up.", AppName);
+					Logger.LogDebug("Waited for a long time for output of {AppName}, some output may be missing; we gave up.", AppName);
 				}
 
 				// Double-check if the process terminated
@@ -601,7 +607,7 @@ namespace AutomationTool
 						IsOurDescendant(ProcessToKill, KillCandidate.Id, VisitedPids))
 					{
 						KilledPids.Add(KillCandidate.Id);
-						CommandUtils.LogLog("Trying to kill descendant pid={0}, name={1}", KillCandidate.Id, KillCandidate.ProcessName);
+						Logger.LogDebug("Trying to kill descendant pid={Arg0}, name={Arg1}", KillCandidate.Id, KillCandidate.ProcessName);
 						try
 						{
 							KillCandidate.Kill();
@@ -611,8 +617,8 @@ namespace AutomationTool
 						{
 							if(!KillCandidate.HasExited)
 							{
-								CommandUtils.LogWarning("Failed to kill descendant:");
-								CommandUtils.LogWarning(LogUtils.FormatException(Ex));
+								Logger.LogWarning("Failed to kill descendant:");
+								Logger.LogWarning("{Text}", LogUtils.FormatException(Ex));
 							}
 						}
 						break;  // exit the loop as who knows what else died, so let's get processes anew
@@ -645,7 +651,7 @@ namespace AutomationTool
 				HashSet<int> VisitedPids = new HashSet<int>();
 				if (ProcessManager.CanBeKilled(ProcessName) && IsOurDescendant(ProcessToCheck, KillCandidate.Id, VisitedPids))
 				{
-					CommandUtils.LogLog("Descendant pid={0}, name={1}", KillCandidate.Id, ProcessName);
+					Logger.LogDebug("Descendant pid={Arg0}, name={ProcessName}", KillCandidate.Id, ProcessName);
 					return true;
 				}
 			}
@@ -672,20 +678,20 @@ namespace AutomationTool
 					ProcToKill.WaitForExit(60000);
 					if (!ProcToKill.HasExited)
 					{
-						CommandUtils.LogLog("Process {0} failed to exit.", ProcToKillName);
+						Logger.LogDebug("Process {ProcToKillName} failed to exit.", ProcToKillName);
 					}
 					else
 					{
 						ExitCode = ProcToKill.ExitCode;
-						CommandUtils.LogLog("Process {0} successfully exited.", ProcToKillName);
+						Logger.LogDebug("Process {ProcToKillName} successfully exited.", ProcToKillName);
 						OnProcessExited();
 					}
 					ProcToKill.Close();					
 				}
 				catch (Exception Ex)
 				{
-					CommandUtils.LogWarning("Exception while trying to kill process {0}:", ProcToKillName);
-					CommandUtils.LogWarning(LogUtils.FormatException(Ex));
+					Logger.LogWarning("Exception while trying to kill process {ProcToKillName}:", ProcToKillName);
+					Logger.LogWarning("{Text}", LogUtils.FormatException(Ex));
 				}
 			}
 		}
@@ -717,7 +723,7 @@ namespace AutomationTool
 			{
 				foreach (var Item in ExeToTimeInMs)
 				{
-					LogVerbose("Total {0}s to run " + Item.Key, Item.Value / 1000);
+					Logger.LogDebug("Total {Time}s to run {Exe}", Item.Value / 1000, Item.Key);
 				}
 				ExeToTimeInMs.Clear();
 			}
@@ -819,11 +825,11 @@ namespace AutomationTool
 
 			if (ResolvedPath != null)
 			{
-				Log.TraceVeryVerbose("Resolved {0} to {1}", App, ResolvedPath);
+				Logger.LogTrace("Resolved {App} to {ResolvedPath}", App, ResolvedPath);
 			}
 			else
 			{
-				Log.TraceVerbose("Could not resolve app {0}", App);
+				Logger.LogDebug("Could not resolve app {App}", App);
 			}
 
 			return ResolvedPath;
@@ -947,7 +953,7 @@ namespace AutomationTool
 				}
 				if (!Options.HasFlag(ERunOptions.NoLoggingOfRunCommand) || Options.HasFlag(ERunOptions.LoggingOfRunDuration))
 				{
-					LogWithVerbosity(SpewVerbosity, "Took {0}s to run {1}, ExitCode={2}", BuildDuration / 1000, Path.GetFileName(App), Result.ExitCode);
+					LogWithVerbosity(SpewVerbosity, "Took {0:n2}s to run {1}, ExitCode={2}", BuildDuration / 1000, Path.GetFileName(App), Result.ExitCode);
 				}
 				Result.OnProcessExited();
 				Result.DisposeProcess();
@@ -1133,7 +1139,7 @@ namespace AutomationTool
 		{
 			while (!FileExists(LogFilename) && !LogProcess.HasExited)
 			{
-				LogInformation("Waiting for logging process to start...");
+				Logger.LogInformation("Waiting for logging process to start...");
 				Thread.Sleep(2000);
 			}
 			Thread.Sleep(1000);

@@ -9,11 +9,8 @@ public class NiagaraShader : ModuleRules
     {
         PrivateDependencyModuleNames.AddRange(
             new string[] {
-                "Core",
                 "CoreUObject",
                 "Engine",
-                "NiagaraCore",
-                "NiagaraVertexFactories",
                 "Renderer",
             }
         );
@@ -39,7 +36,8 @@ public class NiagaraShader : ModuleRules
 
             PrivateDependencyModuleNames.AddRange(
                 new string[] {
-            });
+                    "DerivedDataCache",
+                });
         }
 
         PublicIncludePathModuleNames.AddRange(
@@ -47,7 +45,6 @@ public class NiagaraShader : ModuleRules
             });
 
 		PrivateIncludePaths.AddRange(new string[] {
-			System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 		});
 
 		PrivateIncludePathModuleNames.AddRange(

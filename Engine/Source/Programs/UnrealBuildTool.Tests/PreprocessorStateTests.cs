@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using UnrealBuildTool;
 
 namespace UnrealBuildToolTests
@@ -87,9 +87,9 @@ namespace UnrealBuildToolTests
 		static string FormatTransform(PreprocessorTransform Transform)
 		{
 			StringBuilder Result = new StringBuilder();
-			if (Transform.bRequireTopmostActive.HasValue)
+			if (Transform.RequireTopmostActive.HasValue)
 			{
-				Result.AppendFormat("=b {0}\n", Transform.bRequireTopmostActive.Value ? "Active" : "0");
+				Result.AppendFormat("=b {0}\n", Transform.RequireTopmostActive.Value ? "Active" : "0");
 			}
 			foreach (PreprocessorBranch Branch in Transform.RequiredBranches)
 			{

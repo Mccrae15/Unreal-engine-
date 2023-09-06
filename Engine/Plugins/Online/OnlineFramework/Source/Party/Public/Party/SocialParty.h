@@ -37,7 +37,9 @@ struct PARTY_API FPartyRepData : public FOnlinePartyRepDataBase
 
 public:
 	FPartyRepData() {}
-	void SetOwningParty(const class USocialParty& InOwnerParty);
+	virtual void SetOwningParty(const class USocialParty& InOwnerParty);
+	/** Mark the party data as ownerless. This will bypass any "CanEdit" checks. Useful for using this object in a test context. */
+	void MarkOwnerless();
 
 	const FPartyPlatformSessionInfo* FindSessionInfo(const FString& SessionType) const;
 	const TArray<FPartyPlatformSessionInfo>& GetPlatformSessions() const { return PlatformSessions; }
@@ -52,6 +54,7 @@ protected:
 	virtual const USocialParty* GetOwnerParty() const override;
 
 	TWeakObjectPtr<const USocialParty> OwnerParty;
+	bool bAllowOwnerless = false;
 
 	//@todo DanH Party: Isn't this redundant with the party config itself? Why bother putting it here too when the config replicates to everyone already? #suggested
 	/** The privacy settings for the party */
@@ -198,16 +201,11 @@ public:
 	DECLARE_EVENT_OneParam(USocialParty, FOnInviteSent, const USocialUser&);
 	FOnInviteSent& OnInviteSent() const { return OnInviteSentEvent; }
 
-	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyJIPApproved, const FOnlinePartyId&, bool /* Success*/);
-	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
-	FOnPartyJIPApproved& OnPartyJIPApproved() const { return OnPartyJIPApprovedEvent; }
-
-	DECLARE_EVENT_ThreeParams(USocialParty, FOnPartyJIPResponse, const FOnlinePartyId&, bool /* Success*/, const FString& /*DeniedResultCode*/);
-	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
-	FOnPartyJIPResponse& OnPartyJIPResponse() const { return OnPartyJIPResponseEvent; }
-
 	DECLARE_EVENT_TwoParams(USocialParty, FOnPartyMemberConnectionStatusChanged, UPartyMember&, EMemberConnectionStatus);
 	FOnPartyMemberConnectionStatusChanged& OnPartyMemberConnectionStatusChanged() const { return OnPartyMemberConnectionStatusChangedEvent; }
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnInitializationCompletePreNotify, USocialParty&);
+	FOnInitializationCompletePreNotify& OnInitializationCompletePreNotify() const { return OnInitializationCompletePreNotifyEvent; }
 
 	void ResetPrivacySettings();
 	const FPartyPrivacySettings& GetPrivacySettings() const;
@@ -219,6 +217,8 @@ public:
 
 	DECLARE_DELEGATE_OneParam(FOnRequestJoinInProgressComplete, const EPartyJoinDenialReason /*DenialReason*/);
 	void RequestJoinInProgress(const UPartyMember& TargetMember, const FOnRequestJoinInProgressComplete& CompletionDelegate);
+
+	bool CanInviteUser(const USocialUser& User, const ESocialPartyInviteMethod InviteMethod = ESocialPartyInviteMethod::Other) const;
 
 protected:
 	void InitializeParty(const TSharedRef<const FOnlineParty>& InOssParty);
@@ -236,7 +236,6 @@ protected:
 	// User/member-specific actions that are best exposed on the individuals themselves, but best handled by the actual party
 	bool HasUserBeenInvited(const USocialUser& User) const;
 	
-	bool CanInviteUser(const USocialUser& User) const;
 	bool CanPromoteMember(const UPartyMember& PartyMember) const;
 	bool CanKickMember(const UPartyMember& PartyMember) const;
 	
@@ -260,7 +259,9 @@ protected:
 	virtual void OnLeftPartyInternal(EMemberExitedReason Reason);
 
 	/** Virtual versions of the package-scoped "CanX" methods above, as a virtual declared within package scoping cannot link (exported public, imported protected) */
+	UE_DEPRECATED(5.3, "This function has been deperecated, use CanInviteUserInternal(const USocialUser& User, const ESocialPartyInviteMethod InviteMethod) instead.")
 	virtual ESocialPartyInviteFailureReason CanInviteUserInternal(const USocialUser& User) const;
+	virtual ESocialPartyInviteFailureReason CanInviteUserInternal(const USocialUser& User, const ESocialPartyInviteMethod InviteMethod) const;
 	virtual bool CanPromoteMemberInternal(const UPartyMember& PartyMember) const;
 	virtual bool CanKickMemberInternal(const UPartyMember& PartyMember) const;
 
@@ -273,10 +274,6 @@ protected:
 
 	/** Determines the joinability of this party for a group of users requesting to join */
 	virtual FPartyJoinApproval EvaluateJoinRequest(const TArray<IOnlinePartyUserPendingJoinRequestInfoConstRef>& Players, bool bFromJoinRequest) const;
-
-	/** Determines the joinability of the game a party is in for JoinInProgress */
-	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
-	virtual FPartyJoinApproval EvaluateJIPRequest(const FUniqueNetId& PlayerId) const;
 
 	/** Determines the reason why, if at all, this party is currently flat-out unjoinable  */
 	virtual FPartyJoinDenialReason DetermineCurrentJoinability() const;
@@ -350,14 +347,10 @@ private:	// Handlers
 	void HandlePartyDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FName& Namespace, const FOnlinePartyData& PartyData);
 	void HandleJoinabilityQueryReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const IOnlinePartyPendingJoinRequestInfo& JoinRequestInfo);
 	void HandlePartyJoinRequestReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const IOnlinePartyPendingJoinRequestInfo& JoinRequestInfo);
-	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
-	void HandlePartyJIPRequestReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& SenderId);
 	void HandlePartyLeft(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId);
 	void HandlePartyMemberExited(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId, EMemberExitedReason ExitReason);
 	void HandlePartyMemberDataReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId, const FName& Namespace, const FOnlinePartyData& PartyMemberData);
 	void HandlePartyMemberJoined(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& MemberId);
-	UE_DEPRECATED(5.1, "Use the new join in progress flow with USocialParty::RequestJoinInProgress.")
-	void HandlePartyMemberJIP(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool Success, int32 DeniedResultCode);
 	void HandlePartyMemberPromoted(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& NewLeaderId);
 	void HandlePartyPromotionLockoutChanged(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, bool bArePromotionsLocked);
 
@@ -494,9 +487,13 @@ private:
 	mutable FOnPartyMemberConnectionStatusChanged OnPartyMemberConnectionStatusChangedEvent;
 	mutable FOnPartyFunctionalityDegradedChanged OnPartyFunctionalityDegradedChangedEvent;
 	mutable FOnInviteSent OnInviteSentEvent;
-	mutable FOnPartyJIPApproved OnPartyJIPApprovedEvent;
-	mutable FOnPartyJIPResponse OnPartyJIPResponseEvent;
+	mutable FOnInitializationCompletePreNotify OnInitializationCompletePreNotifyEvent;
 };
+
+namespace UE::OnlineFramework::Party
+{
+PARTY_API TArray<FUniqueNetIdRepl> GetPartyMemberIds(const USocialParty* SocialParty);
+} // UE::OnlineFramework::Party
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "PartyBeaconState.h"

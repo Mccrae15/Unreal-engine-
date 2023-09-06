@@ -20,6 +20,7 @@ namespace P4VUtils.Commands
 		public List<String> Errors = new List<String>();
 	}
 
+	[Command("backout", CommandCategory.Toolbox, 0)]
 	class BackoutCommand : Command
 	{
 		public override string Description => "P4 Admin sanctioned method of backing out a CL";
@@ -45,6 +46,8 @@ namespace P4VUtils.Commands
 				Result.Errors.Add(string.Format($"CL {Change} did not originate in the current stream, to be safe, CLs should be backed out where the change was originally submitted.", Change));
 			}
 
+			List<DescribeFileRecord> BinaryFiles = new List<DescribeFileRecord>();
+
 			foreach (DescribeFileRecord DescFileRec in DescribeRec.Files)
 			{
 				// is this an edit/add/delete operation?
@@ -63,17 +66,37 @@ namespace P4VUtils.Commands
 					Result.Errors.Add($"In CL {Change}, the file below affects asset versioning, therefore it isn't safe to back it out.\n\n{DescFileRec.DepotFile}");
 				}
 
-				// if it's a binary file, are we backing out the head revision?
+				// binary files need another round of validation later
 				if (DescFileRec.Type.Contains("+l", StringComparison.InvariantCultureIgnoreCase))
 				{
-					// check the latest revision of this depot file
-					FStatRecord StatRecord = (await Perforce.FStatAsync(new List<string> { DescFileRec.DepotFile }).ToListAsync()).First();
-					if (StatRecord.HeadRevision != DescFileRec.Revision)
+					BinaryFiles.Add(DescFileRec);
+				}
+			}
+
+			if (BinaryFiles.Count > 0)
+			{
+				// we can only safely backout binary files that are at the head revision, so check for that/
+
+				FileSpecList FileSpecs = BinaryFiles.Select(x => x.DepotFile).ToList();
+
+				List<FStatRecord> StatRecord = await Perforce.FStatAsync(FileSpecs).ToListAsync();
+
+				if(BinaryFiles.Count == StatRecord.Count)
+				{
+					for( int Index = 0; Index < BinaryFiles.Count; ++Index)
 					{
-						Logger.LogError("\nIn CL {Change}, the file below is a binary file and revision #{Rev} isn't the head revision (#{HeadRev}),\ntherefore it isn't safe to back it out\n\n{FileName}",
-							Change, DescFileRec.Revision, StatRecord.HeadRevision, DescFileRec.DepotFile);
-						Result.Errors.Add($"\nIn CL {Change}, the file below is a binary file and revision #{DescFileRec.Revision} isn't the head revision (#{StatRecord.HeadRevision}), therefore it isn't safe to back it out\n\n{DescFileRec.DepotFile}");
+						if (StatRecord[Index].HeadRevision != BinaryFiles[Index].Revision)
+						{
+							Logger.LogError("\nIn CL {Change}, the file below is a binary file and revision #{Rev} isn't the head revision (#{HeadRev}),\ntherefore it isn't safe to back it out\n\n{FileName}",
+								Change, BinaryFiles[Index].Revision, StatRecord[Index].HeadRevision, BinaryFiles[Index].DepotFile);
+								Result.Errors.Add($"\nIn CL {Change}, the file below is a binary file and revision #{BinaryFiles[Index].Revision} isn't the head revision (#{StatRecord[Index].HeadRevision}), therefore it isn't safe to back it out\n\n{BinaryFiles[Index].DepotFile}");
+						}
 					}
+				}
+				else
+				{
+					// This shouldn't happen but if fstat did not return the expected number of records then we cannot safely continue
+					throw new FatalErrorException("Error running ValidateBackoutSafety\nThe number of records returned from p4 fstat {0} does not match the number of records requested {1}'", StatRecord.Count, BinaryFiles.Count);
 				}
 			}
 
@@ -118,7 +141,7 @@ namespace P4VUtils.Commands
 				}
 
 				// warn user
-				MessageBoxResult result = MessageBox.Show(
+				UserInterface.Button result = UserInterface.ShowDialog(
 					"This backout is potentially unsafe:\r\n" +
 					"\r\n" +
 					ErrorString +
@@ -128,9 +151,9 @@ namespace P4VUtils.Commands
 					"You can tag @p4backouthelp in #ue-build-health or #fn-build-health for assistance.\r\n" +
 					"\r\n",
 					"Unsafe backout detected",
-					MessageBoxButton.YesNo);
+					UserInterface.YesNo, UserInterface.Button.No, Logger);
 
-				if (result == MessageBoxResult.No)
+				if (result == UserInterface.Button.No)
 				{
 					Logger.LogInformation("\r\nOperation canceled.");
 					return 0;
@@ -161,7 +184,7 @@ namespace P4VUtils.Commands
 				}
 
 				// prompt
-				MessageBoxResult result = MessageBox.Show(
+				UserInterface.Button result = UserInterface.ShowDialog(
 					"The following files are checked out on another workspace:\r\n" +
 					"\r\n" +
 					FileListTruncated +
@@ -169,9 +192,9 @@ namespace P4VUtils.Commands
 					"Do you want to proceed with the backout operation?\r\n" +
 					"\r\n",
 					"Warning",
-					MessageBoxButton.YesNo);
+					UserInterface.YesNo, UserInterface.Button.Yes, Logger);
 
-				if (result == MessageBoxResult.No)
+				if (result == UserInterface.Button.No)
 				{
 					Logger.LogInformation("\r\nOperation canceled.");
 					return 0;

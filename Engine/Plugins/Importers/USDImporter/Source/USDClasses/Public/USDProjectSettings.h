@@ -16,6 +16,14 @@ enum class EUsdSaveDialogBehavior : uint8
 	ShowPrompt
 };
 
+UENUM( BlueprintType )
+enum class EUsdEditInInstanceBehavior : uint8
+{
+	Ignore,
+	RemoveInstanceable,
+	ShowPrompt
+};
+
 // USDImporter and defaultconfig here so this ends up at DefaultUSDImporter.ini in the editor, and is sent to the
 // packaged game as well
 UCLASS(config=USDImporter, defaultconfig, meta=(DisplayName=USDImporter), MinimalAPI)
@@ -24,9 +32,32 @@ class UUsdProjectSettings : public UDeveloperSettings
 	GENERATED_BODY()
 
 public:
-	// Additional paths to check for USD plugins
-	UPROPERTY( config, EditAnywhere, Category = USD )
+	// Additional paths to check for USD plugins.
+	//
+	// If you want the USD plugins to be included in a packaged game, you must use a relative
+	// path to a location within your project directory, and you must also add that same path
+	// to the "Additional Non-Asset Directories To Copy" Project Packaging setting.
+	//
+	// For example, this relative path could be used to locate USD plugins in a directory at
+	// the root of your project:
+	//     ../USD_Plugins
+	//
+	// The packaging process cannot use an absolute path and will raise an error if given one
+	// when it tries to concatenate the game content directory path with an absolute path.
+	UPROPERTY( config, EditAnywhere, Category = USD, meta = (RelativeToGameContentDir) )
 	TArray<FDirectoryPath> AdditionalPluginDirectories;
+
+	// The directories that will be used as the default search path by USD's default resolver
+	// during asset resolution.
+	//
+	// Each directory in the search path should be an absolute path. If it is not, it will be
+	// anchored to the current working directory.
+	//
+	// Note that the default search path must be set before the first invocation of USD's
+	// resolver system, so changing this setting will require a restart of the engine in order
+	// for the new setting to take effect.
+	UPROPERTY( config, EditAnywhere, Category = USD, meta = (ConfigRestartRequired = true) )
+	TArray<FDirectoryPath> DefaultResolverSearchPath;
 
 	// Material purposes to show on drop-downs in addition to the standard "preview" and "full"
 	UPROPERTY( config, EditAnywhere, Category = USD )
@@ -52,10 +83,18 @@ public:
 	UPROPERTY( config, EditAnywhere, Category = "USD|Dialogs" )
 	bool bShowOverriddenOpinionsWarning = true;
 
+	// Whether to show the warning dialog when authoring opinions inside an instance or instance proxy
+	UPROPERTY( config, EditAnywhere, Category = "USD|Dialogs" )
+	EUsdEditInInstanceBehavior EditInInstanceableBehavior = EUsdEditInInstanceBehavior::ShowPrompt;
+
 	// Whether to show a warning whenever the "Duplicate All Local Layer Specs" option is picked, and the duplicated
 	// prim has some specs outside the local layer stack that will not be duplicated.
 	UPROPERTY( config, EditAnywhere, Category = "USD|Dialogs" )
 	bool bShowWarningOnIncompleteDuplication = true;
+
+	// Whether to show the warning dialog when authoring a transforms directly to a camera component
+	UPROPERTY( config, EditAnywhere, Category = "USD|Dialogs" )
+	bool bShowTransformOnCameraComponentWarning = true;
 
 	// Whether to show the warning dialog when authoring a transform track directly to a camera component
 	UPROPERTY( config, EditAnywhere, Category = "USD|Dialogs" )

@@ -6,13 +6,15 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "IHasDesignerExtensibility.h"
 #include "IHasPropertyBindingExtensibility.h"
+#include "UObject/TopLevelAssetPath.h"
 
 extern const FName UMGEditorAppIdentifier;
 
-class FUMGEditor;
 class FWidgetBlueprintApplicationMode;
+class FWidgetBlueprintEditor;
 class FWorkflowAllowedTabSet;
 class IBlueprintWidgetCustomizationExtender;
+class IPropertyTypeCustomization;
 
 /** The public interface of the UMG editor module. */
 class IUMGEditorModule : 
@@ -46,6 +48,33 @@ public:
 	virtual TArrayView<TSharedRef<IBlueprintWidgetCustomizationExtender>> GetAllWidgetCustomizationExtenders() = 0;
 
 	/** Support for general layout extenders */
-	DECLARE_EVENT_OneParam(IStaticMeshEditor, FOnRegisterLayoutExtensions, FLayoutExtender&);
+	DECLARE_EVENT_OneParam(IUMGEditorModule, FOnRegisterLayoutExtensions, FLayoutExtender&);
 	virtual FOnRegisterLayoutExtensions& OnRegisterLayoutExtensions() = 0;
+
+	DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<IPropertyTypeCustomization>, FOnGetInstancePropertyTypeCustomizationInstance, TWeakPtr<FWidgetBlueprintEditor> Editor);
+	/** Add an instance customization to the widget property view. */
+	virtual void RegisterInstancedCustomPropertyTypeLayout(FTopLevelAssetPath Type, FOnGetInstancePropertyTypeCustomizationInstance) = 0;
+
+	/** Remove an instance customization to the widget property view. */
+	virtual void UnregisterInstancedCustomPropertyTypeLayout(FTopLevelAssetPath Type) = 0;
+
+	struct FCustomPropertyTypeLayout
+	{
+		FTopLevelAssetPath Type;
+		FOnGetInstancePropertyTypeCustomizationInstance Delegate;
+	};
+
+	/** Remove an instance customization to the widget property view. */
+	virtual TArrayView<const FCustomPropertyTypeLayout> GetAllInstancedCustomPropertyTypeLayout() const = 0;
+
+	/** Arguments for the OnBlueprintCreated callback. */
+	struct FWidgetBlueprintCreatedArgs
+	{
+		UClass* ParentClass = nullptr;
+		UWidgetBlueprint* Blueprint = nullptr;
+	};
+	DECLARE_EVENT_OneParam(IUMGEditorModule, FOnWidgetBlueprintCreated, FWidgetBlueprintCreatedArgs);
+
+	/** Callback when a WidgetBlueprint is created by the factory. */
+	virtual FOnWidgetBlueprintCreated& OnWidgetBlueprintCreated() = 0;
 };

@@ -24,9 +24,15 @@ namespace UE::MovieScene
 {
 
 FWidgetMaterialAccessor::FWidgetMaterialAccessor(const FWidgetMaterialKey& InKey)
-	: Widget(CastChecked<UWidget>(InKey.Object.ResolveObjectPtr()))
-	, WidgetMaterialHandle(InKey.WidgetMaterialHandle)
-{}
+	: Widget(CastChecked<UWidget>(InKey.Object.ResolveObjectPtr(), ECastCheckedType::NullAllowed))
+{
+	// Only assign the material handle if the widget itself is still valid
+	// otherwise accessors constructed with the material handle will consider it valid
+	if (Widget)
+	{
+		WidgetMaterialHandle = InKey.WidgetMaterialHandle;
+	}
+}
 
 FWidgetMaterialAccessor::FWidgetMaterialAccessor(UObject* InObject, FWidgetMaterialHandle InWidgetMaterialHandle)
 	: Widget(Cast<UWidget>(InObject))
@@ -97,7 +103,7 @@ UMovieSceneWidgetMaterialSystem::UMovieSceneWidgetMaterialSystem(const FObjectIn
 	FMovieSceneTracksComponentTypes* TracksComponents  = FMovieSceneTracksComponentTypes::Get();
 
 	RelevantComponent = WidgetComponents->WidgetMaterialHandle;
-	Phase = ESystemPhase::Instantiation | ESystemPhase::Evaluation;
+	Phase = ESystemPhase::Instantiation;
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{

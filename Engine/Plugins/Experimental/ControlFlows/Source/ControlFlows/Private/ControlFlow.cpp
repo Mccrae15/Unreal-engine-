@@ -3,7 +3,9 @@
 #include "ControlFlow.h"
 #include "ControlFlowManager.h"
 #include "ControlFlowTask.h"
+#include "ControlFlowTask_Loop.h"
 #include "ControlFlows.h"
+#include "Containers/Ticker.h"
 #include "Misc/TrackedActivity.h"
 
 static const int32 MAX_FLOW_LOOPS = 10000;
@@ -40,15 +42,20 @@ void FControlFlow::ExecuteNextNodeInQueue()
 void FControlFlow::ExecuteNode(TSharedRef<FControlFlowNode_SelfCompleting> SelfCompletingNode)
 {
 	// Calling Synchronous Function in Flow
-	SelfCompletingNode->Process.ExecuteIfBound();
-
+	if (SelfCompletingNode->Process.IsBound())
+	{
+		SelfCompletingNode->Process.Execute();
+	}
+	else
+	{
+		SelfCompletingNode->bWasBoundOnExecution = false;
+	}
+	
 	if (SelfCompletingNode->HasCancelBeenRequested())
 	{
 		FlowQueue.Reset();
 
-		OnCancelledDelegate.Broadcast();
-		OnCancelledDelegate_Internal.ExecuteIfBound();		
-
+		BroadcastCancellation();
 		FControlFlowStatics::HandleControlFlowFinishedNotification();
 	}
 	else
@@ -57,14 +64,31 @@ void FControlFlow::ExecuteNode(TSharedRef<FControlFlowNode_SelfCompleting> SelfC
 	}
 }
 
+void FControlFlow::BroadcastCancellation()
+{
+	OnFlowCancelledDelegate.Broadcast();
+	OnCancelledDelegate_Internal.ExecuteIfBound();
+}
+
 void FControlFlow::HandleControlFlowNodeCompleted(TSharedRef<const FControlFlowNode> NodeCompleted)
 {
 	UE_LOG(LogControlFlows, Verbose, TEXT("ControlFlow - Executing %s%s(x%d).%s (FlowControlNodeCompleted)"), *GetFlowPath(), *DebugName, GetRepeatedFlowCount(), *NodeCompleted->GetNodeName());
 
 	SubFlowStack_ForDebugging.Add(SharedThis(this));
 
-	if (ensure(CurrentNode.IsValid() && &NodeCompleted.Get() == CurrentNode.Get()))
+	if (ensureMsgf(CurrentNode.IsValid(), TEXT("CurrentNode isn't valid when handling control flow node (%s) being completed.  This will likely become a static_assert/compile-error"),
+			*NodeCompleted->GetNodeName()
+				  ) &&
+		ensureMsgf(&NodeCompleted.Get() == CurrentNode.Get(), TEXT("NodeCompleted (%s) does not match the current node (%s).  This will likely become a static_assert/compile-error"),
+			*NodeCompleted->GetNodeName(), *CurrentNode->GetNodeName()
+				  )
+	   )
 	{
+		if (!NodeCompleted->bWasBoundOnExecution)
+		{
+			OnNodeWasNotBoundedOnExecution_Internal.ExecuteIfBound();
+		}
+
 		const bool bCancelRequested = !bInterpretCancelledNodeAsComplete && NodeCompleted->HasCancelBeenRequested();
 		CurrentNode.Reset();
 		CurrentlyRunningTask.Reset();
@@ -97,12 +121,12 @@ void FControlFlow::HandleControlFlowNodeCompleted(TSharedRef<const FControlFlowN
 		{
 			if (bCancelRequested)
 			{
-				OnCancelledDelegate.Broadcast();
-				OnCancelledDelegate_Internal.ExecuteIfBound();				
+				BroadcastCancellation();
 			}
 			else
 			{
-				OnCompleteDelegate.Broadcast();
+				OnStepCompletedDelegate.Broadcast();
+				OnFlowCompleteDelegate.Broadcast();
 				OnCompleteDelegate_Internal.ExecuteIfBound();				
 			}
 
@@ -175,21 +199,29 @@ void FControlFlow::ExecuteFlow()
 
 	if (ensureAlwaysMsgf(!CurrentNode.IsValid(), TEXT("Flow is already running! Or perhaps there are multiple instances of owning class? All flows should have a unique ID.")))
 	{
-		FControlFlowStatics::HandleControlFlowStartedNotification(AsShared());
-
-		SubFlowStack_ForDebugging.Add(SharedThis(this));
-		if (FlowQueue.Num() > 0)
+		if (!ensure(SubFlowStack_ForDebugging.Num() < MAX_FLOW_LOOPS))
 		{
-			ExecuteNextNodeInQueue();
+			UE_LOG(LogControlFlows, Error, TEXT("ControlFlow - Hit maximum Flow loops. Is there an infinite recursion somewhere?"));
 		}
 		else
 		{
-			OnExecutedWithoutAnyNodesDelegate.Broadcast();
-			OnExecutedWithoutAnyNodesDelegate_Internal.ExecuteIfBound();
-			FControlFlowStatics::HandleControlFlowFinishedNotification();
-		}
+			FControlFlowStatics::HandleControlFlowStartedNotification(AsShared());
 
-		SubFlowStack_ForDebugging.Pop();
+			SubFlowStack_ForDebugging.Add(SharedThis(this));
+			if (FlowQueue.Num() > 0)
+			{
+				ExecuteNextNodeInQueue();
+			}
+			else
+			{
+				// No nodes is treated as completed for non internal cases
+				OnFlowCompleteDelegate.Broadcast();
+				OnExecutedWithoutAnyNodesDelegate_Internal.ExecuteIfBound();
+				FControlFlowStatics::HandleControlFlowFinishedNotification();
+			}
+
+			SubFlowStack_ForDebugging.Pop();
+		}
 	}
 
 	UE_LOG(LogControlFlows, Verbose, TEXT("ControlFlow - Executing %s (ExecuteFlow Completed)"), *DebugName);
@@ -218,8 +250,7 @@ void FControlFlow::CancelFlow()
 	}
 	else
 	{
-		OnCancelledDelegate.Broadcast();
-		OnCancelledDelegate_Internal.ExecuteIfBound();
+		BroadcastCancellation();
 		FControlFlowStatics::HandleControlFlowFinishedNotification();
 	}
 }
@@ -259,6 +290,23 @@ TOptional<FString> FControlFlow::GetCurrentStepDebugName() const
 TSharedPtr<FTrackedActivity> FControlFlow::GetTrackedActivity() const
 {
 	return Activity;
+}
+
+FControlFlow& FControlFlow::QueueDelay(const float InDelay, const FString& NodeName)
+{
+	QueueWait(NodeName).BindLambda([InDelay](FControlFlowNodeRef FlowHandle)
+		{
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([FlowHandle](float)
+				{
+					if (FlowHandle->Parent.IsValid() && !FlowHandle->HasCancelBeenRequested())
+					{
+						FlowHandle->ContinueFlow();
+					}
+					return false;
+				}), InDelay);
+		});
+
+	return *this;
 }
 
 FControlFlow& FControlFlow::TrackActivities(TSharedPtr<FTrackedActivity> InActivity)
@@ -315,6 +363,19 @@ FControlFlowBranchDefiner& FControlFlow::QueueControlFlowBranch(const FString& T
 FConcurrentFlowsDefiner& FControlFlow::QueueConcurrentFlows(const FString& TaskName /*= TEXT("")*/, const FString& FlowNodeDebugName /*= TEXT("")*/)
 {
 	TSharedRef<FControlFlowTask_ConcurrentFlows> NewTask = MakeShared<FControlFlowTask_ConcurrentFlows>(TaskName);
+	TSharedRef<FControlFlowNode_Task> NewNode = MakeShared<FControlFlowNode_Task>(SharedThis(this), NewTask, FormatOrGetNewNodeDebugName(FlowNodeDebugName));
+
+	NewNode->OnExecute().BindSP(SharedThis(this), &FControlFlow::HandleTaskNodeExecuted);
+	NewNode->OnCancelRequested().BindSP(SharedThis(this), &FControlFlow::HandleTaskNodeCancelled);
+
+	FlowQueue.Add(NewNode);
+
+	return NewTask->GetDelegate();
+}
+
+FControlFlowConditionalLoopDefiner& FControlFlow::QueueConditionalLoop(const FString& TaskName /*= TEXT("")*/, const FString& FlowNodeDebugName /*= TEXT("")*/)
+{
+	TSharedRef<FControlFlowTask_ConditionalLoop> NewTask = MakeShared<FControlFlowTask_ConditionalLoop>(TaskName);
 	TSharedRef<FControlFlowNode_Task> NewNode = MakeShared<FControlFlowNode_Task>(SharedThis(this), NewTask, FormatOrGetNewNodeDebugName(FlowNodeDebugName));
 
 	NewNode->OnExecute().BindSP(SharedThis(this), &FControlFlow::HandleTaskNodeExecuted);

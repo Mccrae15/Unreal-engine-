@@ -11,6 +11,7 @@
 #include "IPropertyTable.h"
 #include "IPropertyTableCell.h"
 #include "IPropertyTableCellPresenter.h"
+#include "IPropertyTableRow.h"
 #include "Input/Events.h"
 #include "Internationalization/Internationalization.h"
 #include "Layout/Children.h"
@@ -48,7 +49,8 @@ void SPropertyTableCell::Construct( const FArguments& InArgs, const TSharedRef< 
 	Presenter = InArgs._Presenter;
 	Style = InArgs._Style;
 
-	CellBackground = FAppStyle::GetBrush( Style, ".ColumnBorder" );
+	// This draws a box around each column which looks like gridlines
+	CellBackground = FAppStyle::GetBrush( Style, ".CellBorder" );
 
 	SetContent( ConstructCellContents() );
 
@@ -56,10 +58,6 @@ void SPropertyTableCell::Construct( const FArguments& InArgs, const TSharedRef< 
 	Cell->OnExitedEditMode().AddSP( this, &SPropertyTableCell::ExitedEditMode );
 
 	FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SPropertyTableCell::OnCellValueChanged);
-
-	static const FName InvertedForegroundName("InvertedForeground");
-
-	SetForegroundColor( FAppStyle::GetSlateColor(InvertedForegroundName) );
 }
 
 void SPropertyTableCell::SetContent( const TSharedRef< SWidget >& NewContents )
@@ -90,6 +88,13 @@ void SPropertyTableCell::OnCellValueChanged( UObject* Object, FPropertyChangedEv
 TSharedRef< SWidget > SPropertyTableCell::ConstructCellContents()
 {
 	TSharedRef< SWidget > CellContents = SNullWidget::NullWidget;
+
+	// If the cell doesnt pass the permission list, don't show any widget for it
+	if(!Cell->PassesPermissionList())
+	{
+		return CellContents;
+	}
+	
 	if ( Presenter.IsValid() )
 	{
 		if ( Cell->InEditMode() )
@@ -103,18 +108,6 @@ TSharedRef< SWidget > SPropertyTableCell::ConstructCellContents()
 	}
 
 	return CellContents;
-}
-
-const FSlateBrush* SPropertyTableCell::GetCurrentCellBorder() const
-{
-	const bool IsReadOnly = !Presenter.IsValid() || Presenter->HasReadOnlyEditMode() || Cell->IsReadOnly();
-
-	if ( IsReadOnly )
-	{
-		return FAppStyle::GetBrush( Style, ".ReadOnlyCurrentCellBorder" );
-	}
-
-	return FAppStyle::GetBrush( Style, ".CurrentCellBorder" );
 }
 
 void SPropertyTableCell::OnAnchorWindowClosed( const TSharedRef< SWindow >& WindowClosing )
@@ -175,14 +168,27 @@ int32 SPropertyTableCell::OnPaint( const FPaintArgs& Args, const FGeometry& Allo
 	{
 		const FSlateBrush* Background = CellBackground;
 
-		if ( Cell->GetTable()->GetCurrentCell() == Cell )
+		// We go through the row to grab the table because we are in OnPaint() and the column could be in the process of reconstruction
+		if (Cell->GetRow()->GetTable()->GetCurrentCell() == Cell )
 		{
-			Background = GetCurrentCellBorder();
+			// The current cell has the blue selection color and a white border around it
+			Background = FAppStyle::GetBrush( Style, ".CurrentCellBorder" );
 		}
-		else if ( Cell->GetTable()->GetSelectedCells().Contains( Cell.ToSharedRef() ) )
+		else if ( Cell->GetRow()->GetTable()->GetSelectedCells().Contains( Cell.ToSharedRef() ) )
 		{
-			Background = FAppStyle::GetBrush( Style, ".ReadOnlySelectedCellBorder" );
+			// Other selected cells have the blue selection color along with the gridlines
+			Background = FAppStyle::GetBrush( Style, ".SelectedCellBorder" );
 		}
+
+		// If the cell is in edit mode, we give the presenter a chance to specify the background
+		if(Cell->InEditMode() && Presenter)
+		{
+			if(const FSlateBrush* PresenterBackground = Presenter->GetEditModeCellBrush())
+			{
+				Background = PresenterBackground;
+			}
+		}
+		
 
 		FSlateDrawElement::MakeBox(
 			OutDrawElements,
@@ -215,22 +221,14 @@ FReply SPropertyTableCell::OnMouseButtonDoubleClick( const FGeometry& InMyGeomet
 
 TSharedRef< class SWidget > SPropertyTableCell::ConstructEditModeCellWidget()
 {
-	const FSlateBrush* BorderBrush = ( Presenter->HasReadOnlyEditMode() || Cell->IsReadOnly() ) ? FAppStyle::GetBrush( Style, ".ReadOnlyEditModeCellBorder" ) : FAppStyle::GetBrush( Style, ".Selection.Active" );
-
-	return SNew( SBorder )
-		.BorderImage( BorderBrush )
-		.VAlign( VAlign_Center )
-		.Padding( 0 )
-		.Content()
-		[
+	return
 			SAssignNew( DropDownAnchor, SMenuAnchor )
 			.Placement( MenuPlacement_ComboBox )
 			.OnGetMenuContent( this, &SPropertyTableCell::ConstructEditModeDropDownWidget )
 			.Content()
 			[
 				Presenter->ConstructEditModeCellWidget()
-			]
-		];
+			];
 }
 
 TSharedRef< class SWidget > SPropertyTableCell::ConstructEditModeDropDownWidget()
@@ -238,28 +236,21 @@ TSharedRef< class SWidget > SPropertyTableCell::ConstructEditModeDropDownWidget(
 	return Presenter->ConstructEditModeDropDownWidget();
 }
 
-TSharedRef<SBorder> SPropertyTableCell::ConstructInvalidPropertyWidget()
+TSharedRef<SWidget> SPropertyTableCell::ConstructInvalidPropertyWidget()
 {
 	return 
-		SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush( Style, ".ReadOnlyEditModeCellBorder"))
-		.VAlign(VAlign_Center)
-		.Padding(0)
-		.Content()
+		SNew(SHorizontalBox)
+		+SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
 		[
-			SNew(SHorizontalBox)
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-			[
-				SNew(SImage)
-				.Image(FAppStyle::GetBrush("Icons.Error"))
-			]
-			+SHorizontalBox::Slot()
-			[
-				SNew(STextBlock)
-				.ColorAndOpacity(FLinearColor::Red)
-				.Text(NSLOCTEXT("PropertyEditor", "InvalidTableCellProperty", "Failed to retrieve value"))
-			]
+			SNew(SImage)
+			.Image(FAppStyle::GetBrush("Icons.Error"))
+		]
+		+SHorizontalBox::Slot()
+		[
+			SNew(STextBlock)
+			.ColorAndOpacity(FLinearColor::Red)
+			.Text(NSLOCTEXT("PropertyEditor", "InvalidTableCellProperty", "Failed to retrieve value"))
 		];
 }

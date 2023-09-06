@@ -12,7 +12,7 @@
 //
 namespace Chaos::Softs
 {
-class CHAOS_API FPBDTriangleMeshCollisions
+class FPBDTriangleMeshCollisions
 {
 public:
 	struct FContourMinimizationIntersection
@@ -111,6 +111,9 @@ public:
 		, NumParticles(InNumParticles)
 		, bGlobalIntersectionAnalysis(GetUseSelfIntersections(PropertyCollection, false) || GetUseGlobalIntersectionAnalysis(PropertyCollection, false))
 		, bContourMinimization(GetUseSelfIntersections(PropertyCollection, false) || GetUseContourMinimization(PropertyCollection, false))
+		, UseSelfIntersectionsIndex(PropertyCollection)
+		, UseGlobalIntersectionAnalysisIndex(PropertyCollection)
+		, UseContourMinimizationIndex(PropertyCollection)
 	{}
 
 	FPBDTriangleMeshCollisions(
@@ -125,6 +128,9 @@ public:
 		, NumParticles(InNumParticles)
 		, bGlobalIntersectionAnalysis(bInGlobalIntersectionAnalysis)
 		, bContourMinimization(bInContourMinimization)
+		, UseSelfIntersectionsIndex(ForceInit)
+		, UseGlobalIntersectionAnalysisIndex(ForceInit)
+		, UseContourMinimizationIndex(ForceInit)
 	{}
 
 	virtual ~FPBDTriangleMeshCollisions() = default;
@@ -153,7 +159,7 @@ public:
 		}
 	}
 
-	void Init(const FSolverParticles& Particles);
+	CHAOS_API void Init(const FSolverParticles& Particles, const FSolverReal MinProximityQueryRadius = (FSolverReal)0.);
 
 	void SetGlobalIntersectionAnalysis(bool bInGlobalIntersectionAnalysis) { bGlobalIntersectionAnalysis = bInGlobalIntersectionAnalysis; }
 	void SetContourMinimization(bool bInContourMinimization) { bContourMinimization = bInContourMinimization; }

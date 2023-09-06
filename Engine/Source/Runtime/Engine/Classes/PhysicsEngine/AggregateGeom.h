@@ -7,6 +7,7 @@
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/LevelSetElem.h"
 #include "PhysicsEngine/BoxElem.h"
+#include "PhysicsEngine/SkinnedLevelSetElem.h"
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
 #include "PhysicsEngine/TaperedCapsuleElem.h"
@@ -16,7 +17,7 @@ class FMaterialRenderProxy;
 
 /** Container for an aggregate of collision shapes */
 USTRUCT()
-struct ENGINE_API FKAggregateGeom
+struct FKAggregateGeom
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -37,6 +38,9 @@ struct ENGINE_API FKAggregateGeom
 
 	UPROPERTY(EditAnywhere, editfixedsize, Category = "Aggregate Geometry", meta = (DisplayName = "Level Sets"))
 	TArray<FKLevelSetElem> LevelSetElems;
+
+	UPROPERTY(EditAnywhere, editfixedsize, Category = "Aggregate Geometry", meta = (DisplayName = "(Experimental) Skinned Level Sets"), Experimental)
+	TArray<FKSkinnedLevelSetElem> SkinnedLevelSetElems;
 
 	class FKConvexGeomRenderInfo* RenderInfo;
 
@@ -60,12 +64,12 @@ struct ENGINE_API FKAggregateGeom
 
 	int32 GetElementCount() const
 	{
-		return SphereElems.Num() + SphylElems.Num() + BoxElems.Num() + ConvexElems.Num() + TaperedCapsuleElems.Num() + LevelSetElems.Num();
+		return SphereElems.Num() + SphylElems.Num() + BoxElems.Num() + ConvexElems.Num() + TaperedCapsuleElems.Num() + LevelSetElems.Num() + SkinnedLevelSetElems.Num();
 	}
 
-	int32 GetElementCount(EAggCollisionShape::Type Type) const;
+	ENGINE_API int32 GetElementCount(EAggCollisionShape::Type Type) const;
 
-	SIZE_T GetAllocatedSize() const { return SphereElems.GetAllocatedSize() + SphylElems.GetAllocatedSize() + BoxElems.GetAllocatedSize() + ConvexElems.GetAllocatedSize() + TaperedCapsuleElems.GetAllocatedSize(); }
+	SIZE_T GetAllocatedSize() const { return SphereElems.GetAllocatedSize() + SphylElems.GetAllocatedSize() + BoxElems.GetAllocatedSize() + ConvexElems.GetAllocatedSize() + TaperedCapsuleElems.GetAllocatedSize() + LevelSetElems.GetAllocatedSize() + SkinnedLevelSetElems.GetAllocatedSize(); }
 
 	FKShapeElem* GetElement(const EAggCollisionShape::Type Type, const int32 Index)
 	{
@@ -83,6 +87,8 @@ struct ENGINE_API FKAggregateGeom
 			if (ensure(TaperedCapsuleElems.IsValidIndex(Index))) { return &TaperedCapsuleElems[Index]; }
 		case EAggCollisionShape::LevelSet:
 			if (ensure(LevelSetElems.IsValidIndex(Index))) { return &LevelSetElems[Index]; }
+		case EAggCollisionShape::SkinnedLevelSet:
+			if (ensure(SkinnedLevelSetElems.IsValidIndex(Index))) { return &SkinnedLevelSetElems[Index]; }
 		default:
 			ensure(false);
 			return nullptr;
@@ -103,6 +109,8 @@ struct ENGINE_API FKAggregateGeom
 		if (Index < TaperedCapsuleElems.Num()) { return &TaperedCapsuleElems[Index]; }
 		Index -= TaperedCapsuleElems.Num();
 		if (Index < LevelSetElems.Num()) { return &LevelSetElems[Index]; }
+		Index -= LevelSetElems.Num();
+		if (Index < SkinnedLevelSetElems.Num()) { return &SkinnedLevelSetElems[Index]; }
 		ensure(false);
 		return nullptr;
 	}
@@ -121,6 +129,8 @@ struct ENGINE_API FKAggregateGeom
 		if (Index < TaperedCapsuleElems.Num()) { return &TaperedCapsuleElems[Index]; }
 		Index -= TaperedCapsuleElems.Num();
 		if (Index < LevelSetElems.Num()) { return &LevelSetElems[Index]; }
+		Index -= LevelSetElems.Num();
+		if (Index < SkinnedLevelSetElems.Num()) { return &SkinnedLevelSetElems[Index]; }
 		ensure(false);
 		return nullptr;
 	}
@@ -133,20 +143,21 @@ struct ENGINE_API FKAggregateGeom
 		SphereElems.Empty();
 		TaperedCapsuleElems.Empty();
 		LevelSetElems.Empty();
+		SkinnedLevelSetElems.Empty();
 
 		FreeRenderInfo();
 	}
 
 #if WITH_EDITORONLY_DATA
-	void FixupDeprecated(FArchive& Ar);
+	ENGINE_API void FixupDeprecated(FArchive& Ar);
 #endif
 
-	void GetAggGeom(const FTransform& Transform, const FColor Color, const FMaterialRenderProxy* MatInst, bool bPerHullColor, bool bDrawSolid, bool bOutputVelocity, int32 ViewIndex, class FMeshElementCollector& Collector) const;
+	ENGINE_API void GetAggGeom(const FTransform& Transform, const FColor Color, const FMaterialRenderProxy* MatInst, bool bPerHullColor, bool bDrawSolid, bool bOutputVelocity, int32 ViewIndex, class FMeshElementCollector& Collector) const;
 
 	/** Release the RenderInfo (if its there) and safely clean up any resources. Call on the game thread. */
-	void FreeRenderInfo();
+	ENGINE_API void FreeRenderInfo();
 
-	FBox CalcAABB(const FTransform& Transform) const;
+	ENGINE_API FBox CalcAABB(const FTransform& Transform) const;
 
 	/**
 	* Calculates a tight box-sphere bounds for the aggregate geometry; this is more expensive than CalcAABB
@@ -155,16 +166,16 @@ struct ENGINE_API FKAggregateGeom
 	* @param Output The output box-sphere bounds calculated for this set of aggregate geometry
 	*	@param LocalToWorld Transform
 	*/
-	void CalcBoxSphereBounds(FBoxSphereBounds& Output, const FTransform& LocalToWorld) const;
+	ENGINE_API void CalcBoxSphereBounds(FBoxSphereBounds& Output, const FTransform& LocalToWorld) const;
 
 	/** Returns the volume of this element */
 	UE_DEPRECATED(5.1, "Changed to GetScaledVolume. Note that Volume calculation now includes non-uniform scale so values may have changed")
-	FVector::FReal GetVolume(const FVector& Scale3D) const;
+	ENGINE_API FVector::FReal GetVolume(const FVector& Scale3D) const;
 
 	/** Returns the volume of this element */
-	FVector::FReal GetScaledVolume(const FVector& Scale3D) const;
+	ENGINE_API FVector::FReal GetScaledVolume(const FVector& Scale3D) const;
 
-	FGuid MakeDDCKey() const;
+	ENGINE_API FGuid MakeDDCKey() const;
 
 private:
 
@@ -177,5 +188,6 @@ private:
 		ConvexElems = Other.ConvexElems;
 		TaperedCapsuleElems = Other.TaperedCapsuleElems;
 		LevelSetElems = Other.LevelSetElems;
+		SkinnedLevelSetElems = Other.SkinnedLevelSetElems;
 	}
 };

@@ -68,13 +68,6 @@ namespace Chaos
 				if (ConstraintSettings && ConstraintData)
 				{
 					Constraint_PT = ConstraintContainer.AddConstraint(*ConstraintSettings, *ConstraintData, CharacterHandle, GroundHandle);
-
-					CharacterHandle->AddConstraintHandle(Constraint_PT);
-
-					if (GroundHandle)
-					{
-						GroundHandle->AddConstraintHandle(Constraint_PT);
-					}
 				}
 			}
 		}
@@ -99,6 +92,7 @@ namespace Chaos
 				if (FGeometryParticleHandle* Handle = GetParticleHandleFromProxy(GroundParticleProxy->ParticleProxy))
 				{
 					Constraint_PT->GroundParticle = Handle;
+					Constraint_PT->bGroundParticleChanged = true;
 				}
 			}
 		}
@@ -148,6 +142,11 @@ namespace Chaos
 		{
 			Buffer.Force = Constraint_PT->GetSolverAppliedForce();
 			Buffer.Torque = Constraint_PT->GetSolverAppliedTorque();
+			Buffer.GroundNormal = Constraint_PT->GetData().GroundNormal;
+			Buffer.GroundDistance = Constraint_PT->GetData().GroundDistance;
+			Buffer.GroundParticle = Constraint_PT->GetGroundParticle();
+			Buffer.TargetDeltaPos = Constraint_PT->GetData().TargetDeltaPosition;
+			Buffer.TargetDeltaFacing = Constraint_PT->GetData().TargetDeltaFacing;
 		}
 	}
 
@@ -157,6 +156,30 @@ namespace Chaos
 		{
 			Constraint_GT->SolverAppliedForce = Buffer.Force;
 			Constraint_GT->SolverAppliedTorque = Buffer.Torque;
+
+			Constraint_GT->ConstraintData.Modify(false, Constraint_GT->DirtyFlags, Constraint_GT->Proxy, [&Buffer](FCharacterGroundConstraintDynamicData& Data) {
+				Data.GroundDistance = Buffer.GroundDistance;
+				Data.GroundNormal = Buffer.GroundNormal;
+				Data.TargetDeltaPosition = Buffer.TargetDeltaPos;
+				Data.TargetDeltaFacing = Buffer.TargetDeltaFacing;
+				});
+
+			if (Buffer.GroundParticle)
+			{
+				FSingleParticlePhysicsProxy* NewGroundProxy = (FSingleParticlePhysicsProxy*)(Buffer.GroundParticle->PhysicsProxy());
+				Constraint_GT->GroundProxy.Modify(false, Constraint_GT->DirtyFlags, Constraint_GT->Proxy, [NewGroundProxy](FParticleProxyProperty& Data)
+					{
+						Data.ParticleProxy = NewGroundProxy;
+					});
+			}
+			else
+			{
+				Constraint_GT->GroundProxy.Modify(false, Constraint_GT->DirtyFlags, Constraint_GT->Proxy, [](FParticleProxyProperty& Data)
+					{
+						Data.ParticleProxy = nullptr;
+					});
+			}
+			
 		}
 
 		return true;

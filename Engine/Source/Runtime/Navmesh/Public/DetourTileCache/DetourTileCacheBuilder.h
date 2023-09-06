@@ -39,7 +39,7 @@ struct dtTileCacheLayerHeader
 {
 	short version;							///< Data version
 	int tx,ty,tlayer;
-	unsigned short hmin, hmax;				///< Height min/max range
+	unsigned short hmin, hmax;				///< Height min/max range (@todo: remove)
 	unsigned short width, height;			///< Dimension of the layer.
 	unsigned short minx, maxx, miny, maxy;	///< Usable sub-region.
 	// These should be at the bottom, as they are less often used than the rest of the data.
@@ -110,13 +110,13 @@ struct dtTileCacheDistanceField
 	unsigned short* data;	///< distance for every cell in layer
 };
 
-class NAVMESH_API dtTileCacheLogContext
+class dtTileCacheLogContext
 {
 public:
 	/// Logs a message.
 	///  @param[in]		category	The category of the message.
 	///  @param[in]		format		The message.
-	void dtLog(const char* format, ...);
+	NAVMESH_API void dtLog(const char* format, ...);
 
 protected:
 
@@ -129,7 +129,7 @@ protected:
 
 //@UE END
 
-struct NAVMESH_API dtTileCacheAlloc
+struct dtTileCacheAlloc
 {
 	virtual ~dtTileCacheAlloc() = default;
 
@@ -148,7 +148,7 @@ struct NAVMESH_API dtTileCacheAlloc
 	}
 };
 
-struct NAVMESH_API dtTileCacheCompressor
+struct dtTileCacheCompressor
 {
 	virtual int maxCompressedSize(const int bufferSize) = 0;
 	virtual dtStatus compress(const unsigned char* buffer, const int bufferSize,

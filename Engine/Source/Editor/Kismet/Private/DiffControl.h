@@ -7,14 +7,20 @@
 #include "DiffResults.h"
 #include "IAssetTypeActions.h"
 #include "IDetailsView.h"
+#include "ReviewComments.h"
 #include "Algo/Transform.h"
 #include "Widgets/SWidget.h"
+#include "DiffUtils.h"
 
+struct FReviewCommentsDiffControl;
+class SMultiLineEditableTextBox;
 struct FDiffResultItem;
 class SBlueprintDiff;
 class UEdGraph;
 struct FEdGraphEditAction;
+class SCheckBox;
 
+class FAsyncDetailViewDiff;
 
 /** Interface responsible for generating FBlueprintDifferenceTreeEntry's for visual diff tools */
 class KISMET_API IDiffControl
@@ -22,13 +28,25 @@ class KISMET_API IDiffControl
 public:
 	virtual ~IDiffControl() {}
 
+	virtual void Tick() {};
+	
 	/** Adds widgets to the tree of differences to show */
 	virtual void GenerateTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences) = 0;
 	
 	static FText RightRevision;
 	static TSharedRef<SWidget> GenerateSimpleDiffWidget(FText DiffText);
 	static TSharedRef<SWidget> GenerateObjectDiffWidget(FSingleObjectDiffEntry DiffEntry, FText ObjectName);
+
+	// to support comment posting, set this to the tree view that contains the comments.
+	void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView, const UObject* OldObject, const UObject* NewObject);
+	void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView, const TArray<const UObject*>& Objects);
+	virtual void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView) {}
 	
+protected:
+	// to be called at the end of GenerateTreeEntries if you want this diff control to support review comments
+	void GenerateCategoryCommentTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& , TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences, FString CategoryKey);
+	
+	TSharedPtr<FReviewCommentsDiffControl> ReviewCommentsDiffControl;
 };
 
 /** Shows all differences for the blueprint structure itself that aren't picked up elsewhere */
@@ -38,6 +56,9 @@ public:
 	FMyBlueprintDiffControl(const UBlueprint* InOldBlueprint, const UBlueprint* InNewBlueprint, FOnDiffEntryFocused InSelectionCallback);
 
 	virtual void GenerateTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences) override;
+
+	// to support comment posting, set this to the tree view that contains the comments.
+	virtual void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView) override;
 
 private:
 	FOnDiffEntryFocused SelectionCallback;
@@ -59,6 +80,9 @@ public:
 	TSharedRef<SWidget> OldTreeWidget() { return OldSCS.TreeWidget(); }
 	TSharedRef<SWidget> NewTreeWidget() { return NewSCS.TreeWidget(); }
 
+	// to support comment posting, set this to the tree view that contains the comments.
+	virtual void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView) override;
+
 private:
 	FOnDiffEntryFocused SelectionCallback;
 	FSCSDiffRoot DifferingProperties;
@@ -73,33 +97,44 @@ class KISMET_API FDetailsDiffControl : public TSharedFromThis<FDetailsDiffContro
 public:
 	FDetailsDiffControl(const UObject* InOldObject, const UObject* InNewObject, FOnDiffEntryFocused InSelectionCallback, bool bPopulateOutTreeEntries);
 
+	virtual void Tick() override;
+	
 	virtual void GenerateTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences) override;
+	void GenerateTreeEntriesWithoutComments(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences);
 
-	TSharedRef<SWidget> OldDetailsWidget() { return OldDetails.DetailsWidget(); }
-	TSharedRef<SWidget> NewDetailsWidget() { return NewDetails.DetailsWidget(); }
+	TSharedRef<IDetailsView> InsertObject(const UObject* Object, bool bScrollbarOnLeft = false, int32 Index = INDEX_NONE);
+	TSharedRef<IDetailsView> GetDetailsWidget(const UObject* Object) const;
+	TSharedPtr<IDetailsView> TryGetDetailsWidget(const UObject* Object) const;
+	TSharedPtr<FAsyncDetailViewDiff> GetDifferencesWithLeft(const UObject* Object) const;
+	TSharedPtr<FAsyncDetailViewDiff> GetDifferencesWithRight(const UObject* Object) const;
+	int32 IndexOfObject(const UObject* Object) const;
 
+	// to support comment posting, set this to the tree view that contains the comments.
+	virtual void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView) override;
 protected:
 	virtual void OnSelectDiffEntry(FPropertySoftPath PropertyName);
 	TAttribute<TArray<FVector2f>> GetLinkedScrollRateAttribute(const TSharedRef<IDetailsView>& OldDetailsView, const TSharedRef<IDetailsView>& NewDetailsView);
 	
 
 	// helper function that analyzes two details views and determines the rate they should scroll relative to one another to be in sync
-	TArray<FVector2f> GetLinkedScrollRate(TSharedRef<IDetailsView> OldDetailsView, TSharedRef<IDetailsView> NewDetailsView) const;
+	TArray<FVector2f> GetLinkedScrollRate(TSharedRef<IDetailsView> LeftDetailsView, TSharedRef<IDetailsView> RightDetailsView) const;
 
 	FOnDiffEntryFocused SelectionCallback;
-	FDetailsDiff OldDetails;
-	FDetailsDiff NewDetails;
+	
+	TMap<const UObject*,FDetailsDiff> DetailsDiffs;
+	TArray<const UObject*> ObjectDisplayOrder;
+	struct FPropertyTreeDiffPairs
+	{
+		TSharedPtr<FAsyncDetailViewDiff> Left;
+		TSharedPtr<FAsyncDetailViewDiff> Right;
+	};
+	TMap<const UObject*, FPropertyTreeDiffPairs> PropertyTreeDifferences;
 
-	TArray<FSingleObjectDiffEntry> DifferingProperties;
 	TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> > Children;
 	const bool bPopulateOutTreeEntries;
+	
+	TSet<FPropertyPath> PropertyAllowList;
 
-	mutable struct
-	{
-		TArray<TPair<int32, FPropertyPath>> OldProperties;
-		TArray<TPair<int32, FPropertyPath>> NewProperties;
-		TArray<FVector2f> ScrollRate;
-	} LinkedScrollRateCache;
 };
 
 /** Override for CDO special case */
@@ -141,7 +176,10 @@ struct FBlueprintTypeDiffControl : public TSharedFromThis<FBlueprintTypeDiffCont
 
 	/** Generate difference tree widgets */
 	virtual void GenerateTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences) override;
-
+	
+	// to support comment posting, set this to the tree view that contains the comments.
+	virtual void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView) override;
+	
 	/** The old blueprint (left) */
 	const UBlueprint* BlueprintOld;
 
@@ -191,6 +229,9 @@ struct FGraphToDiff	: public TSharedFromThis<FGraphToDiff>, IDiffControl
 	/** Get new(right) graph*/
 	UEdGraph* GetGraphNew() const;
 
+	// to support comment posting, set this to the tree view that contains the comments.
+	virtual void EnableComments(TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView) override;
+	
 	/** Source for list view */
 	TArray<TSharedPtr<FDiffResultItem>> DiffListSource;
 	TSharedPtr<TArray<FDiffSingleResult>> FoundDiffs;
@@ -225,4 +266,122 @@ private:
 
 	/** Handle to the registered OnGraphChanged delegate. */
 	FDelegateHandle OnGraphChangedDelegateHandle;
+};
+
+class FCommentTreeEntry : public FBlueprintDifferenceTreeEntry, public TSharedFromThis<FCommentTreeEntry>
+{
+public:
+	FCommentTreeEntry(TWeakPtr<FReviewCommentsDiffControl> InCommentsControl, const FReviewComment& InComment, const TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>& InChildren);
+	virtual ~FCommentTreeEntry() override;
+	static TSharedRef<FCommentTreeEntry> Make(TWeakPtr<FReviewCommentsDiffControl> CommentsControl, const FReviewComment& Comment, const TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>& Children = {});
+
+	int32 GetCommentIDChecked() const;
+	void AwaitCommentPost();
+private:
+	// FBlueprintDifferenceTreeEntry callbacks
+	TSharedRef<SWidget> CreateWidget();
+
+	// slate callbacks
+	bool IsCommentTextBoxReadonly() const;
+	FReply OnClickReply();
+	FReply OnClickEdit();
+	FReply OnLikeToggle();
+	FText GetLikeTooltip() const;
+	const FSlateBrush* GetLikeIcon() const;
+	FSlateColor GetUsernameColor() const;
+	FSlateColor GetLikeIconColor() const;
+	EVisibility GetEditReplyButtonGroupVisibility() const;
+	EVisibility GetEditButtonVisibility() const;
+	EVisibility GetSubmitCancelButtonGroupVisibility() const;
+	bool IsSubmitButtonEnabled() const;
+	FReply OnEditSubmitClicked();
+	FReply OnEditCancelClicked();
+
+	// comment api callbacks
+	void OnCommentPosted(const FReviewComment& Comment);
+
+	FString GetCommentString() const;
+	void SetCommentString(const FString& NewComment);
+
+	// during a pending edit, returns whether the comment is different from the saved version
+	bool HasCommentStringChanged() const;
+	
+	bool IsEditMode() const;
+	void SetEditMode(bool bIsEditMode);
+	
+	FReviewComment Comment;
+
+	TSharedPtr<SWidget> Content;
+	TSharedPtr<SHorizontalBox> EditReplyButtonGroup;
+	TSharedPtr<SHorizontalBox> SubmitCancelButtonGroup;
+	TSharedPtr<SMultiLineEditableTextBox> CommentTextBox;
+	
+	TWeakPtr<FReviewCommentsDiffControl> CommentsControl;
+	FDelegateHandle OnCommentPostedHandle;
+
+	// prefer the use of IsEditMode().
+	bool bExpectedEditMode = false;
+};
+
+class FCommentDraftTreeEntry : public FBlueprintDifferenceTreeEntry, public TSharedFromThis<FCommentDraftTreeEntry>
+{
+public:
+	FCommentDraftTreeEntry(TWeakPtr<FReviewCommentsDiffControl> InCommentsControl, TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>* InSiblings, int32 InReplyID = -1);
+	static TSharedRef<FCommentDraftTreeEntry> MakeCommentDraft(TWeakPtr<FReviewCommentsDiffControl> CommentsControl, TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>* Siblings);
+	static TSharedRef<FCommentDraftTreeEntry> MakeReplyDraft(TWeakPtr<FReviewCommentsDiffControl> CommentsControl, TSharedPtr<FCommentTreeEntry> InParent);
+
+	void ReassignReplyParent(TSharedPtr<FCommentTreeEntry> InParent);
+
+	TSharedPtr<SMultiLineEditableTextBox> GetCommentTextBox() const {return CommentTextBox;}
+
+	bool IsReply() const;
+private:
+	// FBlueprintDifferenceTreeEntry callbacks
+	TSharedRef<SWidget> CreateWidget();
+	
+	// slate callbacks
+	bool IsPostButtonEnabled() const;
+	FReply OnCommentPostClicked();
+	
+	void ReassignSiblings(TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>* InSiblings, int32 InReplyID);
+	
+	TSharedPtr<SWidget> Content;
+	TSharedPtr<SMultiLineEditableTextBox> CommentTextBox;
+	TSharedPtr<SCheckBox> FlagAsTaskCheckBox;
+	
+	TWeakPtr<FReviewCommentsDiffControl> CommentsControl;
+	
+	TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>* Siblings;
+	
+	// if this is a reply, store the comment id of it's parent
+	int32 ReplyID = -1;
+};
+
+/** Category list item for a graph*/
+struct FReviewCommentsDiffControl : public TSharedFromThis<FReviewCommentsDiffControl>, IDiffControl
+{
+	FReviewCommentsDiffControl(const FString& InCommentFilePath, TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> TreeView);
+
+	virtual void GenerateTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences) override;
+
+	void SetCategory(const FString& CategoryKey);
+
+	void PostComment(FReviewComment& Comment);
+	void DraftReply(TSharedPtr<FCommentTreeEntry> ParentComment);
+	void RebuildListView() const;
+
+	const FString& GetCommentFilePath() {return CommentFilePath;}
+	const FString& GetCommentCategory() {return CommentCategory;}
+protected:
+	
+	void GenerateCommentThreadRecursive(const FReviewComment& Comment,
+		const TMap<int32, TArray<const FReviewComment*>>& CommentReplyMap,
+		TArray<TSharedPtr<FBlueprintDifferenceTreeEntry>>& OutTreeEntries);
+	
+	FString CommentFilePath;
+	FString CommentCategory;
+	TWeakPtr<STreeView<TSharedPtr<FBlueprintDifferenceTreeEntry>>> CommentsTreeView;
+
+	// we only want one reply draft widget in existence so we can use a static to track it
+	static TWeakPtr<FCommentDraftTreeEntry> ReplyDraftEntry;
 };

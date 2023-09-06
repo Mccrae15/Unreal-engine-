@@ -15,7 +15,47 @@
 
 namespace mu
 {
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(float);    
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(double);   
+                                                  
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( int8 );   
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( int16 );  
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( int32 );  
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( int64 );  
+                                                  
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( uint8 );  
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( uint16 ); 
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( uint32 ); 
+    MUTABLE_IMPLEMENT_POD_SERIALISABLE( uint64 )
+	
+                                                                                      
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(vec2f);                                        
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(vec3f);                                        
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(mat3f);                                        
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(mat4f);                                        
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(vec2<int>);                                    
+	
+	// Unreal POD Serializables                                                       
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(FUintVector2);                                 
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(UE::Math::TIntVector2<uint16>);                
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(UE::Math::TIntVector2<int16>); 
 
+	template <>
+    void operator<<<FString>(OutputArchive& arch, const FString& t)
+    {
+	    const TArray<TCHAR>& Data = t.GetCharArray();
+    	arch << Data;
+    }
+
+
+    template <>
+    void operator>><FString>(InputArchive& arch, FString& t)
+    {
+	    TArray<TCHAR> Data;
+    	arch >> Data;
+    	
+    	t = FString(Data);
+    }
 
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------

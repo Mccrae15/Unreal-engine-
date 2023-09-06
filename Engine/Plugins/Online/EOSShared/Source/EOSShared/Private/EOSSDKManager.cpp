@@ -4,11 +4,13 @@
 
 #if WITH_EOS_SDK
 
+#include "Algo/AnyOf.h"
 #include "Containers/Ticker.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/App.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/Fork.h"
 #include "Misc/NetworkVersion.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
@@ -19,6 +21,7 @@
 #include "CoreGlobals.h"
 
 #include "EOSShared.h"
+#include "EOSSharedModule.h"
 #include "EOSSharedTypes.h"
 
 #include "eos_auth.h"
@@ -71,18 +74,34 @@ namespace
 	}
 
 #if !NO_LOGGING
+	bool IsLogLevelSuppressable(EOS_ELogLevel Level)
+	{
+		return Level > EOS_ELogLevel::EOS_LOG_Off && Level < EOS_ELogLevel::EOS_LOG_Info;
+	}
+
 	void EOS_CALL EOSLogMessageReceived(const EOS_LogMessage* Message)
 	{
 #define EOSLOG(Level) UE_LOG(LogEOSSDK, Level, TEXT("%s: %s"), UTF8_TO_TCHAR(Message->Category), *MessageStr)
+#define EOSLOG_SUPPRESS(Level) if(bSuppressLogLevel) { EOSLOG(Log); } else { EOSLOG(Level); }
 
 		FString MessageStr(UTF8_TO_TCHAR(Message->Message));
 		MessageStr.TrimStartAndEndInline();
 
+		// Check if this log line is suppressed.
+		bool bSuppressLogLevel = false;
+		if (IsLogLevelSuppressable(Message->Level))
+		{
+			if(FEOSSharedModule* Module = FEOSSharedModule::Get())
+			{
+				bSuppressLogLevel = Algo::AnyOf(Module->GetSuppressedLogStrings(), [&MessageStr](const FString& SuppressedLogString) { return MessageStr.Contains(SuppressedLogString); });
+			}
+		}
+
 		switch (Message->Level)
 		{
-		case EOS_ELogLevel::EOS_LOG_Fatal:			EOSLOG(Fatal); break;
-		case EOS_ELogLevel::EOS_LOG_Error:			EOSLOG(Error); break;
-		case EOS_ELogLevel::EOS_LOG_Warning:		EOSLOG(Warning); break;
+		case EOS_ELogLevel::EOS_LOG_Fatal:			EOSLOG_SUPPRESS(Fatal); break;
+		case EOS_ELogLevel::EOS_LOG_Error:			EOSLOG_SUPPRESS(Error); break;
+		case EOS_ELogLevel::EOS_LOG_Warning:		EOSLOG_SUPPRESS(Warning); break;
 		case EOS_ELogLevel::EOS_LOG_Info:			EOSLOG(Log); break;
 		case EOS_ELogLevel::EOS_LOG_Verbose:		EOSLOG(Verbose); break;
 		case EOS_ELogLevel::EOS_LOG_VeryVerbose:	EOSLOG(VeryVerbose); break;
@@ -92,6 +111,7 @@ namespace
 			break;
 		}
 #undef EOSLOG
+#undef EOSLOG_SUPPRESS
 	}
 
 	EOS_ELogLevel ConvertLogLevel(ELogVerbosity::Type LogLevel)
@@ -166,15 +186,6 @@ static FDelayedAutoRegisterHelper GKickoffDll(EDelayedRegisterRunPhase::EOS_DLL_
 
 FEOSSDKManager::FEOSSDKManager()
 {
-#if EOSSDK_RUNTIME_LOAD_REQUIRED
-	LLM_SCOPE(ELLMTag::RealTimeCommunications);
-	SDKHandle = GetSdkDllHandle();
-	if (SDKHandle == nullptr)
-	{
-		UE_LOG(LogEOSSDK, Warning, TEXT("Unable to load EOSSDK dynamic library"));
-		return;
-	}
-#endif
 }
 
 FEOSSDKManager::~FEOSSDKManager()
@@ -189,7 +200,18 @@ FEOSSDKManager::~FEOSSDKManager()
 
 EOS_EResult FEOSSDKManager::Initialize()
 {
+	if (FForkProcessHelper::IsForkRequested() && !FForkProcessHelper::IsForkedChildProcess())
+	{
+		UE_LOG(LogEOSSDK, Error, TEXT("FEOSSDKManager::Initialize failed, pre-fork"));
+		return EOS_EResult::EOS_InvalidState;
+	}
+
 #if EOSSDK_RUNTIME_LOAD_REQUIRED
+	if (SDKHandle == nullptr)
+	{
+		LLM_SCOPE(ELLMTag::RealTimeCommunications);
+		SDKHandle = GetSdkDllHandle();
+	}
 	if (SDKHandle == nullptr)
 	{
 		UE_LOG(LogEOSSDK, Log, TEXT("FEOSSDKManager::Initialize failed, SDKHandle=nullptr"));
@@ -496,8 +518,9 @@ void FEOSSDKManager::OnConfigSectionsChanged(const FString& IniFilename, const T
 
 void FEOSSDKManager::LoadConfig()
 {
+	const TCHAR* SectionName = TEXT("EOSSDK");
 	ConfigTickIntervalSeconds = 0.f;
-	GConfig->GetDouble(TEXT("EOSSDK"), TEXT("TickIntervalSeconds"), ConfigTickIntervalSeconds, GEngineIni);
+	GConfig->GetDouble(SectionName, TEXT("TickIntervalSeconds"), ConfigTickIntervalSeconds, GEngineIni);
 
 	SetupTicker();
 }
@@ -710,7 +733,7 @@ EOS_EResult FEOSSDKManager::EOSInitialize(EOS_InitializeOptions& Options)
 	return EOS_Initialize(&Options);
 }
 
-bool FEOSSDKManager::Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+bool FEOSSDKManager::Exec_Runtime(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 	if (!FParse::Command(&Cmd, TEXT("EOSSDK")))
 	{

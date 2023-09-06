@@ -15,6 +15,7 @@ using System.ComponentModel;
 using System.Reflection;
 using EpicGames.Core;
 using System.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace AutomationTool
 {
@@ -82,7 +83,8 @@ namespace AutomationTool
 			Store,
 			Store_True,
 			Store_False,
-			Append
+			Append,
+			Override
 		}
 
 		private ParamHelpAttribute(string Description) : base(Description)
@@ -135,7 +137,10 @@ namespace AutomationTool
 					ChoicesStr += ". Choices=[";
 					foreach (var Value in ValidChoices)
 					{
-						ChoicesStr += Value.ToString() + (MultiSelectSeparator != null ? MultiSelectSeparator : "|");
+						if (Value != null)
+						{
+							ChoicesStr += Value.ToString() + (MultiSelectSeparator != null ? MultiSelectSeparator : "|");
+						}
 					}
 					ChoicesStr = ChoicesStr.Remove(ChoicesStr.Length - 1);
 					ChoicesStr += "]";
@@ -311,12 +316,12 @@ namespace AutomationTool
 					}
 					else
 					{
-						LogWarning("Duplicated help parameter \"{0}\"", ParamName);
+						Logger.LogWarning("Duplicated help parameter \"{ParamName}\"", ParamName);
 					}
 				}
 			}
 
-			Log.TraceInformation("");
+			Logger.LogInformation("");
 			HelpUtils.PrintHelp(String.Format("{0} Help:", Command.Name), Description, ParamDict.ToList());
 		}
 

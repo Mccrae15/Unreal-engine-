@@ -90,27 +90,33 @@ namespace PCGPointHelpers
 			(DenominatorExtent.Z > 0 ? NumeratorExtent.Z / DenominatorExtent.Z : 1.0));
 	}
 
-	FVector::FReal VolumeOverlap(const FPCGPoint& InPoint, const FBox& InBounds, const FTransform& InTransform)
+	FVector::FReal VolumeOverlap(const FPCGPoint& InPoint, const FBox& InBounds, const FMatrix& InInverseTransform)
 	{
 		// This is similar in idea to SAT considering we have two boxes - since we will test all 6 axes.
 		// However, there is some uncertainty due to rotation, and using the overlap value as-is is an overestimation, which might not be critical in this case
 		// TODO: investigate if we should do a 8-pt test instead (would be more precise, but significantly more costly).
+		// Implementation note: we are using FMatrix here because we want to support non-uniform scales
 		const FBox PointBounds = InPoint.GetLocalDensityBounds();
-		const FTransform& PointTransform = InPoint.Transform;
 
-		const FBox FirstOverlap = PointBounds.Overlap(InBounds.TransformBy(InTransform.GetRelativeTransform(PointTransform)));
+		FMatrix PointTransformToInTransform = InPoint.Transform.ToMatrixWithScale() * InInverseTransform;
+		const FBox PointBoundsTransformed = PointBounds.TransformBy(PointTransformToInTransform);
+
+		const FBox FirstOverlap = InBounds.Overlap(PointBoundsTransformed);
 		if (!FirstOverlap.IsValid)
 		{
 			return 0;
 		}
 
-		const FBox SecondOverlap = InBounds.Overlap(PointBounds.TransformBy(PointTransform.GetRelativeTransform(InTransform)));
+		FMatrix InTransformToPointTransform = PointTransformToInTransform.Inverse();
+		const FBox InBoundsTransformed = InBounds.TransformBy(InTransformToPointTransform);
+
+		const FBox SecondOverlap = InBoundsTransformed.Overlap(PointBounds);
 		if (!SecondOverlap.IsValid)
 		{
 			return 0;
 		}
-		
-		return FMath::Min(ComputeOverlapRatio(FirstOverlap, InBounds), ComputeOverlapRatio(SecondOverlap, InBounds));
+
+		return FMath::Min(ComputeOverlapRatio(FirstOverlap, InBounds), ComputeOverlapRatio(SecondOverlap, InBoundsTransformed));
 	}
 
 	/** Helper function for additive blending of quaternions (copied from ControlRig) */
@@ -233,12 +239,6 @@ FPCGPointRef::FPCGPointRef(const FPCGPoint& InPoint)
 {
 	Point = &InPoint;
 	Bounds = InPoint.GetDensityBounds();
-}
-
-FPCGPointRef::FPCGPointRef(const FPCGPointRef& InPointRef)
-{
-	Point = InPointRef.Point;
-	Bounds = InPointRef.Bounds;
 }
 
 void UPCGPointData::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
@@ -391,19 +391,75 @@ void UPCGPointData::SetPoints(const TArray<FPCGPoint>& InPoints)
 void UPCGPointData::InitializeFromActor(AActor* InActor)
 {
 	check(InActor);
+	check(Metadata && Metadata->GetAttributeCount() == 0);
 
-	Points.SetNum(1);
-	Points[0].Transform = InActor->GetActorTransform();
+	AddSinglePointFromActor(InActor);
+}
 
-	const FVector& Position = Points[0].Transform.GetLocation();
-	Points[0].Seed = PCGHelpers::ComputeSeed((int)Position.X, (int)Position.Y, (int)Position.Z);
+void UPCGPointData::AddSinglePointFromActor(AActor* InActor)
+{
+	check(InActor);
+
+	FPCGPoint& Point = GetMutablePoints().Emplace_GetRef();
+	Point.Steepness = 1.0f;
+	Point.Transform = InActor->GetActorTransform();
+
+	const FVector& Position = Point.Transform.GetLocation();
+	Point.Seed = PCGHelpers::ComputeSeed((int)Position.X, (int)Position.Y, (int)Position.Z);
 
 	const FBox LocalBounds = PCGHelpers::GetActorLocalBounds(InActor);
-	Points[0].BoundsMin = LocalBounds.Min;
-	Points[0].BoundsMax = LocalBounds.Max;
+	Point.BoundsMin = LocalBounds.Min;
+	Point.BoundsMax = LocalBounds.Max;
 
-	TargetActor = InActor;
-	Metadata = NewObject<UPCGMetadata>(this);
+	Point.MetadataEntry = Metadata->AddEntry();
+
+	FPCGMetadataAttribute<FString>* ActorReferenceAttribute = Metadata->FindOrCreateAttribute(PCGPointDataConstants::ActorReferenceAttribute, FString(), /*bAllowsInterpolation=*/false, /*bOverrideParent=*/false, /*bOverwriteIfTypeMismatch=*/false);
+	if (ActorReferenceAttribute)
+	{
+		ActorReferenceAttribute->SetValue(Point.MetadataEntry, FSoftObjectPath(InActor).ToString());
+	}
+
+	// Parse tags as well
+	for (FName Tag : InActor->Tags)
+	{
+		const FString TagString = Tag.ToString();
+		int32 EqualPosition = INDEX_NONE;
+		
+		// Tags that contain a colon will be consider a field:value pair; we'll try to read a number first then default to a string
+		if(TagString.FindChar(':', EqualPosition))
+		{
+			FString LeftSide = TagString.Left(EqualPosition);
+			FString RightSide = TagString.RightChop(EqualPosition+1);
+
+			if (LeftSide.IsEmpty() || RightSide.IsEmpty())
+			{
+				continue;
+			}
+
+			if(RightSide.IsNumeric())
+			{
+				if (FPCGMetadataAttribute<double>* Attribute = Metadata->FindOrCreateAttribute<double>(FName(LeftSide), 0.0, /*bAllowsInterpolation=*/false, /*bOverrideParent=*/false, /*bOverwriteIfTypeMismatch=*/false))
+				{
+					double RightSideValue = FCString::Atod(*RightSide);
+					Attribute->SetValue(Point.MetadataEntry, RightSideValue);
+				}
+			}
+			else
+			{
+				if (FPCGMetadataAttribute<FString>* Attribute = Metadata->FindOrCreateAttribute<FString>(FName(LeftSide), FString(), /*bAllowsInterpolation=*/false, /*bOverrideParent=*/false, /*bOverwriteIfTypeMismatch=*/false))
+				{
+					Attribute->SetValue(Point.MetadataEntry, RightSide);
+				}
+			}
+		}
+		else // Otherwise, consider that the tag is a boolean value
+		{
+			if (FPCGMetadataAttribute<bool>* Attribute = Metadata->FindOrCreateAttribute<bool>(Tag, false, /*bAllowsInterpolation=*/false, /*bOverrideParent=*/false, /*bOverwriteIfTypeMismatch=*/false))
+			{
+				Attribute->SetValue(Point.MetadataEntry, true);
+			}
+		}
+	}
 }
 
 FPCGPoint UPCGPointData::GetPoint(int32 Index) const
@@ -450,8 +506,10 @@ bool UPCGPointData::ProjectPoint(const FTransform& InTransform, const FBox& InBo
 	else
 	{
 		FBox TransformedBounds = InBounds.TransformBy(InTransform);
-		Octree.FindElementsWithBoundsTest(FBoxCenterAndExtent(TransformedBounds.GetCenter(), TransformedBounds.GetExtent()), [&InBounds, &InTransform, &Contributions](const FPCGPointRef& InPointRef) {
-			float Contribution = PCGPointHelpers::VolumeOverlap(*InPointRef.Point, InBounds, InTransform);
+		FMatrix InTransformInverseMatrix = InTransform.ToMatrixWithScale().Inverse();
+
+		Octree.FindElementsWithBoundsTest(FBoxCenterAndExtent(TransformedBounds.GetCenter(), TransformedBounds.GetExtent()), [&InBounds, &InTransformInverseMatrix, &Contributions](const FPCGPointRef& InPointRef) {
+			float Contribution = PCGPointHelpers::VolumeOverlap(*InPointRef.Point, InBounds, InTransformInverseMatrix);
 			if (Contribution > 0)
 			{
 				Contributions.Emplace(InPointRef.Point, Contribution);
@@ -494,7 +552,7 @@ bool UPCGPointData::ProjectPoint(const FTransform& InTransform, const FBox& InBo
 	FVector WeightedPosition = FVector::ZeroVector;
 	FQuat WeightedQuat = FQuat::Identity;
 	FVector WeightedScale = FVector::ZeroVector;
-	float WeightedDensity = 0;
+	FVector::FReal WeightedDensity = 0;
 	FVector WeightedBoundsMin = FVector::ZeroVector;
 	FVector WeightedBoundsMax = FVector::ZeroVector;
 	FVector4 WeightedColor = FVector4::Zero();
@@ -555,7 +613,7 @@ bool UPCGPointData::ProjectPoint(const FTransform& InTransform, const FBox& InBo
 		OutPoint.Transform.SetScale3D(InTransform.GetScale3D());
 	}
 
-	OutPoint.Density = WeightedDensity;
+	OutPoint.Density = static_cast<float>(WeightedDensity);
 	OutPoint.BoundsMin = WeightedBoundsMin;
 	OutPoint.BoundsMax = WeightedBoundsMax;
 	OutPoint.Color = WeightedColor;

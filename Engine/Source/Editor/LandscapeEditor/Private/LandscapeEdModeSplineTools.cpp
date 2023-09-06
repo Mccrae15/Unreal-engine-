@@ -178,7 +178,8 @@ public:
 
 	void SelectConnected()
 	{
-		TArray<ULandscapeSplineControlPoint*> ControlPointsToProcess = SelectedSplineControlPoints.Array();
+		TArray<ULandscapeSplineControlPoint*> ControlPointsToProcess =
+			ObjectPtrDecay(SelectedSplineControlPoints.Array());
 
 		while (ControlPointsToProcess.Num() > 0)
 		{
@@ -196,7 +197,7 @@ public:
 			}
 		}
 
-		TArray<ULandscapeSplineSegment*> SegmentsToProcess = SelectedSplineSegments.Array();
+		TArray<ULandscapeSplineSegment*> SegmentsToProcess = ObjectPtrDecay(SelectedSplineSegments.Array());
 
 		while (SegmentsToProcess.Num() > 0)
 		{
@@ -324,7 +325,7 @@ public:
 		End->GetConnectionLocationAndRotation(NewSegment->Connections[1].SocketName, EndLocation, EndRotation);
 
 		// Set up tangent lengths
-		NewSegment->Connections[0].TangentLen = (EndLocation - StartLocation).Size();
+		NewSegment->Connections[0].TangentLen = static_cast<float>((EndLocation - StartLocation).Size());
 		NewSegment->Connections[1].TangentLen = NewSegment->Connections[0].TangentLen;
 
 		NewSegment->AutoFlipTangents();
@@ -432,7 +433,7 @@ public:
 		End->GetConnectionLocationAndRotation(Segment->Connections[1].SocketName, EndLocation, EndRotation);
 
 		// Set up tangent lengths
-		Segment->Connections[0].TangentLen = (EndLocation - StartLocation).Size();
+		Segment->Connections[0].TangentLen = static_cast<float>((EndLocation - StartLocation).Size());
 		Segment->Connections[1].TangentLen = Segment->Connections[0].TangentLen;
 
 		Segment->AutoFlipTangents();
@@ -694,7 +695,7 @@ public:
 			DuplicateCacheSplitSegmentParam = t;
 			DuplicateCacheSplitSegmentTangentLenStart = Segment->Connections[0].TangentLen;
 			DuplicateCacheSplitSegmentTangentLenEnd = Segment->Connections[1].TangentLen;
-			DuplicateCacheSplitSegmentTangentLen = Tangent.Size();
+			DuplicateCacheSplitSegmentTangentLen = static_cast<float>(Tangent.Size());
 		}
 
 		ULandscapeSplineControlPoint* NewControlPoint = NewObject<ULandscapeSplineControlPoint>(SplinesComponent, NAME_None, RF_Transactional);
@@ -725,7 +726,7 @@ public:
 		SplinesComponent->Segments.Add(NewSegment);
 
 		NewSegment->Connections[0].ControlPoint = NewControlPoint;
-		NewSegment->Connections[0].TangentLen = Tangent.Size() * (1 - t);
+		NewSegment->Connections[0].TangentLen = static_cast<float>(Tangent.Size() * (1 - t));
 		NewSegment->Connections[0].ControlPoint->ConnectedSegments.Add(FLandscapeSplineConnection(NewSegment, 0));
 		NewSegment->Connections[1].ControlPoint = Segment->Connections[1].ControlPoint;
 		NewSegment->Connections[1].TangentLen = Segment->Connections[1].TangentLen * (1 - t);
@@ -749,7 +750,7 @@ public:
 		Segment->Connections[0].TangentLen *= t;
 		Segment->Connections[1].ControlPoint->ConnectedSegments.Remove(FLandscapeSplineConnection(Segment, 1));
 		Segment->Connections[1].ControlPoint = NewControlPoint;
-		Segment->Connections[1].TangentLen = -Tangent.Size() * t;
+		Segment->Connections[1].TangentLen = static_cast<float>(-Tangent.Size() * t);
 		Segment->Connections[1].ControlPoint->ConnectedSegments.Add(FLandscapeSplineConnection(Segment, 1));
 
 		Segment->UpdateSplinePoints();
@@ -784,24 +785,17 @@ public:
 		Segment->FindNearest(LocalLocation, t0, Location0, Tangent0);
 		NewSegment->FindNearest(LocalLocation, t1, Location1, Tangent1);
 
-		float Len0 = Tangent0.Size();
-		float Len1 = Tangent1.Size();
-
 		ULandscapeSplineSegment* UseSegment;
 		if (FVector::Distance(LocalLocation, Location0) < FVector::Distance(LocalLocation, Location1))
 		{
 			t = DuplicateCacheSplitSegmentParam * t0;
 			tseg = t0;
-			Location = Location0;
-			Tangent = Tangent0;
 			UseSegment = Segment;
 		}
 		else
 		{
 			t = DuplicateCacheSplitSegmentParam + (1 - DuplicateCacheSplitSegmentParam) * t1;
 			tseg = t1;
-			Location = Location1;
-			Tangent = Tangent1;
 			UseSegment = NewSegment;
 		}
 		DuplicateCacheSplitSegmentParam = t;
@@ -978,7 +972,8 @@ public:
 
 	virtual bool BeginTool(FEditorViewportClient* ViewportClient, const FLandscapeToolTarget& InTarget, const FVector& InHitLocation) override
 	{
-		if (ViewportClient->IsCtrlPressed())
+		HHitProxy* HitProxy = ViewportClient->Viewport->GetHitProxy(ViewportClient->Viewport->GetMouseX(), ViewportClient->Viewport->GetMouseY());
+		if (HitProxy && ViewportClient->IsCtrlPressed())
 		{
 			LandscapeInfo = InTarget.LandscapeInfo.Get();
 			ILandscapeSplineInterface* SplineOwner = nullptr;
@@ -1000,7 +995,6 @@ public:
 			// Hit Test
 			if (!SplineOwner)
 			{
-				HHitProxy* HitProxy = ViewportClient->Viewport->GetHitProxy(ViewportClient->Viewport->GetMouseX(), ViewportClient->Viewport->GetMouseY());
 				if (HitProxy->IsA(HActor::StaticGetType()))
 				{
 					HActor* ActorProxy = (HActor*)HitProxy;
@@ -1601,7 +1595,7 @@ public:
 					continue;
 				}
 
-				float CurrentAngle = FMath::Acos(FVector::DotProduct(LocalDrag, SegmentDirection) / (LocalDrag.Size() * SegmentDirection.Size()));
+				float CurrentAngle = static_cast<float>(FMath::Acos(FVector::DotProduct(LocalDrag, SegmentDirection) / (LocalDrag.Size() * SegmentDirection.Size())));
 
 				// Create a new segment if there is no segment within 90 degrees of drag direction.
 				// Otherwise split segment that is closest to the drag direction.
@@ -1718,9 +1712,9 @@ public:
 			FVector ForwardVector = FQuatRotationMatrix(StartRotation.Quaternion()).TransformVector(FVector(1.0f, 0.0f, 0.0f));
 
 			FVector DragLocal = SplinesComponent->GetComponentTransform().InverseTransformVector(Drag);
-			float Angle = FMath::Acos(FVector::DotProduct(DragLocal, ForwardVector) / DragLocal.Size());
+			float Angle = static_cast<float>(FMath::Acos(FVector::DotProduct(DragLocal, ForwardVector) / DragLocal.Size()));
 			float OldTangentLen = Connection.TangentLen;
-			Connection.TangentLen = DraggingTangent_Length + (Angle < HALF_PI ? 2.0 : -2.0) * DragLocal.Size();
+			Connection.TangentLen = static_cast<float>(DraggingTangent_Length + (Angle < HALF_PI ? 2.0 : -2.0) * DragLocal.Size());
 
 			// Disallow a tangent of exactly 0 and don't allow tangents to flip
 			if ((Connection.TangentLen > 0 && OldTangentLen < 0) || 
@@ -2319,12 +2313,12 @@ protected:
 
 protected:
 	FEdModeLandscape* EdMode;
-	ULandscapeInfo* LandscapeInfo;
+	TObjectPtr<ULandscapeInfo> LandscapeInfo;
 
-	TSet<ULandscapeSplineControlPoint*> SelectedSplineControlPoints;
-	TSet<ULandscapeSplineSegment*> SelectedSplineSegments;
+	TSet<TObjectPtr<ULandscapeSplineControlPoint>> SelectedSplineControlPoints;
+	TSet<TObjectPtr<ULandscapeSplineSegment>> SelectedSplineSegments;
 
-	ULandscapeSplineSegment* DraggingTangent_Segment;
+	TObjectPtr<ULandscapeSplineSegment> DraggingTangent_Segment;
 	float DraggingTangent_Length;
 	ECoordSystem DraggingTangent_CacheCoordSpace;
 	uint32 DraggingTangent_End : 1;

@@ -2,22 +2,20 @@
 
 #pragma once
 
-#include "AnalysisSession.h"
-#include "CoreTypes.h"
-#include "Templates/UniquePtr.h"
+#include "HAL/Platform.h"
 #include "ProfilingDebugging/MemoryTrace.h"
+#include "Templates/Function.h"
+#include "Templates/UniquePtr.h"
+#include "TraceServices/Model/AnalysisSession.h"
+#include "UObject/NameTypes.h"
 
 #include <new>
 
 namespace TraceServices
 {
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 // Id type for tags
 typedef uint32 TagIdType;
-	
-////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class IAllocationsProvider : public IProvider
 {
@@ -116,12 +114,22 @@ public:
 public:
 	virtual ~IAllocationsProvider() = default;
 
-	virtual void BeginEdit() const = 0;
-	virtual void EndEdit() const = 0;
 	virtual void BeginRead() const = 0;
 	virtual void EndRead() const = 0;
+	virtual void ReadAccessCheck() const = 0;
 
 	virtual bool IsInitialized() const = 0;
+
+	// Enumerates the discovered tags.
+	virtual void EnumerateTags(TFunctionRef<void(const TCHAR*, const TCHAR*, TagIdType, TagIdType)> Callback) const = 0;
+
+	// Returns the display name of the specified LLM tag.
+	// Lifetime of returned string matches the session lifetime.
+	virtual const TCHAR* GetTagName(TagIdType Tag) const = 0;
+	virtual const TCHAR* GetTagFullPath(TagIdType Tag) const = 0;
+
+	virtual void EnumerateRootHeaps(TFunctionRef<void(HeapId Id, const FHeapSpec&)> Callback) const = 0;
+	virtual void EnumerateHeaps(TFunctionRef<void(HeapId Id, const FHeapSpec&)> Callback) const = 0;
 
 	// Returns the number of points in each timeline (Min/Max Total Allocated Memory, Min/Max Live Allocations, Total Alloc Events, Total Free Events).
 	virtual int32 GetTimelineNumPoints() const = 0;
@@ -129,8 +137,6 @@ public:
 	// Returns the inclusive index range [StartIndex, EndIndex] for a time range [StartTime, EndTime].
 	// Index values are in range { -1, 0, .. , N-1, N }, where N = GetTimelineNumPoints().
 	virtual void GetTimelineIndexRange(double StartTime, double EndTime, int32& StartIndex, int32& EndIndex) const = 0;
-
-	virtual void EnumerateRootHeaps(TFunctionRef<void(HeapId Id, const FHeapSpec&)> Callback) const = 0;
 
 	// Enumerates the Min Total Allocated Memory timeline points in the inclusive index interval [StartIndex, EndIndex].
 	virtual void EnumerateMinTotalAllocatedMemoryTimeline(int32 StartIndex, int32 EndIndex, TFunctionRef<void(double Time, double Duration, uint64 Value)> Callback) const = 0;
@@ -150,17 +156,9 @@ public:
 	// Enumerates the Free Events timeline points in the inclusive index interval [StartIndex, EndIndex].
 	virtual void EnumerateFreeEventsTimeline(int32 StartIndex, int32 EndIndex, TFunctionRef<void(double Time, double Duration, uint32 Value)> Callback) const = 0;
 
-	// Enumerates the discovered tags.
-	virtual void EnumerateTags(TFunctionRef<void(const TCHAR*, const TCHAR*, TagIdType, TagIdType)> Callback) const = 0;
-
 	virtual FQueryHandle StartQuery(const FQueryParams& Params) const = 0;
 	virtual void CancelQuery(FQueryHandle Query) const = 0;
 	virtual const FQueryStatus PollQuery(FQueryHandle Query) const = 0;
-
-	// Returns the display name of the specified LLM tag.
-	// Lifetime of returned string matches the session lifetime.
-	virtual const TCHAR* GetTagName(TagIdType Tag) const = 0;
-	virtual const TCHAR* GetTagFullPath(TagIdType Tag) const = 0;
 };
 
 TRACESERVICES_API FName GetAllocationsProviderName();

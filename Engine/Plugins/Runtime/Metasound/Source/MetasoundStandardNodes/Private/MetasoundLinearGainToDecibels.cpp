@@ -14,14 +14,12 @@
 
 namespace Metasound
 {
-
 	namespace LinearGainToDecibelsVertexNames
 	{
 		METASOUND_PARAM(InputLinearGain, "Linear Gain", "Input linear gain.");
 
 		METASOUND_PARAM(OutputDecibels, "Decibels", "Output corresponding logarithmic (dB) gain.");
 	}
-
 
 	class FLinearGainToDecibelsOperator : public TExecutableOperator<FLinearGainToDecibelsOperator>
 	{
@@ -31,10 +29,13 @@ namespace Metasound
 		static const FVertexInterface& GetVertexInterface();
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
-		FLinearGainToDecibelsOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InLinearGain);
+		FLinearGainToDecibelsOperator(const FCreateOperatorParams& InParams, const FFloatReadRef& InLinearGain);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -45,30 +46,46 @@ namespace Metasound
 		FFloatWriteRef DecibelOutput;
 	};
 
-	FLinearGainToDecibelsOperator::FLinearGainToDecibelsOperator(const FOperatorSettings& InSettings, const FFloatReadRef& InLinearGain)
+	FLinearGainToDecibelsOperator::FLinearGainToDecibelsOperator(const FCreateOperatorParams& InParams, const FFloatReadRef& InLinearGain)
 		: LinearGainInput(InLinearGain)
-		, DecibelOutput(FFloatWriteRef::CreateNew(FMath::Max(Audio::ConvertToDecibels(*LinearGainInput, TNumericLimits<float>::Min()), -240.0f)))
+		, DecibelOutput(FFloatWriteRef::CreateNew(0))
 	{
+		Reset(InParams);
 	}
 
-	
-	FDataReferenceCollection FLinearGainToDecibelsOperator::GetInputs() const
+	void FLinearGainToDecibelsOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace LinearGainToDecibelsVertexNames;
 
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputLinearGain), LinearGainInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputLinearGain), LinearGainInput);
+	}
 
-		return InputDataReferences;
+	void FLinearGainToDecibelsOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace LinearGainToDecibelsVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputDecibels), DecibelOutput);
+	}
+
+	FDataReferenceCollection FLinearGainToDecibelsOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FLinearGainToDecibelsOperator::GetOutputs() const
 	{
-		using namespace LinearGainToDecibelsVertexNames;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
+	}
 
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputDecibels), DecibelOutput);
-		return OutputDataReferences;
+	void FLinearGainToDecibelsOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		Execute();
 	}
 
 	void FLinearGainToDecibelsOperator::Execute()
@@ -134,7 +151,7 @@ namespace Metasound
 
 		FFloatReadRef InLinearGain = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputLinearGain), InParams.OperatorSettings);
 		
-		return MakeUnique<FLinearGainToDecibelsOperator>(InParams.OperatorSettings, InLinearGain);
+		return MakeUnique<FLinearGainToDecibelsOperator>(InParams, InLinearGain);
 	}
 
 	class METASOUNDSTANDARDNODES_API FLinearGainToDecibelsNode : public FNodeFacade

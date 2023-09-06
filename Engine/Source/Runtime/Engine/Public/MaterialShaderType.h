@@ -147,6 +147,7 @@ public:
 		EShaderPlatform Platform,
 		EShaderPermutationFlags PermutationFlags,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
+		const FString& DebugGroupName,
 		const TCHAR* DebugDescription,
 		const TCHAR* DebugExtension
 	) const;
@@ -161,6 +162,7 @@ public:
 		FSharedShaderCompilerEnvironment* MaterialEnvironment,
 		const FShaderPipelineType* ShaderPipeline,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
+		const FString& DebugGroupName,
 		const TCHAR* DebugDescription,
 		const TCHAR* DebugExtension
 	);
@@ -219,7 +221,7 @@ struct FMaterialShaderTypes
 	template<typename ShaderType>
 	inline const FShaderType* AddShaderType(int32 InPermutationId = 0)
 	{
-		return AddShaderType(&ShaderType::StaticType, InPermutationId);
+		return AddShaderType(&ShaderType::GetStaticType(), InPermutationId);
 	}
 };
 

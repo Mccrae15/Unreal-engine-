@@ -17,67 +17,38 @@
 
 #define LOCTEXT_NAMESPACE "Mass"
 
-namespace UE::MassSpawner
+
+//-----------------------------------------------------------------------------
+// FMassEntityConfig
+//-----------------------------------------------------------------------------
+FMassEntityConfig::FMassEntityConfig()
 {
-	uint32 HashTraits(const TArray<UMassEntityTraitBase*>& CombinedTraits)
-	{
-		class FArchiveObjectCRC32AgentConfig : public FArchiveObjectCrc32
-		{
-		public:
-			virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
-			{
-				check(InProperty);
-				return FArchiveObjectCrc32::ShouldSkipProperty(InProperty) || InProperty->HasAllPropertyFlags(CPF_Transient);
-			}
-		};
-
-		uint32 CRC = 0;
-		for (UMassEntityTraitBase* Trait : CombinedTraits)
-		{
-			FArchiveObjectCRC32AgentConfig Archive;
-			CRC = Archive.Crc32(Trait, CRC);
-		}
-		return CRC;
-	}
-} // UE::MassSpawner
-
-FMassEntityConfig::FMassEntityConfig(UMassEntityConfigAsset& InParent)
-	: Parent(&InParent)
-{
-
+	ConfigGuid = FGuid::NewGuid();
 }
 
-#if WITH_EDITOR
-void UMassEntityConfigAsset::ValidateEntityConfig()
+FMassEntityConfig::FMassEntityConfig(UObject& InOwner)
+	: ConfigOwner(&InOwner)
 {
-	if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
-	{
-		if (Config.ValidateEntityTemplate(*EditorWorld, *this))
-		{
-			const FText InfoText = LOCTEXT("MassEntityConfigAssetNoErrorsDetected", "There were no error detected during validation of the EntityConfigAsset");
-			
-			FMessageLog EditorInfo("LogMass");
-			EditorInfo.Info(InfoText);
+	ConfigGuid = FGuid::NewGuid();
+}
 
-			FNotificationInfo Info(InfoText);
-			Info.bFireAndForget = true;
-			Info.bUseThrobber = false;
-			Info.FadeOutDuration = 0.5f;
-			Info.ExpireDuration = 5.0f;
-			if (TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info))
-			{
-				Notification->SetCompletionState(SNotificationItem::CS_Success);
-			}
+const UMassEntityTraitBase* FMassEntityConfig::FindTrait(TSubclassOf<UMassEntityTraitBase> TraitClass, const bool bExactMatch) const
+{
+	for (const TObjectPtr<UMassEntityTraitBase> Trait : Traits)
+	{
+		if (Trait && (bExactMatch ? Trait->GetClass() == TraitClass : Trait->IsA(TraitClass)))
+		{
+			return Trait;
 		}
 	}
-}
-#endif // WITH_EDITOR
 
-const FMassEntityTemplate& FMassEntityConfig::GetOrCreateEntityTemplate(const UWorld& World, const UObject& ConfigOwner) const
+	return Parent ? Parent->FindTrait(TraitClass, bExactMatch) :  nullptr;
+}
+
+const FMassEntityTemplate& FMassEntityConfig::GetOrCreateEntityTemplate(const UWorld& World) const
 {
 	FMassEntityTemplateID TemplateID;
-	TArray<UMassEntityTraitBase*> CombinedTraits;
-	if (const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, ConfigOwner, TemplateID, CombinedTraits))
+	if (const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, TemplateID))
 	{
 		return *ExistingTemplate;
 	}
@@ -90,25 +61,23 @@ const FMassEntityTemplate& FMassEntityConfig::GetOrCreateEntityTemplate(const UW
 	// TODO: Add methods to FMassEntityTemplateBuildContext to indicate dependency vs setup.
 	// Dependency should add a fragment with default values (which later can be overridden),
 	// while setup would override values and should be run just once.
-	FMassEntityTemplate& Template = TemplateRegistry.CreateTemplate(TemplateID);
-	FMassEntityTemplateBuildContext BuildContext(Template);
+
+	FMassEntityTemplateData TemplateData;
+	FMassEntityTemplateBuildContext BuildContext(TemplateData, TemplateID);
+
+	TArray<UMassEntityTraitBase*> CombinedTraits;
+	GetCombinedTraits(CombinedTraits);
 
 	BuildContext.BuildFromTraits(CombinedTraits, World);
-	Template.SetTemplateName(ConfigOwner.GetName());
+	BuildContext.SetTemplateName(GetNameSafe(ConfigOwner));
 
-	// It is ok to have an empty template, 
-    // but be aware there will be an error if you try to create an entity with it
-    // as there will be no archetype associated with this template...
-	TemplateRegistry.InitializeEntityTemplate(Template);
-
-	return Template;
+	return TemplateRegistry.FindOrAddTemplate(TemplateID, MoveTemp(TemplateData)).Get();
 }
 
-void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject& ConfigOwner) const
+void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World) const
 {
 	FMassEntityTemplateID TemplateID;
-	TArray<UMassEntityTraitBase*> CombinedTraits;
-	const FMassEntityTemplate* Template = GetEntityTemplateInternal(World, ConfigOwner, TemplateID, CombinedTraits);
+	const FMassEntityTemplate* Template = GetEntityTemplateInternal(World, TemplateID);
 	if (Template == nullptr)
 	{
 		return;
@@ -117,6 +86,9 @@ void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject
 	UMassSpawnerSubsystem* SpawnerSystem = UWorld::GetSubsystem<UMassSpawnerSubsystem>(&World);
 	check(SpawnerSystem);
 	FMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetMutableTemplateRegistryInstance();
+
+	TArray<UMassEntityTraitBase*> CombinedTraits;
+	GetCombinedTraits(CombinedTraits);
 
 	for (const UMassEntityTraitBase* Trait : CombinedTraits)
 	{
@@ -129,36 +101,35 @@ void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject
 	TemplateRegistry.DestroyTemplate(TemplateID);
 }
 
-const FMassEntityTemplate& FMassEntityConfig::GetEntityTemplateChecked(const UWorld& World, const UObject& ConfigOwner) const
+const FMassEntityTemplate& FMassEntityConfig::GetEntityTemplateChecked(const UWorld& World) const
 {
 	FMassEntityTemplateID TemplateID;
-	TArray<UMassEntityTraitBase*> CombinedTraits;
-	const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, ConfigOwner, TemplateID, CombinedTraits);
+	const FMassEntityTemplate* ExistingTemplate = GetEntityTemplateInternal(World, TemplateID);
 	check(ExistingTemplate);
 	return *ExistingTemplate;
 }
 
-const FMassEntityTemplate* FMassEntityConfig::GetEntityTemplateInternal(const UWorld& World, const UObject& ConfigOwner, FMassEntityTemplateID& TemplateIDOut, TArray<UMassEntityTraitBase*>& CombinedTraitsOut) const
+const FMassEntityTemplate* FMassEntityConfig::GetEntityTemplateInternal(const UWorld& World, FMassEntityTemplateID& OutTemplateID) const
 {
 	UMassSpawnerSubsystem* SpawnerSystem = UWorld::GetSubsystem<UMassSpawnerSubsystem>(&World);
 	check(SpawnerSystem);
 	const FMassEntityTemplateRegistry& TemplateRegistry = SpawnerSystem->GetTemplateRegistryInstance();
 
-	// Combine all the features into one array
-	// @todo this is an inefficient way assuming given template is expected to have already been created. Figure out a way to cache it.
-	TArray<const UObject*> Visited;
-	CombinedTraitsOut.Reset();
-	Visited.Add(&ConfigOwner);
-	GetCombinedTraits(CombinedTraitsOut, Visited, ConfigOwner);
-
 	// Return existing template if found.
-	// TODO: cache the hash.
-	const uint32 HashOut = UE::MassSpawner::HashTraits(CombinedTraitsOut);
-	TemplateIDOut = FMassEntityTemplateID(HashOut);
-	return TemplateRegistry.FindTemplateFromTemplateID(TemplateIDOut);
+	OutTemplateID = FMassEntityTemplateIDFactory::Make(ConfigGuid);
+	const TSharedRef<FMassEntityTemplate>* TemplateFound = TemplateRegistry.FindTemplateFromTemplateID(OutTemplateID);
+	return TemplateFound ? &TemplateFound->Get() : nullptr;
 }
 
-void FMassEntityConfig::GetCombinedTraits(TArray<UMassEntityTraitBase*>& OutTraits, TArray<const UObject*>& Visited, const UObject& ConfigOwner) const
+void FMassEntityConfig::GetCombinedTraits(TArray<UMassEntityTraitBase*>& OutTraits) const
+{
+	TArray<const UObject*> Visited;
+	OutTraits.Reset();
+	Visited.Add(ConfigOwner);
+	GetCombinedTraitsInternal(OutTraits, Visited);
+}
+
+void FMassEntityConfig::GetCombinedTraitsInternal(TArray<UMassEntityTraitBase*>& OutTraits, TArray<const UObject*>& Visited) const
 {
 	if (Parent)
 	{
@@ -171,12 +142,12 @@ void FMassEntityConfig::GetCombinedTraits(TArray<UMassEntityTraitBase*>& OutTrai
 				Path += Object->GetName();
 				Path += TEXT("/");
 			}
-			UE_VLOG(&ConfigOwner, LogMassSpawner, Error, TEXT("%s: Encountered %s as parent second time (Infinite loop). %s"), *GetNameSafe(&ConfigOwner), *GetNameSafe(Parent), *Path);
+			UE_VLOG(ConfigOwner, LogMassSpawner, Error, TEXT("%s: Encountered %s as parent second time (Infinite loop). %s"), *GetNameSafe(ConfigOwner), *GetNameSafe(Parent), *Path);
 		}
 		else
 		{
 			Visited.Add(Parent);
-			Parent->GetConfig().GetCombinedTraits(OutTraits, Visited, ConfigOwner);
+			Parent->GetConfig().GetCombinedTraitsInternal(OutTraits, Visited);
 		}
 	}
 
@@ -204,17 +175,72 @@ void FMassEntityConfig::AddTrait(UMassEntityTraitBase& Trait)
 	Traits.Add(&Trait);
 }
 
-bool FMassEntityConfig::ValidateEntityTemplate(const UWorld& World, const UObject& ConfigOwner)
+bool FMassEntityConfig::ValidateEntityTemplate(const UWorld& World)
 {
-	TArray<const UObject*> Visited;
 	TArray<UMassEntityTraitBase*> CombinedTraits;
-	Visited.Add(&ConfigOwner);
-	GetCombinedTraits(CombinedTraits, Visited, ConfigOwner);
+	GetCombinedTraits(CombinedTraits);
 
-	FMassEntityTemplate Template;
+	FMassEntityTemplateData Template;
 	FMassEntityTemplateBuildContext BuildContext(Template);
 
 	return BuildContext.BuildFromTraits(CombinedTraits, World);
 }
+
+//-----------------------------------------------------------------------------
+// DEPRECATED
+//-----------------------------------------------------------------------------
+const FMassEntityTemplate& FMassEntityConfig::GetOrCreateEntityTemplate(const UWorld& World, const UObject& InConfigOwner) const
+{
+	return GetOrCreateEntityTemplate(World);
+}
+
+void FMassEntityConfig::DestroyEntityTemplate(const UWorld& World, const UObject& InConfigOwner) const
+{
+	DestroyEntityTemplate(World);
+}
+
+const FMassEntityTemplate& FMassEntityConfig::GetEntityTemplateChecked(const UWorld& World, const UObject& InConfigOwner) const
+{
+	return GetEntityTemplateChecked(World);
+}
+
+bool FMassEntityConfig::ValidateEntityTemplate(const UWorld& World, const UObject& InConfigOwner)
+{
+	return ValidateEntityTemplate(World);
+}
+
+void FMassEntityConfig::GetCombinedTraits(TArray<UMassEntityTraitBase*>& OutTraits, TArray<const UObject*>& Visited, const UObject& InConfigOwner) const
+{
+	return GetCombinedTraitsInternal(OutTraits, Visited);
+}
+
+//-----------------------------------------------------------------------------
+// UMassEntityConfigAsset
+//-----------------------------------------------------------------------------
+#if WITH_EDITOR
+void UMassEntityConfigAsset::ValidateEntityConfig()
+{
+	if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
+	{
+		if (Config.ValidateEntityTemplate(*EditorWorld))
+		{
+			const FText InfoText = LOCTEXT("MassEntityConfigAssetNoErrorsDetected", "There were no errors nor warnings detected during validation of the EntityConfigAsset");
+
+			FMessageLog EditorInfo("MassEntity");
+			EditorInfo.Info(InfoText);
+
+			FNotificationInfo Info(InfoText);
+			Info.bFireAndForget = true;
+			Info.bUseThrobber = false;
+			Info.FadeOutDuration = 0.5f;
+			Info.ExpireDuration = 5.0f;
+			if (TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info))
+			{
+				Notification->SetCompletionState(SNotificationItem::CS_Success);
+			}
+		}
+	}
+}
+#endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE 

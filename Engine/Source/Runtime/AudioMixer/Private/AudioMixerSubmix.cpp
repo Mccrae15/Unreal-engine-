@@ -7,6 +7,7 @@
 #include "AudioMixerSourceVoice.h"
 #include "AudioThread.h"
 #include "DSP/FloatArrayMath.h"
+#include "ISubmixBufferListener.h"
 #include "Sound/SoundEffectPreset.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "Sound/SoundModulationDestination.h"
@@ -739,7 +740,7 @@ namespace Audio
 		{
 			if (FadeInfo.bIsCurrentChain)
 			{
-				if (InIndex < FadeInfo.EffectChain.Num())
+				if (FadeInfo.EffectChain.IsValidIndex(InIndex))
 				{
 					FadeInfo.EffectChain[InIndex] = InEffectInstance;
 				}
@@ -1089,9 +1090,9 @@ namespace Audio
 		{
 			// query the SubmixBufferListeners to see if they plan to render audio into this buffer
 			FScopeLock Lock(&BufferListenerCriticalSection);
-			for(const ISubmixBufferListener* BufferListener : BufferListeners)
+			for (const ISubmixBufferListener* BufferListener : BufferListeners)
 			{
-				if(BufferListener->IsRenderingAudio())
+				if (BufferListener && BufferListener->IsRenderingAudio())
 				{
 					return true;
 				}

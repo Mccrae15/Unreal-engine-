@@ -18,8 +18,7 @@
 #define LOCTEXT_NAMESPACE	"DetailPropertyRow"
 
 FDetailPropertyRow::FDetailPropertyRow(TSharedPtr<FPropertyNode> InPropertyNode, TSharedRef<FDetailCategoryImpl> InParentCategory, TSharedPtr<FComplexPropertyNode> InExternalRootNode)
-	: CustomIsEnabledAttrib( true )
-	, PropertyNode( InPropertyNode )
+	: PropertyNode( InPropertyNode )
 	, ParentCategory( InParentCategory )
 	, ExternalRootNode( InExternalRootNode )
 	, bShowPropertyButtons( true )
@@ -230,6 +229,17 @@ FDetailWidgetRow FDetailPropertyRow::GetWidgetRow()
 	{
 		return *CustomPropertyWidget;
 	}
+}
+
+TArrayView<TSharedPtr<IPropertyHandle>> FDetailPropertyRow::GetPropertyHandles() const
+{
+	if (CustomPropertyWidget)
+	{
+		return CustomPropertyWidget->PropertyHandles;
+	}
+
+	// view single item as a c-array of size one
+	return TArrayView<TSharedPtr<IPropertyHandle>>(const_cast<TSharedPtr<IPropertyHandle>*>(&PropertyHandle), 1);
 }
 
 static bool IsHeaderRowRequired(const TSharedPtr<IPropertyHandle>& PropertyHandle)
@@ -739,6 +749,7 @@ void FDetailPropertyRow::SetWidgetRowProperties(FDetailWidgetRow& Row) const
 		Row.CopyMenuAction = CustomPropertyWidget->CopyMenuAction;
 		Row.PasteMenuAction = CustomPropertyWidget->PasteMenuAction;
 		Row.CustomMenuItems = CustomPropertyWidget->CustomMenuItems;
+        Row.OnPasteFromTextDelegate = CustomPropertyWidget->OnPasteFromTextDelegate;
 
 		if (CustomPropertyWidget->CustomResetToDefault.IsSet())
 		{
@@ -879,6 +890,7 @@ void FDetailPropertyRow::MakeValueWidget( FDetailWidgetRow& Row, const TSharedPt
 		[
 			SAssignNew( PropertyValue, SPropertyValueWidget, PropertyEditor, GetPropertyUtilities() )
 			.ShowPropertyButtons( false ) // We handle this ourselves
+			.InWidgetRow(&Row)
 		];
 		
 		MinWidth = PropertyValue->GetMinDesiredWidth();

@@ -14,7 +14,6 @@ UBlackmagicMediaSource::UBlackmagicMediaSource()
 	, MaxNumAudioFrameBuffer(8)
 	, bCaptureVideo(true)
 	, ColorFormat(EBlackmagicMediaSourceColorFormat::YUV8)
-	, bIsSRGBInput(false)
 	, MaxNumVideoFrameBuffer(8)
 	, bLogDropFrame(false)
 	, bEncodeTimecodeInTexel(false)
@@ -41,7 +40,6 @@ bool UBlackmagicMediaSource::GetMediaOption(const FName& Key, bool DefaultValue)
 	if (Key == BlackmagicMediaOption::CaptureVideo) { return bCaptureVideo; }
 	if (Key == BlackmagicMediaOption::LogDropFrame) { return bLogDropFrame; }
 	if (Key == BlackmagicMediaOption::EncodeTimecodeInTexel) { return bEncodeTimecodeInTexel; }
-	if (Key == BlackmagicMediaOption::SRGBInput) { return bIsSRGBInput; }
 
 	return Super::GetMediaOption(Key, DefaultValue);
 }
@@ -78,8 +76,7 @@ bool UBlackmagicMediaSource::HasMediaOption(const FName& Key) const
 	if (   Key == BlackmagicMediaOption::CaptureAudio
 		|| Key == BlackmagicMediaOption::CaptureVideo
 		|| Key == BlackmagicMediaOption::LogDropFrame
-		|| Key == BlackmagicMediaOption::EncodeTimecodeInTexel
-		|| Key == BlackmagicMediaOption::SRGBInput)
+		|| Key == BlackmagicMediaOption::EncodeTimecodeInTexel)
 	{
 		return true;
 	}
@@ -157,6 +154,30 @@ bool UBlackmagicMediaSource::Validate() const
 		return false;
 	}
 
+
+	if (EvaluationType == EMediaIOSampleEvaluationType::Timecode && (!bUseTimeSynchronization || AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None))
+	{
+		UE_LOG(LogBlackmagicMedia, Warning, TEXT("The MediaSource '%s' uses 'Timecode' evaluation type which requires time synchronization and timecode enabled."), *GetName());
+		return false;
+	}
+
+	if (bFramelock && (!bRenderJIT || !bUseTimeSynchronization || AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None))
+	{
+		UE_LOG(LogBlackmagicMedia, Warning, TEXT("The MediaSource '%s' uses 'Framelock' which requires JIT rendering, time synchronization and timecode enabled."), *GetName());
+		return false;
+	}
+
+	if (!bRenderJIT && EvaluationType == EMediaIOSampleEvaluationType::Latest)
+	{
+		UE_LOG(LogBlackmagicMedia, Warning, TEXT("The MediaSource '%s' uses 'Latest' evaluation type which requires JIT rendering."), *GetName());
+		return false;
+	}
+
+	if (bFramelock)
+	{
+		UE_LOG(LogBlackmagicMedia, Warning, TEXT("The MediaSource '%s' uses 'Framelock' which has not been implemented yet. This option will be ignored."), *GetName());
+	}
+
 	return true;
 }
 
@@ -189,6 +210,23 @@ void UBlackmagicMediaSource::PostEditChangeChainProperty(struct FPropertyChanged
 		{
 			bUseTimeSynchronization = false;
 			bEncodeTimecodeInTexel = false;
+			EvaluationType = EMediaIOSampleEvaluationType::PlatformTime;
+			bFramelock = false;
+		}
+	}
+
+	if (InPropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UCaptureCardMediaSource, EvaluationType))
+	{
+		// 'Timecode' evaluation is not allowed if no timecode set
+		if (AutoDetectableTimecodeFormat == EMediaIOAutoDetectableTimecodeFormat::None)
+		{
+			EvaluationType = (EvaluationType == EMediaIOSampleEvaluationType::Timecode ? EMediaIOSampleEvaluationType::PlatformTime : EvaluationType);
+		}
+
+		// 'Latest' evaluation is available in JITR only
+		if (!bRenderJIT)
+		{
+			EvaluationType = (EvaluationType == EMediaIOSampleEvaluationType::Latest ? EMediaIOSampleEvaluationType::PlatformTime : EvaluationType);
 		}
 	}
 

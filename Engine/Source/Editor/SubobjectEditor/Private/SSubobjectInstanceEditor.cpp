@@ -76,7 +76,7 @@ void SSubobjectInstanceEditor::Construct(const FArguments& InArgs)
 	[
 		SNew(SComponentClassCombo)
 		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Actor.AddComponent")))
-		.Visibility(HideComponentClassCombo.Get() ? EVisibility::Hidden : EVisibility::Visible)
+		.Visibility(this, &SSubobjectInstanceEditor::GetComponentClassComboButtonVisibility)
 		.OnSubobjectClassSelected(this, &SSubobjectInstanceEditor::PerformComboAddClass)
 		.ToolTipText(LOCTEXT("AddComponent_Tooltip", "Adds a new component to this actor"))
 		.IsEnabled(true)
@@ -553,7 +553,7 @@ void SSubobjectInstanceEditor::OnApplyChangesToBlueprint() const
 	AActor* Actor = Cast<AActor>(GetObjectContext());
 	const UBlueprint* const Blueprint = (Actor != nullptr) ? Cast<UBlueprint>(Actor->GetClass()->ClassGeneratedBy) : nullptr;
 
-	if (Actor != nullptr && Blueprint != nullptr && Actor->GetClass()->ClassGeneratedBy == Blueprint)
+	if (Actor != nullptr && Blueprint != nullptr && Actor->GetClass()->ClassGeneratedBy.Get() == Blueprint)
 	{
 		const FString ActorLabel = Actor->GetActorLabel();
 		int32 NumChangedProperties = FKismetEditorUtilities::ApplyInstanceChangesToBlueprint(Actor);

@@ -171,7 +171,7 @@ public:
 	FDisplayClusterConfigurationPrimaryNodePorts();
 
 public:
-	/** Advanced: network port for Cluster Sync Events */
+	/** Advanced: TCP port for nDisplay internal services */
 	UPROPERTY(EditAnywhere, Category = NDisplay, meta = (ClampMin = "1024", ClampMax = "65535", UIMin = "1024", UIMax = "65535"))
 	uint16 ClusterSync;
 
@@ -234,32 +234,29 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationNetworkSettin
 	GENERATED_BODY()
 
 public:
-	FDisplayClusterConfigurationNetworkSettings();
-
-public:
 	/** Advanced: amount of times nDisplay tries to reconnect before dropping */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "1", ClampMax = "99", UIMin = "1", UIMax = "99"))
-	int32 ConnectRetriesAmount;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "1", ClampMax = "500", UIMin = "1", UIMax = "500"))
+	int32 ConnectRetriesAmount = 300;
 
 	/** Advanced: delay in between connection retries */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "1", ClampMax = "5000", UIMin = "1", UIMax = "5000"))
-	int32 ConnectRetryDelay;
+	int32 ConnectRetryDelay = 1000; // 1 second between attempts
 
 	/** Advanced: timeout for Game Thread Barrier */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "5000", UIMin = "5000"))
-	int32 GameStartBarrierTimeout;
+	int32 GameStartBarrierTimeout = 1000 * 3600 * 5; // 5 hours
 
 	/** Advanced: timeout value for Start Frame Barrier */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "1", UIMin = "1"))
-	int32 FrameStartBarrierTimeout;
+	int32 FrameStartBarrierTimeout = 1000 * 60 * 30; // 30 minutes
 
 	/** Advanced: timeout value for End Frame Barrier */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "1", UIMin = "1"))
-	int32 FrameEndBarrierTimeout;
+	int32 FrameEndBarrierTimeout = 1000 * 60 * 30; // 30 minutes
 
 	/** Advanced: timeout value for Render Sync */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (ClampMin = "1", UIMin = "1"))
-	int32 RenderSyncBarrierTimeout;
+	int32 RenderSyncBarrierTimeout = 1000 * 60 * 30; // 30 minutes
 };
 
 USTRUCT(Blueprintable)
@@ -306,12 +303,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "NDisplay|Configuration")
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
 	
-private:
+	//~ Begin UObject interface
+public:
+	virtual void PostLoad() override;
+
 #if WITH_EDITOR
-	// UObject interface
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
-	// End of UObject interface
 #endif
+	//~ End UObject interface
 
 public:
 	/** IP address of this specific cluster Node */
@@ -359,7 +358,7 @@ public:
 	TMap<FString, FDisplayClusterConfigurationPostprocess> Postprocess;
 
 	// Media settings
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media")
 	FDisplayClusterConfigurationMedia Media;
 
 #if WITH_EDITORONLY_DATA
@@ -540,6 +539,13 @@ public:
 	// Return all references to meshes from policy, and other
 	UFUNCTION(BlueprintCallable, Category = "NDisplay|Configuration")
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
+
+public:
+	/** Returns number of nodes in current cluster */
+	uint32 GetNumberOfClusterNodes() const;
+
+	/** Returns primary node IP address of current cluster */
+	FString GetPrimaryNodeAddress() const;
 
 public:
 	FDisplayClusterConfigurationDataMetaInfo Meta;

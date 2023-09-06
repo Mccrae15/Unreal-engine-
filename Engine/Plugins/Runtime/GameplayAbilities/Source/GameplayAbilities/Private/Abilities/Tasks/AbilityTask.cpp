@@ -33,7 +33,7 @@ namespace AbilityTaskCVars
 	static FAutoConsoleVariableRef CVarMaxAbilityTaskCount(
 		TEXT("AbilitySystem.AbilityTask.MaxCount"),
 		AbilityTaskMaxCount,
-		TEXT("Global limit on the number of extant AbilityTasks. Use 'AbilitySystem.Debug.RecordingEnabled' and 'AbilitySystem.AbilityTask.Debug.PrintCounts' to debug why you are hitting this before raising the cap.")
+		TEXT("Global limit on the number of extant AbilityTasks. Use 'AbilitySystem.AbilityTask.Debug.RecordingEnabled' and 'AbilitySystem.AbilityTask.Debug.PrintCounts' to debug why you are hitting this before raising the cap.")
 	);
 
 	// 0 - disabled, 1 - enabled in non-shipping builds, 2 - enabled in all builds (including shipping)
@@ -72,58 +72,72 @@ UAbilityTask::UAbilityTask(const FObjectInitializer& ObjectInitializer)
 {
 	WaitStateBitMask = static_cast<uint8>(EAbilityTaskWaitState::WaitingOnGame);
 
-	if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
+	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
-		DebugRecordAbilityTaskCreated(this);
-	}
-
-	bool bExceededAbilityTaskMaxCount = false;
-
-	++GlobalAbilityTaskCount;
-	SET_DWORD_STAT(STAT_AbilitySystem_TaskCount, GlobalAbilityTaskCount);
-	if (!(GlobalAbilityTaskCount < AbilityTaskCVars::AbilityTaskMaxCount))
-	{
-		bExceededAbilityTaskMaxCount = true;
-
-		ABILITY_LOG(Warning, TEXT("Way too many AbilityTasks are currently active! %d. %s"), GlobalAbilityTaskCount, *GetClass()->GetName());
-
-		// Auto dump the counts if we hit the limit
 		if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
 		{
-			static bool bHasDumpedAbilityTasks = false;  // The dump is spammy, so we only want to auto-dump once
+			DebugRecordAbilityTaskCreated(this);
+		}
 
-			if (!bHasDumpedAbilityTasks)
+		bool bExceededAbilityTaskMaxCount = false;
+
+		++GlobalAbilityTaskCount;
+		SET_DWORD_STAT(STAT_AbilitySystem_TaskCount, GlobalAbilityTaskCount);
+		if (!(GlobalAbilityTaskCount < AbilityTaskCVars::AbilityTaskMaxCount))
+		{
+			bExceededAbilityTaskMaxCount = true;
+
+			ABILITY_LOG(Warning, TEXT("Way too many AbilityTasks are currently active! %d. %s"), GlobalAbilityTaskCount, *GetClass()->GetName());
+
+			// Auto dump the counts if we hit the limit
+			if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
 			{
-				DebugPrintAbilityTasksByClass();
-				bHasDumpedAbilityTasks = true;
+				static bool bHasDumpedAbilityTasks = false;  // The dump is spammy, so we only want to auto-dump once
 
-				// If we don't flush here the ensure is hit without debug ability task info printed in log
-				GLog->FlushThreadedLogs();
-				GLog->Flush();
+				if (!bHasDumpedAbilityTasks)
+				{
+					DebugPrintAbilityTasksByClass();
+					bHasDumpedAbilityTasks = true;
+
+					// If we don't flush here the ensure is hit without debug ability task info printed in log
+					GLog->FlushThreadedLogs();
+					GLog->Flush();
+				}
 			}
 		}
-	}
 
-	ensureMsgf(!bExceededAbilityTaskMaxCount, TEXT("Exceeded AbilityTaskMaxCount. For more information in log set AbilitySystem.AbilityTask.Debug.SourceRecordingEnabled to 1 for non-shipping builds, or 2 for all builds (including shipping)."));
+		ensureMsgf(!bExceededAbilityTaskMaxCount, TEXT("Exceeded AbilityTaskMaxCount. For more information in log set AbilitySystem.AbilityTask.Debug.SourceRecordingEnabled to 1 for non-shipping builds, or 2 for all builds (including shipping)."));
+	}
 }
 
 void UAbilityTask::OnDestroy(bool bInOwnerFinished)
 {
-	checkf(GlobalAbilityTaskCount > 0, TEXT("Mismatched AbilityTask counting"));
-	--GlobalAbilityTaskCount;
-	SET_DWORD_STAT(STAT_AbilitySystem_TaskCount, GlobalAbilityTaskCount);
-
-	bWasSuccessfullyDestroyed = true;
-
-	if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
+	// If we have already been destroyed this is being called recursively so skip the tracking as well as the super call
+	if (!bWasSuccessfullyDestroyed)
 	{
-		DebugRecordAbilityTaskDestroyed(this);
+		if (!HasAnyFlags(RF_ClassDefaultObject))
+		{
+			ensureMsgf(GlobalAbilityTaskCount > 0, TEXT("Mismatched AbilityTask counting"));
+			--GlobalAbilityTaskCount;
+			SET_DWORD_STAT(STAT_AbilitySystem_TaskCount, GlobalAbilityTaskCount);
+
+			if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
+			{
+				DebugRecordAbilityTaskDestroyed(this);
+			}
+		}
+
+		bWasSuccessfullyDestroyed = true;
+
+		// #KillPendingKill Clear ability reference so we don't hold onto it and GC can delete it.
+		Ability = nullptr;
+
+		Super::OnDestroy(bInOwnerFinished);
 	}
-
-	// #KillPendingKill Clear ability reference so we don't hold onto it and GC can delete it.
-	Ability = nullptr;
-
-	Super::OnDestroy(bInOwnerFinished);
+	else
+	{
+		ensureMsgf(TaskState == EGameplayTaskState::Finished, TEXT("OnDestroy called twice on %s with invalid state %i"), *GetName(), TaskState);
+	}
 }
 
 void UAbilityTask::BeginDestroy()
@@ -132,15 +146,18 @@ void UAbilityTask::BeginDestroy()
 
 	if (!bWasSuccessfullyDestroyed)
 	{
-		// this shouldn't happen, it means that ability was destroyed while being active, but we need to keep GlobalAbilityTaskCount in sync anyway
-		checkf(GlobalAbilityTaskCount > 0, TEXT("Mismatched AbilityTask counting"));
-		--GlobalAbilityTaskCount;
-		SET_DWORD_STAT(STAT_AbilitySystem_TaskCount, GlobalAbilityTaskCount);
 		bWasSuccessfullyDestroyed = true;
-
-		if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
+		if (!HasAnyFlags(RF_ClassDefaultObject))
 		{
-			DebugRecordAbilityTaskDestroyed(this);
+			// this shouldn't happen, it means that ability was destroyed while being active, but we need to keep GlobalAbilityTaskCount in sync anyway
+			ensureMsgf(GlobalAbilityTaskCount > 0, TEXT("Mismatched AbilityTask counting"));
+			--GlobalAbilityTaskCount;
+			SET_DWORD_STAT(STAT_AbilitySystem_TaskCount, GlobalAbilityTaskCount);
+
+			if (AbilityTaskCVars::AbilityTaskRecordingType >= AbilityTaskConstants::DebugMinValueToEnableRecording)
+			{
+				DebugRecordAbilityTaskDestroyed(this);
+			}
 		}
 	}
 }
@@ -176,7 +193,7 @@ bool UAbilityTask::ShouldBroadcastAbilityTaskDelegates() const
 
 	if (!ShouldBroadcast && AbilityTaskWarnIfBroadcastSuppress)
 	{
-		ABILITY_LOG(Warning, TEXT("Suppressing ability task %s broadcsat"), *GetDebugString());
+		ABILITY_LOG(Warning, TEXT("Suppressing ability task %s broadcast"), *GetDebugString());
 	}
 
 	return ShouldBroadcast;

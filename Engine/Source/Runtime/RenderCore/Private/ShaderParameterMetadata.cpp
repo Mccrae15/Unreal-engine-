@@ -6,9 +6,13 @@
 
 #include "ShaderParameterMetadata.h"
 #include "RenderCore.h"
+#include "RHIUniformBufferLayoutInitializer.h"
 #include "ShaderCore.h"
 #include "ShaderParameters.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "ShaderParameterMacros.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/CommandLine.h"
 
 bool SupportShaderPrecisionModifier(EShaderPlatform Platform)
 {
@@ -65,22 +69,28 @@ TMap<FHashedName, FShaderParametersMetadata*>& FShaderParametersMetadata::GetNam
 	return NameStructMap;
 }
 
-void FShaderParametersMetadata::FMember::GenerateShaderParameterType(FString& Result, bool bSupportsPrecisionModifier) const
+void FShaderParametersMetadata::FMember::GenerateShaderParameterType(
+	FString& Result,
+	bool bSupportsPrecisionModifier,
+	EUniformBufferBaseType BaseType,
+	EShaderPrecisionModifier::Type PrecisionModifier,
+	uint32 NumRows,
+	uint32 NumColumns)
 {
-	switch (GetBaseType())
+	switch (BaseType)
 	{
 	case UBMT_INT32:   Result = TEXT("int"); break;
 	case UBMT_UINT32:  Result = TEXT("uint"); break;
 	case UBMT_FLOAT32:
-		if (GetPrecision() == EShaderPrecisionModifier::Float || !bSupportsPrecisionModifier)
+		if (PrecisionModifier == EShaderPrecisionModifier::Float || !bSupportsPrecisionModifier)
 		{
 			Result = TEXT("float");
 		}
-		else if (GetPrecision() == EShaderPrecisionModifier::Half)
+		else if (PrecisionModifier == EShaderPrecisionModifier::Half)
 		{
 			Result = TEXT("half");
 		}
-		else if (GetPrecision() == EShaderPrecisionModifier::Fixed)
+		else if (PrecisionModifier == EShaderPrecisionModifier::Fixed)
 		{
 			Result = TEXT("fixed");
 		}
@@ -90,14 +100,19 @@ void FShaderParametersMetadata::FMember::GenerateShaderParameterType(FString& Re
 	};
 
 	// Generate the type dimensions for vectors and matrices.
-	if (GetNumRows() > 1)
+	if (NumRows > 1)
 	{
-		Result = FString::Printf(TEXT("%s%ux%u"), *Result, GetNumRows(), GetNumColumns());
+		Result = FString::Printf(TEXT("%s%ux%u"), *Result, NumRows, NumColumns);
 	}
-	else if (GetNumColumns() > 1)
+	else if (NumColumns > 1)
 	{
-		Result = FString::Printf(TEXT("%s%u"), *Result, GetNumColumns());
+		Result = FString::Printf(TEXT("%s%u"), *Result, NumColumns);
 	}
+}
+
+void FShaderParametersMetadata::FMember::GenerateShaderParameterType(FString& Result, bool bSupportsPrecisionModifier) const
+{
+	GenerateShaderParameterType(Result, bSupportsPrecisionModifier, GetBaseType(), GetPrecision(), GetNumRows(), GetNumColumns());
 }
 
 void FShaderParametersMetadata::FMember::GenerateShaderParameterType(FString& Result, EShaderPlatform ShaderPlatform) const
@@ -118,6 +133,31 @@ FShaderParametersMetadata* FindUniformBufferStructByFName(FName StructName)
 FShaderParametersMetadata* FindUniformBufferStructByLayoutHash(uint32 Hash)
 {
 	return GetLayoutHashStructMap().FindRef(Hash);
+}
+
+static TArray<const FShaderParametersMetadataRegistration*>* GShaderParametersMetadataRegistrationInstances = nullptr;
+TArray<const FShaderParametersMetadataRegistration*>& FShaderParametersMetadataRegistration::GetInstances()
+{
+	if (GShaderParametersMetadataRegistrationInstances == nullptr)
+	{
+		GShaderParametersMetadataRegistrationInstances = new TArray<const FShaderParametersMetadataRegistration*>();
+	}
+	return *GShaderParametersMetadataRegistrationInstances;
+}
+
+void FShaderParametersMetadataRegistration::CommitAll()
+{
+	for (const auto* Instance : GetInstances())
+	{
+		Instance->LazyShaderParametersMetadataAccessor();
+	}
+	GetInstances().Empty();
+}
+
+bool FShaderParametersMetadataRegistration::IsReadyForRegistration()
+{
+	return FCommandLine::IsInitialized() /* If cmd is not ready yet, then it's too early for the plugin manager */ 
+		&& IPluginManager::Get().GetLastCompletedLoadingPhase() >= ELoadingPhase::PostConfigInit;
 }
 
 const TCHAR* const kShaderParameterMacroNames[] = {
@@ -502,10 +542,7 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 			BaseType == UBMT_SRV ||
 			BaseType == UBMT_SAMPLER);
 		const bool bIsRDGResource = IsRDGResourceReferenceShaderParameterType(BaseType);
-		const bool bIsVariableNativeType = (
-			BaseType == UBMT_INT32 ||
-			BaseType == UBMT_UINT32 ||
-			BaseType == UBMT_FLOAT32);
+		const bool bIsVariableNativeType = CurrentMember.IsVariableNativeType();
 
 		LayoutInitializer.bHasNonGraphOutputs |= BaseType == UBMT_UAV;
 
@@ -549,7 +586,7 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 				}
 				else if (ChildStruct->GetUseCase() != EUseCase::ShaderParameterStruct && UseCase == EUseCase::ShaderParameterStruct)
 				{
-					UE_LOG(LogRendererCore, Fatal, TEXT("%sCan only nests or include shader parameter struct define with BEGIN_SHADER_PARAMETER_STRUCT(), but %s is not."), *GetMemberErrorPrefix(), ChildStruct->GetStructTypeName());
+					UE_LOG(LogRendererCore, Fatal, TEXT("%sCan only nest or include shader parameter struct define with BEGIN_SHADER_PARAMETER_STRUCT(), but %s is not."), *GetMemberErrorPrefix(), ChildStruct->GetStructTypeName());
 				}
 			}
 
@@ -656,8 +693,8 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 			for (uint32 ArrayElementId = 0; ArrayElementId < (bIsArray ? ArraySize : 1u); ArrayElementId++)
 			{
 				const uint32 AbsoluteMemberOffset = CurrentMember.GetOffset() + MemberStack[i].StructOffset + ArrayElementId * SHADER_PARAMETER_POINTER_ALIGNMENT;
-				check(AbsoluteMemberOffset < (1u << (sizeof(FRHIUniformBufferResource::MemberOffset) * 8)));
-				const FRHIUniformBufferResource ResourceParameter{ uint16(AbsoluteMemberOffset), BaseType };
+				check(AbsoluteMemberOffset < (1u << (sizeof(FRHIUniformBufferResourceInitializer::MemberOffset) * 8)));
+				const FRHIUniformBufferResourceInitializer ResourceParameter{ uint16(AbsoluteMemberOffset), BaseType };
 
 				LayoutInitializer.Resources.Add(ResourceParameter);
 
@@ -705,15 +742,15 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 	}
 
 	const auto ByMemberOffset = [](
-		const FRHIUniformBufferResource& A,
-		const FRHIUniformBufferResource& B)
+		const FRHIUniformBufferResourceInitializer& A,
+		const FRHIUniformBufferResourceInitializer& B)
 	{
 		return A.MemberOffset < B.MemberOffset;
 	};
 
 	const auto ByTypeThenMemberOffset = [](
-		const FRHIUniformBufferResource& A,
-		const FRHIUniformBufferResource& B)
+		const FRHIUniformBufferResourceInitializer& A,
+		const FRHIUniformBufferResourceInitializer& B)
 	{
 		if (A.MemberType == B.MemberType)
 		{
@@ -746,7 +783,7 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 			MemberHash = HashCombine(MemberHash, GetTypeHash(int32(CurrentMember.GetOffset())));
 			MemberHash = HashCombine(MemberHash, GetTypeHash(uint8(BaseType)));
 			static_assert(EUniformBufferBaseType_NumBits <= 8, "Invalid EUniformBufferBaseType_NumBits");
-			MemberHash = HashCombine(MemberHash, GetTypeHash(CurrentMember.GetName()));
+			MemberHash = HashCombine(MemberHash, FCrc::Strihash_DEPRECATED(CurrentMember.GetName()));
 			MemberHash = HashCombine(MemberHash, GetTypeHash(int32(CurrentMember.GetNumElements())));
 
 			const bool bIsRHIResource = (
@@ -773,7 +810,7 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 			}
 			else if (bIsRHIResource || bIsRDGResource)
 			{
-				MemberHash = HashCombine(MemberHash, GetTypeHash(CurrentMember.GetShaderType()));
+				MemberHash = HashCombine(MemberHash, FCrc::Strihash_DEPRECATED(CurrentMember.GetShaderType()));
 			}
 
 			RootStructureHash = HashCombine(RootStructureHash, MemberHash);
@@ -790,18 +827,6 @@ void FShaderParametersMetadata::InitializeLayout(FRHIUniformBufferLayoutInitiali
 	Layout = RHICreateUniformBufferLayout(LayoutInitializer);
 }
 
-#if WITH_EDITOR
-void FShaderParametersMetadata::InitializeUniformBufferDeclaration()
-{
-	if (UseCase != EUseCase::ShaderParameterStruct)
-	{
-		FString* NewDeclaration = new FString(UE::ShaderParameters::CreateUniformBufferShaderDeclaration(ShaderVariableName, *this));
-		check(!NewDeclaration->IsEmpty());
-
-		UniformBufferDeclaration = MakeShareable(NewDeclaration);
-	}
-}
-#endif // WITH_EDITOR
 
 void FShaderParametersMetadata::GetNestedStructs(TArray<const FShaderParametersMetadata*>& OutNestedStructs) const
 {
@@ -821,8 +846,19 @@ void FShaderParametersMetadata::GetNestedStructs(TArray<const FShaderParametersM
 
 #if WITH_EDITOR
 
-static void AddResourceTableEntriesRecursive(const TArray<FShaderParametersMetadata::FMember>& Members, const TCHAR* UniformBufferName, const TCHAR* Prefix, uint16& ResourceIndex, TMap<FString, FResourceTableEntry>& ResourceTableMap)
+// Actual longest token is 78 characters -- these are a few human written variable names concatenated together, and unlikely to go much higher.
+typedef TStringBuilder<2048> FResourceTableEntryString;
+
+// Function returns count to allocate for MemberNameBuffer and ResourceIndex specifies the number of Entries to allocate, if MemberNameBuffer is nullptr
+static uint32 CacheResourceTableEntriesRecursive(
+	const TArray<FShaderParametersMetadata::FMember>& Members, const TCHAR* UniformBufferName, FResourceTableEntryString& Prefix, uint16& ResourceIndex, TCHAR*& MemberNameBuffer, TArray<FUniformResourceEntry>* Entries)
 {
+	uint32 MemberNameBufferCount = 0;
+	uint32 OriginalPrefixLength = Prefix.Len();
+
+	uint32 UniformBufferNameLength = FCString::Strlen(UniformBufferName);
+	check(UniformBufferNameLength <= UINT8_MAX);
+
 	for (const FShaderParametersMetadata::FMember& Member : Members)
 	{
 		const EUniformBufferBaseType BaseType = Member.GetBaseType();
@@ -830,51 +866,128 @@ static void AddResourceTableEntriesRecursive(const TArray<FShaderParametersMetad
 
 		if (IsShaderParameterTypeForUniformBufferLayout(BaseType))
 		{
-			FResourceTableEntry& Entry = ResourceTableMap.FindOrAdd(FString::Printf(TEXT("%s%s"), Prefix, Member.GetName()));
-			if (Entry.UniformBufferName.IsEmpty())
+			// Format:  "%s%s"
+			Prefix.Append(Member.GetName());
+			uint32 StringStorageCount = Prefix.Len() + 1;
+			if (MemberNameBuffer)
 			{
-				Entry.UniformBufferName = UniformBufferName;
-				Entry.Type = BaseType;
-				Entry.ResourceIndex = ResourceIndex++;
+				FCString::Strcpy(MemberNameBuffer, StringStorageCount, Prefix.ToString());
+
+				check(Entries);
+				Entries->Add({
+					MemberNameBuffer,
+					(uint8)UniformBufferNameLength,
+					BaseType,
+					ResourceIndex
+					});
+
+				MemberNameBuffer += StringStorageCount;
 			}
+
+			MemberNameBufferCount += StringStorageCount;
+			ResourceIndex++;
+			Prefix.RemoveSuffix(Prefix.Len() - OriginalPrefixLength);
 		}
 		else if (BaseType == UBMT_NESTED_STRUCT && NumElements == 0)
 		{
 			check(Member.GetStructMetadata());
-			FString MemberPrefix = FString::Printf(TEXT("%s%s_"), Prefix, Member.GetName());
-			AddResourceTableEntriesRecursive(Member.GetStructMetadata()->GetMembers(), UniformBufferName, *MemberPrefix, ResourceIndex, ResourceTableMap);
+
+			// Format:  "%s%s_"
+			Prefix.Append(Member.GetName());
+			Prefix.AppendChar('_');
+			MemberNameBufferCount += CacheResourceTableEntriesRecursive(Member.GetStructMetadata()->GetMembers(), UniformBufferName, Prefix, ResourceIndex, MemberNameBuffer, Entries);
+			Prefix.RemoveSuffix(Prefix.Len() - OriginalPrefixLength);
 		}
 		else if (BaseType == UBMT_NESTED_STRUCT && NumElements > 0)
 		{
+			// Format:  %s%s_%u_
+			Prefix.Append(Member.GetName());
+			Prefix.AppendChar('_');
+			uint32 PrefixLengthMinusArrayIndex = Prefix.Len();
+
 			for (uint32 ArrayElementId = 0; ArrayElementId < NumElements; ArrayElementId++)
 			{
 				check(Member.GetStructMetadata());
-				FString MemberPrefix = FString::Printf(TEXT("%s%s_%u_"), Prefix, Member.GetName(), ArrayElementId);
-				AddResourceTableEntriesRecursive(Member.GetStructMetadata()->GetMembers(), UniformBufferName, *MemberPrefix, ResourceIndex, ResourceTableMap);
+				Prefix.Appendf(TEXT("%u"), ArrayElementId);
+				Prefix.AppendChar('_');
+				MemberNameBufferCount += CacheResourceTableEntriesRecursive(Member.GetStructMetadata()->GetMembers(), UniformBufferName, Prefix, ResourceIndex, MemberNameBuffer, Entries);
+
+				Prefix.RemoveSuffix(Prefix.Len() - PrefixLengthMinusArrayIndex);
 			}
+
+			Prefix.RemoveSuffix(Prefix.Len() - OriginalPrefixLength);
 		}
 		else if (BaseType == UBMT_INCLUDED_STRUCT)
 		{
 			check(Member.GetStructMetadata());
 			check(NumElements == 0);
-			AddResourceTableEntriesRecursive(Member.GetStructMetadata()->GetMembers(), UniformBufferName, Prefix, ResourceIndex, ResourceTableMap);
+			MemberNameBufferCount += CacheResourceTableEntriesRecursive(Member.GetStructMetadata()->GetMembers(), UniformBufferName, Prefix, ResourceIndex, MemberNameBuffer, Entries);
 		}
+	}
+
+	return MemberNameBufferCount;
+}
+
+void FShaderParametersMetadata::InitializeUniformBufferDeclaration()
+{
+	if (UseCase != EUseCase::ShaderParameterStruct)
+	{
+		FString* NewDeclaration = new FString(UE::ShaderParameters::CreateUniformBufferShaderDeclaration(ShaderVariableName, *this));
+		check(!NewDeclaration->IsEmpty());
+
+		UniformBufferDeclaration = MakeShareable(NewDeclaration);
+
+		// Generate ResourceTableCache and MemberNameBuffer
+		FResourceTableEntryString Prefix;
+		Prefix.Append(ShaderVariableName);
+		Prefix.AppendChar('_');
+
+		// First pass to determine number of entries and name buffer count, by passing nullptr for Buffer
+		uint16 ResourceIndex = 0;
+		TCHAR* Buffer = nullptr;
+		uint32 BufferCount = CacheResourceTableEntriesRecursive(Members, ShaderVariableName, Prefix, ResourceIndex, Buffer, nullptr);
+
+		// Then generate the entries and name buffer
+		TArray<TCHAR>* MemberNameBufferAllocation = new TArray<TCHAR>();
+		MemberNameBufferAllocation->SetNumZeroed(BufferCount);
+		ResourceTableCache.Reserve(ResourceIndex);
+
+		ResourceIndex = 0;
+		Buffer = MemberNameBufferAllocation->GetData();
+		CacheResourceTableEntriesRecursive(Members, ShaderVariableName, Prefix, ResourceIndex, Buffer, &ResourceTableCache);
+
+		MemberNameBuffer = MakeShareable(MemberNameBufferAllocation);
+
+		// Cache strings for uniform buffer generated path and include
+		UniformBufferPath = FString::Printf(TEXT("/Engine/Generated/UniformBuffers/%s.ush"), ShaderVariableName);
+		UniformBufferInclude = FString::Printf(TEXT("#include \"/Engine/Generated/UniformBuffers/%s.ush\"") LINE_TERMINATOR, ShaderVariableName);
+
+		// Cache some frequently used hashes
+		UniformBufferPathHash = GetTypeHash(UniformBufferPath);
+		ShaderVariableNameHash = GetTypeHash(FStringView(ShaderVariableName));
 	}
 }
 
-void FShaderParametersMetadata::AddResourceTableEntries(TMap<FString, FResourceTableEntry>& ResourceTableMap, TMap<FString, FUniformBufferEntry>& UniformBufferMap) const
+void FShaderParametersMetadata::AddResourceTableEntries(FShaderResourceTableMap& ResourceTableMap, TMap<FString, FUniformBufferEntry>& UniformBufferMap) const
 {
-	uint16 ResourceIndex = 0;
-	const FString Prefix = FString::Printf(TEXT("%s_"), ShaderVariableName);
-	AddResourceTableEntriesRecursive(GetMembers(), ShaderVariableName, *Prefix, ResourceIndex, ResourceTableMap);
+	ResourceTableMap.Resources.Append(ResourceTableCache);
 	
 	FUniformBufferEntry UniformBufferEntry;
 	UniformBufferEntry.StaticSlotName = StaticSlotName;
 	UniformBufferEntry.LayoutHash = IsLayoutInitialized() ? GetLayout().GetHash() : 0;
 	UniformBufferEntry.BindingFlags = BindingFlags;
 	UniformBufferEntry.bNoEmulatedUniformBuffer = UsageFlags & (uint32)EUsageFlags::NoEmulatedUniformBuffer;
-	UniformBufferMap.Add(ShaderVariableName, UniformBufferEntry);
+	UniformBufferEntry.MemberNameBuffer = MemberNameBuffer;
+	UniformBufferMap.AddByHash(ShaderVariableNameHash, ShaderVariableName, UniformBufferEntry);
 }
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+// Deprecated version of function
+void FShaderParametersMetadata::AddResourceTableEntries(TMap<FString, FResourceTableEntry>& ResourceTableMap, TMap<FString, FUniformBufferEntry>& UniformBufferMap) const
+{
+	UE_LOG(LogShaders, Error, TEXT("FShaderParametersMetadata::AddResourceTableEntries call that accepts a TMap has been deprecated.  Use FShaderResourceTableMap structure instead."));
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_EDITOR
 

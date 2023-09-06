@@ -20,10 +20,14 @@ uint MaxBytesPerPixel;
 uint bRoughDiffuse;
 
 // Default functions for PackStrataOut to function properly
-void UpdateAllBSDFsOperatorCoverageTransmittance(inout FStrataPixelHeader StrataPixelHeader, inout FStrataTree StrataTree, FStrataIntegrationSettings Settings, FStrataAddressing NullStrataAddressing, float3 V) {}
-void UpdateAllOperatorsCoverageTransmittance(inout FStrataTree StrataTree) {}
-void UpdateAllBSDFWithBottomUpOperatorVisit(inout FStrataTree StrataTree) {}
-void PreUpdateAllBSDFWithBottomUpOperatorVisit(inout FStrataPixelHeader StrataPixelHeader, inout FStrataTree StrataTree, FStrataAddressing NullStrataAddressing, float3 V) {}
+void FStrataPixelHeader::PreUpdateAllBSDFWithBottomUpOperatorVisit(FStrataAddressing NullStrataAddressing, float3 V) {}
+void FStrataPixelHeader::UpdateAllBSDFsOperatorCoverageTransmittance(FStrataIntegrationSettings Settings, FStrataAddressing NullStrataAddressing, float3 V) {}
+void FStrataPixelHeader::UpdateAllOperatorsCoverageTransmittance() {}
+void FStrataPixelHeader::UpdateAllBSDFWithBottomUpOperatorVisit() {}
+void FStrataPixelHeader::PreUpdateAllBSDFWithBottomUpOperatorVisit_FullySimplified(FStrataAddressing NullStrataAddressing, float3 V) {}
+void FStrataPixelHeader::UpdateAllBSDFsOperatorCoverageTransmittance_FullySimplified(FStrataIntegrationSettings Settings, FStrataAddressing NullStrataAddressing, float3 V) {}
+void FStrataPixelHeader::UpdateAllOperatorsCoverageTransmittance_FullySimplified() {}
+void FStrataPixelHeader::UpdateAllBSDFWithBottomUpOperatorVisit_FullySimplified() {}
 
 #endif // STRATA_ENABLED
 
@@ -106,7 +110,7 @@ void WriteOutMaterial(
 	StrataPixelHeader.StrataTree = GetInitialisedStrataTree();
 	StrataPixelHeader.IrradianceAO = InitIrradianceAndOcclusion();
 	StrataPixelHeader.IrradianceAO.MaterialAO = 1.0f - IndirectIrradianceAndAO;
-	SetCastContactShadow(StrataPixelHeader, 0);
+	StrataPixelHeader.SetCastContactShadow(0);
 
 	uint SharedLocalBasisIndex = 0;
 	const float3 NormalizedNormal = normalize(Normal);
@@ -133,12 +137,16 @@ void WriteOutMaterial(
 		/*float FuzzAmount						*/0.0f,
 		/*float3 FuzzColor						*/0.0f,
 		/*float FuzzRoughness					*/0.0f,
-		/*float Thickness						*/0.0f,
+		/*float GlintValue						*/0.0f,
+		/*float GlintUV							*/0.0f.xx,
+		/*float SpecularProfile					*/0.0f,
+		/*float Thickness						*/1.0f,
 		/*bool bIsThinSurface					*/false,
+		/*bool bIsAtTheBottomOfTopology			*/false,
 		/*uint SharedLocalBasisIndex			*/SharedLocalBasisIndex,
 		/*inout uint SharedLocalBasisTypes		*/StrataPixelHeader.SharedLocalBases.Types);
 
-	FStrataData StrataData = PromoteParameterBlendedBSDFToOperator(StrataSlabData, StrataPixelHeader.StrataTree, /*int OperatorIndex*/0, /*int BSDFIndex*/0, /*int LayerDepth*/0, /*int bIsBottom*/1);
+	FStrataData StrataData = StrataPixelHeader.StrataTree.PromoteParameterBlendedBSDFToOperator(StrataSlabData, /*int OperatorIndex*/0, /*int BSDFIndex*/0, /*int LayerDepth*/0, /*int bIsBottom*/1);
 	StrataPixelHeader.StrataTree.BSDFs[0].LuminanceWeightV = 1.0f;
 	StrataPixelHeader.StrataTree.BSDFs[0].TransmittanceAboveAlongN = 1.0f;
 	StrataPixelHeader.StrataTree.BSDFs[0].TopLayerDataWeight = 1.0f;
@@ -242,7 +250,7 @@ void MainPS(
 
 	float2 ScreenPosition = SvPositionToScreenPosition(SvPosition).xy;
 	const float Depth = 1000000.0f;
-	float4 TranslatedWorldPos = mul(float4(ScreenPosition * Depth, Depth, 1), View.ScreenToTranslatedWorld);
+	float4 TranslatedWorldPos = mul(float4(GetScreenPositionForProjectionType(ScreenPosition, Depth), Depth, 1), View.ScreenToTranslatedWorld);
 
 	const float3 RayDir = normalize(TranslatedWorldPos.xyz - View.TranslatedWorldCameraOrigin);
 	const float3 RayOrig = LWCHackToFloat(ResolvedView.WorldCameraOrigin);

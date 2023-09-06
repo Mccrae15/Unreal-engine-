@@ -5,10 +5,9 @@ Class used help debugging Niagara simulations
 ==============================================================================*/
 #pragma once
 
-#include "CoreMinimal.h"
 #include "NiagaraCommon.h"
+#include "NiagaraDefines.h"
 #include "NiagaraTypes.h"
-#include "RHI.h"
 #include "RHICommandList.h"
 #include "NiagaraDebuggerCommon.h"
 #include "NiagaraGPUProfilerInterface.h"
@@ -78,7 +77,7 @@ public:
 
 	virtual bool Tick()override;
 	virtual void TickRT()override;
-	TSharedPtr<FNiagaraDebugHUDPerfStats> GetSystemStats(UNiagaraSystem* System);
+	TSharedPtr<FNiagaraDebugHUDPerfStats> GetSystemStats(UFXSystemAsset* System);
 	FNiagaraDebugHUDPerfStats& GetGlobalStats();
 
 	virtual void OnAddSystem(const TWeakObjectPtr<const UFXSystemAsset>& NewSystem)override;
@@ -94,6 +93,9 @@ class FNiagaraDebugHud
 	struct FSystemDebugInfo
 	{
 		FString		SystemName;
+	#if WITH_EDITORONLY_DATA
+		bool		bCompileForEdit = false;
+	#endif
 
 		#if WITH_PARTICLE_PERF_STATS
 		TSharedPtr<FNiagaraDebugHUDPerfStats> PerfStats = nullptr;
@@ -298,6 +300,9 @@ private:
 
 	struct FGpuUsagePerSystem
 	{
+#if WITH_EDITORONLY_DATA
+		bool bCompileForEdit = false;
+#endif
 		bool bShowDetailed = false;
 		FSmoothedCounter<uint32> InstanceCount;
 		FSmoothedCounter<uint64> Microseconds;

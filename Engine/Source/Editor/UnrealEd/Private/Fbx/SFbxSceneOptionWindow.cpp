@@ -1496,11 +1496,13 @@ void SFbxSceneOptionWindow::CopySkeletalMeshOptionsToFbxOptions(UnFbx::FBXImport
 	ImportSettings->bCreatePhysicsAsset = SkeletalMeshOptions->bCreatePhysicsAsset;
 	ImportSettings->bImportMeshesInBoneHierarchy = SkeletalMeshOptions->bImportMeshesInBoneHierarchy;
 	ImportSettings->bImportMorph = SkeletalMeshOptions->bImportMorphTargets;
+	ImportSettings->bImportVertexAttributes = SkeletalMeshOptions->bImportVertexAttributes;
 	ImportSettings->OverlappingThresholds.ThresholdPosition = SkeletalMeshOptions->ThresholdPosition;
 	ImportSettings->OverlappingThresholds.ThresholdTangentNormal = SkeletalMeshOptions->ThresholdTangentNormal;
 	ImportSettings->OverlappingThresholds.ThresholdUV = SkeletalMeshOptions->ThresholdUV;
 	ImportSettings->OverlappingThresholds.MorphThresholdPosition = SkeletalMeshOptions->MorphThresholdPosition;
 	ImportSettings->bPreserveSmoothingGroups = SkeletalMeshOptions->bPreserveSmoothingGroups;
+	ImportSettings->bKeepSectionsSeparate = SkeletalMeshOptions->bKeepSectionsSeparate;
 	ImportSettings->bUpdateSkeletonReferencePose = SkeletalMeshOptions->bUpdateSkeletonReferencePose;
 	ImportSettings->bUseT0AsRefPose = SkeletalMeshOptions->bUseT0AsRefPose;
 
@@ -1523,11 +1525,13 @@ void SFbxSceneOptionWindow::CopyFbxOptionsToSkeletalMeshOptions(UnFbx::FBXImport
 	SkeletalMeshOptions->bCreatePhysicsAsset = ImportSettings->bCreatePhysicsAsset;
 	SkeletalMeshOptions->bImportMeshesInBoneHierarchy = ImportSettings->bImportMeshesInBoneHierarchy;
 	SkeletalMeshOptions->bImportMorphTargets = ImportSettings->bImportMorph;
+	SkeletalMeshOptions->bImportVertexAttributes = ImportSettings->bImportVertexAttributes;
 	SkeletalMeshOptions->ThresholdPosition = ImportSettings->OverlappingThresholds.ThresholdPosition;
 	SkeletalMeshOptions->ThresholdTangentNormal = ImportSettings->OverlappingThresholds.ThresholdTangentNormal;
 	SkeletalMeshOptions->ThresholdUV = ImportSettings->OverlappingThresholds.ThresholdUV;
 	SkeletalMeshOptions->MorphThresholdPosition = ImportSettings->OverlappingThresholds.MorphThresholdPosition;
 	SkeletalMeshOptions->bPreserveSmoothingGroups = ImportSettings->bPreserveSmoothingGroups;
+	SkeletalMeshOptions->bKeepSectionsSeparate = ImportSettings->bKeepSectionsSeparate;
 	SkeletalMeshOptions->bUpdateSkeletonReferencePose = ImportSettings->bUpdateSkeletonReferencePose;
 	SkeletalMeshOptions->bUseT0AsRefPose = ImportSettings->bUseT0AsRefPose;
 

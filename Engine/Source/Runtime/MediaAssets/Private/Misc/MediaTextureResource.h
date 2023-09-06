@@ -17,6 +17,7 @@
 #include "Async/Async.h"
 #include "RenderingThread.h"
 #include "RendererInterface.h"
+#include "ColorSpace.h"
 
 class FMediaPlayerFacade;
 class IMediaPlayer;
@@ -48,7 +49,7 @@ public:
 	 * @param bEnableGenMips If true mips generation will be enabled (possibly optimizing for NumMips == 1 case)
 	 * @param InNumMips The initial number of mips to be generated for the output texture
 	 */
-	MEDIAASSETS_API FMediaTextureResource(UMediaTexture& InOwner, FIntPoint& InOwnerDim, SIZE_T& InOwnerSize, FLinearColor InClearColor, FGuid InTextureGuid, bool bEnableGenMips, uint8 InNumMips);
+	MEDIAASSETS_API FMediaTextureResource(UMediaTexture& InOwner, FIntPoint& InOwnerDim, SIZE_T& InOwnerSize, FLinearColor InClearColor, FGuid InTextureGuid, bool bEnableGenMips, uint8 InNumMips, UE::Color::EColorSpace OverrideColorSpaceType);
 
 	/** Virtual destructor. */
 	virtual ~FMediaTextureResource() 
@@ -126,8 +127,8 @@ public:
 	virtual FString GetFriendlyName() const override;
 	virtual uint32 GetSizeX() const override;
 	virtual uint32 GetSizeY() const override;
-	virtual void InitDynamicRHI() override;
-	virtual void ReleaseDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	virtual void ReleaseRHI() override;
 
 protected:
 
@@ -173,10 +174,10 @@ protected:
 	void UpdateTextureReference(FRHITexture2D* NewTexture);
 
 	/**
-	 * Create/update output render target as needed
+	 * Create/update intermediate render target as needed. If no color conversion is needed, the RT will be used as the output.
 	 */
-	void CreateOutputRenderTarget(const FIntPoint & InDim, EPixelFormat InPixelFormat, bool bInSRGB, const FLinearColor & InClearColor, uint8 InNumMips, bool bNeedsUAVSupport);
-
+	void CreateIntermediateRenderTarget(const FIntPoint & InDim, EPixelFormat InPixelFormat, bool bInSRGB, const FLinearColor & InClearColor, uint8 InNumMips, bool bNeedsUAVSupport);
+	
 	/**
 	 * Caches next available sample from queue in MediaTexture owner to keep single consumer access
 	 *
@@ -192,6 +193,9 @@ protected:
 
 	bool RequiresConversion(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& Sample, uint8 numMips) const;
 	bool RequiresConversion(const FTexture2DRHIRef& SampleTexture, const FIntPoint & OutputDim, uint8 numMips) const;
+
+	/** Compute CS conversion martix based on sample's data */
+	void GetColorSpaceConversionMatrixForSample(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> Sample, FMatrix44f& ColorSpaceMtx);
 
 private:
 
@@ -210,7 +214,10 @@ private:
 	/** Input render target if the texture samples don't provide one (for conversions). */
 	TRefCountPtr<FRHITexture> InputTarget;
 
-	/** Output render target if the texture samples don't provide one. */
+	/** Holds the intermediate render target if the texture samples don't provide one, or final render target when not using a texture sample color converter. */
+	TRefCountPtr<FRHITexture> IntermediateTarget;
+
+	/** Output render target where the texture sample color converter writes. */
 	TRefCountPtr<FRHITexture> OutputTarget;
 
 	/** The media texture that owns this resource. */
@@ -242,6 +249,8 @@ private:
 
 	/** prior samples not yet ready for retirement as GPU may still actively use them */
 	TSharedRef<FPriorSamples, ESPMode::ThreadSafe> PriorSamples;
+	/** prior samples CS */
+	FCriticalSection PriorSamplesCS;
 
 	/** cached params etc. for use with mip generator */
 	TRefCountPtr<IPooledRenderTarget> MipGenerationCache;
@@ -249,4 +258,9 @@ private:
 	/** Cached FRenderParams, used when JustInTimeRender() gets called. */
 	TUniquePtr<FRenderParams> JustInTimeRenderParams;
 
+	/** Colorspace to override standard proejct "working color space' */
+	TUniquePtr<UE::Color::FColorSpace> OverrideColorSpace;
+
+	/** Used to keep track of whether we should re-create the output target because the intermediate target has changed. */
+	bool bRecreateOutputTarget = false;
 };

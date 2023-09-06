@@ -6,9 +6,6 @@ public class SparseVolumeTexture : ModuleRules
 {
 	public SparseVolumeTexture(ReadOnlyTargetRules Target) : base(Target)
 	{
-		PrivateIncludePaths.Add(ModuleDirectory + "/Private");
-		PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -27,28 +24,24 @@ public class SparseVolumeTexture : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry",
-                "AssetTools",
+				"AssetTools",
 				"EditorWidgets",
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"Renderer",
-				"RenderCore",
 				"RHI",
-				"Core",
 				"CoreUObject",
-				"Engine",
-                "InputCore",
-                "Settings",
+				"InputCore",
+				"Settings",
 			}
 		);
 
 		if (Target.bBuildEditor)
 		{
 			PrivateDependencyModuleNames.AddRange(
-				new string[] 
+				new string[]
 				{
 					"MainFrame",
 					"EditorFramework",

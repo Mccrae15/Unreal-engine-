@@ -3,6 +3,7 @@
 #include "TextureDerivedDataBuildUtils.h"
 
 #if WITH_EDITOR
+#include "ColorSpace.h"
 #include "DerivedDataBuild.h"
 #include "DerivedDataBuildFunctionRegistry.h"
 #include "DerivedDataSharedString.h"
@@ -136,13 +137,57 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 	WriteCbFieldWithDefault<bool>(Writer, "bVolume", BuildSettings.bVolume, DefaultSettings.bVolume);
 	WriteCbFieldWithDefault<bool>(Writer, "bLongLatSource", BuildSettings.bLongLatSource, DefaultSettings.bLongLatSource);
 	WriteCbFieldWithDefault<bool>(Writer, "bSRGB", BuildSettings.bSRGB, DefaultSettings.bSRGB);
-	WriteCbFieldWithDefault(Writer, "SourceEncodingOverride", BuildSettings.SourceEncodingOverride, DefaultSettings.SourceEncodingOverride);
+
+	if (BuildSettings.SourceEncodingOverride != 0 /*UE::Color::EEncoding::None*/)
+	{
+		WriteCbField<uint32>(Writer, "EncodingOverrideVersion", UE::Color::ENCODING_TYPES_VER);
+		WriteCbFieldWithDefault(Writer, "SourceEncodingOverride", BuildSettings.SourceEncodingOverride, DefaultSettings.SourceEncodingOverride);
+	}
+	else // @todo SerializeForKey : remove else-case when overall key changes
+	{
+		WriteCbFieldWithDefault(Writer, "SourceEncodingOverride", BuildSettings.SourceEncodingOverride, DefaultSettings.SourceEncodingOverride);
+	}
+
 	WriteCbFieldWithDefault<bool>(Writer, "bHasColorSpaceDefinition", BuildSettings.bHasColorSpaceDefinition, DefaultSettings.bHasColorSpaceDefinition);
-	WriteCbFieldWithDefault(Writer, "RedChromaticityCoordinate", BuildSettings.RedChromaticityCoordinate, DefaultSettings.RedChromaticityCoordinate);
-	WriteCbFieldWithDefault(Writer, "GreenChromaticityCoordinate", BuildSettings.GreenChromaticityCoordinate, DefaultSettings.GreenChromaticityCoordinate);
-	WriteCbFieldWithDefault(Writer, "BlueChromaticityCoordinate", BuildSettings.BlueChromaticityCoordinate, DefaultSettings.BlueChromaticityCoordinate);
-	WriteCbFieldWithDefault(Writer, "WhiteChromaticityCoordinate", BuildSettings.WhiteChromaticityCoordinate, DefaultSettings.WhiteChromaticityCoordinate);
-	WriteCbFieldWithDefault(Writer, "ChromaticAdaptationMethod", BuildSettings.ChromaticAdaptationMethod, DefaultSettings.ChromaticAdaptationMethod);
+	if (BuildSettings.bHasColorSpaceDefinition)
+	{
+		WriteCbField<uint32>(Writer, "ColorSpaceVersion", UE::Color::COLORSPACE_VER);
+		/*
+		* The texture color transform depends on the chromaticities of both the source color space
+		* and the destination (working) color space, per its project setting. We therefore include
+		* the working color space chromaticities to incur a texture rebuild if/when changed.
+		*/
+		const TStaticArray<FVector2d, 4> DefaultChromaticities = UE::Color::FColorSpace::MakeChromaticities(UE::Color::EColorSpace::sRGB);
+		const UE::Color::FColorSpace& WorkingColorSpace = UE::Color::FColorSpace::GetWorking();
+		WriteCbFieldWithDefault(Writer, "WorkingRedChromaticity", FVector2f(WorkingColorSpace.GetRedChromaticity()), FVector2f(DefaultChromaticities[0]));
+		WriteCbFieldWithDefault(Writer, "WorkingGreenChromaticity", FVector2f(WorkingColorSpace.GetGreenChromaticity()), FVector2f(DefaultChromaticities[1]));
+		WriteCbFieldWithDefault(Writer, "WorkingBlueChromaticity", FVector2f(WorkingColorSpace.GetBlueChromaticity()), FVector2f(DefaultChromaticities[2]));
+		WriteCbFieldWithDefault(Writer, "WorkingWhiteChromaticity", FVector2f(WorkingColorSpace.GetWhiteChromaticity()), FVector2f(DefaultChromaticities[3]));
+
+		WriteCbFieldWithDefault(Writer, "RedChromaticityCoordinate", BuildSettings.RedChromaticityCoordinate, DefaultSettings.RedChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "GreenChromaticityCoordinate", BuildSettings.GreenChromaticityCoordinate, DefaultSettings.GreenChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "BlueChromaticityCoordinate", BuildSettings.BlueChromaticityCoordinate, DefaultSettings.BlueChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "WhiteChromaticityCoordinate", BuildSettings.WhiteChromaticityCoordinate, DefaultSettings.WhiteChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "ChromaticAdaptationMethod", BuildSettings.ChromaticAdaptationMethod, DefaultSettings.ChromaticAdaptationMethod);
+	}
+	else // @todo SerializeForKey : remove else-case when overall key changes
+	{
+		WriteCbFieldWithDefault(Writer, "RedChromaticityCoordinate", BuildSettings.RedChromaticityCoordinate, DefaultSettings.RedChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "GreenChromaticityCoordinate", BuildSettings.GreenChromaticityCoordinate, DefaultSettings.GreenChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "BlueChromaticityCoordinate", BuildSettings.BlueChromaticityCoordinate, DefaultSettings.BlueChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "WhiteChromaticityCoordinate", BuildSettings.WhiteChromaticityCoordinate, DefaultSettings.WhiteChromaticityCoordinate);
+		WriteCbFieldWithDefault(Writer, "ChromaticAdaptationMethod", BuildSettings.ChromaticAdaptationMethod, DefaultSettings.ChromaticAdaptationMethod);
+	}
+
+	if (BuildSettings.SourceEncodingOverride != 0 || BuildSettings.bHasColorSpaceDefinition)
+	{
+		/*
+		 * If any advanced color settings are in use, we link the OpenColorIO library version to the key
+		 * since updates could cause changes in processing.
+		 */ 
+		WriteCbField<uint32>(Writer, "OpenColorIOVersion", FTextureBuildSettings::GetOpenColorIOVersion());
+	}
+
 	WriteCbFieldWithDefault<bool>(Writer, "bUseLegacyGamma", BuildSettings.bUseLegacyGamma, DefaultSettings.bUseLegacyGamma);
 	WriteCbFieldWithDefault<bool>(Writer, "bPreserveBorder", BuildSettings.bPreserveBorder, DefaultSettings.bPreserveBorder);
 	WriteCbFieldWithDefault<bool>(Writer, "bForceNoAlphaChannel", BuildSettings.bForceNoAlphaChannel, DefaultSettings.bForceNoAlphaChannel);
@@ -197,6 +242,7 @@ static void WriteBuildSettings(FCbWriter& Writer, const FTextureBuildSettings& B
 	{
 		WriteCbField<bool>(Writer, "VTPow22_ForceNewDDcKey", true); 
 	}
+	// @todo: see further above, remove the two else-cases per comments.
 
 	Writer.EndObject();
 }
@@ -327,10 +373,12 @@ FCbObject SaveTextureBuildSettings(const UTexture& Texture, const FTextureBuildS
 	Writer.SetName("Source");
 	WriteSource(Writer, Texture, LayerIndex, BuildSettings);
 
-	if (bUseCompositeTexture && Texture.CompositeTexture)
+	if (bUseCompositeTexture && Texture.GetCompositeTexture())
 	{
+		check( Texture.GetCompositeTexture()->Source.IsValid() ); // should have been checked to set bUseCompositeTexture
+
 		Writer.SetName("CompositeSource");
-		WriteSource(Writer, *Texture.CompositeTexture, LayerIndex, BuildSettings);
+		WriteSource(Writer, *Texture.GetCompositeTexture(), LayerIndex, BuildSettings);
 	}
 
 	Writer.EndObject();

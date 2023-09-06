@@ -91,6 +91,20 @@ void UGeometryScriptLibrary_MeshQueryFunctions::GetMeshVolumeArea( UDynamicMesh*
 	});
 }
 
+void UGeometryScriptLibrary_MeshQueryFunctions::GetMeshVolumeAreaCenter(UDynamicMesh* TargetMesh, float& SurfaceArea, float& Volume, FVector& CenterOfMass)
+{
+	SurfaceArea = Volume = 0;
+	CenterOfMass = FVector::ZeroVector;
+	SimpleMeshQuery<bool>(TargetMesh, false, [&](const FDynamicMesh3& Mesh) {
+		FVector3d CoM;
+		FVector2d VolArea = TMeshQueries<FDynamicMesh3>::GetVolumeAreaCenter(Mesh, CoM);
+		Volume = VolArea.X;
+		SurfaceArea = VolArea.Y;
+		CenterOfMass = (FVector)CoM;
+		return true;
+	});
+}
+
 bool UGeometryScriptLibrary_MeshQueryFunctions::GetIsClosedMesh( UDynamicMesh* TargetMesh )
 {
 	return SimpleMeshQuery<bool>(TargetMesh, true, [&](const FDynamicMesh3& Mesh) { return Mesh.IsClosed(); });
@@ -357,7 +371,24 @@ UDynamicMesh* UGeometryScriptLibrary_MeshQueryFunctions::GetAllVertexPositions(U
 }
 
 
+UDynamicMesh* UGeometryScriptLibrary_MeshQueryFunctions::GetVertexConnectedTriangles(UDynamicMesh* TargetMesh, int32 VertexID, TArray<int32>& Triangles)
+{
+	SimpleMeshQuery<int32>(TargetMesh, 0, [&](const FDynamicMesh3& Mesh) {
+		Mesh.GetVtxTriangles(VertexID, Triangles);
+		return 0;
+	});
+	return TargetMesh;
+}
 
+
+UDynamicMesh* UGeometryScriptLibrary_MeshQueryFunctions::GetVertexConnectedVertices(UDynamicMesh* TargetMesh, int32 VertexID, TArray<int32>& Vertices)
+{
+	SimpleMeshQuery<int32>(TargetMesh, 0, [&](const FDynamicMesh3& Mesh) {
+		Mesh.EnumerateVertexVertices(VertexID, [&](int32 vid) { Vertices.Add(vid); });
+		return 0;
+	});
+	return TargetMesh;
+}
 
 
 int32 UGeometryScriptLibrary_MeshQueryFunctions::GetNumUVSets( UDynamicMesh* TargetMesh )
@@ -408,6 +439,28 @@ void UGeometryScriptLibrary_MeshQueryFunctions::GetTriangleUVs(UDynamicMesh* Tar
 		}
 	});
 }
+
+UDynamicMesh* UGeometryScriptLibrary_MeshQueryFunctions::GetAllSplitUVsAtVertex(UDynamicMesh* TargetMesh, int32 UVSetIndex, int32 VertexID,
+	TArray<int32>& ElementIDs, TArray<FVector2D>& ElementUVs, bool& bHaveValidUVs)
+{
+	bHaveValidUVs = SimpleMeshUVSetQuery<bool>(TargetMesh, UVSetIndex, bHaveValidUVs, false, 
+		[&](const FDynamicMesh3& Mesh, const FDynamicMeshUVOverlay& UVSet) 
+	{
+		if (Mesh.IsVertex(VertexID))
+		{
+			UVSet.EnumerateVertexElements(VertexID, [&](int TriangleID, int ElementID, const FVector2f& UVValue)
+			{
+				ElementIDs.Add(ElementID);
+				ElementUVs.Add((FVector2D)UVValue);
+				return true;
+			});
+			return true;
+		}
+		return false;
+	});
+	return TargetMesh;
+}
+
 
 UDynamicMesh* UGeometryScriptLibrary_MeshQueryFunctions::GetInterpolatedTriangleUV(UDynamicMesh* TargetMesh, UPARAM(DisplayName = "UV Channel") int32 UVSetIndex, int32 TriangleID, FVector BarycentricCoords, bool& bHaveValidUVs, FVector2D& InterpolatedUV)
 {

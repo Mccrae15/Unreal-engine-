@@ -12,6 +12,7 @@
 #include "Components/WidgetComponent.h"
 
 class FProperty;
+class UEdGraph;
 class UWidget;
 class UWidgetAnimation;
 class UWidgetGraphSchema;
@@ -66,13 +67,15 @@ protected:
 	*/
 	void ValidateWidgetAnimations();
 
-	// FKismetCompilerContext
+	/** Validates the Desired Focus name to make sure it's part of the Widget Tree. */
+	void ValidateDesiredFocusWidgetName();
+
+	//~ Begin FKismetCompilerContext
 	virtual UEdGraphSchema_K2* CreateSchema() override;
 	virtual void CreateFunctionList() override;
 	virtual void SpawnNewClass(const FString& NewClassName) override;
 	virtual void OnNewClassSet(UBlueprintGeneratedClass* ClassToUse) override;
 	virtual void PrecompileFunction(FKismetFunctionContext& Context, EInternalCompilerFlags InternalFlags) override;
-	virtual void PostcompileFunction(FKismetFunctionContext& Context) override;
 	virtual void CleanAndSanitizeClass(UBlueprintGeneratedClass* ClassToClean, UObject*& InOutOldCDO) override;
 	virtual void SaveSubObjectsFromCleanAndSanitizeClass(FSubobjectCollection& SubObjectsToSave, UBlueprintGeneratedClass* ClassToClean) override;
 	virtual void EnsureProperGeneratedClass(UClass*& TargetClass) override;
@@ -81,7 +84,7 @@ protected:
 	virtual void FinishCompilingClass(UClass* Class) override;
 	virtual bool ValidateGeneratedClass(UBlueprintGeneratedClass* Class) override;
 	virtual void OnPostCDOCompiled(const UObject::FPostCDOCompiledContext& Context) override;
-	// End FKismetCompilerContext
+	//~ End FKismetCompilerContext
 
 	void SanitizeBindings(UBlueprintGeneratedClass* Class);
 
@@ -97,6 +100,7 @@ public:
 	{
 	public:
 		FProperty* CreateVariable(const FName Name, const FEdGraphPinType& Type) const;
+		void AddGeneratedFunctionGraph(UEdGraph* Graph) const;
 		UWidgetBlueprint* GetWidgetBlueprint() const;
 		UWidgetBlueprintGeneratedClass* GetSkeletonGeneratedClass() const;
 		EKismetCompileType::Type GetCompileType() const;

@@ -161,7 +161,7 @@ SCustomizableObjectEditorViewportTabBody::~SCustomizableObjectEditorViewportTabB
 
 void SCustomizableObjectEditorViewportTabBody::AddReferencedObjects( FReferenceCollector& Collector )
 {
-	for (UDebugSkelMeshComponent* PreviewSkeletalMeshComponent : PreviewSkeletalMeshComponents)
+	for (auto& PreviewSkeletalMeshComponent : PreviewSkeletalMeshComponents)
 	{
 		Collector.AddReferencedObject(PreviewSkeletalMeshComponent);
 	}
@@ -358,7 +358,7 @@ void SCustomizableObjectEditorViewportTabBody::Tick(const FGeometry& AllottedGeo
 }
 
 
-void SCustomizableObjectEditorViewportTabBody::SetPreviewComponents(TArray<UDebugSkelMeshComponent*>& InSkeletalMeshComponents)
+void SCustomizableObjectEditorViewportTabBody::SetPreviewComponents(const TArray<UDebugSkelMeshComponent*>& InSkeletalMeshComponents)
 {
 	FTransform Transform = FTransform::Identity;
 
@@ -372,7 +372,7 @@ void SCustomizableObjectEditorViewportTabBody::SetPreviewComponents(TArray<UDebu
 		}
 	}
 
-	PreviewSkeletalMeshComponents = InSkeletalMeshComponents;
+	PreviewSkeletalMeshComponents = ObjectPtrWrap(InSkeletalMeshComponents);
 
 	for (UDebugSkelMeshComponent* PreviewSkeletalMeshComponent : PreviewSkeletalMeshComponents)
 	{
@@ -387,7 +387,7 @@ void SCustomizableObjectEditorViewportTabBody::SetPreviewComponents(TArray<UDebu
 		}
 	}
 
-	LevelViewportClient->SetPreviewComponents(PreviewSkeletalMeshComponents);
+	LevelViewportClient->SetPreviewComponents(ObjectPtrDecay(PreviewSkeletalMeshComponents));
 }
 
 
@@ -399,7 +399,7 @@ bool SCustomizableObjectEditorViewportTabBody::IsVisible() const
 
 const TArray<UDebugSkelMeshComponent*>& SCustomizableObjectEditorViewportTabBody::GetSkeletalMeshComponents() const
 {
-	return PreviewSkeletalMeshComponents;
+	return ObjectPtrDecay(PreviewSkeletalMeshComponents);
 }
 
 
@@ -655,29 +655,54 @@ bool SCustomizableObjectEditorViewportTabBody::IsCameraModeActive(int Value)
 }
 
 
-void SCustomizableObjectEditorViewportTabBody::SetDrawDefaultUVMaterial()
+void SCustomizableObjectEditorViewportTabBody::SetDrawDefaultUVMaterial(bool bIsCompilation)
 {
 	GenerateUVMaterialOptions();
-
-	FString CurrentDrawnMaterial = LevelViewportClient->GetMaterialToDrawInUVs();
+	bool bMaterialFound = false;
 
 	if (!ArrayUVMaterialOptionString.IsEmpty())
 	{
-		bool bFound = false;
-
-		for (int32 StringIndex = 0; StringIndex < ArrayUVMaterialOptionString.Num(); ++StringIndex)
+		if (!bIsCompilation && SelectedUVMaterial.IsValid())
 		{
-			if (*(ArrayUVMaterialOptionString[StringIndex]) == CurrentDrawnMaterial)
+			// We check if the selected Material still exists after the update
+			FString MaterialName = *SelectedUVMaterial;
+
+			for (int32 MaterialIndex = 0; MaterialIndex < ArrayUVMaterialOptionString.Num(); ++MaterialIndex)
 			{
-				bFound = true;
-				break;
+				if (MaterialName == *ArrayUVMaterialOptionString[MaterialIndex])
+				{
+					bMaterialFound = true;
+					break;
+				}
 			}
 		}
 
-		if (!bFound)
+		if (bIsCompilation || !bMaterialFound)
 		{
 			LevelViewportClient->SetDrawUVOverlayMaterial(*(ArrayUVMaterialOptionString[0]), "0");
+			SelectedUVMaterial = ArrayUVMaterialOptionString[0];
 		}
+	}
+	else
+	{
+		SelectedUVMaterial = nullptr;
+	}
+
+	GenerateUVChannelOptions();
+
+	if (!ArrayUVChannelOptionString.IsEmpty() && (bIsCompilation || !bMaterialFound))
+	{
+		SelectedUVChannel = ArrayUVChannelOptionString[0];
+	}
+	else
+	{
+		SelectedUVChannel = nullptr;
+	}
+
+	if (UVMaterialOptionCombo.IsValid() && UVChannelOptionCombo.IsValid())
+	{
+		UVMaterialOptionCombo->SetSelectedItem(SelectedUVMaterial);
+		UVChannelOptionCombo->SetSelectedItem(SelectedUVChannel);
 	}
 }
 
@@ -753,7 +778,7 @@ TSharedRef<SWidget> SCustomizableObjectEditorViewportTabBody::BuildToolBar()
 		[
 			SNew(SBorder)
 			.Padding(0)
-		.BorderImage(FAppStyle::GetBrush("NoBorder"))
+		.BorderImage(UE_MUTABLE_GET_BRUSH("NoBorder"))
 		.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
 		[
 			CommandToolbarBuilder.MakeWidget()
@@ -791,20 +816,6 @@ TSharedRef<SWidget> SCustomizableObjectEditorViewportTabBody::GenerateUVMaterial
 					}
 				}
 			}
-			else
-			{
-				FString CurrentDrawnMaterial = LevelViewportClient->GetMaterialToDrawInUVs();
-
-				for (int32 i = 0; i < ArrayUVMaterialOptionString.Num(); ++i)
-				{
-					if (CurrentDrawnMaterial == *ArrayUVMaterialOptionString[i])
-					{
-						bFound = true;
-						SelectedUVMaterial = ArrayUVMaterialOptionString[i];
-						break;
-					}
-				}
-			}
 
 			if (!bFound)
 			{
@@ -822,7 +833,7 @@ TSharedRef<SWidget> SCustomizableObjectEditorViewportTabBody::GenerateUVMaterial
 			.OnSelectionChanged(this, &SCustomizableObjectEditorViewportTabBody::OnMaterialChanged);
 
 		// Generating an array with all the options of the combobox 
-		GenerateUVChannelOptions(false);
+		GenerateUVChannelOptions();
 
 		// Setting initial selected option
 		if (ArrayUVChannelOptionString.Num())
@@ -899,69 +910,30 @@ void SCustomizableObjectEditorViewportTabBody::GenerateUVMaterialOptions()
 	ArrayUVMaterialOptionString.Empty();
 	
 	int32 ComponentIndex = 0;
-
 	for (UDebugSkelMeshComponent* PreviewSkeletalMeshComponent : PreviewSkeletalMeshComponents)
 	{
-		if (PreviewSkeletalMeshComponent != nullptr && PreviewSkeletalMeshComponent->GetSkinnedAsset() != nullptr && PreviewSkeletalMeshComponent->GetSkinnedAsset()->GetResourceForRendering() != nullptr)
+		if (PreviewSkeletalMeshComponent != nullptr && UE_MUTABLE_GETSKINNEDASSET(PreviewSkeletalMeshComponent) != nullptr && UE_MUTABLE_GETSKINNEDASSET(PreviewSkeletalMeshComponent)->GetResourceForRendering() != nullptr)
 		{
-			TMap<FString, int32> MaterialLODs;
-
-			// Add Suffix "__X" for materials with duplicated names and Suffing " LOD_X" for multiple LODs.
-			const FSkeletalMeshRenderData* MeshRes = PreviewSkeletalMeshComponent->GetSkinnedAsset()->GetResourceForRendering();
 			const TArray<UMaterialInterface*> Materials = PreviewSkeletalMeshComponent->GetMaterials();
-			for (UMaterialInterface* m : Materials)
+			const FSkeletalMeshRenderData* MeshRes = UE_MUTABLE_GETSKINNEDASSET(PreviewSkeletalMeshComponent)->GetResourceForRendering();
+			for (int32 LODIndex = 0; LODIndex < MeshRes->LODRenderData.Num(); ++LODIndex)
 			{
-				const UMaterial* BaseMaterial = m->GetBaseMaterial();
-
-				FString BaseMaterialName = BaseMaterial->GetName();
-
-				int32 LODCount = 0;
-				if (int32* Count = MaterialLODs.Find(BaseMaterialName))
+				for (int32 SectionIndex = 0; SectionIndex < MeshRes->LODRenderData[LODIndex].RenderSections.Num(); ++SectionIndex)
 				{
-					if ((*Count) < MeshRes->LODRenderData.Num() - 1)
+					const FSkelMeshRenderSection& Section = MeshRes->LODRenderData[LODIndex].RenderSections[SectionIndex];
+					
+					if (!Materials.IsValidIndex(Section.MaterialIndex))
 					{
-						(*Count)++;
-						LODCount = (*Count);
+						continue;
 					}
-					else
-					{
-						bool bSearchEmptyLOD = true;
-						int MaterialIndexWithinLOD = 1;
 
-						while (bSearchEmptyLOD)
-						{
-							if (int32* DupeMaterialCount = MaterialLODs.Find(BaseMaterialName + FString::Printf(TEXT("__%d"), MaterialIndexWithinLOD)))
-							{
-								if ((*DupeMaterialCount) < MeshRes->LODRenderData.Num() - 1)
-								{
-									(*DupeMaterialCount)++;
-									LODCount = (*DupeMaterialCount);
-									BaseMaterialName += FString::Printf(TEXT("__%d"), MaterialIndexWithinLOD);
-									bSearchEmptyLOD = false;
-								}
-								else
-								{
-									MaterialIndexWithinLOD++;
-								}
-							}
-							else
-							{
-								MaterialLODs.Add(BaseMaterialName + FString::Printf(TEXT("__%d"), MaterialIndexWithinLOD), 0);
+					const UMaterial* BaseMaterial = Materials[Section.MaterialIndex]->GetBaseMaterial();
+					FString BaseMaterialName = BaseMaterial->GetName();
 
-								BaseMaterialName += FString::Printf(TEXT("__%d"), MaterialIndexWithinLOD);
-								bSearchEmptyLOD = false;
-							}
-						}
-					}
+					BaseMaterialName += FString::Printf(TEXT(" LOD_%d_Component_%d"), LODIndex, ComponentIndex);
+
+					ArrayUVMaterialOptionString.Add(MakeShareable(new FString(BaseMaterialName)));
 				}
-				else
-				{
-					MaterialLODs.Add(BaseMaterialName, LODCount);
-				}
-
-				BaseMaterialName += FString::Printf(TEXT(" LOD_%d_Component_%d"), LODCount, ComponentIndex);
-
-				ArrayUVMaterialOptionString.Add(MakeShareable(new FString(BaseMaterialName)));
 			}
 		}
 
@@ -977,7 +949,14 @@ void SCustomizableObjectEditorViewportTabBody::OnMaterialChanged(TSharedPtr<FStr
 		SelectedUVMaterial = Selected;
 
 		//We need to update options for the new LOD
-		GenerateUVChannelOptions(true);
+		GenerateUVChannelOptions();
+
+		// Resets the value to the first element of the array
+		if (!ArrayUVChannelOptionString.IsEmpty())
+		{
+			SelectedUVChannel = ArrayUVChannelOptionString[0];
+			UVChannelOptionCombo->SetSelectedItem(SelectedUVChannel);
+		}
 
 		if (LevelViewportClient.IsValid() && SelectedUVChannel.IsValid())
 		{
@@ -987,7 +966,7 @@ void SCustomizableObjectEditorViewportTabBody::OnMaterialChanged(TSharedPtr<FStr
 }
 
 
-void SCustomizableObjectEditorViewportTabBody::GenerateUVChannelOptions(bool bReset)
+void SCustomizableObjectEditorViewportTabBody::GenerateUVChannelOptions()
 {
 	ArrayUVChannelOptionString.Empty();
 
@@ -1011,23 +990,16 @@ void SCustomizableObjectEditorViewportTabBody::GenerateUVChannelOptions(bool bRe
 
 	UDebugSkelMeshComponent* PreviewSkeletalMeshComponent = PreviewSkeletalMeshComponents[ComponentIndex];
 
-	if (PreviewSkeletalMeshComponent != nullptr && PreviewSkeletalMeshComponent->GetSkinnedAsset() != nullptr
-		&& PreviewSkeletalMeshComponent->GetSkinnedAsset()->GetResourceForRendering() != nullptr)
+	if (PreviewSkeletalMeshComponent != nullptr && UE_MUTABLE_GETSKINNEDASSET(PreviewSkeletalMeshComponent) != nullptr
+		&& UE_MUTABLE_GETSKINNEDASSET(PreviewSkeletalMeshComponent)->GetResourceForRendering() != nullptr)
 	{
-		const FSkeletalMeshRenderData* MeshRes = PreviewSkeletalMeshComponent->GetSkinnedAsset()->GetResourceForRendering();
+		const FSkeletalMeshRenderData* MeshRes = UE_MUTABLE_GETSKINNEDASSET(PreviewSkeletalMeshComponent)->GetResourceForRendering();
 		
 		int32 UVChannels = MeshRes->LODRenderData[LODIndex].GetNumTexCoords();
 		
 		for (int32 UVChan = 0; UVChan < UVChannels; ++UVChan)
 		{
 			ArrayUVChannelOptionString.Add(MakeShareable(new FString(FString::FromInt(UVChan))));
-		}
-
-		// Resets the value to the first element of the array
-		if (bReset)
-		{
-			SelectedUVChannel = ArrayUVChannelOptionString[0];
-			UVChannelOptionCombo->SetSelectedItem(SelectedUVChannel);
 		}
 	}
 }
@@ -1056,10 +1028,10 @@ FReply SCustomizableObjectEditorViewportTabBody::OnDrop(const FGeometry& MyGeome
 {
 	if (FAssetDragDropOp* DragDropOp = DragDropEvent.GetOperationAs<FAssetDragDropOp>().Get())
 	{
-		if (Helper_GetAssets(DragDropOp).Num())
+		if (DragDropOp->GetAssets().Num())
 		{
 			// This cast also includes UPoseAsset assets.
-			UAnimationAsset* AnimationAsset = Cast<UAnimationAsset>(Helper_GetAssets(DragDropOp)[0].GetAsset());
+			UAnimationAsset* AnimationAsset = Cast<UAnimationAsset>(DragDropOp->GetAssets()[0].GetAsset());
 			if (AnimationAsset)
 			{
 				LevelViewportClient->SetAnimation(AnimationAsset, EAnimationMode::AnimationSingleNode);
@@ -1079,9 +1051,9 @@ int32 SCustomizableObjectEditorViewportTabBody::GetLODModelCount() const
 
 	for (UDebugSkelMeshComponent* PreviewComponent : GetSkeletalMeshComponents())
 	{
-		if (PreviewComponent && PreviewComponent->GetSkinnedAsset())
+		if (PreviewComponent && UE_MUTABLE_GETSKINNEDASSET(PreviewComponent))
 		{
-			const TIndirectArray<FSkeletalMeshLODRenderData>& LODModels = Helper_GetLODData(PreviewComponent->GetSkinnedAsset());
+			const TIndirectArray<FSkeletalMeshLODRenderData>& LODModels = UE_MUTABLE_GETSKINNEDASSET(PreviewComponent)->GetResourceForRendering()->LODRenderData;
 			LODModelCount = FMath::Max(LODModelCount, LODModels.Num());
 		}
 	}

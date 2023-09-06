@@ -2,6 +2,7 @@
 
 #include "PoseSearchDatabaseAssetTree.h"
 #include "Animation/AnimComposite.h"
+#include "Animation/AnimMontage.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/BlendSpace.h"
 #include "AssetSelection.h"
@@ -55,7 +56,7 @@ namespace UE::PoseSearch
 					SNew(SPositiveActionButton)
 					.Icon(FAppStyle::Get().GetBrush("Icons.Plus"))
 					.Text(LOCTEXT("AddNew", "Add"))
-					.ToolTipText(LOCTEXT("AddNewToolTip", "Add a new Sequence, Blend Space or Group"))
+					.ToolTipText(LOCTEXT("AddNewToolTip", "Add a new Sequence, Blend Space, Anim Composite, or Anim Montage"))
 					.OnGetMenuContent(this, &SDatabaseAssetTree::CreateAddNewMenuWidget)
 				]
 				+ SHorizontalBox::Slot()
@@ -99,7 +100,7 @@ namespace UE::PoseSearch
 						.VAlign(VAlign_Center)
 						[
 							SNew(STextBlock)
-							.Text(FText::FromString(TEXT("Drag and drop Animation Sequences, Anim Composites or Blendspaces")))
+							.Text(FText::FromString(TEXT("Drag and drop Animation Sequences, Anim Composites, Blendspaces, or Anim Montages")))
 							.Font(FAppStyle::Get().GetFontStyle("DetailsView.CategoryFontStyle"))
 						]
 					]
@@ -135,7 +136,8 @@ namespace UE::PoseSearch
 						{
 							if (AssetClass->IsChildOf(UAnimSequence::StaticClass()) ||
 								AssetClass->IsChildOf(UAnimComposite::StaticClass()) ||
-								AssetClass->IsChildOf(UBlendSpace::StaticClass()))
+								AssetClass->IsChildOf(UBlendSpace::StaticClass()) ||
+								AssetClass->IsChildOf(UAnimMontage::StaticClass()))
 							{
 								Reply = FReply::Handled();
 								break;
@@ -233,33 +235,13 @@ namespace UE::PoseSearch
 		{
 			// Setup default group node
 			{
-				const TSharedPtr<FDatabaseAssetTreeNode> DefaultGroupNode = MakeShared<FDatabaseAssetTreeNode>(
-					INDEX_NONE,
-					ESearchIndexAssetType::Invalid,
-					ViewModelRef);
+				const TSharedPtr<FDatabaseAssetTreeNode> DefaultGroupNode = MakeShared<FDatabaseAssetTreeNode>(INDEX_NONE, ViewModelRef);
 				AllNodes.Add(DefaultGroupNode);
 				RootNodes.Add(DefaultGroupNode);
 			}
 			
 			const int32 DefaultGroupIdx = RootNodes.Num() - 1;
-			
-			auto CreateAssetNode = [this, ViewModelRef](int32 AssetIdx, ESearchIndexAssetType AssetType, int32 GroupIdx)
-			{
-				// Create sequence node
-				const TSharedPtr<FDatabaseAssetTreeNode> SequenceGroupNode = MakeShared<FDatabaseAssetTreeNode>(
-					AssetIdx,
-					AssetType,
-					ViewModelRef);
-				const TSharedPtr<FDatabaseAssetTreeNode>& ParentGroupNode = RootNodes[GroupIdx];
-
-				// Setup hierarchy
-				SequenceGroupNode->Parent = ParentGroupNode;
-				ParentGroupNode->Children.Add(SequenceGroupNode);
-
-				// Keep track of node
-				AllNodes.Add(SequenceGroupNode);
-			};
-			
+						
 			// Build an index based off of alphabetical order than iterate the index instead
 			TArray<uint32> IndexArray;
 			IndexArray.SetNumUninitialized(Database->AnimationAssets.Num());
@@ -299,7 +281,16 @@ namespace UE::PoseSearch
 
 					if (!bFiltered)
 					{
-						CreateAssetNode(MappedId, DatabaseAnimationAsset->GetSearchIndexType(), DefaultGroupIdx);
+						// Create sequence node
+						const TSharedPtr<FDatabaseAssetTreeNode> SequenceGroupNode = MakeShared<FDatabaseAssetTreeNode>(MappedId, ViewModelRef);
+						const TSharedPtr<FDatabaseAssetTreeNode>& ParentGroupNode = RootNodes[DefaultGroupIdx];
+
+						// Setup hierarchy
+						SequenceGroupNode->Parent = ParentGroupNode;
+						ParentGroupNode->Children.Add(SequenceGroupNode);
+
+						// Keep track of node
+						AllNodes.Add(SequenceGroupNode);
 					}
 				}
 			}
@@ -361,7 +352,8 @@ namespace UE::PoseSearch
 				{
 					if (AssetClass->IsChildOf(UAnimSequence::StaticClass()) ||
 						AssetClass->IsChildOf(UAnimComposite::StaticClass()) ||
-						AssetClass->IsChildOf(UBlendSpace::StaticClass()))
+						AssetClass->IsChildOf(UBlendSpace::StaticClass()) ||
+						AssetClass->IsChildOf(UAnimMontage::StaticClass()))
 					{
 						ReturnedDropZone = EItemDropZone::OntoItem;
 						break;
@@ -436,6 +428,11 @@ namespace UE::PoseSearch
 						ViewModel->AddBlendSpaceToDatabase(Cast<UBlendSpace>(Asset));
 						++AddedAssets;
 					}
+					else if (AssetClass->IsChildOf(UAnimMontage::StaticClass()))
+					{
+						ViewModel->AddAnimMontageToDatabase(Cast<UAnimMontage>(Asset));
+						++AddedAssets;
+					}
 				}
 			}
 			
@@ -459,25 +456,33 @@ namespace UE::PoseSearch
 		{
 			AddOptions.AddMenuEntry(
 				LOCTEXT("AddSequenceOption", "Sequence"),
-				LOCTEXT("AddSequenceOptionTooltip", "Add new sequence to the default group"),
+				LOCTEXT("AddSequenceToDatabaseTooltip", "Add new sequence to the database"),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetTree::OnAddSequence, true)),
 				NAME_None,
 				EUserInterfaceActionType::Button);
 
 			AddOptions.AddMenuEntry(
-				LOCTEXT("BlendSpaceOption", "Blend Space"),
-				LOCTEXT("AddBlendSpaceToDefaultGroupTooltip", "Add new blend space to the default group"),
+				LOCTEXT("AddBlendSpaceOption", "Blend Space"),
+				LOCTEXT("AddBlendSpaceToDatabaseTooltip", "Add new blend space to the database"),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetTree::OnAddBlendSpace, true)),
 				NAME_None,
 				EUserInterfaceActionType::Button);
 
 			AddOptions.AddMenuEntry(
-				LOCTEXT("AnimCompositeOption", "Anim Composite"),
-				LOCTEXT("AddAnimCompositeToDefaultGroupTooltip", "Add new anim composite to the default group"),
+				LOCTEXT("AddAnimCompositeOption", "Anim Composite"),
+				LOCTEXT("AddAnimCompositeToDatabaseTooltip", "Add new composite to the database"),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetTree::OnAddAnimComposite, true)),
+				NAME_None,
+				EUserInterfaceActionType::Button);
+
+			AddOptions.AddMenuEntry(
+				LOCTEXT("AddAnimMontageOption", "Anim Montage"),
+				LOCTEXT("AddAnimMontageToDatabaseTooltip", "Add new montage to the database"),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetTree::OnAddAnimMontage, true)),
 				NAME_None,
 				EUserInterfaceActionType::Button);
 		}
@@ -496,9 +501,7 @@ namespace UE::PoseSearch
 		{
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("DeleteUngroup", "Delete / Remove"),
-				LOCTEXT(
-					"DeleteUngroupTooltip", 
-					"Deletes groups and ungrouped assets; removes grouped assets from group."),
+				LOCTEXT("DeleteUngroupTooltip", "Deletes groups and ungrouped assets; removes grouped assets from group."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetTree::OnDeleteNodes)),
 				NAME_None,
@@ -596,6 +599,18 @@ namespace UE::PoseSearch
 		}
 	}
 
+	void SDatabaseAssetTree::OnAddAnimMontage(bool bFinalizeChanges)
+	{
+		FScopedTransaction Transaction(LOCTEXT("AddAnimMontageTransaction", "Add Anim Montage"));
+
+		EditorViewModel.Pin()->AddAnimMontageToDatabase(nullptr);
+
+		if (bFinalizeChanges)
+		{
+			FinalizeTreeChanges();
+		}
+	}
+
 	void SDatabaseAssetTree::OnDeleteAsset(TSharedPtr<FDatabaseAssetTreeNode> Node, bool bFinalizeChanges)
 	{
 		FScopedTransaction Transaction(LOCTEXT("DeleteAsset", "Delete Asset"));
@@ -626,14 +641,7 @@ namespace UE::PoseSearch
 
 		for (const TSharedPtr<FDatabaseAssetTreeNode>& Node : AllNodes)
 		{
-			const bool bFoundNode = PreviouslySelectedNodes.ContainsByPredicate(
-				[Node](const TSharedPtr<FDatabaseAssetTreeNode>& PrevSelectedNode)
-			{
-				return
-					PrevSelectedNode->SourceAssetType == Node->SourceAssetType &&
-					PrevSelectedNode->SourceAssetIdx == Node->SourceAssetIdx;
-			});
-
+			const bool bFoundNode = PreviouslySelectedNodes.ContainsByPredicate([Node](const TSharedPtr<FDatabaseAssetTreeNode>& PrevSelectedNode) { return PrevSelectedNode->SourceAssetIdx == Node->SourceAssetIdx; });
 			if (bFoundNode)
 			{
 				NewSelectedNodes.Add(Node);
@@ -660,8 +668,7 @@ namespace UE::PoseSearch
 		TArray<TSharedPtr<FDatabaseAssetTreeNode>> SelectedNodes = TreeView->GetSelectedItems();
 		for (TSharedPtr<FDatabaseAssetTreeNode> SelectedNode : SelectedNodes)
 		{
-			if (SelectedNode->SourceAssetType != ESearchIndexAssetType::Invalid ||
-				SelectedNode->SourceAssetIdx != INDEX_NONE)
+			if (SelectedNode->SourceAssetIdx != INDEX_NONE)
 			{
 				return true;
 			}
@@ -680,25 +687,14 @@ namespace UE::PoseSearch
 
 			ViewModel->GetPoseSearchDatabase()->Modify();
 			
-			SelectedNodes.Sort(
-				[](const TSharedPtr<FDatabaseAssetTreeNode>& A, const TSharedPtr<FDatabaseAssetTreeNode>& B)
-			{
-				if (A->SourceAssetType != ESearchIndexAssetType::Invalid &&
-					B->SourceAssetType == ESearchIndexAssetType::Invalid)
+			SelectedNodes.Sort([](const TSharedPtr<FDatabaseAssetTreeNode>& A, const TSharedPtr<FDatabaseAssetTreeNode>& B)
 				{
-					return true;
-				}
-				if (B->SourceAssetType != ESearchIndexAssetType::Invalid &&
-					A->SourceAssetType == ESearchIndexAssetType::Invalid)
-				{
-					return false;
-				}
-				return B->SourceAssetIdx < A->SourceAssetIdx;
-			});
+					return B->SourceAssetIdx < A->SourceAssetIdx;
+				});
 
 			for (TSharedPtr<FDatabaseAssetTreeNode> SelectedNode : SelectedNodes)
 			{
-				if (SelectedNode->SourceAssetType != ESearchIndexAssetType::Invalid)
+				if (SelectedNode->SourceAssetIdx != INDEX_NONE)
 				{
 					OnDeleteAsset(SelectedNode, false);
 				}
@@ -734,19 +730,23 @@ namespace UE::PoseSearch
 		EditorViewModel.Pin()->BuildSearchIndex();
 	}
 
-	TWeakPtr<FDatabaseAssetTreeNode> SDatabaseAssetTree::SetSelectedItem(int32 SourceAssetIdx)
+	void SDatabaseAssetTree::SetSelectedItem(int32 SourceAssetIdx, bool bClearSelection)
 	{
-		for (TSharedPtr<FDatabaseAssetTreeNode> & Node : AllNodes)
+		if (bClearSelection)
 		{
-			if (Node->SourceAssetIdx == SourceAssetIdx)
-			{
-				TreeView->ClearSelection();
-				TreeView->SetItemSelection(Node, true);
-				return Node;
-			}
+			TreeView->ClearSelection();
 		}
 
-		return TWeakPtr<FDatabaseAssetTreeNode>();
+		if (SourceAssetIdx >= 0)
+		{
+			for (TSharedPtr<FDatabaseAssetTreeNode>& Node : AllNodes)
+			{
+				if (Node->SourceAssetIdx == SourceAssetIdx)
+				{
+					TreeView->SetItemSelection(Node, true);
+				}
+			}
+		}
 	}
 }
 

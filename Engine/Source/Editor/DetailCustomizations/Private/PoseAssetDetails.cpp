@@ -179,8 +179,8 @@ void FPoseAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	// add ref pose
 	BasePoseComboList.Add(MakeShareable(new FString(REFERENCE_BASE_POSE_NAME)));
 
-	TArray<FSmartName> PoseNames = PoseAsset->GetPoseNames();
-	FSmartName BasePoseName;
+	TArray<FName> PoseNames = PoseAsset->GetPoseFNames();
+	FName BasePoseName;
 
 	if (PoseNames.IsValidIndex(CachedBasePoseIndex))
 	{
@@ -195,7 +195,7 @@ void FPoseAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 		// go through profile and see if it has mine
 		for (const auto& PoseName : PoseNames)
 		{
-			BasePoseComboList.Add(MakeShareable(new FString(PoseName.DisplayName.ToString())));
+			BasePoseComboList.Add(MakeShareable(new FString(PoseName.ToString())));
 
 			if (PoseName == BasePoseName)
 			{
@@ -210,7 +210,9 @@ void FPoseAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 
 	IDetailCategoryBuilder& AdditiveCategory = DetailBuilder.EditCategory("Additive");
 
-	AdditiveCategory.AddCustomRow(LOCTEXT("AdditiveSettingCategoryLabel", "AdditiveSetting"))
+	TSharedPtr<IPropertyHandle> AdditivePropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UPoseAsset, bAdditivePose));
+	IDetailPropertyRow& AdditivePropertyRow = AdditiveCategory.AddProperty(AdditivePropertyHandle);
+	AdditivePropertyRow.CustomWidget()
 	.NameContent()
 	[
 		SNew(SCheckBox)
@@ -283,7 +285,9 @@ void FPoseAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 
 	DetailBuilder.HideProperty(SourceAnimationPropertyHandle);
 
-	SourceCategory.AddCustomRow(SourceAnimationPropertyHandle->GetPropertyDisplayName())
+	TSharedPtr<IPropertyHandle> SourceAnimationProperty = DetailBuilder.GetProperty(TEXT("SourceAnimation"));
+	IDetailPropertyRow& SourceAnimationRow = SourceCategory.AddProperty(SourceAnimationProperty);
+	SourceAnimationRow.CustomWidget()
 	.NameContent()
 	[
 		SourceAnimationPropertyHandle->CreatePropertyNameWidget()
@@ -306,7 +310,7 @@ void FPoseAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 		.AutoHeight()
 		[
 			SNew(SButton)
-			.Text(LOCTEXT("UpdateSource_Lable", "Update Source"))
+			.Text(this, &FPoseAssetDetails::GetAnimationUpdateButtonText)
 			.ToolTipText(LOCTEXT("UpdateSource_Tooltip", "Update Poses From Source Animation"))
 			.OnClicked(this, &FPoseAssetDetails::OnUpdatePoseSourceAnimation)
 			.IsEnabled(this, &FPoseAssetDetails::IsUpdateSourceEnabled)
@@ -384,7 +388,7 @@ void FPoseAssetDetails::RefreshBasePoseChanged()
 			CachedBasePoseIndex = -1;
 		}
 
-		TArray<FSmartName> PoseNames = PoseAsset->GetPoseNames();
+		TArray<FName> PoseNames = PoseAsset->GetPoseFNames();
 		// add ref pose
 		BasePoseComboList.Add(MakeShareable(new FString(REFERENCE_BASE_POSE_NAME)));
 
@@ -393,7 +397,7 @@ void FPoseAssetDetails::RefreshBasePoseChanged()
 			// go through profile and see if it has mine
 			for (const auto& PoseName : PoseNames)
 			{
-				BasePoseComboList.Add(MakeShareable(new FString(PoseName.DisplayName.ToString())));
+				BasePoseComboList.Add(MakeShareable(new FString(PoseName.ToString())));
 			}
 		}
 
@@ -700,6 +704,16 @@ bool FPoseAssetDetails::IsUpdateSourceEnabled() const
 	}
 
 	return false;
+}
+
+FText FPoseAssetDetails::GetAnimationUpdateButtonText() const
+{
+	if (PoseAsset.IsValid() && !PoseAsset->SourceAnimationRawDataGUID.IsValid())
+	{
+		return LOCTEXT("RestoreSource_Label", "Restore Source");
+	}
+
+	return LOCTEXT("UpdateSource_Label", "Update Source");
 }
 
 #undef LOCTEXT_NAMESPACE

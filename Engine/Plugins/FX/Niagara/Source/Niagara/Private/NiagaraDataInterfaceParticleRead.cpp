@@ -3,14 +3,15 @@
 #include "NiagaraDataInterfaceParticleRead.h"
 #include "NiagaraCompileHashVisitor.h"
 #include "NiagaraComputeExecutionContext.h"
-#include "NiagaraConstants.h"
 #include "NiagaraDataSetAccessor.h"
+#include "NiagaraEmitterInstance.h"
 #include "NiagaraGPUSystemTick.h"
 #include "NiagaraRenderer.h"
+#include "NiagaraSimStageData.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraShaderParametersBuilder.h"
 
-#include "ShaderParameterUtils.h"
+#include "NiagaraSystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceParticleRead)
 
@@ -100,6 +101,15 @@ enum class ENiagaraParticleDataValueType : uint8
 	ID,
 	Position
 };
+
+//-TODO: This is a workaround for when a read is safe because the dispatches can not overlap.  UE-187062
+static bool GNiagaraParticleReadIgnoreUnsafeReads = false;
+static FAutoConsoleVariableRef CVarNiagaraParticleReadIgnoreUnsafeReads(
+	TEXT("fx.Niagara.ParticleRead.IgnoreUnsafeReads"),
+	GNiagaraParticleReadIgnoreUnsafeReads,
+	TEXT("When enabled we will allow unsafe reads to compile with a warning, however the read result will be invalid."),
+	ECVF_Default
+);
 
 DECLARE_INTRINSIC_TYPE_LAYOUT(ENiagaraParticleDataValueType);
 
@@ -257,9 +267,9 @@ struct FNiagaraDataInterfaceProxyParticleRead : public FNiagaraDataInterfaceProx
 		return SystemsRenderData.Find(InstanceID);
 	}
 
-	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override
+	virtual void GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context) override
 	{
-		const FNDIParticleRead_RenderInstanceData* InstanceData = SystemsRenderData.Find(SystemInstanceID);
+		const FNDIParticleRead_RenderInstanceData* InstanceData = SystemsRenderData.Find(Context.GetSystemInstanceID());
 		if (ensure(InstanceData))
 		{
 			if ( InstanceData->SourceEmitterGPUContext != nullptr )
@@ -268,32 +278,11 @@ struct FNiagaraDataInterfaceProxyParticleRead : public FNiagaraDataInterfaceProx
 				{
 					if ( const FNiagaraDataBuffer* CurrentData = SourceDataSet->GetCurrentData() )
 					{
-						return FIntVector(CurrentData->GetNumInstances(), 1, 1);
+						Context.SetDirect(CurrentData->GetNumInstances(), CurrentData->GetGPUInstanceCountBufferOffset());
 					}
 				}
 			}
 		}
-		return FIntVector::ZeroValue;
-	}
-
-	virtual uint32 GetGPUInstanceCountOffset(FNiagaraSystemInstanceID SystemInstanceID) const override
-	{
-		const FNDIParticleRead_RenderInstanceData* InstanceData = SystemsRenderData.Find(SystemInstanceID);
-		if (ensure(InstanceData))
-		{
-			if ( InstanceData->SourceEmitterGPUContext != nullptr )
-			{
-				if ( FNiagaraDataSet* SourceDataSet = InstanceData->SourceEmitterGPUContext->MainDataSet )
-				{
-					if ( const FNiagaraDataBuffer* CurrentData = SourceDataSet->GetCurrentData() )
-					{
-						return CurrentData->GetGPUInstanceCountBufferOffset();
-					}
-				}
-			}
-		}
-
-		return INDEX_NONE;
 	}
 
 private:
@@ -311,7 +300,7 @@ static void NDIParticleRead_FindAttributeIndices(FNDIParticleRead_RenderInstance
 	InstanceData->AttributeCompressed.SetNumUninitialized(NumAttrIndices);
 
 	// Find the register index for each named attribute in the source emitter.
-	const TArray<FNiagaraVariable>& SourceEmitterVariables = SourceDataSet->GetVariables();
+	const TArray<FNiagaraVariableBase>& SourceEmitterVariables = SourceDataSet->GetVariables();
 	const TArray<FNiagaraVariableLayoutInfo>& SourceEmitterVariableLayouts = SourceDataSet->GetVariableLayouts();
 	for (int AttrNameIdx = 0; AttrNameIdx < ShaderStorage.AttributeNames.Num(); ++AttrNameIdx)
 	{
@@ -326,7 +315,7 @@ static void NDIParticleRead_FindAttributeIndices(FNDIParticleRead_RenderInstance
 		bool FoundVariable = false;
 		for (int VarIdx = 0; VarIdx < SourceEmitterVariables.Num(); ++VarIdx)
 		{
-			const FNiagaraVariable& Var = SourceEmitterVariables[VarIdx];
+			const FNiagaraVariableBase& Var = SourceEmitterVariables[VarIdx];
 			if (Var.GetName() == AttrName)
 			{
 				ENiagaraParticleDataValueType AttributeType = ShaderStorage.AttributeTypes[AttrNameIdx];
@@ -334,13 +323,13 @@ static void NDIParticleRead_FindAttributeIndices(FNDIParticleRead_RenderInstance
 				{
 					const FNiagaraVariableLayoutInfo& Layout = SourceEmitterVariableLayouts[VarIdx];
 					InstanceData->AttributeIndices[AttrNameIdx] =
-						(AttributeType == ENiagaraParticleDataValueType::Int || AttributeType == ENiagaraParticleDataValueType::Bool || AttributeType == ENiagaraParticleDataValueType::ID) ? Layout.Int32ComponentStart : Layout.FloatComponentStart;
+						(AttributeType == ENiagaraParticleDataValueType::Int || AttributeType == ENiagaraParticleDataValueType::Bool || AttributeType == ENiagaraParticleDataValueType::ID) ? Layout.GetInt32ComponentStart() : Layout.GetFloatComponentStart();
 					InstanceData->AttributeCompressed[AttrNameIdx] = 0;
 				}
 				else if (CheckHalfVariableType(Var.GetType(), AttributeType))
 				{
 					const FNiagaraVariableLayoutInfo& Layout = SourceEmitterVariableLayouts[VarIdx];
-					InstanceData->AttributeIndices[AttrNameIdx] = Layout.HalfComponentStart;
+					InstanceData->AttributeIndices[AttrNameIdx] = Layout.GetHalfComponentStart();
 					InstanceData->AttributeCompressed[AttrNameIdx] = 1;
 				}
 				else
@@ -374,7 +363,7 @@ static void NDIParticleRead_FindAttributeIndices(FNDIParticleRead_RenderInstance
 			const FNiagaraVariable& Var = SourceEmitterVariables[VarIdx];
 			if (Var.GetName() == FName_ID)
 			{
-				InstanceData->AcquireTagRegisterIndex = SourceEmitterVariableLayouts[VarIdx].Int32ComponentStart + 1;
+				InstanceData->AcquireTagRegisterIndex = SourceEmitterVariableLayouts[VarIdx].GetInt32ComponentStart() + 1;
 				break;
 			}
 		}
@@ -976,9 +965,9 @@ DEFINE_NDI_DIRECT_FUNC_BINDER_WITH_PAYLOAD(UNiagaraDataInterfaceParticleRead, Re
 DEFINE_NDI_DIRECT_FUNC_BINDER_WITH_PAYLOAD(UNiagaraDataInterfaceParticleRead, ReadQuatByIndex);
 DEFINE_NDI_DIRECT_FUNC_BINDER_WITH_PAYLOAD(UNiagaraDataInterfaceParticleRead, ReadIDByIndex);
 
-static bool HasMatchingVariable(TArrayView<const FNiagaraVariable> Variables, FName AttributeName, const FNiagaraTypeDefinition& ValidType)
+static bool HasMatchingVariable(TArrayView<const FNiagaraVariableBase> Variables, FName AttributeName, const FNiagaraTypeDefinition& ValidType)
 {
-	return Variables.Find(FNiagaraVariable(ValidType, AttributeName)) != INDEX_NONE;
+	return Variables.Find(FNiagaraVariableBase(ValidType, AttributeName)) != INDEX_NONE;
 }
 
 void UNiagaraDataInterfaceParticleRead::GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc)
@@ -1033,7 +1022,7 @@ void UNiagaraDataInterfaceParticleRead::GetVMExternalFunction(const FVMExternalF
 		return;
 	}
 
-	TArrayView<const FNiagaraVariable> EmitterVariables;
+	TArrayView<const FNiagaraVariableBase> EmitterVariables;
 	if (PIData->EmitterInstance)
 	{
 		EmitterVariables = PIData->EmitterInstance->GetData().GetVariables();
@@ -1806,7 +1795,7 @@ static bool GenerateGetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& Par
 				ValueComponentNames = IDComponentNames;
 				break;
 			default:
-				UE_LOG(LogNiagara, Error, TEXT("Unknown component type %d while generating function %s"), ComponentType, *FunctionInfo.InstanceName);
+				UE_LOG(LogNiagara, Error, TEXT("Unknown component type %d while generating function %s"), int(ComponentType), *FunctionInfo.InstanceName);
 				return false;
 		}
 
@@ -2170,10 +2159,9 @@ void UNiagaraDataInterfaceParticleRead::SetShaderParameters(const FNiagaraDataIn
 
 	if (InstanceData->SourceEmitterGPUContext == nullptr)
 	{
-		// This means the source emitter isn't running on GPU.
 		if (!InstanceData->bSourceEmitterNotGPUErrorShown)
 		{
-			UE_LOG(LogNiagara, Error, TEXT("GPU particle read DI is set to access CPU emitter '%s'."), *InstanceData->DebugSourceName);
+			UE_LOG(LogNiagara, Error, TEXT("GPU particle read could not find GPU context for '%s', emitter either doesn't exist or is not a GPU simulation."), *InstanceData->DebugSourceName);
 			InstanceData->bSourceEmitterNotGPUErrorShown = true;
 		}
 		SetErrorParams(true);
@@ -2208,7 +2196,10 @@ void UNiagaraDataInterfaceParticleRead::SetShaderParameters(const FNiagaraDataIn
 		{
 			if (StageMetaData->bPartialParticleUpdate)
 			{
-				UE_LOG(LogNiagara, Error, TEXT("Particle read DI reading self '%s' on stage '%s' is unsafe, please disable partial writes on the stage."), *InstanceData->DebugSourceName, *StageMetaData->SimulationStageName.ToString());
+				if (GNiagaraParticleReadIgnoreUnsafeReads == false)
+				{
+					UE_LOG(LogNiagara, Error, TEXT("Particle read DI reading self '%s' on stage '%s' is unsafe, please disable partial writes on the stage."), *InstanceData->DebugSourceName, *StageMetaData->SimulationStageName.ToString());
+				}
 				SetErrorParams(true);
 				return;
 			}
@@ -2486,7 +2477,7 @@ void UNiagaraDataInterfaceParticleRead::GetFeedback(UNiagaraSystem* Asset, UNiag
 									return Var.GetName() == *AttributeName;
 								};
 
-								TArray<FNiagaraVariable> Variables;
+								TArray<FNiagaraVariableBase> Variables;
 								FoundSourceEmitter.GetEmitterData()->GatherCompiledParticleAttributes(Variables);
 								const FNiagaraVariableBase* FoundVar = Variables.FindByPredicate(AttribFilter);
 								if (FoundVar && !CheckVariableType(FoundVar->GetType(), AttributeType))
@@ -2571,9 +2562,12 @@ void UNiagaraDataInterfaceParticleRead::GetEmitterDependencies(UNiagaraSystem* A
 	}
 }
 
-bool UNiagaraDataInterfaceParticleRead::ReadsEmitterParticleData(const FString& InEmitterName) const 
+void UNiagaraDataInterfaceParticleRead::GetEmitterReferencesByName(TArray<FString>& EmitterReferences) const
 {
-	return EmitterName == InEmitterName;
+	if (!EmitterName.IsEmpty())
+	{
+		EmitterReferences.AddUnique(EmitterName);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

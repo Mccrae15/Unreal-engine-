@@ -16,8 +16,6 @@
 #include "Rendering/MorphTargetVertexInfoBuffers.h"
 #include "ShaderCore.h"
 #include "UObject/UObjectGlobals.h"
-#include "NeuralNetwork.h"
-
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NearestNeighborModel)
 
 #define LOCTEXT_NAMESPACE "UNearestNeighborModel"
@@ -54,7 +52,6 @@ UNearestNeighborModel::UNearestNeighborModel(const FObjectInitializer& ObjectIni
 {
 #if WITH_EDITORONLY_DATA
 	SetVizSettings(ObjectInitializer.CreateEditorOnlyDefaultSubobject<UNearestNeighborModelVizSettings>(this, TEXT("VizSettings")));
-	bDoesMeetOptimizedNetworkPrerequisites = DoesMeetOptimizedNetworkPrerequisites();
 #endif
 }
 
@@ -75,23 +72,6 @@ UMLDeformerModelInstance* UNearestNeighborModel::CreateModelInstance(UMLDeformer
 void UNearestNeighborModel::Serialize(FArchive& Archive)
 {
 	Super::Serialize(Archive);
-	if (Archive.IsCooking())
-	{
-		if (DoesUseOptimizedNetwork())
-		{
-			if (GetNNINetwork() != nullptr)
-			{
-				SetNNINetwork(nullptr);
-			}
-		}
-		else
-		{
-			if (GetOptimizedNetwork() != nullptr)
-			{
-				SetOptimizedNetwork(nullptr);
-			}
-		}
-	}
 }
 
 void UNearestNeighborModel::PostLoad()
@@ -106,20 +86,6 @@ void UNearestNeighborModel::PostLoad()
 	UpdateNetworkSize();
 	UpdateMorphTargetSize();
 #endif
-}
-
-void UNearestNeighborModel::SetNNINetwork(UNeuralNetwork* InNeuralNetwork, bool bBroadcast)
-{
-	if (bBroadcast)
-	{
-		GetNeuralNetworkModifyDelegate().Broadcast();
-	}
-	NNINetwork = InNeuralNetwork;
-}
-
-UNeuralNetwork* UNearestNeighborModel::GetNNINetwork() const
-{ 
-	return NNINetwork.Get();
 }
 
 TArray<uint32> ReadTxt(const FString &Path)
@@ -137,7 +103,7 @@ TArray<uint32> ReadTxt(const FString &Path)
 
 TArray<uint32> Range(const uint32 Start, const uint32 End)
 {
-	TArray<uint32> Arr; Arr.SetNum(End - Start + 1);
+	TArray<uint32> Arr; Arr.SetNum(End - Start);
 	for (uint32 i = Start; i < End; i++)
 	{
 		Arr[i - Start] = i;
@@ -419,16 +385,8 @@ int32 UNearestNeighborModel::GetNumNeighborsFromAnimSequence(int32 PartId) const
 
 void UNearestNeighborModel::UpdateNetworkSize()
 {
-	UNeuralNetwork* Network = GetNNINetwork();
-	if (Network != nullptr)
-	{
-		const SIZE_T NumBytes = Network->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
-		SavedNetworkSize = (double)NumBytes / 1024 / 1024;
-	}
-	else
-	{
-		SavedNetworkSize = 0.0f;
-	}
+
+	SavedNetworkSize = 0.0f;
 }
 
 void UNearestNeighborModel::UpdateMorphTargetSize()
@@ -457,10 +415,10 @@ FString UNearestNeighborModel::GetModelDir() const
 	}
 }
 
-bool UNearestNeighborModel::DoesEditorSupportOptimizedNetwork() const
+bool UNearestNeighborModel::ShouldUseOptimizedNetwork() const
 {
 #if NEARESTNEIGHBORMODEL_USE_ISPC
-	return bDoesMeetOptimizedNetworkPrerequisites && UE::NearestNeighborModel::bNearestNeighborModelUseOptimizedNetwork;
+	return UE::NearestNeighborModel::bNearestNeighborModelUseOptimizedNetwork;
 #else
 	return false;
 #endif
@@ -499,10 +457,9 @@ bool UNearestNeighborModel::CheckPCAData(int32 PartId) const
 
 void UNearestNeighborModel::SetOptimizedNetwork(UNearestNeighborOptimizedNetwork* InOptimizedNetwork)
 {
-	GetNeuralNetworkModifyDelegate().Broadcast();
 	OptimizedNetwork = InOptimizedNetwork;
+	GetReinitModelInstanceDelegate().Broadcast();
 }
-
 
 bool UNearestNeighborModel::DoesUseOptimizedNetwork() const
 {
@@ -561,16 +518,6 @@ bool UNearestNeighborModel::LoadOptimizedNetwork(const FString& OnnxPath)
 int32 UNearestNeighborModel::GetOptimizedNetworkNumOutputs() const
 {
 	return OptimizedNetwork ? OptimizedNetwork->GetNumOutputs() : 0;
-}
-
-bool UNearestNeighborModel::DoesMeetOptimizedNetworkPrerequisites() const
-{
-	UNearestNeighborOptimizedNetworkLoader* Loader = GetDerivedCDO<UNearestNeighborOptimizedNetworkLoader>();
-	if (Loader != nullptr)
-	{
-		return Loader->DoesMeetPrerequisites();
-	}
-	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -51,8 +51,8 @@ namespace EpicGames.Horde.Tests
 		public async Task FixedSizeChunkingTests()
 		{
 			ChunkingOptions options = new ChunkingOptions();
-			options.LeafOptions = new ChunkingOptionsForNodeType(64, 64, 64);
-			options.InteriorOptions = new ChunkingOptionsForNodeType(IoHash.NumBytes * 4, IoHash.NumBytes * 4, IoHash.NumBytes * 4);
+			options.LeafOptions = new LeafChunkedDataNodeOptions(64, 64, 64);
+			options.InteriorOptions = new InteriorChunkedDataNodeOptions(4, 4, 4);
 
 			await TestChunkingAsync(options);
 		}
@@ -61,8 +61,8 @@ namespace EpicGames.Horde.Tests
 		public async Task VariableSizeChunkingTests()
 		{
 			ChunkingOptions options = new ChunkingOptions();
-			options.LeafOptions = new ChunkingOptionsForNodeType(32, 64, 96);
-			options.InteriorOptions = new ChunkingOptionsForNodeType(IoHash.NumBytes * 1, IoHash.NumBytes * 4, IoHash.NumBytes * 12);
+			options.LeafOptions = new LeafChunkedDataNodeOptions(32, 64, 96);
+			options.InteriorOptions = new InteriorChunkedDataNodeOptions(1, 4, 12);
 
 			await TestChunkingAsync(options);
 		}
@@ -72,8 +72,8 @@ namespace EpicGames.Horde.Tests
 			using MemoryCache cache = new MemoryCache(new MemoryCacheOptions());
 
 			MemoryStorageClient store = new MemoryStorageClient();
-			TreeReader reader = new TreeReader(store, cache, NullLogger.Instance);
-			using TreeWriter writer = new TreeWriter(store, new TreeOptions());
+			BundleReader reader = new BundleReader(store, cache, NullLogger.Instance);
+			await using IStorageWriter writer = store.CreateWriter();
 
 			byte[] data = new byte[4096];
 			new Random(0).NextBytes(data);
@@ -83,11 +83,11 @@ namespace EpicGames.Horde.Tests
 				data[idx] = (byte)idx;
 			}
 
-			NodeHandle handle;
+			NodeRef<ChunkedDataNode> handle;
 
 			const int NumIterations = 100;
 			{
-				FileNodeWriter fileWriter = new FileNodeWriter(writer, options);
+				ChunkedDataWriter fileWriter = new ChunkedDataWriter(writer, options);
 
 				for (int idx = 0; idx < NumIterations; idx++)
 				{
@@ -97,12 +97,12 @@ namespace EpicGames.Horde.Tests
 				handle = await fileWriter.FlushAsync(CancellationToken.None);
 			}
 
-			FileNode root = await reader.ReadNodeAsync<FileNode>(handle.Locator);
+			ChunkedDataNode root = await handle.ExpandAsync();
 
 			byte[] result;
 			using (MemoryStream stream = new MemoryStream())
 			{
-				await root.CopyToStreamAsync(reader, stream, CancellationToken.None);
+				await root.CopyToStreamAsync(stream, CancellationToken.None);
 				result = stream.ToArray();
 			}
 
@@ -117,24 +117,24 @@ namespace EpicGames.Horde.Tests
 			await CheckSizes(reader, root, options, true);
 		}
 
-		async Task CheckSizes(TreeReader reader, FileNode node, ChunkingOptions options, bool rightmost)
+		async Task CheckSizes(BundleReader reader, ChunkedDataNode node, ChunkingOptions options, bool rightmost)
 		{
-			if (node is LeafFileNode leafNode)
+			if (node is LeafChunkedDataNode leafNode)
 			{
 				Assert.IsTrue(rightmost || leafNode.Data.Length >= options.LeafOptions.MinSize);
 				Assert.IsTrue(leafNode.Data.Length <= options.LeafOptions.MaxSize);
 			}
 			else
 			{
-				InteriorFileNode interiorNode = (InteriorFileNode)node;
+				InteriorChunkedDataNode interiorNode = (InteriorChunkedDataNode)node;
 
-				Assert.IsTrue(rightmost || interiorNode.Children.Count * IoHash.NumBytes >= options.InteriorOptions.MinSize);
-				Assert.IsTrue(interiorNode.Children.Count <= options.InteriorOptions.MaxSize);
+				Assert.IsTrue(rightmost || interiorNode.Children.Count >= options.InteriorOptions.MinChildCount);
+				Assert.IsTrue(interiorNode.Children.Count <= options.InteriorOptions.MaxChildCount);
 
 				int childCount = interiorNode.Children.Count;
 				for (int idx = 0; idx < childCount; idx++)
 				{
-					FileNode childNode = await interiorNode.Children[idx].ExpandAsync(reader, CancellationToken.None);
+					ChunkedDataNode childNode = await interiorNode.Children[idx].ExpandAsync(CancellationToken.None);
 					await CheckSizes(reader, childNode, options, idx == childCount - 1);
 				}
 			}

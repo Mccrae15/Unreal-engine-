@@ -247,7 +247,7 @@ public:
 
 public:
 	//~ Begin FAssetEditorToolkit Interface
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 	virtual void OnClose() override;
 	// End of FAssetEditorToolkit 
 
@@ -433,10 +433,6 @@ public:
 
 	/** Returns true if able to compile */
 	virtual bool IsCompilingEnabled() const;
-
-	/** Returns true if the parent class is also a Blueprint */
-	UE_DEPRECATED(4.27, "Please use FBlueprintEditorUtils::IsParentClassABlueprint instead")
-	bool IsParentClassOfObjectABlueprint(const UBlueprint* Blueprint) const;
 
 	/** Returns true if the parent class of the Blueprint being edited is also a Blueprint */
 	bool IsParentClassABlueprint() const;
@@ -802,8 +798,6 @@ public:
 	void SelectAndDuplicateNode(UEdGraphNode* InNode);
 
 protected:
-	UE_DEPRECATED(4.26, "Please do any validation inside the UBlueprint class during compilation, extra errors during compiling only supplied by the designer can lead to design time only errors being reported and being missed during cooks/content validation.")
-	virtual void AppendExtraCompilerResults(TSharedPtr<class IMessageLogListing> ResultsListing) {}
 
 	/** Called during initialization of the blueprint editor to register commands and extenders. */
 	virtual void InitalizeExtenders();
@@ -902,6 +896,12 @@ protected:
 
 	/** Handles the unloading of Blueprints (by closing the editor, if it operating on the Blueprint being unloaded)*/
 	void OnBlueprintUnloaded(UBlueprint* InBlueprint);
+
+	/** Called when a property change is about to be propagated to instances of the Blueprint */
+	void OnPreObjectPropertyChanged(UObject* InObject, const FEditPropertyChain& EditPropertyChain);
+
+	/** Called after a property change has been propagated to instances of the Blueprint */
+	void OnPostObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& PropertyChangedEvent);
 
 	//@TODO: Should the breakpoint/watch modification operations be whole-blueprint, or current-graph?
 
@@ -1399,7 +1399,7 @@ protected:
 	TSet<TWeakObjectPtr<UUserDefinedStruct>> UserDefinedStructures;
 	
 	/** Macro/function libraries to keep loaded */
-	TArray<UBlueprint*> StandardLibraries;
+	TArray<TObjectPtr<UBlueprint>> StandardLibraries;
 
 	/** Subobject Editor */
 	TSharedPtr<SSubobjectEditor> SubobjectEditor;

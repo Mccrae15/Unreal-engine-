@@ -72,6 +72,7 @@ enum class ELightUnits : uint8
 	Unitless,
 	Candelas,
 	Lumens,
+	EV,
 };
 
 UENUM()
@@ -667,11 +668,9 @@ struct FPostProcessSettingsDebugInfo
 // Each property consists of a bool to enable it (by default off),
 // the variable declaration and further down the default value for it.
 // The comment should include the meaning and usable range.
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 USTRUCT(BlueprintType, meta=(HiddenByDefault))
 struct FPostProcessSettings
 {
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	GENERATED_USTRUCT_BODY()
 
 	// first all bOverride_... as they get grouped together into bitfields
@@ -940,6 +939,9 @@ struct FPostProcessSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_VignetteIntensity:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_Sharpen:1;
 
 	UPROPERTY()
 	uint8 bOverride_GrainIntensity_DEPRECATED:1;
@@ -1252,6 +1254,9 @@ struct FPostProcessSettings
 	uint8 bOverride_LumenFrontLayerTranslucencyReflections:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenMaxReflectionBounces : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_LumenSurfaceCacheResolution : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
@@ -1268,9 +1273,6 @@ struct FPostProcessSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_PathTracingSamplesPerPixel : 1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
-	uint32 bOverride_PathTracingFilterWidth : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_PathTracingMaxPathExposure : 1;
@@ -1647,6 +1649,10 @@ struct FPostProcessSettings
 	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Lumen Reflections", meta = (ClampMin = ".25", UIMax = "2", editcondition = "bOverride_LumenFrontLayerTranslucencyReflections", DisplayName = "High Quality Translucency Reflections"))
 	uint8 LumenFrontLayerTranslucencyReflections : 1;
 
+	/** Sets the maximum number of recursive reflection bounces. 1 means a single reflection ray (no secondary reflections in mirrors). Currently only supported by Hardware Ray Tracing with Hit Lighting. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Lumen Reflections", meta = (ClampMin = "1", ClampMax = "8", editcondition = "bOverride_LumenMaxReflectionBounces", DisplayName = "Max Reflection Bounces"))
+	int32 LumenMaxReflectionBounces;
+
 	/** Enable/Fade/disable the Screen Space Reflection feature, in percent, avoid numbers between 0 and 1 fo consistency */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Reflections|Screen Space Reflections", meta=(ClampMin = "0.0", ClampMax = "100.0", editcondition = "bOverride_ScreenSpaceReflectionIntensity", DisplayName = "Intensity"))
 	float ScreenSpaceReflectionIntensity;
@@ -1895,6 +1901,10 @@ struct FPostProcessSettings
 	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Image Effects", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_VignetteIntensity"))
 	float VignetteIntensity;
 
+	/** Controls the strength of image sharpening applied during tonemapping. */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Lens|Image Effects", meta = (ClampMin = "0.0", ClampMax = "10.0", UIMin = "0.0", UIMax = "2.0", editcondition = "bOverride_Sharpen"))
+	float Sharpen;
+
 	UPROPERTY()
 	float GrainJitter_DEPRECATED;
 
@@ -2070,7 +2080,7 @@ struct FPostProcessSettings
 	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category="Lens|Mobile Depth of Field", AdvancedDisplay, meta=(UIMin = "0.0", UIMax = "100.0", editcondition = "bOverride_DepthOfFieldVignetteSize", DisplayName = "Vignette Size"))
 	float DepthOfFieldVignetteSize;
 
-	/** Strength of motion blur, 0:off, should be renamed to intensity */
+	/** Strength of motion blur, 0:off */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Motion Blur", meta=(ClampMin = "0.0", ClampMax = "1.0", editcondition = "bOverride_MotionBlurAmount", DisplayName = "Amount"))
 	float MotionBlurAmount;
 	/** max distortion caused by motion blur, in percent of the screen width, 0:off */
@@ -2161,10 +2171,6 @@ struct FPostProcessSettings
 	/** Sets the samples per pixel for the path tracer. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path Tracing", meta = (ClampMin = "1", UIMax = "65536", editcondition = "bOverride_PathTracingSamplesPerPixel", DisplayName = "Samples Per Pixel"))
 	int32 PathTracingSamplesPerPixel;
-
-	/** Sets anti-aliasing filter width for the path tracer. Lower values are sharper (and more aliased), larger values are softer (and blurrier). */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Path Tracing", meta = (ClampMin = "1.0", ClampMax = "6.0", editcondition = "bOverride_PathTracingFilterWidth", DisplayName = "Filter Width"))
-	float PathTracingFilterWidth;
 
 	/** Sets the maximum exposure allowed in the path tracer to reduce fireflies. This should be set a few stops higher than the scene exposure. */
 	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Path Tracing", meta = (ClampMin = "-10.0", ClampMax = "30.0", editcondition = "bOverride_PathTracingMaxPathExposure", DisplayName = "Max Path Exposure"))
@@ -2327,8 +2333,14 @@ struct FPostProcessSettings
 
 	// good start values for a new volume, by default no value is overriding
 	ENGINE_API FPostProcessSettings();
-
-	ENGINE_API FPostProcessSettings(const FPostProcessSettings&);
+	
+	// Workaround for clang deprecation warnings for any deprecated members in implicitly-defined special member functions
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FPostProcessSettings(const FPostProcessSettings&) = default;
+	FPostProcessSettings(FPostProcessSettings&&) = default;
+	FPostProcessSettings& operator=(const FPostProcessSettings&) = default;
+	FPostProcessSettings& operator=(FPostProcessSettings&&) = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 		* Used to define the values before any override happens.
@@ -2351,9 +2363,7 @@ struct FPostProcessSettings
 	void PostSerialize(const FArchive& Ar);
 #endif
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 }; // struct FPostProcessSettings
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #if WITH_EDITORONLY_DATA
 template<>

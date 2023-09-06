@@ -3,28 +3,29 @@
 #include "DMXPixelMappingRenderer.h"
 
 #include "Blueprint/UserWidget.h"
+#include "CanvasTypes.h"
 #include "ClearQuad.h"
 #include "CommonRenderResources.h"
+#include "Engine/Canvas.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Materials/Material.h"
 #include "Modules/ModuleManager.h"
 #include "PixelShaderUtils.h"
-#include "ScreenRendering.h"
-#include "Rendering/SlateRenderer.h"
-#include "SlateMaterialBrush.h"
 #include "RenderingThread.h"
-#include "Slate/WidgetRenderer.h"
+#include "Rendering/SlateRenderer.h"
+#include "ScreenRendering.h"
 #include "TextureResource.h"
+#include "SlateMaterialBrush.h"
+#include "Slate/WidgetRenderer.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/SOverlay.h"
+
 
 namespace DMXPixelMappingRenderer
 {
 	static constexpr auto RenderPassName = TEXT("RenderPixelMapping");
 	static constexpr auto RenderPassHint = TEXT("Render Pixel Mapping");
 };
-
-DECLARE_GPU_STAT_NAMED(DMXPixelMappingShadersStat, DMXPixelMappingRenderer::RenderPassHint);
 
 #if WITH_EDITOR
 namespace DMXPixelMappingRenderer
@@ -36,25 +37,35 @@ namespace DMXPixelMappingRenderer
 DECLARE_GPU_STAT_NAMED(DMXPixelMappingPreviewStat, DMXPixelMappingRenderer::RenderPreviewPassHint);
 #endif // WITH_EDITOR
 
-class FDMXPixelBlendingQualityDimension : SHADER_PERMUTATION_ENUM_CLASS("PIXELBLENDING_QUALITY", EDMXPixelShaderBlendingQuality);
-class FDMXVertexUVDimension : SHADER_PERMUTATION_BOOL("VERTEX_UV_STATIC_CALCULATION");
+class UE_DEPRECATED(5.3, "Only here to keep support of deprecated FDMXPixelMappingRenderer::DownsampleRender.") FDEPRECATED_DMXPixelBlendingQualityDimension;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+class FDEPRECATED_DMXPixelBlendingQualityDimension : SHADER_PERMUTATION_ENUM_CLASS("PIXELBLENDING_QUALITY", EDMXPixelShaderBlendingQuality);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+class UE_DEPRECATED(5.3, "Only here to keep support of deprecated FDMXPixelMappingRenderer::DownsampleRender.") FDEPRECATED_DMXVertexUVDimension;
+class FDEPRECATED_DMXVertexUVDimension : SHADER_PERMUTATION_BOOL("VERTEX_UV_STATIC_CALCULATION");
 
 /**
  * Pixel Mapping downsampling vertex shader
  */
-class FDMXPixelMappingRendererVS
+class UE_DEPRECATED(5.3, "Only here to keep support of deprecated FDMXPixelMappingRenderer::DownsampleRender.") FDEPRECATED_DMXPixelMappingRendererVS;
+class FDEPRECATED_DMXPixelMappingRendererVS
 	: public FGlobalShader
 {
-public:
-	DECLARE_GLOBAL_SHADER(FDMXPixelMappingRendererVS);
-	SHADER_USE_PARAMETER_STRUCT(FDMXPixelMappingRendererVS, FGlobalShader);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
-	using FPermutationDomain = TShaderPermutationDomain<FDMXPixelBlendingQualityDimension, FDMXVertexUVDimension>;
+public:
+	DECLARE_GLOBAL_SHADER(FDEPRECATED_DMXPixelMappingRendererVS);
+	SHADER_USE_PARAMETER_STRUCT(FDEPRECATED_DMXPixelMappingRendererVS, FGlobalShader);
+
+	using FPermutationDomain = TShaderPermutationDomain<FDEPRECATED_DMXPixelBlendingQualityDimension, FDEPRECATED_DMXVertexUVDimension>;
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FVector4f, DrawRectanglePosScaleBias)
 		SHADER_PARAMETER(FVector4f, DrawRectangleInvTargetSizeAndTextureSize)
 		SHADER_PARAMETER(FVector4f, DrawRectangleUVScaleBias)
 	END_SHADER_PARAMETER_STRUCT()
+
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return true; }
 };
@@ -62,14 +73,17 @@ public:
 /**
  * Pixel Mapping downsampling pixel shader
  */
-class FDMXPixelMappingRendererPS
+class UE_DEPRECATED(5.3, "Only here to keep support of deprecated FDMXPixelMappingRenderer::DownsampleRender.") FDEPRECATED_DMXPixelMappingRendererPS;
+class FDEPRECATED_DMXPixelMappingRendererPS
 	: public FGlobalShader
 {
-public:
-	DECLARE_GLOBAL_SHADER(FDMXPixelMappingRendererPS);
-	SHADER_USE_PARAMETER_STRUCT(FDMXPixelMappingRendererPS, FGlobalShader);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
-	using FPermutationDomain = TShaderPermutationDomain<FDMXPixelBlendingQualityDimension, FDMXVertexUVDimension>;
+public:
+	DECLARE_GLOBAL_SHADER(FDEPRECATED_DMXPixelMappingRendererPS);
+	SHADER_USE_PARAMETER_STRUCT(FDEPRECATED_DMXPixelMappingRendererPS, FGlobalShader);
+
+	using FPermutationDomain = TShaderPermutationDomain<FDEPRECATED_DMXPixelBlendingQualityDimension, FDEPRECATED_DMXVertexUVDimension>;
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_TEXTURE(Texture2D, InputTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
@@ -80,42 +94,26 @@ public:
 		SHADER_PARAMETER(FVector2f, UVCellSize)
 	END_SHADER_PARAMETER_STRUCT()
 
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return true; }
 };
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+IMPLEMENT_GLOBAL_SHADER(FDEPRECATED_DMXPixelMappingRendererVS, "/Plugin/DMXPixelMapping/Private/DMXPixelMapping.usf", "DMXPixelMappingVS", SF_Vertex);
+IMPLEMENT_GLOBAL_SHADER(FDEPRECATED_DMXPixelMappingRendererPS, "/Plugin/DMXPixelMapping/Private/DMXPixelMapping.usf", "DMXPixelMappingPS", SF_Pixel);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-IMPLEMENT_GLOBAL_SHADER(FDMXPixelMappingRendererVS, "/Plugin/DMXPixelMapping/Private/DMXPixelMapping.usf", "DMXPixelMappingVS", SF_Vertex);
-IMPLEMENT_GLOBAL_SHADER(FDMXPixelMappingRendererPS, "/Plugin/DMXPixelMapping/Private/DMXPixelMapping.usf", "DMXPixelMappingPS", SF_Pixel);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FDMXPixelMappingRenderer::FDMXPixelMappingRenderer()
 {
 	static const FName RendererModuleName("Renderer");
 	RendererModule = FModuleManager::GetModulePtr<IRendererModule>(RendererModuleName);
-
-	// Initialize Material Renderer
-	if (!MaterialWidgetRenderer.IsValid())
-	{
-		const bool bUseGammaCorrection = false;
-		MaterialWidgetRenderer = MakeShared<FWidgetRenderer>(bUseGammaCorrection);
-		check(MaterialWidgetRenderer.IsValid());
-	}
-
-	// Initialize Material Brush
-	if (!UIMaterialBrush.IsValid())
-	{
-		UIMaterialBrush = MakeShared<FSlateMaterialBrush>(FVector2D(1.f));
-		check(UIMaterialBrush.IsValid());
-	}
-
-	// Initialize UMG renderer
-	if (!UMGRenderer.IsValid())
-	{
-		const bool bUseGammaCorrection = true;
-		UMGRenderer = MakeShared<FWidgetRenderer>(bUseGammaCorrection);
-		check(UMGRenderer.IsValid());
-	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void FDMXPixelMappingRenderer::DownsampleRender(
 	const FTextureResource* InputTexture,
 	const FTextureResource* DstTexture,
@@ -124,15 +122,14 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 	DownsampleReadCallback InCallback
 ) const
 {
+	// DEPRECATED 5.3
+
 	check(IsInGameThread());
 	
 	ENQUEUE_RENDER_COMMAND(DownsampleRenderRDG)(
 		[this, InputTexture, DstTexture, DstTextureTargetResource, InCallback, DownsamplePixelPass = InDownsamplePixelPass]
 		(FRHICommandListImmediate& RHICmdList)
 		{
-			SCOPED_GPU_STAT(RHICmdList, DMXPixelMappingShadersStat);
-			SCOPED_DRAW_EVENTF(RHICmdList, DMXPixelMappingShadersStat, DMXPixelMappingRenderer::RenderPassName);
-			
 			FRHITexture* RenderTargetRef = DstTextureTargetResource->TextureRHI;
 			FRHITexture* DstTextureRef = DstTexture->TextureRHI;
 			FRHITexture* ResolveRenderTarget = DstTextureTargetResource->GetRenderTargetTexture();
@@ -161,14 +158,14 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 				for (const FDMXPixelMappingDownsamplePixelParamsV2& PixelParam : DownsamplePixelPass)
 				{
 					// Create shader permutations
-					FDMXPixelMappingRendererPS::FPermutationDomain PermutationVector;
-					PermutationVector.Set<FDMXPixelBlendingQualityDimension>(static_cast<EDMXPixelShaderBlendingQuality>(PixelParam.CellBlendingQuality));
-					PermutationVector.Set<FDMXVertexUVDimension>(PixelParam.bStaticCalculateUV);
+					FDEPRECATED_DMXPixelMappingRendererPS::FPermutationDomain PermutationVector;
+					PermutationVector.Set<FDEPRECATED_DMXPixelBlendingQualityDimension>(static_cast<EDMXPixelShaderBlendingQuality>(PixelParam.CellBlendingQuality));
+					PermutationVector.Set<FDEPRECATED_DMXVertexUVDimension>(PixelParam.bStaticCalculateUV);
 
 					// Create shaders
 					FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-					TShaderMapRef<FDMXPixelMappingRendererVS> VertexShader(ShaderMap, PermutationVector);
-					TShaderMapRef<FDMXPixelMappingRendererPS> PixelShader(ShaderMap, PermutationVector);
+					TShaderMapRef<FDEPRECATED_DMXPixelMappingRendererVS> VertexShader(ShaderMap, PermutationVector);
+					TShaderMapRef<FDEPRECATED_DMXPixelMappingRendererPS> PixelShader(ShaderMap, PermutationVector);
 
 					// Setup graphics pipeline
 					FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -183,7 +180,7 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 					// Set vertex shader buffer
-					FDMXPixelMappingRendererVS::FParameters VSParameters;
+					FDEPRECATED_DMXPixelMappingRendererVS::FParameters VSParameters;
 					VSParameters.DrawRectanglePosScaleBias = FVector4f(PixelSize.X, PixelSize.Y, PixelParam.Position.X, PixelParam.Position.Y);
 					VSParameters.DrawRectangleUVScaleBias = FVector4f(PixelParam.UVSize.X, PixelParam.UVSize.Y, PixelParam.UV.X, PixelParam.UV.Y);
 					VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4f(
@@ -192,7 +189,7 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 					SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 					
 					// Set pixel shader buffer
-					FDMXPixelMappingRendererPS::FParameters PSParameters;
+					FDEPRECATED_DMXPixelMappingRendererPS::FParameters PSParameters;
 					PSParameters.InputTexture = InputTextureRHI;
 					PSParameters.Brightness = Brightness;
 					PSParameters.InputSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
@@ -224,6 +221,64 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 			}
 		});
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+void FDMXPixelMappingRenderer::RenderMaterial(UTextureRenderTarget2D* InRenderTarget, UMaterialInterface* InMaterialInterface) const
+{	
+	// DEPRECATED 5.3
+	if (InMaterialInterface == nullptr)
+	{
+		return;
+	}
+
+	if (InRenderTarget == nullptr)
+	{
+		return;
+	}
+
+	FVector2D TextureSize = FVector2D(InRenderTarget->SizeX, InRenderTarget->SizeY);
+	UMaterial* Material = InMaterialInterface->GetMaterial();
+
+	if (Material != nullptr && Material->IsUIMaterial())
+	{
+		UIMaterialBrush->ImageSize = TextureSize;
+		UIMaterialBrush->SetMaterial(InMaterialInterface);
+
+		TSharedRef<SWidget> Widget =
+			SNew(SOverlay)
+			+ SOverlay::Slot()
+			[
+				SNew(SImage)
+				.Image(UIMaterialBrush.Get())
+			];
+
+		static const float DeltaTime = 0.f;
+		MaterialWidgetRenderer->DrawWidget(InRenderTarget, Widget, TextureSize, DeltaTime);
+		
+		// Reset material after drawing
+		UIMaterialBrush->SetMaterial(nullptr);
+	}
+}
+
+void FDMXPixelMappingRenderer::RenderWidget(UTextureRenderTarget2D* InRenderTarget, UUserWidget* InUserWidget) const
+{
+	// DEPRECATED 5.3
+	if (InUserWidget == nullptr)
+	{
+		return;
+	}
+
+	if (InRenderTarget == nullptr)
+	{
+		return;
+	}
+
+	FVector2D TextureSize = FVector2D(InRenderTarget->SizeX, InRenderTarget->SizeY);
+	static const float DeltaTime = 0.f;
+
+	UMGRenderer->DrawWidget(InRenderTarget, InUserWidget->TakeWidget(), TextureSize, DeltaTime);
+}
+
 
 #if WITH_EDITOR
 void FDMXPixelMappingRenderer::RenderPreview(const FTextureResource* TextureResource, const FTextureResource* DownsampleResource, TArray<FDMXPixelMappingDownsamplePixelPreviewParam>&& InPixelPreviewParamSet) const
@@ -282,7 +337,7 @@ void FDMXPixelMappingRenderer::RenderPreview(const FTextureResource* TextureReso
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), DownsampleTextureRef);
+				SetShaderParametersLegacyPS(RHICmdList, PixelShader, TStaticSamplerState<SF_Point>::GetRHI(), DownsampleTextureRef);
 
 				const float DownsampleSizeX = DownsampleResource->GetSizeX();
 				const float DownsampleSizeY = DownsampleResource->GetSizeY();
@@ -316,59 +371,6 @@ void FDMXPixelMappingRenderer::RenderPreview(const FTextureResource* TextureReso
 }
 #endif // WITH_EDITOR
 
-void FDMXPixelMappingRenderer::RenderMaterial(UTextureRenderTarget2D* InRenderTarget, UMaterialInterface* InMaterialInterface) const
-{
-	if (InMaterialInterface == nullptr)
-	{
-		return;
-	}
-
-	if (InRenderTarget == nullptr)
-	{
-		return;
-	}
-
-	FVector2D TextureSize = FVector2D(InRenderTarget->SizeX, InRenderTarget->SizeY);
-	UMaterial* Material = InMaterialInterface->GetMaterial();
-
-	if (Material != nullptr && Material->IsUIMaterial())
-	{
-		UIMaterialBrush->ImageSize = TextureSize;
-		UIMaterialBrush->SetMaterial(InMaterialInterface);
-
-		TSharedRef<SWidget> Widget =
-			SNew(SOverlay)
-			+ SOverlay::Slot()
-			[
-				SNew(SImage)
-				.Image(UIMaterialBrush.Get())
-			];
-
-		static const float DeltaTime = 0.f;
-		MaterialWidgetRenderer->DrawWidget(InRenderTarget, Widget, TextureSize, DeltaTime);
-
-		// Reset material after drawing
-		UIMaterialBrush->SetMaterial(nullptr);
-	}
-}
-
-void FDMXPixelMappingRenderer::RenderWidget(UTextureRenderTarget2D* InRenderTarget, UUserWidget* InUserWidget) const
-{
-	if (InUserWidget == nullptr)
-	{
-		return;
-	}
-
-	if (InRenderTarget == nullptr)
-	{
-		return;
-	}
-
-	FVector2D TextureSize = FVector2D(InRenderTarget->SizeX, InRenderTarget->SizeY);
-	static const float DeltaTime = 0.f;
-
-	UMGRenderer->DrawWidget(InRenderTarget, InUserWidget->TakeWidget(), TextureSize, DeltaTime);
-}
 void FDMXPixelMappingRenderer::RenderTextureToRectangle(const FTextureResource* InTextureResource, const FTexture2DRHIRef InRenderTargetTexture, FVector2D InSize, bool bSRGBSource) const
 {
 	check(IsInGameThread());
@@ -380,6 +382,11 @@ void FDMXPixelMappingRenderer::RenderTextureToRectangle(const FTextureResource* 
 		FVector2D ViewportSize;
 		bool bSRGBSource;
 	};
+
+	if (!InTextureResource)
+	{
+		return;
+	}
 
 	FRenderContext RenderContext
 	{
@@ -417,14 +424,14 @@ void FDMXPixelMappingRenderer::RenderTextureToRectangle(const FTextureResource* 
 				TShaderMapRef<FScreenPSsRGBSource> PixelShader(ShaderMap);
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), RenderContext.TextureResource->TextureRHI);
+				SetShaderParametersLegacyPS(RHICmdList, PixelShader, TStaticSamplerState<SF_Point>::GetRHI(), RenderContext.TextureResource->TextureRHI);
 			}
 			else
 			{
 				TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), RenderContext.TextureResource->TextureRHI);
+				SetShaderParametersLegacyPS(RHICmdList, PixelShader, TStaticSamplerState<SF_Point>::GetRHI(), RenderContext.TextureResource->TextureRHI);
 			}
 
 			RendererModule->DrawRectangle(

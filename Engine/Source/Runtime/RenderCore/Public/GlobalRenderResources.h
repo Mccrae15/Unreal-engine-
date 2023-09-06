@@ -25,6 +25,9 @@ extern RENDERCORE_API FTextureWithSRV* GTransparentBlackTextureWithSRV;
 // An empty vertex buffer with a UAV
 extern RENDERCORE_API FVertexBufferWithSRV* GEmptyVertexBufferWithUAV;
 
+// An empty structured buffer with a UAV
+extern RENDERCORE_API FVertexBufferWithSRV* GEmptyStructuredBufferWithUAV;
+
 // An empty vertex buffer with a SRV
 extern RENDERCORE_API FVertexBufferWithSRV* GWhiteVertexBufferWithSRV;
 
@@ -71,63 +74,63 @@ extern RENDERCORE_API const uint32 GDiffuseConvolveMipLevel;
 * A vertex buffer with a single color component.  This is used on meshes that don't have a color component
 * to keep from needing a separate vertex factory to handle this case.
 */
-class RENDERCORE_API FNullColorVertexBuffer : public FVertexBuffer
+class FNullColorVertexBuffer : public FVertexBuffer
 {
 public:
-	FNullColorVertexBuffer();
-	~FNullColorVertexBuffer();
+	RENDERCORE_API FNullColorVertexBuffer();
+	RENDERCORE_API ~FNullColorVertexBuffer();
 
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
+	RENDERCORE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	RENDERCORE_API virtual void ReleaseRHI() override;
 
 	FShaderResourceViewRHIRef VertexBufferSRV;
 };
 
 /** The global null color vertex buffer, which is set with a stride of 0 on meshes without a color component. */
-extern RENDERCORE_API TGlobalResource<FNullColorVertexBuffer> GNullColorVertexBuffer;
+extern RENDERCORE_API TGlobalResource<FNullColorVertexBuffer, FRenderResource::EInitPhase::Pre> GNullColorVertexBuffer;
 
 /**
 * A vertex buffer with a single zero float3 component.
 */
-class RENDERCORE_API FNullVertexBuffer : public FVertexBuffer
+class FNullVertexBuffer : public FVertexBuffer
 {
 public:
-	FNullVertexBuffer();
-	~FNullVertexBuffer();
+	RENDERCORE_API FNullVertexBuffer();
+	RENDERCORE_API ~FNullVertexBuffer();
 
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
+	RENDERCORE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	RENDERCORE_API virtual void ReleaseRHI() override;
 
 	FShaderResourceViewRHIRef VertexBufferSRV;
 };
 
 /** The global null vertex buffer, which is set with a stride of 0 on meshes */
-extern RENDERCORE_API TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
+extern RENDERCORE_API TGlobalResource<FNullVertexBuffer, FRenderResource::EInitPhase::Pre> GNullVertexBuffer;
 
-class RENDERCORE_API FScreenSpaceVertexBuffer : public FVertexBuffer
+class FScreenSpaceVertexBuffer : public FVertexBuffer
 {
 public:
 	/**
 	* Initialize the RHI for this rendering resource
 	*/
-	virtual void InitRHI() override;
+	RENDERCORE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
 
-extern RENDERCORE_API TGlobalResource<FScreenSpaceVertexBuffer> GScreenSpaceVertexBuffer;
+extern RENDERCORE_API TGlobalResource<FScreenSpaceVertexBuffer, FRenderResource::EInitPhase::Pre> GScreenSpaceVertexBuffer;
 
-class RENDERCORE_API FTileVertexDeclaration : public FRenderResource
+class FTileVertexDeclaration : public FRenderResource
 {
 public:
-	FTileVertexDeclaration();
-	virtual ~FTileVertexDeclaration();
+	RENDERCORE_API FTileVertexDeclaration();
+	RENDERCORE_API virtual ~FTileVertexDeclaration();
 
-	virtual void InitRHI() override;
-	virtual void ReleaseRHI() override;
+	RENDERCORE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	RENDERCORE_API virtual void ReleaseRHI() override;
 
 	FVertexDeclarationRHIRef VertexDeclarationRHI;
 };
 
-extern RENDERCORE_API TGlobalResource<FTileVertexDeclaration> GTileVertexDeclaration;
+extern RENDERCORE_API TGlobalResource<FTileVertexDeclaration, FRenderResource::EInitPhase::Pre> GTileVertexDeclaration;
 
 class FCubeIndexBuffer : public FIndexBuffer
 {
@@ -135,9 +138,9 @@ public:
 	/**
 	* Initialize the RHI for this rendering resource
 	*/
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
-extern RENDERCORE_API TGlobalResource<FCubeIndexBuffer> GCubeIndexBuffer;
+extern RENDERCORE_API TGlobalResource<FCubeIndexBuffer, FRenderResource::EInitPhase::Pre> GCubeIndexBuffer;
 
 class FTwoTrianglesIndexBuffer : public FIndexBuffer
 {
@@ -145,9 +148,9 @@ public:
 	/**
 	* Initialize the RHI for this rendering resource
 	*/
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 };
-extern RENDERCORE_API TGlobalResource<FTwoTrianglesIndexBuffer> GTwoTrianglesIndexBuffer;
+extern RENDERCORE_API TGlobalResource<FTwoTrianglesIndexBuffer, FRenderResource::EInitPhase::Pre> GTwoTrianglesIndexBuffer;
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -174,40 +177,34 @@ struct FGlobalDynamicVertexBufferAllocation
 /**
  * A system for dynamically allocating GPU memory for vertices.
  */
-class RENDERCORE_API FGlobalDynamicVertexBuffer
+class FGlobalDynamicVertexBuffer
 {
 public:
 	using FAllocation = FGlobalDynamicVertexBufferAllocation;
-
-	/** Default constructor. */
-	FGlobalDynamicVertexBuffer();
-
-	/** Destructor. */
-	~FGlobalDynamicVertexBuffer();
 
 	/**
 	 * Allocates space in the global vertex buffer.
 	 * @param SizeInBytes - The amount of memory to allocate in bytes.
 	 * @returns An FAllocation with information regarding the allocated memory.
 	 */
-	FAllocation Allocate(uint32 SizeInBytes);
+	RENDERCORE_API FAllocation Allocate(FRHICommandListBase& RHICmdList, uint32 SizeInBytes);
+	RENDERCORE_API FAllocation Allocate(uint32 SizeInBytes);
 
 	/**
 	 * Commits allocated memory to the GPU.
 	 *		WARNING: Once this buffer has been committed to the GPU, allocations
 	 *		remain valid only until the next call to Allocate!
 	 */
-	void Commit();
+	RENDERCORE_API void Commit(FRHICommandListBase& RHICmdList);
+	RENDERCORE_API void Commit();
+
+	static RENDERCORE_API void GarbageCollect();
 
 	/** Returns true if log statements should be made because we exceeded GMaxVertexBytesAllocatedPerFrame */
-	bool IsRenderAlarmLoggingEnabled() const;
+	RENDERCORE_API bool IsRenderAlarmLoggingEnabled() const;
 
 private:
-	/** The pool of vertex buffers from which allocations are made. */
-	struct FDynamicVertexBufferPool* Pool;
-
-	/** A total of all allocations made since the last commit. Used to alert about spikes in memory usage. */
-	size_t TotalAllocatedSinceLastCommit;
+	TArray<class FDynamicVertexBuffer*> VertexBuffers;
 };
 
 struct FGlobalDynamicIndexBufferAllocation
@@ -247,17 +244,17 @@ struct FGlobalDynamicIndexBufferAllocationEx : public FGlobalDynamicIndexBufferA
 /**
  * A system for dynamically allocating GPU memory for indices.
  */
-class RENDERCORE_API FGlobalDynamicIndexBuffer
+class FGlobalDynamicIndexBuffer
 {
 public:
 	using FAllocation = FGlobalDynamicIndexBufferAllocation;
 	using FAllocationEx = FGlobalDynamicIndexBufferAllocationEx;
 
 	/** Default constructor. */
-	FGlobalDynamicIndexBuffer();
+	RENDERCORE_API FGlobalDynamicIndexBuffer();
 
 	/** Destructor. */
-	~FGlobalDynamicIndexBuffer();
+	RENDERCORE_API ~FGlobalDynamicIndexBuffer();
 
 	/**
 	 * Allocates space in the global index buffer.
@@ -265,7 +262,7 @@ public:
 	 * @param IndexStride - The size of an index (2 or 4 bytes).
 	 * @returns An FAllocation with information regarding the allocated memory.
 	 */
-	FAllocation Allocate(uint32 NumIndices, uint32 IndexStride);
+	RENDERCORE_API FAllocation Allocate(uint32 NumIndices, uint32 IndexStride);
 
 	/**
 	 * Helper function to allocate.
@@ -283,7 +280,7 @@ public:
 	 *		WARNING: Once this buffer has been committed to the GPU, allocations
 	 *		remain valid only until the next call to Allocate!
 	 */
-	void Commit();
+	RENDERCORE_API void Commit();
 
 private:
 	/** The pool of vertex buffers from which allocations are made. */

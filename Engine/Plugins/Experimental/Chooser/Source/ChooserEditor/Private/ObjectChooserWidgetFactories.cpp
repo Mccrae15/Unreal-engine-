@@ -17,8 +17,36 @@
 
 namespace UE::ChooserEditor
 {
+	
+void FObjectChooserWidgetFactories::RegisterWidgetCreator(const UStruct* Type, FChooserWidgetCreator Creator)
+{
+	ChooserWidgetCreators.Add(Type, Creator);	
+}
+	
+void  FObjectChooserWidgetFactories::RegisterColumnWidgetCreator(const UStruct* ColumnType, FColumnWidgetCreator Creator)
+{
+	ColumnWidgetCreators.Add(ColumnType, Creator);	
+}
+	
+TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateColumnWidget(FChooserColumnBase* Column, const UStruct* ColumnType, UChooserTable* Chooser, int RowIndex)
+{
+	if (Column)
+	{
+		while (ColumnType)
+		{
+			if (FColumnWidgetCreator* Creator = FObjectChooserWidgetFactories::ColumnWidgetCreators.Find(ColumnType))
+			{
+				return (*Creator)(Chooser, Column, RowIndex);
+			}
+			ColumnType = ColumnType->GetSuperStruct();
+		}
+	}
 
-TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(UObject* TransactionObject, void* Value, const UStruct* ValueType, UClass* ContextClass)
+	return nullptr;
+}
+	
+	
+TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(bool bReadOnly, UObject* TransactionObject, void* Value, const UStruct* ValueType, UClass* ResultBaseClass, FChooserWidgetValueChanged ValueChanged)
 {
 	if (Value)
 	{
@@ -26,7 +54,7 @@ TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(UObject* Transac
 		{
 			if (FChooserWidgetCreator* Creator = ChooserWidgetCreators.Find(ValueType))
 			{
-				return (*Creator)(TransactionObject, Value, ContextClass);
+				return (*Creator)(bReadOnly, TransactionObject, Value, ResultBaseClass, ValueChanged);
 			}
 			ValueType = ValueType->GetSuperStruct();
 		}
@@ -35,9 +63,14 @@ TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(UObject* Transac
 	return nullptr;
 }
 
-TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(UObject* TransactionObject, const UScriptStruct* BaseType, void* Value, const UStruct* ValueType, UClass* ContextClass, const FOnStructPicked& CreateClassCallback, TSharedPtr<SBorder>* InnerWidget)
+TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(bool bReadOnly, UObject* TransactionObject, const UScriptStruct* BaseType, void* Value, const UStruct* ValueType, UClass* ResultBaseClass, const FOnStructPicked& CreateClassCallback, TSharedPtr<SBorder>* InnerWidget, FChooserWidgetValueChanged ValueChanged)
 {
-	TSharedPtr<SWidget> LeftWidget = CreateWidget(TransactionObject, Value, ValueType, ContextClass);
+	TSharedPtr<SWidget> LeftWidget = CreateWidget(bReadOnly, TransactionObject, Value, ValueType, ResultBaseClass, ValueChanged);
+	if (bReadOnly)
+	{
+		// don't need the type selector dropdown when read only
+		return LeftWidget;
+	}
 	
 	if (!LeftWidget.IsValid())
 	{
@@ -95,6 +128,7 @@ TSharedPtr<SWidget> FObjectChooserWidgetFactories::CreateWidget(UObject* Transac
 	return Widget;
 }
 
+TMap<const UStruct*, TFunction<TSharedRef<SWidget>(UChooserTable* Chooser, FChooserColumnBase* Column, int Row)>> FObjectChooserWidgetFactories::ColumnWidgetCreators;
 TMap<const UStruct*, FChooserWidgetCreator> FObjectChooserWidgetFactories::ChooserWidgetCreators;
 
 void FObjectChooserWidgetFactories::RegisterWidgets()

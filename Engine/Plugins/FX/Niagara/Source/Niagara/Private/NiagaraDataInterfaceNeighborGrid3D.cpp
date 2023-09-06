@@ -1,13 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceNeighborGrid3D.h"
-#include "NiagaraShader.h"
-#include "ShaderParameterUtils.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraRenderer.h"
-#include "NiagaraShaderParticleID.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "RenderGraphUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceNeighborGrid3D)
 
@@ -745,13 +743,12 @@ void FNiagaraDataInterfaceProxyNeighborGrid3D::PostSimulate(const FNDIGpuCompute
 	}
 }
 
-FIntVector FNiagaraDataInterfaceProxyNeighborGrid3D::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNiagaraDataInterfaceProxyNeighborGrid3D::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context)
 {
-	if ( const FNDINeighborGrid3DInstanceData_RT* TargetData = SystemInstancesToProxyData_RT.Find(SystemInstanceID) )
+	if ( const FNDINeighborGrid3DInstanceData_RT* TargetData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID()) )
 	{
-		return TargetData->NumCells;
+		Context.SetDirect(TargetData->NumCells);
 	}
-	return FIntVector::ZeroValue;
 }
 
 bool UNiagaraDataInterfaceNeighborGrid3D::CopyToInternal(UNiagaraDataInterface* Destination) const

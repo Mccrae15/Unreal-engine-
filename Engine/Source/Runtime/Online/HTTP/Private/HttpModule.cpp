@@ -44,6 +44,12 @@ void FHttpModule::UpdateConfigs()
 	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadActiveMinimumSleepTimeInSeconds"), HttpThreadActiveMinimumSleepTimeInSeconds, GEngineIni);
 	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadIdleFrameTimeInSeconds"), HttpThreadIdleFrameTimeInSeconds, GEngineIni);
 	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpThreadIdleMinimumSleepTimeInSeconds"), HttpThreadIdleMinimumSleepTimeInSeconds, GEngineIni);
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("HttpEventLoopThreadTickIntervalInSeconds"), HttpEventLoopThreadTickIntervalInSeconds, GEngineIni);
+
+	if (!FParse::Value(FCommandLine::Get(), TEXT("HttpNoProxy="), HttpNoProxy))
+	{
+		GConfig->GetString(TEXT("HTTP"), TEXT("HttpNoProxy"), HttpNoProxy, GEngineIni);
+	}
 
 	AllowedDomains.Empty();
 	GConfig->GetArray(TEXT("HTTP"), TEXT("AllowedDomains"), AllowedDomains, GEngineIni);
@@ -71,8 +77,10 @@ void FHttpModule::StartupModule()
 	HttpThreadActiveMinimumSleepTimeInSeconds = 0.0f;
 	HttpThreadIdleFrameTimeInSeconds = 1.0f / 30.0f; // 30Hz
 	HttpThreadIdleMinimumSleepTimeInSeconds = 0.0f;	
+	HttpEventLoopThreadTickIntervalInSeconds = 1.f / 10.f; // 10Hz
 
 	// override the above defaults from configs
+	FCoreDelegates::TSOnConfigSectionsChanged().AddRaw(this, &FHttpModule::OnConfigSectionsChanged);
 	UpdateConfigs();
 
 	if (!FParse::Value(FCommandLine::Get(), TEXT("httpproxy="), ProxyAddress))
@@ -83,6 +91,17 @@ void FHttpModule::StartupModule()
 			{
 				ProxyAddress = MoveTemp(OperatingSystemProxyAddress.GetValue());
 			}
+		}
+	}
+
+	// Load from a configurable array of modules at this point, so things that need to bind to the SDK Manager init hooks can do so.
+	TArray<FString> ModulesToLoad;
+	GConfig->GetArray(TEXT("HTTP"), TEXT("ModulesToLoad"), ModulesToLoad, GEngineIni);
+	for (const FString& ModuleToLoad : ModulesToLoad)
+	{
+		if (FModuleManager::Get().ModuleExists(*ModuleToLoad))
+		{
+			FModuleManager::Get().LoadModule(*ModuleToLoad);
 		}
 	}
 
@@ -118,16 +137,33 @@ void FHttpModule::ShutdownModule()
 	if (HttpManager != nullptr)
 	{
 		// block on any http requests that have already been queued up
-		HttpManager->Flush(EHttpFlushReason::Shutdown);
+		HttpManager->Shutdown();
 	}
 
 	// at least on Linux, the code in HTTP manager (e.g. request destructors) expects platform to be initialized yet
 	delete HttpManager;	// can be passed NULLs
 
+	FCoreDelegates::TSOnConfigSectionsChanged().RemoveAll(this);
+
 	FPlatformHttp::Shutdown();
 
 	HttpManager = nullptr;
 	Singleton = nullptr;
+}
+
+void FHttpModule::OnConfigSectionsChanged(const FString& IniFilename, const TSet<FString>& SectionNames)
+{
+	if (IniFilename == GEngineIni)
+	{
+		for (const FString& SectionName : SectionNames)
+		{
+			if (SectionName.StartsWith(TEXT("HTTP")))
+			{
+				UpdateConfigs();
+				break;
+			}
+		}
+	}
 }
 
 bool FHttpModule::HandleHTTPCommand(const TCHAR* Cmd, FOutputDevice& Ar)
@@ -217,7 +253,7 @@ bool FHttpModule::HandleHTTPCommand(const TCHAR* Cmd, FOutputDevice& Ar)
 	return true;
 }
 
-bool FHttpModule::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+bool FHttpModule::Exec_Runtime(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 	// Ignore any execs that don't start with HTTP
 	if (FParse::Command(&Cmd, TEXT("HTTP")))

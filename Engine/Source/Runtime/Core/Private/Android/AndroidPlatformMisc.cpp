@@ -6,6 +6,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "HAL/IConsoleManager.h"
@@ -143,6 +144,10 @@ extern void AndroidThunkCpp_ForceQuit();
 
 extern void AndroidThunkCpp_SetOrientation(int32 Value);
 
+extern void AndroidThunkCpp_SetCellularPreference(int32 Value);
+
+extern int32 AndroidThunkCpp_GetCellularPreference();
+
 // From AndroidFile.cpp
 extern FString GFontPathBase;
 
@@ -231,7 +236,7 @@ static void InitCpuThermalSensor()
 	}
 }
 
-void FAndroidMisc::RequestExit( bool Force )
+void FAndroidMisc::RequestExit( bool Force, const TCHAR* CallSite)
 {
 
 #if PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING
@@ -245,7 +250,8 @@ void FAndroidMisc::RequestExit( bool Force )
 	}
 #endif
 
-	UE_LOG(LogAndroid, Log, TEXT("FAndroidMisc::RequestExit(%i)"), Force);
+	UE_LOG(LogAndroid, Log, TEXT("FAndroidMisc::RequestExit(%i, %s)"), Force,
+		CallSite ? CallSite : TEXT("<NoCallSiteInfo>"));
 	if (GLog)
 	{
 		GLog->Flush();
@@ -575,14 +581,13 @@ void FAndroidMisc::PlatformInit()
 	InitializeJavaEventReceivers();
 	AndroidOnBackgroundBinding = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddStatic(EnableJavaEventReceivers, false);
 	AndroidOnForegroundBinding = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddStatic(EnableJavaEventReceivers, true);
+
+	extern void AndroidThunkJava_AddNetworkListener();
+	AndroidThunkJava_AddNetworkListener();
 #endif
 
-	InitCpuThermalSensor();
 
-	UE_LOG(LogInit, Log, TEXT(" - This binary is optimized with LTO: %s, PGO: %s, instrumented for PGO data collection: %s"),
-		PLATFORM_COMPILER_OPTIMIZATION_LTCG ? TEXT("yes") : TEXT("no"),
-		FPlatformMisc::IsPGOEnabled() ? TEXT("yes") : TEXT("no"),
-		PLATFORM_COMPILER_OPTIMIZATION_PG_PROFILING ? TEXT("yes") : TEXT("no"));
+	InitCpuThermalSensor();
 }
 
 extern void AndroidThunkCpp_DismissSplashScreen();
@@ -613,27 +618,43 @@ void FAndroidMisc::UpdateDeviceOrientation()
 	JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 	if (JEnv)
 	{
+		static jmethodID getRotationMethod = 0;
 		static jmethodID getOrientationMethod = 0;
 
-		if (getOrientationMethod == 0)
+		if (getRotationMethod == 0 || getOrientationMethod == 0)
 		{
 			jclass MainClass = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/GameActivity");
 			if (MainClass != nullptr)
 			{
-				getOrientationMethod = JEnv->GetMethodID(MainClass, "AndroidThunkJava_GetDeviceOrientation", "()I");
+				getRotationMethod = JEnv->GetMethodID(MainClass, "AndroidThunkJava_GetDeviceRotation", "()I");
+				getOrientationMethod = JEnv->GetMethodID(MainClass, "AndroidThunkJava_GetConfigurationOrientation", "()I");
 				JEnv->DeleteGlobalRef(MainClass);
 			}
 		}
 
-		if (getOrientationMethod != 0)
+		if (getRotationMethod != 0 && getOrientationMethod != 0)
 		{
+			const int Rotation = JEnv->CallIntMethod(AndroidJavaEnv::GetGameActivityThis(), getRotationMethod);
 			const int Orientation = JEnv->CallIntMethod(AndroidJavaEnv::GetGameActivityThis(), getOrientationMethod);
-			switch (Orientation)
+			if (Orientation == EAndroidConfigurationOrientation::ORIENTATION_PORTRAIT)
 			{
-			case 0: DeviceOrientation = EDeviceScreenOrientation::Portrait;             break;
-			case 1: DeviceOrientation = EDeviceScreenOrientation::LandscapeLeft;        break;
-			case 2: DeviceOrientation = EDeviceScreenOrientation::PortraitUpsideDown;   break;
-			case 3: DeviceOrientation = EDeviceScreenOrientation::LandscapeRight;       break;
+				switch (Rotation)
+				{
+				case EAndroidSurfaceRotation::ROTATION_0:	DeviceOrientation = EDeviceScreenOrientation::Portrait;             break;
+				case EAndroidSurfaceRotation::ROTATION_90:	DeviceOrientation = EDeviceScreenOrientation::LandscapeLeft;        break;
+				case EAndroidSurfaceRotation::ROTATION_180:	DeviceOrientation = EDeviceScreenOrientation::PortraitUpsideDown;   break;
+				case EAndroidSurfaceRotation::ROTATION_270:	DeviceOrientation = EDeviceScreenOrientation::LandscapeRight;       break;
+				}
+			}
+			else if (Orientation == EAndroidConfigurationOrientation::ORIENTATION_LANDSCAPE)
+			{
+				switch (Rotation)
+				{
+				case EAndroidSurfaceRotation::ROTATION_0:	DeviceOrientation = EDeviceScreenOrientation::LandscapeLeft;        break;
+				case EAndroidSurfaceRotation::ROTATION_90:	DeviceOrientation = EDeviceScreenOrientation::PortraitUpsideDown;				break;
+				case EAndroidSurfaceRotation::ROTATION_180:	DeviceOrientation = EDeviceScreenOrientation::LandscapeRight;		break;
+				case EAndroidSurfaceRotation::ROTATION_270:	DeviceOrientation = EDeviceScreenOrientation::Portrait;   break;
+				}
 			}
 		}
 	}
@@ -1639,9 +1660,11 @@ void FAndroidMisc::PrepareMobileHaptics(EMobileHapticsType Type)
 void FAndroidMisc::TriggerMobileHaptics()
 {
 #if USE_ANDROID_JNI
-	extern void AndroidThunkCpp_Vibrate(int32 Duration);
-	// tiny little vibration
-	AndroidThunkCpp_Vibrate(10);
+	extern void AndroidThunkCpp_Vibrate(int32 Intensity, int32 Duration);
+	// directly play a small vibration one-shot
+	// note: this will do nothing if device is already playing force feedback (non-zero intensity)
+	// but will play and not be cancelled by force feedback since it only sends updates when not already above zero
+	AndroidThunkCpp_Vibrate(255, 10);
 #endif
 }
 
@@ -2112,7 +2135,7 @@ typedef VkResult(VKAPI_PTR *PFN_vkEnumerateDeviceExtensionProperties)(VkPhysical
 
 ///////////////////////////////////////////////////////////////////////////////
 
-#define UE_VK_API_VERSION	VK_MAKE_VERSION(1, 0, 1)
+#define UE_VK_API_VERSION	VK_MAKE_VERSION(1, 1, 0)
 
 enum class EDeviceVulkanSupportStatus
 {
@@ -2828,6 +2851,17 @@ bool FAndroidMisc::HasActiveWiFiConnection()
 }
 #endif
 
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeNetworkChanged(JNIEnv* jenv, jobject thiz)
+{
+	if (FTaskGraphInterface::IsRunning())
+	{
+		FFunctionGraphTask::CreateAndDispatchWhenReady([]()
+		{
+			FCoreDelegates::OnNetworkConnectionChanged.Broadcast(FAndroidMisc::GetNetworkConnectionType());
+		}, TStatId(), NULL, ENamedThreads::GameThread);
+	}
+}
+
 static FAndroidMisc::ReInitWindowCallbackType OnReInitWindowCallback;
 
 FAndroidMisc::ReInitWindowCallbackType FAndroidMisc::GetOnReInitWindowCallback()
@@ -3102,6 +3136,22 @@ void FAndroidMisc::SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrenta
 	SetAllowedDeviceOrientation(NewDeviceOrentation);
 }
 
+void FAndroidMisc::SetCellularPreference(int32 Value)
+{
+#if USE_ANDROID_JNI
+	AndroidThunkCpp_SetCellularPreference(Value);
+#endif // USE_ANDROID_JNI
+}
+
+int32 FAndroidMisc::GetCellularPreference()
+{
+	int32 value = 0;
+#if USE_ANDROID_JNI
+	value = AndroidThunkCpp_GetCellularPreference();
+#endif // USE_ANDROID_JNI
+	return value;
+}
+
 void FAndroidMisc::SetAllowedDeviceOrientation(EDeviceScreenOrientation NewAllowedDeviceOrientation)
 {
 	AllowedDeviceOrientation = NewAllowedDeviceOrientation;
@@ -3160,3 +3210,32 @@ void FAndroidMisc::ShowConsoleWindow()
 	AndroidThunkCpp_ShowConsoleWindow();
 #endif // !UE_BUILD_SHIPPING && USE_ANDROID_JNI
 }
+
+FDelegateHandle FAndroidMisc::AddNetworkListener(FCoreDelegates::FOnNetworkConnectionChanged::FDelegate&& InNewDelegate)
+{
+	if (!FCoreDelegates::OnNetworkConnectionChanged.IsBound())
+	{
+#if USE_ANDROID_JNI
+		extern void AndroidThunkJava_AddNetworkListener();
+		AndroidThunkJava_AddNetworkListener();
+#endif
+	}
+
+	return FCoreDelegates::OnNetworkConnectionChanged.Add(MoveTemp(InNewDelegate));
+}
+
+bool FAndroidMisc::RemoveNetworkListener(FDelegateHandle Handle)
+{
+	bool bSuccess = FCoreDelegates::OnNetworkConnectionChanged.Remove(Handle);
+
+	if (!FCoreDelegates::OnNetworkConnectionChanged.IsBound())
+	{
+#if USE_ANDROID_JNI
+		extern void AndroidThunkJava_RemoveNetworkListener();
+		AndroidThunkJava_RemoveNetworkListener();
+#endif
+	}
+
+	return bSuccess;
+}
+

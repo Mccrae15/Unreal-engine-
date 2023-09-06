@@ -258,6 +258,10 @@ namespace ChaosTest {
 		EXPECT_VECTOR_NEAR(Bary, FVector(.25, .25, .25), 0.001);
 		TVec3<double> Surf = Tet.ProjectToSurface(Tris, Pt);
 		EXPECT_VECTOR_NEAR(Surf, Tris[3].GetCentroid(), 0.001);
+		TVec4<double> ClosestBary;
+		TVec3<double> ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(0.25, 0.25, 0.25, 0.25), 0.001);
 
 		// Point
 		Pt = Tet[0];
@@ -271,6 +275,10 @@ namespace ChaosTest {
 		EXPECT_VECTOR_NEAR(Bary, FVector(1, 0, 0), 0.001);
 		Surf = Tet.ProjectToSurface(Tris, Pt);
 		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(1, 0, 0, 0), 0.001);
+
 
 		Pt[0] -= 0.1;
 		Hit = !Tet.Outside(Pt, 0.001);
@@ -280,8 +288,19 @@ namespace ChaosTest {
 		RobustHit = Tet.RobustInside(Pt, -0.001);
 		EXPECT_FALSE(RobustHit);
 		Surf = Tet.ProjectToSurface(Tris, Pt);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
 		Pt[0] += 0.1;
 		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Tet[0], 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(1, 0, 0, 0), 0.001);
+
+		Pt -= FVec3(0.1);
+		Surf = Tet.ProjectToSurface(Tris, Pt);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
+		Pt += FVec3(0.1);
+		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Tet[0], 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(1, 0, 0, 0), 0.001);
 
 		// Edge
 		Pt = TVec3<double>(0.5, 0, 0);
@@ -295,6 +314,9 @@ namespace ChaosTest {
 		EXPECT_VECTOR_NEAR(Bary, FVector(.5, .5, 0), 0.001);
 		Surf = Tet.ProjectToSurface(Tris, Pt);
 		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(.5, .5, 0, 0), 0.001);
 
 		Pt[1] -= 0.1;
 		Hit = !Tet.Outside(Pt, 0.001);
@@ -304,8 +326,21 @@ namespace ChaosTest {
 		RobustHit = Tet.RobustInside(Pt, -0.001);
 		EXPECT_FALSE(RobustHit);
 		Surf = Tet.ProjectToSurface(Tris, Pt);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
 		Pt[1] += 0.1;
 		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(.5, .5, 0, 0), 0.001);
+
+		// This is a test case where ProjectToSurface will fail but FindClosestPointAndBary will succeed
+		Pt = TVec3<double>(1, 0, 0);
+		Pt += TVec3<double>(.1, -.05, 0);
+		//Surf = Tet.ProjectToSurface(Tris, Pt);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
+		Pt -= TVec3<double>(.1, -.05, 0);
+		//EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(0, 1, 0, 0), 0.001);
 
 		// Face
 		Pt = Tris[0].GetCentroid();
@@ -319,6 +354,9 @@ namespace ChaosTest {
 		EXPECT_VECTOR_NEAR(Bary, FVector(.3333, .3333, .3333), 0.001);
 		Surf = Tet.ProjectToSurface(Tris, Pt);
 		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(.3333, .3333, .3333, 0), 0.001);
 
 		Pt += Tris[0].GetNormal() * 0.1;
 		Hit = !Tet.Outside(Pt, 0.001);
@@ -328,8 +366,11 @@ namespace ChaosTest {
 		RobustHit = Tet.RobustInside(Pt, -0.001);
 		EXPECT_FALSE(RobustHit);
 		Surf = Tet.ProjectToSurface(Tris, Pt);
+		ClosestPoint = Tet.FindClosestPointAndBary(Pt, ClosestBary);
 		Pt -= Tris[0].GetNormal() * 0.1;
 		EXPECT_VECTOR_NEAR(Surf, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestPoint, Pt, 0.001);
+		EXPECT_VECTOR_NEAR(ClosestBary, TVec4<double>(.3333, .3333, .3333, 0), 0.001);
 
 		// Bounding Volume Hierarchy
 		// Put the center of the tet at the origin, and sweep point tests across it.
@@ -2107,4 +2148,42 @@ namespace ChaosTest {
 
 	}
 
+	GTEST_TEST(ImplicitTests, TestImplicitCasts)
+	{
+		TUniquePtr<FImplicitObject> Sphere = MakeUnique<FImplicitSphere3>(FVec3(0), 100.0);
+		const FImplicitObject* ConstSphere = Sphere.Get();
+
+		TArray<TUniquePtr<FImplicitObject>> UnionObjects;
+		UnionObjects.Emplace(MakeUnique<FImplicitSphere3>(FVec3(0), 100.0));
+
+		TArray<TUniquePtr<FImplicitObject>> UnionClusteredObjects;
+		UnionClusteredObjects.Emplace(MakeUnique<FImplicitSphere3>(FVec3(0), 100.0));
+
+		TUniquePtr<FImplicitObject> Union = MakeUnique<FImplicitObjectUnion>(MoveTemp(UnionObjects));
+		TUniquePtr<FImplicitObject> UnionClustered = MakeUnique<FImplicitObjectUnionClustered>(MoveTemp(UnionClusteredObjects));
+
+		// We can cast an implicit object to its exact type (const and non-const)
+		FImplicitSphere3* SphereCast = Sphere->AsA<FImplicitSphere3>();
+		EXPECT_NE(SphereCast, nullptr);
+
+		FImplicitSphere3* SphereCastChecked = Sphere->AsAChecked<FImplicitSphere3>();
+		EXPECT_NE(SphereCastChecked, nullptr);
+
+		const FImplicitSphere3* ConstSphereCast = ConstSphere->AsA<FImplicitSphere3>();
+		EXPECT_NE(ConstSphereCast, nullptr);
+
+		const FImplicitSphere3* ConstSphereCastChecked = ConstSphere->AsAChecked<FImplicitSphere3>();
+		EXPECT_NE(ConstSphereCastChecked, nullptr);
+
+		FImplicitObjectUnion* UnionCast = Union->AsA<FImplicitObjectUnion>();
+		EXPECT_NE(UnionCast, nullptr);
+
+		FImplicitObjectUnionClustered* UnionClusteredCast = UnionClustered->AsA<FImplicitObjectUnionClustered>();
+		EXPECT_NE(UnionClusteredCast, nullptr);
+
+		// We can cast a Clustered Union to a Union
+		FImplicitObjectUnion* UnionClusteredUpCast = UnionClustered->AsA<FImplicitObjectUnion>();
+		EXPECT_NE(UnionClusteredUpCast, nullptr);
+
+	}
 }

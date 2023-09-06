@@ -12,8 +12,6 @@ public class ReplicationSystemTestTarget : TargetRules
 		LinkType = TargetLinkType.Monolithic;
 		LaunchModuleName = "ReplicationSystemTest";
 
-		bUseMallocProfiler = false;
-
 		// No editor-only data is needed
 		bBuildWithEditorOnlyData = false;
 
@@ -42,6 +40,7 @@ public class ReplicationSystemTestTarget : TargetRules
 		bUseIris = true;
 
 		GlobalDefinitions.Add("UE_TRACE_ENABLED=1");
+		GlobalDefinitions.Add("UE_NET_TEST_FAKE_REP_TAGS=1");
 	}
 }
 

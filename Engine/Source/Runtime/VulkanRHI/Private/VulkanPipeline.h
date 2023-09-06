@@ -473,7 +473,6 @@ struct FGfxPipelineDesc
 			return false;
 		}
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 		if (ShadingRate != In.ShadingRate)
 		{
 			return false;
@@ -483,7 +482,6 @@ struct FGfxPipelineDesc
 		{
 			return false;
 		}
-#endif
 
 		return true;
 	}
@@ -525,7 +523,7 @@ private:
 	void NotifyDeletedGraphicsPSO(FRHIGraphicsPipelineState* PSO);
 	bool CreateGfxPipelineFromEntry(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], bool bPrecompile);
 
-	VkResult CreateVKPipeline(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], VkGraphicsPipelineCreateInfo PipelineInfo, bool bIsPrecompileJob);
+	VkResult CreateVKPipeline(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], const VkGraphicsPipelineCreateInfo& PipelineInfo, bool bIsPrecompileJob);
 	static FString ShaderHashesToString(FVulkanShader* Shaders[ShaderStage::NumStages]);
 
 	FVulkanLayout* FindOrAddLayout(const FVulkanDescriptorSetsLayoutInfo& DescriptorSetLayoutInfo, bool bGfxLayout);
@@ -735,6 +733,12 @@ public:
 	{
 		ShaderStage::EStage Stage = ShaderStage::GetStageForFrequency(Frequency);
 		return ShaderKeys[Stage];
+	}
+
+	inline const FVulkanShader* GetShader(EShaderFrequency Frequency) const
+	{
+		ShaderStage::EStage Stage = ShaderStage::GetStageForFrequency(Frequency);
+		return VulkanShaders[Stage];
 	}
 
 	inline VkPipeline GetVulkanPipeline() const

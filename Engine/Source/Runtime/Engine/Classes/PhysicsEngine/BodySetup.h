@@ -68,9 +68,9 @@ struct FBodySetupUVInfo
 };
 
 /** Helper struct to indicate which geometry needs to be cooked */
-struct ENGINE_API FCookBodySetupInfo
+struct FCookBodySetupInfo
 {
-	FCookBodySetupInfo();
+	ENGINE_API FCookBodySetupInfo();
 
 	/** Trimesh data for cooking */
 	FTriMeshCollisionData TriangleMeshDesc;
@@ -267,7 +267,7 @@ public:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
-	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 #endif // WITH_EDITOR
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	//~ End UObject Interface.

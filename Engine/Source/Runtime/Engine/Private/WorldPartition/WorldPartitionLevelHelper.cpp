@@ -8,6 +8,9 @@
 #include "Misc/PackageName.h"
 #include "WorldPartition/WorldPartitionPackageHelper.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
+#include "Containers/StringFwd.h"
+#include "WorldPartition/WorldPartitionActorContainerID.h"
+#include "WorldPartition/IWorldPartitionObjectResolver.h"
 
 #if WITH_EDITOR
 
@@ -16,10 +19,56 @@
 #include "Model.h"
 #include "UnrealEngine.h"
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionPackageHelper.h"
+#include "WorldPartition/ContentBundle/ContentBundleEditor.h"
+#include "GameFramework/WorldSettings.h"
 #include "LevelUtils.h"
 #include "ActorFolder.h"
 
+#endif
+
+bool FWorldPartitionResolveData::ResolveObject(UWorld* InWorld, const FSoftObjectPath& InObjectPath, UObject*& OutObject) const
+{
+	OutObject = nullptr;
+	if (InWorld)
+	{
+		if (IsValid() && SourceWorldAssetPath == InObjectPath.GetAssetPath().ToString())
+		{
+			const FString SubPathString = FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(ContainerID, InObjectPath.GetSubPathString());
+			// We don't read the return value as we always want to return true when using the resolve data.
+			InWorld->ResolveSubobject(*SubPathString, OutObject, /*bLoadIfExists*/false);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+FString FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(const FActorContainerID& InContainerID, const FString& InSubPathString)
+{
+	if (!InContainerID.IsMainContainer())
+	{
+		constexpr const TCHAR PersistenLevelName[] = TEXT("PersistentLevel.");
+		constexpr const int32 DotPos = UE_ARRAY_COUNT(PersistenLevelName);
+		if (InSubPathString.StartsWith(PersistenLevelName))
+		{
+			const int32 SubObjectPos = InSubPathString.Find(TEXT("."), ESearchCase::IgnoreCase, ESearchDir::FromStart, DotPos);
+			if (SubObjectPos == INDEX_NONE)
+			{
+				return InSubPathString + TEXT("_") + InContainerID.ToShortString();
+			}
+			else
+			{
+				return InSubPathString.Mid(0, SubObjectPos) + TEXT("_") + InContainerID.ToShortString() + InSubPathString.Mid(SubObjectPos);
+			}
+		}
+	}
+
+	return InSubPathString;
+}
+
+#if WITH_EDITOR
 FWorldPartitionLevelHelper& FWorldPartitionLevelHelper::Get()
 {
 	static FWorldPartitionLevelHelper Instance;
@@ -110,7 +159,17 @@ void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPa
 
 	check(InLevel);
 	UPackage* LevelPackage = InLevel->GetPackage();
-	
+
+	// Gather existing actors to validate only the one we expect are added to the level
+	TSet<FName> LevelActors;
+	for (AActor* Actor : InLevel->Actors)
+	{
+		if (Actor)
+		{
+			LevelActors.Add(Actor->GetFName());
+		}
+	}
+
 	// Move all actors to Cell level
 	for (const FWorldPartitionRuntimeCellObjectMapping& PackageObjectMapping : InChildPackages)
 	{
@@ -128,37 +187,68 @@ void FWorldPartitionLevelHelper::MoveExternalActorsToLevel(const TArray<FWorldPa
 
 			const bool bSameOuter = (InLevel == Actor->GetOuter());
 			Actor->SetPackageExternal(false, false);
-						
+
 			// Avoid calling Rename on the actor if it's already outered to InLevel as this will cause it's name to be changed. 
 			// (UObject::Rename doesn't check if Rename is being called with existing outer and assigns new name)
 			if (!bSameOuter)
 			{
 				Actor->Rename(nullptr, InLevel, REN_ForceNoResetLoaders);
 			}
-			
-			check(Actor->GetPackage() == LevelPackage);
-			if (bSameOuter && !InLevel->Actors.Contains(Actor))
+			else if (!InLevel->Actors.Contains(Actor))
 			{
 				InLevel->AddLoadedActor(Actor);
 			}
+			check(Actor->GetPackage() == LevelPackage);
 
-			// Include objects found in the source actor package in the destination level package
+			// Process objects found in the source actor package
 			TArray<UObject*> Objects;
 			const bool bIncludeNestedSubobjects = false;
-			GetObjectsWithOuter(ActorExternalPackage, Objects, bIncludeNestedSubobjects);
+			// Skip Garbage objects as the initial Rename on an actor with an ChildActorComponent can destroy its child actors.
+			// This happens when the component has bNeedsRecreate set to true (when it has a valid ChildActorTemplate).
+			GetObjectsWithPackage(ActorExternalPackage, Objects, bIncludeNestedSubobjects, RF_NoFlags, EInternalObjectFlags::Garbage);
 			for (UObject* Object : Objects)
 			{
 				if (Object->GetFName() != NAME_PackageMetaData)
 				{
-					Object->Rename(nullptr, LevelPackage, REN_ForceNoResetLoaders);
+					if (Object->GetOuter()->IsA<ULevel>())
+					{
+						// Move objects that are outered the level in the destination level
+						AActor* NestedActor = Cast<AActor>(Object);
+						if (InLevel != Object->GetOuter())
+						{
+							Object->Rename(nullptr, InLevel, REN_ForceNoResetLoaders);
+						}
+						else if (NestedActor && !InLevel->Actors.Contains(NestedActor))
+						{
+							InLevel->AddLoadedActor(NestedActor);
+						}
+						if (NestedActor)
+						{
+							LevelActors.Add(NestedActor->GetFName());
+						}
+					}
+					else
+					{
+						// Move objects in the destination level package
+						Object->Rename(nullptr, LevelPackage, REN_ForceNoResetLoaders);
+					}
 				}
 			}
 
 			OutModifiedPackages.Add(ActorExternalPackage);
+			LevelActors.Add(Actor->GetFName());
 		}
 		else
 		{
-			UE_LOG(LogEngine, Warning, TEXT("Can't find actor %s."), *PackageObjectMapping.Path.ToString());
+			UE_LOG(LogWorldPartition, Warning, TEXT("Can't find actor %s."), *PackageObjectMapping.Path.ToString());
+		}
+	}
+
+	for (AActor* Actor : InLevel->Actors)
+	{
+		if (Actor && Actor->HasAllFlags(RF_WasLoaded))
+		{
+			checkf(LevelActors.Contains(Actor->GetFName()), TEXT("Actor %s(%s) was unexpectedly loaded when moving actors to streaming cell"), *Actor->GetActorNameOrLabel(), *Actor->GetName());
 		}
 	}
 }
@@ -180,59 +270,54 @@ void FWorldPartitionLevelHelper::RemapLevelSoftObjectPaths(ULevel* InLevel, UWor
 	FixupSerializer.Fixup(InLevel);
 }
 
-FString FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(const FActorContainerID& InContainerID, const FString& InSubPathString)
-{
-	if (!InContainerID.IsMainContainer())
-	{
-		constexpr const TCHAR PersistenLevelName[] = TEXT("PersistentLevel.");
-		constexpr const int32 DotPos = UE_ARRAY_COUNT(PersistenLevelName);
-		if (InSubPathString.StartsWith(PersistenLevelName))
-		{
-			const int32 SubObjectPos = InSubPathString.Find(TEXT("."), ESearchCase::IgnoreCase, ESearchDir::FromStart, DotPos);
-			if (SubObjectPos == INDEX_NONE)
-			{
-				return InSubPathString + TEXT("_") + InContainerID.ToString();
-			}
-			else
-			{
-				return InSubPathString.Mid(0, SubObjectPos) + TEXT("_") + InContainerID.ToString() + InSubPathString.Mid(SubObjectPos);
-			}
-		}
-	}
-
-	return InSubPathString;
-}
-
 FString FWorldPartitionLevelHelper::GetContainerPackage(const FActorContainerID& InContainerID, const FString& InPackageName, const FString& InDestLevelPackageName)
 {
+	// Generate a unique name to load a Level Instance embedded actor if there are multiple instances of this Level Instance and possibly across multiple instances of the World Partition world
+	// InContainerID will distinguish between instances of the same Level Instance
+	// InDestLevelPackageName will distinguish between instances of the same top level World Partition world (Only needed in PIE, In Cook we always cook the source WP and not an instance and Actor packages no longer exist at runtime)
 	uint64 DestLevelID = 0;
+	TStringBuilder<512> PackageNameBuilder;
+	PackageNameBuilder.Appendf(TEXT("/Temp%s_%s"), *InPackageName, *InContainerID.ToShortString());
+		
 	if (!InDestLevelPackageName.IsEmpty())
 	{
 		DestLevelID = CityHash64((const char*)*InDestLevelPackageName, InDestLevelPackageName.Len() * sizeof(TCHAR));
+		PackageNameBuilder.Appendf(TEXT("_%016llx"), DestLevelID);
 	}
 
-	return FString::Printf(TEXT("/Temp%s_%s_%016llx"), *InPackageName, *InContainerID.ToString(), DestLevelID);
+	return PackageNameBuilder.ToString();
 }
 
-bool FWorldPartitionLevelHelper::RemapActorPath(const FActorContainerID& InContainerID, const FString& InActorPath, FString& OutActorPath)
+FSoftObjectPath FWorldPartitionLevelHelper::RemapActorPath(const FActorContainerID& InContainerID, const FString& InSourceWorldPath, const FSoftObjectPath& InActorPath)
 {
-	if (!InContainerID.IsMainContainer())
+	// If Path is in an instanced package it will now be remapped to its source package
+	FSoftObjectPath OutActorPath(FTopLevelAssetPath(InSourceWorldPath), InActorPath.GetSubPathString());
+	
+	if(!InContainerID.IsMainContainer())
 	{
-		const FSoftObjectPath SoftObjectPath(InActorPath);
-		const FString LongPackageName = SoftObjectPath.GetLongPackageName();
-			
-		const FString ContainerPackageString = GetContainerPackage(InContainerID, LongPackageName);	
-		const FString NewSubPathString = FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(InContainerID, SoftObjectPath.GetSubPathString());
-
-		FNameBuilder NewAssetPathBuilder;
-		SoftObjectPath.GetAssetPath().AppendString(NewAssetPathBuilder);
-		NewAssetPathBuilder.ReplaceAt(0, LongPackageName.Len(), ContainerPackageString);
-
-		OutActorPath = FSoftObjectPath(FTopLevelAssetPath(NewAssetPathBuilder.ToView()), NewSubPathString).ToString();
-		return true;
+		// This gets called by UWorldPartitionLevelStreamingPolicy::PrepareActorToCellRemapping and FWorldPartitionLevelHelper::LoadActors
+		// 
+		// At this point we are changing the top level asset and remapping the SubPathString to add a ContainerID suffix so
+		// '/Game/SomePath/LevelInstance.LevelInstance:PersistentLevel.ActorA' becomes
+		// '/Game/SomeOtherPath/SourceWorldName.SourceWorldName:PersistentLevel.ActorA_{ContainerID}'
+		FString RemappedSubPathString = FWorldPartitionLevelHelper::AddActorContainerIDToSubPathString(InContainerID, InActorPath.GetSubPathString());
+		OutActorPath.SetSubPathString(RemappedSubPathString);
 	}
+	
+	return OutActorPath;
+}
 
-	return false;
+bool FWorldPartitionLevelHelper::RemapLevelCellPathInContentBundle(ULevel* Level, const class FContentBundleEditor* ContentBundleEditor, const UWorldPartitionRuntimeCell* Cell)
+{
+	FString CellPath = ContentBundleEditor->GetExternalStreamingObjectPackagePath();
+	CellPath += TEXT(".");
+	CellPath += ContentBundleEditor->GetExternalStreamingObjectName();
+	CellPath += TEXT(".");
+	CellPath += Cell->GetName();
+	
+	Level->WorldPartitionRuntimeCell = FSoftObjectPath(CellPath);
+
+	return !Level->WorldPartitionRuntimeCell.GetUniqueID().IsNull();
 }
 
 /**
@@ -266,12 +351,14 @@ ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorldP
 	UWorld::InitializationValues IVS = FWorldPartitionLevelHelper::GetWorldInitializationValues();
 	const FName WorldName = FName(FPackageName::ObjectPathToObjectName(InWorldAssetName));
 	check(!FindObject<UWorld>(CellPackage, *WorldName.ToString()));
-	UWorld* NewWorld = UWorld::CreateWorld(InWorld->WorldType, /*bInformEngineOfWorld*/false, WorldName, CellPackage, /*bAddToRoot*/false, InWorld->FeatureLevel, &IVS, /*bInSkipInitWorld*/true);
+	UWorld* NewWorld = UWorld::CreateWorld(InWorld->WorldType, /*bInformEngineOfWorld*/false, WorldName, CellPackage, /*bAddToRoot*/false, InWorld->GetFeatureLevel(), &IVS, /*bInSkipInitWorld*/true);
 	check(NewWorld);
 	NewWorld->SetFlags(RF_Public | RF_Standalone);
 	check(NewWorld->GetWorldSettings());
 	check(UWorld::FindWorldInPackage(CellPackage) == NewWorld);
 	check(InPackage || (NewWorld->GetPathName() == InWorldAssetName));
+	// We don't need the cell level's world setting to replicate
+	FSetActorReplicates SetActorReplicates(NewWorld->GetWorldSettings(), false);
 	
 	// Setup of streaming cell Runtime Level
 	ULevel* NewLevel = NewWorld->PersistentLevel;
@@ -300,7 +387,7 @@ ULevel* FWorldPartitionLevelHelper::CreateEmptyLevelForRuntimeCell(const UWorldP
 	return NewLevel;
 }
 
-bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDestLevel, TArrayView<FWorldPartitionRuntimeCellObjectMapping> InActorPackages, FWorldPartitionLevelHelper::FPackageReferencer& InPackageReferencer, TFunction<void(bool)> InCompletionCallback, bool bInLoadAsync, FLinkerInstancingContext InstancingContext)
+bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOuterWorld, ULevel* InDestLevel, TArrayView<FWorldPartitionRuntimeCellObjectMapping> InActorPackages, FWorldPartitionLevelHelper::FPackageReferencer& InPackageReferencer, TFunction<void(bool)> InCompletionCallback, bool bInLoadAsync, FLinkerInstancingContext InstancingContext)
 {
 	UPackage* DestPackage = InDestLevel ? InDestLevel->GetPackage() : nullptr;
 	FString ShortLevelPackageName = DestPackage? FPackageName::GetShortName(DestPackage->GetFName()) : FString();
@@ -331,6 +418,11 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 			const FName ContainerPackageInstanceName(GetContainerPackage(PackageObjectMapping.ContainerID, PackageObjectMapping.ContainerPackage.ToString(), DestLevelPackageName));
 
 			FLinkerInstancingContext& NewContext = LinkerInstancingContexts.Add(PackageObjectMapping.ContainerID);
+
+			// Make sure here we don't remap the SoftObjectPaths through the linker when loading the embedded actor packages. 
+			// A remapping will happen in the packaged loaded callback later in this method.
+			NewContext.SetSoftObjectPathRemappingEnabled(false); 
+			
 			NewContext.AddTag(ULevel::DontLoadExternalObjectsTag);
 			NewContext.AddPackageMapping(PackageObjectMapping.ContainerPackage, ContainerPackageInstanceName);
 			Context = &NewContext;
@@ -339,19 +431,23 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 		const FName ContainerPackageInstanceName = Context->RemapPackage(PackageObjectMapping.ContainerPackage);
 		if (PackageObjectMapping.ContainerPackage != ContainerPackageInstanceName)
 		{
-			const FString ActorPackageName = FPackageName::ObjectPathToPackageName(PackageObjectMapping.Package.ToString());
-			const FString ActorPackageInstanceName = ULevel::GetExternalActorPackageInstanceName(ContainerPackageInstanceName.ToString(), ActorPackageName);
+			const FName ActorPackageName = *FPackageName::ObjectPathToPackageName(PackageObjectMapping.Package.ToString());
+			const FName ActorPackageInstanceName = PackageObjectMapping.bIsEditorOnly ? NAME_None : FName(*ULevel::GetExternalActorPackageInstanceName(ContainerPackageInstanceName.ToString(), ActorPackageName.ToString()));
 
-			Context->AddPackageMapping(FName(*ActorPackageName), FName(*ActorPackageInstanceName));
+			Context->AddPackageMapping(ActorPackageName, ActorPackageInstanceName);
 		}
-		ActorPackages.Add(&PackageObjectMapping);
+
+		if (!PackageObjectMapping.bIsEditorOnly)
+		{
+			ActorPackages.Add(&PackageObjectMapping);
+		}
 	}
 
 	LoadProgress->NumPendingLoadRequests = ActorPackages.Num();
 
 	for (FWorldPartitionRuntimeCellObjectMapping* PackageObjectMapping : ActorPackages)
 	{
-		FLoadPackageAsyncDelegate CompletionCallback = FLoadPackageAsyncDelegate::CreateLambda([LoadProgress, PackageObjectMapping, &InPackageReferencer, InOwningWorld, InDestLevel, InCompletionCallback](const FName& LoadedPackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
+		FLoadPackageAsyncDelegate CompletionCallback = FLoadPackageAsyncDelegate::CreateLambda([LoadProgress, PackageObjectMapping, &InPackageReferencer, InOuterWorld, InDestLevel, InCompletionCallback](const FName& LoadedPackageName, UPackage* LoadedPackage, EAsyncLoadingResult::Type Result)
 		{
 			const FName ActorName = *FPaths::GetExtension(PackageObjectMapping->Path.ToString());
 			check(LoadProgress->NumPendingLoadRequests);
@@ -373,7 +469,7 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 
 			if (Actor)
 			{
-				const UWorld* ContainerWorld = PackageObjectMapping->ContainerID.IsMainContainer() ? InOwningWorld : Actor->GetTypedOuter<UWorld>();
+				const UWorld* ContainerWorld = PackageObjectMapping->ContainerID.IsMainContainer() ? InOuterWorld : Actor->GetTypedOuter<UWorld>();
 				
 				TOptional<FName> SrcActorFolderPath;
 
@@ -401,17 +497,22 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 					// Add Cache handle on world so it gets unloaded properly
 					InPackageReferencer.AddReference(ContainerWorld->GetPackage());
 										
-					FString SourceWorldPath, RemappedWorldPath;
-					ContainerWorld->GetSoftObjectPathMapping(SourceWorldPath, RemappedWorldPath);
+					// We only care about the source paths here
+					FString SourceWorldPath, DummyUnusedPath;
+					// Verify that it is indeed an instanced world
+					verify(ContainerWorld->GetSoftObjectPathMapping(SourceWorldPath, DummyUnusedPath));
+					FString SourceOuterWorldPath;
+					InOuterWorld->GetSoftObjectPathMapping(SourceOuterWorldPath, DummyUnusedPath);
 
 					// Rename through UObject to avoid changing Actor's external packaging and folder properties
-					Actor->UObject::Rename(*FString::Printf(TEXT("%s_%s"), *Actor->GetName(), *PackageObjectMapping->ContainerID.ToString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
+					Actor->UObject::Rename(*FString::Printf(TEXT("%s_%s"), *Actor->GetName(), *PackageObjectMapping->ContainerID.ToShortString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
+
 					// Handle child actors
 					Actor->ForEachComponent<UChildActorComponent>(true, [InDestLevel, PackageObjectMapping](UChildActorComponent* ChildActorComponent)
 					{
 						if (AActor* ChildActor = ChildActorComponent->GetChildActor())
 						{
-							ChildActor->UObject::Rename(*FString::Printf(TEXT("%s_%s"), *ChildActor->GetName(), *PackageObjectMapping->ContainerID.ToString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
+							ChildActor->UObject::Rename(*FString::Printf(TEXT("%s_%s"), *ChildActor->GetName(), *PackageObjectMapping->ContainerID.ToShortString()), InDestLevel, REN_NonTransactional | REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors);
 						}
 					});
 					
@@ -419,20 +520,32 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 					TransformParams.Actor = Actor;
 					TransformParams.bDoPostEditMove = false;
 					FLevelUtils::ApplyLevelTransform(TransformParams);
+
+					// Set the actor's instance guid
+					FSetActorInstanceGuid SetActorInstanceGuid(Actor, PackageObjectMapping->ActorInstanceGuid);
 						
 					// Path to use when searching for this actor in MoveExternalActorsToLevel
 					PackageObjectMapping->LoadedPath = *Actor->GetPathName();
 
 					// Fixup any FSoftObjectPath from this Actor (and its SubObjects) in this container to another object in the same container with a ContainerID suffix that can be remapped to
-					// to a Cell in the StreamingPolicy (this relies on the fact that the _DUP package doesn't get fixed up)
+					// a Cell package in the StreamingPolicy.
+					// 
+					// At  this point we are remapping the SubPathString and adding a ContainerID suffix so
+					// '/Game/SomePath/WorldName.WorldName:PersistentLevel.ActorA' becomes
+					// '/Game/SomeOtherPath/OuterWorldName.OuterWorldName:PersistentLevel.ActorA_{ContainerID}'
 					FSoftObjectPathFixupArchive FixupArchive([&](FSoftObjectPath& Value)
 					{
-						if (!Value.IsNull() && Value.GetAssetPathString().Equals(RemappedWorldPath, ESearchCase::IgnoreCase))
+						if (!Value.IsNull() && Value.GetAssetPathString().Equals(SourceWorldPath, ESearchCase::IgnoreCase))
 						{
-							Value.SetSubPathString(AddActorContainerIDToSubPathString(PackageObjectMapping->ContainerID, Value.GetSubPathString()));
+							Value = RemapActorPath(PackageObjectMapping->ContainerID, SourceOuterWorldPath, Value);
 						}
 					});
 					FixupArchive.Fixup(Actor);
+
+					if (IWorldPartitionObjectResolver* ObjectResolver = Cast<IWorldPartitionObjectResolver>(Actor))
+					{
+						ObjectResolver->SetWorldPartitionResolveData(FWorldPartitionResolveData(PackageObjectMapping->ContainerID, SourceWorldPath));
+					}
 				}
 
 				if (InDestLevel)
@@ -459,11 +572,24 @@ bool FWorldPartitionLevelHelper::LoadActors(UWorld* InOwningWorld, ULevel* InDes
 					});
 				}
 
-				UE_LOG(LogEngine, Verbose, TEXT(" ==> Loaded %s (remaining: %d)"), *Actor->GetFullName(), LoadProgress->NumPendingLoadRequests);
+				UE_LOG(LogWorldPartition, Verbose, TEXT(" ==> Loaded %s (remaining: %d)"), *Actor->GetFullName(), LoadProgress->NumPendingLoadRequests);
 			}
 			else
 			{
-				UE_LOG(LogEngine, Warning, TEXT("Failed to load %s"), *LoadedPackageName.ToString());
+				if (LoadedPackage)
+				{
+					UE_LOG(LogWorldPartition, Warning, TEXT("Failed to find actor in package %s. Package Content:"), *LoadedPackageName.ToString());
+					ForEachObjectWithPackage(LoadedPackage, [](UObject* Object)
+					{
+						UE_LOG(LogWorldPartition, Warning, TEXT("\t Object %s, Flags 0x%llx"), *Object->GetName(), static_cast<uint64>(Object->GetFlags()));
+						return true;
+					}, false);
+				}
+				else
+				{
+					UE_LOG(LogWorldPartition, Warning, TEXT("Failed to load actor package %s"), *LoadedPackageName.ToString());
+				}
+
 				//@todo_ow: cumulate and process when NumPendingActorRequests == 0
 				LoadProgress->NumFailedLoadedRequests++;
 			}

@@ -18,7 +18,6 @@
 #include "ShaderCore.h"
 #include "CrossCompilerCommon.h"
 #include "ShaderCodeLibrary.h"
-#include "Async/AsyncFileHandle.h"
 #include "ShaderPipelineCache.h"
 
 class FOpenGLLinkedProgram;
@@ -34,24 +33,24 @@ public:
 
 	static bool IsEnabled();
 
-	/** Extract the program binary from GL and store on disk. */
-	static FOpenGLProgramBinary CreateAndCacheProgramBinary(const FOpenGLProgramKey& ProgramKey, GLuint Program);
-
-	/** Is the program already in the currently building cache */
-	static bool DoesOutputCacheContain(const FOpenGLProgramKey& ProgramKey);
+	/** has the program already been encountered */
+	static bool RequiresCaching(const FOpenGLProgramKey& ProgramKey);
 
 	/** Take an existing program binary and store on disk. Only when ProgramBinaryCache is enabled
 	*/
-	static void CacheProgramBinary(const FOpenGLProgramKey& ProgramKey, const FOpenGLProgramBinary& CachedProgramBinary);
+	static void CacheProgramBinary(const FOpenGLProgramKey& ProgramKey, TUniqueObj<FOpenGLProgramBinary>&& ProgramBinary);
 
 	/** Create any pending GL programs that have come from shader library requests */
-	static void CheckPendingGLProgramCreateRequests();
+	static void TickBinaryCache();
 
 	/** Create any single GL program that have come from shader library requests */
 	static bool CheckSinglePendingGLProgramCreateRequest(const FOpenGLProgramKey& ProgramKey);
 
 	/** true if the program binary cache is currently in cache build mode */
 	static bool IsBuildingCache();
+
+	/** Add a binary program to the GL container queue, it is moved at a later point to the GL program container */
+	static void EnqueueBinaryForGLProgramContainer(const FOpenGLProgramKey& ProgramKey, TUniqueObj<FOpenGLProgramBinary>&& ProgramBinary);
 
 private:
 	FOpenGLProgramBinaryCache(const FString& InCachePath);
@@ -71,13 +70,28 @@ private:
 	static TAutoConsoleVariable<int32> CVarRestartAndroidAfterPrecompile;
 	static FOpenGLProgramBinaryCache* CachePtr;
 
-	/*  Path to directory where binary programs will be stored excluding the cache filename */
-	FString CachePath;
-	/* Just the cache filename, without the path */
-	FString CacheFilename;
+	// Binary program file layout is <osfilelocation>/CachePathRoot/CacheSubDir/CurrentShaderPipelineCacheName
 
-	// Guid of the PSO cache being procesed.
-	FGuid CurrentShaderPipelineCacheVersionGuid;
+	/*  Path to root directory where the binary program subdir will be created */
+	FString CachePathRoot;
+	/* Subdir is a hash of the device's version info, anything within CachePathRoot that does not == CacheSubDir is deleted. */
+	FString CacheSubDir;
+
+	struct FCurrentShaderPipelineProperties
+	{
+		// Guid of the PSO cache being procesed.
+		FGuid CacheVersionGuid;
+		// String name of the current cache.
+		FString PipelineCacheName;
+
+		// contains the count of programs when the write cache was last flushed.
+		int32 NumProgramsFlushed = 0;
+		// Last mmapped position
+		int64 LastMappedPosition = 0;
+		// Last number of programs mapped
+		int32 MappedPrograms = 0;
+	};
+	FCurrentShaderPipelineProperties CurrentShaderPipelineProperties;
 
 	/**
 	* Shaders that were requested for compilation
@@ -92,14 +106,15 @@ private:
 
 	void ScanProgramCacheFile();
 
-	void OpenAsyncReadHandle();
-	void CloseAsyncReadHandle();
+	bool OpenCacheWriteHandle(const FString& ProgramCacheFilenameToWrite, bool bAppendToExisting);
 
-	bool OpenWriteHandle();
-	void CloseWriteHandle();
+	// set the file header to the current write position and program count, then flush the cache to storage.
+	bool MarkValidContent(int32 NumPrograms);
 
-	FOpenGLProgramBinary CreateAndCacheProgramBinary_Internal(const FOpenGLProgramKey& ProgramKey, GLuint Program);
-	bool DoesOutputCacheContain_Internal(const FOpenGLProgramKey& ProgramKey) const;
+	// finalize the current cache file, returns true if a valid file was created.
+	bool CloseCacheWriteHandle(int32 NumProgramsAdded); 
+
+	bool RequiresCaching_Internal(const FOpenGLProgramKey& ProgramKey);
 
 	void AddProgramBinaryDataToBinaryCache(const FOpenGLProgramKey& ProgramKey, const FOpenGLProgramBinary& BinaryProgramData);
 
@@ -112,16 +127,23 @@ private:
 	void OnShaderPipelineCacheOpened(FString const& Name, EShaderPlatform Platform, uint32 Count, const FGuid& VersionGuid, FShaderPipelineCache::FShaderCachePrecompileContext& ShaderCachePrecompileContext);
 	void OnShaderPipelineCachePrecompilationComplete(uint32 Count, double Seconds, const FShaderPipelineCache::FShaderCachePrecompileContext& ShaderCachePrecompileContext);
 
+	void InitPrecaching();
+	void UpdatePrecacheMapping();
+
 private:
+	TRefCountPtr<FOpenGLProgramBinaryMapping> GetOrAddFileMapping(const FString& ProgramCacheFilename, int32 ProgramCount, int64 Offset, int64 Size);
+
+	FString GetProgramBinaryCacheDir() const { return (CachePathRoot / CacheSubDir);	}
+	bool ReadProgramFile_Internal(uint32 ProgramsToRead, int64 EndOffset, const FString& ProgramCacheFilename, FArchive& Ar);
 
 	FDelegateHandle OnShaderPipelineCacheOpenedDelegate;
 	FDelegateHandle OnShaderPipelineCachePrecompilationCompleteDelegate;
 
-	TSet<FOpenGLProgramKey> ProgramsWrittenToOutputCache; // Only populated when creating the cache. Used to prevents duplicates.
+	TSet<FOpenGLProgramKey> ProgramsInCurrentCache; // Only populated during PSO precompile delegates.
 
-	// All of the mmapped binary programs encountered during the cache open scan.
+	// All of the binary programs encountered during PSO cache processing.
 	// The contents are moved to OpenGL's program cache during RHI's end of frame tick.
-	TMap<FOpenGLProgramKey, TUniqueObj<FOpenGLProgramBinary>> ScannedBinaryPrograms;
+	TMap<FOpenGLProgramKey, TUniqueObj<FOpenGLProgramBinary>> PendingGLContainerPrograms;
 
 	FArchive* BinaryCacheWriteFileHandle;
 	bool bShownLoadingScreen;
@@ -133,9 +155,9 @@ private:
 		ValidCacheFile,					// We have a valid cache file we can use for reading.
 	};
 
-	bool IsBuildingCache_internal() const	{ return BinaryFileState == EBinaryFileState::BuildingCacheFile; }
+	bool IsBuildingCache_internal() const	{ return CurrentBinaryFileState == EBinaryFileState::BuildingCacheFile; }
 
-	EBinaryFileState BinaryFileState;
+	EBinaryFileState CurrentBinaryFileState;
 
 	// Container of all currently open program cache files.
 	TMap<FGuid, TRefCountPtr<FOpenGLProgramBinaryMapping>> MappedCacheFiles;

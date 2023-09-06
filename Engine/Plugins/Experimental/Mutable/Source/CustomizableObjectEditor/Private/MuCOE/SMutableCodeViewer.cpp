@@ -4,13 +4,12 @@
 
 #include "DesktopPlatformModule.h"
 #include "EditorDirectories.h"
+#include "IDesktopPlatform.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Views/TableViewMetadata.h"
-#include "IDesktopPlatform.h"
 #include "Misc/Paths.h"
 #include "MuCO/CustomizableObject.h"
 #include "MuCOE/SMutableBoolViewer.h"
-#include "MuCOE/SMutableColorPreviewBox.h"
 #include "MuCOE/SMutableColorViewer.h"
 #include "MuCOE/SMutableConstantsWidget.h"
 #include "MuCOE/SMutableCurveViewer.h"
@@ -23,18 +22,22 @@
 #include "MuCOE/SMutableScalarViewer.h"
 #include "MuCOE/SMutableSkeletonViewer.h"
 #include "MuCOE/SMutableStringViewer.h"
+#include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "MuR/SystemPrivate.h"
 #include "MuT/ErrorLogPrivate.h"
 #include "MuT/Streams.h"
-#include "MuT/Table.h"
 #include "MuT/TypeInfo.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Views/STreeView.h"
-#include "Widgets/SNullWidget.h"
+
+
+#include "Widgets/Input/SSearchBox.h"
+#include "Internationalization/Regex.h"
 
 class FExtender;
 class FReferenceCollector;
@@ -109,130 +112,30 @@ public:
 		}
 	}
 
+	/** Depending on the state of the row returns one color or another to be used by the highlighting system */
+	FLinearColor GetHighlightColor() const
+	{
+		if (bShouldBeHiglighted)
+		{
+			if (RowItem->DuplicatedOf)
+			{
+				return HighlightedDuplicatedBoxColor;
+			}
+			else
+			{
+				return HighlightedUniqueRowBoxColor;
+			}
+		}
+
+		return HighlightBoxDefaultColor;
+	}
+	
 	/** Method intended with the generation of the wanted objects for each column*/
 	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override
 	{
 		// Primary column showing the name of the operation and tye type
 		if (ColumnName == MutableCodeTreeViewColumns::OperationsColumnID)
 		{
-			const mu::FProgram& Program = RowItem->MutableModel->GetPrivate()->m_program;
-			const mu::OP_TYPE Type = Program.GetOpType(RowItem->MutableOperation);
-			FString OpName = mu::s_opNames[int32(Type)];
-			OpName.TrimEndInline();
-
-			// See if the operation type accepts additional information in the label
-			switch ( Type )
-			{
-			case mu::OP_TYPE::NU_PARAMETER:
-			{
-				mu::OP::ParameterArgs Args = Program.GetOpArgs<mu::OP::ParameterArgs>(RowItem->MutableOperation);
-				OpName += TEXT(" ");
-				OpName += ANSI_TO_TCHAR(Program.m_parameters[int32(Args.variable)].m_name.c_str());
-				break;
-			}
-
-			case mu::OP_TYPE::IM_SWIZZLE:
-			{
-				mu::OP::ImageSwizzleArgs Args = Program.GetOpArgs<mu::OP::ImageSwizzleArgs>(RowItem->MutableOperation);
-				OpName += TEXT(" ");
-				OpName += ANSI_TO_TCHAR(mu::TypeInfo::s_imageFormatName[int32(Args.format)]);
-				break;
-			}
-
-			case mu::OP_TYPE::IM_PIXELFORMAT:
-			{
-				mu::OP::ImagePixelFormatArgs Args = Program.GetOpArgs<mu::OP::ImagePixelFormatArgs>(RowItem->MutableOperation);
-				OpName += TEXT(" ");
-				OpName += ANSI_TO_TCHAR(mu::TypeInfo::s_imageFormatName[int32(Args.format)]);
-				OpName += TEXT(" or ");
-				OpName += ANSI_TO_TCHAR(mu::TypeInfo::s_imageFormatName[int32(Args.formatIfAlpha)]);
-				break;
-			}
-
-			case mu::OP_TYPE::IM_MIPMAP:
-			{
-				mu::OP::ImageMipmapArgs Args = Program.GetOpArgs<mu::OP::ImageMipmapArgs>(RowItem->MutableOperation);
-				OpName += FString::Printf(TEXT(" levels: %d-%d tail: %d"), Args.levels, Args.blockLevels, int32(Args.onlyTail));
-				break;
-			}
-
-			case mu::OP_TYPE::IM_RESIZE:
-			{
-				mu::OP::ImageResizeArgs Args = Program.GetOpArgs<mu::OP::ImageResizeArgs>(RowItem->MutableOperation);
-				OpName += FString::Printf(TEXT(" %d x %d"), int32(Args.size[0]), int32(Args.size[1]));
-				break;
-			}
-
-			case mu::OP_TYPE::IM_RESIZEREL:
-			{
-				mu::OP::ImageResizeRelArgs Args = Program.GetOpArgs<mu::OP::ImageResizeRelArgs>(RowItem->MutableOperation);
-				OpName += FString::Printf(TEXT(" %.3f x %.3f"), Args.factor[0], Args.factor[1]);
-				break;
-			}
-
-			case mu::OP_TYPE::IM_MULTILAYER:
-			{
-				mu::OP::ImageMultiLayerArgs Args = Program.GetOpArgs<mu::OP::ImageMultiLayerArgs>(RowItem->MutableOperation);
-				OpName += TEXT(" rgb: ");
-				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendType)];
-				if (Args.blendTypeAlpha != int8(mu::EBlendType::BT_NONE))
-				{
-					OpName += TEXT(", a: ");
-					OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendTypeAlpha)];
-				}
-				OpName += FString::Printf(TEXT(" range-id: %d"), Args.rangeId);
-				OpName += FString::Printf(TEXT(" mask-from-alpha: %d"), int32(Args.bUseMaskFromBlended));
-				break;
-			}
-
-			case mu::OP_TYPE::IM_LAYER:
-			{
-				mu::OP::ImageLayerArgs Args = Program.GetOpArgs<mu::OP::ImageLayerArgs>(RowItem->MutableOperation);
-				OpName += TEXT(" rgb: ");
-				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendType)];
-				if (Args.blendTypeAlpha != int8(mu::EBlendType::BT_NONE))
-				{
-					OpName += TEXT(", a: ");
-					OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendTypeAlpha)];
-				}
-				OpName += FString::Printf(TEXT(" flags %d"),Args.flags);
-				break;
-			}
-
-			case mu::OP_TYPE::IM_LAYERCOLOUR:
-			{
-				mu::OP::ImageLayerColourArgs Args = Program.GetOpArgs<mu::OP::ImageLayerColourArgs>(RowItem->MutableOperation);
-				OpName += TEXT(" rgb: ");
-				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendType)];
-				OpName += TEXT(" a: ");
-				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendTypeAlpha)];
-				OpName += FString::Printf(TEXT(" flags %d"), Args.flags);
-				break;
-			}
-
-			default:
-				break;
-			}
-
-			// Prepare the text shown on the UI side of the operation tree
-			FString MainLabel = FString::Printf(TEXT("%s %d : %s"), *RowItem->Caption, int32(RowItem->MutableOperation), *OpName);
-
-			// DEBUG : 
-			// FString IndexOnTree = FString::FromInt(RowItem->IndexOnTree);
-			// IndexOnTree.Append(TEXT("- "));
-			// MainLabel.InsertAt(0,IndexOnTree);
-
-			// DEBUG : 
-			// FString RowStateIndex = FString::FromInt(RowItem->GetStateIndex());
-			// RowStateIndex.Append(TEXT(" st "));
-			// MainLabel.InsertAt(0,RowStateIndex);
-
-			
-			if (RowItem->DuplicatedOf)
-			{
-				MainLabel.Append(TEXT(" (duplicated)"));
-			}
-
 			// TODO:
 			const FSlateBrush* IconBrush = nullptr;
 			
@@ -241,14 +144,14 @@ public:
 				
 			// First coll showing operation name and type
 			+ SHorizontalBox::Slot()
-			.HAlign(EHorizontalAlignment::HAlign_Left)
+			.HAlign(EHorizontalAlignment::HAlign_Fill)
 			[
 				SNew(SOverlay)
 
 				+ SOverlay::Slot()
 				[
-					SAssignNew(this->HighlightingColorBox, SMutableColorPreviewBox)
-					.BoxColor(HighlightBoxDefaultColor)
+					SAssignNew(this->HighlightingColorBox, SColorBlock)
+					.Color(this, &SMutableCodeTreeRow::GetHighlightColor)
 				]
 
 				+ SOverlay::Slot()
@@ -278,7 +181,7 @@ public:
 					+ SHorizontalBox::Slot()
 					[
 						SNew(STextBlock)
-						.Text(FText::FromString(MainLabel))
+						.Text(FText::FromString(RowItem->MainLabel))
 						.ColorAndOpacity(RowItem->LabelColor)
 					]
 				]
@@ -320,23 +223,16 @@ public:
 		return SNullWidget::NullWidget;
 	}
 	
-	/** Set the row background to one or another highlighting color depending if it is a unique or a duplicated row */
-	void Highlight() const
+	/** Marks the row to be highlighted */
+	void Highlight()
 	{
-		if (RowItem->DuplicatedOf)
-		{
-			HighlightingColorBox->SetColor(HighlightedDuplicatedBoxColor);
-		}
-		else
-		{
-			HighlightingColorBox->SetColor(HighlightedUniqueRowBoxColor);
-		}
+		bShouldBeHiglighted = true;
 	}
 
-	/** Sets the background of the row to the default state */
-	void ResetHighlight() const
+	/** Resets the highlighting status */
+	void ResetHighlight()
 	{
-		HighlightingColorBox->SetColor(HighlightBoxDefaultColor);
+		bShouldBeHiglighted = false;
 	}
 
 	/** Returns a reference to the Element this row is representing */
@@ -358,16 +254,16 @@ private:
 	 */
 	
 	/** Custom Widget used to display a color. Used as the background of the text on the row to serve as highlighting Visual Element*/
-	TSharedPtr<SMutableColorPreviewBox> HighlightingColorBox = nullptr;
+	TSharedPtr<SColorBlock> HighlightingColorBox = nullptr;
 	
 	/** The color used to highlight the row if duplicated from another row */
-	const FSlateColor HighlightedDuplicatedBoxColor = FSlateColor(FLinearColor(1, 1, 1, 0.15));
+	const FLinearColor HighlightedDuplicatedBoxColor = FLinearColor(1, 1, 1, 0.15);
 
 	/** The color used to highlight elements that are originals (not duplicates)  */
-	const FSlateColor HighlightedUniqueRowBoxColor = FSlateColor(FLinearColor(1, 1, 1, 0.28));
+	const FLinearColor HighlightedUniqueRowBoxColor = FLinearColor(1, 1, 1, 0.28);
 
 	/** Default color used when the row is not highlighted */
-	const FSlateColor HighlightBoxDefaultColor = FSlateColor(TransparentColor);
+	const FLinearColor HighlightBoxDefaultColor = TransparentColor;
 
 	/*
 	 * Extra data objects
@@ -390,6 +286,8 @@ private:
 
 	/** Color shown on the extra data column when the resource is found to be State Constant */
 	const FLinearColor StateConstantBoxColor = FLinearColor(1,0,0,0.8);
+
+	bool bShouldBeHiglighted = false;
 };
 
 
@@ -405,6 +303,11 @@ FString SMutableCodeViewer::GetReferencerName() const
 	return TEXT("SMutableCodeViewer");
 }
 
+void SMutableCodeViewer::ClearSelectedTreeRow() const
+{
+	check(TreeView);
+	TreeView->ClearSelection();
+}
 
 void SMutableCodeViewer::SetCurrentModel(const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& InMutableModel)
 {
@@ -420,7 +323,14 @@ void SMutableCodeViewer::SetCurrentModel(const TSharedPtr<mu::Model, ESPMode::Th
 	FoundModelOperationTypeElements.Empty();
 	ModelOperationTypes.Empty();
 	ModelOperationTypeNames.Empty();
+
+	// Reset navigation by type / constant resource
 	NavigationElements.Empty();
+	NavigationIndex = -1;
+
+	// Reset navigation by string
+	NameBasedNavigationElements.Empty();
+	StringNavigationIndex = -1;
 
 	// Generate all elements before starting the tree UI so we have a deterministic set of unique and duplicated elements
 	GenerateAllTreeElements();
@@ -491,7 +401,7 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const TSharedPtr<mu
 					{
 						const FString SaveFileName = FString(SaveFilenames[0]);
 
-						mu::OutputFileStream Stream(TCHAR_TO_ANSI(*SaveFileName));
+						mu::OutputFileStream Stream(StringCast<ANSICHAR>(*SaveFileName).Get());
 						Stream.Write(MUTABLE_COMPILED_MODEL_FILETAG, 4);
 						mu::OutputArchive Archive(&Stream);
 						mu::Model::Serialise(InMutableModel.Get(), Archive);
@@ -513,6 +423,11 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const TSharedPtr<mu
 	ToolbarBuilder.EndSection();
 
 	ToolbarBuilder.AddWidget(SNew(STextBlock).Text(FText::FromString(InArgs._DataTag)));
+
+	TSharedRef<SScrollBar> TreeVertScrollBar =
+		SNew(SScrollBar).
+		Orientation(EOrientation::Orient_Vertical).
+		AlwaysShowScrollbar(false);
 	
 	ChildSlot
 	[
@@ -533,7 +448,63 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const TSharedPtr<mu
 			.Value(0.35f)
 			[
 				SNew(SVerticalBox)
-		
+
+				// Search box for tree operations
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Right)
+				[
+					SNew(SHorizontalBox)
+
+					// Search by name
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SHorizontalBox)
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("SelectedOperationByStringLabel","Search Operation by String :"))
+						]
+					
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SSearchBox)
+							.HintText(LOCTEXT("OperationToSearchHintText","Search OP"))
+							.SearchResultData(this,&SMutableCodeViewer::SearchResultsData)
+							.OnSearch(this, &SMutableCodeViewer::OnTreeStringSearch)
+							.OnTextChanged(this, &SMutableCodeViewer::OnTreeSearchTextChanged)
+							.OnTextCommitted(this, &SMutableCodeViewer::OnTreeSearchTextCommitted)
+						]
+					]
+					
+					
+					// Regex control for search by name
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(4,2)
+					[
+						SNew(SHorizontalBox)
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("OperationToSearchRegexLabel","Is RegEx?"))
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SCheckBox)
+							.OnCheckStateChanged(this,&SMutableCodeViewer::OnRegexToggleChanged)
+						]
+					]	
+				]
+				
 				// Operation type filtering slot
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -613,31 +584,53 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const TSharedPtr<mu
 				.FillHeight(1.0f)
 				[
 					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("ToolPanel.GroupBorder"))
 					.Padding(FMargin(4.0f, 4.0f))
 					[
-						SAssignNew(TreeView, STreeView<TSharedPtr<FMutableCodeTreeElement>>)
-						.TreeItemsSource(&RootNodes)
-						.OnGenerateRow(this, &SMutableCodeViewer::GenerateRowForNodeTree)
-						.OnRowReleased(this, &SMutableCodeViewer::OnRowReleased)
-						.OnGetChildren(this, &SMutableCodeViewer::GetChildrenForInfo)
-						.OnSelectionChanged(this, &SMutableCodeViewer::OnSelectionChanged)
-						.OnSetExpansionRecursive(this, &SMutableCodeViewer::TreeExpandRecursive)
-						.OnContextMenuOpening(this, &SMutableCodeViewer::OnTreeContextMenuOpening)
-						.OnExpansionChanged(this, &SMutableCodeViewer::OnExpansionChanged)
-						.SelectionMode(ESelectionMode::Single)
-						.HeaderRow
-						(
-							SNew(SHeaderRow)
+						SNew(SHorizontalBox)
 
-							+ SHeaderRow::Column(MutableCodeTreeViewColumns::OperationsColumnID)
-								.DefaultLabel(LOCTEXT("Operation", "Operation"))
-								.FillWidth(OperationsColumnWidth)
-								
-							+ SHeaderRow::Column(MutableCodeTreeViewColumns::AdditionalDataColumnID)
-								.DefaultLabel(LOCTEXT("OperationFlags", "Flags"))
-								.FillWidth(ExtraDataColumnWidth)
-						)
+						+ SHorizontalBox::Slot()
+						.FillWidth(1.0f)
+						[
+							SNew(SScrollBox)
+							.Orientation(EOrientation::Orient_Horizontal)
+							.ConsumeMouseWheel(EConsumeMouseWheel::Never)
+
+							+ SScrollBox::Slot()
+							.HAlign(HAlign_Fill)
+							[
+								SAssignNew(TreeView, STreeView<TSharedPtr<FMutableCodeTreeElement>>)
+								.TreeItemsSource(&RootNodes)
+								.OnGenerateRow(this, &SMutableCodeViewer::GenerateRowForNodeTree)
+								.OnRowReleased(this, &SMutableCodeViewer::OnRowReleased)
+								.OnGetChildren(this, &SMutableCodeViewer::GetChildrenForInfo)
+								.OnSelectionChanged(this, &SMutableCodeViewer::OnSelectionChanged)
+								.OnSetExpansionRecursive(this, &SMutableCodeViewer::TreeExpandRecursive)
+								.OnContextMenuOpening(this, &SMutableCodeViewer::OnTreeContextMenuOpening)
+								.OnExpansionChanged(this, &SMutableCodeViewer::OnExpansionChanged)
+								.SelectionMode(ESelectionMode::Single)
+								.ExternalScrollbar(TreeVertScrollBar)
+								.HeaderRow
+								(
+									SNew(SHeaderRow)
+									.ResizeMode(ESplitterResizeMode::Fill)
+
+									+ SHeaderRow::Column(MutableCodeTreeViewColumns::OperationsColumnID)
+										.DefaultLabel(LOCTEXT("Operation", "Operation"))
+										.ManualWidth(618.0f)
+				
+									+ SHeaderRow::Column(MutableCodeTreeViewColumns::AdditionalDataColumnID)
+										.DefaultLabel(LOCTEXT("OperationFlags", "Flags"))
+										.FixedWidth(50.0f)
+								)
+							]
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							TreeVertScrollBar
+						]
 					]
 				]
 				
@@ -710,7 +703,7 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const TSharedPtr<mu
 				.Value(0.72f)
 				[
 					SAssignNew(PreviewBorder, SBorder)
-					.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(UE_MUTABLE_GET_BRUSH("ToolPanel.GroupBorder"))
 					.Padding(FMargin(4.0f, 4.0f))					
 				]
 			]
@@ -746,6 +739,234 @@ void SMutableCodeViewer::OnCurrentMipSkipChanged(int32 NewValue)
 	MipsToSkip = NewValue;
 	bIsPreviewPendingUpdate = true;
 }
+
+#pragma region CodeTree operation name search
+
+
+void SMutableCodeViewer::OnRegexToggleChanged(ECheckBoxState CheckBoxState)
+{
+	const bool bPreChangeValue = bIsSearchStringRegularExpression;
+	bIsSearchStringRegularExpression = CheckBoxState == ECheckBoxState::Checked ? true : false;
+	
+	if (bPreChangeValue != bIsSearchStringRegularExpression)
+	{
+		CacheOperationsMatchingStringPattern();
+		GoToNextOperation();
+	}
+}
+
+void SMutableCodeViewer::OnTreeStringSearch(SSearchBox::SearchDirection SearchDirection)
+{
+	if (SearchDirection==SSearchBox::SearchDirection::Next)
+	{
+		GoToNextOperation();
+	}
+	else
+	{
+		GoToPreviousOperation();
+	}
+}
+
+void SMutableCodeViewer::GoToNextOperation()
+{
+	// Contingency : Prevent a second scroll operation from being performed if still we do not have the first target in view
+	if (bWasScrollToTargetRequested)
+	{
+		return;
+	}
+	
+	if (NameBasedNavigationElements.Num())
+	{
+		const int32 PreviousIndex = StringNavigationIndex;
+
+		// Focus on next target
+		StringNavigationIndex = StringNavigationIndex >= NameBasedNavigationElements.Num() - 1
+										   ? 0
+										   : StringNavigationIndex + 1;
+
+		if (StringNavigationIndex != PreviousIndex)
+		{
+			FocusViewOnNavigationTarget(NameBasedNavigationElements[StringNavigationIndex]);
+		}
+	}
+}
+
+
+void SMutableCodeViewer::GoToPreviousOperation()
+{
+	// Contingency : Prevent a second scroll operation from being performed if still we do not have the first target in view
+	if (bWasScrollToTargetRequested)
+	{
+		return;
+	}
+	
+	if (NameBasedNavigationElements.Num())
+	{
+		const int32 PreviousIndex = StringNavigationIndex;
+		
+		// Focus on previous target
+		StringNavigationIndex = StringNavigationIndex <= 0 ?  NameBasedNavigationElements.Num() -1 : StringNavigationIndex -1;
+
+		if (PreviousIndex != StringNavigationIndex)
+		{
+			FocusViewOnNavigationTarget(NameBasedNavigationElements[StringNavigationIndex]);
+		}
+	}
+}
+
+void SMutableCodeViewer::GoToTargetOperation(const int32& InTargetIndex)
+{
+	if (InTargetIndex == StringNavigationIndex)
+	{
+		return;
+	}
+	
+	if (NameBasedNavigationElements.Num() && InTargetIndex > 0 && InTargetIndex <= NameBasedNavigationElements.Num()-1)
+	{
+		// Focus on the target index
+		StringNavigationIndex = InTargetIndex;
+		FocusViewOnNavigationTarget(NameBasedNavigationElements[StringNavigationIndex]);
+	}
+}
+
+
+void SMutableCodeViewer::OnTreeSearchTextChanged(const FText& InUpdatedText)
+{
+	SearchString = InUpdatedText.ToString();
+}
+
+
+TOptional<SSearchBox::FSearchResultData> SMutableCodeViewer::SearchResultsData() const
+{
+	if (NameBasedNavigationElements.Num() == 0)
+	{
+		return TOptional<SSearchBox::FSearchResultData>();
+	}
+	return TOptional<SSearchBox::FSearchResultData>({ NameBasedNavigationElements.Num(), StringNavigationIndex + 1});
+}
+
+
+void SMutableCodeViewer::OnTreeSearchTextCommitted(const FText& InUpdatedText, ETextCommit::Type TextCommitType)
+{
+	if (TextCommitType == ETextCommit::OnEnter)
+	{
+		check (InUpdatedText.ToString() == SearchString);
+		CacheOperationsMatchingStringPattern();	
+		GoToNextOperation();
+	}
+}
+
+
+void SMutableCodeViewer::CacheOperationsMatchingStringPattern()
+{
+	check(MutableModel);
+	check(RootNodeAddresses.Num());
+	
+	if ( LastSearchedString == SearchString &&
+		bWasLastSearchRegEx == bIsSearchStringRegularExpression && 
+		LastSearchedModel == MutableModel )
+	{
+		// Do not perform a search again since the context has not changed
+		return;
+	} 
+	
+	if (!SearchString.IsEmpty())
+	{
+		UE_LOG(LogMutable,Display,TEXT("Starting string search with target string ""\"%s""\" "),*SearchString);
+	
+		// Object containing all data required by the search operation to be able to be called recursively
+		FElementsSearchCache SearchPayload;
+		// Initialize the Search Payload with the root node addresses. This way the search will use them as the root nodes where
+		// to start searching
+		SearchPayload.SetupRootBatch(RootNodeAddresses);
+
+		const mu::FProgram& Program = MutableModel->GetPrivate()->m_program;
+		GetOperationsMatchingStringPattern(SearchString,bIsSearchStringRegularExpression,SearchPayload, Program);
+	
+		// Dump the located resources array onto the navigation array
+		NameBasedNavigationElements = MoveTemp(SearchPayload.FoundElements);
+		SortElementsByTreeIndex(NameBasedNavigationElements);
+		
+		UE_LOG(LogMutable, Display, TEXT("Operations found with matching pattern ""\"%s""\" is  %i"), *SearchString, NameBasedNavigationElements.Num());
+	}
+	else
+	{
+		NameBasedNavigationElements.Reset();
+	}
+
+	// Reset the search index
+	StringNavigationIndex = -1;
+
+	// Keep track of what context was used to perform the search to avoid doing it again if the context has not changed
+	LastSearchedString = SearchString;
+	bWasLastSearchRegEx = bIsSearchStringRegularExpression;
+	LastSearchedModel = MutableModel;
+}
+
+
+void SMutableCodeViewer::GetOperationsMatchingStringPattern(const FString& InStringPattern,const bool bIsRegularExpression ,FElementsSearchCache& SearchPayload,const mu::FProgram& InProgram)
+{
+	// next batch of addresses to be explored 
+	TArray<FItemCacheKey> NextBatchAddressesData;
+	
+	for (int32 ParentIndex = 0; ParentIndex < SearchPayload.BatchData.Num(); ParentIndex++)
+	{	
+		const FItemCacheKey CacheKey = SearchPayload.BatchData[ParentIndex];
+		const FString OperationDescriptiveText = GetOperationDescriptiveText(CacheKey);
+		
+		bool bMatchesPattern = false;
+		if (!bIsRegularExpression)
+		{
+			// Check if the provided text is contained over the element identification text
+			bMatchesPattern = OperationDescriptiveText.Contains(InStringPattern);
+		}
+		else
+		{
+			FRegexPattern Pattern{InStringPattern};
+			FRegexMatcher RegexMatcher{Pattern,OperationDescriptiveText};
+			bMatchesPattern = RegexMatcher.FindNext();
+		}
+		
+		// Get one of the previous run "children" and treat as a parent to get it's children and process them
+		const mu::OP::ADDRESS& ParentAddress = SearchPayload.BatchData[ParentIndex].Child;
+		
+		if (bMatchesPattern)
+		{
+			SearchPayload.AddToFoundElements(ParentAddress,ParentIndex,ItemCache);
+		}
+		
+		// Get all NON PROCESSED the children of this operation to later be able to process them (on next recursive call)
+		SearchPayload.CacheChildrenOfAddressIfNotProcessed(ParentAddress, InProgram, NextBatchAddressesData);
+	}
+
+	// At this point all the addresses to be computed on the next batch have already been set and will be computed on
+	// the next recursive call
+	
+	// Explore children if found 
+	if (NextBatchAddressesData.Num())
+	{
+		// Cache next batch data so the next invocations is able to locate the provided addresses on the itemsCache
+		SearchPayload.BatchData = MoveTemp(NextBatchAddressesData);
+		
+		GetOperationsMatchingStringPattern(InStringPattern,bIsRegularExpression, SearchPayload, InProgram);
+	}
+}
+
+
+FString SMutableCodeViewer::GetOperationDescriptiveText(const FItemCacheKey& InItemCacheKey)
+{
+	FString OperationDescriptiveText;
+		
+	if (const TSharedPtr<FMutableCodeTreeElement>* Element = ItemCache.Find(InItemCacheKey))
+	{
+		OperationDescriptiveText = Element->Get()->MainLabel;
+		check (!OperationDescriptiveText.IsEmpty());
+	}
+	
+	return OperationDescriptiveText;
+}
+
+#pragma endregion 
 
 
 #pragma region CodeTree operation search
@@ -899,10 +1120,10 @@ void SMutableCodeViewer::OnSelectedOperationTypeFromTree()
 }
 
 
-void SMutableCodeViewer::SortNavigationElements()
+void SMutableCodeViewer::SortElementsByTreeIndex(TArray<TSharedPtr<FMutableCodeTreeElement>>& InElementsArrayToSort)
 {
 	// Sort the array from lower index to bigger index (0 , 1 , 2 ...)
-	NavigationElements.Sort([](const TSharedPtr<FMutableCodeTreeElement> A , const TSharedPtr<FMutableCodeTreeElement> B)
+	InElementsArrayToSort.Sort([](const TSharedPtr<FMutableCodeTreeElement> A , const TSharedPtr<FMutableCodeTreeElement> B)
 	{
 		return A->IndexOnTree < B->IndexOnTree;
 	});
@@ -929,7 +1150,7 @@ void SMutableCodeViewer::CacheAddressesOfOperationsOfType()
 	{
 		// Cache the navigation addresses so we are able to navigate over them
 		NavigationElements = MoveTemp(SearchPayload.FoundElements);
-		SortNavigationElements();
+		SortElementsByTreeIndex(NavigationElements);
 		
 		// Reset the navigation index
 		NavigationIndex = -1;
@@ -943,7 +1164,6 @@ void SMutableCodeViewer::GetOperationsOfType(const mu::OP_TYPE& TargetOperationT
 	// next batch of addresses to be explored 
 	TArray<FItemCacheKey> NextBatchAddressesData;
 	
-	// uint32 CurrentParentBeingScanned = 0;
 	for	(int32 ParentIndex = 0 ; ParentIndex < InSearchPayload.BatchData.Num(); ParentIndex++)
 	{
 		// Get one of the previous run "children" and treat as a parent to get it's children and process them
@@ -1086,7 +1306,7 @@ FReply SMutableCodeViewer::OnGoToPreviousOperationButtonPressed()
 {
 	// Focus on previous target
 	NavigationIndex = NavigationIndex<=0 ? 0 : NavigationIndex - 1;
-	FocusViewOnNavigationTarget();
+	FocusViewOnNavigationTarget(NavigationElements[NavigationIndex]);
 	
 	return FReply::Handled();
 }
@@ -1095,37 +1315,39 @@ FReply SMutableCodeViewer::OnGoToNextOperationButtonPressed()
 {
 	// Focus on next target
 	NavigationIndex = NavigationIndex>=NavigationElements.Num() -1 ? NavigationElements.Num() -1 : NavigationIndex + 1;
-	FocusViewOnNavigationTarget();
+	FocusViewOnNavigationTarget(NavigationElements[NavigationIndex]);
 	
 	return FReply::Handled();
 }
 
-void SMutableCodeViewer::FocusViewOnNavigationTarget()
+void SMutableCodeViewer::FocusViewOnNavigationTarget(TSharedPtr<FMutableCodeTreeElement> InTargetElement)
 {
 	// Stage 1 : Expand all tree so all navigable elements get to be reachable
 	if (!bWasUniqueExpansionInvokedForNavigation && !bWasScrollToTargetRequested)
 	{
 		TreeExpandUnique();
 		bWasUniqueExpansionInvokedForNavigation = true;
+		
+		// Cache the current navigation target so after the update we can focus it 
+		ToFocusElement = InTargetElement;
+		
 		// Early exit, this method will get called again later after tree update
 		return;		
 	}
 	
 	// Stage 2 : Try to get to the targeted element. if not visible scroll into view
-	
-	// Locate the element on our map of elements
-	const TSharedPtr<FMutableCodeTreeElement> TargetElement = NavigationElements[NavigationIndex];
-	check (TargetElement.IsValid());
+	check (InTargetElement.IsValid());
 	
 	// If required scroll to the area where we know the element is going to be in view
 	// a way to ensure this happens is by calling 
-	if (TreeView->IsItemVisible(TargetElement))
+	if (TreeView->IsItemVisible(InTargetElement))
 	{
 		// Stage 3-b : Select the element we have provided since now is sure to be in view
 		
 		// This line selects the element with at the same time updates the UI to show the row representing this element selected
-		TreeView->SetSelection(TargetElement);
-	
+		TreeView->SetSelection(InTargetElement);
+		ToFocusElement.Reset();							// We have focused the target so we no longer need to keep a reference to it
+		
 		// Done!
 		// We have the element in view and we have selected it!
 	}
@@ -1136,8 +1358,8 @@ void SMutableCodeViewer::FocusViewOnNavigationTarget()
 		// Failing this check would mean we have performed a scroll but we are still not able to view the element
 		check (!bWasScrollToTargetRequested);
 		
-		// Amount of elements that can be shown by the UI at any given time (search for better way of knowing this)
-		TreeView->RequestScrollIntoView(TargetElement);
+		// Request the tree to show us the target element we want to get focused
+		TreeView->RequestScrollIntoView(InTargetElement);
 		
 		// Read this variable after the update and then select the object (easy at this point)
 		// You may want to just call again this method after refresh since the element will be on view
@@ -1171,7 +1393,7 @@ void SMutableCodeViewer::GenerateAllTreeElements()
 	for ( uint32 StateIndex=0; StateIndex<StateCount; ++StateIndex )
 	{
 		const mu::FProgram::FState& State = ModelPrivate->m_program.m_states[StateIndex];
-		FString Caption = FString::Printf( TEXT("state [%s]"), ANSI_TO_TCHAR(State.m_name.c_str()) );
+		FString Caption = FString::Printf( TEXT("state [%s]"), StringCast<TCHAR>(State.m_name.c_str()).Get() );
 
 		const FSlateColor LabelColor = ColorPerComputationalCost[StaticCast<uint8>(GetOperationTypeComputationalCost(
 			ModelPrivate->m_program.GetOpType(State.m_root)))];
@@ -1241,6 +1463,7 @@ void SMutableCodeViewer::GenerateElementRecursive(const int32& InStateIndex, mu:
 	case mu::OP_TYPE::SC_SWITCH:
 	case mu::OP_TYPE::NU_SWITCH:
 	case mu::OP_TYPE::IN_SWITCH:
+	case mu::OP_TYPE::ED_SWITCH:
 	{
 		const uint8* OpData = InProgram.GetOpArgsPointer(InParentAddress);
 
@@ -1538,6 +1761,9 @@ void SMutableCodeViewer::OnSelectionChanged(TSharedPtr<FMutableCodeTreeElement> 
 		return;
 	}
 
+	// Clear all selected items in the constant resources widget
+	ConstantsWidget->ClearSelectedConstantItems();
+	
 	// Find the duplicates for the selected tree element element and highlight them
 	if (InNode)
 	{
@@ -1727,7 +1953,7 @@ void SMutableCodeViewer::HighlightDuplicatesOfEntry(const TSharedPtr<FMutableCod
 		if (TreeItem.Get() != InTargetEntry.Get() && TreeItem->MutableOperation == HighlightedOperation)
 		{
 			TSharedPtr<ITableRow> TableRow = TreeView->WidgetFromItem(TreeItem);
-			const SMutableCodeTreeRow* MutableRow = static_cast<SMutableCodeTreeRow*>(TableRow.Get());
+			SMutableCodeTreeRow* MutableRow = static_cast<SMutableCodeTreeRow*>(TableRow.Get());
 			MutableRow->Highlight();
 		}
 	}
@@ -1746,7 +1972,7 @@ void SMutableCodeViewer::ClearHighlightedItems()
 
 			if (TableRow.IsValid())
 			{
-				const SMutableCodeTreeRow* MutableRow = static_cast<SMutableCodeTreeRow*>(TableRow.Get());
+				SMutableCodeTreeRow* MutableRow = static_cast<SMutableCodeTreeRow*>(TableRow.Get());
 				MutableRow->ResetHighlight();
 			}
 
@@ -1986,7 +2212,7 @@ void SMutableCodeViewer::CacheRootNodeAddresses()
 
 		// Dump the located resources array onto the navigation array since we have content to navigate over
 		NavigationElements = MoveTemp(SearchPayload.FoundElements);
-		SortNavigationElements();
+		SortElementsByTreeIndex(NavigationElements);
 		
 		// Reset the navigation index
 		NavigationIndex = -1;
@@ -2091,16 +2317,6 @@ bool SMutableCodeViewer::IsConstantResourceUsedByOperation(const int32 IndexOnCo
 				else if (OperationType == mu::OP_TYPE::IN_ADDSURFACE)
 				{
 					bResourceLocated = IndexOnConstantsArray == InProgram.GetOpArgs<mu::OP::InstanceAddArgs>(OperationAddress).name;
-				}
-				else if (OperationType == mu::OP_TYPE::ME_CLIPMORPHPLANE)
-				{
-					const mu::OP::MeshClipMorphPlaneArgs Arguments = InProgram.GetOpArgs<mu::OP::MeshClipMorphPlaneArgs>(OperationAddress);
-
-					// treat the data as if it was a bone name
-					if (Arguments.vertexSelectionType == mu::OP::MeshClipMorphPlaneArgs::VS_BONE_HIERARCHY)
-					{
-						bResourceLocated = IndexOnConstantsArray == InProgram.GetOpArgs<mu::OP::MeshClipMorphPlaneArgs>(OperationAddress).vertexSelectionShapeOrBone;
-					}
 				}
 				else if (OperationType == mu::OP_TYPE::ME_BINDSHAPE)
 				{
@@ -2243,44 +2459,61 @@ namespace
 			mu::FImageDesc(mu::FImageSize(1024, 1024), mu::EImageFormat::IF_RGBA_UBYTE, 1);
 		
 	public:
-		TTuple<FGraphEventRef, TFunction<void()>> GetImageAsync(mu::EXTERNAL_IMAGE_ID id, uint8 MipmapsToSkip, TFunction<void (mu::Ptr<mu::Image>)>& ResultCallback) override
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+		TTuple<UE::Tasks::FTask, TFunction<void()>> GetImageAsync(FName Id, uint8 MipmapsToSkip, TFunction<void(mu::Ptr<mu::Image>)>& ResultCallback) override
+#else
+		TTuple<FGraphEventRef, TFunction<void()>> GetImageAsync(FName Id, uint8 MipmapsToSkip, TFunction<void(mu::Ptr<mu::Image>)>& ResultCallback) override
+#endif
 		{
 			MUTABLE_CPUPROFILER_SCOPE(TestImageProvider_GetImage);
 
 			int32 Size = IMAGE_DESC.m_size[0];
 			Size = FMath::Max(4, Size / (1 << MipmapsToSkip));
 
-			mu::Ptr<mu::Image> Image = 
-					new mu::Image(IMAGE_DESC.m_size[0], IMAGE_DESC.m_size[1], IMAGE_DESC.m_lods, IMAGE_DESC.m_format);
+			mu::Ptr<mu::Image> Image = new mu::Image(
+				Size, Size, IMAGE_DESC.m_lods,
+				IMAGE_DESC.m_format,
+				mu::EInitializationType::NotInitialized);
 
-			// Generate an alphatested circle with an horizontal gradient color.
+			// Generate an alpha-tested circle with an horizontal gradient color.
 			uint8* Data = Image->GetData();
 			int32 CircleRadius = (Size * 2) / 5;
 			int32 CircleRadius2 = CircleRadius * CircleRadius;
 			int32 Color[3] = { 255,128,0 };
 
-			for (int y = 0; y < Size; ++y)
+			int32 LogSize = FMath::CeilLogTwo(Size);
+
+			int32 HalfSize = Size >> 1;
+			for (int32 RadY = -HalfSize; RadY < HalfSize; ++RadY)
 			{
-				for (int x = 0; x < Size; ++x)
+				int32 RadY2 = RadY * RadY;
+				for (int32 x = 0; x < Size; ++x)
 				{
-					float R2 = (x - Size / 2) * (x - Size / 2) + (y - Size / 2) * (y - Size / 2);
-					int32 Opacity = FMath::Clamp( (CircleRadius2-R2)/CircleRadius2 * 512 - 64, 0, 255 );
-					Data[0] = (Color[0] * x) / Size;
-					Data[1] = (Color[1] * x) / Size;
-					Data[2] = (Color[2] * x) / Size;
+					int32 RadX = (x - HalfSize);
+					int32 R2 = RadX * RadX + RadY2;
+					int32 Opacity = FMath::Clamp(((CircleRadius2 - R2) * 512) / CircleRadius2 - 64, 0, 255);
+					Data[0] = uint8((Color[0] * x) >> LogSize);
+					Data[1] = uint8((Color[1] * x) >> LogSize);
+					Data[2] = uint8((Color[2] * x) >> LogSize);
 					Data[3] = uint8(Opacity);
 					Data += 4;
 				}
 			}
 
 			ResultCallback(Image);
+
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+			UE::Tasks::FTaskEvent CompletionEvent(TEXT("TestImageProvider_GetImageAsunc_Completed"));
+			CompletionEvent.Trigger();
+#else
 			FGraphEventRef CompletionEvent = FGraphEvent::CreateGraphEvent();
 			CompletionEvent->DispatchSubsequents();
+#endif
 
 			return MakeTuple(CompletionEvent, []() -> void {});
 		}
 
-		mu::FImageDesc GetImageDesc(mu::EXTERNAL_IMAGE_ID Id, uint8 MipmapsToSkip) override
+		mu::FImageDesc GetImageDesc(FName Id, uint8 MipmapsToSkip) override
 		{
 			return IMAGE_DESC;
 		}
@@ -2300,7 +2533,7 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 		/** If we have expanded the tree elements in order to reach one of them then continue the operation */
 		if (bWasUniqueExpansionInvokedForNavigation || bWasScrollToTargetRequested)
 		{
-			FocusViewOnNavigationTarget();
+			FocusViewOnNavigationTarget(ToFocusElement);
 		}
 	}
 	
@@ -2318,7 +2551,7 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 	const mu::Ptr<mu::Settings> Settings = new mu::Settings();
 	const mu::Ptr<mu::System> System = new mu::System(Settings);
 
-	TestImageProvider* ImageProvider = new TestImageProvider;
+	TSharedPtr<TestImageProvider> ImageProvider = MakeShared<TestImageProvider>();
 	System->SetImageParameterGenerator(ImageProvider);
 
 	System->GetPrivate()->BeginBuild(MutableModel);
@@ -2336,7 +2569,7 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 	case mu::DT_IMAGE:
 	{
 		check(PreviewImageViewer);
-		mu::ImagePtrConst MutableImage = System->GetPrivate()->BuildImage(MutableModel, PreviewParameters.get(), SelectedOperationAddress, MipsToSkip);
+		mu::ImagePtrConst MutableImage = System->GetPrivate()->BuildImage(MutableModel, PreviewParameters.get(), SelectedOperationAddress, MipsToSkip, 0);
 		PreviewImageViewer->SetImage(MutableImage, 0);
 		break;
 	}
@@ -2385,26 +2618,21 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 	case mu::DT_COLOUR:
 	{
 		check(PreviewColorViewer);
-		float RedValue;
-		float GreenValue;
-		float BlueValue;
-		float AlphaValue;
-		System->GetPrivate()->BuildColour(MutableModel, PreviewParameters.get(), SelectedOperationAddress, &RedValue, &GreenValue, &BlueValue, &AlphaValue);
-		PreviewColorViewer->SetColor(RedValue, GreenValue, BlueValue, AlphaValue);
+		FVector4f Color = System->GetPrivate()->BuildColour(MutableModel, PreviewParameters.get(), SelectedOperationAddress);
+		PreviewColorViewer->SetColor(Color);
 		break;
 	}
 
 	case mu::DT_PROJECTOR:
 	{
 		check (PreviewProjectorViewer);
-		const mu::Ptr<const mu::Projector> ProjectorPtr = System->GetPrivate()->BuildProjector(
-				MutableModel, PreviewParameters.get(), SelectedOperationAddress);
-		PreviewProjectorViewer->SetProjector(ProjectorPtr->m_value);
+		mu::FProjector Projector = System->GetPrivate()->BuildProjector(MutableModel, PreviewParameters.get(), SelectedOperationAddress);
+		PreviewProjectorViewer->SetProjector(Projector);
 	}
 	
 	default:
 #if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
-		UE_LOG(LogMutable,Display,TEXT("There is no previewer for the selected type of Mutable object"))
+		UE_LOG(LogMutable, Log, TEXT("There is no previewer for the selected type of Mutable object"))
 #endif
 		// There is no viewer for this type.
 		break;
@@ -2560,13 +2788,13 @@ void SMutableCodeViewer::PreviewMutableCurve(const mu::Curve* Curve)
 // TODO: Implement matrix viewer
 void SMutableCodeViewer::PreviewMutableMatrix(const mu::mat4f* Mat)
 {
-	UE_LOG(LogMutable,Warning,TEXT("Previewer for Mutable Matrices not yet implemented"))
+	UE_LOG(LogMutable, Warning, TEXT("Previewer for Mutable Matrices not yet implemented"))
 }
 
 // TODO: Implement shape viewer
 void SMutableCodeViewer::PreviewMutableShape(const mu::FShape* Shape)
 {
-	UE_LOG(LogMutable,Warning,TEXT("Previewer for Mutable Shapes not yet implemented"))
+	UE_LOG(LogMutable, Warning, TEXT("Previewer for Mutable Shapes not yet implemented"))
 }
 
 
@@ -2585,7 +2813,7 @@ FReply SMutableCodeViewer::OnDragOver(const FGeometry& MyGeometry, const FDragDr
 				if (DraggedFileExtension == TEXT(".mutable_compiled"))
 				{
 					// Dump source model to a file.
-					mu::InputFileStream stream(TCHAR_TO_ANSI(*Files[0]));
+					mu::InputFileStream stream(StringCast<ANSICHAR>(*Files[0]).Get());
 
 					char MutableSourceTag[4] = {};
 					stream.Read(MutableSourceTag, 4);
@@ -2621,7 +2849,7 @@ FReply SMutableCodeViewer::OnDrop(const FGeometry& MyGeometry, const FDragDropEv
 				if (DraggedFileExtension == TEXT(".mutable_compiled"))
 				{
 					// Read a mutable compiled model file.
-					mu::InputFileStream stream(TCHAR_TO_ANSI(*Files[0]));
+					mu::InputFileStream stream(StringCast<ANSICHAR>(*Files[0]).Get());
 
 					char MutableSourceTag[4] = {};
 					stream.Read(MutableSourceTag, 4);

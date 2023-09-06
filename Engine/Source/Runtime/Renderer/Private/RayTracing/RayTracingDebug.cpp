@@ -17,6 +17,7 @@
 #include "RayTracing/RayTracingLighting.h"
 #include "RayTracing/RaytracingOptions.h"
 #include "RayTracing/RayTracingTraversalStatistics.h"
+#include "Nanite/NaniteRayTracing.h"
 #include "PixelShaderUtils.h"
 #include "SystemTextures.h"
 
@@ -117,12 +118,13 @@ class FRayTracingDebugRGS : public FGlobalShader
 		SHADER_PARAMETER(float, FarFieldMaxTraceDistance)
 		SHADER_PARAMETER(FVector3f, FarFieldReferencePos)
 		SHADER_PARAMETER(int32, OpaqueOnly)
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, Output)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, OutputDepth)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer, InstancesDebugData)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FRayTracingPickingFeedback>, PickingBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, SceneUniformBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -149,22 +151,31 @@ class FRayTracingDebugCHS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FRayTracingDebugCHS);
 
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
 public:
+
+	FRayTracingDebugCHS() = default;
+	FRayTracingDebugCHS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{}
+
+	class FNaniteRayTracing : SHADER_PERMUTATION_BOOL("NANITE_RAY_TRACING");
+	using FPermutationDomain = TShaderPermutationDomain<FNaniteRayTracing>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
-	FRayTracingDebugCHS() = default;
-	FRayTracingDebugCHS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FGlobalShader(Initializer)
-	{}
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		FPermutationDomain PermutationVector(Parameters.PermutationId);
+		if (PermutationVector.Get<FNaniteRayTracing>())
+		{
+			OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
+		}
+	}
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
 	{
@@ -209,8 +220,9 @@ class FRayTracingDebugTraversalCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, Output)
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FNaniteUniformParameters, NaniteUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(RaytracingTraversalStatistics::FShaderParameters, TraversalStatistics)
 
@@ -264,12 +276,13 @@ class FRayTracingPickingRGS : public FGlobalShader
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FRayTracingPickingRGS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER(int32, OpaqueOnly)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer, PickingOutput)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer, InstancesDebugData)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer, InstanceBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, SceneUniformBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -291,9 +304,7 @@ class FRayTracingDebugInstanceOverlapVS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, InstanceGPUSceneIndices)
 		SHADER_PARAMETER(float, BoundingBoxExtentScale)
 	END_SHADER_PARAMETER_STRUCT()
@@ -303,7 +314,6 @@ class FRayTracingDebugInstanceOverlapVS : public FGlobalShader
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 
 		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -382,7 +392,7 @@ public:
 	/**
 	* Initialize the RHI for this rendering resource
 	*/
-	void InitRHI() override
+	void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		TResourceArray<uint16, INDEXBUFFER_ALIGNMENT> Indices;
 
@@ -411,7 +421,7 @@ public:
 
 		// Create index buffer. Fill buffer with initial data upon creation
 		FRHIResourceCreateInfo CreateInfo(TEXT("FRayTracingDebugLineAABBIndexBuffer"), &Indices);
-		IndexBufferRHI = RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
+		IndexBufferRHI = RHICmdList.CreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 	}
 };
 
@@ -424,7 +434,7 @@ struct FRayTracingDebugResources : public FRenderResource
 	int32 PickingBufferNumPending = 0;
 	TArray<FRHIGPUBufferReadback*> PickingBuffers;
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		PickingBuffers.AddZeroed(MaxPickingBuffers);
 	}
@@ -446,10 +456,8 @@ struct FRayTracingDebugResources : public FRenderResource
 
 TGlobalResource<FRayTracingDebugResources> GRayTracingDebugResources;
 
-void BindRayTracingDebugCHSMaterialBindings(FRHICommandList& RHICmdList, const FViewInfo& View, FRayTracingPipelineState* PipelineState)
+void BindRayTracingDebugCHSMaterialBindings(FRHICommandList& RHICmdList, const FViewInfo& View, FRHIUniformBuffer* SceneUniformBuffer, FRayTracingPipelineState* PipelineState)
 {
-	const int32 NumTotalBindings = View.VisibleRayTracingMeshCommands.Num();
-
 	FSceneRenderingBulkObjectAllocator Allocator;
 
 	auto Alloc = [&](uint32 Size, uint32 Align)
@@ -459,23 +467,73 @@ void BindRayTracingDebugCHSMaterialBindings(FRHICommandList& RHICmdList, const F
 			: RHICmdList.Alloc(Size, Align);
 	};
 
+	const int32 NumTotalBindings = View.VisibleRayTracingMeshCommands.Num();
 	const uint32 MergedBindingsSize = sizeof(FRayTracingLocalShaderBindings) * NumTotalBindings;
 	FRayTracingLocalShaderBindings* Bindings = (FRayTracingLocalShaderBindings*)Alloc(MergedBindingsSize, alignof(FRayTracingLocalShaderBindings));
 
-	const uint32 NumUniformBuffers = 1;
-	FRHIUniformBuffer** UniformBufferArray = (FRHIUniformBuffer**)Alloc(sizeof(FRHIUniformBuffer*) * NumUniformBuffers, alignof(FRHIUniformBuffer*));
-	UniformBufferArray[0] = View.ViewUniformBuffer.GetReference();
+	struct FBinding
+	{
+		int32 ShaderIndexInPipeline;
+		uint32 NumUniformBuffers;
+		FRHIUniformBuffer** UniformBufferArray;
+	};
+
+	auto SetupBinding = [&](FRayTracingDebugCHS::FPermutationDomain PermutationVector)
+	{
+		auto Shader = View.ShaderMap->GetShader<FRayTracingDebugCHS>(PermutationVector);
+		auto HitGroupShader = Shader.GetRayTracingShader();
+
+		FBinding Binding;
+		Binding.ShaderIndexInPipeline = FindRayTracingHitGroupIndex(PipelineState, HitGroupShader, true);
+		Binding.NumUniformBuffers = Shader->ParameterMapInfo.UniformBuffers.Num();
+		Binding.UniformBufferArray = (FRHIUniformBuffer**)Alloc(sizeof(FRHIUniformBuffer*) * Binding.NumUniformBuffers, alignof(FRHIUniformBuffer*));
+
+		const auto& ViewUniformBufferParameter = Shader->GetUniformBufferParameter<FViewUniformShaderParameters>();
+		const auto& SceneUniformBufferParameter = Shader->GetUniformBufferParameter<FSceneUniformParameters>();
+		const auto& NaniteUniformBufferParameter = Shader->GetUniformBufferParameter<FNaniteRayTracingUniformParameters>();
+
+		if (ViewUniformBufferParameter.IsBound())
+		{
+			check(ViewUniformBufferParameter.GetBaseIndex() < Binding.NumUniformBuffers);
+			Binding.UniformBufferArray[ViewUniformBufferParameter.GetBaseIndex()] = View.ViewUniformBuffer.GetReference();
+		}
+
+		if (SceneUniformBufferParameter.IsBound())
+		{
+			check(SceneUniformBufferParameter.GetBaseIndex() < Binding.NumUniformBuffers);
+			Binding.UniformBufferArray[SceneUniformBufferParameter.GetBaseIndex()] = SceneUniformBuffer;
+		}
+
+		if (NaniteUniformBufferParameter.IsBound())
+		{
+			check(NaniteUniformBufferParameter.GetBaseIndex() < Binding.NumUniformBuffers);
+			Binding.UniformBufferArray[NaniteUniformBufferParameter.GetBaseIndex()] = Nanite::GRayTracingManager.GetUniformBuffer().GetReference();
+		}
+
+		return Binding;
+	};
+
+	FRayTracingDebugCHS::FPermutationDomain PermutationVector;
+
+	PermutationVector.Set<FRayTracingDebugCHS::FNaniteRayTracing>(false);
+	FBinding ShaderBinding = SetupBinding(PermutationVector);
+
+	PermutationVector.Set<FRayTracingDebugCHS::FNaniteRayTracing>(true);
+	FBinding ShaderBindingNaniteRT = SetupBinding(PermutationVector);
 
 	uint32 BindingIndex = 0;
 	for (const FVisibleRayTracingMeshCommand VisibleMeshCommand : View.VisibleRayTracingMeshCommands)
 	{
 		const FRayTracingMeshCommand& MeshCommand = *VisibleMeshCommand.RayTracingMeshCommand;
 
+		const FBinding& HelperBinding = MeshCommand.IsUsingNaniteRayTracing() ? ShaderBindingNaniteRT : ShaderBinding;
+
 		FRayTracingLocalShaderBindings Binding = {};
+		Binding.ShaderIndexInPipeline = HelperBinding.ShaderIndexInPipeline;
 		Binding.InstanceIndex = VisibleMeshCommand.InstanceIndex;
 		Binding.SegmentIndex = MeshCommand.GeometrySegmentIndex;
-		Binding.UniformBuffers = UniformBufferArray;
-		Binding.NumUniformBuffers = NumUniformBuffers;
+		Binding.UniformBuffers = HelperBinding.UniformBufferArray;
+		Binding.NumUniformBuffers = HelperBinding.NumUniformBuffers;
 		Binding.UserData = VisibleMeshCommand.InstanceIndex;
 
 		Bindings[BindingIndex] = Binding;
@@ -535,18 +593,27 @@ static FRDGBufferRef RayTracingPerformPicking(FRDGBuilder& GraphBuilder, const F
 	auto RayGenShader = ShaderMap->GetShader<FRayTracingPickingRGS>();
 
 	FRayTracingPipelineStateInitializer Initializer;
+	Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::RayTracingDebug);
 
 	FRHIRayTracingShader* RayGenShaderTable[] = { RayGenShader.GetRayTracingShader() };
 	Initializer.SetRayGenShaderTable(RayGenShaderTable);
 
-	auto ClosestHitShader = ShaderMap->GetShader<FRayTracingDebugCHS>();
-	auto MissShader = ShaderMap->GetShader<FRayTracingDebugMS>();
-	FRHIRayTracingShader* HitGroupTable[] = { ClosestHitShader.GetRayTracingShader() };
+	FRayTracingDebugCHS::FPermutationDomain PermutationVector;
+
+	PermutationVector.Set<FRayTracingDebugCHS::FNaniteRayTracing>(false);
+	auto HitGroupShader = View.ShaderMap->GetShader<FRayTracingDebugCHS>(PermutationVector);
+
+	PermutationVector.Set<FRayTracingDebugCHS::FNaniteRayTracing>(true);
+	auto HitGroupShaderNaniteRT = View.ShaderMap->GetShader<FRayTracingDebugCHS>(PermutationVector);
+
+	FRHIRayTracingShader* HitGroupTable[] = { HitGroupShader.GetRayTracingShader(), HitGroupShaderNaniteRT.GetRayTracingShader() };
 	Initializer.SetHitGroupTable(HitGroupTable);
 	Initializer.bAllowHitGroupIndexing = true; // Required for stable output using GetBaseInstanceIndex().
+
+	auto MissShader = ShaderMap->GetShader<FRayTracingDebugMS>();
 	FRHIRayTracingShader* MissTable[] = { MissShader.GetRayTracingShader() };
 	Initializer.SetMissShaderTable(MissTable);
-	Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::RayTracingDebug);
+
 	FRayTracingPipelineState* PickingPipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(GraphBuilder.RHICmdList, Initializer);
 
 	FRDGBufferDesc PickingBufferDesc = FRDGBufferDesc::CreateStructuredDesc(sizeof(FRayTracingPickingFeedback), 1);
@@ -555,10 +622,11 @@ static FRDGBufferRef RayTracingPerformPicking(FRDGBuilder& GraphBuilder, const F
 
 	FRayTracingPickingRGS::FParameters* RayGenParameters = GraphBuilder.AllocParameters<FRayTracingPickingRGS::FParameters>();
 	RayGenParameters->InstancesDebugData = GraphBuilder.CreateSRV(Scene->RayTracingScene.InstanceDebugBuffer);
-	RayGenParameters->TLAS = Scene->RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
+	RayGenParameters->TLAS = Scene->RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base);
 	RayGenParameters->OpaqueOnly = CVarRayTracingDebugModeOpaqueOnly.GetValueOnRenderThread();
 	RayGenParameters->InstanceBuffer = GraphBuilder.CreateSRV(Scene->RayTracingScene.InstanceBuffer);
 	RayGenParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+	RayGenParameters->SceneUniformBuffer = GetSceneUniformBufferRef(GraphBuilder, View); // TODO: use a separate params structure
 	RayGenParameters->PickingOutput = GraphBuilder.CreateUAV(PickingBuffer);
 
 	GraphBuilder.AddPass(
@@ -570,7 +638,7 @@ static FRDGBufferRef RayTracingPerformPicking(FRDGBuilder& GraphBuilder, const F
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenShader, *RayGenParameters);
 
-			BindRayTracingDebugCHSMaterialBindings(RHICmdList, View, PickingPipeline);
+			BindRayTracingDebugCHSMaterialBindings(RHICmdList, View, RayGenParameters->SceneUniformBuffer->GetRHI(), PickingPipeline);
 			RHICmdList.SetRayTracingMissShader(View.GetRayTracingSceneChecked(), 0, PickingPipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 
 			RHICmdList.RayTraceDispatch(PickingPipeline, RayGenShader.GetRayTracingShader(), View.GetRayTracingSceneChecked(), GlobalResources, 1, 1);
@@ -629,20 +697,16 @@ static FRDGBufferRef RayTracingPerformPicking(FRDGBuilder& GraphBuilder, const F
 	return PickingBuffer;
 }
 
-static void RayTracingDrawInstances(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FGPUScene& GPUScene, FRDGTextureRef OutputTexture, FRDGTextureRef SceneDepthTexture, FRDGBufferRef InstanceGPUSceneIndexBuffer, bool bWireframe)
+static void RayTracingDrawInstances(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef OutputTexture, FRDGTextureRef SceneDepthTexture, FRDGBufferRef InstanceGPUSceneIndexBuffer, bool bWireframe)
 {
 	TShaderMapRef<FRayTracingDebugInstanceOverlapVS> VertexShader(View.ShaderMap);
 	TShaderMapRef<FRayTracingDebugInstanceOverlapPS> PixelShader(View.ShaderMap);
 
 	FRayTracingDebugInstanceOverlapVSPSParameters* PassParameters = GraphBuilder.AllocParameters<FRayTracingDebugInstanceOverlapVSPSParameters>();
 	PassParameters->VS.View = View.ViewUniformBuffer;
+	PassParameters->VS.Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 	PassParameters->VS.InstanceGPUSceneIndices = GraphBuilder.CreateSRV(InstanceGPUSceneIndexBuffer);
 	PassParameters->VS.BoundingBoxExtentScale = CVarRayTracingDebugInstanceOverlapBoundingBoxScale.GetValueOnRenderThread();
-
-	const FGPUSceneResourceParameters GPUSceneParameters = GPUScene.GetShaderParameters();
-	PassParameters->VS.GPUSceneInstanceSceneData = GPUSceneParameters.GPUSceneInstanceSceneData;
-	PassParameters->VS.GPUSceneInstancePayloadData = GPUSceneParameters.GPUSceneInstancePayloadData;
-	PassParameters->VS.GPUScenePrimitiveSceneData = GPUSceneParameters.GPUScenePrimitiveSceneData;
 
 	PassParameters->PS.View = View.ViewUniformBuffer;
 
@@ -721,7 +785,7 @@ static void DrawInstanceOverlap(FRDGBuilder& GraphBuilder, const FScene* Scene, 
 	FRDGTextureDesc InstanceOverlapTextureDesc = FRDGTextureDesc::Create2D(SceneColorTexture->Desc.Extent, PF_R32_FLOAT, FClearValueBinding::Black, TexCreate_ShaderResource | TexCreate_RenderTargetable);
 	FRDGTextureRef InstanceOverlapTexture = GraphBuilder.CreateTexture(InstanceOverlapTextureDesc, TEXT("RayTracingDebug::InstanceOverlap"));
 	
-	RayTracingDrawInstances(GraphBuilder, View, Scene->GPUScene, InstanceOverlapTexture, SceneDepthTexture, Scene->RayTracingScene.DebugInstanceGPUSceneIndexBuffer, false);
+	RayTracingDrawInstances(GraphBuilder, View, InstanceOverlapTexture, SceneDepthTexture, Scene->RayTracingScene.DebugInstanceGPUSceneIndexBuffer, false);
 
 	// Calculate heatmap of instance overlap and blend it on top of ray tracing debug output
 	{
@@ -749,7 +813,7 @@ static void DrawInstanceOverlap(FRDGBuilder& GraphBuilder, const FScene* Scene, 
 	// Draw instance AABB with lines
 	if (CVarRayTracingDebugInstanceOverlapShowWireframe.GetValueOnRenderThread() != 0)
 	{
-		RayTracingDrawInstances(GraphBuilder, View, Scene->GPUScene, SceneColorTexture, SceneDepthTexture, Scene->RayTracingScene.DebugInstanceGPUSceneIndexBuffer, true);
+		RayTracingDrawInstances(GraphBuilder, View, SceneColorTexture, SceneDepthTexture, Scene->RayTracingScene.DebugInstanceGPUSceneIndexBuffer, true);
 	}
 }
 
@@ -825,8 +889,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 
 		FRayTracingDebugTraversalCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRayTracingDebugTraversalCS::FParameters>();
 		PassParameters->Output = GraphBuilder.CreateUAV(SceneColorTexture);
-		PassParameters->TLAS = Scene->RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
+		PassParameters->TLAS = Scene->RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base);
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+		PassParameters->Scene = GetSceneUniforms().GetBuffer(GraphBuilder);
 		PassParameters->NaniteUniformBuffer = CreateDebugNaniteUniformBuffer(GraphBuilder, Scene->GPUScene.InstanceSceneDataSOAStride);
 
 		PassParameters->VisualizationMode = DebugVisualizationMode;
@@ -916,20 +981,26 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 	if (bRequiresDebugCHS)
 	{
 		FRayTracingPipelineStateInitializer Initializer;
+		Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::RayTracingDebug);
 
 		FRHIRayTracingShader* RayGenShaderTable[] = { RayGenShader.GetRayTracingShader() };
 		Initializer.SetRayGenShaderTable(RayGenShaderTable);
 
-		auto ClosestHitShader = ShaderMap->GetShader<FRayTracingDebugCHS>();
-		auto MissShader = ShaderMap->GetShader<FRayTracingDebugMS>();
-		FRHIRayTracingShader* HitGroupTable[] = { ClosestHitShader.GetRayTracingShader() };
+		FRayTracingDebugCHS::FPermutationDomain PermutationVectorCHS;
+
+		PermutationVectorCHS.Set<FRayTracingDebugCHS::FNaniteRayTracing>(false);
+		auto HitGroupShader = View.ShaderMap->GetShader<FRayTracingDebugCHS>(PermutationVectorCHS);
+
+		PermutationVectorCHS.Set<FRayTracingDebugCHS::FNaniteRayTracing>(true);
+		auto HitGroupShaderNaniteRT = View.ShaderMap->GetShader<FRayTracingDebugCHS>(PermutationVectorCHS);
+
+		FRHIRayTracingShader* HitGroupTable[] = { HitGroupShader.GetRayTracingShader(), HitGroupShaderNaniteRT.GetRayTracingShader() };
 		Initializer.SetHitGroupTable(HitGroupTable);
 		Initializer.bAllowHitGroupIndexing = true; // Required for stable output using GetBaseInstanceIndex().
-		
+
+		auto MissShader = ShaderMap->GetShader<FRayTracingDebugMS>();
 		FRHIRayTracingShader* MissTable[] = { MissShader.GetRayTracingShader() };
 		Initializer.SetMissShaderTable(MissTable);
-
-		Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::RayTracingDebug);
 
 		Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(GraphBuilder.RHICmdList, Initializer);
 		bRequiresBindings = true;
@@ -969,9 +1040,11 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 	
 	RayGenParameters->InstancesDebugData = GraphBuilder.CreateSRV(InstanceDebugBuffer);
 	RayGenParameters->PickingBuffer = GraphBuilder.CreateSRV(PickingBuffer);
-	RayGenParameters->TLAS = Scene->RayTracingScene.GetLayerSRVChecked(ERayTracingSceneLayer::Base);
+	RayGenParameters->TLAS = Scene->RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base);
 	RayGenParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	RayGenParameters->Output = GraphBuilder.CreateUAV(SceneColorTexture);
+
+	RayGenParameters->SceneUniformBuffer = GetSceneUniformBufferRef(GraphBuilder); // TODO: use a separate params structure
 
 	FIntRect ViewRect = View.ViewRect;
 
@@ -988,7 +1061,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDebug(FRDGBuilder& GraphBuil
 
 		if (bRequiresBindings)
 		{
-			BindRayTracingDebugCHSMaterialBindings(RHICmdList, View, Pipeline);
+			BindRayTracingDebugCHSMaterialBindings(RHICmdList, View, RayGenParameters->SceneUniformBuffer->GetRHI(), Pipeline);
 			RHICmdList.SetRayTracingMissShader(View.GetRayTracingSceneChecked(), 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 		}
 
@@ -1049,7 +1122,7 @@ void FDeferredShadingSceneRenderer::RayTracingDisplayPicking(const FRayTracingPi
 	{
 		if (Instance.GeometryRHI)
 		{
-			const uint64 GeometryAddress = uint64(Instance.GeometryRHI.GetReference());
+			const uint64 GeometryAddress = uint64(Instance.GeometryRHI);
 			if (PickingFeedback.GeometryAddress == GeometryAddress)
 			{
 				Geometry = Instance.GeometryRHI;

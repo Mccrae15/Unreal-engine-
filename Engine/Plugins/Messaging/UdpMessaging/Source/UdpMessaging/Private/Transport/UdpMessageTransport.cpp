@@ -231,6 +231,13 @@ void JoinedToGroup(const FIPv4Endpoint& UnicastEndpoint, const FIPv4Endpoint& Mu
 		{
 			DoJoinMulticastGroup(MulticastAddr, LocalIp, MulticastSocket);
 		}
+
+		// GetLocalAdapterAddresses returns empty list when all network adapters are offline
+		if (LocapIps.Num() == 0)
+		{
+			bool bCanBindAll = false;
+			DoJoinMulticastGroup(MulticastAddr, ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalHostAddr(*GLog, bCanBindAll), MulticastSocket);
+		}
 	}
 	else
 	{
@@ -319,6 +326,8 @@ bool FUdpMessageTransport::StartTransport(IMessageTransportHandler& Handler)
 		MessageProcessor->OnError().BindRaw(this, &FUdpMessageTransport::HandleProcessorError);
 		MessageProcessor->OnErrorSendingToEndpoint_UdpMessageProcessorThread().BindRaw(this, &FUdpMessageTransport::HandleEndpointCommunicationError);
 		MessageProcessor->OnCanAcceptEndpoint_UdpMessageProcessorThread().BindRaw(this, &FUdpMessageTransport::HandleProcessorEndpointCheck);
+		UUdpMessagingSettings const * CurrentSettings = GetDefault<UUdpMessagingSettings>();
+		MessageProcessor->SetShareKnownNodesState(CurrentSettings->bShareKnownNodesWithActiveConnections);
 	}
 
 	if (MulticastSocket != nullptr)
@@ -471,7 +480,7 @@ void FUdpMessageTransport::HandleProcessorError()
 			// won't be able to access the settings CDO even if the transport still exists.
 			if (!UObjectInitialized())
 			{
-					return;
+				return;
 			}
 
 			if (TSharedPtr<FUdpMessageTransport, ESPMode::ThreadSafe> Transport = WeakTransport.Pin())

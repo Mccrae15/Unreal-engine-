@@ -2,10 +2,13 @@
 #include "LevelInstanceEditorModule.h"
 #include "LevelInstanceActorDetails.h"
 #include "LevelInstancePivotDetails.h"
+#include "PackedLevelActorUtils.h"
+#include "LevelInstanceFilterPropertyTypeCustomization.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceActor.h"
 #include "PackedLevelActor/PackedLevelActor.h"
+#include "PackedLevelActor/PackedLevelActorBuilder.h"
 #include "LevelInstanceEditorSettings.h"
 #include "ToolMenus.h"
 #include "Editor.h"
@@ -41,6 +44,7 @@
 #include "MessageLogModule.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "WorldPartition/WorldPartitionConverter.h"
+#include "WorldPartition/WorldPartitionActorLoaderInterface.h"
 
 IMPLEMENT_MODULE( FLevelInstanceEditorModule, LevelInstanceEditor );
 
@@ -261,6 +265,26 @@ namespace LevelInstanceMenuUtils
 		}
 	}
 
+	UClass* GetDefaultLevelInstanceClass(ELevelInstanceCreationType CreationType)
+	{
+		if (CreationType == ELevelInstanceCreationType::PackedLevelActor)
+		{
+			return APackedLevelActor::StaticClass();
+		}
+
+		ULevelInstanceEditorSettings* LevelInstanceEditorSettings = GetMutableDefault<ULevelInstanceEditorSettings>();
+		if (!LevelInstanceEditorSettings->LevelInstanceClassName.IsEmpty())
+		{
+			UClass* LevelInstanceClass = LoadClass<AActor>(nullptr, *LevelInstanceEditorSettings->LevelInstanceClassName, nullptr, LOAD_NoWarn);
+			if (LevelInstanceClass && LevelInstanceClass->ImplementsInterface(ULevelInstanceInterface::StaticClass()))
+			{
+				return LevelInstanceClass;
+			}
+		}
+
+		return ALevelInstance::StaticClass();
+	}
+
 	void CreateLevelInstanceFromSelection(ULevelInstanceSubsystem* LevelInstanceSubsystem, ELevelInstanceCreationType CreationType)
 	{
 		TArray<AActor*> ActorsToMove;
@@ -317,20 +341,12 @@ namespace LevelInstanceMenuUtils
 				UPackage* TemplatePackage = !TemplateMapPackage.IsEmpty() ? LoadPackage(nullptr, *TemplateMapPackage, LOAD_None) : nullptr;
 				
 				CreationParams.TemplateWorld = TemplatePackage ? UWorld::FindWorldInPackage(TemplatePackage) : nullptr;
-				
-				if (!LevelInstanceEditorSettings->LevelInstanceClassName.IsEmpty())
-				{
-					UClass* LevelInstanceClass = LoadClass<AActor>(nullptr, *LevelInstanceEditorSettings->LevelInstanceClassName, nullptr, LOAD_NoWarn);
-					if (LevelInstanceClass && LevelInstanceClass->ImplementsInterface(ULevelInstanceInterface::StaticClass()))
-					{
-						CreationParams.LevelInstanceClass = LevelInstanceClass;
-					}
-				}
+				CreationParams.LevelInstanceClass = GetDefaultLevelInstanceClass(CreationType);
+				CreationParams.bEnableStreaming = LevelInstanceEditorSettings->bEnableStreaming;
 
 				if (!LevelInstanceSubsystem->CreateLevelInstanceFrom(ActorsToMove, CreationParams))
 				{
-					FText FailedTitle = LOCTEXT("CreateFromSelectionFailTitle", "Create from selection failed");
-					FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("CreateFromSelectionFailMsg", "Failed to create from selection. Check log for details."), &FailedTitle);
+					FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("CreateFromSelectionFailMsg", "Failed to create from selection. Check log for details."), LOCTEXT("CreateFromSelectionFailTitle", "Create from selection failed"));
 				}
 			}
 		}
@@ -477,17 +493,17 @@ namespace LevelInstanceMenuUtils
 				;
 				if (APackedLevelActor* PackedLevelActor = Cast<APackedLevelActor>(ContextLevelInstance))
 				{
-					if (TSoftObjectPtr<UBlueprint> BlueprintAsset = PackedLevelActor->GetClass()->ClassGeneratedBy)
+					if (TSoftObjectPtr<UBlueprint> BlueprintAsset = PackedLevelActor->GetClass()->ClassGeneratedBy.Get())
 					{
 						FToolUIAction UIAction;
 						UIAction.ExecuteAction.BindLambda([ContextLevelInstance, BlueprintAsset](const FToolMenuContext& MenuContext)
-							{
-								APackedLevelActor::CreateOrUpdateBlueprint(ContextLevelInstance->GetWorldAsset(), BlueprintAsset);
-							});
+						{
+							FPackedLevelActorUtils::CreateOrUpdateBlueprint(ContextLevelInstance->GetWorldAsset(), BlueprintAsset);
+						});
 						UIAction.CanExecuteAction.BindLambda([](const FToolMenuContext& MenuContext)
-							{
-								return GEditor->GetSelectedActorCount() > 0;
-							});
+						{
+							return FPackedLevelActorUtils::CanPack() && GEditor->GetSelectedActorCount() > 0;
+						});
 
 						Section.AddMenuEntry(
 							"UpdatePackedBlueprint",
@@ -507,12 +523,12 @@ namespace LevelInstanceMenuUtils
 		
 		virtual bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
 		{
-			return InClass && InClass->ImplementsInterface(ULevelInstanceInterface::StaticClass()) && !InClass->IsChildOf(APackedLevelActor::StaticClass()) && !InClass->HasAnyClassFlags(CLASS_Deprecated);
+			return InClass && InClass->ImplementsInterface(ULevelInstanceInterface::StaticClass()) && InClass->IsNative() && !InClass->HasAnyClassFlags(CLASS_Deprecated);
 		}
 
 		virtual bool IsUnloadedClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const TSharedRef< const IUnloadedBlueprintData > InUnloadedClassData, TSharedRef< FClassViewerFilterFuncs > InFilterFuncs) override
 		{
-			return InUnloadedClassData->ImplementsInterface(ULevelInstanceInterface::StaticClass()) && !InUnloadedClassData->IsChildOf(APackedLevelActor::StaticClass())  && !InUnloadedClassData->HasAnyClassFlags(CLASS_Deprecated);
+			return false;
 		}
 	};
 
@@ -525,7 +541,7 @@ namespace LevelInstanceMenuUtils
 		LongPackageName.FindLastChar('/', LastSlashIndex);
 		
 		FString PackagePath = LongPackageName.Mid(0, LastSlashIndex == INDEX_NONE ? MAX_int32 : LastSlashIndex);
-		FString AssetName = LevelInstancePtr.GetAssetName() + "_LevelInstance";
+		FString AssetName = "BP_" + LevelInstancePtr.GetAssetName();
 		IAssetTools& AssetTools = FAssetToolsModule::GetModule().Get();
 
 		UBlueprintFactory* BlueprintFactory = NewObject<UBlueprintFactory>();
@@ -551,6 +567,11 @@ namespace LevelInstanceMenuUtils
 			LevelInstanceCDO->SetWorldAsset(LevelInstancePtr);
 			FBlueprintEditorUtils::MarkBlueprintAsModified(NewBlueprint);
 			
+			if (NewBlueprint->GeneratedClass->IsChildOf<APackedLevelActor>())
+			{
+				FPackedLevelActorUtils::UpdateBlueprint(NewBlueprint);
+			}
+
 			FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 			TArray<UObject*> Assets;
 			Assets.Add(NewBlueprint);
@@ -574,7 +595,7 @@ namespace LevelInstanceMenuUtils
 			"CreateLevelInstanceBlueprint",
 			LOCTEXT("CreateLevelInstanceBlueprint", "New Blueprint..."),
 			TAttribute<FText>(),
-			TAttribute<FSlateIcon>(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.LevelInstance"),
 			UIAction);
 	}
 
@@ -599,7 +620,6 @@ namespace LevelInstanceMenuUtils
 		FWorldPartitionConverter::FParameters Parameters;
 		Parameters.bConvertSubLevels = false;
 		Parameters.bEnableStreaming = false;
-		Parameters.bCanBeUsedByLevelInstance = true;
 		Parameters.bUseActorFolders = true;
 
 		if (FWorldPartitionConverter::Convert(WorldAsset, Parameters))
@@ -637,10 +657,42 @@ namespace LevelInstanceMenuUtils
 		}
 	}
 
+	void UpdatePackedBlueprintsFromMenu(UToolMenu* Menu, FAssetData WorldAsset)
+	{
+		FToolMenuSection& Section = CreateLevelSection(Menu);
+		FToolUIAction UIAction;
+		UIAction.CanExecuteAction.BindLambda([](const FToolMenuContext& MenuContext)
+		{
+			return FPackedLevelActorUtils::CanPack();
+		});
+		UIAction.ExecuteAction.BindLambda([WorldAsset](const FToolMenuContext& MenuContext)
+		{
+			FScopedSlowTask SlowTask(0.0f, LOCTEXT("UpdatePackedBlueprintsProgress", "Updating Packed Blueprints..."));
+			TSet<TSoftObjectPtr<UBlueprint>> BlueprintAssets;
+			FPackedLevelActorUtils::GetPackedBlueprintsForWorldAsset(TSoftObjectPtr<UWorld>(WorldAsset.GetSoftObjectPath()), BlueprintAssets, false);
+			TSharedPtr<FPackedLevelActorBuilder> Builder = FPackedLevelActorBuilder::CreateDefaultBuilder();
+			for (TSoftObjectPtr<UBlueprint> BlueprintAsset : BlueprintAssets)
+			{
+				if (UBlueprint* Blueprint = BlueprintAsset.Get())
+				{
+					Builder->UpdateBlueprint(Blueprint, false);
+				}
+			}
+		});
+
+		Section.AddMenuEntry(
+			"UpdatePackedBlueprintsFromMenu",
+			LOCTEXT("UpdatePackedBlueprintsFromMenu", "Update Packed Blueprints"),
+			TAttribute<FText>(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.PackedLevelActor"),
+			UIAction
+		);
+	}
+
 	void AddPartitionedStreamingSupportFromMenu(UToolMenu* Menu, FAssetData WorldAsset)
 	{
 		FName WorldAssetName = WorldAsset.PackageName;
-		if (!ULevel::GetIsLevelPartitionedFromPackage(WorldAssetName) || !ULevel::GetPartitionedLevelCanBeUsedByLevelInstanceFromPackage(WorldAssetName))
+		if (!ULevel::GetIsLevelPartitionedFromPackage(WorldAssetName))
 		{
 			FToolMenuSection& Section = CreateLevelSection(Menu);
 			FToolUIAction UIAction;
@@ -669,7 +721,9 @@ void FLevelInstanceEditorModule::StartupModule()
 
 	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 	PropertyModule.RegisterCustomClassLayout("LevelInstance", FOnGetDetailCustomizationInstance::CreateStatic(&FLevelInstanceActorDetails::MakeInstance));
-	PropertyModule.RegisterCustomClassLayout("LevelInstancePivot", FOnGetDetailCustomizationInstance::CreateStatic(&FLevelInstancePivotDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("LevelInstancePivot", FOnGetDetailCustomizationInstance::CreateStatic(&FLevelInstancePivotDetails::MakeInstance));		
+	PropertyModule.RegisterCustomPropertyTypeLayout("WorldPartitionActorFilter", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FLevelInstanceFilterPropertyTypeCustomization::MakeInstance, false), MakeShared<FLevelInstancePropertyTypeIdentifier>(false));
+	PropertyModule.RegisterCustomPropertyTypeLayout("WorldPartitionActorFilter", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FLevelInstanceFilterPropertyTypeCustomization::MakeInstance, true), MakeShared<FLevelInstancePropertyTypeIdentifier>(true));
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// GEditor needs to be set before this module is loaded
@@ -677,6 +731,34 @@ void FLevelInstanceEditorModule::StartupModule()
 	GEditor->OnLevelActorDeleted().AddRaw(this, &FLevelInstanceEditorModule::OnLevelActorDeleted);
 	
 	EditorLevelUtils::CanMoveActorToLevelDelegate.AddRaw(this, &FLevelInstanceEditorModule::CanMoveActorToLevel);
+
+	// Register actor descriptor loading filter
+	class FLevelInstanceActorDescFilter : public IWorldPartitionActorLoaderInterface::FActorDescFilter
+	{
+	public:
+		bool PassFilter(class UWorld* InWorld, const FWorldPartitionHandle& InHandle) override
+		{
+			if (UWorld* OwningWorld = InWorld->PersistentLevel->GetWorld())
+			{
+				if (ULevelInstanceSubsystem* LevelInstanceSubsystem = OwningWorld->GetSubsystem<ULevelInstanceSubsystem>())
+				{
+					return LevelInstanceSubsystem->PassLevelInstanceFilter(InWorld, InHandle);
+				}
+			}
+
+			return true;
+		}
+
+		// Leave [0, 19] for Game code
+		virtual uint32 GetFilterPriority() const override { return 20; }
+
+		virtual FText* GetFilterReason() const override
+		{
+			static FText UnloadedReason(LOCTEXT("LevelInstanceActorDescFilterReason", "Filtered"));
+			return &UnloadedReason;
+		}
+	};
+	IWorldPartitionActorLoaderInterface::RegisterActorDescFilter(MakeShareable<IWorldPartitionActorLoaderInterface::FActorDescFilter>(new FLevelInstanceActorDescFilter()));
 
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
 	FMessageLogInitializationOptions InitOptions;
@@ -767,20 +849,11 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 		FUIAction PackAction(
 			FExecuteAction::CreateLambda([]() 
 			{
-				UWorld* World = GEditor->GetEditorWorldContext().World();
-				if (ULevelInstanceSubsystem* LevelInstanceSubsystem = World->GetSubsystem<ULevelInstanceSubsystem>())
-				{
-					LevelInstanceSubsystem->PackAllLoadedActors();
-				}
+				FPackedLevelActorUtils::PackAllLoadedActors();
 			}), 
 			FCanExecuteAction::CreateLambda([]()
 			{
-				UWorld* World = GEditor->GetEditorWorldContext().World();
-				if (ULevelInstanceSubsystem* LevelInstanceSubsystem = World->GetSubsystem<ULevelInstanceSubsystem>())
-				{
-					return LevelInstanceSubsystem->CanPackAllLoadedActors();
-				}
-				return false;
+				return FPackedLevelActorUtils::CanPack();
 			}),
 			FIsActionChecked(),
 			FIsActionButtonVisible::CreateLambda([]() 
@@ -794,6 +867,11 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 
 	auto AddDynamicSection = [](UToolMenu* ToolMenu)
 	{				
+		if (GEditor->GetPIEWorldContext())
+		{
+			return;
+		}
+
 		if (ULevelEditorContextMenuContext* LevelEditorMenuContext = ToolMenu->Context.FindContext<ULevelEditorContextMenuContext>())
 		{
 			// Use the actor under the cursor if available (e.g. right-click menu).
@@ -833,6 +911,11 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 	{
 		FToolMenuSection& Section = WorldAssetMenu->AddDynamicSection("ActorLevelInstance", FNewToolMenuDelegate::CreateLambda([this](UToolMenu* ToolMenu)
 		{
+			if (GEditor->GetPIEWorldContext())
+			{
+				return;
+			}
+
 			if(!GetDefault<UEditorExperimentalSettings>()->bLevelInstance)
 			{
 				return;
@@ -851,6 +934,7 @@ void FLevelInstanceEditorModule::ExtendContextMenu()
 					if (AssetMenuContext->SelectedAssets[0].IsInstanceOf<UWorld>())
 					{
 						LevelInstanceMenuUtils::CreateBlueprintFromMenu(ToolMenu, WorldAsset);
+						LevelInstanceMenuUtils::UpdatePackedBlueprintsFromMenu(ToolMenu, WorldAsset);
 						LevelInstanceMenuUtils::AddPartitionedStreamingSupportFromMenu(ToolMenu, WorldAsset);
 					}
 				}

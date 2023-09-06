@@ -6,6 +6,7 @@
 #include "UObject/Package.h"
 #include "UObject/PropertyHelper.h"
 #include "UObject/TopLevelAssetPath.h"
+#include "UObject/UnrealType.h"
 
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/AutomationTest.h"
@@ -104,8 +105,8 @@ bool FCoreRedirectObjectName::Matches(const FCoreRedirectObjectName& Other, EMat
 		}
 		else if (bSubString)
 		{
-			// Much slower
-			return WriteToString<FName::StringBufferSize>(RHS).ToView().Contains(WriteToString<FName::StringBufferSize>(LHS));
+			// Much slower, see if RHS contains the substring LHS.
+			return INDEX_NONE != UE::String::FindFirst(WriteToString<FName::StringBufferSize>(RHS), WriteToString<FName::StringBufferSize>(LHS), ESearchCase::IgnoreCase);
 		}
 		else
 		{

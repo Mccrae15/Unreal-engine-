@@ -33,6 +33,7 @@
 #include "EngineModule.h"
 #include "Misc/PackageName.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Null/NullPlatformApplicationMisc.h"
 #include "ShaderPipelineCache.h"
 
 #include "Misc/ConfigCacheIni.h"
@@ -639,8 +640,8 @@ TSharedRef<SWindow> UGameEngine::CreateGameWindow()
 		Window->SetWindowMode(WindowMode);
 	}
 
-	// No need to show window in off-screen rendering mode as it does not render to screen
-	if (FSlateApplication::Get().IsRenderingOffScreen())
+	// No need to show window if rendering off-screen without the null platform as it does not render to screen
+	if (FSlateApplication::Get().IsRenderingOffScreen() && !FNullPlatformApplicationMisc::IsUsingNullApplication())
 	{
 		FSlateApplicationBase::Get().GetRenderer()->CreateViewport(Window);
 	}
@@ -673,7 +674,7 @@ void UGameEngine::SwitchGameWindowToUseGameViewport()
 				CreateGameViewport(GameViewport);
 			}
 
-			if (GameViewportWidget.IsValid())
+			if (GameViewportWidget.IsValid() && FSlateApplication::IsInitialized())
 			{
 				GameViewportWindowPtr->SetContent(GameViewportWidget.ToSharedRef());
 				GameViewportWindowPtr->SlatePrepass(FSlateApplication::Get().GetApplicationScale() * GameViewportWindowPtr->GetNativeWindow()->GetDPIScaleFactor());
@@ -683,20 +684,17 @@ void UGameEngine::SwitchGameWindowToUseGameViewport()
 				UE_LOG(LogEngine, Error, TEXT("The Game Viewport Widget is invalid."));
 			}
 
-			if (SceneViewport.IsValid())
+			// If Scene Viewport is not valid, the window was closed.
+			if (SceneViewport.IsValid() && FSlateApplication::IsInitialized())
 			{
 				SceneViewport->ResizeFrame((uint32)GSystemResolution.ResX, (uint32)GSystemResolution.ResY, GSystemResolution.WindowMode);
-			}
 
-			// Registration of the game viewport to that messages are correctly received.
-			// Could be a re-register, however it's necessary after the window is set.
-			if (GameViewportWidget.IsValid())
-			{
-				FSlateApplication::Get().RegisterGameViewport(GameViewportWidget.ToSharedRef());
-			}
-
-			if (FSlateApplication::IsInitialized())
-			{
+				// Registration of the game viewport to that messages are correctly received.
+				// Could be a re-register, however it's necessary after the window is set.
+				if (GameViewportWidget.IsValid())
+				{
+					FSlateApplication::Get().RegisterGameViewport(GameViewportWidget.ToSharedRef());
+				}
 				FSlateApplication::Get().SetAllUserFocusToGameViewport(EFocusCause::SetDirectly);
 			}
 		}
@@ -1016,6 +1014,7 @@ public:
 		return GEngineIni;
 	}
 
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override
 	{
 		if (FParse::Command(&Cmd, TEXT("exitembedded")))
@@ -1092,7 +1091,7 @@ public:
 		}
 		return false;
 	}
-
+#endif // UE_ALLOW_EXEC_COMMANDS
 } GEmbeddedCommunicationExec;
 
 
@@ -1378,6 +1377,7 @@ bool UGameEngine::ShouldDoAsyncEndOfFrameTasks() const
 	Command line executor.
 -----------------------------------------------------------------------------*/
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool UGameEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	if( FParse::Command( &Cmd,TEXT("REATTACHCOMPONENTS")) || FParse::Command( &Cmd,TEXT("REREGISTERCOMPONENTS")))
@@ -1532,6 +1532,7 @@ bool UGameEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 		return false;
 	}
 }
+#endif // UE_ALLOW_EXEC_COMMANDS
 
 bool UGameEngine::HandleExitCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 {
@@ -1539,7 +1540,7 @@ bool UGameEngine::HandleExitCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 
 	FGameDelegates::Get().GetExitCommandDelegate().Broadcast();
 
-	FPlatformMisc::RequestExit( 0 );
+	FPlatformMisc::RequestExit(false, TEXT("UGameEngine::HandleExitCommand"));
 	return true;
 }
 
@@ -1599,7 +1600,7 @@ float UGameEngine::GetMaxTickRate(float DeltaTime, bool bAllowFrameRateSmoothing
 			if( NetDriver && (NetDriver->GetNetMode() == NM_DedicatedServer || (NetDriver->GetNetMode() == NM_ListenServer && NetDriver->bClampListenServerTickRate)))
 			{
 				// We're a dedicated server, use the LAN or Net tick rate.
-				MaxTickRate = FMath::Clamp( NetDriver->NetServerMaxTickRate, 1, 1000 );
+				MaxTickRate = FMath::Clamp( NetDriver->GetNetServerMaxTickRate(), 1, 1000 );
 			}
 			/*else if( NetDriver && NetDriver->ServerConnection )
 			{
@@ -1671,7 +1672,7 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 	if (GIsClient && (GameViewport == nullptr) && FApp::CanEverRender())
 	{
 		UE_LOG(LogEngine, Log,  TEXT("All Windows Closed") );
-		FPlatformMisc::RequestExit( 0 );
+		FPlatformMisc::RequestExit(false, TEXT("UGameEngine::Tick.ViewportClosed"));
 		return;
 	}
 
@@ -1878,13 +1879,32 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 		}
 	}
 
+	const bool bRenderingSuspended = IsRenderingSuspended();
+
 	if (!bIdleMode && !IsRunningDedicatedServer() && !IsRunningCommandlet() && FEmbeddedCommunication::IsAwakeForRendering())
 	{
-		// Render everything.
-		RedrawViewports();
+		if (!bRenderingSuspended)
+		{
+			// Render everything.
+			RedrawViewports();
 
-		// Some tasks can only be done once we finish all scenes/viewports
-		GetRendererModule().PostRenderAllViewports();
+			// Some tasks can only be done once we finish all scenes/viewports
+			GetRendererModule().PostRenderAllViewports();
+		}
+		else
+		{
+			// Still need to call UpdateLevelStreaming() even when not rendering
+			if (GameViewport && GameViewport->Viewport)
+			{
+				if (FViewportClient* ViewportClient = GameViewport->Viewport->GetClient())
+				{
+					if (UWorld* World = ViewportClient->GetWorld())
+					{
+						World->UpdateLevelStreaming();
+					}
+				}
+			}
+		}
 	}
 
 	if( GIsClient )
@@ -1918,6 +1938,16 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 			FRDGBuilder::TickPoolElements();
 			ICustomResourcePool::TickPoolElements(RHICmdList);
 		});
+
+		if (bRenderingSuspended)
+		{
+			GetRendererModule().PerFrameCleanupIfSkipRenderer();
+			ENQUEUE_RENDER_COMMAND(UGameEngine_Tick_FlushRHIResources)(
+				[](FRHICommandListImmediate& RHICmdList)
+				{
+					RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
+				});
+		}
 	}
 
 #if WITH_EDITOR
@@ -1991,6 +2021,6 @@ void UGameEngine::HandleTravelFailure_NotifyGameInstance(UWorld* World, ETravelF
 void UGameEngine::HandleBrowseToDefaultMapFailure(FWorldContext& Context, const FString& TextURL, const FString& Error)
 {
 	Super::HandleBrowseToDefaultMapFailure(Context, TextURL, Error);
-	FPlatformMisc::RequestExit(false);
+	FPlatformMisc::RequestExit(false, TEXT("UGameEngine::HandleBrowseToDefaultMapFailure"));
 }
 

@@ -58,6 +58,9 @@ public:
 	/** Construct the widget for the Editor status bar.*/
 	TSharedRef<SWidget> MakeUnsavedAssetsStatusBarWidget();
 
+	/** Displays a dialog prompting the user to save unsaved packages. */
+	bool PromptToSavePackages();
+
 	/** Invoked when a file is added to the unsaved list. */
 	FOnUnsavedAssetAdded OnUnsavedAssetAdded;
 
@@ -65,7 +68,11 @@ public:
 	FOnUnsavedAssetRemoved OnUnsavedAssetRemoved;
 
 	/** Invoked before an asset is potentially automatically checked out of source control */
+	/** Every notified File/Operation combination is followed by one of the Cancel/Success/Failure notifications below */
 	FPreUnsavedAssetAutoCheckout PreUnsavedAssetAutoCheckout;
+
+	/** Invoked after an asset has been cancelled for automatic check out */
+	FPostUnsavedAssetAutoCheckout PostUnsavedAssetAutoCheckoutCancel;
 	
 	/** Invoked after an asset has been checked out of source control */
 	FPostUnsavedAssetAutoCheckout PostUnsavedAssetAutoCheckout;

@@ -44,6 +44,8 @@ class UContentBundleEditingSubmodule : public UContentBundleEditorSubsystemModul
 {
 	GENERATED_BODY()
 
+	friend class UContentBundleEditorSubsystem;
+
 public:
 	//~ Begin IActorEditorContextClient interface
 	virtual void OnExecuteActorEditorContextAction(UWorld* InWorld, const EActorEditorContextAction& InType, AActor* InActor = nullptr) override;
@@ -118,7 +120,7 @@ public:
 
 	TArray<TSharedPtr<FContentBundleEditor>> GetEditorContentBundles();
 	TSharedPtr<FContentBundleEditor> GetEditorContentBundle(const UContentBundleDescriptor* ContentBundleDescriptor) const;
-	TSharedPtr<FContentBundleEditor> GetEditorContentBundle(const FGuid& ContentBundleGuid) const;
+	TSharedPtr<FContentBundleEditor> GetEditorContentBundle(const FGuid& ContentBundleGuid) const override;
 
 	void SelectActors(FContentBundleEditor& EditorContentBundle);
 	void DeselectActors(FContentBundleEditor& EditorContentBundle);
@@ -126,28 +128,18 @@ public:
 	void ReferenceAllActors(FContentBundleEditor& EditorContentBundle);
 	void UnreferenceAllActors(FContentBundleEditor& EditorContentBundle);
 
-	bool IsEditingContentBundle() const;
+	bool IsEditingContentBundle() const override;
 	bool IsEditingContentBundle(const FGuid& ContentBundleGuid) const;
-	bool ActivateContentBundleEditing(TSharedPtr<FContentBundleEditor>& ContentBundleEditor) const;
-	bool DeactivateContentBundleEditing(TSharedPtr<FContentBundleEditor>& ContentBundleEditor) const;
+	bool ActivateContentBundleEditing(TSharedPtr<FContentBundleEditor>& ContentBundleEditor) const override;
+	bool DeactivateContentBundleEditing(TSharedPtr<FContentBundleEditor>& ContentBundleEditor) const override;
 	bool IsContentBundleEditingActivated(TSharedPtr<FContentBundleEditor>& ContentBundleEditor) const;
 
-	DECLARE_EVENT_OneParam(UContentBundleEditorSubsystem, FOnContentBundleChanged, const FContentBundleEditor*);
-	FOnContentBundleChanged& OnContentBundleChanged() { return ContentBundleChanged; }
-
-	DECLARE_EVENT_OneParam(UContentBundleEditorSubsystem, FOnContentBundleAdded, const FContentBundleEditor*);
-	FOnContentBundleAdded& OnContentBundleAdded() { return ContentBundleAdded; }
-
-	DECLARE_EVENT_OneParam(UContentBundleEditorSubsystem, FOnContentBundleRemoved, const FContentBundleEditor*);
-	FOnContentBundleRemoved& OnContentBundleRemoved() { return ContentBundleRemoved; }
+	virtual void PushContentBundleEditing() override;
+	virtual void PopContentBundleEditing() override;
 
 private:
 	void SelectActorsInternal(FContentBundleEditor& EditorContentBundle, bool bSelect);
 
 	UPROPERTY()
 	TObjectPtr<UContentBundleEditingSubmodule> ContentBundleEditingSubModule;
-
-	FOnContentBundleChanged ContentBundleChanged;
-	FOnContentBundleAdded ContentBundleAdded;
-	FOnContentBundleRemoved ContentBundleRemoved;
 };

@@ -59,7 +59,9 @@ struct FReplicationGraphDestructionSettings;
 
 typedef TObjectKey<class UNetReplicationGraphConnection> FRepGraphConnectionKey;
 
+#ifndef DO_ENABLE_REPGRAPH_DEBUG_ACTOR
 #define DO_ENABLE_REPGRAPH_DEBUG_ACTOR !(UE_BUILD_SHIPPING)
+#endif // DO_ENABLE_REPGRAPH_DEBUG_ACTOR
 
 UCLASS(abstract, transient, config=Engine)
 class REPLICATIONGRAPH_API UReplicationGraphNode : public UObject
@@ -91,6 +93,9 @@ public:
 
 	/** Debugging only function to return a normal TArray of actor rep list (for logging, debug UIs, etc) */
 	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const;
+
+	/** Debugging only function to verify referenced actors (if any) are still valid. */
+	void VerifyActorReferences();
 
 	// -----------------------------------------------------
 
@@ -148,6 +153,14 @@ protected:
 	 */
 	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const {}
 
+
+	/**
+	 * Verify the validity of any potentially stale actor pointers. Used for debugging.
+	 */
+	virtual void VerifyActorReferencesInternal() {}
+
+	bool VerifyActorReference(const FActorRepListType& Actor) const;
+
 protected:
 
 	UPROPERTY()
@@ -181,6 +194,8 @@ public:
 	virtual void LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const override;
 
 	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const override;
+
+	virtual void VerifyActorReferencesInternal() override;
 
 	virtual void TearDown() override;
 
@@ -265,6 +280,8 @@ public:
 
 	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const override;
 
+	virtual void VerifyActorReferencesInternal() override;
+
 	virtual void OnCollectActorRepListStats(struct FActorRepListStatCollector& StatsCollector) const override;
 
 	void SetNonStreamingCollectionSize(const int32 NewSize);
@@ -298,6 +315,8 @@ public:
 	UReplicationGraphNode_DynamicSpatialFrequency();
 	
 	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
+	
+	virtual void VerifyActorReferencesInternal() override;
 
 	// --------------------------------------------------------
 
@@ -361,7 +380,6 @@ protected:
 
 		bool operator<(const FDynamicSpatialFrequency_SortedItem& Other) const { return FramesTillReplicate < Other.FramesTillReplicate; }
 
-		UPROPERTY()
 		AActor* Actor = nullptr;
 
 		int32 FramesTillReplicate = 0; // Note this also serves as "Distance Sq" when doing the FSettings::MaxNearestActors pass.
@@ -421,6 +439,7 @@ public:
 	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
 	virtual bool NotifyRemoveNetworkActor(const FNewReplicatedActorInfo& ActorInfo, bool WarnIfNotFound) override;
 	virtual void NotifyResetAllNetworkActors() override;
+	virtual void VerifyActorReferencesInternal() override;
 
 	void NotifyActorDormancyFlush(FActorRepListType Actor);
 
@@ -517,7 +536,7 @@ public:
 	// Allow graph to override function for creating the dynamic node in the cell
 	TFunction<UReplicationGraphNode*(UReplicationGraphNode_GridCell* Parent)> CreateDynamicNodeOverride;
 
-	UReplicationGraphNode_DormancyNode* GetDormancyNode();
+	UReplicationGraphNode_DormancyNode* GetDormancyNode(bool bInCreateIfMissing = true);
 
 private:
 
@@ -553,6 +572,8 @@ public:
 	virtual void NotifyResetAllNetworkActors() override;
 	virtual void PrepareForReplication() override;
 	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
+	virtual void LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const override;
+	virtual void VerifyActorReferencesInternal() override;
 
 	void AddActor_Static(const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& ActorRepInfo) { AddActorInternal_Static(ActorInfo, ActorRepInfo, false); }
 	void AddActor_Dynamic(const FNewReplicatedActorInfo& ActorInfo, FGlobalActorReplicationInfo& ActorRepInfo) { AddActorInternal_Dynamic(ActorInfo); }
@@ -714,6 +735,9 @@ private:
 	// This is a reused TArray for gathering actor nodes. Just to prevent using a stack based TArray everywhere or static/reset patten.
 	TArray<UReplicationGraphNode_GridCell*> GatheredNodes;
 
+	// This is a reused FActorRepListRefView for gathering actors for dormancy cleanup. Just to prevent using a stack based FActorRepListRefView or static/reset patten.
+	FActorRepListRefView GatheredActors;
+
 	friend class AReplicationGraphDebugActor;
 };
 
@@ -849,6 +873,7 @@ public:
 	virtual void NotifyResetAllNetworkActors() override { TearOffActors.Reset(); }
 	virtual void GatherActorListsForConnection(const FConnectionGatherActorListParameters& Params) override;
 	virtual void LogNode(FReplicationGraphDebugInfo& DebugInfo, const FString& NodeName) const override;
+	virtual void VerifyActorReferencesInternal() override;
 
 	void NotifyTearOffActor(AActor* Actor, uint32 FrameNum);
 
@@ -976,6 +1001,8 @@ public:
 
 	virtual void CollectRepListStats(struct FActorRepListStatCollector& StatCollector) const;
 
+	void VerifyActorReferences();
+
 	const TSharedPtr<FReplicationGraphGlobalData>& GetGraphGlobals() const { return GraphGlobals; }
 
 	uint32 GetReplicationGraphFrame() const { return ReplicationGraphFrame; }
@@ -1018,6 +1045,8 @@ public:
 
 	void NotifyConnectionSaturated(class UNetReplicationGraphConnection& Connection);
 
+	void NotifyConnectionFastPathSaturated();
+
 	void SetActorDestructionInfoToIgnoreDistanceCulling(AActor* DestroyedActor);
 
 	uint16 GetReplicationPeriodFrameForFrequency(float NetUpdateFrequency) const
@@ -1026,13 +1055,15 @@ public:
 		check(NetUpdateFrequency != 0.0f);
 
 		// Replication Graph is frame based. Convert NetUpdateFrequency to ReplicationPeriodFrame based on Server MaxTickRate.
-		uint32 FramesBetweenUpdates = (uint32)FMath::RoundToInt(NetDriver->NetServerMaxTickRate / NetUpdateFrequency);
+		uint32 FramesBetweenUpdates = (uint32)FMath::RoundToInt(((float)NetDriver->GetNetServerMaxTickRate()) / NetUpdateFrequency);
 		FramesBetweenUpdates = FMath::Clamp<uint32>(FramesBetweenUpdates, 1, MAX_uint16);
 
 		return (uint16)FramesBetweenUpdates;
 	}
 
 	UNetReplicationGraphConnection* FindConnectionManager(UNetConnection* NetConnection) const;
+
+	virtual void VerifyActorReferencesInternal() {}
 
 protected:
 
@@ -1096,6 +1127,9 @@ private:
 	/** Whether or not a connection was saturated during an update. */
 	bool bWasConnectionSaturated = false;
 
+	/** Whether or not all fast shared replication budget has been used during replication. */
+	bool bWasConnectionFastPathSaturated = false;
+
 protected:
 	/** Default Replication Path */
 	void ReplicateActorListsForConnections_Default(UNetReplicationGraphConnection* ConnectionManager, FGatheredReplicationActorLists& GatheredReplicationListsForConnection, FNetViewerArray& Viewers);
@@ -1147,6 +1181,9 @@ private:
 	/** Separate bandwidth cap for traffic used when opening actor channels. Ignored if set to 0 */
 	int32 ActorDiscoveryMaxBitsPerFrame;
 
+	/** Optimization to update only one connection each frame */
+	int32 HeavyComputationConnectionSelector = 0;
+
 	/** Internal time used to track when the next update should occur based on frequency settings. */
 	float TimeLeftUntilUpdate = 0.f;
 
@@ -1179,6 +1216,28 @@ struct FLastLocationGatherInfo
 	bool operator==(UNetConnection* Other) const
 	{
 		return Connection == Other;
+	}
+};
+
+struct FRepGraphConnectionSaturationAnalytics
+{
+	uint32 LongestRunOfSaturatedReplications = 0;
+	uint32 CurrentRunOfSaturatedReplications = 0;
+
+	void TrackReplication(bool bIsSaturated)
+	{
+		if (bIsSaturated)
+		{
+			++CurrentRunOfSaturatedReplications;
+			if (CurrentRunOfSaturatedReplications > LongestRunOfSaturatedReplications)
+			{
+				LongestRunOfSaturatedReplications = CurrentRunOfSaturatedReplications;
+			}
+		}
+		else
+		{
+			CurrentRunOfSaturatedReplications = 0;
+		}
 	}
 };
 
@@ -1288,6 +1347,13 @@ public:
 
 	void CleanupNodeCaches(const UReplicationGraphNode* Node);
 
+	virtual void NotifyDSFNodeSaturated(const UReplicationGraphNode_DynamicSpatialFrequency* Node) {}
+
+	virtual void TrackReplicationForAnalytics(bool bFastPathSaturated);
+
+	virtual void ResetSaturationAnalytics();
+
+	FRepGraphConnectionSaturationAnalytics FastPathSaturationAnalytics;
 private:
 
 	// Stored list of dormant actors in a previous cell when it's been left - this is for
@@ -1416,6 +1482,7 @@ public:
 	AReplicationGraphDebugActor()
 	{
 		bReplicates = true; // must be set for RPCs to be sent
+		NetUpdateFrequency = 10.0f;
 	}
 
 	// To prevent demo netdriver from replicating.

@@ -63,6 +63,7 @@ public class MovieSceneTools : ModuleRules
 				"RHI",
 				"SequenceRecorder",
 				"TimeManagement",
+				"ToolWidgets",
                 "AnimationCore",
 				"TimeManagement",
                 "XmlParser",
@@ -74,12 +75,8 @@ public class MovieSceneTools : ModuleRules
 			new string[] {
                 "AssetRegistry",
 				"AssetTools",
-				"Sequencer",
                 "Settings",
-				"SceneOutliner",
                 "MainFrame",
-				"EditorFramework",
-                "UnrealEd",
                 "Analytics",
             }
         );

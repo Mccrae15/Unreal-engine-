@@ -3,7 +3,6 @@
 #include "CADKernel/Topo/TopologicalLoop.h"
 
 #include "Algo/AllOf.h"
-#include "CADKernel/Core/KernelParameters.h"
 #include "CADKernel/Geo/Curves/RestrictionCurve.h"
 #include "CADKernel/Geo/GeoEnum.h"
 #include "CADKernel/Math/SlopeUtils.h"
@@ -50,6 +49,11 @@ TSharedPtr<FTopologicalLoop> FTopologicalLoop::Make(const TArray<TSharedPtr<FTop
 
 	Loop.EnsureLogicalClosing(GeometricTolerance);
 	Loop.RemoveDegeneratedEdges();
+
+	if (Loop.GetEdges().IsEmpty())
+	{
+		return  TSharedPtr<FTopologicalLoop>();
+	}
 
 	for (FOrientedEdge& OrientedEdge : Loop.GetEdges())
 	{
@@ -144,6 +148,11 @@ EOrientation FTopologicalLoop::GetDirection(TSharedPtr<FTopologicalEdge>& InEdge
 
 void FTopologicalLoop::Get2DSampling(TArray<FPoint2D>& LoopSampling) const
 {
+	if (Edges.IsEmpty())
+	{
+		return;
+	}
+
 	int32 PointCount = 0;
 	for (const FOrientedEdge& Edge : Edges)
 	{
@@ -162,6 +171,11 @@ void FTopologicalLoop::Get2DSampling(TArray<FPoint2D>& LoopSampling) const
 
 bool FTopologicalLoop::Get2DSamplingWithoutDegeneratedEdges(TArray<FPoint2D>& LoopSampling) const
 {
+	if (Edges.IsEmpty())
+	{
+		return false;
+	}
+
 	double LoopLength = 0;
 	int32 EdgeCount = 0;
 	int32 PointCount = 0;
@@ -1016,16 +1030,6 @@ void FTopologicalLoop::EnsureLogicalClosing(const double Tolerance3D)
 	}
 }
 
-#ifdef CADKERNEL_DEV
-FInfoEntity& FTopologicalLoop::GetInfo(FInfoEntity& Info) const
-{
-	return FEntity::GetInfo(Info)
-		.Add(TEXT("Edges"), (TArray<TOrientedEntity<FEntity>>&) Edges)
-		.Add(TEXT("IsExternal"), bIsExternal)
-		.Add(TEXT("Hosted by"), Face);
-}
-#endif
-
 void FTopologicalLoop::FindBreaks(TArray<TSharedPtr<FTopologicalVertex>>& OutBreaks, TArray<int32>& OutStartSideIndex, TArray<double>& OutBreakValues) const
 {
 	const double MinCosAngleOfBreak = -0.7;  // 135 deg
@@ -1126,6 +1130,21 @@ bool FTopologicalLoop::IsInside(const FTopologicalLoop& OtherLoop) const
 	TArray<FPoint2D> OtherSampling2D;
 	OtherLoop.Get2DSampling(OtherSampling2D);
 
+#ifdef DEBUG_IS_INSIDE
+	bool bDisplayDebug = true; //(GetId() == 1046569);
+	if (bDisplayDebug)
+	{
+		{
+			F3DDebugSession _(*FString::Printf(TEXT("Loop")));
+			DisplayPolylineWithScale(Sampling2D, EVisuProperty::BlueCurve);
+		}
+		{
+			F3DDebugSession _(*FString::Printf(TEXT("External Loop")));
+			DisplayPolylineWithScale(OtherSampling2D, EVisuProperty::RedCurve);
+		}
+		Wait();
+	}
+#endif
 
 	int32 InsidePoint = 0;
 	int32 OutsidePoint = 0;
@@ -1170,8 +1189,17 @@ bool FTopologicalLoop::IsInside(const FTopologicalLoop& OtherLoop) const
 		CountLeftIntersection(TestPoint, EIso::IsoV);
 	}
 
-	return InsidePoint > OutsidePoint;
+	return InsidePoint < OutsidePoint;
 }
 
+double FTopologicalLoop::Length() const
+{
+	double Length = 0;
+	for (const FOrientedEdge& Edge : GetEdges())
+	{
+		Length += Edge.Entity->Length();
+	}
+	return Length;
+}
 
 }

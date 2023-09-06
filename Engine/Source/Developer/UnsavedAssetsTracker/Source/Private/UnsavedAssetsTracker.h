@@ -41,7 +41,7 @@ public:
 	void SetWarningNotificationEnabled(bool bEnabled) { bWarningNotificationEnabled = bEnabled; }
 
 	/** Displays a dialog prompting the user to save the packages. */
-	void PrompToSavePackages();
+	bool PromptToSavePackages();
 
 	/** Check if the input asset is unsaved. */
 	bool IsAssetUnsaved(const FString& FileAbsPathname) const;
@@ -99,6 +99,9 @@ private:
 	 */
 	void OnUndo(const FTransactionContext& TransactionContext, bool Succeeded);
 	void OnRedo(const FTransactionContext& TransactionContext, bool Succeeded);
+
+	/** Invoked after garbage collection. */
+	void OnPostGarbageCollect();
 
 	/** Invoked when a package is deleted. */
 	void OnPackageDeleted(UPackage* Package);

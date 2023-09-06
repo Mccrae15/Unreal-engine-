@@ -126,20 +126,36 @@ FAnimationEditorPreviewScene::~FAnimationEditorPreviewScene()
 	}
 }
 
+void FAnimationEditorPreviewScene::UnregisterForUndo()
+{
+	if (GEditor)
+	{
+		GEditor->UnregisterForUndo(this);
+	}
+}
+
 TArray<UDebugSkelMeshComponent*> FAnimationEditorPreviewScene::GetAllPreviewMeshComponents() const
 {
 	TArray<UDebugSkelMeshComponent*> PreviewMeshComponents;
-	GetActor()->GetComponents(PreviewMeshComponents, true);
+	const AActor* MyActor = GetActor();
+	if (MyActor)
+	{
+		MyActor->GetComponents(PreviewMeshComponents, true);
+	}
 	return PreviewMeshComponents;
 }
 
 void FAnimationEditorPreviewScene::ForEachPreviewMesh(TFunction<void (UDebugSkelMeshComponent*)> PerMeshFunction)
 {
 	TArray<UDebugSkelMeshComponent*> PreviewMeshComponents;
-	GetActor()->GetComponents(PreviewMeshComponents, true);
-	for (UDebugSkelMeshComponent* PreviewMesh : PreviewMeshComponents)
+	const AActor* MyActor = GetActor();
+	if (MyActor)
 	{
-		PerMeshFunction(PreviewMesh);
+		MyActor->GetComponents(PreviewMeshComponents, true);
+		for (UDebugSkelMeshComponent* PreviewMesh : PreviewMeshComponents)
+		{
+			PerMeshFunction(PreviewMesh);
+		}
 	}
 }
 
@@ -842,23 +858,15 @@ void FAnimationEditorPreviewScene::SetSelectedBone(const FName& BoneName, ESelec
 		ClearSelectedSocket();
 		ClearSelectedActor();
 
-		// Add in bone of interest only if we have a preview instance set-up
-		if (SkeletalMeshComponent->PreviewInstance != nullptr)
-		{
-			// need to get mesh bone base since BonesOfInterest is saved in SkeletalMeshComponent
-			// and it is used by renderer. It is not Skeleton base
-			const int32 MeshBoneIndex = SkeletalMeshComponent->GetBoneIndex(BoneName);
+		// need to get mesh bone base since BonesOfInterest is saved in SkeletalMeshComponent
+		// and it is used by renderer. It is not Skeleton base
+		const int32 MeshBoneIndex = SkeletalMeshComponent->GetBoneIndex(BoneName);
+		SelectedBoneIndex = MeshBoneIndex != INDEX_NONE ? MeshBoneIndex : BoneIndex;
+		SkeletalMeshComponent->BonesOfInterest.Add(SelectedBoneIndex);
 
-			if (MeshBoneIndex != INDEX_NONE)
-			{
-				SelectedBoneIndex = MeshBoneIndex;
-				SkeletalMeshComponent->BonesOfInterest.Add(SelectedBoneIndex);
-			}
+		InvalidateViews();
 
-			InvalidateViews();
-
-			OnSelectedBoneChanged.Broadcast(BoneName, InSelectInfo);
-		}
+		OnSelectedBoneChanged.Broadcast(BoneName, InSelectInfo);
 	}
 }
 

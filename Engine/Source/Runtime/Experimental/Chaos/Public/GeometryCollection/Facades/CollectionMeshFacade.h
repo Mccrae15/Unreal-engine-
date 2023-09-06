@@ -10,42 +10,37 @@
 namespace GeometryCollection::Facades
 {
 
-	class CHAOS_API FCollectionMeshFacade : public FCollectionUVFacade
+	class FCollectionMeshFacade : public FCollectionUVFacade
 	{
 	public:
-		FCollectionMeshFacade(FManagedArrayCollection& InCollection);
-		FCollectionMeshFacade(const FManagedArrayCollection& InCollection);
+		CHAOS_API FCollectionMeshFacade(FManagedArrayCollection& InCollection);
+		CHAOS_API FCollectionMeshFacade(const FManagedArrayCollection& InCollection);
 
 		/**
 		 * returns true if all the necessary attributes are present
 		 * if not then the API can be used to create
 		 */
-		bool IsValid() const;
+		CHAOS_API bool IsValid() const;
 
 		/**
 		 * Add the necessary attributes if they are missing
 		 */
-		void DefineSchema();
+		CHAOS_API void DefineSchema();
 
 		/**
 		 * Returns the vertex indicies for the bone
 		 */
-		const TArray<int32> GetVertexIndices(int32 BoneIdx) const;
+		CHAOS_API const TArray<int32> GetVertexIndices(int32 BoneIdx) const;
 
 		/**
 		 * Returns the vertex positions for the bone in bone space
 		 */
-		const TArrayView<const FVector3f> GetVertexPositions(int32 BoneIdx) const;
+		CHAOS_API const TArrayView<const FVector3f> GetVertexPositions(int32 BoneIdx) const;
 
 		/**
 		 * Returns the face indices for the bone
 		 */
-		const TArray<int32> GetFaceIndices(int32 BoneIdx) const;
-
-		/**
-		 * Adds and sets "Internal" attribute in FGeometryCollection::FacesGroup to designate internal faces
-		 */
-		static void AddInternalAttribute(FGeometryCollection& InGeometryCollection, const TArray<int32>& InMaterialID);
+		CHAOS_API const TArray<int32> GetFaceIndices(int32 BoneIdx) const;
 
 		/**
 		 * Returns the vertex indices of the face for the bone
@@ -55,9 +50,10 @@ namespace GeometryCollection::Facades
 		/**
 		 * Bakes the transforms into the vertex positions and sets the bone transforms to identity
 		 */
-		 void BakeTransform(int32 TransformIdx, const FTransform& InTransform);
+		 CHAOS_API void BakeTransform(int32 TransformIdx, const FTransform& InTransform);
 
 		TManagedArrayAccessor<int32> TransformToGeometryIndexAttribute;
+		TManagedArrayAccessor<int32> TransformIndexAttribute;
 		TManagedArrayAccessor<FVector3f> VertexAttribute;
 		TManagedArrayAccessor<FVector3f> TangentUAttribute;
 		TManagedArrayAccessor<FVector3f> TangentVAttribute;
@@ -70,6 +66,7 @@ namespace GeometryCollection::Facades
 		TManagedArrayAccessor<bool> VisibleAttribute;
 		TManagedArrayAccessor<int32> MaterialIndexAttribute;
 		TManagedArrayAccessor<int32> MaterialIDAttribute;
+		TManagedArrayAccessor<bool> InternalAttribute;
 		TManagedArrayAccessor<int32> FaceStartAttribute;
 		TManagedArrayAccessor<int32> FaceCountAttribute;
 	};

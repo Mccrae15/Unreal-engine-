@@ -2,10 +2,10 @@
 
 #include "FoliageSupport/FoliageSupport.h"
 
+#include "Filtering/PropertySelection.h"
+#include "Filtering/PropertySelectionMap.h"
 #include "FoliageSupport/Data/InstancedFoliageActorData.h"
 #include "Params/ObjectSnapshotSerializationData.h"
-#include "Selection/PropertySelection.h"
-#include "Selection/PropertySelectionMap.h"
 #include "SnapshotCustomVersion.h"
 #include "WorldSnapshotData.h"
 
@@ -190,7 +190,7 @@ namespace UE::LevelSnapshots::Foliage::Private
 		// Rest is done in PostApplySnapshotToActor (need access to the property selection map)
 	}
 
-	void FFoliageSupport::PostApplySnapshot(const FApplySnapshotParams& Params)
+	void FFoliageSupport::PostApplySnapshot(const FPostApplySnapshotParams& Params)
 	{
 		// Without this step all foliage will teleport visually upon being selected by the user; its cache needs to be updated:
 		// 1. Add 1 instance 2. Take snapshot 3. Paint many instances 4. Restore 5. Lasso select all > The instance jumps to a random place until you paint

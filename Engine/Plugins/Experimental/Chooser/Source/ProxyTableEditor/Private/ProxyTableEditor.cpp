@@ -2,6 +2,7 @@
 
 #include "ProxyTableEditor.h"
 
+#include "AssetViewUtils.h"
 #include "Framework/Docking/TabManager.h"
 #include "Modules/ModuleManager.h"
 #include "Styling/AppStyle.h"
@@ -11,26 +12,30 @@
 #include "Editor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SHyperlink.h"
-#include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "SAssetDropTarget.h"
 #include "SClassViewer.h"
 #include "SourceCodeNavigation.h"
 #include "ProxyTable.h"
 #include "ClassViewerFilter.h"
+#include "DetailLayoutBuilder.h"
 #include "IPropertyAccessEditor.h"
 #include "LandscapeRender.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "DragAndDrop/DecoratedDragDropOp.h"
 #include "GraphEditorSettings.h"
+#include "IDetailCustomization.h"
 #include "ObjectChooserClassFilter.h"
 #include "ScopedTransaction.h"
 #include "ObjectChooserWidgetFactories.h"
-#include "ContextPropertyWidget.h"
 #include "IObjectChooser.h"
-#include "Misc/TransactionObjectEvent.h"
+#include "Widgets/Layout/SSeparator.h"
+#include "PropertyCustomizationHelpers.h"
+#include "ProxyTableEditorCommands.h"
+#include "LookupProxy.h"
+#include "SPropertyAccessChainWidget.h"
+#include "Widgets/Layout/SScrollBox.h"
 
 #define LOCTEXT_NAMESPACE "ProxyTableEditor"
 
@@ -40,7 +45,48 @@ namespace UE::ProxyTableEditor
 const FName FProxyTableEditor::ToolkitFName( TEXT( "GenericAssetEditor" ) );
 const FName FProxyTableEditor::PropertiesTabId( TEXT( "ProxyEditor_Properties" ) );
 const FName FProxyTableEditor::TableTabId( TEXT( "ProxyEditor_Table" ) );
+	
 
+class FProxyRowDetails : public IDetailCustomization
+{
+public:
+	FProxyRowDetails() {};
+	virtual ~FProxyRowDetails() override {};
+
+	static TSharedRef<IDetailCustomization> MakeInstance()
+	{
+		return MakeShareable( new FProxyRowDetails() );
+	}
+
+	// IDetailCustomization interface
+	virtual void CustomizeDetails(class IDetailLayoutBuilder& DetailBuilder) override;
+};
+
+// Make the details panel show the values for the selected row, showing each column value
+void FProxyRowDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+{
+	TArray<TWeakObjectPtr<UObject>> Objects;
+	DetailBuilder.GetObjectsBeingCustomized(Objects);
+
+	UProxyRowDetails* Row = Cast<UProxyRowDetails>(Objects[0]);
+	UProxyTable* ProxyTable = Row->ProxyTable;
+	
+	if (ProxyTable->Entries.Num() > Row->Row)
+	{
+		IDetailCategoryBuilder& PropertiesCategory = DetailBuilder.EditCategory("Row Properties");
+
+		TSharedPtr<IPropertyHandle> ProxyTableProperty = DetailBuilder.GetProperty("ProxyTable", Row->StaticClass());
+		DetailBuilder.HideProperty(ProxyTableProperty);
+	
+		TSharedPtr<IPropertyHandle> EntriesArrayProperty = ProxyTableProperty->GetChildHandle("Entries");
+		TSharedPtr<IPropertyHandle> CurrentEntryProperty = EntriesArrayProperty->AsArray()->GetElement(Row->Row);
+		IDetailPropertyRow& NewEntryProperty = PropertiesCategory.AddProperty(CurrentEntryProperty);
+		NewEntryProperty.DisplayName(LOCTEXT("Entry","Selected Entry"));
+		NewEntryProperty.ShowPropertyButtons(false); // hide array add button
+		NewEntryProperty.ShouldAutoExpand(true);
+	}
+}
+	
 void FProxyTableEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
 {
 	WorkspaceMenuCategory = InTabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("WorkspaceMenu_GenericAssetEditor", "Asset Editor"));
@@ -72,15 +118,53 @@ FProxyTableEditor::~FProxyTableEditor()
 {
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.RemoveAll(this);
 	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
+	FCoreUObjectDelegates::OnObjectTransacted.RemoveAll(this);
 	
 	DetailsView.Reset();
 }
 
+void FProxyTableEditor::RegisterToolbar()
+{
+	UToolMenus* ToolMenus = UToolMenus::Get();
+	UToolMenu* ToolBar;
+	FName ParentName;
+	const FName MenuName = GetToolMenuToolbarName(ParentName);
+	if (ToolMenus->IsMenuRegistered(MenuName))
+	{
+		ToolBar = ToolMenus->ExtendMenu(MenuName);
+	}
+	else
+	{
+		ToolBar = UToolMenus::Get()->RegisterMenu(MenuName, ParentName, EMultiBoxType::ToolBar);
+	}
+
+	const FProxyTableEditorCommands& Commands = FProxyTableEditorCommands::Get();
+	FToolMenuInsert InsertAfterAssetSection("Asset", EToolMenuInsertType::After);
+	{
+		FToolMenuSection& Section = ToolBar->AddSection("Proxy Table", TAttribute<FText>(), InsertAfterAssetSection);
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(
+			Commands.EditTableSettings,
+			TAttribute<FText>(),
+			TAttribute<FText>(),
+			FSlateIcon("EditorStyle", "FullBlueprintEditor.EditGlobalOptions")));
+	}
+
+}
+
+void FProxyTableEditor::BindCommands()
+{
+	const FProxyTableEditorCommands& Commands = FProxyTableEditorCommands::Get();
+
+	ToolkitCommands->MapAction(
+		Commands.EditTableSettings,
+		FExecuteAction::CreateSP(this, &FProxyTableEditor::SelectRootProperties));
+}
 
 void FProxyTableEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, const TArray<UObject*>& ObjectsToEdit, FGetDetailsViewObjects GetDetailsViewObjects )
 {
 	EditingObjects = ObjectsToEdit;
 	FCoreUObjectDelegates::OnObjectsReplaced.AddSP(this, &FProxyTableEditor::OnObjectsReplaced);
+	FCoreUObjectDelegates::OnObjectTransacted.AddSP(this, &FProxyTableEditor::OnObjectTransacted);
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
 	FDetailsViewArgs DetailsViewArgs;
@@ -113,7 +197,9 @@ void FProxyTableEditor::InitEditor( const EToolkitMode::Type Mode, const TShared
 	const bool bCreateDefaultToolbar = true;
 	FAssetEditorToolkit::InitAssetEditor( Mode, InitToolkitHost, FProxyTableEditor::ProxyEditorAppIdentifier, StandaloneDefaultLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, ObjectsToEdit );
 
+	BindCommands();
 	RegenerateMenusAndToolbars();
+	RegisterToolbar();
 
 	SelectRootProperties();
 }
@@ -145,12 +231,14 @@ void FProxyTableEditor::NotifyPreChange(FProperty* PropertyAboutToChange)
 
 void FProxyTableEditor::NotifyPostChange(const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged)
 {
+	// for all details panel changes, just refresh the table
+	UpdateTableRows();
 }
 
 	
 FText FProxyTableEditor::GetToolkitName() const
 {
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 
 	check( EditingObjs.Num() > 0 );
 
@@ -201,7 +289,7 @@ FText FProxyTableEditor::GetToolkitName() const
 
 FText FProxyTableEditor::GetToolkitToolTipText() const
 {
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 
 	check( EditingObjs.Num() > 0 );
 
@@ -286,17 +374,14 @@ class FProxyRowDragDropOp : public FDecoratedDragDropOp
 public:
 	DRAG_DROP_OPERATOR_TYPE(FWidgetTemplateDragDropOp, FDecoratedDragDropOp)
 
-	FProxyTableEditor* ChooserEditor;
-	uint32 RowIndex;
+	TSharedPtr<FProxyTableEditor::FProxyTableRow> Row;
 
 	/** Constructs the drag drop operation */
-	static TSharedRef<FProxyRowDragDropOp> New(FProxyTableEditor* InEditor, uint32 InRowIndex)
+	static TSharedRef<FProxyRowDragDropOp> New(TSharedPtr<FProxyTableEditor::FProxyTableRow> InRow)
 	{
 		TSharedRef<FProxyRowDragDropOp> Operation = MakeShareable(new FProxyRowDragDropOp());
-		Operation->ChooserEditor = InEditor;
-		Operation->RowIndex = InRowIndex;
+		Operation->Row = InRow;
 		Operation->DefaultHoverText = LOCTEXT("Proxy Row", "Proxy Row");
-		// UE::ChooserEditor::FObjectChooserWidgetFactories::ConvertToText(InEditor->GetProxyTable()->Entries[InRowIndex].Value.GetObject(), Operation->DefaultHoverText);
 		Operation->CurrentHoverText = Operation->DefaultHoverText;
 			
 		Operation->Construct();
@@ -310,15 +395,14 @@ class SProxyRowHandle : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(SProxyRowHandle)
 	{}
-	SLATE_DEFAULT_SLOT(FArguments, Content)
-	SLATE_ARGUMENT(FProxyTableEditor*, ProxyEditor)
-	SLATE_ARGUMENT(uint32, RowIndex)
+	SLATE_ARGUMENT(FProxyTableEditor*, Editor)
+	SLATE_ARGUMENT(TSharedPtr<FProxyTableEditor::FProxyTableRow>, Row)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
-		ProxyEditor = InArgs._ProxyEditor;
-		RowIndex = InArgs._RowIndex;
+		ProxyEditor = InArgs._Editor;
+		Row = InArgs._Row;
 
 		ChildSlot
 		[
@@ -332,18 +416,19 @@ public:
 
 	FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
 	{
+		ProxyEditor->SelectRow(Row);
 		return FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
 	};
 
 	FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
 	{
-		TSharedRef<FProxyRowDragDropOp> DragDropOp = FProxyRowDragDropOp::New(ProxyEditor, RowIndex);
+		TSharedRef<FProxyRowDragDropOp> DragDropOp = FProxyRowDragDropOp::New(Row);
 		return FReply::Handled().BeginDragDrop(DragDropOp);
 	}
 
 private:
 	FProxyTableEditor* ProxyEditor = nullptr;
-	uint32 RowIndex;
+	TSharedPtr<FProxyTableEditor::FProxyTableRow> Row;
 };
 
 
@@ -353,15 +438,15 @@ public:
 	SLATE_BEGIN_ARGS(SProxyTableRow) {}
 		/** The list item for this row */
 		SLATE_ARGUMENT(TSharedPtr<FProxyTableEditor::FProxyTableRow>, Entry)
-		SLATE_ARGUMENT(UProxyTable*, ProxyTable)
 		SLATE_ARGUMENT(FProxyTableEditor*, Editor)
 	SLATE_END_ARGS()
 
+	static constexpr int SpecialIndex_AddRow = -1;
+	static constexpr int SpecialIndex_InheritedFrom = -2;
 
 	void Construct(const FArguments& Args, const TSharedRef<STableViewBase>& OwnerTableView)
 	{
-		RowIndex = Args._Entry;
-		ProxyTable = Args._ProxyTable;
+		Row = Args._Entry;
 		Editor = Args._Editor;
 
 		SMultiColumnTableRow<TSharedPtr<FProxyTableEditor::FProxyTableRow>>::Construct(
@@ -375,84 +460,306 @@ public:
 	{
 		static FName Handles = "Handles";
 		static FName Key = "Key";
+		static FName OldKey = "OldKey";
 		static FName Value = "Value";
-		
-		if (RowIndex->RowIndex < ProxyTable->Entries.Num())
+
+		if (Row->RowIndex >=0)
 		{
 			if (ColumnName == Handles)
 			{
 				// row drag handle
-				return SNew(SProxyRowHandle).ProxyEditor(Editor).RowIndex(RowIndex->RowIndex);
+				return SNew(SProxyRowHandle).Row(Row).Editor(Editor);
 			}
 			else if (ColumnName == Value) 
 			{
-				TSharedPtr<SWidget> ResultWidget = ChooserEditor::FObjectChooserWidgetFactories::CreateWidget(ProxyTable, FObjectChooserBase::StaticStruct(),
-					ProxyTable->Entries[RowIndex->RowIndex].ValueStruct.GetMutableMemory(),
-					ProxyTable->Entries[RowIndex->RowIndex].ValueStruct.GetScriptStruct(),
-					nullptr/*ProxyTable->ContextObjectType*/,
-					FOnStructPicked::CreateLambda([this, RowIndex=RowIndex->RowIndex](const UScriptStruct* ChosenStruct)
+				UClass* ObjectType = nullptr;
+				if (Row->ProxyTable->Entries[Row->RowIndex].Proxy)
+				{
+					ObjectType = Row->ProxyTable->Entries[Row->RowIndex].Proxy->Type;
+				}
+				bool bReadOnly = Row->ProxyTable != Editor->GetProxyTable();
+				TSharedPtr<SWidget> ResultWidget = ChooserEditor::FObjectChooserWidgetFactories::CreateWidget( bReadOnly,
+					Row->ProxyTable, FObjectChooserBase::StaticStruct(),
+					Row->ProxyTable->Entries[Row->RowIndex].ValueStruct.GetMutableMemory(),
+					Row->ProxyTable->Entries[Row->RowIndex].ValueStruct.GetScriptStruct(),
+					ObjectType,
+					FOnStructPicked::CreateLambda([this](const UScriptStruct* ChosenStruct)
 					{
-						const FScopedTransaction Transaction(LOCTEXT("Change Value Type", "Change Value Type"));
-						ProxyTable->Entries[RowIndex].ValueStruct.InitializeAs(ChosenStruct);
-						ProxyTable->Modify(true);
-						ChooserEditor::FObjectChooserWidgetFactories::CreateWidget(ProxyTable, FObjectChooserBase::StaticStruct(),
-								ProxyTable->Entries[RowIndex].ValueStruct.GetMutableMemory(),
-								ProxyTable->Entries[RowIndex].ValueStruct.GetScriptStruct(),
-								nullptr/*ProxyTable->ContextObjectType*/, FOnStructPicked(), &CacheBorder);
+						{
+							const FScopedTransaction Transaction(LOCTEXT("Change Value Type", "Change Value Type"));
+							Row->ProxyTable->Modify(true);
+							Row->ProxyTable->Entries[Row->RowIndex].ValueStruct.InitializeAs(ChosenStruct);
+						}
+						ChooserEditor::FObjectChooserWidgetFactories::CreateWidget(false, Row->ProxyTable, FObjectChooserBase::StaticStruct(),
+								Row->ProxyTable->Entries[Row->RowIndex].ValueStruct.GetMutableMemory(),
+								Row->ProxyTable->Entries[Row->RowIndex].ValueStruct.GetScriptStruct(),
+								Row->ProxyTable->Entries[Row->RowIndex].Proxy ? Row->ProxyTable->Entries[Row->RowIndex].Proxy->Type.Get() : UObject::StaticClass(),
+								FOnStructPicked(), &CacheBorder);
 					}),
 					&CacheBorder
 					);
-				return ResultWidget.ToSharedRef();
+
+				return SNew(SOverlay)
+					+ SOverlay::Slot()
+					[
+						ResultWidget.ToSharedRef()
+					]
+					+ SOverlay::Slot().VAlign(VAlign_Bottom)
+					[
+						SNew(SSeparator).SeparatorImage(FCoreStyle::Get().GetBrush("FocusRectangle"))
+						.Visibility_Lambda([this]() { return bDragActive && !bDropAbove ? EVisibility::Visible : EVisibility::Hidden; })
+					]
+					+ SOverlay::Slot().VAlign(VAlign_Top)
+					[
+						SNew(SSeparator).SeparatorImage(FCoreStyle::Get().GetBrush("FocusRectangle"))
+						.Visibility_Lambda([this]() { return bDragActive && bDropAbove ? EVisibility::Visible : EVisibility::Hidden; })
+					];
+			}
+			else if (ColumnName == OldKey)
+			{
+				bool bReadOnly = Row->ProxyTable != Editor->GetProxyTable();
+				return SNew(SEditableTextBox)
+					.IsEnabled(!bReadOnly)
+					.Text_Lambda([this](){ return Row->ProxyTable->Entries.Num() > Row->RowIndex ?  FText::FromName(Row->ProxyTable->Entries[Row->RowIndex].Key) : FText();})
+					.OnTextCommitted_Lambda([this](const FText& Text, ETextCommit::Type CommitType)
+					{
+						if (Row->ProxyTable->Entries.Num() > Row->RowIndex)
+						{
+							Row->ProxyTable->Entries[Row->RowIndex].Key = FName(Text.ToString());
+						}
+					});	
 			}
 			else if (ColumnName == Key)
 			{
-				return SNew(SEditableTextBox)
-					.Text_Lambda([this](){ return ProxyTable->Entries.Num() > RowIndex->RowIndex ?  FText::FromName(ProxyTable->Entries[RowIndex->RowIndex].Key) : FText();})
-					.OnTextCommitted_Lambda([this](const FText& Text, ETextCommit::Type CommitType)
+				bool bReadOnly = Row->ProxyTable != Editor->GetProxyTable();
+				return SNew(SObjectPropertyEntryBox).IsEnabled(!bReadOnly)
+					.AllowedClass(UProxyAsset::StaticClass())
+					.ObjectPath_Lambda([this]()
 					{
-						if (ProxyTable->Entries.Num() > RowIndex->RowIndex)
+						return Row->ProxyTable->Entries.Num() > Row->RowIndex ?  Row->ProxyTable->Entries[Row->RowIndex].Proxy.GetPath() : FString();
+					})
+					.OnObjectChanged_Lambda([this](const FAssetData& AssetData)
+					{
+						if (Row->ProxyTable->Entries.Num() > Row->RowIndex)
 						{
-							ProxyTable->Entries[RowIndex->RowIndex].Key = FName(Text.ToString());
+							const FScopedTransaction Transaction(LOCTEXT("Edit Proxy Asset", "Edit Proxy Asset"));
+							Row->ProxyTable->Modify(true);
+							Row->ProxyTable->Entries[Row->RowIndex].Proxy = Cast<UProxyAsset>(AssetData.GetAsset());
+							
+							// ideally just need to rebuild the widget for the "Value" to update the UObject type filtering.
+							// For now just trigger a full refresh
+							Editor->UpdateTableRows();
 						}
 					});
 			}
 		}
-		else if (RowIndex->RowIndex == ProxyTable->Entries.Num())
-        {
-			// on the row past the end, show an Add button in the result column
-			if (ColumnName == Key)
+		else
+		{
+			// special case row for "Add Row" button
+			if (Row->RowIndex == SpecialIndex_AddRow)
 			{
-				return Editor->GetCreateRowComboButton().ToSharedRef();
+				// on the row past the end, show an Add button in the result column
+				if (ColumnName == Value)
+				{
+					return SNew(SOverlay)
+						+ SOverlay::Slot()
+						[
+							Editor->GetCreateRowComboButton().ToSharedRef()
+						]
+						+ SOverlay::Slot().VAlign(VAlign_Top)
+						[
+							SNew(SSeparator).SeparatorImage(FCoreStyle::Get().GetBrush("FocusRectangle"))
+							.Visibility_Lambda([this]() { return bDragActive ? EVisibility::Visible : EVisibility::Hidden; })
+						];
+				}
 			}
 		}
 		return SNullWidget::NullWidget;
 	}
 
+	
+	virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		if (TSharedPtr<FProxyRowDragDropOp> Operation = DragDropEvent.GetOperationAs<FProxyRowDragDropOp>())
+		{
+			if (Row->ProxyTable == Editor->GetProxyTable())
+			{
+				bDragActive = true;
+				float Center = MyGeometry.Position.Y + MyGeometry.Size.Y;
+				bDropAbove = DragDropEvent.GetScreenSpacePosition().Y < Center;
+			}
+		}
+	}
+	virtual void OnDragLeave(const FDragDropEvent& DragDropEvent) override
+	{
+		bDragActive = false;
+	}
+	
+	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		if (Row->ProxyTable == Editor->GetProxyTable())
+		{
+			if (TSharedPtr<FProxyRowDragDropOp> Operation = DragDropEvent.GetOperationAs<FProxyRowDragDropOp>())
+			{
+				float Center = MyGeometry.AbsolutePosition.Y + MyGeometry.Size.Y/2;
+				bDropAbove = DragDropEvent.GetScreenSpacePosition().Y < Center;
+				return FReply::Handled();
+			}
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		if (TSharedPtr<FProxyRowDragDropOp> Operation = DragDropEvent.GetOperationAs<FProxyRowDragDropOp>())
+		{
+			if (Row->ProxyTable == Editor->GetProxyTable()) // only allow dropping on rows that are part of this actual table (not inherited entries)
+			{
+				int InsertIndex = Row->RowIndex;
+				if (InsertIndex < 0)
+				{
+					InsertIndex = Editor->GetProxyTable()->Entries.Num();
+				}
+				else
+				{
+					if (!bDropAbove)
+					{
+						InsertIndex++;
+					}
+				}
+				
+				if (Row->ProxyTable == Operation->Row->ProxyTable)
+				{
+					// move row within a proxy table
+					Editor->MoveRow(Operation->Row->RowIndex, InsertIndex);
+					return FReply::Handled();		
+				}
+				else
+				{
+					Editor->InsertEntry(Operation->Row->ProxyTable->Entries[Operation->Row->RowIndex], InsertIndex);
+					return FReply::Handled();
+				}
+			}
+		}
+		return FReply::Unhandled();
+	}	
+
 private:
-	TSharedPtr<FProxyTableEditor::FProxyTableRow> RowIndex;
-	UProxyTable* ProxyTable;
+	TSharedPtr<FProxyTableEditor::FProxyTableRow> Row;
 	FProxyTableEditor* Editor;
 	TSharedPtr<SBorder> CacheBorder;
+	bool bDragActive = false;
+	bool bDropAbove = false;	
 };
 
 
 TSharedRef<ITableRow> FProxyTableEditor::GenerateTableRow(TSharedPtr<FProxyTableRow> InItem, const TSharedRef<STableViewBase>& OwnerTable)
 {
 	UProxyTable* ProxyTable = Cast<UProxyTable>(EditingObjects[0]);
-	
-	return SNew(SProxyTableRow, OwnerTable)
-		.Entry(InItem).ProxyTable(ProxyTable).Editor(this);
+
+	if (InItem->RowIndex == SProxyTableRow::SpecialIndex_InheritedFrom)
+	{
+		return SNew(STableRow<TSharedRef<FProxyTableRow>>, OwnerTable)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(STextBlock)
+					.Text(InItem->Children.Num() > 0 ?  LOCTEXT("Inherited from ", "Inherited from ") : LOCTEXT("No rows inherited from ", "No rows inherited from ") )
+			]
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SHyperlink)
+					.Text(FText::FromString(InItem->ProxyTable->GetName()))
+					.OnNavigate_Lambda([InItem]()
+					{
+						AssetViewUtils::OpenEditorForAsset(InItem->ProxyTable);
+					})
+			]
+		];
+	}
+	else
+	{
+		return SNew(SProxyTableRow, OwnerTable)
+
+			.Entry(InItem).Editor(this);
+	}
 }
 
-FReply FProxyTableEditor::SelectRootProperties()
+void FProxyTableEditor::SelectRootProperties()
 {
 	if( DetailsView.IsValid() )
 	{
 		// Make sure details window is pointing to our object
 		DetailsView->SetObjects( EditingObjects );
 	}
+}
 
-	return FReply::Handled();
+void FProxyTableEditor::DeleteSelectedRows()
+{
+	UProxyTable* ProxyTable = Cast<UProxyTable>(EditingObjects[0]);
+	
+	const FScopedTransaction Transaction(LOCTEXT("Delete Row Transaction", "Delete Row"));
+	ProxyTable->Modify(true);
+	
+	// delete selected rows.
+	TArray<uint32> RowsToDelete;
+	for(auto& SelectedRow:SelectedRows)
+	{
+		RowsToDelete.Add(SelectedRow->Row);
+	}
+	// sort indices in reverse
+	RowsToDelete.Sort([](int32 A, int32 B){ return A>B; });
+	for(uint32 RowIndex : RowsToDelete)
+	{
+		ProxyTable->Entries.RemoveAt(RowIndex);
+	}
+	
+	UpdateTableRows();
+}
+
+void FProxyTableEditor::InsertEntry(FProxyEntry& Entry, int RowIndex)
+{
+	UProxyTable* Table = Cast<UProxyTable>(EditingObjects[0]);
+	RowIndex = FMath::Min(RowIndex,Table->Entries.Num());
+	
+	const FScopedTransaction Transaction(LOCTEXT("Move Row", "Move Row"));
+	
+	Table->Modify(true);
+
+	RowIndex = FMath::Clamp(RowIndex, 0, Table->Entries.Num());
+
+	Table->Entries.Insert(Entry, RowIndex);
+
+	UpdateTableRows();
+}
+
+void FProxyTableEditor::MoveRow(int SourceRowIndex, int TargetRowIndex)
+{
+	UProxyTable* Table = Cast<UProxyTable>(EditingObjects[0]);
+	TargetRowIndex = FMath::Min(TargetRowIndex,Table->Entries.Num());
+	
+	const FScopedTransaction Transaction(LOCTEXT("Move Row", "Move Row"));
+	
+	Table->Modify(true);
+
+	FProxyEntry Entry = Table->Entries[SourceRowIndex];
+	Table->Entries.RemoveAt(SourceRowIndex);
+	if (SourceRowIndex < TargetRowIndex)
+	{
+		TargetRowIndex--;
+	}
+	Table->Entries.Insert(Entry, TargetRowIndex);
+
+	UpdateTableRows();
+}
+
+void FProxyTableEditor::TreeViewExpansionChanged(TSharedPtr<FProxyTableEditor::FProxyTableRow> InItem, bool bShouldBeExpanded)
+{
+	if (InItem->RowIndex == SProxyTableRow::SpecialIndex_InheritedFrom)
+	{
+		ImportedTablesExpansionState.Add(InItem->ProxyTable, bShouldBeExpanded);
+	}
 }
 
 
@@ -460,20 +767,31 @@ void FProxyTableEditor::UpdateTableColumns()
 {
 	HeaderRow->ClearColumns();
 	HeaderRow->AddColumn(SHeaderRow::Column("Handles")
-					.ManualWidth(30)
-					.HeaderContent()
-					[					
-						SNew(SButton).OnClicked_Raw(this, &FProxyTableEditor::SelectRootProperties)
-					]);
+					.DefaultLabel(FText())
+					.ManualWidth(30));
 	
 	HeaderRow->AddColumn(SHeaderRow::Column("Key")
-					.DefaultLabel(LOCTEXT("KeyColumnName", "Key"))
+					.DefaultLabel(LOCTEXT("KeyColumnName", "Proxy"))
 					.ManualWidth(500));
+
+  // Code for allowing editing of deprecated Key data
+  //   if (UProxyTable* Table = GetProxyTable())
+  //   	{
+  //   		if (Table->Entries.Num() > 0)
+  //   		{
+  //   			// if the first entry has a non-none key, assume this is an old table and make an extra column with the old FName Key property
+  //   			if (Table->Entries[0].Key != NAME_None)
+  //   			{
+  //   					HeaderRow->AddColumn(SHeaderRow::Column("OldKey")
+  //                   					.DefaultLabel(LOCTEXT("OldKeyColumnName", "Key (Deprecated)"))
+  //                   					.ManualWidth(500));
+  //   			}
+  //   		}
+  //   	}
 
 	HeaderRow->AddColumn(SHeaderRow::Column("Value")
 					.DefaultLabel(LOCTEXT("ValueColumnName", "Value"))
 					.ManualWidth(500));
-
 }
 
 TSharedRef<SDockTab> FProxyTableEditor::SpawnTableTab( const FSpawnTabArgs& Args )
@@ -510,90 +828,152 @@ TSharedRef<SDockTab> FProxyTableEditor::SpawnTableTab( const FSpawnTabArgs& Args
 		});
 
 	HeaderRow = SNew(SHeaderRow);
-
-	UpdateTableColumns();
-	UpdateTableRows();
-
-	TableView = SNew(SListView<TSharedPtr<FProxyTableRow>>)
-    			.ListItemsSource(&TableRows)
-				.OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& Event)
+	
+	TableView = SNew(STreeView<TSharedPtr<FProxyTableRow>>)
+    			.TreeItemsSource(&TableRows)
+			.OnExpansionChanged(this, &FProxyTableEditor::TreeViewExpansionChanged)
+				.OnGetChildren_Lambda( [] (TSharedPtr<FProxyTableRow> Row, TArray<TSharedPtr<FProxyTableRow>>& OutChildren)
 				{
-					if (Event.GetKey() == EKeys::Delete)
+					OutChildren = Row->Children;
+				})
+				.OnKeyDownHandler_Lambda([this](const FGeometry&, const FKeyEvent& Event)
+				{	
+					if ( Event.GetKey() == EKeys::Delete)
 					{
-						const FScopedTransaction Transaction(LOCTEXT("Delete Row Transaction", "Delete Row"));
-						UProxyTable* ProxyTable = Cast<UProxyTable>(EditingObjects[0]);
-						ProxyTable->Modify(true);
-						// delete selected rows.
-						TArray<uint32> RowsToDelete;
-						for(auto& SelectedRow:SelectedRows)
-						{
-							RowsToDelete.Add(SelectedRow->Row);
-						}
-						// sort indices in reverse
-						RowsToDelete.Sort([](int32 A, int32 B){ return A>B; });
-						for(uint32 RowIndex : RowsToDelete)
-						{
-							ProxyTable->Entries.RemoveAt(RowIndex);
-						}
-
-						UpdateTableRows();
-						
+						UProxyTable* ProxyTable = GetProxyTable();
+						DeleteSelectedRows();
 						return FReply::Handled();
 					}
 					return FReply::Unhandled();
-				}
-				)
+				})
 				.OnSelectionChanged_Lambda([this](TSharedPtr<FProxyTableRow> SelectedItem,  ESelectInfo::Type SelectInfo)
 				{
 					if (SelectedItem)
 					{
+						for (UObject* SelectedRow : SelectedRows)
+                     	{
+                     		SelectedRow->ClearFlags(RF_Standalone);
+                     	}
 						SelectedRows.SetNum(0);
 						UProxyTable* ProxyTable = Cast<UProxyTable>(EditingObjects[0]);
 						// Get the list of objects to edit the details of
 						TObjectPtr<UProxyRowDetails> Selection = NewObject<UProxyRowDetails>();
 						Selection->ProxyTable = ProxyTable;
 						Selection->Row = SelectedItem->RowIndex;
-						Selection->SetFlags(RF_Transactional); 
+						Selection->SetFlags(RF_Standalone);
 						SelectedRows.Add(Selection);
-											
+						
+						TArray<UObject*> DetailsObjects;
+						for(auto& Item : SelectedRows)
+						{
+							DetailsObjects.Add(Item.Get());
+						}
+
 						if( DetailsView.IsValid() )
 						{
 							// Make sure details window is pointing to our object
-							//DetailsView->SetObjects( ... )
-						}
+							DetailsView->SetObjects( DetailsObjects );
+						}		
 					}
 				})
     			.OnGenerateRow_Raw(this, &FProxyTableEditor::GenerateTableRow)
 				.HeaderRow(HeaderRow);
+				
+
+	UpdateTableColumns();
+	UpdateTableRows();
 	
 	return SNew(SDockTab)
 		.Label( LOCTEXT("ProxtTableTitle", "Proxy Table") )
 		.TabColorScale( GetTabColorScale() )
 		.OnCanCloseTab_Lambda([]() { return false; })
 		[
-			TableView.ToSharedRef()
+			SNew(SScrollBox).Orientation(Orient_Horizontal)
+			+ SScrollBox::Slot()
+			[
+				TableView.ToSharedRef()
+			]
 		];
+}
+
+void FProxyTableEditor::AddInheritedRows(UProxyTable* ProxyTable)
+{
+	if (ProxyTable == nullptr || ReferencedProxyTables.Find(ProxyTable))
+	{
+		return;
+	}
+
+	// prevent infinite inheritance loops
+	ReferencedProxyTables.Add(ProxyTable);
+	
+	// add "Inherited from" header above inherited rows
+	TSharedPtr<FProxyTableRow> ParentTableRow = MakeShared<FProxyTableRow>(SProxyTableRow::SpecialIndex_InheritedFrom, ProxyTable);
+	TableRows.Add(ParentTableRow);
+
+	bool* CachedExpansionState = ImportedTablesExpansionState.Find(ProxyTable);
+	bool Expansion = CachedExpansionState ? *CachedExpansionState : true;
+	TableView->SetItemExpansion(ParentTableRow, Expansion);
+
+	int NumRows = TableRows.Num();
+	for(int i =0; i<ProxyTable->Entries.Num(); i++)
+	{
+		// check if there's already an entry in TableRows for the same ProxyAsset
+		if (!ReferencedProxyEntries.Find(ProxyTable->Entries[i]))
+		{
+			ParentTableRow->Children.Add(MakeShared<FProxyTableRow>(i, ProxyTable));
+			ReferencedProxyEntries.Add(ProxyTable->Entries[i]);
+		}
+	}
+
+	// recursively add inherited entries
+	for(UProxyTable* InheritedTable : ProxyTable->InheritEntriesFrom)
+	{
+		AddInheritedRows(InheritedTable);
+	}
 }
 
 void FProxyTableEditor::UpdateTableRows()
 {
 	UProxyTable* ProxyTable = Cast<UProxyTable>(EditingObjects[0]);
-	int32 OldNum = TableRows.Num();
-	int32 NewNum = ProxyTable->Entries.Num();
 
-	// Sync the TableRows array which drives the ui table to match the number of results.
-	// Add 1 at the end, for the "Add Row" control
-	TableRows.SetNum(NewNum + 1);
-	
-	for(int32 i = OldNum; i < NewNum+1; i++)
+	TableRows.SetNum(0);
+	ReferencedProxyEntries.Empty(ReferencedProxyEntries.Num());
+	ReferencedProxyTables.Empty(ReferencedProxyTables.Num());
+
+	// add rows from this table
+	for(int i =0; i<ProxyTable->Entries.Num(); i++)
 	{
-		TableRows[i] = MakeShared<FProxyTableRow>(i);
+		TableRows.Add(MakeShared<FProxyTableRow>(i, ProxyTable));
+		ReferencedProxyEntries.Add(ProxyTable->Entries[i]);
+	}
+
+	// Add 1 at the end, for the "Add Row" control
+	TableRows.Add(MakeShared<FProxyTableRow>(SProxyTableRow::SpecialIndex_AddRow, ProxyTable));
+	
+	if (ProxyTable->InheritEntriesFrom.Num()>0)
+	{
+		// add imported rows in to the table
+		for(UProxyTable* InheritedTable : ProxyTable->InheritEntriesFrom)
+		{
+			AddInheritedRows(InheritedTable);
+		}
 	}
 
 	if (TableView.IsValid())
 	{
 		TableView->RebuildList();
 	}
+}
+
+void FProxyTableEditor::OnObjectTransacted(UObject* InObject, const FTransactionObjectEvent& InTransactionObjectEvent)
+{
+	if (UProxyTable* ModifiedProxyTable = Cast<UProxyTable>(InObject))
+	{
+		if (ReferencedProxyTables.Contains(ModifiedProxyTable))
+		{
+			UpdateTableRows();
+		}
+	}	
 }
 
 void FProxyTableEditor::OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap)
@@ -643,32 +1023,80 @@ TSharedRef<FProxyTableEditor> FProxyTableEditor::CreateEditor( const EToolkitMod
 }
 
 /// Result widgets
+///
+	
+TSharedRef<SWidget> CreateProxyTablePropertyWidget(bool bReadOnly, UObject* TransactionObject, void* Value, UClass* ResultBaseClass, UE::ChooserEditor::FChooserWidgetValueChanged ValueChanged)
+{
+	IHasContextClass* HasContextClass = Cast<IHasContextClass>(TransactionObject);
 
-TSharedRef<SWidget> CreateLookupProxyWidget(UObject* TransactionObject, void* Value, UClass* ContextObject)
+	FProxyTableContextProperty* ContextProperty = reinterpret_cast<FProxyTableContextProperty*>(Value);
+
+	return SNew(UE::ChooserEditor::SPropertyAccessChainWidget).ContextClassOwner(HasContextClass).AllowFunctions(false).BindingColor("ClassPinTypeColor").TypeFilter("UProxyTable*")
+	.PropertyBindingValue(&ContextProperty->Binding)
+	.OnAddBinding_Lambda(
+		[ContextProperty, TransactionObject, ValueChanged](FName InPropertyName, const TArray<FBindingChainElement>& InBindingChain)
+		{
+			const FScopedTransaction Transaction(NSLOCTEXT("ContextPropertyWidget", "Change Property Binding", "Change Property Binding"));
+			TransactionObject->Modify(true);
+			ContextProperty->SetBinding(InBindingChain);
+			ValueChanged.ExecuteIfBound();
+		});
+}
+
+TSharedRef<SWidget> CreateLookupProxyWidget(bool bReadOnly, UObject* TransactionObject, void* Value, UClass* ResultBaseClass, ChooserEditor::FChooserWidgetValueChanged ValueChanged)
 {
 	FLookupProxy* LookupProxy = static_cast<FLookupProxy*>(Value);
 	
+	TSharedPtr<SWidget> ProxyTableWidget = UE::ChooserEditor::FObjectChooserWidgetFactories::CreateWidget(false, TransactionObject, LookupProxy->ProxyTable.GetMutableMemory(),LookupProxy->ProxyTable.GetScriptStruct(), ResultBaseClass);
+
+	
+	TSharedRef<SWidget> ProxyAssetWidget =SNew(SObjectPropertyEntryBox)
+    		.IsEnabled(!bReadOnly)
+    		.AllowedClass(UProxyAsset::StaticClass())
+			.DisplayBrowse(false)
+			.DisplayUseSelected(false)
+    		.ObjectPath_Lambda([LookupProxy](){ return LookupProxy->Proxy.GetPath();})
+    		.OnShouldFilterAsset_Lambda([ResultBaseClass](const FAssetData& AssetData)
+    		{
+    			if (ResultBaseClass == nullptr)
+    			{
+    				return false;
+    			}
+    			if (AssetData.IsInstanceOf(UProxyAsset::StaticClass()))
+    			{
+    				if (UProxyAsset* Proxy = Cast<UProxyAsset>(AssetData.GetAsset()))
+    				{
+    					return !(Proxy->Type && Proxy->Type->IsChildOf(ResultBaseClass));
+    				}
+    			}
+    			return true;
+    		})
+    		.OnObjectChanged_Lambda([TransactionObject, LookupProxy, ValueChanged](const FAssetData& AssetData)
+    		{
+    			const FScopedTransaction Transaction(LOCTEXT("Edit Chooser", "Edit Chooser"));
+    			TransactionObject->Modify(true);
+    			LookupProxy->Proxy = Cast<UProxyAsset>(AssetData.GetAsset());
+    			ValueChanged.ExecuteIfBound();
+    		});
+
 	return SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
+		+SHorizontalBox::Slot()
 		[
-			UE::ChooserEditor::CreatePropertyWidget<FProxyTableContextProperty>(TransactionObject, LookupProxy->ProxyTable.GetMutablePtr<FProxyTableContextProperty>(), ContextObject, GetDefault<UGraphEditorSettings>()->ObjectPinTypeColor)
+			ProxyTableWidget ? ProxyTableWidget.ToSharedRef() : SNullWidget::NullWidget
 		]
-		+ SHorizontalBox::Slot()
+		+SHorizontalBox::Slot()
 		[
-			SNew(SEditableTextBox)
-			.Text_Lambda([LookupProxy]() { return FText::FromName(LookupProxy->Key);})
-			.OnTextChanged_Lambda([TransactionObject,LookupProxy](const FText& NewText)
-			{
-				FScopedTransaction ScopedTransaction(LOCTEXT("Change LookupProxy Key Name", "Change LookupProxy Key Name"));
-				TransactionObject->Modify(true);
-				LookupProxy->Key = FName(NewText.ToString());
-			})
+			ProxyAssetWidget
 		];
 }
 
 void FProxyTableEditor::RegisterWidgets()
 {
-	UE::ChooserEditor::FObjectChooserWidgetFactories::ChooserWidgetCreators.Add(FLookupProxy::StaticStruct(), CreateLookupProxyWidget);
+	UE::ChooserEditor::FObjectChooserWidgetFactories::RegisterWidgetCreator(FLookupProxy::StaticStruct(), CreateLookupProxyWidget);
+	UE::ChooserEditor::FObjectChooserWidgetFactories::RegisterWidgetCreator(FProxyTableContextProperty::StaticStruct(), CreateProxyTablePropertyWidget);
+	
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	PropertyModule.RegisterCustomClassLayout("ProxyRowDetails", FOnGetDetailCustomizationInstance::CreateStatic(&FProxyRowDetails::MakeInstance));	
 }
 	
 }

@@ -8,6 +8,7 @@
 #include "Misc/Attribute.h"
 #include "Features/IModularFeature.h"
 #include "UObject/UnrealType.h"
+#include "Input/Reply.h"
 
 class UBlueprint;
 class IPropertyHandle;
@@ -15,6 +16,7 @@ class UEdGraph;
 class FExtender;
 class SWidget;
 struct FSlateBrush;
+struct FButtonStyle;
 struct FEdGraphPinType;
 class IPropertyAccessLibraryCompiler;
 struct FPropertyAccessLibrary;
@@ -133,6 +135,12 @@ DECLARE_DELEGATE_RetVal_OneParam(bool, FOnCanRemoveBinding, FName /*InPropertyNa
 /** Delegate called once a new function binding has been created */
 DECLARE_DELEGATE_TwoParams(FOnNewFunctionBindingCreated, UEdGraph* /*InFunctionGraph*/, UFunction* /*InFunction*/);
 
+/** Delegate called to resolve true type of the instance */
+DECLARE_DELEGATE_RetVal_OneParam(UStruct*, FOnResolveIndirection, const TArray<FBindingChainElement>& /*InBindingChain*/);
+
+/** Delegate called once a drag-drop event is dropped on the binding widget */
+DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnDrop, const FGeometry&, const FDragDropEvent&);
+
 /** Setup arguments structure for a property binding widget */
 struct FPropertyBindingWidgetArgs
 {
@@ -180,7 +188,13 @@ struct FPropertyBindingWidgetArgs
 
 	/** Delegate called once a new function binding has been created */
 	FOnNewFunctionBindingCreated OnNewFunctionBindingCreated;
+
+	/** Delegate called to resolve true type of the instance */
+	FOnResolveIndirection OnResolveIndirection;
 	
+	/** Delegate called when a property is dropped on the property binding widget */
+	FOnDrop OnDrop;
+
 	/** The current binding's text label */
 	TAttribute<FText> CurrentBindingText;
 
@@ -196,6 +210,9 @@ struct FPropertyBindingWidgetArgs
 	/** Menu extender */
 	TSharedPtr<FExtender> MenuExtender;
 
+	/** Optional style override for bind button */
+	const FButtonStyle* BindButtonStyle = nullptr;
+	
 	/** Whether to generate pure bindings */
 	bool bGeneratePureBindings = true;
 
@@ -219,6 +236,9 @@ struct FPropertyBindingWidgetArgs
 
 	/** Whether to allow UObject functions as non-leaf nodes */
 	bool bAllowUObjectFunctions = false;
+	
+	/** Whether to allow only functions marked thread safe */
+	bool bAllowOnlyThreadSafeFunctions = false;
 
 	/** Whether to allow UScriptStruct functions as non-leaf nodes */
 	bool bAllowStructFunctions = false;	

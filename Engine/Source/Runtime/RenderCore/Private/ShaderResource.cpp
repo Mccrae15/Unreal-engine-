@@ -5,23 +5,17 @@
 =============================================================================*/
 
 #include "Shader.h"
+#include "Misc/Compression.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/StringBuilder.h"
-#include "Stats/StatsMisc.h"
-#include "Serialization/MemoryWriter.h"
-#include "VertexFactory.h"
-#include "ProfilingDebugging/DiagnosticTable.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Interfaces/IShaderFormat.h"
-#include "ShaderCodeLibrary.h"
+#include "RHI.h"
 #include "ShaderCore.h"
-#include "RenderUtils.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeLock.h"
+#include "RenderingThread.h"
 #include "UObject/RenderingObjectVersion.h"
-#include "UObject/FortniteMainBranchObjectVersion.h"
-#include "ProfilingDebugging/LoadTimeTracker.h"
 #include "Misc/MemStack.h"
 #include "ShaderCompilerCore.h"
 #include "Compression/OodleDataCompression.h"
@@ -34,48 +28,6 @@
 
 DECLARE_LOG_CATEGORY_CLASS(LogShaderWarnings, Log, Log);
 
-int32 GShaderCompressionFormatChoice = 2;
-static FAutoConsoleVariableRef CVarShaderCompressionFormatChoice(
-	TEXT("r.Shaders.CompressionFormat"),
-	GShaderCompressionFormatChoice,
-	TEXT("Select the compression methods for the shader code.\n")
-	TEXT(" 0: None (uncompressed)\n")
-	TEXT(" 1: LZ4\n")
-	TEXT(" 2: Oodle (default)\n")
-	TEXT(" 3: ZLib\n"),
-	ECVF_ReadOnly);
-
-int32 GShaderCompressionOodleAlgo = 2;
-static FAutoConsoleVariableRef CVarShaderCompressionOodleAlgo(
-	TEXT("r.Shaders.CompressionFormat.Oodle.Algo"),
-	GShaderCompressionOodleAlgo,
-	TEXT("Oodle compression method for the shader code, from fastest to slowest to decode.\n")
-	TEXT(" 0: None (invalid setting)\n")
-	TEXT(" 1: Selkie (fastest to decode)\n")
-	TEXT(" 2: Mermaid\n")
-	TEXT(" 3: Kraken\n")
-	TEXT(" 4: Leviathan (slowest to decode)\n"),
-	ECVF_ReadOnly);
-
-int32 GShaderCompressionOodleLevel = 6;
-static FAutoConsoleVariableRef CVarShaderCompressionOodleAlgoChoice(
-	TEXT("r.Shaders.CompressionFormat.Oodle.Level"),
-	GShaderCompressionOodleLevel,
-	TEXT("Oodle compression level. This mostly trades encode speed vs compression ratio, decode speed is determined by r.Shaders.CompressionFormat.Oodle.Algo\n")
-	TEXT(" -4 : HyperFast4\n")
-	TEXT(" -3 : HyperFast3\n")
-	TEXT(" -2 : HyperFast2\n")
-	TEXT(" -1 : HyperFast1\n")
-	TEXT("  0 : None\n")
-	TEXT("  1 : SuperFast\n")
-	TEXT("  2 : VeryFast\n")
-	TEXT("  3 : Fast\n")
-	TEXT("  4 : Normal\n")
-	TEXT("  5 : Optimal1\n")
-	TEXT("  6 : Optimal2\n")
-	TEXT("  7 : Optimal3\n")
-	TEXT("  8 : Optimal4\n"),
-	ECVF_ReadOnly);
 
 static int32 GShaderCompilerEmitWarningsOnLoad = 0;
 static FAutoConsoleVariableRef CVarShaderCompilerEmitWarningsOnLoad(
@@ -85,35 +37,19 @@ static FAutoConsoleVariableRef CVarShaderCompilerEmitWarningsOnLoad(
 	ECVF_Default
 );
 
-FName GetShaderCompressionFormat(const FName& ShaderFormat)
+FName GetShaderCompressionFormat()
 {
-	// support an older developer-only CVar for compatibility and make it preempt
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	static const IConsoleVariable* CVarSkipCompression = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.SkipCompression"));
-	static bool bSkipCompression = (CVarSkipCompression && CVarSkipCompression->GetInt() != 0);
-	if (UNLIKELY(bSkipCompression))
-	{
-		return NAME_None;
-	}
-#endif
-
-	static FName Formats[]
-	{
-		NAME_None,
-		NAME_LZ4,
-		NAME_Oodle,
-		NAME_Zlib
-	};
-	
-	//GShaderCompressionFormatChoice = (GShaderCompressionFormatChoice < 0) ? 0 : GShaderCompressionFormatChoice;
-	GShaderCompressionFormatChoice = FMath::Clamp<int32>(GShaderCompressionFormatChoice, 0, UE_ARRAY_COUNT(Formats) - 1);
-	return Formats[GShaderCompressionFormatChoice];
+	// We always use oodle now. This was instituted because UnrealPak recompresses the shaders and doens't have
+	// access to the INIs that drive the CVars and would always use default, resulting in mismatches for non
+	// default encoder selection.
+	return NAME_Oodle;
 }
 
 void GetShaderCompressionOodleSettings(FOodleDataCompression::ECompressor& OutCompressor, FOodleDataCompression::ECompressionLevel& OutLevel, const FName& ShaderFormat)
 {
 	// support an older developer-only CVar for compatibility and make it preempt
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	// Since we always use Oodle, we make SkipCompression tell Oodle to not compress.
 	static const IConsoleVariable* CVarSkipCompression = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.SkipCompression"));
 	static bool bSkipCompression = (CVarSkipCompression && CVarSkipCompression->GetInt() != 0);
 	if (UNLIKELY(bSkipCompression))
@@ -124,11 +60,9 @@ void GetShaderCompressionOodleSettings(FOodleDataCompression::ECompressor& OutCo
 	}
 #endif
 
-	GShaderCompressionOodleAlgo = FMath::Clamp(GShaderCompressionOodleAlgo, static_cast<int32>(FOodleDataCompression::ECompressor::NotSet), static_cast<int32>(FOodleDataCompression::ECompressor::Leviathan));
-	OutCompressor = static_cast<FOodleDataCompression::ECompressor>(GShaderCompressionOodleAlgo);
-
-	GShaderCompressionOodleLevel = FMath::Clamp(GShaderCompressionOodleLevel, static_cast<int32>(FOodleDataCompression::ECompressionLevel::HyperFast4), static_cast<int32>(FOodleDataCompression::ECompressionLevel::Optimal4));
-	OutLevel = static_cast<FOodleDataCompression::ECompressionLevel>(GShaderCompressionOodleLevel);
+	// We just use mermaid/normal here since these settings get overwritten in unrealpak, so this is just for non pak'd builds.
+	OutCompressor = FOodleDataCompression::ECompressor::Mermaid;
+	OutLevel = FOodleDataCompression::ECompressionLevel::Normal;
 }
 
 bool FShaderMapResource::ArePlatformsCompatible(EShaderPlatform CurrentPlatform, EShaderPlatform TargetPlatform)
@@ -666,7 +600,7 @@ FRHIShader* FShaderMapResource_InlineCode::CreateRHIShaderOrCrash(int32 ShaderIn
 	double TimeFunctionEntered = FPlatformTime::Seconds();
 	ON_SCOPE_EXIT
 	{
-		if (IsInRenderingThread())
+		if (IsInParallelRenderingThread())
 		{
 			double ShaderCreationTime = FPlatformTime::Seconds() - TimeFunctionEntered;
 			INC_FLOAT_STAT_BY(STAT_Shaders_TotalRTShaderInitForRenderingTime, ShaderCreationTime);

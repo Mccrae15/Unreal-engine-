@@ -75,6 +75,14 @@ FAutoConsoleVariableRef CVarUpdateBoundsNotifyStreamingRadiusChangeRatio(
 	ECVF_Default
 );
 
+static bool GReleasePreviousLODInfoOnInitialization = true;
+static FAutoConsoleVariableRef CVarReleasePreviousLODInfoOnInitialization(
+	TEXT("r.SkinnedMesh.ReleasePreviousLODInfoOnInitialization"),
+	GReleasePreviousLODInfoOnInitialization,
+	TEXT("Whether to flush the render thread (incurring a game thread stall) and clean existing LOD info when re-initializating."),
+	ECVF_Default
+);
+
 namespace FAnimUpdateRateManager
 {
 	static float TargetFrameTimeForUpdateRate = 1.f / 30.f; //Target frame rate for lookahead URO
@@ -455,37 +463,50 @@ USkinnedMeshComponent::~USkinnedMeshComponent() = default;
 
 void USkinnedMeshComponent::UpdateMorphMaterialUsageOnProxy()
 {
-	// update morph material usage
-	if (SceneProxy)
+	if (!SceneProxy)
 	{
-		if (ActiveMorphTargets.Num() > 0 && GetSkinnedAsset()->GetMorphTargets().Num() > 0)
+		return;
+	}
+	TArray<UMaterialInterface*> MaterialUsingMorphTarget;
+
+	// Collect all sections on the underlying mesh that are going to be modified by morph targets, 
+	if (!ActiveMorphTargets.IsEmpty())
+	{
+		TSet<int32> UsedMaterialIndices;
+
+		const TIndirectArray<FSkeletalMeshLODRenderData>& LODRenderData = GetSkinnedAsset()->GetResourceForRendering()->LODRenderData;
+		for (const TTuple<const UMorphTarget*, int32> ActiveMorphTargetInfo: ActiveMorphTargets)
 		{
-			TArray<UMaterialInterface*> MaterialUsingMorphTarget;
-			for (UMorphTarget* MorphTarget : GetSkinnedAsset()->GetMorphTargets())
+			const UMorphTarget* MorphTarget = ActiveMorphTargetInfo.Key;
+			if (!MorphTarget)
 			{
-				if (!MorphTarget)
+				continue;
+			}
+
+			const TArray<FMorphTargetLODModel>& MorphLODModels = MorphTarget->GetMorphLODModels();
+			for (int32 LODIndex = 0; LODIndex < FMath::Min(LODRenderData.Num(), MorphLODModels.Num()); LODIndex++)
+			{
+				const FSkeletalMeshLODRenderData& RenderData = LODRenderData[LODIndex];
+				
+				for(const int32 MorphSectionIndex: MorphLODModels[LODIndex].SectionIndices)
 				{
-					continue;
-				}
-				for (const FMorphTargetLODModel& MorphTargetLODModel : MorphTarget->GetMorphLODModels())
-				{
-					for (int32 SectionIndex : MorphTargetLODModel.SectionIndices)
+					if (RenderData.RenderSections.IsValidIndex(MorphSectionIndex))
 					{
-						for (int32 LodIdx = 0; LodIdx < GetSkinnedAsset()->GetResourceForRendering()->LODRenderData.Num(); LodIdx++)
-						{
-							const FSkeletalMeshLODRenderData& LODModel = GetSkinnedAsset()->GetResourceForRendering()->LODRenderData[LodIdx];
-							if (LODModel.RenderSections.IsValidIndex(SectionIndex))
-							{
-								MaterialUsingMorphTarget.AddUnique(GetMaterial(LODModel.RenderSections[SectionIndex].MaterialIndex));
-							}
-						}
+						UsedMaterialIndices.Add(RenderData.RenderSections[MorphSectionIndex].MaterialIndex);
 					}
 				}
 			}
-			((FSkeletalMeshSceneProxy*)SceneProxy)->UpdateMorphMaterialUsage_GameThread(MaterialUsingMorphTarget);
+		}
+		for (const int32 MaterialIndex: UsedMaterialIndices)
+		{
+			MaterialUsingMorphTarget.Add(GetMaterial(MaterialIndex));
 		}
 	}
+
+	// If no morph targets are active, then this function needs to know that as well.
+	static_cast<FSkeletalMeshSceneProxy*>(SceneProxy)->UpdateMorphMaterialUsage_GameThread(MaterialUsingMorphTarget);
 }
+
 
 void USkinnedMeshComponent::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 {
@@ -501,16 +522,21 @@ void USkinnedMeshComponent::GetResourceSizeEx(FResourceSizeEx& CumulativeResourc
 FPrimitiveSceneProxy* USkinnedMeshComponent::CreateSceneProxy()
 {
 	LLM_SCOPE(ELLMTag::SkeletalMesh);
-	ERHIFeatureLevel::Type SceneFeatureLevel = GetWorld()->FeatureLevel;
+	ERHIFeatureLevel::Type SceneFeatureLevel = GetWorld()->GetFeatureLevel();
 	FSkeletalMeshSceneProxy* Result = nullptr;
 	FSkeletalMeshRenderData* SkelMeshRenderData = GetSkeletalMeshRenderData();
+
+	if (CheckPSOPrecachingAndBoostPriority() && GetPSOPrecacheProxyCreationStrategy() == EPSOPrecacheProxyCreationStrategy::DelayUntilPSOPrecached)
+	{
+		UE_LOG(LogSkinnedMeshComp, Verbose, TEXT("Skipping CreateSceneProxy for USkinnedMeshComponent %s (USkinnedMeshComponent PSOs are still compiling)"), *GetFullName());
+		return nullptr;
+	}
 
 	// Only create a scene proxy for rendering if properly initialized
 	if (SkelMeshRenderData &&
 		SkelMeshRenderData->LODRenderData.IsValidIndex(GetPredictedLODLevel()) &&
 		!bHideSkin &&
-		MeshObject &&
-		!IsPSOPrecaching())
+		MeshObject)
 	{
 		// Only create a scene proxy if the bone count being used is supported, or if we don't have a skeleton (this is the case with destructibles)
 		int32 MinLODIndex = ComputeMinLOD();
@@ -572,7 +598,7 @@ void USkinnedMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& Bas
 		return;
 	}
 
-	ERHIFeatureLevel::Type FeatureLevel = GetWorld() ? GetWorld()->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+	ERHIFeatureLevel::Type FeatureLevel = GetWorld() ? GetWorld()->GetFeatureLevel() : GMaxRHIFeatureLevel;
 	int32 MinLODIndex = ComputeMinLOD();
 	bool bCPUSkin = bRenderStatic || ShouldCPUSkin();
 
@@ -595,6 +621,18 @@ void USkinnedMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& Bas
 		ComponentParams.MaterialInterface = MaterialInterface;
 		ComponentParams.VertexFactoryDataList = VFsPerMaterial.VertexFactoryDataList;
 		ComponentParams.PSOPrecacheParams = PrecachePSOParams;
+	}
+
+	UMaterialInterface* OverlayMaterialInterface = GetOverlayMaterial();
+	if (OverlayMaterialInterface && VFsPerMaterials.Num() != 0)
+	{
+		// Overlay is rendered with the same set of VFs
+		FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+
+		ComponentParams.MaterialInterface = OverlayMaterialInterface;
+		ComponentParams.VertexFactoryDataList = VFsPerMaterials[0].VertexFactoryDataList;
+		ComponentParams.PSOPrecacheParams = PrecachePSOParams;
+		ComponentParams.PSOPrecacheParams.bCastShadow = false;
 	}
 }
 
@@ -724,6 +762,11 @@ void USkinnedMeshComponent::RemoveExternalMorphSet(int32 LOD, int32 ID)
 	{
 		ExternalMorphSets[LOD].Remove(ID);
 	}
+
+	if (ExternalMorphWeightData.IsValidIndex(LOD))
+	{
+		ExternalMorphWeightData[LOD].MorphSets.Remove(ID);
+	}
 }
 
 bool USkinnedMeshComponent::HasExternalMorphSet(int32 LOD, int32 ID) const
@@ -743,8 +786,15 @@ void USkinnedMeshComponent::ClearExternalMorphSets(int32 LOD)
 	{
 		ResizeExternalMorphTargetSets();
 	}
+
 	if (ExternalMorphSets.IsValidIndex(LOD))
 	{
+		// Remove all weight sets as well.
+		if (ExternalMorphWeightData.IsValidIndex(LOD))
+		{
+			ExternalMorphWeightData[LOD].MorphSets.Empty();
+		}
+
 		ExternalMorphSets[LOD].Empty();
 	}
 }
@@ -798,7 +848,6 @@ void USkinnedMeshComponent::RefreshExternalMorphTargetWeights(bool bZeroOldWeigh
 			check(MorphSetWeights != nullptr);
 
 			MorphSetWeights->Name = Item.Value->Name;
-
 			if (bZeroOldWeights)
 			{
 				MorphSetWeights->Weights.Reset();
@@ -879,7 +928,7 @@ void USkinnedMeshComponent::CreateRenderState_Concurrent(FRegisterComponentConte
 		// No need to create the mesh object if we aren't actually rendering anything (see UPrimitiveComponent::Attach)
 		if ( FApp::CanEverRender() && ShouldComponentAddToScene() )
 		{
-			ERHIFeatureLevel::Type SceneFeatureLevel = GetWorld()->FeatureLevel;
+			ERHIFeatureLevel::Type SceneFeatureLevel = GetWorld()->GetFeatureLevel();
 			FSkeletalMeshRenderData* SkelMeshRenderData = GetSkinnedAsset()->GetResourceForRendering();
 			int32 MinLODIndex = ComputeMinLOD();
 			
@@ -1204,21 +1253,34 @@ void USkinnedMeshComponent::InitLODInfos()
 		if (GetSkinnedAsset()->GetLODNum() != LODInfo.Num())
 		{
 			// Perform cleanup if LOD infos have been initialized before 
-			if (!LODInfo.IsEmpty())
+			if (!LODInfo.IsEmpty() && GReleasePreviousLODInfoOnInitialization)
 			{
 				// Batch release all resources of LOD infos we're about to destruct.
 				// This is relevant when overrides have been set but LODInfos are
 				// re-initialized, for example by changing the mesh at runtime.
+				bool bNeedRenderFlush = false;
+				
 				for (int32 Idx = 0; Idx < LODInfo.Num(); ++Idx)
 				{
-					LODInfo[Idx].BeginReleaseOverrideSkinWeights();
-					LODInfo[Idx].BeginReleaseOverrideVertexColors();
+					if (LODInfo[Idx].BeginReleaseOverrideSkinWeights())
+					{
+						bNeedRenderFlush = true;
+					}
+					
+					if (LODInfo[Idx].BeginReleaseOverrideVertexColors())
+					{
+						bNeedRenderFlush = true;
+					}
 				}
-				FlushRenderingCommands();
-				for (int32 Idx = 0; Idx < LODInfo.Num(); ++Idx)
+
+				if (bNeedRenderFlush)
 				{
-					LODInfo[Idx].EndReleaseOverrideSkinWeights();
-					LODInfo[Idx].EndReleaseOverrideVertexColors();
+					FlushRenderingCommands();
+					for (int32 Idx = 0; Idx < LODInfo.Num(); ++Idx)
+					{
+						LODInfo[Idx].EndReleaseOverrideSkinWeights();
+						LODInfo[Idx].EndReleaseOverrideVertexColors();
+					}
 				}
 			}
 			
@@ -2466,6 +2528,24 @@ void USkinnedMeshComponent::SetForceWireframe(bool InForceWireframe)
 	}
 }
 
+UMaterialInterface* USkinnedMeshComponent::GetDefaultOverlayMaterial() const
+{
+	if (GetSkinnedAsset())
+	{
+		return GetSkinnedAsset()->GetOverlayMaterial();
+	}
+	return nullptr;
+}
+
+float USkinnedMeshComponent::GetDefaultOverlayMaterialMaxDrawDistance() const
+{
+	if (GetSkinnedAsset())
+	{
+		return GetSkinnedAsset()->GetOverlayMaterialMaxDrawDistance();
+	}
+	return 0.f;
+}
+
 #if WITH_EDITOR
 void USkinnedMeshComponent::SetSectionPreview(int32 InSectionIndexPreview)
 {
@@ -3189,9 +3269,10 @@ void USkinnedMeshComponent::GetUsedMaterials( TArray<UMaterialInterface*>& OutMa
 			OutMaterials.Add( MaterialInterface );
 		}
 
-		if (OverlayMaterial != nullptr)
+		UMaterialInterface* OverlayMaterialInterface = GetOverlayMaterial();
+		if (OverlayMaterialInterface != nullptr)
 		{
-			OutMaterials.Add(OverlayMaterial);
+			OutMaterials.Add(OverlayMaterialInterface);
 		}
 	}
 
@@ -3943,6 +4024,15 @@ void USkinnedMeshComponent::RegisterLODStreamingCallback(FLODStreamingCallback&&
 	}
 }
 
+void USkinnedMeshComponent::RegisterLODStreamingCallback(FLODStreamingCallback&& CallbackStreamingStart, FLODStreamingCallback&& CallbackStreamingDone, float TimeoutStartSecs, float TimeoutDoneSecs)
+{
+	if (GetSkinnedAsset())
+	{
+		GetSkinnedAsset()->RegisterMipLevelChangeCallback(this, TimeoutStartSecs, MoveTemp(CallbackStreamingStart), TimeoutDoneSecs, MoveTemp(CallbackStreamingDone));
+		bMipLevelCallbackRegistered = true;
+	}
+}
+
 void USkinnedMeshComponent::BeginDestroy()
 {
 	if (GetSkinnedAsset() && bMipLevelCallbackRegistered)
@@ -4012,13 +4102,16 @@ void FSkelMeshComponentLODInfo::ReleaseOverrideVertexColorsAndBlock()
 	}
 }
 
-void FSkelMeshComponentLODInfo::BeginReleaseOverrideVertexColors()
+bool FSkelMeshComponentLODInfo::BeginReleaseOverrideVertexColors()
 {
 	if (OverrideVertexColors)
 	{
 		// enqueue a rendering command to release
 		BeginReleaseResource(OverrideVertexColors);
+		return true;
 	}
+
+	return false;
 }
 
 void FSkelMeshComponentLODInfo::EndReleaseOverrideVertexColors()
@@ -4048,13 +4141,16 @@ void FSkelMeshComponentLODInfo::ReleaseOverrideSkinWeightsAndBlock()
 	}
 }
 
-void FSkelMeshComponentLODInfo::BeginReleaseOverrideSkinWeights()
+bool FSkelMeshComponentLODInfo::BeginReleaseOverrideSkinWeights()
 {
 	if (OverrideSkinWeights)
 	{
 		// enqueue a rendering command to release
 		OverrideSkinWeights->BeginReleaseResources();
+		return true;
 	}
+
+	return false;
 }
 
 void FSkelMeshComponentLODInfo::EndReleaseOverrideSkinWeights()
@@ -4608,6 +4704,119 @@ void USkinnedMeshComponent::HandleFeatureLevelChanged(ERHIFeatureLevel::Type InF
 	}
 }
 #endif
+
+/** Takes sorted array Base and then adds any elements from sorted array Insert which is missing from it, preserving order.
+ * this assumes both arrays are sorted and contain unique bone indices. */
+/*static*/ void USkinnedMeshComponent::MergeInBoneIndexArrays(TArray<FBoneIndexType>& BaseArray, const TArray<FBoneIndexType>& InsertArray)
+{
+	// Then we merge them into the array of required bones.
+	int32 BaseBonePos = 0;
+	int32 InsertBonePos = 0;
+
+	// Iterate over each of the bones we need.
+	while (InsertBonePos < InsertArray.Num())
+	{
+		// Find index of physics bone
+		FBoneIndexType InsertBoneIndex = InsertArray[InsertBonePos];
+
+		// If at end of BaseArray array - just append.
+		if (BaseBonePos == BaseArray.Num())
+		{
+			BaseArray.Add(InsertBoneIndex);
+			BaseBonePos++;
+			InsertBonePos++;
+		}
+		// If in the middle of BaseArray, merge together.
+		else
+		{
+			// Check that the BaseArray array is strictly increasing, otherwise merge code does not work.
+			check(BaseBonePos == 0 || BaseArray[BaseBonePos - 1] < BaseArray[BaseBonePos]);
+
+			// Get next required bone index.
+			FBoneIndexType BaseBoneIndex = BaseArray[BaseBonePos];
+
+			// We have a bone in BaseArray not required by Insert. Thats ok - skip.
+			if (BaseBoneIndex < InsertBoneIndex)
+			{
+				BaseBonePos++;
+			}
+			// Bone required by Insert is in 
+			else if (BaseBoneIndex == InsertBoneIndex)
+			{
+				BaseBonePos++;
+				InsertBonePos++;
+			}
+			// Bone required by Insert is missing - insert it now.
+			else // BaseBoneIndex > InsertBoneIndex
+			{
+				BaseArray.InsertUninitialized(BaseBonePos);
+				BaseArray[BaseBonePos] = InsertBoneIndex;
+
+				BaseBonePos++;
+				InsertBonePos++;
+			}
+		}
+	}
+}
+
+void USkinnedMeshComponent::GetPhysicsRequiredBones(const USkinnedAsset* SkinnedAsset, const UPhysicsAsset* PhysicsAsset, TArray<FBoneIndexType>& OutRequiredBones)
+{
+	check(SkinnedAsset != nullptr);
+	check(PhysicsAsset != nullptr);
+
+	// If we have a PhysicsAsset, we also need to make sure that all the bones used by it are always updated, as its used
+	// by line checks etc. We might also want to kick in the physics, which means having valid bone transforms.
+	TArray<FBoneIndexType> PhysAssetBones;
+	PhysAssetBones.Reserve(PhysicsAsset->SkeletalBodySetups.Num());
+	for (int32 i = 0; i < PhysicsAsset->SkeletalBodySetups.Num(); ++i)
+	{
+		if (!ensure(PhysicsAsset->SkeletalBodySetups[i]))
+		{
+			continue;
+		}
+		const int32 PhysBoneIndex = SkinnedAsset->GetRefSkeleton().FindBoneIndex(PhysicsAsset->SkeletalBodySetups[i]->BoneName);
+		if (PhysBoneIndex != INDEX_NONE)
+		{
+			PhysAssetBones.Add(PhysBoneIndex);
+		}
+	}
+
+	// Then sort array of required bones in hierarchy order
+	PhysAssetBones.Sort();
+
+	// Make sure all of these are in RequiredBones.
+	MergeInBoneIndexArrays(OutRequiredBones, PhysAssetBones);
+}
+
+void USkinnedMeshComponent::GetSocketRequiredBones(const USkinnedAsset* SkinnedAsset, TArray<FBoneIndexType>& OutRequiredBones, TArray<FBoneIndexType>& NeededBonesForFillComponentSpaceTransforms)
+{
+	check(SkinnedAsset != nullptr);
+
+	TArray<FBoneIndexType> ForceAnimatedSocketBones;
+	const TArray<USkeletalMeshSocket*> ActiveSocketList = SkinnedAsset->GetActiveSocketList();
+	ForceAnimatedSocketBones.Reserve(ActiveSocketList.Num());
+	for (const USkeletalMeshSocket* Socket : ActiveSocketList)
+	{
+		const int32 BoneIndex = SkinnedAsset->GetRefSkeleton().FindBoneIndex(Socket->BoneName);
+		if (BoneIndex != INDEX_NONE)
+		{
+			if (Socket->bForceAlwaysAnimated)
+			{
+				ForceAnimatedSocketBones.AddUnique(BoneIndex);
+			}
+			else
+			{
+				NeededBonesForFillComponentSpaceTransforms.AddUnique(BoneIndex);
+			}
+		}
+	}
+
+	// Then sort array of required bones in hierarchy order
+	ForceAnimatedSocketBones.Sort();
+
+	// Make sure all of these are in OutRequiredBones.
+	MergeInBoneIndexArrays(OutRequiredBones, ForceAnimatedSocketBones);
+}
 
 void FAnimUpdateRateParameters::SetTrailMode(float DeltaTime, uint8 UpdateRateShift, int32 NewUpdateRate, int32 NewEvaluationRate, bool bNewInterpSkippedFrames)
 {

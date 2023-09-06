@@ -39,7 +39,7 @@ namespace ESlateShaderResource
 /** 
  * Base class for all platform independent texture types
  */
-class SLATECORE_API FSlateShaderResource
+class FSlateShaderResource
 {
 public:
 
@@ -63,6 +63,11 @@ public:
 	 * @return Resource type.
 	 */
 	virtual ESlateShaderResource::Type GetType() const = 0;
+
+	/**
+	 * Additional validation that can vary per resource type
+	 */
+	virtual bool IsResourceValid() const { return true; };
 
 #if SLATE_CHECK_UOBJECT_RENDER_RESOURCES
 	virtual void CheckForStaleResources() const { }
@@ -109,7 +114,7 @@ public:
  * May point to a full resource or point or to a texture resource in an atlas
  * Note: This class does not free any resources.  Resources should be owned and freed elsewhere
  */
-class SLATECORE_API FSlateShaderResourceProxy
+class FSlateShaderResourceProxy
 {
 public:
 

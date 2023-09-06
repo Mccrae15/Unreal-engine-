@@ -13,6 +13,19 @@
 #include "Widgets/Images/SLayeredImage.h"
 #include "Widgets/Layout/SSeparator.h"
 
+FToolBarButtonBlock::FToolBarButtonBlock( FButtonArgs ButtonArgs )
+: FMultiBlock( ButtonArgs.Command, ButtonArgs.CommandList, NAME_None, EMultiBlockType::ToolBarButton )
+	, LabelOverride( ButtonArgs.LabelOverride )
+	, ToolTipOverride( ButtonArgs.ToolTipOverride )
+	, IconOverride( ButtonArgs.IconOverride )
+   // , BorderBrushName(ButtonArgs.BorderBrushName)
+	, LabelVisibility()
+	, UserInterfaceActionType(ButtonArgs.UserInterfaceActionType != EUserInterfaceActionType::None ?
+		ButtonArgs.UserInterfaceActionType : EUserInterfaceActionType::Button)
+	, bIsFocusable(false)
+	, bForceSmallIcons(false)
+{
+}
 
 FToolBarButtonBlock::FToolBarButtonBlock( const TSharedPtr< const FUICommandInfo > InCommand, TSharedPtr< const FUICommandList > InCommandList, const TAttribute<FText>& InLabelOverride, const TAttribute<FText>& InToolTipOverride, const TAttribute<FSlateIcon>& InIconOverride )
 	: FMultiBlock( InCommand, InCommandList, NAME_None, EMultiBlockType::ToolBarButton )
@@ -40,7 +53,12 @@ FToolBarButtonBlock::FToolBarButtonBlock( const TAttribute<FText>& InLabel, cons
 
 void FToolBarButtonBlock::SetCustomMenuDelegate( FNewMenuDelegate& InCustomMenuDelegate )
 {
-	CustomMenuDelegate = InCustomMenuDelegate;	
+	CustomMenuDelegate = InCustomMenuDelegate;
+}
+
+void FToolBarButtonBlock::SetOnGetMenuContent( FOnGetContent& InOnGetMenuContent)
+{
+	OnGetMenuContent = InOnGetMenuContent;
 }
 
 void FToolBarButtonBlock::CreateMenuEntry(FMenuBuilder& MenuBuilder) const
@@ -202,12 +220,24 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 		.Image(this, &SToolBarButtonBlock::GetIconBrush);
 
 	IconWidget->AddLayer(TAttribute<const FSlateBrush*>(this, &SToolBarButtonBlock::GetOverlayIconBrush));
+	const bool bIsSlimHorizontalUniformToolBar = MultiBox->GetType() == EMultiBoxType::SlimHorizontalUniformToolBar;
 
 	// Create the content for our button
 	TSharedRef<SWidget> ButtonContent = SNullWidget::NullWidget;
-	if (MultiBox->GetType() == EMultiBoxType::SlimHorizontalToolBar)
+	if (MultiBox->GetType() == EMultiBoxType::SlimHorizontalToolBar 
+		|| bIsSlimHorizontalUniformToolBar)
 	{
 		const FVector2f IconSize = ToolBarStyle.IconSize;
+		const TSharedRef<STextBlock> TextBlock = SNew(STextBlock)
+				.Visibility(LabelVisibility)
+				.Text(ActualLabel)
+				.TextStyle(&ToolBarStyle.LabelStyle); // Smaller font for tool tip labels
+
+		if (bIsSlimHorizontalUniformToolBar)
+		{
+			TextBlock->SetOverflowPolicy(ETextOverflowPolicy::Ellipsis);
+			TextBlock->SetVisibility(EVisibility::Visible);
+		}
 
 		IconWidget->SetDesiredSizeOverride(FVector2D(IconSize));
 		ButtonContent =
@@ -215,50 +245,61 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 			.AddMetaData<FTagMetaData>(FTagMetaData(TutorialHighlightName))
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
+		    .Padding(ToolBarStyle.IconPadding)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Center)
 			[
 				IconWidget
 			]
 			// Label text
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(ToolBarStyle.LabelPadding)
-			.VAlign(VAlign_Center)
-			[
-				SNew(STextBlock)
-				.Visibility(LabelVisibility)
-				.Text(ActualLabel)
-				.TextStyle(&ToolBarStyle.LabelStyle)	// Smaller font for tool tip labels
-			];
+		+ (bIsSlimHorizontalUniformToolBar ?
+		SHorizontalBox::Slot()
+		.Padding(ToolBarStyle.LabelPadding)
+		.VAlign(VAlign_Center) :
+		SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(ToolBarStyle.LabelPadding)
+		.VAlign(VAlign_Center))
+		[ TextBlock ];
 	}
 	else
 	{
+		const FMargin IconPadding = !LabelVisibility.IsSet() ? ToolBarStyle.IconPadding :
+		(LabelVisibility.Get() == EVisibility::Collapsed ? ToolBarStyle.IconPadding : ToolBarStyle.IconPaddingWithVisibleLabel);
+		const TSharedRef ContentVBox = 
+			SNew(SVerticalBox)
+					// Icon image
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(IconPadding)
+					.HAlign(HAlign_Center)	// Center the icon horizontally, so that large labels don't stretch out the artwork
+					[
+						IconWidget
+					]
+					// Label text
+					+ SVerticalBox::Slot().AutoHeight()
+				.Padding(ToolBarStyle.LabelPadding)
+					.HAlign(HAlign_Center)	// Center the label text horizontally
+					[
+						SNew(STextBlock)
+						.Visibility(LabelVisibility)
+						.Text(ActualLabel)
+						.TextStyle(&ToolBarStyle.LabelStyle)	// Smaller font for tool tip labels
+					];
+
 		ButtonContent =
 			SNew(SHorizontalBox)
 			.AddMetaData<FTagMetaData>(FTagMetaData(TutorialHighlightName))
-			+ SHorizontalBox::Slot()
-			.FillWidth(1)
-			.VAlign(VAlign_Center)
+			+ ( MultiBox->GetType() == EMultiBoxType::VerticalToolBar ?
+				SHorizontalBox::Slot()
+			.MaxWidth(ToolBarStyle.ButtonContentMaxWidth)
+			.SizeParam(FStretch())
+			.VAlign(VAlign_Center) :
+			SHorizontalBox::Slot()
+			.FillWidth(ToolBarStyle.ButtonContentFillWidth)
+			.VAlign(VAlign_Center))
 			[
-				SNew(SVerticalBox)
-				// Icon image
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.HAlign(HAlign_Center)	// Center the icon horizontally, so that large labels don't stretch out the artwork
-				[
-					IconWidget
-				]
-				// Label text
-				+ SVerticalBox::Slot().AutoHeight()
-				.Padding(ToolBarStyle.LabelPadding)
-				.HAlign(HAlign_Center)	// Center the label text horizontally
-				[
-					SNew(STextBlock)
-					.Visibility(LabelVisibility)
-					.Text(ActualLabel)
-					.TextStyle(&ToolBarStyle.LabelStyle)	// Smaller font for tool tip labels
-				]
+				ContentVBox
 			];
 		}
 
@@ -308,20 +349,37 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 			CheckStyle = &ToolBarStyle.SettingsToggleButton;
 		}
 
+		const TSharedPtr<SWidget> CheckBox = SNew(SCheckBox)
+						// Use the tool bar style for this check box
+						.Style(CheckStyle)
+						.CheckBoxContentUsesAutoWidth(false)
+						.IsFocusable(bIsFocusable)
+						.ToolTip( FMultiBoxSettings::ToolTipConstructor.Execute( ActualToolTip, nullptr, Action.Pin()))		
+						.OnCheckStateChanged(this, &SToolBarButtonBlock::OnCheckStateChanged )
+						.OnGetMenuContent( ToolBarButtonBlock->OnGetMenuContent )
+						.IsChecked(this, &SToolBarButtonBlock::GetCheckState)
+						.IsEnabled(this, &SToolBarButtonBlock::IsEnabled)
+						[
+							ButtonContent
+						];
+
+		TSharedRef<SWidget> CheckBoxWidget = CheckBox.ToSharedRef();
+
+		if (!ToolBarButtonBlock->BorderBrushName.Get().IsNone())
+		{
+			const FSlateBrush* Brush = FAppStyle::GetBrush(ToolBarButtonBlock->BorderBrushName.Get());
+			CheckBoxWidget =
+				SNew(SBorder)
+				.BorderImage(Brush)
+				.Padding(2.f)
+				[
+					CheckBox.ToSharedRef()
+				];
+		}
+
 		ChildSlot
 		[
-			// Create a check box
-			SNew(SCheckBox)
-			// Use the tool bar style for this check box
-			.Style(CheckStyle)
-			.IsFocusable(bIsFocusable)
-			.ToolTip( FMultiBoxSettings::ToolTipConstructor.Execute( ActualToolTip, nullptr, Action.Pin()))		
-			.OnCheckStateChanged(this, &SToolBarButtonBlock::OnCheckStateChanged )
-			.IsChecked(this, &SToolBarButtonBlock::GetCheckState)
-			.IsEnabled(this, &SToolBarButtonBlock::IsEnabled)
-			[
-				ButtonContent
-			]
+			CheckBoxWidget
 		];
 	}
 
@@ -366,6 +424,10 @@ void SToolBarButtonBlock::BuildMultiBlockWidget(const ISlateStyle* StyleSet, con
 	SetVisibility(TAttribute<EVisibility>(this, &SToolBarButtonBlock::GetBlockVisibility));
 }
 
+bool FToolBarButtonBlock::GetIsFocusable() const
+{
+	return bIsFocusable;
+}
 
 
 /**

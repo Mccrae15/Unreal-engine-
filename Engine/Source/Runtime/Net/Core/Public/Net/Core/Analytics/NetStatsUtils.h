@@ -44,7 +44,7 @@ class TSampleProducer
 		);
 	};
 
-	static_assert(TModels<CSampleConsumer, ConsumerType>::Value, "ConsumerType must implement AddSample(double Val)");
+	static_assert(TModels_V<CSampleConsumer, ConsumerType>, "ConsumerType must implement AddSample(double Val)");
 
 public:
 	/**
@@ -77,7 +77,7 @@ protected:
 	 * @param Value		The measurement value being collected for sampling
 	 */
 
-	template<typename InnerConsumerType=ConsumerType, typename = typename TEnableIf<TModels<CPeekMeasurements, InnerConsumerType>::Value>::Type>
+	template<typename InnerConsumerType=ConsumerType, typename = typename TEnableIf<TModels_V<CPeekMeasurements, InnerConsumerType>>::Type>
 	inline void PeekMeasurement(double TimeVal, double Value)
 	{
 		if (Consumer != nullptr)
@@ -86,7 +86,7 @@ protected:
 		}
 	}
 
-	template<typename InnerConsumerType=ConsumerType, typename = typename TEnableIf<!TModels<CPeekMeasurements, InnerConsumerType>::Value>::Type, int32 UnusedParamForODR=0>
+	template<typename InnerConsumerType=ConsumerType, typename = typename TEnableIf<!TModels_V<CPeekMeasurements, InnerConsumerType>>::Type, int32 UnusedParamForODR=0>
 	inline void PeekMeasurement(double TimeVal, double Value)
 	{
 	}
@@ -112,7 +112,7 @@ enum class EBinnedValueMode : uint8
  * Base class for moving values, implementing non-templatized data-structure/methods.
  * See TBinnedMovingValue.
  */
-class NETCORE_API FBinnedMovingValueBase
+class FBinnedMovingValueBase
 {
 protected:
 	struct FBin
@@ -126,7 +126,7 @@ protected:
 
 protected:
 	FBinnedMovingValueBase() = delete;
-	explicit FBinnedMovingValueBase(const TArrayView<FBin> InBins, double InTimePerBin, EBinnedValueMode InMode);
+	NETCORE_API explicit FBinnedMovingValueBase(const TArrayView<FBin> InBins, double InTimePerBin, EBinnedValueMode InMode);
 
 	/**
 	 * Internal implementation for AddMeasurement, which outputs a sample if the bins have filled and rolled back over to FirstBinIndex.
@@ -135,7 +135,7 @@ protected:
 	 * @param Value			The measurement value
 	 * @param OutSample		Outputs a sample, if all bins have filled and rolled back over to FirstBinIndex
 	 */
-	void AddMeasurement_Implementation(double TimeVal, double Value, TOptional<double>& OutSample);
+	NETCORE_API void AddMeasurement_Implementation(double TimeVal, double Value, TOptional<double>& OutSample);
 
 public:
 	/**
@@ -143,15 +143,15 @@ public:
 	 *
 	 * @return	Outputs the calculated sample value
 	 */
-	double GetSample() const;
+	NETCORE_API double GetSample() const;
 
 	/**
 	 * Resets the accumulated bin/sample data.
 	 */
-	void Reset();
+	NETCORE_API void Reset();
 
 private:
-	void ResetNewAndSkippedBins(int32 BinIdx, TOptional<double>& OutSample);
+	NETCORE_API void ResetNewAndSkippedBins(int32 BinIdx, TOptional<double>& OutSample);
 
 
 private:
@@ -367,18 +367,18 @@ enum EMinMaxValueMode
  * This base class can handle reading.
  * The TSampleMinMaxAvg subclass is compatible as a consumer for TSampleProducer, and is used for writing.
  */
-class NETCORE_API FSampleMinMaxAvg
+class FSampleMinMaxAvg
 {
 	template<EMinMaxValueMode, int32> friend class TSampleMinMaxAvg;
 
 private:
-	void AddSample_Internal(double Value);
+	NETCORE_API void AddSample_Internal(double Value);
 
 public:
 	/**
 	 * Resets the accumulated sample data
 	 */
-	void Reset();
+	NETCORE_API void Reset();
 
 	/**
 	 * Gets the minimum sample value encountered

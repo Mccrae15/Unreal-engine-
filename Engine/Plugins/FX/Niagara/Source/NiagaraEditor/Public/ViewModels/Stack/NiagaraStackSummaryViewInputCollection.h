@@ -3,19 +3,12 @@
 #pragma once
 
 #include "NiagaraEmitter.h"
-#include "ViewModels/Stack/NiagaraStackItem.h"
-#include "PropertyEditorDelegates.h"
 #include "NiagaraStackFunctionInputCollection.h"
+#include "ViewModels/HierarchyEditor/NiagaraHierarchyViewModelBase.h"
 #include "NiagaraStackSummaryViewInputCollection.generated.h"
 
-class IPropertyRowGenerator;
-class UNiagaraNode;
-class IDetailTreeNode;
-class UNiagaraStackFunctionInputCollection;
-class UNiagaraNodeFunctionCall;
-
-UCLASS()
-class NIAGARAEDITOR_API UNiagaraStackSummaryViewObject : public UNiagaraStackFunctionInputCollectionBase
+UCLASS(MinimalAPI)
+class UNiagaraStackSummaryViewCollection : public UNiagaraStackValueCollection
 {
 	GENERATED_BODY()
 		
@@ -23,29 +16,26 @@ public:
 	DECLARE_DELEGATE_TwoParams(FOnSelectRootNodes, TArray<TSharedRef<IDetailTreeNode>>, TArray<TSharedRef<IDetailTreeNode>>*);
 
 public:
-	UNiagaraStackSummaryViewObject();
+	UNiagaraStackSummaryViewCollection() {}
 
-	void Initialize(FRequiredEntryData InRequiredEntryData, FVersionedNiagaraEmitterWeakPtr InEmitter, FString InOwningStackItemEditorDataKey);
-	virtual void FinalizeInternal() override;
+	NIAGARAEDITOR_API void Initialize(FRequiredEntryData InRequiredEntryData, FVersionedNiagaraEmitterWeakPtr InEmitter, FString InOwningStackItemEditorDataKey);
+	NIAGARAEDITOR_API virtual void FinalizeInternal() override;
 
-	virtual FText GetDisplayName() const override;
-	virtual bool GetIsEnabled() const;
+	NIAGARAEDITOR_API virtual FText GetDisplayName() const override;
+	NIAGARAEDITOR_API virtual bool GetIsEnabled() const override;
 
+	void RefreshForAdvancedToggle();
 protected:
+	NIAGARAEDITOR_API virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
 
-	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
+	NIAGARAEDITOR_API virtual void GetSectionsInternal(TArray<FNiagaraStackSection>& OutStackSections) const override;
+	NIAGARAEDITOR_API const TArray<UNiagaraHierarchySection*>& GetHierarchySections() const;
 
-	void AppendEmitterCategory(FFunctionCallNodesState& State, TSharedPtr<FNiagaraScriptViewModel> ScriptViewModelPinned, ENiagaraScriptUsage ScriptUsage, FGuid ScriptUsageId, TArray<FStackIssue>& NewIssues);
-
-	virtual void PostRefreshChildrenInternal() override;
-
-	virtual void GetSectionsInternal(TArray<FNiagaraStackSection>& OutStackSections) const override;
-
+	NIAGARAEDITOR_API virtual bool FilterByActiveSection(const UNiagaraStackEntry& Child) const override;
 private:
-
-	void OnViewStateChanged();
+	NIAGARAEDITOR_API void OnViewStateChanged();
 private:
 
 	FVersionedNiagaraEmitterWeakPtr Emitter;
-	TMap<FGuid, UNiagaraStackFunctionInputCollection*> KnownInputCollections;
 };
+

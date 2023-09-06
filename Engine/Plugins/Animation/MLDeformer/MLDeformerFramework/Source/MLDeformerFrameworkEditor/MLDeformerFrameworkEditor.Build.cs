@@ -23,6 +23,13 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
+			PublicIncludePathModuleNames.AddRange(
+				new string[]
+				{
+					"GeometryCache",
+				}
+			);
+
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
@@ -43,16 +50,17 @@ namespace UnrealBuildTool.Rules
 					"ToolWidgets",
 					"EditorWidgets",
 					"GeometryCache",
-					"SequencerWidgets",
 					"TimeManagement",
 					"RenderCore",
-					"RHI"
+					"RHI",
+					"AssetDefinition"
 				}
 			);
 
-			PrivateIncludePathModuleNames.AddRange(
+			PublicIncludePathModuleNames.AddRange(
 				new string[]
 				{
+					"Persona",
 				}
 			);
 		}

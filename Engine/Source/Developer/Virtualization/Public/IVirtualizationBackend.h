@@ -13,7 +13,6 @@ struct FIoHash;
 
 namespace UE::Virtualization
 {
-
 /**
  * The interface to derive from to create a new backend implementation.
  * 
@@ -50,6 +49,24 @@ public:
 		/** The connection has been made successfully */
 		Connected,
 	};
+
+	/** Specialize pushing behavior, @See IVirtualizationBackend::PushData */
+	enum class EPushFlags : uint32
+	{
+		None = 0,
+		/** Backends should not test payloads for existence and just assume that they need re-uploading */
+		Force = 1 << 0
+	};
+
+	FRIEND_ENUM_CLASS_FLAGS(EPushFlags);
+
+	/** Specialize pulling behavior, @See IVirtualizationBackend::PullData */
+	enum class EPullFlags : uint32
+	{
+		None = 0
+	};
+
+	FRIEND_ENUM_CLASS_FLAGS(EPullFlags);
 
 protected:
 
@@ -103,7 +120,7 @@ public:
 	/**
 	 * @return True if all of the requests succeeded, false if one of more failed
 	 */
-	virtual bool PushData(TArrayView<FPushRequest> Requests) = 0;
+	virtual bool PushData(TArrayView<FPushRequest> Requests, EPushFlags Flags) = 0;
 
 	/** 
 	 * The backend will attempt to retrieve the given payloads by what ever method the backend uses.
@@ -116,6 +133,9 @@ public:
 	 * backend to do this.
 	 * 
 	 * @param	Requests	An array of payload pull requests. @see FPullRequest
+	 * @param	Flags		Flags that allow the pull to be specialized @see EPullFlags
+	 * @param	OutErrors	If the pull fails, the backend can add optional additional error messages
+	 *						to be displayed directly to the user.
 	 * 
 	 * @return				True if no errors were encountered while pulling, otherwise false.
 	 *						Note that returning true does not mean that all of the payloads were
@@ -125,7 +145,7 @@ public:
 	// Assume that the array only has unique requests
 	// Will set request error value if there is a problem with loading it
 	// Returns false on critical error, otherwise true
-	virtual bool PullData(TArrayView<FPullRequest> Requests) = 0;
+	virtual bool PullData(TArrayView<FPullRequest> Requests, EPullFlags Flags, FText& OutErrors) = 0;
 	
 	/**
 	 * Checks if a payload exists in the backends storage.
@@ -226,6 +246,25 @@ private:
 	virtual EConnectionStatus OnConnect() = 0;
 
 private:
+	// Deprecated methods, will cause compiler errors if anyone has actually overridden IVirtualizationBackend
+	// pre 5.3 but there is currently no good compiler support for invoking compiler warnings when overriding
+	// a deprecated base method.
+
+	UE_DEPRECATED(5.2, "Use the overload that also takes EPushFlags")
+	virtual bool PushData(TArrayView<FPushRequest> Requests) final
+	{
+		checkNoEntry();
+		return false;
+	}
+
+	UE_DEPRECATED(5.3, "Use the overload that also takes EPullFlags")
+	virtual bool PullData(TArrayView<FPullRequest> Requests) final
+	{
+		checkNoEntry();
+		return false;
+	}
+
+private:
 
 	/** The operations that this backend supports */
 	EOperations SupportedOperations;
@@ -248,7 +287,7 @@ private:
  * IModularFeatures with the feature name "VirtualizationBackendFactory" to
  * give 'FVirtualizationManager' access to it. 
  * The macro 'UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY' can be used to create 
- * a factory easily if you do not want to specialize the behaviour.
+ * a factory easily if you do not want to specialize the behavior.
 */
 class IVirtualizationBackendFactory : public IModularFeature
 {
@@ -278,13 +317,13 @@ ENUM_CLASS_FLAGS(IVirtualizationBackend::EOperations);
  * @param The name used in config ini files to reference this backend type.
  */
 #define UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY(BackendClass, ConfigName) \
-	class F##BackendClass##Factory : public IVirtualizationBackendFactory \
+	class F##BackendClass##Factory : public UE::Virtualization::IVirtualizationBackendFactory \
 	{ \
 	public: \
 		F##BackendClass##Factory() { IModularFeatures::Get().RegisterModularFeature(FName("VirtualizationBackendFactory"), this); }\
 		virtual ~F##BackendClass##Factory() { IModularFeatures::Get().UnregisterModularFeature(FName("VirtualizationBackendFactory"), this); } \
 	private: \
-		virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) override \
+		virtual TUniquePtr<UE::Virtualization::IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) override \
 		{ \
 			return MakeUnique<BackendClass>(ProjectName, ConfigName, WriteToString<256>(#ConfigName, TEXT(" - "), ConfigName).ToString()); \
 		} \
@@ -293,7 +332,7 @@ ENUM_CLASS_FLAGS(IVirtualizationBackend::EOperations);
 	static F##BackendClass##Factory BackendClass##Factory##Instance;
 
 #define UE_REGISTER_VIRTUALIZATION_BACKEND_FACTORY_LEGACY_IMPL(FactoryName, BackendClass, LegacyConfigName, ConfigName) \
-	class F##FactoryName : public IVirtualizationBackendFactory \
+	class F##FactoryName : public UE::Virtualization::IVirtualizationBackendFactory \
 	{ \
 	public: \
 		F##FactoryName(const TCHAR* InLegacyConfigName, const TCHAR* InNewConfigName) \
@@ -302,7 +341,7 @@ ENUM_CLASS_FLAGS(IVirtualizationBackend::EOperations);
 			{ IModularFeatures::Get().RegisterModularFeature(FName("VirtualizationBackendFactory"), this); }\
 		virtual ~F##FactoryName() { IModularFeatures::Get().UnregisterModularFeature(FName("VirtualizationBackendFactory"), this); } \
 	private: \
-		virtual TUniquePtr<IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) override \
+		virtual TUniquePtr<UE::Virtualization::IVirtualizationBackend> CreateInstance(FStringView ProjectName, FStringView ConfigName) override \
 		{ \
 			UE_LOG(LogVirtualization, Warning, TEXT("Creating a backend via the legacy config name '%s' use '%s' instead"), *StoredLegacyConfigName, *StoredNewConfigName); \
 			return MakeUnique<BackendClass>(ProjectName, ConfigName, WriteToString<256>(#ConfigName, TEXT(" - "), ConfigName).ToString()); \

@@ -52,7 +52,7 @@ namespace UE::Reload::Private
 		UClass* NewClass;
 
 		/** Necessary for delta serialization */
-		UObject* CopyOfPreviousCDO;
+		TObjectPtr<UObject> CopyOfPreviousCDO;
 
 		/**
 		 * Sets the re-instancer up for new class re-instancing
@@ -1244,6 +1244,7 @@ void FReload::ReplaceReferencesToReconstructedCDOs()
 					{
 						ArIsObjectReferenceCollector = true;
 						ArIgnoreOuterRef = true;
+						ArShouldSkipBulkData = true;
 					}
 
 					virtual FString GetArchiveName() const override
@@ -1264,6 +1265,11 @@ void FReload::ReplaceReferencesToReconstructedCDOs()
 						}
 
 						return *this;
+					}
+
+					virtual bool ShouldSkipProperty(const FProperty* InProperty) const
+					{
+						return InProperty->GetClass()->HasAnyCastFlags(CASTCLASS_FDelegateProperty | CASTCLASS_FMulticastDelegateProperty | CASTCLASS_FMulticastInlineDelegateProperty | CASTCLASS_FMulticastSparseDelegateProperty);
 					}
 
 					const TMap<UObject*, UObject*>& ReconstructedCDOsMap;

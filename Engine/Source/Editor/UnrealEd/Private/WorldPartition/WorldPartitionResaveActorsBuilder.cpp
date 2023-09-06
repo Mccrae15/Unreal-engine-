@@ -3,6 +3,7 @@
 #include "WorldPartition/WorldPartitionResaveActorsBuilder.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionClassDescRegistry.h"
 #include "PackageSourceControlHelper.h"
 #include "SourceControlHelpers.h"
 #include "Engine/Level.h"
@@ -29,7 +30,7 @@ UWorldPartitionResaveActorsBuilder::UWorldPartitionResaveActorsBuilder(const FOb
 bool UWorldPartitionResaveActorsBuilder::PreRun(UWorld* World, FPackageSourceControlHelper& PackageHelper)
 {
 	TArray<FString> Tokens, Switches;
-	UCommandlet::ParseCommandLine(FCommandLine::Get(), Tokens, Switches);
+	UCommandlet::ParseCommandLine(*GetBuilderArgs(), Tokens, Switches);
 
 	//@todo_ow: generalize to all builders
 	for (const FString& Switch : Switches)
@@ -120,14 +121,14 @@ TArray<TSubclassOf<AActor>> UWorldPartitionResaveActorsBuilder::GetActorClassesF
 		if (!ActorClass)
 		{
 			// Look for a fully qualified BP class
-			ActorClass = LoadClass<AActor>(nullptr, *ClassName, nullptr, LOAD_None, nullptr);
+			ActorClass = LoadClass<AActor>(nullptr, *ClassName, nullptr, LOAD_NoWarn, nullptr);
 
 			if (!ActorClass)
 			{
 				// Look for a package BP
 				if (FPackageName::DoesPackageExist(ClassName))
 				{
-					ActorClass = LoadClass<AActor>(nullptr, *FString::Printf(TEXT("%s.%s_C"), *ClassName, *FPackageName::GetLongPackageAssetName(ClassName)), nullptr, LOAD_None, nullptr);
+					ActorClass = LoadClass<AActor>(nullptr, *FString::Printf(TEXT("%s.%s_C"), *ClassName, *FPackageName::GetLongPackageAssetName(ClassName)), nullptr, LOAD_NoWarn, nullptr);
 				}
 			}
 		}
@@ -316,7 +317,7 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 				}
 			}
 
-			if (FWorldPartitionHelpers::HasExceededMaxMemory())
+			if (FWorldPartitionHelpers::ShouldCollectGarbage())
 			{
 				if (!UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper))
 				{
@@ -340,6 +341,58 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 	}
 	else
 	{
+		if (bResaveBlueprints)
+		{
+			// Resave blueprints top-down from the class hierarchy
+			FWorldPartitionClassDescRegistry& ClassDescRegistry = FWorldPartitionClassDescRegistry::Get();
+
+			TArray<FTopLevelAssetPath> ClassesToResave;
+			TMap<FTopLevelAssetPath, TArray<FTopLevelAssetPath>> ClassHierarchy;
+			for (auto& [ClassPath, ParentClassPath] : ClassDescRegistry.GetParentClassMap())
+			{
+				ClassHierarchy.FindOrAdd(ParentClassPath).Add(ClassPath);
+
+				if (!ClassPath.ToString().StartsWith(TEXT("/Script/")) && ParentClassPath.ToString().StartsWith(TEXT("/Script/")))
+				{
+					ClassesToResave.Add(ClassPath);
+				}
+			}
+
+			TArray<UPackage*> PackagesToSave;
+			while (!ClassesToResave.IsEmpty())
+			{
+				for (const FTopLevelAssetPath& ClassToResave : ClassesToResave)
+				{
+					UPackage* ClassPackage = LoadPackage(nullptr, *ClassToResave.GetPackageName().ToString(), LOAD_None);
+
+					if (!ClassPackage)
+					{
+						UE_LOG(LogWorldPartitionResaveActorsBuilder, Error, TEXT("Failed to load package for class '%s'"), *ClassToResave.ToString());
+						return false;
+					}
+
+					PackagesToSave.Add(ClassPackage);
+
+					if (FWorldPartitionHelpers::HasExceededMaxMemory())
+					{
+						UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper, true);
+						FWorldPartitionHelpers::DoCollectGarbage();
+						PackagesToSave.Empty();
+					}
+				}
+
+				const TArray<FTopLevelAssetPath> ParentClasses = MoveTemp(ClassesToResave);
+
+				for (const FTopLevelAssetPath& ParentClass : ParentClasses)
+				{
+					ClassesToResave += ClassHierarchy.FindRef(ParentClass);
+				}
+			}
+
+			UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper);
+			FWorldPartitionHelpers::DoCollectGarbage();
+		}
+
 		TArray<UPackage*> PackagesToSave;
 
 		FWorldPartitionHelpers::FForEachActorWithLoadingParams ForEachActorWithLoadingParams;
@@ -403,15 +456,15 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 				{
 					TUniquePtr<FWorldPartitionActorDesc> NewActorDesc = Actor->CreateActorDesc();
 
-					if (!ActorDesc->IsResaveNeeded() && ActorDesc->Equals(NewActorDesc.Get()))
+					if (!ActorDesc->IsResaveNeeded() && !ActorDesc->ShouldResave(NewActorDesc.Get()))
 					{
 						return true;
 					}
 
 					if (bDiffDirtyActorDescs)
 					{
-						DirtyActorDescsOld.Add(ActorDesc->ToString());
-						DirtyActorDescsNew.Add(NewActorDesc->ToString());
+						DirtyActorDescsOld.Add(ActorDesc->ToString(FWorldPartitionActorDesc::EToStringMode::Full));
+						DirtyActorDescsNew.Add(NewActorDesc->ToString(FWorldPartitionActorDesc::EToStringMode::Full));
 					}
 
 					UE_LOG(LogWorldPartitionResaveActorsBuilder, Log, TEXT("Package %s needs to be resaved."), *Package->GetName());
@@ -427,7 +480,7 @@ bool UWorldPartitionResaveActorsBuilder::RunInternal(UWorld* World, const FCellI
 		}, ForEachActorWithLoadingParams);
 	}
 
-	if (bDiffDirtyActorDescs)
+	if (bDiffDirtyActorDescs && DirtyActorDescsOld.Num())
 	{
 		auto WriteTempFile = [](const TArray<FString>& Lines, FString& TempFileName)
 		{

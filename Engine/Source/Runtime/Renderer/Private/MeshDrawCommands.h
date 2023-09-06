@@ -10,6 +10,7 @@ MeshDrawCommands.h: Mesh draw commands.
 #include "TranslucencyPass.h"
 #include "InstanceCulling/InstanceCullingContext.h"
 #include "InstanceCulling/InstanceCullingManager.h"
+#include "ScenePrivateBase.h"
 
 struct FMeshBatchAndRelevance;
 class FStaticMeshBatch;
@@ -37,7 +38,7 @@ public:
 	void ReturnToFreeList(FPrimitiveIdVertexBufferPoolEntry Entry);
 	RENDERER_API void DiscardAll();
 
-	virtual void ReleaseDynamicRHI() override;
+	virtual void ReleaseRHI() override;
 
 private:
 	uint32 DiscardId;
@@ -96,7 +97,7 @@ public:
 	FVector TranslucentSortAxis;
 	FVector ViewOrigin;
 	FMatrix ViewMatrix;
-	const TArray<struct FPrimitiveBounds>* PrimitiveBounds;
+	const TScenePrimitiveArray<struct FPrimitiveBounds>* PrimitiveBounds;
 
 	// For logging instancing stats.
 	int32 VisibleMeshDrawCommandsNum;
@@ -104,7 +105,6 @@ public:
 	int32 MaxInstances;
 
 	FInstanceCullingContext InstanceCullingContext;
-	FInstanceCullingResult InstanceCullingResult;
 };
 
 /**

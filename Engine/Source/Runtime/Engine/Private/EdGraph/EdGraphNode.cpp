@@ -17,6 +17,7 @@
 #include "ScopedTransaction.h"
 #include "FindInBlueprintManager.h"
 #include "DiffResults.h"
+#include "DiffUtils.h"
 #else
 #include "EdGraph/EdGraphPin.h"
 #endif
@@ -315,10 +316,7 @@ void UEdGraphNode::DiffProperties(UStruct* StructA, UStruct* StructB, uint8* Dat
 			continue;
 		}
 
-		const FString ValueStringA = GetPropertyNameAndValueForDiff(Prop, Prop->ContainerPtrToValuePtr<uint8>(DataA));
-		const FString ValueStringB = GetPropertyNameAndValueForDiff(PropB, PropB->ContainerPtrToValuePtr<uint8>(DataB));
-
-		if (ValueStringA != ValueStringB)
+		if (!DiffUtils::Identical(FResolvedProperty(DataA, Prop), FResolvedProperty(DataB, PropB), StructA, StructB))
 		{
 			// Only bother setting up the display data if we're storing the result
 			if (Results.CanStoreResults())
@@ -349,26 +347,6 @@ UEdGraphPin* UEdGraphNode::CreatePin(EEdGraphPinDirection Dir, const FEdGraphPin
 	}
 	return NewPin;
 }
-
-UEdGraphPin* UEdGraphNode::CreatePin(EEdGraphPinDirection Dir, const FNameParameterHelper PinCategory, const FNameParameterHelper PinSubCategory, UObject* PinSubCategoryObject, bool bIsArray, bool bIsReference, const FNameParameterHelper PinName, bool bIsConst /*= false*/, int32 Index /*= INDEX_NONE*/, bool bIsSet /*= false*/, bool bIsMap /*= false*/, const FEdGraphTerminalType& ValueTerminalType /*= FEdGraphTerminalType()*/)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return CreatePin(Dir, PinCategory, PinSubCategory, PinSubCategoryObject, PinName, FEdGraphPinType::ToPinContainerType(bIsArray, bIsSet, bIsMap), bIsReference, bIsConst, Index, ValueTerminalType);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-UEdGraphPin* UEdGraphNode::CreatePin(EEdGraphPinDirection Dir, const FNameParameterHelper PinCategory, const FNameParameterHelper PinSubCategory, UObject* PinSubCategoryObject, const FNameParameterHelper PinName, EPinContainerType PinContainerType /* EPinContainerType::None */, bool bIsReference /* = false */, bool bIsConst /*= false*/, int32 Index /*= INDEX_NONE*/, const FEdGraphTerminalType& ValueTerminalType /*= FEdGraphTerminalType()*/)
-{
-	FCreatePinParams PinParams;
-	PinParams.ContainerType = PinContainerType;
-	PinParams.bIsConst = bIsConst;
-	PinParams.bIsReference = bIsReference;
-	PinParams.Index = Index;
-	PinParams.ValueTerminalType = ValueTerminalType;
-
-	return CreatePin(Dir, *PinCategory, *PinSubCategory, PinSubCategoryObject, *PinName, PinParams);
-}
-
 
 UEdGraphPin* UEdGraphNode::CreatePin(const EEdGraphPinDirection Dir, const FName PinCategory, const FName PinSubCategory, UObject* PinSubCategoryObject, const FName PinName, const FCreatePinParams& PinParams)
 {
@@ -507,7 +485,10 @@ class UEdGraph* UEdGraphNode::GetGraph() const
 	UEdGraph* Graph = Cast<UEdGraph>(GetOuter());
 	if (Graph == nullptr && IsValid(this))
 	{
-		ensureMsgf(false, TEXT("EdGraphNode::GetGraph : '%s' does not have a UEdGraph as an Outer."), *GetPathName());
+		if(GetOuter() != GetTransientPackage())
+		{
+			ensureMsgf(false, TEXT("EdGraphNode::GetGraph : '%s' does not have a UEdGraph as an Outer."), *GetPathName());
+		}
 	}
 	return Graph;
 }
@@ -852,6 +833,12 @@ UEdGraphPin* UEdGraphNode::GetPinWithDirectionAt(int32 PinIndex, EEdGraphPinDire
 
 void UEdGraphNode::AddSearchMetaDataInfo(TArray<struct FSearchTagDataPair>& OutTaggedMetaData) const
 {
+	if (GetSchema() == nullptr)
+	{
+		ensure(false);
+		return;
+	}
+
 	// Searchable - Primary label for the item in the search results
 	OutTaggedMetaData.Add(FSearchTagDataPair(FFindInBlueprintSearchTags::FiB_Name, GetNodeTitle(ENodeTitleType::ListView)));
 

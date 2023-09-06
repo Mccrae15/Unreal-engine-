@@ -1,33 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
-using System;
-using System.IO;
 
+[SupportedPlatformGroups("Desktop", "Android")]
 public class VulkanRHI : ModuleRules
 {
-	protected virtual bool bShouldIncludePlatformPrivate { get { return true; } }
-
 	public VulkanRHI(ReadOnlyTargetRules Target) : base(Target)
 	{
 		IWYUSupport = IWYUSupport.None;
 		bLegalToDistributeObjectCode = true;
+		bBuildLocallyWithSNDBS = false; // VulkanPlatform.h
 
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 		{
-			PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/Windows");
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
-		}
-		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
-		{
-			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
-			{
-				PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/Linux");
-			}
-		}
-		else if (bShouldIncludePlatformPrivate)
-		{
-			PrivateIncludePaths.Add("Runtime/VulkanRHI/Private/" + Target.Platform);
 		}
 
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))

@@ -107,10 +107,6 @@ void UPlaneCutTool::Setup()
 	BasicProperties->RestoreProperties(this);
 	AddToolPropertySource(BasicProperties);
 
-	AcceptProperties = NewObject<UAcceptOutputProperties>(this, TEXT("Tool Accept Output Settings"));
-	AcceptProperties->RestoreProperties(this);
-	AddToolPropertySource(AcceptProperties);
-
 	ToolPropertyObjects.Add(this);
 
 	// initialize the PreviewMesh+BackgroundCompute object
@@ -248,7 +244,6 @@ void UPlaneCutTool::OnShutdown(EToolShutdownType ShutdownType)
 {
 	PlaneMechanic->Shutdown();
 	BasicProperties->SaveProperties(this);
-	AcceptProperties->SaveProperties(this);
 
 	// Restore (unhide) the source meshes
 	for (int Idx = 0; Idx < Targets.Num(); Idx++)
@@ -272,6 +267,7 @@ TUniquePtr<FDynamicMeshOperator> UPlaneCutOperatorFactory::MakeNewOperator()
 	TUniquePtr<FPlaneCutOp> CutOp = MakeUnique<FPlaneCutOp>();
 	CutOp->bFillCutHole = CutTool->BasicProperties->bFillCutHole;
 	CutOp->bFillSpans = CutTool->BasicProperties->bFillSpans;
+	CutOp->bSimplifyAlongNewEdges = CutTool->BasicProperties->bSimplifyAlongCut;
 
 	FTransform LocalToWorld = (FTransform) UE::ToolTarget::GetLocalToWorldTransform(CutTool->Targets[ComponentIndex]);
 	CutOp->SetTransform(LocalToWorld);
@@ -428,9 +424,9 @@ void UPlaneCutTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 	// if so ask user what to do
 	if (bWantDestroy)
 	{
-		FText Title = LOCTEXT("PlaneCutDestroyTitle", "Delete mesh components?");
 		EAppReturnType::Type Ret = FMessageDialog::Open(EAppMsgType::YesNo, 
-			LOCTEXT("PlaneCutDestroyQuestion", "Plane cuts have entirely cut away at least one mesh. Do you actually want to delete these mesh components? Note that either way all actors will remain, and meshes that are not fully cut away will still be cut as normal."), &Title);
+			LOCTEXT("PlaneCutDestroyQuestion", "Plane cuts have entirely cut away at least one mesh. Do you actually want to delete these mesh components? Note that either way all actors will remain, and meshes that are not fully cut away will still be cut as normal."), 
+			LOCTEXT("PlaneCutDestroyTitle", "Delete mesh components?"));
 		if (Ret == EAppReturnType::No || Ret == EAppReturnType::Cancel)
 		{
 			bWantDestroy = false; // quell destructive urge
@@ -452,7 +448,7 @@ void UPlaneCutTool::GenerateAsset(const TArray<FDynamicMeshOpResult>& Results)
 			continue;
 		}
 
-		if (AcceptProperties->bExportSeparatedPiecesAsNewMeshAssets)
+		if (BasicProperties->bExportSeparatedPiecesAsNewMeshAssets)
 		{
 			TDynamicMeshScalarTriangleAttribute<int>* SubMeshIDs =
 				static_cast<TDynamicMeshScalarTriangleAttribute<int>*>(UseMesh->Attributes()->GetAttachedAttribute(

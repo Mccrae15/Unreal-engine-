@@ -80,6 +80,7 @@ public:
 
 	//~ Begin UObject Interface.
 	virtual void PostInitProperties() override;
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual void PostLoad() override;
 #if WITH_EDITORONLY_DATA
 	ENGINE_API static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
@@ -93,7 +94,7 @@ public:
 	//~ End UObject Interface.
 
 	/** Used by materials using this function to know when to recompile. */
-	UPROPERTY(duplicatetransient)
+	UPROPERTY()
 	FGuid StateId;
 
 protected:
@@ -147,6 +148,9 @@ public:
 	/** Returns an array of the functions that this function is dependent on, directly or indirectly. */
 	ENGINE_API virtual void GetDependentFunctions(TArray<UMaterialFunctionInterface*>& DependentFunctions) const
 		PURE_VIRTUAL(UMaterialFunctionInterface::GetDependentFunctions,);
+
+	/** Returns If returns an empty string, use the default class name for the material function. Otherwise, the string will be the name shown when the function is exposed to users in the material graph as a node, or from the contextual menu when searching for nodes. */
+	virtual FString GetUserExposedCaption() const { return TEXT(""); }
 #endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
@@ -183,12 +187,14 @@ public:
 	ENGINE_API UMaterialFunctionInterface* GetBaseFunctionInterface();
 	ENGINE_API const UMaterialFunctionInterface* GetBaseFunctionInterface() const;
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	ENGINE_API TConstArrayView<TObjectPtr<UMaterialExpression>> GetExpressions() const;
 
 	UE_DEPRECATED(5.1, "Use GetExpressions()")
 	inline TConstArrayView<TObjectPtr<UMaterialExpression>> GetFunctionExpressions() const { return GetExpressions(); }
+#endif // WITH_EDITORONLY_DATA
 
+#if WITH_EDITOR
 	ENGINE_API const FString& GetDescription() const;
 	ENGINE_API bool GetReentrantFlag() const;
 	ENGINE_API void SetReentrantFlag(bool bIsReentrant);

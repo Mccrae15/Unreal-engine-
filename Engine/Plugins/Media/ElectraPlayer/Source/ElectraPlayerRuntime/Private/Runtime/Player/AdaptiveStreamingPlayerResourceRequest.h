@@ -19,7 +19,14 @@ public:
 	{
 		Empty,
 		Playlist,
-		LicenseKey
+		LicenseKey,
+		BinaryData
+	};
+
+	struct FBinaryDataParams
+	{
+		int64 AbsoluteFileOffset = 0;
+		int64 NumBytesToRead = 0;
 	};
 
 	virtual ~IAdaptiveStreamingPlayerResourceRequest() = default;
@@ -28,11 +35,15 @@ public:
 	virtual EPlaybackResourceType GetResourceType() const = 0;
 	//! Returns the URL of the requested resource.
 	virtual FString GetResourceURL() const = 0;
+	//! Returns the read parameters for a binary data request.
+	virtual FBinaryDataParams GetBinaryDataParams() const = 0;
 
 	//! Sets the binary resource data. If data can not be provided do not set anything (or a nullptr)
-	virtual void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData) = 0;
+	//! For a request of `BinaryData` you need to set `TotalResourceSize` to the total size of the file so the reader
+	//! will know how big the file is. This is true even for `NumBytesToRead` set to 0.
+	virtual void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData, int64 TotalResourceSize) = 0;
 
-	//! Signal request completion. Must be called with ot without data being set.
+	//! Signal request completion. Must be called with or without data being set.
 	virtual void SignalDataReady() = 0;
 };
 
@@ -103,6 +114,9 @@ public:
 	virtual FHTTPResourceRequest& Object(TSharedPtrTS<IHTTPResourceRequestObject> InUserObject)
 	{ UserObject = InUserObject; return *this; }
 
+	virtual FHTTPResourceRequest& StreamTypeAndQuality(EStreamType InStreamType, int32 InQualityIndex, int32 InMaxQualityIndex)
+	{ Request->Parameters.StreamType = InStreamType; Request->Parameters.QualityIndex = InQualityIndex; Request->Parameters.MaxQualityIndex = InMaxQualityIndex; return *this; }
+
 	virtual FOnRequestCompletedCallback& Callback()
 	{ return CompletedCallback; }
 
@@ -142,6 +156,9 @@ public:
 	virtual const HTTP::FConnectionInfo* GetConnectionInfo() const
 	{ return Request.IsValid() ? &Request->ConnectionInfo : nullptr; }
 
+	virtual TSharedPtrTS<IElectraHttpManager::FRequest> GetRequest() const
+	{ return Request; }
+
 private:
 
 	class FStaticResourceRequest : public IAdaptiveStreamingPlayerResourceRequest
@@ -150,19 +167,25 @@ private:
 		FStaticResourceRequest(TWeakPtrTS<FHTTPResourceRequest> InOwner) : Owner(InOwner) {}
 		virtual ~FStaticResourceRequest() = default;
 
-		virtual EPlaybackResourceType GetResourceType() const override
+		EPlaybackResourceType GetResourceType() const override
 		{
 			TSharedPtrTS<FHTTPResourceRequest> p(Owner.Pin());
 			return p.IsValid() ? p->GetStaticQuery() : EPlaybackResourceType::Empty;
 		}
 
-		virtual FString GetResourceURL() const
+		FString GetResourceURL() const override
 		{
 			TSharedPtrTS<FHTTPResourceRequest> p(Owner.Pin());
 			return p.IsValid() ? p->GetURL() : FString();
 		}
 
-		virtual void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData)
+		FBinaryDataParams GetBinaryDataParams() const override
+		{
+			FBinaryDataParams None;
+			return None;
+		}
+
+		void SetPlaybackData(TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>	PlaybackData, int64 TotalResourceSize) override
 		{
 			if (PlaybackData.IsValid())
 			{
@@ -182,7 +205,7 @@ private:
 		}
 
 		//! Signal request completion. Must be called with or without data being set.
-		virtual void SignalDataReady()
+		void SignalDataReady() override
 		{
 			TSharedPtrTS<FHTTPResourceRequest> p(Owner.Pin());
 			if (p.IsValid())
@@ -207,6 +230,7 @@ private:
 	TWeakPtrTS<IHTTPResourceRequestObject> UserObject;
 	TWeakPtrTS<IElectraHttpManager> HTTPManager;
 	TMediaOptionalValue<IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType> StaticQueryType;
+	IPlayerSessionServices* PlayerSessionServices = nullptr;
 	bool bWasAdded = false;
 	bool bWasCanceled = false;
 	bool bHasFinished = false;

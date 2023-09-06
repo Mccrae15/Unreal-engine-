@@ -31,7 +31,78 @@ namespace AnalyticsProviderETCvars
 		PreventMultipleFlushesInOneFrame,
 		TEXT("When true, prevents more than one AnalyticsProviderET instance from flushing in the same frame, allowing the flush and HTTP cost to be amortized.")
 	);
+
+	TAutoConsoleVariable<bool> CVarDefaultUserAgentCommentsEnabled(
+		TEXT("AnalyticsET.UserAgentCommentsEnabled"),
+		true,
+		TEXT("Whether comments are supported in the analytics user agent string"),
+		ECVF_SaveForNextBoot
+	);
 }
+
+// Want to avoid putting the project name into the User-Agent, because for some apps (like the editor), the project name is private info.
+// The analytics User-Agent uses the default User-Agent, but with project name removed.
+class FAnalyticsUserAgentCache
+{
+public:
+	FAnalyticsUserAgentCache()
+		: CachedUserAgent()
+		, CachedAgentVersion(0)
+	{
+	}
+
+	FString GetUserAgent()
+	{
+		if (CachedUserAgent.IsEmpty() || CachedAgentVersion != FPlatformHttp::GetDefaultUserAgentVersion())
+		{
+			UpdateUserAgent();
+		}
+
+		return CachedUserAgent;
+	}
+
+private:
+	void UpdateUserAgent()
+	{
+		static TSet<FString> AllowedProjectComments(GetAllowedProjectComments());
+		static TSet<FString> AllowedPlatformComments(GetAllowedPlatformComments());
+
+		FDefaultUserAgentBuilder Builder = FPlatformHttp::GetDefaultUserAgentBuilder();
+		Builder.SetProjectName(TEXT("PROJECTNAME"));
+		CachedUserAgent = Builder.BuildUserAgentString(&AllowedProjectComments, &AllowedPlatformComments);
+		CachedAgentVersion = Builder.GetAgentVersion();
+	}
+
+	static TSet<FString> GetAllowedProjectComments()
+	{
+		TArray<FString> AllowedProjectComments;
+		if (AnalyticsProviderETCvars::CVarDefaultUserAgentCommentsEnabled.GetValueOnAnyThread())
+		{
+			GConfig->GetArray(TEXT("Analytics"), TEXT("AllowedUserAgentProjectComments"), AllowedProjectComments, GEngineIni);
+		}
+		return TSet<FString>(MoveTemp(AllowedProjectComments));
+	}
+
+	static TSet<FString> GetAllowedPlatformComments()
+	{
+		TArray<FString> AllowedPlatformComments;
+		if (AnalyticsProviderETCvars::CVarDefaultUserAgentCommentsEnabled.GetValueOnAnyThread())
+		{
+			GConfig->GetArray(TEXT("Analytics"), TEXT("AllowedUserAgentPlatformComments"), AllowedPlatformComments, GEngineIni);
+		}
+		return TSet<FString>(MoveTemp(AllowedPlatformComments));
+	}
+
+	static TSet<FString> ParseCommentSet(const FString& CommentBlob)
+	{
+		TArray<FString> Comments;
+		CommentBlob.ParseIntoArray(Comments, TEXT(";"));
+		return TSet<FString>(MoveTemp(Comments));
+	}
+
+	FString CachedUserAgent;
+	uint32 CachedAgentVersion;
+};
 
 /**
  * Implementation of analytics for Epic Telemetry.
@@ -78,6 +149,7 @@ public:
 	virtual void SetEventCallback(const OnEventRecorded& Callback) override;
 
 	virtual void SetURLEndpoint(const FString& UrlEndpoint, const TArray<FString>& AltDomains) override;
+	virtual void SetHeader(const FString& HeaderName, const FString& HeaderValue) override;
 	virtual void BlockUntilFlushed(float InTimeoutSec) override;
 	virtual void SetShouldRecordEventFunc(const ShouldRecordEventFunction& InShouldRecordEventFunc) override;
 	virtual ~FAnalyticsProviderET();
@@ -129,6 +201,10 @@ private:
 
 	TSharedPtr<class FHttpRetrySystem::FManager> HttpRetryManager;
 	FHttpRetrySystem::FRetryDomainsPtr RetryServers;
+	/** Http headers to add to requests */
+	TMap<FString, FString> HttpHeaders;
+
+	FAnalyticsUserAgentCache UserAgentCache;
 };
 
 TSharedPtr<IAnalyticsProviderET> FAnalyticsET::CreateAnalyticsProvider(const Config& ConfigValues) const
@@ -180,6 +256,13 @@ FAnalyticsProviderET::FAnalyticsProviderET(const FAnalyticsET::Config& ConfigVal
 		}
 
 		RetryServers = MakeShared<FHttpRetrySystem::FRetryDomains, ESPMode::ThreadSafe>(MoveTemp(TmpAltAPIServers));
+	}
+
+	const bool bTestingMode = FParse::Param(FCommandLine::Get(), TEXT("TELEMETRYTESTING"));
+	if (bTestingMode)
+	{
+		UE_SET_LOG_VERBOSITY(LogAnalytics, VeryVerbose);
+		bShouldCacheEvents = false;
 	}
 
 	// force very verbose logging if we are force-disabling events.
@@ -264,7 +347,7 @@ bool FAnalyticsProviderET::Tick(float DeltaSeconds)
 			// try to keep on the same cadence when flushing, since we could miss our window by several frames.
 			if (!bHadFlushesQueued && Now >= NextEventFlushTime)
 			{
-				const float Multiplier = (FloatCastChecked<float>(Now - NextEventFlushTime, 1./16.) / FlushIntervalSec) + 1.f;
+				const double Multiplier = FMath::Floor((Now - NextEventFlushTime) / FlushIntervalSec) + 1.;
 				NextEventFlushTime += Multiplier * FlushIntervalSec;
 			}
 		}
@@ -321,6 +404,10 @@ TSharedRef<IHttpRequest, ESPMode::ThreadSafe> FAnalyticsProviderET::CreateReques
 		FHttpRetrySystem::FRetryResponseCodes(),
 		FHttpRetrySystem::FRetryVerbs(),
 		RetryServers);
+	for (const TPair<FString, FString>& HttpHeader : HttpHeaders)
+	{
+		HttpRequest->SetHeader(HttpHeader.Key, HttpHeader.Value);
+	}
 
 	return HttpRequest;
 }
@@ -388,12 +475,8 @@ void FAnalyticsProviderET::FlushEventsOnce()
 			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = CreateRequest();
 			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json; charset=utf-8"));
 			// Want to avoid putting the project name into the User-Agent, because for some apps (like the editor), the project name is private info.
-			// Code Pulled from FGenericPlatformHttp::GetDefaultUserAgent, but with project name pulled out
-			HttpRequest->SetHeader(TEXT("User-Agent"), FString::Printf(TEXT("%s/%s %s/%s"),
-				TEXT("PROJECTNAME"),
-				*FPlatformHttp::EscapeUserAgentString(FApp::GetBuildVersion()),
-				*FPlatformHttp::EscapeUserAgentString(FString(FPlatformProperties::IniPlatformName())),
-				*FPlatformHttp::EscapeUserAgentString(FPlatformMisc::GetOSVersion())));
+			// The analytics User-Agent uses the default User-Agent, but with project name removed.
+			HttpRequest->SetHeader(TEXT("User-Agent"), UserAgentCache.GetUserAgent());
 			HttpRequest->SetURL(Config.APIServerET / URLPath);
 			HttpRequest->SetVerb(TEXT("POST"));
 			HttpRequest->SetContent(MoveTemp(Payload));
@@ -596,6 +679,18 @@ void FAnalyticsProviderET::SetURLEndpoint(const FString& UrlEndpoint, const TArr
 	if (Config.APIServerET.IsEmpty())
 	{
 		UE_LOG(LogAnalytics, Warning, TEXT("AnalyticsET: APIServerET is empty for APIKey (%s), converting to a NULL provider!"), *Config.APIKeyET);
+	}
+}
+
+void FAnalyticsProviderET::SetHeader(const FString& HeaderName, const FString& HeaderValue)
+{
+	if (HeaderValue.IsEmpty())
+	{
+		HttpHeaders.Remove(HeaderName);
+	}
+	else
+	{
+		HttpHeaders.Emplace(HeaderName, HeaderValue);
 	}
 }
 

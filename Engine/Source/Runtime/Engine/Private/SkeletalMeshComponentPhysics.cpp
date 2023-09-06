@@ -2865,6 +2865,10 @@ void USkeletalMeshComponent::ExtractCollisionsForCloth(
 		// Init cache on first copy
 		if(!ClothCollisionSource.bCached || ClothCollisionSource.CachedSkeletalMesh.Get() != SourceComponent->GetSkeletalMeshAsset())
 		{
+			// Clear previous cached data
+			ClothCollisionSource.CachedSpheres.Reset();
+			ClothCollisionSource.CachedSphereConnections.Reset();
+
 			for(const USkeletalBodySetup* SkeletalBodySetup : PhysicsAsset->SkeletalBodySetups)
 			{
 				// Cache bones
@@ -2972,7 +2976,7 @@ void USkeletalMeshComponent::CopyClothCollisionsToChildren()
 	for (USceneComponent* AttachedChild : GetAttachChildren())
 	{
 		USkeletalMeshComponent* pChild = Cast<USkeletalMeshComponent>(AttachedChild);
-		if(pChild && pChild->ClothingSimulation->ShouldSimulate())
+		if(pChild && pChild->ClothingSimulation && pChild->ClothingSimulation->ShouldSimulate())
 		{
 			ClothChildren.Add(pChild);
 		}
@@ -3351,7 +3355,7 @@ void USkeletalMeshComponent::ProcessClothCollisionWithEnvironment()
 							break;
 
 						default: 
-							ensure(false);  // Is there a missing collision type?
+							UE_LOG(LogSkeletalMesh, Verbose, TEXT("Found unsupported collision type during environmental collision with the cloth in [%s]"), !Component->GetOwner() ? TEXT("Unknown") : *Component->GetOwner()->GetFName().ToString());
 							break;
 						}
 					}
@@ -3883,6 +3887,13 @@ void USkeletalMeshComponent::GetUpdateClothSimulationData_AnyThread(TMap<int32, 
 	}
 }
 
+void USkeletalMeshComponent::WaitForExistingParallelClothSimulation_GameThread()
+{
+	// Should only kick new parallel cloth simulations from game thread, so should be safe to also wait for existing ones there.
+	check(IsInGameThread());
+	HandleExistingParallelClothSimulation();
+}
+
 void USkeletalMeshComponent::DebugDrawClothing(FPrimitiveDrawInterface* PDI)
 {
 #if WITH_EDITOR && ENABLE_DRAW_DEBUG
@@ -4035,7 +4046,7 @@ FTransform USkeletalMeshComponent::GetComponentTransformFromBodyInstance(FBodyIn
 }
 
 
-Chaos::FPhysicsObject* USkeletalMeshComponent::GetPhysicsObjectById(int32 Id) const
+Chaos::FPhysicsObject* USkeletalMeshComponent::GetPhysicsObjectById(Chaos::FPhysicsObjectId Id) const
 {
 	if (!Bodies.IsValidIndex(Id) || !Bodies[Id] || !Bodies[Id]->ActorHandle)
 	{

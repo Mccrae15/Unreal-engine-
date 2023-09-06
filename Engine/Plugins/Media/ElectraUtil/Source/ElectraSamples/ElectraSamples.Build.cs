@@ -38,14 +38,17 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
-				PublicSystemIncludePaths.Add(DirectX.GetIncludeDir(Target));
+				PublicDependencyModuleNames.Add("DirectX");
 				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "DX9");
 
-					PublicAdditionalLibraries.AddRange(new string[] {
-						DirectX.GetLibDir(Target) + "dxerr.lib",
-					});
+					if (Target.WindowsPlatform.Architecture != UnrealArch.Arm64)
+					{
+						PublicAdditionalLibraries.AddRange(new string[] {
+							DirectX.GetLibDir(Target) + "dxerr.lib",
+						});
+					}
 
 					PrivateDependencyModuleNames.Add("D3D11RHI");
 

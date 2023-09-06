@@ -22,17 +22,7 @@ public class PoseSearch : ModuleRules
 				"AnimationCore",
 				"TraceLog",
 				"AnimGraphRuntime",
-				"GameplayTags",
 				"StructUtils"
-			}
-		);
-
-		PrivateDependencyModuleNames.AddRange(
-			new string[]
-            {
-				"Core",
-				"CoreUObject",
-				"Engine"
 			}
 		);
 

@@ -81,9 +81,14 @@ public:
 		FTransform const& InUVToWorld,
 		FBox const& InWorldBounds);
 	
-	RENDERER_API virtual ~FRuntimeVirtualTextureProducer() {}
+	virtual ~FRuntimeVirtualTextureProducer() {}
 
 	//~ Begin IVirtualTexture Interface.
+	virtual bool IsPageStreamed(uint8 vLevel, uint32 vAddress) const override
+	{
+		return false;
+	}
+
 	virtual FVTRequestPageResult RequestPageData(
 		FRHICommandList& RHICmdList,
 		const FVirtualTextureProducerHandle& ProducerHandle,

@@ -114,16 +114,17 @@ void FSlowTask::Destroy()
 		}
 
 		FSlowTaskStack& Stack = Context.ScopeStack;
-		checkSlow(Stack.Num() != 0 && Stack.Last() == this);
-
-		FSlowTask* Task = Stack.Last();
-		if (ensureMsgf(Task == this, TEXT("Out-of-order scoped task construction/destruction")))
+		if (ensure(Stack.Num() != 0))
 		{
-			Stack.Pop(false);
-		}
-		else
-		{
-			Stack.RemoveSingleSwap(this, false);
+			FSlowTask* Task = Stack.Last();
+			if (ensureMsgf(Task == this, TEXT("Out-of-order slow task construction/destruction: destroying '%s' but '%s' is at the top of the stack"), *DefaultMessage.ToString(), *Task->DefaultMessage.ToString()))
+			{
+				Stack.Pop(false);
+			}
+			else
+			{
+				Stack.RemoveSingleSwap(this, false);
+			}
 		}
 
 		if (Stack.Num() != 0)
@@ -185,6 +186,11 @@ void FSlowTask::TickProgress()
 	}
 }
 
+void FSlowTask::ForceRefresh()
+{
+	ForceRefresh(Context);
+}
+
 const FText& FSlowTask::GetCurrentMessage() const
 {
 	return FrameMessage.IsEmpty() ? DefaultMessage : FrameMessage;
@@ -192,9 +198,9 @@ const FText& FSlowTask::GetCurrentMessage() const
 
 void FSlowTask::MakeDialog(bool bShowCancelButton, bool bAllowInPIE)
 {
-	const bool bIsDisabledByPIE = Context.IsPlayingInEditor() && !bAllowInPIE;
-	const bool bIsDialogAllowed = bEnabled && !GIsSilent && !bIsDisabledByPIE && !IsRunningCommandlet() && IsInGameThread() && Visibility != ESlowTaskVisibility::Invisible;
-	if (!GIsSlowTask && bIsDialogAllowed)
+	const auto IsDisabledByPIE = [this, bAllowInPIE]() { return Context.IsPlayingInEditor() && !bAllowInPIE; };
+	const bool bIsDialogAllowed = bEnabled && IsInGameThread() && !GIsSilent && !IsDisabledByPIE() && !IsRunningCommandlet() && Visibility != ESlowTaskVisibility::Invisible;
+	if (bIsDialogAllowed && !GIsSlowTask)
 	{
 		Context.StartSlowTask(GetCurrentMessage(), bShowCancelButton);
 		if (GIsSlowTask)

@@ -5,17 +5,18 @@
 #if WITH_EDITOR
 
 #include "Containers/Array.h"
+#include "Math/Bounds.h"
 
-struct FStaticMeshBuildVertex;
-
+struct FMeshBuildVertexData;
 struct FNaniteDisplacedMeshParams;
 
 bool DisplaceNaniteMesh(
 	const FNaniteDisplacedMeshParams& Parameters,
 	const uint32 NumTextureCoord,
-	TArray< FStaticMeshBuildVertex >& Verts,
+	FMeshBuildVertexData& Verts,
 	TArray< uint32 >& Indexes,
-	TArray< int32 >& MaterialIndexes
+	TArray< int32 >& MaterialIndexes,
+	FBounds3f& VertexBounds
 );
 
 #endif

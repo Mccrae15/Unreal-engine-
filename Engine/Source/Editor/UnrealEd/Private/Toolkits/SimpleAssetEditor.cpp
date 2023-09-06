@@ -112,7 +112,7 @@ FText FSimpleAssetEditor::GetBaseToolkitName() const
 
 FText FSimpleAssetEditor::GetToolkitName() const
 {
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 
 	check( EditingObjs.Num() > 0 );
 
@@ -163,7 +163,7 @@ FText FSimpleAssetEditor::GetToolkitName() const
 
 FText FSimpleAssetEditor::GetToolkitToolTipText() const
 {
-	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	const auto& EditingObjs = GetEditingObjects();
 
 	check( EditingObjs.Num() > 0 );
 
@@ -334,6 +334,12 @@ void FSimpleAssetEditor::PostRegenerateMenusAndToolbars()
 	
 		SetMenuOverlay(MenuOverlayBox);
 	}
+}
+
+FName FSimpleAssetEditor::GetEditingAssetTypeName() const
+{
+	// We want the global recent assets menu for simple asset editors so we report our editing asset type as none
+	return NAME_None;
 }
 
 #undef LOCTEXT_NAMESPACE

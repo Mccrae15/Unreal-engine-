@@ -78,7 +78,7 @@ struct FWorldConditionTest : public FWorldConditionBase
 	FWorldConditionTest() = default;
 	explicit FWorldConditionTest(const int32 InTestValue, const bool bInActivateResult = true) : TestValue(InTestValue), bActivateResult(bInActivateResult) {}
 	
-	virtual const UStruct* GetRuntimeStateType() const override { return nullptr; }
+	virtual TObjectPtr<const UStruct>* GetRuntimeStateType() const override { return nullptr; }
 	
 	virtual bool Initialize(const UWorldConditionSchema& Schema) override
 	{
@@ -112,9 +112,13 @@ struct FWorldConditionTest : public FWorldConditionBase
 	
 	virtual void Deactivate(const FWorldConditionContext& Context) const override
 	{
-		
 	}
 
+	virtual FText GetDescription() const override
+	{
+		return FText::Format(FText::FromString(TEXT("Value == {0}")), FText::AsNumber(TestValue));
+	}
+	
 protected:
 
 	FWorldConditionContextDataRef ValueRef;
@@ -142,7 +146,11 @@ struct FWorldConditionTestCached : public FWorldConditionBase
 	
 	using FStateType = FWorldConditionTestState;
 	
-	virtual const UStruct* GetRuntimeStateType() const override { return FStateType::StaticStruct(); }
+	virtual TObjectPtr<const UStruct>* GetRuntimeStateType() const override
+	{
+		static TObjectPtr<const UStruct> Ptr{FStateType::StaticStruct()};
+		return &Ptr;
+	}
 	
 	virtual bool Initialize(const UWorldConditionSchema& Schema) override
 	{
@@ -213,4 +221,15 @@ protected:
 	FWorldConditionContextDataRef ValueRef;
 	
 	int32 TestValue = 0;
+};
+
+UCLASS(hidden)
+class UWorldConditionOwnerClass : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	
+	UPROPERTY(EditAnywhere, Category = "Default")
+	FWorldConditionQueryDefinition Definition;
 };

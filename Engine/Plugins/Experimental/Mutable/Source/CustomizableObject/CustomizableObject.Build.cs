@@ -17,21 +17,15 @@ public class CustomizableObject : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
             "InputCore",
             "SlateCore",
-            "Slate",
-            "Core",
             "CoreUObject",
-            "Engine",
             "RenderCore",
             "RHI",
             "AppFramework",
             "Projects",
             "ApplicationCore",
-			"ClothingSystemRuntimeCommon",
 			"ClothingSystemRuntimeInterface",
 			//"ClothingSystemEditor",
 			"UMG",
-
-			"MutableRuntime",
 		});
 
         PublicDependencyModuleNames.AddRange(new string[] {
@@ -41,16 +35,15 @@ public class CustomizableObject : ModuleRules
 			"SkeletalMerging",
 			"ClothingSystemRuntimeCommon",
             "GameplayTags",
+			"MutableRuntime",
+			"AnimGraphRuntime",
+			"StructUtils"
 		});
 
         PrivateIncludePathModuleNames.AddRange(
         new string[] {
                 "TargetPlatform"
         });
-
-		PrivateIncludePaths.AddRange(new string[] {
-				"MutableRuntime/Private",
-			});
 
 		if (TargetRules.bBuildEditor == true)
         {

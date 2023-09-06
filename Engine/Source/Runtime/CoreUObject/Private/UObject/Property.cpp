@@ -11,6 +11,7 @@
 #include "Misc/StringBuilder.h"
 #include "Math/RandomStream.h"
 #include "Logging/LogScopedCategoryAndVerbosityOverride.h"
+#include "UObject/CoreNetTypes.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Class.h"
@@ -24,7 +25,9 @@
 #include "Math/Ray.h"
 #include "Math/Sphere.h"
 #include "Math/InterpCurvePoint.h"
+#include "UObject/Package.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "Serialization/TestUndeclaredScriptStructObjectReferences.h"
 
 DEFINE_LOG_CATEGORY(LogProperty);
 
@@ -42,6 +45,7 @@ struct TVector3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithStructuredSerializer = true,
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FVector3f> : public TVector3StructOpsTypeTraits<FVector3f> {};
 template<> struct TStructOpsTypeTraits<FVector3d> : public TVector3StructOpsTypeTraits<FVector3d> {};
@@ -60,6 +64,7 @@ struct TIntPointStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FInt32Point> : public TIntPointStructOpsTypeTraits<FInt32Point> {};
 template<> struct TStructOpsTypeTraits<FInt64Point> : public TIntPointStructOpsTypeTraits<FInt64Point> {};
@@ -83,6 +88,7 @@ struct TIntVectorStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FInt32Vector2> : public TIntVectorStructOpsTypeTraits<FInt32Vector2> {};
 template<> struct TStructOpsTypeTraits<FInt64Vector2> : public TIntVectorStructOpsTypeTraits<FInt64Vector2> {};
@@ -130,6 +136,7 @@ struct TVector2StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FVector2f> : public TVector2StructOpsTypeTraits<FVector2f> {};
 template<> struct TStructOpsTypeTraits<FVector2d> : public TVector2StructOpsTypeTraits<FVector2d> {};
@@ -148,6 +155,7 @@ struct TVector4StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FVector4f> : public TVector4StructOpsTypeTraits<FVector4f> {};
 template<> struct TStructOpsTypeTraits<FVector4d> : public TVector4StructOpsTypeTraits<FVector4d> {};
@@ -168,6 +176,7 @@ struct TPlaneStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FPlane4f> : public TPlaneStructOpsTypeTraits<FPlane4f> {};
 template<> struct TStructOpsTypeTraits<FPlane4d> : public TPlaneStructOpsTypeTraits<FPlane4d> {};
@@ -188,6 +197,7 @@ struct TRotatorStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
 template<> struct TStructOpsTypeTraits<FRotator3f> : public TRotatorStructOpsTypeTraits<FRotator3f> {};
@@ -207,6 +217,7 @@ struct TBox3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FBox3f> : public TBox3StructOpsTypeTraits<FBox3f> {};
 template<> struct TStructOpsTypeTraits<FBox3d> : public TBox3StructOpsTypeTraits<FBox3d> {};
@@ -242,6 +253,7 @@ struct TMatrixStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
 template<> struct TStructOpsTypeTraits<FMatrix44f> : public TMatrixStructOpsTypeTraits<FMatrix44f> {};
@@ -283,6 +295,7 @@ struct TStructOpsTypeTraits<FLinearColor> : public TStructOpsTypeTraitsBase2<FLi
 		WithZeroConstructor = true,
 		WithStructuredSerializer = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", LinearColor);
 
@@ -296,6 +309,7 @@ struct TStructOpsTypeTraits<FColor> : public TStructOpsTypeTraitsBase2<FColor>
 		WithZeroConstructor = true,
 		WithSerializer = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Color);
 
@@ -313,6 +327,7 @@ struct TQuatStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
 		WithSerializer = true,
 		WithSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 template<> struct TStructOpsTypeTraits<FQuat4f> : public TQuatStructOpsTypeTraits<FQuat4f> {};
 template<> struct TStructOpsTypeTraits<FQuat4d> : public TQuatStructOpsTypeTraits<FQuat4d> {};
@@ -330,6 +345,7 @@ struct TStructOpsTypeTraits<FTwoVectors> : public TStructOpsTypeTraitsBase2<FTwo
 		WithSerializer = true,
 		WithNoDestructor = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", TwoVectors);
 
@@ -441,6 +457,7 @@ struct TStructOpsTypeTraits<FGuid> : public TStructOpsTypeTraitsBase2<FGuid>
 		WithSerializer = true,
 		WithStructuredSerializer = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Guid);
 
@@ -484,6 +501,7 @@ struct TStructOpsTypeTraits<FDateTime> : public TStructOpsTypeTraitsBase2<FDateT
 		WithZeroConstructor = true,
 		WithIdenticalViaEquality = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", DateTime);
 
@@ -501,6 +519,7 @@ struct TStructOpsTypeTraits<FTimespan> : public TStructOpsTypeTraitsBase2<FTimes
 		WithZeroConstructor = true,
 		WithIdenticalViaEquality = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Timespan);
 
@@ -512,6 +531,7 @@ struct TStructOpsTypeTraits<FFrameNumber> : public TStructOpsTypeTraitsBase2<FFr
 		WithSerializer = true,
 		WithIdenticalViaEquality = true
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", FrameNumber);
 
@@ -528,6 +548,7 @@ struct TStructOpsTypeTraits<FSoftObjectPath> : public TStructOpsTypeTraitsBase2<
 		WithImportTextItem = true,
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::Soft;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", SoftObjectPath);
 
@@ -544,6 +565,7 @@ struct TStructOpsTypeTraits<FSoftClassPath> : public TStructOpsTypeTraitsBase2<F
 		WithImportTextItem = true,
 		WithStructuredSerializeFromMismatchedTag = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::Soft;
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", SoftClassPath);
 
@@ -578,6 +600,18 @@ struct TStructOpsTypeTraits<FPrimaryAssetId> : public TStructOpsTypeTraitsBase2<
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", PrimaryAssetId);
 
 template<>
+struct TStructOpsTypeTraits<FTestUndeclaredScriptStructObjectReferencesTest> : public TStructOpsTypeTraitsBase2<FTestUndeclaredScriptStructObjectReferencesTest>
+{
+	enum 
+	{
+		WithSerializer = true,
+	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::Strong | EPropertyObjectReferenceType::Weak | EPropertyObjectReferenceType::Soft;
+};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", TestUndeclaredScriptStructObjectReferencesTest);
+
+
+template<>
 struct TStructOpsTypeTraits<FFallbackStruct> : public TStructOpsTypeTraitsBase2<FFallbackStruct>
 {
 };
@@ -586,6 +620,24 @@ UE_IMPLEMENT_STRUCT("/Script/CoreUObject", FallbackStruct);
 /*-----------------------------------------------------------------------------
 	Helpers.
 -----------------------------------------------------------------------------*/
+
+const TCHAR* LexToString(EPropertyObjectReferenceType Type)
+{
+	switch(Type)
+	{
+	case EPropertyObjectReferenceType::None:
+		return TEXT("None");
+	case EPropertyObjectReferenceType::Strong:
+		return TEXT("Strong");
+	case EPropertyObjectReferenceType::Weak:
+		return TEXT("Weak");
+	case EPropertyObjectReferenceType::Soft:
+		return TEXT("Soft");
+	case EPropertyObjectReferenceType::Conservative:
+		return TEXT("Conservative");
+	}	
+	return TEXT("Unknown");
+}
 
 constexpr FAsciiSet AlphaNumericChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
@@ -665,101 +717,13 @@ const TCHAR* FPropertyHelpers::ReadToken( const TCHAR* Buffer, FStringBuilderBas
 	return Buffer;
 }
 
-FString FGCStackSizeHelper::GetPropertyPath() const
-{
-	FString Result;
-	const FProperty* PreviousProperty = nullptr;
-	const TCHAR DelimiterChar = TEXT('.');
-
-	for (int32 PropertyIndex = 0; PropertyIndex < PropertyStack.Num(); ++PropertyIndex)
-	{
-		const FProperty* Property = PropertyStack[PropertyIndex];
-		check(Property);
-		if (PropertyIndex > 0)
-		{
-			if (Property->GetOwner<FProperty>() == PreviousProperty && Property->GetFName() == PreviousProperty->GetFName())
-			{
-				// Skipping inner properties (inside of containers) if their name matches their owner name - TArrayName.TArrayName doesn't have much value
-				// but we do want to keep TMapName.TMapName_Key
-				continue;
-			}
-			Result += DelimiterChar;
-		}
-		Result += Property->GetName();
-		PreviousProperty = Property;
-	}
-	return Result;
-}
-
-bool FGCStackSizeHelper::ConvertPathToProperties(UClass* ObjectClass, const FName& InPropertyPath, TArray<FProperty*>& OutProperties)
-{
-	const TCHAR DelimiterChar = TEXT('.');
-	FString PropertyNameOrPath = InPropertyPath.ToString();
-	int32 DelimiterIndex = -1;
-	bool bFullPathConstructed = true;
-
-	if (!PropertyNameOrPath.FindChar(DelimiterChar, DelimiterIndex))
-	{
-		// 99% of the time we're be dealing with just a single property
-		FProperty* FoundProperty = ObjectClass->FindPropertyByName(*PropertyNameOrPath);
-		if (FoundProperty)
-		{
-			OutProperties.Add(FoundProperty);
-		}
-		else
-		{
-			bFullPathConstructed = false;
-		}
-	}
-	else
-	{
-		// Try and find the first property as we can't start processing the rest of the path without it
-		FString PropertyName = PropertyNameOrPath.Left(DelimiterIndex);
-		FProperty* FoundProperty = ObjectClass->FindPropertyByName(*PropertyName);
-		if (FoundProperty)
-		{
-			OutProperties.Add(FoundProperty);
-
-			int32 StartIndex = DelimiterIndex + 1;
-			const TCHAR DelimiterStr[] = { DelimiterChar, TEXT('\0') };
-			do
-			{
-				// Determine the next property name
-				DelimiterIndex = PropertyNameOrPath.Find(DelimiterStr, ESearchCase::CaseSensitive, ESearchDir::FromStart, StartIndex);
-				PropertyName = PropertyNameOrPath.Mid(StartIndex, DelimiterIndex >= 0 ? (DelimiterIndex - StartIndex) : (PropertyNameOrPath.Len() - StartIndex));
-
-				if (FStructProperty* StructProp = CastField<FStructProperty>(FoundProperty))
-				{
-					// If the previous property was a struct property, the next one belongs to the struct the previous property represented
-					FoundProperty = StructProp->Struct->FindPropertyByName(*PropertyName);
-				}
-				else
-				{
-					// In all other case (though in reality it should only be a TMap) find the inner property
-					FoundProperty = CastField<FProperty>(FoundProperty->GetInnerFieldByName(*PropertyName));
-				}
-
-				if (FoundProperty)
-				{
-					OutProperties.Add(FoundProperty);
-				}
-				else
-				{
-					bFullPathConstructed = false;
-				}
-			} while (DelimiterIndex >= 0 && bFullPathConstructed);
-		}
-		else
-		{
-			bFullPathConstructed = false;
-		}
-	}
-	return bFullPathConstructed;
-}
-
 /*-----------------------------------------------------------------------------
 	FProperty implementation.
 -----------------------------------------------------------------------------*/
+
+#if UE_GAME && UE_FNAME_OUTLINE_NUMBER
+	static_assert(sizeof(FProperty) <= 104, "FProperty was optimized to reduce its size so most of the classes that inherent from it will fall withing 112 bytes bin of MallocBinned3");
+#endif
 
 IMPLEMENT_FIELD(FProperty)
 
@@ -1366,11 +1330,19 @@ void FProperty::LinkInternal(FArchive& Ar)
 	check(0); // Link shouldn't call super...and we should never link an abstract property, like this base class
 }
 
-EConvertFromTypeResult FProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults)
 {
 	return EConvertFromTypeResult::UseSerializeItem;
 }
 
+namespace UE::CoreUObject::Private
+{
+	[[noreturn]] void OnInvalidPropertySize(uint32 InvalidPropertySize, const FProperty* Prop)
+	{
+		UE_LOG(LogProperty, Fatal, TEXT("Invalid property size %u when linking property %s of size %d"), InvalidPropertySize, *Prop->GetFullName(), Prop->GetSize());
+		for (;;);
+	}
+}
 
 int32 FProperty::SetupOffset()
 {
@@ -1384,7 +1356,13 @@ int32 FProperty::SetupOffset()
 	{
 		Offset_Internal = Align(0, GetMinAlignment());
 	}
-	return Offset_Internal + GetSize();
+
+	uint32 UnsignedTotal = (uint32)Offset_Internal + (uint32)GetSize();
+	if (UnsignedTotal >= (uint32)MAX_int32)
+	{
+		UE::CoreUObject::Private::OnInvalidPropertySize(UnsignedTotal, this);
+	}
+	return (int32)UnsignedTotal;
 }
 
 void FProperty::SetOffset_Internal(int32 NewOffset)
@@ -1575,7 +1553,7 @@ static const int32 ReadArrayIndex(UStruct* ObjectStruct, const TCHAR*& Str, FOut
 					if (IndexTokenName != NAME_None)
 					{
 						// Search for the enum in question.
-						Index = UEnum::LookupEnumName(FName(), IndexTokenName, EFindFirstObjectOptions::NativeFirst /* Only native enums can be used as array indices */);
+						Index = IntCastChecked<int32>(UEnum::LookupEnumName(FName(), IndexTokenName, EFindFirstObjectOptions::NativeFirst /* Only native enums can be used as array indices */));
 						if (Index == INDEX_NONE)
 						{
 							Index = 0;
@@ -1646,19 +1624,37 @@ const TCHAR* FProperty::ImportSingleProperty( const TCHAR* Str, void* DestData, 
 
 	// strip leading whitespace
 	const TCHAR* Start = FAsciiSet::Skip(Str, Whitespaces);
-	// find first delimiter
-	Str = FAsciiSet::FindFirstOrEnd(Start, Delimiters);
-	// check if delimiter was found...
-	if (*Str)
+	FName PropertyName;
+	
+	if (*Start == '"')
 	{
-		// strip trailing whitespace
-		int32 Len = UE_PTRDIFF_TO_INT32(Str - Start);
-		while (Len > 0 && Whitespaces.Contains(Start[Len - 1]))
+		int32 OutQuotedLen;
+		FString OutUnquotedString;
+		FParse::QuotedString(Start, OutUnquotedString, &OutQuotedLen);
+		PropertyName = FName(OutUnquotedString);
+		
+		// advance iterator to next delimiter
+		Str = FAsciiSet::FindFirstOrEnd(Start + OutQuotedLen, Delimiters);
+	}
+	else // legacy format requires that we support un-quoted and un-escaped property names
+	{
+		// find first delimiter
+		Str = FAsciiSet::FindFirstOrEnd(Start, Delimiters);
+		// check if delimiter was found...
+		if (*Str)
 		{
-			--Len;
+			// strip trailing whitespace
+			int32 Len = UE_PTRDIFF_TO_INT32(Str - Start);
+			while (Len > 0 && Whitespaces.Contains(Start[Len - 1]))
+			{
+				--Len;
+			}
+			PropertyName = FName(Len, Start);
 		}
-
-		const FName PropertyName(Len, Start);
+	}
+	
+	if (*Str && !PropertyName.IsNone())
+	{
 		FProperty* Property = FindFProperty<FProperty>(ObjectStruct, PropertyName);
 
 		if (Property == nullptr)

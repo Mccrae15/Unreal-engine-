@@ -8,11 +8,14 @@
 #include "HAL/LowLevelMemStats.h"
 #include "RenderingThread.h"
 #include "TextureResource.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "UnrealEngine.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/TextureCube.h"
+#include "RHIUtilities.h"
+
 #if WITH_EDITOR
 #include "Components/SceneCaptureComponentCube.h"
 #include "UObject/UObjectIterator.h"
@@ -247,7 +250,7 @@ UTextureCube* UTextureRenderTargetCube::ConstructTextureCube(
  * Called when the resource is initialized, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTargetCubeResource::InitDynamicRHI()
+void FTextureRenderTargetCubeResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
 
@@ -284,7 +287,7 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
 
 		if (EnumHasAnyFlags(TexCreateFlags, ETextureCreateFlags::UAV))
 		{
-			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(TextureRHI);
+			UnorderedAccessViewRHI = RHICmdList.CreateUnorderedAccessView(TextureRHI);
 		}
 
 		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, TextureRHI);
@@ -322,10 +325,10 @@ void FTextureRenderTargetCubeResource::InitDynamicRHI()
  * Called when the resource is released, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTargetCubeResource::ReleaseDynamicRHI()
+void FTextureRenderTargetCubeResource::ReleaseRHI()
 {
 	// release the FTexture RHI resources here as well
-	ReleaseRHI();
+	FTexture::ReleaseRHI();
 
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, nullptr);
 	RenderTargetTextureRHI.SafeRelease();

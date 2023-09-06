@@ -19,8 +19,7 @@ public:
 	virtual TSoftClassPtr<UObject> GetAssetClass() const override { return UChooserTable::StaticClass(); }
 	virtual TConstArrayView<FAssetCategoryPath> GetAssetCategories() const override
 	{
-		static const auto Categories = { FAssetCategoryPath(EAssetCategoryPaths::Animation, NSLOCTEXT("AssetTypeActions", "DataInterfacesSubMenu", "Data Interfaces")) };
-		
+		static const auto Categories = { FAssetCategoryPath(EAssetCategoryPaths::Misc) };
 		return Categories;
 	}
 	virtual EAssetCommandResult OpenAssets(const FAssetOpenArgs& OpenArgs) const override;

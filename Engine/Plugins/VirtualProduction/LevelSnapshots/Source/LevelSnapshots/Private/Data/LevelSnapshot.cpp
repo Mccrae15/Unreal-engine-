@@ -2,11 +2,11 @@
 
 #include "Data/LevelSnapshot.h"
 
-#include "Data/Util/ActorHashUtil.h"
-#include "Data/Util/EquivalenceUtil.h"
-#include "Data/Util/SnapshotUtil.h"
-#include "Data/Util/WorldData/ActorUtil.h"
-#include "Data/Util/WorldData/WorldDataUtil.h"
+#include "Data/Hashing/ActorHashUtil.h"
+#include "Data/Util/ClassDataUtil.h"
+#include "Data/Util/WorldDataUtil.h"
+#include "Filtering/Diffing/EquivalenceUtil.h"
+#include "Restoration/Actor/ActorUtil.h"
 #include "LevelSnapshotsSettings.h"
 #include "LevelSnapshotsLog.h"
 #include "LevelSnapshotsModule.h"
@@ -14,17 +14,15 @@
 #include "SnapshotCustomVersion.h"
 #include "SnapshotConsoleVariables.h"
 #include "Util/SortedScopedLog.h"
+#include "Util/SoftObjectPathUtil.h"
 
 #include "Algo/Accumulate.h"
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
-#include "Algo/IndexOf.h"
 #include "HAL/IConsoleManager.h"
 #include "GameFramework/Actor.h"
 #include "Misc/ScopeExit.h"
-#include "Stats/StatsMisc.h"
 #include "UObject/Package.h"
-#include "Util/WorldData/ClassDataUtil.h"
 #if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 #include "Logging/MessageLog.h"
 #endif
@@ -45,9 +43,19 @@ void ULevelSnapshot::ApplySnapshotToWorld(UWorld* TargetWorld, const FPropertySe
 	};
 	
 	EnsureWorldInitialised();
-	
+
+	using namespace UE::LevelSnapshots;
+	using namespace UE::LevelSnapshots::Private;
 	OnPreApplySnapshotDelegate.Broadcast();
-	UE::LevelSnapshots::Private::ApplyToWorld(SerializedData, Cache, TargetWorld, GetPackage(), SelectionSet);
+	ApplyToWorld(
+		SerializedData,
+		Cache,
+		TargetWorld,
+		GetPackage(),
+		SelectionSet,
+		[this, &SelectionSet](){ FLevelSnapshotsModule::GetInternalModuleInstance().OnPreApplySnapshot({FApplySnapshotSharedParams{ *this, SelectionSet }}); },
+		[this, &SelectionSet](){ FLevelSnapshotsModule::GetInternalModuleInstance().OnPostApplySnapshot({ FApplySnapshotSharedParams{ *this, SelectionSet }}); }
+		);
 	OnPostApplySnapshotDelegate.Broadcast();
 }
 
@@ -80,7 +88,7 @@ bool ULevelSnapshot::SnapshotWorld(UWorld* TargetWorld)
 	{
 		return false;
 	}
-	Module.OnPreTakeSnapshot().Broadcast({this});
+	Module.OnPreTakeSnapshot().Broadcast({ this, TargetWorld });
 
 	MapPath = TargetWorld;
 	CaptureTime = FDateTime::UtcNow();
@@ -91,7 +99,7 @@ bool ULevelSnapshot::SnapshotWorld(UWorld* TargetWorld)
 	Cache.InitFor(SerializedData);
 	// Should we delete preexisting actors from the snapshot world?
 
-	Module.OnPostTakeSnapshot().Broadcast({ this });
+	Module.OnPostTakeSnapshot().Broadcast({ this, TargetWorld });
 
 	return true;
 }

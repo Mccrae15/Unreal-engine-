@@ -32,6 +32,7 @@
 #include "RenderGraphUtils.h"
 #include "DynamicResolutionState.h"
 #include "Stats/StatsTrace.h"
+#include "RHIUtilities.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogClient, Log, All);
 
@@ -378,7 +379,7 @@ void FScreenshotRequest::CreateViewportScreenShotFilename(FString& InOutFilename
 
 	//default to using the path that is given
 	InOutFilename = TypeName;
-	if (!TypeName.Contains(TEXT("/")))
+	if (!TypeName.Contains(TEXT("/")) && !TypeName.Contains(TEXT("\\")))
 	{
 		InOutFilename = GetDefault<UEngine>()->GameScreenshotSaveDirectory.Path / TypeName;
 	}
@@ -1580,7 +1581,7 @@ void FViewport::HighResScreenshot()
 		{
 			GIsHighResScreenshot = true;
 		}
-		FCanvas Canvas(DummyViewport, NULL, ViewportClient->GetWorld(), ViewportClient->GetWorld()->FeatureLevel);
+		FCanvas Canvas(DummyViewport, NULL, ViewportClient->GetWorld(), ViewportClient->GetWorld()->GetFeatureLevel());
 		{
 			ViewportClient->Draw(DummyViewport, &Canvas);
 		}
@@ -1681,7 +1682,7 @@ void FViewport::EndRenderFrame(FRHICommandListImmediate& RHICmdList, bool bPrese
 
 	RHICmdList.EnqueueLambda([CurrentFrameCounter = GFrameCounterRenderThread](FRHICommandListImmediate& InRHICmdList)
 	{
-		GEngine->SetPresentLatencyMarkerStart(CurrentFrameCounter);
+		UEngine::SetPresentLatencyMarkerStart(CurrentFrameCounter);
 	});
 
 	{
@@ -1691,7 +1692,7 @@ void FViewport::EndRenderFrame(FRHICommandListImmediate& RHICmdList, bool bPrese
 
 	RHICmdList.EnqueueLambda([CurrentFrameCounter = GFrameCounterRenderThread](FRHICommandListImmediate& InRHICmdList)
 	{
-		GEngine->SetPresentLatencyMarkerEnd(CurrentFrameCounter);
+		UEngine::SetPresentLatencyMarkerEnd(CurrentFrameCounter);
 	});
 }
 
@@ -1831,6 +1832,7 @@ void FViewport::Draw( bool bShouldPresent /*= true */)
 							uint32 ThreadTime	= CurrentTime - Lastimestamp;
 							// add any stalls via sleep or fevent
 							GGameThreadTime		= (ThreadTime > GameThread.Waits) ? (ThreadTime - GameThread.Waits) : ThreadTime;
+							GGameThreadWaitTime = GameThread.Waits;
 						}
 						else
 						{
@@ -1844,7 +1846,7 @@ void FViewport::Draw( bool bShouldPresent /*= true */)
 				}
 
 				UWorld* ViewportWorld = ViewportClient->GetWorld();
-				FCanvas Canvas(this, nullptr, ViewportWorld, ViewportWorld ? ViewportWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel, FCanvas::CDM_DeferDrawing, ViewportClient->ShouldDPIScaleSceneCanvas() ? ViewportClient->GetDPIScale() : 1.0f);
+				FCanvas Canvas(this, nullptr, ViewportWorld, ViewportWorld ? ViewportWorld->GetFeatureLevel() : GMaxRHIFeatureLevel, FCanvas::CDM_DeferDrawing, ViewportClient->ShouldDPIScaleSceneCanvas() ? ViewportClient->GetDPIScale() : 1.0f);
 				Canvas.SetRenderTargetRect(FIntRect(0, 0, SizeX, SizeY));
 				{
 					ViewportClient->Draw(this, &Canvas);
@@ -1937,6 +1939,8 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 	// If the hit proxy map isn't up to date, render the viewport client's hit proxies to it.
 	else if (!bHitProxiesCached)
 	{
+		SCOPED_NAMED_EVENT(HitProxyMapGen, FColor::Red);
+		
 		RenderCaptureInterface::FScopedCapture RenderCapture(GHitProxyCaptureNextUpdate != 0, TEXT("Update Hit Proxies"));
 		GHitProxyCaptureNextUpdate = 0;
 
@@ -1983,6 +1987,7 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 	if (bFetchHitProxyBytes)
 	{
 		// Read the hit proxy map surface data back.
+		SCOPED_NAMED_EVENT(HitProxyReadback, FColor::Red);
 		FIntRect ViewportRect(0, 0, SizeX, SizeY);
 		struct FReadSurfaceContext
 		{
@@ -2275,42 +2280,19 @@ void FViewport::SetViewportClient( FViewportClient* InViewportClient )
 	ViewportClient = InViewportClient;
 }
 
-void FViewport::InitDynamicRHI()
+void FViewport::ReleaseRHI()
 {
-	UpdateRenderTargetSurfaceRHIToCurrentBackBuffer();
+	HitProxyMap.Release();
+	RenderTargetTextureRHI.SafeRelease();
+	ViewportRHI.SafeRelease();
+}
 
+void FViewport::InitRHI(FRHICommandListBase& RHICmdList)
+{
 	if(bRequiresHitProxyStorage)
 	{
 		// Initialize the hit proxy map.
 		HitProxyMap.Init(SizeX,SizeY);
-	}
-}
-
-void FViewport::ReleaseDynamicRHI()
-{
-	HitProxyMap.Release();
-	RenderTargetTextureRHI.SafeRelease();
-}
-
-void FViewport::ReleaseRHI()
-{
-	FlushRenderingCommands();
-	ViewportRHI.SafeRelease();
-}
-
-void FViewport::InitRHI()
-{
-	FlushRenderingCommands();
-	if(!IsValidRef(ViewportRHI))
-	{
-		ViewportRHI = RHICreateViewport(
-			GetWindow(),
-			SizeX,
-			SizeY,
-			IsFullscreen(),
-			EPixelFormat::PF_Unknown
-			);
-		UpdateRenderTargetSurfaceRHIToCurrentBackBuffer();
 	}
 }
 
@@ -2457,7 +2439,7 @@ ENGINE_API bool GetViewportScreenShot(FViewport* Viewport, TArray<FColor>& Bitma
 	// Read the contents of the viewport into an array.
 	if (Viewport->ReadPixels(Bitmap, FReadSurfaceDataFlags(), ViewRect))
 	{
-		check(Bitmap.Num() == ViewRect.Area() || (Bitmap.Num() == Viewport->GetSizeXY().X * Viewport->GetSizeXY().Y));
+		check(Bitmap.Num() == ViewRect.Area() || (Bitmap.Num() == Viewport->GetRenderTargetTextureSizeXY().X * Viewport->GetRenderTargetTextureSizeXY().Y));
 		return true;
 	}
 
@@ -2469,7 +2451,7 @@ ENGINE_API bool GetViewportScreenShotHDR(FViewport* Viewport, TArray<FLinearColo
 	// Read the contents of the viewport into an array.
 	if (Viewport->ReadLinearColorPixels(Bitmap, FReadSurfaceDataFlags(RCM_MinMax), ViewRect))
 	{
-		check(Bitmap.Num() == ViewRect.Area() || (Bitmap.Num() == Viewport->GetSizeXY().X * Viewport->GetSizeXY().Y));
+		check(Bitmap.Num() == ViewRect.Area() || (Bitmap.Num() == Viewport->GetRenderTargetTextureSizeXY().X * Viewport->GetRenderTargetTextureSizeXY().Y));
 		return true;
 	}
 
@@ -2658,7 +2640,7 @@ FDummyViewport::FDummyViewport(FViewportClient* InViewportClient)
 {
 	ViewportType = NAME_DummyViewport;
 	UWorld* CurWorld = (InViewportClient != NULL ? InViewportClient->GetWorld() : NULL);
-	DebugCanvas = new FCanvas(this, NULL, CurWorld, (CurWorld != NULL ? CurWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel));
+	DebugCanvas = new FCanvas(this, NULL, CurWorld, (CurWorld != NULL ? CurWorld->GetFeatureLevel() : GMaxRHIFeatureLevel));
 		
 	DebugCanvas->SetAllowedModes(0);
 }
@@ -2672,7 +2654,7 @@ FDummyViewport::~FDummyViewport()
 	}
 }
 
-void FDummyViewport::InitDynamicRHI()
+void FDummyViewport::InitRHI(FRHICommandListBase&)
 {
 	EPixelFormat DummyViewportFormat = bSceneHDREnabled ? GRHIHDRDisplayOutputFormat : PF_A2B10G10R10;
 	const FRHITextureCreateDesc Desc =

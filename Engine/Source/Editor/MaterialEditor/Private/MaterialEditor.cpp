@@ -294,7 +294,7 @@ int32 FMatExpressionPreview::CompilePropertyAndSetMaterialProperty(EMaterialProp
 		// Get back into gamma corrected space, as DrawTile does not do this adjustment.
 		Ret = Compiler->Power(Compiler->Max(PreviewCodeChunk, Compiler->Constant(0)), Compiler->Constant(1.f / 2.2f));
 	}
-	else if (Property == MP_WorldPositionOffset)
+	else if (Property == MP_WorldPositionOffset || Property == MP_Displacement)
 	{
 		//set to 0 to prevent off by 1 pixel errors
 		Ret = Compiler->Constant(0.0f);
@@ -311,11 +311,10 @@ int32 FMatExpressionPreview::CompilePropertyAndSetMaterialProperty(EMaterialProp
 	}
 	else if (Property == MP_FrontMaterial)
 	{
-		// Try to fetch the material interface to compile the front material.
-		UMaterial* ExprMat = Expression.IsValid() ? Expression->Material : nullptr;
-		FMaterialRenderProxy* MatProxy = ExprMat ? ExprMat->GetRenderProxy() : nullptr;
-		UMaterialInterface* MatInterface = MatProxy ? MatProxy->GetMaterialInterface() : nullptr;
-		return MatInterface ? MatInterface->CompileProperty(Compiler, MP_FrontMaterial) : Compiler->StrataCreateAndRegisterNullMaterial();
+		// No need to compile the front material: when previewing a node, the FrontMaterial is plugged into the emissive color.
+		// Then CompilePreview is called, and this is where we convert the strata material to a single color for preview.
+		// That single color is then scheduled to be output thanks to setting the compiler as SME_MaterialPreview. 
+		return Compiler->StrataCreateAndRegisterNullMaterial();
 	}
 	else
 	{
@@ -492,7 +491,7 @@ void FMaterialEditor::InitEditorForMaterial(UMaterial* InMaterial)
 	// Create a copy of the material for preview usage (duplicating to a different class than original!)
 	// Propagate all object flags except for RF_Standalone, otherwise the preview material won't GC once
 	// the material editor releases the reference.
-	Material = (UMaterial*)StaticDuplicateObject(OriginalMaterial, GetTransientPackage(), NAME_None, ~RF_Standalone, UPreviewMaterial::StaticClass()); 
+	Material = (UMaterial*)StaticDuplicateObject(OriginalMaterial, GetTransientPackage(), NAME_None, ~RF_Standalone, UPreviewMaterial::StaticClass());  
 	
 	Material->CancelOutstandingCompilation();	//The material is compiled later on anyway so no need to do it in Duplication/PostLoad. 
 												//I'm hackily canceling the jobs here but we should really not add the jobs in the first place. <<--- TODO
@@ -1240,7 +1239,7 @@ void FMaterialEditor::ExpandNode(UEdGraphNode* InNodeToExpand, UEdGraph* InSourc
 
 	const bool bIsCollapsedGraph = InNodeToExpand->IsA<UMaterialGraphNode_Composite>();
 
-	MoveNodesToGraph(SourceGraph->Nodes, DestinationGraph, OutExpandedNodes, &Entry, &Result, bIsCollapsedGraph);
+	MoveNodesToGraph(MutableView(SourceGraph->Nodes), DestinationGraph, OutExpandedNodes, &Entry, &Result, bIsCollapsedGraph);
 	CollapseGatewayNode(InNodeToExpand, Entry, Result, &OutExpandedNodes);
 
 	bool bPreviewExpressionDeleted = false;
@@ -1962,7 +1961,7 @@ void FMaterialEditor::GeneratePreviewMenuContent(UToolMenu* Menu)
 	FToolMenuSection& FeatureLevelSection = Menu->AddSection("MaterialEditorFeaturePreview", LOCTEXT("MaterialFeatureHeading", "Feature Level"));
 	{
 		FeatureLevelSection.AddMenuEntry(FMaterialEditorCommands::Get().FeatureLevel_All);
-		FeatureLevelSection.AddMenuEntry(FMaterialEditorCommands::Get().FeatureLevel_ES31);
+		FeatureLevelSection.AddMenuEntry(FMaterialEditorCommands::Get().FeatureLevel_Mobile);
 		FeatureLevelSection.AddMenuEntry(FMaterialEditorCommands::Get().FeatureLevel_SM5);
 		FeatureLevelSection.AddMenuEntry(FMaterialEditorCommands::Get().FeatureLevel_SM6);
 	}
@@ -2054,10 +2053,16 @@ void FMaterialEditor::SaveAssetAs_Execute()
 	}
 }
 
-bool FMaterialEditor::OnRequestClose()
+bool FMaterialEditor::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
 	DestroyColorPicker();
 
+	// If the asset has been deleted, we don't want to show the save changes prompt
+	if(InCloseReason == EAssetEditorCloseReason::AssetForceDeleted)
+	{
+		bMaterialDirty = false;
+	}
+	
 	if (bMaterialDirty)
 	{
 		// find out the user wants to do with this dirty material
@@ -2246,6 +2251,23 @@ void FMaterialEditor::DrawMaterialInfoStrings(
 				FLinearColor(1, 1, 0)
 			);
 			DrawPositionY += SpacingBetweenLines;
+		}
+
+		TStaticArray<uint16, (int)ELWCFunctionKind::Max> LWCFuncUsages = MaterialResource->GetEstimatedLWCFuncUsages();
+		for (int KindIndex = 0; KindIndex < (int)ELWCFunctionKind::Max; ++KindIndex)
+		{
+			int Usages = LWCFuncUsages[KindIndex];
+			if (LWCFuncUsages[KindIndex] > 0)
+			{
+				Canvas->DrawShadowedString(
+					5,
+					DrawPositionY,
+					*FString::Printf(TEXT("LWC %s usages (Est.): %u"), *UEnum::GetDisplayValueAsText((ELWCFunctionKind)KindIndex).ToString(), Usages),
+					FontToUse,
+					FLinearColor(1,1,0)
+				);
+				DrawPositionY += SpacingBetweenLines;
+			}
 		}
 
 		if (bGeneratedNewShaders)
@@ -2700,6 +2722,10 @@ bool FMaterialEditor::UpdateOriginalMaterial()
 		// A bit hacky, but disable material compilation in post load when we duplicate the material.
 		UMaterial::ForceNoCompilationInPostLoad(true);
 
+		// Now, the material has been loaded and serialized. PostLoad has been called and the asset has been converted and now it is up to date.
+		// Let's thus reset the linker (to the last version) to make sure PostLoad on the duplicated object is not doing any data conversion, squashing new properties with not properly initialized _DEPRECATED members (e.g. RefractionMode_DEPRECATED).
+		ResetLoaders(OriginalMaterial->GetPackage());
+
 		// overwrite the original material in place by constructing a new one with the same name
 		OriginalMaterial = (UMaterial*)StaticDuplicateObject( Material, OriginalMaterial->GetOuter(), OriginalMaterial->GetFName(), 
 			RF_AllFlags, 
@@ -3020,17 +3046,23 @@ void FMaterialEditor::UpdateMaterialinfoList_Old()
 					Messages.Add(Line);
 				}
 
+			TStaticArray<uint16, (int)ELWCFunctionKind::Max> LWCFuncUsages = MaterialResource->GetEstimatedLWCFuncUsages();
+			for (int KindIndex = 0; KindIndex < (int)ELWCFunctionKind::Max; ++KindIndex)
+			{
+				int Usages = LWCFuncUsages[KindIndex];
+				if (LWCFuncUsages[KindIndex] > 0)
+				{
+					FString Message = FString::Printf(TEXT("LWC %s usages (Est.): %u"), *UEnum::GetDisplayValueAsText((ELWCFunctionKind)KindIndex).ToString(), Usages);
+						
+					TempMaterialInfoList.Add(MakeShareable(new FMaterialInfo(Message, FLinearColor::Yellow)));
+					TSharedRef<FTokenizedMessage> Line = FTokenizedMessage::Create(EMessageSeverity::Info);
+					Line->AddToken(FTextToken::Create(FText::FromString(Message)));
+					Messages.Add(Line);
+				}
+			}
+
 				if (FMaterialShaderMap* ShaderMap = MaterialResource->GetGameThreadShaderMap())
 				{
-					const FString StrataMaterialDescription = ShaderMap->GetStrataMaterialDescription();
-
-					if (StrataMaterialDescription.Len())
-					{
-						TSharedRef<FTokenizedMessage> Line = FTokenizedMessage::Create(EMessageSeverity::Info);
-						Line->AddToken(FTextToken::Create(FText::FromString(StrataMaterialDescription)));
-						Messages.Add(Line);
-					}
-
 					// Add shader count
 					FString ShaderCountString = FString::Printf(TEXT("Shader Count: %u"), ShaderMap->GetShaderNum());
 					TSharedRef<FTokenizedMessage> ShaderCountLine = FTokenizedMessage::Create(EMessageSeverity::Info);
@@ -3466,7 +3498,7 @@ void FMaterialEditor::BindCommands()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &FMaterialEditor::IsFeaturePreviewChecked, ERHIFeatureLevel::Num));
 	ToolkitCommands->MapAction(
-		Commands.FeatureLevel_ES31,
+		Commands.FeatureLevel_Mobile,
 		FExecuteAction::CreateSP(this, &FMaterialEditor::SetFeaturePreview, ERHIFeatureLevel::ES3_1),
 		FCanExecuteAction::CreateSP(this, &FMaterialEditor::IsFeaturePreviewAvailable, ERHIFeatureLevel::ES3_1),
 		FIsActionChecked::CreateSP(this, &FMaterialEditor::IsFeaturePreviewChecked, ERHIFeatureLevel::ES3_1));
@@ -4022,6 +4054,22 @@ void FMaterialEditor::OnConvertObjects()
 							NewTextureExpr->CoordinatesDY = TextureSampleExpression->CoordinatesDY;
 							NewTextureExpr->MipValueMode = TextureSampleExpression->MipValueMode;
 							NewGraphNode->ReconstructNode();
+						}
+						else if (TextureObjectExpression && !TextureObjectParameterExpression)
+						{
+							bNeedsRefresh = true;
+							UMaterialExpressionTextureObjectParameter* NewTextureObjectParameterExpression = CastChecked<UMaterialExpressionTextureObjectParameter>(NewExpression);
+							NewTextureObjectParameterExpression->Texture = TextureObjectExpression->Texture;
+							NewTextureObjectParameterExpression->AutoSetSampleType();
+							NewTextureObjectParameterExpression->IsDefaultMeshpaintTexture = TextureObjectExpression->IsDefaultMeshpaintTexture;
+						}	
+						else if (TextureObjectParameterExpression && (!TextureObjectExpression || !TextureSampleExpression))
+						{
+							bNeedsRefresh = true;
+							UMaterialExpressionTextureObject* NewTextureObjectExpression = CastChecked<UMaterialExpressionTextureObject>(NewExpression);
+							NewTextureObjectExpression->Texture = TextureObjectParameterExpression->Texture;
+							NewTextureObjectExpression->AutoSetSampleType();
+							NewTextureObjectExpression->IsDefaultMeshpaintTexture = TextureObjectParameterExpression->IsDefaultMeshpaintTexture;
 						}
 						else if (RuntimeVirtualTextureSampleExpression)
 						{
@@ -4637,6 +4685,7 @@ UClass* FMaterialEditor::GetOnPromoteToParameterClass(const UEdGraphPin* TargetP
 			case MP_ShadingModel:
 			case MP_OpacityMask:
 			case MP_SurfaceThickness:
+			case MP_Displacement:
 				return UMaterialExpressionScalarParameter::StaticClass();
 
 			case MP_WorldPositionOffset:
@@ -4655,7 +4704,7 @@ UClass* FMaterialEditor::GetOnPromoteToParameterClass(const UEdGraphPin* TargetP
 	}
 	else if (OtherPinNode)
 	{
-		const TArray<FExpressionInput*> ExpressionInputs = OtherPinNode->MaterialExpression->GetInputs();
+		TArrayView<FExpressionInput*> ExpressionInputs = OtherPinNode->MaterialExpression->GetInputsView();
 		FName TargetPinName = OtherPinNode->GetShortenPinName(TargetPin->PinName);
 
 		for (int32 Index = 0; Index < ExpressionInputs.Num(); ++Index)
@@ -4790,7 +4839,7 @@ void FMaterialEditor::OnCreateStrataNodeForPin(const FToolMenuContext& InMenuCon
 	{
 		// Link manually
 		UMaterialGraphNode* NewNode = Cast<UMaterialGraphNode>(Action.PerformAction(GraphObj, nullptr, NewNodePos));
-		const TArray<FExpressionInput*> NewNodeExpressionInputs = NewNode->MaterialExpression->GetInputs();
+		TArrayView<FExpressionInput*> NewNodeExpressionInputs = NewNode->MaterialExpression->GetInputsView();
 
 		// From that direction, the node is never going to be a root node (a root node has no output we can connect from).
 		UMaterialGraphNode* TargetPinNode = Cast<UMaterialGraphNode>(TargetPin->GetOwningNode());
@@ -4829,7 +4878,7 @@ bool FMaterialEditor::OnCanCreateStrataNodeForPin(const FToolMenuContext& InMenu
 		}
 		else if (OtherPinNode)
 		{
-			const TArray<FExpressionInput*> ExpressionInputs = OtherPinNode->MaterialExpression->GetInputs();
+			TArrayView<FExpressionInput*> ExpressionInputs = OtherPinNode->MaterialExpression->GetInputsView();
 			FName TargetPinName = OtherPinNode->GetShortenPinName(TargetPin->PinName);
 
 			for (int32 Index = 0; Index < ExpressionInputs.Num(); ++Index)
@@ -4988,7 +5037,7 @@ void FMaterialEditor::SetNumericParameterDefaultOnDependentMaterials(EMaterialPa
 		MaterialsToOverride.Add(OriginalMaterial);
 	}
 
-	const ERHIFeatureLevel::Type FeatureLevel = GEditor->GetEditorWorldContext().World()->FeatureLevel;
+	const ERHIFeatureLevel::Type FeatureLevel = GEditor->GetEditorWorldContext().World()->GetFeatureLevel();
 
 	for (int32 MaterialIndex = 0; MaterialIndex < MaterialsToOverride.Num(); MaterialIndex++)
 	{
@@ -5032,7 +5081,7 @@ void FMaterialEditor::OnNumericParameterDefaultChanged(class UMaterialExpression
 void FMaterialEditor::OnParameterDefaultChanged()
 {
 	// Brute force all flush virtual textures if this material writes to any runtime virtual texture.
-	if (Material->GetCachedExpressionData().bHasRuntimeVirtualTextureOutput)
+	if (Material->WritesToRuntimeVirtualTexture())
 	{
 		ENQUEUE_RENDER_COMMAND(FlushVTCommand)([](FRHICommandListImmediate& RHICmdList)
 		{
@@ -5309,7 +5358,7 @@ UMaterialExpression* FMaterialEditor::CreateNewMaterialExpression(UClass* NewExp
 {
 	check( NewExpressionClass->IsChildOf(UMaterialExpression::StaticClass()) );
 	TSharedPtr<SGraphEditor> FocusedGraphEd = FocusedGraphEdPtr.Pin();
-	UMaterialGraph* ExpressionGraph = Graph ? CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph)) : Material->MaterialGraph; 
+	UMaterialGraph* ExpressionGraph = Graph ? ToRawPtr(CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph))) : ToRawPtr(Material->MaterialGraph); 
 	ExpressionGraph->Modify();
 
 	if (!IsAllowedExpressionType(NewExpressionClass, MaterialFunction != NULL))
@@ -5370,7 +5419,7 @@ UMaterialExpression* FMaterialEditor::CreateNewMaterialExpression(UClass* NewExp
 UMaterialExpressionComposite* FMaterialEditor::CreateNewMaterialExpressionComposite(const FVector2D& NodePos, const UEdGraph* Graph)
 {
 	TSharedPtr<SGraphEditor> FocusedGraphEd = FocusedGraphEdPtr.Pin();
-	UMaterialGraph* ExpressionGraph = Graph ? CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph)) : Material->MaterialGraph;
+	UMaterialGraph* ExpressionGraph = Graph ? ToRawPtr(CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph))) : ToRawPtr(Material->MaterialGraph);
 	ExpressionGraph->Modify();
 
 	UMaterialExpressionComposite* NewComposite = nullptr;
@@ -5431,7 +5480,7 @@ UMaterialExpressionComposite* FMaterialEditor::CreateNewMaterialExpressionCompos
 UMaterialExpressionComment* FMaterialEditor::CreateNewMaterialExpressionComment(const FVector2D& NodePos, const UEdGraph* Graph)
 {
 	TSharedPtr<SGraphEditor> FocusedGraphEd = FocusedGraphEdPtr.Pin();
-	UMaterialGraph* ExpressionGraph = Graph ? CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph)) : Material->MaterialGraph;
+	UMaterialGraph* ExpressionGraph = Graph ? ToRawPtr(CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph))) : ToRawPtr(Material->MaterialGraph);
 	ExpressionGraph->Modify();
 
 	UMaterialExpressionComment* NewComment = NULL;
@@ -5815,6 +5864,11 @@ void FMaterialEditor::PostPasteMaterialExpression(UMaterialExpression* NewExpres
 		// We just updated all our child expressions, reconstruct node.
 		Composite->GraphNode->ReconstructNode();
 	}
+	else
+	{
+		// Give new expression a different Guid from the old one after pasting
+		NewExpression->UpdateMaterialExpressionGuid(true, true);
+	}
 
 	// There can be only one default mesh paint texture.
 	UMaterialExpressionTextureBase* TextureSample = Cast<UMaterialExpressionTextureBase>(NewExpression);
@@ -5867,7 +5921,7 @@ void FMaterialEditor::PasteNodesHere(const FVector2D& Location, const class UEdG
 	Material->MaterialGraph->Modify();
 	Material->Modify();
 
-	UMaterialGraph* ExpressionGraph = Graph ? CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph)) : Material->MaterialGraph;
+	UMaterialGraph* ExpressionGraph = Graph ? ToRawPtr(CastChecked<UMaterialGraph>(const_cast<UEdGraph*>(Graph))) : ToRawPtr(Material->MaterialGraph);
 	ExpressionGraph->Modify();
 
 	// Clear the selection set (newly pasted stuff will be selected)
@@ -6008,6 +6062,26 @@ FText FMaterialEditor::GetOriginalObjectName() const
 	return FText::FromString(GetEditingObjects()[0]->GetName());
 }
 
+void FMaterialEditor::UpdateStrataTopologyPreview()
+{
+	if (Strata::IsStrataEnabled())
+	{
+		// Update all Strata node which have a preview.
+		for (int32 Index = 0; Index < Material->MaterialGraph->Nodes.Num(); ++Index)
+		{
+			UMaterialGraphNode* MaterialNode = Cast<UMaterialGraphNode>(Material->MaterialGraph->Nodes[Index]);
+			if (MaterialNode && MaterialNode->MaterialExpression && MaterialNode->MaterialExpression->IsA(UMaterialExpressionStrataBSDF::StaticClass()))
+			{
+				UEdGraph* Graph = MaterialNode->GetGraph();
+				if (Graph)
+				{
+					Graph->NotifyGraphChanged();
+				}
+			}
+		}
+	}
+}
+
 void FMaterialEditor::UpdateMaterialAfterGraphChange()
 {
 	FlushRenderingCommands();
@@ -6038,6 +6112,8 @@ void FMaterialEditor::UpdateMaterialAfterGraphChange()
 	}
 
 	Material->MaterialGraph->UpdatePinTypes();
+
+	UpdateStrataTopologyPreview();
 }
 
 void FMaterialEditor::JumpToHyperlink(const UObject* ObjectReference)
@@ -7006,7 +7082,28 @@ FGraphAppearanceInfo FMaterialEditor::GetGraphAppearance() const
 	}
 	else
 	{
-		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Material", "MATERIAL");
+		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText_Material", "MATERIAL"); 
+	}
+
+	if (Strata::IsStrataEnabled())
+	{
+		UMaterial* MaterialForStats = this->bStatsFromPreviewMaterial ? this->Material : this->OriginalMaterial;
+		const FMaterialResource* MaterialResource = MaterialForStats->GetMaterialResource(GMaxRHIFeatureLevel);
+		if (MaterialResource)
+		{
+			FString MaterialDescription;
+
+			FMaterialShaderMap* ShaderMap = MaterialResource->GetGameThreadShaderMap();
+			if (ShaderMap)
+			{
+				const FStrataMaterialCompilationOutput& CompilationOutput = ShaderMap->GetStrataMaterialCompilationOutput();
+				if (CompilationOutput.bMaterialOutOfBudgetHasBeenSimplified)
+				{
+					AppearanceInfo.WarningText = LOCTEXT("AppearanceWarningText_Material", "Substrate material was out of budget and has been simplified.");
+
+				}
+			}
+		}
 	}
 
 	return AppearanceInfo;
@@ -7403,8 +7500,13 @@ void FMaterialEditor::OnNodeTitleCommitted(const FText& NewText, ETextCommit::Ty
 {
 	if (NodeBeingChanged)
 	{
-		FString NewName = NewText.ToString();
-		if (NewName.Len() >= NAME_SIZE) {
+		FString NewName = NewText.ToString().TrimStartAndEnd();
+		if (NewName.IsEmpty())
+		{
+			// Ignore empty names
+			return;
+		}
+		else if (NewName.Len() >= NAME_SIZE) {
 			UE_LOG(LogMaterialEditor, Warning, TEXT("New material graph node name '%s...' exceeds maximum length of %d and thus was truncated."), *NewName.Left(8), NAME_SIZE - 1);
 			NewName = NewName.Left(NAME_SIZE - 1);
 		}
@@ -7474,6 +7576,9 @@ void FMaterialEditor::UpdateStatsMaterials()
 		EmptyMaterial->PreEditChange(NULL);
 		EmptyMaterial->PostEditChange();
 	}
+
+	// Also request to update the Substrate slab.
+	StrataWidget->UpdateFromMaterial();
 }
 
 void FMaterialEditor::NotifyExternalMaterialChange()

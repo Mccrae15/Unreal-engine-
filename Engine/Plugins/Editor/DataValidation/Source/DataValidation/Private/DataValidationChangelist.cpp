@@ -16,7 +16,7 @@
 
 #define LOCTEXT_NAMESPACE "DataValidationChangelist"
 
-void GatherDependencies(const FName& InPackageName, TSet<FName>& OutDependencies)
+void UDataValidationChangelist::GatherDependencies(const FName& InPackageName, TSet<FName>& OutDependencies)
 {
 	OutDependencies.Add(InPackageName);
 
@@ -34,7 +34,7 @@ void GatherDependencies(const FName& InPackageName, TSet<FName>& OutDependencies
 	}
 }
 
-FString GetPrettyPackageName(const FName& InPackageName)
+FString UDataValidationChangelist::GetPrettyPackageName(const FName& InPackageName)
 {
 	TArray<FAssetData> Assets;
 	USourceControlHelpers::GetAssetDataFromPackage(InPackageName.ToString(), Assets);
@@ -131,6 +131,13 @@ EDataValidationResult UDataValidationChangelist::IsDataValid(FDataValidationCont
 
 		// Check if file is in cache; if it's not in the cache, then it's not currently changed.
 		if (!ExternalDependencyFileState)
+		{
+			continue;
+		}
+
+		// Some kinds of package dependencies create false positives because they're not checked into source
+		// control as of this writing (1/23/2023). We just skip over them.
+		if (FPackageName::IsVersePackage(ExternalDependency.ToString()))
 		{
 			continue;
 		}

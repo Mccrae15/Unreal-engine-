@@ -2,14 +2,20 @@
 
 #pragma once
 
+#include "Containers/StaticArray.h"
 #include "MuR/Serialisation.h"
 
+#include "Misc/TVariant.h"
+#include "Math/Color.h"
 #include "Math/Quat.h"
 #include "Math/Vector.h"
+#include "Math/IntVector.h"
+#include "Math/Vector4.h"
 #include "Math/Transform.h"
 #include "MuR/Ptr.h"
 #include "MuR/RefCounted.h"
 #include "MuR/MutableMemory.h"
+#include "MuR/MutableMath.h"
 #include "MuR/Types.h"
 
 #include <string>
@@ -18,6 +24,7 @@
 namespace mu
 {
 	typedef std::string string;
+	
 
     //!
     class MUTABLERUNTIME_API InputMemoryStream : public InputStream
@@ -137,45 +144,98 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	template< typename T >
-	inline void operator<< ( OutputArchive& arch, const T& t )
-	{
-        t.Serialise( arch );
-	}
-
-	template< typename T >
-	inline void operator>> ( InputArchive& arch, T& t )
-	{
-        t.Unserialise( arch );
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-#define MUTABLE_DEFINE_POD_SERIALISABLE(T)								\
+#define MUTABLE_IMPLEMENT_POD_SERIALISABLE(T)							\
 		template<>														\
-		inline void operator<< <T>( OutputArchive& arch, const T& t )	\
+		void DLLEXPORT operator<< <T>( OutputArchive& arch, const T& t )			\
 		{																\
 			arch.GetPrivate()->m_pStream->Write( &t, sizeof(T) );		\
 		}																\
 																		\
 		template<>														\
-		inline void operator>> <T>( InputArchive& arch, T& t )			\
+		void DLLEXPORT operator>> <T>( InputArchive& arch, T& t )					\
 		{																\
 			arch.GetPrivate()->m_pStream->Read( &t, sizeof(T) );		\
+		}																\
+		
+
+#define MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(T)									     \
+	template<typename Alloc>                                                             \
+	void operator <<(OutputArchive& arch, const TArray<T, Alloc>& v)					 \
+	{                                                                                    \
+		uint32 Num = uint32(v.Num());													 \
+		arch << Num;																	 \
+		if (Num)																		 \
+		{                                                                                \
+			arch.GetPrivate()->m_pStream->Write(&v[0], Num * sizeof(T));				 \
+		}                                                                                \
+	}                                                                                    \
+	                                                                                     \
+	template<typename Alloc>                                                             \
+	void operator >>(InputArchive& arch, TArray<T, Alloc>& v)                            \
+	{                                                                                    \
+		uint32 Num;																		 \
+		arch >> Num;																	 \
+		v.SetNum(Num);																	 \
+		if (Num)																		 \
+		{                                                                                \
+			arch.GetPrivate()->m_pStream->Read(&v[0], Num * sizeof(T));					 \
+		}                                                                                \
+	}                                                                                    \
+
+	//---------------------------------------------------------------------------------------------
+	// TVariant custom serialize. Based on the default serialization.
+	//---------------------------------------------------------------------------------------------
+	template <typename... Ts>
+	void operator<<(OutputArchive& Ar, const TVariant<Ts...>& Variant)
+	{
+		const uint8 Index = static_cast<uint8>(Variant.GetIndex());
+		Ar << Index;
+		
+		Visit([&Ar](auto& StoredValue)
+		{
+			Ar << StoredValue;
+		}, Variant);
+	}
+
+
+	template <typename T, typename VariantType>
+	struct TVariantLoadFromInputArchiveCaller
+	{
+		/** Default construct the type and load it from the FArchive */
+		static void Load(InputArchive& Ar, VariantType& OutVariant)
+		{
+			OutVariant.template Emplace<T>();
+			Ar >> OutVariant.template Get<T>();
 		}
+	};
 
-	MUTABLE_DEFINE_POD_SERIALISABLE(float);
-	MUTABLE_DEFINE_POD_SERIALISABLE(double);
+	
+	template <typename... Ts>
+	struct TVariantLoadFromInputArchiveLookup
+	{
+		using VariantType = TVariant<Ts...>;
+		static_assert((std::is_default_constructible<Ts>::value && ...), "Each type in TVariant template parameter pack must be default constructible in order to use FArchive serialization");
 
-    MUTABLE_DEFINE_POD_SERIALISABLE( int8 );
-    MUTABLE_DEFINE_POD_SERIALISABLE( int16 );
-    MUTABLE_DEFINE_POD_SERIALISABLE( int32 );
-    MUTABLE_DEFINE_POD_SERIALISABLE( int64 );
+		/** Load the type at the specified index from the FArchive and emplace it into the TVariant */
+		static void Load(SIZE_T TypeIndex, InputArchive& Ar, VariantType& OutVariant)
+		{
+			static constexpr void(*Loaders[])(InputArchive&, VariantType&) = { &TVariantLoadFromInputArchiveCaller<Ts, VariantType>::Load... };
+			check(TypeIndex < UE_ARRAY_COUNT(Loaders));
+			Loaders[TypeIndex](Ar, OutVariant);
+		}
+	};
 
-    MUTABLE_DEFINE_POD_SERIALISABLE( uint8 );
-    MUTABLE_DEFINE_POD_SERIALISABLE( uint16 );
-    MUTABLE_DEFINE_POD_SERIALISABLE( uint32 );
-    MUTABLE_DEFINE_POD_SERIALISABLE( uint64 );
+	
+	template <typename... Ts>
+	void operator>>(InputArchive& Ar, TVariant<Ts...>& Variant)
+	{
+		uint8 Index;
+		Ar >> Index;
+		check(Index < sizeof...(Ts));
+
+		TVariantLoadFromInputArchiveLookup<Ts...>::Load(static_cast<SIZE_T>(Index), Ar, Variant);
+	}
+	
 
 	//---------------------------------------------------------------------------------------------
 	// Bool size is not a standard
@@ -197,22 +257,21 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-#define MUTABLE_DEFINE_ENUM_SERIALISABLE(T)								\
-		template<>														\
-        inline void operator<< <T>( OutputArchive& arch, const T& t )	\
-		{																\
-            auto v = (uint32)t;                                       \
-            arch.GetPrivate()->m_pStream->Write( &v, sizeof(uint32) );\
-		}																\
-																		\
-		template<>														\
-        inline void operator>> <T>( InputArchive& arch, T& t )          \
-		{																\
-            uint32 v;													\
-            arch.GetPrivate()->m_pStream->Read( &v, sizeof(uint32) );	\
-			t = (T)v;													\
-		}
-
+#define MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(T)								\
+		template<>															\
+        void DLLEXPORT operator<< <T>( OutputArchive& arch, const T& t )	\
+		{																	\
+            auto v = (uint32)t;                                         	\
+            arch.GetPrivate()->m_pStream->Write( &v, sizeof(uint32) );  	\
+		}																	\
+																			\
+		template<>															\
+        void DLLEXPORT operator>> <T>( InputArchive& arch, T& t )   		\
+		{																	\
+            uint32 v;														\
+            arch.GetPrivate()->m_pStream->Read( &v, sizeof(uint32) );		\
+			t = (T)v;														\
+		}																	\
 
     //---------------------------------------------------------------------------------------------
     template< typename T0, typename T1 >
@@ -229,30 +288,24 @@ namespace mu
         arch >> v.second;
     }
 
-
 	
 	//---------------------------------------------------------------------------------------------
-	template<typename T> inline void operator<<(OutputArchive& arch, const TArray<T>& v)
+	template<typename T, uint32 Size> void operator<<(OutputArchive& arch, const TStaticArray<T, Size>& v)
 	{
-		// TODO: Optimise for vectors of PODs
-		arch << (uint32)v.Num();
-		for (std::size_t i = 0; i < v.Num(); ++i)
+		for (uint32 i = 0; i < Size; ++i)
 		{
 			arch << v[i];
 		}
 	}
 
-	template<typename T> inline void operator>>(InputArchive& arch, TArray<T>& v)
+	template<typename T, uint32 Size> void operator>>(InputArchive& arch, TStaticArray<T, Size>& v)
 	{
-		// TODO: Optimise for vectors of PODs
-		uint32 size;
-		arch >> size;
-		v.SetNum(size);
-		for (std::size_t i = 0; i < size; ++i)
+		for (uint32 i = 0; i < Size; ++i)
 		{
 			arch >> v[i];
 		}
 	}
+	
 
 	//---------------------------------------------------------------------------------------------
 	template< typename K, typename T >
@@ -282,41 +335,41 @@ namespace mu
 		}
 	}
 
+	MUTABLE_DEFINE_POD_SERIALISABLE(vec2f);
+	MUTABLE_DEFINE_POD_SERIALISABLE(vec3f);
+	MUTABLE_DEFINE_POD_SERIALISABLE(mat3f);
+	MUTABLE_DEFINE_POD_SERIALISABLE(mat4f);
+	MUTABLE_DEFINE_POD_SERIALISABLE(vec2<int>);
 
-	//---------------------------------------------------------------------------------------------
-#define MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(T)										\
-	template<> inline void operator<<<T>(OutputArchive& arch, const TArray<T>& v)		\
-	{                                                                                   \
-		uint32 Num = uint32(v.Num());													\
-		arch << Num;																	\
-		if (Num)																		\
-		{                                                                               \
-			arch.GetPrivate()->m_pStream->Write(&v[0], Num * sizeof(T));				\
-		}                                                                               \
-	}                                                                                   \
-																						\
-	template<> inline void operator>><T>(InputArchive& arch, TArray<T>& v)				\
-	{                                                                                   \
-		uint32 Num;																		\
-		arch >> Num;																	\
-		v.SetNum(Num);																	\
-		if (Num)																		\
-		{                                                                               \
-			arch.GetPrivate()->m_pStream->Read(&v[0], Num * sizeof(T));					\
-		}                                                                               \
-	}
+	// Unreal POD Serializables
+	MUTABLE_DEFINE_POD_SERIALISABLE(FUintVector2);
+	MUTABLE_DEFINE_POD_SERIALISABLE(UE::Math::TIntVector2<uint16>);
+	MUTABLE_DEFINE_POD_SERIALISABLE(UE::Math::TIntVector2<int16>);
+	MUTABLE_DEFINE_POD_SERIALISABLE(FVector4f);
+	MUTABLE_DEFINE_POD_SERIALISABLE(UE::Math::TVector4<float>);
 
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(float)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(double)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint8)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint16)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint32)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(uint64)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int8)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int16)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int32)
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(int64)
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(float);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(double);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(uint8);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(uint16);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(uint32);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(uint64);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(int8);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(int16);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(int32);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(int64);
 
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(vec2f);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(vec3f);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(mat3f);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(mat4f);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(vec2<int>);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(TCHAR);
+
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(FUintVector2);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(UE::Math::TIntVector2<uint16>);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(UE::Math::TIntVector2<int16>);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(FVector4f);
 
 	//---------------------------------------------------------------------------------------------
 	template<>
@@ -496,6 +549,26 @@ namespace mu
 		arch >> Scale;
 
 		v.SetComponents(Rot, Trans, Scale);
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	template< typename T >
+	inline void operator<< (OutputArchive& arch, const UE::Math::TVector4<T>& v)
+	{
+		arch << v.X;
+		arch << v.Y;
+		arch << v.Z;
+		arch << v.W;
+	}
+
+	template< typename T >
+	inline void operator>> (InputArchive& arch, UE::Math::TVector4<T>& v)
+	{
+		arch >> v.X;
+		arch >> v.Y;
+		arch >> v.Z;
+		arch >> v.W;
 	}
 
 }

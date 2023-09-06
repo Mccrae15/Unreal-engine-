@@ -2,11 +2,13 @@ Availability: NoPublish
 Title: Build Configuration Properties Page
 Crumbs:
 Description: This is a procedurally generated markdown page.
-Version: 5.2
+Version: 5.3
 
 ### Read-Only Properties
 
 $ IsPlugin (Boolean): True if a Plugin contains this module
+
+$ Logger (ILogger): Accessor for the target logger
 
 $ HasPackageOverride (Boolean): Returns true if there has been an override type specified on this module
 
@@ -36,11 +38,11 @@ $ ShortName (String): Specifies an alternate name for intermediate directories a
 
 $ bTreatAsEngineModule (Boolean): Whether this module should be treated as an engine module (eg. using engine definitions, PCHs, compiled with optimizations enabled in DebugGame configurations, etc...). Initialized to a default based on the rules assembly it was created from.
 
-$ bDeterministic (Boolean): Set flags for determinstic compiles (experimental, may not be fully supported). Deterministic linking is controlled via TargetRules.
-
 $ bUseRTTI (Boolean): Use run time type information
 
-$ bUseAVX (Boolean): Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the platforms that support it. Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
+$ bCodeCoverage (Boolean): Enable code coverage compilation/linking support.
+
+$ MinCpuArchX64 (Nullable&lt;MinimumCpuArchitectureX64&gt;): Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the x64 platforms that support it. Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
 
 $ bEnableBufferSecurityChecks (Boolean): Enable buffer security checks.  This should usually be enabled as it prevents severe security risks.
 
@@ -49,6 +51,8 @@ $ bEnableExceptions (Boolean): Enable exception handling
 $ bEnableObjCExceptions (Boolean): Enable objective C exception handling
 
 $ bEnableObjCAutomaticReferenceCounting (Boolean): Enable objective C automatic reference counting (ARC) If you set this to true you should not use shared PCHs for this module. The engine won't be extensively using ARC in the short term Not doing this will result in a compile errors because shared PCHs were compiled with different flags than consumer
+
+$ bWarningsAsErrors (Boolean): Whether to enable all warnings as errors. UE enables most warnings as errors already, but disables a few (such as deprecation warnings).
 
 $ bEnableUndefinedIdentifierWarnings (Boolean): Enable warnings for using undefined identifiers in #if expressions
 
@@ -95,6 +99,8 @@ $ bPrecompile (Boolean): Whether this module should be precompiled. Defaults to 
 $ bUsePrecompiled (Boolean): Whether this module should use precompiled data. Always true for modules created from installed assemblies.
 
 $ bAllowConfidentialPlatformDefines (Boolean): Whether this module can use PLATFORM_XXXX style defines, where XXXX is a confidential platform name. This is used to ensure engine or other shared code does not reveal confidential information inside an #if PLATFORM_XXXX block. Licensee game code may want to allow for them, however.
+
+$ bAllowAutoRTFMInstrumentation (Boolean): Enables AutoRTFM instrumentation to this module only when AutoRTFMCompiler is enabled
 
 $ PublicIncludePathModuleNames (List&lt;String&gt;): List of modules names (no path needed) with header files that our module's public headers needs access to, but we don't need to "import" or link against.
 
@@ -164,9 +170,11 @@ $ VerseScope (VerseScope): Visibility of Verse code in this module's Source/Vers
 
 $ bValidateCircularDependencies (Boolean): Whether circular dependencies will be validated against the allow list Circular module dependencies result in slower builds. Disabling this option is strongly discouraged. This option is ignored for Engine modules which will always be validated against the allow list.
 
-$ CppStandard (CppStandardVersion): Which stanard to use for compiling this module
+$ CppStandard (Nullable&lt;CppStandardVersion&gt;): Which stanard to use for compiling this module
 
-$ CStandard (CStandardVersion): Which standard to use for compiling this module
+$ CStandard (Nullable&lt;CStandardVersion&gt;): Which standard to use for compiling this module
+
+$ GenerateHeaderFuncs (List&lt;Tuple&lt;String, Action&lt;ILogger, DirectoryReference&gt;&gt;&gt;): A list of subdirectory names and functions that are invoked to generate header files. The subdirectory name is appended to the generated code directory to form a new directory that headers are generated inside.
 
 $ ModuleSymbolVisibility (SymbolVisibility): Control visibility of symbols
 
@@ -176,15 +184,27 @@ $ OverridePackageType (PackageOverrideType): Overridden type of module that will
 
 $ OptimizeCode (CodeOptimization): When this module's code should be optimized.
 
+$ OptimizationLevel (OptimizationMode): Allows fine tuning optimization level for speed and\or code size. This requires a private PCH (or NoPCHs, which is not recommended)
+
 $ PCHUsage (PCHUsageMode): Precompiled header usage for this module
 
 $ DefaultBuildSettings (BuildSettingsVersion): Which engine version's build settings to use by default.
 
 $ IncludeOrderVersion (EngineIncludeOrderVersion): What version of include order to use when compiling this module. Can be overridden via -ForceIncludeOrder on the command line or in a module's rules.
 
+$ bUseAVX (Boolean): Obsolete: Direct the compiler to generate AVX instructions wherever SSE or AVX intrinsics are used, on the platforms that support it. Note that by enabling this you are changing the minspec for the PC platform, and the resultant executable will crash on machines without AVX support.
+
+$ DeterministicWarningLevel (WarningLevel): How to treat deterministic warnings (experimental).
+
 $ ShadowVariableWarningLevel (WarningLevel): How to treat shadow variable warnings
 
 $ UnsafeTypeCastWarningLevel (WarningLevel): How to treat unsafe implicit type cast warnings (e.g., double->float or int64->int32)
+
+$ ModuleIncludePathWarningLevel (WarningLevel): How to treat general module include path validation messages
+
+$ ModuleIncludePrivateWarningLevel (WarningLevel): How to treat private module include path validation messages, where a module is adding an include path that exposes private headers
+
+$ ModuleIncludeSubdirectoryWarningLevel (WarningLevel): How to treat unnecessary module sub-directory include path validation messages
 
 $ bUseUnity (Boolean): If unity builds are enabled this can be used to override if this specific module will build using Unity. This is set using the per module configurations in BuildConfiguration.
 

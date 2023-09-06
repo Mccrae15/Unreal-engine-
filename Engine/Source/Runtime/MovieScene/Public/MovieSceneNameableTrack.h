@@ -47,7 +47,7 @@ public:
 	 *
 	 * @return Whether this track can be renamed.
 	 */
-	MOVIESCENE_API virtual bool CanRename() const { return true; }
+	virtual bool CanRename() const { return true; }
 
 	/** 
 	 * Validate the new display name. 
@@ -64,6 +64,8 @@ public:
 	MOVIESCENE_API virtual FText GetDisplayName() const override;
 	MOVIESCENE_API virtual FText GetTrackRowDisplayName(int32 RowIndex) const override;
 	MOVIESCENE_API virtual FText GetDefaultDisplayName() const;
+
+	MOVIESCENE_API virtual void OnRowIndicesChanged(const TMap<int32, int32>& NewToOldRowIndices) override;
 
 private:
 

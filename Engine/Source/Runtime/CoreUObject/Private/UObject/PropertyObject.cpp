@@ -10,27 +10,6 @@
 #include "UObject/LinkerPlaceholderClass.h"
 #include "UObject/PropertyHelper.h"
 
-namespace UE::Core::Private
-{
-	// Dummy struct to satisfy [Get/Set]WrappedUObjectPtrValues_InContainer API requirements (Get() function)
-	struct FWrappedObjectPtr
-	{
-		UObject* Obj = nullptr;
-
-		FWrappedObjectPtr() = default;
-
-		FWrappedObjectPtr(UObject* InObj)
-			: Obj(InObj)
-		{
-		}
-
-		UObject* Get() const
-		{
-			return Obj;
-		}
-	};
-}
-
 /*-----------------------------------------------------------------------------
 	FObjectProperty.
 -----------------------------------------------------------------------------*/
@@ -58,7 +37,7 @@ FString FObjectProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 	return TEXT("OBJECT");
 }
 
-EConvertFromTypeResult FObjectProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FObjectProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults)
 {
 	static FName NAME_AssetObjectProperty = "AssetObjectProperty"; // old name of soft object property
 
@@ -71,7 +50,7 @@ EConvertFromTypeResult FObjectProperty::ConvertFromType(const FPropertyTag& Tag,
 		UObject* PreviousValueObj = nullptr;
 
 		// If we're async loading it's not safe to do a sync load because it may crash or fail to set the variable, so throw an error if it's not already in memory
-		if (IsInAsyncLoadingThread())
+		if (!IsInGameThread())
 		{
 			PreviousValueObj = PreviousValue.Get();
 
@@ -112,7 +91,7 @@ EConvertFromTypeResult FObjectProperty::ConvertFromType(const FPropertyTag& Tag,
 	return EConvertFromTypeResult::UseSerializeItem;
 }
 
-void FObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults ) const
+void FObjectProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 
@@ -123,7 +102,7 @@ void FObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value
 		Slot << (*ObjectPtr);
 
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING) 
-		if(!UnderlyingArchive.IsSaving())
+		if (!UnderlyingArchive.IsSaving())
 		{
 			CheckValidObject(ObjectPtr, *ObjectPtr);
 		}
@@ -131,38 +110,69 @@ void FObjectProperty::SerializeItem( FStructuredArchive::FSlot Slot, void* Value
 	}
 	else
 	{
-		UObject* ObjectValue = GetObjectPropertyValue(Value);
+		TObjectPtr<UObject> ObjectValuePtr = GetObjectPtrPropertyValue(Value);
+		check(ObjectValuePtr.IsResolved());
+		UObject* ObjectValue = UE::CoreUObject::Private::ReadObjectHandlePointerNoCheck(ObjectValuePtr.GetHandle());
+
 		Slot << ObjectValue;
 
-		UObject* CurrentValue = GetObjectPropertyValue(Value);
-		if (ObjectValue != CurrentValue)
+		TObjectPtr<UObject> CurrentValuePtr = GetObjectPtrPropertyValue(Value);
+		check(CurrentValuePtr.IsResolved());
+		UObject* CurrentValue = UE::CoreUObject::Private::ReadObjectHandlePointerNoCheck(CurrentValuePtr.GetHandle());
+
+		PostSerializeObjectItem(UnderlyingArchive, Value, CurrentValue, ObjectValue, EObjectPropertyOptions::None);
+	}
+}
+
+void FObjectProperty::PostSerializeObjectItem(FArchive& SerializingArchive, void* Value, UObject* CurrentValue, UObject* ObjectValue, EObjectPropertyOptions Options /*= EObjectPropertyOptions::None*/) const
+{
+	// Make sure non-nullable properties don't end up with null values
+	if (!(Options & EObjectPropertyOptions::AllowNullValuesOnNonNullableProperty) &&
+		!ObjectValue && HasAnyPropertyFlags(CPF_NonNullable) &&
+		!SerializingArchive.IsSerializingDefaults() && // null values when Serializing CDOs are allowed, they will be fixed up later
+		!SerializingArchive.IsSaving() && // Constructing new objects when saving may confuse package saving code (new import/export created after import/export collection pass)
+		!SerializingArchive.IsTransacting() && // Don't create new objects when loading from the transaction buffer
+		!SerializingArchive.IsCountingMemory())
+	{
+		UObject* DefaultValue = ConstructDefaultObjectValueIfNecessary(CurrentValue);
+
+		UE_LOG(LogProperty, Warning,
+			TEXT("Failed to serialize value for non-nullable property %s. Reference will be defaulted to %s."),
+			*GetFullName(),
+			*DefaultValue->GetFullName()
+		);
+
+		SetObjectPropertyValue(Value, DefaultValue);
+		ObjectValue = DefaultValue;
+	}
+
+	if (ObjectValue != CurrentValue)
+	{
+		SetObjectPropertyValue(Value, ObjectValue);
+
+#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+		if (ULinkerPlaceholderExportObject* PlaceholderVal = Cast<ULinkerPlaceholderExportObject>(ObjectValue))
 		{
-			SetObjectPropertyValue(Value, ObjectValue);
-
-	#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-			if (ULinkerPlaceholderExportObject* PlaceholderVal = Cast<ULinkerPlaceholderExportObject>(ObjectValue))
-			{
-				PlaceholderVal->AddReferencingPropertyValue(this, Value);
-			}
-			else if (ULinkerPlaceholderClass* PlaceholderClass = Cast<ULinkerPlaceholderClass>(ObjectValue))
-			{
-				PlaceholderClass->AddReferencingPropertyValue(this, Value);
-			}
-			// NOTE: we don't remove this from CurrentValue if it is a 
-			//       ULinkerPlaceholderExportObject; this is because this property 
-			//       could be an array inner, and another member of that array (also 
-			//       referenced through this property)... if this becomes a problem,
-			//       then we could inc/decrement a ref count per referencing property 
-			//
-			// @TODO: if this becomes problematic (because ObjectValue doesn't match 
-			//        this property's PropertyClass), then we could spawn another
-			//        placeholder object (of PropertyClass's type), or use null; but
-			//        we'd have to modify ULinkerPlaceholderExportObject::ReplaceReferencingObjectValues()
-			//        to accommodate this (as it depends on finding itself as the set value)
-	#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-
-			CheckValidObject(Value, CurrentValue);
+			PlaceholderVal->AddReferencingPropertyValue(this, Value);
 		}
+		else if (ULinkerPlaceholderClass* PlaceholderClass = Cast<ULinkerPlaceholderClass>(ObjectValue))
+		{
+			PlaceholderClass->AddReferencingPropertyValue(this, Value);
+		}
+		// NOTE: we don't remove this from CurrentValue if it is a 
+		//       ULinkerPlaceholderExportObject; this is because this property 
+		//       could be an array inner, and another member of that array (also 
+		//       referenced through this property)... if this becomes a problem,
+		//       then we could inc/decrement a ref count per referencing property 
+		//
+		// @TODO: if this becomes problematic (because ObjectValue doesn't match 
+		//        this property's PropertyClass), then we could spawn another
+		//        placeholder object (of PropertyClass's type), or use null; but
+		//        we'd have to modify ULinkerPlaceholderExportObject::ReplaceReferencingObjectValues()
+		//        to accommodate this (as it depends on finding itself as the set value)
+#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+
+		CheckValidObject(Value, CurrentValue);
 	}
 }
 
@@ -172,7 +182,7 @@ const TCHAR* FObjectProperty::ImportText_Internal(const TCHAR* Buffer, void* Con
 	if (Result)
 	{
 		void* Data = PointerToValuePtr(ContainerOrPropertyPtr, PropertyPointerType);
-		UObject* ObjectValue = GetObjectPropertyValue(Data);
+		TObjectPtr<UObject> ObjectValue = GetObjectPtrPropertyValue(Data);
 		CheckValidObject(Data, ObjectValue);
 
 #if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING		
@@ -214,8 +224,20 @@ UObject* FObjectProperty::GetObjectPropertyValue(const void* PropertyValueAddres
 UObject* FObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
 	UObject* Result = nullptr;
-	GetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	GetWrappedUObjectPtrValues<FObjectPtr>(&Result, ContainerAddress, EPropertyMemoryAccess::InContainer, ArrayIndex, 1);
 	return Result;
+}
+
+void FObjectProperty::SetObjectPtrPropertyValue(void* PropertyValueAddress, TObjectPtr<UObject> Value) const
+{
+	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
+	{
+		SetPropertyValue(PropertyValueAddress, Value);
+	}
+	else
+	{
+		UE_LOG(LogProperty, Verbose /*Warning*/, TEXT("Trying to assign null object value to non-nullable \"%s\""), *GetFullName());
+	}
 }
 
 void FObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
@@ -234,7 +256,7 @@ void FObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress,
 {
 	if (Value || !HasAnyPropertyFlags(CPF_NonNullable))
 	{
-		SetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
+		SetWrappedUObjectPtrValues<FObjectPtr>(ContainerAddress, EPropertyMemoryAccess::InContainer, &Value, ArrayIndex, 1);
 	}
 	else
 	{
@@ -242,12 +264,32 @@ void FObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress,
 	}
 }
 
+void FObjectProperty::CopySingleValueToScriptVM(void* Dest, const void* Src) const
+{
+	*(UObject**)Dest = ((const FObjectPtr*)Src)->Get();
+}
+
+void FObjectProperty::CopySingleValueFromScriptVM(void* Dest, const void* Src) const
+{
+	*(FObjectPtr*)Dest = *(UObject**)Src;
+}
+
+void FObjectProperty::CopyCompleteValueToScriptVM(void* Dest, const void* Src) const
+{
+	GetWrappedUObjectPtrValues<FObjectPtr>((UObject**)Dest, Src, EPropertyMemoryAccess::Direct, 0, ArrayDim);
+}
+
+void FObjectProperty::CopyCompleteValueFromScriptVM(void* Dest, const void* Src) const
+{
+	SetWrappedUObjectPtrValues<FObjectPtr>(Dest, EPropertyMemoryAccess::Direct, (UObject**)Src, 0, ArrayDim);
+}
+
 void FObjectProperty::CopyCompleteValueToScriptVM_InContainer(void* OutValue, void const* InContainer) const
 {
-	GetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>((UObject**)OutValue, InContainer, 0, ArrayDim);
+	GetWrappedUObjectPtrValues<FObjectPtr>((UObject**)OutValue, InContainer, EPropertyMemoryAccess::InContainer, 0, ArrayDim);
 }
 
 void FObjectProperty::CopyCompleteValueFromScriptVM_InContainer(void* OutContainer, void const* InValue) const
 {
-	SetWrappedUObjectPtrValues_InContainer<UE::Core::Private::FWrappedObjectPtr>(OutContainer, (UObject**)InValue, 0, ArrayDim);
+	SetWrappedUObjectPtrValues<FObjectPtr>(OutContainer, EPropertyMemoryAccess::InContainer, (UObject**)InValue, 0, ArrayDim);
 }

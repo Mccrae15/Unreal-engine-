@@ -20,6 +20,8 @@
 	#include "ImageUtils.h"
 	#include "Tests/AutomationCommon.h"
 	#include "UnrealClient.h"
+	#include "RHIFeatureLevel.h"
+	#include "RHIStrings.h"
 #endif
 
 #if WITH_EDITOR
@@ -486,16 +488,49 @@ void FAutomationWorkerModule::HandleScreenShotAndTraceCapturedWithName(const TAr
 }
 #endif
 
-FString GetRHIForAutomation()
+TSet<FName> GetRHIForAutomation()
 {
-	// Remove any extra information in () from RHI string
 	FString RHI = FApp::GetGraphicsRHI();
-	int Pos;
-	if (RHI.FindChar(*TEXT("("), Pos))
+#if WITH_ENGINE
+	FString FeatureLevel = LexToString(GMaxRHIFeatureLevel);
+#else
+	FString FeatureLevel = TEXT("N/A");
+#endif
+
+	if (RHI.IsEmpty())
 	{
-		RHI = RHI.Left(Pos).TrimEnd();
+		RHI = FParse::Param(FCommandLine::Get(), TEXT("nullrhi"))? LexToString(ETEST_RHI_Options::Null) : TEXT("N/A");
 	}
-	return RHI;
+	else
+	{
+		// Remove any extra information in () from RHI string
+		int Pos;
+		if (RHI.FindChar(*TEXT("("), Pos))
+		{
+			RHI = RHI.Left(Pos).TrimEnd();
+		}
+	}
+
+	return TSet<FName> {FName(RHI), FName(FeatureLevel)};
+}
+
+bool FAutomationWorkerModule::IsTestExcluded(const FString& InTestToRun, FString* OutReason, bool* OutWarn) const
+{
+	FName SkipReason;
+	UAutomationTestExcludelist* Excludelist = UAutomationTestExcludelist::Get();
+	static const TSet<FName> RHI = GetRHIForAutomation();
+	if (Excludelist->IsTestExcluded(InTestToRun, RHI, &SkipReason, OutWarn))
+	{
+		if (OutReason)
+		{
+			(*OutReason) = (SkipReason.IsNone() ? TEXT("unknown reason") : SkipReason.ToString());
+			(*OutReason) += TEXT(" [config]");
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunTests& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context )
@@ -529,14 +564,15 @@ void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunT
 	}
 
 	// Do we need to skip the test
-	FName SkipReason;
+	FString SkipReason;
 	bool bWarn(false);
-	UAutomationTestExcludelist* Excludelist = UAutomationTestExcludelist::Get();
-	static FString RHI = GetRHIForAutomation();
-	if (Excludelist->IsTestExcluded(Message.FullTestPath, RHI, &SkipReason, &bWarn))
+	FAutomationTestFramework& AutomationTestFramework = FAutomationTestFramework::Get();
+	if (!AutomationTestFramework.CanRunTestInEnvironment(Message.TestName, &SkipReason, &bWarn)
+		|| IsTestExcluded(Message.FullTestPath, &SkipReason, &bWarn))
 	{
 		FString SkippingMessage = FString::Format(TEXT("Test Skipped. Name={{0}} Reason={{1}} Path={{2}}"),
-			{ *Message.BeautifiedTestName, *SkipReason.ToString(), *Message.FullTestPath });
+			{ *Message.BeautifiedTestName, *SkipReason, *Message.FullTestPath });
+
 		if (bWarn)
 		{
 			UE_LOG(LogAutomationWorker, Warning, TEXT("%s"), *SkippingMessage);
@@ -550,7 +586,7 @@ void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunT
 		OutMessage->TestName = Message.TestName;
 		OutMessage->ExecutionCount = Message.ExecutionCount;
 		OutMessage->State = EAutomationState::Skipped;
-		OutMessage->Entries.Add(FAutomationExecutionEntry(FAutomationEvent(EAutomationEventType::Info, FString::Printf(TEXT("Skipping test because of exclude list: %s"), *SkipReason.ToString()))));
+		OutMessage->Entries.Add(FAutomationExecutionEntry(FAutomationEvent(EAutomationEventType::Info, FString::Printf(TEXT("Skipping test: %s"), *SkipReason))));
 		MessageEndpoint->Send(OutMessage, Context->GetSender());
 
 		return;

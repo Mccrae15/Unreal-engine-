@@ -1,16 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceCurveBase.h"
-#include "Curves/CurveVector.h"
 #include "Engine/Texture2D.h"
 #include "Internationalization/Internationalization.h"
-#include "ShaderParameterUtils.h"
 
+#include "NiagaraCompileHashVisitor.h"
+#include "NiagaraConstants.h"
 #include "NiagaraCustomVersion.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraRenderer.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraStats.h"
 #include "NiagaraSystemStaticBuffers.h"
 #include "NiagaraTypes.h"
 
@@ -45,6 +45,142 @@ END_SHADER_PARAMETER_STRUCT()
 
 static const TCHAR* NDICurve_TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceCurveTemplate.ush");
 
+namespace NiagaraDataInterfaceCurveBaseImpl
+{
+
+static bool PassesErrorThreshold(TConstArrayView<float> ShaderLUT, TConstArrayView<float> ResampledLUT, int32 NumElements, float ErrorThreshold)
+{
+	const int32 CurrNumSamples = ShaderLUT.Num() / NumElements;
+	const int32 NewNumSamples = ResampledLUT.Num() / NumElements;
+
+	for (int iSample = 0; iSample < CurrNumSamples; ++iSample)
+	{
+		const float NormalizedSampleTime = float(iSample) / float(CurrNumSamples - 1);
+
+		const float LhsInterp = FMath::Frac(NormalizedSampleTime * CurrNumSamples);
+		const int LhsSampleA = FMath::Min(FMath::FloorToInt(NormalizedSampleTime * CurrNumSamples), CurrNumSamples - 1);
+		const int LhsSampleB = FMath::Min(LhsSampleA + 1, CurrNumSamples - 1);
+
+		const float RhsInterp = FMath::Frac(NormalizedSampleTime * NewNumSamples);
+		const int RhsSampleA = FMath::Min(FMath::FloorToInt(NormalizedSampleTime * NewNumSamples), NewNumSamples - 1);
+		const int RhsSampleB = FMath::Min(RhsSampleA + 1, NewNumSamples - 1);
+
+		for (int iElement = 0; iElement < NumElements; ++iElement)
+		{
+			const float LhsValue = FMath::Lerp(ShaderLUT[LhsSampleA * NumElements + iElement], ShaderLUT[LhsSampleB * NumElements + iElement], LhsInterp);
+			const float RhsValue = FMath::Lerp(ResampledLUT[RhsSampleA * NumElements + iElement], ResampledLUT[RhsSampleB * NumElements + iElement], RhsInterp);
+			const float Error = FMath::Abs(LhsValue - RhsValue);
+			if (Error > ErrorThreshold)
+			{
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+template<int32 ElementStride>
+static bool PassesErrorThresholdVectorized(TConstArrayView<float> ShaderLUT, TConstArrayView<float> ResampledLUT, float ErrorThreshold)
+{
+	const int32 CurrNumSamples = ShaderLUT.Num() / ElementStride;
+	const int32 NewNumSamples = ResampledLUT.Num() / ElementStride;
+
+	const float* ShaderLUTData = ShaderLUT.GetData();
+	const float* ResampledLUTData = ResampledLUT.GetData();
+
+	const VectorRegister4Float Threshold = VectorSetFloat1(ErrorThreshold);
+
+	for (int iSample = 0; iSample < CurrNumSamples; ++iSample)
+	{
+		const float NormalizedSampleTime = float(iSample) / float(CurrNumSamples - 1);
+
+		const int LhsSampleA = FMath::Min(FMath::FloorToInt(NormalizedSampleTime * CurrNumSamples), CurrNumSamples - 1);
+		const int LhsSampleB = FMath::Min(LhsSampleA + 1, CurrNumSamples - 1);
+
+		const int RhsSampleA = FMath::Min(FMath::FloorToInt(NormalizedSampleTime * NewNumSamples), NewNumSamples - 1);
+		const int RhsSampleB = FMath::Min(RhsSampleA + 1, NewNumSamples - 1);
+
+		VectorRegister4Float LhsInterp = VectorSetFloat1(NormalizedSampleTime * CurrNumSamples);
+		LhsInterp = VectorSubtract(LhsInterp, VectorTruncate(LhsInterp));
+
+		VectorRegister4Float RhsInterp = VectorSetFloat1(NormalizedSampleTime * NewNumSamples);
+		RhsInterp = VectorSubtract(RhsInterp, VectorTruncate(RhsInterp));
+
+		VectorRegister4Float LhsValue = VectorLerp(VectorLoad(ShaderLUTData + LhsSampleA * ElementStride), VectorLoad(ShaderLUTData + LhsSampleB * ElementStride), LhsInterp);
+		VectorRegister4Float RhsValue = VectorLerp(VectorLoad(ResampledLUTData + RhsSampleA * ElementStride), VectorLoad(ResampledLUTData + RhsSampleB * ElementStride), RhsInterp);
+		VectorRegister4Float Error = VectorAbs(VectorSubtract(LhsValue, RhsValue));
+		if (VectorAnyGreaterThan(Error, Threshold))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+}; // NiagaraDataInterfaceCurveBaseImpl
+
+/** Base class for curve data proxy data. */
+struct FNiagaraDataInterfaceProxyCurveBase : public FNiagaraDataInterfaceProxy
+{
+	virtual ~FNiagaraDataInterfaceProxyCurveBase()
+	{
+		check(IsInRenderingThread());
+		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, CurveLUT.NumBytes);
+		CurveLUT.Release();
+	}
+
+	float LUTMinTime = 0.0f;
+	float LUTMaxTime = 0.0f;
+	float LUTInvTimeRange = 0.0f;
+	uint32 CurveLUTNumMinusOne = 0;
+	uint32 LUTOffset = INDEX_NONE;
+	FReadBuffer CurveLUT;
+
+	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
+	{
+		return 0;
+	}
+
+	// @todo REMOVEME
+	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override { check(false); }
+};
+
+UNiagaraDataInterfaceCurveBase::UNiagaraDataInterfaceCurveBase()
+	: LUTMinTime(0.0f)
+	, LUTMaxTime(1.0f)
+	, LUTInvTimeRange(1.0f)
+	, bUseLUT(true)
+	, bExposeCurve(false)
+#if WITH_EDITORONLY_DATA
+	, bOptimizeLUT(true)
+	, bOverrideOptimizeThreshold(false)
+	, HasEditorData(true)
+	, OptimizeThreshold(DefaultOptimizeThreshold)
+#endif
+	, ExposedName(TEXT("Curve"))
+{
+	Proxy.Reset(new FNiagaraDataInterfaceProxyCurveBase());
+}
+
+UNiagaraDataInterfaceCurveBase::UNiagaraDataInterfaceCurveBase(FObjectInitializer const& ObjectInitializer)
+	: LUTMinTime(0.0f)
+	, LUTMaxTime(1.0f)
+	, LUTInvTimeRange(1.0f)
+	, bUseLUT(true)
+	, bExposeCurve(false)
+#if WITH_EDITORONLY_DATA
+	, bOptimizeLUT(true)
+	, bOverrideOptimizeThreshold(false)
+	, HasEditorData(true)
+	, OptimizeThreshold(DefaultOptimizeThreshold)
+#endif
+	, ExposedName(TEXT("Curve"))
+{
+	Proxy.Reset(new FNiagaraDataInterfaceProxyCurveBase());
+}
+
 void UNiagaraDataInterfaceCurveBase::PostLoad()
 {
 	Super::PostLoad();
@@ -54,7 +190,7 @@ void UNiagaraDataInterfaceCurveBase::PostLoad()
 	{
 		const int32 NiagaraVer = GetLinkerCustomVersion(FNiagaraCustomVersion::GUID);
 
-		if (NiagaraVer < FNiagaraCustomVersion::LatestVersion)
+		if (NiagaraVer < FNiagaraCustomVersion::CurveLUTRegen)
 		{
 			UpdateLUT();
 		}
@@ -72,8 +208,10 @@ void UNiagaraDataInterfaceCurveBase::Serialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 		HasEditorData = !Ar.IsFilterEditorOnly();
 		// Sometimes curves are out of date which needs to be tracked down
-		// Temporarily we will make sure they are up to date in editor builds
-		if (HasEditorData && GetClass() != UNiagaraDataInterfaceCurveBase::StaticClass())
+		// Temporarily we will make sure they are up to date in editor builds,
+		// but not for cooked editor packages since they're already up to date,
+		// and the curve data is not valid at this point.
+		if (HasEditorData && Ar.IsLoadingFromCookedPackage() == false && GetClass() != UNiagaraDataInterfaceCurveBase::StaticClass())
 		{
 			UpdateLUT(true);
 		}
@@ -91,6 +229,10 @@ void UNiagaraDataInterfaceCurveBase::PostEditChangeProperty(struct FPropertyChan
 	{
 		UpdateExposedTexture();
 	}
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UNiagaraDataInterfaceCurveBase, CurveAsset))
+	{
+		UpdateLUT();
+	}
 }
 #endif
 
@@ -106,6 +248,7 @@ bool UNiagaraDataInterfaceCurveBase::CopyToInternal(UNiagaraDataInterface* Desti
 	DestinationTyped->ShaderLUT = ShaderLUT;
 	DestinationTyped->LUTNumSamplesMinusOne = LUTNumSamplesMinusOne;
 #if WITH_EDITORONLY_DATA
+	DestinationTyped->CurveAsset = CurveAsset;
 	DestinationTyped->bOptimizeLUT = bOptimizeLUT;
 	DestinationTyped->bOverrideOptimizeThreshold = bOverrideOptimizeThreshold;
 	DestinationTyped->OptimizeThreshold = OptimizeThreshold;
@@ -151,6 +294,7 @@ void UNiagaraDataInterfaceCurveBase::SetDefaultLUT()
 #if WITH_EDITORONLY_DATA
 void UNiagaraDataInterfaceCurveBase::UpdateLUT(bool bFromSerialize)
 {
+	SyncCurvesToAsset();
 	UpdateTimeRanges();
 	if (bUseLUT)
 	{
@@ -192,45 +336,30 @@ void UNiagaraDataInterfaceCurveBase::OptimizeLUT()
 
 	const int CurrNumSamples = ShaderLUT.Num() / NumElements;
 
-	for (int32 NewNumSamples = 1; NewNumSamples < CurrNumSamples; ++NewNumSamples)
+	if (NumElements == 4)
 	{
-		TArray<float> ResampledLUT = BuildLUT(NewNumSamples);
-
-		bool bCanUseLUT = true;
-		for (int iSample = 0; iSample < CurrNumSamples; ++iSample)
+		for (int32 NewNumSamples = 1; NewNumSamples < CurrNumSamples; ++NewNumSamples)
 		{
-			const float NormalizedSampleTime = float(iSample) / float(CurrNumSamples - 1);
+			TArray<float> ResampledLUT = BuildLUT(NewNumSamples);
 
-			const float LhsInterp = FMath::Frac(NormalizedSampleTime * CurrNumSamples);
-			const int LhsSampleA = FMath::Min(FMath::FloorToInt(NormalizedSampleTime * CurrNumSamples), CurrNumSamples - 1);
-			const int LhsSampleB = FMath::Min(LhsSampleA + 1, CurrNumSamples - 1);
-
-			const float RhsInterp = FMath::Frac(NormalizedSampleTime * NewNumSamples);
-			const int RhsSampleA = FMath::Min(FMath::FloorToInt(NormalizedSampleTime * NewNumSamples), NewNumSamples - 1);
-			const int RhsSampleB = FMath::Min(RhsSampleA + 1, NewNumSamples - 1);
-
-			for (int iElement = 0; iElement < NumElements; ++iElement)
+			if (NiagaraDataInterfaceCurveBaseImpl::PassesErrorThresholdVectorized<4>(ShaderLUT, ResampledLUT, ErrorThreshold))
 			{
-				const float LhsValue = FMath::Lerp(ShaderLUT[LhsSampleA * NumElements + iElement], ShaderLUT[LhsSampleB * NumElements + iElement], LhsInterp);
-				const float RhsValue = FMath::Lerp(ResampledLUT[RhsSampleA * NumElements + iElement], ResampledLUT[RhsSampleB * NumElements + iElement], RhsInterp);
-				const float Error = FMath::Abs(LhsValue - RhsValue);
-				if (Error > ErrorThreshold)
-				{
-					bCanUseLUT = false;
-					break;
-				}
-			}
-
-			if (!bCanUseLUT)
-			{
+				ShaderLUT = MoveTemp(ResampledLUT);
 				break;
 			}
 		}
-
-		if (bCanUseLUT)
+	}
+	else
+	{
+		for (int32 NewNumSamples = 1; NewNumSamples < CurrNumSamples; ++NewNumSamples)
 		{
-			ShaderLUT = ResampledLUT;
-			break;
+			TArray<float> ResampledLUT = BuildLUT(NewNumSamples);
+
+			if (NiagaraDataInterfaceCurveBaseImpl::PassesErrorThreshold(ShaderLUT, ResampledLUT, NumElements, ErrorThreshold))
+			{
+				ShaderLUT = MoveTemp(ResampledLUT);
+				break;
+			}
 		}
 	}
 }
@@ -291,6 +420,7 @@ bool UNiagaraDataInterfaceCurveBase::Equals(const UNiagaraDataInterface* Other) 
 	const UNiagaraDataInterfaceCurveBase* OtherTyped = CastChecked<UNiagaraDataInterfaceCurveBase>(Other);
 	bool bEqual = OtherTyped->bUseLUT == bUseLUT;
 #if WITH_EDITORONLY_DATA
+	bEqual &= OtherTyped->CurveAsset == CurveAsset;
 	bEqual &= OtherTyped->bOptimizeLUT == bOptimizeLUT;
 	bEqual &= OtherTyped->bOverrideOptimizeThreshold == bOverrideOptimizeThreshold;
 	if (bOverrideOptimizeThreshold)
@@ -308,20 +438,14 @@ bool UNiagaraDataInterfaceCurveBase::Equals(const UNiagaraDataInterface* Other) 
 	return bEqual;
 }
 
-void UNiagaraDataInterfaceCurveBase::CacheStaticBuffers(struct FNiagaraSystemStaticBuffers& StaticBuffers, const struct FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo, bool bUsedByCPU, bool bUsedByGPU)
+void UNiagaraDataInterfaceCurveBase::CacheStaticBuffers(struct FNiagaraSystemStaticBuffers& StaticBuffers, const FNiagaraVariable& ResolvedVariable, bool bUsedByCPU, bool bUsedByGPU)
 {
-	const uint32 PrevLUTOffset = LUTOffset;
-
 	LUTOffset = INDEX_NONE;
-	if (bUsedByGPU && DataInterfaceInfo.IsUserDataInterface() == false)
+	if (bUsedByGPU && ResolvedVariable.IsInNameSpace(FNiagaraConstants::UserNamespaceString) == false)
 	{
 		LUTOffset = StaticBuffers.AddGpuData(ShaderLUT);
 	}
-
-	if (PrevLUTOffset != LUTOffset)
-	{
-		MarkRenderDataDirty();
-	}
+	MarkRenderDataDirty();
 }
 
 void UNiagaraDataInterfaceCurveBase::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
@@ -339,6 +463,13 @@ void UNiagaraDataInterfaceCurveBase::SetShaderParameters(const FNiagaraDataInter
 	Parameters->CurveLUTNumMinusOne = DIProxy.CurveLUTNumMinusOne;
 	Parameters->LUTOffset = DIProxy.LUTOffset;
 	Parameters->CurveLUT = DIProxy.CurveLUT.SRV.IsValid() ? DIProxy.CurveLUT.SRV.GetReference() : FNiagaraRenderer::GetDummyFloatBuffer();
+}
+
+void UNiagaraDataInterfaceCurveBase::PostCompile()
+{
+#if WITH_EDITORONLY_DATA
+	SyncCurvesToAsset();
+#endif
 }
 
 #if WITH_EDITORONLY_DATA
@@ -409,11 +540,11 @@ void UNiagaraDataInterfaceCurveBase::PushToRenderThreadImpl()
 
 			if (RT_ShaderLUT.Num() > 0)
 			{
-				RT_Proxy->CurveLUT.Initialize(TEXT("CurveLUT"), sizeof(float), RT_ShaderLUT.Num(), EPixelFormat::PF_R32_FLOAT, BUF_Static);
+				RT_Proxy->CurveLUT.Initialize(RHICmdList, TEXT("CurveLUT"), sizeof(float), RT_ShaderLUT.Num(), EPixelFormat::PF_R32_FLOAT, BUF_Static);
 				const uint32 BufferSize = RT_ShaderLUT.Num() * sizeof(float);
-				void* BufferData = RHILockBuffer(RT_Proxy->CurveLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly);
+				void* BufferData = RHICmdList.LockBuffer(RT_Proxy->CurveLUT.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly);
 				FPlatformMemory::Memcpy(BufferData, RT_ShaderLUT.GetData(), BufferSize);
-				RHIUnlockBuffer(RT_Proxy->CurveLUT.Buffer);
+				RHICmdList.UnlockBuffer(RT_Proxy->CurveLUT.Buffer);
 				INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, RT_Proxy->CurveLUT.NumBytes);
 			}
 		}

@@ -11,27 +11,11 @@
 struct FInstancedStruct;
 class IRewindDebugger;
 class UPoseSearchDatabase;
-class UPoseSearchSearchableAsset;
 
 namespace UE::PoseSearch
 {
 
 struct FTraceMotionMatchingStateMessage;
-
-/** Draw flags for the view's debug draw */
-enum class ESkeletonDrawFlags : uint32
-{
-	None			= 0,
-	ActivePose		= 1 << 0,
-	SelectedPose	= 1 << 1,
-	Asset			= 1 << 2,
-};
-ENUM_CLASS_FLAGS(ESkeletonDrawFlags)
-
-struct FSkeletonDrawParams
-{
-	ESkeletonDrawFlags Flags = ESkeletonDrawFlags::None;
-};
 
 class FDebuggerViewModel : public TSharedFromThis<FDebuggerViewModel>
 {
@@ -42,13 +26,9 @@ public:
 	// Used for view callbacks
     const FTraceMotionMatchingStateMessage* GetMotionMatchingState() const;
 	const UPoseSearchDatabase* GetCurrentDatabase() const;
-	const UPoseSearchSearchableAsset* GetSearchableAsset() const;
 	const TArray<int32>* GetNodeIds() const;
 	int32 GetNodesNum() const;
-	const FTransform* GetRootTransform() const;
-
-	/** Checks if Update must be called */
-	bool HasSearchableAssetChanged() const;
+	const FTransform& GetRootBoneTransform() const;
 
 	/** Update motion matching states for frame */
 	void OnUpdate();
@@ -56,39 +36,24 @@ public:
 	/** Updates active motion matching state based on node selection */
 	void OnUpdateNodeSelection(int32 InNodeId);
 
-	/** Updates internal Skeletal Mesh Component depending on input */
-	void OnDraw(FSkeletonDrawParams& DrawParams);
-	
 	/** Sets the selected pose skeleton*/
 	void ShowSelectedSkeleton(const UPoseSearchDatabase* Database, int32 DbPoseIdx, float Time);
 	
 	/** Clears the selected pose skeleton */
 	void ClearSelectedSkeleton();
 	
-	/** Plays the selected row upon button press */
-	void PlaySelection(int32 PoseIdx, float Time);
-
-	/** Stops the playing selection upon button press */
-	void StopSelection();
-	
-	/** If there is an asset selection playing */
-	bool IsPlayingSelections() const { return AssetData.bActive; }
-	
-	/** Play Rate of the asset selection player */
-	void ChangePlayRate(float PlayRate) { AssetPlayRate = PlayRate; }
-	
-	/** Current play rate of the asset selection player */
-	float GetPlayRate() const { return AssetPlayRate; }
-	
 	void SetVerbose(bool bVerbose) { bIsVerbose = bVerbose; }
-
 	bool IsVerbose() const { return bIsVerbose; }
+
+	void SetDrawQuery(bool bInDrawQuery) { bDrawQuery = bInDrawQuery; }
+	bool GetDrawQuery() const { return bDrawQuery; }
+
+	void SetDrawTrajectory(bool bInDrawTrajectory) { bDrawTrajectory = bInDrawTrajectory; }
+
+	bool GetDrawTrajectory() const { return bDrawTrajectory; }
 
 	/** Callback to reset debug skeletons for the active world */
 	void OnWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResources);
-
-	/** Updates the current playing asset */
-	void UpdateAsset();
 
 	const USkinnedMeshComponent* GetMeshComponent() const;
 
@@ -97,16 +62,13 @@ private:
 	struct FSkeleton
 	{
 		/** Actor object for the skeleton */
-		TWeakObjectPtr<AActor> Actor = nullptr;
+		TWeakObjectPtr<AActor> Actor;
 
 		/** Derived skeletal mesh for setting the skeleton in the scene */
-		TWeakObjectPtr<UPoseSearchMeshComponent> Component = nullptr;
-
-		/** Type of the asset being played */
-		ESearchIndexAssetType Type = ESearchIndexAssetType::Invalid;
+		TWeakObjectPtr<UPoseSearchMeshComponent> Component;
 
 		/** Source database for this skeleton  */
-		TWeakObjectPtr<const UPoseSearchDatabase> SourceDatabase = nullptr;
+		TWeakObjectPtr<const UPoseSearchDatabase> SourceDatabase;
 
 		/** Source asset for this skeleton */
 		int32 AssetIdx = 0;
@@ -140,14 +102,11 @@ private:
 	/** Currently active motion matching state based on node selection in the view */
 	const FTraceMotionMatchingStateMessage* ActiveMotionMatchingState = nullptr;
 
-	/** Active motion matching state's searchable asset */
-	uint64 SearchableAssetId = 0;
-
 	/** Current Skeletal Mesh Component Id for the AnimInstance */
 	uint64 SkeletalMeshComponentId = 0;
 
-	/** Currently active root transform on the skeletal mesh */
-	const FTransform* RootTransform = nullptr;
+	/** Currently active root bone transform */
+	FTransform RootBoneWorldTransform = FTransform::Identity;
 
 	/** Pointer to the active rewind debugger in the scene */
 	TAttribute<const IRewindDebugger*> RewindDebugger;
@@ -181,28 +140,12 @@ private:
 	/** If we currently have a selection active in the view */
 	bool bSelecting = false;
 	
-	/** Data of the active playing asset */
-	struct FAsset
-	{
-		/** How long to stop upon reaching target */
-		static constexpr float StopDuration = 2.0f;
-
-		/** Time since the start of play */
-		float AccumulatedTime = 0.0f;
-
-		/** Start time of the asset */
-		float StartTime = 0.0f;
-
-		/** If we are currently playing a asset */
-		bool bActive = false;
-
-	} AssetData;
-	
-	/** Current play rate of the asset selection player */
-	float AssetPlayRate = 1.0f;
-
 	bool bIsVerbose = false;
 
+	bool bDrawQuery = true;	
+
+	bool bDrawTrajectory = false;
+	
 	/** Limits some public API */
 	friend class FDebugger;
 };

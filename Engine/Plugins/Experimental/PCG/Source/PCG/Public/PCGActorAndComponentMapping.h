@@ -3,17 +3,22 @@
 #pragma once
 
 #include "PCGCommon.h"
+#include "Elements/PCGActorSelector.h"
 #include "Grid/PCGComponentOctree.h"
 
 #include "Containers/Array.h"
 #include "Containers/Map.h"
 #include "Containers/Set.h"
 #include "Templates/Function.h"
+#include "UObject/ObjectKey.h"
 #include "UObject/ObjectPtr.h"
-#include "UObject/WeakObjectPtrTemplates.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/WeakObjectPtr.h"
 
 class AActor;
+class ALandscapeProxy;
 class APCGPartitionActor;
+class FLandscapeProxyComponentDataChangedParams;
 class UObject;
 class UPCGComponent;
 class UPCGSubsystem;
@@ -24,7 +29,7 @@ class UPCGSubsystem;
 * For now it is used for:
 * - Mapping between PCG Components and Partition actors: Dispatch tasks from original components to local components
 * - Tracking non partitioned PCG Components that has tracking actors needs.
-* - TODO: Tracking actors: Be able to react to actors changes, and potentially dirty/refresh affected components
+* - Tracking actors: Be able to react to actors changes, and potentially dirty/refresh affected components
 */
 class UPCGActorAndComponentMapping
 {
@@ -43,10 +48,10 @@ public:
 	void RegisterTrackingCallbacks();
 	void TeardownTrackingCallbacks();
 
-	void OnActorAdded(AActor* InActor);
-	void OnActorDeleted(AActor* InActor);
-	void OnActorMoved(AActor* InActor);
-	void OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent);
+	void AddDelayedActors();
+
+	/** Will register/update tracking if a component was registered/updated. */
+	void RegisterOrUpdateTracking(UPCGComponent* InComponent, bool bInShouldDirtyActors);
 #endif // WITH_EDITOR
 
 	/** Register a new PCG Component or update it. Returns true if it was added/updated. Thread safe */
@@ -65,10 +70,13 @@ public:
 	void UnregisterPartitionActor(APCGPartitionActor* InActor);
 
 	/** Return a copy of all the registered partitioned components. Thread safe */
-	TSet<TObjectPtr<UPCGComponent>> GetAllRegisteredPartitionedComponents() const;
+	TSet<UPCGComponent*> GetAllRegisteredPartitionedComponents() const;
 
-	/** Check if a component is currently tracked. Thread safe */
-	bool IsComponentTracked(const UPCGComponent* InComponent) const;
+	/** Return a copy of all the registered non-partitioned components. Thread safe */
+	TSet<UPCGComponent*> GetAllRegisteredNonPartitionedComponents() const;
+
+	/** Return a copy of all the registered components. Thread safe */
+	TSet<UPCGComponent*> GetAllRegisteredComponents() const;
 
 private:
 	// This class is only meant to be used as part of the PCG Subsytem and owned by it.
@@ -101,14 +109,41 @@ private:
 	/** Delete the current mapping between a PCG component and its PCG Partition actors */
 	void DeleteMappingPCGComponentPartitionActor(UPCGComponent* InComponent);
 
-	/** Will register/update tracking if a component was registered/updated. */
-	void RegisterOrUpdateTracking(UPCGComponent* InComponent);
+#if WITH_EDITOR
+	/* Return true if something is still tracked or was just untracked. */
+	bool AddOrUpdateTrackedActor(AActor* InActor);
+
+	void RegisterActor(AActor* InActor);
+
+	/* Return true if the actor was tracked. */
+	bool UnregisterActor(AActor* InActor);
+
+	void OnActorAdded(AActor* InActor);
+	void OnActorAdded_Internal(AActor* InActor, bool bShouldDirty = true);
+	void OnActorDeleted(AActor* InActor);
+	void OnActorMoved(AActor* InActor);
+	void OnLandscapeChanged(ALandscapeProxy* InLandscape, const FLandscapeProxyComponentDataChangedParams& InChangeParams);
+	void OnPreObjectPropertyChanged(UObject* InObject, const FEditPropertyChain& InEditPropertyChain);
+	void OnObjectPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent);
+	void OnPCGGraphGeneratedOrCleaned(UPCGComponent* InComponent);
 
 	/** Remap the tracking in case of BP components. */
 	void RemapTracking(const UPCGComponent* InOldComponent, UPCGComponent* InNewComponent);
 
 	/** Unregister tracking when a component is removed. */
 	void UnregisterTracking(UPCGComponent* InComponent);
+
+	/** Trigger an update when the actor changed. 
+	* Can specify if the actor has moved to also update components that were at its previous position.
+	* Can also specify an optional object, originating the change, to avoid re-dirtying a component if it was the origin.
+	*/
+	void OnActorChanged(AActor* InActor, bool bInHasMoved, const UObject* InOriginatingChangeObject = nullptr);
+
+	/** Update dependencies for a given tracked actor. */
+	void UpdateActorDependencies(AActor* InActor);
+
+	bool IsActorTracked(const AActor* InActor) const;
+#endif // WITH_EDITOR
 
 private:
 	// Cached subsystem
@@ -118,29 +153,42 @@ private:
 	/** Octree tracking all partitioned pcg components */
 	FPCGComponentOctreeAndMap PartitionedOctree;
 
-	/** Grid mapping for partition actors. We can only have 1 partition actor per grid cell. */
-	TMap<FIntVector, TObjectPtr<APCGPartitionActor>> PartitionActorsMap;
+	/** Mapping from grid size and grid coords to partition actor. We can only have 1 partition actor per grid cell. */
+	TMap<uint32, TMap<FIntVector, TObjectPtr<APCGPartitionActor>>> PartitionActorsMap;
 	mutable FRWLock PartitionActorsMapLock;
 
 	/** Mapping between original components and its overlapping partition actors. */
-	TMap<TObjectPtr<const UPCGComponent>, TSet<TObjectPtr<APCGPartitionActor>>> ComponentToPartitionActorsMap;
+	TMap<const UPCGComponent*, TSet<TObjectPtr<APCGPartitionActor>>> ComponentToPartitionActorsMap;
 	mutable FRWLock ComponentToPartitionActorsMapLock;
 
 	/** Components to be unregister at the next frame. cf. UnregisterComponent for a better understanding on why it is needed. */
-	TSet<TObjectPtr<UPCGComponent>> DelayedComponentToUnregister;
+	TSet<UPCGComponent*> DelayedComponentToUnregister;
 	mutable FCriticalSection DelayedComponentToUnregisterLock;
 
 	// Tracking actors
 	/** Will hold all the components that are not partitioned (and not local) and are tracking something. Will be use to dispatch actor tracking updates. */
 	FPCGComponentOctreeAndMap NonPartitionedOctree;
 
-	/** Keep a mapping between tracked actors and the components that track them. */
-	TMap<TWeakObjectPtr<AActor>, TSet<TObjectPtr<UPCGComponent>>> TrackedActorsToComponentsMap;
+	/** Keep a mapping between tracked actors and the components that track them, and the tracking needs to be culled.*/
+	TMap<TObjectKey<AActor>, TSet<UPCGComponent*>> CulledTrackedActorsToComponentsMap;
 
-	/** Also keep the reverse mapping. */
-	TMap<TObjectPtr<UPCGComponent>, TSet<TWeakObjectPtr<AActor>>> TrackedComponentsToActorsMap;
+	/** Same mapping but for always tracked actors */
+	TMap<TObjectKey<AActor>, TSet<UPCGComponent*>> AlwaysTrackedActorsToComponentsMap;
+
+	/** Keep the list of the keys already tracked, to avoid requerying the actors everytime */
+	TMap<FPCGActorSelectionKey, TSet<UPCGComponent*>> KeysToComponentsMap;
+
+	/** Finally keep a mapping between actors and their position to know if an actor move in/out of a component tracking bounds. Only kept for actors that need to be culled. */
+	TMap<TObjectKey<AActor>, FBox> TrackedActorToPositionMap;
+
 	mutable FRWLock TrackedComponentsLock;
 
+	// Keep track of actors that aren't yet ready (or if the subsystem is not yet ready) and add them in next tick.
+	TSet<TTuple<TObjectKey<AActor>, bool>> DelayedAddedActors;
+
 	/** Keep a mapping between tracked actors and their dependencies. */
-	TMap<TWeakObjectPtr<AActor>, TSet<TObjectPtr<UObject>>> TrackedActorsToDependenciesMap;
+	TMap<TObjectKey<AActor>, TSet<TObjectPtr<UObject>>> TrackedActorsToDependenciesMap;
+
+	/** Transient list of tags, kept when there is a tag change on a tracked Actor. */
+	TSet<FName> TempTrackedActorTags;
 };

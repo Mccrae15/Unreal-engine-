@@ -119,6 +119,10 @@ namespace UnrealIdentifiers
 	const TfToken Surface = TfToken("surface");
 	const TfToken St = TfToken("st");
 	const TfToken Varname = TfToken("varname");
+	const TfToken Scale = TfToken("scale");
+	const TfToken Rotation = TfToken("rotation");
+	const TfToken Translation = TfToken("translation");
+	const TfToken In = TfToken("in");
 	const TfToken Result = TfToken("result");
 	const TfToken File = TfToken("file");
 	const TfToken WrapT = TfToken( "wrapT" );
@@ -134,6 +138,7 @@ namespace UnrealIdentifiers
 	const TfToken SourceColorSpaceToken = TfToken{ "sourceColorSpace" };
 
 	const TfToken UsdPreviewSurface = TfToken( "UsdPreviewSurface" );
+	const TfToken UsdTransform2d = TfToken( "UsdTransform2d" );
 	const TfToken UsdPrimvarReader_float2 = TfToken( "UsdPrimvarReader_float2" );
 	const TfToken UsdPrimvarReader_float3 = TfToken( "UsdPrimvarReader_float3" );
 	const TfToken UsdUVTexture = TfToken( "UsdUVTexture" );
@@ -435,10 +440,16 @@ FString UnrealIdentifiers::MaterialAllPurposeText = TEXT( "allPurpose" );
 FString UnrealIdentifiers::MaterialAllPurpose = ANSI_TO_TCHAR( pxr::UsdShadeTokens->allPurpose.GetString().c_str() );
 FString UnrealIdentifiers::MaterialPreviewPurpose = ANSI_TO_TCHAR( pxr::UsdShadeTokens->preview.GetString().c_str() );
 FString UnrealIdentifiers::MaterialFullPurpose = ANSI_TO_TCHAR( pxr::UsdShadeTokens->full.GetString().c_str() );
+FString UnrealIdentifiers::PrimvarsDisplayColor = ANSI_TO_TCHAR(pxr::UsdGeomTokens->primvarsDisplayColor.GetString().c_str());
+FString UnrealIdentifiers::PrimvarsDisplayOpacity = ANSI_TO_TCHAR(pxr::UsdGeomTokens->primvarsDisplayOpacity.GetString().c_str());
+FString UnrealIdentifiers::DoubleSided = ANSI_TO_TCHAR(pxr::UsdGeomTokens->doubleSided.GetString().c_str());
 #else
 FString UnrealIdentifiers::MaterialAllPurpose = TEXT( "" );
 FString UnrealIdentifiers::MaterialPreviewPurpose = TEXT( "preview" );
 FString UnrealIdentifiers::MaterialFullPurpose = TEXT( "full" );
+FString UnrealIdentifiers::PrimvarsDisplayColor = TEXT("primvars:displayColor");
+FString UnrealIdentifiers::PrimvarsDisplayOpacity = TEXT("primvars:displayOpacity");
+FString UnrealIdentifiers::DoubleSided = TEXT("doubleSided");
 #endif // USE_USD_SDK
 
 FUsdDelegates::FUsdImportDelegate FUsdDelegates::OnPreUsdImport;
@@ -507,6 +518,38 @@ double UnrealUSDWrapper::GetDefaultTimeCode()
 	return UsdTimeCode::Default().GetValue();
 }
 #endif // USE_USD_SDK
+
+TArray<FString> UnrealUSDWrapper::RegisterPlugins(const FString& PathToPlugInfo)
+{
+	return RegisterPlugins(TArray<FString>{PathToPlugInfo});
+}
+
+TArray<FString> UnrealUSDWrapper::RegisterPlugins(const TArray<FString>& PathsToPlugInfo)
+{
+	TArray<FString> PluginNames;
+
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	std::vector<std::string> UsdPathsToPlugInfo;
+	UsdPathsToPlugInfo.reserve(PathsToPlugInfo.Num());
+
+	for (const FString& PathToPlugInfo : PathsToPlugInfo)
+	{
+		UsdPathsToPlugInfo.emplace_back(TCHAR_TO_UTF8(*PathToPlugInfo));
+	}
+
+	const pxr::PlugPluginPtrVector UsdPlugins =
+		pxr::PlugRegistry::GetInstance().RegisterPlugins(UsdPathsToPlugInfo);
+
+	for (const pxr::PlugPluginPtr& UsdPlugin : UsdPlugins)
+	{
+		PluginNames.Emplace(UTF8_TO_TCHAR(UsdPlugin->GetName().c_str()));
+	}
+#endif // USE_USD_SDK
+
+	return PluginNames;
+}
 
 TArray<FString> UnrealUSDWrapper::GetAllSupportedFileFormats()
 {
@@ -856,6 +899,23 @@ void UnrealUSDWrapper::EraseStageFromCache( const UE::FUsdStage& Stage )
 #endif // #if USE_USD_SDK
 }
 
+void UnrealUSDWrapper::SetDefaultResolverDefaultSearchPath( const TArray<FDirectoryPath>& SearchPath )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs UsdAllocs;
+
+	std::vector< std::string > DefaultResolverSearchPath;
+	DefaultResolverSearchPath.reserve( SearchPath.Num() );
+
+	for ( const FDirectoryPath& Directory : SearchPath )
+	{
+		DefaultResolverSearchPath.push_back( TCHAR_TO_UTF8( *Directory.Path ) );
+	}
+
+	pxr::ArDefaultResolver::SetDefaultSearchPath( DefaultResolverSearchPath );
+#endif // #if USE_USD_SDK
+}
+
 void UnrealUSDWrapper::SetupDiagnosticDelegate()
 {
 #if USE_USD_SDK
@@ -939,7 +999,20 @@ public:
 		{
 			if ( !Directory.Path.IsEmpty() )
 			{
-				PluginDirectories.Add( Directory.Path );
+				// The directory chooser will try to enforce that the paths
+				// in the setting are within the game content dir, but it's
+				// still possible for the user to manually enter either a
+				// relative or an absolute path that points elsewhere, so aim
+				// to support any of these.
+				FString PluginDirPath = Directory.Path;
+				if ( FPaths::IsRelative( PluginDirPath ) )
+				{
+					PluginDirPath = FPaths::Combine( FPaths::ProjectContentDir(), PluginDirPath );
+					PluginDirPath = FPaths::ConvertRelativePathToFull( PluginDirPath );
+				}
+				FPaths::NormalizeDirectoryName( PluginDirPath );
+				FPaths::CollapseRelativeDirectories( PluginDirPath );
+				PluginDirectories.Add( PluginDirPath );
 			}
 		}
 
@@ -956,6 +1029,10 @@ public:
 
 			PlugRegistry::GetInstance().RegisterPlugins( UsdPluginDirectories );
 		}
+
+		// Set the default search path for USD's default resolver using any path specified in the settings.
+		const TArray<FDirectoryPath> SearchPath = GetDefault<UUsdProjectSettings>()->DefaultResolverSearchPath;
+		UnrealUSDWrapper::SetDefaultResolverDefaultSearchPath( SearchPath );
 
 #endif // USE_USD_SDK
 

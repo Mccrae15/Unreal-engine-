@@ -3,8 +3,9 @@
 #include "USDLevelSequenceHelper.h"
 
 #include "GeometryCache.h"
-#include "USDAssetImportData.h"
+#include "USDAssetUserData.h"
 #include "USDAttributeUtils.h"
+#include "USDClassesModule.h"
 #include "USDConversionUtils.h"
 #include "USDInfoCache.h"
 #include "USDIntegrationUtils.h"
@@ -13,8 +14,8 @@
 #include "USDLog.h"
 #include "USDMemory.h"
 #include "USDPrimConversion.h"
-#include "USDProjectSettings.h"
 #include "USDPrimTwin.h"
+#include "USDProjectSettings.h"
 #include "USDStageActor.h"
 #include "USDTypesConversion.h"
 #include "USDValueConversion.h"
@@ -77,6 +78,7 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "RigVMBlueprintGeneratedClass.h"
 
 #if WITH_EDITOR
 #include "ControlRigBlueprint.h"
@@ -97,20 +99,6 @@
 
 namespace UsdLevelSequenceHelperImpl
 {
-	// Adapted from ObjectTools as it is within an Editor-only module
-	FString SanitizeObjectName(const FString& InObjectName)
-	{
-		FString SanitizedText = InObjectName;
-		const TCHAR* InvalidChar = INVALID_OBJECTNAME_CHARACTERS;
-		while (*InvalidChar)
-		{
-			SanitizedText.ReplaceCharInline(*InvalidChar, TCHAR('_'), ESearchCase::CaseSensitive);
-			++InvalidChar;
-		}
-
-		return SanitizedText;
-	}
-
 	/**
 	 * Similar to FrameRate.AsFrameNumber(TimeSeconds) except that it uses RoundToDouble instead of FloorToDouble, to
 	 * prevent issues with floating point precision
@@ -559,7 +547,7 @@ public:
 	TArray< ULevelSequence* > GetSubSequences() const
 	{
 		TArray< ULevelSequence* > SubSequences;
-		LevelSequencesByIdentifier.GenerateValueArray(SubSequences);
+		ObjectPtrDecay(LevelSequencesByIdentifier).GenerateValueArray(SubSequences);
 		SubSequences.Remove(MainLevelSequence);
 
 		return SubSequences;
@@ -581,8 +569,8 @@ private:
 	void RemoveSequenceForPrim(ULevelSequence& Sequence, const UUsdPrimTwin& PrimTwin);
 
 private:
-	ULevelSequence* MainLevelSequence;
-	TMap<FString, ULevelSequence*> LevelSequencesByIdentifier;
+	TObjectPtr<ULevelSequence> MainLevelSequence;
+	TMap<FString, TObjectPtr<ULevelSequence>> LevelSequencesByIdentifier;
 	TMap<ULevelSequence*, FString> IdentifierByLevelSequence;
 
 	TSet< FName > LocalLayersSequences; // List of sequences associated with sublayers
@@ -639,7 +627,7 @@ private:
 
 		// For now we support one binding per component type (mostly so we can fit a binding to a scene component and
 		// camera component for a Camera prim twin)
-		TMap< const UClass*, FGuid > ComponentClassToBindingGuid;
+		TMap< const UClass*, FGuid > ObjectClassToBindingGuid;
 	};
 
 	TMap< TWeakObjectPtr< const UUsdPrimTwin >, FPrimTwinBindings > PrimTwinToBindings;
@@ -973,7 +961,7 @@ void FUsdLevelSequenceHelperImpl::OnStageActorRenamed()
 	FGuid NewId = NewPossessable.GetGuid();
 
 	bool bDidSomething = false;
-	for (const TPair<FString, ULevelSequence*>& Pair : LevelSequencesByIdentifier)
+	for (const auto& Pair : LevelSequencesByIdentifier)
 	{
 		ULevelSequence* Sequence = Pair.Value;
 		if (!Sequence)
@@ -1057,9 +1045,17 @@ ULevelSequence* FUsdLevelSequenceHelperImpl::FindOrAddSequenceForAttribute(const
 	{
 		if (UE::FSdfLayer AttributeLayer = UsdUtils::FindLayerForAttribute(Attribute, 0.0))
 		{
-			const FString SequenceIdentifier = Attribute.GetPrim().GetPrimPath().GetString();
-
+			const FString SequenceIdentifier = AttributeLayer.GetIdentifier();
 			Sequence = FindOrAddSequenceForLayer(AttributeLayer, SequenceIdentifier, SequenceIdentifier);
+
+#if WITH_EDITORONLY_DATA
+			// Make level sequences for non-local layers read-only: Our current approach is that only
+			// local layers can be written to, so there is no point in doing otherwise
+			if (Sequence && UsdStage && !UsdStage.HasLocalLayer(AttributeLayer))
+			{
+				Sequence->GetMovieScene()->SetReadOnly(true);
+			}
+#endif
 		}
 	}
 
@@ -1086,8 +1082,12 @@ ULevelSequence* FUsdLevelSequenceHelperImpl::FindOrAddSequenceForLayer(const UE:
 		// which also gives us a stage actor. So if we don't have an actor but have a cache, we're importing
 		const bool bIsImporting = StageActor.IsExplicitlyNull() && InfoCache;
 		FName UniqueSequenceName = bIsImporting
-			? *UsdLevelSequenceHelperImpl::SanitizeObjectName(FPaths::GetBaseFilename(SequenceDisplayName))
-			: MakeUniqueObjectName(GetTransientPackage(), ULevelSequence::StaticClass(), *UsdLevelSequenceHelperImpl::SanitizeObjectName(FPaths::GetBaseFilename(SequenceDisplayName)));
+			? *IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(SequenceDisplayName))
+			: MakeUniqueObjectName(
+				GetTransientPackage(),
+				ULevelSequence::StaticClass(),
+				*IUsdClassesModule::SanitizeObjectName(FPaths::GetBaseFilename(SequenceDisplayName))
+			);
 
 		Sequence = NewObject< ULevelSequence >(GetTransientPackage(), UniqueSequenceName, FUsdLevelSequenceHelperImpl::DefaultObjFlags);
 		Sequence->Initialize();
@@ -1232,27 +1232,49 @@ void FUsdLevelSequenceHelperImpl::CreateSubSequenceSection(ULevelSequence& Seque
 	}
 
 	const double TimeCodesPerSecond = Layer.GetTimeCodesPerSecond();
+	const bool bIsAlembicSublayer = SubLayerIdentifier->EndsWith(TEXT(".abc"));
+	TRange< FFrameNumber > SubSectionRange;
+	FFrameNumber StartFrame;
 
-	// Section full duration is always [0, endTimeCode]. The play range varies: For the root layer it will be [startTimeCode, endTimeCode],
-	// but for sublayers it will be [0, endTimeCode] too in order to match how USD composes sublayers with non-zero startTimeCode
-	const double SubDurationTimeCodes = SubLayer.GetEndTimeCode() * SubLayerOffset.Scale;
-	const double SubDurationSeconds = SubDurationTimeCodes / TimeCodesPerSecond;
+	if (!bIsAlembicSublayer)
+	{
+		// Section full duration is always [0, endTimeCode]. The play range varies: For the root layer it will be [startTimeCode, endTimeCode],
+		// but for sublayers it will be [0, endTimeCode] too in order to match how USD composes sublayers with non-zero startTimeCode
+		const double SubDurationTimeCodes = SubLayer.GetEndTimeCode() * SubLayerOffset.Scale;
+		const double SubDurationSeconds = SubDurationTimeCodes / TimeCodesPerSecond;
 
-	const double SubStartTimeSeconds = SubLayerOffset.Offset / TimeCodesPerSecond;
-	const double SubEndTimeSeconds = SubStartTimeSeconds + SubDurationSeconds;
+		const double SubStartTimeSeconds = SubLayerOffset.Offset / TimeCodesPerSecond;
+		const double SubEndTimeSeconds = SubStartTimeSeconds + SubDurationSeconds;
 
-	const FFrameNumber StartFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, SubStartTimeSeconds);
-	const FFrameNumber EndFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, SubEndTimeSeconds);
+		StartFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, SubStartTimeSeconds);
+		const FFrameNumber EndFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, SubEndTimeSeconds);
 
-	// Don't clip subsections with their duration, so that the root layer's [startTimeCode, endTimeCode] range is the only thing clipping
-	// anything, as this is how USD seems to behave. Even if a middle sublayer has startTimeCode == endTimeCode, its animations
-	// (or its child sublayers') won't be clipped by it and play according to the stage's range
-	const double StageEndTimeSeconds = UsdStage.GetEndTimeCode() / UsdStage.GetTimeCodesPerSecond();
-	const FFrameNumber StageEndFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, StageEndTimeSeconds);
+		// Don't clip subsections with their duration, so that the root layer's [startTimeCode, endTimeCode] range is the only thing clipping
+		// anything, as this is how USD seems to behave. Even if a middle sublayer has startTimeCode == endTimeCode, its animations
+		// (or its child sublayers') won't be clipped by it and play according to the stage's range
+		const double StageEndTimeSeconds = UsdStage.GetEndTimeCode() / UsdStage.GetTimeCodesPerSecond();
+		const FFrameNumber StageEndFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, StageEndTimeSeconds);
 
-	// Max here because StartFrame can theoretically be larger than StageEndFrame, which would generate a range where the upper bound is smaller
-	// than the lower bound, which can trigger asserts
-	TRange< FFrameNumber > SubSectionRange{StartFrame, FMath::Max(StageEndFrame, EndFrame)};
+		// Max here because StartFrame can theoretically be larger than StageEndFrame, which would generate a range where the upper bound is smaller
+		// than the lower bound, which can trigger asserts
+		SubSectionRange = TRange< FFrameNumber >{StartFrame, FMath::Max(StageEndFrame, EndFrame)};
+	}
+	else
+	{
+		// One issue with a sublayer from Alembic is that the usdAbc plugin does not retrieve the frame rate of the archive.
+		// Another is that the start time does not necessarily represents the actual start of the animation. That's why
+		// there's an option to "skip empty frames" when importing an Alembic. So instead take the start/end timecodes from
+		// the parent layer. That way the user can define the animation range needed.
+		SubLayer = Layer;
+
+		const double SubStartTimeSeconds = SubLayer.GetStartTimeCode() * SubLayerOffset.Scale / TimeCodesPerSecond;
+		const double SubEndTimeSeconds = SubLayer.GetEndTimeCode() * SubLayerOffset.Scale / TimeCodesPerSecond;
+
+		StartFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, SubStartTimeSeconds);
+		const FFrameNumber EndFrame = UsdLevelSequenceHelperImpl::RoundAsFrameNumber(TickResolution, SubEndTimeSeconds);
+
+		SubSectionRange = TRange<FFrameNumber>{StartFrame, EndFrame};
+	}
 
 	UMovieSceneSubSection* SubSection = FindSubSequenceSection(Sequence, SubSequence);
 	if (SubSection)
@@ -1855,7 +1877,7 @@ void FUsdLevelSequenceHelperImpl::AddSkeletalTracks(const UUsdPrimTwin& PrimTwin
 	// Fetch the UAnimSequence asset from the asset cache. Ideally we'd call AUsdStageActor::GetGeneratedAssets,
 	// but we may belong to a FUsdStageImportContext, and so there's no AUsdStageActor at all to use.
 	// At this point it doesn't matter much though, because we shouldn't need to uncollapse a SkelAnimation prim path anyway
-	const UE::FSdfPath PrimPath = SkelAnimationPrim.GetPrimPath();
+	const UE::FSdfPath PrimPath = Prim.GetPrimPath();
 	UAnimSequence* Sequence = InfoCache->GetSingleAssetForPrim<UAnimSequence>(
 		PrimPath
 	);
@@ -1900,12 +1922,11 @@ void FUsdLevelSequenceHelperImpl::AddSkeletalTracks(const UUsdPrimTwin& PrimTwin
 	if (UMovieSceneSkeletalAnimationTrack* SkeletalTrack = AddTrack<UMovieSceneSkeletalAnimationTrack>(SkelAnimationPrim.GetName(), PrimTwin, *ComponentToBind, *SkelAnimationSequence, bIsMuted))
 	{
 		double LayerStartOffsetSeconds = 0.0f;
-#if WITH_EDITOR
-		if (UUsdAnimSequenceAssetImportData* ImportData = Cast<UUsdAnimSequenceAssetImportData>(Sequence->AssetImportData))
+		if (UUsdAnimSequenceAssetUserData* UserData = Sequence->GetAssetUserData<UUsdAnimSequenceAssetUserData>())
 		{
-			LayerStartOffsetSeconds = ImportData->LayerStartOffsetSeconds;
+			LayerStartOffsetSeconds = UserData->LayerStartOffsetSeconds;
 		}
-#endif // WITH_EDITOR
+
 		FFrameNumber StartOffsetTick = FFrameTime::FromDecimal(LayerStartOffsetSeconds * MovieScene->GetTickResolution().AsDecimal()).RoundToFrame();
 
 		SkeletalTrack->RemoveAllAnimationData();
@@ -1964,11 +1985,13 @@ void FUsdLevelSequenceHelperImpl::AddGeometryCacheTracks(const UUsdPrimTwin& Pri
 		GeometryCacheTrack->RemoveAllAnimationData();
 
 		double LayerStartOffsetSeconds = 0;
-		if (GeometryCache->Tracks.Num())
+		if (GeometryCacheSequence == MainLevelSequence)
 		{
-			// Use the geometry cache start frame index converted to time as the offset
-			UGeometryCacheTrackUsd* UsdTrack = Cast<UGeometryCacheTrackUsd>(GeometryCache->Tracks[0]);
-			LayerStartOffsetSeconds = UsdTrack->StartFrameIndex / UsdTrack->FramesPerSecond;
+			// The LayerStartOffset needs to be applied only for the track in the main sequence. For subsequences, it's the subsequence section that is offset.
+			if (UUsdAnimSequenceAssetUserData* UserData = GeometryCache->GetAssetUserData<UUsdAnimSequenceAssetUserData>())
+			{
+				LayerStartOffsetSeconds = UserData->LayerStartOffsetSeconds;
+			}
 		}
 
 		const FFrameNumber StartOffsetTick = FFrameTime::FromDecimal(LayerStartOffsetSeconds * MovieScene->GetTickResolution().AsDecimal()).RoundToFrame();
@@ -2052,6 +2075,12 @@ void FUsdLevelSequenceHelperImpl::AddPrim(UUsdPrimTwin& PrimTwin, bool bForceVis
 	UE::FSdfLayer PrimLayer = UsdUtils::FindLayerForPrim(UsdPrim);
 	ULevelSequence* PrimSequence = FindSequenceForIdentifier(PrimLayer.GetIdentifier());
 
+	// PrimSequence is needed for a subsequence section to be created so fall back to the main sequence
+	if (!PrimSequence)
+	{
+		PrimSequence = MainLevelSequence;
+	}
+
 	TArray< UE::FUsdAttribute > PrimAttributes = UsdPrim.GetAttributes();
 
 	for (const UE::FUsdAttribute& PrimAttribute : PrimAttributes)
@@ -2081,7 +2110,7 @@ void FUsdLevelSequenceHelperImpl::AddPrim(UUsdPrimTwin& PrimTwin, bool bForceVis
 	{
 		AddCameraTracks(PrimTwin, UsdPrim);
 	}
-	else if (UsdPrim.HasAPI(TEXT("UsdLuxLightAPI")))
+	else if (UsdPrim.HasAPI(TEXT("LightAPI")))
 	{
 		AddLightTracks(PrimTwin, UsdPrim);
 	}
@@ -2172,7 +2201,7 @@ void FUsdLevelSequenceHelperImpl::RemovePrim(const UUsdPrimTwin& PrimTwin)
 
 	for (const FName& PrimSequenceName : PrimSequences)
 	{
-		for (const TPair< FString, ULevelSequence* >& IdentifierSequencePair : LevelSequencesByIdentifier)
+		for (const auto& IdentifierSequencePair : LevelSequencesByIdentifier)
 		{
 			if (IdentifierSequencePair.Value && IdentifierSequencePair.Value->GetFName() == PrimSequenceName)
 			{
@@ -2206,6 +2235,8 @@ void FUsdLevelSequenceHelperImpl::UpdateControlRigTracks(UUsdPrimTwin& PrimTwin)
 		return;
 	}
 
+	ensure(UsdPrim.IsA(TEXT("SkelRoot")));
+
 	USkeletalMeshComponent* ComponentToBind = Cast<USkeletalMeshComponent>(PrimTwin.GetSceneComponent());
 	if (!ComponentToBind)
 	{
@@ -2231,8 +2262,6 @@ void FUsdLevelSequenceHelperImpl::UpdateControlRigTracks(UUsdPrimTwin& PrimTwin)
 		// If this SkelRoot doesn't have any animation, lets create a new one on the current edit target
 		SkelAnimationLayer = UsdStage.GetEditTarget();
 
-		ensure(UsdPrim.IsA(TEXT("SkelRoot")));
-
 		FString UniqueChildName = UsdUtils::GetValidChildName(TEXT("Animation"), UsdPrim);
 		SkelAnimationPrim = UsdStage.DefinePrim(
 			UsdPrim.GetPrimPath().AppendChild(*UniqueChildName),
@@ -2245,19 +2274,18 @@ void FUsdLevelSequenceHelperImpl::UpdateControlRigTracks(UUsdPrimTwin& PrimTwin)
 
 		UsdUtils::BindAnimationSource(UsdPrim, SkelAnimationPrim);
 	}
-
-	// Fetch the UAnimSequence asset from the asset cache. Ideally we'd call AUsdStageActor::GetGeneratedAssets,
-	// but we may belong to a FUsdStageImportContext, and so there's no AUsdStageActor at all to use.
-	// At this point it doesn't matter much though, because we shouldn't need to uncollapse a SkelAnimation prim path anyway
-	const UE::FSdfPath SkelAnimationPrimPath = SkelAnimationPrim.GetPrimPath();
-	UAnimSequence* AnimSequence = InfoCache->GetSingleAssetForPrim<UAnimSequence>(
-		SkelAnimationPrimPath
-	);
-
 	if (!SkelAnimationLayer)
 	{
 		return;
 	}
+
+	// Fetch the UAnimSequence asset from the asset cache. Ideally we'd call AUsdStageActor::GetGeneratedAssets,
+	// but we may belong to a FUsdStageImportContext, and so there's no AUsdStageActor at all to use.
+	// At this point it doesn't matter much though, because we shouldn't need to uncollapse a SkelAnimation prim path anyway
+	UAnimSequence* AnimSequence = InfoCache->GetSingleAssetForPrim<UAnimSequence>(
+		PrimPath
+	);
+
 	UE::FUsdEditContext EditContext{UsdStage, SkelAnimationLayer};
 	FString Identifier = SkelAnimationLayer.GetIdentifier();
 
@@ -2349,7 +2377,7 @@ void FUsdLevelSequenceHelperImpl::UpdateControlRigTracks(UUsdPrimTwin& PrimTwin)
 
 			if (UControlRigBlueprint* BP = Cast<UControlRigBlueprint>(FSoftObjectPath(ControlRigBPPath).TryLoad()))
 			{
-				ControlRigClass = BP->GetControlRigClass();
+				ControlRigClass = BP->GetRigVMBlueprintGeneratedClass();
 			}
 		}
 
@@ -2437,7 +2465,7 @@ void FUsdLevelSequenceHelperImpl::RemovePossessable(const UUsdPrimTwin& PrimTwin
 	// ones don't modify the Sequence and change properties, so we must modify them here
 	Bindings->Sequence->Modify();
 
-	for (const TPair< const UClass*, FGuid >& Pair : Bindings->ComponentClassToBindingGuid)
+	for (const TPair< const UClass*, FGuid >& Pair : Bindings->ObjectClassToBindingGuid)
 	{
 		const FGuid& ComponentPossessableGuid = Pair.Value;
 
@@ -2732,12 +2760,12 @@ void FUsdLevelSequenceHelperImpl::OnUsdObjectsChanged(const UsdUtils::FObjectCha
 
 	FScopedBlockMonitoringChangesForTransaction BlockMonitoring{*this};
 
-	for (const TPair<FString, TArray<UsdUtils::FObjectChangeNotice>>& InfoChange : InfoChanges)
+	for (const TPair<FString, TArray<UsdUtils::FSdfChangeListEntry>>& InfoChange : InfoChanges)
 	{
 		const FString& PrimPath = InfoChange.Key;
 		if (PrimPath == TEXT("/"))
 		{
-			for (const UsdUtils::FObjectChangeNotice& ObjectChange : InfoChange.Value)
+			for (const UsdUtils::FSdfChangeListEntry& ObjectChange : InfoChange.Value)
 			{
 				for (const UsdUtils::FAttributeChange& AttributeChange : ObjectChange.AttributeChanges)
 				{
@@ -2808,7 +2836,7 @@ FGuid FUsdLevelSequenceHelperImpl::GetOrCreateComponentBinding(const UUsdPrimTwi
 	ensure(Bindings.Sequence == nullptr || Bindings.Sequence == &Sequence);
 	Bindings.Sequence = &Sequence;
 
-	if (FGuid* ExistingGuid = Bindings.ComponentClassToBindingGuid.Find(ComponentToBind.GetClass()))
+	if (FGuid* ExistingGuid = Bindings.ObjectClassToBindingGuid.Find(ComponentToBind.GetClass()))
 	{
 		return *ExistingGuid;
 	}
@@ -2855,7 +2883,7 @@ FGuid FUsdLevelSequenceHelperImpl::GetOrCreateComponentBinding(const UUsdPrimTwi
 
 	// Bind component
 	Sequence.BindPossessableObject(ComponentBinding, ComponentToBind, ComponentContext);
-	Bindings.ComponentClassToBindingGuid.Emplace(ComponentToBind.GetClass(), ComponentBinding);
+	Bindings.ObjectClassToBindingGuid.Emplace(ComponentToBind.GetClass(), ComponentBinding);
 	return ComponentBinding;
 }
 
@@ -2908,7 +2936,7 @@ void FUsdLevelSequenceHelperImpl::HandleMovieSceneChange(UMovieScene& MovieScene
 		UsdStage.SetTimeCodesPerSecond(StageTimeCodesPerSecond);
 
 		// Propagate to all movie scenes, as USD only uses the stage FramesPerSecond so the sequences should have a unified DisplayRate to reflect that
-		for (TPair< FString, ULevelSequence* >& SequenceByIdentifier : LevelSequencesByIdentifier)
+		for (auto& SequenceByIdentifier : LevelSequencesByIdentifier)
 		{
 			if (ULevelSequence* OtherSequence = SequenceByIdentifier.Value)
 			{
@@ -2971,7 +2999,7 @@ void FUsdLevelSequenceHelperImpl::HandleMovieSceneChange(UMovieScene& MovieScene
 			continue;
 		}
 
-		for (TMap< const UClass*, FGuid >::TIterator BindingIt = Bindings.ComponentClassToBindingGuid.CreateIterator();
+		for (TMap< const UClass*, FGuid >::TIterator BindingIt = Bindings.ObjectClassToBindingGuid.CreateIterator();
 			BindingIt;
 			++BindingIt)
 		{
@@ -3299,8 +3327,6 @@ void FUsdLevelSequenceHelperImpl::HandleTrackChange(const UMovieSceneTrack& Trac
 		return;
 	}
 
-	ensure( BoundSceneComponent->Mobility != EComponentMobility::Static );
-
 	UUsdPrimTwin* PrimTwin = StageActor->RootUsdTwin->Find(BoundSceneComponent);
 
 	// If we exported/created this Camera prim ourselves, we'll have a decomposed parent Xform and a child Camera prim (to mirror
@@ -3348,6 +3374,8 @@ void FUsdLevelSequenceHelperImpl::HandleTrackChange(const UMovieSceneTrack& Trac
 
 	if (PrimTwin)
 	{
+		ensure(BoundSceneComponent->Mobility != EComponentMobility::Static);
+
 		FScopedBlockNoticeListening BlockNotices(StageActor.Get());
 		UE::FUsdPrim UsdPrim = UsdStage.GetPrimAtPath(UE::FSdfPath(*PrimTwin->PrimPath));
 
@@ -3356,10 +3384,10 @@ void FUsdLevelSequenceHelperImpl::HandleTrackChange(const UMovieSceneTrack& Trac
 		Bindings.Sequence = Sequence;
 
 		// Make sure we track this binding
-		const UClass* ComponentClass = BoundSceneComponent->GetClass();
-		FGuid* FoundExistingGuid = Bindings.ComponentClassToBindingGuid.Find(ComponentClass);
+		const UClass* ComponentClass = BoundObject->GetClass();
+		FGuid* FoundExistingGuid = Bindings.ObjectClassToBindingGuid.Find(ComponentClass);
 		ensure(!FoundExistingGuid || *FoundExistingGuid == PossessableGuid);
-		Bindings.ComponentClassToBindingGuid.Emplace(ComponentClass, PossessableGuid);
+		Bindings.ObjectClassToBindingGuid.Emplace(ComponentClass, PossessableGuid);
 
 		if (bIsMuteChange)
 		{
@@ -3553,7 +3581,7 @@ void FUsdLevelSequenceHelperImpl::UpdateLayerTimeInfoFromLayer(FLayerTimeInfo& L
 ULevelSequence* FUsdLevelSequenceHelperImpl::FindSequenceForIdentifier(const FString& SequenceIdentitifer)
 {
 	ULevelSequence* Sequence = nullptr;
-	if (ULevelSequence** FoundSequence = LevelSequencesByIdentifier.Find(SequenceIdentitifer))
+	if (auto* FoundSequence = LevelSequencesByIdentifier.Find(SequenceIdentitifer))
 	{
 		Sequence = *FoundSequence;
 	}

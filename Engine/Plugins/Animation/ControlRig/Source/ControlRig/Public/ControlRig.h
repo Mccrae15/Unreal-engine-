@@ -1,10 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "UObject/Object.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/ScriptMacros.h"
 #include "UObject/SparseDelegate.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Templates/SubclassOf.h"
@@ -72,11 +69,6 @@ public:
 	// To support Blueprints/scripting, we need a different delegate type (a 'Dynamic' delegate) which supports looser style UFunction binding (using names).
 	DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_ThreeParams(FOnControlSelectedBP, UControlRig, OnControlSelected_BP, UControlRig*, Rig, const FRigControlElement&, Control, bool, bSelected);
 
-#if WITH_EDITOR
-	/** Bindable event for external objects to be notified that a control rig is fully end-loaded*/
-	DECLARE_EVENT_OneParam(UControlRig, FOnEndLoadPackage, UControlRig*);
-#endif
-
 	/** Bindable event to notify object binding change. */
 	DECLARE_EVENT_OneParam(UControlRig, FControlRigBoundEvent, UControlRig*);
 
@@ -90,19 +82,6 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 	virtual UScriptStruct* GetPublicContextStruct() const override { return FControlRigExecuteContext::StaticStruct(); }
-
-#if WITH_EDITOR
-
-private:
-	FOnEndLoadPackage EndLoadPackageEvent;
-
-public:
-	// these are needed so that sequencer can have a chance to update its 
-	// ControlRig instances after the package is fully end-loaded
-	void BroadCastEndLoadPackage() { EndLoadPackageEvent.Broadcast(this); }
-	FOnEndLoadPackage& OnEndLoadPackage() { return EndLoadPackageEvent; }
-
-#endif
 
 	/** Creates a transformable control handle for the specified control to be used by the constraints system. Should use the UObject from 
 	ConstraintsScriptingLibrary::GetManager(UWorld* InWorld)*/
@@ -330,7 +309,7 @@ public:
 	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
 #endif
 
-	virtual USceneComponent* GetOwningSceneComponent() override;;
+	virtual USceneComponent* GetOwningSceneComponent() override;
 
 protected:
 
@@ -349,6 +328,9 @@ protected:
 
 	UPROPERTY()
 	TArray<TSoftObjectPtr<UControlRigShapeLibrary>> ShapeLibraries;
+
+	UPROPERTY(transient)
+	TMap<FString, FString> ShapeLibraryNameMap;
 
 	/** Runtime object binding */
 	TSharedPtr<IControlRigObjectBinding> ObjectBinding;
@@ -393,7 +375,7 @@ private:
 #endif
 	
 	/** The registry to access data source */
-	UPROPERTY(transient)
+	UPROPERTY(Transient)
 	TObjectPtr<UAnimationDataSourceRegistry> DataSourceRegistry;
 
 	/** Broadcasts a notification when launching the construction event */
@@ -457,7 +439,10 @@ private:
 	void HandleHierarchyEvent(URigHierarchy* InHierarchy, const FRigEventContext& InEvent);
 	FRigEventDelegate RigEventDelegate;
 
+	void OnAddShapeLibrary(const FControlRigExecuteContext* InContext, const FString& InLibraryName, UControlRigShapeLibrary* InShapeLibrary, bool bReplaceExisting, bool bLogResults);
+	bool OnShapeExists(const FName& InShapeName) const;
 	virtual void InitializeFromCDO() override;
+
 
 	UPROPERTY()
 	FRigInfluenceMapPerEvent Influences;
@@ -491,6 +476,13 @@ public:
 #endif
 
 	float GetDebugBoneRadiusMultiplier() const { return DebugBoneRadiusMultiplier; }
+
+public:
+	//~ Begin IInterface_AssetUserData Interface
+	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
+	//~ End IInterface_AssetUserData Interface
+protected:
+	mutable TArray<TObjectPtr<UAssetUserData>> CombinedAssetUserData;
 
 private:
 
@@ -597,7 +589,7 @@ private:
 	{
 	public:
 		FPoseScope(UControlRig* InControlRig, ERigElementType InFilter = ERigElementType::All,
-			const TArray<FRigElementKey>& InElements = TArray<FRigElementKey>());
+			const TArray<FRigElementKey>& InElements = TArray<FRigElementKey>(), const ERigTransformType::Type InTransformType = ERigTransformType::CurrentLocal);
 		~FPoseScope();
 
 	private:
@@ -605,6 +597,7 @@ private:
 		UControlRig* ControlRig;
 		ERigElementType Filter;
 		FRigPose CachedPose;
+		ERigTransformType::Type TransformType;
 	};
 
 #if WITH_EDITOR
@@ -697,6 +690,10 @@ private:
 	friend struct FAnimNode_ControlRig;
 	friend class URigHierarchy;
 	friend class UFKControlRig;
+	friend class UControlRigGraph;
+	friend class AControlRigControlActor;
+	friend class AControlRigShapeActor;
+	friend class FRigTransformElementDetails;
 };
 
 class CONTROLRIG_API FControlRigBracketScope

@@ -1,12 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -43,12 +38,12 @@ namespace UnrealBuildTool
 		/// Entry point for this command
 		/// </summary>
 		/// <returns></returns>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 			Arguments.CheckAllArgumentsUsed();
 
-			switch(Type)
+			switch (Type)
 			{
 				case DocumentationType.BuildConfiguration:
 					XmlConfig.WriteDocumentation(OutputFile, Logger);
@@ -62,7 +57,7 @@ namespace UnrealBuildTool
 				default:
 					throw new BuildException("Invalid documentation type: {0}", Type);
 			}
-			return 0;
+			return Task.FromResult(0);
 		}
 	}
 }

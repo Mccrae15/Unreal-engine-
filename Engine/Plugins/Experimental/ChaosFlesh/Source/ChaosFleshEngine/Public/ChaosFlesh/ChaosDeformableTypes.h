@@ -6,6 +6,8 @@
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineBaseTypes.h"
 
+#include "ChaosDeformableTypes.generated.h"
+
 UENUM(BlueprintType)
 enum class EDeformableExecutionModel : uint8
 {
@@ -30,6 +32,11 @@ struct FChaosEngineDeformableCVarParams
 	bool bDoDrawCandidateRaycasts = false;
 
 	int32 EnvCollisionsLineTraceBatchSize = 10;
+
+	bool bTestUnpacking = false;
+	bool bTestSparseMappings = false;
+	bool bTestCompressedIndexing = false;
+	bool bUpdateGPUBuffersOnTick = true;
 
 	bool IsDebugDrawingEnabled()
 	{

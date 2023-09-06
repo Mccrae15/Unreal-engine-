@@ -1278,7 +1278,7 @@ void SStatsView::CreateGroups()
 
 		for (const FStatsNodePtr& NodePtr : StatsNodes)
 		{
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 		}
 		TreeView->SetItemExpansion(GroupPtr, true);
 	}
@@ -1294,7 +1294,7 @@ void SStatsView::CreateGroups()
 			{
 				GroupPtr = GroupNodeSet.Add(GroupName, MakeShared<FStatsNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.KeySort([](const FName& A, const FName& B) { return A.Compare(B) < 0; }); // sort groups by name
@@ -1313,7 +1313,7 @@ void SStatsView::CreateGroups()
 				const FName GroupName = *StatsNodeTypeHelper::ToText(NodeType).ToString();
 				GroupPtr = GroupNodeSet.Add(NodeType, MakeShared<FStatsNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.KeySort([](const EStatsNodeType& A, const EStatsNodeType& B) { return A < B; }); // sort groups by type
@@ -1332,7 +1332,7 @@ void SStatsView::CreateGroups()
 				const FName GroupName = *StatsNodeDataTypeHelper::ToText(DataType).ToString();
 				GroupPtr = GroupNodeSet.Add(DataType, MakeShared<FStatsNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 			TreeView->SetItemExpansion(GroupPtr, true);
 		}
 		GroupNodeSet.KeySort([](const EStatsNodeDataType& A, const EStatsNodeDataType& B) { return A < B; }); // sort groups by data type
@@ -1352,7 +1352,7 @@ void SStatsView::CreateGroups()
 				const FName GroupName(FirstLetterStr);
 				GroupPtr = GroupNodeSet.Add(FirstLetter, MakeShared<FStatsNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 		}
 		GroupNodeSet.KeySort([](const TCHAR& A, const TCHAR& B) { return A < B; }); // sort groups alphabetically
 		GroupNodeSet.GenerateValueArray(GroupNodes);
@@ -1388,7 +1388,7 @@ void SStatsView::CreateGroups()
 				                            FName(FString::Printf(TEXT("Count >= %s"), Orders[MaxOrder - 1]));
 				GroupPtr = GroupNodeSet.Add(Order, MakeShared<FStatsNode>(GroupName));
 			}
-			GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+			GroupPtr->AddChildAndSetParent(NodePtr);
 		}
 		GroupNodeSet.KeySort([](const uint32& A, const uint32& B) { return A > B; }); // sort groups by order
 		GroupNodeSet.GenerateValueArray(GroupNodes);
@@ -1539,19 +1539,13 @@ void SStatsView::SortTreeNodes()
 
 void SStatsView::SortTreeNodesRec(FStatsNode& Node, const Insights::ITableCellValueSorter& Sorter)
 {
-	if (ColumnSortMode == EColumnSortMode::Type::Descending)
-	{
-		Node.SortChildrenDescending(Sorter);
-	}
-	else // if (ColumnSortMode == EColumnSortMode::Type::Ascending)
-	{
-		Node.SortChildrenAscending(Sorter);
-	}
+	Insights::ESortMode SortMode = (ColumnSortMode == EColumnSortMode::Type::Descending) ? Insights::ESortMode::Descending : Insights::ESortMode::Ascending;
+	Node.SortChildren(Sorter, SortMode);
 
 #if 0 // Current groupings creates only one level.
 	for (Insights::FBaseTreeNodePtr ChildPtr : Node.GetChildren())
 	{
-		if (ChildPtr->GetChildren().Num() > 0)
+		if (ChildPtr->GetChildrenCount() > 0)
 		{
 			SortTreeNodesRec(*StaticCastSharedPtr<FTimerNode>(ChildPtr), Sorter);
 		}
@@ -2395,9 +2389,19 @@ void SStatsView::ContextMenu_ExportValues_Execute() const
 	}
 
 	const uint32 CounterId = SelectedNodes[0]->GetCounterId();
+	FString CounterName = SelectedNodes[0]->GetName().ToString();
 
 	const FString DialogTitle = LOCTEXT("ExportValues_Title", "Export Counter Values").ToString();
-	const FString DefaultFile = TEXT("CounterValues.tsv");
+
+	FString DefaultFile = CounterName.Replace(TEXT("(1/frame)"), TEXT("(1 per frame)"));
+	DefaultFile.ReplaceCharInline(TEXT('.'), TEXT('_'));
+	DefaultFile = FPaths::MakeValidFileName(DefaultFile, TCHAR('_'));
+	if (DefaultFile.IsEmpty() || DefaultFile[DefaultFile.Len() - 1] == TEXT(' '))
+	{
+		DefaultFile += TEXT('_');
+	}
+	DefaultFile = TEXT("CounterValues ") + DefaultFile + TEXT(".tsv");
+
 	FString Filename;
 	if (!OpenSaveTextFileDialog(DialogTitle, DefaultFile, Filename))
 	{
@@ -2406,6 +2410,28 @@ void SStatsView::ContextMenu_ExportValues_Execute() const
 
 	Insights::FTimingExporter Exporter(*Session.Get());
 	Insights::FTimingExporter::FExportCounterParams Params; // default
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// Limit the time interval for enumeration (if a time range selection is made in Timing view).
+
+	Params.IntervalStartTime = -std::numeric_limits<double>::infinity();
+	Params.IntervalEndTime = +std::numeric_limits<double>::infinity();
+
+	TSharedPtr<STimingProfilerWindow> Wnd = FTimingProfilerManager::Get()->GetProfilerWindow();
+	TSharedPtr<STimingView> TimingView = Wnd.IsValid() ? Wnd->GetTimingView() : nullptr;
+	if (TimingView.IsValid())
+	{
+		const double SelectionStartTime = TimingView->GetSelectionStartTime();
+		const double SelectionEndTime = TimingView->GetSelectionEndTime();
+		if (SelectionStartTime < SelectionEndTime)
+		{
+			Params.IntervalStartTime = SelectionStartTime;
+			Params.IntervalEndTime = SelectionEndTime;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	Exporter.ExportCounterAsText(*Filename, CounterId, Params);
 }
 
@@ -2433,9 +2459,19 @@ void SStatsView::ContextMenu_ExportOps_Execute() const
 	}
 
 	const uint32 CounterId = SelectedNodes[0]->GetCounterId();
+	FString CounterName = SelectedNodes[0]->GetName().ToString();
 
 	const FString DialogTitle = LOCTEXT("ExportOps_Title", "Export Counter Ops").ToString();
-	const FString DefaultFile = TEXT("CounterOps.tsv");
+
+	FString DefaultFile = CounterName.Replace(TEXT("(1/frame)"), TEXT("(1 per frame)"));
+	DefaultFile.ReplaceCharInline(TEXT('.'), TEXT('_'));
+	DefaultFile = FPaths::MakeValidFileName(DefaultFile, TCHAR('_'));
+	if (DefaultFile.IsEmpty() || DefaultFile[DefaultFile.Len() - 1] == TEXT(' '))
+	{
+		DefaultFile += TEXT('_');
+	}
+	DefaultFile = TEXT("CounterOps ") + DefaultFile + TEXT(".tsv");
+
 	FString Filename;
 	if (!OpenSaveTextFileDialog(DialogTitle, DefaultFile, Filename))
 	{
@@ -2444,7 +2480,30 @@ void SStatsView::ContextMenu_ExportOps_Execute() const
 
 	Insights::FTimingExporter Exporter(*Session.Get());
 	Insights::FTimingExporter::FExportCounterParams Params; // default
-	Params.bExportOps = true;
+
+	Params.bExportOps = true; // export "operations" instead of "values"
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// Limit the time interval for enumeration (if a time range selection is made in Timing view).
+
+	Params.IntervalStartTime = -std::numeric_limits<double>::infinity();
+	Params.IntervalEndTime = +std::numeric_limits<double>::infinity();
+
+	TSharedPtr<STimingProfilerWindow> Wnd = FTimingProfilerManager::Get()->GetProfilerWindow();
+	TSharedPtr<STimingView> TimingView = Wnd.IsValid() ? Wnd->GetTimingView() : nullptr;
+	if (TimingView.IsValid())
+	{
+		const double SelectionStartTime = TimingView->GetSelectionStartTime();
+		const double SelectionEndTime = TimingView->GetSelectionEndTime();
+		if (SelectionStartTime < SelectionEndTime)
+		{
+			Params.IntervalStartTime = SelectionStartTime;
+			Params.IntervalEndTime = SelectionEndTime;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	Exporter.ExportCounterAsText(*Filename, CounterId, Params);
 }
 

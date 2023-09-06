@@ -1,8 +1,12 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
-#include "MemAllocGroupingByTag.h"
-#include "MemAllocNode.h"
 
+#include "MemAllocGroupingByTag.h"
+
+#include "Common/ProviderLock.h" // TraceServices
+
+// Insights
 #include "Insights/Common/AsyncOperationProgress.h"
+#include "Insights/MemoryProfiler/ViewModels/MemAllocNode.h"
 
 #define LOCTEXT_NAMESPACE "Insights::FMemAllocGroupingByTag"
 
@@ -14,7 +18,7 @@ namespace Insights
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 INSIGHTS_IMPLEMENT_RTTI(FMemAllocGroupingByTag);
-	
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FMemAllocGroupingByTag::FMemAllocGroupingByTag(const TraceServices::IAllocationsProvider& InTagProvider)
@@ -35,7 +39,7 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
                                         IAsyncOperationProgress& InAsyncOperationProgress) const
 {
 	using namespace TraceServices;
-	
+
 	ParentGroup.ClearChildren();
 
 	constexpr TagIdType InvalidTagId = ~0u;
@@ -110,20 +114,26 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 	};
 	FScopedMemory _(TagNodes);
 
+	const FSlateBrush* IconBrush = FBaseTreeNode::GetDefaultIcon(true);
+	FLinearColor GroupNodeColor(0.75f, 0.5f, 1.0f, 1.0f);
+
 	// Create tag nodes.
-	TagProvider.EnumerateTags([&](const TCHAR* Name, const TCHAR* FullName, TagIdType Id, TagIdType ParentId)
 	{
-		const FName NodeName(Name);
+		TraceServices::FProviderReadScopeLock TagProviderReadScopeLock(TagProvider);
+		TagProvider.EnumerateTags([&](const TCHAR* Name, const TCHAR* FullName, TagIdType Id, TagIdType ParentId)
+			{
+				const FName NodeName(Name);
 #if INSIGHTS_MERGE_MEM_TAGS_BY_NAME
-		FTableTreeNodePtr TreeNode = MakeShared<FTableTreeNode>(NodeName, InParentTable);
+				FTableTreeNodePtr TreeNode = MakeShared<FCustomTableTreeNode>(NodeName, InParentTable, IconBrush, GroupNodeColor);
 #else
-		const FName NodeNameEx(Name, int32(Id));
-		FTableTreeNodePtr TreeNode = MakeShared<FTableTreeNode>(NodeNameEx, InParentTable);
+				const FName NodeNameEx(Name, int32(Id));
+				FTableTreeNodePtr TreeNode = MakeShared<FCustomTableTreeNode>(NodeNameEx, InParentTable, IconBrush, GroupNodeColor);
 #endif
-		FTagNode* TagNode = new FTagNode(NodeName, Id, ParentId, TreeNode);
-		TagNodes.Add(TagNode);
-		IdToNodeMap.Add(Id, TagNode);
-	});
+				FTagNode* TagNode = new FTagNode(NodeName, Id, ParentId, TreeNode);
+				TagNodes.Add(TagNode);
+				IdToNodeMap.Add(Id, TagNode);
+			});
+	}
 
 	// Create the Untagged node (if not already present).
 	constexpr TagIdType UntaggedNodeId = 0;
@@ -131,7 +141,7 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 	if (!UntaggedNode)
 	{
 		const FName NodeName(TEXT("Untagged"));
-		FTableTreeNodePtr UntaggedTreeNode = MakeShared<FTableTreeNode>(NodeName, InParentTable);
+		FTableTreeNodePtr UntaggedTreeNode = MakeShared<FCustomTableTreeNode>(NodeName, InParentTable, IconBrush, GroupNodeColor);
 		UntaggedNode = new FTagNode(NodeName, UntaggedNodeId, InvalidTagId, UntaggedTreeNode);
 		TagNodes.Add(UntaggedNode);
 		IdToNodeMap.Add(UntaggedNodeId, UntaggedNode);
@@ -143,7 +153,7 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 	if (!UnknownTagNode)
 	{
 		const FName NodeName(TEXT("Unknown"));
-		FTableTreeNodePtr UnknownTagTreeNode = MakeShared<FTableTreeNode>(NodeName, InParentTable);
+		FTableTreeNodePtr UnknownTagTreeNode = MakeShared<FCustomTableTreeNode>(NodeName, InParentTable, IconBrush, GroupNodeColor);
 		UnknownTagNode = new FTagNode(NodeName, UnknownTagNodeId, InvalidTagId, UnknownTagTreeNode);
 		TagNodes.Add(UnknownTagNode);
 		IdToNodeMap.Add(UnknownTagNodeId, UnknownTagNode);
@@ -189,7 +199,7 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 
 		if (NodePtr->IsGroup())
 		{
-			ParentGroup.AddChildAndSetGroupPtr(NodePtr);
+			ParentGroup.AddChildAndSetParent(NodePtr);
 			continue;
 		}
 
@@ -203,12 +213,12 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 			{
 				TagNode = UnknownTagNode;
 			}
-			TagNode->TreeNode->AddChildAndSetGroupPtr(NodePtr);
+			TagNode->TreeNode->AddChildAndSetParent(NodePtr);
 			TagNode->AllocCount++;
 		}
 		else
 		{
-			ParentGroup.AddChildAndSetGroupPtr(NodePtr);
+			ParentGroup.AddChildAndSetParent(NodePtr);
 		}
 	}
 
@@ -240,17 +250,17 @@ void FMemAllocGroupingByTag::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes,
 			check(TagNode->TreeNode);
 			if (TagNode->Parent->TreeNode)
 			{
-				TagNode->Parent->TreeNode->AddChildAndSetGroupPtr(TagNode->TreeNode);
+				TagNode->Parent->TreeNode->AddChildAndSetParent(TagNode->TreeNode);
 			}
 			else
 			{
 				check(TagNode->Parent == &Root);
-				ParentGroup.AddChildAndSetGroupPtr(TagNode->TreeNode);
+				ParentGroup.AddChildAndSetParent(TagNode->TreeNode);
 			}
 		}
 	}
 }
-	
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #undef INSIGHTS_MERGE_MEM_TAGS_BY_NAME

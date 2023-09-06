@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using EpicGames.Core;
+using EpicGames.OIDC;
 using EpicGames.Perforce;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -8,26 +9,32 @@ using Sentry;
 using Sentry.Infrastructure;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Windows;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
-	static class Program
+	/// <summary>
+	/// Delegate used to create a telemetry sink
+	/// </summary>
+	/// <param name="userName">The default Perforce user name</param>
+	/// <param name="sessionId">Unique identifier for this session</param>
+	/// <param name="logger">Log writer</param>
+	/// <returns>New telemetry sink instance</returns>
+	public delegate ITelemetrySink CreateTelemetrySinkDelegate(string userName, string sessionId, ILogger logger);
+
+	static partial class Program
 	{
+		/// <summary>
+		/// Delegate used to create a new telemetry sink
+		/// </summary>
+		static CreateTelemetrySinkDelegate CreateTelemetrySink { get; } = (userName, sessionId, log) => new NullTelemetrySink();
+
 		public static string GetVersionString()
 		{
 			AssemblyInformationalVersionAttribute? version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>();
@@ -38,7 +45,7 @@ namespace UnrealGameSync
 
 		public static void CaptureException(Exception exception)
 		{
-			if (DeploymentSettings.SentryDsn != null)
+			if (DeploymentSettings.Instance.SentryDsn != null)
 			{
 				SentrySdk.CaptureException(exception);
 			}
@@ -47,10 +54,10 @@ namespace UnrealGameSync
 		[STAThread]
 		static void Main(string[] args)
 		{
-			if (DeploymentSettings.SentryDsn != null)
+			if (DeploymentSettings.Instance.SentryDsn != null)
 			{
 				SentryOptions sentryOptions = new SentryOptions();
-				sentryOptions.Dsn = DeploymentSettings.SentryDsn;
+				sentryOptions.Dsn = DeploymentSettings.Instance.SentryDsn;
 				sentryOptions.StackTraceMode = StackTraceMode.Enhanced;
 				sentryOptions.AttachStacktrace = true;
 				sentryOptions.TracesSampleRate = 1.0;
@@ -74,6 +81,7 @@ namespace UnrealGameSync
 				{
 					Application.EnableVisualStyles();
 					Application.SetCompatibleTextRenderingDefault(false);
+					Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 				}
 
 				using (EventWaitHandle activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "ActivateUnrealGameSync"))
@@ -147,7 +155,11 @@ namespace UnrealGameSync
 			{
 				if (File.Exists(updateSpawn))
 				{
-					Directory.SetCurrentDirectory(Path.GetDirectoryName(updateSpawn));
+					Directory.SetCurrentDirectory(Path.GetDirectoryName(updateSpawn)!);
+				}
+				else
+				{
+					updateSpawn = null;
 				}
 			}
 
@@ -167,15 +179,14 @@ namespace UnrealGameSync
 			DirectoryReference dataFolder = DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.LocalApplicationData)!, "UnrealGameSync");
 			DirectoryReference.CreateDirectory(dataFolder);
 
-			// Enable TLS 1.1 and 1.2. TLS 1.0 is now deprecated and not allowed by default in NET Core servers.
-			ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls11 | SecurityProtocolType.Tls12;
-
 			// Create a new logger
 			using (ILoggerProvider loggerProvider = Logging.CreateLoggerProvider(FileReference.Combine(dataFolder, "UnrealGameSync.log")))
 			{
 				ServiceCollection services = new ServiceCollection();
 				services.AddLogging(builder => builder.AddProvider(loggerProvider));
 				services.AddSingleton<IAsyncDisposer, AsyncDisposer>();
+				services.AddSingleton(sp => TokenStoreFactory.CreateTokenStore());
+				services.AddSingleton<OidcTokenManager>();
 
 				await using (ServiceProvider serviceProvider = services.BuildServiceProvider())
 				{
@@ -201,7 +212,7 @@ namespace UnrealGameSync
 					ILogger telemetryLogger = loggerProvider.CreateLogger("Telemetry");
 					telemetryLogger.LogInformation("Creating telemetry sink for session {SessionId}", sessionId);
 
-					using (ITelemetrySink telemetrySink = DeploymentSettings.CreateTelemetrySink(userName, sessionId, telemetryLogger))
+					using (ITelemetrySink telemetrySink = CreateTelemetrySink(userName, sessionId, telemetryLogger))
 					{
 						ITelemetrySink? prevTelemetrySink = Telemetry.ActiveSink;
 						try
@@ -218,7 +229,7 @@ namespace UnrealGameSync
 
 							using (UpdateMonitor updateMonitor = new UpdateMonitor(defaultSettings, updatePath, serviceProvider))
 							{
-								using ProgramApplicationContext context = new ProgramApplicationContext(defaultSettings, updateMonitor, DeploymentSettings.ApiUrl, dataFolder, activateEvent, restoreState, updateSpawn, projectFileName, preview, serviceProvider, uri);
+								using ProgramApplicationContext context = new ProgramApplicationContext(defaultSettings, updateMonitor, DeploymentSettings.Instance.ApiUrl, dataFolder, activateEvent, restoreState, updateSpawn, projectFileName, preview, serviceProvider, uri);
 								Application.Run(context);
 
 								if (updateMonitor.IsUpdateAvailable && updateSpawn != null)
@@ -245,7 +256,7 @@ namespace UnrealGameSync
 
 		private static void TraceException(Exception ex, ILogger logger)
 		{
-			if (DeploymentSettings.SentryDsn != null)
+			if (DeploymentSettings.Instance.SentryDsn != null)
 			{
 				SentrySdk.CaptureException(ex);
 			}
@@ -274,7 +285,7 @@ namespace UnrealGameSync
 		{
 			SentrySdk.CaptureException(e.Exception);
 
-			ThreadExceptionDialog dialog = new ThreadExceptionDialog(e.Exception);
+			using ThreadExceptionDialog dialog = new ThreadExceptionDialog(e.Exception);
 			dialog.ShowDialog();
 		}
 
@@ -326,7 +337,7 @@ namespace UnrealGameSync
 		{
 			for(int idx = 0; idx < remainingArgs.Count; idx++)
 			{
-				if(remainingArgs[idx].Equals(option, StringComparison.InvariantCultureIgnoreCase))
+				if(remainingArgs[idx].Equals(option, StringComparison.OrdinalIgnoreCase))
 				{
 					value = true;
 					remainingArgs.RemoveAt(idx);
@@ -342,7 +353,7 @@ namespace UnrealGameSync
 		{
 			for(int idx = 0; idx < remainingArgs.Count; idx++)
 			{
-				if(remainingArgs[idx].StartsWith(prefix, StringComparison.InvariantCultureIgnoreCase))
+				if(remainingArgs[idx].StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
 				{
 					value = remainingArgs[idx].Substring(prefix.Length);
 					remainingArgs.RemoveAt(idx);

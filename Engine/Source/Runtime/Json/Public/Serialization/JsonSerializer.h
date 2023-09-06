@@ -321,11 +321,25 @@ private:
 				{
 					if (Element->Identifier.IsEmpty())
 					{
-						Writer.WriteValue(Element->Value->AsNumber());
+						if (Element->Value->PreferStringRepresentation())
+						{
+							Writer.WriteRawJSONValue(Element->Value->AsString());
+						}
+						else
+						{
+							Writer.WriteValue(Element->Value->AsNumber());
+						}
 					}
 					else
 					{
-						Writer.WriteValue(Element->Identifier, Element->Value->AsNumber());
+						if (Element->Value->PreferStringRepresentation())
+						{
+							Writer.WriteRawJSONValue(Element->Identifier, Element->Value->AsString());
+						}
+						else
+						{
+							Writer.WriteValue(Element->Identifier, Element->Value->AsNumber());
+						}
 					}
 				}
 				break;

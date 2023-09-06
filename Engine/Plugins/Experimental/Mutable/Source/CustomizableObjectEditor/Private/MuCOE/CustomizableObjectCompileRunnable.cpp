@@ -16,9 +16,8 @@ class ITargetPlatform;
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
 
-FCustomizableObjectCompileRunnable::FCustomizableObjectCompileRunnable(mu::NodePtr Root, bool bInDisableTextureLayout)
+FCustomizableObjectCompileRunnable::FCustomizableObjectCompileRunnable(mu::Ptr<mu::Node> Root)
 	: MutableRoot(Root)
-	, bDisableTextureLayout(bInDisableTextureLayout)
 	, bThreadCompleted(false)
 	, MutableIsDisabled(false)
 {
@@ -45,7 +44,7 @@ uint32 FCustomizableObjectCompileRunnable::Run()
 
 	if (Options.OptimizationLevel > 3)
 	{
-		UE_LOG(LogMutable, Verbose, TEXT("Mutable compile optimization level out of range. Clamping to maximum."));
+		UE_LOG(LogMutable, Log, TEXT("Mutable compile optimization level out of range. Clamping to maximum."));
 		Options.OptimizationLevel = 3;
 	}
 
@@ -88,12 +87,11 @@ uint32 FCustomizableObjectCompileRunnable::Run()
 	const int MinRomSize = 128;
 	CompilerOptions->SetDataPackingStrategy(MinRomSize, MinResidentMips);
 
-	/** At object compilation time we don't know if we will want progressive images or not. Assume we will. */
+	// At object compilation time we don't know if we will want progressive images or not. Assume we will. 
+	// TODO: Per-state setting?
 	CompilerOptions->SetEnableProgressiveImages(true);
-
-	CompilerOptions->SetTextureLayoutStrategy(bDisableTextureLayout
-		? mu::CompilerOptions::TextureLayoutStrategy::None
-		: mu::CompilerOptions::TextureLayoutStrategy::Pack);
+	
+	CompilerOptions->SetImageTiling(Options.ImageTiling);
 
 	mu::CompilerPtr Compiler = new mu::Compiler(CompilerOptions);
 
@@ -105,35 +103,32 @@ uint32 FCustomizableObjectCompileRunnable::Run()
 	for (int i = 0; i < pLog->GetMessageCount(); ++i)
 	{
 		const FString& Message = pLog->GetMessageText(i);
-		mu::ErrorLogMessageType MessageType = pLog->GetMessageType(i);
-		mu::ErrorLogMessageAttachedDataView MessageAttachedData = pLog->GetMessageAttachedData(i);
+		const mu::ErrorLogMessageType MessageType = pLog->GetMessageType(i);
+		const mu::ErrorLogMessageAttachedDataView MessageAttachedData = pLog->GetMessageAttachedData(i);
 
-		if (MessageType == mu::ELMT_WARNING)
+		if (MessageType == mu::ELMT_WARNING || MessageType == mu::ELMT_ERROR)
 		{
+			const EMessageSeverity::Type Severity = MessageType == mu::ELMT_WARNING ? EMessageSeverity::Warning : EMessageSeverity::Error;
+			const ELoggerSpamBin SpamBin = [&] {
+				switch (pLog->GetMessageSpamBin(i)) {
+				case mu::ErrorLogMessageSpamBin::ELMSB_UNKNOWN_TAG:
+					return ELoggerSpamBin::TagsNotFound;
+				case mu::ErrorLogMessageSpamBin::ELMSB_ALL:
+				default:
+					return ELoggerSpamBin::ShowAll;
+			}
+			}();
+
 			if (MessageAttachedData.m_unassignedUVs && MessageAttachedData.m_unassignedUVsSize > 0) 
 			{			
 				TSharedPtr<FErrorAttachedData> ErrorAttachedData = MakeShared<FErrorAttachedData>();
 				ErrorAttachedData->UnassignedUVs.Reset();
 				ErrorAttachedData->UnassignedUVs.Append(MessageAttachedData.m_unassignedUVs, MessageAttachedData.m_unassignedUVsSize);
-				ArrayWarning.Add(FError(FText::AsCultureInvariant(Message), ErrorAttachedData, pLog->GetMessageContext(i)));
+				ArrayErrors.Add(FError(Severity, FText::AsCultureInvariant(Message), ErrorAttachedData, pLog->GetMessageContext(i), SpamBin));
 			}
 			else
 			{
-				ArrayWarning.Add(FError(FText::AsCultureInvariant(Message), pLog->GetMessageContext(i)));
-			}
-		}
-		else if (MessageType == mu::ELMT_ERROR)
-		{
-			if (MessageAttachedData.m_unassignedUVs && MessageAttachedData.m_unassignedUVsSize > 0) 
-			{			
-				TSharedPtr<FErrorAttachedData> ErrorAttachedData = MakeShared<FErrorAttachedData>();
-				ErrorAttachedData->UnassignedUVs.Reset();
-				ErrorAttachedData->UnassignedUVs.Append(MessageAttachedData.m_unassignedUVs, MessageAttachedData.m_unassignedUVsSize);
-				ArrayError.Add(FError(FText::AsCultureInvariant(Message), ErrorAttachedData, pLog->GetMessageContext(i)));
-			}
-			else
-			{
-				ArrayError.Add(FError(FText::AsCultureInvariant(Message), pLog->GetMessageContext(i)));
+				ArrayErrors.Add(FError(Severity, FText::AsCultureInvariant(Message), pLog->GetMessageContext(i), SpamBin));
 			}
 		}
 	}
@@ -154,15 +149,9 @@ bool FCustomizableObjectCompileRunnable::IsCompleted() const
 }
 
 
-const TArray<FCustomizableObjectCompileRunnable::FError>& FCustomizableObjectCompileRunnable::GetArrayError() const
+const TArray<FCustomizableObjectCompileRunnable::FError>& FCustomizableObjectCompileRunnable::GetArrayErrors() const
 {
-	return ArrayError;
-}
-
-
-const TArray<FCustomizableObjectCompileRunnable::FError>& FCustomizableObjectCompileRunnable::GetArrayWarning() const
-{
-	return ArrayWarning;
+	return ArrayErrors;
 }
 
 
@@ -178,7 +167,7 @@ FCustomizableObjectSaveDDRunnable::FCustomizableObjectSaveDDRunnable(UCustomizab
 	{
 		// We will be saving all compilation data in two separate files, write CO Data
 		FolderPath = CustomizableObject->GetCompiledDataFolderPath(!InOptions.bIsCooking);
-		CompildeDataFullFileName = FolderPath + CustomizableObject->GetCompiledDataFileName(true, InOptions.TargetPlatform);
+		CompileDataFullFileName = FolderPath + CustomizableObject->GetCompiledDataFileName(true, InOptions.TargetPlatform);
 		StreamableDataFullFileName = FolderPath + CustomizableObject->GetCompiledDataFileName(false, InOptions.TargetPlatform);
 
 		// Serialize Customizable Object's data
@@ -201,7 +190,7 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 		ModelMemoryWriter << bModelSerialized;
 		if (bModelSerialized)
 		{
-			FUnrealMutableModelBulkStreamer Streamer(&ModelMemoryWriter, &StreamableMemoryWriter);
+			FUnrealMutableModelBulkWriter Streamer(&ModelMemoryWriter, &StreamableMemoryWriter);
 			mu::Model::Serialise(Model.Get(), Streamer);
 		}
 	}
@@ -213,10 +202,10 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 
 		// Delete files...
 		bool bFilesDeleted = true;
-		if (FileManager.FileExists(*CompildeDataFullFileName)
-			&& !FileManager.Delete(*CompildeDataFullFileName, true, false, true))
+		if (FileManager.FileExists(*CompileDataFullFileName)
+			&& !FileManager.Delete(*CompileDataFullFileName, true, false, true))
 		{
-			UE_LOG(LogMutable, Error, TEXT("Failed to delete compiled data in file [%s]."), *CompildeDataFullFileName);
+			UE_LOG(LogMutable, Error, TEXT("Failed to delete compiled data in file [%s]."), *CompileDataFullFileName);
 			bFilesDeleted = false;
 		}
 
@@ -231,8 +220,8 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 		if (bFilesDeleted)
 		{
 			// Create file writers...
-			FArchive* ModelMemoryWriter = FileManager.CreateFileWriter(*CompildeDataFullFileName);
-			FArchive* StreamableMemoryWriter = FileManager.CreateFileWriter(*StreamableDataFullFileName);
+			TUniquePtr<FArchive> ModelMemoryWriter( FileManager.CreateFileWriter(*CompileDataFullFileName) );
+			TUniquePtr<FArchive> StreamableMemoryWriter( FileManager.CreateFileWriter(*StreamableDataFullFileName) );
 			check(ModelMemoryWriter);
 			check(StreamableMemoryWriter);
 
@@ -241,13 +230,13 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 			*StreamableMemoryWriter << CustomizableObjectHeader;
 
 			// Serialize Customizable Object's Data to disk
-			ModelMemoryWriter->Serialize(reinterpret_cast<void*>(Bytes.GetData()), Bytes.Num() * sizeof(uint8));
+			ModelMemoryWriter->Serialize(Bytes.GetData(), Bytes.Num() * sizeof(uint8));
 			Bytes.Empty();
 
 			// Serialize mu::Model and streamable resources
 			*ModelMemoryWriter << bModelSerialized;
 
-			FUnrealMutableModelBulkStreamer Streamer(ModelMemoryWriter, StreamableMemoryWriter);
+			FUnrealMutableModelBulkWriter Streamer(ModelMemoryWriter.Get(), StreamableMemoryWriter.Get());
 			mu::Model::Serialise(Model.Get(), Streamer);
 
 			// Save to disk
@@ -256,9 +245,11 @@ uint32 FCustomizableObjectSaveDDRunnable::Run()
 
 			ModelMemoryWriter->Close();
 			StreamableMemoryWriter->Close();
-
-			delete ModelMemoryWriter;
-			delete StreamableMemoryWriter;
+		}
+		else
+		{
+			// Remove old data if there.
+			Model.Reset();
 		}
 	}
 

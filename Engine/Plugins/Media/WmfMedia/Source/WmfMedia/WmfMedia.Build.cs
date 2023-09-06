@@ -27,7 +27,6 @@ namespace UnrealBuildTool.Rules
 					"Projects",
 					"RenderCore",
                     "RHI",
-                    "WmfMediaFactory"
                 });
 
 
@@ -35,13 +34,6 @@ namespace UnrealBuildTool.Rules
 				new string[] {
 					"Media",
 				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"WmfMedia/Private",
-					"WmfMedia/Private/Player",
-					"WmfMedia/Private/Wmf",
-                });
 
 			if (Target.bCompileAgainstEngine)
 			{

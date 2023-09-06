@@ -61,12 +61,34 @@ void FContextualAnimEdMode::Render(const FSceneView* View, FViewport* Viewport, 
 			const FTransform PrimaryTransform = PrimaryBinding->GetContext().GetTransform();
 			if (const FContextualAnimSceneSection* Section = SceneAsset->GetSection(Bindings.GetSectionIdx()))
 			{
-				// Draw Scene Pivots
+				// Draw warp points
 				if (const FContextualAnimSet* AnimSet = Section->GetAnimSet(Bindings.GetAnimSetIdx()))
 				{
-					for (const FTransform& ScenePivot : AnimSet->ScenePivots)
+					for (const FContextualAnimWarpPointDefinition& WarpPointDef : Section->GetWarpPointDefinitions())
 					{
-						DrawCoordinateSystem(PDI, ScenePivot.GetLocation(), ScenePivot.Rotator(), 50.f, SDPG_Foreground);
+						FContextualAnimWarpPoint WarpPoint;
+						if (Bindings.CalculateWarpPoint(WarpPointDef, WarpPoint)) //@TODO: WE HAVE TO  PASS SECTION AND ANIM SET VIA PARAM
+						{
+							// Draw warp point in Green.
+							const float Thickness = 0.f;
+							DrawCoordinateSystem(PDI, WarpPoint.Transform.GetLocation(), WarpPoint.Transform.Rotator(), 5.f, SDPG_Foreground, Thickness);
+							DrawWireDiamond(PDI, WarpPoint.Transform.ToMatrixNoScale(), 3.f, FLinearColor::Green, 0, Thickness);
+
+							// Draw warp target transforms for each actor using this warp point in White. This is where the root should end up at the end of the warping window.
+							for (const FContextualAnimSceneBinding& Binding : Bindings)
+							{
+								const FContextualAnimTrack& AnimTrack = Bindings.GetAnimTrackFromBinding(Binding);
+								if(AnimTrack.Animation)
+								{
+									const float Time = AnimTrack.GetSyncTimeForWarpSection(WarpPointDef.WarpTargetName);
+									const FTransform TransformRelativeToWarpPoint = SceneAsset->GetAlignmentTransform(Bindings.GetSectionIdx(), Bindings.GetAnimSetIdx(), AnimTrack.AnimTrackIdx, WarpPointDef.WarpTargetName, Time);
+									const FTransform WarpTargetTransform = (TransformRelativeToWarpPoint * WarpPoint.Transform);
+
+									DrawCoordinateSystem(PDI, WarpTargetTransform.GetLocation(), WarpTargetTransform.Rotator(), 5.f, SDPG_Foreground, Thickness);
+									DrawWireDiamond(PDI, WarpTargetTransform.ToMatrixNoScale(), 3.f, FLinearColor::White, 0, Thickness);
+								}
+							}
+						}
 					}
 				}
 
@@ -153,7 +175,7 @@ void FContextualAnimEdMode::Render(const FSceneView* View, FViewport* Viewport, 
 											FVector Origin, Direction;
 											if (Cone->Mode == EContextualAnimCriterionConeMode::ToPrimary)
 											{
-												const FTransform QuerierTransform = Section->GetAlignmentTransformForRoleRelativeToOtherRole(AnimSetIdx, AnimTrack.Role, PrimaryRole, 0.f) * PrimaryTransform;
+												const FTransform QuerierTransform = SceneAsset->GetAlignmentTransformForRoleRelativeToOtherRole(AnimTrack.SectionIdx, AnimTrack.AnimSetIdx, AnimTrack.Role, PrimaryRole, 0.f) * PrimaryTransform;
 												Origin = QuerierTransform.GetLocation();
 												Direction = QuerierTransform.GetRotation().GetForwardVector().RotateAngleAxis(Cone->Offset, FVector::UpVector);
 											}
@@ -176,7 +198,7 @@ void FContextualAnimEdMode::Render(const FSceneView* View, FViewport* Viewport, 
 								if (AnimTrack.Role != PrimaryRole && AnimTrack.Animation)
 								{
 									const float Time = 0.f;
-									const FTransform RelativeToPrimary = Section->GetAlignmentTransformForRoleRelativeToOtherRole(AnimSetIdx, AnimTrack.Role, PrimaryRole, Time);
+									const FTransform RelativeToPrimary = SceneAsset->GetAlignmentTransformForRoleRelativeToOtherRole(AnimTrack.SectionIdx, AnimTrack.AnimSetIdx, AnimTrack.Role, PrimaryRole, Time);
 									FTransform Transform = (SceneAsset->GetMeshToComponentForRole(AnimTrack.Role) * RelativeToPrimary) * PrimaryTransform;
 
 									if (ACharacter* PrimaryAsCharacter = Cast<ACharacter>(PrimaryBinding->GetActor()))

@@ -16,7 +16,6 @@ namespace UnrealBuildTool.Rules
                     "Engine",
                     "RenderCore",
                     "RHI",
-					"PhysicsCore"
 				}
 			);
 
@@ -26,10 +25,6 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.Add("UnrealEd");
 			}
 			
-			// Used for including the private Chaos headers
-			string EnginePath = Path.GetFullPath(Target.RelativeEnginePath);
-			PrivateIncludePaths.Add(Path.Combine(EnginePath, "Source/Runtime/Engine/Private"));
-
 			PrivateIncludePathModuleNames.Add("DerivedDataCache");
 		}
 	}

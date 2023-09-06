@@ -8,12 +8,14 @@
 #include "SceneUtils.h"
 
 class FSceneViewFamily;
+struct FMinimalSceneTextures;
 
 /** A uniform buffer containing common scene textures used by materials or global shaders. */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, ENGINE_API)
-	// Scene Color / Depth
+	// Scene Color / Depth / Partial Depth
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScenePartialDepthTexture)
 
 	// GBuffer
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, GBufferATexture)
@@ -40,6 +42,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, ENGIN
 	SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorTextureSampler)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, SceneDepthTextureSampler)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScenePartialDepthTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, ScenePartialDepthTextureSampler)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, CustomDepthTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, CustomDepthTextureSampler)
 	SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<uint2>, CustomStencilTexture)
@@ -51,6 +55,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, ENGIN
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, GBufferCTexture)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, GBufferDTexture)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthAuxTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LocalLightTextureA)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LocalLightTextureB)
 	SHADER_PARAMETER_SAMPLER(SamplerState, GBufferATextureSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, GBufferBTextureSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, GBufferCTextureSampler)
@@ -97,7 +103,7 @@ struct FSceneTexturesConfigInitSettings
  *  SceneTexturesConfig structure in the FViewFamilyInfo.  A global singleton instance is maintained manually with static Set / Get
  *  functions, but will soon be deprecated, in preference of using the structure from the FViewFamilyInfo.
  */
-struct ENGINE_API FSceneTexturesConfig
+struct FSceneTexturesConfig
 {
 	// Sets the persistent global config instance.
 	static void Set(const FSceneTexturesConfig& Config)
@@ -121,9 +127,10 @@ struct ENGINE_API FSceneTexturesConfig
 		, bSupportsXRTargetManagerDepthAlloc{}
 	{}
 
-	void Init(const FSceneTexturesConfigInitSettings& InitSettings);
-    void BuildSceneColorAndDepthFlags();
-	uint32 GetGBufferRenderTargetsInfo(FGraphicsPipelineRenderTargetsInfo& RenderTargetsInfo, EGBufferLayout Layout = GBL_Default) const;
+	ENGINE_API void Init(const FSceneTexturesConfigInitSettings& InitSettings);
+    ENGINE_API void BuildSceneColorAndDepthFlags();
+	ENGINE_API uint32 GetGBufferRenderTargetsInfo(FGraphicsPipelineRenderTargetsInfo& RenderTargetsInfo, EGBufferLayout Layout = GBL_Default) const;
+	ENGINE_API void SetupMobileGBufferFlags(bool bRequiresMultiPass);
 
 	FORCEINLINE bool IsValid() const
 	{
@@ -197,5 +204,5 @@ struct ENGINE_API FSceneTexturesConfig
     bool bRequiresAlphaChannel = false;
 
 private:
-	static FSceneTexturesConfig GlobalInstance;
+	static ENGINE_API FSceneTexturesConfig GlobalInstance;
 };

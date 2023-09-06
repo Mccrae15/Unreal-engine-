@@ -183,10 +183,14 @@ void INiagaraParameterDefinitionsSubscriber::SynchronizeWithParameterDefinitions
 		AssetRegistryModule.GetRegistry().GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/NiagaraEditor"), TEXT("NiagaraParameterDefinitions")), ParameterDefinitionsAssetData);
 		for (const FAssetData& ParameterDefinitionsAssetDatum : ParameterDefinitionsAssetData)
 		{
+			if (!ParameterDefinitionsAssetDatum.IsUAsset() || !ParameterDefinitionsAssetDatum.IsAssetLoaded())
+			{
+				continue;
+			}
 			UNiagaraParameterDefinitionsBase* ParameterDefinitions = Cast<UNiagaraParameterDefinitionsBase>(ParameterDefinitionsAssetDatum.GetAsset());
 			if (ParameterDefinitions == nullptr)
 			{
-				ensureMsgf(false, TEXT("Failed to load parameter definition from asset registry!"));
+				UE_LOG(LogNiagara, Warning, TEXT("Failed to load parameter definition %s from asset registry!"), *ParameterDefinitionsAssetDatum.GetSoftObjectPath().ToString());
 				continue;
 			}
 			AllDefinitions.Add(ParameterDefinitions);

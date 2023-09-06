@@ -10,6 +10,7 @@
 #include "Misc/RemoteConfigIni.h"
 #include "Misc/Paths.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 namespace
 {
@@ -109,12 +110,28 @@ const FConfigContext::FPerPlatformDirs& FConfigContext::GetPerPlatformDirs(const
 	FConfigContext::FPerPlatformDirs* Dirs = FConfigContext::PerPlatformDirs.Find(PlatformName);
 	if (Dirs == nullptr)
 	{
+		FString PluginExtDir;
+		if (bIsForPlugin)
+		{
+			// look if there's a plugin extension for this platform, it will have the platform name in the path
+			for (const FString& ChildDir : ChildPluginBaseDirs)
+			{
+				if (ChildDir.Contains(*FString::Printf(TEXT("/%s/"), *PlatformName)))
+				{
+					PluginExtDir = ChildDir;
+					break;
+				}
+			}
+		}
+		
 		Dirs = &PerPlatformDirs.Emplace(PlatformName, FConfigContext::FPerPlatformDirs
 			{
 				// PlatformExtensionEngineDir
 				FPaths::Combine(*FPaths::EnginePlatformExtensionsDir(), *PlatformName).Replace(*FPaths::EngineDir(), *(EngineRootDir + "/")),
 				// PlatformExtensionProjectDir
-				FPaths::Combine(*FPaths::ProjectPlatformExtensionsDir(), *PlatformName).Replace(*FPaths::ProjectDir(), *(ProjectRootDir + "/"))
+				FPaths::Combine(*FPaths::ProjectPlatformExtensionsDir(), *PlatformName).Replace(*FPaths::ProjectDir(), *(ProjectRootDir + "/")),
+				// PluginExtensionDir
+				PluginExtDir,
 			});
 	}
 	return *Dirs;
@@ -122,6 +139,7 @@ const FConfigContext::FPerPlatformDirs& FConfigContext::GetPerPlatformDirs(const
 
 bool FConfigContext::Load(const TCHAR* InBaseIniName, FString& OutFinalFilename)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FConfigContext::Load);
 	// for single file loads, just return early of the file doesn't exist
 	const bool bBaseIniNameIsFullInIFilePath = FString(InBaseIniName).EndsWith(TEXT(".ini"));
 	if (!bIsHierarchicalConfig && bBaseIniNameIsFullInIFilePath && !DoesConfigFileExistWrapper(InBaseIniName, IniCacheSet))
@@ -432,6 +450,32 @@ FString FConfigContext::PerformFinalExpansions(const FString& InString, const FS
 	OutString = OutString.Replace(TEXT("{RESTRICTEDPROJECT_NFL}"), *ProjectNotForLicenseesDir);
 	OutString = OutString.Replace(TEXT("{RESTRICTEDPROJECT_NR}"), *ProjectNoRedistDir);
 
+	if (FPaths::IsUnderDirectory(ProjectRootDir, ProjectNotForLicenseesDir))
+	{
+		FString RelativeDir = ProjectRootDir;
+		FPaths::MakePathRelativeTo(RelativeDir, *(ProjectNotForLicenseesDir + TEXT("/")));
+
+		OutString = OutString.Replace(TEXT("{OPT_SUBDIR}"), *(RelativeDir + TEXT("/")));
+	}
+	else if (FPaths::IsUnderDirectory(ProjectRootDir, ProjectNoRedistDir))
+	{
+		FString RelativeDir = ProjectRootDir;
+		FPaths::MakePathRelativeTo(RelativeDir, *(ProjectNoRedistDir + TEXT("/")));
+
+		OutString = OutString.Replace(TEXT("{OPT_SUBDIR}"), *(RelativeDir + TEXT("/")));
+	}
+	else if (FPaths::IsUnderDirectory(ProjectRootDir, EngineRootDir))
+	{
+		FString RelativeDir = ProjectRootDir;
+		FPaths::MakePathRelativeTo(RelativeDir, *(EngineRootDir + TEXT("/")));
+		
+		OutString = OutString.Replace(TEXT("{OPT_SUBDIR}"), *(RelativeDir + TEXT("/")));
+	}
+	else
+	{
+		OutString = OutString.Replace(TEXT("{OPT_SUBDIR}"), TEXT(""));
+	}
+	
 	if (Platform.Len() > 0)
 	{
 		OutString = OutString.Replace(TEXT("{EXTENGINE}"), *GetPerPlatformDirs(InPlatform).PlatformExtensionEngineDir);
@@ -442,6 +486,7 @@ FString FConfigContext::PerformFinalExpansions(const FString& InString, const FS
 	if (bIsForPlugin)
 	{
 		OutString = OutString.Replace(TEXT("{PLUGIN}"), *PluginRootDir);
+		OutString = OutString.Replace(TEXT("{EXTPLUGIN}"), *GetPerPlatformDirs(InPlatform).PlatformExtensionPluginDir);
 	}
 
 	return OutString;
@@ -597,12 +642,17 @@ void FConfigContext::AddStaticLayersToHierarchy()
  **/
 static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FConfigFile& ConfigFile, bool bUseCache, const TSet<FString>* IniCacheSet)
 {
+	static bool bDumpIniLoadInfo = FParse::Param(FCommandLine::Get(), TEXT("dumpiniloads"));
+	
+	TRACE_CPUPROFILER_EVENT_SCOPE(LoadIniFileHierarchy);
 	// Traverse ini list back to front, merging along the way.
 	for (const TPair<int32, FString>& HierarchyIt : HierarchyToLoad)
 	{
 		bool bDoCombine = (HierarchyIt.Key != 0);
 		const FString& IniFileName = HierarchyIt.Value;
 
+		UE_CLOG(bDumpIniLoadInfo, LogConfig, Display, TEXT("Looking for file: %s"), *IniFileName);
+		
 		// skip non-existant files
 		if (IsUsingLocalIniFile(*IniFileName, nullptr) && !DoesConfigFileExistWrapper(*IniFileName, IniCacheSet))
 		{
@@ -612,6 +662,8 @@ static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FC
 		bool bDoEmptyConfig = false;
 		//UE_LOG(LogConfig, Log,  TEXT( "Combining configFile: %s" ), *IniList(IniIndex) );
 		ProcessIniContents(*IniFileName, *IniFileName, &ConfigFile, bDoEmptyConfig, bDoCombine);
+
+		UE_CLOG(bDumpIniLoadInfo, LogConfig, Display, TEXT("   Found!"));
 	}
 
 	// Set this configs files source ini hierarchy to show where it was loaded from.
@@ -621,12 +673,9 @@ static bool LoadIniFileHierarchy(const FConfigFileHierarchy& HierarchyToLoad, FC
 }
 
 /**
- * This will load up two .ini files and then determine if the destination one is outdated.
+ * This will load up two .ini files and then determine if the destination one is outdated by comparing
+ * version number in [CurrentIniVersion] section, Version key against the version in the Default*.ini
  * Outdatedness is determined by the following mechanic:
- *
- * When a generated .ini is written out it will store the timestamps of the files it was generated
- * from.  This way whenever the Default__.inis are modified the Generated .ini will view itself as
- * outdated and regenerate it self.
  *
  * Outdatedness also can be affected by commandline params which allow one to delete all .ini, have
  * automated build system etc.

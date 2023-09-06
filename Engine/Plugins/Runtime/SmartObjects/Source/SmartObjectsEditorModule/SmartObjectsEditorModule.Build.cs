@@ -21,7 +21,6 @@ namespace UnrealBuildTool.Rules
 				"Engine",
 				"InputCore",
 				"InteractiveToolsFramework",
-				"MassEntity",
 				"PropertyEditor",
 				"SlateCore",
 				"Slate",
@@ -37,6 +36,7 @@ namespace UnrealBuildTool.Rules
 			new string[] {
 				"RenderCore",
 				"ApplicationCore",
+				"AssetDefinition",
 				"StructUtilsEditor",
 			}
 			);

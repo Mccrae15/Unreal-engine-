@@ -38,6 +38,10 @@ public:
 #endif // WITH_EDITOR
 	//~ End UPrimitiveComponent Interface
 
+	//~ Begin INavRelevantInterface Interface
+	virtual bool IsNavigationRelevant() const override { return false; }
+	//~ End INavRelevantInterface Interface
+
 	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) override;
 
 	void Update();
@@ -133,7 +137,6 @@ private:
 #if WITH_EDITOR
 	//~ Begin USceneComponent Interface
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PostEditComponentMove(bool bFinished) override;
 	//~ Begin USceneComponent Interface
 #endif
 };

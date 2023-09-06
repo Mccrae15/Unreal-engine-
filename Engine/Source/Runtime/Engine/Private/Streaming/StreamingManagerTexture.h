@@ -99,6 +99,8 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 
 	virtual int64 GetMaxEverRequired() const override { return MaxEverRequired; }
 
+	virtual float GetCachedMips() const override { return DisplayedStats.CachedMips; }
+
 	virtual void ResetMaxEverRequired() override { MaxEverRequired = 0; }
 
 	/**
@@ -180,6 +182,14 @@ struct FRenderAssetStreamingManager final : public IRenderAssetStreamingManager
 	void PropagateLightingScenarioChange() override;
 
 	void AddRenderedTextureStats(TMap<FString, FRenderedTextureStats>& InOutRenderedTextureStats) override;
+
+	/**
+	 * Mark the textures/meshes with a timestamp. They're about to lose their location-based heuristic and we don't want them to
+	 * start using LastRenderTime heuristic for a few seconds until they are garbage collected!
+	 *
+	 * @param RemovedRenderAssets	List of removed textures or meshes.
+	 */
+	void SetRenderAssetsRemovedTimestamp(const FRemovedRenderAssetArray& RemovedRenderAssets);
 
 private:
 //BEGIN: Thread-safe functions and data
@@ -267,14 +277,6 @@ private:
 		int32 CurrentUpdateStreamingRenderAssetIndex;
 //END: Thread-safe functions and data
 
-	/**
-	 * Mark the textures/meshes with a timestamp. They're about to lose their location-based heuristic and we don't want them to
-	 * start using LastRenderTime heuristic for a few seconds until they are garbage collected!
-	 *
-	 * @param RemovedRenderAssets	List of removed textures or meshes.
-	 */
-	void	SetRenderAssetsRemovedTimestamp(const FRemovedRenderAssetArray& RemovedRenderAssets);
-
 	void	SetLastUpdateTime();
 	void	UpdateStats();
 	void	UpdateCSVOnlyStats();
@@ -308,6 +310,8 @@ private:
 	 * When asset streamign status is updated on an async task, we need to tick their callabcks later.
 	 */
 	void TickDeferredMipLevelChangeCallbacks();
+
+	void ProcessPendingLevelManagers();
 
 	/** Cached from the system settings. */
 	int32 NumStreamedMips_Texture[TEXTUREGROUP_MAX];
@@ -361,6 +365,22 @@ private:
 
 	/** Level data */
 	TArray<FLevelRenderAssetManager*> LevelRenderAssetManagers;
+
+	// Used to prevent hazard when LevelRenderAssetManagers array is modified through recursion
+	struct FScopedLevelRenderAssetManagersLock
+	{
+		FRenderAssetStreamingManager* StreamingManager;
+		TArray<FLevelRenderAssetManager*> PendingAddLevelManagers;
+		TArray<FLevelRenderAssetManager*> PendingRemoveLevelManagers;
+
+		FScopedLevelRenderAssetManagersLock(FRenderAssetStreamingManager* InStreamingManager);
+
+		~FScopedLevelRenderAssetManagersLock();
+	};
+
+	friend struct FScopedLevelRenderAssetManagersLock;
+
+	FScopedLevelRenderAssetManagersLock* LevelRenderAssetManagersLock;
 
 	/** Stages [0,N-2] is non-threaded data collection, Stage N-1 is wait-for-AsyncWork-and-finalize. */
 	int32					ProcessingStage;

@@ -79,6 +79,10 @@ protected:
 	ECheckBoxState GetDrawFontMetricsState() const;
 	void OnDrawFontMetricsStateChanged(ECheckBoxState NewState);
 
+	/** Called to handle the "Draw Font Scale" numeric entry box */
+	TOptional<float> GetDrawFontScale() const;
+	void OnDrawFontScaleChanged(float InNewValue, ETextCommit::Type CommitType);
+
 	//~ Begin FEditorUndoClient Interface
 	/** Handles any post undo cleanup of the GUI so that we don't have stale data being displayed. */
 	virtual void PostUndo(bool bSuccess) override;
@@ -152,7 +156,7 @@ private:
 
 private:
 	/** The font asset being inspected */
-	UFont* Font;
+	TObjectPtr<UFont> Font;
 
 	/** List of open tool panels; used to ensure only one exists at any one time */
 	TMap< FName, TWeakPtr<SDockTab> > SpawnedToolPanels;
@@ -182,10 +186,10 @@ private:
 	static FString LastPath;
 	
 	/** The exporter to use for all font page exporting */
-	UTextureExporterTGA* TGAExporter;
+	TObjectPtr<UTextureExporterTGA> TGAExporter;
 
 	/** The factory to create updated pages with */
-	UTextureFactory* Factory;
+	TObjectPtr<UTextureFactory> Factory;
 
 	/** The current font editor layout (if any) */
 	TOptional<EFontCacheType> CurrentEditorLayout;

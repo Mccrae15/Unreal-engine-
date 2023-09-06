@@ -1,15 +1,16 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
 #include "NavAgentSelector.generated.h"
 
 USTRUCT()
-struct ENGINE_API FNavAgentSelector
+struct FNavAgentSelector
 {
 	GENERATED_USTRUCT_BODY()
 
 	static const uint32 InitializedBit = 0x80000000;
+	static const uint32 AllAgentsMask = 0x7fffffff;
 
 #if CPP
 	union
@@ -55,12 +56,18 @@ struct ENGINE_API FNavAgentSelector
 	};
 #endif
 
-	explicit FNavAgentSelector(const uint32 InBits = 0x7fffffff);
+	ENGINE_API explicit FNavAgentSelector(const uint32 InBits = AllAgentsMask);
 
 	FORCEINLINE bool Contains(int32 AgentIndex) const
 	{
 		return (AgentIndex >= 0 && AgentIndex < 16) ? !!(PackedBits & (1 << AgentIndex)) : false;
 	}
+
+	FORCEINLINE bool ContainsAnyAgent() const
+	{
+		return PackedBits & AllAgentsMask;
+	}
+
 
 	FORCEINLINE void Set(int32 AgentIndex)
 	{
@@ -90,7 +97,7 @@ struct ENGINE_API FNavAgentSelector
 		return (~InitializedBit & PackedBits) == (~InitializedBit & Other.PackedBits);
 	}
 
-	bool Serialize(FArchive& Ar);
+	ENGINE_API bool Serialize(FArchive& Ar);
 
 	uint32 GetAgentBits() const 
 	{
@@ -105,5 +112,6 @@ struct TStructOpsTypeTraits< FNavAgentSelector > : public TStructOpsTypeTraitsBa
 	{
 		WithSerializer = true,
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 

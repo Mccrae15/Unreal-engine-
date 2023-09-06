@@ -12,8 +12,6 @@ public class AnimationSharingEd : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"Engine",
-				"EditorFramework",
                 "UnrealEd",
                 "AssetTools",
                 "AnimationSharing",
@@ -22,6 +20,7 @@ public class AnimationSharingEd : ModuleRules
                 "PropertyEditor",
             }
 		);
-    }
 
+		UnsafeTypeCastWarningLevel = WarningLevel.Error;
+	}
 }

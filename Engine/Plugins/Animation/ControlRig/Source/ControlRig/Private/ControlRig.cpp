@@ -27,6 +27,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "RigVMDeveloperTypeUtils.h"
+#include "Editor.h"
 #endif// WITH_EDITOR
 #include "ControlRigComponent.h"
 #include "Constraints/ControlRigTransformableHandle.h"
@@ -51,6 +52,14 @@ static TAutoConsoleVariable<int32> CVarControlRigCreateFloatControlsForCurves(
 	TEXT("ControlRig.CreateFloatControlsForCurves"),
 	0,
 	TEXT("If nonzero we create a float control for each curve in the curve container, useful for debugging low level controls."),
+	ECVF_Default);
+
+//CVar to specify if we should allow debug drawing in game (during shipped game or PIE)
+//By default we don't for performance 
+static TAutoConsoleVariable<float> CVarControlRigEnableDrawInterfaceInGame(
+	TEXT("ControlRig.EnableDrawInterfaceInGame"),
+	0,
+	TEXT("If nonzero debug drawing will be enabled during play."),
 	ECVF_Default);
 
 UControlRig::UControlRig(const FObjectInitializer& ObjectInitializer)
@@ -153,6 +162,132 @@ void UControlRig::Initialize(bool bRequestInit)
 	GetHierarchy()->UpdateVisibilityOnProxyControls();
 }
 
+void UControlRig::OnAddShapeLibrary(const FControlRigExecuteContext* InContext, const FString& InLibraryName, UControlRigShapeLibrary* InShapeLibrary, bool bReplaceExisting, bool bLogResults)
+{
+	// don't ever change the CDO
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	if(InShapeLibrary == nullptr)
+	{
+		if(InContext)
+		{
+			static constexpr TCHAR Message[] = TEXT("No shape library provided.");
+			InContext->Log(EMessageSeverity::Error, Message);
+		}
+		return;
+	}
+
+	// remove the shape library in case it was there before
+	ShapeLibraryNameMap.Remove(InShapeLibrary->GetName());
+	ShapeLibraries.Remove(InShapeLibrary);
+
+	// if we've removed all shape libraries - let's add the ones from the CDO back
+	if (ShapeLibraries.IsEmpty())
+	{
+		UControlRig* CDO = GetClass()->GetDefaultObject<UControlRig>();
+		ShapeLibraries = CDO->ShapeLibraries;
+	}
+
+	// if we are supposed to replace the library and the library name is empty
+	FString LibraryName = InLibraryName;
+	if(LibraryName.IsEmpty() && bReplaceExisting)
+	{
+		if(ShapeLibraries.Num() == 1)
+		{
+			LibraryName = ShapeLibraries[0]->GetName();
+		}
+	}
+
+	if(LibraryName.IsEmpty())
+	{
+		LibraryName = InShapeLibrary->GetName();
+	}
+
+	if(LibraryName != InShapeLibrary->GetName())
+	{
+		ShapeLibraryNameMap.FindOrAdd(InShapeLibrary->GetName()) = LibraryName;
+	}
+
+	if(bReplaceExisting)
+	{
+		for(int32 Index = 0; Index < ShapeLibraries.Num(); Index++)
+		{
+			const TSoftObjectPtr<UControlRigShapeLibrary>& ExistingShapeLibrary = ShapeLibraries[Index];
+			if(ExistingShapeLibrary.IsNull())
+			{
+				continue;
+			}
+			FString ExistingName = ExistingShapeLibrary->GetName();
+			if (FString* MapName = ShapeLibraryNameMap.Find(ExistingName))
+			{
+				ExistingName = *MapName;
+			}
+			if(ExistingName.Equals(LibraryName, ESearchCase::IgnoreCase))
+			{
+				ShapeLibraryNameMap.Remove(ExistingShapeLibrary->GetName());
+				ShapeLibraries[Index] = InShapeLibrary;
+				break;
+			}
+		}
+	}
+
+	ShapeLibraries.AddUnique(InShapeLibrary);
+
+#if WITH_EDITOR
+	if(bLogResults)
+	{
+		static constexpr TCHAR MapFormat[] = TEXT("Control Rig '%s': Shape Library Name Map: '%s' -> '%s'");
+		static constexpr TCHAR LibraryFormat[] = TEXT("Control Rig '%s': Shape Library '%s' uses asset '%s'");
+		static constexpr TCHAR DefaultShapeFormat[] = TEXT("Control Rig '%s': Shape Library '%s' has default shape '%s'");
+		static constexpr TCHAR ShapeFormat[] = TEXT("Control Rig '%s': Shape Library '%s' contains shape %03d: '%s'");
+
+		const FString PathName = GetPathName();
+
+		for(const TPair<FString, FString>& Pair: ShapeLibraryNameMap)
+		{
+			UE_LOG(LogControlRig, Display, MapFormat, *PathName, *Pair.Key, *Pair.Value);
+		}
+
+		const int32 NumShapeLibraries = ShapeLibraries.Num();
+		
+		for(int32 Index = 0; Index <NumShapeLibraries; Index++)
+		{
+			const TSoftObjectPtr<UControlRigShapeLibrary>& ShapeLibrary = ShapeLibraries[Index];
+			if(ShapeLibrary.IsNull())
+			{
+				continue;
+			}
+
+			UE_LOG(LogControlRig, Display, LibraryFormat, *PathName, *ShapeLibrary->GetName(), *ShapeLibrary->GetPathName());
+
+			const bool bUseNameSpace = ShapeLibraries.Num() > 1;
+			const FString DefaultShapeName = UControlRigShapeLibrary::GetShapeName(ShapeLibrary.Get(), bUseNameSpace, ShapeLibraryNameMap, ShapeLibrary->DefaultShape);
+			UE_LOG(LogControlRig, Display, DefaultShapeFormat, *PathName, *ShapeLibrary->GetName(), *DefaultShapeName);
+
+			for(int32 ShapeIndex = 0; ShapeIndex < ShapeLibrary->Shapes.Num(); ShapeIndex++)
+			{
+				const FString ShapeName = UControlRigShapeLibrary::GetShapeName(ShapeLibrary.Get(), bUseNameSpace, ShapeLibraryNameMap, ShapeLibrary->Shapes[ShapeIndex]);
+				UE_LOG(LogControlRig, Display, ShapeFormat, *PathName, *ShapeLibrary->GetName(), ShapeIndex, *ShapeName);
+			}
+		}
+	}
+#endif
+}
+
+bool UControlRig::OnShapeExists(const FName& InShapeName) const
+{
+	const TArray<TSoftObjectPtr<UControlRigShapeLibrary>>& Libraries = GetShapeLibraries();
+	if (UControlRigShapeLibrary::GetShapeByName(InShapeName, GetShapeLibraries(), ShapeLibraryNameMap))
+	{
+		return true;
+	}
+	
+	return false;
+}
+
 bool UControlRig::InitializeVM(const FName& InEventName)
 {
 	if(!Super::InitializeVM(InEventName))
@@ -168,8 +303,7 @@ bool UControlRig::InitializeVM(const FName& InEventName)
 	{
 		HierarchyController->LogFunction = [this](EMessageSeverity::Type InSeverity, const FString& Message)
 		{
-			const FRigVMExtendedExecuteContext& ExtendedExecuteContext = GetVM()->GetContext();
-			const FRigVMExecuteContext& PublicContext = ExtendedExecuteContext.GetPublicData<>(); 
+			const FRigVMExecuteContext& PublicContext = GetExtendedExecuteContext().GetPublicData<>();
 			if(RigVMLog)
 			{
 				RigVMLog->Report(InSeverity,PublicContext.GetFunctionName(),PublicContext.GetInstructionIndex(), Message);
@@ -295,11 +429,18 @@ bool UControlRig::Execute(const FName& InEventName)
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_Execute);
 	
-	FRigVMExtendedExecuteContext& ExtendedExecuteContext = GetVM()->GetContext();
-	FControlRigExecuteContext& PublicContext = ExtendedExecuteContext.GetPublicDataSafe<FControlRigExecuteContext>();
+	FControlRigExecuteContext& PublicContext = GetExtendedExecuteContext().GetPublicDataSafe<FControlRigExecuteContext>();
+
+#if WITH_EDITOR
+	PublicContext.SetLog(RigVMLog); // may be nullptr
+#endif
+
 	PublicContext.SetDeltaTime(DeltaTime);
 	PublicContext.SetAbsoluteTime(AbsoluteTime);
 	PublicContext.SetFramesPerSecond(GetCurrentFramesPerSecond());
+#if UE_RIGVM_DEBUG_EXECUTION
+	PublicContext.bDebugExecution = bDebugExecutionEnabled;
+#endif
 
 	if (VM)
 	{
@@ -313,7 +454,7 @@ bool UControlRig::Execute(const FName& InEventName)
 		// only set a valid first entry event later when execution
 		// has passed the initialization stage and there are multiple events present in one evaluation
 		// first entry event is used to determined when to clear data during an evaluation
-		VM->SetFirstEntryEventInEventQueue(NAME_None);
+		VM->SetFirstEntryEventInEventQueue(GetExtendedExecuteContext(), NAME_None);
 #endif
 	}
 
@@ -332,25 +473,42 @@ bool UControlRig::Execute(const FName& InEventName)
 			}
 		}
 
-		if(VM)
-		{
-			VM->SetDebugInfo(&DebugInfo);
-		}
+		GetExtendedExecuteContext().SetDebugInfo(&DebugInfo);
+		GetSnapshotContext() = GetExtendedExecuteContext();
 	}
-	else if(VM)
+	else
 	{
-		VM->SetDebugInfo(nullptr);
+		GetExtendedExecuteContext().SetDebugInfo(nullptr);
+		GetSnapshotContext().Reset();
 	}
 #endif
 
 	FRigUnitContext& Context = PublicContext.UnitContext;
+
+	bool bEnableDrawInterface = false;
+#if WITH_EDITOR
+	const bool bEnabledDuringGame = CVarControlRigEnableDrawInterfaceInGame->GetInt() != 0;
+	const bool bInGame = !(GEditor && !GEditor->GetPIEWorldContext());
+	if (bEnabledDuringGame || !bInGame)
+	{
+		bEnableDrawInterface = true;
+	}	
+#endif
 
 	// setup the draw interface for debug drawing
 	if(!bIsEventInQueue || bIsEventFirstInQueue)
 	{
 		DrawInterface.Reset();
 	}
-	PublicContext.SetDrawInterface(&DrawInterface);
+
+	if (bEnableDrawInterface)
+	{
+		PublicContext.SetDrawInterface(&DrawInterface);
+	}
+	else
+	{
+		PublicContext.SetDrawInterface(nullptr);
+	}
 
 	// setup the animation attribute container
 	Context.AnimAttributeContainer = ExternalAnimAttributeContainer;
@@ -375,6 +533,10 @@ bool UControlRig::Execute(const FName& InEventName)
 	// allow access to the hierarchy
 	Context.HierarchySettings = HierarchySettings;
 	check(PublicContext.Hierarchy);
+
+	// allow access to the shape libraries
+	PublicContext.OnAddShapeLibraryDelegate.BindUObject(this, &UControlRig::OnAddShapeLibrary);
+	PublicContext.OnShapeExistsDelegate.BindUObject(this, &UControlRig::OnShapeExists);
 
 	// allow access to the default hierarchy to allow to reset
 	if(!HasAnyFlags(RF_ClassDefaultObject))
@@ -422,6 +584,21 @@ bool UControlRig::Execute(const FName& InEventName)
 			}
 		}
 	}
+	
+	// setup the user data
+	// first using the data from the rig,
+	// followed by the data coming from the skeleton
+	// then the data coming from the skeletal mesh,
+	// and in the future we'll also add the data from the control rig component
+	PublicContext.AssetUserData.Reset();
+	if(const TArray<UAssetUserData*>* ControlRigUserDataArray = GetAssetUserDataArray())
+	{
+		for(const UAssetUserData* ControlRigUserData : *ControlRigUserDataArray)
+		{
+			PublicContext.AssetUserData.Add(ControlRigUserData);
+		}
+	}
+	PublicContext.AssetUserData.Remove(nullptr);
 
 	// if we have any referenced elements dirty them
 	if(GetHierarchy())
@@ -473,7 +650,7 @@ bool UControlRig::Execute(const FName& InEventName)
 
 			// disable selection notifications from the hierarchy
 			TGuardValue<bool> DisableSelectionNotifications(GetHierarchy()->GetController(true)->bSuspendSelectionNotifications, true);
-			{				
+			{
 				// save the current state of all pose elements to preserve user intention, since construction event can
 				// run in between forward events
 				// the saved pose is reapplied to the rig after construction event as the pose scope goes out of scope
@@ -482,7 +659,14 @@ bool UControlRig::Execute(const FName& InEventName)
 				{
 					// only do this in non-construction mode because 
 					// when construction mode is enabled, the control values are cleared before reaching here (too late to save them)
-					PoseScope = MakeUnique<FPoseScope>(this, ERigElementType::ToResetAfterConstructionEvent);
+					if (!bJustRanInit)
+					{
+						PoseScope = MakeUnique<FPoseScope>(this, ERigElementType::ToResetAfterConstructionEvent, TArray<FRigElementKey>(), ERigTransformType::CurrentGlobal);
+					}
+					else
+					{
+						PoseScope = MakeUnique<FPoseScope>(this, ERigElementType::ToResetAfterConstructionEvent);
+					}
 				}
 				
 				{
@@ -520,6 +704,13 @@ bool UControlRig::Execute(const FName& InEventName)
 	#endif
 						// reset the pose to initial such that construction event can run from a deterministic initial state
 						GetHierarchy()->ResetPoseToInitial(ERigElementType::All);
+					}
+
+					// clone the shape libraries again from the CDO 
+					if (!HasAnyFlags(RF_ClassDefaultObject) && ShapeLibraries.IsEmpty())
+					{
+						UControlRig* CDO = GetClass()->GetDefaultObject<UControlRig>();
+						ShapeLibraries = CDO->ShapeLibraries;
 					}
 
 					if (PreConstructionEvent.IsBound())
@@ -585,7 +776,7 @@ bool UControlRig::Execute(const FName& InEventName)
 		// has passed the initialization stage and there are multiple events present
 		if (EventQueueToRun.Num() >= 2 && VM)
 		{
-			VM->SetFirstEntryEventInEventQueue(EventQueueToRun[0]);
+			VM->SetFirstEntryEventInEventQueue(GetExtendedExecuteContext(), EventQueueToRun[0]);
 		}
 
 		// Transform Overrride is generated using a Transient Control 
@@ -925,6 +1116,8 @@ bool UControlRig::Execute_Internal(const FName& InEventName)
 {
 	if (VM)
 	{
+		FRigVMExtendedExecuteContext& Context = GetExtendedExecuteContext();
+
 		static constexpr TCHAR InvalidatedVMFormat[] = TEXT("%s: Invalidated VM - aborting execution.");
 		if(VM->IsNativized())
 		{
@@ -938,7 +1131,8 @@ bool UControlRig::Execute_Internal(const FName& InEventName)
 		else
 		{
 			// sanity check the validity of the VM to ensure stability.
-			if(!IsValidLowLevel() ||
+			if(!VM->IsContextValidForExecution(Context) ||
+				!IsValidLowLevel() ||
 				!VM->IsValidLowLevel() ||
 				!VM->GetLiteralMemory()->IsValidLowLevel() ||
 				!VM->GetWorkMemory()->IsValidLowLevel())
@@ -969,16 +1163,18 @@ bool UControlRig::Execute_Internal(const FName& InEventName)
 				const bool bIsEventFirstInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun[0] == InEventName; 
 				const bool bIsEventLastInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun.Last() == InEventName;
 
-				if (VM->GetHaltedAtBreakpoint().IsValid())
+				if (GetHaltedAtBreakpoint().IsValid())
 				{
 					if(bIsEventFirstInQueue)
 					{
 						VM->CopyFrom(SnapShotVM, false, false, false, true, true);
+						GetExtendedExecuteContext() = GetSnapshotContext();
 					}
 				}
 				else if(bIsEventLastInQueue)
 				{
 					SnapShotVM->CopyFrom(VM, false, false, false, true, true);
+					GetSnapshotContext() = GetExtendedExecuteContext();
 				}
 			}
 		}
@@ -1004,9 +1200,9 @@ bool UControlRig::Execute_Internal(const FName& InEventName)
 		}
 		
 #endif
-		FRigHierarchyExecuteContextBracket HierarchyContextGuard(Hierarchy, &VM->GetContext());
+		FRigHierarchyExecuteContextBracket HierarchyContextGuard(Hierarchy, &Context);
 
-		const bool bSuccess = VM->Execute(LocalMemory, InEventName) != ERigVMExecuteResult::Failed;
+		const bool bSuccess = VM->Execute(Context, LocalMemory, InEventName) != ERigVMExecuteResult::Failed;
 
 #if UE_RIGVM_PROFILE_EXECUTE_UNITS_NUM
 		const uint64 EndCycles = FPlatformTime::Cycles64();
@@ -1100,8 +1296,9 @@ UAnimationDataSourceRegistry* UControlRig::GetDataSourceRegistry()
 	}
 	if (DataSourceRegistry == nullptr)
 	{
-		DataSourceRegistry = NewObject<UAnimationDataSourceRegistry>(this);
+		DataSourceRegistry = NewObject<UAnimationDataSourceRegistry>(this, NAME_None, RF_Transient);
 	}
+
 	return DataSourceRegistry;
 }
 
@@ -1384,7 +1581,7 @@ void UControlRig::SetControlLocalTransform(const FName& InControlName, const FTr
 			OnFilterControl.Broadcast(this, ControlElement, Value);
 			
 		}
-		SetControlValue(InControlName, Value, bNotify, Context, bSetupUndo, bFixEulerFlips);
+		SetControlValue(InControlName, Value, bNotify, Context, bSetupUndo, false /*bPrintPython not defined!*/, bFixEulerFlips);
 	}
 }
 
@@ -1401,7 +1598,7 @@ const TArray<TSoftObjectPtr<UControlRigShapeLibrary>>& UControlRig::GetShapeLibr
 {
 	const TArray<TSoftObjectPtr<UControlRigShapeLibrary>>* LibrariesPtr = &ShapeLibraries;
 
-	if(!GetClass()->IsNative())
+	if(!GetClass()->IsNative() && ShapeLibraries.IsEmpty())
 	{
 		if (UControlRig* CDO = Cast<UControlRig>(GetClass()->GetDefaultObject()))
 		{
@@ -2107,6 +2304,26 @@ void UControlRig::SetInteractionRigClass(TSubclassOf<UControlRig> InInteractionR
 
 void UControlRig::PreEditChange(FProperty* PropertyAboutToChange)
 {
+	// for BP user authored properties let's ignore changes since they
+	// will be distributed from the BP anyway to all archetype instances.
+	if(PropertyAboutToChange && !PropertyAboutToChange->IsNative())
+	{
+		if(const UBlueprint* Blueprint = Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
+		{
+			const struct FBPVariableDescription* FoundVariable = Blueprint->NewVariables.FindByPredicate(
+				[PropertyAboutToChange](const struct FBPVariableDescription& NewVariable)
+				{
+					return NewVariable.VarName == PropertyAboutToChange->GetFName();
+				}
+			);
+
+			if(FoundVariable)
+			{
+				return;
+			}
+		}
+	}
+	
 	Super::PreEditChange(PropertyAboutToChange);
 
 	if (PropertyAboutToChange && PropertyAboutToChange->GetFName() == GET_MEMBER_NAME_CHECKED(UControlRig, InteractionRig))
@@ -2141,6 +2358,46 @@ void UControlRig::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	}
 }
 #endif
+
+const TArray<UAssetUserData*>* UControlRig::GetAssetUserDataArray() const
+{
+	if(HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return &ToRawPtrTArrayUnsafe(AssetUserData);
+	}
+
+	CombinedAssetUserData.Reset();
+	CombinedAssetUserData.Append(AssetUserData);
+
+	if(OuterSceneComponent.IsValid())
+	{
+		if(const USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(OuterSceneComponent))
+		{
+			if(USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->GetSkeletalMeshAsset())
+			{
+				if(const USkeleton* Skeleton = SkeletalMesh->GetSkeleton())
+				{
+					if(const TArray<UAssetUserData*>* SkeletonUserDataArray = Skeleton->GetAssetUserDataArray())
+					{
+						for(UAssetUserData* SkeletonUserData : *SkeletonUserDataArray)
+						{
+							CombinedAssetUserData.Add(SkeletonUserData);
+						}
+					}
+				}
+				if(const TArray<UAssetUserData*>* SkeletalMeshUserDataArray = SkeletalMesh->GetAssetUserDataArray())
+				{
+					for(UAssetUserData* SkeletalMeshUserData : *SkeletalMeshUserDataArray)
+					{
+						CombinedAssetUserData.Add(SkeletalMeshUserData);
+					}
+				}
+			}
+		}
+	}
+
+	return &ToRawPtrTArrayUnsafe(CombinedAssetUserData);
+}
 
 void UControlRig::CopyPoseFromOtherRig(UControlRig* Subject)
 {
@@ -2510,8 +2767,7 @@ USceneComponent* UControlRig::GetOwningSceneComponent()
 {
 	if(OuterSceneComponent == nullptr)
 	{
-		FRigVMExtendedExecuteContext& ExtendedExecuteContext = GetVM()->GetContext();
-		const FControlRigExecuteContext& PublicContext = ExtendedExecuteContext.GetPublicDataSafe<FControlRigExecuteContext>();
+		const FControlRigExecuteContext& PublicContext = GetExtendedExecuteContext().GetPublicDataSafe<FControlRigExecuteContext>();
 		const FRigUnitContext& Context = PublicContext.UnitContext;
 
 		USceneComponent* SceneComponentFromRegistry = Context.DataSourceRegistry->RequestSource<USceneComponent>(UControlRig::OwnerComponent);
@@ -2535,9 +2791,10 @@ void UControlRig::PostInitInstance(URigVMHost* InCDO)
 		RF_Public | RF_DefaultSubObject :
 		RF_Transient | RF_Transactional;
 
+	FRigVMExtendedExecuteContext& Context = GetExtendedExecuteContext();
 	// set up the VM
 	VM = NewObject<URigVM>(this, TEXT("VM"), SubObjectFlags);
-	VM->SetContextPublicDataStruct(FControlRigExecuteContext::StaticStruct());
+	Context.SetContextPublicDataStruct(FControlRigExecuteContext::StaticStruct());
 
 	// Cooked platforms will load these pointers from disk.
 	// In certain scenarios RequiresCookedData wil be false but the PKG_FilterEditorOnly will still be set (UEFN)
@@ -2548,7 +2805,7 @@ void UControlRig::PostInitInstance(URigVMHost* InCDO)
 		VM->GetMemoryByType(ERigVMMemoryType::Debug, true);
 	}
 
-	VM->ExecutionReachedExit().AddUObject(this, &UControlRig::HandleExecutionReachedExit);
+	Context.ExecutionReachedExit().AddUObject(this, &UControlRig::HandleExecutionReachedExit);
 	UpdateVMSettings();
 
 	// set up the hierarchy
@@ -2562,8 +2819,24 @@ void UControlRig::PostInitInstance(URigVMHost* InCDO)
 	if(!HasAnyFlags(RF_ClassDefaultObject) && InCDO)
 	{
 		InCDO->PostInitInstanceIfRequired();
-		VM->CopyFrom(InCDO->GetVM());
+
+		VM->CopyFrom(InCDO->GetVM(), false, false, false, true); // we need the external properties to keep the Hash consistent with CDO
+		VM->SetVMHash(VM->ComputeVMHash());
 		DynamicHierarchy->CopyHierarchy(CastChecked<UControlRig>(InCDO)->GetHierarchy());
+
+		// This has to be calculated after the copy, as the CDO memory is lazily instantiated and it affects the Hash
+		const uint32 CDOVMHash = ComputeAndUpdateCDOHash(InCDO);
+		Context.VMHash = CDOVMHash;
+
+		if (VM->GetVMHash() != CDOVMHash)
+		{
+			UE_LOG(LogRigVM
+				, Warning
+				, TEXT("ControlRig : CDO VM Hash [%d] is different from calculated VM Hash [%d]. Please recompile ControlRig used at Asset : [%s]")
+				, CDOVMHash
+				, VM->GetVMHash()
+				, *GetPathName());
+		}
 	}
 	else // we are the CDO
 	{
@@ -2632,20 +2905,21 @@ void UControlRig::OnHierarchyTransformUndoRedo(URigHierarchy* InHierarchy, const
 	}
 }
 
-UControlRig::FPoseScope::FPoseScope(UControlRig* InControlRig, ERigElementType InFilter, const TArray<FRigElementKey>& InElements)
+UControlRig::FPoseScope::FPoseScope(UControlRig* InControlRig, ERigElementType InFilter, const TArray<FRigElementKey>& InElements, const ERigTransformType::Type InTransformType)
 : ControlRig(InControlRig)
 , Filter(InFilter)
+, TransformType(InTransformType)
 {
 	check(InControlRig);
 	const TArrayView<const FRigElementKey> ElementView(InElements.GetData(), InElements.Num());
-	CachedPose = InControlRig->GetHierarchy()->GetPose(false, InFilter, ElementView);
+	CachedPose = InControlRig->GetHierarchy()->GetPose(IsInitial(InTransformType), InFilter, ElementView);
 }
 
 UControlRig::FPoseScope::~FPoseScope()
 {
 	check(ControlRig);
 
-	ControlRig->GetHierarchy()->SetPose(CachedPose);
+	ControlRig->GetHierarchy()->SetPose(CachedPose, TransformType);
 }
 
 #if WITH_EDITOR

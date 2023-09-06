@@ -3,22 +3,25 @@
 #include "SRCControllerPanel.h"
 
 #include "Controller/RCController.h"
+#include "Controller/RCCustomControllerUtilities.h"
+#include "Engine/Texture.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/MessageDialog.h"
 #include "RCControllerModel.h"
 #include "RCVirtualPropertyContainer.h"
 #include "RemoteControlLogicConfig.h"
 #include "RemoteControlPreset.h"
-#include "SlateOptMacros.h"
 #include "SRCControllerPanelList.h"
+#include "SlateOptMacros.h"
 #include "Styling/RemoteControlStyles.h"
 #include "UI/BaseLogicUI/RCLogicModeBase.h"
 #include "UI/Panels/SRCDockPanel.h"
-#include "UI/RemoteControlPanelStyle.h"
 #include "UI/RCUIHelpers.h"
+#include "UI/RemoteControlPanelStyle.h"
 #include "UI/SRemoteControlPanel.h"
-#include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Views/SListView.h"
 
 #if WITH_EDITOR
@@ -95,6 +98,7 @@ void SRCControllerPanel::Construct(const FArguments& InArgs, const TSharedRef<SR
 
 	ControllerDockPanel->AddHeaderToolbarItem(EToolbar::Left, AddNewControllerButton);
 	ControllerDockPanel->AddFooterToolbarItem(EToolbar::Right, DeleteSelectedControllerButton);
+	ControllerDockPanel->AddHeaderToolbarItem(EToolbar::Right, GetMultiControllerSwitchWidget());
 
 	ChildSlot
 		.Padding(RCPanelStyle->PanelPadding)
@@ -104,6 +108,21 @@ void SRCControllerPanel::Construct(const FArguments& InArgs, const TSharedRef<SR
 }
 
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
+SRCControllerPanel::FRCControllerPropertyInfo SRCControllerPanel::GetPropertyInfoForCustomType(const FName& InType)
+{
+	FRCControllerPropertyInfo PropertyInfo;
+	const EPropertyBagPropertyType CustomControllerType = UE::RCCustomControllers::GetCustomControllerType(InType);
+
+	if (CustomControllerType != EPropertyBagPropertyType::None)
+	{
+		PropertyInfo.Type = CustomControllerType;
+		PropertyInfo.CustomMetaData = UE::RCCustomControllers::GetCustomControllerMetaData(InType.ToString());
+	}
+
+	return PropertyInfo;
+}
+
 
 static UObject* GetBaseStructForType(FName StructType)
 {
@@ -263,12 +282,52 @@ FReply SRCControllerPanel::RequestDeleteAllItems()
 	return FReply::Handled();
 }
 
+void SRCControllerPanel::OnToggleMultiControllersMode(ECheckBoxState CheckBoxState)
+{
+	switch (CheckBoxState)
+	{
+		case ECheckBoxState::Unchecked:
+			bIsMultiControllerMode = false;
+			break;
+
+		case ECheckBoxState::Checked:
+			bIsMultiControllerMode = true;
+			break;
+
+		case ECheckBoxState::Undetermined:
+			bIsMultiControllerMode = false;
+			break;
+	}
+
+	if (ControllerPanelList.IsValid())
+	{
+		ControllerPanelList->SetMultiControllerMode(bIsMultiControllerMode);
+	}
+}
+
+EVisibility SRCControllerPanel::GetMultiControllerSwitchVisibility() const
+{
+	if (const URemoteControlPreset* const Preset = GetPreset())
+	{
+		const int32 NoFieldIdControllersNum = Preset->GetControllersByFieldId(NAME_None).Num();
+
+		// if no controller has a Field Id, let's hide the MultiController Switch
+		if (NoFieldIdControllersNum == Preset->GetNumControllers())
+		{
+			return EVisibility::Collapsed;
+			//todo: this could be smarter, e.g. showing the switch only if there are controllers with the same Field Id
+		}
+	}
+
+	return EVisibility::Visible;
+}
+
 TSharedRef<SWidget> SRCControllerPanel::GetControllerMenuContentWidget() const
 {
 	constexpr  bool bShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
 
-	TArray<TPair<EPropertyBagPropertyType, UObject*>> VirtualPropertyFieldClassNames;
+	TArray<TPair<EPropertyBagPropertyType, FRCControllerPropertyInfo>> VirtualPropertyFieldClassNames;
 
 	// See Config file: BaseRemoteControl.ini
 	const URemoteControlLogicConfig* RCLogicConfig = GetDefault<URemoteControlLogicConfig>();
@@ -276,13 +335,28 @@ TSharedRef<SWidget> SRCControllerPanel::GetControllerMenuContentWidget() const
 	{
 		if (ControllerType == EPropertyBagPropertyType::Struct)
 		{
-			for (const FName StructType : RCLogicConfig->SupportedControllerStructTypes)
+			for (const FName& StructType : RCLogicConfig->SupportedControllerStructTypes)
 			{
 				UObject* ValueTypeObject = GetBaseStructForType(StructType);
 				if (ensure(ValueTypeObject))
 				{
-					VirtualPropertyFieldClassNames.Add({ ControllerType, ValueTypeObject });
+					FRCControllerPropertyInfo PropertyInfo(ValueTypeObject);
+					VirtualPropertyFieldClassNames.Add({ ControllerType, PropertyInfo });
 				}
+			}
+		}
+		else if (ControllerType == EPropertyBagPropertyType::Object)
+		{
+			for (const FName& ObjectType : RCLogicConfig->SupportedControllerObjectClassPaths)
+			{			
+				FSoftClassPath ClassPath(ObjectType.ToString());
+				UObject* ValueTypeObject = ClassPath.TryLoad();
+				
+				if (ensure(ValueTypeObject))
+				{
+					FRCControllerPropertyInfo PropertyInfo(ValueTypeObject);
+					VirtualPropertyFieldClassNames.Add({ ControllerType, PropertyInfo });
+				}	
 			}
 		}
 		else
@@ -291,18 +365,40 @@ TSharedRef<SWidget> SRCControllerPanel::GetControllerMenuContentWidget() const
 		}
 	}
 
-	// Generate a menu from the list of supported Controllers
-	for (const TPair<EPropertyBagPropertyType, UObject*>& Pair : VirtualPropertyFieldClassNames)
+	for (const FName& CustomType : RCLogicConfig->SupportedControllerCustomTypes)
 	{
+		FRCControllerPropertyInfo PropertyInfo = GetPropertyInfoForCustomType(CustomType);
+		VirtualPropertyFieldClassNames.Add({ PropertyInfo.Type, PropertyInfo });
+	}
+
+	// Generate a menu from the list of supported Controllers
+	for (const TPair<EPropertyBagPropertyType, FRCControllerPropertyInfo>& Pair : VirtualPropertyFieldClassNames)
+	{
+		const EPropertyBagPropertyType Type = Pair.Key;
+		const FRCControllerPropertyInfo& PropertyInfo = Pair.Value;
+		UObject* ValueTypeObject = PropertyInfo.ValueTypeObject;
+		
 		// Display Name
-		const FName DefaultName = URCVirtualPropertyBase::GetVirtualPropertyTypeDisplayName(Pair.Key, Pair.Value);
+		FName DefaultName;
+
+		const FName& CustomNameKey = UE::RCCustomControllers::CustomControllerNameKey;
+		
+		// Check if this is a custom property with a dedicated name
+		if (PropertyInfo.CustomMetaData.Contains(CustomNameKey))
+		{
+			DefaultName = FName(PropertyInfo.CustomMetaData[CustomNameKey]);
+		}
+		else
+		{
+			DefaultName = URCVirtualPropertyBase::GetVirtualPropertyTypeDisplayName(Type, ValueTypeObject);
+		}
 
 		// Type Color
 		FLinearColor TypeColor = FColor::White;
 
 		// Generate a transient virtual property for deducing type color:
 		FInstancedPropertyBag Bag;
-		Bag.AddProperty(DefaultName, Pair.Key, Pair.Value);
+		Bag.AddProperty(DefaultName, Type, ValueTypeObject);
 		const FPropertyBagPropertyDesc* BagPropertyDesc = Bag.FindPropertyDescByName(DefaultName);
 		if (!ensure(BagPropertyDesc))
 		{
@@ -328,7 +424,7 @@ TSharedRef<SWidget> SRCControllerPanel::GetControllerMenuContentWidget() const
 			];
 
 		// Menu Item
-		FUIAction Action(FExecuteAction::CreateSP(this, &SRCControllerPanel::OnAddControllerClicked, Pair.Key, Pair.Value));
+		FUIAction Action(FExecuteAction::CreateSP(this, &SRCControllerPanel::OnAddControllerClicked, Type, PropertyInfo));
 
 		MenuBuilder.AddMenuEntry(Action, MenuItemWidget);
 	}
@@ -336,7 +432,29 @@ TSharedRef<SWidget> SRCControllerPanel::GetControllerMenuContentWidget() const
 	return MenuBuilder.MakeWidget();
 }
 
-void SRCControllerPanel::OnAddControllerClicked(const EPropertyBagPropertyType InValueType, UObject* InValueTypeObject) const
+TSharedRef<SWidget> SRCControllerPanel::GetMultiControllerSwitchWidget()
+{
+	const FText& SwitchTooltipText = LOCTEXT("MultiControllerModeSwitchTooltip", "Enable/Disable MultiController Mode.\nWhen enabled, the Controllers list will only show one Controller per Field Id.");
+
+	return
+		SNew(SCheckBox)
+		.Visibility(this, &SRCControllerPanel::GetMultiControllerSwitchVisibility)
+		.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("Toggle MultiController Mode")))
+		.ToolTipText(SwitchTooltipText)
+		.HAlign(HAlign_Center)
+		.Style(&RCPanelStyle->ToggleButtonStyle)
+		.ForegroundColor(FSlateColor::UseForeground())
+		.IsChecked_Lambda([this]() { return bIsMultiControllerMode ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+		.OnCheckStateChanged(this, &SRCControllerPanel::OnToggleMultiControllersMode)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("MultiControllersModeSwitchLabel", "Multi"))
+			.Justification(ETextJustify::Center)
+			.TextStyle(&RCPanelStyle->PanelTextStyle)
+		];
+}
+
+void SRCControllerPanel::OnAddControllerClicked(const EPropertyBagPropertyType InValueType, const FRCControllerPropertyInfo InControllerPropertyInfo) const
 {
 	// Add to the asset
 	if (URemoteControlPreset* Preset = GetPreset())
@@ -344,7 +462,20 @@ void SRCControllerPanel::OnAddControllerClicked(const EPropertyBagPropertyType I
 		FScopedTransaction Transaction(LOCTEXT("AddController", "Add Controller"));
 		Preset->Modify();
 
-		URCVirtualPropertyInContainer* NewVirtualProperty = Preset->AddController(URCController::StaticClass(), InValueType, InValueTypeObject);
+		URCVirtualPropertyInContainer* NewVirtualProperty = Preset->AddController(URCController::StaticClass(), InValueType, InControllerPropertyInfo.ValueTypeObject);
+
+		// Copy over the custom metadata of this property
+		for (const TPair<FName, FString>& Pair : InControllerPropertyInfo.CustomMetaData)
+		{
+			NewVirtualProperty->SetMetadataValue(Pair.Key, Pair.Value);
+		}
+
+		// Additional logic for Custom Controllers naming
+		if (UE::RCCustomControllers::IsCustomController(NewVirtualProperty))
+		{
+			const FName& NewControllerName = UE::RCCustomControllers::GetUniqueNameForController(NewVirtualProperty);
+			NewVirtualProperty->DisplayName = NewControllerName;
+		}
 
 		if (ControllerPanelList.IsValid())
 		{

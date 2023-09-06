@@ -34,6 +34,10 @@ class UFbxSceneImportOptionsSkeletalMesh : public UObject
 	UPROPERTY(EditAnywhere, config, Category = SkeletalMesh)
 	uint32 bPreserveSmoothingGroups : 1;
 
+	/** If checked, sections with matching materials are kept separate and will not get combined. */
+	UPROPERTY(EditAnywhere, config, Category = SkeletalMesh)
+	uint32 bKeepSectionsSeparate : 1;
+
 	/** If checked, meshes nested in bone hierarchies will be imported instead of being converted to bones. */
 	UPROPERTY(EditAnywhere, config, Category = SkeletalMesh)
 	uint32 bImportMeshesInBoneHierarchy : 1;
@@ -41,6 +45,10 @@ class UFbxSceneImportOptionsSkeletalMesh : public UObject
 	/** True to import morph target meshes from the FBX file */
 	UPROPERTY(EditAnywhere, config, Category = SkeletalMesh, meta = (ToolTip = "If enabled, creates Unreal morph objects for the imported meshes"))
 	uint32 bImportMorphTargets : 1;
+
+	/** True to import morph target meshes from the FBX file */
+	UPROPERTY(EditAnywhere, config, Category = SkeletalMesh, meta = (ToolTip = "If enabled, import single-channel/weight/alpha vertex attributes"))
+	uint32 bImportVertexAttributes : 1;
 
 	/** Threshold to compare vertex position equality. */
 	UPROPERTY(EditAnywhere, config, Category = "SkeletalMesh|Thresholds", meta = (NoSpinbox = "true", ClampMin = "0.0"))

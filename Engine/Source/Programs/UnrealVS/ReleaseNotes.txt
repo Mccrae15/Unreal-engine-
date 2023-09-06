@@ -1,3 +1,18 @@
+1.84.3.2
+* Bug fix for compiling a single file when us
+
+1.84.3.1
+* Bug fix for leaving in debugging code
+
+1.84.3
+* Added command to generate assembly file while compiling single file
+
+1.84.2
+* Fix to Unreal.TestAdapater to output test results to a file
+
+1.84.1
+* P4 Commands now are more aggressive about finding your working directory
+
 1.83
 * Open for Edit now also Adds if the file is not already added
 * added Revert command

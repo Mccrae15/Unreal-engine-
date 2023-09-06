@@ -1,35 +1,68 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System;
 using SolidWorks.Interop.sldworks;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using DatasmithSolidworks.Names;
+using static DatasmithSolidworks.Addin;
 
 namespace DatasmithSolidworks
 {
+	public struct FConvertedTransform
+	{
+		public float[] Matrix;
+
+		public FConvertedTransform(float[] Floats)
+		{
+			Matrix = Floats;
+		}
+
+		public bool IsValid()
+		{
+			return Matrix != null;
+		}
+
+		public override string ToString()
+		{
+			return (Matrix==null ? "null" : string.Join(", ", Matrix));
+		}
+
+		public static FConvertedTransform Identity()
+		{
+			return new FConvertedTransform(new[]
+			{
+				1.0f, 0.0f, 0.0f, 0.0f,
+				0.0f, 1.0f, 0.0f, 0.0f,
+				0.0f, 0.0f, 1.0f, 0.0f,
+				0.0f, 0.0f, 0.0f, 1.0f
+			});
+		}
+	}
+
 	public class FConfigurationTree
 	{
 		// Component state for a single configuration
 		public class FComponentConfig
 		{
-			public readonly string ConfigName;
+			public readonly FVariantName ConfigName;
 			public readonly bool bIsMainActive;  // if this Configuration is the active config
 
 			public bool bVisible = true;
 			public bool bSuppressed = false;
 			
 			// Node transform. Null value if transform is not changed in this configuration.
-			public float[] Transform = null;
-			public float[] RelativeTransform = null;
+			public FConvertedTransform Transform;
+			public FConvertedTransform RelativeTransform;
 
 			// Null value if configuration doesn't override the material.
 			public FObjectMaterials Materials = null;
 
 			public List<Body2> Bodies = null;
 
-			public FComponentConfig(string InConfigName, bool bInIsMainActive)
+			public FComponentConfig(FVariantName InConfigName, bool bInIsMainActive)
 			{
 				ConfigName = InConfigName;
 				bIsMainActive = bInIsMainActive;
@@ -68,7 +101,7 @@ namespace DatasmithSolidworks
 			public string PartPath => ComponentInfo.PartPath;
 
 			// Common configuration data
-			public FComponentConfig CommonConfig = new FComponentConfig(null, true);
+			public FComponentConfig CommonConfig = new FComponentConfig(new FVariantName(), true);
 
 			// Per-configuration data
 			public List<FComponentConfig> Configurations = null;
@@ -82,6 +115,28 @@ namespace DatasmithSolidworks
 			public HashSet<FActorName> Meshes = null;
 
 			public List<FComponentTreeNode> Children;
+
+			// Traverse tree passing result of function computation for each node to its children
+			// Function - receives parent's computed value and current node and returns value computed for the node(to pass to children)
+			public void Traverse<T>(T ParentValue, Func<T, FComponentTreeNode, T> Function)
+			{
+				LogDebug($" {ComponentName}");
+
+				T Value = Function(ParentValue, this);
+
+				if (Children == null)
+				{
+					return;
+				}				
+				
+				foreach (FComponentTreeNode Child in Children)
+				{
+					using (LogScopedIndent())
+					{
+						Child.Traverse(Value, Function);
+					}
+				}
+			}
 
 			public IEnumerable<FComponentTreeNode> EnumChildren()
 			{
@@ -101,9 +156,11 @@ namespace DatasmithSolidworks
 				Component = InComponent;
 			}
 
-			public FComponentConfig AddConfiguration(string InConfigurationName, bool bIsDisplayState, bool bIsActiveConfiguration)
+			public FComponentConfig AddConfiguration(FVariantName InConfigurationName, bool bIsDisplayState, bool bIsActiveConfiguration)
 			{
 				List<FComponentConfig> TargetList = null;
+
+				Debug.Assert(InConfigurationName.IsValid());
 
 				if (bIsDisplayState)
 				{
@@ -127,7 +184,7 @@ namespace DatasmithSolidworks
 				return Result;
 			}
 
-			public FComponentConfig GetConfiguration(string InConfigurationName, bool bIsDisplayState)
+			public FComponentConfig GetConfiguration(FVariantName InConfigurationName, bool bIsDisplayState)
 			{
 				List<FComponentConfig> TargetList = null;
 
@@ -168,7 +225,7 @@ namespace DatasmithSolidworks
 			}
 		};
 
-		static public void Merge(FComponentTreeNode OutCombined, FComponentTreeNode InTree, string InConfigurationName,
+		static public void Merge(FComponentTreeNode OutCombined, FComponentTreeNode InTree, FVariantName InConfigurationName,
 			bool bIsActiveConfiguration)
 		{
 			foreach (FComponentTreeNode Child in InTree.EnumChildren())
@@ -210,6 +267,12 @@ namespace DatasmithSolidworks
 				// Make a NodeConfig and copy parameter values from 'tree' node
 				FComponentConfig NodeConfig = CombinedChild.AddConfiguration(InConfigurationName, false, bIsActiveConfiguration);
 				NodeConfig.CopyFrom(Child.CommonConfig);
+
+				// Copy 'extra' configurations created for this actual configuration - linked display states and exploded views
+				if (Child.Configurations != null)
+				{
+					CombinedChild.Configurations.AddRange(Child.Configurations);
+				}
 
 				// Recurse to children
 				Merge(CombinedChild, Child, InConfigurationName, bIsActiveConfiguration);
@@ -255,15 +318,16 @@ namespace DatasmithSolidworks
 			if (InNode.Configurations != null && InNode.Configurations.Count > 0)
 			{
 				// Check transform
-				float[] Transform = InNode.Configurations[0].Transform;
-				float[] RelativeTransform = InNode.Configurations[0].RelativeTransform;
+				FConvertedTransform Transform = InNode.Configurations[0].Transform;
+				FConvertedTransform RelativeTransform = InNode.Configurations[0].RelativeTransform;
 				bool bAllTransformsAreSame = true;
-				if (RelativeTransform != null)
+				if (RelativeTransform.IsValid())
 				{
 					// There could be components without a transform, so we're checking if for null
 					for (int Idx = 1; Idx < InNode.Configurations.Count; Idx++)
 					{
-						if (!InNode.Configurations[Idx].RelativeTransform.SequenceEqual(RelativeTransform))
+						FConvertedTransform OtherTransform = InNode.Configurations[Idx].RelativeTransform;
+						if (OtherTransform.IsValid() && !MathUtils.TransformsAreEqual(OtherTransform, RelativeTransform))
 						{
 							bAllTransformsAreSame = false;
 							break;
@@ -275,8 +339,8 @@ namespace DatasmithSolidworks
 						InNode.CommonConfig.RelativeTransform = RelativeTransform;
 						foreach (FComponentConfig Config in InNode.Configurations)
 						{
-							Config.RelativeTransform = null;
-							Config.Transform = null;
+							Config.RelativeTransform = new FConvertedTransform();
+							Config.Transform = new FConvertedTransform();
 						}
 					}
 				}
@@ -372,7 +436,7 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		static public void FillConfigurationData(FConfigurationExporter ConfigurationExporter, FComponentTreeNode InNode, string InConfigurationName, FConfigurationData OutData, bool bIsDisplayState)
+		static public void FillConfigurationData(FConfigurationExporter ConfigurationExporter, FComponentTreeNode InNode, FVariantName InConfigurationName, FConfigurationData OutData, bool bIsDisplayState)
 		{
 			FComponentConfig NodeConfig = InNode.GetConfiguration(InConfigurationName, bIsDisplayState);
 
@@ -392,7 +456,7 @@ namespace DatasmithSolidworks
 			if (NodeConfig != null)
 			{
 				// Only add variant information if attribute is not the same in all configurations
-				if (NodeConfig.RelativeTransform != null)
+				if (NodeConfig.RelativeTransform.IsValid())
 				{
 					OutData.ComponentTransform.Add(InNode.ComponentName, NodeConfig.RelativeTransform);
 				}

@@ -42,12 +42,12 @@
 #include "Templates/IsUEnumClass.h"
 #include "Templates/MemoryOps.h"
 #include "Templates/Models.h"
+#include "Templates/SharedPointer.h"
 #include "Templates/Tuple.h"
 #include "Templates/UnrealTemplate.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Trace/Detail/Channel.h"
 #include "UObject/Class.h"
-#include "UObject/CoreNetTypes.h"
 #include "UObject/Field.h"
 #include "UObject/LazyObjectPtr.h"
 #include "UObject/NameTypes.h"
@@ -70,9 +70,15 @@ class FBlake3;
 class FOutputDevice;
 class UPackageMap;
 class UPropertyWrapper;
+enum ELifetimeCondition : int;
 struct CGetTypeHashable;
 struct FUObjectSerializeContext;
 template <typename FuncType> class TFunctionRef;
+namespace UE::GC
+{
+	class FPropertyStack;
+	class FSchemaBuilder;
+}
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogType, Log, All);
 
@@ -121,90 +127,18 @@ enum class EConvertFromTypeResult
 	Converted
 };
 
-enum class EPropertyObjectReferenceType : uint32
+enum class EPropertyMemoryAccess : uint8
 {
-	None = 0,
-	Strong = 1 << 0,
-	Weak = 1 << 1
+	// Direct memory access - the associated pointer points to the memory at the reflected item.
+	Direct,
+
+	// Container access - the associated pointer points to the outer of the reflected item.
+	// Access via containers will use getter and setters, if present.
+	InContainer
 };
-ENUM_CLASS_FLAGS(EPropertyObjectReferenceType);
 
 namespace UEProperty_Private { class FProperty_DoNotUse; }
 
-/**
- * Helper class that calculates the maximum stack entry size required by Garbage Collector Token Stream for each class 
- */
-class COREUOBJECT_API FGCStackSizeHelper
-{
-	int32 MaxStackSize = 0;
-	/** Current property stack. Includes properties nested inside of struct member variables */
-	TArray<const FProperty*> PropertyStack;
-	
-public:
-
-	FGCStackSizeHelper() = default;
-	FGCStackSizeHelper(const FGCStackSizeHelper& Other) = delete;
-	FGCStackSizeHelper& operator=(const FGCStackSizeHelper& Other) = delete;
-
-	~FGCStackSizeHelper()
-	{
-		// Sanity check to make sure every Push() was followed by a Pop()
-		check(PropertyStack.Num() == 0);
-	}
-
-	void Push(const FProperty* InProperty)
-	{
-		PropertyStack.Push(InProperty);
-		MaxStackSize = FMath::Max(PropertyStack.Num(), MaxStackSize);
-	}
-
-	void Pop()
-	{
-		PropertyStack.Pop();
-	}
-
-	const TArray<const FProperty*>& GetPropertyStack() const
-	{
-		return PropertyStack;
-	}
-
-	/** Converts the interal property stack to a string representing the current property path (Member.StructMember.InnerStructMember) */
-	FString GetPropertyPath() const;
-
-	/** 
-	 * Converts a property path constructed with GetPropertyPath() to an array of properties (from the outermost to the innermost) *
-	 * @param ObjectClass Class that defines the outermost property
-	 * @param InPropertyPath Property path
-	 * @param OutProperties resulting array
-	 * @returns true if the conversion was successful, false otherwise
-	 */
-	static bool ConvertPathToProperties(UClass* ObjectClass, const FName& InPropertyPath, TArray<FProperty*>& OutProperties);
-
-	int32 GetMaxStackSize() const
-	{
-		return MaxStackSize;
-	}
-};
-
-/** Helper class to push and pop FGCStackSizeHelper stack inside of the current scope */
-class FGCStackSizeHelperScope
-{
-	FGCStackSizeHelper& StackSizeHelper;
-public:
-	explicit FGCStackSizeHelperScope(FGCStackSizeHelper& InHelper, FProperty* InProperty)
-		: StackSizeHelper(InHelper)
-	{		
-		StackSizeHelper.Push(InProperty);
-	}
-
-	FGCStackSizeHelperScope(const FGCStackSizeHelperScope& Other) = delete;
-	FGCStackSizeHelperScope& operator=(const FGCStackSizeHelperScope& Other) = delete;
-
-	~FGCStackSizeHelperScope()
-	{		
-		StackSizeHelper.Pop();
-	}
-};
 
 /** Type of pointer provided for property API functions */
 enum class EPropertyPointerType
@@ -216,9 +150,9 @@ enum class EPropertyPointerType
 //
 // An UnrealScript variable.
 //
-class COREUOBJECT_API FProperty : public FField
+class FProperty : public FField
 {
-	DECLARE_FIELD(FProperty, FField, CASTCLASS_FProperty)
+	DECLARE_FIELD_API(FProperty, FField, CASTCLASS_FProperty, COREUOBJECT_API)
 
 	// Persistent variables.
 	int32			ArrayDim;
@@ -233,8 +167,6 @@ private:
 	int32		Offset_Internal;
 
 public:
-	FName		RepNotifyFunc;
-
 	/** In memory only: Linked list of properties from most-derived to base **/
 	FProperty*	PropertyLinkNext;
 	/** In memory only: Linked list of object reference properties from most-derived to base **/
@@ -244,37 +176,39 @@ public:
 	/** In memory only: Linked list of properties requiring post constructor initialization.**/
 	FProperty*	PostConstructLinkNext;
 
+	FName		RepNotifyFunc;
+
 public:
 	// Constructors.
-	FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
+	COREUOBJECT_API FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
 
 	UE_DEPRECATED(5.1, "Compiled-in property constructor is deprecated, use other constructors instead.")
-	FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags);
+	COREUOBJECT_API FProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags, int32 InOffset, EPropertyFlags InFlags);
 
 	/**
 	 * Constructor used for constructing compiled-in properties
 	 * @param InOwner Owner of the property
 	 * @param PropBase Pointer to the compiled in structure describing the property
 	 **/
-	FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
+	COREUOBJECT_API FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
 
 	/**
 	 * Constructor used for constructing compiled-in properties
 	 * @param InOwner Owner of the property
 	 * @param PropBase Pointer to the compiled in structure describing the property
 	 **/
-	FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithoutOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
+	COREUOBJECT_API FProperty(FFieldVariant InOwner, const UECodeGen_Private::FPropertyParamsBaseWithoutOffset& Prop, EPropertyFlags AdditionalPropertyFlags = CPF_None);
 
 #if WITH_EDITORONLY_DATA
-	explicit FProperty(UField* InField);
+	COREUOBJECT_API explicit FProperty(UField* InField);
 #endif // WITH_EDITORONLY_DATA
 
 	// UObject interface
-	virtual void Serialize( FArchive& Ar ) override;
+	COREUOBJECT_API virtual void Serialize( FArchive& Ar ) override;
 	// End of UObject interface
 
 	// FField interface
-	virtual void PostDuplicate(const FField& InField) override;
+	COREUOBJECT_API virtual void PostDuplicate(const FField& InField) override;
 
 	/** parses and imports a text definition of a single property's value (if array, may be an individual element)
 	 * also includes parsing of special operations for array properties (Add/Remove/RemoveIndex/Empty)
@@ -287,17 +221,17 @@ public:
 	 * @param DefinedProperties (out)	list of properties/indices that have been parsed by previous calls, so duplicate definitions cause an error
 	 * @return pointer to remaining text in the stream (even on failure, but on failure it may not be advanced past the entire key/value pair)
 	 */
-	static const TCHAR* ImportSingleProperty( const TCHAR* Str, void* DestData, class UStruct* ObjectStruct, UObject* SubobjectOuter, int32 PortFlags,
+	static COREUOBJECT_API const TCHAR* ImportSingleProperty( const TCHAR* Str, void* DestData, class UStruct* ObjectStruct, UObject* SubobjectOuter, int32 PortFlags,
 											FOutputDevice* Warn, TArray<struct FDefinedProperty>& DefinedProperties );
 
 	/** Gets a redirected property name, will return NAME_None if no redirection was found */
-	static FName FindRedirectedPropertyName(UStruct* ObjectStruct, FName OldName);
+	static COREUOBJECT_API FName FindRedirectedPropertyName(UStruct* ObjectStruct, FName OldName);
 
 	// UHT interface
-	void ExportCppDeclaration(FOutputDevice& Out, EExportedDeclaration::Type DeclarationType, const TCHAR* ArrayDimOverride = NULL, uint32 AdditionalExportCPPFlags = 0
+	COREUOBJECT_API void ExportCppDeclaration(FOutputDevice& Out, EExportedDeclaration::Type DeclarationType, const TCHAR* ArrayDimOverride = NULL, uint32 AdditionalExportCPPFlags = 0
 		, bool bSkipParameterName = false, const FString* ActualCppType = nullptr, const FString* ActualExtendedType = nullptr, const FString* ActualParameterName = nullptr) const;
-	virtual FString GetCPPMacroType( FString& ExtendedTypeText ) const;
-	virtual bool PassCPPArgsByRef() const;
+	COREUOBJECT_API virtual FString GetCPPMacroType( FString& ExtendedTypeText ) const;
+	COREUOBJECT_API virtual bool PassCPPArgsByRef() const;
 
 	/**
 	 * Returns the C++ name of the property, including the _DEPRECATED suffix if the 
@@ -305,7 +239,7 @@ public:
 	 *
 	 * @return C++ name of property
 	 */
-	FString GetNameCPP() const;
+	COREUOBJECT_API FString GetNameCPP() const;
 
 	/**
 	 * Returns the text to use for exporting this property to header file.
@@ -313,14 +247,14 @@ public:
 	 * @param	ExtendedTypeText	for property types which use templates, will be filled in with the type
 	 * @param	CPPExportFlags		flags for modifying the behavior of the export
 	 */
-	virtual FString GetCPPType( FString* ExtendedTypeText=NULL, uint32 CPPExportFlags=0 ) const PURE_VIRTUAL(FProperty::GetCPPType,return TEXT(""););
+	COREUOBJECT_API virtual FString GetCPPType( FString* ExtendedTypeText=NULL, uint32 CPPExportFlags=0 ) const PURE_VIRTUAL(FProperty::GetCPPType,return TEXT(""););
 
-	virtual FString GetCPPTypeForwardDeclaration() const PURE_VIRTUAL(FProperty::GetCPPTypeForwardDeclaration, return TEXT(""););
+	COREUOBJECT_API virtual FString GetCPPTypeForwardDeclaration() const PURE_VIRTUAL(FProperty::GetCPPTypeForwardDeclaration, return TEXT(""););
 	// End of UHT interface
 
 #if WITH_EDITORONLY_DATA
 	/** Gets the wrapper object for this property or creates one if it doesn't exist yet */
-	UPropertyWrapper* GetUPropertyWrapper();
+	COREUOBJECT_API UPropertyWrapper* GetUPropertyWrapper();
 #endif
 
 	/** Checks if this property as a native setter function */
@@ -361,19 +295,19 @@ private:
 	/** Set the alignment offset for this property 
 	 * @return the size of the structure including this newly added property
 	*/
-	int32 SetupOffset();
+	COREUOBJECT_API int32 SetupOffset();
 
 protected:
 	friend class FMapProperty;
 	friend class UEProperty_Private::FProperty_DoNotUse;
 
 	/** Set the alignment offset for this property - added for FMapProperty */
-	void SetOffset_Internal(int32 NewOffset);
+	COREUOBJECT_API void SetOffset_Internal(int32 NewOffset);
 
 	/**
 	 * Initializes internal state.
 	 */
-	void Init();
+	COREUOBJECT_API void Init();
 
 public:
 	/** Return offset of property from container base. */
@@ -414,7 +348,7 @@ public:
 	}
 
 protected:
-	virtual void LinkInternal(FArchive& Ar);
+	COREUOBJECT_API virtual void LinkInternal(FArchive& Ar);
 public:
 
 	/**
@@ -422,15 +356,16 @@ public:
 	* 
 	* @param	Tag			property tag of the loading data
 	* @param	Ar			the archive the data is being loaded from
-	* @param	Data		
+	* @param	Data		a pointer to the container to write the loaded data to
 	* @param	DefaultsStruct 
+	* @param	Defaults	if available, a pointer to the container containing the default value for this property, or null
 	*
 	* @return	A state which tells the tagged property system how the property dealt with the data.
 	*			Converted:        the function has handled the tag.
 	*			CannotConvert:    the tag is not something that the property can convert.
 	*			UseSerializeItem: no conversion was done on the property - this can mean that the tag is correct and normal serialization applies or that the tag is incompatible.
 	*/
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct);
+	COREUOBJECT_API virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults);
 
 	/**
 	 * Determines whether the property values are identical.
@@ -441,7 +376,7 @@ public:
 	 *
 	 * @return	true if the property values are identical
 	 */
-	virtual bool Identical( const void* A, const void* B, uint32 PortFlags=0 ) const PURE_VIRTUAL(FProperty::Identical,return false;);
+	COREUOBJECT_API virtual bool Identical( const void* A, const void* B, uint32 PortFlags=0 ) const PURE_VIRTUAL(FProperty::Identical,return false;);
 
 	/**
 	 * Determines whether the property values are identical.
@@ -496,7 +431,7 @@ public:
 		{
 			for (int32 Idx = 0; Idx < ArrayDim; Idx++)
 			{
-				void *Target = ContainerPtrToValuePtr<void>(Data, Idx);
+				void* Target = ContainerPtrToValuePtr<void>(Data, Idx);
 				void const* Default = ContainerPtrToValuePtrForDefaults<void>(DefaultStruct, DefaultData, Idx);
 				if ( !Identical(Target, Default, UnderlyingArchive.GetPortFlags()) )
 				{
@@ -507,9 +442,9 @@ public:
 		}
 	}
 
-	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults = NULL) const PURE_VIRTUAL(FProperty::SerializeItem, );
-	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const;
-	virtual bool SupportsNetSharedSerialization() const;
+	COREUOBJECT_API virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults = NULL) const PURE_VIRTUAL(FProperty::SerializeItem, );
+	COREUOBJECT_API virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const;
+	COREUOBJECT_API virtual bool SupportsNetSharedSerialization() const;
 
 	UE_DEPRECATED(5.1, "Please use ExportTextItem_InContainer or ExportTextItem_Direct instead.")
 	virtual void ExportTextItem(FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const
@@ -600,7 +535,7 @@ public:
 	* @param InValue Pointer to the memory that the value will be copied from. Must be at least ElementSize big
 	* @param ArrayIndex Index into the static array to copy the value from. If the property is not a static array it should be 0
 	*/
-	void SetSingleValue_InContainer(void* OutContainer, const void* InValue, int32 ArrayIndex) const;
+	COREUOBJECT_API void SetSingleValue_InContainer(void* OutContainer, const void* InValue, int32 ArrayIndex) const;
 
 	/**
 	* Copies a single value to OutValue even if the property represents a static array of values
@@ -608,13 +543,13 @@ public:
 	* @param OutValue Pointer to the memory that the value will be copied to. Must be at least ElementSize big
 	* @param ArrayIndex Index into the static array to copy the value from. If the property is not a static array it should be 0
 	*/
-	void GetSingleValue_InContainer(const void* InContainer, void* OutValue, int32 ArrayIndex) const;
+	COREUOBJECT_API void GetSingleValue_InContainer(const void* InContainer, void* OutValue, int32 ArrayIndex) const;
 
 	/** Allocates and initializes memory to hold a value this property represents */
-	void* AllocateAndInitializeValue() const;
+	COREUOBJECT_API void* AllocateAndInitializeValue() const;
 
 	/** Destroys and frees memory with a value this property represents */
-	void DestroyAndFreeValue(void* InMemory) const;
+	COREUOBJECT_API void DestroyAndFreeValue(void* InMemory) const;
 
 	/**
 	 * Helper function for setting container / struct property value and performing operation directly on the value memory
@@ -622,7 +557,7 @@ public:
 	 * @param DirectPropertyAddress Direct property value address. Can be null only if OutContainer is a valid pointer.
 	 * @param DirectValueAccessFunc Function that manipulates directly on property value address. The value address can be different than the passed in DirectPropertyAddress if setters and getters are present and OutContainer pointer is valid.
 	 */
-	void PerformOperationWithSetter(void* OutContainer, void* DirectPropertyAddress, TFunctionRef<void(void*)> DirectValueAccessFunc) const;
+	COREUOBJECT_API void PerformOperationWithSetter(void* OutContainer, void* DirectPropertyAddress, TFunctionRef<void(void*)> DirectValueAccessFunc) const;
 
 	/**
 	 * Helper function for getting container / struct property value and performing operation directly on the value memory
@@ -630,7 +565,7 @@ public:
 	 * @param DirectPropertyAddress Direct property value address. Can be null only if OutContainer is a valid pointer.
 	 * @param DirectValueAccessFunc Function that manipulates directly on property value address. The value address can be different than the passed in DirectPropertyAddress if setters and getters are present and OutContainer pointer is valid.
 	 */
-	void PerformOperationWithGetter(void* OutContainer, const void* DirectPropertyAddress, TFunctionRef<void(const void*)> DirectValueAccessFunc) const;
+	COREUOBJECT_API void PerformOperationWithGetter(void* OutContainer, const void* DirectPropertyAddress, TFunctionRef<void(const void*)> DirectValueAccessFunc) const;
 
 	/** 
 	 * Gets value address at given index inside of a static array or container
@@ -638,7 +573,7 @@ public:
 	 * @param Index into the static array or container
 	 * @returns address of the value at given index
 	 */
-	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const;
+	COREUOBJECT_API virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const;
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -652,16 +587,16 @@ public:
 	 *                        If true, sub- properties that are editor-only should not be appended to the hash.
 	 *                        This property's base data is appended without regard for bSkipEditorOnly.
 	 */
-	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const;
+	COREUOBJECT_API virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const;
 #endif
 protected:
 
-	virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const PURE_VIRTUAL(FProperty::ExportText, );
-	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const PURE_VIRTUAL(FProperty::ImportText, return nullptr;);
+	COREUOBJECT_API virtual void ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const PURE_VIRTUAL(FProperty::ExportText, );
+	COREUOBJECT_API virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const PURE_VIRTUAL(FProperty::ImportText, return nullptr;);
 
 public:
 	
-	bool ExportText_Direct(FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const;
+	COREUOBJECT_API bool ExportText_Direct(FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const;
 	FORCEINLINE bool ExportText_InContainer(int32 Index, FString& ValueStr, const void* Data, const void* Delta, UObject* Parent, int32 PortFlags, UObject* ExportRootScope = nullptr) const
 	{
 		return ExportText_Direct(ValueStr, ContainerPtrToValuePtr<void>(Data, Index), ContainerPtrToValuePtrForDefaults<void>(NULL, Delta, Index), Parent, PortFlags, ExportRootScope);
@@ -680,7 +615,7 @@ private:
 			check(!GetOwner<UClass>()); // Check we are _not_ calling this on a direct child property of a UClass, you should pass in a UObject* in that case
 		}
 
-		return (uint8*)ContainerPtr + Offset_Internal + ElementSize * ArrayIndex;
+		return (uint8*)ContainerPtr + Offset_Internal + static_cast<size_t>(ElementSize) * ArrayIndex;
 	}
 
 	FORCEINLINE void* ContainerUObjectPtrToValuePtrInternal(UObject* ContainerPtr, int32 ArrayIndex) const
@@ -707,7 +642,7 @@ private:
 			check(!GetOwner<UClass>()); // Check we are _not_ calling this on a direct child property of a UClass, you should pass in a UObject* in that case
 		}
 
-		return (uint8*)ContainerPtr + Offset_Internal + ElementSize * ArrayIndex;
+		return (uint8*)ContainerPtr + Offset_Internal + static_cast<size_t>(ElementSize) * ArrayIndex;
 	}
 
 protected:
@@ -716,7 +651,7 @@ protected:
 	{
 		if (PropertyPointerType == EPropertyPointerType::Container)
 		{
-			return (uint8*)ContainerOrPropertyPtr + Offset_Internal + ElementSize * ArrayIndex;
+			return (uint8*)ContainerOrPropertyPtr + Offset_Internal + static_cast<size_t>(ElementSize) * ArrayIndex;
 		}
 		else
 		{
@@ -832,11 +767,11 @@ public:
 	/**
 	 * Returns the hash value for an element of this property.
 	 */
-	uint32 GetValueTypeHash(const void* Src) const;
+	COREUOBJECT_API uint32 GetValueTypeHash(const void* Src) const;
 
 protected:
-	virtual void CopyValuesInternal( void* Dest, void const* Src, int32 Count  ) const;
-	virtual uint32 GetValueTypeHashInternal(const void* Src) const;
+	COREUOBJECT_API virtual void CopyValuesInternal( void* Dest, void const* Src, int32 Count  ) const;
+	COREUOBJECT_API virtual uint32 GetValueTypeHashInternal(const void* Src) const;
 
 public:
 	/**
@@ -854,7 +789,7 @@ public:
 		{
 			if (PropertyFlags & CPF_IsPlainOldData)
 			{
-				FMemory::Memcpy( Dest, Src, ElementSize * ArrayDim );
+				FMemory::Memcpy( Dest, Src, static_cast<size_t>(ElementSize) * ArrayDim );
 			}
 			else
 			{
@@ -877,7 +812,7 @@ public:
 	 *									SIZE = the ElementSize of this FProperty
 	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
 	 */
-	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const;
+	COREUOBJECT_API virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const;
 
 	/**
 	 * Copy the value for all elements of this property. To the script VM.
@@ -887,13 +822,13 @@ public:
 	 *									OFFSET = the Offset of this FProperty
 	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
 	 */
-	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const;
+	COREUOBJECT_API virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const;
 
 	/**
 	 * Equivalent to the above functions, but using the container and aware of getters/setters when the container has them.
 	 */
-	virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const;
-	virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const;
+	COREUOBJECT_API virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const;
+	COREUOBJECT_API virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const;
 
 	/**
 	 * Copy the value for a single element of this property. From the script VM.
@@ -905,7 +840,7 @@ public:
 	 *									SIZE = the ElementSize of this FProperty
 	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
 	 */
-	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const;
+	COREUOBJECT_API virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const;
 
 	/**
 	 * Copy the value for all elements of this property. From the script VM.
@@ -915,7 +850,7 @@ public:
 	 *									OFFSET = the Offset of this FProperty
 	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
 	 */
-	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const;
+	COREUOBJECT_API virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const;
 
 	/**
 	 * Zeros the value for this property. The existing data is assumed valid (so for example this calls FString::Empty)
@@ -952,7 +887,7 @@ public:
 		}
 	}
 protected:
-	virtual void ClearValueInternal( void* Data ) const;
+	COREUOBJECT_API virtual void ClearValueInternal( void* Data ) const;
 public:
 	/**
 	 * Destroys the value for this property. The existing data is assumed valid (so for example this calls FString::Empty)
@@ -981,7 +916,7 @@ public:
 		}
 	}
 protected:
-	virtual void DestroyValueInternal( void* Dest ) const;
+	COREUOBJECT_API virtual void DestroyValueInternal( void* Dest ) const;
 public:
 
 	/**
@@ -995,7 +930,7 @@ public:
 	{
 		if (PropertyFlags & CPF_ZeroConstructor)
 		{
-			FMemory::Memzero(Dest,ElementSize * ArrayDim);
+			FMemory::Memzero(Dest, static_cast<size_t>(ElementSize) * ArrayDim);
 		}
 		else
 		{
@@ -1013,7 +948,7 @@ public:
 	{
 		if (PropertyFlags & CPF_ZeroConstructor)
 		{
-			FMemory::Memzero(ContainerPtrToValuePtr<void>(Dest),ElementSize * ArrayDim);
+			FMemory::Memzero(ContainerPtrToValuePtr<void>(Dest), static_cast<size_t>(ElementSize) * ArrayDim);
 		}
 		else
 		{
@@ -1021,7 +956,7 @@ public:
 		}
 	}
 protected:
-	virtual void InitializeValueInternal( void* Dest ) const;
+	COREUOBJECT_API virtual void InitializeValueInternal( void* Dest ) const;
 public:
 
 	/**
@@ -1032,9 +967,9 @@ public:
 	 *
 	 * @return	true if ImportText should be allowed
 	 */
-	bool ValidateImportFlags( uint32 PortFlags, FOutputDevice* ErrorText = NULL ) const;
-	bool ShouldPort( uint32 PortFlags=0 ) const;
-	virtual FName GetID() const;
+	COREUOBJECT_API bool ValidateImportFlags( uint32 PortFlags, FOutputDevice* ErrorText = NULL ) const;
+	COREUOBJECT_API bool ShouldPort( uint32 PortFlags=0 ) const;
+	COREUOBJECT_API virtual FName GetID() const;
 
 	/**
 	 * Creates new copies of components
@@ -1044,9 +979,9 @@ public:
 	 * @param	Owner				the object that contains this property's data
 	 * @param	InstanceGraph		contains the mappings of instanced objects and components to their templates
 	 */
-	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph );
+	COREUOBJECT_API virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph );
 
-	virtual int32 GetMinAlignment() const;
+	COREUOBJECT_API virtual int32 GetMinAlignment() const;
 
 	/**
 	 * Returns true if this property, or in the case of e.g. array or struct properties any sub- property, contains a
@@ -1056,7 +991,7 @@ public:
 	 *
 	 * @return true if property (or sub- properties) contains the specified type of UObject reference, false otherwise
 	 */
-	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const;
+	COREUOBJECT_API virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const;
 
 	/**
 	 * Returns true if this property, or in the case of e.g. array or struct properties any sub- property, contains a
@@ -1085,13 +1020,15 @@ public:
 	 * Emits tokens used by realtime garbage collection code to passed in ReferenceTokenStream. The offset emitted is relative
 	 * to the passed in BaseOffset which is used by e.g. arrays of structs.
 	 */
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper);
+	COREUOBJECT_API virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath);
 
+    // @TODO: Surely this can have an int32 overflow. This should probably return size_t. Just
+    // need to audit all callers to make such a change.
 	FORCEINLINE int32 GetSize() const
 	{
 		return ArrayDim * ElementSize;
 	}
-	bool ShouldSerializeValue( FArchive& Ar ) const;
+	COREUOBJECT_API bool ShouldSerializeValue( FArchive& Ar ) const;
 
 	/**
 	 * Determines whether this property value is eligible for copying when duplicating an object
@@ -1192,20 +1129,20 @@ public:
 	}
 
 	/** returns true, if Other is property of exactly the same type */
-	virtual bool SameType(const FProperty* Other) const;
+	COREUOBJECT_API virtual bool SameType(const FProperty* Other) const;
 
 	ELifetimeCondition GetBlueprintReplicationCondition() const { return BlueprintReplicationCondition; }
 	void SetBlueprintReplicationCondition(ELifetimeCondition InBlueprintReplicationCondition) { BlueprintReplicationCondition = InBlueprintReplicationCondition; }
 };
 
 
-class COREUOBJECT_API FPropertyHelpers
+class FPropertyHelpers
 {
 public:
-	static const TCHAR* ReadToken( const TCHAR* Buffer, FString& Out, bool DottedNames = false);
+	static COREUOBJECT_API const TCHAR* ReadToken( const TCHAR* Buffer, FString& Out, bool DottedNames = false);
 
 	// @param Out Appended to
-	static const TCHAR* ReadToken( const TCHAR* Buffer, FStringBuilderBase& Out, bool DottedNames = false);
+	static COREUOBJECT_API const TCHAR* ReadToken( const TCHAR* Buffer, FStringBuilderBase& Out, bool DottedNames = false);
 };
 
 namespace UEProperty_Private
@@ -1222,7 +1159,7 @@ namespace UEProperty_Private
 		 * 
 		 * Explicitly exposed for this singular case -- DO NOT USE otherwise.
 		 */
-		static COREUOBJECT_API void Unsafe_AlterOffset(FProperty& Property, const int32 OffsetOverride)
+		static void Unsafe_AlterOffset(FProperty& Property, const int32 OffsetOverride)
 		{
 			Property.SetOffset_Internal(OffsetOverride);
 		}
@@ -1230,7 +1167,7 @@ namespace UEProperty_Private
 }
 
 /** reference to a property and optional array index used in property text import to detect duplicate references */
-struct COREUOBJECT_API FDefinedProperty
+struct FDefinedProperty
 {
     FProperty* Property;
     int32 Index;
@@ -1243,35 +1180,27 @@ struct COREUOBJECT_API FDefinedProperty
 /**
  * Creates a temporary object that represents the default constructed value of a FProperty
  */
-class COREUOBJECT_API FDefaultConstructedPropertyElement
+class FDefaultConstructedPropertyElement
 {
 public:
-	explicit FDefaultConstructedPropertyElement(FProperty* InProp)
-		: Prop(InProp)
-		, Obj(FMemory::Malloc(InProp->GetSize(), InProp->GetMinAlignment()))
+	FDefaultConstructedPropertyElement() = default;
+	explicit FDefaultConstructedPropertyElement(const FProperty* InProp)
+		: Obj(FMemory::Malloc(InProp->GetSize(), InProp->GetMinAlignment()), [InProp](void* Object)
+			{
+				InProp->DestroyValue(Object);
+				FMemory::Free(Object);
+			})
 	{
-		InProp->InitializeValue(Obj);
-	}
-
-	~FDefaultConstructedPropertyElement()
-	{
-		Prop->DestroyValue(Obj);
-		FMemory::Free(Obj);
+		InProp->InitializeValue(Obj.Get());
 	}
 
 	void* GetObjAddress() const
 	{
-		return Obj;
+		return Obj.Get();
 	}
 
 private:
-	// Non-copyable
-	FDefaultConstructedPropertyElement(const FDefaultConstructedPropertyElement&) = delete;
-	FDefaultConstructedPropertyElement& operator=(const FDefaultConstructedPropertyElement&) = delete;
-
-private:
-	FProperty* Prop;
-	void* Obj;
+	TSharedPtr<void> Obj;
 };
 
 
@@ -1346,7 +1275,7 @@ protected:
 			(TIsPODType<TCppType>::Value ? CPF_IsPlainOldData : CPF_None) 
 			| (TIsTriviallyDestructible<TCppType>::Value ? CPF_NoDestructor : CPF_None) 
 			| (TIsZeroConstructType<TCppType>::Value ? CPF_ZeroConstructor : CPF_None)
-			| (TModels<CGetTypeHashable, TCppType>::Value ? CPF_HasGetValueTypeHash : CPF_None);
+			| (TModels_V<CGetTypeHashable, TCppType> ? CPF_HasGetValueTypeHash : CPF_None);
 
 	}
 };
@@ -1441,14 +1370,14 @@ public:
 	{
 		for (int32 i = 0; i < this->ArrayDim; ++i)
 		{
-			TTypeFundamentals::InitializePropertyValue((uint8*)Dest + i * this->ElementSize);
+			TTypeFundamentals::InitializePropertyValue((uint8*)Dest + i * static_cast<size_t>(this->ElementSize));
 		}
 	}
 	virtual void DestroyValueInternal( void* Dest ) const override
 	{
 		for (int32 i = 0; i < this->ArrayDim; ++i)
 		{
-			TTypeFundamentals::DestroyPropertyValue((uint8*)Dest + i * this->ElementSize);
+			TTypeFundamentals::DestroyPropertyValue((uint8*)Dest + i * static_cast<size_t>(this->ElementSize));
 		}
 	}
 
@@ -1794,7 +1723,7 @@ private:
 	};
 
 public:
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override
 	{
 		if (const EName * TagType = Tag.Type.ToEName())
 		{
@@ -1973,7 +1902,7 @@ class COREUOBJECT_API FByteProperty : public TProperty_Numeric<uint8>
 	DECLARE_FIELD(FByteProperty, TProperty_Numeric<uint8>, CASTCLASS_FByteProperty)
 
 	// Variables.
-	UEnum* Enum;
+	TObjectPtr<UEnum> Enum;
 
 	FByteProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
 		: TProperty_Numeric(InOwner, InName, InObjectFlags)
@@ -2021,7 +1950,7 @@ protected:
 	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* Parent, int32 PortFlags, FOutputDevice* ErrorText) const override;
 public:
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 #if WITH_EDITORONLY_DATA
 	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
 #endif
@@ -2221,7 +2150,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	 * @param InOwner Owner of the property
 	 * @param PropBase Pointer to the compiled in structure describing the property
 	 **/
-	FUInt16Property(FFieldVariant InOwner, const UECodeGen_Private::FFInt16PropertyParams& Prop);
+	FUInt16Property(FFieldVariant InOwner, const UECodeGen_Private::FUInt16PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FUInt16Property(UField* InField)
@@ -2299,7 +2228,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	 * @param InOwner Owner of the property
 	 * @param PropBase Pointer to the compiled in structure describing the property
 	 **/
-	FUInt64Property(FFieldVariant InOwner, const UECodeGen_Private::FUnsizedIntPropertyParams& Prop);
+	FUInt64Property(FFieldVariant InOwner, const UECodeGen_Private::FUInt64PropertyParams& Prop);
 
 #if WITH_EDITORONLY_DATA
 	explicit FUInt64Property(UField* InField)
@@ -2308,28 +2237,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 #endif // WITH_EDITORONLY_DATA
 };
-
-
-/*-----------------------------------------------------------------------------
-	Aliases for implicitly-sized integer properties.
------------------------------------------------------------------------------*/
-
-namespace UETypes_Private
-{
-	template <typename IntType> struct TIntegerPropertyMapping;
-
-	template <> struct TIntegerPropertyMapping<int8>   { typedef FInt8Property   Type; };
-	template <> struct TIntegerPropertyMapping<int16>  { typedef FInt16Property  Type; };
-	template <> struct TIntegerPropertyMapping<int32>  { typedef FIntProperty    Type; };
-	template <> struct TIntegerPropertyMapping<int64>  { typedef FInt64Property  Type; };
-	template <> struct TIntegerPropertyMapping<uint8>  { typedef FByteProperty   Type; };
-	template <> struct TIntegerPropertyMapping<uint16> { typedef FUInt16Property Type; };
-	template <> struct TIntegerPropertyMapping<uint32> { typedef FUInt32Property Type; };
-	template <> struct TIntegerPropertyMapping<uint64> { typedef FUInt64Property Type; };
-}
-
-typedef UETypes_Private::TIntegerPropertyMapping<signed int>::Type UUnsizedIntProperty;
-typedef UETypes_Private::TIntegerPropertyMapping<unsigned int>::Type UUnsizedFIntProperty;
 
 
 /*-----------------------------------------------------------------------------
@@ -2499,7 +2406,7 @@ public:
 	virtual void ClearValueInternal( void* Data ) const override;
 	virtual void InitializeValueInternal( void* Dest ) const override;
 	virtual int32 GetMinAlignment() const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 #if WITH_EDITORONLY_DATA
 	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
 #endif
@@ -2559,6 +2466,18 @@ public:
 		return FieldMask == 0xff;
 	}
 
+	/** Return the the mask that defines the relevant bit for this boolean, or 0xFF if IsNativeBool() is true */
+	FORCEINLINE uint8 GetFieldMask() const
+	{
+		return FieldMask;
+	}
+
+	/** Return the byte offset from this property's storage type to the byte that FieldMask applies to. Only valid if IsNativeBool() is true. */
+	FORCEINLINE uint8 GetByteOffset() const
+	{
+		return ByteOffset;
+	}
+
 	uint32 GetValueTypeHashInternal(const void* Src) const override;
 };
 
@@ -2576,7 +2495,7 @@ class COREUOBJECT_API FObjectPropertyBase : public FProperty
 public:
 
 	// Variables.
-	class UClass* PropertyClass;
+	TObjectPtr<class UClass> PropertyClass;
 
 	FObjectPropertyBase(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
 		: FProperty(InOwner, InName, InObjectFlags)
@@ -2623,49 +2542,6 @@ public:
 	virtual FName GetID() const override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool SameType(const FProperty* Other) const override;
-	/**
-	 * Copy the value for a single element of this property. To the script VM.
-	 * 
-	 * @param	Dest				the address where the value should be copied to.  This should always correspond to the BASE + OFFSET + INDEX * SIZE, where
-	 *									BASE = (for member properties) the address of the UObject which contains this data, (for locals/parameters) the address of the space allocated for the function's locals
-	 *									OFFSET = the Offset of this FProperty
-	 *									INDEX = the index that you want to copy.  for properties which are not arrays, this should always be 0
-	 *									SIZE = the ElementSize of this FProperty
-	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
-	 */
-	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const override;
-
-	/**
-	 * Copy the value for all elements of this property. To the script VM.
-	 * 
-	 * @param	Dest				the address where the value should be copied to.  This should always correspond to the BASE + OFFSET, where
-	 *									BASE = (for member properties) the address of the UObject which contains this data, (for locals/parameters) the address of the space allocated for the function's locals
-	 *									OFFSET = the Offset of this FProperty
-	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
-	 */
-	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const override;
-
-	/**
-	 * Copy the value for a single element of this property. From the script VM.
-	 * 
-	 * @param	Dest				the address where the value should be copied to.  This should always correspond to the BASE + OFFSET + INDEX * SIZE, where
-	 *									BASE = (for member properties) the address of the UObject which contains this data, (for locals/parameters) the address of the space allocated for the function's locals
-	 *									OFFSET = the Offset of this FProperty
-	 *									INDEX = the index that you want to copy.  for properties which are not arrays, this should always be 0
-	 *									SIZE = the ElementSize of this FProperty
-	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
-	 */
-	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const override;
-
-	/**
-	 * Copy the value for all elements of this property. From the script VM.
-	 * 
-	 * @param	Dest				the address where the value should be copied to.  This should always correspond to the BASE + OFFSET, where
-	 *									BASE = (for member properties) the address of the UObject which contains this data, (for locals/parameters) the address of the space allocated for the function's locals
-	 *									OFFSET = the Offset of this FProperty
-	 * @param	Src					the address of the value to copy from. should be evaluated the same way as Dest
-	 */
-	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const override;
 	// End of FProperty interface
 
 	// FObjectPropertyBase interface
@@ -2688,8 +2564,8 @@ public:
 	 * @param bAllowAnyPackage		allows ignoring package name to find any object that happens to be loaded with the same name
 	 * @return	true if the text is successfully resolved into a valid object reference of the correct type, false otherwise.
 	 */
-	static bool ParseObjectPropertyValue( const FProperty* Property, UObject* OwnerObject, UClass* RequiredMetaClass, uint32 PortFlags, const TCHAR*& Buffer, UObject*& out_ResolvedValue, FUObjectSerializeContext* InSerializeContext = nullptr, bool bAllowAnyPackage = true );
-	static UObject* FindImportedObject( const FProperty* Property, UObject* OwnerObject, UClass* ObjectClass, UClass* RequiredMetaClass, const TCHAR* Text, uint32 PortFlags = 0, FUObjectSerializeContext* InSerializeContext = nullptr, bool bAllowAnyPackage = true );
+	static bool ParseObjectPropertyValue( const FProperty* Property, UObject* OwnerObject, UClass* RequiredMetaClass, uint32 PortFlags, const TCHAR*& Buffer, TObjectPtr<UObject>& out_ResolvedValue, FUObjectSerializeContext* InSerializeContext = nullptr, bool bAllowAnyPackage = true );
+	static TObjectPtr<UObject> FindImportedObject( const FProperty* Property, UObject* OwnerObject, UClass* ObjectClass, UClass* RequiredMetaClass, const TCHAR* Text, uint32 PortFlags = 0, FUObjectSerializeContext* InSerializeContext = nullptr, bool bAllowAnyPackage = true );
 	
 	/**
 	 * Returns the qualified export path for a given object, parent, and export root scope
@@ -2725,6 +2601,7 @@ public:
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const;
 	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const;
+	virtual void SetObjectPtrPropertyValue(void* PropertyValueAddress, TObjectPtr<UObject> Value) const;
 	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const;
 
 	/**
@@ -2742,111 +2619,130 @@ public:
 	FORCEINLINE void SetPropertyClass(UClass* NewPropertyClass) { PropertyClass = NewPropertyClass; }
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 
-	virtual void CheckValidObject(void* ValueAddress, UObject* OldValue) const;
+	virtual void CheckValidObject(void* ValueAddress, TObjectPtr<UObject> OldValue) const;
 
 protected:
 	virtual bool AllowCrossLevel() const;
 	virtual bool AllowObjectTypeReinterpretationTo(const FObjectPropertyBase* Other) const;
 	// End of FObjectPropertyBase interface
 
+	/**
+	 * Constructs a new object if the existing one is missing or is not compatible with the property class
+	 * Used for making sure non-nullable properties have valid values.
+	 * @param ExistingValue Previous object value (can be null)
+	 * @return Non-null object that was assigned to this property value address
+	 */
+	UObject* ConstructDefaultObjectValueIfNecessary(UObject* ExistingValue) const;
+
+	// Disable false positive buffer overrun warning during pgoprofile linking step
+	PRAGMA_DISABLE_BUFFER_OVERRUN_WARNING
 	/* Helper functions for UObject property types that wrap the object pointer in a smart pointer */
 	template <typename T>
-	void GetWrappedUObjectPtrValues_InContainer(UObject** OutObjects, const void* ContainerAddress, int32 ArrayIndex, int32 ArrayCount) const
+	void GetWrappedUObjectPtrValues(UObject** OutObjects, const void* SrcAddress, EPropertyMemoryAccess SrcAccess, int32 ArrayIndex, int32 ArrayCount) const
 	{
 		// Ensure required range is valid
 		checkf(ArrayIndex >= 0 && ArrayCount >= 0 && ArrayIndex <= ArrayDim && ArrayCount <= ArrayDim && ArrayIndex <= ArrayDim - ArrayCount, TEXT("ArrayIndex (%d) and ArrayCount (%d) is invalid for an array of size %d"), ArrayIndex, ArrayCount, ArrayDim);
 
-		if (!HasGetter())
+		if (SrcAccess == EPropertyMemoryAccess::InContainer)
 		{
-			// Fast path - direct memory access
-			const uint8* ObjAddress = (const uint8*)ContainerPtrToValuePtr<void>(ContainerAddress, ArrayIndex);
-
-			if (ArrayCount == 1)
+			if (HasGetter())
 			{
-				*OutObjects = GetObjectPropertyValue(ObjAddress);
-			}
-			else
-			{
-				int32 LocalElementSize = ElementSize;
-				for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
+				if (ArrayCount == 1)
 				{
-					OutObjects[OutIndex] = GetObjectPropertyValue(ObjAddress + OutIndex * LocalElementSize);
+					// Slower but no mallocs. We can copy the value directly to the resulting param
+					T Value;
+					GetValue_InContainer(SrcAddress, &Value);
+					*OutObjects = Value.Get();
 				}
+				else
+				{
+					// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
+					T* ValueArray = (T*)AllocateAndInitializeValue();
+					FProperty::GetValue_InContainer(SrcAddress, ValueArray);
+
+					// Grab the items we care about and free the temp array
+					int32 LocalElementSize = ElementSize;
+					for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
+					{
+						OutObjects[OutIndex] = ValueArray[ArrayIndex + OutIndex].Get();
+					}
+					DestroyAndFreeValue(ValueArray);
+				}
+
+				return;
 			}
+
+			SrcAddress = ContainerPtrToValuePtr<void>(SrcAddress, ArrayIndex);
+		}
+
+		// Fast path - direct memory access
+		if (ArrayCount == 1)
+		{
+			*OutObjects = GetObjectPropertyValue(SrcAddress);
 		}
 		else
 		{
-			if (ArrayCount == 1)
+			int32 LocalElementSize = ElementSize;
+			for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
 			{
-				// Slower but no mallocs. We can copy the value directly to the resulting param
-				T Value;
-				GetValue_InContainer(ContainerAddress, &Value);
-				*OutObjects = Value.Get();
-			}
-			else
-			{
-				// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
-				T* ValueArray = (T*)AllocateAndInitializeValue();
-				FProperty::GetValue_InContainer(ContainerAddress, ValueArray);
-
-				// Grab the items we care about and free the temp array
-				int32 LocalElementSize = ElementSize;
-				for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
-				{
-					OutObjects[OutIndex] = ValueArray[ArrayIndex + OutIndex].Get();
-				}
-				DestroyAndFreeValue(ValueArray);
+				OutObjects[OutIndex] = GetObjectPropertyValue((const uint8*)SrcAddress + OutIndex * LocalElementSize);
 			}
 		}
 	}
+	// Enable back buffer overrun warning
+	PRAGMA_ENABLE_BUFFER_OVERRUN_WARNING
+
 	template <typename T>
-	void SetWrappedUObjectPtrValues_InContainer(void* ContainerAddress, UObject** InValues, int32 ArrayIndex, int32 ArrayCount) const
+	void SetWrappedUObjectPtrValues(void* DestAddress, EPropertyMemoryAccess DestAccess, UObject** InValues, int32 ArrayIndex, int32 ArrayCount) const
 	{
 		// Ensure required range is valid
 		checkf(ArrayIndex >= 0 && ArrayCount >= 0 && ArrayIndex <= ArrayDim && ArrayCount <= ArrayDim && ArrayIndex <= ArrayDim - ArrayCount, TEXT("ArrayIndex (%d) and ArrayCount (%d) is invalid for an array of size %d"), ArrayIndex, ArrayCount, ArrayDim);
 
-		if (!HasSetter())
+		if (DestAccess == EPropertyMemoryAccess::InContainer)
 		{
-			// Fast path - direct memory access
-			uint8* ObjAddress = (uint8*)ContainerPtrToValuePtr<void>(ContainerAddress, ArrayIndex);
-
-			if (ArrayCount == 1)
+			if (HasSetter())
 			{
-				SetObjectPropertyValue(ObjAddress, *InValues);
-			}
-			else
-			{
-				int32 LocalElementSize = ElementSize;
-				for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
+				if (ArrayCount == 1)
 				{
-					SetObjectPropertyValue(ObjAddress + OutIndex * LocalElementSize, InValues[OutIndex]);
+					// Slower but no mallocs. We can copy a local wrapped value directly to the resulting param
+					T WrappedValue(*InValues);
+					SetValue_InContainer(DestAddress, &WrappedValue);
 				}
+				else
+				{
+					// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
+					T* ValueArray = (T*)AllocateAndInitializeValue();
+					FProperty::GetValue_InContainer(DestAddress, ValueArray);
+
+					// Replace the items we care about
+					int32 LocalElementSize = ElementSize;
+					for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
+					{
+						ValueArray[ArrayIndex + OutIndex] = InValues[OutIndex];
+					}
+
+					// Now copy the entire array back to the property using a setter
+					SetValue_InContainer(DestAddress, ValueArray);
+					DestroyAndFreeValue(ValueArray);
+				}
+
+				return;
 			}
+
+			DestAddress = ContainerPtrToValuePtr<void>(DestAddress, ArrayIndex);
+		}
+
+		// Fast path - direct memory access
+		if (ArrayCount == 1)
+		{
+			SetObjectPropertyValue(DestAddress, *InValues);
 		}
 		else
 		{
-			if (ArrayCount == 1)
+			int32 LocalElementSize = ElementSize;
+			for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
 			{
-				// Slower but no mallocs. We can copy a local wrapped value directly to the resulting param
-				T WrappedValue(*InValues);
-				SetValue_InContainer(ContainerAddress, &WrappedValue);
-			}
-			else
-			{
-				// Malloc a temp value that is the size of the array. Getter will then copy the entire array to the temp value
-				T* ValueArray = (T*)AllocateAndInitializeValue();
-				FProperty::GetValue_InContainer(ContainerAddress, ValueArray);
-
-				// Replace the items we care about
-				int32 LocalElementSize = ElementSize;
-				for (int32 OutIndex = 0; OutIndex != ArrayCount; ++OutIndex)
-				{
-					ValueArray[ArrayIndex + OutIndex] = InValues[OutIndex];
-				}
-
-				// Now copy the entire array back to the property using a setter
-				SetValue_InContainer(ContainerAddress, ValueArray);
-				DestroyAndFreeValue(ValueArray);
+				SetObjectPropertyValue((uint8*)DestAddress + OutIndex * LocalElementSize, InValues[OutIndex]);
 			}
 		}
 	}
@@ -2913,8 +2809,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// FProperty interface.
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override
 	{
-		return (!!(InReferenceType & EPropertyObjectReferenceType::Strong) && !TIsWeakPointerType<InTCppType>::Value) ||
-			(!!(InReferenceType & EPropertyObjectReferenceType::Weak) && TIsWeakPointerType<InTCppType>::Value);
+		return (EnumHasAnyFlags(InReferenceType, EPropertyObjectReferenceType::Strong) && !TIsWeakPointerType<InTCppType>::Value)
+			|| (EnumHasAnyFlags(InReferenceType, EPropertyObjectReferenceType::Weak) && TIsWeakPointerType<InTCppType>::Value)
+			|| (EnumHasAnyFlags(InReferenceType, EPropertyObjectReferenceType::Soft) && TIsSoftObjectPointerType<InTCppType>::Value);
 	}
 	// End of FProperty interface
 
@@ -2927,6 +2824,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 };
 
+enum class EObjectPropertyOptions
+{
+	None = 0,
+	AllowNullValuesOnNonNullableProperty = 1
+};
+ENUM_CLASS_FLAGS(EObjectPropertyOptions);
 
 //
 // Describes a reference variable to another object which may be nil.
@@ -2969,13 +2872,17 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath) override;
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
 public:
+	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const override;
 	virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const override;
 	virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const override;
 	// End of FProperty interface
@@ -2985,10 +2892,20 @@ public:
 	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
 	virtual UObject* GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex = 0) const override;
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual void SetObjectPtrPropertyValue(void* PropertyValueAddress, TObjectPtr<UObject> Value) const override;
 	virtual void SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex = 0) const override;
 	virtual FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerNativeTypeName)  const override;
 	// End of FObjectPropertyBase interface
 	
+	/**
+	 * Performs post serialization steps after loading a property value
+	 * @param SerializingArchive Archive used for serialization
+	 * @param Value Property address
+	 * @param CurrentValue Current Object value
+	 * @param ObjectValue Deserialized Object value
+	 */
+	void PostSerializeObjectItem(FArchive& SerializingArchive, void* Value, UObject* CurrentValue, UObject* ObjectValue, EObjectPropertyOptions Options = EObjectPropertyOptions::None) const;
+
 	inline TObjectPtr<UObject>* GetObjectPtrPropertyValuePtr(const void* PropertyValueAddress) const
 	{
 		return reinterpret_cast<TObjectPtr<UObject>*>(const_cast<void*>(PropertyValueAddress));
@@ -3025,6 +2942,10 @@ class COREUOBJECT_API FObjectPtrProperty : public FObjectProperty
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual bool Identical(const void* A, const void* B, uint32 PortFlags) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
+	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const override;
 	virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const override;
 	virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const override;
 	// End of FProperty interface
@@ -3093,12 +3014,15 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 protected:
 	virtual void LinkInternal(FArchive& Ar) override;
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
 public:
+	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const override;
 	virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const override;
 	virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const override;
 	// End of FProperty interface
@@ -3158,7 +3082,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual FName GetID() const override;
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults ) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const override;
 	virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const override;
 	virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const override;
 	// End of FProperty interface
@@ -3233,8 +3160,7 @@ protected:
 	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 public:
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 	// End of FProperty interface
 
 	// FObjectProperty interface
@@ -3262,13 +3188,8 @@ public:
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
 public:
+	// Note: FSoftObjectProperty does not override the Copy*VM functions, as ScriptVM should store Asset as a FSoftObjectPtr not as a UObject*.
 
-	// ScriptVM should store Asset as FSoftObjectPtr not as UObject.
-
-	virtual void CopySingleValueToScriptVM(void* Dest, void const* Src) const override;
-	virtual void CopyCompleteValueToScriptVM(void* Dest, void const* Src) const override;
-	virtual void CopySingleValueFromScriptVM(void* Dest, void const* Src) const override;
-	virtual void CopyCompleteValueFromScriptVM(void* Dest, void const* Src) const override;
 	// End of FObjectProperty interface
 };
 
@@ -3284,7 +3205,7 @@ class COREUOBJECT_API FClassProperty : public FObjectProperty
 	DECLARE_FIELD(FClassProperty, FObjectProperty, CASTCLASS_FClassProperty)
 
 	// Variables.
-	class UClass* MetaClass;
+	TObjectPtr<class UClass> MetaClass;
 public:
 
 	FClassProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
@@ -3380,6 +3301,10 @@ class COREUOBJECT_API FClassPtrProperty : public FClassProperty
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual bool Identical(const void* A, const void* B, uint32 PortFlags) const override;
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
+	virtual void CopySingleValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopySingleValueFromScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueToScriptVM( void* Dest, void const* Src ) const override;
+	virtual void CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) const override;
 	virtual void CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const override;
 	virtual void CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const override;
 	// End of FProperty interface
@@ -3407,7 +3332,7 @@ class COREUOBJECT_API FSoftClassProperty : public FSoftObjectProperty
 	DECLARE_FIELD(FSoftClassProperty, FSoftObjectProperty, CASTCLASS_FSoftClassProperty)
 
 	// Variables.
-	class UClass* MetaClass;
+	TObjectPtr<class UClass> MetaClass;
 public:
 
 	FSoftClassProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
@@ -3488,7 +3413,8 @@ class COREUOBJECT_API FInterfaceProperty : public FInterfaceProperty_Super
 	DECLARE_FIELD(FInterfaceProperty, FInterfaceProperty_Super, CASTCLASS_FInterfaceProperty)
 
 	/** The native interface class that this interface property refers to */
-	class	UClass*		InterfaceClass;
+	TObjectPtr<class	UClass>		InterfaceClass;
+	
 public:
 	typedef FInterfaceProperty_Super::TTypeFundamentals TTypeFundamentals;
 	typedef TTypeFundamentals::TCppType TCppType;
@@ -3547,7 +3473,7 @@ public:
 
 	// UObject interface
 	virtual void Serialize( FArchive& Ar ) override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath) override;
 	virtual void BeginDestroy() override;
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	// End of UObject interface
@@ -3618,7 +3544,7 @@ protected:
 	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 public:
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 	virtual FString GetCPPTypeForwardDeclaration() const override;
 	uint32 GetValueTypeHashInternal(const void* Src) const override;
 	// End of FProperty interface
@@ -3674,7 +3600,7 @@ protected:
 	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 public:
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 	virtual FString GetCPPTypeForwardDeclaration() const override;
 	uint32 GetValueTypeHashInternal(const void* Src) const override;
 	// End of FProperty interface
@@ -3704,8 +3630,8 @@ class COREUOBJECT_API FArrayProperty : public FArrayProperty_Super
 	DECLARE_FIELD(FArrayProperty, FArrayProperty_Super, CASTCLASS_FArrayProperty)
 
 	// Variables.
-	FProperty* Inner;
 	EArrayPropertyFlags ArrayFlags;
+	FProperty* Inner;
 
 public:
 	/** Type of the CPP property **/
@@ -3787,14 +3713,14 @@ public:
 
 			for (int32 i = 0; i < this->ArrayDim; ++i)
 			{
-				new ((uint8*)Dest + i * this->ElementSize) FFreezableScriptArray;
+				new ((uint8*)Dest + i * static_cast<size_t>(this->ElementSize)) FFreezableScriptArray;
 			}
 		}
 		else
 		{
 			for (int32 i = 0; i < this->ArrayDim; ++i)
 			{
-				new ((uint8*)Dest + i * this->ElementSize) FScriptArray;
+				new ((uint8*)Dest + i * static_cast<size_t>(this->ElementSize)) FScriptArray;
 			}
 		}
 	}
@@ -3804,9 +3730,9 @@ public:
 	virtual bool PassCPPArgsByRef() const override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath) override;
 	virtual bool SameType(const FProperty* Other) const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 
 	virtual int32 GetMinAlignment() const override
 	{
@@ -3923,14 +3849,14 @@ public:
 
 			for (int32 i = 0; i < this->ArrayDim; ++i)
 			{
-				new ((uint8*)Dest + i * this->ElementSize) FFreezableScriptMap;
+				new ((uint8*)Dest + i * static_cast<size_t>(this->ElementSize)) FFreezableScriptMap;
 			}
 		}
 		else
 		{
 			for (int32 i = 0; i < this->ArrayDim; ++i)
 			{
-				new ((uint8*)Dest + i * this->ElementSize) FScriptMap;
+				new ((uint8*)Dest + i * static_cast<size_t>(this->ElementSize)) FScriptMap;
 			}
 		}
 	}
@@ -3940,9 +3866,9 @@ public:
 	virtual bool PassCPPArgsByRef() const override;
 	virtual void InstanceSubobjects(void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph) override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath) override;
 	virtual bool SameType(const FProperty* Other) const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const override;
 	// End of FProperty interface
 
@@ -4064,9 +3990,9 @@ public:
 	virtual bool PassCPPArgsByRef() const override;
 	virtual void InstanceSubobjects(void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph) override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath) override;
 	virtual bool SameType(const FProperty* Other) const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 	virtual void* GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InValueAddress, int32 Index) const override;
 	// End of FProperty interface
 
@@ -4166,17 +4092,6 @@ public:
 		return Result;
 	}
 	/**
-	 *	Static version of Num() used when you don't need to bother to construct a FScriptArrayHelper. Returns the number of elements in the array.
-	 *	@param	Target: pointer to the raw memory associated with a FScriptArray
-	 *	@return The number of elements in the array.
-	**/
-	UE_DEPRECATED(4.25, "This shortcut is no longer valid - the Num() should be read from a proper array helper")
-	static FORCEINLINE int32 Num(const void *Target)
-	{
-		checkSlow(((const FScriptArray*)Target)->Num() >= 0); 
-		return ((const FScriptArray*)Target)->Num();
-	}
-	/**
 	 *	Returns a uint8 pointer to an element in the array
 	 *	@param	Index: index of the item to return a pointer to.
 	 *	@return	Pointer to this element, or NULL if the array is empty
@@ -4189,7 +4104,17 @@ public:
 			return NULL;
 		}
 		checkSlow(IsValidIndex(Index)); 
-		return (uint8*)WithScriptArray([](auto* Array) { return Array->GetData(); }) + Index * ElementSize;
+		return (uint8*)WithScriptArray([](auto* Array) { return Array->GetData(); }) + Index * static_cast<size_t>(ElementSize);
+	}
+	/**
+	 *	Returns a uint8 pointer to an element in the array. This call is identical to GetRawPtr and is
+	 *  here to provide interface parity with FScriptSetHelper*.
+	 *	@param	Index: index of the item to return a pointer to.
+	 *	@return	Pointer to this element, or NULL if the array is empty
+	**/
+	FORCEINLINE uint8* GetElementPtr(int32 Index = 0)
+	{
+		return GetRawPtr(Index);
 	}
 	/**
 	*	Empty the array, then add blank, constructed values to a given size.
@@ -4235,8 +4160,12 @@ public:
 	*	@param	Count: the number of items the array will have on completion.
 	**/
 	void Resize(int32 Count)
-	{ 
-		check(Count>=0);
+	{
+		if (Count < 0)
+		{
+			UE::Core::Private::OnInvalidArrayNum(Count);
+		}
+
 		int32 OldNum = Num();
 		if (Count > OldNum)
 		{
@@ -4358,6 +4287,8 @@ public:
 	void MoveAssign(void* InOtherArray)
 	{
 		checkSlow(InOtherArray);
+		// FScriptArray::MoveAssign does not call destructors for our elements, so do that before calling it.
+		DestructItems(0, Num());
 		WithScriptArray([this, InOtherArray](auto* Array) { Array->MoveAssign(*static_cast<decltype(Array)>(InOtherArray), ElementSize, ElementAlignment); });
 	}
 
@@ -4420,7 +4351,7 @@ private:
 			uint8* Dest = GetRawPtr(Index);
 			if (InnerProperty->PropertyFlags & CPF_ZeroConstructor)
 			{
-				FMemory::Memzero(Dest, Count * ElementSize);
+				FMemory::Memzero(Dest, Count * static_cast<size_t>(ElementSize));
 			}
 			else
 			{
@@ -4442,7 +4373,6 @@ private:
 		{
 			checkSlow(Count >= 0);
 			checkSlow(Index >= 0); 
-			checkSlow(Index < Num());
 			checkSlow(Index + Count <= Num());
 			if (Count > 0)
 			{
@@ -4470,7 +4400,7 @@ private:
 			uint8* Dest = GetRawPtr(Index);
 			if ((InnerProperty->PropertyFlags & (CPF_ZeroConstructor | CPF_NoDestructor)) == (CPF_ZeroConstructor | CPF_NoDestructor))
 			{
-				FMemory::Memzero(Dest, Count * ElementSize);
+				FMemory::Memzero(Dest, Count * static_cast<size_t>(ElementSize));
 			}
 			else
 			{
@@ -4582,21 +4512,6 @@ public:
 	}
 
 	/**
-	 * Static version of Num() used when you don't need to bother to construct a FScriptMapHelper. Returns the number of elements in the map.
-	 *
-	 * @param  Target  Pointer to the raw memory associated with a FScriptMap
-	 *
-	 * @return The number of elements in the map.
-	 */
-	UE_DEPRECATED(4.25, "This shortcut is no longer valid - the Num() should be read from a proper map helper")
-	static FORCEINLINE int32 Num(const void* Target)
-	{
-		int32 Result = ((const FScriptMap*)Target)->Num();
-		checkSlow(Result >= 0); 
-		return Result;
-	}
-
-	/**
 	 * Returns a uint8 pointer to the pair in the map
 	 *
 	 * @param  Index  index of the item to return a pointer to.
@@ -4675,6 +4590,56 @@ public:
 	{
 		return const_cast<FScriptMapHelper*>(this)->GetPairPtr(Index);
 	}
+	
+	/**
+	* Returns a uint8 pointer to the the Nth valid pair in the map (skipping invalid entries).
+	* NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
+	*
+	* @return Pointer to the element, or nullptr if the index is invalid.
+	*/
+	uint8* FindNthPairPtr(int32 N)
+	{
+		const int32 Index = FindInternalIndex(N);
+		
+		checkSlow(IsValidIndex(Index));
+		return (Index != INDEX_NONE) ? GetPairPtr(Index) : nullptr;
+	}
+	
+	/**
+	* Returns a uint8 pointer to the the Nth valid key in the map (skipping invalid entries).
+	* NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
+	*
+	* @return Pointer to the element, or nullptr if the index is invalid.
+	*/
+	uint8* FindNthKeyPtr(int32 N)
+	{
+		const int32 Index = FindInternalIndex(N);
+		return (Index != INDEX_NONE) ? GetKeyPtr(Index) : nullptr;
+	}
+	
+	/**
+	* Returns a uint8 pointer to the the Nth valid value in the map (skipping invalid entries).
+	* NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
+	*
+	* @return Pointer to the element, or nullptr if the index is invalid.
+	*/
+	uint8* FindNthValuePtr(int32 N)
+	{
+		const int32 Index = FindInternalIndex(N);
+		return (Index != INDEX_NONE) ? GetValuePtr(Index) : nullptr;
+	}
+	
+	/**
+	* Returns a uint8 pointer to the the Nth valid pair in the map (skipping invalid entries).
+	* NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
+	*
+	* @return Pointer to the element, or nullptr if the index is invalid.
+	*/
+	const uint8* FindNthPairPtr(int32 N) const
+	{
+		const int32 Index = FindInternalIndex(N);
+		return (Index != INDEX_NONE) ? GetPairPtr(Index) : nullptr;
+	}
 
 	/**
 	 * Move the allocation from another map and make it our own.
@@ -4685,6 +4650,8 @@ public:
 	void MoveAssign(void* InOtherMap)
 	{
 		checkSlow(InOtherMap);
+		// FScriptArray::MoveAssign does not call destructors for our elements, so do that before calling it.
+		DestructItems(0, Num());
 		return WithScriptMap([this, InOtherMap](auto* Map)
 		{
 			Map->MoveAssign(*(decltype(Map))InOtherMap, MapLayout);
@@ -4809,6 +4776,12 @@ public:
 			if (LocalLogicalIdx < 0 && LocalLogicalIdx > Map->Num())
 			{
 				return INDEX_NONE;
+			}
+
+			// if map is compact, use random access
+			if (Num() == GetMaxIndex())
+			{
+				return IsValidIndex(LogicalIdx) ? LogicalIdx : INDEX_NONE;
 			}
 
 			int32 MaxIndex = Map->GetMaxIndex();
@@ -5051,39 +5024,6 @@ public:
 		});
 	}
 
-	/**
-	 * Checks if a key in the map matches the specified key
-	 *
-	 * @param	InBaseAddress	The base address of the map
-	 * @param	InKeyValue		The key to find within the map
-	 *
-	 * @return	True if the key is found, false otherwise
-	 */
-	bool HasKey(const void* InBaseAddress, const FString& InKeyValue) const
-	{
-		for (int32 Index = 0, ItemsLeft = Num(); ItemsLeft > 0; ++Index)
-		{
-			if (IsValidIndex(Index))
-			{
-				--ItemsLeft;
-
-				const uint8* PairPtr = GetPairPtr(Index);
-				const uint8* KeyPtr = KeyProp->ContainerPtrToValuePtr<const uint8>(PairPtr);
-
-				FString KeyValue;
-				if (KeyPtr != InBaseAddress && KeyProp->ExportText_Direct(KeyValue, KeyPtr, KeyPtr, nullptr, 0))
-				{
-					if ((CastField<FObjectProperty>(KeyProp) != nullptr && KeyValue.Contains(InKeyValue)) || InKeyValue == KeyValue)
-					{
-						return true;
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
 	static FScriptMapHelper CreateHelperFormInnerProperties(FProperty* InKeyProperty, FProperty* InValProperty, const void *InMap, EMapPropertyFlags InMapFlags = EMapPropertyFlags::None)
 	{
 		return FScriptMapHelper(
@@ -5107,7 +5047,7 @@ public:
 		}
 
 		FIterator& operator++() { Advance(); return *this; }
-		FIterator& operator++(int) { Advance(); return *this; }
+		FIterator operator++(int) { const FIterator Temp(*this); Advance(); return Temp; }
 		explicit operator bool() const { return Map.IsValidIndex(CurrentIndex); }
 		int32 operator*() const { return CurrentIndex; }
 
@@ -5396,6 +5336,30 @@ public:
 	}
 
 	/**
+	* Returns a uint8 pointer to the the Nth valid element in the set (skipping invalid entries).
+	* NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
+	*
+	* @return Pointer to the element, or nullptr if the index is invalid.
+	*/
+	uint8* FindNthElementPtr(int32 N)
+	{
+		const int32 Index = FindInternalIndex(N);
+		return (Index != INDEX_NONE) ? GetElementPtr(Index) : nullptr;
+	}
+
+	/**
+	* Returns a uint8 pointer to the the Nth valid element in the set (skipping invalid entries).
+	* NOTE: This is slow, do not use this for iteration! Use CreateIterator() instead.
+	*
+	* @return Pointer to the element, or nullptr if the index is invalid.
+	*/
+	const uint8* FindNthElementPtr(int32 N) const
+	{
+		const int32 Index = FindInternalIndex(N);
+		return (Index != INDEX_NONE) ? GetElementPtr(Index) : nullptr;
+	}
+
+	/**
 	* Move the allocation from another set and make it our own.
 	* @note The sets MUST be of the same type, and this function will NOT validate that!
 	*
@@ -5499,6 +5463,12 @@ public:
 		if (LogicalIdx < 0 && LogicalIdx > Num())
 		{
 			return INDEX_NONE;
+		}
+
+		// if set is compact, use random access
+		if (Num() == GetMaxIndex())
+		{
+			return IsValidIndex(LogicalIdx) ? LogicalIdx : INDEX_NONE;
 		}
 
 		int32 MaxIndex = GetMaxIndex();
@@ -5655,38 +5625,6 @@ public:
 		}
 	}
 
-	/**
-	 * Checks if an element has already been added to the set
-	 *
-	 * @param	InBaseAddress	The base address of the set
-	 * @param	InElementValue	The element value to check for
-	 *
-	 * @return	True if the element is found in the set, false otherwise
-	 */
-	bool HasElement(void* InBaseAddress, const FString& InElementValue) const
-	{
-		for (int32 Index = 0, ItemsLeft = Num(); ItemsLeft > 0; ++Index)
-		{
-			if (IsValidIndex(Index))
-			{
-				--ItemsLeft;
-
-				const uint8* Element = GetElementPtr(Index);
-
-				FString ElementValue;
-				if (Element != InBaseAddress && ElementProp->ExportText_Direct(ElementValue, Element, Element, nullptr, 0))
-				{
-					if ((CastField<FObjectProperty>(ElementProp) != nullptr && ElementValue.Contains(InElementValue)) || ElementValue == InElementValue)
-					{
-						return true;
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
 	static FScriptSetHelper CreateHelperFormElementProperty(FProperty* InElementProperty, const void *InSet)
 	{
 		check(InElementProperty);
@@ -5713,7 +5651,7 @@ public:
 		}
 
 		FIterator& operator++() { Advance(); return *this; }
-		FIterator& operator++(int) { Advance(); return *this; }
+		FIterator operator++(int) { const FIterator Temp(*this); Advance(); return Temp; }
 		explicit operator bool() const { return Set.IsValidIndex(CurrentIndex); }
 		int32 operator*() const { return CurrentIndex; }
 
@@ -5852,7 +5790,7 @@ class COREUOBJECT_API FStructProperty : public FProperty
 	DECLARE_FIELD(FStructProperty, FProperty, CASTCLASS_FStructProperty)
 
 	// Variables.
-	class UScriptStruct* Struct;
+	TObjectPtr<class UScriptStruct> Struct;
 public:
 	FStructProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags);
 
@@ -5899,15 +5837,16 @@ public:
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual int32 GetMinAlignment() const override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
+	virtual void EmitReferenceInfo(UE::GC::FSchemaBuilder& Schema, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, UE::GC::FPropertyStack& DebugPath) override;
 	virtual bool SameType(const FProperty* Other) const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 #if WITH_EDITORONLY_DATA
 	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
 #endif
 	// End of FProperty interface
 
 	bool UseBinaryOrNativeSerialization(const FArchive& Ar) const;
+	bool FindInnerPropertyInstance(FName PropertyName, const void* Data, const FProperty*& OutProp, const void*& OutData) const;
 
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const;
@@ -5928,7 +5867,7 @@ class COREUOBJECT_API FDelegateProperty : public FDelegateProperty_Super
 	DECLARE_FIELD(FDelegateProperty, FDelegateProperty_Super, CASTCLASS_FDelegateProperty)
 
 	/** Points to the source delegate function (the function declared with the delegate keyword) used in the declaration of this delegate property. */
-	UFunction* SignatureFunction;
+	TObjectPtr<UFunction> SignatureFunction;
 public:
 
 	typedef FDelegateProperty_Super::TTypeFundamentals TTypeFundamentals;
@@ -5980,7 +5919,6 @@ protected:
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, UObject* OwnerObject, int32 PortFlags, FOutputDevice* ErrorText) const override;
 public:
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool SameType(const FProperty* Other) const override;
 #if WITH_EDITORONLY_DATA
@@ -6002,7 +5940,7 @@ class COREUOBJECT_API FMulticastDelegateProperty : public FProperty
 	DECLARE_FIELD(FMulticastDelegateProperty, FProperty, CASTCLASS_FMulticastDelegateProperty)
 
 	/** Points to the source delegate function (the function declared with the delegate keyword) used in the declaration of this delegate property. */
-	UFunction* SignatureFunction;
+	TObjectPtr<UFunction> SignatureFunction;
 
 public:
 
@@ -6050,10 +5988,9 @@ protected:
 	virtual void ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 public:
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UE::GC::FTokenStreamBuilder& TokenStream, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool SameType(const FProperty* Other) const override;
-	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults) override;
 	// End of FProperty interface
 
 	virtual const FMulticastScriptDelegate* GetMulticastDelegate(const void* PropertyValue) const PURE_VIRTUAL(FMulticastDelegateProperty::GetMulticastDelegate, return nullptr;);
@@ -6066,8 +6003,8 @@ public:
 protected:
 	friend class FProperty;
 
-	static FMulticastScriptDelegate::FInvocationList EmptyList;
-	virtual FMulticastScriptDelegate::FInvocationList& GetInvocationList(const void* PropertyValue) const PURE_VIRTUAL(FMulticastDelegateProperty::GetInvocationList, return EmptyList;);
+	static FMulticastScriptDelegate EmptyDelegate;
+	virtual FMulticastScriptDelegate& GetMulticastScriptDelegate(const void* PropertyValue, int32 Index) const PURE_VIRTUAL(FMulticastDelegateProperty::GetMulticastScriptDelegate, return EmptyDelegate;);
 
 
 	const TCHAR* ImportText_Add( const TCHAR* Buffer, void* PropertyValue, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const;
@@ -6182,7 +6119,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void ClearDelegate(UObject* Parent = nullptr, void* PropertyValue = nullptr) const override;
 
 protected:
-	virtual FMulticastScriptDelegate::FInvocationList& GetInvocationList(const void* PropertyValue) const;
+	virtual FMulticastScriptDelegate& GetMulticastScriptDelegate(const void* PropertyValue, int32 Index) const;
 	// End of FMulticastDelegateProperty interface
 };
 
@@ -6233,7 +6170,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void ClearDelegate(UObject* Parent = nullptr, void* PropertyValue = nullptr) const override;
 
 protected:
-	virtual FMulticastScriptDelegate::FInvocationList& GetInvocationList(const void* PropertyValue) const;
+	virtual FMulticastScriptDelegate& GetMulticastScriptDelegate(const void* PropertyValue, int32 Index) const;
 	// End of FMulticastDelegateProperty interface
 
 private:
@@ -6416,20 +6353,6 @@ struct FPropertyChangedEvent
 		, bFilterChangedInstances(false)
 		, TopLevelObjects(InTopLevelObjects)
 	{
-	}
-
-	UE_DEPRECATED(4.25, "The FPropertyChangedEvent constructor taking a TArray* is deprecated. Use the version taking a TArrayView instead.")
-	FPropertyChangedEvent(FProperty* InProperty, EPropertyChangeType::Type InChangeType, const TArray<const UObject*>* InTopLevelObjects)
-		: Property(InProperty)
-		, MemberProperty(InProperty)
-		, ChangeType(InChangeType)
-		, ObjectIteratorIndex(INDEX_NONE)
-		, bFilterChangedInstances(false)
-	{
-		if (InTopLevelObjects)
-		{
-			TopLevelObjects = MakeArrayView(*InTopLevelObjects);
-		}
 	}
 
 	void SetActiveMemberProperty( FProperty* InActiveMemberProperty )
@@ -6782,41 +6705,6 @@ struct TFieldRange
 	Field templates.
 -----------------------------------------------------------------------------*/
 
-//
-// Find a typed field in a struct.
-//
-template <class T>
-UE_DEPRECATED(4.25, "FindField will no longer return properties. Use FindFProperty instead or FindUField if you want to find functions or enums.")
- T* FindField( const UStruct* Owner, FName FieldName )
-{
-	// We know that a "none" field won't exist in this Struct
-	if( FieldName.IsNone() )
-	{
-		return nullptr;
-	}
-
-	// Search by comparing FNames (INTs), not strings
-	for( TFieldIterator<T>It( Owner ); It; ++It )
-	{
-		if( It->GetFName() == FieldName )
-		{
-			return *It;
-		}
-	}
-
-	// If we didn't find it, return no field
-	return nullptr;
-}
-
-template <class T>
-UE_DEPRECATED(4.25, "FindField will no longer return properties. Use FindFProperty instead or FindUField if you want to find UFunctions or UEnums.")
-T* FindField( const UStruct* Owner, const TCHAR* FieldName )
-{
-	// lookup the string name in the Name hash
-	FName Name(FieldName, FNAME_Find);
-	return FindField<T>(Owner, Name);
-}
-
 template <class T> 
 typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(const UStruct* Owner, FName FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
@@ -7083,7 +6971,8 @@ private:
 		None = 0x0,
 		IsMatch = 0x01,
 
-		ContainerMask = 0xF0,
+		ContainerMask = 0xF8,
+		IsOptional = 0x08,
 		IsArray = 0x10,
 		IsMap = 0x20,
 		IsSet = 0x40,

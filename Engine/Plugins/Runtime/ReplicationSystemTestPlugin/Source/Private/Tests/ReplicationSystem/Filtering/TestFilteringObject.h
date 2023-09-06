@@ -12,6 +12,10 @@ class UTestFilteringObject : public UReplicatedTestObject
 
 public:
 	void SetFilterOut(bool bFilterOut);
+	bool GetFilterOut() const { return NetTest_FilterOut; }
+
+	UPROPERTY(Replicated)
+	uint32 ReplicatedCounter = 0;
 
 protected:
 	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Fragments, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
@@ -21,3 +25,25 @@ private:
 	UPROPERTY(Replicated)
 	bool NetTest_FilterOut = false;
 };
+
+
+
+UCLASS()
+class UTestLocationFragmentFilteringObject : public UReplicatedTestObject
+{
+	GENERATED_BODY()
+
+public:
+	
+protected:
+	virtual void RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Fragments, UE::Net::EFragmentRegistrationFlags RegistrationFlags) override;
+
+public:
+	
+	UPROPERTY(Replicated)
+	FVector WorldLocation;
+
+	UPROPERTY(Replicated)
+	float NetCullDistanceSquared = 0.0f;
+};
+

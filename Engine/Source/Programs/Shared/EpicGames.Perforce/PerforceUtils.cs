@@ -34,8 +34,26 @@ namespace EpicGames.Perforce
 			".ush",
 			".uproject",
 			".uplugin",
-			".sln"
+			".sln",
+			".native.verse"
 		};
+
+		/// <summary>
+		/// Tests if a path is a code file
+		/// </summary>
+		/// <param name="path">Path to test</param>
+		/// <returns>True if the path is a code file</returns>
+		public static bool IsCodeFile(string path)
+		{
+			foreach (string codeExtension in CodeExtensions)
+			{
+				if (path.EndsWith(codeExtension, StringComparison.OrdinalIgnoreCase))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
 
 		/// <summary>
 		/// Escape a path to Perforce syntax

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "IKRetargetProfile.h"
-#include "IKRigDefinition.h"
+#include "Rig/IKRigDefinition.h"
 #include "IKRetargetSettings.h"
 
 #include "IKRetargeter.generated.h"
@@ -210,15 +210,15 @@ public:
 	UIKRetargeter(const FObjectInitializer& ObjectInitializer);
 
 	// Get read-only access to the source IK Rig asset 
-	const UIKRigDefinition* GetSourceIKRig() const { return SourceIKRigAsset.LoadSynchronous(); };
+	const UIKRigDefinition* GetSourceIKRig() const;
 	// Get read-only access to the target IK Rig asset 
-	const UIKRigDefinition* GetTargetIKRig() const { return TargetIKRigAsset.LoadSynchronous(); };
+	const UIKRigDefinition* GetTargetIKRig() const;
 	// Get read-write access to the source IK Rig asset.
 	// WARNING: do not use for editing the data model. Use Controller class instead. 
-	UIKRigDefinition* GetSourceIKRigWriteable() const { return SourceIKRigAsset.LoadSynchronous(); };
+	UIKRigDefinition* GetSourceIKRigWriteable() const;
 	// Get read-write access to the target IK Rig asset.
 	// WARNING: do not use for editing the data model. Use Controller class instead. 
-	UIKRigDefinition* GetTargetIKRigWriteable() const { return TargetIKRigAsset.LoadSynchronous(); };
+	UIKRigDefinition* GetTargetIKRigWriteable() const;
 
 	// Get read-only access to the chain mapping 
 	const TArray<TObjectPtr<URetargetChainSettings>>& GetAllChainSettings() const { return ChainSettings; };
@@ -332,7 +332,8 @@ public:
 		const FTargetChainSpeedPlantSettings& SpeedPlantSettings,
 		const FName TargetChainName);
 
-	// UObject 
+	// UObject
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 	// END UObject
@@ -428,7 +429,7 @@ public:
 	float BoneDrawSize = 1.0f;
 
 	/** The controller responsible for managing this asset's data (all editor mutation goes through this) */
-	UPROPERTY(Transient)
+	UPROPERTY(Transient, DuplicateTransient, NonTransactional )
 	TObjectPtr<UObject> Controller;
 	
 private:

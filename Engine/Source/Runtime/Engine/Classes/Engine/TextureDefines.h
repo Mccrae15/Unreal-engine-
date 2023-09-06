@@ -89,6 +89,20 @@ enum TextureGroup : int
 	TEXTUREGROUP_Project16 UMETA(DisplayName="ini:Project Group 16"),
 	TEXTUREGROUP_Project17 UMETA(DisplayName="ini:Project Group 17"),
 	TEXTUREGROUP_Project18 UMETA(DisplayName="ini:Project Group 18"),
+	TEXTUREGROUP_Project19 UMETA(DisplayName="ini:Project Group 19"),
+	TEXTUREGROUP_Project20 UMETA(DisplayName="ini:Project Group 20"),
+	TEXTUREGROUP_Project21 UMETA(DisplayName="ini:Project Group 21"),
+	TEXTUREGROUP_Project22 UMETA(DisplayName="ini:Project Group 22"),
+	TEXTUREGROUP_Project23 UMETA(DisplayName="ini:Project Group 23"),
+	TEXTUREGROUP_Project24 UMETA(DisplayName="ini:Project Group 24"),
+	TEXTUREGROUP_Project25 UMETA(DisplayName="ini:Project Group 25"),
+	TEXTUREGROUP_Project26 UMETA(DisplayName="ini:Project Group 26"),
+	TEXTUREGROUP_Project27 UMETA(DisplayName="ini:Project Group 27"),
+	TEXTUREGROUP_Project28 UMETA(DisplayName="ini:Project Group 28"),
+	TEXTUREGROUP_Project29 UMETA(DisplayName="ini:Project Group 29"),
+	TEXTUREGROUP_Project30 UMETA(DisplayName="ini:Project Group 30"),
+	TEXTUREGROUP_Project31 UMETA(DisplayName="ini:Project Group 31"),
+	TEXTUREGROUP_Project32 UMETA(DisplayName="ini:Project Group 32"),
 	TEXTUREGROUP_MAX,
 };
 
@@ -325,6 +339,7 @@ enum ETextureSourceFormat : int
 };
 
 // This needs to be mirrored in EditorFactories.cpp.
+// TC_EncodedReflectionCapture is no longer used and could be deleted
 UENUM()
 enum TextureCompressionSettings : int
 {
@@ -342,7 +357,7 @@ enum TextureCompressionSettings : int
 	TC_BC7						UMETA(DisplayName = "BC7 (DX11, optional A)"),
 	TC_HalfFloat				UMETA(DisplayName = "Half Float (R16F)"),
 	TC_LQ				        UMETA(Hidden, DisplayName = "Low Quality (BGR565/BGR555A1)", ToolTip = "BGR565/BGR555A1, fallback to DXT1/DXT5 on Mac platform"),
-	TC_EncodedReflectionCapture	UMETA(Hidden),
+	TC_EncodedReflectionCapture	UMETA(Hidden), 
 	TC_SingleFloat				UMETA(DisplayName = "Single Float (R32F)"),
 	TC_HDR_F32					UMETA(DisplayName = "HDR High Precision (RGBA32F)"),
 	TC_MAX,
@@ -414,6 +429,7 @@ enum class ETextureChromaticAdaptationMethod : uint8
 	TCAM_None		= 0 UMETA(DisplayName = "None", ToolTip = "No chromatic adaptation is applied."),
 	TCAM_Bradford	= 1 UMETA(DisplayName = "Bradford", ToolTip = "Chromatic adaptation is applied using the Bradford method."),
 	TCAM_CAT02		= 2 UMETA(DisplayName = "CAT02", ToolTip = "Chromatic adaptation is applied using the CAT02 method."),
+	TCAM_MAX,
 };
 
 
@@ -498,6 +514,20 @@ static FORCEINLINE bool IsUncompressed(TextureCompressionSettings CompressionSet
 			CompressionSettings == TC_SingleFloat
 		);
 }
+
+static FORCEINLINE bool ShouldUseGreyScaleEditorVisualization(TextureCompressionSettings CompressionSettings)
+{
+	// these formats should do R -> RGB red to gray replication in Editor viz
+	return (CompressionSettings == TC_Grayscale ||
+			CompressionSettings == TC_Alpha ||
+			CompressionSettings == TC_Displacementmap ||
+			CompressionSettings == TC_DistanceFieldFont );
+
+	// ?? maybe these too ??
+	//		CompressionSettings == TC_HalfFloat ||
+	//		CompressionSettings == TC_SingleFloat
+}
+
 
 } // TextureDefines
 } // UE

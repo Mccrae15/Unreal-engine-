@@ -6,8 +6,11 @@
 #include "HttpServerRequest.h"
 #include "HttpConnectionContext.h"
 #include "IPAddress.h"
+#include "PlatformHttp.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
+
+DEFINE_LOG_CATEGORY(LogHttpConnectionRequestReadContext)
 
 FHttpConnectionRequestReadContext::FHttpConnectionRequestReadContext(FSocket* InSocket)
 	: Socket(InSocket)
@@ -36,7 +39,7 @@ EHttpConnectionContextState FHttpConnectionRequestReadContext::ReadStream(float 
 	int32 BytesRead = 0;
 	if (!Socket->Recv(ByteBuffer, sizeof(ByteBuffer) - 1, BytesRead, ESocketReceiveFlags::None))
 	{
-		AddError(FHttpServerErrorStrings::SocketRecvFailure);
+		AddError(UE_HTTP_SERVER_ERROR_STR_SOCKET_RECV_FAILURE);
 		return EHttpConnectionContextState::Error;
 	}
 
@@ -46,6 +49,8 @@ EHttpConnectionContextState FHttpConnectionRequestReadContext::ReadStream(float 
 	}
 	else
 	{
+		UE_LOG(LogHttpConnectionRequestReadContext, Verbose,
+			TEXT("ElapsedIdleTime\t %f"), ElapsedIdleTime);
 		ElapsedIdleTime = 0.0f;
 	}
 
@@ -133,7 +138,7 @@ bool FHttpConnectionRequestReadContext::ParseBody(uint8* ByteBuffer, int32 Buffe
 	if (BufferLen > IncomingRequestBodyBytesToRead)
 	{
 		// Error - Sent data size exceeds expected 
-		AddError(FHttpServerErrorStrings::MismatchedContentLengthBodyTooLarge, EHttpServerResponseCodes::BadRequest);
+		AddError(UE_HTTP_SERVER_ERROR_STR_MISMATCHED_CONTENT_LENGTH_BODY_TOO_LARGE, EHttpServerResponseCodes::BadRequest);
 		return false;
 	}
 
@@ -159,7 +164,7 @@ bool FHttpConnectionRequestReadContext::IsRequestValid(const FHttpServerRequest&
 		// Enforce content length missing or 0
 		if (bContentLengthSpecified && 0 != RequestContentLength)
 		{
-			AddError(FHttpServerErrorStrings::InvalidContentLengthHeader, EHttpServerResponseCodes::BadRequest);
+			AddError(UE_HTTP_SERVER_ERROR_STR_INVALID_CONTENT_LENGTH_HEADER, EHttpServerResponseCodes::BadRequest);
 			return false;
 		}
 		break;
@@ -169,13 +174,13 @@ bool FHttpConnectionRequestReadContext::IsRequestValid(const FHttpServerRequest&
 		// Content length must be set
 		if (!bContentLengthSpecified)
 		{
-			AddError(FHttpServerErrorStrings::MissingContentLengthHeader, EHttpServerResponseCodes::LengthRequired);
+			AddError(UE_HTTP_SERVER_ERROR_STR_MISSING_CONTENT_LENGTH_HEADER, EHttpServerResponseCodes::LengthRequired);
 			return false;
 		}
 		// Content length must be valid
 		if(RequestContentLength < 0)
 		{
-			AddError(FHttpServerErrorStrings::InvalidContentLengthHeader, EHttpServerResponseCodes::LengthRequired);
+			AddError(UE_HTTP_SERVER_ERROR_STR_INVALID_CONTENT_LENGTH_HEADER, EHttpServerResponseCodes::LengthRequired);
 			return false;
 		}
 		break;
@@ -186,7 +191,7 @@ bool FHttpConnectionRequestReadContext::IsRequestValid(const FHttpServerRequest&
 
 bool FHttpConnectionRequestReadContext::ParseContentLength(const FHttpServerRequest& InRequest, int32& OutContentLength)
 {
-	const TArray<FString>* ContentLengthValues = InRequest.Headers.Find(FHttpServerHeaderKeys::CONTENT_LENGTH);
+	const TArray<FString>* ContentLengthValues = InRequest.Headers.Find(UE_HTTP_SERVER_HEADER_KEYS_CONTENT_LENGTH);
 
 	if (ContentLengthValues && ContentLengthValues->Num() > 0)
 	{
@@ -209,7 +214,7 @@ TSharedPtr<FHttpServerRequest> FHttpConnectionRequestReadContext::BuildRequest(c
 
 	if (0 == ParsedHeader.Num())
 	{
-		AddError(FHttpServerErrorStrings::MissingRequestHeaders, EHttpServerResponseCodes::BadRequest);
+		AddError(UE_HTTP_SERVER_ERROR_STR_MISSING_REQUEST_HEADERS, EHttpServerResponseCodes::BadRequest);
 		return nullptr;
 	}
 
@@ -219,7 +224,7 @@ TSharedPtr<FHttpServerRequest> FHttpConnectionRequestReadContext::BuildRequest(c
 	HttpMethod.ParseIntoArrayWS(HttpMethodTokens);
 	if (HttpMethodTokens.Num() < 3)
 	{
-		AddError(FHttpServerErrorStrings::MalformedRequestHeaders, EHttpServerResponseCodes::BadRequest);
+		AddError(UE_HTTP_SERVER_ERROR_STR_MALFORMED_REQUEST_HEADER, EHttpServerResponseCodes::BadRequest);
 		return nullptr;
 	}
 
@@ -271,7 +276,7 @@ TSharedPtr<FHttpServerRequest> FHttpConnectionRequestReadContext::BuildRequest(c
 	else
 	{
 		// Unknown Verb
-		AddError(FHttpServerErrorStrings::UnknownRequestVerb, EHttpServerResponseCodes::BadMethod);
+		AddError(UE_HTTP_SERVER_ERROR_STR_UNKNOWN_REQUEST_VERB, EHttpServerResponseCodes::BadMethod);
 		return nullptr;
 	}
 
@@ -291,8 +296,8 @@ TSharedPtr<FHttpServerRequest> FHttpConnectionRequestReadContext::BuildRequest(c
 			int32 Equalsindex = 0;
 			if (QueryParamPair.FindChar(TCHAR('='), Equalsindex))
 			{
-				FString QueryParamKey = UrlDecode(QueryParamPair.Mid(0, Equalsindex));
-				FString QueryParamValue = UrlDecode(QueryParamPair.Mid(Equalsindex + 1));
+				FString QueryParamKey = FGenericPlatformHttp::UrlDecode(QueryParamPair.Mid(0, Equalsindex));
+				FString QueryParamValue = FGenericPlatformHttp::UrlDecode(QueryParamPair.Mid(Equalsindex + 1));
 				Request->QueryParams.Emplace(MoveTemp(QueryParamKey), MoveTemp(QueryParamValue));
 			}
 		}
@@ -303,7 +308,7 @@ TSharedPtr<FHttpServerRequest> FHttpConnectionRequestReadContext::BuildRequest(c
 	const FString& RequestHttpVersion = HttpMethodTokens[2];
 	if(!HttpVersion::FromString(RequestHttpVersion, Request->HttpVersion))
 	{
-		AddError(FHttpServerErrorStrings::UnsupportedHttpVersion, EHttpServerResponseCodes::VersionNotSup);
+		AddError(UE_HTTP_SERVER_ERROR_STR_UNSUPPORTED_HTTP_VERSION, EHttpServerResponseCodes::VersionNotSup);
 		return nullptr;
 	}
 
@@ -336,70 +341,4 @@ TSharedPtr<FHttpServerRequest> FHttpConnectionRequestReadContext::BuildRequest(c
 	}
 
 	return Request;
-}
-
-FString FHttpConnectionRequestReadContext::UrlDecode(const FString &EncodedString)
-{
-	FTCHARToUTF8 Converter(*EncodedString);
-	const UTF8CHAR* UTF8Data = (UTF8CHAR*)Converter.Get();
-
-	TArray<UTF8CHAR> Data;
-	Data.Reserve(EncodedString.Len());
-
-	for (int32 CharIdx = 0; CharIdx < Converter.Length();)
-	{
-		if (UTF8Data[CharIdx] == '%')
-		{
-			int32 Value = 0;
-			if (CharIdx < Converter.Length() - 1 && UTF8Data[CharIdx + 1] == 'u')
-			{
-				if (CharIdx <= Converter.Length() - 6)
-				{
-					// Treat all %uXXXX as code point
-					Value = FParse::HexDigit(UTF8Data[CharIdx + 2]) << 12;
-					Value += FParse::HexDigit(UTF8Data[CharIdx + 3]) << 8;
-					Value += FParse::HexDigit(UTF8Data[CharIdx + 4]) << 4;
-					Value += FParse::HexDigit(UTF8Data[CharIdx + 5]);
-					CharIdx += 6;
-
-					UTF8CHAR Buffer[8] = { };
-					UTF8CHAR* BufferPtr = Buffer;
-					const int32 Len = UE_ARRAY_COUNT(Buffer);
-					const UTF8CHAR* BufferEnd = FPlatformString::Convert(BufferPtr, Len, (UTF32CHAR*)&Value, 1);
-					check(BufferEnd);
-
-					Data.Append(Buffer, (int32)(BufferEnd - BufferPtr));
-				}
-				else
-				{
-					// Not enough in the buffer for valid decoding, skip it
-					CharIdx++;
-					continue;
-				}
-			}
-			else if (CharIdx <= Converter.Length() - 3)
-			{
-				// Treat all %XX as straight byte
-				Value = FParse::HexDigit(UTF8Data[CharIdx + 1]) << 4;
-				Value += FParse::HexDigit(UTF8Data[CharIdx + 2]);
-				CharIdx += 3;
-				Data.Add((UTF8CHAR)(Value));
-			}
-			else
-			{
-				// Not enough in the buffer for valid decoding, skip it
-				CharIdx++;
-				continue;
-			}
-		}
-		else
-		{
-			// Non escaped characters
-			Data.Add(UTF8Data[CharIdx]);
-			CharIdx++;
-		}
-	}
-
-	Data.Add(UTF8TEXT('\0'));
-	return FString(UTF8_TO_TCHAR(Data.GetData()));
 }

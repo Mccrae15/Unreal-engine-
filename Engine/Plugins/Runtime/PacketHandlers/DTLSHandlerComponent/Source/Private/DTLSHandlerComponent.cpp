@@ -92,7 +92,7 @@ void FDTLSHandlerComponent::SetEncryptionData(const FEncryptionData& EncryptionD
 	{
 		CertId = EncryptionData.Identifier;
 
-		if (Handler->Mode == Handler::Mode::Client)
+		if (Handler->Mode == UE::Handler::Mode::Client)
 		{
 			RemoteFingerprint = MakeUnique<FDTLSFingerprint>();
 
@@ -110,7 +110,7 @@ void FDTLSHandlerComponent::SetEncryptionData(const FEncryptionData& EncryptionD
 
 void FDTLSHandlerComponent::EnableEncryption()
 {
-	EDTLSContextType ContextType = (Handler->Mode == Handler::Mode::Server) ? EDTLSContextType::Server : EDTLSContextType::Client;
+	EDTLSContextType ContextType = (Handler->Mode == UE::Handler::Mode::Server) ? EDTLSContextType::Server : EDTLSContextType::Client;
 
 	UE_LOG(LogDTLSHandler, Log, TEXT("EnableEncryption: %s"), LexToString(ContextType));
 
@@ -133,7 +133,7 @@ void FDTLSHandlerComponent::EnableEncryption()
 		else
 		{
 			UE_LOG(LogDTLSHandler, Error, TEXT("EnableEncryption: Failed to initialize context."));
-			DTLSContext.Release();
+			DTLSContext.Reset();
 		}
 	}
 	else
@@ -146,7 +146,7 @@ void FDTLSHandlerComponent::DisableEncryption()
 {
 	UE_LOG(LogDTLSHandler, Log, TEXT("DisableEncryption"));
 
-	DTLSContext.Release();
+	DTLSContext.Reset();
 }
 
 bool FDTLSHandlerComponent::IsEncryptionEnabled() const
@@ -157,7 +157,7 @@ bool FDTLSHandlerComponent::IsEncryptionEnabled() const
 void FDTLSHandlerComponent::Initialize()
 {
 	SetActive(true);
-	SetState(Handler::Component::State::Initialized);
+	SetState(UE::Handler::Component::State::Initialized);
 	Initialized();
 }
 
@@ -205,7 +205,7 @@ void FDTLSHandlerComponent::Incoming(FBitReader& Packet)
 				if (InternalState == EDTLSHandlerState::Unencrypted)
 				{
 					// server can move to handshaking now
-					check(Handler->Mode == Handler::Mode::Server);
+					check(Handler->Mode == UE::Handler::Mode::Server);
 					InternalState = EDTLSHandlerState::Handshaking;
 				}
 

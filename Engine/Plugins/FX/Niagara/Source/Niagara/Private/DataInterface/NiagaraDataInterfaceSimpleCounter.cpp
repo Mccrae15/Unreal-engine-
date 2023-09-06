@@ -2,6 +2,7 @@
 
 #include "NiagaraDataInterfaceSimpleCounter.h"
 #include "NiagaraClearCounts.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuReadbackManager.h"
 #include "NiagaraShaderParametersBuilder.h"
@@ -9,7 +10,7 @@
 
 #include "Internationalization/Internationalization.h"
 #include "Async/Async.h"
-#include "ShaderParameterUtils.h"
+#include "RenderGraphUtils.h"
 #include "ShaderCompilerCore.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceSimpleCounter)
@@ -23,6 +24,7 @@ namespace NDISimpleCounterLocal
 	static const TCHAR* TemplateShaderFile = TEXT("/Plugin/FX/Niagara/Private/NiagaraDataInterfaceSimpleCounterTemplate.ush");
 	static const FName NAME_GetNextValue_Deprecated(TEXT("GetNextValue"));
 	static const FName NAME_Get(TEXT("Get"));
+	static const FName NAME_Set(TEXT("Set"));
 	static const FName NAME_Exchange(TEXT("Exchange"));
 	static const FName NAME_Add(TEXT("Add"));
 	static const FName NAME_Increment(TEXT("Increment"));
@@ -41,7 +43,7 @@ struct FNDISimpleCounterInstanceData_GameThread
 	std::atomic<int32>	Counter;
 };
 
-struct FNDISimpleCounterProxy : public FNiagaraDataInterfaceProxy
+struct FNDISimpleCounterProxy : public FNiagaraDataInterfaceProxyRW
 {
 	FNDISimpleCounterProxy(UNiagaraDataInterfaceSimpleCounter* Owner)
 		: WeakOwner(Owner)
@@ -51,6 +53,14 @@ struct FNDISimpleCounterProxy : public FNiagaraDataInterfaceProxy
 
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override {}
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }
+
+	virtual void GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context) override
+	{
+		if (const FNDISimpleCounterInstanceData_RenderThread* InstanceData = PerInstanceData_RenderThread.Find(Context.GetSystemInstanceID()))
+		{
+			Context.CreateIndirect(InstanceData->CountOffset);
+		}
+	}
 
 	virtual void PreStage(const FNDIGpuComputePreStageContext& Context) override
 	{
@@ -200,7 +210,7 @@ bool UNiagaraDataInterfaceSimpleCounter::InitPerInstanceData(void* PerInstanceDa
 	FNDISimpleCounterInstanceData_GameThread* InstanceData_GT = new(PerInstanceData) FNDISimpleCounterInstanceData_GameThread();
 	InstanceData_GT->Counter = InitialValue;
 
-	if ( IsUsedWithGPUEmitter() )
+	if ( IsUsedWithGPUScript() )
 	{
 		FNDISimpleCounterProxy* Proxy_GT = GetProxyAs<FNDISimpleCounterProxy>();
 		Proxy_GT->PerInstanceData_GameThread.Add(SystemInstance->GetId(), InstanceData_GT);
@@ -223,7 +233,7 @@ void UNiagaraDataInterfaceSimpleCounter::DestroyPerInstanceData(void* PerInstanc
 	auto* InstanceData = reinterpret_cast<FNDISimpleCounterInstanceData_GameThread*>(PerInstanceData);
 	InstanceData->~FNDISimpleCounterInstanceData_GameThread();
 
-	if ( IsUsedWithGPUEmitter() )
+	if ( IsUsedWithGPUScript() )
 	{
 		FNDISimpleCounterProxy* Proxy_GT = GetProxyAs<FNDISimpleCounterProxy>();
 		Proxy_GT->PerInstanceData_GameThread.Remove(SystemInstance->GetId());
@@ -275,6 +285,17 @@ void UNiagaraDataInterfaceSimpleCounter::GetFunctions(TArray<FNiagaraFunctionSig
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Counter")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Current Value")));
 		Sig.SetDescription(LOCTEXT("GetDesc", "Gets the current value of the counter."));
+	}
+	{
+		FNiagaraFunctionSignature& Sig = OutFunctions.AddDefaulted_GetRef();
+		Sig.Name = NAME_Set;
+		Sig.bMemberFunction = true;
+		Sig.bRequiresContext = false;
+		Sig.bRequiresExecPin = true;
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Counter")));
+		Sig.Inputs.Add_GetRef(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Execute"))).SetValue(true);
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("New Value")));
+		Sig.SetDescription(LOCTEXT("SetDesc", "Sets the current value of the counter."));
 	}
 	{
 		FNiagaraFunctionSignature& Sig = OutFunctions.AddDefaulted_GetRef();
@@ -338,6 +359,10 @@ void UNiagaraDataInterfaceSimpleCounter::GetVMExternalFunction(const FVMExternal
 	else if (BindingInfo.Name == NAME_Get)
 	{
 		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceSimpleCounter::VMGet);
+	}
+	else if (BindingInfo.Name == NAME_Set)
+	{
+		OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceSimpleCounter::VMSet);
 	}
 	else if (BindingInfo.Name == NAME_Exchange)
 	{
@@ -450,6 +475,29 @@ void UNiagaraDataInterfaceSimpleCounter::VMGet(FVectorVMExternalFunctionContext&
 	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		OutValue.SetAndAdvance(CurrValue);
+	}
+}
+
+void UNiagaraDataInterfaceSimpleCounter::VMSet(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<FNDISimpleCounterInstanceData_GameThread> InstanceData(Context);
+	FNDIInputParam<bool> InExecute(Context);
+	FNDIInputParam<int32> InValue(Context);
+
+	for (int32 i=0; i < Context.GetNumInstances(); ++i)
+	{
+		const bool bExecute = InExecute.GetAndAdvance();
+		const int32 NewValue = InValue.GetAndAdvance();
+		if (bExecute)
+		{
+			const int32 PrevValue = InstanceData->Counter.exchange(NewValue);
+		}
+	}
+
+	if (FNiagaraUtilities::ShouldSyncCpuToGpu(GpuSyncMode))
+	{
+		InstanceData->bModified = true;
+		MarkRenderDataDirty();
 	}
 }
 

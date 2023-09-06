@@ -20,6 +20,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimTrace.h"
 #include "Animation/ActiveMontageInstanceScope.h"
+#include "Animation/AnimationSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimMontage)
 
@@ -370,6 +371,16 @@ void UAnimMontage::PreSave(FObjectPreSaveContext ObjectSaveContext)
 	BakeTimeStretchCurve();
 #endif // WITH_EDITOR
 	Super::PreSave(ObjectSaveContext);
+}
+
+FFrameRate UAnimMontage::GetSamplingFrameRate() const
+{	
+	if (CommonTargetFrameRate.IsValid())
+	{
+		return CommonTargetFrameRate;
+	}
+
+	return Super::GetSamplingFrameRate();
 }
 
 void UAnimMontage::PostLoad()
@@ -739,6 +750,8 @@ void UAnimMontage::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 		CollectMarkers();
 	}
 
+	UpdateCommonTargetFrameRate();
+
 	PropagateChanges();
 }
 
@@ -758,6 +771,20 @@ void UAnimMontage::PropagateChanges()
 	}
 }
 #endif // WITH_EDITOR
+
+void UAnimMontage::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(CompositeSections.GetAllocatedSize());
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(SlotAnimTracks.GetAllocatedSize());
+	for (FSlotAnimationTrack& Slot : SlotAnimTracks)
+	{
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(Slot.AnimTrack.GetTotalBytesUsed());
+	}
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(BranchingPointMarkers.GetAllocatedSize());
+	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(BranchingPointStateNotifyIndices.GetAllocatedSize());
+}
 
 bool UAnimMontage::IsValidAdditive() const
 {
@@ -1177,13 +1204,14 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 	// nothing has to happen here
 	// we just have to make sure we set Context data correct
 	//if (ensure (Context.IsLeader()))
-	if ((Context.IsLeader()))
+	if (Context.IsLeader())
 	{
 		check(Instance.DeltaTimeRecord);
 		const float CurrentTime = Instance.Montage.CurrentPosition;
 		const float PreviousTime = Instance.DeltaTimeRecord->GetPrevious();
 		const float MoveDelta = Instance.DeltaTimeRecord->Delta;
 
+		// Update context's data for followers to use.
 		Context.SetLeaderDelta(MoveDelta);
 		Context.SetPreviousAnimationPositionRatio(PreviousTime / GetPlayLength());
 
@@ -1193,11 +1221,12 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 			{
 				FMarkerTickRecord* MarkerTickRecord = Instance.MarkerTickRecord;
 				FMarkerTickContext& MarkerTickContext = Context.MarkerTickContext;
-
-				if (MarkerTickRecord->IsValid(Instance.bLooping))
+				const bool bIsMarkerTickRecordValid = MarkerTickRecord->IsValid(Instance.bLooping);
+				
+				// Store the sync anim position BEFORE the asset has being ticked.
+				if (bIsMarkerTickRecordValid)
 				{
 					MarkerTickContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionFromMarkerIndicies(MarkerTickRecord->PreviousMarker.MarkerIndex, MarkerTickRecord->NextMarker.MarkerIndex, PreviousTime, nullptr));
-
 				}
 				else
 				{
@@ -1208,16 +1237,21 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 					MarkerTickContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionFromMarkerIndicies(PreviousMarker.MarkerIndex, NextMarker.MarkerIndex, PreviousTime, nullptr));
 				}
 
+				// Advance as leader.
 				// @todo this won't work well once we start jumping
 				// only thing is that passed markers won't work in this frame. To do that, I have to figure out how it jumped from where to where, 
 				GetMarkerIndicesForTime(CurrentTime, false, MarkerTickContext.GetValidMarkerNames(), MarkerTickRecord->PreviousMarker, MarkerTickRecord->NextMarker);
-				bRecordNeedsResetting = false; // we have updated it now, no need to reset
+				bRecordNeedsResetting = false; // we have updated it now, no need to reset.
+
+				// Store the sync anim position AFTER the asset has being ticked.
 				MarkerTickContext.SetMarkerSyncEndPosition(GetMarkerSyncPositionFromMarkerIndicies(MarkerTickRecord->PreviousMarker.MarkerIndex, MarkerTickRecord->NextMarker.MarkerIndex, CurrentTime, nullptr));
 
 				MarkerTickContext.MarkersPassedThisTick = *Instance.Montage.MarkersPassedThisTick;
 
 #if DO_CHECK
-				if(MarkerTickContext.MarkersPassedThisTick.Num() == 0)
+				// The marker tick record gets invalidated when the montage position is set externally and due to this change we cannot assume
+				// its sync positions will be the same as the previous tick. 
+				if (MarkerTickContext.MarkersPassedThisTick.Num() == 0 && bIsMarkerTickRecordValid)
 				{
 					const FMarkerSyncAnimPosition& StartPosition = MarkerTickContext.GetMarkerSyncStartPosition();
 					const FMarkerSyncAnimPosition& EndPosition = MarkerTickContext.GetMarkerSyncEndPosition();
@@ -1226,14 +1260,15 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 				}
 #endif
 
-				UE_LOG(LogAnimMarkerSync, Log, TEXT("Montage Leading SyncGroup: %s(%s) Start [%s], End [%s]"),
-					*GetNameSafe(this), *SyncGroup.ToString(), *MarkerTickContext.GetMarkerSyncStartPosition().ToString(), *MarkerTickContext.GetMarkerSyncEndPosition().ToString());
+				UE_LOG(LogAnimMarkerSync, Log, TEXT("Montage Leading SyncGroup: %s(%s) Start [%s], End [%s]"), *GetNameSafe(this), *SyncGroup.ToString(), *MarkerTickContext.GetMarkerSyncStartPosition().ToString(), *MarkerTickContext.GetMarkerSyncEndPosition().ToString());
 			}
 		}
-
+		
+		// Update context's position for followers to use.
 		Context.SetAnimationPositionRatio(CurrentTime / GetPlayLength());
 	}
 
+	// Reset record if needed.
 	if (bRecordNeedsResetting && Instance.MarkerTickRecord)
 	{
 		Instance.MarkerTickRecord->Reset();
@@ -1244,39 +1279,46 @@ void UAnimMontage::CollectMarkers()
 {
 	MarkerData.AuthoredSyncMarkers.Reset();
 
-	// we want to make sure anim reference actually contains markers
-	if (SyncGroup != NAME_None && SlotAnimTracks.IsValidIndex(SyncSlotIndex))
+	// We want to make sure anim reference actually contains markers
+	if (SyncGroup != NAME_None)
 	{
-		const FAnimTrack& AnimTrack = SlotAnimTracks[SyncSlotIndex].AnimTrack;
-		for (const auto& Seg : AnimTrack.AnimSegments)
+		if (SlotAnimTracks.IsValidIndex(SyncSlotIndex))
 		{
-			const UAnimSequence* Sequence = Cast<UAnimSequence>(Seg.GetAnimReference());
-			if (Sequence && Sequence->AuthoredSyncMarkers.Num() > 0)
+			const FAnimTrack& AnimTrack = SlotAnimTracks[SyncSlotIndex].AnimTrack;
+			for (const auto& Seg : AnimTrack.AnimSegments)
 			{
-				// @todo this won't work well if you have starttime < end time and it does have negative playrate
-				for (const auto& Marker : Sequence->AuthoredSyncMarkers)
+				const UAnimSequence* Sequence = Cast<UAnimSequence>(Seg.GetAnimReference());
+				if (Sequence && Sequence->AuthoredSyncMarkers.Num() > 0)
 				{
-					if (Marker.Time >= Seg.AnimStartTime && Marker.Time <= Seg.AnimEndTime)
+					// @todo this won't work well if you have starttime < end time and it does have negative playrate
+					for (const auto& Marker : Sequence->AuthoredSyncMarkers)
 					{
-						const float TotalSegmentLength = (Seg.AnimEndTime - Seg.AnimStartTime)*Seg.AnimPlayRate;
-						// i don't think we can do negative in this case
-						ensure(TotalSegmentLength >= 0.f);
-
-						// now add to the list
-						for (int32 LoopCount = 0; LoopCount < Seg.LoopingCount; ++LoopCount)
+						if (Marker.Time >= Seg.AnimStartTime && Marker.Time <= Seg.AnimEndTime)
 						{
-							FAnimSyncMarker NewMarker;
+							const float TotalSegmentLength = (Seg.AnimEndTime - Seg.AnimStartTime)*Seg.AnimPlayRate;
+							// i don't think we can do negative in this case
+							ensure(TotalSegmentLength >= 0.f);
 
-							NewMarker.Time = Seg.StartPos + (Marker.Time - Seg.AnimStartTime)*Seg.AnimPlayRate + TotalSegmentLength*LoopCount;
-							NewMarker.MarkerName = Marker.MarkerName;
-							MarkerData.AuthoredSyncMarkers.Add(NewMarker);
+							// now add to the list
+							for (int32 LoopCount = 0; LoopCount < Seg.LoopingCount; ++LoopCount)
+							{
+								FAnimSyncMarker NewMarker;
+
+								NewMarker.Time = Seg.StartPos + (Marker.Time - Seg.AnimStartTime)*Seg.AnimPlayRate + TotalSegmentLength*LoopCount;
+								NewMarker.MarkerName = Marker.MarkerName;
+								MarkerData.AuthoredSyncMarkers.Add(NewMarker);
+							}
 						}
 					}
 				}
 			}
-		}
 
-		MarkerData.CollectUniqueNames();
+			MarkerData.CollectUniqueNames();
+		}
+		else
+		{
+			UE_LOG(LogAnimMontage, Warning, TEXT("Montage's sync slot track index is invalid. Make sure to use a valid slot track index, otherwise this Montage will use old sync markers or not use marker-based syncing at all."))
+		}
 	}
 }
 
@@ -2944,17 +2986,7 @@ void UAnimMontage::BakeTimeStretchCurve()
 	const FFloatCurve* TimeStretchFloatCurve = nullptr;
 	if (ShouldDataModelBeValid())
 	{		
-		if (const USkeleton* MySkeleton = GetSkeleton())
-		{
-			if (const FSmartNameMapping* CurveNameMapping = MySkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName))
-			{
-				const USkeleton::AnimCurveUID CurveUID = CurveNameMapping->FindUID(TimeStretchCurveName);
-				if (CurveUID != SmartName::MaxUID)
-				{
-					TimeStretchFloatCurve = GetDataModel()->FindFloatCurve(FAnimationCurveIdentifier(CurveUID, ERawCurveTrackTypes::RCT_Float));
-				}
-			}
-		}
+		TimeStretchFloatCurve = GetDataModel()->FindFloatCurve(FAnimationCurveIdentifier(TimeStretchCurveName, ERawCurveTrackTypes::RCT_Float));
 	}
 
 	if (TimeStretchFloatCurve == nullptr)
@@ -2975,6 +3007,74 @@ void UAnimMontage::PopulateWithExistingModel(TScriptInterface<IAnimationDataMode
 	const float CurrentCalculatedLength = CalculateSequenceLength();
 	SetCompositeLength(CurrentCalculatedLength);
 }
+
+void UAnimMontage::UpdateCommonTargetFrameRate()
+{
+	CommonTargetFrameRate = FFrameRate(0,0);
+	FFrameRate TargetRate = UAnimationSettings::Get()->GetDefaultFrameRate();
+
+	bool bValidFrameRate = true;
+	bool bFirst = true;
+	for (const FSlotAnimationTrack& Track : SlotAnimTracks)
+	{
+		for (const FAnimSegment& Segment : Track.AnimTrack.AnimSegments)
+		{
+			const UAnimSequenceBase* Base = Segment.GetAnimReference();
+			if (Base && Base != this)
+			{
+				const FFrameRate BaseFrameRate = Base->GetSamplingFrameRate();
+				if (bFirst)
+				{
+					TargetRate = BaseFrameRate;
+					bFirst = false;
+				}
+				else
+				{
+					if (BaseFrameRate.IsValid())
+					{
+						if (TargetRate.IsMultipleOf(BaseFrameRate))
+						{
+							TargetRate = BaseFrameRate;
+						}
+						else if (TargetRate != BaseFrameRate && !BaseFrameRate.IsMultipleOf(TargetRate))
+						{
+							FString AssetString;
+							TArray<UAnimationAsset*> Assets;
+							if(GetAllAnimationSequencesReferred(Assets, false))
+							{
+								for (const UAnimationAsset* AnimAsset : Assets)
+								{
+									if (const UAnimSequenceBase* AnimSequenceBase = Cast<UAnimSequenceBase>(AnimAsset))
+									{
+										AssetString.Append(FString::Printf(TEXT("\n\t%s - %s"), *AnimSequenceBase->GetName(), *AnimSequenceBase->GetSamplingFrameRate().ToPrettyText().ToString()));
+									}
+								}
+							}						
+
+							if (UE::Anim::CVarOutputMontageFrameRateWarning.GetValueOnAnyThread() == true)
+							{
+								UE_LOG(LogAnimation, Warning, TEXT("Frame rate of animation %s (%s) is incompatible with other animations in Animation Montage %s - underlying frame-rate will be set to %s:%s"), *Base->GetName(), *BaseFrameRate.ToPrettyText().ToString(), *GetName(), *Super::GetSamplingFrameRate().ToPrettyText().ToString(), *AssetString);
+							}
+						
+							bValidFrameRate = false;
+							break;
+						}
+					}
+					else
+					{
+						UE_LOG(LogAnimMontage, Warning, TEXT("Invalid frame rate %s for %s in %s"), *BaseFrameRate.ToPrettyText().ToString(), *Base->GetName(), *GetName());
+					}
+				}			
+			}	
+		}			
+	}
+
+	if (bValidFrameRate)
+	{
+		CommonTargetFrameRate = TargetRate;
+	}
+}
+
 #endif // WITH_EDITOR
 
 FMontageBlendSettings::FMontageBlendSettings()

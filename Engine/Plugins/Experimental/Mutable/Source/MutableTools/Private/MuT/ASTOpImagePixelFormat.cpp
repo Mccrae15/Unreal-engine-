@@ -78,7 +78,7 @@ namespace mu
 	}
 
 
-	void ASTOpImagePixelFormat::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpImagePixelFormat::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -100,15 +100,33 @@ namespace mu
 	}
 
 
-	mu::Ptr<ASTOp> ASTOpImagePixelFormat::OptimiseSink(const FModelOptimizationOptions& options, FOptimizeSinkContext& context) const
+	Ptr<ASTOp> ASTOpImagePixelFormat::OptimiseSemantic(const FModelOptimizationOptions& options, int32 Pass) const
 	{
-		mu::Ptr<ASTOp> at;
+		mu::Ptr<ASTOp> NewOp;
 
-		mu::Ptr<ASTOp> sourceAt = Source.child();
+		// Skip this operation if the source op format is already the one we want.
+		if (Source)
+		{
+			FImageDesc SourceDesc = Source->GetImageDesc();
+			if (SourceDesc.m_format==Format)
+			{
+				NewOp = Source.child();
+			}
+		}
+
+		return NewOp;
+	}
+
+
+	Ptr<ASTOp> ASTOpImagePixelFormat::OptimiseSink(const FModelOptimizationOptions& options, FOptimizeSinkContext& context) const
+	{
+		Ptr<ASTOp> at;
+
+		Ptr<ASTOp> sourceAt = Source.child();
 
 		EImageFormat format = Format;
 		bool bIsCompressedFormat = IsCompressedFormat(Format);
-		//bool isBlockFormat = GetImageFormatData( format ).m_pixelsPerBlockX!=0;
+		//bool isBlockFormat = GetImageFormatData( format ).PixelsPerBlockX!=0;
 
 		// The instruction can be sunk
 		OP_TYPE sourceType = sourceAt->GetOpType();
@@ -174,7 +192,6 @@ namespace mu
 			break;
 		}
 
-
 		case OP_TYPE::IM_BLANKLAYOUT:
 		{
 			// Just make sure the layout format is the right one and forget the op
@@ -183,12 +200,30 @@ namespace mu
 			EImageFormat layoutFormat = (EImageFormat)nop->op.args.ImageBlankLayout.format;
 			if (FormatIfAlpha != EImageFormat::IF_NONE
 				&&
-				GetImageFormatData(layoutFormat).m_channels > 3)
+				GetImageFormatData(layoutFormat).Channels > 3)
 			{
 				format = FormatIfAlpha;
 			}
 
 			nop->op.args.ImageBlankLayout.format = format;
+			at = nop;
+			break;
+		}
+
+		case OP_TYPE::IM_PLAINCOLOUR:
+		{
+			// Just make sure the format is the right one and forget the op
+			auto nop = mu::Clone<ASTOpFixed>(sourceAt);
+
+			EImageFormat layoutFormat = (EImageFormat)nop->op.args.ImagePlainColour.format;
+			if (FormatIfAlpha != EImageFormat::IF_NONE
+				&&
+				GetImageFormatData(layoutFormat).Channels > 3)
+			{
+				format = FormatIfAlpha;
+			}
+
+			nop->op.args.ImagePlainColour.format = format;
 			at = nop;
 			break;
 		}
@@ -232,7 +267,7 @@ namespace mu
 
 		if (FormatIfAlpha != EImageFormat::IF_NONE
 			&&
-			GetImageFormatData(res.m_format).m_channels > 3)
+			GetImageFormatData(res.m_format).Channels > 3)
 		{
 			res.m_format = FormatIfAlpha;
 		}
@@ -322,7 +357,7 @@ namespace mu
 
 		EImageFormat format = currentFormatOp->Format;
 		bool bIsCompressedFormat = IsCompressedFormat(format);
-		bool isBlockFormat = GetImageFormatData(format).m_pixelsPerBlockX != 0;
+		bool isBlockFormat = GetImageFormatData(format).PixelsPerBlockX != 0;
 
 		// Already visited?
 		const Ptr<ASTOp>* Cached = OldToNew.Find({ at,currentFormatOp });
@@ -364,8 +399,8 @@ namespace mu
 			{
 				// We can only optimise if the layout grid blocks size in pixels is
 				// a multiple of the image format block size.
-				int imageFormatBlockSizeX = GetImageFormatData(format).m_pixelsPerBlockX;
-				int imageFormatBlockSizeY = GetImageFormatData(format).m_pixelsPerBlockY;
+				int imageFormatBlockSizeX = GetImageFormatData(format).PixelsPerBlockX;
+				int imageFormatBlockSizeY = GetImageFormatData(format).PixelsPerBlockY;
 				bool acceptable = imageFormatBlockSizeX == 1 && imageFormatBlockSizeY == 1;
 
 				if (!acceptable)
@@ -388,7 +423,7 @@ namespace mu
 				if (acceptable)
 				{
 					// We move the format down the two paths
-					auto newOp = mu::Clone<ASTOpImageCompose>(at);
+					Ptr<ASTOpImageCompose> newOp = mu::Clone<ASTOpImageCompose>(at);
 
 					// TODO: We have to make sure we don't end up with two different formats if
 					// there is an formatIfAlpha
@@ -411,7 +446,7 @@ namespace mu
 			if (isBlockFormat)
 			{
 				// We move the format down the two paths
-				auto newOp = mu::Clone<ASTOpImagePatch>(at);
+				Ptr<ASTOpImagePatch> newOp = mu::Clone<ASTOpImagePatch>(at);
 
 				newOp->base = Visit(newOp->base.child(), currentFormatOp);
 				newOp->patch = Visit(newOp->patch.child(), currentFormatOp);
@@ -424,7 +459,7 @@ namespace mu
 
 		case OP_TYPE::IM_MIPMAP:
 		{
-			auto typedSource = dynamic_cast<const ASTOpImageMipmap*>(at.get());
+			const ASTOpImageMipmap* typedSource = dynamic_cast<const ASTOpImageMipmap*>(at.get());
 
 			// If its a compressed format, only sink formats on mipmap operations that
 			// generate the tail. To avoid optimization loop.
@@ -454,29 +489,6 @@ namespace mu
 					auto bOp = Visit(child, currentFormatOp);
 					newOp->SetChild(newOp->op.args.ImageInterpolate.targets[v], bOp);
 				}
-
-				newAt = newOp;
-			}
-			break;
-		}
-
-
-		case OP_TYPE::IM_INTERPOLATE3:
-		{
-			// This op doesn't support compressed formats
-			if (!bIsCompressedFormat)
-			{
-				// We move the format down all the paths
-				auto newOp = mu::Clone<ASTOpFixed>(at);
-
-				auto top0 = newOp->children[newOp->op.args.ImageInterpolate3.target0].child();
-				newOp->SetChild(newOp->op.args.ImageInterpolate3.target0, Visit(top0, currentFormatOp));
-
-				auto top1 = newOp->children[newOp->op.args.ImageInterpolate3.target1].child();
-				newOp->SetChild(newOp->op.args.ImageInterpolate3.target1, Visit(top1, currentFormatOp));
-
-				auto top2 = newOp->children[newOp->op.args.ImageInterpolate3.target2].child();
-				newOp->SetChild(newOp->op.args.ImageInterpolate3.target2, Visit(top2, currentFormatOp));
 
 				newAt = newOp;
 			}

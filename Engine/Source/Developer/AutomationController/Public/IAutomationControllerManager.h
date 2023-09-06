@@ -239,9 +239,20 @@ public:
 	virtual void SetFilter( TSharedPtr< AutomationFilterCollection > InFilter ) = 0;
 
 	/**
-	 * Gives the array of test results to the UI.
+	 * Gives the array of filtered test results to the UI.
 	 */
+	UE_DEPRECATED(5.3, "Use GetFilteredReports or GetEnabledReports instead.")
 	virtual TArray <TSharedPtr <IAutomationReport> >& GetReports() = 0;
+	
+	/**
+	 * Gives the array of filtered test results to the UI.
+	 */
+	virtual TArray <TSharedPtr <IAutomationReport> >& GetFilteredReports() = 0;
+
+	/**
+	 * Gives the array of enabled test results to the UI.
+	 */
+	virtual TArray <TSharedPtr <IAutomationReport> > GetEnabledReports() = 0;
 
 	/**
 	 * Get num devices types.
@@ -270,6 +281,14 @@ public:
  	 * @param DeviceIndex The Device Index.
 	 */
 	virtual FString GetGameInstanceName(const int32 ClusterIndex, const int32 DeviceIndex) const = 0;
+
+	/**
+	 * Get a device name.
+	 *
+	 * @param ClusterIndex The cluster Index.
+	 * @param DeviceIndex The Device Index.
+	 */
+	virtual FString GetDeviceName(const int32 ClusterIndex, const int32 DeviceIndex) const = 0;
 
 	/**
 	 * Sets whether all visible tests are enabled or not.

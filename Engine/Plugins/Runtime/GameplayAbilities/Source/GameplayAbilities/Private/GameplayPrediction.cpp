@@ -6,6 +6,45 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayPrediction)
 
+FReplicatedPredictionKeyItem::FReplicatedPredictionKeyItem()
+{
+};
+
+FReplicatedPredictionKeyItem::FReplicatedPredictionKeyItem(const FReplicatedPredictionKeyItem& Other)
+{
+	*this = Other;
+}
+
+FReplicatedPredictionKeyItem& FReplicatedPredictionKeyItem::operator=(const FReplicatedPredictionKeyItem& Other)
+{
+	if (&Other != this)
+	{
+		ReplicationID = Other.ReplicationID;
+		ReplicationKey = Other.ReplicationKey;
+		MostRecentArrayReplicationKey = Other.MostRecentArrayReplicationKey;
+		PredictionKey = Other.PredictionKey;
+	}
+	return *this;
+}
+
+FReplicatedPredictionKeyItem::FReplicatedPredictionKeyItem(FReplicatedPredictionKeyItem&& Other)
+: PredictionKey(MoveTemp(Other.PredictionKey))
+{
+	ReplicationID = Other.ReplicationID;
+	ReplicationKey = Other.ReplicationKey;
+	MostRecentArrayReplicationKey = Other.MostRecentArrayReplicationKey;
+}
+
+FReplicatedPredictionKeyItem& FReplicatedPredictionKeyItem::operator=(FReplicatedPredictionKeyItem&& Other)
+{
+	ReplicationID = Other.ReplicationID;
+	ReplicationKey = Other.ReplicationKey;
+	MostRecentArrayReplicationKey = Other.MostRecentArrayReplicationKey;
+	PredictionKey = MoveTemp(Other.PredictionKey);
+
+	return *this;
+}
+
 /** The key to understanding this function is that when a key is received by the server, we note which connection gave it to us. We only serialize the key back to that client.  */
 bool FPredictionKey::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)
 {
@@ -272,7 +311,7 @@ FScopedPredictionWindow::FScopedPredictionWindow(UAbilitySystemComponent* InAbil
 	// Original ensure has been left in to catch other cases of invalid Owner ASCs
 	if ((!InAbilitySystemComponent) || (InAbilitySystemComponent->IsBeingDestroyed()) || (!IsValidChecked(InAbilitySystemComponent) || InAbilitySystemComponent->IsUnreachable()))
 	{
-		ABILITY_LOG(Verbose, TEXT("FScopedPredictionWindow() aborting due to Owner (ASC) being null, destroyed or pending kill / unreachable [%s]"), *ScopedPredictionKey.ToString());
+		ABILITY_LOG(Verbose, TEXT("FScopedPredictionWindow() aborting due to Owner (ASC) being null, destroyed or pending kill / unreachable"));
 		return;
 	}
 
@@ -305,7 +344,6 @@ FScopedPredictionWindow::~FScopedPredictionWindow()
 			if (OwnerPtr->ScopedPredictionKey.IsValidKey())
 			{
 				OwnerPtr->ReplicatedPredictionKeyMap.ReplicatePredictionKey(OwnerPtr->ScopedPredictionKey);
-				OwnerPtr->bIsNetDirty = true;
 			}
 		}
 		if (ClearScopedPredictionKey)
@@ -355,6 +393,10 @@ const int32 FReplicatedPredictionKeyMap::KeyRingBufferSize = 32;
 FReplicatedPredictionKeyMap::FReplicatedPredictionKeyMap()
 {
 	PredictionKeys.SetNum(KeyRingBufferSize);
+	for (FReplicatedPredictionKeyItem& Item : PredictionKeys)
+	{
+		MarkItemDirty(Item);
+	}
 }
 
 bool FReplicatedPredictionKeyMap::NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParms)

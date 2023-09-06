@@ -14,7 +14,7 @@ class FODSCThread;
  * Responsible for processing shader compile responses from the ODSC Thread.
  * Interface for submitting shader compile requests to the ODSC Thread.
  */
-class ENGINE_API FODSCManager
+class FODSCManager
 	: public FTSTickerObjectBase
 {
 public:
@@ -24,12 +24,12 @@ public:
 	/**
 	 * Constructor
 	 */
-	FODSCManager();
+	ENGINE_API FODSCManager();
 
 	/**
 	 * Destructor
 	 */
-	virtual ~FODSCManager();
+	ENGINE_API virtual ~FODSCManager();
 
 	// FTSTickerObjectBase
 
@@ -40,7 +40,7 @@ public:
 	 *
 	 * @return false if no longer needs ticking
 	 */
-	bool Tick(float DeltaSeconds) override;
+	ENGINE_API bool Tick(float DeltaSeconds) override;
 
 	/**
 	 * Add a request to compile a shader.  The results are submitted and processed in an async manner.
@@ -51,10 +51,10 @@ public:
 	 *
 	 * @return false if no longer needs ticking
 	 */
-	void AddThreadedRequest(const TArray<FString>& MaterialsToCompile, const FString& ShaderTypesToLoad, EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, ODSCRecompileCommand RecompileCommandType);
+	ENGINE_API void AddThreadedRequest(const TArray<FString>& MaterialsToCompile, const FString& ShaderTypesToLoad, EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, ODSCRecompileCommand RecompileCommandType);
 
 	/**
-	 * Add a request to compile a pipeline (VS/PS) of shaders.  The results are submitted and processed in an async manner.
+	 * Add a request to compile a pipeline of shaders.  The results are submitted and processed in an async manner.
 	 *
 	 * @param ShaderPlatform - Which shader platform to compile for.
 	 * @param FeatureLevel - Which feature level to compile for.
@@ -63,18 +63,28 @@ public:
 	 * @param VertexFactoryName - The name of the vertex factory type we should compile.
 	 * @param PipelineName - The name of the shader pipeline we should compile.
 	 * @param ShaderTypeNames - The shader type names of all the shader stages in the pipeline.
+	 * @param PermutationId - The permutation ID of the shader we should compile.
 	 *
 	 * @return false if no longer needs ticking
 	 */
-	void AddThreadedShaderPipelineRequest(EShaderPlatform ShaderPlatform, ERHIFeatureLevel::Type FeatureLevel, EMaterialQualityLevel::Type QualityLevel, const FString& MaterialName, const FString& VertexFactoryName, const FString& PipelineName, const TArray<FString>& ShaderTypeNames);
+	ENGINE_API void AddThreadedShaderPipelineRequest(
+		EShaderPlatform ShaderPlatform,
+		ERHIFeatureLevel::Type FeatureLevel,
+		EMaterialQualityLevel::Type QualityLevel,
+		const FString& MaterialName,
+		const FString& VertexFactoryName,
+		const FString& PipelineName,
+		const TArray<FString>& ShaderTypeNames,
+		int32 PermutationId
+	);
 
 	/** Returns true if we would actually add a request when calling AddThreadedShaderPipelineRequest. */
 	inline bool IsHandlingRequests() const { return Thread != nullptr; }
 
 private:
 
-	void OnEnginePreExit();
-	void StopThread();
+	ENGINE_API void OnEnginePreExit();
+	ENGINE_API void StopThread();
 
 	/** Handles communicating directly with the cook on the fly server. */
 	FODSCThread* Thread = nullptr;

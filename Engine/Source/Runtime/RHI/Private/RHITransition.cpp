@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RHITransition.h"
-#include "RHI.h"
+#include "DynamicRHI.h"
 
-RHI_API uint64 GRHITransitionPrivateData_SizeInBytes = 0;
-RHI_API uint64 GRHITransitionPrivateData_AlignInBytes = 0;
+uint64 GRHITransitionPrivateData_SizeInBytes = 0;
+uint64 GRHITransitionPrivateData_AlignInBytes = 0;
 
 FRHIViewableResource* GetViewableResource(const FRHITransitionInfo& Info)
 {
@@ -15,7 +15,7 @@ FRHIViewableResource* GetViewableResource(const FRHITransitionInfo& Info)
 		return Info.ViewableResource;
 
 	case FRHITransitionInfo::EType::UAV:
-		return Info.UAV ? Info.UAV->GetParentResource() : nullptr;
+		return Info.UAV ? Info.UAV->GetResource() : nullptr;
 	}
 
 	return nullptr;

@@ -8,6 +8,7 @@
 #include "Sequencer.h"
 #include "SequencerSettings.h"
 #include "SequencerCommonHelpers.h"
+#include "MVVM/Selection/Selection.h"
 #include "MVVM/ViewModels/ViewModel.h"
 #include "MVVM/SectionModelStorageExtension.h"
 #include "MVVM/Extensions/IDraggableTrackAreaExtension.h"
@@ -18,6 +19,7 @@
 #include "MVVM/ViewModels/TrackAreaViewModel.h"
 #include "MVVM/ViewModels/VirtualTrackArea.h"
 #include "Algo/AllOf.h"
+#include "MovieScene.h"
 #include "MovieSceneTimeHelpers.h"
 #include "Modules/ModuleManager.h"
 #include "Channels/MovieSceneChannel.h"
@@ -99,15 +101,16 @@ void FEditToolDragOperation::EndTransaction()
 	Sequencer.NotifyMovieSceneDataChanged( EMovieSceneDataChangeType::TrackValueChanged );
 }
 
-FResizeSection::FResizeSection( FSequencer& InSequencer, const TSet<TWeakObjectPtr<UMovieSceneSection>>& InSections, bool bInDraggingByEnd, bool bInIsSlipping )
+FResizeSection::FResizeSection( FSequencer& InSequencer, bool bInDraggingByEnd, bool bInIsSlipping )
 	: FEditToolDragOperation( InSequencer )
 	, bDraggingByEnd(bInDraggingByEnd)
 	, bIsSlipping(bInIsSlipping)
 	, MouseDownTime(0)
 {
-	Sections.Reserve(InSections.Num());
+	TSet<UMovieSceneSection*> SelectedSections = Sequencer.GetViewModel()->GetSelection()->GetSelectedSections();
+	Sections.Reserve(SelectedSections.Num());
 
-	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : InSections)
+	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : SelectedSections)
 	{
 		UMovieSceneSection* Section = WeakSection.Get();
 		if (Section)
@@ -618,16 +621,23 @@ FMoveKeysAndSections::FMoveKeysAndSections(FSequencer& InSequencer, ESequencerMo
 {
 	using namespace UE::Sequencer;
 
-	bAllowVerticalMovement = HotspotCast<FSectionHotspotBase>(InSequencer.GetViewModel()->GetTrackArea()->GetHotspot()) != nullptr;
+	TSharedPtr<FSequencerEditorViewModel> SequencerViewModel = InSequencer.GetViewModel()->CastThisShared<FSequencerEditorViewModel>();
+	bAllowVerticalMovement = HotspotCast<FSectionHotspotBase>(SequencerViewModel->GetHotspot()) != nullptr;
 
 	if (EnumHasAnyFlags(MoveType, ESequencerMoveOperationType::MoveKeys))
 	{
 		// Filter out the keys on sections that are read only
-		for (const FSequencerSelectedKey& SelectedKey : Sequencer.GetSelection().GetSelectedKeys())
+		const FKeySelection& KeySelection = Sequencer.GetViewModel()->GetSelection()->KeySelection;
+
+		Keys.Reserve(KeySelection.Num());
+
+		for (FKeyHandle Key : KeySelection)
 		{
-			if (!SelectedKey.Section->IsReadOnly())
+			TSharedPtr<FChannelModel> Channel = KeySelection.GetModelForKey(Key);
+			UMovieSceneSection*       Section = Channel ? Channel->GetSection() : nullptr;
+			if (Section && !Section->IsReadOnly())
 			{
-				Keys.Add(SelectedKey);
+				Keys.Emplace(FSequencerSelectedKey(*Section, Channel, Key));
 			}
 		}
 
@@ -636,17 +646,14 @@ FMoveKeysAndSections::FMoveKeysAndSections(FSequencer& InSequencer, ESequencerMo
 
 	if (EnumHasAnyFlags(MoveType, ESequencerMoveOperationType::MoveSections))
 	{
-		for (TWeakPtr<FViewModel> WeakSelectedModel : Sequencer.GetSelection().GetSelectedTrackAreaItems())
+		for (TViewModelPtr<IDraggableTrackAreaExtension> DraggableItem : Sequencer.GetViewModel()->GetSelection()->TrackArea.Filter<IDraggableTrackAreaExtension>())
 		{
-			if (TSharedPtr<IDraggableTrackAreaExtension> DraggableItem = ICastable::CastWeakPtrShared<IDraggableTrackAreaExtension>(WeakSelectedModel))
-			{
-				DraggableItem->OnBeginDrag(*this);
-			}
+			DraggableItem->OnBeginDrag(*this);
 		}
 	}
 
 	// Always move selected marked frames along with keys and/or sections.
-	MarkedFrames = Sequencer.GetSelection().GetSelectedMarkedFrames();
+	MarkedFrames = Sequencer.GetViewModel()->GetSelection()->MarkedFrames.GetSelected();
 }
 
 void FMoveKeysAndSections::AddSnapTime(FFrameNumber SnapTime)
@@ -752,7 +759,7 @@ void FMoveKeysAndSections::OnDrag(const FPointerEvent& MouseEvent, FVector2D Loc
 	{
 		return;
 	}
-
+	
 	// Convert the current mouse position to a time
 	FVector2D  VirtualMousePos = VirtualTrackArea.PhysicalToVirtual(LocalMousePos);
 	FFrameTime MouseTime = VirtualTrackArea.PixelToFrame(LocalMousePos.X);
@@ -771,9 +778,10 @@ void FMoveKeysAndSections::OnDrag(const FPointerEvent& MouseEvent, FVector2D Loc
 		const bool bSnapToLikeTypes = (KeysAsArray.Num() > 0 && Settings->GetSnapKeyTimesToKeys()) || (Sections.Num() > 0 && Settings->GetSnapSectionTimesToSections());
 
 		SnapField.GetValue().SetSnapToInterval(bSnapToInterval);
+		SnapField.GetValue().SetSnapToLikeTypes(bSnapToLikeTypes);
 
 		// RelativeSnapOffsets contains both our sections and our keys, and we add them all as potential things that can snap to stuff.
-		if (bSnapToLikeTypes)
+		if (bSnapToLikeTypes || bSnapToInterval)
 		{
 			ValidSnapMarkers.SetNumUninitialized(RelativeSnapOffsets.Num());
 			for (int32 Index = 0; Index < RelativeSnapOffsets.Num(); ++Index)
@@ -819,7 +827,7 @@ void FMoveKeysAndSections::OnDrag(const FPointerEvent& MouseEvent, FVector2D Loc
 
 	// Update our marked frames by moving them by our delta.
 	HandleMarkedFrameMovement(MaxDeltaX, MouseDeltaTime);
-
+	
 	// Get a list of the unique tracks in this selection and update their easing so previews draw interactively as you drag.
 	TSet<UMovieSceneTrack*> Tracks;
 	FMovieSceneSectionMovedParams SectionMovedParams(EPropertyChangeType::Interactive);
@@ -1084,17 +1092,22 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 
 	// If sections are all on different rows or from different tracks, don't set row indices for anything because it leads to odd behavior.
 	bool bSectionsAreOnDifferentRows = false;
-	int32 FirstRowIndex = -1;
+	TOptional<int32> LowestRowIndex;
+	TOptional<int32> HighestRowIndex;
 	UMovieSceneTrack* FirstTrack = nullptr;
 
 	for (UMovieSceneSection* Section : Sections)
 	{
 		UMovieSceneTrack* Track = Section->GetTypedOuter<UMovieSceneTrack>();
-		if (FirstRowIndex == -1)
+		if (!LowestRowIndex.IsSet() || LowestRowIndex.GetValue() < Section->GetRowIndex())
 		{
-			FirstRowIndex = Section->GetRowIndex();
+			LowestRowIndex = Section->GetRowIndex();
 		}
-		if (FirstRowIndex != Section->GetRowIndex())
+		if (!HighestRowIndex.IsSet() || HighestRowIndex.GetValue() > Section->GetRowIndex())
+		{
+			HighestRowIndex = Section->GetRowIndex();
+		}
+		if (LowestRowIndex.IsSet() && LowestRowIndex.GetValue() != Section->GetRowIndex())
 		{
 			bSectionsAreOnDifferentRows = true;
 		}
@@ -1119,14 +1132,14 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 	bool bRowIndexChanged = false;
 	for (UMovieSceneSection* Section : Sections)
 	{
-		TSharedPtr<FSectionModel>      SectionModel = SectionStorage->FindModelForSection(Section);
-		TSharedPtr<FViewModel> TrackModel   = SectionModel ? SectionModel->GetParentTrackModel() : nullptr;
-		if (!SectionModel || !TrackModel)
+		TSharedPtr<FSectionModel>      SectionModel  = SectionStorage->FindModelForSection(Section);
+		TViewModelPtr<ITrackExtension> TrackExtModel = SectionModel ? SectionModel->GetParentTrackModel() : nullptr;
+		if (!SectionModel || !TrackExtModel)
 		{
 			continue;
 		}
 
-		UMovieSceneTrack* Track = TrackModel->CastThis<ITrackExtension>()->GetTrack();
+		UMovieSceneTrack* Track = TrackExtModel->GetTrack();
 
 		const TArray<UMovieSceneSection*>& AllSections = Track->GetAllSections();
 
@@ -1139,7 +1152,7 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 			}
 		}
 
-		Tracks.AddUnique(TrackModel);
+		Tracks.AddUnique(TrackExtModel.AsModel());
 
 		int32 TargetRowIndex = Section->GetRowIndex();
 
@@ -1161,12 +1174,12 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 			}
 
 			// Handle sub-track and non-sub-track dragging
-			if (TrackModel->IsA<FTrackModel>())
+			if (TViewModelPtr<FTrackModel> TrackModel = TrackExtModel.ImplicitCast())
 			{
 				const int32 NumRows = FMath::Max(Section->GetRowIndex() + 1, MaxRowIndex);
 
 				// Find the total height of the track - this is necessary because tracks may contain key areas, but they will not use sub tracks unless there is more than one row
-				const FVirtualGeometry VirtualGeometry = TrackModel->CastThis<FTrackModel>()->GetVirtualGeometry();
+				const FVirtualGeometry VirtualGeometry = TrackModel->GetVirtualGeometry();
 
 				// Assume same height rows
 				const float VirtualSectionHeight = VirtualGeometry.NestedBottom - VirtualGeometry.Top;
@@ -1185,9 +1198,9 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 					TargetRowIndex = -1;
 				}
 			}
-			else if (TrackModel->IsA<FTrackRowModel>())
+			else if (TViewModelPtr<FTrackRowModel> TrackRow = TrackExtModel.ImplicitCast())
 			{
-				TSharedPtr<FTrackModel> ParentTrack = TrackModel->FindAncestorOfType<FTrackModel>();
+				TSharedPtr<FTrackModel> ParentTrack = TrackExtModel.AsModel()->FindAncestorOfType<FTrackModel>();
 				if (ensure(ParentTrack.IsValid()))
 				{
 					int32 ChildIndex = 0;
@@ -1205,8 +1218,7 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 						if (ChildIndex == 0 && (VirtualMousePos.Y <= VirtualSectionTop || LocalMousePos.Y <= 0))
 						{
 							TargetRowIndex = 0;
-							FTrackRowModel* TrackRowModel = TrackModel->CastThis<FTrackRowModel>();
-							for (TSharedPtr<FSectionModel> SectionNode : TrackRowModel->GetTrackAreaModelListAs<FSectionModel>())
+							for (TSharedPtr<FSectionModel> SectionNode : TrackRow->GetTrackAreaModelListAs<FSectionModel>())
 							{
 								if (!Sections.Contains(SectionNode->GetSection()))
 								{
@@ -1294,7 +1306,7 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 					{
 						if (!Sections.Contains(InitialRowIndex.Section))
 						{
-							if (InitialRowIndex.RowIndex <= FirstRowIndex)
+							if (LowestRowIndex.IsSet() && InitialRowIndex.RowIndex <= LowestRowIndex.GetValue())
 							{
 								bSectionsBeingMovedAreAtTop = false;
 								break;
@@ -1318,9 +1330,30 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 			}
 			else
 			{
-				Section->Modify();
-				Section->SetRowIndex(TargetRowIndex);
-				bRowIndexChanged = true;
+				if (!bSectionsAreOnDifferentRows)
+				{
+					// If the sections being moved are all at the bottom, and all others are aove it, do nothing
+					bool bSectionsBeingMovedAreAtBottom = true;
+
+					for (const FInitialRowIndex& InitialRowIndex : InitialSectionRowIndicies)
+					{
+						if (!Sections.Contains(InitialRowIndex.Section))
+						{
+							if (HighestRowIndex.IsSet() && InitialRowIndex.RowIndex >= HighestRowIndex.GetValue())
+							{
+								bSectionsBeingMovedAreAtBottom = false;
+								break;
+							}
+						}
+					}
+
+					if (!bSectionsBeingMovedAreAtBottom || TargetRowIndex < Section->GetRowIndex())
+					{
+						Section->Modify();
+						Section->SetRowIndex(TargetRowIndex);
+						bRowIndexChanged = true;
+					}
+				}
 			}
 		}
 	}

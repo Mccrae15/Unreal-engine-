@@ -19,10 +19,8 @@
 #include "RewindData.h"
 
 
-
 namespace Chaos
 {
-extern CHAOS_API int32 SyncKinematicOnGameThread;
 
 class FPBDRigidsEvolutionGBF;
 
@@ -56,23 +54,21 @@ private:
 class FRigidBodyHandle_External;
 class FRigidBodyHandle_Internal;
 
-extern CHAOS_API FRealSingle ResimInterpStrength;
-
-class CHAOS_API FSingleParticlePhysicsProxy : public IPhysicsProxyBase
+class FSingleParticlePhysicsProxy : public IPhysicsProxyBase
 {
 public:
 	using PARTICLE_TYPE = FGeometryParticle;
 	using FParticleHandle = FGeometryParticleHandle;
 
-	static FSingleParticlePhysicsProxy* Create(TUniquePtr<FGeometryParticle>&& Particle);
+	static CHAOS_API FSingleParticlePhysicsProxy* Create(TUniquePtr<FGeometryParticle>&& Particle);
 
 	FSingleParticlePhysicsProxy() = delete;
 	FSingleParticlePhysicsProxy(const FSingleParticlePhysicsProxy&) = delete;
 	FSingleParticlePhysicsProxy(FSingleParticlePhysicsProxy&&) = delete;
-	virtual ~FSingleParticlePhysicsProxy();
+	CHAOS_API virtual ~FSingleParticlePhysicsProxy();
 
-	const FProxyInterpolationData& GetInterpolationData() const { return InterpolationData; }
-	FProxyInterpolationData& GetInterpolationData() { return InterpolationData; }
+	const FProxyInterpolationBase& GetInterpolationData() const { return InterpolationData; }
+	FProxyInterpolationBase& GetInterpolationData() { return InterpolationData; }
 
 	FORCEINLINE FRigidBodyHandle_External& GetGameThreadAPI()
 	{
@@ -120,29 +116,29 @@ public:
 
 	// Threading API
 
-	void PushToPhysicsState(const FDirtyPropertiesManager& Manager,int32 DataIdx,const FDirtyProxy& Dirty,FShapeDirtyData* ShapesData, FReal ExternalDt);
+	CHAOS_API void PushToPhysicsState(const FDirtyPropertiesManager& Manager,int32 DataIdx,const FDirtyProxy& Dirty,FShapeDirtyData* ShapesData, FReal ExternalDt);
 
 	/**/
-	void ClearAccumulatedData();
+	CHAOS_API void ClearAccumulatedData();
 
 	/**/
-	void BufferPhysicsResults(FDirtyRigidParticleData&);
+	CHAOS_API void BufferPhysicsResults(FDirtyRigidParticleData&);
 
 	/**/
-	void BufferPhysicsResults_External(FDirtyRigidParticleData&);
+	CHAOS_API void BufferPhysicsResults_External(FDirtyRigidParticleData&);
 
 	/**/
-	bool PullFromPhysicsState(const FDirtyRigidParticleData& PullData, int32 SolverSyncTimestamp, const FDirtyRigidParticleData* NextPullData = nullptr, const FRealSingle* Alpha = nullptr);
+	CHAOS_API bool PullFromPhysicsState(const FDirtyRigidParticleData& PullData, int32 SolverSyncTimestamp, const FDirtyRigidParticleData* NextPullData = nullptr, const FRealSingle* Alpha = nullptr, const FDirtyRigidParticleReplicationErrorData* Error = nullptr, const Chaos::FReal AsyncFixedTimeStep = 0);
 
 	/**/
-	bool IsDirty();
+	CHAOS_API bool IsDirty();
 
 
 	/**/
-	EWakeEventEntry GetWakeEvent() const;
+	CHAOS_API EWakeEventEntry GetWakeEvent() const;
 
 	/**/
-	void ClearEvents();
+	CHAOS_API void ClearEvents();
 
 	//Returns the underlying game thread particle. Note this should only be needed for internal book keeping type tasks. API may change, use GetGameThreadAPI instead
 	PARTICLE_TYPE* GetParticle_LowLevel()
@@ -182,17 +178,21 @@ protected:
 	FPhysicsObjectUniquePtr Reference;
 
 private:
-	FProxyInterpolationData InterpolationData;
+#if RENDERINTERP_ERRORVELOCITYSMOOTHING
+	FProxyInterpolationErrorVelocity InterpolationData;
+#else
+	FProxyInterpolationError InterpolationData;
+#endif
 
 	//use static Create
-	FSingleParticlePhysicsProxy(TUniquePtr<PARTICLE_TYPE>&& InParticle, FParticleHandle* InHandle, UObject* InOwner = nullptr);
+	CHAOS_API FSingleParticlePhysicsProxy(TUniquePtr<PARTICLE_TYPE>&& InParticle, FParticleHandle* InHandle, UObject* InOwner = nullptr);
 };
 
 /** Wrapper class that routes all reads and writes to the appropriate particle data. This is helpful for cases where we want to both write to a particle and a network buffer for example*/
 template <bool bExternal>
 class TThreadedSingleParticlePhysicsProxyBase : protected FSingleParticlePhysicsProxy
 {
-	TThreadedSingleParticlePhysicsProxyBase() = delete;	//You should only ever new FSingleParticlePhysicsProxy, derrived types are simply there for API constraining, no new data
+	TThreadedSingleParticlePhysicsProxyBase() = delete;	//You should only ever new FSingleParticlePhysicsProxy, derived types are simply there for API constraining, no new data
 public:
 
 	FSingleParticlePhysicsProxy* GetProxy() { return static_cast<FSingleParticlePhysicsProxy*>(this); }
@@ -248,7 +248,7 @@ public:
 	const TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return ReadRef([](auto* Ptr) -> const auto& { return Ptr->SharedGeometryLowLevel(); });}
 
 #if CHAOS_DEBUG_NAME
-	const TSharedPtr<FString, ESPMode::ThreadSafe>& DebugName() const { return Read([](auto* Ptr) { return Ptr->DebugName(); }); }
+	const TSharedPtr<FString, ESPMode::ThreadSafe>& DebugName() const { return ReadRef([](auto* Ptr) -> const auto& { return Ptr->DebugName(); }); }
 	void SetDebugName(const TSharedPtr<FString, ESPMode::ThreadSafe>& InDebugName) { Write([&InDebugName](auto* Ptr) { Ptr->SetDebugName(InDebugName); }); }
 #endif
 
@@ -372,6 +372,30 @@ public:
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
 				return Rigid->SetGravityEnabled(InGravityEnabled);
+			}
+		});
+	}
+
+	bool UpdateKinematicFromSimulation() const
+	{
+		return Read([](auto* Particle)
+		{
+			if (auto Rigid = Particle->CastToRigidParticle())
+			{
+				return Rigid->UpdateKinematicFromSimulation();
+			}
+
+			return false;
+		});
+	}
+
+	void SetUpdateKinematicFromSimulation(const bool InUpdateKinematicFromSimulation)
+	{
+		Write([InUpdateKinematicFromSimulation](auto* Particle)
+		{
+			if (auto Rigid = Particle->CastToRigidParticle())
+			{
+				return Rigid->SetUpdateKinematicFromSimulation(InUpdateKinematicFromSimulation);
 			}
 		});
 	}
@@ -1258,19 +1282,6 @@ public:
 
 		return false;
 	}
-
-private:
-
-	int32 GetSolverSyncTimestamp_External() const
-	{
-		if (FPhysicsSolverBase* SolverBase = GetSolverBase())
-		{
-			return SolverBase->GetMarshallingManager().GetExternalTimestamp_External();
-		}
-
-		return INDEX_NONE;
-	}
-
 };
 
 static_assert(sizeof(FRigidBodyHandle_External) == sizeof(FSingleParticlePhysicsProxy), "Derived types only used to constrain API, all data lives in base class ");

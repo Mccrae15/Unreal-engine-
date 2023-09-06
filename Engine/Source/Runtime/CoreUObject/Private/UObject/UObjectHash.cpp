@@ -21,16 +21,26 @@ DECLARE_CYCLE_STAT( TEXT( "GetObjectsOfClass" ), STAT_Hash_GetObjectsOfClass, ST
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 DECLARE_CYCLE_STAT( TEXT( "HashObject" ), STAT_Hash_HashObject, STATGROUP_UObjectHash );
 DECLARE_CYCLE_STAT( TEXT( "UnhashObject" ), STAT_Hash_UnhashObject, STATGROUP_UObjectHash );
-#endif
-
-#if UE_GC_TRACK_OBJ_AVAILABLE
 DEFINE_STAT( STAT_Hash_NumObjects );
-#endif
+#endif // !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 
 LLM_DEFINE_TAG(UObjectHash, TEXT("UObject hashtables"));
 
 // Global UObject array instance
 FUObjectArray GUObjectArray;
+
+static FORCENOINLINE void OnHashFailure(UObjectBaseUtility* Object, const TCHAR* HashName, const TCHAR* FailureKind)
+{
+	UE_LOG(LogUObjectHash, Error, TEXT("UObject %s consistency failure (%s). Checking for memory corruption"), HashName, FailureKind);
+	UE_CLOG(!Object->IsValidLowLevelFast(false), LogUObjectHash, Fatal, TEXT("IsValidLowLevelFast failure"));
+	UE_CLOG(!Object->IsValidLowLevel(), LogUObjectHash, Fatal, TEXT("IsValid failure"));
+	UObjectBaseUtility* Outer = Object->GetOuter();
+	UE_CLOG(Outer && !Outer->IsValidLowLevelFast(false), LogUObjectHash, Fatal, TEXT("Outer IsValidLowLevelFast failure"));
+	UObjectBaseUtility* Class = Object->GetClass();
+	UE_CLOG(Class && !Class->IsValidLowLevelFast(false), LogUObjectHash, Fatal, TEXT("Class IsvalidLowLevelFast failure"));
+	
+	UE_LOG(LogUObjectHash, Fatal, TEXT("Unidentified failure for object %s, hash itself may be corrupted or buggy."), *Object->GetFullName());
+}
 
 /**
  * This implementation will use more space than the UE3 implementation. The goal was to make UObjects smaller to save L2 cache space. 
@@ -164,12 +174,12 @@ struct FHashBucket
 		return !!ElementsOrSetPtr[0] + !!ElementsOrSetPtr[1];
 	}
 	/** Returns the amount of memory allocated for and by Items TSet */
-	FORCEINLINE uint32 GetItemsSize() const
+	FORCEINLINE SIZE_T GetItemsSize() const
 	{
 		const TSet<UObjectBase*>* Items = GetSet();
 		if (Items)
 		{
-			return (uint32)sizeof(*Items) + Items->GetAllocatedSize();
+			return sizeof(*Items) + Items->GetAllocatedSize();
 		}
 		return 0;
 	}
@@ -521,16 +531,16 @@ static FORCEINLINE int32 GetObjectHash(FName ObjName)
 
 /**
  * Calculates the object's hash just using the object's name index
- * XORed with the outer. Yields much better spread in the hash
+ * added with the outer. Yields much better spread in the hash
  * buckets, but requires knowledge of the outer, which isn't available
  * in all cases.
  *
  * @param ObjName the object's name to use the index of
  * @param Outer the object's outer pointer treated as an int32
  */
-static FORCEINLINE int32 GetObjectOuterHash(FName ObjName,PTRINT Outer)
+static int32 GetObjectOuterHash(FName ObjName, PTRINT Outer)
 {
-	return GetTypeHash(ObjName) + (Outer >> 6);
+	return GetTypeHash(ObjName) + static_cast<int32>(Outer >> 6);
 }
 
 UObject* StaticFindObjectFastExplicitThreadSafe(FUObjectHashTables& ThreadHash, const UClass* ObjectClass, FName ObjectName, const FString& ObjectPathName, bool bExactClass, EObjectFlags ExcludeFlags/*=0*/)
@@ -986,7 +996,10 @@ FORCEINLINE static void RemoveFromOuterMap(FUObjectHashTables& ThreadHash, UObje
 	FHashBucket& Bucket = ThreadHash.ObjectOuterMap.FindOrAdd(Object->GetOuter());
 	int32 NumRemoved = Bucket.Remove(Object);
 
-	UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: RemoveFromOuterMap NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe((UObjectBaseUtility*)Object));
+	if (!LIKELY(NumRemoved == 1))
+	{
+		OnHashFailure((UObjectBaseUtility*)Object, TEXT("OuterMap"), TEXT("remove miscount"));
+	}
 
 	if (!Bucket.Num())
 	{
@@ -1003,8 +1016,10 @@ FORCEINLINE static void RemoveFromClassMap(FUObjectHashTables& ThreadHash, UObje
 		FHashBucket& ObjectList = ThreadHash.ClassToObjectListMap.FindOrAdd(Object->GetClass());
 		int32 NumRemoved = ObjectList.Remove(Object);
 
-		// must have existed, else something is wrong with the external code
-		UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: RemoveFromClassMap NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe(ObjectWithUtility));
+		if (!LIKELY(NumRemoved == 1))
+		{
+			OnHashFailure((UObjectBaseUtility*)Object, TEXT("ClassMap"), TEXT("remove miscount"));
+		}
 
 		if (!ObjectList.Num())
 		{
@@ -1022,8 +1037,10 @@ FORCEINLINE static void RemoveFromClassMap(FUObjectHashTables& ThreadHash, UObje
 			TSet<UClass*>& ChildList = ThreadHash.ClassToChildListMap.FindOrAdd(SuperClass);
 			int32 NumRemoved = ChildList.Remove(Class);
 
-			// must have existed, else something is wrong with the external code
-			UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: RemoveFromClassMap NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe(ObjectWithUtility));
+			if (!LIKELY(NumRemoved == 1))
+			{
+				OnHashFailure((UObjectBaseUtility*)Object, TEXT("ClassToChildListMap"), TEXT("remove miscount"));
+			}
 
 			if (!ChildList.Num())
 			{
@@ -1041,7 +1058,10 @@ FORCEINLINE static void RemoveFromPackageMap(FUObjectHashTables& ThreadHash, UOb
 	FHashBucket& Bucket = ThreadHash.PackageToObjectListMap.FindOrAdd(Package);
 	int32 NumRemoved = Bucket.Remove(Object);
 
-	UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: RemoveFromPackageMap NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe((UObjectBaseUtility*)Object));
+	if (!LIKELY(NumRemoved == 1))
+	{
+		OnHashFailure((UObjectBaseUtility*)Object, TEXT("PackageMap"), TEXT("remove miscount"));
+	}
 
 	if (!Bucket.Num())
 	{
@@ -1356,7 +1376,7 @@ void GetObjectsOfClass(const UClass* ClassToLookFor, TArray<UObject *>& Results,
 	check(Results.Num() <= GUObjectArray.GetObjectArrayNum()); // otherwise we have a cycle in the outer chain, which should not be possible
 }
 
-FORCEINLINE void ForEachObjectOfClasses_Implementation(FUObjectHashTables& ThreadHash, TArrayView<const UClass*> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags /*= RF_ClassDefaultObject*/, EInternalObjectFlags ExclusionInternalFlags /*= EInternalObjectFlags::None*/)
+FORCEINLINE void ForEachObjectOfClasses_Implementation(FUObjectHashTables& ThreadHash, TArrayView<const UClass* const> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags /*= RF_ClassDefaultObject*/, EInternalObjectFlags ExclusionInternalFlags /*= EInternalObjectFlags::None*/)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(ForEachObjectOfClasses_Implementation);
 
@@ -1406,7 +1426,7 @@ void ForEachObjectOfClass(const UClass* ClassToLookFor, TFunctionRef<void(UObjec
 	ForEachObjectOfClasses_Implementation(ThreadHash, ClassesToSearch, Operation, ExclusionFlags, ExclusionInternalFlags);
 }
 
-void ForEachObjectOfClasses(TArrayView<const UClass*> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags /*= RF_ClassDefaultObject*/, EInternalObjectFlags ExclusionInternalFlags /*= EInternalObjectFlags::None*/)
+void ForEachObjectOfClasses(TArrayView<const UClass* const> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags /*= RF_ClassDefaultObject*/, EInternalObjectFlags ExclusionInternalFlags /*= EInternalObjectFlags::None*/)
 {
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock HashLock(ThreadHash);
@@ -1485,8 +1505,10 @@ void HashObject(UObjectBase* Object)
 
 		Hash = GetObjectHash(Name);
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
-		// if it already exists, something is wrong with the external code
-		UE_CLOG(ThreadHash.PairExistsInHash(Hash, Object), LogUObjectHash, Fatal, TEXT("%s already exists in UObject hash!"), *GetFullNameSafe((UObjectBaseUtility*)Object));
+		if (ThreadHash.PairExistsInHash(Hash, Object))
+		{
+			OnHashFailure((UObjectBaseUtility*)Object, TEXT("Hash"), TEXT("double add"));
+		}
 #endif
 		ThreadHash.AddToHash(Hash, Object);
 
@@ -1495,8 +1517,10 @@ void HashObject(UObjectBase* Object)
 			Hash = GetObjectOuterHash(Name, Outer);
 			checkSlow(!ThreadHash.HashOuter.FindPair(Hash, Object->GetUniqueID()));
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
-			// if it already exists, something is wrong with the external code
-			UE_CLOG(ThreadHash.HashOuter.FindPair(Hash, Object->GetUniqueID()), LogUObjectHash, Fatal, TEXT("%s already exists in UObject Outer hash!"), *GetFullNameSafe((UObjectBaseUtility*)Object));
+			if (ThreadHash.HashOuter.FindPair(Hash, Object->GetUniqueID()))
+			{
+				OnHashFailure((UObjectBaseUtility*)Object, TEXT("HashOuter"), TEXT("double add"));
+			}
 #endif
 			ThreadHash.HashOuter.Add(Hash, Object->GetUniqueID());
 
@@ -1530,16 +1554,20 @@ void UnhashObject(UObjectBase* Object)
 		Hash = GetObjectHash(Name);
 		NumRemoved = ThreadHash.RemoveFromHash(Hash, Object);
 
-		// must have existed, else something is wrong with the external code
-		UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: RemoveFromHash NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe((UObjectBaseUtility*)Object));
+		if (!LIKELY(NumRemoved == 1))
+		{
+			OnHashFailure((UObjectBaseUtility*)Object, TEXT("Hash"), TEXT("remove miscount"));
+		}
 
 		if (PTRINT Outer = (PTRINT)Object->GetOuter())
 		{
 			Hash = GetObjectOuterHash(Name, Outer);
 			NumRemoved = ThreadHash.HashOuter.RemoveSingle(Hash, Object->GetUniqueID());
 
-			// must have existed, else something is wrong with the external code
-			UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: Remove from HashOuter NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe((UObjectBaseUtility*)Object));
+			if (!LIKELY(NumRemoved == 1))
+			{
+				OnHashFailure((UObjectBaseUtility*)Object, TEXT("HashOuter"), TEXT("remove miscount"));
+			}
 
 			RemoveFromOuterMap(ThreadHash, Object);
 		}
@@ -1564,6 +1592,7 @@ void HashObjectExternalPackage(UObjectBase* Object, UPackage* Package)
 			}
 			AddToPackageMap(ThreadHash, Object, Package);
 		}
+		Object->AtomicallySetFlags(RF_HasExternalPackage);
 	}
 	else
 	{
@@ -1576,8 +1605,8 @@ void UnhashObjectExternalPackage(class UObjectBase* Object)
 	LLM_SCOPE_BYTAG(UObjectHash);
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock LockHash(ThreadHash);
-	UPackage* Package = UnassignExternalPackageFromObject(ThreadHash, Object);
-	if (Package)
+	Object->AtomicallyClearFlags(RF_HasExternalPackage);
+	if (UPackage* Package = UnassignExternalPackageFromObject(ThreadHash, Object))
 	{
 		RemoveFromPackageMap(ThreadHash, Object, Package);
 	}
@@ -1587,7 +1616,9 @@ UPackage* GetObjectExternalPackageThreadSafe(const UObjectBase* Object)
 {
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock LockHash(ThreadHash);
-	return ThreadHash.ObjectToPackageMap.FindRef(Object);
+	UPackage* ExternalPackage = ThreadHash.ObjectToPackageMap.FindRef(Object);
+	UE_CLOG(!ExternalPackage && ((Object->GetFlags() & RF_HasExternalPackage) != 0), LogUObjectHash, Warning, TEXT("Object %s ExternalPackage is invalid: RF_HasExternalPackage is set, but ExternalPackage is nullptr."), *static_cast<const UObjectBaseUtility*>(Object)->GetPathName());
+	return ExternalPackage;
 }
 
 UPackage* GetObjectExternalPackageInternal(const UObjectBase* Object)
@@ -1680,8 +1711,8 @@ void LogHashStatisticsInternal(TMultiMap<int32, uint32>& Hash, FOutputDevice& Ar
 		MaxCollisions);
 
 	// Calculate Hashtable size
-	const uint32 HashtableAllocatedSize = Hash.GetAllocatedSize();
-	Ar.Logf(TEXT("Total memory allocated for Object Outer Hash: %u bytes."), HashtableAllocatedSize);
+	const SIZE_T HashtableAllocatedSize = Hash.GetAllocatedSize();
+	Ar.Logf(TEXT("Total memory allocated for Object Outer Hash: %" SIZE_T_FMT " bytes."), HashtableAllocatedSize);
 }
 
 void LogHashStatisticsInternal(TBucketMap<int32>& Hash, FOutputDevice& Ar, const bool bShowHashBucketCollisionInfo)
@@ -1747,13 +1778,13 @@ void LogHashStatisticsInternal(TBucketMap<int32>& Hash, FOutputDevice& Ar, const
 		SlotsInUse);
 
 	// Calculate Hashtable size
-	uint32 HashtableAllocatedSize = Hash.GetAllocatedSize();
+	SIZE_T HashtableAllocatedSize = Hash.GetAllocatedSize();
 	// Calculate the size of a all Allocations inside of the buckets (TSet Items)
 	for (auto& Pair : Hash)
 	{
 		HashtableAllocatedSize += Pair.Value.GetItemsSize();
 	}
-	Ar.Logf(TEXT("Total memory allocated for and by Object Hash: %u bytes."), HashtableAllocatedSize);
+	Ar.Logf(TEXT("Total memory allocated for and by Object Hash: %" SIZE_T_FMT " bytes."), HashtableAllocatedSize);
 }
 
 void LogHashStatistics(FOutputDevice& Ar, const bool bShowHashBucketCollisionInfo)
@@ -1775,12 +1806,12 @@ void LogHashOuterStatistics(FOutputDevice& Ar, const bool bShowHashBucketCollisi
 	LogHashStatisticsInternal(FUObjectHashTables::Get().HashOuter, Ar, bShowHashBucketCollisionInfo);
 	Ar.Logf(TEXT(""));
 
-	uint32 HashOuterMapSize = 0;
+	SIZE_T HashOuterMapSize = 0;
 	for (TPair<UObjectBase*, FHashBucket>& OuterMapEntry : FUObjectHashTables::Get().ObjectOuterMap)
 	{
 		HashOuterMapSize += OuterMapEntry.Value.GetItemsSize();
 	}
-	Ar.Logf(TEXT("Total memory allocated for Object Outer Map: %u bytes."), HashOuterMapSize);
+	Ar.Logf(TEXT("Total memory allocated for Object Outer Map: %" SIZE_T_FMT " bytes."), HashOuterMapSize);
 	Ar.Logf(TEXT(""));
 }
 
@@ -1792,26 +1823,26 @@ void LogHashMemoryOverheadStatistics(FOutputDevice& Ar, const bool bShowIndividu
 	FUObjectHashTables& HashTables = FUObjectHashTables::Get();
 	FHashTableLock HashLock(HashTables);
 
-	int64 TotalSize = 0;
+	SIZE_T TotalSize = 0;
 	
 	{
-		int64 Size = HashTables.Hash.GetAllocatedSize();
+		SIZE_T Size = HashTables.Hash.GetAllocatedSize();
 		for (const TPair<int32, FHashBucket>& Pair : HashTables.Hash)
 		{
 			Size += Pair.Value.GetItemsSize();
 		}
 		if (bShowIndividualStats)
 		{
-			Ar.Logf(TEXT("Memory used by UObject Hash: %lld bytes."), Size);
+			Ar.Logf(TEXT("Memory used by UObject Hash: %" SIZE_T_FMT " bytes."), Size);
 		}
 		TotalSize += Size;
 	}
 
 	{
-		int64 Size = HashTables.HashOuter.GetAllocatedSize();
+		const SIZE_T Size = HashTables.HashOuter.GetAllocatedSize();
 		if (bShowIndividualStats)
 		{
-			Ar.Logf(TEXT("Memory used by UObject Outer Hash: %lld bytes."), Size);
+			Ar.Logf(TEXT("Memory used by UObject Outer Hash: %" SIZE_T_FMT " bytes."), Size);
 		}
 		TotalSize += Size;
 	}
@@ -1830,62 +1861,62 @@ void LogHashMemoryOverheadStatistics(FOutputDevice& Ar, const bool bShowIndividu
 	}
 
 	{
-		int64 Size = HashTables.ClassToObjectListMap.GetAllocatedSize();
+		SIZE_T Size = HashTables.ClassToObjectListMap.GetAllocatedSize();
 		for (const TPair<UClass*, FHashBucket>& Pair : HashTables.ClassToObjectListMap)
 		{
 			Size += Pair.Value.GetItemsSize();
 		}
 		if (bShowIndividualStats)
 		{
-			Ar.Logf(TEXT("Memory used by UClass To UObject List Map: %lld bytes."), Size);
+			Ar.Logf(TEXT("Memory used by UClass To UObject List Map: %" SIZE_T_FMT " bytes."), Size);
 		}
 		TotalSize += Size;
 	}
 
 	{
-		int64 Size = HashTables.ClassToChildListMap.GetAllocatedSize();
+		SIZE_T Size = HashTables.ClassToChildListMap.GetAllocatedSize();
 		for (const TPair<UClass*, TSet<UClass*> >& Pair : HashTables.ClassToChildListMap)
 		{
 			Size += Pair.Value.GetAllocatedSize();
 		}
 		if (bShowIndividualStats)
 		{
-			Ar.Logf(TEXT("Memory used by UClass To Child UClass List Map: %lld bytes."), Size);
+			Ar.Logf(TEXT("Memory used by UClass To Child UClass List Map: %" SIZE_T_FMT " bytes."), Size);
 		}
 		TotalSize += Size;
 	}
 
 	{
-		int64 Size = HashTables.PackageToObjectListMap.GetAllocatedSize();
+		SIZE_T Size = HashTables.PackageToObjectListMap.GetAllocatedSize();
 		for (const TPair<UPackage*, FHashBucket>& Pair : HashTables.PackageToObjectListMap)
 		{
 			Size += Pair.Value.GetItemsSize();
 		}
 		if (bShowIndividualStats)
 		{
-			Ar.Logf(TEXT("Memory used by UPackage To UObject List Map: %lld bytes."), Size);
+			Ar.Logf(TEXT("Memory used by UPackage To UObject List Map: %" SIZE_T_FMT " bytes."), Size);
 		}
 		TotalSize += Size;
 	}
 
 	{
-		int64 Size = HashTables.ObjectToPackageMap.GetAllocatedSize();
+		const SIZE_T Size = HashTables.ObjectToPackageMap.GetAllocatedSize();
 		if (bShowIndividualStats)
 		{
-			Ar.Logf(TEXT("Memory used by UObject To External Package Map: %lld bytes."), Size);
+			Ar.Logf(TEXT("Memory used by UObject To External Package Map: %" SIZE_T_FMT " bytes."), Size);
 		}
 		TotalSize += Size;
 	}
 
-    {
-        int64 Size = GUObjectArray.GetAllocatedSize();
-        if (bShowIndividualStats)
-        {
-            Ar.Logf(TEXT("Memory used by UObjectArray: %lld bytes."), Size);
-        }
-        TotalSize += Size;
-    }
-    
-	Ar.Logf(TEXT("Total memory allocated by Object hash tables and maps: %lld bytes (%.2f MB)."), TotalSize, (double)TotalSize / 1024.0 / 1024.0);
+	{
+		const SIZE_T Size = GUObjectArray.GetAllocatedSize();
+		if (bShowIndividualStats)
+		{
+			Ar.Logf(TEXT("Memory used by UObjectArray: %" SIZE_T_FMT " bytes."), Size);
+		}
+		TotalSize += Size;
+	}
+
+	Ar.Logf(TEXT("Total memory allocated by Object hash tables and maps: %" SIZE_T_FMT " bytes(% .2f MB)."), TotalSize, (double)TotalSize / 1024.0 / 1024.0);
 	Ar.Logf(TEXT(""));
 }

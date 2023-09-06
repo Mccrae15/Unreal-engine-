@@ -202,7 +202,7 @@ void UpdateLane2DCoordinateInformations(
 
 float3 ComputeTranslatedWorldPositions(float2 ScreenPos, float SceneDepth)
 {
-	return mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+	return mul(float4(GetScreenPositionForProjectionType(ScreenPos, SceneDepth), SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 }
 
 uint2 ComputePixelPosition(float3 TranslatedWorldPosition)
@@ -401,7 +401,7 @@ void MainCS(
 			float2 FullResPixelPosition = 0;
 			UpdateLane2DCoordinateInformations(PixelPosition, /* out */ BufferUV, /* out */ ScreenPos, /* out */ FullResPixelPosition); 
 	
-			float3 PositionTranslatedWorld = mul(float4(ScreenPos * SceneDepth, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
+			float3 PositionTranslatedWorld = mul(float4(GetScreenPositionForProjectionType(ScreenPos, SceneDepth), SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 			float3 V = normalize(View.TranslatedWorldCameraOrigin - PositionTranslatedWorld);
 
 			float StepOffset = InterleavedGradientNoise(PixelPosition + 0.5, View.StateFrameIndexMod8);
@@ -437,7 +437,7 @@ void MainCS(
 				float3x3 TangentBasis = GetTangentBasis(N);
 				float3 TangentV = mul(TangentBasis, V);
 				
-				float3 H = mul(ImportanceSampleVisibleGGX(UniformSampleDisk(E), a2, TangentV).xyz, TangentBasis);
+				float3 H = mul(ImportanceSampleVisibleGGX(E, a, TangentV).xyz, TangentBasis);
 				L = 2 * dot( V, H ) * H - V;
 
 				Ray = InitScreenSpaceRayFromWorldSpace(

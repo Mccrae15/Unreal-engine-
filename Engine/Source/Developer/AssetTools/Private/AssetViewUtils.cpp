@@ -18,6 +18,7 @@
 #include "Engine/Level.h"
 #include "Settings/ContentBrowserSettings.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "Settings/EditorLoadingSavingSettings.h"
 #include "SourceControlOperations.h"
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
@@ -41,7 +42,6 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 #include "UObject/LinkerInstancingContext.h"
-#include "LevelEditorViewport.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -57,6 +57,12 @@ namespace AssetViewUtils
 
 	/** Callback used when a folder is moved or renamed */
 	static FOnFolderPathChanged OnFolderPathChangedDelegate;
+
+	/** Callback used when a sync starts */
+	static FOnSyncStart FOnSyncStartDelegate;
+
+	/** Callback used when a sync finishes */
+	static FOnSyncFinish FOnSyncFinishDelegate;
 
 	/** Keep a map of all the paths that have custom colors, so updating the color in one location updates them all */
 	static TMap< FString, FLinearColor > PathColors;
@@ -162,7 +168,7 @@ bool AssetViewUtils::LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArr
 	{
 		// Get the maximum objects to load before displaying the slow task
 		const bool bShowProgressDialog = (UnloadedObjectPaths.Num() > GetDefault<UContentBrowserSettings>()->NumObjectsToLoadBeforeWarning) || bAtLeastOneUnloadedMap;
-		FScopedSlowTask SlowTask(UnloadedObjectPaths.Num(), LOCTEXT("LoadingObjects", "Loading Objects..."));
+		FScopedSlowTask SlowTask(static_cast<float>(UnloadedObjectPaths.Num()), LOCTEXT("LoadingObjects", "Loading Objects..."));
 		if (bShowProgressDialog)
 		{
 			SlowTask.MakeDialog();
@@ -337,7 +343,8 @@ void AssetViewUtils::MoveAssets(const TArray<UObject*>& Assets, const FString& D
 
 	if ( AssetsAndNames.Num() > 0 )
 	{
-		AssetToolsModule.Get().RenameAssetsWithDialog(AssetsAndNames);
+		const UEditorLoadingSavingSettings* Settings = GetDefault<UEditorLoadingSavingSettings>();
+		AssetToolsModule.Get().RenameAssetsWithDialog(AssetsAndNames, Settings->GetAutomaticallyCheckoutOnAssetModification());
 	}
 }
 
@@ -704,11 +711,21 @@ bool AssetViewUtils::MoveFolders(const TArray<FString>& InSourcePathNames, const
 			MoveAssets( PathIt.Value(), Destination, PathIt.Key() );
 		}
 
+		TArray<FString> PathsToRescan;
+		PathsToRescan.Add(Destination);
+
 		// Attempt to remove the old path
 		if (DeleteEmptyFolderFromDisk(SourcePath))
 		{
 			AssetRegistryModule.Get().RemovePath(SourcePath);
 		}
+		else if (PathIt.Value().Num() > 0)
+		{
+			PathsToRescan.Add(SourcePath);
+		}
+
+		const bool bForceRescan = true;
+		AssetRegistryModule.Get().ScanPathsSynchronous(PathsToRescan, bForceRescan);
 
 		const TOptional<FLinearColor> FolderColor = GetPathColor(SourcePath);
 		if (FolderColor.IsSet())
@@ -906,9 +923,9 @@ void AssetViewUtils::ClearCustomThumbnails(const TArray<FAssetData>& InAssetsToA
 		{
 			//assign the thumbnail and dirty
 			const FString ObjectFullName = CurrentAsset.GetFullName();
-			const FString PackageName    = CurrentAsset.PackageName.ToString();
 
-			UPackage* AssetPackage = FindObject<UPackage>( NULL, *PackageName );
+			// Load the asset so that we can find and clear the thumbnail
+			UPackage* AssetPackage = CurrentAsset.GetPackage();
 			if ( ensure(AssetPackage) )
 			{
 				ThumbnailTools::CacheEmptyThumbnail( ObjectFullName, AssetPackage);
@@ -1306,26 +1323,11 @@ bool AssetViewUtils::IsValidObjectPathForCreate(const FString& ObjectPath, FText
 
 bool AssetViewUtils::IsValidObjectPathForCreate(const FString& ObjectPath, const UClass* ObjectClass, FText& OutErrorMessage, bool bAllowExistingAsset)
 {
-	const FString ObjectName = FPackageName::ObjectPathToObjectName(ObjectPath);
-
-	// Make sure the name is not already a class or otherwise invalid for saving
-	if ( !FFileHelper::IsFilenameValidForSaving(ObjectName, OutErrorMessage) )
-	{
-		// Return false to indicate that the user should enter a new name
-		return false;
-	}
+	const FString ObjectName = FPackageName::ObjectPathToPathWithinPackage(ObjectPath);
 
 	// Make sure the new name only contains valid characters
-	if ( !FName::IsValidXName( ObjectName, INVALID_OBJECTNAME_CHARACTERS INVALID_LONGPACKAGE_CHARACTERS, &OutErrorMessage ) )
+	if (!FName::IsValidXName( ObjectName, INVALID_OBJECTNAME_CHARACTERS INVALID_LONGPACKAGE_CHARACTERS, &OutErrorMessage))
 	{
-		// Return false to indicate that the user should enter a new name
-		return false;
-	}
-
-	// Make sure we are not creating an FName that is too large
-	if ( ObjectPath.Len() >= NAME_SIZE )
-	{
-		OutErrorMessage = LOCTEXT("AssetNameTooLong", "This asset name is too long. Please choose a shorter name.");
 		// Return false to indicate that the user should enter a new name
 		return false;
 	}
@@ -1334,6 +1336,14 @@ bool AssetViewUtils::IsValidObjectPathForCreate(const FString& ObjectPath, const
 
 	if (!IsValidPackageForCooking(PackageName, OutErrorMessage))
 	{
+		return false;
+	}
+
+	// Make sure we are not creating an FName that is too large
+	if ( ObjectPath.Len() >= NAME_SIZE )
+	{
+		OutErrorMessage = LOCTEXT("AssetNameTooLong", "This asset name is too long. Please choose a shorter name.");
+		// Return false to indicate that the user should enter a new name
 		return false;
 	}
 
@@ -1393,6 +1403,19 @@ bool AssetViewUtils::IsValidObjectPathForCreate(const FString& ObjectPath, const
 	{
 		return false;
 	}
+
+	/** 
+	 * Make sure the name is not already a class or otherwise invalid for saving
+	 * Some other function above also test for some issues that this function can also find,
+	 * but they have an better error message more suited for the asset view.
+	 * Because of this, this test should be the last one to be run.
+	 */
+	if ( !FFileHelper::IsFilenameValidForSaving(ObjectName, OutErrorMessage) )
+	{
+		// Return false to indicate that the user should enter a new name
+		return false;
+	}
+
 
 	return true;
 }
@@ -1501,10 +1524,12 @@ int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, boo
 			int32 CookPathRelativeToTargetRootLen = CookSubPath.Len();
 			CookPathRelativeToTargetRootLen += (AbsoluteTargetPath.Len() - AbsoluteUERootPath.Len());
 
-			int32 InternalCookPathLen = FCString::Strlen(TEXT("D:/BuildFarm/buildmachine_++depot+UE-Releases+XX.XX/")) + CookPathRelativeToTargetRootLen + AssetPathRelativeToCookRootLen;
+			int32 InternalCookPathLen = FCString::Strlen(TEXT("d:/build/XXX+RXX.XX+Inc/Sync")) + CookPathRelativeToTargetRootLen + AssetPathRelativeToCookRootLen;
 
-			// Only add game name padding to project plugins so that they can ported to other projects
-			if (PluginContainingAsset && bIsProjectAsset)
+			// Only add game name padding to non-GameFeature project plugins so that they can ported to other projects.
+			// GameFeaturePlugins are not designed to be ported between projects since they can depend on /Game/ assets and non-plugin code.
+			const bool bIsGameFeaturePlugin = AbsolutePathToAsset.Contains(TEXT("/Plugins/GameFeatures/"));
+			if (PluginContainingAsset && bIsProjectAsset && !bIsGameFeaturePlugin)
 			{
 				// We assume the game name is 20 characters (the maximum allowed) to make sure that content can be ported between projects
 				constexpr int32 MaxGameNameLen = 20;
@@ -1706,60 +1731,77 @@ void ShowSyncDependenciesDialog(const TArray<FString>& InDependencies, TArray<FS
 
 void AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& PackageNames, bool bIsSyncLatestOperation)
 {
-	if (PackageNames.Num() > 0 || bIsSyncLatestOperation)
+	if (bIsSyncLatestOperation)
 	{
+		SyncLatestFromSourceControl();
+	}
+	else
+	{
+		SyncPackagesFromSourceControl(PackageNames);
+	}
+}
+
+bool AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& PackageNames)
+{
+	if (PackageNames.Num() > 0)
+	{
+		// Broadcast sync starting...
+		AssetViewUtils::OnSyncStart().Broadcast();
+
 		TArray<FString> PackageNamesToSync = PackageNames;
 
-		if (!bIsSyncLatestOperation)
-		{
-			// Warn about any packages that are being synced without also getting the newest version of their dependencies...
-			TArray<FString> OutOfDateDependencies;
-			GetOutOfDatePackageDependencies(PackageNamesToSync, OutOfDateDependencies);
+		// Warn about any packages that are being synced without also getting the newest version of their dependencies...
+		TArray<FString> OutOfDateDependencies;
+		GetOutOfDatePackageDependencies(PackageNamesToSync, OutOfDateDependencies);
 
-			TArray<FString> ExtraPackagesToSync;
-			ShowSyncDependenciesDialog(OutOfDateDependencies, ExtraPackagesToSync);
+		TArray<FString> ExtraPackagesToSync;
+		ShowSyncDependenciesDialog(OutOfDateDependencies, ExtraPackagesToSync);
 
-			PackageNamesToSync.Append(ExtraPackagesToSync);
-		}
+		PackageNamesToSync.Append(ExtraPackagesToSync);
 
 		ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
 		const TArray<FString> PackageFilenames = SourceControlHelpers::PackageFilenames(PackageNamesToSync);
 
 		// Form a list of loaded packages to reload...
+		TArray<UObject*> LoadedObjects;
 		TArray<UPackage*> LoadedPackages;
+		TArray<UPackage*> PendingPackages;
+		LoadedObjects.Reserve(PackageNamesToSync.Num());
 		LoadedPackages.Reserve(PackageNamesToSync.Num());
+		PendingPackages.Reserve(PackageNamesToSync.Num());
 		for (const FString& PackageName : PackageNamesToSync)
 		{
 			UPackage* Package = FindPackage(nullptr, *PackageName);
 			if (Package)
 			{
+				LoadedObjects.Emplace(Package);
 				LoadedPackages.Emplace(Package);
 
-				// Detach the linkers of any loaded packages so that SCC can overwrite the files...
 				if (!Package->IsFullyLoaded())
 				{
-					FlushAsyncLoading();
-					Package->FullyLoad();
+					PendingPackages.Emplace(Package);
 				}
-				ResetLoaders(Package);
 			}
+		}
+
+		// Detach the linkers of any loaded packages so that SCC can overwrite the files...
+		if (PendingPackages.Num() > 0)
+		{
+			FlushAsyncLoading();
+
+			for (UPackage* Package : PendingPackages)
+			{
+				Package->FullyLoad();
+			}
+		}
+		if (LoadedObjects.Num() > 0)
+		{
+			ResetLoaders(LoadedObjects);
 		}
 
 		// Sync everything...
 		TSharedRef<FSync> Operation = ISourceControlOperation::Create<FSync>();
-		if (bIsSyncLatestOperation)
-		{
-			Operation->SetHeadRevisionFlag(true);
-			if (SCCProvider.Execute(Operation) != ECommandResult::Succeeded)
-			{
-				UE_LOG(LogAssetViewTools, Warning, TEXT("Error while syncing latest revision"));
-				return;
-			}
-		}
-		else
-		{
-			SCCProvider.Execute(Operation, PackageFilenames);
-		}
+		ECommandResult::Type SyncResult = SCCProvider.Execute(Operation, PackageFilenames);
 
 		// Syncing may have deleted some packages, so we need to unload those rather than re-load them...
 		// Note: we will store the package using weak pointers here otherwise we might have garbage collection issues after the ReloadPackages call
@@ -1776,38 +1818,8 @@ void AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& Packag
 			return false; // keep package
 		});
 
-		// Syncing may result in a map reload, so we retain the camera views to restore after the reload...
-		struct FCameraView
-		{
-			FVector Location;
-			FRotator Rotation;
-		};
-		TMap<FLevelEditorViewportClient*, FCameraView> CameraViews;
-		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
-		{
-			CameraViews.Add(LevelVC, { LevelVC->GetViewLocation(), LevelVC->GetViewRotation() });
-		}
-
 		// Hot-reload the new packages...
-		if (bIsSyncLatestOperation)
-		{
-			UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
-			LoadedPackages.Add(EditorWorld->GetPackage());
-		}
 		UPackageTools::ReloadPackages(LoadedPackages);
-
-		// Restore the camera views after a map reload if necessary...
-		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
-		{
-			const FCameraView& CameraView = CameraViews.FindChecked(LevelVC);
-			LevelVC->SetViewLocation(CameraView.Location);
-			if (!LevelVC->IsOrtho())
-			{
-				LevelVC->SetViewRotation(CameraView.Rotation);
-			}
-			LevelVC->Invalidate();
-			FEditorDelegates::OnEditorCameraMoved.Broadcast(CameraView.Location, CameraView.Rotation, LevelVC->ViewportType, LevelVC->ViewIndex);
-		}
 
 		// Unload any deleted packages...
 		TArray<UPackage*> PackageRawPtrsToUnload;
@@ -1823,60 +1835,35 @@ void AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& Packag
 
 		// Re-cache the SCC state...
 		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames);
+
+		// Broadcast sync finished...
+		AssetViewUtils::OnSyncFinish().Broadcast(SyncResult == ECommandResult::Succeeded, &PackageFilenames);
+
+		// Return result...
+		return (SyncResult == ECommandResult::Succeeded);
 	}
+
+	return true;
 }
 
-void AssetViewUtils::SyncLatestFromSourceControl()
+static bool SyncPathsFromSourceControl(const TArray<FString>& Paths, bool bCheckDependencies)
 {
-	TArray<FString> PackageNames;
-	TArray<FString> PackageFilenames;
-
-	ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
-	TSharedRef<FSyncPreview> PreviewOperation = ISourceControlOperation::Create<FSyncPreview>();
-	PreviewOperation->SetHeadRevisionFlag(true);
-	ECommandResult::Type OperationResult =  SCCProvider.Execute(PreviewOperation);
-
-	if (OperationResult == ECommandResult::Succeeded)
+	TArray<FString> PathsOnDisk;
+	PathsOnDisk.Reserve(Paths.Num());
+	for (const FString& Path : Paths)
 	{
-		PackageFilenames = PreviewOperation->GetAffectedFiles();
-
-		for (const FString& PackageFilename : PackageFilenames)
+		FString PathOnDisk;
+		if (FPackageName::TryConvertLongPackageNameToFilename(Path / TEXT(""), PathOnDisk))
 		{
-			FString PackageName;
-			if (FPackageName::TryConvertFilenameToLongPackageName(PackageFilename, PackageName))
-			{
-				PackageNames.Add(PackageName);
-			}
-		}
-
-		SyncPackagesFromSourceControl(PackageNames, /*IsSyncLatestOperation=*/true);
-	}
-	else
-	{
-		// Likely the source control provider does not support sync previews. Proceed to syncing all paths under source control
-		TArray<FString> SourceControlLocations;
-
-		if (ISourceControlModule::Get().UsesCustomProjectDir())
-		{
-			SourceControlLocations.Add(ISourceControlModule::Get().GetSourceControlProjectDir());
+			// Given path was a content path.
 		}
 		else
 		{
-			SourceControlLocations = SourceControlHelpers::GetSourceControlLocations(/*bContentOnly=*/true);
+			// Treat path as a (relative or absolute) disk path.
+			PathOnDisk = FPaths::ConvertRelativePathToFull(Path);
 		}
 
-		SyncPathsFromSourceControl(SourceControlLocations);
-	}
-}
-
-void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPaths)
-{
-	TArray<FString> PathsOnDisk;
-	PathsOnDisk.Reserve(ContentPaths.Num());
-	for (const FString& ContentPath : ContentPaths)
-	{
-		FString PathOnDisk;
-		if (FPackageName::TryConvertLongPackageNameToFilename(ContentPath / TEXT(""), PathOnDisk) && FPaths::DirectoryExists(PathOnDisk))
+		if (FPaths::DirectoryExists(PathOnDisk))
 		{
 			PathsOnDisk.Emplace(MoveTemp(PathOnDisk));
 		}
@@ -1884,22 +1871,54 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 
 	if (PathsOnDisk.Num() > 0)
 	{
-		// Get all the assets under the path(s) on disk...
+		// Broadcast sync starting...
+		AssetViewUtils::OnSyncStart().Broadcast();
+
+		ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
+
+		// Get all the assets about to be synced in those path(s) on disk...
+		TArray<FString> AffectedFiles;
 		TArray<FString> PackageNames;
+
+		// Use FSyncPreview if possible.
+		TSharedRef<FSyncPreview> PreviewOperation = ISourceControlOperation::Create<FSyncPreview>();
+		if (SCCProvider.CanExecuteOperation(PreviewOperation) &&
+			SCCProvider.Execute(PreviewOperation, PathsOnDisk) == ECommandResult::Succeeded)
 		{
+			// The source control provider supports sync previews which gets us the full list of
+			// affected files, both packages and non-packages.
+			AffectedFiles = PreviewOperation->GetAffectedFiles();
+
+			// Determine which packages would be affected.
+			for (const FString& FileName : AffectedFiles)
+			{
+				FString PackageName;
+				if (FPackageName::TryConvertFilenameToLongPackageName(FileName, PackageName))
+				{
+					PackageNames.Add(PackageName);
+				}
+			}
+		}
+		else
+		{
+			// The source control provider does not support sync previews.
+			// Fallback on using the AssetRegistry.
 			FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 			FARFilter Filter;
 			Filter.bRecursivePaths = true;
 			for (const FString& PathOnDisk : PathsOnDisk)
 			{
-				FString PackagePath = FPackageName::FilenameToLongPackageName(PathOnDisk);
-				if (PackagePath.Len() > 1 && PackagePath[PackagePath.Len() - 1] == TEXT('/'))
+				FString PackagePath;
+				if (FPackageName::TryConvertFilenameToLongPackageName(PathOnDisk, PackagePath))
 				{
-					// The filter path can't end with a trailing slash
-					PackagePath.LeftChopInline(1, false);
+					if (PackagePath.Len() > 1 && PackagePath[PackagePath.Len() - 1] == TEXT('/'))
+					{
+						// The filter path can't end with a trailing slash
+						PackagePath.LeftChopInline(1, false);
+					}
+					Filter.PackagePaths.Emplace(*PackagePath);
 				}
-				Filter.PackagePaths.Emplace(*PackagePath);
 			}
 
 			TArray<FAssetData> AssetList;
@@ -1917,11 +1936,10 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 			}
 		}
 
-		ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
-
 		// Warn about any packages that are being synced without also getting the newest version of their dependencies...
 		TArray<FString> PackageNamesToSync = PackageNames;
 		TArray<FString> ExtraPackagesToSync;
+		if (bCheckDependencies)
 		{
 			TArray<FString> OutOfDateDependencies;
 			GetOutOfDatePackageDependencies(PackageNamesToSync, OutOfDateDependencies);
@@ -1932,23 +1950,40 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 		}
 
 		// Form a list of loaded packages to reload...
+		TArray<UObject*> LoadedObjects;
 		TArray<UPackage*> LoadedPackages;
+		TArray<UPackage*> PendingPackages;
+		LoadedObjects.Reserve(PackageNamesToSync.Num());
 		LoadedPackages.Reserve(PackageNamesToSync.Num());
+		PendingPackages.Reserve(PackageNamesToSync.Num());
 		for (const FString& PackageName : PackageNamesToSync)
 		{
 			UPackage* Package = FindPackage(nullptr, *PackageName);
 			if (Package)
 			{
+				LoadedObjects.Emplace(Package);
 				LoadedPackages.Emplace(Package);
 
-				// Detach the linkers of any loaded packages so that SCC can overwrite the files...
 				if (!Package->IsFullyLoaded())
 				{
-					FlushAsyncLoading();
-					Package->FullyLoad();
+					PendingPackages.Emplace(Package);
 				}
-				ResetLoaders(Package);
 			}
+		}
+
+		// Detach the linkers of any loaded packages so that SCC can overwrite the files...
+		if (PendingPackages.Num() > 0)
+		{
+			FlushAsyncLoading();
+
+			for (UPackage* Package : PendingPackages)
+			{
+				Package->FullyLoad();
+			}
+		}
+		if (LoadedObjects.Num() > 0)
+		{
+			ResetLoaders(LoadedObjects);
 		}
 
 		// Group everything...
@@ -1958,7 +1993,7 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 		PathsToSync.Append(SourceControlHelpers::PackageFilenames(ExtraPackagesToSync));
 
 		// Sync everything...
-		SCCProvider.Execute(ISourceControlOperation::Create<FSync>(), PathsToSync);
+		ECommandResult::Type SyncResult = SCCProvider.Execute(ISourceControlOperation::Create<FSync>(), PathsToSync);
 
 		// Syncing may have deleted some packages, so we need to unload those rather than re-load them...
 		// Note: we will store the package using weak pointers here otherwise we might have garbage collection issues after the ReloadPackages call
@@ -1975,11 +2010,23 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 			return false; // keep package
 		});
 
-		//UE_LOG(LogContentBrowser, Log, TEXT("Syncing %d path(s):"), ContentPaths.Num());
-		//for (const UPackage* Package : LoadedPackages)
-		//{
-		//	UE_LOG(LogContentBrowser, Log, TEXT("\t - %s"), *Package->GetName());
-		//}
+		// Check if the world should be reloaded as well because one of its external packages got synced...
+		if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
+		{
+			UPackage* EditorWorldPackage = EditorWorld->GetPackage();
+			if (!LoadedPackages.Contains(EditorWorldPackage))
+			{
+				for (const FString& PackageName : PackageNamesToSync)
+				{
+					if (PackageName.Contains(FPackagePath::GetExternalActorsFolderName()) ||
+						PackageName.Contains(FPackagePath::GetExternalObjectsFolderName()))
+					{
+						LoadedPackages.Add(EditorWorldPackage);
+						break;
+					}
+				}
+			}
+		}
 
 		// Hot-reload the new packages...
 		UPackageTools::ReloadPackages(LoadedPackages);
@@ -1997,8 +2044,26 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 		UPackageTools::UnloadPackages(PackageRawPtrsToUnload);
 
 		// Re-cache the SCC state...
-		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PathsOnDisk);
+		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), AffectedFiles.Num() > 0 ? AffectedFiles : PathsOnDisk);
+
+		// Broadcast sync finished...
+		AssetViewUtils::OnSyncFinish().Broadcast(SyncResult == ECommandResult::Succeeded, AffectedFiles.Num() > 0 ? &AffectedFiles : nullptr);
+
+		// Return result...
+		return (SyncResult == ECommandResult::Succeeded);
 	}
+
+	return true;
+}
+
+bool AssetViewUtils::SyncLatestFromSourceControl()
+{
+	return SyncPathsFromSourceControl(SourceControlHelpers::GetSourceControlLocations(), /*bCheckDependencies=*/false);
+}
+
+bool AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& Paths)
+{
+	return SyncPathsFromSourceControl(Paths, /*bCheckDependencies=*/true);
 }
 
 void AssetViewUtils::ShowErrorNotifcation(const FText& InErrorMsg)
@@ -2023,6 +2088,16 @@ AssetViewUtils::FOnAlwaysShowPath& AssetViewUtils::OnAlwaysShowPath()
 AssetViewUtils::FOnFolderPathChanged& AssetViewUtils::OnFolderPathChanged()
 {
 	return OnFolderPathChangedDelegate;
+}
+
+AssetViewUtils::FOnSyncStart& AssetViewUtils::OnSyncStart()
+{
+	return FOnSyncStartDelegate;
+}
+
+AssetViewUtils::FOnSyncFinish& AssetViewUtils::OnSyncFinish()
+{
+	return FOnSyncFinishDelegate;
 }
 
 #undef LOCTEXT_NAMESPACE

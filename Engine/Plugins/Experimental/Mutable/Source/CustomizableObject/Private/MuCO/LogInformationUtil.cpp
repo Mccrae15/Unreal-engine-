@@ -37,15 +37,15 @@ void LogInformationUtil::PrintGeneratedTextures(const TArray<struct FGeneratedTe
 
 	if (Max > 1)
 	{
-		UE_LOG(LogMutable, Warning, TEXT("Case"));
+		UE_LOG(LogMutable, Log, TEXT("Case"));
 	}
 
 	for (i = 0; i < Max; ++i)
 	{
 		Log += FString::Printf(TEXT("Texture name=%s, "), *GeneratedTextures[i].Name);
-		Log += FString::Printf(TEXT("id=%d, "), GeneratedTextures[i].Id);
+		Log += FString::Printf(TEXT("id=%d, "), GeneratedTextures[i].Key.Resource);
 		Log += "\n\t\t\t";
-		PrintTextureData(GeneratedTextures[i].Texture, Log, false);
+		PrintTextureData(Cast<UTexture2D>(GeneratedTextures[i].Texture), Log, false);
 		if (i < (Max - 1))
 		{
 			Log += "\n\t\t";
@@ -145,7 +145,6 @@ void LogInformationUtil::LogShowInstanceDataFull(const UCustomizableObjectInstan
 	FString MessageChunk;
 
 	MessageChunk += "\n\t";
-	MessageChunk += FString::Printf(TEXT("        bBuildParameterDecorations = %d\n"), CustomizableObjectInstance->GetBuildParameterDecorations());
 	MessageChunk += FString::Printf(TEXT("        bShowOnlyRuntimeParameters = %d\n"), CustomizableObjectInstance->bShowOnlyRuntimeParameters);
 	MessageChunk += FString::Printf(TEXT("        bShowOnlyRelevantParameters = %d\n"), CustomizableObjectInstance->bShowOnlyRelevantParameters);
 	MessageChunk += FString::Printf(TEXT("        MinSquareDistFromComponentToPlayer = %.2f\n"), CustomizableObjectInstance->GetPrivate()->MinSquareDistFromComponentToPlayer);
@@ -191,7 +190,7 @@ void LogInformationUtil::LogShowInstanceDataFull(const UCustomizableObjectInstan
 		}
 	}
 
-	UE_LOG(LogMutable, Warning, TEXT("%s"), *LogData);
+	UE_LOG(LogMutable, Log, TEXT("%s"), *LogData);
 
 	UWorld* World = GWorld;
 
@@ -336,6 +335,11 @@ void LogInformationUtil::PrintProjectorParameters(const TArray<struct FCustomiza
 
 void LogInformationUtil::PrintTextureData(const UTexture2D* Texture, FString& Log, bool UseTabulation)
 {
+	if (!Texture)
+	{
+		return;
+	}
+
 	FString MessageChunk;
 	MessageChunk += FString::Printf(TEXT("        Name=%s\n"), *Texture->GetName());
 	if (UseTabulation)

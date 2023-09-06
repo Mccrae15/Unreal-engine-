@@ -26,12 +26,31 @@
 
 
 
+enum class EVulkanVariableRateShadingPreference : uint8
+{
+	PreferFSR = 0, // This can be used to prefer FSR over FDM when both are available.
+	UseFSROnlyIfAvailable, // This will only print a message if FSR is not available.
+	RequireFSR, // This will print an error if FSR is not available.
+	PreferFDM, // This can be used to prefer FDM over FSR when both are available.
+	UseFDMOnlyIfAvailable, // This will only print a message if FDM is not available.
+	RequireFDM, // This will print an error if FDM is not available.
+};
+
 TAutoConsoleVariable<int32> GRHIAllow64bitShaderAtomicsCvar(
 	TEXT("r.Vulkan.Allow64bitShaderAtomics"),
 	1,
 	TEXT("Whether to enable 64bit buffer/image atomics required by Nanite\n")
 	TEXT("0 to disable 64bit atomics\n")
 	TEXT("1 to enable (default)"),
+	ECVF_ReadOnly
+);
+
+TAutoConsoleVariable<int32> GRHIAllow16bitOps(
+	TEXT("r.Vulkan.Allow16bitOps"),
+	0,
+	TEXT("Whether to enable 16bit ops to speeds up TSR\n")
+	TEXT("0 to disable (default)\n")
+	TEXT("1 to enable"),
 	ECVF_ReadOnly
 );
 
@@ -59,6 +78,19 @@ TAutoConsoleVariable<int32> GVulkaAllowSync2BarriersCVar(
 	TEXT("This is necessary in order to support parallel command buffer generation.\n")
 	TEXT("0: Do not enable support for sync2 barriers.\n")
 	TEXT("1: Enable sync2 barriers (default)"),
+	ECVF_ReadOnly
+);
+
+TAutoConsoleVariable<int32> GVulkanVariableRateShadingFormatCVar(
+	TEXT("r.Vulkan.VRSFormat"),
+	0,
+	TEXT("Allows to choose the preferred Variable Rate Shading option. \n")
+	TEXT("0: Prefer Fragment Shading Rate if both Fragment Shading Rate and Fragment Density Map are available.\n")
+	TEXT("1: Use Fragment Shading Rate if available. A message will be reported if not available. \n")
+	TEXT("2: Require Fragment Shading Rate. Will generate an error if the extension is not available. \n")
+	TEXT("3: Prefer Fragment Density Map if both Fragment Shading Rate and Fragment Density Map are available.\n")
+	TEXT("4: Use Fragment Density Map if available. A message will be reported if not available.\n")
+	TEXT("5: Require Fragment Density Map. Will generate an error if the extension is not available."),
 	ECVF_ReadOnly
 );
 
@@ -154,7 +186,8 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasKHRMaintenance4 = (Maintenance4Features.maintenance4 == VK_TRUE) ? 1 : 0; 
+		bRequirementsPassed = (Maintenance4Features.maintenance4 == VK_TRUE);
+		ExtensionFlags.HasKHRMaintenance4 = bRequirementsPassed;
 	}
 
 private:
@@ -197,12 +230,11 @@ class FVulkanShaderAtomicInt64Extension : public FVulkanDeviceExtension
 public:
 
 	FVulkanShaderAtomicInt64Extension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME, VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS, VK_API_VERSION_1_2)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VK_API_VERSION_1_2)
 	{
 		bEnabledInCode = bEnabledInCode && (GRHIAllow64bitShaderAtomicsCvar.GetValueOnAnyThread() != 0);
 	}
 
-#if VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
 	{
 		ZeroVulkanStruct(BufferAtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
@@ -211,24 +243,19 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasKHRShaderAtomicInt64 = BufferAtomicFeatures.shaderBufferInt64Atomics;
-		GRHISupportsAtomicUInt64 = (BufferAtomicFeatures.shaderBufferInt64Atomics == VK_TRUE);
+		bRequirementsPassed = (BufferAtomicFeatures.shaderBufferInt64Atomics == VK_TRUE);
+		ExtensionFlags.HasKHRShaderAtomicInt64 = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (BufferAtomicFeatures.shaderBufferInt64Atomics == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, BufferAtomicFeatures);
-		}
-		else
-		{
-			GRHISupportsAtomicUInt64 = false;
 		}
 	}
 
 	VkPhysicalDeviceShaderAtomicInt64Features BufferAtomicFeatures;
-#endif // VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS
 };
 
 
@@ -239,12 +266,11 @@ class FVulkanShaderImageAtomicInt64Extension : public FVulkanDeviceExtension
 public:
 
 	FVulkanShaderImageAtomicInt64Extension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME, VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
 	{
 		bEnabledInCode = bEnabledInCode && (GRHIAllow64bitShaderAtomicsCvar.GetValueOnAnyThread() != 0);
 	}
 
-#if VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
 	{
 		ZeroVulkanStruct(ImageAtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT);
@@ -253,26 +279,23 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasImageAtomicInt64 = ImageAtomicFeatures.shaderImageInt64Atomics;
-		GRHISupportsAtomicUInt64 = GRHISupportsAtomicUInt64 && (ImageAtomicFeatures.shaderImageInt64Atomics == VK_TRUE); // GRHISupportsAtomicUInt64 already contains FVulkanShaderAtomicInt64Extension support
+		bRequirementsPassed = (ImageAtomicFeatures.shaderImageInt64Atomics == VK_TRUE);
+		ExtensionFlags.HasImageAtomicInt64 = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		const bool bEnable64bitAtomics = (GRHIAllow64bitShaderAtomicsCvar.GetValueOnAnyThread() != 0);
-		if (bEnable64bitAtomics && (ImageAtomicFeatures.shaderImageInt64Atomics == VK_TRUE))
+		// The PreCreateDevice() call is after all extension have gone through PostPhysicalDeviceFeatures(), so ExtensionFlags will be filled for both.
+		const FOptionalVulkanDeviceExtensions& ExtensionFlags = Device->GetOptionalExtensions();
+		GRHISupportsAtomicUInt64 = ExtensionFlags.HasKHRShaderAtomicInt64 && ExtensionFlags.HasImageAtomicInt64;
+
+		if (bRequirementsPassed)
 		{
-			ImageAtomicFeatures.pNext = (void*)DeviceCreateInfo.pNext;
-			DeviceCreateInfo.pNext = &ImageAtomicFeatures;
-		}
-		else
-		{
-			GRHISupportsAtomicUInt64 = false;
+			AddToPNext(DeviceCreateInfo, ImageAtomicFeatures);
 		}
 	}
 
 	VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT ImageAtomicFeatures;
-#endif // VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 };
 
 
@@ -315,12 +338,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasSeparateDepthStencilLayouts = SeparateDepthStencilLayoutsFeatures.separateDepthStencilLayouts;
+		bRequirementsPassed = (SeparateDepthStencilLayoutsFeatures.separateDepthStencilLayouts == VK_TRUE);
+		ExtensionFlags.HasSeparateDepthStencilLayouts = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (SeparateDepthStencilLayoutsFeatures.separateDepthStencilLayouts == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, SeparateDepthStencilLayoutsFeatures);
 		}
@@ -351,12 +375,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasKHRSynchronization2 = Synchronization2Features.synchronization2;
+		bRequirementsPassed = (Synchronization2Features.synchronization2 == VK_TRUE);
+		ExtensionFlags.HasKHRSynchronization2 = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (Synchronization2Features.synchronization2 == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, Synchronization2Features);
 		}
@@ -385,12 +410,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final 
 	{
-		ExtensionFlags.HasKHRMultiview = DeviceMultiviewFeatures.multiview; 
+		bRequirementsPassed = (DeviceMultiviewFeatures.multiview == VK_TRUE);
+		ExtensionFlags.HasKHRMultiview = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (DeviceMultiviewFeatures.multiview == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, DeviceMultiviewFeatures);
 		}
@@ -419,12 +445,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final 
 	{
-		ExtensionFlags.HasEXTScalarBlockLayout = ScalarBlockLayoutFeatures.scalarBlockLayout; 
+		bRequirementsPassed = (ScalarBlockLayoutFeatures.scalarBlockLayout == VK_TRUE);
+		ExtensionFlags.HasEXTScalarBlockLayout = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (ScalarBlockLayoutFeatures.scalarBlockLayout == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, ScalarBlockLayoutFeatures);
 		}
@@ -453,17 +480,17 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		bFullySupported = (DescriptorIndexingFeatures.runtimeDescriptorArray == VK_TRUE) &&
+		bRequirementsPassed = (DescriptorIndexingFeatures.runtimeDescriptorArray == VK_TRUE) &&
 			(DescriptorIndexingFeatures.descriptorBindingPartiallyBound == VK_TRUE) &&
 			(DescriptorIndexingFeatures.descriptorBindingUpdateUnusedWhilePending == VK_TRUE) &&
 			(DescriptorIndexingFeatures.descriptorBindingVariableDescriptorCount == VK_TRUE);
 
-		ExtensionFlags.HasEXTDescriptorIndexing = bFullySupported ? 1 : 0;
+		ExtensionFlags.HasEXTDescriptorIndexing = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (bFullySupported)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, DescriptorIndexingFeatures);
 		}
@@ -471,7 +498,6 @@ public:
 
 private:
 	VkPhysicalDeviceDescriptorIndexingFeaturesEXT DescriptorIndexingFeatures;
-	bool bFullySupported = false;
 };
 
 
@@ -482,8 +508,12 @@ class FVulkanKHRFragmentShadingRateExtension : public FVulkanDeviceExtension
 public:
 
 	FVulkanKHRFragmentShadingRateExtension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
 	{
+		int32 VRSFormatPreference = GVulkanVariableRateShadingFormatCVar->GetInt();
+		bEnabledInCode = bEnabledInCode && GRHIVariableRateShadingEnabled;
+		// FSR should be enabled even if FDM is preferred because it could be not available.
+		bEnabledInCode &= (VRSFormatPreference <= (uint8) EVulkanVariableRateShadingPreference::RequireFSR || VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::PreferFDM);
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
@@ -496,6 +526,7 @@ public:
 	{
 		ExtensionFlags.HasKHRFragmentShadingRate = 1;
 
+		VkPhysicalDeviceFragmentShadingRateFeaturesKHR& FragmentShadingRateFeatures = GetDeviceExtensionProperties().FragmentShadingRateFeatures;
 		GRHISupportsAttachmentVariableRateShading = (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE);
 		GRHISupportsPipelineVariableRateShading = (FragmentShadingRateFeatures.pipelineFragmentShadingRate == VK_TRUE);
 
@@ -513,6 +544,7 @@ public:
 
 	virtual void PostPhysicalDeviceProperties() override final
 	{
+		VkPhysicalDeviceFragmentShadingRateFeaturesKHR& FragmentShadingRateFeatures = GetDeviceExtensionProperties().FragmentShadingRateFeatures;
 		if (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE)
 		{
 			GRHIVariableRateShadingImageTileMinWidth = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.width;
@@ -534,12 +566,14 @@ public:
 
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
 	{
+		VkPhysicalDeviceFragmentShadingRateFeaturesKHR& FragmentShadingRateFeatures = GetDeviceExtensionProperties().FragmentShadingRateFeatures;
 		ZeroVulkanStruct(FragmentShadingRateFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR);
 		AddToPNext(PhysicalDeviceFeatures2, FragmentShadingRateFeatures);
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
+		VkPhysicalDeviceFragmentShadingRateFeaturesKHR& FragmentShadingRateFeatures = GetDeviceExtensionProperties().FragmentShadingRateFeatures;
 		if (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE || FragmentShadingRateFeatures.pipelineFragmentShadingRate == VK_TRUE)
 		{
 			AddToPNext(DeviceCreateInfo, FragmentShadingRateFeatures);
@@ -548,7 +582,6 @@ public:
 
 private:
 	VkPhysicalDeviceFragmentShadingRatePropertiesKHR FragmentShadingRateProperties;
-	VkPhysicalDeviceFragmentShadingRateFeaturesKHR FragmentShadingRateFeatures;
 };
 
 
@@ -559,8 +592,12 @@ class FVulkanEXTFragmentDensityMapExtension : public FVulkanDeviceExtension
 public:
 
 	FVulkanEXTFragmentDensityMapExtension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME, VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
 	{
+		int32 VRSFormatPreference = GVulkanVariableRateShadingFormatCVar->GetInt();
+		bEnabledInCode = bEnabledInCode && GRHIVariableRateShadingEnabled;
+		// FDM should be enabled even if the preferred choice is FSR because that might not be available.
+		bEnabledInCode &= (VRSFormatPreference >= (uint8) EVulkanVariableRateShadingPreference::PreferFDM || VRSFormatPreference == (uint8) EVulkanVariableRateShadingPreference::PreferFSR);
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
@@ -571,11 +608,22 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasEXTFragmentDensityMap = 1;
+		bRequirementsPassed = (FragmentDensityMapFeatures.fragmentDensityMap == VK_TRUE);
+		ExtensionFlags.HasEXTFragmentDensityMap = bRequirementsPassed;
+	}
 
-		// Use the Fragment Density Map extension if and only if the Fragment Shading Rate extension is not available.
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(FragmentDensityMapFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT);
+		AddToPNext(PhysicalDeviceFeatures2, FragmentDensityMapFeatures);
+	}
+
+	virtual void PostPhysicalDeviceProperties() override final
+	{
+		// Use the Fragment Density Map extension if the Fragment Shading Rate extension is not available or if both are available but 
+		// Fragment Density Map is the preferred user choice.
 		// NOTE: FVulkanKHRFragmentShadingRateExtension must be placed before FVulkanEXTFragmentDensityMapExtension for this to work!
-		if (!GRHISupportsAttachmentVariableRateShading && (FragmentDensityMapFeatures.fragmentDensityMap == VK_TRUE))
+		if ((!GRHISupportsAttachmentVariableRateShading || (GVulkanVariableRateShadingFormatCVar->GetInt() >= (uint8) EVulkanVariableRateShadingPreference::PreferFDM)) && bRequirementsPassed)
 		{
 			GRHISupportsAttachmentVariableRateShading = true;
 
@@ -595,15 +643,9 @@ public:
 		}
 	}
 
-	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
-	{
-		ZeroVulkanStruct(FragmentDensityMapFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT);
-		AddToPNext(PhysicalDeviceFeatures2, FragmentDensityMapFeatures);
-	}
-
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (FragmentDensityMapFeatures.fragmentDensityMap == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, FragmentDensityMapFeatures);
 		}
@@ -622,8 +664,9 @@ class FVulkanEXTFragmentDensityMap2Extension : public FVulkanDeviceExtension
 public:
 
 	FVulkanEXTFragmentDensityMap2Extension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME, VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
 	{
+		bEnabledInCode = bEnabledInCode && GRHIVariableRateShadingEnabled;
 	}
 
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
@@ -634,14 +677,15 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasEXTFragmentDensityMap2 = FragmentDensityMap2Features.fragmentDensityMapDeferred;
+		bRequirementsPassed = (FragmentDensityMap2Features.fragmentDensityMapDeferred == VK_TRUE);
+		ExtensionFlags.HasEXTFragmentDensityMap2 = bRequirementsPassed;
 
-		GRHISupportsLateVariableRateShadingUpdate = (FragmentDensityMap2Features.fragmentDensityMapDeferred == VK_TRUE);
+		GRHISupportsLateVariableRateShadingUpdate = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (FragmentDensityMap2Features.fragmentDensityMapDeferred == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, FragmentDensityMap2Features);
 		}
@@ -671,7 +715,7 @@ class FVulkanKHRBufferDeviceAddressExtension : public FVulkanDeviceExtension
 public:
 
 	FVulkanKHRBufferDeviceAddressExtension(FVulkanDevice* InDevice)
-		: FVulkanDeviceExtension(InDevice, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME, VULKAN_RHI_RAYTRACING, VK_API_VERSION_1_2) {}
+		: FVulkanDeviceExtension(InDevice, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VK_API_VERSION_1_2) {}
 
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
 	{
@@ -681,12 +725,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final 
 	{
-		ExtensionFlags.HasBufferDeviceAddress = BufferDeviceAddressFeatures.bufferDeviceAddress; 
+		bRequirementsPassed = (BufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE);
+		ExtensionFlags.HasBufferDeviceAddress = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (BufferDeviceAddressFeatures.bufferDeviceAddress == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, BufferDeviceAddressFeatures);
 		}
@@ -711,15 +756,16 @@ public:
 
 	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
 	{
-		ZeroVulkanStruct(AccelerationStructureFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);;
+		ZeroVulkanStruct(AccelerationStructureFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
 		AddToPNext(PhysicalDeviceFeatures2, AccelerationStructureFeatures);
 	}
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasAccelerationStructure = 
-			AccelerationStructureFeatures.accelerationStructure & 
-			AccelerationStructureFeatures.descriptorBindingAccelerationStructureUpdateAfterBind;
+		bRequirementsPassed = (AccelerationStructureFeatures.accelerationStructure == VK_TRUE) && 
+			(AccelerationStructureFeatures.descriptorBindingAccelerationStructureUpdateAfterBind == VK_TRUE);
+
+		ExtensionFlags.HasAccelerationStructure = bRequirementsPassed;
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
@@ -733,8 +779,7 @@ public:
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if ((AccelerationStructureFeatures.accelerationStructure == VK_TRUE) &&
-			(AccelerationStructureFeatures.descriptorBindingAccelerationStructureUpdateAfterBind == VK_TRUE))
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, AccelerationStructureFeatures);
 		}
@@ -765,7 +810,10 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasRayTracingPipeline = RayTracingPipelineFeatures.rayTracingPipeline & RayTracingPipelineFeatures.rayTraversalPrimitiveCulling;
+		bRequirementsPassed = (RayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE) &&
+			(RayTracingPipelineFeatures.rayTraversalPrimitiveCulling == VK_TRUE);
+
+		ExtensionFlags.HasRayTracingPipeline = bRequirementsPassed;
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
@@ -779,8 +827,7 @@ public:
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if ((RayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE) &&
-			(RayTracingPipelineFeatures.rayTraversalPrimitiveCulling == VK_TRUE))
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, RayTracingPipelineFeatures);
 		}
@@ -811,12 +858,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasRayQuery = RayQueryFeatures.rayQuery; 
+		bRequirementsPassed = (RayQueryFeatures.rayQuery == VK_TRUE);
+		ExtensionFlags.HasRayQuery = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (RayQueryFeatures.rayQuery == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, RayQueryFeatures);
 		}
@@ -911,12 +959,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final 
 	{
-		ExtensionFlags.HasNVDeviceDiagnosticConfig = DeviceDiagnosticsConfigFeaturesNV.diagnosticsConfig; 
+		bRequirementsPassed = (DeviceDiagnosticsConfigFeaturesNV.diagnosticsConfig == VK_TRUE);
+		ExtensionFlags.HasNVDeviceDiagnosticConfig = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (DeviceDiagnosticsConfigFeaturesNV.diagnosticsConfig == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, DeviceDiagnosticsConfigFeaturesNV);
 
@@ -931,6 +980,39 @@ private:
 	VkDeviceDiagnosticsConfigCreateInfoNV DeviceDiagnosticsConfigCreateInfoNV;
 };
 
+// ***** VK_EXT_device_fault
+class FVulkanEXTDeviceFaultExtension : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanEXTDeviceFaultExtension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_DEVICE_FAULT_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
+	{
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(DeviceFaultFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT);
+		AddToPNext(PhysicalDeviceFeatures2, DeviceFaultFeatures);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		bRequirementsPassed = (DeviceFaultFeatures.deviceFault == VK_TRUE);
+		ExtensionFlags.HasEXTDeviceFault = bRequirementsPassed;
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		if (bRequirementsPassed)
+		{
+			AddToPNext(DeviceCreateInfo, DeviceFaultFeatures);
+		}
+	}
+
+private:
+	VkPhysicalDeviceFaultFeaturesEXT DeviceFaultFeatures;
+};
 
 // ***** VK_EXT_host_query_reset
 class FVulkanEXTHostQueryResetExtension : public FVulkanDeviceExtension
@@ -951,12 +1033,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
-		ExtensionFlags.HasEXTHostQueryReset = HostQueryResetFeatures.hostQueryReset;
+		bRequirementsPassed = (HostQueryResetFeatures.hostQueryReset == VK_TRUE);
+		ExtensionFlags.HasEXTHostQueryReset = bRequirementsPassed;
 	}
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (HostQueryResetFeatures.hostQueryReset == VK_TRUE)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, HostQueryResetFeatures);
 		}
@@ -984,13 +1067,13 @@ public:
 
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
- 		bSupportsSubgroupSizeControl = (SubgroupSizeControlFeatures.subgroupSizeControl == VK_TRUE);
-		ExtensionFlags.HasEXTSubgroupSizeControl = bSupportsSubgroupSizeControl ? 1 : 0;
+		bRequirementsPassed = (SubgroupSizeControlFeatures.subgroupSizeControl == VK_TRUE);
+		ExtensionFlags.HasEXTSubgroupSizeControl = bRequirementsPassed;
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
 	{
-		if (bSupportsSubgroupSizeControl)
+		if (bRequirementsPassed)
 		{
 			VkPhysicalDeviceSubgroupSizeControlPropertiesEXT& SubgroupSizeControlProperties = GetDeviceExtensionProperties().SubgroupSizeControlProperties;
 			ZeroVulkanStruct(SubgroupSizeControlProperties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES);
@@ -1000,7 +1083,7 @@ public:
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (bSupportsSubgroupSizeControl)
+		if (bRequirementsPassed)
 		{
 			VkPhysicalDeviceSubgroupSizeControlPropertiesEXT& SubgroupSizeControlProperties = GetDeviceExtensionProperties().SubgroupSizeControlProperties;
 
@@ -1013,7 +1096,40 @@ public:
 
 private:
 	VkPhysicalDeviceSubgroupSizeControlFeaturesEXT SubgroupSizeControlFeatures;
-	bool bSupportsSubgroupSizeControl = false;
+};
+
+
+// ***** VK_EXT_shader_demote_to_helper_invocation
+class FVulkanEXTShaderDemoteToHelperInvocationExtension : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanEXTShaderDemoteToHelperInvocationExtension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_EXT_SHADER_DEMOTE_TO_HELPER_INVOCATION_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VK_API_VERSION_1_3)
+	{
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(ShaderDemoteToHelperInvocationFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DEMOTE_TO_HELPER_INVOCATION_FEATURES);
+		AddToPNext(PhysicalDeviceFeatures2, ShaderDemoteToHelperInvocationFeatures);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		bRequirementsPassed = (ShaderDemoteToHelperInvocationFeatures.shaderDemoteToHelperInvocation == VK_TRUE);
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		if (bRequirementsPassed)
+		{
+			AddToPNext(DeviceCreateInfo, ShaderDemoteToHelperInvocationFeatures);
+		}
+	}
+
+private:
+	VkPhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT ShaderDemoteToHelperInvocationFeatures;
 };
 
 
@@ -1065,13 +1181,13 @@ public:
 	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
 	{
 		// only enable descriptor buffers if we also support mutable descriptor types (value filled prior)
-		bSupportsDescriptorBuffer = (DescriptorBufferFeatures.descriptorBuffer == VK_TRUE);
-		ExtensionFlags.HasEXTDescriptorBuffer = bSupportsDescriptorBuffer ? 1 : 0;
+		bRequirementsPassed = (DescriptorBufferFeatures.descriptorBuffer == VK_TRUE);
+		ExtensionFlags.HasEXTDescriptorBuffer = bRequirementsPassed;
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final
 	{
-		if (bSupportsDescriptorBuffer)
+		if (bRequirementsPassed)
 		{
 			VkPhysicalDeviceDescriptorBufferPropertiesEXT& DescriptorBufferProperties = GetDeviceExtensionProperties().DescriptorBufferProps;
 			ZeroVulkanStruct(DescriptorBufferProperties, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT);
@@ -1081,7 +1197,7 @@ public:
 
 	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
 	{
-		if (bSupportsDescriptorBuffer)
+		if (bRequirementsPassed)
 		{
 			AddToPNext(DeviceCreateInfo, DescriptorBufferFeatures);
 
@@ -1105,14 +1221,88 @@ public:
 
 private:
 	VkPhysicalDeviceDescriptorBufferFeaturesEXT DescriptorBufferFeatures;
-	bool bSupportsDescriptorBuffer = false;
+};
+
+// ***** VK_KHR_16bit_storage
+class FVulkanKHR16BitStorageExtension : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanKHR16BitStorageExtension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_16BIT_STORAGE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
+	{
+		bEnabledInCode = bEnabledInCode && (GRHIAllow16bitOps.GetValueOnAnyThread() != 0);
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(Device16BitStorageFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES_KHR);
+		AddToPNext(PhysicalDeviceFeatures2, Device16BitStorageFeatures);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		bRequirementsPassed = (
+			Device16BitStorageFeatures.storageBuffer16BitAccess == VK_TRUE &&
+			Device16BitStorageFeatures.uniformAndStorageBuffer16BitAccess == VK_TRUE &&
+			Device16BitStorageFeatures.storagePushConstant16 == VK_TRUE);
+		ExtensionFlags.HasKHR16bitStorage = bRequirementsPassed;
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		if (bRequirementsPassed)
+		{
+			AddToPNext(DeviceCreateInfo, Device16BitStorageFeatures);
+		}
+	}
+
+	VkPhysicalDevice16BitStorageFeaturesKHR Device16BitStorageFeatures;
+};
+
+// ***** VK_KHR_shader_float16_int8
+class FVulkanKHRShaderFloat16Int8Extension : public FVulkanDeviceExtension
+{
+public:
+
+	FVulkanKHRShaderFloat16Int8Extension(FVulkanDevice* InDevice)
+		: FVulkanDeviceExtension(InDevice, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED)
+	{
+		bEnabledInCode = bEnabledInCode && (GRHIAllow16bitOps.GetValueOnAnyThread() != 0);
+	}
+
+	virtual void PrePhysicalDeviceFeatures(VkPhysicalDeviceFeatures2KHR& PhysicalDeviceFeatures2) override final
+	{
+		ZeroVulkanStruct(ShaderFloat16Int8Features, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR);
+		AddToPNext(PhysicalDeviceFeatures2, ShaderFloat16Int8Features);
+	}
+
+	virtual void PostPhysicalDeviceFeatures(FOptionalVulkanDeviceExtensions& ExtensionFlags) override final
+	{
+		bRequirementsPassed = (ShaderFloat16Int8Features.shaderFloat16 == VK_TRUE);
+		ExtensionFlags.HasKHRShaderFloat16 = bRequirementsPassed;
+	}
+
+	virtual void PreCreateDevice(VkDeviceCreateInfo& DeviceCreateInfo) override final
+	{
+		// The PreCreateDevice() call is after all extension have gone through PostPhysicalDeviceFeatures(), so ExtensionFlags will be filled for both.
+		const FOptionalVulkanDeviceExtensions& ExtensionFlags = Device->GetOptionalExtensions();
+		GRHIGlobals.SupportsNative16BitOps = ExtensionFlags.HasKHR16bitStorage && ExtensionFlags.HasKHRShaderFloat16;
+
+		if (bRequirementsPassed)
+		{
+			AddToPNext(DeviceCreateInfo, ShaderFloat16Int8Features);
+		}
+	}
+
+	VkPhysicalDeviceShaderFloat16Int8Features  ShaderFloat16Int8Features;
 };
 
 
 
 
 template <typename ExtensionType>
-static void FlagExtensionSupport(const TArray<VkExtensionProperties>& ExtensionProperties, TArray<TUniquePtr<ExtensionType>>& UEExtensions, const TCHAR* ExtensionTypeName)
+static void FlagExtensionSupport(const TArray<VkExtensionProperties>& ExtensionProperties, TArray<TUniquePtr<ExtensionType>>& UEExtensions, uint32 ApiVersion, const TCHAR* ExtensionTypeName)
 {
 	// Flag the extension support
 	UE_LOG(LogVulkanRHI, Display, TEXT("Found %d available %s extensions :"), ExtensionProperties.Num(), ExtensionTypeName);
@@ -1120,17 +1310,22 @@ static void FlagExtensionSupport(const TArray<VkExtensionProperties>& ExtensionP
 	{
 		const int32 ExtensionIndex = ExtensionType::FindExtension(UEExtensions, Extension.extensionName);
 		const bool bFound = (ExtensionIndex != INDEX_NONE);
+		bool bIsCore = false;
 		if (bFound)
 		{
 			UEExtensions[ExtensionIndex]->SetSupported();
+
+			// Set the core flag if the extension was promoted for our current api version
+			bIsCore = UEExtensions[ExtensionIndex]->SetCore(ApiVersion);
 		}
-		UE_LOG(LogVulkanRHI, Display, TEXT("  %s %s"), bFound ? TEXT("+") : TEXT("-"), ANSI_TO_TCHAR(Extension.extensionName));
+
+		UE_LOG(LogVulkanRHI, Display, TEXT("  %s %s"), bIsCore ? TEXT("*") : bFound ? TEXT("+") : TEXT("-"), ANSI_TO_TCHAR(Extension.extensionName));
 	}
 }
 
 
 
-FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensions(FVulkanDevice* InDevice)
+FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensions(FVulkanDevice* InDevice, uint32 ApiVersion)
 {
 	FVulkanDeviceExtensionArray OutUEDeviceExtensions;
 
@@ -1147,31 +1342,26 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	// Generic simple extensions :
 
 	ADD_SIMPLE_EXTENSION(VK_KHR_SWAPCHAIN_EXTENSION_NAME,                VULKAN_EXTENSION_ENABLED,             VULKAN_EXTENSION_NOT_PROMOTED, nullptr);
-	ADD_SIMPLE_EXTENSION(VK_KHR_MAINTENANCE1_EXTENSION_NAME,             VULKAN_EXTENSION_ENABLED,             VK_API_VERSION_1_1,            DEVICE_EXT_FLAG_SETTER(HasKHRMaintenance1));
-	ADD_SIMPLE_EXTENSION(VK_KHR_MAINTENANCE2_EXTENSION_NAME,             VULKAN_EXTENSION_ENABLED,             VK_API_VERSION_1_1,            DEVICE_EXT_FLAG_SETTER(HasKHRMaintenance2));
 	ADD_SIMPLE_EXTENSION(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME,            VULKAN_SUPPORTS_MEMORY_BUDGET,        VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasMemoryBudget));
 	ADD_SIMPLE_EXTENSION(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME,          VULKAN_SUPPORTS_MEMORY_PRIORITY,      VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasMemoryPriority));
 	ADD_SIMPLE_EXTENSION(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,      VULKAN_SUPPORTS_RENDERPASS2,          VK_API_VERSION_1_2,            DEVICE_EXT_FLAG_SETTER(HasKHRRenderPass2));
-	ADD_SIMPLE_EXTENSION(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,     VULKAN_SUPPORTS_DEDICATED_ALLOCATION, VK_API_VERSION_1_1,            DEVICE_EXT_FLAG_SETTER(HasKHRDedicatedAllocation));
 	ADD_SIMPLE_EXTENSION(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, VULKAN_RHI_RAYTRACING,                VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasDeferredHostOperations));
 	ADD_SIMPLE_EXTENSION(VK_KHR_SPIRV_1_4_EXTENSION_NAME,                VULKAN_RHI_RAYTRACING,                VK_API_VERSION_1_2,            DEVICE_EXT_FLAG_SETTER(HasSPIRV_14));
 	ADD_SIMPLE_EXTENSION(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,    VULKAN_RHI_RAYTRACING,                VK_API_VERSION_1_2,            DEVICE_EXT_FLAG_SETTER(HasShaderFloatControls));
 	ADD_SIMPLE_EXTENSION(VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,        VULKAN_EXTENSION_ENABLED,             VK_API_VERSION_1_2,            DEVICE_EXT_FLAG_SETTER(HasKHRImageFormatList));
 	ADD_SIMPLE_EXTENSION(VK_EXT_VALIDATION_CACHE_EXTENSION_NAME,         VULKAN_SUPPORTS_VALIDATION_CACHE,     VULKAN_EXTENSION_NOT_PROMOTED, DEVICE_EXT_FLAG_SETTER(HasEXTValidationCache));
-	ADD_SIMPLE_EXTENSION(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,            VULKAN_EXTENSION_ENABLED,             VK_API_VERSION_1_1,            nullptr);
 
 
 	// Externally activated extensions (supported by the engine, but enabled externally by plugin or other) :
 
-	ADD_EXTERNAL_EXTENSION(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, VULKAN_SUPPORTS_EXTERNAL_MEMORY, VK_API_VERSION_1_1, nullptr);
 
 
 	// Extensions with custom classes :
 
 	ADD_CUSTOM_EXTENSION(FVulkanKHRDriverPropertiesExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanKHRMaintenance4Extension);
-	ADD_CUSTOM_EXTENSION(FVulkanShaderAtomicInt64Extension);      // must be kept BEFORE ShaderImageAtomicInt64!
-	ADD_CUSTOM_EXTENSION(FVulkanShaderImageAtomicInt64Extension); // must be kept AFTER ShaderAtomicInt64!
+	ADD_CUSTOM_EXTENSION(FVulkanShaderAtomicInt64Extension);
+	ADD_CUSTOM_EXTENSION(FVulkanShaderImageAtomicInt64Extension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTScalarBlockLayoutExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTShaderViewportIndexLayerExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanKHRSeparateDepthStencilLayoutsExtension);
@@ -1186,6 +1376,10 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ADD_CUSTOM_EXTENSION(FVulkanEXTSubgroupSizeControlExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTCalibratedTimestampsExtension);
 	ADD_CUSTOM_EXTENSION(FVulkanEXTDescriptorBuffer);
+	ADD_CUSTOM_EXTENSION(FVulkanEXTDeviceFaultExtension);
+	ADD_CUSTOM_EXTENSION(FVulkanEXTShaderDemoteToHelperInvocationExtension);
+	ADD_CUSTOM_EXTENSION(FVulkanKHR16BitStorageExtension);
+	ADD_CUSTOM_EXTENSION(FVulkanKHRShaderFloat16Int8Extension);
 
 	// Needed for Raytracing
 	ADD_CUSTOM_EXTENSION(FVulkanKHRBufferDeviceAddressExtension);
@@ -1239,7 +1433,7 @@ FVulkanDeviceExtensionArray FVulkanDeviceExtension::GetUESupportedDeviceExtensio
 	ActivateExternalExtensions(ExternalExtensions, TEXT("Externally"));
 
 	// Now that all the extensions are listed, update their support flags
-	FlagExtensionSupport(GetDriverSupportedDeviceExtensions(InDevice->GetPhysicalHandle()), OutUEDeviceExtensions, TEXT("device"));
+	FlagExtensionSupport(GetDriverSupportedDeviceExtensions(InDevice->GetPhysicalHandle()), OutUEDeviceExtensions, ApiVersion, TEXT("device"));
 
 	#undef ADD_SIMPLE_EXTENSION
 	#undef ADD_EXTERNAL_EXTENSION
@@ -1325,13 +1519,11 @@ private:
 
 
 
-FVulkanInstanceExtensionArray FVulkanInstanceExtension::GetUESupportedInstanceExtensions()
+FVulkanInstanceExtensionArray FVulkanInstanceExtension::GetUESupportedInstanceExtensions(uint32 ApiVersion)
 {
 	FVulkanInstanceExtensionArray OutUEInstanceExtensions;
 
 	// Generic simple extensions :
-	OutUEInstanceExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME, VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2, VK_API_VERSION_1_1, INSTANCE_EXT_FLAG_SETTER(HasKHRGetPhysicalDeviceProperties2)));
-	OutUEInstanceExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME, VULKAN_SUPPORTS_EXTERNAL_MEMORY, VK_API_VERSION_1_1, INSTANCE_EXT_FLAG_SETTER(HasKHRExternalMemoryCapabilities)));
 	OutUEInstanceExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_KHR_SURFACE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
 	OutUEInstanceExtensions.Add(MakeUnique<FVulkanInstanceExtension>(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME, VULKAN_EXTENSION_ENABLED, VULKAN_EXTENSION_NOT_PROMOTED));
 
@@ -1382,11 +1574,44 @@ FVulkanInstanceExtensionArray FVulkanInstanceExtension::GetUESupportedInstanceEx
 	ActivateExternalExtensions(ExternalExtensions, TEXT("Externally"));
 
 	// Now that all the extensions are listed, update their support flags
-	FlagExtensionSupport(GetDriverSupportedInstanceExtensions(), OutUEInstanceExtensions, TEXT("instance"));
+	FlagExtensionSupport(GetDriverSupportedInstanceExtensions(), OutUEInstanceExtensions, ApiVersion, TEXT("instance"));
 
 	return OutUEInstanceExtensions;
 }
 
+void ChooseVariableRateShadingMethod(FOptionalVulkanDeviceExtensions& ExtensionFlags, const VkPhysicalDeviceFragmentShadingRateFeaturesKHR& FragmentShadingRateFeatures)
+{
+	int32 VRSFormatPreference = GVulkanVariableRateShadingFormatCVar->GetInt();
 
-
+	if (VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::PreferFSR && (FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE))
+	{
+		ExtensionFlags.HasEXTFragmentDensityMap = 0;
+		return;
+	}
+	if (VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::PreferFDM && ExtensionFlags.HasEXTFragmentDensityMap)
+	{
+		ExtensionFlags.HasKHRFragmentShadingRate = 0;
+		return;
+	}
+	if (VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::UseFSROnlyIfAvailable && !(FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE))
+	{
+		UE_LOG(LogVulkanRHI, Display, TEXT("Fragment Shading Rate was requested but is not available."));
+		return;
+	}
+	if (VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::UseFDMOnlyIfAvailable && !ExtensionFlags.HasEXTFragmentDensityMap)
+	{
+		UE_LOG(LogVulkanRHI, Display, TEXT("Fragment Density Map was requested but is not available."));
+		return;
+	}
+	if (VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::RequireFSR && !(FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE))
+	{
+		UE_LOG(LogVulkanRHI, Error, TEXT("Fragment Shading Rate was required but is not available."));
+		return;
+	}
+	if (VRSFormatPreference == (uint8)EVulkanVariableRateShadingPreference::RequireFDM && !ExtensionFlags.HasEXTFragmentDensityMap)
+	{
+		UE_LOG(LogVulkanRHI, Error, TEXT("Fragment Density Map was required but is not available."));
+		return;
+	}
+}
 

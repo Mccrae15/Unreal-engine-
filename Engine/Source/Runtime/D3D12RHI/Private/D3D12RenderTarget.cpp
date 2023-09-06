@@ -186,7 +186,7 @@ void FD3D12CommandContext::ResolveTextureUsingShader(
 
 			FlushResourceBarriers();
 
-			GraphicsCommandList()->ClearDepthStencilView(DestTextureDSV->GetView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0, 0, 0, nullptr);
+			GraphicsCommandList()->ClearDepthStencilView(DestTextureDSV->GetOfflineCpuHandle(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0, 0, 0, nullptr);
 			UpdateResidency(DestTextureDSV->GetResource());
 		}
 
@@ -218,7 +218,7 @@ void FD3D12CommandContext::ResolveTextureUsingShader(
 			FlushResourceBarriers();
 
 			FLinearColor ClearColor(0, 0, 0, 0);
-			GraphicsCommandList()->ClearRenderTargetView(DestTextureRTV->GetView(), (float*)&ClearColor, 0, nullptr);
+			GraphicsCommandList()->ClearRenderTargetView(DestTextureRTV->GetOfflineCpuHandle(), (float*)&ClearColor, 0, nullptr);
 			UpdateResidency(DestTextureRTV->GetResource());
 		}
 
@@ -257,8 +257,8 @@ void FD3D12CommandContext::ResolveTextureUsingShader(
 			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 			RHICmdList.SetBlendFactor(FLinearColor::White);
 
-			ResolveVertexShader->SetParameters(RHICmdList, SourceRect, DestRect, ResolveTargetDesc.Width, ResolveTargetDesc.Height);
-			ResolvePixelShader->SetParameters(RHICmdList, PixelShaderParameter);
+			SetShaderParametersLegacyVS(RHICmdList, ResolveVertexShader, SourceRect, DestRect, ResolveTargetDesc.Width, ResolveTargetDesc.Height);
+			SetShaderParametersLegacyPS(RHICmdList, ResolvePixelShader, PixelShaderParameter);
 
 			const uint32 TextureIndex = ResolvePixelShader->UnresolvedSurface.GetBaseIndex();
 
@@ -295,283 +295,6 @@ static DXGI_FORMAT GetPlaneFormat(DXGI_FORMAT InFormat, uint32 InPlaneSlice)
 	}
 
 	return InFormat;
-}
-
-/**
-* Copies the contents of the given surface to its resolve target texture.
-* @param SourceSurface - surface with a resolve texture to copy to
-* @param ResolveParams - optional resolve params
-*/
-void FD3D12CommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRHITexture* DestTextureRHI, const FResolveParams& ResolveParams)
-{
-	if (!SourceTextureRHI || !DestTextureRHI)
-	{
-		// no need to do anything (silently ignored)
-		return;
-	}
-
-	uint32 GPUIndex = GetGPUIndex();
-	FD3D12Texture* SourceTexture = GetD3D12TextureFromRHITexture(SourceTextureRHI, GPUIndex);
-	FD3D12Texture* DestTexture = GetD3D12TextureFromRHITexture(DestTextureRHI, GPUIndex);
-
-	const FRHITextureDesc& SourceDesc = SourceTexture->GetDesc();
-	const FRHITextureDesc& DestDesc = DestTexture->GetDesc();
-
-	if (SourceDesc.IsTexture2D() && DestDesc.IsTexture2D())
-	{
-		const D3D_FEATURE_LEVEL FeatureLevel = GetParentDevice()->GetParentAdapter()->GetFeatureLevel();
-		if (SourceTexture != DestTexture)
-		{
-			if (IsDefaultContext())
-			{
-				GetParentDevice()->RegisterGPUWork();
-			}
-
-			if (SourceTexture->GetDepthStencilView(FExclusiveDepthStencil::DepthWrite_StencilWrite)
-				&& SourceTextureRHI->IsMultisampled()
-				&& !DestTextureRHI->IsMultisampled())
-			{
-				D3D12_RESOURCE_DESC const& ResolveTargetDesc = DestTexture->GetResource()->GetDesc();
-
-				ResolveTextureUsingShader<FResolveDepthPS>(
-					SourceTexture,
-					DestTexture,
-					DestTexture->GetRenderTargetView(0, -1),
-					DestTexture->GetDepthStencilView(FExclusiveDepthStencil::DepthWrite_StencilWrite),
-					ResolveTargetDesc,
-					GetDefaultRect(ResolveParams.Rect, DestTexture->GetSizeX(), DestTexture->GetSizeY()),
-					GetDefaultRect(ResolveParams.Rect, DestTexture->GetSizeX(), DestTexture->GetSizeY()),
-					FDummyResolveParameter()
-					);
-			}
-			else
-			{
-				DXGI_FORMAT SrcFmt = (DXGI_FORMAT)GPixelFormats[SourceTextureRHI->GetFormat()].PlatformFormat;
-				DXGI_FORMAT DstFmt = (DXGI_FORMAT)GPixelFormats[DestTexture->GetFormat()].PlatformFormat;
-
-				DXGI_FORMAT Fmt = ConvertTypelessToUnorm((DXGI_FORMAT)GPixelFormats[DestTexture->GetFormat()].PlatformFormat);
-
-				// Determine whether a MSAA resolve is needed, or just a copy.
-				if (SourceTextureRHI->IsMultisampled() && !DestTexture->IsMultisampled())
-				{
-					FScopedResourceBarrier ConditionalScopeResourceBarrierDst(*this, DestTexture->GetResource()  , D3D12_RESOURCE_STATE_RESOLVE_DEST  , ResolveParams.DestArrayIndex  );
-					FScopedResourceBarrier ConditionalScopeResourceBarrierSrc(*this, SourceTexture->GetResource(), D3D12_RESOURCE_STATE_RESOLVE_SOURCE, ResolveParams.SourceArrayIndex);
-
-					FlushResourceBarriers();
-					GraphicsCommandList()->ResolveSubresource(
-						DestTexture->GetResource()->GetResource(),
-						ResolveParams.DestArrayIndex,
-						SourceTexture->GetResource()->GetResource(),
-						ResolveParams.SourceArrayIndex,
-						Fmt
-						);
-
-					UpdateResidency(SourceTexture->GetResource());
-					UpdateResidency(DestTexture->GetResource());
-				}
-				else
-				{
-					D3D12_RESOURCE_DESC const& srcDesc = SourceTexture->GetResource()->GetDesc();
-					D3D12_RESOURCE_DESC const& ResolveTargetDesc = DestTexture->GetResource()->GetDesc();
-					bool bCopySrcSubRect = ResolveParams.Rect.IsValid() && (ResolveParams.Rect.X1 != 0 || ResolveParams.Rect.Y1 != 0 || ResolveParams.Rect.X2 != srcDesc.Width || ResolveParams.Rect.Y2 != srcDesc.Height);
-					bool bCopyDstSubRect = ResolveParams.DestRect.IsValid() && (ResolveParams.DestRect.X1 != 0 || ResolveParams.DestRect.Y1 != 0 || ResolveParams.DestRect.X2 != ResolveTargetDesc.Width || ResolveParams.DestRect.Y2 != ResolveTargetDesc.Height);
-
-					if ((bCopySrcSubRect || bCopyDstSubRect)
-						&& !SourceTextureRHI->IsMultisampled()
-						&& !DestTexture->GetDepthStencilView(FExclusiveDepthStencil::DepthWrite_StencilWrite))
-					{
-						// currently no support for readback buffers
-						check(ResolveTargetDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER);
-
-						const FResolveRect& SrcRect = ResolveParams.Rect.IsValid() ? ResolveParams.Rect : FResolveRect(0, 0, srcDesc.Width, srcDesc.Height);
-						D3D12_BOX SrcBox;
-
-						SrcBox.left = SrcRect.X1;
-						SrcBox.top = SrcRect.Y1;
-						SrcBox.front = 0;
-						SrcBox.right = SrcRect.X2;
-						SrcBox.bottom = SrcRect.Y2;
-						SrcBox.back = 1;
-
-						const FResolveRect& DestRect = ResolveParams.DestRect.IsValid() ? ResolveParams.DestRect : SrcRect;
-
-						FScopedResourceBarrier ConditionalScopeResourceBarrierDst(*this, DestTexture->GetResource()  , D3D12_RESOURCE_STATE_COPY_DEST  , ResolveParams.DestArrayIndex  );
-						FScopedResourceBarrier ConditionalScopeResourceBarrierSrc(*this, SourceTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, ResolveParams.SourceArrayIndex);
-
-						CD3DX12_TEXTURE_COPY_LOCATION DestCopyLocation(DestTexture->GetResource()->GetResource(), ResolveParams.DestArrayIndex);
-						CD3DX12_TEXTURE_COPY_LOCATION SourceCopyLocation(SourceTexture->GetResource()->GetResource(), ResolveParams.SourceArrayIndex);
-
-						FlushResourceBarriers();
-						GraphicsCommandList()->CopyTextureRegion(
-							&DestCopyLocation,
-							DestRect.X1, DestRect.Y1, 0,
-							&SourceCopyLocation,
-							&SrcBox);
-
-						UpdateResidency(SourceTexture->GetResource());
-						UpdateResidency(DestTexture->GetResource());
-					}
-					else
-					{
-						FScopedResourceBarrier ConditionalScopeResourceBarrierSrc(*this, SourceTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, ResolveParams.SourceArrayIndex);
-
-						// Resolve to a buffer.
-						if (ResolveTargetDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-						{
-							check(IsDefaultContext());
-
-							const uint32 PlaneSlice = 0;
-							const DXGI_FORMAT DestFormat = GetPlaneFormat(srcDesc.Format, PlaneSlice);
-
-							const uint32 BlockBytes = ComputeBytesPerPixel(DestFormat);
-							const uint32 XBytes = (uint32)srcDesc.Width * BlockBytes;
-							const uint32 XBytesAligned = Align(XBytes, FD3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-
-							D3D12_PLACED_SUBRESOURCE_FOOTPRINT DestFootprint{};
-							DestFootprint.Footprint.Depth = 1;
-							DestFootprint.Footprint.Height = srcDesc.Height;
-							DestFootprint.Footprint.Width = srcDesc.Width;
-							DestFootprint.Footprint.Format = DestFormat;
-							DestFootprint.Footprint.RowPitch = XBytesAligned;
-
-							const UINT SourceSubresource = D3D12CalcSubresource(ResolveParams.MipIndex, ResolveParams.SourceArrayIndex, PlaneSlice, srcDesc.MipLevels, srcDesc.DepthOrArraySize);
-
-							CD3DX12_TEXTURE_COPY_LOCATION DestCopyLocation(DestTexture->GetResource()->GetResource(), DestFootprint);
-							CD3DX12_TEXTURE_COPY_LOCATION SourceCopyLocation(SourceTexture->GetResource()->GetResource(), SourceSubresource);
-
-							FlushResourceBarriers();
-							GraphicsCommandList()->CopyTextureRegion(
-								&DestCopyLocation,
-								0, 0, 0,
-								&SourceCopyLocation,
-								nullptr);
-
-							UpdateResidency(SourceTexture->GetResource());
-							UpdateResidency(DestTexture->GetResource());
-						}
-						// Resolve to a texture.
-						else
-						{
-							// Transition to the copy dest state.
-							FScopedResourceBarrier ConditionalScopeResourceBarrierDst(*this, DestTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, 0);
-
-							CD3DX12_TEXTURE_COPY_LOCATION DestCopyLocation(DestTexture->GetResource()->GetResource(), ResolveParams.DestArrayIndex);
-							CD3DX12_TEXTURE_COPY_LOCATION SourceCopyLocation(SourceTexture->GetResource()->GetResource(), ResolveParams.SourceArrayIndex);
-
-							FlushResourceBarriers();
-							GraphicsCommandList()->CopyTextureRegion(
-								&DestCopyLocation,
-								0, 0, 0,
-								&SourceCopyLocation,
-								nullptr);
-
-							UpdateResidency(SourceTexture->GetResource());
-							UpdateResidency(DestTexture->GetResource());
-						}
-					}
-				}
-			}
-		}
-	}
-	else if (SourceDesc.IsTextureCube() && DestDesc.IsTextureCube())
-	{
-		if (SourceTexture != DestTexture)
-		{
-			if (IsDefaultContext())
-			{
-				GetParentDevice()->RegisterGPUWork();
-			}
-
-			// Determine the cubemap face being resolved.
-			const uint32 D3DFace = GetD3D12CubeFace(ResolveParams.CubeFace);
-			const uint32 SourceSubresource = CalcSubresource(ResolveParams.MipIndex, ResolveParams.SourceArrayIndex * 6 + D3DFace, SourceTexture->GetNumMips());
-			const uint32 DestSubresource = CalcSubresource(ResolveParams.MipIndex, ResolveParams.DestArrayIndex * 6 + D3DFace, DestTexture->GetNumMips());
-
-			// Determine whether a MSAA resolve is needed, or just a copy.
-			if (SourceTextureRHI->IsMultisampled() && !DestTexture->IsMultisampled())
-			{
-				FScopedResourceBarrier ConditionalScopeResourceBarrierDst(*this, DestTexture->GetResource()  , D3D12_RESOURCE_STATE_RESOLVE_DEST  , DestSubresource  );
-				FScopedResourceBarrier ConditionalScopeResourceBarrierSrc(*this, SourceTexture->GetResource(), D3D12_RESOURCE_STATE_RESOLVE_SOURCE, SourceSubresource);
-
-				FlushResourceBarriers();
-				GraphicsCommandList()->ResolveSubresource(
-					DestTexture->GetResource()->GetResource(),
-					DestSubresource,
-					SourceTexture->GetResource()->GetResource(),
-					SourceSubresource,
-					(DXGI_FORMAT)GPixelFormats[DestTexture->GetFormat()].PlatformFormat
-					);
-
-				UpdateResidency(SourceTexture->GetResource());
-				UpdateResidency(DestTexture->GetResource());
-			}
-			else
-			{
-				CD3DX12_TEXTURE_COPY_LOCATION DestCopyLocation(DestTexture->GetResource()->GetResource(), DestSubresource);
-				CD3DX12_TEXTURE_COPY_LOCATION SourceCopyLocation(SourceTexture->GetResource()->GetResource(), SourceSubresource);
-
-				FScopedResourceBarrier ConditionalScopeResourceBarrierDst(*this, DestTexture->GetResource()  , D3D12_RESOURCE_STATE_COPY_DEST  , DestCopyLocation.SubresourceIndex  );
-				FScopedResourceBarrier ConditionalScopeResourceBarrierSrc(*this, SourceTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, SourceCopyLocation.SubresourceIndex);
-
-				FlushResourceBarriers();
-				GraphicsCommandList()->CopyTextureRegion(
-					&DestCopyLocation,
-					0, 0, 0,
-					&SourceCopyLocation,
-					nullptr);
-
-				UpdateResidency(SourceTexture->GetResource());
-				UpdateResidency(DestTexture->GetResource());
-			}
-		}
-	}
-	else if (SourceDesc.IsTexture2D() && DestDesc.IsTextureCube())
-	{
-		// If source is 2D and Dest is a cube then copy the 2D texture to the specified cube face.
-		// Determine the cubemap face being resolved.
-		const uint32 D3DFace = GetD3D12CubeFace(ResolveParams.CubeFace);
-		const uint32 Subresource = CalcSubresource(0, D3DFace, 1);
-
-		CD3DX12_TEXTURE_COPY_LOCATION DestCopyLocation(DestTexture->GetResource()->GetResource(), Subresource);
-		CD3DX12_TEXTURE_COPY_LOCATION SourceCopyLocation(SourceTexture->GetResource()->GetResource(), 0);
-
-		FScopedResourceBarrier ConditionalScopeResourceBarrierDst(*this, DestTexture->GetResource()  , D3D12_RESOURCE_STATE_COPY_DEST  , DestCopyLocation.SubresourceIndex  );
-		FScopedResourceBarrier ConditionalScopeResourceBarrierSrc(*this, SourceTexture->GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, SourceCopyLocation.SubresourceIndex);
-
-		FlushResourceBarriers();
-		GraphicsCommandList()->CopyTextureRegion(
-			&DestCopyLocation,
-			0, 0, 0,
-			&SourceCopyLocation,
-			nullptr);
-
-		UpdateResidency(SourceTexture->GetResource());
-		UpdateResidency(DestTexture->GetResource());
-	}
-
-	else if (SourceDesc.IsTexture3D() && DestDesc.IsTexture3D())
-	{
-		// bit of a hack.  no one resolves slice by slice and 0 is the default value.  assume for the moment they are resolving the whole texture.
-		check(ResolveParams.SourceArrayIndex == 0);
-		check(SourceTexture == DestTexture);
-	}
-
-	// Force transtion to readable since RHI user expects both source and dest to be in readable state after calling RHICopyToResolveTarget
-	{
-		TRHICommandList_RecursiveHazardous<FD3D12CommandContext> RHICmdList(this);
-		if (SourceTextureRHI && ResolveParams.SourceAccessFinal != ERHIAccess::Unknown)
-		{
-			RHICmdList.Transition(FRHITransitionInfo(SourceTextureRHI, ERHIAccess::Unknown, ResolveParams.SourceAccessFinal));
-		}
-		if (DestTextureRHI && SourceTextureRHI != DestTextureRHI && ResolveParams.DestAccessFinal != ERHIAccess::Unknown)
-		{
-			RHICmdList.Transition(FRHITransitionInfo(DestTextureRHI, ERHIAccess::Unknown, ResolveParams.DestAccessFinal));
-		}
-	}
-
-	ConditionalSplitCommandList();
-
-	DEBUG_EXECUTE_COMMAND_LIST(this);
 }
 
 void FD3D12CommandContext::ResolveTexture(UE::RHICore::FResolveTextureInfo Info)
@@ -761,8 +484,7 @@ void FD3D12DynamicRHI::ReadSurfaceDataNoMSAARaw(FRHITexture* TextureRHI, FIntRec
 	uint32 BytesPerPixel = GPixelFormats[TextureRHI->GetFormat()].BlockBytes;
 
 	// Allocate the output buffer.
-	OutData.Empty();
-	OutData.AddUninitialized(SizeX * SizeY * BytesPerPixel);
+	OutData.SetNumUninitialized(SizeX * SizeY * BytesPerPixel);
 
 	uint32 BytesPerLine = BytesPerPixel * InRect.Width();
 	const uint32 XBytesAligned = Align((uint32)readBackHeapDesc.Footprint.Width * BytesPerPixel, FD3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
@@ -1092,7 +814,6 @@ static void ConvertRAWSurfaceDataToFLinearColor(EPixelFormat Format, uint32 Widt
 			}
 		}
 	}
-	// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
 	else if (Format == PF_DepthStencil)
 	{
 		// Depth stencil
@@ -1181,8 +902,7 @@ void FD3D12DynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect InRe
 	const uint32 SizeY = InRect.Height();
 
 	// Allocate the output buffer.
-	OutData.Empty();
-	OutData.AddUninitialized(SizeX * SizeY);
+	OutData.SetNumUninitialized(SizeX * SizeY);
 
 	uint32 BytesPerPixel = ComputeBytesPerPixel(TextureDesc.Format);
 	uint32 SrcPitch = SizeX * BytesPerPixel;
@@ -1196,8 +916,8 @@ void FD3D12DynamicRHI::RHIReadSurfaceData(FRHITexture* InRHITexture, FIntRect In
 {
 	if (!ensure(InRHITexture))
 	{
-		OutData.Empty();
-		OutData.AddZeroed(InRect.Width() * InRect.Height());
+		OutData.SetNumUninitialized(InRect.Width() * InRect.Height());
+		FMemory::Memzero(OutData.GetData(), sizeof(FColor) * OutData.Num());
 		return;
 	}
 
@@ -1239,8 +959,7 @@ void FD3D12DynamicRHI::RHIReadSurfaceData(FRHITexture* InRHITexture, FIntRect In
 	const uint32 SizeY = InRect.Height();
 
 	// Allocate the output buffer.
-	OutData.Empty();
-	OutData.AddUninitialized(SizeX * SizeY);
+	OutData.SetNumUninitialized(SizeX * SizeY);
 
 	FPixelFormatInfo FormatInfo = GPixelFormats[DestTexture2D->GetFormat()];
 	uint32 BytesPerPixel = FormatInfo.BlockBytes;
@@ -1299,16 +1018,16 @@ void FD3D12DynamicRHI::ReadSurfaceDataMSAARaw(FRHITexture* TextureRHI, FIntRect 
 	FD3D12ResourceLocation ResourceLocation(Device);
 	ResourceLocation.AsStandAlone(NonMSAATexture2D);
 
-	TRefCountPtr<FD3D12RenderTargetView> NonMSAARTV;
-	D3D12_RENDER_TARGET_VIEW_DESC RTVDesc;
-	FMemory::Memset(&RTVDesc, 0, sizeof(RTVDesc));
+	D3D12_RENDER_TARGET_VIEW_DESC RTVDesc = {};
 
 	// typeless is not supported, similar code might be needed for other typeless formats
 	RTVDesc.Format = ConvertTypelessToUnorm(NonMSAADesc.Format);
 
 	RTVDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 	RTVDesc.Texture2D.MipSlice = 0;
-	NonMSAARTV = new FD3D12RenderTargetView(Device, RTVDesc, Texture, ResourceLocation);
+
+	FD3D12RenderTargetView NonMSAARTV(Device);
+	NonMSAARTV.CreateView(&ResourceLocation, RTVDesc);
 
 	// Create a CPU-accessible staging texture to copy the resolved sample data to.
 	TRefCountPtr<FD3D12Resource> StagingTexture2D;
@@ -1360,7 +1079,7 @@ void FD3D12DynamicRHI::ReadSurfaceDataMSAARaw(FRHITexture* TextureRHI, FIntRect 
 		DefaultContext.ResolveTextureUsingShader<FResolveSingleSamplePS>(
 			ResourceCast(TextureRHI->GetTexture2D()),
 			NULL,
-			NonMSAARTV,
+			&NonMSAARTV,
 			NULL,
 			NonMSAADesc,
 			FResolveRect(InRect.Min.X, InRect.Min.Y, InRect.Max.X, InRect.Max.Y),
@@ -1411,12 +1130,12 @@ void FD3D12DynamicRHI::ReadSurfaceDataMSAARaw(FRHITexture* TextureRHI, FIntRect 
 
 void FD3D12DynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFence* FenceRHI, void*& OutData, int32& OutWidth, int32& OutHeight, uint32 GPUIndex)
 {	
-	FD3D12Texture* DestTexture2D = ResourceCast(TextureRHI->GetTexture2D(), GPUIndex);
+	FD3D12Texture* DestTexture = ResourceCast(TextureRHI, GPUIndex);
 
-	check(DestTexture2D);
-	FD3D12Resource* Texture = DestTexture2D->GetResource();
+	check(DestTexture);
+	FD3D12Resource* Texture = DestTexture->GetResource();
 
-	DXGI_FORMAT Format = (DXGI_FORMAT)GPixelFormats[DestTexture2D->GetFormat()].PlatformFormat;
+	DXGI_FORMAT Format = (DXGI_FORMAT)GPixelFormats[DestTexture->GetFormat()].PlatformFormat;
 
 	uint32 BytesPerPixel = ComputeBytesPerPixel(Format);
 
@@ -1434,7 +1153,7 @@ void FD3D12DynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFenc
 	);
 
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT ReadBackHeapDesc;
-	DestTexture2D->GetReadBackHeapDesc(ReadBackHeapDesc, 0);
+	DestTexture->GetReadBackHeapDesc(ReadBackHeapDesc, 0);
 	OutData = pData;
 	OutWidth = ReadBackHeapDesc.Footprint.RowPitch / BytesPerPixel;
 	OutHeight = ReadBackHeapDesc.Footprint.Height;
@@ -1451,10 +1170,9 @@ void FD3D12DynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFenc
 
 void FD3D12DynamicRHI::RHIUnmapStagingSurface(FRHITexture* TextureRHI, uint32 GPUIndex)
 {	
-	FD3D12Texture* DestTexture2D = ResourceCast(TextureRHI->GetTexture2D(), GPUIndex);
+	FD3D12Texture* DestTexture = ResourceCast(TextureRHI, GPUIndex);
 
-	check(DestTexture2D);
-	ID3D12Resource* Texture = DestTexture2D->GetResource()->GetResource();
+	ID3D12Resource* Texture = DestTexture->GetResource()->GetResource();
 
 	Texture->Unmap(0, nullptr);
 }
@@ -1478,8 +1196,8 @@ void FD3D12DynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 
 	FD3D12Texture* Texture = GetD3D12TextureFromRHITexture(TextureRHI, GPUIndex);
 
-	uint32 SizeX = InRect.Width();
-	uint32 SizeY = InRect.Height();
+	const uint32 SizeX = InRect.Width();
+	const uint32 SizeY = InRect.Height();
 
 	// Check the format of the surface
 	D3D12_RESOURCE_DESC const& TextureDesc = Texture->GetResource()->GetDesc();
@@ -1487,7 +1205,7 @@ void FD3D12DynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 	check(TextureDesc.Format == GPixelFormats[PF_FloatRGBA].PlatformFormat);
 
 	// Allocate the output buffer.
-	OutData.Empty(SizeX * SizeY);
+	OutData.SetNumUninitialized(SizeX * SizeY);
 
 	// Read back the surface data from defined rect
 	D3D12_BOX	Rect;
@@ -1558,13 +1276,6 @@ void FD3D12DynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 	D3D12_RANGE Range = { 0, MipBytesAligned };
 	VERIFYD3D12RESULT(TempTexture2D->GetResource()->Map(0, &Range, &pData));
 
-	// Presize the array
-	int32 TotalCount = SizeX * SizeY;
-	if (TotalCount >= OutData.Num())
-	{
-		OutData.AddZeroed(TotalCount);
-	}
-
 	for (int32 Y = InRect.Min.Y; Y < InRect.Max.Y; Y++)
 	{
 		FFloat16Color* SrcPtr = (FFloat16Color*)((uint8*)pData + (Y - InRect.Min.Y) * XBytesAligned);
@@ -1576,6 +1287,11 @@ void FD3D12DynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 	}
 
 	TempTexture2D->GetResource()->Unmap(0, nullptr);
+
+#if UE_MEMORY_TRACE_ENABLED
+	// Free the temporary texture after read back finishes. This matches the MemoryTrace_Alloc call in Adapter->CreateBuffer() above.
+	MemoryTrace_Free(TempTexture2D->GetGPUVirtualAddress(), EMemoryTraceRootHeap::VideoMemory);
+#endif
 }
 
 void FD3D12DynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI, FIntRect InRect, FIntPoint ZMinMax, TArray<FFloat16Color>& OutData)
@@ -1594,9 +1310,9 @@ void FD3D12DynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI, FIntRe
 
 	FD3D12Texture* Texture = GetD3D12TextureFromRHITexture(TextureRHI, GPUIndex);
 
-	uint32 SizeX = InRect.Width();
-	uint32 SizeY = InRect.Height();
-	uint32 SizeZ = ZMinMax.Y - ZMinMax.X;
+	const uint32 SizeX = InRect.Width();
+	const uint32 SizeY = InRect.Height();
+	const uint32 SizeZ = ZMinMax.Y - ZMinMax.X;
 
 	// Check the format of the surface
 	D3D12_RESOURCE_DESC const& TextureDesc = Texture->GetResource()->GetDesc();
@@ -1606,7 +1322,7 @@ void FD3D12DynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI, FIntRe
 	check(bIsRGBAFmt || bIsR16FFmt || bIsR32FFmt);
 
 	// Allocate the output buffer.
-	OutData.Empty(SizeX * SizeY * SizeZ * sizeof(FFloat16Color));
+	OutData.SetNumUninitialized(SizeX * SizeY * SizeZ);
 
 	// Read back the surface data from defined rect
 	D3D12_BOX	Rect;
@@ -1663,13 +1379,6 @@ void FD3D12DynamicRHI::RHIRead3DSurfaceFloatData(FRHITexture* TextureRHI, FIntRe
 	// Lock the staging resource.
 	void* pData;
 	VERIFYD3D12RESULT(TempTexture3D->GetResource()->Map(0, nullptr, &pData));
-
-	// Presize the array
-	int32 TotalCount = SizeX * SizeY * SizeZ;
-	if (TotalCount >= OutData.Num())
-	{
-		OutData.AddZeroed(TotalCount);
-	}
 
 	// Read the data out of the buffer
 	if (bIsRGBAFmt)

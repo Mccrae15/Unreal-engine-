@@ -53,7 +53,7 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateViewportStereoMode(FDisp
 
 void FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_OverlayRenderSettings(FDisplayClusterViewport& DstViewport, const FDisplayClusterConfigurationICVFX_OverlayAdvancedRenderSettings& InOverlaySettings)
 {
-	DstViewport.Owner.SetViewportBufferRatio(DstViewport, InOverlaySettings.BufferRatio);
+	DstViewport.SetViewportBufferRatio(InOverlaySettings.BufferRatio);
 	DstViewport.RenderSettings.RenderTargetRatio = InOverlaySettings.RenderTargetRatio;
 
 	DstViewport.RenderSettings.GPUIndex = InOverlaySettings.GPUIndex;
@@ -196,7 +196,7 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 	FDisplayClusterViewportConfigurationHelpers_Postprocess::UpdatePerViewportPostProcessSettings(DstViewport, RootActor);
 
 	{
-		DstViewport.Owner.SetViewportBufferRatio(DstViewport, InRenderSettings.BufferRatio);
+		DstViewport.SetViewportBufferRatio(InRenderSettings.BufferRatio);
 
 		UpdateViewportSetting_Overscan(DstViewport, InRenderSettings.Overscan);
 
@@ -223,79 +223,21 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 			if (MediaSettings.bEnable)
 			{
 				// Don't render the viewport if media input assigned
-				DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = !!MediaSettings.MediaSource;
+				DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = MediaSettings.IsMediaInputAssigned();
 
 				// Mark this viewport is going to be captured by a capture device
-				DstViewport.RenderSettings.bIsBeingCaptured = !!MediaSettings.MediaOutput;
+				DstViewport.RenderSettings.bIsBeingCaptured = MediaSettings.IsMediaOutputAssigned();
 			}
 		}
 	}
 
+
 	// FDisplayClusterConfigurationViewport_ICVFX property:
 	{
-		EDisplayClusterViewportICVFXFlags& TargetFlags = DstViewport.RenderSettingsICVFX.Flags;
+		const FDisplayClusterConfigurationICVFX_StageSettings& StageSettings = RootActor.GetStageSettings();
 
-		if (InConfigurationViewport.ICVFX.bAllowICVFX)
-		{
-			EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::Enable);
-
-			EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode CameraRenderMode = InConfigurationViewport.ICVFX.CameraRenderMode;
-
-			const FDisplayClusterConfigurationICVFX_StageSettings& StageSettings = RootActor.GetStageSettings();
-			if (InConfigurationViewport.ICVFX.bAllowInnerFrustum == false || StageSettings.bEnableInnerFrustums == false)
-			{
-				CameraRenderMode = EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::Disabled;
-			}
-
-			switch (CameraRenderMode)
-			{
-				// Disable camera frame render for this viewport
-			case EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::Disabled:
-				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableCamera | EDisplayClusterViewportICVFXFlags::DisableChromakey | EDisplayClusterViewportICVFXFlags::DisableChromakeyMarkers);
-				break;
-
-				// Disable chromakey render for this viewport
-			case EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::DisableChromakey:
-				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableChromakey | EDisplayClusterViewportICVFXFlags::DisableChromakeyMarkers);
-				break;
-
-				// Disable chromakey markers render for this viewport
-			case EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::DisableChromakeyMarkers:
-
-				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableChromakeyMarkers);
-				break;
-
-			default:
-				// Use default rendering rules
-				break;
-			}
-
-			switch (InConfigurationViewport.ICVFX.LightcardRenderMode)
-			{
-				// Render incamera frame over lightcard for this viewport
-			case EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode::Over:
-
-				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::OverrideLightcardMode);
-				DstViewport.RenderSettingsICVFX.ICVFX.LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
-				break;
-
-				// Over lightcard over incamera frame  for this viewport
-			case EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode::Under:
-
-				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::OverrideLightcardMode);
-				DstViewport.RenderSettingsICVFX.ICVFX.LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
-				break;
-
-			case EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode::Disabled:
-
-				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableLightcard);
-				break;
-
-			default:
-				// Use default lightcard mode
-				break;
-			}
-		}
+		DstViewport.RenderSettingsICVFX.Flags = InConfigurationViewport.ICVFX.GetViewportICVFXFlags(StageSettings);
+		DstViewport.RenderSettingsICVFX.ICVFX.LightCardMode = InConfigurationViewport.ICVFX.GetLightCardRenderMode(StageSettings);
 	}
 }
 
@@ -335,11 +277,17 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateProjectionPolicy(FDispla
 	{
 		if (!DstViewport.ProjectionPolicy.IsValid())
 		{
-			if (DstViewport.Owner.IsSceneOpened())
+			if (DstViewport.IsSceneOpened())
 			{
 				// Try initialize proj policy every tick (mesh deferred load, etc)
 				DstViewport.HandleStartScene();
 			}
 		}
+	}
+
+	// Override PostProcess from projection policy
+	if (DstViewport.ProjectionPolicy.IsValid())
+	{
+		DstViewport.ProjectionPolicy->OverridePostProcessSettings(&DstViewport);
 	}
 }

@@ -19,16 +19,18 @@
 UCLASS(abstract, hidecategories=(Input, Movement, Collision, Rendering, HLOD, WorldPartition, DataLayers, Transformation), showcategories=("Input|MouseInput", "Input|TouchInput"), MinimalAPI, NotBlueprintable)
 class AInfo : public AActor
 {
-	GENERATED_UCLASS_BODY()
+	GENERATED_BODY()
 
 public:
+	ENGINE_API AInfo(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
 #if WITH_EDITOR
 	ENGINE_API virtual void PostLoad() override;
 #endif
 
 private:
 #if WITH_EDITOR
-	virtual bool ActorTypeSupportsDataLayer() const override { return false; }
+	virtual bool IsDataLayerTypeSupported(TSubclassOf<UDataLayerInstance> DataLayerType) const override { return false; }
 #endif
 
 #if WITH_EDITORONLY_DATA

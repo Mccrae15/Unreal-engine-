@@ -34,6 +34,8 @@
 #include "AssetViewerSettings.h"
 #include "UnrealWidget.h"
 
+#include "Rendering/NaniteResources.h"
+
 #define LOCTEXT_NAMESPACE "FStaticMeshEditorViewportClient"
 
 #define HITPROXY_SOCKET	1
@@ -792,13 +794,13 @@ void FStaticMeshEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneVi
 			LOD - 1;
 	}();
 
-	if (StaticMesh->NaniteSettings.bEnabled)
+	if (StaticMesh->IsNaniteEnabled())
 	{
 		TextItems.Emplace(FText::Format(NSLOCTEXT("UnrealEd", "NaniteEnabled", "<TextBlock.ShadowedText>Nanite Enabled</> <TextBlock.ShadowedTextWarning>{0}</>"), StaticMeshComponent->bDisplayNaniteFallbackMesh ? NSLOCTEXT("UnrealEd", "ShowingNaniteFallback", "(Showing Fallback)") : FText::GetEmpty()), false, true);
 
 		if (StaticMesh->GetRenderData())
 		{
-			const Nanite::FResources& Resources = StaticMesh->GetRenderData()->NaniteResources;
+			const Nanite::FResources& Resources = *StaticMesh->GetRenderData()->NaniteResourcesPtr.Get();
 			if (Resources.RootData.Num() > 0)
 			{
 				const FString PositionStr = FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(Resources.PositionPrecision);
@@ -826,7 +828,7 @@ void FStaticMeshEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneVi
 		}
 	}
 
-	if (!StaticMesh->NaniteSettings.bEnabled || StaticMeshComponent->bDisplayNaniteFallbackMesh)
+	if (!StaticMesh->IsNaniteEnabled() || StaticMeshComponent->bDisplayNaniteFallbackMesh)
 	{
 		const int32 CurrentMinLODLevel = StaticMesh->GetMinLOD().GetValue();
 		const bool bBelowMinLOD = CurrentLODLevel < CurrentMinLODLevel;
@@ -849,11 +851,11 @@ void FStaticMeshEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneVi
 	const FText StaticMeshTriangleCount = FText::AsNumber(StaticMeshEditorPtr.Pin()->GetNumTriangles(CurrentLODLevel));
 	const FText StaticMeshVertexCount = FText::AsNumber(StaticMeshEditorPtr.Pin()->GetNumVertices(CurrentLODLevel));
 
-	if (StaticMesh->NaniteSettings.bEnabled)
+	if (StaticMesh->IsNaniteEnabled())
 	{
 		if (StaticMesh->GetRenderData())
 		{
-			const Nanite::FResources& Resources = StaticMesh->GetRenderData()->NaniteResources;
+			const Nanite::FResources& Resources = *StaticMesh->GetRenderData()->NaniteResourcesPtr.Get();
 			if (Resources.RootData.Num() > 0)
 			{
 				// Nanite Mesh Information

@@ -29,6 +29,8 @@ public:
 	/** Tools should use vertical snapping since grid lines to snap to will usually be visible */
 	virtual bool IsValueSnapEnabled() const override { return true; }
 
+	virtual void UpdateViewToTransformCurves(double InputMin, double InputMax) override;
+
 protected:
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;

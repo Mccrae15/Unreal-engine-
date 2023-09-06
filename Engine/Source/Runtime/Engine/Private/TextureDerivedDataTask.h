@@ -103,6 +103,8 @@ struct FTextureSourceData
 
 	void ReleaseMemory()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Texture.ReleaseMemory);
+
 		// Unload BulkData loaded with LoadBulkDataWithFileReader
 		AsyncSource.RemoveBulkData();
 		Blocks.Empty();
@@ -164,6 +166,8 @@ class FTextureCacheDerivedDataWorker : public FNonAbandonableTask
 
 	/** true if caching has succeeded. */
 	bool bSucceeded = false;
+	/** true if caching was tried and failed; if bSucceeded & bTriedAndFailed are both false, it has not been tried yet */
+	bool bTriedAndFailed = false;
 	/** true if the derived data was pulled from DDC */
 	bool bLoadedFromDDC = false;
 public:

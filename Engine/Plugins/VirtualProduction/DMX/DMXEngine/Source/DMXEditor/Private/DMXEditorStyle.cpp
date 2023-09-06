@@ -6,6 +6,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IPluginManager.h"
 #include "Styling/AppStyle.h"
+#include "Styling/SlateBrush.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateStyleMacros.h"
 #include "Styling/SlateTypes.h"
@@ -49,11 +50,12 @@ FDMXEditorStyle::FDMXEditorStyle()
 	// Border Brushes
 	{
 		Set("DMXEditor.RoundedPropertyBorder", new FSlateRoundedBoxBrush(FLinearColor::Black, 4.f));
+		Set("DMXEditor.WhiteRoundedPropertyBorder", new FSlateRoundedBoxBrush(FLinearColor::White, 2.f));
 
-		Set("FixturePatcher.FragmentBorder.Normal", new BORDER_BRUSH("FixturePatch_Border_Normal_8x", 2.f / 8.f));
-		Set("FixturePatcher.FragmentBorder.L", new BORDER_BRUSH("FixturePatch_Border_L_8x", 2.f / 8.f));
-		Set("FixturePatcher.FragmentBorder.R", new BORDER_BRUSH("FixturePatch_Border_R_8x", 2.f / 8.f));
-		Set("FixturePatcher.FragmentBorder.TB", new BORDER_BRUSH("FixturePatch_Border_TB_8x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.Normal", new BORDER_BRUSH("FixturePatch_Border_Full_16x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.L", new BORDER_BRUSH("FixturePatch_Border_L_16x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.R", new BORDER_BRUSH("FixturePatch_Border_R_16x", 2.f / 8.f));
+		Set("FixturePatcher.FragmentBorder.TB", new BORDER_BRUSH("FixturePatch_Border_M_16x", 2.f / 8.f));
 	}
 
 	// Fonts
@@ -100,6 +102,8 @@ FDMXEditorStyle::FDMXEditorStyle()
 		Set("Icons.PatchTool", new IMAGE_BRUSH_SVG("PatchTool_16", Icon16x16));
 		Set("Icons.ReceiveDMX", new IMAGE_BRUSH_SVG("ToggleReceiveDMX_16", Icon16x16));
 		Set("Icons.SendDMX", new IMAGE_BRUSH_SVG("ToggleSendDMX_16", Icon16x16));
+
+		Set("Icons.WarningExclamationMark", new CORE_IMAGE_BRUSH("Old/Tiles/Outer/alertSolid", Icon16x16, FStyleColors::Warning));
 	}
 	
 	// Distribution Grid buttons
@@ -147,15 +151,21 @@ FDMXEditorStyle::FDMXEditorStyle()
 			.SetArrowsImage(FSlateNoResource()));
 	}
 
-	// Fixture List
+	// MVR Fixture List / Read Only Fixture Patch List 
 	{
-		Set("MVRFixtureList.Row", FTableRowStyle()
-			.SetEvenRowBackgroundBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .2f)))
-			.SetOddRowBackgroundBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .3f)))
-			.SetEvenRowBackgroundHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .4f)))
-			.SetOddRowBackgroundHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(1.f, 1.f, 1.f, .5f)))
-			.SetSelectorFocusedBrush(CORE_BORDER_BRUSH("Common/Selector", FMargin(4.f / 16.f), FLinearColor(1.f, 1.f, 1.f, .8f)))
+		Set("FixturePatchList.Row", FTableRowStyle()
+			.SetEvenRowBackgroundBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.1f, .1f, .1f, .1f)))
+			.SetOddRowBackgroundBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.2f, .2f, .2f, .2f)))
+			.SetEvenRowBackgroundHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.1f, .1f, .1f, .3f)))
+			.SetOddRowBackgroundHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.2f, .2f, .2f, .3f)))
+			.SetInactiveBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.3f, .3f, .3f, .5f)))
+			.SetInactiveHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.3f, .3f, .3f, .7f)))
+			.SetActiveBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.3f, .3f, .3f, .6f)))
+			.SetActiveHoveredBrush(CORE_IMAGE_BRUSH("Common/Selection", Icon8x8, FLinearColor(.3f, .3f, .3f, .8f)))
+			.SetSelectorFocusedBrush(CORE_BORDER_BRUSH("Common/Selector", FMargin(4.f / 16.f), FLinearColor(1.f, 1.f, 1.f, .7f)))
 		);
+
+		Set("FixturePatchFragment.ConflictBackground", new IMAGE_BRUSH("FixturePatch_ConflictBack_36x", FVector2D(36.f, 36.f), FStyleColors::Warning, ESlateBrushTileType::Both));
 	}
 
 	FSlateStyleRegistry::RegisterSlateStyle(*this);

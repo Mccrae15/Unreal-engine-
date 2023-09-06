@@ -1013,9 +1013,8 @@ void UClothingAssetCommon::RefreshBoneMapping(USkeletalMesh* InSkelMesh)
 	// Repopulate the used indices.
 	for(int32 BoneNameIndex = 0; BoneNameIndex < UsedBoneNames.Num(); ++BoneNameIndex)
 	{
-		UsedBoneIndices[BoneNameIndex] = 
-			InSkelMesh->GetRefSkeleton().FindBoneIndex(
-				UsedBoneNames[BoneNameIndex]);
+		const int32 BoneIndex = InSkelMesh->GetRefSkeleton().FindBoneIndex(UsedBoneNames[BoneNameIndex]);
+		UsedBoneIndices[BoneNameIndex] = (BoneIndex != INDEX_NONE) ? BoneIndex : 0;  // Remap to the root bone if the two skeletons differ
 	}
 }
 
@@ -1327,6 +1326,8 @@ void UClothingAssetCommon::PostLoad()
 		ClothingCachedDataFlags |= EClothingCachedDataFlagsCommon::Tethers;
 
 		// ReferenceBoneIndex is only required when rebinding the cloth.
+		USkeletalMesh* const OwnerMesh = CastChecked<USkeletalMesh>(GetOuter());
+		RefreshBoneMapping(OwnerMesh);
 		CalculateReferenceBoneIndex();
 	}
 
@@ -1485,7 +1486,7 @@ void UClothingAssetCommon::PropagateSharedConfigs(bool bMigrateSharedConfigToCon
 		}
 
 		// Migrate the common shared configs' deprecated parameters to all per cloth configs, and fix the shared config ownership
-		for (const TPair<FName, TObjectPtr<UClothConfigBase>>& ClothSharedConfigItem : ClothConfigs)
+		for (TPair<FName, TObjectPtr<UClothConfigBase>>& ClothSharedConfigItem : ClothConfigs)
 		{
 			if (UClothSharedConfigCommon* const ClothSharedConfig = Cast<UClothSharedConfigCommon>(ClothSharedConfigItem.Value))
 			{
@@ -1504,10 +1505,16 @@ void UClothingAssetCommon::PropagateSharedConfigs(bool bMigrateSharedConfigToCon
 						}
 					}
 				}
-				// Fix the shared config outer if it is still a common asset (the config must belong to the skeletal mesh, as it is shared between assets)
-				if (ClothSharedConfig->GetOuter() != SkeletalMesh)
+				// Fix the shared config outer if it is still a UClothingAssetCommon (the config must belong to the skeletal mesh, as it is shared between assets)
+				if (Cast<UClothingAssetCommon>(ClothSharedConfig->GetOuter()))
 				{
 					ClothSharedConfig->Rename(nullptr, SkeletalMesh, REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
+				}
+
+				// Fix the shared config ownership, asset might have been copied and the shared config could still point to a different skeletal mesh
+				if (ClothSharedConfig->GetOuter() != SkeletalMesh)
+				{
+					ClothSharedConfigItem.Value = DuplicateObject<UClothSharedConfigCommon>(ClothSharedConfig, SkeletalMesh, ClothSharedConfig->GetFName());
 				}
 			}
 		}

@@ -120,8 +120,10 @@ class FStrataSystemInfoCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, Classification8bits)
 		SHADER_PARAMETER(uint32, bRoughRefraction)
 		SHADER_PARAMETER(uint32, bTileOverflowUseMaterialData)
-		SHADER_PARAMETER(uint32, ProjectMaxBytePerPixel)
+		SHADER_PARAMETER(uint32, ProjectMaxBytesPerPixel)
+		SHADER_PARAMETER(uint32, ViewsMaxBytesPerPixel)
 		SHADER_PARAMETER(uint32, MaterialBufferAllocationInBytes)
+		SHADER_PARAMETER(uint32, MaterialBufferAllocationMode)
 		SHADER_PARAMETER(float, TileOverflowRatio)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, ClassificationTileDrawIndirectBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
@@ -251,7 +253,7 @@ static void AddVisualizeMaterialPropertiesPasses(FRDGBuilder& GraphBuilder, cons
 	}
 }
 
-static void AddVisualizeMaterialCountPasses(FRDGBuilder & GraphBuilder, const FViewInfo & View, FScreenPassTexture & ScreenPassSceneColor, EShaderPlatform Platform)
+static void AddVisualizeMaterialCountPasses(FRDGBuilder & GraphBuilder, const FViewInfo & View, FScreenPassTexture & ScreenPassSceneColor, EShaderPlatform Platform, uint32 ViewMode)
 {
 	ShaderPrint::SetEnabled(true);
 	ShaderPrint::RequestSpaceForLines(1024);
@@ -262,7 +264,7 @@ static void AddVisualizeMaterialCountPasses(FRDGBuilder & GraphBuilder, const FV
 
 	FVisualizeMaterialCountPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVisualizeMaterialCountPS::FParameters>();
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-	PassParameters->ViewMode = 2;
+	PassParameters->ViewMode = FMath::Clamp(ViewMode, 2, 3);
 	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 	PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture, ERenderTargetLoadAction::ELoad);
@@ -278,6 +280,7 @@ float GetStrataTileOverflowRatio(const FViewInfo& View);
 bool IsClassificationAsync();
 bool SupportsCMask(const FStaticShaderPlatform InPlatform);
 bool DoesStrataTileOverflowUseMaterialData();
+uint32 GetMaterialBufferAllocationMode();
 
 static void AddVisualizeSystemInfoPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor, EShaderPlatform Platform)
 {
@@ -302,8 +305,10 @@ static void AddVisualizeSystemInfoPasses(FRDGBuilder& GraphBuilder, const FViewI
 	PassParameters->ClassificationTileDrawIndirectBuffer = GraphBuilder.CreateSRV(View.StrataViewData.ClassificationTileDrawIndirectBuffer, PF_R32_UINT);
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
-	PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);	
-	PassParameters->ProjectMaxBytePerPixel = GetBytePerPixel(View.GetShaderPlatform());	
+	PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
+	PassParameters->ProjectMaxBytesPerPixel = GetBytePerPixel(View.GetShaderPlatform());
+	PassParameters->ViewsMaxBytesPerPixel = View.StrataViewData.SceneData->ViewsMaxBytesPerPixel;
+	PassParameters->MaterialBufferAllocationMode = GetMaterialBufferAllocationMode();
 	PassParameters->MaterialBufferAllocationInBytes = MaterialBufferDesc.Extent.X * MaterialBufferDesc.Extent.Y * MaterialBufferDesc.ArraySize * sizeof(uint32);
 	ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
 
@@ -358,9 +363,9 @@ static void AddVisualizeAdvancedMaterialPasses(FRDGBuilder& GraphBuilder, const 
 bool ShouldRenderStrataRoughRefractionRnD();
 void StrataRoughRefractionRnD(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor);
 
-static FStrataVisualizationData::FViewMode GetStrataVisualizeMode(const FViewInfo & View)
+static FStrataViewMode GetStrataVisualizeMode(const FViewInfo & View)
 {
-	FStrataVisualizationData::FViewMode Out = FStrataVisualizationData::FViewMode::None;
+	FStrataViewMode Out = FStrataViewMode::None;
 	if (IsStrataEnabled() && StrataDebugVisualizationCanRunOnPlatform(View.GetShaderPlatform()))
 	{
 		// Variable defined in StrataVisualizationData.h/.cpp
@@ -368,13 +373,14 @@ static FStrataVisualizationData::FViewMode GetStrataVisualizeMode(const FViewInf
 		const uint32 ViewMode = CVar && CVar->AsVariableInt() ? CVar->AsVariableInt()->GetValueOnRenderThread() : 0;
 		switch (ViewMode)
 		{
-			case 1: return FStrataVisualizationData::FViewMode::MaterialProperties;
-			case 2: return FStrataVisualizationData::FViewMode::MaterialCount;
-			case 3: return FStrataVisualizationData::FViewMode::AdvancedMaterialProperties;
-			case 4: return FStrataVisualizationData::FViewMode::MaterialClassification;
-			case 5: return FStrataVisualizationData::FViewMode::DecalClassification;
-			case 6: return FStrataVisualizationData::FViewMode::RoughRefractionClassification;
-			case 7: return FStrataVisualizationData::FViewMode::StrataInfo;
+			case 1: return FStrataViewMode::MaterialProperties;
+			case 2: return FStrataViewMode::MaterialCount;
+			case 3: return FStrataViewMode::AdvancedMaterialProperties;
+			case 4: return FStrataViewMode::MaterialClassification;
+			case 5: return FStrataViewMode::DecalClassification;
+			case 6: return FStrataViewMode::RoughRefractionClassification;
+			case 7: return FStrataViewMode::StrataInfo;
+			case 8: return FStrataViewMode::MaterialByteCount;
 		}
 
 		const FStrataVisualizationData& VisualizationData = GetStrataVisualizationData();
@@ -388,36 +394,40 @@ static FStrataVisualizationData::FViewMode GetStrataVisualizeMode(const FViewInf
 
 bool ShouldRenderStrataDebugPasses(const FViewInfo& View)
 {
-	return GetStrataVisualizeMode(View) != FStrataVisualizationData::FViewMode::None || ShouldRenderStrataRoughRefractionRnD();
+	return GetStrataVisualizeMode(View) != FStrataViewMode::None || ShouldRenderStrataRoughRefractionRnD();
 }
 
 FScreenPassTexture AddStrataDebugPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor)
 {
 	check(IsStrataEnabled());
 
-	const FStrataVisualizationData::FViewMode DebugMode = GetStrataVisualizeMode(View);
-	if (DebugMode != FStrataVisualizationData::FViewMode::None)
+	const FStrataViewMode DebugMode = GetStrataVisualizeMode(View);
+	if (DebugMode != FStrataViewMode::None)
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "Substrate::VisualizeMaterial");
 
 		const bool bDebugPass = true;
-		if (DebugMode == FStrataVisualizationData::FViewMode::MaterialProperties)
+		if (DebugMode == FStrataViewMode::MaterialProperties)
 		{
 			AddVisualizeMaterialPropertiesPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
 		}
-		if (DebugMode == FStrataVisualizationData::FViewMode::MaterialCount)
+		if (DebugMode == FStrataViewMode::MaterialCount)
 		{
-			AddVisualizeMaterialCountPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
+			AddVisualizeMaterialCountPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform(), 2);
 		}
-		if (DebugMode == FStrataVisualizationData::FViewMode::AdvancedMaterialProperties)
+		if (DebugMode == FStrataViewMode::MaterialByteCount)
+		{
+			AddVisualizeMaterialCountPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform(), 3);
+		}
+		if (DebugMode == FStrataViewMode::AdvancedMaterialProperties)
 		{
 			AddVisualizeAdvancedMaterialPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
 		}
-		else if (DebugMode == FStrataVisualizationData::FViewMode::StrataInfo)
+		else if (DebugMode == FStrataViewMode::StrataInfo)
 		{
 			AddVisualizeSystemInfoPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
 		}
-		else if (DebugMode == FStrataVisualizationData::FViewMode::DecalClassification)
+		else if (DebugMode == FStrataViewMode::DecalClassification)
 		{
 			if (IsDBufferPassEnabled(View.GetShaderPlatform()))
 			{
@@ -426,7 +436,7 @@ FScreenPassTexture AddStrataDebugPasses(FRDGBuilder& GraphBuilder, const FViewIn
 				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EDecalComplex, bDebugPass);
 			}
 		}
-		else if (DebugMode == FStrataVisualizationData::FViewMode::RoughRefractionClassification)
+		else if (DebugMode == FStrataViewMode::RoughRefractionClassification)
 		{
 			if (IsOpaqueRoughRefractionEnabled())
 			{
@@ -434,8 +444,12 @@ FScreenPassTexture AddStrataDebugPasses(FRDGBuilder& GraphBuilder, const FViewIn
 				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EOpaqueRoughRefractionSSSWithout, bDebugPass);
 			}
 		}
-		else if (DebugMode == FStrataVisualizationData::FViewMode::MaterialClassification)
+		else if (DebugMode == FStrataViewMode::MaterialClassification)
 		{
+			if (GetStrataUsesComplexSpecialPath(View))
+			{
+				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EComplexSpecial, bDebugPass);
+			}
 			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EComplex, bDebugPass);
 			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::ESingle, bDebugPass);
 			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::ESimple, bDebugPass);

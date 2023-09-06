@@ -8,17 +8,20 @@
 #include "IO/IoHash.h"
 #include "ISourceControlModule.h"
 #include "ISourceControlProvider.h"
+#include "Interfaces/IPluginManager.h"
 #include "Logging/MessageLog.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/PathViews.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
+#include "SVirtualizationRevisionControlConnectionDialog.h"
+#include "SourceControlHelpers.h"
 #include "SourceControlInitSettings.h"
 #include "SourceControlOperations.h"
+#include "VirtualizationManager.h"
 #include "VirtualizationSourceControlUtilities.h"
 #include "VirtualizationUtilities.h"
-#include "Interfaces/IPluginManager.h"
 
 // When the SourceControl module (or at least the perforce source control module) is thread safe we
 // can enable this and stop using the hacky work around 'TryToDownloadFileFromBackgroundThread'
@@ -179,16 +182,36 @@ private:
 	FSemaphore* Semaphore;
 };
 
+/**
+ * This utility can be used to try and find the P4PORT (server address) that the provider 
+ * is using. The source control api doesn't actually have a way to do this at the moment, 
+ * but we can get a general status text of the connection from which we can attempt to 
+ * parse the port.
+ */
+[[nodiscard]] FString GetPortFromProvider(ISourceControlProvider* SCCProvider)
+{
+	if (SCCProvider != nullptr)
+	{
+		const FString Status = SCCProvider->GetStatusText().ToString();
+
+		FString Port;
+		if (FParse::Value(*Status, TEXT("Port:"), Port))
+		{
+			return Port;
+		}		
+	}
+
+	return FString(TEXT("Unknown"));
+}
+
 /** Utility function to create a directory to submit payloads from. */
-[[nodiscard]] static bool TryCreateSubmissionSessionDirectory(FStringView SessionDirectoryPath)
+[[nodiscard]] static bool TryCreateSubmissionSessionDirectory(FStringView SessionDirectoryPath, FStringView IgnoreFileName)
 {
 	// Write out an ignore file to the submission directory (will create the directory if needed)
 	{
 		TStringBuilder<260> IgnoreFilePath;
 
-		// TODO: We should find if P4IGNORE is actually set and if so extract the filename to use.
-		// This will require extending the source control module
-		FPathViews::Append(IgnoreFilePath, SessionDirectoryPath, TEXT(".p4ignore.txt"));
+		FPathViews::Append(IgnoreFilePath, SessionDirectoryPath, IgnoreFileName);
 
 		// A very basic .p4ignore file that should make sure that we are only submitting valid .upayload files.
 		// 
@@ -315,14 +338,81 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 		return IVirtualizationBackend::EConnectionStatus::Error;
 	}
 
+	FString Port = ServerAddress;
+	FString UserName = TEXT("");
+	bool bSaveSettings = false; // Initially we will try to reason the perforce settings from the ini file and global environment
+								// so we don't want to save these values to the users ini files.
+
+	while (true)
+	{
+		// TODO: At the moment we cannot get back error messages from ISourceControlProvider::Init, nor can we get back info about
+		// the actual login details used, so for the initial dialog we will just have to go with the settings we know and not 
+		// give the user any details about the connection problem.
+		FText ErrorMessage;
+		IVirtualizationBackend::EConnectionStatus ConnectionResult = OnConnectInternal(Port, UserName, bSaveSettings, ErrorMessage);
+
+		if (ConnectionResult == IVirtualizationBackend::EConnectionStatus::Connected)
+		{
+			if (bSaveSettings)
+			{
+				check(::IsInGameThread());
+				GConfig->Flush(false, SourceControlHelpers::GetSettingsIni());
+			}
+			return IVirtualizationBackend::EConnectionStatus::Connected;
+		}
+
+#if UE_VA_WITH_SLATE
+		// If the local ini settings are ignored then there is no point saving correct settings given by the user.
+		// They will need to fix their root problem instead.
+		// TODO: Maybe give a bespoke error at this point?
+		if (bUseRetryConnectionDialog && bUseLocalIniFileSettings)
+		{
+			SRevisionControlConnectionDialog::FResult DialogResult = SRevisionControlConnectionDialog::RunDialog(Port, UserName);
+			if (!DialogResult.bShouldRetry)
+			{
+				OnConnectionError(ErrorMessage);
+				return IVirtualizationBackend::EConnectionStatus::Error;
+			}
+
+			Port = DialogResult.Port;
+			UserName = DialogResult.UserName;
+			bSaveSettings = true; // Now we have input from the user, so we should save it for future sessions
+		}
+		else
+#endif
+		{
+			OnConnectionError(ErrorMessage);
+			return IVirtualizationBackend::EConnectionStatus::Error;
+		}
+	}
+}
+
+
+IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnectInternal(FStringView Port, FStringView Username, bool bSaveConnectionSettings, FText& OutErrorMessage)
+{
 	// We do not want the connection to have a client workspace so explicitly set it to empty
 	FSourceControlInitSettings SCCSettings(FSourceControlInitSettings::EBehavior::OverrideExisting);
-	SCCSettings.SetConfigBehavior(FSourceControlInitSettings::EConfigBehavior::ReadOnly);
 
-	if (!ServerAddress.IsEmpty())
+	FSourceControlInitSettings::EConfigBehavior IniBehavior = bSaveConnectionSettings	? FSourceControlInitSettings::EConfigBehavior::ReadWrite 
+																						: FSourceControlInitSettings::EConfigBehavior::ReadOnly;
+
+	if (!bUseLocalIniFileSettings)
 	{
-		SCCSettings.AddSetting(TEXT("P4Port"), ServerAddress);
+		IniBehavior = FSourceControlInitSettings::EConfigBehavior::None;
 	}
+
+	SCCSettings.SetConfigBehavior(IniBehavior);
+
+	if (!Port.IsEmpty())
+	{
+		SCCSettings.AddSetting(TEXT("P4Port"), Port);
+	}
+
+	if (!Username.IsEmpty())
+	{
+		SCCSettings.AddSetting(TEXT("P4User"), Username);
+	}
+
 	SCCSettings.AddSetting(TEXT("P4Client"), TEXT(""));
 
 	SCCProvider = ISourceControlModule::Get().CreateProvider(FName("Perforce"), TEXT("Virtualization"), SCCSettings);
@@ -332,68 +422,42 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 		return IVirtualizationBackend::EConnectionStatus::Error;
 	}
 
-	SCCProvider->Init(true);
+	// Will attempt to make initial connection to the server, it doesn't return any error values we can check against but
+	// it will output problems to the log file.
+	const bool bForceConnection = true;
+	SCCProvider->Init(bForceConnection);
 
-	if (IsInGameThread())
+	if (!SCCProvider->IsAvailable())
 	{
-		// Note that if the connect is failing then we expect it to fail here rather than in the subsequent attempts to get the meta info file
-		TSharedRef<FConnect, ESPMode::ThreadSafe> ConnectCommand = ISourceControlOperation::Create<FConnect>();
-		if (SCCProvider->Execute(ConnectCommand, FString(), EConcurrency::Synchronous) != ECommandResult::Succeeded)
-		{
-			FTextBuilder Errors;
-			for (const FText& Msg : ConnectCommand->GetResultInfo().ErrorMessages)
-			{
-				Errors.AppendLine(Msg);
-			}
-
-			FMessageLog Log("LogVirtualization");
-			Log.Warning(FText::Format(LOCTEXT("FailedSourceControlConnection", "Failed to connect to revision control backend with the following errors:\n{0}\nThe revision control backend had trouble connecting!\nTrying logging in with the 'p4 login' command or by using p4vs/UnrealGameSync."),
-				Errors.ToText()));
-
-			OnConnectionError();
-			return IVirtualizationBackend::EConnectionStatus::Error;
-		}
+		OutErrorMessage = FText(LOCTEXT("FailedSourceControlConnection", "Failed to connect to revision control backend, see the Message Log 'Revision Control' errors for details.\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"));
+		return IVirtualizationBackend::EConnectionStatus::Error;
 	}
 
 	// When a source control depot is set up a file named 'payload_metainfo.txt' should be submitted to it's root.
 	// This allows us to check for the existence of the file to confirm that the depot root is indeed valid.
-	const FString PayloadMetaInfoPath = WriteToString<512>(DepotRoot, TEXT("payload_metainfo.txt")).ToString();
+	const FString PayloadMetaInfoPath = WriteToString<512>(DepotPathRoot, TEXT("payload_metainfo.txt")).ToString();
+
+	FSharedBuffer MetaInfoBuffer;
 
 #if IS_SOURCE_CONTROL_THREAD_SAFE
 	TSharedRef<FDownloadFile, ESPMode::ThreadSafe> DownloadCommand = ISourceControlOperation::Create<FDownloadFile>();
 	if (SCCProvider->Execute(DownloadCommand, PayloadMetaInfoPath, EConcurrency::Synchronous) != ECommandResult::Succeeded)
 	{
-		FMessageLog Log("LogVirtualization");
-
-		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
-			FText::FromString(DepotRoot)));
-
-		OnConnectionError();
-		return IVirtualizationBackend::EConnectionStatus::Error;
-}
 #else
 	TSharedRef<FDownloadFile, ESPMode::ThreadSafe> DownloadCommand = ISourceControlOperation::Create<FDownloadFile>();
-	if (!SCCProvider->TryToDownloadFileFromBackgroundThread(DownloadCommand, PayloadMetaInfoPath))
+	if (SCCProvider->TryToDownloadFileFromBackgroundThread(DownloadCommand, PayloadMetaInfoPath))
 	{
-		FMessageLog Log("LogVirtualization");
-
-		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
-			FText::FromString(DepotRoot)));
-
-		OnConnectionError();
-		return IVirtualizationBackend::EConnectionStatus::Error;
-	}
 #endif //IS_SOURCE_CONTROL_THREAD_SAFE
 
-	FSharedBuffer MetaInfoBuffer = DownloadCommand->GetFileData(PayloadMetaInfoPath);
+		MetaInfoBuffer = DownloadCommand->GetFileData(PayloadMetaInfoPath);
+	}
+
 	if (MetaInfoBuffer.IsNull())
 	{
-		FMessageLog Log("LogVirtualization");
+		OutErrorMessage = FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find '{0}' on server '{1}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
+			FText::FromString(PayloadMetaInfoPath),
+			FText::FromString(GetPortFromProvider(SCCProvider.Get())));
 
-		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
-			FText::FromString(DepotRoot)));
-
-		OnConnectionError();
 		return IVirtualizationBackend::EConnectionStatus::Error;
 	}
 
@@ -404,7 +468,7 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 	return IVirtualizationBackend::EConnectionStatus::Connected;
 }
 
-bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
+bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests, EPullFlags Flags, FText& OutErrors)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FSourceControlBackend::PullData);
 
@@ -426,13 +490,15 @@ bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
 
 	int32 Retries = 0;
 
+	bool bConnectionFailed = false;
+
 	while (Retries < RetryCount)
 	{
 		// Only warn if the backend is configured to retry
 		if (Retries != 0)
 		{
 		//	UE_LOG(LogVirtualization, Warning, TEXT("[%s] Failed to download '%s' retrying (%d/%d) in %dms..."), *GetDebugName(), DepotPath.ToString(), Retries, RetryCount, RetryWaitTimeMS);
-			FPlatformProcess::SleepNoStats(RetryWaitTimeMS * 0.001f);
+			FPlatformProcess::SleepNoStats(static_cast<float>(RetryWaitTimeMS) * 0.001f);
 		}
 
 #if IS_SOURCE_CONTROL_THREAD_SAFE
@@ -449,7 +515,10 @@ bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
 		{
 			// The payload was created by FCompressedBuffer::Compress so we can return it as a FCompressedBuffer.
 			FSharedBuffer Buffer = DownloadCommand->GetFileData(DepotPaths[Index]);
-			Requests[Index].SetPayload(FCompressedBuffer::FromCompressed(Buffer));
+			if (!Buffer.IsNull())
+			{
+				Requests[Index].SetPayload(FCompressedBuffer::FromCompressed(Buffer));
+			}
 		}
 
 		if (bOperationSuccess)
@@ -464,7 +533,18 @@ bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
 			return false;
 		}
 
+		bConnectionFailed = DownloadCommand->GetResultInfo().DidConnectionFail();
+
 		Retries++;
+	}
+
+	if (bConnectionFailed)
+	{
+		TMap<ISourceControlProvider::EStatus, FString> SCPStatus = SCCProvider->GetStatus();
+		
+		OutErrors = FText::Format(LOCTEXT("VA_SCP", "Failed to connect to perforce server '{0}' with username '{1}'"),
+			FText::FromString(SCPStatus[ISourceControlProvider::EStatus::Port]), 
+			FText::FromString(SCPStatus[ISourceControlProvider::EStatus::User]));
 	}
 
 	return false;
@@ -485,7 +565,7 @@ bool FSourceControlBackend::DoesPayloadExist(const FIoHash& Id)
 	}
 }
 
-bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
+bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests, EPushFlags Flags)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FSourceControlBackend::PushData);
 
@@ -522,6 +602,11 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 
 	TArray<const FPushRequest*> RequestsToPush;
 	RequestsToPush.Reserve(UniqueRequests.Num());
+
+	// Note that we do not check EPushFlags::Force here and always check if the payloads are already in
+	// source control as we do not want multiple revisions.
+	// This might change at some point if we want to try changing the compression codec of the stored
+	// payloads.
 
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FSourceControlBackend::PushData::CheckIfPayloadsAlreadyExist);
@@ -600,7 +685,7 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 	TStringBuilder<260> SessionDirectory;
 	FPathViews::Append(SessionDirectory, SubmissionRootDir, SessionGuid);
 
-	if (!TryCreateSubmissionSessionDirectory(SessionDirectory))
+	if (!TryCreateSubmissionSessionDirectory(SessionDirectory, IgnoreFileName))
 	{
 		UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to created directory '%s' to submit payloads from"), *GetDebugName(), SessionDirectory.ToString());
 		return false;
@@ -625,7 +710,7 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 		if (ClientStream.IsEmpty())
 		{
 			TStringBuilder<512> DepotMapping;
-			DepotMapping << DepotRoot << TEXT("...");
+			DepotMapping << DepotPathRoot << TEXT("...");
 
 			TStringBuilder<128> ClientMapping;
 			ClientMapping << TEXT("//") << WorkspaceName << TEXT("/...");
@@ -836,7 +921,7 @@ bool FSourceControlBackend::DoPayloadsExist(TArrayView<const FIoHash> PayloadIds
 			TStringBuilder<52> LocalPayloadPath;
 			Utils::PayloadIdToPath(PayloadId, LocalPayloadPath);
 
-			DepotPaths.Emplace(WriteToString<512>(DepotRoot, LocalPayloadPath));
+			DepotPaths.Emplace(WriteToString<512>(DepotPathRoot, LocalPayloadPath));
 		}
 	}
 
@@ -865,35 +950,6 @@ bool FSourceControlBackend::DoPayloadsExist(TArrayView<const FIoHash> PayloadIds
 
 bool FSourceControlBackend::TryApplySettingsFromConfigFiles(const FString& ConfigEntry)
 {
-	// We require that a valid depot root has been provided
-	{
-		if (!FParse::Value(*ConfigEntry, TEXT("DepotRoot="), DepotRoot))
-		{
-			UE_LOG(LogVirtualization, Error, TEXT("'DepotRoot=' not found in the config file"));
-			return false;
-		}
-
-		if (!DepotRoot.EndsWith(TEXT("/")))
-		{
-			DepotRoot.AppendChar(TEXT('/'));
-		}
-	}
-
-	// Now parse the optional config values
-
-	{
-		FParse::Value(*ConfigEntry, TEXT("Server="), ServerAddress);
-
-		if (!ClientStream.IsEmpty())
-		{
-			UE_LOG(LogVirtualization, Log, TEXT("[%s] Using server address: '%s'"), *GetDebugName(), *ServerAddress);
-		}
-		else
-		{
-			UE_LOG(LogVirtualization, Log, TEXT("[%s] Will connect to the default server address"), *GetDebugName());
-		}
-	}
-
 	// If the depot root is within a perforce stream then we must specify which stream. This may be a virtual stream with a custom view.
 	{
 		FParse::Value(*ConfigEntry, TEXT("ClientStream="), ClientStream);
@@ -904,6 +960,47 @@ bool FSourceControlBackend::TryApplySettingsFromConfigFiles(const FString& Confi
 		else
 		{
 			UE_LOG(LogVirtualization, Log, TEXT("[%s] Not using client stream"), *GetDebugName());
+		}
+	}
+
+	// We require that a valid depot root has been provided
+	{
+		if (FParse::Value(*ConfigEntry, TEXT("DepotRoot="), DepotPathRoot))
+		{
+			UE_LOG(LogVirtualization, Warning, TEXT("[%s] Entry 'DepotRoot' is deprecated, replace with 'DepotPath'"), *GetDebugName());
+		}
+		else
+		{
+			FParse::Value(*ConfigEntry, TEXT("DepotPath="), DepotPathRoot);
+		}
+
+		if (DepotPathRoot.IsEmpty())
+		{
+			DepotPathRoot = ClientStream;
+		}
+
+		if (DepotPathRoot.IsEmpty())
+		{
+			UE_LOG(LogVirtualization, Error, TEXT("[%s] 'DepotPath' was not found in the config file!"), *GetDebugName());
+			return false;
+		}
+
+		if (!DepotPathRoot.EndsWith(TEXT("/")))
+		{
+			DepotPathRoot.AppendChar(TEXT('/'));
+		}
+	}
+
+	{
+		FParse::Value(*ConfigEntry, TEXT("Server="), ServerAddress);
+
+		if (!ServerAddress.IsEmpty())
+		{
+			UE_LOG(LogVirtualization, Log, TEXT("[%s] Using server address: '%s'"), *GetDebugName(), *ServerAddress);
+		}
+		else
+		{
+			UE_LOG(LogVirtualization, Log, TEXT("[%s] Will connect to the default server address"), *GetDebugName());
 		}
 	}
 
@@ -971,6 +1068,24 @@ bool FSourceControlBackend::TryApplySettingsFromConfigFiles(const FString& Confi
 		}
 	}
 
+	{
+		FParse::Bool(*ConfigEntry, TEXT("UseLocalIniFileSettings="), bUseLocalIniFileSettings);
+		UE_LOG(LogVirtualization, Log, TEXT("[%s] Reading settings from local SourceControlSettings.ini is %s"), *GetDebugName(), bUseLocalIniFileSettings ? TEXT("enabled") : TEXT("disabled"));	
+	}
+
+	{
+		FParse::Bool(*ConfigEntry, TEXT("UseRetryConnectionDialog="), bUseRetryConnectionDialog);
+		UE_LOG(LogVirtualization, Log, TEXT("[%s] Showing a reconnect dialog on initial failure %s"), *GetDebugName(), bUseRetryConnectionDialog ? TEXT("enabled") : TEXT("disabled"));
+	}
+
+	{
+		// TODO: We should just extract this from the perforce environment but that requires extending
+		// the source control api.
+		// Letting the backend define the ignore filename to use is a quicker work around
+		FParse::Value(*ConfigEntry, TEXT("IgnoreFile="), IgnoreFileName);
+		UE_LOG(LogVirtualization, Log, TEXT("[%s] Using '%s' as the p4 ignore file name"), *GetDebugName(), *IgnoreFileName);
+	}
+
 	if (!FindSubmissionWorkingDir(ConfigEntry))
 	{
 		return false;
@@ -984,7 +1099,7 @@ void FSourceControlBackend::CreateDepotPath(const FIoHash& PayloadId, FStringBui
 	TStringBuilder<52> PayloadPath;
 	Utils::PayloadIdToPath(PayloadId, PayloadPath);
 
-	OutPath << DepotRoot << PayloadPath;
+	OutPath << DepotPathRoot << PayloadPath;
 }
 
 bool FSourceControlBackend::FindSubmissionWorkingDir(const FString& ConfigEntry)
@@ -993,18 +1108,37 @@ bool FSourceControlBackend::FindSubmissionWorkingDir(const FString& ConfigEntry)
 	// During submission each payload path will be 90 characters in length which will then be appended to
 	// the SubmissionWorkingDir
 
-	SubmissionRootDir = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-VirtualizationWorkingDir"));
-
-	if (!SubmissionRootDir.IsEmpty())
+	FString WorkingDirFromIniFile;
+	if (FParse::Value(*ConfigEntry, TEXT("WorkingDir="), WorkingDirFromIniFile) && !WorkingDirFromIniFile.IsEmpty())
 	{
-		FPaths::NormalizeDirectoryName(SubmissionRootDir);
-		UE_LOG(LogVirtualization, Log, TEXT("[%s] Found Environment Variable: UE-VirtualizationWorkingDir"), *GetDebugName());	
+		TStringBuilder<512> ExpandedPath;
+		if (Utils::ExpandEnvironmentVariables(WorkingDirFromIniFile, ExpandedPath))
+		{
+			SubmissionRootDir = ExpandedPath;
+		}
+		else
+		{
+			UE_LOG(LogVirtualization, Log, TEXT("[%s] Failed to correctly expand 'WorkingDir=%s'"), *GetDebugName(), *WorkingDirFromIniFile);
+		}
 	}
-	else
+	
+	if (SubmissionRootDir.IsEmpty())
+	{
+		SubmissionRootDir = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-VirtualizationWorkingDir"));
+		if (!SubmissionRootDir.IsEmpty())
+		{
+			UE_LOG(LogVirtualization, Log, TEXT("[%s] Found Environment Variable: UE-VirtualizationWorkingDir"), *GetDebugName());
+		}
+	}
+
+	if (SubmissionRootDir.IsEmpty())
 	{
 
 		bool bSubmitFromTempDir = false;
-		FParse::Bool(*ConfigEntry, TEXT("SubmitFromTempDir="), bSubmitFromTempDir);
+		if (FParse::Bool(*ConfigEntry, TEXT("SubmitFromTempDir="), bSubmitFromTempDir))
+		{
+			UE_LOG(LogVirtualization, Warning, TEXT("[%s] Found legacy ini file setting 'SubmitFromTempDir' use '-WorkingDir=$(Temp)/UnrealEngine/VASubmission' instead!"), *GetDebugName());
+		}
 
 		TStringBuilder<260> PathBuilder;
 		if (bSubmitFromTempDir)
@@ -1018,6 +1152,8 @@ bool FSourceControlBackend::FindSubmissionWorkingDir(const FString& ConfigEntry)
 
 		SubmissionRootDir = PathBuilder;
 	}
+
+	FPaths::NormalizeDirectoryName(SubmissionRootDir);
 
 	if (IFileManager::Get().DirectoryExists(*SubmissionRootDir) || IFileManager::Get().MakeDirectory(*SubmissionRootDir))
 	{
@@ -1036,20 +1172,71 @@ bool FSourceControlBackend::FindSubmissionWorkingDir(const FString& ConfigEntry)
 	}
 }
 
-void FSourceControlBackend::OnConnectionError()
+void FSourceControlBackend::OnConnectionError(FText Message)
 {
-	auto Callback = [](float Delta)->bool
-	{
-		FMessageLog Log("LogVirtualization");
-		Log.Notify(LOCTEXT("ConnectionError", "Asset virtualization connect errors were encountered, see the message log for more info"));
+	// We don't know when or where this error might occur. We can currently only create 
+	// FMessageLog on the game thread or risk slate asserts, and if we raise a 
+	// FMessageLog::Notify too early in the editor loading process it won't be shown 
+	// correctly.
+	// To avoid this we push errors to the next editor tick, which will be on the 
+	// GameThread and at a point where notification will work. In addition if we do need
+	// to defer the error message until next tick (rather than just the notification) then
+	// we will write it to the log at the point it is raised rather than the point it is
+	// deferred to in an attempt to make the log more readable.
 
-		// This tick callback is one shot, so return false to prevent it being invoked again
-		return false;
-	};
+	if (Message.IsEmpty())
+	{
+		return;
+	}
+
+	TSharedRef<FTokenizedMessage> TokenizedMsg = FTokenizedMessage::Create(EMessageSeverity::Error);
+	TokenizedMsg->AddToken(FTextToken::Create(Message));
+
+	FString ConnectionHelpUrl = FVirtualizationManager::GetConnectionHelpUrl();
+	if (!ConnectionHelpUrl.IsEmpty())
+	{
+		TokenizedMsg->AddToken(FURLToken::Create(ConnectionHelpUrl, LOCTEXT("URL", "Additional connection help")));
+	}
+
+	if (::IsInGameThread())
+	{
+		// If we are on the game thread we can post the error message immediately
+		FMessageLog Log("LogVirtualization");
+		Log.AddMessage(TokenizedMsg);
+	}
+	else
+	{
+		// We can only send a FMessageLog on the GameThread so for now just log the error
+		// and we can send it to the FMessageLog system next tick
+		UE_LOG(LogVirtualization, Error, TEXT("%s"), *Message.ToString());
+
+		auto Callback = [TokenizedMsg, bShouldNotify = !bSuppressNotifications](float Delta)->bool
+		{
+			FMessageLog Log("LogVirtualization");
+			Log.SuppressLoggingToOutputLog();
+			Log.AddMessage(TokenizedMsg);
+
+			return false;
+		};
+
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(MoveTemp(Callback)));
+	}
 
 	if (!bSuppressNotifications)
 	{
-		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(Callback));
+		// Add the notification to the ticker so that if this is called during editor startup it will only
+		// be issued on the first frame, increasing the chance that the user will see it.
+		auto NotificationCallback = [](float Delta)->bool
+			{
+				FMessageLog Notification("LogVirtualization");;
+				Notification.SuppressLoggingToOutputLog();
+
+				Notification.Notify(LOCTEXT("ConnectionError", "Asset virtualization connection errors were encountered, see the message log for more info"));
+
+				return false;
+			};
+
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(MoveTemp(NotificationCallback)));
 	}
 }
 

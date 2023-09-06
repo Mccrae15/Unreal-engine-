@@ -2,12 +2,8 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -74,12 +70,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Map from type name to deserializing constructor
 		/// </summary>
-		static Dictionary<Type, IActionSerializer> TypeToSerializer;
+		static IReadOnlyDictionary<Type, IActionSerializer> TypeToSerializer;
 
 		/// <summary>
 		/// Map from serializer name to instance
 		/// </summary>
-		static Dictionary<string, IActionSerializer> NameToSerializer;
+		static IReadOnlyDictionary<string, IActionSerializer> NameToSerializer;
 
 		/// <summary>
 		/// Creates a map of type name to constructor
@@ -87,8 +83,8 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		static ActionSerialization()
 		{
-			TypeToSerializer = new Dictionary<Type, IActionSerializer>();
-			NameToSerializer = new Dictionary<string, IActionSerializer>(StringComparer.Ordinal);
+			Dictionary<Type, IActionSerializer> TypeToSerializerDict = new Dictionary<Type, IActionSerializer>();
+			Dictionary<string, IActionSerializer> NameToSerializerDict = new Dictionary<string, IActionSerializer>(StringComparer.Ordinal);
 
 			Type[] Types = Assembly.GetExecutingAssembly().GetTypes();
 			foreach (Type Type in Types)
@@ -96,10 +92,13 @@ namespace UnrealBuildTool
 				if (Type.IsClass && !Type.IsAbstract && typeof(IActionSerializer).IsAssignableFrom(Type))
 				{
 					IActionSerializer Serializer = (IActionSerializer)Activator.CreateInstance(Type)!;
-					TypeToSerializer[Serializer.Type] = Serializer;
-					NameToSerializer[Type.Name] = Serializer;
+					TypeToSerializerDict[Serializer.Type] = Serializer;
+					NameToSerializerDict[Type.Name] = Serializer;
 				}
 			}
+
+			TypeToSerializer = TypeToSerializerDict;
+			NameToSerializer = NameToSerializerDict;
 		}
 
 		/// <summary>

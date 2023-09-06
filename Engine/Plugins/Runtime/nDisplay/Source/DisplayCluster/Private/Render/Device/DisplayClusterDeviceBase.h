@@ -83,18 +83,6 @@ protected:
 	virtual bool NeedReAllocateViewportRenderTarget(const class FViewport& Viewport) override;
 
 protected:
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	// FDisplayClusterDeviceBase
-	//////////////////////////////////////////////////////////////////////////////////////////////
-	enum EDisplayClusterEyeType
-	{
-		StereoLeft  = 0,
-		Mono        = 1,
-		StereoRight = 2,
-		COUNT
-	};
-
-protected:
 	// Factory method to instantiate an output presentation class implementation
 	virtual FDisplayClusterPresentationBase* CreatePresentationObject(FViewport* const Viewport, TSharedPtr<IDisplayClusterRenderSyncPolicy>& SyncPolicy) = 0;
 
@@ -103,10 +91,18 @@ protected:
 	virtual bool OverrideFinalPostprocessSettings(struct FPostProcessSettings* OverridePostProcessingSettings, const enum EStereoscopicPass StereoPassType, const int32 StereoViewIndex, float& BlendWeight) override;
 	virtual void EndFinalPostprocessSettings(struct FPostProcessSettings* FinalPostProcessingSettings, const enum EStereoscopicPass StereoPassType, const int32 StereoViewIndex) override;
 
+	/** Get a pointer to the DC ViewportManager if it still exists. */
+	IDisplayClusterViewportManager* GetViewportManager() const;
+
+	/** Get a pointer to the DC ViewportManagerProxy if it still exists. */
+	FDisplayClusterViewportManagerProxy* GetViewportManagerProxy_RenderThread() const;
+
 private:
-	// Runtime viewport manager api for game and render threads. Internal usage only
-	IDisplayClusterViewportManager* ViewportManager = nullptr;
-	TSharedPtr<FDisplayClusterViewportManagerProxy, ESPMode::ThreadSafe> ViewportManagerProxy;
+	// Pointer to the DC ViewportManager from the active DCRA that is currently being used for rendering.
+	TWeakPtr<IDisplayClusterViewportManager, ESPMode::ThreadSafe> ViewportManagerWeakPtr;
+
+	// Pointer to the DC ViewportManagerProxy from the active DCRA that is currently being used for rendering.
+	mutable TWeakPtr<FDisplayClusterViewportManagerProxy, ESPMode::ThreadSafe> ViewportManagerProxyWeakPtr;
 
 	EDisplayClusterRenderFrameMode RenderFrameMode = EDisplayClusterRenderFrameMode::Mono;
 	int32 DesiredNumberOfViews = 0;

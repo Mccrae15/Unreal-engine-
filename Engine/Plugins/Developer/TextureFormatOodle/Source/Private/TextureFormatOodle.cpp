@@ -601,6 +601,8 @@ public:
 
 	void GetOodleCompressParameters(EPixelFormat * OutCompressedPixelFormat,int * OutRDOLambda, OodleTex_EncodeEffortLevel * OutEffortLevel, bool * bOutDebugColor, OodleTex_RDO_UniversalTiling* OutRDOUniversalTiling, const struct FTextureBuildSettings& InBuildSettings, bool bHasAlpha) const
 	{
+		//TRACE_CPUPROFILER_EVENT_SCOPE(Texture.GetOodleCompressParameters);
+
 		FName TextureFormatName = InBuildSettings.TextureFormatName;
 
 		EPixelFormat CompressedPixelFormat = PF_Unknown;
@@ -778,7 +780,7 @@ public:
 
 	virtual FName GetEncoderName(FName Format) const override
 	{
-		static const FName OodleName("EngineOodle");
+		static const FName OodleName("UE5 Oodle Texture");
 		return OodleName;
 	}
 	
@@ -802,7 +804,9 @@ public:
 			TEXT("2.9.5"),
 			TEXT("2.9.6"),
 			TEXT("2.9.7"),
-			TEXT("2.9.8")
+			TEXT("2.9.8"),
+			TEXT("2.9.9"),
+			TEXT("2.9.10")
 		};
 		const int32 OodleTextureVersionsCount = (int32)( sizeof(OodleTextureVersions)/sizeof(OodleTextureVersions[0]) );
 
@@ -868,7 +872,7 @@ public:
 		return OodleTextureVersionLatest;
 	}
 
-	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& InBuildSettings) const override
+	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& InBuildSettings, int32 InMipCount, const FIntVector3& InMip0Dimensions) const override
 	{
 		// return all parameters that affect our output Texture
 		// so if any of them change, we rebuild
@@ -914,7 +918,9 @@ public:
 
 			// concatenate VersionString without . characters which are illegal in DDC
 			// version is something like "2.9.5" , we'll add something like "_V295"
-			FString VersionString = InBuildSettings.OodleTextureSdkVersion.ToString();
+			FName UseOodleTextureSdkVersion = ValidateOodleTextureSdkVersion(InBuildSettings.OodleTextureSdkVersion);
+
+			FString VersionString = UseOodleTextureSdkVersion.ToString();
 			for(int32 i=0;i<VersionString.Len();i++)
 			{
 				if ( VersionString[i] != TEXT('.') )
@@ -930,6 +936,25 @@ public:
 		#endif
 
 		return DDCString;
+	}
+
+	FName ValidateOodleTextureSdkVersion(FName DesiredOodleTextureSdkVersion) const
+	{
+		const FOodleTextureVTable * VTable = GetOodleTextureVTable(DesiredOodleTextureSdkVersion);
+		if (VTable == nullptr)
+		{
+			UE_LOG(LogTextureFormatOodle,Warning,
+				TEXT("Unsupported OodleTextureSdkVersion: %s ; instead using: %s"),
+				*DesiredOodleTextureSdkVersion.ToString(),
+				*OodleTextureVersionLatest.ToString()
+				);
+			
+			return OodleTextureVersionLatest;
+		}
+		else
+		{
+			return DesiredOodleTextureSdkVersion;
+		}
 	}
 
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
@@ -1004,10 +1029,10 @@ public:
 		return true;
 	}
 
-	virtual bool CompressImage(FImage& InImage, const FTextureBuildSettings& InBuildSettings, const FIntVector3& InMip0Dimensions,
-		int32 InMip0NumSlicesNoDepth, FStringView DebugTexturePathName, const bool bInHasAlpha, FCompressedImage2D& OutImage) const override
+	virtual bool CompressImage(const FImage& InImage, const FTextureBuildSettings& InBuildSettings, const FIntVector3& InMip0Dimensions,
+		int32 InMip0NumSlicesNoDepth, int32 InMipIndex, int32 InMipCount, FStringView DebugTexturePathName, const bool bInHasAlpha, FCompressedImage2D& OutImage) const override
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_CompressImage);
+		TRACE_CPUPROFILER_EVENT_SCOPE(TFOodle_CompressImage);
 
 		check(InImage.SizeX > 0);
 		check(InImage.SizeY > 0);
@@ -1024,13 +1049,17 @@ public:
 			return false;			
 		}
 
-		FName CompressOodleTextureVersion(InBuildSettings.OodleTextureSdkVersion);
+		FName CompressOodleTextureVersion;
 
-		if ( CompressOodleTextureVersion.IsNone() )
+		if ( InBuildSettings.OodleTextureSdkVersion.IsNone() )
 		{
 			// legacy texture without version, and no remap is set up in prefs
 			// use default:
 			CompressOodleTextureVersion = OodleTextureSdkVersionToUseIfNone;
+		}
+		else
+		{
+			CompressOodleTextureVersion = ValidateOodleTextureSdkVersion(InBuildSettings.OodleTextureSdkVersion);
 		}
 
 		const FOodleTextureVTable * VTable = GetOodleTextureVTable(CompressOodleTextureVersion);
@@ -1130,16 +1159,32 @@ public:
 			Gamma == EGammaSpace::Linear &&			
 			!bDebugColor)
 		{
-			// for BC4/5 use 16-bit :
+			// for BC4/5 use 16-bit integer U16 pixels :
 			//	BC4/5 should always have linear gamma
-			// @todo we only need 1 or 2 channel 16-bit, not all 4; use our own converter
-			//	or just let our encoder take F32 input?
 
 			// input image format now can be BGRA8 (used to always be RGBA32F)
 			// but to maintain matching output with previous RGBA32F format, still do convert to RGBA16
 			// ideally should pass BGRA8 directly to Oodle, but that changes output bits
-			ImageFormat = ERawImageFormat::RGBA16;
-			OodlePF = OodleTex_PixelFormat_4_U16;
+
+			/*
+			// -> need DDC key bump for this
+			if ( InImage.Format == ERawImageFormat::BGRA8 && InBuildSettings.bUseNewMipFilter )
+			{
+				ImageFormat = ERawImageFormat::BGRA8;
+				OodlePF = OodleTex_PixelFormat_4_U8_BGRA;
+			}
+			*/
+
+			if ( InImage.Format == ERawImageFormat::RGBA16 )
+			{
+				ImageFormat = ERawImageFormat::RGBA16;
+				OodlePF = OodleTex_PixelFormat_4_U16;
+			}
+			else
+			{
+				ImageFormat = ERawImageFormat::BGRA8; // <- not really, 2_U16 in disguise!
+				OodlePF = OodleTex_PixelFormat_2_U16;
+			}
 		}
 		else
 		{
@@ -1150,23 +1195,43 @@ public:
 			OodlePF = bHasAlpha ? OodleTex_PixelFormat_4_U8_BGRA : OodleTex_PixelFormat_4_U8_BGRx;
 		}
 
+		bool bIsSpecial2U16 = (OodlePF == OodleTex_PixelFormat_2_U16);
+
 		bool bNeedsImageCopy = ImageFormat != InImage.Format ||
 			Gamma != InImage.GammaSpace ||
 			(CompressedPixelFormat == PF_DXT5 && TextureFormatName == GTextureFormatNameDXT5n) ||
-			bDebugColor;
+			bDebugColor || bIsSpecial2U16;
 		FImage ImageCopy;
 		if (bNeedsImageCopy)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_FormatChange);
+
                         //not sure if we should bill this alloc to OodleTexture or the calling context (TextureCompressor)
                         //we are freeing the previous Image alloc to replace it with a changed format
 			//LLM_SCOPE_BYTAG(OodleTexture);
 
-			InImage.CopyTo(ImageCopy, ImageFormat, Gamma);
-			
+			if ( bIsSpecial2U16 )
+			{
+				ImageCopy.Init(InImage.SizeX,InImage.SizeY,InImage.NumSlices,ImageFormat,EGammaSpace::Linear);
+				FImageCore::CopyImageTo2U16(InImage,ImageCopy);
+
+				// everything past this point only uses OodlePF
+				//  so the fact that ImageCopy.Format is wrong is okay
+			}
+			else
+			{
+				InImage.CopyTo(ImageCopy, ImageFormat, Gamma);
+			}
+
 			// after we copy the image, we can free the source
 			//	can reduce peak mem use to do so immediately
 			//	(source is usually/often F32 RGBA (when not VT) so quite fat)
-			InImage.RawData.Empty();
+
+			// InImage.RawData.Empty();
+			// -> no longer possible because Hashing Source is on a thread
+			//  needs a refcount on the source Image to make that work again
+			// @todo Oodle : peak memory use is a lot higher if we don't free the float temp image here
+
 		}
 		const FImage& Image = bNeedsImageCopy ? ImageCopy : InImage;
 
@@ -1358,7 +1423,10 @@ public:
 		OutImage.SizeY = Image.SizeY;
 		// note: cubes come in as 6 slices and go out as 1
 		OutImage.SizeZ = (InBuildSettings.bVolume || InBuildSettings.bTextureArray) ? Image.NumSlices : 1;
+		{
+		TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_Alloc);
 		OutImage.RawData.AddUninitialized(OutBytesTotal);
+		}
 
 		UE_LOG(LogTextureFormatOodle, Verbose, TEXT("TFO out size=%dx%d stride=%d total=%d"),
 			OutImage.SizeX,OutImage.SizeY,
@@ -1455,7 +1523,7 @@ public:
 				}
 
 				{
-					TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_EncodeBCN);
+					TRACE_CPUPROFILER_EVENT_SCOPE(TFOodle_EncodeBCN);
 
 					// if RDOLambda == 0, does non-RDO encode :
 					OodleTex_Err OodleErr = (VTable->fp_OodleTex_EncodeBCN_RDO_Ex)(OodleBCN, OutSlicePtr, NumBlocksPerSlice, 
@@ -1518,20 +1586,15 @@ static OO_U64 OODLE_CALLBACK TFO_RunJob(t_fp_Oodle_Job* JobFunction, void* JobDa
 {
 	using namespace UE::Tasks;
 
-	// Don't trace both RunJob and the EncodeBCN_Task by default; that's a lot of event
-	// spam. The RunJob portion is a bit of setup work, just elide that unless there's
-	// reason to suspect something fishy here.
-	//TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_EncodeBCN_RunJob);
-
 	// DebugInfo to inspect:
 	const FOodleJobDebugInfo * DebugInfo = (FOodleJobDebugInfo *)UserPtr;
 
 	FTask* Task = new FTask;
 	Task->Launch(
-		TEXT("Oodle_EncodeBCN_Task"),
+		TEXT("TFOodle_EncodeBCN_Task"),
 		[JobFunction, JobData]
 		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_EncodeBCN_Task);
+			TRACE_CPUPROFILER_EVENT_SCOPE(TFOodle_EncodeBCN_Task);
 			JobFunction(JobData);
 		},
 		TArrayView<FTask*>{ reinterpret_cast<FTask**>(Dependencies), NumDependencies },
@@ -1550,7 +1613,7 @@ static void OODLE_CALLBACK TFO_WaitJob(OO_U64 JobHandle, void* UserPtr)
 	// DebugInfo to inspect:
 	const FOodleJobDebugInfo * DebugInfo = (FOodleJobDebugInfo *)UserPtr;
 
-	TRACE_CPUPROFILER_EVENT_SCOPE(Texture.Oodle_WaitJob);
+	TRACE_CPUPROFILER_EVENT_SCOPE(TFOodle_WaitJob);
 
 	FTask* Task = reinterpret_cast<FTask*>(JobHandle);
 	Task->Wait();

@@ -38,6 +38,54 @@ UIKRetargeter::UIKRetargeter(const FObjectInitializer& ObjectInitializer)
 	CleanAndInitialize();
 }
 
+const UIKRigDefinition* UIKRetargeter::GetSourceIKRig() const
+{
+	if (IsInGameThread())
+	{
+		return SourceIKRigAsset.LoadSynchronous();	
+	}
+	
+	return nullptr;
+}
+
+const UIKRigDefinition* UIKRetargeter::GetTargetIKRig() const
+{
+	if (IsInGameThread())
+	{
+		return TargetIKRigAsset.LoadSynchronous();	
+	}
+	
+	return nullptr;
+}
+
+UIKRigDefinition* UIKRetargeter::GetSourceIKRigWriteable() const
+{
+	if (IsInGameThread())
+	{
+		return SourceIKRigAsset.LoadSynchronous();	
+	}
+	
+	return nullptr;
+}
+
+UIKRigDefinition* UIKRetargeter::GetTargetIKRigWriteable() const
+{
+	if (IsInGameThread())
+	{
+		return TargetIKRigAsset.LoadSynchronous();	
+	}
+	
+	return nullptr;
+}
+
+void UIKRetargeter::PostDuplicate(bool bDuplicateForPIE)
+{
+	Super::PostDuplicate(bDuplicateForPIE);
+#if WITH_EDITORONLY_DATA
+	Controller = nullptr;
+#endif
+}
+
 void UIKRetargeter::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);

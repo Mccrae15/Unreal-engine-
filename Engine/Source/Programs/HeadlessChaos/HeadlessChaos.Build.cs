@@ -7,10 +7,7 @@ public class HeadlessChaos : TestModuleRules
 {
 	public HeadlessChaos(ReadOnlyTargetRules Target) : base(Target, false)
 	{
-		PublicIncludePaths.Add("Runtime/Launch/Public");
-
-		// For LaunchEngineLoop.cpp include
-		PrivateIncludePaths.Add("Runtime/Launch/Private");
+		PublicIncludePathModuleNames.Add("Launch");
 
 		// For testing access to private Chaos classes
 		PrivateIncludePaths.Add("Runtime/Experimental/Chaos/Private");
@@ -53,6 +50,6 @@ public class HeadlessChaos : TestModuleRules
 
 		PrivateDefinitions.Add("CHAOS_INCLUDE_LEVEL_1=1");
 
-		UpdateBuildGraphPropertiesFile(new Metadata("HeadlessChaos", "Headless Chaos"));
+		UpdateBuildGraphPropertiesFile(new Metadata() { TestName = "HeadlessChaos", TestShortName = "Headless Chaos", UsesCatch2 = false });
 	}
 }

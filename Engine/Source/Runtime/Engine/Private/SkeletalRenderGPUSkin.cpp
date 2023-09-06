@@ -84,7 +84,7 @@ static int32 GetRayTracingSkeletalMeshGlobalLODBias()
 FMorphVertexBuffer
 -----------------------------------------------------------------------------*/
 
-void FMorphVertexBuffer::InitDynamicRHI()
+void FMorphVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	// LOD of the skel mesh is used to find number of vertices in buffer
 	FSkeletalMeshLODRenderData& LodData = SkelMeshRenderData->LODRenderData[LODIdx];
@@ -102,23 +102,23 @@ void FMorphVertexBuffer::InitDynamicRHI()
 	// BUF_ShaderResource is needed for Morph support of the SkinCache
 	Flags = (EBufferUsageFlags)(Flags | BUF_ShaderResource);
 
-	VertexBufferRHI = RHICreateVertexBuffer(Size, Flags, CreateInfo);
+	VertexBufferRHI = RHICmdList.CreateVertexBuffer(Size, Flags, CreateInfo);
 	VertexBufferRHI->SetOwnerName(GetOwnerName());
-	SRVValue = RHICreateShaderResourceView(VertexBufferRHI, 4, PF_R32_FLOAT);
+	SRVValue = RHICmdList.CreateShaderResourceView(VertexBufferRHI, 4, PF_R32_FLOAT);
 
 	if (!bUseGPUMorphTargets)
 	{
 		// Lock the buffer.
-		void* BufferData = RHILockBuffer(VertexBufferRHI, 0, sizeof(FMorphGPUSkinVertex)*LodData.GetNumVertices(), RLM_WriteOnly);
+		void* BufferData = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FMorphGPUSkinVertex)*LodData.GetNumVertices(), RLM_WriteOnly);
 		FMorphGPUSkinVertex* Buffer = (FMorphGPUSkinVertex*)BufferData;
 		FMemory::Memzero(&Buffer[0], sizeof(FMorphGPUSkinVertex)*LodData.GetNumVertices());
 		// Unlock the buffer.
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 		bNeedsInitialClear = false;
 	}
 	else
 	{
-		UAVValue = RHICreateUnorderedAccessView(VertexBufferRHI, PF_R32_UINT);
+		UAVValue = RHICmdList.CreateUnorderedAccessView(VertexBufferRHI, PF_R32_UINT);
 		bNeedsInitialClear = true;
 	}
 
@@ -126,7 +126,7 @@ void FMorphVertexBuffer::InitDynamicRHI()
 	bHasBeenUpdated = false;
 }
 
-void FMorphVertexBuffer::ReleaseDynamicRHI()
+void FMorphVertexBuffer::ReleaseRHI()
 {
 	UAVValue.SafeRelease();
 	VertexBufferRHI.SafeRelease();
@@ -170,7 +170,7 @@ void FMorphVertexBufferPool::EnableDoubleBuffer()
 	bDoubleBuffer = true;
 	if (!MorphVertexBuffers[1].VertexBufferRHI.IsValid())
 	{
-		MorphVertexBuffers[1].InitResource();
+		MorphVertexBuffers[1].InitResource(FRHICommandListImmediate::Get());
 	}
 }
 
@@ -405,26 +405,26 @@ void FSkeletalMeshObjectGPUSkin::Update(
 		PreviousBoneTransformUpdateMode,
 		InExternalMorphWeightData);
 
-	// We prepare the next frame but still have the value from the last one
-	uint32 FrameNumberToPrepare = GFrameNumber + 1;
+	uint64 FrameNumberToPrepare = GFrameCounter;
 	uint32 RevisionNumber = 0;
 
 	FGPUSkinCache* GPUSkinCache = nullptr;
+	FSceneInterface* Scene = nullptr;
 	if (InMeshComponent && InMeshComponent->SceneProxy)
 	{
 		// We allow caching of per-frame, per-scene data
-		FrameNumberToPrepare = InMeshComponent->SceneProxy->GetScene().GetFrameNumber() + 1;
-		GPUSkinCache = InMeshComponent->SceneProxy->GetScene().GetGPUSkinCache();
+		Scene = &(InMeshComponent->SceneProxy->GetScene());
+		GPUSkinCache = Scene->GetGPUSkinCache();
 		RevisionNumber = InMeshComponent->GetBoneTransformRevisionNumber();
 	}
 
 	// queue a call to update this data
 	FSkeletalMeshObjectGPUSkin* MeshObject = this;
 	ENQUEUE_RENDER_COMMAND(SkelMeshObjectUpdateDataCommand)(
-		[MeshObject, FrameNumberToPrepare, RevisionNumber, NewDynamicData, GPUSkinCache](FRHICommandListImmediate& RHICmdList)
+		[MeshObject, FrameNumberToPrepare, RevisionNumber, NewDynamicData, GPUSkinCache, Scene](FRHICommandListImmediate& RHICmdList)
 		{
 			FScopeCycleCounter Context(MeshObject->GetStatId());
-			MeshObject->UpdateDynamicData_RenderThread(GPUSkinCache, RHICmdList, NewDynamicData, nullptr, FrameNumberToPrepare, RevisionNumber);
+			MeshObject->UpdateDynamicData_RenderThread(GPUSkinCache, RHICmdList, NewDynamicData, Scene, FrameNumberToPrepare, RevisionNumber);
 		}
 	);
 }
@@ -482,7 +482,7 @@ FORCEINLINE bool IsDeferredSkeletalDynamicDataUpdateEnabled()
 	return CVarDeferSkeletalDynamicDataUpdateUntilGDME.GetValueOnRenderThread() > 0;
 }
 
-void FSkeletalMeshObjectGPUSkin::UpdateDynamicData_RenderThread(FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, FDynamicSkelMeshObjectDataGPUSkin* InDynamicData, FSceneInterface* Scene, uint32 FrameNumberToPrepare, uint32 RevisionNumber)
+void FSkeletalMeshObjectGPUSkin::UpdateDynamicData_RenderThread(FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, FDynamicSkelMeshObjectDataGPUSkin* InDynamicData, FSceneInterface* Scene, uint64 FrameNumberToPrepare, uint32 RevisionNumber)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(GPUSkin::UpdateDynamicData_RT);
 
@@ -498,6 +498,13 @@ void FSkeletalMeshObjectGPUSkin::UpdateDynamicData_RenderThread(FGPUSkinCache* G
 		(DynamicData ? (DynamicData->LODIndex != InDynamicData->LODIndex ||
 		!DynamicData->ActiveMorphTargetsEqual(InDynamicData->ActiveMorphTargets, InDynamicData->MorphTargetWeights))
 		: true);
+
+#if RHI_RAYTRACING
+	if (bMorphNeedsUpdate && Scene)
+	{
+		Scene->InvalidatePathTracedOutput();
+	}
+#endif
 
 	WaitForRHIThreadFenceForDynamicData();
 	if (DynamicData)
@@ -626,6 +633,7 @@ void FSkeletalMeshObjectGPUSkin::ProcessUpdatedDynamicData(EGPUSkinCacheEntryMod
 		if(bMorphNeedsUpdate)
 		{
 			UpdateMorphVertexBuffer(RHICmdList, Mode, LOD, LODData, bGPUSkinCacheEnabled, MorphVertexBuffer);
+			LOD.MorphVertexBufferPool.SetUpdatedFrameNumber(FrameNumberToPrepare);
 		}
 	}
 	else
@@ -767,7 +775,7 @@ void FSkeletalMeshObjectGPUSkin::ProcessUpdatedDynamicData(EGPUSkinCacheEntryMod
 
 void FSkeletalMeshObjectGPUSkin::UpdateRayTracingGeometry(FSkeletalMeshLODRenderData& LODModel, uint32 LODIndex, TArray<FBufferRHIRef>& VertexBufffers)
 {
-	check(IsInRenderingThread());
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 	if (IsRayTracingEnabled() && bSupportRayTracing)
 	{
@@ -873,7 +881,7 @@ void FSkeletalMeshObjectGPUSkin::UpdateRayTracingGeometry(FSkeletalMeshLODRender
 			RayTracingGeometryStructureSize = RHICalcRayTracingGeometrySize(Initializer);
 
 			// Only create RHI object but enqueue actual BLAS creation so they can be accumulated
-			RayTracingGeometry.CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority::Skip);
+			RayTracingGeometry.CreateRayTracingGeometry(RHICmdList, ERTAccelerationStructureBuildPriority::Skip);
 		}
 		else if (!bAnySegmentUsesWorldPositionOffset)
 		{
@@ -1118,26 +1126,28 @@ FGPUMorphUpdateCS::FGPUMorphUpdateCS(const ShaderMetaType::CompiledShaderInitial
 	MorphDataBufferParameter.Bind(Initializer.ParameterMap, TEXT("MorphDataBuffer"));
 }
 
-void FGPUMorphUpdateCS::SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumGroups)
+void FGPUMorphUpdateCS::SetParameters(
+	FRHIBatchedShaderParameters& BatchedParameters,
+	const FVector4& LocalScale,
+	const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers,
+	FMorphVertexBuffer& MorphVertexBuffer,
+	uint32 NumGroups,
+	uint32 BatchOffsets[MorphTargetDispatchBatchSize],
+	uint32 GroupOffsets[MorphTargetDispatchBatchSize],
+	float Weights[MorphTargetDispatchBatchSize])
 {
-	FRHIComputeShader* CS = RHICmdList.GetBoundComputeShader();
+	SetUAVParameter(BatchedParameters, MorphVertexBufferParameter, MorphVertexBuffer.GetUAV());
 
-	SetUAVParameter(RHICmdList, CS, MorphVertexBufferParameter, MorphVertexBuffer.GetUAV());
-
-	SetShaderValue(RHICmdList, CS, PositionScaleParameter, (FVector4f)LocalScale);
+	SetShaderValue(BatchedParameters, PositionScaleParameter, (FVector4f)LocalScale);
 	FVector2f Precision = { MorphTargetVertexInfoBuffers.GetPositionPrecision(), MorphTargetVertexInfoBuffers.GetTangentZPrecision() };
-	SetShaderValue(RHICmdList, CS, PrecisionParameter, Precision);
-	SetShaderValue(RHICmdList, CS, NumGroupsParameter, NumGroups);
+	SetShaderValue(BatchedParameters, PrecisionParameter, Precision);
+	SetShaderValue(BatchedParameters, NumGroupsParameter, NumGroups);
 
-	SetSRVParameter(RHICmdList, CS, MorphDataBufferParameter, MorphTargetVertexInfoBuffers.MorphDataSRV);
-}
+	SetSRVParameter(BatchedParameters, MorphDataBufferParameter, MorphTargetVertexInfoBuffers.MorphDataSRV);
 
-void FGPUMorphUpdateCS::SetMorphOffsetsAndWeights(FRHICommandList& RHICmdList, uint32 BatchOffsets[MorphTargetDispatchBatchSize], uint32 GroupOffsets[MorphTargetDispatchBatchSize], float Weights[MorphTargetDispatchBatchSize])
-{
-	FRHIComputeShader* CS = RHICmdList.GetBoundComputeShader();
-	SetShaderValue(RHICmdList, CS, MorphTargetBatchOffsetsParameter,*(uint32(*)[MorphTargetDispatchBatchSize]) BatchOffsets);
-	SetShaderValue(RHICmdList, CS, MorphTargetGroupOffsetsParameter,*(uint32(*)[MorphTargetDispatchBatchSize]) GroupOffsets);
-	SetShaderValue(RHICmdList, CS, MorphTargetWeightsParameter,		*(float(*)[MorphTargetDispatchBatchSize]) Weights);
+	SetShaderValue(BatchedParameters, MorphTargetBatchOffsetsParameter, *(uint32(*)[MorphTargetDispatchBatchSize]) BatchOffsets);
+	SetShaderValue(BatchedParameters, MorphTargetGroupOffsetsParameter, *(uint32(*)[MorphTargetDispatchBatchSize]) GroupOffsets);
+	SetShaderValue(BatchedParameters, MorphTargetWeightsParameter, *(float(*)[MorphTargetDispatchBatchSize]) Weights);
 }
 
 void FGPUMorphUpdateCS::Dispatch(FRHICommandList& RHICmdList, uint32 Size)
@@ -1146,10 +1156,9 @@ void FGPUMorphUpdateCS::Dispatch(FRHICommandList& RHICmdList, uint32 Size)
 	RHICmdList.DispatchComputeShader(DispatchSize.X, DispatchSize.Y, DispatchSize.Z);
 }
 
-void FGPUMorphUpdateCS::EndAllDispatches(FRHICommandList& RHICmdList)
+void FGPUMorphUpdateCS::UnsetParameters(FRHIBatchedShaderUnbinds& BatchedUnbinds)
 {
-	FRHIComputeShader* CS = RHICmdList.GetBoundComputeShader();
-	SetUAVParameter(RHICmdList, CS, MorphVertexBufferParameter, nullptr);
+	UnsetUAVParameter(BatchedUnbinds, MorphVertexBufferParameter);
 }
 
 bool FGPUMorphUpdateCS::ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -1174,12 +1183,11 @@ bool FGPUMorphNormalizeCS::ShouldCompilePermutation(const FGlobalShaderPermutati
 	return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 }
 
-void FGPUMorphNormalizeCS::SetParameters(FRHICommandList& RHICmdList, const FVector4& InvLocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumVertices)
+void FGPUMorphNormalizeCS::SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FVector4& InvLocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumVertices)
 {
-	FRHIComputeShader* CS = RHICmdList.GetBoundComputeShader();
-	SetUAVParameter(RHICmdList, CS, MorphVertexBufferParameter, MorphVertexBuffer.GetUAV());
-	SetShaderValue(RHICmdList, CS, PositionScaleParameter, (FVector4f)InvLocalScale);
-	SetShaderValue(RHICmdList, CS, NumVerticesParameter, NumVertices);
+	SetUAVParameter(BatchedParameters, MorphVertexBufferParameter, MorphVertexBuffer.GetUAV());
+	SetShaderValue(BatchedParameters, PositionScaleParameter, (FVector4f)InvLocalScale);
+	SetShaderValue(BatchedParameters, NumVerticesParameter, NumVertices);
 }
 
 void FGPUMorphNormalizeCS::Dispatch(FRHICommandList& RHICmdList, uint32 NumVertices)
@@ -1188,10 +1196,9 @@ void FGPUMorphNormalizeCS::Dispatch(FRHICommandList& RHICmdList, uint32 NumVerti
 	RHICmdList.DispatchComputeShader(DispatchSize.X, DispatchSize.Y, DispatchSize.Z);
 }
 
-void FGPUMorphNormalizeCS::EndAllDispatches(FRHICommandList& RHICmdList)
+void FGPUMorphNormalizeCS::UnsetParameters(FRHIBatchedShaderUnbinds& BatchedUnbinds)
 {
-	FRHIComputeShader* CS = RHICmdList.GetBoundComputeShader();
-	SetUAVParameter(RHICmdList, CS, MorphVertexBufferParameter, nullptr);
+	UnsetUAVParameter(BatchedUnbinds, MorphVertexBufferParameter);
 }
 
 IMPLEMENT_SHADER_TYPE(, FGPUMorphNormalizeCS, TEXT("/Engine/Private/MorphTargets.usf"), TEXT("GPUMorphNormalizeCS"), SF_Compute);
@@ -1279,12 +1286,22 @@ void FSkeletalMeshObjectGPUSkin::FSkeletalMeshObjectLOD::UpdateMorphVertexBuffer
 
 					SetComputePipelineState(RHICmdList, GPUMorphUpdateCS.GetComputeShader());
 
-					GPUMorphUpdateCS->SetParameters(RHICmdList, MorphScale, MorphTargetVertexInfoBuffers, MorphVertexBuffer, NumBatches);
-					GPUMorphUpdateCS->SetMorphOffsetsAndWeights(RHICmdList, BatchOffsets, GroupOffsets, Weights);
+					SetShaderParametersLegacyCS(
+						RHICmdList,
+						GPUMorphUpdateCS,
+						MorphScale,
+						MorphTargetVertexInfoBuffers,
+						MorphVertexBuffer,
+						NumBatches,
+						BatchOffsets,
+						GroupOffsets,
+						Weights);
+
 					GPUMorphUpdateCS->Dispatch(RHICmdList, NumBatches);
 				}
+
+				UnsetShaderParametersLegacyCS(RHICmdList, GPUMorphUpdateCS);
 				
-				GPUMorphUpdateCS->EndAllDispatches(RHICmdList);
 				RHICmdList.EndUAVOverlap(MorphVertexBuffer.GetUAV());
 			}
 
@@ -1302,10 +1319,10 @@ void FSkeletalMeshObjectGPUSkin::FSkeletalMeshObjectLOD::UpdateMorphVertexBuffer
 				TShaderMapRef<FGPUMorphNormalizeCS> GPUMorphNormalizeCS(GetGlobalShaderMap(FeatureLevel));
 
 				SetComputePipelineState(RHICmdList, GPUMorphNormalizeCS.GetComputeShader());
-
-				GPUMorphNormalizeCS->SetParameters(RHICmdList, InvMorphScale, MorphTargetVertexInfoBuffers, MorphVertexBuffer, MorphVertexBuffer.GetNumVerticies());
+				SetShaderParametersLegacyCS(RHICmdList, GPUMorphNormalizeCS, InvMorphScale, MorphTargetVertexInfoBuffers, MorphVertexBuffer, MorphVertexBuffer.GetNumVerticies());
 				GPUMorphNormalizeCS->Dispatch(RHICmdList, MorphVertexBuffer.GetNumVerticies());
-				GPUMorphNormalizeCS->EndAllDispatches(RHICmdList);
+				UnsetShaderParametersLegacyCS(RHICmdList, GPUMorphNormalizeCS);
+
 				RHICmdList.Transition(FRHITransitionInfo(MorphVertexBuffer.GetUAV(), ERHIAccess::UAVCompute, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask));
 			}
 		}
@@ -1352,6 +1369,7 @@ void FSkeletalMeshObjectGPUSkin::FSkeletalMeshObjectLOD::UpdateMorphVertexBuffer
 																					const TArray<int32>& SectionIdsUseByActiveMorphTargets, bool bGPUSkinCacheEnabled, FMorphVertexBuffer& MorphVertexBuffer)
 {
 	SCOPE_CYCLE_COUNTER(STAT_MorphVertexBuffer_Update);
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 	if (IsValidRef(MorphVertexBuffer.VertexBufferRHI))
 	{
@@ -1471,7 +1489,7 @@ void FSkeletalMeshObjectGPUSkin::FSkeletalMeshObjectLOD::UpdateMorphVertexBuffer
 		// Lock the real buffer.
 		{
 			SCOPE_CYCLE_COUNTER(STAT_MorphVertexBuffer_RhiLockAndCopy);
-			FMorphGPUSkinVertex* ActualBuffer = (FMorphGPUSkinVertex*)RHILockBuffer(MorphVertexBuffer.VertexBufferRHI, 0, Size, RLM_WriteOnly);
+			FMorphGPUSkinVertex* ActualBuffer = (FMorphGPUSkinVertex*)RHICmdList.LockBuffer(MorphVertexBuffer.VertexBufferRHI, 0, Size, RLM_WriteOnly);
 			FMemory::Memcpy(ActualBuffer, Buffer, Size);
 			FMemory::Free(Buffer);
 		}
@@ -1479,7 +1497,7 @@ void FSkeletalMeshObjectGPUSkin::FSkeletalMeshObjectLOD::UpdateMorphVertexBuffer
 		{
 			SCOPE_CYCLE_COUNTER(STAT_MorphVertexBuffer_RhiUnlock);
 			// Unlock the buffer.
-			RHIUnlockBuffer(MorphVertexBuffer.VertexBufferRHI);
+			RHICmdList.UnlockBuffer(MorphVertexBuffer.VertexBufferRHI);
 			// Copy the section Ids use by all active morph targets
 			MorphVertexBuffer.SectionIds = SectionIdsUseByActiveMorphTargets;
 			// set update flag
@@ -1797,12 +1815,12 @@ static FGPUBaseSkinVertexFactory* CreateVertexFactory(TArray<TUniquePtr<FGPUBase
 
 	// update vertex factory components and sync it
 	ENQUEUE_RENDER_COMMAND(InitGPUSkinVertexFactory)(
-		[VertexUpdateData](FRHICommandList& CmdList)
+		[VertexUpdateData](FRHICommandList& RHICmdList)
 		{
 			FGPUSkinDataType Data;
 			InitGPUSkinVertexFactoryComponents(&Data, VertexUpdateData.VertexBuffers, VertexUpdateData.VertexFactory);
 			VertexUpdateData.VertexFactory->SetData(&Data);
-			VertexUpdateData.VertexFactory->InitResource();
+			VertexUpdateData.VertexFactory->InitResource(RHICmdList);
 		}
 	);
 
@@ -1846,7 +1864,7 @@ static void CreatePassthroughVertexFactory(ERHIFeatureLevel::Type InFeatureLevel
 			FLocalVertexFactory::FDataType Data;
 			SourceVertexFactory->CopyDataTypeForLocalVertexFactory(Data);
 			NewPassthroughVertexFactory->SetData(Data);
-			NewPassthroughVertexFactory->InitResource();
+			NewPassthroughVertexFactory->InitResource(RHICmdList);
 		}
 	);
 }
@@ -1882,7 +1900,7 @@ static void CreateVertexFactoryMorph(TArray<TUniquePtr<FGPUBaseSkinVertexFactory
 			InitGPUSkinVertexFactoryComponents(&Data, VertexUpdateData.VertexBuffers, VertexUpdateData.VertexFactory);
 			InitMorphVertexFactoryComponents(&Data, VertexUpdateData.VertexBuffers.MorphVertexBufferPool);
 			VertexUpdateData.VertexFactory->SetData(&Data);
-			VertexUpdateData.VertexFactory->InitResource();
+			VertexUpdateData.VertexFactory->InitResource(RHICmdList);
 		}
 	);
 }
@@ -1961,7 +1979,7 @@ static void CreateVertexFactoryCloth(TArray<TUniquePtr<FGPUBaseSkinAPEXClothVert
 			InitGPUSkinVertexFactoryComponents(&Data, VertexUpdateData.VertexBuffers, VertexUpdateData.VertexFactory);
 			InitAPEXClothVertexFactoryComponents(&Data, VertexUpdateData.VertexBuffers);
 			VertexUpdateData.VertexFactory->SetData(&Data);
-			VertexUpdateData.VertexFactory->InitResource();
+			VertexUpdateData.VertexFactory->InitResource(RHICmdList);
 		}
 	);
 }

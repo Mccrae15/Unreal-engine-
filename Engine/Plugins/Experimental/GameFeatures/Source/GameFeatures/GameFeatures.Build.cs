@@ -25,8 +25,10 @@ namespace UnrealBuildTool.Rules
 					"GameplayTags",
 					"InstallBundleManager",
 					"Json",
+					"JsonUtilities",
 					"PakFile",
 					"Projects",
+					"RenderCore", // required for FDeferredCleanupInterface
 				}
 			);
 

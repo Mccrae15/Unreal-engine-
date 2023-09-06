@@ -117,36 +117,17 @@ bool ULocalLightComponent::CanEditChange(const FProperty* InProperty) const
  */
 void ULocalLightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	Intensity = FMath::Max(0.0f, Intensity);
+	// Clamp intensity to 0 only for non-EV unit, as EV value are negative for small luminance value.
+	if (IntensityUnits != ELightUnits::EV)
+	{
+		Intensity = FMath::Max(0.0f, Intensity);
+	}
 	LightmassSettings.IndirectLightingSaturation = FMath::Max(LightmassSettings.IndirectLightingSaturation, 0.0f);
 	LightmassSettings.ShadowExponent = FMath::Clamp(LightmassSettings.ShadowExponent, .5f, 8.0f);
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 #endif // WITH_EDITOR
-
-void ULocalLightComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	static FName RadiusName(TEXT("Radius"));
-	static FName AttenuationRadiusName(TEXT("AttenuationRadius"));
-	FName PropertyName = PropertyThatChanged->GetFName();
-
-	if (PropertyName == RadiusName
-		|| PropertyName == AttenuationRadiusName)
-	{
-		// Old radius tracks will animate the deprecated value
-		if (PropertyName == RadiusName)
-		{
-			AttenuationRadius = Radius_DEPRECATED;
-		}
-
-		PushRadiusToRenderThread();
-	}
-	else
-	{
-		Super::PostInterpChange(PropertyThatChanged);
-	}
-}
 
 void ULocalLightComponent::PushRadiusToRenderThread()
 {
@@ -167,6 +148,30 @@ void ULocalLightComponent::PushRadiusToRenderThread()
 
 float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELightUnits TargetUnits, float CosHalfConeAngle)
 {
+	// Notes
+	// -----
+	// * UE light operates at constant 'luminous intensity' i.e., the intensity will remain constant when changing the light's 
+	//   size (radius/width/height/...). When dealing with EV, we use an implicit 1m2 surface are for conversion, which allows 
+	//   to keep EV constant under light's size change.
+	// * UE unit is in centimeters (CM), while SI unit version are in meter (M), hence the conversion unit (100*100) in the 
+	//   formula below
+	// * When chaning unit, first GetUnitsConversionFactor() is called, then SetBrightness(). When switching to EV unit, 
+	//   we for convert the intensity to luminance (assuming an implicity 1m2 surface) and then apply the luminance -> EV unit 
+	//   in SetBrightness()
+	// Reminder
+	// --------
+	// Light units (in terms of candela)
+	//  Flux        = Lm = cd.sr
+	//  Intensity   = Cd
+	//  Luminance   = Cd/m2
+	//  Illuminance = Cd.sr/m2 = Lux
+	//
+	// Light units (in terms of Lumen)
+	//  Flux        = Lm = cd.sr
+	//  Intensity   = Lm/sr
+	//  Luminance   = Lm/sr/m2
+	//  Illuminance = Lm/m2 = Lux
+	
 	CosHalfConeAngle = FMath::Clamp<float>(CosHalfConeAngle, -1, 1 - UE_KINDA_SMALL_NUMBER);
 
 	if (SrcUnits == TargetUnits)
@@ -185,6 +190,10 @@ float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELigh
 		{
 			CnvFactor = 100.f * 100.f / 2.f / UE_PI / (1.f - CosHalfConeAngle);
 		}
+		else if (SrcUnits == ELightUnits::EV)
+		{
+			CnvFactor = 100.f * 100.f;
+		}
 		else
 		{
 			CnvFactor = 16.f;
@@ -197,6 +206,10 @@ float ULocalLightComponent::GetUnitsConversionFactor(ELightUnits SrcUnits, ELigh
 		else if (TargetUnits == ELightUnits::Lumens)
 		{
 			CnvFactor *= 2.f  * UE_PI * (1.f - CosHalfConeAngle) / 100.f / 100.f;
+		}
+		else if (TargetUnits == ELightUnits::EV)
+		{
+			CnvFactor *= 1.f / 100.f / 100.f;
 		}
 		else
 		{

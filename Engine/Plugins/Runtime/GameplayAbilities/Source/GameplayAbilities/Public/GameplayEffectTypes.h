@@ -90,6 +90,9 @@ struct GAMEPLAYABILITIES_API FGameplayModEvaluationChannelSettings
 
 	void SetEvaluationChannel(EGameplayModEvaluationChannel NewChannel);
 
+	bool operator==(const FGameplayModEvaluationChannelSettings& Other) const;
+	bool operator!=(const FGameplayModEvaluationChannelSettings& Other) const;
+
 protected:
 
 	/** Channel the settings would prefer to use, if possible/valid */
@@ -245,7 +248,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	{
 	}
 
-	/** Returns the list of gameplay tags applicable to this effect, defaults to the owner's tags */
+	/** Returns the list of gameplay tags applicable to this effect, defaults to the owner's tags. SpecTagContainer remains untouched by default. */
 	virtual void GetOwnedGameplayTags(OUT FGameplayTagContainer& ActorTagContainer, OUT FGameplayTagContainer& SpecTagContainer) const;
 
 	/** Sets the instigator and effect causer. Instigator is who owns the ability that spawned this, EffectCauser is the actor that is the physical source of the effect, such as a weapon. They can be the same. */
@@ -672,7 +675,12 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContextHandle
 	/** Returns actor list, may be empty */
 	const TArray<TWeakObjectPtr<AActor>> GetActors()
 	{
-		return Data->GetActors();
+		if (IsValid())
+		{
+			return Data->GetActors();
+		}
+
+		return {};
 	}
 
 	/** Returns hit result, this can be null */
@@ -780,18 +788,21 @@ USTRUCT(BlueprintType)
 struct FGameplayEffectRemovalInfo
 {
 	GENERATED_USTRUCT_BODY()
-
+	
 	/** True when the gameplay effect's duration has not expired, meaning the gameplay effect is being forcefully removed.  */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Removal")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Removal")
 	bool bPrematureRemoval = false;
 
 	/** Number of Stacks this gameplay effect had before it was removed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Removal")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Removal")
 	int32 StackCount = 0;
 
 	/** Actor this gameplay effect was targeting. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Removal")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Removal")
 	FGameplayEffectContextHandle EffectContext;
+
+	/** The Effect being Removed */
+	const FActiveGameplayEffect* ActiveEffect = nullptr;
 };
 
 
@@ -1277,6 +1288,9 @@ public:
 		PropertyGuid = Other.PropertyGuid;
 	}
 
+	// Pretty weird that the assignment operator copies the handle when the copy constructor doesn't - bug?
+	FGameplayTagBlueprintPropertyMapping& operator=(const FGameplayTagBlueprintPropertyMapping& Other) = default;
+
 	/** Gameplay tag being counted. */
 	UPROPERTY(EditAnywhere, Category = GameplayTagBlueprintProperty)
 	FGameplayTag TagToMap;
@@ -1322,8 +1336,11 @@ public:
 	void ApplyCurrentTags();
 
 #if WITH_EDITOR
+	UE_DEPRECATED(5.3, "The signature for IsDataValid has changed.  Please use the one that takes a FDataValidationContext")
+	EDataValidationResult IsDataValid(const UObject* ContainingAsset, TArray<FText>& ValidationErrors) { return EDataValidationResult::NotValidated; }
+
 	/** This can optionally be called in the owner's IsDataValid() for data validation. */
-	EDataValidationResult IsDataValid(UObject* ContainingAsset, TArray<FText>& ValidationErrors);
+	EDataValidationResult IsDataValid(const UObject* ContainingAsset, class FDataValidationContext& Context) const;
 #endif // #if WITH_EDITOR
 
 protected:
@@ -1353,12 +1370,16 @@ struct GAMEPLAYABILITIES_API FGameplayTagRequirements
 	GENERATED_USTRUCT_BODY()
 
 	/** All of these tags must be present */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GameplayModifier)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GameplayModifier, meta=(DisplayName="Must Have Tags"))
 	FGameplayTagContainer RequireTags;
 
 	/** None of these tags may be present */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GameplayModifier)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GameplayModifier, meta=(DisplayName="Must Not Have Tags"))
 	FGameplayTagContainer IgnoreTags;
+
+	/** Build up a more complex query that can't be expressed with RequireTags/IgnoreTags alone */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = GameplayModifier, meta = (DisplayName = "Query Must Match"))
+	FGameplayTagQuery TagQuery;
 
 	/** True if all required tags and no ignore tags found */
 	bool	RequirementsMet(const FGameplayTagContainer& Container) const;
@@ -1368,6 +1389,12 @@ struct GAMEPLAYABILITIES_API FGameplayTagRequirements
 
 	/** Return debug string */
 	FString ToString() const;
+
+	bool operator==(const FGameplayTagRequirements& Other) const;
+	bool operator!=(const FGameplayTagRequirements& Other) const;
+
+	/** Converts the RequireTags and IgnoreTags fields into an equivalent FGameplayTagQuery */
+	UE_NODISCARD FGameplayTagQuery ConvertTagFieldsToTagQuery() const;
 };
 
 
@@ -1382,7 +1409,6 @@ struct GAMEPLAYABILITIES_API FTagContainerAggregator
 	FTagContainerAggregator(FTagContainerAggregator&& Other)
 		: CapturedActorTags(MoveTemp(Other.CapturedActorTags))
 		, CapturedSpecTags(MoveTemp(Other.CapturedSpecTags))
-		, ScopedTags(MoveTemp(Other.ScopedTags))
 		, CachedAggregator(MoveTemp(Other.CachedAggregator))
 		, CacheIsValid(Other.CacheIsValid)
 	{
@@ -1391,7 +1417,6 @@ struct GAMEPLAYABILITIES_API FTagContainerAggregator
 	FTagContainerAggregator(const FTagContainerAggregator& Other)
 		: CapturedActorTags(Other.CapturedActorTags)
 		, CapturedSpecTags(Other.CapturedSpecTags)
-		, ScopedTags(Other.ScopedTags)
 		, CachedAggregator(Other.CachedAggregator)
 		, CacheIsValid(Other.CacheIsValid)
 	{
@@ -1401,7 +1426,6 @@ struct GAMEPLAYABILITIES_API FTagContainerAggregator
 	{
 		CapturedActorTags = MoveTemp(Other.CapturedActorTags);
 		CapturedSpecTags = MoveTemp(Other.CapturedSpecTags);
-		ScopedTags = MoveTemp(Other.ScopedTags);
 		CachedAggregator = MoveTemp(Other.CachedAggregator);
 		CacheIsValid = Other.CacheIsValid;
 		return *this;
@@ -1411,7 +1435,6 @@ struct GAMEPLAYABILITIES_API FTagContainerAggregator
 	{
 		CapturedActorTags = Other.CapturedActorTags;
 		CapturedSpecTags = Other.CapturedSpecTags;
-		ScopedTags = Other.ScopedTags;
 		CachedAggregator = Other.CachedAggregator;
 		CacheIsValid = Other.CacheIsValid;
 		return *this;
@@ -1436,6 +1459,7 @@ private:
 	UPROPERTY()
 	FGameplayTagContainer CapturedSpecTags;
 
+	UE_DEPRECATED(5.3, "This variable is unused and will removed")
 	UPROPERTY()
 	FGameplayTagContainer ScopedTags;
 
@@ -1536,7 +1560,7 @@ struct GAMEPLAYABILITIES_API FMinimalReplicationTagCountMap
 	{
 		MapID++;
 		int32& Count = TagMap.FindOrAdd(Tag);
-		Count = NewCount;
+		Count = FMath::Max(0, NewCount);
 		
 		if (Count == 0)
 		{

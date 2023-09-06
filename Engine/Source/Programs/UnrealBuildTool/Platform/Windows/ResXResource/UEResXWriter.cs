@@ -1,10 +1,5 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Xml;
 
 namespace UnrealBuildTool
@@ -61,7 +56,7 @@ namespace UnrealBuildTool
 				Data.Attributes.Append(Attr);
 			}
 
-			if (!string.IsNullOrEmpty(InSpace))
+			if (!System.String.IsNullOrEmpty(InSpace))
 			{
 				XmlAttribute Attr = Document.CreateAttribute("xml:space");
 				Attr.Value = "preserve";

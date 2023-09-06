@@ -25,9 +25,9 @@ namespace unsync {
 bool GForceBufferedFiles = false;
 
 // Returns extended absolute path of a form \\?\D:\verylongpath or \\?\UNC\servername\verylongpath
-// Expects an absolute path input.
+// Expects an absolute path input. Returns original path on non-Windows.
 // https://docs.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation
-static FPath
+FPath
 MakeExtendedAbsolutePath(const FPath& InAbsolutePath)
 {
 	if (InAbsolutePath.empty())
@@ -55,6 +55,28 @@ MakeExtendedAbsolutePath(const FPath& InAbsolutePath)
 	}
 #else // UNSYNC_PLATFORM_WINDOWS
 	return InAbsolutePath;
+#endif // UNSYNC_PLATFORM_WINDOWS
+}
+
+FPath
+RemoveExtendedPathPrefix(const FPath& InPath)
+{
+#if UNSYNC_PLATFORM_WINDOWS
+	const std::wstring& InPathString = InPath.native();
+	if (InPathString.starts_with(L"\\\\?\\UNC\\"))
+	{
+		return FPath(InPathString.substr(8));
+	}
+	else if (InPathString.starts_with(L"\\\\?\\"))
+	{
+		return FPath(InPathString.substr(4));
+	}
+	else
+	{
+		return InPath;
+	}
+#else // UNSYNC_PLATFORM_WINDOWS
+	return InPath;
 #endif // UNSYNC_PLATFORM_WINDOWS
 }
 

@@ -80,49 +80,7 @@ void UInputSettings::PostInitProperties()
 	Super::PostInitProperties();
 
 	PopulateAxisConfigs();
-
-#if PLATFORM_WINDOWS
-	// If the console key is set to the default we'll see about adding the keyboard default
-	// If they've mapped any additional keys, we'll just assume they've set it up in a way they desire
-	if (ConsoleKeys.Num() == 1 && ConsoleKeys[0] == EKeys::Tilde)
-	{
-		FKey DefaultConsoleKey = EKeys::Tilde;
-		switch(PRIMARYLANGID(LOWORD(GetKeyboardLayout(0))))
-		{
-		case LANG_FRENCH:
-		case LANG_HUNGARIAN:
-			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_7, 0);
-			break;
-
-		case LANG_GERMAN:
-			DefaultConsoleKey = EKeys::Caret;
-			break;
-
-		case LANG_ITALIAN:
-			DefaultConsoleKey = EKeys::Backslash;
-			break;
-
-		case LANG_SPANISH:
-			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_5, 0);
-			break;
-
-		case LANG_SLOVAK:
-		case LANG_SWEDISH:
-			DefaultConsoleKey = EKeys::Section;
-			break;
-
-		case LANG_JAPANESE:
-		case LANG_RUSSIAN:
-			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_3, 0);
-			break;
-		}
-
-		if (DefaultConsoleKey != EKeys::Tilde && DefaultConsoleKey.IsValid())
-		{
-			ConsoleKeys.Add(DefaultConsoleKey);
-		}
-	}
-#endif
+	AddInternationalConsoleKey();
 
 	for (const FInputActionKeyMapping& KeyMapping : ActionMappings)
 	{
@@ -176,12 +134,62 @@ void UInputSettings::PopulateAxisConfigs()
 #endif
 }
 
-#if WITH_EDITOR
-void UInputSettings::PostReloadConfig( FProperty* PropertyThatWasLoaded )
+void UInputSettings::AddInternationalConsoleKey()
+{
+#if PLATFORM_WINDOWS
+	// If the console key is set to the default we'll see about adding the keyboard default
+	// If they've mapped any additional keys, we'll just assume they've set it up in a way they desire
+	if (ConsoleKeys.Num() == 1 && ConsoleKeys[0] == EKeys::Tilde)
+	{
+		FKey DefaultConsoleKey = EKeys::Tilde;
+		switch (PRIMARYLANGID(LOWORD(GetKeyboardLayout(0))))
+		{
+		case LANG_FRENCH:
+		case LANG_HUNGARIAN:
+			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_7, 0);
+			break;
+
+		case LANG_GERMAN:
+			DefaultConsoleKey = EKeys::Caret;
+			break;
+
+		case LANG_ITALIAN:
+			DefaultConsoleKey = EKeys::Backslash;
+			break;
+
+		case LANG_SPANISH:
+			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_5, 0);
+			break;
+
+		case LANG_SLOVAK:
+		case LANG_SWEDISH:
+			DefaultConsoleKey = EKeys::Section;
+			break;
+
+		case LANG_JAPANESE:
+		case LANG_RUSSIAN:
+			DefaultConsoleKey = FInputKeyManager::Get().GetKeyFromCodes(VK_OEM_3, 0);
+			break;
+		}
+
+		if (DefaultConsoleKey != EKeys::Tilde && DefaultConsoleKey.IsValid())
+		{
+			ConsoleKeys.Add(DefaultConsoleKey);
+		}
+	}
+#endif
+}
+
+void UInputSettings::PostReloadConfig(FProperty* PropertyThatWasLoaded)
 {
 	Super::PostReloadConfig(PropertyThatWasLoaded);
+#if WITH_EDITOR
 	PopulateAxisConfigs();
+#endif
+	AddInternationalConsoleKey();
 }
+
+#if WITH_EDITOR
 
 void UInputSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
 {
@@ -327,6 +335,26 @@ void UInputSettings::GetAxisNames(TArray<FName>& AxisNames) const
 		AxisNames.AddUnique(AxisMapping.AxisName);
 	}
 }
+
+#if WITH_EDITOR
+const TArray<FName>& UInputSettings::GetAllActionAndAxisNames()
+{
+	static TArray<FName> OutNames;
+	OutNames.Reset();
+
+	const UInputSettings* InputSettings = GetDefault<UInputSettings>();
+	check(InputSettings);
+
+	TArray<FName> ActionNames;
+	InputSettings->GetActionNames(ActionNames);
+	OutNames.Append(ActionNames);
+	
+	InputSettings->GetAxisNames(ActionNames);
+	OutNames.Append(ActionNames);
+	
+	return OutNames;
+}
+#endif // WITH_EDITOR
 
 void UInputSettings::ForceRebuildKeymaps()
 {
@@ -498,27 +526,104 @@ void UInputSettings::SetDefaultInputComponentClass(TSubclassOf<UInputComponent> 
 /////////////////////////////////////////////////////////////
 // FHardwareDeviceIdentifier
 
-FHardwareDeviceIdentifier FHardwareDeviceIdentifier::Invalid = { NAME_None, NAME_None };
-FHardwareDeviceIdentifier FHardwareDeviceIdentifier::DefaultKeyboardAndMouse = { TEXT("DefaultKeyboardAndMouse"), TEXT("KBM") };
+FHardwareDeviceIdentifier FHardwareDeviceIdentifier::Invalid =
+	{
+		/* .InputClassName= */ NAME_None,
+		/* .HardwareDeviceIdentifier= */ NAME_None,
+		/* .PrimaryDeviceType= */ EHardwareDevicePrimaryType::Unspecified,
+		/* .SupportedFeaturesMask= */ EHardwareDeviceSupportedFeatures::Type::Unspecified
+	};
+
+FHardwareDeviceIdentifier FHardwareDeviceIdentifier::DefaultKeyboardAndMouse = 
+	{
+		/* .InputClassName= */ TEXT("DefaultKeyboardAndMouse"),
+		/* .HardwareDeviceIdentifier= */ TEXT("KBM"),
+		/* .PrimaryDeviceType= */ EHardwareDevicePrimaryType::KeyboardAndMouse,
+		/* .SupportedFeaturesMask= */ EHardwareDeviceSupportedFeatures::Type::Keypress | EHardwareDeviceSupportedFeatures::Type::Pointer
+	};
+
+FHardwareDeviceIdentifier FHardwareDeviceIdentifier::DefaultGamepad = 
+	{
+	/* .InputClassName= */ TEXT("DefaultGamepad"),
+	/* .HardwareDeviceIdentifier= */ TEXT("Gamepad"),
+	/* .PrimaryDeviceType= */ EHardwareDevicePrimaryType::Gamepad,
+	/* .SupportedFeaturesMask= */  EHardwareDeviceSupportedFeatures::Type::Gamepad
+};
+
+FHardwareDeviceIdentifier FHardwareDeviceIdentifier::DefaultMobileTouch = 
+	{
+	/* .InputClassName= */ TEXT("DefaultMobileTouch"),
+	/* .HardwareDeviceIdentifier= */ TEXT("MobileTouch"),
+	/* .PrimaryDeviceType= */ EHardwareDevicePrimaryType::Touch,
+	/* .SupportedFeaturesMask= */ EHardwareDeviceSupportedFeatures::Type::Touch
+};
 
 // Default to the invalid hardware device identifier
 FHardwareDeviceIdentifier::FHardwareDeviceIdentifier()
 	: InputClassName(Invalid.InputClassName)
 	, HardwareDeviceIdentifier(Invalid.HardwareDeviceIdentifier)
+	, PrimaryDeviceType(EHardwareDevicePrimaryType::Unspecified)
+	, SupportedFeaturesMask(EHardwareDeviceSupportedFeatures::Type::Unspecified)
 {
 	
 }
 
-FHardwareDeviceIdentifier::FHardwareDeviceIdentifier(const FName InClassName, const FName InHardwareDeviceIdentifier)
+FHardwareDeviceIdentifier::FHardwareDeviceIdentifier(const FName InClassName, const FName InHardwareDeviceIdentifier, EHardwareDevicePrimaryType InPrimaryType, EHardwareDeviceSupportedFeatures::Type Flags)
 	: InputClassName(InClassName)
 	, HardwareDeviceIdentifier(InHardwareDeviceIdentifier)
+	, PrimaryDeviceType(InPrimaryType)
+	, SupportedFeaturesMask(Flags)
 {
 
+}
+
+uint32 GetTypeHash(const FHardwareDeviceIdentifier& InDevice)
+{
+	return HashCombine(GetTypeHash(InDevice.InputClassName), GetTypeHash(InDevice.HardwareDeviceIdentifier));
+}
+
+FArchive& operator<<(FArchive& Ar, FHardwareDeviceIdentifier& InDevice)
+{
+	Ar << InDevice.InputClassName;
+	Ar << InDevice.HardwareDeviceIdentifier;
+	Ar << InDevice.PrimaryDeviceType;
+	Ar << InDevice.SupportedFeaturesMask;
+	
+	return Ar;
+}
+
+bool FHardwareDeviceIdentifier::HasAnySupportedFeatures(const EHardwareDeviceSupportedFeatures::Type FlagsToCheck) const
+{
+	return (SupportedFeaturesMask & static_cast<int32>(FlagsToCheck)) != 0;
+}
+
+bool FHardwareDeviceIdentifier::HasAllSupportedFeatures(const EHardwareDeviceSupportedFeatures::Type FlagsToCheck) const
+{
+	return ((SupportedFeaturesMask & FlagsToCheck) == FlagsToCheck);
 }
 
 bool FHardwareDeviceIdentifier::IsValid() const
 {
 	return InputClassName.IsValid() && HardwareDeviceIdentifier.IsValid();
+}
+
+FString FHardwareDeviceIdentifier::ToString() const
+{
+	return FString::Printf(TEXT("%s::%s"), *InputClassName.ToString(), *HardwareDeviceIdentifier.ToString());
+}
+
+bool FHardwareDeviceIdentifier::operator==(const FHardwareDeviceIdentifier& Other) const
+{
+	return
+		Other.InputClassName == InputClassName &&
+		Other.HardwareDeviceIdentifier == HardwareDeviceIdentifier &&
+		Other.SupportedFeaturesMask == SupportedFeaturesMask &&
+		Other.PrimaryDeviceType == PrimaryDeviceType;	
+}
+
+bool FHardwareDeviceIdentifier::operator!=(const FHardwareDeviceIdentifier& Other) const
+{
+	return !(Other == *this);
 }
 
 //////////////////////////////////////////////////////////////////
@@ -530,11 +635,27 @@ UInputPlatformSettings::UInputPlatformSettings()
 	, MaxTriggerVibrationTriggerPosition(9)
 	, MaxTriggerVibrationFrequency(255)
 	, MaxTriggerVibrationAmplitude(8)
-{ }
+{
+	// Add the default invalid and KBM hardware device ID's here so that they will
+	// be found if no custom devices exist when you call GetHardwareDeviceForClassName
+	HardwareDevices.AddUnique(FHardwareDeviceIdentifier::Invalid);
+	HardwareDevices.AddUnique(FHardwareDeviceIdentifier::DefaultKeyboardAndMouse);
+	HardwareDevices.AddUnique(FHardwareDeviceIdentifier::DefaultGamepad);
+	HardwareDevices.AddUnique(FHardwareDeviceIdentifier::DefaultMobileTouch);
+}
 
 UInputPlatformSettings* UInputPlatformSettings::Get()
 {
 	return UPlatformSettingsManager::Get().GetSettingsForPlatform<UInputPlatformSettings>();
+}
+
+const FHardwareDeviceIdentifier* UInputPlatformSettings::GetHardwareDeviceForClassName(const FName InHardwareDeviceIdentifier) const
+{
+	return HardwareDevices.FindByPredicate(
+		[InHardwareDeviceIdentifier](const FHardwareDeviceIdentifier& Hardware)
+		{
+			return Hardware.HardwareDeviceIdentifier == InHardwareDeviceIdentifier;
+		});
 }
 
 void UInputPlatformSettings::AddHardwareDeviceIdentifier(const FHardwareDeviceIdentifier& InHardwareDevice)

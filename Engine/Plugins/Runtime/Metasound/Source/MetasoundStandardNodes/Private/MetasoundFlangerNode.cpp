@@ -1,17 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Internationalization/Text.h"
-#include "MetasoundFacade.h"
-#include "MetasoundExecutableOperator.h"
-#include "MetasoundNodeRegistrationMacro.h"
-#include "MetasoundPrimitives.h"
-#include "MetasoundStandardNodesNames.h"
-#include "MetasoundStandardNodesCategories.h"
 #include "DSP/BufferVectorOperations.h"
 #include "DSP/Flanger.h"
+#include "Internationalization/Text.h"
+#include "MetasoundExecutableOperator.h"
+#include "MetasoundFacade.h"
+#include "MetasoundNodeRegistrationMacro.h"
 #include "MetasoundParamHelper.h"
+#include "MetasoundPrimitives.h"
+#include "MetasoundStandardNodesCategories.h"
+#include "MetasoundStandardNodesNames.h"
 
 #define LOCTEXT_NAMESPACE "MetasoundStandardNodes_FlangerNode"
+
 
 namespace Metasound
 {
@@ -45,6 +46,7 @@ namespace Metasound
 				Info.DisplayName = NodeDisplayName;
 				Info.Description = NodeDescription;
 				Info.Author = PluginAuthor;
+				Info.CategoryHierarchy = { NodeCategories::Filters };
 				Info.PromptIfMissing = PluginNodeMissingPrompt;
 				Info.DefaultInterface = GetVertexInterface();
 
@@ -88,10 +90,10 @@ namespace Metasound
 			FFloatReadRef CenterDelay = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputCenterDelay), InParams.OperatorSettings);
 			FFloatReadRef MixLevel = InParams.InputDataReferences.GetDataReadReferenceOrConstructWithVertexDefault<float>(InputInterface, METASOUND_GET_PARAM_NAME(InputMixLevel), InParams.OperatorSettings);
 
-			return MakeUnique<FFlangerOperator>(InParams.OperatorSettings, AudioInput, ModulationRate, ModulationDepth, CenterDelay, MixLevel);
+			return MakeUnique<FFlangerOperator>(InParams, AudioInput, ModulationRate, ModulationDepth, CenterDelay, MixLevel);
 		}
 
-		FFlangerOperator(const FOperatorSettings& InSettings,
+		FFlangerOperator(const FCreateOperatorParams& InParams,
 			const FAudioBufferReadRef& InAudioInput,
 			const FFloatReadRef& InputModulationRate,
 			const FFloatReadRef& InputModulationDepth,
@@ -103,33 +105,49 @@ namespace Metasound
 			, ModulationDepth(InputModulationDepth)
 			, CenterDelay(InputCenterDelay)
 			, MixLevel(InMixLevel)
-			, AudioOut(FAudioBufferWriteRef::CreateNew(InSettings))
+			, AudioOut(FAudioBufferWriteRef::CreateNew(InParams.OperatorSettings))
 			, Flanger()
 		{
-			Flanger.Init(InSettings.GetSampleRate());
+			Reset(InParams);
 		}
 
-		FDataReferenceCollection GetInputs() const
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace FlangerVertexNames;
 
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioIn);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputModulationRate), ModulationRate);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputModulationDepth), ModulationDepth);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputCenterDelay), CenterDelay);
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputMixLevel), MixLevel);
-
-			return InputDataReferences;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioIn);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputModulationRate), ModulationRate);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputModulationDepth), ModulationDepth);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputCenterDelay), CenterDelay);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputMixLevel), MixLevel);
 		}
 
-		virtual FDataReferenceCollection GetOutputs() const
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace FlangerVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOut);
+		}
 
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudio), AudioOut);
-			return OutputDataReferences;
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		virtual FDataReferenceCollection GetOutputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			AudioOut->Zero();
+			Flanger.Init(InParams.OperatorSettings.GetSampleRate());
 		}
 
 		void Execute()
@@ -140,19 +158,9 @@ namespace Metasound
 			Flanger.SetModulationDepth(*ModulationDepth);
 			Flanger.SetMixLevel(*MixLevel);
 
-			const float* InputAudio = AudioIn->GetData();
-			float* OutputAudio = AudioOut->GetData();
 			int32 NumFrames = AudioIn->Num();
 
-			// Copy input audio into aligned buffer
-			AlignedAudioIn.Reset();
-			AlignedAudioIn.Append(InputAudio, NumFrames);
-
-			AlignedAudioOut.Reset();
-			AlignedAudioOut.AddUninitialized(NumFrames);
-
-			Flanger.ProcessAudio(AlignedAudioIn, NumFrames, AlignedAudioOut);
-			FMemory::Memcpy(OutputAudio, AlignedAudioOut.GetData(), sizeof(float) * NumFrames);
+			Flanger.ProcessAudio(*AudioIn, NumFrames, *AudioOut);
 		}
 
 	private:
@@ -175,10 +183,6 @@ namespace Metasound
 
 		// Flanger DSP object
 		Audio::FFlanger Flanger;
-
-		// Input/output aligned buffers
-		Audio::FAlignedFloatBuffer AlignedAudioIn;
-		Audio::FAlignedFloatBuffer AlignedAudioOut;
 	};
 
 	class METASOUNDSTANDARDNODES_API FFlangerNode : public FNodeFacade

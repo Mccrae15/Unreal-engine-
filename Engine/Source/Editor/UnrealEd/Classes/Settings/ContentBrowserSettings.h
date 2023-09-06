@@ -6,7 +6,6 @@
 
 #pragma once
 
-
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
@@ -15,8 +14,8 @@
 /**
  * Implements content browser settings.  These are global not per-project
  */
-UCLASS(config=EditorSettings)
-class UNREALED_API UContentBrowserSettings : public UObject
+UCLASS(config=EditorSettings, MinimalAPI)
+class UContentBrowserSettings : public UObject
 {
 	GENERATED_BODY()
 
@@ -25,10 +24,6 @@ public:
 	/** The number of objects to load at once in the Content Browser before displaying a warning about loading many assets */
 	UPROPERTY(EditAnywhere, config, Category=ContentBrowser, meta=(DisplayName = "Assets to Load at Once Before Warning", ClampMin = "1"))
 	int32 NumObjectsToLoadBeforeWarning;
-
-	/** Whether the Content Browser should open the Sources Panel by default */
-	UPROPERTY(EditAnywhere, config, Category = ContentBrowser)
-	bool bOpenSourcesPanelByDefault;
 
 	/** Whether to render thumbnails for loaded assets in real-time in the Content Browser */
 	UPROPERTY(config)
@@ -63,8 +58,8 @@ public:
 	bool bDisplayFriendlyNameForPluginFolders = true;
 
 	/** The number of objects to keep in the Content Browser Recently Opened filter */
-	UPROPERTY(EditAnywhere, config, Category = ContentBrowser, meta = (DisplayName = "Number of Assets to Keep in the Recently Opened Filter", ClampMin = "1", ClampMax = "30"))
-	int32 NumObjectsInRecentList;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "The filter now always keeps track of your last 30 recent assets"))
+	int32 NumObjectsInRecentList_DEPRECATED;
 
 	/** Enables the rendering of Material Instance thumbnail previews */
 	UPROPERTY(EditAnywhere, config, Category = ContentBrowser)
@@ -240,7 +235,7 @@ protected:
 
 	// UObject overrides
 
-	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
+	UNREALED_API virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
 
 private:
 
@@ -262,8 +257,7 @@ private:
 	UPROPERTY(config)
 	bool DisplayFavorites;
 
-	UPROPERTY(config)
-	bool DockCollections;
+	bool DockCollections = true;
 
 	UPROPERTY(config)
 	bool DisplayCppFolders;
@@ -278,5 +272,5 @@ private:
 	bool IncludeCollectionNames;
 
 	// Holds an event delegate that is executed when a setting has changed.
-	static FSettingChangedEvent SettingChangedEvent;
+	static UNREALED_API FSettingChangedEvent SettingChangedEvent;
 };

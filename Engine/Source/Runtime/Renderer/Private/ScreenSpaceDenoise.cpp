@@ -16,7 +16,7 @@
 #include "PipelineStateCache.h"
 #include "SceneTextureParameters.h"
 #include "SystemTextures.h"
-#include "Lumen/LumenSceneRendering.h"
+#include "Lumen/Lumen.h"
 
 
 // ---------------------------------------------------- Cvars
@@ -775,7 +775,7 @@ static bool ShouldCompileSignalPipeline(ESignalProcessing SignalProcessing, ESha
 		SignalProcessing == ESignalProcessing::DiffuseAndAmbientOcclusion)
 	{
 		// Only for ray tracing denoising.
-		return RHISupportsRayTracingShaders(Platform);
+		return RHISupportsRayTracing(Platform);
 	}
 	else if (SignalProcessing == ESignalProcessing::PolychromaticPenumbraHarmonic)
 	{
@@ -1114,7 +1114,7 @@ class FSSDSpatialAccumulationCS : public FGlobalShader
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		// TODO: UECON-464 - force optimizations to workaround shader compiler issue on DXC until fixed by MS
+		// Dead code stripping required or else we have an unrolled loop with a non-compile time specified iteration count.
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
@@ -1167,7 +1167,7 @@ class FSSDTemporalAccumulationCS : public FGlobalShader
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		// TODO: UECON-464 - force optimizations to workaround shader compiler issue on DXC until fixed by MS
+		// Dead code stripping required or else we have an unrolled loop with a non-compile time specified iteration count.
 		OutEnvironment.CompilerFlags.Add(CFLAG_ForceOptimization);
 	}
 
@@ -1879,16 +1879,18 @@ static void DenoiseSignalAtConstantPixelDensity(
 		bool bGlobalCameraCut = !View.PrevViewInfo.DepthBuffer.IsValid();
 		if (CompressedMetadataLayout == ECompressedMetadataLayout::DepthAndViewNormal)
 		{
-			PassParameters->PrevCompressedMetadata[0] = RegisterExternalTextureWithFallback(
-				GraphBuilder, ViewInfoPooledRenderTargets.PrevCompressedDepthViewNormal, GSystemTextures.ZeroUIntDummy);
+			PassParameters->PrevCompressedMetadata[0] = ViewInfoPooledRenderTargets.PrevCompressedDepthViewNormal
+				? GraphBuilder.RegisterExternalTexture(ViewInfoPooledRenderTargets.PrevCompressedDepthViewNormal)
+				: GSystemTextures.GetZeroUIntDummy(GraphBuilder);
 			bGlobalCameraCut = !View.PrevViewInfo.CompressedDepthViewNormal.IsValid();
 		}
 		else if (CompressedMetadataLayout == ECompressedMetadataLayout::FedDepthAndShadingModelID)
 		{
 			PassParameters->PrevCompressedMetadata[0] = RegisterExternalTextureWithFallback(
 				GraphBuilder, View.PrevViewInfo.CompressedOpaqueDepth, GSystemTextures.BlackDummy);
-			PassParameters->PrevCompressedMetadata[1] = RegisterExternalTextureWithFallback(
-				GraphBuilder, View.PrevViewInfo.CompressedOpaqueShadingModel, GSystemTextures.ZeroUIntDummy);
+			PassParameters->PrevCompressedMetadata[1] = View.PrevViewInfo.CompressedOpaqueShadingModel
+				? GraphBuilder.RegisterExternalTexture(View.PrevViewInfo.CompressedOpaqueShadingModel)
+				: GSystemTextures.GetZeroUIntDummy(GraphBuilder);
 
 			bGlobalCameraCut = !View.PrevViewInfo.CompressedOpaqueDepth.IsValid() || !View.PrevViewInfo.CompressedOpaqueShadingModel.IsValid();
 		}

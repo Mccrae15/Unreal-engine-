@@ -12,10 +12,15 @@
 #include "CookOnTheSide/CookLog.h"
 #include "CoreGlobals.h"
 #include "DerivedDataBuildRemoteExecutor.h"
+#include "HAL/FileManager.h"
+#include "Misc/CommandLine.h"
 #include "Misc/OutputDevice.h"
+#include "Misc/PathViews.h"
 #include "Misc/StringBuilder.h"
 #include "PackageBuildDependencyTracker.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/ArchiveUObject.h"
+#include "Serialization/JsonWriter.h"
 #include "Templates/Casts.h"
 #include "UObject/GCObject.h"
 #include "UObject/MetaData.h"
@@ -39,6 +44,7 @@
 #include "IAnalyticsProviderET.h"
 #include "StudioAnalytics.h"
 #include "DerivedDataCacheInterface.h"
+#include "DerivedDataCacheUsageStats.h"
 #include "Virtualization/VirtualizationSystem.h"
 #include "Experimental/ZenServerInterface.h"
 #endif
@@ -240,16 +246,18 @@ namespace DetailedCookStats
 	int32 PeakRequestQueueSize = 0;
 	int32 PeakLoadQueueSize = 0;
 	int32 PeakSaveQueueSize = 0;
-	uint32 NumPreloadedDependencies = 0;
+	std::atomic<int32> NumDetectedLoads{ 0 };
+	int32 NumRequestedLoads = 0;
 	uint32 NumPackagesIterativelySkipped = 0;
-	uint32 NumPackagesSavedForCook = 0;
 	FCookStatsManager::FAutoRegisterCallback RegisterCookOnTheFlyServerStats([](FCookStatsManager::AddStatFuncRef AddStat)
 		{
-			AddStat(TEXT("Package.Load"), FCookStatsManager::CreateKeyValueArray(TEXT("NumPreloadedDependencies"), NumPreloadedDependencies));
+			AddStat(TEXT("Package.Load"), FCookStatsManager::CreateKeyValueArray(
+				TEXT("NumInlineLoads"), NumDetectedLoads - NumRequestedLoads));
 			AddStat(TEXT("Package.Save"), FCookStatsManager::CreateKeyValueArray(TEXT("NumPackagesIterativelySkipped"), NumPackagesIterativelySkipped));
-			AddStat(TEXT("CookOnTheFlyServer"), FCookStatsManager::CreateKeyValueArray(TEXT("PeakRequestQueueSize"), PeakRequestQueueSize));
-			AddStat(TEXT("CookOnTheFlyServer"), FCookStatsManager::CreateKeyValueArray(TEXT("PeakLoadQueueSize"), PeakLoadQueueSize));
-			AddStat(TEXT("CookOnTheFlyServer"), FCookStatsManager::CreateKeyValueArray(TEXT("PeakSaveQueueSize"), PeakSaveQueueSize));
+			AddStat(TEXT("CookOnTheFlyServer"), FCookStatsManager::CreateKeyValueArray(
+				TEXT("PeakRequestQueueSize"), PeakRequestQueueSize,
+				TEXT("PeakLoadQueueSize"), PeakLoadQueueSize,
+				TEXT("PeakSaveQueueSize"), PeakSaveQueueSize));
 		});
 }
 #endif
@@ -898,72 +906,6 @@ void LogCookStats(ECookMode::Type CookMode)
 		return;
 	}
 
-	if (FStudioAnalytics::IsAvailable() && IsCookByTheBookMode(CookMode))
-	{
-
-		// convert filtered stats directly to an analytics event
-		TArray<FAnalyticsEventAttribute> Attributes;
-
-		// Sends each cook stat to the studio analytics system.
-		auto SendCookStatsToAnalytics = [&Attributes](const FString& StatName, const TArray<FCookStatsManager::StringKeyValue>& StatAttributes)
-		{
-			for (const auto& Attr : StatAttributes)
-			{
-				FString FormattedAttrName = StatName + "." + Attr.Key;
-				Attributes.Emplace(FormattedAttrName, Attr.Value);
-			}
-		};
-
-		// Now actually grab the stats 
-		FCookStatsManager::LogCookStats(SendCookStatsToAnalytics);
-
-		// Gather DDC analytics
-		GetDerivedDataCacheRef().GatherAnalytics(Attributes);
-
-		// Gather Virtualization analytics
-		UE::Virtualization::IVirtualizationSystem::Get().GatherAnalytics(Attributes);
-
-#if UE_WITH_ZEN
-		// Gather Zen analytics
-		if (UE::Zen::IsDefaultServicePresent())
-		{
-			UE::Zen::GetDefaultServiceInstance().GatherAnalytics(Attributes);
-		}
-#endif
-
-		// Record them all under cooking event
-		FStudioAnalytics::GetProvider().RecordEvent(TEXT("Core.Cooking"), Attributes);
-
-		FStudioAnalytics::GetProvider().BlockUntilFlushed(60.0f);
-	}
-
-	/** Used for custom logging of DDC Resource usage stats. */
-	struct FDDCResourceUsageStat
-	{
-	public:
-		FDDCResourceUsageStat(FString InAssetType, double InTotalTimeSec, bool bIsGameThreadTime, double InSizeMB, int64 InAssetsBuilt) : AssetType(MoveTemp(InAssetType)), TotalTimeSec(InTotalTimeSec), GameThreadTimeSec(bIsGameThreadTime ? InTotalTimeSec : 0.0), SizeMB(InSizeMB), AssetsBuilt(InAssetsBuilt) {}
-		void Accumulate(const FDDCResourceUsageStat& OtherStat)
-		{
-			TotalTimeSec += OtherStat.TotalTimeSec;
-			GameThreadTimeSec += OtherStat.GameThreadTimeSec;
-			SizeMB += OtherStat.SizeMB;
-			AssetsBuilt += OtherStat.AssetsBuilt;
-		}
-		FString AssetType;
-		double TotalTimeSec;
-		double GameThreadTimeSec;
-		double SizeMB;
-		int64 AssetsBuilt;
-	};
-
-	/** Used for custom TSet comparison of DDC Resource usage stats. */
-	struct FDDCResourceUsageStatKeyFuncs : BaseKeyFuncs<FDDCResourceUsageStat, FString, false>
-	{
-		static const FString& GetSetKey(const FDDCResourceUsageStat& Element) { return Element.AssetType; }
-		static bool Matches(const FString& A, const FString& B) { return A == B; }
-		static uint32 GetKeyHash(const FString& Key) { return GetTypeHash(Key); }
-	};
-
 	/** Used to store profile data for custom logging. */
 	struct FCookProfileData
 	{
@@ -975,7 +917,7 @@ void LogCookStats(ECookMode::Type CookMode)
 	};
 
 	// instead of printing the usage stats generically, we capture them so we can log a subset of them in an easy-to-read way.
-	TSet<FDDCResourceUsageStat, FDDCResourceUsageStatKeyFuncs> DDCResourceUsageStats;
+	TArray<FDerivedDataCacheResourceStat> DDCResourceUsageStats;
 	TArray<FCookStatsManager::StringKeyValue> DDCSummaryStats;
 	TArray<FCookProfileData> CookProfileData;
 	TArray<FString> StatCategories;
@@ -995,54 +937,7 @@ void LogCookStats(ECookMode::Type CookMode)
 		}
 		else if (StatName.EndsWith(TEXT(".Usage"), ESearchCase::IgnoreCase))
 		{
-			// Anything that ends in .Usage is assumed to be an instance of FCookStats.FDDCResourceUsageStats. We'll log that using custom formatting.
-			FString AssetType = StatName;
-			AssetType.RemoveFromEnd(TEXT(".Usage"), ESearchCase::IgnoreCase);
-			// See if the asset has a subtype (found via the "Node" parameter")
-			const FCookStatsManager::StringKeyValue* AssetSubType = StatAttributes.FindByPredicate([](const FCookStatsManager::StringKeyValue& Item) { return Item.Key == TEXT("Node"); });
-			if (AssetSubType && AssetSubType->Value.Len() > 0)
-			{
-				AssetType += FString::Printf(TEXT(" (%s)"), *AssetSubType->Value);
-			}
-			// Pull the Time and Size attributes and AddOrAccumulate them into the set of stats. Ugly string/container manipulation code courtesy of UE/C++.
-			const FCookStatsManager::StringKeyValue* AssetTimeSecAttr = StatAttributes.FindByPredicate([](const FCookStatsManager::StringKeyValue& Item) { return Item.Key == TEXT("TimeSec"); });
-			double AssetTimeSec = 0.0;
-			if (AssetTimeSecAttr)
-			{
-				LexFromString(AssetTimeSec, *AssetTimeSecAttr->Value);
-			}
-			const FCookStatsManager::StringKeyValue* AssetSizeMBAttr = StatAttributes.FindByPredicate([](const FCookStatsManager::StringKeyValue& Item) { return Item.Key == TEXT("MB"); });
-			double AssetSizeMB = 0.0;
-			if (AssetSizeMBAttr)
-			{
-				LexFromString(AssetSizeMB, *AssetSizeMBAttr->Value);
-			}
-			const FCookStatsManager::StringKeyValue* ThreadNameAttr = StatAttributes.FindByPredicate([](const FCookStatsManager::StringKeyValue& Item) { return Item.Key == TEXT("ThreadName"); });
-			bool bIsGameThreadTime = ThreadNameAttr != nullptr && ThreadNameAttr->Value == TEXT("GameThread");
-
-			const FCookStatsManager::StringKeyValue* HitOrMissAttr = StatAttributes.FindByPredicate([](const FCookStatsManager::StringKeyValue& Item) { return Item.Key == TEXT("HitOrMiss"); });
-			bool bWasMiss = HitOrMissAttr != nullptr && HitOrMissAttr->Value == TEXT("Miss");
-			int64 AssetsBuilt = 0;
-			if (bWasMiss)
-			{
-				const FCookStatsManager::StringKeyValue* CountAttr = StatAttributes.FindByPredicate([](const FCookStatsManager::StringKeyValue& Item) { return Item.Key == TEXT("Count"); });
-				if (CountAttr)
-				{
-					LexFromString(AssetsBuilt, *CountAttr->Value);
-				}
-			}
-
-
-			FDDCResourceUsageStat Stat(AssetType, AssetTimeSec, bIsGameThreadTime, AssetSizeMB, AssetsBuilt);
-			FDDCResourceUsageStat* ExistingStat = DDCResourceUsageStats.Find(Stat.AssetType);
-			if (ExistingStat)
-			{
-				ExistingStat->Accumulate(Stat);
-			}
-			else
-			{
-				DDCResourceUsageStats.Add(Stat);
-			}
+			// These are gathered through GatherResourceStats.
 			bStatUsedCustomFormatting = true;
 		}
 		else if (StatName == TEXT("DDC.Summary"))
@@ -1071,6 +966,8 @@ void LogCookStats(ECookMode::Type CookMode)
 		}
 	};
 
+	GetDerivedDataCacheRef().GatherResourceStats(DDCResourceUsageStats);
+
 	FCookStatsManager::LogCookStats(LogStatsFunc);
 
 	UE_LOG(LogCook, Display, TEXT("Misc Cook Stats"));
@@ -1097,6 +994,46 @@ void LogCookStats(ECookMode::Type CookMode)
 		{
 			UE_LOG(LogCook, Display, TEXT("%s.%s=%s"), *ProfileEntry.Path, *ProfileEntry.Key, *ProfileEntry.Value);
 		}
+
+		FString CookStatsFileName;
+		if (FParse::Value(FCommandLine::Get(), TEXT("-CookStatsFile="), CookStatsFileName))
+		{
+			uint32 MultiprocessId = 0;
+			FParse::Value(FCommandLine::Get(), TEXT("-MultiprocessId="), MultiprocessId);
+			if (MultiprocessId != 0)
+			{
+				// Suppress the file creation on CookWorkers
+				// TODO: Replicate the information back to the CookDirector instead, UE-185774
+				CookStatsFileName.Empty();
+			}
+		}
+
+		if (!CookStatsFileName.IsEmpty())
+		{
+			FString JsonString;
+			TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> JsonWriter = TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR> >::Create(&JsonString);
+			JsonWriter->WriteObjectStart();
+			for (const auto& ProfileEntry : CookProfileData)
+			{
+				JsonWriter->WriteObjectStart(ProfileEntry.Key);
+				JsonWriter->WriteValue(TEXT("Path"), ProfileEntry.Path);
+				JsonWriter->WriteValue(TEXT("Value"), ProfileEntry.Value);
+				JsonWriter->WriteObjectEnd();
+			}
+			JsonWriter->WriteObjectEnd();
+			JsonWriter->Close();
+			TUniquePtr<FArchive> JsonFile(IFileManager::Get().CreateFileWriter(*CookStatsFileName));
+			if (!JsonFile)
+			{
+				UE_LOG(LogCook, Warning, TEXT("Could not write to CookStatsFile %s."), *CookStatsFileName);
+			}
+			else
+			{
+				JsonFile->Serialize(TCHAR_TO_ANSI(*JsonString), JsonString.Len());
+				JsonFile->Close();
+			}
+		}
+
 	}
 	if (DDCSummaryStats.Num() > 0)
 	{
@@ -1111,28 +1048,20 @@ void LogCookStats(ECookMode::Type CookMode)
 
 	DumpDerivedDataBuildRemoteExecutorStats();
 
-	if (DDCResourceUsageStats.Num() > 0)
+	if (!DDCResourceUsageStats.IsEmpty())
 	{
-		// sort the list
-		TArray<FDDCResourceUsageStat> SortedDDCResourceUsageStats;
-		SortedDDCResourceUsageStats.Empty(DDCResourceUsageStats.Num());
-		for (const FDDCResourceUsageStat& Stat : DDCResourceUsageStats)
-		{
-			SortedDDCResourceUsageStats.Emplace(Stat);
-		}
-		SortedDDCResourceUsageStats.Sort([](const FDDCResourceUsageStat& LHS, const FDDCResourceUsageStat& RHS)
-			{
-				return LHS.TotalTimeSec > RHS.TotalTimeSec;
-			});
+		Algo::SortBy(DDCResourceUsageStats, [](const FDerivedDataCacheResourceStat& Stat) { return Stat.BuildTimeSec + Stat.LoadTimeSec; }, TGreater());
 
 		UE_LOG(LogCook, Display, TEXT(""));
 		UE_LOG(LogCook, Display, TEXT("DDC Resource Stats"));
 		UE_LOG(LogCook, Display, TEXT("======================================================================================================="));
 		UE_LOG(LogCook, Display, TEXT("Asset Type                          Total Time (Sec)  GameThread Time (Sec)  Assets Built  MB Processed"));
 		UE_LOG(LogCook, Display, TEXT("----------------------------------  ----------------  ---------------------  ------------  ------------"));
-		for (const FDDCResourceUsageStat& Stat : SortedDDCResourceUsageStats)
+		for (const FDerivedDataCacheResourceStat& Stat : DDCResourceUsageStats)
 		{
-			UE_LOG(LogCook, Display, TEXT("%-34s  %16.2f  %21.2f  %12d  %12.2f"), *Stat.AssetType, Stat.TotalTimeSec, Stat.GameThreadTimeSec, Stat.AssetsBuilt, Stat.SizeMB);
+			UE_LOG(LogCook, Display, TEXT("%-34s  %16.2f  %21.2f  %12d  %12.2f"),
+				*Stat.AssetType, Stat.LoadTimeSec + Stat.BuildTimeSec, Stat.GameThreadTimeSec,
+				Stat.BuildCount, Stat.LoadSizeMB + Stat.BuildSizeMB);
 		}
 	}
 
@@ -1141,11 +1070,6 @@ void LogCookStats(ECookMode::Type CookMode)
 	if (UE::Virtualization::IVirtualizationSystem::IsInitialized())
 	{
 		UE::Virtualization::IVirtualizationSystem::Get().DumpStats();
-	}
-
-	if (IsCookByTheBookMode(CookMode))
-	{
-		FStudioAnalytics::FireEvent_Loading(TEXT("CookByTheBook"), DetailedCookStats::CookWallTimeSec);
 	}
 }
 

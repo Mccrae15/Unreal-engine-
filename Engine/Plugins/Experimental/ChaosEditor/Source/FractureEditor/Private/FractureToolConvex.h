@@ -42,9 +42,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = AutomaticOverlapRemoval, meta = (DisplayName = "Max Removal Fraction", ClampMin = ".01", ClampMax = "1"))
 	double FractionAllowRemove = .5;
 
-		/** Delete convex hulls from selected clusters.  Does not affect hulls on leaves. */
+	/** Delete convex hulls from selected clusters.  Does not affect hulls on leaves. */
 	UFUNCTION(CallInEditor, Category = Custom, meta = (DisplayName = "Delete From Selected"))
 	void DeleteFromSelected();
+
+	/** When enabled, convex visualization lines will show through the actual geometry */
+	UPROPERTY(EditAnywhere, Category = Visualization, meta = (DisplayName = "See Through Lines"))
+	bool bSeeThroughLines = false;
+
+	/** line thickness*/
+	UPROPERTY(EditAnywhere, Category = Visualization, meta = (DisplayName = "Line Thickness", ClampMin = ".00", ClampMax = "1.0"))
+	float LineThickness = 0.5f;
 
 	// Note: this feature puts multiple convexes on a single bone, which isn't supported by sim yet
 #if 0
@@ -121,7 +129,7 @@ public:
 	void PromoteChildren();
 	void ClearCustomConvex();
 
-	virtual void Setup() override;
+	virtual void Setup(TWeakPtr<FFractureEditorModeToolkit> InToolkit) override;
 
 
 	UPROPERTY(EditAnywhere, Category = Convex)
@@ -140,10 +148,14 @@ protected:
 		EdgesMappings.Empty();
 	}
 
+	void AddConvexHullVizualizationData(const Chaos::FConvex& ConvexHull, const FTransform& WorldSpaceTransform, bool bIsCustom, bool bIsUnionOfHulls);
+	void AddVisualizationData(FGeometryCollection& Collection, const FTransform& OuterTransform, int32 TransformIdx, bool bUseExternalCollision, bool bIsUnionOfHulls = false);
+
 	struct FEdgeVisInfo
 	{
 		int32 A, B;
-		bool bIsCustom; // allow for different coloring of hulls that have been manually set vs auto-generated ones
+		int8 bIsCustom : 1; // allow for different coloring of hulls that have been manually set vs auto-generated ones
+		int8 bIsUnion : 1; // this edge is part of a union of hulls ( cluster does not have a convex and is using a union of the children )
 	};
 
 	TArray<FVector> HullPoints;

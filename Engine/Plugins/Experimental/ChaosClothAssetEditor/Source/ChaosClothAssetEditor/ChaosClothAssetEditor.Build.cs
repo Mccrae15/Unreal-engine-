@@ -35,6 +35,8 @@ public class ChaosClothAssetEditor : ModuleRules
 				"EditorInteractiveToolsFramework",
 				"ModelingComponentsEditorOnly", // Static/skeletal mesh tool targets
 				"ModelingComponents",
+				"MeshConversion",
+				"MeshDescription",
 				"MeshModelingToolsExp",
 				"MeshModelingToolsEditorOnlyExp",
 				"EditorStyle",
@@ -50,8 +52,10 @@ public class ChaosClothAssetEditor : ModuleRules
 				"ClothingSystemEditorInterface",
 				"ClothingSystemRuntimeInterface",
 				"Chaos",
+				"ChaosCloth",
 				"ChaosClothAsset",
 				"ChaosClothAssetEngine",
+				"ChaosClothAssetDataflowNodes",
 				"ClothingSystemEditor",
 				"ChaosClothAssetTools",
 				"ChaosClothAssetEditorTools",
@@ -63,6 +67,9 @@ public class ChaosClothAssetEditor : ModuleRules
 				"TypedElementFramework",
 				"TypedElementRuntime",
 				"AssetDefinition",
+				"EditorWidgets",
+				"KismetWidgets",      // SScrubControlPanel
+				"AnimGraph"           // UAnimSingleNodeInstance
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

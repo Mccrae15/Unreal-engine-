@@ -13,6 +13,7 @@
 
 #define RECAST_INTERNAL_DEBUG_DATA (!UE_BUILD_SHIPPING)
 
+enum class ENavigationInvokerPriority : uint8;
 class UBodySetup;
 class UNavCollision;
 struct FKAggregateGeom;
@@ -20,7 +21,7 @@ class FNavigationOctree;
 class UNavigationPath;
 class ANavigationData;
 
-struct NAVIGATIONSYSTEM_API FPathFindingQueryData
+struct FPathFindingQueryData
 {
 	TWeakObjectPtr<const UObject> Owner;
 	FVector StartLocation;
@@ -45,18 +46,17 @@ struct NAVIGATIONSYSTEM_API FPathFindingQueryData
 		Owner(InOwner), StartLocation(InStartLocation), EndLocation(InEndLocation), QueryFilter(InQueryFilter), CostLimit(InCostLimit), NavDataFlags(InNavDataFlags), bAllowPartialPaths(bInAllowPartialPaths), bRequireNavigableEndLocation(bInRequireNavigableEndLocation) {}
 };
 
-struct NAVIGATIONSYSTEM_API FPathFindingQuery : public FPathFindingQueryData
+struct FPathFindingQuery : public FPathFindingQueryData
 {
 	TWeakObjectPtr<const ANavigationData> NavData;
 	FNavPathSharedPtr PathInstanceToFill;
 	FNavAgentProperties NavAgentProperties;
 
 	FPathFindingQuery() : FPathFindingQueryData() {}
-	FPathFindingQuery(const FPathFindingQuery& Source);
-	FPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true);
-	FPathFindingQuery(const INavAgentInterface& InNavAgent, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true);
+	NAVIGATIONSYSTEM_API FPathFindingQuery(const UObject* InOwner, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true);
+	NAVIGATIONSYSTEM_API FPathFindingQuery(const INavAgentInterface& InNavAgent, const ANavigationData& InNavData, const FVector& Start, const FVector& End, FSharedConstNavQueryFilter SourceQueryFilter = NULL, FNavPathSharedPtr InPathInstanceToFill = NULL, const FVector::FReal CostLimit = TNumericLimits<FVector::FReal>::Max(), const bool bInRequireNavigableEndLocation = true);
 
-	explicit FPathFindingQuery(FNavPathSharedRef PathToRecalculate, const ANavigationData* NavDataOverride = NULL);
+	NAVIGATIONSYSTEM_API explicit FPathFindingQuery(FNavPathSharedRef PathToRecalculate, const ANavigationData* NavDataOverride = NULL);
 
 	FPathFindingQuery& SetPathInstanceToUpdate(FNavPathSharedPtr InPathInstanceToFill) { PathInstanceToFill = InPathInstanceToFill; return *this; }
 	FPathFindingQuery& SetAllowPartialPaths(const bool bAllow) { bAllowPartialPaths = bAllow; return *this; }
@@ -66,7 +66,7 @@ struct NAVIGATIONSYSTEM_API FPathFindingQuery : public FPathFindingQueryData
 	/** utility function to compute a cost limit using an Euclidean heuristic, an heuristic scale and a cost limit factor
 	*	CostLimitFactor: multiplier used to compute the cost limit value from the initial heuristic
 	*	MinimumCostLimit: minimum clamping value used to prevent low cost limit for short path query */
-	static FVector::FReal ComputeCostLimitFromHeuristic(const FVector& StartPos, const FVector& EndPos, const FVector::FReal HeuristicScale, const FVector::FReal CostLimitFactor, const FVector::FReal MinimumCostLimit);
+	static NAVIGATIONSYSTEM_API FVector::FReal ComputeCostLimitFromHeuristic(const FVector& StartPos, const FVector& EndPos, const FVector::FReal HeuristicScale, const FVector::FReal CostLimitFactor, const FVector::FReal MinimumCostLimit);
 };
 
 namespace EPathFindingMode
@@ -82,7 +82,7 @@ namespace EPathFindingMode
 //// Custom path following data
 //
 ///** Custom data passed to movement requests. */
-struct NAVIGATIONSYSTEM_API FMoveRequestCustomData
+struct FMoveRequestCustomData
 {
 };
 
@@ -98,10 +98,9 @@ struct FNavigationInvokerRaw
 	float RadiusMin;
 	float RadiusMax;
 	FNavAgentSelector SupportedAgents;
+	ENavigationInvokerPriority Priority;
 
-	FNavigationInvokerRaw(const FVector& InLocation, float Min, float Max, const FNavAgentSelector& InSupportedAgents)
-		: Location(InLocation), RadiusMin(Min), RadiusMax(Max), SupportedAgents(InSupportedAgents)
-	{}
+	FNavigationInvokerRaw(const FVector& InLocation, float Min, float Max, const FNavAgentSelector& InSupportedAgents, ENavigationInvokerPriority InPriority);
 };
 
 struct FNavigationInvoker
@@ -110,14 +109,19 @@ struct FNavigationInvoker
 
 	/** tiles GenerationRadius away or close will be generated if they're not already present */
 	float GenerationRadius;
+
 	/** tiles over RemovalRadius will get removed.
-	*	@Note needs to be >= GenerationRadius or will get clampped */
+	*	@Note needs to be >= GenerationRadius or will get clamped */
 	float RemovalRadius;
+
 	/** restrict navigation generation to specific agents */
 	FNavAgentSelector SupportedAgents;
 
+	/** invoker Priority used when dirtying tiles */
+	ENavigationInvokerPriority Priority;
+	
 	FNavigationInvoker();
-	FNavigationInvoker(AActor& InActor, float InGenerationRadius, float InRemovalRadius, const FNavAgentSelector& InSupportedAgents);
+	FNavigationInvoker(AActor& InActor, float InGenerationRadius, float InRemovalRadius, const FNavAgentSelector& InSupportedAgents, ENavigationInvokerPriority InPriority);
 };
 
 namespace NavigationHelper
@@ -147,14 +151,14 @@ namespace FNavigationSystem
 
 namespace NavigationHelper
 {
-	struct NAVIGATIONSYSTEM_API FNavLinkOwnerData
+	struct FNavLinkOwnerData
 	{
 		const AActor* Actor;
 		FTransform LinkToWorld;
 
 		FNavLinkOwnerData() : Actor(nullptr) {}
-		FNavLinkOwnerData(const AActor& InActor);
-		FNavLinkOwnerData(const USceneComponent& InComponent);
+		NAVIGATIONSYSTEM_API FNavLinkOwnerData(const AActor& InActor);
+		NAVIGATIONSYSTEM_API FNavLinkOwnerData(const USceneComponent& InComponent);
 	};
 
 	DECLARE_DELEGATE_ThreeParams(FNavLinkProcessorDelegate, FCompositeNavModifier*, const AActor*, const TArray<FNavigationLink>&);

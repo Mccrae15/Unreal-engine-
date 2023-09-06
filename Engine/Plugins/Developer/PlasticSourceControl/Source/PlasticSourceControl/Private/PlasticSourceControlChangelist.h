@@ -20,8 +20,6 @@ public:
 	{
 	}
 
-	FPlasticSourceControlChangelist(const FPlasticSourceControlChangelist& InOther) = default;
-
 	virtual bool CanDelete() const override
 	{
 		return !IsDefault();
@@ -37,7 +35,7 @@ public:
 		return ChangelistName != InOther.ChangelistName;
 	}
 
-	bool IsDefault() const
+	virtual bool IsDefault() const override
 	{
 		return ChangelistName == DefaultChangelist.ChangelistName;
 	}
@@ -64,6 +62,11 @@ public:
 	}
 
 	FString GetName() const
+	{
+		return ChangelistName;
+	}
+
+	virtual FString GetIdentifier() const override
 	{
 		return ChangelistName;
 	}

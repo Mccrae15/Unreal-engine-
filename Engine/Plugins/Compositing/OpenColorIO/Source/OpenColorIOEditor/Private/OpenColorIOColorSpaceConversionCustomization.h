@@ -23,18 +23,14 @@ public:
 	virtual void CustomizeHeader(TSharedRef<class IPropertyHandle> InPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& PropertyTypeCustomizationUtils) override;
 	virtual void CustomizeChildren(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& PropertyTypeCustomizationUtils) override;
 
-	void OnSourceColorSpaceChanged(const FOpenColorIOColorSpace& NewColorSpace, const FOpenColorIODisplayView& NewDisplayView);
-	void OnDestinationColorSpaceChanged(const FOpenColorIOColorSpace& NewColorSpace, const FOpenColorIODisplayView& NewDisplayView);
-
-protected:
-	/** Read configuration settings into local selection objects.*/
-	void ApplyConfigurationToSelection();
-	/** Apply transform selections onto the configuration object.*/
-	void ApplySelectionToConfiguration();
+	void OnSelectionChanged(const FOpenColorIOColorSpace& NewColorSpace, const FOpenColorIODisplayView& NewDisplayView, bool bIsDestination);
 
 private:
 	/** Callback to reset the configuration in the transform source/destination pickers. */
 	void OnConfigurationReset();
+
+	/** Get the struct value of the color space settings member property.*/
+	struct FOpenColorIOColorConversionSettings* GetConversionSettings() const;
 
 	/** Pointer to the struct SourceColorSpace property handle. */
 	TSharedPtr<IPropertyHandle> SourceColorSpaceProperty;
@@ -50,9 +46,7 @@ private:
 
 	/** ColorSpace pickers reference to update them when config asset is changed */
 	TStaticArray<TSharedPtr<SOpenColorIOColorSpacePicker>, 2> TransformPicker;
-	/** Intermediate selection objects. This is done to allow inverted display-view selections (when enabled in settings). */
-	TStaticArray<FOpenColorIOPickerSelection, 2> TransformSelection;
 
-	/** Raw pointer to the conversion settings struct. */
-	struct FOpenColorIOColorConversionSettings* ColorSpaceConversion = nullptr;
+	/** Property handle to the conversion settings struct. */
+	TSharedPtr<IPropertyHandle> ColorSpaceSettingsProperty;
 };

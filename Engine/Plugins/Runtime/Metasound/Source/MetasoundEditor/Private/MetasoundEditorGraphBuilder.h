@@ -60,6 +60,7 @@ namespace Metasound
 			static const FText GraphMenuName;
 
 			static void InitGraphNode(Frontend::FNodeHandle& InNodeHandle, UMetasoundEditorGraphNode* NewGraphNode, UObject& InMetaSound);
+			static void InitGraphNodeIDFromNodeHandle(const Frontend::FConstNodeHandle& InNodeHandle, UMetasoundEditorGraphNode* NewGraphNode);
 
 			// Adds an EdGraph node to mirror the provided FNodeHandle.
 			static UMetasoundEditorGraphNode* AddNode(UObject& InMetaSound, Frontend::FNodeHandle InNodeHandle, FVector2D InLocation, bool bInSelectNewNode = true);
@@ -233,10 +234,12 @@ namespace Metasound
 			static FLinearColor GetPinCategoryColor(const FEdGraphPinType& PinType);
 
 			// Initializes MetaSound with default inputs & outputs.
+			UE_DEPRECATED(5.3, "Use FMetaSoundFrontendDocumentBuilder::InitDocument instead.")
 			static void InitMetaSound(UObject& InMetaSound, const FString& InAuthor);
 
 			// Initializes a MetaSound Preset using the provided ReferencedMetaSound asset's
 			// root graph as the sole, encapsulated topology.
+			UE_DEPRECATED(5.3, "Use FMetaSoundFrontendDocumentBuilder::ConvertToPreset instead.")
 			static void InitMetaSoundPreset(UObject& InMetaSoundReferenced, UObject& InMetaSoundPreset);
 
 			// Rebuilds all editor node pins based on the provided node handle's class definition.

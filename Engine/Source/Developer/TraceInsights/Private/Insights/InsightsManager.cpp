@@ -143,6 +143,7 @@ TSharedPtr<FInsightsManager> FInsightsManager::CreateInstance(TSharedRef<TraceSe
 FInsightsManager::FInsightsManager(TSharedRef<TraceServices::IAnalysisService> InTraceAnalysisService,
 								   TSharedRef<TraceServices::IModuleService> InTraceModuleService)
 	: LogListingName(TEXT("UnrealInsights"))
+	, AnalysisLogListingName(TEXT("TraceAnalysis"))
 	, AnalysisService(InTraceAnalysisService)
 	, ModuleService(InTraceModuleService)
 	, CommandList(new FUICommandList())
@@ -163,10 +164,11 @@ void FInsightsManager::Initialize(IUnrealInsightsModule& InsightsModule)
 
 	InsightsMenuBuilder = MakeShared<FInsightsMenuBuilder>();
 
-	Insights::FFilterService::CreateInstance();
+	Insights::FFilterService::Initialize();
 
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
 	MessageLogModule.RegisterLogListing(GetLogListingName(), LOCTEXT("UnrealInsights", "Unreal Insights"));
+	MessageLogModule.RegisterLogListing(AnalysisLogListingName, LOCTEXT("TraceAnalysis", "Trace Analysis"));
 	MessageLogModule.EnableMessageLogDisplay(true);
 
 	// Register tick functions.
@@ -203,6 +205,8 @@ void FInsightsManager::Shutdown()
 			MessageLogModule.UnregisterLogListing(GetLogListingName());
 		}
 	}
+
+	Insights::FFilterService::Shutdown();
 
 	FInsightsManager::Instance.Reset();
 }
@@ -439,6 +443,16 @@ void FInsightsManager::OnSessionInfoTabClosed(TSharedRef<SDockTab> TabBeingClose
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+FString FInsightsManager::GetStoreDir()
+{
+	using namespace UE::Trace;
+	FScopeLock _(&StoreClientCriticalSection);
+	const FStoreClient::FStatus* Status = StoreClient->GetStatus();
+	return Status ? FString(Status->GetStoreDir()) : FString();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 bool FInsightsManager::ConnectToStore(const TCHAR* Host, uint32 Port)
 {
 	using namespace UE::Trace;
@@ -449,14 +463,24 @@ bool FInsightsManager::ConnectToStore(const TCHAR* Host, uint32 Port)
 		return false;
 	}
 
-	const FStoreClient::FStatus* Status = StoreClient->GetStatus();
-	FString RemoteStoreDir(Status->GetStoreDir());
-	if (RemoteStoreDir.Len() > 0)
-	{
-		SetStoreDir(RemoteStoreDir);
-	}
+	LastStoreHost = Host;
+	LastStorePort = Port;
+	bCanChangeStoreSettings = LastStoreHost.Equals(TEXT("localhost"), ESearchCase::IgnoreCase) ||
+	                          LastStoreHost.Equals(TEXT("127.0.0.1"));
 
 	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FInsightsManager::ReconnectToStore() const
+{
+	if (!StoreClient.IsValid())
+	{
+		return false;
+	}
+
+	return StoreClient->Reconnect(*LastStoreHost, LastStorePort);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -510,10 +534,12 @@ bool FInsightsManager::Tick(float DeltaTime)
 			RetryLoadLastLiveSessionTimer -= DeltaTime;
 		}
 	}
-	
+
 	AutoLoadLiveSession();
 
 	UpdateSessionDuration();
+
+	PollAnalysisInfo();
 
 #if !WITH_EDITOR
 	if (!bIsSessionInfoSet && Session.IsValid())
@@ -554,7 +580,9 @@ void FInsightsManager::UpdateSessionDuration()
 			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 			bLocalIsAnalysisComplete = Session->IsAnalysisComplete();
 			LocalSessionDuration = Session->GetDurationSeconds();
+
 		}
+
 
 		if (LocalSessionDuration != SessionDuration)
 		{
@@ -663,8 +691,39 @@ void FInsightsManager::ResetSession(bool bNotify)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void FInsightsManager::PollAnalysisInfo()
+{
+	if (Session.IsValid())
+	{
+		if (Session->GetNumPendingMessages())
+		{
+			TSharedPtr<TraceServices::IAnalysisSession> EditableSession = ConstCastSharedPtr<TraceServices::IAnalysisSession>(Session);
+			TraceServices::FAnalysisSessionEditScope SessionEditScope(*EditableSession.Get());
+			const auto Messages = EditableSession->DrainPendingMessages();
+			
+			FMessageLog ReportMessageLog(AnalysisLogListingName);
+			for (const auto& Message : Messages)
+			{
+				TSharedRef<FTokenizedMessage> LogMessage = FTokenizedMessage::Create(Message.Severity, FText::FromString(Message.Message));
+				ReportMessageLog.AddMessage(LogMessage);
+				if (Message.Severity == EMessageSeverity::Error)
+				{
+					ReportMessageLog.Notify();
+				}
+			}
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FInsightsManager::OnSessionChanged()
 {
+	if (Session.IsValid())
+	{
+		FMessageLog(AnalysisLogListingName).NewPage(FText::FromString(Session->GetName()));
+	}
+	
 	SessionChangedEvent.Broadcast();
 }
 
@@ -829,20 +888,29 @@ void FInsightsManager::AutoLoadLiveSession()
 		return;
 	}
 
-	const uint32 SessionCount = StoreClient->GetSessionCount();
-	for (uint32 SessionIndex = 0; SessionIndex < SessionCount; ++SessionIndex)
+	uint32 AutoLoadTraceId = 0;
 	{
-		const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionIndex);
-		if (SessionInfo)
+		FScopeLock _(&StoreClientCriticalSection);
+		const uint32 SessionCount = StoreClient->GetSessionCount();
+		for (uint32 SessionIndex = 0; SessionIndex < SessionCount; ++SessionIndex)
 		{
-			const uint32 TraceId = SessionInfo->GetTraceId();
-			if (TraceId != CurrentTraceId && !AutoLoadedTraceIds.Contains(TraceId))
+			const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionIndex);
+			if (SessionInfo)
 			{
-				AutoLoadedTraceIds.Add(TraceId);
-				LoadTrace(SessionInfo->GetTraceId());
-				break;
+				const uint32 TraceId = SessionInfo->GetTraceId();
+				if (TraceId != CurrentTraceId && !AutoLoadedTraceIds.Contains(TraceId))
+				{
+					AutoLoadTraceId = TraceId;
+					break;
+				}
 			}
 		}
+	}
+
+	if (AutoLoadTraceId != 0)
+	{
+		AutoLoadedTraceIds.Add(AutoLoadTraceId);
+		LoadTrace(AutoLoadTraceId);
 	}
 }
 
@@ -857,14 +925,23 @@ void FInsightsManager::LoadLastLiveSession(float RetryTime)
 		return;
 	}
 
-	const uint32 SessionCount = StoreClient->GetSessionCount();
-	if (SessionCount != 0)
+	uint32 LastLiveSessionTraceId = 0;
 	{
-		const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionCount - 1);
-		if (SessionInfo)
+		FScopeLock _(&StoreClientCriticalSection);
+		const uint32 SessionCount = StoreClient->GetSessionCount();
+		if (SessionCount != 0)
 		{
-			LoadTrace(SessionInfo->GetTraceId());
+			const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionCount - 1);
+			if (SessionInfo)
+			{
+				LastLiveSessionTraceId = SessionInfo->GetTraceId();
+			}
 		}
+	}
+
+	if (LastLiveSessionTraceId)
+	{
+		LoadTrace(LastLiveSessionTraceId);
 	}
 
 	if (Session == nullptr && RetryTime > 0)
@@ -888,6 +965,8 @@ void FInsightsManager::LoadTrace(uint32 InTraceId, bool InAutoQuit)
 		return;
 	}
 
+	FScopeLock StoreClientLock(&StoreClientCriticalSection);
+
 	UE::Trace::FStoreClient::FTraceData TraceData = StoreClient->ReadTrace(InTraceId);
 	if (!TraceData)
 	{
@@ -898,19 +977,27 @@ void FInsightsManager::LoadTrace(uint32 InTraceId, bool InAutoQuit)
 		return;
 	}
 
-	FString TraceName(StoreClient->GetStatus()->GetStoreDir());
+	FString TraceName;
 	const UE::Trace::FStoreClient::FTraceInfo* TraceInfo = StoreClient->GetTraceInfoById(InTraceId);
 	if (TraceInfo != nullptr)
 	{
 		const FUtf8StringView Utf8NameView = TraceInfo->GetName();
 		FString Name(Utf8NameView);
-		if (!Name.EndsWith(TEXT(".utrace")))
+		FUtf8StringView Uri = TraceInfo->GetUri();
+		if (Uri.Len() > 0)
 		{
-			Name += TEXT(".utrace");
+			TraceName = FString(Uri);
 		}
-		TraceName = FPaths::Combine(TraceName, Name);
-		FPaths::NormalizeFilename(TraceName);
+		else
+		{
+			// Fallback for older versions of UTS which didn't write uri
+			FString StoreDirectory(StoreClient->GetStatus()->GetStoreDir());
+			TraceName = FPaths::SetExtension(FPaths::Combine(StoreDirectory, Name), TEXT(".utrace"));
+			FPaths::MakePlatformFilename(TraceName);
+		}
 	}
+
+	StoreClientLock.Unlock();
 
 	Session = AnalysisService->StartAnalysis(InTraceId, *TraceName, MoveTemp(TraceData));
 
@@ -1089,26 +1176,6 @@ void FInsightsManager::ScheduleCommand(const FString& InCmd)
 
 void FInsightsManager::OnSessionAnalysisCompleted()
 {
-	// Report any errors or warning that occurred
-	FMessageLog* Log = Session->GetLog();
-	if (Log)
-	{
-		if (const int32 NumErrors = Log->NumMessages(EMessageSeverity::Error); NumErrors > 0)
-		{
-			Log->Notify(FText::Format(NSLOCTEXT("TraceAnalysis", "FinishedWithErrors", "Analysis finished with {0} error(s)"),
-				FText::AsNumber(NumErrors)));
-		}
-		else if (const int32 NumWarnings = Log->NumMessages(EMessageSeverity::Warning); NumWarnings > 0)
-		{
-			Log->Notify(FText::Format(NSLOCTEXT("TraceAnalysis", "FinishedWithWarnings", "Analysis finished with {0} warning(s)"),
-				FText::AsNumber(NumWarnings)));
-		}
-		else
-		{
-			Log->Notify(NSLOCTEXT("TraceAnalysis", "Finished", "Analysis finished."));
-		}
-	}
-	
 	if (!SessionAnalysisCompletedCmd.IsEmpty())
 	{
 		FOutputDevice& Ar = *GLog;
@@ -1217,54 +1284,6 @@ bool FInsightsManager::HandleResponseFileCmd(const TCHAR* ResponseFile, FOutputD
 	}
 
 	return true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FInsightsManager::AddInProgressAsyncOp(FGraphEventRef Event, const FString& Name)
-{
-	check(IsInGameThread());
-	if (Event.IsValid() && !Event->IsComplete())
-	{
-		InProgressAsyncTasks.AddTail(FAsyncTaskData(Event, Name));
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FInsightsManager::RemoveInProgressAsyncOp(FGraphEventRef Event)
-{
-	check(IsInGameThread());
-	if (Event.IsValid())
-	{
-		auto Element = InProgressAsyncTasks.GetHead();
-		while (Element && Element->GetValue().GraphEvent != Event)
-		{
-			Element = Element->GetNextNode();
-		}
-		if (Element)
-		{
-			InProgressAsyncTasks.RemoveNode(Element);
-		}
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FInsightsManager::WaitOnInProgressAsyncOps()
-{
-	check(IsInGameThread());
-	while(!InProgressAsyncTasks.IsEmpty())
-	{
-		auto Entry = InProgressAsyncTasks.GetHead();
-		UE_LOG(TraceInsights, Log, TEXT("Waiting on task: %s."), *(Entry->GetValue().Name));
-		FGraphEventRef Event = Entry->GetValue().GraphEvent;
-		while (!Event->IsComplete())
-		{
-			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
-			FPlatformProcess::Sleep(0.1f);
-		}
-	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

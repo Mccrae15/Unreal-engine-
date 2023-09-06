@@ -113,6 +113,20 @@ namespace Interchange
 					}
 				}
 
+				namespace NormalFromHeightMap
+				{
+					const FName Name = TEXT("NormalFromHeightMap");
+
+					namespace Inputs
+					{
+						const FName HeightMap = TEXT("Height Map");                // Type: FString (unique id of a texture node)
+						const FName Intensity = TEXT("Normal Map Intensity");      // Type: float
+						const FName Offset = TEXT("Height Map UV Offset");         // Type: float
+						const FName Coordinates = TEXT("Coordinates");             // Type: vec2
+						const FName Channel = TEXT("Height Map Channel Selector"); // Type: vec4
+					}
+				}
+
 				namespace OneMinus
 				{
 					const FName Name = TEXT("OneMinus");
@@ -120,6 +134,21 @@ namespace Interchange
 					namespace Inputs
 					{
 						const FName Input = TEXT("Input");
+					}
+				}
+
+				namespace Swizzle
+				{
+					const FName Name = TEXT("MaterialXSwizzle");
+
+					namespace Inputs
+					{
+						const FName Input = TEXT("Input");
+					}
+
+					namespace Attributes
+					{
+						const FName Channels = TEXT("Channels");
 					}
 				}
 
@@ -136,6 +165,16 @@ namespace Interchange
 						const FName Scale = TEXT("Scale"); // Type: vec2
 						const FName Rotate = TEXT("Rotate"); // Type: float, Range: 0-1
 						const FName RotationCenter = TEXT("RotationCenter"); // Type: vec2
+					}
+				}
+
+				namespace TextureObject
+				{
+					const FName Name = TEXT("TextureObject");
+
+					namespace Inputs
+					{
+						const FName Texture = TEXT("TextureUid"); // Type: FString (unique id of a texture node)
 					}
 				}
 
@@ -157,6 +196,19 @@ namespace Interchange
 						const FName B = TEXT("B"); // Type: float
 						const FName A = TEXT("A"); // Type: float
 						const FName RGBA = TEXT("RGBA"); // Type: linear color
+					}
+				}
+
+				namespace TextureSampleBlur
+				{
+					using namespace TextureSample;					
+
+					namespace Attributes
+					{
+						const FName KernelSize = TEXT("KernelSize"); // Type: float
+						const FName FilterSize = TEXT("FilterSize"); // Type: float
+						const FName FilterOffset= TEXT("FilterOffset"); // Type: float
+						const FName Filter = TEXT("Filter"); // Type: int
 					}
 				}
 
@@ -222,6 +274,11 @@ namespace Interchange
 						const FName Position = TEXT("Position");
 					}
 				}
+
+				namespace VertexColor
+				{
+					const FName Name = TEXT("VertexColor");
+				}
 			}
 		}
 
@@ -233,10 +290,12 @@ namespace Interchange
 				const FName Normal = TEXT("Normal"); // Type: vector3f
 				const FName Tangent = TEXT("Tangent"); // Type: vector3f
 				const FName Opacity = TEXT("Opacity"); // Type: float
+				const FName OpacityMask = TEXT("OpacityMask"); // Type: float
 				const FName Occlusion = TEXT("Occlusion"); // Type: float
 				const FName IndexOfRefraction = TEXT("IOR"); // Type: float
 				const FName BxDF = TEXT("BxDF"); // input/output of BSDF or BRDF or BXDF or BTDF data
 				const FName Refraction = TEXT("Refraction"); // input/output of BSDF or BRDF or BXDF or BTDF data
+				const FName Anisotropy = TEXT("Anisotropy"); // Type: float
 			}
 		}
 
@@ -258,10 +317,25 @@ namespace Interchange
 
 				const FName SpecularColor = TEXT("SpecularColor"); // Type: linear color
 				const FName Shininess = TEXT("Shininess"); // Type: float, this is the specular exponent, expected range: 2-100
+				const FName AmbientColor = TEXT("AmbientColor"); // Type: linear color
 			}
 		}
 
-		namespace PBR
+		/** PBR Specular/Glossiness model */
+		namespace PBRSG
+		{
+			namespace Parameters
+			{
+				using namespace Common::Parameters;
+
+				const FName DiffuseColor = TEXT("DiffuseColor"); // Type: vector3
+				const FName SpecularColor = TEXT("SpecularColor"); // Type: vector3
+				const FName Glossiness = TEXT("Glossiness"); // Type: float
+			}
+		}
+
+		/** PBR Metallic/Roughness model */
+		namespace PBRMR
 		{
 			namespace Parameters
 			{
@@ -271,7 +345,6 @@ namespace Interchange
 				const FName Metallic = TEXT("Metallic"); // Type: float
 				const FName Specular = TEXT("Specular"); // Type: float
 				const FName Roughness = TEXT("Roughness"); // Type: float
-				const FName Anisotropy = TEXT("Anisotropy"); // Type: float
 			}
 		}
 
@@ -279,8 +352,6 @@ namespace Interchange
 		{
 			namespace Parameters
 			{
-				using namespace PBR::Parameters;
-
 				const FName ClearCoat = TEXT("ClearCoat"); // Type: float
 				const FName ClearCoatRoughness = TEXT("ClearCoatRoughness"); // Type: float
 				const FName ClearCoatNormal = TEXT("ClearCoatNormal"); // Type: vector3
@@ -291,8 +362,6 @@ namespace Interchange
 		{
 			namespace Parameters
 			{
-				using namespace PBR::Parameters;
-
 				const FName TransmissionColor = TEXT("TransmissionColor"); // Type: vector3
 			}
 		}
@@ -301,8 +370,6 @@ namespace Interchange
 		{
 			namespace Parameters
 			{
-				using namespace PBR::Parameters;
-
 				const FName SheenColor = TEXT("SheenColor"); // Type: vector3
 				const FName SheenRoughness = TEXT("SheenRoughness"); // Type: float
 			}
@@ -312,8 +379,6 @@ namespace Interchange
 		{
 			namespace Parameters
 			{
-				using namespace PBR::Parameters;
-
 				const FName SubsurfaceColor = TEXT("SubsurfaceColor"); // Type: linear color
 			}
 		}
@@ -366,6 +431,42 @@ namespace Interchange
 				const FName ThinWalled = TEXT("thin_walled");
 				const FName Normal = TEXT("normal");
 				const FName Tangent = TEXT("tangent");
+			}
+		}
+
+		namespace SurfaceUnlit
+		{
+			const FName Name = TEXT("surface_unlit");
+
+			namespace Parameters
+			{
+				const FName Emission = TEXT("emission");
+				const FName EmissionColor = TEXT("emission_color");
+				const FName Transmission = TEXT("transmission");
+				const FName TransmissionColor = TEXT("transmission_color");
+				const FName Opacity = TEXT("opacity");
+			}
+		}
+
+		namespace UsdPreviewSurface
+		{
+			const FName Name = TEXT("UsdPreviewSurface");
+
+			namespace Parameters
+			{
+				const FName DiffuseColor = TEXT("diffuseColor");
+				const FName EmissiveColor = TEXT("emissiveColor");
+				const FName SpecularColor = TEXT("specularColor");
+				const FName Metallic = TEXT("metallic");
+				const FName Roughness = TEXT("roughness");
+				const FName Clearcoat = TEXT("clearcoat");
+				const FName ClearcoatRoughness = TEXT("clearcoatRoughness");
+				const FName Opacity = TEXT("opacity");
+				const FName OpacityThreshold = TEXT("opacityThreshold");
+				const FName IOR = TEXT("ior");
+				const FName Normal = TEXT("normal");
+				const FName Displacement = TEXT("displacement");
+				const FName Occlusion = TEXT("occlusion");
 			}
 		}
 

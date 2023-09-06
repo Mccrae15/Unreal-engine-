@@ -2,16 +2,11 @@
 
 using EpicGames.Core;
 using EpicGames.Perforce;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -70,16 +65,12 @@ namespace UnrealGameSync
 		public const int DefaultMaxSizePerBatch = 128 * 1024 * 1024;
 		public const int DefaultNumSyncErrorRetries = 0;
 
-		public int NumRetries = DefaultNumRetries;
-		public int NumThreads = DefaultNumThreads;
-		public int TcpBufferSize = DefaultTcpBufferSize;
-		public int FileBufferSize = DefaultFileBufferSize;
+		public int? NumThreads { get; set; }
 
-		public int MaxCommandsPerBatch = DefaultMaxCommandsPerBatch;
-		public int MaxSizePerBatch = DefaultMaxSizePerBatch;
-
-		public int NumSyncErrorRetries = DefaultNumSyncErrorRetries;
-
+		public int? MaxCommandsPerBatch { get; set; }
+		public int? MaxSizePerBatch { get; set; }
+		
+		public int? NumSyncErrorRetries { get; set; }
 
 		public PerforceSyncOptions Clone()
 		{
@@ -89,44 +80,68 @@ namespace UnrealGameSync
 
 	public class WorkspaceUpdateContext
 	{
-		public DateTime StartTime = DateTime.UtcNow;
-		public int ChangeNumber;
-		public int? CodeChangeNumber;
-		public WorkspaceUpdateOptions Options;
-		public BuildConfig EditorConfig;
-		public string[]? SyncFilter;
-		public Dictionary<string, Tuple<IArchiveInfo, string>?> ArchiveTypeToArchive = new Dictionary<string, Tuple<IArchiveInfo, string>?>();
-		public Dictionary<string, bool> DeleteFiles = new Dictionary<string,bool>();
-		public Dictionary<string, bool> ClobberFiles = new Dictionary<string,bool>();
-		public List<ConfigObject> UserBuildStepObjects;
-		public HashSet<Guid>? CustomBuildSteps;
-		public Dictionary<string, string> AdditionalVariables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		public PerforceSyncOptions? PerforceSyncOptions;
-		public List<HaveRecord>? HaveFiles; // Cached when sync filter has changed
+		public DateTime StartTime { get; set; } = DateTime.UtcNow;
+		public int ChangeNumber { get; set; }
+		public int? CodeChangeNumber { get; set; }
+		public WorkspaceUpdateOptions Options { get; set; }
+		public BuildConfig EditorConfig { get; set; }
+		public List<string> SyncFilter { get; } = new List<string>();
+		public Dictionary<string, Tuple<IArchiveInfo, string>?> ArchiveTypeToArchive { get; } = new Dictionary<string, Tuple<IArchiveInfo, string>?>();
+		public Dictionary<string, bool> DeleteFiles { get; } = new Dictionary<string, bool>();
+		public Dictionary<string, bool> ClobberFiles { get; } = new Dictionary<string, bool>();
+		public List<ConfigObject> UserBuildStepObjects { get; } = new List<ConfigObject>();
+		public HashSet<Guid> CustomBuildSteps { get; } = new HashSet<Guid>();
+		public Dictionary<string, string> AdditionalVariables { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		public PerforceSyncOptions? PerforceSyncOptions { get; set; }
+		public List<HaveRecord> HaveFiles { get; } = new List<HaveRecord>(); // Cached when sync filter has changed
 
 		// May be updated during sync
-		public ConfigFile? ProjectConfigFile;
-		public IReadOnlyList<string>? ProjectStreamFilter;
+		public ConfigFile? ProjectConfigFile { get; set; }
+		public IReadOnlyList<string>? ProjectStreamFilter { get; set; }
 
-		public WorkspaceUpdateContext(int inChangeNumber, WorkspaceUpdateOptions inOptions, BuildConfig inEditorConfig, string[]? inSyncFilter, List<ConfigObject> inUserBuildSteps, HashSet<Guid>? inCustomBuildSteps)
+		public WorkspaceUpdateContext(int changeNumber, WorkspaceUpdateOptions options, BuildConfig editorConfig, string[]? syncFilter, List<ConfigObject> userBuildSteps, HashSet<Guid>? customBuildSteps)
 		{
-			ChangeNumber = inChangeNumber;
-			Options = inOptions;
-			EditorConfig = inEditorConfig;
-			SyncFilter = inSyncFilter;
-			UserBuildStepObjects = inUserBuildSteps;
-			CustomBuildSteps = inCustomBuildSteps;
+			ChangeNumber = changeNumber;
+			Options = options;
+			EditorConfig = editorConfig;
+			if (syncFilter != null)
+			{
+				SyncFilter.AddRange(syncFilter);
+			}
+			UserBuildStepObjects = userBuildSteps;
+			if (customBuildSteps != null)
+			{
+				CustomBuildSteps.UnionWith(customBuildSteps);
+			}
+		}
+
+		public static WorkspaceUpdateOptions GetOptionsFromConfig(GlobalSettings globalSettings, UserWorkspaceSettings workspaceSettings)
+		{
+			WorkspaceUpdateOptions options = 0;
+			if (globalSettings.AutoResolveConflicts)
+			{
+				options |= WorkspaceUpdateOptions.AutoResolveChanges;
+			}
+			if (workspaceSettings.Filter.AllProjects ?? globalSettings.Filter.AllProjects ?? false)
+			{
+				options |= WorkspaceUpdateOptions.SyncAllProjects | WorkspaceUpdateOptions.IncludeAllProjectsInSolution;
+			}
+			if (workspaceSettings.Filter.AllProjectsInSln ?? globalSettings.Filter.AllProjectsInSln ?? false)
+			{
+				options |= WorkspaceUpdateOptions.IncludeAllProjectsInSolution;
+			}
+			return options;
 		}
 	}
 
 	public class WorkspaceSyncCategory
 	{
-		public Guid UniqueId;
-		public bool Enable;
-		public string Name;
-		public string[] Paths;
-		public bool Hidden;
-		public Guid[] Requires;
+		public Guid UniqueId { get; set; }
+		public bool Enable { get; set; }
+		public string Name { get; set; }
+		public List<string> Paths { get; } = new List<string>();
+		public bool Hidden { get; set; }
+		public List<Guid> Requires { get; } = new List<Guid>();
 
 		public WorkspaceSyncCategory(Guid uniqueId) : this(uniqueId, "Unnamed")
 		{
@@ -134,11 +149,10 @@ namespace UnrealGameSync
 
 		public WorkspaceSyncCategory(Guid uniqueId, string name, params string[] paths)
 		{
-			this.UniqueId = uniqueId;
-			this.Enable = true;
-			this.Name = name;
-			this.Paths = paths;
-			this.Requires = new Guid[0];
+			UniqueId = uniqueId;
+			Enable = true;
+			Name = name;
+			Paths.AddRange(paths);
 		}
 
 		public static Dictionary<Guid, bool> GetDefault(IEnumerable<WorkspaceSyncCategory> categories)
@@ -193,25 +207,30 @@ namespace UnrealGameSync
 		public string ClientFileName => $"//{ClientName}{BranchPath}{ProjectPath}";
 		public string TelemetryProjectIdentifier => PerforceUtils.GetClientOrDepotDirectoryName(ProjectIdentifier);
 		public DirectoryReference EngineDir => DirectoryReference.Combine(LocalRootPath, "Engine");
-		public DirectoryReference? ProjectDir => ProjectPath.EndsWith(".uproject")? LocalFileName.Directory : null;
+		public DirectoryReference? ProjectDir => ProjectPath.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase)? LocalFileName.Directory : null;
 		public DirectoryReference DataFolder => GetDataFolder(LocalRootPath);
 		public DirectoryReference CacheFolder => GetCacheFolder(LocalRootPath);
 
 		public static DirectoryReference GetDataFolder(DirectoryReference workspaceDir) => DirectoryReference.Combine(workspaceDir, ".ugs");
 		public static DirectoryReference GetCacheFolder(DirectoryReference workspaceDir) => DirectoryReference.Combine(workspaceDir, ".ugs", "cache");
 
+		public ProjectInfo(DirectoryReference localRootPath, ReadOnlyWorkspaceState state)
+			: this(localRootPath, state.ClientName, state.BranchPath, state.ProjectPath, state.StreamName, state.ProjectIdentifier, state.IsEnterpriseProject)
+		{
+		}
+
 		public ProjectInfo(DirectoryReference localRootPath, string clientName, string branchPath, string projectPath, string? streamName, string projectIdentifier, bool isEnterpriseProject)
 		{
 			ValidateBranchPath(branchPath);
 			ValidateProjectPath(projectPath);
 
-			this.LocalRootPath = localRootPath;
-			this.ClientName = clientName;
-			this.BranchPath = branchPath;
-			this.ProjectPath = projectPath;
-			this.StreamName = streamName;
-			this.ProjectIdentifier = projectIdentifier;
-			this.IsEnterpriseProject = isEnterpriseProject;
+			LocalRootPath = localRootPath;
+			ClientName = clientName;
+			BranchPath = branchPath;
+			ProjectPath = projectPath;
+			StreamName = streamName;
+			ProjectIdentifier = projectIdentifier;
+			IsEnterpriseProject = isEnterpriseProject;
 		}
 
 		public static async Task<ProjectInfo> CreateAsync(IPerforceConnection perforceClient, UserWorkspaceSettings settings, CancellationToken cancellationToken)
@@ -303,7 +322,7 @@ namespace UnrealGameSync
 
 		public static void ValidateBranchPath(string branchPath)
 		{
-			if (branchPath.Length > 0 && (!branchPath.StartsWith("/") || branchPath.EndsWith("/")))
+			if (branchPath.Length > 0 && (!branchPath.StartsWith("/", StringComparison.Ordinal) || branchPath.EndsWith("/", StringComparison.Ordinal)))
 			{
 				throw new ArgumentException("Branch path must start with a slash, and not end with a slash", nameof(branchPath));
 			}
@@ -311,7 +330,7 @@ namespace UnrealGameSync
 
 		public static void ValidateProjectPath(string projectPath)
 		{
-			if (!projectPath.StartsWith("/"))
+			if (!projectPath.StartsWith("/", StringComparison.Ordinal))
 			{
 				throw new ArgumentException("Project path must start with a slash", nameof(projectPath));
 			}
@@ -331,19 +350,19 @@ namespace UnrealGameSync
 		static readonly string LocalVersionHeaderFileName = VersionHeaderFileName.Replace('/', Path.DirectorySeparatorChar);
 		static readonly string LocalObjectVersionFileName = ObjectVersionFileName.Replace('/', Path.DirectorySeparatorChar);
 
-		static SemaphoreSlim _updateSemaphore = new SemaphoreSlim(1);
+		static readonly SemaphoreSlim _updateSemaphore = new SemaphoreSlim(1);
 
 		class RecordCounter : IDisposable
 		{
-			ProgressValue _progress;
-			string _message;
+			readonly ProgressValue _progress;
+			readonly string _message;
 			int _count;
-			Stopwatch _timer = Stopwatch.StartNew();
+			readonly Stopwatch _timer = Stopwatch.StartNew();
 
 			public RecordCounter(ProgressValue progress, string message)
 			{
-				this._progress = progress;
-				this._message = message;
+				_progress = progress;
+				_message = message;
 
 				progress.Set(message);
 			}
@@ -381,9 +400,9 @@ namespace UnrealGameSync
 
 			public SyncBatchBuilder(int? maxCommandsPerList, long? maxSizePerList)
 			{
-				this.MaxCommandsPerList = maxCommandsPerList ?? PerforceSyncOptions.DefaultMaxCommandsPerBatch;
-				this.MaxSizePerList = maxSizePerList ?? PerforceSyncOptions.DefaultMaxSizePerBatch;
-				this.Batches = new Queue<List<string>>();
+				MaxCommandsPerList = maxCommandsPerList ?? PerforceSyncOptions.DefaultMaxCommandsPerBatch;
+				MaxSizePerList = maxSizePerList ?? PerforceSyncOptions.DefaultMaxSizePerBatch;
+				Batches = new Queue<List<string>>();
 			}
 
 			public void Add(string newCommand, long newSize)
@@ -424,7 +443,7 @@ namespace UnrealGameSync
 
 			public SyncTree(bool canUseWildcard)
 			{
-				this.CanUseWildcard = canUseWildcard;
+				CanUseWildcard = canUseWildcard;
 			}
 
 			public SyncTree FindOrAddSubTree(string name)
@@ -442,7 +461,7 @@ namespace UnrealGameSync
 
 			private void IncludeFile(string fullPath, string path, long size, ILogger logger)
 			{
-				int idx = path.IndexOf('/');
+				int idx = path.IndexOf('/', StringComparison.Ordinal);
 				if (idx == -1)
 				{
 					if (!IncludedFiles.ContainsKey(path))
@@ -461,7 +480,7 @@ namespace UnrealGameSync
 
 			public void ExcludeFile(string path)
 			{
-				int idx = path.IndexOf('/');
+				int idx = path.IndexOf('/', StringComparison.Ordinal);
 				if (idx != -1)
 				{
 					SyncTree subTree = FindOrAddSubTree(path.Substring(0, idx));
@@ -495,7 +514,7 @@ namespace UnrealGameSync
 
 		public WorkspaceUpdate(WorkspaceUpdateContext context)
 		{
-			this.Context = context;
+			Context = context;
 		}
 
 		class SyncFile
@@ -506,20 +525,20 @@ namespace UnrealGameSync
 
 			public SyncFile(string depotFile, string relativePath, long size)
 			{
-				this.DepotFile = depotFile;
-				this.RelativePath = relativePath;
-				this.Size = size;
+				DepotFile = depotFile;
+				RelativePath = relativePath;
+				Size = size;
 			}
 		};
 
 		class SemaphoreScope : IDisposable
 		{
-			SemaphoreSlim _semaphore;
+			readonly SemaphoreSlim _semaphore;
 			public bool HasLock { get; private set; }
 
 			public SemaphoreScope(SemaphoreSlim semaphore)
 			{
-				this._semaphore = semaphore;
+				_semaphore = semaphore;
 			}
 
 			public bool TryAcquire()
@@ -548,7 +567,7 @@ namespace UnrealGameSync
 
 		public static string ShellScriptExt { get; }= RuntimeInformation.IsOSPlatform(OSPlatform.Windows)? "bat" : "sh";
 
-		public Task<int> ExecuteShellCommandAsync(string commandLine, string? workingDir, Action<string> processOutput, CancellationToken cancellationToken)
+		public static Task<int> ExecuteShellCommandAsync(string commandLine, Action<string> processOutput, CancellationToken cancellationToken)
 		{
 			if(RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
@@ -562,9 +581,11 @@ namespace UnrealGameSync
 			}
 		}
 
-		public async Task<(WorkspaceUpdateResult, string)> ExecuteAsync(IPerforceSettings perforceSettings, ProjectInfo project, UserWorkspaceState state, ILogger logger, CancellationToken cancellationToken)
+		public async Task<(WorkspaceUpdateResult, string)> ExecuteAsync(IPerforceSettings perforceSettings, ProjectInfo project, WorkspaceStateWrapper stateMgr, ILogger logger, CancellationToken cancellationToken)
 		{
 			using IPerforceConnection perforce = await PerforceConnection.CreateAsync(perforceSettings, logger);
+
+			ReadOnlyWorkspaceState state = stateMgr.Current;
 
 			List<Tuple<string, TimeSpan>> times = new List<Tuple<string, TimeSpan>>();
 
@@ -588,27 +609,26 @@ namespace UnrealGameSync
 
 					// Get the user's sync filter
 					FileFilter userFilter = new FileFilter(FileFilterType.Include);
-					if (Context.SyncFilter != null)
-					{
-						userFilter.AddRules(Context.SyncFilter.Select(x => x.Trim()).Where(x => x.Length > 0 && !x.StartsWith(";") && !x.StartsWith("#")));
-					}
+					userFilter.AddRules(Context.SyncFilter.Select(x => x.Trim()).Where(x => x.Length > 0 && !x.StartsWith(";", StringComparison.Ordinal) && !x.StartsWith("#", StringComparison.Ordinal)));
 
 					// Check if the new sync filter matches the previous one. If not, we'll enumerate all files in the workspace and make sure there's nothing extra there.
 					string? nextSyncFilterHash = null;
-					using (SHA1Managed sha = new SHA1Managed())
+#pragma warning disable CA5350 // Do Not Use Weak Cryptographic Algorithms
+					using (SHA1 sha = SHA1.Create())
 					{
 						StringBuilder combinedFilter = new StringBuilder();
 						foreach (string relativeSyncPath in relativeSyncPaths)
 						{
 							combinedFilter.AppendFormat("{0}\n", relativeSyncPath);
 						}
-						if (Context.SyncFilter != null)
+						if (Context.SyncFilter.Count > 0)
 						{
 							combinedFilter.Append("--FROM--\n");
 							combinedFilter.Append(String.Join("\n", Context.SyncFilter));
 						}
-						nextSyncFilterHash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(combinedFilter.ToString()))).Replace("-", "");
+						nextSyncFilterHash = StringUtils.FormatHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(combinedFilter.ToString())));
 					}
+#pragma warning restore CA5350 // Do Not Use Weak Cryptographic Algorithms
 
 					// If the hash differs, enumerate everything in the workspace to find what needs to be removed
 					if (nextSyncFilterHash != state.CurrentSyncFilterHash || (Context.Options & WorkspaceUpdateOptions.Refilter) != 0)
@@ -618,10 +638,9 @@ namespace UnrealGameSync
 							logger.LogInformation("Filter has changed ({PrevHash} -> {NextHash}); finding files in workspace that need to be removed.", (String.IsNullOrEmpty(state.CurrentSyncFilterHash)) ? "None" : state.CurrentSyncFilterHash, nextSyncFilterHash);
 
 							// Find all the files that are in this workspace
-							List<HaveRecord>? haveFiles = Context.HaveFiles;
-							if (haveFiles == null)
+							List<HaveRecord> haveFiles = Context.HaveFiles;
+							if (haveFiles.Count == 0)
 							{
-								haveFiles = new List<HaveRecord>();
 								using (RecordCounter haveCounter = new RecordCounter(Progress, "Sync filter changed; checking workspace..."))
 								{
 									await foreach (PerforceResponse<HaveRecord> record in perforce.TryHaveAsync(FileSpecList.Any, cancellationToken))
@@ -637,7 +656,6 @@ namespace UnrealGameSync
 										}
 									}
 								}
-								Context.HaveFiles = haveFiles;
 							}
 
 							// Build a filter for the current sync paths
@@ -671,22 +689,23 @@ namespace UnrealGameSync
 							{
 								bool deleteListMatches = true;
 
-								Dictionary<string, bool> newDeleteFiles = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+								Dictionary<string, bool> prevDeleteFiles = new Dictionary<string, bool>(Context.DeleteFiles, StringComparer.OrdinalIgnoreCase);
+
+								Context.DeleteFiles.Clear();
 								foreach (string removeDepotPath in removeDepotPaths)
 								{
 									bool delete;
-									if (!Context.DeleteFiles.TryGetValue(removeDepotPath, out delete))
+									if (!prevDeleteFiles.TryGetValue(removeDepotPath, out delete))
 									{
 										deleteListMatches = false;
 										delete = true;
 									}
-									newDeleteFiles[removeDepotPath] = delete;
+									Context.DeleteFiles[removeDepotPath] = delete;
 								}
-								Context.DeleteFiles = newDeleteFiles;
 
 								if (!deleteListMatches)
 								{
-									return (WorkspaceUpdateResult.FilesToDelete, $"Cancelled after finding {newDeleteFiles.Count} files excluded by filter");
+									return (WorkspaceUpdateResult.FilesToDelete, $"Cancelled after finding {Context.DeleteFiles.Count} files excluded by filter");
 								}
 
 								removeDepotPaths.RemoveAll(x => !Context.DeleteFiles[x]);
@@ -696,8 +715,7 @@ namespace UnrealGameSync
 							if (removeDepotPaths.Count > 0)
 							{
 								// Clear the current sync filter hash. If the sync is canceled, we'll be in an indeterminate state, and we should always clean next time round.
-								state.CurrentSyncFilterHash = "INVALID";
-								state.Save(logger);
+								state = stateMgr.Modify(x => x.CurrentSyncFilterHash = "INVALID");
 
 								// Find all the depot paths that will be synced
 								HashSet<string> remainingDepotPathsToRemove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -715,8 +733,7 @@ namespace UnrealGameSync
 							}
 
 							// Update the sync filter hash. We've removed any files we need to at this point.
-							state.CurrentSyncFilterHash = nextSyncFilterHash;
-							state.Save(logger);
+							state = stateMgr.Modify(x => x.CurrentSyncFilterHash = nextSyncFilterHash);
 						}
 					}
 
@@ -772,7 +789,7 @@ namespace UnrealGameSync
 								}
 								if (response.Info != null)
 								{
-									logger.LogInformation("Note: {0}", response.Info.Data);
+									logger.LogInformation("Note: {Note}", response.Info.Data);
 									continue;
 								}
 
@@ -857,9 +874,11 @@ namespace UnrealGameSync
 					// Clear the current sync changelist, in case we cancel
 					if (!Context.Options.HasFlag(WorkspaceUpdateOptions.SyncSingleChange))
 					{
-						state.CurrentChangeNumber = -1;
-						state.AdditionalChangeNumbers.Clear();
-						state.Save(logger);
+						state = stateMgr.Modify(x =>
+						{
+							x.CurrentChangeNumber = -1;
+							x.AdditionalChangeNumbers.Clear();
+						});
 					}
 
 					// Find all the depot paths that will be synced
@@ -886,7 +905,7 @@ namespace UnrealGameSync
 					{
 						// Read the new config file
 						Context.ProjectConfigFile = await ReadProjectConfigFile(project.LocalRootPath, project.LocalFileName, logger);
-						Context.ProjectStreamFilter = await ReadProjectStreamFilter(perforce, Context.ProjectConfigFile, logger, cancellationToken);
+						Context.ProjectStreamFilter = await ReadProjectStreamFilter(perforce, Context.ProjectConfigFile, cancellationToken);
 
 						// Get the branch name
 						string? branchOrStreamName = await perforce.GetCurrentStreamAsync(cancellationToken);
@@ -906,7 +925,7 @@ namespace UnrealGameSync
 						else
 						{
 							// Otherwise use the depot path for GenerateProjectFiles.bat in the root of the workspace
-							List<WhereRecord> files = await perforce.WhereAsync(project.ClientRootPath + "/GenerateProjectFiles.bat").Where(x => !x.Unmap).ToListAsync(cancellationToken);
+							List<WhereRecord> files = await perforce.WhereAsync(project.ClientRootPath + "/GenerateProjectFiles.bat", cancellationToken).Where(x => !x.Unmap).ToListAsync(cancellationToken);
 							if (files.Count != 1)
 							{
 								return (WorkspaceUpdateResult.FailedToSync, $"Couldn't determine branch name for {project.ClientFileName}.");
@@ -966,7 +985,7 @@ namespace UnrealGameSync
 						// Update the version files
 						if (Context.ProjectConfigFile.GetValue("Options.UseFastModularVersioningV2", false))
 						{
-							bool isLicenseeVersion = await IsLicenseeVersion(perforce, project, logger, cancellationToken);
+							bool isLicenseeVersion = await IsLicenseeVersion(perforce, project, cancellationToken);
 							if (!await UpdateVersionFile(perforce, project.ClientRootPath + BuildVersionFileName, Context.ChangeNumber, text => UpdateBuildVersion(text, Context.ChangeNumber, versionChangeNumber, branchOrStreamName, isLicenseeVersion), logger, cancellationToken))
 							{
 								return (WorkspaceUpdateResult.FailedToSync, $"Failed to update {BuildVersionFileName}.");
@@ -974,7 +993,7 @@ namespace UnrealGameSync
 						}
 						else if (Context.ProjectConfigFile.GetValue("Options.UseFastModularVersioning", false))
 						{
-							bool isLicenseeVersion = await IsLicenseeVersion(perforce, project, logger, cancellationToken);
+							bool isLicenseeVersion = await IsLicenseeVersion(perforce, project, cancellationToken);
 							if (!await UpdateVersionFile(perforce, project.ClientRootPath + BuildVersionFileName, Context.ChangeNumber, text => UpdateBuildVersion(text, Context.ChangeNumber, versionChangeNumber, branchOrStreamName, isLicenseeVersion), logger, cancellationToken))
 							{
 								return (WorkspaceUpdateResult.FailedToSync, $"Failed to update {BuildVersionFileName}");
@@ -1051,7 +1070,7 @@ namespace UnrealGameSync
 							logger.LogInformation("");
 							logger.LogInformation("Executing post-sync steps...");
 
-							Dictionary<string, string> postSyncVariables = ConfigUtils.GetWorkspaceVariables(project, Context.ChangeNumber, versionChangeNumber, null, Context.ProjectConfigFile);
+							Dictionary<string, string> postSyncVariables = ConfigUtils.GetWorkspaceVariables(project, Context.ChangeNumber, versionChangeNumber, null, Context.ProjectConfigFile, perforceSettings);
 							foreach (string postSyncStep in postSyncSteps.Select(x => x.Trim()))
 							{
 								ConfigObject postSyncStepObject = new ConfigObject(postSyncStep);
@@ -1079,16 +1098,18 @@ namespace UnrealGameSync
 					}
 
 					// Update the current state
+					state = stateMgr.Modify(x =>
+					{
 					if (Context.Options.HasFlag(WorkspaceUpdateOptions.SyncSingleChange))
 					{
-						state.AdditionalChangeNumbers.Add(Context.ChangeNumber);
+							x.AdditionalChangeNumbers.Add(Context.ChangeNumber);
 					}
 					else
 					{
-						state.CurrentChangeNumber = Context.ChangeNumber;
-						state.CurrentCodeChangeNumber = versionChangeNumber;
+							x.CurrentChangeNumber = Context.ChangeNumber;
+							x.CurrentCodeChangeNumber = versionChangeNumber;
 					}
-					state.Save(logger);
+					});
 
 					// Update the timing info
 					times.Add(new Tuple<string, TimeSpan>("Sync", syncTelemetryStopwatch.Stop("Success")));
@@ -1138,9 +1159,9 @@ namespace UnrealGameSync
 							IArchiveInfo archiveInfo = archiveTypeAndArchive.Value.Item1;
 							string archiveKey = archiveTypeAndArchive.Value.Item2;
 
-							logger.LogInformation("Syncing {ArchiveType} binaries...", archiveType.ToLowerInvariant());
-							Progress.Set(String.Format("Syncing {0} binaries...", archiveType.ToLowerInvariant()), 0.0f);
-							if (!archiveInfo.DownloadArchive(perforce, archiveKey, project.LocalRootPath, manifestFileName, logger, Progress, CancellationToken.None).Result)
+							logger.LogInformation("Syncing {ArchiveType} binaries...", archiveType);
+							Progress.Set(String.Format("Syncing {0} binaries...", archiveType), 0.0f);
+							if (!await archiveInfo.DownloadArchive(perforce, archiveKey, project.LocalRootPath, manifestFileName, logger, Progress, CancellationToken.None))
 							{
 								return (WorkspaceUpdateResult.FailedToSync, $"Couldn't read {archiveKey}");
 							}
@@ -1148,8 +1169,11 @@ namespace UnrealGameSync
 					}
 
 					// Update the state
-					state.ExpandedArchiveTypes = Context.ArchiveTypeToArchive.Where(x => x.Value != null).Select(x => x.Key).ToArray();
-					state.Save(logger);
+					state = stateMgr.Modify(x =>
+					{
+						x.ExpandedArchiveTypes.Clear();
+						x.ExpandedArchiveTypes.UnionWith(Context.ArchiveTypeToArchive.Where(x => x.Value != null).Select(x => x.Key));
+					});
 
 					// Add the finish time
 					times.Add(new Tuple<string, TimeSpan>("Archive", stopwatch.Stop("Success")));
@@ -1187,7 +1211,7 @@ namespace UnrealGameSync
 					logger.LogInformation("Generating project files...");
 					logger.LogInformation("gpf> Running {Arguments}", commandLine);
 
-					int generateProjectFilesResult = await ExecuteShellCommandAsync(commandLine.ToString(), null, line => ProcessOutput(line, "gpf> ", Progress, logger), cancellationToken);
+					int generateProjectFilesResult = await ExecuteShellCommandAsync(commandLine.ToString(), line => ProcessOutput(line, "gpf> ", Progress, logger), cancellationToken);
 					if (generateProjectFilesResult != 0)
 					{
 						return (WorkspaceUpdateResult.FailedToCompile, $"Failed to generate project files (exit code {generateProjectFilesResult}).");
@@ -1213,7 +1237,7 @@ namespace UnrealGameSync
 				// Get the build steps
 				bool usingPrecompiledEditor = Context.ArchiveTypeToArchive.TryGetValue(IArchiveInfo.EditorArchiveType, out Tuple<IArchiveInfo, string>? archiveInfo) && archiveInfo != null;
 				Dictionary<Guid, ConfigObject> buildStepObjects = ConfigUtils.GetDefaultBuildStepObjects(project, editorTargetName, Context.EditorConfig, Context.ProjectConfigFile, usingPrecompiledEditor);
-				BuildStep.MergeBuildStepObjects(buildStepObjects, Context.ProjectConfigFile.GetValues("Build.Step", new string[0]).Select(x => new ConfigObject(x)));
+				BuildStep.MergeBuildStepObjects(buildStepObjects, Context.ProjectConfigFile.GetValues("Build.Step", Array.Empty<string>()).Select(x => new ConfigObject(x)));
 				BuildStep.MergeBuildStepObjects(buildStepObjects, Context.UserBuildStepObjects);
 
 				// Construct build steps from them
@@ -1235,10 +1259,10 @@ namespace UnrealGameSync
 				bool forceClean = false;
 				if (state.LastBuiltChangeNumber != 0)
 				{
-					foreach (string cleanBuildChange in Context.ProjectConfigFile.GetValues("ForceClean.Changelist", new string[0]))
+					foreach (string cleanBuildChange in Context.ProjectConfigFile.GetValues("ForceClean.Changelist", Array.Empty<string>()))
 					{
 						int changeNumber;
-						if (int.TryParse(cleanBuildChange, out changeNumber))
+						if (Int32.TryParse(cleanBuildChange, out changeNumber))
 						{
 							if ((state.LastBuiltChangeNumber >= changeNumber) != (state.CurrentChangeNumber >= changeNumber))
 							{
@@ -1285,7 +1309,7 @@ namespace UnrealGameSync
 							{
 								editorReceipt = defaultEditorReceipt;
 							}
-							Dictionary<string, string> variables = ConfigUtils.GetWorkspaceVariables(project, state.CurrentChangeNumber, state.CurrentCodeChangeNumber, editorReceipt, Context.ProjectConfigFile, Context.AdditionalVariables);
+							Dictionary<string, string> variables = ConfigUtils.GetWorkspaceVariables(project, state.CurrentChangeNumber, state.CurrentCodeChangeNumber, editorReceipt, Context.ProjectConfigFile, perforceSettings, Context.AdditionalVariables);
 
 							// Handle all the different types of steps
 							switch (step.Type)
@@ -1301,12 +1325,12 @@ namespace UnrealGameSync
 										if (Context.Options.HasFlag(WorkspaceUpdateOptions.Clean) || forceClean)
 										{
 											logger.LogInformation("ubt> Running {Arguments}", commandLine + " -clean");
-											await ExecuteShellCommandAsync(commandLine + " -clean", null, line => ProcessOutput(line, "ubt> ", Progress, logger), cancellationToken);
+											await ExecuteShellCommandAsync(commandLine + " -clean", line => ProcessOutput(line, "ubt> ", Progress, logger), cancellationToken);
 										}
 
 										logger.LogInformation("ubt> Running {FileName} {Arguments}", buildBat, commandLine + " -progress");
 
-										int resultFromBuild = await ExecuteShellCommandAsync(commandLine + " -progress", null, line => ProcessOutput(line, "ubt> ", Progress, logger), cancellationToken);
+										int resultFromBuild = await ExecuteShellCommandAsync(commandLine + " -progress", line => ProcessOutput(line, "ubt> ", Progress, logger), cancellationToken);
 										if (resultFromBuild != 0)
 										{
 											stepStopwatch.Stop("Failed");
@@ -1336,7 +1360,7 @@ namespace UnrealGameSync
 										string arguments = String.Format("\"{0}\" -profile=\"{1}\"", localRunUat, FileReference.Combine(project.LocalRootPath, step.FileName ?? "unknown"));
 										logger.LogInformation("uat> Running {FileName} {Argument}", localRunUat, arguments);
 
-										int resultFromUat = await ExecuteShellCommandAsync(arguments, null, line => ProcessOutput(line, "uat> ", Progress, logger), cancellationToken);
+										int resultFromUat = await ExecuteShellCommandAsync(arguments, line => ProcessOutput(line, "uat> ", Progress, logger), cancellationToken);
 										if (resultFromUat != 0)
 										{
 											stepStopwatch.Stop("Failed");
@@ -1354,7 +1378,7 @@ namespace UnrealGameSync
 										FileReference toolFileName = FileReference.Combine(project.LocalRootPath, Utility.ExpandVariables(step.FileName ?? "unknown", variables));
 										string toolWorkingDir = String.IsNullOrWhiteSpace(step.WorkingDir) ? toolFileName.Directory.FullName : Utility.ExpandVariables(step.WorkingDir, variables);
 										string toolArguments = Utility.ExpandVariables(step.Arguments ?? "", variables);
-										logger.LogInformation("tool> Running {0} {1}", toolFileName, toolArguments);
+										logger.LogInformation("tool> Running {Tool} {Arguments}", toolFileName, toolArguments);
 
 										if (!FileReference.Exists(toolFileName))
 										{
@@ -1397,8 +1421,7 @@ namespace UnrealGameSync
 				// Update the last successful build change number
 				if (Context.CustomBuildSteps == null || Context.CustomBuildSteps.Count == 0)
 				{
-					state.LastBuiltChangeNumber = state.CurrentChangeNumber;
-					state.Save(logger);
+					state = stateMgr.Modify(x => x.LastBuiltChangeNumber = state.CurrentChangeNumber);
 				}
 			}
 
@@ -1429,7 +1452,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		static async Task<bool> IsLicenseeVersion(IPerforceConnection perforce, ProjectInfo project, ILogger logger, CancellationToken cancellationToken)
+		static async Task<bool> IsLicenseeVersion(IPerforceConnection perforce, ProjectInfo project, CancellationToken cancellationToken)
 		{
 			string[] files =
 			{
@@ -1447,12 +1470,12 @@ namespace UnrealGameSync
 			return syncPaths.Select(x => project.ClientRootPath + x).ToList();
 		}
 
-		public static List<string> GetRelativeSyncPaths(ProjectInfo project, bool syncAllProjects, string[]? syncFilter)
+		public static List<string> GetRelativeSyncPaths(ProjectInfo project, bool syncAllProjects, IReadOnlyList<string>? syncFilter)
 		{
 			List<string> syncPaths = new List<string>();
 
 			// Check the client path is formatted correctly
-			if (!project.ClientFileName.StartsWith(project.ClientRootPath + "/"))
+			if (!project.ClientFileName.StartsWith(project.ClientRootPath + "/", StringComparison.OrdinalIgnoreCase))
 			{
 				throw new Exception(String.Format("Expected '{0}' to start with '{1}'", project.ClientFileName, project.ClientRootPath));
 			}
@@ -1480,13 +1503,13 @@ namespace UnrealGameSync
 				foreach (string syncPath in syncFilter)
 				{
 					string trimSyncPath = syncPath.Trim();
-					if (trimSyncPath.StartsWith("/"))
+					if (trimSyncPath.StartsWith("/", StringComparison.Ordinal))
 					{
 						syncPaths.Add(trimSyncPath);
 					}
-					else if (trimSyncPath.StartsWith("-/") && trimSyncPath.EndsWith("..."))
+					else if (trimSyncPath.StartsWith("-/", StringComparison.Ordinal) && trimSyncPath.EndsWith("...", StringComparison.Ordinal))
 					{
-						syncPaths.RemoveAll(x => x.StartsWith(trimSyncPath.Substring(1, trimSyncPath.Length - 4)));
+						syncPaths.RemoveAll(x => x.StartsWith(trimSyncPath.Substring(1, trimSyncPath.Length - 4), StringComparison.Ordinal));
 					}
 				}
 			}
@@ -1496,12 +1519,12 @@ namespace UnrealGameSync
 			for (int idx = 0; idx < syncPaths.Count; idx++)
 			{
 				string syncPath = syncPaths[idx];
-				if (syncPath.EndsWith("..."))
+				if (syncPath.EndsWith("...", StringComparison.Ordinal))
 				{
 					string syncPathPrefix = syncPath.Substring(0, syncPath.Length - 3);
 					for (int otherIdx = syncPaths.Count - 1; otherIdx > idx; otherIdx--)
 					{
-						if (syncPaths[otherIdx].StartsWith(syncPathPrefix))
+						if (syncPaths[otherIdx].StartsWith(syncPathPrefix, StringComparison.Ordinal))
 						{
 							syncPaths.RemoveAt(otherIdx);
 						}
@@ -1536,10 +1559,10 @@ namespace UnrealGameSync
 
 			public SyncState(HashSet<string> remainingDepotPaths, Queue<List<string>> syncCommandLists)
 			{
-				this.TotalDepotPaths = remainingDepotPaths.Count;
-				this.RemainingDepotPaths = remainingDepotPaths;
-				this.SyncCommandLists = syncCommandLists;
-				this.StatusMessage = "Succeeded.";
+				TotalDepotPaths = remainingDepotPaths.Count;
+				RemainingDepotPaths = remainingDepotPaths;
+				SyncCommandLists = syncCommandLists;
+				StatusMessage = "Succeeded.";
 			}
 		}
 
@@ -1581,7 +1604,7 @@ namespace UnrealGameSync
 					IPerforceConnection childConnection = await PerforceConnection.CreateAsync(perforce.Settings, perforce.Logger);
 					childConnections.Add(childConnection);
 
-					Task childTask = Task.Run(() => StaticSyncWorker(threadNumber, childConnection, context, state, syncOutput, logWrapper, cancellationToken));
+					Task childTask = Task.Run(() => StaticSyncWorker(threadNumber, childConnection, context, state, syncOutput, logWrapper, cancellationToken), cancellationToken);
 					childTasks.Add(childTask);
 				}
 
@@ -1601,7 +1624,7 @@ namespace UnrealGameSync
 			{
 				foreach (Task childTask in childTasks)
 				{
-					await childTask.ContinueWith(_ => { }); // Swallow exceptions until we've disposed the connections
+					await childTask.ContinueWith(_ => { }, TaskScheduler.Default); // Swallow exceptions until we've disposed the connections
 				}
 
 				foreach (IPerforceConnection childConnection in childConnections)
@@ -1657,7 +1680,7 @@ namespace UnrealGameSync
 				WorkspaceUpdateResult result = WorkspaceUpdateResult.FailedToSync;
 				string statusMessage = "";
 
-				int retries = (null != context.PerforceSyncOptions) ? context.PerforceSyncOptions!.NumSyncErrorRetries : 0;
+				int retries = context.PerforceSyncOptions!.NumSyncErrorRetries ?? PerforceSyncOptions.DefaultNumSyncErrorRetries;
 
 				while (retries >= 0 && WorkspaceUpdateResult.FailedToSync == result)
 				{
@@ -1666,7 +1689,7 @@ namespace UnrealGameSync
 
 					if (WorkspaceUpdateResult.FailedToSync == result && --retries >= 0)
 					{
-						threadLog.LogWarning("Sync Errors occurred.  Retrying: Remaining retries " + retries.ToString());
+						threadLog.LogWarning("Sync Errors occurred.  Retrying: Remaining retries {Count}", retries);
 					}
 				}
 
@@ -1744,7 +1767,7 @@ namespace UnrealGameSync
 					bool shouldClobber = (context.Options & WorkspaceUpdateOptions.Clobber) != 0 || context.ClobberFiles[tamperedFile];
 					if (shouldClobber)
 					{
-						List<PerforceResponse<SyncRecord>> response = await perforce.TrySyncAsync(SyncOptions.Force, -1, tamperedFile, cancellationToken).ToListAsync();
+						List<PerforceResponse<SyncRecord>> response = await perforce.TrySyncAsync(SyncOptions.Force, -1, tamperedFile, cancellationToken).ToListAsync(cancellationToken);
 						if (!response.Succeeded())
 						{
 							return (WorkspaceUpdateResult.FailedToSync, $"Couldn't sync {tamperedFile}.");
@@ -1781,7 +1804,7 @@ namespace UnrealGameSync
 			return projectConfig;
 		}
 
-		public static async Task<IReadOnlyList<string>?> ReadProjectStreamFilter(IPerforceConnection perforce, ConfigFile projectConfigFile, ILogger logger, CancellationToken cancellationToken)
+		public static async Task<IReadOnlyList<string>?> ReadProjectStreamFilter(IPerforceConnection perforce, ConfigFile projectConfigFile, CancellationToken cancellationToken)
 		{
 			string? streamListDepotPath = projectConfigFile.GetValue("Options.QuickSelectStreamList", null);
 			if (streamListDepotPath == null)
@@ -1795,7 +1818,7 @@ namespace UnrealGameSync
 				return null;
 			}
 
-			return response.Data.Contents.Select(x => x.Trim()).Where(x => x.Length > 0).ToList().AsReadOnly();
+			return response.Data.Contents?.Select(x => x.Trim()).Where(x => x.Length > 0).ToList().AsReadOnly();
 		}
 
 		static string FormatTime(long seconds)
@@ -1898,7 +1921,7 @@ namespace UnrealGameSync
 
 		static string UpdateVersionStrings(string text, Dictionary<string, string> versionStrings)
 		{
-			StringWriter writer = new StringWriter();
+			using StringWriter writer = new StringWriter();
 			foreach (string line in text.Split('\n'))
 			{
 				string newLine = line;
@@ -1921,13 +1944,19 @@ namespace UnrealGameSync
 			int prevCompatibleChangelist = 0;
 			if (obj.TryGetValue("CompatibleChangelist", out object? prevCompatibleChangelistObj))
 			{
-				int.TryParse(prevCompatibleChangelistObj?.ToString(), out prevCompatibleChangelist);
+				if (!Int32.TryParse(prevCompatibleChangelistObj?.ToString(), out prevCompatibleChangelist))
+				{
+					prevCompatibleChangelist = 0;
+				}
 			}
 
 			int prevIsLicenseeVersion = 0;
 			if (obj.TryGetValue("IsLicenseeVersion", out object? prevIsLicenseeVersionObj))
 			{
-				int.TryParse(prevIsLicenseeVersionObj?.ToString(), out prevIsLicenseeVersion);
+				if (!Int32.TryParse(prevIsLicenseeVersionObj?.ToString(), out prevIsLicenseeVersion))
+				{
+					prevIsLicenseeVersion = 0;
+				}
 			}
 
 			obj["Changelist"] = changelist;
@@ -1958,7 +1987,7 @@ namespace UnrealGameSync
 				}
 				else
 				{
-					Directory.CreateDirectory(Path.GetDirectoryName(localPath));
+					Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
 					Utility.ForceDeleteFile(localPath);
 					if (depotPath != null)
 					{
@@ -2024,9 +2053,6 @@ namespace UnrealGameSync
 			return line.Substring(startIdx, lineIdx - startIdx);
 		}
 
-		public Tuple<string, float> CurrentProgress
-		{
-			get { return Progress.Current; }
-		}
+		public Tuple<string, float> CurrentProgress => Progress.Current;
 	}
 }

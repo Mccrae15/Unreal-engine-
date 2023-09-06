@@ -7,6 +7,7 @@
 #include "VulkanRHIPrivate.h"
 #include "VulkanPendingState.h"
 #include "VulkanDescriptorSets.h"
+#include "RHIUtilities.h"
 
 static FCriticalSection GSamplerHashLock;
 
@@ -232,9 +233,11 @@ FVulkanSamplerState::FVulkanSamplerState(const VkSamplerCreateInfo& InInfo, FVul
 		SamplerId = ++GVulkanSamplerHandleIdCounter;
 	}
 
-	if (InDevice.SupportsBindless() && (RHIGetBindlessSamplersConfiguration(GMaxRHIShaderPlatform) != ERHIBindlessConfiguration::Disabled))
+	if (InDevice.SupportsBindless() && (RHIGetRuntimeBindlessSamplersConfiguration(GMaxRHIShaderPlatform) != ERHIBindlessConfiguration::Disabled))
 	{
-		BindlessHandle = InDevice.GetBindlessDescriptorManager()->RegisterSampler(Sampler);
+		FVulkanBindlessDescriptorManager* BindlessDescriptorManager = InDevice.GetBindlessDescriptorManager();
+		BindlessHandle = BindlessDescriptorManager->ReserveDescriptor(VK_DESCRIPTOR_TYPE_SAMPLER);
+		BindlessDescriptorManager->UpdateSampler(BindlessHandle, Sampler);
 	}
 }
 

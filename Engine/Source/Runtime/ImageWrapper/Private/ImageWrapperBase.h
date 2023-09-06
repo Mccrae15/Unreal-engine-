@@ -98,14 +98,14 @@ public:
 		return Format;
 	}
 
-	virtual int32 GetHeight() const override
+	virtual int64 GetHeight() const override
 	{
 		return Height;
 	}
 
 	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArray64<uint8>& OutRawData) override;
 
-	virtual int32 GetWidth() const override
+	virtual int64 GetWidth() const override
 	{
 		return Width;
 	}
@@ -115,8 +115,13 @@ public:
 
 protected:
 
-	int GetBytesPerPel() const { return GetRGBFormatBytesPerPel(Format,BitDepth); }
-	int GetBytesPerRow() const { return Width * GetBytesPerPel(); }
+	int64 GetBytesPerPel() const { return GetRGBFormatBytesPerPel(Format,BitDepth); }
+	int64 GetBytesPerRow() const { return Width * GetBytesPerPel(); }
+
+	// For writers: after SetRaw(), call this to get an ImageView of the raw data that was set
+	//	can return false if the SetRaw does not map to an image format
+	//	pixels point at the RawData array
+	bool GetImageViewOfSetRawForCompress(FImageView & OutImage) const;
 
 	/** Arrays of compressed/raw data */
 	TArray64<uint8> RawData;
@@ -127,8 +132,8 @@ protected:
 	int BitDepth;
 
 	/** Width/Height of the image data */
-	int32 Width;
-	int32 Height;
+	int64 Width;
+	int64 Height;
 	
 	/** Last Error Message. */
 	FString LastError;

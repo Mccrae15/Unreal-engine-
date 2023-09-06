@@ -2,10 +2,13 @@
 
 #pragma once
 
+#include "Math/Vector.h"
 #include "RenderResource.h"
-#include "RHI.h"
+#include "RHIFwd.h"
 
+class FPositionVertexData;
 struct FStaticMeshBuildVertex;
+struct FConstMeshBuildVertexView;
 
 /** A vertex that stores just position. */
 struct FPositionVertex
@@ -40,12 +43,13 @@ public:
 	* @param InVertices - The vertices to initialize the buffer with.
 	*/
 	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, bool bInNeedsCPUAccess = true);
-
+	ENGINE_API void Init(const FConstMeshBuildVertexView& InVertices, bool bInNeedsCPUAccess = true);
+	
 	/**
 	* Initializes this vertex buffer with the contents of the given vertex buffer.
 	* @param InVertexBuffer - The vertex buffer to initialize from.
 	*/
-	void Init(const FPositionVertexBuffer& InVertexBuffer, bool bInNeedsCPUAccess = true);
+	ENGINE_API void Init(const FPositionVertexBuffer& InVertexBuffer, bool bInNeedsCPUAccess = true);
 
 	ENGINE_API void Init(const TArray<FVector3f>& InPositions, bool bInNeedsCPUAccess = true);
 
@@ -64,7 +68,7 @@ public:
 	* @param	Ar					Archive to serialize with
 	* @param	bInNeedsCPUAccess	Whether the elements need to be accessed by the CPU
 	*/
-	void Serialize(FArchive& Ar, bool bInNeedsCPUAccess);
+	ENGINE_API void Serialize(FArchive& Ar, bool bInNeedsCPUAccess);
 
 	void SerializeMetaData(FArchive& Ar);
 
@@ -96,20 +100,19 @@ public:
 		return NumVertices;
 	}
 	ENGINE_API bool GetAllowCPUAccess() const;
+	
+	FORCEINLINE SIZE_T GetAllocatedSize() const { return (Data != nullptr) ? Stride * NumVertices : 0; }
 
 	/** Create an RHI vertex buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
 	FBufferRHIRef CreateRHIBuffer_RenderThread();
 	FBufferRHIRef CreateRHIBuffer_Async();
-
-	/** Copy everything, keeping reference to the same RHI resources. */
-	void CopyRHIForStreaming(const FPositionVertexBuffer& Other, bool InAllowCPUAccess);
 
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher);
 	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher);
 
 	// FRenderResource interface.
-	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	ENGINE_API virtual void ReleaseRHI() override;
 	virtual FString GetFriendlyName() const override { return TEXT("PositionOnly Static-mesh vertices"); }
 
@@ -125,7 +128,7 @@ private:
 	FShaderResourceViewRHIRef PositionComponentSRV;
 
 	/** The vertex data storage type */
-	TMemoryImagePtr<class FPositionVertexData> VertexData;
+	FPositionVertexData* VertexData;
 
 	/** The cached vertex data pointer. */
 	uint8* Data;
@@ -144,4 +147,8 @@ private:
 	template <bool bRenderThread>
 	FBufferRHIRef CreateRHIBuffer_Internal();
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_3
+#include "RHI.h"
+#endif
 

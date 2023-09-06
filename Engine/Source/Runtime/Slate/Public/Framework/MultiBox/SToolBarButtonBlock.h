@@ -15,15 +15,41 @@
 
 class SBorder;
 
+/** Delegate used by multi-box to call a user function to populate a new menu.  Used for spawning sub-menus and pull-down menus. */
+DECLARE_DELEGATE_OneParam( FNewMenuDelegate, class FMenuBuilder& );
+
+struct FButtonArgs : public TSharedFromThis<FButtonArgs>
+{
+	TSharedPtr< const FUICommandInfo > Command;
+	TSharedPtr< const FUICommandList > CommandList;
+	FName ExtensionHook;
+	TAttribute<FText> LabelOverride;
+	TAttribute<FText> ToolTipOverride;
+	TAttribute<FSlateIcon> IconOverride;
+	FName TutorialHighlightName;
+	FName BorderBrushName;
+	EUserInterfaceActionType UserInterfaceActionType = EUserInterfaceActionType::None;
+	FUIAction Action;
+	
+	FNewMenuDelegate CustomMenuDelegate;
+	FOnGetContent OnGetMenuContent;
+
+	explicit FButtonArgs() {}
+};
+
+
 /**
  * Tool bar button MultiBlock
  */
-class SLATE_API FToolBarButtonBlock
+class FToolBarButtonBlock
 	: public FMultiBlock
 {
 
 public:
 
+	
+	SLATE_API FToolBarButtonBlock( FButtonArgs ButtonArgs );
+	
 	/**
 	 * Constructor
 	 *
@@ -33,7 +59,7 @@ public:
 	 * @param	InToolTipOverride	Optional tool tip override.	 If omitted, then the action's label will be used instead.
 	 * @param	InIconOverride		Optional icon to use for the tool bar image.  If omitted, then the action's icon will be used instead.
 	 */
-	FToolBarButtonBlock( const TSharedPtr< const FUICommandInfo > InCommand, TSharedPtr< const FUICommandList > InCommandList, const TAttribute<FText>& InLabelOverride = TAttribute<FText>(), const TAttribute<FText>& InToolTipOverride = TAttribute<FText>(), const TAttribute<FSlateIcon>& InIconOverride = TAttribute<FSlateIcon>() );
+	SLATE_API FToolBarButtonBlock( const TSharedPtr< const FUICommandInfo > InCommand, TSharedPtr< const FUICommandList > InCommandList, const TAttribute<FText>& InLabelOverride = TAttribute<FText>(), const TAttribute<FText>& InToolTipOverride = TAttribute<FText>(), const TAttribute<FSlateIcon>& InIconOverride = TAttribute<FSlateIcon>() );
 	
 	/**
 	 * Constructor
@@ -44,7 +70,7 @@ public:
 	 * @param	InUIAction			UI action to take when this menu item is clicked as well as to determine if the menu entry can be executed or appears "checked"
 	 * @param	InUserInterfaceActionType	Type of interface action
 	 */
-	FToolBarButtonBlock( const TAttribute<FText>& InLabel, const TAttribute<FText>& InToolTip, const TAttribute<FSlateIcon>& InIcon, const FUIAction& InUIAction, const EUserInterfaceActionType InUserInterfaceActionType );
+	SLATE_API FToolBarButtonBlock( const TAttribute<FText>& InLabel, const TAttribute<FText>& InToolTip, const TAttribute<FSlateIcon>& InIcon, const FUIAction& InUIAction, const EUserInterfaceActionType InUserInterfaceActionType );
 
 	void SetLabelVisibility( EVisibility InLabelVisibility ) { LabelVisibility = InLabelVisibility ; }
 
@@ -53,17 +79,26 @@ public:
 	/** Set whether this toolbar should always use small icons, regardless of the current settings */
 	void SetForceSmallIcons( const bool InForceSmallIcons ) { bForceSmallIcons = InForceSmallIcons; }
 
+	/** Set the border brush for this toolbar button block */
+	void SetBorderBrushName( const FName InBorderBrushName ) { BorderBrushName = InBorderBrushName; }
+
 	/** FMultiBlock interface */
-	virtual void CreateMenuEntry(class FMenuBuilder& MenuBuilder) const override;
-	virtual bool HasIcon() const override;
+	SLATE_API virtual void CreateMenuEntry(class FMenuBuilder& MenuBuilder) const override;
+	SLATE_API virtual bool HasIcon() const override;
 
 	/** Set optional delegate to customize when a menu appears instead of the widget, such as in toolbars */
-	void SetCustomMenuDelegate( FNewMenuDelegate& InOnFillMenuDelegate);
+	SLATE_API void SetCustomMenuDelegate( FNewMenuDelegate& InOnFillMenuDelegate);
+
+	SLATE_API void SetOnGetMenuContent( FOnGetContent& OnGetMenuContent);
+
+protected:
+	
+	SLATE_API bool GetIsFocusable() const;
 
 private:
 
 	/** FMultiBlock private interface */
-	virtual TSharedRef< class IMultiBlockBaseWidget > ConstructWidget() const override;
+	SLATE_API virtual TSharedRef< class IMultiBlockBaseWidget > ConstructWidget() const override;
 
 private:
 
@@ -75,6 +110,9 @@ private:
 
 	/** Optional overridden tool tip for this tool bar button.  If not set, then the action's tool tip will be used instead. */
 	TAttribute<FText> ToolTipOverride;
+	
+	/** The name of the border brush style, if present */
+	TAttribute<FName> BorderBrushName;
 
 	/** Optional overridden icon for this tool bar button.  IF not set, then the action's icon will be used instead. */
 	TAttribute<FSlateIcon> IconOverride;
@@ -93,6 +131,9 @@ private:
 
 	/** Optional delegate to customize when a menu appears instead of the widget, such as in toolbars */
 	FNewMenuDelegate CustomMenuDelegate;
+
+	/** Delegate to execute to get the menu content of this button */
+	FOnGetContent OnGetMenuContent;
 };
 
 
@@ -100,7 +141,7 @@ private:
 /**
  * Tool bar button MultiBlock widget
  */
-class SLATE_API SToolBarButtonBlock
+class SToolBarButtonBlock
 	: public SMultiBlockBaseWidget
 {
 
@@ -122,7 +163,7 @@ public:
 	/**
 	 * Builds this MultiBlock widget up from the MultiBlock associated with it
 	 */
-	virtual void BuildMultiBlockWidget(const ISlateStyle* StyleSet, const FName& StyleName) override;
+	SLATE_API virtual void BuildMultiBlockWidget(const ISlateStyle* StyleSet, const FName& StyleName) override;
 
 
 	/**
@@ -130,41 +171,40 @@ public:
 	 *
 	 * @param	InArgs	The declaration data for this widget
 	 */
-	void Construct( const FArguments& InArgs );
+	SLATE_API void Construct( const FArguments& InArgs );
 
 protected:
 
 	/**
 	 * Called by Slate when this tool bar button's button is clicked
 	 */
-	FReply OnClicked();
-
-
+	SLATE_API FReply OnClicked();
+	
 	/**
 	 * Called by Slate when this tool bar check box button is toggled
 	 */
-	void OnCheckStateChanged( const ECheckBoxState NewCheckedState );
+	SLATE_API void OnCheckStateChanged( const ECheckBoxState NewCheckedState );
 
 	/**
 	 * Called by slate to determine if this button should appear checked
 	 *
 	 * @return ECheckBoxState::Checked if it should be checked, ECheckBoxState::Unchecked if not.
 	 */
-	ECheckBoxState GetCheckState() const;
+	SLATE_API ECheckBoxState GetCheckState() const;
 
 	/**
 	 * Called by Slate to determine if this button is enabled
 	 * 
 	 * @return True if the menu entry is enabled, false otherwise
 	 */
-	bool IsEnabled() const;
+	SLATE_API bool IsEnabled() const;
 
 	/**
 	 * Called by Slate to determine if this button is visible
 	 *
 	 * @return EVisibility::Visible or EVisibility::Collapsed, depending on if the button should be displayed
 	 */
-	EVisibility GetBlockVisibility() const;
+	SLATE_API EVisibility GetBlockVisibility() const;
 
 private:
 	/** Called by Slate to determine whether icons/labels are visible */
@@ -206,4 +246,5 @@ private:
 
 	/** Name to identify a widget for tutorials */
 	FName TutorialHighlightName;
+
 };

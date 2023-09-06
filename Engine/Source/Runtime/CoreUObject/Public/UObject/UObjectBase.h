@@ -27,12 +27,10 @@ class UScriptStruct;
 
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("STAT_UObjectsStatGroupTester"), STAT_UObjectsStatGroupTester, STATGROUP_UObjects, COREUOBJECT_API);
 
-namespace UE::GC { class FTokenStreamBuilder; }
-
 /** 
  * Low level implementation of UObject, should not be used directly in game code 
  */
-class COREUOBJECT_API UObjectBase
+class UObjectBase
 {
 	friend class UObjectBaseUtility;
 	friend struct Z_Construct_UClass_UObject_Statics;
@@ -57,7 +55,7 @@ protected:
 	 * Constructor used for bootstrapping
 	 * @param	InFlags			RF_Flags to assign
 	 */
-	UObjectBase( EObjectFlags InFlags );
+	COREUOBJECT_API UObjectBase( EObjectFlags InFlags );
 public:
 
 	/**
@@ -70,7 +68,7 @@ public:
 	 * @param	InInternalIndex		internal index to use (if already allocated), negative value means allocate a new index
 	 * @param	InSerialNumber		serial number to re-use (if already allocated)
 	 */
-	UObjectBase(UClass* InClass,
+	COREUOBJECT_API UObjectBase(UClass* InClass,
 			EObjectFlags InFlags,
 			EInternalObjectFlags InInternalFlags,
 			UObject *InOuter,
@@ -81,12 +79,7 @@ public:
 	/**
 	 * Final destructor, removes the object from the object array, and indirectly, from any annotations
 	 **/
-	virtual ~UObjectBase();
-
-	/**
-	 * Emit GC tokens for UObjectBase, this might be UObject::StaticClass or Default__Class
-	 **/
-	static void EmitBaseReferences(UE::GC::FTokenStreamBuilder& TokenStream);
+	COREUOBJECT_API virtual ~UObjectBase();
 
 protected:
 	/**
@@ -95,20 +88,20 @@ protected:
 	 * @param NewName	new name for this object
 	 * @param NewOuter	new outer for this object, if NULL, outer will be unchanged
 	 */
-	void LowLevelRename(FName NewName,UObject *NewOuter = NULL);
+	COREUOBJECT_API void LowLevelRename(FName NewName,UObject *NewOuter = NULL);
 
 	/** Force any base classes to be registered first */
 	virtual void RegisterDependencies() {}
 
 	/** Enqueue the registration for this object. */
-	void Register(const TCHAR* PackageName,const TCHAR* Name);
+	COREUOBJECT_API void Register(const TCHAR* PackageName,const TCHAR* Name);
 	
 	/**
 	 * Convert a boot-strap registered class into a real one, add to uobject array, etc
 	 *
 	 * @param UClassStaticClass Now that it is known, fill in UClass::StaticClass() as the class
 	 */
-	virtual void DeferredRegister(UClass *UClassStaticClass,const TCHAR* PackageName,const TCHAR* Name);
+	COREUOBJECT_API virtual void DeferredRegister(UClass *UClassStaticClass,const TCHAR* PackageName,const TCHAR* Name);
 
 private:
 	/**
@@ -119,14 +112,14 @@ private:
 	 * @param InInternalIndex already allocated internal index to use, negative value means allocate a new index
 	 * @param InSerialNumber already allocated serial number to re-use
 	 */
-	void AddObject(FName Name, EInternalObjectFlags InSetInternalFlags, int32 InInternalIndex = -1, int32 InSerialNumber = 0);
+	COREUOBJECT_API void AddObject(FName Name, EInternalObjectFlags InSetInternalFlags, int32 InInternalIndex = -1, int32 InSerialNumber = 0);
 
 public:
 	/**
 	 * Checks to see if the object appears to be valid
 	 * @return true if this appears to be a valid object
 	 */
-	bool IsValidLowLevel() const;
+	COREUOBJECT_API bool IsValidLowLevel() const;
 
 	/**
 	 * Faster version of IsValidLowLevel.
@@ -135,7 +128,7 @@ public:
 	 * @param bRecursive true if the Class pointer should be checked with IsValidLowLevelFast
 	 * @return true if this appears to be a valid object
 	 */
-	bool IsValidLowLevelFast(bool bRecursive = true) const;
+	COREUOBJECT_API bool IsValidLowLevelFast(bool bRecursive = true) const;
 
 	/** 
 	 * Returns the unique ID of the object...these are reused so it is only unique while the object is alive.
@@ -165,25 +158,26 @@ public:
 	}
 
 	/** Overridable method to return a logical name for identification in stats. */
-	virtual FName GetFNameForStatID() const;
+	COREUOBJECT_API virtual FName GetFNameForStatID() const;
 
 	/** Removes the class prefix from the given string */
-	static FString RemoveClassPrefix(const TCHAR* ClassName);
+	static COREUOBJECT_API FString RemoveClassPrefix(const TCHAR* ClassName);
 
 	/** Returns the external UPackage associated with this object, if any */
-	UPackage* GetExternalPackage() const;
+	COREUOBJECT_API UPackage* GetExternalPackage() const;
 	
 	/** Associate an external package directly to this object. */
-	void SetExternalPackage(UPackage* InPackage);
+	COREUOBJECT_API void SetExternalPackage(UPackage* InPackage);
 
 	/** Returns the external UPackage for this object, if any, NOT THREAD SAFE, used by internal gc reference collecting. */
-	UPackage* GetExternalPackageInternal() const;
+	COREUOBJECT_API UPackage* GetExternalPackageInternal() const;
 
 protected:
 	/**
 	 * Set the object flags directly
 	 *
 	 **/
+	UE_DEPRECATED(5.3, "This function is not thread-safe. Use AtomicallySetFlags or AtomicallyClearFlags instead.")
 	FORCEINLINE void SetFlagsTo( EObjectFlags NewFlags )
 	{
 		checkfSlow((NewFlags & ~RF_AllFlags) == 0, TEXT("%s flagged as 0x%x but is trying to set flags to RF_AllFlags"), *GetFName().ToString(), (int)ObjectFlags);
@@ -198,48 +192,54 @@ public:
 	 **/
 	FORCEINLINE EObjectFlags GetFlags() const
 	{
-		checkfSlow((ObjectFlags & ~RF_AllFlags) == 0, TEXT("%s flagged as RF_AllFlags"), *GetFName().ToString());
-		return ObjectFlags;
+		EObjectFlags Flags = (EObjectFlags)GetFlagsInternal();
+		checkfSlow((Flags & ~RF_AllFlags) == 0, TEXT("%s flagged as RF_AllFlags"), *GetFName().ToString());
+		return Flags;
 	}
 
 	/**
 	 *	Atomically adds the specified flags.
-	 *	Do not use unless you know what you are doing.
-	 *	Designed to be used only by parallel GC and UObject loading thread.
 	 */
 	FORCENOINLINE void AtomicallySetFlags( EObjectFlags FlagsToAdd )
 	{
-		int32 OldFlags = 0;
-		int32 NewFlags = 0;
-		do 
+		int32 OldFlags = GetFlagsInternal();
+		int32 NewFlags = OldFlags | FlagsToAdd;
+
+		// Fast path without atomics if already set
+		if (NewFlags == OldFlags)
 		{
-			OldFlags = ObjectFlags;
-			NewFlags = OldFlags | FlagsToAdd;
+			return;
 		}
-		while( FPlatformAtomics::InterlockedCompareExchange( (int32*)&ObjectFlags, NewFlags, OldFlags) != OldFlags );
+
+		FPlatformAtomics::InterlockedOr((int32*)&ObjectFlags, FlagsToAdd);
 	}
 
 	/**
 	 *	Atomically clears the specified flags.
-	 *	Do not use unless you know what you are doing.
-	 *	Designed to be used only by parallel GC and UObject loading thread.
 	 */
 	FORCENOINLINE void AtomicallyClearFlags( EObjectFlags FlagsToClear )
 	{
-		int32 OldFlags = 0;
-		int32 NewFlags = 0;
-		do 
+		int32 OldFlags = GetFlagsInternal();
+		int32 NewFlags = OldFlags & ~FlagsToClear;
+
+		// Fast path without atomics if already cleared
+		if (NewFlags == OldFlags)
 		{
-			OldFlags = ObjectFlags;
-			NewFlags = OldFlags & ~FlagsToClear;
+			return;
 		}
-		while( FPlatformAtomics::InterlockedCompareExchange( (int32*)&ObjectFlags, NewFlags, OldFlags) != OldFlags );
+
+		FPlatformAtomics::InterlockedAnd((int32*)&ObjectFlags, ~FlagsToClear);
 	}
 
 	static void PrefetchClass(UObject* Object) { FPlatformMisc::Prefetch(Object, offsetof(UObjectBase, ClassPrivate)); }
 	static void PrefetchOuter(UObject* Object) { FPlatformMisc::Prefetch(Object, offsetof(UObjectBase, OuterPrivate)); }
 
 private:
+	FORCEINLINE int32 GetFlagsInternal() const
+	{
+		static_assert(sizeof(int32) == sizeof(ObjectFlags), "Flags must be 32-bit for atomics.");
+		return FPlatformAtomics::AtomicRead_Relaxed((int32*)&ObjectFlags);
+	}
 
 	/** Flags used to track and report various object states. This needs to be 8 byte aligned on 32-bit
 	    platforms to reduce memory waste */
@@ -263,7 +263,7 @@ private:
 
 #if WITH_EDITOR
 	/** This is used by the reinstancer to re-class and re-archetype the current instances of a class before recompiling */
-	void SetClass(UClass* NewClass);
+	COREUOBJECT_API void SetClass(UClass* NewClass);
 #endif
 };
 

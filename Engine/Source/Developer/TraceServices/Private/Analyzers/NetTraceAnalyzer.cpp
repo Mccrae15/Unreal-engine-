@@ -20,6 +20,7 @@ enum ENetTraceAnalyzerVersion
 	ENetTraceAnalyzerVersion_Initial = 1,
 	ENetTraceAnalyzerVersion_BunchChannelIndex = 2,
 	ENetTraceAnalyzerVersion_BunchChannelInfo = 3,
+	ENetTraceAnalyzerVersion_FixedBunchSizeEncoding = 4,		
 };
 
 
@@ -58,6 +59,7 @@ void FNetTraceAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	{
 		FAnalysisSessionEditScope _(Session);
 		BunchHeaderNameIndex = NetProfilerProvider.AddNetProfilerName(TEXT("BunchHeader"));
+		PendingNameIndex = NetProfilerProvider.AddNetProfilerName(TEXT("Pending"));
 	}
 }
 
@@ -276,6 +278,23 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 						Event.NameIndex = ActiveObjectState->NameIndex;
 						Event.ObjectInstanceIndex = ActiveObjectState->ObjectIndex;
 					}
+					else if (DecodedNameOrObjectId != 0)
+					{
+						// Sometime we report data for objects that are still pending creation, which we will update as soon as we have more data.
+						FNetProfilerObjectInstance& ObjectInstance = NetProfilerProvider.CreateObject(GameInstanceState->GameInstanceIndex);
+
+						// Fill in the object data we currently have
+						ObjectInstance.LifeTime.Begin = GetLastTimestamp();
+						ObjectInstance.NameIndex = static_cast<uint16>(PendingNameIndex);
+						ObjectInstance.NetObjectId = DecodedNameOrObjectId;
+						ObjectInstance.TypeId = 0;
+
+						// Add to active objects
+						GameInstanceState->ActiveObjects.Add(DecodedNameOrObjectId, { ObjectInstance.ObjectIndex, ObjectInstance.NameIndex });
+						
+						Event.NameIndex = ObjectInstance.NameIndex;
+						Event.ObjectInstanceIndex = ObjectInstance.ObjectIndex;
+					}
 				}
 				else if (DecodedEventType == EContentEventType::NameId)
 				{
@@ -297,8 +316,18 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 			case EContentEventType::BunchEvent:
 			{
 				const uint16 DecodedNameId = IntCastChecked<uint16>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
-				const uint32 DecodedEventStartPos = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
-				const uint32 DecodedEventEndPos = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr)) + DecodedEventStartPos;
+
+				uint32 DecodedBunchBits = 0U;
+				if (NetTraceVersion >= ENetTraceAnalyzerVersion_FixedBunchSizeEncoding)
+				{
+					DecodedBunchBits = IntCastChecked<uint32>(FTraceAnalyzerUtils::Decode7bit(BufferPtr));
+				}
+				else
+				{
+					const uint64 DecodedEventStartPos = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
+					const uint64 DecodedEventEndPos = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
+					DecodedBunchBits = IntCastChecked<uint32>((uint32)DecodedEventEndPos + (uint32)DecodedEventStartPos);
+				}
 
 				const uint32* NetProfilerNameIndex = DecodedNameId ? TracedNameIdToNetProfilerNameIdMap.Find(DecodedNameId) : nullptr;
 
@@ -306,7 +335,7 @@ void FNetTraceAnalyzer::HandlePacketContentEvent(const FOnEventContext& Context,
 
 				BunchInfo.BunchInfo.Value = 0;
 				BunchInfo.HeaderBits = 0U;
-				BunchInfo.BunchBits = DecodedEventEndPos;
+				BunchInfo.BunchBits = DecodedBunchBits;
 				BunchInfo.FirstBunchEventIndex = Events.Num();
 				BunchInfo.NameIndex = NetProfilerNameIndex ? IntCastChecked<uint16>(*NetProfilerNameIndex) : 0U;
 
@@ -758,7 +787,7 @@ void FNetTraceAnalyzer::HandleConnectionClosedEvent(const FOnEventContext& Conte
 void FNetTraceAnalyzer::HandleObjectCreatedEvent(const FOnEventContext& Context, const FEventData& EventData)
 {
 	const uint64 TypeId = EventData.GetValue<uint64>("TypeId");
-	const uint32 ObjectId = EventData.GetValue<uint32>("ObjectId");
+	const uint64 ObjectId = EventData.GetValue<uint64>("ObjectId");
 	const uint32 OwnerId = EventData.GetValue<uint32>("OwnerId");
 	const uint16 NameId = EventData.GetValue<uint16>("NameId");
 	const uint8 GameInstanceId = EventData.GetValue<uint8>("GameInstanceId");
@@ -767,16 +796,20 @@ void FNetTraceAnalyzer::HandleObjectCreatedEvent(const FOnEventContext& Context,
 	const uint32* NetProfilerNameIndex = TracedNameIdToNetProfilerNameIdMap.Find(NameId);
 	const uint32 NameIndex = NetProfilerNameIndex ? *NetProfilerNameIndex : 0u;
 
-	if (GameInstanceState->ActiveObjects.Contains(ObjectId))
+	if (FNetTraceActiveObjectState* ActiveObjectInstance = GameInstanceState->ActiveObjects.Find(ObjectId))
 	{
-		if (FNetProfilerObjectInstance* ExistingInstance = NetProfilerProvider.EditObject(GameInstanceState->GameInstanceIndex, GameInstanceState->ActiveObjects[ObjectId].ObjectIndex))
+		if (FNetProfilerObjectInstance* ExistingInstance = NetProfilerProvider.EditObject(GameInstanceState->GameInstanceIndex, ActiveObjectInstance->ObjectIndex))
 		{
-			if (ExistingInstance->NameIndex == NameIndex)
+			if (ExistingInstance->NameIndex == NameIndex || ExistingInstance->NameIndex == PendingNameIndex)
 			{
 				// Update existing object instance
 				ExistingInstance->LifeTime.Begin = GetLastTimestamp();
-				ExistingInstance->NetId = ObjectId;
+				ExistingInstance->NetObjectId = ObjectId;
 				ExistingInstance->TypeId = TypeId;
+
+				// Update name in both the persistent instance and the active one
+				ExistingInstance->NameIndex = static_cast<uint16>(NameIndex);
+				ActiveObjectInstance->NameIndex = NameIndex;
 
 				return;
 			}
@@ -793,7 +826,7 @@ void FNetTraceAnalyzer::HandleObjectCreatedEvent(const FOnEventContext& Context,
 	// Fill in object data
 	ObjectInstance.LifeTime.Begin = GetLastTimestamp();
 	ObjectInstance.NameIndex = IntCastChecked<uint16>(NameIndex);
-	ObjectInstance.NetId = ObjectId;
+	ObjectInstance.NetObjectId = ObjectId;
 	ObjectInstance.TypeId = TypeId;
 
 	// Add to active objects
@@ -804,7 +837,7 @@ void FNetTraceAnalyzer::HandleObjectDestroyedEvent(const FOnEventContext& Contex
 {
 	// Remove from active instances and mark the end timestamp in the persistent instance list
 	const uint8 GameInstanceId = EventData.GetValue<uint8>("GameInstanceId");
-	const uint32 ObjectId = EventData.GetValue<uint32>("ObjectId");
+	const uint64 ObjectId = EventData.GetValue<uint64>("ObjectId");
 
 	TSharedRef<FNetTraceGameInstanceState> GameInstanceState = GetOrCreateActiveGameInstanceState(GameInstanceId);
 

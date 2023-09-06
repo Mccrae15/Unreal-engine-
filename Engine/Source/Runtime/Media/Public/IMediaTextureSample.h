@@ -22,6 +22,7 @@
 #if WITH_ENGINE
 	class FRHITexture;
 	class IMediaTextureSampleConverter;
+	class IMediaTextureSampleColorConverter;
 #endif
 
 
@@ -46,6 +47,9 @@ enum class EMediaTextureSampleFormat
 	/** Four 8-bit unsigned integer components (Blue, Green, Red, Alpha) per texel. */
 	CharBGRA,
 
+	/** Four 8-bit unsigned integer components (Blue, Green, Red, Alpha) per texel. */
+	CharRGBA,
+
 	/** Four 10-bit unsigned integer components (Blue, Green, Red) & 2-bit alpha per texel. */
 	CharBGR10A2,
 
@@ -64,6 +68,9 @@ enum class EMediaTextureSampleFormat
 	/** Four 8-bit unsigned integer components (YUY2 packing aka. YUNV, YUYV) per texel. */
 	CharYUY2,
 
+	/** Four 8-bit unsigned integer components (UYVY) per texel. */
+	Char2VUY,
+
 	/** Four 8-bit unsigned integer components (YVYU packing) per texel. */
 	CharYVYU,
 
@@ -76,8 +83,14 @@ enum class EMediaTextureSampleFormat
 	/** YUV v210 format which pack 6 pixel using 12 x 10bits components (128 bits block). */
 	YUVv210,
 
+	/** YUV v216 format which pack 2 pixel using 4 x 16bits components */
+	YUVv216,
+
 	/** 4:4:4:4 AY'CbCr 16-bit little endian full range alpha, video range Y'CbCr. */
 	Y416,
+
+	/** 4:4:4:4 AY'CbCr 32-bit little endian full range alpha, video range Y'CbCr. */
+	R4FL,
 
 	/** NV12-style encoded monochrome texture with 16 bits per channel, with the upper 10 bits used. */
 	P010,
@@ -88,6 +101,9 @@ enum class EMediaTextureSampleFormat
 	/** DXT5. */
 	DXT5,
 
+	/** BC4. */
+	BC4,
+
 	/** YCoCg colour space encoded in DXT5. */
 	YCoCg_DXT5,
 
@@ -96,6 +112,15 @@ enum class EMediaTextureSampleFormat
 
 	/** 3 planes of RGB1010102 data representing Y, U & V at 4:2:0 sampling. */
 	P010_RGB1010102,
+
+	/** RGBA 16-bit per component */
+	RGBA16,
+
+	/** ABGR 16-bit per component */
+	ABGR16,
+
+	/** ARGB 16-bit per component, big endian */
+	ARGB16_BIG,
 };
 
 namespace MediaTextureSampleFormat
@@ -242,6 +267,16 @@ public:
 		return nullptr; 
 	}
 
+	/**
+	 * Get a media texture sample color converter if sample implements it
+	 * @Note IMediaTextureSampleColorConverter will be applied after IMediaTextureSampleConverter if one is provided.
+	 * @return texture sample color converter
+	 */
+	virtual IMediaTextureSampleColorConverter* GetMediaTextureSampleColorConverter()
+	{ 
+		return nullptr; 
+	}
+
 #endif //WITH_ENGINE
 
 	/**
@@ -354,10 +389,20 @@ public:
 	virtual FMatrix44f GetSampleToRGBMatrix() const
 	{
 		FMatrix Pre = FMatrix::Identity;
-		Pre.M[0][3] = -MediaShaders::YUVOffset8bits.X;
-		Pre.M[1][3] = -MediaShaders::YUVOffset8bits.Y;
-		Pre.M[2][3] = -MediaShaders::YUVOffset8bits.Z;
-		return FMatrix44f(MediaShaders::YuvToRgbRec709Scaled * Pre);
+		FVector Off;
+		switch (GetFormat())
+		{
+			case EMediaTextureSampleFormat::R4FL:		Off = MediaShaders::YUVOffsetFloat; break;
+			case EMediaTextureSampleFormat::Y416:
+			case EMediaTextureSampleFormat::P010:
+			case EMediaTextureSampleFormat::YUVv216:	Off = MediaShaders::YUVOffset16bits; break;
+			case EMediaTextureSampleFormat::YUVv210:	Off = MediaShaders::YUVOffset10bits; break;
+			default:									Off = MediaShaders::YUVOffset8bits; break;
+		}
+		Pre.M[0][3] = -Off.X;
+		Pre.M[1][3] = -Off.Y;
+		Pre.M[2][3] = -Off.Z;
+		return FMatrix44f(MediaShaders::YuvToRgbRec709Scaled * Pre);	// assumes sRGB & video range
 	}
 
 	/**
@@ -380,12 +425,32 @@ public:
 		return FVector2f(UE::Color::GetWhitePoint(UE::Color::EWhitePoint::CIE1931_D65));
 	}
 
+	virtual FVector2f GetDisplayPrimaryRed() const
+	{
+		return FVector2f(0.64, 0.33);
+	}
+
+	virtual FVector2f GetDisplayPrimaryGreen() const
+	{
+		return FVector2f(0.30, 0.60);
+	}
+
+	virtual FVector2f GetDisplayPrimaryBlue() const
+	{
+		return FVector2f(0.15, 0.06);
+	}
+
 	/**
 	 * Get EOTF / "Gamma" / encoding type of data
 	 */
 	virtual UE::Color::EEncoding GetEncodingType() const
 	{
 		return IsOutputSrgb() ? UE::Color::EEncoding::sRGB : UE::Color::EEncoding::Linear;
+	}
+
+	virtual float GetHDRNitsNormalizationFactor() const
+	{
+		return (GetEncodingType() == UE::Color::EEncoding::sRGB || GetEncodingType() == UE::Color::EEncoding::Linear) ? 1.0f : kMediaSample_HDR_NitsNormalizationFactor;
 	}
 
 	/**

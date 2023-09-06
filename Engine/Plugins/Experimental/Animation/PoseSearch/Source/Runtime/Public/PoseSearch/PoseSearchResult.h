@@ -3,38 +3,32 @@
 #pragma once
 
 #include "PoseSearch/PoseSearchCost.h"
-#include "PoseSearchResult.generated.h"
+#include "PoseSearch/PoseSearchDefines.h"
 
-struct FPoseSearchIndexAsset;
 class UPoseSearchDatabase;
 class UPoseSearchSchema;
+
+namespace UE::PoseSearch
+{
+struct FSearchIndexAsset;
 
 /**
 * float buffer of features according to a UPoseSearchSchema layout.
 * FFeatureVectorBuilder is used to build search queries at runtime and for adding samples during search index construction.
 */
-USTRUCT()
-struct POSESEARCH_API FPoseSearchFeatureVectorBuilder
+struct FFeatureVectorBuilder
 {
-	GENERATED_BODY()
-
 public:
-	void Init(const UPoseSearchSchema* Schema);
-	void Reset();
-
+	explicit FFeatureVectorBuilder(const UPoseSearchSchema* Schema);
 	const UPoseSearchSchema* GetSchema() const { return Schema.Get(); }
 
-	TArray<float>& EditValues() { return Values; }
+	TArrayView<float> EditValues() { return Values; }
 	TConstArrayView<float> GetValues() const { return Values; }
 
 private:
-	UPROPERTY(Transient)
-	TWeakObjectPtr<const UPoseSearchSchema> Schema = nullptr;
-	TArray<float> Values;
+	TStackAlignedArray<float> Values;
+	TObjectPtr<const UPoseSearchSchema> Schema;
 };
-
-namespace UE::PoseSearch
-{
 	
 struct FSearchResult
 {
@@ -42,23 +36,14 @@ struct FSearchResult
 	FPoseSearchCost PoseCost;
 	int32 PoseIdx = INDEX_NONE;
 
-	int32 PrevPoseIdx = INDEX_NONE;
-	int32 NextPoseIdx = INDEX_NONE;
-
-	// lerp value to find AssetTime from PrevPoseIdx -> AssetTime -> NextPoseIdx, within range [-0.5, 0.5]
-	float LerpValue = 0.f;
-
-	TWeakObjectPtr<const UPoseSearchDatabase> Database;
-	FPoseSearchFeatureVectorBuilder ComposedQuery;
-
-	// cost of the current pose with the query from database in the result, if possible
-	FPoseSearchCost ContinuingPoseCost; 
+	TObjectPtr<const UPoseSearchDatabase> Database;
 
 	float AssetTime = 0.0f;
 
-#if WITH_EDITORONLY_DATA
+#if UE_POSE_SEARCH_TRACE_ENABLED
 	FPoseSearchCost BruteForcePoseCost;
-#endif // WITH_EDITORONLY_DATA
+	int32 BestPosePos = 0;
+#endif // UE_POSE_SEARCH_TRACE_ENABLED
 
 	// Attempts to set the internal state to match the provided asset time including updating the internal DbPoseIdx. 
 	// If the provided asset time is out of bounds for the currently playing asset then this function will reset the 
@@ -69,7 +54,9 @@ struct FSearchResult
 
 	void Reset();
 
-	const FPoseSearchIndexAsset* GetSearchIndexAsset(bool bMandatory = false) const;
+	const FSearchIndexAsset* GetSearchIndexAsset(bool bMandatory = false) const;
+	
+	bool CanAdvance(float DeltaTime) const;
 };
 
 } // namespace UE::PoseSearch

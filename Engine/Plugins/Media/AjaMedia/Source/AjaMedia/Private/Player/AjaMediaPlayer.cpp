@@ -3,9 +3,10 @@
 #include "AjaMediaPlayer.h"
 
 
-#include "AJA.h"
+#include "Aja/Aja.h"
 #include "AjaMediaAudioSample.h"
 #include "AjaMediaBinarySample.h"
+#include "AjaMediaDefinitions.h"
 #include "AjaMediaPrivate.h"
 #include "AjaMediaSettings.h"
 #include "AjaMediaTextureSample.h"
@@ -13,9 +14,11 @@
 
 #include "Engine/Engine.h"
 #include "GenlockedCustomTimeStep.h"
+#include "MediaIOCoreDeinterlacer.h"
 #include "MediaIOCoreEncodeTime.h"
 #include "MediaIOCoreFileWriter.h"
 #include "MediaIOCoreSamples.h"
+#include "MediaIOCoreUtilities.h"
 #include "HAL/PlatformAtomics.h"
 #include "HAL/PlatformProcess.h"
 #include "IAjaMediaModule.h"
@@ -59,28 +62,10 @@ FAjaMediaPlayer::FAjaMediaPlayer(IMediaEventSink& InEventSink)
 	, AudioSamplePool(MakeUnique<FAjaMediaAudioSamplePool>())
 	, MetadataSamplePool(MakeUnique<FAjaMediaBinarySamplePool>())
 	, TextureSamplePool(MakeUnique<FAjaMediaTextureSamplePool>())
-	, MaxNumAudioFrameBuffer(8)
-	, MaxNumMetadataFrameBuffer(8)
-	, MaxNumVideoFrameBuffer(8)
-	, AjaThreadNewState(EMediaState::Closed)
 	, EventSink(InEventSink)
-	, AjaThreadAudioChannels(0)
-	, AjaThreadAudioSampleRate(0)
-	, AjaThreadFrameDropCount(0)
-	, LastFrameDropCount(0)
-	, PreviousFrameDropCount(0)
-	, bEncodeTimecodeInTexel(false)
-	, bUseFrameTimecode(false)
-	, bIsSRGBInput(false)
-	, bUseAncillary(false)
-	, bUseAudio(false)
-	, bUseVideo(false)
-	, bVerifyFrameDropCount(true)
-	, InputChannel(nullptr)
 	, SupportedSampleTypes(EMediaIOSampleType::None)
-	, bPauseRequested(false)
+	, DeviceProvider(MakePimpl<FAjaDeviceProvider>())
 {
-	DeviceProvider = MakePimpl<FAjaDeviceProvider>();
 }
 
 
@@ -118,6 +103,11 @@ bool FAjaMediaPlayer::Open(const FString& Url, const IMediaOptions* Options)
 	const bool bAutoDetectTimecode = Timecode == EMediaIOAutoDetectableTimecodeFormat::Auto;
 	const bool bAutoDetectVideoFormat = bAutoDetect;
 
+	bOverrideSourceEncoding = Options->GetMediaOption(UE::CaptureCardMediaSource::OverrideSourceEncoding, true);
+	OverrideSourceEncoding = (ETextureSourceEncoding) Options->GetMediaOption(UE::CaptureCardMediaSource::SourceEncoding, (int64) ETextureSourceEncoding::TSE_Linear);
+	bOverrideSourceColorSpace = Options->GetMediaOption(UE::CaptureCardMediaSource::OverrideSourceColorSpace, true);
+	OverrideSourceColorSpace =  (ETextureColorSpace) Options->GetMediaOption(UE::CaptureCardMediaSource::SourceColorSpace, (int64) ETextureColorSpace::TCS_None);
+
 	if (!bAutoDetectTimecode)
 	{
 		TimecodeFormat = UE::MediaIO::FromAutoDetectableTimecodeFormat(Timecode);
@@ -150,9 +140,6 @@ void FAjaMediaPlayer::Close()
 	AudioSamplePool->Reset();
 	MetadataSamplePool->Reset();
 	TextureSamplePool->Reset();
-
-	UnregisterSampleBuffers();
-	UnregisterTextures();
 
 	//Disable all our channels from the monitor
 	Samples->EnableTimedDataChannels(this, EMediaIOSampleType::None);
@@ -298,40 +285,45 @@ void FAjaMediaPlayer::VerifyFrameDropCount()
 		}
 		LastFrameDropCount = FrameDropCount;
 
-		const int32 CurrentMetadataDropCount = Samples->GetMetadataFrameDropCount();
-		int32 DeltaMetadataDropCount = CurrentMetadataDropCount;
-		if (CurrentMetadataDropCount >= PreviousMetadataFrameDropCount)
+		// JITR pipeline always keeps the sample pool full. So every new sample increments internal drop count.
+		// This if-condition is intended to avoid "Lost %d XXX frames on input..." message spam every frame.
+		if (!IsJustInTimeRenderingEnabled())
 		{
-			DeltaMetadataDropCount = CurrentMetadataDropCount - PreviousMetadataFrameDropCount;
-		}
-		PreviousMetadataFrameDropCount = CurrentMetadataDropCount;
-		if (DeltaMetadataDropCount > 0)
-		{
-			UE_LOG(LogAjaMedia, Warning, TEXT("Lost %d metadata frames on input %s. Frame rate is either too slow or buffering capacity is too small."), DeltaMetadataDropCount, *GetUrl());
-		}
+			const int32 CurrentMetadataDropCount = Samples->GetMetadataFrameDropCount();
+			int32 DeltaMetadataDropCount = CurrentMetadataDropCount;
+			if (CurrentMetadataDropCount >= PreviousMetadataFrameDropCount)
+			{
+				DeltaMetadataDropCount = CurrentMetadataDropCount - PreviousMetadataFrameDropCount;
+			}
+			PreviousMetadataFrameDropCount = CurrentMetadataDropCount;
+			if (DeltaMetadataDropCount > 0)
+			{
+				UE_LOG(LogAjaMedia, Warning, TEXT("Lost %d metadata frames on input %s. Frame rate is either too slow or buffering capacity is too small."), DeltaMetadataDropCount, *GetUrl());
+			}
 
-		const int32 CurrentAudioDropCount = Samples->GetAudioFrameDropCount();
-		int32 DeltaAudioDropCount = CurrentAudioDropCount;
-		if (CurrentAudioDropCount >= PreviousAudioFrameDropCount)
-		{
-			DeltaAudioDropCount = CurrentAudioDropCount - PreviousAudioFrameDropCount;
-		}
-		PreviousAudioFrameDropCount = CurrentAudioDropCount;
-		if (DeltaAudioDropCount > 0)
-		{
-			UE_LOG(LogAjaMedia, Warning, TEXT("Lost %d audio frames on input %s. Frame rate is either too slow or buffering capacity is too small."), DeltaAudioDropCount, *GetUrl());
-		}
+			const int32 CurrentAudioDropCount = Samples->GetAudioFrameDropCount();
+			int32 DeltaAudioDropCount = CurrentAudioDropCount;
+			if (CurrentAudioDropCount >= PreviousAudioFrameDropCount)
+			{
+				DeltaAudioDropCount = CurrentAudioDropCount - PreviousAudioFrameDropCount;
+			}
+			PreviousAudioFrameDropCount = CurrentAudioDropCount;
+			if (DeltaAudioDropCount > 0)
+			{
+				UE_LOG(LogAjaMedia, Warning, TEXT("Lost %d audio frames on input %s. Frame rate is either too slow or buffering capacity is too small."), DeltaAudioDropCount, *GetUrl());
+			}
 
-		const int32 CurrentVideoDropCount = Samples->GetVideoFrameDropCount();
-		int32 DeltaVideoDropCount = CurrentVideoDropCount;
-		if (CurrentVideoDropCount >= PreviousVideoFrameDropCount)
-		{
-			DeltaVideoDropCount = CurrentVideoDropCount - PreviousVideoFrameDropCount;
-		}
-		PreviousVideoFrameDropCount = CurrentVideoDropCount;
-		if (DeltaVideoDropCount > 0)
-		{
-			UE_LOG(LogAjaMedia, Warning, TEXT("Lost %d video frames on input %s. Frame rate is either too slow or buffering capacity is too small."), DeltaVideoDropCount, *GetUrl());
+			const int32 CurrentVideoDropCount = Samples->GetVideoFrameDropCount();
+			int32 DeltaVideoDropCount = CurrentVideoDropCount;
+			if (CurrentVideoDropCount >= PreviousVideoFrameDropCount)
+			{
+				DeltaVideoDropCount = CurrentVideoDropCount - PreviousVideoFrameDropCount;
+			}
+			PreviousVideoFrameDropCount = CurrentVideoDropCount;
+			if (DeltaVideoDropCount > 0)
+			{
+				UE_LOG(LogAjaMedia, Warning, TEXT("Lost %d video frames on input %s. Frame rate is either too slow or buffering capacity is too small."), DeltaVideoDropCount, *GetUrl());
+			}
 		}
 	}
 }
@@ -420,7 +412,7 @@ bool FAjaMediaPlayer::OnRequestInputBuffer(const AJA::AJARequestInputBufferData&
 	if (bUseAncillary && InRequestBuffer.AncF2BufferSize > 0)
 	{
 		AjaThreadCurrentAncF2Sample = MetadataSamplePool->AcquireShared();
-		OutRequestedBuffer.AncBuffer = reinterpret_cast<uint8_t*>(AjaThreadCurrentAncF2Sample->RequestBuffer(InRequestBuffer.AncF2BufferSize));
+		OutRequestedBuffer.AncF2Buffer = reinterpret_cast<uint8_t*>(AjaThreadCurrentAncF2Sample->RequestBuffer(InRequestBuffer.AncF2BufferSize));
 	}
 
 	// Audio
@@ -433,11 +425,13 @@ bool FAjaMediaPlayer::OnRequestInputBuffer(const AJA::AJARequestInputBufferData&
 	// Video
 	if (bUseVideo && InRequestBuffer.VideoBufferSize > 0 && InRequestBuffer.bIsProgressivePicture)
 	{
-		const bool bCanUseGPUTextureTransfer = CanUseGPUTextureTransfer();
-
-		if (bCanUseGPUTextureTransfer)
+		// JITR pipeline uses a single texture for GPU texture transfer as a shared one, so it's always available.
+		const bool bIsJustInTimeRenderingEnabled = IsJustInTimeRenderingEnabled();
+		const bool bCanUseGPUTextureTransfer     = CanUseGPUTextureTransfer();
+		if (!bIsJustInTimeRenderingEnabled && bCanUseGPUTextureTransfer)
 		{
-			if (!Textures.Num())
+			const bool bHasTextureAvailableForGPUTransfer = HasTextureAvailableForGPUTransfer();
+			if (!bHasTextureAvailableForGPUTransfer)
 			{
 				UE_LOG(LogAjaMedia, Error, TEXT("No texture available while doing a gpu texture transfer."));
 				return false;
@@ -446,10 +440,11 @@ bool FAjaMediaPlayer::OnRequestInputBuffer(const AJA::AJARequestInputBufferData&
 
 		AjaThreadCurrentTextureSample = TextureSamplePool->AcquireShared();
 		AjaThreadCurrentTextureSample->RequestBuffer(InRequestBuffer.VideoBufferSize);
+		AjaThreadCurrentTextureSample->SetColorConversionSettings(OCIOSettings);
 
-		if (bCanUseGPUTextureTransfer)
+		if (bIsJustInTimeRenderingEnabled && bCanUseGPUTextureTransfer)
 		{
-			PreGPUTransfer(AjaThreadCurrentTextureSample);
+			AjaThreadCurrentTextureSample->SetAwaitingForGPUTransfer();
 		}
 
 		OutRequestedBuffer.VideoBuffer = reinterpret_cast<uint8_t*>(AjaThreadCurrentTextureSample->GetMutableBuffer());
@@ -461,7 +456,6 @@ bool FAjaMediaPlayer::OnRequestInputBuffer(const AJA::AJARequestInputBufferData&
 bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInputFrame, const AJA::AJAAncillaryFrameData& InAncillaryFrame, const AJA::AJAAudioFrameData& InAudioFrame, const AJA::AJAVideoFrameData& InVideoFrame)
 {
 	SCOPE_CYCLE_COUNTER(STAT_AJA_MediaPlayer_ProcessFrame);
-
 
 	if ((AjaThreadNewState != EMediaState::Playing) && (AjaThreadNewState != EMediaState::Paused))
 	{
@@ -493,7 +487,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 		const FFrameNumber ConvertedFrameNumber = DecodedTimecode.GetValue().ToFrameNumber(VideoFrameRate);
 		const double NumberOfSeconds = ConvertedFrameNumber.Value * VideoFrameRate.AsInterval();
 		const FTimespan TimecodeDecodedTime = FTimespan::FromSeconds(NumberOfSeconds);
-		if (bUseTimeSynchronization)
+		if (EvaluationType == EMediaIOSampleEvaluationType::Timecode)
 		{
 			DecodedTime = TimecodeDecodedTime;
 			DecodedTimeF2 = TimecodeDecodedTime + FTimespan::FromSeconds(VideoFrameRate.AsInterval());
@@ -515,7 +509,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 		{
 			if (AjaThreadCurrentAncSample->SetProperties(DecodedTime, VideoFrameRate, DecodedTimecode))
 			{
-				Samples->AddMetadata(AjaThreadCurrentAncSample.ToSharedRef());
+				AddMetadataSample(AjaThreadCurrentAncSample.ToSharedRef());
 			}
 		}
 		else
@@ -523,7 +517,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 			auto MetaDataSample = MetadataSamplePool->AcquireShared();
 			if (MetaDataSample->Initialize(InAncillaryFrame.AncBuffer, InAncillaryFrame.AncBufferSize, DecodedTime, VideoFrameRate, DecodedTimecode))
 			{
-				Samples->AddMetadata(MetaDataSample);
+				AddMetadataSample(MetaDataSample);
 			}
 		}
 	}
@@ -535,7 +529,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 		{
 			if (AjaThreadCurrentAncF2Sample->SetProperties(DecodedTimeF2, VideoFrameRate, DecodedTimecodeF2))
 			{
-				Samples->AddMetadata(AjaThreadCurrentAncF2Sample.ToSharedRef());
+				AddMetadataSample(AjaThreadCurrentAncF2Sample.ToSharedRef());
 			}
 		}
 		else
@@ -543,7 +537,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 			auto MetaDataSample = MetadataSamplePool->AcquireShared();
 			if (MetaDataSample->Initialize(InAncillaryFrame.AncF2Buffer, InAncillaryFrame.AncF2BufferSize, DecodedTimeF2, VideoFrameRate, DecodedTimecodeF2))
 			{
-				Samples->AddMetadata(MetaDataSample);
+				AddMetadataSample(MetaDataSample);
 			}
 		}
 	}
@@ -555,7 +549,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 		{
 			if (AjaThreadCurrentAudioSample->SetProperties(InAudioFrame.AudioBufferSize / sizeof(int32), InAudioFrame.NumChannels, InAudioFrame.AudioRate, DecodedTime, DecodedTimecode))
 			{
-				Samples->AddAudio(AjaThreadCurrentAudioSample.ToSharedRef());
+				AddAudioSample(AjaThreadCurrentAudioSample.ToSharedRef());
 			}
 
 			AjaThreadAudioChannels = AjaThreadCurrentAudioSample->GetChannels();
@@ -566,7 +560,7 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 			auto AudioSample = AudioSamplePool->AcquireShared();
 			if (AudioSample->Initialize(InAudioFrame, DecodedTime, DecodedTimecode))
 			{
-				Samples->AddAudio(AudioSample);
+				AddAudioSample(AudioSample);
 			}
 
 			AjaThreadAudioChannels = AudioSample->GetChannels();
@@ -624,18 +618,61 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 			bAjaWriteOutputRawDataCmdEnable = false;
 		}
 
+		UE::MediaIOCore::FColorFormatArgs ColorFormat;
+		FAjaMediaHDROptions HDROptions = UE::AjaMedia::MakeAjaMediaHDROptions(InVideoFrame.HDROptions);
+		
+		if (bOverrideSourceEncoding)
+		{
+			ColorFormat.Encoding = (UE::Color::EEncoding) OverrideSourceEncoding;
+		}
+		else
+		{
+			const FTimespan TimeBetweenLogs = FTimespan::FromSeconds(5);
+
+			switch (HDROptions.EOTF)
+			{
+			case EAjaHDRMetadataEOTF::SDR:
+				ColorFormat.Encoding = UE::Color::EEncoding::sRGB; // Missing support for BT.1886 so we default to sRGB instead.
+				break;
+			case EAjaHDRMetadataEOTF::PQ:
+				ColorFormat.Encoding = UE::Color::EEncoding::ST2084;
+				break;
+			case EAjaHDRMetadataEOTF::HLG:
+				UE_MEDIA_IO_LOG_THROTTLE(LogAjaMedia, Warning, TimeBetweenLogs, TEXT("HLG EOTF is not supported at the moment. Defaulting to sRGB."));
+				ColorFormat.Encoding = UE::Color::EEncoding::sRGB;
+				break;
+			default:
+				checkNoEntry();
+				ColorFormat.Encoding = UE::Color::EEncoding::None;			
+			}
+		}
+		
+		if (bOverrideSourceColorSpace)
+		{
+			ColorFormat.ColorSpace = (UE::Color::EColorSpace) OverrideSourceColorSpace;
+		}
+		else
+		{
+			switch (HDROptions.Gamut)
+			{
+			case EAjaHDRMetadataGamut::Rec709:
+				ColorFormat.ColorSpace = UE::Color::EColorSpace::sRGB;
+				break;
+			case EAjaHDRMetadataGamut::Rec2020:
+				ColorFormat.ColorSpace = UE::Color::EColorSpace::Rec2020;
+				break;
+			default:
+				checkNoEntry();
+				ColorFormat.ColorSpace = UE::Color::EColorSpace::sRGB;
+				break;
+			}
+		}
+
 		if (AjaThreadCurrentTextureSample.IsValid())
 		{
-			if (AjaThreadCurrentTextureSample->SetProperties(InVideoFrame.Stride, InVideoFrame.Width, InVideoFrame.Height, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, bIsSRGBInput))
+			if (AjaThreadCurrentTextureSample->SetProperties(InVideoFrame.Stride, InVideoFrame.Width, InVideoFrame.Height, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, ColorFormat))
 			{
-				if (CanUseGPUTextureTransfer())
-				{
-					ExecuteGPUTransfer(AjaThreadCurrentTextureSample);
-				}
-				else
-				{
-					Samples->AddVideo(AjaThreadCurrentTextureSample.ToSharedRef());
-				}
+				AddVideoSample(AjaThreadCurrentTextureSample.ToSharedRef());
 			}
 		}
 		else
@@ -658,31 +695,42 @@ bool FAjaMediaPlayer::OnInputFrameReceived(const AJA::AJAInputFrameData& InInput
 			}
 			else
 			{
-				auto TextureSample = TextureSamplePool->AcquireShared();
 				if (InVideoFrame.bIsProgressivePicture)
-
 				{
-					if (TextureSample->InitializeProgressive(InVideoFrame, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, bIsSRGBInput))
+					auto TextureSample = TextureSamplePool->AcquireShared();
+					if (TextureSample->InitializeProgressive(InVideoFrame, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, ColorFormat))
 					{
-						Samples->AddVideo(TextureSample);
+						TextureSample->SetColorConversionSettings(OCIOSettings);
+						AddVideoSample(TextureSample);
 					}
 				}
 				else
 				{
-					bool bEven = true;
-					if (UGenlockedCustomTimeStep* TimeStep = Cast< UGenlockedCustomTimeStep>(GEngine->GetCustomTimeStep()))
+					if (UGenlockedCustomTimeStep* TimeStep = Cast<UGenlockedCustomTimeStep>(GEngine->GetCustomTimeStep()))
 					{
 						bAddedSynchronizedSamples = TimeStep->GetSynchronizationState() == ECustomTimeStepSynchronizationState::Synchronized;
 					}
-					if (TextureSample->InitializeInterlaced_Halfed(InVideoFrame, VideoSampleFormat, DecodedTime, VideoFrameRate, DecodedTimecode, bEven, bIsSRGBInput))
+
+					UE::MediaIOCore::FVideoFrame FrameInfo
 					{
-						Samples->AddVideo(TextureSample);
-					}
-					bEven = !bEven;
-					auto TextureSampleOdd = TextureSamplePool->AcquireShared();
-					if (TextureSampleOdd->InitializeInterlaced_Halfed(InVideoFrame, VideoSampleFormat, DecodedTimeF2, VideoFrameRate, DecodedTimecodeF2, bEven, bIsSRGBInput))
+						InVideoFrame.VideoBuffer,
+						InVideoFrame.VideoBufferSize,
+						InVideoFrame.Stride,
+						InVideoFrame.Width,
+						InVideoFrame.Height,
+						VideoSampleFormat,
+						DecodedTime,
+						VideoFrameRate,
+						DecodedTimecode,
+						ColorFormat
+					};
+
+					const TArray<TSharedRef<FMediaIOCoreTextureSampleBase>> DeinterlacedSamples = Deinterlace(FrameInfo);
+
+					for (const TSharedRef<FMediaIOCoreTextureSampleBase>& TextureSample : DeinterlacedSamples)
 					{
-						Samples->AddVideo(TextureSampleOdd);
+						TextureSample->SetColorConversionSettings(OCIOSettings);
+						AddVideoSample(TextureSample);
 					}
 				}
 			}
@@ -722,11 +770,6 @@ void FAjaMediaPlayer::SetupSampleChannels()
 	FMediaIOSamplingSettings MetadataSettings = BaseSettings;
 	MetadataSettings.BufferSize = MaxNumMetadataFrameBuffer;
 	Samples->InitializeMetadataBuffer(MetadataSettings);
-}
-
-void FAjaMediaPlayer::AddVideoSample(const TSharedRef<FMediaIOCoreTextureSampleBase>& InSample)
-{
-	Samples->AddVideo(InSample);
 }
 
 bool FAjaMediaPlayer::Open_Internal(const FString& Url, const IMediaOptions* Options, AJA::AJAInputOutputChannelOptions AjaOptions)
@@ -946,7 +989,7 @@ void FAjaMediaPlayer::OnAutoDetected(TArray<FAjaDeviceProvider::FMediaIOConfigur
 			break;
 		}
 	}
-			
+
 	if (!bConfigurationFound)
 	{
 		UE_LOG(LogAjaMedia, Warning, TEXT("No configuration was detected for MediaPlayer."));
@@ -955,6 +998,8 @@ void FAjaMediaPlayer::OnAutoDetected(TArray<FAjaDeviceProvider::FMediaIOConfigur
 	}
 
 	Open_Internal(Url, Options, AjaOptions);
+
+	NotifyVideoFormatDetected();
 }
 
 bool FAjaMediaPlayer::SetRate(float Rate)
@@ -972,6 +1017,11 @@ bool FAjaMediaPlayer::SetRate(float Rate)
 	}
 
 	return false;
+}
+
+TSharedPtr<FMediaIOCoreTextureSampleBase> FAjaMediaPlayer::AcquireTextureSample_AnyThread() const
+{
+	return TextureSamplePool->AcquireShared();
 }
 
 #undef LOCTEXT_NAMESPACE

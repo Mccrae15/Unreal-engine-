@@ -15,7 +15,7 @@
 #include "ViewModels/NiagaraScratchPadScriptViewModel.h"
 #include "ViewModels/NiagaraScratchPadViewModel.h"
 #include "ViewModels/NiagaraScriptGraphViewModel.h"
-#include "NiagaraSystemScriptViewModel.h"
+#include "ViewModels/NiagaraSystemScriptViewModel.h"
 #include "Widgets/SNiagaraSystemScript.h"
 #include "Widgets/SNiagaraSystemViewport.h"
 #include "Widgets/SNiagaraParameterPanel.h"
@@ -27,8 +27,8 @@
 #include "NiagaraSystemFactoryNew.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystemEditorData.h"
-#include "NiagaraScriptStatsViewModel.h"
-#include "NiagaraBakerViewModel.h"
+#include "ViewModels/NiagaraScriptStatsViewModel.h"
+#include "ViewModels/NiagaraBakerViewModel.h"
 #include "NiagaraToolkitCommon.h"
 #include "ViewModels/NiagaraSystemEditorDocumentsViewModel.h"
 
@@ -51,10 +51,10 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/TransactionObjectEvent.h"
 #include "Modules/ModuleManager.h"
-#include "NiagaraMessageLogViewModel.h"
+#include "ViewModels/NiagaraMessageLogViewModel.h"
 #include "NiagaraVersionMetaData.h"
 #include "SNiagaraAssetPickerList.h"
-#include "SystemToolkitModes/NiagaraSystemToolkitModeBase.h"
+#include "Toolkits/SystemToolkitModes/NiagaraSystemToolkitModeBase.h"
 #include "SystemToolkitModes/NiagaraSystemToolkitMode_Default.h"
 #include "SystemToolkitModes/NiagaraSystemToolkitMode_Scalability.h"
 #include "ViewModels/NiagaraParameterDefinitionsPanelViewModel.h"
@@ -281,6 +281,9 @@ void FNiagaraSystemToolkit::InitializeInternal(const EToolkitMode::Type Mode, co
 	BakerViewModel = MakeShared<FNiagaraBakerViewModel>();
 	BakerViewModel->Initialize(SystemViewModel);
 
+	SimCacheViewModel = MakeShared<FNiagaraSimCacheViewModel>();
+	SimCacheViewModel->Initialize(nullptr);
+
 	SystemViewModel->OnEmitterHandleViewModelsChanged().AddSP(this, &FNiagaraSystemToolkit::RefreshParameters);
 	SystemViewModel->GetSelectionViewModel()->OnSystemIsSelectedChanged().AddSP(this, &FNiagaraSystemToolkit::OnSystemSelectionChanged);
 	SystemViewModel->GetSelectionViewModel()->OnEmitterHandleIdSelectionChanged().AddSP(this, &FNiagaraSystemToolkit::OnSystemSelectionChanged);
@@ -309,13 +312,13 @@ void FNiagaraSystemToolkit::InitializeInternal(const EToolkitMode::Type Mode, co
 	VersionMetadata = NewObject<UNiagaraVersionMetaData>(ToolkitObject, "VersionMetadata", RF_Transient);
 	SAssignNew(VersionsWidget, SNiagaraEmitterVersionWidget, HasEmitter() ? GetEditedEmitterViewModel()->GetEmitter().Emitter : nullptr, VersionMetadata, HasEmitter() ? Emitter->GetOutermost()->GetName() : TEXT(""))
 		.OnChangeToVersion(this, &FNiagaraSystemToolkit::SwitchToVersion)
-		.OnVersionDataChanged_Lambda([this]()
+		.OnVersionDataChanged_Lambda([this](const FPropertyChangedEvent* InChangedEvent, FGuid SelectedVersion)
 		{
 			if (TSharedPtr<FNiagaraEmitterViewModel> EditableEmitterViewModel = SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterViewModel())
 			{
 				FVersionedNiagaraEmitter EditableEmitter = EditableEmitterViewModel->GetEmitter();
 				FProperty* VersionProperty = FindFProperty<FProperty>(UNiagaraEmitter::StaticClass(), FName("VersionData"));
-				FPropertyChangedEvent ChangeEvent(VersionProperty);
+				FPropertyChangedEvent ChangeEvent = InChangedEvent ? *InChangedEvent : FPropertyChangedEvent(VersionProperty);
 				EditableEmitter.Emitter->PostEditChangeProperty(ChangeEvent);
 			}
 		});
@@ -324,7 +327,8 @@ void FNiagaraSystemToolkit::InitializeInternal(const EToolkitMode::Type Mode, co
 	
 	FNiagaraEditorModule& NiagaraEditorModule = FModuleManager::LoadModuleChecked<FNiagaraEditorModule>("NiagaraEditor");
 	AddMenuExtender(NiagaraEditorModule.GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
-	
+	AddToolbarExtender(NiagaraEditorModule.GetToolBarExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
+
 	RegenerateMenusAndToolbars();
 
 	bChangesDiscarded = false;
@@ -520,7 +524,7 @@ void FNiagaraSystemToolkit::SetupCommands()
 
 	GetToolkitCommands()->MapAction(
 		FNiagaraEditorCommands::Get().IsolateSelectedEmitters,
-		FExecuteAction::CreateLambda([=]()
+		FExecuteAction::CreateLambda([this]()
 		{
 			SystemViewModel->IsolateSelectedEmitters();
 		}),
@@ -528,7 +532,7 @@ void FNiagaraSystemToolkit::SetupCommands()
 
 	GetToolkitCommands()->MapAction(
 		FNiagaraEditorCommands::Get().DisableSelectedEmitters,
-		FExecuteAction::CreateLambda([=]()
+		FExecuteAction::CreateLambda([this]()
 		{
 			SystemViewModel->DisableSelectedEmitters();
 		}),
@@ -609,6 +613,24 @@ TSharedRef<SWidget> FNiagaraSystemToolkit::GenerateBoundsMenuContent(TSharedRef<
 	}
 	
 	MenuBuilder.AddMenuEntry(FNiagaraEditorCommands::Get().ToggleBounds_SetFixedBounds_SelectedEmitters);
+
+	MenuBuilder.AddMenuSeparator();
+
+	for (TSharedRef<FNiagaraEmitterHandleViewModel> EmitterViewModel : SystemViewModel->GetEmitterHandleViewModels())
+	{
+		MenuBuilder.AddMenuEntry(
+			FText::Format(LOCTEXT("ShowEmitterBounds", "Show {0} Emitter Bounds"), EmitterViewModel->GetNameText()),
+			LOCTEXT("ShowEmitterBoundsTooltip", "Shows the emitter bounds."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &FNiagaraSystemToolkit::ToggleShowEmitterBounds, EmitterViewModel),
+				FCanExecuteAction::CreateSP(this, &FNiagaraSystemToolkit::CanShowEmitterBounds),
+				FIsActionChecked::CreateSP(this, &FNiagaraSystemToolkit::IsShowEmitterBounds, EmitterViewModel)
+			),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+	}
 
 	return MenuBuilder.MakeWidget();
 }
@@ -826,6 +848,11 @@ TSharedPtr<FNiagaraSystemViewModel> FNiagaraSystemToolkit::GetSystemViewModel()
 	return SystemViewModel;
 }
 
+TSharedPtr<FNiagaraSimCacheViewModel> FNiagaraSystemToolkit::GetSimCacheViewModel()
+{
+	return SimCacheViewModel;
+}
+
 TSharedPtr<FNiagaraSystemGraphSelectionViewModel> FNiagaraSystemToolkit::GetSystemGraphSelectionViewModel()
 {
 	return SystemViewModel->GetSystemGraphSelectionViewModel();
@@ -862,6 +889,25 @@ void FNiagaraSystemToolkit::OnToggleBounds()
 bool FNiagaraSystemToolkit::IsToggleBoundsChecked() const
 {
 	return IsDrawOptionEnabled(SNiagaraSystemViewport::Bounds);
+}
+
+bool FNiagaraSystemToolkit::CanShowEmitterBounds() const
+{
+	return SystemViewModel->GetSystem().bFixedBounds == false;
+}
+
+bool FNiagaraSystemToolkit::IsShowEmitterBounds(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterViewModel) const
+{
+	FNiagaraEmitterHandle* EmitterHandle = EmitterViewModel->GetEmitterHandle();
+	return EmitterHandle ? EmitterHandle->GetDebugShowBounds() : false;
+}
+
+void FNiagaraSystemToolkit::ToggleShowEmitterBounds(TSharedRef<FNiagaraEmitterHandleViewModel> EmitterViewModel)
+{
+	if (FNiagaraEmitterHandle* EmitterHandle = EmitterViewModel->GetEmitterHandle())
+	{
+		EmitterHandle->SetDebugShowBounds(!EmitterHandle->GetDebugShowBounds());
+	}
 }
 
 void FNiagaraSystemToolkit::ToggleDrawOption(int32 Element)
@@ -907,7 +953,7 @@ void FNiagaraSystemToolkit::OpenDebugOutliner()
 
 void FNiagaraSystemToolkit::OpenAttributeSpreadsheet()
 {
-	InvokeTab(FNiagaraSystemToolkitModeBase::DebugSpreadsheetTabID);
+	InvokeTab(FNiagaraSystemToolkitModeBase::DebugCacheSpreadsheetTabID);
 }
 
 
@@ -1227,7 +1273,7 @@ void FNiagaraSystemToolkit::SaveAssetAs_Execute()
 	SystemViewModel->NotifyPostSave();
 }
 
-bool FNiagaraSystemToolkit::OnRequestClose()
+bool FNiagaraSystemToolkit::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
 	if (GbLogNiagaraSystemChanges > 0)
 	{
@@ -1262,7 +1308,7 @@ bool FNiagaraSystemToolkit::OnRequestClose()
 		}
 	}
 
-	if (bScratchPadChangesDiscarded == false && bHasUnappliedScratchPadChanges)
+	if (InCloseReason != EAssetEditorCloseReason::AssetForceDeleted && bScratchPadChangesDiscarded == false && bHasUnappliedScratchPadChanges)
 	{
 		// find out the user wants to do with their dirty scratch pad scripts.
 		EAppReturnType::Type YesNoCancelReply = FMessageDialog::Open(EAppMsgType::YesNoCancel,
@@ -1282,7 +1328,7 @@ bool FNiagaraSystemToolkit::OnRequestClose()
 		}
 	}
 
-	if (SystemToolkitMode == ESystemToolkitMode::Emitter)
+	if (SystemToolkitMode == ESystemToolkitMode::Emitter && InCloseReason != EAssetEditorCloseReason::AssetForceDeleted)
 	{
 		TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel = SystemViewModel->GetEmitterHandleViewModels()[0]->GetEmitterViewModel();
 		if (bChangesDiscarded == false && (EmitterViewModel->GetEmitter().Emitter->GetChangeId() != LastSyncedEmitterChangeId || bEmitterThumbnailUpdated))
@@ -1315,7 +1361,7 @@ bool FNiagaraSystemToolkit::OnRequestClose()
 	}
 	
 	GEngine->ForceGarbageCollection(true);
-	return FAssetEditorToolkit::OnRequestClose();
+	return FAssetEditorToolkit::OnRequestClose(InCloseReason);
 }
 
 void FNiagaraSystemToolkit::EmitterAssetSelected(const FAssetData& AssetData)

@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearch/KDTree.h"
+#include "Stats/Stats.h"
 
-#define UE_POSE_SEARCH_USE_NANOFLANN 1
+#ifndef UE_POSE_SEARCH_USE_NANOFLANN
+	#define UE_POSE_SEARCH_USE_NANOFLANN 1
+#endif
 
 // @third party code - BEGIN nanoflann
 #if UE_POSE_SEARCH_USE_NANOFLANN
@@ -28,7 +31,10 @@ FKDTree::FKDTree(int32 Count, int32 Dim, const float* Data, int32 MaxLeafSize)
 , Impl(nullptr)
 {
 #if UE_POSE_SEARCH_USE_NANOFLANN
-	Impl = new FKDTreeImplementation(Dim, DataSource, nanoflann::KDTreeSingleIndexAdaptorParams(MaxLeafSize));
+	if (Count > 0 && Dim > 0 && Data)
+	{
+		Impl = new FKDTreeImplementation(Dim, DataSource, nanoflann::KDTreeSingleIndexAdaptorParams(MaxLeafSize));
+	}
 #endif
 }
 
@@ -36,18 +42,11 @@ FKDTree::FKDTree()
 : DataSource(0, 0, nullptr)
 , Impl(nullptr)
 {
-#if UE_POSE_SEARCH_USE_NANOFLANN
-	Impl = new FKDTreeImplementation(0, DataSource, nanoflann::KDTreeSingleIndexAdaptorParams(0));
-#endif
 }
 
 FKDTree::~FKDTree()
 {
-#if UE_POSE_SEARCH_USE_NANOFLANN
-	delete Impl;
-	Impl = nullptr;
-#endif
-	DataSource = FDataSource();
+	Reset();
 }
 
 #if UE_POSE_SEARCH_USE_NANOFLANN
@@ -83,9 +82,8 @@ void CopySubTree(FKDTree& KDTree, FKDTreeImplementation::NodePtr& ThisNode, cons
 FKDTree::FKDTree(const FKDTree& Other)
 {
 #if UE_POSE_SEARCH_USE_NANOFLANN
-	if (this != &Other)
+	if (this != &Other && Other.Impl)
 	{
-		check(Other.Impl);
 		Impl = new FKDTreeImplementation(0, DataSource, nanoflann::KDTreeSingleIndexAdaptorParams(0));
 
 		DataSource = Other.DataSource;
@@ -129,21 +127,32 @@ FKDTree& FKDTree::operator=(const FKDTree& Other)
 {
 	if (this != &Other)
 	{
-		this->~FKDTree();
+		Reset();
 		new(this)FKDTree(Other);
 	}
 	return *this;
 }
 
+void FKDTree::Reset()
+{
+#if UE_POSE_SEARCH_USE_NANOFLANN
+	delete Impl;
+	Impl = nullptr;
+#endif
+	DataSource = FDataSource();
+}
+
 void FKDTree::Construct(int32 Count, int32 Dim, const float* Data, int32 MaxLeafSize)
 {
-	this->~FKDTree();
+	Reset();
 	new(this)FKDTree(Count, Dim, Data, MaxLeafSize);
 }
 
 bool FKDTree::FindNeighbors(KNNResultSet& Result, const float* Query) const
 {
 #if UE_POSE_SEARCH_USE_NANOFLANN
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FKDTree_FindNeighbors);
+
 	check(Query && Impl->root_node);
 	const nanoflann::SearchParams SearchParams(
 		32,			// Ignored parameter (Kept for compatibility with the FLANN interface).
@@ -151,7 +160,7 @@ bool FKDTree::FindNeighbors(KNNResultSet& Result, const float* Query) const
 		false);		// only for radius search, require neighbours sorted by
 	return Impl->findNeighbors(Result, Query, SearchParams);
 #else
-	check(false); // unimplemented
+	checkNoEntry(); // unimplemented
 	return false;
 #endif
 }
@@ -214,15 +223,21 @@ FArchive& SerializeSubTree(FArchive& Ar, FKDTree& KDTree, FKDTreeImplementation:
 FArchive& Serialize(FArchive& Ar, FKDTree& KDTree, const float* KDTreeData)
 {
 #if UE_POSE_SEARCH_USE_NANOFLANN
+	uint32 KDTreeSize = KDTree.Impl ? KDTree.Impl->m_size : 0;
 
-	check(KDTree.Impl);
-	check(KDTree.Impl->m_size < UINT_MAX);
-	uint32 KDTreeSize = KDTree.Impl->m_size;
 	Ar << KDTreeSize;
-	KDTree.Impl->m_size = KDTreeSize;
 
-	if (KDTree.Impl->m_size  > 0)
+	check(KDTreeSize < UINT_MAX);
+
+	if (KDTreeSize > 0)
 	{
+		if (Ar.IsLoading() && !KDTree.Impl)
+		{
+			KDTree.Impl = new FKDTreeImplementation(0, KDTree.DataSource, nanoflann::KDTreeSingleIndexAdaptorParams(0));
+		}
+
+		KDTree.Impl->m_size = KDTreeSize;
+
 		Ar << KDTree.Impl->dim;
 
 		uint32 root_bbox_size = KDTree.Impl->root_bbox.size();
@@ -260,6 +275,10 @@ FArchive& Serialize(FArchive& Ar, FKDTree& KDTree, const float* KDTreeData)
 			Ar << el;
 		}
 		SerializeSubTree(Ar, KDTree, KDTree.Impl->root_node);
+	}
+	else if (Ar.IsLoading())
+	{
+		KDTree.Reset();
 	}
 #endif
 

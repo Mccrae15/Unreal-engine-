@@ -486,6 +486,7 @@ void FTextLayout::JustifyLayout()
 		switch (VisualJustification)
 		{
 		case ETextJustify::Left:
+		case ETextJustify::InvariantLeft:
 			{
 				const float ExtraSpace = LineView.Size.X - LineJustificationWidth;
 				OffsetAdjustment.X = -ExtraSpace;
@@ -500,6 +501,7 @@ void FTextLayout::JustifyLayout()
 			break;
 
 		case ETextJustify::Right:
+		case ETextJustify::InvariantRight:
 			{
 				const float ExtraSpace = LayoutWidthNoMargin - LineJustificationWidth;
 				OffsetAdjustment.X = ExtraSpace;
@@ -2164,11 +2166,13 @@ void FTextLayout::AddLine( const FNewLineData& NewLine )
 
 void FTextLayout::AddLines( const TArray<FNewLineData>& NewLines )
 {
+	LineModels.Reserve(NewLines.Num());
 	for (const auto& NewLine : NewLines)
 	{
 		FLineModel LineModel( NewLine.Text );
 		TransformLineText(LineModel);
 
+		LineModel.Runs.Reserve(NewLine.Runs.Num());
 		for (const auto& Run : NewLine.Runs)
 		{
 			LineModel.Runs.Add( FRunModel( Run ) );

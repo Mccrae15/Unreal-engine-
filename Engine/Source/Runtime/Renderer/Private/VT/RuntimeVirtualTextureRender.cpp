@@ -99,6 +99,7 @@ namespace RuntimeVirtualTexture
 		{
 		case SP_METAL:
 		case SP_METAL_MRT:
+		case SP_METAL_SIM:
 		case SP_METAL_TVOS:
 		case SP_METAL_MRT_TVOS:
 		case SP_VULKAN_ES3_1_ANDROID:
@@ -123,6 +124,7 @@ namespace RuntimeVirtualTexture
 	public:
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 			SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+			SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 			SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 			RENDER_TARGET_BINDING_SLOTS()
 		END_SHADER_PARAMETER_STRUCT()
@@ -150,19 +152,6 @@ namespace RuntimeVirtualTexture
 		FShader_VirtualTextureMaterialDraw(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer)
 			: FMeshMaterialShader(Initializer)
 		{
-		}
-
-		template <typename TRHICmdList>
-		void SetParameters(TRHICmdList& RHICmdList, FSceneView const& View, FMaterialRenderProxy const& MaterialProxy, FMaterial const& Material)
-		{
-			FMeshMaterialShader::SetParameters(
-				RHICmdList,
-				RHICmdList.GetBoundPixelShader(),
-				&MaterialProxy,
-				Material,
-				View,
-				View.ViewUniformBuffer,
-				ESceneTextureSetupMode::All);
 		}
 	};
 
@@ -547,7 +536,7 @@ namespace RuntimeVirtualTexture
 						CompressTexture0 = GraphBuilder.RegisterExternalTexture(Desc.OutputTargets[0], ERDGTextureFlags::None);
 						CompressTextureUAV0_64bit = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(CompressTexture0, 0, Compressed64BitFormat));
 						CompressTexture1 = GraphBuilder.RegisterExternalTexture(Desc.OutputTargets[1], ERDGTextureFlags::None);
-						CompressTextureUAV1_128bit = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(CompressTexture0, 0, Compressed128BitFormat));
+						CompressTextureUAV1_128bit = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(CompressTexture1, 0, Compressed128BitFormat));
 						OutputAlias0 = OutputAlias1 = nullptr;
 					}
 					else
@@ -1011,7 +1000,7 @@ namespace RuntimeVirtualTexture
 				if (StaticMeshRelevance.bRenderToVirtualTexture && StaticMeshRelevance.LODIndex == LodIndex && StaticMeshRelevance.RuntimeVirtualTextureMaterialType == (uint32)MaterialType)
 				{
 					bool bCachedDraw = false;
-					if (StaticMeshRelevance.bSupportsCachingMeshDrawCommands && !PrimitiveSceneInfo->NeedsUpdateStaticMeshes())
+					if (StaticMeshRelevance.bSupportsCachingMeshDrawCommands)
 					{
 						// Use cached draw command
 						const int32 StaticMeshCommandInfoIndex = StaticMeshRelevance.GetStaticMeshCommandInfoIndex(EMeshPass::VirtualTexture);
@@ -1315,6 +1304,7 @@ namespace RuntimeVirtualTexture
 	void RenderPage(
 		FRDGBuilder& GraphBuilder,
 		FScene* Scene,
+		FSceneUniformBuffer& SceneUB,
 		uint32 RuntimeVirtualTextureMask,
 		ERuntimeVirtualTextureMaterialType MaterialType,
 		bool bClearTextures,
@@ -1393,7 +1383,6 @@ namespace RuntimeVirtualTexture
 		View->CachedViewUniformShaderParameters->RuntimeVirtualTextureMipLevel = MipLevelParameter;
 		View->CachedViewUniformShaderParameters->RuntimeVirtualTexturePackHeight = FVector2f(WorldHeightPackParameter);	// LWC_TODO: Precision loss
 		View->CachedViewUniformShaderParameters->RuntimeVirtualTextureDebugParams = FVector4f(DebugType == ERuntimeVirtualTextureDebugType::Debug ? 1.f : 0.f, 0.f, 0.f, 0.f);
-		Scene->GPUScene.FillViewShaderParameters(*View->CachedViewUniformShaderParameters);
 		View->ViewUniformBuffer = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(*View->CachedViewUniformShaderParameters, UniformBuffer_SingleFrame);
 
 		// Build graph
@@ -1412,6 +1401,7 @@ namespace RuntimeVirtualTexture
 			ERenderTargetLoadAction LoadAction = bClearTextures ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ENoAction;
 			FShader_VirtualTextureMaterialDraw::FParameters* PassParameters = GraphBuilder.AllocParameters<FShader_VirtualTextureMaterialDraw::FParameters>();
 			PassParameters->View = View->ViewUniformBuffer;
+			PassParameters->Scene = SceneUB.GetBuffer(GraphBuilder);
 			PassParameters->RenderTargets[0] = GraphSetup.RenderTexture0 ? FRenderTargetBinding(GraphSetup.RenderTexture0, LoadAction) : FRenderTargetBinding();
 			PassParameters->RenderTargets[1] = GraphSetup.RenderTexture1 ? FRenderTargetBinding(GraphSetup.RenderTexture1, LoadAction) : FRenderTargetBinding();
 			PassParameters->RenderTargets[2] = GraphSetup.RenderTexture2 ? FRenderTargetBinding(GraphSetup.RenderTexture2, LoadAction) : FRenderTargetBinding();
@@ -1488,7 +1478,7 @@ namespace RuntimeVirtualTexture
 		}
 	}
 
-	void RenderPagesInternal(FRDGBuilder& GraphBuilder, FRenderPageBatchDesc const& InDesc)
+	void RenderPagesInternal(FRDGBuilder& GraphBuilder, FRenderPageBatchDesc const& InDesc, FSceneUniformBuffer& SceneUB)
 	{
 		check(InDesc.NumPageDescs <= EMaxRenderPageBatch);
 
@@ -1504,6 +1494,7 @@ namespace RuntimeVirtualTexture
 				RenderPage(
 					GraphBuilder,
 					InDesc.Scene,
+					SceneUB,
 					InDesc.RuntimeVirtualTextureMask,
 					InDesc.MaterialType,
 					InDesc.bClearTextures,
@@ -1531,18 +1522,23 @@ namespace RuntimeVirtualTexture
 		// Call to let GPU-Scene determine if it is active and record scene primitive count
 		FGPUSceneScopeBeginEndHelper GPUSceneScopeBeginEndHelper(InDesc.Scene->GPUScene, GPUSceneDynamicContext, InDesc.Scene);
 
+		FSceneUniformBuffer SceneUB {};
 		FRDGExternalAccessQueue ExternalAccessQueue;
-		InDesc.Scene->GPUScene.Update(GraphBuilder, *InDesc.Scene, ExternalAccessQueue);
+		InDesc.Scene->GPUScene.Update(GraphBuilder, SceneUB, *InDesc.Scene, ExternalAccessQueue);
 		ExternalAccessQueue.Submit(GraphBuilder);
 
-		RenderPagesInternal(GraphBuilder, InDesc);
+		RenderPagesInternal(GraphBuilder, InDesc, SceneUB);
 	}
 
 	void RenderPages(FRDGBuilder& GraphBuilder, FRenderPageBatchDesc const& InDesc)
 	{
 		if (InDesc.Scene->GPUScene.IsRendering())
 		{
-			RenderPagesInternal(GraphBuilder, InDesc);
+			// TODO: this should be replaced by piping through a reference to the scene renderer rather than just the scene, such that we can get at the already populated scene UB.
+			FSceneUniformBuffer SceneUB{};
+			InDesc.Scene->GPUScene.FillSceneUniformBuffer(GraphBuilder, SceneUB);
+
+			RenderPagesInternal(GraphBuilder, InDesc, SceneUB);
 		}
 		else
 		{

@@ -1,19 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "Modules/ModuleManager.h"
+
+#if WITH_EDITOR
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Interfaces/IPluginManager.h"
 #include "MuCO/CustomizableObject.h"
+#include "MuCO/UnrealPortabilityHelpers.h"
 #include "MuCOE/ICustomizableObjectPopulationModule.h"
 #include "MuCOP/CustomizableObjectPopulation.h"
 #include "MuCOP/CustomizableObjectPopulationGenerator.h"
-
+#endif
 
 /**
  * MovieSceneCore module implementation (private)
  */
-class FCustomizableObjectPopulationModule : public ICustomizableObjectPopulationModule
+class FCustomizableObjectPopulationModule : 
+#if WITH_EDITOR
+	public ICustomizableObjectPopulationModule
+#else
+	public IModuleInterface
+#endif
 {
 
 public:
@@ -22,22 +31,21 @@ public:
 	void StartupModule() override{}
 	void ShutdownModule() override{}
 
+#if WITH_EDITOR
 	// ICustomizableObjectPopulationModule interface
 	FString GetPluginVersion() const override;
 
-#if WITH_EDITOR
 	// Recompiles all the populations referenced in the Customizabled Object
 	virtual void RecompilePopulations(UCustomizableObject* Object);
 #endif
 
 };
 
-
 IMPLEMENT_MODULE( FCustomizableObjectPopulationModule, CustomizableObjectPopulation );
-
 
 //-------------------------------------------------------------------------------------------------
 
+#if WITH_EDITOR
 FString FCustomizableObjectPopulationModule::GetPluginVersion() const
 {
 	FString Version = "x.x";
@@ -49,8 +57,6 @@ FString FCustomizableObjectPopulationModule::GetPluginVersion() const
 	return Version;
 }
 
-
-#if WITH_EDITOR
 void FCustomizableObjectPopulationModule::RecompilePopulations(UCustomizableObject* Object)
 {
 	if (!Object)
@@ -68,7 +74,7 @@ void FCustomizableObjectPopulationModule::RecompilePopulations(UCustomizableObje
 	{
 		// Creating a filter to search only population classes
 		FARFilter COFilter;
-		COFilter.ClassPaths.Add(UCustomizableObjectPopulation::StaticClass()->GetClassPathName());
+		UE_MUTABLE_GET_CLASSPATHS(COFilter).Add(UE_MUTABLE_GET_CLASS_PATHNAME(UCustomizableObjectPopulation::StaticClass()));
 
 		for (const FName AssetName : COAssetNames)
 		{
@@ -85,12 +91,7 @@ void FCustomizableObjectPopulationModule::RecompilePopulations(UCustomizableObje
 			{
 				if (Population->IsValidPopulation())
 				{
-					//for (int32 j = 0; j < Population->ClassWeights.Num(); ++j)
-					//{
-					//	//Population->ClassWeights[j].Class->CustomizableObject->RefreshVersionId();
-					//	Population->ClassWeights[j].Class->CustomizableObject->LoadDerivedData(true);
-					//}
-					Population->CompilePopulation(NewObject<UCustomizableObjectPopulationGenerator>());
+					Population->CompilePopulation();
 				}
 			}
 		}

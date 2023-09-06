@@ -9,7 +9,7 @@ namespace Chaos
 {
 	struct FTaperedCylinderSpecializeSamplingHelper;
 
-	class CHAOS_API FTaperedCylinder : public FImplicitObject
+	class FTaperedCylinder : public FImplicitObject
 	{
 	public:
 		FTaperedCylinder()
@@ -66,7 +66,7 @@ namespace Chaos
 		 * \p IncludeEndCaps determines whether or not points are generated on the 
 		 *    end caps of the cylinder.
 		 */
-		TArray<FVec3> ComputeLocalSamplePoints(const int32 NumPoints, const bool IncludeEndCaps = true) const;
+		CHAOS_API TArray<FVec3> ComputeLocalSamplePoints(const int32 NumPoints, const bool IncludeEndCaps = true) const;
 
 		/** 
 		 * Returns sample points centered about the origin. 
@@ -86,7 +86,7 @@ namespace Chaos
 		 * \p IncludeEndCaps determines whether or not points are generated on the 
 		 *    end caps of the cylinder.
 		 */
-		TArray<FVec3> ComputeSamplePoints(const int32 NumPoints, const bool IncludeEndCaps = true) const;
+		CHAOS_API TArray<FVec3> ComputeSamplePoints(const int32 NumPoints, const bool IncludeEndCaps = true) const;
 
 		/** 
 		 * Returns sample points at the current location of the cylinder.
@@ -330,7 +330,7 @@ namespace Chaos
 			return HashCombine(PlaneHashes, PropertyHash);
 		}
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
+#if INTEL_ISPC
 		// See PerParticlePBDCollisionConstraint.cpp
 		// ISPC code has matching structs for interpreting FImplicitObjects.
 		// This is used to verify that the structs stay the same.
@@ -348,7 +348,7 @@ namespace Chaos
 			static constexpr int32 SizeOfMRadius2() { return sizeof(FTaperedCylinder::MRadius2); }
 		};
 		friend FISPCDataVerifier;
-#endif // #if INTEL_ISPC && !UE_BUILD_SHIPPING
+#endif // #if INTEL_ISPC
 
 	private:
 		//Phi is distance from closest point on plane1
@@ -363,7 +363,7 @@ namespace Chaos
 		FAABB3 MLocalBoundingBox;
 	};
 
-	struct CHAOS_API FTaperedCylinderSpecializeSamplingHelper
+	struct FTaperedCylinderSpecializeSamplingHelper
 	{
 		static FORCEINLINE void ComputeSamplePoints(
 		    TArray<FVec3>& Points, const FTaperedCylinder& Cylinder,

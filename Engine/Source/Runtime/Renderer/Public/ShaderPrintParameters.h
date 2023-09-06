@@ -84,14 +84,14 @@ namespace ShaderPrint
 	RENDERER_API void RequestSpaceForTriangles(uint32 MaxElementCount);
 
 	/** Structure containing setup for shader print capturing. */
-	struct RENDERER_API FShaderPrintSetup
+	struct FShaderPrintSetup
 	{
 		/** Construct with shader print disabled setup. */
 		FShaderPrintSetup() = default;
 		/** Construct with view and system defaults. */
-		FShaderPrintSetup(FSceneView const& InView);
+		RENDERER_API FShaderPrintSetup(FSceneView const& InView);
 		/** Construct with view rectangle and system defaults. */
-		FShaderPrintSetup(FIntRect InViewRect);
+		RENDERER_API FShaderPrintSetup(FIntRect InViewRect);
 
 		/** The shader print system's enabled state. This is set in the constructor and should't be overriden. */
 		bool bEnabled = false;
@@ -141,6 +141,46 @@ namespace ShaderPrint
 	
 	UE_DEPRECATED(5.1, "Use one of the other implementations of SetParameters()")
 	void SetParameters(FRDGBuilder& GraphBuilder, const FViewInfo& View, FShaderParameters& OutParameters);
+
+	// Experimental GPU string
+	//
+	// In Cpp:
+	//   SHADER_PARAMETER_STRUCT(ShaderPrint::FStrings::FShaderPararameters, MyVariable)
+	//   ShaderPrint::FStrings MyVariable;
+	//	 MyVariable.Add(FString(...), StringId);
+	//
+	// In shader:
+	//   FSTRINGS(MyVariable)
+	//   void foo()
+	//   {  
+	//     InitShaderPrintContext Ctx = InitShaderPrintContext(...);
+	//     PrintMyVariable(Ctx, StringId, FontWhite);
+	//   }
+	struct FStrings
+	{
+	public:
+		BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters, )
+			SHADER_PARAMETER(uint32, InfoCount)
+			SHADER_PARAMETER(uint32, CharCount)
+			SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint2>, InfoBuffer)
+			SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint8>, CharBuffer)
+		END_SHADER_PARAMETER_STRUCT()
+
+		RENDERER_API FStrings(uint32 InAvgEntryCount=128u, uint32 InAvgStringLength=32u);
+		RENDERER_API void Add(const FString& In, uint32 EntryID);
+		RENDERER_API void Add(const FString& In);
+		RENDERER_API FShaderParameters GetParameters(FRDGBuilder& GraphBuilder);
+	private:
+		struct FEntryInfo
+		{
+			uint32 EntryID;
+			uint16 Offset;
+			uint8  Length;
+			uint8  Pad0;
+		};
+		TArray<FEntryInfo> Infos;
+		TArray<uint8> Chars;
+	};
 }
 
 /** 
@@ -151,7 +191,7 @@ namespace ShaderPrint
  * (i) FreezeShaderPrintData() to "freeze" the data which exports it from the current RDG builder context.
  * (ii) SubmitShaderPrintData() to submit the frozen data for later thawing and rendering.
  */
-struct RENDERER_API FShaderPrintData
+struct FShaderPrintData
 {
 	ShaderPrint::FShaderPrintSetup Setup;
 	TUniformBufferRef<ShaderPrint::FShaderPrintCommonParameters> UniformBuffer;
@@ -166,7 +206,7 @@ struct RENDERER_API FShaderPrintData
  * (i) Can be thawed by the client for continued gathering of shader print glyphs, or
  * (ii) Can be submitted for later rendering using SubmitShaderPrintData().
  */
-struct RENDERER_API FFrozenShaderPrintData
+struct FFrozenShaderPrintData
 {
 	ShaderPrint::FShaderPrintSetup Setup;
 

@@ -2,6 +2,7 @@
 
 #include "CookWorkerServer.h"
 
+#include "Algo/Find.h"
 #include "Commandlets/AssetRegistryGenerator.h"
 #include "CompactBinaryTCP.h"
 #include "CookDirector.h"
@@ -13,6 +14,9 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Math/NumericLimits.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/Char.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/ScopeLock.h"
 #include "PackageResultsMessage.h"
 #include "PackageTracker.h"
@@ -52,6 +56,161 @@ void FCookWorkerServer::DetachFromRemoteProcess()
 	bTerminateImmediately = false;
 	SendBuffer.Reset();
 	ReceiveBuffer.Reset();
+
+	if (bNeedCrashDiagnostics)
+	{
+		SendCrashDiagnostics();
+	}
+}
+
+bool TryParseLogCategoryVerbosityMessage(FStringView Line, FName& OutCategory, ELogVerbosity::Type& OutVerbosity, FStringView& OutMessage)
+{
+	TPair<FStringView, ELogVerbosity::Type> VerbosityMarkers[]{
+		{ TEXTVIEW(": Fatal:"), ELogVerbosity::Fatal },
+		{ TEXTVIEW(": Error:"), ELogVerbosity::Error },
+		{ TEXTVIEW(": Warning:"), ELogVerbosity::Warning},
+		{ TEXTVIEW(": Display:"), ELogVerbosity::Display },
+		{ TEXTVIEW(":"), ELogVerbosity::Log },
+	};
+
+
+	// Find the first colon not in brackets and look for ": <Verbosity>:". This is complicated by Log verbosity not printing out the Verbosity:
+	// [2023.03.20-16.32.48:878][  0]LogCook: MessageText
+	// [2023.03.20-16.32.48:878][  0]LogCook: Display: MessageText
+
+	int32 FirstColon = INDEX_NONE;
+	int32 SubExpressionLevel = 0;
+	for (int32 Index = 0; Index < Line.Len(); ++Index)
+	{
+		switch (Line[Index])
+		{
+		case '[':
+			++SubExpressionLevel;
+			break;
+		case ']':
+			if (SubExpressionLevel > 0)
+			{
+				--SubExpressionLevel;
+			}
+			break;
+		case ':':
+			if (SubExpressionLevel == 0)
+			{
+				FirstColon = Index;
+			}
+			break;
+		default:
+			break;
+		}
+		if (FirstColon != INDEX_NONE)
+		{
+			break;
+		}
+	}
+	if (FirstColon == INDEX_NONE)
+	{
+		return false;
+	}
+
+	FStringView RestOfLine = FStringView(Line).RightChop(FirstColon);
+	for (TPair<FStringView, ELogVerbosity::Type>& VerbosityPair : VerbosityMarkers)
+	{
+		if (RestOfLine.StartsWith(VerbosityPair.Key, ESearchCase::IgnoreCase))
+		{
+			int32 CategoryEndIndex = FirstColon;
+			while (CategoryEndIndex > 0 && FChar::IsWhitespace(Line[CategoryEndIndex - 1])) --CategoryEndIndex;
+			int32 CategoryStartIndex = CategoryEndIndex > 0 ? CategoryEndIndex - 1 : CategoryEndIndex;
+			while (CategoryStartIndex > 0 && FChar::IsAlnum(Line[CategoryStartIndex - 1])) --CategoryStartIndex;
+			int32 MessageStartIndex = CategoryEndIndex + VerbosityPair.Key.Len();
+			while (MessageStartIndex < Line.Len() && FChar::IsWhitespace(Line[MessageStartIndex])) ++MessageStartIndex;
+
+			OutCategory = FName(FStringView(Line).SubStr(CategoryStartIndex, CategoryEndIndex - CategoryStartIndex));
+			OutVerbosity = VerbosityPair.Value;
+			OutMessage = FStringView(Line).SubStr(MessageStartIndex, Line.Len() - MessageStartIndex);
+			return true;
+		}
+	}
+	return false;
+}
+
+void FCookWorkerServer::SendCrashDiagnostics()
+{
+	FString LogFileName = Director.GetWorkerLogFileName(ProfileId);
+	UE_LOG(LogCook, Display, TEXT("LostConnection to CookWorker %d. Log messages written after communication loss:"), ProfileId);
+	FString LogText;
+	int32 ReadFlags = FILEREAD_AllowWrite; // To be able to open a file for read that might be open for write from another process, we have to specify FILEREAD_AllowWrite
+	bool bLoggedErrorMessage = false;
+	if (!FFileHelper::LoadFileToString(LogText, *LogFileName, FFileHelper::EHashOptions::None, ReadFlags))
+	{
+		UE_LOG(LogCook, Warning, TEXT("No log file found for CookWorker %d."), ProfileId);
+	}
+	else
+	{
+		FString LastSentHeartbeat = FString::Printf(TEXT("%.*s %d"), HeartbeatCategoryText.Len(), HeartbeatCategoryText.GetData(),
+			LastReceivedHeartbeatNumber);
+		int32 StartIndex = INDEX_NONE;
+		for (FStringView MarkerText : { FStringView(LastSentHeartbeat),
+			HeartbeatCategoryText, TEXTVIEW("Connection to CookDirector successful") })
+		{
+			StartIndex = UE::String::FindLast(LogText, MarkerText);
+			if (StartIndex >= 0)
+			{
+				break;
+			}
+		}
+		const TCHAR* StartText = *LogText;
+		FString Line;
+		if (StartIndex != INDEX_NONE)
+		{
+			// Skip the MarkerLine
+			StartText = *LogText + StartIndex;
+			FParse::Line(&StartText, Line);
+			if (*StartText == '\0')
+			{
+				// If there was no line after the MarkerLine, write out the MarkerLine
+				StartText = *LogText + StartIndex;
+			}
+		}
+
+		while (FParse::Line(&StartText, Line))
+		{
+			// Get the Category,Severity,Message out of each line and log it with that Category and Severity
+			// TODO: Change the CookWorkers to write out structured logs rather than interpreting their text logs
+			FName Category;
+			ELogVerbosity::Type Verbosity;
+			FStringView Message;
+			if (!TryParseLogCategoryVerbosityMessage(Line, Category, Verbosity, Message))
+			{
+				Category = LogCook.GetCategoryName();
+				Verbosity = ELogVerbosity::Display;
+				Message = Line;
+			}
+			// Downgrade Fatals in our local verbosity from Fatal to Error to avoid crashing the CookDirector
+			if (Verbosity == ELogVerbosity::Fatal)
+			{
+				Verbosity = ELogVerbosity::Error;
+			}
+			bLoggedErrorMessage |= Verbosity == ELogVerbosity::Error;
+			FMsg::Logf(__FILE__, __LINE__, Category, Verbosity, TEXT("[CookWorker %d]: %.*s"),
+				ProfileId, Message.Len(), Message.GetData());
+		}
+	}
+	if (!CrashDiagnosticsError.IsEmpty())
+	{
+		if (!bLoggedErrorMessage)
+		{
+			UE_LOG(LogCook, Error, TEXT("%s"), *CrashDiagnosticsError);
+		}
+		else
+		{
+			// When we already logged an error from the crashed worker, log the what-went-wrong as a warning rather than an error,
+			// to avoid making it seem like a separate issue.
+			UE_LOG(LogCook, Warning, TEXT("%s"), *CrashDiagnosticsError);
+		}
+	}
+
+	bNeedCrashDiagnostics = false;
+	CrashDiagnosticsError.Empty();
 }
 
 void FCookWorkerServer::ShutdownRemoteProcess()
@@ -246,6 +405,9 @@ bool FCookWorkerServer::TryHandleConnectMessage(FWorkerConnectMessage& Message, 
 	HandleReceiveMessagesInternal();
 	const FInitialConfigMessage& InitialConfigMessage = Director.GetInitialConfigMessage();
 	OrderedSessionPlatforms = InitialConfigMessage.GetOrderedSessionPlatforms();
+	OrderedSessionAndSpecialPlatforms.Reset(OrderedSessionPlatforms.Num() + 1);
+	OrderedSessionAndSpecialPlatforms.Append(OrderedSessionPlatforms);
+	OrderedSessionAndSpecialPlatforms.Add(CookerLoadingPlatformKey);
 	SendMessageInLock(InitialConfigMessage);
 	return true;
 }
@@ -362,8 +524,9 @@ void FCookWorkerServer::LaunchProcess()
 	else
 	{
 		// GetLastError information was logged by CreateProc
-		UE_LOG(LogCook, Error, TEXT("CookWorkerServer %d failed to create CookWorker process. Assigned packages will be returned to the director."),
+		CrashDiagnosticsError = FString::Printf(TEXT("CookWorkerCrash: Failed to create process for CookWorker %d. Assigned packages will be returned to the director."),
 			ProfileId);
+		bNeedCrashDiagnostics = true;
 		SendToState(EConnectStatus::LostConnection);
 	}
 }
@@ -371,7 +534,7 @@ void FCookWorkerServer::LaunchProcess()
 void FCookWorkerServer::TickWaitForConnect()
 {
 	constexpr float TestProcessExistencePeriod = 1.f;
-	constexpr float WaitForConnectTimeout = 60.f * 10;
+	constexpr float WaitForConnectTimeout = 60.f * 20;
 
 	check(!Socket); // When the Socket is assigned we leave the WaitForConnect state, and we set it to null before entering
 
@@ -380,8 +543,9 @@ void FCookWorkerServer::TickWaitForConnect()
 	{
 		if (!FPlatformProcess::IsProcRunning(CookWorkerHandle))
 		{
-			UE_LOG(LogCook, Error, TEXT("CookWorkerServer %d process terminated before connecting. Assigned packages will be returned to the director."),
+			CrashDiagnosticsError = FString::Printf(TEXT("CookWorkerCrash: CookWorker %d process terminated before connecting. Assigned packages will be returned to the director."),
 				ProfileId);
+			bNeedCrashDiagnostics = true;
 			SendToState(EConnectStatus::LostConnection);
 			return;
 		}
@@ -390,8 +554,9 @@ void FCookWorkerServer::TickWaitForConnect()
 
 	if (CurrentTime - ConnectStartTimeSeconds > WaitForConnectTimeout && !IsCookIgnoreTimeouts())
 	{
-		UE_LOG(LogCook, Error, TEXT("CookWorkerServer %d process failed to connect within %.0f seconds. Assigned packages will be returned to the director."),
+		CrashDiagnosticsError = FString::Printf(TEXT("CookWorkerCrash: CookWorker %d process failed to connect within %.0f seconds. Assigned packages will be returned to the director."),
 			ProfileId, WaitForConnectTimeout);
+		bNeedCrashDiagnostics = true;
 		ShutdownRemoteProcess();
 		SendToState(EConnectStatus::LostConnection);
 		return;
@@ -434,8 +599,9 @@ void FCookWorkerServer::PumpSendMessages()
 	UE::CompactBinaryTCP::EConnectionStatus Status = UE::CompactBinaryTCP::TryFlushBuffer(Socket, SendBuffer);
 	if (Status == UE::CompactBinaryTCP::Failed)
 	{
-		UE_LOG(LogCook, Error, TEXT("CookWorkerServer %d failed to write to socket, we will shutdown the remote process. Assigned packages will be returned to the director."),
+		UE_LOG(LogCook, Error, TEXT("CookWorkerCrash: CookWorker %d failed to write to socket, we will shutdown the remote process. Assigned packages will be returned to the director."),
 			ProfileId);
+		bNeedCrashDiagnostics = true;
 		SendToState(EConnectStatus::WaitForDisconnect);
 		bTerminateImmediately = true;
 	}
@@ -451,15 +617,27 @@ void FCookWorkerServer::SendPendingPackages()
 
 	TArray<FAssignPackageData> AssignDatas;
 	AssignDatas.Reserve(PackagesToAssign.Num());
+	TBitArray<> SessionPlatformNeedsCook;
+
 	for (FPackageData* PackageData : PackagesToAssign)
 	{
 		FAssignPackageData& AssignData = AssignDatas.Emplace_GetRef();
 		AssignData.ConstructData = PackageData->CreateConstructData();
 		AssignData.Instigator = PackageData->GetInstigator();
+		SessionPlatformNeedsCook.Init(false, OrderedSessionPlatforms.Num());
+		int32 PlatformIndex = 0;
+		for (const ITargetPlatform* SessionPlatform : OrderedSessionPlatforms)
+		{
+			FPackagePlatformData* PlatformData = PackageData->FindPlatformData(SessionPlatform);
+			SessionPlatformNeedsCook[PlatformIndex++] = PlatformData && PlatformData->NeedsCooking(SessionPlatform);
+		}
+		AssignData.NeedCookPlatforms = FDiscoveredPlatformSet(SessionPlatformNeedsCook);
 	}
 	PendingPackages.Append(PackagesToAssign);
 	PackagesToAssign.Empty();
-	SendMessageInLock(FAssignPackagesMessage(MoveTemp(AssignDatas)));
+	FAssignPackagesMessage AssignPackagesMessage(MoveTemp(AssignDatas));
+	AssignPackagesMessage.OrderedSessionPlatforms = OrderedSessionPlatforms;
+	SendMessageInLock(MoveTemp(AssignPackagesMessage));
 }
 
 void FCookWorkerServer::PumpReceiveMessages()
@@ -470,8 +648,9 @@ void FCookWorkerServer::PumpReceiveMessages()
 	EConnectionStatus SocketStatus = TryReadPacket(Socket, ReceiveBuffer, Messages);
 	if (SocketStatus != EConnectionStatus::Okay && SocketStatus != EConnectionStatus::Incomplete)
 	{
-		UE_LOG(LogCook, Warning, TEXT("CookWorkerServer %d failed to read from socket, we will shutdown the remote process. Assigned packages will be returned to the director."),
+		CrashDiagnosticsError = FString::Printf(TEXT("CookWorkerCrash: CookWorker %d failed to read from socket, we will shutdown the remote process. Assigned packages will be returned to the director."),
 			ProfileId);
+		bNeedCrashDiagnostics = true;
 		SendToState(EConnectStatus::WaitForDisconnect);
 		bTerminateImmediately = true;
 		return;
@@ -498,10 +677,12 @@ void FCookWorkerServer::HandleReceiveMessagesInternal()
 		if (PeekMessage.MessageType == FAbortWorkerMessage::MessageType)
 		{
 			UE::CompactBinaryTCP::FMarshalledMessage Message = ReceiveMessages.PopFrontValue();
-			UE_CLOG(ConnectStatus != EConnectStatus::PumpingCookComplete && ConnectStatus != EConnectStatus::WaitForDisconnect,
-				LogCook, Error, TEXT("CookWorkerServer %d remote process shut down unexpectedly. Assigned packages will be returned to the director."),
-				ProfileId);
-
+			if (ConnectStatus != EConnectStatus::PumpingCookComplete && ConnectStatus != EConnectStatus::WaitForDisconnect)
+			{
+				CrashDiagnosticsError = FString::Printf(TEXT("CookWorkerCrash: CookWorker %d remote process shut down unexpectedly. Assigned packages will be returned to the director."),
+					ProfileId);
+				bNeedCrashDiagnostics = true;
+			}
 			SendMessageInLock(FAbortWorkerMessage(FAbortWorkerMessage::AbortAcknowledge));
 			SendToState(EConnectStatus::WaitForDisconnect);
 			ReceiveMessages.Reset();
@@ -529,15 +710,16 @@ void FCookWorkerServer::HandleReceiveMessagesInternal()
 		else if (Message.MessageType == FDiscoveredPackagesMessage::MessageType)
 		{
 			FDiscoveredPackagesMessage DiscoveredMessage;
+			DiscoveredMessage.OrderedSessionAndSpecialPlatforms = OrderedSessionAndSpecialPlatforms;
 			if (!DiscoveredMessage.TryRead(Message.Object))
 			{
 				LogInvalidMessage(TEXT("FDiscoveredPackagesMessage"));
 			}
 			else
 			{
-				for (FDiscoveredPackage& DiscoveredPackage : DiscoveredMessage.Packages)
+				for (FDiscoveredPackageReplication& DiscoveredPackage : DiscoveredMessage.Packages)
 				{
-					AddDiscoveredPackage(MoveTemp(DiscoveredPackage));
+					QueueDiscoveredPackage(MoveTemp(DiscoveredPackage));
 				}
 			}
 		}
@@ -630,7 +812,7 @@ void FCookWorkerServer::RecordResults(FPackageResultsMessage& Message)
 		}
 		if (PendingPackages.Remove(PackageData) != 1)
 		{
-			UE_LOG(LogCook, Warning, TEXT("CookWorkerServer %d received FPackageResultsMessage for package %s which is not a pending package. Ignoring it."),
+			UE_LOG(LogCook, Display, TEXT("CookWorkerServer %d received FPackageResultsMessage for package %s which is not a pending package. Ignoring it."),
 				ProfileId, *Result.GetPackageName().ToString());
 			continue;
 		}
@@ -638,7 +820,7 @@ void FCookWorkerServer::RecordResults(FPackageResultsMessage& Message)
 
 		// MPCOOKTODO: Refactor FSaveCookedPackageContext::FinishPlatform and ::FinishPackage so we can call them from here
 		// to reduce duplication
-		if (Result.GetSuppressCookReason() == ESuppressCookReason::InvalidSuppressCookReason)
+		if (Result.GetSuppressCookReason() == ESuppressCookReason::NotSuppressed)
 		{
 			int32 NumPlatforms = OrderedSessionPlatforms.Num();
 			if (Result.GetPlatforms().Num() != NumPlatforms)
@@ -654,9 +836,27 @@ void FCookWorkerServer::RecordResults(FPackageResultsMessage& Message)
 			{
 				ITargetPlatform* TargetPlatform = OrderedSessionPlatforms[PlatformIndex];
 				FPackageRemoteResult::FPlatformResult& PlatformResult = Result.GetPlatforms()[PlatformIndex];
-				PackageData->SetPlatformCooked(TargetPlatform, PlatformResult.IsSuccessful());
-				HandleReceivedPackagePlatformMessages(*PackageData, TargetPlatform, PlatformResult.ReleaseMessages());
+				FPackagePlatformData& ExistingData = PackageData->FindOrAddPlatformData(TargetPlatform);
+				if (!ExistingData.NeedsCooking(TargetPlatform))
+				{
+					if (PlatformResult.GetCookResults() != ECookResult::Invalid)
+					{
+						UE_LOG(LogCook, Display,
+							TEXT("CookWorkerServer %d received FPackageResultsMessage for package %s, platform %s, but that platform has already been cooked. Ignoring the results for that platform."),
+							ProfileId, *Result.GetPackageName().ToString(), *TargetPlatform->PlatformName());
+					}
+					continue;
+				}
+				else
+				{
+					if (PlatformResult.GetCookResults() != ECookResult::Invalid)
+					{
+						PackageData->SetPlatformCooked(TargetPlatform, PlatformResult.GetCookResults());
+					}
+					HandleReceivedPackagePlatformMessages(*PackageData, TargetPlatform, PlatformResult.ReleaseMessages());
+				}
 			}
+			COTFS.RecordExternalActorDependencies(Result.GetExternalActorDependencies());
 			if (Result.IsReferencedOnlyByEditorOnlyData())
 			{
 				COTFS.PackageTracker->UncookedEditorOnlyPackages.AddUnique(Result.GetPackageName());
@@ -677,25 +877,42 @@ void FCookWorkerServer::LogInvalidMessage(const TCHAR* MessageTypeName)
 		MessageTypeName);
 }
 
-void FCookWorkerServer::AddDiscoveredPackage(FDiscoveredPackage&& DiscoveredPackage)
+void FCookWorkerServer::QueueDiscoveredPackage(FDiscoveredPackageReplication&& DiscoveredPackage)
 {
 	check(TickState.TickThread == ECookDirectorThread::SchedulerThread);
 
-	FPackageData& PackageData = COTFS.PackageDatas->FindOrAddPackageData(DiscoveredPackage.PackageName,
+	FPackageDatas& PackageDatas = *COTFS.PackageDatas;
+	FInstigator& Instigator = DiscoveredPackage.Instigator;
+	FDiscoveredPlatformSet& Platforms = DiscoveredPackage.Platforms;
+	FPackageData& PackageData = PackageDatas.FindOrAddPackageData(DiscoveredPackage.PackageName,
 		DiscoveredPackage.NormalizedFileName);
-	if (PackageData.IsInProgress() || PackageData.HasAnyCookedPlatform())
+
+	TArray<const ITargetPlatform*, TInlineAllocator<ExpectedMaxNumPlatforms>> BufferPlatforms;
+	TConstArrayView<const ITargetPlatform*> DiscoveredPlatforms;
+	if (!COTFS.bSkipOnlyEditorOnly)
+	{
+		DiscoveredPlatforms = OrderedSessionAndSpecialPlatforms;
+	}
+	else
+	{
+		DiscoveredPlatforms = Platforms.GetPlatforms(COTFS, &Instigator, OrderedSessionAndSpecialPlatforms, &BufferPlatforms);
+	}
+
+	if (Instigator.Category != EInstigator::ForceExplorableSaveTimeSoftDependency &&
+		PackageData.HasReachablePlatforms(DiscoveredPlatforms))
 	{
 		// The CookWorker thought this was a new package, but the Director already knows about it; ignore the report
 		return;
 	}
 
-	if (DiscoveredPackage.Instigator.Category == EInstigator::GeneratedPackage)
+	if (Instigator.Category == EInstigator::GeneratedPackage)
 	{
 		PackageData.SetGenerated(true);
 		PackageData.SetWorkerAssignmentConstraint(GetWorkerId());
 	}
 	Director.ResetFinalIdleHeartbeatFence();
-	COTFS.QueueDiscoveredPackageData(PackageData, MoveTemp(DiscoveredPackage.Instigator));
+	Platforms.ConvertFromBitfield(OrderedSessionAndSpecialPlatforms);
+	COTFS.QueueDiscoveredPackageOnDirector(PackageData, MoveTemp(Instigator), MoveTemp(Platforms), false /* bUrgent */);
 }
 
 FCookWorkerServer::FTickState::FTickState()
@@ -729,29 +946,50 @@ FAssignPackagesMessage::FAssignPackagesMessage(TArray<FAssignPackageData>&& InPa
 
 void FAssignPackagesMessage::Write(FCbWriter& Writer) const
 {
-	Writer << "P" << PackageDatas;
+	Writer.BeginArray("P");
+	for (const FAssignPackageData& PackageData : PackageDatas)
+	{
+		WriteToCompactBinary(Writer, PackageData, OrderedSessionPlatforms);
+	}
+	Writer.EndArray();
 }
 
 bool FAssignPackagesMessage::TryRead(FCbObjectView Object)
 {
-	return LoadFromCompactBinary(Object["P"], PackageDatas);
+	bool bOk = true;
+	PackageDatas.Reset();
+	for (FCbFieldView PackageField : Object["P"])
+	{
+		FAssignPackageData& PackageData = PackageDatas.Emplace_GetRef();
+		if (!LoadFromCompactBinary(PackageField, PackageData, OrderedSessionPlatforms))
+		{
+			PackageDatas.Pop();
+			bOk = false;
+		}
+	}
+	return bOk;
 }
 
 FGuid FAssignPackagesMessage::MessageType(TEXT("B7B1542B73254B679319D73F753DB6F8"));
 
-FCbWriter& operator<<(FCbWriter& Writer, const FAssignPackageData& AssignData)
+void WriteToCompactBinary(FCbWriter& Writer, const FAssignPackageData& AssignData, 
+	TConstArrayView<const ITargetPlatform*> OrderedSessionPlatforms)
 {
-	Writer.BeginObject();
-	Writer << "C" << AssignData.ConstructData;
-	Writer << "I" << AssignData.Instigator;
-	Writer.EndObject();
-	return Writer;
+	Writer.BeginArray();
+	Writer << AssignData.ConstructData;
+	Writer << AssignData.Instigator;
+	WriteToCompactBinary(Writer, AssignData.NeedCookPlatforms, OrderedSessionPlatforms);
+	Writer.EndArray();
 }
 
-bool LoadFromCompactBinary(FCbFieldView Field, FAssignPackageData& AssignData)
+bool LoadFromCompactBinary(FCbFieldView Field, FAssignPackageData& AssignData,
+	TConstArrayView<const ITargetPlatform*> OrderedSessionPlatforms)
 {
-	bool bOk = LoadFromCompactBinary(Field["C"], AssignData.ConstructData);
-	bOk = LoadFromCompactBinary(Field["I"], AssignData.Instigator) & bOk;
+	FCbFieldViewIterator It = Field.CreateViewIterator();
+	bool bOk = true;
+	bOk = LoadFromCompactBinary(*It++, AssignData.ConstructData) & bOk;
+	bOk = LoadFromCompactBinary(*It++, AssignData.Instigator) & bOk;
+	bOk = LoadFromCompactBinary(*It++, AssignData.NeedCookPlatforms, OrderedSessionPlatforms) & bOk;
 	return bOk;
 }
 
@@ -904,18 +1142,21 @@ bool FInitialConfigMessage::TryRead(FCbObjectView Object)
 
 FGuid FInitialConfigMessage::MessageType(TEXT("340CDCB927304CEB9C0A66B5F707FC2B"));
 
-FCbWriter& operator<<(FCbWriter& Writer, const FDiscoveredPackage& Package)
+void WriteToCompactBinary(FCbWriter& Writer, const FDiscoveredPackageReplication& Package,
+	TConstArrayView<const ITargetPlatform*> OrderedSessionAndSpecialPlatforms)
 {
 	Writer.BeginObject();
 	Writer << "PackageName" << Package.PackageName;
 	Writer << "NormalizedFileName" << Package.NormalizedFileName;
 	Writer << "Instigator.Category" << static_cast<uint8>(Package.Instigator.Category);
 	Writer << "Instigator.Referencer" << Package.Instigator.Referencer;
+	Writer.SetName("Platforms");
+	WriteToCompactBinary(Writer, Package.Platforms, OrderedSessionAndSpecialPlatforms);
 	Writer.EndObject();
-	return Writer;
 }
 
-bool LoadFromCompactBinary(FCbFieldView Field, FDiscoveredPackage& OutPackage)
+bool LoadFromCompactBinary(FCbFieldView Field, FDiscoveredPackageReplication& OutPackage,
+	TConstArrayView<const ITargetPlatform*> OrderedSessionAndSpecialPlatforms)
 {
 	bool bOk = LoadFromCompactBinary(Field["PackageName"], OutPackage.PackageName);
 	bOk = LoadFromCompactBinary(Field["NormalizedFileName"], OutPackage.NormalizedFileName) & bOk;
@@ -931,21 +1172,38 @@ bool LoadFromCompactBinary(FCbFieldView Field, FDiscoveredPackage& OutPackage)
 		bOk = false;
 	}
 	bOk = LoadFromCompactBinary(Field["Instigator.Referencer"], OutPackage.Instigator.Referencer) & bOk;
+	bOk = LoadFromCompactBinary(Field["Platforms"], OutPackage.Platforms, OrderedSessionAndSpecialPlatforms) & bOk;
 	if (!bOk)
 	{
-		OutPackage = FDiscoveredPackage();
+		OutPackage = FDiscoveredPackageReplication();
 	}
 	return bOk;
 }
 
 void FDiscoveredPackagesMessage::Write(FCbWriter& Writer) const
 {
-	Writer << "Packages" << Packages;
+	Writer.BeginArray("Packages");
+	for (const FDiscoveredPackageReplication& Package : Packages)
+	{
+		WriteToCompactBinary(Writer, Package, OrderedSessionAndSpecialPlatforms);
+	}
+	Writer.EndArray();
 }
 
 bool FDiscoveredPackagesMessage::TryRead(FCbObjectView Object)
 {
-	return LoadFromCompactBinary(Object["Packages"], Packages);
+	bool bOk = true;
+	Packages.Reset();
+	for (FCbFieldView PackageField : Object["Packages"])
+	{
+		FDiscoveredPackageReplication& Package = Packages.Emplace_GetRef();
+		if (!LoadFromCompactBinary(PackageField, Package, OrderedSessionAndSpecialPlatforms))
+		{
+			Packages.Pop();
+			bOk = false;
+		}
+	}
+	return bOk;
 }
 
 FGuid FDiscoveredPackagesMessage::MessageType(TEXT("C9F5BC5C11484B06B346B411F1ED3090"));
@@ -1024,6 +1282,11 @@ void FLogMessagesMessageHandler::ServerReceiveMessage(FMPCollectorServerMessageC
 
 	for (FReplicatedLogData& LogData : Messages)
 	{
+		if (LogData.Category == LogCookName && LogData.Message.Contains(HeartbeatCategoryText))
+		{
+			// Do not spam heartbeat messages into the CookDirector log
+			continue;
+		}
 		GLog->CategorizedLogf(LogData.Category, LogData.Verbosity, TEXT("[CookWorker %d]: %s"),
 			Context.GetProfileId(), *LogData.Message);
 	}
@@ -1069,6 +1332,10 @@ void FPackageWriterMPCollector::ClientTickPackage(FMPCollectorClientTickPackageC
 {
 	for (const FMPCollectorClientTickPackageContext::FPlatformData& PlatformData : Context.GetPlatformDatas())
 	{
+		if (PlatformData.CookResults == ECookResult::Invalid)
+		{
+			continue;
+		}
 		ICookedPackageWriter& PackageWriter = COTFS.FindOrCreatePackageWriter(PlatformData.TargetPlatform);
 		TFuture<FCbObject> ObjectFuture = PackageWriter.WriteMPCookMessageForPackage(Context.GetPackageName());
 		Context.AddAsyncPlatformMessage(PlatformData.TargetPlatform, MoveTemp(ObjectFuture));

@@ -91,9 +91,16 @@ public:
 	// END EPIC MOD
 
 	// BEGIN EPIC MOD - Allow lazy-loading modules
+	struct LazyLoadedModule
+	{
+		Windows::HMODULE m_moduleBase;
+		bool m_loaded;
+	};
+
 	void AddLazyLoadedModule(const std::wstring moduleName, Windows::HMODULE moduleBase);
 	void SetLazyLoadedModuleAsLoaded(const std::wstring moduleName);
 	bool IsPendingLazyLoadedModule(const std::wstring& moduleName) const;
+	const types::unordered_map<std::wstring, LazyLoadedModule>& GetLazyLoadedModules() const { return m_lazyLoadedModules; }
 	Windows::HMODULE GetLazyLoadedModuleBase(const std::wstring& moduleName) const;
 	// END EPIC MOD
 
@@ -119,6 +126,13 @@ public:
 	}
 	// END EPIC MOD
 
+	// BEGIN EPIC MOD
+	void AddPage(void *page)
+	{
+		m_virtualMemoryRange.AddPage(page);
+	}
+	// END EPIC MOD
+
 private:
 	Process::Handle m_processHandle;
 	Process::Id m_processId;
@@ -136,12 +150,6 @@ private:
 	// END EPIC MOD
 
 	// BEGIN EPIC MOD - Allow lazy-loading modules
-	struct LazyLoadedModule
-	{
-		Windows::HMODULE m_moduleBase;
-		bool m_loaded;
-	};
-
 	types::unordered_map<std::wstring, LazyLoadedModule> m_lazyLoadedModules;
 	// END EPIC MOD
 

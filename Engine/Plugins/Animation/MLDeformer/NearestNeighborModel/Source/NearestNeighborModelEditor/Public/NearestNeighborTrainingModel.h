@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerTrainingModel.h"
 #include "NearestNeighborTrainingModel.generated.h"
 
@@ -12,6 +12,7 @@ namespace UE::NearestNeighborModel
 }
 
 class UNearestNeighborModel;
+class UNearestNeighborModelInstance;
 
 UCLASS(Blueprintable)
 class NEARESTNEIGHBORMODELEDITOR_API UNearestNeighborTrainingModel
@@ -51,9 +52,6 @@ private:
 	const TArray<int32> GetPartVertexMap(const int32 PartId) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Python")
-	int32 SamplePart(int32 PartId, int32 Index);
-
-	UFUNCTION(BlueprintCallable, Category = "Python")
 	int32 SetSamplerPartData(const int32 PartId);
 
 	UFUNCTION(BlueprintPure, Category = "Python")
@@ -79,6 +77,12 @@ private:
 
 	UFUNCTION(BlueprintPure, Category = "Python")
 	const TArray<int32> GetMeshIndexBuffer() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Python")
+	UNearestNeighborModelInstance* CreateModelInstance();
+
+	UFUNCTION(BlueprintCallable, Category = "Python")
+	void DestroyModelInstance(UNearestNeighborModelInstance* ModelInstance);
 
 	UNearestNeighborModel* NearestNeighborModel = nullptr;
 };

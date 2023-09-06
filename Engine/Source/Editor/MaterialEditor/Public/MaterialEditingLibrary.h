@@ -199,6 +199,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "MaterialEditing")
 	static FString GetMaterialPropertyInputNodeOutputName(UMaterial* Material, EMaterialProperty Property);
 
+	/** Get the array of input pin names for a material expression */
+	UFUNCTION(BlueprintPure, Category = "MaterialEditing")
+	static TArray<FString> GetMaterialExpressionInputNames(UMaterialExpression* MaterialExpression);
+
+	/** Get the array of input pin types for a material expression */
+	UFUNCTION(BlueprintPure, Category = "MaterialEditing")
+	static TArray<int32> GetMaterialExpressionInputTypes(UMaterialExpression* MaterialExpression);
+
 	/** Get the set of nodes acting as inputs to a node from an active material editor */
 	UFUNCTION(BlueprintPure, Category = "MaterialEditing")
 	static TArray<UMaterialExpression*> GetInputsForMaterialExpression(UMaterial* Material, UMaterialExpression* MaterialExpression);
@@ -382,4 +390,8 @@ public:
 	/** Returns statistics about the given material */
 	UFUNCTION(BlueprintCallable, Category = "MaterialEditing")
 	static FMaterialStatistics GetStatistics(UMaterialInterface* Material);
+
+	/** Returns any nanite override material for the given material */
+	UFUNCTION(BlueprintCallable, Category = "MaterialEditing")
+	static UMaterialInterface* GetNaniteOverrideMaterial(UMaterialInterface* Material);
 };

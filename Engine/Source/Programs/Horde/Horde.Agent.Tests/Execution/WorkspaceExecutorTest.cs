@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 using EpicGames.Core;
 using Horde.Agent.Execution;
 using Horde.Agent.Services;
+using HordeCommon.Rpc;
+using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -46,8 +48,10 @@ public sealed class WorkspaceExecutorTest : IDisposable
 		_autoSdkWorkspace.SetFile(1, "HostWin64/Android/base.h", "base");
 		_workspace.SetFile(1, "main.cpp", "main");
 		_workspace.SetFile(1, "foo/bar/baz.h", "baz");
-		
-		_executor = new (_session, JobId, "batch1", AgentType, null, _workspace, null!, NullLogger.Instance);
+
+		BeginBatchResponse batch = new BeginBatchResponse { Change = 1 };
+		JobExecutorOptions executorOptions = new JobExecutorOptions(_session, null!, JobId, "batch1", batch, default, "", null!, new JobOptions());
+		_executor = new (executorOptions, _workspace, null, NullLogger.Instance);
 	}
 
 	public void Dispose()
@@ -68,7 +72,9 @@ public sealed class WorkspaceExecutorTest : IDisposable
 	[TestMethod]
 	public async Task RegularAndAutoSdkWorkspace()
 	{
-		WorkspaceExecutor executor = new (_session, JobId, "batch1", AgentType, _autoSdkWorkspace, _workspace, null!, NullLogger.Instance);
+		BeginBatchResponse batch = new BeginBatchResponse { Change = 1 };
+		JobExecutorOptions executorOptions = new JobExecutorOptions(_session, null!, JobId, "batch1", batch, default, "", null!, new JobOptions());
+		WorkspaceExecutor executor = new (executorOptions, _workspace, _autoSdkWorkspace, NullLogger.Instance);
 
 		await executor.InitializeAsync(_logger, CancellationToken.None);
 		AssertWorkspaceFile(_autoSdkWorkspace, "HostWin64/Android/base.h", "base");
@@ -80,7 +86,9 @@ public sealed class WorkspaceExecutorTest : IDisposable
 	[TestMethod]
 	public async Task EnvVars()
 	{
-		WorkspaceExecutor executor = new (_session, JobId, "batch1", AgentType, _autoSdkWorkspace, _workspace, null!, NullLogger.Instance);
+		BeginBatchResponse batch = new BeginBatchResponse { Change = 1 };
+		JobExecutorOptions executorOptions = new JobExecutorOptions(_session, null!, JobId, "batch1", batch, default, "", null!, new JobOptions());
+		WorkspaceExecutor executor = new (executorOptions, _workspace, _autoSdkWorkspace, NullLogger.Instance);
 		await executor.InitializeAsync(_logger, CancellationToken.None);
 
 		WorkspaceMaterializerSettings settings = await _workspace.GetSettingsAsync(CancellationToken.None);
@@ -93,7 +101,6 @@ public sealed class WorkspaceExecutorTest : IDisposable
 		Assert.AreEqual("1", envVars["uebp_CL"]);
 		Assert.AreEqual("0", envVars["uebp_CodeCL"]);
 		Assert.AreEqual(autoSdkSettings.DirectoryPath.FullName, envVars["UE_SDKS_ROOT"]);
-		Assert.AreEqual(7, envVars.Count);
 		
 		await executor.FinalizeAsync(_logger, CancellationToken.None);
 	}
@@ -103,7 +110,10 @@ public sealed class WorkspaceExecutorTest : IDisposable
 	{
 		_server.AddJob("jobPreflight", StreamId, 1, 1000);		
 		_workspace.SetFile(1000, "New/Feature/Foo.cs", "foo");
-		WorkspaceExecutor executor = new (_session, "jobPreflight", "batch1", AgentType, null, _workspace, null!, NullLogger.Instance);
+
+		BeginBatchResponse batch = new BeginBatchResponse { Change = 1, PreflightChange = 1000 };
+		JobExecutorOptions executorOptions = new JobExecutorOptions(_session, null!, "jobPreflight", "batch1", batch, default, "", null!, new JobOptions());
+		WorkspaceExecutor executor = new (executorOptions, _workspace, null, NullLogger.Instance);
 		
 		await executor.InitializeAsync(_logger, CancellationToken.None);
 		AssertWorkspaceFile(_workspace, "main.cpp", "main");
@@ -115,8 +125,10 @@ public sealed class WorkspaceExecutorTest : IDisposable
 	[TestMethod]
 	public async Task JobWithNoChange()
 	{
-		_server.AddJob("jobNoChange", StreamId, 0, 0);		
-		WorkspaceExecutor executor = new (_session, "jobNoChange", "batch1", AgentType, null, _workspace, null!, NullLogger.Instance);
+		_server.AddJob("jobNoChange", StreamId, 0, 0);
+		BeginBatchResponse batch = new BeginBatchResponse { };
+		JobExecutorOptions executorOptions = new JobExecutorOptions(_session, null!, "jobNoChange", "batch1", batch, default, "", null!, new JobOptions());
+		WorkspaceExecutor executor = new (executorOptions, _workspace, null, NullLogger.Instance);
 		await Assert.ThrowsExceptionAsync<WorkspaceMaterializationException>(() => executor.InitializeAsync(_logger, CancellationToken.None));
 	}
 

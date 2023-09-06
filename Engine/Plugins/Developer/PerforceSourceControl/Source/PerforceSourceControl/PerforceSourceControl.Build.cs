@@ -6,11 +6,12 @@ public class PerforceSourceControl : ModuleRules
 {
 	public PerforceSourceControl(ReadOnlyTargetRules Target) : base(Target)
 	{
+		IWYUSupport = IWYUSupport.KeepAsIsForNow;
+
         PrivateDependencyModuleNames.AddRange(
             new string[] {
 				"Core",
-				"CoreUObject",
-                "InputCore",
+				"InputCore",
 				"Slate",
 				"SlateCore",
 				"SourceControl",

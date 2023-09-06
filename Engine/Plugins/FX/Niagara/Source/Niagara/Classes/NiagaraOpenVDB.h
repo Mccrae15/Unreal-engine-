@@ -3,8 +3,9 @@
 #pragma once
 
 #include "HAL/Platform.h"
+#include "NiagaraUseOpenVDB.h"
 
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 
 THIRD_PARTY_INCLUDES_START
 

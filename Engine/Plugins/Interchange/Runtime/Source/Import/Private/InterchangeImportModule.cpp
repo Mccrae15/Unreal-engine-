@@ -20,7 +20,8 @@
 #include "Misc/CoreDelegates.h"
 #include "Modules/ModuleManager.h"
 #include "Scene/InterchangeActorFactory.h"
-#include "Scene/InterchangeCineCameraActorFactory.h"
+#include "Scene/InterchangeCameraActorFactory.h"
+#include "Scene/InterchangeSceneImportAssetFactory.h"
 #include "Scene/InterchangeLightActorFactory.h"
 #include "Scene/InterchangeSceneVariantSetsFactory.h"
 #include "Scene/InterchangeStaticMeshActorFactory.h"
@@ -57,7 +58,7 @@ void FInterchangeImportModule::StartupModule()
 		//Register the translators
 		//Scenes
 		InterchangeManager.RegisterTranslator(UInterchangeFbxTranslator::StaticClass());
-		InterchangeManager.RegisterTranslator(UInterchangeGltfTranslator::StaticClass());
+		InterchangeManager.RegisterTranslator(UInterchangeGLTFTranslator::StaticClass());
 		InterchangeManager.RegisterTranslator(UInterchangeOBJTranslator::StaticClass());
 
 		//Materials
@@ -83,10 +84,12 @@ void FInterchangeImportModule::StartupModule()
 		InterchangeManager.RegisterFactory(UInterchangeAnimationTrackSetFactory::StaticClass());
 		InterchangeManager.RegisterFactory(UInterchangeAnimSequenceFactory::StaticClass());
 		InterchangeManager.RegisterFactory(UInterchangeCineCameraActorFactory::StaticClass());
+		InterchangeManager.RegisterFactory(UInterchangeCameraActorFactory::StaticClass());
 		InterchangeManager.RegisterFactory(UInterchangeStaticMeshActorFactory::StaticClass());
 		InterchangeManager.RegisterFactory(UInterchangeSkeletalMeshActorFactory::StaticClass());
 		InterchangeManager.RegisterFactory(UInterchangeSceneVariantSetsFactory::StaticClass());
 		InterchangeManager.RegisterFactory(UInterchangeLightActorFactory::StaticClass());
+		InterchangeManager.RegisterFactory(UInterchangeSceneImportAssetFactory::StaticClass());
 	};
 	
 	if (GEngine)
@@ -97,11 +100,15 @@ void FInterchangeImportModule::StartupModule()
 	{
 		FCoreDelegates::OnPostEngineInit.AddLambda(RegisterItems);
 	}
+
+	UInterchangeManager::SetInterchangeImportEnabled(true);
 }
 
 
 void FInterchangeImportModule::ShutdownModule()
-{}
+{
+	UInterchangeManager::SetInterchangeImportEnabled(false);
+}
 
 
 

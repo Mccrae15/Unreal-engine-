@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HeterogeneousVolumes.h"
+#include "HeterogeneousVolumeInterface.h"
 
 #include "LightRendering.h"
 #include "PixelShaderUtils.h"
@@ -78,7 +79,7 @@ class FGenerateRayMarchingTiles : public FGlobalShader
 	static int32 GetThreadGroupSize2D() { return 8; }
 };
 
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FGenerateRayMarchingTiles, TEXT("/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesPreshadingPipeline.usf"), TEXT("GenerateRayMarchingTiles"), SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FGenerateRayMarchingTiles, "/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesPreshadingPipeline.usf", "GenerateRayMarchingTiles", SF_Compute);
 
 namespace HeterogeneousVolumes
 {
@@ -107,7 +108,7 @@ void GenerateRayMarchingTiles(
 	const FViewInfo& View,
 	const FSceneTextures& SceneTextures,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
 	const TRDGUniformBufferRef<FSparseVoxelUniformBufferParameters>& SparseVoxelUniformBuffer,
@@ -280,7 +281,7 @@ class FRenderLightingCacheWithPreshadingCS : public FGlobalShader
 	static int32 GetThreadGroupSize3D() { return 4; }
 };
 
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FRenderLightingCacheWithPreshadingCS, TEXT("/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesPreshadingPipeline.usf"), TEXT("RenderLightingCacheWithPreshadingCS"), SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FRenderLightingCacheWithPreshadingCS, "/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesPreshadingPipeline.usf", "RenderLightingCacheWithPreshadingCS", SF_Compute);
 
 class FRenderSingleScatteringWithPreshadingCS : public FGlobalShader
 {
@@ -376,7 +377,7 @@ class FRenderSingleScatteringWithPreshadingCS : public FGlobalShader
 	static int32 GetThreadGroupSize2D() { return 8; }
 };
 
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FRenderSingleScatteringWithPreshadingCS, TEXT("/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesPreshadingPipeline.usf"), TEXT("RenderSingleScatteringWithPreshadingCS"), SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FRenderSingleScatteringWithPreshadingCS, "/Engine/Private/HeterogeneousVolumes/HeterogeneousVolumesPreshadingPipeline.usf", "RenderSingleScatteringWithPreshadingCS", SF_Compute);
 
 void RenderLightingCacheWithPreshadingCompute(
 	FRDGBuilder& GraphBuilder,
@@ -394,7 +395,7 @@ void RenderLightingCacheWithPreshadingCompute(
 	const FVisibleLightInfo* VisibleLightInfo,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
 	const TRDGUniformBufferRef<FSparseVoxelUniformBufferParameters>& SparseVoxelUniformBuffer,
@@ -429,7 +430,8 @@ void RenderLightingCacheWithPreshadingCompute(
 		PassParameters->SparseVoxelUniformBuffer = SparseVoxelUniformBuffer;
 
 		// Transmittance volume
-		PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+		PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
+		PassParameters->LightingCache.LightingCacheVoxelBias = HeterogeneousVolumeInterface->GetShadowBiasFactor();
 		PassParameters->LightingCache.LightingCacheTexture = LightingCacheTexture;
 
 		// Ray data
@@ -483,7 +485,7 @@ void RenderLightingCacheWithPreshadingCompute(
 	PermutationVector.Set<FRenderLightingCacheWithPreshadingCS::FLightingCacheMode>(HeterogeneousVolumes::GetLightingCacheMode() - 1);
 	TShaderRef<FRenderLightingCacheWithPreshadingCS> ComputeShader = View.ShaderMap->GetShader<FRenderLightingCacheWithPreshadingCS>(PermutationVector);
 
-	FIntVector GroupCount = HeterogeneousVolumes::GetLightingCacheResolution();
+	FIntVector GroupCount = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
 	GroupCount.X = FMath::DivideAndRoundUp(GroupCount.X, FRenderLightingCacheWithPreshadingCS::GetThreadGroupSize3D());
 	GroupCount.Y = FMath::DivideAndRoundUp(GroupCount.Y, FRenderLightingCacheWithPreshadingCS::GetThreadGroupSize3D());
 	GroupCount.Z = FMath::DivideAndRoundUp(GroupCount.Z, FRenderLightingCacheWithPreshadingCS::GetThreadGroupSize3D());
@@ -512,7 +514,7 @@ void RenderSingleScatteringWithPreshadingCompute(
 	const FVisibleLightInfo* VisibleLightInfo,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
 	const TRDGUniformBufferRef<FSparseVoxelUniformBufferParameters>& SparseVoxelUniformBuffer,
@@ -579,7 +581,7 @@ void RenderSingleScatteringWithPreshadingCompute(
 
 		// Indirect lighting data
 		auto* LumenUniforms = GraphBuilder.AllocParameters<FLumenTranslucencyLightingUniforms>();
-		LumenUniforms->Parameters = GetLumenTranslucencyLightingParameters(GraphBuilder, View.LumenTranslucencyGIVolume, View.LumenFrontLayerTranslucency);
+		LumenUniforms->Parameters = GetLumenTranslucencyLightingParameters(GraphBuilder, View.GetLumenTranslucencyGIVolume(), View.LumenFrontLayerTranslucency);
 		PassParameters->LumenGIVolumeStruct = GraphBuilder.CreateUniformBuffer(LumenUniforms);
 
 		// Volume data
@@ -591,7 +593,8 @@ void RenderSingleScatteringWithPreshadingCompute(
 		// Transmittance volume
 		if ((HeterogeneousVolumes::UseLightingCacheForTransmittance() && bApplyShadowTransmittance) || HeterogeneousVolumes::UseLightingCacheForInscattering())
 		{
-			PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution();
+			PassParameters->LightingCache.LightingCacheResolution = HeterogeneousVolumes::GetLightingCacheResolution(HeterogeneousVolumeInterface);
+			PassParameters->LightingCache.LightingCacheVoxelBias = HeterogeneousVolumeInterface->GetShadowBiasFactor();
 			PassParameters->LightingCache.LightingCacheTexture = LightingCacheTexture;
 		}
 
@@ -625,7 +628,7 @@ void RenderSingleScatteringWithPreshadingCompute(
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingCS::FSparseVoxelTracingDim>(HeterogeneousVolumes::UseSparseVoxelPipeline());
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingCS::FUseTransmittanceVolume>(HeterogeneousVolumes::UseLightingCacheForTransmittance());
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingCS::FUseInscatteringVolume>(HeterogeneousVolumes::UseLightingCacheForInscattering());
-	PermutationVector.Set<FRenderSingleScatteringWithPreshadingCS::FUseLumenGI>(HeterogeneousVolumes::UseIndirectLighting() && View.LumenTranslucencyGIVolume.Texture0 != nullptr);
+	PermutationVector.Set<FRenderSingleScatteringWithPreshadingCS::FUseLumenGI>(HeterogeneousVolumes::UseIndirectLighting() && View.GetLumenTranslucencyGIVolume().Texture0 != nullptr);
 	PermutationVector.Set<FRenderSingleScatteringWithPreshadingCS::FDebugDim>(HeterogeneousVolumes::GetDebugMode() != 0);
 	TShaderRef<FRenderSingleScatteringWithPreshadingCS> ComputeShader = View.ShaderMap->GetShader<FRenderSingleScatteringWithPreshadingCS>(PermutationVector);
 	FComputeShaderUtils::AddPass(
@@ -648,7 +651,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingCompute(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -668,7 +671,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingCompute(
 	TArray<FLightSceneInfoCompact, TInlineAllocator<64>> LightSceneInfoCompact;
 	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 	{
-		if (LightIt->AffectsPrimitive(PrimitiveSceneProxy->GetBounds(), PrimitiveSceneProxy))
+		if (LightIt->AffectsPrimitive(HeterogeneousVolumeInterface->GetBounds(), HeterogeneousVolumeInterface->GetPrimitiveSceneProxy()))
 		{
 			LightSceneInfoCompact.Add(*LightIt);
 		}
@@ -715,7 +718,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingCompute(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Volume data
 			NumVoxelsBuffer,
 			// Sparse voxel data
@@ -755,7 +758,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingCompute(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Volume data
 			NumVoxelsBuffer,
 			// Sparse voxel data
@@ -782,7 +785,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingCompute(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -802,7 +805,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingCompute(
 	TArray<FLightSceneInfoCompact, TInlineAllocator<64>> LightSceneInfoCompact;
 	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 	{
-		if (LightIt->AffectsPrimitive(PrimitiveSceneProxy->GetBounds(), PrimitiveSceneProxy))
+		if (LightIt->AffectsPrimitive(HeterogeneousVolumeInterface->GetBounds(), HeterogeneousVolumeInterface->GetPrimitiveSceneProxy()))
 		{
 			LightSceneInfoCompact.Add(*LightIt);
 		}
@@ -851,7 +854,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingCompute(
 				VisibleLightInfo,
 				VirtualShadowMapArray,
 				// Object data
-				PrimitiveSceneProxy,
+				HeterogeneousVolumeInterface,
 				// Volume data
 				NumVoxelsBuffer,
 				// Sparse voxel data
@@ -881,7 +884,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingCompute(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Volume data
 			NumVoxelsBuffer,
 			// Sparse voxel data
@@ -908,7 +911,7 @@ void RenderWithPreshadingCompute(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -932,7 +935,7 @@ void RenderWithPreshadingCompute(
 			View,
 			SceneTextures,
 			// Object
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Volume data
 			NumVoxelsBuffer,
 			// Sparse voxel data
@@ -957,7 +960,7 @@ void RenderWithPreshadingCompute(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			// Sparse voxel data
 			NumVoxelsBuffer,
@@ -984,7 +987,7 @@ void RenderWithPreshadingCompute(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			// Sparse voxel data
 			NumVoxelsBuffer,
@@ -1011,7 +1014,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingHardwareRayTracing(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -1029,7 +1032,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingHardwareRayTracing(
 	TArray<FLightSceneInfoCompact, TInlineAllocator<64>> LightSceneInfoCompact;
 	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 	{
-		if (LightIt->AffectsPrimitive(PrimitiveSceneProxy->GetBounds(), PrimitiveSceneProxy))
+		if (LightIt->AffectsPrimitive(HeterogeneousVolumeInterface->GetBounds(), HeterogeneousVolumeInterface->GetPrimitiveSceneProxy()))
 		{
 			LightSceneInfoCompact.Add(*LightIt);
 		}
@@ -1076,7 +1079,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingHardwareRayTracing(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Sparse voxel
 			SparseVoxelUniformBuffer,
 			// Ray tracing data
@@ -1112,7 +1115,7 @@ void RenderWithInscatteringVolumePipelineWithPreshadingHardwareRayTracing(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Sparse voxel
 			SparseVoxelUniformBuffer,
 			// Ray tracing data
@@ -1137,7 +1140,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingHardwareRayTracing(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -1155,7 +1158,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingHardwareRayTracing(
 	TArray<FLightSceneInfoCompact, TInlineAllocator<64>> LightSceneInfoCompact;
 	for (auto LightIt = Scene->Lights.CreateConstIterator(); LightIt; ++LightIt)
 	{
-		if (LightIt->AffectsPrimitive(PrimitiveSceneProxy->GetBounds(), PrimitiveSceneProxy))
+		if (LightIt->AffectsPrimitive(HeterogeneousVolumeInterface->GetBounds(), HeterogeneousVolumeInterface->GetPrimitiveSceneProxy()))
 		{
 			LightSceneInfoCompact.Add(*LightIt);
 		}
@@ -1204,7 +1207,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingHardwareRayTracing(
 				VisibleLightInfo,
 				VirtualShadowMapArray,
 				// Object data
-				PrimitiveSceneProxy,
+				HeterogeneousVolumeInterface,
 				// Sparse voxel
 				SparseVoxelUniformBuffer,
 				// Ray tracing data
@@ -1230,7 +1233,7 @@ void RenderWithTransmittanceVolumePipelineWithPreshadingHardwareRayTracing(
 			VisibleLightInfo,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Sparse voxel
 			SparseVoxelUniformBuffer,
 			// Ray tracing data
@@ -1255,7 +1258,7 @@ void RenderWithPreshadingHardwareRayTracing(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	// Sparse voxel data
 	FRDGBufferRef NumVoxelsBuffer,
@@ -1281,7 +1284,7 @@ void RenderWithPreshadingHardwareRayTracing(
 			Scene,
 			View,
 			// Object
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			// Sparse voxel
 			NumVoxelsBuffer,
 			SparseVoxelUniformBuffer,
@@ -1295,8 +1298,6 @@ void RenderWithPreshadingHardwareRayTracing(
 			// Scene
 			Scene,
 			View,
-			// Object
-			PrimitiveSceneProxy,
 			// Ray tracing data
 			RayTracingGeometries,
 			RayTracingTransforms,
@@ -1317,7 +1318,7 @@ void RenderWithPreshadingHardwareRayTracing(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			NumVoxelsBuffer,
 			SparseVoxelUniformBuffer,
@@ -1339,7 +1340,7 @@ void RenderWithPreshadingHardwareRayTracing(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			NumVoxelsBuffer,
 			SparseVoxelUniformBuffer,
@@ -1483,7 +1484,7 @@ void RenderWithPreshading(
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
 	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	// Object data
-	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
+	const IHeterogeneousVolumeInterface* HeterogeneousVolumeInterface,
 	const FMaterialRenderProxy* MaterialRenderProxy,
 	const int32 PrimitiveId,
 	const FBoxSphereBounds LocalBoxSphereBounds,
@@ -1494,7 +1495,7 @@ void RenderWithPreshading(
 )
 {
 	// Determine baking voxel resolution
-	FIntVector VolumeResolution = HeterogeneousVolumes::GetVolumeResolution();
+	FIntVector VolumeResolution = HeterogeneousVolumes::GetVolumeResolution(HeterogeneousVolumeInterface);
 
 	// Create baked material grids
 	uint32 NumMips = FMath::Log2(float(FMath::Min(FMath::Min(VolumeResolution.X, VolumeResolution.Y), VolumeResolution.Z))) + 1;
@@ -1523,7 +1524,7 @@ void RenderWithPreshading(
 				Scene,
 				View,
 				// Object data
-				PrimitiveSceneProxy,
+				HeterogeneousVolumeInterface,
 				MaterialRenderProxy,
 				PrimitiveId,
 				LocalBoxSphereBounds,
@@ -1586,7 +1587,7 @@ void RenderWithPreshading(
 	FSparseVoxelUniformBufferParameters* SparseVoxelUniformBufferParameters = GraphBuilder.AllocParameters<FSparseVoxelUniformBufferParameters>();
 	{
 		// Object data
-		FMatrix44f LocalToWorld = FMatrix44f(PrimitiveSceneProxy->GetLocalToWorld());
+		FMatrix44f LocalToWorld = FMatrix44f(HeterogeneousVolumeInterface->GetLocalToWorld());
 		SparseVoxelUniformBufferParameters->LocalToWorld = LocalToWorld;
 		SparseVoxelUniformBufferParameters->WorldToLocal = LocalToWorld.Inverse();
 		SparseVoxelUniformBufferParameters->LocalBoundsOrigin = FVector3f(LocalBoxSphereBounds.Origin);
@@ -1608,7 +1609,9 @@ void RenderWithPreshading(
 		SparseVoxelUniformBufferParameters->MaxTraceDistance = HeterogeneousVolumes::GetMaxTraceDistance();
 		SparseVoxelUniformBufferParameters->MaxShadowTraceDistance = HeterogeneousVolumes::GetMaxShadowTraceDistance();
 		SparseVoxelUniformBufferParameters->StepSize = HeterogeneousVolumes::GetStepSize();
+		SparseVoxelUniformBufferParameters->StepFactor = HeterogeneousVolumeInterface->GetStepFactor();
 		SparseVoxelUniformBufferParameters->ShadowStepSize = HeterogeneousVolumes::GetShadowStepSize();
+		SparseVoxelUniformBufferParameters->ShadowStepFactor = HeterogeneousVolumeInterface->GetShadowStepFactor();
 	}
 	TRDGUniformBufferRef<FSparseVoxelUniformBufferParameters> SparseVoxelUniformBuffer = GraphBuilder.CreateUniformBuffer(SparseVoxelUniformBufferParameters);
 
@@ -1626,7 +1629,7 @@ void RenderWithPreshading(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			// Sparse voxel data
 			NumVoxelsBuffer,
@@ -1651,7 +1654,7 @@ void RenderWithPreshading(
 			VisibleLightInfos,
 			VirtualShadowMapArray,
 			// Object data
-			PrimitiveSceneProxy,
+			HeterogeneousVolumeInterface,
 			MaterialRenderProxy,
 			// Sparse voxel data
 			NumVoxelsBuffer,

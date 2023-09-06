@@ -5,30 +5,23 @@ D3D12Adapter.cpp:D3D12 Adapter implementation.
 =============================================================================*/
 
 #include "D3D12RHIPrivate.h"
+#include "D3D12AmdExtensions.h"
+#include "D3D12IntelExtensions.h"
+#include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/OutputDeviceRedirector.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
-#include "DataDrivenShaderPlatformInfo.h"
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsPlatformMisc.h"
 #include "Windows/WindowsPlatformStackWalk.h"
+#include "Windows/WindowsPlatformCrashContext.h"
 #endif
 #include "Modules/ModuleManager.h"
-
-#if WITH_AMD_AGS
-	#include "amd_ags.h"
-#endif
 #include "Windows/HideWindowsPlatformTypes.h"
 
-#if INTEL_EXTENSIONS
-	#define INTC_IGDEXT_D3D12 1
-
-	THIRD_PARTY_INCLUDES_START
-	#include "igdext.h"
-	THIRD_PARTY_INCLUDES_END
-#endif
 
 #if ENABLE_RESIDENCY_MANAGEMENT
 bool GEnableResidencyManagement = true;
@@ -50,17 +43,44 @@ static FAutoConsoleVariableRef CTrackedReleasedAllocationFrameRetention(
 );
 #endif
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 
 #if UE_BUILD_SHIPPING || UE_BUILD_TEST
 static int32 GD3D12EnableGPUBreadCrumbs = 0;
 static int32 GD3D12EnableNvAftermath = 0;
 static int32 GD3D12EnableDRED = 0;
+static int32 GD3D12EnableLightweightDRED = 1;
 #else
 static int32 GD3D12EnableGPUBreadCrumbs = 1;
 static int32 GD3D12EnableNvAftermath = 1;
 static int32 GD3D12EnableDRED = 0;
+static int32 GD3D12EnableLightweightDRED = 1;
 #endif // UE_BUILD_SHIPPING || UE_BUILD_TEST
+
+TAutoConsoleVariable<int32> GD3D12DebugCvar (
+	TEXT("r.D3D12.EnableD3DDebug"),
+	0,
+	TEXT("0 to disable d3ddebug layer (default)\n")
+	TEXT("1 to enable error logging (-d3ddebug) \n")
+	TEXT("2 to enable error & warning logging (-d3dlogwarnings)\n")
+	TEXT("3 to enable breaking on errors & warnings (-d3dbreakonwarning)\n")
+	TEXT("4 to enable CONTINUING on errors (-d3dcontinueonerrors)\n"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+bool D3D12_ShouldLogD3DDebugWarnings()
+{
+	return GD3D12DebugCvar.GetValueOnAnyThread() > 1;
+}
+
+bool D3D12_ShouldBreakOnD3DDebugErrors()
+{
+	return GD3D12DebugCvar.GetValueOnAnyThread() > 0 && GD3D12DebugCvar.GetValueOnAnyThread() != 4;
+}
+
+bool D3D12_ShouldBreakOnD3DDebugWarnings()
+{
+	return GD3D12DebugCvar.GetValueOnAnyThread() > 3;
+}
 
 static FAutoConsoleVariableRef CVarD3D12EnableGPUBreadCrumbs(
 	TEXT("r.D3D12.BreadCrumbs"),
@@ -82,6 +102,13 @@ static FAutoConsoleVariableRef CVarD3D12EnableDRED(
 	TEXT("Has GPU overhead but gives the most information on the current GPU state when it crashes or hangs.\n"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
+static FAutoConsoleVariableRef CVarD3D12EnableLightweightDRED(
+	TEXT("r.D3D12.LightweightDRED"),
+	GD3D12EnableLightweightDRED,
+	TEXT("Enable Lightweight DRED GPU Crash debugging mode to track the current GPU state and logs information what operations the GPU executed last.")
+	TEXT("Gives the basic information on the current GPU state when it crashes or hangs on all PC hardware.\n"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
 bool GD3D12TrackAllAlocations = false;
 static TAutoConsoleVariable<int32> CVarD3D12TrackAllAllocations(
 	TEXT("D3D12.TrackAllAllocations"),
@@ -89,7 +116,15 @@ static TAutoConsoleVariable<int32> CVarD3D12TrackAllAllocations(
 	TEXT("Controls whether D3D12 RHI should track all allocation information (default = off)."),
 	ECVF_ReadOnly
 );
-#endif // PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+
+bool GD3D12EvictAllResidentResourcesInBackground = false;
+static FAutoConsoleVariableRef CVarD3D12EvictAllResidentResourcesInBackground(
+	TEXT("D3D12.EvictAllResidentResourcesInBackground"),
+	GD3D12EvictAllResidentResourcesInBackground,
+	TEXT("Force D3D12 resource residency manager to evict all tracked unused resources when the application is not focused\n"),
+	ECVF_Default);
+
+#endif // PLATFORM_WINDOWS
 
 #if D3D12_SUPPORTS_INFO_QUEUE
 static bool CheckD3DStoredMessages()
@@ -105,6 +140,8 @@ static bool CheckD3DStoredMessages()
 		{
 			D3D12_MESSAGE* d3dMessage = nullptr;
 			SIZE_T AllocateSize = 0;
+
+			static const bool bBreakOnWarning = FParse::Param(FCommandLine::Get(), TEXT("d3dbreakonwarning"));
 
 			int StoredMessageCount = d3dInfoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
 			for (int MessageIndex = 0; MessageIndex < StoredMessageCount; MessageIndex++)
@@ -138,24 +175,32 @@ static bool CheckD3DStoredMessages()
 					// get the actual message data from the queue
 					hr = d3dInfoQueue->GetMessage(MessageIndex, d3dMessage, &MessageLength);
 
-					if (d3dMessage->Severity == D3D12_MESSAGE_SEVERITY_ERROR)
+
+					switch (d3dMessage->Severity)
 					{
-						UE_LOG(LogD3D12RHI, Error, TEXT("%s"), ANSI_TO_TCHAR(d3dMessage->pDescription));
-					}
-					else if (d3dMessage->Severity == D3D12_MESSAGE_SEVERITY_WARNING)
-					{
-						UE_LOG(LogD3D12RHI, Warning, TEXT("%s"), ANSI_TO_TCHAR(d3dMessage->pDescription));
-					}
-					else 
-					{
-						UE_LOG(LogD3D12RHI, Log, TEXT("%s"), ANSI_TO_TCHAR(d3dMessage->pDescription));
+					case D3D12_MESSAGE_SEVERITY_CORRUPTION:
+					case D3D12_MESSAGE_SEVERITY_ERROR:
+						{
+							UE_LOG(LogD3D12RHI, Error, TEXT("[D3DDebug] %s"), ANSI_TO_TCHAR(d3dMessage->pDescription));
+							bResult = true;
+							break;
+						}
+					case D3D12_MESSAGE_SEVERITY_WARNING:
+						{
+							UE_LOG(LogD3D12RHI, Warning, TEXT("[D3DDebug] %s"), ANSI_TO_TCHAR(d3dMessage->pDescription));
+							if (bBreakOnWarning)
+								bResult = true;
+							break;
+						}
+					default:
+						{
+							UE_LOG(LogD3D12RHI, Log, TEXT("[D3DDebug] %s"), ANSI_TO_TCHAR(d3dMessage->pDescription));
+							break;
+						}
 					}
 				}
-
-				// we got messages
-				bResult = true;
 			}
-
+			d3dInfoQueue->ClearStoredMessages();
 			if (AllocateSize > 0)
 			{
 				FMemory::Free(d3dMessage);
@@ -285,14 +330,60 @@ FD3D12Adapter::FD3D12Adapter(FD3D12AdapterDesc& DescIn)
 	}
 }
 
+#if NV_AFTERMATH
 /** Callback function called when the GPU crashes, when Aftermath is enabled */
 static void D3D12AftermathCrashCallback(const void* InGPUCrashDump, const uint32_t InGPUCrashDumpSize, void* InUserData)
 {
-	// Disabled for now, let the regular rendering code catch the error on the next API call via VERIFYD3D12RESULT & co.
-	// Note that this means we won't be getting aftermath crash dump files anymore, since those are written based on the data passed to this function via InGPUCrashDump.
-	// D3D12RHI::TerminateOnGPUCrash(nullptr, InGPUCrashDump, InGPUCrashDumpSize);
+	// If we have crash dump data then dump to disc
+	if (InGPUCrashDump != nullptr)
+	{
+		// Write out crash dump to project log dir - exception handling code will take care of copying it to the correct location
+		const FString GpuMiniDumpPath = FPaths::Combine(FPaths::ProjectLogDir(), FWindowsPlatformCrashContext::UEGPUAftermathMinidumpName);
+
+		UE_LOG(LogD3D12RHI, Error, TEXT("Aftermath: Writing Aftermath dump to: %s"), *GpuMiniDumpPath);
+
+		if (FArchive* Writer = IFileManager::Get().CreateFileWriter(*GpuMiniDumpPath))
+		{
+			Writer->Serialize((void*)InGPUCrashDump, InGPUCrashDumpSize);
+			Writer->Close();
+		}
+	}
 }
 
+void EnableNVAftermathCrashDumps(ED3D12GPUCrashDebuggingModes GPUCrashDebuggingModes)
+{
+	// GPUcrash dump handler must be attached prior to device creation
+	if (GDX12NVAfterMathModuleLoaded && EnumHasAnyFlags(GPUCrashDebuggingModes, ED3D12GPUCrashDebuggingModes::NvAftermath))
+	{
+		const HANDLE CurrentThread = ::GetCurrentThread();
+
+		const GFSDK_Aftermath_Result Result = GFSDK_Aftermath_EnableGpuCrashDumps(
+			GFSDK_Aftermath_Version_API,
+			GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_DX,
+			GFSDK_Aftermath_GpuCrashDumpFeatureFlags_Default,
+			&D3D12AftermathCrashCallback,
+			nullptr, //Shader debug callback
+			nullptr, // description callback
+			nullptr, // resolve marker callback
+			CurrentThread
+		); // user data
+
+		if (Result == GFSDK_Aftermath_Result_Success)
+		{
+			UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath crash dumping enabled"));
+
+			// enable core Aftermath to set the init flags
+			GDX12NVAfterMathEnabled = 1;
+		}
+		else
+		{
+			UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath crash dumping failed to initialize (%x)"), Result);
+
+			GDX12NVAfterMathEnabled = 0;
+		}
+	}
+}
+#endif
 
 void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 {
@@ -332,84 +423,104 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 	UE_LOG(LogD3D12RHI, Log, TEXT("InitD3DDevice: -D3DDebug = %s -D3D12GPUValidation = %s"), bWithDebug ? TEXT("on") : TEXT("off"), bWithGPUValidation ? TEXT("on") : TEXT("off"));
 #endif
 
-#if PLATFORM_WINDOWS || (PLATFORM_HOLOLENS && !UE_BUILD_SHIPPING && WITH_PIX_EVENT_RUNTIME)
+#if PLATFORM_WINDOWS
 	
     SetupGPUCrashDebuggingModesCommon();
 
 #if NV_AFTERMATH
 	if (IsRHIDeviceNVIDIA() && GDX12NVAfterMathModuleLoaded)
 	{
-		// GPUcrash dump handler must be attached prior to device creation
-		if (EnumHasAnyFlags(GPUCrashDebuggingModes, ED3D12GPUCrashDebuggingModes::NvAftermath))
-		{
-			HANDLE CurrentThread = ::GetCurrentThread();
-
-			GFSDK_Aftermath_Result Result = GFSDK_Aftermath_EnableGpuCrashDumps(
-				GFSDK_Aftermath_Version_API,
-				GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_DX,
-				GFSDK_Aftermath_GpuCrashDumpFeatureFlags_Default,
-				&D3D12AftermathCrashCallback,
-				nullptr, //Shader debug callback
-				nullptr, // description callback
-				nullptr, // resolve marker callback
-				CurrentThread); // user data
-
-			if (Result == GFSDK_Aftermath_Result_Success)
-			{
-				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath crash dumping enabled"));
-
-				// enable core Aftermath to set the init flags
-				GDX12NVAfterMathEnabled = 1;
-			}
-			else
-			{
-				UE_LOG(LogD3D12RHI, Log, TEXT("[Aftermath] Aftermath crash dumping failed to initialize (%x)"), Result);
-
-				GDX12NVAfterMathEnabled = 0;
-			}
-		}
+		EnableNVAftermathCrashDumps(GPUCrashDebuggingModes);
 	}
 #endif
 
 	// Setup DRED if requested
 	bool bDRED = false;
+	bool bDREDMarkersOnly = false; // LightweightDRED
 	bool bDREDContext = false;
-	if (EnumHasAnyFlags(GPUCrashDebuggingModes, ED3D12GPUCrashDebuggingModes::DRED))
-	{
-		TRefCountPtr<ID3D12DeviceRemovedExtendedDataSettings> DredSettings;
-		HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(DredSettings.GetInitReference()));
+	{		
+		HMODULE d3d12DllHandle = (HMODULE)FPlatformProcess::GetDllHandle(TEXT("d3d12.dll"));
+		typedef HRESULT(WINAPI* FD3D12GetInterface)(REFCLSID, REFIID, void**);
 
-		// Can fail if not on correct Windows Version - needs 1903 or newer
-		if (SUCCEEDED(hr))
+		if (d3d12DllHandle)
 		{
-			// Turn on AutoBreadcrumbs and Page Fault reporting
-			DredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-			DredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			FD3D12GetInterface D3D12GetInterfaceFnPtr = (FD3D12GetInterface)(void*)(GetProcAddress(d3d12DllHandle, "D3D12GetInterface"));
 
-			bDRED = true;
-			UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Dred enabled"));
-		}
-		else
-		{
-			UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] DRED requested but interface was not found, hresult: %x. DRED only works on Windows 10 1903+."), hr);
-		}
+			if (D3D12GetInterfaceFnPtr != nullptr)
+			{
+				if (EnumHasAnyFlags(GPUCrashDebuggingModes, ED3D12GPUCrashDebuggingModes::DRED))
+				{
+					TRefCountPtr<ID3D12DeviceRemovedExtendedDataSettings> DredSettings;
+					HRESULT hr = D3D12GetInterfaceFnPtr(CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS(DredSettings.GetInitReference()));
+
+					// Can fail if not on correct Windows Version - needs 1903 or newer
+					if (SUCCEEDED(hr))
+					{
+						// Turn on AutoBreadcrumbs and Page Fault reporting
+						DredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+						DredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+
+						bDRED = true;
+						bDREDMarkersOnly = false;
+						SetEmitDrawEvents(true);
+						UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] DRED enabled"));
+					}
+					else
+					{
+						UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] DRED requested but interface was not found, hresult: %x. DRED only works on Windows 10 1903+."), hr);
+					}
 
 #ifdef __ID3D12DeviceRemovedExtendedDataSettings1_INTERFACE_DEFINED__
-		TRefCountPtr<ID3D12DeviceRemovedExtendedDataSettings1> DredSettings1;
-		hr = D3D12GetDebugInterface(IID_PPV_ARGS(DredSettings1.GetInitReference()));
-		if (SUCCEEDED(hr))
-		{
-			DredSettings1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-			bDREDContext = true;
-			UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Dred breadcrumb context enabled"));
+					TRefCountPtr<ID3D12DeviceRemovedExtendedDataSettings1> DredSettings1;
+					hr = D3D12GetInterfaceFnPtr(CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS(DredSettings1.GetInitReference()));
+
+					if (SUCCEEDED(hr))
+					{
+						DredSettings1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+						bDREDContext = true;
+						UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Dred breadcrumb context enabled"));
+					}
+#endif // __ID3D12DeviceRemovedExtendedDataSettings1_INTERFACE_DEFINED__
+				}
+
+				else if(GD3D12EnableLightweightDRED)
+				{
+#ifdef __ID3D12DeviceRemovedExtendedDataSettings2_INTERFACE_DEFINED__
+					TRefCountPtr<ID3D12DeviceRemovedExtendedDataSettings2> DredSettings2;
+					HRESULT hr = D3D12GetInterfaceFnPtr(CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS(DredSettings2.GetInitReference()));
+
+					if (SUCCEEDED(hr))
+					{
+						DredSettings2->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+						bDREDContext = true;
+						UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Dred breadcrumb context enabled"));
+
+						// Turn on AutoBreadcrumbs and Page Fault reporting
+						DredSettings2->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+						DredSettings2->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+
+						bDREDMarkersOnly = true;
+						DredSettings2->UseMarkersOnlyAutoBreadcrumbs(true);
+						SetEmitDrawEvents(true);
+						UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Using lightweight DRED."));
+					}
+					else
+					{
+						UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Lightweight DRED requested but interface was not found, hresult: %x. DRED only works on Windows 10 1903+."), hr);
+					}
+#else
+					UE_LOG(LogD3D12RHI, Log, TEXT("[DRED] Lightweight DRED unsupported."));
+#endif // __ID3D12DeviceRemovedExtendedDataSettings2_INTERFACE_DEFINED__
+				}
+			}
 		}
-#endif
 	}
 
 	FGenericCrashContext::SetEngineData(TEXT("RHI.DRED"), bDRED ? TEXT("true") : TEXT("false"));
-	FGenericCrashContext::SetEngineData(TEXT("RHI.DREDContext"), bDREDContext ? TEXT("true") : TEXT("false"));
+	FGenericCrashContext::SetEngineData(TEXT("RHI.DREDMarkersOnly"), bDREDMarkersOnly ? TEXT("true") : TEXT("false"));
+	FGenericCrashContext::SetEngineData(TEXT("RHI.DREDContext"), bDREDContext && bDRED ? TEXT("true") : TEXT("false"));
 
-#endif // PLATFORM_WINDOWS || (PLATFORM_HOLOLENS && !UE_BUILD_SHIPPING && WITH_PIX_EVENT_RUNTIME)
+#endif // PLATFORM_WINDOWS
 
 #if USE_PIX
 	UE_LOG(LogD3D12RHI, Log, TEXT("Emitting draw events for PIX profiling."));
@@ -613,7 +724,7 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 			}
 		}
 	}
-#endif //  (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+#endif // D3D12_SUPPORTS_DXGI_DEBUG
 
 #if UE_BUILD_DEBUG	&& D3D12_SUPPORTS_INFO_QUEUE
 	//break on debug
@@ -623,9 +734,9 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 		TRefCountPtr<ID3D12InfoQueue> d3dInfoQueue;
 		if (SUCCEEDED(d3dDebug->QueryInterface(__uuidof(ID3D12InfoQueue), (void**)d3dInfoQueue.GetInitReference())))
 		{
-			d3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
-			d3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
-			//d3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
+			d3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, D3D12_ShouldBreakOnD3DDebugErrors());
+			d3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, D3D12_ShouldBreakOnD3DDebugErrors());
+			d3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, D3D12_ShouldBreakOnD3DDebugWarnings());
 		}
 	}
 #endif
@@ -642,10 +753,10 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 			FMemory::Memzero(&NewFilter, sizeof(NewFilter));
 
 			// Turn off info msgs as these get really spewy
-			D3D12_MESSAGE_SEVERITY DenySeverity = D3D12_MESSAGE_SEVERITY_INFO;
-			NewFilter.DenyList.NumSeverities = 1;
-			NewFilter.DenyList.pSeverityList = &DenySeverity;
-
+			const bool bLogWarnings = D3D12_ShouldBreakOnD3DDebugWarnings() || D3D12_ShouldLogD3DDebugWarnings();
+			D3D12_MESSAGE_SEVERITY DenySeverity[] = { D3D12_MESSAGE_SEVERITY_INFO, D3D12_MESSAGE_SEVERITY_WARNING };
+			NewFilter.DenyList.NumSeverities = 1 + (bLogWarnings ? 0 : 1);
+			NewFilter.DenyList.pSeverityList = DenySeverity;
 			// Be sure to carefully comment the reason for any additions here!  Someone should be able to look at it later and get an idea of whether it is still necessary.
 			TArray<D3D12_MESSAGE_ID, TInlineAllocator<16>> DenyIds = {
 
@@ -729,14 +840,15 @@ void FD3D12Adapter::CreateRootDevice(bool bWithDebug)
 			pd3dInfoQueue->PushStorageFilter(&NewFilter);
 
 			// Break on D3D debug errors.
-			pd3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, true);
+			pd3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, D3D12_ShouldBreakOnD3DDebugErrors());
 
 			// Enable this to break on a specific id in order to quickly get a callstack
 			//pd3dInfoQueue->SetBreakOnID(D3D12_MESSAGE_ID_DEVICE_DRAW_CONSTANT_BUFFER_TOO_SMALL, true);
 
-			if (FParse::Param(FCommandLine::Get(), TEXT("d3dbreakonwarning")))
+			// Break on D3D warnings if warning log or warning breakpoint is enabled
+			if (bLogWarnings)
 			{
-				pd3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, true);
+				pd3dInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, D3D12_ShouldBreakOnD3DDebugWarnings());
 			}
 
 			pd3dInfoQueue->Release();
@@ -772,7 +884,7 @@ void FD3D12Adapter::InitializeDevices()
 	FlushRenderingCommands();
 
 	// Use a debug device if specified on the command line.
-	bool bWithD3DDebug = D3D12RHI_ShouldCreateWithD3DDebug();
+	bool bWithD3DDebug = GRHIGlobals.IsDebugLayerEnabled;
 
 	// If we don't have a device yet, either because this is the first viewport, or the old device was removed, create a device.
 	if (!RootDevice)
@@ -854,6 +966,18 @@ void FD3D12Adapter::InitializeDevices()
 			if (SUCCEEDED(RootDevice->QueryInterface(IID_PPV_ARGS(RootDevice10.GetInitReference()))))
 			{
 				UE_LOG(LogD3D12RHI, Log, TEXT("ID3D12Device10 is supported."));
+			}
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 11
+			if (SUCCEEDED(RootDevice->QueryInterface(IID_PPV_ARGS(RootDevice11.GetInitReference()))))
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("ID3D12Device11 is supported."));
+			}
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 12
+			if (SUCCEEDED(RootDevice->QueryInterface(IID_PPV_ARGS(RootDevice12.GetInitReference()))))
+			{
+				UE_LOG(LogD3D12RHI, Log, TEXT("ID3D12Device12 is supported."));
 			}
 #endif
 
@@ -969,8 +1093,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 			}
 
+			{
+				D3D12_FEATURE_DATA_D3D12_OPTIONS4 Features{};
+				RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &Features, sizeof(Features));
+				GRHIGlobals.SupportsNative16BitOps = Features.Native16BitShaderOpsSupported;
+			}
+
 #if D3D12_RHI_RAYTRACING
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 			D3D12_FEATURE_DATA_D3D12_OPTIONS5 D3D12Caps5 = {};
 			if (SUCCEEDED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &D3D12Caps5, sizeof(D3D12Caps5))))
 			{
@@ -1020,7 +1150,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					UE_LOG(LogD3D12RHI, Warning, TEXT("Ray Tracing is disabled because the RenderDoc plugin is currently not compatible with D3D12 ray tracing."));
 				}
 			}
-#endif // PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#endif // PLATFORM_WINDOWS
 
 			GRHIRayTracingAccelerationStructureAlignment = uint32(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 			GRHIRayTracingScratchBufferAlignment = uint32(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
@@ -1083,7 +1213,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif // PLATFORM_WINDOWS
 		}
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 		D3D12_FEATURE_DATA_D3D12_OPTIONS2 D3D12Caps2 = {};
 		if (FAILED(RootDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &D3D12Caps2, sizeof(D3D12Caps2))))
 		{
@@ -1117,7 +1247,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if TRACK_RESOURCE_ALLOCATIONS
 		// Set flag if we want to track all allocations - comes with some overhead and only possible when Tier 2 is available
 		// (because we will create placed buffers for texture allocation to retrieve the GPU virtual addresses)
-		bTrackAllAllocation = (GD3D12TrackAllAlocations || GPUCrashDebuggingModes == ED3D12GPUCrashDebuggingModes::All) && (GetResourceHeapTier() == D3D12_RESOURCE_HEAP_TIER_2);
+		const bool bTraceMemAlloc = UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel);
+		bTrackAllAllocation = (GD3D12TrackAllAlocations || GPUCrashDebuggingModes == ED3D12GPUCrashDebuggingModes::All || bTraceMemAlloc) && (GetResourceHeapTier() == D3D12_RESOURCE_HEAP_TIER_2);
 #endif 
 
 		// Context redirectors allow RHI commands to be executed on multiple GPUs at the
@@ -1166,8 +1297,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 		if (Desc.MaxSupportedFeatureLevel >= D3D_FEATURE_LEVEL_12_0 && Desc.MaxSupportedShaderModel >= D3D_SHADER_MODEL_6_6 && Desc.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3)
 		{
-			BindlessResourcesConfig = RHIGetBindlessResourcesConfiguration(GMaxRHIShaderPlatform);
-			BindlessSamplersConfig = RHIGetBindlessSamplersConfiguration(GMaxRHIShaderPlatform);
+			BindlessResourcesConfig = RHIGetRuntimeBindlessResourcesConfiguration(GMaxRHIShaderPlatform);
+			BindlessSamplersConfig = RHIGetRuntimeBindlessSamplersConfiguration(GMaxRHIShaderPlatform);
 
 			bBindlessResourcesAllowed = (BindlessResourcesConfig != ERHIBindlessConfiguration::Disabled);
 			bBindlessSamplersAllowed = (BindlessSamplersConfig != ERHIBindlessConfiguration::Disabled);
@@ -1391,12 +1522,7 @@ FD3D12Adapter::~FD3D12Adapter()
 #endif
 
 #if PLATFORM_WINDOWS
-	if (ExceptionHandlerHandle != INVALID_HANDLE_VALUE)
-	{
-		RemoveVectoredExceptionHandler(ExceptionHandlerHandle);
-	}
-
-	if (D3D12RHI_ShouldCreateWithD3DDebug())
+	if (GetD3DDevice() && GRHIGlobals.IsDebugLayerEnabled)
 	{
 		TRefCountPtr<ID3D12DebugDevice> Debug;
 		if (SUCCEEDED(GetD3DDevice()->QueryInterface(IID_PPV_ARGS(Debug.GetInitReference()))))
@@ -1404,6 +1530,11 @@ FD3D12Adapter::~FD3D12Adapter()
 			D3D12_RLDO_FLAGS rldoFlags = D3D12_RLDO_DETAIL;
 			Debug->ReportLiveDeviceObjects(rldoFlags);
 		}
+	}
+
+	if (ExceptionHandlerHandle != INVALID_HANDLE_VALUE)
+	{
+		RemoveVectoredExceptionHandler(ExceptionHandlerHandle);
 	}
 #endif
 
@@ -1418,37 +1549,32 @@ FD3D12Adapter::~FD3D12Adapter()
 
 void FD3D12Adapter::CreateDXGIFactory(TRefCountPtr<IDXGIFactory2>& DxgiFactory2, bool bWithDebug, HMODULE DxgiDllHandle)
 {
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 	typedef HRESULT(WINAPI FCreateDXGIFactory2)(UINT, REFIID, void**);
 
-#if PLATFORM_WINDOWS
 	FCreateDXGIFactory2* CreateDXGIFactory2FnPtr = (FCreateDXGIFactory2*)(void*)::GetProcAddress(DxgiDllHandle, "CreateDXGIFactory2");
-#else
-	FCreateDXGIFactory2* CreateDXGIFactory2FnPtr = &CreateDXGIFactory2;
-#endif
 
 	check(CreateDXGIFactory2FnPtr);
 
 	const uint32 Flags = bWithDebug ? DXGI_CREATE_FACTORY_DEBUG : 0;
 	VERIFYD3D12RESULT(CreateDXGIFactory2FnPtr(Flags, IID_PPV_ARGS(DxgiFactory2.GetInitReference())));
-#endif // #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#endif // PLATFORM_WINDOWS
 }
 
 void FD3D12Adapter::CreateDXGIFactory(bool bWithDebug)
 {
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	HMODULE UsedDxgiDllHandle = (HMODULE)0;
 #if PLATFORM_WINDOWS
+	HMODULE UsedDxgiDllHandle = (HMODULE)0;
+
 	// Dynamically load this otherwise Win7 fails to boot as it's missing on that DLL
 	DxgiDllHandle = (HMODULE)FPlatformProcess::GetDllHandle(TEXT("dxgi.dll"));
 	check(DxgiDllHandle);
 	UsedDxgiDllHandle = DxgiDllHandle;
-#endif
 
 	CreateDXGIFactory(DxgiFactory2, bWithDebug, UsedDxgiDllHandle);
 
 	InitDXGIFactoryVariants(DxgiFactory2);
-#endif // #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#endif // PLATFORM_WINDOWS
 }
 
 void FD3D12Adapter::InitDXGIFactoryVariants(IDXGIFactory2* InDxgiFactory2)
@@ -1464,6 +1590,9 @@ void FD3D12Adapter::InitDXGIFactoryVariants(IDXGIFactory2* InDxgiFactory2)
 #endif
 #if DXGI_MAX_FACTORY_INTERFACE >= 6
 	InDxgiFactory2->QueryInterface(IID_PPV_ARGS(DxgiFactory6.GetInitReference()));
+#endif
+#if DXGI_MAX_FACTORY_INTERFACE >= 7
+	InDxgiFactory2->QueryInterface(IID_PPV_ARGS(DxgiFactory7.GetInitReference()));
 #endif
 }
 
@@ -1534,7 +1663,7 @@ void FD3D12Adapter::ReleaseTransientUniformBufferAllocator(FTransientUniformBuff
 
 void FD3D12Adapter::UpdateMemoryInfo()
 {
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+#if PLATFORM_WINDOWS
 	const uint64 UpdateFrame = FrameFence != nullptr ? FrameFence->GetNextFenceToSignal() : 0;
 
 	// Avoid spurious query calls if we have already captured this frame.
@@ -1551,6 +1680,20 @@ void FD3D12Adapter::UpdateMemoryInfo()
 
 	VERIFYD3D12RESULT(Adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &MemoryInfo.LocalMemoryInfo));
 	VERIFYD3D12RESULT(Adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &MemoryInfo.NonLocalMemoryInfo));
+
+#if ENABLE_RESIDENCY_MANAGEMENT
+	// D3D12 residency manager will only evict resources when the resident set is larger than DXGI reported budget.
+	// However, the DXGI reports high budget even when multiple applications use large amounts of VRAM.
+	// This casuses VidMm to automatically page out allocations out of VRAM based on its own heuristics, which can cause significant 
+	// performance degradation when paged-out resources are used for rendering before VidMm pages them back in (which can take a long time).
+	// By overriding the budget to 0 and stopping rendering at the high-level, we can immediately free VRAM and avoid VidMm paging.
+	const bool bEvictResidentResources = GEnableResidencyManagement && GD3D12EvictAllResidentResourcesInBackground && !FApp::HasFocus();
+	const uint64 LocalMemoryBudgetLimit = bEvictResidentResources ? 0 : MemoryInfo.LocalMemoryInfo.Budget;
+	for (uint32 GPUIndex : FRHIGPUMask::All())
+	{
+		GetDevice(GPUIndex)->GetResidencyManager().SetLocalMemoryBudgetLimit(LocalMemoryBudgetLimit);
+	}
+#endif // ENABLE_RESIDENCY_MANAGEMENT
 
 	// Over budget?
 	if (MemoryInfo.LocalMemoryInfo.CurrentUsage > MemoryInfo.LocalMemoryInfo.Budget)

@@ -45,7 +45,7 @@ CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogInit, Log, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogExit, Log, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogExec, Warning, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogScript, Warning, All);
-CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogLocalization, Error, All);
+CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogLocalization, Log, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogLongPackageNames, Log, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogProcess, Log, All);
 CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogLoad, Log, All);
@@ -71,20 +71,20 @@ CORE_API void BootTimingPoint(const ANSICHAR *Message);
 
 CORE_API void DumpBootTiming();
 
-struct CORE_API FScopedBootTiming
+struct FScopedBootTiming
 {
 	FString Message;
 	double StartTime;
-	FScopedBootTiming(const ANSICHAR *InMessage);
-	FScopedBootTiming(const ANSICHAR *InMessage, FName Suffix);
-	~FScopedBootTiming();
+	CORE_API FScopedBootTiming(const ANSICHAR *InMessage);
+	CORE_API FScopedBootTiming(const ANSICHAR *InMessage, FName Suffix);
+	CORE_API ~FScopedBootTiming();
 };
 
-struct CORE_API FEngineTrackedActivityScope
+struct FEngineTrackedActivityScope
 {
-	FEngineTrackedActivityScope(const TCHAR* Fmt, ...);
-	FEngineTrackedActivityScope(const FString& Str);
-	~FEngineTrackedActivityScope();
+	CORE_API FEngineTrackedActivityScope(const TCHAR* Fmt, ...);
+	CORE_API FEngineTrackedActivityScope(const FString& Str);
+	CORE_API ~FEngineTrackedActivityScope();
 };
 
 
@@ -105,7 +105,7 @@ extern CORE_API TCHAR GErrorHist[16384];
 // #crashReport: 2014-08-19 Combine into one, refactor.
 extern CORE_API TCHAR GErrorExceptionDescription[4096];
 
-struct CORE_API FCoreTexts
+struct FCoreTexts
 {
 	const FText& True;
 	const FText& False;
@@ -113,10 +113,10 @@ struct CORE_API FCoreTexts
 	const FText& No;
 	const FText& None;
 
-	static const FCoreTexts& Get();
+	static CORE_API const FCoreTexts& Get();
 
 	/** Invalidates existing references. Do not use FCoreTexts after calling. */
-	static void TearDown();
+	static CORE_API void TearDown();
 
 	// Non-copyable
 	FCoreTexts(const FCoreTexts&) = delete;
@@ -212,7 +212,6 @@ extern CORE_API bool PRIVATE_GAllowCommandletAudio;
 */
 extern CORE_API bool GIsEditor;
 extern CORE_API bool GIsImportingT3D;
-extern CORE_API bool GIsUCCMakeStandaloneHeaderGenerator;
 extern CORE_API bool GIsTransacting;
 
 /** Indicates that the game thread is currently paused deep in a call stack,
@@ -226,14 +225,12 @@ extern CORE_API bool			GFirstFrameIntraFrameDebugging;
 
 // Defined as variables during code analysis to prevent lots of '<constant> && <expr>' warnings
 extern CORE_API bool GIsEditor;
-extern CORE_API bool GIsUCCMakeStandaloneHeaderGenerator;
 extern CORE_API bool GIntraFrameDebuggingGameThread;
 extern CORE_API bool GFirstFrameIntraFrameDebugging;
 
 #else
 
 #define GIsEditor								false
-#define GIsUCCMakeStandaloneHeaderGenerator		false
 #define GIntraFrameDebuggingGameThread			false
 #define GFirstFrameIntraFrameDebugging			false
 
@@ -313,11 +310,11 @@ FORCEINLINE bool IsAllowCommandletAudio()
 #endif
 }
 
-class CORE_API FIsDuplicatingClassForReinstancing
+class FIsDuplicatingClassForReinstancing
 {
 public:
-	FIsDuplicatingClassForReinstancing& operator= (bool bOther);
-	operator bool() const;
+	CORE_API FIsDuplicatingClassForReinstancing& operator= (bool bOther);
+	CORE_API operator bool() const;
 };
 
 extern CORE_API bool GEdSelectionLock;
@@ -415,6 +412,7 @@ extern CORE_API FString GDeviceProfilesIni;
 extern CORE_API FString GGameplayTagsIni;
 
 extern CORE_API float GNearClippingPlane;
+extern CORE_API float GNearClippingPlane_RenderThread;
 
 extern CORE_API bool GExitPurge;
 extern CORE_API TCHAR GInternalProjectName[64];
@@ -453,7 +451,14 @@ extern CORE_API bool GIsCookerLoadingPackage;
 /** Whether GWorld points to the play in editor world */
 extern CORE_API bool GIsPlayInEditorWorld;
 
-extern CORE_API int32 GPlayInEditorID;
+class FPlayInEditorID
+{
+public:
+	CORE_API FPlayInEditorID& operator= (int32 InOther);
+	CORE_API operator int32() const;
+};
+/** In the editor, this is set to the specific world context PIEInstance that is being currently processed */
+extern CORE_API FPlayInEditorID GPlayInEditorID;
 
 /** Whether or not PIE was attempting to play from PlayerStart */
 UE_DEPRECATED(4.25, "This variable is no longer set. Use !GEditor->GetPlayInEditorSessionInfo()->OriginalRequestParams.HasPlayWorldPlacement() instead.")
@@ -635,7 +640,7 @@ protected:
 	CORE_API FTaskTagScope(bool InTagOnlyIfNone, ETaskTag InTag);
 
 public:
-	CORE_API FTaskTagScope(ETaskTag InTag = ETaskTag::ENone) : FTaskTagScope(false, InTag)
+	FTaskTagScope(ETaskTag InTag = ETaskTag::ENone) : FTaskTagScope(false, InTag)
 	{
 
 	}
@@ -656,7 +661,7 @@ public:
 class FOptionalTaskTagScope : public FTaskTagScope
 {
 public:
-	CORE_API FOptionalTaskTagScope(ETaskTag InTag = ETaskTag::ENone) : FTaskTagScope(true, InTag)
+	FOptionalTaskTagScope(ETaskTag InTag = ETaskTag::ENone) : FTaskTagScope(true, InTag)
 	{
 
 	}
@@ -761,12 +766,12 @@ extern CORE_API FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers;
 namespace UE::CoreUObject::Private
 {
 	/** Array to help visualize object paths in the debugger */
-	struct FStoredObjectPath;
+	struct FStoredObjectPathDebug;
 	
 	/** Array to help visualize object handles in the debugger */
 	struct FObjectHandlePackageDebugData;
 }
-extern CORE_API UE::CoreUObject::Private::FStoredObjectPath* GCoreComplexObjectPathDebug;
+extern CORE_API UE::CoreUObject::Private::FStoredObjectPathDebug* GCoreComplexObjectPathDebug;
 extern CORE_API UE::CoreUObject::Private::FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug;
 
 /** @return True if running cook-on-the-fly. */

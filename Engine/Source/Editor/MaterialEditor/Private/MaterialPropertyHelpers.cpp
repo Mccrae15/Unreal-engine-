@@ -544,6 +544,12 @@ ECheckBoxState FMaterialPropertyHelpers::IsOverriddenExpressionCheckbox(UDEditor
 
 void FMaterialPropertyHelpers::OnOverrideParameter(bool NewValue, class UDEditorParameterValue* Parameter, UMaterialEditorInstanceConstant* MaterialEditorInstance)
 {
+	// If the material instance disallows the creation of new shader permutations, prevent overriding the static parameter.
+	if (NewValue && Parameter->IsStaticParameter() && MaterialEditorInstance->SourceInstance->bDisallowStaticParameterPermutations)
+	{
+		return;
+	}
+
 	const FScopedTransaction Transaction( LOCTEXT( "OverrideParameter", "Override Parameter" ) );
 	Parameter->Modify();
 	Parameter->bOverride = NewValue;
@@ -564,7 +570,13 @@ FText FMaterialPropertyHelpers::GetParameterTooltip(UDEditorParameterValue* Para
 {
 	const FText AssetPath = FText::FromString(Parameter->AssetPath);
 	FText TooltipText;
-	if (!Parameter->Description.IsEmpty())
+
+	// If the material instance disallows the creation of new shader permutations, prevent overriding the static parameter.
+	if (Parameter->IsStaticParameter() && static_cast<UMaterialEditorInstanceConstant*>(MaterialEditorInstance)->SourceInstance->bDisallowStaticParameterPermutations)
+	{
+		return FText::FromString(TEXT("This material instance parent restricts the creation of new shader permutations. Overriding this parameter would result in the generation of additional shader permutations."));
+	}
+	else if (!Parameter->Description.IsEmpty())
 	{
 		TooltipText = FText::Format(LOCTEXT("ParameterInfoDescAndLocation", "{0} \nFound in: {1}"), FText::FromString(Parameter->Description), AssetPath);
 	}

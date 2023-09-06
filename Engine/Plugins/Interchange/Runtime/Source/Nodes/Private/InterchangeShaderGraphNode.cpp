@@ -7,8 +7,9 @@
 
 const TCHAR* UInterchangeShaderPortsAPI::InputPrefix = TEXT("Inputs");
 const TCHAR* UInterchangeShaderPortsAPI::InputSeparator = TEXT(":");
+const TCHAR* UInterchangeShaderPortsAPI::OutputByIndex = TEXT("__ByIndex__");
 
-FName UInterchangeShaderPortsAPI::MakeInputConnectionKey(const FString& InputName)
+FString UInterchangeShaderPortsAPI::MakeInputConnectionKey(const FString& InputName)
 {
 	TStringBuilder<128> StringBuilder;
 	StringBuilder.Append(InputPrefix);
@@ -17,10 +18,10 @@ FName UInterchangeShaderPortsAPI::MakeInputConnectionKey(const FString& InputNam
 	StringBuilder.Append(InputSeparator);
 	StringBuilder.Append(TEXT("Connect"));
 
-	return FName(StringBuilder.ToString());
+	return StringBuilder.ToString();
 }
 
-FName UInterchangeShaderPortsAPI::MakeInputValueKey(const FString& InputName)
+FString UInterchangeShaderPortsAPI::MakeInputValueKey(const FString& InputName)
 {
 	TStringBuilder<128> StringBuilder;
 	StringBuilder.Append(InputPrefix);
@@ -29,7 +30,7 @@ FName UInterchangeShaderPortsAPI::MakeInputValueKey(const FString& InputName)
 	StringBuilder.Append(InputSeparator);
 	StringBuilder.Append(TEXT("Value"));
 	
-	return FName(StringBuilder.ToString());
+	return StringBuilder.ToString();
 }
 
 FString UInterchangeShaderPortsAPI::MakeInputName(const FString& InputKey)
@@ -87,7 +88,7 @@ bool UInterchangeShaderPortsAPI::ConnectDefaultOuputToInput(UInterchangeBaseNode
 	return InterchangeNode->AddStringAttribute(MakeInputConnectionKey(InputName), ExpressionUid);
 }
 
-bool UInterchangeShaderPortsAPI::ConnectOuputToInput(UInterchangeBaseNode* InterchangeNode, const FString& InputName, const FString& ExpressionUid, const FString& OutputName)
+bool UInterchangeShaderPortsAPI::ConnectOuputToInputByName(UInterchangeBaseNode* InterchangeNode, const FString& InputName, const FString& ExpressionUid, const FString& OutputName)
 {
 	if (OutputName.IsEmpty())
 	{
@@ -97,6 +98,18 @@ bool UInterchangeShaderPortsAPI::ConnectOuputToInput(UInterchangeBaseNode* Inter
 	{
 		return InterchangeNode->AddStringAttribute(MakeInputConnectionKey(InputName), ExpressionUid + InputSeparator + OutputName);
 	}
+}
+
+bool UInterchangeShaderPortsAPI::ConnectOuputToInputByIndex(UInterchangeBaseNode* InterchangeNode, const FString& InputName, const FString& ExpressionUid, int32 OutputIndex)
+{
+	TStringBuilder<128> StringBuilder;
+	StringBuilder.Append(ExpressionUid);
+	StringBuilder.Append(InputSeparator);
+	StringBuilder.Append(OutputByIndex);
+	StringBuilder.Append(InputSeparator);
+	StringBuilder.Append(FString::FromInt(OutputIndex));
+
+	return InterchangeNode->AddStringAttribute(MakeInputConnectionKey(InputName), StringBuilder.ToString());
 }
 
 UE::Interchange::EAttributeTypes UInterchangeShaderPortsAPI::GetInputType(const UInterchangeBaseNode* InterchangeNode, const FString& InputName)
@@ -113,6 +126,21 @@ bool UInterchangeShaderPortsAPI::GetInputConnection(const UInterchangeBaseNode* 
 	}
 
 	return false;
+}
+
+int32 UInterchangeShaderPortsAPI::GetOutputIndexFromName(const FString& OutputName)
+{
+	if (OutputName.StartsWith(OutputByIndex))
+	{
+		FString OutputIndex;
+		FString Discard;
+
+		OutputName.Split(InputSeparator, &Discard, &OutputIndex, ESearchCase::IgnoreCase, ESearchDir::FromStart);
+
+		return FCString::Atoi(*OutputIndex);
+	}
+
+	return INDEX_NONE;
 }
 
 FString UInterchangeShaderNode::MakeNodeUid(const FStringView NodeName, const FStringView ParentNodeUid)
@@ -197,6 +225,16 @@ bool UInterchangeShaderGraphNode::SetCustomTwoSided(const bool& AttributeValue)
 	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(TwoSided, bool);
 }
 
+bool UInterchangeShaderGraphNode::GetCustomTwoSidedTransmission(bool& AttributeValue) const
+{
+	IMPLEMENT_NODE_ATTRIBUTE_GETTER(TwoSidedTransmission, bool);
+}
+
+bool UInterchangeShaderGraphNode::SetCustomTwoSidedTransmission(const bool& AttributeValue)
+{
+	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(TwoSidedTransmission, bool);
+}
+
 bool UInterchangeShaderGraphNode::GetCustomOpacityMaskClipValue(float& AttributeValue) const
 {
 	IMPLEMENT_NODE_ATTRIBUTE_GETTER(OpacityMaskClipValue, float);
@@ -217,6 +255,15 @@ bool UInterchangeShaderGraphNode::SetCustomIsAShaderFunction(const bool& Attribu
 	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(IsAShaderFunction, bool);
 }
 
+bool UInterchangeShaderGraphNode::GetCustomScreenSpaceReflections(bool& AttributeValue) const
+{
+	IMPLEMENT_NODE_ATTRIBUTE_GETTER(ScreenSpaceReflections, bool);
+}
+bool UInterchangeShaderGraphNode::SetCustomScreenSpaceReflections(const bool& AttributeValue)
+{
+	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(ScreenSpaceReflections, bool);
+}
+
 FString UInterchangeFunctionCallShaderNode::GetTypeName() const
 {
 	const FString TypeName = TEXT("FunctionCallShaderNode");
@@ -232,4 +279,3 @@ bool UInterchangeFunctionCallShaderNode::SetCustomMaterialFunction(const FString
 {
 	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(MaterialFunction, FString);
 }
-

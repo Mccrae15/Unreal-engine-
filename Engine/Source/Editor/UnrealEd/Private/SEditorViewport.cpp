@@ -24,6 +24,11 @@
 #include "GPUSkinCacheVisualizationMenuCommands.h"
 #include "GPUSkinCache.h"
 #include "Widgets/Colors/SComplexGradient.h"
+#include "Modules/ModuleManager.h"
+#include "ISettingsModule.h"
+#if WITH_DUMPGPU
+	#include "RenderGraph.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "EditorViewport"
 
@@ -374,6 +379,20 @@ void SEditorViewport::BindCommands()
 		FCanExecuteAction::CreateSP(this, &SEditorViewport::CanToggleInViewportContextMenu)
 	);
 
+	CommandListRef.MapAction(
+		Commands.ToggleOverrideViewportScreenPercentage,
+		FExecuteAction::CreateSP(this, &SEditorViewport::TogglePreviewingScreenPercentage),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SEditorViewport::IsPreviewingScreenPercentage));
+
+	CommandListRef.MapAction(
+		Commands.OpenEditorPerformanceProjectSettings,
+		FExecuteAction::CreateSP(this, &SEditorViewport::OnOpenViewportPerformanceProjectSettings));
+
+	CommandListRef.MapAction(
+		Commands.OpenEditorPerformanceEditorPreferences,
+		FExecuteAction::CreateSP(this, &SEditorViewport::OnOpenViewportPerformanceEditorPreferences));
+
 	// Simple macro for binding many view mode UI commands
 
 #define MAP_VIEWMODEPARAM_ACTION( ViewModeCommand, ViewModeParam ) \
@@ -582,10 +601,6 @@ bool SEditorViewport::IsRealtime() const
 
 bool SEditorViewport::IsVisible() const
 {
-#if WITH_DUMPGPU
-	extern ENGINE_API uint32 GDumpGPU_FrameNumber;
-#endif
-
 	const float VisibilityTimeThreshold = .25f;
 	// The viewport is visible if we don't have a parent layout (likely a floating window) or this viewport is visible in the parent layout.
 	// Also, always render the viewport if DumpGPU is active, regardless of tick time threshold -- otherwise these don't show up due to lag
@@ -594,7 +609,7 @@ bool SEditorViewport::IsVisible() const
 		LastTickTime == 0.0	||	// Never been ticked
 		FPlatformTime::Seconds() - LastTickTime <= VisibilityTimeThreshold	// Ticked recently
 #if WITH_DUMPGPU
-		|| GDumpGPU_FrameNumber == GFrameNumber	// GPU dump in progress
+		|| FRDGBuilder::IsDumpingFrame()	// GPU dump in progress
 #endif		
 		;
 }
@@ -774,6 +789,26 @@ bool SEditorViewport::OnIsSurfaceSnapEnabled()
 	return GetDefault<ULevelEditorViewportSettings>()->SnapToSurface.bEnabled;
 }
 
+bool SEditorViewport::IsPreviewingScreenPercentage() const
+{
+	return Client->IsPreviewingScreenPercentage();
+}
+
+void SEditorViewport::TogglePreviewingScreenPercentage()
+{
+	Client->SetPreviewingScreenPercentage(!IsPreviewingScreenPercentage());
+}
+
+void SEditorViewport::OnOpenViewportPerformanceProjectSettings()
+{
+	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Project", "Editor", "EditorPerformanceProjectSettings");
+}
+
+void SEditorViewport::OnOpenViewportPerformanceEditorPreferences()
+{
+	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Editor", "General", "EditorPerformanceSettings");
+}
+
 EActiveTimerReturnType SEditorViewport::EnsureTick( double InCurrentTime, float InDeltaTime )
 {
 	// Keep the timer going if we're realtime or were invalidated this frame
@@ -839,7 +874,7 @@ EVisibility SEditorViewport::GetCurrentFeatureLevelPreviewTextVisibility() const
 {
 	if (Client->GetWorld())
 	{
-		return (Client->GetWorld()->FeatureLevel != GMaxRHIFeatureLevel) ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
+		return (Client->GetWorld()->GetFeatureLevel() != GMaxRHIFeatureLevel) ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
 	}
 	else
 	{
@@ -853,14 +888,14 @@ FText SEditorViewport::GetCurrentFeatureLevelPreviewText(bool bDrawOnlyLabel) co
 
 	if (bDrawOnlyLabel)
 	{
-		LabelName = LOCTEXT("FeatureLevelLabel", "Feature Level:");
+		LabelName = LOCTEXT("PreviewPlatformLabel", "Preview Platform:");
 	}
 	else
 	{
 		UWorld* World = Client->GetWorld();
 		if (World != nullptr)
 		{
-			ERHIFeatureLevel::Type TargetFeatureLevel = World->FeatureLevel;
+			ERHIFeatureLevel::Type TargetFeatureLevel = World->GetFeatureLevel();
 			EShaderPlatform ShaderPlatform = GetShaderPlatformHelper(TargetFeatureLevel);
 			const FText& PlatformText = FDataDrivenShaderPlatformInfo::GetFriendlyName(ShaderPlatform);
 			LabelName = FText::Format(LOCTEXT("WorldFeatureLevel", "{0}"), PlatformText);

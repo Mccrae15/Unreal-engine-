@@ -1,24 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
+
 namespace UnrealBuildTool.Rules
 {
     public class AIModule : ModuleRules
     {
         public AIModule(ReadOnlyTargetRules Target) : base(Target)
         {
-            PublicIncludePaths.AddRange(
-                new string[] {
-                    "Runtime/NavigationSystem/Public",
-                    "Runtime/AIModule/Public",
-                }
-                );
-
-            PrivateIncludePaths.AddRange(
-                new string[] {
-                    "Runtime/Engine/Private",
-                }
-                );
-
             PublicDependencyModuleNames.AddRange(
                 new string[] {
                     "Core",
@@ -35,12 +24,6 @@ namespace UnrealBuildTool.Rules
                     "RHI",
                     "RenderCore",
                 }
-                );
-
-            DynamicallyLoadedModuleNames.AddRange(
-                new string[] {
-					// ... add any modules that your module loads dynamically here ...
-				}
                 );
 
             if (Target.bBuildEditor == true)

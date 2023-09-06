@@ -13,14 +13,14 @@ struct FPropertyChangedEvent;
 /**
  * Streaming settings.
  */
-UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Streaming"))
-class ENGINE_API UStreamingSettings : public UDeveloperSettings
+UCLASS(config=Engine, defaultconfig, meta=(DisplayName="Streaming"), MinimalAPI)
+class UStreamingSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
 public:
 
-	UStreamingSettings();
+	ENGINE_API UStreamingSettings();
 
 protected:
 
@@ -116,7 +116,7 @@ protected:
 		uint32 EventDrivenLoaderEnabled : 1;
 
 	//~ Begin UObject Interface
-	virtual void PostInitProperties() override;
+	ENGINE_API virtual void PostInitProperties() override;
 
 	//~ End UObject Interface
 };
@@ -155,18 +155,20 @@ extern ENGINE_API int32 GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch;
 extern ENGINE_API int32 GLevelStreamingForceVerifyLevelsGotRemovedByGC;
 /** Whether to force routing actor initialize phase in its own frame. */
 extern ENGINE_API int32 GLevelStreamingForceRouteActorInitializeNextFrame;
+/** In a low memory situation, will kick off a 'soft' GC if the number of streaming levels pending purge meets or exceeds this count. */
+extern ENGINE_API int32 GLevelStreamingLowMemoryPendingPurgeCount;
 
 /**
 * Implements the settings for garbage collection.
 */
-UCLASS(config = Engine, defaultconfig, meta = (DisplayName = "Garbage Collection"))
-class ENGINE_API UGarbageCollectionSettings : public UDeveloperSettings
+UCLASS(config = Engine, defaultconfig, meta = (DisplayName = "Garbage Collection"), MinimalAPI)
+class UGarbageCollectionSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
 public:
 
-	UGarbageCollectionSettings();
+	ENGINE_API UGarbageCollectionSettings();
 
 protected:
 
@@ -211,28 +213,24 @@ protected:
 	uint32 ActorClusteringEnabled : 1;
 
 	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
-		ConsoleVariable = "gc.BlueprintClusteringEnabled", DisplayName = "Blueprint Clustering Enabled",
-		ToolTip = "Whether to allow Blueprint classes to create GC clusters."))
-	uint32 BlueprintClusteringEnabled : 1;
-
-	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
 		ConsoleVariable = "gc.UseDisregardForGCOnDedicatedServers", DisplayName = "Use DisregardForGC On Dedicated Servers",
 		ToolTip = "If false, DisregardForGC will be disabled for dedicated servers."))
 	uint32 UseDisregardForGCOnDedicatedServers : 1;
 
 	UPROPERTY(EditAnywhere, config, Category = Debug, meta = (
-		ConsoleVariable = "gc.VerifyGCObjectNames", DisplayName = "Verify FGCObject names",
-		ToolTip = "If true, the engine will verify if all FGCObject-derived classes define GetReferencerName() function overrides."))
-	uint32 VerifyGCObjectNames : 1;
-
-	UPROPERTY(EditAnywhere, config, Category = Debug, meta = (
 		ConsoleVariable = "gc.VerifyUObjectsAreNotFGCObjects", DisplayName = "Verify UObjects Are Not FGCObjects",
 		ToolTip = "If true, the engine will throw a warning when it detects a UObject-derived class which also derives from FGCObject or any of its members is derived from FGCObject."))
 	uint32 VerifyUObjectsAreNotFGCObjects : 1;
+
 	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
 		ConsoleVariable = "gc.PendingKillEnabled", DisplayName = "Pending Kill Enabled",
 		ToolTip = "If true, objects marked as PendingKill will be automatically nulled and destroyed by Garbage Collector."))
 	uint32 PendingKillEnabled : 1;
+
+	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
+		ConsoleVariable = "gc.DumpObjectCountsToLogWhenMaxObjectLimitExceeded", DisplayName = "Log UObject counts when UObject limit has been exceeded",
+		ToolTip = "If true, the engine will dump UObject counts when maximum number of UObjects limit has been exceeded."))
+	uint32 DumpObjectCountsToLogWhenMaxObjectLimitExceeded : 1;
 
 	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
 		ConsoleVariable = "gc.MinGCClusterSize", DisplayName = "Minimum GC Cluster size",
@@ -265,10 +263,10 @@ protected:
 	int32 MaxObjectsInEditor;
 
 	//~ Begin UObject Interface
-	virtual void PostInitProperties() override;
+	ENGINE_API virtual void PostInitProperties() override;
 
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 	//~ End UObject Interface
 };

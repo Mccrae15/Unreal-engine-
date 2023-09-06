@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-
+#include "NiagaraCompilationTypes.h"
 #include "NiagaraScript.h"
 
 #include "NiagaraAsyncCompile.generated.h"
@@ -66,7 +65,6 @@ public:
 	uint32 TaskHandle = 0;
 
 	double StartTaskTime = 0;
-	double DDCFetchTime = 0;
 	double StartCompileTime = 0;
 	bool bWaitForCompileJob = false;
 	bool bUsedShaderCompilerWorker = false;
@@ -80,6 +78,7 @@ public:
 	FEmitterCompiledScriptPair ScriptPair;
 	TArray<FNiagaraVariable> EncounteredExposedVars;
 	TArray<FNiagaraVariable> BakedRapidIterationParameters;
+	FNiagaraScriptCompileMetrics CompileMetrics;
 
 	ENiagaraCompilationState CurrentState;
 
@@ -114,3 +113,41 @@ public:
 	bool CompilationIdMatchesRequest() const;
 #endif
 };
+
+class FNiagaraActiveCompilationDefault : public FNiagaraActiveCompilation
+{
+public:
+	virtual ~FNiagaraActiveCompilationDefault();
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("NiagaraActiveCompilationDefault");
+	}
+
+	virtual bool Launch(const FNiagaraCompilationOptions& Options) override;
+	virtual void Abort() override;
+	virtual bool QueryCompileComplete(const FNiagaraQueryCompilationOptions& Options) override;
+	virtual bool ValidateConsistentResults(const FNiagaraQueryCompilationOptions& Options) const override;
+	virtual void Apply(const FNiagaraQueryCompilationOptions& Options) override;
+	virtual void ReportResults(const FNiagaraQueryCompilationOptions& Options) const override;
+	virtual bool BlocksBeginCacheForCooked() const override;
+
+	double StartTime = 0.0;
+
+	TSet<TObjectPtr<UObject>> RootObjects;
+
+	using FAsyncTaskPtr = TSharedPtr<FNiagaraAsyncCompileTask, ESPMode::ThreadSafe>;
+
+	FAsyncTaskPtr* FindTask(const UNiagaraScript* Script);
+	const FAsyncTaskPtr* FindTask(const UNiagaraScript* Script) const;
+	void Reset();
+
+	bool bAllScriptsSynchronized = false;
+	bool bEvaluateParametersPending = false;
+
+	TArray<FAsyncTaskPtr> Tasks;
+
+private:
+	bool bDDCGetCompleted = false;
+};
+

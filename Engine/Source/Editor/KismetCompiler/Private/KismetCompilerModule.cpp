@@ -46,9 +46,21 @@ public:
 	virtual void RecoverCorruptedBlueprint(class UBlueprint* Blueprint) override;
 	virtual void RemoveBlueprintGeneratedClasses(class UBlueprint* Blueprint) override;
 	virtual TArray<IBlueprintCompiler*>& GetCompilers() override { return Compilers; }
+	virtual void OverrideBPTypeForClass(UClass* Class, TSubclassOf<UBlueprint> BlueprintType) override;
+	virtual void OverrideBPTypeForClassInEditor(UClass* Class, TSubclassOf<UBlueprint> BlueprintType) override;
+	virtual void OverrideBPGCTypeForBPType(TSubclassOf<UBlueprint> BlueprintType, TSubclassOf<UBlueprintGeneratedClass> BPGCType) override;
+	virtual void ValidateBPAndClassType(UBlueprint* BP, FCompilerResultsLog& OutResults) override;
 	virtual void GetBlueprintTypesForClass(UClass* ParentClass, UClass*& OutBlueprintClass, UClass*& OutBlueprintGeneratedClass) const override;
 	// End implementation
+
+	static TSubclassOf<UBlueprint> FindBlueprintType(UClass* ForClass, const TMap<UClass*, TSubclassOf<UBlueprint>>& FromMap);
 private:
+	// these are all pointers to native reflection data, so don't require gc visibility
+	// this will frustrate hotreload, though - hot reload of objects used as keys or values
+	// doesn't really work anyway:
+	TMap<UClass*, TSubclassOf<UBlueprint>> ClassToBPType;
+	TMap<UClass*, TSubclassOf<UBlueprint>> ClassToEditorBPType;
+	TMap<TSubclassOf<UBlueprint>, TSubclassOf<UBlueprintGeneratedClass>> BPTypeToBPGCType;
 
 	TArray<IBlueprintCompiler*> Compilers;
 };
@@ -181,22 +193,186 @@ void FKismet2CompilerModule::RemoveBlueprintGeneratedClasses(class UBlueprint* B
 {
 	if (Blueprint != NULL)
 	{
+		// Order unfortunately matters, as we want to allow UBlueprintGeneratedClass::GetAuthoritativeClass to function
+		// correctly for as long as possible:
+		if (Blueprint->SkeletonGeneratedClass != NULL)
+		{
+			FKismetCompilerUtilities::ConsignToOblivion(Blueprint->SkeletonGeneratedClass, Blueprint->bIsRegeneratingOnLoad);
+			Blueprint->SkeletonGeneratedClass = NULL;
+		}
+
 		if (Blueprint->GeneratedClass != NULL)
 		{
 			FKismetCompilerUtilities::ConsignToOblivion(Blueprint->GeneratedClass, Blueprint->bIsRegeneratingOnLoad);
 			Blueprint->GeneratedClass = NULL;
 		}
+	}
+}
 
-		if (Blueprint->SkeletonGeneratedClass != NULL)
+void FKismet2CompilerModule::OverrideBPTypeForClass(UClass* Class, TSubclassOf<UBlueprint> BlueprintType)
+{
+	check(Class && BlueprintType);
+	#if DO_CHECK
+	if (const TSubclassOf<UBlueprint>* ExistingBlueprintType = ClassToBPType.Find(Class))
+	{
+		ensureMsgf(false,
+			TEXT("Ambiguous mapping attempting to add %s to %s when mapping to %s exists"),
+			*(Class->GetFullName()), *(BlueprintType.Get()->GetFullName()),
+			*(ExistingBlueprintType->Get()->GetFullName())
+		);
+	}
+	#endif // DO_CHECK
+
+	ClassToBPType.Add(Class, BlueprintType);
+}
+
+void FKismet2CompilerModule::OverrideBPTypeForClassInEditor(UClass* Class, TSubclassOf<UBlueprint> BlueprintType)
+{
+	check(Class && BlueprintType);
+#if DO_CHECK
+	if (const TSubclassOf<UBlueprint>* ExistingBlueprintType = ClassToEditorBPType.Find(Class))
+	{
+		ensureMsgf(false,
+			TEXT("Ambiguous mapping attempting to add %s to %s when mapping to %s exists"),
+			*(Class->GetFullName()), *(BlueprintType.Get()->GetFullName()),
+			*(ExistingBlueprintType->Get()->GetFullName())
+		);
+	}
+#endif // DO_CHECK
+
+	ClassToEditorBPType.Add(Class, BlueprintType);
+}
+
+void FKismet2CompilerModule::OverrideBPGCTypeForBPType(TSubclassOf<UBlueprint> BlueprintType, TSubclassOf<UBlueprintGeneratedClass> BPGCType)
+{
+	check(BlueprintType && BPGCType);
+#if DO_CHECK
+	if (const TSubclassOf<UBlueprintGeneratedClass>* ExistingBlueprintType = BPTypeToBPGCType.Find(BlueprintType))
+	{
+		ensureMsgf(false,
+			TEXT("Ambiguous mapping attempting to add %s to %s when mapping to %s exists"),
+			*(BlueprintType.Get()->GetFullName()), *(BPGCType.Get()->GetFullName()),
+			*(ExistingBlueprintType->Get()->GetFullName())
+		);
+	}
+#endif // DO_CHECK
+
+	BPTypeToBPGCType.Add(BlueprintType, BPGCType);
+}
+
+void FKismet2CompilerModule::ValidateBPAndClassType(UBlueprint* BP, FCompilerResultsLog& OutResults)
+{
+	// validation can become a warning as this matures, for now just note:
+
+	if (BP->BlueprintType == BPTYPE_MacroLibrary)
+	{
+		// macros will contain macros of all sorts of UClasses, they only have a notional
+		// type for scoping purposes, it is not useful to inspect their GeneratedClass:
+		return;
+	}
+
+	UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BP->GeneratedClass);
+	if(!BPGC)
+	{
+		return;
+	}
+
+	// validate according to ClassToBPType:
+	{
+		TSubclassOf<UBlueprint> ExpectedType = FindBlueprintType(BPGC, ClassToBPType);
+		if(!BP->GetClass()->IsChildOf(ExpectedType))
 		{
-			FKismetCompilerUtilities::ConsignToOblivion(Blueprint->SkeletonGeneratedClass, Blueprint->bIsRegeneratingOnLoad);
-			Blueprint->SkeletonGeneratedClass = NULL;
+			OutResults.Note(
+				*(FText::Format(
+					LOCTEXT("BPGCTypeMismatch_Blueprint", "@@ has an incorrect BP type - this type of blueprint ({0}) needs to be converted."),
+					FText::FromString(BP->GetFullName())).ToString()),
+				BP
+			);
+		}
+	}
+
+	// validate according to ClassToEditorBPType:
+	if (::IsEditorOnlyObject(BP->GetOutermost()))
+	{
+		TSubclassOf<UBlueprint> ExpectedType = FindBlueprintType(BPGC, ClassToEditorBPType);
+		if (!BP->GetClass()->IsChildOf(ExpectedType))
+		{
+			OutResults.Note(
+				*(FText::Format(
+					LOCTEXT("BPGCTypeMismatch_EditorOnlyBlueprint", "@@ has an incorrect editor BP type - this type of blueprint ({0}) needs to be converted."),
+					FText::FromString(BP->GetFullName())).ToString()),
+				BP
+			);
+		}
+	}
+
+	// validate according to BPTypeToBPGCType:
+	for (TPair<TSubclassOf<UBlueprint>, TSubclassOf<UBlueprintGeneratedClass>> BPTypeToBPGCTypeIter : BPTypeToBPGCType)
+	{
+		// if there's a BP type implied by the BPGC we want it to match the provided BP:
+		if(BP->GetClass()->IsChildOf(BPTypeToBPGCTypeIter.Key))
+		{
+			if (!BPGC->GetClass()->IsChildOf(BPTypeToBPGCTypeIter.Value))
+			{
+				OutResults.Note(
+					*(FText::Format(
+						LOCTEXT("BPGCTypeMismatch_GeneratedClass", "@@ has an incorrect BPGC type - this type of blueprint ({0}) needs to sanitize its class."),
+						FText::FromString(BP->GetFullName())).ToString()),
+					BP
+				);
+			}
+		}
+
+		// if there's a class implied by the BP type we want it to match the provided BPGC:
+		if(BPGC->GetClass()->IsChildOf(BPTypeToBPGCTypeIter.Value))
+		{
+			if (!BP->GetClass()->IsChildOf(BPTypeToBPGCTypeIter.Key))
+			{
+				OutResults.Note(
+					*(FText::Format(
+						LOCTEXT("BPGCTypeMismatch_ClassGeneratedBy", "@@ has an incorrect BP type - this blueprint ({0}) needs to be converted to a different type of blueprint."),
+						FText::FromString(BP->GetFullName())).ToString()),
+					BP
+				);
+			}
 		}
 	}
 }
 
 void FKismet2CompilerModule::GetBlueprintTypesForClass(UClass* ParentClass, UClass*& OutBlueprintClass, UClass*& OutBlueprintGeneratedClass) const
 {
+	const TMap<TSubclassOf<UBlueprint>, TSubclassOf<UBlueprintGeneratedClass>>& BPTypeToBPGCTypeForLookup = BPTypeToBPGCType;
+	const auto GetBPGCTypeForBPType = [&BPTypeToBPGCTypeForLookup](TSubclassOf<UBlueprint> BPType) -> TSubclassOf<UBlueprintGeneratedClass>
+	{
+		if(const TSubclassOf<UBlueprintGeneratedClass>* BPGCType = BPTypeToBPGCTypeForLookup.Find(BPType))
+		{
+			return *BPGCType;
+		}
+		return UBlueprintGeneratedClass::StaticClass();
+	};
+
+	// honor ClassToEditorBPType
+	if(::IsEditorOnlyObject(ParentClass))
+	{
+		TSubclassOf<UBlueprint> BlueprintType = FindBlueprintType(ParentClass, ClassToEditorBPType);
+		if(BlueprintType != UBlueprint::StaticClass())
+		{
+			OutBlueprintGeneratedClass = GetBPGCTypeForBPType(BlueprintType);
+			OutBlueprintClass = BlueprintType;
+			return;
+		}
+	}
+
+	// no editor mapping found, fall back to ClassToBPType:
+	TSubclassOf<UBlueprint> BlueprintType = FindBlueprintType(ParentClass, ClassToBPType);
+	if (BlueprintType != UBlueprint::StaticClass())
+	{
+		OutBlueprintGeneratedClass = GetBPGCTypeForBPType(BlueprintType);
+		OutBlueprintClass = BlueprintType;
+		return;
+	}
+
+	// legacy support for IBlueprintCompiler:
 	for ( IBlueprintCompiler* Compiler : Compilers )
 	{
 		if ( Compiler->GetBlueprintTypesForClass(ParentClass, OutBlueprintClass, OutBlueprintGeneratedClass) )
@@ -207,6 +383,20 @@ void FKismet2CompilerModule::GetBlueprintTypesForClass(UClass* ParentClass, UCla
 
 	OutBlueprintClass = UBlueprint::StaticClass();
 	OutBlueprintGeneratedClass = UBlueprintGeneratedClass::StaticClass();
+}
+
+TSubclassOf<UBlueprint> FKismet2CompilerModule::FindBlueprintType(UClass* ForClass, const TMap<UClass*, TSubclassOf<UBlueprint>>& FromMap)
+{
+	UClass* Iter = ForClass;
+	while (Iter)
+	{
+		if (const TSubclassOf<UBlueprint>* BPType = FromMap.Find(Iter))
+		{
+			return *BPType;
+		}
+		Iter = Iter->GetSuperClass();
+	}
+	return UBlueprint::StaticClass();
 }
 
 #undef LOCTEXT_NAMESPACE

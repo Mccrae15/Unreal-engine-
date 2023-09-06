@@ -9,12 +9,8 @@ public class AnimationBlueprintLibrary : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"BlueprintGraph",
 				"Core",
 				"CoreUObject",
-				"Kismet",
-				"AnimGraph",
-				"UnrealEd",
 				"TimeManagement"
 			}
 		);
@@ -23,7 +19,6 @@ public class AnimationBlueprintLibrary : ModuleRules
 			new string[]
 			{
 				"AnimGraph",
-				"KismetCompiler",
 				"Engine",
 				"BlueprintGraph",
 				"UnrealEd",

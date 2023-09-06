@@ -8,6 +8,7 @@
 
 #include "CoreMinimal.h"
 #include "RHI.h"
+#include "RHICommandList.h"
 #include "RenderResource.h"
 #include "Containers/DynamicRHIResourceArray.h"
 
@@ -24,7 +25,7 @@ public:
 	void CacheOptimize();
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	// Serialization.
 	friend FArchive& operator<<(FArchive& Ar,FRawIndexBuffer& I);
@@ -58,7 +59,7 @@ public:
 	void ForceUse32Bit(bool bIn32Bit) { b32Bit = bIn32Bit; }
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	// Serialization.
 	friend FArchive& operator<<(FArchive& Ar,FRawIndexBuffer16or32& I);
@@ -152,7 +153,7 @@ public:
 	 * @param	At	The index of the index to set
 	 * @param	NewIndexValue	The index value
 	 */
-	ENGINE_API inline void SetIndex( const uint32 At, const uint32 NewIndexValue )
+	inline void SetIndex( const uint32 At, const uint32 NewIndexValue )
 	{
 		check( At >= 0 && At < (uint32)IndexStorage.Num() );
 
@@ -191,7 +192,7 @@ public:
 	ENGINE_API void AppendIndices( const uint32* IndicesToAppend, const uint32 NumIndicesToAppend );
 
 	/** @return Gets a specific index value */
-	ENGINE_API inline uint32 GetIndex( const uint32 At ) const
+	inline uint32 GetIndex( const uint32 At ) const
 	{
 		check( At >= 0 && At < (uint32)IndexStorage.Num() );
 		uint32 IndexValue;
@@ -278,9 +279,6 @@ public:
 	FBufferRHIRef CreateRHIBuffer_RenderThread();
 	FBufferRHIRef CreateRHIBuffer_Async();
 
-	/** Copy everything, keeping reference to the same RHI resources. */
-	void CopyRHIForStreaming(const FRawStaticIndexBuffer& Other, bool InAllowCPUAccess);
-
 	/** Take over ownership of IntermediateBuffer */
 	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher);
 
@@ -292,7 +290,7 @@ public:
 	 * @param	Ar				Archive to serialize with
 	 * @param	bNeedsCPUAccess	Whether the elements need to be accessed by the CPU
 	 */
-	void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
+	ENGINE_API void Serialize(FArchive& Ar, bool bNeedsCPUAccess);
 
 	/** Serialize only meta data (e.g. number of indices) but not the actual index data */
 	void SerializeMetaData(FArchive& Ar);
@@ -306,7 +304,7 @@ public:
     void Discard();
     
 	// FRenderResource interface.
-	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	inline bool Is32Bit() const { return b32Bit; }
 
@@ -398,7 +396,7 @@ public:
 	/**
 	* Create the index buffer RHI resource and initialize its data
 	*/
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		const bool bHadIndexData = Num() > 0;
 		IndexBufferRHI = CreateRHIBuffer_RenderThread();
@@ -406,7 +404,7 @@ public:
 		if (IndexBufferRHI && IsSRVNeeded(Indices.GetAllowCPUAccess()) && bHadIndexData)
 		{
 			// If the index buffer is a placeholder we still need to create a FRHIShaderResourceView.
-			SRVValue = RHICreateShaderResourceView(FShaderResourceViewInitializer(IndexBufferRHI->GetSize() > 0 ? IndexBufferRHI : nullptr, sizeof(INDEX_TYPE) == 2 ? PF_R16_UINT : PF_R32_UINT));
+			SRVValue = RHICmdList.CreateShaderResourceView(IndexBufferRHI, sizeof(INDEX_TYPE), sizeof(INDEX_TYPE) == 2 ? PF_R16_UINT : PF_R32_UINT);
 		}
 	}
 	

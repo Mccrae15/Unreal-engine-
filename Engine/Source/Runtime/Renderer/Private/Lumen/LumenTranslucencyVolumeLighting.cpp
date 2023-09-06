@@ -294,7 +294,7 @@ namespace LumenTranslucencyVolumeRadianceCache
 		Parameters.RadianceProbeClipmapResolution = GetClipmapGridResolution();
 		Parameters.ProbeAtlasResolutionInProbes = FIntPoint(GTranslucencyVolumeRadianceCacheProbeAtlasResolutionInProbes, GTranslucencyVolumeRadianceCacheProbeAtlasResolutionInProbes);
 		Parameters.NumRadianceProbeClipmaps = GetNumClipmaps(LumenTranslucencyVolume::GetEndDistanceFromCamera(View));
-		Parameters.RadianceProbeResolution = GetProbeResolution();
+		Parameters.RadianceProbeResolution = FMath::Max(GetProbeResolution(), LumenRadianceCache::MinRadianceProbeResolution);
 		Parameters.FinalProbeResolution = GetFinalProbeResolution();
 		Parameters.FinalRadianceAtlasMaxMip = GetNumMipmaps() - 1;
 		const float TraceBudgetScale = View.Family->bCurrentlyBeingEdited ? 10.0f : 1.0f;
@@ -440,8 +440,9 @@ class FTranslucencyVolumeTraceVoxelsCS : public FGlobalShader
 	class FDynamicSkyLight : SHADER_PERMUTATION_BOOL("ENABLE_DYNAMIC_SKY_LIGHT");
 	class FRadianceCache : SHADER_PERMUTATION_BOOL("USE_RADIANCE_CACHE");
 	class FTraceFromVolume : SHADER_PERMUTATION_BOOL("TRACE_FROM_VOLUME");
+	class FSimpleCoverageBasedExpand : SHADER_PERMUTATION_BOOL("GLOBALSDF_SIMPLE_COVERAGE_BASED_EXPAND");
 
-	using FPermutationDomain = TShaderPermutationDomain<FDynamicSkyLight, FRadianceCache, FTraceFromVolume>;
+	using FPermutationDomain = TShaderPermutationDomain<FDynamicSkyLight, FRadianceCache, FTraceFromVolume, FSimpleCoverageBasedExpand>;
 
 	static FIntVector GetGroupSize()
 	{
@@ -450,6 +451,13 @@ class FTranslucencyVolumeTraceVoxelsCS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		const FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		if (!PermutationVector.Get<FTraceFromVolume>() && PermutationVector.Get<FSimpleCoverageBasedExpand>())
+		{
+			return false;
+		}
+
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
@@ -457,7 +465,6 @@ class FTranslucencyVolumeTraceVoxelsCS : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize().X);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
 };
@@ -632,6 +639,7 @@ void TraceVoxelsTranslucencyVolume(
 	PermutationVector.Set<FTranslucencyVolumeTraceVoxelsCS::FDynamicSkyLight>(bDynamicSkyLight);
 	PermutationVector.Set<FTranslucencyVolumeTraceVoxelsCS::FRadianceCache>(RadianceCacheParameters.RadianceProbeIndirectionTexture != nullptr);
 	PermutationVector.Set<FTranslucencyVolumeTraceVoxelsCS::FTraceFromVolume>(bTraceFromVolume);
+	PermutationVector.Set<FTranslucencyVolumeTraceVoxelsCS::FSimpleCoverageBasedExpand>(bTraceFromVolume && Lumen::UseGlobalSDFSimpleCoverageBasedExpand());
 	auto ComputeShader = View.ShaderMap->GetShader<FTranslucencyVolumeTraceVoxelsCS>(PermutationVector);
 
 	const FIntVector GroupSize = FComputeShaderUtils::GetGroupCount(VolumeTraceRadiance->Desc.GetSize(), FTranslucencyVolumeTraceVoxelsCS::GetGroupSize());
@@ -889,15 +897,15 @@ void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 				View.ViewState->Lumen.TranslucencyVolume1 = GraphBuilder.ConvertToExternalTexture(TranslucencyGIVolumeNewHistory1);
 			}
 
-			View.LumenTranslucencyGIVolume.Texture0 = TranslucencyGIVolume0;
-			View.LumenTranslucencyGIVolume.Texture1 = TranslucencyGIVolume1;
+			View.GetOwnLumenTranslucencyGIVolume().Texture0 = TranslucencyGIVolume0;
+			View.GetOwnLumenTranslucencyGIVolume().Texture1 = TranslucencyGIVolume1;
 
-			View.LumenTranslucencyGIVolume.HistoryTexture0 = TranslucencyGIVolumeNewHistory0;
-			View.LumenTranslucencyGIVolume.HistoryTexture1 = TranslucencyGIVolumeNewHistory1;
+			View.GetOwnLumenTranslucencyGIVolume().HistoryTexture0 = TranslucencyGIVolumeNewHistory0;
+			View.GetOwnLumenTranslucencyGIVolume().HistoryTexture1 = TranslucencyGIVolumeNewHistory1;
 
-			View.LumenTranslucencyGIVolume.GridZParams = (FVector)VolumeParameters.TranslucencyGIGridZParams;
-			View.LumenTranslucencyGIVolume.GridPixelSizeShift = FMath::FloorLog2(GTranslucencyFroxelGridPixelSize);
-			View.LumenTranslucencyGIVolume.GridSize = TranslucencyGridSize;
+			View.GetOwnLumenTranslucencyGIVolume().GridZParams = (FVector)VolumeParameters.TranslucencyGIGridZParams;
+			View.GetOwnLumenTranslucencyGIVolume().GridPixelSizeShift = FMath::FloorLog2(GTranslucencyFroxelGridPixelSize);
+			View.GetOwnLumenTranslucencyGIVolume().GridSize = TranslucencyGridSize;
 		}
 	}
 }

@@ -14,11 +14,16 @@
 
 class UInterchangePipelineBase;
 
-UCLASS(BlueprintType)
-class INTERCHANGEENGINE_API UInterchangeAssetImportData : public UAssetImportData
+UCLASS(BlueprintType, MinimalAPI)
+class UInterchangeAssetImportData : public UAssetImportData
 {
 	GENERATED_BODY()
 public:
+	// Begin UObject interface
+	virtual void PostLoad() override;
+	virtual void Serialize(FArchive& Ar) override;
+	// End UObject interface
+
 
 	/**
 	 * Return the first filename stored in this data. The resulting filename will be absolute (ie, not relative to the asset).
@@ -69,11 +74,14 @@ public:
 	 */
 	virtual void AppendAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) override
 	{
-		if (NodeContainer->IsNodeUidValid(NodeUniqueID))
+		if(const UInterchangeBaseNodeContainer* NodeContainerTmp = GetNodeContainer())
 		{
-			if (const UInterchangeBaseNode* Node = NodeContainer->GetNode(NodeUniqueID))
+			if (NodeContainerTmp->IsNodeUidValid(NodeUniqueID))
 			{
-				Node->AppendAssetRegistryTags(OutTags);
+				if (const UInterchangeBaseNode* Node = GetStoredNode(NodeUniqueID))
+				{
+					Node->AppendAssetRegistryTags(OutTags);
+				}
 			}
 		}
 		Super::AppendAssetRegistryTags(OutTags);
@@ -81,15 +89,74 @@ public:
 #endif
 #endif
 
-	/** The graph that was use to create this asset */
-	UPROPERTY(VisibleAnywhere, Category = "Interchange | AssetImportData")
-	TObjectPtr<UInterchangeBaseNodeContainer> NodeContainer;
+	/** On a level import, set to the UInterchangeSceneImportAsset created during the import */
+	UPROPERTY(EditAnywhere, Category = "Interchange | AssetImportData")
+	FSoftObjectPath SceneImportAsset;
+
+	/** Returns a pointer to the UInterchangeAssetImportData referred by the input object if applicable */
+	static UInterchangeAssetImportData* GetFromObject(UObject* Object)
+	{
+		if (Object)
+		{
+			TArray<UObject*> SubObjects;
+			GetObjectsWithOuter(Object, SubObjects);
+			for (UObject* SubObject : SubObjects)
+			{
+				if (UInterchangeAssetImportData* AssetImportData = Cast<UInterchangeAssetImportData>(SubObject))
+				{
+					return AssetImportData;
+				}
+			}
+		}
+
+		return nullptr;
+	}
 
 	/** The Node UID pass to the factory that exist in the graph that was use to create this asset */
 	UPROPERTY(VisibleAnywhere, Category = "Interchange | AssetImportData")
 	FString NodeUniqueID;
 
-	/** List of pipelines use to import an asset */
-	UPROPERTY(EditAnywhere, Category = "Interchange | AssetImportData")
-	TArray<TObjectPtr<UObject>> Pipelines;
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API UInterchangeBaseNodeContainer* GetNodeContainer() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API void SetNodeContainer(UInterchangeBaseNodeContainer* InNodeContainer) const;
+
+	/**
+	* Returns Array of non-null pipelines
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API TArray<UObject*> GetPipelines() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API int32 GetNumberOfPipelines() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API void SetPipelines(const TArray<UObject*>& InPipelines) const;
+
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API const UInterchangeBaseNode* GetStoredNode(const FString& InNodeUniqueId) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Interchange | AssetImportData")
+	INTERCHANGEENGINE_API UInterchangeFactoryBaseNode* GetStoredFactoryNode(const FString& InNodeUniqueId) const;
+
+private:
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use GetNodeContainer/SetNodeContainer instead."))
+	TObjectPtr<UInterchangeBaseNodeContainer> NodeContainer_DEPRECATED;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use GetPipelines/SetPipelines instead."))
+	TArray<TObjectPtr<UObject>> Pipelines_DEPRECATED;
+
+	UPROPERTY(Transient)
+	mutable TObjectPtr<UInterchangeBaseNodeContainer> TransientNodeContainer;
+
+	UPROPERTY(Transient)
+	mutable TArray<TObjectPtr<UObject>> TransientPipelines;
+
+	void ProcessContainerCache() const;
+	void ProcessPipelinesCache() const;
+	void ProcessDeprecatedData() const;
+	mutable TArray64<uint8> CachedNodeContainer;
+	mutable TArray<TPair<FString, FString>> CachedPipelines; //Class, Data(serialized JSON) pair
 };

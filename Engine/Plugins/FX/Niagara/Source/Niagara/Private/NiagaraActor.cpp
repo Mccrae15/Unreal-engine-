@@ -8,7 +8,6 @@
 #include "Components/BillboardComponent.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
-#include "NiagaraEffectType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraActor)
 
@@ -79,6 +78,17 @@ void ANiagaraActor::PostRegisterAllComponents()
 	if (NiagaraComponent)
 	{
 		NiagaraComponent->OnSystemFinished.AddUniqueDynamic(this, &ANiagaraActor::OnNiagaraSystemFinished);
+	}
+}
+
+void ANiagaraActor::PostUnregisterAllComponents()
+{
+	Super::PostUnregisterAllComponents();
+
+	// Clear Notification Delegate
+	if (NiagaraComponent)
+	{
+		NiagaraComponent->OnSystemFinished.RemoveAll(this);
 	}
 }
 

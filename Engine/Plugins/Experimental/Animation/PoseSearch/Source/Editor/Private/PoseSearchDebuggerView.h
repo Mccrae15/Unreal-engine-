@@ -79,7 +79,7 @@ public:
 
 private:
 	/** Called each frame to draw features of the query vector & database selections */
-	void DrawFeatures(const UWorld& DebuggerWorld, const FTraceMotionMatchingStateMessage& State, const FTransform& Transform, const USkinnedMeshComponent* Mesh) const;
+	void DrawFeatures(const UWorld& DebuggerWorld, const FTraceMotionMatchingStateMessage& State, const FTransform& RootBoneWorldTransform, const USkinnedMeshComponent* Mesh, int32 MaxRowsToDraw = 250) const;
 	
 	/** Check if a node selection was made, true if a node is selected */
 	bool UpdateNodeSelection();
@@ -96,9 +96,6 @@ private:
 	FReply OnUpdateNodeSelection(int32 InSelectedNodeId);
 
 	void OnPoseSelectionChanged(const UPoseSearchDatabase* Database, int32 PoseIdx, float Time);
-
-	/** Button interaction to toggle play / stop of the asset */
-	FReply TogglePlaySelectedAssets() const;
 
 	/** Generates the message view relaying that there is no data */
 	TSharedRef<SWidget> GenerateNoDataMessageView();

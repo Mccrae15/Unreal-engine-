@@ -2,23 +2,36 @@
 
 #include "SkeletalMeshModelingToolsEditorMode.h"
 
+#include "AttributeEditorTool.h"
 #include "SkeletalMeshModelingToolsEditorModeToolkit.h"
 #include "SkeletalMeshModelingToolsCommands.h"
+#include "SkeletalMeshGizmoUtils.h"
 
 #include "BaseGizmos/TransformGizmoUtil.h"
 #include "EdMode.h"
 #include "EdModeInteractiveToolsContext.h"
 #include "EditorModeManager.h"
 #include "EditorViewportClient.h"
+
+// Stylus support is currently disabled due to issues with the stylus plugin
+// We are leaving the code in this cpp file, defined out, so that it is easier to bring back if/when the stylus plugin is improved.
+#define ENABLE_STYLUS_SUPPORT 0
+
+#if ENABLE_STYLUS_SUPPORT 
 #include "IStylusInputModule.h"
 #include "IStylusState.h"
+#endif
+
 #include "ToolTargets/SkeletalMeshComponentToolTarget.h"
+#include "Components/SkeletalMeshComponent.h"
 
 #include "DeformMeshPolygonsTool.h"
 #include "DisplaceMeshTool.h"
 #include "DynamicMeshSculptTool.h"
 #include "EditMeshPolygonsTool.h"
+#include "EditorInteractiveGizmoManager.h"
 #include "HoleFillTool.h"
+#include "ISkeletalMeshEditor.h"
 #include "LatticeDeformerTool.h"
 #include "MeshAttributePaintTool.h"
 #include "MeshSpaceDeformerTool.h"
@@ -30,16 +43,22 @@
 #include "RemeshMeshTool.h"
 #include "RemoveOccludedTrianglesTool.h"
 #include "SimplifyMeshTool.h"
-#include "SkinWeightsBindingTool.h"
-#include "SkinWeightsPaintTool.h"
+#include "SkeletalMeshEditorUtils.h"
 #include "SmoothMeshTool.h"
 #include "ToolTargetManager.h"
 #include "WeldMeshEdgesTool.h"
 
+#include "SkeletalMeshNotifier.h"
+#include "Animation/DebugSkelMeshComponent.h"
+
+#include "SkeletalMesh/SkeletalMeshEditionInterface.h"
+#include "SkeletalMesh/SkeletonEditingTool.h"
+#include "SkeletalMesh/SkinWeightsBindingTool.h"
+#include "SkeletalMesh/SkinWeightsPaintTool.h"
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshModelingToolsEditorMode"
 
-
+#if ENABLE_STYLUS_SUPPORT
 // FStylusStateTracker registers itself as a listener for stylus events and implements
 // the IToolStylusStateProviderAPI interface, which allows MeshSurfacePointTool implementations
  // to query for the pen pressure.
@@ -67,8 +86,13 @@ public:
 
 	virtual ~FStylusStateTracker()
 	{
-		UStylusInputSubsystem* StylusSubsystem = GEditor->GetEditorSubsystem<UStylusInputSubsystem>();
-		StylusSubsystem->RemoveMessageHandler(*this);
+		if (GEditor)
+		{
+			if (UStylusInputSubsystem* StylusSubsystem = GEditor->GetEditorSubsystem<UStylusInputSubsystem>())
+			{
+				StylusSubsystem->RemoveMessageHandler(*this);
+			}
+		}
 	}
 
 	void OnStylusStateChanged(const FStylusState& NewState, int32 StylusIndex) override
@@ -120,6 +144,7 @@ public:
 	}
 
 };
+#endif // ENABLE_STYLUS_SUPPORT
 
 
 // NOTE: This is a simple proxy at the moment. In the future we want to pull in more of the 
@@ -130,7 +155,7 @@ const FEditorModeID USkeletalMeshModelingToolsEditorMode::Id("SkeletalMeshModeli
 
 USkeletalMeshModelingToolsEditorMode::USkeletalMeshModelingToolsEditorMode() 
 {
-	Info = FEditorModeInfo(Id, LOCTEXT("SkeletalMeshModelingMode", "Skeletal Mesh Modeling"), FSlateIcon(), false);
+	Info = FEditorModeInfo(Id, LOCTEXT("SkeletalMeshEditingMode", "Skeletal Mesh Editing"), FSlateIcon(), false);
 }
 
 
@@ -157,38 +182,19 @@ void USkeletalMeshModelingToolsEditorMode::Enter()
 {
 	UEdMode::Enter();
 
-	GetInteractiveToolsContext()->TargetManager->AddTargetFactory(NewObject<USkeletalMeshComponentToolTargetFactory>(GetInteractiveToolsContext()->TargetManager));
+	UEditorInteractiveToolsContext* InteractiveToolsContext = GetInteractiveToolsContext();
+	
+	InteractiveToolsContext->TargetManager->AddTargetFactory(NewObject<USkeletalMeshComponentToolTargetFactory>(InteractiveToolsContext->TargetManager));
 
+#if ENABLE_STYLUS_SUPPORT
 	StylusStateTracker = MakeUnique<FStylusStateTracker>();
+#endif
 	// register gizmo helper
-	UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(GetInteractiveToolsContext());
+	UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(InteractiveToolsContext);
+	UE::SkeletalMeshGizmoUtils::RegisterTransformGizmoContextObject(InteractiveToolsContext);
+	UE::SkeletalMeshEditorUtils::RegisterEditorContextObject(InteractiveToolsContext);
 
 	const FModelingToolsManagerCommands& ToolManagerCommands = FModelingToolsManagerCommands::Get();
-
-		/*
-		ToolbarBuilder.AddToolBarButton(Commands.BeginPolyEditTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginPolyDeformTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginHoleFillTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginPolygonCutTool);
-	}
-	else if (PaletteName == ProcessingTabName)
-	{
-		ToolbarBuilder.AddToolBarButton(Commands.BeginSimplifyMeshTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginRemeshMeshTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginWeldEdgesTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginRemoveOccludedTrianglesTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginProjectToTargetTool);
-	}
-	else if (PaletteName == DeformTabName)
-	{
-		ToolbarBuilder.AddToolBarButton(Commands.BeginSculptMeshTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginRemeshSculptMeshTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginSmoothMeshTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginOffsetMeshTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginMeshSpaceDeformerTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginLatticeDeformerTool);
-		ToolbarBuilder.AddToolBarButton(Commands.BeginDisplaceMeshTool);
-		*/
 
 	RegisterTool(ToolManagerCommands.BeginPolyEditTool, TEXT("BeginPolyEditTool"), NewObject<UEditMeshPolygonsToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginPolyDeformTool, TEXT("BeginPolyDeformTool"), NewObject<UDeformMeshPolygonsToolBuilder>());
@@ -202,13 +208,17 @@ void USkeletalMeshModelingToolsEditorMode::Enter()
 	RegisterTool(ToolManagerCommands.BeginProjectToTargetTool, TEXT("BeginProjectToTargetTool"), NewObject<UProjectToTargetToolBuilder>());
 	
 
-	auto MoveVerticesToolBuilder = NewObject<UMeshVertexSculptToolBuilder>();
+	UMeshVertexSculptToolBuilder* MoveVerticesToolBuilder = NewObject<UMeshVertexSculptToolBuilder>();
+#if ENABLE_STYLUS_SUPPORT
 	MoveVerticesToolBuilder->StylusAPI = StylusStateTracker.Get();
+#endif
 	RegisterTool(ToolManagerCommands.BeginSculptMeshTool, TEXT("BeginSculptMeshTool"), MoveVerticesToolBuilder);
 
-	auto DynaSculptToolBuilder = NewObject<UDynamicMeshSculptToolBuilder>();
+	UDynamicMeshSculptToolBuilder* DynaSculptToolBuilder = NewObject<UDynamicMeshSculptToolBuilder>();
 	DynaSculptToolBuilder->bEnableRemeshing = true;
+#if ENABLE_STYLUS_SUPPORT
 	DynaSculptToolBuilder->StylusAPI = StylusStateTracker.Get();
+#endif
 	RegisterTool(ToolManagerCommands.BeginRemeshSculptMeshTool, TEXT("BeginRemeshSculptMeshTool"), DynaSculptToolBuilder);
 	
 	RegisterTool(ToolManagerCommands.BeginSmoothMeshTool, TEXT("BeginSmoothMeshTool"), NewObject<USmoothMeshToolBuilder>());
@@ -217,17 +227,38 @@ void USkeletalMeshModelingToolsEditorMode::Enter()
 	RegisterTool(ToolManagerCommands.BeginLatticeDeformerTool, TEXT("BeginLatticeDeformerTool"), NewObject<ULatticeDeformerToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginDisplaceMeshTool, TEXT("BeginDisplaceMeshTool"), NewObject<UDisplaceMeshToolBuilder>());
 
-	// RegisterTool(ToolManagerCommands.BeginMeshAttributePaintTool, TEXT("BeginMeshAttributePaintTool"), NewObject<UMeshAttributePaintToolBuilder>());
+	RegisterTool(ToolManagerCommands.BeginAttributeEditorTool, TEXT("BeginAttributeEditorTool"), NewObject<UAttributeEditorToolBuilder>());
+	RegisterTool(ToolManagerCommands.BeginMeshAttributePaintTool, TEXT("BeginMeshAttributePaintTool"), NewObject<UMeshAttributePaintToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginSkinWeightsPaintTool, TEXT("BeginSkinWeightsPaintTool"), NewObject<USkinWeightsPaintToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginSkinWeightsBindingTool, TEXT("BeginSkinWeightsBindingTool"), NewObject<USkinWeightsBindingToolBuilder>());
 
+	// Skeleton Editing
+	RegisterTool(ToolManagerCommands.BeginSkeletonEditingTool, TEXT("BeginSkeletonEditingTool"), NewObject<USkeletonEditingToolBuilder>());
+	
 	GetInteractiveToolsContext()->ToolManager->SelectActiveToolType(EToolSide::Left, TEXT("BeginSkinWeightsPaintTool"));
 }
 
+UDebugSkelMeshComponent* USkeletalMeshModelingToolsEditorMode::GetSkelMeshComponent() const
+{
+	FToolBuilderState State; GetToolManager()->GetContextQueriesAPI()->GetCurrentSelectionState(State);
+	UActorComponent* SkeletalMeshComponent = ToolBuilderUtil::FindFirstComponent(State, [&](UActorComponent* Component)
+	{
+		return IsValid(Component) && Component->IsA<UDebugSkelMeshComponent>();
+	});
+
+	return Cast<UDebugSkelMeshComponent>(SkeletalMeshComponent);
+}
 
 void USkeletalMeshModelingToolsEditorMode::Exit()
 {
+	UEditorInteractiveToolsContext* InteractiveToolsContext = GetInteractiveToolsContext();
+	UE::TransformGizmoUtil::DeregisterTransformGizmoContextObject(InteractiveToolsContext);
+	UE::SkeletalMeshGizmoUtils::UnregisterTransformGizmoContextObject(InteractiveToolsContext);
+	UE::SkeletalMeshEditorUtils::UnregisterEditorContextObject(InteractiveToolsContext);
+	
+#if ENABLE_STYLUS_SUPPORT
 	StylusStateTracker = nullptr;
+#endif
 
 	UEdMode::Exit();
 }
@@ -238,11 +269,139 @@ void USkeletalMeshModelingToolsEditorMode::CreateToolkit()
 	Toolkit = MakeShareable(new FSkeletalMeshModelingToolsEditorModeToolkit);
 }
 
-
 void USkeletalMeshModelingToolsEditorMode::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
 {
 	Super::Tick(ViewportClient, DeltaTime);
 }
 
+bool USkeletalMeshModelingToolsEditorMode::HandleClick(FEditorViewportClient* InViewportClient, HHitProxy *HitProxy, const FViewportClick &Click)
+{
+	if (Binding.IsValid())
+	{
+		TSharedPtr<ISkeletalMeshEditorBinding> BindingPtr = Binding.Pin();
+
+		TArray<FName> SelectedBones;
+		if (HitProxy && BindingPtr->GetNameFunction())
+		{
+			if (TOptional<FName> BoneName = BindingPtr->GetNameFunction()(HitProxy))
+			{
+				SelectedBones.Emplace(*BoneName);
+			}
+		}
+		
+		BindingPtr->GetNotifier().HandleNotification( SelectedBones, ESkeletalMeshNotifyType::BonesSelected);
+	}
+	
+	return Super::HandleClick(InViewportClient, HitProxy, Click);
+}
+
+bool USkeletalMeshModelingToolsEditorMode::ComputeBoundingBoxForViewportFocus(AActor* Actor, UPrimitiveComponent* PrimitiveComponent, FBox& InOutBox) const
+{
+	// if Tool supports custom Focus box, use that first
+	if (GetToolManager()->HasAnyActiveTool())
+	{
+		UInteractiveTool* Tool = GetToolManager()->GetActiveTool(EToolSide::Mouse);
+		IInteractiveToolCameraFocusAPI* FocusAPI = Cast<IInteractiveToolCameraFocusAPI>(Tool);
+		if (FocusAPI && FocusAPI->SupportsWorldSpaceFocusBox())
+		{
+			InOutBox = FocusAPI->GetWorldSpaceFocusBox();
+			return true;
+		}
+	}
+
+	// focus using selected bones in skel mesh editor
+	if (const USkeletalMeshComponent* Component = Cast<USkeletalMeshComponent>(PrimitiveComponent))
+	{
+		check(Component->GetSkeletalMeshAsset());
+		
+		if (Binding.IsValid())
+		{
+			const TArray<FName> Selection = Binding.Pin()->GetSelectedBones();
+			if (!Selection.IsEmpty())
+			{
+				TArray<FName> AllChildren;
+
+				const FReferenceSkeleton& RefSkeleton = Component->GetSkeletalMeshAsset()->GetRefSkeleton();
+				for (const FName& BoneName: Selection)
+				{
+					const int32 BoneIndex = RefSkeleton.FindBoneIndex(BoneName);
+					if (BoneIndex > INDEX_NONE)
+					{
+						// enlarge box
+						InOutBox += Component->GetBoneLocation(BoneName);
+
+						// get direct children
+						TArray<int32> Children;
+						RefSkeleton.GetDirectChildBones(BoneIndex, Children);
+						Algo::Transform(Children, AllChildren, [&RefSkeleton](int ChildrenIndex)
+						{
+							return RefSkeleton.GetBoneName(ChildrenIndex);
+						});
+					}
+				}
+
+				// enlarge box using direct children
+				for (const FName& BoneName: AllChildren)
+				{
+					InOutBox += Component->GetBoneLocation(BoneName);
+				}
+				
+				return true; 
+			}
+		}
+	}
+	
+	return Super::ComputeBoundingBoxForViewportFocus(Actor, PrimitiveComponent, InOutBox);
+}
+
+void USkeletalMeshModelingToolsEditorMode::OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
+{
+	FSkeletalMeshModelingToolsActionCommands::UpdateToolCommandBinding(Tool, Toolkit->GetToolkitCommands(), false);
+}
+
+void USkeletalMeshModelingToolsEditorMode::OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool)
+{
+	FSkeletalMeshModelingToolsActionCommands::UpdateToolCommandBinding(Tool, Toolkit->GetToolkitCommands(), true);
+}
+
+void USkeletalMeshModelingToolsEditorMode::SetEditorBinding(const TWeakPtr<ISkeletalMeshEditor>& InSkeletalMeshEditor)
+{
+	if (!InSkeletalMeshEditor.IsValid())
+	{
+		return;
+	}
+	
+	Binding = InSkeletalMeshEditor.Pin()->GetBinding();
+
+	if (USkeletalMeshEditorContextObject* ContextObject = UE::SkeletalMeshEditorUtils::GetEditorContextObject(GetInteractiveToolsContext()))
+	{
+		ContextObject->Init(InSkeletalMeshEditor);
+	}
+}
+
+ISkeletalMeshEditingInterface* USkeletalMeshModelingToolsEditorMode::GetSkeletonInterface(UInteractiveTool* InTool)
+{
+	if (!IsValid(InTool) || !InTool->Implements<USkeletalMeshEditingInterface>())
+	{
+		return nullptr;
+	}
+	return static_cast<ISkeletalMeshEditingInterface*>(InTool->GetInterfaceAddress(USkeletalMeshEditingInterface::StaticClass()));
+}
+
+bool USkeletalMeshModelingToolsEditorMode::NeedsTransformGizmo() const
+{
+	UInteractiveTool* Tool = GetToolManager()->GetActiveTool(EToolSide::Mouse);
+	if (const ISkeletalMeshEditingInterface* SkeletonInterface = GetSkeletonInterface(Tool))
+	{
+		return !SkeletonInterface->GetSelectedBones().IsEmpty();
+	}
+
+	if (Binding.IsValid())
+	{
+		return !Binding.Pin()->GetSelectedBones().IsEmpty();
+	}
+	
+	return false;
+}
 
 #undef LOCTEXT_NAMESPACE

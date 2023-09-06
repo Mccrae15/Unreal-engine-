@@ -23,11 +23,12 @@
 #include "RendererInterface.h"
 #include "ScreenRendering.h"
 #include "Containers/DynamicRHIResourceArray.h"
-#include "PostProcess/SceneFilterRendering.h"
-#include "PostProcess/PostProcessMaterial.h"
 #include "CommonRenderResources.h"
 #include "ARUtilitiesFunctionLibrary.h"
 #include "UObject/Package.h"
+#include "PostProcess/DrawRectangle.h"
+#include "ScreenPass.h"
+#include "PostProcess/PostProcessMaterialInputs.h"
 
 #if SUPPORTS_ARKIT_1_0
 	#include "IOSAppDelegate.h"
@@ -121,11 +122,19 @@ FAppleARKitVideoOverlay::~FAppleARKitVideoOverlay()
 	CVarDebugOverlayMode->SetOnChangedCallback({});
 }
 
+BEGIN_SHADER_PARAMETER_STRUCT(FARKitPostProcessMaterialParameters, )
+	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, PostProcessOutput)
+	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PostProcessInput, [kPostProcessMaterialInputCountMax])
+	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PathTracingPostProcessInput, [kPathTracingPostProcessMaterialInputCountMax])
+	SHADER_PARAMETER_SAMPLER(SamplerState, PostProcessInput_BilinearSampler)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
 template <bool bIsMobileRenderer>
 class TPostProcessMaterialShader : public FMaterialShader
 {
 public:
-	using FParameters = FPostProcessMaterialParameters;
+	using FParameters = FARKitPostProcessMaterialParameters;
 	SHADER_USE_PARAMETER_STRUCT_WITH_LEGACY_BASE(TPostProcessMaterialShader, FMaterialShader);
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
@@ -146,6 +155,9 @@ public:
 		OutEnvironment.SetDefine(TEXT("POST_PROCESS_MATERIAL"), 1);
 		OutEnvironment.SetDefine(TEXT("POST_PROCESS_MATERIAL_BEFORE_TONEMAP"), (Parameters.MaterialParameters.BlendableLocation != BL_AfterTonemapping) ? 1 : 0);
 		OutEnvironment.SetDefine(TEXT("POST_PROCESS_AR_PASSTHROUGH"), 1);
+
+		const bool bMobileForceDepthRead = MobileUsesFullDepthPrepass(Parameters.Platform);
+		OutEnvironment.SetDefine(TEXT("FORCE_DEPTH_TEXTURE_READS"), bMobileForceDepthRead ? 1u : 0u);
 	}
 };
 
@@ -161,6 +173,9 @@ public:
 	{
 		TPostProcessMaterialShader<bIsMobileRenderer>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("POST_PROCESS_AR_PASSTHROUGH"), 1);
+
+		const bool bMobileForceDepthRead = MobileUsesFullDepthPrepass(Parameters.Platform);
+		OutEnvironment.SetDefine(TEXT("FORCE_DEPTH_TEXTURE_READS"), bMobileForceDepthRead ? 1u : 0u);
 	}
 
 	TARKitCameraOverlayVS() = default;
@@ -168,10 +183,10 @@ public:
 		: TPostProcessMaterialShader<bIsMobileRenderer>(Initializer)
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView View)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View)
 	{
-		FRHIVertexShader* ShaderRHI = RHICmdList.GetBoundVertexShader();
-		TPostProcessMaterialShader<bIsMobileRenderer>::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
+		UE::Renderer::PostProcess::SetDrawRectangleParameters(BatchedParameters, this, View);
+		TPostProcessMaterialShader<bIsMobileRenderer>::SetViewParameters(BatchedParameters, View, View.ViewUniformBuffer);
 	}
 };
 
@@ -199,11 +214,10 @@ public:
 		: TPostProcessMaterialShader<bIsMobileRenderer>(Initializer)
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView View, const FMaterialRenderProxy* MaterialProxy, const FMaterial& Material)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, const FMaterialRenderProxy* MaterialProxy, const FMaterial& Material)
 	{
-		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
-		TPostProcessMaterialShader<bIsMobileRenderer>::SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
-		TPostProcessMaterialShader<bIsMobileRenderer>::SetParameters(RHICmdList, ShaderRHI, MaterialProxy, Material, View);
+		TPostProcessMaterialShader<bIsMobileRenderer>::SetViewParameters(BatchedParameters, View, View.ViewUniformBuffer);
+		TPostProcessMaterialShader<bIsMobileRenderer>::SetParameters(BatchedParameters, MaterialProxy, Material, View);
 	}
 };
 
@@ -268,7 +282,7 @@ void FAppleARKitVideoOverlay::UpdateOcclusionTextures(const FAppleARKitFrame& Fr
 #endif
 }
 
-void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImmediate& RHICmdList, const FSceneView& InView, struct FAppleARKitFrame& Frame, UMaterialInstanceDynamic* RenderingOverlayMaterial, const bool bRenderingOcclusion)
+void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandList& RHICmdList, const FSceneView& InView, struct FAppleARKitFrame& Frame, UMaterialInstanceDynamic* RenderingOverlayMaterial, const bool bRenderingOcclusion)
 {
 	if (RenderingOverlayMaterial == nullptr || !RenderingOverlayMaterial->IsValidLowLevel())
 	{
@@ -305,7 +319,7 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 		}
 		
 		FRHIResourceCreateInfo CreateInfoVB(TEXT("VideoOverlayVertexBuffer"), &Vertices);
-		OverlayVertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfoVB);
+		OverlayVertexBufferRHI = RHICmdList.CreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfoVB);
 		
 		// Cache UVOffsets
 		const FVector2D ViewSize(InView.UnconstrainedViewRect.Max.X, InView.UnconstrainedViewRect.Max.Y);
@@ -340,7 +354,7 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 		FMemory::Memcpy(IndexBuffer.GetData(), Indices, NumIndices * sizeof(uint16));
 
 		FRHIResourceCreateInfo CreateInfoIB(TEXT("VideoOverlayIndexBuffer"), &IndexBuffer);
-		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfoIB);
+		IndexBufferRHI = RHICmdList.CreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfoIB);
 	}
 
 	const auto FeatureLevel = InView.GetFeatureLevel();
@@ -392,33 +406,21 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-	const FIntPoint ViewSize = InView.UnconstrainedViewRect.Size();
-	FDrawRectangleParameters Parameters;
-	Parameters.PosScaleBias = FVector4f(ViewSize.X, ViewSize.Y, 0, 0);
-	Parameters.UVScaleBias = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
-	Parameters.InvTargetSizeAndTextureSize = FVector4f(
-													  1.0f / ViewSize.X, 1.0f / ViewSize.Y,
-													  1.0f, 1.0f);
-
 	if (bIsMobileRenderer)
 	{
-		FARKitCameraOverlayMobileVS* const VertexShaderPtr = static_cast<FARKitCameraOverlayMobileVS*>(VertexShader.GetShader());
-		check(VertexShaderPtr != nullptr);
-		SetUniformBufferParameterImmediate(RHICmdList, VertexShader.GetVertexShader(), VertexShaderPtr->GetUniformBufferParameter<FDrawRectangleParameters>(), Parameters);
-		VertexShaderPtr->SetParameters(RHICmdList, InView);
-		FARKitCameraOverlayMobilePS* PixelShaderPtr = static_cast<FARKitCameraOverlayMobilePS*>(PixelShader.GetShader());
-		check(PixelShaderPtr != nullptr);
-		PixelShaderPtr->SetParameters(RHICmdList, InView, MaterialProxy, CameraMaterial);
+		TShaderRef<FARKitCameraOverlayMobileVS> VertexShaderPtr(static_cast<FARKitCameraOverlayMobileVS*>(VertexShader.GetShader()), *MaterialShaderMap);
+		TShaderRef<FARKitCameraOverlayMobilePS> PixelShaderPtr(static_cast<FARKitCameraOverlayMobilePS*>(PixelShader.GetShader()), *MaterialShaderMap);
+
+		SetShaderParametersLegacyVS(RHICmdList, VertexShaderPtr, InView);
+		SetShaderParametersLegacyPS(RHICmdList, PixelShaderPtr, InView, MaterialProxy, CameraMaterial);
 	}
 	else
 	{
-		FARKitCameraOverlayVS* const VertexShaderPtr = static_cast<FARKitCameraOverlayVS*>(VertexShader.GetShader());
-		check(VertexShaderPtr != nullptr);
-		SetUniformBufferParameterImmediate(RHICmdList, VertexShader.GetVertexShader(), VertexShaderPtr->GetUniformBufferParameter<FDrawRectangleParameters>(), Parameters);
-		VertexShaderPtr->SetParameters(RHICmdList, InView);
-		FARKitCameraOverlayPS* PixelShaderPtr = static_cast<FARKitCameraOverlayPS*>(PixelShader.GetShader());
-		check(PixelShaderPtr != nullptr);
-		PixelShaderPtr->SetParameters(RHICmdList, InView, MaterialProxy, CameraMaterial);
+		TShaderRef<FARKitCameraOverlayVS> VertexShaderPtr(static_cast<FARKitCameraOverlayVS*>(VertexShader.GetShader()), *MaterialShaderMap);
+		TShaderRef<FARKitCameraOverlayPS> PixelShaderPtr(static_cast<FARKitCameraOverlayPS*>(PixelShader.GetShader()), *MaterialShaderMap);
+
+		SetShaderParametersLegacyVS(RHICmdList, VertexShaderPtr, InView);
+		SetShaderParametersLegacyPS(RHICmdList, PixelShaderPtr, InView, MaterialProxy, CameraMaterial);
 	}
 	
 	if (OverlayVertexBufferRHI && IndexBufferRHI)
@@ -436,7 +438,7 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 	}
 }
 
-void FAppleARKitVideoOverlay::RenderVideoOverlay_RenderThread(FRHICommandListImmediate& RHICmdList, const FSceneView& InView, FAppleARKitFrame& Frame, const float WorldToMeterScale)
+void FAppleARKitVideoOverlay::RenderVideoOverlay_RenderThread(FRHICommandList& RHICmdList, const FSceneView& InView, FAppleARKitFrame& Frame, const float WorldToMeterScale)
 {
 	UpdateVideoTextures(Frame);
 	UpdateOcclusionTextures(Frame);

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "Async/Mutex.h"
+#include "Async/RecursiveMutex.h"
 #include "Async/Future.h"
 #include "Compression/CompressedBuffer.h"
 #include "Containers/Array.h"
@@ -104,20 +106,39 @@ enum class ECompressionOptions : uint8
  * would be able to share local copies of the payload between branches to reduce the cost of having multiple branches 
  * with similar data on the same machine.
  * 
+ * Updating the bulkdata:
+ * Unlike the older bulkdata system, EditorBulkData does not support any lock/unlock mechanism, instead the internal 
+ * data is updated via a single call to ::UpdatePayload and the data is retrieved via a single call to ::GetPayload.
+ * 
+ * For examples see the "System.CoreUObject.Serialization.EditorBulkData.UpdatePayload" test found in
+ * Engine\Source\Runtime\CoreUObject\Private\Tests\Serialization\EditorBulkDataTests.cpp.
+ * 
+ * Thread Safety:
+ * 
+ * The class should be thread safe in that you can call the public methods on multiple threads at once and expect
+ * things to work. However if you were to call ::GetPayloadSize() before calling ::GetPayload() on one thread
+ * it would be possible for a call to ::UpdatePayload() to occur on another thread in between those two calls, 
+ * meaning that the size you got might not be the correct size as the payload returned. If you need that level
+ * of thread safety it would be up to you to manage it at a higher level. 
+ * It would however be safe to pass a copy of your FEditorBulkData to a background task rather than a reference.
+ * The copy would either be able to load the payload from disk, pull it from virtualized storage or if the 
+ * source bulkdata is holding the payload in memory it will just take a reference to that payload rather than 
+ * making a copy. In this way you can be sure of the state of the FEditorBulkData on the background task as 
+ * future edits to the original bulkdata will not affect it.
  */
 
 /** The base class with no type */
-class COREUOBJECT_API FEditorBulkData
+class FEditorBulkData final
 {
 public:
 	FEditorBulkData() = default;
-	FEditorBulkData(FEditorBulkData&& Other);
-	FEditorBulkData& operator=(FEditorBulkData&& Other);
+	COREUOBJECT_API ~FEditorBulkData();
 
-	FEditorBulkData(const FEditorBulkData& Other);
-	FEditorBulkData& operator=(const FEditorBulkData& Other);
+	COREUOBJECT_API FEditorBulkData(FEditorBulkData&& Other);
+	COREUOBJECT_API FEditorBulkData& operator=(FEditorBulkData&& Other);
 
-	~FEditorBulkData();
+	COREUOBJECT_API FEditorBulkData(const FEditorBulkData& Other);
+	COREUOBJECT_API FEditorBulkData& operator=(const FEditorBulkData& Other);
 
 	/** 
 	 * Convenience method to make it easier to convert from FBulkData to FEditorBulkData and sets the Guid 
@@ -126,9 +147,13 @@ public:
 	 * @param Guid		A guid associated with the bulkdata object which will be used to identify the payload.
 	 *					This MUST remain the same between sessions so that the payloads key remains consistent!
 	 */
-	void CreateFromBulkData(FBulkData& BulkData, const FGuid& Guid, UObject* Owner);
-	/** Fix legacy content that created the Id from non-unique Guids. */
-	void CreateLegacyUniqueIdentifier(UObject* Owner);
+	COREUOBJECT_API void CreateFromBulkData(FBulkData& BulkData, const FGuid& Guid, UObject* Owner);
+	
+	/** 
+	 * Fix legacy content that created the Id from non-unique Guids.
+	 * Run on objects created before FUE5MainStreamObjectVersion::VirtualizedBulkDataHaveUniqueGuids
+	 */
+	COREUOBJECT_API void CreateLegacyUniqueIdentifier(UObject* Owner);
 
 	/** 
 	 * Used to serialize the bulkdata to/from a FArchive
@@ -140,15 +165,16 @@ public:
 	 * @param bAllowRegistry Legacy parameter to skip registration when loading BulkData we know we will need to
 	 *				modify the identifier of. Should always be true for non-legacy serialization.
 	 */
-	void Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegister=true);
+	COREUOBJECT_API void Serialize(FArchive& Ar, UObject* Owner, bool bAllowRegister=true);
 
 	/** Reset to a truly empty state */
-	void Reset();
+	COREUOBJECT_API void Reset();
 
-	// TODO: Probably can just remove this as there probably isn't a good use case for unloading updated payloads as there is no
-	// way for us to restore it. In that case ::Reset might as well be used.
+	// TODO: Not sure if there is a scenario where we can reload the payload off disk but it is also
+	// in memory.and so this might not really do anything anymore.
+
 	/** Unloads the data (if possible) but leaves it in a state where the data can be reloaded */
-	void UnloadData();
+	COREUOBJECT_API void UnloadData();
 
 	/** 
 	 * Removes the ability for the bulkdata object to load it's payload from disk (if it was doing so) 
@@ -158,37 +184,31 @@ public:
 	 *									the payload should be loaded into memory so that it can be accessed in the future.
 	 *									If false then the payload is not important and does not need to be loaded.
 	 */
-	void DetachFromDisk(FArchive* Ar, bool bEnsurePayloadIsLoaded);
+	COREUOBJECT_API void DetachFromDisk(FArchive* Ar, bool bEnsurePayloadIsLoaded);
 
 	/** Returns a unique identifier for the object itself. */
-	FGuid GetIdentifier() const;
+	COREUOBJECT_API FGuid GetIdentifier() const;
 
 	/** Returns an unique identifier for the content of the payload. */
-	const FIoHash& GetPayloadId() const
-	{ 
-		return PayloadContentId; 
-	}
+	COREUOBJECT_API const FIoHash& GetPayloadId() const;
 
 	/** Returns the size of the payload in bytes. */
-	int64 GetPayloadSize() const 
+	int64 GetPayloadSize() const
 	{ 
 		return PayloadSize; 
 	}
 
 	/** Returns true if the bulkdata object contains a valid payload greater than zero bytes in size. */
-	bool HasPayloadData() const 
+	bool HasPayloadData() const
 	{ 
 		return PayloadSize > 0; 
 	}
 
 	/** Returns if the payload would require loading in order to be accessed. Returns false if the payload is already in memory or of zero length */
-	bool DoesPayloadNeedLoading() const
-	{
-		return Payload.IsNull() && PayloadSize > 0; 
-	}
+	COREUOBJECT_API bool DoesPayloadNeedLoading() const;
 
 	/** Returns an immutable FCompressedBuffer reference to the payload data. */
-	TFuture<FSharedBuffer> GetPayload() const;
+	COREUOBJECT_API TFuture<FSharedBuffer> GetPayload() const;
 
 	/**
 	 * Returns an immutable FCompressedBuffer reference to the payload data.
@@ -197,7 +217,7 @@ public:
 	 * will be handled by the FCompressedBuffer interface. Call FCompressedBuffer::Decompress() to get access to
 	 * the payload in FSharedBuffer format.
 	 */
-	TFuture<FCompressedBuffer> GetCompressedPayload() const;
+	COREUOBJECT_API TFuture<FCompressedBuffer> GetCompressedPayload() const;
 
 	/**
 	 * Replaces the existing payload (if any) with a new one. 
@@ -213,14 +233,24 @@ public:
 	 * @param InPayload	The payload that this bulkdata object should reference. @see FSharedBuffer
 	 * @param Owner The object that owns the bulkdata, or null to not associate with a UObject.
 	 */
-	void UpdatePayload(FSharedBuffer InPayload, UObject* Owner = nullptr);
+	COREUOBJECT_API void UpdatePayload(FSharedBuffer InPayload, UObject* Owner = nullptr);
 
+	/**
+	 * Replaces the existing payload (if any) with a new one.
+	 * Note that FCompressedBuffers already know the FIoHash of the raw payload and so we do not
+	 * recalculate it, making this method much faster for larger payloads than the other overloads.
+	 * 
+	 * @param InPayload	The payload that this bulkdata object should reference. @see FCompressedBuffer
+	 * @param Owner The object that owns the bulkdata, or null to not associate with a UObject.
+	 */
+	COREUOBJECT_API void UpdatePayload(FCompressedBuffer InPayload, UObject* Owner = nullptr);
+	
 	/**
 	 * Utility struct used to compute the Payload ID before calling UpdatePayload
 	 */
-	struct COREUOBJECT_API FSharedBufferWithID
+	struct FSharedBufferWithID
 	{
-		FSharedBufferWithID(FSharedBuffer InPayload);
+		COREUOBJECT_API FSharedBufferWithID(FSharedBuffer InPayload);
 
 		FSharedBufferWithID() = default;
 		FSharedBufferWithID(FSharedBufferWithID&&) = default;
@@ -252,7 +282,7 @@ public:
 	 * @param InPayload	The payload to update the bulkdata with
 	 * @param Owner The object that owns the bulkdata, or null to not associate with a UObject.
 	 */
-	void UpdatePayload(FSharedBufferWithID InPayload, UObject* Owner = nullptr);
+	COREUOBJECT_API void UpdatePayload(FSharedBufferWithID InPayload, UObject* Owner = nullptr);
 
 	/** 
 	 * Sets the compression options to be applied to the payload during serialization.
@@ -262,7 +292,7 @@ public:
 	 * 
 	 * @param Option	The high level option to use. @see UE::Serialization::ECompressionOptions
 	 */ 
-	void SetCompressionOptions(ECompressionOptions Option);
+	COREUOBJECT_API void SetCompressionOptions(ECompressionOptions Option);
 
 	/** 
 	 * Sets the compression options to be applied to the payload during serialization.
@@ -273,17 +303,17 @@ public:
 	 * @param Compressor		The Oodle compressor to use. @see ECompressedBufferCompressor
 	 * @param CompressionLevel	The Oodle compression level to use. @see ECompressedBufferCompressionLevel
 	 */
-	void SetCompressionOptions(ECompressedBufferCompressor Compressor, ECompressedBufferCompressionLevel CompressionLevel);
+	COREUOBJECT_API void SetCompressionOptions(ECompressedBufferCompressor Compressor, ECompressedBufferCompressionLevel CompressionLevel);
 
 	UE_DEPRECATED(5.1, "Call GetBulkDataVersions instead.")
-	FCustomVersionContainer GetCustomVersions(FArchive& InlineArchive);
+	COREUOBJECT_API FCustomVersionContainer GetCustomVersions(FArchive& InlineArchive);
 
 	/**
 	 * Get the versions used in the file containing the payload.
 	 *
 	 * @param InlineArchive The archive that was used to load this object
 	 */
-	void GetBulkDataVersions(FArchive& InlineArchive, FPackageFileVersion& OutUEVersion, int32& OutLicenseeUEVersion,
+	COREUOBJECT_API void GetBulkDataVersions(FArchive& InlineArchive, FPackageFileVersion& OutUEVersion, int32& OutLicenseeUEVersion,
 		FCustomVersionContainer& OutCustomVersions) const;
 
 	/**
@@ -291,7 +321,7 @@ public:
 	 * copied from another BulkData, and it will pass on this flag to any BulkData copied/moved from it.
 	 * Use Reset() to remove this state. Torn-off BulkDatas share the guid with the BulkData they copy from.
 	 */
-	void TearOff();
+	COREUOBJECT_API void TearOff();
 
 	/** Make a torn-off copy of this bulk data. */
 	FEditorBulkData CopyTornOff() const
@@ -302,33 +332,41 @@ public:
 	// Functions used by the BulkDataRegistry
 
 	/** Used to serialize the bulkdata to/from a limited cache system used by the BulkDataRegistry. */
-	void SerializeForRegistry(FArchive& Ar);
+	COREUOBJECT_API void SerializeForRegistry(FArchive& Ar);
+	
 	/** Return true if the bulkdata has a source location that persists between editor processes (package file or virtualization). */
-	bool CanSaveForRegistry() const;
+	COREUOBJECT_API bool CanSaveForRegistry() const;
+	
 	/** Return whether the BulkData has legacy payload id that needs to be updated from loaded payload before it can be used in DDC. */
-	bool HasPlaceholderPayloadId() const { return EnumHasAnyFlags(Flags, EFlags::LegacyKeyWasGuidDerived); }
+	bool HasPlaceholderPayloadId() const
+	{
+		return EnumHasAnyFlags(Flags, EFlags::LegacyKeyWasGuidDerived);
+	}
+	
 	/** Return whether the BulkData is an in-memory payload without a persistent source location. */
-	bool IsMemoryOnlyPayload() const;
+	COREUOBJECT_API bool IsMemoryOnlyPayload() const;
+	
 	/** Load the payload and set the correct payload id, if the bulkdata has a PlaceholderPayloadId. */
-	void UpdatePayloadId();
+	COREUOBJECT_API void UpdatePayloadId();
+	
 	/** Return whether *this has the same source for the bulkdata (e.g. identical file locations if from file) as Other */
-	bool LocationMatches(const FEditorBulkData& Other) const;
+	COREUOBJECT_API bool LocationMatches(const FEditorBulkData& Other) const;
 
 	/**
 	 * Update the Owner of this BulkData in the BulkDataRegistry to include the Owner information.
 	 * Has no effect if the BulkData is not valid for registration.
 	 * The Owner information is lost and this function must be called again if the BulkData's payload information is modified.
 	 */
-	void UpdateRegistrationOwner(UObject* Owner);
+	COREUOBJECT_API void UpdateRegistrationOwner(UObject* Owner);
 
 #if UE_ENABLE_VIRTUALIZATION_TOGGLE
 	UE_DEPRECATED(5.0, "SetVirtualizationOptOut is an internal feature for development and will be removed without warning!")
-	void SetVirtualizationOptOut(bool bOptOut);
+	COREUOBJECT_API void SetVirtualizationOptOut(bool bOptOut);
 #endif //UE_ENABLE_VIRTUALIZATION_TOGGLE
 
 protected:
 	enum class ETornOff {};
-	FEditorBulkData(const FEditorBulkData& Other, ETornOff);
+	COREUOBJECT_API FEditorBulkData(const FEditorBulkData& Other, ETornOff);
 
 private:
 	friend struct FTocEntry;
@@ -380,33 +418,33 @@ private:
 	};
 
 	/** Old legacy path that saved the payload to the end of the package */
-	void SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner);
+	COREUOBJECT_API void SerializeToLegacyPath(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner);
 	/** The new path that saves payloads to the FPackageTrailer which is then appended to the end of the package file */
-	void SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner);
+	COREUOBJECT_API void SerializeToPackageTrailer(FLinkerSave& LinkerSave, FCompressedBuffer PayloadToSerialize, EFlags UpdatedFlags, UObject* Owner);
 
-	void UpdatePayloadImpl(FSharedBuffer&& InPayload, FIoHash&& InPayloadID, UObject* Owner);
+	COREUOBJECT_API void UpdatePayloadImpl(FSharedBuffer&& InPayload, const FIoHash& InPayloadID, UObject* Owner);
 
-	FCompressedBuffer GetDataInternal() const;
+	COREUOBJECT_API FCompressedBuffer GetDataInternal() const;
 
-	FCompressedBuffer LoadFromDisk() const;
-	FCompressedBuffer LoadFromPackageFile() const;
-	FCompressedBuffer LoadFromPackageTrailer() const;
-	FCompressedBuffer LoadFromSidecarFile() const;
-	FCompressedBuffer LoadFromSidecarFileInternal(ErrorVerbosity Verbosity) const;
+	COREUOBJECT_API FCompressedBuffer LoadFromDisk() const;
+	COREUOBJECT_API FCompressedBuffer LoadFromPackageFile() const;
+	COREUOBJECT_API FCompressedBuffer LoadFromPackageTrailer() const;
+	COREUOBJECT_API FCompressedBuffer LoadFromSidecarFile() const;
+	COREUOBJECT_API FCompressedBuffer LoadFromSidecarFileInternal(ErrorVerbosity Verbosity) const;
 
-	bool SerializeData(FArchive& Ar, FCompressedBuffer& Payload, const EFlags PayloadFlags) const;
+	COREUOBJECT_API bool SerializeData(FArchive& Ar, FCompressedBuffer& Payload, const EFlags PayloadFlags) const;
 
-	void PushData(const FPackagePath& InPackagePath);
-	FCompressedBuffer PullData() const;
+	COREUOBJECT_API void PushData(const FPackagePath& InPackagePath);
+	COREUOBJECT_API FCompressedBuffer PullData() const;
 
-	bool CanUnloadData() const;
-	bool CanLoadDataFromDisk() const;
+	COREUOBJECT_API bool CanUnloadData() const;
+	COREUOBJECT_API bool CanLoadDataFromDisk() const;
 
-	void UpdateKeyIfNeeded();
-	void UpdateKeyIfNeeded(FCompressedBuffer InPayload) const;
+	COREUOBJECT_API void UpdateKeyIfNeeded();
+	COREUOBJECT_API void UpdateKeyIfNeeded(FCompressedBuffer InPayload) const;
 
-	void RecompressForSerialization(FCompressedBuffer& InOutPayload, EFlags PayloadFlags) const;
-	EFlags BuildFlagsForSerialization(FArchive& Ar, bool bKeepFileDataByReference) const;
+	COREUOBJECT_API void RecompressForSerialization(FCompressedBuffer& InOutPayload, EFlags PayloadFlags) const;
+	COREUOBJECT_API EFlags BuildFlagsForSerialization(FArchive& Ar, bool bKeepFileDataByReference) const;
 
 	bool IsDataVirtualized() const 
 	{ 
@@ -468,17 +506,17 @@ private:
 		return AttachedAr != nullptr;
 	}
 
-	void Register(UObject* Owner, const TCHAR* LogCallerName, bool bAllowUpdateId);
+	COREUOBJECT_API void Register(UObject* Owner, const TCHAR* LogCallerName, bool bAllowUpdateId);
 	/** Used when we need to clear the registration for our bulkdataId because its ownership is transferring elsewhere. */
-	void Unregister();
+	COREUOBJECT_API void Unregister();
 	/**
 	 * Used when we want to keep registration of our BulkDataId tied to our Payload location, but this BulkData is exiting memory
 	 * and the registry needs to know so it can drop its copy of the payload and allow us to reregister later if reloaded.
 	 */
-	void OnExitMemory();
+	COREUOBJECT_API void OnExitMemory();
 	/** Check whether we should be registered, and register/unregister/update as necessary to match. */
-	void UpdateRegistrationData(UObject* Owner, const TCHAR* LogCallerName, bool bAllowUpdateId);
-	void LogRegisterError(UE::BulkDataRegistry::ERegisterResult Value, UObject* Owner, const FGuid& FailedBulkDataId,
+	COREUOBJECT_API void UpdateRegistrationData(UObject* Owner, const TCHAR* LogCallerName, bool bAllowUpdateId);
+	COREUOBJECT_API void LogRegisterError(UE::BulkDataRegistry::ERegisterResult Value, UObject* Owner, const FGuid& FailedBulkDataId,
 		const TCHAR* CallerName, bool bHandledbyCreateUniqueGuid) const;
 
 	/**
@@ -487,7 +525,7 @@ private:
 	 * This error is not reasonable to expect, if it occurs then it means something has gone very wrong, which is why there is
 	 * also an ensure to make sure that any instances of it occurring as properly recorded and can be investigated.
 	 */
-	bool TryPayloadValidationForSaving(const FCompressedBuffer& PayloadForSaving, FLinkerSave* LinkerSave) const;
+	COREUOBJECT_API bool TryPayloadValidationForSaving(const FCompressedBuffer& PayloadForSaving, FLinkerSave* LinkerSave) const;
 
 	/** 
 	 * Utility to return an apt error message if the payload is invalid when trying to save the bulkdata. It will try to provide the best info from the given options.
@@ -495,7 +533,7 @@ private:
 	 * @param Linker	The FLinkerSave being used to save the bulkdata at the point of error. This can be nullptr if the bulkdata is not being saved to a package on disk.
 	 * @return			The formatted error message.
 	 */
-	FText GetCorruptedPayloadErrorMsgForSave(FLinkerSave* Linker) const;
+	COREUOBJECT_API FText GetCorruptedPayloadErrorMsgForSave(FLinkerSave* Linker) const;
 
 	/**
 	 * A utility for validating that a package trailer builder was created correctly. If a problem is encountered we will assert
@@ -509,10 +547,10 @@ private:
 	 * @param Id			The hash of the payload we want to verify
 	 * @param PayloadFlags	The flags for the payload.
 	 */
-	static void ValidatePackageTrailerBuilder(const FLinkerSave* LinkerSave, const FIoHash& Id, EFlags PayloadFlags);
+	static COREUOBJECT_API void ValidatePackageTrailerBuilder(const FLinkerSave* LinkerSave, const FIoHash& Id, EFlags PayloadFlags);
 
 	/** Returns true if we should use legacy serialization instead of the FPackageTrailer system. This can be removed when UE_ENABLE_VIRTUALIZATION_TOGGLE is removed. */
-	bool ShouldUseLegacySerialization(const FLinkerSave* LinkerSave) const;
+	COREUOBJECT_API bool ShouldUseLegacySerialization(const FLinkerSave* LinkerSave) const;
 
 	/** Unique identifier for the bulkdata object itself */
 	FGuid BulkDataId;
@@ -540,6 +578,9 @@ private:
 	/** A 32bit bitfield of flags */
 	EFlags Flags = EFlags::None;
 
+	// Use of IBulkDataRegistry requires a recursive mutex
+	mutable FRecursiveMutex Mutex;
+
 #if UE_ENABLE_VIRTUALIZATION_TOGGLE
 	bool bSkipVirtualization = false;
 #endif //UE_ENABLE_VIRTUALIZATION_TOGGLE
@@ -553,70 +594,6 @@ private:
 };
 
 ENUM_CLASS_FLAGS(FEditorBulkData::EFlags);
-
-/** 
- * NOTE: FPayloadToc/FTocEntry are now strictly legacy and are only used by the experimental sidecar system.
- * They will be removed when the sidecar storage is changed to use FPackageTrailer instead.
- */
-
-/** 
-  * Represents an entry to the table of contents found at the start of a payload sidecar file.
-  * This might be moved to it's own header and the table of contents made into a proper class 
-  * if we decide that we want to make access of the payload sidecar file a generic feature.
-  */
-struct COREUOBJECT_API FTocEntry
-{
-	FTocEntry() = default;
-	FTocEntry(const FEditorBulkData& BulkData)
-		: Identifier(BulkData.PayloadContentId)
-		, OffsetInFile(BulkData.OffsetInFile)
-		, UncompressedSize(BulkData.PayloadSize)
-	{
-
-	}
-
-	friend FArchive& operator<<(FArchive& Ar, FTocEntry& Entry);
-	friend void operator<<(FStructuredArchive::FSlot Slot, FTocEntry& Entry);
-
-	static constexpr uint32 PayloadSidecarFileVersion = 1;
-
-	/** Identifier for the payload */
-	FIoHash Identifier;
-	/** The offset into the file where we can find the payload, note that a virtualized payload will have an offset of INDEX_NONE */
-	int64 OffsetInFile = INDEX_NONE;
-	/** The size of the payload when uncompressed. */
-	int64 UncompressedSize = INDEX_NONE;
-};
-
-/** 
- * A table of contents showing the location of all virtualized bulkdata payloads in a file. 
- * NOTE: This is currently only used by the sidecar functionality.
- */
-class COREUOBJECT_API FPayloadToc
-{
-public:
-
-	void AddEntry(const FEditorBulkData& BulkData);
-	bool FindEntry(const FIoHash& Identifier, FTocEntry& OutEntry);
-
-	const TArray<FTocEntry>& GetContents() const;
-
-	friend FArchive& operator<<(FArchive& Ar, FPayloadToc& TableOfContents);
-	friend void operator<<(FStructuredArchive::FSlot Slot, FPayloadToc& TableOfContents);
-
-private:
-	enum class EVersion : uint32
-	{
-		INITIAL = 0,
-
-		// -----<new versions can be added before this line>-------------------------------------------------
-		// - this needs to be the last line (see note below)
-		AUTOMATIC_VERSION_PLUS_ONE,
-		AUTOMATIC_VERSION = AUTOMATIC_VERSION_PLUS_ONE - 1
-	};
-
-	TArray<FTocEntry> Contents;
-};
 
 /** 
  * Returns a FGuid representation of a FIoHash, to be used in existing code paths that require the id of 

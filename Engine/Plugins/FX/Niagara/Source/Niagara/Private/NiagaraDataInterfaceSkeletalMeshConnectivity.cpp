@@ -2,13 +2,15 @@
 
 #include "NiagaraDataInterfaceSkeletalMeshConnectivity.h"
 
-#include "Algo/StableSort.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/SkinnedAssetCommon.h"
-#include "NiagaraResourceArrayWriter.h"
+#include "NiagaraDataInterfaceSkeletalMesh.h"
 #include "NiagaraSettings.h"
 #include "NiagaraStats.h"
 
+#include "Rendering/SkeletalMeshRenderData.h"
 #include <limits>
+#include "RenderingThread.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - SkelMesh - BuildAdjacencyBuffer"), STAT_NiagaraSkel_Connectivity_Adjacency, STATGROUP_Niagara);
 
@@ -118,7 +120,7 @@ void FSkeletalMeshConnectivity::RegisterUser(FSkeletalMeshConnectivityUsage Usag
 			}
 			else
 			{
-				Proxy.Release();
+				Proxy.Reset();
 			}
 		}
 	}
@@ -396,15 +398,15 @@ FSkeletalMeshConnectivityProxy::Initialize(const FSkeletalMeshConnectivity& Conn
 }
 
 void
-FSkeletalMeshConnectivityProxy::InitRHI()
+FSkeletalMeshConnectivityProxy::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FRHIResourceCreateInfo CreateInfo(TEXT("FSkeletalMeshConnectivityProxy_AdjacencyBuffer"));
 	CreateInfo.ResourceArray = &AdjacencyResource;
 
 	const int32 BufferSize = AdjacencyResource.Num();
 
-	AdjacencyBuffer = RHICreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_Static, CreateInfo);
-	AdjacencySrv = RHICreateShaderResourceView(AdjacencyBuffer, sizeof(uint32), PF_R32_UINT);
+	AdjacencyBuffer = RHICmdList.CreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_Static, CreateInfo);
+	AdjacencySrv = RHICmdList.CreateShaderResourceView(AdjacencyBuffer, sizeof(uint32), PF_R32_UINT);
 
 #if STATS
 	check(GpuMemoryUsage == 0);

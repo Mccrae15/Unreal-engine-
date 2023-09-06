@@ -500,7 +500,71 @@ float3 F_Fresnel( float3 SpecularColor, float VoH )
 	return 0.5 * Square( (g - VoH) / (g + VoH) ) * ( 1 + Square( ((g+VoH)*VoH - 1) / ((g-VoH)*VoH + 1) ) );
 }
 
+float4 SheenLTC_Cofficients(float NoV, float Roughness, Texture2D InSheenLTCTexture, SamplerState InSheenSampler)
+{
+	const float Alpha = sqrt(Roughness);
+	const float SatNoV = saturate(abs(NoV) + 1e-5);
+	float2 UV = float2(Alpha, SatNoV);
+	UV = UV * (31.0 / 32.0) + (0.5 / 32.0);
+	return InSheenLTCTexture.SampleLevel(InSheenSampler, UV, 0);
+}
 
+float SheenLTC_DirectionalAlbedo(float NoV, float Roughness, Texture2D InSheenLTCTexture, SamplerState InSheenSampler)
+{
+	return SheenLTC_Cofficients(NoV, Roughness, InSheenLTCTexture, InSheenSampler).z;
+}
+
+// [Zeltner et al. 2022, "Practical Multiple-Scattering Sheen Using Linearly Transformed Cosines"]
+float3 SheenLTC_Sample(float3 CosSample, float3 V, half3 N, float NoV, float Roughness, Texture2D InSheenLTCTexture, SamplerState InSheenSampler)
+{
+	const float4 LTC = SheenLTC_Cofficients(NoV, Roughness, InSheenLTCTexture, InSheenSampler);
+	const float aInv = LTC.x;
+	const float bInv = LTC.y;
+	const float3 LocalL = normalize(float3(CosSample.x / aInv - CosSample.z * bInv / aInv, CosSample.y / aInv, CosSample.z));
+
+	// Rotate L into tangent space
+	const float3 T1 = normalize(V - N * NoV);
+	const float3 T2 = cross(N, T1);
+	const float3x3 TangentBasis = float3x3(T1, T2, N);
+	const float3 S = mul(LocalL, TangentBasis);
+	return S;
+}
+
+// [Zeltner et al. 2022, "Practical Multiple-Scattering Sheen Using Linearly Transformed Cosines"]
+float SheenLTC_Eval(float3 V, float3 L, half3 N, float NoV, float Roughness, Texture2D InSheenLTCTexture, SamplerState InSheenSampler, inout float OutDirectionalAlbedo)
+{
+	// Rotate L into tangent space
+	const float3 T1 = normalize(V - N * NoV);
+	const float3 T2 = cross(N, T1);
+	const float3x3 TangentBasis = float3x3(T1, T2, N);
+
+	// L' = mul(L, InvT) 
+	// Since TangentBasis is orthnormal Inv(T)=Transpose(T), i.e., mul(L, transpose(T)), which is equivalent to mul(T,L)
+	const float3 LocalL = mul(TangentBasis, L); 
+
+	const float4 LTC = SheenLTC_Cofficients(NoV, Roughness, InSheenLTCTexture, InSheenSampler);
+	const float aInv = LTC.x;
+	const float bInv = LTC.y;
+	OutDirectionalAlbedo = LTC.z;
+
+	float3 WrappedLocalL = float3(
+		aInv * LocalL.x + bInv * LocalL.z,
+		aInv * LocalL.y,
+		LocalL.z);
+
+	const float LenWrappedLocalL = length(WrappedLocalL);
+	// Jabobian is defined as: det(InvLTC) / ||InvLTC . L||
+	const float Jacobian = Pow2(aInv) / Pow3(LenWrappedLocalL);
+
+	// Normalized wrapped direction
+	WrappedLocalL /= LenWrappedLocalL;
+
+	// Evaluation a normalized cos distribution
+	const float CosDistribution = WrappedLocalL.z / PI;
+	const float Out = OutDirectionalAlbedo * CosDistribution * Jacobian; // Fs * CosTheta
+
+	return max(Out, 0.f);
+}
 
 //---------------
 // EnvBRDF
@@ -742,4 +806,37 @@ float3 SimpleClearCoatTransmittance(float NoL, float NoV, float Metallic, float3
 	//	- Transmittance is only computed for metals, for some reason plastic do not receive transmittance.
 
 	return Transmittance;
+}
+
+// Conversion of GGX roughness to Beckmann roughness
+// Using Microfacet Distribution Function: To Change or Not to Change, That Is the Question.
+float ConvertRoughnessGGXToBeckmann(float Roughness)
+{
+	// Use a custom remapping to better match the overall highlight shape, in particular for lower roughness (i.e., <0.5). 
+	// The original mapping was Ctr=Roughness based on the paper
+	const float Ctr = pow(Roughness, 0.7f);
+	return saturate(0.8388 * Ctr+ 0.7 * Pow4(Ctr));
+}
+float2 ConvertRoughnessGGXToBeckmann(float2 Roughness)
+{
+	return float2(ConvertRoughnessGGXToBeckmann(Roughness.x), ConvertRoughnessGGXToBeckmann(Roughness.y));
+}
+
+struct FBeckmannDesc
+{
+	float2 Roughness;	// Roughness
+	float2 Alpha;		// Roughness squared
+	float2 Sigma;		// RMS slope of the microfacets
+	float  Rho;			// Slope correlation factor to be used with LEAN mapping. See http://igg.unistra.fr/People/chermain/assets/pdf/Chermain2021RealTime.pdf.
+};
+FBeckmannDesc GGXToBeckmann(float2 GGXSafeRoughness)
+{
+	const float InvSqrt2 = 0.707106f;
+
+	FBeckmannDesc Out;
+	Out.Roughness	= ConvertRoughnessGGXToBeckmann(GGXSafeRoughness);
+	Out.Alpha		= Square(Out.Roughness);
+	Out.Sigma		= Out.Alpha * InvSqrt2;
+	Out.Rho			= 0.0f;
+	return Out;
 }

@@ -3,7 +3,6 @@
 #include "NearestNeighborModelInstance.h"
 #include "NearestNeighborModel.h"
 #include "NearestNeighborModelInputInfo.h"
-#include "NeuralNetwork.h"
 #include "NearestNeighborOptimizedNetwork.h"
 #include "MLDeformerAsset.h"
 #include "Components/ExternalMorphSet.h"
@@ -44,51 +43,45 @@ int64 UNearestNeighborModelInstance::SetBoneTransforms(float* OutputBuffer, int6
 bool UNearestNeighborModelInstance::SetupInputs()
 {
 	const UNearestNeighborModel* NearestNeighborModel = Cast<UNearestNeighborModel>(Model);
-	check(NearestNeighborModel);
-	if (NearestNeighborModel && NearestNeighborModel->DoesUseOptimizedNetwork())
+	if (NearestNeighborModel == nullptr ||
+		SkeletalMeshComponent == nullptr ||
+		SkeletalMeshComponent->GetSkeletalMeshAsset() == nullptr ||
+		!bIsCompatible)
 	{
-		if (NearestNeighborModel == nullptr ||
-			SkeletalMeshComponent == nullptr ||
-			SkeletalMeshComponent->GetSkeletalMeshAsset() == nullptr ||
-			!bIsCompatible)
-		{
-			return false;
-		}
-
+		return false;
+	}
+	if (NearestNeighborModel->DoesUseOptimizedNetwork())
+	{
 		const UNearestNeighborOptimizedNetwork* OptimizedNetwork = NearestNeighborModel->GetOptimizedNetwork();
 		if (!OptimizedNetwork || !OptimizedNetworkInstance)
 		{
 			return false;
 		}
-
-		int32 NumNeuralNetInputs = 0;
-		float* InputDataPointer = nullptr;
-		GetInputDataPointer(InputDataPointer, NumNeuralNetInputs);
-
-		// If the neural network expects a different number of inputs, do nothing.
-		const int32 NumFloatsPerBone = NearestNeighborModel->GetNumFloatsPerBone();
-		const int32 NumFloatsPerCurve = NearestNeighborModel->GetNumFloatsPerCurve();
-		const int64 NumDeformerAssetInputs = NearestNeighborModel->GetInputInfo()->CalcNumNeuralNetInputs(NumFloatsPerBone, NumFloatsPerCurve);
-		if (NumNeuralNetInputs != NumDeformerAssetInputs)
-		{
-			return false;
-		}
-
-		const int64 NumFloatsWritten = SetNeuralNetworkInputValues(InputDataPointer, NumNeuralNetInputs);
-		check(NumFloatsWritten == NumNeuralNetInputs);
 	}
 	else
 	{
-		const bool bSuccess = Super::SetupInputs();
-		if (!bSuccess)
-		{
-			return false;
-		}
+		return false;
 	}
 
-	float* InputDataPointer = nullptr;
 	int32 NumNeuralNetInputs = 0;
+	float* InputDataPointer = nullptr;
 	GetInputDataPointer(InputDataPointer, NumNeuralNetInputs);
+	if (!InputDataPointer)
+	{
+		return false;
+	}
+
+	// If the neural network expects a different number of inputs, do nothing.
+	const int32 NumFloatsPerBone = NearestNeighborModel->GetNumFloatsPerBone();
+	const int32 NumFloatsPerCurve = NearestNeighborModel->GetNumFloatsPerCurve();
+	const int64 NumDeformerAssetInputs = NearestNeighborModel->GetInputInfo()->CalcNumNeuralNetInputs(NumFloatsPerBone, NumFloatsPerCurve);
+	if (NumNeuralNetInputs != NumDeformerAssetInputs)
+	{
+		return false;
+	}
+
+	const int64 NumFloatsWritten = SetNeuralNetworkInputValues(InputDataPointer, NumNeuralNetInputs);
+	check(NumFloatsWritten == NumNeuralNetInputs);
 	if (InputDataPointer)
 	{
 		// Clip network inputs based on training set min and max values.
@@ -127,10 +120,6 @@ void UNearestNeighborModelInstance::Execute(float ModelWeight)
 	{
 		UNearestNeighborOptimizedNetwork* OptimizedNetwork = NearestNeighborModel->GetOptimizedNetwork();
 		OptimizedNetworkInstance->Run();
-	}
-	else
-	{
-		Super::Execute(ModelWeight);
 	}
 }
 
@@ -297,7 +286,7 @@ void UNearestNeighborModelInstance::InitPreviousWeights()
 	}
 }
 
-void UNearestNeighborModelInstance::GetInputDataPointer(float*& OutInputData, int32& OutNumInputFloats) const
+void UNearestNeighborModelInstance::GetInputDataPointer(float*& OutInputData, int32& OutNumInputFloats)
 {
 	const UNearestNeighborModel* NearestNeighborModel = Cast<UNearestNeighborModel>(Model);
 	check(NearestNeighborModel);
@@ -311,21 +300,11 @@ void UNearestNeighborModelInstance::GetInputDataPointer(float*& OutInputData, in
 			return;
 		}
 	}
-	else
-	{
-		UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		if (NeuralNetwork)
-		{
-			OutInputData = static_cast<float*>(NeuralNetwork->GetInputDataPointerMutableForContext(NeuralNetworkInferenceHandle));
-			OutNumInputFloats = NeuralNetwork->GetInputTensorForContext(NeuralNetworkInferenceHandle).Num();
-			return;
-		}
-	}
 	OutInputData = nullptr;
 	OutNumInputFloats = 0;
 }
 
-void UNearestNeighborModelInstance::GetOutputDataPointer(float*& OutOutputData, int32& OutNumOutputFloats) const
+void UNearestNeighborModelInstance::GetOutputDataPointer(float*& OutOutputData, int32& OutNumOutputFloats)
 {
 	const UNearestNeighborModel* NearestNeighborModel = Cast<UNearestNeighborModel>(Model);
 	check(NearestNeighborModel);
@@ -336,17 +315,6 @@ void UNearestNeighborModelInstance::GetOutputDataPointer(float*& OutOutputData, 
 		{
 			OutOutputData = OptimizedNetworkInstance->GetOutputs().GetData();
 			OutNumOutputFloats = OptimizedNetwork->GetNumOutputs();
-			return;
-		}
-	}
-	else
-	{
-		UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		if (NeuralNetwork)
-		{
-			const FNeuralTensor& OutputTensor = NeuralNetwork->GetOutputTensorForContext(NeuralNetworkInferenceHandle);
-			OutNumOutputFloats = OutputTensor.Num();
-			OutOutputData = (float*)OutputTensor.GetDataCasted<float>();
 			return;
 		}
 	}
@@ -390,14 +358,6 @@ FString UNearestNeighborModelInstance::CheckCompatibility(USkeletalMeshComponent
 		}
 
 	}
-	else
-	{
-		UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		if (NeuralNetwork && NeuralNetwork->IsLoaded())
-		{
-			NumNeuralNetInputs = NeuralNetwork->GetInputTensor().Num();
-		}
-	}
 
 	// Only check compatibility after the network is loaded. 
 	if (NumNeuralNetInputs >= 0 && NumNeuralNetInputs != NumDeformerAssetInputs) 
@@ -411,4 +371,29 @@ FString UNearestNeighborModelInstance::CheckCompatibility(USkeletalMeshComponent
 	}
 
 	return ErrorText;
+}
+
+TArray<float> UNearestNeighborModelInstance::Eval(const TArray<float>& InputData)
+{
+	const UNearestNeighborModel* NearestNeighborModel = Cast<UNearestNeighborModel>(Model);
+	int32 NumNeuralNetInputs = 0;
+	float* InputDataPointer = nullptr;
+	GetInputDataPointer(InputDataPointer, NumNeuralNetInputs);
+	check(InputDataPointer != nullptr);
+	check(InputData.Num() == NumNeuralNetInputs);
+
+	for (int32 i = 0; i < NumNeuralNetInputs; ++i)
+	{
+		InputDataPointer[i] = InputData[i];
+	}
+	NearestNeighborModel->ClipInputs(InputDataPointer, NumNeuralNetInputs);
+
+	if (NearestNeighborModel->DoesUseOptimizedNetwork())
+	{
+		check(OptimizedNetworkInstance != nullptr);
+		OptimizedNetworkInstance->Run();
+		TArrayView<float> Outputs = OptimizedNetworkInstance->GetOutputs();
+		return TArray<float>(Outputs.GetData(), Outputs.Num());
+	}
+	return TArray<float>();
 }

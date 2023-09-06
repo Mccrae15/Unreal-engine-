@@ -23,6 +23,7 @@
 #include "/Engine/Private/HairStrands/HairCardsAttributeCommon.ush"
 #include "/Engine/Private/HairStrands/HairStrandsAttributeCommon.ush"
 #include "/Engine/Private/DeferredShadingCommon.ush"
+#include "/Engine/Private/SparseVolumeTexture/SparseVolumeTextureCommon.ush"
 
 // Reduce latency of Nanite material base pass pixel shaders caused by register pressure due to the calculation of WPO
 #if PIXELSHADER && IS_NANITE_SHADING_PASS && IS_BASE_PASS
@@ -130,7 +131,10 @@
 #if IS_NANITE_PASS
 	#define ALLOW_CLIP 0
 	#define clip(x)
-	#if COMPUTESHADER
+	#if COMPUTE_SHADED
+		// Threads are remapped into 2x2 quad layout, so quad read x/y/d work for ddx/ddy
+		#define fwidth(x) 0
+	#elif COMPUTESHADER
 		#define ddx(x) 0
 		#define ddy(x) 0
 		#define fwidth(x) 0
@@ -139,13 +143,16 @@
 	#define ALLOW_CLIP 1
 #endif
 
-#define TEMPLATE_USES_STRATA			(STRATA_ENABLED && MATERIAL_IS_STRATA)
-#define STRATA_OPAQUE_MATERIAL			(TEMPLATE_USES_STRATA && ((!STRATA_MATERIAL_EXPORT_EXECUTED && MATERIALBLENDING_ANY_TRANSLUCENT<=0) || STRATA_MATERIAL_EXPORT_FROM_OPAQUE))
-#define STRATA_TRANSLUCENT_MATERIAL		(TEMPLATE_USES_STRATA && ((!STRATA_MATERIAL_EXPORT_EXECUTED && MATERIALBLENDING_ANY_TRANSLUCENT>0 ) || STRATA_MATERIAL_EXPORT_FROM_TRANSLUCENT))
-#define STRATA_OPAQUE_DEFERRED			(STRATA_OPAQUE_MATERIAL && !FORWARD_SHADING)
-#define STRATA_TRANSLUCENT_FORWARD		(STRATA_TRANSLUCENT_MATERIAL && !FORWARD_SHADING)
-#define STRATA_FORWARD_SHADING			(FORWARD_SHADING && (STRATA_OPAQUE_MATERIAL || STRATA_TRANSLUCENT_MATERIAL))
-#define STRATA_OUTPUT_ROUGH_REFRACTION	(STRATA_ENABLED && STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED && STRATA_MATERIAL_OUTPUT_OPAQUE_ROUGH_REFRACTIONS)
+#define TEMPLATE_USES_STRATA				(STRATA_ENABLED && MATERIAL_IS_STRATA)
+#define STRATA_OPAQUE_MATERIAL				(TEMPLATE_USES_STRATA && ((!STRATA_MATERIAL_EXPORT_EXECUTED && MATERIALBLENDING_ANY_TRANSLUCENT<=0) || STRATA_MATERIAL_EXPORT_FROM_OPAQUE))
+#define STRATA_TRANSLUCENT_MATERIAL			(TEMPLATE_USES_STRATA && ((!STRATA_MATERIAL_EXPORT_EXECUTED && MATERIALBLENDING_ANY_TRANSLUCENT>0 ) || STRATA_MATERIAL_EXPORT_FROM_TRANSLUCENT))
+#define STRATA_OPAQUE_DEFERRED				(STRATA_OPAQUE_MATERIAL && !FORWARD_SHADING)
+#define STRATA_TRANSLUCENT_FORWARD			(STRATA_TRANSLUCENT_MATERIAL && !FORWARD_SHADING)
+#define STRATA_FORWARD_SHADING				(FORWARD_SHADING && (STRATA_OPAQUE_MATERIAL || STRATA_TRANSLUCENT_MATERIAL))
+#define STRATA_OUTPUT_ROUGH_REFRACTION		(STRATA_ENABLED && STRATA_OPAQUE_ROUGH_REFRACTION_ENABLED && STRATA_MATERIAL_OUTPUT_OPAQUE_ROUGH_REFRACTIONS)
+
+// Premultiplied alpha override is only enabled when alpha composite blending is used and the root node input is fed.
+#define STRATA_USE_PREMULTALPHA_OVERRIDE	(STRATA_ENABLED && MATERIALBLENDING_ALPHACOMPOSITE && STRATA_PREMULTIPLIED_ALPHA_OPACITY_OVERRIDEN)
 
 #if TEMPLATE_USES_STRATA
 #define STRATA_INLINE_SHADING 1
@@ -226,26 +233,54 @@ struct FMaterialParticleParameters
 
 	/** The size of the particle. */
 	float2 Size;
+
+	/** The sprite rotation */
+	float SpriteRotation;
 };
 
 float4 GetDynamicParameter(FMaterialParticleParameters Parameters, float4 Default, int ParameterIndex=0)
 {
 #if (NIAGARA_PARTICLE_FACTORY)
-	switch ( ParameterIndex)
+	switch ( ParameterIndex )
 	{
 	#if (DYNAMIC_PARAMETERS_MASK & 1)
-		case 0:	return (Parameters.DynamicParameterValidMask & 1) != 0 ? Parameters.DynamicParameter : Default;
+		case 0:
+			return float4(
+				(Parameters.DynamicParameterValidMask & 0x0001) == 0 ? Default.x : Parameters.DynamicParameter.x,
+				(Parameters.DynamicParameterValidMask & 0x0002) == 0 ? Default.y : Parameters.DynamicParameter.y,
+				(Parameters.DynamicParameterValidMask & 0x0004) == 0 ? Default.z : Parameters.DynamicParameter.z,
+				(Parameters.DynamicParameterValidMask & 0x0008) == 0 ? Default.w : Parameters.DynamicParameter.w
+			);
 	#endif
 	#if (DYNAMIC_PARAMETERS_MASK & 2)
-		case 1:	return (Parameters.DynamicParameterValidMask & 2) != 0 ? Parameters.DynamicParameter1 : Default;
+		case 1:
+			return float4(
+				(Parameters.DynamicParameterValidMask & 0x0010) == 0 ? Default.x : Parameters.DynamicParameter1.x,
+				(Parameters.DynamicParameterValidMask & 0x0020) == 0 ? Default.y : Parameters.DynamicParameter1.y,
+				(Parameters.DynamicParameterValidMask & 0x0040) == 0 ? Default.z : Parameters.DynamicParameter1.z,
+				(Parameters.DynamicParameterValidMask & 0x0080) == 0 ? Default.w : Parameters.DynamicParameter1.w
+			);
 	#endif
 	#if (DYNAMIC_PARAMETERS_MASK & 4)
-		case 2:	return (Parameters.DynamicParameterValidMask & 4) != 0 ? Parameters.DynamicParameter2 : Default;
+		case 2:
+			return float4(
+				(Parameters.DynamicParameterValidMask & 0x0100) == 0 ? Default.x : Parameters.DynamicParameter2.x,
+				(Parameters.DynamicParameterValidMask & 0x0200) == 0 ? Default.y : Parameters.DynamicParameter2.y,
+				(Parameters.DynamicParameterValidMask & 0x0400) == 0 ? Default.z : Parameters.DynamicParameter2.z,
+				(Parameters.DynamicParameterValidMask & 0x0800) == 0 ? Default.w : Parameters.DynamicParameter2.w
+			);
 	#endif	
 	#if (DYNAMIC_PARAMETERS_MASK & 8)
-		case 3:	return (Parameters.DynamicParameterValidMask & 8) != 0 ? Parameters.DynamicParameter3 : Default;
+		case 3:
+			return float4(
+				(Parameters.DynamicParameterValidMask & 0x1000) == 0 ? Default.x : Parameters.DynamicParameter3.x,
+				(Parameters.DynamicParameterValidMask & 0x2000) == 0 ? Default.y : Parameters.DynamicParameter3.y,
+				(Parameters.DynamicParameterValidMask & 0x4000) == 0 ? Default.z : Parameters.DynamicParameter3.z,
+				(Parameters.DynamicParameterValidMask & 0x8000) == 0 ? Default.w : Parameters.DynamicParameter3.w
+			);
 	#endif
-		default: return Default;
+		default:
+			return Default;
 	}
 #elif (PARTICLE_FACTORY)
 	if ( ParameterIndex == 0 )
@@ -269,6 +304,17 @@ float4 GetDynamicParameter(FMaterialParticleParameters Parameters, float4 Defaul
 struct FPixelMaterialInputs
 {
 %s
+
+#if TEMPLATE_USES_STRATA
+FStrataData GetFrontStrataData()
+{
+#if STRATA_USE_FULLYSIMPLIFIED_MATERIAL == 1
+	return FullySimplifiedFrontMaterial;
+#else
+	return FrontMaterial;
+#endif
+}
+#endif // TEMPLATE_USES_STRATA
 };
 
 /** 
@@ -403,7 +449,7 @@ struct FMaterialPixelParameters
 
 	// Actual primitive Id
 #if HAIR_STRAND_MESH_FACTORY
-	uint	HairPrimitiveId;		// Control point ID
+	uint	HairControlPointId;		// Control point ID
 	float2	HairPrimitiveUV;		// U: parametric distance between the two surrounding control point. V: parametric distance along hair width
 #endif
 #if HAIR_CARD_MESH_FACTORY
@@ -461,7 +507,29 @@ struct FMaterialPixelParameters
 #if TEMPLATE_USES_STRATA
 	FSharedLocalBases SharedLocalBases;
 	FStrataTree StrataTree;
+
+#if STRATA_USE_FULLYSIMPLIFIED_MATERIAL == 1
+	FSharedLocalBases SharedLocalBasesFullySimplified;
+	FStrataTree StrataTreeFullySimplified;
+#endif
+
 	FStrataPixelFootprint StrataPixelFootprint;
+
+	FStrataPixelHeader GetFrontStrataHeader()
+	{
+		FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
+#if STRATA_USE_FULLYSIMPLIFIED_MATERIAL == 1
+		StrataPixelHeader.StrataTree = StrataTreeFullySimplified;
+		StrataPixelHeader.BSDFCount = StrataTreeFullySimplified.BSDFCount;
+		StrataPixelHeader.SharedLocalBases = SharedLocalBasesFullySimplified;
+#else
+		StrataPixelHeader.StrataTree = StrataTree;
+		StrataPixelHeader.BSDFCount = StrataTree.BSDFCount;
+		StrataPixelHeader.SharedLocalBases = SharedLocalBases;
+#endif
+		StrataPixelHeader.IrradianceAO = InitIrradianceAndOcclusion();
+		return StrataPixelHeader;
+	}
 #endif
 
 	FMaterialAttributes MaterialAttributes;
@@ -561,10 +629,17 @@ struct FMaterialVertexParameters
 	// Index into View.PrimitiveSceneData
 	uint PrimitiveId;
 
-#if IS_NANITE_PASS
 	bool bEvaluateWorldPositionOffset;
-#endif
 };
+
+FMaterialVertexParameters MakeInitializedMaterialVertexParameters()
+{
+	FMaterialVertexParameters Result = (FMaterialVertexParameters)0;
+	Result.PrimitiveId = INVALID_PRIMITIVE_ID;
+	Result.bEvaluateWorldPositionOffset = true;
+
+	return Result;
+}
 
 float MaterialReadInterpolatorComponent(FMaterialPixelParameters Parameters, int InterpolatorIndex)
 {
@@ -807,17 +882,6 @@ float2 GetPixelPosition(FMaterialVertexParameters Parameters)
 	return GetViewportUV(Parameters) * View.ViewSizeAndInvSize.xy;
 }
 
-uint3 SparseVolumeTextureGetVoxelCoord(uint PackedPhysicalTileCoord, uint PhysicalTileSize, uint3 PageTableCoord, uint3 VolumeCoord)
-{
-	const int3 PhysicalTileCoord = int3(
-		PackedPhysicalTileCoord & 0x7FF,
-		(PackedPhysicalTileCoord >> 11) & 0x7FF,
-		(PackedPhysicalTileCoord >> 22) & 0x3FF);
-
-	int3 VoxelCoord = PhysicalTileCoord * PhysicalTileSize + int3(VolumeCoord - PageTableCoord * PhysicalTileSize);
-	return VoxelCoord;
-}
-
 #if POST_PROCESS_MATERIAL
 
 float2 GetPixelPosition(FMaterialPixelParameters Parameters)
@@ -834,7 +898,7 @@ float2 GetViewportUV(FMaterialPixelParameters Parameters)
 
 float2 GetPixelPosition(FMaterialPixelParameters Parameters)
 {
-	return Parameters.SvPosition.xy - float2(View.ViewRectMin.xy);
+	return Parameters.SvPosition.xy - ResolvedView.ViewRectMin.xy;
 }
 
 float2 GetViewportUV(FMaterialPixelParameters Parameters)
@@ -1073,6 +1137,16 @@ MaterialFloat2 GetDefaultSceneTextureUV(FMaterialPixelParameters Parameters, con
 		return GetPrimitiveData(Parameters).ActorWorldPosition;
 	#endif
 	}
+
+	float3 GetActorTranslatedWorldPosition(FMaterialVertexParameters Parameters)
+	{
+		return LWCToFloat(LWCAdd(GetActorWorldPosition(Parameters), ResolvedView.PreViewTranslation));
+	}
+
+	float3 GetActorTranslatedWorldPosition(FMaterialPixelParameters Parameters)
+	{
+		return LWCToFloat(LWCAdd(GetActorWorldPosition(Parameters), ResolvedView.PreViewTranslation));
+	}
 	
 	float3 GetObjectOrientation(FMaterialVertexParameters Parameters)
 	{
@@ -1190,7 +1264,7 @@ MaterialFloat3 GetPerInstanceCustomData3Vector(FMaterialPixelParameters Paramete
 /** Get the per-instance custom data when instancing */
 MaterialFloat3 GetPerInstanceCustomData3Vector(FMaterialVertexParameters Parameters, int Index, MaterialFloat3 DefaultValue)
 {
-#if USE_INSTANCE_CULLING && USES_PER_INSTANCE_CUSTOM_DATA
+#if VF_USE_PRIMITIVE_SCENE_DATA && USES_PER_INSTANCE_CUSTOM_DATA
 		return float3(GetPerInstanceCustomData(Parameters, Index, DefaultValue.x), 
 					  GetPerInstanceCustomData(Parameters, Index + 1, DefaultValue.y),
 					  GetPerInstanceCustomData(Parameters, Index + 2, DefaultValue.z));
@@ -1240,7 +1314,11 @@ FLWCMatrix GetLocalToWorld(FMaterialPixelParameters Parameters)
 
 FLWCMatrix GetPrevLocalToWorld(FMaterialVertexParameters Parameters)
 {
+#if USE_INSTANCING || USE_INSTANCE_CULLING || IS_MESHPARTICLE_FACTORY
 	return Parameters.PrevFrameLocalToWorld;
+#else
+	return GetPrimitiveData(Parameters).PreviousLocalToWorld;
+#endif
 }
 
 /** Transforms a vector from local space to world space (PS version) */
@@ -1307,6 +1385,16 @@ FLWCVector3 GetObjectWorldPosition(FMaterialVertexParameters Parameters)
 #else
 	return GetPrimitiveData(Parameters).ObjectWorldPosition;
 #endif
+}
+
+float3 GetObjectTranslatedWorldPosition(FMaterialPixelParameters Parameters)
+{
+	return LWCToFloat(LWCAdd(GetObjectWorldPosition(Parameters), ResolvedView.PreViewTranslation));
+}
+
+float3 GetObjectTranslatedWorldPosition(FMaterialVertexParameters Parameters)
+{
+	return LWCToFloat(LWCAdd(GetObjectWorldPosition(Parameters), ResolvedView.PreViewTranslation));
 }
 
 /** Get the per-instance random value when instancing */
@@ -1456,7 +1544,7 @@ float3 MaterialExpressionBlackBody( float Temp )
 float2 MaterialExpressionGetHairRootUV(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsRootUV(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsRootUV(Parameters.HairControlPointId);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsRootUV(Parameters.HairPrimitiveUV, Parameters.HairPrimitiveRootUV);
 #else
@@ -1467,7 +1555,7 @@ float2 MaterialExpressionGetHairRootUV(FMaterialPixelParameters Parameters)
 float2 MaterialExpressionGetHairUV(FMaterialPixelParameters Parameters)
 {	
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsUV(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsUV(Parameters.HairControlPointId, Parameters.HairPrimitiveUV);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsUV(Parameters.HairPrimitiveUV);
 #else
@@ -1478,7 +1566,7 @@ float2 MaterialExpressionGetHairUV(FMaterialPixelParameters Parameters)
 float2 MaterialExpressionGetHairDimensions(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsDimensions(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsDimensions(Parameters.HairControlPointId, Parameters.HairPrimitiveUV.x);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsDimensions(Parameters.HairPrimitiveUV, Parameters.HairPrimitiveLength);
 #else
@@ -1489,7 +1577,7 @@ float2 MaterialExpressionGetHairDimensions(FMaterialPixelParameters Parameters)
 float MaterialExpressionGetHairSeed(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsSeed(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsSeed(Parameters.HairControlPointId);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsSeed(Parameters.HairPrimitiveUV);
 #else
@@ -1497,10 +1585,10 @@ float MaterialExpressionGetHairSeed(FMaterialPixelParameters Parameters)
 #endif
 }
 
-float MaterialExpressionGetHairClumpID(FMaterialPixelParameters Parameters)
+float3 MaterialExpressionGetHairClumpID(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsClumpID(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsClumpID(Parameters.HairControlPointId);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsClumpID(Parameters.HairPrimitiveUV);
 #else
@@ -1511,7 +1599,7 @@ float MaterialExpressionGetHairClumpID(FMaterialPixelParameters Parameters)
 float3 MaterialExpressionGetHairBaseColor(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsBaseColor(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsColor(Parameters.HairControlPointId, Parameters.HairPrimitiveUV.x);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsBaseColor(Parameters.HairPrimitiveUV, Parameters.HairPrimitiveMaterial.xyz);
 #else
@@ -1522,7 +1610,7 @@ float3 MaterialExpressionGetHairBaseColor(FMaterialPixelParameters Parameters)
 float MaterialExpressionGetHairRoughness(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsRoughness(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsRoughness(Parameters.HairControlPointId, Parameters.HairPrimitiveUV.x);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsRoughness(Parameters.HairPrimitiveUV, Parameters.HairPrimitiveMaterial.w);
 #else
@@ -1533,7 +1621,7 @@ float MaterialExpressionGetHairRoughness(FMaterialPixelParameters Parameters)
 float MaterialExpressionGetHairAO(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsAO(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsAO(Parameters.HairControlPointId, Parameters.HairPrimitiveUV.x);
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsAO(Parameters.HairPrimitiveUV, 1.0f);
 #else
@@ -1549,7 +1637,7 @@ float MaterialExpressionGetHairDepth(FMaterialVertexParameters Parameters)
 float MaterialExpressionGetHairDepth(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsDepth(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV, Parameters.SvPosition.z);
+	return GetHairStrandsDepth();
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsDepth(Parameters.HairPrimitiveUV, Parameters.SvPosition.z);
 #else
@@ -1560,7 +1648,7 @@ float MaterialExpressionGetHairDepth(FMaterialPixelParameters Parameters)
 float MaterialExpressionGetHairCoverage(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsCoverage(Parameters.HairPrimitiveId, Parameters.HairPrimitiveUV);
+	return GetHairStrandsCoverage();
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsCoverage(Parameters.HairPrimitiveUV);
 #else
@@ -1603,7 +1691,7 @@ float4 MaterialExpressionGetHairAuxilaryData(FMaterialPixelParameters Parameters
 float MaterialExpressionGetHairGroupIndex(FMaterialPixelParameters Parameters)
 {
 #if HAIR_STRAND_MESH_FACTORY
-	return GetHairStrandsGroupIndex(Parameters.HairPrimitiveId);
+	return GetHairStrandsGroupIndex();
 #elif HAIR_CARD_MESH_FACTORY
 	return GetHairStrandsGroupIndex(Parameters.HairPrimitiveUV, Parameters.HairPrimitiveGroupIndex);
 #else
@@ -2466,7 +2554,7 @@ float4 SceneTextureLookup(float2 UV, int SceneTextureIndex, bool bFiltered)
 				case PPI_Specular:				return StrataGetBSDFSpecular(BSDF);
 				case PPI_Metallic:				return StrataGetBSDFMetallic(BSDF);
 				case PPI_WorldNormal:			return float4(StrataGetWorldNormal(StrataPixelHeader, BSDF, StrataAddressing), 0);
-				case PPI_Opacity:				return SSSType != SSS_TYPE_INVALID ? StrataSubSurfaceHeaderGetOpacity(SSSHeader) : 1.f;
+				case PPI_Opacity:				return BSDF.HasScatteringData() ? StrataSubSurfaceHeaderGetOpacity(SSSHeader) : 1.f;
 				case PPI_Roughness:				return StrataGetBSDFRoughness(BSDF);
 				case PPI_MaterialAO:			return StrataGetAO(StrataPixelHeader);
 				case PPI_ShadingModelColor:		return float4(GetShadingModelColor(StrataGetLegacyShadingModels(BSDF)), 1);
@@ -2543,8 +2631,10 @@ float4 MaterialExpressionDBufferTextureLookup(FMaterialPixelParameters Parameter
 {
 	if ((GetPrimitiveData(Parameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER) != 0 && View.ShowDecalsMask > 0)
 	{
+		uint2 PixelPos = uint2(BufferUV * View.BufferSizeAndInvSize.xy);
+		uint ValidDBufferTargetMask = GetDBufferTargetMask(PixelPos) & (1u << DBufferTextureIndex);
 #if STRATA_ENABLED
-		const FStrataDBuffer DBufferData = GetDBufferData(BufferUV, DBufferTextureIndex);
+		const FStrataDBuffer DBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
 		switch (DBufferTextureIndex)
 		{
 		// All data (BaseColor, WorldNormal, Roughness) are pre-multiplied by their coverage
@@ -2553,8 +2643,6 @@ float4 MaterialExpressionDBufferTextureLookup(FMaterialPixelParameters Parameter
 		case 2:	return float4(DBufferData.Roughness,	DBufferData.Metallic, DBufferData.Specular, DBufferData.OneMinusCoverage_Roughness);
 		}
 #else
-		uint2 PixelPos = uint2(BufferUV * View.BufferSizeAndInvSize.xy);
-		uint ValidDBufferTargetMask = GetDBufferTargetMask(PixelPos) & (1u << DBufferTextureIndex);
 		FDBufferData DBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
 		switch (DBufferTextureIndex)
 		{
@@ -2566,6 +2654,39 @@ float4 MaterialExpressionDBufferTextureLookup(FMaterialPixelParameters Parameter
 	}
 
 	return float4(0, 0, 0, 1);
+}
+
+
+MaterialFloat2 GetDefaultPathTracingBufferTextureUV(FMaterialPixelParameters Parameters, const uint PathTracingBufferTextureIndex)
+{
+	float2 ViewportUV = GetViewportUV(Parameters);
+#if POST_PROCESS_MATERIAL && SHADING_PATH_DEFERRED && MATERIAL_PATH_TRACING_BUFFER_READ
+	
+	switch (PathTracingBufferTextureIndex)
+	{
+	case 0: return ViewportUV * PathTracingPostProcessInput_0_UVViewportSize + PathTracingPostProcessInput_0_UVViewportMin;
+	case 1: return ViewportUV * PathTracingPostProcessInput_1_UVViewportSize + PathTracingPostProcessInput_1_UVViewportMin;
+	case 2: return ViewportUV * PathTracingPostProcessInput_2_UVViewportSize + PathTracingPostProcessInput_2_UVViewportMin;
+	case 3: return ViewportUV * PathTracingPostProcessInput_3_UVViewportSize + PathTracingPostProcessInput_3_UVViewportMin;
+	case 4: return ViewportUV * PathTracingPostProcessInput_4_UVViewportSize + PathTracingPostProcessInput_4_UVViewportMin;
+	}
+#endif
+	return ViewportUV;
+}
+
+float4 MaterialExpressionPathTracingBufferTextureLookup(FMaterialPixelParameters Parameters, float2 BufferUV, int PathTracingBufferTextureIndex)
+{
+#if POST_PROCESS_MATERIAL && SHADING_PATH_DEFERRED && MATERIAL_PATH_TRACING_BUFFER_READ
+	switch (PathTracingBufferTextureIndex)
+	{
+	case 0:	return Texture2DSample(PathTracingPostProcessInput_0_Texture, PathTracingPostProcessInput_0_Sampler, BufferUV);
+	case 1:	return Texture2DSample(PathTracingPostProcessInput_1_Texture, PathTracingPostProcessInput_1_Sampler, BufferUV);
+	case 2:	return Texture2DSample(PathTracingPostProcessInput_2_Texture, PathTracingPostProcessInput_2_Sampler, BufferUV);
+	case 3:	return Texture2DSample(PathTracingPostProcessInput_3_Texture, PathTracingPostProcessInput_3_Sampler, BufferUV);
+	case 4:	return Texture2DSample(PathTracingPostProcessInput_4_Texture, PathTracingPostProcessInput_4_Sampler, BufferUV);
+	}
+#endif
+	return float4(1, 0, 0, 1);
 }
 
 // DERIV_BASE_VALUE() is a disgusting macro to manage backwards compatibility while changing the generated materials. The existing nodes are not "aware"
@@ -2828,6 +2949,30 @@ half GetMaterialOpacityMaskClipValue()
 %s;
 }
 
+#if USES_DISPLACEMENT && IS_NANITE_PASS
+float GetMaterialDisplacementMagnitude()
+{
+%s;
+}
+
+float GetMaterialDisplacementCenter()
+{
+%s;
+}
+
+float GetMaterialDisplacement(FPixelMaterialInputs PixelMaterialInputs)
+{
+	return saturate(PixelMaterialInputs.Displacement);
+}
+
+float GetMaterialDisplacementScaled(FPixelMaterialInputs PixelMaterialInputs)
+{
+	const float CenterScaled = GetMaterialDisplacementCenter() * GetMaterialDisplacementMagnitude();
+	const float NormalizedDisplacement = GetMaterialDisplacement(PixelMaterialInputs);
+	return (NormalizedDisplacement * GetMaterialDisplacementMagnitude()) - CenterScaled;
+}
+#endif
+
 // Should only be used by GetMaterialOpacity(), returns the unmodified value generated from the shader expressions of the opacity input.
 // To compute the opacity depending on the material blending GetMaterialOpacity() should be called instead.
 half GetMaterialOpacityRaw(FPixelMaterialInputs PixelMaterialInputs)
@@ -2867,40 +3012,26 @@ half GetMaterialMaskedOpacity(FPixelMaterialInputs PixelMaterialInputs)
 
 bool ShouldEnableWorldPositionOffset(FMaterialVertexParameters Parameters)
 {
-#if IS_NANITE_PASS
-	if (!Parameters.bEvaluateWorldPositionOffset)
-	{
-		return false;
-	}
-#endif
-
-#if !USES_WORLD_POSITION_OFFSET
-	return false;
-#endif
-
-#if USE_INSTANCING || USE_INSTANCE_CULLING
-	// skip if this instance is hidden
-	if (Parameters.PerInstanceParams.y < 1.f)
-	{
-		return false;
-	}
-#endif
-
-	if ((GetPrimitiveData(Parameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) == 0)
+#if USES_WORLD_POSITION_OFFSET
+	if (!Parameters.bEvaluateWorldPositionOffset ||
+		(GetPrimitiveData(Parameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_EVALUATE_WORLD_POSITION_OFFSET) == 0)
 	{
 		return false;
 	}
 
 	return true;
+#else
+	return false;
+#endif
 }
 
 float3 ClampWorldPositionOffset(FMaterialVertexParameters Parameters, float3 InOffset)
 {
 #if (FEATURE_LEVEL == FEATURE_LEVEL_ES3_1 && VF_SUPPORTS_PRIMITIVE_SCENE_DATA)
-	// Do not use WPO clamping on mobile platforms as MaxWPODisplacement has to be pulled from PrimitiveUB breaking auto-instancing
+	// Do not use WPO clamping on mobile platforms as MaxWPOExtent has to be pulled from PrimitiveUB breaking auto-instancing
 	return InOffset;
 #else
-	const float MaxWPODim = GetPrimitiveData(Parameters).MaxWPODisplacement;
+	const float MaxWPODim = GetPrimitiveData(Parameters).MaxWPOExtent;
 	return MaxWPODim <= 0.0f ? InOffset : clamp(InOffset, -MaxWPODim.xxx, MaxWPODim.xxx);
 #endif
 }
@@ -3115,6 +3246,10 @@ void CalcPixelMaterialInputs(in out FMaterialPixelParameters Parameters, in out 
 	Parameters.StrataPixelFootprint = StrataGetPixelFootprint(Parameters.WorldPosition_CamRelative, GetRoughnessFromNormalCurvature(Parameters));
 	Parameters.SharedLocalBases = StrataInitialiseSharedLocalBases();
 	Parameters.StrataTree = GetInitialisedStrataTree();
+#if STRATA_USE_FULLYSIMPLIFIED_MATERIAL == 1
+	Parameters.SharedLocalBasesFullySimplified = StrataInitialiseSharedLocalBases();
+	Parameters.StrataTreeFullySimplified = GetInitialisedStrataTree();
+#endif
 #endif
 
 	// Note that here MaterialNormal can be in world space or tangent space
@@ -3173,6 +3308,10 @@ void CalcPixelMaterialInputsAnalyticDerivatives(in out FMaterialPixelParameters 
 	Parameters.StrataPixelFootprint = StrataGetPixelFootprint(Parameters.WorldPosition_CamRelative, GetRoughnessFromNormalCurvature(Parameters));
 	Parameters.SharedLocalBases = StrataInitialiseSharedLocalBases();
 	Parameters.StrataTree = GetInitialisedStrataTree();
+#if STRATA_USE_FULLYSIMPLIFIED_MATERIAL == 1
+	Parameters.SharedLocalBasesFullySimplified = StrataInitialiseSharedLocalBases();
+	Parameters.StrataTreeFullySimplified = GetInitialisedStrataTree();
+#endif
 #endif
 
 	// Note that here MaterialNormal can be in world space or tangent space
@@ -3475,7 +3614,7 @@ void CalcMaterialParametersEx(
 	#endif
 #endif
 
-#if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED
+#if MATERIAL_VIRTUALTEXTURE_FEEDBACK || LIGHTMAP_VT_ENABLED
 	InitializeVirtualTextureFeedback(Parameters.VirtualTextureFeedback, (uint2)SvPosition.xy, View.FrameNumber);
 #endif
 

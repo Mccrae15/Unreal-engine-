@@ -5,6 +5,7 @@
 #if UE_TRACE_ENABLED && PLATFORM_ANDROID
 
 #include <arpa/inet.h>
+#include <string.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -12,7 +13,6 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <errno.h>
 
 namespace UE {
 namespace Trace {
@@ -222,6 +222,21 @@ UPTRINT FileOpen(const ANSICHAR* Path)
 	}
 
 	return UPTRINT(Out + 1);
+}
+	
+////////////////////////////////////////////////////////////////////////////////
+int32 GetLastErrorCode()
+{
+	return errno;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool GetErrorMessage(char* OutBuffer, uint32 BufferSize, int32 ErrorCode)
+{
+	const char* ErrorMessage = strerror(ErrorCode);
+	const bool bResult = strncpy(OutBuffer, ErrorMessage, BufferSize) != 0;
+	OutBuffer[BufferSize-1] = 0;
+	return bResult;
 }
 
 } // namespace Private

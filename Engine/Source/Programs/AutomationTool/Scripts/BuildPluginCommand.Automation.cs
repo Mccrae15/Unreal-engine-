@@ -10,6 +10,9 @@ using UnrealBuildTool;
 using EpicGames.Core;
 using System.Text;
 using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 [Help("Builds a plugin, and packages it for distribution")]
 [Help("Plugin", "Specify the path to the descriptor file for the plugin that should be packaged")]
@@ -23,7 +26,9 @@ using UnrealBuildBase;
 [Help("Architecture_<Platform>=<Architecture[s]>", "Control architecture to compile for a platform (eg. -Architecture_Mac=arm64+x86). Default is to use UBT defaults for the platform.")]
 public sealed class BuildPlugin : BuildCommand
 {
-	const string AndroidArchitectures = "arm64";
+	const string MacDefaultArchitectures = "arm64+x64";
+	const string AndroidDefaultArchitectures = "arm64";
+
 	string UnrealBuildToolDllRelativePath = @"Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll";
 	FileReference UnrealBuildToolDll;
 	static private Dictionary<UnrealTargetPlatform, string> PlatformToArchitectureMap = new Dictionary<UnrealTargetPlatform, string>();
@@ -101,25 +106,36 @@ public sealed class BuildPlugin : BuildCommand
 		FileReference HostProjectPluginFile = CreateHostProject(HostProjectFile, PluginFile);
 
 		// Read the plugin
-		CommandUtils.LogInformation("Reading plugin from {0}...", HostProjectPluginFile);
+		Logger.LogInformation("Reading plugin from {HostProjectPluginFile}...", HostProjectPluginFile);
 		PluginDescriptor Plugin = PluginDescriptor.FromFile(HostProjectPluginFile);
 
 		// Get the arguments for the compile
 		StringBuilder AdditionalArgs = new StringBuilder();
 		if (bStrictIncludes)
 		{
-			CommandUtils.LogInformation("Building with precompiled headers and unity disabled");
+			Logger.LogInformation("Building with precompiled headers and unity disabled");
 			AdditionalArgs.Append(" -NoPCH -NoSharedPCH -DisableUnity");
 		}
 
 		// check if any architectures were specified
 		foreach (UnrealTargetPlatform Platform in UnrealTargetPlatform.GetValidPlatforms())
 		{
-			PlatformToArchitectureMap[Platform] = ParseParamValue($"architecture_{Platform}");
+			// by default, don't specify any architecture when building (unless user requested with -architecture_Platform=), except for
+			// any special cases set at the top of this file
+			string DefaultValue = null;
+			if (Platform == UnrealTargetPlatform.Mac)
+			{
+				DefaultValue = MacDefaultArchitectures;
+			}
+			else if (Platform == UnrealTargetPlatform.Android)
+			{
+				DefaultValue = AndroidDefaultArchitectures;
+			}
+			PlatformToArchitectureMap[Platform] = ParseParamValue($"architecture_{Platform}", DefaultValue);
 		}
 
 		// Compile the plugin for all the target platforms
-		List<UnrealTargetPlatform> HostPlatforms = GetHostPlatforms(this);
+		IReadOnlyList<UnrealTargetPlatform> HostPlatforms = GetHostPlatforms(this);
 		List<UnrealTargetPlatform> TargetPlatforms = GetTargetPlatforms(this, BuildHostPlatform.Current.Platform);
 		FileReference[] BuildProducts = CompilePlugin(UnrealBuildToolDll, HostProjectFile, HostProjectPluginFile, Plugin, HostPlatforms, TargetPlatforms, AdditionalArgs.ToString());
 
@@ -206,7 +222,7 @@ public sealed class BuildPlugin : BuildCommand
 		// Build the host platforms
 		if(HostPlatforms.Count > 0)
 		{
-			CommandUtils.LogInformation("Building plugin for host platforms: {0}", String.Join(", ", HostPlatforms));
+			Logger.LogInformation("Building plugin for host platforms: {Arg0}", String.Join(", ", HostPlatforms));
 			foreach (UnrealTargetPlatform HostPlatform in HostPlatforms)
 			{
 				CompilePluginWithUBT(UBTExe, HostProjectFile, HostProjectPluginFile, Plugin, "UnrealEditor", TargetType.Editor, HostPlatform, UnrealTargetConfiguration.Development, ManifestFileNames, AdditionalArgs);
@@ -217,7 +233,7 @@ public sealed class BuildPlugin : BuildCommand
 		if(TargetPlatforms.Count > 0)
 		{
 			List<UnrealTargetPlatform> SupportedTargetPlatforms = TargetPlatforms.FindAll(Plugin.SupportsTargetPlatform);
-			CommandUtils.LogInformation("Building plugin for target platforms: {0}", String.Join(", ", SupportedTargetPlatforms));
+			Logger.LogInformation("Building plugin for target platforms: {Arg0}", String.Join(", ", SupportedTargetPlatforms));
 			foreach (UnrealTargetPlatform TargetPlatform in SupportedTargetPlatforms)
 			{
 				string AdditionalTargetArgs = AdditionalArgs;
@@ -236,14 +252,14 @@ public sealed class BuildPlugin : BuildCommand
 		return BuildProducts.ToArray();
 	}
 
-	public static FileReference[] CompilePlugin(FileReference UnrealBuildToolDll, FileReference HostProjectFile, FileReference HostProjectPluginFile, PluginDescriptor Plugin, List<UnrealTargetPlatform> HostPlatforms, List<UnrealTargetPlatform> TargetPlatforms, string AdditionalArgs = "")
+	public static FileReference[] CompilePlugin(FileReference UnrealBuildToolDll, FileReference HostProjectFile, FileReference HostProjectPluginFile, PluginDescriptor Plugin, IReadOnlyList<UnrealTargetPlatform> HostPlatforms, List<UnrealTargetPlatform> TargetPlatforms, string AdditionalArgs = "")
 	{
 		List<FileReference> ManifestFileNames = new List<FileReference>();
 
 		// Build the host platforms
 		if(HostPlatforms.Count > 0)
 		{
-			CommandUtils.LogInformation("Building plugin for host platforms: {0}", String.Join(", ", HostPlatforms));
+			Logger.LogInformation("Building plugin for host platforms: {Arg0}", String.Join(", ", HostPlatforms));
 			foreach (UnrealTargetPlatform HostPlatform in HostPlatforms)
 			{
 				CompilePluginWithUBT(UnrealBuildToolDll, HostProjectFile, HostProjectPluginFile, Plugin, "UnrealEditor", TargetType.Editor, HostPlatform, UnrealTargetConfiguration.Development, ManifestFileNames, AdditionalArgs);
@@ -254,7 +270,7 @@ public sealed class BuildPlugin : BuildCommand
 		if(TargetPlatforms.Count > 0)
 		{
 			List<UnrealTargetPlatform> SupportedTargetPlatforms = TargetPlatforms.FindAll(Plugin.SupportsTargetPlatform);
-			CommandUtils.LogInformation("Building plugin for target platforms: {0}", String.Join(", ", SupportedTargetPlatforms));
+			Logger.LogInformation("Building plugin for target platforms: {Arg0}", String.Join(", ", SupportedTargetPlatforms));
 			foreach (UnrealTargetPlatform TargetPlatform in SupportedTargetPlatforms)
 			{
 				string AdditionalTargetArgs = AdditionalArgs;
@@ -355,10 +371,6 @@ public sealed class BuildPlugin : BuildCommand
 				{
 					Arguments += String.Format(" -architecture={0}", SpecifiedArchitecture);
 				}
-				else if (Platform == UnrealTargetPlatform.Android)
-				{
-					Arguments += String.Format(" -architectures={0}", AndroidArchitectures);
-				}
 
 				if (!String.IsNullOrEmpty(InAdditionalArgs))
 				{
@@ -403,7 +415,7 @@ public sealed class BuildPlugin : BuildCommand
 	{
 		if (FileReference.Exists(FilterFile))
 		{
-			CommandUtils.LogInformation("Reading filter rules from {0}", FilterFile);
+			Logger.LogInformation("Reading filter rules from {FilterFile}", FilterFile);
 			Filter.ReadRulesFromFile(FilterFile, "FilterPlugin");
 		}
 	}
@@ -420,6 +432,7 @@ public sealed class BuildPlugin : BuildCommand
 		Filter.Include("/Intermediate/Build/.../Inc/...");
 		Filter.Include("/Shaders/...");
 		Filter.Include("/Source/...");
+		Filter.Exclude("/Tests/...");
 
 		// Add custom rules for all platforms
 		AddRulesFromFileToFilter(Filter, FileReference.Combine(PluginFile.Directory, "Config", "FilterPlugin.ini"));
@@ -427,7 +440,7 @@ public sealed class BuildPlugin : BuildCommand
 		// Add custom rules for targeted platforms.
 		foreach (UnrealTargetPlatform Platform in TargetPlatforms)
 		{
-			Log.TraceInformation("Loading FilterPlugin{0}.ini", Platform);
+			Logger.LogInformation("Loading FilterPlugin{Platform}.ini", Platform);
 			AddRulesFromFileToFilter(Filter, FileReference.Combine(PluginFile.Directory, "Config", $"FilterPlugin{Platform}.ini"));
 		}
 
@@ -492,66 +505,55 @@ public sealed class BuildPlugin : BuildCommand
 		return TargetPlatforms;
 	}
 
-	static List<UnrealTargetPlatform> GetHostPlatforms(BuildCommand Command)
+	static IReadOnlyList<UnrealTargetPlatform> GetHostPlatforms(BuildCommand Command)
 	{
-		List<UnrealTargetPlatform> HostPlatforms = new List<UnrealTargetPlatform>();
-		if (!Command.ParseParam("NoHostPlatform"))
+		if (Command.ParseParam("NoHostPlatform"))
 		{
-			var CurrentPlatform = BuildHostPlatform.Current.Platform;
+			return Array.Empty<UnrealTargetPlatform>();
+		}
+		var CurrentPlatform = BuildHostPlatform.Current.Platform;
+		string HostPlatformFilter = Command.ParseParamValue("HostPlatforms", null);
+		if (HostPlatformFilter == null)
+		{
+			return new[] { CurrentPlatform };
+		}
+		// Only interested in building for Platforms that support code projects
+		HashSet<UnrealTargetPlatform> SupportedHostPlatforms = PlatformExports.GetRegisteredPlatforms().Where(x => InstalledPlatformInfo.IsValidPlatform(x, EProjectType.Code)).ToHashSet();
 
-			if (Command.ParseParam("HostPlatforms"))
+		// only build Mac on Mac
+		if (CurrentPlatform != UnrealTargetPlatform.Mac && SupportedHostPlatforms.Contains(UnrealTargetPlatform.Mac))
+		{
+			SupportedHostPlatforms.Remove(UnrealTargetPlatform.Mac);
+		}
+		// only build Windows on Windows
+		if (CurrentPlatform != UnrealTargetPlatform.Win64 && SupportedHostPlatforms.Contains(UnrealTargetPlatform.Win64))
+		{
+			SupportedHostPlatforms.Remove(UnrealTargetPlatform.Win64);
+		}
+		// build Linux on Windows and Linux
+		if (CurrentPlatform != UnrealTargetPlatform.Win64 && CurrentPlatform != UnrealTargetPlatform.Linux)
+		{
+			SupportedHostPlatforms.Remove(UnrealTargetPlatform.Linux);
+			SupportedHostPlatforms.Remove(UnrealTargetPlatform.LinuxArm64);
+		}
+
+		List<UnrealTargetPlatform> NewHostPlatforms = new List<UnrealTargetPlatform>();
+		foreach (string HostPlatformName in HostPlatformFilter.Split(new char[] { '+' }, StringSplitOptions.RemoveEmptyEntries))
+		{
+			UnrealTargetPlatform HostPlatform;
+			if (!UnrealTargetPlatform.TryParse(HostPlatformName, out HostPlatform))
 			{
-				string HostPlatformFilter = Command.ParseParamValue("HostPlatforms", null);
-				if(HostPlatformFilter != null)
-				{
-					// Only interested in building for Platforms that support code projects
-					HostPlatforms = PlatformExports.GetRegisteredPlatforms().Where(x => InstalledPlatformInfo.IsValidPlatform(x, EProjectType.Code)).ToList();
-
-					// only build Mac on Mac
-					if (CurrentPlatform != UnrealTargetPlatform.Mac && HostPlatforms.Contains(UnrealTargetPlatform.Mac))
-					{
-						HostPlatforms.Remove(UnrealTargetPlatform.Mac);
-					}
-					// only build Windows on Windows
-					if (CurrentPlatform != UnrealTargetPlatform.Win64 && HostPlatforms.Contains(UnrealTargetPlatform.Win64))
-					{
-						HostPlatforms.Remove(UnrealTargetPlatform.Win64);
-					}
-					// build Linux on Windows and Linux
-					if (CurrentPlatform != UnrealTargetPlatform.Win64 && CurrentPlatform != UnrealTargetPlatform.Linux)
-					{
-						if (HostPlatforms.Contains(UnrealTargetPlatform.Linux))
-							HostPlatforms.Remove(UnrealTargetPlatform.Linux);
-
-						if (HostPlatforms.Contains(UnrealTargetPlatform.LinuxArm64))
-							HostPlatforms.Remove(UnrealTargetPlatform.LinuxArm64);
-					}
-
-					List<UnrealTargetPlatform> NewHostPlatforms = new List<UnrealTargetPlatform>();
-					foreach (string HostPlatformName in HostPlatformFilter.Split(new char[]{ '+' }, StringSplitOptions.RemoveEmptyEntries))
-					{
-						UnrealTargetPlatform HostPlatform;
-						if (!UnrealTargetPlatform.TryParse(HostPlatformName, out HostPlatform))
-						{
-							throw new AutomationException("Unknown host platform '{0}' specified on command line", HostPlatformName);
-						}
-						if(HostPlatforms.Contains(HostPlatform))
-						{
-							NewHostPlatforms.Add(HostPlatform);
-						}
-					}
-					HostPlatforms = NewHostPlatforms;
-				}
-				else
-				{
-					HostPlatforms.Add(CurrentPlatform);
-				}
+				throw new AutomationException("Unknown host platform '{0}' specified on command line", HostPlatformName);
+			}
+			if (SupportedHostPlatforms.Contains(HostPlatform))
+			{
+				NewHostPlatforms.Add(HostPlatform);
 			}
 			else
 			{
-				HostPlatforms.Add(CurrentPlatform);
+				Logger.LogWarning("HostPlatform {HostPlatformName} not supported on current platform {CurrentPlatform}", HostPlatformName, CurrentPlatform);
 			}
 		}
-		return HostPlatforms;
+		return NewHostPlatforms;
 	}
 }

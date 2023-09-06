@@ -6,6 +6,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "NetworkPredictionLog.h"
+#include "Trace/Trace.h"
+#include "Trace/Trace.inl"
 
 // TODO:
 // Should update string tracing with UE::Trace::AnsiString
@@ -350,7 +352,7 @@ void FNetworkPredictionTrace::TraceSystemFault(const TCHAR* Fmt, ...)
 
 		check(Result >= 0 );
 
-	UE_LOG(LogNetworkPrediction, Warning, TEXT("SystemFault: %s"), Buffer);
+	UE_LOG(LogNetworkPrediction, Log, TEXT("SystemFault: %s"), Buffer);
 	);
 
 	UE_TRACE_LOG(NetworkPrediction, SystemFault, NetworkPredictionChannel)

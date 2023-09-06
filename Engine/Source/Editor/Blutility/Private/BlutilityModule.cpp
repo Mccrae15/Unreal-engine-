@@ -4,8 +4,6 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetToolsModule.h"
-#include "AssetTypeActions_EditorUtilityBlueprint.h"
-#include "AssetTypeActions_EditorUtilityWidgetBlueprint.h"
 #include "AssetTypeCategories.h"
 #include "BlutilityContentBrowserExtensions.h"
 #include "BlutilityLevelEditorExtensions.h"
@@ -16,8 +14,11 @@
 #include "Editor.h"
 #include "Editor/EditorEngine.h"
 #include "EditorSupportDelegates.h"
+#include "EditorUtilityActor.h"
 #include "EditorUtilityBlueprint.h"
+#include "EditorUtilityCamera.h"
 #include "EditorUtilityCommon.h"
+#include "EditorUtilityObject.h"
 #include "EditorUtilitySubsystem.h"
 #include "EditorUtilityWidget.h"
 #include "EditorUtilityWidgetBlueprint.h"
@@ -64,6 +65,9 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
+#include "EditorUtilityWidgetSettingsCustomization.h"
+#include "EditorUtilityWidgetProjectSettings.h"
+#include "PropertyEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -78,27 +82,22 @@ DEFINE_LOG_CATEGORY(LogEditorUtilityBlueprint);
 class FBlutilityModule : public IBlutilityModule, public FGCObject
 {
 public:
-	/** Asset type actions for editor utility assets.  Cached here so that we can unregister it during shutdown. */
-	TSharedPtr<FAssetTypeActions_EditorUtilityBlueprint> EditorBlueprintAssetTypeActions;
-	TSharedPtr<FAssetTypeActions_EditorUtilityWidgetBlueprint> EditorWidgetBlueprintAssetTypeActions;
-
-public:
 	virtual void StartupModule() override
 	{
 		// Register the asset type
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 		EditorUtilityAssetCategory = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("EditorUtilities")), LOCTEXT("EditorUtilitiesAssetCategory", "Editor Utilities"));
-		EditorBlueprintAssetTypeActions = MakeShareable(new FAssetTypeActions_EditorUtilityBlueprint);
-		AssetTools.RegisterAssetTypeActions(EditorBlueprintAssetTypeActions.ToSharedRef());
-		EditorWidgetBlueprintAssetTypeActions = MakeShareable(new FAssetTypeActions_EditorUtilityWidgetBlueprint);
-		AssetTools.RegisterAssetTypeActions(EditorWidgetBlueprintAssetTypeActions.ToSharedRef());
 
 		FKismetCompilerContext::RegisterCompilerForBP(UEditorUtilityWidgetBlueprint::StaticClass(), &UWidgetBlueprint::GetCompilerForWidgetBP);
 
-		// Register widget blueprint compiler we do this no matter what.
+		// Register widget blueprint compiler we do this no matter what - @todo: can i remove this? we're double registering..
 		IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 		IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
 		KismetCompilerModule.GetCompilers().Add(UMGEditorModule.GetRegisteredCompiler());
+		KismetCompilerModule.OverrideBPTypeForClass(AEditorUtilityActor::StaticClass(), UEditorUtilityBlueprint::StaticClass());
+		KismetCompilerModule.OverrideBPTypeForClass(AEditorUtilityCamera::StaticClass(), UEditorUtilityBlueprint::StaticClass());
+		KismetCompilerModule.OverrideBPTypeForClass(UEditorUtilityObject::StaticClass(), UEditorUtilityBlueprint::StaticClass());
+		KismetCompilerModule.OverrideBPTypeForClassInEditor(UUserWidget::StaticClass(), UEditorUtilityWidgetBlueprint::StaticClass());
 
 		FBlutilityContentBrowserExtensions::InstallHooks();
 		FBlutilityLevelEditorExtensions::InstallHooks();
@@ -117,6 +116,9 @@ public:
 
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 		AssetRegistryModule.Get().OnAssetRemoved().AddRaw(this, &FBlutilityModule::HandleAssetRemoved);
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.RegisterCustomClassLayout(UEditorUtilityWidgetProjectSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FEditorUtilityWidgetSettingsCustomization::MakeInstance));
 	}
 
 	void ReinitializeUIs()
@@ -208,17 +210,6 @@ public:
 		FBlutilityContentBrowserExtensions::RemoveHooks();
 		FBlutilityUMGEditorExtensions::RemoveHooks();
 
-		// Only unregister if the asset tools module is loaded.  We don't want to forcibly load it during shutdown phase.
-		check( EditorBlueprintAssetTypeActions.IsValid() );
-		if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
-		{
-			IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-			AssetTools.UnregisterAssetTypeActions(EditorBlueprintAssetTypeActions.ToSharedRef());
-			AssetTools.UnregisterAssetTypeActions(EditorWidgetBlueprintAssetTypeActions.ToSharedRef());
-		}
-		EditorBlueprintAssetTypeActions.Reset();
-		EditorWidgetBlueprintAssetTypeActions.Reset();
-
 		FEditorSupportDelegates::PrepareToCleanseEditorObject.RemoveAll(this);
 	}
 
@@ -245,13 +236,20 @@ public:
 		return EditorUtilityAssetCategory;
 	}
 
+	virtual TConstArrayView<FAssetCategoryPath> GetAssetCategories() const override
+	{
+		static const TArray<FAssetCategoryPath, TFixedAllocator<1>> Categories = {
+			FAssetCategoryPath(LOCTEXT("EditorUtilities", "Editor Utilities"))
+		};
+		return Categories;
+	}
+
 	virtual void AddLoadedScriptUI(class UEditorUtilityWidgetBlueprint* InBlueprint) override
 	{
 		UEditorUtilitySubsystem* EditorUtilitySubsystem = GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>();
 		EditorUtilitySubsystem->LoadedUIs.AddUnique(InBlueprint);
 		EditorUtilitySubsystem->SaveConfig();
 	}
-
 
 	virtual void RemoveLoadedScriptUI(class UEditorUtilityWidgetBlueprint* InBlueprint) override
 	{

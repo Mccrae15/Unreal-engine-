@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet2/KismetReinstanceUtilities.h"
+#include "Algo/ForEach.h"
 #include "BlueprintCompilationManager.h"
 #include "ComponentInstanceDataCache.h"
 #include "Engine/Blueprint.h"
@@ -59,6 +60,61 @@ static FAutoConsoleVariableRef CVarUseLegacyAnimInstanceReinstancingBehavior(
 
 struct FReplaceReferenceHelper
 {
+	static void ValidateReplacementMappings(const TMap<UObject*, UObject*>& OldToNewInstanceMap)
+	{
+		// Test long unstated assumption - alternatively we could 'flatten' the chains
+		// but would then have to guard against cycles:
+		bool bFoundChains = false;
+		for (const TPair<UObject*, UObject*>& OldToNew : OldToNewInstanceMap)
+		{
+			bFoundChains = OldToNewInstanceMap.Find(OldToNew.Value) != nullptr;
+			if (bFoundChains)
+			{
+				break;
+			}
+		}
+
+		if (!bFoundChains)
+		{
+			return;
+		}
+
+		TSet<UObject*> ObjectsInvolved;
+		Algo::ForEach(OldToNewInstanceMap, [&ObjectsInvolved, &OldToNewInstanceMap](const TPair<UObject*, UObject*>& OldToNew)
+			{
+				UObject* const* NewMappedToNew = OldToNewInstanceMap.Find(OldToNew.Value);
+				if (NewMappedToNew != nullptr)
+				{
+					if(OldToNew.Key)
+					{
+						ObjectsInvolved.Add(OldToNew.Key);
+					}
+					if (OldToNew.Value)
+					{
+						ObjectsInvolved.Add(OldToNew.Value);
+					}
+					if(*NewMappedToNew)
+					{
+						ObjectsInvolved.Add(*NewMappedToNew);
+					}
+				}
+			});
+
+		TSet<UClass*> ClassesInvolved;
+		Algo::ForEach(ObjectsInvolved, [&ClassesInvolved](UObject* Object)
+			{
+				ClassesInvolved.Add(Object->GetClass());
+			});
+
+		TStringBuilder<256> NamesOfClasses;
+		Algo::ForEach(ClassesInvolved, [&NamesOfClasses](UClass* Class) { NamesOfClasses.Append(Class->GetName() + TEXT("\n")); });
+		TStringBuilder<256> NamesOfObjects;
+		Algo::ForEach(ObjectsInvolved, [&NamesOfObjects](UObject* Obj) { NamesOfObjects.Append(Obj->GetName() + TEXT("\n")); });
+
+		ensureMsgf(false, TEXT("Found chains of replacement objects while updating class layouts, please report a bug involving Classes:\n%sAnd Objects:\n%s"), 
+			*NamesOfClasses, *NamesOfObjects);
+	}
+
 	static void IncludeCDO(UClass* OldClass, UClass* NewClass, TMap<UObject*, UObject*> &OldToNewInstanceMap, TArray<UObject*> &SourceObjects, UObject* OriginalCDO)
 	{
 		UObject* OldCDO = OldClass->GetDefaultObject();
@@ -415,14 +471,17 @@ void FBlueprintCompileReinstancer::GenerateFieldMappings(TMap<FFieldVariant, FFi
 		FieldMapping.Add(Prop.Value, FindFProperty<FProperty>(ClassToReinstance, *Prop.Key.ToString()));
 	}
 
-	for (TPair<FName, UFunction*>& Func : FunctionMap)
+	for (auto& Func : FunctionMap)
 	{
 		UFunction* NewFunction = ClassToReinstance->FindFunctionByName(Func.Key, EIncludeSuperFlag::ExcludeSuper);
 		FieldMapping.Add(Func.Value, NewFunction);
 	}
 
-	UObject* NewCDO = ClassToReinstance->GetDefaultObject();
-	FieldMapping.Add(OriginalCDO, NewCDO);
+	if(!ClassToReinstance->bLayoutChanging)
+	{
+		UObject* NewCDO = ClassToReinstance->GetDefaultObject();
+		FieldMapping.Add(OriginalCDO, NewCDO);
+	}
 }
 
 void FBlueprintCompileReinstancer::AddReferencedObjects(FReferenceCollector& Collector)
@@ -1532,6 +1591,15 @@ namespace InstancedPropertyUtils
 	};
 }
 
+class FReplaceActorHelperSetActorInstanceGuid
+{
+public:
+	FReplaceActorHelperSetActorInstanceGuid(AActor* InActor, const FGuid& InActorInstanceGuid)
+	{
+		FSetActorInstanceGuid SetActorInstanceGuid(InActor, InActorInstanceGuid);
+	}
+};
+
 // @todo_deprecated - Remove in a future release.
 void FBlueprintCompileReinstancer::ReplaceInstancesOfClass(UClass* OldClass, UClass* NewClass, UObject*	OriginalCDO, TSet<UObject*>* ObjectsThatShouldUseOldStuff, bool bClassObjectReplaced, bool bPreserveRootComponent)
 {
@@ -1649,7 +1717,7 @@ void FBlueprintCompileReinstancer::GetSortedClassHierarchy(UClass* ClassToSearch
 	OutHierarchy.Sort([](UClass& A, UClass& B)->bool { return FBlueprintCompileReinstancer::ReinstancerOrderingFunction(&A, &B); });
 }
 
-void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* const OwnerClass, TMap<UClass*, UClass*>& OldToNewMap)
+void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* const OwnerClass, TMap<UClass*, UClass*>& NewSkeletonToOldSkeleton)
 {
 	// Gather the whole class hierarchy up the native class so that we can correctly create the REINST class parented to native
 	TArray<UClass*> ClassHierarchy;
@@ -1671,15 +1739,23 @@ void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* const Owner
 		UObject* OldCDO = CurClass->ClassDefaultObject;
 		const FName ReinstanceName = MakeUniqueObjectName(GetTransientPackage(), CurClass->GetClass(), *(FString(TEXT("REINST_")) + *CurClass->GetName()));
 
-		checkf(IsValid(CurClass), TEXT("%s is invalid - will not duplicate successfully"), *(CurClass->GetName()));
+		if (!IsValid(CurClass) || CurClass->HasAnyClassFlags(CLASS_NewerVersionExists))
+		{
+			if (UClass* const* NewSuper = NewSkeletonToOldSkeleton.Find(CurClass->GetSuperClass()))
+			{
+				CurClass->SetSuperStruct(*NewSuper);
+			}
+			continue;
+		}
+
 		UClass* ReinstClass = CastChecked<UClass>(StaticDuplicateObject(CurClass, GetTransientPackage(), ReinstanceName, ~RF_Transactional));
 		
 		ReinstClass->RemoveFromRoot();
-		CurClass->ClassFlags |= CLASS_NewerVersionExists;
-		CurClass->ClassFlags &= ~CLASS_NewerVersionExists;
+		ReinstClass->ClassFlags |= CLASS_NewerVersionExists;
+
 		GIsDuplicatingClassForReinstancing = false;
 
-		UClass** OverridenParent = OldToNewMap.Find(ReinstClass->GetSuperClass());
+		UClass** OverridenParent = NewSkeletonToOldSkeleton.Find(ReinstClass->GetSuperClass());
 		if (OverridenParent && *OverridenParent)
 		{
 			ReinstClass->SetSuperStruct(*OverridenParent);
@@ -1688,8 +1764,16 @@ void FBlueprintCompileReinstancer::MoveDependentSkelToReinst(UClass* const Owner
 		ReinstClass->Bind();
 		ReinstClass->StaticLink(true);
 
+		if (!ReinstClass->GetSparseClassDataStruct())
+		{
+			if (UScriptStruct* SparseClassDataStructArchetype = ReinstClass->GetSparseClassDataArchetypeStruct())
+			{
+				ReinstClass->SetSparseClassDataStruct(SparseClassDataStructArchetype);
+			}
+		}
+
 		// Map the old class to the new one
-		OldToNewMap.Add(CurClass, ReinstClass);
+		NewSkeletonToOldSkeleton.Add(CurClass, ReinstClass);
 
 		// Actually move the old CDO reference out of the way
 		if (OldCDO)
@@ -1729,7 +1813,7 @@ UClass* FBlueprintCompileReinstancer::MoveCDOToNewClass(UClass* OwnerClass, cons
 		OriginalNames.Add(OwnedObject->GetFName());
 		if(OwnedObject->HasAnyFlags(RF_ArchetypeObject))
 		{
-			OwnedObject->Rename(nullptr, GetTransientPackage(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			OwnedObject->Rename(nullptr, GetTransientPackage(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 		}
 	}
 
@@ -1775,12 +1859,22 @@ UClass* FBlueprintCompileReinstancer::MoveCDOToNewClass(UClass* OwnerClass, cons
 		UObject* OwnedArchetype = OwnedObjects[I];
 		if(OwnedArchetype->HasAnyFlags(RF_ArchetypeObject))
 		{
-			OwnedArchetype->Rename(*OriginalNames[I].ToString(), OwnerClass, REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			OwnedArchetype->Rename(*OriginalNames[I].ToString(), OwnerClass, REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 		}
 	}
 
 	CopyOfOwnerClass->Bind();
 	CopyOfOwnerClass->StaticLink(true);
+
+	// make sure we've bound to our native sparse data - this should have been done in
+	// link but don't want to destabilize early adopters:
+	if (!CopyOfOwnerClass->GetSparseClassDataStruct())
+	{
+		if (UScriptStruct* SparseClassDataStructArchetype = CopyOfOwnerClass->GetSparseClassDataArchetypeStruct())
+		{
+			CopyOfOwnerClass->SetSparseClassDataStruct(SparseClassDataStructArchetype);
+		}
+	}
 
 	if(OldCDO)
 	{
@@ -1788,7 +1882,7 @@ UClass* FBlueprintCompileReinstancer::MoveCDOToNewClass(UClass* OwnerClass, cons
 		if(bAvoidCDODuplication)
 		{
 			OwnerClass->ClassDefaultObject = nullptr;
-			OldCDO->Rename(nullptr, CopyOfOwnerClass->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			OldCDO->Rename(nullptr, CopyOfOwnerClass->GetOuter(), REN_DoNotDirty | REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 			CopyOfOwnerClass->ClassDefaultObject = OldCDO;
 		}
 		OldCDO->SetClass(CopyOfOwnerClass);
@@ -1802,7 +1896,7 @@ bool FBlueprintCompileReinstancer::IsReinstClass(const UClass* Class)
 	return Class && Class->GetFName().ToString().StartsWith(ReinstPrefix);
 }
 
-static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*& NewUObject, UClass* NewClass, TMap<UObject*, UObject*>& OldToNewInstanceMap, TMap<UObject*, FName>& OldToNewNameMap, int32 OldObjIndex, TArray<UObject*>& ObjectsToReplace, TArray<UObject*>& PotentialEditorsForRefreshing, TSet<AActor*>& OwnersToRerunConstructionScript, TFunctionRef<TArray<USceneComponent*>&(USceneComponent*)> GetAttachChildrenArray, bool bIsComponent, bool bArchetypesAreUpToDate)
+static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*& NewUObject, UClass* NewClass, TMap<UObject*, UObject*>& OldToNewInstanceMap, TMap<UObject*, FName>& OldToNewNameMap, int32 OldObjIndex, TArray<UObject*>& ObjectsToReplace, TArray<UObject*>& PotentialEditorsForRefreshing, TSet<AActor*>& OwnersToRerunConstructionScript, TFunctionRef<TArray<TObjectPtr<USceneComponent>>&(USceneComponent*)> GetAttachChildrenArray, bool bIsComponent, bool bArchetypesAreUpToDate)
 {
 	const EObjectFlags FlagMask = RF_Public | RF_ArchetypeObject | RF_Transactional | RF_Transient | RF_TextExportTransient | RF_InheritableComponentTemplate | RF_Standalone; //TODO: what about RF_RootSet?
 	// If the old object was spawned from an archetype (i.e. not the CDO), we must use the new version of that archetype as the template object when constructing the new instance.
@@ -1932,6 +2026,13 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 	Options.bNotifyObjectReplacement = true;
 	Options.bSkipCompilerGeneratedDefaults = true;
 	Options.OptionalReplacementMappings = &OldToNewInstanceMap;
+	// this currently happens because of some misguided logic in UBlueprintGeneratedClass::FindArchetype that
+	// points us to a mismatched archetype, in which case delta serialization becomes unsafe.. without
+	// that logic we could lose data, so for now i'm disabling delta serialization when we detect that situation
+	if(Options.SourceObjectArchetype && !OldObject->IsA(Options.SourceObjectArchetype->GetClass()))
+	{
+		Options.bDoDelta = false;
+	}
 	UEditorEngine::CopyPropertiesForUnrelatedObjects(OldObject, NewUObject, Options);
 	// Generate new subobjects
 	InstancedPropertyUtils::FArchiveInsertInstancedSubObjects InstancedSubObjSpawner(NewUObject, InstancedPropertyMap);
@@ -1949,8 +2050,17 @@ static void ReplaceObjectHelper(UObject*& OldObject, UClass* OldClass, UObject*&
 		}
 	}
 
+	OldObject->ClearFlags(RF_Standalone);
 	OldObject->RemoveFromRoot();
 	OldObject->MarkAsGarbage();
+	ForEachObjectWithOuter(OldObject, 
+		[](UObject* ObjectInOuter)
+		{
+			ObjectInOuter->ClearFlags(RF_Standalone);
+			ObjectInOuter->RemoveFromRoot();
+			ObjectInOuter->MarkAsGarbage();
+		}
+		, true, RF_NoFlags, EInternalObjectFlags::Garbage);
 
 	OldToNewInstanceMap.Add(OldObject, NewUObject);
 
@@ -2077,6 +2187,9 @@ static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& New
 
 	check(NewActor != nullptr);
 
+	// Set the actor instance guid before registering components
+	FReplaceActorHelperSetActorInstanceGuid SetActorInstanceGuid(NewActor, OldActor->GetActorInstanceGuid());
+
 	// When Spawning an actor that has an external package the package can be PKG_NewlyCreated. 
 	// We need to remove this flag if the package didn't have that flag prior to the SpawnActor. 
 	// This means we are reinstancing an actor that was already saved on disk.
@@ -2116,6 +2229,12 @@ static void ReplaceActorHelper(AActor* OldActor, UClass* OldClass, UObject*& New
 	Params.bAggressiveDefaultSubobjectReplacement = true;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	Params.bNotifyObjectReplacement = true;
+	// This shouldn't be possible, but if GetArchetype has a bug we could crash in delta serialization
+	// attempting to use it:
+	if (OldArchetype &&!ensure(OldActor->IsA(OldArchetype->GetClass())))
+	{
+		Params.bDoDelta = false;
+	}
 	UEngine::CopyPropertiesForUnrelatedObjects(OldActor, NewActor, Params);
 
 	// reset properties/streams
@@ -2195,6 +2314,18 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 	// Set global flag to let system know we are reconstructing blueprint instances
 	TGuardValue<bool> GuardTemplateNameFlag(GIsReconstructingBlueprintInstances, true);
 
+	// Keep track of non-dirty packages for objects about to be reinstanced, so we can clear the dirty state after reinstancing them
+	TSet<UPackage*> CleanPackageList;
+	auto CheckAndSaveOuterPackageToCleanList = [&CleanPackageList](const UObject* InObject)
+	{
+		check(InObject);
+		UPackage* ObjectPackage = InObject->GetPackage();
+		if (ObjectPackage && !ObjectPackage->IsDirty() && ObjectPackage != GetTransientPackage())
+		{
+			CleanPackageList.Add(ObjectPackage);
+		}
+	};
+
 	struct FObjectRemappingHelper
 	{
 		void OnObjectsReplaced(const TMap<UObject*, UObject*>& InReplacedObjects)
@@ -2245,11 +2376,26 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 		TArray<UObject*> ObjectsToReplace;
 
 		BP_SCOPED_COMPILER_EVENT_STAT(EKismetReinstancerStats_ReplaceInstancesOfClass);
-		if(GEditor && GEditor->GetSelectedActors())
+
+		// Reinstantiation can happen on the asyncloading thread and should not interact with GEditor in this case.
+		if (IsInGameThread())
 		{
-			SelectedActors = GEditor->GetSelectedActors();
-			SelectedActors->BeginBatchSelectOperation();
-			SelectedActors->Modify();
+			if(GEditor && GEditor->GetSelectedActors())
+			{
+				SelectedActors = GEditor->GetSelectedActors();
+
+				// Note: For OFPA, each instance may be stored in its own external package.
+				for (int32 SelectionIdx = 0; SelectionIdx < SelectedActors->Num(); ++SelectionIdx)
+				{
+					if (const UObject* SelectedActor = SelectedActors->GetSelectedObject(SelectionIdx))
+					{
+						CheckAndSaveOuterPackageToCleanList(SelectedActor);
+					}
+				}
+			
+				SelectedActors->BeginBatchSelectOperation();
+				SelectedActors->Modify();
+			}
 		}
 
 		// WARNING: for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap) duplicated below 
@@ -2293,12 +2439,59 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 				for (int32 OldObjIndex = 0; OldObjIndex < ObjectsToReplace.Num(); ++OldObjIndex)
 				{
 					UObject* OldObject = ObjectsToReplace[OldObjIndex];
-					
+
+					// Skipping any default sub object that outer is going to be replaced
+					// This isn't needed for the actor loop as the only outer for actor is a level
+					if ((OldObject->IsDefaultSubobject() || OldObject->HasAnyFlags(RF_DefaultSubObject)) && InOldToNewClassMap.Contains(OldObject->GetOuter()->GetClass()))
+					{
+						continue;
+					}
+
 					AActor* OldActor = Cast<AActor>(OldObject);
+					bool bIsValid = IsValid(OldObject);
+
+					// If the object is not valid, it might been replaced by the IntancedReferenceSubobjectHelper code.
+					// Anyhow we still need to replace the object class as it only duplicated the object, 
+					// So check if it has replacement and process it now if the IntancedReferenceSubobjectHelper reinstanciated the class being replaced.
+					UObject* PrevOldObject = nullptr;
+					if (!bIsValid)
+					{
+						// Was it replaced because it owner got re-instantiated?
+						if (UObject** ReplacedOldObject = OldToNewInstanceMap.Find(OldObject))
+						{
+							// If the replaced object does not have the right class
+							if ((*ReplacedOldObject)->GetClass() != NewClass)
+							{
+								// Remove the old entry as it points to the wrong instance to replace
+								OldToNewInstanceMap.Remove(OldObject);
+								ObjectRemappingHelper.ReplacedObjects.Remove(OldObject);
+
+								// Make sure the replaced object has not already been re-instantiated
+								if (UObject** NewUObject = OldToNewInstanceMap.Find(*ReplacedOldObject))
+								{
+									// Add missing entry in the map
+									checkf(IsValid(*NewUObject), TEXT("Expecting the new object to already be valid"));
+									OldToNewInstanceMap.Add(OldObject, *NewUObject);
+									ObjectRemappingHelper.ReplacedObjects.Add(OldObject, *NewUObject);
+								}
+								else
+								{
+									// Remember old object and re-instantiate the replaced object
+									PrevOldObject = OldObject;
+									OldObject = *ReplacedOldObject;
+									bIsValid = IsValid(OldObject);
+								}
+							}
+							else
+							{
+								checkf(IsValid(*ReplacedOldObject), TEXT("Expecting the replaced object to already be valid"));
+							}
+						}
+					}
 
 					// Skip archetype instances, EXCEPT for component templates and child actor templates
 					const bool bIsChildActorTemplate = OldActor && OldActor->GetOuter()->IsA<UChildActorComponent>();
-					if ((!IsValid(OldObject) && !bIsScriptComponent) || // @todo: why do we need to replace PendingKill script components?
+					if ((!bIsValid && !bIsScriptComponent) || // @todo: why do we need to replace PendingKill script components?
 						(!bIsComponent && !bIsChildActorTemplate && OldObject->IsTemplate() && !bIsScriptComponent) ||
 						(InstancesThatShouldUseOldClass && InstancesThatShouldUseOldClass->Contains(OldObject)))
 					{
@@ -2308,10 +2501,22 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 					// WARNING: This loop only handles non-actor objects, actor objects are handled below:
 					if (OldActor == nullptr)
 					{
+						CheckAndSaveOuterPackageToCleanList(OldObject);
+
 						UObject* NewUObject = nullptr;
 						ReplaceObjectHelper(OldObject, OldClass, NewUObject, NewClass, OldToNewInstanceMap, OldToNewNameMap, OldObjIndex, ObjectsToReplace, PotentialEditorsForRefreshing, OwnersToRerunConstructionScript, &FDirectAttachChildrenAccessor::Get, bIsComponent, bArchetypesAreUpToDate);
 						UpdateObjectBeingDebugged(OldObject, NewUObject);
-						ObjectsReplaced.Add(OldObject);
+
+						if (PrevOldObject)
+						{
+							OldToNewInstanceMap.Add(PrevOldObject, NewUObject);
+							ObjectRemappingHelper.ReplacedObjects.Add(PrevOldObject, NewUObject);
+							ObjectsReplaced.Add(PrevOldObject);
+						}
+						else
+						{
+							ObjectsReplaced.Add(OldObject);
+						}
 
 						if (bLogConversions)
 						{
@@ -2324,13 +2529,13 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 
 
 		FDelegateHandle OnLevelActorDeletedHandle = GEngine ? GEngine->OnLevelActorDeleted().AddLambda([&OldToNewInstanceMap](AActor* DestroyedActor)
+		{
+			if (UObject** ReplacementObject = OldToNewInstanceMap.Find(DestroyedActor))
 			{
-				if (UObject** ReplacementObject = OldToNewInstanceMap.Find(DestroyedActor))
-				{
-					AActor* ReplacementActor = CastChecked<AActor>(*ReplacementObject);
-					ReplacementActor->GetWorld()->EditorDestroyActor(ReplacementActor, /*bShouldModifyLevel =*/true);
-				}
-			}) : FDelegateHandle();
+				AActor* ReplacementActor = CastChecked<AActor>(*ReplacementObject);
+				ReplacementActor->GetWorld()->EditorDestroyActor(ReplacementActor, /*bShouldModifyLevel =*/true);
+			}
+		}) : FDelegateHandle();
 
 		// WARNING: for (TPair<UClass*, UClass*> OldToNewClass : InOldToNewClassMap) duplicated above 
 		// this loop only handles actors - which need to be reconstructed *after* their owned components 
@@ -2382,9 +2587,26 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 					// handled above
 					if (OldActor != nullptr)
 					{
+						// Note: For OFPA, each instance may be stored in its own external package.
+						CheckAndSaveOuterPackageToCleanList(OldActor);
+
 						UObject* NewUObject = nullptr;
 						if (OldActor->GetLevel() && OldActor->GetWorld())
 						{
+							// Attached actors will be marked dirty as well when the old instance is destroyed, but
+							// since these attachments will get restored as part of replacement, there's no need to
+							// re-save after reinstancing. In general, this applies only to OFPA-enabled levels, as
+							// in that case, attached actors reside in their own external packages and not the level.
+							TArray<AActor*> AttachedActors;
+							OldActor->GetAttachedActors(AttachedActors);
+							for (AActor* AttachedActor : AttachedActors)
+							{
+								if (AttachedActor)
+								{
+									CheckAndSaveOuterPackageToCleanList(AttachedActor);
+								}
+							}
+
 							ReplaceActorHelper(OldActor, OldClass, NewUObject, NewClass, OldToNewInstanceMap, InOldToNewClassMap, ReinstancedObjectsWeakReferenceMap, ActorAttachmentData, ReplacementActors, bPreserveRootComponent, bSelectionChanged);
 						}
 						else
@@ -2488,6 +2710,7 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 		}
 	}
 
+	//FReplaceReferenceHelper::ValidateReplacementMappings(OldToNewInstanceMap);
 	FReplaceReferenceHelper::FindAndReplaceReferences(SourceObjects, ObjectsThatShouldUseOldStuff, ObjectsReplaced, OldToNewInstanceMap, ReinstancedObjectsWeakReferenceMap);
 	
 	for (UObject* Obj : ObjectsReplaced)
@@ -2531,6 +2754,13 @@ void FBlueprintCompileReinstancer::ReplaceInstancesOfClass_Inner(const TMap<UCla
 	if (bSelectionChanged && GEditor)
 	{
 		GEditor->NoteSelectionChange();
+	}
+
+	// Clear the dirty flag on packages that didn't already have it set prior to objects being reinstanced.
+	for (UPackage* PackageToMarkAsClean : CleanPackageList)
+	{
+		check(PackageToMarkAsClean);
+		PackageToMarkAsClean->SetDirtyFlag(false);
 	}
 
 	TSet<UBlueprintGeneratedClass*> FixedSCS;

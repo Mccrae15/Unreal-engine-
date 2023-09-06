@@ -63,6 +63,10 @@ struct ANIMATIONBLUEPRINTLIBRARY_API FAnimPoseEvaluationOptions
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category="Animation|Pose")
 	bool bExtractRootMotion = false;
 
+	// Whether or not to force root motion being incorporated into retrieved pose
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category="Animation|Pose")
+	bool bIncorporateRootMotionIntoPose = true;
+
 	// Optional skeletal mesh with proportions to use when evaluating a pose
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category="Animation|Pose")
 	TObjectPtr<USkeletalMesh> OptionalSkeletalMesh = nullptr;
@@ -134,6 +138,15 @@ protected:
 
 	UPROPERTY()
 	TArray<float> CurveValues;
+	
+	UPROPERTY()
+	TArray<FName> SocketNames;
+
+	UPROPERTY()
+	TArray<FName> SocketParentBoneNames;
+	
+	UPROPERTY()
+	TArray<FTransform> SocketTransforms;
 
 	friend class UAnimPoseExtensions;
 };
@@ -237,6 +250,29 @@ public:
 	*/
 	UFUNCTION(BlueprintPure, meta = (ScriptMethod), Category = "Animation|Pose")
     static FTransform GetRefPoseRelativeTransform(UPARAM(ref) const FAnimPose& Pose, FName FromBoneName, FName ToBoneName, EAnimPoseSpaces Space = EAnimPoseSpaces::Local);
+
+	/**
+	* Returns an array of socket names contained by the pose
+	*
+	* @param	Pose	Anim Pose to retrieve the names from
+	* @param	Sockets	Array to be populated with the socket names
+	*
+	*/
+	UFUNCTION(BlueprintPure, meta = (ScriptMethod), Category = "Animation|Pose")
+	static void GetSocketNames(UPARAM(ref) const FAnimPose& Pose, TArray<FName>& Sockets);
+
+	/**
+	* Retrieves the transform for the provided socket name from a pose
+	*
+	* @param	Pose		Anim Pose to retrieve the transform from
+	* @param	SocketName	Name of the socket to retrieve
+	* @param	Space		Space in which the transform should be retrieved
+	*
+	* @return	Transform in requested space for bone if found, otherwise return identity transform
+	*/
+	UFUNCTION(BlueprintPure, meta = (ScriptMethod), Category = "Animation|Pose")
+	static FTransform GetSocketPose(UPARAM(ref) const FAnimPose& Pose, FName SocketName, EAnimPoseSpaces Space = EAnimPoseSpaces::Local);
+	
 
 	/**
 	* Evaluates an Animation Sequence Base to generate a valid Anim Pose instance

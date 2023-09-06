@@ -24,6 +24,9 @@
 #include "Chaos/PBDTriangleMeshCollisions.h"
 #include "Chaos/XPBDBendingConstraints.h"
 #include "Chaos/XPBDSpringConstraints.h"
+#include "Chaos/XPBDAnisotropicBendingConstraints.h"
+#include "Chaos/XPBDStretchBiasElementConstraints.h"
+#include "Chaos/WeightedLatticeImplicitObject.h"
 #include "DynamicMeshBuilder.h"
 #include "Engine/EngineTypes.h"
 #include "SceneManagement.h"
@@ -33,15 +36,56 @@
 #include "Engine/Canvas.h"  // For draw text
 #include "CanvasItem.h"     //
 #include "Engine/Engine.h"  //
+#include "UObject/ICookInfo.h"
 #endif  // #if WITH_EDITOR
 
 namespace Chaos
 {
+
+namespace Private
+{
+static int DrawSkinnedLattice = 0;
+static FAutoConsoleVariableRef CVarClothVizDrawSkinnedLattice(TEXT("p.ChaosClothVisualization.DrawSkinnedLattice"), DrawSkinnedLattice, TEXT("Draw skinned lattice, 0 = none, 1 = filled, 2 = empty, 3 = both"));
+
+// TODO: move these options to be somewhere the new cloth editor visualization can use.
+enum class EBendingDrawMode : int
+{
+	BuckleStatus = 0,
+	ParallelGraphColor = 1,
+	Anisotropy = 2,
+	RestAngle = 3
+};
+static int32 BendingDrawMode = (int32)EBendingDrawMode::BuckleStatus;
+static FAutoConsoleVariableRef CVarClothVizBendDrawMode(TEXT("p.ChaosClothVisualization.BendingDrawMode"), BendingDrawMode, TEXT("Bending draw mode, 0 = BuckleStatus, 1 = Parallel graph color, 2 = Anisotropy, 3 = RestAngle"));
+
+enum class EStretchBiasDrawMode : int
+{
+	ParallelGraphColor = 0,
+	WarpStretch = 1,
+	WeftStretch = 2,
+	BiasStretch = 3
+};
+static int32 StretchBiasDrawMode = (int32)EStretchBiasDrawMode::ParallelGraphColor;
+static FAutoConsoleVariableRef CVarClothVizStretchBiasDrawMode(TEXT("p.ChaosClothVisualization.StretchBiasDrawMode"), StretchBiasDrawMode, TEXT("Stretch draw mode, 0 = Parallel graph color, 1 = Warp Stretch, 2 = Weft Stretch, 3 = BiasStretch"));
+static float StretchBiasDrawRangeMin = -1.f;
+static float StretchBiasDrawRangeMax = 1.f;
+static FAutoConsoleVariableRef CVarClothVizStretchBiasDrawRangeMin(TEXT("p.ChaosClothVisualization.StretchBiasDrawRangeMin"), StretchBiasDrawRangeMin, TEXT("Min stretch in draw color range. Negative = compressed, 0 = undeformed, positive = stretched. (When drawing warp/weft stretch)"));
+static FAutoConsoleVariableRef CVarClothVizStretchBiasDrawRangeMax(TEXT("p.ChaosClothVisualization.StretchBiasDrawRangeMax"), StretchBiasDrawRangeMax, TEXT("Max stretch in draw color range. Negative = compressed, 0 = undeformed, positive = stretched. (When drawing warp/weft stretch)"));
+static bool bStretchBiasDrawOutOfRange = true;
+static FAutoConsoleVariableRef CVarClothVizStretchBiasDrawOutOfRange(TEXT("p.ChaosClothVisualization.StretchBiasDrawOutOfRange"), bStretchBiasDrawOutOfRange, TEXT("Draw out of range elements (When drawing warp/weft stretch)"));
+
+static FString WeightMapName = "";
+static FAutoConsoleVariableRef CVarClothVizWeightMapName(TEXT("p.ChaosClothVisualization.WeightMapName"), WeightMapName, TEXT("Weight map name to be visualized"));
+
+}// namespace Private
+
 	FClothVisualization::FClothVisualization(const ::Chaos::FClothingSimulationSolver* InSolver)
 		: Solver(InSolver)
 	{
 #if WITH_EDITOR
+		FCookLoadScope CookLoadScope(ECookLoadType::EditorOnly);
 		ClothMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/Cloth/CameraLitDoubleSided.CameraLitDoubleSided"), nullptr, LOAD_None, nullptr);  // LOAD_EditorOnly
+		ClothMaterialColor = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/Cloth/CameraLitVertexColor.CameraLitVertexColor"), nullptr, LOAD_None, nullptr);  // LOAD_EditorOnly
 		ClothMaterialVertex = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/WidgetVertexColorMaterial"), nullptr, LOAD_None, nullptr);  // LOAD_EditorOnly
 		CollisionMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/PhAT_UnselectedMaterial"), nullptr, LOAD_None, nullptr);
 #endif  // #if WITH_EDITOR
@@ -58,6 +102,7 @@ namespace Chaos
 	void FClothVisualization::AddReferencedObjects(FReferenceCollector& Collector)
 	{
 		Collector.AddReferencedObject(ClothMaterial);
+		Collector.AddReferencedObject(ClothMaterialColor);
 		Collector.AddReferencedObject(ClothMaterialVertex);
 		Collector.AddReferencedObject(CollisionMaterial);
 	}
@@ -230,7 +275,8 @@ namespace Chaos
 				continue;
 			}
 
-			const TConstArrayView<FRealSingle>& MaxDistances = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::MaxDistance];
+
+			const TConstArrayView<FRealSingle>& MaxDistances = Cloth->GetWeightMapByProperty(Solver, TEXT("MaxDistance"));
 			if (!MaxDistances.Num())
 			{
 				continue;
@@ -250,6 +296,76 @@ namespace Chaos
 				DrawText(Canvas, SceneView, Position, Text, InvMasses[Index] == (Softs::FSolverReal)0. ? KinematicColor : DynamicColor);
 			}
 		}
+	}
+
+	void FClothVisualization::DrawWeightMapWithName(FPrimitiveDrawInterface* PDI, const FString& Name) const
+	{
+		if (!Solver || !ClothMaterialColor)
+		{
+			return;
+		}
+
+		FDynamicMeshBuilder MeshBuilder(PDI->View->GetFeatureLevel());
+		int32 VertexIndex = 0;
+
+		for (const FClothingSimulationCloth* const Cloth : Solver->GetCloths())
+		{
+			const int32 Offset = Cloth->GetOffset(Solver);
+			if (Offset == INDEX_NONE)
+			{
+				continue;
+			}
+
+			const TConstArrayView<TVec3<int32>> Elements = Cloth->GetTriangleMesh(Solver).GetElements();
+			const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver);
+			const TConstArrayView<FRealSingle>& WeightMap = Cloth->GetWeightMapByName(Solver, Name);
+
+			for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ++ElementIndex, VertexIndex += 3)
+			{
+				const TVec3<int32>& Element = Elements[ElementIndex];
+
+				const FVector3f Pos0(Positions[Element.X - Offset]);
+				const FVector3f Pos1(Positions[Element.Y - Offset]);
+				const FVector3f Pos2(Positions[Element.Z - Offset]);
+
+				const FVector3f Normal = FVector3f::CrossProduct(Pos2 - Pos0, Pos1 - Pos0).GetSafeNormal();
+				const FVector3f Tangent = ((Pos1 + Pos2) * 0.5f - Pos0).GetSafeNormal();
+
+				FLinearColor VertexColor1 = FLinearColor::Black;
+				FLinearColor VertexColor2 = FLinearColor::Black;
+				FLinearColor VertexColor3 = FLinearColor::Black;
+
+				if (!WeightMap.IsEmpty() && WeightMap.Num() == Positions.Num()) // if map with that name exists and not empty
+				{
+					const FRealSingle Value0(WeightMap[Element.X - Offset]);
+					const FRealSingle Value1(WeightMap[Element.Y - Offset]);
+					const FRealSingle Value2(WeightMap[Element.Z - Offset]);
+
+					VertexColor1 = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, (float)Value0);
+					VertexColor2 = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, (float)Value1);
+					VertexColor3 = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, (float)Value2);
+				}
+	
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos0, Tangent, Normal, FVector2f(0.f, 0.f), VertexColor1.ToFColor(true)));
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos1, Tangent, Normal, FVector2f(0.f, 1.f), VertexColor2.ToFColor(true)));
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos2, Tangent, Normal, FVector2f(1.f, 1.f), VertexColor3.ToFColor(true)));
+				MeshBuilder.AddTriangle(VertexIndex, VertexIndex + 1, VertexIndex + 2);
+			}
+		}
+		
+		FMatrix LocalSimSpaceToWorld(FMatrix::Identity);
+		LocalSimSpaceToWorld.SetOrigin(Solver->GetLocalSpaceLocation());
+		MeshBuilder.Draw(PDI, LocalSimSpaceToWorld, ClothMaterialColor->GetRenderProxy(), SDPG_World, false, false);
+	}
+
+	void FClothVisualization::DrawWeightMap(FPrimitiveDrawInterface* PDI) const
+	{
+		DrawWeightMapWithName(PDI, Private::WeightMapName);
+	}
+
+	void FClothVisualization::DrawInpaintWeightsMatched(FPrimitiveDrawInterface* PDI) const
+	{
+		DrawWeightMapWithName(PDI, TEXT("_InpaintWeightMask"));
 	}
 #endif  // #if WITH_EDITOR
 
@@ -460,6 +576,85 @@ namespace Chaos
 #endif
 		{
 			DrawCoordinateSystem(PDI, Transform.GetRotation(), Transform.GetTranslation());
+		}
+	}
+
+	static void DrawSkinnedLevelSet(FPrimitiveDrawInterface* PDI, const TWeightedLatticeImplicitObject<FLevelSet>& SkinnedLevelSet, const FQuat& Rotation, const FVector& Position, const FMaterialRenderProxy* MaterialRenderProxy)
+	{
+#if WITH_EDITOR
+		if (PDI && MaterialRenderProxy)
+		{
+			TArray<FVector3f> Vertices;
+			TArray<FIntVector> Tris;
+			const FLevelSet* const LevelSet = SkinnedLevelSet.GetEmbeddedObject();
+			LevelSet->GetZeroIsosurfaceGridCellFaces(Vertices, Tris);
+
+			FDynamicMeshBuilder MeshBuilder(PDI->View->GetFeatureLevel());
+			for (const FVector3f& V : Vertices)
+			{
+				MeshBuilder.AddVertex(FDynamicMeshVertex(FVector3f(SkinnedLevelSet.GetDeformedPoint(FVec3(V)))));
+			}
+			for (const FIntVector& T : Tris)
+			{
+				MeshBuilder.AddTriangle(T[0], T[1], T[2]);
+			}
+
+			MeshBuilder.Draw(PDI, FTransform(Rotation, Position).ToMatrixWithScale(), MaterialRenderProxy, SDPG_World, false, false);
+
+			if (Private::DrawSkinnedLattice)
+			{
+				const Chaos::TUniformGrid<double, 3>& LatticeGrid = SkinnedLevelSet.GetGrid();
+				const Chaos::TArrayND<Chaos::FVec3, 3>& DeformedPoints = SkinnedLevelSet.GetDeformedPoints();
+				const Chaos::TArrayND<bool, 3>& EmptyCells = SkinnedLevelSet.GetEmptyCells();
+				const FColor LatticeColor = FColor::Cyan;
+				const FColor EmptyLatticeColor = FColor::White;
+				const Chaos::TVec3<int32> CellCounts = LatticeGrid.Counts();
+
+				FTransform LocalToWorld(Rotation, Position);
+				for (int32 I = 0; I < CellCounts.X; ++I)
+				{
+					for (int32 J = 0; J < CellCounts.Y; ++J)
+					{
+						for (int32 K = 0; K < CellCounts.Z; ++K)
+						{
+							const bool bIsEmpty = EmptyCells(I, J, K);
+							const int32 EmptyDrawMask = bIsEmpty ? 2 : 1;
+							if (EmptyDrawMask & Private::DrawSkinnedLattice)
+							{
+								const FVector P000 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I, J, K)));
+								const FVector P001 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I, J, K + 1)));
+								const FVector P010 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I, J + 1, K)));
+								const FVector P011 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I, J + 1, K + 1)));
+								const FVector P100 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I + 1, J, K)));
+								const FVector P101 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I + 1, J, K + 1)));
+								const FVector P110 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I + 1, J + 1, K)));
+								const FVector P111 = LocalToWorld.TransformPosition(FVector(DeformedPoints(I + 1, J + 1, K + 1)));
+
+								PDI->AddReserveLines(SDPG_World, 12);
+								const FColor& Color = bIsEmpty ? EmptyLatticeColor : LatticeColor;
+								PDI->DrawLine(P000, P001, Color, SDPG_World);
+								PDI->DrawLine(P000, P010, Color, SDPG_World);
+								PDI->DrawLine(P000, P100, Color, SDPG_World);
+								PDI->DrawLine(P001, P011, Color, SDPG_World);
+								PDI->DrawLine(P001, P101, Color, SDPG_World);
+								PDI->DrawLine(P010, P011, Color, SDPG_World);
+								PDI->DrawLine(P010, P110, Color, SDPG_World);
+								PDI->DrawLine(P011, P111, Color, SDPG_World);
+								PDI->DrawLine(P100, P101, Color, SDPG_World);
+								PDI->DrawLine(P100, P110, Color, SDPG_World);
+								PDI->DrawLine(P101, P111, Color, SDPG_World);
+								PDI->DrawLine(P110, P111, Color, SDPG_World);
+
+							}
+						}
+					}
+				}
+			}
+		}
+		else
+#endif
+		{
+			DrawCoordinateSystem(PDI, Rotation, Position);
 		}
 	}
 
@@ -874,7 +1069,19 @@ namespace Chaos
 								DrawLevelSet(PDI, CombinedTransform, MaterialRenderProxy, LevelSet);
 							}
 							break;
+						case (ImplicitObjectType::LevelSet | ImplicitObjectType::IsWeightedLattice):
+							{
+								const TWeightedLatticeImplicitObject<FLevelSet>& WeightedLevelset = Object->GetObjectChecked< TWeightedLatticeImplicitObject<FLevelSet> >();
+								const FMaterialRenderProxy* MaterialRenderProxy =
+#if WITH_EDITOR
+									CollisionMaterial->GetRenderProxy();
+#else
+									nullptr;
+#endif
+								DrawSkinnedLevelSet(PDI, WeightedLevelset, Rotation, Position, MaterialRenderProxy);
 
+							}
+							break;
 						default:
 							DrawCoordinateSystem(PDI, Rotation, Position);  // Draw everything else as a coordinate for now
 							break;
@@ -896,6 +1103,7 @@ namespace Chaos
 
 		// Draw contacts
 		check(Solver->GetCollisionContacts().Num() == Solver->GetCollisionNormals().Num());
+		const bool bDrawPhis = Solver->GetCollisionContacts().Num() == Solver->GetCollisionPhis().Num();
 		constexpr FReal NormalLength = (FReal)10.;
 
 		const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
@@ -917,6 +1125,13 @@ namespace Chaos
 			static const FLinearColor Brown(0.1f, 0.05f, 0.f);
 			const FVec3 Pos1 = Pos0 + NormalLength * Normal;
 			DrawLine(PDI, Pos0, Pos1, Brown);
+
+			if (bDrawPhis)
+			{
+				const FVec3 PhiLocation = Pos0 - Solver->GetCollisionPhis()[i] * Normal;
+				DrawLine(PDI, Pos0, PhiLocation, Brown);
+				DrawPoint(PDI, PhiLocation, FLinearColor::Red, nullptr, 5);
+			}
 		}
 	}
 
@@ -954,8 +1169,9 @@ namespace Chaos
 			if (const Softs::FPBDSphericalBackstopConstraint* const BackstopConstraint = ClothConstraints.GetBackstopConstraints().Get())
 			{
 				const bool bUseLegacyBackstop = BackstopConstraint->UseLegacyBackstop();
-				const TConstArrayView<FRealSingle>& BackstopDistances = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::BackstopDistance];
-				const TConstArrayView<FRealSingle>& BackstopRadiuses = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::BackstopRadius];
+
+				const TConstArrayView<FRealSingle>& BackstopDistances = Cloth->GetWeightMapByProperty(Solver, TEXT("BackstopDistance"));
+				const TConstArrayView<FRealSingle>& BackstopRadiuses = Cloth->GetWeightMapByProperty(Solver, TEXT("BackstopRadius"));
 				const TConstArrayView<Softs::FSolverVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver);
 				const TConstArrayView<Softs::FSolverVec3> AnimationNormals = Cloth->GetAnimationNormals(Solver);
 				const TConstArrayView<Softs::FSolverVec3> ParticlePositions = Cloth->GetParticlePositions(Solver);
@@ -1013,8 +1229,8 @@ namespace Chaos
 			if (const Softs::FPBDSphericalBackstopConstraint* const BackstopConstraint = ClothConstraints.GetBackstopConstraints().Get())
 			{
 				const bool bUseLegacyBackstop = BackstopConstraint->UseLegacyBackstop();
-				const TConstArrayView<FRealSingle>& BackstopDistances = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::BackstopDistance];
-				const TConstArrayView<FRealSingle>& BackstopRadiuses = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::BackstopRadius];
+				const TConstArrayView<FRealSingle>& BackstopDistances = Cloth->GetWeightMapByProperty(Solver, TEXT("BackstopDistance"));
+				const TConstArrayView<FRealSingle>& BackstopRadiuses = Cloth->GetWeightMapByProperty(Solver, TEXT("BackstopRadius"));
 				const TConstArrayView<Softs::FSolverVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver);
 				const TConstArrayView<Softs::FSolverVec3> AnimationNormals = Cloth->GetAnimationNormals(Solver);
 
@@ -1056,7 +1272,7 @@ namespace Chaos
 				continue;
 			}
 
-			const TConstArrayView<FRealSingle>& MaxDistances = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::MaxDistance];
+			const TConstArrayView<FRealSingle>& MaxDistances = Cloth->GetWeightMapByProperty(Solver, TEXT("MaxDistance"));
 			if (!MaxDistances.Num())
 			{
 				continue;
@@ -1109,7 +1325,7 @@ namespace Chaos
 			const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
 			if (const Softs::FPBDAnimDriveConstraint* const AnimDriveConstraint = ClothConstraints.GetAnimDriveConstraints().Get())
 			{
-				const TConstArrayView<FRealSingle>& AnimDriveStiffnessMultipliers = Cloth->GetWeightMaps(Solver)[(int32)EChaosWeightMapTarget::AnimDriveStiffness];
+				const TConstArrayView<FRealSingle>& AnimDriveStiffnessMultipliers = Cloth->GetWeightMapByProperty(Solver, TEXT("AnimDriveStiffness"));
 				const TConstArrayView<Softs::FSolverVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver);
 				const TConstArrayView<Softs::FSolverVec3> ParticlePositions = Cloth->GetParticlePositions(Solver);
 				check(ParticlePositions.Num() == AnimationPositions.Num());
@@ -1132,11 +1348,12 @@ namespace Chaos
 		}
 	}
 
-	static void DrawSpringConstraintColors(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const ::Chaos::Softs::FPBDSpringConstraints* const SpringConstraints)
+	template<typename SpringConstraintType>
+	static void DrawSpringConstraintColors(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const SpringConstraintType* const SpringConstraints)
 	{
 		check(SpringConstraints);
 
-		const TArray<TVec2<int32>>& Constraints = SpringConstraints->GetConstraints();
+		const auto& Constraints = SpringConstraints->GetConstraints(); // auto because constraints can be TVec2<int> or TVec4<int>, but we just care about first two for drawing here either way
 		const TArray<int32>& ConstraintsPerColorStartIndex = SpringConstraints->GetConstraintsPerColorStartIndex();
 		if (ConstraintsPerColorStartIndex.Num() > 1)
 		{
@@ -1156,7 +1373,7 @@ namespace Chaos
 				for (int32 ConstraintIndex = ColorStart; ConstraintIndex < ColorEnd; ++ConstraintIndex)
 				{
 					// Draw line
-					const TVec2<int32>& Constraint = Constraints[ConstraintIndex];
+					const auto& Constraint = Constraints[ConstraintIndex];
 					const FVec3 Pos0 = FVec3(Positions[Constraint[0]]) + LocalSpaceLocation;
 					const FVec3 Pos1 = FVec3(Positions[Constraint[1]]) + LocalSpaceLocation;
 					DrawLine(PDI, Pos0, Pos1, DrawColor);
@@ -1165,7 +1382,7 @@ namespace Chaos
 		}
 		else
 		{
-			for (const TVec2<int32>& Constraint : Constraints)
+			for (const auto& Constraint : Constraints)
 			{
 				// Draw line
 				const FVec3 Pos0 = FVec3(Positions[Constraint[0]]) + LocalSpaceLocation;
@@ -1174,6 +1391,193 @@ namespace Chaos
 				DrawLine(PDI, Pos0, Pos1, FLinearColor::Black);
 			}
 		}
+	}
+
+	static void DrawStretchBiasConstraints_ParallelGraphColor(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const FMaterialRenderProxy* MaterialRenderProxy, const Softs::FXPBDStretchBiasElementConstraints* const SpringConstraints)
+	{
+#if WITH_EDITOR
+		if (PDI && MaterialRenderProxy)
+		{
+			const TArray<TVec3<int32>>& Constraints = SpringConstraints->GetConstraints();
+			const TArray<int32>& ConstraintsPerColorStartIndex = SpringConstraints->GetConstraintsPerColorStartIndex();
+
+			const int32 ConstraintColorNum = ConstraintsPerColorStartIndex.Num() - 1;
+			const uint8 HueOffset = 196 / ConstraintColorNum;
+
+			auto ConstraintColor =
+				[HueOffset](int32 ColorIndex)->FColor
+			{
+				return FLinearColor::MakeFromHSV8(ColorIndex * HueOffset, 255, 255).ToFColor(true);
+			};
+
+			FDynamicMeshBuilder MeshBuilder(PDI->View->GetFeatureLevel());
+			int32 VertexIndex = 0;
+			for (int32 ConstraintColorIndex = 0; ConstraintColorIndex < ConstraintColorNum; ++ConstraintColorIndex)
+			{
+				const int32 ColorStart = ConstraintsPerColorStartIndex[ConstraintColorIndex];
+				const int32 ColorEnd = ConstraintsPerColorStartIndex[ConstraintColorIndex + 1];
+				const FColor DrawColor = ConstraintColor(ConstraintColorIndex);
+				for (int32 ConstraintIndex = ColorStart; ConstraintIndex < ColorEnd; ++ConstraintIndex, VertexIndex += 3)
+				{
+					const TVec3<int32>& Constraint = Constraints[ConstraintIndex];
+					const FVector3f Pos0 = FVector3f(Positions[Constraint[0]]);
+					const FVector3f Pos1 = FVector3f(Positions[Constraint[1]]);
+					const FVector3f Pos2 = FVector3f(Positions[Constraint[2]]);
+					const FVector3f Normal = FVector3f::CrossProduct(Pos2 - Pos0, Pos1 - Pos0).GetSafeNormal();
+					const FVector3f Tangent = ((Pos1 + Pos2) * 0.5f - Pos0).GetSafeNormal();
+
+					MeshBuilder.AddVertex(FDynamicMeshVertex(Pos0, Tangent, Normal, FVector2f(0.f, 0.f), DrawColor));
+					MeshBuilder.AddVertex(FDynamicMeshVertex(Pos1, Tangent, Normal, FVector2f(0.f, 1.f), DrawColor));
+					MeshBuilder.AddVertex(FDynamicMeshVertex(Pos2, Tangent, Normal, FVector2f(1.f, 1.f), DrawColor));
+					MeshBuilder.AddTriangle(VertexIndex, VertexIndex + 1, VertexIndex + 2);
+				}
+			}
+
+			FMatrix LocalSimSpaceToWorld(FMatrix::Identity);
+			LocalSimSpaceToWorld.SetOrigin(LocalSpaceLocation);
+			MeshBuilder.Draw(PDI, LocalSimSpaceToWorld, MaterialRenderProxy, SDPG_World, false, false);
+		}
+#endif
+	}
+
+	static void DrawStretchBiasConstraints_WarpWeftStretch(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const FMaterialRenderProxy* MaterialRenderProxy, const Softs::FXPBDStretchBiasElementConstraints* const SpringConstraints)
+	{
+#if WITH_EDITOR
+		if (PDI && MaterialRenderProxy)
+		{
+			const TArray<TVec3<int32>>& Constraints = SpringConstraints->GetConstraints();
+			const float StretchRangeMinClamped = Private::StretchBiasDrawRangeMin <= Private::StretchBiasDrawRangeMax ? Private::StretchBiasDrawRangeMin : 0.f;
+			const float StretchRangeMaxClamped = Private::StretchBiasDrawRangeMin <= Private::StretchBiasDrawRangeMax ? Private::StretchBiasDrawRangeMax : 0.f;
+			const float StretchRange = StretchRangeMaxClamped - StretchRangeMinClamped;
+			const float StretchRangeInv = StretchRange > UE_KINDA_SMALL_NUMBER ? 1.f / StretchRange : 0.f;
+			const bool bIsWeftStretch = (Private::EStretchBiasDrawMode)Private::StretchBiasDrawMode == Private::EStretchBiasDrawMode::WeftStretch;
+			auto ConstraintColor =
+				[bIsWeftStretch, StretchRangeMinClamped, StretchRangeMaxClamped, StretchRangeInv, &Constraints, &Positions, &SpringConstraints](int32 ConstraintIndex, bool& bOutOfRange)->FColor
+			{
+				bOutOfRange = false;
+
+				// TODO: make these configurable
+				constexpr float OutOfRangeMinHue = 240.f; // blue
+				constexpr float MinHue = 180.f; // cyan
+				constexpr float MaxHue = 60.f; // yellow
+				constexpr float OutOfRangeMaxHue = 0.f; // red
+				constexpr float StretchedValue = 1.f;
+				constexpr float CompressedValue = 0.5;
+
+				const TVec3<int32>& Constraint = Constraints[ConstraintIndex];
+				const Softs::FSolverVec3& P0 = Positions[Constraint[0]];
+				const Softs::FSolverVec3& P1 = Positions[Constraint[1]];
+				const Softs::FSolverVec3& P2 = Positions[Constraint[2]];
+				Softs::FSolverVec3 dX_dU, dX_dV;
+				SpringConstraints->CalculateUVStretch(ConstraintIndex, P0, P1, P2, dX_dU, dX_dV);
+				const Softs::FSolverReal Stretch = bIsWeftStretch ? dX_dV.Length() : dX_dU.Length();
+
+				const int32 WarpWeftIndex = bIsWeftStretch ? 1 : 0;
+
+				const Softs::FSolverVec2 StretchScale = SpringConstraints->GetWarpWeftScale(ConstraintIndex);
+				const Softs::FSolverReal RestStretch = SpringConstraints->GetRestStretchLengths()[ConstraintIndex][WarpWeftIndex] * StretchScale[WarpWeftIndex];
+				const Softs::FSolverReal RestStretchInv = (Softs::FSolverReal)1. / FMath::Max(RestStretch, UE_KINDA_SMALL_NUMBER);
+
+				const float StretchRatio = (Stretch - RestStretch) * RestStretchInv;
+				if (StretchRatio < StretchRangeMinClamped)
+				{
+					bOutOfRange = true;
+					return FLinearColor(OutOfRangeMinHue, 1.f, StretchRatio < 0 ? CompressedValue : StretchedValue).HSVToLinearRGB().ToFColor(true);
+				}
+				if (StretchRatio > StretchRangeMaxClamped)
+				{
+					bOutOfRange = true;
+					return FLinearColor(OutOfRangeMaxHue, 1.f, StretchRatio < 0 ? CompressedValue : StretchedValue).HSVToLinearRGB().ToFColor(true);
+				}
+
+				// Convert from [StretchRangeMinClamped, StretchRangeMaxClamped] --> [MinHue, MaxHue]
+				const float Hue = (MinHue + (MaxHue - MinHue) * (StretchRatio - StretchRangeMinClamped) * StretchRangeInv);
+				return FLinearColor(Hue, 1.f, StretchRatio < 0 ? CompressedValue : StretchedValue).HSVToLinearRGB().ToFColor(true);
+			};
+
+			FDynamicMeshBuilder MeshBuilder(PDI->View->GetFeatureLevel());
+			int32 VertexIndex = 0;
+			for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
+			{
+
+				bool bIsOutOfRange;
+				const FColor DrawColor = ConstraintColor(ConstraintIndex, bIsOutOfRange);
+				if (bIsOutOfRange && !Private::bStretchBiasDrawOutOfRange)
+				{
+					continue;
+				}
+
+				const TVec3<int32>& Constraint = Constraints[ConstraintIndex];
+				const FVector3f Pos0 = FVector3f(Positions[Constraint[0]]);
+				const FVector3f Pos1 = FVector3f(Positions[Constraint[1]]);
+				const FVector3f Pos2 = FVector3f(Positions[Constraint[2]]);
+				const FVector3f Normal = FVector3f::CrossProduct(Pos2 - Pos0, Pos1 - Pos0).GetSafeNormal();
+				const FVector3f Tangent = ((Pos1 + Pos2) * 0.5f - Pos0).GetSafeNormal();
+
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos0, Tangent, Normal, FVector2f(0.f, 0.f), DrawColor));
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos1, Tangent, Normal, FVector2f(0.f, 1.f), DrawColor));
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos2, Tangent, Normal, FVector2f(1.f, 1.f), DrawColor));
+				MeshBuilder.AddTriangle(VertexIndex, VertexIndex + 1, VertexIndex + 2);
+				VertexIndex += 3;
+			}
+
+			FMatrix LocalSimSpaceToWorld(FMatrix::Identity);
+			LocalSimSpaceToWorld.SetOrigin(LocalSpaceLocation);
+			MeshBuilder.Draw(PDI, LocalSimSpaceToWorld, MaterialRenderProxy, SDPG_World, false, false);
+		}
+#endif
+	}
+
+	static void DrawStretchBiasConstraints_BiasStretch(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const FMaterialRenderProxy* MaterialRenderProxy, const Softs::FXPBDStretchBiasElementConstraints* const SpringConstraints)
+	{
+
+#if WITH_EDITOR
+		if (PDI && MaterialRenderProxy)
+		{
+			const TArray<TVec3<int32>>& Constraints = SpringConstraints->GetConstraints();
+			auto ConstraintColor = [&Constraints, &Positions, &SpringConstraints](int32 ConstraintIndex)->FColor
+			{
+				const TVec3<int32>& Constraint = Constraints[ConstraintIndex];
+				const Softs::FSolverVec3& P0 = Positions[Constraint[0]];
+				const Softs::FSolverVec3& P1 = Positions[Constraint[1]];
+				const Softs::FSolverVec3& P2 = Positions[Constraint[2]];
+				Softs::FSolverVec3 dX_dU, dX_dV;
+				SpringConstraints->CalculateUVStretch(ConstraintIndex, P0, P1, P2, dX_dU, dX_dV);
+				
+				const Softs::FSolverVec3 dX_dU_normalized = dX_dU.GetSafeNormal();
+				const Softs::FSolverVec3 dX_dV_normalized = dX_dV.GetSafeNormal();
+				const Softs::FSolverReal Shear = FMath::Abs(Softs::FSolverVec3::DotProduct(dX_dU_normalized, dX_dV_normalized));
+
+				constexpr float UndeformedHue = 240.f; // blue
+				constexpr float MaxDeformedHue = 360.f; // red
+
+				return FLinearColor(UndeformedHue + Shear * (MaxDeformedHue - UndeformedHue), 1.f, 1.f).HSVToLinearRGB().ToFColor(true);
+			};
+
+			FDynamicMeshBuilder MeshBuilder(PDI->View->GetFeatureLevel());
+			int32 VertexIndex = 0;
+			for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex, VertexIndex += 3)
+			{
+				const FColor DrawColor = ConstraintColor(ConstraintIndex);
+
+				const TVec3<int32>& Constraint = Constraints[ConstraintIndex];
+				const FVector3f Pos0 = FVector3f(Positions[Constraint[0]]);
+				const FVector3f Pos1 = FVector3f(Positions[Constraint[1]]);
+				const FVector3f Pos2 = FVector3f(Positions[Constraint[2]]);
+				const FVector3f Normal = FVector3f::CrossProduct(Pos2 - Pos0, Pos1 - Pos0).GetSafeNormal();
+				const FVector3f Tangent = ((Pos1 + Pos2) * 0.5f - Pos0).GetSafeNormal();
+
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos0, Tangent, Normal, FVector2f(0.f, 0.f), DrawColor));
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos1, Tangent, Normal, FVector2f(0.f, 1.f), DrawColor));
+				MeshBuilder.AddVertex(FDynamicMeshVertex(Pos2, Tangent, Normal, FVector2f(1.f, 1.f), DrawColor));
+				MeshBuilder.AddTriangle(VertexIndex, VertexIndex + 1, VertexIndex + 2);
+			}
+
+			FMatrix LocalSimSpaceToWorld(FMatrix::Identity);
+			LocalSimSpaceToWorld.SetOrigin(LocalSpaceLocation);
+			MeshBuilder.Draw(PDI, LocalSimSpaceToWorld, MaterialRenderProxy, SDPG_World, false, false);
+		}
+#endif
 	}
 
 	void FClothVisualization::DrawEdgeConstraint(FPrimitiveDrawInterface* PDI) const
@@ -1198,10 +1602,90 @@ namespace Chaos
 
 			const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver);
 
-			if (const Softs::FPBDSpringConstraints* const EdgeConstraints = ClothConstraints.GetEdgeConstraints().Get())
+			if (const Softs::FPBDEdgeSpringConstraints* const EdgeConstraints = ClothConstraints.GetEdgeSpringConstraints().Get())
 			{
 				DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, EdgeConstraints);
 			}
+
+			if (const Softs::FXPBDEdgeSpringConstraints* const EdgeConstraints = ClothConstraints.GetXEdgeSpringConstraints().Get())
+			{
+				DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, EdgeConstraints);
+			}
+
+			if (const Softs::FXPBDStretchBiasElementConstraints* const StretchConstraints = ClothConstraints.GetXStretchBiasConstraints().Get())
+			{
+				const FMaterialRenderProxy* MaterialRenderProxy =
+#if WITH_EDITOR
+					ClothMaterialColor->GetRenderProxy();
+#else
+					nullptr;
+#endif
+				switch ((Private::EStretchBiasDrawMode)Private::StretchBiasDrawMode)
+				{
+				case Private::EStretchBiasDrawMode::WarpStretch: // fallthrough
+				case Private::EStretchBiasDrawMode::WeftStretch:
+					DrawStretchBiasConstraints_WarpWeftStretch(PDI, Positions, LocalSpaceLocation, MaterialRenderProxy, StretchConstraints);
+					break;
+				case Private::EStretchBiasDrawMode::BiasStretch:
+					DrawStretchBiasConstraints_BiasStretch(PDI, Positions, LocalSpaceLocation, MaterialRenderProxy, StretchConstraints);
+					break;
+				case Private::EStretchBiasDrawMode::ParallelGraphColor: // fallthrough
+				default:
+					DrawStretchBiasConstraints_ParallelGraphColor(PDI, Positions, LocalSpaceLocation, MaterialRenderProxy, StretchConstraints);
+				}
+
+			}
+		}
+	}
+
+	static void DrawBendingElementBuckleStatus(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const ::Chaos::Softs::FPBDBendingConstraintsBase* const BendingConstraints)
+	{
+		const TArray<TVec4<int32>>& Constraints = BendingConstraints->GetConstraints();
+		const TArray<bool>& IsBuckled = BendingConstraints->GetIsBuckled();
+
+		// Color constraint edge with red or blue: Red = Buckled, Blue = Not Buckled. 
+		for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
+		{
+			const Softs::FSolverVec3& P1 = Positions[Constraints[ConstraintIndex][0]];
+			const Softs::FSolverVec3& P2 = Positions[Constraints[ConstraintIndex][1]];
+
+			const bool bIsBuckled = IsBuckled[ConstraintIndex];
+
+			const FVec3 Pos0 = FVec3(P1) + LocalSpaceLocation;
+			const FVec3 Pos1 = FVec3(P2) + LocalSpaceLocation;
+			DrawLine(PDI, Pos0, Pos1, bIsBuckled ? FLinearColor::Red : FLinearColor::Blue);
+		}
+	}
+
+	static void DrawBendingElementAnisotropy(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const ::Chaos::Softs::FXPBDAnisotropicBendingConstraints* const BendingConstraints)
+	{
+		const TArray<TVec4<int32>>& Constraints = BendingConstraints->GetConstraints();
+		const TArray<Softs::FSolverVec3>& WarpWeftBiasBaseMultipliers = BendingConstraints->GetWarpWeftBiasBaseMultipliers();
+		for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
+		{
+			const Softs::FSolverVec3& P1 = Positions[Constraints[ConstraintIndex][0]];
+			const Softs::FSolverVec3& P2 = Positions[Constraints[ConstraintIndex][1]];
+			const Softs::FSolverVec3& Multiplier = WarpWeftBiasBaseMultipliers[ConstraintIndex];
+
+			const FVec3 Pos0 = FVec3(P1) + LocalSpaceLocation;
+			const FVec3 Pos1 = FVec3(P2) + LocalSpaceLocation;
+			DrawLine(PDI, Pos0, Pos1, FLinearColor(Multiplier[0], Multiplier[1], Multiplier[2]));
+		}
+	}
+	static void DrawBendingElementRestAngle(FPrimitiveDrawInterface* PDI, const TConstArrayView<::Chaos::Softs::FSolverVec3>& Positions, const ::Chaos::FVec3& LocalSpaceLocation, const ::Chaos::Softs::FPBDBendingConstraintsBase* const BendingConstraints)
+	{
+		const TArray<TVec4<int32>>& Constraints = BendingConstraints->GetConstraints();
+		const TArray<Softs::FSolverReal>& RestAngles = BendingConstraints->GetRestAngles();
+		for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
+		{
+			const Softs::FSolverVec3& P1 = Positions[Constraints[ConstraintIndex][0]];
+			const Softs::FSolverVec3& P2 = Positions[Constraints[ConstraintIndex][1]];
+			const Softs::FSolverReal RestAngle = RestAngles[ConstraintIndex];
+			const uint8 ColorSat = (uint8)FMath::Clamp(FMath::Abs(RestAngle) / UE_PI * 256, 0, 255);
+
+			const FVec3 Pos0 = FVec3(P1) + LocalSpaceLocation;
+			const FVec3 Pos1 = FVec3(P2) + LocalSpaceLocation;
+			DrawLine(PDI, Pos0, Pos1, FLinearColor::MakeFromHSV8(RestAngle > 0 ? 170 : 0, ColorSat, 255));
 		}
 	}
 
@@ -1227,46 +1711,67 @@ namespace Chaos
 
 			const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver);
 
-			if (const Softs::FPBDSpringConstraints* const BendingConstraints = ClothConstraints.GetBendingConstraints().Get())
+			if (const Softs::FPBDBendingSpringConstraints* const BendingConstraints = ClothConstraints.GetBendingSpringConstraints().Get())
+			{
+				DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+			}
+
+			if (const Softs::FXPBDBendingSpringConstraints* const BendingConstraints = ClothConstraints.GetXBendingSpringConstraints().Get())
 			{
 				DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, BendingConstraints);
 			}
 
 			if (const Softs::FPBDBendingConstraints* const BendingConstraints = ClothConstraints.GetBendingElementConstraints().Get())
 			{
-				const TArray<TVec4<int32>>& Constraints = BendingConstraints->GetConstraints();
-				const TArray<bool>& IsBuckled = BendingConstraints->GetIsBuckled();
-
-				// Color constraint edge with red or blue: Red = Buckled, Blue = Not Buckled. 
-				for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
+				switch ((Private::EBendingDrawMode)Private::BendingDrawMode)
 				{
-					const Softs::FSolverVec3& P1 = Positions[Constraints[ConstraintIndex][0]];
-					const Softs::FSolverVec3& P2 = Positions[Constraints[ConstraintIndex][1]];
-				
-					const bool bIsBuckled = IsBuckled[ConstraintIndex];
-
-					const FVec3 Pos0 = FVec3(P1) + LocalSpaceLocation;
-					const FVec3 Pos1 = FVec3(P2) + LocalSpaceLocation;
-					DrawLine(PDI, Pos0, Pos1, bIsBuckled ? FLinearColor::Red : FLinearColor::Blue);
+				case Private::EBendingDrawMode::RestAngle:
+					DrawBendingElementRestAngle(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::ParallelGraphColor:
+					DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::BuckleStatus:
+				default:
+					DrawBendingElementBuckleStatus(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
 				}
 			}
 
 			if (const Softs::FXPBDBendingConstraints* const BendingConstraints = ClothConstraints.GetXBendingElementConstraints().Get())
 			{
-				const TArray<TVec4<int32>>& Constraints = BendingConstraints->GetConstraints();
-				const TArray<bool>& IsBuckled = BendingConstraints->GetIsBuckled();
-
-				// Color constraint edge with red or blue: Red = Buckled, Blue = Not Buckled.
-				for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
+				switch ((Private::EBendingDrawMode)Private::BendingDrawMode)
 				{
-					const Softs::FSolverVec3& P1 = Positions[Constraints[ConstraintIndex][0]];
-					const Softs::FSolverVec3& P2 = Positions[Constraints[ConstraintIndex][1]];
+				case Private::EBendingDrawMode::RestAngle:
+					DrawBendingElementRestAngle(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::ParallelGraphColor:
+					DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::BuckleStatus:
+				default:
+					DrawBendingElementBuckleStatus(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				}
+			}
 
-					const bool bIsBuckled = IsBuckled[ConstraintIndex];
-
-					const FVec3 Pos0 = FVec3(P1) + LocalSpaceLocation;
-					const FVec3 Pos1 = FVec3(P2) + LocalSpaceLocation;
-					DrawLine(PDI, Pos0, Pos1, bIsBuckled ? FLinearColor::Red : FLinearColor::Blue);
+			if (const Softs::FXPBDAnisotropicBendingConstraints* const BendingConstraints = ClothConstraints.GetXAnisoBendingElementConstraints().Get())
+			{
+				switch ((Private::EBendingDrawMode)Private::BendingDrawMode)
+				{
+				case Private::EBendingDrawMode::RestAngle:
+					DrawBendingElementRestAngle(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::ParallelGraphColor:
+					DrawSpringConstraintColors(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::Anisotropy:
+					DrawBendingElementAnisotropy(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
+				case Private::EBendingDrawMode::BuckleStatus:
+				default:
+					DrawBendingElementBuckleStatus(PDI, Positions, LocalSpaceLocation, BendingConstraints);
+					break;
 				}
 			}
 		}

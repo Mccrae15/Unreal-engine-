@@ -4,15 +4,18 @@
 #include "NiagaraEmitter.h"
 
 #include "INiagaraEditorOnlyDataUtlities.h"
+#include "NiagaraBoundsCalculator.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraMessageDataBase.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "NiagaraEditorDataBase.h"
 #include "NiagaraModule.h"
-#include "NiagaraRenderer.h"
 #include "NiagaraRendererProperties.h"
+#include "NiagaraScratchPadContainer.h"
 #include "NiagaraScript.h"
 #include "NiagaraScriptSourceBase.h"
 #include "NiagaraSettings.h"
+#include "NiagaraShader.h"
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraStats.h"
 #include "NiagaraSystem.h"
@@ -20,10 +23,12 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Modules/ModuleManager.h"
+#include "Templates/Greater.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
+#include "WorldCollision.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraEmitter)
 
@@ -172,9 +177,6 @@ UNiagaraEmitter::UNiagaraEmitter(const FObjectInitializer& Initializer)
 , bUseMinDetailLevel_DEPRECATED(false)
 , bUseMaxDetailLevel_DEPRECATED(false)
 , bRequiresPersistentIDs_DEPRECATED(false)
-, bCombineEventSpawn_DEPRECATED(false)
-, MaxDeltaTimePerTick_DEPRECATED(0.125)
-, bLimitDeltaTime_DEPRECATED(true)
 , MaxGPUParticlesSpawnPerFrame_DEPRECATED(0)
 #endif
 {
@@ -254,11 +256,20 @@ void FVersionedNiagaraEmitterData::PostInitProperties(UNiagaraEmitter* Outer)
 		GPUComputeScript->SetUsage(ENiagaraScriptUsage::ParticleGPUComputeScript);
 
 #if WITH_EDITORONLY_DATA && WITH_EDITOR
-	if (EditorParameters == nullptr)
+	if(EditorParameters == nullptr || EditorData == nullptr)
 	{
 		INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
-		EditorParameters = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorParameters(Outer);
-	}
+
+		if(EditorParameters == nullptr)
+		{
+			EditorParameters = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorParameters(Outer);
+		}
+
+		if(EditorData == nullptr)
+		{
+			EditorData = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorData(Outer);
+		}
+	}	
 #endif
 }
 
@@ -411,10 +422,13 @@ TArray<INiagaraMergeManager::FMergeEmitterResults> UNiagaraEmitter::MergeChanges
 				*GetPathName(), VersionedParent.Emitter != nullptr ? *VersionedParent.Emitter->GetPathName() : TEXT("(null)"), *MergeResults.GetErrorMessagesString());
 		}
 
-		RemoveMessage(EmitterMergeMessageId);
 		if (MergeResults.MergeNiagaraMessage != nullptr)
 		{
-			AddMessage(EmitterMergeMessageId, CastChecked<UNiagaraMessageDataBase>(StaticDuplicateObject(MergeResults.MergeNiagaraMessage, this)));
+			MessageStore.AddMessage(EmitterMergeMessageId, CastChecked<UNiagaraMessageDataBase>(StaticDuplicateObject(MergeResults.MergeNiagaraMessage, this)));
+		}
+		else
+		{
+			MessageStore.RemoveMessage(EmitterMergeMessageId);
 		}
 	}
 	return Results;
@@ -656,6 +670,12 @@ void UNiagaraEmitter::PostLoad()
 		LibraryVisibility = ENiagaraScriptLibraryVisibility::Library;
 	}
 
+	if (MessageKeyToMessageMap_DEPRECATED.IsEmpty() == false)
+	{
+		MessageStore.SetMessages(MessageKeyToMessageMap_DEPRECATED);
+		MessageKeyToMessageMap_DEPRECATED.Empty();
+	}
+
 	if (this->GetOuter()->IsA<UNiagaraSystem>() || this->GetOuter()->IsA<UNiagaraEmitter>())
 	{
 		// Remove thunbnails for non-asset emitters to prevent problems with cooked for editor emitters being referenced by uncooked emitters and systems.
@@ -772,6 +792,12 @@ void FVersionedNiagaraEmitterData::PostLoad(UNiagaraEmitter& Emitter, int32 Niag
 	if (EditorData != nullptr)
 	{
 		EditorData->ConditionalPostLoad();
+		EditorData->PostLoadFromOwner(&Emitter);
+	}
+	else
+	{
+		INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+		EditorData = NiagaraModule.GetEditorOnlyDataUtilities().CreateDefaultEditorData(&Emitter);
 	}
 	
 	if (!GPUComputeScript)
@@ -1259,14 +1285,6 @@ void UNiagaraEmitter::PostEditChangeVersionedProperty(FPropertyChangedEvent& Pro
 		}
 		bNeedsRecompile = true;
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FVersionedNiagaraEmitterData, MaxDeltaTimePerTick))
-	{
-		if (EmitterData->GraphSource != nullptr)
-		{
-			EmitterData->GraphSource->MarkNotSynchronized(TEXT("MaxDeltaTimePerTick changed."));
-		}
-		bNeedsRecompile = true;
-	}
 
 	ResolveScalabilitySettings();
 
@@ -1306,6 +1324,16 @@ UNiagaraEmitter::FOnPropertiesChanged& UNiagaraEmitter::OnRenderersChanged()
 	return OnRenderersChangedDelegate;
 }
 
+UNiagaraEmitter::FOnSimStagesChanged& UNiagaraEmitter::OnSimStagesChanged()
+{
+	return OnSimStagesChangedDelegate;
+}
+
+UNiagaraEmitter::FOnSimStagesChanged& UNiagaraEmitter::OnEventHandlersChanged()
+{
+	return OnEventHandlersChangedDelegate;
+}
+
 void UNiagaraEmitter::HandleVariableRenamed(const FNiagaraVariable& InOldVariable, const FNiagaraVariable& InNewVariable, bool bUpdateContexts, FGuid EmitterVersion)
 {
 	// Rename the variable if it is in use by any renderer properties
@@ -1316,14 +1344,13 @@ void UNiagaraEmitter::HandleVariableRenamed(const FNiagaraVariable& InOldVariabl
 		Prop->RenameVariable(InOldVariable, InNewVariable, FVersionedNiagaraEmitter(this, EmitterVersion));
 	}
 
-	// Rename any simulation stage iteration sources
+	// Rename any simulation stage variables
 	for (UNiagaraSimulationStageBase* SimStage : Data->SimulationStages)
 	{
-		UNiagaraSimulationStageGeneric* GenericStage = Cast<UNiagaraSimulationStageGeneric>(SimStage);
-		if (GenericStage && GenericStage->DataInterface.BoundVariable.GetName() == InOldVariable.GetName())
+		if (UNiagaraSimulationStageGeneric* GenericStage = Cast<UNiagaraSimulationStageGeneric>(SimStage))
 		{
 			GenericStage->Modify(false);
-			GenericStage->DataInterface.BoundVariable = InNewVariable;
+			GenericStage->RenameVariable(InOldVariable, InNewVariable, FVersionedNiagaraEmitter(this, EmitterVersion));
 		}
 	}
 
@@ -1343,6 +1370,16 @@ void UNiagaraEmitter::HandleVariableRemoved(const FNiagaraVariable& InOldVariabl
 	{
 		Prop->Modify(false);
 		Prop->RemoveVariable(InOldVariable, FVersionedNiagaraEmitter(this, EmitterVersion));
+	}
+
+	// Remove any simulation stage variables
+	for (UNiagaraSimulationStageBase* SimStage : Data->SimulationStages)
+	{
+		if (UNiagaraSimulationStageGeneric* GenericStage = Cast<UNiagaraSimulationStageGeneric>(SimStage))
+		{
+			GenericStage->Modify(false);
+			GenericStage->RemoveVariable(InOldVariable, FVersionedNiagaraEmitter(this, EmitterVersion));
+		}
 	}
 
 	Data->RebuildRendererBindings(*this);
@@ -1552,6 +1589,7 @@ UNiagaraScript* FVersionedNiagaraEmitterData::GetScript(ENiagaraScriptUsage Usag
 void FVersionedNiagaraEmitterData::CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData, const UNiagaraEmitter& Emitter)
 {
 	bRequiresViewUniformBuffer = false;
+	bNeedsPartialDepthTexture = false;
 
 	MaxInstanceCount = 0;
 	MaxAllocationCount = 0;
@@ -1690,7 +1728,7 @@ void FVersionedNiagaraEmitterData::UpdateDebugName(const UNiagaraEmitter& Emitte
 			{
 				if (const FNiagaraVariableLayoutInfo* VariableInfo = CompiledData->FindVariableLayoutInfo(FNiagaraVariableBase(FNiagaraTypeDefinition::GetIntDef(), SimStageMetaData.ParticleIterationStateBinding)))
 				{
-					SimStageMetaData.ParticleIterationStateComponentIndex = VariableInfo->Int32ComponentStart;
+					SimStageMetaData.ParticleIterationStateComponentIndex = VariableInfo->GetInt32ComponentStart();
 				}
 			}
 		}
@@ -1748,6 +1786,9 @@ void FVersionedNiagaraEmitterData::RebuildRendererBindings(const UNiagaraEmitter
 	FNiagaraParameterStore TempStore;
 	const bool bAnyRendererBindingsAdded = BuildParameterStoreRendererBindings(TempStore);
 
+	RendererBindings.Empty();
+	RendererBindingsExternalObjects.Empty();
+
 	if (bAnyRendererBindingsAdded)
 	{
 		TArray<UNiagaraScript*> TargetScripts;
@@ -1756,32 +1797,84 @@ void FVersionedNiagaraEmitterData::RebuildRendererBindings(const UNiagaraEmitter
 			TargetScripts.Add(SystemOwner->GetSystemSpawnScript());
 			TargetScripts.Add(SystemOwner->GetSystemUpdateScript());
 		}
+		const int32 EmitterScriptIndex = TargetScripts.Num();
 		GetScripts(TargetScripts, false, true);
 
-		RendererBindings.Empty();
 		TArrayView<const FNiagaraVariableWithOffset> Vars = TempStore.ReadParameterVariables();
 		for (const FNiagaraVariableWithOffset& Var : Vars)
 		{
-			bool bFound = false;
-			for (UNiagaraScript* Script : TargetScripts)
+			for (int iScript=0; iScript < TargetScripts.Num(); ++iScript)
 			{
-				if (Script)
+				UNiagaraScript* Script = TargetScripts[iScript];
+				if (Script == nullptr)
+				{
+					continue;
+				}
+				bool bVariableFound = false;
+
+				// Find Resolved UObjects
+				// Note: Most parameters are pushed in as part of the DataSet -> Parameters process
+				if (Var.GetType().IsUObject() && !Var.GetType().IsDataInterface())
+				{
+					const ENiagaraSimTarget ScriptSimTarget = iScript < EmitterScriptIndex ? ENiagaraSimTarget::CPUSim : SimTarget;
+					if (const FNiagaraScriptExecutionParameterStore* ScriptParameterStore = Script->GetExecutionReadyParameterStore(ScriptSimTarget))
+					{
+						if (ScriptParameterStore->IndexOf(Var) != INDEX_NONE)
+						{
+							int32 ParameterOffset = INDEX_NONE;
+							RendererBindings.AddParameter(Var, true, false, &ParameterOffset);
+							bVariableFound = true;
+						}
+					}
+				}
+				// Find static variables
+				else
 				{
 					for (const FNiagaraVariable& StaticVar : Script->GetVMExecutableData().StaticVariablesWritten)
 					{
 						if (StaticVar.GetType().IsSameBaseDefinition(Var.GetType()) && StaticVar.GetName() == Var.GetName())
 						{
-							RendererBindings.AddParameter(StaticVar);
-							bFound = true;
+							RendererBindings.AddParameter(StaticVar, true, false);
+							bVariableFound = true;
 							break;
 						}
 					}
 				}
 
-				if (bFound)
+				if (bVariableFound)
+				{
 					break;
+				}
 			}
 		}
+
+		if (RendererBindings.GetUObjects().Num() > 0)
+		{
+			for (const UNiagaraScript* Script : TargetScripts)
+			{
+				for (const FNiagaraScriptUObjectCompileInfo& DefaultInfo : Script->GetCachedDefaultUObjects())
+				{
+					const FNiagaraVariableBase ReadVariable(DefaultInfo.Variable.GetType(), DefaultInfo.RegisteredParameterMapRead);
+					const bool bIsUserVariable = ReadVariable.IsInNameSpace(FNiagaraConstants::UserNamespaceString);
+					if (!bIsUserVariable)
+					{
+						continue;
+					}
+					for (const FName WriteName : DefaultInfo.RegisteredParameterMapWrites)
+					{
+						const FNiagaraVariableBase WriteVariable(DefaultInfo.Variable.GetType(), WriteName);
+						if (RendererBindings.IndexOf(WriteVariable) != INDEX_NONE)
+						{
+							FNiagaraExternalUObjectInfo& ExternalInfo = RendererBindingsExternalObjects.AddDefaulted_GetRef();
+							ExternalInfo.Variable = WriteVariable;
+							ExternalInfo.ExternalName = ReadVariable.GetName();
+						}
+					}
+				}
+			}
+		}
+
+		RendererBindings.TriggerOnLayoutChanged();
 	}
 #endif
 }
@@ -1789,6 +1882,7 @@ void FVersionedNiagaraEmitterData::RebuildRendererBindings(const UNiagaraEmitter
 void FVersionedNiagaraEmitterData::CacheFromShaderCompiled()
 {
 	bRequiresViewUniformBuffer = false;
+	bNeedsPartialDepthTexture = false;
 	if (GPUComputeScript && (SimTarget == ENiagaraSimTarget::GPUComputeSim))
 	{
 		if (const FNiagaraShaderScript* NiagaraShaderScript = GPUComputeScript->GetRenderThreadScript())
@@ -1796,10 +1890,10 @@ void FVersionedNiagaraEmitterData::CacheFromShaderCompiled()
 			for (int i=0; i < NiagaraShaderScript->GetNumPermutations(); ++i)
 			{
 				FNiagaraShaderRef NiagaraShaderRef = NiagaraShaderScript->GetShaderGameThread(i);
-				if (NiagaraShaderRef.IsValid() && NiagaraShaderRef->bNeedsViewUniformBuffer)
+				if (NiagaraShaderRef.IsValid())
 				{
-					bRequiresViewUniformBuffer = true;
-					break;
+					bRequiresViewUniformBuffer |= NiagaraShaderRef->bNeedsViewUniformBuffer;
+					bNeedsPartialDepthTexture |= (NiagaraShaderRef->MiscUsageBitMask & uint16(ENiagaraScriptMiscUsageMask::UsesPartialDepthCollisionQuery)) != 0;
 				}
 			}
 		}
@@ -2197,7 +2291,7 @@ void UNiagaraEmitter::RebindNotifications()
 #endif
 
 
-void FVersionedNiagaraEmitterData::GatherCompiledParticleAttributes(TArray<FNiagaraVariable>& OutVariables) const
+void FVersionedNiagaraEmitterData::GatherCompiledParticleAttributes(TArray<FNiagaraVariableBase>& OutVariables) const
 {
 	if (SimTarget == ENiagaraSimTarget::GPUComputeSim)
 	{
@@ -2207,7 +2301,7 @@ void FVersionedNiagaraEmitterData::GatherCompiledParticleAttributes(TArray<FNiag
 	{
 		OutVariables = UpdateScriptProps.Script->GetVMExecutableData().Attributes;
 
-		for (const FNiagaraVariable& Var : SpawnScriptProps.Script->GetVMExecutableData().Attributes)
+		for (const FNiagaraVariableBase& Var : SpawnScriptProps.Script->GetVMExecutableData().Attributes)
 		{
 			OutVariables.AddUnique(Var);
 		}
@@ -2460,6 +2554,14 @@ FGuid UNiagaraEmitter::AddNewVersion(int32 MajorVersion, int32 MinorVersion)
 	check(MajorVersion != 1 || MinorVersion != 0);
 	Modify();
 
+	FNiagaraSystemUpdateContext UpdateContext;
+	UpdateContext.SetDestroyOnAdd(true);
+	UpdateContext.SetDestroySystemSim(true);
+	if (UNiagaraSystem* Owner = GetTypedOuter<UNiagaraSystem>())
+	{
+		UpdateContext.Add(Owner, true);
+	}
+
 	FVersionedNiagaraEmitterData NewVersionData;
 	FNiagaraAssetVersion NewVersion = { MajorVersion, MinorVersion, FGuid::NewGuid() };
 	
@@ -2646,16 +2748,13 @@ void UNiagaraEmitter::CheckVersionDataAvailable()
 	Data.GraphSource = GraphSource_DEPRECATED;
 	Data.bDeterminism = bDeterminism_DEPRECATED;
 	Data.AllocationMode = AllocationMode_DEPRECATED;
-	Data.bLimitDeltaTime = bLimitDeltaTime_DEPRECATED;
 	Data.SpawnScriptProps = SpawnScriptProps_DEPRECATED;
 	Data.SimulationStages = SimulationStages_DEPRECATED;
 	Data.EditorParameters = EditorParameters_DEPRECATED;
 	Data.GPUComputeScript = GPUComputeScript_DEPRECATED;
 	Data.UpdateScriptProps = UpdateScriptProps_DEPRECATED;
 	Data.PreAllocationCount = PreAllocationCount_DEPRECATED;
-	Data.bCombineEventSpawn = bCombineEventSpawn_DEPRECATED;
 	Data.RendererProperties = RendererProperties_DEPRECATED;
-	Data.MaxDeltaTimePerTick = MaxDeltaTimePerTick_DEPRECATED;
 	Data.ScalabilityOverrides = ScalabilityOverrides_DEPRECATED;
 	Data.AttributesToPreserve = AttributesToPreserve_DEPRECATED;
 	Data.bInterpolatedSpawning = bInterpolatedSpawning_DEPRECATED;
@@ -2711,10 +2810,9 @@ FVersionedNiagaraEmitterData::FVersionedNiagaraEmitterData()
 	, bGpuAlwaysRunParticleUpdateScript(false)
 #endif
 	, bRequiresPersistentIDs(false)
-	, bCombineEventSpawn(false)
-	, bLimitDeltaTime(true)
 	, MaxGPUParticlesSpawnPerFrame(0)
 	, bRequiresViewUniformBuffer(false)
+	, bNeedsPartialDepthTexture(false)
 #if WITH_EDITORONLY_DATA
 	, EditorData(nullptr)
 	, EditorParameters(nullptr)
@@ -2849,13 +2947,12 @@ void UNiagaraEmitter::UpdateFromMergedCopy(const INiagaraMergeManager& MergeMana
 	SetEditorData(MergedData->GetEditorData(), EmitterData->Version.VersionGuid);
 
 	// Update messages
-	for (const TPair<FGuid, TObjectPtr<UNiagaraMessageDataBase>>& Message : MergedEmitter->GetMessages())
+	for (const TPair<FGuid, TObjectPtr<UNiagaraMessageDataBase>>& Message : MergedEmitter->GetMessageStore().GetMessages())
 	{
-		TObjectPtr<UNiagaraMessageDataBase>& MessageData = MessageKeyToMessageMap.FindOrAdd(Message.Key);
 		if (Message.Value != nullptr)
 		{
 			ReouterMergedObject(this, Message.Value);
-			MessageData = Message.Value;
+			MessageStore.AddMessage(Message.Key, Message.Value);
 		}
 	}
 
@@ -2887,6 +2984,15 @@ void FVersionedNiagaraEmitterData::SyncEmitterAlias(const FString& InOldName, co
 			{
 				Renderer->Modify(false);
 				Renderer->RenameEmitter(*InOldName, &InEmitter);
+			}
+		}
+
+		for (UNiagaraSimulationStageBase* SimStage : SimulationStages)
+		{
+			if (UNiagaraSimulationStageGeneric* GenericStage = Cast<UNiagaraSimulationStageGeneric>(SimStage))
+			{
+				GenericStage->Modify(false);
+				GenericStage->RenameEmitter(*InOldName, &InEmitter);
 			}
 		}
 	}
@@ -3018,6 +3124,7 @@ void UNiagaraEmitter::AddEventHandler(FNiagaraEventScriptProperties EventHandler
 	EventHandler.Script->RapidIterationParameters.AddOnChangedHandler(
 		FNiagaraParameterStore::FOnChanged::FDelegate::CreateUObject(this, &UNiagaraEmitter::ScriptRapidIterationParameterChanged));
 	UpdateChangeId(TEXT("Event handler added"));
+	OnEventHandlersChangedDelegate.Broadcast();
 #endif
 }
 
@@ -3035,6 +3142,7 @@ void UNiagaraEmitter::RemoveEventHandlerByUsageId(FGuid EventHandlerUsageId, FGu
 #endif
 	EventHandlerScriptProps.RemoveAll(FindEventHandlerById);
 #if WITH_EDITOR
+	OnEventHandlersChangedDelegate.Broadcast();
 	UpdateChangeId(TEXT("Event handler removed"));
 #endif
 }
@@ -3055,6 +3163,7 @@ void UNiagaraEmitter::AddSimulationStage(UNiagaraSimulationStageBase* Simulation
 	SimulationStage->Script->RapidIterationParameters.AddOnChangedHandler(
 		FNiagaraParameterStore::FOnChanged::FDelegate::CreateUObject(this, &UNiagaraEmitter::ScriptRapidIterationParameterChanged));
 	UpdateChangeId(TEXT("Shader stage added"));
+	OnSimStagesChangedDelegate.Broadcast();
 #endif
 }
 
@@ -3068,6 +3177,7 @@ void UNiagaraEmitter::RemoveSimulationStage(UNiagaraSimulationStageBase* Simulat
 		SimulationStage->OnChanged().RemoveAll(this);
 		SimulationStage->Script->RapidIterationParameters.RemoveAllOnChangedHandlers(this);
 		UpdateChangeId(TEXT("Simulation stage removed"));
+		OnSimStagesChangedDelegate.Broadcast();
 	}
 #endif
 }
@@ -3087,6 +3197,7 @@ void UNiagaraEmitter::MoveSimulationStageToIndex(UNiagaraSimulationStageBase* Si
 		SimulationStages.Insert(SimulationStageToMove, AdjustedTargetIndex);
 #if WITH_EDITOR
 		UpdateChangeId("Simulation stage moved.");
+		OnSimStagesChangedDelegate.Broadcast();
 #endif
 	}
 }

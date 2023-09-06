@@ -1,14 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterface2DArrayTexture.h"
-#include "NiagaraComputeExecutionContext.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
 
 #include "Engine/Texture2DArray.h"
 #include "Engine/TextureRenderTarget2DArray.h"
+#include "RenderGraphBuilder.h"
 #include "RHIStaticStates.h"
 #include "ShaderCompilerCore.h"
 #include "TextureResource.h"

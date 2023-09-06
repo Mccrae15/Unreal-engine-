@@ -53,7 +53,7 @@ struct FControlRigComponentMappedElement
 	GENERATED_BODY()
 
 		FControlRigComponentMappedElement()
-		: ComponentReference(FComponentReference())
+		: ComponentReference(FSoftComponentReference())
 		, TransformIndex(INDEX_NONE)
 		, TransformName(NAME_None)
 		, ElementType(ERigElementType::Bone)
@@ -70,7 +70,7 @@ struct FControlRigComponentMappedElement
 
 	// The component to map to the Control Rig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mapping")
-	FComponentReference ComponentReference;
+	FSoftComponentReference ComponentReference;
 
 	// An optional index that can be used with components
 	// with multiple transforms (for example the InstancedStaticMeshComponent)
@@ -210,6 +210,7 @@ public:
 	//~ Begin UObject interface
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostLoad() override;
 #endif
 
 	virtual void BeginDestroy() override;

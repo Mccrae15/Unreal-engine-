@@ -10,23 +10,20 @@ NiagaraInterpolateGroomGuides.usf
 #define WORLD_INTERPOLATION 1
 
 #include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/HairStrands/HairStrandsPack.ush"
 
 #if PERMUTATION_INTERPOLATION == LOCAL_INTERPOLATION
 
 #include "NiagaraGroomInterpolationUtils.ush"
 
-Buffer<float4>		RestTrianglePositionABuffer;
-Buffer<float4>		RestTrianglePositionBBuffer;
-Buffer<float4>		RestTrianglePositionCBuffer;
-Buffer<float4>		DeformedTrianglePositionABuffer;
-Buffer<float4>		DeformedTrianglePositionBBuffer;
-Buffer<float4>		DeformedTrianglePositionCBuffer;
+Buffer<float4>		RestTrianglePositionBuffer;
+Buffer<float4>		DeformedTrianglePositionBuffer;
 Buffer<uint>		RootBarycentricCoordinatesBuffer;
 Buffer<uint>		RootToUniqueTriangleIndexBuffer;
 
 #endif
 
-Buffer<uint>		VertexToCurveIndexBuffer;
+Buffer<uint>		PointToCurveIndexBuffer;
 RWBuffer<uint4>		DeformedPositionBuffer;
 Buffer<uint4>		RestPositionBuffer;
 Buffer<uint>		CurvesOffsetsBuffer;
@@ -50,9 +47,9 @@ void DIHairStrands_BuildDeformedTriangle(in float2 ProjectionUV, in uint Triangl
 {
 	DIHairStrands_ComputeProjectionTriangle(
 		ProjectionUV, 
-		DeformedTrianglePositionABuffer[TriangleIndex].xyz,
-		DeformedTrianglePositionBBuffer[TriangleIndex].xyz, 
-		DeformedTrianglePositionCBuffer[TriangleIndex].xyz, 
+		DeformedTrianglePositionBuffer[TriangleIndex * 3 + 0].xyz,
+		DeformedTrianglePositionBuffer[TriangleIndex * 3 + 1].xyz, 
+		DeformedTrianglePositionBuffer[TriangleIndex * 3 + 2].xyz, 
 		float3(0,0,0), OutTrianglePosition, OutTriangleRotation);
 }
 
@@ -61,9 +58,9 @@ void DIHairStrands_BuildRestTriangle(in float2 ProjectionUV, in uint TriangleInd
 {
 	DIHairStrands_ComputeProjectionTriangle(
 		ProjectionUV, 
-		RestTrianglePositionABuffer[TriangleIndex].xyz,
-		RestTrianglePositionBBuffer[TriangleIndex].xyz,
-		RestTrianglePositionCBuffer[TriangleIndex].xyz,
+		RestTrianglePositionBuffer[TriangleIndex * 3 + 0].xyz,
+		RestTrianglePositionBuffer[TriangleIndex * 3 + 1].xyz,
+		RestTrianglePositionBuffer[TriangleIndex * 3 + 2].xyz,
 		float3(0,0,0), OutTrianglePosition, OutTriangleRotation);
 }
 
@@ -74,10 +71,13 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
 	if (DispatchThreadId.x < uint(NumPoints))
 	{
-		const int StrandIndex = VertexToCurveIndexBuffer[DispatchThreadId.x];
+		const int StrandIndex = PointToCurveIndexBuffer[DispatchThreadId.x];
+
+		const FHairCurve Curve = UnpackHairCurve(CurvesOffsetsBuffer[StrandIndex]);
+		const int PointBegin = Curve.PointIndex;
+		const int PointCount = Curve.PointCount;
+		const int PointIndex = DispatchThreadId.x - PointBegin;
 		
-		const int PointCount = CurvesOffsetsBuffer[StrandIndex + 1] - CurvesOffsetsBuffer[StrandIndex];
-		const int PointIndex = DispatchThreadId.x - CurvesOffsetsBuffer[StrandIndex];
 		
 		const float PointCoord = (float) (PointIndex) / (PointCount - 1.0);
 		const float PointNode = PointCoord * (StrandsSize - 2);
@@ -113,7 +113,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 #if PERMUTATION_INTERPOLATION == LOCAL_INTERPOLATION
 		
-		const float2 ProjectionUV = ExtractBarycentrics(RootBarycentricCoordinatesBuffer[StrandIndex]);
+		const float2 ProjectionUV = UnpackBarycentrics(RootBarycentricCoordinatesBuffer[StrandIndex]).xy;
 
 		float3 RestTrianglePosition = float3(0, 0, 0), DeformedTrianglePosition = float3(0, 0, 0);
 		float4 RestTriangleOrientation = QUATERNION_IDENTITY, DeformedTriangleOrientation = QUATERNION_IDENTITY;
@@ -130,11 +130,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 		const float3 LocalPointDisplace = (TrianglePrevNodePosition - TrianglePrevRestPosition)  * (1.0 - PointAlpha) + (TriangleNextNodePosition - TriangleNextRestPosition) * PointAlpha;
 		
+		const uint4 Packed = RestPositionBuffer[DispatchThreadId.x];
 		const float3 LocalTrianglePosition = DIHairStrands_TriangleLocalPosition(RestTrianglePosition, RestTriangleOrientation, 
-					f16tof32(RestPositionBuffer[DispatchThreadId.x].xyz) + RestPositionOffset) + LocalPointDisplace;
+					UnpackHairControlPointPosition(Packed, RestPositionOffset)) + LocalPointDisplace;
 		
 		const float3 LocalComponentPosition = DIHairStrands_TriangleWorldPosition(DeformedTrianglePosition, DeformedTriangleOrientation, LocalTrianglePosition) - DeformedPositionOffset[0].xyz;
-		DeformedPositionBuffer[DispatchThreadId.x] = uint4(f32tof16(LocalComponentPosition), RestPositionBuffer[DispatchThreadId.x].w);
+		DeformedPositionBuffer[DispatchThreadId.x] = PackHairControlPointPosition(Packed, LocalComponentPosition);
 
 #endif
 		
@@ -142,8 +143,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		
 		const float3 LocalPointDisplace = (LocalPrevNodePosition - LocalPrevRestPosition)  * (1.0 - PointAlpha) + (LocalNextNodePosition - LocalNextRestPosition) * PointAlpha;
 
-		const float3 LocalComponentPosition = f16tof32(RestPositionBuffer[DispatchThreadId.x].xyz) + LocalPointDisplace + RestPositionOffset - DeformedPositionOffset[0].xyz;
-		DeformedPositionBuffer[DispatchThreadId.x] = uint4(f32tof16(LocalComponentPosition), RestPositionBuffer[DispatchThreadId.x].w);
+		const uint4 Packed = RestPositionBuffer[DispatchThreadId.x];
+		const float3 LocalComponentPosition = UnpackHairControlPointPosition(RestPositionBuffer[DispatchThreadId.x], RestPositionOffset) + LocalPointDisplace;
+		DeformedPositionBuffer[DispatchThreadId.x] = PackHairControlPointPosition(Packed, LocalComponentPosition, DeformedPositionOffset[0].xyz);
 		
 #endif
 	}

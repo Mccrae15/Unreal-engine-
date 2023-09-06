@@ -3,9 +3,12 @@
 #include "InterchangeGenericScenesPipeline.h"
 
 #include "InterchangeActorFactoryNode.h"
+#include "InterchangeAssetImportData.h"
 #include "InterchangeCameraNode.h"
-#include "InterchangeCineCameraFactoryNode.h"
+#include "InterchangeCameraFactoryNode.h"
 #include "InterchangeCommonPipelineDataFactoryNode.h"
+#include "InterchangeSceneImportAsset.h"
+#include "InterchangeSceneImportAssetFactoryNode.h"
 #include "InterchangeLightNode.h"
 #include "InterchangeLightFactoryNode.h"
 #include "InterchangeMeshActorFactoryNode.h"
@@ -17,6 +20,7 @@
 #include "InterchangeVariantSetNode.h"
 #include "Nodes/InterchangeUserDefinedAttribute.h"
 #include "InterchangeSkeletonFactoryNode.h"
+#include "InterchangeSkeletalMeshFactoryNode.h"
 
 #include "Animation/SkeletalMeshActor.h"
 #include "CineCameraActor.h"
@@ -25,8 +29,165 @@
 #include "Engine/RectLight.h"
 #include "Engine/SpotLight.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/World.h"
+
+#if WITH_EDITOR
+#include "ObjectTools.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeGenericScenesPipeline)
+
+namespace UE::Interchange::Private
+{
+	//Either a (TransformSpecialized || !JointSpecialized || RootJoint) can be a parent (only those get FactoryNodes) :
+	FString FindFactoryParentSceneNodeUid(UInterchangeBaseNodeContainer* BaseNodeContainer, const UInterchangeSceneNode* SceneNode)
+	{
+		FString ParentUid = SceneNode->GetParentUid();
+		if (const UInterchangeSceneNode* ParentSceneNode = Cast<UInterchangeSceneNode>(BaseNodeContainer->GetNode(ParentUid)))
+		{
+			if (ParentSceneNode->IsSpecializedTypeContains(UE::Interchange::FSceneNodeStaticData::GetTransformSpecializeTypeString()))
+			{
+				return ParentUid;
+			}
+			else
+			{
+				bool bParentIsJoint = ParentSceneNode->IsSpecializedTypeContains(UE::Interchange::FSceneNodeStaticData::GetJointSpecializeTypeString());
+				if (bParentIsJoint)
+				{
+					//Check if its a rootjoint:
+					//	aka check parent's parent if its !joint:
+					FString ParentsParentUid = ParentSceneNode->GetParentUid();
+					if (const UInterchangeSceneNode* ParentsParentSceneNode = Cast<UInterchangeSceneNode>(BaseNodeContainer->GetNode(ParentsParentUid)))
+					{
+						bool bParentsParentIsJoint = ParentSceneNode->IsSpecializedTypeContains(UE::Interchange::FSceneNodeStaticData::GetJointSpecializeTypeString());
+						if (bParentsParentIsJoint)
+						{
+							return FindFactoryParentSceneNodeUid(BaseNodeContainer, ParentSceneNode);
+						}
+						else
+						{
+							return ParentUid;
+						}
+					}
+				}
+				else
+				{
+					return ParentUid;
+				}
+			}
+		}
+
+		return UInterchangeBaseNode::InvalidNodeUid();
+	}
+
+	void UpdateReimportStrategyFlags(UInterchangeBaseNodeContainer& NodeContainer, UInterchangeFactoryBaseNode& FactoryNode, EReimportStrategyFlags ReimportPropertyStrategy)
+	{
+		FactoryNode.SetReimportStrategyFlags(ReimportPropertyStrategy);
+
+		TArray<FString> ActorDependencies;
+		FactoryNode.GetFactoryDependencies(ActorDependencies);
+		for (const FString& FactoryNodeID : ActorDependencies)
+		{
+			if (UInterchangeFactoryBaseNode* DependencyFactoryNode = NodeContainer.GetFactoryNode(FactoryNodeID))
+			{
+				UpdateReimportStrategyFlags(NodeContainer, *DependencyFactoryNode, ReimportPropertyStrategy);
+			}
+		}
+	}
+
+#if WITH_EDITOR
+	void DeleteAssets(const TArray<UObject*>& AssetsToDelete)
+	{
+		if (AssetsToDelete.IsEmpty())
+		{
+			return;
+		}
+
+		TArray<UObject*> ObjectsToForceDelete;
+		ObjectsToForceDelete.Reserve(AssetsToDelete.Num());
+
+		for (UObject* Asset : AssetsToDelete)
+		{
+			if (Asset)
+			{
+				ObjectsToForceDelete.Add(Asset);
+			}
+		}
+
+		if (ObjectsToForceDelete.IsEmpty())
+		{
+			return;
+		}
+
+		constexpr bool bShowConfirmation = true;
+		constexpr ObjectTools::EAllowCancelDuringDelete AllowCancelDuringDelete = ObjectTools::EAllowCancelDuringDelete::CancelNotAllowed;
+		ObjectTools::DeleteObjects(ObjectsToForceDelete, bShowConfirmation, AllowCancelDuringDelete);
+	}
+#else
+	void DeleteAssets(const TArray<UObject*>& AssetsToDelete)
+	{
+		if (AssetsToDelete.IsEmpty())
+		{
+			return;
+		}
+
+		bool bForceGarbageCollection = false;
+		for (UObject* Asset : AssetsToDelete)
+		{
+			if (Asset)
+			{
+				Asset->Rename(nullptr, GetTransientPackage(), REN_NonTransactional | REN_DontCreateRedirectors);
+
+				if (Asset->IsRooted())
+				{
+					Asset->RemoveFromRoot();
+				}
+
+				Asset->ClearFlags(RF_Public | RF_Standalone);
+				Asset->MarkAsGarbage();
+
+				bForceGarbageCollection = true;
+			}
+		}
+
+		if (bForceGarbageCollection)
+		{
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+		}
+	}
+#endif // WITH_EDITOR
+
+	void DeleteActors(const TArray<AActor*>& ActorsToDelete)
+	{
+		if (ActorsToDelete.IsEmpty())
+		{
+			return;
+		}
+
+		for (AActor* Actor : ActorsToDelete)
+		{
+			if (!Actor)
+			{
+				continue;
+			}
+
+			if (UWorld* OwningWorld = Actor->GetWorld())
+			{
+				OwningWorld->EditorDestroyActor(Actor, true);
+				// Since deletion can be delayed, rename to avoid future name collision
+				// Call UObject::Rename directly on actor to avoid AActor::Rename which unnecessarily sunregister and re-register components
+				Actor->UObject::Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			}
+		}
+	}
+}
+
+void UInterchangeGenericLevelPipeline::AdjustSettingsForContext(EInterchangePipelineContext ImportType, TObjectPtr<UObject> ReimportAsset)
+{
+	Super::AdjustSettingsForContext(ImportType, ReimportAsset);
+
+	bIsReimportContext = ReimportAsset != nullptr;
+}
 
 void UInterchangeGenericLevelPipeline::ExecutePipeline(UInterchangeBaseNodeContainer* InBaseNodeContainer, const TArray<UInterchangeSourceData*>& InSourceDatas)
 {
@@ -37,6 +198,15 @@ void UInterchangeGenericLevelPipeline::ExecutePipeline(UInterchangeBaseNodeConta
 	}
 
 	BaseNodeContainer = InBaseNodeContainer;
+
+	// Make sure all factory nodes created for assets have the chosen policy strategy
+	InBaseNodeContainer->IterateNodesOfType<UInterchangeFactoryBaseNode>([this](const FString& NodeUid, UInterchangeFactoryBaseNode* FactoryNode)
+		{
+			if (this->bForceReimportDeletedAssets)
+			{
+				FactoryNode->SetForceNodeReimport();
+			}
+		});
 
 	FTransform GlobalOffsetTransform = FTransform::Identity;
 	if (UInterchangeCommonPipelineDataFactoryNode* CommonPipelineDataFactoryNode = UInterchangeCommonPipelineDataFactoryNode::GetUniqueInstance(BaseNodeContainer))
@@ -62,6 +232,33 @@ void UInterchangeGenericLevelPipeline::ExecutePipeline(UInterchangeBaseNodeConta
 		}
 	});
 
+#if WITH_EDITORONLY_DATA
+	// Add the SceneImportData factory node
+	{
+		ensure(!SceneImportFactoryNode);
+
+		const FString FilePath = FPaths::ConvertRelativePathToFull(InSourceDatas[0]->GetFilename());
+		const FString DisplayLabel = TEXT("SceneImport_") + FPaths::GetBaseFilename(FilePath);
+		const FString NodeUid = TEXT("SceneImport_") + FilePath;
+		const FString FactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(NodeUid);
+		ensure(!BaseNodeContainer->IsNodeUidValid(FactoryNodeUid));
+		SceneImportFactoryNode = NewObject<UInterchangeSceneImportAssetFactoryNode>(BaseNodeContainer, NAME_None);
+
+		SceneImportFactoryNode->InitializeNode(FactoryNodeUid, DisplayLabel, EInterchangeNodeContainerType::FactoryData);
+
+		// Add dependency to all the factory nodes created so far
+		BaseNodeContainer->IterateNodesOfType<UInterchangeFactoryBaseNode>(
+			[this](const FString& NodeUid, UInterchangeFactoryBaseNode* Node)
+			{
+				// Make sure the UInterchangeSceneImportAsset is the last asset created
+				this->SceneImportFactoryNode->AddFactoryDependencyUid(NodeUid);
+			}
+		);
+
+		BaseNodeContainer->AddNode(SceneImportFactoryNode);
+	}
+#endif
+
 	for (const UInterchangeSceneNode* SceneNode : SceneNodes)
 	{
 		if (SceneNode)
@@ -75,7 +272,7 @@ void UInterchangeGenericLevelPipeline::ExecutePipeline(UInterchangeBaseNodeConta
 					bool bSkipNode = true;
 					if (SpecializeTypes.Contains(UE::Interchange::FSceneNodeStaticData::GetJointSpecializeTypeString()))
 					{
-						//check if its the rootjoint (we want to create an actor for the rootjoint)
+						//check if its the root joint (we want to create an actor for the root joint)
 						FString CurrentNodesParentUid = SceneNode->GetParentUid();
 						const UInterchangeBaseNode* ParentNode = BaseNodeContainer->GetNode(CurrentNodesParentUid);
 						if (const UInterchangeSceneNode* ParentSceneNode = Cast<UInterchangeSceneNode>(ParentNode))
@@ -101,57 +298,54 @@ void UInterchangeGenericLevelPipeline::ExecutePipeline(UInterchangeBaseNodeConta
 	//Find all translated scene variant sets
 	TArray<UInterchangeSceneVariantSetsNode*> SceneVariantSetNodes;
 
-InBaseNodeContainer->IterateNodesOfType<UInterchangeSceneVariantSetsNode>([&SceneVariantSetNodes](const FString& NodeUid, UInterchangeSceneVariantSetsNode* Node)
-	{
-		SceneVariantSetNodes.Add(Node);
-	});
+	InBaseNodeContainer->IterateNodesOfType<UInterchangeSceneVariantSetsNode>([&SceneVariantSetNodes](const FString& NodeUid, UInterchangeSceneVariantSetsNode* Node)
+		{
+			SceneVariantSetNodes.Add(Node);
+		});
 
-for (const UInterchangeSceneVariantSetsNode* SceneVariantSetNode : SceneVariantSetNodes)
-{
-	if (SceneVariantSetNode)
+	for (const UInterchangeSceneVariantSetsNode* SceneVariantSetNode : SceneVariantSetNodes)
 	{
-		ExecuteSceneVariantSetNodePreImport(*SceneVariantSetNode);
+		if (SceneVariantSetNode)
+		{
+			ExecuteSceneVariantSetNodePreImport(*SceneVariantSetNode);
+		}
 	}
-}
 }
 
 void UInterchangeGenericLevelPipeline::ExecuteSceneNodePreImport(const FTransform& GlobalOffsetTransform, const UInterchangeSceneNode* SceneNode)
 {
+	using namespace UE::Interchange;
+
 	if (!BaseNodeContainer || !SceneNode)
 	{
 		return;
 	}
 
 	const UInterchangeBaseNode* TranslatedAssetNode = nullptr;
-	bool bRootJointNode = SceneNode->IsSpecializedTypeContains(UE::Interchange::FSceneNodeStaticData::GetJointSpecializeTypeString());
+	bool bRootJointNode = false;
 	FString SkeletalMeshFactoryNodeUid;
 
-	if (bRootJointNode)
+	FString SkeletonFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(SceneNode->GetUniqueID());
+	const UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = Cast<UInterchangeSkeletonFactoryNode>(BaseNodeContainer->GetFactoryNode(SkeletonFactoryNodeUid));
+	if (SkeletonFactoryNode)
 	{
-		FString SkeletonFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(SceneNode->GetUniqueID());
-		const UInterchangeSkeletonFactoryNode* SkeletonFactoryNode = Cast<UInterchangeSkeletonFactoryNode>(BaseNodeContainer->GetFactoryNode(SkeletonFactoryNodeUid));
-		if (SkeletonFactoryNode)
+		if (SkeletonFactoryNode->GetCustomSkeletalMeshFactoryNodeUid(SkeletalMeshFactoryNodeUid))
 		{
-			if (SkeletonFactoryNode->GetCustomSkeletalMeshFactoryNodeUid(SkeletalMeshFactoryNodeUid))
+			if (const UInterchangeFactoryBaseNode* SkeletalMeshFactoryNode = BaseNodeContainer->GetFactoryNode(SkeletalMeshFactoryNodeUid))
 			{
-				if (const UInterchangeFactoryBaseNode* SkeletalMeshFactoryNode = BaseNodeContainer->GetFactoryNode(SkeletalMeshFactoryNodeUid))
-				{
-					TArray<FString> NodeUids;
-					SkeletalMeshFactoryNode->GetTargetNodeUids(NodeUids);
+				TArray<FString> NodeUids;
+				SkeletalMeshFactoryNode->GetTargetNodeUids(NodeUids);
 
-					if (NodeUids.Num() > 0)
-					{
-						TranslatedAssetNode = BaseNodeContainer->GetNode(NodeUids[0]);
-					}
-					else
-					{
-						TranslatedAssetNode = nullptr;
-					}
+				if (NodeUids.Num() > 0)
+				{
+					TranslatedAssetNode = BaseNodeContainer->GetNode(NodeUids[0]);
+					bRootJointNode = true;
 				}
 			}
 		}
 	}
-	else
+	
+	if (!bRootJointNode)
 	{
 		FString AssetInstanceUid;
 		if (SceneNode->GetCustomAssetInstanceUid(AssetInstanceUid))
@@ -172,11 +366,18 @@ void UInterchangeGenericLevelPipeline::ExecuteSceneNodePreImport(const FTransfor
 
 	ActorFactoryNode->InitializeNode(FactoryNodeUid, SceneNode->GetDisplayLabel(), EInterchangeNodeContainerType::FactoryData);
 	const FString ActorFactoryNodeUid = BaseNodeContainer->AddNode(ActorFactoryNode);
+
 	if (!SceneNode->GetParentUid().IsEmpty())
 	{
-		const FString ParentFactoryNodeUid = TEXT("Factory_") + SceneNode->GetParentUid();
-		BaseNodeContainer->SetNodeParentUid(ActorFactoryNodeUid, ParentFactoryNodeUid);
-		ActorFactoryNode->AddFactoryDependencyUid(ParentFactoryNodeUid);
+		FString ParentNodeUid = UE::Interchange::Private::FindFactoryParentSceneNodeUid(BaseNodeContainer, SceneNode);
+		if (ParentNodeUid != UInterchangeBaseNode::InvalidNodeUid())
+		{
+			FString ParentFactoryNodeUid = UInterchangeFactoryBaseNode::BuildFactoryNodeUid(ParentNodeUid);
+			if (BaseNodeContainer->SetNodeParentUid(ActorFactoryNodeUid, ParentFactoryNodeUid))
+			{
+				ActorFactoryNode->AddFactoryDependencyUid(ParentFactoryNodeUid);
+			}
+		}
 	}
 
 	if (bRootJointNode)
@@ -215,6 +416,18 @@ void UInterchangeGenericLevelPipeline::ExecuteSceneNodePreImport(const FTransfor
 	{
 		SetUpFactoryNode(ActorFactoryNode, SceneNode, TranslatedAssetNode);
 	}
+
+	//Make sure all actor factory nodes and dependencies have the specified strategy
+	Private::UpdateReimportStrategyFlags(*BaseNodeContainer, *ActorFactoryNode, ReimportPropertyStrategy);
+	if (bForceReimportDeletedActors)
+	{
+		ActorFactoryNode->SetForceNodeReimport();
+	}
+
+#if WITH_EDITORONLY_DATA
+	// Add dependency to newly created factory node
+	SceneImportFactoryNode->AddFactoryDependencyUid(ActorFactoryNode->GetUniqueID());
+#endif
 }
 
 UInterchangeActorFactoryNode* UInterchangeGenericLevelPipeline::CreateActorFactoryNode(const UInterchangeSceneNode* SceneNode, const UInterchangeBaseNode* TranslatedAssetNode) const
@@ -226,9 +439,26 @@ UInterchangeActorFactoryNode* UInterchangeGenericLevelPipeline::CreateActorFacto
 
 	if(TranslatedAssetNode)
 	{
-		if(TranslatedAssetNode->IsA<UInterchangeCameraNode>())
+		if(TranslatedAssetNode->IsA<UInterchangePhysicalCameraNode>())
 		{
-			return NewObject<UInterchangeCineCameraFactoryNode>(BaseNodeContainer, NAME_None);
+			return NewObject<UInterchangePhysicalCameraFactoryNode>(BaseNodeContainer, NAME_None);
+		}
+		if (TranslatedAssetNode->IsA<UInterchangeStandardCameraNode>())
+		{
+			if (bUsePhysicalInsteadOfStandardPerspectiveCamera)
+			{
+				//in case it has perspective projection we want to use PhysicalCamera (CineCamera) instead:
+				if (const UInterchangeStandardCameraNode* CameraNode = Cast<UInterchangeStandardCameraNode>(TranslatedAssetNode))
+				{
+					EInterchangeCameraProjectionType ProjectionType = EInterchangeCameraProjectionType::Perspective;
+					if (CameraNode->GetCustomProjectionMode(ProjectionType) && ProjectionType == EInterchangeCameraProjectionType::Perspective)
+					{
+						return NewObject<UInterchangePhysicalCameraFactoryNode>(BaseNodeContainer, NAME_None);
+					}
+				}
+			}
+
+			return NewObject<UInterchangeStandardCameraFactoryNode>(BaseNodeContainer, NAME_None);
 		}
 		else if(TranslatedAssetNode->IsA<UInterchangeMeshNode>())
 		{
@@ -264,14 +494,19 @@ void UInterchangeGenericLevelPipeline::SetUpFactoryNode(UInterchangeActorFactory
 
 	if (const UInterchangeMeshNode* MeshNode = Cast<UInterchangeMeshNode>(TranslatedAssetNode))
 	{
-		if (MeshNode->IsSkinnedMesh())
+		TArray<FString> TargetNodeUids;
+		ActorFactoryNode->GetTargetNodeUids(TargetNodeUids);
+		bool bSkeletal = false;
+		if (TargetNodeUids.Num() > 0)
 		{
-			bool bRootJointNode = SceneNode->IsSpecializedTypeContains(UE::Interchange::FSceneNodeStaticData::GetJointSpecializeTypeString());
-			if (!bRootJointNode)
+			if (const UInterchangeSkeletalMeshFactoryNode* SkeletalMeshFactoryNode = Cast<UInterchangeSkeletalMeshFactoryNode>(BaseNodeContainer->GetFactoryNode(TargetNodeUids[0])))
 			{
-				return;
+				bSkeletal = true;
 			}
+		}
 
+		if (bSkeletal)
+		{
 			ActorFactoryNode->SetCustomActorClassName(ASkeletalMeshActor::StaticClass()->GetPathName());
 			ActorFactoryNode->SetCustomMobility(EComponentMobility::Movable);
 		}
@@ -287,7 +522,19 @@ void UInterchangeGenericLevelPipeline::SetUpFactoryNode(UInterchangeActorFactory
 
 			UE::Interchange::MeshesUtilities::ApplySlotMaterialDependencies(*MeshActorFactoryNode, SlotMaterialDependencies, *BaseNodeContainer);
 
+			FString AnimationAssetUidToPlay;
+			if (SceneNode->GetCustomAnimationAssetUidToPlay(AnimationAssetUidToPlay))
+			{
+				MeshActorFactoryNode->SetCustomAnimationAssetUidToPlay(AnimationAssetUidToPlay);
+			}
+
 			MeshActorFactoryNode->AddFactoryDependencyUid(UInterchangeFactoryBaseNode::BuildFactoryNodeUid(MeshNode->GetUniqueID()));
+
+			FTransform GeometricTransform;
+			if (SceneNode->GetCustomGeometricTransform(GeometricTransform))
+			{
+				MeshActorFactoryNode->SetCustomGeometricTransform(GeometricTransform);
+			}
 		}
 	}
 	else if (const UInterchangeBaseLightNode* BaseLightNode = Cast<UInterchangeBaseLightNode>(TranslatedAssetNode))
@@ -321,6 +568,7 @@ void UInterchangeGenericLevelPipeline::SetUpFactoryNode(UInterchangeActorFactory
 			static_assert(FCommonLightUnits(EInterchangeLightUnits::Unitless) == FCommonLightUnits(ELightUnits::Unitless), "EInterchangeLightUnits::Unitless differs from ELightUnits::Unitless");
 			static_assert(FCommonLightUnits(EInterchangeLightUnits::Lumens) == FCommonLightUnits(ELightUnits::Lumens), "EInterchangeLightUnits::Lumens differs from ELightUnits::Lumens");
 			static_assert(FCommonLightUnits(EInterchangeLightUnits::Candelas) == FCommonLightUnits(ELightUnits::Candelas), "EInterchangeLightUnits::Candelas differs from ELightUnits::Candelas");
+			static_assert(FCommonLightUnits(EInterchangeLightUnits::EV) == FCommonLightUnits(ELightUnits::EV), "EInterchangeLightUnits::EV differs from ELightUnits::EV");
 
 			if (const UInterchangeLightNode* LightNode = Cast<UInterchangeLightNode>(BaseLightNode))
 			{
@@ -416,37 +664,108 @@ void UInterchangeGenericLevelPipeline::SetUpFactoryNode(UInterchangeActorFactory
 			ActorFactoryNode->SetCustomActorClassName(APointLight::StaticClass()->GetPathName());
 		}
 	}
-	else if (const UInterchangeCameraNode* CameraNode = Cast<UInterchangeCameraNode>(TranslatedAssetNode))
+	else if (const UInterchangePhysicalCameraNode* PhysicalCameraNode = Cast<UInterchangePhysicalCameraNode>(TranslatedAssetNode))
 	{
 		ActorFactoryNode->SetCustomActorClassName(ACineCameraActor::StaticClass()->GetPathName());
 		ActorFactoryNode->SetCustomMobility(EComponentMobility::Movable);
 
-		if (UInterchangeCineCameraFactoryNode* CineCameraFactoryNode = Cast<UInterchangeCineCameraFactoryNode>(ActorFactoryNode))
+		if (UInterchangePhysicalCameraFactoryNode* PhysicalCameraFactoryNode = Cast<UInterchangePhysicalCameraFactoryNode>(ActorFactoryNode))
 		{
 			float FocalLength;
-			if (CameraNode->GetCustomFocalLength(FocalLength))
+			if (PhysicalCameraNode->GetCustomFocalLength(FocalLength))
 			{
-				CineCameraFactoryNode->SetCustomFocalLength(FocalLength);
+				PhysicalCameraFactoryNode->SetCustomFocalLength(FocalLength);
 			}
 
 			float SensorHeight;
-			if (CameraNode->GetCustomSensorHeight(SensorHeight))
+			if (PhysicalCameraNode->GetCustomSensorHeight(SensorHeight))
 			{
-				CineCameraFactoryNode->SetCustomSensorHeight(SensorHeight);
+				PhysicalCameraFactoryNode->SetCustomSensorHeight(SensorHeight);
 			}
 
 			float SensorWidth;
-			if (CameraNode->GetCustomSensorWidth(SensorWidth))
+			if (PhysicalCameraNode->GetCustomSensorWidth(SensorWidth))
 			{
-				CineCameraFactoryNode->SetCustomSensorWidth(SensorWidth);
+				PhysicalCameraFactoryNode->SetCustomSensorWidth(SensorWidth);
 			}
 
 			bool bEnableDepthOfField;
-			if (CameraNode->GetCustomEnableDepthOfField(bEnableDepthOfField))
+			if (PhysicalCameraNode->GetCustomEnableDepthOfField(bEnableDepthOfField))
 			{
-				CineCameraFactoryNode->SetCustomFocusMethod(bEnableDepthOfField ? ECameraFocusMethod::Manual : ECameraFocusMethod::DoNotOverride);
+				PhysicalCameraFactoryNode->SetCustomFocusMethod(bEnableDepthOfField ? ECameraFocusMethod::Manual : ECameraFocusMethod::DoNotOverride);
 			}
 			
+		}
+	}
+	else if (const UInterchangeStandardCameraNode* CameraNode = Cast<UInterchangeStandardCameraNode>(TranslatedAssetNode))
+	{
+		EInterchangeCameraProjectionType ProjectionType = EInterchangeCameraProjectionType::Perspective;
+		if (CameraNode->GetCustomProjectionMode(ProjectionType) && bUsePhysicalInsteadOfStandardPerspectiveCamera && ProjectionType == EInterchangeCameraProjectionType::Perspective)
+		{
+			float AspectRatio = 1.0f;
+			CameraNode->GetCustomAspectRatio(AspectRatio);
+
+			const float SensorWidth = 36.f;  // mm
+			float SensorHeight = SensorWidth / AspectRatio;
+
+			float FieldOfView = 90;
+			CameraNode->GetCustomFieldOfView(FieldOfView); //Degrees
+
+			float FocalLength = (SensorHeight) / (2.0 * tan(FMath::DegreesToRadians(FieldOfView) / 2.0));
+
+			ActorFactoryNode->SetCustomActorClassName(ACineCameraActor::StaticClass()->GetPathName());
+			ActorFactoryNode->SetCustomMobility(EComponentMobility::Movable);
+
+			if (UInterchangePhysicalCameraFactoryNode* PhysicalCameraFactoryNode = Cast<UInterchangePhysicalCameraFactoryNode>(ActorFactoryNode))
+			{
+				PhysicalCameraFactoryNode->SetCustomFocalLength(FocalLength);
+				PhysicalCameraFactoryNode->SetCustomSensorHeight(SensorHeight);
+				PhysicalCameraFactoryNode->SetCustomSensorWidth(SensorWidth);
+				PhysicalCameraFactoryNode->SetCustomFocusMethod(ECameraFocusMethod::DoNotOverride);
+			}
+		}
+		else
+		{
+			ActorFactoryNode->SetCustomActorClassName(ACameraActor::StaticClass()->GetPathName());
+			ActorFactoryNode->SetCustomMobility(EComponentMobility::Movable);
+
+			if (UInterchangeStandardCameraFactoryNode* CameraFactoryNode = Cast<UInterchangeStandardCameraFactoryNode>(ActorFactoryNode))
+			{
+				if (CameraNode->GetCustomProjectionMode(ProjectionType))
+				{
+					CameraFactoryNode->SetCustomProjectionMode((ECameraProjectionMode::Type)ProjectionType);
+				}
+
+				float OrthoWidth;
+				if (CameraNode->GetCustomWidth(OrthoWidth))
+				{
+					CameraFactoryNode->SetCustomWidth(OrthoWidth);
+				}
+
+				float OrthoNearClipPlane;
+				if (CameraNode->GetCustomNearClipPlane(OrthoNearClipPlane))
+				{
+					CameraFactoryNode->SetCustomNearClipPlane(OrthoNearClipPlane);
+				}
+
+				float OrthoFarClipPlane;
+				if (CameraNode->GetCustomFarClipPlane(OrthoFarClipPlane))
+				{
+					CameraFactoryNode->SetCustomFarClipPlane(OrthoFarClipPlane);
+				}
+
+				float AspectRatio;
+				if (CameraNode->GetCustomAspectRatio(AspectRatio))
+				{
+					CameraFactoryNode->SetCustomAspectRatio(AspectRatio);
+				}
+
+				float FieldOfView;
+				if (CameraNode->GetCustomFieldOfView(FieldOfView))
+				{
+					CameraFactoryNode->SetCustomFieldOfView(FieldOfView);
+				}
+			}
 		}
 	}
 }
@@ -505,3 +824,99 @@ void UInterchangeGenericLevelPipeline::ExecuteSceneVariantSetNodePreImport(const
 
 	BaseNodeContainer->AddNode(FactoryNode);
 }
+
+void UInterchangeGenericLevelPipeline::ExecutePostImportPipeline(const UInterchangeBaseNodeContainer* InBaseNodeContainer, const FString& NodeKey, UObject* CreatedAsset, bool bIsAReimport)
+{
+	Super::ExecutePostImportPipeline(InBaseNodeContainer, NodeKey, CreatedAsset, bIsAReimport);
+
+#if WITH_EDITORONLY_DATA
+	using namespace UE::Interchange;
+
+	//We do not use the provided base container since ExecutePreImportPipeline cache it
+	//We just make sure the same one is pass in parameter
+	if (!InBaseNodeContainer || !ensure(BaseNodeContainer == InBaseNodeContainer) || !CreatedAsset || !ensure(IsInGameThread()))
+	{
+		return;
+	}
+
+	if (UInterchangeSceneImportAsset* SceneImportAsset = Cast<UInterchangeSceneImportAsset>(CreatedAsset))
+	{
+		if (!bIsReimportContext || !bDeleteMissingActors)
+		{
+			SceneImportAsset->UpdateSceneObjects();
+			return;
+		}
+
+		const UInterchangeSceneImportAssetFactoryNode* FactoryNode = Cast<UInterchangeSceneImportAssetFactoryNode>(BaseNodeContainer->GetFactoryNode(NodeKey));
+		if (!ensure(FactoryNode))
+		{
+			SceneImportAsset->UpdateSceneObjects();
+			return;
+		}
+
+		// Cache list of objects previously imported in case of a re-import
+		TArray<FSoftObjectPath> PrevSoftObjectPaths;
+		SceneImportAsset->GetSceneSoftObjectPaths(PrevSoftObjectPaths);
+
+		SceneImportAsset->UpdateSceneObjects();
+
+		// Nothing to take care of
+		if (PrevSoftObjectPaths.IsEmpty())
+		{
+			return;
+		}
+
+		TArray<FSoftObjectPath> NewSoftObjectPaths;
+		SceneImportAsset->GetSceneSoftObjectPaths(NewSoftObjectPaths);
+
+		TSet<FSoftObjectPath> SoftObjectPathSet(NewSoftObjectPaths);
+		TArray<AActor*> ActorsToDelete;
+		TArray<UObject*> AssetsToForceDelete;
+
+		ActorsToDelete.Reserve(PrevSoftObjectPaths.Num());
+		AssetsToForceDelete.Reserve(PrevSoftObjectPaths.Num());
+
+		for (const FSoftObjectPath& ObjectPath : PrevSoftObjectPaths)
+		{
+			if (!SoftObjectPathSet.Contains(ObjectPath))
+			{
+				if (UObject* Object = ObjectPath.TryLoad())
+				{
+					if (IsValid(Object))
+					{
+						if (Object->GetClass()->IsChildOf<AActor>())
+						{
+							ActorsToDelete.Add(Cast<AActor>(Object));
+						}
+						else
+						{
+							AssetsToForceDelete.Add(Object);
+						}
+					}
+				}
+			}
+		}
+
+		Private::DeleteActors(ActorsToDelete);
+
+		if (!AssetsToForceDelete.IsEmpty())
+		{
+			Private::DeleteAssets(AssetsToForceDelete);
+		}
+
+		// Update newly imported objects with a soft reference to the UInterchangeSceneImportAsset
+		for (const FSoftObjectPath& ObjectPath : NewSoftObjectPaths)
+		{
+			UObject* Object = ObjectPath.TryLoad();
+			if (IsValid(Object) && Object != CreatedAsset)
+			{
+				if (UInterchangeAssetImportData* AssetImportData = UInterchangeAssetImportData::GetFromObject(Object))
+				{
+					AssetImportData->SceneImportAsset = CreatedAsset;
+				}
+			}
+		}
+	}
+#endif
+}
+

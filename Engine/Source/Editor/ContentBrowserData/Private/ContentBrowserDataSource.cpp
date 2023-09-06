@@ -153,6 +153,14 @@ bool UContentBrowserDataSource::TryConvertInternalPathToVirtual(const FName InIn
 	return true;
 }
 
+void UContentBrowserDataSource::RemoveUnusedCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter)
+{
+}
+
+void UContentBrowserDataSource::ClearCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner)
+{
+}
+
 void UContentBrowserDataSource::RootPathAdded(const FStringView InInternalPath)
 {
 	// Trim trailing slash
@@ -245,7 +253,7 @@ bool UContentBrowserDataSource::PrioritizeSearchPath(const FName InPath)
 	return false;
 }
 
-bool UContentBrowserDataSource::IsFolderVisibleIfHidingEmpty(const FName InPath)
+bool UContentBrowserDataSource::IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags)
 {
 	return true;
 }
@@ -261,6 +269,11 @@ bool UContentBrowserDataSource::CreateFolder(const FName InPath, FContentBrowser
 }
 
 bool UContentBrowserDataSource::DoesItemPassFilter(const FContentBrowserItemData& InItem, const FContentBrowserDataCompiledFilter& InFilter)
+{
+	return false;
+}
+
+bool UContentBrowserDataSource::ConvertItemForFilter(FContentBrowserItemData& Item, const FContentBrowserDataCompiledFilter& InFilter)
 {
 	return false;
 }

@@ -5,65 +5,78 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "MaterialShared.h"
 #include "Materials/MaterialInterface.h"
-#include "Misc/App.h"
 #include "RenderUtils.h"
-#include "UObject/UObjectThreadContext.h"
+#include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
+#include "UObject/UObjectBaseUtility.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialOverrideNanite)
 
-
-bool FMaterialOverrideNanite::CanUseOverride(EShaderPlatform ShaderPlatform) const
+bool FMaterialOverrideNanite::FixupLegacySoftReference(UObject* OptionalOwner)
 {
-	return DoesPlatformSupportNanite(ShaderPlatform);
-}
-
 #if WITH_EDITOR
 
-void FMaterialOverrideNanite::RefreshOverrideMaterial()
-{
-	// We don't resolve the soft pointer if we're cooking. 
-	// Instead we defer any resolve to LoadOverrideForPlatform() which should be called in BeginCacheForCookedPlatformData().
-	if (FApp::CanEverRender())
+	if (OverrideMaterialRef.IsNull())
 	{
-		check(IsInGameThread());
-		
-		OverrideMaterial = bEnableOverride && !OverrideMaterialRef.IsNull() ? OverrideMaterialRef.LoadSynchronous() : nullptr;
-
-		// When we are routing PostLoad, LoadSynchronous can return a valid object pointer when the asset has not loaded.
-		// We can still store the TObjectPtr, but we need to ensure that the material re-inits on completion of the async load.
-		if (OverrideMaterial && OverrideMaterial->HasAnyFlags(RF_NeedLoad))
-		{ 
-			const FString LongPackageName = OverrideMaterialRef.GetLongPackageName();
-			UE_LOG(LogMaterial, Display, TEXT("Async loading NaniteOverrideMaterial '%s'"), *LongPackageName);
-			LoadPackageAsync(LongPackageName, FLoadPackageAsyncDelegate::CreateLambda(
-				[WeakOverrideMaterial = MakeWeakObjectPtr(OverrideMaterial)](const FName&, UPackage*, EAsyncLoadingResult::Type)
-				{
-					if (UMaterialInterface* Material = WeakOverrideMaterial.Get())
-					{
-						Material->ForceRecompileForRendering();
-					}
-				}));
-		}
+		return false;
 	}
-}
 
+	// Need to resolve and load the soft ref here before we can deprecate it.
+	OverrideMaterialEditor = OverrideMaterialRef.LoadSynchronous();
+	if (!OverrideMaterialEditor)
+	{
+		UE_LOG(LogMaterial, Warning, TEXT("MaterialOverrideNanite with owner '%s' has a legacy override material reference (%s) but it could not be loaded."), OptionalOwner ? *OptionalOwner->GetPathName() : TEXT("UNKNOWN"), *OverrideMaterialRef.ToString());
+		return false;
+	}
+
+	// When we are routing PostLoad, LoadSynchronous can return a valid object pointer when the asset has not loaded.
+	// We can still store the TObjectPtr, but we need to ensure that the material re-inits on completion of the async load.
+	if (OverrideMaterialEditor->HasAnyFlags(RF_NeedLoad))
+	{
+		const FString LongPackageName = OverrideMaterialRef.GetLongPackageName();
+		UE_LOG(LogMaterial, Display, TEXT("Async loading NaniteOverrideMaterial '%s' for owner '%s'."), *LongPackageName, OptionalOwner ? *OptionalOwner->GetPathName() : TEXT("UNKNOWN"));
+		LoadPackageAsync(LongPackageName, FLoadPackageAsyncDelegate::CreateLambda(
+			[WeakOverrideMaterial = MakeWeakObjectPtr(OverrideMaterialEditor)](const FName&, UPackage*, EAsyncLoadingResult::Type)
+			{
+				if (UMaterialInterface* Material = WeakOverrideMaterial.Get())
+				{
+					// Use a MaterialUpdateContext to make sure dependent interfaces (e.g. MIDs) update as well
+					FMaterialUpdateContext UpdateContext;
+					UpdateContext.AddMaterialInterface(Material);
+
+					Material->ForceRecompileForRendering();
+				}
+			}));
+	}
+
+	// Reset the deprecated ref.
+	OverrideMaterialRef.Reset();
+	return true;
+
+#else
+	return false;
 #endif // WITH_EDITOR
+}
 
 bool FMaterialOverrideNanite::Serialize(FArchive& Ar)
 {
+	Ar.UsingCustomVersion(FFortniteReleaseBranchCustomObjectVersion::GUID);
+	
+	const bool bEditorOnlyCook = Ar.CustomVer(FFortniteReleaseBranchCustomObjectVersion::GUID) >= FFortniteReleaseBranchCustomObjectVersion::NaniteMaterialOverrideUsesEditorOnly;
+
+	// Path for loading legacy data.
+	if (!bEditorOnlyCook)
 	{
-		// Use non-collecting serialization scope for override material.
-		// This prevents the cook from automatically seeing it, so that we can avoid cooking it on non-nanite platforms.
-		FSoftObjectPathSerializationScope SerializationScope(NAME_None, NAME_None, ESoftObjectPathCollectType::NeverCollect, ESoftObjectPathSerializeType::AlwaysSerialize);
 		Ar << OverrideMaterialRef;
+		Ar << bEnableOverride;
+		Ar << OverrideMaterial;
+		// No default property serialization in this path.
+		return true;
 	}
 
-	Ar << bEnableOverride;
+	// We don't want to serialize OverrideMaterial to non-nanite platforms.
+	// This reduces the cooked cost of the material and, just as importantly, its texture dependencies.
+	bool bCookOverrideMaterial = false;
 
-	// We don't want the hard references somehow serializing to saved maps.
-	// So we only serialize hard references when loading, or when cooking supported platforms.
-	// Note that this approach won't be correct for a multi-platform cook with both nanite and non-nanite platforms.
-	bool bSerializeOverrideObject = Ar.IsLoading();
 #if WITH_EDITOR
 	if (Ar.IsCooking())
 	{
@@ -72,74 +85,59 @@ bool FMaterialOverrideNanite::Serialize(FArchive& Ar)
 		for (FName ShaderFormat : ShaderFormats)
 		{
 			const EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(ShaderFormat);
-			if (CanUseOverride(ShaderPlatform))
+			if (DoesPlatformSupportNanite(ShaderPlatform))
 			{
-				bSerializeOverrideObject = true;
+				bCookOverrideMaterial = true;
 				break;
 			}
 		}
 	}
 #endif
 
-	if (bSerializeOverrideObject)
+	bool bSerializeAsCookedData = Ar.IsCooking();
+	Ar << bSerializeAsCookedData;
+
+	if (bSerializeAsCookedData)
 	{
-		Ar << OverrideMaterial;
+		// In cooked data we serialize a UObject* here in the native serializer to hold the OverrideMaterial.
+		if (Ar.IsSaving())
+		{
+#if WITH_EDITORONLY_DATA
+			// Use this->OverrideMaterialEditor.
+			// If we are choosing not to cook because of no nanite platform support then serialize nullptr.
+			UObject* SavedOverrideMaterial = bCookOverrideMaterial ? OverrideMaterialEditor : nullptr;
+#else
+			UObject* SavedOverrideMaterial = OverrideMaterial;
+#endif
+			Ar << SavedOverrideMaterial;
+		}
+		else
+		{
+#if WITH_EDITORONLY_DATA
+			// If we are loading a cooked package in an environment that has EditorOnlyData, load the OverrideMaterial into OverrideMaterialEditor.
+			// That is the variable we read/write when WITH_EDITORONLY_DATA.
+			Ar << OverrideMaterialEditor;
+#else
+			Ar << OverrideMaterial;
+#endif
+		}
 	}
 	else
 	{
-		TObjectPtr<UMaterialInterface> Dummy;
-		Ar << Dummy;
+		// In non-cooked data we do not serialize a UObject* here.
+		// The OverrideMaterial is stored in this->OverrideMaterialEditor, which is serialized through default property serialization.
 	}
 
-	return true;
+	// Continue serialization of other properties.
+	return false;
 }
 
-void FMaterialOverrideNanite::InitUnsafe(UMaterialInterface* InMaterial)
+void FMaterialOverrideNanite::SetOverrideMaterial(UMaterialInterface* InMaterial, bool bInOverride)
 {
-	OverrideMaterialRef = InMaterial;
+#if WITH_EDITORONLY_DATA
+	OverrideMaterialEditor = InMaterial;
+#else
 	OverrideMaterial = InMaterial;
-	bEnableOverride = true;
-}
-
-void FMaterialOverrideNanite::PostLoad()
-{
-#if WITH_EDITOR
-	// Don't call RefreshOverrideMaterial() directly because we can't SyncLoad during PostLoad phase.
-	bIsRefreshRequested = true;
 #endif
+	bEnableOverride = bInOverride;
 }
-
-#if WITH_EDITOR
-
-void FMaterialOverrideNanite::PostEditChange()
-{
-	RefreshOverrideMaterial();
-}
-
-void FMaterialOverrideNanite::LoadOverrideForPlatform(const ITargetPlatform* TargetPlatform)
-{
-	bool bCookOverrideObject = false;
-	TArray<FName> ShaderFormats;
-	TargetPlatform->GetAllTargetedShaderFormats(ShaderFormats);
-	for (FName ShaderFormat : ShaderFormats)
-	{
-		const EShaderPlatform ShaderPlatform = ShaderFormatToLegacyShaderPlatform(ShaderFormat);
-		if (CanUseOverride(ShaderPlatform))
-		{
-			bCookOverrideObject = true;
-			break;
-		}
-	}
-
-	if (bCookOverrideObject)
-	{
-		OverrideMaterial = bEnableOverride ? OverrideMaterialRef.LoadSynchronous() : nullptr;
-	}
-}
-
-void FMaterialOverrideNanite::ClearOverride()
-{
-	OverrideMaterial = nullptr;
-}
-
-#endif // WITH_EDITOR

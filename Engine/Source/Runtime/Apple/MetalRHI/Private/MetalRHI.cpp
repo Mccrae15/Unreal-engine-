@@ -58,7 +58,7 @@ static void ValidateTargetedRHIFeatureLevelExists(EShaderPlatform Platform)
 		}
 	}
 #else
-	if (Platform == SP_METAL || Platform == SP_METAL_TVOS)
+	if (Platform == SP_METAL || Platform == SP_METAL_TVOS || Platform == SP_METAL_SIM)
 	{
 		GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportsMetal"), bSupportsShaderPlatform, GEngineIni);
 	}
@@ -75,7 +75,7 @@ static void ValidateTargetedRHIFeatureLevelExists(EShaderPlatform Platform)
 		FText LocalizedMsg = FText::Format(NSLOCTEXT("MetalRHI", "ShaderPlatformUnavailable","Shader platform: {ShaderPlatform} was not cooked! Please enable this shader platform in the project's target settings."),Args);
 		
 		FText Title = NSLOCTEXT("MetalRHI", "ShaderPlatformUnavailableTitle","Shader Platform Unavailable");
-		FMessageDialog::Open(EAppMsgType::Ok, LocalizedMsg, &Title);
+		FMessageDialog::Open(EAppMsgType::Ok, LocalizedMsg, Title);
 		FPlatformMisc::RequestExit(true);
 		
 		METAL_FATAL_ERROR(TEXT("Shader platform: %s was not cooked! Please enable this shader platform in the project's target settings."), *LegacyShaderPlatformToShaderFormat(Platform).ToString());
@@ -115,8 +115,9 @@ static void VerifyMetalCompiler()
 		
 		if(!bFoundXCode)
 		{
-			const FText Title = NSLOCTEXT("MetalRHI", "XCodeMissingInstallTitle", "Xcode Not Found");
-			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("MetalRHI", "XCodeMissingInstall", "Unreal Engine requires Xcode to compile shaders for Metal. To continue, install Xcode and open it to accept the license agreement. If you install Xcode to any location other than Applications/Xcode, also run the xcode-select command-line tool to specify its location."), &Title);
+			FMessageDialog::Open(EAppMsgType::Ok, 
+				NSLOCTEXT("MetalRHI", "XCodeMissingInstall", "Unreal Engine requires Xcode to compile shaders for Metal. To continue, install Xcode and open it to accept the license agreement. If you install Xcode to any location other than Applications/Xcode, also run the xcode-select command-line tool to specify its location."), 
+				NSLOCTEXT("MetalRHI", "XCodeMissingInstallTitle", "Xcode Not Found"));
 			FPlatformMisc::RequestExit(true);
 			return;
 		}
@@ -248,7 +249,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
         static auto* CVarMobileVirtualTextures = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.VirtualTextures"));
         if(CVarMobileVirtualTextures->GetValueOnAnyThread() != 0)
         {
-            UE_LOG(LogMetal, Fatal, TEXT("Mobile Virtual Textures require a minimum of the Apple A9 feature set."));
+            UE_LOG(LogMetal, Warning, TEXT("Mobile Virtual Textures require a minimum of the Apple A9 feature set."));
         }
     }
         
@@ -257,8 +258,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 
 	bool const bRequestedMetalMRT = ((RequestedFeatureLevel >= ERHIFeatureLevel::SM5) || (!bRequestedFeatureLevel && FParse::Param(FCommandLine::Get(),TEXT("metalmrt"))));
 
-    // only allow GBuffers, etc on A8s (A7s are just not going to cut it)
-    if (bProjectSupportsMRTs && bRequestedMetalMRT)
+    // Only allow SM5 MRT on A9 or above devices
+    if (bProjectSupportsMRTs && bRequestedMetalMRT && !bIsA8FeatureSet)
     {
 #if PLATFORM_TVOS
 		ValidateTargetedRHIFeatureLevelExists(SP_METAL_MRT);
@@ -280,9 +281,14 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		ValidateTargetedRHIFeatureLevelExists(SP_METAL_TVOS);
 		GMaxRHIShaderPlatform = SP_METAL_TVOS;
 #else
+#if WITH_IOS_SIMULATOR
+		ValidateTargetedRHIFeatureLevelExists(SP_METAL_SIM);
+		GMaxRHIShaderPlatform = SP_METAL_SIM;
+#else
 		ValidateTargetedRHIFeatureLevelExists(SP_METAL);
 		GMaxRHIShaderPlatform = SP_METAL;
-#endif
+#endif	// WITH_IOS_SIMULATOR
+#endif	// PLATFORM_TVOS
         GMaxRHIFeatureLevel = ERHIFeatureLevel::ES3_1;
 	}
 		
@@ -298,7 +304,11 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_METAL_TVOS;
 #else
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2_REMOVED] = SP_NumPlatforms;
+#if WITH_IOS_SIMULATOR
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_METAL_SIM;
+#else
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_METAL;
+#endif
 #endif
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5) ? GMaxRHIShaderPlatform : SP_NumPlatforms;
@@ -320,10 +330,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	bool bSupportsTiledReflections = false;
 	bool bSupportsDistanceFields = false;
 	
-	// Default is SM5 on:
-	// 10.11.6 for AMD/Nvidia
-	// 10.12.2+ for AMD/Nvidia
-	// 10.12.4+ for Intel
+    bool bSupportsSM6 = false;
 	bool bSupportsSM5 = true;
 	bool bIsIntelHaswell = false;
 	
@@ -332,7 +339,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	if(GRHIAdapterName.Contains("Nvidia"))
 	{
 		bSupportsPointLights = true;
-		GRHIVendorId = 0x10DE;
+		GRHIVendorId = (uint32)EGpuVendorId::Nvidia;
 		bSupportsTiledReflections = true;
 		bSupportsDistanceFields = true;
 		GRHISupportsWaveOperations = false;
@@ -340,7 +347,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	else if(GRHIAdapterName.Contains("ATi") || GRHIAdapterName.Contains("AMD"))
 	{
 		bSupportsPointLights = true;
-		GRHIVendorId = 0x1002;
+		GRHIVendorId = (uint32)EGpuVendorId::Amd;
 		if(GPUDesc.GPUVendorId == GRHIVendorId)
 		{
 			GRHIAdapterName = FString(GPUDesc.GPUName);
@@ -363,7 +370,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	{
 		bSupportsTiledReflections = false;
 		bSupportsPointLights = true;
-		GRHIVendorId = 0x8086;
+		GRHIVendorId = (uint32)EGpuVendorId::Intel;
 		bSupportsDistanceFields = true;
 		bIsIntelHaswell = (GRHIAdapterName == TEXT("Intel HD Graphics 5000") || GRHIAdapterName == TEXT("Intel Iris Graphics") || GRHIAdapterName == TEXT("Intel Iris Pro Graphics"));
 		GRHISupportsWaveOperations = false;
@@ -371,7 +378,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	else if(GRHIAdapterName.Contains("Apple"))
 	{
 		bSupportsPointLights = true;
-		GRHIVendorId = 0x106B;
+		GRHIVendorId = (uint32)EGpuVendorId::Apple;
 		bSupportsTiledReflections = true;
 		bSupportsDistanceFields = true;
 		GSupportsTimestampRenderQueries = true;
@@ -380,45 +387,41 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		GRHIMinimumWaveSize = 32;
 		GRHIMaximumWaveSize = 32;
 
-#if PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
-        // Int64 atomic support was introduced with M2 devices.
-        GRHISupportsAtomicUInt64 = !GRHIAdapterName.Contains("M1");
-        GRHIPersistentThreadGroupCount = 1024;
-
-        // Disable persistent threads on Apple Silicon (as it doesn't support forward progress guarantee).
-        IConsoleVariable* NanitePersistentThreadCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.PersistentThreadsCulling"));
-        if (NanitePersistentThreadCVar != nullptr && NanitePersistentThreadCVar->GetInt() == 1)
+		bSupportsSM6 = !GRHIAdapterName.Contains("M1");
+        if(bSupportsSM6)
         {
-            NanitePersistentThreadCVar->Set(0);
+            // Int64 atomic support was introduced with M2 devices.
+            GRHISupportsAtomicUInt64 = bSupportsSM6;
+            GRHIPersistentThreadGroupCount = 1024;
+            
+            // Disable persistent threads on Apple Silicon (as it doesn't support forward progress guarantee).
+            IConsoleVariable* NanitePersistentThreadCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.PersistentThreadsCulling"));
+            if (NanitePersistentThreadCVar != nullptr && NanitePersistentThreadCVar->GetInt() == 1)
+            {
+                NanitePersistentThreadCVar->Set(0);
+            }
+            
+            // Switch back to single page allocation for VSM (Metal does not support atomic operations on Texture2DArrays...).
+            IConsoleVariable* VSMCacheStaticSeparateCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Cache.StaticSeparate"));
+            if (VSMCacheStaticSeparateCVar != nullptr)
+            {
+                VSMCacheStaticSeparateCVar->Set(0);
+            }
         }
-
-        // Switch back to single page allocation for VSM (Metal does not support atomic operations on Texture2DArrays...).
-        IConsoleVariable* VSMCacheStaticSeparateCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Cache.StaticSeparate"));
-        if (VSMCacheStaticSeparateCVar != nullptr)
-        {
-            VSMCacheStaticSeparateCVar->Set(0);
-        }
-
-        // TODO: FIXME: Workaround to fix visual artifacts on the CitySample demo (has a severe performance cost 
-		// compared to non-compute materials. This is highly experimental).
-#if 1
-        IConsoleVariable* NaniteAllowComputeMatsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.AllowComputeMaterials"));
-        if (NaniteAllowComputeMatsCVar != nullptr)
-        {
-            NaniteAllowComputeMatsCVar->Set(1);
-        }
-
-        IConsoleVariable* NaniteComputeMatsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.ComputeMaterials"));
-        if (NaniteComputeMatsCVar != nullptr)
-        {
-            NaniteComputeMatsCVar->Set(1);
-        }
-#endif
-#endif // PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
 	}
 
-	bool const bRequestedSM5 = (RequestedFeatureLevel == ERHIFeatureLevel::SM5 || (!bRequestedFeatureLevel && (FParse::Param(FCommandLine::Get(),TEXT("metalsm5")) || FParse::Param(FCommandLine::Get(),TEXT("metalmrt")))));
-	if(bSupportsSM5 && bRequestedSM5)
+    bool const bRequestedSM6 = RequestedFeatureLevel == ERHIFeatureLevel::SM6 ||
+                               (!bRequestedFeatureLevel && (FParse::Param(FCommandLine::Get(),TEXT("metalsm6"))));
+        
+	bool const bRequestedSM5 = RequestedFeatureLevel == ERHIFeatureLevel::SM5 ||
+                               (!bRequestedFeatureLevel && (FParse::Param(FCommandLine::Get(),TEXT("metalsm5")) || FParse::Param(FCommandLine::Get(),TEXT("metalmrt"))));
+                                
+    if(bSupportsSM6 && bRequestedSM6)
+    {
+        GMaxRHIFeatureLevel = ERHIFeatureLevel::SM6;
+        GMaxRHIShaderPlatform = SP_METAL_SM6;
+    }
+	else if(bSupportsSM5 && bRequestedSM5)
 	{
 		GMaxRHIFeatureLevel = ERHIFeatureLevel::SM5;
 		if (!FParse::Param(FCommandLine::Get(),TEXT("metalmrt")))
@@ -455,6 +458,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::ES3_1) ? SP_METAL_MACES3_1 : SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5) ? GMaxRHIShaderPlatform : SP_NumPlatforms;
+    GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM6] = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM6) ? GMaxRHIShaderPlatform : SP_NumPlatforms;
 	
 	// Mac GPUs support layer indexing.
 	GSupportsVolumeTextureRendering = (GMaxRHIShaderPlatform != SP_METAL_MRT_MAC);
@@ -484,7 +488,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	}
 	
 	// Disable the distance field AO & shadowing effects on GPU drivers that don't currently execute the shaders correctly.
-	if ((GMaxRHIShaderPlatform == SP_METAL_SM5) && !bSupportsDistanceFields && !FParse::Param(FCommandLine::Get(),TEXT("metaldistancefields")))
+	if ((GMaxRHIShaderPlatform == SP_METAL_SM5 || GMaxRHIShaderPlatform == SP_METAL_SM6) && !bSupportsDistanceFields && !FParse::Param(FCommandLine::Get(),TEXT("metaldistancefields")))
 	{
 		static auto CVarDistanceFieldAO = IConsoleManager::Get().FindConsoleVariable(TEXT("r.DistanceFieldAO"));
 		if(CVarDistanceFieldAO && CVarDistanceFieldAO->GetInt() != 0)
@@ -541,12 +545,10 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	if (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
 		GRHISupportsRHIThread = true;
-		GSupportsParallelOcclusionQueries = GRHISupportsRHIThread;
 	}
 	else
 	{
 		GRHISupportsRHIThread = FParse::Param(FCommandLine::Get(),TEXT("rhithread")) || (CVarUseIOSRHIThread.GetValueOnAnyThread() > 0);
-		GSupportsParallelOcclusionQueries = false;
 	}
 
 	if (FPlatformMisc::IsDebuggerPresent() && UE_BUILD_DEBUG)
@@ -762,7 +764,12 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_R64_UINT				] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_R9G9B9EXP5			] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_P010					] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
-	static_assert(PF_MAX == 87, "Please setup GMetalBufferFormats properly for the new pixel format");
+	GMetalBufferFormats[PF_ASTC_4x4_NORM_RG		] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_6x6_NORM_RG		] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_8x8_NORM_RG		] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_10x10_NORM_RG	] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	GMetalBufferFormats[PF_ASTC_12x12_NORM_RG	] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	static_assert(PF_MAX == 92, "Please setup GMetalBufferFormats properly for the new pixel format");
 
 	// Initialize the platform pixel format map.
 	GPixelFormats[PF_Unknown			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
@@ -865,8 +872,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		GPixelFormats[PF_DepthStencil		].BlockBytes		= 4;
 
 	GPixelFormats[PF_DepthStencil		].Supported			= true;
-	GPixelFormats[PF_ShadowDepth		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth32Float;
-	GPixelFormats[PF_ShadowDepth		].BlockBytes		= 4;
+	GPixelFormats[PF_ShadowDepth		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth16Unorm;
+	GPixelFormats[PF_ShadowDepth		].BlockBytes		= 2;
 	GPixelFormats[PF_ShadowDepth		].Supported			= true;
 	GPixelFormats[PF_D24				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth32Float;
 	GPixelFormats[PF_D24				].Supported			= true;
@@ -947,6 +954,7 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_FloatRGBA			].BlockBytes		= 8;
     GPixelFormats[PF_X24_G8				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Stencil8;
     GPixelFormats[PF_X24_G8				].BlockBytes		= 1;
+	GPixelFormats[PF_X24_G8             ].Supported         = true;
 	
     GPixelFormats[PF_R32_FLOAT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::R32Float;
 #if PLATFORM_MAC
@@ -966,7 +974,6 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 #endif
         
     GPixelFormats[PF_G16R16F			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Float;
-        
 	GPixelFormats[PF_G16R16F_FILTER		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Float;
 	GPixelFormats[PF_G32R32F			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG32Float;
 	GPixelFormats[PF_A2B10G10R10		].PlatformFormat    = (uint32)mtlpp::PixelFormat::RGB10A2Unorm;
@@ -1394,6 +1401,13 @@ void FMetalDynamicRHI::RHIBlockUntilGPUIdle()
 	}
 }
 
+void FMetalDynamicRHI::RHISubmitCommandsAndFlushGPU()
+{
+    @autoreleasepool {
+    ImmediateContext.Context->SubmitCommandBufferAndWait();
+    }
+}
+
 uint32 FMetalDynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
 {
 	check(GPUIndex == 0);
@@ -1420,7 +1434,6 @@ IRHIPlatformCommandList* FMetalDynamicRHI::RHIFinalizeContext(IRHIComputeContext
 	return nullptr;
 }
 
-void FMetalDynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists)
+void FMetalDynamicRHI::RHISubmitCommandLists(TArrayView<IRHIPlatformCommandList*> CommandLists, bool bFlushResources)
 {
-	UE_LOG(LogRHI, Fatal, TEXT("FMetalDynamicRHI::RHISubmitCommandLists should never be called. Metal RHI does not implement parallel command list execution."));
 }

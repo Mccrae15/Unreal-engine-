@@ -9,11 +9,14 @@
 #include "Internationalization/TextLocalizationResource.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/EnumClassFlags.h"
+#include "Misc/ScopeLock.h"
 #include "Templates/Tuple.h"
 #include "Templates/UnrealTemplate.h"
 
 bool FPolyglotTextSource::GetNativeCultureName(const ELocalizedTextSourceCategory InCategory, FString& OutNativeCultureName)
 {
+	FScopeLock ScopeLock(&PolyglotDataCS);
+
 	if (FCultureInfo* CultureInfo = AvailableCultureInfo.Find(InCategory))
 	{
 		for (const auto& NativeCulturePair : CultureInfo->NativeCultures)
@@ -22,6 +25,7 @@ bool FPolyglotTextSource::GetNativeCultureName(const ELocalizedTextSourceCategor
 			return true;
 		}
 	}
+
 	return false;
 }
 
@@ -42,6 +46,8 @@ void FPolyglotTextSource::GetLocalizedCultureNames(const ELocalizationLoadFlags 
 			AppendCulturesForMap(CultureInfo->LocalizedCultures);
 		}
 	};
+
+	FScopeLock ScopeLock(&PolyglotDataCS);
 
 	if (EnumHasAnyFlags(InLoadFlags, ELocalizationLoadFlags::Editor))
 	{
@@ -106,6 +112,7 @@ void FPolyglotTextSource::AddPolyglotDataToResource(const FPolyglotTextData& InP
 	};
 
 	const int32 BaseResourcePriority = GetPriority() * -1; // Flip the priority as larger text source priorities are more important, but smaller text resource priorities are more important
+	const int32 NativeResourcePriority = BaseResourcePriority + InPrioritizedCultures.Num(); // Native resources always prioritize below any localized ones
 	const FString NativeCulture = InPolyglotTextData.ResolveNativeCulture();
 
 	// We skip loading the native text if we're transitioning to the native culture as there's no extra work that needs to be done
@@ -119,7 +126,7 @@ void FPolyglotTextSource::AddPolyglotDataToResource(const FPolyglotTextData& InP
 				InPolyglotTextData.GetKey(),
 				InPolyglotTextData.GetNativeString(),
 				LocalizedString,
-				BaseResourcePriority
+				NativeResourcePriority
 				);
 		}
 	}
@@ -137,7 +144,7 @@ void FPolyglotTextSource::AddPolyglotDataToResource(const FPolyglotTextData& InP
 					InPolyglotTextData.GetKey(),
 					InPolyglotTextData.GetNativeString(),
 					LocalizedString,
-					BaseResourcePriority
+					NativeResourcePriority
 					);
 			}
 		}
@@ -153,7 +160,7 @@ void FPolyglotTextSource::AddPolyglotDataToResource(const FPolyglotTextData& InP
 					InPolyglotTextData.GetKey(),
 					InPolyglotTextData.GetNativeString(),
 					LocalizedString,
-					BaseResourcePriority + LocalizedPriority + 1
+					BaseResourcePriority + LocalizedPriority
 					);
 			}
 		}
@@ -162,6 +169,8 @@ void FPolyglotTextSource::AddPolyglotDataToResource(const FPolyglotTextData& InP
 
 void FPolyglotTextSource::LoadLocalizedResources(const ELocalizationLoadFlags InLoadFlags, TArrayView<const FString> InPrioritizedCultures, FTextLocalizationResource& InOutNativeResource, FTextLocalizationResource& InOutLocalizedResource)
 {
+	FScopeLock ScopeLock(&PolyglotDataCS);
+
 	for (const auto& PolyglotTextDataPair : PolyglotTextDataMap)
 	{
 		const FPolyglotTextData& PolyglotTextData = PolyglotTextDataPair.Value;
@@ -171,17 +180,22 @@ void FPolyglotTextSource::LoadLocalizedResources(const ELocalizationLoadFlags In
 
 EQueryLocalizedResourceResult FPolyglotTextSource::QueryLocalizedResource(const ELocalizationLoadFlags InLoadFlags, TArrayView<const FString> InPrioritizedCultures, const FTextId InTextId, FTextLocalizationResource& InOutNativeResource, FTextLocalizationResource& InOutLocalizedResource)
 {
+	FScopeLock ScopeLock(&PolyglotDataCS);
+
 	if (const FPolyglotTextData* PolyglotTextData = PolyglotTextDataMap.Find(InTextId))
 	{
 		AddPolyglotDataToResource(*PolyglotTextData, InLoadFlags, InPrioritizedCultures, InOutNativeResource, InOutLocalizedResource);
 		return EQueryLocalizedResourceResult::Found;
 	}
+
 	return EQueryLocalizedResourceResult::NotFound;
 }
 
 void FPolyglotTextSource::RegisterPolyglotTextData(const FPolyglotTextData& InPolyglotTextData)
 {
 	check(InPolyglotTextData.IsValid());
+
+	FScopeLock ScopeLock(&PolyglotDataCS);
 
 	const FTextId Identity = FTextId(FTextKey(*InPolyglotTextData.GetNamespace()), FTextKey(*InPolyglotTextData.GetKey()));
 	if (FPolyglotTextData* CurrentPolyglotData = PolyglotTextDataMap.Find(Identity))

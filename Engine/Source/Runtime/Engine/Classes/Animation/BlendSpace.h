@@ -464,6 +464,7 @@ public:
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
+	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	//~ End UObject Interface
 
 	//~ Begin UAnimationAsset Interface
@@ -595,7 +596,7 @@ public:
 	ENGINE_API bool	DeleteSample(const int32 BlendSampleIndex);
 	
 	/** Get the number of sample points for this blend space */
-	ENGINE_API int32 GetNumberOfBlendSamples()  const { return SampleData.Num(); }
+	int32 GetNumberOfBlendSamples()  const { return SampleData.Num(); }
 
 	/** Check whether or not the sample index is valid in combination with the stored sample data */
 	ENGINE_API bool IsValidBlendSampleIndex(const int32 SampleIndex) const;
@@ -670,7 +671,10 @@ protected:
 	/** Initialize Per Bone Blend **/
 	void InitializePerBoneBlend();
 
-	void TickFollowerSamples(TArray<FBlendSampleData> &SampleDataList, const int32 HighestWeightIndex, FAnimAssetTickContext &Context, bool bResetMarkerDataOnFollowers, const UMirrorDataTable* MirrorDataTable = nullptr) const;
+	/** Ticks the samples in SampleDataList apart from the HighestWeightIndex one. */
+	void TickFollowerSamples(
+		TArray<FBlendSampleData> &SampleDataList, const int32 HighestWeightIndex, FAnimAssetTickContext &Context, 
+		bool bResetMarkerDataOnFollowers, bool bLooping, const UMirrorDataTable* MirrorDataTable = nullptr) const;
 
 	/** Returns the blend input clamped to the valid range, unless that axis has been set to wrap in which case no clamping is done **/
 	FVector GetClampedBlendInput(const FVector& BlendInput) const;

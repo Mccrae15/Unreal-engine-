@@ -29,6 +29,14 @@ DEFINE_LOG_CATEGORY(LogAvfMediaCapture);
 #define LOCTEXT_NAMESPACE "FAvfMediaCaptureFactoryModule"
 
 
+// new API doesn't compile on old IOS sdk
+#if (PLATFORM_IOS && (defined(__IPHONE_17_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_17_0))
+	#define USE_NEW_MICROPHONE_API 1
+#else
+	#define USE_NEW_MICROPHONE_API 0
+#endif
+
+
 /**
  * Implements the AvfMediaCapture module.
  */
@@ -42,7 +50,13 @@ public:
 	{
 		SCOPED_AUTORELEASE_POOL
 
-		NSArray* DeviceTypes = @[AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeBuiltInMicrophone];
+        NSArray* DeviceTypes = nil;
+        
+    #if USE_NEW_MICROPHONE_API
+        DeviceTypes = @[AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeMicrophone];
+    #else
+        DeviceTypes = @[AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeBuiltInMicrophone];
+    #endif
 
 		AVCaptureDeviceDiscoverySession* LocalDiscoverySession = [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:DeviceTypes mediaType:nil position:AVCaptureDevicePositionUnspecified];
 		if(LocalDiscoverySession != nil)
@@ -51,8 +65,11 @@ public:
 			for(uint32 i = 0;i < Devices.count;++i)
 			{
 				AVCaptureDevice* AvailableDevice = Devices[i];
-				
-				if(TargetDeviceType == EMediaCaptureDeviceType::Audio && AvailableDevice.deviceType == AVCaptureDeviceTypeBuiltInMicrophone)
+            #if USE_NEW_MICROPHONE_API
+                if(TargetDeviceType == EMediaCaptureDeviceType::Audio && AvailableDevice.deviceType == AVCaptureDeviceTypeMicrophone)
+            #else
+                if(TargetDeviceType == EMediaCaptureDeviceType::Audio && AvailableDevice.deviceType == AVCaptureDeviceTypeBuiltInMicrophone)
+            #endif
 				{
 					FMediaCaptureDeviceInfo DeviceInfo;
 					
@@ -63,7 +80,11 @@ public:
 					
 					OutDeviceInfos.Add(MoveTemp(DeviceInfo));
 				}
-				else if(TargetDeviceType == EMediaCaptureDeviceType::Video && AvailableDevice.deviceType != AVCaptureDeviceTypeBuiltInMicrophone)
+            #if USE_NEW_MICROPHONE_API
+                else if(TargetDeviceType == EMediaCaptureDeviceType::Video && AvailableDevice.deviceType != AVCaptureDeviceTypeMicrophone)
+            #else
+                else if(TargetDeviceType == EMediaCaptureDeviceType::Video && AvailableDevice.deviceType != AVCaptureDeviceTypeBuiltInMicrophone)
+            #endif
 				{
 					FMediaCaptureDeviceInfo DeviceInfo;
 				

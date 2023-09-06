@@ -8,7 +8,6 @@
 #include "VertexFactory.h"
 #include "RenderGraphResources.h"
 #include "HairCardsDatas.h"
-#include "HairStrandsRendering.h"
 #include "HairStrandsInterface.h"
 #include "PrimitiveSceneProxy.h"
 
@@ -51,10 +50,10 @@ public:
 	*/
 	void Copy(const FHairCardsVertexFactory& Other);
 
-	void InitResources();
+	void InitResources(FRHICommandListBase& RHICmdList);
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	virtual void ReleaseRHI() override;
 	const FDataType& GetData() const { return Data; }
 	FDataType Data;

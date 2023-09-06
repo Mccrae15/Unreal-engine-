@@ -19,7 +19,7 @@
 #include "ConcertClientVRPresenceActor.h"
 #include "EngineUtils.h"
 #include "Features/IModularFeatures.h"
-#include "XRMotionControllerBase.h"
+#include "IMotionController.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -70,6 +70,10 @@ void FConcertClientBasePresenceMode::SendEvents(IConcertClientSession& Session)
 	PresenceDataUpdatedEvent.WorldPath = *ParentManager->GetPresenceWorldPath(Session.GetSessionClientEndpointId(), EditorPlayModePlaceholder); // The Non-PIE world path, i.e. the "UEDPIE_%d_" decoration stripped away.
 	PresenceDataUpdatedEvent.Position = PresenceHeadTransform.GetLocation();
 	PresenceDataUpdatedEvent.Orientation = PresenceHeadTransform.GetRotation();
+	if (!ParentManager->IsInPIE() && IVREditorModule::Get().GetVRModeBase())
+	{
+		PresenceDataUpdatedEvent.PresenceType = EPresenceModeType::VRMode;
+	}
 
 	SetUpdateIndex(Session, FConcertClientPresenceDataUpdateEvent::StaticStruct()->GetFName(), PresenceDataUpdatedEvent);
 
@@ -243,8 +247,8 @@ void FConcertClientVRPresenceMode::SendEvents(IConcertClientSession& Session)
 			return MotionControllerToWorld;
 		};
 
-		FTransform LeftMotionControllerTransform = GetControllerTransform(FXRMotionControllerBase::LeftHandSourceId);
-		FTransform RightMotionControllerTransform = GetControllerTransform(FXRMotionControllerBase::RightHandSourceId);
+		FTransform LeftMotionControllerTransform = GetControllerTransform(IMotionController::LeftHandSourceId);
+		FTransform RightMotionControllerTransform = GetControllerTransform(IMotionController::RightHandSourceId);
 		
 		FConcertClientVRPresenceUpdateEvent Event;
 		Event.LeftMotionControllerOrientation = LeftMotionControllerTransform.GetRotation();

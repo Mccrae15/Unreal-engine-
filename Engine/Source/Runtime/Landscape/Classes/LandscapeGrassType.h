@@ -8,6 +8,7 @@
 #include "Engine/EngineTypes.h"
 #include "PerPlatformProperties.h"
 #include "PerQualityLevelProperties.h"
+#include "SceneTypes.h"
 #include "LandscapeGrassType.generated.h"
 
 class UStaticMesh;
@@ -132,6 +133,10 @@ struct FGrassVariety
 	/** Distance at which to grass instances should disable WPO for performance reasons */
 	UPROPERTY(EditAnywhere, Category = Grass)
 	uint32 InstanceWorldPositionOffsetDisableDistance;
+
+	/** Control shadow invalidation behavior, in particular with respect to Virtual Shadow Maps and material effects like World Position Offset. */
+	UPROPERTY(EditAnywhere, Category=Grass, AdvancedDisplay)
+	EShadowCacheInvalidationBehavior ShadowCacheInvalidationBehavior;
 
 	bool IsGrassQualityLevelEnable() const;
 

@@ -18,13 +18,7 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-					"AndroidMedia",
 					"Media",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"AndroidMediaFactory/Private",
 				});
 
 			PublicDependencyModuleNames.AddRange(

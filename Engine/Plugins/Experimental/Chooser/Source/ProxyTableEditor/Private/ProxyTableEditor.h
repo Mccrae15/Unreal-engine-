@@ -7,6 +7,7 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Editor/PropertyEditor/Public/PropertyEditorDelegates.h"
 #include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STreeView.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "ProxyTable.h"
 #include "EditorUndoClient.h"
@@ -80,15 +81,27 @@ namespace UE::ProxyTableEditor
 	
 		struct FProxyTableRow
 		{
-			FProxyTableRow(int32 i) { RowIndex = i; }
+			FProxyTableRow(int32 InIndex, UProxyTable* InProxyTable) :
+				ProxyTable(InProxyTable),
+				RowIndex(InIndex)
+			{
+			}
+			
+			UProxyTable* ProxyTable;
 			int32 RowIndex;
+			TArray<TSharedPtr<FProxyTableRow>> Children;			
 		};
 
 		void UpdateTableColumns();
 		void UpdateTableRows();
+		void MoveRow(int SourceRowIndex, int TargetIndex);
+		void InsertEntry(FProxyEntry& Entry, int RowIndex);
+		void DeleteSelectedRows();
 	private:
-
-		FReply SelectRootProperties();
+		void AddInheritedRows(UProxyTable* ProxyTable);
+		void SelectRootProperties();
+		void RegisterToolbar();
+		void BindCommands();
 	
 		/** Create the properties tab and its content */
 		TSharedRef<SDockTab> SpawnPropertiesTab( const FSpawnTabArgs& Args );
@@ -96,9 +109,11 @@ namespace UE::ProxyTableEditor
 		TSharedRef<SDockTab> SpawnTableTab( const FSpawnTabArgs& Args );
 	
 		TSharedRef<ITableRow> GenerateTableRow(TSharedPtr<FProxyTableRow> InItem, const TSharedRef<STableViewBase>& OwnerTable);
+		void TreeViewExpansionChanged(TSharedPtr<FProxyTableEditor::FProxyTableRow> InItem, bool bShouldBeExpanded);
 
 		/** Called when objects need to be swapped out for new versions, like after a blueprint recompile. */
 		void OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
+		void OnObjectTransacted(UObject* InObject, const FTransactionObjectEvent& InTransactionObjectEvent);
 
 		/** Details view */
 		TSharedPtr< class IDetailsView > DetailsView;
@@ -115,14 +130,27 @@ namespace UE::ProxyTableEditor
 
 		TArray<TObjectPtr<UProxyRowDetails>> SelectedRows;
 
+		TArray<TSharedPtr<FProxyTableRow>> MainTableRows;
 		TArray<TSharedPtr<FProxyTableRow>> TableRows;
 	
 		TSharedPtr<SComboButton> CreateRowComboButton;
 		
 		TSharedPtr<SHeaderRow> HeaderRow;
-		TSharedPtr<SListView<TSharedPtr<FProxyTableRow>>> TableView;
+		TSharedPtr<STreeView<TSharedPtr<FProxyTableRow>>> TableView;
 		
 	public:
+		TMap<UProxyTable*, bool> ImportedTablesExpansionState;
+		TSet<FProxyEntry> ReferencedProxyEntries;
+		TSet<UProxyTable*> ReferencedProxyTables;
+		
+		void SelectRow(TSharedPtr<FProxyTableRow> Row)
+		{
+			if (!TableView->IsItemSelected(Row))
+			{
+				TableView->ClearSelection();
+				TableView->SetItemSelection(Row, true, ESelectInfo::OnMouseClick);
+			}
+		}
 		TSharedPtr<SComboButton>& GetCreateRowComboButton() { return CreateRowComboButton; };
 
 		/** The name given to all instances of this type of editor */

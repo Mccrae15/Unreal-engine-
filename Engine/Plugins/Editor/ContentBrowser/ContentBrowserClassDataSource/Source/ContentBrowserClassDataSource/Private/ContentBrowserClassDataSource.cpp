@@ -97,6 +97,8 @@ bool UContentBrowserClassDataSource::RootClassPathPassesFilter(const FName InRoo
 
 void UContentBrowserClassDataSource::CompileFilter(const FName InPath, const FContentBrowserDataFilter& InFilter, FContentBrowserDataCompiledFilter& OutCompiledFilter)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UContentBrowserClassDataSource::CompileFilter);
+
 	const FContentBrowserDataClassFilter* ClassFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataClassFilter>();
 	const FContentBrowserDataCollectionFilter* CollectionFilter = InFilter.ExtraFilters.FindFilter<FContentBrowserDataCollectionFilter>();
 
@@ -412,7 +414,7 @@ bool UContentBrowserClassDataSource::EnumerateItemsForObjects(const TArrayView<U
 	return true;
 }
 
-bool UContentBrowserClassDataSource::IsFolderVisibleIfHidingEmpty(const FName InPath)
+bool UContentBrowserClassDataSource::IsFolderVisible(const FName InPath, const EContentBrowserIsFolderVisibleFlags InFlags)
 {
 	FName ConvertedPath;
 	const EContentBrowserPathType ConvertedPathType = TryConvertVirtualPath(InPath, ConvertedPath);
@@ -435,6 +437,7 @@ bool UContentBrowserClassDataSource::IsFolderVisibleIfHidingEmpty(const FName In
 	ConditionalCreateNativeClassHierarchy();
 
 	return ContentBrowserDataUtils::IsTopLevelFolder(ConvertedPath) 
+		|| !EnumHasAnyFlags(InFlags, EContentBrowserIsFolderVisibleFlags::HideEmptyFolders)
 		|| NativeClassHierarchy->HasClasses(ConvertedPath, /*bRecursive*/true);
 }
 

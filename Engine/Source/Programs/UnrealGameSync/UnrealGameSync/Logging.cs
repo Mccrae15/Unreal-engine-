@@ -4,13 +4,10 @@ using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Templates;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace UnrealGameSync
 {
-	public static class Logging
+	static class Logging
 	{
 		public static ILoggerProvider CreateLoggerProvider(FileReference file)
 		{

@@ -13,16 +13,17 @@
 #include "MLDeformerComponent.h"
 #include "MLDeformerEditorToolkit.h"
 #include "MLDeformerAsset.h"
-#include "NeuralNetwork.h"
 #include "GeometryCache.h"
 #include "GeometryCacheComponent.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Animation/MorphTarget.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimInstance.h"
+#include "BonePose.h"
 #include "PackageTools.h"
 #include "ObjectTools.h"
 #include "UObject/SavePackage.h"
+#include "Misc/FileHelper.h"
 
 
 #define LOCTEXT_NAMESPACE "NearestNeighborEditorModel"
@@ -69,7 +70,7 @@ namespace UE::NearestNeighborModel
 			GetEditor()->GetModelDetailsView()->ForceRefresh();
 		}
 
-		if (Property->GetFName() == UNearestNeighborModel::GetNearestNeighborDataPropertyName() || (PropertyChangedEvent.MemberProperty != nullptr && PropertyChangedEvent.MemberProperty->GetFName() == UNearestNeighborModel::GetNearestNeighborDataPropertyName()) || Property->GetFName() == UNearestNeighborModel::GetUsePartOnlyMeshPropertyName())
+		if (Property->GetFName() == UNearestNeighborModel::GetNearestNeighborDataPropertyName() || (PropertyChangedEvent.MemberProperty != nullptr && PropertyChangedEvent.MemberProperty->GetFName() == UNearestNeighborModel::GetNearestNeighborDataPropertyName()))
 		{
 			GetNearestNeighborModel()->InvalidateNearestNeighborData();
 			GetEditor()->GetModelDetailsView()->ForceRefresh();
@@ -92,73 +93,26 @@ namespace UE::NearestNeighborModel
 			GetEditor()->GetModelDetailsView()->ForceRefresh();
 		}
 	}
-
-	UNeuralNetwork* FNearestNeighborEditorModel::LoadNeuralNetworkFromOnnx(const FString& Filename) const
-	{
-		const FString OnnxFile = FPaths::ConvertRelativePathToFull(Filename);
-		if (FPaths::FileExists(OnnxFile))
-		{
-			UE_LOG(LogNearestNeighborModel, Display, TEXT("Loading Onnx file '%s'..."), *OnnxFile);
-			UNeuralNetwork* Result = NewObject<UNeuralNetwork>(Model, UNeuralNetwork::StaticClass());		
-			if (Result->Load(OnnxFile))
-			{
-				Result->SetDeviceType(ENeuralDeviceType::GPU, ENeuralDeviceType::CPU, ENeuralDeviceType::GPU);	
-				if (Result->GetDeviceType() != ENeuralDeviceType::GPU || Result->GetOutputDeviceType() != ENeuralDeviceType::GPU || Result->GetInputDeviceType() != ENeuralDeviceType::CPU)
-				{
-					UE_LOG(LogNearestNeighborModel, Error, TEXT("Neural net in ML Deformer '%s' cannot run on the GPU, it will not be active."), *Model->GetDeformerAsset()->GetName());
-				}
-				UE_LOG(LogNearestNeighborModel, Display, TEXT("Successfully loaded Onnx file '%s'..."), *OnnxFile);
-				return Result;
-			}
-			else
-			{
-				UE_LOG(LogNearestNeighborModel, Error, TEXT("Failed to load Onnx file '%s'"), *OnnxFile);
-			}
-		}
-		else
-		{
-			UE_LOG(LogNearestNeighborModel, Error, TEXT("Onnx file '%s' does not exist!"), *OnnxFile);
-		}
-
-		return nullptr;
-	}
-
+	
 	bool FNearestNeighborEditorModel::LoadTrainedNetwork() const
 	{
 		UNearestNeighborModel* NearestNeighborModel = GetNearestNeighborModel();
 		if (NearestNeighborModel)
-		{
+		{	
 			const FString OnnxFile = GetTrainedNetworkOnnxFile();
-			UNeuralNetwork* Network = LoadNeuralNetworkFromOnnx(OnnxFile);
-			if (Network)
+			if (NearestNeighborModel->ShouldUseOptimizedNetwork())
 			{
-				if (NearestNeighborModel->DoesEditorSupportOptimizedNetwork())
+				const bool bSuccess = NearestNeighborModel->LoadOptimizedNetwork(OnnxFile);
+				if (bSuccess)
 				{
-					// We still need NNINetwork for serialization in nearest neighbor update and kmeans update.
-					NearestNeighborModel->SetNNINetwork(Network, false);
-
-					const bool bSuccess = NearestNeighborModel->LoadOptimizedNetwork(OnnxFile);
-					if (bSuccess)
+					UNearestNeighborModelInstance* ModelInstance = static_cast<UNearestNeighborModelInstance*>(GetTestMLDeformerModelInstance());
+					if (ModelInstance)
 					{
-						UNearestNeighborModelInstance* ModelInstance = static_cast<UNearestNeighborModelInstance*>(GetTestMLDeformerModelInstance());
-						if (ModelInstance)
-						{
-							ModelInstance->InitOptimizedNetworkInstance();
-							return true;
-						}
+						ModelInstance->InitOptimizedNetworkInstance();
+						NearestNeighborModel->SetUseOptimizedNetwork(true);
+						return true;
 					}
-					NearestNeighborModel->SetUseOptimizedNetwork(true);
 				}
-				else
-				{
-					NearestNeighborModel->SetNNINetwork(Network);
-					NearestNeighborModel->SetUseOptimizedNetwork(false);
-					return true;
-				}
-			}
-			else
-			{
-				return false;
 			}
 		}
 		return false;
@@ -169,7 +123,7 @@ namespace UE::NearestNeighborModel
 		const UNearestNeighborModel* NearestNeighborModel = GetNearestNeighborModel();
 		if (NearestNeighborModel)
 		{
-			return NearestNeighborModel->DoesUseOptimizedNetwork() ? NearestNeighborModel->GetOptimizedNetwork() != nullptr : NearestNeighborModel->GetNNINetwork() != nullptr;
+			return NearestNeighborModel->DoesUseOptimizedNetwork() && NearestNeighborModel->GetOptimizedNetwork() != nullptr;
 		}
 		return false;
 	}
@@ -340,8 +294,7 @@ namespace UE::NearestNeighborModel
 					GeometryCacheComponent->SetManualTick(true);
 					GeometryCacheComponent->SetPlaybackSpeed(1.0f);
 					GeometryCacheComponent->Play();
-					uint8 ReturnCode = GeomCacheSampler->GeneratePartMeshMappings(GetNearestNeighborModel()->PartVertexMap(PartId), NearestNeighborModel->GetUsePartOnlyMesh());
-					if (HasError(ReturnCode))
+					if (uint8 ReturnCode = GeomCacheSampler->GenerateMeshMappings(); HasError(ReturnCode))
 					{
 						return ReturnCode;
 					}
@@ -454,19 +407,6 @@ namespace UE::NearestNeighborModel
 			return EUpdateResult::SUCCESS;
 		}
 
-		const UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		if(NeuralNetwork && NeuralNetwork->IsLoaded())
-		{
-			const FString SavePath = GetTrainedNetworkOnnxFile();
-			UE_LOG(LogNearestNeighborModel, Display, TEXT("Saving to %s"), *SavePath);
-			NeuralNetwork->Save(SavePath);
-		}
-		else
-		{
-			UE_LOG(LogNearestNeighborModel, Display, TEXT("Network not loaded. A network needs to be trained."));
-			return EUpdateResult::WARNING;
-		}
-
 		FNearestNeighborGeomCacheSampler* GeomCacheSampler = static_cast<FNearestNeighborGeomCacheSampler*>(GetGeomCacheSampler());
 		if (GeomCacheSampler)
 		{
@@ -548,28 +488,6 @@ namespace UE::NearestNeighborModel
 		UNearestNeighborModel* NearestNeighborModel = static_cast<UNearestNeighborModel*>(Model);
 		check(NearestNeighborModel != nullptr);
 
-		const UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		if(NeuralNetwork && NeuralNetwork->IsLoaded())
-		{
-			const FString SavePath = GetTrainedNetworkOnnxFile();
-			if (FPaths::DirectoryExists(FPaths::GetPath(SavePath)))
-			{
-				UE_LOG(LogNearestNeighborModel, Display, TEXT("Saving to %s"), *SavePath);
-				NeuralNetwork->Save(SavePath);
-			}
-			else
-			{
-				UE_LOG(LogNearestNeighborModel, Error, TEXT("Path %s does not exist."), *FPaths::GetPath(SavePath));
-				KMeansClusterResult |= EUpdateResult::ERROR;
-				return;
-			}
-		}
-		else
-		{
-			UE_LOG(LogNearestNeighborModel, Warning, TEXT("Network is not available. Nothing will be done."));
-			KMeansClusterResult |= EUpdateResult::WARNING;
-			return;
-		}
 		if (NearestNeighborModel->KMeansPartId >= NearestNeighborModel->GetNumParts())
 		{
 			UE_LOG(LogNearestNeighborModel, Error, TEXT("KMeansPartId %d is out of range [0, %d). Nothing will be done."), NearestNeighborModel->KMeansPartId, NearestNeighborModel->GetNumParts());
@@ -621,26 +539,98 @@ namespace UE::NearestNeighborModel
 		KmeansResults.Reset();
 	}
 
+	template<typename T>
+	TArray<T> Range(T End)
+	{
+		TArray<T> Result;
+		Result.SetNum(End);
+		for (uint32 i = 0; i < End; i++)
+		{
+			Result[i] = i;
+		}
+		return Result;
+	}
+
+	class FAnimEvaluator
+	{
+	public:
+		FAnimEvaluator(USkeleton* Skeleton)
+		{
+			const FReferenceSkeleton& ReferenceSkeleton = Skeleton->GetReferenceSkeleton();
+			const int32 NumBones = ReferenceSkeleton.GetNum();
+			TArray<uint16> BoneIndices = Range<uint16>(NumBones);
+			BoneContainer.SetUseRAWData(true);
+			BoneContainer.InitializeTo(BoneIndices, UE::Anim::FCurveFilterSettings(), *Skeleton);
+			OutPose.SetBoneContainer(&BoneContainer);
+			OutCurve.InitFrom(BoneContainer);
+		}
+
+		TArray<FTransform> GetBoneTransforms(const UAnimSequence* Anim, int32 Frame)
+		{
+			const double Time = FMath::Clamp(Anim->GetSamplingFrameRate().AsSeconds(Frame), 0., (double)Anim->GetPlayLength());
+			FAnimExtractContext ExtractionContext(Time);
+			FAnimationPoseData AnimationPoseData(OutPose, OutCurve, TempAttributes);
+			Anim->GetAnimationPose(AnimationPoseData, ExtractionContext);
+
+			const int32 NumBones = BoneContainer.GetNumBones();
+			TArray<FTransform> Transforms;
+			Transforms.SetNum(NumBones);
+			for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+			{
+				const FCompactPoseBoneIndex CompactIndex = BoneContainer.MakeCompactPoseIndex(FMeshPoseBoneIndex(BoneIndex));
+				const FTransform BoneTransform = OutPose[CompactIndex];
+				Transforms[BoneIndex] = BoneTransform;
+			}
+			return Transforms;
+		}
+
+	private:
+		FBoneContainer BoneContainer;
+		FCompactPose OutPose;
+		FBlendedCurve OutCurve;
+		UE::Anim::FStackAttributeContainer TempAttributes;
+	};
+
 	TPair<UAnimSequence*, uint8> FNearestNeighborEditorModel::CreateAnimOfClusterCenters(const FString& PackageName, const TArray<int32>& KmeansResults)
 	{
 		uint8 ReturnCode = EUpdateResult::SUCCESS;
 		UNearestNeighborModel *NearestNeighborModel = static_cast<UNearestNeighborModel*>(Model);
+		TTuple<UAnimSequence*, uint8> None = TTuple<UAnimSequence*, uint8>(nullptr, EUpdateResult::ERROR);
 
 		if (KmeansResults.Num() != NearestNeighborModel->NumClusters * 2)
 		{
 			UE_LOG(LogNearestNeighborModel, Error, TEXT("KmeansClusterPoses returned %d clusters whereas %d are expected."), KmeansResults.Num() / 2, NearestNeighborModel->NumClusters);
-			return TTuple<UAnimSequence*, uint8>(nullptr, EUpdateResult::ERROR);
+			return None;
 		}
-
+		if (NearestNeighborModel->SourceAnims.Num() == 0)
+		{
+			UE_LOG(LogNearestNeighborModel, Error, TEXT("No source anims found."));
+			return None;
+		}
 		const UAnimSequence* DefaultAnim = NearestNeighborModel->SourceAnims[0];
+		if (DefaultAnim == nullptr)
+		{
+			UE_LOG(LogNearestNeighborModel, Error, TEXT("Source anim 0 is null."));
+			return None;
+		}
 
 		UAnimSequence* Anim = CreateObjectInstance<UAnimSequence>(PackageName);
 		if (Anim == nullptr)
 		{
-			return TTuple<UAnimSequence*, uint8>(nullptr, EUpdateResult::ERROR);
+			UE_LOG(LogNearestNeighborModel, Error, TEXT("Failed to create AnimSequence."));
+			return None;
 		}
 
-		Anim->SetSkeleton(DefaultAnim->GetSkeleton());
+		USkeleton* const Skeleton = DefaultAnim->GetSkeleton();
+		if (Skeleton == nullptr)
+		{
+			UE_LOG(LogNearestNeighborModel, Error, TEXT("Skeleton is null."));
+			return None;
+		}
+		const FReferenceSkeleton& ReferenceSkeleton = Skeleton->GetReferenceSkeleton();
+		const int32 NumBones = ReferenceSkeleton.GetNum();
+
+		Anim->SetSkeleton(Skeleton);
 		IAnimationDataController& Controller = Anim->GetController();
 		Controller.OpenBracket(LOCTEXT("CreateNewAnim_Bracket", "Create New Anim"));
 		Controller.InitializeModel();
@@ -651,42 +641,55 @@ namespace UE::NearestNeighborModel
 		Controller.SetNumberOfFrames(NumKeys - 1);
 		Controller.SetFrameRate(FFrameRate(30, 1));
 
-		TArray<FName> TrackNames;		
-		DefaultAnim->GetDataModel()->GetBoneTrackNames(TrackNames);
-		const int32 NumTracks = TrackNames.Num();
-		for (const FName& TrackName : TrackNames)
+		FMemMark Mark(FMemStack::Get());
+		FAnimEvaluator AnimEval(Skeleton);
+
+		TArray<TArray<FVector3f>> PosKeys;
+		TArray<TArray<FQuat4f>> RotKeys;
+		TArray<TArray<FVector3f>> ScaleKeys;
+		PosKeys.SetNum(NumBones);
+		RotKeys.SetNum(NumBones);
+		ScaleKeys.SetNum(NumBones);
+		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
 		{
-			TArray<FVector3f> PosKeys;
-			TArray<FQuat4f> RotKeys;
-			TArray<FVector3f> ScaleKeys;
-			PosKeys.SetNum(NumKeys);
-			RotKeys.SetNum(NumKeys);
-			ScaleKeys.SetNum(NumKeys);
-			for (int32 KeyIndex = 0; KeyIndex < NumKeys; KeyIndex++)
-			{
-				const int32 PickedAnimId = KmeansResults[KeyIndex * 2];
-				const int32 PickedFrame = KmeansResults[KeyIndex * 2 + 1];
-				if (PickedAnimId < 0 || PickedAnimId >= NearestNeighborModel->SourceAnims.Num())
-				{
-					UE_LOG(LogNearestNeighborModel, Error, TEXT("CreateAnimOfClusterCenters: PickedAnimId %d is out of range."), PickedAnimId);
-					return TTuple<UAnimSequence*, uint8>(nullptr, EUpdateResult::ERROR);
-				}
-
-				const UAnimSequence* PickedAnim = NearestNeighborModel->SourceAnims[PickedAnimId];
-				if (PickedAnim == nullptr)
-				{
-					UE_LOG(LogNearestNeighborModel, Error, TEXT("CreateAnimOfClusterCenters: PickedAnim %d is null."), PickedAnimId);
-					return TTuple<UAnimSequence*, uint8>(nullptr, EUpdateResult::ERROR);
-				}
-
-				const FTransform BoneTransform = PickedAnim->GetDataModel()->GetBoneTrackTransform(TrackName, PickedFrame);				
-				PosKeys[KeyIndex] = FVector3f(BoneTransform.GetLocation());
-				RotKeys[KeyIndex] = FQuat4f(BoneTransform.GetRotation());
-				ScaleKeys[KeyIndex] = FVector3f(BoneTransform.GetScale3D());
-			}
-			Controller.AddBoneCurve(TrackName);
-			Controller.SetBoneTrackKeys(TrackName, PosKeys, RotKeys, ScaleKeys);
+			PosKeys[BoneIndex].SetNum(NumKeys);
+			RotKeys[BoneIndex].SetNum(NumKeys);
+			ScaleKeys[BoneIndex].SetNum(NumKeys);
 		}
+
+		for (int32 KeyIndex = 0; KeyIndex < NumKeys; ++KeyIndex)
+		{
+			const int32 PickedAnimId = KmeansResults[KeyIndex * 2];
+			const int32 PickedFrame = KmeansResults[KeyIndex * 2 + 1];
+			if (PickedAnimId < 0 || PickedAnimId >= NearestNeighborModel->SourceAnims.Num())
+			{
+				UE_LOG(LogNearestNeighborModel, Error, TEXT("CreateAnimOfClusterCenters: PickedAnimId %d is out of range."), PickedAnimId);
+				return None;
+			}
+			
+			const UAnimSequence* PickedAnim = NearestNeighborModel->SourceAnims[PickedAnimId];
+			if (PickedAnim == nullptr)
+			{
+				UE_LOG(LogNearestNeighborModel, Error, TEXT("CreateAnimOfClusterCenters: PickedAnim %d is null."), PickedAnimId);
+				return None;
+			}
+
+			const TArray<FTransform> BoneTransforms = AnimEval.GetBoneTransforms(PickedAnim, PickedFrame);
+			for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+			{
+				const FTransform& BoneTransform = BoneTransforms[BoneIndex];
+				PosKeys[BoneIndex][KeyIndex] = FVector3f(BoneTransform.GetLocation());
+				RotKeys[BoneIndex][KeyIndex] = FQuat4f(BoneTransform.GetRotation());
+				ScaleKeys[BoneIndex][KeyIndex] = FVector3f(BoneTransform.GetScale3D());
+			}
+		}
+		for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+		{
+			const FName BoneName = ReferenceSkeleton.GetBoneName(BoneIndex);
+			Controller.AddBoneCurve(BoneName);
+			Controller.SetBoneTrackKeys(BoneName, PosKeys[BoneIndex], RotKeys[BoneIndex], ScaleKeys[BoneIndex]);
+		}
+
 		Controller.NotifyPopulated();
 		Controller.CloseBracket();
 		return MakeTuple(Anim, ReturnCode);
@@ -724,15 +727,6 @@ namespace UE::NearestNeighborModel
 		MorphTargetUpdateResult = EUpdateResult::SUCCESS;
 
 		UNearestNeighborModel* NearestNeighborModel = GetNearestNeighborModel();
-		// Automatic converting NNI network to optimized network
-		const UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		if (NearestNeighborModel->DoesEditorSupportOptimizedNetwork() && NeuralNetwork != nullptr && NearestNeighborModel->GetOptimizedNetwork() == nullptr)
-		{
-			const FString SavePath = GetTrainedNetworkOnnxFile();
-			UE_LOG(LogNearestNeighborModel, Display, TEXT("Saving to %s"), *SavePath);
-			NeuralNetwork->Save(SavePath);
-			LoadTrainedNetwork();
-		}
 
 		if (!NearestNeighborModel->IsClothPartDataValid())
 		{
@@ -755,7 +749,7 @@ namespace UE::NearestNeighborModel
 			}
 		}
 
-		if (IsNeuralNetworkLoaded())
+		if (IsTrained())
 		{
 			MorphTargetUpdateResult |= InitMorphTargets();
 			if (HasError(MorphTargetUpdateResult))
@@ -766,6 +760,7 @@ namespace UE::NearestNeighborModel
 			GetNearestNeighborModel()->UpdateNetworkSize();
 			GetNearestNeighborModel()->UpdateMorphTargetSize();
 		}
+
 		InitTestMLDeformerPreviousWeights();
 		GetNearestNeighborModel()->ValidateMorphTargetData();
 
@@ -841,7 +836,7 @@ namespace UE::NearestNeighborModel
 
 		const int32 LOD = 0;
 		TArray<UMorphTarget*> MorphTargets;
-		CreateEngineMorphTargets(
+		CreateMorphTargets(
 			MorphTargets, 
 			Deltas, 
 			FString("NNMorphTarget_"),
@@ -853,7 +848,7 @@ namespace UE::NearestNeighborModel
 
 		check(NearestNeighborModel->GetMorphTargetSet().IsValid());
 		FMorphTargetVertexInfoBuffers& MorphBuffers = NearestNeighborModel->GetMorphTargetSet()->MorphBuffers;
-		CompressEngineMorphTargets(MorphBuffers, MorphTargets, LOD, NearestNeighborModel->GetMorphCompressionLevel());
+		CompressMorphTargets(MorphBuffers, MorphTargets, LOD, NearestNeighborModel->GetMorphCompressionLevel());
 
 		if (MorphBuffers.GetNumBatches() <= 0)
 		{
@@ -923,33 +918,9 @@ namespace UE::NearestNeighborModel
 				return EUpdateResult::WARNING;
 			}
 		}
-		else
-		{
-			const UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-			const UMLDeformerComponent* MLDeformerComponent = GetTestMLDeformerComponent();
-			if(NeuralNetwork && NeuralNetwork->IsLoaded() && MLDeformerComponent && MLDeformerComponent->GetModelInstance())
-			{
-				const int32 NeuralNetworkInferenceHandle = MLDeformerComponent->GetModelInstance()->GetNeuralNetworkInferenceHandle();
-				const FNeuralTensor& OutputTensor = NeuralNetwork->GetOutputTensorForContext(NeuralNetworkInferenceHandle);
-				const int32 NumNetworkWeights = OutputTensor.Num();
-				const int32 NumPCACoeffs = NearestNeighborModel->GetTotalNumPCACoeffs();
-				if (NumNetworkWeights != NumPCACoeffs)
-				{
-					UE_LOG(LogNearestNeighborModel, Warning, TEXT("Network output dimension %d is not equal to number of morph targets %d. Network needs to be re-trained and no deformation will be applied."), NumNetworkWeights, NumPCACoeffs);
-					return EUpdateResult::WARNING;
-				}
-			}
-		}
-
 		return EUpdateResult::SUCCESS;
 	}
 
-	bool FNearestNeighborEditorModel::IsNeuralNetworkLoaded()
-	{
-		const UNearestNeighborModel *NearestNeighborModel = static_cast<UNearestNeighborModel*>(Model);
-		const UNeuralNetwork* NeuralNetwork = NearestNeighborModel->GetNNINetwork();
-		return NeuralNetwork && NeuralNetwork->IsLoaded();
-	}
 
 	UMLDeformerModelInstance* FNearestNeighborEditorModel::GetTestMLDeformerModelInstance() const
 	{

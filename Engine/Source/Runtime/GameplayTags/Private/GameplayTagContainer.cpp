@@ -10,6 +10,7 @@
 #include "GameplayTagsManager.h"
 #include "GameplayTagsModule.h"
 #include "Misc/OutputDeviceNull.h"
+#include "JsonObjectConverter.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayTagContainer)
 
@@ -222,7 +223,7 @@ void FQueryEvaluator::Read(FGameplayTagQueryExpression& E)
 
 void FQueryEvaluator::ReadExpr(FGameplayTagQueryExpression& E)
 {
-	E.ExprType = (EGameplayTagQueryExprType::Type) GetToken();
+	E.ExprType = (EGameplayTagQueryExprType) GetToken();
 	if (bReadError)
 	{
 		return;
@@ -478,7 +479,7 @@ bool FQueryEvaluator::EvalNoExprMatch(FGameplayTagContainer const& Tags, bool bS
 
 bool FQueryEvaluator::EvalExpr(FGameplayTagContainer const& Tags, bool bSkip)
 {
-	EGameplayTagQueryExprType::Type const ExprType = (EGameplayTagQueryExprType::Type) GetToken();
+	EGameplayTagQueryExprType const ExprType = (EGameplayTagQueryExprType) GetToken();
 	if (bReadError)
 	{
 		return false;
@@ -506,6 +507,10 @@ bool FQueryEvaluator::EvalExpr(FGameplayTagContainer const& Tags, bool bSkip)
 	return false;
 }
 
+const TArray<FGameplayTag>& FGameplayTagContainer::GetGameplayTagArray() const
+{
+	return GameplayTags;
+}
 
 FGameplayTagContainer& FGameplayTagContainer::operator=(FGameplayTagContainer const& Other)
 {
@@ -538,15 +543,7 @@ bool FGameplayTagContainer::operator==(FGameplayTagContainer const& Other) const
 		return false;
 	}
 
-	for (const FGameplayTag& Tag : GameplayTags)
-	{
-		if (!Tag.MatchesAnyExact(Other))
-		{
-			return false;
-		}
-	}
-
-	return true;
+	return HasAllExact(Other);
 }
 
 bool FGameplayTagContainer::operator!=(FGameplayTagContainer const& Other) const
@@ -1078,7 +1075,7 @@ FGameplayTagContainer FGameplayTag::GetGameplayTagParents() const
 
 bool FGameplayTag::MatchesTag(const FGameplayTag& TagToCheck) const
 {
-	SCOPE_CYCLE_COUNTER(STAT_FGameplayTag_MatchesTag);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_FGameplayTag_MatchesTag, GEnableGameplayTagDetailedStats);
 
 	const FGameplayTagContainer* TagContainer = UGameplayTagsManager::Get().GetSingleTagContainer(*this);
 
@@ -1375,8 +1372,27 @@ FGameplayTagQuery& FGameplayTagQuery::operator=(FGameplayTagQuery&& Other)
 	return *this;
 }
 
+bool FGameplayTagQuery::operator==(const FGameplayTagQuery& Other) const
+{
+	return TokenStreamVersion == Other.TokenStreamVersion &&
+		TagDictionary == Other.TagDictionary &&
+		QueryTokenStream == Other.QueryTokenStream &&
+		UserDescription == Other.UserDescription &&
+		AutoDescription == Other.AutoDescription;
+}
+
+bool FGameplayTagQuery::operator!=(const FGameplayTagQuery& Other) const
+{
+	return !(*this == Other);
+}
+
 bool FGameplayTagQuery::Matches(FGameplayTagContainer const& Tags) const
 {
+	if (IsEmpty())
+	{
+		return false;
+	}
+
 	FQueryEvaluator QE(*this);
 	return QE.Eval(Tags);
 }
@@ -1398,6 +1414,11 @@ void FGameplayTagQuery::GetQueryExpr(FGameplayTagQueryExpression& OutExpr) const
 	QE.Read(OutExpr);
 }
 
+const TArray<FGameplayTag>& FGameplayTagQuery::GetGameplayTagArray() const
+{
+	return TagDictionary;
+}
+	
 void FGameplayTagQuery::Serialize(FArchive& Ar)
 {
 	Ar << TokenStreamVersion;
@@ -1514,7 +1535,7 @@ UEditableGameplayTagQuery* FQueryEvaluator::CreateEditableQuery()
 
 UEditableGameplayTagQueryExpression* FQueryEvaluator::ReadEditableQueryExpr(UObject* ExprOuter)
 {
-	EGameplayTagQueryExprType::Type const ExprType = (EGameplayTagQueryExprType::Type) GetToken();
+	EGameplayTagQueryExprType const ExprType = (EGameplayTagQueryExprType) GetToken();
 	if (bReadError)
 	{
 		return nullptr;
@@ -1645,7 +1666,7 @@ void FQueryEvaluator::ReadEditableQueryExprList(UEditableGameplayTagQueryExpress
 	}
 }
 
-UEditableGameplayTagQuery* FGameplayTagQuery::CreateEditableQuery()
+UEditableGameplayTagQuery* FGameplayTagQuery::CreateEditableQuery() const
 {
 	FQueryEvaluator QE(*this);
 	return QE.CreateEditableQuery();
@@ -1750,7 +1771,7 @@ void UEditableGameplayTagQueryExpression::EmitExprListTokens(TArray<UEditableGam
 		else
 		{
 			// null expression
-			TokenStream.Add(EGameplayTagQueryExprType::Undefined);
+			TokenStream.Add((uint8)EGameplayTagQueryExprType::Undefined);
 			if (DebugString)
 			{
 				DebugString->Append(TEXT("undefined"));
@@ -1763,7 +1784,7 @@ void UEditableGameplayTagQueryExpression::EmitExprListTokens(TArray<UEditableGam
 
 void UEditableGameplayTagQueryExpression_AnyTagsMatch::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary, FString* DebugString) const
 {
-	TokenStream.Add(EGameplayTagQueryExprType::AnyTagsMatch);
+	TokenStream.Add((uint8)EGameplayTagQueryExprType::AnyTagsMatch);
 
 	if (DebugString)
 	{
@@ -1780,7 +1801,7 @@ void UEditableGameplayTagQueryExpression_AnyTagsMatch::EmitTokens(TArray<uint8>&
 
 void UEditableGameplayTagQueryExpression_AllTagsMatch::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary, FString* DebugString) const
 {
-	TokenStream.Add(EGameplayTagQueryExprType::AllTagsMatch);
+	TokenStream.Add((uint8)EGameplayTagQueryExprType::AllTagsMatch);
 
 	if (DebugString)
 	{
@@ -1797,7 +1818,7 @@ void UEditableGameplayTagQueryExpression_AllTagsMatch::EmitTokens(TArray<uint8>&
 
 void UEditableGameplayTagQueryExpression_NoTagsMatch::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary, FString* DebugString) const
 {
-	TokenStream.Add(EGameplayTagQueryExprType::NoTagsMatch);
+	TokenStream.Add((uint8)EGameplayTagQueryExprType::NoTagsMatch);
 
 	if (DebugString)
 	{
@@ -1814,7 +1835,7 @@ void UEditableGameplayTagQueryExpression_NoTagsMatch::EmitTokens(TArray<uint8>& 
 
 void UEditableGameplayTagQueryExpression_AnyExprMatch::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary, FString* DebugString) const
 {
-	TokenStream.Add(EGameplayTagQueryExprType::AnyExprMatch);
+	TokenStream.Add((uint8)EGameplayTagQueryExprType::AnyExprMatch);
 
 	if (DebugString)
 	{
@@ -1831,7 +1852,7 @@ void UEditableGameplayTagQueryExpression_AnyExprMatch::EmitTokens(TArray<uint8>&
 
 void UEditableGameplayTagQueryExpression_AllExprMatch::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary, FString* DebugString) const
 {
-	TokenStream.Add(EGameplayTagQueryExprType::AllExprMatch);
+	TokenStream.Add((uint8)EGameplayTagQueryExprType::AllExprMatch);
 
 	if (DebugString)
 	{
@@ -1848,7 +1869,7 @@ void UEditableGameplayTagQueryExpression_AllExprMatch::EmitTokens(TArray<uint8>&
 
 void UEditableGameplayTagQueryExpression_NoExprMatch::EmitTokens(TArray<uint8>& TokenStream, TArray<FGameplayTag>& TagDictionary, FString* DebugString) const
 {
-	TokenStream.Add(EGameplayTagQueryExprType::NoExprMatch);
+	TokenStream.Add((uint8)EGameplayTagQueryExprType::NoExprMatch);
 
 	if (DebugString)
 	{
@@ -1913,6 +1934,101 @@ void FGameplayTagQueryExpression::EmitTokens(TArray<uint8>& TokenStream, TArray<
 	default:
 		break;
 	}
+}
+
+bool FGameplayTagQueryExpression::ConvertToJsonObject(TSharedRef<FJsonObject>& OutObject) const
+{
+	TArray<TSharedPtr<FJsonValue>> TagSetArray;
+	TArray<TSharedPtr<FJsonValue>> ExprSetArray;
+	for (const FGameplayTag& GameplayTag : TagSet)
+	{
+		TSharedRef<FJsonObject> TagJsonObject = MakeShared<FJsonObject>();
+		if (FJsonObjectConverter::UStructToJsonObject(FGameplayTag::StaticStruct(), &GameplayTag, TagJsonObject))
+		{
+			TagSetArray.Add(MakeShared<FJsonValueObject>(TagJsonObject).ToSharedPtr());
+		}
+		else
+		{
+			UE_LOG(LogGameplayTags, Error, TEXT("Failed to convert GameplayTag (%s) to json"), *GameplayTag.ToString());
+			return false;
+		}
+	}
+	for (const FGameplayTagQueryExpression& TagQueryExpression : ExprSet)
+	{
+		TSharedRef<FJsonObject> ExprJsonObject = MakeShared<FJsonObject>();
+		if (TagQueryExpression.ConvertToJsonObject(ExprJsonObject)) // caution recursion
+		{
+			ExprSetArray.Add(MakeShared<FJsonValueObject>(ExprJsonObject).ToSharedPtr());
+		}
+		else
+		{
+			UE_LOG(LogGameplayTags, Error, TEXT("Failed to convert tag query expression to json"));
+			return false;
+		}
+	}
+
+	OutObject->SetStringField(TEXT("ExprType"), UEnum::GetValueAsString(ExprType));
+	OutObject->SetArrayField(TEXT("ExprSet"), ExprSetArray);
+	OutObject->SetArrayField(TEXT("TagSet"), TagSetArray);
+	return true;
+}
+
+bool FGameplayTagQueryExpression::MakeFromJsonObject(const TSharedRef<FJsonObject>& InObject, FGameplayTagQueryExpression& OutQueryExpression)
+{
+	FGameplayTagQueryExpression ReturnQueryExpression;
+
+	FString FoundExprType;
+	if (InObject->TryGetStringField(TEXT("ExprType"), FoundExprType))
+	{
+		ReturnQueryExpression.ExprType = (EGameplayTagQueryExprType)StaticEnum<EGameplayTagQueryExprType>()->GetValueByNameString(FoundExprType);
+	}
+	else
+	{
+		UE_LOG(LogGameplayTags, Error, TEXT("Failed to get ExprType from json object. Unable to make GameplayTagQueryExpression"));
+		return false;
+	}
+
+	{
+		const TArray<TSharedPtr<FJsonValue>>* TagSetArray;
+		if (InObject->TryGetArrayField(TEXT("TagSet"), TagSetArray))
+		{
+			for (const TSharedPtr<FJsonValue>& GameplayTagObject : *TagSetArray)
+			{
+				FGameplayTag GameplayTag;
+				if (FJsonObjectConverter::JsonObjectToUStruct(GameplayTagObject->AsObject().ToSharedRef(), FGameplayTag::StaticStruct(), &GameplayTag))
+				{
+					ReturnQueryExpression.TagSet.Add(GameplayTag);
+				}
+				else
+				{
+					UE_LOG(LogGameplayTags, Error, TEXT("Failed to make GameplayTag from Json"));
+					return false;
+				}
+			}
+		}
+	}
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ExprSetArray;
+		if (InObject->TryGetArrayField(TEXT("ExprSet"), ExprSetArray))
+		{
+			for (const TSharedPtr<FJsonValue>& ExprJsonObject : *ExprSetArray)
+			{
+				FGameplayTagQueryExpression TagQueryExpression;
+				if (MakeFromJsonObject(ExprJsonObject->AsObject().ToSharedRef(), TagQueryExpression))
+				{
+					ReturnQueryExpression.ExprSet.Add(TagQueryExpression);
+				}
+				else
+				{
+					UE_LOG(LogGameplayTags, Error, TEXT("Failed to make GameplayTagQueryExpression from Json"));
+					return false;
+				}
+			}
+		}
+	}
+
+	OutQueryExpression = MoveTemp(ReturnQueryExpression);
+	return true;
 }
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)

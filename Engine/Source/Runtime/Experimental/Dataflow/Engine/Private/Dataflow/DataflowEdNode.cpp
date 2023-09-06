@@ -11,8 +11,9 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DataflowEdNode)
 
-#if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if WITH_EDITOR
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "DataflowEdNode"
@@ -94,6 +95,144 @@ void UDataflowEdNode::AllocateDefaultPins()
 #endif // WITH_EDITOR && !UE_BUILD_SHIPPING
 }
 
+void UDataflowEdNode::UpdatePinsFromDataflowNode()
+{
+	UE_LOG(DATAFLOWNODE_LOG, Verbose, TEXT("UDataflowEdNode::UpdatePinsFromDataflowNode()"));
+	// called on node creation from UI. 
+
+#if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (DataflowGraph)
+	{
+		if (DataflowNodeGuid.IsValid())
+		{
+			if (TSharedPtr<FDataflowNode> DataflowNode = DataflowGraph->FindBaseNode(DataflowNodeGuid))
+			{
+				// remove pins that do not match inputs / outputs anymore
+				TArray<UEdGraphPin*> PinsToRemove;
+				for (UEdGraphPin* Pin : GetAllPins())
+				{
+					if (Pin)
+					{
+						if (Pin->Direction == EEdGraphPinDirection::EGPD_Input)
+						{
+							if (!DataflowNode->FindInput(Pin->GetFName()))
+							{
+								PinsToRemove.Add(Pin);
+							}
+						}
+						else if (Pin->Direction == EEdGraphPinDirection::EGPD_Output)
+						{
+							if (!DataflowNode->FindOutput(Pin->GetFName()))
+							{
+								PinsToRemove.Add(Pin);
+							}
+						}
+					}
+				}
+				for (UEdGraphPin* PinToRemove : PinsToRemove)
+				{
+					RemovePin(PinToRemove);
+				}
+				PinsToRemove.Reset();
+
+				for (const Dataflow::FPin& Pin : DataflowNode->GetPins())
+				{
+					if (Pin.Direction == Dataflow::FPin::EDirection::INPUT)
+					{
+						if (!FindPin(Pin.Name, EEdGraphPinDirection::EGPD_Input))
+						{
+							CreatePin(EEdGraphPinDirection::EGPD_Input, Pin.Type, Pin.Name);
+						}
+					}
+					if (Pin.Direction == Dataflow::FPin::EDirection::OUTPUT)
+					{
+						if (!FindPin(Pin.Name, EEdGraphPinDirection::EGPD_Output))
+						{
+							CreatePin(EEdGraphPinDirection::EGPD_Output, Pin.Type, Pin.Name);
+						}
+					}
+				}
+			}
+		}
+	}
+#endif // WITH_EDITOR && !UE_BUILD_SHIPPING
+}
+
+void UDataflowEdNode::AddOptionPin()
+{
+#if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (DataflowGraph && DataflowNodeGuid.IsValid())
+	{
+		// Modify();  // TODO: How do we modify a DataflowNode
+
+		if (const TSharedPtr<FDataflowNode> DataflowNode = DataflowGraph->FindBaseNode(DataflowNodeGuid))
+		{
+			const Dataflow::FPin Pin = DataflowNode->AddPin();
+			switch (Pin.Direction)
+			{
+			case Dataflow::FPin::EDirection::INPUT:
+				CreatePin(EEdGraphPinDirection::EGPD_Input, Pin.Type, Pin.Name);
+				ReconstructNode();
+				break;
+			case Dataflow::FPin::EDirection::OUTPUT:
+				CreatePin(EEdGraphPinDirection::EGPD_Output, Pin.Type, Pin.Name);
+				ReconstructNode();
+				break;
+			default:
+				break;  // Add pin isn't implemented on this node
+			}
+		}
+
+		// Refresh the current graph, so the pins can be updated
+		if (UEdGraph* const ParentGraph = GetGraph())
+		{
+			ParentGraph->NotifyGraphChanged();
+		}
+	}
+#endif // WITH_EDITOR && !UE_BUILD_SHIPPING
+}
+
+void UDataflowEdNode::RemoveOptionPin()
+{
+#if WITH_EDITOR && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (DataflowGraph && DataflowNodeGuid.IsValid())
+	{
+		// Modify();  // TODO: How do we modify a DataflowNode
+
+		if (const TSharedPtr<FDataflowNode> DataflowNode = DataflowGraph->FindBaseNode(DataflowNodeGuid))
+		{
+			const Dataflow::FPin Pin = DataflowNode->RemovePin();
+			switch (Pin.Direction)
+			{
+			case Dataflow::FPin::EDirection::INPUT:
+				if (UEdGraphPin* const EdPin = FindPin(Pin.Name, EEdGraphPinDirection::EGPD_Input))
+				{
+					EdPin->BreakAllPinLinks();
+					RemovePin(EdPin);
+					ReconstructNode();
+				}
+				break;
+			case Dataflow::FPin::EDirection::OUTPUT:
+				if (UEdGraphPin* const EdPin = FindPin(Pin.Name, EEdGraphPinDirection::EGPD_Output))
+				{
+					EdPin->BreakAllPinLinks();
+					RemovePin(EdPin);
+					ReconstructNode();
+				}
+				break;
+			default:
+				break;  // Add pin isn't implemented on this node
+			}
+		}
+
+		// Refresh the current graph, so the pins can be updated
+		if (UEdGraph* const ParentGraph = GetGraph())
+		{
+			ParentGraph->NotifyGraphChanged();
+		}
+	}
+#endif // WITH_EDITOR && !UE_BUILD_SHIPPING
+}
 
 FText UDataflowEdNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
@@ -216,6 +355,25 @@ FText UDataflowEdNode::GetTooltipText() const
 
 }
 
+FText UDataflowEdNode::GetPinDisplayName(const UEdGraphPin* Pin) const
+{
+	if (Pin && DataflowGraph)
+	{
+		if (DataflowNodeGuid.IsValid())
+		{
+			if (TSharedPtr<FDataflowNode> DataflowNode = DataflowGraph->FindBaseNode(DataflowNodeGuid))
+			{
+				FText DisplayName = DataflowNode->GetPinDisplayName(Pin->PinName);
+				if (!DisplayName.IsEmpty())
+				{
+					return DisplayName;
+				}
+			}
+		}
+	}
+	return Super::GetPinDisplayName(Pin);
+}
+
 void UDataflowEdNode::GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const
 {
 	if (DataflowGraph)
@@ -244,6 +402,47 @@ void UDataflowEdNode::GetPinHoverText(const UEdGraphPin& Pin, FString& HoverText
 				}
 
 				HoverTextOut.Appendf(TEXT("%s\n%s\n\n%s"), *NameStr, *Pin.PinType.PinCategory.ToString(), *DataflowNode->GetPinToolTip(Pin.PinName));
+			}
+		}
+	}
+}
+
+void UDataflowEdNode::AutowireNewNode(UEdGraphPin* FromPin)
+{
+	if (DataflowGraph && FromPin)
+	{
+		if (UEdGraphNode* FromGraphNode = FromPin->GetOwningNode())
+		{
+			if (UDataflowEdNode* FromDataflowGraphNode = Cast<UDataflowEdNode>(FromPin->GetOwningNode()))
+			{
+				const TSharedPtr<FDataflowNode> FromDataFlowNode = FromDataflowGraphNode->GetDataflowNode();
+				if (FromDataFlowNode)
+				{
+					if (FDataflowOutput* FromOutput = FromDataFlowNode->FindOutput(FromPin->PinName))
+					{
+						const FName OutputType = FromOutput->GetType();
+
+						const TSharedPtr<FDataflowNode> ToDataFlowNode = this->GetDataflowNode();
+						for (UEdGraphPin* InputPin : this->GetAllPins())
+						{
+							if (FDataflowInput* ToInput = ToDataFlowNode->FindInput(InputPin->PinName))
+							{
+								if (ToInput->GetType() == OutputType)
+								{
+									if (const UEdGraph* EdGraph = this->GetGraph())
+									{
+										if (EdGraph->GetSchema()->TryCreateConnection(FromPin, InputPin))
+										{
+											FromGraphNode->NodeConnectionListChanged();
+											this->NodeConnectionListChanged();
+											break;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}

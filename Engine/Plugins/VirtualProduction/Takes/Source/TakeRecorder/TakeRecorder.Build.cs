@@ -9,8 +9,8 @@ public class TakeRecorder : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"AppFramework",
+				"AssetDefinition",
 				"AssetRegistry",
-				"AssetTools",
 				"ContentBrowser",
 				"Core",
 				"CoreUObject",
@@ -20,7 +20,6 @@ public class TakeRecorder : ModuleRules
 				"InputCore",
 				"LevelEditor",
 				"LevelSequence",
-				"LevelSequenceEditor",
 				"MovieScene",
 				"MovieSceneTools",
 				"PropertyEditor",
@@ -30,7 +29,6 @@ public class TakeRecorder : ModuleRules
 				"Settings",
 				"Slate",
 				"SlateCore",
-				"UMG",
 				"EditorFramework",
 				"UnrealEd",
 				"WorkspaceMenuStructure",
@@ -51,8 +49,6 @@ public class TakeRecorder : ModuleRules
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"TakeRecorder/Private",
-				"TakeRecorder/Public",
                 "TakeRecorderSources/Private",
             }
         );

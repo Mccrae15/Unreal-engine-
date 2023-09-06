@@ -70,6 +70,7 @@ inline FPooledRenderTargetDesc Translate(const FRHITextureDesc& InDesc)
 	OutDesc.NumSamples = InDesc.NumSamples;
 	OutDesc.bIsArray = InDesc.IsTextureArray();
 	OutDesc.bIsCubemap = InDesc.IsTextureCube();
+	OutDesc.FastVRAMPercentage = InDesc.FastVRAMPercentage;
 
 	check(OutDesc.IsValid());
 	return OutDesc;
@@ -126,6 +127,9 @@ inline FRDGTextureDesc Translate(const FPooledRenderTargetDesc& InDesc)
 	}
 
 	OutDesc.Flags = InDesc.Flags;
+	// UE-TODO: UE-188415 fix flags that we force in Render Target Pool
+	//OutDesc.Flags |= ETextureCreateFlags::ForceIntoNonStreamingMemoryTracking;
+	OutDesc.FastVRAMPercentage = InDesc.FastVRAMPercentage;
 	check(OutDesc.IsValid());
 
 	return OutDesc;
@@ -189,7 +193,6 @@ inline FRDGBufferSRVDesc::FRDGBufferSRVDesc(FRDGBufferRef InBuffer)
 {
 	if (EnumHasAnyFlags(Buffer->Desc.Usage, EBufferUsageFlags::DrawIndirect))
 	{
-		BytesPerElement = 4;
 		Format = PF_R32_UINT;
 	}
 	else if (EnumHasAnyFlags(Buffer->Desc.Usage, EBufferUsageFlags::AccelerationStructure))

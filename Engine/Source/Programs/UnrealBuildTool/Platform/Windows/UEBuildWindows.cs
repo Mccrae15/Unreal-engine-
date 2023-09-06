@@ -2,15 +2,14 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using EpicGames.Core;
 using System.Diagnostics.CodeAnalysis;
-using UnrealBuildBase;
+using System.Linq;
 using System.Runtime.Versioning;
+using System.Text;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -21,13 +20,74 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static UnrealArch Arm64ec = FindOrAddByName("arm64ec", bIsX64: false);
 
-
-		private static Dictionary<UnrealArch, string> WindowsToolchainArchitectures = new()
+		private struct WindowsArchInfo
 		{
-			{ UnrealArch.Arm64,         "arm64" },
-			{ UnrealArch.Arm64ec,       "arm64" },
-			{ UnrealArch.X64,           "x64" },
+			public string ToolChain;
+			public string LibDir;
+			public string SystemLibDir;
+
+			public WindowsArchInfo(string ToolChain, string LibDir, string SystemLibDir)
+			{
+				this.ToolChain = ToolChain;
+				this.LibDir = LibDir;
+				this.SystemLibDir = SystemLibDir;
+			}
+		}
+
+		private static IReadOnlyDictionary<UnrealArch, WindowsArchInfo> WindowsToolchainArchitectures = new Dictionary<UnrealArch, WindowsArchInfo>()
+		{
+			{ UnrealArch.Arm64,         new WindowsArchInfo("arm64", "arm64", "arm64") },
+			{ UnrealArch.Arm64ec,       new WindowsArchInfo("arm64", "x64", "arm64") },
+			{ UnrealArch.X64,           new WindowsArchInfo("x64", "x64", "x64") },
 		};
+
+		/// <summary>
+		/// Windows-specific tool chain to compile with
+		/// </summary>
+		public string WindowsToolChain
+		{
+			get
+			{
+				if (WindowsToolchainArchitectures.ContainsKey(this))
+				{
+					return WindowsToolchainArchitectures[this].ToolChain;
+				}
+
+				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.WindowsToolChain");
+			}
+		}
+
+		/// <summary>
+		/// Windows-specific lib directory for this architecture
+		/// </summary>
+		public string WindowsLibDir
+		{
+			get
+			{
+				if (WindowsToolchainArchitectures.ContainsKey(this))
+				{
+					return WindowsToolchainArchitectures[this].LibDir;
+				}
+
+				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.WindowsLibDir");
+			}
+		}
+
+		/// <summary>
+		/// Windows-specific system lib directory for this architecture
+		/// </summary>
+		public string WindowsSystemLibDir
+		{
+			get
+			{
+				if (WindowsToolchainArchitectures.ContainsKey(this))
+				{
+					return WindowsToolchainArchitectures[this].SystemLibDir;
+				}
+
+				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.WindowsSystemLibDir");
+			}
+		}
 
 		/// <summary>
 		/// Windows-specific low level name for the generic platforms
@@ -36,11 +96,14 @@ namespace UnrealBuildTool
 		{
 			get
 			{
-				if (WindowsToolchainArchitectures.ContainsKey(this)) return WindowsToolchainArchitectures[this];
+				if (WindowsToolchainArchitectures.ContainsKey(this))
+				{
+					return WindowsToolchainArchitectures[this].ToolChain;
+				}
+
 				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.WindowsName");
 			}
 		}
-
 	}
 
 	/// <summary>
@@ -59,6 +122,11 @@ namespace UnrealBuildTool
 		Clang,
 
 		/// <summary>
+		/// Use the RTFM (Rollback Transactions on Failure Memory) Clang variant for Verse on Windows, using the verse-clang-cl driver.
+		/// </summary>
+		ClangRTFM,
+
+		/// <summary>
 		/// Use the Intel oneAPI C++ compiler
 		/// </summary>
 		Intel,
@@ -74,6 +142,16 @@ namespace UnrealBuildTool
 		VisualStudio2022,
 	}
 
+	/// <summary>
+	/// Enum describing the release channel of a compiler
+	/// </summary>
+	internal enum WindowsCompilerChannel
+	{
+		Latest,
+		Preview,
+		Experimental,
+		Any = Latest | Preview | Experimental
+	}
 
 	/// <summary>
 	/// Extension methods for WindowsCompilier enum
@@ -87,7 +165,17 @@ namespace UnrealBuildTool
 		/// <returns>true if Clang based</returns>
 		public static bool IsClang(this WindowsCompiler Compiler)
 		{
-			return Compiler == WindowsCompiler.Clang || Compiler == WindowsCompiler.Intel;
+			return Compiler == WindowsCompiler.Clang || Compiler == WindowsCompiler.ClangRTFM || Compiler == WindowsCompiler.Intel;
+		}
+
+		/// <summary>
+		/// Returns if this compiler toolchain based on Intel
+		/// </summary>
+		/// <param name="Compiler">The compiler to check</param>
+		/// <returns>true if Intel based</returns>
+		public static bool IsIntel(this WindowsCompiler Compiler)
+		{
+			return Compiler == WindowsCompiler.Intel;
 		}
 
 		/// <summary>
@@ -101,63 +189,6 @@ namespace UnrealBuildTool
 		}
 	}
 
-
-	/// <summary>
-	/// Which static analyzer to use
-	/// </summary>
-	[Obsolete("Replace with StaticAnalyzer. Will be removed in 5.2")]
-	public enum WindowsStaticAnalyzer
-	{
-		/// <summary>
-		/// Do not perform static analysis
-		/// </summary>
-		None,
-
-		/// <summary>
-		/// Use the default static analyzer for the selected compiler, if it has one. For
-		/// Visual Studio and Clang, this means using their built-in static analysis tools.
-		/// Any compiler that doesn't support static analysis will ignore this option.
-		/// </summary>
-		Default, 
-
-		/// <summary>
-		/// Use the built-in Visual C++ static analyzer
-		/// </summary>
-		VisualCpp = Default,
-
-		/// <summary>
-		/// Use PVS-Studio for static analysis
-		/// </summary>
-		PVSStudio,
-		
-		/// <summary>
-		/// Use clang for static analysis. This forces the compiler to clang.
-		/// </summary>
-		Clang,
-	}
-
-	/// <summary>
-	/// Output type for the static analyzer. This currently only works for the Clang static analyzer.
-	/// The Clang static analyzer can do either Text, which prints the analysis to stdout, or
-	/// html, where it writes out a navigable HTML page for each issue that it finds, per file.
-	/// The HTML is output in the same directory as the object fil that would otherwise have
-	/// been generated. 
-	/// All other analyzers default automatically to Text. 
-	/// </summary>
-	[Obsolete("Replace with StaticAnalyzerOutputType. Will be removed in 5.2")]
-	public enum WindowsStaticAnalyzerOutputType
-	{
-		/// <summary>
-		/// Output the analysis to stdout.
-		/// </summary>
-		Text,
-
-		/// <summary>
-		/// Output the analysis to an HTML file in the object folder.
-		/// </summary>
-		Html,
-	}
-
 	/// <summary>
 	/// Windows-specific target settings
 	/// </summary>
@@ -167,6 +198,36 @@ namespace UnrealBuildTool
 		/// The target rules which owns this object. Used to resolve some properties.
 		/// </summary>
 		TargetRules Target;
+
+		/// <summary>
+		/// If -PGOOptimize is specified but the linker flags have changed since the last -PGOProfile, this will emit a warning and build without PGO instead of failing during link with LNK1268. 
+		/// </summary>
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-IgnoreStalePGOData")]
+		public bool bIgnoreStalePGOData = false;
+
+		/// <summary>
+		/// If specified along with -PGOProfile, then /FASTGENPROFILE will be used instead of /GENPROFILE. This usually means that the PGO data is generated faster, but the resulting data may not yield as efficient optimizations during -PGOOptimize
+		/// </summary>
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-PGOFastGen")]
+		public bool bUseFastGenProfile = false;
+
+		/// <summary>
+		/// If specified along with -PGOProfile, prevent the usage of extra counters. Please note that by default /FASTGENPROFILE doesnt use extra counters
+		/// </summary>
+		/// <seealso href="link">https://learn.microsoft.com/en-us/cpp/build/reference/genprofile-fastgenprofile-generate-profiling-instrumented-build</seealso>
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-PGONoExtraCounters")]
+		public bool bPGONoExtraCounters = false;
+
+		/// <summary>
+		/// Which level to use for Inline Function Expansion when TargetRules.bUseInlining is enabled
+		/// </summary>
+		/// <seealso href="link">https://learn.microsoft.com/en-us/cpp/build/reference/ob-inline-function-expansion</seealso>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "InlineFunctionExpansionLevel")]
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		public int InlineFunctionExpansionLevel { get; set; } = 2;
 
 		/// <summary>
 		/// Version of the compiler toolchain to use on Windows platform. A value of "default" will be changed to a specific version at UBT start up.
@@ -181,7 +242,15 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Version of the toolchain to use on Windows platform when a non-msvc Compiler is in use, to locate include paths etc.
 		/// </summary>
-		public WindowsCompiler ToolChain => Compiler.IsMSVC() ? Compiler : WindowsPlatform.GetDefaultCompiler(Target.ProjectFile, Architecture, Target.Logger);
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "Toolchain")]
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-VCToolchain=")]
+		public WindowsCompiler ToolChain
+		{
+			get => ToolChainPrivate ?? (Compiler.IsMSVC() ? Compiler : WindowsPlatform.GetDefaultCompiler(Target.ProjectFile, Architecture, Target.Logger));
+			set => ToolChainPrivate = value;
+		}
+		private WindowsCompiler? ToolChainPrivate = null;
 
 		/// <summary>
 		/// Architecture of Target.
@@ -194,7 +263,7 @@ namespace UnrealBuildTool
 		= UnrealArch.X64;
 
 		/// <summary>
-		/// The specific toolchain version to use. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or
+		/// The specific compiler version to use. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or
 		/// the string "Preview" to select the newest available preview version. By default, and if it is available, we use the toolchain version indicated by
 		/// WindowsPlatform.DefaultToolChainVersion (otherwise, we use the latest version).
 		/// </summary>
@@ -204,18 +273,38 @@ namespace UnrealBuildTool
 		public string? CompilerVersion = null;
 
 		/// <summary>
+		/// The specific msvc toolchain version to use if the compiler is not msvc. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or
+		/// the string "Preview" to select the newest available preview version. By default, and if it is available, we use the toolchain version indicated by
+		/// WindowsPlatform.DefaultToolChainVersion (otherwise, we use the latest version).
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "ToolchainVersion")]
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-VCToolchainVersion")]
+		public string? ToolchainVersion = null;
+
+		/// <summary>
+		/// True if /fastfail should be passed to the msvc compiler and linker
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "bVCFastFail")]
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-VCFastFail")]
+		public bool bVCFastFail = false;
+
+		/// <summary>
 		/// True if we should use the Clang linker (LLD) when we are compiling with Clang, or Intel linker (xilink\xilib) when we are compiling with Intel oneAPI, otherwise we use the MSVC linker.
 		/// </summary>
 		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "bAllowClangLinker")]
 		[XmlConfigFile(Category = "WindowsPlatform")]
 		[CommandLine("-ClangLinker")]
 		public bool bAllowClangLinker = false;
-		
+
 		/// <summary>
 		/// The specific Windows SDK version to use. This may be a specific version number (for example, "8.1", "10.0" or "10.0.10150.0"), or the string "Latest", to select the newest available version.
 		/// By default, and if it is available, we use the Windows SDK version indicated by WindowsPlatform.DefaultWindowsSdkVersion (otherwise, we use the latest version).
 		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "WindowsSDKVersion")]
 		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-WindowsSDKVersion")]
 		public string? WindowsSdkVersion = null;
 
 		/// <summary>
@@ -266,27 +355,25 @@ namespace UnrealBuildTool
 		public string? ProductName;
 
 		/// <summary>
-		/// The static analyzer to use.
-		/// </summary>
-		[XmlConfigFile(Category = "WindowsPlatform")]
-		[CommandLine("-StaticAnalyzer")]
-		[Obsolete("Replace with TargetRuies.StaticAnalyzer (Xml Category BuildConfiguration). Will be removed in 5.2")]
-		public WindowsStaticAnalyzer StaticAnalyzer = WindowsStaticAnalyzer.None;
-
-		/// <summary>
-		/// The output type to use for the static analyzer.
-		/// </summary>
-		[XmlConfigFile(Category = "WindowsPlatform")]
-		[CommandLine("-StaticAnalyzerOutputType")]
-		[Obsolete("Replace with TargetRuies.StaticAnalyzerOutputType (Xml Category BuildConfiguration). Will be removed in 5.2")]
-		public WindowsStaticAnalyzerOutputType StaticAnalyzerOutputType = WindowsStaticAnalyzerOutputType.Text;
-
-		/// <summary>
 		/// Enables address sanitizer (ASan). Only supported for Visual Studio 2019 16.7.0 and up.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableAddressSanitizer")]
 		[CommandLine("-EnableASan")]
 		public bool bEnableAddressSanitizer = false;
+
+		/// <summary>
+		/// Enables LibFuzzer. Only supported for Visual Studio 2022 17.0.0 and up.
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableLibFuzzer")]
+		[CommandLine("-EnableLibFuzzer")]
+		public bool bEnableLibFuzzer = false;
+
+		/// <summary>
+		/// Whether .sarif files containing errors and warnings are written alongside each .obj, if supported
+		/// </summary>
+		[XmlConfigFile(Category = "BuildConfiguration", Name = "bWriteSarif")]
+		[CommandLine("-Sarif")]
+		public bool bWriteSarif = false;
 
 		/// <summary>
 		/// Whether we should export a file containing .obj to source file mappings.
@@ -308,11 +395,21 @@ namespace UnrealBuildTool
 		public string? ManifestFile;
 
 		/// <summary>
+		/// Specifies the path to an .ico file to use as the appliction icon. Can be assigned to null and will default to Engine/Build/Windows/Resources/Default.ico for engine targets or Build/Windows/Application.ico for projects.
+		/// </summary>
+		public string? ApplicationIcon;
+
+		/// <summary>
 		/// Enables strict standard conformance mode (/permissive-).
 		/// </summary>
 		[XmlConfigFile(Category = "WindowsPlatform")]
 		[CommandLine("-Strict")]
-		public bool bStrictConformanceMode = false;
+		public bool bStrictConformanceMode
+		{
+			get => bStrictConformanceModePrivate ?? Target.DefaultBuildSettings >= BuildSettingsVersion.V4;
+			set => bStrictConformanceModePrivate = value;
+		}
+		private bool? bStrictConformanceModePrivate;
 
 		/// <summary>
 		/// Enables updated __cplusplus macro (/Zc:__cplusplus).
@@ -345,12 +442,18 @@ namespace UnrealBuildTool
 		[CommandLine("-StrictEnumTypes")]
 		public bool bStrictEnumTypesConformance = false;
 
+		/// <summary>
+		/// Specify an alternate location for the PDB file. This option does not change the location of the generated PDB file,
+		/// it changes the name that is embedded into the executable. Path can contain %_PDB% which will be expanded to the original
+		/// PDB file name of the target, without the directory.
+		/// See https://learn.microsoft.com/en-us/cpp/build/reference/pdbaltpath-use-alternate-pdb-path
+		/// </summary>
+		[CommandLine("-PdbAltPath")]
+		public string? PdbAlternatePath = null;
+
 		/// VS2015 updated some of the CRT definitions but not all of the Windows SDK has been updated to match.
 		/// Microsoft provides legacy_stdio_definitions library to enable building with VS2015 until they fix everything up.
-		public bool bNeedsLegacyStdioDefinitionsLib
-		{
-			get { return Compiler.IsMSVC() || Compiler.IsClang(); }
-		}
+		public bool bNeedsLegacyStdioDefinitionsLib => Compiler.IsMSVC() || Compiler.IsClang();
 
 		/// <summary>
 		/// The stack size when linking
@@ -383,8 +486,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bCreateHotPatchableImage
 		{
-			get { return bCreateHotPatchableImagePrivate ?? Target.bWithLiveCoding; }
-			set { bCreateHotPatchableImagePrivate = value; }
+			get => bCreateHotPatchableImagePrivate ?? Target.bWithLiveCoding;
+			set => bCreateHotPatchableImagePrivate = value;
 		}
 		private bool? bCreateHotPatchableImagePrivate;
 
@@ -393,18 +496,18 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bStripUnreferencedSymbols
 		{
-			get { return bStripUnreferencedSymbolsPrivate ?? ((Target.Configuration == UnrealTargetConfiguration.Test || Target.Configuration == UnrealTargetConfiguration.Shipping) && !Target.bWithLiveCoding); }
-			set { bStripUnreferencedSymbolsPrivate = value; }
+			get => bStripUnreferencedSymbolsPrivate ?? ((Target.Configuration == UnrealTargetConfiguration.Test || Target.Configuration == UnrealTargetConfiguration.Shipping) && !Target.bWithLiveCoding);
+			set => bStripUnreferencedSymbolsPrivate = value;
 		}
 		private bool? bStripUnreferencedSymbolsPrivate;
-			
+
 		/// <summary>
 		/// Merge identical COMDAT sections together (/OPT:ICF)
 		/// </summary>
 		public bool bMergeIdenticalCOMDATs
 		{
-			get { return bMergeIdenticalCOMDATsPrivate ?? ((Target.Configuration == UnrealTargetConfiguration.Test || Target.Configuration == UnrealTargetConfiguration.Shipping) && !Target.bWithLiveCoding); }
-			set { bMergeIdenticalCOMDATsPrivate = value; }
+			get => bMergeIdenticalCOMDATsPrivate ?? ((Target.Configuration == UnrealTargetConfiguration.Test || Target.Configuration == UnrealTargetConfiguration.Shipping) && !Target.bWithLiveCoding);
+			set => bMergeIdenticalCOMDATsPrivate = value;
 		}
 		private bool? bMergeIdenticalCOMDATsPrivate;
 
@@ -412,14 +515,6 @@ namespace UnrealBuildTool
 		/// Whether to put global symbols in their own sections (/Gw), allowing the linker to discard any that are unused.
 		/// </summary>
 		public bool bOptimizeGlobalData = true;
-
-		/// <summary>
-		/// If specified along with -PGOProfile, then /FASTGENPROFILE will be used instead of /GENPROFILE. 
-		/// This usually means that the PGO data is generated faster, but the resulting data may not yield as efficient optimizations during -PGOOptimize
-		/// </summary>
-		[XmlConfigFile(Category = "WindowsPlatform")]
-		[CommandLine("-PGOFastGen")]
-		public bool bUseFastGenProfile = false;
 
 		/// <summary>
 		/// (Experimental) Appends the -ftime-trace argument to the command line for Clang to output a JSON file containing a timeline for the compile. 
@@ -448,6 +543,12 @@ namespace UnrealBuildTool
 		public bool bUseBundledDbgHelp = true;
 
 		/// <summary>
+		/// Whether this build will use Microsoft's custom XCurl instead of libcurl
+		/// Note that XCurl is not part of the normal Windows SDK and will require additional downloads
+		/// </summary>
+		public bool bUseXCurl = false;
+
+		/// <summary>
 		/// Settings for PVS studio
 		/// </summary>
 		public PVSTargetSettings PVS = new PVSTargetSettings();
@@ -456,31 +557,6 @@ namespace UnrealBuildTool
 		/// The Visual C++ environment to use for this target. Only initialized after all the target settings are finalized, in ValidateTarget().
 		/// </summary>
 		internal VCEnvironment? Environment;
-
-		/// <summary>
-		/// Directory containing the toolchain
-		/// </summary>
-		public string? ToolChainDir
-		{
-			get { return (Environment == null)? null : Environment.ToolChainDir.FullName; }
-		}
-
-		/// <summary>
-		/// The version number of the toolchain
-		/// </summary>
-		public string? ToolChainVersion
-		{
-			get { return (Environment == null)? null : Environment.ToolChainVersion.ToString(); }
-		}
-
-		/// <summary>
-		/// Root directory containing the Windows Sdk
-		/// </summary>
-		public string? WindowsSdkDir
-		{
-			get { return (Environment == null)? null : Environment.WindowsSdkDir.FullName; }
-		}
-
 
 		/// <summary>
 		/// Directory containing the NETFXSDK
@@ -502,10 +578,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Directory containing the DIA SDK
 		/// </summary>
-		public string? DiaSdkDir
-		{
-			get { return MicrosoftPlatformSDK.FindDiaSdkDirs(Environment!.Compiler).Select(x => x.FullName).FirstOrDefault(); }
-		}
+		public string? DiaSdkDir => MicrosoftPlatformSDK.FindDiaSdkDirs(Environment!.ToolChain).Select(x => x.FullName).FirstOrDefault();
 
 		/// <summary>
 		/// Directory containing the IDE package (Professional, Community, etc...)
@@ -516,9 +589,9 @@ namespace UnrealBuildTool
 			{
 				try
 				{
-					return MicrosoftPlatformSDK.FindVisualStudioInstallations(Environment!.Compiler, Target.Logger).Select(x => x.BaseDir.FullName).FirstOrDefault();
+					return MicrosoftPlatformSDK.FindVisualStudioInstallations(Environment!.ToolChain, Target.Logger).Select(x => x.BaseDir.FullName).FirstOrDefault();
 				}
-				catch(Exception) // Find function will throw if there is no visual studio installed! This can happen w/ clang builds
+				catch (Exception) // Find function will throw if there is no visual studio installed! This can happen w/ clang builds
 				{
 					return null;
 				}
@@ -534,6 +607,7 @@ namespace UnrealBuildTool
 			switch (Compiler)
 			{
 				case WindowsCompiler.Clang:
+				case WindowsCompiler.ClangRTFM:
 				case WindowsCompiler.Intel:
 				case WindowsCompiler.VisualStudio2019:
 				case WindowsCompiler.VisualStudio2022:
@@ -553,7 +627,7 @@ namespace UnrealBuildTool
 			this.Target = Target;
 
 			string Platform = Target.Platform.ToString();
-			if (Target.Platform== UnrealTargetPlatform.Win64 && !Target.Architecture.bIsX64)
+			if (Target.Platform == UnrealTargetPlatform.Win64 && !Target.Architecture.bIsX64)
 			{
 				Platform += "-arm64";
 			}
@@ -578,253 +652,135 @@ namespace UnrealBuildTool
 		public ReadOnlyWindowsTargetRules(WindowsTargetRules Inner)
 		{
 			this.Inner = Inner;
-			this.PVS = new ReadOnlyPVSTargetSettings(Inner.PVS);
+			PVS = new ReadOnlyPVSTargetSettings(Inner.PVS);
 		}
 
 		/// <summary>
 		/// Accessors for fields on the inner TargetRules instance
 		/// </summary>
 		#region Read-only accessor properties 
-		#pragma warning disable CS1591
+#pragma warning disable CS1591
 
-		public WindowsCompiler Compiler
-		{
-			get { return Inner.Compiler; }
-		}
-		
-		public UnrealArch Architecture
-		{
-			get { return Inner.Architecture; }
-		}
+		public bool bIgnoreStalePGOData => Inner.bIgnoreStalePGOData;
 
-		public string? CompilerVersion
-		{
-			get { return Inner.CompilerVersion; }
-		}
+		public bool bUseFastGenProfile => Inner.bUseFastGenProfile;
 
-		public string? WindowsSdkVersion
-		{
-			get { return Inner.WindowsSdkVersion; }
-		}
+		public bool bPGONoExtraCounters => Inner.bPGONoExtraCounters;
 
-		public int TargetWindowsVersion
-		{
-			get { return Inner.TargetWindowsVersion; }
-		}
+		public int InlineFunctionExpansionLevel => Inner.InlineFunctionExpansionLevel;
 
-		public bool bPixProfilingEnabled
-		{
-			get { return Inner.bPixProfilingEnabled; }
-		}
+		public WindowsCompiler Compiler => Inner.Compiler;
 
-		public bool bUseWindowsSDK10
-		{
-			get { return Inner.bUseWindowsSDK10; }
-		}
+		public WindowsCompiler ToolChain => Inner.ToolChain;
 
-		public bool bUseCPPWinRT
-		{
-			get { return Inner.bUseCPPWinRT; }
-		}
+		public UnrealArch Architecture => Inner.Architecture;
 
-		public bool bAllowClangLinker
-		{
-			get { return Inner.bAllowClangLinker; }
-		}
+		public string? CompilerVersion => Inner.CompilerVersion;
 
-		public bool bEnableRayTracing
-		{
-			get { return Inner.bEnableRayTracing; }
-		}
+		public string? ToolchainVerison => Inner.ToolchainVersion;
 
-		public string? CompanyName
-		{
-			get { return Inner.CompanyName; }
-		}
+		public string? WindowsSdkVersion => Inner.WindowsSdkVersion;
 
-		public string? CopyrightNotice
-		{
-			get { return Inner.CopyrightNotice; }
-		}
+		public int TargetWindowsVersion => Inner.TargetWindowsVersion;
 
-		public string? ProductName
-		{
-			get { return Inner.ProductName; }
-		}
+		public bool bPixProfilingEnabled => Inner.bPixProfilingEnabled;
 
-		[Obsolete("Replace with TargetRuies.StaticAnalyzer (Xml Category BuildConfiguration). Will be removed in 5.2")]
-		public WindowsStaticAnalyzer StaticAnalyzer
-		{
-			get { return Inner.StaticAnalyzer; }
-		}
+		public bool bUseWindowsSDK10 => Inner.bUseWindowsSDK10;
 
-		[Obsolete("Replace with TargetRuies.StaticAnalyzerOutputType (Xml Category BuildConfiguration). Will be removed in 5.2")]
-		public WindowsStaticAnalyzerOutputType StaticAnalyzerOutputType
-		{
-			get { return Inner.StaticAnalyzerOutputType; }
-		}
+		public bool bUseCPPWinRT => Inner.bUseCPPWinRT;
 
-		public bool bEnableAddressSanitizer
-		{ 
-			get { return Inner.bEnableAddressSanitizer; }
-		}
+		public bool bVCFastFail => Inner.bVCFastFail;
 
-		public string? ObjSrcMapFile
-		{
-			get { return Inner.ObjSrcMapFile; }
-		}
+		public bool bAllowClangLinker => Inner.bAllowClangLinker;
 
-		public string? ModuleDefinitionFile
-		{
-			get { return Inner.ModuleDefinitionFile; }
-		}
+		public bool bEnableRayTracing => Inner.bEnableRayTracing;
 
-		public string? ManifestFile
-		{
-			get { return Inner.ManifestFile; }
-		}
+		public string? CompanyName => Inner.CompanyName;
 
-		public bool bNeedsLegacyStdioDefinitionsLib
-		{
-			get { return Inner.bNeedsLegacyStdioDefinitionsLib; }
-		}
+		public string? CopyrightNotice => Inner.CopyrightNotice;
 
-		public bool bStrictConformanceMode
-		{
-			get { return Inner.bStrictConformanceMode; }
-		}
+		public string? ProductName => Inner.ProductName;
 
-		public bool bUpdatedCPPMacro
-		{
-			get { return Inner.bUpdatedCPPMacro; }
-		}
+		public bool bEnableAddressSanitizer => Inner.bEnableAddressSanitizer;
 
-		public bool bStrictInlineConformance
-		{
-			get { return Inner.bStrictInlineConformance; }
-		}
+		public bool bEnableLibFuzzer => Inner.bEnableLibFuzzer;
 
-		public bool bStrictPreprocessorConformance
-		{
-			get { return Inner.bStrictPreprocessorConformance; }
-		}
+		public bool bWriteSarif => Inner.bWriteSarif;
 
-		public bool bStrictEnumTypesConformance
-		{
-			get { return Inner.bStrictEnumTypesConformance; }
-		}
+		public string? ObjSrcMapFile => Inner.ObjSrcMapFile;
 
-		public int DefaultStackSize
-		{
-			get { return Inner.DefaultStackSize; }
-		}
+		public string? ModuleDefinitionFile => Inner.ModuleDefinitionFile;
 
-		public int DefaultStackSizeCommit
-		{
-			get { return Inner.DefaultStackSizeCommit; }
-		}
+		public string? ManifestFile => Inner.ManifestFile;
 
-		public int PCHMemoryAllocationFactor
-		{
-			get { return Inner.PCHMemoryAllocationFactor; }
-		}
+		public string? ApplicationIcon => Inner.ApplicationIcon;
 
-		public string AdditionalLinkerOptions
-		{
-			get { return Inner.AdditionalLinkerOptions; }
-		}
+		public bool bNeedsLegacyStdioDefinitionsLib => Inner.bNeedsLegacyStdioDefinitionsLib;
 
-		public bool bCreateHotpatchableImage
-		{
-			get { return Inner.bCreateHotPatchableImage; }
-		}
+		public bool bStrictConformanceMode => Inner.bStrictConformanceMode;
 
-		public bool bStripUnreferencedSymbols
-		{
-			get { return Inner.bStripUnreferencedSymbols; }
-		}
+		public bool bUpdatedCPPMacro => Inner.bUpdatedCPPMacro;
 
-		public bool bMergeIdenticalCOMDATs
-		{
-			get { return Inner.bMergeIdenticalCOMDATs; }
-		}
+		public bool bStrictInlineConformance => Inner.bStrictInlineConformance;
 
-		public bool bOptimizeGlobalData
-		{
-			get { return Inner.bOptimizeGlobalData; }
-		}
+		public bool bStrictPreprocessorConformance => Inner.bStrictPreprocessorConformance;
 
-		public bool bUseFastGenProfile
-		{
-			get { return Inner.bUseFastGenProfile; }
-		}
+		public bool bStrictEnumTypesConformance => Inner.bStrictEnumTypesConformance;
 
-		public bool bClangTimeTrace
-		{
-			get { return Inner.bClangTimeTrace; }
-		}
+		public string? PdbAlternatePath => Inner.PdbAlternatePath;
 
-		public bool bCompilerTrace
-		{
-			get { return Inner.bCompilerTrace; }
-		}
+		public int DefaultStackSize => Inner.DefaultStackSize;
 
-		public bool bShowIncludes
-		{
-			get { return Inner.bShowIncludes; }
-		}
+		public int DefaultStackSizeCommit => Inner.DefaultStackSizeCommit;
+
+		public int PCHMemoryAllocationFactor => Inner.PCHMemoryAllocationFactor;
+
+		public string AdditionalLinkerOptions => Inner.AdditionalLinkerOptions;
+
+		public bool bCreateHotpatchableImage => Inner.bCreateHotPatchableImage;
+
+		public bool bStripUnreferencedSymbols => Inner.bStripUnreferencedSymbols;
+
+		public bool bMergeIdenticalCOMDATs => Inner.bMergeIdenticalCOMDATs;
+
+		public bool bOptimizeGlobalData => Inner.bOptimizeGlobalData;
+
+		public bool bClangTimeTrace => Inner.bClangTimeTrace;
+
+		public bool bCompilerTrace => Inner.bCompilerTrace;
+
+		public bool bShowIncludes => Inner.bShowIncludes;
 
 		public string GetVisualStudioCompilerVersionName()
 		{
 			return Inner.GetVisualStudioCompilerVersionName();
 		}
 
-		public bool bUseBundledDbgHelp
-		{
-			get { return Inner.bUseBundledDbgHelp; }
-		}
+		public bool bUseBundledDbgHelp => Inner.bUseBundledDbgHelp;
+
+		public bool bUseXCurl => Inner.bUseXCurl;
 
 		public ReadOnlyPVSTargetSettings PVS
 		{
 			get; private set;
 		}
 
-		internal VCEnvironment? Environment
-		{
-			get { return Inner.Environment; }
-		}
+		internal VCEnvironment? Environment => Inner.Environment;
 
-		public string? ToolChainDir
-		{
-			get { return Inner.ToolChainDir; }
-		}
 
-		public string? ToolChainVersion
-		{
-			get { return Inner.ToolChainVersion; }
-		}
+		public string? ToolChainDir => Inner.Environment?.ToolChainDir.FullName ?? null;
 
-		public string? WindowsSdkDir
-		{
-			get { return Inner.WindowsSdkDir; }
-		}
+		public string? ToolChainVersion => Inner.Environment?.ToolChainVersion.ToString() ?? null;
 
-		public string? NetFxSdkDir
-		{
-			get { return Inner.NetFxSdkDir; }
-		}
+		public string? WindowsSdkDir => Inner.Environment?.WindowsSdkDir.ToString() ?? null;
 
-		public string? DiaSdkDir
-		{
-			get { return Inner.DiaSdkDir; }
-		}
-		
-		public string? IDEDir
-		{
-			get { return Inner.IDEDir; }
-		}
+		public string? NetFxSdkDir => Inner.NetFxSdkDir;
 
-		#pragma warning restore CS1591
+		public string? DiaSdkDir => Inner.DiaSdkDir;
+
+		public string? IDEDir => Inner.IDEDir;
+
+#pragma warning restore CS1591
 		#endregion
 	}
 
@@ -855,34 +811,34 @@ namespace UnrealBuildTool
 		public bool bCommunity { get; }
 
 		/// <summary>
-		/// Whether it's a pre-release version of the IDE.
+		/// The release channel of this installation
 		/// </summary>
-		public bool bPreview { get; }
+		public WindowsCompilerChannel ReleaseChannel { get; }
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public VisualStudioInstallation(WindowsCompiler Compiler, VersionNumber Version, DirectoryReference BaseDir, bool bCommunity, bool bPreview)
+		public VisualStudioInstallation(WindowsCompiler Compiler, VersionNumber Version, DirectoryReference BaseDir, bool bCommunity, WindowsCompilerChannel ReleaseChannel)
 		{
 			this.Compiler = Compiler;
 			this.Version = Version;
 			this.BaseDir = BaseDir;
 			this.bCommunity = bCommunity;
-			this.bPreview = bPreview;
+			this.ReleaseChannel = ReleaseChannel;
 		}
 	}
 
 	class WindowsArchitectureConfig : UnrealArchitectureConfig
 	{
 		public WindowsArchitectureConfig()
-			: base(UnrealArchitectureMode.OneTargetPerArchitecture, new[] { UnrealArch.X64, UnrealArch.Arm64, UnrealArch.Arm64ec})
+			: base(UnrealArchitectureMode.OneTargetPerArchitecture, new[] { UnrealArch.X64, UnrealArch.Arm64, UnrealArch.Arm64ec })
 		{
 
 		}
 
 		public override UnrealArchitectures ActiveArchitectures(FileReference? ProjectFile, string? TargetName)
 		{
-			// for now alwways ocmpile X64 unless overridden on commandline
+			// for now always compile X64 unless overridden on commandline
 			return new UnrealArchitectures(UnrealArch.X64);
 		}
 
@@ -890,12 +846,10 @@ namespace UnrealBuildTool
 		{
 			return Architectures.SingleArchitecture != UnrealArch.X64;
 		}
-
-
 	}
 
 	class WindowsPlatform : UEBuildPlatform
-	{		
+	{
 		MicrosoftPlatformSDK SDK;
 
 		/// <summary>
@@ -938,7 +892,7 @@ namespace UnrealBuildTool
 		[SupportedOSPlatform("windows")]
 		protected virtual VCEnvironment CreateVCEnvironment(TargetRules Target)
 		{
-			return VCEnvironment.Create(Target.WindowsPlatform.Compiler, Target.WindowsPlatform.ToolChain, Platform, Target.WindowsPlatform.Architecture, Target.WindowsPlatform.CompilerVersion, Target.WindowsPlatform.WindowsSdkVersion, null, Target.WindowsPlatform.bUseCPPWinRT, Target.WindowsPlatform.bAllowClangLinker, Logger);
+			return VCEnvironment.Create(Target.WindowsPlatform.Compiler, Target.WindowsPlatform.ToolChain, Platform, Target.WindowsPlatform.Architecture, Target.WindowsPlatform.CompilerVersion, Target.WindowsPlatform.ToolchainVersion, Target.WindowsPlatform.WindowsSdkVersion, null, Target.WindowsPlatform.bUseCPPWinRT, Target.WindowsPlatform.bAllowClangLinker, Logger);
 		}
 
 		/// <summary>
@@ -951,15 +905,23 @@ namespace UnrealBuildTool
 			{
 				Target.WindowsPlatform.Architecture = Target.Architecture;// == UnrealArch.Default ? UnrealArch.X64 : Target.Architecture;
 
-				// Add names of plugins here that are incompatible with arm64
+				// Add names of plugins here that are incompatible with arm64ec or arm64
 				bool bCompilingForArm = !Target.Architecture.bIsX64;
 				if (bCompilingForArm && Target.Name != "UnrealHeaderTool")
 				{
+					if (Target.WindowsPlatform.Architecture == UnrealArch.Arm64ec)
+					{
+						Target.DisablePlugins.AddRange(new string[]
+						{
+							"VirtualCamera", // WebRTC currently does not link properly
+						});
+					}
+
 					Target.DisablePlugins.AddRange(new string[]
 					{
-						"OpenImageDenoise"
+						"OpenImageDenoise",
 					});
-					
+
 					// VTune does not support ARM
 					Target.GlobalDefinitions.Add("UE_EXTERNAL_PROFILING_ENABLED=0");
 				}
@@ -970,7 +932,7 @@ namespace UnrealBuildTool
 			{
 				Target.bCompileCEF3 = false;
 			}
-			
+
 			// If clang is selected for static analysis, switch compiler to clang and proceed
 			// as normal.
 			if (Target.StaticAnalyzer == StaticAnalyzer.Clang)
@@ -981,10 +943,15 @@ namespace UnrealBuildTool
 				}
 				Target.StaticAnalyzer = StaticAnalyzer.Default;
 			}
-			else if (Target.StaticAnalyzer != StaticAnalyzer.None && 
-			         Target.StaticAnalyzerOutputType != StaticAnalyzerOutputType.Text)
+			else if (Target.StaticAnalyzer != StaticAnalyzer.None &&
+					 Target.StaticAnalyzerOutputType != StaticAnalyzerOutputType.Text)
 			{
 				Logger.LogInformation("Defaulting static analyzer output type to text");
+			}
+
+			if (Target.bUseAutoRTFMCompiler)
+			{
+				Target.WindowsPlatform.Compiler = WindowsCompiler.ClangRTFM;
 			}
 
 			// Set the compiler version if necessary
@@ -1004,6 +971,12 @@ namespace UnrealBuildTool
 			if (Target.StaticAnalyzer == StaticAnalyzer.PVSStudio)
 			{
 				Target.bUsePCHFiles = false;
+			}
+
+			// Disable chaining PCH files if not using clang
+			if (!Target.WindowsPlatform.Compiler.IsClang())
+			{
+				Target.bChainPCHs = false;
 			}
 
 			// E&C support.
@@ -1035,43 +1008,68 @@ namespace UnrealBuildTool
 			// pull some things from it
 			Target.WindowsPlatform.Compiler = Target.WindowsPlatform.Environment.Compiler;
 			Target.WindowsPlatform.CompilerVersion = Target.WindowsPlatform.Environment.CompilerVersion.ToString();
+			Target.WindowsPlatform.ToolChain = Target.WindowsPlatform.Environment.ToolChain;
+			Target.WindowsPlatform.ToolchainVersion = Target.WindowsPlatform.Environment.ToolChainVersion.ToString();
 			Target.WindowsPlatform.WindowsSdkVersion = Target.WindowsPlatform.Environment.WindowsSdkVersion.ToString();
 
 			// If we're enabling support for C++ modules, make sure the compiler supports it. VS 16.8 changed which command line arguments are used to enable modules support.
-			if (Target.bEnableCppModules && !ProjectFileGenerator.bGenerateProjectFiles && Target.WindowsPlatform.Environment.CompilerVersion < new VersionNumber(14, 28, 29304))
+			if (Target.bEnableCppModules && !ProjectFileGenerator.bGenerateProjectFiles && Target.WindowsPlatform.Environment.ToolChainVersion < new VersionNumber(14, 28, 29304))
 			{
-				throw new BuildException("Support for C++20 modules requires Visual Studio 2019 16.8 preview 3 or later. Compiler Version Targeted: {0}", Target.WindowsPlatform.Environment.CompilerVersion);
+				throw new BuildException("Support for C++20 modules requires Visual Studio 2019 16.8 Preview 3 (MSVC 17.28.29304) or later. The current compiler version was detected as: {0}", Target.WindowsPlatform.Environment.ToolChainVersion);
 			}
 
 			// Ensure we're using recent enough version of Visual Studio to support ASan builds.
-			if (Target.WindowsPlatform.bEnableAddressSanitizer && Target.WindowsPlatform.Environment.CompilerVersion < new VersionNumber(14, 27, 0))
+			if (Target.WindowsPlatform.bEnableAddressSanitizer && Target.WindowsPlatform.Environment.ToolChainVersion < new VersionNumber(14, 27, 0))
 			{
-				throw new BuildException("Address sanitizer requires Visual Studio 2019 16.7 or later.");
+				throw new BuildException("Address sanitizer requires Visual Studio 2019 16.7 (MSVC 17.27.x) or later. The current compiler version was detected as: {0}", Target.WindowsPlatform.Environment.ToolChainVersion);
 			}
 
-//			@Todo: Still getting reports of frequent OOM issues with this enabled as of 15.7.
-//			// Enable fast PDB linking if we're on VS2017 15.7 or later. Previous versions have OOM issues with large projects.
-//			if(!Target.bFormalBuild && !Target.bUseFastPDBLinking.HasValue && Target.WindowsPlatform.Compiler.IsMSVC())
-//			{
-//				VersionNumber Version;
-//				DirectoryReference ToolChainDir;
-//				if(TryGetVCToolChainDir(Target.WindowsPlatform.Compiler, Target.WindowsPlatform.CompilerVersion, out Version, out ToolChainDir) && Version >= new VersionNumber(14, 14, 26316))
-//				{
-//					Target.bUseFastPDBLinking = true;
-//				}
-//			}
+			// Ensure we're using recent enough version of Visual Studio to support LibFuzzer.
+			if (Target.WindowsPlatform.bEnableLibFuzzer && Target.WindowsPlatform.Environment.ToolChainVersion < new VersionNumber(14, 30, 0))
+			{
+				throw new BuildException("LibFuzzer MSVC support requires Visual Studio 2022 17.0 (MSVC 14.30.x) or later. The current compiler version was detected as: {0}", Target.WindowsPlatform.Environment.ToolChainVersion);
+			}
+
+			// Ensure we're using a recent enough version of Clang given the MSVC version
+			if (Target.WindowsPlatform.Compiler.IsClang() && !MicrosoftPlatformSDK.IgnoreToolchainErrors)
+			{
+				VersionNumber ClangVersion = Target.WindowsPlatform.Compiler == WindowsCompiler.Intel ? MicrosoftPlatformSDK.GetClangVersionForIntelCompiler(Target.WindowsPlatform.Environment.CompilerPath) : Target.WindowsPlatform.Environment.CompilerVersion;
+				VersionNumber MinimumClang = MicrosoftPlatformSDK.GetMinimumClangVersionForVcVersion(Target.WindowsPlatform.Environment.ToolChainVersion);
+				if (ClangVersion < MinimumClang)
+				{
+					throw new BuildException("MSVC toolchain version {0} requires Clang compiler version {1} or later. The current Clang compiler version was detected as: {2}", Target.WindowsPlatform.Environment.ToolChainVersion, MinimumClang, ClangVersion);
+				}
+			}
+
+			// Ensure we're using VS2022 when compiling for the installed engine.
+			if (Unreal.IsEngineInstalled() && (Target.WindowsPlatform.ToolChain == WindowsCompiler.VisualStudio2019 || Target.WindowsPlatform.Environment.ToolChainVersion < new VersionNumber(14, 34, 0)))
+			{
+				throw new BuildException("Microsoft platform targets must be compiled with Visual Studio 2022 17.4 (MSVC 14.34.x) or later for the installed engine. Please update Visual Studio 2022 and ensure no configuration is forcing WindowsTargetRules.Compiler to VisualStudio2019. The current compiler version was detected as: {0}", Target.WindowsPlatform.Environment.ToolChainVersion);
+			}
+
+			//			@Todo: Still getting reports of frequent OOM issues with this enabled as of 15.7.
+			//			// Enable fast PDB linking if we're on VS2017 15.7 or later. Previous versions have OOM issues with large projects.
+			//			if(!Target.bFormalBuild && !Target.bUseFastPDBLinking.HasValue && Target.WindowsPlatform.Compiler.IsMSVC())
+			//			{
+			//				VersionNumber Version;
+			//				DirectoryReference ToolChainDir;
+			//				if(TryGetVCToolChainDir(Target.WindowsPlatform.Compiler, Target.WindowsPlatform.CompilerVersion, out Version, out ToolChainDir) && Version >= new VersionNumber(14, 14, 26316))
+			//				{
+			//					Target.bUseFastPDBLinking = true;
+			//				}
+			//			}
 		}
 
 		/// <summary>
 		/// Gets the default compiler which should be used, if it's not set explicitly by the target, command line, or config file.
 		/// </summary>
 		/// <returns>The default compiler version</returns>
-		internal static WindowsCompiler GetDefaultCompiler(FileReference? ProjectFile, UnrealArch Architecture, ILogger Logger, bool bSkipWarning=false)
+		internal static WindowsCompiler GetDefaultCompiler(FileReference? ProjectFile, UnrealArch Architecture, ILogger Logger, bool bSkipWarning = false)
 		{
 			// If there's no specific compiler set, try to pick the matching compiler for the selected IDE
 			if (ProjectFileGeneratorSettings.Format != null)
 			{
-				foreach(ProjectFileFormat Format in ProjectFileGeneratorSettings.ParseFormatList(ProjectFileGeneratorSettings.Format, Logger))
+				foreach (ProjectFileFormat Format in ProjectFileGeneratorSettings.ParseFormatList(ProjectFileGeneratorSettings.Format, Logger))
 				{
 					if (Format == ProjectFileFormat.VisualStudio2022)
 					{
@@ -1081,7 +1079,7 @@ namespace UnrealBuildTool
 					{
 						return WindowsCompiler.VisualStudio2019;
 					}
-				} 
+				}
 			}
 
 			// Also check the default format for the Visual Studio project generator
@@ -1101,12 +1099,12 @@ namespace UnrealBuildTool
 
 			// Check the editor settings too
 			ProjectFileFormat PreferredAccessor;
-			if(ProjectFileGenerator.GetPreferredSourceCodeAccessor(ProjectFile, out PreferredAccessor))
+			if (ProjectFileGenerator.GetPreferredSourceCodeAccessor(ProjectFile, out PreferredAccessor))
 			{
-				if(PreferredAccessor == ProjectFileFormat.VisualStudio2022)
-			    {
-				    return WindowsCompiler.VisualStudio2022;
-			    }
+				if (PreferredAccessor == ProjectFileFormat.VisualStudio2022)
+				{
+					return WindowsCompiler.VisualStudio2022;
+				}
 				else if (PreferredAccessor == ProjectFileFormat.VisualStudio2019)
 				{
 					return WindowsCompiler.VisualStudio2019;
@@ -1170,7 +1168,7 @@ namespace UnrealBuildTool
 		public static IEnumerable<DirectoryReference>? TryGetVSInstallDirs(WindowsCompiler Compiler, ILogger Logger)
 		{
 			List<VisualStudioInstallation> Installations = MicrosoftPlatformSDK.FindVisualStudioInstallations(Compiler, Logger);
-			if(Installations.Count == 0)
+			if (Installations.Count == 0)
 			{
 				return null;
 			}
@@ -1221,14 +1219,11 @@ namespace UnrealBuildTool
 			return FileReference.Exists(FileReference.Combine(DiaSdkDir, "bin", "amd64", "msdia140.dll"));
 		}
 
-
-
 		[SupportedOSPlatform("windows")]
 		public static bool TryGetWindowsSdkDir(string? DesiredVersion, ILogger Logger, [NotNullWhen(true)] out VersionNumber? OutSdkVersion, [NotNullWhen(true)] out DirectoryReference? OutSdkDir)
 		{
 			return MicrosoftPlatformSDK.TryGetWindowsSdkDir(DesiredVersion, Logger, out OutSdkVersion, out OutSdkDir);
 		}
-
 
 		/// <summary>
 		/// Gets the platform name that should be used.
@@ -1266,12 +1261,15 @@ namespace UnrealBuildTool
 			return IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".exe")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".dll")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".dll.response")
+				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".dll.rsp")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".lib")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".pdb")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".exp")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".obj")
 				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".map")
-				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".objpaths");
+				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".objpaths")
+				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".natvis")
+				|| IsBuildProductName(FileName, NamePrefixes, NameSuffixes, ".natstepfilter");
 		}
 
 		/// <summary>
@@ -1305,9 +1303,9 @@ namespace UnrealBuildTool
 			{
 				case UEBuildBinaryType.DynamicLinkLibrary:
 				case UEBuildBinaryType.Executable:
-					return new string[] {".pdb"};
+					return new string[] { ".pdb" };
 			}
-			return new string [] {};
+			return new string[] { };
 		}
 
 		public override bool HasDefaultBuildConfig(UnrealTargetPlatform Platform, DirectoryReference ProjectPath)
@@ -1335,10 +1333,10 @@ namespace UnrealBuildTool
 		public static FileReference GetWindowsApplicationIcon(FileReference? ProjectFile)
 		{
 			// Check if there's a custom icon
-			if(ProjectFile != null)
+			if (ProjectFile != null)
 			{
 				FileReference IconFile = FileReference.Combine(ProjectFile.Directory, "Build", "Windows", "Application.ico");
-				if(FileReference.Exists(IconFile))
+				if (FileReference.Exists(IconFile))
 				{
 					return IconFile;
 				}
@@ -1357,7 +1355,6 @@ namespace UnrealBuildTool
 		{
 			return GetWindowsApplicationIcon(ProjectFile);
 		}
-
 
 		/// <summary>
 		/// Modify the rules for a newly created module, in a target that's being built for this platform.
@@ -1416,15 +1413,17 @@ namespace UnrealBuildTool
 
 			CompileEnvironment.Definitions.Add(String.Format("_WIN32_WINNT=0x{0:X4}", Target.WindowsPlatform.TargetWindowsVersion));
 			CompileEnvironment.Definitions.Add(String.Format("WINVER=0x{0:X4}", Target.WindowsPlatform.TargetWindowsVersion));
-			
+
 			CompileEnvironment.Definitions.Add("PLATFORM_WINDOWS=1");
 			CompileEnvironment.Definitions.Add("PLATFORM_MICROSOFT=1");
 
-			// both Win32 and Win64 use Windows headers, so we enforce that here
-			CompileEnvironment.Definitions.Add(String.Format("OVERRIDE_PLATFORM_HEADER_NAME={0}", GetPlatformName()));
+			string? OverridePlatformHeaderName = GetOverridePlatformHeaderName();
+			if (!String.IsNullOrEmpty(OverridePlatformHeaderName))
+			{
+				CompileEnvironment.Definitions.Add(String.Format("OVERRIDE_PLATFORM_HEADER_NAME={0}", OverridePlatformHeaderName));
+			}
 
-			// Ray tracing only supported on 64-bit Windows.
-			if (Target.Platform == UnrealTargetPlatform.Win64 && Target.WindowsPlatform.bEnableRayTracing)
+			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) && Target.WindowsPlatform.bEnableRayTracing && Target.Type != TargetType.Server)
 			{
 				CompileEnvironment.Definitions.Add("RHI_RAYTRACING=1");
 			}
@@ -1505,6 +1504,7 @@ namespace UnrealBuildTool
 			LinkEnvironment.SystemLibraries.Add("netapi32.lib");
 			LinkEnvironment.SystemLibraries.Add("iphlpapi.lib");
 			LinkEnvironment.SystemLibraries.Add("setupapi.lib"); //  Required for access monitor device enumeration
+			LinkEnvironment.SystemLibraries.Add("synchronization.lib"); // Required for WaitOnAddress and WakeByAddressSingle
 
 			// Windows 7 Desktop Windows Manager API for Slate Windows Compliance
 			LinkEnvironment.SystemLibraries.Add("dwmapi.lib");
@@ -1524,12 +1524,11 @@ namespace UnrealBuildTool
 
 			if ((Target.bPGOOptimize || Target.bPGOProfile) && Target.ProjectFile != null)
 			{
-				// LTCG is required for PGO
-				//CompileEnvironment.bAllowLTCG = true;
-				//LinkEnvironment.bAllowLTCG = true;
+				// Win64 PGO folder is Windows, the rest match the platform name
+				string PGOPlatform = Target.Platform == UnrealTargetPlatform.Win64 ? "Windows" : Target.Platform.ToString();
 
-				CompileEnvironment.PGODirectory = Path.Combine(DirectoryReference.FromFile(Target.ProjectFile).FullName, "Platforms", "Windows", "Build", "PGO");
-				CompileEnvironment.PGOFilenamePrefix = string.Format("{0}-{1}-{2}", Target.Name, Target.Platform, Target.Configuration);
+				CompileEnvironment.PGODirectory = DirectoryReference.Combine(Target.ProjectFile.Directory, "Platforms", PGOPlatform, "Build", "PGO").FullName;
+				CompileEnvironment.PGOFilenamePrefix = String.Format("{0}-{1}-{2}", Target.Name, Target.Platform, Target.Configuration);
 
 				LinkEnvironment.PGODirectory = CompileEnvironment.PGODirectory;
 				LinkEnvironment.PGOFilenamePrefix = CompileEnvironment.PGOFilenamePrefix;
@@ -1601,7 +1600,7 @@ namespace UnrealBuildTool
 		{
 			base.GetExternalBuildMetadata(ProjectFile, Metadata);
 
-			if(ProjectFile != null)
+			if (ProjectFile != null)
 			{
 				Metadata.AppendLine("ICON: {0}", GetApplicationIcon(ProjectFile));
 			}
@@ -1614,6 +1613,15 @@ namespace UnrealBuildTool
 		public override void Deploy(TargetReceipt Receipt)
 		{
 			new UEDeployWindows(Logger).PrepTargetForDeployment(Receipt);
+		}
+
+		/// <summary>
+		/// Allows the platform header name to be overridden to differ from the platform name.
+		/// </summary>
+		protected virtual string? GetOverridePlatformHeaderName()
+		{
+			// Both Win32 and Win64 use Windows headers, so we enforce that here.
+			return GetPlatformName();
 		}
 	}
 
@@ -1632,10 +1640,7 @@ namespace UnrealBuildTool
 
 	class WindowsPlatformFactory : UEBuildPlatformFactory
 	{
-		public override UnrealTargetPlatform TargetPlatform
-		{
-			get { return UnrealTargetPlatform.Win64; }
-		}
+		public override UnrealTargetPlatform TargetPlatform => UnrealTargetPlatform.Win64;
 
 		/// <summary>
 		/// Register the platform with the UEBuildPlatform class

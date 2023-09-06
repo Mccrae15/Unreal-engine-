@@ -25,6 +25,7 @@ class IPropertyHandle;
 class SBorder;
 class SComboButton;
 class UFactory;
+class FDetailWidgetRow;
 
 /**
  * A widget used to edit Asset-type properties (UObject-derived properties).
@@ -67,6 +68,7 @@ public:
 		SLATE_ARGUMENT(bool, DisplayThumbnail)
 		SLATE_ARGUMENT(bool, DisplayUseSelected)
 		SLATE_ARGUMENT(bool, DisplayBrowse)
+		SLATE_EVENT(FSimpleDelegate, OnBrowseOverride)
 		SLATE_ARGUMENT(bool, EnableContentPicker)
 		SLATE_ARGUMENT(bool, DisplayCompactSize)
 		SLATE_ARGUMENT(TSharedPtr<FAssetThumbnailPool>, ThumbnailPool)
@@ -80,6 +82,7 @@ public:
 		SLATE_ARGUMENT(TSharedPtr<IPropertyHandle>, PropertyHandle)
 		SLATE_ARGUMENT(TArray<FAssetData>, OwnerAssetDataArray)
 		SLATE_EVENT(FOnShouldFilterActor, OnShouldFilterActor)
+		SLATE_ARGUMENT(TOptional<FDetailWidgetRow*>, InWidgetRow)
 
 	SLATE_END_ARGS()
 
@@ -96,6 +99,8 @@ public:
 	void Construct( const FArguments& InArgs, const TSharedPtr<FPropertyEditor>& InPropertyEditor = NULL );
 
 	void GetDesiredWidth( float& OutMinDesiredWidth, float &OutMaxDesiredWidth );
+
+	void OpenComboButton();
 
 	/** Override the tick method so we can check for thumbnail differences & update if necessary */
 	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
@@ -293,6 +298,21 @@ private:
 	void OnPaste();
 
 	/**
+	 * @return True if the (optionally tagged) input contents can be pasted
+	 */
+	bool CanPasteFromText(const FString& InTag, const FString& InText) const;
+
+	/**
+	 * Delegate handling pasting an optionally tagged text snippet
+	 */
+	void OnPasteFromText(const FString& InTag, const FString& InText, const TOptional<FGuid>& InOperationId);
+
+	/**
+	 * Handle pasting an optionally tagged text snippet
+	 */
+	void PasteFromText(const FString& InTag, const FString& InText);
+
+	/**
 	 * @return True of the current clipboard contents can be pasted
 	 */
 	bool CanPaste();
@@ -388,6 +408,9 @@ private:
 
 	/** The number of additional buttons this picker has. */
 	int32 NumButtons;
+
+	/** Base attribute passed to specify whether this editor is enabled */ 
+	TAttribute<bool> OnIsEnabled;
 
 	/** Delegate to call when our object value is set */
 	FOnSetObject OnSetObject;

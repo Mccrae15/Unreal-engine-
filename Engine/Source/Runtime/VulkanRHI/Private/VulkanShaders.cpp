@@ -52,6 +52,8 @@ FVulkanShaderFactory::~FVulkanShaderFactory()
 template <typename ShaderType> 
 ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVulkanDevice* Device)
 {
+	static_assert(ShaderType::StaticFrequency != SF_RayCallable && ShaderType::StaticFrequency != SF_RayGen && ShaderType::StaticFrequency != SF_RayHitGroup && ShaderType::StaticFrequency != SF_RayMiss);
+
 	const uint32 ShaderCodeLen = Code.Num();
 	const uint32 ShaderCodeCRC = FCrc::MemCrc32(Code.GetData(), Code.Num());
 	const uint64 ShaderKey = ((uint64)ShaderCodeLen | ((uint64)ShaderCodeCRC << 32));
@@ -64,6 +66,8 @@ ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVu
 		FMemoryReaderView Ar(Code, true);
 		FVulkanShaderHeader CodeHeader;
 		Ar << CodeHeader;
+		FShaderResourceTable SerializedSRT;
+		Ar << SerializedSRT;
 		FVulkanShader::FSpirvContainer SpirvContainer;
 		Ar << SpirvContainer;
 
@@ -77,17 +81,7 @@ ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVu
 			else
 			{
 				RetShader = new ShaderType(Device);
-				RetShader->Setup(MoveTemp(CodeHeader), MoveTemp(SpirvContainer), ShaderKey);
-				if constexpr (
-					ShaderType::StaticFrequency == SF_RayCallable ||
-					ShaderType::StaticFrequency == SF_RayGen ||
-					ShaderType::StaticFrequency == SF_RayHitGroup ||
-					ShaderType::StaticFrequency == SF_RayMiss)
-				{
-					RetShader->RayTracingPayloadType = RetShader->CodeHeader.RayTracingPayloadType;
-					RetShader->RayTracingPayloadSize = RetShader->CodeHeader.RayTracingPayloadSize;
-				}
-
+				RetShader->Setup(MoveTemp(CodeHeader), MoveTemp(SerializedSRT), MoveTemp(SpirvContainer), ShaderKey);
 				ShaderMap[ShaderType::StaticFrequency].Add(ShaderKey, RetShader);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -100,6 +94,72 @@ ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVu
 
 	return RetShader;
 }
+
+#if VULKAN_RHI_RAYTRACING
+template <EShaderFrequency ShaderFrequency>
+FVulkanRayTracingShader* FVulkanShaderFactory::CreateRayTracingShader(TArrayView<const uint8> Code, FVulkanDevice* Device)
+{
+	static_assert(ShaderFrequency == SF_RayCallable || ShaderFrequency == SF_RayGen || ShaderFrequency == SF_RayHitGroup || ShaderFrequency == SF_RayMiss);
+
+	auto LookupRayTracingShader = [this](uint64 ShaderKey)
+	{
+		FVulkanRayTracingShader* RTShader = nullptr;
+		if (ShaderKey)
+		{
+			FRWScopeLock ScopedLock(RWLock[ShaderFrequency], SLT_ReadOnly);
+			FVulkanShader* const* FoundShaderPtr = ShaderMap[ShaderFrequency].Find(ShaderKey);
+			if (FoundShaderPtr)
+			{
+				RTShader = static_cast<FVulkanRayTracingShader*>(*FoundShaderPtr);
+			}
+		}
+		return RTShader;
+	};
+
+	const uint32 ShaderCodeLen = Code.Num();
+	const uint32 ShaderCodeCRC = FCrc::MemCrc32(Code.GetData(), Code.Num());
+	const uint64 ShaderKey = ((uint64)ShaderCodeLen | ((uint64)ShaderCodeCRC << 32));
+
+	FVulkanRayTracingShader* RetShader = LookupRayTracingShader(ShaderKey);
+
+	if (RetShader == nullptr)
+	{
+		// Do serialize outside of lock
+		FMemoryReaderView Ar(Code, true);
+		FVulkanShaderHeader CodeHeader;
+		Ar << CodeHeader;
+		FShaderResourceTable SerializedSRT;
+		Ar << SerializedSRT;
+		FVulkanShader::FSpirvContainer SpirvContainer;
+		Ar << SpirvContainer;
+
+		{
+			FRWScopeLock ScopedLock(RWLock[ShaderFrequency], SLT_Write);
+			FVulkanShader* const* FoundShaderPtr = ShaderMap[ShaderFrequency].Find(ShaderKey);
+			if (FoundShaderPtr)
+			{
+				RetShader = static_cast<FVulkanRayTracingShader*>(*FoundShaderPtr);
+			}
+			else
+			{
+				RetShader = new FVulkanRayTracingShader(Device, ShaderFrequency);
+				RetShader->Setup(MoveTemp(CodeHeader), MoveTemp(SerializedSRT), MoveTemp(SpirvContainer), ShaderKey);
+				RetShader->RayTracingPayloadType = RetShader->CodeHeader.RayTracingPayloadType;
+				RetShader->RayTracingPayloadSize = RetShader->CodeHeader.RayTracingPayloadSize;
+
+				ShaderMap[ShaderFrequency].Add(ShaderKey, RetShader);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+				FShaderCodeReader ShaderCode(Code);
+				RetShader->Debug.ShaderName = ShaderCode.FindOptionalData(FShaderCodeName::Key);
+#endif
+			}
+		}
+	}
+
+	return RetShader;
+}
+#endif // VULKAN_RHI_RAYTRACING
 
 void FVulkanShaderFactory::LookupShaders(const uint64 InShaderKeys[ShaderStage::NumStages], FVulkanShader* OutShaders[ShaderStage::NumStages]) const
 {
@@ -192,7 +252,7 @@ FVulkanShader::FSpirvCode FVulkanShader::GetSpirvCode()
 }
 
 
-void FVulkanShader::Setup(FVulkanShaderHeader&& InCodeHeader, FSpirvContainer&& InSpirvContainer, uint64 InShaderKey)
+void FVulkanShader::Setup(FVulkanShaderHeader&& InCodeHeader, FShaderResourceTable&& InSRT, FSpirvContainer&& InSpirvContainer, uint64 InShaderKey)
 {
 	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanShaders);
 	check(Device);
@@ -200,6 +260,8 @@ void FVulkanShader::Setup(FVulkanShaderHeader&& InCodeHeader, FSpirvContainer&& 
 	ShaderKey = InShaderKey;
 
 	CodeHeader = MoveTemp(InCodeHeader);
+
+	ShaderResourceTable = MoveTemp(InSRT);
 
 	SpirvContainer = MoveTemp(InSpirvContainer);
 
@@ -357,7 +419,7 @@ FVulkanShader::FSpirvCode FVulkanShader::GetPatchedSpirvCode(const FGfxPipelineD
 {
 	FSpirvCode Spirv = GetSpirvCode();
 
-	Layout->PatchSpirvBindings(Spirv, Frequency, CodeHeader, StageFlag);
+	Layout->PatchSpirvBindings(Spirv, Frequency, CodeHeader);
 	if (NeedsSpirvInputAttachmentPatching(Desc))
 	{
 		Spirv = PatchSpirvInputAttachments(Spirv);
@@ -366,14 +428,34 @@ FVulkanShader::FSpirvCode FVulkanShader::GetPatchedSpirvCode(const FGfxPipelineD
 	return Spirv;
 }
 
+// Bindless variant of function that does not require layout for patching
+TRefCountPtr<FVulkanShaderModule> FVulkanShader::GetOrCreateHandle()
+{
+	check(Device->SupportsBindless());
+	FScopeLock Lock(&VulkanShaderModulesMapCS);
+	FSpirvCode Spirv = GetSpirvCode();
+
+	TRefCountPtr<FVulkanShaderModule> Module = CreateShaderModule(Device, Spirv);
+	ShaderModules.Add(0, Module);
+	if (!CodeHeader.DebugName.IsEmpty())
+	{
+		VULKAN_SET_DEBUG_NAME((*Device), VK_OBJECT_TYPE_SHADER_MODULE, Module->GetVkShaderModule(), TEXT("%s : (FVulkanShader*)0x%p"), *CodeHeader.DebugName, this);
+	}
+	return Module;
+}
+
 TRefCountPtr<FVulkanShaderModule> FVulkanShader::CreateHandle(const FVulkanLayout* Layout, uint32 LayoutHash)
 {
 	FScopeLock Lock(&VulkanShaderModulesMapCS);
 	FSpirvCode Spirv = GetSpirvCode();
 
-	Layout->PatchSpirvBindings(Spirv, Frequency, CodeHeader, StageFlag);
+	Layout->PatchSpirvBindings(Spirv, Frequency, CodeHeader);
 	TRefCountPtr<FVulkanShaderModule> Module = CreateShaderModule(Device, Spirv);
 	ShaderModules.Add(LayoutHash, Module);
+	if (!CodeHeader.DebugName.IsEmpty())
+	{
+		VULKAN_SET_DEBUG_NAME((*Device), VK_OBJECT_TYPE_SHADER_MODULE, Module->GetVkShaderModule(), TEXT("%s : (FVulkanShader*)0x%p"), *CodeHeader.DebugName, this);
+	}
 	return Module;
 }
 
@@ -389,12 +471,17 @@ void FVulkanShader::PurgeShaderModules()
 	ShaderModules.Empty(0);
 }
 
-void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader, VkShaderStageFlagBits InStageFlag) const
+void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader) const
 {
+	// Bindless shader compilation already places descriptors and bindings in their fixed values based on stage and descriptor type
+	if (Device->SupportsBindless())
+	{
+		return;
+	}
+
 	TArrayView<uint32> Spirv = SprivCode.GetCodeView();	//#todo-rco: Do we need an actual copy of the SPIR-V?
 	ShaderStage::EStage Stage = ShaderStage::GetStageForFrequency(Frequency);
 	const FDescriptorSetRemappingInfo::FStageInfo& StageInfo = DescriptorSetLayout.RemappingInfo.StageInfos[Stage];
-	const uint32 FirstSet = Device->SupportsBindless() ? VulkanBindless::NumBindlessSets : 0;
 
 	checkSlow(StageInfo.UniformBuffers.Num() == CodeHeader.UniformBufferSpirvInfos.Num());
 	for (int32 Index = 0; Index < CodeHeader.UniformBufferSpirvInfos.Num(); ++Index)
@@ -405,7 +492,7 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 			const uint32 OffsetBindingIndex = CodeHeader.UniformBufferSpirvInfos[Index].BindingIndexOffset;
 			check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
 			uint16 NewDescriptorSet = StageInfo.UniformBuffers[Index].Remapping.NewDescriptorSet;
-			Spirv[OffsetDescriptorSet] = FirstSet + NewDescriptorSet;
+			Spirv[OffsetDescriptorSet] = NewDescriptorSet;
 			uint16 NewBindingIndex = StageInfo.UniformBuffers[Index].Remapping.NewBindingIndex;
 			Spirv[OffsetBindingIndex] = NewBindingIndex;
 		}
@@ -418,7 +505,7 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 		const uint32 OffsetBindingIndex = CodeHeader.GlobalSpirvInfos[Index].BindingIndexOffset;
 		check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
 		uint16 NewDescriptorSet = StageInfo.Globals[Index].NewDescriptorSet;
-		Spirv[OffsetDescriptorSet] = FirstSet + NewDescriptorSet;
+		Spirv[OffsetDescriptorSet] = NewDescriptorSet;
 		uint16 NewBindingIndex = StageInfo.Globals[Index].NewBindingIndex;
 		Spirv[OffsetBindingIndex] = NewBindingIndex;
 	}
@@ -429,7 +516,7 @@ void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, ESh
 		const uint32 OffsetDescriptorSet = CodeHeader.PackedUBs[Index].SPIRVDescriptorSetOffset;
 		const uint32 OffsetBindingIndex = CodeHeader.PackedUBs[Index].SPIRVBindingIndexOffset;
 		check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
-		Spirv[OffsetDescriptorSet] = FirstSet + StageInfo.PackedUBDescriptorSet;
+		Spirv[OffsetDescriptorSet] = StageInfo.PackedUBDescriptorSet;
 		Spirv[OffsetBindingIndex] = StageInfo.PackedUBBindingIndices[Index];
 	}
 }
@@ -460,16 +547,16 @@ FRayTracingShaderRHIRef FVulkanDynamicRHI::RHICreateRayTracingShader(TArrayView<
 	switch (ShaderFrequency)
 	{
 	case EShaderFrequency::SF_RayGen:
-		 return Device->GetShaderFactory().CreateShader<FVulkanRayGenShader>(Code, Device);
+		 return Device->GetShaderFactory().CreateRayTracingShader<SF_RayGen>(Code, Device);
 
 	case EShaderFrequency::SF_RayMiss:
-		return Device->GetShaderFactory().CreateShader<FVulkanRayMissShader>(Code, Device);
+		return Device->GetShaderFactory().CreateRayTracingShader<SF_RayMiss>(Code, Device);
 
 	case EShaderFrequency::SF_RayCallable:
-		return Device->GetShaderFactory().CreateShader<FVulkanRayCallableShader>(Code, Device);
+		return Device->GetShaderFactory().CreateRayTracingShader<SF_RayCallable>(Code, Device);
 
 	case EShaderFrequency::SF_RayHitGroup:
-		return Device->GetShaderFactory().CreateShader<FVulkanRayHitGroupShader>(Code, Device);
+		return Device->GetShaderFactory().CreateRayTracingShader<SF_RayHitGroup>(Code, Device);
 
 	default:
 		check(false);
@@ -534,7 +621,7 @@ uint32 FVulkanDescriptorSetWriter::SetupDescriptorWrites(
 	VkWriteDescriptorSetAccelerationStructureKHR* InAccelerationStructuresWriteDescriptors,
 	VkAccelerationStructureKHR* InAccelerationStructures,
 #endif // VULKAN_RHI_RAYTRACING
-	const FVulkanSamplerState& DefaultSampler, const FVulkanTextureView& DefaultImageView)
+	const FVulkanSamplerState& DefaultSampler, const FVulkanView::FTextureView& DefaultImageView)
 {
 	HashableDescriptorInfos = InHashableDescriptorInfos;
 	WriteDescriptors = InWriteDescriptors;
@@ -542,8 +629,6 @@ uint32 FVulkanDescriptorSetWriter::SetupDescriptorWrites(
 
 	BindingToDynamicOffsetMap = InBindingToDynamicOffsetMap;
 
-	BufferViewReferences.Empty(NumWrites);
-	BufferViewReferences.AddDefaulted(NumWrites);
 	InitWrittenMasks(NumWrites);
 
 	uint32 DynamicOffsetIndex = 0;
@@ -660,8 +745,8 @@ void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FVulkanDevice& Devi
 	FMemory::Memzero(Binding);
 	Binding.descriptorCount = 1;
 
-	const bool bConvertAllUBsToDynamic = (GDynamicGlobalUBs.GetValueOnAnyThread() > 1);
-	const bool bConvertPackedUBsToDynamic = bConvertAllUBsToDynamic || (GDynamicGlobalUBs.GetValueOnAnyThread() == 1);
+	const bool bConvertAllUBsToDynamic = !Device.SupportsBindless() && (GDynamicGlobalUBs.GetValueOnAnyThread() > 1);
+	const bool bConvertPackedUBsToDynamic = !Device.SupportsBindless() && (bConvertAllUBsToDynamic || (GDynamicGlobalUBs.GetValueOnAnyThread() == 1));
 	const bool bConsolidateAllIntoOneSet = GDescriptorSetLayoutMode.GetValueOnAnyThread() == 2;
 	const uint32 MaxDescriptorSetUniformBuffersDynamic = Device.GetLimits().maxDescriptorSetUniformBuffersDynamic;
 

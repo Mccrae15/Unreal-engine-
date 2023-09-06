@@ -13,6 +13,7 @@ namespace UE::Net
 {
 	class FNetCullDistanceOverrides;
 	class FWorldLocations;
+	struct FRepTagFindInfo;
 }
 
 UCLASS(transient, config=Engine, MinimalAPI)
@@ -55,7 +56,7 @@ class UNetObjectGridFilter : public UNetObjectFilter
 
 protected:
 	// UNetObjectFilter interface
-	IRISCORE_API virtual void Init(FNetObjectFilterInitParams&) override;
+	IRISCORE_API virtual void OnInit(FNetObjectFilterInitParams&) override;
 	IRISCORE_API virtual void AddConnection(uint32 ConnectionId) override;
 	IRISCORE_API virtual void RemoveConnection(uint32 ConnectionId) override;
 	IRISCORE_API virtual bool AddObject(uint32 ObjectIndex, FNetObjectFilterAddObjectParams&) override;
@@ -84,7 +85,8 @@ protected:
 	IRISCORE_API void RemoveCellInfoForObject(const FObjectLocationInfo& ObjectInfo);
 	IRISCORE_API void UpdateCellInfoForObject(const FObjectLocationInfo& ObjectInfo, const UE::Net::FReplicationInstanceProtocol* InstanceProtocol);
 
-private:
+protected:
+
 	enum : unsigned
 	{
 		ObjectInfosChunkSize = 64 * 1024,
@@ -106,13 +108,22 @@ private:
 	// We can't fit all info we need in 4x16bits.
 	struct FPerObjectInfo
 	{
-		FVector Position = {0,0,0};
+		FVector Position = { 0.f,0.f,0.f };
 		FCellBox CellBox = {};
-		float CullDistance = 0;
-		uint32 ObjectIndex = 0;
-		uint16 CullDistanceSqrStateIndex = InvalidStateIndex;
-		uint16 CullDistanceSqrStateOffset = InvalidStateOffset;
+		float CullDistance = 0.0f;
+		uint32 ObjectIndex = 0U;
 	};
+
+	/** Sets the current position of the object based on how we access it's given location. */
+	virtual void UpdateObjectInfo(FPerObjectInfo& PerObjectInfo, const FObjectLocationInfo& ObjectLocationInfo, const UE::Net::FReplicationInstanceProtocol* InstanceProtocol) {}
+
+	/** Build the data needed to properly filter this object. */
+	virtual bool BuildObjectInfo(uint32 ObjectIndex, FNetObjectFilterAddObjectParams& Params) { return false; }
+
+	/** Callback when an object is removed from the grid. Useful to cleanup data tied to the object. */
+	virtual void OnObjectRemoved(uint32 ObjectIndex) {}
+
+private:
 
 	struct FCellCoord
 	{
@@ -173,10 +184,56 @@ private:
 	TMap<FCellCoord, FCellObjects> Cells;
 	uint32 FrameIndex = 0;
 
-	const UE::Net::FWorldLocations* WorldLocations = nullptr;
 	const UE::Net::FNetCullDistanceOverrides* NetCullDistanceOverrides = nullptr;
 };
 
+/**
+ * Filter for replicated objects that have a WorldLocation reference (e.g. Actors).
+ * 
+ * This filter is more efficient since it's run before Polling and culls out objects that are not relevant to any connection.
+ */
+UCLASS()
+class UNetObjectGridWorldLocFilter : public UNetObjectGridFilter
+{
+	GENERATED_BODY()
+
+protected:
+
+	virtual void OnInit(FNetObjectFilterInitParams&) override;
+	virtual void UpdateObjectInfo(FPerObjectInfo& PerObjectInfo, const UNetObjectGridFilter::FObjectLocationInfo& ObjectLocationInfo, const UE::Net::FReplicationInstanceProtocol* InstanceProtocol) override;
+	virtual bool BuildObjectInfo(uint32 ObjectIndex, FNetObjectFilterAddObjectParams& Params) override;
+
+private:
+
+	const UE::Net::FWorldLocations* WorldLocations = nullptr;
+};
+
+/**
+ * Filter for replicated objects that have their location stored in their fragment
+ * 
+ * This filter may be less efficient since it's run after Polling and DirtyData copying and cannot cull out objects from those operations.
+ */
+UCLASS()
+class UNetObjectGridFragmentLocFilter : public UNetObjectGridFilter
+{
+	GENERATED_BODY()
+
+protected:
+
+	virtual void OnInit(FNetObjectFilterInitParams&) override;
+	virtual void UpdateObjectInfo(FPerObjectInfo& PerObjectInfo, const UNetObjectGridFilter::FObjectLocationInfo& ObjectLocationInfo, const UE::Net::FReplicationInstanceProtocol* InstanceProtocol) override;
+	virtual bool BuildObjectInfo(uint32 ObjectIndex, FNetObjectFilterAddObjectParams& Params) override;
+	virtual void OnObjectRemoved(uint32 ObjectIndex) override;
+
+private:
+	struct FCullDistanceFragmentInfo
+	{
+		uint16 CullDistanceSqrStateIndex = InvalidStateIndex;
+		uint16 CullDistanceSqrStateOffset = InvalidStateOffset;
+	};
+
+	TMap<uint32, FCullDistanceFragmentInfo> CullDistanceFragments;
+};
 
 //
 inline bool UNetObjectGridFilter::FCellBox::operator==(const UNetObjectGridFilter::FCellBox& Other) const

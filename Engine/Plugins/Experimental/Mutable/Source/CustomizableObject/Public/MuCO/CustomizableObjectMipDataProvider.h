@@ -2,11 +2,17 @@
 
 #pragma once
 
+#include "FMutableTaskGraph.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Engine/TextureMipDataProviderFactory.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuR/Image.h"
 #include "Streaming/TextureMipDataProvider.h"
+
+#include "DefaultImageProvider.h"
+#include "MuCO/CustomizableObjectSystemPrivate.h"
+#include "MuCO/UnrealMutableImageProvider.h"
+#include "MuR/System.h"
 
 #include "CustomizableObjectMipDataProvider.generated.h"
 
@@ -22,8 +28,26 @@ class UTexture;
 /** This struct stores the data relevant for the construction of a specific texture. 
 * This includes all the data required to rebuild the image (or any of its mips).
 */
-struct FMutableUpdateContext
+class FMutableUpdateContext
 {
+public:
+	FMutableUpdateContext() = default;
+	
+	FMutableUpdateContext(mu::Ptr<mu::System> InSystem, TSharedPtr<mu::Model, ESPMode::ThreadSafe> InModel, mu::Ptr<const mu::Parameters> InParameters, int32 InState);
+
+	~FMutableUpdateContext();
+
+	mu::Ptr<mu::System> GetSystem() const;
+	
+	TSharedPtr<mu::Model, ESPMode::ThreadSafe> GetModel() const;
+
+	mu::Ptr<const mu::Parameters> GetParameters() const;
+	
+	int32 GetState() const;
+
+	const TArray<mu::Ptr<const mu::Image>>& GetImageParameterValues() const;
+	
+private:
 	mu::Ptr<mu::System> System;
 	TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model;
 	mu::Ptr<const mu::Parameters> Parameters;
@@ -97,7 +121,8 @@ public:
 	bool bRequestAborted = false;
 
 	TSharedPtr<FMutableImageOperationData> OperationData;
-	FGraphEventRef UpdateImageMutableTaskEvent;
+
+	uint32 MutableTaskId = FMutableTaskGraph::INVALID_ID;
 };
 
 

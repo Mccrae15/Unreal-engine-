@@ -1,11 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ClearQuad.h"
+#include "RenderUtils.h"
 #include "Shader.h"
 #include "RHIStaticStates.h"
 #include "OneColorShader.h"
 #include "PipelineStateCache.h"
-#include "ClearReplacementShaders.h"
 #include "RendererInterface.h"
 #include "Logging/LogMacros.h"
 
@@ -76,8 +76,11 @@ static void ClearQuadSetup(FRHICommandList& RHICmdList, int32 NumClearColors, co
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, Stencil);
 
-	VertexShader->SetDepthParameter(RHICmdList, Depth);
-	PixelShader->SetColors(RHICmdList, PixelShader, ClearColorArray, NumClearColors);
+	SetShaderParametersLegacyVS(RHICmdList, VertexShader, Depth);
+	
+	TOneColorPixelShaderMRT::FParameters PixelParameters;
+	PixelShader->FillParameters(PixelParameters, ClearColorArray, NumClearColors);
+	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PixelParameters);
 }
 
 void DrawClearQuadAlpha(FRHICommandList& RHICmdList, float Alpha)
@@ -168,8 +171,8 @@ void DrawClearQuadMRT(FRHICommandList& RHICmdList, bool bClearColor, int32 NumCl
 		InnerVertices[3].Set(FMath::Lerp(-1.0f, 1.0f, FractionRect.X), FMath::Lerp(1.0f, -1.0f, FractionRect.W), Depth, 1.0f);
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("DrawClearQuadMRT"));
-		FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector4f) * 10, BUF_Volatile, CreateInfo);
-		void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 10, RLM_WriteOnly);
+		FBufferRHIRef VertexBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(FVector4f) * 10, BUF_Volatile, CreateInfo);
+		void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 10, RLM_WriteOnly);
 		
 		FVector4f* Vertices = reinterpret_cast<FVector4f*>(VoidPtr);
 		Vertices[0] = OuterVertices[0];
@@ -183,7 +186,7 @@ void DrawClearQuadMRT(FRHICommandList& RHICmdList, bool bClearColor, int32 NumCl
 		Vertices[8] = OuterVertices[0];
 		Vertices[9] = InnerVertices[0];
 
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 		RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 
 		RHICmdList.DrawPrimitive(0, 8, 1);

@@ -89,6 +89,8 @@ public:
 	virtual UObject* DuplicateAssetWithDialogAndTitle(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject, FText DialogTitle) override;
 	virtual void SetCreateAssetsAsExternallyReferenceable(bool bValue) override;
 	virtual bool GetCreateAssetsAsExternallyReferenceable() override;
+	virtual bool IsDiscoveringAssetsInProgress() const override;
+	virtual void OpenDiscoveringAssetsDialog(const FOnAssetsDiscovered& InOnAssetsDiscovered) override;
 	virtual bool RenameAssets(const TArray<FAssetRenameData>& AssetsAndNames) override;
 	virtual EAssetRenameResult RenameAssetsWithDialog(const TArray<FAssetRenameData>& AssetsAndNames, bool bAutoCheckout = false) override;
 	virtual void FindSoftReferencesToObject(FSoftObjectPath TargetObject, TArray<UObject*>& ReferencingObjects) override;
@@ -103,6 +105,7 @@ public:
 	virtual void ExportAssets(const TArray<UObject*>& AssetsToExport, const FString& ExportPath) const override;
 	virtual void ExportAssetsWithDialog(const TArray<UObject*>& AssetsToExport, bool bPromptForIndividualFilenames) override;
 	virtual void ExportAssetsWithDialog(const TArray<FString>& AssetsToExport, bool bPromptForIndividualFilenames) override;
+	virtual bool CanExportAssets(const TArray<FAssetData>& AssetsToExport) const override;
 	virtual void CreateUniqueAssetName(const FString& InBasePackageName, const FString& InSuffix, FString& OutPackageName, FString& OutAssetName) override;
 	virtual bool AssetUsesGenericThumbnail( const FAssetData& AssetData ) const override;
 	virtual void DiffAgainstDepot(UObject* InObject, const FString& InPackagePath, const FString& InPackageName) const override;
@@ -135,6 +138,8 @@ public:
 	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use GetAssetClassPathPermissionList.")
 	TSharedRef<FNamePermissionList>& GetAssetClassPermissionList(EAssetClassAction AssetClassAction);
 	virtual const TSharedRef<FPathPermissionList>& GetAssetClassPathPermissionList(EAssetClassAction AssetClassAction) const override;
+	virtual const TSharedRef<FNamePermissionList>& GetImportExtensionPermissionList() const override;
+	virtual bool IsImportExtensionAllowed(const FString& Extension) const override;
 	virtual TSet<EBlueprintType>& GetAllowedBlueprintTypes() override;
 	virtual TSharedRef<FPathPermissionList>& GetFolderPermissionList() override;
 	virtual TSharedRef<FPathPermissionList>& GetWritableFolderPermissionList() override;
@@ -244,6 +249,8 @@ private:
 	/** Permission lists of assets by class path name, one for each EAssetClassAction */
 	TArray<TSharedRef<FPathPermissionList>> AssetClassPermissionList;
 
+	TSharedRef<FNamePermissionList> ImportExtensionPermissionList;
+	
 	/** Which types of BlueprintFactories are allowed to be returned through GetNewAssetFactories. Empty set allows all types. */
 	TSet<EBlueprintType> AllowedBlueprintTypes;
 

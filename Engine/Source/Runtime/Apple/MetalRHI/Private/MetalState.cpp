@@ -6,6 +6,7 @@
 
 #include "MetalRHIPrivate.h"
 #include "MetalProfiler.h"
+#include "RHIUtilities.h"
 
 static uint32 GetMetalMaxAnisotropy(ESamplerFilter Filter, uint32 MaxAniso)
 {
@@ -222,9 +223,11 @@ private:
 };
 
 static FMetalStateObjectCache<FSamplerStateInitializerRHI, FMetalSampler> Samplers;
+static FCriticalSection SamplersCS;
 
 static FMetalSampler FindOrCreateSamplerState(mtlpp::Device Device, const FSamplerStateInitializerRHI& Initializer)
 {
+	FScopeLock Lock(&SamplersCS);
 	FMetalSampler State = Samplers.Find(Initializer);
 	if (!State.GetPtr())
 	{

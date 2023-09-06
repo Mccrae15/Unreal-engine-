@@ -10,7 +10,9 @@
 #include "ImageWriteQueue.h"
 #include "HighResScreenshot.h"
 #include "BufferVisualizationData.h"
+#include "SceneRendering.h"
 #include "UnrealEngine.h"
+#include "PathTracing.h"
 
 class FVisualizeBufferPS : public FGlobalShader
 {
@@ -350,6 +352,24 @@ FScreenPassTexture AddVisualizeGBufferOverviewPass(
 		PostProcessMaterialInputs.SetInput(EPostProcessMaterialInput::PreTonemapHDRColor, Inputs.SceneColorBeforeTonemap);
 		PostProcessMaterialInputs.SetInput(EPostProcessMaterialInput::PostTonemapHDRColor, Inputs.SceneColorAfterTonemap);
 		PostProcessMaterialInputs.SetInput(EPostProcessMaterialInput::Velocity, Inputs.Velocity);
+
+		if (View.Family->EngineShowFlags.PathTracing && Inputs.PathTracingResources->bPostProcessEnabled)
+		{
+			const FPathTracingResources& PathTracingResources = *Inputs.PathTracingResources;
+			
+			FIntRect ViewRect = Inputs.SceneColor.ViewRect;
+			PostProcessMaterialInputs.SetPathTracingInput(
+				EPathTracingPostProcessMaterialInput::DenoisedRadiance, FScreenPassTexture(PathTracingResources.DenoisedRadiance, ViewRect));
+			PostProcessMaterialInputs.SetPathTracingInput(
+				EPathTracingPostProcessMaterialInput::Albedo, FScreenPassTexture(PathTracingResources.Albedo, ViewRect));
+			PostProcessMaterialInputs.SetPathTracingInput(
+				EPathTracingPostProcessMaterialInput::Normal, FScreenPassTexture(PathTracingResources.Normal, ViewRect));
+			PostProcessMaterialInputs.SetPathTracingInput(
+				EPathTracingPostProcessMaterialInput::Variance, FScreenPassTexture(PathTracingResources.Variance, ViewRect));
+			PostProcessMaterialInputs.SetPathTracingInput(
+				EPathTracingPostProcessMaterialInput::Radiance, FScreenPassTexture(PathTracingResources.Radiance, ViewRect));
+		}
+
 		PostProcessMaterialInputs.SceneTextures = Inputs.SceneTextures;
 		PostProcessMaterialInputs.OutputFormat = OutputFormat;
 

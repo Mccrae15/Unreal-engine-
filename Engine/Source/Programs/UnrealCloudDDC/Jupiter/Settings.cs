@@ -111,7 +111,7 @@ namespace Jupiter
 
         public int LastAccessRollupFrequencySeconds { get; set; } = 900; // 15 minutes
         public bool EnableLastAccessTracking { get; set; } = true;
-        public bool EnableOnDemandReplication { get; set; } = false;
+        public bool EnableOnDemandReplication { get; set; } = true;
     }
 
     public class MongoSettings
@@ -130,9 +130,26 @@ namespace Jupiter
         public int SlidingExpirationMinutes { get; set; } = 120;
     }
 
+    public class MemoryCacheReferencesSettings : MemoryCacheOptions
+    {
+        public bool Enabled { get; set; } = true;
+
+        public bool EnableSlidingExpiry { get; set; } = true;
+        public int SlidingExpirationMinutes { get; set; } = 120;
+    }
+
 	public class AzureSettings
     {
         [Required] public string ConnectionString { get; set; } = string.Empty;
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Modified by settings")]
+        // ReSharper disable once CollectionNeverUpdated.Global
+        public Dictionary<string, string> StoragePoolConnectionStrings { get; set; } = new Dictionary<string, string>();
+
+        
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Modified by settings")]
+        // ReSharper disable once CollectionNeverUpdated.Global
+        public Dictionary<string, string> StoragePoolContainerOverride { get; set; } = new Dictionary<string, string>();
     }
 
     public class FilesystemSettings
@@ -150,12 +167,19 @@ namespace Jupiter
         [Required] public string BucketName { get; set; } = "";
 
         public bool ForceAWSPathStyle { get; set; }
+        public bool AssumeHttpForRedirectUri { get; set; } = false;
         public bool CreateBucketIfMissing { get;set; } = true;
 
         // Options to disable setting of bucket access policies, useful for local testing as minio does not support them.
         public bool SetBucketPolicies { get; set; } = true;
 
         public bool UseBlobIndexForExistsCheck { get; set; } = false;
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2227:Collection properties should be read only", Justification = "Modified by settings")]
+        // ReSharper disable once CollectionNeverUpdated.Global
+        public Dictionary<string, string> StoragePoolBucketOverride { get; set; } = new Dictionary<string, string>();
+
+        public bool? UseArnRegion { get; set; } = null;
     }
 
     public class GCSettings
@@ -172,7 +196,7 @@ namespace Jupiter
         public TimeSpan RefCleanupPollFrequency { get; set; } = TimeSpan.FromMinutes(60);
         public int OrphanGCMaxParallelOperations { get; set; } = 8;
         public int OrphanRefMaxParallelOperations { get; set; } = 8;
-
+        public bool WriteDeleteToReplicationLog { get; set; } = false;
     }
 
     public class UpstreamRelaySettings

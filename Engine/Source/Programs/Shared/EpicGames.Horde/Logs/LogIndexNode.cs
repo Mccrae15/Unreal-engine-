@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using EpicGames.Core;
 using EpicGames.Horde.Storage;
 using OpenTracing;
@@ -27,8 +28,8 @@ namespace EpicGames.Horde.Logs
 	/// Since alignment of ngrams may not match alignment of ngrams in the search term, we offset the search term by
 	/// 1-4 bytes and include the union of blocks matching at any offset.
 	/// </summary>
-	[TreeNode("{BAE1A00E-FD63-474E-A804-8081E20134F9}", 1)]
-	public class LogIndexNode : TreeNode
+	[NodeType("{BAE1A00E-FD63-474E-A804-8081E20134F9}", 1)]
+	public class LogIndexNode : Node
 	{
 		/// <summary>
 		/// Version number for serialized data
@@ -87,7 +88,7 @@ namespace EpicGames.Horde.Logs
 		/// Deserialization constructor
 		/// </summary>
 		/// <param name="reader">Reader for data</param>
-		public LogIndexNode(ITreeNodeReader reader)
+		public LogIndexNode(NodeReader reader)
 		{
 			int version = (int)reader.ReadUnsignedVarInt();
 			if (version != CurrentVersion)
@@ -101,23 +102,22 @@ namespace EpicGames.Horde.Logs
 		}
 
 		/// <inheritdoc/>
-		public override void Serialize(ITreeNodeWriter writer)
+		public override void Serialize(NodeWriter writer)
 		{
 			writer.WriteUnsignedVarInt(CurrentVersion);
 			writer.WriteNgramSet(_ngramSet);
 			writer.WriteUnsignedVarInt(_numChunkBits);
-			writer.WriteVariableLengthArray(_plainTextChunkRefs, x => writer.WriteRef(x));
+			writer.WriteVariableLengthArray(_plainTextChunkRefs, x => writer.WriteNodeRef(x));
 		}
-
-		/// <inheritdoc/>
-		public override IEnumerable<TreeNodeRef> EnumerateRefs() => _plainTextChunkRefs;
 
 		/// <summary>
 		/// Appends a set of text blocks to this index
 		/// </summary>
+		/// <param name="writer">Writer for output nodes</param>
 		/// <param name="appendPlainTextChunks">Text blocks to append</param>
+		/// <param name="cancellationToken"></param>
 		/// <returns>New log index with the given blocks appended</returns>
-		public LogIndexNode Append(IReadOnlyList<LogChunkNode> appendPlainTextChunks)
+		public async ValueTask<LogIndexNode> AppendAsync(IStorageWriter writer, IReadOnlyList<LogChunkNode> appendPlainTextChunks, CancellationToken cancellationToken)
 		{
 			using IScope scope = GlobalTracer.Instance.BuildSpan("LogIndex.Append").StartActive();
 
@@ -132,10 +132,11 @@ namespace EpicGames.Horde.Logs
 			long offset = Length;
 			for (int idx = 0; idx < appendPlainTextChunks.Count; idx++)
 			{
-				LogChunkNode appendBlock = appendPlainTextChunks[idx];
-				newChunks[_plainTextChunkRefs.Length + idx] = new LogChunkRef(lineIndex, offset, appendPlainTextChunks[idx]);
-				lineIndex += appendBlock.LineCount;
-				offset += appendBlock.Length;
+				LogChunkNode newChunk = appendPlainTextChunks[idx];
+				NodeRef<LogChunkNode> newChunkRef = await writer.WriteNodeAsync(newChunk, cancellationToken);
+				newChunks[_plainTextChunkRefs.Length + idx] = new LogChunkRef(lineIndex, newChunk.LineCount, offset, newChunk.Length, newChunkRef);
+				lineIndex += newChunk.LineCount;
+				offset += newChunk.Length;
 			}
 
 			// Figure out how many bits to devote to the block size
@@ -174,13 +175,12 @@ namespace EpicGames.Horde.Logs
 		/// <summary>
 		/// Search for the given text in the index
 		/// </summary>
-		/// <param name="reader">Reader for node data</param>
 		/// <param name="firstLineIndex">First line index to search from</param>
 		/// <param name="text">Text to search for</param>
 		/// <param name="stats">Receives stats for the search</param>
 		/// <param name="cancellationToken">Cancellation token for the operation</param>
 		/// <returns>List of line numbers for the text</returns>
-		public async IAsyncEnumerable<int> Search(TreeReader reader, int firstLineIndex, SearchTerm text, SearchStats stats, [EnumeratorCancellation] CancellationToken cancellationToken)
+		public async IAsyncEnumerable<int> Search(int firstLineIndex, SearchTerm text, SearchStats stats, [EnumeratorCancellation] CancellationToken cancellationToken)
 		{
 			int lastBlockCount = 0;
 			foreach (int blockIdx in EnumeratePossibleChunks(text.Bytes, firstLineIndex))
@@ -188,13 +188,13 @@ namespace EpicGames.Horde.Logs
 				LogChunkRef indexChunk = _plainTextChunkRefs[blockIdx];
 
 				stats.NumScannedBlocks++;
-				stats.NumDecompressedBlocks += (indexChunk.Target == null)? 1 : 0;
+//				stats.NumDecompressedBlocks += (indexChunk.Target == null)? 1 : 0;
 
 				stats.NumSkippedBlocks += blockIdx - lastBlockCount;
 				lastBlockCount = blockIdx + 1;
 
 				// Decompress the text
-				LogChunkNode chunk = await indexChunk.ExpandAsync(reader, cancellationToken);
+				LogChunkNode chunk = await indexChunk.ExpandAsync(cancellationToken);
 
 				// Find the initial offset within this block
 				int offset = 0;

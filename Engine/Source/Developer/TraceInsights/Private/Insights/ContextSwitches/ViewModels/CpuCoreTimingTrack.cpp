@@ -106,7 +106,7 @@ void FCpuCoreTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuil
 
 	if (HasCustomFilter())
 	{
-		STimingView* TimingView = SharedState.GetTimingView();
+		TSharedPtr<STimingView> TimingView = SharedState.GetTimingView();
 		if (!TimingView)
 		{
 			return;
@@ -420,14 +420,14 @@ void FCpuCoreTimingTrack::BuildContextMenu(FMenuBuilder& InOutMenuBuilder)
 
 bool FCpuCoreTimingTrack::HasCustomFilter() const
 {
-	STimingView* TimingView = SharedState.GetTimingView();
+	TSharedPtr<STimingView> TimingView = SharedState.GetTimingView();
 	if (!TimingView)
 	{
 		return false;
 	}
 
 	TSharedPtr<FFilterConfigurator> FilterConfigurator = TimingView->GetFilterConfigurator();
-	return FilterConfigurator.IsValid() && FilterConfigurator->GetRootNode().IsValid() && FilterConfigurator->GetRootNode()->GetChildren().Num() > 0;
+	return FilterConfigurator.IsValid() && !FilterConfigurator->IsEmpty();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

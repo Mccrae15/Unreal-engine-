@@ -2,17 +2,15 @@
 
 #include "MuCOE/CustomizableObjectEditorModule.h"
 
+#include "AssetToolsModule.h"
 #include "GameFramework/Pawn.h"
 #include "ISettingsModule.h"
 #include "ISettingsSection.h"
-#include "Kismet/GameplayStatics.h"
 #include "MessageLogModule.h"
-#include "MuCO/CustomizableObjectDGGUI.h"
 #include "MuCO/CustomizableObjectSystem.h"		// For defines related to memory function replacements.
 #include "MuCO/CustomizableSkeletalComponent.h"
 #include "MuCO/CustomizableSkeletalMeshActor.h"
-#include "MuCOE/AssetTypeActions_CustomizableObject.h"
-#include "MuCOE/AssetTypeActions_CustomizableObjectInstance.h"
+#include "MuCO/ICustomizableObjectModule.h"		// For instance editor command utility function
 #include "MuCOE/CustomizableInstanceDetails.h"
 #include "MuCOE/CustomizableObjectCustomSettings.h"
 #include "MuCOE/CustomizableObjectCustomSettingsDetails.h"
@@ -51,7 +49,6 @@
 #include "MuCOE/Nodes/CustomizableObjectNodePinViewerDetails.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeProjectorConstant.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeProjectorParameterDetails.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeGroupProjectorParameterDetails.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeRemoveMeshBlocks.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeRemoveMeshBlocksDetails.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
@@ -59,9 +56,13 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeStaticMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTableDetails.h"
+#include "MuCOE/Widgets/CustomizableObjectLODReductionSettings.h"
 #include "PropertyEditorModule.h"
+#include "MuCO/CustomizableObjectInstance.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeGroupProjectorParameter.h"
 #include "UObject/UObjectIterator.h"
+#include "Subsystems/PlacementSubsystem.h"
+
 
 class AActor;
 class FString;
@@ -123,10 +124,6 @@ private:
 
 	FCustomizableObjectEditorLogger Logger;
 
-	// Command to look for Customizable Object Instance in the player pawn of the current world and open a DGGUI to edit its parameters
-	IConsoleCommand* LaunchDGGUICommand;
-	static void ToggleDGGUI(const TArray<FString>& Arguments);
-
 	// Command to look for Customizable Object Instance in the player pawn of the current world and open its Customizable Object Instance Editor
 	IConsoleCommand* LaunchCOIECommand;
 	static void OpenCOIE(const TArray<FString>& Arguments);
@@ -174,7 +171,6 @@ void FCustomizableObjectEditorModule::StartupModule()
 	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeObject::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeObjectDetails::MakeInstance));
 	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeObjectGroup::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeObjectGroupDetails::MakeInstance));
 	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeProjectorParameter::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeProjectorParameterDetails::MakeInstance));
-	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeGroupProjectorParameter::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeGroupProjectorParameterDetails::MakeInstance));
 	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeProjectorConstant::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeProjectorParameterDetails::MakeInstance));
 	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeMeshMorph::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeMeshMorphDetails::MakeInstance));
 	RegisterCustomDetails(PropertyModule, UCustomizableObjectNodeMeshClipMorph::StaticClass(), FOnGetDetailCustomizationInstance::CreateStatic(&FCustomizableObjectNodeMeshClipMorphDetails::MakeInstance));
@@ -190,27 +186,16 @@ void FCustomizableObjectEditorModule::StartupModule()
 	//Custom properties
 	PropertyModule.RegisterCustomPropertyTypeLayout("CustomizableObjectIdentifier", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCustomizableObjectIdentifierCustomization::MakeInstance));
 	PropertyModule.RegisterCustomPropertyTypeLayout(FMeshReshapeBoneReference::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMeshReshapeBonesReferenceCustomization::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout(FBoneToRemove::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCustomizableObjectLODReductionSettings::MakeInstance));
 
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// Register factory
-	UCustomizableObjectInstanceFactory* CustomizableObjectInstanceFactory = NewObject<UCustomizableObjectInstanceFactory>();
-	CustomizableObjectInstanceFactory->NewActorClass = ACustomizableSkeletalMeshActor::StaticClass();
-	UEditorEngine* engine = GEditor;
-	engine->ActorFactories.Add(CustomizableObjectInstanceFactory);
-	
-	// New category
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	CustomizableObjectAssetCategory = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("Mutable")), LOCTEXT("MutableAssetsCategory", "Mutable"));
-
-	// Asset actions
-	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked< FAssetToolsModule >( "AssetTools" );
-	
-	TSharedPtr<FAssetTypeActions_CustomizableObject> CustomizableObjectAssetTypeActions = MakeShareable( new FAssetTypeActions_CustomizableObject );	
-	AssetToolsModule.Get().RegisterAssetTypeActions( CustomizableObjectAssetTypeActions.ToSharedRef() );
-
-	TSharedPtr<FAssetTypeActions_CustomizableObjectInstance> CustomizableObjectInstanceAssetTypeActions = MakeShareable( new FAssetTypeActions_CustomizableObjectInstance );
-	AssetToolsModule.Get().RegisterAssetTypeActions( CustomizableObjectInstanceAssetTypeActions.ToSharedRef() );
+	GEditor->ActorFactories.Add(NewObject<UCustomizableObjectInstanceFactory>());
+	if (UPlacementSubsystem* PlacementSubsystem = GEditor->GetEditorSubsystem<UPlacementSubsystem>())
+	{
+		PlacementSubsystem->RegisterAssetFactory(NewObject<UCustomizableObjectInstanceFactory>());
+	}
 	
 
 	// Additional UI style
@@ -224,11 +209,6 @@ void FCustomizableObjectEditorModule::StartupModule()
 
 	CustomizableObjectEditor_ToolBarExtensibilityManager = MakeShareable(new FExtensibilityManager);
 	CustomizableObjectEditor_MenuExtensibilityManager = MakeShareable(new FExtensibilityManager);
-
-	LaunchDGGUICommand = IConsoleManager::Get().RegisterConsoleCommand(
-		TEXT("mutable.ToggleDGGUI"),
-		TEXT("Looks for a Customizable Object Instance within the player pawn and opens a UI to modify its parameters, or closes it if it's open. Specify slot ID to control which component is modified."),
-		FConsoleCommandWithArgsDelegate::CreateStatic(&FCustomizableObjectEditorModule::ToggleDGGUI));
 
 	LaunchCOIECommand = IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("mutable.OpenCOIE"),
@@ -351,95 +331,6 @@ void FCustomizableObjectEditorModule::RegisterCustomDetails(FPropertyEditorModul
 }
 
 
-const UWorld* GetWorldForCurrentCOI()
-{
-	UWorld* CurrentWorld = nullptr;
-	const TIndirectArray<FWorldContext>& WorldContexts = GEngine->GetWorldContexts();
-	for (const FWorldContext& Context : WorldContexts)
-	{
-		if ((Context.WorldType == EWorldType::Game) && (Context.World() != NULL))
-		{
-			CurrentWorld = Context.World();
-		}
-	}
-	// Fall back to GWorld if we don't actually have a world.
-	if (CurrentWorld == nullptr)
-	{
-		CurrentWorld = GWorld;
-	}
-	return CurrentWorld;
-}
-
-
-UCustomizableSkeletalComponent* GetPlayerCustomizableSkeletalComponent(const int32 SlotID, const UWorld* CurrentWorld, const int32 PlayerIndex = 0)
-{
-	// Get customizable skeletal component attached to player pawn
-	UCustomizableSkeletalComponent* SelectedCustomizableSkeletalComponent = nullptr;
-	{
-		APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(CurrentWorld, PlayerIndex);
-		int32 IndexFound = INDEX_NONE;
-		for (TObjectIterator<UCustomizableSkeletalComponent> CustomizableSkeletalComponent; CustomizableSkeletalComponent; ++CustomizableSkeletalComponent)
-		{
-			if (CustomizableSkeletalComponent->IsValidLowLevel() && !CustomizableSkeletalComponent->IsTemplate())
-			{
-				AActor* CustomizableActor = CustomizableSkeletalComponent->GetAttachmentRootActor();
-				if (CustomizableActor && PlayerPawn == CustomizableActor)
-				{
-					++IndexFound;
-					SelectedCustomizableSkeletalComponent = *CustomizableSkeletalComponent;
-					if (IndexFound == SlotID)
-					{
-						break;
-					}
-				}
-			}
-		}
-	}
-
-
-	// If none found, try getting a component without caring about the actor
-	if (!SelectedCustomizableSkeletalComponent)
-	{
-		APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(CurrentWorld, PlayerIndex);
-		int32 IndexFound = INDEX_NONE;
-		for (TObjectIterator<UCustomizableSkeletalComponent> CustomizableSkeletalComponent; CustomizableSkeletalComponent; ++CustomizableSkeletalComponent)
-		{
-			if (CustomizableSkeletalComponent->IsValidLowLevel() && !CustomizableSkeletalComponent->IsTemplate())
-			{
-				++IndexFound;
-				SelectedCustomizableSkeletalComponent = *CustomizableSkeletalComponent;
-				if (IndexFound == SlotID)
-				{
-					break;
-				}
-			}
-		}
-	}
-
-	return SelectedCustomizableSkeletalComponent;
-}
-
-
-void FCustomizableObjectEditorModule::ToggleDGGUI(const TArray<FString>& Arguments)
-{
-	int32 SlotID = INDEX_NONE;
-	if (Arguments.Num() >= 1)
-	{
-		SlotID = FCString::Atoi(*Arguments[0]);
-	}
-	const UWorld* CurrentWorld = GetWorldForCurrentCOI();
-	const int32 PlayerIndex = 0;
-	if (UDGGUI::CloseExistingDGGUI(CurrentWorld))
-	{
-		return;
-	}
-	else if (UCustomizableSkeletalComponent* SelectedCustomizableSkeletalComponent = GetPlayerCustomizableSkeletalComponent(SlotID, CurrentWorld, PlayerIndex))
-	{
-		UDGGUI::OpenDGGUI(SlotID, SelectedCustomizableSkeletalComponent, CurrentWorld, PlayerIndex);
-	}
-}
-
-
 void FCustomizableObjectEditorModule::OpenCOIE(const TArray<FString>& Arguments)
 {
 	int32 SlotID = INDEX_NONE;
@@ -447,7 +338,25 @@ void FCustomizableObjectEditorModule::OpenCOIE(const TArray<FString>& Arguments)
 	{
 		SlotID = FCString::Atoi(*Arguments[0]);
 	}
-	const UWorld* CurrentWorld = GetWorldForCurrentCOI();
+
+	const UWorld* CurrentWorld = []() -> const UWorld*
+	{
+		UWorld* WorldForCurrentCOI = nullptr;
+		const TIndirectArray<FWorldContext>& WorldContexts = GEngine->GetWorldContexts();
+		for (const FWorldContext& Context : WorldContexts)
+		{
+			if ((Context.WorldType == EWorldType::Game) && (Context.World() != NULL))
+			{
+				WorldForCurrentCOI = Context.World();
+			}
+		}
+		// Fall back to GWorld if we don't actually have a world.
+		if (WorldForCurrentCOI == nullptr)
+		{
+			WorldForCurrentCOI = GWorld;
+		}
+		return WorldForCurrentCOI;
+	}();
 	const int32 PlayerIndex = 0;
 
 	// Open the Customizable Object Instance Editor

@@ -6,12 +6,16 @@
 
 #if WITH_EDITOR
 
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetDependencyGatherer.h"
 #include "EngineUtils.h"
 #include "Engine/LODActor.h"
 #include "Engine/HLODProxy.h"
+#include "Engine/World.h"
 #include "Editor.h"
 #include "UnrealEngine.h"
 #include "HierarchicalLOD.h"
+#include "Misc/PathViews.h"
 #include "Modules/ModuleManager.h"
 #include "IHierarchicalLODUtilities.h"
 #include "HierarchicalLODUtilitiesModule.h"
@@ -193,6 +197,50 @@ void UHLODEngineSubsystem::OnPreSaveWorld(UWorld* InWorld, FObjectPreSaveContext
 		}
 	}
 }
+
+class FHLODDependencyGatherer : public IAssetDependencyGatherer
+{
+public:
+	virtual void GatherDependencies(const FAssetData& AssetData, const FAssetRegistryState& AssetRegistryState,
+		TFunctionRef<FARCompiledFilter(const FARFilter&)> CompileFilterFunc,
+		TArray<IAssetDependencyGatherer::FGathereredDependency>& OutDependencies,
+		TArray<FString>& OutDependencyDirectories) const override;
+};
+
+void FHLODDependencyGatherer::GatherDependencies(const FAssetData& AssetData,
+	const FAssetRegistryState& AssetRegistryState, TFunctionRef<FARCompiledFilter(const FARFilter&)> CompileFilterFunc,
+	TArray<IAssetDependencyGatherer::FGathereredDependency>& OutDependencies,
+	TArray<FString>& OutDependencyDirectories) const
+{
+	if (!GetDefault<UHierarchicalLODSettings>()->bSaveLODActorsToHLODPackages)
+	{
+		return;
+	}
+
+	// Record a dependency on the paths to HLODProxy packages that can be associated with
+	// this level if they exist
+	FHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<FHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
+	IHierarchicalLODUtilities* Utilities = Module.GetUtilities();
+
+	// TODO: GetHLODPackageName is usually constructed from the World's packagename, but this can be replaced by ULevelStreaming::PackageNameToLoad
+	// We need to write the list of LevelStreaming PackageNameToLoad into the AssetData so we can read it from here.
+	FString Wildcard = Utilities->GetWildcardOfHLODPackagesForPackage(AssetData.PackageName.ToString());
+	FARFilter PossibleAssetsFilter;
+	PossibleAssetsFilter.PackagePaths.Add(FName(FPathViews::GetPath(Wildcard)));
+	TArray<FAssetData> FilteredAssets;
+	AssetRegistryState.GetAssets(CompileFilterFunc(PossibleAssetsFilter), {}, FilteredAssets);
+	FString PackageName;
+	for (const FAssetData& FilteredAsset : FilteredAssets)
+	{
+		FilteredAsset.PackageName.ToString(PackageName);
+		if (PackageName.MatchesWildcard(Wildcard))
+		{
+			OutDependencies.Emplace(IAssetDependencyGatherer::FGathereredDependency{ FilteredAsset.PackageName,
+				UE::AssetRegistry::EDependencyProperty::Game | UE::AssetRegistry::EDependencyProperty::Build });
+		}
+	}
+}
+REGISTER_ASSETDEPENDENCY_GATHERER(FHLODDependencyGatherer, UWorld);
 
 #endif // WITH_EDITOR
 

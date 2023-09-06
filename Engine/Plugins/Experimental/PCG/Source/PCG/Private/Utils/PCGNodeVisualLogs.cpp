@@ -13,7 +13,8 @@
 
 void FPCGNodeVisualLogs::Log(TWeakObjectPtr<const UPCGNode> InNode, TWeakObjectPtr<UPCGComponent> InComponent, ELogVerbosity::Type InVerbosity, const FText& InMessage)
 {
-	if (!ensure(InNode.Get()) || !ensure(InComponent.Get()))
+	// InNode can be null, in case of unit tests.
+	if (!InNode.Get() || !ensure(InComponent.Get()))
 	{
 		return;
 	}
@@ -39,7 +40,7 @@ void FPCGNodeVisualLogs::Log(TWeakObjectPtr<const UPCGNode> InNode, TWeakObjectP
 	}
 
 	// Broadcast outside of write scope lock
-	if (bAdded)
+	if (bAdded && IsInGameThread())
 	{
 		InNode->OnNodeChangedDelegate.Broadcast(const_cast<UPCGNode*>(InNode.Get()), EPCGChangeType::Cosmetic);
 	}

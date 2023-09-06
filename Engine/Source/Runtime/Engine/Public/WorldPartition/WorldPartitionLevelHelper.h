@@ -9,8 +9,6 @@
 
 #pragma once
 
-#if WITH_EDITOR
-
 #include "Engine/World.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
 
@@ -20,6 +18,9 @@ struct FActorContainerID;
 
 class FWorldPartitionLevelHelper
 {
+public:
+	static FString AddActorContainerIDToSubPathString(const FActorContainerID& InContainerID, const FString& InSubPathString);
+#if WITH_EDITOR
 public:
 	static FWorldPartitionLevelHelper& Get();
 
@@ -35,11 +36,10 @@ public:
 	static void MoveExternalActorsToLevel(const TArray<FWorldPartitionRuntimeCellObjectMapping>& InChildPackages, ULevel* InLevel, TArray<UPackage*>& OutModifiedPackages);
 	static void RemapLevelSoftObjectPaths(ULevel* InLevel, UWorldPartition* InWorldPartition);
 	
-	static bool LoadActors(UWorld* InOwningWorld, ULevel* InDestLevel, TArrayView<FWorldPartitionRuntimeCellObjectMapping> InActorPackages, FPackageReferencer& InPackageReferencer, TFunction<void(bool)> InCompletionCallback, bool bInLoadAsync, FLinkerInstancingContext InOutInstancingContext);
+	static bool LoadActors(UWorld* InOuterWorld, ULevel* InDestLevel, TArrayView<FWorldPartitionRuntimeCellObjectMapping> InActorPackages, FPackageReferencer& InPackageReferencer, TFunction<void(bool)> InCompletionCallback, bool bInLoadAsync, FLinkerInstancingContext InOutInstancingContext);
 	
-	static bool RemapActorPath(const FActorContainerID& InContainerID, const FString& InActorPath, FString& OutActorPath);
-	static FString AddActorContainerIDToSubPathString(const FActorContainerID& InContainerID, const FString& InSubPathString);
-	static FString GetContainerPackage(const FActorContainerID& InContainerID, const FString& InPackageName, const FString& InDestLevelPackageName = FString());
+	static FSoftObjectPath RemapActorPath(const FActorContainerID& InContainerID, const FString& SourceWorldName, const FSoftObjectPath& InActorPath);
+
 private:
 	FWorldPartitionLevelHelper();
 
@@ -47,7 +47,12 @@ private:
 	void RemoveReferences(FPackageReferencer* InReferencer);
 	void PreGarbageCollect();
 
+	static FString GetContainerPackage(const FActorContainerID& InContainerID, const FString& InPackageName, const FString& InDestLevelPackageName = FString());
 	static UWorld::InitializationValues GetWorldInitializationValues();
+
+
+	friend class FContentBundleEditor;
+	static bool RemapLevelCellPathInContentBundle(ULevel* Level, const class FContentBundleEditor* ContentBundleEditor, const UWorldPartitionRuntimeCell* Cell);
 
 	struct FPackageReference
 	{
@@ -60,6 +65,6 @@ private:
 	TMap<FName, FPackageReference> PackageReferences;
 
 	TSet<TWeakObjectPtr<UPackage>> PreGCPackagesToUnload;
+#endif
 };
 
-#endif

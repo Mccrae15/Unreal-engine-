@@ -6,11 +6,25 @@
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+namespace
+{
+	const FName BreakTimerAttributeName = "BreakTimer";
+	const FName PostBreakDurationAttributeName = "PostBreakDuration";
+	const FName BreakRemovalDurationAttributeName = "BreakRemovalDuration";
+
+	const FName SleepTimerAttributeName = "SleepTimer";
+	const FName MaxSleepTimeAttributeName = "MaxSleepTime";
+	const FName SleepRemovalDurationAttributeName = "SleepRemovalDuration";
+	const FName LastPositionAttributeName = "LastPosition";
+
+	const FName DecayAttributeName = "Decay";
+}
+
 FGeometryCollectionRemoveOnBreakDynamicFacade::FGeometryCollectionRemoveOnBreakDynamicFacade(FManagedArrayCollection& InCollection)
-	: BreakTimerAttribute(InCollection, "BreakTimer", FGeometryCollection::TransformGroup)
-	, PostBreakDurationAttribute(InCollection, "PostBreakDuration", FGeometryCollection::TransformGroup)
-	, BreakRemovalDurationAttribute(InCollection, "BreakRemovalDuration", FGeometryCollection::TransformGroup)
-	, ChildrenAttribute(InCollection, "Children", FTransformCollection::TransformGroup)
+	: BreakTimerAttribute(InCollection, BreakTimerAttributeName, FGeometryCollection::TransformGroup)
+	, PostBreakDurationAttribute(InCollection, PostBreakDurationAttributeName, FGeometryCollection::TransformGroup)
+	, BreakRemovalDurationAttribute(InCollection, BreakRemovalDurationAttributeName, FGeometryCollection::TransformGroup)
+	, ChildrenAttribute(InCollection, FTransformCollection::ChildrenAttribute, FTransformCollection::TransformGroup)
 
 {
 }
@@ -46,6 +60,11 @@ void FGeometryCollectionRemoveOnBreakDynamicFacade::SetAttributeValues(const Geo
 
 		BreakTimerAttribute.Fill(DisabledBreakTimer);
 
+		// make sure we generate random value consistently between client and server 
+		// we can use the length of the transform group for that
+		const int32 RandomSeed = Children.Num();
+		FRandomStream Random(RandomSeed);
+
 		TManagedArray<float>& PostBreakDuration = PostBreakDurationAttribute.Modify();
 		for (int32 Idx = 0; Idx < PostBreakDuration.Num(); ++Idx)
 		{
@@ -53,7 +72,7 @@ void FGeometryCollectionRemoveOnBreakDynamicFacade::SetAttributeValues(const Geo
 			const FVector2f PostBreakTimer = RemoveOnBreakData.GetBreakTimer();
 			const float MinBreakTime = FMath::Max(0.0f, PostBreakTimer.X);
 			const float MaxBreakTime = FMath::Max(MinBreakTime, PostBreakTimer.Y);
-			PostBreakDuration[Idx] = RemoveOnBreakData.IsEnabled() ? FMath::RandRange(MinBreakTime, MaxBreakTime) : DisabledPostBreakDuration;
+			PostBreakDuration[Idx] = RemoveOnBreakData.IsEnabled() ? Random.FRandRange(MinBreakTime, MaxBreakTime) : DisabledPostBreakDuration;
 		}
 
 		TManagedArray<float>& BreakRemovalDuration = BreakRemovalDurationAttribute.Modify();
@@ -65,7 +84,7 @@ void FGeometryCollectionRemoveOnBreakDynamicFacade::SetAttributeValues(const Geo
 			const float MaxRemovalTime = FMath::Max(MinRemovalTime, RemovalTimer.Y);
 			const bool bIsCluster = (Children[Idx].Num() > 0);
 			const bool bUseClusterCrumbling = (bIsCluster && RemoveOnBreakData.GetClusterCrumbling());
-			BreakRemovalDuration[Idx] = bUseClusterCrumbling ? CrumblingRemovalTimer : FMath::RandRange(MinRemovalTime, MaxRemovalTime);
+			BreakRemovalDuration[Idx] = bUseClusterCrumbling ? CrumblingRemovalTimer : Random.FRandRange(MinRemovalTime, MaxRemovalTime);
 		}
 	}
 }
@@ -104,10 +123,10 @@ float FGeometryCollectionRemoveOnBreakDynamicFacade::UpdateBreakTimerAndComputeD
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FGeometryCollectionRemoveOnSleepDynamicFacade::FGeometryCollectionRemoveOnSleepDynamicFacade(FManagedArrayCollection& InCollection)
-	: SleepTimerAttribute(InCollection, "SleepTimer", FGeometryCollection::TransformGroup)
-	, MaxSleepTimeAttribute(InCollection, "MaxSleepTime", FGeometryCollection::TransformGroup)
-	, SleepRemovalDurationAttribute(InCollection, "SleepRemovalDuration", FGeometryCollection::TransformGroup)
-	, LastPositionAttribute(InCollection, "LastPosition", FGeometryCollection::TransformGroup)
+	: SleepTimerAttribute(InCollection, SleepTimerAttributeName, FGeometryCollection::TransformGroup)
+	, MaxSleepTimeAttribute(InCollection, MaxSleepTimeAttributeName, FGeometryCollection::TransformGroup)
+	, SleepRemovalDurationAttribute(InCollection, SleepRemovalDurationAttributeName, FGeometryCollection::TransformGroup)
+	, LastPositionAttribute(InCollection, LastPositionAttributeName, FGeometryCollection::TransformGroup)
 {
 }
 
@@ -197,20 +216,32 @@ float FGeometryCollectionRemoveOnSleepDynamicFacade::ComputeDecay(int32 Transfor
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FGeometryCollectionDecayDynamicFacade::FGeometryCollectionDecayDynamicFacade(FManagedArrayCollection& InCollection)
-	: DecayAttribute(InCollection, "Decay", FGeometryCollection::TransformGroup)
-	, UniformScaleAttribute(InCollection, "UniformScale", FGeometryCollection::TransformGroup)
+	: DecayAttribute(InCollection, DecayAttributeName, FGeometryCollection::TransformGroup)
 {
 }
 
 bool FGeometryCollectionDecayDynamicFacade::IsValid() const
 {
-	return DecayAttribute.IsValid()
-		&& UniformScaleAttribute.IsValid()
-	;
+	// on check the decay since the uniform attribute is optional ( see bScaleOnRemoval )
+	return DecayAttribute.IsValid();
 }
 
 void FGeometryCollectionDecayDynamicFacade::AddAttributes()
 {
 	DecayAttribute.AddAndFill(0.0f);
-	UniformScaleAttribute.AddAndFill(FTransform::Identity);
+}
+
+float FGeometryCollectionDecayDynamicFacade::GetDecay(int32 TransformIndex) const
+{
+	return DecayAttribute[TransformIndex];
+}
+
+void FGeometryCollectionDecayDynamicFacade::SetDecay(int32 TransformIndex, float DecayValue)
+{
+	DecayAttribute.ModifyAt(TransformIndex, DecayValue);
+}
+
+int32 FGeometryCollectionDecayDynamicFacade::GetDecayAttributeSize() const
+{
+	return DecayAttribute.Num();
 }

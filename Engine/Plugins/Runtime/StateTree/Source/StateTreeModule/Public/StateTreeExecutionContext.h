@@ -3,6 +3,7 @@
 #pragma once
 
 #include "StateTree.h"
+#include "StateTreeExecutionTypes.h"
 #include "StateTreeNodeBase.h"
 #include "Experimental/ConcurrentLinearAllocator.h"
 
@@ -14,6 +15,7 @@ struct FStateTreeTaskBase;
 struct FStateTreeConditionBase;
 struct FStateTreeEvent;
 struct FStateTreeTransitionRequest;
+struct FStateTreeInstanceDebugId;
 
 /**
  * StateTree Execution Context is a helper that is used to update and access StateTree instance data.
@@ -81,8 +83,12 @@ public:
 	/** Start executing. */
 	EStateTreeRunStatus Start();
 	
-	/** Stop executing. */
-	EStateTreeRunStatus Stop();
+	/**
+	 * Stop executing if the tree is running.
+	 * @param CompletionStatus Status (and terminal state) reported in the transition when the tree is stopped.
+	 * @return Tree execution status at stop, can be CompletionStatus, or earlier status if the tree is not running. 
+	 */
+	EStateTreeRunStatus Stop(const EStateTreeRunStatus CompletionStatus = EStateTreeRunStatus::Stopped);
 
 	/**
 	 * Tick the state tree logic.
@@ -160,7 +166,7 @@ public:
 	/** @return Pointer to a State or null if state not found */ 
 	const FCompactStateTreeState* GetStateFromHandle(const FStateTreeStateHandle StateHandle) const
 	{
-		return StateTree.States.IsValidIndex(StateHandle.Index) ? &StateTree.States[StateHandle.Index] : nullptr;
+		return StateTree.GetStateFromHandle(StateHandle);
 	}
 
 	/** @return Array view to external data descriptors associated with this context. Note: Init() must be called before calling this method. */
@@ -266,7 +272,11 @@ public:
 
 protected:
 
-	/** @return Prefix that will be used by STATETREE_LOG and STATETREE_CLOG, empty by default. */
+#if WITH_STATETREE_DEBUGGER
+	FStateTreeInstanceDebugId GetInstanceDebugId() const;
+#endif // WITH_STATETREE_DEBUGGER
+
+	/** @return Prefix that will be used by STATETREE_LOG and STATETREE_CLOG, Owner name by default. */
 	virtual FString GetInstanceDescription() const;
 
 	UE_DEPRECATED(5.2, "Use BeginDelayedTransition() instead.")
@@ -304,14 +314,14 @@ protected:
 
 	/**
 	 * Starts evaluators and global tasks.
-	 * @return true if all evaluators and tasks were started, or false if any failed.
+	 * @return run status returned by the global tasks.
 	 */
-	bool StartEvaluatorsAndGlobalTasks(FStateTreeIndex16& OutLastInitializedTaskIndex);
+	EStateTreeRunStatus StartEvaluatorsAndGlobalTasks(FStateTreeIndex16& OutLastInitializedTaskIndex);
 
 	/**
 	 * Stops evaluators and global tasks.
 	 */
-	void StopEvaluatorsAndGlobalTasks(const FStateTreeIndex16 LastInitializedTaskIndex = FStateTreeIndex16());
+	void StopEvaluatorsAndGlobalTasks(const EStateTreeRunStatus CompletionStatus, const FStateTreeIndex16 LastInitializedTaskIndex = FStateTreeIndex16());
 
 	/**
 	 * Ticks tasks of all active states starting from current state by delta time.
@@ -354,25 +364,26 @@ protected:
 	 * If NextState is a leaf state, the active states leading from root to the leaf are returned.
 	 * @param NextState The state which we try to select next.
 	 * @param OutNewActiveStates Active states that got selected.
+	 * @param VisitedStates States visited so far during selection (used for detecting selection loops)
 	 * @return True if succeeded to select new active states.
 	 */
-	bool SelectState(const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates);
+	bool SelectState(const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates, FStateTreeActiveStates& VisitedStates);
 
 	/**
 	 * Used internally to do the recursive part of the SelectState().
 	 */
-	bool SelectStateInternal(const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates);
+	bool SelectStateInternal(const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates, FStateTreeActiveStates& VisitedStates);
 
 	/** @return StateTree execution state from the instance storage. */
 	FStateTreeExecutionState& GetExecState()
 	{
-		return InstanceData.GetMutableStruct(0).GetMutable<FStateTreeExecutionState>();
+		return InstanceData.GetMutableStruct(0).Get<FStateTreeExecutionState>();
 	}
 
 	/** @return const StateTree execution state from the instance storage. */
 	const FStateTreeExecutionState& GetExecState() const
 	{
-		return InstanceData.GetStruct(0).Get<FStateTreeExecutionState>();
+		return InstanceData.GetStruct(0).Get<const FStateTreeExecutionState>();
 	}
 
 	/** Sets up parameter data view for a linked state and copies bound properties. */
@@ -430,6 +441,9 @@ protected:
 
 	/** Next transition, used by RequestTransition(). */
 	FStateTreeTransitionResult NextTransition;
+
+	/** Structure describing the origin of the state transition that caused the state change. */
+	FStateTreeTransitionSource NextTransitionSource;
 
 	/** Current state we're processing, or invalid if not applicable. */
 	FStateTreeStateHandle CurrentlyProcessedState;

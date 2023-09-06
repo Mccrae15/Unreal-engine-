@@ -39,19 +39,19 @@ void FRawIndexBuffer::CacheOptimize()
 #endif
 }
 
-void FRawIndexBuffer::InitRHI()
+void FRawIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	uint32 Size = Indices.Num() * sizeof(uint16);
 	if( Size > 0 )
 	{
 		// Create the index buffer.
 		FRHIResourceCreateInfo CreateInfo(TEXT("FRawIndexBuffer"));
-		IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		IndexBufferRHI = RHICmdList.CreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 		// Initialize the buffer.
-		void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+		void* Buffer = RHICmdList.LockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, Indices.GetData(), Size);
-		RHIUnlockBuffer(IndexBufferRHI);
+		RHICmdList.UnlockBuffer(IndexBufferRHI);
 	}
 }
 
@@ -96,7 +96,7 @@ void FRawIndexBuffer16or32::ComputeIndexWidth()
 	}
 }
 
-void FRawIndexBuffer16or32::InitRHI()
+void FRawIndexBuffer16or32::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	const int32 IndexStride = b32Bit ? sizeof(uint32) : sizeof(uint16);
 	const int32 NumIndices = Indices.Num();
@@ -106,10 +106,10 @@ void FRawIndexBuffer16or32::InitRHI()
 	{
 		// Create the index buffer.
 		FRHIResourceCreateInfo CreateInfo(TEXT("FRawIndexBuffer"));
-		IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, IndexStride, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		IndexBufferRHI = RHICmdList.CreateBuffer(Size, BUF_Static | BUF_IndexBuffer, IndexStride, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 		// Initialize the buffer.		
-		void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+		void* Buffer = RHICmdList.LockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 
 		if (b32Bit)
 		{
@@ -123,8 +123,8 @@ void FRawIndexBuffer16or32::InitRHI()
 				DestIndices16Bit[i] = Indices[i];
 			}
 		}
-		
-		RHIUnlockBuffer(IndexBufferRHI);
+
+		RHICmdList.UnlockBuffer(IndexBufferRHI);
 	}
 
 	// Undo/redo can destroy and recreate the render resources for UModels without rebuilding the
@@ -338,13 +338,18 @@ FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 
 		const EBufferUsageFlags BufferFlags = EBufferUsageFlags::Static | (bSRV ? EBufferUsageFlags::ShaderResource : EBufferUsageFlags::None);
 
+		const static FLazyName ClassName32(TEXT("FRawStaticIndexBuffer32"));
+		const static FLazyName ClassName16(TEXT("FRawStaticIndexBuffer16"));
+
 		// Create the index buffer.
 		FBufferRHIRef Ret;
 		FRHIResourceCreateInfo CreateInfo(Is32Bit() ? TEXT("FRawStaticIndexBuffer32") : TEXT("FRawStaticIndexBuffer16"), &IndexStorage);
+		CreateInfo.ClassName = Is32Bit() ? ClassName32 : ClassName16;
+		CreateInfo.OwnerName = GetOwnerName();
 		CreateInfo.bWithoutNativeResource = !SizeInBytes;
 		if (bRenderThread)
 		{
-			Ret = RHICreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
+			Ret = FRHICommandListImmediate::Get().CreateIndexBuffer(IndexStride, SizeInBytes, BufferFlags, CreateInfo);
 		}
 		else
 		{
@@ -368,22 +373,6 @@ FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Async()
 	return CreateRHIBuffer_Internal<false>();
 }
 
-void FRawStaticIndexBuffer::CopyRHIForStreaming(const FRawStaticIndexBuffer& Other, bool InAllowCPUAccess)
-{
-	// Copy serialized properties.
-	CachedNumIndices = Other.CachedNumIndices;
-	b32Bit = Other.b32Bit;
-
-	// Handle CPU access.
-	if (InAllowCPUAccess)
-	{
-		IndexStorage = Other.IndexStorage;
-	}
-
-	// Copy resource references.
-	IndexBufferRHI = Other.IndexBufferRHI;
-}
-
 void FRawStaticIndexBuffer::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
 {
 	if (IndexBufferRHI && IntermediateBuffer)
@@ -400,7 +389,7 @@ void FRawStaticIndexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Ba
 	}
 }
 
-void FRawStaticIndexBuffer::InitRHI()
+void FRawStaticIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FRawStaticIndexBuffer::InitRHI);
 	IndexBufferRHI = CreateRHIBuffer_RenderThread();
@@ -479,10 +468,6 @@ void FRawStaticIndexBuffer16or32Interface::InitRHIForStreaming(FRHIBuffer* Inter
 	if (IndexBufferRHI && IntermediateBuffer)
 	{
 		Batcher.QueueUpdateRequest(IndexBufferRHI, IntermediateBuffer);
-		if (SRVValue)
-		{
-			Batcher.QueueUpdateRequest(SRVValue, IndexBufferRHI, IndexSize, IndexSize == 2 ? PF_R16_UINT : PF_R32_UINT);
-		}
 	}
 }
 
@@ -491,10 +476,6 @@ void FRawStaticIndexBuffer16or32Interface::ReleaseRHIForStreaming(FRHIResourceUp
 	if (IndexBufferRHI)
 	{
 		Batcher.QueueUpdateRequest(IndexBufferRHI, nullptr);
-	}
-	if (SRVValue)
-	{
-		Batcher.QueueUpdateRequest(SRVValue, nullptr, 0, 0);
 	}
 }
 
@@ -510,6 +491,8 @@ FBufferRHIRef FRawStaticIndexBuffer16or32Interface::CreateRHIIndexBufferInternal
 {
 	// Create the index buffer.
 	FRHIResourceCreateInfo CreateInfo(InDebugName, ResourceArray);
+	CreateInfo.ClassName = InDebugName;
+	CreateInfo.OwnerName = InOwnerName;
 	EBufferUsageFlags Flags = EBufferUsageFlags::Static;
 
 	if (bNeedSRV)
@@ -523,7 +506,7 @@ FBufferRHIRef FRawStaticIndexBuffer16or32Interface::CreateRHIIndexBufferInternal
 	CreateInfo.bWithoutNativeResource = !Size;
 	if (bRenderThread)
 	{
-		Ret = RHICreateIndexBuffer(IndexSize, Size, Flags, CreateInfo);
+		Ret = FRHICommandListImmediate::Get().CreateIndexBuffer(IndexSize, Size, Flags, CreateInfo);
 	}
 	else
 	{

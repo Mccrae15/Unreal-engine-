@@ -3,16 +3,19 @@
 #pragma once
 
 #include "Containers/Array.h"
-#include "DebugUtils/DebugDraw.h"
 #include "Math/Color.h"
 #include "Math/UnrealMathSSE.h"
 #include "Math/Vector.h"
 #include "NavMesh/RecastHelpers.h"
 
+#if WITH_RECAST
+
+#include "DebugUtils/DebugDraw.h"
+
 struct FRecastInternalDebugData : public duDebugDraw
 {
-	duDebugDrawPrimitives CurrentPrim;
-	int32 FirstVertexIndex;
+	duDebugDrawPrimitives CurrentPrim = DU_DRAW_POINTS;
+	int32 FirstVertexIndex = 0;
 
 	TArray<uint32> TriangleIndices;
 	TArray<FVector> TriangleVertices;
@@ -29,6 +32,7 @@ struct FRecastInternalDebugData : public duDebugDraw
 	double BuildNavigationDataTime = 0.;
 
 	uint32 TriangleCount = 0;
+	unsigned char Resolution = 0;
 	
 	FRecastInternalDebugData() {}
 	virtual ~FRecastInternalDebugData() override {}
@@ -61,4 +65,4 @@ struct FRecastInternalDebugData : public duDebugDraw
 
 	virtual void end() override;
 };
-
+#endif // WITH_RECAST

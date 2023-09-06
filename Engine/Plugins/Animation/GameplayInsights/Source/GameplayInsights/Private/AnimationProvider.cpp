@@ -142,6 +142,19 @@ void FAnimationProvider::EnumerateSkeletalMeshCurves(const FSkeletalMeshPoseMess
 	}
 }
 
+void FAnimationProvider::EnumeratePoseWatchCurves(const FPoseWatchMessage& InMessage, TFunctionRef<void(const FSkeletalMeshNamedCurve&)> Callback) const
+{
+	Session.ReadAccessCheck();
+
+	uint64 StartCurveIndex = InMessage.CurveStartIndex;
+	uint64 EndCurveIndex = InMessage.CurveStartIndex + InMessage.NumCurves;
+
+	for(uint64 CurveIndex = StartCurveIndex; CurveIndex < EndCurveIndex; ++CurveIndex)
+	{
+		Callback(SkeletalMeshCurves[CurveIndex]);
+	}
+}
+
 void FAnimationProvider::EnumerateTickRecordIds(uint64 InObjectId, TFunctionRef<void(uint64, int32)> Callback) const
 {
 	Session.ReadAccessCheck();
@@ -424,6 +437,22 @@ const FSkeletalMeshInfo* FAnimationProvider::FindSkeletalMeshInfo(uint64 InObjec
 	return nullptr;
 }
 
+const FAnimNodeInfo* FAnimationProvider::FindAnimNodeInfo(int32 InAnimNodeId, uint64 InAnimInstanceId) const
+{
+	Session.ReadAccessCheck();
+
+	const uint32* IndexPtr = AnimNodeIdToIndexMap.Find({ InAnimNodeId, InAnimInstanceId });
+	if (IndexPtr != nullptr)
+	{
+		if (*IndexPtr < uint32(AnimNodeInfos.Num()))
+		{
+			return &AnimNodeInfos[*IndexPtr];
+		}
+	}
+
+	return nullptr;
+}
+
 const TCHAR* FAnimationProvider::GetName(uint32 InId) const
 {
 	const TCHAR* const* FoundName = NameMap.Find(InId);
@@ -475,6 +504,12 @@ FText FAnimationProvider::FormatNodeValue(const FAnimNodeValueMessage& InMessage
 	{
 		const FClassInfo& ClassInfo = GameplayProvider.GetClassInfo(InMessage.Value.Class.Value);
 		Text = FText::FromString(ClassInfo.PathName);
+		break;
+	}
+	case EAnimNodeValueType::AnimNode:
+	{
+		const FAnimNodeInfo* AnimNodeInfo = FindAnimNodeInfo(InMessage.Value.AnimNode.Value, InMessage.Value.AnimNode.AnimInstanceId);
+		Text = FText::FromString(AnimNodeInfo ? AnimNodeInfo->Name : TEXT(""));
 		break;
 	}
 	}
@@ -841,7 +876,7 @@ void FAnimationProvider::AppendAnimGraph(uint64 InAnimInstanceId, double InStart
 	Session.UpdateDurationSeconds(InStartTime);
 }
 
-void FAnimationProvider::AppendAnimNodeStart(uint64 InAnimInstanceId, double InStartTime, uint16 InFrameCounter, int32 InNodeId, int32 PreviousNodeId, float InWeight, float InRootMotionWeight, const TCHAR* InTargetNodeName, uint8 InPhase)
+void FAnimationProvider::AppendAnimNodeStart(uint64 InAnimInstanceId, double InStartTime, uint16 InFrameCounter, int32 InNodeId, int32 PreviousNodeId, const TCHAR* InTargetNodeName, float InWeight, float InRootMotionWeight, const TCHAR* InTargetNodeDisplayName, uint8 InPhase)
 {
 	Session.WriteAccessCheck();
 
@@ -862,7 +897,8 @@ void FAnimationProvider::AppendAnimNodeStart(uint64 InAnimInstanceId, double InS
 	}
 
 	FAnimNodeMessage Message;
-	Message.NodeName = Session.StoreString(InTargetNodeName);
+	Message.NodeName = Session.StoreString(InTargetNodeDisplayName);
+	Message.NodeTypeName = Session.StoreString(InTargetNodeName);
 	Message.AnimInstanceId = InAnimInstanceId;
 	Message.PreviousNodeId = PreviousNodeId;
 	Message.NodeId = InNodeId;
@@ -872,6 +908,20 @@ void FAnimationProvider::AppendAnimNodeStart(uint64 InAnimInstanceId, double InS
 	Message.Phase = (EAnimGraphPhase)InPhase;
 
 	Timeline->AppendEvent(InStartTime, Message);
+
+	if (AnimNodeIdToIndexMap.Find({ InNodeId, InAnimInstanceId }) == nullptr)
+	{
+		bHasAnyData = true;
+
+		FAnimNodeInfo NewAnimNodeInfo;
+		NewAnimNodeInfo.Id = Message.NodeId;
+		NewAnimNodeInfo.AnimInstanceId = Message.AnimInstanceId;
+		NewAnimNodeInfo.Name = Message.NodeName;
+		NewAnimNodeInfo.TypeName = Message.NodeTypeName;
+
+		uint32 NewAnimNodeInfoIndex = AnimNodeInfos.Add(NewAnimNodeInfo);
+		AnimNodeIdToIndexMap.Add({ InNodeId, InAnimInstanceId }, NewAnimNodeInfoIndex);
+	}
 
 	Session.UpdateDurationSeconds(InStartTime);
 }
@@ -944,79 +994,89 @@ void FAnimationProvider::AppendBlendSpacePlayer(uint64 InAnimInstanceId, double 
 	Session.UpdateDurationSeconds(InTime);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, bool bInValue)
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, bool bInValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Bool.bValue = bInValue;
 	Message.Value.Type = EAnimNodeValueType::Bool;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, int32 InValue)
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, int32 InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Int32.Value = InValue;
 	Message.Value.Type = EAnimNodeValueType::Int32;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, float InValue)
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, float InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Float.Value = InValue;
 	Message.Value.Type = EAnimNodeValueType::Float;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, const FVector2D& InValue)
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, const FVector2D& InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Vector2D.Value = InValue;
 	Message.Value.Type = EAnimNodeValueType::Vector2D;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, const FVector& InValue)
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, const FVector& InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Vector.Value = InValue;
 	Message.Value.Type = EAnimNodeValueType::Vector;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, const TCHAR* InValue)
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, const TCHAR* InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.String.Value = Session.StoreString(InValue);
 	Message.Value.Type = EAnimNodeValueType::String;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValueObject(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, uint64 InValue)
+void FAnimationProvider::AppendAnimNodeValueObject(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, uint64 InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Object.Value = InValue;
 	Message.Value.Type = EAnimNodeValueType::Object;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValueClass(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, uint64 InValue)
+void FAnimationProvider::AppendAnimNodeValueClass(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, uint64 InValue)
 {
 	FAnimNodeValueMessage Message;
 	Message.Value.Class.Value = InValue;
 	Message.Value.Type = EAnimNodeValueType::Class;
 
-	AppendAnimNodeValue(InAnimInstanceId, InTime, InFrameCounter, InNodeId, InKey, Message);
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
 }
 
-void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, FAnimNodeValueMessage& InMessage)
+void FAnimationProvider::AppendAnimNodeValueAnimNode(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, int32 InValue, uint64 InValueAnimInstanceId)
+{
+	FAnimNodeValueMessage Message;
+	Message.Value.AnimNode.Value = InValue;
+	Message.Value.AnimNode.AnimInstanceId = InValueAnimInstanceId;
+	Message.Value.Type = EAnimNodeValueType::AnimNode;
+
+	AppendAnimNodeValue(InAnimInstanceId, InTime, InRecordingTime, InFrameCounter, InNodeId, InKey, Message);
+}
+
+void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint16 InFrameCounter, int32 InNodeId, const TCHAR* InKey, FAnimNodeValueMessage& InMessage)
 {
 	Session.WriteAccessCheck();
 
@@ -1039,6 +1099,7 @@ void FAnimationProvider::AppendAnimNodeValue(uint64 InAnimInstanceId, double InT
 	InMessage.AnimInstanceId = InAnimInstanceId;
 	InMessage.NodeId = InNodeId;
 	InMessage.FrameCounter = InFrameCounter;
+	InMessage.RecordingTime = InRecordingTime;
 
 	Timeline->AppendEvent(InTime, InMessage);
 
@@ -1315,11 +1376,11 @@ void FAnimationProvider::AppendPoseWatch(uint64 InAnimInstanceId, double InTime,
 	bHasAnyData = true;
 
 	TSharedPtr<TraceServices::TPointTimeline<FPoseWatchMessage>> Timeline;
-	uint32* IndexPtr = ObjectIdToPoseWatchTimelines.Find(InAnimInstanceId);
-	if (IndexPtr != nullptr)
+	uint32* PoseWatchIndexPtr = ObjectIdToPoseWatchTimelines.Find(InAnimInstanceId);
+	if (PoseWatchIndexPtr != nullptr)
 	{
-		check(PoseWatchTimelines.IsValidIndex(*IndexPtr));
-		Timeline = PoseWatchTimelines[*IndexPtr];
+		check(PoseWatchTimelines.IsValidIndex(*PoseWatchIndexPtr));
+		Timeline = PoseWatchTimelines[*PoseWatchIndexPtr];
 	}
 	else
 	{
@@ -1333,13 +1394,16 @@ void FAnimationProvider::AppendPoseWatch(uint64 InAnimInstanceId, double InTime,
 
 	FPoseWatchMessage Message;
 	Message.RecordingTime = InRecordingTime;
+	Message.ComponentId = 0;
 	Message.AnimInstanceId = InAnimInstanceId;
 	Message.PoseWatchId = PoseWatchId;
 	Message.BoneTransformsStartIndex = SkeletalMeshPoseTransforms.Num();
+	Message.CurveStartIndex = SkeletalMeshCurves.Num();
 	Message.NumBoneTransforms = BoneTransformsRaw.Num() / (sizeof(FTransform) / sizeof(float));
 	Message.WorldTransform = WorldTransform;
 	Message.RequiredBonesStartIndex = PoseWatchRequiredBones.Num();
 	Message.NumRequiredBones = RequiredBones.Num();
+	Message.NumCurves = 0;
 	Message.bIsEnabled = bIsEnabled;
 
 	Timeline->AppendEvent(InTime, Message);
@@ -1364,6 +1428,98 @@ void FAnimationProvider::AppendPoseWatch(uint64 InAnimInstanceId, double InTime,
 		}
 	}
 
+	// Dump RequiredBones into PoseWatchRequiredBones
+	for (const uint16 RequiredBone : RequiredBones)
+	{
+		PoseWatchRequiredBones.PushBack() = RequiredBone;
+	}
+
+	Session.UpdateDurationSeconds(InTime);
+}
+
+void FAnimationProvider::AppendPoseWatch(uint64 InComponentId, uint64 InAnimInstanceId, double InTime, double InRecordingTime, uint64 PoseWatchId, uint32 NameId, FColor Color, const TArrayView<const float>& BoneTransformsRaw, const TArrayView<const uint32>& CurveIds, const TArrayView<const float>& CurveValues, const TArrayView<const uint16>& RequiredBones, const TArrayView<const float>& WorldTransformRaw, const bool bIsEnabled)
+{
+	Session.WriteAccessCheck();
+
+	bHasAnyData = true;
+
+	TSharedPtr<TraceServices::TPointTimeline<FPoseWatchMessage>> Timeline;
+	uint32* PoseWatchIndexPtr = ObjectIdToPoseWatchTimelines.Find(InAnimInstanceId);
+	if (PoseWatchIndexPtr != nullptr)
+	{
+		check(PoseWatchTimelines.IsValidIndex(*PoseWatchIndexPtr));
+		Timeline = PoseWatchTimelines[*PoseWatchIndexPtr];
+	}
+	else
+	{
+		Timeline = MakeShared<TraceServices::TPointTimeline<FPoseWatchMessage>>(Session.GetLinearAllocator());
+		ObjectIdToPoseWatchTimelines.Add(InAnimInstanceId, PoseWatchTimelines.Num());
+		PoseWatchTimelines.Add(Timeline.ToSharedRef());
+	}
+
+	TSharedPtr<FSkeletalMeshTimelineStorage> TimelineStorage;
+	uint32* SkeletalMeshIndexPtr = ObjectIdToSkeletalMeshPoseTimelines.Find(InComponentId);
+	if(SkeletalMeshIndexPtr != nullptr)
+	{
+		TimelineStorage = SkeletalMeshPoseTimelineStorage[*SkeletalMeshIndexPtr];
+	}
+	else
+	{
+		TimelineStorage = MakeShared<FSkeletalMeshTimelineStorage>();
+		TimelineStorage->Timeline = MakeShared<TraceServices::TIntervalTimeline<FSkeletalMeshPoseMessage>>(Session.GetLinearAllocator());
+		ObjectIdToSkeletalMeshPoseTimelines.Add(InComponentId, SkeletalMeshPoseTimelineStorage.Num());
+		SkeletalMeshPoseTimelineStorage.Add(TimelineStorage.ToSharedRef());
+	}
+	
+	const int32 NumCurves = CurveIds.Num();
+
+	FTransform WorldTransform;
+	FMemory::Memcpy(&WorldTransform, &WorldTransformRaw[0], sizeof(FTransform));
+
+	FPoseWatchMessage Message;
+	Message.RecordingTime = InRecordingTime;
+	Message.ComponentId = InComponentId;
+	Message.AnimInstanceId = InAnimInstanceId;
+	Message.PoseWatchId = PoseWatchId;
+	Message.NameId = NameId;
+	Message.Color = Color;
+	Message.BoneTransformsStartIndex = SkeletalMeshPoseTransforms.Num();
+	Message.CurveStartIndex = SkeletalMeshCurves.Num();
+	Message.NumBoneTransforms = BoneTransformsRaw.Num() / (sizeof(FTransform) / sizeof(float));
+	Message.WorldTransform = WorldTransform;
+	Message.RequiredBonesStartIndex = PoseWatchRequiredBones.Num();
+	Message.NumRequiredBones = RequiredBones.Num();
+	Message.NumCurves = NumCurves;
+	Message.bIsEnabled = bIsEnabled;
+
+	Timeline->AppendEvent(InTime, Message);
+
+	const int CaptureTransformSize = sizeof(FTransform) / sizeof(float); // TODO
+	const int LocalTransformSize = sizeof(FTransform) / sizeof(float);
+	const int PoseTransformCount = BoneTransformsRaw.Num() / CaptureTransformSize;
+
+	// Dump PoseBoneTransformsRaw into SkeletalMeshPoseTransforms
+	if (CaptureTransformSize == LocalTransformSize)
+	{
+		for (int i = 0; i < PoseTransformCount; i++)
+		{
+			FMemory::Memcpy(&SkeletalMeshPoseTransforms.PushBack(), &BoneTransformsRaw[CaptureTransformSize * i], sizeof(FTransform));
+		}
+	}
+	else
+	{
+		for (int i = 0; i < PoseTransformCount; i++)
+		{
+			SkeletalMeshPoseTransforms.PushBack() = ConvertTransform(CaptureTransformSize, &BoneTransformsRaw[CaptureTransformSize * i]);
+		}
+	}
+
+	for(int32 CurveIndex = 0; CurveIndex < NumCurves; ++CurveIndex)
+	{
+		SkeletalMeshCurves.PushBack() = { CurveIds[CurveIndex], CurveValues[CurveIndex] };
+		TimelineStorage->AllCurveIds.Add(CurveIds[CurveIndex]);
+	}
+	
 	// Dump RequiredBones into PoseWatchRequiredBones
 	for (const uint16 RequiredBone : RequiredBones)
 	{

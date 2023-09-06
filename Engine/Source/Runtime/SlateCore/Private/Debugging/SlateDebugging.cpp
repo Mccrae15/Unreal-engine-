@@ -10,6 +10,7 @@
 #include "Misc/StringBuilder.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Rendering/DrawElements.h"
+#include "Rendering/DrawElementPayloads.h"
 #include "SlateGlobals.h"
 #include "Styling/CoreStyle.h"
 #include "Types/ReflectionMetadata.h"
@@ -70,7 +71,7 @@ FSlateDebuggingFocusEventArgs::FSlateDebuggingFocusEventArgs(
 	, NewFocusedWidgetPath(InNewFocusedWidgetPath)
 	, NewFocusedWidget(InNewFocusedWidget)
 {
-}
+} 
 
 FText FSlateDebuggingFocusEventArgs::ToText() const
 {
@@ -350,6 +351,16 @@ FSlateDebuggingWidgetUpdatedEventArgs::FSlateDebuggingWidgetUpdatedEventArgs(
 {
 }
 
+FSlateDebuggingElementTypeAddedEventArgs::FSlateDebuggingElementTypeAddedEventArgs(
+	const FSlateWindowElementList& InElementList,
+	int32 InElementIndex,
+	EElementType InElementType)
+	: ElementList(InElementList)
+	, ElementIndex(InElementIndex)
+	, ElementType(InElementType)
+{
+}
+
 FText FSlateDebuggingWidgetUpdatedEventArgs::ToText() const
 {
 	TArray<FText> UpdateText;
@@ -390,7 +401,11 @@ FSlateDebugging::FEndWidgetPaint FSlateDebugging::EndWidgetPaint;
 
 FSlateDebugging::FPaintDebugElements FSlateDebugging::PaintDebugElements;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FSlateDebugging::FDrawElement FSlateDebugging::ElementAdded;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+FSlateDebugging::FDrawElementType FSlateDebugging::ElementTypeAdded;
 
 FSlateDebugging::FWidgetWarningEvent FSlateDebugging::Warning;
 

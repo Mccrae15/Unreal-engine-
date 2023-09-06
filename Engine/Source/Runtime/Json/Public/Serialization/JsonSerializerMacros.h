@@ -24,6 +24,16 @@
 #define JSON_SERIALIZE(JsonName, JsonValue) \
 		Serializer.Serialize(TEXT(JsonName), JsonValue)
 
+#define JSON_SERIALIZE_WITHDEFAULT(JsonName, JsonValue, DefaultJsonValue) \
+		if (Serializer.IsLoading()) \
+		{ \
+			if (!Serializer.GetObject()->HasField(TEXT(JsonName))) \
+           	{ \
+           		JsonValue = DefaultJsonValue; \
+           	} \
+        } \
+		Serializer.Serialize(TEXT(JsonName), JsonValue);
+		
 #define JSON_SERIALIZE_OPTIONAL(JsonName, OptionalJsonValue) \
 		if (Serializer.IsLoading()) \
 		{ \
@@ -42,6 +52,26 @@
 
 #define JSON_SERIALIZE_ARRAY(JsonName, JsonArray) \
 		Serializer.SerializeArray(TEXT(JsonName), JsonArray)
+		
+#define JSON_SERIALIZE_ARRAY_WITHDEFAULT(JsonName, JsonArray, DefaultArray) \
+		if (Serializer.IsLoading()) \
+		{ \
+			if (!Serializer.GetObject()->HasField(TEXT(JsonName))) \
+			{ \
+				JsonArray = DefaultArray; \
+			} \
+		} \
+		Serializer.SerializeArray(TEXT(JsonName), JsonArray);
+		
+#define JSON_SERIALIZE_OBJECT_WITHDEFAULT(JsonName, JsonObject, DefaultObject) \
+		if (Serializer.IsLoading()) \
+		{ \
+			if (!Serializer.GetObject()->HasField(TEXT(JsonName))) \
+			{ \
+				JsonObject = DefaultObject; \
+			} \
+		} \
+		Serializer.SerializeArray(TEXT(JsonName), JsonArray);
 
 #define JSON_SERIALIZE_MAP(JsonName, JsonMap) \
 		Serializer.SerializeMap(TEXT(JsonName), JsonMap)
@@ -88,9 +118,35 @@
 			{ \
 				for (auto It = Serializer.GetObject()->GetArrayField(JsonName).CreateConstIterator(); It; ++It) \
 				{ \
-					ElementType* Obj = new(JsonArray) ElementType(); \
-					Obj->FromJson((*It)->AsObject()); \
+					ElementType& Obj = JsonArray.AddDefaulted_GetRef(); \
+					Obj.FromJson((*It)->AsObject()); \
 				} \
+			} \
+		} \
+		else \
+		{ \
+			Serializer.StartArray(JsonName); \
+			for (auto It = JsonArray.CreateIterator(); It; ++It) \
+			{ \
+				It->Serialize(Serializer, false); \
+			} \
+			Serializer.EndArray(); \
+		}
+		
+#define JSON_SERIALIZE_ARRAY_SERIALIZABLE_WITHDEFAULT(JsonName, JsonArray, ElementType, DefaultArray) \
+		if (Serializer.IsLoading()) \
+		{ \
+			if (Serializer.GetObject()->HasTypedField<EJson::Array>(JsonName)) \
+			{ \
+				for (auto It = Serializer.GetObject()->GetArrayField(JsonName).CreateConstIterator(); It; ++It) \
+				{ \
+					ElementType& Obj = JsonArray.AddDefaulted_GetRef(); \
+					Obj.FromJson((*It)->AsObject()); \
+				} \
+			} \
+			else \
+			{ \
+				JsonArray = DefaultArray; \
 			} \
 		} \
 		else \
@@ -111,8 +167,8 @@
 				TArray<ElementType>& JsonArray = OptionalJsonArray.Emplace(); \
 				for (auto It = Serializer.GetObject()->GetArrayField(JsonName).CreateConstIterator(); It; ++It) \
 				{ \
-					ElementType* Obj = new(JsonArray) ElementType(); \
-					Obj->FromJson((*It)->AsObject()); \
+					ElementType& Obj = JsonArray.AddDefaulted_GetRef(); \
+					Obj.FromJson((*It)->AsObject()); \
 				} \
 			} \
 		} \
@@ -167,6 +223,32 @@
 				{ \
 					(JsonSerializableObject).FromJson(JsonObj); \
 				} \
+			} \
+		} \
+		else \
+		{ \
+			/* Write the value to the Name field */ \
+			Serializer.StartObject(JsonName); \
+			(JsonSerializableObject).Serialize(Serializer, true); \
+			Serializer.EndObject(); \
+		}
+		
+#define JSON_SERIALIZE_OBJECT_SERIALIZABLE_WITHDEFAULT(JsonName, JsonSerializableObject, JsonSerializableObjectDefault) \
+		/* Process the JsonName field differently because it is an object */ \
+		if (Serializer.IsLoading()) \
+		{ \
+			/* Read in the value from the JsonName field */ \
+			if (Serializer.GetObject()->HasTypedField<EJson::Object>(JsonName)) \
+			{ \
+				TSharedPtr<FJsonObject> JsonObj = Serializer.GetObject()->GetObjectField(JsonName); \
+				if (JsonObj.IsValid()) \
+				{ \
+					(JsonSerializableObject).FromJson(JsonObj); \
+				} \
+			} \
+			else \
+			{ \
+				JsonSerializableObject = JsonSerializableObjectDefault; \
 			} \
 		} \
 		else \
@@ -269,12 +351,14 @@ struct FJsonSerializerBase;
 /** Array of data */
 typedef TArray<FString> FJsonSerializableArray;
 typedef TArray<int32> FJsonSerializableArrayInt;
+typedef TArray<float> FJsonSerializableArrayFloat;
 
 /** Maps a key to a value */
 typedef TMap<FString, FString> FJsonSerializableKeyValueMap;
 typedef TMap<FString, int32> FJsonSerializableKeyValueMapInt;
 typedef TMap<FString, int64> FJsonSerializableKeyValueMapInt64;
 typedef TMap<FString, float> FJsonSerializableKeyValueMapFloat;
+typedef TMap<FString, FJsonSerializableArrayInt> FJsonSerializableKeyValueMapArrayInt;
 
 /**
  * Base interface used to serialize to/from JSON. Hides the fact there are separate read/write classes
@@ -301,8 +385,10 @@ struct FJsonSerializerBase
 	virtual void SerializeArray(FJsonSerializableArray& Array) = 0;
 	virtual void SerializeArray(const TCHAR* Name, FJsonSerializableArray& Value) = 0;
 	virtual void SerializeArray(const TCHAR* Name, FJsonSerializableArrayInt& Value) = 0;
+	virtual void SerializeArray(const TCHAR* Name, FJsonSerializableArrayFloat& Value) = 0;
 	virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMap& Map) = 0;
 	virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMapInt& Map) = 0;
+	virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMapArrayInt& Map) = 0;
 	virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMapInt64& Map) = 0;
 	virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMapFloat& Map) = 0;
 	virtual void SerializeSimpleMap(FJsonSerializableKeyValueMap& Map) = 0;
@@ -525,6 +611,23 @@ public:
 	}
 
 	/**
+	 * Serializes an array of values with an identifier
+	 *
+	 * @param Name the name of the property to serialize
+	 * @param Array the array to serialize
+	 */
+	virtual void SerializeArray(const TCHAR* Name, FJsonSerializableArrayFloat& Array) override
+	{
+		JsonWriter->WriteArrayStart(Name);
+		// Iterate all of values
+		for (FJsonSerializableArrayFloat::ElementType& Item : Array)
+		{
+			JsonWriter->WriteValue(Item);
+		}
+		JsonWriter->WriteArrayEnd();
+	}
+
+	/**
 	 * Serializes the keys & values for map
 	 *
 	 * @param Name the name of the property to serialize
@@ -554,6 +657,22 @@ public:
 		for (FJsonSerializableKeyValueMapInt::ElementType& Pair : Map)
 		{
 			Serialize(*Pair.Key, Pair.Value);
+		}
+		JsonWriter->WriteObjectEnd();
+	}
+	/**
+	 * Serializes the keys & values for map
+	 *
+	 * @param Name the name of the property to serialize
+	 * @param Map the map to serialize
+	 */
+	virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMapArrayInt& Map) override
+	{
+		JsonWriter->WriteObjectStart(Name);
+		// Iterate all of the keys and their values
+		for (FJsonSerializableKeyValueMapArrayInt::ElementType& Pair : Map)
+		{
+			SerializeArray(*Pair.Key, Pair.Value);
 		}
 		JsonWriter->WriteObjectEnd();
 	}
@@ -846,6 +965,24 @@ public:
 		}
 	}
 	/**
+	 * Serializes an array of values with an identifier
+	 *
+	 * @param Name the name of the property to serialize
+	 * @param Array the array to serialize
+	 */
+	virtual void SerializeArray(const TCHAR* Name, FJsonSerializableArrayFloat& Array) override
+	{
+		if (JsonObject->HasTypedField<EJson::Array>(Name))
+		{
+			TArray< TSharedPtr<FJsonValue> > JsonArray = JsonObject->GetArrayField(Name);
+			// Iterate all of the keys and their values
+			for (TSharedPtr<FJsonValue>& Value : JsonArray)
+			{
+				Array.Add((float)Value->AsNumber());
+			}
+		}
+	}
+	/**
 	 * Serializes the keys & values for map
 	 *
 	 * @param Name the name of the property to serialize
@@ -883,6 +1020,34 @@ public:
 			}
 		}
 	}
+	
+	/**
+     * Serializes the keys & values for map
+     *
+     * @param Name the name of the property to serialize
+     * @param Map the map to serialize
+     */
+    virtual void SerializeMap(const TCHAR* Name, FJsonSerializableKeyValueMapArrayInt& Map) override
+    {
+    	if (JsonObject->HasTypedField<EJson::Object>(Name))
+    	{
+    		TSharedPtr<FJsonObject> JsonMap = JsonObject->GetObjectField(Name);
+    		// Iterate all of the keys and their values
+    		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : JsonMap->Values)
+    		{
+    			FJsonSerializableArrayInt TempArray;
+    			for(const TSharedPtr<FJsonValue>& ArrayValue : Pair.Value->AsArray())
+    			{
+    				int32 IntValue;
+    				if(ArrayValue.IsValid() && ArrayValue->TryGetNumber(IntValue))
+    				{
+    					TempArray.Add(IntValue);
+    				}
+    			}
+    			Map.Add(Pair.Key, TempArray);
+    		}
+    	}
+    }
 
 	/**
 	 * Serializes the keys & values for map

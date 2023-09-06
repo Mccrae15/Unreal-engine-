@@ -7,14 +7,21 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "MVVMBlueprintView.h"
+#include "MVVMDeveloperProjectSettings.h"
+#include "MVVMEditorSubsystem.h"
 #include "MVVMWidgetBlueprintExtension_View.h"
+#include "PropertyHandle.h"
+#include "PropertyPathHelpers.h"
 #include "Styling/StyleColors.h"
+#include "Widgets/ViewModelFieldDragDropOp.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "MVVMPropertyBindingExtension"
 
-static void ExtendBindingsMenu(FMenuBuilder& MenuBuilder, const UWidgetBlueprint* WidgetBlueprint, const UWidget* Widget, const FProperty* Property)
+namespace UE::MVVM
+{
+static void ExtendBindingsMenu(FMenuBuilder& MenuBuilder, const UWidgetBlueprint* WidgetBlueprint, UWidget* Widget, TSharedPtr<IPropertyHandle> WidgetPropertyHandle)
 {
 	MenuBuilder.BeginSection("ViewModels", LOCTEXT("ViewModels", "View Models"));
 
@@ -74,15 +81,29 @@ static void ExtendBindingsMenu(FMenuBuilder& MenuBuilder, const UWidgetBlueprint
 		return HorizontalBox;
 	};
 
-	auto CreateBinding = [MVVMBlueprintView](const UWidget* Widget, const FProperty* WidgetProperty, FGuid ViewModelId, const FProperty* ViewModelProperty)
+	auto CreateBinding = [WidgetBlueprint, MVVMBlueprintView](UWidget* Widget, TSharedPtr<IPropertyHandle> WidgetPropertyHandle, FGuid ViewModelId, const FProperty* ViewModelProperty)
 	{
 		FMVVMBlueprintViewBinding& NewBinding = MVVMBlueprintView->AddDefaultBinding();
 
-		NewBinding.ViewModelPath.SetViewModelId(ViewModelId);
-		NewBinding.ViewModelPath.SetBasePropertyPath(UE::MVVM::FMVVMConstFieldVariant(ViewModelProperty));
+		NewBinding.SourcePath.SetViewModelId(ViewModelId);
+		NewBinding.SourcePath.SetPropertyPath(WidgetBlueprint, UE::MVVM::FMVVMConstFieldVariant(ViewModelProperty));
 
-		NewBinding.WidgetPath.SetWidgetName(Widget->GetFName());
-		NewBinding.WidgetPath.SetBasePropertyPath(UE::MVVM::FMVVMConstFieldVariant(WidgetProperty));
+		// Generate the destination path from the widget property that we are dropping on.
+		FCachedPropertyPath CachedPropertyPath(WidgetPropertyHandle->GeneratePathToProperty());
+		CachedPropertyPath.Resolve(Widget);
+
+		// Set the destination path.
+		FMVVMBlueprintPropertyPath DestinationPropertyPath;
+		DestinationPropertyPath.ResetPropertyPath();
+
+		for (int32 SegNum = 0; SegNum < CachedPropertyPath.GetNumSegments(); SegNum++)
+		{
+			FFieldVariant Field = CachedPropertyPath.GetSegment(SegNum).GetField();
+			DestinationPropertyPath.AppendPropertyPath(WidgetBlueprint, UE::MVVM::FMVVMConstFieldVariant(Field));
+		}
+
+		DestinationPropertyPath.SetWidgetName(Widget->GetFName());
+		NewBinding.DestinationPath = DestinationPropertyPath;
 
 		NewBinding.BindingType = EMVVMBindingMode::OneWayToDestination;
 	};
@@ -96,9 +117,10 @@ static void ExtendBindingsMenu(FMenuBuilder& MenuBuilder, const UWidgetBlueprint
 		}
 
 		MenuBuilder.AddSubMenu(ViewModel.GetDisplayName(), ViewModel.GetDisplayName(),
-			FNewMenuDelegate::CreateLambda([ViewModel, Widget, Property, Schema, CreatePropertyWidget, CreateBinding](FMenuBuilder& MenuBuilder)
+			FNewMenuDelegate::CreateLambda([ViewModel, Widget, WidgetPropertyHandle, Schema, CreatePropertyWidget, CreateBinding](FMenuBuilder& MenuBuilder)
 				{
 					const UClass* ViewModelClass = ViewModel.GetViewModelClass();
+					const FProperty* Property = WidgetPropertyHandle->GetProperty();
 
 					MenuBuilder.BeginSection("ValidDataTypes", LOCTEXT("ValidDataTypes", "Valid Data Types"));
 
@@ -111,7 +133,7 @@ static void ExtendBindingsMenu(FMenuBuilder& MenuBuilder, const UWidgetBlueprint
 						}
 
 						FUIAction UIAction;
-						UIAction.ExecuteAction = FExecuteAction::CreateLambda(CreateBinding, Widget, Property, ViewModel.GetViewModelId(), VMProperty);
+						UIAction.ExecuteAction = FExecuteAction::CreateLambda(CreateBinding, Widget, WidgetPropertyHandle, ViewModel.GetViewModelId(), VMProperty);
 						MenuBuilder.AddMenuEntry(
 							UIAction,
 							CreatePropertyWidget(VMProperty, false)
@@ -131,7 +153,7 @@ static void ExtendBindingsMenu(FMenuBuilder& MenuBuilder, const UWidgetBlueprint
 						}
 
 						FUIAction UIAction;
-						UIAction.ExecuteAction = FExecuteAction::CreateLambda(CreateBinding, Widget, Property, ViewModel.GetViewModelId(), VMProperty);
+						UIAction.ExecuteAction = FExecuteAction::CreateLambda(CreateBinding, Widget, WidgetPropertyHandle, ViewModel.GetViewModelId(), VMProperty);
 						MenuBuilder.AddMenuEntry(
 							UIAction,
 							CreatePropertyWidget(VMProperty, true)
@@ -158,7 +180,7 @@ TOptional<FName> FMVVMPropertyBindingExtension::GetCurrentValue(const UWidgetBlu
 		return TOptional<FName>();
 	}
 
-	TArray<FName> Names = Binding->ViewModelPath.GetPaths();
+	TArray<FName> Names = Binding->SourcePath.GetFieldNames(WidgetBlueprint->SkeletonGeneratedClass);
 	if (Names.Num() > 0)
 	{
 		return Names.Last();
@@ -181,7 +203,7 @@ const FSlateBrush* FMVVMPropertyBindingExtension::GetCurrentIcon(const UWidgetBl
 		return nullptr;
 	}
 
-	TArray<UE::MVVM::FMVVMConstFieldVariant> Fields = Binding->ViewModelPath.GetFields();
+	TArray<UE::MVVM::FMVVMConstFieldVariant> Fields = Binding->SourcePath.GetFields(WidgetBlueprint->SkeletonGeneratedClass);
 	if (Fields.IsEmpty())
 	{
 		return nullptr;
@@ -210,21 +232,26 @@ void FMVVMPropertyBindingExtension::ClearCurrentValue(const UWidgetBlueprint* Wi
 		{
 			if (FMVVMBlueprintViewBinding* Binding = MVVMBlueprintView->FindBinding(Widget, Property))
 			{
-				Binding->ViewModelPath.ResetBasePropertyPath();
+				Binding->SourcePath.ResetPropertyPath();
 			}
 		}
 	}
 }
 
-TSharedPtr<FExtender> FMVVMPropertyBindingExtension::CreateMenuExtender(const UWidgetBlueprint* WidgetBlueprint, const UWidget* Widget, const FProperty* Property)
+TSharedPtr<FExtender> FMVVMPropertyBindingExtension::CreateMenuExtender(const UWidgetBlueprint* WidgetBlueprint, UWidget* Widget, TSharedPtr<IPropertyHandle> WidgetPropertyHandle)
 {
 	TSharedPtr<FExtender> Extender = MakeShared<FExtender>();
-	Extender->AddMenuExtension("BindingActions", EExtensionHook::After, nullptr, FMenuExtensionDelegate::CreateStatic(&ExtendBindingsMenu, WidgetBlueprint, Widget, Property));
+	Extender->AddMenuExtension("BindingActions", EExtensionHook::After, nullptr, FMenuExtensionDelegate::CreateStatic(&ExtendBindingsMenu, WidgetBlueprint, Widget, WidgetPropertyHandle));
 	return Extender;
 }
 
 bool FMVVMPropertyBindingExtension::CanExtend(const UWidgetBlueprint* WidgetBlueprint, const UWidget* Widget, const FProperty* Property) const
 {
+	if (!GetDefault<UMVVMDeveloperProjectSettings>()->bAllowBindingFromDetailView)
+	{
+		return false;
+	}
+
 	const UMVVMWidgetBlueprintExtension_View* MVVMExtensionPtr = UMVVMWidgetBlueprintExtension_View::GetExtension<UMVVMWidgetBlueprintExtension_View>(WidgetBlueprint);
 	if (MVVMExtensionPtr == nullptr)
 	{
@@ -234,4 +261,66 @@ bool FMVVMPropertyBindingExtension::CanExtend(const UWidgetBlueprint* WidgetBlue
 	return MVVMBlueprintView ? MVVMBlueprintView->GetViewModels().Num() > 0 : false;
 }
 
+IPropertyBindingExtension::EDropResult FMVVMPropertyBindingExtension::OnDrop(const FGeometry& Geometry, const FDragDropEvent& DragDropEvent, UWidgetBlueprint* WidgetBlueprint, UWidget* Widget, TSharedPtr<IPropertyHandle> WidgetPropertyHandle)
+{
+	UMVVMWidgetBlueprintExtension_View* MVVMExtensionPtr = UMVVMWidgetBlueprintExtension_View::GetExtension<UMVVMWidgetBlueprintExtension_View>(WidgetBlueprint);
+	if (MVVMExtensionPtr == nullptr)
+	{
+		return EDropResult::Unhandled;
+	}
+	UMVVMBlueprintView* MVVMBlueprintView = MVVMExtensionPtr->GetBlueprintView();
+	if (MVVMBlueprintView == nullptr)
+	{
+		return EDropResult::Unhandled;
+	}
+
+	if (TSharedPtr<UE::MVVM::FViewModelFieldDragDropOp> ViewModelFieldDragDropOp = DragDropEvent.GetOperationAs<UE::MVVM::FViewModelFieldDragDropOp>())
+	{
+		UMVVMEditorSubsystem* EditorSubsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>();
+		FMVVMBlueprintViewBinding& NewBinding = EditorSubsystem->AddBinding(WidgetBlueprint);
+
+		TArray<FFieldVariant> SourceFieldPath = ViewModelFieldDragDropOp->DraggedField;
+
+		// Set the source path (view model property from the drop event).
+		FMVVMBlueprintPropertyPath SourcePropertyPath;
+		SourcePropertyPath.ResetPropertyPath();
+		for (const FFieldVariant& Field : SourceFieldPath)
+		{
+			SourcePropertyPath.AppendPropertyPath(WidgetBlueprint, UE::MVVM::FMVVMConstFieldVariant(Field));
+		}
+		if (ViewModelFieldDragDropOp->ViewModelId.IsValid())
+		{
+			SourcePropertyPath.SetViewModelId(ViewModelFieldDragDropOp->ViewModelId);
+		}
+
+		NewBinding.SourcePath = SourcePropertyPath;
+		EditorSubsystem->SetSourcePathForBinding(WidgetBlueprint, NewBinding, SourcePropertyPath);
+
+		// Generate the destination path from the widget property that we are dropping on.
+		FCachedPropertyPath CachedPropertyPath(WidgetPropertyHandle->GeneratePathToProperty());
+		CachedPropertyPath.Resolve(Widget);
+
+		// Set the destination path.
+		FMVVMBlueprintPropertyPath DestinationPropertyPath;
+		DestinationPropertyPath.ResetPropertyPath();
+
+		for (int32 SegNum = 0; SegNum < CachedPropertyPath.GetNumSegments(); SegNum++)
+		{
+			FFieldVariant Field = CachedPropertyPath.GetSegment(SegNum).GetField();
+			DestinationPropertyPath.AppendPropertyPath(WidgetBlueprint, UE::MVVM::FMVVMConstFieldVariant(Field));
+		}
+
+		DestinationPropertyPath.SetWidgetName(Widget->GetFName());
+		EditorSubsystem->SetDestinationPathForBinding(WidgetBlueprint, NewBinding, DestinationPropertyPath);
+
+		return EDropResult::HandledContinue;
+	}
+	return EDropResult::Unhandled;
+}
+
+TSharedPtr<FExtender> FMVVMPropertyBindingExtension::CreateMenuExtender(const UWidgetBlueprint* WidgetBlueprint, const UWidget* Widget, const FProperty* Property)
+{
+	return MakeShared<FExtender>();
+}
+}
 #undef LOCTEXT_NAMESPACE

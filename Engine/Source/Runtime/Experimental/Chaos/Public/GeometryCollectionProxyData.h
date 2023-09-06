@@ -17,12 +17,12 @@
 *
 * Stores per instance data for transforms and hierarchy information
 */
-class CHAOS_API FTransformDynamicCollection : public FManagedArrayCollection
+class FTransformDynamicCollection : public FManagedArrayCollection
 {
 public:
 	typedef FManagedArrayCollection Super;
 
-	FTransformDynamicCollection();
+	CHAOS_API FTransformDynamicCollection();
 	FTransformDynamicCollection(FTransformDynamicCollection&) = delete;
 	FTransformDynamicCollection& operator=(const FTransformDynamicCollection&) = delete;
 	FTransformDynamicCollection(FTransformDynamicCollection&&) = delete;
@@ -38,7 +38,7 @@ public:
 protected:
 
 	/** Construct */
-	void Construct();
+	CHAOS_API void Construct();
 };
 
 
@@ -48,11 +48,10 @@ protected:
 * Stores per instance data for simulation level information
 */
 
-class CHAOS_API FGeometryDynamicCollection : public FTransformDynamicCollection
+class FGeometryDynamicCollection : public FTransformDynamicCollection
 {
-
 public:
-	FGeometryDynamicCollection();
+	CHAOS_API FGeometryDynamicCollection();
 	FGeometryDynamicCollection(FGeometryDynamicCollection&) = delete;
 	FGeometryDynamicCollection& operator=(const FGeometryDynamicCollection&) = delete;
 	FGeometryDynamicCollection(FGeometryDynamicCollection&&) = delete;
@@ -61,16 +60,16 @@ public:
 	typedef FTransformDynamicCollection Super;
 	typedef TSharedPtr<Chaos::FImplicitObject, ESPMode::ThreadSafe> FSharedImplicit;
 
-	static const FName ActiveAttribute;
-	static const FName CollisionGroupAttribute;
-	static const FName CollisionMaskAttribute;
-	static const FName DynamicStateAttribute;
-	static const FName ImplicitsAttribute;
-	static const FName ShapesQueryDataAttribute;
-	static const FName ShapesSimDataAttribute;
-	static const FName SharedImplicitsAttribute;
-	static const FName SimplicialsAttribute;
-	static const FName SimulatableParticlesAttribute;
+	static CHAOS_API const FName ActiveAttribute;
+	static CHAOS_API const FName CollisionGroupAttribute;
+	static CHAOS_API const FName CollisionMaskAttribute;
+	static CHAOS_API const FName DynamicStateAttribute;
+	static CHAOS_API const FName ImplicitsAttribute;
+	static CHAOS_API const FName ShapesQueryDataAttribute;
+	static CHAOS_API const FName ShapesSimDataAttribute;
+	static CHAOS_API const FName SharedImplicitsAttribute;
+	static CHAOS_API const FName SimplicialsAttribute;
+	static CHAOS_API const FName SimulatableParticlesAttribute;
 
 	// Transform Group
 	TManagedArray<bool> Active;
@@ -79,13 +78,29 @@ public:
 	TManagedArray<int32> CollisionStructureID;
 	TManagedArray<int32> DynamicState;
 	TManagedArray<FSharedImplicit> Implicits;
-	TManagedArray<FVector3f> InitialAngularVelocity;
-	TManagedArray<FVector3f> InitialLinearVelocity;
 	TManagedArray<FTransform> MassToLocal;
-	//TManagedArray<TArray<FCollisionFilterData>> ShapeQueryData;
-	//TManagedArray<TArray<FCollisionFilterData>> ShapeSimData;
 	TManagedArray<TUniquePtr<FCollisionStructureManager::FSimplicial>> Simplicials;
 	TManagedArray<bool> SimulatableParticles;
+
+public:
+	struct FInitialVelocityFacade
+	{
+		FInitialVelocityFacade(FGeometryDynamicCollection& DynamicCollection);
+		FInitialVelocityFacade(const FGeometryDynamicCollection& DynamicCollection);
+
+		bool IsValid() const;
+		void DefineSchema();
+		void Fill(const FVector3f& InitialLinearVelocity, const FVector3f& InitialAngularVelocity);
+		void CopyFrom(const FGeometryDynamicCollection& SourceCollection);
+
+		TManagedArrayAccessor<FVector3f> InitialLinearVelocityAttribute;
+		TManagedArrayAccessor<FVector3f> InitialAngularVelocityAttribute;
+	};
+
+	FInitialVelocityFacade GetInitialVelocityFacade() { return FInitialVelocityFacade(*this); }
+	FInitialVelocityFacade GetInitialVelocityFacade() const { return FInitialVelocityFacade(*this); }
+
+	CHAOS_API void CopyInitialVelocityAttributesFrom(const FGeometryDynamicCollection& SourceCollection);
 };
 
 /**
@@ -93,31 +108,31 @@ public:
  * physics state , broken state, current parent (normal or internal clusters )
  * To be used with the dynamic collection
  */
-class CHAOS_API FGeometryCollectionDynamicStateFacade
+class FGeometryCollectionDynamicStateFacade
 {
 public:
-	FGeometryCollectionDynamicStateFacade(FManagedArrayCollection& InCollection);
+	CHAOS_API FGeometryCollectionDynamicStateFacade(FManagedArrayCollection& InCollection);
 
 	/** returns true if all the necessary attributes are present */
-	bool IsValid() const;
+	CHAOS_API bool IsValid() const;
 
 	/** return true if the transform is in a dynamic or sleeping state */
-	bool IsDynamicOrSleeping(int32 TransformIndex) const;
+	CHAOS_API bool IsDynamicOrSleeping(int32 TransformIndex) const;
 
 	/** return true if the transform is in a sleeping state */
-	bool IsSleeping(int32 TransformIndex) const;
+	CHAOS_API bool IsSleeping(int32 TransformIndex) const;
 
 	/** whether there's children attached to this transfom (Cluster) */
-	bool HasChildren(int32 TransformIndex) const;
+	CHAOS_API bool HasChildren(int32 TransformIndex) const;
 	
 	/** return true if the transform has broken off its parent */
-	bool HasBrokenOff(int32 TransformIndex) const;
+	CHAOS_API bool HasBrokenOff(int32 TransformIndex) const;
 
 	/** return true if the transform has an internal cluster parent */
-	bool HasInternalClusterParent(int32 TransformIndex) const;
+	CHAOS_API bool HasInternalClusterParent(int32 TransformIndex) const;
 
 	/** return true if the transform has an internal cluster parent in a dynamic state */
-	bool HasDynamicInternalClusterParent(int32 TransformIndex) const;
+	CHAOS_API bool HasDynamicInternalClusterParent(int32 TransformIndex) const;
 	
 private:
 	/** Active state, true means that the transform is active or broken off from its parent */
@@ -148,6 +163,10 @@ public:
 		, bNotifyRemovals(false)
 		, bNotifyCrumblings(false)
 		, bCrumblingEventIncludesChildren(false)
+		, bNotifyGlobalBreakings(false)
+		, bNotifyGlobalRemovals(false)
+		, bNotifyGlobalCrumblings(false)
+		, bGlobalCrumblingEventIncludesChildren(false)
 		, bEnableStrainOnCollision(false)
 	{}
 
@@ -207,6 +226,31 @@ public:
 	bool GetNotifyCrumblings() const { return bNotifyCrumblings; }
 	bool GetCrumblingEventIncludesChildren() const { return bCrumblingEventIncludesChildren; }
 
+	void SetNotifyGlobalBreakings(bool bNotify)
+	{
+		bNotifyGlobalBreakings = bNotify;
+		bIsNotificationDataDirty = true;
+	}
+	bool GetNotifyGlobalBreakings() const { return bNotifyGlobalBreakings; }
+
+	void SetNotifyGlobalRemovals(bool bNotify)
+	{
+		bNotifyGlobalRemovals = bNotify;
+		bIsNotificationDataDirty = true;
+	}
+	bool GetNotifyGlobalRemovals() const { return bNotifyGlobalRemovals; }
+
+	void SetNotifyGlobalCrumblings(bool bNotify, bool bIncludeChildren)
+	{
+		bNotifyGlobalCrumblings = bNotify;
+		bGlobalCrumblingEventIncludesChildren = bIncludeChildren;
+		bIsNotificationDataDirty = true;
+	}
+
+	bool GetNotifyGlobalCrumblings() const { return bNotifyGlobalCrumblings; }
+	bool GetGlobalCrumblingEventIncludesChildren() const { return bGlobalCrumblingEventIncludesChildren; }
+
+
 	bool GetIsNotificationDataDirty() const { return bIsNotificationDataDirty; }
 	void ResetIsNotificationDataDirty() { bIsNotificationDataDirty = false; }
 
@@ -232,6 +276,10 @@ private:
 	uint16 bNotifyRemovals : 1;
 	uint16 bNotifyCrumblings : 1;
 	uint16 bCrumblingEventIncludesChildren : 1;
+	uint16 bNotifyGlobalBreakings : 1;
+	uint16 bNotifyGlobalRemovals : 1;
+	uint16 bNotifyGlobalCrumblings : 1;
+	uint16 bGlobalCrumblingEventIncludesChildren : 1;
 
 	/** updated when bDamageSettingsDataDirty is set */
 	uint16 bEnableStrainOnCollision : 1;
@@ -248,32 +296,28 @@ private:
  * Buffer structure for communicating simulation state between game and physics
  * threads.
  */
-class FGeometryCollectionResults
+class FGeometryCollectionResults: public FRefCountedObject
 {
 public:
 	FGeometryCollectionResults();
 
+	int32 GetNumEntries() const { return Transforms.Num(); }
+
 	void Reset();
 
-	int32 NumTransformGroup() const { return Transforms.Num(); }
-
-	void InitArrays(const FGeometryDynamicCollection& Other)
+	void InitArrays(const FGeometryDynamicCollection& Collection)
 	{
-		const int32 NumTransforms = Other.NumElements(FGeometryCollection::TransformGroup);
-		States.SetNumUninitialized(NumTransforms);
-		GlobalTransforms.SetNumUninitialized(NumTransforms);
-		ParticleXs.SetNumUninitialized(NumTransforms);
-		ParticleRs.SetNumUninitialized(NumTransforms);
-		ParticleVs.SetNumUninitialized(NumTransforms);
-		ParticleWs.SetNumUninitialized(NumTransforms);
-		
-		Transforms.SetNumUninitialized(NumTransforms);
-		Parent.SetNumUninitialized(NumTransforms);
-		InternalClusterUniqueIdx.SetNumUninitialized(NumTransforms);
+		const int32 NumTransforms = Collection.NumElements(FGeometryCollection::TransformGroup);
+		ModifiedTransformIndices.Init(false, NumTransforms);
 #if WITH_EDITORONLY_DATA
-		DamageInfo.SetNumUninitialized(NumTransforms);
-#endif		
+		if (Damages.Num() != NumTransforms)
+		{
+			Damages.SetNumUninitialized(NumTransforms);
+		}
+#endif	
 	}
+
+	using FEntryIndex = int32;
 
 	struct FState
 	{
@@ -284,29 +328,133 @@ public:
 		// 5 bits left
 	};
 
-	Chaos::FReal SolverDt;
-	TArray<FState> States;
-	TArray<FMatrix> GlobalTransforms;
-	TArray<Chaos::FVec3> ParticleXs;
-	TArray<Chaos::FRotation3> ParticleRs;
-	TArray<Chaos::FVec3> ParticleVs;
-	TArray<Chaos::FVec3> ParticleWs;
+	struct FStateData
+	{
+		int32  TransformIndex;
+		int32  ParentTransformIndex;
+		int32  InternalClusterUniqueIdx;
+		FState State;
+	};
 
-	TArray<FTransform> Transforms;
-	TArray<int32> Parent;
-	TArray<int32> InternalClusterUniqueIdx;
+	struct FPositionData
+	{
+		Chaos::FVec3 ParticleX;
+		Chaos::FRotation3 ParticleR;
+	};
+
+	struct FVelocityData
+	{
+		Chaos::FVec3f ParticleV;
+		Chaos::FVec3f ParticleW;
+	};
 
 #if WITH_EDITORONLY_DATA
-	struct FDamageInfo
+	struct FDamageData
 	{
 		float Damage = 0;
 		float DamageThreshold = 0;
 	};
-	
-	// use to display impulse statistics in editor
-	TArray<FDamageInfo> DamageInfo;
+
+	void SetDamages(int32 TransformIndex, const FDamageData& DamageData)
+	{
+		Damages[TransformIndex] = DamageData;
+	}
+
+	const FDamageData& GetDamages(int32 TransformIndex) const
+	{
+		return Damages[TransformIndex];
+	}
 #endif
-	
-	bool IsObjectDynamic;
-	bool IsObjectLoading;
+
+	inline FEntryIndex GetEntryIndexByTransformIndex(int32 TransformIndex) const
+	{
+		if (ModifiedTransformIndices[TransformIndex])
+		{
+			return ModifiedTransformIndices.CountSetBits(0, TransformIndex + 1) - 1;
+		}
+		return INDEX_NONE;
+	}
+
+	inline const FStateData& GetState(FEntryIndex EntryIndex) const
+	{
+		return States[EntryIndex];
+	}
+
+	inline const FPositionData& GetPositions(FEntryIndex EntryIndex) const
+	{
+		return Positions[EntryIndex];
+	}
+
+	inline const FVelocityData& GetVelocities(FEntryIndex EntryIndex) const
+	{
+		return Velocities[EntryIndex];
+	}
+
+	inline const FTransform& GetTransform(FEntryIndex EntryIndex) const
+	{
+		return Transforms[EntryIndex];
+	}
+
+	inline void SetSolverDt(const Chaos::FReal SolverDtIn)
+	{
+		SolverDt = SolverDtIn;
+	}
+
+	inline void SetState(int32 EntryIndex, const FStateData& StateData)
+	{
+		States[EntryIndex] = StateData;
+	}
+
+	inline FEntryIndex AddEntry(int32 TransformIndex)
+	{
+		ModifiedTransformIndices[TransformIndex] = true;
+		const FEntryIndex EntryIndex = States.AddDefaulted();
+		ensure(GetEntryIndexByTransformIndex(TransformIndex) == EntryIndex);
+		Positions.AddDefaulted();
+		Velocities.AddDefaulted();
+		Transforms.AddDefaulted();
+		return EntryIndex;
+	}
+
+	inline void SetPositions(FEntryIndex EntryIndex, const FPositionData& PositionData)
+	{
+		Positions[EntryIndex] = PositionData;
+	}
+
+	inline void SetVelocities(FEntryIndex EntryIndex, const FVelocityData& VelocityData)
+	{
+		Velocities[EntryIndex] = VelocityData;
+	}
+
+	inline void SetTransform(FEntryIndex EntryIndex, const FTransform& Transform)
+	{
+		Transforms[EntryIndex] = Transform;
+	}
+
+	inline const TBitArray<>& GetModifiedTransformIndices() const
+	{
+		return ModifiedTransformIndices;
+	}
+
+private:
+	Chaos::FReal SolverDt;
+
+	// we only store the data for modified transforms
+	// ModifiedTransformIndices contains which transform has been set 
+	// use the API to retrieve the entry Index matching a specific transform index
+	TBitArray<> ModifiedTransformIndices;
+	TArray<FStateData> States;
+	TArray<FPositionData> Positions;
+	TArray<FVelocityData> Velocities;
+	TArray<FTransform> Transforms;
+
+#if WITH_EDITORONLY_DATA
+	// use to display impulse statistics in editor
+	// this is indexed on the transform index
+	TArray<FDamageData> Damages;
+#endif
+
+public:
+	uint8 IsObjectDynamic: 1;
+	uint8 IsObjectLoading: 1;
 };

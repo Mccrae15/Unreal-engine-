@@ -33,6 +33,8 @@
 
 #pragma once
 
+#include "D3D12RHIPrivate.h"
+
 struct FD3D12DeviceBasicInfo
 {
 	D3D_FEATURE_LEVEL           MaxFeatureLevel;
@@ -172,6 +174,21 @@ public:
 #if D3D12_MAX_DEVICE_INTERFACE >= 7
 	FORCEINLINE ID3D12Device7* GetD3DDevice7() { return RootDevice7; }
 #endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 8
+	FORCEINLINE ID3D12Device8* GetD3DDevice8() { return RootDevice8; }
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 9
+	FORCEINLINE ID3D12Device9* GetD3DDevice9() { return RootDevice9; }
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 10
+	FORCEINLINE ID3D12Device10* GetD3DDevice10() { return RootDevice10; }
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 11
+	FORCEINLINE ID3D12Device11* GetD3DDevice11() { return RootDevice11; }
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 12
+	FORCEINLINE ID3D12Device12* GetD3DDevice12() { return RootDevice12; }
+#endif
 
 	FORCEINLINE IDXGIFactory2* GetDXGIFactory2() const { return DxgiFactory2; }
 #if DXGI_MAX_FACTORY_INTERFACE >= 3
@@ -185,6 +202,9 @@ public:
 #endif
 #if DXGI_MAX_FACTORY_INTERFACE >= 6
 	FORCEINLINE IDXGIFactory6* GetDXGIFactory6() const { return DxgiFactory6; }
+#endif
+#if DXGI_MAX_FACTORY_INTERFACE >= 7
+	FORCEINLINE IDXGIFactory7* GetDXGIFactory7() const { return DxgiFactory7; }
 #endif
 
 	FORCEINLINE const bool IsDebugDevice() const { return bDebugDevice; }
@@ -307,6 +327,16 @@ public:
 		const TCHAR* Name,
 		bool bVerifyHResult = true);
 
+	HRESULT CreateReservedResource(const FD3D12ResourceDesc& Desc,
+		FRHIGPUMask CreationNode,
+		D3D12_RESOURCE_STATES InInitialState,
+		ED3D12ResourceStateMode InResourceStateMode,
+		D3D12_RESOURCE_STATES InDefaultState,
+		const D3D12_CLEAR_VALUE* ClearValue,
+		FD3D12Resource** ppOutResource,
+		const TCHAR* Name,
+		bool bVerifyHResult = true);
+
 	HRESULT CreateBuffer(D3D12_HEAP_TYPE HeapType,
 		FRHIGPUMask CreationNode,
 		FRHIGPUMask VisibleNodes,
@@ -337,13 +367,15 @@ public:
 
 	FD3D12Buffer* CreateRHIBuffer(
 		const D3D12_RESOURCE_DESC& Desc,
-		uint32 Alignment, uint32 Stride, uint32 Size, EBufferUsageFlags InUsage,
+		uint32 Alignment, FRHIBufferDesc const& BufferDesc,
 		ED3D12ResourceStateMode InResourceStateMode,
 		D3D12_RESOURCE_STATES InCreateState,
 		bool bHasInitialData,
 		const FRHIGPUMask& InGPUMask,
 		ID3D12ResourceAllocator* ResourceAllocator,
-		const TCHAR* InDebugName);
+		const TCHAR* InDebugName,
+		const FName& InOwnerName = NAME_None,
+		const FName& InClassName = NAME_None);
 
 	void CreateUAVAliasResource(
 		D3D12_CLEAR_VALUE* ClearValuePtr,
@@ -356,16 +388,6 @@ public:
 		return FD3D12LinkedAdapterObject<typename ObjectType::LinkedObjectType>::template CreateLinkedObjects<ObjectType>(
 			GPUMask,
 			[this](uint32 GPUIndex) { return GetDevice(GPUIndex); },
-			pfnCreationCore
-		);
-	}
-
-	template <typename ResourceType, typename ViewType, typename CreationCoreFunction>
-	inline ViewType* CreateLinkedViews(ResourceType* Resource, const CreationCoreFunction& pfnCreationCore)
-	{
-		return FD3D12LinkedAdapterObject<typename ViewType::LinkedObjectType>::template CreateLinkedObjects<ViewType>(
-			Resource->GetLinkedObjectsGPUMask(),
-			[Resource](uint32 GPUIndex) { return static_cast<ResourceType*>(Resource->GetLinkedObject(GPUIndex)); },
 			pfnCreationCore
 		);
 	}
@@ -472,6 +494,12 @@ protected:
 #if D3D12_MAX_DEVICE_INTERFACE >= 10
 	TRefCountPtr<ID3D12Device10> RootDevice10;
 #endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 11
+	TRefCountPtr<ID3D12Device11> RootDevice11;
+#endif
+#if D3D12_MAX_DEVICE_INTERFACE >= 12
+	TRefCountPtr<ID3D12Device12> RootDevice12;
+#endif
 
 	TRefCountPtr<IDXGIFactory2> DxgiFactory2;
 #if DXGI_MAX_FACTORY_INTERFACE >= 3
@@ -485,6 +513,9 @@ protected:
 #endif
 #if DXGI_MAX_FACTORY_INTERFACE >= 6
 	TRefCountPtr<IDXGIFactory6> DxgiFactory6;
+#endif
+#if DXGI_MAX_FACTORY_INTERFACE >= 7
+	TRefCountPtr<IDXGIFactory7> DxgiFactory7;
 #endif
 
 #if D3D12_SUPPORTS_DXGI_DEBUG
@@ -587,4 +618,8 @@ protected:
 	FD3D12RootSignature StaticRayTracingGlobalRootSignature;
 	FD3D12RootSignature StaticRayTracingLocalRootSignature;
 #endif
+
+private:
+	// Insight memory trace helper
+	void TraceMemoryAllocation(FD3D12Resource* Resource);
 };

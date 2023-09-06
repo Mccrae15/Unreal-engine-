@@ -29,6 +29,18 @@ enum class EAutoSaveMethod : uint8
 	BackupAndOverwrite,
 };
 
+UENUM()
+enum class ERestoreOpenAssetTabsMethod : uint8
+{
+	/** Always prompt the user if they want to restore previously opened asset tabs on launch */
+	AlwaysPrompt = 0,
+	
+	/** Always automatically restore any previously opened asset tabs on launch */
+	AlwaysRestore = 1,
+
+	/** Never restore previously opened asset tabs on launch */
+	NeverRestore = 2
+};
 
 /** A filter used by the auto reimport manager to explicitly include/exclude files matching the specified wildcard */
 USTRUCT()
@@ -64,11 +76,11 @@ struct FAutoReimportDirectoryConfig
 	UPROPERTY(EditAnywhere, config, Category=AutoReimport, meta=(DisplayName="Include/Exclude Wildcards", ToolTip="(Optional) Specify a set of wildcards to include or exclude files from this auto-reimporter."))
 	TArray<FAutoReimportWildcard> Wildcards;
 
-	struct UNREALED_API FParseContext
+	struct FParseContext
 	{
 		TArray<TPair<FString, FString>> MountedPaths;
 		bool bEnableLogging;
-		FParseContext(bool bInEnableLogging = true);
+		UNREALED_API FParseContext(bool bInEnableLogging = true);
 	};
 
 	/** Parse and validate the specified source directory / mount point combination */
@@ -79,8 +91,8 @@ struct FAutoReimportDirectoryConfig
 /**
  * Implements the Level Editor's loading and saving settings.
  */
-UCLASS(config=EditorPerProjectUserSettings, autoexpandcategories=(AutoSave, AutoReimport, Blueprints))
-class UNREALED_API UEditorLoadingSavingSettings
+UCLASS(config=EditorPerProjectUserSettings, autoexpandcategories=(AutoSave, AutoReimport, Blueprints), MinimalAPI)
+class UEditorLoadingSavingSettings
 	: public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -95,9 +107,15 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Startup)
 	uint32 bForceCompilationAtStartup:1;
 
-	/** Whether to restore previously open assets at startup */
+	/** Whether to restore previously open assets at startup after a clean shutdown */
 	UPROPERTY(EditAnywhere, config, Category=Startup)
-	uint32 bRestoreOpenAssetTabsOnRestart:1;
+	ERestoreOpenAssetTabsMethod RestoreOpenAssetTabsOnRestart = ERestoreOpenAssetTabsMethod::AlwaysPrompt;
+
+#if WITH_EDITOR
+	/** Whether to restore previously open assets at startup */
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use RestoreOpenAssetTabsOnRestart instead"))
+	uint32 bRestoreOpenAssetTabsOnRestart_DEPRECATED:1;
+#endif
 
 private:
 
@@ -205,13 +223,13 @@ public:
 public:
 
 	// @todo thomass: proper settings support for source control module
-	void SccHackInitialize( );
+	UNREALED_API void SccHackInitialize( );
 
-	bool GetAutomaticallyCheckoutOnAssetModification() const;
+	UNREALED_API bool GetAutomaticallyCheckoutOnAssetModification() const;
 
-	void SetAutomaticallyCheckoutOnAssetModificationOverride(bool InValue);
+	UNREALED_API void SetAutomaticallyCheckoutOnAssetModificationOverride(bool InValue);
 
-	void ResetAutomaticallyCheckoutOnAssetModificationOverride();
+	UNREALED_API void ResetAutomaticallyCheckoutOnAssetModificationOverride();
 
 public:
 
@@ -227,8 +245,8 @@ protected:
 
 	// UObject overrides
 
-	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
-	virtual void PostInitProperties() override;
+	UNREALED_API virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent ) override;
+	UNREALED_API virtual void PostInitProperties() override;
 
 private:
 

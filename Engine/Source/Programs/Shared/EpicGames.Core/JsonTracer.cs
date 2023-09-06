@@ -42,11 +42,16 @@ namespace EpicGames.Core
 		private static long s_nextIdCounter = 0;
 
 		/// <summary>
+		/// Unique GUID for this process so IDs are always unique
+		/// </summary>
+		private static readonly string s_processGuidStr = Guid.NewGuid().ToString();
+
+		/// <summary>
 		/// A simple-as-possible (consecutive for repeatability) id generator.
 		/// </summary>
 		private static string NextId()
 		{
-			return Interlocked.Increment(ref s_nextIdCounter).ToString(CultureInfo.InvariantCulture);
+			return s_processGuidStr + "." + Interlocked.Increment(ref s_nextIdCounter).ToString(CultureInfo.InvariantCulture);
 		}
 
 		// C# doesn't have "return type covariance" so we use the trick with the explicit interface implementation
@@ -485,6 +490,11 @@ namespace EpicGames.Core
 				}
 				writer.WriteValue("StartTime", span.StartTimestamp.ToString("o", CultureInfo.InvariantCulture));
 				writer.WriteValue("FinishTime", span.FinishTimestamp.ToString("o", CultureInfo.InvariantCulture));
+				writer.WriteValue("SpanId", span.Context.SpanId);
+				if (span.ParentId != null)
+				{
+					writer.WriteValue("ParentId", span.ParentId);
+				}
 				writer.WriteObjectStart("Metadata");
 				// TODO: Write tags as metadata?
 				writer.WriteObjectEnd();

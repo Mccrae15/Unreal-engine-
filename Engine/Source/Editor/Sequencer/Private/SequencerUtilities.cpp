@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerUtilities.h"
+#include "AnimatedRange.h"
 #include "CineCameraActor.h"
 #include "CameraRig_Rail.h"
 #include "CameraRig_Crane.h"
 #include "Components/SplineComponent.h"
 #include "Containers/ArrayBuilder.h"
+#include "Editor/EditorEngine.h"
 #include "Engine/Selection.h"
 #include "EngineUtils.h"
 #include "Exporters/Exporter.h"
@@ -28,6 +30,7 @@
 #include "EntitySystem/MovieSceneBlenderSystem.h"
 #include "EntitySystem/IMovieSceneBlenderSystemSupport.h"
 #include "MovieSceneFolder.h"
+#include "MovieSceneNameableTrack.h"
 #include "MovieSceneSection.h"
 #include "MovieSceneSpawnRegister.h"
 #include "MovieSceneTimeHelpers.h"
@@ -61,19 +64,6 @@
 
 #define LOCTEXT_NAMESPACE "FSequencerUtilities"
 
-static EVisibility GetRolloverVisibility(TAttribute<bool> HoverState, TWeakPtr<SButton> WeakButton)
-{
-	TSharedPtr<SButton> Button = WeakButton.Pin();
-	if (HoverState.Get())
-	{
-		return EVisibility::SelfHitTestInvisible;
-	}
-	else
-	{
-		return EVisibility::Collapsed;
-	}
-}
-
 static void ResetCopiedTracksFlags(UMovieSceneTrack* Track)
 {
 	TArray<UObject*> SectionSubObjects;
@@ -93,13 +83,6 @@ TSharedRef<SWidget> FSequencerUtilities::MakeAddButton(FText HoverText, FOnGetCo
 
 TSharedRef<SWidget> FSequencerUtilities::MakeAddButton(FText HoverText, FOnClicked OnClicked, const TAttribute<bool>& HoverState, TWeakPtr<ISequencer> InSequencer)
 {
-	FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
-
-	TSharedRef<STextBlock> ButtonText = SNew(STextBlock)
-		.Text(HoverText)
-		.Font(SmallLayoutFont)
-		.ColorAndOpacity(FSlateColor::UseForeground());
-
 	TSharedRef<SButton> Button =
 
 		SNew(SButton)
@@ -123,18 +106,9 @@ TSharedRef<SWidget> FSequencerUtilities::MakeAddButton(FText HoverText, FOnClick
 				SNew(SImage)
 				.ColorAndOpacity(FSlateColor::UseForeground())
 				.Image(FAppStyle::GetBrush("Plus"))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.AutoWidth()
-			[
-				ButtonText
+				.ToolTipText(HoverText)
 			]
 		];
-
-	TAttribute<EVisibility> Visibility = TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(GetRolloverVisibility, HoverState, TWeakPtr<SButton>(Button)));
-	ButtonText->SetVisibility(Visibility);
 
 	return Button;
 }
@@ -208,18 +182,25 @@ void FSequencerUtilities::PopulateMenu_CreateNewSection(FMenuBuilder& MenuBuilde
 		if (UMovieSceneSection* NewSection = Track->CreateNewSection())
 		{
 			int32 OverlapPriority = 0;
+			TMap<int32, int32> NewToOldRowIndices;
 			for (UMovieSceneSection* Section : Track->GetAllSections())
 			{
-				OverlapPriority = FMath::Max(Section->GetOverlapPriority() + 1, OverlapPriority);
+				OverlapPriority = FMath::Max(Section->GetOverlapPriority() + 1, OverlapPriority);				
 
 				// Move existing sections on the same row or beyond so that they don't overlap with the new section
 				if (Section != NewSection && Section->GetRowIndex() >= RowIndex)
 				{
-					Section->SetRowIndex(Section->GetRowIndex() + 1);
+					int32 OldRowIndex = Section->GetRowIndex();
+					int32 NewRowIndex = Section->GetRowIndex() + 1;
+					NewToOldRowIndices.FindOrAdd(NewRowIndex, OldRowIndex);
+					Section->Modify();
+					Section->SetRowIndex(NewRowIndex);
 				}
 			}
 
 			Track->Modify();
+
+			Track->OnRowIndicesChanged(NewToOldRowIndices);
 
 			FFrameNumber NewSectionRangeEnd = PlaybackEnd;
 			if (PlaybackEnd <= CurrentTime.Time.FrameNumber)
@@ -231,11 +212,16 @@ void FSequencerUtilities::PopulateMenu_CreateNewSection(FMenuBuilder& MenuBuilde
 			
 			NewSection->SetRange(TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, NewSectionRangeEnd));
 			NewSection->SetOverlapPriority(OverlapPriority);
-			NewSection->SetRowIndex(RowIndex);
+			NewSection->SetRowIndex(RowIndex);			
 			NewSection->SetBlendType(BlendType);
 
 			Track->AddSection(*NewSection);
 			Track->UpdateEasing();
+
+			if (UMovieSceneNameableTrack* NameableTrack = Cast<UMovieSceneNameableTrack>(Track))
+			{
+				NameableTrack->SetTrackRowDisplayName(FText::GetEmpty(), RowIndex);
+			}
 
 			Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
 			Sequencer->EmptySelection();
@@ -825,6 +811,8 @@ FGuid FSequencerUtilities::CreateCamera(TSharedRef<ISequencer> Sequencer, const 
 	}
 	else
 	{
+		FActorLabelUtilities::SetActorLabelUnique(OutActor, ACineCameraActor::StaticClass()->GetName());
+
 		CameraGuid = CreateBinding(Sequencer, *OutActor, OutActor->GetActorLabel());
 	}
 
@@ -916,6 +904,8 @@ FGuid FSequencerUtilities::CreateCameraWithRig(TSharedRef<ISequencer> Sequencer,
 	}
 	else
 	{
+		FActorLabelUtilities::SetActorLabelUnique(OutActor, ACineCameraActor::StaticClass()->GetName());
+
 		// Parent it
 		OutActor->AttachToActor(Actor, FAttachmentTransformRules::KeepRelativeTransform);
 	}
@@ -1956,7 +1946,7 @@ void FSequencerUtilities::CopyBindings(TSharedRef<ISequencer> Sequencer, const T
 			{
 				if (AActor* Actor = Cast<AActor>(RuntimeObject.Get()))
 				{
-					CopyableBinding->BoundObjectNames.Add(Actor->GetName());
+					CopyableBinding->BoundObjectNames.Add(Actor->GetPathName());
 				}
 			}
 		}
@@ -1995,6 +1985,14 @@ void FSequencerUtilities::CopyBindings(TSharedRef<ISequencer> Sequencer, const T
 			{
 				UMovieSceneFolder::CalculateFolderPath(Folder, InFolders, CopyableBinding->FolderPath);
 				break;
+			}
+		}
+
+		for (TPair<FName, FMovieSceneObjectBindingIDs> TaggedBinding : Sequencer->GetRootMovieSceneSequence()->GetMovieScene()->AllTaggedBindings())
+		{
+			if (TaggedBinding.Value.IDs.Contains(FMovieSceneObjectBindingID(UE::MovieScene::FFixedObjectBindingID(ObjectBinding.BindingID, Sequencer->GetFocusedTemplateID()))))
+			{
+				CopyableBinding->Tags.Add(TaggedBinding.Key);
 			}
 		}
 	}
@@ -2087,6 +2085,8 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 		return false;
 	}
 
+	UMovieScene* RootMovieScene = Sequencer->GetRootMovieSceneSequence()->GetMovieScene();
+
 	UWorld* World = Cast<UWorld>(Sequencer->GetPlaybackContext());
 
 	const FScopedTransaction Transaction(LOCTEXT("PasteBindings", "Paste Bindings"));
@@ -2149,11 +2149,26 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 					GuidToFolderMap.Add(NewGuid, ParentFolder);
 				}
 
-				if (FMovieScenePossessable* Possessable = MovieScene->FindPossessable(NewGuid))
+				if (CopyableBinding->Tags.Num() > 0)
 				{
-					if (TargetIndex < PasteBindingsParams.Bindings.Num())
+					RootMovieScene->Modify();
+
+					for (const FName& Tag : CopyableBinding->Tags)
 					{
-						Possessable->SetParent(PasteBindingsParams.Bindings[TargetIndex].BindingID, MovieScene);
+						RootMovieScene->TagBinding(Tag, UE::MovieScene::FFixedObjectBindingID(NewGuid, Sequencer->GetFocusedTemplateID()));
+					}
+				}
+
+				// Set the parent to the pasted target only if it's not an actor
+				const UClass* PossessedObjectClass = CopyableBinding->Possessable.GetPossessedObjectClass();
+				if (PossessedObjectClass && !PossessedObjectClass->IsChildOf(AActor::StaticClass()))
+				{
+					if (FMovieScenePossessable* Possessable = MovieScene->FindPossessable(NewGuid))
+					{
+						if (TargetIndex < PasteBindingsParams.Bindings.Num())
+						{
+							Possessable->SetParent(PasteBindingsParams.Bindings[TargetIndex].BindingID, MovieScene);
+						}
 					}
 				}
 
@@ -2164,7 +2179,7 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 					for (TActorIterator<AActor> ActorItr(World); ActorItr; ++ActorItr)
 					{
 						AActor* Actor = *ActorItr;
-						if (Actor && CopyableBinding->BoundObjectNames.Contains(Actor->GetName()))
+						if (Actor && CopyableBinding->BoundObjectNames.Contains(Actor->GetPathName()))
 						{
 							// If this actor is already bound and we're not duplicating actors, don't bind to anything
 							if (!PasteBindingsParams.bDuplicateExistingActors && Sequencer->FindObjectId(*Actor, Sequencer->GetFocusedTemplateID()).IsValid())
@@ -2173,7 +2188,7 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 							}
 
 							ActorsToRebind.Add(Actor);
-							CopyableBinding->BoundObjectNames.Remove(Actor->GetName());
+							CopyableBinding->BoundObjectNames.Remove(Actor->GetPathName());
 						}
 					}
 				}
@@ -2205,7 +2220,7 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 							{
 								ActorsToRebind.Add(Actor);
 
-								CopyableBinding->BoundObjectNames.Add(Actor->GetName());
+								CopyableBinding->BoundObjectNames.Add(Actor->GetPathName());
 							}
 						}
 					}
@@ -2268,6 +2283,16 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 				if (ParentFolder)
 				{
 					GuidToFolderMap.Add(NewGuid, ParentFolder);
+				}
+
+				if (CopyableBinding->Tags.Num() > 0)
+				{
+					RootMovieScene->Modify();
+
+					for (const FName& Tag : CopyableBinding->Tags)
+					{
+						RootMovieScene->TagBinding(Tag, UE::MovieScene::FFixedObjectBindingID(NewGuid, Sequencer->GetFocusedTemplateID()));
+					}
 				}
 			}
 		}
@@ -2799,7 +2824,7 @@ void FSequencerUtilities::AddActorsToBinding(TSharedRef<ISequencer> Sequencer, c
 			}
 			else
 			{
-				const FText NotificationText = FText::Format(LOCTEXT("UnableToAssignObject", "Cannot assign object {0}. Expected class {1}"), FText::FromString(ActorToAdd->GetName()), FText::FromString(ActorClass->GetName()));
+				const FText NotificationText = FText::Format(LOCTEXT("UnableToAssignObject", "Cannot assign object {0}. Expected class {1}"), FText::FromString(ActorToAdd->GetPathName()), FText::FromString(ActorClass->GetName()));
 				FNotificationInfo Info(NotificationText);
 				Info.ExpireDuration = 3.f;
 				Info.bUseLargeFont = false;
@@ -2958,6 +2983,21 @@ void FSequencerUtilities::ShowSpawnableNotAllowedError()
 	FNotificationInfo Info(LOCTEXT("SequenceSpawnableNotAllowed", "Spawnable object is not allowed for Sequence."));
 	Info.ExpireDuration = 5.0f;
 	FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);	
+}
+
+void FSequencerUtilities::SaveCurrentMovieSceneAs(TSharedRef<ISequencer> Sequencer)
+{
+	StaticCastSharedPtr<FSequencer>(Sequencer.ToSharedPtr())->SaveCurrentMovieSceneAs();
+}
+
+void FSequencerUtilities::SynchronizeExternalSelectionWithSequencerSelection (TSharedRef<ISequencer> Sequencer)
+{
+	StaticCastSharedPtr<FSequencer>(Sequencer.ToSharedPtr())->SynchronizeExternalSelectionWithSequencerSelection();
+}
+
+TRange<FFrameNumber> FSequencerUtilities::GetTimeBounds(TSharedRef<ISequencer> Sequencer)
+{
+	return StaticCastSharedPtr<FSequencer>(Sequencer.ToSharedPtr())->GetTimeBounds();
 }
 
 #undef LOCTEXT_NAMESPACE

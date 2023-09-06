@@ -18,6 +18,7 @@
 #include "WorldPartition/ContentBundle/ContentBundlePaths.h"
 #include "WorldPartition/Cook/WorldPartitionCookPackageContextInterface.h"
 #include "WorldPartition/Cook/WorldPartitionCookPackage.h"
+#include "WorldPartition/WorldPartitionLevelHelper.h"
 
 FContentBundleEditor::FContentBundleEditor(TSharedPtr<FContentBundleClient>& InClient, UWorld* InWorld)
 	: FContentBundleBase(InClient, InWorld)
@@ -50,14 +51,29 @@ void FContentBundleEditor::DoUninitialize()
 void FContentBundleEditor::DoInjectContent()
 {
 	FString ActorDescContainerPackage;
-	bool bCreatedContainerPath = ContentBundlePaths::BuildActorDescContainerPackgePath(GetDescriptor()->GetPackageRoot(), GetDescriptor()->GetGuid(), GetInjectedWorld()->GetPackage()->GetName(), ActorDescContainerPackage);
+	bool bCreatedContainerPath = ContentBundlePaths::BuildActorDescContainerPackagePath(GetDescriptor()->GetPackageRoot(), GetDescriptor()->GetGuid(), GetInjectedWorld()->GetPackage()->GetName(), ActorDescContainerPackage);
 	if (bCreatedContainerPath)
 	{
-		UnsavedActorMonitor = NewObject<UContentBundleUnsavedActorMonitor>(GetTransientPackage(), NAME_None, RF_Transactional);
-		UnsavedActorMonitor->Initialize(*this);
-
 		UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
-		ActorDescContainer = WorldPartition->RegisterActorDescContainer(FName(*ActorDescContainerPackage));
+		UWorldPartition::FContainerRegistrationParams RegistrationsParams(*ActorDescContainerPackage);
+		
+		const FTopLevelAssetPath InjectedWorldAssetPath = FSoftObjectPath(GetInjectedWorld()).GetAssetPath();
+		RegistrationsParams.FilterActorDescFunc = [&](const FWorldPartitionActorDesc* ActorDesc)
+		{
+			if (ActorDesc->GetActorSoftPath().GetAssetPath() != InjectedWorldAssetPath)
+			{
+				UE_LOG(LogContentBundle, Display, TEXT("%s Container '%s' : Actor '%s' object path doesn't match injected world path '%s'"),
+					*ContentBundle::Log::MakeDebugInfoString(*this),
+					*ActorDescContainerPackage,
+					*ActorDesc->GetActorSoftPath().ToString(),
+					*InjectedWorldAssetPath.ToString());
+				return false;
+			}
+
+			return true;
+		};
+
+		ActorDescContainer = WorldPartition->RegisterActorDescContainer(RegistrationsParams);
 		if (ActorDescContainer.IsValid())
 		{
 			UE_LOG(LogContentBundle, Log, TEXT("%s ExternalActors in %s found. %u actors were injected"), *ContentBundle::Log::MakeDebugInfoString(*this), *ActorDescContainer->GetExternalActorPath(), ActorDescContainer->GetActorDescCount());
@@ -75,11 +91,14 @@ void FContentBundleEditor::DoInjectContent()
 				SetStatus(EContentBundleStatus::ReadyToInject);
 			}
 
+			UnsavedActorMonitor = NewObject<UContentBundleUnsavedActorMonitor>(GetTransientPackage(), NAME_None, RF_Transactional);
+			UnsavedActorMonitor->Initialize(*this);
+
 			RegisterDelegates();
 		}
 		else
 		{
-			UE_LOG(LogContentBundle, Log, TEXT("%s Failed to register actor desc container with %s"), *ContentBundle::Log::MakeDebugInfoString(*this), *ActorDescContainerPackage);
+			UE_LOG(LogContentBundle, Error, TEXT("%s Failed to register actor desc container with %s"), *ContentBundle::Log::MakeDebugInfoString(*this), *ActorDescContainerPackage);
 			SetStatus(EContentBundleStatus::FailedToInject);
 		}
 	}
@@ -176,7 +195,7 @@ bool FContentBundleEditor::ContainsActor(const AActor* InActor) const
 {
 	if (InActor != nullptr)
 	{
-		return ActorDescContainer->GetActorDesc(InActor) != nullptr || UnsavedActorMonitor->IsMonitoring(InActor);
+		return ActorDescContainer->GetActorDesc(InActor->GetActorGuid()) != nullptr || UnsavedActorMonitor->IsMonitoring(InActor);
 	}
 
 	return false;
@@ -311,10 +330,16 @@ void FContentBundleEditor::GenerateStreaming(TArray<FString>* OutPackageToGenera
 		return;
 	}
 
-	UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
-	WorldPartition->GenerateContainerStreaming(ActorDescContainer.Get(), OutPackageToGenerate);
+	UWorldPartition::FGenerateStreamingParams Params = UWorldPartition::FGenerateStreamingParams()
+		.SetActorDescContainer(ActorDescContainer.Get());
 
-	ExternalStreamingObject = WorldPartition->RuntimeHash->StoreToExternalStreamingObject(WorldPartition, *GetExternalStreamingObjectName());
+	UWorldPartition::FGenerateStreamingContext Context = UWorldPartition::FGenerateStreamingContext()
+		.SetPackagesToGenerate(OutPackageToGenerate);
+
+	UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
+	WorldPartition->GenerateContainerStreaming(Params, Context);
+
+	ExternalStreamingObject = WorldPartition->FlushStreamingToExternalStreamingObject(GetExternalStreamingObjectName());
 
 	uint32 CellCount = 0;
 	ExternalStreamingObject->ForEachStreamingCells([&CellCount](const UWorldPartitionRuntimeCell& Cell)
@@ -336,8 +361,6 @@ void FContentBundleEditor::GenerateStreaming(TArray<FString>* OutPackageToGenera
 		// Clear streaming object. It will be kept alive & duplicated by UContentBundleDuplicateForPIEHelper.
 		ExternalStreamingObject = nullptr;
 	}
-
-	WorldPartition->FlushStreaming();
 }
 
 void FContentBundleEditor::OnBeginCook(IWorldPartitionCookPackageContext& CookContext)
@@ -437,12 +460,33 @@ bool FContentBundleEditor::PopulateGeneratedPackageForCook(class IWorldPartition
 				if (!Cell->IsAlwaysLoaded())
 				{
 					TArray<UPackage*> ModifiedPackages;
-					if (!Cell->PopulateGeneratedPackageForCook(PackageToCook.GetPackage(), OutModifiedPackages))
+					if (Cell->PopulateGeneratedPackageForCook(PackageToCook.GetPackage(), OutModifiedPackages))
+					{
+						UWorld* CellWorld = FindObject<UWorld>(PackageToCook.GetPackage(), *GetInjectedWorld()->GetName());
+						if (CellWorld != nullptr)
+						{
+							// @todo_ow : Order on PopulateGeneratedPackageForCook for each PackageToCook parameters is not deterministic.
+							// PopulateGeneratedPackageForCook can be called on some cell(s) before it was called for the ExternalStreamingObject.
+							// This lead to a wrong path in ULevel::WorldPartitionRuntimeCell because the ExternalStreamingObject could not yet have been renamed.
+							// Compute & set ULevel::WorldPartitionRuntimeCell by hand in FWorldPartitionLevelHelper::RemapLevelCellPathInContentBundle
+							// We already know that the cell will reside in the ExternalStreamingObject package at runtime.
+							if (!FWorldPartitionLevelHelper::RemapLevelCellPathInContentBundle(CellWorld->PersistentLevel, this, Cell))
+							{
+								UE_LOG(LogContentBundle, Warning, TEXT("%s[Cook] Failed to Remap cell in level for package %s."), *ContentBundle::Log::MakeDebugInfoString(*this), *PackageToCook.RelativePath);
+								bIsSuccess = false;
+							}
+						}
+						else
+						{
+							UE_LOG(LogContentBundle, Warning, TEXT("%s[Cook] Failed to retrieve cell world from package %s."), *ContentBundle::Log::MakeDebugInfoString(*this), *PackageToCook.RelativePath);
+							bIsSuccess = false;
+						}
+					}
+					else
 					{
 						UE_LOG(LogContentBundle, Error, TEXT("%s[Cook] Failed to populate cell package %s."), *ContentBundle::Log::MakeDebugInfoString(*this), *PackageToCook.RelativePath);
 						bIsSuccess = false;
 					}
-					
 				}
 				else
 				{

@@ -50,6 +50,13 @@ namespace mu
     }
 
 
+	//---------------------------------------------------------------------------------------------
+	int32 Instance::GetDataSize() const
+	{
+		return 16 + sizeof(Private) + m_pD->m_lods.GetAllocatedSize() + m_pD->m_extensionData.GetAllocatedSize();
+	}
+
+
     //---------------------------------------------------------------------------------------------
     Instance::ID Instance::GetId() const
     {
@@ -58,41 +65,27 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::GetLODCount() const
+    int32 Instance::GetLODCount() const
     {
-        return m_pD->GetLODCount();
+		return m_pD->m_lods.Num();
     }
 
 
 	//---------------------------------------------------------------------------------------------
-	int Instance::Private::GetLODCount() const
+	int32 Instance::GetComponentCount( int32 lod ) const
 	{
-		return m_lods.Num();
-	}
+		check(lod >= 0 && lod < m_pD->m_lods.Num());
+		if (lod >= 0 && lod < m_pD->m_lods.Num())
+		{
+			return m_pD->m_lods[lod].m_components.Num();
+		}
 
-
-	//---------------------------------------------------------------------------------------------
-	int Instance::GetComponentCount( int lod ) const
-	{
-		return m_pD->GetComponentCount( lod );
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-	int Instance::Private::GetComponentCount( int lod ) const
-	{
-		check( lod>=0 && lod<m_lods.Num() );
-        if ( lod>=0 && lod<m_lods.Num() )
-        {
-            return m_lods[lod].m_components.Num();
-        }
-
-        return 0;
+		return 0;
 	}
 
 
     //---------------------------------------------------------------------------------------------
-    const char* Instance::GetComponentName( int lod, int comp ) const
+    const char* Instance::GetComponentName( int32 lod, int32 comp ) const
     {
         if ( lod>=0 && lod<m_pD->m_lods.Num() &&
              comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() )
@@ -109,7 +102,7 @@ namespace mu
 
 	
 	//---------------------------------------------------------------------------------------------
-	uint16 Instance::GetComponentId( int lod, int comp ) const
+	uint16 Instance::GetComponentId( int32 lod, int32 comp ) const
 	{
 		if ( lod>=0 && lod<m_pD->m_lods.Num() &&
 			 comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() )
@@ -126,31 +119,24 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::GetSurfaceCount( int lod, int comp ) const
+    int32 Instance::GetSurfaceCount( int32 lod, int32 comp ) const
     {
-        return m_pD->GetSurfaceCount( lod, comp );
-    }
-
-
-    //---------------------------------------------------------------------------------------------
-    int Instance::Private::GetSurfaceCount( int lod, int comp ) const
-    {
-        if ( lod>=0 && lod<m_lods.Num() &&
-             comp>=0 && comp<m_lods[lod].m_components.Num() )
-        {
-            return m_lods[lod].m_components[comp].m_surfaces.Num();
-        }
+		if (lod >= 0 && lod < m_pD->m_lods.Num() &&
+			comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num())
+		{
+			return m_pD->m_lods[lod].m_components[comp].m_surfaces.Num();
+		}
 		else
 		{
 			check(false);
 		}
 
-        return 0;
-    }
+		return 0;
+	}
 
 
 	//---------------------------------------------------------------------------------------------
-    const char* Instance::GetSurfaceName( int lod, int comp, int surf ) const
+    const char* Instance::GetSurfaceName( int32 lod, int32 comp, int32 surf ) const
     {
         if ( lod>=0 && lod<m_pD->m_lods.Num() &&
              comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() &&
@@ -168,13 +154,13 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    uint32_t Instance::GetSurfaceId( int lod, int comp, int surf ) const
+    uint32 Instance::GetSurfaceId( int32 lod, int32 comp, int32 surf ) const
     {
         if ( lod>=0 && lod<m_pD->m_lods.Num() &&
              comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() &&
              surf>=0 && surf<m_pD->m_lods[lod].m_components[comp].m_surfaces.Num() )
         {
-            return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_internalID;
+            return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].InternalId;
         }
 		else
 		{
@@ -186,14 +172,14 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::FindSurfaceById( int lod, int comp, uint32_t id ) const
+    int32 Instance::FindSurfaceById( int32 lod, int32 comp, uint32 id ) const
     {
 		if (lod >= 0 && lod < m_pD->m_lods.Num() &&
 			comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num())
 		{
-			for (int i = 0; i < m_pD->m_lods[lod].m_components[comp].m_surfaces.Num(); ++i)
+			for (int32 i = 0; i < m_pD->m_lods[lod].m_components[comp].m_surfaces.Num(); ++i)
 			{
-				if (m_pD->m_lods[lod].m_components[comp].m_surfaces[i].m_internalID == id)
+				if (m_pD->m_lods[lod].m_components[comp].m_surfaces[i].InternalId == id)
 				{
 					return i;
 				}
@@ -207,15 +193,58 @@ namespace mu
         return -1;
     }
 
+	
+	//---------------------------------------------------------------------------------------------
+	void Instance::FindBaseSurfaceBySharedId(int32 CompIndex, int32 SharedId, int32& OutSurfaceIndex, int32& OutLODIndex) const
+	{
+		for (int32 LodIndex = 0; LodIndex < m_pD->m_lods.Num(); LodIndex++)
+		{
+			if (m_pD->m_lods[LodIndex].m_components.IsValidIndex(CompIndex))
+			{
+				for (int32 SurfaceIndex = 0; SurfaceIndex < m_pD->m_lods[LodIndex].m_components[CompIndex].m_surfaces.Num(); ++SurfaceIndex)
+				{
+					if (m_pD->m_lods[LodIndex].m_components[CompIndex].m_surfaces[SurfaceIndex].SharedId == SharedId)
+					{
+						OutSurfaceIndex = SurfaceIndex;
+						OutLODIndex = LodIndex;
+						return;
+					}
+				}
+			}
+
+		}
+
+		OutSurfaceIndex = INDEX_NONE;
+		OutLODIndex = INDEX_NONE;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
+	int32 Instance::GetSharedSurfaceId(int32 LodIndex, int32 CompIndex, int32 SurfaceIndex) const
+	{
+		if (LodIndex >= 0 && LodIndex < m_pD->m_lods.Num() &&
+			CompIndex >= 0 && CompIndex < m_pD->m_lods[LodIndex].m_components.Num() &&
+			SurfaceIndex >= 0 && SurfaceIndex < m_pD->m_lods[LodIndex].m_components[CompIndex].m_surfaces.Num())
+		{
+			return m_pD->m_lods[LodIndex].m_components[CompIndex].m_surfaces[SurfaceIndex].SharedId;
+		}
+		else
+		{
+			check(false);
+		}
+
+		return 0;
+	}
+	
 
     //---------------------------------------------------------------------------------------------
-    uint32_t Instance::GetSurfaceCustomId( int lod, int comp, int surf ) const
+    uint32 Instance::GetSurfaceCustomId( int32 lod, int32 comp, int32 surf ) const
     {
         if ( lod>=0 && lod<m_pD->m_lods.Num() &&
              comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() &&
              surf>=0 && surf<m_pD->m_lods[lod].m_components[comp].m_surfaces.Num() )
         {
-            return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_customID;
+            return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].ExternalId;
         }
 		else
 		{
@@ -227,133 +256,87 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::GetMeshCount( int lod, int comp ) const
+    int32 Instance::GetMeshCount( int32 lod, int32 comp ) const
 	{
-        return m_pD->GetMeshCount( lod, comp );
+		check(lod >= 0 && lod < m_pD->m_lods.Num());
+		check(comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num());
+
+		return m_pD->m_lods[lod].m_components[comp].m_meshes.Num();
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::Private::GetMeshCount( int lod, int comp ) const
+    int32 Instance::GetImageCount( int32 lod, int32 comp, int32 surf ) const
 	{
-		check( lod>=0 && lod<m_lods.Num() );
-		check( comp>=0 && comp<m_lods[lod].m_components.Num() );
+		check(lod >= 0 && lod < m_pD->m_lods.Num());
+		check(comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num());
+		check(surf >= 0 && surf < m_pD->m_lods[lod].m_components[comp].m_surfaces.Num());
 
-        return m_lods[lod].m_components[comp].m_meshes.Num();
+		return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_images.Num();
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::GetImageCount( int lod, int comp, int surf ) const
+    int32 Instance::GetVectorCount( int32 lod, int32 comp, int32 surf ) const
 	{
-        return m_pD->GetImageCount( lod, comp, surf );
+		check(lod >= 0 && lod < m_pD->m_lods.Num());
+		check(comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num());
+		check(surf >= 0 && surf < m_pD->m_lods[lod].m_components[comp].m_surfaces.Num());
+
+		return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors.Num();
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::Private::GetImageCount( int lod, int comp, int surf ) const
+    int32 Instance::GetScalarCount( int32 lod, int32 comp, int32 surf ) const
 	{
-		check( lod>=0 && lod<m_lods.Num() );
-		check( comp>=0 && comp<m_lods[lod].m_components.Num() );
-        check( surf>=0 && surf<m_lods[lod].m_components[comp].m_surfaces.Num() );
+		check(lod >= 0 && lod < m_pD->m_lods.Num());
+		check(comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num());
+		check(surf >= 0 && surf < m_pD->m_lods[lod].m_components[comp].m_surfaces.Num());
 
-        return m_lods[lod].m_components[comp].m_surfaces[surf].m_images.Num();
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-    int Instance::GetVectorCount( int lod, int comp, int surf ) const
-	{
-        return m_pD->GetVectorCount( lod, comp, surf );
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-    int Instance::Private::GetVectorCount( int lod, int comp, int surf ) const
-	{
-		check( lod>=0 && lod<m_lods.Num() );
-		check( comp>=0 && comp<m_lods[lod].m_components.Num() );
-        check( surf>=0 && surf<m_lods[lod].m_components[comp].m_surfaces.Num() );
-
-        return m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors.Num();
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-    int Instance::GetScalarCount( int lod, int comp, int surf ) const
-	{
-        return m_pD->GetScalarCount( lod, comp, surf );
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-    int Instance::Private::GetScalarCount( int lod, int comp, int surf ) const
-	{
-		check( lod>=0 && lod<m_lods.Num() );
-		check( comp>=0 && comp<m_lods[lod].m_components.Num() );
-        check( surf>=0 && surf<m_lods[lod].m_components[comp].m_surfaces.Num() );
-
-        return m_lods[lod].m_components[comp].m_surfaces[surf].m_scalars.Num();
+		return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_scalars.Num();
 	}
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::GetStringCount( int lod, int comp, int surf ) const
+    int32 Instance::GetStringCount( int32 lod, int32 comp, int32 surf ) const
     {
-        return m_pD->GetStringCount( lod, comp, surf );
-    }
+		check(lod >= 0 && lod < m_pD->m_lods.Num());
+		check(comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num());
+		check(surf >= 0 && surf < m_pD->m_lods[lod].m_components[comp].m_surfaces.Num());
 
+		return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_strings.Num();
+	}
 
-    //---------------------------------------------------------------------------------------------
-    int Instance::Private::GetStringCount( int lod, int comp, int surf ) const
-    {
-        check( lod >= 0 && lod < m_lods.Num() );
-        check( comp >= 0 && comp < m_lods[lod].m_components.Num() );
-        check( surf >= 0 && surf < m_lods[lod].m_components[comp].m_surfaces.Num() );
-
-        return m_lods[lod].m_components[comp].m_surfaces[surf].m_strings.Num();
-    }
 
 
     //---------------------------------------------------------------------------------------------
-    RESOURCE_ID Instance::GetMeshId( int lod, int comp, int mesh ) const
+	FResourceID Instance::GetMeshId( int32 lod, int32 comp, int32 mesh ) const
     {
         check( lod>=0 && lod<m_pD->m_lods.Num() );
         check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
         check( mesh>=0 && mesh<m_pD->m_lods[lod].m_components[comp].m_meshes.Num() );
 
-        RESOURCE_ID result = m_pD->m_lods[lod].m_components[comp].m_meshes[mesh].m_meshId;
+		FResourceID result = m_pD->m_lods[lod].m_components[comp].m_meshes[mesh].m_meshId;
         return result;
     }
 
 
 	//---------------------------------------------------------------------------------------------
-    const char* Instance::GetMeshName( int lod, int comp, int mesh ) const
-	{
-		check( lod>=0 && lod<m_pD->m_lods.Num() );
-		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
-        check( mesh>=0 && mesh<m_pD->m_lods[lod].m_components[comp].m_meshes.Num() );
-
-        const char* strResult = m_pD->m_lods[lod].m_components[comp].m_meshes[mesh].m_name.c_str();
-		return strResult;
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-    RESOURCE_ID Instance::GetImageId( int lod, int comp, int surf, int img ) const
+	FResourceID Instance::GetImageId( int32 lod, int32 comp, int32 surf, int32 img ) const
 	{
 		check( lod>=0 && lod<m_pD->m_lods.Num() );
 		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
         check( surf>=0 && surf<m_pD->m_lods[lod].m_components[comp].m_surfaces.Num() );
         check( img>=0 && img<m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_images.Num() );
 
-        RESOURCE_ID result = m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_images[img].m_imageId;
+		FResourceID result = m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_images[img].m_imageId;
         return result;
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-    const char* Instance::GetImageName( int lod, int comp, int surf, int img ) const
+    const char* Instance::GetImageName( int32 lod, int32 comp, int32 surf, int32 img ) const
 	{
 		check( lod>=0 && lod<m_pD->m_lods.Num() );
 		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
@@ -366,25 +349,19 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    void Instance::GetVector( int lod, int comp, int surf, int vec,
-							  float* pX, float* pY, float* pZ, float* pW ) const
+	FVector4f Instance::GetVector( int32 lod, int32 comp, int32 surf, int32 vec ) const
 	{
 		check( lod>=0 && lod<m_pD->m_lods.Num() );
 		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
         check( surf>=0 && surf<m_pD->m_lods[lod].m_components[comp].m_surfaces.Num() );
         check( vec>=0 && vec<m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors.Num() );
 
-        FVector4f r = m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors[vec].m_vec;
-
-		if ( pX ) { *pX = r[0]; }
-		if ( pY ) { *pY = r[1]; }
-		if ( pZ ) { *pZ = r[2]; }
-		if ( pW ) { *pW = r[3]; }
+        return m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors[vec].m_vec;
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-    const char* Instance::GetVectorName( int lod, int comp, int surf, int vec ) const
+    const char* Instance::GetVectorName( int32 lod, int32 comp, int32 surf, int32 vec ) const
 	{
 		check( lod>=0 && lod<m_pD->m_lods.Num() );
 		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
@@ -397,7 +374,7 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    float Instance::GetScalar( int lod, int comp, int surf, int sca ) const
+    float Instance::GetScalar( int32 lod, int32 comp, int32 surf, int32 sca ) const
 	{
 		check( lod>=0 && lod<m_pD->m_lods.Num() );
 		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
@@ -410,7 +387,7 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    const char* Instance::GetScalarName( int lod, int comp, int surf, int sca ) const
+    const char* Instance::GetScalarName( int32 lod, int32 comp, int32 surf, int32 sca ) const
 	{
 		check( lod>=0 && lod<m_pD->m_lods.Num() );
 		check( comp>=0 && comp<m_pD->m_lods[lod].m_components.Num() );
@@ -423,7 +400,7 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    const char* Instance::GetString( int lod, int comp, int surf, int str ) const
+    const char* Instance::GetString( int32 lod, int32 comp, int32 surf, int32 str ) const
     {
         check( lod >= 0 && lod < m_pD->m_lods.Num() );
         check( comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num() );
@@ -450,7 +427,7 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    const char* Instance::GetStringName( int lod, int comp, int surf, int str ) const
+    const char* Instance::GetStringName( int32 lod, int32 comp, int32 surf, int32 str ) const
     {
         check( lod >= 0 && lod < m_pD->m_lods.Num() );
         check( comp >= 0 && comp < m_pD->m_lods[lod].m_components.Num() );
@@ -473,57 +450,74 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-	int Instance::Private::AddLOD()
+	int32 Instance::GetExtensionDataCount() const
 	{
-		int result = m_lods.Num();
+		return m_pD->m_extensionData.Num();
+	}
+
+
+    //---------------------------------------------------------------------------------------------
+	void Instance::GetExtensionData(int32 Index, ExtensionDataPtrConst& OutExtensionData, const char*& OutName) const
+	{
+		check(m_pD->m_extensionData.IsValidIndex(Index));
+
+		OutExtensionData = m_pD->m_extensionData[Index].Data;
+		OutName = m_pD->m_extensionData[Index].Name.c_str();
+	}
+
+
+    //---------------------------------------------------------------------------------------------
+	int32 Instance::Private::AddLOD()
+	{
+		int32 result = m_lods.Num();
 		m_lods.Add( INSTANCE_LOD() );
 		return result;
 	}
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::Private::AddComponent( int lod )
+    int32 Instance::Private::AddComponent( int32 lod )
     {
         // Automatically create the necessary lods and components
-        while ( lod>=GetLODCount() )
+        while (lod >= m_lods.Num())
         {
             AddLOD();
         }
 
-        int result = m_lods[lod].m_components.Num();
+        int32 result = m_lods[lod].m_components.Num();
         m_lods[lod].m_components.Add( INSTANCE_COMPONENT() );
         return result;
     }
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::Private::AddSurface( int lod, int comp )
+    int32 Instance::Private::AddSurface( int32 lod, int32 comp )
     {
         // Automatically create the necessary lods and components
-        while ( lod>=GetLODCount() )
+        while (lod >= m_lods.Num())
         {
             AddLOD();
         }
-        while ( comp>=GetComponentCount(lod) )
+        while (comp >= m_lods[lod].m_components.Num())
         {
             AddComponent(lod);
         }
 
-        int result = m_lods[lod].m_components[comp].m_surfaces.Num();
+        int32 result = m_lods[lod].m_components[comp].m_surfaces.Num();
         m_lods[lod].m_components[comp].m_surfaces.Add( INSTANCE_SURFACE() );
         return result;
     }
 
 
     //---------------------------------------------------------------------------------------------
-    void Instance::Private::SetComponentName( int lod, int comp, const char* strName )
+    void Instance::Private::SetComponentName( int32 lod, int32 comp, const char* strName )
     {
         // Automatically create the necessary lods and components
-        while ( lod>=GetLODCount() )
+        while (lod >= m_lods.Num())
         {
             AddLOD();
         }
-        while ( comp>=GetComponentCount(lod) )
+        while (comp >= m_lods[lod].m_components.Num())
         {
             AddComponent( lod );
         }
@@ -541,18 +535,18 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    void Instance::Private::SetSurfaceName( int lod, int comp, int surf, const char* strName )
+    void Instance::Private::SetSurfaceName( int32 lod, int32 comp, int32 surf, const char* strName )
     {
         // Automatically create the necessary lods and components
-        while ( lod>=GetLODCount() )
+        while ( lod>=m_lods.Num() )
         {
             AddLOD();
         }
-        while ( comp>=GetComponentCount(lod) )
+        while (comp >= m_lods[lod].m_components.Num())
         {
             AddComponent( lod );
         }
-        while ( surf>=GetSurfaceCount(lod, comp) )
+        while ( surf>=m_lods[lod].m_components[comp].m_surfaces.Num() )
         {
             AddSurface( lod, comp );
         }
@@ -570,22 +564,20 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::Private::AddMesh( int lod, int comp,
-                                    RESOURCE_ID meshId,
-                                    const char* strName )
+    int32 Instance::Private::AddMesh( int32 lod, int32 comp, FResourceID meshId, const char* strName )
 	{
 		// Automatically create the necessary lods and components
-		while ( lod>=GetLODCount() )
+		while (lod >= m_lods.Num())
 		{
 			AddLOD();
 		}
-		while ( comp>=GetComponentCount(lod) )
+		while (comp >= m_lods[lod].m_components.Num())
 		{
 			AddComponent( lod );
 		}
 
 		INSTANCE_COMPONENT& component = m_lods[lod].m_components[comp];
-        int result = component.m_meshes.Num();
+        int32 result = component.m_meshes.Num();
         component.m_meshes.Emplace( meshId, strName );
 
 		return result;
@@ -593,26 +585,24 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::Private::AddImage( int lod, int comp, int surf,
-                                     RESOURCE_ID imageId,
-                                     const char* strName )
+    int32 Instance::Private::AddImage( int32 lod, int32 comp, int32 surf, FResourceID imageId, const char* strName )
 	{
 		// Automatically create the necessary lods and components
-		while ( lod>=GetLODCount() )
+		while (lod >= m_lods.Num())
 		{
 			AddLOD();
 		}
-		while ( comp>=GetComponentCount(lod) )
+		while (comp >= m_lods[lod].m_components.Num())
 		{
-			AddComponent( lod );
+			AddComponent(lod);
 		}
-        while ( surf>=GetSurfaceCount(lod, comp) )
-        {
-            AddSurface( lod, comp );
-        }
+		while (surf >= m_lods[lod].m_components[comp].m_surfaces.Num())
+		{
+			AddSurface(lod, comp);
+		}
 
         INSTANCE_SURFACE& surface = m_lods[lod].m_components[comp].m_surfaces[surf];
-        int result = surface.m_images.Num();
+        int32 result = surface.m_images.Num();
         surface.m_images.Emplace( imageId, strName );
 
         return result;
@@ -620,24 +610,24 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::Private::AddVector( int lod, int comp, int surf, const FVector4f& vec, const char* strName )
+    int32 Instance::Private::AddVector( int32 lod, int32 comp, int32 surf, const FVector4f& vec, const char* strName )
 	{
 		// Automatically create the necessary lods and components
-		while ( lod>=GetLODCount() )
+		while (lod >= m_lods.Num())
 		{
 			AddLOD();
 		}
-		while ( comp>=GetComponentCount(lod) )
+		while (comp >= m_lods[lod].m_components.Num())
 		{
-			AddComponent( lod );
+			AddComponent(lod);
 		}
-        while ( surf>=GetSurfaceCount(lod, comp) )
-        {
-            AddSurface( lod, comp );
-        }
+		while (surf >= m_lods[lod].m_components[comp].m_surfaces.Num())
+		{
+			AddSurface(lod, comp);
+		}
 
         INSTANCE_SURFACE& surface = m_lods[lod].m_components[comp].m_surfaces[surf];
-        int result = surface.m_vectors.Num();
+        int32 result = surface.m_vectors.Num();
         surface.m_vectors.Emplace( vec, strName );
 
         return result;
@@ -645,24 +635,24 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::Private::AddScalar( int lod, int comp, int surf, float sca, const char* strName )
+    int32 Instance::Private::AddScalar( int32 lod, int32 comp, int32 surf, float sca, const char* strName )
     {
         // Automatically create the necessary lods and components
-        while ( lod >= GetLODCount() )
-        {
-            AddLOD();
-        }
-        while ( comp >= GetComponentCount( lod ) )
-        {
-            AddComponent( lod );
-        }
-        while ( surf >= GetSurfaceCount( lod, comp ) )
-        {
-            AddSurface( lod, comp );
-        }
+		while (lod >= m_lods.Num())
+		{
+			AddLOD();
+		}
+		while (comp >= m_lods[lod].m_components.Num())
+		{
+			AddComponent(lod);
+		}
+		while (surf >= m_lods[lod].m_components[comp].m_surfaces.Num())
+		{
+			AddSurface(lod, comp);
+		}
 
         INSTANCE_SURFACE& surface = m_lods[lod].m_components[comp].m_surfaces[surf];
-        int result = surface.m_scalars.Num();
+        int32 result = surface.m_scalars.Num();
         surface.m_scalars.Emplace( sca, strName );
 
         return result;
@@ -670,28 +660,41 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    int Instance::Private::AddString(
-        int lod, int comp, int surf, const char* str, const char* strName )
+    int32 Instance::Private::AddString( int32 lod, int32 comp, int32 surf, const char* str, const char* strName )
     {
         // Automatically create the necessary lods and components
-        while ( lod >= GetLODCount() )
-        {
-            AddLOD();
-        }
-        while ( comp >= GetComponentCount( lod ) )
-        {
-            AddComponent( lod );
-        }
-        while ( surf >= GetSurfaceCount( lod, comp ) )
-        {
-            AddSurface( lod, comp );
-        }
+		while (lod >= m_lods.Num())
+		{
+			AddLOD();
+		}
+		while (comp >= m_lods[lod].m_components.Num())
+		{
+			AddComponent(lod);
+		}
+		while (surf >= m_lods[lod].m_components[comp].m_surfaces.Num())
+		{
+			AddSurface(lod, comp);
+		}
 
         INSTANCE_SURFACE& surface = m_lods[lod].m_components[comp].m_surfaces[surf];
-        int result = surface.m_strings.Num();
+        int32 result = surface.m_strings.Num();
         surface.m_strings.Emplace( str, strName );
 
         return result;
     }
+
+
+    //---------------------------------------------------------------------------------------------
+	void Instance::Private::AddExtensionData(ExtensionDataPtrConst Data, const char* Name)
+	{
+		check(Data);
+		check(Name);
+
+		NamedExtensionData& Entry = m_extensionData.AddDefaulted_GetRef();
+		Entry.Data = Data;
+		Entry.Name = Name;
+
+		check(Entry.Name.length() > 0);
+	}
 }
 

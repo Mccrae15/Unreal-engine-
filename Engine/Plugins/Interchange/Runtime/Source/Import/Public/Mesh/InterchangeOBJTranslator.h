@@ -3,12 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectMacros.h"
 #include "InterchangeTranslatorBase.h"
 #include "Nodes/InterchangeBaseNodeContainer.h"
-#include "Mesh/InterchangeStaticMeshPayload.h"
-#include "Mesh/InterchangeStaticMeshPayloadInterface.h"
+#include "Mesh/InterchangeMeshPayload.h"
+#include "Mesh/InterchangeMeshPayloadInterface.h"
 #include "Texture/InterchangeTexturePayloadInterface.h"
 
 #include "InterchangeOBJTranslator.generated.h"
@@ -19,7 +17,7 @@ struct FObjData;
 
 UCLASS(BlueprintType, Experimental)
 class INTERCHANGEIMPORT_API UInterchangeOBJTranslator : public UInterchangeTranslatorBase,
-	                                                    public IInterchangeStaticMeshPayloadInterface,
+	                                                    public IInterchangeMeshPayloadInterface,
 	                                                    public IInterchangeTexturePayloadInterface
 {
 	GENERATED_BODY()
@@ -32,6 +30,7 @@ public:
 
 	virtual TArray<FString> GetSupportedFormats() const override;
 	virtual EInterchangeTranslatorAssetType GetSupportedAssetTypes() const override;
+
 	/**
 	 * Translate the associated source data into a node hold by the specified nodes container.
 	 *
@@ -50,7 +49,7 @@ public:
 	 * @param PayloadKey - The key to retrieve the a particular payload contain into the specified source data.
 	 * @return a PayloadData containing the the data ask with the key.
 	 */
-	virtual TFuture<TOptional<UE::Interchange::FStaticMeshPayloadData>> GetStaticMeshPayloadData(const FString& PayloadKey) const override;
+	virtual TFuture<TOptional<UE::Interchange::FMeshPayloadData>> GetMeshPayloadData(const FInterchangeMeshPayLoadKey& PayLoadKey, const FTransform& MeshGlobalTransform) const override;
 
 	/* IInterchangeStaticMeshPayloadInterface End */
 
@@ -65,12 +64,9 @@ public:
 	 * @param PayloadKey - The key to retrieve the a particular payload contain into the specified source data.
 	 * @return a PayloadData containing the imported data. The TOptional will not be set if there is an error.
 	 */
-	virtual TOptional<UE::Interchange::FImportImage> GetTexturePayloadData(const UInterchangeSourceData* InSourceData, const FString& PayLoadKey) const override;
-
+	virtual TOptional<UE::Interchange::FImportImage> GetTexturePayloadData(const FString& PayloadKey, TOptional<FString>& AlternateTexturePath) const override;
 	/* IInterchangeTexturePayloadInterface End */
 
 private:
-	void AddMaterialNodes(UInterchangeBaseNodeContainer& BaseNodeContainer, UInterchangeShaderGraphNode* ShaderGraphNode, const FString& InputType, const FVector3f& Color, const FString& TexturePath) const;
-
 	TPimplPtr<FObjData> ObjDataPtr;
 };

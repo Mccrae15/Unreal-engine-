@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Animation/AnimBulkCurves.h"
 #include "Animation/AnimNode_CustomProperty.h"
 #include "AnimNode_ControlRigBase.generated.h"
 
@@ -118,23 +119,30 @@ protected:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Settings)
 	TArray<FBoneReference> InputBonesToTransfer;
 
+	/**
+	 * An inclusive list of bones to transfer as part
+	 * of the output pose transfer phase.
+	 * If this list is empty all bones will be transferred.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Settings)
+	TArray<FBoneReference> OutputBonesToTransfer;
+
 	/** Complete mapping from skeleton to control rig bone index */
 	TArray<TPair<uint16, uint16>> ControlRigBoneInputMappingByIndex;
 	TArray<TPair<uint16, uint16>> ControlRigBoneOutputMappingByIndex;
 
-	/** Complete mapping from skeleton to curve index */
-	TArray<TPair<uint16, uint16>> ControlRigCurveMappingByIndex;
+	/** Complete mapping from skeleton to curve name */
+	TArray<TPair<uint16, FName>> ControlRigCurveMappingByIndex;
 
 	/** Rig Hierarchy bone name to required array index mapping */
 	TMap<FName, uint16> ControlRigBoneInputMappingByName;
 	TMap<FName, uint16> ControlRigBoneOutputMappingByName;
 
-	/** Rig Curve name to Curve LUI mapping */
-	TMap<FName, uint16> ControlRigCurveMappingByName;
-
-	TMap<FName, uint16> InputToCurveMappingUIDs;
+	/** Rig Curve name to Curve mapping */
+	TMap<FName, FName> ControlRigCurveMappingByName;
+	
 	TMap<FName, int32> InputToControlIndex;
-
+	
 	/** Node Mapping Container */
 	UPROPERTY(transient)
 	TWeakObjectPtr<UNodeMappingContainer> NodeMappingContainer;

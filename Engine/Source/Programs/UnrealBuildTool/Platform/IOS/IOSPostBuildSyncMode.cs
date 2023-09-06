@@ -2,12 +2,10 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -15,6 +13,7 @@ namespace UnrealBuildTool
 	class IOSPostBuildSyncTarget
 	{
 		public UnrealTargetPlatform Platform;
+		public UnrealArchitectures Architectures;
 		public UnrealTargetConfiguration Configuration;
 		public FileReference? ProjectFile;
 		public string TargetName;
@@ -35,24 +34,25 @@ namespace UnrealBuildTool
 
 		public IOSPostBuildSyncTarget(ReadOnlyTargetRules Target, FileReference OutputPath, DirectoryReference? ProjectIntermediateDirectory, List<string> UPLScripts, VersionNumber SdkVersion, Dictionary<string, DirectoryReference> FrameworkNameToSourceDir)
 		{
-			this.Platform = Target.Platform;
-			this.Configuration = Target.Configuration;
-			this.ProjectFile = Target.ProjectFile;
-			this.TargetName = Target.Name;
-			this.TargetType = Target.Type;
+			Platform = Target.Platform;
+			Architectures = Target.Architectures;
+			Configuration = Target.Configuration;
+			ProjectFile = Target.ProjectFile;
+			TargetName = Target.Name;
+			TargetType = Target.Type;
 			this.OutputPath = OutputPath;
 			this.UPLScripts = UPLScripts;
 			this.SdkVersion = SdkVersion;
-			this.bCreateStubIPA = Target.IOSPlatform.bCreateStubIPA;
-			this.bSkipCrashlytics = Target.IOSPlatform.bSkipCrashlytics;
-			this.ProjectDirectory = DirectoryReference.FromFile(Target.ProjectFile) ?? Unreal.EngineDirectory;
+			bCreateStubIPA = Target.IOSPlatform.bCreateStubIPA;
+			bSkipCrashlytics = Target.IOSPlatform.bSkipCrashlytics;
+			ProjectDirectory = DirectoryReference.FromFile(Target.ProjectFile) ?? Unreal.EngineDirectory;
 			this.ProjectIntermediateDirectory = ProjectIntermediateDirectory;
-			this.ImportProvision = Target.IOSPlatform.ImportProvision;
-			this.ImportCertificate = Target.IOSPlatform.ImportCertificate;
-			this.ImportCertificatePassword = Target.IOSPlatform.ImportCertificatePassword;
+			ImportProvision = Target.IOSPlatform.ImportProvision;
+			ImportCertificate = Target.IOSPlatform.ImportCertificate;
+			ImportCertificatePassword = Target.IOSPlatform.ImportCertificatePassword;
 			this.FrameworkNameToSourceDir = FrameworkNameToSourceDir;
-			this.bForDistribution = Target.IOSPlatform.bForDistribution;
-			this.bBuildAsFramework = Target.bShouldCompileAsDLL;
+			bForDistribution = Target.IOSPlatform.bForDistribution;
+			bBuildAsFramework = Target.bShouldCompileAsDLL;
 		}
 	}
 
@@ -65,7 +65,12 @@ namespace UnrealBuildTool
 		[CommandLine("-XmlConfigCache=")]
 		public FileReference? XmlConfigCache = null;
 
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		// this isn't actually used, but is helpful to pass -legacyxcode along in CreatePostBuildSyncAction, and UBT won't
+		// complain that nothing is using it, because where we _do_ use it is outside the normal cmdline parsing functionality
+		[CommandLine("-LegacyXcode")]
+		public bool bLegacyXcode;
+
+		public override Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Arguments.ApplyTo(this);
 			Arguments.CheckAllArgumentsUsed();
@@ -74,7 +79,7 @@ namespace UnrealBuildTool
 			IOSPostBuildSyncTarget Target = BinaryFormatterUtils.Load<IOSPostBuildSyncTarget>(InputFile!);
 			IOSToolChain.PostBuildSync(Target, Logger);
 
-			return 0;
+			return Task.FromResult(0);
 		}
 	}
 }

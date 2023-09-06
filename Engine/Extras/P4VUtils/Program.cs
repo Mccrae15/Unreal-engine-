@@ -2,11 +2,8 @@
 
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Console;
-using P4VUtils.Commands;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -44,54 +41,8 @@ namespace P4VUtils
 
 	class Program
 	{
-		// UEHelpersInRoot - commands that help with common but simple operations
-		public static IReadOnlyDictionary<string, Command> RootHelperCommands { get; } = new Dictionary<string, Command>(StringComparer.OrdinalIgnoreCase)
-		{
-			["describe"] = new DescribeCommand(),
-			["copyclnum"] = new CopyCLCommand(),
-			["findlastedit"] = new FindLastEditCommand(),
-			["findlasteditbyline"] = new P4BlameCommand(),
-		};
-
-		// UESubmit - commands that help with submitting files/changelists
-		public static IReadOnlyDictionary<string, Command> SubmissionCommands { get; } = new Dictionary<string, Command>(StringComparer.OrdinalIgnoreCase)
-		{
-			["submitandvirtualize"] = new SubmitAndVirtualizeCommand(),
-		};
-
-		// UEHelpers - commands that help with common but simple operations
-		public static IReadOnlyDictionary<string, Command> ToolboxCommands { get; } = new Dictionary<string, Command>(StringComparer.OrdinalIgnoreCase)
-		{
-			["backout"] = new BackoutCommand(),
-			["snapshot"] = new SnapshotCommand(),
-			["reconcilecode"] = new FastReconcileCodeEditsCommand(),
-			["reconcileall"] = new FastReconcileAllEditsCommand(),
-			["unshelvetocurrentrevision"] = new UnshelveToCurrentRevision(),
-			["unshelvemakedatawritable"] = new UnshelveMakeDataWritable(),
-			["convertcldatatolocalwritable"] = new ConvertCLDataToLocalWritable(),
-			["convertdatatolocalwritable"] = new ConvertDataToLocalWritable(),
-			["describedirectory"] = new DescribeDirectoryCommand(),
-		};
-
-		// UEIntegrate Folder commands - complex commands to facilitate integrations/backout
-		public static IReadOnlyDictionary<string, Command> IntegrateCommands { get; } = new Dictionary<string, Command>(StringComparer.OrdinalIgnoreCase)
-		{
-			["cherrypick"] = new CherryPickCommand(),
-			["converttoedit"] = new ConvertToEditCommand(),
-			["edigrate"] = new EdigrateCommand(),
-		};
-
-		// UEHorde Folder - local build and horde preflights
-		public static IReadOnlyDictionary<string, Command> HordeCommands { get; } = new Dictionary<string, Command>(StringComparer.OrdinalIgnoreCase)
-		{
-			["compile"] = new CompileCommand(),
-			["preflight"] = new PreflightCommand(),
-			["preflightandsubmit"] = new PreflightAndSubmitCommand(),
-			["movewriteablepreflightandsubmit"] = new MoveWriteableFilesthenPreflightAndSubmitCommand(),
-			["openpreflight"] = new OpenPreflightCommand(),
-		};
-
-		public static IDictionary<string, Command> Commands = SubmissionCommands.Concat(RootHelperCommands).Concat(ToolboxCommands).Concat(IntegrateCommands).Concat(HordeCommands).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+		public static IDictionary<string, Command> Commands = new Dictionary<string, Command>();
+		public static IDictionary<CommandCategory, List<string>> CommandCategories = new Dictionary<CommandCategory, List<string>>();
 
 		static void PrintHelp(ILogger Logger)
 		{
@@ -114,7 +65,7 @@ namespace P4VUtils
 
 		static async Task<int> Main(string[] Args)
 		{
-			using ILoggerFactory Factory = LoggerFactory.Create(Builder => Builder.AddEpicDefault());//.AddSimpleConsole(Options => { Options.SingleLine = true; Options.IncludeScopes = false; }));
+			using ILoggerFactory Factory = LoggerFactory.Create(Builder => Builder.AddEpicDefault());
 			ILogger Logger = Factory.CreateLogger<Program>();
 			Log.SetInnerLogger(Logger);
 
@@ -129,8 +80,33 @@ namespace P4VUtils
 			}
 		}
 
+		static void RegisterCommands()
+		{
+			// Grab all the commands, sorting to preserve the previous order from the explicit tabs.
+			var Types = from assembly in Assembly.GetExecutingAssembly().GetTypes()
+						where assembly.IsDefined(typeof(CommandAttribute))
+						let attrib = assembly.GetCustomAttributes(typeof(CommandAttribute), true).Cast<CommandAttribute>().First()
+						orderby attrib.Order
+						select new { Type = assembly, Attribute = attrib };
+						
+			foreach (var Type in Types)
+			{
+				CommandAttribute attribute = Type.Attribute;
+				if (!CommandCategories.ContainsKey(attribute.Category))
+				{
+					CommandCategories[attribute.Category] = new List<string>();
+				}
+
+				Command? CreatedCommand = Activator.CreateInstance(Type.Type) as Command;
+				Commands.Add(attribute.CommandName, CreatedCommand!);
+				CommandCategories[attribute.Category].Add(attribute.CommandName);
+			}
+		}
+
 		static async Task<int> InnerMain(string[] Args, ILogger Logger)
 		{
+			RegisterCommands();
+
 			if (Args.Length == 0 || Args[0].Equals("-help", StringComparison.OrdinalIgnoreCase))
 			{
 				PrintHelp(Logger);
@@ -168,7 +144,7 @@ namespace P4VUtils
 				return await Command.Execute(Args, ConfigValues, Logger);
 			}
 			else
-		{
+			{
 				Logger.LogError("Unknown command: {Command}", Args[0]);
 				PrintHelp(Logger);
 				return 1;
@@ -179,7 +155,7 @@ namespace P4VUtils
 		{
 			Dictionary<string, string> ConfigValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-			string BasePath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
+			string BasePath = System.AppContext.BaseDirectory;
 			AppendConfig(Path.Combine(BasePath, "P4VUtils.ini"), ConfigValues);
 			AppendConfig(Path.Combine(BasePath, "NotForLicensees", "P4VUtils.ini"), ConfigValues);
 
@@ -225,8 +201,48 @@ namespace P4VUtils
 			return ToolNode.SelectSingleNode("Definition")?.SelectSingleNode("Name")?.InnerText ?? string.Empty;
 		}
 
+		static bool ShouldBeRemoved(XmlElement ChildElement, FileReference ExecutableLocation)
+		{
+			XmlElement? CommandElement = ChildElement.SelectSingleNode("Definition/Command") as XmlElement;
+
+			// leave any missing entries alone
+			if (CommandElement == null || CommandElement.InnerText == null)
+			{
+				return false;
+			}
+
+			// In a recent change we started to output the Command element as a quoted argument if the path contains spaces.
+			// FileReference does not resolve quoted string properly which was causing the comparisons here to fail.
+			// We can strip the quotes before creating a FileReference to compare with DotNetLocation to ensure that the comparsion
+			// is correct.
+			FileReference ExistingCommandPath = new FileReference(CommandElement.InnerText.StripQuoteArgument());
+
+			// if the executables matches this, then we remove it
+			if (ExistingCommandPath == ExecutableLocation)
+			{
+				return true;
+			}
+
+			// if it's an old style command that ran "dotnet P4VUtils.dll", remove it
+			if (ExistingCommandPath.GetFileNameWithoutAnyExtensions().Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+			{
+				XmlElement? ArgumentsElement = ChildElement.SelectSingleNode("Definition/Arguments") as XmlElement;
+				if (ArgumentsElement != null)
+				{
+					string[] Arguments = CommandLineArguments.Split(ArgumentsElement.InnerText);
+					if (Arguments.Length > 0 && Path.GetFileNameWithoutExtension(Arguments[0]).Equals("P4VUtils", StringComparison.OrdinalIgnoreCase))
+					{
+						return true;
+					}
+				}
+			}
+
+			// any other case, leave it installed
+			return false;
+		}
+
 		// returns true if all tools were removed
-		static bool RemoveCustomToolsFromNode(XmlElement RootNode, FileReference DotNetLocation, FileReference AssemblyLocation, ILogger Logger)
+		static bool RemoveCustomToolsFromNode(XmlElement RootNode, FileReference ExecutableLocation, ILogger Logger)
 		{
 			int ToolsChecked = 0;
 			int ToolsRemoved = 0;
@@ -244,28 +260,12 @@ namespace P4VUtils
 				if (ChildElement != null)
 				{
 					ToolsChecked++;
-					XmlElement? CommandElement = ChildElement.SelectSingleNode("Definition/Command") as XmlElement;
 
-
-					// In a recent change we started to output the Command element as a quoted argument if the path contains spaces.
-					// FileReference does not resolve quoted string properly which was causing the comparisons here to fail.
-					// We can strip the quotes before creating a FileReference to compare with DotNetLocation to ensure that the comparsion
-					// is correct.
-					String CommandPath = (CommandElement?.InnerText ?? String.Empty).StripQuoteArgument();
-
-					if (new FileReference(CommandPath) == DotNetLocation)
+					if (ShouldBeRemoved(ChildElement, ExecutableLocation))
 					{
-						XmlElement? ArgumentsElement = ChildElement.SelectSingleNode("Definition/Arguments") as XmlElement;
-						if (ArgumentsElement != null)
-						{
-							string[] Arguments = CommandLineArguments.Split(ArgumentsElement.InnerText);
-							if (Arguments.Length > 0 && new FileReference(Arguments[0]) == AssemblyLocation)
-							{
-								Logger.LogInformation("Removing Tool {ToolName}", GetToolName(ChildElement));
-								RootNode.RemoveChild(ChildElement);
-								ToolsRemoved++;
-							}
-						}
+						Logger.LogInformation("Removing Tool {ToolName}", GetToolName(ChildElement));
+						RootNode.RemoveChild(ChildElement);
+						ToolsRemoved++;
 					}
 				}
 			}
@@ -273,7 +273,7 @@ namespace P4VUtils
 			return ToolsChecked == ToolsRemoved;
 		}
 
-		static void InstallCommandsListInFolder(string FolderName, bool AddFolderToContextMenu, IReadOnlyDictionary<string, Command> InputCommmands, XmlDocument Document, FileReference DotNetLocation, FileReference AssemblyLocation, ILogger Logger)
+		static void InstallCommandsListInFolder(string FolderName, bool AddFolderToContextMenu, CommandCategory Category, XmlDocument Document, FileReference ExecutableLocation, ILogger Logger)
 		{
 			// <CustomToolDefList>				// list of custom tools (top level)
 			//  < CustomToolDef >				// loose custom tool in top level
@@ -299,7 +299,10 @@ namespace P4VUtils
 
 				XmlElement FolderDefList = Document.CreateElement("CustomToolDefList");
 
-				foreach (KeyValuePair<string, Command> Pair in InputCommmands)
+				List<string> CommandList = CommandCategories[Category];
+				IEnumerable<KeyValuePair<string, Command>> CategoryCommands = Commands.Where(Pair => CommandList.Contains(Pair.Key));
+
+				foreach (KeyValuePair<string, Command> Pair in CategoryCommands)
 				{
 					CustomToolInfo CustomTool = Pair.Value.CustomTool;
 
@@ -312,11 +315,16 @@ namespace P4VUtils
 							Definition.AppendChild(Description);
 
 							XmlElement Command = Document.CreateElement("Command");
-							Command.InnerText = DotNetLocation.FullName.QuoteArgument();
+							Command.InnerText = ExecutableLocation.FullName;
+							if (OperatingSystem.IsWindows())
+							{
+								Command.InnerText = Command.InnerText.QuoteArgument();
+
+							}
 							Definition.AppendChild(Command);
 
 							XmlElement Arguments = Document.CreateElement("Arguments");
-							Arguments.InnerText = $"{AssemblyLocation.FullName.QuoteArgument()} {Pair.Key} {CustomTool.Arguments}";
+							Arguments.InnerText = $"{Pair.Key} {CustomTool.Arguments}";
 							Definition.AppendChild(Arguments);
 
 							if (CustomTool.Shortcut.Length > 1)
@@ -369,7 +377,7 @@ namespace P4VUtils
 				Root.AppendChild(FolderDefinition);
 			}
 		}
-		static void RemoveCustomToolsFromFolders(XmlElement RootNode, FileReference DotNetLocation, FileReference AssemblyLocation, ILogger Logger)
+		static void RemoveCustomToolsFromFolders(XmlElement RootNode, FileReference ExecutableLocation, ILogger Logger)
 		{
 			XmlNodeList? CustomToolFolderList = RootNode.SelectNodes("CustomToolFolder");
 			if(CustomToolFolderList == null)
@@ -392,7 +400,7 @@ namespace P4VUtils
 							FolderNameString = FolderNameNode.InnerText;
 						}
 						Logger.LogInformation("Removing Tools from folder {Folder}", FolderNameString);
-						RemoveFolder = RemoveCustomToolsFromNode(FolderRoot, DotNetLocation, AssemblyLocation, Logger);
+						RemoveFolder = RemoveCustomToolsFromNode(FolderRoot, ExecutableLocation, Logger);
 					}
 
 					if (RemoveFolder)
@@ -412,7 +420,15 @@ namespace P4VUtils
 				return 1;
 			}
 
-			FileReference ConfigFile = FileReference.Combine(ConfigDir, ".p4qt", "customtools.xml");
+			FileReference ConfigFile;
+			if (OperatingSystem.IsMacOS())
+			{
+				ConfigFile = FileReference.Combine(ConfigDir, "Library", "Preferences", "com.perforce.p4v", "customtools.xml");
+			}
+			else
+			{
+				ConfigFile = FileReference.Combine(ConfigDir, ".p4qt", "customtools.xml");
+			}
 
 			XmlDocument Document = new XmlDocument();
 			if (!TryLoadXmlDocument(ConfigFile, Document))
@@ -429,8 +445,7 @@ namespace P4VUtils
 			}
 
 
-			FileReference DotNetLocation = FileReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.ProgramFiles)!, "dotnet", "dotnet.exe");
-			FileReference AssemblyLocation = new FileReference(Assembly.GetExecutingAssembly().GetOriginalLocation());
+			FileReference? ExecutableLocation = new FileReference(Environment.ProcessPath!);
 
 			XmlElement? Root = Document.SelectSingleNode("CustomToolDefList") as XmlElement;
 			if (Root == null)
@@ -440,19 +455,20 @@ namespace P4VUtils
 			}
 
 			// Remove Custom tools at the root
-			RemoveCustomToolsFromNode(Root, DotNetLocation, AssemblyLocation, Logger);
+			RemoveCustomToolsFromNode(Root, ExecutableLocation, Logger);
 
 			// Remove Custom tools in folders, and the folders
-			RemoveCustomToolsFromFolders(Root, DotNetLocation, AssemblyLocation, Logger);
+			RemoveCustomToolsFromFolders(Root, ExecutableLocation, Logger);
 
 			// Insert new entries
 			if (bInstall)
 			{
-				InstallCommandsListInFolder("UE RootHelpers", false/*AddFolderToContextMenu*/, RootHelperCommands, Document, DotNetLocation, AssemblyLocation, Logger);
-				InstallCommandsListInFolder("UE Submit", true/*AddFolderToContextMenu*/, SubmissionCommands, Document, DotNetLocation, AssemblyLocation, Logger);
-				InstallCommandsListInFolder("UE Toolbox", true/*AddFolderToContextMenu*/, ToolboxCommands, Document, DotNetLocation, AssemblyLocation, Logger);
-				InstallCommandsListInFolder("UE Integrate", true/*AddFolderToContextMenu*/, IntegrateCommands, Document, DotNetLocation, AssemblyLocation, Logger);
-				InstallCommandsListInFolder("UE Horde", true/*AddFolderToContextMenu*/, HordeCommands, Document, DotNetLocation, AssemblyLocation, Logger);
+				InstallCommandsListInFolder("UE RootHelpers", false/*AddFolderToContextMenu*/, CommandCategory.Root, Document, ExecutableLocation, Logger);
+				InstallCommandsListInFolder("UE Content", true/*AddFolderToContextMenu*/, CommandCategory.Content, Document, ExecutableLocation, Logger);
+				InstallCommandsListInFolder("UE Toolbox", true/*AddFolderToContextMenu*/, CommandCategory.Toolbox, Document, ExecutableLocation, Logger);
+				InstallCommandsListInFolder("UE Integrate", true/*AddFolderToContextMenu*/, CommandCategory.Integrate, Document, ExecutableLocation, Logger);
+				InstallCommandsListInFolder("UE Horde", true/*AddFolderToContextMenu*/, CommandCategory.Horde, Document, ExecutableLocation, Logger);
+				InstallCommandsListInFolder("UE Browser", true/*AddFolderToContextMenu*/, CommandCategory.Browser, Document, ExecutableLocation, Logger);
 			}
 
 			// Save the new document

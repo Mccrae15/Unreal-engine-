@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OptiXDenoiser.h"
+#include "HAL/IConsoleManager.h"
 #include "PathTracingDenoiser.h"
 #include <mutex>
 
@@ -236,9 +237,9 @@ void FOptiXDenoiseModule::ShutdownModule()
 	GPathTracingMotionVectorFunc = nullptr;
 
 	// Assure resources related to CUDA is released before the releasing of CUDA module.
-	Denoiser.Release();
-	FlowEstimator.Release();
-	OptiXImageFactory.Release();
+	Denoiser.Reset();
+	FlowEstimator.Reset();
+	OptiXImageFactory.Reset();
 
 	// Unload function list manually to ensure CUDA model is still active.
 	FOptiXCudaFunctionList::Get().ShutDown();

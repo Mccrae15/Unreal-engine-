@@ -7,6 +7,7 @@
 #include "InstallBundleManagerModule.h"
 
 
+#include "HAL/IConsoleManager.h"
 #include "Misc/Base64.h"
 #include "Misc/ConfigContext.h"
 #include "Misc/CommandLine.h"
@@ -125,6 +126,10 @@ static FAutoConsoleCommand InstallBundleCacheStatsCommand(
 	}),
 	ECVF_Cheat);
 
+static int32 MaxContentInstallTimePerTickMS = 0;
+static FAutoConsoleVariableRef CVarMaxContentInstallTimePerTickMS(TEXT("InstallBundleManager.MaxContentInstallTimePerTickMS"),
+	MaxContentInstallTimePerTickMS,
+	TEXT("Maximum duration in milliseconds to allot for content install requests"));
 
 FDefaultInstallBundleManager::EBundleState FDefaultInstallBundleManager::GetBundleStatus(const FBundleInfo& BundleInfo) const
 {
@@ -918,12 +923,27 @@ void FDefaultInstallBundleManager::TryReserveCache(FContentRequestRef Request)
 
 	if (!bSuccess)
 	{
-		// Release from any caches that were reserved
+		LOG_INSTALL_BUNDLE_MAN_OVERRIDE(Request->LogVerbosityOverride, Display, TEXT("Failed to reserve cache for Request %s"), *Request->BundleName.ToString());
+
 		for (const TPair<FName, EInstallBundleCacheReserveResult>& Pair : ReserveResults)
 		{
 			if (Pair.Value == EInstallBundleCacheReserveResult::Success)
 			{
+				// Release from any caches that were reserved
 				verify(BundleCaches.FindChecked(Pair.Key)->Release(Request->BundleName));
+			}
+			else if (Pair.Value == EInstallBundleCacheReserveResult::Fail_CacheFull)
+			{
+				// Dump useful info
+				GetCacheStats(FInstallBundleSourceOrCache(Pair.Key), EInstallBundleCacheDumpToLog::Default, Request->GetLogVerbosityOverride());
+
+				TSharedRef<FInstallBundleCache> Cache = BundleCaches.FindChecked(Pair.Key);
+				if (TOptional<FInstallBundleCacheBundleInfo> CacheBundleInfo = Cache->GetBundleInfo(Request->BundleName))
+				{
+					LOG_INSTALL_BUNDLE_MAN_OVERRIDE(Request->LogVerbosityOverride, Display, TEXT("* Reserve attempt for request %s"), *Request->BundleName.ToString());
+					LOG_INSTALL_BUNDLE_MAN_OVERRIDE(Request->LogVerbosityOverride, Display, TEXT("* \tfull size: %" UINT64_FMT), CacheBundleInfo->FullInstallSize)
+					LOG_INSTALL_BUNDLE_MAN_OVERRIDE(Request->LogVerbosityOverride, Display, TEXT("* \tcurrent size: %" UINT64_FMT), CacheBundleInfo->CurrentInstallSize)
+				}
 			}
 		}
 
@@ -1397,6 +1417,7 @@ void FDefaultInstallBundleManager::TickAsyncMountTasks()
 void FDefaultInstallBundleManager::MountPaks(FContentRequestRef Request)
 {
 	SCOPED_BOOT_TIMING("FDefaultInstallBundleManager::MountPaks");
+	TRACE_BOOKMARK(TEXT("Start Mount Bundle %s"), *Request->BundleName.ToString());
 
 	check(!Request->bIsCanceled && Request->Result == EInstallBundleResult::OK);
 
@@ -1444,6 +1465,7 @@ void FDefaultInstallBundleManager::MountPaks(FContentRequestRef Request)
 		SetBundleStatus(BundleInfoLambda, EBundleState::Mounted);
 
 		StatsEnd(Request->BundleName, EContentRequestState::Mounting);
+		TRACE_BOOKMARK(TEXT("Finsihed Mount Bundle %s"), *Request->BundleName.ToString());
 		Request->StepResult = EContentRequestStepResult::Done;
 	};
 
@@ -1865,8 +1887,13 @@ void FDefaultInstallBundleManager::TickContentRequests()
 		ContentRequests[EContentRequestBatch::Cache].RemoveAt(ContentRequests[EContentRequestBatch::Cache].Num() - 1); //Invalidates Request
 	}
 
-	for (int i = 0; i < ContentRequests[EContentRequestBatch::Install].Num();)
+	// Set an optional maximum end time for processing install requests to ensure we don't hang
+	const double ContentInstallEndTime = MaxContentInstallTimePerTickMS <= 0 ? DBL_MAX : FPlatformTime::Seconds() + MaxContentInstallTimePerTickMS / 1000.0;
+
+	for (int i = 0; i < ContentRequests[EContentRequestBatch::Install].Num() && FPlatformTime::Seconds() < ContentInstallEndTime;)
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_TickContentRequests_Install);
+
 		bool bRequestComplete = false;
 		FContentRequestRef& Request = ContentRequests[EContentRequestBatch::Install][i];
 		while (!bRequestComplete && Request->StepResult == EContentRequestStepResult::Done)
@@ -2904,6 +2931,15 @@ bool FDefaultInstallBundleManager::HasBundleSource(EInstallBundleSourceType Sour
 	return BundleSources.Contains(SourceType);
 }
 
+const TSharedPtr<IInstallBundleSource> FDefaultInstallBundleManager::GetBundleSource(EInstallBundleSourceType SourceType) const
+{
+	if (InitState != EInstallBundleManagerInitState::Succeeded)
+		return nullptr;
+
+	const TSharedPtr<IInstallBundleSource>* Found = BundleSources.Find(SourceType);
+	return Found ? *Found : nullptr;
+}
+
 FDelegateHandle FDefaultInstallBundleManager::PushInitErrorCallback(FInstallBundleManagerInitErrorHandler Callback)
 {
 	InitErrorHandlerStack.Push(MoveTemp(Callback));
@@ -2960,7 +2996,9 @@ EInstallBundleManagerInitState FDefaultInstallBundleManager::GetInitState() cons
 }
 
 TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> FDefaultInstallBundleManager::RequestUpdateContent(
-	TArrayView<const FName> InBundleNames, EInstallBundleRequestFlags Flags, ELogVerbosity::Type LogVerbosityOverride /*= ELogVerbosity::NoLogging*/)
+	TArrayView<const FName> InBundleNames, EInstallBundleRequestFlags Flags,
+	ELogVerbosity::Type LogVerbosityOverride /*= ELogVerbosity::NoLogging*/,
+	InstallBundleUtil::FContentRequestSharedContextPtr RequestSharedContext /*= nullptr*/)
 {
 	CSV_SCOPED_TIMING_STAT(InstallBundleManager, InstallBundleManager_RequestUpdateContent);
 
@@ -2977,9 +3015,6 @@ TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> FDefaultInstallBu
 	{
 		return MakeError(EInstallBundleResult::InitializationPending);
 	}
-
-	// Shared between all bundles for the same request
-	InstallBundleUtil::FContentRequestSharedContextPtr RequestSharedContext;
 
 	TSet<FName> BundlesToLoad = GatherBundlesForRequest(InBundleNames, RetInfo.InfoFlags);
 	for (const FName& BundleName : BundlesToLoad)
@@ -3794,7 +3829,7 @@ void FDefaultInstallBundleManager::StartSessionPersistentStatTracking(const FStr
 				}
 				else
 				{
-					LOG_INSTALL_BUNDLE_MAN(Warning, TEXT("Could not start bundle persistent stat tracking for %s with an accurate AnalyticsID! We could not find an entry for it in the IndividualBundleStates even though it was a required bundle to track! Starting with generic Analytics ID to hope for the best!"));
+					LOG_INSTALL_BUNDLE_MAN(Warning, TEXT("Could not start bundle persistent stat tracking with an accurate AnalyticsID! We could not find an entry for it in the IndividualBundleStates even though it was a required bundle to track! Starting with generic Analytics ID to hope for the best!"));
 					StartBundlePersistentStatTracking(QueuedRequest);
 				}
 			}

@@ -16,7 +16,7 @@ struct FDataflowOutput;
 class UScriptStruct;
 
 namespace Dataflow {
-	struct DATAFLOWCORE_API FNodeParameters {
+	struct FNodeParameters {
 		FName Name;
 	};
 	class FGraph;
@@ -32,7 +32,7 @@ namespace Dataflow {
 *        evaluation. 
 */
 USTRUCT()
-struct DATAFLOWCORE_API FDataflowNode
+struct FDataflowNode
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -75,44 +75,61 @@ struct DATAFLOWCORE_API FDataflowNode
 	virtual FName GetDisplayName() const { return ""; }
 	virtual FName GetCategory() const { return ""; }
 	virtual FString GetTags() const { return ""; }
-	virtual FString GetToolTip();
-	FString GetPinToolTip(const FName& PropertyName);
-	TArray<FString> GetPinMetaData(const FName& PropertyName);
+	DATAFLOWCORE_API virtual FString GetToolTip();
+	DATAFLOWCORE_API FString GetPinToolTip(const FName& PropertyName);
+	DATAFLOWCORE_API FText GetPinDisplayName(const FName& PropertyName);
+	DATAFLOWCORE_API TArray<FString> GetPinMetaData(const FName& PropertyName);
 	virtual TArray<Dataflow::FRenderingParameter> GetRenderParameters() const { return GetRenderParametersImpl(); }
+	// Copy node property values from another node
+	DATAFLOWCORE_API void CopyNodeProperties(const TSharedPtr<FDataflowNode> CopyFromDataflowNode);
 
 	//
 	// Connections
 	//
 
-	TArray<Dataflow::FPin> GetPins() const;
+	DATAFLOWCORE_API TArray<Dataflow::FPin> GetPins() const;
+
+	/** Override this function to add the AddOptionPin functionality to the node's context menu. */
+	virtual Dataflow::FPin AddPin() { return { Dataflow::FPin::EDirection::NONE, NAME_None, NAME_None }; }
+	/** Override this function to add the AddOptionPin functionality to the node's context menu. */
+	virtual bool CanAddPin() const { return false; }
+	/** Override this function to add the RemoveOPtionPin functionality to the node's context menu. */
+	virtual Dataflow::FPin RemovePin() { return { Dataflow::FPin::EDirection::NONE, NAME_None, NAME_None }; }
+	/** Override this function to add the RemoveOPtionPin functionality to the node's context menu. */
+	virtual bool CanRemovePin() const { return false; }
+
+	DATAFLOWCORE_API virtual void AddInput(FDataflowInput* InPtr);
+	DATAFLOWCORE_API TArray< FDataflowInput* > GetInputs() const;
+	DATAFLOWCORE_API void ClearInputs();
+
+	DATAFLOWCORE_API FDataflowInput* FindInput(FName Name);
+	DATAFLOWCORE_API FDataflowInput* FindInput(void* Reference);
+	DATAFLOWCORE_API const FDataflowInput* FindInput(const void* Reference) const;
 
 
-	virtual void AddInput(FDataflowInput* InPtr);
-	TArray< FDataflowInput* > GetInputs() const;
-	void ClearInputs();
+	DATAFLOWCORE_API virtual void AddOutput(FDataflowOutput* InPtr);
+	DATAFLOWCORE_API int NumOutputs() const;
+	DATAFLOWCORE_API TArray< FDataflowOutput* > GetOutputs() const;
+	DATAFLOWCORE_API void ClearOutputs();
 
-	FDataflowInput* FindInput(FName Name);
-	FDataflowInput* FindInput(void* Reference);
-	const FDataflowInput* FindInput(const void* Reference) const;
+	DATAFLOWCORE_API FDataflowOutput* FindOutput(FName Name);
+	DATAFLOWCORE_API FDataflowOutput* FindOutput(void* Reference);
+	DATAFLOWCORE_API const FDataflowOutput* FindOutput(FName Name) const;
+	DATAFLOWCORE_API const FDataflowOutput* FindOutput(const void* Reference) const;
 
+	/** Return a property's byte offset from the dataflow base node address using the full property name (must includes its parent struct property names). */
+	uint32 GetPropertyOffset(const FName& PropertyFullName) const;
 
-	virtual void AddOutput(FDataflowOutput* InPtr);
-	int NumOutputs() const;
-	TArray< FDataflowOutput* > GetOutputs() const;
-	void ClearOutputs();
+	static DATAFLOWCORE_API const FName DataflowInput;
+	static DATAFLOWCORE_API const FName DataflowOutput;
+	static DATAFLOWCORE_API const FName DataflowPassthrough;
+	static DATAFLOWCORE_API const FName DataflowIntrinsic;
 
-	FDataflowOutput* FindOutput(FName Name);
-	FDataflowOutput* FindOutput(void* Reference);
-	const FDataflowOutput* FindOutput(FName Name) const;
-	const FDataflowOutput* FindOutput(const void* Reference) const;
+	static DATAFLOWCORE_API const FLinearColor DefaultNodeTitleColor;
+	static DATAFLOWCORE_API const FLinearColor DefaultNodeBodyTintColor;
 
-	static const FName DataflowInput;
-	static const FName DataflowOutput;
-	static const FName DataflowPassthrough;
-	static const FName DataflowIntrinsic;
-
-	static const FLinearColor DefaultNodeTitleColor;
-	static const FLinearColor DefaultNodeBodyTintColor;
+	/** Override this method to provide custom serialization for this node. */
+	virtual void Serialize(FArchive& Ar) {}
 
 	//
 	//  Struct Support
@@ -122,9 +139,15 @@ struct DATAFLOWCORE_API FDataflowNode
 	virtual FStructOnScope* NewStructOnScope() { return nullptr; }
 	virtual const UScriptStruct* TypedScriptStruct() const { return nullptr; }
 
-	/** Register the Input and Outputs after the creation in the factory */
-	void RegisterInputConnection(const void* Property);
-	void RegisterOutputConnection(const void* Property, const void* Passthrough = nullptr);
+	/** Register the Input and Outputs after the creation in the factory. Use PropertyName to disambiguate a struct name from its first property. */
+	DATAFLOWCORE_API void RegisterInputConnection(const void* Property, const FName& PropertyName = NAME_None);
+	DATAFLOWCORE_API void RegisterOutputConnection(
+		const void* Property,
+		const void* Passthrough = nullptr,
+		const FName& PropertyName = NAME_None,
+		const FName& PassthroughName = NAME_None);
+	/** Unregister the input connection if one exists matching this property, and then invalidate the graph. */
+	DATAFLOWCORE_API void UnregisterInputConnection(const void* Property, const FName& PropertyName = NAME_None);
 
 	//
 	// Evaluation
@@ -173,16 +196,22 @@ struct DATAFLOWCORE_API FDataflowNode
 	/**
 	*   SetValue(...)
 	*
-	*	Set the value of the Reference output.
+	*   Set the value of the Reference output.
+	* 
+	*   Note: If the compiler errors out with "You cannot bind an lvalue to an rvalue reference", then simply remove
+	*         the explicit template parameter from the function call to allow for a const reference type to be deducted.
+	*         const int32 Value = 0; SetValue<int32>(Context, Value, &Reference);  // Error: You cannot bind an lvalue to an rvalue reference
+	*         const int32 Value = 0; SetValue(Context, Value, &Reference);  // Fine
+	*         const int32 Value = 0; SetValue<const int32&>(Context, Value, &Reference);  // Fine
 	* 
 	*   @param Context : The evaluation context that holds the data store.
 	*   @param Value : The value to store in the contexts data store. 
 	*   @param Reference : Pointer to a member of this node that corresponds with the output to set. 
 	*/
-	template<class T> void SetValue(Dataflow::FContext& Context, const T& Value, const T* Reference) const
+	template<class T> void SetValue(Dataflow::FContext& Context, T&& Value, const typename TDecay<T>::Type* Reference) const
 	{
 		checkSlow(FindOutput(Reference));
-		FindOutput(Reference)->template SetValue<T>(Value, Context);
+		FindOutput(Reference)->SetValue(Forward<T>(Value), Context);
 	}
 
 	/**
@@ -198,11 +227,13 @@ struct DATAFLOWCORE_API FDataflowNode
 		return (FindInput(Reference)->GetConnection() != nullptr);
 	}
 
-	void Invalidate();
+	DATAFLOWCORE_API void Invalidate(const Dataflow::FTimestamp& ModifiedTimestamp = Dataflow::FTimestamp::Current());
 
-	virtual bool ValidateConnections();
+	virtual void OnInvalidate() {}
 
-	bool IsValid() const { return bValid; }
+	DATAFLOWCORE_API virtual bool ValidateConnections();
+
+	bool HasValidConnections() const { return bHasValidConnections; }
 
 	virtual bool IsA(FName InType) const 
 	{ 
@@ -235,10 +266,24 @@ struct DATAFLOWCORE_API FDataflowNode
 	FOnNodeInvalidated& GetOnNodeInvalidatedDelegate() { return OnNodeInvalidatedDelegate; }
 
 private:
+	static FName GetPropertyFullName(const TArray<const FProperty*>& PropertyChain);
+	static FText GetPropertyDisplayNameText(const TArray<const FProperty*>& PropertyChain);
+	static uint32 GetPropertyOffset(const TArray<const FProperty*>& PropertyChain);
+
+	/**
+	* Find a property using the property address and name (not including its parent struct property names).
+	* If NAME_None is used as the name, and the same address is shared by a parent structure property and
+	* its first child property, then the parent will be returned.
+	*/
+	const FProperty* FindProperty(const UStruct* Struct, const void* Property, const FName& PropertyName, TArray<const FProperty*>* OutPropertyChain = nullptr) const;
+
+	/** Find a property using the property full name (must includes its parent struct property names). */
+	const FProperty* FindProperty(const UStruct* Struct, const FName& PropertyFullName, TArray<const FProperty*>* OutPropertyChain = nullptr) const;
+
 	virtual TArray<Dataflow::FRenderingParameter> GetRenderParametersImpl() const { return TArray<Dataflow::FRenderingParameter>(); }
 
 
-	bool bValid = true;
+	bool bHasValidConnections = true;
 
 protected:
 	FOnNodeInvalidated OnNodeInvalidatedDelegate;
@@ -252,16 +297,16 @@ namespace Dataflow
 	//
 
 #define DATAFLOW_NODE_REGISTER_CREATION_FACTORY(A)									\
-	FNodeFactory::GetInstance()->RegisterNode(										\
+	::Dataflow::FNodeFactory::GetInstance()->RegisterNode(							\
 		{A::StaticType(),A::StaticDisplay(),A::StaticCategory(),					\
 			A::StaticTags(),A::StaticToolTip()},									\
-		[](const FNewNodeParameters& InParam){										\
-				TUniquePtr<A> Val = MakeUnique<A>(FNodeParameters{InParam.Name}, InParam.Guid);    \
+		[](const ::Dataflow::FNewNodeParameters& InParam){							\
+				TUniquePtr<A> Val = MakeUnique<A>(::Dataflow::FNodeParameters{InParam.Name}, InParam.Guid);    \
 				Val->ValidateConnections(); return Val;});
 
 #define DATAFLOW_NODE_RENDER_TYPE(A, B)												\
-	virtual TArray<Dataflow::FRenderingParameter> GetRenderParametersImpl() const {		\
-		TArray<Dataflow::FRenderingParameter> Array;								\
+	virtual TArray<::Dataflow::FRenderingParameter> GetRenderParametersImpl() const {		\
+		TArray<::Dataflow::FRenderingParameter> Array;								\
 		Array.Add({ A, {B,} });														\
 		return Array;}
 
@@ -280,7 +325,8 @@ public:																				\
 	virtual void SerializeInternal(FArchive& Ar) override {							\
 		UScriptStruct* const Struct = TYPE::StaticStruct();							\
 		Struct->SerializeTaggedProperties(Ar, (uint8*)this,							\
-		Struct, nullptr);}															\
+		Struct, nullptr);															\
+		Serialize(Ar);}																\
 	virtual FName GetDisplayName() const override { return TYPE::StaticDisplay(); }	\
 	virtual FName GetCategory() const override { return TYPE::StaticCategory(); }	\
 	virtual FString GetTags() const override { return TYPE::StaticTags(); }			\
@@ -291,7 +337,7 @@ private:
 
 #define DATAFLOW_NODE_REGISTER_CREATION_FACTORY_NODE_COLORS_BY_CATEGORY(A, C1, C2)	\
 {																					\
-	FNodeColorsRegistry::Get().RegisterNodeColors(A, {C1, C2});						\
+	::Dataflow::FNodeColorsRegistry::Get().RegisterNodeColors(A, {C1, C2});			\
 }																					\
 
 }

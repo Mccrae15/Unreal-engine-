@@ -16,6 +16,14 @@
 	"EnabledByDefault": false,
 	"Modules": [
 		{
+			"Name": "DecoupledOutputProvider",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformDenyList": [
+				"TVOS"
+			]
+		},
+		{
 			"Name": "PixelStreamingVCam",
 			"Type": "Editor",
 			"LoadingPhase": "PostDefault",
@@ -44,42 +52,12 @@
 			]
 		},
 		{
-			"Name": "VCamExtensions",
-			"Type": "Runtime",
-			"LoadingPhase": "Default",
-			"PlatformDenyList": [
-				"TVOS"
-			]
-		},
-		{
-			"Name": "VCamExtensionsEditor",
-			"Type": "Editor",
-			"LoadingPhase": "Default",
-			"PlatformDenyList": [
-				"TVOS"
-			]
-		},
-		{
 			"Name": "VCamInput",
 			"Type": "Runtime",
 			"LoadingPhase": "PreDefault",
 			"PlatformDenyList": [
 				"TVOS"
 			]
-		},
-		{
-			"Name": "VirtualCamera",
-			"Type": "Runtime",
-			"LoadingPhase": "PostDefault",
-			"PlatformAllowList": [
-				"Win64",
-				"Linux"
-			]
-		},
-		{
-			"Name": "VirtualCameraEditor",
-			"Type": "Editor",
-			"LoadingPhase": "PostEngineInit"
 		}
 	],
 	"Plugins": [

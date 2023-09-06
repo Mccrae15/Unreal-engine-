@@ -3,14 +3,12 @@
 #include "RenderGraphUtils.h"
 
 #include "ClearQuad.h"
-#include "ClearReplacementShaders.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "GlobalShader.h"
 #include "PixelShaderUtils.h"
 #include "RenderGraphResourcePool.h"
 #include "RenderTargetPool.h"
 #include "RHIGPUReadback.h"
-#include "ShaderParameterUtils.h"
 
 #include <initializer_list>
 
@@ -102,8 +100,10 @@ void ClearUnusedGraphResourcesImpl(
 	const auto& GraphResources = ParametersMetadata->GetLayout().GraphResources;
 
 	TArray<int32, TInlineAllocator<SF_NumFrequencies>> ShaderResourceIds;
+	TArray<int32, TInlineAllocator<SF_NumFrequencies>> BindlessResourceIds;
 	TArray<int32, TInlineAllocator<SF_NumFrequencies>> GraphUniformBufferIds;
 	ShaderResourceIds.SetNumZeroed(ShaderBindingsList.Num());
+	BindlessResourceIds.SetNumZeroed(ShaderBindingsList.Num());
 	GraphUniformBufferIds.SetNumZeroed(ShaderBindingsList.Num());
 
 	auto Base = reinterpret_cast<uint8*>(InoutParameters);
@@ -122,12 +122,24 @@ void ClearUnusedGraphResourcesImpl(
 		{
 			for (int32 Index = 0; Index < ShaderBindingsList.Num(); ++Index)
 			{
-				const auto& ResourceParameters = ShaderBindingsList[Index]->ResourceParameters;
-				int32& ShaderResourceId = ShaderResourceIds[Index];
-				for (; ShaderResourceId < ResourceParameters.Num() && ResourceParameters[ShaderResourceId].ByteOffset < ByteOffset; ++ShaderResourceId)
 				{
+					const auto& ResourceParameters = ShaderBindingsList[Index]->ResourceParameters;
+					int32& ShaderResourceId = ShaderResourceIds[Index];
+					for (; ShaderResourceId < ResourceParameters.Num() && ResourceParameters[ShaderResourceId].ByteOffset < ByteOffset; ++ShaderResourceId)
+					{
+					}
+					bResourceIsUsed |= ShaderResourceId < ResourceParameters.Num() && ByteOffset == ResourceParameters[ShaderResourceId].ByteOffset;
 				}
-				bResourceIsUsed |= ShaderResourceId < ResourceParameters.Num() && ByteOffset == ResourceParameters[ShaderResourceId].ByteOffset;
+
+				if (!bResourceIsUsed)
+				{
+					const auto& BindlessResourceParameters = ShaderBindingsList[Index]->BindlessResourceParameters;
+					int32& BindlessResourceId = BindlessResourceIds[Index];
+					for (; BindlessResourceId < BindlessResourceParameters.Num() && BindlessResourceParameters[BindlessResourceId].ByteOffset < ByteOffset; ++BindlessResourceId)
+					{
+					}
+					bResourceIsUsed |= BindlessResourceId < BindlessResourceParameters.Num() && ByteOffset == BindlessResourceParameters[BindlessResourceId].ByteOffset;
+				}
 			}
 		}
 		else if (Type == UBMT_RDG_UNIFORM_BUFFER)
@@ -192,20 +204,15 @@ FRDGTextureRef RegisterExternalTextureWithFallback(
 RENDERCORE_API FRDGTextureMSAA CreateTextureMSAA(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureDesc Desc,
-	const TCHAR* Name,
+	const TCHAR* NameMultisampled, const TCHAR* NameResolved,
 	ETextureCreateFlags ResolveFlagsToAdd)
 {
-	bool bForceSeparateTargetAndShaderResource = Desc.NumSamples > 1 && RHISupportsSeparateMSAAAndResolveTextures(GMaxRHIShaderPlatform);
-	
-	if (!bForceSeparateTargetAndShaderResource)
-	{
-		Desc.Flags |= TexCreate_ShaderResource;
-	}
+	const bool bForceSeparateTargetAndShaderResource = Desc.NumSamples > 1 && RHISupportsSeparateMSAAAndResolveTextures(GMaxRHIShaderPlatform);
 
-	FRDGTextureMSAA Texture(GraphBuilder.CreateTexture(Desc, Name));
-
-	if (bForceSeparateTargetAndShaderResource)
+	if (LIKELY(bForceSeparateTargetAndShaderResource))
 	{
+		FRDGTextureMSAA Texture(GraphBuilder.CreateTexture(Desc, NameMultisampled));
+
 		Desc.NumSamples = 1;
 		ETextureCreateFlags ResolveFlags = TexCreate_ShaderResource;
 		if (EnumHasAnyFlags(Desc.Flags, TexCreate_DepthStencilTargetable))
@@ -219,10 +226,13 @@ RENDERCORE_API FRDGTextureMSAA CreateTextureMSAA(
         ResolveFlags &= ~(TexCreate_Memoryless);
         
 		Desc.Flags = ResolveFlags | ResolveFlagsToAdd;
-		Texture.Resolve = GraphBuilder.CreateTexture(Desc, Name);
+		Texture.Resolve = GraphBuilder.CreateTexture(Desc, NameResolved);
+
+		return Texture;
 	}
 
-	return Texture;
+	Desc.Flags |= TexCreate_ShaderResource;
+	return FRDGTextureMSAA(GraphBuilder.CreateTexture(Desc, NameResolved));
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FCopyTextureParameters, )
@@ -230,7 +240,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FCopyTextureParameters, )
 	RDG_TEXTURE_ACCESS(Output, ERHIAccess::CopyDest)
 END_SHADER_PARAMETER_STRUCT()
 
-class RENDERCORE_API FDrawTexturePS : public FGlobalShader
+class FDrawTexturePS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FDrawTexturePS);
 	SHADER_USE_PARAMETER_STRUCT(FDrawTexturePS, FGlobalShader);
@@ -351,54 +361,6 @@ RENDERCORE_API void AddDrawTexturePass(
 			}
 		}
 	}
-}
-
-BEGIN_SHADER_PARAMETER_STRUCT(FCopyToResolveTargetParameters, )
-	RDG_TEXTURE_ACCESS_DYNAMIC(Input)
-	RDG_TEXTURE_ACCESS_DYNAMIC(Output)
-END_SHADER_PARAMETER_STRUCT()
-
-void AddCopyToResolveTargetPass(
-	FRDGBuilder& GraphBuilder,
-	FRDGTextureRef InputTexture,
-	FRDGTextureRef OutputTexture,
-	const FResolveParams& ResolveParams)
-{
-	check(InputTexture && OutputTexture);
-
-	if (InputTexture == OutputTexture)
-	{
-		return;
-	}
-
-	ERHIAccess AccessSource = ERHIAccess::ResolveSrc;
-	ERHIAccess AccessDest = ERHIAccess::ResolveDst;
-
-	// This might also just be a copy.
-	if (InputTexture->Desc.NumSamples == OutputTexture->Desc.NumSamples)
-	{
-		AccessSource = ERHIAccess::CopySrc;
-		AccessDest = ERHIAccess::CopyDest;
-	}
-
-	FCopyToResolveTargetParameters* Parameters = GraphBuilder.AllocParameters<FCopyToResolveTargetParameters>();
-	Parameters->Input = FRDGTextureAccess(InputTexture, AccessSource);
-	Parameters->Output = FRDGTextureAccess(OutputTexture, AccessDest);
-
-	FResolveParams LocalResolveParams = ResolveParams;
-	LocalResolveParams.SourceAccessFinal = AccessSource;
-	LocalResolveParams.DestAccessFinal = AccessDest;
-
-	GraphBuilder.AddPass(
-		RDG_EVENT_NAME("CopyToResolveTarget(%s -> %s)", InputTexture->Name, OutputTexture->Name),
-		Parameters,
-		ERDGPassFlags::Copy | ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
-		[InputTexture, OutputTexture, LocalResolveParams](FRHICommandList& RHICmdList)
-	{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		RHICmdList.CopyToResolveTarget(InputTexture->GetRHI(), OutputTexture->GetRHI(), LocalResolveParams);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	});
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FCopyBufferParameters, )
@@ -992,12 +954,6 @@ FRDGBufferRef FComputeShaderUtils::AddIndirectArgsSetupCsPass1D(FRDGBuilder& Gra
 	}
 
 	return IndirectArgsBuffer;
-}
-
-// Deprecated
-FRDGBufferRef FComputeShaderUtils::AddIndirectArgsSetupCsPass1D(FRDGBuilder& GraphBuilder, FRDGBufferRef& InputCountBuffer, const TCHAR* OutputBufferName, uint32 Divisor, uint32 InputCountOffset, uint32 Multiplier)
-{
-	return AddIndirectArgsSetupCsPass1D(GraphBuilder, GMaxRHIFeatureLevel, InputCountBuffer, OutputBufferName, Divisor, InputCountOffset, Multiplier);
 }
 
 FRDGBufferRef CreateStructuredBuffer(

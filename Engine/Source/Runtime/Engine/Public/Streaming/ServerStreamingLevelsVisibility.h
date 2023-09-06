@@ -7,19 +7,21 @@
 #include "GameFramework/Actor.h"
 #include "ServerStreamingLevelsVisibility.generated.h"
 
+class ULevelStreaming;
+
 /**
  * Actor used to replicate server's visible level streaming
  */
-UCLASS(notplaceable, transient)
-class ENGINE_API AServerStreamingLevelsVisibility : public AActor
+UCLASS(notplaceable, transient, MinimalAPI)
+class AServerStreamingLevelsVisibility : public AActor
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	static AServerStreamingLevelsVisibility* SpawnServerActor(UWorld* World);
-	bool Contains(const FName& InPackageName) const;
-	void SetIsVisible(const FName& InLevelPackageName, bool bInIsVisible);
-
+	static ENGINE_API AServerStreamingLevelsVisibility* SpawnServerActor(UWorld* World);
+	ENGINE_API bool Contains(const FName& InPackageName) const;
+	ENGINE_API void SetIsVisible(ULevelStreaming* InStreamingLevel, bool bInIsVisible);
+	ENGINE_API ULevelStreaming* GetVisibleStreamingLevel(const FName& InPackageName) const;
 private:
-	TSet<FName> ServerVisibleLevelNames;
+	TMap<FName, TWeakObjectPtr<ULevelStreaming>> ServerVisibleStreamingLevels;
 };

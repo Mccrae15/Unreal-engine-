@@ -7,13 +7,14 @@ Controller class running on game clients that handles the passing of messages to
 #pragma once
 
 #include "Containers/Ticker.h"
-#include "CoreMinimal.h"
 #include "NiagaraCommon.h"
 #include "NiagaraDebuggerCommon.h"
 #include "IMessageContext.h"
+#include "NiagaraDefines.h"
 #include "Particles/ParticlePerfStatsManager.h"
-#include "NiagaraSimCache.h"
 #include "UObject/StrongObjectPtr.h"
+
+class UNiagaraSimCache;
 
 class FMessageEndpoint;
 
@@ -22,7 +23,7 @@ class FMessageEndpoint;
 /**
 Listener that accumulates a short run of stats for all systems and components in the scene and reports those stats to the outliner.
 */
-class NIAGARA_API FNiagaraOutlinerPerfListener : public FParticlePerfStatsListener_GatherAll
+class FNiagaraOutlinerPerfListener : public FParticlePerfStatsListener_GatherAll
 {
 public:
 	FNiagaraOutlinerPerfListener() : FParticlePerfStatsListener_GatherAll(true, true, true)

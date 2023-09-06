@@ -7,12 +7,21 @@
 #include "ShaderCore.h"
 #include "RHIBufferTests.h"
 #include "RHITextureTests.h"
+#include "RHIDrawTests.h"
+#include "RHIReadbackTests.h"
 
 #define LOCTEXT_NAMESPACE "FRHITestsModule"
 
 static bool RunTests_RenderThread(FRHICommandListImmediate& RHICmdList)
 {
 	bool bResult = true;
+
+	// ------------------------------------------------
+	// Drawing
+	// ------------------------------------------------
+	{
+		RUN_TEST(FRHIDrawTests::Test_MultiDrawIndirect(RHICmdList));
+	}
 
 	// ------------------------------------------------
 	// RHI Formats
@@ -47,6 +56,14 @@ static bool RunTests_RenderThread(FRHICommandListImmediate& RHICmdList)
 	}
 
 	// ------------------------------------------------
+	// Readback
+	// ------------------------------------------------
+	{
+		RUN_TEST(FRHIReadbackTests::Test_BufferReadback(RHICmdList));
+		RUN_TEST(FRHIReadbackTests::Test_TextureReadback(RHICmdList));
+	}
+
+	// ------------------------------------------------
 	// Buffer Operations
 	// ------------------------------------------------
 	{
@@ -59,8 +76,8 @@ static bool RunTests_RenderThread(FRHICommandListImmediate& RHICmdList)
 
 void FRHITestsModule::StartupModule()
 {
-	//FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("RHITests"))->GetBaseDir(), TEXT("Shaders"));
-	//AddShaderSourceDirectoryMapping(TEXT("/Plugin/RHITests"), PluginShaderDir);
+	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("RHITests"))->GetBaseDir(), TEXT("Shaders"));
+	AddShaderSourceDirectoryMapping(TEXT("/Plugin/RHITests"), PluginShaderDir);
 }
 
 void FRHITestsModule::RunAllTests()

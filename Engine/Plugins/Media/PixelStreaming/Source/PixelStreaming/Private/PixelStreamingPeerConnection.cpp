@@ -12,7 +12,12 @@
 #include "PixelStreamingDataChannel.h"
 #include "Stats.h"
 #include "AudioInputMixer.h"
+
+// Start WebRTC Includes
+#include "PreWebRTCApi.h"
 #include "absl/strings/match.h"
+#include "PostWebRTCApi.h"
+// End WebRTC Includes
 
 namespace
 {
@@ -43,8 +48,11 @@ namespace
 				const FLayer* SimulcastLayer = SortedLayers[i];
 				webrtc::RtpEncodingParameters LayerEncoding{};
 				LayerEncoding.rid = TCHAR_TO_UTF8(*(FString("simulcast") + FString::FromInt(LayerCount - i)));
-				LayerEncoding.min_bitrate_bps = SimulcastLayer->MinBitrate;
-				LayerEncoding.max_bitrate_bps = SimulcastLayer->MaxBitrate;
+				int minBps, maxBps;
+				minBps = SimulcastLayer->MinBitrate;
+				maxBps = FMath::Max(minBps, SimulcastLayer->MaxBitrate);
+				LayerEncoding.min_bitrate_bps = minBps;
+				LayerEncoding.max_bitrate_bps = maxBps;
 				LayerEncoding.scale_resolution_down_by = SimulcastLayer->Scaling;
 
 				// In M84 this will crash with "Attempted to set an unimplemented parameter of RtpParameters".
@@ -59,8 +67,19 @@ namespace
 		{
 			webrtc::RtpEncodingParameters Encoding{};
 			Encoding.rid = "base";
-			Encoding.max_bitrate_bps = Settings::CVarPixelStreamingWebRTCMaxBitrate.GetValueOnAnyThread();
-			Encoding.min_bitrate_bps = Settings::CVarPixelStreamingWebRTCMinBitrate.GetValueOnAnyThread();
+			// if the min/max bitrates are in the wrong order the stream will fail
+			int MinBps, MaxBps;
+			MinBps = Settings::CVarPixelStreamingWebRTCMinBitrate.GetValueOnAnyThread();
+			MaxBps = Settings::CVarPixelStreamingWebRTCMaxBitrate.GetValueOnAnyThread();
+			if (MinBps > MaxBps)
+			{
+				MaxBps = MinBps;
+				// to try to not be misleading with debug texts etc, we reset these sanitised settings here
+				Settings::CVarPixelStreamingWebRTCMinBitrate->Set(MinBps, ECVF_SetByCode);
+				Settings::CVarPixelStreamingWebRTCMaxBitrate->Set(MaxBps, ECVF_SetByCode);
+			}
+			Encoding.max_bitrate_bps = MaxBps;
+			Encoding.min_bitrate_bps = MinBps;
 			Encoding.max_framerate = Settings::CVarPixelStreamingWebRTCFps.GetValueOnAnyThread();
 			Encoding.scale_resolution_down_by.reset();
 			Encoding.network_priority = webrtc::Priority::kHigh;
@@ -243,6 +262,9 @@ FPixelStreamingPeerConnection::FPixelStreamingPeerConnection() = default;
 
 FPixelStreamingPeerConnection::~FPixelStreamingPeerConnection()
 {
+	// callbacks might still be fired as we're destroying this object, we want to make sure we dont try and access this still.
+	bIsDestroying = true;
+
 	// need to remove the audio/video sinks before deleting it.
 	if (PeerConnection)
 	{
@@ -334,7 +356,7 @@ void FPixelStreamingPeerConnection::ReceiveOffer(const FString& Sdp, const VoidC
 	}
 	else
 	{
-		UE_LOG(LogPixelStreaming, Error, TEXT("Failed to parse offer: %s"), Error.description.c_str());
+		UE_LOG(LogPixelStreaming, Error, TEXT("Failed to parse offer: %hs"), Error.description.c_str());
 		if (ErrorCallback)
 		{
 			ErrorCallback(ToString(Error.description));
@@ -352,7 +374,7 @@ void FPixelStreamingPeerConnection::ReceiveAnswer(const FString& Sdp, const Void
 	}
 	else
 	{
-		UE_LOG(LogPixelStreaming, Error, TEXT("Failed to parse answer: %s"), Error.description.c_str());
+		UE_LOG(LogPixelStreaming, Error, TEXT("Failed to parse answer: %hs"), Error.description.c_str());
 		if (ErrorCallback)
 		{
 			ErrorCallback(ToString(Error.description));
@@ -457,7 +479,11 @@ void FPixelStreamingPeerConnection::SetVideoSource(rtc::scoped_refptr<webrtc::Vi
 		if (Transceiver->media_type() == cricket::MediaType::MEDIA_TYPE_VIDEO)
 		{
 			bHasVideoTransceiver = true;
+#if WEBRTC_5414
+			Sender->SetTrack(VideoTrack.get());
+#else
 			Sender->SetTrack(VideoTrack);
+#endif
 			Sender->SetStreams({ GetVideoStreamID() });
 			SetTransceiverDirection(*Transceiver, webrtc::RtpTransceiverDirection::kSendOnly);
 			webrtc::RtpParameters ExistingParams = Sender->GetParameters();
@@ -508,8 +534,11 @@ void FPixelStreamingPeerConnection::SetAudioSource(rtc::scoped_refptr<webrtc::Au
 		AudioTransceiverDirection = webrtc::RtpTransceiverDirection::kInactive;
 	}
 
+#if WEBRTC_5414
+	rtc::scoped_refptr<webrtc::AudioTrackInterface> AudioTrack = PeerConnectionFactory->CreateAudioTrack(ToString(AudioTrackLabel), InAudioSource.get());
+#else
 	rtc::scoped_refptr<webrtc::AudioTrackInterface> AudioTrack = PeerConnectionFactory->CreateAudioTrack(ToString(AudioTrackLabel), InAudioSource);
-
+#endif
 	bool bHasAudioTransceiver = false;
 	for (auto& Transceiver : PeerConnection->GetTransceivers())
 	{
@@ -517,7 +546,11 @@ void FPixelStreamingPeerConnection::SetAudioSource(rtc::scoped_refptr<webrtc::Au
 		if (Transceiver->media_type() == cricket::MediaType::MEDIA_TYPE_AUDIO)
 		{
 			bHasAudioTransceiver = true;
+#if WEBRTC_5414
+			Sender->SetTrack(AudioTrack.get());
+#else
 			Sender->SetTrack(AudioTrack);
+#endif
 			Sender->SetStreams({ GetAudioStreamID() });
 			SetTransceiverDirection(*Transceiver, AudioTransceiverDirection);
 		}
@@ -597,7 +630,7 @@ void FPixelStreamingPeerConnection::AddRemoteIceCandidate(const FString& SdpMid,
 	std::unique_ptr<webrtc::IceCandidateInterface> Candidate(webrtc::CreateIceCandidate(UE::PixelStreaming::ToString(SdpMid), SdpMLineIndex, UE::PixelStreaming::ToString(Sdp), &Error));
 	if (!Candidate)
 	{
-		UE_LOG(LogPixelStreaming, Error, TEXT("Failed to create ICE candicate: %s"), Error.description.c_str());
+		UE_LOG(LogPixelStreaming, Error, TEXT("Failed to create ICE candicate: %hs"), Error.description.c_str());
 		return;
 	}
 
@@ -653,11 +686,13 @@ rtc::scoped_refptr<webrtc::AudioSourceInterface> FPixelStreamingPeerConnection::
 		AudioSourceOptions.audio_jitter_buffer_max_packets = 1000;
 		AudioSourceOptions.audio_jitter_buffer_fast_accelerate = false;
 		AudioSourceOptions.audio_jitter_buffer_min_delay_ms = 0;
+#if !WEBRTC_5414
 		AudioSourceOptions.audio_jitter_buffer_enable_rtx_handling = false;
 		AudioSourceOptions.typing_detection = false;
 		AudioSourceOptions.experimental_agc = false;
 		AudioSourceOptions.experimental_ns = false;
 		AudioSourceOptions.residual_echo_detector = false;
+#endif
 		// Create audio source
 		ApplicationAudioSource = PeerConnectionFactory->CreateAudioSource(AudioSourceOptions);
 	}
@@ -782,7 +817,11 @@ void FPixelStreamingPeerConnection::CreateSDP(ESDPType SDPType, EReceiveMediaOpt
 			}
 		};
 
-		SetLocalDescription(SDP, OnSetLocalDescriptionSuccess, OnSetLocalDescriptionFail);
+		// prevents this callback from continuing if we're currently in the destructor
+		if (!bIsDestroying)
+		{
+			SetLocalDescription(SDP, OnSetLocalDescriptionSuccess, OnSetLocalDescriptionFail);
+		}
 	};
 
 	auto OnCreateSDPFail = [ErrorCallback](const FString& Error) {
@@ -872,11 +911,13 @@ void FPixelStreamingPeerConnection::CreatePeerConnectionFactory()
 		Config.echo_canceller.enabled = false;
 		Config.noise_suppression.enabled = false;
 		Config.transient_suppression.enabled = false;
-		Config.voice_detection.enabled = false;
 		Config.gain_controller1.enabled = false;
 		Config.gain_controller2.enabled = false;
+#if !WEBRTC_5414
+		Config.voice_detection.enabled = false;
 		Config.residual_echo_detector.enabled = false;
 		Config.level_estimation.enabled = false;
+#endif
 
 		// Apply the config.
 		AudioProcessingModule->ApplyConfig(Config);
@@ -884,6 +925,17 @@ void FPixelStreamingPeerConnection::CreatePeerConnectionFactory()
 
 	std::unique_ptr<FVideoEncoderFactoryLayered> VideoEncoderFactory = std::make_unique<FVideoEncoderFactoryLayered>();
 	GVideoEncoderFactory = VideoEncoderFactory.get();
+	 
+	FString FieldTrials = Settings::CVarPixelStreamingWebRTCFieldTrials.GetValueOnAnyThread();
+	if (!FieldTrials.IsEmpty()) {
+		//Pass the field trials string to WebRTC. String must never be destroyed.
+		TStringConversion<TStringConvert<TCHAR, ANSICHAR>> Str = StringCast<ANSICHAR>(*FieldTrials);
+		int length = Str.Length() + 1;
+		char* WRTCFieldTrials = (char*)FMemory::SystemMalloc(length);
+		FMemory::Memcpy(WRTCFieldTrials, Str.Get(), Str.Length());
+		WRTCFieldTrials[length - 1] = '\0';
+		webrtc::field_trial::InitFieldTrialsFromString(WRTCFieldTrials);
+	}
 
 	PeerConnectionFactory = webrtc::CreatePeerConnectionFactory(
 		nullptr,													   // network_thread

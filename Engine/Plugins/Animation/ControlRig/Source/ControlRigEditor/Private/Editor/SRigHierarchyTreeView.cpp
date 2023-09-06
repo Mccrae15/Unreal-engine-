@@ -7,7 +7,6 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Views/SListPanel.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Editor/EditorEngine.h"
@@ -44,21 +43,6 @@ FRigTreeElement::FRigTreeElement(const FRigElementKey& InKey, TWeakPtr<SRigHiera
 	{
 		if(const URigHierarchy* Hierarchy = InTreeView.Pin()->GetRigTreeDelegates().GetHierarchy())
 		{
-			if(const FRigBaseElement* Element = Hierarchy->Find(Key))
-			{
-				bIsProcedural = Element->IsProcedural();
-				
-				if(const FRigControlElement* ControlElement = Cast<FRigControlElement>(Element))
-				{
-					bIsTransient = ControlElement->Settings.bIsTransientControl;
-					bIsAnimationChannel = ControlElement->IsAnimationChannel();
-					if(bIsAnimationChannel)
-					{
-						ChannelName = ControlElement->GetDisplayName();
-					}
-				}
-			}
-
 			const FRigTreeDisplaySettings& Settings = InTreeView.Pin()->GetRigTreeDelegates().GetDisplaySettings();
 			RefreshDisplaySettings(Hierarchy, Settings);
 		}
@@ -82,6 +66,21 @@ void FRigTreeElement::RequestRename()
 void FRigTreeElement::RefreshDisplaySettings(const URigHierarchy* InHierarchy, const FRigTreeDisplaySettings& InSettings)
 {
 	const TPair<const FSlateBrush*, FSlateColor> Result = SRigHierarchyItem::GetBrushForElementType(InHierarchy, Key);
+
+	if(const FRigBaseElement* Element = InHierarchy->Find(Key))
+	{
+		bIsProcedural = Element->IsProcedural();
+				
+		if(const FRigControlElement* ControlElement = Cast<FRigControlElement>(Element))
+		{
+			bIsTransient = ControlElement->Settings.bIsTransientControl;
+			bIsAnimationChannel = ControlElement->IsAnimationChannel();
+			if(bIsAnimationChannel)
+			{
+				ChannelName = ControlElement->GetDisplayName();
+			}
+		}
+	}
 
 	IconBrush = Result.Key;
 	IconColor = Result.Value;
@@ -278,12 +277,12 @@ void SRigHierarchyTreeView::Tick(const FGeometry& AllottedGeometry, const double
 			}
 			else
 			{
-				const TSharedPtr<FRigTreeElement> Item = FindItemAtPosition(MousePosition);
-				if(Item.IsValid())
+				const TSharedPtr<FRigTreeElement>* Item = FindItemAtPosition(MousePosition);
+				if(Item && Item->IsValid())
 				{
-					if(!IsItemExpanded(Item))
+					if(!IsItemExpanded(*Item))
 					{
-						SetItemExpansion(Item, true);
+						SetItemExpansion(*Item, true);
 					}
 				}
 			}
@@ -750,34 +749,31 @@ TArray<FRigElementKey> SRigHierarchyTreeView::GetSelectedKeys() const
 	return Keys;
 }
 
-TSharedPtr<FRigTreeElement> SRigHierarchyTreeView::FindItemAtPosition(FVector2D InScreenSpacePosition) const
+const TSharedPtr<FRigTreeElement>* SRigHierarchyTreeView::FindItemAtPosition(FVector2D InScreenSpacePosition) const
 {
-	if(ItemsPanel.IsValid() && HasValidItemsSource())
+	if (ItemsPanel.IsValid() && SListView<TSharedPtr<FRigTreeElement>>::HasValidItemsSource())
 	{
-		const FGeometry MyGeometry = ItemsPanel->GetCachedGeometry();
 		FArrangedChildren ArrangedChildren(EVisibility::Visible);
-		ItemsPanel->ArrangeChildren(MyGeometry, ArrangedChildren, true);
-
-		const int32 Index = ItemsPanel->FindChildUnderPosition(ArrangedChildren, InScreenSpacePosition); 
-		if(ArrangedChildren.IsValidIndex(Index))
+		const int32 Index = FindChildUnderPosition(ArrangedChildren, InScreenSpacePosition);
+		if (ArrangedChildren.IsValidIndex(Index))
 		{
 			TSharedRef<SRigHierarchyItem> ItemWidget = StaticCastSharedRef<SRigHierarchyItem>(ArrangedChildren[Index].Widget);
-			if(ItemWidget->WeakRigTreeElement.IsValid())
+			if (ItemWidget->WeakRigTreeElement.IsValid())
 			{
 				const FRigElementKey Key = ItemWidget->WeakRigTreeElement.Pin()->Key;
-				const TSharedPtr<FRigTreeElement>* ResultPtr = GetItems().FindByPredicate([Key](const TSharedPtr<FRigTreeElement>& Item) -> bool
+				const TSharedPtr<FRigTreeElement>* ResultPtr = SListView<TSharedPtr<FRigTreeElement>>::GetItems().FindByPredicate([Key](const TSharedPtr<FRigTreeElement>& Item) -> bool
+					{
+						return Item->Key == Key;
+					});
+
+				if (ResultPtr)
 				{
-					return Item->Key == Key;
-				});
-				
-				if(ResultPtr)
-				{
-					return *ResultPtr;
+					return ResultPtr;
 				}
 			}
 		}
 	}
-	return TSharedPtr<FRigTreeElement>();
+	return nullptr;
 }
 
 bool SRigHierarchyItem::OnVerifyNameChanged(const FText& InText, FText& OutErrorMessage)

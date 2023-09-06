@@ -11,6 +11,7 @@
 #include "Misc/MemStack.h"
 #include "Misc/ScopeExit.h"
 #include "Net/Core/Trace/Private/NetTraceInternal.h"
+#include "Net/Core/Misc/NetContext.h"
 #include "Net/NetworkProfiler.h"
 #include "Engine/PackageMapClient.h"
 #include "Net/RepLayout.h"
@@ -20,19 +21,17 @@
 #include "Engine/NetConnection.h"
 #include "Net/NetworkGranularMemoryLogging.h"
 #include "Net/Core/Trace/NetTrace.h"
+#include "Net/Core/NetCoreModule.h"
 #include "HAL/LowLevelMemStats.h"
 #include "Net/Core/PushModel/Types/PushModelPerNetDriverState.h"
 #include "Net/RPCDoSDetection.h"
-
-#if UE_WITH_IRIS
-#include "Iris/IrisConfig.h"
-#endif
 
 DECLARE_LLM_MEMORY_STAT(TEXT("NetObjReplicator"), STAT_NetObjReplicatorLLM, STATGROUP_LLMFULL);
 LLM_DEFINE_TAG(NetObjReplicator, NAME_None, TEXT("Networking"), GET_STATFNAME(STAT_NetObjReplicatorLLM), GET_STATFNAME(STAT_NetworkingSummaryLLM));
 
 DECLARE_CYCLE_STAT(TEXT("Custom Delta Property Rep Time"), STAT_NetReplicateCustomDeltaPropTime, STATGROUP_Game);
 DECLARE_CYCLE_STAT(TEXT("ReceiveRPC"), STAT_NetReceiveRPC, STATGROUP_Game);
+DECLARE_CYCLE_STAT(TEXT("ReceiveRPC_ProcessRemoteFunction"), STAT_NetReceiveRPC_ProcessRemoteFunction, STATGROUP_Game);
 
 static TAutoConsoleVariable<int32> CVarMaxRPCPerNetUpdate(
 	TEXT("net.MaxRPCPerNetUpdate"),
@@ -84,8 +83,6 @@ FAutoConsoleVariableRef CVarPushModelSkipUndirtiedFastArrays(
 	TEXT("When true, include fast arrays when skipping objects that we can safely see aren't dirty."));
 
 extern int32 GNumSkippedObjectEmptyUpdates;
-
-extern NETCORE_API TAutoConsoleVariable<int32> CVarNetEnableDetailedScopeCounters;
 
 class FNetSerializeCB : public INetSerializeCB
 {
@@ -342,21 +339,12 @@ FObjectReplicator::~FObjectReplicator()
 	CleanUp();
 }
 
-bool FObjectReplicator::SendCustomDeltaProperty(UObject* InObject, FProperty* Property, uint32 ArrayIndex, FNetBitWriter& OutBunch, TSharedPtr<INetDeltaBaseState>& NewFullState, TSharedPtr<INetDeltaBaseState>& OldState)
-{
-	check(RepLayout);
-
-	const uint16 CustomDeltaIndex = RepLayout->GetCustomDeltaIndexFromPropertyRepIndex(Property->RepIndex + ArrayIndex);
-
-	return SendCustomDeltaProperty(InObject, CustomDeltaIndex, OutBunch, NewFullState, OldState);
-}
-
 bool FObjectReplicator::SendCustomDeltaProperty(UObject* InObject, uint16 CustomDeltaIndex, FNetBitWriter& OutBunch, TSharedPtr<INetDeltaBaseState>& NewFullState, TSharedPtr<INetDeltaBaseState>& OldState)
 {
 	check(!NewFullState.IsValid()); // NewState is passed in as nullptr and instantiated within this function if necessary
 	check(RepLayout);
 
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetSerializeItemDeltaTime, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetSerializeItemDeltaTime, GUseDetailedScopeCounters);
 
 	UNetDriver* const ConnectionDriver = Connection->GetDriver();
 	FNetSerializeCB NetSerializeCB(ConnectionDriver);
@@ -376,13 +364,8 @@ bool FObjectReplicator::SendCustomDeltaProperty(UObject* InObject, uint16 Custom
 	Parms.Connection = Connection;
 	Parms.bInternalAck = Connection->IsInternalAck();
 
-#if UE_WITH_IRIS
-	if (UE::Net::ShouldUseIrisReplication())
-	{
-		// When initializing baselines we should not modify the source data if it originates from the CDO or archetype
-		Parms.bIsInitializingBaseFromDefault = Parms.Object && Parms.Object->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
-	}
-#endif
+	// When initializing baselines we should not modify the source data if it originates from the CDO or archetype
+	Parms.bIsInitializingBaseFromDefault = Parms.Object && Parms.Object->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
 
 	return FNetSerializeCB::SendCustomDeltaProperty(*RepLayout, Parms, CustomDeltaIndex);
 }
@@ -1238,22 +1221,22 @@ struct FScopedRPCTimingTracker
 		}
 	}
 
-	UNetConnection* Connection;
-	UFunction* Function;
+	UNetConnection* Connection = nullptr;
+	UFunction* Function = nullptr;
 	FRPCDoSDetection* RPCDoS = nullptr;
-	double StartTime;
+	double StartTime = 0.0;
 
 	static TArray<FScopedRPCTimingTracker*> ActiveTrackers;
 };
 
 TArray<FScopedRPCTimingTracker*> FScopedRPCTimingTracker::ActiveTrackers;
 
+/** Return the list of UFunctions currently tracked or  */
 ENGINE_API TArray<UFunction*> FindScopedRPCTrackers(UNetConnection* Connection = nullptr)
 {
 	TArray<UFunction*> FuncList;
-	for (int32 Idx = 0; Idx < FScopedRPCTimingTracker::ActiveTrackers.Num(); Idx++)
+	for (const FScopedRPCTimingTracker* TestTracker : FScopedRPCTimingTracker::ActiveTrackers)
 	{
-		const FScopedRPCTimingTracker* TestTracker = FScopedRPCTimingTracker::ActiveTrackers[Idx];
 		if (TestTracker && (Connection == nullptr || TestTracker->Connection == Connection))
 		{
 			FuncList.Add(TestTracker->Function);
@@ -1380,6 +1363,7 @@ bool FObjectReplicator::ReceivedRPC(FNetBitReader& Reader, const FReplicationFla
 					{
 						if (Driver.NetDriver != nullptr && (Driver.NetDriver != Connection->Driver) && Driver.NetDriver->ShouldReplicateFunction(OwningActor, Function))
 						{
+							SCOPE_CYCLE_COUNTER(STAT_NetReceiveRPC_ProcessRemoteFunction);
 							Driver.NetDriver->ProcessRemoteFunction(OwningActor, Function, Parms, nullptr, nullptr, SubObject);
 						}
 					}
@@ -1389,8 +1373,12 @@ bool FObjectReplicator::ReceivedRPC(FNetBitReader& Reader, const FReplicationFla
 			// Reset errors from replay driver
 			RPC_ResetLastFailedReason();
 
-			// Call the function.
-			Object->ProcessEvent(Function, Parms);
+
+			{
+				UE::Net::FScopedNetContextRPC CallingRPC;
+				// Call the function.
+				Object->ProcessEvent(Function, Parms);
+			}
 		}
 
 		// Destroy the parameters.
@@ -1566,8 +1554,6 @@ static FORCEINLINE FPropertyRetirement** UpdateAckedRetirements(
 
 void FObjectReplicator::ReplicateCustomDeltaProperties( FNetBitWriter & Bunch, FReplicationFlags RepFlags, bool& bSkippedPropertyCondition)
 {
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetReplicateCustomDeltaPropTime, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
-
 	check(RepLayout);
 	const FRepLayout& LocalRepLayout = *RepLayout;
 
@@ -1580,6 +1566,8 @@ void FObjectReplicator::ReplicateCustomDeltaProperties( FNetBitWriter & Bunch, F
 		// No custom properties
 		return;
 	}
+
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetReplicateCustomDeltaPropTime, GUseDetailedScopeCounters);
 
 	// TODO: See comments in ReceivedBunch. This code should get merged into RepLayout, to help optimize
 	//			the receiving end, and make things more consistent.
@@ -1621,7 +1609,16 @@ void FObjectReplicator::ReplicateCustomDeltaProperties( FNetBitWriter & Bunch, F
 	// Replicate those properties.
 	for (uint16 CustomDeltaProperty = 0; CustomDeltaProperty < NumLifetimeCustomDeltaProperties; ++CustomDeltaProperty)
 	{
-		const ELifetimeCondition RepCondition = FNetSerializeCB::GetLifetimeCustomDeltaPropertyCondition(LocalRepLayout, CustomDeltaProperty);
+		ELifetimeCondition RepCondition = FNetSerializeCB::GetLifetimeCustomDeltaPropertyCondition(LocalRepLayout, CustomDeltaProperty);
+		FProperty* Property = FNetSerializeCB::GetLifetimeCustomDeltaProperty(LocalRepLayout, CustomDeltaProperty);
+
+		if (RepCondition == COND_Dynamic)
+		{
+			if (const FRepChangedPropertyTracker* RepChangedPropertyTracker = SendingRepState->RepChangedPropertyTracker.Get())
+			{
+				RepCondition = RepChangedPropertyTracker->GetDynamicCondition(Property->RepIndex);
+			}
+		}
 
 		check(RepCondition >= 0 && RepCondition < COND_Max);
 
@@ -1631,8 +1628,6 @@ void FObjectReplicator::ReplicateCustomDeltaProperties( FNetBitWriter & Bunch, F
 			bSkippedPropertyCondition = true;
 			continue;
 		}
-
-		FProperty* Property = FNetSerializeCB::GetLifetimeCustomDeltaProperty(LocalRepLayout, CustomDeltaProperty);
 
 		// If this is a dynamic array, we do the delta here
 		TSharedPtr<INetDeltaBaseState> NewState;
@@ -1738,24 +1733,22 @@ void FObjectReplicator::ReplicateCustomDeltaProperties( FNetBitWriter & Bunch, F
 bool FObjectReplicator::CanSkipUpdate(FReplicationFlags RepFlags)
 {
 #if WITH_PUSH_MODEL
-	const FSendingRepState& SendingRepState = *RepState->GetSendingRepState();
-	const FRepChangelistState& RepChangelistState = *ChangelistMgr->GetRepChangelistState();
-
-	if (bCanUseNonDirtyOptimization &&
-		(RemoteFunctions == nullptr || RemoteFunctions->GetNumBits() == 0) &&
-		(RepLayout->IsEmpty() ||
-			(!RepFlags.bNetInitial &&
-			SendingRepState.RepFlags.Value == RepFlags.Value &&
-			SendingRepState.NumNaks == 0 &&
-			SendingRepState.LastCompareIndex > 1 &&
-			!(SendingRepState.bOpenAckedCalled && SendingRepState.PreOpenAckHistory.Num() > 0) &&
-			SendingRepState.LastChangelistIndex == RepChangelistState.HistoryEnd &&
-			Connection->ResendAllDataState == EResendAllDataState::None &&
-			!OwningChannel->bForceCompareProperties &&
-			(!GbPushModelSkipUndirtiedFastArrays || ((RepChangelistState.CustomDeltaChangeIndex == SendingRepState.CustomDeltaChangeIndex) && !SendingRepState.HasAnyPendingRetirements())) &&
-			!RepChangelistState.HasAnyDirtyProperties())
-		))
+	if (!bCanUseNonDirtyOptimization)
 	{
+		// This class must always replicate
+		return false;
+	}
+
+	const bool bHasRPCQueued = RemoteFunctions && RemoteFunctions->GetNumBits() >= 0;
+	if (bHasRPCQueued)
+	{
+		return false;
+	}
+
+	const bool bHasNoRepLayout = RepLayout->IsEmpty();
+	if (bHasNoRepLayout)
+	{
+		// No properties to replicate and no RPCs queued, let's skip!
 #if CSV_PROFILER
 		++GNumSkippedObjectEmptyUpdates;
 #endif
@@ -1763,9 +1756,61 @@ bool FObjectReplicator::CanSkipUpdate(FReplicationFlags RepFlags)
 		bLastUpdateEmpty = true;
 		return true;
 	}
+
+	const bool bIsNetInitial = RepFlags.bNetInitial;
+	if (bIsNetInitial)
+	{
+		return false;
+	}
+
+	const FSendingRepState& SendingRepState = *RepState->GetSendingRepState();
+	const FRepChangelistState& RepChangelistState = *ChangelistMgr->GetRepChangelistState();
+
+	bool bCanSkip = true;
+
+	// Have the RepFlags changed ?
+	bCanSkip = bCanSkip && SendingRepState.RepFlags.Value == RepFlags.Value; 
+
+	// Any Naks to handle ?
+	bCanSkip = bCanSkip && SendingRepState.NumNaks == 0;
+
+	// Have we compared the properties twice ?
+	bCanSkip = bCanSkip && SendingRepState.LastCompareIndex > 1;
+
+	// Do we have open Ack's ?
+	bCanSkip = bCanSkip && !(SendingRepState.bOpenAckedCalled && SendingRepState.PreOpenAckHistory.Num() > 0);
+
+	// Any changelists to send ?
+	bCanSkip = bCanSkip && SendingRepState.LastChangelistIndex == RepChangelistState.HistoryEnd;
+
+	// Is the changelist history fully acknowledged ?
+	bCanSkip = bCanSkip && SendingRepState.HistoryStart == SendingRepState.HistoryEnd;
+
+	// Are we resending data for replay ?
+	bCanSkip = bCanSkip && Connection->ResendAllDataState == EResendAllDataState::None;
+
+	// Are we forcing a compare property ?
+	bCanSkip = bCanSkip && !OwningChannel->bForceCompareProperties;
+
+	// Are any CustomDelta properties dirty ?
+	bCanSkip = bCanSkip && (RepChangelistState.CustomDeltaChangeIndex == SendingRepState.CustomDeltaChangeIndex && !SendingRepState.HasAnyPendingRetirements());
+
+	// Are any replicated properties dirty ?
+	bCanSkip = bCanSkip && RepChangelistState.HasAnyDirtyProperties() == false;
+
+	if (bCanSkip)
+	{
+#if CSV_PROFILER
+		++GNumSkippedObjectEmptyUpdates;
 #endif
 
+		bLastUpdateEmpty = true;
+	}
+
+	return bCanSkip;
+#else // WITH_PUSH_MODEL
 	return false;
+#endif
 }
 
 bool FObjectReplicator::ReplicateProperties(FOutBunch& Bunch, FReplicationFlags RepFlags, FNetBitWriter& Writer)
@@ -1792,17 +1837,16 @@ bool FObjectReplicator::ReplicateProperties_r( FOutBunch & Bunch, FReplicationFl
 		return false;
 	}
 
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// some games ship checks() in Shipping so we cannot rely on DO_CHECK here, and these checks are in an extremely hot path
-	if (!UE_BUILD_SHIPPING && !UE_BUILD_TEST)
-	{
-		check(OwningChannel);
-		check(RepLayout.IsValid());
-		check(RepState.IsValid());
-		check(RepState->GetSendingRepState());
-		check(ChangelistMgr.IsValid());
-		check(ChangelistMgr->GetRepChangelistState() != nullptr);
-		check((ChangelistMgr->GetRepChangelistState()->StaticBuffer.Num() == 0) == RepLayout->IsEmpty());
-	}
+	check(OwningChannel);
+	check(RepLayout.IsValid());
+	check(RepState.IsValid());
+	check(RepState->GetSendingRepState());
+	check(ChangelistMgr.IsValid());
+	check(ChangelistMgr->GetRepChangelistState() != nullptr);
+	check((ChangelistMgr->GetRepChangelistState()->StaticBuffer.Num() == 0) == RepLayout->IsEmpty());
+#endif
 
 	UNetConnection* OwningChannelConnection = OwningChannel->Connection;
 

@@ -8,6 +8,8 @@
 #include "Data/PCGSpatialData.h"
 #include "MeshSelectors/PCGMeshSelectorBase.h"
 
+#include "Engine/StaticMesh.h"
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMeshSelectorByAttribute)
 
 #define LOCTEXT_NAMESPACE "PCGMeshSelectorByAttribute"
@@ -157,17 +159,15 @@ bool UPCGMeshSelectorByAttribute::SelectInstances(
 	int32 LastCheckpointIndex = CurrentPointIndex;
 	constexpr int32 TimeSlicingCheckFrequency = 1024;
 	TMap<PCGMetadataValueKey, TSoftObjectPtr<UStaticMesh>>& ValueKeyToMesh = Context.ValueKeyToMesh;
+	TMap<TSoftObjectPtr<UStaticMesh>, FBox>& MeshToBoundingBox = Context.MeshToBoundingBox;
 
 	const TArray<FPCGPoint>& Points = InPointData->GetPoints();
-	while(CurrentPointIndex < Points.Num())
+	TArray<FPCGPoint>* OutPoints = OutPointData ? &OutPointData->GetMutablePoints() : nullptr;
+
+	while (CurrentPointIndex < Points.Num())
 	{
 		const FPCGPoint& Point = Points[CurrentPointIndex++];
-
-		if (Point.Density <= 0.0f)
-		{
-			continue;
-		}
-
+		
 		PCGMetadataValueKey ValueKey = Attribute->GetValueKey(Point.MetadataEntry);
 		TSoftObjectPtr<UStaticMesh>* NewMesh = ValueKeyToMesh.Find(ValueKey);
 		TSoftObjectPtr<UStaticMesh> Mesh = nullptr;
@@ -179,7 +179,7 @@ bool UPCGMeshSelectorByAttribute::SelectInstances(
 
 			if (!MeshSoftObjectPath.IsEmpty() && MeshSoftObjectPath != TEXT("None"))
 			{
-				FSoftObjectPath MeshPath(MeshSoftObjectPath);
+				const FSoftObjectPath MeshPath(MeshSoftObjectPath);
 				Mesh = TSoftObjectPtr<UStaticMesh>(MeshPath);
 
 				if (Mesh.IsNull())
@@ -208,6 +208,24 @@ bool UPCGMeshSelectorByAttribute::SelectInstances(
 		FPCGMeshInstanceList& InstanceList = PCGMeshSelectorAttribute::GetInstanceList(OutMeshInstances, TemplateDescriptor, Mesh, MaterialOverrideHelper.GetMaterialOverrides(Point.MetadataEntry), bReverseTransform);
 		InstanceList.Instances.Emplace(Point.Transform);
 		InstanceList.InstancesMetadataEntry.Emplace(Point.MetadataEntry);
+
+		// Update point bounds to reflect StaticMesh bounds
+		if (OutPoints && Settings->bApplyMeshBoundsToPoints)
+		{
+			if (!MeshToBoundingBox.Contains(Mesh) && Mesh.LoadSynchronous())
+			{
+				MeshToBoundingBox.Add(Mesh, Mesh->GetBoundingBox());
+			}
+
+			if (MeshToBoundingBox.Contains(Mesh))
+			{
+				const FBox MeshBounds = MeshToBoundingBox[Mesh];
+
+				// CurrentPointIndex - 1, because CurrentPointIndex is incremented at the beginning of the function
+				(*OutPoints)[CurrentPointIndex - 1].BoundsMin = MeshBounds.Min;
+				(*OutPoints)[CurrentPointIndex - 1].BoundsMax = MeshBounds.Max;
+			}
+		}
 
 		// Check if we should stop here and continue in a subsequent call
 		if(CurrentPointIndex - LastCheckpointIndex >= TimeSlicingCheckFrequency)

@@ -139,7 +139,6 @@ void FInsightsStyle::FStyle::Initialize()
 	Set("Border.R", new CORE_BOX_BRUSH("Icons/Profiler/Profiler_Border_R_16x", FMargin(4.0f / 16.0f)));
 
 	Set("Graph.Point", new EDITOR_IMAGE_BRUSH("Old/Graph/ExecutionBubble", Icon16x16));
-	Set("TreeViewBanner.WarningIcon", new CORE_IMAGE_BRUSH_SVG("Starship/Common/alert-circle", Icon20x20, FStyleColors::Warning));
 
 	//////////////////////////////////////////////////
 	// Icons for major components
@@ -150,8 +149,16 @@ void FInsightsStyle::FStyle::Initialize()
 	// Trace Store, Connection, Launcher
 
 	Set("Icons.TraceStore", new IMAGE_BRUSH_SVG("TraceStore", Icon16x16));
+	Set("Icons.Expand", new CORE_IMAGE_BRUSH_SVG("Starship/Common/chevron-right", Icon16x16));
+	Set("Icons.Expanded", new CORE_IMAGE_BRUSH_SVG("Starship/Common/chevron-down", Icon16x16));
+	Set("Icons.AddWatchDir", new CORE_IMAGE_BRUSH_SVG("Starship/Common/folder-plus", Icon16x16));
+	Set("Icons.RemoveWatchDir", new CORE_IMAGE_BRUSH_SVG("Starship/Common/delete", Icon16x16));
 	Set("Icons.Connection", new IMAGE_BRUSH_SVG("Connection", Icon16x16));
+	Set("Icons.Online", new CORE_IMAGE_BRUSH_SVG("Starship/Common/check-circle", Icon16x16, FStyleColors::AccentGreen));
+	Set("Icons.Offline", new CORE_IMAGE_BRUSH_SVG("Starship/Common/alert-triangle", Icon16x16, FStyleColors::Warning));
 	Set("Icons.Launcher", new TODO_IMAGE_BRUSH(Icon16x16));
+	Set("Icons.UTrace", new IMAGE_BRUSH_SVG("UTrace", Icon16x16));
+	Set("Icons.UTraceStack", new IMAGE_BRUSH_SVG("UTrace", Icon16x16));
 
 	//////////////////////////////////////////////////
 	// Timing Insights
@@ -285,8 +292,8 @@ void FInsightsStyle::FStyle::Initialize()
 	//Set("Icons.FolderClosed", new CORE_IMAGE_BRUSH_SVG("Starship/Common/folder-closed", Icon16x16));	//-> use FAppStyle "Icons.FolderClosed"
 
 	Set("Icons.SortBy", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_SortBy_32x", Icon16x16));
-	//Set("Icons.SortAscending", new CORE_IMAGE_BRUSH_SVG("Starship/Common/SortUp", Icon16x16));	//-> use FAppStyle "Icons.SortUp"
-	//Set("Icons.SortDescending", new CORE_IMAGE_BRUSH_SVG("Starship/Common/SortDown", Icon16x16));	//-> use FAppStyle "Icons.SortDown"
+	//Set("Icons.SortUp", new CORE_IMAGE_BRUSH_SVG("Starship/Common/SortUp", Icon16x16));		//-> use FAppStyle "Icons.SortUp"
+	//Set("Icons.SortDown", new CORE_IMAGE_BRUSH_SVG("Starship/Common/SortDown", Icon16x16));	//-> use FAppStyle "Icons.SortDown"
 
 	Set("Icons.ViewColumn", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ViewColumn_32x", Icon16x16));
 	Set("Icons.ResetColumn", new CORE_IMAGE_BRUSH("Icons/Profiler/profiler_ResetColumn_32x", Icon16x16));
@@ -300,7 +307,7 @@ void FInsightsStyle::FStyle::Initialize()
 	Set("Icons.RemoveGraphSeries", new CORE_IMAGE_BRUSH_SVG("Starship/Common/close", Icon16x16));
 
 	Set("Icons.TestAutomation", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/TestAutomation", Icon16x16));
-	Set("Icons.Test", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/Test", Icon16x16));
+	Set("Icons.Test", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Test", Icon16x16));
 
 	Set("Icons.Debug", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/bug", Icon16x16));
 	Set("Icons.Debug.ToolBar", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/bug", Icon20x20));
@@ -318,15 +325,17 @@ void FInsightsStyle::FStyle::Initialize()
 	Set("Icons.Delete", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Delete", Icon16x16));
 
 	Set("Icons.ImportTable", new CORE_IMAGE_BRUSH_SVG("Starship/Common/Import", Icon16x16));
+	Set("Icons.SelectEventRange", new EDITOR_IMAGE_BRUSH_SVG("Starship/Common/SelectInViewport", Icon16x16));
 
 	//////////////////////////////////////////////////
 
 	Set("TreeTable.RowBackground", new EDITOR_IMAGE_BRUSH("Old/White", Icon16x16, FLinearColor(1.0f, 1.0f, 1.0f, 0.25f)));
+	Set("TreeViewBanner.WarningIcon", new CORE_IMAGE_BRUSH_SVG("Starship/Common/alert-circle", Icon20x20, FStyleColors::Warning));
 
 	Set("Icons.Hint.TreeItem", new IMAGE_BRUSH_SVG("InfoTag_12", Icon12x12));
 	Set("Icons.HotPath.TreeItem", new IMAGE_BRUSH_SVG("HotPath_12", Icon12x12));
 	Set("Icons.Group.TreeItem", new CORE_IMAGE_BRUSH_SVG("Starship/Common/folder-closed", Icon12x12));
-	Set("Icons.Leaf.TreeItem", new CORE_IMAGE_BRUSH_SVG("Starship/Common/file", Icon12x12));
+	Set("Icons.Leaf.TreeItem", new CORE_IMAGE_BRUSH_SVG("Starship/Common/bullet-point", Icon12x12));
 	Set("Icons.GpuTimer.TreeItem", new TODO_IMAGE_BRUSH(Icon12x12));
 	Set("Icons.CpuTimer.TreeItem", new TODO_IMAGE_BRUSH(Icon12x12));
 	Set("Icons.Counter.TreeItem", new TODO_IMAGE_BRUSH(Icon12x12));
@@ -350,7 +359,34 @@ void FInsightsStyle::FStyle::Initialize()
 		.SetShadowColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.8f))
 	);
 
+	Set("TreeTable.NameText", FTextBlockStyle(NormalText)
+		.SetColorAndOpacity(FLinearColor::White)
+	);
+
+	Set("TreeTable.NormalText", FTextBlockStyle(NormalText)
+		.SetColorAndOpacity(FLinearColor::White)
+	);
+
 	//////////////////////////////////////////////////
+
+	// NormalEditableTextBox && SearchBox
+	{
+		const FEditableTextBoxStyle& NormalEditableTextBoxStyle = FAppStyle::GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
+		const FTextBlockStyle TextBlockStyle = FTextBlockStyle()
+			.SetColorAndOpacity(NormalEditableTextBoxStyle.ForegroundColor)
+			.SetHighlightColor(NormalEditableTextBoxStyle.FocusedForegroundColor)
+			.SetFont(NormalEditableTextBoxStyle.TextStyle.Font)
+			.SetFontSize(uint16(NormalEditableTextBoxStyle.TextStyle.Font.Size));
+		const FEditableTextBoxStyle EditableTextBoxStyle = FEditableTextBoxStyle(NormalEditableTextBoxStyle)
+			.SetPadding(FMargin(6.0f, 4.0f, 6.0f, 4.0f))
+			.SetTextStyle(TextBlockStyle);
+		Set("NormalEditableTextBox", EditableTextBoxStyle);
+
+		const FSearchBoxStyle& NormalSearchBoxStyle = FAppStyle::GetWidgetStyle<FSearchBoxStyle>("SearchBox");
+		const FSearchBoxStyle SearchBoxStyle = FSearchBoxStyle(NormalSearchBoxStyle)
+			.SetTextBoxStyle(EditableTextBoxStyle);
+		Set("SearchBox", SearchBoxStyle);
+	}
 
 	// PrimaryToolbar
 	{
@@ -414,6 +450,7 @@ void FInsightsStyle::FStyle::Initialize()
 		Set("SecondaryToolbar2.MaxUniformToolbarSize", 32.0f);
 	}
 
+	// ToggleButton
 	{
 		Set("ToggleButton", FButtonStyle(Button)
 			.SetNormal(FSlateNoResource())
@@ -421,6 +458,7 @@ void FInsightsStyle::FStyle::Initialize()
 			.SetPressed(EDITOR_BOX_BRUSH("Common/RoundedSelection_16x", 4.0f / 16.0f, SelectionColor_Pressed)));
 	}
 
+	// Common.GotoNativeCodeHyperlink
 	{
 		FTextBlockStyle InheritedFromNativeTextStyle = FTextBlockStyle(NormalText)
 			.SetFont(DEFAULT_FONT("Regular", 10));
@@ -439,7 +477,6 @@ void FInsightsStyle::FStyle::Initialize()
 
 		Set("Common.GotoNativeCodeHyperlink", EditNativeHyperlinkStyle);
 	}
-
 
 	//////////////////////////////////////////////////
 }

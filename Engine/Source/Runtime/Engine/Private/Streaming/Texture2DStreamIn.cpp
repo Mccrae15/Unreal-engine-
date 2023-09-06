@@ -128,8 +128,8 @@ void FTexture2DStreamIn::DoAsyncCreateWithNewMips(const FContext& Context)
 		const FTexture2DMipMap& RequestedMipMap = *Context.MipsView[PendingFirstLODIdx];
 
 		// old textures have sizes padded up to multiple of 4; that's wrong, should be real size unpadded
-		check( RequestedMipMap.SizeX == FMath::Max(1, Context.MipsView[0]->SizeX >> PendingFirstLODIdx) );
-		check( RequestedMipMap.SizeY == FMath::Max(1, Context.MipsView[0]->SizeY >> PendingFirstLODIdx) );
+		check( RequestedMipMap.SizeX == FMath::Max(1, (int32)Context.MipsView[0]->SizeX >> PendingFirstLODIdx) );
+		check( RequestedMipMap.SizeY == FMath::Max(1, (int32)Context.MipsView[0]->SizeY >> PendingFirstLODIdx) );
 
 		check( PendingFirstLODIdx+ResourceState.NumRequestedLODs <= MipData.Num() );
 
@@ -147,6 +147,7 @@ void FTexture2DStreamIn::DoAsyncCreateWithNewMips(const FContext& Context)
 		FTexture2DResource::WarnRequiresTightPackedMip(RequestedMipMap.SizeX,RequestedMipMap.SizeY,Context.Resource->GetPixelFormat(),MipData[PendingFirstLODIdx].Pitch);
 
 		ensure(IntermediateTextureRHI == nullptr);
+		FGraphEventRef CompletionEvent;
 		IntermediateTextureRHI = RHIAsyncCreateTexture2D(
 			RequestedMipMap.SizeX,
 			RequestedMipMap.SizeY,
@@ -154,6 +155,19 @@ void FTexture2DStreamIn::DoAsyncCreateWithNewMips(const FContext& Context)
 			ResourceState.NumRequestedLODs,
 			Context.Resource->GetCreationFlags(),
 			InitialMipDataForAsyncCreate+PendingFirstLODIdx,
-			ResourceState.NumRequestedLODs - ResourceState.NumResidentLODs);
+			ResourceState.NumRequestedLODs - ResourceState.NumResidentLODs,
+			CompletionEvent);
+
+		if (CompletionEvent)
+		{
+			TaskSynchronization.Increment();
+			FFunctionGraphTask::CreateAndDispatchWhenReady(
+				[this]()
+				{
+					TaskSynchronization.Decrement();
+				},
+				TStatId{},
+				CompletionEvent);
+		}
 	}
 }

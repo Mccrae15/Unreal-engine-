@@ -126,16 +126,6 @@ void FStreamingLevelCollectionModel::UnloadLevels(const FLevelModelList& InLevel
 			// this level is dirty and can be removed from the world
 			bHaveDirtyLevels = true;
 		}
-
-		if (const ULevel* Level = LevelModel->GetLevelObject())
-		{
-			if (Level->IsPartitionSubLevel())
-			{
-				// this level is a partition sublevel and cannot be removed from the world
-				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("RemoveLevel_PartitionSubLevel", "Cannot remove a level which is part of a partition. Delete the top level instead."));
-				return;
-			}
-		}
 	}
 
 	// Depending on the state of the level, create a warning message
@@ -304,7 +294,7 @@ void FStreamingLevelCollectionModel::BuildHierarchyMenu(FMenuBuilder& InMenuBuil
 			FNewMenuDelegate::CreateSP(const_cast<FStreamingLevelCollectionModel*>(this), &FStreamingLevelCollectionModel::FillLockSubMenu ) );
 		
 		// Level streaming specific commands
-		if (AreAnyLevelsSelected() && !(IsOneLevelSelected() && GetSelectedLevels()[0]->IsPersistent()))
+		if (AreAllSelectedLevelsUserManaged() && !(IsOneLevelSelected() && GetSelectedLevels()[0]->IsPersistent()))
 		{
 			InMenuBuilder.AddMenuEntry(Commands.World_RemoveSelectedLevels);
 			//
@@ -349,9 +339,12 @@ void FStreamingLevelCollectionModel::BuildHierarchyMenu(FMenuBuilder& InMenuBuil
 			InMenuBuilder.AddMenuEntry( Commands.MoveFoliageToSelected );
 		}
 
-		InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToExternalActors);
-		InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToInternalActors);
-		
+		if (AreAllSelectedLevelsUserManaged())
+		{
+			InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToExternalActors);
+			InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToInternalActors);
+		}
+
 		if (AreAnyLevelsSelected() && !(IsOneLevelSelected() && SelectedLevelsList[0]->IsPersistent()))
 		{
 			InMenuBuilder.AddMenuEntry( Commands.SelectStreamingVolumes );
@@ -594,7 +587,7 @@ bool FStreamingLevelCollectionModel::AreAllSelectedLevelsRemovable() const
 {
 	for (const TSharedPtr<FLevelModel>& LevelModel : SelectedLevelsList)
 	{
-		if (LevelModel->IsLocked() || LevelModel->IsPersistent())
+		if (LevelModel->IsLocked() || LevelModel->IsPersistent() || !LevelModel->IsUserManaged())
 		{
 			return false;
 		}

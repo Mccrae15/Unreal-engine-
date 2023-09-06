@@ -11,26 +11,21 @@ public class LinuxArm64TargetPlatform : ModuleRules
         PrivateDependencyModuleNames.AddRange(
             new string[] {
 				"Core",
-				"TargetPlatform",
 				"DesktopPlatform",
-				"Projects"
+				"TargetPlatform",
 			}
         );
 
         if (Target.bCompileAgainstEngine)
         {
             PrivateDependencyModuleNames.AddRange(new string[] {
-				"Engine"
+					"Engine"
 				}
             );
 
             PrivateIncludePathModuleNames.Add("TextureCompressor");
         }
 
-        PrivateIncludePaths.AddRange(
-            new string[] {
-				"Developer/Linux/LinuxTargetPlatform/Private"
-			}
-        );
+		PrivateIncludePathModuleNames.Add("LinuxTargetPlatform");
     }
 }

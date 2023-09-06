@@ -20,7 +20,6 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
-#include "PackageStoreManifest.h"
 #include "PackageStoreWriter.h"
 #include "Serialization/AsyncLoading2.h"
 #include "Serialization/CompactBinary.h"
@@ -46,6 +45,7 @@ class FCbAttachment;
 class FCbPackage;
 class FCbWriter;
 class FPackageStoreOptimizer;
+class FPackageStorePackage;
 class FZenFileSystemManifest;
 
 /** 
@@ -60,6 +60,36 @@ public:
 											const ITargetPlatform* TargetPlatform);
 
 	IOSTOREUTILITIES_API ~FZenStoreWriter();
+
+	/** Identify as a implmenter of this class from the IPackageStoreWriter api. */
+	IOSTOREUTILITIES_API virtual FZenStoreWriter* AsZenStoreWriter() override
+	{
+		return this;
+	};
+
+	// Delegates to forward PackageWriter events onto UCookOnTheFlyServer when cooking
+	void SetBeginCacheCallback(FBeginCacheCallback&& InBeginCacheCallback)
+	{
+		BeginCacheCallback = MoveTemp(InBeginCacheCallback);
+	}
+
+	struct ZenHostInfo
+	{
+		FString ProjectId;
+		FString OplogId;
+		FString HostName;
+		uint16 HostPort;
+	};
+
+	IOSTOREUTILITIES_API virtual FCookCapabilities GetCookCapabilities() const override
+	{
+		FCookCapabilities Result;
+		Result.bDiffModeSupported = true;
+		Result.HeaderFormat = EPackageHeaderFormat::ZenPackageSummary;
+		return Result;
+	}
+
+	IOSTOREUTILITIES_API ZenHostInfo GetHostInfo() const;
 
 	IOSTOREUTILITIES_API virtual void BeginPackage(const FBeginPackageInfo& Info) override;
 	IOSTOREUTILITIES_API virtual void CommitPackage(FCommitPackageInfo&& Info) override;
@@ -100,6 +130,9 @@ public:
 	IOSTOREUTILITIES_API virtual void RemoveCookedPackages(TArrayView<const FName> PackageNamesToRemove) override;
 	IOSTOREUTILITIES_API virtual void RemoveCookedPackages() override;
 	IOSTOREUTILITIES_API virtual void MarkPackagesUpToDate(TArrayView<const FName> UpToDatePackages) override;
+	IOSTOREUTILITIES_API bool GetPreviousCookedBytes(const FPackageInfo& Info, FPreviousCookedBytesData& OutData) override;
+	IOSTOREUTILITIES_API void CompleteExportsArchiveForDiff(FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive) override;
+	IOSTOREUTILITIES_API virtual EPackageWriterResult BeginCacheForCookedPlatformData(FBeginCacheForCookedPlatformDataInfo& Info) override;
 	IOSTOREUTILITIES_API virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override;
 	IOSTOREUTILITIES_API virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) override;
 
@@ -114,15 +147,19 @@ private:
 		TFuture<FCompressedBuffer> CompressedPayload;
 		FBulkDataInfo Info;
 		FCbObjectId ChunkId;
+		TArray<FFileRegion> FileRegions;
 		bool IsValid = false;
 	};
 
 	struct FPackageDataEntry
 	{
+		~FPackageDataEntry();
+
 		TFuture<FCompressedBuffer> CompressedPayload;
 		FPackageInfo Info;
 		FCbObjectId ChunkId;
-		FPackageStoreEntryResource PackageStoreEntry;
+		TUniquePtr<FPackageStorePackage> OptimizedPackage;
+		TArray<FFileRegion> FileRegions;
 		bool IsValid = false;
 	};
 
@@ -136,12 +173,18 @@ private:
 
 	struct FPendingPackageState
 	{
+		~FPendingPackageState();
+
 		FName PackageName;
-		FPackageDataEntry PackageData;
+		TArray<FPackageDataEntry> PackageData;
 		TArray<FBulkDataEntry> BulkData;
 		TArray<FFileDataEntry> FileData;
 		TRefCountPtr<FPackageHashes> PackageHashes;
 		TUniquePtr<TPromise<int>> PackageHashesCompletionPromise;
+
+		/** Solely for use in DiffOnly mode */
+		uint64 OriginalHeaderSize = 0;
+		TUniquePtr<FPackageStorePackage> PreOptimizedPackage;
 	};
 
 	FPendingPackageState& GetPendingPackage(const FName& PackageName)
@@ -152,14 +195,7 @@ private:
 		return *Package;
 	}
 	
-	FPendingPackageState& AddPendingPackage(const FName& PackageName)
-	{
-		FScopeLock _(&PackagesCriticalSection);
-		checkf(!PendingPackages.Contains(PackageName), TEXT("Trying to add package that is already pending"));
-		TUniquePtr<FPendingPackageState>& Package = PendingPackages.Add(PackageName, MakeUnique<FPendingPackageState>());
-		check(Package.IsValid());
-		return *Package;
-	}
+	FPendingPackageState& AddPendingPackage(const FName& PackageName);
 	
 	TUniquePtr<FPendingPackageState> RemovePendingPackage(const FName& PackageName)
 	{
@@ -189,7 +225,6 @@ private:
 	FString								MetadataDirectoryPath;
 	TMap<FName, TRefCountPtr<FPackageHashes>> AllPackageHashes;
 
-	FPackageStoreManifest				PackageStoreManifest;
 	TUniquePtr<FPackageStoreOptimizer>	PackageStoreOptimizer;
 	
 	FRWLock								EntriesLock;
@@ -199,6 +234,8 @@ private:
 
 	TUniquePtr<FZenFileSystemManifest>	ZenFileSystemManifest;
 	TMap<FName, TArray<FString>>		PackageAdditionalFiles;
+
+	FBeginCacheCallback					BeginCacheCallback;
 
 	FEntryCreatedEvent					EntryCreatedEvent;
 	FCriticalSection					CommitEventCriticalSection;

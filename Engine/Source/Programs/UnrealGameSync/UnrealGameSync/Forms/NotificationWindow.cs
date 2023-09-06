@@ -1,16 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Windows.Forms.VisualStyles;
 
 namespace UnrealGameSync
 {
@@ -44,13 +37,14 @@ namespace UnrealGameSync
 		bool _mouseDownOverClose;
 
 		// Notifications
-		public Action? OnMoreInformation;
-		public Action? OnDismiss;
+		public Action? OnMoreInformation { get; set; }
+		public Action? OnDismiss { get; set; }
 
 		public NotificationWindow(Image inLogo)
 		{
 			_logoBitmap = new Bitmap(inLogo);
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 		}
 
 		public void Show(NotificationType inType, string inCaption, string inMessage)
@@ -72,15 +66,24 @@ namespace UnrealGameSync
 
 		protected override void Dispose(bool disposing)
 		{
-			if(disposing && _logoBitmap != null)
+			if (disposing)
 			{
-				_logoBitmap.Dispose();
-				_logoBitmap = null;
+				if (_captionFont != null)
+				{
+					_captionFont.Dispose();
+					_captionFont = null;
+				}
+				if (_logoBitmap != null)
+				{
+					_logoBitmap.Dispose();
+					_logoBitmap = null;
+				}
+				if (components != null)
+				{
+					components.Dispose();
+				}
 			}
-			if(disposing && components != null)
-			{
-				components.Dispose();
-			}
+
 			base.Dispose(disposing);
 		}
 
@@ -135,11 +138,8 @@ namespace UnrealGameSync
 		{
 			base.OnFontChanged(e);
 
-			if(_captionFont != null)
-			{
-				_captionFont.Dispose();
-			}
-			_captionFont = new Font(this.Font.Name, this.Font.Size * (12.0f / 9.0f), FontStyle.Regular);
+			_captionFont?.Dispose();
+			_captionFont = new Font(Font.Name, Font.Size * (12.0f / 9.0f), FontStyle.Regular);
 
 			CalculateBounds();
 			Invalidate();
@@ -234,7 +234,7 @@ namespace UnrealGameSync
 			e.Graphics.DrawRectangle(Pens.Black, new Rectangle(0, 0, Width - 1, Height - 1));
 
 			e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-			e.Graphics.DrawImage(_logoBitmap, _logoBounds);
+			e.Graphics.DrawImage(_logoBitmap!, _logoBounds);
 		}
 
 		protected override void OnPaint(PaintEventArgs e)

@@ -13,144 +13,33 @@
 #include "Application/SlateApplicationBase.h"
 
 #include <limits>
+#include <type_traits>
+#include <utility>
 
-DECLARE_CYCLE_STAT(TEXT("FSlateDrawElement::Make Time"), STAT_SlateDrawElementMakeTime, STATGROUP_SlateVerbose);
-DECLARE_CYCLE_STAT(TEXT("FSlateDrawElement::MakeCustomVerts Time"), STAT_SlateDrawElementMakeCustomVertsTime, STATGROUP_Slate);
-DECLARE_CYCLE_STAT(TEXT("FSlateDrawElement::Prebatch Time"), STAT_SlateDrawElementPrebatchTime, STATGROUP_Slate);
-
-DEFINE_STAT(STAT_SlateBufferPoolMemory);
-DEFINE_STAT(STAT_SlateCachedDrawElementMemory);
-
-static bool bApplyDisabledEffectOnWidgets = true;
-
-static void HandleApplyDisabledEffectOnWidgetsToggled(IConsoleVariable* CVar)
+/** 
+ * Helper struct to determine if an element has implemented AddReferencedObject 
+ * 
+ * For an explantion of how this detection: https://en.cppreference.com/w/cpp/types/void_t
+ */
+template <typename T>
+struct TIsReferencedObjects
 {
-	if (FSlateApplicationBase::IsInitialized())
+	template <typename U, typename = void>
+	struct IsReferencedObjectsHelper : std::false_type
 	{
-		FSlateApplicationBase::Get().InvalidateAllWidgets(false);
-	}
-}
+	};
 
-static FAutoConsoleVariableRef CVarApplyDisabledEffectOnWidgets(
-	TEXT("Slate.ApplyDisabledEffectOnWidgets"),
-	bApplyDisabledEffectOnWidgets,
-	TEXT("If true, disabled game-layer widgets will have alpha multiplied by 0.45."),
-	FConsoleVariableDelegate::CreateStatic(&HandleApplyDisabledEffectOnWidgetsToggled)
-);
-
-static bool IsResourceObjectValid(UObject*& InObject)
-{
-	if (InObject != nullptr && (!IsValidChecked(InObject) || InObject->IsUnreachable() || InObject->HasAnyFlags(RF_BeginDestroyed)))
+	template <typename U>
+	struct IsReferencedObjectsHelper<U, std::void_t<decltype(std::declval<U>().AddReferencedObjects(std::declval<FReferenceCollector&>()))>> : std::true_type
 	{
-		UE_LOG(LogSlate, Warning, TEXT("Attempted to access resource for %s which is pending kill, unreachable or pending destroy"), *InObject->GetName());
-		return false;
-	}
+	};
 
-	return true;
-}
+	static constexpr bool Value = IsReferencedObjectsHelper<T>::value;
+};
 
-static bool ShouldCull(const FSlateWindowElementList& ElementList)
-{
-	const FSlateClippingManager& ClippingManager = ElementList.GetClippingManager();
-	const int32 CurrentIndex = ClippingManager.GetClippingIndex();
-	if (CurrentIndex != INDEX_NONE)
-	{
-		const FSlateClippingState& ClippingState = ClippingManager.GetClippingStates()[CurrentIndex];
-		if (ClippingState.GetClippingMethod() == EClippingMethod::Scissor)
-		{
-			return ClippingState.HasZeroArea();
-		}
-		else if (ClippingState.GetClippingMethod() == EClippingMethod::Stencil)
-		{
-			FSlateRect WindowRect = ElementList.GetPaintWindow()->GetClippingRectangleInWindow();
-			if (WindowRect.GetArea() > 0)
-			{
-				for (const FSlateClippingZone& Stencil : ClippingState.StencilQuads)
-				{
-					bool bOverlapping = false;
-					FSlateRect ClippedStencil = Stencil.GetBoundingBox().IntersectionWith(WindowRect, bOverlapping);
-					
-					if (!bOverlapping || ClippedStencil.GetArea() <= 0)
-					{
-						return true;
-					}
-				}
-			}
-		}
-
-	}
-
-	return false;
-}
-
-static bool ShouldCull(const FSlateWindowElementList& ElementList, const FPaintGeometry& PaintGeometry)
-{
-	const FVector2f LocalSize = UE::Slate::CastToVector2f(PaintGeometry.GetLocalSize());
-	const float DrawScale = PaintGeometry.DrawScale;
-
-	const FVector2f PixelSize = (LocalSize * DrawScale);
-	if (PixelSize.X <= 0.f || PixelSize.Y <= 0.f)
-	{
-		return true;
-	}
-
-	return ShouldCull(ElementList);
-}
-
-static bool ShouldCull(const FSlateWindowElementList& ElementList, const FPaintGeometry& PaintGeometry, const FSlateBrush* InBrush)
-{
-	if (ShouldCull(ElementList, PaintGeometry))
-	{
-		return true;
-	}
-
-	if (InBrush->GetDrawType() == ESlateBrushDrawType::NoDrawType)
-	{
-		return true;
-	}
-
-	UObject* ResourceObject = InBrush->GetResourceObject();
-	if (!IsResourceObjectValid(ResourceObject))
-	{
-		return true;
-	}
-
-	return false;
-}
-
-
-static bool ShouldCull(const FSlateWindowElementList& ElementList, const FPaintGeometry& PaintGeometry, const FLinearColor& InTint)
-{
-	if (InTint.A == 0 || ShouldCull(ElementList, PaintGeometry))
-	{
-		return true;
-	}
-
-	return false;
-}
-
-static bool ShouldCull(const FSlateWindowElementList& ElementList, const FPaintGeometry& PaintGeometry, const FLinearColor& InTint, const FString& InText)
-{
-	if (InTint.A == 0 || InText.Len() == 0 || ShouldCull(ElementList, PaintGeometry))
-	{
-		return true;
-	}
-
-	return false;
-}
-
-static bool ShouldCull(const FSlateWindowElementList& ElementList, const FPaintGeometry& PaintGeometry, const FSlateBrush* InBrush, const FLinearColor& InTint)
-{
-	bool bIsFullyTransparent = InTint.A == 0 && (InBrush->OutlineSettings.Color.GetSpecifiedColor().A == 0 || InBrush->OutlineSettings.bUseBrushTransparency);
-	if (bIsFullyTransparent || ShouldCull(ElementList, PaintGeometry, InBrush))
-	{
-		return true;
-	}
-
-	return false;
-}
-
-
+static_assert(!TIsReferencedObjects<FSlateBoxElement>::Value, "FSlateBoxElement should have not AddReferencedObjects.");
+static_assert(TIsReferencedObjects<FSlateTextElement>::Value, "FSlateTextElement should have AddReferencedObjects.");
+static_assert(TIsReferencedObjects<FSlateShapedTextElement>::Value, "FSlateShapedTextElement should have AddReferencedObjects.");
 
 FSlateWindowElementList::FSlateWindowElementList(const TSharedPtr<SWindow>& InPaintWindow)
 	: WeakPaintWindow(InPaintWindow)
@@ -187,600 +76,6 @@ FSlateWindowElementList::~FSlateWindowElementList()
 	}*/
 }
 
-void FSlateDrawElement::Init(FSlateWindowElementList& ElementList, EElementType InElementType, uint32 InLayer, const FPaintGeometry& PaintGeometry, ESlateDrawEffect InDrawEffects)
-{
-	if (ElementList.GetIsInGameLayer() && !bApplyDisabledEffectOnWidgets)
-	{
-		InDrawEffects &= ~ESlateDrawEffect::DisabledEffect;
-	}
-
-	RenderTransform = PaintGeometry.GetAccumulatedRenderTransform();
-	Position = PaintGeometry.DrawPosition;
-	Scale = PaintGeometry.DrawScale;
-	LocalSize = FVector2f(PaintGeometry.GetLocalSize());
-	ClipStateHandle.SetPreCachedClipIndex(ElementList.GetClippingIndex());
-
-#if UE_SLATE_VERIFY_PIXELSIZE
-	const FVector2f PixelSize = FVector2f(LocalSize * Scale);
-	ensureMsgf(PixelSize.X >= 0.f && PixelSize.X <= (float)std::numeric_limits<uint16>::max(), TEXT("The size X '%f' is too small or big to fit in the SlateVertex buffer."), PixelSize.X);
-	ensureMsgf(PixelSize.Y >= 0.f && PixelSize.Y <= (float)std::numeric_limits<uint16>::max(), TEXT("The size Y '%f' is too small or big to fit in the SlateVertex buffer."), PixelSize.Y);
-#endif
-
-	LayerId = InLayer;
-
-	ElementType = InElementType;
-	DrawEffects = InDrawEffects;
-	
-	// Calculate the layout to render transform as this is needed by several calculations downstream.
-	const FSlateLayoutTransform InverseLayoutTransform(Inverse(FSlateLayoutTransform(Scale, Position)));
-
-	{
-		// This is a workaround because we want to keep track of the various Scenes 
-		// in use throughout the UI. We keep a synchronized set with the render thread on the SlateRenderer and 
-		// use indices to synchronize between them.
-		FSlateRenderer* Renderer = FSlateApplicationBase::Get().GetRenderer();
-		checkSlow(Renderer);
-		int32 SceneIndexLong = Renderer->GetCurrentSceneIndex();
-		ensureMsgf(SceneIndexLong <= std::numeric_limits<int8>::max(), TEXT("The Scene index is saved as an int8 in the DrawElements."));
-		SceneIndex = (int8)SceneIndexLong;
-	}
-
-	BatchFlags = ESlateBatchDrawFlag::None;
-	BatchFlags |= static_cast<ESlateBatchDrawFlag>(static_cast<uint32>(InDrawEffects) & static_cast<uint32>(ESlateDrawEffect::NoBlending | ESlateDrawEffect::PreMultipliedAlpha | ESlateDrawEffect::NoGamma | ESlateDrawEffect::InvertAlpha));
-
-	static_assert(((__underlying_type(ESlateDrawEffect))ESlateDrawEffect::NoBlending) == ((__underlying_type(ESlateBatchDrawFlag))ESlateBatchDrawFlag::NoBlending), "Must keep ESlateBatchDrawFlag and ESlateDrawEffect partial matches");
-	static_assert(((__underlying_type(ESlateDrawEffect))ESlateDrawEffect::PreMultipliedAlpha) == ((__underlying_type(ESlateBatchDrawFlag))ESlateBatchDrawFlag::PreMultipliedAlpha), "Must keep ESlateBatchDrawFlag and ESlateDrawEffect partial matches");
-	static_assert(((__underlying_type(ESlateDrawEffect))ESlateDrawEffect::NoGamma) == ((__underlying_type(ESlateBatchDrawFlag))ESlateBatchDrawFlag::NoGamma), "Must keep ESlateBatchDrawFlag and ESlateDrawEffect partial matches");
-	static_assert(((__underlying_type(ESlateDrawEffect))ESlateDrawEffect::InvertAlpha) == ((__underlying_type(ESlateBatchDrawFlag))ESlateBatchDrawFlag::InvertAlpha), "Must keep ESlateBatchDrawFlag and ESlateDrawEffect partial matches");
-	if ((InDrawEffects & ESlateDrawEffect::ReverseGamma) != ESlateDrawEffect::None)
-	{
-		BatchFlags |= ESlateBatchDrawFlag::ReverseGamma;
-	}
-}
-
-void FSlateDrawElement::ApplyPositionOffset(UE::Slate::FDeprecateVector2DParameter InOffset)
-{
-	SetPosition(Position + InOffset);
-	RenderTransform = Concatenate(RenderTransform, InOffset);
-
-	// Recompute cached layout to render transform
-	const FSlateLayoutTransform InverseLayoutTransform(Inverse(FSlateLayoutTransform(Scale, Position)));
-}
-
-void FSlateDrawElement::MakeDebugQuad( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, FLinearColor Tint)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-	FSlateBoxPayload& BoxPayload = ElementList.CreatePayload<FSlateBoxPayload>(Element);
-
-	BoxPayload.SetTint(Tint);
-	Element.Init(ElementList, EElementType::ET_DebugQuad, InLayer, PaintGeometry, ESlateDrawEffect::None);
-}
-
-FSlateDrawElement& FSlateDrawElement::MakeBoxInternal(
-	FSlateWindowElementList& ElementList,
-	uint32 InLayer,
-	const FPaintGeometry& PaintGeometry,
-	const FSlateBrush* InBrush,
-	ESlateDrawEffect InDrawEffects,
-	const FLinearColor& InTint
-)
-{
-	EElementType ElementType = (InBrush->DrawAs == ESlateBrushDrawType::Border) ? EElementType::ET_Border : (InBrush->DrawAs == ESlateBrushDrawType::RoundedBox) ? EElementType::ET_RoundedBox : EElementType::ET_Box;
-
-	// Cast to Rounded Rect to get the internal parameters 
-	// New payload type - inherit from BoxPayload 
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateBoxPayload* BoxPayload;
-	if ( ElementType == EElementType::ET_RoundedBox )
-	{
-		FSlateRoundedBoxPayload* RBoxPayload = &ElementList.CreatePayload<FSlateRoundedBoxPayload>(Element);
-		FVector4f CornerRadii = FVector4f(InBrush->OutlineSettings.CornerRadii);
-		if (InBrush->OutlineSettings.RoundingType == ESlateBrushRoundingType::HalfHeightRadius)
-		{
-			const float UniformRadius = PaintGeometry.GetLocalSize().Y / 2.0f;
-			CornerRadii = FVector4f(UniformRadius, UniformRadius, UniformRadius, UniformRadius);
-		}
-		RBoxPayload->SetRadius(CornerRadii);
-
-		if (InBrush->OutlineSettings.bUseBrushTransparency)
-		{
-			FLinearColor Color = InBrush->OutlineSettings.Color.GetSpecifiedColor().CopyWithNewOpacity(InTint.A);
-			RBoxPayload->SetOutline(Color, InBrush->OutlineSettings.Width);
-		}
-		else
-		{
-			RBoxPayload->SetOutline(InBrush->OutlineSettings.Color.GetSpecifiedColor(), InBrush->OutlineSettings.Width);
-		}
-		BoxPayload = RBoxPayload;
-	}
-	else 
-	{
-		BoxPayload = &ElementList.CreatePayload<FSlateBoxPayload>(Element);
-	}
-
-	BoxPayload->SetTint(InTint);
-	BoxPayload->SetBrush(InBrush, PaintGeometry.GetLocalSize(), PaintGeometry.DrawScale);
-
-	Element.Init(ElementList, ElementType, InLayer, PaintGeometry, InDrawEffects);
-
-	return Element;
-}
-
-void FSlateDrawElement::MakeBox(
-	FSlateWindowElementList& ElementList,
-	uint32 InLayer, 
-	const FPaintGeometry& PaintGeometry, 
-	const FSlateBrush* InBrush,
-	ESlateDrawEffect InDrawEffects, 
-	const FLinearColor& InTint)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList, PaintGeometry, InBrush, InTint))
-	{
-		return;
-	}
-
-	MakeBoxInternal(ElementList, InLayer, PaintGeometry, InBrush, InDrawEffects, InTint);
-}
-
-void FSlateDrawElement::MakeRotatedBox(
-	FSlateWindowElementList& ElementList,
-	uint32 InLayer,
-	const FPaintGeometry& PaintGeometry,
-	const FSlateBrush* InBrush,
-	ESlateDrawEffect InDrawEffects,
-	float Angle2D,
-	UE::Slate::FDeprecateOptionalVector2DParameter InRotationPoint,
-	ERotationSpace RotationSpace,
-	const FLinearColor& InTint)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList, PaintGeometry, InBrush, InTint))
-	{
-		return;
-	}
-
-	FSlateDrawElement& DrawElement = MakeBoxInternal(ElementList, InLayer, PaintGeometry, InBrush, InDrawEffects, InTint);
-	
-	if (Angle2D != 0.0f)
-	{
-		const FVector2f RotationPoint = GetRotationPoint(PaintGeometry, InRotationPoint, RotationSpace);
-		const FSlateRenderTransform RotationTransform = Concatenate(Inverse(RotationPoint), FQuat2f(Angle2D), RotationPoint);
-		DrawElement.SetRenderTransform(Concatenate(RotationTransform, DrawElement.GetRenderTransform()));
-	}
-}
-
-#if !UE_BUILD_SHIPPING
-namespace UE::Slate::Private
-{
-	bool GLogPaintedText = false;
-	FAutoConsoleVariableRef LogPaintedTextRef(
-		TEXT("Slate.LogPaintedText"),
-		GLogPaintedText,
-		TEXT("If true, all text that is visible to the user will be logged when it is painted. This will log the full text to be painted, not the truncated or clipped version based on UI constraints.")
-	);
-}
-#endif
-
-void FSlateDrawElement::MakeText( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FString& InText, const int32 StartIndex, const int32 EndIndex, const FSlateFontInfo& InFontInfo, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint )
-{
-	SCOPE_CYCLE_COUNTER(STAT_SlateDrawElementMakeTime)
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList, PaintGeometry, InTint, InText))
-	{
-		return;
-	}
-
-#if !UE_BUILD_SHIPPING
-	if (UE::Slate::Private::GLogPaintedText)
-	{
-		UE_LOG(LogSlate, Log, TEXT("MakeText: '%s'."), *InText);
-	}
-#endif
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-	FSlateTextPayload& DataPayload = ElementList.CreatePayload<FSlateTextPayload>(Element);
-
-	DataPayload.SetTint(InTint);
-	DataPayload.SetText(InText, InFontInfo, StartIndex, EndIndex);
-
-	Element.Init(ElementList, EElementType::ET_Text, InLayer, PaintGeometry, InDrawEffects);
-}
-
-void FSlateDrawElement::MakeText( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FString& InText, const FSlateFontInfo& InFontInfo, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint )
-{
-	SCOPE_CYCLE_COUNTER(STAT_SlateDrawElementMakeTime)
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	// Don't try and render empty text
-	if (InText.Len() == 0)
-	{
-		return;
-	}
-
-	if (ShouldCull(ElementList, PaintGeometry, InTint, InText))
-	{
-		return;
-	}
-
-	// Don't do anything if there the font would be completely transparent 
-	if (InTint.A == 0 && !InFontInfo.OutlineSettings.IsVisible())
-	{
-		return;
-	}
-#if !UE_BUILD_SHIPPING
-	if (UE::Slate::Private::GLogPaintedText)
-	{
-		UE_LOG(LogSlate, Log, TEXT("MakeText: '%s'."), *InText);
-	}
-#endif
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateTextPayload& DataPayload = ElementList.CreatePayload<FSlateTextPayload>(Element);
-
-	DataPayload.SetTint(InTint);
-	DataPayload.SetText(InText, InFontInfo);
-
-	Element.Init(ElementList, EElementType::ET_Text, InLayer, PaintGeometry, InDrawEffects);
-}
-
-namespace SlateDrawElement
-{
-#if SLATE_CHECK_UOBJECT_RENDER_RESOURCES
-	const FName MaterialInterfaceClassName = "MaterialInterface";
-	void CheckInvalidUMaterial(const UObject* InMaterialResource, const TCHAR* MaterialMessage)
-	{
-		if (InMaterialResource && GSlateCheckUObjectRenderResources)
-		{
-			bool bIsValidLowLevel = InMaterialResource->IsValidLowLevelFast(false);
-			if (!bIsValidLowLevel || !IsValid(InMaterialResource) || InMaterialResource->GetClass()->GetFName() == MaterialInterfaceClassName)
-			{
-				UE_LOG(LogSlate, Error, TEXT("Material '%s' is not valid. PendingKill:'%d'. ValidLowLevelFast:'%d'. InvalidClass:'%d'")
-					, MaterialMessage
-					, (bIsValidLowLevel ? !IsValid(InMaterialResource) : false)
-					, bIsValidLowLevel
-					, (bIsValidLowLevel ? InMaterialResource->GetClass()->GetFName() == MaterialInterfaceClassName : false));
-
-				if (bIsValidLowLevel)
-				{
-					UE_LOG(LogSlate, Error, TEXT("Material name: '%s'"), *InMaterialResource->GetFullName());
-				}
-
-				const TCHAR* Message = TEXT("We detected an invalid resource in FSlateDrawElement. Check the log for more detail.");
-				if (GSlateCheckUObjectRenderResourcesShouldLogFatal)
-				{
-					UE_LOG(LogSlate, Fatal, TEXT("%s"), Message);
-				}
-				else
-				{
-					ensureAlwaysMsgf(false, TEXT("%s"), Message);
-				}
-			}
-		}
-	}
-#endif
-}
-
-void FSlateDrawElement::MakeShapedText(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FShapedGlyphSequenceRef& InShapedGlyphSequence, ESlateDrawEffect InDrawEffects, const FLinearColor& BaseTint, const FLinearColor& OutlineTint, FTextOverflowArgs TextOverflowArgs)
-{
-	SCOPE_CYCLE_COUNTER(STAT_SlateDrawElementMakeTime)
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (InShapedGlyphSequence->GetGlyphsToRender().Num() == 0)
-	{
-		return;
-	}
-
-	if (ShouldCull(ElementList, PaintGeometry))
-	{
-		return;
-	}
-
-	// Don't do anything if there the font would be completely transparent 
-	if ((BaseTint.A == 0 && InShapedGlyphSequence->GetFontOutlineSettings().OutlineSize == 0) || 
-		(BaseTint.A == 0 && OutlineTint.A == 0))
-	{
-		return;
-	}
-
-#if SLATE_CHECK_UOBJECT_RENDER_RESOURCES
-	SlateDrawElement::CheckInvalidUMaterial(InShapedGlyphSequence->GetFontMaterial(), TEXT("Font Material"));
-	SlateDrawElement::CheckInvalidUMaterial(InShapedGlyphSequence->GetFontOutlineSettings().OutlineMaterial, TEXT("Outline Material"));
-#endif
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateShapedTextPayload& DataPayload = ElementList.CreatePayload<FSlateShapedTextPayload>(Element);
-	DataPayload.SetTint(BaseTint);
-	DataPayload.SetShapedText(ElementList, InShapedGlyphSequence, OutlineTint);
-	DataPayload.SetOverflowArgs(TextOverflowArgs);
-
-	Element.Init(ElementList, EElementType::ET_ShapedText, InLayer, PaintGeometry, InDrawEffects);
-}
-
-void FSlateDrawElement::MakeGradient( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, TArray<FSlateGradientStop> InGradientStops, EOrientation InGradientType, ESlateDrawEffect InDrawEffects, FVector4f CornerRadius)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList, PaintGeometry))
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateGradientPayload& DataPayload = ElementList.CreatePayload<FSlateGradientPayload>(Element);
-
-	DataPayload.SetGradient(InGradientStops, InGradientType, CornerRadius);
-
-	Element.Init(ElementList, EElementType::ET_Gradient, InLayer, PaintGeometry, InDrawEffects);
-}
-
-void FSlateDrawElement::MakeSpline(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const UE::Slate::FDeprecateVector2DParameter InStart, const UE::Slate::FDeprecateVector2DParameter InStartDir, const UE::Slate::FDeprecateVector2DParameter InEnd, const UE::Slate::FDeprecateVector2DParameter InEndDir, float InThickness, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateSplinePayload& DataPayload = ElementList.CreatePayload<FSlateSplinePayload>(Element);
-
-	DataPayload.SetHermiteSpline(InStart, InStartDir, InEnd, InEndDir, InThickness, InTint);
-
-	Element.Init(ElementList, EElementType::ET_Spline, InLayer, PaintGeometry, InDrawEffects);
-}
-
-void FSlateDrawElement::MakeCubicBezierSpline(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const UE::Slate::FDeprecateVector2DParameter P0, const UE::Slate::FDeprecateVector2DParameter P1, const UE::Slate::FDeprecateVector2DParameter P2, const UE::Slate::FDeprecateVector2DParameter P3, float InThickness, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateSplinePayload& DataPayload = ElementList.CreatePayload<FSlateSplinePayload>(Element);
-
-	DataPayload.SetCubicBezier(P0, P1, P2, P3, InThickness, InTint);
-
-	Element.Init(ElementList, EElementType::ET_Spline, InLayer, PaintGeometry, InDrawEffects);
-}
-
-void FSlateDrawElement::MakeDrawSpaceSpline(FSlateWindowElementList& ElementList, uint32 InLayer, const UE::Slate::FDeprecateVector2DParameter InStart, const UE::Slate::FDeprecateVector2DParameter InStartDir, const UE::Slate::FDeprecateVector2DParameter InEnd, const UE::Slate::FDeprecateVector2DParameter InEndDir, float InThickness, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint)
-{
-	MakeSpline(ElementList, InLayer, FPaintGeometry(), InStart, InStartDir, InEnd, InEndDir, InThickness, InDrawEffects, InTint);
-}
-
-#if UE_ENABLE_SLATE_VECTOR_DEPRECATION_MECHANISMS
-void FSlateDrawElement::MakeLines(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const TArray<FVector2d>& Points, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint, bool bAntialias, float Thickness)
-{
-	if (ShouldCull(ElementList) || Points.Num() < 2)
-	{
-		return;
-	}
-
-	TArray<FVector2f> NewVector;
-	NewVector.Reserve(Points.Num());
-	for (FVector2d Vect : Points)
-	{
-		NewVector.Add(UE::Slate::CastToVector2f(Vect));
-	}
-	MakeLines(ElementList, InLayer, PaintGeometry, MoveTemp(NewVector), InDrawEffects, InTint, bAntialias, Thickness);
-}
-#endif // UE_ENABLE_SLATE_VECTOR_DEPRECATION_MECHANISMS
-
-void FSlateDrawElement::MakeLines(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, TArray<FVector2f> Points, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint, bool bAntialias, float Thickness)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList) || Points.Num() < 2)
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateLinePayload& DataPayload = ElementList.CreatePayload<FSlateLinePayload>(Element);
-
-	DataPayload.SetTint(InTint);
-	DataPayload.SetThickness(Thickness);
-	DataPayload.SetLines(MoveTemp(Points), bAntialias);
-
-	ESlateDrawEffect DrawEffects = InDrawEffects;
-	if (bAntialias)
-	{
-		// If the line is to be anti-aliased, we cannot reliably snap
-		// the generated vertices
-		DrawEffects |= ESlateDrawEffect::NoPixelSnapping;
-	}
-
-	Element.Init(ElementList, EElementType::ET_Line, InLayer, PaintGeometry, DrawEffects);
-}
-
-#if UE_ENABLE_SLATE_VECTOR_DEPRECATION_MECHANISMS
-void FSlateDrawElement::MakeLines(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const TArray<FVector2d>& Points, const TArray<FLinearColor>& PointColors, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint, bool bAntialias, float Thickness)
-{
-	if (ShouldCull(ElementList) || Points.Num() < 2)
-	{
-		return;
-	}
-
-	TArray<FVector2f> NewVector;
-	NewVector.Reserve(Points.Num());
-	for (FVector2d Vect : Points)
-	{
-		NewVector.Add(UE::Slate::CastToVector2f(Vect));
-	}
-	MakeLines(ElementList, InLayer, PaintGeometry, MoveTemp(NewVector), PointColors, InDrawEffects, InTint, bAntialias, Thickness);
-}
-#endif
-
-void FSlateDrawElement::MakeLines( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, TArray<FVector2f> Points, TArray<FLinearColor> PointColors, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint, bool bAntialias, float Thickness )
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList) || Points.Num() < 2)
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateLinePayload& DataPayload = ElementList.CreatePayload<FSlateLinePayload>(Element);
-	DataPayload.SetTint(InTint);
-	DataPayload.SetThickness(Thickness);
-	DataPayload.SetLines(MoveTemp(Points), bAntialias, MoveTemp(PointColors));
-
-	Element.Init(ElementList, EElementType::ET_Line, InLayer, PaintGeometry, InDrawEffects);
-}
-
-void FSlateDrawElement::MakeViewport( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, TSharedPtr<const ISlateViewport> Viewport, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint )
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-	FSlateViewportPayload& DataPayload = ElementList.CreatePayload<FSlateViewportPayload>(Element);
-
-	DataPayload.SetViewport(Viewport, InTint);
-	check(DataPayload.RenderTargetResource == nullptr || !DataPayload.RenderTargetResource->Debug_IsDestroyed());
-
-	Element.Init(ElementList, EElementType::ET_Viewport, InLayer, PaintGeometry, InDrawEffects);
-}
-
-
-void FSlateDrawElement::MakeCustom( FSlateWindowElementList& ElementList, uint32 InLayer, TSharedPtr<ICustomSlateElement, ESPMode::ThreadSafe> CustomDrawer )
-{
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlateCustomDrawerPayload& DataPayload = ElementList.CreatePayload<FSlateCustomDrawerPayload>(Element);
-	DataPayload.SetCustomDrawer(CustomDrawer);
-	
-	Element.Init(ElementList, EElementType::ET_Custom, InLayer, FPaintGeometry(), ESlateDrawEffect::None);
-	Element.RenderTransform = FSlateRenderTransform();
-}
-
-
-void FSlateDrawElement::MakeCustomVerts(FSlateWindowElementList& ElementList, uint32 InLayer, const FSlateResourceHandle& InRenderResourceHandle, const TArray<FSlateVertex>& InVerts, const TArray<SlateIndex>& InIndexes, ISlateUpdatableInstanceBuffer* InInstanceData, uint32 InInstanceOffset, uint32 InNumInstances, ESlateDrawEffect InDrawEffects)
-{
-	SCOPE_CYCLE_COUNTER(STAT_SlateDrawElementMakeCustomVertsTime);
-	
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-	FSlateCustomVertsPayload& DataPayload = ElementList.CreatePayload<FSlateCustomVertsPayload>(Element);
-
-	const FSlateShaderResourceProxy* RenderingProxy = InRenderResourceHandle.GetResourceProxy();
-	ISlateUpdatableInstanceBufferRenderProxy* RenderProxy = InInstanceData ? InInstanceData->GetRenderProxy() : nullptr;
-	DataPayload.SetCustomVerts(RenderingProxy, InVerts, InIndexes, RenderProxy, InInstanceOffset, InNumInstances);
-
-	Element.Init(ElementList, EElementType::ET_CustomVerts, InLayer, FPaintGeometry(), InDrawEffects);
-	Element.RenderTransform = FSlateRenderTransform();
-}
-
-void FSlateDrawElement::MakePostProcessPass(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FVector4f& Params, int32 DownsampleAmount, FVector4f CornerRadius)
-{
-	PaintGeometry.CommitTransformsIfUsingLegacyConstructor();
-
-	if (ShouldCull(ElementList))
-	{
-		return;
-	}
-
-	FSlateDrawElement& Element = ElementList.AddUninitialized();
-
-	FSlatePostProcessPayload& DataPayload = ElementList.CreatePayload<FSlatePostProcessPayload>(Element);
-	DataPayload.DownsampleAmount = DownsampleAmount;
-	DataPayload.PostProcessData = Params;
-	DataPayload.CornerRadius = CornerRadius;
-
-	Element.Init(ElementList, EElementType::ET_PostProcessPass, InLayer, PaintGeometry, ESlateDrawEffect::None);
-}
-
-FSlateDrawElement::FSlateDrawElement()
-	: DataPayload(nullptr)
-	, bIsCached(false)
-{
-
-}
-
-FSlateDrawElement::~FSlateDrawElement()
-{
-	if (bIsCached)
-	{
-		delete DataPayload;
-	}
-	else if (DataPayload)
-	{
-		// Allocated by a memstack so we just need to call the destructor manually
-		DataPayload->~FSlateDataPayload();
-	}
-}
-
-FVector2f FSlateDrawElement::GetRotationPoint(const FPaintGeometry& PaintGeometry, const TOptional<FVector2f>& UserRotationPoint, ERotationSpace RotationSpace)
-{
-	FVector2f RotationPoint(0, 0);
-
-	const FVector2f LocalSize = UE::Slate::CastToVector2f(PaintGeometry.GetLocalSize());
-
-	switch (RotationSpace)
-	{
-		case RelativeToElement:
-		{
-			// If the user did not specify a rotation point, we rotate about the center of the element
-			RotationPoint = UserRotationPoint.Get(LocalSize * 0.5f);
-		}
-		break;
-		case RelativeToWorld:
-		{
-			// its in world space, must convert the point to local space.
-			RotationPoint = TransformPoint(Inverse(PaintGeometry.GetAccumulatedRenderTransform()), UserRotationPoint.Get(FVector2f::ZeroVector));
-		}
-		break;
-	default:
-		check(0);
-		break;
-	}
-
-	return RotationPoint;
-}
-
-void FSlateDrawElement::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	if(DataPayload)
-	{
-		DataPayload->AddReferencedObjects(Collector);
-	}
-}
-
 void FSlateWindowElementList::SetIsInGameLayer(bool bInGameLayer)
 {
 	bIsInGameLayer = bInGameLayer;
@@ -790,30 +85,6 @@ bool FSlateWindowElementList::GetIsInGameLayer()
 {
 	return bIsInGameLayer;
 }
-
-FSlateDrawElement& FSlateWindowElementList::AddUninitialized()
-{
-	const bool bAllowCache = CachedElementDataListStack.Num() > 0 && WidgetDrawStack.Num() && !WidgetDrawStack.Top().bIsVolatile;
-
-	if (bAllowCache)
-	{
-		// @todo get working with slate debugging
-		return AddCachedElement();
-	}
-	else
-	{
-		FSlateDrawElementArray& Elements = UncachedDrawElements;
-		const int32 InsertIdx = Elements.AddDefaulted();
-
-#if WITH_SLATE_DEBUGGING
-		FSlateDebugging::ElementAdded.Broadcast(*this, InsertIdx);
-#endif
-
-		FSlateDrawElement& NewElement = Elements[InsertIdx];
-		return Elements[InsertIdx];
-	}
-}
-
 
 FSlateWindowElementList::FDeferredPaint::FDeferredPaint( const TSharedRef<const SWidget>& InWidgetToPaint, const FPaintArgs& InArgs, const FGeometry InAllottedGeometry, const FWidgetStyle& InWidgetStyle, bool InParentEnabled )
 	: WidgetToPaintPtr( InWidgetToPaint )
@@ -960,22 +231,6 @@ void FSlateWindowElementList::PopBatchPriortyGroup()
 	//BatchDepthPriorityStack.Pop();
 }*/
 
-FSlateDrawElement& FSlateWindowElementList::AddCachedElement()
-{
-	FSlateCachedElementData* CurrentCachedElementData = GetCurrentCachedElementData();
-	check(CurrentCachedElementData);
-
-	FWidgetDrawElementState& CurrentWidgetState = WidgetDrawStack.Top();
-	check(!CurrentWidgetState.bIsVolatile);
-
-	if (!CurrentWidgetState.CacheHandle.IsValid())
-	{
-		CurrentWidgetState.CacheHandle = CurrentCachedElementData->AddCache(CurrentWidgetState.Widget);
-	}
-
-	return CurrentCachedElementData->AddCachedElement(CurrentWidgetState.CacheHandle, GetClippingManager(), CurrentWidgetState.Widget);
-}
-
 void FSlateWindowElementList::PushCachedElementData(FSlateCachedElementData& CachedElementData)
 {
 	check(&CachedElementData); 
@@ -986,6 +241,81 @@ void FSlateWindowElementList::PushCachedElementData(FSlateCachedElementData& Cac
 void FSlateWindowElementList::PopCachedElementData()
 {
 	CachedElementDataListStack.Pop();
+}
+
+FSlateDrawElement& FSlateWindowElementList::AddUninitializedLookup(EElementType InElementType)
+{
+	// Determine what type of element to add
+	switch (InElementType)
+	{
+	case EElementType::ET_Box:
+	{
+		return AddUninitialized<EElementType::ET_Box>();
+	}
+	break;
+	case EElementType::ET_RoundedBox:
+	{
+		return AddUninitialized<EElementType::ET_RoundedBox>();
+	}
+	break;
+	case EElementType::ET_Border:
+	{
+		return AddUninitialized<EElementType::ET_Border>();
+	}
+	break;
+	case EElementType::ET_Text:
+	{
+		return AddUninitialized<EElementType::ET_Text>();
+	}
+	break;
+	case EElementType::ET_ShapedText:
+	{
+		return AddUninitialized<EElementType::ET_ShapedText>();
+	}
+	break;
+	case EElementType::ET_Line:
+	{
+		return AddUninitialized<EElementType::ET_Line>();
+	}
+	break;
+	case EElementType::ET_DebugQuad:
+	{
+		return AddUninitialized<EElementType::ET_DebugQuad>();
+	}
+	break;
+	case EElementType::ET_Spline:
+	{
+		return AddUninitialized<EElementType::ET_Spline>();
+	}
+	break;
+	case EElementType::ET_Gradient:
+	{
+		return AddUninitialized<EElementType::ET_Gradient>();
+	}
+	break;
+	case EElementType::ET_Viewport:
+	{
+		return AddUninitialized<EElementType::ET_Viewport>();
+	}
+	break;
+	case EElementType::ET_Custom:
+	{
+		return AddUninitialized<EElementType::ET_Custom>();
+	}
+	break;
+	case EElementType::ET_CustomVerts:
+	{
+		return AddUninitialized<EElementType::ET_CustomVerts>();
+	}
+	break;
+	case EElementType::ET_PostProcessPass:
+	{
+		return AddUninitialized<EElementType::ET_PostProcessPass>();
+	}
+	break;
+	default:
+		return AddUninitialized<EElementType::ET_NonMapped>();
+	}
 }
 
 int32 FSlateWindowElementList::PushClip(const FSlateClippingZone& InClipZone)
@@ -1015,6 +345,24 @@ void FSlateWindowElementList::PopClipToStackIndex(int32 Index)
 	ClippingManager.PopToStackIndex(Index);
 }
 
+int32 FSlateWindowElementList::PushPixelSnappingMethod(EWidgetPixelSnapping InPixelSnappingMethod)
+{
+	PixelSnappingMethodStack.Add(InPixelSnappingMethod);
+	return PixelSnappingMethodStack.Num();
+}
+
+void FSlateWindowElementList::PopPixelSnappingMethod()
+{
+	if (ensure(PixelSnappingMethodStack.Num() > 0))
+	{
+		PixelSnappingMethodStack.Pop();
+	}
+}
+
+EWidgetPixelSnapping FSlateWindowElementList::GetPixelSnappingMethod() const
+{
+	return (PixelSnappingMethodStack.Num() > 0) ? PixelSnappingMethodStack.Top() : EWidgetPixelSnapping::Inherit;
+}
 
 void FSlateWindowElementList::SetRenderTargetWindow(SWindow* InRenderTargetWindow)
 {
@@ -1036,7 +384,12 @@ void FSlateWindowElementList::ResetElementList()
 
 	ClippingManager.ResetClippingState();
 
-	UncachedDrawElements.Reset();
+	auto ResetElementContainer = [](auto& Container)
+	{
+		Container.Reset();
+	};
+
+	VisitTupleElements(ResetElementContainer, UncachedDrawElements);
 
 #if STATS
 	const int32 DeltaMemory = MemManager.GetByteCount() - MemManagerAllocatedMemory;
@@ -1057,16 +410,26 @@ void FSlateWindowElementList::ResetElementList()
 	RenderTargetWindow = nullptr;
 }
 
-
 void FSlateWindowElementList::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	for (FSlateDrawElement& Element : UncachedDrawElements)
+	auto AddReferencedElementContainer = [&](auto& Container)
 	{
-		Element.AddReferencedObjects(Collector);
-	}
+		// Container should just be some FSlateDrawElementArray<T>
+		using FSlateElementType = typename std::remove_reference<decltype(Container)>::type::ElementType;
+
+		if constexpr (TIsReferencedObjects<FSlateElementType>::Value)
+		{
+			for (FSlateElementType& Element : Container)
+			{
+				Element.AddReferencedObjects(Collector);
+			}
+		}
+	};
+
+	VisitTupleElements(AddReferencedElementContainer, UncachedDrawElements);
 }
 
-static const FSlateClippingState* GetClipStateFromParent(const FSlateClippingManager& ParentClipManager)
+const FSlateClippingState* FSlateCachedElementData::GetClipStateFromParent(const FSlateClippingManager& ParentClipManager)
 {
 	const int32 ClippingIndex = ParentClipManager.GetClippingIndex();
 
@@ -1078,6 +441,14 @@ static const FSlateClippingState* GetClipStateFromParent(const FSlateClippingMan
 	{
 		return nullptr;
 	}
+}
+
+void FSlateCachedElementData::ValidateWidgetOwner(TSharedPtr<FSlateCachedElementList> List, const SWidget* CurrentWidget)
+{
+#if WITH_SLATE_DEBUGGING
+	checkSlow(List->OwningWidget == CurrentWidget);
+	checkSlow(CurrentWidget->GetParentWidget().IsValid());
+#endif
 }
 
 void FSlateCachedElementData::Empty()
@@ -1115,34 +486,6 @@ FSlateCachedElementsHandle FSlateCachedElementData::AddCache(const SWidget* Widg
 	CachedElementLists.Add(NewList);
 
 	return FSlateCachedElementsHandle(NewList);
-}
-
-FSlateDrawElement& FSlateCachedElementData::AddCachedElement(FSlateCachedElementsHandle& CacheHandle, const FSlateClippingManager& ParentClipManager, const SWidget* CurrentWidget)
-{
-	TSharedPtr<FSlateCachedElementList> List = CacheHandle.Ptr.Pin();
-
-#if WITH_SLATE_DEBUGGING
-	check(List->OwningWidget == CurrentWidget);
-	check(CurrentWidget->GetParentWidget().IsValid());
-#endif
-
-	FSlateDrawElement& NewElement = List->DrawElements.AddDefaulted_GetRef();
-	NewElement.SetIsCached(true);
-
-	// Check if slow vs checking a flag on the list to see if it contains new data.
-	ListsWithNewData.AddUnique(List.Get());
-
-	const FSlateClippingState* ExistingClipState = GetClipStateFromParent(ParentClipManager);
-
-	if (ExistingClipState)
-	{
-		// We need to cache this clip state for the next time the element draws
-		FSlateCachedClipState& CachedClipState = FindOrAddCachedClipState(ExistingClipState);
-		List->AddCachedClipState(CachedClipState);
-		NewElement.SetCachedClippingState(&CachedClipState.ClippingState.Get());
-	}
-
-	return NewElement;
 }
 
 FSlateRenderBatch& FSlateCachedElementData::AddCachedRenderBatch(FSlateRenderBatch&& NewBatch, int32& OutIndex)
@@ -1249,16 +592,63 @@ void FSlateCachedElementList::AddCachedClipState(FSlateCachedClipState& ClipStat
 
 void FSlateCachedElementList::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	for (FSlateDrawElement& Element : DrawElements)
+	auto AddReferencedElementContainer = [&](auto& Container)
 	{
-		Element.AddReferencedObjects(Collector);
-	}
+		// Container should just be some FSlateDrawElementArray<T>
+		using FSlateElementType = typename std::remove_reference<decltype(Container)>::type::ElementType;
+
+		if constexpr (TIsReferencedObjects<FSlateElementType>::Value)
+		{
+			for (FSlateElementType& Element : Container)
+			{
+				Element.AddReferencedObjects(Collector);
+			}
+		}
+	};
+
+	VisitTupleElements(AddReferencedElementContainer, DrawElements);
+}
+
+bool FSlateCachedElementList::IsEmpty()
+{
+	bool bElementsFound = false;
+
+	auto CheckElementsExist = [&](auto& Container)
+	{
+		if (!bElementsFound)
+		{
+			bElementsFound = Container.Num() > 0;
+		}
+	};
+
+	VisitTupleElements(CheckElementsExist, DrawElements);
+
+	return bElementsFound;
+}
+
+int32 FSlateCachedElementList::NumElements()
+{
+	int32 NumElements = 0;
+
+	auto CountNumElements = [&](auto& Container)
+	{
+		NumElements += Container.Num();
+	};
+
+	VisitTupleElements(CountNumElements, DrawElements);
+
+	return NumElements;
 }
 
 void FSlateCachedElementList::DestroyCachedData()
 {
 	// Clear out any cached draw elements
-	DrawElements.Reset();
+	auto ResetElementContainer = [](auto& Container)
+	{
+		Container.Reset();
+	};
+
+	VisitTupleElements(ResetElementContainer, DrawElements);
 
 	// Clear out any cached render batches
 	if (CachedRenderBatchIndices.Num())
@@ -1321,7 +711,19 @@ bool FSlateCachedElementsHandle::HasCachedElements() const
 {
 	if (const TSharedPtr<FSlateCachedElementList> List = Ptr.Pin())
 	{
-		return List->DrawElements.Num() > 0;
+		bool bElementsFound = false;
+
+		auto CheckElementsExist = [&](auto& Container)
+		{
+			if (!bElementsFound)
+			{
+				bElementsFound = Container.Num() > 0;
+			}
+		};
+
+		VisitTupleElements(CheckElementsExist, List->DrawElements);
+
+		return bElementsFound;
 	}
 
 	return false;

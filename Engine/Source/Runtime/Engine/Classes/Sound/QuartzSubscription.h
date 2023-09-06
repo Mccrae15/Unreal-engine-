@@ -2,8 +2,9 @@
 
 #pragma once
 
+#include "QuartzSubscriptionToken.h"
 #include "Sound/QuartzQuantizationUtilities.h"
-#include "Containers/DepletableMpmcQueue.h"
+#include "Containers/ConsumeAllMpmcQueue.h"
 
 // forwards
 class UQuartzSubsystem;
@@ -17,7 +18,7 @@ namespace Audio
 	class FQuartzClockProxy;
 
 	// Struct used to communicate command state back to the game play thread
-	struct ENGINE_API FQuartzQuantizedCommandDelegateData : public FQuartzCrossThreadMessage
+	struct FQuartzQuantizedCommandDelegateData : public FQuartzCrossThreadMessage
 	{
 		EQuartzCommandType CommandType;
 		EQuartzCommandDelegateSubType DelegateSubType;
@@ -28,7 +29,7 @@ namespace Audio
 	}; // struct FQuartzQuantizedCommandDelegateData
 
 	// Struct used to communicate metronome events back to the game play thread
-	struct ENGINE_API FQuartzMetronomeDelegateData : public FQuartzCrossThreadMessage
+	struct FQuartzMetronomeDelegateData : public FQuartzCrossThreadMessage
 	{
 		int32 Bar;
 		int32 Beat;
@@ -38,18 +39,18 @@ namespace Audio
 	}; // struct FQuartzMetronomeDelegateData
 
 	//Struct used to queue events to be sent to the Audio Render thread closer to their start time
-	struct ENGINE_API FQuartzQueueCommandData : public FQuartzCrossThreadMessage
+	struct FQuartzQueueCommandData : public FQuartzCrossThreadMessage
 	{
 		FAudioComponentCommandInfo AudioComponentCommandInfo;
 		FName ClockName;
 
-		FQuartzQueueCommandData(const FAudioComponentCommandInfo& InAudioComponentCommandInfo, FName InClockName);
+		ENGINE_API FQuartzQueueCommandData(const FAudioComponentCommandInfo& InAudioComponentCommandInfo, FName InClockName);
 	}; // struct FQuartzQueueCommandData
 
 
 	// old non-template\ version of TQuartzShareableCommandQueue
 	class UE_DEPRECATED(5.1, "Message") FShareableQuartzCommandQueue;
-	class ENGINE_API FShareableQuartzCommandQueue
+	class FShareableQuartzCommandQueue
 	{
 	};
 
@@ -88,24 +89,24 @@ namespace Audio
 		template <typename T>
 		void PushEvent(const T& Data)
 		{
-			CommandQueue.Enqueue([InData = Data](ListenerType* Listener) { Listener->ExecCommand(InData); });
+			CommandQueue.ProduceItem([InData = Data](ListenerType* Listener) { Listener->ExecCommand(InData); });
 		}
 
 		void PushCommand(TFunction<void(ListenerType*)> InCommand)
 		{
-			CommandQueue.Enqueue([=](ListenerType* Listener) { InCommand(Listener); });
+			CommandQueue.ProduceItem([=](ListenerType* Listener) { InCommand(Listener); });
 		}
 
 		void PumpCommandQueue(ListenerType* InListener)
 		{
-			CommandQueue.Deplete([InListener](TFunction<void(ListenerType*)> Command)
+			CommandQueue.ConsumeAllFifo([InListener](TFunction<void(ListenerType*)> Command)
 			{
 				Command(InListener);
 			});
 		}
 
 	private:
-		UE::TDepletableMpmcQueue<TFunction<void(ListenerType*)>> CommandQueue;
+		UE::TConsumeAllMpmcQueue<TFunction<void(ListenerType*)>> CommandQueue;
 	};
 
 } // namespace Audio
@@ -122,50 +123,49 @@ using FQuartzGameThreadCommandQueuePtr = TSharedPtr<FQuartzGameThreadCommandQueu
  *		It is a wrapper around TQuartzShareableCommandQueue.
  *		(see UQuartzClockHandle or UAudioComponent as implementation examples)
  */
-class ENGINE_API FQuartzTickableObject
+class FQuartzTickableObject
 {
 public:
 	// ctor
-	FQuartzTickableObject() {}
+	ENGINE_API FQuartzTickableObject();
 
 	// explicitly defaulted ctors (to disable deprecation warnings in compiler-generated functions)
     PRAGMA_DISABLE_DEPRECATION_WARNINGS
     FQuartzTickableObject(const FQuartzTickableObject& Other) = default;
     FQuartzTickableObject& operator=(const FQuartzTickableObject&) = default;
-    PRAGMA_ENABLE_DEPRECATION_WARNINGS
+    ENGINE_API PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// dtor
 	virtual ~FQuartzTickableObject();
 
-	FQuartzTickableObject* Init(UWorld* InWorldPtr);
+	ENGINE_API FQuartzTickableObject* Init(UWorld* InWorldPtr);
 
 	// called by the associated QuartzSubsystem
-	void QuartzTick(float DeltaTime);
+	ENGINE_API void QuartzTick(float DeltaTime);
 
-	bool QuartzIsTickable() const;
+	ENGINE_API bool QuartzIsTickable() const;
 
 	UE_DEPRECATED(5.1, "Derived classes should have access to their own UWorld, this function will always return null")
 	UWorld* QuartzGetWorld() const { return nullptr; }
 
-	void AddMetronomeBpDelegate(EQuartzCommandQuantization InQuantizationBoundary, const FOnQuartzMetronomeEventBP& OnQuantizationEvent);
+	ENGINE_API void AddMetronomeBpDelegate(EQuartzCommandQuantization InQuantizationBoundary, const FOnQuartzMetronomeEventBP& OnQuantizationEvent);
 
+	bool IsInitialized() const { return QuartzSubscriptionToken.IsSubscribed(); }
 
-	bool IsInitialized() const { return TickableObjectManagerPtr.IsValid(); }
+	ENGINE_API Audio::FQuartzGameThreadSubscriber GetQuartzSubscriber();
 
-	Audio::FQuartzGameThreadSubscriber GetQuartzSubscriber();
-
-	int32 AddCommandDelegate(const FOnQuartzCommandEventBP& InDelegate);
+	ENGINE_API int32 AddCommandDelegate(const FOnQuartzCommandEventBP& InDelegate);
 
 	UE_DEPRECATED(5.1, "use FQuartzTickableObject::AddCommandDelegate(const FOnQuartzCommandEventBP& InDelegate) insead")
 	int32 AddCommandDelegate(const FOnQuartzCommandEventBP& InDelegate, TArray<FQuartzGameThreadCommandQueuePtr>& TargetSubscriberArray){ return -1; }
 
 	UE_DEPRECATED(5.1, "This object no longer holds any UObject references. Caller should have their own UWorld* and use static 'UQuartzSubsystem::Get()' instead.")
-	UQuartzSubsystem* GetQuartzSubsystem() const;
+	ENGINE_API UQuartzSubsystem* GetQuartzSubsystem() const;
 
 	// required by TQuartzShareableCommandQueue template
-	void ExecCommand(const Audio::FQuartzQuantizedCommandDelegateData& Data);
-	void ExecCommand(const Audio::FQuartzMetronomeDelegateData& Data);
-	void ExecCommand(const Audio::FQuartzQueueCommandData& Data);
+	ENGINE_API void ExecCommand(const Audio::FQuartzQuantizedCommandDelegateData& Data);
+	ENGINE_API void ExecCommand(const Audio::FQuartzMetronomeDelegateData& Data);
+	ENGINE_API void ExecCommand(const Audio::FQuartzQueueCommandData& Data);
 
 	// virtual interface (ExecCommand will forward the data to derived classes' ProcessCommand() call)
 	virtual void ProcessCommand(const Audio::FQuartzQuantizedCommandDelegateData& Data) {}
@@ -175,8 +175,10 @@ public:
 	const Audio::FQuartzOffset& GetQuartzOffset() const { return NotificationOffset; }
 
 protected:
-	void SetNotificationAnticipationAmountMilliseconds(const double Milliseconds);
-	void SetNotificationAnticipationAmountMusicalDuration(const EQuartzCommandQuantization Duration,  const double Multiplier);
+	ENGINE_API void SetNotificationAnticipationAmountMilliseconds(const double Milliseconds);
+	ENGINE_API void SetNotificationAnticipationAmountMusicalDuration(const EQuartzCommandQuantization Duration,  const double Multiplier);
+
+	ENGINE_API void QuartzUnsubscribe();
 
 private:
 	struct FMetronomeDelegateGameThreadData
@@ -203,7 +205,7 @@ public:
 
 private:
 	Audio::FQuartzOffset NotificationOffset;
-	TWeakPtr<FQuartzTickableObjectsManager> TickableObjectManagerPtr;
 
+	FQuartzSubscriptionToken QuartzSubscriptionToken;
 }; // class FQuartzTickableObject
 

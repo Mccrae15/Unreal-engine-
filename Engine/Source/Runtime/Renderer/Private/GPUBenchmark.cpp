@@ -62,13 +62,11 @@ public:
 		InputTextureSampler.Bind(Initializer.ParameterMap,TEXT("InputTextureSampler"));
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, TRefCountPtr<IPooledRenderTarget>& Src)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, TRefCountPtr<IPooledRenderTarget>& Src)
 	{
-		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(BatchedParameters, View.ViewUniformBuffer);
 
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, View.ViewUniformBuffer);
-
-		SetTextureParameter(RHICmdList, ShaderRHI, InputTexture, InputTextureSampler, TStaticSamplerState<>::GetRHI(), Src->GetRHI());
+		SetTextureParameter(BatchedParameters, InputTexture, InputTextureSampler, TStaticSamplerState<>::GetRHI(), Src->GetRHI());
 	}
 
 	static const TCHAR* GetSourceFilename()
@@ -117,11 +115,9 @@ public:
 	{
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View)
 	{
-		FRHIVertexShader* ShaderRHI = RHICmdList.GetBoundVertexShader();
-		
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, ShaderRHI, View.ViewUniformBuffer);
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(BatchedParameters, View.ViewUniformBuffer);
 	}
 };
 
@@ -154,7 +150,7 @@ struct FVertexThroughputDeclaration : public FRenderResource
 {
 	FVertexDeclarationRHIRef DeclRHI;
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FVertexDeclarationElementList Elements = 
 		{
@@ -202,8 +198,8 @@ void RunBenchmarkShader(FRHICommandList& RHICmdList, FRHIBuffer* VertexThroughpu
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-	PixelShader->SetParameters(RHICmdList, View, Src);
-	VertexShader->SetParameters(RHICmdList, View);
+	SetShaderParametersLegacyPS(RHICmdList, PixelShader, View, Src);
+	SetShaderParametersLegacyVS(RHICmdList, VertexShader, View);
 
 	if (bVertexTest)
 	{
@@ -420,7 +416,7 @@ void RendererGPUBenchmark(FRHICommandListImmediate& RHICmdList, FSynthBenchmarkR
 	}
 
 	FRHIResourceCreateInfo CreateInfo(TEXT("RendererGPUBenchmark"), &Vertices);
-	FBufferRHIRef VertexBuffer = RHICreateVertexBuffer(GBenchmarkVertices * sizeof(FBenchmarkVertex), BUF_Static, CreateInfo);
+	FBufferRHIRef VertexBuffer = RHICmdList.CreateVertexBuffer(GBenchmarkVertices * sizeof(FBenchmarkVertex), BUF_Static, CreateInfo);
 
 	// two RT to ping pong so we force the GPU to flush its pipeline
 	TRefCountPtr<IPooledRenderTarget> RTItems[2];

@@ -4,6 +4,7 @@
 
 #include "Chaos/ImplicitObjectTransformed.h"
 #include "Chaos/ImplicitObjectScaled.h"
+#include "Chaos/ImplicitObjectUnion.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
 #include "Chaos/Framework/PhysicsProxy.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
@@ -13,6 +14,8 @@
 
 namespace Chaos
 {
+	extern void UpdateShapesArrayFromGeometry(FShapeInstanceProxyArray& ShapesArray, TSerializablePtr<FImplicitObject> Geometry, const FRigidTransform3& ActorTM, IPhysicsProxyBase* Proxy);
+
 	void SetObjectStateHelper(IPhysicsProxyBase& Proxy, FPBDRigidParticleHandle& Rigid, EObjectStateType InState, bool bAllowEvents, bool bInvalidate)
 	{
 		if (auto PhysicsSolver = Proxy.GetSolver<Chaos::FPBDRigidsSolver>())
@@ -52,6 +55,12 @@ namespace Chaos
 		}
 
 		return nullptr;
+	}
+
+	template <typename T, int d>
+	void Chaos::TGeometryParticle<T, d>::UpdateShapesArray()
+	{
+		UpdateShapesArrayFromGeometry(MShapesArray, MakeSerializable(MNonFrequentData.Read().Geometry()), FRigidTransform3(X(), R()), Proxy);
 	}
 
 	template <typename T, int d>
@@ -105,6 +114,18 @@ namespace Chaos
 
 	}
 
+	template <typename T, int d>
+	void Chaos::TGeometryParticle<T, d>::PrepareBVHImpl()
+	{
+		if (MNonFrequentData.IsDirty(MDirtyFlags))
+		{
+			if (const FImplicitObjectUnion* Union = MNonFrequentData.Read().Geometry()->template GetObject<FImplicitObjectUnion>())
+			{
+				// This will rebuild the BVH if the geometry is new, otherwise do nothing
+				const_cast<FImplicitObjectUnion*>(Union)->SetAllowBVH(true);
+			}
+		}
+	}
 
 	template <typename T, int d>
 	void Chaos::TGeometryParticle<T, d>::SetIgnoreAnalyticCollisionsImp(FImplicitObject* Implicit, bool bIgnoreAnalyticCollisions)

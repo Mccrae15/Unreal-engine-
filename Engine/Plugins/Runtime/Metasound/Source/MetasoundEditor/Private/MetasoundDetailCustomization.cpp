@@ -2,7 +2,6 @@
 #include "MetasoundDetailCustomization.h"
 
 #include "Containers/Set.h"
-#include "CoreMinimal.h"
 #include "Delegates/Delegate.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
@@ -12,12 +11,13 @@
 #include "IAudioParameterTransmitter.h"
 #include "IDetailGroup.h"
 #include "Input/Events.h"
+#include "Interfaces/MetasoundFrontendInterfaceRegistry.h"
 #include "MetasoundAssetBase.h"
+#include "MetasoundBuilderSubsystem.h"
 #include "MetasoundEditor.h"
 #include "MetasoundEditorGraphBuilder.h"
 #include "MetasoundEditorSettings.h"
 #include "MetasoundFrontend.h"
-#include "MetasoundFrontendArchetypeRegistry.h"
 #include "MetasoundFrontendController.h"
 #include "MetasoundFrontendSearchEngine.h"
 #include "MetasoundSource.h"
@@ -382,10 +382,11 @@ namespace Metasound
 							MetaSound.Get()->Modify();
 							MetaSoundAsset->GetGraphChecked().Modify();
 
-							FDocumentHandle DocumentHandle = MetaSoundAsset->GetDocumentHandle();
-							FModifyRootGraphInterfaces ModifyTransform({ }, { InterfaceToAdd });
-							ModifyTransform.SetDefaultNodeLocations(false); // Don't automatically add nodes to ed graph
-							ModifyTransform.Transform(DocumentHandle);
+							TScriptInterface<IMetaSoundDocumentInterface> MetaSoundPatchDocInterface = MetaSound.Get();
+							FMetaSoundFrontendDocumentBuilder Builder(MetaSoundPatchDocInterface);
+							FModifyInterfaceOptions Options({ }, { InterfaceToAdd });
+							Options.bSetDefaultNodeLocations = false; // Don't automatically add nodes to ed graph
+							Builder.ModifyInterfaces(MoveTemp(Options));
 						}
 
 						UpdateInterfaceNames();
@@ -529,22 +530,28 @@ namespace Metasound
 
 		void FMetasoundInterfacesDetailCustomization::UpdateInterfaceNames()
 		{
-			using namespace Frontend;
-
 			AddableInterfaceNames.Reset();
 			ImplementedInterfaceNames.Reset();
 
-			if (const FMetasoundAssetBase* MetaSoundAsset = IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(MetaSound.Get()))
+			const UObject* MetaSoundObject = MetaSound.Get();
+			if (const FMetasoundAssetBase* MetaSoundAsset = IMetasoundUObjectRegistry::Get().GetObjectAsAssetBase(MetaSoundObject))
 			{
 				auto GetVersionName = [](const FMetasoundFrontendVersion& Version) { return Version.Name; };
-				auto CanAddOrRemoveInterface = [](const FMetasoundFrontendVersion& Version)
+				const UClass* MetaSoundClass = MetaSoundObject->GetClass();
+				auto CanAddOrRemoveInterface = [ClassName = MetaSoundClass->GetClassPathName()](const FMetasoundFrontendVersion& Version)
 				{
-					using namespace Metasound::Frontend;
+					using namespace Frontend;
 
 					const FInterfaceRegistryKey Key = GetInterfaceRegistryKey(Version);
 					if (const IInterfaceRegistryEntry* Entry = IInterfaceRegistry::Get().FindInterfaceRegistryEntry(Key))
 					{
-						return Entry->EditorCanAddOrRemove();
+						if (const FMetasoundFrontendInterfaceUClassOptions* Options = Entry->GetInterface().FindClassOptions(ClassName))
+						{
+							return Options->bIsModifiable;
+						}
+
+						// If no options are found for the given class, interface is modifiable by default.
+						return true;
 					}
 
 					return false;
@@ -553,7 +560,7 @@ namespace Metasound
 				const TSet<FMetasoundFrontendVersion>& ImplementedInterfaces = MetaSoundAsset->GetDocumentChecked().Interfaces;
 				Algo::TransformIf(ImplementedInterfaces, ImplementedInterfaceNames, CanAddOrRemoveInterface, GetVersionName);
 
-				TArray<FMetasoundFrontendInterface> Interfaces = ISearchEngine::Get().FindAllInterfaces();
+				TArray<FMetasoundFrontendInterface> Interfaces = Frontend::ISearchEngine::Get().FindAllInterfaces();
 				for (const FMetasoundFrontendInterface& Interface : Interfaces)
 				{
 					if (!ImplementedInterfaceNames.Contains(Interface.Version.Name))
@@ -565,6 +572,8 @@ namespace Metasound
 						}
 					}
 				}
+
+				AddableInterfaceNames.Sort([](const TSharedPtr<FString>& A, const TSharedPtr<FString>& B) { return A->Compare(*B) < 0; });
 			}
 		}
 	} // namespace Editor

@@ -36,12 +36,7 @@ void UMLDeformerComponent::Init()
 	// If there is no deformer asset linked, release what we currently have.
 	if (DeformerAsset == nullptr)
 	{
-		if (ModelInstance)
-		{
-			ModelInstance->Release();
-			ModelInstance->ConditionalBeginDestroy();
-			ModelInstance = nullptr;
-		}
+		ReleaseModelInstance();
 		return;
 	}
 
@@ -49,16 +44,12 @@ void UMLDeformerComponent::Init()
 	UMLDeformerModel* Model = DeformerAsset->GetModel();
 	if (Model)
 	{
-		if (ModelInstance)
-		{
-			ModelInstance->Release();
-			ModelInstance->ConditionalBeginDestroy();
-			ModelInstance = nullptr;
-		}
+		ReleaseModelInstance();
 		ModelInstance = Model->CreateModelInstance(this);
 		ModelInstance->SetModel(Model);
 		ModelInstance->Init(SkelMeshComponent);
 		ModelInstance->PostMLDeformerComponentInit();
+		BindDelegates();
 	}
 	else
 	{
@@ -90,9 +81,9 @@ void UMLDeformerComponent::SetupComponent(UMLDeformerAsset* InDeformerAsset, USk
 	SkelMeshComponent = InSkelMeshComponent;
 
 	// Initialize and make sure we have a model instance.
-	RemoveNeuralNetworkModifyDelegate();
+	UnbindDelegates();
 	Init();
-	AddNeuralNetworkModifyDelegate();
+	BindDelegates();
 
 	// Verify that a mesh deformer has been setup when the used ML model requires one.
 	if (!bSuppressMeshDeformerLogWarnings && DeformerAsset && ModelInstance && ModelInstance->GetModel() && SkelMeshComponent)
@@ -118,42 +109,43 @@ void UMLDeformerComponent::SetupComponent(UMLDeformerAsset* InDeformerAsset, USk
 	#endif
 }
 
-void UMLDeformerComponent::AddNeuralNetworkModifyDelegate()
+void UMLDeformerComponent::BindDelegates()
 {
-	if (DeformerAsset == nullptr)
-	{
-		return;
-	}
-
-	UMLDeformerModel* Model = DeformerAsset->GetModel();
+	UMLDeformerModel* Model = DeformerAsset ? DeformerAsset->GetModel() : nullptr;
 	if (Model)
 	{
-		NeuralNetworkModifyDelegateHandle = Model->GetNeuralNetworkModifyDelegate().AddLambda
-		(
-			([this]()
+		ReinitModelInstanceDelegateHandle = Model->GetReinitModelInstanceDelegate().AddLambda(
+			[this]()
 			{
 				Init();
-			})
-		);
+			});
 	}
 }
 
-void UMLDeformerComponent::RemoveNeuralNetworkModifyDelegate()
+void UMLDeformerComponent::UnbindDelegates()
 {
-	if (DeformerAsset && 
-		NeuralNetworkModifyDelegateHandle != FDelegateHandle() && 
-		DeformerAsset->GetModel())
+	UMLDeformerModel* Model = DeformerAsset ? DeformerAsset->GetModel() : nullptr;
+	if (Model && ReinitModelInstanceDelegateHandle.IsValid())
 	{
-		DeformerAsset->GetModel()->GetNeuralNetworkModifyDelegate().Remove(NeuralNetworkModifyDelegateHandle);
+		Model->GetReinitModelInstanceDelegate().Remove(ReinitModelInstanceDelegateHandle);	
 	}
-	
-	NeuralNetworkModifyDelegateHandle = FDelegateHandle();
+
+	ReinitModelInstanceDelegateHandle = FDelegateHandle();
 }
 
 void UMLDeformerComponent::BeginDestroy()
 {
-	RemoveNeuralNetworkModifyDelegate();
+	UnbindDelegates();
 	Super::BeginDestroy();
+}
+
+void UMLDeformerComponent::ReleaseModelInstance()
+{
+	if (ModelInstance)
+	{
+		ModelInstance->ConditionalBeginDestroy(); // Force destruction immediately instead of waiting for the next GC.
+		ModelInstance = nullptr;
+	}
 }
 
 USkeletalMeshComponent* UMLDeformerComponent::FindSkeletalMeshComponent(const UMLDeformerAsset* const Asset) const
@@ -209,10 +201,10 @@ void UMLDeformerComponent::Deactivate()
 		TickPerfCounter.Reset();
 	#endif
 
-	RemoveNeuralNetworkModifyDelegate();
+	UnbindDelegates();
 	if (ModelInstance)
 	{
-		ModelInstance->Release();
+		ModelInstance->ConditionalBeginDestroy();
 		ModelInstance = nullptr;
 	}
 	Super::Deactivate();
@@ -254,6 +246,17 @@ void UMLDeformerComponent::TickComponent(float DeltaTime, enum ELevelTick TickTy
 	#if WITH_EDITOR
 		TickPerfCounter.EndSample();
 	#endif
+}
+
+void UMLDeformerComponent::SetWeightInternal(const float NormalizedWeightValue)
+{ 
+	Weight = FMath::Clamp<float>(NormalizedWeightValue, 0.0f, 1.0f);
+}
+
+void UMLDeformerComponent::SetDeformerAssetInternal(UMLDeformerAsset* const InDeformerAsset)
+{ 
+	DeformerAsset = InDeformerAsset;
+	UpdateSkeletalMeshComponent();
 }
 
 #if WITH_EDITOR

@@ -9,6 +9,7 @@ FElectraPlayerVideoDecoderOutputLinux::FElectraPlayerVideoDecoderOutputLinux()
 {
 	Stride = 0;
 	NumBits = 0;
+	Buffer = MakeShared<TArray<uint8>, ESPMode::ThreadSafe>();
 }
 
 FElectraPlayerVideoDecoderOutputLinux::~FElectraPlayerVideoDecoderOutputLinux()
@@ -20,9 +21,9 @@ void FElectraPlayerVideoDecoderOutputLinux::SetDecodedImage(TSharedPtr<ILibavDec
 	DecodedImage = MoveTemp(InDecodedImage);
 }
 
-bool FElectraPlayerVideoDecoderOutputLinux::InitializeForBuffer(FIntPoint Dim, EPixelFormat PixFmt, int32 InNumBits, FParamDict* InParamDict)
+bool FElectraPlayerVideoDecoderOutputLinux::InitializeForBuffer(FIntPoint Dim, EPixelFormat PixFmt, int32 InNumBits, TSharedPtr<FParamDict, ESPMode::ThreadSafe> InParamDict, bool bAllocateBuffer)
 {
-	FVideoDecoderOutputLinux::Initialize(InParamDict);
+	FVideoDecoderOutputLinux::Initialize(MoveTemp(InParamDict));
 	NumBits = InNumBits;
 	check(PixFmt == EPixelFormat::PF_NV12 || PixFmt == EPixelFormat::PF_P010);
 	if (PixFmt != EPixelFormat::PF_NV12 && PixFmt != EPixelFormat::PF_P010)
@@ -34,15 +35,19 @@ bool FElectraPlayerVideoDecoderOutputLinux::InitializeForBuffer(FIntPoint Dim, E
 	Dim.X = ((Dim.X + 1) / 2) * 2;
 	Dim.Y = ((Dim.Y + 1) / 2) * 2;
 
-	int32 AllocSize = (Dim.X * Dim.Y) * 3;
-	if (NumBits <= 8)
+	if (bAllocateBuffer)
 	{
-		AllocSize /= 2;
+		int32 AllocSize = (Dim.X * Dim.Y) * 3;
+		if (NumBits <= 8)
+		{
+			AllocSize /= 2;
+		}
+		if (Buffer->Num() < AllocSize)
+		{
+			Buffer->SetNum(AllocSize);
+		}
 	}
-	if (Buffer.Num() < AllocSize)
-	{
-		Buffer.SetNum(AllocSize);
-	}
+
 	// Stride is the width of the buffer
 	Stride = Dim.X;
 	// The vertical sample dimension encompasses the height of the UV plane.
@@ -57,14 +62,14 @@ FIntPoint FElectraPlayerVideoDecoderOutputLinux::GetBufferDimensions() const
 	return FIntPoint(SampleDim.X, SampleDim.Y * 2 / 3);
 }
 
-TArray<uint8>& FElectraPlayerVideoDecoderOutputLinux::GetMutableBuffer()
+TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>& FElectraPlayerVideoDecoderOutputLinux::GetMutableBuffer()
 {
 	return Buffer;
 }
 
 const TArray<uint8>& FElectraPlayerVideoDecoderOutputLinux::GetBuffer() const
 {
-	return Buffer;
+	return *Buffer;
 }
 
 uint32 FElectraPlayerVideoDecoderOutputLinux::GetStride() const

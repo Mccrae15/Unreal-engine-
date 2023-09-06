@@ -5,6 +5,7 @@
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
 #include "Containers/UnrealString.h"
+#include "Containers/Map.h"
 #include "CoreTypes.h"
 #include "CurveEditorTypes.h"
 #include "Curves/RichCurve.h"
@@ -137,6 +138,16 @@ public:
 	*/
 	virtual void GetValueRange(double& MinValue, double& MaxValue) const = 0;
 
+	/** Get range of output value based on specified input times. By default will just get the range
+	* without a specified time
+	* @param MinTime Minimum Time
+	* @param MaxTime Maximium Time
+	* @param MinValue Minimum Value
+	* @param MaxValue Minimum Value
+	*/
+	virtual void GetValueRange(double InMinTime, double InMaxTime, double& MinValue, double& MaxValue) const { GetValueRange(MinValue, MaxValue); }
+
+
 	/** Get the number of keys
 	* @param The number of keys
 	*/
@@ -149,6 +160,18 @@ public:
      * @param OutNextKeyHandle The next key handle
 	 */
 	virtual void GetNeighboringKeys(const FKeyHandle InKeyHandle, TOptional<FKeyHandle>& OutPreviousKeyHandle, TOptional<FKeyHandle>& OutNextKeyHandle) const = 0;
+
+	/**
+	 * Get the interpolation mode to use at a specified time
+	 *
+	 * @param InTime						The time we are looking for an interpolation mode
+	 * @param DefaultInterpolationMode		Current default interpolation mode, returned if other keys not found or interpolation not supported
+	 * @return Interpolation mode to use at that frame
+	 */
+	virtual TPair<ERichCurveInterpMode, ERichCurveTangentMode> GetInterpolationMode(const double& InTime, ERichCurveInterpMode DefaultInterpolationMode, ERichCurveTangentMode DefaultTangentMode) const 
+	{
+		return TPair<ERichCurveInterpMode, ERichCurveTangentMode>(DefaultInterpolationMode, DefaultTangentMode);
+	}
 
 	/**
 	 * Evaluate this curve at the specified time

@@ -27,9 +27,16 @@ public:
 	
 	void RegisterAndMapContextMenuCommands();
 
+	/** Creates a new widget only if one does not already exist. Otherwise returns the existing widget. */
 	TSharedRef<SWidget> GetOrCreateWidget();
 
-	/** Regenerate the list items and refresh the list. Call when adding or removing items. */
+	/** Creates a new widget, replacing the existing one's pointer. Not useful to call alone, use RequestRegenerateListWidget */
+	TSharedRef<SWidget> CreateWidget();
+
+	/** Calls back to the module to replace the widget in the dock tab. Call when columns or the object filters have changed. */
+	void RequestRegenerateListWidget();
+
+	/** Rebuild the list items and refresh the list. Call when adding or removing items. */
 	void RequestRebuildList() const;
 
 	/**
@@ -39,6 +46,8 @@ public:
 	void RefreshList() const;
 
 	void BuildPerformanceCache();
+
+	bool ShouldShowTransientObjects() const;
 
 	/** Called when the Rename command is executed from the UI or hotkey. */
 	void OnRenameCommand();
@@ -97,9 +106,16 @@ public:
 		}
 	}
 
-	void CacheAndRebuildFilters()
+	void CacheAndRebuildFilters(const bool bShouldRegenerateWidget = false)
 	{
 		CacheObjectFilterInstances();
+
+		if (bShouldRegenerateWidget)
+		{
+			RequestRegenerateListWidget();
+			return;
+		}
+		
 		RequestRebuildList();
 	}
 
@@ -108,6 +124,8 @@ public:
 	{
 		return ModuleName;
 	}
+
+	FObjectMixerEditorModule* GetModulePtr() const;
 
 	// User Collections
 
@@ -168,6 +186,7 @@ public:
 	TSet<FName> ForceAddedColumnsCache;
 	EObjectMixerInheritanceInclusionOptions PropertyInheritanceInclusionOptionsCache = EObjectMixerInheritanceInclusionOptions::None;
 	bool bShouldIncludeUnsupportedPropertiesCache = false;
+	bool bShouldShowTransientObjectsCache = false;
 
 protected:
 	
@@ -194,11 +213,6 @@ protected:
 	TArray<TSubclassOf<UObjectMixerObjectFilter>> ObjectFilterClasses;
 
 	/**
-	 * The FObjectMixerEditorModule subclass that created this instance.
-	 */
-	TWeakPtr<FObjectMixerEditorModule> SpawningModulePtr;
-
-	/**
 	 * If set, this is the filter class used to initialize the ListModel.
 	 * This filter class cannot be turned off by the end user.
 	 */
@@ -210,4 +224,6 @@ protected:
 	EObjectMixerTreeViewMode TreeViewMode = EObjectMixerTreeViewMode::Folders;
 
 	FName ModuleName = NAME_None;
+	
+	FDelegateHandle OnBlueprintFilterCompiledHandle;
 };

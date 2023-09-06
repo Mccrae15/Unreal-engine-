@@ -5,7 +5,9 @@
 #include "VertexDeltaModelInstance.h"
 #include "MLDeformerComponent.h"
 #include "MLDeformerAsset.h"
-#include "NeuralNetwork.h"
+#include "NNE.h"
+#include "NNEModelData.h"
+#include "NNERuntimeRDG.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
@@ -39,6 +41,12 @@ UVertexDeltaModel::UVertexDeltaModel(const FObjectInitializer& ObjectInitializer
 #endif
 }
 
+void UVertexDeltaModel::SetNNEModelData(TObjectPtr<UNNEModelData> ModelData)
+{
+	NNEModel = ModelData;
+	GetReinitModelInstanceDelegate().Broadcast();
+}
+
 UMLDeformerModelInstance* UVertexDeltaModel::CreateModelInstance(UMLDeformerComponent* Component)
 {
 	return NewObject<UVertexDeltaModelInstance>(Component);
@@ -52,26 +60,6 @@ FString UVertexDeltaModel::GetDefaultDeformerGraphAssetPath() const
 void UVertexDeltaModel::PostLoad()
 {
 	Super::PostLoad();
-
-	if (NNINetwork)
-	{
-		NNINetwork->SetDeviceType(ENeuralDeviceType::GPU, ENeuralDeviceType::CPU, ENeuralDeviceType::GPU);
-		if (NNINetwork->GetDeviceType() != ENeuralDeviceType::GPU || NNINetwork->GetOutputDeviceType() != ENeuralDeviceType::GPU || NNINetwork->GetInputDeviceType() != ENeuralDeviceType::CPU)
-		{
-			UE_LOG(LogVertexDeltaModel, Error, TEXT("Neural net in MLD Vertex Delta Model '%s' cannot run on the GPU, it will not be active."), *GetDeformerAsset()->GetName());
-		}
-	}
-}
-
-void UVertexDeltaModel::SetNNINetwork(UNeuralNetwork* InNeuralNetwork)
-{
-	GetNeuralNetworkModifyDelegate().Broadcast();
-	NNINetwork = InNeuralNetwork;
-}
-
-UNeuralNetwork* UVertexDeltaModel::GetNNINetwork() const
-{
-	return NNINetwork.Get();
 }
 
 #if WITH_EDITOR
@@ -79,17 +67,12 @@ UNeuralNetwork* UVertexDeltaModel::GetNNINetwork() const
 	{
 		Super::UpdateMemoryUsage();
 
-		// Check if the neural network is on the GPU, if so, count the memory to the GPU and remove it from Main memory, as we added it to 
-		// that already when we did the Model->GetResourceSizeBytes.
-		if (NNINetwork)
+		if (NNEModel)
 		{
-			if (NNINetwork->GetDeviceType() == ENeuralDeviceType::GPU)
-			{
-				const uint64 NeuralNetSize = static_cast<uint64>(NNINetwork->GetResourceSizeBytes(EResourceSizeMode::Type::EstimatedTotal));
+				const uint64 NeuralNetSize = 0;
 				GPUMemUsageInBytes += NeuralNetSize;
 				MemUsageInBytes -= NeuralNetSize;
 				CookedMemUsageInBytes -= NeuralNetSize;
-			}
 		}
 	}
 #endif

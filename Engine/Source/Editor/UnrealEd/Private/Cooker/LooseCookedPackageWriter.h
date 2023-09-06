@@ -14,7 +14,6 @@
 #include "Memory/SharedBuffer.h"
 #include "Misc/DateTime.h"
 #include "Misc/PackagePath.h"
-#include "PackageStoreManifest.h"
 #include "Serialization/CompactBinary.h"
 #include "Serialization/FileRegions.h"
 #include "Serialization/PackageWriter.h"
@@ -30,7 +29,6 @@ class FMD5;
 class IPlugin;
 class ITargetPlatform;
 template <typename ReferencedType> class TRefCountPtr;
-namespace UE::Cook { struct FPackageDatas; }
 
 /** A CookedPackageWriter that saves cooked packages in separate .uasset,.uexp,.ubulk files in the Saved\Cooked\[Platform] directory. */
 class FLooseCookedPackageWriter : public TPackageWriterToSharedBuffer<ICookedPackageWriter>
@@ -40,7 +38,7 @@ public:
 
 	FLooseCookedPackageWriter(const FString& OutputPath, const FString& MetadataDirectoryPath,
 		const ITargetPlatform* TargetPlatform, FAsyncIODelete& InAsyncIODelete,
-		UE::Cook::FPackageDatas& InPackageDatas, const TArray<TSharedRef<IPlugin>>& InPluginsToRemap);
+		const TArray<TSharedRef<IPlugin>>& InPluginsToRemap, FBeginCacheCallback&& InBeginCacheCallback);
 	~FLooseCookedPackageWriter();
 
 	virtual FCookCapabilities GetCookCapabilities() const override
@@ -65,12 +63,18 @@ public:
 	virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override;
 	virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) override;
 	virtual bool GetPreviousCookedBytes(const FPackageInfo& Info, FPreviousCookedBytesData& OutData) override;
-	virtual void CompleteExportsArchiveForDiff(const FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive) override;
+	virtual void CompleteExportsArchiveForDiff(FPackageInfo& Info, FLargeMemoryWriter& ExportsArchive) override;
+	virtual EPackageWriterResult BeginCacheForCookedPlatformData(FBeginCacheForCookedPlatformDataInfo& Info) override;
+
 	virtual void CommitPackageInternal(FPackageWriterRecords::FPackage&& BaseRecord,
 		const FCommitPackageInfo& Info) override;
 	virtual FPackageWriterRecords::FPackage* ConstructRecord() override;
 
 	static EPackageExtension BulkDataTypeToExtension(FBulkDataInfo::EType BulkDataType);
+	static bool TryConvertUncookedFilenameToCookedRemappedPluginFilename(
+		FStringView FileName, TConstArrayView<TSharedRef<IPlugin>> InPluginsToRemap,
+		FStringView SandboxDirectory, FString& OutCookedFileName);
+
 private:
 
 	/** Version of the superclass's per-package record that includes our class-specific data. */
@@ -110,22 +114,35 @@ private:
 		TArray<FWriteFileData> OutputFiles;
 	};
 
+	struct FOplogChunkInfo
+	{
+		FString RelativeFileName;
+		FIoChunkId ChunkId;
+	};
+
+	struct FOplogPackageInfo
+	{
+		FName PackageName;
+		TArray<FOplogChunkInfo, TInlineAllocator<1>> PackageDataChunks;
+		TArray<FOplogChunkInfo> BulkDataChunks;
+	};
+
 	/* Delete the sandbox directory (asynchronously) in preparation for a clean cook */
 	void DeleteSandboxDirectory();
-	/**
-	* Searches the disk for all the cooked files in the sandbox path provided
-	* Returns a map of the uncooked file path matches to the cooked file path for each package which exists
-	*
-	* @param UncookedpathToCookedPath out Map of the uncooked path matched with the cooked package which exists
-	* @param SandboxRootDir root dir to search for cooked packages in
-	*/
+	/** Searches the disk for all the cooked files in the sandbox. Stores results in PackageNameToCookedFiles. */
 	void GetAllCookedFiles();
+	void FindAndDeleteCookedFilesForPackages(TConstArrayView<FName> PackageNames);
 
-	FName ConvertCookedPathToUncookedPath(
+	FName ConvertCookedPathToPackageName(
 		const FString& SandboxRootDir, const FString& RelativeRootDir,
 		const FString& SandboxProjectDir, const FString& RelativeProjectDir,
-		const FString& CookedPath, FString& OutUncookedPath) const;
-	void RemoveCookedPackagesByUncookedFilename(const TArray<FName>& UncookedFileNamesToRemove);
+		const FString& CookedPath, FString& ScratchFileName, FString& ScratchPackageName) const;
+	FString ConvertPackageNameToCookedPath(
+		const FString& SandboxRootDir, const FString& RelativeRootDir,
+		const FString& SandboxProjectDir, const FString& RelativeProjectDir,
+		FStringView PackageName) const;
+
+	void RemoveCookedPackagesByPackageName(TArrayView<const FName> PackageNamesToRemove, bool bRemoveRecords);
 	void AsyncSave(FRecord& Record, const FCommitPackageInfo& Info);
 
 	void CollectForSavePackageData(FRecord& Record, FCommitContext& Context);
@@ -137,6 +154,8 @@ private:
 	void CollectForSaveExportsBuffers(FRecord& Record, FCommitContext& Context);
 	void AsyncSaveOutputFiles(FRecord& Record, FCommitContext& Context);
 	void UpdateManifest(FRecord& Record);
+	void WriteOplogEntry(FCbWriter& Writer, const FOplogPackageInfo& PackageInfo);
+	bool ReadOplogEntry(FOplogPackageInfo& PackageInfo, const FCbFieldView& Field);
 
 	TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
 	{
@@ -146,16 +165,17 @@ private:
 	// If EWriteOptions::ComputeHash is not set, the package will not get added to this.
 	TMap<FName, TRefCountPtr<FPackageHashes>> AllPackageHashes;
 
-	TMap<FName, FName> UncookedPathToCookedPath;
+	TMap<FName, TArray<FString>> PackageNameToCookedFiles;
 	/** CommitPackage can be called in parallel if using recursive save, so we need a lock for shared containers used during CommitPackage */
 	FCriticalSection PackageHashesLock;
+	FCriticalSection OplogLock;
 	FString OutputPath;
 	FString MetadataDirectoryPath;
 	const ITargetPlatform& TargetPlatform;
-	UE::Cook::FPackageDatas& PackageDatas;
-	FPackageStoreManifest PackageStoreManifest;
+	TMap<FName, FOplogPackageInfo> Oplog;
 	const TArray<TSharedRef<IPlugin>>& PluginsToRemap;
 	FAsyncIODelete& AsyncIODelete;
+	FBeginCacheCallback BeginCacheCallback;
 	bool bIterateSharedBuild = false;
 	bool bProvidePerPackageResults = false;
 };

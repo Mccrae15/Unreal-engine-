@@ -28,7 +28,6 @@ namespace PlatformProcessLimits
 {
 	enum
 	{
-		MaxUserHomeDirLength = MAC_MAX_PATH + 1,
 		MaxArgvParameters	 = 256
 	};
 };
@@ -1050,34 +1049,6 @@ const TCHAR* FMacPlatformProcess::BaseDir()
 	return Result;
 }
 
-const TCHAR* FMacPlatformProcess::UserDir()
-{
-	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
-	if (!Result[0])
-	{
-		SCOPED_AUTORELEASE_POOL;
-		NSString *DocumentsFolder = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex: 0];
-		FPlatformString::CFStringToTCHAR((CFStringRef)DocumentsFolder, Result);
-		FCString::Strcat(Result, TEXT("/"));
-	}
-	return Result;
-}
-
-const TCHAR* FMacPlatformProcess::UserTempDir()
-{
-	static FString MacUserTempDir;
-	if (!MacUserTempDir.Len())
-	{
-		MacUserTempDir = NSTemporaryDirectory();
-	}
-	return *MacUserTempDir;
-}
-
-const TCHAR* FMacPlatformProcess::UserSettingsDir()
-{
-	return ApplicationSettingsDir();
-}
-
 static TCHAR* UserLibrarySubDirectory()
 {
 	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
@@ -1124,31 +1095,6 @@ const TCHAR* FMacPlatformProcess::UserLogsDir()
 		FPlatformString::CFStringToTCHAR((CFStringRef)UserLibraryDirectory, Result);
 		FCString::Strcat(Result, TEXT("/Logs/"));
 		FCString::Strcat(Result, UserLibrarySubDirectory());
-	}
-	return Result;
-}
-
-const TCHAR* FMacPlatformProcess::UserHomeDir()
-{
-	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
-	if (!Result[0])
-	{
-		SCOPED_AUTORELEASE_POOL;
-		FPlatformString::CFStringToTCHAR((CFStringRef)NSHomeDirectory(), Result);
-	}
-	return Result;
-}
-
-const TCHAR* FMacPlatformProcess::ApplicationSettingsDir()
-{
-	static TCHAR Result[MAC_MAX_PATH] = TEXT("");
-	if (!Result[0])
-	{
-		SCOPED_AUTORELEASE_POOL;
-		NSString *ApplicationSupportFolder = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) objectAtIndex: 0];
-		FPlatformString::CFStringToTCHAR((CFStringRef)ApplicationSupportFolder, Result);
-		// @todo rocket this folder should be based on your company name, not just be hard coded to /Epic/
-		FCString::Strcat(Result, TEXT("/Epic/"));
 	}
 	return Result;
 }
@@ -1386,19 +1332,17 @@ bool FMacPlatformProcess::ReadPipeToArray(void* ReadPipe, TArray<uint8>& Output)
 bool FMacPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FString* OutWritten)
 {
 	// if there is not a message or WritePipe is nullptr
-	if ((Message.Len() == 0) || (WritePipe == nullptr))
+	int32 MessageLen = Message.Len();
+	if ((MessageLen == 0) || (WritePipe == nullptr))
 	{
 		return false;
 	}
 
 	// Convert input to UTF8CHAR
-	uint32 BytesAvailable = Message.Len();
-	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
-	for (uint32 i = 0; i < BytesAvailable; i++)
-	{
-		Buffer[i] = (UTF8CHAR)Message[i];
-	}
-	Buffer[BytesAvailable] = (UTF8CHAR)'\n';
+	const TCHAR* MessagePtr = *Message;
+	int32 BytesAvailable = FPlatformString::ConvertedLength<UTF8CHAR>(MessagePtr, MessageLen);
+	UTF8CHAR* Buffer = new UTF8CHAR[BytesAvailable + 2];
+	*FPlatformString::Convert(Buffer, BytesAvailable, MessagePtr, MessageLen) = (UTF8CHAR)'\n';
 
 	// Write to pipe
 	uint32 BytesWritten = write([(NSFileHandle*)WritePipe fileDescriptor], Buffer, BytesAvailable + 1);
@@ -1406,8 +1350,7 @@ bool FMacPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FSt
 	// Get written message
 	if (OutWritten)
 	{
-		Buffer[BytesWritten] = (UTF8CHAR)'\0';
-		*OutWritten = FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
+		*OutWritten = StringCast<TCHAR>(Buffer, BytesWritten).Get();
 	}
 
 	delete[] Buffer;

@@ -4,6 +4,8 @@
 
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/UnrealPortabilityHelpers.h"
+#include "Engine/SkeletalMesh.h"
+#include "GPUSkinVertexFactory.h"
 
 class USkeleton;
 
@@ -79,61 +81,44 @@ namespace UnrealConversionUtils
 			const int32 NumBones,
 			const int32 NumBoneInfluences,
 			const bool bNeedCPUAccess,
-			const void* InMutableData)
+			const void* InMutableData,
+			const uint32 MutableDataSize)
 		{
-			// \todo Ugly cast.
-			FSkinWeightDataVertexBuffer* VertexBuffer = const_cast<FSkinWeightDataVertexBuffer*>(OutVertexWeightBuffer.GetDataVertexBuffer());
+			FSkinWeightDataVertexBuffer* VertexBuffer = OutVertexWeightBuffer.GetDataVertexBuffer();
 			VertexBuffer->SetMaxBoneInfluences(NumBoneInfluences);
 			VertexBuffer->Init(NumBones, NumVertices);
 
+			bool bIsVariableBonesPerVertex = OutVertexWeightBuffer.GetDataVertexBuffer()->GetVariableBonesPerVertex();
+			check(!FGPUBaseSkinVertexFactory::UseUnlimitedBoneInfluences(NumBoneInfluences) || bIsVariableBonesPerVertex);
+
+			OutVertexWeightBuffer.SetNeedsCPUAccess(bNeedCPUAccess);
+
 			if (NumVertices)
 			{
-				OutVertexWeightBuffer.SetNeedsCPUAccess(bNeedCPUAccess);
+				void* Data = VertexBuffer->GetWeightData();
 
-				uint8* Data = VertexBuffer->GetWeightData();
-				FMemory::Memcpy(Data, InMutableData, OutVertexWeightBuffer.GetVertexDataSize());
+				uint32 OutVertexWeightBufferSize = OutVertexWeightBuffer.GetDataVertexBuffer()->GetVertexDataSize();
+				ensure(MutableDataSize == OutVertexWeightBufferSize);
+
+				FMemory::Memcpy(Data, InMutableData, OutVertexWeightBufferSize);
+
+				if (bIsVariableBonesPerVertex)
+				{
+					OutVertexWeightBuffer.RebuildLookupVertexBuffer();
+
+					{
+						MUTABLE_CPUPROFILER_SCOPE(OptimizeVertexAndLookupBuffers);
+
+						// Everything in this scope is optional and makes extra copies, but will optimize the variable bone
+						// influences buffers. Without it, the vertices are assumed to have a constant NumBoneInfluences per vertex.
+						TArray<FSkinWeightInfo> TempVertices;
+						OutVertexWeightBuffer.GetSkinWeights(TempVertices);
+
+						// The assignment operator actually optimizes the DataVertexBuffer
+						OutVertexWeightBuffer = TempVertices;
+					}
+				}
 			}
-		}
-	}
-
-
-
-	void BuildRefSkeleton(FInstanceUpdateData::FSkeletonData* OutMutSkeletonData
-		, const FReferenceSkeleton& InSourceReferenceSkeleton, const TArray<bool>& InUsedBones,
-		FReferenceSkeleton& InRefSkeleton, const USkeleton* InSkeleton)
-	{
-		const int32 SourceBoneCount = InSourceReferenceSkeleton.GetRawBoneNum();
-		const TArray<FTransform>& SourceRawMeshBonePose = InSourceReferenceSkeleton.GetRawRefBonePose();
-
-		MUTABLE_CPUPROFILER_SCOPE(BuildRefSkeleton);
-
-		// Build new RefSkeleton	
-		FReferenceSkeletonModifier RefSkeletonModifier(InRefSkeleton, InSkeleton);
-
-		const TArray<FMeshBoneInfo>& BoneInfo = InSourceReferenceSkeleton.GetRawRefBoneInfo();
-
-		TMap<FName, uint16> BoneToFinalBoneIndexMap;
-		BoneToFinalBoneIndexMap.Reserve(SourceBoneCount);
-
-		uint32 FinalBoneCount = 0;
-		for (int32 BoneIndex = 0; BoneIndex < SourceBoneCount; ++BoneIndex)
-		{
-			if (!InUsedBones[BoneIndex])
-			{
-				continue;
-			}
-
-			FName BoneName = BoneInfo[BoneIndex].Name;
-
-			// Build a bone to index map so we can remap BoneMaps and ActiveBoneIndices later on
-			BoneToFinalBoneIndexMap.Add(BoneName, FinalBoneCount);
-			FinalBoneCount++;
-
-			// Find parent index
-			const int32 SourceParentIndex = BoneInfo[BoneIndex].ParentIndex;
-			const int32 ParentIndex = SourceParentIndex != INDEX_NONE ? BoneToFinalBoneIndexMap[BoneInfo[SourceParentIndex].Name] : INDEX_NONE;
-
-			RefSkeletonModifier.Add(FMeshBoneInfo(BoneName, BoneName.ToString(), ParentIndex), SourceRawMeshBonePose[BoneIndex]);
 		}
 	}
 
@@ -142,7 +127,8 @@ namespace UnrealConversionUtils
 		const USkeletalMesh* OutSkeletalMesh,
 		const mu::MeshPtrConst InMutableMesh,
 		const int32 MeshLODIndex,
-		const TArray<uint16>& InBoneMap)
+		const TArray<uint16>& InBoneMap,
+		const int32 InFirstBoneMapIndex)
 	{
 		check(InMutableMesh);
 
@@ -168,8 +154,10 @@ namespace UnrealConversionUtils
 			int32 IndexCount;
 			int32 FirstVertex;
 			int32 VertexCount;
-			InMutableMesh->GetSurface(SurfaceIndex, &FirstVertex, &VertexCount, &FirstIndex, &IndexCount);
-			FSkelMeshRenderSection& Section = Helper_GetLODRenderSections(OutSkeletalMesh, MeshLODIndex)[SurfaceIndex];
+			int32 FirstBone;
+			int32 BoneCount;
+			InMutableMesh->GetSurface(SurfaceIndex, &FirstVertex, &VertexCount, &FirstIndex, &IndexCount, &FirstBone, &BoneCount);
+			FSkelMeshRenderSection& Section = OutSkeletalMesh->GetResourceForRendering()->LODRenderData[MeshLODIndex].RenderSections[SurfaceIndex];
 
 			Section.DuplicatedVerticesBuffer.Init(1, TMap<int, TArray<int32>>());
 
@@ -184,7 +172,15 @@ namespace UnrealConversionUtils
 			Section.BaseVertexIndex = FirstVertex;
 			Section.MaxBoneInfluences = NumBoneInfluences;
 			Section.NumVertices = VertexCount;
-			Section.BoneMap.Append(InBoneMap);
+
+			// InBoneMaps may contain bonemaps from other sections. Copy the bones belonging to this mesh.
+			FirstBone += InFirstBoneMapIndex;
+			
+			Section.BoneMap.Reserve(BoneCount);
+			for (int32 BoneMapIndex = 0; BoneMapIndex < BoneCount; ++BoneMapIndex, ++FirstBone)
+			{
+				Section.BoneMap.Add(InBoneMap[FirstBone]);
+			}
 		}
 	}
 
@@ -197,7 +193,7 @@ namespace UnrealConversionUtils
 	{
 		MUTABLE_CPUPROFILER_SCOPE(CopyMutableVertexBuffers);
 
-		FSkeletalMeshLODRenderData& LODModel = Helper_GetLODData(SkeletalMesh)[MeshLODIndex];
+		FSkeletalMeshLODRenderData& LODModel = SkeletalMesh->GetResourceForRendering()->LODRenderData[MeshLODIndex];
 		const mu::FMeshBufferSet& MutableMeshVertexBuffers = MutableMesh->GetVertexBuffers();
 		const int32 NumVertices = MutableMeshVertexBuffers.GetElementCount();
 
@@ -208,7 +204,7 @@ namespace UnrealConversionUtils
 		const bool bHasVertexColors = EnumHasAllFlags(BuildFlags, ESkeletalMeshVertexFlags::HasVertexColors);
 		const int NumTexCoords = MutableMeshVertexBuffers.GetBufferChannelCount(MUTABLE_VERTEXBUFFER_TEXCOORDS);
 
-		const bool bNeedsCPUAccess = Helper_GetLODInfoArray(SkeletalMesh)[MeshLODIndex].bAllowCPUAccess;
+		const bool bNeedsCPUAccess = SkeletalMesh->GetLODInfoArray()[MeshLODIndex].bAllowCPUAccess;
 
 		FStaticMeshVertexBuffers_InitWithMutableData(
 			LODModel.StaticVertexBuffers,
@@ -242,16 +238,6 @@ namespace UnrealConversionUtils
 				nullptr, nullptr, &BoneWeightFormat, nullptr, nullptr);
 		}
 
-		// Init skin weight buffer
-		FSkinWeightVertexBuffer_InitWithMutableData(
-			LODModel.SkinWeightVertexBuffer,
-			NumVertices,
-			NumBoneInfluences * NumVertices,
-			NumBoneInfluences,
-			bNeedsCPUAccess,
-			MutableMeshVertexBuffers.GetBufferData(BoneIndexBuffer)
-		);
-
 		if (BoneIndexFormat == mu::MBF_UINT16)
 		{
 			LODModel.SkinWeightVertexBuffer.SetUse16BitBoneIndex(true);
@@ -259,9 +245,19 @@ namespace UnrealConversionUtils
 
 		if (BoneWeightFormat == mu::MBF_NUINT16)
 		{
-			// TODO: 
-			unimplemented()
+			LODModel.SkinWeightVertexBuffer.SetUse16BitBoneWeight(true);
 		}
+
+		// Init skin weight buffer
+		FSkinWeightVertexBuffer_InitWithMutableData(
+			LODModel.SkinWeightVertexBuffer,
+			NumVertices,
+			NumBoneInfluences * NumVertices,
+			NumBoneInfluences,
+			bNeedsCPUAccess,
+			MutableMeshVertexBuffers.GetBufferData(BoneIndexBuffer),
+			MutableMeshVertexBuffers.GetBufferDataSize(BoneIndexBuffer)
+		);
 
 		// Optional buffers
 		for (int Buffer = MUTABLE_VERTEXBUFFER_TEXCOORDS + 1; Buffer < MutableMeshVertexBuffers.GetBufferCount(); ++Buffer)
@@ -280,14 +276,16 @@ namespace UnrealConversionUtils
 					const int32 BonesPerVertex = ComponentCount;
 					const int32 NumBones = BonesPerVertex * NumVertices;
 
-					check(LODModel.SkinWeightVertexBuffer.GetVariableBonesPerVertex() == false);
+					check(FGPUBaseSkinVertexFactory::UseUnlimitedBoneInfluences(BonesPerVertex) ||
+						!LODModel.SkinWeightVertexBuffer.GetVariableBonesPerVertex());
 					FSkinWeightVertexBuffer_InitWithMutableData(
 						LODModel.SkinWeightVertexBuffer,
 						NumVertices,
 						NumBones,
 						NumBoneInfluences,
 						bNeedsCPUAccess,
-						MutableMeshVertexBuffers.GetBufferData(Buffer)
+						MutableMeshVertexBuffers.GetBufferData(Buffer),
+						MutableMeshVertexBuffers.GetBufferDataSize(Buffer)
 					);
 				}
 
@@ -448,21 +446,21 @@ namespace UnrealConversionUtils
 			 return;
 		 }
 
-		 const FSkeletalMeshLODRenderData& SrcLODModel = Helper_GetLODData(SrcSkeletalMesh)[SrcLODIndex];
-		 FSkeletalMeshLODRenderData& DestLODModel = Helper_GetLODData(DestSkeletalMesh)[DestLODIndex];
+		 const FSkeletalMeshLODRenderData& SrcLODModel = SrcSkeletalMesh->GetResourceForRendering()->LODRenderData[SrcLODIndex];
+		 FSkeletalMeshLODRenderData& DestLODModel = DestSkeletalMesh->GetResourceForRendering()->LODRenderData[DestLODIndex];
 
 		 // Copying render sections
 		 {
-			 const FSkeletalMeshLODInfo& SrcLODInfo = Helper_GetLODInfoArray(SrcSkeletalMesh)[SrcLODIndex];
-			 FSkeletalMeshLODInfo& DestLODInfo = Helper_GetLODInfoArray(DestSkeletalMesh)[DestLODIndex];
+			 const FSkeletalMeshLODInfo& SrcLODInfo = SrcSkeletalMesh->GetLODInfoArray()[SrcLODIndex];
+			 FSkeletalMeshLODInfo& DestLODInfo = DestSkeletalMesh->GetLODInfoArray()[DestLODIndex];
 
 			 DestLODInfo.LODMaterialMap = SrcLODInfo.LODMaterialMap;
 
 			 const int32 SurfaceCount = SrcLODModel.RenderSections.Num();
 			 for (int32 SurfaceIndex = 0; SurfaceIndex < SurfaceCount; ++SurfaceIndex)
 			 {
-				 const FSkelMeshRenderSection& SrcSection = Helper_GetLODRenderSections(SrcSkeletalMesh, SrcLODIndex)[SurfaceIndex];
-				 FSkelMeshRenderSection* DestSection = new(Helper_GetLODRenderSections(DestSkeletalMesh, DestLODIndex)) Helper_SkelMeshRenderSection();
+				 const FSkelMeshRenderSection& SrcSection = SrcSkeletalMesh->GetResourceForRendering()->LODRenderData[SrcLODIndex].RenderSections[SurfaceIndex];
+				 FSkelMeshRenderSection* DestSection = new(DestSkeletalMesh->GetResourceForRendering()->LODRenderData[DestLODIndex].RenderSections) FSkelMeshRenderSection();
 
 				 DestSection->DuplicatedVerticesBuffer.Init(1, TMap<int, TArray<int32>>());
 				 DestSection->bDisabled = SrcSection.bDisabled;
@@ -485,7 +483,7 @@ namespace UnrealConversionUtils
 		 const int32 NumVertices = SrcStaticVertexBuffer.PositionVertexBuffer.GetNumVertices();
 		 const int32 NumTexCoords = SrcStaticVertexBuffer.StaticMeshVertexBuffer.GetNumTexCoords();
 
-		 bool bAllowCPUAccess = Helper_GetLODInfoArray(SrcSkeletalMesh)[SrcLODIndex].bAllowCPUAccess;
+		 bool bAllowCPUAccess = SrcSkeletalMesh->GetLODInfoArray()[SrcLODIndex].bAllowCPUAccess;
 
 		 // Copying Static Vertex Buffers
 		 {
@@ -515,25 +513,25 @@ namespace UnrealConversionUtils
 			 const FSkinWeightVertexBuffer& SrcSkinWeightBuffer = SrcLODModel.SkinWeightVertexBuffer;
 			 FSkinWeightVertexBuffer& DestSkinWeightBuffer = DestLODModel.SkinWeightVertexBuffer;
 
-			  int32 NumBoneInfluences = SrcSkinWeightBuffer.GetDataVertexBuffer()->GetMaxBoneInfluences();
+			 int32 NumBoneInfluences = SrcSkinWeightBuffer.GetDataVertexBuffer()->GetMaxBoneInfluences();
 			 int32 NumBones = SrcSkinWeightBuffer.GetDataVertexBuffer()->GetNumBoneWeights();
 
-			 const_cast<FSkinWeightDataVertexBuffer*>(DestSkinWeightBuffer.GetDataVertexBuffer())->SetMaxBoneInfluences(NumBoneInfluences);
-			 const_cast<FSkinWeightDataVertexBuffer*>(DestSkinWeightBuffer.GetDataVertexBuffer())->Init(NumBones, NumVertices);
+			 DestSkinWeightBuffer.SetUse16BitBoneIndex(SrcSkinWeightBuffer.Use16BitBoneIndex());
+			 FSkinWeightDataVertexBuffer* SkinWeightDataVertexBuffer = DestSkinWeightBuffer.GetDataVertexBuffer();
+			 SkinWeightDataVertexBuffer->SetMaxBoneInfluences(NumBoneInfluences);
+			 SkinWeightDataVertexBuffer->Init(NumBones, NumVertices);
 
 			 if (NumVertices)
 			 {
 				 DestSkinWeightBuffer.SetNeedsCPUAccess(bAllowCPUAccess);
 
-				 const uint8* SrcData = SrcSkinWeightBuffer.GetDataVertexBuffer()->GetWeightData();
-				 uint8* Data = DestSkinWeightBuffer.GetDataVertexBuffer()->GetWeightData();
+				 const void* SrcData = SrcSkinWeightBuffer.GetDataVertexBuffer()->GetWeightData();
+				 void* Data = SkinWeightDataVertexBuffer->GetWeightData();
 				 check(SrcData);
 				 check(Data);
 
 				 FMemory::Memcpy(Data, SrcData, DestSkinWeightBuffer.GetVertexDataSize());
 			 }
-
-			 DestSkinWeightBuffer.SetUse16BitBoneIndex(SrcSkinWeightBuffer.Use16BitBoneIndex());
 		 }
 
 		 // Copying Skin Weight Profiles Buffers
@@ -562,7 +560,7 @@ namespace UnrealConversionUtils
 				 int32 IndexCount = SrcLODModel.MultiSizeIndexContainer.GetIndexBuffer()->Num();
 				 int32 ElementSize = SrcLODModel.MultiSizeIndexContainer.GetDataTypeSize();
 
-				 const void* Data = Helper_GetLODData(SrcSkeletalMesh)[SrcLODIndex].MultiSizeIndexContainer.GetIndexBuffer()->GetPointerTo(0);
+				 const void* Data = SrcSkeletalMesh->GetResourceForRendering()->LODRenderData[SrcLODIndex].MultiSizeIndexContainer.GetIndexBuffer()->GetPointerTo(0);
 
 				 DestLODModel.MultiSizeIndexContainer.CreateIndexBuffer(ElementSize);
 				 DestLODModel.MultiSizeIndexContainer.GetIndexBuffer()->Insert(0, IndexCount);

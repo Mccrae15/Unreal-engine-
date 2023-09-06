@@ -54,10 +54,11 @@ static bool IsInstanceOrderPreservationAllowed(ERHIFeatureLevel::Type FeatureLev
 	return GInstanceCullingAllowOrderPreservation && FeatureLevel > ERHIFeatureLevel::ES3_1;
 }
 
-static uint32 PackDrawCommandDesc(bool bMaterialUsesWorldPositionOffset, uint32 MeshLODIndex)
+static uint32 PackDrawCommandDesc(bool bMaterialUsesWorldPositionOffset, bool bMaterialAlwaysEvaluatesWorldPositionOffset, uint32 MeshLODIndex)
 {
 	uint32 PackedData = bMaterialUsesWorldPositionOffset ? 1U : 0U;
-	PackedData |= ((MeshLODIndex & 0x000000FFU) << 1U);
+	PackedData |= bMaterialAlwaysEvaluatesWorldPositionOffset ? 2U : 0U;
+	PackedData |= ((MeshLODIndex & 0x000000FFU) << 2U);
 	return PackedData;
 }
 
@@ -174,6 +175,27 @@ uint32 FInstanceCullingContext::AllocateIndirectArgs(const FMeshDrawCommand *Mes
 	}
 	return 0U;
 }
+
+void FInstanceCullingContext::BeginAsyncSetup(SyncPrerequisitesFuncType&& InSyncPrerequisitesFunc) 
+{ 
+	SyncPrerequisitesFunc = MoveTemp(InSyncPrerequisitesFunc); 
+}
+
+void FInstanceCullingContext::WaitForSetupTask()
+{
+	if (SyncPrerequisitesFunc)
+	{
+		SyncPrerequisitesFunc(*this);
+	}
+	SyncPrerequisitesFunc = SyncPrerequisitesFuncType();
+}
+
+void FInstanceCullingContext::SetDynamicPrimitiveInstanceOffsets(int32 InDynamicInstanceIdOffset, int32 InDynamicInstanceIdNum)
+{
+	DynamicInstanceIdOffset = InDynamicInstanceIdOffset;
+	DynamicInstanceIdNum = InDynamicInstanceIdNum;
+}
+
 // Key things to achieve
 // 1. low-data handling of since ID/Primitive path
 // 2. no redundant alloc upload of indirect cmd if none needed.
@@ -306,7 +328,7 @@ public:
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint32>, BlockDestInstanceOffsets)
 
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint32>, InstanceIdsBufferOut)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FVector4f>, InstanceIdsBufferOutMobile)		
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWByteAddressBuffer, InstanceIdsBufferOutMobile)		
 	END_SHADER_PARAMETER_STRUCT()
 };
 IMPLEMENT_GLOBAL_SHADER(FCompactVisibleInstancesCs, "/Engine/Private/InstanceCulling/CompactVisibleInstances.usf", "CompactVisibleInstances", SF_Compute);
@@ -323,6 +345,7 @@ public:
 	class FOutputCommandIdDim : SHADER_PERMUTATION_BOOL("OUTPUT_COMMAND_IDS");
 	class FSingleInstanceModeDim : SHADER_PERMUTATION_BOOL("SINGLE_INSTANCE_MODE");
 	class FCullInstancesDim : SHADER_PERMUTATION_BOOL("CULL_INSTANCES");
+	class FAllowWPODisableDim : SHADER_PERMUTATION_BOOL("ALLOW_WPO_DISABLE");
 	class FOcclusionCullInstancesDim : SHADER_PERMUTATION_BOOL("OCCLUSION_CULL_INSTANCES");
 	class FStereoModeDim : SHADER_PERMUTATION_BOOL("STEREO_CULLING_MODE");
 	// This permutation should be used for all debug output etc that adds overhead not wanted in production. 
@@ -332,7 +355,7 @@ public:
 	class FBatchedDim : SHADER_PERMUTATION_BOOL("ENABLE_BATCH_MODE");
 	class FInstanceCompactionDim : SHADER_PERMUTATION_BOOL("ENABLE_INSTANCE_COMPACTION");
 
-	using FPermutationDomain = TShaderPermutationDomain<FOutputCommandIdDim, FSingleInstanceModeDim, FCullInstancesDim, FOcclusionCullInstancesDim, FStereoModeDim, FDebugModeDim, FBatchedDim, FInstanceCompactionDim>;
+	using FPermutationDomain = TShaderPermutationDomain<FOutputCommandIdDim, FSingleInstanceModeDim, FCullInstancesDim, FAllowWPODisableDim, FOcclusionCullInstancesDim, FStereoModeDim, FDebugModeDim, FBatchedDim, FInstanceCompactionDim>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -346,16 +369,32 @@ public:
 		// Currently, instance compaction is not supported on mobile platforms
 		if (PermutationVector.Get<FInstanceCompactionDim>() && IsMobilePlatform(Parameters.Platform))
 		{
-			return false;				
+			return false;
 		}
 
-		return true;		
+		// Current behavior is that instance culling coerces the WPO disable distance check, so don't compile permutations
+		// that include the former and exclude the latter
+		if (PermutationVector.Get<FCullInstancesDim>() && !PermutationVector.Get<FAllowWPODisableDim>())
+		{
+			return false;
+		}
+
+		return true;
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		FInstanceProcessingGPULoadBalancer::SetShaderDefines(OutEnvironment);
+
+		// Force use of DXC for platforms compiled with hlslcc due to hlslcc's inability to handle member functions in structs
+		if (FDataDrivenShaderPlatformInfo::GetIsHlslcc(Parameters.Platform))
+		{
+			OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
+		}
+
+		// This shader takes a very long time to compile with FXC, so we pre-compile it with DXC first and then forward the optimized HLSL to FXC.
+		OutEnvironment.CompilerFlags.Add(CFLAG_PrecompileWithDXC);
 
 		OutEnvironment.SetDefine(TEXT("INDIRECT_ARGS_NUM_WORDS"), FInstanceCullingContext::IndirectArgsNumWords);
 		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
@@ -394,7 +433,7 @@ public:
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, InstanceIdOffsetBuffer)
 
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, InstanceIdsBufferOut)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float4>, InstanceIdsBufferOutMobile)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWByteAddressBuffer, InstanceIdsBufferOutMobile)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWBuffer<uint>, DrawIndirectArgsBufferOut)
 
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FInstanceCullingContext::FCompactionData>, DrawCommandCompactionData)
@@ -447,58 +486,108 @@ public:
 	void ProcessBatched(TStaticArray<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FParameters*, static_cast<uint32>(EBatchProcessingMode::Num)> PassParameters);
 };
 
-static FRDGBufferDesc CreateInstanceIdsBufferDesc(ERHIFeatureLevel::Type FeatureLevel, uint32 BufferSize)
+static uint32 GetInstanceIdsNumElements(ERHIFeatureLevel::Type FeatureLevel, uint32 NumInstances)
 {
-	FRDGBufferDesc BufferDesc = FRDGBufferDesc::CreateStructuredDesc(FInstanceCullingContext::GetInstanceIdBufferStride(FeatureLevel), BufferSize);
+	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
+	{
+		// Mobile uses ByteAddressBuffer which is 4 bytes per element
+		const uint32 ByteBufferStride = FInstanceCullingContext::GetInstanceIdBufferStride(ERHIFeatureLevel::ES3_1) / 4u;
+		return (ByteBufferStride * NumInstances);
+	}
+	else
+	{
+		// Desktop uses StructuredBuffer<uint> NumElements==NumInstances
+		return NumInstances;
+	}
+}
+
+static FRDGBufferDesc CreateInstanceIdsBufferDesc(ERHIFeatureLevel::Type FeatureLevel, uint32 NumInstances)
+{
+	const uint32 BufferNumElements = GetInstanceIdsNumElements(FeatureLevel, NumInstances);
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
 	{
 		// Mobile writes to this buffer from compute and then uses as a vertex input
-		// D3D does not allow a storage buffer with vertex buffer usage
-		BufferDesc.Usage |= (IsD3DPlatform(GMaxRHIShaderPlatform) ? BUF_None : BUF_VertexBuffer);
+		// We can't expose this as typed buffer to compute, because Android has a 64K limit for texel buffers which is not enough 
+		// Use ByteAddress buffer here since this is the only way D3D allows it to mix with vertex buffer usage, and it translates to a storage buffer on GL and VK
+		FRDGBufferDesc BufferDesc = FRDGBufferDesc::CreateByteAddressDesc(4u * BufferNumElements);
+		BufferDesc.Usage |= BUF_VertexBuffer;
+		return BufferDesc;
 	}
-	return BufferDesc;
+	return FRDGBufferDesc::CreateStructuredDesc(sizeof(uint32), BufferNumElements);
 }
 
 void FInstanceCullingContext::BuildRenderingCommands(
 	FRDGBuilder& GraphBuilder,
 	const FGPUScene& GPUScene,
-	int32 DynamicInstanceIdOffset,
-	int32 DynamicInstanceIdNum,
-	FInstanceCullingResult& Results,
-	FInstanceCullingDrawParams* InstanceCullingDrawParams) const
+	int32 InDynamicInstanceIdOffset,
+	int32 InDynamicInstanceIdNum,
+	FInstanceCullingResult& Results)
 {
+	check(!SyncPrerequisitesFunc);
 	Results = FInstanceCullingResult();
+	SetDynamicPrimitiveInstanceOffsets(InDynamicInstanceIdOffset, InDynamicInstanceIdNum);
+	BuildRenderingCommandsInternal(GraphBuilder, GPUScene, EAsyncProcessingMode::Synchronous, &Results.Parameters);
+}
 
-	if (!HasCullingCommands())
+
+void FInstanceCullingContext::BuildRenderingCommands(FRDGBuilder& GraphBuilder, const FGPUScene& GPUScene, FInstanceCullingDrawParams* InstanceCullingDrawParams)
+{
+	BuildRenderingCommandsInternal(GraphBuilder, GPUScene, EAsyncProcessingMode::DeferredOrAsync, InstanceCullingDrawParams);
+}
+
+bool FInstanceCullingContext::HasCullingCommands() const
+{
+	check(!SyncPrerequisitesFunc);  return TotalInstances > 0;
+}
+
+
+void FInstanceCullingContext::BuildRenderingCommandsInternal(
+	FRDGBuilder& GraphBuilder,
+	const FGPUScene& GPUScene,
+	EAsyncProcessingMode AsyncProcessingMode,
+	FInstanceCullingDrawParams* InstanceCullingDrawParams)
+{
+	check(InstanceCullingDrawParams);
+	FMemory::Memzero(*InstanceCullingDrawParams);
+
+	if (InstanceCullingManager)
 	{
-		if (InstanceCullingManager)
-		{
-			Results.UniformBuffer = InstanceCullingManager->GetDummyInstanceCullingUniformBuffer();
-		}
-		return;
+		InstanceCullingDrawParams->Scene = InstanceCullingManager->SceneUB.GetBuffer(GraphBuilder);
 	}
 
-	const bool bOcclusionCullInstances = PrevHZB.IsValid() && IsOcclusionCullingEnabled();
-	const uint32 InstanceIdBufferSize = TotalInstances * ViewIds.Num();
-	if (InstanceCullingDrawParams && InstanceCullingManager && InstanceCullingManager->IsDeferredCullingActive() && (InstanceCullingMode == EInstanceCullingMode::Normal))
+	if (AsyncProcessingMode != EAsyncProcessingMode::Synchronous && InstanceCullingDrawParams && InstanceCullingManager && InstanceCullingManager->IsDeferredCullingActive() && (InstanceCullingMode == EInstanceCullingMode::Normal))
 	{
 		FInstanceCullingDeferredContext *DeferredContext = InstanceCullingManager->DeferredContext;
 
 		// If this is true, then RDG Execute or Drain has been called, and no further contexts can be deferred. 
 		if (!DeferredContext->bProcessed)
 		{
-			Results.DrawIndirectArgsBuffer = DeferredContext->DrawIndirectArgsBuffer;
-			Results.InstanceDataBuffer = DeferredContext->InstanceDataBuffer;
-			Results.UniformBuffer = DeferredContext->UniformBuffer;
-			DeferredContext->AddBatch(GraphBuilder, this, DynamicInstanceIdOffset, DynamicInstanceIdNum, InstanceCullingDrawParams);
+			InstanceCullingDrawParams->DrawIndirectArgsBuffer = DeferredContext->DrawIndirectArgsBuffer;
+			InstanceCullingDrawParams->InstanceIdOffsetBuffer = DeferredContext->InstanceDataBuffer;
+			InstanceCullingDrawParams->InstanceCulling = DeferredContext->UniformBuffer;
+			DeferredContext->AddBatch(GraphBuilder, this, InstanceCullingDrawParams);
 		}
 		return;
 	}
+	WaitForSetupTask();
+
+	if (!HasCullingCommands())
+	{
+		if (InstanceCullingManager)
+		{
+			InstanceCullingDrawParams->InstanceCulling = InstanceCullingManager->GetDummyInstanceCullingUniformBuffer();
+		}
+		return;
+	}
+
+	check(DynamicInstanceIdOffset >= 0);
+	check(DynamicInstanceIdNum >= 0);
 
 	ensure(InstanceCullingMode == EInstanceCullingMode::Normal || ViewIds.Num() == 2);
 
 	// If there is no manager, then there is no data on culling, so set flag to skip that and ignore buffers.
 	const bool bCullInstances = InstanceCullingManager != nullptr && CVarCullInstances.GetValueOnRenderThread() != 0;
+	const bool bAllowWPODisable = InstanceCullingManager != nullptr;
 
 	RDG_EVENT_SCOPE(GraphBuilder, "BuildRenderingCommands(Culling=%s)", bCullInstances ? TEXT("On") : TEXT("Off"));
 
@@ -545,6 +634,7 @@ void FInstanceCullingContext::BuildRenderingCommands(
 
 	FRDGBufferRef ViewIdsBuffer = CreateStructuredBuffer(GraphBuilder, TEXT("InstanceCulling.ViewIds"), ViewIds);
 
+	const uint32 InstanceIdBufferSize = TotalInstances * ViewIds.Num();
 	FRDGBufferRef InstanceIdsBuffer = GraphBuilder.CreateBuffer(CreateInstanceIdsBufferDesc(FeatureLevel, InstanceIdBufferSize), TEXT("InstanceCulling.InstanceIdsBuffer"));
 	FRDGBufferUAVRef InstanceIdsBufferUAV = GraphBuilder.CreateUAV(InstanceIdsBuffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
 
@@ -592,7 +682,7 @@ void FInstanceCullingContext::BuildRenderingCommands(
 
 	PassParametersTmp.ViewIds = GraphBuilder.CreateSRV(ViewIdsBuffer);
 	PassParametersTmp.NumCullingViews = 0;
-	if (bCullInstances)
+	if (bCullInstances || bAllowWPODisable)
 	{
 #if DO_CHECK
 		for (int32 ViewId : ViewIds)
@@ -612,6 +702,7 @@ void FInstanceCullingContext::BuildRenderingCommands(
 	PassParametersTmp.DrawIndirectArgsBufferOut = GraphBuilder.CreateUAV(DrawIndirectArgsRDG, PF_R32_UINT, ERDGUnorderedAccessViewFlags::SkipBarrier);
 	PassParametersTmp.InstanceIdOffsetBuffer = GraphBuilder.CreateSRV(InstanceIdOffsetBufferRDG, PF_R32_UINT);
 
+	const bool bOcclusionCullInstances = PrevHZB.IsValid() && IsOcclusionCullingEnabled();
 	if (bOcclusionCullInstances)
 	{
 		PassParametersTmp.HZBTexture = GraphBuilder.RegisterExternalTexture(PrevHZB);
@@ -638,6 +729,7 @@ void FInstanceCullingContext::BuildRenderingCommands(
 			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FOutputCommandIdDim>(0);
 			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FSingleInstanceModeDim>(EBatchProcessingMode(Mode) == EBatchProcessingMode::UnCulled);
 			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FCullInstancesDim>(bCullInstances && EBatchProcessingMode(Mode) != EBatchProcessingMode::UnCulled);
+			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FAllowWPODisableDim>(bAllowWPODisable);
 			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FOcclusionCullInstancesDim>(bOcclusionCullInstances);
 			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FStereoModeDim>(InstanceCullingMode == EInstanceCullingMode::Stereo);
 			PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FDebugModeDim>(bUseDebugMode);
@@ -703,21 +795,21 @@ void FInstanceCullingContext::BuildRenderingCommands(
 		}
 	}
 
-	Results.DrawIndirectArgsBuffer = DrawIndirectArgsRDG;
+	InstanceCullingDrawParams->DrawIndirectArgsBuffer = DrawIndirectArgsRDG;
 
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
 	{
-		Results.InstanceDataBuffer = InstanceIdsBuffer;
+		InstanceCullingDrawParams->InstanceIdOffsetBuffer = InstanceIdsBuffer;
 	}
 	else
 	{
-		Results.InstanceDataBuffer = InstanceIdOffsetBufferRDG;
+		InstanceCullingDrawParams->InstanceIdOffsetBuffer = InstanceIdOffsetBufferRDG;
 
 		FInstanceCullingGlobalUniforms* UniformParameters = GraphBuilder.AllocParameters<FInstanceCullingGlobalUniforms>();
 		UniformParameters->InstanceIdsBuffer = GraphBuilder.CreateSRV(InstanceIdsBuffer);
 		UniformParameters->PageInfoBuffer = GraphBuilder.CreateSRV(InstanceIdsBuffer);
 		UniformParameters->BufferCapacity = InstanceIdBufferSize;
-		Results.UniformBuffer = GraphBuilder.CreateUniformBuffer(UniformParameters);
+		InstanceCullingDrawParams->InstanceCulling = GraphBuilder.CreateUniformBuffer(UniformParameters);
 	}
 }
 
@@ -802,6 +894,8 @@ FInstanceCullingDeferredContext *FInstanceCullingContext::CreateDeferredContext(
 	FInstanceCullingDeferredContext* DeferredContext = GraphBuilder.AllocObject<FInstanceCullingDeferredContext>(FeatureLevel, InstanceCullingManager);
 
 	const bool bCullInstances = CVarCullInstances.GetValueOnRenderThread() != 0;
+	const bool bAllowWPODisable = true;
+
 	RDG_EVENT_SCOPE(GraphBuilder, "BuildRenderingCommandsDeferred(Culling=%s)", bCullInstances ? TEXT("On") : TEXT("Off"));
 
 	TStaticArray<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FParameters*, static_cast<uint32>(EBatchProcessingMode::Num)> PassParameters;
@@ -862,7 +956,11 @@ FInstanceCullingDeferredContext *FInstanceCullingContext::CreateDeferredContext(
 	FRDGBufferRef InstanceIdOffsetBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(uint32), 1), TEXT("InstanceCulling.InstanceIdOffsetBuffer"), INST_CULL_CALLBACK(DeferredContext->InstanceIdOffsets.Num()));
 	GraphBuilder.QueueBufferUpload(InstanceIdOffsetBuffer, INST_CULL_CALLBACK(DeferredContext->InstanceIdOffsets.GetData()), INST_CULL_CALLBACK(DeferredContext->InstanceIdOffsets.GetTypeSize() * DeferredContext->InstanceIdOffsets.Num()));
 
-	FRDGBufferRef InstanceIdsBuffer = GraphBuilder.CreateBuffer(CreateInstanceIdsBufferDesc(FeatureLevel, 1), TEXT("InstanceCulling.InstanceIdsBuffer"), INST_CULL_CALLBACK(DeferredContext->InstanceIdBufferSize));
+	FRDGBufferRef InstanceIdsBuffer = GraphBuilder.CreateBuffer(
+			CreateInstanceIdsBufferDesc(FeatureLevel, 1), 
+			TEXT("InstanceCulling.InstanceIdsBuffer"), 
+			INST_CULL_CALLBACK(GetInstanceIdsNumElements(DeferredContext->FeatureLevel, DeferredContext->InstanceIdBufferSize))
+	);
 	FRDGBufferUAVRef InstanceIdsBufferUAV = GraphBuilder.CreateUAV(InstanceIdsBuffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
 	{
@@ -897,8 +995,8 @@ FInstanceCullingDeferredContext *FInstanceCullingContext::CreateDeferredContext(
 	PassParametersTmp.InstanceIdsBufferOutMobile = InstanceIdsBufferUAV;
 
 	PassParametersTmp.DrawIndirectArgsBufferOut = GraphBuilder.CreateUAV(DeferredContext->DrawIndirectArgsBuffer, PF_R32_UINT, ERDGUnorderedAccessViewFlags::SkipBarrier);
-	PassParametersTmp.InstanceIdOffsetBuffer = GraphBuilder.CreateSRV(InstanceIdOffsetBuffer, PF_R32_UINT);
-	if (bCullInstances)
+	PassParametersTmp.InstanceIdOffsetBuffer = GraphBuilder.CreateSRV(InstanceIdOffsetBuffer, PF_R32_UINT);	
+	if (bCullInstances || bAllowWPODisable)
 	{
 		PassParametersTmp.InViews = GraphBuilder.CreateSRV(InstanceCullingManager->CullingIntermediate.CullingViews);
 		PassParametersTmp.NumCullingViews = InstanceCullingManager->CullingIntermediate.NumViews;
@@ -954,6 +1052,7 @@ FInstanceCullingDeferredContext *FInstanceCullingContext::CreateDeferredContext(
 		PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FBatchedDim>(true);
 		PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FSingleInstanceModeDim>(EBatchProcessingMode(Mode) == EBatchProcessingMode::UnCulled);
 		PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FCullInstancesDim>(bCullInstances && EBatchProcessingMode(Mode) != EBatchProcessingMode::UnCulled);
+		PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FAllowWPODisableDim>(bAllowWPODisable);
 		PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FOcclusionCullInstancesDim>(bOcclusionCullInstances);
 		PermutationVector.Set<FBuildInstanceIdBufferAndCommandsFromPrimitiveIdsCs::FInstanceCompactionDim>(bEnableInstanceCompaction);
 
@@ -1201,6 +1300,7 @@ void FInstanceCullingContext::SetupDrawCommands(
 
 		const bool bSupportsGPUSceneInstancing = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::HasPrimitiveIdStreamIndex);
 		const bool bMaterialUsesWorldPositionOffset = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::MaterialUsesWorldPositionOffset);
+		const bool bMaterialAlwaysEvaluatesWorldPositionOffset = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::MaterialAlwaysEvaluatesWorldPositionOffset);
 		const bool bForceInstanceCulling = EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::ForceInstanceCulling);
 		const bool bPreserveInstanceOrder = bOrderPreservationEnabled && EnumHasAnyFlags(VisibleMeshDrawCommand.Flags, EFVisibleMeshDrawCommandFlags::PreserveInstanceOrder);
 		const bool bUseIndirectDraw = bAlwaysUseIndirectDraws || bForceInstanceCulling || (VisibleMeshDrawCommand.NumRuns > 0 || MeshDrawCommand->NumInstances > 1);
@@ -1241,7 +1341,7 @@ void FInstanceCullingContext::SetupDrawCommands(
 				{
 					MeshLODIndex = StateBucketsAuxData[VisibleMeshDrawCommand.StateBucketId].MeshLODIndex;
 				}
-				DrawCommandDescs.Add(PackDrawCommandDesc(bMaterialUsesWorldPositionOffset, MeshLODIndex));
+				DrawCommandDescs.Add(PackDrawCommandDesc(bMaterialUsesWorldPositionOffset, bMaterialAlwaysEvaluatesWorldPositionOffset, MeshLODIndex));
 				
 				if (bUseIndirectDraw)
 				{

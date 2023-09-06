@@ -1,21 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceRenderTarget2DArray.h"
-#include "ShaderParameterUtils.h"
-#include "ClearQuad.h"
+#include "Engine/Engine.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "TextureResource.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "TextureRenderTarget2DArrayResource.h"
-#include "Engine/Texture2DArray.h"
 #include "Engine/TextureRenderTarget2DArray.h"
 
 #include "NiagaraDataInterfaceRenderTargetCommon.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraStats.h"
-#include "NiagaraRenderer.h"
-#include "NiagaraSettings.h"
-#include "NiagaraShader.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraGpuComputeDebugInterface.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
+#include "RenderGraphBuilder.h"
+#include "RenderGraphUtils.h"
 #include "RHIStaticStates.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRenderTarget2DArray)
@@ -391,7 +390,7 @@ void UNiagaraDataInterfaceRenderTarget2DArray::SetShaderParameters(const FNiagar
 	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
 
 	// Ensure RDG resources are ready to use
-	if (InstanceData_RT->TransientRDGTexture == nullptr)
+	if (InstanceData_RT->TransientRDGTexture == nullptr && InstanceData_RT->RenderTarget)
 	{
 		InstanceData_RT->TransientRDGTexture = GraphBuilder.RegisterExternalTexture(InstanceData_RT->RenderTarget);
 		InstanceData_RT->TransientRDGSRV = GraphBuilder.CreateSRV(InstanceData_RT->TransientRDGTexture);
@@ -421,7 +420,6 @@ void UNiagaraDataInterfaceRenderTarget2DArray::SetShaderParameters(const FNiagar
 	
 	if (bRTRead)
 	{
-		ensureMsgf(bRTWrite == false, TEXT("RenderTarget DataInterface is both wrote and read from in the same stage, this is not allowed, read will be invalid"));
 		if (bRTWrite == false && InstanceData_RT->RenderTarget.IsValid())
 		{
 			InstanceData_RT->bReadThisFrame = true;
@@ -429,6 +427,9 @@ void UNiagaraDataInterfaceRenderTarget2DArray::SetShaderParameters(const FNiagar
 		}
 		else
 		{
+		#if WITH_NIAGARA_DEBUG_EMITTER_NAME
+			GEngine->AddOnScreenDebugMessage(uint64(this), 1.f, FColor::White, *FString::Printf(TEXT("RenderTarget is read and wrote in the same stage, this is not allowed, read will be invalid. (%s)"), *Context.GetDebugString()));
+		#endif
 			Parameters->Texture = Context.GetComputeDispatchInterface().GetBlackTextureSRV(GraphBuilder, ETextureDimension::Texture2DArray);
 		}
 
@@ -449,15 +450,18 @@ bool UNiagaraDataInterfaceRenderTarget2DArray::InitPerInstanceData(void* PerInst
 
 	FRenderTarget2DArrayRWInstanceData_GameThread* InstanceData = new (PerInstanceData) FRenderTarget2DArrayRWInstanceData_GameThread();
 
-	if (NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut && !IsUsedWithGPUEmitter())
-	{
-		return true;
-	}
+	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
+	const bool bValidGpuDataInterface = NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut == 0 || IsUsedWithGPUScript();
 
 	ETextureRenderTargetFormat RenderTargetFormat;
 	if (NiagaraDataInterfaceRenderTargetCommon::GetRenderTargetFormat(bOverrideFormat, OverrideRenderTargetFormat, RenderTargetFormat) == false)
 	{
-		return false;
+		if (bValidGpuDataInterface)
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NDIRT2DArray failed to find a render target format that supports UAV store"));
+			return false;
+		}
+		return true;
 	}
 
 	InstanceData->Size.X = FMath::Clamp<int>(int(float(Size.X) * NiagaraDataInterfaceRenderTargetCommon::GResolutionMultiplier), 1, GMaxTextureDimensions);
@@ -475,8 +479,10 @@ bool UNiagaraDataInterfaceRenderTarget2DArray::InitPerInstanceData(void* PerInst
 
 void UNiagaraDataInterfaceRenderTarget2DArray::DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance)
 {
-	FRenderTarget2DArrayRWInstanceData_GameThread* InstanceData = static_cast<FRenderTarget2DArrayRWInstanceData_GameThread*>(PerInstanceData);
+	using namespace NDIRenderTarget2DArrayLocal;
 
+	FRenderTarget2DArrayRWInstanceData_GameThread* InstanceData = static_cast<FRenderTarget2DArrayRWInstanceData_GameThread*>(PerInstanceData);
+	NiagaraDataInterfaceRenderTargetCommon::ReleaseRenderTarget(SystemInstance, InstanceData);
 	InstanceData->~FRenderTarget2DArrayRWInstanceData_GameThread();
 
 	FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy>();
@@ -494,14 +500,6 @@ void UNiagaraDataInterfaceRenderTarget2DArray::DestroyPerInstanceData(void* PerI
 			RT_Proxy->SystemInstancesToProxyData_RT.Remove(InstanceID);
 		}
 	);
-
-	// Make sure to clear out the reference to the render target if we created one.
-	using RenderTargetType = decltype(decltype(ManagedRenderTargets)::ElementType::Value);
-	RenderTargetType ExistingRenderTarget = nullptr;
-	if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && NiagaraDataInterfaceRenderTargetCommon::GReleaseResourceOnRemove)
-	{
-		ExistingRenderTarget->ReleaseResource();
-	}
 }
 
 
@@ -610,19 +608,16 @@ void UNiagaraDataInterfaceRenderTarget2DArray::VMSetFormat(FVectorVMExternalFunc
 
 bool UNiagaraDataInterfaceRenderTarget2DArray::PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds)
 {
+	using namespace NDIRenderTarget2DArrayLocal;
+
 	FRenderTarget2DArrayRWInstanceData_GameThread* InstanceData = static_cast<FRenderTarget2DArrayRWInstanceData_GameThread*>(PerInstanceData);
 
 	// Pull from user parameter
 	UTextureRenderTarget2DArray* UserTargetTexture = InstanceData->RTUserParamBinding.GetValue<UTextureRenderTarget2DArray>();
 	if (UserTargetTexture && (InstanceData->TargetTexture != UserTargetTexture))
 	{
+		NiagaraDataInterfaceRenderTargetCommon::ReleaseRenderTarget(SystemInstance, InstanceData);
 		InstanceData->TargetTexture = UserTargetTexture;
-
-		TObjectPtr<UTextureRenderTarget2DArray> ExistingRenderTarget = nullptr;
-		if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && NiagaraDataInterfaceRenderTargetCommon::GReleaseResourceOnRemove)
-		{
-			ExistingRenderTarget->ReleaseResource();
-		}
 	}
 
 	// Do we inherit the texture parameters from the user supplied texture?
@@ -656,6 +651,8 @@ bool UNiagaraDataInterfaceRenderTarget2DArray::PerInstanceTick(void* PerInstance
 
 bool UNiagaraDataInterfaceRenderTarget2DArray::PerInstanceTickPostSimulate(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds)
 {
+	using namespace NDIRenderTarget2DArrayLocal;
+
 	// Update InstanceData as the texture may have changed
 	FRenderTarget2DArrayRWInstanceData_GameThread* InstanceData = static_cast<FRenderTarget2DArrayRWInstanceData_GameThread*>(PerInstanceData);
 #if WITH_EDITORONLY_DATA
@@ -663,22 +660,26 @@ bool UNiagaraDataInterfaceRenderTarget2DArray::PerInstanceTickPostSimulate(void*
 #endif
 
 	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
-	if (NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut && !IsUsedWithGPUEmitter())
+	const bool bValidGpuDataInterface = NiagaraDataInterfaceRenderTargetCommon::GIgnoreCookedOut == 0 || IsUsedWithGPUScript();
+
+	if (::IsValid(InstanceData->TargetTexture) == false)
 	{
-		return false;
+		InstanceData->TargetTexture = nullptr;
 	}
 
-	if (!bInheritUserParameterSettings && (InstanceData->TargetTexture == nullptr))
+	if (bValidGpuDataInterface && !bInheritUserParameterSettings && (InstanceData->TargetTexture == nullptr))
 	{
-		InstanceData->TargetTexture = NewObject<UTextureRenderTarget2DArray>(this);
+		if (NiagaraDataInterfaceRenderTargetCommon::CreateRenderTarget<UTextureRenderTarget2DArray>(SystemInstance, InstanceData) == false)
+		{
+			return false;
+		}
+		check(InstanceData->TargetTexture);
 		InstanceData->TargetTexture->bCanCreateUAV = true;
 		//InstanceData->TargetTexture->bAutoGenerateMips = InstanceData->MipMapGeneration != ENiagaraMipMapGeneration::Disabled;
 		InstanceData->TargetTexture->ClearColor = FLinearColor(0.0, 0, 0, 0);
 		InstanceData->TargetTexture->Filter = InstanceData->Filter;
 		InstanceData->TargetTexture->Init(InstanceData->Size.X, InstanceData->Size.Y, InstanceData->Size.Z, InstanceData->Format);
 		InstanceData->TargetTexture->UpdateResourceImmediate(true);
-
-		ManagedRenderTargets.Add(SystemInstance->GetId()) = InstanceData->TargetTexture;
 	}
 
 	// Do we need to update the existing texture?
@@ -702,7 +703,7 @@ bool UNiagaraDataInterfaceRenderTarget2DArray::PerInstanceTickPostSimulate(void*
 	}
 
 	//-TODO: We could avoid updating each frame if we cache the resource pointer or a serial number
-	bool bUpdateRT = true;
+	const bool bUpdateRT = true && bValidGpuDataInterface;
 	if (bUpdateRT)
 	{
 		FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy>();
@@ -772,13 +773,12 @@ void FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy::PostSimulate(const FNDI
 	ProxyData->TransientRDGUAV = nullptr;
 }
 
-FIntVector FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const
+void FNiagaraDataInterfaceProxyRenderTarget2DArrayProxy::GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context) 
 {
-	if ( const FRenderTarget2DArrayRWInstanceData_RenderThread* TargetData = SystemInstancesToProxyData_RT.Find(SystemInstanceID) )
+	if ( const FRenderTarget2DArrayRWInstanceData_RenderThread* TargetData = SystemInstancesToProxyData_RT.Find(Context.GetSystemInstanceID()) )
 	{
-		return TargetData->Size;
+		Context.SetDirect(TargetData->Size);
 	}
-	return FIntVector::ZeroValue;
 }
 
 #undef LOCTEXT_NAMESPACE

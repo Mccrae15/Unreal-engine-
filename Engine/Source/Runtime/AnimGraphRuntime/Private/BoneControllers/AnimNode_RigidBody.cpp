@@ -3,6 +3,11 @@
 #include "BoneControllers/AnimNode_RigidBody.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+
+#if WITH_CHAOS_VISUAL_DEBUGGER
+#include "ChaosVDRuntimeModule.h"
+#endif
+
 #include "ClothCollisionSource.h"
 #include "GameFramework/Pawn.h"
 #include "HAL/Event.h"
@@ -88,6 +93,11 @@ FAutoConsoleVariableRef CVarRigidBodyNodeDeferredSimulationDefault(
 bool bRBAN_DebugDraw = false;
 FAutoConsoleVariableRef CVarRigidBodyNodeDebugDraw(TEXT("p.RigidBodyNode.DebugDraw"), bRBAN_DebugDraw, TEXT("Whether to debug draw the rigid body simulation state. Requires p.Chaos.DebugDraw.Enabled 1 to function as well."), ECVF_Default);
 
+// Temporary to avoid out of bounds access issue
+bool bRBAN_InitializeBoneReferencesRangeCheckEnabled = true;
+FAutoConsoleVariableRef CVarRigidBodyNodeInitializeBoneReferencesRangeCheckEnabled(TEXT("p.RigidBodyNode.InitializeBoneReferencesRangeCheckEnabled"), bRBAN_InitializeBoneReferencesRangeCheckEnabled, TEXT(""), ECVF_Default);
+
+
 // Array of priorities that can be indexed into with CVars, since task priorities cannot be set from scalability .ini
 static UE::Tasks::ETaskPriority GRigidBodyNodeTaskPriorities[] =
 {
@@ -105,6 +115,11 @@ FAutoConsoleVariableRef CVarRigidBodyNodeSimulationTaskPriority(
 	TEXT("Task priority for running the rigid body node simulation task (0 = foreground/high, 1 = foreground/normal, 2 = background/high, 3 = background/normal, 4 = background/low)."),
 	ECVF_Default
 );
+
+// This is to validate our declaration of TIsPODType in the header, which
+// was done to ensure that STRUCT_IsPlainOldData is set, which allows scripts
+// and reflection based clients to copy via memcpy:
+static_assert(std::is_trivially_copyable<FSimSpaceSettings>::value);
 
 FSimSpaceSettings::FSimSpaceSettings()
 	: WorldAlpha(0)
@@ -242,56 +257,6 @@ void FAnimNode_RigidBody::Initialize_AnyThread(const FAnimationInitializeContext
 		InitPhysics(Cast<UAnimInstance>(Context.GetAnimInstanceObject()));
 	}
 #endif
-}
-
-FTransform SpaceToWorldTransform(ESimulationSpace Space, const FTransform& ComponentToWorld, const FTransform& BaseBoneTM)
-{
-	switch (Space)
-	{
-	case ESimulationSpace::ComponentSpace: 
-		return ComponentToWorld;
-	case ESimulationSpace::WorldSpace: 
-		return FTransform::Identity;
-	case ESimulationSpace::BaseBoneSpace:
-		return BaseBoneTM * ComponentToWorld;
-	default:
-		return FTransform::Identity;
-	}
-}
-
-FVector WorldVectorToSpaceNoScale(ESimulationSpace Space, const FVector& WorldDir, const FTransform& ComponentToWorld, const FTransform& BaseBoneTM)
-{
-	switch(Space)
-	{
-		case ESimulationSpace::ComponentSpace: return ComponentToWorld.InverseTransformVectorNoScale(WorldDir);
-		case ESimulationSpace::WorldSpace: return WorldDir;
-		case ESimulationSpace::BaseBoneSpace:
-			return BaseBoneTM.InverseTransformVectorNoScale(ComponentToWorld.InverseTransformVectorNoScale(WorldDir));
-		default: return FVector::ZeroVector;
-	}
-}
-
-FVector WorldPositionToSpace(ESimulationSpace Space, const FVector& WorldPoint, const FTransform& ComponentToWorld, const FTransform& BaseBoneTM)
-{
-	switch (Space)
-	{
-		case ESimulationSpace::ComponentSpace: return ComponentToWorld.InverseTransformPosition(WorldPoint);
-		case ESimulationSpace::WorldSpace: return WorldPoint;
-		case ESimulationSpace::BaseBoneSpace:
-			return BaseBoneTM.InverseTransformPosition(ComponentToWorld.InverseTransformPosition(WorldPoint));
-		default: return FVector::ZeroVector;
-	}
-}
-
-FORCEINLINE_DEBUGGABLE FTransform ConvertCSTransformToSimSpace(ESimulationSpace SimulationSpace, const FTransform& InCSTransform, const FTransform& ComponentToWorld, const FTransform& BaseBoneTM)
-{
-	switch (SimulationSpace)
-	{
-		case ESimulationSpace::ComponentSpace: return InCSTransform;
-		case ESimulationSpace::WorldSpace:  return InCSTransform * ComponentToWorld; 
-		case ESimulationSpace::BaseBoneSpace: return InCSTransform.GetRelativeTransform(BaseBoneTM); break;
-		default: ensureMsgf(false, TEXT("Unsupported Simulation Space")); return InCSTransform;
-	}
 }
 
 void FAnimNode_RigidBody::UpdateComponentPose_AnyThread(const FAnimationUpdateContext& Context)
@@ -1040,7 +1005,9 @@ void FAnimNode_RigidBody::InitPhysics(const UAnimInstance* InAnimInstance)
 	SkeletonBoneIndexToBodyIndex.Init(INDEX_NONE, NumSkeletonBones);
 
 	PreviousTransform = SkeletalMeshComp->GetComponentToWorld();
-
+	
+	RemoveClothColliderObjects();
+	
 	ComponentsInSim.Reset();
 	ComponentsInSimTick = 0;
 
@@ -1059,6 +1026,11 @@ void FAnimNode_RigidBody::InitPhysics(const UAnimInstance* InAnimInstance)
 	if(bEnabled)
 	{
 		PhysicsSimulation = new ImmediatePhysics::FSimulation();
+
+#if WITH_CHAOS_VISUAL_DEBUGGER
+		PhysicsSimulation->GetChaosVDContextData().Id = FChaosVDRuntimeModule::Get().GenerateUniqueID();
+#endif
+
 		const int32 NumBodies = UsePhysicsAsset->SkeletalBodySetups.Num();
 		Bodies.Empty(NumBodies);
 		BodyAnimData.Reset(NumBodies);
@@ -1273,8 +1245,6 @@ void FAnimNode_RigidBody::InitPhysics(const UAnimInstance* InAnimInstance)
 
 		PhysicsSimulation->SetIgnoreCollisionPairTable(IgnorePairs);
 		PhysicsSimulation->SetIgnoreCollisionActors(IgnoreCollisionActors);
-
-		CollectClothColliderObjects(SkeletalMeshComp);
 
 		SolverSettings = UsePhysicsAsset->SolverSettings;
 		PhysicsSimulation->SetSolverSettings(
@@ -1517,6 +1487,13 @@ void FAnimNode_RigidBody::PreUpdate(const UAnimInstance* InAnimInstance)
 			}
 		}
 	}
+
+	if (bUseExternalClothCollision && ClothColliders.IsEmpty())
+	{
+		// The Cloth Collider assets are part of the SkelMeshComponent and can be initialized after the first call to InitPhysics. Keep checking here until some 
+		// are found, following the behavior of the cloth system (see USkeletalMeshComponent::UpdateClothTransformImp())
+		CollectClothColliderObjects(SKC);
+	}
 }
 
 int32 FAnimNode_RigidBody::GetLODThreshold() const
@@ -1634,7 +1611,7 @@ void FAnimNode_RigidBody::UpdateClothColliderObjects(const FTransform& SpaceTran
 			CompSpaceTransform.SetScale3D(FVector::OneVector);	// TODO - sort out scale for world objects in local sim
 
 			// Update the sim's copy of the world object
-			ClothCollider.ActorHandle->SetWorldTransform(CompSpaceTransform);
+			ClothCollider.ActorHandle->SetKinematicTarget(CompSpaceTransform);
 		}
 	}
 }
@@ -1748,7 +1725,7 @@ void FAnimNode_RigidBody::UpdateWorldObjects(const FTransform& SpaceTransform)
 				CompSpaceTransform.SetScale3D(FVector::OneVector);	// TODO - sort out scale for world objects in local sim
 
 				// Update the sim's copy of the world object
-				ActorHandle->SetWorldTransform(CompSpaceTransform);
+				ActorHandle->SetKinematicTarget(CompSpaceTransform);
 			}
 		}
 	}
@@ -1795,6 +1772,19 @@ void FAnimNode_RigidBody::InitializeBoneReferences(const FBoneContainer& Require
 
 		if (BodyIndex != INDEX_NONE)
 		{
+			// Avoid and track down issues with out-of-bounds access of BodyAnimData
+			if (bRBAN_InitializeBoneReferencesRangeCheckEnabled)
+			{
+				if (!ensure(BodyAnimData.IsValidIndex(BodyIndex)))
+				{
+					UE_LOG(LogRBAN, Warning, TEXT("FAnimNode_RigidBody::InitializeBoneReferences: BodyIndex out of range. BodyIndex=%d/%d, SkeletonBoneIndex=%d/%d, CompactPoseBoneIndex=%d, RequiredBoneIndex=%d"),
+								 BodyIndex, BodyAnimData.Num(), SkeletonBoneIndex, SkeletonBoneIndexToBodyIndex.Num(), CompactPoseBoneIndex.GetInt(), Index);
+
+					bHasInvalidBoneReference = true;
+					break;
+				}
+			}
+
 			//If we have a body we need to save it for later
 			FOutputBoneData* OutputData = new (OutputBoneData) FOutputBoneData();
 			OutputData->BodyIndex = BodyIndex;
@@ -1842,8 +1832,9 @@ void FAnimNode_RigidBody::InitializeBoneReferences(const FBoneContainer& Require
 	if (bHasInvalidBoneReference)
 	{
 		// If a bone was missing, let us know which asset it happened on, and clear our bone container to make the bad asset visible.
-		ensureMsgf(false, TEXT("FAnimNode_RigidBody::InitializeBoneReferences: The Skeleton %s, is missing bones that SkeletalMesh %s needs. Skeleton might need to be resaved."),
+		UE_LOG(LogRBAN, Warning, TEXT("FAnimNode_RigidBody::InitializeBoneReferences: The Skeleton %s, is missing bones that SkeletalMesh %s needs. Skeleton might need to be resaved."),
 			*GetNameSafe(RequiredBones.GetSkeletonAsset()), *GetNameSafe(RequiredBones.GetSkeletalMeshAsset()));
+		ensure(false);
 		OutputBoneData.Empty();
 	}
 	else

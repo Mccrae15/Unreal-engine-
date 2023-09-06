@@ -17,10 +17,12 @@ float DecalCommonOutput(
 	inout FPixelShaderOut Out, 
 	in FStrataPixelHeader InHeader,
 	in FStrataBSDF InBSDF,
-	in float CoverageWeight)
+	in float FadeOutWeight,
+	in float CoverageOverBackground)
 {
-	FStrataDBuffer DBuffer = StrataConvertToDBuffer(InHeader, InBSDF);
-	DBuffer.Coverage *= CoverageWeight;
+	FStrataDBuffer DBuffer = InHeader.StrataConvertToDBuffer(InBSDF);
+
+	DBuffer.Coverage *= FadeOutWeight;
 
 	float3 Color = DBuffer.Emissive;
 
@@ -41,21 +43,27 @@ float DecalCommonOutput(
 
 #if DECAL_RENDERTARGETMODE == DECAL_RENDERTARGETMODE_SCENECOLOR
 	Color *= View.PreExposure;
+#if STRATA_USES_CONVERSION_FROM_LEGACY && MATERIALBLENDING_ALPHACOMPOSITE
+	// In legacy mode, emissive is always influenced by opacity, even when AlphaComposite blend mode is used.
+	// This is only here to maintain the legacy behavior after material are converted; not with Substrate itself.
+	Color *= CoverageOverBackground;
+#endif
 #endif
 
+	// Outputing color to MRT0 (can be emissive or any other data set above)
 	Out.MRT[0] = float4(Color, DBuffer.Coverage);
 
 #if DECAL_RENDERTARGETMODE == DECAL_RENDERTARGETMODE_DBUFFER
+	// If we output to DBuffer, write to all the 3 RTs.
+	StrataPackDBuffer(DBuffer, Out.MRT[0], Out.MRT[1], Out.MRT[2]);
 
-	//StrataPackDBuffer(DBuffer, Out.MRT[0], Out.MRT[1], Out.MRT[2], Out.MRT[3]);
-	float4 PreMulEmissive_Coverage = 0;
-	StrataPackDBuffer(DBuffer, PreMulEmissive_Coverage, Out.MRT[0], Out.MRT[1], Out.MRT[2]);
-
-	#if DECAL_RENDERTARGET_COUNT == 4
-		Out.MRT[3] = 1.0f; // DBufferMask
-	#endif
-
+	// This is to set the coverage over the background to an arbitrary value in case premultiplied alpha is used.
+	Out.MRT[0].a = CoverageOverBackground;
+	Out.MRT[1].a = CoverageOverBackground;
+	Out.MRT[2].a = CoverageOverBackground;
+	Out.MRT[3].a = CoverageOverBackground;
 #endif
+
 	// Allow shader compiler to cull outputs that we won't use.
 	// Blend state also prevents writing unused outputs, but we want to be sure that we also avoid shader cost.
 #if !DECAL_OUT_MRT0
@@ -87,7 +95,7 @@ void DecalCommonOutput(inout FPixelShaderIn In, inout FPixelShaderOut Out, float
 	Color = lerp(1, Data.GBufferAO, Opacity);
 #endif
 
-	#if DECAL_RENDERTARGETMODE == DECAL_RENDERTARGETMODE_SCENECOLOR || DECAL_RENDERTARGET == DECAL_RENDERTARGETMODE_GBUFFER || DECAL_RENDERTARGET == DECAL_RENDERTARGETMODE_GBUFFER_NONORMAL
+	#if DECAL_RENDERTARGETMODE == DECAL_RENDERTARGETMODE_SCENECOLOR || DECAL_RENDERTARGETMODE == DECAL_RENDERTARGETMODE_GBUFFER || DECAL_RENDERTARGETMODE == DECAL_RENDERTARGETMODE_GBUFFER_NONORMAL
 		Color *= View.PreExposure;
 	#endif
 

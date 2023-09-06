@@ -43,6 +43,8 @@ class UObject;
 class USkeletalMesh;
 class USkeletalMeshComponent;
 struct FToolMenuContext;
+struct FFrame;
+struct FBlueprintExceptionInfo;
 
 struct FAnimationBlueprintEditorModes
 {
@@ -83,6 +85,7 @@ namespace AnimationBlueprintEditorTabs
 	extern const FName SlotNamesTab;
 	extern const FName CurveNamesTab;
 	extern const FName PoseWatchTab;
+	extern const FName FindReplaceTab;
 };
 
 /**
@@ -198,7 +201,7 @@ public:
 	void RecompileAnimBlueprintIfDirty();
 
 	/** Get the skeleton tree this Persona editor is hosting */
-	TSharedRef<class ISkeletonTree> GetSkeletonTree() const { return SkeletonTree.ToSharedRef(); }
+	TSharedPtr<class ISkeletonTree> GetSkeletonTree() const { return SkeletonTree; }
 
 	/** Make this available to allow us to create title bar widgets for other container types - e.g. blendspaces */
 	using FBlueprintEditor::CreateGraphTitleBarWidget;
@@ -357,6 +360,9 @@ private:
 
 	void HandleAnimationSequenceBrowserCreated(const TSharedRef<IAnimationSequenceBrowser>& InSequenceBrowser);
 
+	/** Hook the BP exception handler to deal with infinite loops (more) gracefully */
+	void HandleScriptException(const UObject* InObject, const FFrame& InFrame, const FBlueprintExceptionInfo& InInfo);
+
 	void HandleUpdateSettings(const UAnimationBlueprintEditorSettings* AnimationBlueprintEditorSettings, EPropertyChangeType::Type ChangeType);
 
 	/** Chooses a suitable pose watch color automatically - i.e. one that isn't already in use (if possible) */
@@ -411,7 +417,7 @@ private:
 	FEdGraphPinType LastGraphPinType;
 
     /** Configuration class used to store editor settings across sessions. */
-	UAnimationBlueprintEditorOptions* EditorOptions;
+	TObjectPtr<UAnimationBlueprintEditorOptions> EditorOptions;
 
 	/** Cached mesh component held during compilation, used to reconnect debugger */
 	USkeletalMeshComponent* DebuggedMeshComponent;
@@ -421,4 +427,7 @@ private:
 
 	/** Delegate handle registered for when settings change */
 	FDelegateHandle AnimationBlueprintEditorSettingsChangedHandle;
+
+	/** Delegate handle registered to handle infinite loop exceptions */
+	FDelegateHandle ScriptExceptionHandle;
 };

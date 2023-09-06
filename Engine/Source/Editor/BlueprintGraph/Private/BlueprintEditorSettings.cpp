@@ -14,6 +14,7 @@
 #include "EdGraphSchema_K2.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Engine/Blueprint.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
@@ -52,8 +53,13 @@ UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& Obj
 	, BreakpointReloadMethod(EBlueprintBreakpointReloadMethod::RestoreAll)
 	, bEnablePinValueInspectionTooltips(true)
 	, bEnableNamespaceEditorFeatures(true)
+	, bEnableContextMenuTimeSlicing(true)
+	, ContextMenuTimeSlicingThresholdMs(50)
+	, bIncludeActionsForSelectedAssetsInContextMenu(false)
+	, bLimitAssetActionBindingToSingleSelectionOnly(false)
+	, bLoadSelectedAssetsForContextMenuActionBinding(true)
+	, bDoNotMarkAllInstancesDirtyOnDefaultValueChange(true)
 	// Experimental
-	, bEnableContextMenuTimeSlicing(false)
 	, bFavorPureCastNodes(false)
 	// Compiler Settings
 	, SaveOnCompile(SoC_Never)
@@ -175,7 +181,7 @@ void UBlueprintEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		FBlueprintEditorModule& BlueprintEditorModule = FModuleManager::LoadModuleChecked<FBlueprintEditorModule>("Kismet");
 		for (const TSharedRef<IBlueprintEditor>& BlueprintEditor : BlueprintEditorModule.GetBlueprintEditors())
 		{
-			BlueprintEditor->CloseWindow();
+			BlueprintEditor->CloseWindow(EAssetEditorCloseReason::EditorRefreshRequested);
 		}
 	}
 
@@ -268,4 +274,33 @@ bool UBlueprintEditorSettings::IsClassPathAllowedOnPin(const FTopLevelAssetPath&
 		}
 	}
 	return true;
+}
+
+bool UBlueprintEditorSettings::IsFunctionAllowed(const UBlueprint* InBlueprint, const FName FunctionName) const
+{
+	if (!FunctionPermissions.HasFiltering())
+	{
+		return true;
+	}
+
+	if (FunctionPermissions.PassesFilter(FunctionName))
+	{
+		return true;
+	}
+
+	if (InBlueprint)
+	{
+		if (const UClass* NativeParentClass = FBlueprintEditorUtils::FindFirstNativeClass(InBlueprint->ParentClass))
+		{
+			if (const UFunction* NativeParentFunction = NativeParentClass->FindFunctionByName(FunctionName))
+			{
+				if (FunctionPermissions.PassesFilter(NativeParentFunction->GetPathName()))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
 }

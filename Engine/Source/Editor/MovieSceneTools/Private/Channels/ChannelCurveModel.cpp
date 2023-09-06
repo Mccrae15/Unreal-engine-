@@ -98,6 +98,13 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::DrawCurve(const FCu
 		const int32 StartingIndex = Algo::UpperBound(Times, StartFrame);
 		const int32 EndingIndex = Algo::LowerBound(Times, EndFrame);
 
+		// Add the lower bound of the visible space
+		const bool bValidRange = StartingIndex < EndingIndex;
+		if (bValidRange)
+		{
+			OutInterpolatingPoints.Add(MakeTuple(StartFrame / TickResolution, GetKeyValue(Values, StartingIndex)));
+		}
+
 		TOptional<double> PreviousValue;
 		for (int32 KeyIndex = StartingIndex; KeyIndex < EndingIndex; ++KeyIndex)
 		{
@@ -109,6 +116,12 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::DrawCurve(const FCu
 
 			OutInterpolatingPoints.Add(MakeTuple(Times[KeyIndex] / TickResolution, Value));
 			PreviousValue = Value;
+		}
+
+		// Add the upper bound of the visible space
+		if (bValidRange)
+		{
+			OutInterpolatingPoints.Add(MakeTuple(EndFrame / TickResolution, GetKeyValue(Values, EndingIndex - 1)));
 		}
 	}
 }
@@ -356,12 +369,15 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::AddKeys(TArrayView<
 		TArray<FKeyHandle> NewKeyHandles;
 		NewKeyHandles.SetNumUninitialized(InKeyPositions.Num());
 
+		FFrameNumber MinFrame = TNumericLimits<FFrameNumber>::Max();
+		FFrameNumber MaxFrame = TNumericLimits<FFrameNumber>::Min();
 		for (int32 Index = 0; Index < InKeyPositions.Num(); ++Index)
 		{
 			FKeyPosition Position = InKeyPositions[Index];
 
 			FFrameNumber Time = (Position.InputValue * TickResolution).RoundToFrame();
-			Section->ExpandToFrame(Time);
+			MinFrame = FMath::Min(MinFrame, Time);
+			MaxFrame = FMath::Max(MaxFrame, Time);
 
 			ChannelValue Value = (ChannelValue)(Position.OutputValue);
 
@@ -375,6 +391,12 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::AddKeys(TArrayView<
 					(*OutKeyHandles)[Index] = NewHandle;
 				}
 			}
+		}
+
+		if (InKeyPositions.Num() > 0)
+		{
+			Section->ExpandToFrame(MinFrame);
+			Section->ExpandToFrame(MaxFrame);
 		}
 
 		// We reuse SetKeyAttributes here as there is complex logic determining which parts of the attributes are valid to set.

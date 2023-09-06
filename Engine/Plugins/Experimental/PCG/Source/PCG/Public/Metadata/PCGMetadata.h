@@ -82,6 +82,7 @@ public:
 	bool HasParent(const UPCGMetadata* InTentativeParent) const;
 
 	/** Unparents current metadata by flattening the attributes (values, entries, etc.) */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata|Advanced")
 	void Flatten();
 
 	/** Create new streams */
@@ -119,7 +120,26 @@ public:
 	void CreateStringAttribute(FName AttributeName, FString DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
 
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	void CreateNameAttribute(FName AttributeName, FName DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
 	void CreateBoolAttribute(FName AttributeName, bool DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
+
+	/** Creates an attribute given a property.
+	* @param AttributeName: Target attribute to create
+	* @param Object: Object to get the property value from
+	* @param Property: The property to set from
+	* @returns true if the attribute creation succeeded
+	*/
+	bool CreateAttributeFromProperty(FName AttributeName, const UObject* Object, const FProperty* Property);
+
+	/** Creates an attribute given a property.
+	* @param AttributeName: Target attribute to create
+	* @param Data: Data pointer to get the property value from
+	* @param Property: The property to set from
+	* @returns true if the attribute creation succeeded
+	*/
+	bool CreateAttributeFromDataProperty(FName AttributeName, const void* Data, const FProperty* Property);
 
 	/** Set an attribute given a property and its value.
 	* @param AttributeName: Target attribute to set the property's value to
@@ -277,6 +297,8 @@ protected:
 	void AddAttributeInternal(FName AttributeName, FPCGMetadataAttributeBase* Attribute);
 	void RemoveAttributeInternal(FName AttributeName);
 
+	void SetLastCachedSelectorOnOwner(FName AttributeName);
+
 	UPROPERTY()
 	TObjectPtr<const UPCGMetadata> Parent;
 
@@ -321,27 +343,32 @@ FPCGMetadataAttribute<T>* UPCGMetadata::CreateAttribute(FName AttributeName, con
 
 	FPCGMetadataAttribute<T>* NewAttribute = new FPCGMetadataAttribute<T>(this, AttributeName, ParentAttribute, DefaultValue, bAllowsInterpolation);
 
-	AttributeLock.WriteLock();
-	if (FPCGMetadataAttributeBase** ExistingAttribute = Attributes.Find(AttributeName))
 	{
-		delete NewAttribute;
-		if ((*ExistingAttribute)->GetTypeId() != PCG::Private::MetadataTypes<T>::Id)
+		FWriteScopeLock WriteLock(AttributeLock);
+
+		if (FPCGMetadataAttributeBase** ExistingAttribute = Attributes.Find(AttributeName))
 		{
-			UE_LOG(LogPCG, Error, TEXT("Attribute %s already exists but is not the right type. Abort."), *AttributeName.ToString());
-			return nullptr;
+			delete NewAttribute;
+			if ((*ExistingAttribute)->GetTypeId() != PCG::Private::MetadataTypes<T>::Id)
+			{
+				UE_LOG(LogPCG, Error, TEXT("Attribute %s already exists but is not the right type. Abort."), *AttributeName.ToString());
+				return nullptr;
+			}
+			else
+			{
+				UE_LOG(LogPCG, Warning, TEXT("Attribute %s already exists"), *AttributeName.ToString());
+				NewAttribute = static_cast<FPCGMetadataAttribute<T>*>(*ExistingAttribute);
+			}
 		}
 		else
 		{
-			UE_LOG(LogPCG, Warning, TEXT("Attribute %s already exists"), *AttributeName.ToString());
-			NewAttribute = static_cast<FPCGMetadataAttribute<T>*>(*ExistingAttribute);
+			NewAttribute->AttributeId = NextAttributeId++;
+			AddAttributeInternal(AttributeName, NewAttribute);
+
+			// Also when creating an attribute, notify the PCG Data owner that the latest attribute manipulated is this one.
+			SetLastCachedSelectorOnOwner(AttributeName);
 		}
 	}
-	else
-	{
-		NewAttribute->AttributeId = NextAttributeId++;
-		AddAttributeInternal(AttributeName, NewAttribute);
-	}
-	AttributeLock.WriteUnlock();
 
 	return NewAttribute;
 }

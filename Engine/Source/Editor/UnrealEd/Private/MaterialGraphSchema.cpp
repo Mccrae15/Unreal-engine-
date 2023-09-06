@@ -47,6 +47,10 @@
 
 #define LOCTEXT_NAMESPACE "MaterialGraphSchema"
 
+static bool GDisableMaterialFunctionContextMenuActions = false;
+static FAutoConsoleVariableRef DisableMaterialFunctionContextMenuActionsCVar(TEXT("r.Material.DisableMaterialFunctionContextMenuActions"),
+	GDisableMaterialFunctionContextMenuActions, TEXT("Prevents MaterialFunction creation actions from being added to MaterialEditor context menus (False: disabled, True: enabled"));
+
 int32 UMaterialGraphSchema::CurrentCacheRefreshID = 0;
 
 ////////////////////////////////////////
@@ -917,6 +921,13 @@ TSharedPtr<FEdGraphSchemaAction> UMaterialGraphSchema::GetCreateCommentAction() 
 
 void UMaterialGraphSchema::GetMaterialFunctionActions(FGraphActionMenuBuilder& ActionMenuBuilder) const
 {
+	// Note: this is a temporary security solution. We need to improve on this by allowing functions that in included folders, 
+	// also considering that some folders may be aliased to different paths.
+	if (GDisableMaterialFunctionContextMenuActions)
+	{
+		return;
+	}
+
 	// Get type of dragged pin
 	uint32 FromPinType = 0;
 	if (ActionMenuBuilder.FromPin)
@@ -1008,13 +1019,23 @@ void UMaterialGraphSchema::GetMaterialFunctionActions(FGraphActionMenuBuilder& A
 					}
 				}
 
-				// Extract the object name from the path
 				FString FunctionName = FunctionPathName;
-				int32 PeriodIndex = FunctionPathName.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
 
-				if (PeriodIndex != INDEX_NONE)
+				const FString UserExposedCaption = AssetData.GetTagValueRef<FString>("UserExposedCaption");
+				if (!UserExposedCaption.IsEmpty())
 				{
-					FunctionName = FunctionPathName.Right(FunctionPathName.Len() - PeriodIndex - 1);
+					// If the UI user exposed name name is not empty, use it directly
+					FunctionName = UserExposedCaption;
+				}
+				else
+				{
+					// Extract the object name from the path
+					int32 PeriodIndex = FunctionPathName.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+
+					if (PeriodIndex != INDEX_NONE)
+					{
+						FunctionName = FunctionPathName.Right(FunctionPathName.Len() - PeriodIndex - 1);
+					}
 				}
 
 				// For each category the function should belong to...

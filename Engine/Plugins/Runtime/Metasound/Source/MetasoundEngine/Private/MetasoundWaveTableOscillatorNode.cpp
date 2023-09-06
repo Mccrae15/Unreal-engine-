@@ -67,7 +67,7 @@ namespace Metasound
 					PluginAuthor,
 					PluginNodeMissingPrompt,
 					GetDefaultInterface(),
-					{ NodeCategories::Generators },
+					{ NodeCategories::WaveTables },
 					{ METASOUND_LOCTEXT("WaveTableOscillatorSynthesisKeyword", "Synthesis")},
 					{ }
 				};
@@ -127,28 +127,39 @@ namespace Metasound
 
 		virtual ~FMetasoundWaveTableOscillatorNodeOperator() = default;
 
-		virtual FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
 		{
-			FDataReferenceCollection Inputs;
-
-			Inputs.AddDataReadReference("WaveTable", WaveTableReadRef);
-			Inputs.AddDataReadReference("Sync", SyncReadRef);
-			Inputs.AddDataReadReference("Freq", FreqReadRef);
+			InOutVertexData.BindReadVertex("WaveTable", WaveTableReadRef);
+			InOutVertexData.BindReadVertex("Play", PlayReadRef);
+			InOutVertexData.BindReadVertex("Stop", StopReadRef);
+			InOutVertexData.BindReadVertex("Sync", SyncReadRef);
+			InOutVertexData.BindReadVertex("Freq", FreqReadRef);
 
 			if (PhaseModReadRef.IsSet())
 			{
-				Inputs.AddDataReadReference("PhaseMod", *PhaseModReadRef);
+				InOutVertexData.BindReadVertex("PhaseMod", *PhaseModReadRef);
 			}
+		}
 
-			return Inputs;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex("Out", TDataReadReference<FAudioBuffer>(OutBufferWriteRef));
+		}
+
+		virtual FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference("Out", TDataReadReference<FAudioBuffer>(OutBufferWriteRef));
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
@@ -208,6 +219,23 @@ namespace Metasound
 				const FWaveTable& InputTable = *WaveTableReadRef;
 				Sampler.Process(InputTable.GetView(), { }, PhaseMod, SyncBufferView, OutBuffer);
 			}
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			const float BlockRate = InParams.OperatorSettings.GetActualBlockRate();
+			if (BlockRate > 0.0f)
+			{
+				BlockPeriod = 1.0f / BlockRate;
+			}
+
+			bPlaying = false;
+			if (SyncBuffer.Num() > 0)
+			{
+				FMemory::Memset(SyncBuffer.GetData(), 0, sizeof(float) * SyncBuffer.Num());
+			}
+			Sampler = WaveTable::FWaveTableSampler{};
+			OutBufferWriteRef->Zero();
 		}
 
 	private:

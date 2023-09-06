@@ -4,17 +4,14 @@
 #include "Net/Core/PropertyConditions/PropertyConditionsDelegates.h"
 #include "Net/Core/PushModel/PushModel.h"
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FRepChangedPropertyTracker::FRepChangedPropertyTracker(FCustomPropertyConditionState&& InActiveState)
 	: ActiveState(MoveTemp(InActiveState))
-	, ExternalDataNumBits(0)
 {
 }
 
 FRepChangedPropertyTracker::FRepChangedPropertyTracker(const bool InbIsReplay, const bool InbIsClientReplayRecording)
 	: FRepChangedPropertyTracker(0)
 {}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void FRepChangedPropertyTracker::SetCustomIsActiveOverride(UObject* OwningObject, const uint16 RepIndex, const bool bIsActive)
 {
@@ -36,24 +33,34 @@ void FRepChangedPropertyTracker::SetCustomIsActiveOverride(UObject* OwningObject
 #endif // UE_WITH_IRIS
 }
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-void FRepChangedPropertyTracker::SetExternalData(const uint8* Src, const int32 NumBits)
+void FRepChangedPropertyTracker::CallSetDynamicCondition(const UObject* OwningObject, const uint16 RepIndex, const ELifetimeCondition Condition)
 {
-	ExternalDataNumBits = NumBits;
-	const int32 NumBytes = (NumBits + 7) >> 3;
-	ExternalData.Reset(NumBytes);
-	ExternalData.AddUninitialized(NumBytes);
-	FMemory::Memcpy(ExternalData.GetData(), Src, NumBytes);
+	using namespace UE::Net::Private;
+
+	const ELifetimeCondition OldCondition = ActiveState.GetDynamicCondition(RepIndex);
+	if (Condition == OldCondition)
+	{
+		return;
+	}
+
+	ActiveState.SetDynamicCondition(RepIndex, Condition);
+
+#if WITH_PUSH_MODEL
+	MARK_PROPERTY_DIRTY_UNSAFE(OwningObject, RepIndex);
+#endif
+
+#if UE_WITH_IRIS
+	FPropertyConditionDelegates::FOnPropertyDynamicConditionChanged& Delegate = FPropertyConditionDelegates::GetOnPropertyDynamicConditionChangedDelegate();
+	if (Delegate.IsBound())
+	{
+		Delegate.Broadcast(OwningObject, RepIndex, Condition);
+	}
+#endif
 }
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void FRepChangedPropertyTracker::CountBytes(FArchive& Ar) const
 {
 	// Include our size here, because the caller won't know.
 	Ar.CountBytes(sizeof(FRepChangedPropertyTracker), sizeof(FRepChangedPropertyTracker));
 	ActiveState.CountBytes(Ar);
-
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ExternalData.CountBytes(Ar);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }

@@ -188,9 +188,12 @@ void UMovieSceneSubSection::PostLoad()
 
 bool UMovieSceneSubSection::PopulateEvaluationFieldImpl(const TRange<FFrameNumber>& EffectiveRange, const FMovieSceneEvaluationFieldEntityMetaData& InMetaData, FMovieSceneEntityComponentFieldBuilder* OutFieldBuilder)
 {
-	const int32 EntityIndex   = OutFieldBuilder->FindOrAddEntity(this, 0);
-	const int32 MetaDataIndex = OutFieldBuilder->AddMetaData(InMetaData);
-	OutFieldBuilder->AddPersistentEntity(EffectiveRange, EntityIndex, MetaDataIndex);
+	if (SubSequence)
+	{
+		const int32 EntityIndex   = OutFieldBuilder->FindOrAddEntity(this, 0);
+		const int32 MetaDataIndex = OutFieldBuilder->AddMetaData(InMetaData);
+		OutFieldBuilder->AddPersistentEntity(EffectiveRange, EntityIndex, MetaDataIndex);
+	}
 
 	return true;
 }
@@ -347,15 +350,16 @@ UMovieSceneSection* UMovieSceneSubSection::SplitSection( FQualifiedFrameTime Spl
 
 TOptional<TRange<FFrameNumber> > UMovieSceneSubSection::GetAutoSizeRange() const
 {
-	if (SubSequence && SubSequence->GetMovieScene())
+	UMovieScene* MovieScene = SubSequence ? SubSequence->GetMovieScene() : nullptr;
+	if (MovieScene)
 	{
 		// We probably want to just auto-size the section to the sub-sequence's scaled playback range... if this section
-		// is looping, however, it's hard to know what we want to do.
-		FMovieSceneTimeTransform InnerToOuter = OuterToInnerTransform().InverseLinearOnly();
-		UMovieScene* InnerMovieScene = SubSequence->GetMovieScene();
+		// is looping, however, it's hard to know what we want to do. Let's just size it to one loop.
+		const FMovieSceneTimeTransform InnerToOuter = OuterToInnerTransform().InverseLinearOnly();
+		const TRange<FFrameNumber> InnerPlaybackRange = UMovieSceneSubSection::GetValidatedInnerPlaybackRange(Parameters, *MovieScene);
 
-		FFrameTime IncAutoStartTime = FFrameTime(UE::MovieScene::DiscreteInclusiveLower(InnerMovieScene->GetPlaybackRange())) * InnerToOuter;
-		FFrameTime ExcAutoEndTime   = FFrameTime(UE::MovieScene::DiscreteExclusiveUpper(InnerMovieScene->GetPlaybackRange())) * InnerToOuter;
+		const FFrameTime IncAutoStartTime = FFrameTime(UE::MovieScene::DiscreteInclusiveLower(InnerPlaybackRange)) * InnerToOuter;
+		const FFrameTime ExcAutoEndTime = FFrameTime(UE::MovieScene::DiscreteExclusiveUpper(InnerPlaybackRange)) * InnerToOuter;
 
 		return TRange<FFrameNumber>(GetInclusiveStartFrame(), GetInclusiveStartFrame() + (ExcAutoEndTime.RoundToFrame() - IncAutoStartTime.RoundToFrame()));
 	}

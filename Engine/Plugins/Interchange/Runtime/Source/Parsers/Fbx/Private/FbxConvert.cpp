@@ -26,15 +26,19 @@ namespace UE
 				//Set the original framerate from the current fbx file
 				float FbxFramerate = FbxTime::GetFrameRate(TimeMode);
 
-				//Merge the anim stack before the conversion since the above 0 layer will not be converted
 				int32 AnimStackCount = SDKScene->GetSrcObjectCount<FbxAnimStack>();
-				//Merge the animation stack layer before converting the scene
 				for (int32 AnimStackIndex = 0; AnimStackIndex < AnimStackCount; AnimStackIndex++)
 				{
-					FbxAnimStack* CurAnimStack = SDKScene->GetSrcObject<FbxAnimStack>(AnimStackIndex);
-					if (CurAnimStack->GetMemberCount() > 1)
+					FbxAnimStack* CurrentAnimStack = SDKScene->GetSrcObject<FbxAnimStack>(AnimStackIndex);
+					int32 NumLayers = CurrentAnimStack->GetMemberCount();
+					for (int LayerIndex = 0; LayerIndex < NumLayers; LayerIndex++)
 					{
-						MergeAllLayerAnimation(SDKScene, CurAnimStack, FbxFramerate);
+						FbxAnimLayer* AnimLayer = (FbxAnimLayer*)CurrentAnimStack->GetMember(LayerIndex);
+
+						// always apply unroll filter
+						FbxAnimCurveFilterUnroll UnrollFilter;
+						UnrollFilter.Reset();
+						ApplyUnroll(SDKScene->GetRootNode(), AnimLayer, &UnrollFilter);
 					}
 				}
 
@@ -129,6 +133,33 @@ namespace UE
 				return UEMatrix;
 			}
 
+			FbxAMatrix FFbxConvert::ConvertMatrix(const FMatrix& UEMatrix)
+			{
+				FbxAMatrix FbxMatrix;
+
+				for (int i = 0; i < 4; ++i)
+				{
+					FbxVector4 Row;
+					if (i == 1)
+					{
+						Row[0] = -UEMatrix.M[i][0];
+						Row[1] = UEMatrix.M[i][1];
+						Row[2] = -UEMatrix.M[i][2];
+						Row[3] = -UEMatrix.M[i][3];
+					}
+					else
+					{
+						Row[0] = UEMatrix.M[i][0];
+						Row[1] = -UEMatrix.M[i][1];
+						Row[2] = UEMatrix.M[i][2];
+						Row[3] = UEMatrix.M[i][3];
+					}
+					FbxMatrix.SetRow(i, Row);
+				}
+
+				return FbxMatrix;
+			}
+
 			FQuat FFbxConvert::ConvertRotToQuat(FbxQuaternion Quaternion)
 			{
 				FQuat UnrealQuat;
@@ -180,30 +211,6 @@ namespace UE
 				return LinearColor;
 			}
 
-			FString FFbxConvert::MakeName(const ANSICHAR* Name)
-			{
-				const TCHAR SpecialChars[] = { TEXT('.'), TEXT(','), TEXT('/'), TEXT('`'), TEXT('%') };
-
-				FString TmpName = MakeString(Name);
-
-				// Remove namespaces
-				int32 LastNamespaceTokenIndex = INDEX_NONE;
-				if (TmpName.FindLastChar(TEXT(':'), LastNamespaceTokenIndex))
-				{
-					const bool bAllowShrinking = true;
-					//+1 to remove the ':' character we found
-					TmpName.RightChopInline(LastNamespaceTokenIndex + 1, bAllowShrinking);
-				}
-
-				//Remove the special chars
-				for (int32 i = 0; i < UE_ARRAY_COUNT(SpecialChars); i++)
-				{
-					TmpName.ReplaceCharInline(SpecialChars[i], TEXT('_'), ESearchCase::CaseSensitive);
-				}
-
-				return TmpName;
-			}
-
 			/**
 			 * Convert ANSI char to a FString using ANSI_TO_TCHAR macro
 			 */
@@ -240,26 +247,6 @@ namespace UE
 				{
 					ApplyUnroll(Node->GetChild(i), Layer, UnrollFilter);
 				}
-			}
-
-			void FFbxConvert::MergeAllLayerAnimation(FbxScene* SDKScene, FbxAnimStack* AnimStack, float ResampleRate)
-			{
-				if (!ensure(SDKScene) || !ensure(AnimStack))
-				{
-					return;
-				}
-				FbxTime FramePeriod;
-				FramePeriod.SetSecondDouble(1.0 / (double)ResampleRate);
-
-				FbxTimeSpan TimeSpan = AnimStack->GetLocalTimeSpan();
-				AnimStack->BakeLayers(SDKScene->GetAnimationEvaluator(), TimeSpan.GetStart(), TimeSpan.GetStop(), FramePeriod);
-
-				// always apply unroll filter
-				FbxAnimCurveFilterUnroll UnrollFilter;
-
-				FbxAnimLayer* Layer = AnimStack->GetMember<FbxAnimLayer>(0);
-				UnrollFilter.Reset();
-				ApplyUnroll(SDKScene->GetRootNode(), Layer, &UnrollFilter);
 			}
 		}//ns Private
 	}//ns Interchange

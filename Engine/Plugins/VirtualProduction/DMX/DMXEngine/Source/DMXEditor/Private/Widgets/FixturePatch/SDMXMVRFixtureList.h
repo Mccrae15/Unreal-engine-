@@ -11,28 +11,28 @@
 class FDMXEditor;
 class FDMXMVRFixtureListItem;
 class FDMXFixturePatchSharedData;
+class FUICommandList;
+class ITableRow;
+class SBorder;
 class SDMXMVRFixtureListRow;
 class SDMXMVRFixtureListToolbar;
+class SHeaderRow;
+template <typename ItemType> class SListView;
+class STableViewBase;
 class UDMXEntity;
 class UDMXEntityFixturePatch;
 class UDMXEntityFixtureType;
 class UDMXLibrary;
 class UDMXMVRFixtureNode;
 class UDMXMVRGeneralSceneDescription;
-
-class FUICommandList;
-class ITableRow;
-class SBorder;
-class SHeaderRow;
-template <typename ItemType> class SListView;
-class STableViewBase;
-
+namespace UE::DMXEditor::AutoAssign { enum class EAutoAssignMode : uint8; }
 
 /** Collumn IDs in the Fixture Patch List */
 struct FDMXMVRFixtureListCollumnIDs
 {
-	static const FName Status;
+	static const FName EditorColor;
 	static const FName FixturePatchName;
+	static const FName Status;
 	static const FName FixtureID;
 	static const FName FixtureType;
 	static const FName Mode;
@@ -113,7 +113,10 @@ private:
 	void AdoptSelectionFromFixturePatchSharedData();
 
 	/** Auto assigns selected Fixture Patches */
-	void AutoAssignFixturePatches();
+	void AutoAssignFixturePatches(UE::DMXEditor::AutoAssign::EAutoAssignMode Mode);
+
+	/** Returns true if the DMX Library has reachable Universes */
+	bool DoesDMXLibraryHaveReachableUniverses() const;
 
 	/** Sets keyboard focus on this widget */
 	void SetKeyboardFocus();
@@ -122,10 +125,10 @@ private:
 	TSharedRef<SHeaderRow> GenerateHeaderRow();
 
 	/** Saves how the user customized the header row in DMX Editor Settings */
-	void SaveHeaderRowSettings();
+	void SaveSettings();
 
 	/** Restores how the user customized the header row in DMX Editor Settings */
-	void RestoresHeaderRowSettings();
+	void RestoreSettings();
 
 	/** Returns the column sort mode for the list*/
 	EColumnSortMode::Type GetColumnSortMode(const FName ColumnId) const;
@@ -150,6 +153,9 @@ private:
 
 	/** List source when filtered by search */
 	TArray<TSharedPtr<FDMXMVRFixtureListItem>> FilteredListSource;
+
+	/** The item that was last selected in the list */
+	TSharedPtr<FDMXMVRFixtureListItem> LastSelectedItem;
 
 	/** The Search Bar for the List */
 	TSharedPtr<SDMXMVRFixtureListToolbar> Toolbar;

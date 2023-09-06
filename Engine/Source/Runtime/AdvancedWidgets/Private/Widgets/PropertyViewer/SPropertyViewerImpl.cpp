@@ -412,6 +412,7 @@ FPropertyViewerImpl::FPropertyViewerImpl(const SPropertyViewer::FArguments& InAr
 	OnContextMenuOpening = InArgs._OnContextMenuOpening;
 	OnSelectionChanged = InArgs._OnSelectionChanged;
 	OnDoubleClicked = InArgs._OnDoubleClicked;
+	OnDragDetected = InArgs._OnDragDetected;
 	OnGenerateContainer = InArgs._OnGenerateContainer;
 	PropertyVisibility = InArgs._PropertyVisibility;
 	bSanitizeName = InArgs._bSanitizeName;
@@ -422,6 +423,7 @@ FPropertyViewerImpl::FPropertyViewerImpl(const SPropertyViewer::FArguments& InAr
 	if (GEditor)
 	{
 		GEditor->OnBlueprintCompiled().AddRaw(this, &FPropertyViewerImpl::HandleBlueprintCompiled);
+		FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FPropertyViewerImpl::HandleReplaceViewedObjects);
 	}
 #endif
 }
@@ -441,6 +443,7 @@ FPropertyViewerImpl::~FPropertyViewerImpl()
 	if (GEditor)
 	{
 		GEditor->OnBlueprintCompiled().RemoveAll(this);
+		FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 	}
 #endif
 }
@@ -773,17 +776,17 @@ TSharedPtr<FTreeNode> FPropertyViewerImpl::FindExistingChild(const TSharedPtr<FT
 
 void FPropertyViewerImpl::SetSelection(SPropertyViewer::FHandle Identifier, TArrayView<const FFieldVariant> FieldPath)
 {
+	TreeWidget->ClearSelection();
 	for (const TSharedPtr<FTreeNode>& Node : TreeSource)
 	{
 		if (TSharedPtr<FContainer> Container = Node->GetContainer())
 		{
 			if (Container->GetIdentifier() == Identifier)
 			{
-				TreeWidget->ClearSelection();
-
 				if (TSharedPtr<FTreeNode> FoundNode = FindExistingChild(Node, FieldPath))
 				{
 					TreeWidget->SetItemSelection(FoundNode, true);
+					break;
 				}
 			}
 		}
@@ -1085,6 +1088,7 @@ TSharedRef<ITableRow> FPropertyViewerImpl::HandleGenerateRow(TSharedPtr<FTreeNod
 	if (bUseRows)
 	{
 		return SNew(SMultiRowType, AsShared(), OwnerTable, Item.ToSharedRef(), FieldWidget)
+			.OnDragDetected(this, &FPropertyViewerImpl::HandleDragDetected, Item)
 			.Padding(0.0f);
 	}
 
@@ -1181,6 +1185,23 @@ void FPropertyViewerImpl::HandleDoubleClick(TSharedPtr<FTreeNode> Item)
 }
 
 
+FReply FPropertyViewerImpl::HandleDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, const TSharedPtr<FTreeNode> Item)
+{
+	if (OnDragDetected.IsBound())
+	{
+		if (Item.IsValid())
+		{
+			TSharedPtr<FContainer> OwnerContainer = Item->GetOwnerContainer();
+			return OnDragDetected.Execute(MyGeometry, MouseEvent, OwnerContainer.IsValid() ? OwnerContainer->GetIdentifier() : SPropertyViewer::FHandle(), Item->GetFieldPath());
+		}
+		else
+		{
+			return OnDragDetected.Execute(MyGeometry, MouseEvent, SPropertyViewer::FHandle(), TArray<FFieldVariant>());
+		}
+	}
+	return FReply::Unhandled();
+}
+
 void FPropertyViewerImpl::HandleSearchChanged(const FText& InFilterText)
 {
 	if (SearchBoxWidget)
@@ -1216,14 +1237,37 @@ void FPropertyViewerImpl::HandleBlueprintCompiled()
 
 	if (bRemoved)
 	{
+		TreeWidget->RebuildList();
 		if (FilterHandler)
 		{
 			FilterHandler->RefreshAndFilterTree();
 		}
-		else
+	}
+}
+
+void FPropertyViewerImpl::HandleReplaceViewedObjects(const TMap<UObject*, UObject*>& OldToNewObjectMap)
+{
+	TArray<UObject*> ValueArray;
+	OldToNewObjectMap.GenerateValueArray(ValueArray);
+
+	TArray<TSharedPtr<FContainer>> ItemsToReplace;
+
+	for (TSharedPtr<FContainer> Container : Containers)
+	{
+		if (Container->GetStruct())
 		{
-			TreeWidget->RequestTreeRefresh();
+			if (ValueArray.Contains(Container->GetStruct()))
+			{
+				ItemsToReplace.Add(Container);
+			}
 		}
+	}
+
+	for (TSharedPtr<FContainer> Container : ItemsToReplace)
+	{
+		Remove(Container->GetIdentifier());
+		Containers.Add(Container);
+		AddContainerInternal(Container->GetIdentifier(), Container);
 	}
 }
 #endif //WITH_EDITOR

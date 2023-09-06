@@ -9,6 +9,7 @@ class FControlFlowNode;
 class FControlFlowNode_Task;
 class FControlFlowSubTaskBase;
 class FControlFlowBranch;
+class FConditionalLoop;
 class FConcurrentControlFlows;
 class FConcurrentControlFlowBehavior;
 class FTrackedActivity;
@@ -25,6 +26,13 @@ DECLARE_DELEGATE_RetVal(int32, FControlFlowBranchDecider_Legacy)
 // Would be nice to not force people to use int32 for the branch key, but finding the syntax to get it to work properly proved to be more difficult than it was worth. End result is callers have to cast to an int32.
 DECLARE_DELEGATE_RetVal_OneParam(int32, FControlFlowBranchDefiner, TSharedRef<FControlFlowBranch>);
 
+enum class EConditionalLoopResult
+{
+	RunLoop,
+	LoopFinished
+};
+DECLARE_DELEGATE_RetVal_OneParam(EConditionalLoopResult, FControlFlowConditionalLoopDefiner, TSharedRef<FConditionalLoop>);
+
 DECLARE_DELEGATE_OneParam(FConcurrentFlowsDefiner, TSharedRef<FConcurrentControlFlows>);
 
 class FControlFlowNode : public TSharedFromThis<FControlFlowNode>
@@ -40,19 +48,21 @@ public:
 
 	CONTROLFLOWS_API TSharedPtr<FTrackedActivity> GetTrackedActivity() const;
 
+	[[nodiscard]] bool HasCancelBeenRequested() const { return bCancelled; }
+
+	virtual FString GetNodeName() const;
+
 protected:
 	friend class FControlFlow;
-
-	bool HasCancelBeenRequested() const { return bCancelled; }
 	
 	virtual void Execute() {}
 
 	void LogExecution();
-	virtual FString GetNodeName() const;
 
 	TWeakPtr<FControlFlow> Parent = nullptr;
 	FString NodeName;
 	bool bCancelled = false;
+	bool bWasBoundOnExecution = true;
 };
 
 class FControlFlowNode_RequiresCallback : public FControlFlowNode

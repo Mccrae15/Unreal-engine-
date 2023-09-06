@@ -7,27 +7,23 @@ the same VectorVM byte code / compute shader code
 ==============================================================================*/
 #pragma once
 
-#include "CoreMinimal.h"
 #include "FXSystem.h"
-#include "Modules/ModuleManager.h"
+#include "GlobalDistanceFieldParameters.h"
 #include "NiagaraCommon.h"
 #include "NiagaraComputeExecutionContext.h"
-#include "NiagaraEmitter.h"
 #include "NiagaraGPUProfiler.h"
-#include "NiagaraGPUSortInfo.h"
 #include "NiagaraGPUSystemTick.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "NiagaraParameters.h"
-#include "NiagaraRendererProperties.h"
-#include "NiagaraSystemGpuComputeProxy.h"
-#include "ParticleResources.h"
-#include "Particles/ParticleSortingGPU.h"
+#include "NiagaraSimStageData.h"
+#include "RenderGraphUtils.h"
 #include "RHIResources.h"
 #include "RendererInterface.h"
-#include "Tickable.h"
+#include "RendererUtils.h"
+
+enum class EGPUSortFlags : uint32;
+struct FNiagaraGPUSortInfo;
 
 class FGPUSortManager;
-class FDistanceFieldSceneData;
 class FNiagaraAsyncGpuTraceHelper;
 
 //////////////////////////////////////////////////////////////////////////
@@ -109,23 +105,23 @@ public:
 
 	virtual void DrawDebug(FCanvas* Canvas) override {}
 	virtual bool ShouldDebugDraw_RenderThread() const override;
-	virtual void DrawDebug_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, const struct FScreenPassRenderTarget& Output) override;
-	virtual void DrawSceneDebug_RenderThread(class FRDGBuilder& GraphBuilder, const class FViewInfo& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth) override;
+	virtual void DrawDebug_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const struct FScreenPassRenderTarget& Output) override;
+	virtual void DrawSceneDebug_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, FRDGTextureRef SceneColor, FRDGTextureRef SceneDepth) override;
 	virtual void AddVectorField(UVectorFieldComponent* VectorFieldComponent) override {}
 	virtual void RemoveVectorField(UVectorFieldComponent* VectorFieldComponent) override {}
 	virtual void UpdateVectorField(UVectorFieldComponent* VectorFieldComponent) override {}
-	virtual void PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate) override;
-	virtual void PostInitViews(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
+	virtual void PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate, const TArrayView<const FSceneViewFamily*> &ViewFamilies, const FSceneViewFamily* CurrentFamily) override;
+	virtual void PostInitViews(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, bool bAllowGPUParticleUpdate) override;
 	virtual bool UsesGlobalDistanceField() const override;
 	virtual bool UsesDepthBuffer() const override;
 	virtual bool RequiresEarlyViewUniformBuffer() const override;
 	virtual bool RequiresRayTracingScene() const override;
-	virtual void PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
+	virtual void PreRender(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, FSceneUniformBuffer &SceneUniformBuffer, bool bAllowGPUParticleUpdate) override;
 	virtual void OnDestroy() override; // Called on the gamethread to delete the batcher on the renderthread.
 
 	virtual void Tick(UWorld* World, float DeltaTime) override;
 
-	virtual void PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
+	virtual void PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, FSceneUniformBuffer &SceneUniformBuffer, bool bAllowGPUParticleUpdate) override;
 
 	// FNiagaraGpuComputeDispatchInterface Impl
 	virtual void FlushPendingTicks_GameThread() override;
@@ -146,6 +142,7 @@ public:
 	virtual void ProcessDebugReadbacks(FRHICommandListImmediate& RHICmdList, bool bWaitCompletion) override;
 
 	virtual bool AddSortedGPUSimulation(FNiagaraGPUSortInfo& SortInfo) override;
+	virtual const FGlobalDistanceFieldParameterData* GetGlobalDistanceFieldData() const override;
 
 	void ResetDataInterfaces(FRDGBuilder& GraphBuilder, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData) const;
 	void SetDataInterfaceParameters(FRDGBuilder& GraphBuilder, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraShaderRef& ComputeShader, const FNiagaraSimStageData& SimStageData, const FNiagaraShaderScriptParametersMetadata& NiagaraShaderParametersMetadata, uint8* ParametersStructure) const;
@@ -184,7 +181,7 @@ private:
 	void UpdateInstanceCountManager(FRHICommandListImmediate& RHICmdList);
 	void PrepareTicksForProxy(FRHICommandListImmediate& RHICmdList, FNiagaraSystemGpuComputeProxy* ComputeProxy, FNiagaraGpuDispatchList& GpuDispatchList);
 	void PrepareAllTicks(FRHICommandListImmediate& RHICmdList);
-	void ExecuteTicks(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, ENiagaraGpuComputeTickStage::Type TickStage);
+	void ExecuteTicks(FRDGBuilder& GraphBuilder, TConstStridedView<FSceneView> Views, ENiagaraGpuComputeTickStage::Type TickStage);
 	void DispatchStage(FRDGBuilder& GraphBuilder, const FNiagaraGPUSystemTick& Tick, const FNiagaraComputeInstanceData& InstanceData, const FNiagaraSimStageData& SimStageData);
 
 	/**
@@ -251,18 +248,22 @@ private:
 	};
 	TArray<FDebugReadbackInfo> GpuDebugReadbackInfos;
 
-#if WITH_MGPU
-	ENiagaraGpuComputeTickStage::Type StageToTransferGPUBuffers = ENiagaraGpuComputeTickStage::First;
-	ENiagaraGpuComputeTickStage::Type StageToWaitForGPUTransfers = ENiagaraGpuComputeTickStage::First;
+	// List of items that need MultiViewPreviousDataToRender to be cleaned up on the last view family
+	TArray<FNiagaraComputeExecutionContext*> NeedsMultiViewPreviousDataClear;
 
+#if WITH_MGPU
+	// Cross GPU transfer arrays need to be mutable, so they can be written from const MultiGPUResourceModified utility functions
 	bool bCrossGPUTransferEnabled = false;
-	TArray<FTransferResourceParams> CrossGPUTransferBuffers;
+	mutable TArray<FTransferResourceParams> CrossGPUTransferBuffers;
+
+	uint32 OptimizedCrossGPUTransferMask = 0;
+	mutable TArray<FTransferResourceParams> OptimizedCrossGPUTransferBuffers[MAX_NUM_GPUS];
+	mutable FCrossGPUTransferFence* OptimizedCrossGPUFences[MAX_NUM_GPUS] = { 0 };
 
 	void AddCrossGPUTransfer(FRHICommandList& RHICmdList, FRHIBuffer* Buffer);
 
-	void CalculateCrossGPUTransferLocation();
-	void TransferMultiGPUBufers(FRHICommandList& RHICmdList, ENiagaraGpuComputeTickStage::Type TickStage);
-	void WaitForMultiGPUBuffers(FRHICommandList& RHICmdList, ENiagaraGpuComputeTickStage::Type TickStage);
+	void TransferMultiGPUBuffers(FRHICommandList& RHICmdList);
+	void WaitForMultiGPUBuffers(FRHICommandList& RHICmdList, uint32 GPUIndex);
 #endif // WITH_MGPU
 
 	// Cached information to build a dummy view info if necessary
@@ -275,8 +276,21 @@ private:
 		FMatrix		ViewRotationMatrix	= FMatrix::Identity;
 		FMatrix		ProjectionMatrix	= FMatrix::Identity;
 	};
-
 	FCachedViewInitOptions CachedViewInitOptions;
+
+	// Cached info for distance fields
+	struct FCachedDistanceFieldData
+	{
+		bool								bCacheValid = false;
+		bool								bValidForPass = false;
+		FTextureRHIRef						PageAtlasTexture;
+		FTextureRHIRef						CoverageAtlasTexture;
+		TRefCountPtr<FRDGPooledBuffer>		PageObjectGridBuffer;
+		FTextureRHIRef						PageTableTexture;
+		FTextureRHIRef						MipTexture;
+		FGlobalDistanceFieldParameterData	GDFParameterData;
+	};
+	FCachedDistanceFieldData			CachedGDFData;
 
 #if WITH_EDITOR
 	bool bRaisedWarningThisFrame = false;

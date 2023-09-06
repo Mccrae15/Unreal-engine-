@@ -427,7 +427,7 @@ void FImageUtils::ImageResize(int32 SrcWidth, int32 SrcHeight, const TArray<FCol
  */
 void FImageUtils::ImageResize(int32 SrcWidth, int32 SrcHeight, const TArrayView<const FColor> &SrcData, int32 DstWidth, int32 DstHeight, const TArrayView<FColor> &DstData, bool bLinearSpace, bool bForceOpaqueOutput)
 {
-	//@todo Oodle : this could be better ; investigate how widely it's used
+	//@todo OodleImageResize : deprecate ImageResize and direct users to new function
 
 	check(SrcData.Num() >= SrcWidth * SrcHeight);
 	check(DstData.Num() >= DstWidth * DstHeight);
@@ -551,7 +551,7 @@ void FImageUtils::ImageResize(int32 SrcWidth, int32 SrcHeight, const TArray64<FL
  */
 void FImageUtils::ImageResize(int32 SrcWidth, int32 SrcHeight, const TArrayView64<const FLinearColor>& SrcData, int32 DstWidth, int32 DstHeight, const TArrayView64<FLinearColor>& DstData)
 {
-	//@todo Oodle : this could be better ; investigate how widely it's used
+	//@todo OodleImageResize : deprecate ImageResize and direct users to new function
 
 	check(SrcData.Num() >= SrcWidth * SrcHeight);
 	check(DstData.Num() >= DstWidth * DstHeight);
@@ -1013,6 +1013,7 @@ public:
 		TArray<uint8*> RawData2;
 		Size = Texture->GetImportedSize();
 		RawData2.AddZeroed(Texture->GetNumMips());
+		// this is PlatformData GetMipData , not Source :
 		Texture->GetMipData(0, (void**)RawData2.GetData());
 		const EPixelFormat NewFormat = Texture->GetPixelFormat();
 
@@ -1315,6 +1316,7 @@ bool FImageUtils::GetTexture2DSourceImage(UTexture2D* Texture, FImage & OutImage
 
 	/*
 	EPixelFormat PixelFormat = Texture->GetFormat();
+	// this is PlatformData GetMipData , not Source :
 	Texture->GetMipData(0, (void**)RawData2.GetData());
 	if (Texture->GetPlatformData()->Mips.Num() == 0)
 	*/

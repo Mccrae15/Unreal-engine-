@@ -181,6 +181,7 @@ private:
 	TAtomic<bool> bStopRequested{ false };
 	mutable FRWLock IoStoreReadersLock;
 	TArray<TUniquePtr<FFileIoStoreReader>> IoStoreReaders;
+	TArray<TUniquePtr<FFileIoStoreCompressionContext>> CompressionContexts;
 	FFileIoStoreCompressionContext* FirstFreeCompressionContext = nullptr;
 	FFileIoStoreCompressedBlock* ReadyForDecompressionHead = nullptr;
 	FFileIoStoreCompressedBlock* ReadyForDecompressionTail = nullptr;

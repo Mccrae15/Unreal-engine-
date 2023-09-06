@@ -99,7 +99,6 @@ void UGameplayTasksComponent::OnGameplayTaskActivated(UGameplayTask& Task)
 	{
 		const bool bWasAdded = AddSimulatedTask(&Task);
 		check(bWasAdded == true);
-		bIsNetDirty = true;
 	}
 
 	IGameplayTaskOwnerInterface* TaskOwner = Task.GetTaskOwner();
@@ -144,7 +143,6 @@ void UGameplayTasksComponent::OnGameplayTaskDeactivated(UGameplayTask& Task)
 	if (Task.IsSimulatedTask())
 	{
 		RemoveSimulatedTask(&Task);
-		bIsNetDirty = true;
 	}
 
 	// Resource-using task
@@ -179,6 +177,15 @@ void UGameplayTasksComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProper
 
 bool UGameplayTasksComponent::ReplicateSubobjects(UActorChannel* Channel, class FOutBunch *Bunch, FReplicationFlags *RepFlags)
 {
+#if SUBOBJECT_TRANSITION_VALIDATION
+	// When true it means we are calling this function to find any leftover replicated subobjects in classes that transitioned to the new registry list.
+	// This shared class needs to keep supporting the old ways until we fully deprecate the API, so by only returning false we prevent the ensures to trigger
+	if (UActorChannel::CanIgnoreDeprecatedReplicateSubObjects())
+	{
+		return false;
+	}
+#endif
+
 	bool WroteSomething = Super::ReplicateSubobjects(Channel, Bunch, RepFlags);
 	
 	if (!RepFlags->bNetOwner)
@@ -773,7 +780,7 @@ EGameplayTaskRunResult UGameplayTasksComponent::RunGameplayTask(IGameplayTaskOwn
 	return EGameplayTaskRunResult::Error;
 }
 
-TArray<UGameplayTask*>& UGameplayTasksComponent::GetSimulatedTasks_Mutable()
+TArray<TObjectPtr<UGameplayTask>>& UGameplayTasksComponent::GetSimulatedTasks_Mutable()
 {
 	MARK_PROPERTY_DIRTY_FROM_NAME(UGameplayTasksComponent, SimulatedTasks, this);
 	return SimulatedTasks;

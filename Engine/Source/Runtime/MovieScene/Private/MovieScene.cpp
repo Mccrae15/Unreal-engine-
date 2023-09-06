@@ -17,6 +17,7 @@
 #include "UObject/UObjectHash.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieScene)
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneMarkedFrame)
 
 #define LOCTEXT_NAMESPACE "MovieScene"
 
@@ -43,6 +44,7 @@ TOptional<TRangeBound<FFrameNumber>> GetMaxUpperBound(const UMovieSceneTrack* Tr
 #if WITH_EDITOR
 
 UMovieScene::FIsTrackClassAllowedEvent UMovieScene::IsTrackClassAllowedEvent;
+UMovieScene::FFixupDynamicBindingPayloadParameterNameEvent UMovieScene::FixupDynamicBindingPayloadParameterNameEvent;
 
 bool UMovieScene::IsTrackClassAllowed(UClass* InClass)
 {
@@ -70,6 +72,7 @@ UMovieScene::UMovieScene(const FObjectInitializer& ObjectInitializer)
 #if WITH_EDITORONLY_DATA
 	bReadOnly = false;
 	bPlaybackRangeLocked = false;
+	bMarkedFramesLocked = false;
 	PlaybackRange.MigrationDefault = FFloatRange::Empty();
 	EditorData.WorkingRange_DEPRECATED = EditorData.ViewRange_DEPRECATED = TRange<float>::Empty();
 
@@ -649,6 +652,16 @@ void UMovieScene::SetPlaybackRangeLocked(bool bLocked)
 {
 	bPlaybackRangeLocked = bLocked;
 }
+
+bool UMovieScene::AreMarkedFramesLocked() const
+{
+	return bMarkedFramesLocked;
+}
+
+void UMovieScene::SetMarkedFramesLocked(bool bLocked)
+{
+	bMarkedFramesLocked = bLocked;
+}
 #endif
 
 
@@ -766,20 +779,32 @@ void UMovieSceneNodeGroup::SetEnableFilter(bool bInEnableFilter)
 	}
 }
 
-void UMovieSceneNodeGroupCollection::PostLoad()
+void UMovieSceneNodeGroupCollection::Refresh()
 {
 	bAnyActiveFilter = false;
 	for (UMovieSceneNodeGroup* NodeGroup : NodeGroups)
 	{
 		NodeGroup->OnNodeGroupChanged().AddUObject(this, &UMovieSceneNodeGroupCollection::OnNodeGroupChanged);
-		
+
 		if (NodeGroup->GetEnableFilter())
 		{
 			bAnyActiveFilter = true;
 		}
 	}
-	
+}
+
+void UMovieSceneNodeGroupCollection::PostLoad()
+{
+	Refresh();
+
 	Super::PostLoad();
+}
+
+void UMovieSceneNodeGroupCollection::PostEditUndo()
+{
+	Refresh();
+
+	Super::PostEditUndo();
 }
 
 void UMovieSceneNodeGroupCollection::AddNodeGroup(UMovieSceneNodeGroup* NodeGroup)
@@ -791,7 +816,7 @@ void UMovieSceneNodeGroupCollection::AddNodeGroup(UMovieSceneNodeGroup* NodeGrou
 		NodeGroups.Add(NodeGroup);
 		NodeGroup->OnNodeGroupChanged().AddUObject(this, &UMovieSceneNodeGroupCollection::OnNodeGroupChanged);
 		
-		OnNodeGroupCollectionChangedEvent.Broadcast();
+		OnNodeGroupChanged();
 	}
 }
 
@@ -803,7 +828,7 @@ void UMovieSceneNodeGroupCollection::RemoveNodeGroup(UMovieSceneNodeGroup* NodeG
 
 	if (NodeGroups.RemoveSingle(NodeGroup))
 	{
-		OnNodeGroupCollectionChangedEvent.Broadcast();
+		OnNodeGroupChanged();
 	}
 }
 
@@ -1423,13 +1448,6 @@ void UMovieScene::RemoveNullTracks()
 /* UObject interface
  *****************************************************************************/
 
-
-void UMovieScene::PreSave(const class ITargetPlatform* TargetPlatform)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
-	Super::PreSave(TargetPlatform);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
-}
 
 void UMovieScene::PreSave(FObjectPreSaveContext ObjectSaveContext)
 {

@@ -98,10 +98,7 @@ FString FExternalPackageHelper::GetExternalPackageName(const FString& InOuterPac
 	FArchiveMD5 ArMD5;
 	ArMD5 << ObjectPath;
 
-	FMD5Hash MD5Hash;
-	ArMD5.GetHash(MD5Hash);
-
-	FGuid PackageGuid = MD5HashToGuid(MD5Hash);
+	FGuid PackageGuid = ArMD5.GetGuidFromHash();
 	check(PackageGuid.IsValid());
 
 	FString GuidBase36 = PackageGuid.ToString(EGuidFormats::Base36Encoded);
@@ -123,6 +120,25 @@ FString FExternalPackageHelper::GetExternalPackageName(const FString& InOuterPac
 FString FExternalPackageHelper::GetExternalObjectPackageInstanceName(const FString& OuterPackageName, const FString& ObjectPackageName)
 {
 	return FLinkerInstancingContext::GetInstancedPackageName(OuterPackageName, ObjectPackageName);
+}
+
+void FExternalPackageHelper::GetExternalSaveableObjects(UObject* InOuter, TArray<UObject*>& OutObjects)
+{
+	// Get external packages
+	TSet<UPackage*> ExternalObjectPackages;
+	ExternalObjectPackages.Append(InOuter->GetPackage()->GetExternalPackages());
+
+	// Find assets for external packages
+	for (UPackage* ExternalPackage : ExternalObjectPackages)
+	{
+		if(FPackageName::IsValidLongPackageName(ExternalPackage->GetName()) && ExternalPackage->IsDirty())
+		{
+			if(UObject* Asset = ExternalPackage->FindAssetInPackage())
+			{
+				OutObjects.Add(Asset);
+			}
+		}
+	}
 }
 
 #endif

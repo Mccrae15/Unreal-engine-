@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraColorTypeEditorUtilities.h"
+
+#include "NiagaraEditorSettings.h"
 #include "SNiagaraParameterEditor.h"
 #include "NiagaraTypes.h"
 #include "NiagaraEditorStyle.h"
@@ -90,6 +92,7 @@ private:
 		.OnBeginSliderMovement(this, &SNiagaraColorParameterEditor::BeginSliderMovement)
 		.OnEndSliderMovement(this, &SNiagaraColorParameterEditor::EndSliderMovement)
 		.AllowSpin(true)
+		.BroadcastValueChangesPerKey(!GetDefault<UNiagaraEditorSettings>()->GetUpdateStackValuesOnCommitOnly())
 		.LabelVAlign(EVerticalAlignment::VAlign_Center)
 		.MinDesiredValueWidth(30)
 		.Label()
@@ -202,7 +205,7 @@ void FNiagaraEditorColorTypeUtilities::UpdateVariableWithDefaultValue(FNiagaraVa
 	Variable.SetValue<FLinearColor>(FLinearColor(1, 1, 1, 1));
 }
 
-TSharedPtr<SNiagaraParameterEditor> FNiagaraEditorColorTypeUtilities::CreateParameterEditor(const FNiagaraTypeDefinition& ParameterType) const
+TSharedPtr<SNiagaraParameterEditor> FNiagaraEditorColorTypeUtilities::CreateParameterEditor(const FNiagaraTypeDefinition& ParameterType, EUnit DisplayUnit, const FNiagaraInputParameterCustomization& WidgetCustomization) const
 {
 	return SNew(SNiagaraColorParameterEditor);
 }

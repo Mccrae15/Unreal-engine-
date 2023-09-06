@@ -66,13 +66,12 @@ struct FPropertyDefinition
 	FPropertyDefinition() = default;
 
 	FPropertyDefinition(
-			uint16 InVariableSizeCompositeOffset, uint16 InSizeofStorageType, uint16 InAlignofStorageType,
+			uint16 InVariableSizeCompositeOffset,
 			FComponentTypeID InPropertyType, FComponentTypeID InInitialValueType)
 		: CustomPropertyRegistration(nullptr)
 		, DoubleCompositeMask(0)
 		, VariableSizeCompositeOffset(InVariableSizeCompositeOffset)
 		, CompositeSize(0)
-		, StorageType{ InSizeofStorageType, InAlignofStorageType }
 		, PropertyType(InPropertyType)
 		, InitialValueType(InInitialValueType)
 		, BlenderSystemClass(nullptr)
@@ -107,13 +106,6 @@ struct FPropertyDefinition
 
 	/** The number of channels that this property comprises */
 	uint16 CompositeSize = 0;
-
-	/** Operational type meta-data */
-	struct
-	{
-		uint16 Sizeof = 0;
-		uint16 Alignof = 0;
-	} StorageType;
 
 	/** The component type or tag of the property itself */
 	FComponentTypeID PropertyType;
@@ -156,7 +148,7 @@ template<typename PropertyTraits> struct TPropertyDefinitionBuilder;
  * Central registry of all property types animatable by sequencer.
  * Once registered, properties cannot be de-registered. This vastly simplifies the lifetime and ID management of the class
  */
-class MOVIESCENE_API FPropertyRegistry
+class FPropertyRegistry
 {
 public:
 
@@ -173,7 +165,7 @@ public:
 	 * @param CustomAccessors A view to an array of custom accessors (as retrieved from ICustomPropertyRegistration::GetAccessors)
 	 * @return An optional variant specifying the resolved property if it resolved successfully
 	 */
-	static TOptional< FResolvedFastProperty > ResolveFastProperty(UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, FCustomAccessorView CustomAccessors);
+	static MOVIESCENE_API TOptional< FResolvedFastProperty > ResolveFastProperty(UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, FCustomAccessorView CustomAccessors);
 
 	/**
 	 * Resolve a property to either a fast ptr offset, or a custom property accessor based on the specified array falling back to a slow instance binding if possible
@@ -183,7 +175,7 @@ public:
 	 * @param CustomAccessors A view to an array of custom accessors (as retrieved from ICustomPropertyRegistration::GetAccessors)
 	 * @return An optional variant specifying the resolved property if it resolved successfully
 	 */
-	static TOptional< FResolvedProperty > ResolveProperty(UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, FCustomAccessorView CustomAccessors);
+	static MOVIESCENE_API TOptional< FResolvedProperty > ResolveProperty(UObject* Object, const FMovieScenePropertyBinding& PropertyBinding, FCustomAccessorView CustomAccessors);
 
 	/**
 	 * Define a new animatable composite property type from its components.
@@ -265,7 +257,6 @@ private:
 	void DefinePropertyImpl(TPropertyComponents<PropertyTraits>& InOutPropertyComponents, const TCHAR* InStatName)
 	{
 		using StorageType = typename PropertyTraits::StorageType;
-		static_assert( TIsBitwiseConstructible<StorageType, StorageType>::Value && TIsTriviallyDestructible<StorageType>::Value, "StorageType must be trivially TIsTriviallyCopyConstructible" );
 
 		const int32 CompositeOffset = CompositeDefinitions.Num();
 		checkf(CompositeOffset <= MAX_uint16, TEXT("Maximum number of composite definitions reached"));
@@ -292,7 +283,6 @@ private:
 
 		FPropertyDefinition NewDefinition(
 			CompositeOffset, 
-			sizeof(StorageType), alignof(StorageType),
 			InOutPropertyComponents.PropertyTag,
 			InOutPropertyComponents.InitialValue);
 

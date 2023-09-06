@@ -48,6 +48,7 @@ const branchBasePrototype = {
 	flowsTo: [''],
 	forceFlowTo: [''],
 	defaultFlow: [''],
+	macros: {} as { [name: string]: string[] } | undefined,
 	resolver: '' as string | null,
 	triager: '' as string | null,
 	nagWhenBlocked: false as boolean | null,
@@ -86,6 +87,7 @@ export type IntegrationWindowPane = {
 
 export const commonOptionFieldsPrototype = {
 	lastGoodCLPath: 0 as string | number,
+	waitingForCISLink: "",
 	pauseCISUnlessAtGate: false,
 
 	initialCL: 0,
@@ -162,8 +164,8 @@ const edgeOptionFieldsPrototype = {
 
 	approval: {
 		description: '',
-		channelName: '',
-		channelId: ''
+		channelId: '',
+		block: true
 	}
 }
 
@@ -265,7 +267,7 @@ export class BranchDefs {
 		}
 	}
 
-	static parseAndValidate(outErrors: string[], branchSpecsText: string, allStreamSpecs: StreamSpecs): ParseResult {
+	static parseAndValidate(outErrors: string[], branchSpecsText: string, allStreamSpecs: StreamSpecs, isPreviewing?: boolean): ParseResult {
 		const defaultConfigForWholeBot: BotConfig = {
 			defaultStreamDepot: null,
 			defaultIntegrationMethod: null,
@@ -380,7 +382,7 @@ export class BranchDefs {
 				def.streamSubpath
 			)
 
-			if (streamResult.stream && !allStreamSpecs.has(streamResult.stream)) {
+			if (!isPreviewing && streamResult.stream && !allStreamSpecs.has(streamResult.stream)) {
 				outErrors.push(`Stream ${streamResult.stream} not found`)
 			}
 		}
@@ -424,7 +426,7 @@ export class BranchDefs {
 				}
 			}
 
-			if (def.streamName && !defaultConfigForWholeBot.noStreamAliases) {
+			if (def.streamName && !def.streamSubpath && !defaultConfigForWholeBot.noStreamAliases) {
 				addAlias(upperName, def.streamName.toUpperCase())
 			}
 
@@ -461,7 +463,7 @@ export class BranchDefs {
 
 				if (edge.approval) {
 					// should be replaced by generic handling of objects in the prototype
-					if (!edge.approval.description || !edge.approval.channelName || !edge.approval.channelId) {
+					if (!edge.approval.description || !edge.approval.channelId) {
 						throw new Error(`Invalid approval settings for edge ${edge.from}->${edge.to}`)
 					}
 				}

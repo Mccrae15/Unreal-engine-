@@ -1,11 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Iris/ReplicationState/InternalPropertyReplicationState.h"
-#include "CoreTypes.h"
-#include "Net/Core/NetBitArray.h"
+#include "Iris/ReplicationState/PropertyReplicationState.h"
 #include "Iris/ReplicationState/ReplicationStateUtil.h"
 #include "Iris/ReplicationState/InternalReplicationStateDescriptorUtils.h"
 #include "Iris/Serialization/NetSerializers.h"
+#include "Net/Core/NetBitArray.h"
 #include "UObject/UnrealType.h"
 
 namespace UE::Net::Private
@@ -151,23 +151,7 @@ bool InternalCompareMember(const FReplicationStateDescriptor* Descriptor, uint32
 		const FReplicationStateDescriptor* StructDescriptor = StructConfig->StateDescriptor;
 		if (!EnumHasAnyFlags(StructDescriptor->Traits, EReplicationStateTraits::AllMembersAreReplicated))
 		{
-			const FReplicationStateMemberDescriptor* MemberDescriptors = StructDescriptor->MemberDescriptors;
-			const FProperty** MemberProperties = StructDescriptor->MemberProperties;
-			const FReplicationStateMemberPropertyDescriptor* MemberPropertyDescriptors = StructDescriptor->MemberPropertyDescriptors;
-
-			for (uint32 StructMemberIt = 0, StructMemberEndIt = StructDescriptor->MemberCount; StructMemberIt != StructMemberEndIt; ++StructMemberIt)
-			{
-				const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[StructMemberIt];
-				const FReplicationStateMemberPropertyDescriptor& MemberPropertyDescriptor = MemberPropertyDescriptors[StructMemberIt];
-				const FProperty* MemberProperty = MemberProperties[StructMemberIt];
-				const SIZE_T MemberOffset = MemberProperty->GetOffset_ForGC() + MemberProperty->ElementSize*MemberPropertyDescriptor.ArrayIndex;
-				if (!InternalCompareMember(StructDescriptor, StructMemberIt, static_cast<const uint8*>(ValueA) + MemberOffset, static_cast<const uint8*>(ValueB) + MemberOffset))
-				{
-					return false;
-				}
-			}
-
-			return true;
+			return InternalCompareStructProperty(StructDescriptor, ValueA, ValueB);
 		}
 	}
 	else if (IsUsingArrayPropertyNetSerializer(MemberSerializerDescriptor))
@@ -192,19 +176,42 @@ bool InternalCompareMember(const FReplicationStateDescriptor* Descriptor, uint32
 	return Property->Identical(ValueA, ValueB);
 }
 
-bool InternalCompareStructProperty(const FReplicationStateDescriptor* StructDescriptor, void* RESTRICT Dst, const void* RESTRICT Src)
+bool InternalCompareStructProperty(const FReplicationStateDescriptor* StructDescriptor, const void* RESTRICT ValueA, const void* RESTRICT ValueB)
 {
+	uint32 FirstStructMemberForCompare = 0U;
+
 	const FReplicationStateMemberDescriptor* MemberDescriptors = StructDescriptor->MemberDescriptors;
+	const FReplicationStateMemberSerializerDescriptor* MemberSerializerDescriptors = StructDescriptor->MemberSerializerDescriptors;
 	const FProperty** MemberProperties = StructDescriptor->MemberProperties;
 	const FReplicationStateMemberPropertyDescriptor* MemberPropertyDescriptors = StructDescriptor->MemberPropertyDescriptors;
 
-	for (uint32 StructMemberIt = 0, StructMemberEndIt = StructDescriptor->MemberCount; StructMemberIt != StructMemberEndIt; ++StructMemberIt)
+	// For derived structs the first property is a NetSerializer for some super struct. Its property will be null so we can't use standard iteration over properties. Let's use serializer equal for it. 
+	if (EnumHasAnyFlags(StructDescriptor->Traits, EReplicationStateTraits::IsDerivedStruct))
+	{
+		FirstStructMemberForCompare = 1U;
+
+		const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[0];
+		const FReplicationStateMemberSerializerDescriptor& MemberSerializerDescriptor = MemberSerializerDescriptors[0];
+
+		FNetSerializationContext Context;
+		FNetIsEqualArgs IsEqualArgs;
+		IsEqualArgs.NetSerializerConfig = MemberSerializerDescriptor.SerializerConfig;
+		IsEqualArgs.Source0 = NetSerializerValuePointer(ValueA) + MemberDescriptor.ExternalMemberOffset;
+		IsEqualArgs.Source1 = NetSerializerValuePointer(ValueB) + MemberDescriptor.ExternalMemberOffset;
+		IsEqualArgs.bStateIsQuantized = false;
+		if (!MemberSerializerDescriptor.Serializer->IsEqual(Context, IsEqualArgs))
+		{
+			return false;
+		}
+	}
+
+	for (uint32 StructMemberIt = FirstStructMemberForCompare, StructMemberEndIt = StructDescriptor->MemberCount; StructMemberIt < StructMemberEndIt; ++StructMemberIt)
 	{
 		const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[StructMemberIt];
 		const FReplicationStateMemberPropertyDescriptor& MemberPropertyDescriptor = MemberPropertyDescriptors[StructMemberIt];
 		const FProperty* MemberProperty = MemberProperties[StructMemberIt];
 		const SIZE_T MemberOffset = MemberProperty->GetOffset_ForGC() + MemberProperty->ElementSize*MemberPropertyDescriptor.ArrayIndex;
-		if (!InternalCompareMember(StructDescriptor, StructMemberIt, static_cast<uint8*>(Dst) + MemberOffset, static_cast<const uint8*>(Src) + MemberOffset))
+		if (!InternalCompareMember(StructDescriptor, StructMemberIt, static_cast<const uint8*>(ValueA) + MemberOffset, static_cast<const uint8*>(ValueB) + MemberOffset))
 		{
 			return false;
 		}
@@ -215,11 +222,21 @@ bool InternalCompareStructProperty(const FReplicationStateDescriptor* StructDesc
 
 void InternalCopyStructProperty(const FReplicationStateDescriptor* StructDescriptor, void* RESTRICT Dst, const void* RESTRICT Src)
 {
+	uint32 FirstStructMemberForCopy = 0U;
+	if (EnumHasAnyFlags(StructDescriptor->Traits, EReplicationStateTraits::IsDerivedStruct))
+	{
+		const UScriptStruct* BaseStruct = StructDescriptor->BaseStruct;
+		BaseStruct->CopyScriptStruct(Dst, Src, 1);
+
+		// The first member in a derived struct descriptor is the base struct. We can skip it now that we've copied the value.
+		FirstStructMemberForCopy = 1U;
+	}
+
 	const FReplicationStateMemberDescriptor* MemberDescriptors = StructDescriptor->MemberDescriptors;
 	const FProperty** MemberProperties = StructDescriptor->MemberProperties;
 	const FReplicationStateMemberPropertyDescriptor* MemberPropertyDescriptors = StructDescriptor->MemberPropertyDescriptors;
 
-	for (uint32 StructMemberIt = 0, StructMemberEndIt = StructDescriptor->MemberCount; StructMemberIt != StructMemberEndIt; ++StructMemberIt)
+	for (uint32 StructMemberIt = FirstStructMemberForCopy, StructMemberEndIt = StructDescriptor->MemberCount; StructMemberIt < StructMemberEndIt; ++StructMemberIt)
 	{
 		const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[StructMemberIt];
 		const FReplicationStateMemberPropertyDescriptor& MemberPropertyDescriptor = MemberPropertyDescriptors[StructMemberIt];
@@ -260,10 +277,6 @@ void InternalCopyPropertyValue(const FReplicationStateDescriptor* Descriptor, ui
 			const uint32 ElementCount = ScriptArrayHelperSrc.Num();
 			ScriptArrayHelperDst.Resize(ElementCount);
 		
-			const FReplicationStateMemberDescriptor* MemberDescriptors = StructDescriptor->MemberDescriptors;
-			const FProperty** MemberProperties = StructDescriptor->MemberProperties;
-			const FReplicationStateMemberPropertyDescriptor* MemberPropertyDescriptors = StructDescriptor->MemberPropertyDescriptors;
-
 			// Iterate over array entries and copy the statedata using internal data
 			for (uint32 ElementIt = 0, ElementEndIt = ElementCount; ElementIt < ElementEndIt; ++ElementIt)
 			{
@@ -272,6 +285,7 @@ void InternalCopyPropertyValue(const FReplicationStateDescriptor* Descriptor, ui
 
 				InternalCopyStructProperty(StructDescriptor, ArrayDst, ArraySrc);
 			}
+
 			return;
 		}
 	}
@@ -279,6 +293,60 @@ void InternalCopyPropertyValue(const FReplicationStateDescriptor* Descriptor, ui
 	// Default handling for all properties except for structs and arrays that have some non-replicated members
 	const FProperty* Property = Descriptor->MemberProperties[MemberIndex];
 	Property->CopySingleValue(Dst, Src);
+}
+
+bool InternalCompareAndCopyArrayWithElementChangeMask(const FReplicationStateDescriptor* Descriptor, uint32 MemberIndex, const void* RESTRICT DstArray, const void* RESTRICT SrcArray, UE::Net::FNetBitArrayView& ChangeMask)
+{
+	bool bArrayIsEqual = true;
+
+	const FReplicationStateMemberChangeMaskDescriptor& ChangeMaskInfo = Descriptor->MemberChangeMaskDescriptors[MemberIndex];
+
+	const FReplicationStateMemberSerializerDescriptor& ArrayDescriptor = Descriptor->MemberSerializerDescriptors[MemberIndex];
+	const FArrayPropertyNetSerializerConfig* ArrayConfig = static_cast<const FArrayPropertyNetSerializerConfig*>(ArrayDescriptor.SerializerConfig);
+
+	FScriptArrayHelper SrcScriptArray(ArrayConfig->Property.Get(), SrcArray);
+	FScriptArrayHelper DstScriptArray(ArrayConfig->Property.Get(), DstArray);
+
+	// Detect size change and adjust the destination array size as needed and clear bits that don't relate to any elements.
+	const uint32 SrcElementCount = SrcScriptArray.Num();
+	const uint32 DstElementCount = DstScriptArray.Num();
+	if (SrcElementCount != DstElementCount)
+	{
+		bArrayIsEqual = false;
+
+		DstScriptArray.Resize(SrcElementCount);
+
+		// If array has shrunk then mask off bits in the changemask pertaining to elements that no longer exist. For a growing array we skip compare and set it to dirty in the element loop.
+		if (SrcElementCount < DstElementCount)
+		{
+			if (SrcElementCount + 1U < ChangeMaskInfo.BitCount)
+			{
+				const uint32 BitOffsetToClear = ChangeMaskInfo.BitOffset + FPropertyReplicationState::TArrayElementChangeMaskBitOffset + SrcElementCount;
+				const uint32 BitCountToClear = ChangeMaskInfo.BitCount - 1U - SrcElementCount;
+				ChangeMask.ClearBits(BitOffsetToClear, BitCountToClear);
+			}
+		}
+	}
+
+	const FReplicationStateDescriptor* ElementDescriptor = ArrayConfig->StateDescriptor;
+	const uint32 ElementChangeMaskBitOffset = ChangeMaskInfo.BitOffset + FPropertyReplicationState::TArrayElementChangeMaskBitOffset;
+	for (uint32 ElementIt = 0, ElementEndIt = SrcElementCount; ElementIt < ElementEndIt; ++ElementIt)
+	{
+		const uint8* SrcElement = SrcScriptArray.GetRawPtr(ElementIt);
+		uint8* DstElement = DstScriptArray.GetRawPtr(ElementIt);
+
+		// Compare elements up to the previous element count, i.e. at most DstElementCount. New elements will be considered different and always copied.
+		const bool bIsNewElement = ElementIt >= DstElementCount;
+		if (bIsNewElement || !InternalCompareStructProperty(ElementDescriptor, DstElement, SrcElement))
+		{
+			bArrayIsEqual = false;
+			const uint32 ElementBitOffset = ElementChangeMaskBitOffset + (ElementIt % FPropertyReplicationState::TArrayElementChangeMaskBits);
+			ChangeMask.SetBit(ElementBitOffset);
+			InternalCopyStructProperty(ElementDescriptor, DstElement, SrcElement);
+		}
+	}
+
+	return bArrayIsEqual;
 }
 
 }

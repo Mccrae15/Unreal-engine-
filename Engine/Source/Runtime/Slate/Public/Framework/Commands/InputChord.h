@@ -20,7 +20,7 @@ typedef struct FInputChord FInputGesture;
 
 /** An Input Chord is a key and the modifier keys that are to be held with it. */
 USTRUCT(BlueprintType)
-struct SLATE_API FInputChord
+struct FInputChord
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -57,16 +57,9 @@ struct SLATE_API FInputChord
 	};
 
 	/** Returns the relationship between this chord and another. */
-	ERelationshipType GetRelationship(const FInputChord& OtherChord) const;
+	SLATE_API ERelationshipType GetRelationship(const FInputChord& OtherChord) const;
 
-	FInputChord()
-		: Key(EKeys::Invalid)
-		, bShift(false)
-		, bCtrl(false)
-		, bAlt(false)
-		, bCmd(false)
-	{
-	}
+	SLATE_API FInputChord();
 
 	FInputChord(const FKey InKey)
 		: Key(InKey)
@@ -121,14 +114,28 @@ struct SLATE_API FInputChord
 	 *
 	 * @param Other
 	 */
-	FInputChord( const FInputChord& Other )
-		: Key(Other.Key)
-		, bShift(Other.bShift)
-		, bCtrl(Other.bCtrl)
-		, bAlt(Other.bAlt)
-		, bCmd(Other.bCmd)
-	{
-	}
+	FInputChord(const FInputChord& Other) = default;
+
+	/**
+	 * Move constructor.
+	 *
+	 * @param Other
+	 */
+	FInputChord(FInputChord&& Other) = default;
+
+	/**
+	 * Copy assignment operator.
+	 *
+	 * @param Other
+	 */
+	FInputChord& operator=(const FInputChord& Other) = default;
+
+	/**
+	 * Move assignment operator.
+	 *
+	 * @param Other
+	 */
+	FInputChord& operator=(FInputChord&& Other) = default;
 
 	/**
 	 * Compares this input chord with another for equality.
@@ -171,21 +178,21 @@ struct SLATE_API FInputChord
 	 *
 	 * @return A localized string.
 	 */
-	FText GetInputText(const bool bLongDisplayName = true) const;
+	SLATE_API FText GetInputText(const bool bLongDisplayName = true) const;
 	
 	/**
 	 * Gets the key represented as a localized string.
 	 *
 	 * @return A localized string.
 	 */
-	FText GetKeyText(const bool bLongDisplayName = true) const;
+	SLATE_API FText GetKeyText(const bool bLongDisplayName = true) const;
 
 	/**
 	 * Gets the localized string for the modifier portion of the coord. 
 	 * 
 	 * @param ModifierAppender. Text to append between each modifier and the key. If this is not specified a '+' character will be used
 	 */
-	FText GetModifierText(TOptional<FText> ModifierAppender = TOptional<FText>()) const;
+	SLATE_API FText GetModifierText(TOptional<FText> ModifierAppender = TOptional<FText>()) const;
 
 	/**
 	 * Checks whether this chord requires an modifier keys to be pressed.

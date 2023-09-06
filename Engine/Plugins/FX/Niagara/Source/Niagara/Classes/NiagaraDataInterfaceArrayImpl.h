@@ -13,53 +13,51 @@
 
 #include "Async/Async.h"
 #include "Containers/ArrayView.h"
+#include "RenderGraphUtils.h"
 #include "ShaderParameterUtils.h"
 #include "ShaderCompilerCore.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Helpers
 
-#define NDIARRAY_GENERATE_BODY(CLASSNAME, TYPENAME, MEMBERNAME) \
-	using FProxyType = FNDIArrayProxyImpl<TYPENAME, CLASSNAME>; \
-	virtual void PostInitProperties() override \
+#define NDIARRAY_GENERATE_IMPL(CLASSNAME, TYPENAME, MEMBERNAME) \
+	void CLASSNAME::PostInitProperties() \
 	{ \
 		Proxy.Reset(new FProxyType(this)); \
 		Super::PostInitProperties(); \
 	} \
 	template<typename TFromArrayType> \
-	void SetVariantArrayData(TConstArrayView<TFromArrayType> InArrayData) \
+	void CLASSNAME::SetVariantArrayData(TConstArrayView<TFromArrayType> InArrayData) \
 	{ \
 		MEMBERNAME = InArrayData; \
 	} \
 	template<typename TFromArrayType> \
-	void SetVariantArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit) \
+	void CLASSNAME::SetVariantArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit) \
 	{ \
 		const int NumRequired = Index + 1 - MEMBERNAME.Num(); \
 		if ( NumRequired > 0 && !bSizeToFit ) return; \
 		MEMBERNAME.AddDefaulted(FMath::Max(NumRequired, 0)); \
 		MEMBERNAME[Index] = Value; \
-	} \
-	TArray<TYPENAME>& GetArrayReference() { return MEMBERNAME; }
+	}
 
 #if WITH_EDITORONLY_DATA
-	#define NDIARRAY_GENERATE_BODY_LWC(CLASSNAME, TYPENAME, MEMBERNAME) \
-		using FProxyType = FNDIArrayProxyImpl<TYPENAME, CLASSNAME>; \
-		virtual void PostInitProperties() override \
+	#define NDIARRAY_GENERATE_IMPL_LWC(CLASSNAME, TYPENAME, MEMBERNAME) \
+		void CLASSNAME::PostInitProperties() \
 		{ \
 			Super::PostInitProperties(); \
 			Proxy.Reset(new FProxyType(this)); \
 		} \
-		virtual void PostLoad() override \
+		void CLASSNAME::PostLoad() \
 		{ \
 			Super::PostLoad(); \
 			GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(MakeArrayView(MEMBERNAME)); \
 		} \
-		virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override \
+		void CLASSNAME::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) \
 		{ \
 			Super::PostEditChangeProperty(PropertyChangedEvent); \
 			GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(MakeArrayView(MEMBERNAME)); \
 		} \
-		virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override \
+		bool CLASSNAME::CopyToInternal(UNiagaraDataInterface* Destination) const \
 		{ \
 			if ( Super::CopyToInternal(Destination) == false ) \
 			{ \
@@ -72,7 +70,7 @@
 			} \
 			return TypedDestination != nullptr;  \
 		} \
-		virtual bool Equals(const UNiagaraDataInterface* Other) const override \
+		bool CLASSNAME::Equals(const UNiagaraDataInterface* Other) const \
 		{ \
 			const CLASSNAME* TypedOther = Cast<const CLASSNAME>(Other); \
 			return \
@@ -81,7 +79,7 @@
 				TypedOther->MEMBERNAME == MEMBERNAME; \
 		} \
 		template<typename TFromArrayType> \
-		void SetVariantArrayData(TConstArrayView<TFromArrayType> InArrayData) \
+		void CLASSNAME::SetVariantArrayData(TConstArrayView<TFromArrayType> InArrayData) \
 		{ \
 			if constexpr (std::is_same_v<TFromArrayType, decltype(MEMBERNAME)::ElementType>) \
 			{ \
@@ -96,17 +94,16 @@
 			} \
 		} \
 		template<typename TFromArrayType> \
-		void SetVariantArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit) \
+		void CLASSNAME::SetVariantArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit) \
 		{ \
 			const int NumRequired = Index + 1 - MEMBERNAME.Num(); \
 			if ( NumRequired > 0 && !bSizeToFit ) return; \
 			MEMBERNAME.AddDefaulted(FMath::Max(NumRequired, 0)); \
 			MEMBERNAME[Index] = Value; \
 			GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(MEMBERNAME); \
-		} \
-		TArray<TYPENAME>& GetArrayReference() { return Internal##MEMBERNAME; }
+		}
 #else
-	#define NDIARRAY_GENERATE_BODY_LWC(CLASSNAME, TYPENAME, MEMBERNAME) NDIARRAY_GENERATE_BODY(CLASSNAME, TYPENAME, Internal##MEMBERNAME)
+	#define NDIARRAY_GENERATE_IMPL_LWC(CLASSNAME, TYPENAME, MEMBERNAME) NDIARRAY_GENERATE_IMPL(CLASSNAME, TYPENAME, Internal##MEMBERNAME)
 #endif
 
 template<typename TArrayType>
@@ -263,18 +260,18 @@ struct FNDIArrayInstanceData_RenderThread
 			FRHIResourceCreateInfo CreateInfo(TEXT("NiagaraDataInterfaceArray"));
 			const EBufferUsageFlags BufferUsage = BUF_Static | BUF_ShaderResource | BUF_VertexBuffer | (IsReadOnly() ? BUF_None : BUF_UnorderedAccess | BUF_SourceCopy);
 			const ERHIAccess DefaultAccess = IsReadOnly() ? ERHIAccess::SRVCompute : ERHIAccess::UAVCompute;
-			ArrayBuffer = RHICreateBuffer(ArrayNumBytes, BufferUsage, TypeStride, DefaultAccess, CreateInfo);
+			ArrayBuffer = RHICmdList.CreateBuffer(ArrayNumBytes, BufferUsage, TypeStride, DefaultAccess, CreateInfo);
 
-			ArraySRV = RHICreateShaderResourceView(ArrayBuffer, TypeStride, PixelFormat);
+			ArraySRV = RHICmdList.CreateShaderResourceView(ArrayBuffer, TypeStride, PixelFormat);
 			if ( !IsReadOnly() )
 			{
-				ArrayUAV = RHICreateUnorderedAccessView(ArrayBuffer, PixelFormat);
+				ArrayUAV = RHICmdList.CreateUnorderedAccessView(ArrayBuffer, PixelFormat);
 			}
 		}
 
 		// Copy data in new data over
 		{
-			uint8* GPUMemory = reinterpret_cast<uint8*>(RHILockBuffer(ArrayBuffer, 0, ArrayNumBytes, RLM_WriteOnly));
+			uint8* GPUMemory = reinterpret_cast<uint8*>(RHICmdList.LockBuffer(ArrayBuffer, 0, ArrayNumBytes, RLM_WriteOnly));
 			if (InArrayData.Num() > 0)
 			{
 				T::CopyCpuToGpuMemory(GPUMemory, InArrayData.GetData(), InArrayData.Num());
@@ -283,7 +280,7 @@ struct FNDIArrayInstanceData_RenderThread
 			const TArrayType DefaultValue = TArrayType(FNDIArrayImplHelper<TArrayType>::GetDefaultValue());
 			T::CopyCpuToGpuMemory(GPUMemory + (sizeof(TVMArrayType) * NumElements), &DefaultValue, 1);
 
-			RHIUnlockBuffer(ArrayBuffer);
+			RHICmdList.UnlockBuffer(ArrayBuffer);
 		}
 
 		// Adjust counter value
@@ -433,7 +430,7 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	void CachePropertiesFromOwner()
 	{
 		bShouldSyncToGpu = FNiagaraUtilities::ShouldSyncCpuToGpu(Owner->GpuSyncMode);
-		bShouldSyncToCpu = FNiagaraUtilities::ShouldSyncGpuToCpu(Owner->GpuSyncMode) && Owner->IsUsedByCPUEmitter();
+		bShouldSyncToCpu = FNiagaraUtilities::ShouldSyncGpuToCpu(Owner->GpuSyncMode) && Owner->IsUsedWithCPUScript();
 	}
 
 	//////////////////////////////////////////////////////////////////////////
@@ -472,22 +469,12 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 		GameToRenderInstanceData->~FGameToRenderInstanceData();
 	}
 
-	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override
+	virtual void GetDispatchArgs(const FNDIGpuComputeDispatchArgsGenContext& Context) override
 	{
-		if (const FNDIArrayInstanceData_RenderThread<TArrayType>* InstanceData_RT = PerInstanceData_RenderThread.Find(SystemInstanceID))
+		if (const FNDIArrayInstanceData_RenderThread<TArrayType>* InstanceData_RT = PerInstanceData_RenderThread.Find(Context.GetSystemInstanceID()))
 		{
-			return FIntVector(InstanceData_RT->NumElements, 1, 1);
+			Context.SetDirect(InstanceData_RT->NumElements, InstanceData_RT->CountOffset);
 		}
-		return FIntVector::ZeroValue;
-	}
-
-	virtual uint32 GetGPUInstanceCountOffset(FNiagaraSystemInstanceID SystemInstanceID) const override
-	{
-		if (const FNDIArrayInstanceData_RenderThread<TArrayType>* InstanceData_RT = PerInstanceData_RenderThread.Find(SystemInstanceID))
-		{
-			return InstanceData_RT->CountOffset;
-		}
-		return INDEX_NONE;
 	}
 
 	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override
@@ -1028,9 +1015,9 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	}
 #endif
 #if WITH_NIAGARA_DEBUGGER
-	virtual void DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const override
+	virtual void DrawDebugHud(FNDIDrawDebugHudContext& DebugHudContext) const override
 	{
-		FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.FindRef(SystemInstance->GetId());
+		FNDIArrayInstanceData_GameThread<TArrayType>* InstanceData = PerInstanceData_GameThread.FindRef(DebugHudContext.GetSystemInstance()->GetId());
 		if (InstanceData == nullptr )
 		{
 			return;
@@ -1052,7 +1039,7 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 			CpuValuesString.Append(TEXT(", ..."));
 		}
 
-		VariableDataString = FString::Printf(
+		DebugHudContext.GetOutputString().Appendf(
 			TEXT("Type(%s) CpuLength(%d) CpuValues(%s)"),
 			*FNDIArrayImplHelper<TArrayType>::GetTypeDefinition().GetName(),
 			ArrayData.GetArray().Num(),
@@ -1089,12 +1076,12 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 
 		PerInstanceData_GameThread.Emplace(SystemInstance->GetId(), InstanceData_GT);
 
-		if ( FNDIArrayImplHelper<TArrayType>::bSupportsGPU && Owner->IsUsedWithGPUEmitter() )
+		if ( FNDIArrayImplHelper<TArrayType>::bSupportsGPU && Owner->IsUsedWithGPUScript() )
 		{
 			bool bRWGpuArray = false;
 			FNiagaraDataInterfaceUtilities::ForEachGpuFunction(
 				DataInterface, SystemInstance,
-				[&](const FNiagaraDataInterfaceGeneratedFunction& Function) -> bool
+				[&](const UNiagaraScript* Script, const FNiagaraDataInterfaceGeneratedFunction& Function) -> bool
 				{
 					bRWGpuArray = FNiagaraDataInterfaceArrayImplHelper::IsRWFunction(Function.DefinitionName);
 					return !bRWGpuArray;
@@ -1118,7 +1105,7 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	{
 		auto* InstanceData_GT = reinterpret_cast<FNDIArrayInstanceData_GameThread<TArrayType>*>(InPerInstanceData);
 
-		if ( FNDIArrayImplHelper<TArrayType>::bSupportsGPU && Owner->IsUsedWithGPUEmitter() )
+		if ( FNDIArrayImplHelper<TArrayType>::bSupportsGPU && Owner->IsUsedWithGPUScript() )
 		{
 			ENQUEUE_RENDER_COMMAND(FNDIArrayProxyImpl_RemoveProxy)
 			(

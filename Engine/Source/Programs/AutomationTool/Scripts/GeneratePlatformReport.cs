@@ -7,6 +7,7 @@ using UnrealBuildTool;
 using System;
 using System.Text;
 using System.Linq;
+using Microsoft.Extensions.Logging;
 
 namespace AutomationTool
 {
@@ -45,7 +46,7 @@ namespace AutomationTool
 			PlatformReport Report = GenerateDDPIReport(Platforms, DDPISection);
 			if (Report.Rows.Count <= 1)
 			{
-				Log.TraceError("cannot generate report");
+				Logger.LogError("cannot generate report");
 				return;
 			}
 
@@ -80,20 +81,24 @@ namespace AutomationTool
 		private PlatformReport GenerateDDPIReport(string[] Platforms, string DDPISection)
 		{
 			// Collect the list of DDPIs to use
-			Dictionary<string, DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo> PlatformInfos = new Dictionary<string, DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo>(); 
+			IReadOnlyDictionary<string, DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo> PlatformInfos; 
 			if (Platforms == null || Platforms.Length == 0)
 			{
 				PlatformInfos = DataDrivenPlatformInfo.GetAllPlatformInfos();
 			}
-			else foreach( string PlatformName in Platforms )
+			else
 			{
-				DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo? Config = DataDrivenPlatformInfo.GetDataDrivenInfoForPlatform(PlatformName);
-				if (Config != null)
+				Dictionary<string, DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo> PlatformInfosDict = new Dictionary<string, DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo>();
+				foreach (string PlatformName in Platforms)
 				{
-					PlatformInfos.Add( PlatformName, Config );
+					DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo? Config = DataDrivenPlatformInfo.GetDataDrivenInfoForPlatform(PlatformName);
+					if (Config != null)
+					{
+						PlatformInfosDict.Add(PlatformName, Config);
+					}
 				}
-			}
-
+				PlatformInfos = PlatformInfosDict;
+			} 	
 
 			// collect all possible config values
 			SortedSet<string> ColumnNames = new SortedSet<string>();

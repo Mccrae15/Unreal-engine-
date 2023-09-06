@@ -8,7 +8,6 @@ public class DataValidation : ModuleRules
 	{
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"MessageLog",
 			}
 		);
 
@@ -37,11 +36,13 @@ public class DataValidation : ModuleRules
 				"AssetTools",
 				"PropertyEditor",
 				"GraphEditor",
+				"LevelEditor",
 				"BlueprintGraph",
 				"KismetCompiler",
 				"SandboxFile",
 				"Blutility",
 				"ToolMenus",
+				"TypedElementRuntime",
 				"SourceControl",
 				"UncontrolledChangelists",
 			}

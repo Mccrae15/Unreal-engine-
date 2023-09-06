@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TraceServices/Model/TimingProfiler.h"
+
+#include "TraceServices/Model/Frames.h"
 #include "Model/TimingProfilerPrivate.h"
 #include "AnalysisServicePrivate.h"
 #include "Common/StringStore.h"
@@ -263,19 +265,19 @@ void FTimingProfilerProvider::ReadTimers(TFunctionRef<void(const ITimingProfiler
 	Callback(*this);
 }
 
-ITable<FTimingProfilerAggregatedStats>* FTimingProfilerProvider::CreateAggregation(double IntervalStart, double IntervalEnd, TFunctionRef<bool(uint32)> CpuThreadFilter, bool IncludeGpu) const
+ITable<FTimingProfilerAggregatedStats>* FTimingProfilerProvider::CreateAggregation(const FCreateAggreationParams& Params) const
 {
 	Session.ReadAccessCheck();
 
 	TArray<const TimelineInternal*> IncludedTimelines;
-	if (IncludeGpu)
+	if (Params.IncludeGpu)
 	{
 		IncludedTimelines.Add(&Timelines[GpuTimelineIndex].Get());
 		IncludedTimelines.Add(&Timelines[Gpu2TimelineIndex].Get());
 	}
 	for (const auto& KV : CpuThreadTimelineIndexMap)
 	{
-		if (CpuThreadFilter(KV.Key))
+		if (Params.CpuThreadFilter(KV.Key))
 		{
 			IncludedTimelines.Add(&Timelines[KV.Value].Get());
 		}
@@ -287,8 +289,43 @@ ITable<FTimingProfilerAggregatedStats>* FTimingProfilerProvider::CreateAggregati
 	};
 
 	TMap<const FTimingProfilerTimer*, FAggregatedTimingStats> Aggregation;
-	FTimelineStatistics::CreateAggregation(IncludedTimelines, BucketMappingFunc, IntervalStart, IntervalEnd, Aggregation);
+	if (Params.FrameType == ETraceFrameType::TraceFrameType_Count)
+	{
+		if (Params.IntervalStart <= Session.GetDurationSeconds())
+		{
+			// Do not allow inf for the end time.
+			double EndTime = FMath::Min(Params.IntervalEnd, Session.GetDurationSeconds());
+			FTimelineStatistics::CreateAggregation(IncludedTimelines, BucketMappingFunc, Params.IntervalStart, EndTime, Params.CancellationToken, Aggregation);
+		}
+	}
+	else
+	{
+		TArray<FFrameData> Frames;
+		const IFrameProvider& FrameProvider = ReadFrameProvider(Session);
+		FrameProvider.EnumerateFrames(Params.FrameType, Params.IntervalStart, Params.IntervalEnd, [&Frames](const FFrame& Frame)
+			{
+				FFrameData NewFrameData;
+				NewFrameData.StartTime = Frame.StartTime;
+				NewFrameData.EndTime = Frame.EndTime;
+
+				Frames.Add(NewFrameData);
+			});
+
+		if (Frames.Num() > 0)
+		{
+			// Do not allow inf for the last frame end time.
+			Frames[Frames.Num() - 1].EndTime = FMath::Min(Session.GetDurationSeconds(), Frames[Frames.Num() - 1].EndTime);
+			FTimelineStatistics::CreateFrameStatsAggregation(IncludedTimelines, BucketMappingFunc, Frames, Params.CancellationToken, Aggregation);
+		}
+	}
+
 	TTable<FTimingProfilerAggregatedStats>* Table = new TTable<FTimingProfilerAggregatedStats>(AggregatedStatsTableLayout);
+	
+	if (Params.CancellationToken.IsValid() && Params.CancellationToken->ShouldCancel())
+	{
+		return Table;
+	}
+
 	for (const auto& KV : Aggregation)
 	{
 		FTimingProfilerAggregatedStats& Row = Table->AddRow();

@@ -95,14 +95,15 @@ UE::AssetUtils::ECreateSkeletalMeshResult UE::AssetUtils::CreateSkeletalMeshAsse
 	}
 
 	// ensure there is at least one material
-	if (Materials.Num() == 0)
+	if (MaterialView.IsEmpty())
 	{
 		Materials.Add(FSkeletalMaterial());
 		MaterialView = Materials;
 	}
 	
 	if (!FStaticToSkeletalMeshConverter::InitializeSkeletalMeshFromMeshDescriptions(
-		NewSkeletalMesh, MeshDescriptions, MaterialView, Options.Skeleton->GetReferenceSkeleton(),
+		NewSkeletalMesh, MeshDescriptions, MaterialView, 
+		Options.RefSkeleton ? *Options.RefSkeleton : Options.Skeleton->GetReferenceSkeleton(),
 		Options.bEnableRecomputeNormals, Options.bEnableRecomputeTangents))
 	{
 		return ECreateSkeletalMeshResult::UnknownError;

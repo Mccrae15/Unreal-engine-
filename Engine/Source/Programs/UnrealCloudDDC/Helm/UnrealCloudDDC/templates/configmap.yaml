@@ -29,6 +29,10 @@ UnrealCloudDDC:
   ContentIdStoreImplementation :  {{ default "Scylla" $config.ContentIdStoreImplementation }}
   BlobIndexImplementation :  {{ default "Scylla" $config.BlobIndexImplementation }}
 
+{{- if $config.EnableOnDemandReplication -}}
+  EnableOnDemandReplication :  {{ $config.EnableOnDemandReplication }}
+{{- end -}}
+
 {{- if $config.EnableLastAccessTracking -}}
   EnableLastAccessTracking: {{ $config.EnableLastAccessTracking }}
 {{- end -}}
@@ -60,6 +64,18 @@ Jupiter:
 {{ $config.Jupiter | toYaml | nindent 2 }}
 {{- end }}
 
+{{ if .Values.nginx.useDomainSockets }}
+Jupiter:
+  UseDomainSockets: true
+  DomainSocketsRoot: "/nginx"
+  ChmodDomainSockets: true
+{{ end }}
+
+{{ if .Values.nginx.enabled }}
+Nginx:
+  UseNginxRedirect: true
+{{ end }}
+
 Replication:
   Enabled: {{ default "false" $replication.Enabled }}
 {{ with $replication.Replicators }}
@@ -90,7 +106,7 @@ GC:
 {{- if or (.Values.persistence.enabled) (.Values.persistence.volume) }}
 FileSystem:
   RootDir:  {{ printf "%s/Blobs" .Values.persistence.mountPath }}
-  MaxSizeBytes: {{ required "MaxSizeBytes of the cache volume must be specified" $filesystem.MaxSizeBytes }}
+  MaxSizeBytes: {{ default .Values.persistence.size $filesystem.MaxSizeBytes }}
  {{- if $filesystem.TriggerThresholdPercentage }}
   TriggerThresholdPercentage: {{ $filesystem.TriggerThresholdPercentage }}
 {{- end }}
@@ -107,6 +123,11 @@ Scylla:
 {{- if $config.Serilog }}
 Serilog: 
 {{ $config.Serilog | toYaml | nindent 2 }}
+{{- end }}
+
+{{- if $config.CacheRef }}
+CacheRef:
+{{ $config.CacheRef | toYaml | nindent 2 }}
 {{- end }}
 
 {{- if and (.Values.global.cloudProvider) (eq .Values.global.cloudProvider "Azure") }}
@@ -131,11 +152,19 @@ Azure:
 {{- $s3 := default dict $config.S3 -}}
 S3:
   ConnectionString: "AWS"
-  BucketName: {{ required "The name of the S3 bucket to use has to be specified" $s3.BucketName }}
+  BucketName: {{ required "The name of the S3 bucket to use has to be specified (.config.S3.BucketName)" $s3.BucketName }}
   # We assume that you are creating your buckets yourself for production deployments like this 
   CreateBucketIfMissing: {{ default  false $s3.CreateBucketIfMissing }}
   SetBucketPolicies: {{ default false $s3.SetBucketPolicies }}
 
   UseBlobIndexForExistsCheck: {{ default false $s3.UseBlobIndexForExistsCheck }}
+
+  {{- if $s3.UseArnRegion }}
+  UseArnRegion: {{ $s3.UseArnRegion }}
+  {{- end }}
+
+  {{- if $s3.StoragePoolBucketOverride }}
+  StoragePoolBucketOverride: {{ $s3.StoragePoolBucketOverride | toYaml | nindent 4  }}
+  {{- end }}
 {{ end }}
 

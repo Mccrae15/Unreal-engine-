@@ -15,7 +15,6 @@
 #endif
 #include "Engine/RendererSettings.h"
 #include "Modules/ModuleManager.h"
-#include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 
@@ -109,11 +108,11 @@ UMaterialExpressionCustomOutput* FGLTFMaterialUtilities::GetCustomOutputByName(c
 	return nullptr;
 }
 
-FGLTFPropertyBakeOutput FGLTFMaterialUtilities::BakeMaterialProperty(const FIntPoint& OutputSize, const FMaterialPropertyEx& Property, const UMaterialInterface* Material, int32 TexCoord, const FGLTFMeshData* MeshData, const FGLTFIndexArray& MeshSectionIndices, bool bFillAlpha, bool bAdjustNormalmaps)
+FGLTFPropertyBakeOutput FGLTFMaterialUtilities::BakeMaterialProperty(const FIntPoint& OutputSize, const FMaterialPropertyEx& Property, const UMaterialInterface* Material, const FBox2f& TexCoordBounds, int32 TexCoordIndex, const FGLTFMeshData* MeshData, const FGLTFIndexArray& MeshSectionIndices, bool bFillAlpha, bool bAdjustNormalmaps)
 {
 	FMeshData MeshSet;
-	MeshSet.TextureCoordinateBox = { { 0.0f, 0.0f }, { 1.0f, 1.0f } };
-	MeshSet.TextureCoordinateIndex = TexCoord;
+	MeshSet.TextureCoordinateBox = FBox2D(TexCoordBounds);
+	MeshSet.TextureCoordinateIndex = TexCoordIndex;
 	MeshSet.MaterialIndices = MeshSectionIndices; // NOTE: MaterialIndices is actually section indices
 	if (MeshData != nullptr)
 	{
@@ -165,18 +164,10 @@ FGLTFPropertyBakeOutput FGLTFMaterialUtilities::BakeMaterialProperty(const FIntP
 	}
 
 	bool bFromSRGB = !bIsLinearBake;
+	FGLTFPropertyBakeOutput PropertyBakeOutput(BakedPixels, BakedSize, EmissiveScale, bFromSRGB);
+
 	bool bToSRGB = IsSRGB(Property);
 	FGLTFTextureUtilities::TransformColorSpace(*BakedPixels, bFromSRGB, bToSRGB);
-
-	FGLTFPropertyBakeOutput PropertyBakeOutput(Property, PF_B8G8R8A8, BakedPixels, BakedSize, EmissiveScale, !bIsLinearBake);
-
-	if (BakedPixels->Num() == 1)
-	{
-		const FColor& Pixel = (*BakedPixels)[0];
-
-		PropertyBakeOutput.bIsConstant = true;
-		PropertyBakeOutput.ConstantValue = bToSRGB ? FLinearColor(Pixel) : Pixel.ReinterpretAsLinear();
-	}
 
 	return PropertyBakeOutput;
 }
@@ -194,7 +185,12 @@ FGLTFJsonTexture* FGLTFMaterialUtilities::AddTexture(FGLTFConvertBuilder& Builde
 
 FLinearColor FGLTFMaterialUtilities::GetMask(const FExpressionInput& ExpressionInput)
 {
-	return FLinearColor(ExpressionInput.MaskR, ExpressionInput.MaskG, ExpressionInput.MaskB, ExpressionInput.MaskA);
+	return FLinearColor(
+		static_cast<float>(ExpressionInput.MaskR),
+		static_cast<float>(ExpressionInput.MaskG),
+		static_cast<float>(ExpressionInput.MaskB),
+		static_cast<float>(ExpressionInput.MaskA)
+	);
 }
 
 uint32 FGLTFMaterialUtilities::GetMaskComponentCount(const FExpressionInput& ExpressionInput)
@@ -215,10 +211,10 @@ bool FGLTFMaterialUtilities::TryGetTextureCoordinateIndex(const UMaterialExpress
 	if (const UMaterialExpressionTextureCoordinate* TextureCoordinate = Cast<UMaterialExpressionTextureCoordinate>(Expression))
 	{
 		TexCoord = TextureCoordinate->CoordinateIndex;
-		Transform.Offset.X = TextureCoordinate->UnMirrorU ? TextureCoordinate->UTiling * 0.5 : 0.0;
-		Transform.Offset.Y = TextureCoordinate->UnMirrorV ? TextureCoordinate->VTiling * 0.5 : 0.0;
-		Transform.Scale.X = TextureCoordinate->UTiling * (TextureCoordinate->UnMirrorU ? 0.5 : 1.0);
-		Transform.Scale.Y = TextureCoordinate->VTiling * (TextureCoordinate->UnMirrorV ? 0.5 : 1.0);
+		Transform.Offset.X = TextureCoordinate->UnMirrorU ? TextureCoordinate->UTiling * 0.5f : 0.0f;
+		Transform.Offset.Y = TextureCoordinate->UnMirrorV ? TextureCoordinate->VTiling * 0.5f : 0.0f;
+		Transform.Scale.X = TextureCoordinate->UTiling * (TextureCoordinate->UnMirrorU ? 0.5f : 1.0f);
+		Transform.Scale.Y = TextureCoordinate->VTiling * (TextureCoordinate->UnMirrorV ? 0.5f : 1.0f);
 		Transform.Rotation = 0;
 		return true;
 	}

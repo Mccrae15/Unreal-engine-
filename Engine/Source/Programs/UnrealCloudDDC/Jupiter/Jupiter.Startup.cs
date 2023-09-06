@@ -19,8 +19,11 @@ using Jupiter.Implementation;
 using Jupiter.Implementation.Blob;
 using Jupiter.Implementation.LeaderElection;
 using Jupiter.Common.Implementation;
+using Jupiter.Implementation.Bundles;
+using Jupiter.Implementation.Objects;
 using Jupiter.Implementation.TransactionLog;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -90,6 +93,8 @@ namespace Jupiter
             services.AddOptions<AzureSettings>().Bind(Configuration.GetSection("Azure")).ValidateDataAnnotations();
             services.AddOptions<FilesystemSettings>().Bind(Configuration.GetSection("Filesystem")).ValidateDataAnnotations();
 
+            services.AddOptions<NginxSettings>().Bind(Configuration.GetSection("Nginx")).ValidateDataAnnotations();
+
             services.AddOptions<ConsistencyCheckSettings>().Bind(Configuration.GetSection("ConsistencyCheck")).ValidateDataAnnotations();
 
             services.AddOptions<UpstreamRelaySettings>().Configure(o => Configuration.GetSection("Upstream").Bind(o)).ValidateDataAnnotations();
@@ -104,6 +109,9 @@ namespace Jupiter
 
             services.AddOptions<KubernetesLeaderElectionSettings>().Configure(o => Configuration.GetSection("Kubernetes").Bind(o)).ValidateDataAnnotations();
             services.AddOptions<StaticPeerServiceDiscoverySettings>().Configure(o => Configuration.GetSection("ServiceDiscovery").Bind(o)).ValidateDataAnnotations();
+
+            services.AddOptions<MemoryCacheReferencesSettings>().Configure(o => Configuration.GetSection("CacheRef").Bind(o)).ValidateDataAnnotations();
+            services.AddOptions<MemoryCacheContentIdSettings>().Configure(o => Configuration.GetSection("CacheContentId").Bind(o)).ValidateDataAnnotations();
 
             services.AddSingleton(typeof(CompressedBufferUtils), CreateCompressedBufferUtils);
 
@@ -137,7 +145,6 @@ namespace Jupiter
             services.AddSingleton<OrphanBlobCleanupRefs>();
 
             services.AddSingleton(typeof(IBlobService), typeof(BlobService));
-
             services.AddSingleton(serviceType: typeof(IScyllaSessionManager), ScyllaFactory);
 
             services.AddSingleton(serviceType: typeof(IReplicationLog), ReplicationLogWriterFactory);
@@ -153,9 +160,13 @@ namespace Jupiter
             services.AddSingleton(Configuration);
 
             services.AddSingleton<FormatResolver>();
+            services.AddSingleton<NginxRedirectHelper>();
 
             services.AddSingleton(serviceType: typeof(ISecretResolver), typeof(SecretResolver));
             services.AddSingleton(typeof(IAmazonSecretsManager), CreateAWSSecretsManager);
+
+            services.AddSingleton(typeof(IStorageService), typeof(StorageService));
+            services.AddSingleton(typeof(IMemoryCache), typeof(MemoryCache));
 
             services.AddSingleton<LastAccessServiceReferences>();
             services.AddHostedService<LastAccessServiceReferences>(p => p.GetService<LastAccessServiceReferences>()!);
@@ -177,7 +188,7 @@ namespace Jupiter
             services.AddSingleton(typeof(IPeerStatusService), typeof(PeerStatusService));
             services.AddHostedService<PeerStatusService>(p => (PeerStatusService)p.GetService<IPeerStatusService>()!);
         
-            services.AddTransient(typeof(IRefCleanup), typeof(RefCleanup));
+            services.AddTransient(typeof(IRefCleanup), typeof(RefLastAccessCleanup));
 
             services.AddTransient(typeof(VersionFile), typeof(VersionFile));
 
@@ -290,7 +301,7 @@ namespace Jupiter
             Builder clusterBuilder = Cluster.Builder()
                 .WithConnectionString(connectionString)
                 .WithDefaultKeyspace(DefaultKeyspaceName)
-                .WithLoadBalancingPolicy(new DefaultLoadBalancingPolicy(settings.LocalDatacenterName))
+                .WithLoadBalancingPolicy(Policies.NewDefaultLoadBalancingPolicy(settings.LocalDatacenterName))
                 .WithPoolingOptions(PoolingOptions.Create().SetMaxConnectionsPerHost(HostDistance.Local, settings.MaxConnectionForLocalHost))
                 .WithExecutionProfiles(options =>
                     options.WithProfile("default", builder => builder.WithConsistencyLevel(ConsistencyLevel.LocalOne)));
@@ -355,7 +366,7 @@ namespace Jupiter
             }
 
             ISession replicatedSession;
-            const int MaxRetryAttempts = 10;
+            const int MaxRetryAttempts = 100;
             int countOfAttempts = 0;
             while(true)
             {
@@ -406,19 +417,24 @@ namespace Jupiter
         private IReferencesStore ObjectStoreFactory(IServiceProvider provider)
         {
             UnrealCloudDDCSettings settings = provider.GetService<IOptionsMonitor<UnrealCloudDDCSettings>>()!.CurrentValue!;
-            switch (settings.ReferencesDbImplementation)
+            IReferencesStore store = settings.ReferencesDbImplementation switch
             {
-                case UnrealCloudDDCSettings.ReferencesDbImplementations.Memory:
-                    return ActivatorUtilities.CreateInstance<MemoryReferencesStore>(provider);
-                case UnrealCloudDDCSettings.ReferencesDbImplementations.Scylla:
-                    return ActivatorUtilities.CreateInstance<ScyllaReferencesStore>(provider);
-                case UnrealCloudDDCSettings.ReferencesDbImplementations.Mongo:
-                    return ActivatorUtilities.CreateInstance<MongoReferencesStore>(provider);
-                case UnrealCloudDDCSettings.ReferencesDbImplementations.Cache:
-                    return ActivatorUtilities.CreateInstance<CacheReferencesStore>(provider);
-                default:
-                    throw new NotImplementedException($"Unknown references db implementation: {settings.ReferencesDbImplementation}");
+                UnrealCloudDDCSettings.ReferencesDbImplementations.Memory => ActivatorUtilities.CreateInstance<MemoryReferencesStore>(provider),
+                UnrealCloudDDCSettings.ReferencesDbImplementations.Scylla => ActivatorUtilities.CreateInstance<ScyllaReferencesStore>(provider),
+                UnrealCloudDDCSettings.ReferencesDbImplementations.Mongo => ActivatorUtilities.CreateInstance<MongoReferencesStore>(provider),
+                UnrealCloudDDCSettings.ReferencesDbImplementations.Cache => ActivatorUtilities.CreateInstance<CacheReferencesStore>(provider),
+                _ => throw new NotImplementedException(
+                    $"Unknown references db implementation: {settings.ReferencesDbImplementation}")
+            };
+
+            MemoryCacheReferencesSettings memoryCacheSettings = provider.GetService<IOptionsMonitor<MemoryCacheReferencesSettings>>()!.CurrentValue;
+
+            if (memoryCacheSettings.Enabled)
+            {
+                store = ActivatorUtilities.CreateInstance<MemoryCachedReferencesStore>(provider, store);
             }
+
+            return store;
         }
         
         private ILeaderElection CreateLeaderElection(IServiceProvider provider)
@@ -466,6 +482,11 @@ namespace Jupiter
                     if (s3Settings.ForceAWSPathStyle)
                     {
                         c.ForcePathStyle = true;
+                    }
+
+                    if (s3Settings.UseArnRegion.HasValue)
+                    {
+                        c.UseArnRegion = s3Settings.UseArnRegion.Value;
                     }
                 }
                 else
@@ -515,8 +536,10 @@ namespace Jupiter
                         }, tags: new[] {"services"});*/
                         break;
                     case UnrealCloudDDCSettings.StorageBackendImplementations.Azure:
-                        AzureSettings azureSettings = provider.GetService<IOptionsMonitor<AzureSettings>>()!.CurrentValue;
-                        healthChecks.AddAzureBlobStorage(AzureBlobStore.GetConnectionString(azureSettings, provider), tags: new[] {"services"});
+                        // Health checks for Azure are disabled as the connection string will vary based on the namespace used
+                        /*AzureSettings azureSettings = provider.GetService<IOptionsMonitor<AzureSettings>>()!.CurrentValue;
+                        healthChecks.AddAzureBlobStorage(AzureBlobStore.GetConnectionString(azureSettings, provider), tags: new[] {"services"});*/
+                        
                         break;
 
                     case UnrealCloudDDCSettings.StorageBackendImplementations.FileSystem:

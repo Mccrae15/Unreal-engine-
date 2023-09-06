@@ -9,6 +9,7 @@
 #include "Misc/FileHelper.h"
 #include "HAL/FileManager.h"
 #include "Serialization/MemoryWriter.h"
+#include "ShaderPreprocessTypes.h"
 #include "RayTracingDefinitions.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogD3D12ShaderCompiler, Log, All);
@@ -153,9 +154,259 @@ static void LogFailedHRESULT(const TCHAR* FailedExpressionStr, HRESULT Result)
 		}													\
 	}
 
+
+class FDxcArguments
+{
+protected:
+	FString ShaderProfile;
+	FString EntryPoint;
+	FString Exports;
+	FString DumpDisasmFilename;
+	FString BatchBaseFilename;
+	FString DumpDebugInfoPath;
+	bool bKeepEmbeddedPDB = false;
+	bool bDump = false;
+
+	TArray<FString> ExtraArguments;
+
+public:
+	FDxcArguments(
+		const FShaderCompilerInput& Input,
+		const FString& InEntryPoint,
+		const TCHAR* InShaderProfile,
+		ELanguage Language,
+		const FString& InExports
+	)
+		: ShaderProfile(InShaderProfile)
+		, EntryPoint(InEntryPoint)
+		, Exports(InExports)
+		, BatchBaseFilename(FPaths::GetBaseFilename(Input.GetSourceFilename()))
+		, DumpDebugInfoPath(Input.DumpDebugInfoPath)
+		, bDump(Input.DumpDebugInfoEnabled())
+	{
+		if (bDump)
+		{
+			DumpDisasmFilename = Input.DumpDebugInfoPath / TEXT("Output.d3dasm");
+		}
+
+		const bool bEnable16BitTypes =
+			// 16bit types are SM6.2 whereas Language == ELanguage::SM6 is SM6.6, so their support at runtime is guarented.
+			(Language == ELanguage::SM6 && Input.Environment.CompilerFlags.Contains(CFLAG_AllowRealTypes))
+
+			// Enable 16bit_types to reduce DXIL size (compiler bug - will be fixed)
+			|| Input.IsRayTracingShader();
+
+		const bool bHlslVersion2021 = Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021);
+		const uint32 HlslVersion = (bHlslVersion2021 ? 2021 : 2018);
+
+		switch (HlslVersion)
+		{
+		case 2015:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2015"));
+			break;
+		case 2016:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2016"));
+			break;
+		case 2017:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2017"));
+			break;
+		case 2018:
+			break; // Default
+		case 2021:
+			ExtraArguments.Add(TEXT("-HV"));
+			ExtraArguments.Add(TEXT("2021"));
+			break;
+		default:
+			checkf(false, TEXT("Invalid HLSL version: expected 2015, 2016, 2017, 2018, or 2021 but %u was specified"), HlslVersion);
+			break;
+		}
+
+		// Unpack uniform matrices as row-major to match the CPU layout.
+		ExtraArguments.Add(TEXT("-Zpr"));
+
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_Debug) || Input.Environment.CompilerFlags.Contains(CFLAG_SkipOptimizationsDXC))
+		{
+			ExtraArguments.Add(TEXT("-Od"));
+		}
+		else if (Input.Environment.CompilerFlags.Contains(CFLAG_StandardOptimization))
+		{
+			ExtraArguments.Add(TEXT("-O1"));
+		}
+		else
+		{
+			ExtraArguments.Add(TEXT("-O3"));
+		}
+
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_PreferFlowControl))
+		{
+			ExtraArguments.Add(TEXT("-Gfp"));
+		}
+
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_AvoidFlowControl))
+		{
+			ExtraArguments.Add(TEXT("-Gfa"));
+		}
+
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_WarningsAsErrors))
+		{
+			ExtraArguments.Add(TEXT("-WX"));
+		}
+
+		const uint32 AutoBindingSpace = GetAutoBindingSpace(Input.Target);
+		if (AutoBindingSpace != ~0u)
+		{
+			ExtraArguments.Add(TEXT("-auto-binding-space"));
+			ExtraArguments.Add(FString::Printf(TEXT("%d"), AutoBindingSpace));
+		}
+
+		if (Exports.Len() > 0)
+		{
+			// Ensure that only the requested functions exists in the output DXIL.
+			// All other functions and their used resources must be eliminated.
+			ExtraArguments.Add(TEXT("-exports"));
+			ExtraArguments.Add(Exports);
+		}
+
+		if (bEnable16BitTypes)
+		{
+			ExtraArguments.Add(TEXT("-enable-16bit-types"));
+		}
+
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_GenerateSymbols))
+		{
+			if (Input.Environment.CompilerFlags.Contains(CFLAG_AllowUniqueSymbols))
+			{
+				// -Zss Compute Shader Hash considering source information
+				ExtraArguments.Add(TEXT("-Zss"));
+			}
+			else
+			{
+				// -Zsb Compute Shader Hash considering only output binary
+				ExtraArguments.Add(TEXT("-Zsb"));
+			}
+
+			ExtraArguments.Add(TEXT("-Qembed_debug"));
+			ExtraArguments.Add(TEXT("-Zi"));
+
+			ExtraArguments.Add(TEXT("-Fd"));
+			ExtraArguments.Add(TEXT(".\\"));
+
+			bKeepEmbeddedPDB = true;
+		}
+
+		// Reflection will be removed later, otherwise the disassembly won't contain variables
+		//ExtraArguments.Add(TEXT("-Qstrip_reflect"));
+
+		// disable undesired warnings
+		ExtraArguments.Add(TEXT("-Wno-parentheses-equality"));
+
+		// working around bindless conversion specific issue where globallycoherent on a function return type is flagged as ignored even though it is necessary.
+		// github issue: https://github.com/microsoft/DirectXShaderCompiler/issues/4537
+		if (Input.Environment.CompilerFlags.Contains(CFLAG_BindlessResources))
+		{
+			ExtraArguments.Add(TEXT("-Wno-ignored-attributes"));
+		}
+
+		// @lh-todo: This fixes a loop unrolling issue that showed up in DOFGatherKernel with cs_6_6 with the latest DXC revision
+		ExtraArguments.Add(TEXT("-disable-lifetime-markers"));
+	}
+
+	FString GetDumpDebugInfoPath() const
+	{
+		return DumpDebugInfoPath;
+	}
+
+	bool ShouldKeepEmbeddedPDB() const
+	{
+		return bKeepEmbeddedPDB;
+	}
+
+	bool ShouldDump() const
+	{
+		return bDump;
+	}
+
+	FString GetEntryPointName() const
+	{
+		return Exports.Len() > 0 ? FString(TEXT("")) : EntryPoint;
+	}
+
+	const FString& GetShaderProfile() const
+	{
+		return ShaderProfile;
+	}
+
+	const FString& GetDumpDisassemblyFilename() const
+	{
+		return DumpDisasmFilename;
+	}
+
+	void GetCompilerArgsNoEntryNoProfileNoDisasm(TArray<const WCHAR*>& Out) const
+	{
+		for (const FString& Entry : ExtraArguments)
+		{
+			Out.Add(*Entry);
+		}
+	}
+
+	void GetCompilerArgs(TArray<const WCHAR*>& Out) const
+	{
+		GetCompilerArgsNoEntryNoProfileNoDisasm(Out);
+		if (Exports.Len() == 0)
+		{
+			Out.Add(TEXT("-E"));
+			Out.Add(*EntryPoint);
+		}
+
+		Out.Add(TEXT("-T"));
+		Out.Add(*ShaderProfile);
+
+		Out.Add(TEXT(" -Fc "));
+		Out.Add(TEXT("zzz.d3dasm"));	// Dummy
+
+		Out.Add(TEXT(" -Fo "));
+		Out.Add(TEXT("zzz.dxil"));	// Dummy
+	}
+
+	const FString& GetBatchBaseFilename() const
+	{
+		return BatchBaseFilename;
+	}
+
+	FString GetBatchCommandLineString() const
+	{
+		FString DXCCommandline;
+		for (const FString& Entry : ExtraArguments)
+		{
+			DXCCommandline += TEXT(" ");
+			DXCCommandline += Entry;
+		}
+
+		DXCCommandline += TEXT(" -T ");
+		DXCCommandline += ShaderProfile;
+
+		if (Exports.Len() == 0)
+		{
+			DXCCommandline += TEXT(" -E ");
+			DXCCommandline += EntryPoint;
+		}
+
+		DXCCommandline += TEXT(" -Fc ");
+		DXCCommandline += BatchBaseFilename + TEXT(".d3dasm");
+
+		DXCCommandline += TEXT(" -Fo ");
+		DXCCommandline += BatchBaseFilename + TEXT(".dxil");
+
+		return DXCCommandline;
+	}
+};
+
 class FDxcMalloc final : public IMalloc
 {
-	ULONG RefCount = 1;
+	std::atomic<ULONG> RefCount{ 1 };
 
 public:
 
@@ -219,16 +470,20 @@ static IMalloc* GetDxcMalloc()
 	return &Instance;
 }
 
+
 static dxc::DxcDllSupport& GetDxcDllHelper()
 {
-	static dxc::DxcDllSupport DxcDllSupport;
-	static bool DxcDllInitialized = false;
-	if (!DxcDllInitialized)
+	struct DxcDllHelper
 	{
-		VERIFYHRESULT(DxcDllSupport.Initialize());
-		DxcDllInitialized = true;
-	}
-	return DxcDllSupport;
+		DxcDllHelper()
+		{
+			VERIFYHRESULT(DxcDllSupport.Initialize());
+		}
+		dxc::DxcDllSupport DxcDllSupport;
+	};
+
+	static DxcDllHelper DllHelper;
+	return DllHelper.DxcDllSupport;
 }
 
 static FString DxcBlobEncodingToFString(TRefCountPtr<IDxcBlobEncoding> DxcBlob)
@@ -306,7 +561,7 @@ static HRESULT InnerDXCCompileWrapper(
 static HRESULT DXCCompileWrapper(
 	TRefCountPtr<IDxcCompiler3>& Compiler,
 	TRefCountPtr<IDxcBlobEncoding>& TextBlob,
-	FDxcArguments& Arguments,
+	const FDxcArguments& Arguments,
 	TRefCountPtr<IDxcResult>& OutCompileResult)
 {
 	bool bExceptionError = false;
@@ -415,7 +670,7 @@ static bool RemoveContainerReflection(dxc::DxcDllSupport& DxcDllHelper, TRefCoun
 	return false;
 };
 
-static HRESULT D3DCompileToDxil(const char* SourceText, FDxcArguments& Arguments,
+static HRESULT D3DCompileToDxil(const char* SourceText, const FDxcArguments& Arguments,
 	TRefCountPtr<IDxcBlob>& OutDxilBlob, TRefCountPtr<IDxcBlob>& OutReflectionBlob, TRefCountPtr<IDxcBlobEncoding>& OutErrorBlob)
 {
 	dxc::DxcDllSupport& DxcDllHelper = GetDxcDllHelper();
@@ -501,7 +756,7 @@ static HRESULT D3DCompileToDxil(const char* SourceText, FDxcArguments& Arguments
 	return CompileResultCode;
 }
 
-static FString D3DCreateDXCCompileBatchFile(const FDxcArguments& Args, const FString& ShaderPath)
+static FString D3DCreateDXCCompileBatchFile(const FDxcArguments& Args)
 {
 	FString DxcPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
 
@@ -511,7 +766,8 @@ static FString D3DCreateDXCCompileBatchFile(const FDxcArguments& Args, const FSt
 	FString DxcFilename = FPaths::Combine(DxcPath, TEXT("dxc.exe"));
 	FPaths::MakePlatformFilename(DxcFilename);
 
-	const FString BatchCmdLineArgs = Args.GetBatchCommandLineString(ShaderPath);
+	const FString& BatchBaseFilename = Args.GetBatchBaseFilename();
+	const FString BatchCmdLineArgs = Args.GetBatchCommandLineString();
 
 	return FString::Printf(
 		TEXT(
@@ -528,7 +784,7 @@ static FString D3DCreateDXCCompileBatchFile(const FDxcArguments& Args, const FSt
 		*DxcFilename,
 		*DxcPath,
 		*BatchCmdLineArgs,
-		*ShaderPath
+		*BatchBaseFilename
 	);
 }
 
@@ -610,103 +866,19 @@ static bool DXCRewriteWrapper(
 #endif
 }
 
-static const TCHAR* GRewrittenBaseFilename = TEXT("Output.dxc.hlsl");
-static bool RewriteUsingSC(FString& PreprocessedShaderSource, const FShaderCompilerInput& Input, bool bIsRayTracingShader,
-	bool bDumpDebugInfo, ELanguage Language, FShaderCompilerOutput& Output)
-{
-	bool bResult = true;
-	if (bIsRayTracingShader)
-	{
-		bResult = false;
-	}
-	else
-	{
-		// Set up compile options for ShaderConductor (shader model, optimization settings etc.)
-		ShaderConductor::Compiler::Options Options;
-		Options.removeUnusedGlobals = false;
-		Options.packMatricesInRowMajor = false;
-		Options.enableDebugInfo = false;
-		Options.enable16bitTypes = false;
-		Options.disableOptimizations = false;
-		Options.shaderModel = ToDXCShaderModel(Language);
-
-		// Convert input source code from TCHAR to ANSI
-		std::string CStrSourceData(TCHAR_TO_ANSI(*PreprocessedShaderSource));
-		std::string CStrFileName(TCHAR_TO_ANSI(*Input.VirtualSourceFilePath));
-		std::string CStrEntryPointName(TCHAR_TO_ANSI(*Input.EntryPointName));
-
-		const ShaderConductor::MacroDefine BuiltinDefines[] =
-		{
-//			{ "COMPILER_HLSL", "1" },
-			{ "TextureExternal", "Texture2D" },
-		};
-
-		// Set up source description for ShaderConductor
-		ShaderConductor::Compiler::SourceDesc SourceDesc;
-		FMemory::Memzero(SourceDesc);
-		SourceDesc.source = CStrSourceData.c_str();
-		SourceDesc.fileName = CStrFileName.c_str();
-		SourceDesc.entryPoint = CStrEntryPointName.c_str();
-		SourceDesc.numDefines = sizeof(BuiltinDefines) / sizeof(BuiltinDefines[0]);
-		SourceDesc.defines = BuiltinDefines;
-		SourceDesc.stage = ToDXCShaderStage(Input.Target.GetFrequency());
-
-		ShaderConductor::Compiler::TargetDesc TargetDesc;
-		FMemory::Memzero(TargetDesc);
-		TargetDesc.language = ShaderConductor::ShadingLanguage::Dxil;
-
-		// Rewrite HLSL source to remove unused global variables (DXC retains them when compiling)
-		Options.removeUnusedGlobals = true;
-		bool bException = false;
-		ShaderConductor::Compiler::ResultDesc RewriteResultDesc;
-		DXCRewriteWrapper(SourceDesc, Options, RewriteResultDesc, bException);
-		Options.removeUnusedGlobals = false;
-		if (RewriteResultDesc.hasError || bException)
-		{
-			if (bException)
-			{
-				Output.Errors.Add(TEXT("ShaderConductor exception during rewrite"));
-			}
-			// Append compile error to output reports
-			if (RewriteResultDesc.errorWarningMsg.Size() > 0)
-			{
-				FUTF8ToTCHAR UTF8Converter(reinterpret_cast<const ANSICHAR*>(RewriteResultDesc.errorWarningMsg.Data()), RewriteResultDesc.errorWarningMsg.Size());
-				const FString ErrorString(RewriteResultDesc.errorWarningMsg.Size(), UTF8Converter.Get());
-				Output.Errors.Add(*ErrorString);
-				RewriteResultDesc.errorWarningMsg.Reset();
-				bResult = false;
-			}
-		}
-		else
-		{
-			// Copy rewritten HLSL code into new source data string
-			CStrSourceData.clear();
-			CStrSourceData.resize(RewriteResultDesc.target.Size());
-			FCStringAnsi::Strncpy(&CStrSourceData[0], static_cast<const char*>(RewriteResultDesc.target.Data()), RewriteResultDesc.target.Size());
-			PreprocessedShaderSource = CStrSourceData.c_str();
-
-			if (bDumpDebugInfo)
-			{
-				UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
-				DebugDataOptions.OverrideBaseFilename = GRewrittenBaseFilename;
-				UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource, DebugDataOptions);
-			}
-		}
-	}
-
-	return bResult;
-}
-
 // Generate the dumped usf file; call the D3D compiler, gather reflection information and generate the output data
-bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
-	const uint32 CompileFlags,
+bool CompileAndProcessD3DShaderDXC(const FShaderPreprocessOutput& PreprocessOutput,
 	const FShaderCompilerInput& Input,
 	const FShaderParameterParser& ShaderParameterParser,
-	FString& EntryPointName,
-	const TCHAR* ShaderProfile, ELanguage Language, bool bProcessingSecondTime,
+	const TCHAR* ShaderProfile,
+	ELanguage Language,
+	bool bProcessingSecondTime,
 	FShaderCompilerOutput& Output)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(CompileAndProcessD3DShaderDXC);
+
+	const FString& PreprocessedShaderSource = Output.ModifiedShaderSource.IsEmpty() ? PreprocessOutput.GetSource() : Output.ModifiedShaderSource;
+	const FString& EntryPointName = Output.ModifiedEntryPointName.IsEmpty() ? Input.EntryPointName : Output.ModifiedEntryPointName;
 
 	auto AnsiSourceFile = StringCast<ANSICHAR>(*PreprocessedShaderSource);
 
@@ -718,13 +890,6 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 	FString RayAnyHitEntryPoint; // Optional for hit group shaders
 	FString RayIntersectionEntryPoint; // Optional for hit group shaders
 	FString RayTracingExports;
-
-	bool bEnable16BitTypes = false;
-	if (Language == ELanguage::SM6)
-	{
-		// 16bit types are SM6.2 whereas Language == ELanguage::SM6 is SM6.6, so their support at runtime is guarented.
-		bEnable16BitTypes = Input.Environment.CompilerFlags.Contains(CFLAG_AllowRealTypes);
-	}
 
 	if (bIsRayTracingShader)
 	{
@@ -743,65 +908,21 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 			RayTracingExports += TEXT(";");
 			RayTracingExports += RayIntersectionEntryPoint;
 		}
-
-		// Enable 16bit_types to reduce DXIL size (compiler bug - will be fixed)
-		bEnable16BitTypes = true;
 	}
-
-	UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource);
-	bool bDumpDebugInfo = Input.DumpDebugInfoEnabled(); 
-
-	FString Filename = Input.GetSourceFilename();
-
-	if (Input.Environment.CompilerFlags.Contains(CFLAG_D3D12ForceShaderConductorRewrite))
-	{
-		if (RewriteUsingSC(PreprocessedShaderSource, Input, bIsRayTracingShader, bDumpDebugInfo, Language, Output))
-		{
-			Filename = GRewrittenBaseFilename;
-		}
-	}
-
-	FString DisasmFilename;
-	if (bDumpDebugInfo)
-	{
-		DisasmFilename = Input.DumpDebugInfoPath / Filename;
-	}
-
-	// Ignore backwards compatibility flag (/Gec) as it is deprecated.
-	// #dxr_todo: this flag should not be even passed into this function from the higher level.
-	uint32 DXCFlags = CompileFlags & (~D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY);
-	if (Input.Environment.CompilerFlags.Contains(CFLAG_SkipOptimizationsDXC))
-	{
-		DXCFlags |= D3DCOMPILE_SKIP_OPTIMIZATION;
-	}
-
-	const TCHAR* ValidatorVersion = nullptr; // Whatever default validator chosen by DXC
-
-	const bool bGenerateSymbols = Input.Environment.CompilerFlags.Contains(CFLAG_GenerateSymbols);
-	const bool bSymbolsBasedOnSource = Input.Environment.CompilerFlags.Contains(CFLAG_AllowUniqueSymbols);
-	const bool bHlslVersion2021 = Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021);
-	const uint32 HlslVersion = (bHlslVersion2021 ? 2021 : 2018);
 
 	FDxcArguments Args
 	(
+		Input,
 		EntryPointName,
 		ShaderProfile,
-		RayTracingExports,
-		Input.DumpDebugInfoPath,
-		Filename,
-		bEnable16BitTypes,
-		bGenerateSymbols,
-		bSymbolsBasedOnSource,
-		DXCFlags,
-		AutoBindingSpace,
-		ValidatorVersion,
-		HlslVersion
+		Language,
+		RayTracingExports
 	);
 
-	if (bDumpDebugInfo)
+	if (Args.ShouldDump())
 	{
-		FString BatchFileContents = D3DCreateDXCCompileBatchFile(Args, Filename);
-		FFileHelper::SaveStringToFile(BatchFileContents, *(Input.DumpDebugInfoPath / TEXT("CompileDXC.bat")));
+		const FString BatchFileContents = D3DCreateDXCCompileBatchFile(Args);
+		FFileHelper::SaveStringToFile(BatchFileContents, *(Args.GetDumpDebugInfoPath() / TEXT("CompileDXC.bat")));
 	}
 
 	TRefCountPtr<IDxcBlob> ShaderBlob;
@@ -1023,12 +1144,10 @@ bool CompileAndProcessD3DShaderDXC(FString& PreprocessedShaderSource,
 			uint32 RayTracingPayloadSize = 0;
 			if (bIsRayTracingShader)
 			{
-				const FString* RTPayloadTypePtr = Input.Environment.GetDefinitions().Find(TEXT("RT_PAYLOAD_TYPE"));
-				const FString* RTPayloadSizePtr = Input.Environment.GetDefinitions().Find(TEXT("RT_PAYLOAD_MAX_SIZE"));
-				checkf(RTPayloadTypePtr != nullptr, TEXT("Ray tracing shaders must provide a payload type as this information is required for offline RTPSO compilation. Check that FShaderType::ModifyCompilationEnvironment correctly set this value."));
-				checkf(RTPayloadSizePtr != nullptr, TEXT("Ray tracing shaders must provide a payload size as this information is required for offline RTPSO compilation. Check that FShaderType::ModifyCompilationEnvironment correctly set this value."));
-				RayTracingPayloadType = FCString::Atoi(**RTPayloadTypePtr);
-				RayTracingPayloadSize = FCString::Atoi(**RTPayloadSizePtr);
+				bool bArgFound = Input.Environment.GetCompileArgument(TEXT("RT_PAYLOAD_TYPE"), RayTracingPayloadType);
+				checkf(bArgFound, TEXT("Ray tracing shaders must provide a payload type as this information is required for offline RTPSO compilation. Check that FShaderType::ModifyCompilationEnvironment correctly set this value."));
+				bArgFound = Input.Environment.GetCompileArgument(TEXT("RT_PAYLOAD_MAX_SIZE"), RayTracingPayloadSize);
+				checkf(bArgFound, TEXT("Ray tracing shaders must provide a payload size as this information is required for offline RTPSO compilation. Check that FShaderType::ModifyCompilationEnvironment correctly set this value."));
 			}
 			auto PostSRTWriterCallback = [&](FMemoryWriter& Ar)
 			{

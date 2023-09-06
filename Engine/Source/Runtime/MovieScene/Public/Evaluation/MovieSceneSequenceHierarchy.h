@@ -70,7 +70,7 @@ struct FMovieSceneSubSequenceData
 	/**
 	* Gets the signature of the sub-section this points to. 
 	*/
-	MOVIESCENE_API FGuid GetSubSectionSignature() const { return SubSectionSignature; }
+	FGuid GetSubSectionSignature() const { return SubSectionSignature; }
 
 	/**
 	 * Re-creates a sub-section parameter struct.
@@ -145,6 +145,10 @@ struct FMovieSceneSubSequenceData
 	/** The accumulated hierarchical bias of this sequence. Higher bias will take precedence */
 	UPROPERTY()
 	int16 HierarchicalBias;
+
+	/** Flags accumulated from parent->child for each sub-section that led to the inclusion of this sub-sequence */
+	UPROPERTY()
+	EMovieSceneSubSectionFlags AccumulatedFlags;
 
 	/** Instance data that should be used for any tracks contained immediately within this sub sequence */
 	UPROPERTY()

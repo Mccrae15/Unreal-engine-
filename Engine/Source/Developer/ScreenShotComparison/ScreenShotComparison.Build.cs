@@ -16,7 +16,6 @@ public class ScreenShotComparison : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"AutomationController",
 				"ToolWidgets",
 				"InputCore",
 				"ScreenShotComparisonTools",
@@ -35,7 +34,6 @@ public class ScreenShotComparison : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"SessionServices",
 			}
 		);
 	}

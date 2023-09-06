@@ -2,6 +2,7 @@
 
 #include "Kismet/GameplayStatics.h"
 #include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
@@ -9,6 +10,7 @@
 #include "Misc/PackageName.h"
 #include "Kismet/GameplayStaticsTypes.h"
 #include "Misc/EngineVersion.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/DamageType.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "SceneView.h"
@@ -103,6 +105,8 @@ DECLARE_CYCLE_STAT(TEXT("SpawnTime"), STAT_SpawnTime, STATGROUP_Game);
 //////////////////////////////////////////////////////////////////////////
 // FSaveGameHeader
 
+// This is the engine-level header for save game versioning and is not useful for game-specific version changes
+// To implement those, you would need to save the version number into the save game object using something like ULocalPlayerSaveGame
 struct FSaveGameHeader
 {
 	FSaveGameHeader();
@@ -163,15 +167,10 @@ void FSaveGameHeader::Read(FMemoryReader& MemoryReader)
 
 	if (FileTypeTag != UE_SAVEGAME_FILE_TYPE_TAG)
 	{
-		// this is an old saved game, back up the file pointer to the beginning and assume version 1
+		// This is a very old saved game, back up the file pointer to the beginning and assume version 1
+		// This is unlikely to work without additional licensee-specific modifications to this code
 		MemoryReader.Seek(0);
 		SaveGameFileVersion = FSaveGameFileVersion::InitialVersion;
-
-		// Note for 4.8 and beyond: if you get a crash loading a pre-4.8 version of your savegame file and 
-		// you don't want to delete it, try uncommenting these lines and changing them to use the version 
-		// information from your previous build. Then load and resave your savegame file.
-		//MemoryReader.SetUEVer(MyPreviousUEVersion);				// @see GPackageFileUEVersion
-		//MemoryReader.SetEngineVer(MyPreviousEngineVersion);		// @see FEngineVersion::Current()
 	}
 	else
 	{
@@ -203,6 +202,10 @@ void FSaveGameHeader::Read(FMemoryReader& MemoryReader)
 			CustomVersions.Serialize(MemoryReader, static_cast<ECustomVersionSerializationFormat::Type>(CustomVersionFormat));
 			MemoryReader.SetCustomVersions(CustomVersions);
 		}
+
+		// This code does not handle SetLicenseeUEVer because save games are not expected to work across major licensee changes to the engine
+		// If your game wants to support advanced backward compatibility, you will probably want to implement a version number on the object itself
+		// ULocalPlayerSaveGame has an example of how to implement a version number in a way that can be accessed after serialization
 	}
 
 	// Get the class name
@@ -418,6 +421,43 @@ APlayerCameraManager* UGameplayStatics::GetPlayerCameraManager(const UObject* Wo
 {
 	APlayerController* const PC = GetPlayerController(WorldContextObject, PlayerIndex);
 	return PC ? PC->PlayerCameraManager : nullptr;
+}
+
+bool UGameplayStatics::IsAnyLocalPlayerCameraWithinRange(const UObject* WorldContextObject, const FVector& Location, float MaximumRange)
+{
+	if (!GEngine || IsRunningDedicatedServer())
+	{
+		return false;
+	}
+	
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (!World)
+	{
+		return false;
+	}
+
+	const float MaximumRangeSq = MaximumRange * MaximumRange; 
+
+	for (FConstPlayerControllerIterator PlayerControllerIterator = World->GetPlayerControllerIterator();
+		 PlayerControllerIterator; 
+		 ++PlayerControllerIterator)
+	{
+		const APlayerController* PlayerController = PlayerControllerIterator->Get();
+		if (!PlayerController || !PlayerController->IsLocalController())
+		{
+			continue;
+		}
+
+		if (const APlayerCameraManager* PlayerCameraManager = PlayerController->PlayerCameraManager)
+		{
+			if (FVector::DistSquared(PlayerCameraManager->GetCameraLocation(), Location) <= MaximumRangeSq)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 APlayerController* UGameplayStatics::CreatePlayer(const UObject* WorldContextObject, int32 ControllerId, bool bSpawnPlayerController)
@@ -2980,6 +3020,113 @@ bool UGameplayStatics::SuggestProjectileVelocity_CustomArc(const UObject* WorldC
 
 	OutLaunchVelocity = FVector::ZeroVector;
 	return false;
+}
+
+bool UGameplayStatics::SuggestProjectileVelocity_MovingTarget(const UObject* WorldContextObject, FVector& OutLaunchVelocity, FVector ProjectileStartLocation, AActor* TargetActor, FVector TargetLocationOffset /*= FVector::ZeroVector*/, double GravityZOverride /*= 0.f*/, double TimeToTarget /*= 1.f*/, EDrawDebugTrace::Type DrawDebugType /*= EDrawDebugTrace::Type::None*/, float DrawDebugTime /*= 3.f*/, FLinearColor DrawDebugColor /*= FLinearColor::Red*/)
+{
+	// Generally solved using the logic below. In code we also adjust for TargetLocationOffset and a GravityZOverride.
+	// 
+	// pp = projectile position
+	// pp0 = projectile initial position
+	// vp0 = projectile initial velocity (OutLaunchVelocity)
+	// g = gravity vector
+	// pt = target position
+	// pt0 = target initial position
+	// vt0 = target initial velocity
+	// 
+	// Projectile position as a function of time
+	// pp = pp0 + vp0*t + (g/2)*(t^2)
+	// 
+	// Target position as a function of time
+	// pt = pt0 + vt0*t
+	// 
+	// Since we want the projectile position and target position to be the same, we can set the equations equal to each other to get:
+	// vp0 = (pt0 + vt0*t - pp0 - (g/2)*(t^2)) / t
+	
+	if (!GEngine)
+	{
+		return false;
+	}
+
+	const UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	if (!World)
+	{
+		return false;
+	}
+
+	if (!TargetActor)
+	{
+		return false;
+	}
+
+	// Clamp TimeToTarget to ensure non-zero value
+	TimeToTarget = FMath::Clamp(TimeToTarget, 0.1, TimeToTarget);
+
+	// Find the target's velocity
+	FVector TargetVelocity = TargetActor->GetVelocity();
+
+	// If the target is a character moving on ground or the floor result is walkable (and therefore used for movement),
+	// GetVelocity() will return a vector with a Z value of 0, so we need to adjust for slope.
+	if (ACharacter* TargetCharacter = Cast<ACharacter>(TargetActor))
+	{
+		if (UCharacterMovementComponent* TargetMovementComp = TargetCharacter->GetCharacterMovement())
+		{
+			FFindFloorResult FloorResult = TargetMovementComp->CurrentFloor;
+			if (TargetMovementComp->IsMovingOnGround() || FloorResult.IsWalkableFloor())
+			{
+				FHitResult FloorHit = FloorResult.HitResult;
+				const double FloorAngleRadians = FMath::Acos(FloorHit.ImpactNormal.Z);
+
+				// z = x * tan(theta)
+				const double ZMagnitude = TargetVelocity.Size2D() * FMath::Tan(FloorAngleRadians);
+				TargetVelocity.Z = TargetVelocity.Dot(FloorHit.ImpactNormal) < 0.0 ? ZMagnitude : -ZMagnitude;
+			}
+		}
+	}
+
+	// Find projectile's velocity using the target's velocity
+	const FVector TargetCurrentLocationPlusOffset = TargetActor->GetActorLocation() + TargetLocationOffset;
+	const double GravityZ = FMath::IsNearlyZero(GravityZOverride) ? World->GetGravityZ() : GravityZOverride;
+	const FVector GravityVector = FVector(0.0, 0.0, GravityZ);
+	
+	OutLaunchVelocity = (TargetCurrentLocationPlusOffset + (TargetVelocity * TimeToTarget) - ProjectileStartLocation - (0.5 * GravityVector * FMath::Square(TimeToTarget))) / TimeToTarget;
+
+#if ENABLE_DRAW_DEBUG
+	if (DrawDebugType != EDrawDebugTrace::None)
+	{
+		const bool bPersistentLines = DrawDebugType == EDrawDebugTrace::Persistent;
+		const float LifeTime = (DrawDebugType == EDrawDebugTrace::ForDuration) ? DrawDebugTime : 0.f;
+		
+		// Draw bounding box of target at current location
+		const float BoxThickness = 2.f;
+		const FQuat CurrentRotation = TargetActor->GetActorRotation().Quaternion();
+		FBox BodyBox(ForceInit);
+		FVector BoundingBoxExtent = FVector::ZeroVector;
+		FVector BoundingBoxCenter = TargetActor->GetActorLocation();
+		if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(TargetActor->GetRootComponent()))
+		{
+			BodyBox = PrimitiveComponent->Bounds.GetBox();
+			BodyBox.GetCenterAndExtents(BoundingBoxCenter, BoundingBoxExtent);
+		}
+
+		DrawDebugBox(World, BoundingBoxCenter, BoundingBoxExtent, DrawDebugColor.ToFColor(true), bPersistentLines, LifeTime, 0, BoxThickness);
+
+		// Draw arrow indicating aim direction from start location
+		const float DirectionalArrowLength = 30.f;
+		const float DirectionalArrowsize = 5.f;
+		const float DirectionalArrowThickness = 2.f;
+		DrawDebugDirectionalArrow(World, ProjectileStartLocation, ProjectileStartLocation + OutLaunchVelocity.GetSafeNormal() * DirectionalArrowLength, DirectionalArrowsize, DrawDebugColor.ToFColor(true), bPersistentLines, LifeTime, 0, DirectionalArrowThickness);
+
+		// Draw sphere at the target's final location (where the projectile should pass through after TimeToTarget seconds)
+		const float SphereRadius = 16.f;
+		const int32 SphereSegments = 16;
+		const float SphereThickness = 2.f;
+		const FVector TargetFinalLocation = TargetCurrentLocationPlusOffset + (TargetVelocity * TimeToTarget);
+		DrawDebugSphere(World, TargetFinalLocation, SphereRadius, SphereSegments, DrawDebugColor.ToFColor(true), bPersistentLines, LifeTime, 0, SphereThickness);
+	}
+#endif //ENABLE_DRAW_DEBUG
+
+	return true;
 }
 
 FIntVector UGameplayStatics::GetWorldOriginLocation(const UObject* WorldContextObject)

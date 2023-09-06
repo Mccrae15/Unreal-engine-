@@ -4,9 +4,42 @@
 #include "StreamTypes.h"
 #include "Utilities/StringHelpers.h"
 #include "Utilities/Utilities.h"
+#include "ElectraDecodersUtils.h"
 
 namespace Electra
 {
+
+	namespace
+	{
+		static constexpr uint32 Make4CC(const uint8 A, const uint8 B, const uint8 C, const uint8 D)
+		{
+			return (static_cast<uint32>(A) << 24) | (static_cast<uint32>(B) << 16) | (static_cast<uint32>(C) << 8) | static_cast<uint32>(D);
+		}
+		static constexpr uint32 Make4CC(const uint32 FourCC)
+		{
+			return Make4CC((FourCC >> 24) & 255, (FourCC >> 16) & 255, (FourCC >> 8) & 255, FourCC & 255);
+		}
+		FString Printable4CC(const uint32 In4CC)
+		{
+			FString Out;
+			// Not so much just printable as alphanumeric.
+			for(uint32 i=0, Atom=In4CC; i<4; ++i, Atom<<=8)
+			{
+				int32 v = Atom >> 24;
+				if ((v >= 'A' && v <= 'Z') || (v >= 'a' && v <= 'z') || (v >= '0' && v <= '9') || v == '_')
+				{
+					Out.AppendChar(v);
+				}
+				else
+				{
+					// Not alphanumeric, return it as a hex string.
+					return FString::Printf(TEXT("%08x"), In4CC);
+				}
+			}
+			return Out;
+		}
+	}
+
 
 	FString FStreamCodecInformation::GetMimeType() const
 	{
@@ -51,7 +84,7 @@ namespace Electra
 
 	bool FStreamCodecInformation::ParseFromRFC6381(const FString& CodecOTI)
 	{
-		if (CodecOTI.StartsWith("avc"))
+		if (CodecOTI.StartsWith(TEXT("avc")))
 		{
 			// avc1 and avc3 (inband SPS/PPS) are recognized.
 			StreamType = EStreamType::Video;
@@ -101,7 +134,7 @@ namespace Electra
 			}
 			return true;
 		}
-		else if (CodecOTI.StartsWith("hvc") || CodecOTI.StartsWith("hev"))
+		else if (CodecOTI.StartsWith(TEXT("hvc")) || CodecOTI.StartsWith(TEXT("hev")))
 		{
 			FString oti = CodecOTI;
 			FString Temp;
@@ -178,7 +211,7 @@ namespace Electra
 			}
 			return false;
 		}
-		else if (CodecOTI.StartsWith("mp4a"))
+		else if (CodecOTI.StartsWith(TEXT("mp4a")))
 		{
 			StreamType = EStreamType::Audio;
 			CodecSpecifier = CodecOTI;
@@ -206,7 +239,7 @@ namespace Electra
 			}
 			return true;
 		}
-		else if (CodecOTI.StartsWith("ec-3") || CodecOTI.StartsWith("ec+3") || CodecOTI.StartsWith("ec3") || CodecOTI.StartsWith("eac3"))
+		else if (CodecOTI.StartsWith(TEXT("ec-3")) || CodecOTI.StartsWith(TEXT("ec+3")) || CodecOTI.StartsWith(TEXT("ec3")) || CodecOTI.StartsWith(TEXT("eac3")))
 		{
 			StreamType = EStreamType::Audio;
 			CodecSpecifier = CodecOTI;
@@ -214,6 +247,65 @@ namespace Electra
 			// Presently not supported.
 			return false;
 		}
+		else if (CodecOTI.Equals(TEXT("opus"), ESearchCase::IgnoreCase))
+		{
+			StreamType = EStreamType::Audio;
+			CodecSpecifier = CodecOTI;
+			Codec = ECodec::Audio4CC;
+			Codec4CC = Make4CC('O','p','u','s');
+			return true;
+		}
+		else if (CodecOTI.StartsWith(TEXT("vp08")))
+		{
+			ElectraDecodersUtil::FMimeTypeVideoCodecInfo ci;
+			if (ElectraDecodersUtil::ParseCodecVP8(ci, CodecOTI, Extras.GetValue(TEXT("vpcC_box")).SafeGetArray()))
+			{
+				StreamType = EStreamType::Video;
+				CodecSpecifier = CodecOTI;
+				Codec = ECodec::Video4CC;
+				Codec4CC = Make4CC('v','p','0','8');
+				SetProfile(ci.Profile);
+				SetProfileLevel(ci.Level);
+				SetCodecSpecifierRFC6381(FString::Printf(TEXT("vp08.%02d.%02d.%02d"), ci.Profile, ci.Level, ci.NumBitsLuma));
+				return true;
+			}
+			return false;
+		}
+		else if (CodecOTI.Equals(TEXT("vp8")))
+		{
+			StreamType = EStreamType::Video;
+			CodecSpecifier = CodecOTI;
+			Codec = ECodec::Video4CC;
+			Codec4CC = Make4CC('v','p','0','8');
+			SetCodecSpecifierRFC6381(FString::Printf(TEXT("vp08.%02d.%02d.%02d"), 0, 0, 8));
+			return true;
+		}
+		else if (CodecOTI.StartsWith(TEXT("vp09")))
+		{
+			ElectraDecodersUtil::FMimeTypeVideoCodecInfo ci;
+			if (ElectraDecodersUtil::ParseCodecVP9(ci, CodecOTI, Extras.GetValue(TEXT("vpcC_box")).SafeGetArray()))
+			{
+				StreamType = EStreamType::Video;
+				CodecSpecifier = CodecOTI;
+				Codec = ECodec::Video4CC;
+				Codec4CC = Make4CC('v','p','0','9');
+				SetProfile(ci.Profile);
+				SetProfileLevel(ci.Level);
+				SetCodecSpecifierRFC6381(FString::Printf(TEXT("vp09.%02d.%02d.%02d.%02d.%02d.%02d.%02d.%02d"), ci.Profile, ci.Level, ci.NumBitsLuma, ci.Extras[3], ci.Extras[4], ci.Extras[5], ci.Extras[6], ci.Extras[7]));
+				return true;
+			}
+			return false;
+		}
+		else if (CodecOTI.Equals(TEXT("vp9")))
+		{
+			StreamType = EStreamType::Video;
+			CodecSpecifier = CodecOTI;
+			Codec = ECodec::Video4CC;
+			Codec4CC = Make4CC('v','p','0','9');
+			SetCodecSpecifierRFC6381(FString::Printf(TEXT("vp09.%02d.%02d.%02d"), 0, 0, 8));
+			return true;
+		}
+
 		else if (CodecOTI.Equals(TEXT("wvtt")))
 		{
 			StreamType = EStreamType::Subtitle;
@@ -266,6 +358,9 @@ namespace Electra
 				return FString(TEXT("tx3g"));
 			case FStreamCodecInformation::ECodec::OtherSubtitle:
 				return FString(TEXT("subt"));
+			case FStreamCodecInformation::ECodec::Video4CC:
+			case FStreamCodecInformation::ECodec::Audio4CC:
+				return Printable4CC(Codec4CC);
 			default:
 				return FString(TEXT("unknown"));
 		}

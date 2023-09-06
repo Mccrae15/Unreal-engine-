@@ -20,7 +20,6 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"CoreUObject",
-					"Json",
 					"Networking",
 					"Serialization",
 					"Sockets",
@@ -34,7 +33,6 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePaths.AddRange(
 				new string[] {
-					"TcpMessaging/Private",
 					"TcpMessaging/Private/Settings",
 					"TcpMessaging/Private/Transport",
 				});

@@ -402,12 +402,11 @@ public:
 	/** Clears the actor starvation map */
 	void ResetActorsStarvedByClassTimeMap() { ActorsStarvedByClassTimeMap.Empty(); }
 
-public:
+private:
 	// Connection information.
-
-	UE_DEPRECATED(5.0, "EConnectionState State will be made private. Use GetConnectionState and SetConnectionState to access State instead.")
 	EConnectionState	State;					// State this connection is in.
 
+public:
 	ENGINE_API const EConnectionState GetConnectionState() const;
 	ENGINE_API void SetConnectionState(EConnectionState ConnectionState);
 	
@@ -520,6 +519,10 @@ public:
 	int32 InTotalBytes, OutTotalBytes;
 	/** packets sent/received on this connection (accumulated during a StatPeriod) */
 	int32 InPackets, OutPackets;
+	/** Packets received in the current tick */
+	int32 InPacketsThisFrame = 0;
+	/** Packets sent in the current tick */
+	int32 OutPacketsThisFrame = 0;
 	/** total packets sent/received on this connection */
 	int32 InTotalPackets, OutTotalPackets;
 	/** bytes sent/received on this connection (per second) - these are from previous StatPeriod interval */
@@ -597,7 +600,7 @@ public:
 	UE_DEPRECATED(5.1, "No longer used")
 	int32 MaxChannelSize;
 
-	TArray<UChannel*>	Channels;
+	TArray<TObjectPtr<UChannel>>	Channels;
 	TArray<int32>		OutReliable;
 	TArray<int32>		InReliable;
 	TArray<int32>		PendingOutRec;	// Outgoing reliable unacked data from previous (now destroyed) channel in this slot.  This contains the first chsequence not acked
@@ -802,7 +805,7 @@ private:
 public:
 
 	/** This holds a list of actor channels that want to fully shutdown, but need to continue processing bunches before doing so */
-	TMap<FNetworkGUID, TArray<class UActorChannel*>> KeepProcessingActorChannelBunchesMap;
+	TMap<FNetworkGUID, TArray<TObjectPtr<class UActorChannel>>> KeepProcessingActorChannelBunchesMap;
 
 	/** A list of replicators that belong to recently dormant actors/objects */
 	UE_DEPRECATED(5.2, "The DormantReplicatorMap is deprecated in favor of the private DormantReplicatorSet.")
@@ -814,7 +817,7 @@ private:
 
 public:
 
-	ENGINE_API FName GetClientWorldPackageName() const { return ClientWorldPackageName; }
+	FName GetClientWorldPackageName() const { return ClientWorldPackageName; }
 
 	ENGINE_API void SetClientWorldPackageName(FName NewClientWorldPackageName);
 
@@ -828,7 +831,7 @@ public:
 	/** Called by PlayerController to tell connection about client level visibility change */
 	ENGINE_API void UpdateLevelVisibility(const struct FUpdateLevelVisibilityLevelInfo& LevelVisibility);
 
-	ENGINE_API const TSet<FName>& GetClientMakingVisibleLevelNames() const { return ClientMakingVisibleLevelNames; }
+	const TSet<FName>& GetClientMakingVisibleLevelNames() const { return ClientMakingVisibleLevelNames; }
 	
 #if DO_ENABLE_NET_TEST
 
@@ -916,9 +919,9 @@ public:
 
 
 	//~ Begin FExec Interface.
-
+#if UE_ALLOW_EXEC_COMMANDS
 	ENGINE_API virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog ) override;
-
+#endif
 	//~ End FExec Interface.
 
 	/** read input */
@@ -1131,7 +1134,7 @@ public:
 	* Gets a unique ID for the connection, this ID depends on the underlying connection
 	* For IP connections this is an IP Address and port, for steam this is a SteamID
 	*/
-	ENGINE_API virtual FString RemoteAddressToString()
+	virtual FString RemoteAddressToString()
 	{
 		if (RemoteAddr.IsValid())
 		{
@@ -1201,8 +1204,16 @@ public:
 	/** 
 	* Handle a packet we just received. 
 	* bIsReinjectedPacket is true if a packet is reprocessed after getting cached 
+	* bDispatchPacket if true the packet will be processed (passed to DispatchPacket)
 	*/
-	void ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacket=false );
+	ENGINE_API virtual void ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacket=false, bool bDispatchPacket=true );
+	
+	/**
+	* Disassemble and dispatch packet.
+	* PacketId is an id of the packet to dispatch
+	* bOutSkipAck Flag that marks packet as dropped
+	*/
+	ENGINE_API virtual void DispatchPacket( FBitReader& Reader, int32 PacketId, bool& bOutSkipAck, bool& bOutHasBunchErrors );
 
 	/** Packet was negatively acknowledged. */
 	void ReceivedNak( int32 NakPacketId );
@@ -1244,7 +1255,7 @@ public:
 	 * Wrapper for setting the current client login state, so we can trap for debugging, and verbosity purposes. 
 	 * Only valid on the server
 	 */
-	ENGINE_API void SetClientLoginState( const EClientLoginState::Type NewState );
+	ENGINE_API virtual void SetClientLoginState( const EClientLoginState::Type NewState );
 
 	/** 
 	 * Wrapper for setting the current expected client login msg type. 
@@ -1294,7 +1305,7 @@ public:
 	ENGINE_API void SetPlayerOnlinePlatformName(const FName InPlayerOnlinePlatformName);
 
 	/** Returns the online platform name for the player on this connection. Only valid for client connections on servers. */
-	ENGINE_API FName GetPlayerOnlinePlatformName() const { return PlayerOnlinePlatformName; }
+	FName GetPlayerOnlinePlatformName() const { return PlayerOnlinePlatformName; }
 	
 	/** Sets whether we handle opening channels with an index that already exists, used by replays to fast forward the packet stream */
 	void SetAllowExistingChannelIndex(bool bAllow);
@@ -1350,7 +1361,7 @@ public:
 	void CleanupDormantReplicatorsForActor(AActor* Actor);
 
 	/** Trigger a callback on all dormant replicators of every dormant actor we stored */
-	void ExecuteOnAllDormantReplicators(UE::Net::FExecuteForEachDormantReplicator ExecuteFunction);
+	ENGINE_API void ExecuteOnAllDormantReplicators(UE::Net::FExecuteForEachDormantReplicator ExecuteFunction);
 
 	/** Trigger a callback on all dormant replicators owned by a dormant actor */
 	void ExecuteOnAllDormantReplicatorsOfActor(AActor* OwnerActor, UE::Net::FExecuteForEachDormantReplicator ExecuteFunction);
@@ -1424,7 +1435,7 @@ public:
 	}
 
 	/** Called when an actor channel is open and knows its NetGUID. */
-	ENGINE_API virtual void NotifyActorNetGUID(UActorChannel* Channel) {}
+	virtual void NotifyActorNetGUID(UActorChannel* Channel) {}
 
 	/**
 	 * Returns the current delinquency analytics and resets them.
@@ -1476,7 +1487,7 @@ public:
 	/**
 	 * Get the current number of sent packets for which we have received a delivery notification
 	 */
-	ENGINE_API uint32 GetOutTotalNotifiedPackets() const { return OutTotalNotifiedPackets; }
+	uint32 GetOutTotalNotifiedPackets() const { return OutTotalNotifiedPackets; }
 
 	/** Sends the NMT_Challenge message */
 	ENGINE_API void SendChallengeControlMessage();
@@ -1525,6 +1536,11 @@ protected:
 	 * Notification that information about this connection may have been updated
 	 */
 	ENGINE_API void NotifyConnectionUpdated();
+
+	/**
+	 * Return last notified packet id
+	 */
+	ENGINE_API int32 GetLastNotifiedPacketId() const;
 
 private:
 	/**
@@ -1585,7 +1601,7 @@ private:
 	void WriteFinalPacketInfo(FBitWriter& Writer, double PacketSentTimeInS);
 	
 	/** Read extended packet header information (ServerFrameTime) */
-	bool ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPayload);
+	bool ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPayload, FEngineNetworkCustomVersion::Type EngineNetVer);
 
 	/** Packet was acknowledged as delivered */
 	void ReceivedAck(int32 AckPacketId, FChannelsToClose& OutChannelsToClose);
@@ -1666,10 +1682,6 @@ private:
 	FNetworkGUID GetActorGUIDFromOpenBunch(FInBunch& Bunch);
 
 	/** Out of order packet tracking/correction */
-
-	/** Stat tracking for the total number of out of order packets, for this connection */
-	UE_DEPRECATED(5.0, "Use GetTotalOutOfOrderPackets instead.")
-	int32 TotalOutOfOrderPackets = 0;
 
 	/** Stat tracking for the total number of out of order packets lost */
 	int32 TotalOutOfOrderPacketsLost = 0;
@@ -1806,6 +1818,23 @@ protected:
 	TOptional<FNetworkCongestionControl> NetworkCongestionControl;
 
 	void InitChannelData();
+
+public:
+	/**
+	 * Retrieve stored set of replicated sub-objects of the given actor at the time of the last dormancy flush
+	 * This data is cleared when the actor is processed by ReplicateActor
+	 *
+	 * @param Actor		The actor to retrieve the object map for
+	 * @return A map of network guids to weak object pointers 
+	 */
+	UE::Net::FDormantObjectMap* GetDormantFlushedObjectsForActor(AActor* Actor);
+
+	/**
+	 * Clear stored flushed replicated sub-objects for a given actor, generally after replication or when the actor is destroyed
+	 *
+	 * @param Actor		The actor to clear the flushed object data for
+	 */
+	void ClearDormantFlushedObjectsForActor(AActor* Actor);
 };
 
 struct FScopedRepContext
@@ -1899,15 +1928,15 @@ struct FScopedNetConnectionSettings
 };
 
 /** A fake connection that will absorb traffic and auto ack every packet. Useful for testing scaling. Use net.SimulateConnections command to add at runtime. */
-UCLASS(transient, config=Engine)
-class ENGINE_API USimulatedClientNetConnection
+UCLASS(transient, config=Engine, MinimalAPI)
+class USimulatedClientNetConnection
 	: public UNetConnection
 {
 	GENERATED_UCLASS_BODY()
 public:
 
 	virtual void LowLevelSend(void* Data, int32 CountBits, FOutPacketTraits& Traits) override { }
-	void HandleClientPlayer( APlayerController* PC, UNetConnection* NetConnection ) override;
+	ENGINE_API void HandleClientPlayer( APlayerController* PC, UNetConnection* NetConnection ) override;
 	virtual FString LowLevelGetRemoteAddress(bool bAppendPort=false) override { return FString(); }
 	virtual bool ClientHasInitializedLevelFor(const AActor* TestActor) const { return true; }
 

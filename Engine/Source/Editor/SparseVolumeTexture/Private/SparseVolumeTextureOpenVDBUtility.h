@@ -6,25 +6,37 @@
 
 #include "CoreMinimal.h"
 
+namespace UE
+{
+	namespace SVT
+	{
+		struct FTextureData;
+	}
+}
+
 enum class EOpenVDBGridType : uint8
 {
 	Unknown = 0,
-	Float = 1,
-	Float2 = 2,
-	Float3 = 3,
-	Float4 = 4,
-	Double = 5,
-	Double2 = 6,
-	Double3 = 7,
-	Double4 = 8,
+	Half,
+	Half2,
+	Half3,
+	Half4,
+	Float,
+	Float2,
+	Float3,
+	Float4,
+	Double,
+	Double2,
+	Double3,
+	Double4,
 };
 
 struct FOpenVDBGridInfo
 {
 	FMatrix44f Transform;
-	FVector VolumeActiveAABBMin;
-	FVector VolumeActiveAABBMax;
-	FVector VolumeActiveDim;
+	FIntVector3 VolumeActiveAABBMin;
+	FIntVector3 VolumeActiveAABBMax;
+	FIntVector3 VolumeActiveDim;
 	FVector VolumeVoxelSize;
 	FString Name;
 	FString DisplayString; // Contains Index (into source file grids), Type and Name
@@ -35,18 +47,19 @@ struct FOpenVDBGridInfo
 	bool bHasUniformVoxels;
 };
 
+struct FOpenVDBToSVTConversionResult
+{
+	struct FSparseVolumeAssetHeader* Header;
+	TArray<uint32>* PageTable;
+	TArray<uint8>* PhysicalTileDataA;
+	TArray<uint8>* PhysicalTileDataB;
+};
+
 bool IsOpenVDBGridValid(const FOpenVDBGridInfo& GridInfo, const FString& Filename);
 
-bool GetOpenVDBGridInfo(TArray<uint8>& SourceFile, bool bCreateStrings, TArray<FOpenVDBGridInfo>* OutGridInfo);
+bool GetOpenVDBGridInfo(TArray64<uint8>& SourceFile, bool bCreateStrings, TArray<FOpenVDBGridInfo>* OutGridInfo);
 
-bool ConvertOpenVDBToSparseVolumeTexture(
-	TArray<uint8>& SourceFile,
-	struct FSparseVolumeRawSourcePackedData& PackedDataA,
-	struct FSparseVolumeRawSourcePackedData& PackedDataB,
-	struct FOpenVDBToSVTConversionResult* OutResult,
-	bool bOverrideActiveMinMax,
-	FVector ActiveMin,
-	FVector ActiveMax);
+bool ConvertOpenVDBToSparseVolumeTexture(TArray64<uint8>& SourceFile, const struct FOpenVDBImportOptions& ImportOptions, const FIntVector3& VolumeBoundsMin, UE::SVT::FTextureData& OutResult);
 
 const TCHAR* OpenVDBGridTypeToString(EOpenVDBGridType Type);
 

@@ -112,10 +112,12 @@ public:
 	virtual int64 GetBuildSize() const override;
 	virtual int64 GetBuildSize(const TSet<FString>& Tags) const override;
 	virtual TArray<FString> GetBuildFileList() const override;
+	virtual TArray<FStringView> GetBuildFileListView() const override;
 	virtual TArray<FString> GetBuildFileList(const TSet<FString>& Tags) const override;
 	virtual int64 GetFileSize(const FString& Filename) const override;
 	virtual int64 GetFileSize(const TArray<FString>& Filenames) const override;
 	virtual int64 GetFileSize(const TSet  <FString>& Filenames) const override;
+	virtual bool GetFileHash(const FString& Filename, FSHAHash& OutHash) const override;
 	virtual TSet<FString> GetFileTagList() const override;
 	virtual void GetFileTagList(TSet<FString>& Tags) const override;
 	virtual void GetOutdatedFiles(const IBuildManifestRef& OldManifest, TSet<FString>& OutdatedFiles) const override;
@@ -218,6 +220,7 @@ public:
 	 * @param Filenames		OUT		Receives the list of files.
 	 */
 	virtual void GetFileList(TArray<FString>& Filenames) const;
+	virtual void GetFileList(TArray<FStringView>& Filenames) const;
 	virtual void GetFileList(TSet  <FString>& Filenames) const;
 
 	/**
@@ -278,14 +281,6 @@ public:
 	 * @return	true if we had the hash for this file
 	 */
 	virtual bool GetFileHash(const FGuid& FileGuid, FSHAHash& OutHash) const; // DEPRECATE ME
-
-	/**
-	 * Gets the file hash for a given file
-	 * @param Filename		IN		The filename in the build
-	 * @param OutHash		OUT		Receives the hash value if found
-	 * @return	true if we had the hash for this file
-	 */
-	virtual bool GetFileHash(const FString& Filename, FSHAHash& OutHash) const;
 
 	/**
 	 * Gets the file hash for given file data. Valid for non-chunked manifest
@@ -376,7 +371,7 @@ private:
 
 	/** Some lookups to optimize data access */
 	TMap<FGuid, const FString*> FileNameLookup;
-	TMap<FString, const BuildPatchServices::FFileManifest*> FileManifestLookup;
+	TMap<FStringView, const BuildPatchServices::FFileManifest*> FileManifestLookup;
 	TMap<FString, TArray<const BuildPatchServices::FFileManifest*>> TaggedFilesLookup;
 	TMap<FGuid, const BuildPatchServices::FChunkInfo*> ChunkInfoLookup;
 

@@ -31,6 +31,9 @@ enum class EHairDescriptionStatus
 	GuidesOnly, // guides-only with unspecified groom asset
 	GuidesOnlyCompatible,
 	GuidesOnlyIncompatible,
+	ValidPointLimit,
+	ValidCurveLimit,
+	ValidCurveAndPointLimit,
 	Unknown
 };
 
@@ -73,6 +76,23 @@ void SGroomImportOptionsWindow::UpdateStatus(UGroomHairGroupsPreview* Descriptio
 		}
 	}
 
+	// Check if any curve or point have been trimmed
+	for (const FGroomHairGroupPreview& Group : Description->Groups)
+	{
+		if ((Group.Flags & uint32(EHairGroupInfoFlags::HasTrimmedCurve)) && (Group.Flags & uint32(EHairGroupInfoFlags::HasTrimmedPoint)))
+		{
+			CurrentStatus = EHairDescriptionStatus::ValidCurveAndPointLimit;
+		}
+		else if (Group.Flags & uint32(EHairGroupInfoFlags::HasTrimmedCurve))
+		{
+			CurrentStatus = EHairDescriptionStatus::ValidCurveLimit;
+		}
+		else if (Group.Flags & uint32(EHairGroupInfoFlags::HasTrimmedPoint))
+		{
+			CurrentStatus = EHairDescriptionStatus::ValidPointLimit;
+		}
+	}
+
 	if (!bImportGroomCache)
 	{
 		return;
@@ -94,7 +114,7 @@ void SGroomImportOptionsWindow::UpdateStatus(UGroomHairGroupsPreview* Descriptio
 			return;
 		}
 
-		const TArray<FHairGroupData>& GroomHairGroupsData = GroomAssetForCache->HairGroupsData;
+		const TArray<FHairGroupPlatformData>& GroomHairGroupsData = GroomAssetForCache->GetHairGroupsPlatformData();
 		if (GroomHairGroupsData.Num() != Description->Groups.Num())
 		{
 			CurrentStatus = bGuidesOnly ? EHairDescriptionStatus::GuidesOnlyIncompatible : EHairDescriptionStatus::GroomCacheIncompatible;
@@ -152,6 +172,12 @@ FText SGroomImportOptionsWindow::GetStatusText() const
 			return LOCTEXT("GroomOptionsWindow_ValidationText8", "Only guides were detected. The groom asset provided is compatible.");
 		case EHairDescriptionStatus::GuidesOnlyIncompatible:
 			return LOCTEXT("GroomOptionsWindow_ValidationText9", "Only guides were detected. The groom asset provided is incompatible.");
+		case EHairDescriptionStatus::ValidCurveLimit:
+			return LOCTEXT("GroomOptionsWindow_ValidationText10", "Valid. At least one group contains more curves than allowed limit (Max:4M). Curves beyond that limit will be trimmed."); static_assert(HAIR_MAX_NUM_CURVE_PER_GROUP == 4194303);
+		case EHairDescriptionStatus::ValidPointLimit:
+			return LOCTEXT("GroomOptionsWindow_ValidationText11", "Valid. At least one group contains more control points per curve than the allowed limit (Max:255). Control points beyond that limit will be trimmed."); static_assert(HAIR_MAX_NUM_POINT_PER_CURVE == 255);
+		case EHairDescriptionStatus::ValidCurveAndPointLimit:
+			return LOCTEXT("GroomOptionsWindow_ValidationText12", "Valid. At least one group contains more control points per curve and more curves than the allowed limit (curve limit:4M, point limit:255). Curves and control points beyond that limit will be trimmed.");
 		case EHairDescriptionStatus::Unset:
 		case EHairDescriptionStatus::Unknown:
 		default:
@@ -176,11 +202,61 @@ FSlateColor SGroomImportOptionsWindow::GetStatusColor() const
 		case EHairDescriptionStatus::GroomCache:
 		case EHairDescriptionStatus::GuidesOnly:
 			return FLinearColor(0.80f, 0.80f, 0, 1);
+		case EHairDescriptionStatus::ValidCurveLimit:
+		case EHairDescriptionStatus::ValidPointLimit:
+		case EHairDescriptionStatus::ValidCurveAndPointLimit:
+			return FLinearColor(0.80f, 0.80f, 0, 1);
 		case EHairDescriptionStatus::Unset:
 		case EHairDescriptionStatus::Unknown:
 		default:
 			return FLinearColor(1, 1, 1);
 	}
+}
+
+static void AddAttribute(SVerticalBox::FScopedWidgetSlotArguments& Slot, FText AttributeLegend)
+{
+	const FLinearColor AttributeColor(0.72f, 0.72f, 0.20f);
+	const FSlateFontInfo AttributeFont = FAppStyle::GetFontStyle("CurveEd.InfoFont");
+	const FSlateFontInfo AttributeResultFont = FAppStyle::GetFontStyle("CurveEd.InfoFont");
+
+	Slot
+	.AutoHeight()
+	.Padding(2)
+	[
+		SNew(SBorder)
+		.Padding(FMargin(3))
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(10, 0, 0, 0)
+			[
+				SNew(STextBlock)
+				.Font(AttributeFont)
+				.Text(AttributeLegend)
+				.ColorAndOpacity(AttributeColor)
+			]				
+		]
+	];
+}
+
+FText GetHairAttributeLocText(EHairAttribute In, uint32 InFlags)
+{
+	// If a new optional attribute is added, please add its UI/text description here
+	static_assert(uint32(EHairAttribute::Count) == 7);
+
+	switch (In)
+	{
+	case EHairAttribute::RootUV:					return HasHairAttributeFlags(InFlags, EHairAttributeFlags::HasRootUDIM) ? LOCTEXT("GroomOptionsWindow_HasRootUDIM", "Root UV (UDIM)") : LOCTEXT("GroomOptionsWindow_HasRootUV", "Root UV");
+	case EHairAttribute::ClumpID:					return HasHairAttributeFlags(InFlags, EHairAttributeFlags::HasMultipleClumpIDs) ? LOCTEXT("GroomOptionsWindow_HasClumpIDs", "Clump IDs (3)") : LOCTEXT("GroomOptionsWindow_HasClumpID", "Clump ID");
+	case EHairAttribute::StrandID:					return LOCTEXT("GroomOptionsWindow_HasStrandID", "Strand ID");
+	case EHairAttribute::PrecomputedGuideWeights:	return LOCTEXT("GroomOptionsWindow_HasPercomputedGuideWeights", "Pre-Computed Guide Weights");
+	case EHairAttribute::Color:						return LOCTEXT("GroomOptionsWindow_HasColor", "Color");
+	case EHairAttribute::Roughness:					return LOCTEXT("GroomOptionsWindow_HasRoughness", "Roughness");
+	case EHairAttribute::AO:						return LOCTEXT("GroomOptionsWindow_HasAO", "AO");
+	}
+	return FText::GetEmpty();
 }
 
 void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
@@ -207,36 +283,24 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 	CurrentStatus = EHairDescriptionStatus::Unset;
 	UpdateStatus(GroupsPreview);
 
-	const FSlateFontInfo AttributeFont = FAppStyle::GetFontStyle("CurveEd.InfoFont");
-	const FSlateFontInfo AttributeResultFont = FAppStyle::GetFontStyle("CurveEd.InfoFont");
-	const FLinearColor AttributeColor(0.80f, 0.80f, 0.80f);
-	const FText TrueText  = LOCTEXT("GroomOptionsWindow_AttributeTrue", "True");
-	const FText FalseText = LOCTEXT("GroomOptionsWindow_AttributeFalse", "False");
-
-	FText HasRootUVText = FalseText;
-	FText HasClumpIDText = FalseText;
-	FText HasColorText = FalseText;
-	FText HasRoughnessText = FalseText;
-	FText HasAOText = FalseText;
-	FText HasGuideWeightsText = FalseText;
-
-	if (GroupsPreview)
+	// Aggregate attributes from all groups (ideally we should display each group attribute separately, to check if one groom is not missing data)
+	uint32 Attributes = 0;
+	uint32 AttributeFlags = 0;
+	for (const FGroomHairGroupPreview& Group : GroupsPreview->Groups)
 	{
-		for (const FGroomHairGroupPreview& Group : GroupsPreview->Groups)
-		{
-			if (Group.bHasRootUV)				{ HasRootUVText = TrueText; }
-			if (Group.bHasClumpID)				{ HasClumpIDText = TrueText; }
-			if (Group.bHasColor)				{ HasColorText = TrueText; }
-			if (Group.bHasRoughness)			{ HasRoughnessText = TrueText; }
-			if (Group.bHasAO)					{ HasAOText = TrueText; }
-			if (Group.bHasPrecomputedWeights)	{ HasGuideWeightsText = TrueText; }
-		}
+		Attributes |= Group.Attributes;
+		AttributeFlags |= Group.AttributeFlags;
 	}
 
-	this->ChildSlot
-	[
-		SNew(SVerticalBox)
+	FText bHasAttributeText = LOCTEXT("GroomOptionsWindow_HasAttributeNone", "None");
+	FLinearColor bHasAttributeColor = FLinearColor(0.80f, 0, 0, 1);
+	if (Attributes != 0)
+	{
+		bHasAttributeText = LOCTEXT("GroomOptionsWindow_HasAttributeValid", "Valid");
+		bHasAttributeColor = FLinearColor(0, 0.80f, 0, 1);
+	}
 
+	auto VerticalSlot = SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(2)
@@ -294,8 +358,9 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// Root UV
-		+ SVerticalBox::Slot()
+		
+		// Insert title of for the attributes
+		+SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(2)
 		[
@@ -308,8 +373,8 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.Font(AttributeFont)
-					.Text(LOCTEXT("GroomOptionsWindow_HasRootUV", "Has Root UV: "))
+					.Font(FAppStyle::GetFontStyle("CurveEd.LabelFont"))
+					.Text(LOCTEXT("GroomOptionsWindow_Attribute", "Attributes: "))
 				]
 				+ SHorizontalBox::Slot()
 				.Padding(5, 0, 0, 0)
@@ -317,162 +382,15 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Font(AttributeResultFont)
-					.Text(HasRootUVText)
-					.ColorAndOpacity(AttributeColor)
+					.Font(FAppStyle::GetFontStyle("CurveEd.InfoFont"))
+					.Text(bHasAttributeText)
+					.ColorAndOpacity(bHasAttributeColor)
 				]
 			]
 		]
 
-		// Clump ID
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2)
-		[
-			SNew(SBorder)
-			.Padding(FMargin(3))
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(STextBlock)
-					.Font(AttributeFont)
-					.Text(LOCTEXT("GroomOptionsWindow_HasClumpID", "Has Clump ID: "))
-				]
-				+ SHorizontalBox::Slot()
-				.Padding(5, 0, 0, 0)
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Font(AttributeResultFont)
-					.Text(HasClumpIDText)
-					.ColorAndOpacity(AttributeColor)
-				]
-			]
-		]
-
-		// Color attributes
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2)
-		[
-			SNew(SBorder)
-			.Padding(FMargin(3))
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(STextBlock)
-					.Font(AttributeFont)
-					.Text(LOCTEXT("GroomOptionsWindow_HasColor", "Has Color: "))
-				]
-				+ SHorizontalBox::Slot()
-				.Padding(5, 0, 0, 0)
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Font(AttributeResultFont)
-					.Text(HasColorText)
-					.ColorAndOpacity(AttributeColor)
-				]
-			]
-		]
-
-		// Roughness attributes
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2)
-		[
-			SNew(SBorder)
-			.Padding(FMargin(3))
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(STextBlock)
-					.Font(AttributeFont)
-					.Text(LOCTEXT("GroomOptionsWindow_HasRoughness", "Has Roughness: "))
-				]
-				+ SHorizontalBox::Slot()
-				.Padding(5, 0, 0, 0)
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Font(AttributeResultFont)
-					.Text(HasRoughnessText)
-					.ColorAndOpacity(AttributeColor)
-				]
-			]
-		]
-
-		// AO attributes
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2)
-		[
-			SNew(SBorder)
-			.Padding(FMargin(3))
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(STextBlock)
-					.Font(AttributeFont)
-					.Text(LOCTEXT("GroomOptionsWindow_HasAO", "Has AO: "))
-				]
-				+ SHorizontalBox::Slot()
-				.Padding(5, 0, 0, 0)
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Font(AttributeResultFont)
-					.Text(HasAOText)
-					.ColorAndOpacity(AttributeColor)
-				]
-			]
-		]
-
-		// Guide weights
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2)
-		[
-			SNew(SBorder)
-			.Padding(FMargin(3))
-			.BorderImage(FAppStyle::GetBrush("ToolPanel.GroupBorder"))
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(STextBlock)
-					.Font(AttributeFont)
-					.Text(LOCTEXT("GroomOptionsWindow_HasGuideWeights", "Has Pre-Computed Guides Weights: "))
-				]
-				+ SHorizontalBox::Slot()
-				.Padding(5, 0, 0, 0)
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(STextBlock)
-					.Font(AttributeResultFont)
-					.Text(HasGuideWeightsText)
-					.ColorAndOpacity(AttributeColor)
-				]
-			]
-		]
+		// All optional attribute will be inserted here
+		// The widget are inserted at the end of this function
 
 		+ SVerticalBox::Slot()
 		.Padding(2)
@@ -517,7 +435,23 @@ void SGroomImportOptionsWindow::Construct(const FArguments& InArgs)
 				.Text(LOCTEXT("Cancel", "Cancel"))
 				.OnClicked(this, &SGroomImportOptionsWindow::OnCancel)
 			]
-		]
+		];
+
+	// Insert all the optional attributes
+	uint32 AttributeSlotIndex = 3;
+	for (uint32 AttributeIt = 0; AttributeIt < uint32(EHairAttribute::Count); ++AttributeIt)
+	{
+		const EHairAttribute AttributeType = (EHairAttribute)AttributeIt;
+		if (HasHairAttribute(Attributes, AttributeType))
+		{
+			SVerticalBox::FScopedWidgetSlotArguments SlotArg = VerticalSlot->InsertSlot(AttributeSlotIndex++);
+			AddAttribute(SlotArg, GetHairAttributeLocText(AttributeType, AttributeFlags));
+		}
+	}
+
+	this->ChildSlot
+	[
+		VerticalSlot
 	];
 }
 
@@ -541,6 +475,9 @@ bool SGroomImportOptionsWindow::CanImport() const
 		case EHairDescriptionStatus::Valid:
 		case EHairDescriptionStatus::GroomCacheCompatible:
 		case EHairDescriptionStatus::GuidesOnlyCompatible:
+		case EHairDescriptionStatus::ValidPointLimit:
+		case EHairDescriptionStatus::ValidCurveLimit:
+		case EHairDescriptionStatus::ValidCurveAndPointLimit:
 			return true;
 		case EHairDescriptionStatus::Unset:
 		case EHairDescriptionStatus::NoGroup:

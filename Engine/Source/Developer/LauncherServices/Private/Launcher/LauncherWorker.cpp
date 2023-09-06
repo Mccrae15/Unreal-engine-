@@ -455,8 +455,8 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 		}
 	}
 
-	// If both Client and Server are desired to be built avoid Server causing clients to not be built PlatformInfo wise
-	if (OptionalParams.Contains(TEXT("-client")) && OptionalParams.Contains(TEXT("-noclient")))
+	// If both Client/Game and Server are desired to be built avoid Server causing clients/game to not be built PlatformInfo wise
+	if (ServerPlatforms.Len() > 0 && Platforms.Len() > 0 && OptionalParams.Contains(TEXT("-noclient")))
 	{
 		OptionalParams = OptionalParams.Replace(TEXT("-noclient"), TEXT(""));
 	}
@@ -576,17 +576,24 @@ FString FLauncherWorker::CreateUATCommand( const ILauncherProfileRef& InProfile,
 		*InProfile->GetAdditionalCommandLineParameters());
 
 	// map list
-	FString MapList = TEXT(" -map=");
+	FString MapList;
 	const TArray<FString>& CookedMaps = InProfile->GetCookedMaps();
 	if (CookedMaps.Num() > 0 && (InProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBook || InProfile->GetCookMode() == ELauncherProfileCookModes::ByTheBookInEditor))
 	{
-		MapList += InitialMap;
-		MapList += TEXT("+");
+		if (!InitialMap.IsEmpty())
+		{
+			MapList += InitialMap;
+			MapList += TEXT("+");
+		}
 		MapList += FString::Join(CookedMaps, TEXT("+"));
 	}
 	else
 	{
-		MapList += InitialMap;
+		MapList = InitialMap;
+	}
+	if (!MapList.IsEmpty())
+	{
+		MapList = FString(TEXT(" -map=")) + MapList;
 	}
 
 	// culture list

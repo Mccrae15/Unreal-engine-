@@ -24,7 +24,8 @@ namespace UnrealBuildTool.Rules
 				}
 				);
 
-            PublicIncludePathModuleNames.Add("OptionalMobileFeaturesBPLibrary");
-        }
+			ShortName = "OptMobFeatBPLib";
+
+		}
 	}
 }

@@ -207,6 +207,11 @@
 	#define FORCE_USE_STATS 0
 #endif
 
+/** Set to true to force an ansi allocator instead of redirecting to FMemory. */
+#ifndef FORCE_ANSI_ALLOCATOR
+	#define FORCE_ANSI_ALLOCATOR 0
+#endif
+
 /**
  *	Optionally enable support for named events from the stat macros without the stat system overhead
  *	This will attempt to disable regular stats system and use named events instead
@@ -242,7 +247,7 @@
 		#define DO_ENSURE										1
 	#endif
 	#ifndef STATS
-		#define STATS											((WITH_UNREAL_DEVELOPER_TOOLS || !WITH_EDITORONLY_DATA || USE_STATS_WITHOUT_ENGINE || USE_MALLOC_PROFILER || FORCE_USE_STATS) && !ENABLE_STATNAMEDEVENTS)
+		#define STATS											((WITH_UNREAL_DEVELOPER_TOOLS || !WITH_EDITORONLY_DATA || USE_STATS_WITHOUT_ENGINE || FORCE_USE_STATS) && !ENABLE_STATNAMEDEVENTS)
 	#endif
 	#ifndef ALLOW_DEBUG_FILES
 		#define ALLOW_DEBUG_FILES								1
@@ -264,7 +269,7 @@
 		#define DO_ENSURE										1
 	#endif
 	#ifndef STATS
-		#define STATS											((WITH_UNREAL_DEVELOPER_TOOLS || !WITH_EDITORONLY_DATA || USE_STATS_WITHOUT_ENGINE || USE_MALLOC_PROFILER || FORCE_USE_STATS) && !ENABLE_STATNAMEDEVENTS)
+		#define STATS											((WITH_UNREAL_DEVELOPER_TOOLS || !WITH_EDITORONLY_DATA || USE_STATS_WITHOUT_ENGINE || FORCE_USE_STATS) && !ENABLE_STATNAMEDEVENTS)
 	#endif
 	#ifndef ALLOW_DEBUG_FILES
 		#define ALLOW_DEBUG_FILES								1
@@ -286,7 +291,7 @@
 		#define DO_ENSURE										USE_ENSURES_IN_SHIPPING
 	#endif
 	#ifndef STATS
-		#define STATS											((USE_MALLOC_PROFILER || FORCE_USE_STATS) && !ENABLE_STATNAMEDEVENTS)
+		#define STATS											(FORCE_USE_STATS && !ENABLE_STATNAMEDEVENTS)
 	#endif
 	#ifndef ALLOW_DEBUG_FILES
 		#define ALLOW_DEBUG_FILES								1
@@ -475,4 +480,17 @@
 // Controls whether or not process will control OS scheduler priority
 #ifndef WITH_PROCESS_PRIORITY_CONTROL
 	#define WITH_PROCESS_PRIORITY_CONTROL 0
+#endif
+
+// Controls whether or not MemoryProfiler is enabled in STATS system.
+// This functionality is deprecated in UE 5.3.
+// For memory profiling, use instead Trace/MemoryInsights and/or LLM.
+#ifndef UE_STATS_MEMORY_PROFILER_ENABLED
+	#define UE_STATS_MEMORY_PROFILER_ENABLED 0
+#endif
+
+// Controls whether old Profiler (UnrealFrontend/SessionFrontend/Profiler) is enabled or not.
+// Old Profiler is deprecated since UE 5.0. Use Trace/UnrealInsights instead.
+#ifndef UE_DEPRECATED_PROFILER_ENABLED
+	#define UE_DEPRECATED_PROFILER_ENABLED 0
 #endif

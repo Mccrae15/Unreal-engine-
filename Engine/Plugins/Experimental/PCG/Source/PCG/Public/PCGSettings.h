@@ -5,6 +5,7 @@
 #include "PCGData.h"
 #include "PCGDebug.h"
 #include "PCGElement.h"
+#include "Elements/PCGActorSelector.h"
 #include "Tests/Determinism/PCGDeterminismSettings.h"
 
 #include "PCGSettings.generated.h"
@@ -19,7 +20,7 @@ class UPCGNode;
 class UPCGSettings;
 
 using FPCGSettingsAndCulling = TPair<TWeakObjectPtr<const UPCGSettings>, bool>;
-using FPCGTagToSettingsMap = TMap<FName, TSet<FPCGSettingsAndCulling>>;
+using FPCGActorSelectionKeyToSettingsMap = TMap<FPCGActorSelectionKey, TArray<FPCGSettingsAndCulling>>;
 
 UENUM()
 enum class EPCGSettingsExecutionMode : uint8
@@ -44,12 +45,24 @@ enum class EPCGSettingsType : uint8
 	Subgraph,
 	Debug,
 	Generic,
-	Param
+	Param,
+	HierarchicalGeneration,
+	ControlFlow
 };
 
 #if WITH_EDITOR
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPCGSettingsChanged, UPCGSettings*, EPCGChangeType);
 #endif
+
+// Dummy struct to bypass the UHT limitation for array of arrays.
+USTRUCT(meta=(Hidden))
+struct FPCGPropertyAliases
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FName> Aliases;
+};
 
 USTRUCT()
 struct FPCGSettingsOverridableParam
@@ -65,8 +78,65 @@ struct FPCGSettingsOverridableParam
 	UPROPERTY()
 	TObjectPtr<const UStruct> PropertyClass;
 
+	// Map of all aliases for a given property, using its Index (to avoid name clashes within the same path)
+	UPROPERTY()
+	TMap<int32, FPCGPropertyAliases> MapOfAliases;
+
+	// If this flag is true, Label will be the full property path.
+	UPROPERTY()
+	bool bHasNameClash = false;
+
+	bool HasAliases() const { return !MapOfAliases.IsEmpty(); }
+
 	// Transient
 	TArray<const FProperty*> Properties;
+
+	FString GetPropertyPath() const;
+
+	TArray<FName> GenerateAllPossibleAliases() const;
+
+#if WITH_EDITOR
+	FString GetDisplayPropertyPath() const;
+#endif // WITH_EDITOR
+};
+
+/**
+* Pre-configured settings info
+* Will be passed to the settings to pre-configure the settings on creation.
+* Example: Maths operations: Add, Mul, etc...
+*/
+USTRUCT(BlueprintType)
+struct FPCGPreConfiguredSettingsInfo
+{
+	GENERATED_BODY()
+
+	FPCGPreConfiguredSettingsInfo() = default;
+
+	explicit FPCGPreConfiguredSettingsInfo(int32 InIndex, FText InLabel = FText{})
+		: PreconfiguredIndex(InIndex)
+		, Label(std::move(InLabel))
+	{}
+
+#if WITH_EDITOR
+	FPCGPreConfiguredSettingsInfo(int32 InIndex, FText InLabel, FText InTooltip)
+		: PreconfiguredIndex(InIndex)
+		, Label(std::move(InLabel))
+		, Tooltip(std::move(InTooltip))
+	{}
+#endif // WITH_EDITOR
+
+	/* Index used by the settings to know which preconfigured settings it needs to set. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "")
+	int32 PreconfiguredIndex = -1;
+
+	/* Label for the exposed asset. Can also be used instead of the index, if it is easier to deal with strings. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "")
+	FText Label;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, Category = "")
+	FText Tooltip;
+#endif // WITH_EDITORONLY_DATA
 };
 
 
@@ -96,6 +166,10 @@ public:
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Debug, meta = (ShowOnlyInnerProperties))
 	FPCGDebugVisualizationSettings DebugSettings;
+
+	/** If a debugger is attached, triggers a breakpoint inside IPCGElement::Execute(). Editor only. Transient. */
+	UPROPERTY(Transient, DuplicateTransient, EditAnywhere, BlueprintReadWrite, Category = Debug, AdvancedDisplay)
+	bool bBreakDebugger = false;
 #endif
 };
 
@@ -134,7 +208,7 @@ public:
 	/*virtual*/ FPCGElementPtr GetElement() const;
 	virtual UPCGNode* CreateNode() const;
 	
-	/** Return the concatenation of InputPinPropertiesand FillOverridableParamsPins */
+	/** Return the concatenation of InputPinProperties and FillOverridableParamsPins */
 	TArray<FPCGPinProperties> AllInputPinProperties() const;
 
 	/** For symmetry reason, do the same with output pins. For now forward just the call to OutputPinProperties */
@@ -162,25 +236,50 @@ public:
 	const FPCGCrc& GetCachedCrc() const { return CachedCrc; }
 
 #if WITH_EDITOR
+	/** Puts node title on node body, reducing overall node size */
+	virtual bool ShouldDrawNodeCompact() const { return false; }
+
 	/** UpdatePins will kick off invalid edges, so this is useful for moving edges around in case of pin changes. */
 	virtual void ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins);
 	/** Any final migration/recovery that can be done after pins are finalized. This function should also set DataVersion to LatestVersion. */
 	virtual void ApplyDeprecation(UPCGNode* InOutNode);
+
+	/** If settings require structural changes, this will apply them */
+	virtual void ApplyStructuralDeprecation(UPCGNode* InOutNode) {}
 
 	virtual FName GetDefaultNodeName() const { return NAME_None; }
 	virtual FText GetDefaultNodeTitle() const { return FText::FromName(GetDefaultNodeName()); }
 	virtual FText GetNodeTooltipText() const { return FText::GetEmpty(); }
 	virtual FLinearColor GetNodeTitleColor() const { return FLinearColor::White; }
 	virtual EPCGSettingsType GetType() const { return EPCGSettingsType::Generic; }
+
+	/** Can override the label style for a pin. Return false if no override is available. */
+	virtual bool GetPinLabelStyle(const UPCGPin* InPin, FName& OutLabelStyle) const { return false; }
+
+	/** Can override to add a custom icon next to the pin label (and an optional tooltip). Return false if no override is available. */
+	virtual bool GetPinExtraIcon(const UPCGPin* InPin, FName& OutExtraIcon, FText& OutTooltip) const { return false; }
+
 	/** Derived classes must implement this to communicate dependencies on external actors */
-	virtual void GetTrackedActorTags(FPCGTagToSettingsMap& OutTagToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const {}
+	virtual void GetTrackedActorKeys(FPCGActorSelectionKeyToSettingsMap& OutKeysToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const {}
+
 	/** Override this class to provide an UObject to jump to in case of double click on node
 	 *  ie. returning a blueprint instance will open the given blueprint in its editor.
 	 *  By default, it will return the underlying class, to try to jump to its header in code
      */
 	virtual UObject* GetJumpTargetForDoubleClick() const;
 	virtual bool IsPropertyOverriddenByPin(const FProperty* InProperty) const;
+
+	/* Return preconfigured info that will be filled in the editor palette action, allowing to create pre-configured settings */
+	virtual TArray<FPCGPreConfiguredSettingsInfo> GetPreconfiguredInfo() const { return {}; }
+
+	/* If there are preconfigured info, we can skip the default settings and only expose pre-configured actions in the editor palette */
+	virtual bool OnlyExposePreconfiguredSettings() const { return false; }
+
+	/* Perform post-operations when an editor node is copied */
+	virtual void PostPaste();
 #endif
+
+	virtual void ApplyPreconfiguredSettings(const FPCGPreConfiguredSettingsInfo& PreconfigureInfo) {}
 
 	/** Derived classes can implement this to expose additional name information in the logs */
 	virtual FName AdditionalTaskName() const { return NAME_None; }
@@ -191,8 +290,11 @@ public:
 	/** Returns true if only the first input edge is used from the primary pin when the node is disabled. */
 	virtual bool OnlyPassThroughOneEdgeWhenDisabled() const { return false; }
 
+	/** Returns the current pin types, which can either be the static types from the pin properties, or a dynamic type based on connected edges. */
+	virtual EPCGDataType GetCurrentPinTypes(const UPCGPin* InPin) const;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Settings, meta=(EditCondition=bUseSeed, EditConditionHides, PCG_Overridable))
-	int Seed = 0xC35A9631; // random prime number
+	int Seed = 0xC35A9631; // Default seed is a random prime number, but will be overriden for new settings based on the class type name hash, making each settings class have a different default seed.
 
 	/** Warning - this is deprecated and will be removed soon since we have a Filter By Tag node for this specific purpose */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tags")
@@ -225,6 +327,9 @@ public:
 	FText Description;
 #endif
 
+	// Holds the original settings used to duplicate this object if it was overridden
+	const UPCGSettings* OriginalSettings = nullptr;
+
 protected:
 	// Returns an array of all the input pin properties. You should not add manually a "params" pin, it is handled automatically by FillOverridableParamsPins
 	virtual TArray<FPCGPinProperties> InputPinProperties() const;
@@ -235,6 +340,9 @@ protected:
 	/** An additional custom version number that external system users can use to track versions. This version will be serialized into the asset and will be provided by UserDataVersion after load. */
 	virtual FGuid GetUserCustomVersionGuid() { return FGuid(); }
 
+	/** Can be overriden by child class if they ever got renamed to avoid changing the default seed for this one. Otherwise default is hash of the class name. */
+	virtual uint32 GetTypeNameHash() const;
+
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool IsStructuralProperty(const FName& InPropertyName) const { return false; }
@@ -242,6 +350,10 @@ protected:
 	/** Method that can be called to dirty the cache data from this settings objects if the operator== does not allow to detect changes */
 	void DirtyCache();
 
+	// We need the more complex function (with PropertyChain) to detect child properties in structs, if they are overridable
+	virtual bool CanEditChange(const FEditPropertyChain& InPropertyChain) const override;
+
+	// Passthrough for the simpler method, to avoid modifying the child settings already overriding this method.
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif
 

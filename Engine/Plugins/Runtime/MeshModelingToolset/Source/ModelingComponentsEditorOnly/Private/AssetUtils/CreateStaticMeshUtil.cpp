@@ -2,6 +2,7 @@
 
 #include "AssetUtils/CreateStaticMeshUtil.h"
 
+#include "CoreGlobals.h" // GUndo
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 
@@ -12,6 +13,11 @@
 #include "DynamicMeshToMeshDescription.h"
 #include "UObject/Package.h"
 
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInterface.h"
+#include "AssetUtils/StaticMeshMaterialUtil.h"
+
 using namespace UE::AssetUtils;
 
 using namespace UE::Geometry;
@@ -21,6 +27,16 @@ UE::AssetUtils::ECreateStaticMeshResult UE::AssetUtils::CreateStaticMeshAsset(
 	FStaticMeshAssetOptions& Options,
 	FStaticMeshResults& ResultsOut)
 {
+	// MINOR HACK: undoing static mesh asset creation causes a bunch of problems because the asset is not deleted,
+	// and is instead left in an invalid state that can cause crashes later. Since we can't undo full asset creation
+	// anyway, we are going to make sure that we don't transact the static mesh asset creation at all. We still want
+	// to allow the calling code to enclose this in another transaction because upstream code may not want to care
+	// about what type of object we are creating, so it shouldn't have to be careful with its transaction placement.
+	// So we temporarily disconnect the current transaction object, if any.
+	ITransaction* UndoState = GUndo;
+	GUndo = nullptr; // Pretend we're not in a transaction
+	ON_SCOPE_EXIT{ GUndo = UndoState; }; // Revert
+
 	FString NewObjectName = FPackageName::GetLongPackageAssetName(Options.NewAssetPath);
 
 	UPackage* UsePackage;
@@ -71,21 +87,31 @@ UE::AssetUtils::ECreateStaticMeshResult UE::AssetUtils::CreateStaticMeshAsset(
 		NewStaticMesh->GetBodySetup()->CollisionTraceFlag = Options.CollisionType;
 	}
 
-	// add a material slot. Must always have one material slot.
+	// Must always have one material slot.
 	int32 UseNumMaterialSlots = FMath::Max(1, Options.NumMaterialSlots);
-	for (int MatIdx = 0; MatIdx < UseNumMaterialSlots; MatIdx++)
+	// initialize list of Static Materials. Set Default Surface Material in each slot if no
+	// other Material was provided. Derive slot names from material names 
+	TArray<FStaticMaterial> StaticMaterials;
+	for (int32 MatIdx = 0; MatIdx < UseNumMaterialSlots; ++MatIdx)
 	{
-		NewStaticMesh->GetStaticMaterials().Add(FStaticMaterial());
-	}
-
-	// set materials if the count matches
-	if (Options.AssetMaterials.Num() == UseNumMaterialSlots)
-	{
-		for (int MatIdx = 0; MatIdx < UseNumMaterialSlots; MatIdx++)
+		FStaticMaterial NewMaterial;
+		// fallback to default material if no material is found
+		if (MatIdx < Options.AssetMaterials.Num() && Options.AssetMaterials[MatIdx] != nullptr)
 		{
-			NewStaticMesh->SetMaterial(MatIdx, Options.AssetMaterials[MatIdx]);
+			NewMaterial.MaterialInterface = Options.AssetMaterials[MatIdx];
+			NewMaterial.MaterialSlotName = UE::AssetUtils::GenerateNewMaterialSlotName(StaticMaterials, NewMaterial.MaterialInterface, MatIdx);
 		}
+		else
+		{
+			NewMaterial.MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
+			NewMaterial.MaterialSlotName = UE::AssetUtils::GenerateNewMaterialSlotName(StaticMaterials, nullptr, MatIdx);
+		}
+		NewMaterial.ImportedMaterialSlotName = NewMaterial.MaterialSlotName;
+		NewMaterial.UVChannelData = FMeshUVChannelInfo(1.f);		// this avoids an ensure in  UStaticMesh::GetUVChannelData
+		StaticMaterials.Add(NewMaterial);
 	}
+	NewStaticMesh->SetStaticMaterials(StaticMaterials);
+
 
 	// determine maximum number of sections across all mesh LODs
 	int32 MaxNumSections = 0;
@@ -161,6 +187,14 @@ UE::AssetUtils::ECreateStaticMeshResult UE::AssetUtils::CreateStaticMeshAsset(
 
 	// Distance field
 	NewStaticMesh->bGenerateMeshDistanceField = Options.bAllowDistanceField;
+
+	// Set the initial overall static mesh lightmap settings to match the first lightmap build settings
+	if (Options.bGenerateLightmapUVs)
+	{
+		FMeshBuildSettings& BuildSettings = NewStaticMesh->GetSourceModel(0).BuildSettings;
+		NewStaticMesh->SetLightMapCoordinateIndex(BuildSettings.DstLightmapIndex);
+		NewStaticMesh->SetLightMapResolution(BuildSettings.MinLightmapResolution);
+	}
 
 	[[maybe_unused]] bool MarkedDirty = NewStaticMesh->MarkPackageDirty();
 	if (Options.bDeferPostEditChange == false)

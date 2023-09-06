@@ -1,14 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSessionInterfaceNull.h"
+
+#include "UObject/CoreNet.h"
 #include "Online/OnlineBase.h"
+#include "Interfaces/OnlineIdentityInterface.h"
+
+#include "NboSerializerNull.h"
+#include "OnlineAsyncTaskManager.h"
+#include "OnlineSubsystem.h"
 #include "OnlineSubsystemNull.h"
 #if WITH_ENGINE
 #include "OnlineSubsystemUtils.h"
 #endif //WITH_ENGINE
-#include "OnlineAsyncTaskManager.h"
 #include "SocketSubsystem.h"
-#include "NboSerializerNull.h"
 
 
 
@@ -211,9 +216,6 @@ bool FOnlineSessionNull::CreateSession(int32 HostingPlayerNum, FName SessionName
 			Session->OwningUserId = FUniqueNetIdNull::Create(FString::Printf(TEXT("%d"), HostingPlayerNum));
 			Session->OwningUserName = FString(TEXT("NullUser"));
 		}
-		
-		// Unique identifier of this build for compatibility
-		Session->SessionSettings.BuildUniqueId = GetBuildUniqueId();
 
 		// Setup the host session info
 		FOnlineSessionInfoNull* NewSessionInfo = new FOnlineSessionInfoNull();
@@ -1186,22 +1188,32 @@ void FOnlineSessionNull::ReadSettingsFromPacket(FNboSerializeFromBufferNull& Pac
 
 void FOnlineSessionNull::OnValidResponsePacketReceived(uint8* PacketData, int32 PacketLength)
 {
-	// Create an object that we'll copy the data to
-	FOnlineSessionSettings NewServer;
 	if (CurrentSessionSearch.IsValid())
 	{
-		// Add space in the search results array
-		FOnlineSessionSearchResult* NewResult = new (CurrentSessionSearch->SearchResults) FOnlineSessionSearchResult();
-		// this is not a correct ping, but better than nothing
-		NewResult->PingInMs = static_cast<int32>((FPlatformTime::Seconds() - SessionSearchStartInSeconds) * 1000);
+		FOnlineSessionSearchResult SearchResult;
 
-		FOnlineSession* NewSession = &NewResult->Session;
+		// this is not a correct ping, but better than nothing
+		SearchResult.PingInMs = static_cast<int32>((FPlatformTime::Seconds() - SessionSearchStartInSeconds) * 1000);
 
 		// Prepare to read data from the packet
 		FNboSerializeFromBufferNull Packet(PacketData, PacketLength);
-		
-		ReadSessionFromPacket(Packet, NewSession);
 
+		ReadSessionFromPacket(Packet, &SearchResult.Session);
+
+		const int32 BuildUniqueId = GetBuildUniqueId();
+
+		if (SearchResult.Session.SessionSettings.BuildUniqueId == BuildUniqueId)
+		{
+			// Add the found session to the search results array
+			CurrentSessionSearch->SearchResults.Emplace(MoveTemp(SearchResult));
+		}
+		else
+		{
+			UE_LOG_ONLINE_SESSION(Verbose, TEXT("Rejecting search result [%s]: mismatched build id. Local: %d - Session: %d"),
+				*SearchResult.Session.GetSessionIdStr(),
+				BuildUniqueId,
+				SearchResult.Session.SessionSettings.BuildUniqueId);
+		}
 		// NOTE: we don't notify until the timeout happens
 	}
 	else

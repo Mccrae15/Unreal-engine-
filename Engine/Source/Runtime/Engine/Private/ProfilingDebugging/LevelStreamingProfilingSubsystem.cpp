@@ -9,11 +9,36 @@
 #include "Streaming/LevelStreamingDelegates.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
+#include "Stats/Stats.h"
+
+#if !WITH_EDITOR
+#include "Engine/World.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelStreamingProfilingSubsystem)
 
 DEFINE_LOG_CATEGORY_STATIC(LogLevelStreamingProfiling, Log, All);
 CSV_DEFINE_CATEGORY_MODULE(ENGINE_API, LevelStreaming, true);
+
+static bool GLevelStreamingProfilingEnabled = !UE_BUILD_SHIPPING && !UE_SERVER;
+static FAutoConsoleVariableRef CVarLevelStreamingProfilingEnabled(
+#if UE_BUILD_SHIPPING
+	TEXT("LevelStreaming.Profiling.Enabled.Shipping"),
+#else
+	TEXT("LevelStreaming.Profiling.Enabled"),
+#endif
+	GLevelStreamingProfilingEnabled,
+	TEXT("Whether to enable the LevelStreamingProfilingSubsystem automatically."),
+	ECVF_Default
+);
+
+static bool GStartProfilingAutomatically = false;
+static FAutoConsoleVariableRef CVarStartProfilingAutomatically(
+	TEXT("LevelStreaming.Profiling.StartAutomatically"),
+	GStartProfilingAutomatically,
+	TEXT("Whether to start recording level streaminge events as soon as the subsystem is created."),
+	ECVF_Default
+);
 
 static float GLateStreamingDistanceSquared = 0.0f;
 static FAutoConsoleVariableRef CVarLateStreamingDistanceSquared(
@@ -43,16 +68,58 @@ bool ULevelStreamingProfilingSubsystem::DoesSupportWorldType(const EWorldType::T
 
 bool ULevelStreamingProfilingSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
-	return Super::ShouldCreateSubsystem(Outer);
+	// If there are any loaded child classes of this subsystem and this is not the CDO of that child class, skip creation of this subsystem.
+	TArray<UClass*> DerivedClasses; 
+	GetDerivedClasses(ULevelStreamingProfilingSubsystem::StaticClass(), DerivedClasses, true);
+	if (DerivedClasses.Num() > 0)
+	{
+		if (!Algo::AnyOf(DerivedClasses, [Class=GetClass()](UClass* DerivedClass) { return Class == DerivedClass; }))
+		{
+			return false;
+		}
+	}
+	return GLevelStreamingProfilingEnabled && Super::ShouldCreateSubsystem(Outer);
 }
 
-#if !UE_BUILD_SHIPPING
 void ULevelStreamingProfilingSubsystem::PostInitialize()
 {
+	Super::PostInitialize();
+
 	Handle_OnLevelStreamingTargetStateChanged = FLevelStreamingDelegates::OnLevelStreamingTargetStateChanged.AddUObject(this, &ULevelStreamingProfilingSubsystem::OnLevelStreamingTargetStateChanged);
 	Handle_OnLevelStreamingStateChanged = FLevelStreamingDelegates::OnLevelStreamingStateChanged.AddUObject(this, &ULevelStreamingProfilingSubsystem::OnLevelStreamingStateChanged);
 	Handle_OnLevelBeginAddToWorld = FLevelStreamingDelegates::OnLevelBeginMakingVisible.AddUObject(this, &ULevelStreamingProfilingSubsystem::OnLevelStartedAddToWorld);
 	Handle_OnLevelBeginRemoveFromWorld = FLevelStreamingDelegates::OnLevelBeginMakingInvisible.AddUObject(this, &ULevelStreamingProfilingSubsystem::OnLevelStartedRemoveFromWorld);
+	
+	if (GStartProfilingAutomatically)
+	{
+		StartTracking();
+	}
+}
+
+void ULevelStreamingProfilingSubsystem::Deinitialize() 
+{
+	if (IsTracking())
+	{
+		StopTrackingAndReport();
+	}
+
+	if (!ReportWritingTask.IsCompleted())
+	{
+		UE_LOG(LogLevelStreamingProfiling, Log, TEXT("Waiting for report writing task to complete during Deinitialize for safety"));
+		ReportWritingTask.Wait();
+	}
+
+	FLevelStreamingDelegates::OnLevelStreamingTargetStateChanged.Remove(Handle_OnLevelStreamingTargetStateChanged);
+	FLevelStreamingDelegates::OnLevelStreamingStateChanged.Remove(Handle_OnLevelStreamingStateChanged);
+	FLevelStreamingDelegates::OnLevelBeginMakingVisible.Remove(Handle_OnLevelBeginAddToWorld);
+	FLevelStreamingDelegates::OnLevelBeginMakingInvisible.Remove(Handle_OnLevelBeginRemoveFromWorld);
+	
+	Handle_OnLevelStreamingTargetStateChanged.Reset();
+	Handle_OnLevelStreamingStateChanged.Reset();
+	Handle_OnLevelBeginAddToWorld.Reset();
+	Handle_OnLevelBeginRemoveFromWorld.Reset();
+
+	Super::Deinitialize();
 }
 
 const TCHAR* ULevelStreamingProfilingSubsystem::EnumToString(ULevelStreamingProfilingSubsystem::ELevelState State)
@@ -84,7 +151,7 @@ TConstArrayView<ULevelStreamingProfilingSubsystem::FLevelStats> ULevelStreamingP
 TUniquePtr<ULevelStreamingProfilingSubsystem::FActiveLevel> ULevelStreamingProfilingSubsystem::MakeActiveLevel(const ULevelStreaming* StreamingLevel, ELevelState InitialState, ULevel* LoadedLevel)
 {
 	TUniquePtr<FActiveLevel> Level = MakeUnique<FActiveLevel>(LevelStats.AddDefaulted());
-	Level->State = InitialState;
+	Level->State = ELevelState::None;
 	Level->StateStartTime = FPlatformTime::Seconds();
 	if (LoadedLevel)
 	{
@@ -113,15 +180,23 @@ TUniquePtr<ULevelStreamingProfilingSubsystem::FActiveLevel> ULevelStreamingProfi
 			break;
 		}
 	}
-	if (const UWorldPartitionLevelStreamingDynamic* WPStreamingLevel = Cast<UWorldPartitionLevelStreamingDynamic>(StreamingLevel))
+	if (const UWorldPartitionRuntimeCell* Cell = Cast<const UWorldPartitionRuntimeCell>(StreamingLevel->GetWorldPartitionCell()))
 	{
-		if (const UWorldPartitionRuntimeCell* Cell = WPStreamingLevel->GetWorldPartitionRuntimeCell())
-		{
-			LevelStats[Level->StatsIndex].CellBounds = Cell->GetCellBounds();
-			LevelStats[Level->StatsIndex].ContentBounds = Cell->GetContentBounds();
-		}
+		LevelStats[Level->StatsIndex].CellBounds = Cell->GetCellBounds();
+		LevelStats[Level->StatsIndex].ContentBounds = Cell->GetContentBounds();
+		LevelStats[Level->StatsIndex].bIsHLOD = Cell->GetIsHLOD();
 	}
+	UpdateLevelState(*Level, StreamingLevel, InitialState, Level->StateStartTime);
 	return MoveTemp(Level);
+}
+
+void ULevelStreamingProfilingSubsystem::UpdateLevelState(ULevelStreamingProfilingSubsystem::FActiveLevel& Level, const ULevelStreaming* StreamingLevel, ULevelStreamingProfilingSubsystem::ELevelState NewState, double Time)
+{	
+	ELevelState OldState = Level.State;
+	Level.State = NewState;
+	Level.StateStartTime = Time;
+
+	UpdateTrackingData(Level.StatsIndex, LevelStats[Level.StatsIndex], StreamingLevel, OldState, NewState);
 }
 
 void ULevelStreamingProfilingSubsystem::StartTracking()
@@ -149,6 +224,7 @@ void ULevelStreamingProfilingSubsystem::StartTracking()
 
 void ULevelStreamingProfilingSubsystem::StopTrackingAndReport()
 {
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_LevelStreamingProfilingSubsystem_StopTrackingAndReport);
 	if (!bIsTracking)
 	{
 		UE_LOG(LogLevelStreamingProfiling, Warning, TEXT("StopTrackingAndReport called without StartTracking"));
@@ -161,6 +237,7 @@ void ULevelStreamingProfilingSubsystem::StopTrackingAndReport()
 	ReportWritingTask = UE::Tasks::Launch(UE_SOURCE_LOCATION,
 	[this]() 
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_LevelStreamingProfilingSubsystem_ReportWritingTask);
 		FString OutDir = FPaths::ProfilingDir() / TEXT("LevelStreaming");
 		IFileManager::Get().MakeDirectory(*OutDir, true);
 
@@ -199,7 +276,7 @@ void ULevelStreamingProfilingSubsystem::StopTrackingAndReport()
 				}
 			};
 
-			Builder << "NameOnDisk\tNameInMemory\tTimeQueuedForLoadingMS\tTimeLoadingMS\tTimeQueuedForAddToWorldMS\tTimeAddingToWorldMS\tTimeInWorldS\tTimeQueuedForRemoveFromWorldMS\tTimeRemovingFromWorldMS\tStreamInDistance_Cell\tStreamInDistance_Content\tStreamInSourceLocation\tCellBounds\tContentBounds";
+			Builder << "NameOnDisk\tNameInMemory\tTimeQueuedForLoadingMS\tTimeLoadingMS\tTimeQueuedForAddToWorldMS\tTimeAddingToWorldMS\tTimeInWorldS\tTimeQueuedForRemoveFromWorldMS\tTimeRemovingFromWorldMS\tStreamInDistance_Cell\tStreamInDistance_Content\tStreamInSourceLocation\tCellBounds\tContentBounds\tbIsHLOD";
 			AugmentReportHeader(Builder);
 			Write();
 			for (int32 i=0; i < LevelStats.Num(); ++i)
@@ -220,6 +297,7 @@ void ULevelStreamingProfilingSubsystem::StopTrackingAndReport()
 				AddVector(Stats.FinalStreamInLocation);
 				AddBounds(Stats.CellBounds);
 				AddBounds(Stats.ContentBounds);
+				Builder << '\t' << (int32)Stats.bIsHLOD;
 				AugmentReportRow(Builder, i);
 				Write();
 			}
@@ -445,8 +523,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelStartedAsyncLoading(UWorld* World
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
 	LevelStats[Level->StatsIndex].TimeQueuedForLoading = Time - Level->StateStartTime;
-	Level->State = ELevelState::Loading;
-	Level->StateStartTime = FPlatformTime::Seconds();
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::Loading, FPlatformTime::Seconds());
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelFinishedAsyncLoading(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -472,8 +549,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelFinishedAsyncLoading(UWorld* Worl
 		// Fill in stats so we calculate the time til now as queued time, and loading time as 0
 		LevelStats[Level->StatsIndex].bValid = true;
 		LevelStats[Level->StatsIndex].TimeQueuedForLoading = Time - Level->StateStartTime;
-		Level->State = ELevelState::Loading;
-		Level->StateStartTime = Time;
+		UpdateLevelState(*Level, StreamingLevel, ELevelState::Loading, Time);
 	}
 	else if (Level->State != ELevelState::Loading)
 	{
@@ -488,8 +564,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelFinishedAsyncLoading(UWorld* Worl
 			*StreamingLevel->GetWorldAssetPackageName());
 		LevelStats[Level->StatsIndex].TimeLoading = Time - Level->StateStartTime;
 		LevelStats[Level->StatsIndex].bValid = true; // Record this as a cancelled load
-		Level->State = ELevelState::None;
-		Level->StateStartTime = Time;
+		UpdateLevelState(*Level, StreamingLevel, ELevelState::None, Time);
 		return;
 	}
 
@@ -500,8 +575,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelFinishedAsyncLoading(UWorld* Worl
 	LevelStats[Level->StatsIndex].PackageNameInMemory = LoadedLevel->GetOutermost()->GetFName();
 	LevelStats[Level->StatsIndex].bValid = true;
 	LevelStats[Level->StatsIndex].TimeLoading = Time - Level->StateStartTime;
-	Level->State = ELevelState::Loaded;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::Loaded, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelQueuedForAddToWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -543,8 +617,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelQueuedForAddToWorld(UWorld* World
 		*StreamingLevel->GetWorldAssetPackageName());
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
-	Level->State = ELevelState::QueuedForAddToWorld;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::QueuedForAddToWorld, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelUnqueuedForAddToWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -574,8 +647,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelUnqueuedForAddToWorld(UWorld* Wor
 		*StreamingLevel->GetWorldAssetPackageName());
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
-	Level->State = ELevelState::Loaded;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::Loaded, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelStartedAddToWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -606,8 +678,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelStartedAddToWorld(UWorld* World, 
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
 	LevelStats[Level->StatsIndex].TimeQueueudForAddToWorld = Time - Level->StateStartTime; 
-	Level->State = ELevelState::AddingToWorld;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::AddingToWorld, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelFinishedAddToWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -640,52 +711,52 @@ void ULevelStreamingProfilingSubsystem::OnLevelFinishedAddToWorld(UWorld* World,
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
 	LevelStats[Level->StatsIndex].TimeAddingToWorld = Time - Level->StateStartTime;
-	Level->State = ELevelState::AddedToWorld;
-	Level->StateStartTime = Time;
 	Level->TimeAddedToWorld = Time;
 
-	FBox CellBounds = LevelStats[Level->StatsIndex].CellBounds;
-	if (CellBounds.IsValid)
+	if (World && World->GetWorldPartition())
 	{
-		double MinDistance = MAX_dbl;
-
-
-		MinDistance = MAX_dbl;
-		FVector Location;
-		for (const FWorldPartitionStreamingSource& Source : World->GetWorldPartition()->GetStreamingSources())
+		FBox CellBounds = LevelStats[Level->StatsIndex].CellBounds;
+		if (CellBounds.IsValid)
 		{
-			double Distance = CellBounds.ComputeSquaredDistanceToPoint(Source.Location);
-			if (Distance < MinDistance)
-			{ 
-				MinDistance = Distance;
-				Location = Source.Location;
+			double MinDistance = MAX_dbl;
+			MinDistance = MAX_dbl;
+			FVector Location;
+			for (const FWorldPartitionStreamingSource& Source : World->GetWorldPartition()->GetStreamingSources())
+			{
+				double Distance = CellBounds.ComputeSquaredDistanceToPoint(Source.Location);
+				if (Distance < MinDistance)
+				{ 
+					MinDistance = Distance;
+					Location = Source.Location;
+				}
+			}
+			if (MinDistance != MAX_dbl)
+			{
+				UE_LOG(LogLevelStreamingProfiling, Verbose, TEXT("Streaming level %s %s streamed in at distance %.0f from cell bounds"), 
+					*StreamingLevel->GetName(), *StreamingLevel->GetWorldAssetPackageName(), MinDistance);
+				LevelStats[Level->StatsIndex].FinalStreamInDistance_Cell = FMath::Sqrt(MinDistance);
+				LevelStats[Level->StatsIndex].FinalStreamInLocation = Location;
 			}
 		}
-		if (MinDistance != MAX_dbl)
-		{
-			UE_LOG(LogLevelStreamingProfiling, Verbose, TEXT("Streaming level %s %s streamed in at distance %.0f from cell bounds"), 
-				*StreamingLevel->GetName(), *StreamingLevel->GetWorldAssetPackageName(), MinDistance);
-			LevelStats[Level->StatsIndex].FinalStreamInDistance_Cell = FMath::Sqrt(MinDistance);
-			LevelStats[Level->StatsIndex].FinalStreamInLocation = Location;
-		}
-	}
 
-	FBox ContentBounds = LevelStats[Level->StatsIndex].ContentBounds;
-	if (ContentBounds.IsValid)
-	{
-		double MinDistance = MAX_dbl;
-		for (const FWorldPartitionStreamingSource& Source : World->GetWorldPartition()->GetStreamingSources())
+		FBox ContentBounds = LevelStats[Level->StatsIndex].ContentBounds;
+		if (ContentBounds.IsValid)
 		{
-			double Distance = ContentBounds.ComputeSquaredDistanceToPoint(Source.Location);
-			MinDistance = FMath::Min(Distance, MinDistance);
-		}
-		if (MinDistance != MAX_dbl)
-		{
-			UE_LOG(LogLevelStreamingProfiling, Verbose, TEXT("Streaming level %s %s streamed in at distance %.0f from content bounds"), 
-				*StreamingLevel->GetName(), *StreamingLevel->GetWorldAssetPackageName(), MinDistance);
-			LevelStats[Level->StatsIndex].FinalStreamInDistance_Content = FMath::Sqrt(MinDistance);
+			double MinDistance = MAX_dbl;
+			for (const FWorldPartitionStreamingSource& Source : World->GetWorldPartition()->GetStreamingSources())
+			{
+				double Distance = ContentBounds.ComputeSquaredDistanceToPoint(Source.Location);
+				MinDistance = FMath::Min(Distance, MinDistance);
+			}
+			if (MinDistance != MAX_dbl)
+			{
+				UE_LOG(LogLevelStreamingProfiling, Verbose, TEXT("Streaming level %s %s streamed in at distance %.0f from content bounds"), 
+					*StreamingLevel->GetName(), *StreamingLevel->GetWorldAssetPackageName(), MinDistance);
+				LevelStats[Level->StatsIndex].FinalStreamInDistance_Content = FMath::Sqrt(MinDistance);
+			}
 		}
 	}
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::AddedToWorld, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelQueuedForRemoveFromWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -715,8 +786,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelQueuedForRemoveFromWorld(UWorld* 
 		*StreamingLevel->GetWorldAssetPackageName());
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
-	Level->State = ELevelState::QueuedForRemoveFromWorld;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::QueuedForRemoveFromWorld, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelUnqueuedForRemoveFromWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel)
@@ -746,8 +816,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelUnqueuedForRemoveFromWorld(UWorld
 		*StreamingLevel->GetWorldAssetPackageName());
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
-	Level->State = ELevelState::AddedToWorld;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::AddedToWorld, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelStartedRemoveFromWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel*)
@@ -780,8 +849,7 @@ void ULevelStreamingProfilingSubsystem::OnLevelStartedRemoveFromWorld(UWorld* Wo
 	{
 		LevelStats[Level->StatsIndex].TimeInWorld = Time - Level->TimeAddedToWorld.GetValue(); // Not really a perf thing but may give an idea of churn 
 	}
-	Level->State = ELevelState::RemovingFromWorld;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::RemovingFromWorld, Time);
 }
 
 void ULevelStreamingProfilingSubsystem::OnLevelFinishedRemoveFromWorld(UWorld* World, const ULevelStreaming* StreamingLevel, ULevel*)
@@ -810,7 +878,5 @@ void ULevelStreamingProfilingSubsystem::OnLevelFinishedRemoveFromWorld(UWorld* W
 	double Time = FPlatformTime::Seconds();
 	LevelStats[Level->StatsIndex].bValid = true;
 	LevelStats[Level->StatsIndex].TimeRemovingFromWorld = Time - Level->StateStartTime; 
-	Level->State = ELevelState::RemovedFromWorld;
-	Level->StateStartTime = Time;
+	UpdateLevelState(*Level, StreamingLevel, ELevelState::RemovedFromWorld, Time);
 }
-#endif // !UE_BUILD_SHIPPING

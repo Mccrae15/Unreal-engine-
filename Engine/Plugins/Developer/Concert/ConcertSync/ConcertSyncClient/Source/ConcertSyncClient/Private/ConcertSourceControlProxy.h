@@ -24,8 +24,8 @@ public:
 	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetHistoryItem(int32 HistoryIndex) const override;
 	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FindHistoryRevision(int32 RevisionNumber) const override;
 	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FindHistoryRevision(const FString& InRevision) const override;
-	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetBaseRevForMerge() const override;
 	virtual TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> GetCurrentRevision() const override;
+	virtual FResolveInfo GetResolveInfo() const override;
 	virtual FSlateIcon GetIcon() const override;
 	virtual FText GetDisplayName() const override;
 	virtual FText GetDisplayTooltip() const override;
@@ -103,6 +103,7 @@ public:
 	virtual void Init(bool bForceConnection = true) override;
 	virtual void Close() override;
 	virtual FText GetStatusText() const override;
+	virtual TMap<EStatus, FString> GetStatus() const override;
 	virtual bool IsEnabled() const override;
 	virtual bool IsAvailable() const override;
 	virtual const FName& GetName(void) const override;
@@ -115,6 +116,7 @@ public:
 	virtual FDelegateHandle RegisterSourceControlStateChanged_Handle( const FSourceControlStateChanged::FDelegate& SourceControlStateChanged ) override;
 	virtual void UnregisterSourceControlStateChanged_Handle( FDelegateHandle Handle ) override;
 	virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() ) override;
+	virtual bool CanExecuteOperation( const FSourceControlOperationRef& InOperation ) const override;
 	virtual bool CanCancelOperation( const FSourceControlOperationRef& InOperation ) const override;
 	virtual void CancelOperation( const FSourceControlOperationRef& InOperation ) override;
 	virtual bool UsesLocalReadOnlyState() const override;

@@ -204,15 +204,54 @@ DYNAMICMESH_API bool InitializeSelectionFromTriangles(
 
 /**
  * Convert Selection from one type to another, based on geometry/topology types in FromSelectionIn and ToSelectionOut.
- * Not all conversion types are necessarily supported
- * (currently only Triangles -> All Others is working)
- * @return true if conversion is supported and was computed successfully
+ * 
+ * The following table describes the conversions, the FromSelectionIn/ToSelectionOut type are rows/columns respectively:
+ *
+ *   ================================================================
+ *                 To:    Triangle               Polygroup           
+ *   From:                Vertex  Edge    Face   Vertex  Edge    Face
+ *   ----------------------------------------------------------------
+ *   Triangle Vertex      1       .       .      .       .       .   
+ *   Triangle Edge        1       1       .      .       .       .   
+ *   Triangle Face        1       1       1      4#      3#      2#  
+ *   Polygroup Vertex     6#      .       .      1       .       .   
+ *   Polygroup Edge       5#      .       .      .       1       .   
+ *   Polygroup Face       .       .       .      .       .       1   
+ *   ================================================================
+ *
+ *   Key:
+ *   .  These conversions are not implemented... yet? GroupTopology is ignored
+ *   1  supported. The implementation is obvious/unambiguous
+ *   2  supported. Polygroup faces containing any input triangle are selected
+ *   3  supported. Polygroup edges containing any input triangle edge are selected, but
+ *                 polygroup edges containing only input triangle vertices are not.
+ *   4  supported. Polygroup corners coinciding with any input triangle vertex are selected
+ *   5  supported. All mesh vertices along the polygroup edge are selected
+ *   6  supported. All mesh vertices coinciding with polygroup corners are selected
+ *   #  indicates GroupTopology must not be null for this combination. If this symbol is missing GroupTopology is ignored
+ *
+ * @return true if conversion is supported and was computed successfully, return false otherwise
  */
 DYNAMICMESH_API bool ConvertSelection(
 	const UE::Geometry::FDynamicMesh3& Mesh,
 	const FGroupTopology* GroupTopology,
 	const FGeometrySelection& FromSelectionIn,
 	FGeometrySelection& ToSelectionOut);
+
+/**
+ * Convert the given MeshSelection to a list of Triangles and Vertices into the Mesh,
+ * which can be used to represent a selection of overlay elements. This is always possible
+ * since any FGeometrySelection can be represented as an overlay element selection because
+ * any overlay element can be represented as a (Triangle,Vertex) pair.
+ *
+ * @note it is not necessarily the case that all vertices of triangles in TrianglesOut will be in VerticesOut.
+ * @return false if the MeshSelection topology type is not Triangle and true otherwise
+ */
+DYNAMICMESH_API bool ConvertTriangleSelectionToOverlaySelection(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const FGeometrySelection& MeshSelection,
+	TSet<int>& TrianglesOut,
+	TSet<int>& VerticesOut);
 
 
 /**
@@ -261,6 +300,54 @@ DYNAMICMESH_API bool MakeBoundaryConnectedSelection(
 	const FGeometrySelection& ReferenceSelection,
 	TFunctionRef<bool(FGeoSelectionID)> SelectionIDPredicate,
 	FGeometrySelection& BoundaryConnectedSelection);
+
+/**
+ * Given a selection, return the vertex IDs of the vertices on the boundary of this selection. A selected vertex 
+ * is considered to be on the boundary either if it is on the actual mesh boundary (for an open mesh) or it is
+ * connected to a triangle element that is not part of the selection (i.e. if the vertex has a neighbor vertex 
+ * not in selection for a selection of type EGeometryElementType::Vertex, or an adjacent edge not in selection
+ * for a selection of type EGeometryElementType::Edge, an adjacent triangle not in the selection for a selection 
+ * of type EGeometryElementType::Face).
+ * 
+ * For selections of type EGeometryTopologyType::Polygroup, the results are equivalent to first converting the
+ * selection to corresponding EGeometryTopologyType::Triangle selection and then finding the boundary vertices.
+ * This gives the intuitive result for face selections, but may or may not be what is desired for polygroup 
+ * vertex/edge selections, because vertices/edges that seem to be on the interior of the polygroup selection 
+ * may be considered border vertices if the tesselation is such that they are adjacent to unselected triangle
+ * vertices/edges.
+ * 
+ * @param GroupTopology Must not be null for selections of type EGeometryTopologyType::Polygroup
+ * @param BorderVidsOut Output vertex IDs of border vertices
+ * @param CurVerticesOut Output vertex IDs of all vertices in the current selection
+ * @return true if successful. For instance, could fail if GroupTopology was null for a EGeometryTopologyType::Polygroup selection
+ */
+DYNAMICMESH_API bool GetSelectionBoundaryVertices(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const UE::Geometry::FGroupTopology* GroupTopology,
+	const UE::Geometry::FGeometrySelection& ReferenceSelection,
+	TSet<int32>& BorderVidsOut, TSet<int32>& CurVerticesOut);
+
+/**
+ * Given a EGeometryTopologyType::Polygroup selection, return the corner IDs of the polygroup corners on the
+ * boundary of the selection. A selected corner is considered to be on the boundary either if it is on the actual 
+ * mesh boundary (for an open mesh) or it is connected to an element that is not part of the selection (i.e. if
+ * there is a neighbor corner not in the selection for a selection of type EGeometryElementType::Vertex, or an
+ * adjoining edge not in the selection for a selection of type EGeometryElementType::Edge, or an adjoining group not
+ * in the selection for a selection of type EGeometryElementType::Face).
+ * 
+ * Selection must be of type EGeometryTopologyType::Polygroup, and GroupTopology must not be null.
+ *
+ * @param GroupTopology Must not be null
+ * @param BorderCornerIDsOut Output corner IDs of border corners
+ * @param CurCornerIDsOut Output corner IDs of all corners included in the current selection
+ * @return true if successful. For instance, could fail if GroupTopology was null
+ */
+DYNAMICMESH_API bool GetSelectionBoundaryCorners(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const UE::Geometry::FGroupTopology* GroupTopology,
+	const UE::Geometry::FGeometrySelection& ReferenceSelection,
+	TSet<int32>& BorderCornerIDsOut, TSet<int32>& CurCornerIDsOut);
+
 
 
 enum class EGeometrySelectionCombineModes : uint8

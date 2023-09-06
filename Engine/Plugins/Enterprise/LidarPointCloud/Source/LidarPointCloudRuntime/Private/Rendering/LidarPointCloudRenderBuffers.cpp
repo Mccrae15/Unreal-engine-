@@ -38,19 +38,19 @@ void FLidarPointCloudIndexBuffer::Resize(const uint32 & RequestedCapacity)
 	{
 		ReleaseResource();
 		Capacity = RequestedCapacity;
-		InitResource();
+		InitResource(FRHICommandListExecutor::GetImmediateCommandList());
 	}
 }
 
-void FLidarPointCloudIndexBuffer::InitRHI()
+void FLidarPointCloudIndexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudIndexBuffer"));
 	const uint32 Size = Capacity * 7 * sizeof(uint32);
 	PointOffset = Capacity * 6;
 
-	IndexBufferRHI = RHICreateBuffer(Size, BUF_Dynamic | BUF_IndexBuffer, sizeof(uint32), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	IndexBufferRHI = RHICmdList.CreateBuffer(Size, BUF_Dynamic | BUF_IndexBuffer, sizeof(uint32), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
-	uint32* Data = (uint32*)RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+	uint32* Data = (uint32*)RHICmdList.LockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 	for (uint32 i = 0, idx = 0; i < Capacity; i++)
 	{
 		const uint32 v = i * 4;
@@ -66,7 +66,7 @@ void FLidarPointCloudIndexBuffer::InitRHI()
 		// Points
 		Data[PointOffset + i] = v;
 	}
-	RHIUnlockBuffer(IndexBufferRHI);
+	RHICmdList.UnlockBuffer(IndexBufferRHI);
 }
 
 //////////////////////////////////////////////////////////// Structured Buffer
@@ -74,28 +74,25 @@ void FLidarPointCloudIndexBuffer::InitRHI()
 void FLidarPointCloudRenderBuffer::Resize(const uint32& RequestedCapacity)
 {
 	// This must be called from Rendering thread
-	check(IsInRenderingThread());
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
 
 	if (Capacity != RequestedCapacity)
 	{
 		ReleaseResource();
 		Capacity = RequestedCapacity;
-		InitResource();
+		InitResource(RHICmdList);
 	}
 	else if (!IsInitialized())
 	{
-		InitResource();
+		InitResource(RHICmdList);
 	}
 }
 
-void FLidarPointCloudRenderBuffer::InitRHI()
+void FLidarPointCloudRenderBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	// This must be called from Rendering thread
-	check(IsInRenderingThread());
-
 	FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudRenderBuffer"));
-	Buffer = RHICreateVertexBuffer(sizeof(uint32) * Capacity, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-	SRV = RHICreateShaderResourceView(Buffer, sizeof(uint32), PF_R32_FLOAT);
+	Buffer = RHICmdList.CreateVertexBuffer(sizeof(uint32) * Capacity, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
+	SRV = RHICmdList.CreateShaderResourceView(Buffer, sizeof(uint32), PF_R32_FLOAT);
 
 	FLidarPointCloudVertexFactoryUniformShaderParameters UniformParameters;
 	UniformParameters.VertexFetch_Buffer = SRV;
@@ -124,13 +121,15 @@ void FLidarPointCloudRenderBuffer::Initialize(FLidarPointCloudPoint* Data, int32
 {
 	Resize(NumPoints * 5);
 
-	uint8* StructuredBuffer = (uint8*)RHILockBuffer(Buffer, 0, NumPoints * sizeof(FLidarPointCloudPoint), RLM_WriteOnly);
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+
+	uint8* StructuredBuffer = (uint8*)RHICmdList.LockBuffer(Buffer, 0, NumPoints * sizeof(FLidarPointCloudPoint), RLM_WriteOnly);
 	for (FLidarPointCloudPoint* P = Data, *DataEnd = P + NumPoints; P != DataEnd; ++P)
 	{
 		FMemory::Memcpy(StructuredBuffer, P, sizeof(FLidarPointCloudPoint));
 		StructuredBuffer += sizeof(FLidarPointCloudPoint);
 	}
-	RHIUnlockBuffer(Buffer);
+	RHICmdList.UnlockBuffer(Buffer);
 }
 
 //////////////////////////////////////////////////////////// Ray Tracing Geometry
@@ -154,7 +153,8 @@ void FLidarPointCloudRayTracingGeometry::Initialize(int32 NumPoints)
 	Initializer.bFastBuild = true;
 	Initializer.bAllowUpdate = true;
 
-	InitResource();
+	FRHICommandListBase& RHICmdList = FRHICommandListImmediate::Get();
+	InitResource(RHICmdList);
 	
 	FRayTracingGeometrySegment Segment;
 	Segment.VertexBuffer = nullptr;
@@ -162,7 +162,7 @@ void FLidarPointCloudRayTracingGeometry::Initialize(int32 NumPoints)
 	Segment.MaxVertices = NumVertices;
 	Initializer.Segments.Add(Segment);
 	
-	UpdateRHI();
+	UpdateRHI(RHICmdList);
 #endif
 }
 
@@ -298,7 +298,7 @@ FShaderResourceViewRHIRef FLidarPointCloudVertexFactoryBase::GetVertexBufferSRV(
 	return GDummyLidarPointCloudRenderBuffer.SRV;
 }
 
-void FLidarPointCloudVertexFactoryBase::InitRHI()
+void FLidarPointCloudVertexFactoryBase::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FLidarPointCloudVertexFactoryUniformShaderParameters UniformParameters;
 	UniformParameters.VertexFetch_Buffer = GetVertexBufferSRV();
@@ -324,16 +324,16 @@ void FLidarPointCloudVertexFactory::Initialize(FLidarPointCloudPoint* Data, int3
 	VertexBuffer.Data = Data;
 	VertexBuffer.NumPoints = NumPoints;
 
-	InitResource();
+	InitResource(FRHICommandListImmediate::Get());
 }
 
-void FLidarPointCloudVertexFactory::FPointCloudVertexBuffer::InitRHI()
+void FLidarPointCloudVertexFactory::FPointCloudVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	const uint32 BufferSize = NumPoints * 4 * sizeof(FLidarPointCloudPoint);
 	FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBuffer"));
-	VertexBufferRHI = RHICreateBuffer(BufferSize, BUF_ShaderResource | BUF_Static | BUF_VertexBuffer, sizeof(FLidarPointCloudPoint), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-	VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
-	void* Buffer = RHILockBuffer(VertexBufferRHI, 0, BufferSize, RLM_WriteOnly);
+	VertexBufferRHI = RHICmdList.CreateBuffer(BufferSize, BUF_ShaderResource | BUF_Static | BUF_VertexBuffer, sizeof(FLidarPointCloudPoint), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	VertexBufferSRV = RHICmdList.CreateShaderResourceView(VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
+	void* Buffer = RHICmdList.LockBuffer(VertexBufferRHI, 0, BufferSize, RLM_WriteOnly);
 
 	FLidarPointCloudPoint* Dest = (FLidarPointCloudPoint*)Buffer;
 	for (int32 i = 0; i < NumPoints; ++i, ++Data)
@@ -344,20 +344,20 @@ void FLidarPointCloudVertexFactory::FPointCloudVertexBuffer::InitRHI()
 		FMemory::Memcpy(Dest, Data, sizeof(FLidarPointCloudPoint)); Dest++;
 	}
 
-	RHIUnlockBuffer(VertexBufferRHI);
+	RHICmdList.UnlockBuffer(VertexBufferRHI);
 }
 
-void FLidarPointCloudVertexFactory::InitRHI()
+void FLidarPointCloudVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	VertexBuffer.InitResource();
-	
+	VertexBuffer.InitResource(RHICmdList);
+
 	FVertexDeclarationElementList Elements;
 	Elements.Add(AccessStreamComponent(FVertexStreamComponent(&VertexBuffer, 0, sizeof(FLidarPointCloudPoint), VET_Float3), 0));
 	Elements.Add(AccessStreamComponent(FVertexStreamComponent(&VertexBuffer, 12, sizeof(FLidarPointCloudPoint), VET_Color), 1));
 	Elements.Add(AccessStreamComponent(FVertexStreamComponent(&VertexBuffer, 16, sizeof(FLidarPointCloudPoint), VET_UInt), 2));
 	InitDeclaration(Elements);
 
-	FLidarPointCloudVertexFactoryBase::InitRHI();
+	FLidarPointCloudVertexFactoryBase::InitRHI(RHICmdList);
 }
 
 void FLidarPointCloudVertexFactory::ReleaseRHI()
@@ -366,18 +366,18 @@ void FLidarPointCloudVertexFactory::ReleaseRHI()
 	VertexBuffer.ReleaseResource();
 }
 
-void FLidarPointCloudSharedVertexFactory::FPointCloudVertexBuffer::InitRHI()
+void FLidarPointCloudSharedVertexFactory::FPointCloudVertexBuffer::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBuffer"));
-	VertexBufferRHI = RHICreateBuffer(sizeof(FVector), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-	void* Buffer = RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector), RLM_WriteOnly);
+	VertexBufferRHI = RHICmdList.CreateBuffer(sizeof(FVector), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	void* Buffer = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FVector), RLM_WriteOnly);
 	FMemory::Memzero(Buffer, sizeof(FVector));
-	RHIUnlockBuffer(VertexBufferRHI);
+	RHICmdList.UnlockBuffer(VertexBufferRHI);
 }
 
-void FLidarPointCloudSharedVertexFactory::InitRHI()
+void FLidarPointCloudSharedVertexFactory::InitRHI(FRHICommandListBase& RHICmdList)
 {
-	VertexBuffer.InitResource();
+	VertexBuffer.InitResource(RHICmdList);
 
 	FVertexDeclarationElementList Elements;
 	Elements.Add(AccessStreamComponent(FVertexStreamComponent(&VertexBuffer, 0, 0, VET_Float3), 0));
@@ -385,7 +385,7 @@ void FLidarPointCloudSharedVertexFactory::InitRHI()
 	Elements.Add(AccessStreamComponent(FVertexStreamComponent(&VertexBuffer, 0, 0, VET_Color), 2));
 	InitDeclaration(Elements);
 
-	FLidarPointCloudVertexFactoryBase::InitRHI();
+	FLidarPointCloudVertexFactoryBase::InitRHI(RHICmdList);
 }
 
 void FLidarPointCloudSharedVertexFactory::ReleaseRHI()

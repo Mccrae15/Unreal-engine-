@@ -28,7 +28,7 @@ namespace
 
 		virtual ~FMoviePlaybackResources() { }
 
-		virtual void InitRHI() override
+		virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 		{
 			FVertexDeclarationElementList Elements;
 			uint16 Stride = sizeof(FMediaElementVertex);
@@ -47,7 +47,7 @@ namespace
 			Vertices[3].Position.Set(1.0f, -1.0f, 1.0f, 1.0f);
 			Vertices[3].TextureCoordinate.Set(1.0f, 1.0f);
 			FRHIResourceCreateInfo CreateInfo(TEXT("FMoviePlaybackResources"), &Vertices);
-			VertexBufferRHI = RHICreateVertexBuffer(sizeof(FMediaElementVertex) * 4, BUF_Static, CreateInfo);
+			VertexBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(FMediaElementVertex) * 4, BUF_Static, CreateInfo);
 		}
 
 		virtual void ReleaseRHI() override
@@ -90,7 +90,7 @@ bool FWebMVideoDecoder::Initialize(const char* CodecName)
 	}
 	else
 	{
-		UE_LOG(LogWebMMedia, Display, TEXT("Unsupported video codec: %s"), CodecName);
+		UE_LOG(LogWebMMedia, Display, TEXT("Unsupported video codec: %hs"), CodecName);
 		return false;
 	}
 
@@ -283,7 +283,8 @@ void FWebMVideoDecoder::ConvertYUVToRGBAndSubmit(const FConvertParams& Params)
 			}
 
 			SetGraphicsPipelineState(CommandList, GraphicsPSOInit, 0);
-			PixelShader->SetParameters(CommandList, DecodedY->GetTexture2D(), DecodedU->GetTexture2D(), DecodedV->GetTexture2D(), FIntPoint(Image->d_w, Image->d_h), MediaShaders::YuvToRgbRec709Scaled, MediaShaders::YUVOffset8bits, true);
+
+			SetShaderParametersLegacyPS(CommandList, PixelShader, DecodedY->GetTexture2D(), DecodedU->GetTexture2D(), DecodedV->GetTexture2D(), FIntPoint(Image->d_w, Image->d_h), MediaShaders::YuvToRgbRec709Scaled, MediaShaders::YUVOffset8bits, true);
 
 			// draw full-size quad
 			CommandList.SetViewport(0, 0, 0.0f, Image->d_w, Image->d_h, 1.0f);

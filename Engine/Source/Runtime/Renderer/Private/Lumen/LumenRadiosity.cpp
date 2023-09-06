@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenRadiosity.cpp
-=============================================================================*/
-
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "SceneUtils.h"
@@ -128,21 +124,6 @@ static TAutoConsoleVariable<int32> CVarLumenRadiosityHardwareRayTracing(
 	ECVF_RenderThreadSafe
 );
 
-static TAutoConsoleVariable<int32> CVarLumenRadiosityHardwareRayTracingIndirect(
-	TEXT("r.LumenScene.Radiosity.HardwareRayTracing.Indirect"),
-	1,
-	TEXT("Enables indirect dispatch for hardware ray tracing for radiosity (default = 1)."),
-	ECVF_RenderThreadSafe
-);
-
-float GLumenRadiosityAvoidSelfIntersectionTraceDistance = 5.0f;
-FAutoConsoleVariableRef CVarRadiosityAvoidSelfIntersectionTraceDistance(
-	TEXT("r.LumenScene.Radiosity.HardwareRayTracing.AvoidSelfIntersectionTraceDistance"),
-	GLumenRadiosityAvoidSelfIntersectionTraceDistance,
-	TEXT("When greater than zero, a short trace skipping backfaces will be done to escape the surface, followed by the remaining trace that can hit backfaces."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
-
 int32 GLumenRadiosityTemporalAccumulation = 1;
 FAutoConsoleVariableRef CVarLumenRadiosityTemporalAccumulation(
 	TEXT("r.LumenScene.Radiosity.Temporal"),
@@ -171,14 +152,14 @@ TAutoConsoleVariable<int32> CVarLumenSceneRadiosityVisualizeProbes(
 	TEXT("r.LumenScene.Radiosity.VisualizeProbes"),
 	0,
 	TEXT("Whether to visualize radiosity probes."),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
 TAutoConsoleVariable<int32> CVarLumenSceneRadiosityVisualizeProbeRadius(
 	TEXT("r.LumenScene.Radiosity.VisualizeProbeRadius"),
 	10.0f,
 	TEXT("Radius of a visualized radiosity probe."),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
 namespace LumenRadiosity
@@ -268,8 +249,8 @@ class FBuildRadiosityTilesCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint>, CardPageIndexData)
 		SHADER_PARAMETER(uint32, NumViews)
 		SHADER_PARAMETER(uint32, MaxCardTiles)
-		SHADER_PARAMETER_ARRAY(FMatrix44f, WorldToClip, [MaxLumenViews])
-		SHADER_PARAMETER_ARRAY(FVector4f, PreViewTranslation, [MaxLumenViews])
+		SHADER_PARAMETER_ARRAY(FMatrix44f, WorldToClip, [Lumen::MaxViews])
+		SHADER_PARAMETER_ARRAY(FVector4f, PreViewTranslation, [Lumen::MaxViews])
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -367,17 +348,24 @@ class FLumenRadiosityDistanceFieldTracingCS : public FGlobalShader
 
 	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FTraceGlobalSDF : SHADER_PERMUTATION_BOOL("TRACE_GLOBAL_SDF");
-	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF>;
+	class FSimpleCoverageBasedExpand : SHADER_PERMUTATION_BOOL("GLOBALSDF_SIMPLE_COVERAGE_BASED_EXPAND");
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FTraceGlobalSDF, FSimpleCoverageBasedExpand>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
+		const FPermutationDomain PermutationVector(Parameters.PermutationId);
+
+		if (!PermutationVector.Get<FTraceGlobalSDF>() && PermutationVector.Get<FSimpleCoverageBasedExpand>())
+		{
+			return false;
+		}
+
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("ENABLE_DYNAMIC_SKY_LIGHT"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
@@ -391,10 +379,6 @@ class FLumenRadiosityHardwareRayTracing : public FLumenHardwareRayTracingShaderB
 {
 	DECLARE_LUMEN_RAYTRACING_SHADER(FLumenRadiosityHardwareRayTracing, Lumen::ERayTracingShaderDispatchSize::DispatchSize1D)
 
-	class FIndirectDispatchDim : SHADER_PERMUTATION_BOOL("DIM_INDIRECT_DISPATCH");
-	class FAvoidSelfIntersectionTrace : SHADER_PERMUTATION_BOOL("DIM_AVOID_SELF_INTERSECTION_TRACE");
-	using FPermutationDomain = TShaderPermutationDomain<FIndirectDispatchDim, FAvoidSelfIntersectionTrace>;
-
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenHardwareRayTracingShaderBase::FSharedParameters, SharedParameters)
 		RDG_BUFFER_ACCESS(HardwareRayTracingIndirectArgs, ERHIAccess::IndirectArgs | ERHIAccess::SRVCompute)
@@ -404,9 +388,7 @@ class FLumenRadiosityHardwareRayTracing : public FLumenHardwareRayTracingShaderB
 		SHADER_PARAMETER(float, MaxTraceDistance)
 		SHADER_PARAMETER(float, SurfaceBias)
 		SHADER_PARAMETER(float, HeightfieldSurfaceBias)
-		SHADER_PARAMETER(float, AvoidSelfIntersectionTraceDistance)
 		SHADER_PARAMETER(float, MaxRayIntensity)
-		SHADER_PARAMETER(int32, MaxTranslucentSkipCount)
 		SHADER_PARAMETER(uint32, MaxTraversalIterations)
 		SHADER_PARAMETER(float, MinTraceDistanceToSampleSurfaceCache)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, RWTraceRadianceAtlas)
@@ -418,6 +400,7 @@ class FLumenRadiosityHardwareRayTracing : public FLumenHardwareRayTracingShaderB
 		FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(Parameters, ShaderDispatchType, Lumen::ESurfaceCacheSampling::HighResPages, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize());
 		OutEnvironment.SetDefine(TEXT("ENABLE_DYNAMIC_SKY_LIGHT"), 1);
+		OutEnvironment.SetDefine(TEXT("AVOID_SELF_INTERSECTIONS"), 1);
 	}
 
 	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
@@ -436,18 +419,11 @@ IMPLEMENT_LUMEN_RAYGEN_AND_COMPUTE_RAYTRACING_SHADERS(FLumenRadiosityHardwareRay
 IMPLEMENT_GLOBAL_SHADER(FLumenRadiosityHardwareRayTracingRGS, "/Engine/Private/Lumen/Radiosity/LumenRadiosityHardwareRayTracing.usf", "LumenRadiosityHardwareRayTracingRGS", SF_RayGen);
 IMPLEMENT_GLOBAL_SHADER(FLumenRadiosityHardwareRayTracingCS, "/Engine/Private/Lumen/Radiosity/LumenRadiosityHardwareRayTracing.usf", "LumenRadiosityHardwareRayTracingCS", SF_Compute);
 
-bool IsHardwareRayTracingRadiosityIndirectDispatch()
-{
-	return GRHISupportsRayTracingDispatchIndirect && (CVarLumenRadiosityHardwareRayTracingIndirect.GetValueOnRenderThread() == 1);
-}
-
 void FDeferredShadingSceneRenderer::PrepareLumenHardwareRayTracingRadiosityLumenMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
 	if (Lumen::ShouldRenderRadiosityHardwareRayTracing(*View.Family))
 	{
 		FLumenRadiosityHardwareRayTracingRGS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FLumenRadiosityHardwareRayTracingRGS::FIndirectDispatchDim>(IsHardwareRayTracingRadiosityIndirectDispatch());
-		PermutationVector.Set<FLumenRadiosityHardwareRayTracingRGS::FAvoidSelfIntersectionTrace>(GLumenRadiosityAvoidSelfIntersectionTraceDistance > 0.0f);
 		TShaderRef<FLumenRadiosityHardwareRayTracingRGS> RayGenerationShader = View.ShaderMap->GetShader<FLumenRadiosityHardwareRayTracingRGS>(PermutationVector);
 		OutRayGenShaders.Add(RayGenerationShader.GetRayTracingShader());
 	}
@@ -762,24 +738,16 @@ void LumenRadiosity::AddRadiosityPass(
 		PassParameters->NumThreadsToDispatch = NumThreadsToDispatch;
 		PassParameters->SurfaceBias = FMath::Clamp(GLumenRadiosityHardwareRayTracingSurfaceSlopeBias, 0.0f, 1000.0f);
 		PassParameters->HeightfieldSurfaceBias = Lumen::GetHeightfieldReceiverBias();
-		PassParameters->AvoidSelfIntersectionTraceDistance = FMath::Clamp(GLumenRadiosityAvoidSelfIntersectionTraceDistance, 0.0f, 1000000.0f);
 		PassParameters->MaxRayIntensity = FMath::Clamp(GLumenRadiosityMaxRayIntensity, 0.0f, 1000000.0f);
 		PassParameters->MinTraceDistance = FMath::Clamp(GLumenRadiosityHardwareRayTracingSurfaceBias, 0.0f, 1000.0f);
 		PassParameters->MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
-		PassParameters->MaxTranslucentSkipCount = Lumen::GetMaxTranslucentSkipCount();
 		PassParameters->MaxTraversalIterations = LumenHardwareRayTracing::GetMaxTraversalIterations();
 		PassParameters->MinTraceDistanceToSampleSurfaceCache = LumenHardwareRayTracing::GetMinTraceDistanceToSampleSurfaceCache();
 
 		FLumenRadiosityHardwareRayTracingRGS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FLumenRadiosityHardwareRayTracingRGS::FIndirectDispatchDim>(IsHardwareRayTracingRadiosityIndirectDispatch());
-		PermutationVector.Set<FLumenRadiosityHardwareRayTracingRGS::FAvoidSelfIntersectionTrace>(GLumenRadiosityAvoidSelfIntersectionTraceDistance > 0.0f);		
 
 		const FIntPoint DispatchResolution = FIntPoint(NumThreadsToDispatch, 1);
 		FString Resolution = FString::Printf(TEXT("%ux%u"), DispatchResolution.X, DispatchResolution.Y);
-		if (IsHardwareRayTracingRadiosityIndirectDispatch())
-		{
-			Resolution = FString::Printf(TEXT("<indirect>"));
-		}
 
 		if (bInlineRayTracing)
 		{
@@ -788,7 +756,7 @@ void LumenRadiosity::AddRadiosityPass(
 			// Inline always runs as an indirect compute shader
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
-				RDG_EVENT_NAME("HardwareRayTracing (inline) <indirect> %ux%u probes at %u spacing", HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
+				RDG_EVENT_NAME("HardwareRayTracingCS <indirect> %ux%u probes at %u spacing", HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
 				ComputePassFlags,
 				ComputeShader,
 				PassParameters,
@@ -799,29 +767,16 @@ void LumenRadiosity::AddRadiosityPass(
 		else
 		{
 			TShaderRef<FLumenRadiosityHardwareRayTracingRGS> RayGenerationShader = GlobalShaderMap->GetShader<FLumenRadiosityHardwareRayTracingRGS>(PermutationVector);
-			if (IsHardwareRayTracingRadiosityIndirectDispatch())
-			{
-				AddLumenRayTraceDispatchIndirectPass(
-					GraphBuilder,
-					RDG_EVENT_NAME("HardwareRayTracing (raygen) %s %ux%u probes at %u spacing", *Resolution, HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
-					RayGenerationShader,
-					PassParameters,
-					PassParameters->HardwareRayTracingIndirectArgs,
-					(uint32)ERadiosityIndirectArgs::HardwareRayTracingThreadPerTrace + ViewIndex * (uint32)ERadiosityIndirectArgs::MAX * sizeof(FRHIDispatchIndirectParameters),
-					View,
-					bUseMinimalPayload);
-			}
-			else
-			{
-				AddLumenRayTraceDispatchPass(
-					GraphBuilder,
-					RDG_EVENT_NAME("HardwareRayTracing (raygen) %s %ux%u probes at %u spacing", *Resolution, HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
-					RayGenerationShader,
-					PassParameters,
-					DispatchResolution,
-					View,
-					bUseMinimalPayload);
-			}
+
+			AddLumenRayTraceDispatchIndirectPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("HardwareRayTracingRGS %s %ux%u probes at %u spacing", *Resolution, HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
+				RayGenerationShader,
+				PassParameters,
+				PassParameters->HardwareRayTracingIndirectArgs,
+				(uint32)ERadiosityIndirectArgs::HardwareRayTracingThreadPerTrace + ViewIndex * (uint32)ERadiosityIndirectArgs::MAX * sizeof(FRHIDispatchIndirectParameters),
+				View,
+				bUseMinimalPayload);
 		}
 #endif
 	}
@@ -849,6 +804,7 @@ void LumenRadiosity::AddRadiosityPass(
 			FLumenRadiosityDistanceFieldTracingCS::FPermutationDomain PermutationVector;
 			PermutationVector.Set<FLumenRadiosityDistanceFieldTracingCS::FThreadGroupSize32>(Lumen::UseThreadGroupSize32());
 			PermutationVector.Set<FLumenRadiosityDistanceFieldTracingCS::FTraceGlobalSDF>(Lumen::UseGlobalSDFTracing(*View.Family));
+			PermutationVector.Set<FLumenRadiosityDistanceFieldTracingCS::FSimpleCoverageBasedExpand>(Lumen::UseGlobalSDFTracing(*View.Family) && Lumen::UseGlobalSDFSimpleCoverageBasedExpand());
 			auto ComputeShader = GlobalShaderMap->GetShader<FLumenRadiosityDistanceFieldTracingCS>(PermutationVector);
 
 			FComputeShaderUtils::AddPass(
@@ -1142,7 +1098,7 @@ void FDeferredShadingSceneRenderer::RenderLumenRadiosityProbeVisualization(FRDGB
 {
 	const FViewInfo& View = Views[0];
 	const FPerViewPipelineState& ViewPipelineState = GetViewPipelineState(View);
-	const bool bAnyLumenActive = ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen || ViewPipelineState.ReflectionsMethod == EReflectionsMethod::Lumen;
+	const bool bAnyLumenActive = ViewPipelineState.DiffuseIndirectMethod == EDiffuseIndirectMethod::Lumen;
 	FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(View);
 
 	if (Views.Num() == 1

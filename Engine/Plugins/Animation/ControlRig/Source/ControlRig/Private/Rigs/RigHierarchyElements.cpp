@@ -290,16 +290,16 @@ void FRigBaseElement::NotifyMetadataTagChanged(const FName& InTag, bool bAdded)
 // FRigComputedTransform
 ////////////////////////////////////////////////////////////////////////////////
 
-void FRigComputedTransform::Save(FArchive& Ar)
+void FRigComputedTransform::Save(FArchive& Ar, bool& bDirty)
 {
 	Ar << Transform;
 	Ar << bDirty;
 }
 
-void FRigComputedTransform::Load(FArchive& Ar)
+void FRigComputedTransform::Load(FArchive& Ar, bool& bDirty)
 {
 	// load and save are identical
-	Save(Ar);
+	Save(Ar, bDirty);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -308,14 +308,14 @@ void FRigComputedTransform::Load(FArchive& Ar)
 
 void FRigLocalAndGlobalTransform::Save(FArchive& Ar)
 {
-	Local.Save(Ar);
-	Global.Save(Ar);
+	Local.Save(Ar, bDirty[ELocal]);
+	Global.Save(Ar, bDirty[EGlobal]);
 }
 
 void FRigLocalAndGlobalTransform::Load(FArchive& Ar)
 {
-	Local.Load(Ar);
-	Global.Load(Ar);
+	Local.Load(Ar, bDirty[ELocal]);
+	Global.Load(Ar, bDirty[EGlobal]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -365,31 +365,12 @@ void FRigPreferredEulerAngles::Reset()
 
 FRotator FRigPreferredEulerAngles::GetRotator(bool bInitial) const
 {
-	return FRotator::MakeFromEuler(GetAngles(bInitial, DefaultRotationOrder));
+	return FRotator::MakeFromEuler(GetAngles(bInitial, RotationOrder));
 }
 
 FRotator FRigPreferredEulerAngles::SetRotator(const FRotator& InValue, bool bInitial, bool bFixEulerFlips)
 {
-	if(RotationOrder == DefaultRotationOrder)
-	{
-		if(bFixEulerFlips)
-		{
-			const FRotator CurrentValue = GetRotator(bInitial);
-			
-			//Find Diff of the rotation from current and just add that instead of setting so we can go over/under -180
-			FRotator CurrentWinding;
-			FRotator CurrentRotRemainder;
-			CurrentValue.GetWindingAndRemainder(CurrentWinding, CurrentRotRemainder);
-
-			FRotator DeltaRot = InValue - CurrentRotRemainder;
-			DeltaRot.Normalize();
-			const FRotator FixedValue = CurrentValue + DeltaRot;
-
-			SetAngles(FixedValue.Euler(), bInitial, DefaultRotationOrder);
-			return FixedValue;
-		}
-	}
-	SetAngles(InValue.Euler(), bInitial, DefaultRotationOrder);
+	SetAngles(InValue.Euler(), bInitial, RotationOrder, bFixEulerFlips);
 	return InValue;
 }
 
@@ -402,15 +383,61 @@ FVector FRigPreferredEulerAngles::GetAngles(bool bInitial, EEulerRotationOrder I
 	return AnimationCore::ChangeEulerRotationOrder(Get(bInitial), RotationOrder, InRotationOrder);
 }
 
-void FRigPreferredEulerAngles::SetAngles(const FVector& InValue, bool bInitial, EEulerRotationOrder InRotationOrder)
+void FRigPreferredEulerAngles::SetAngles(const FVector& InValue, bool bInitial, EEulerRotationOrder InRotationOrder, bool bFixEulerFlips)
 {
 	FVector Value = InValue;
 	if(RotationOrder != InRotationOrder)
 	{
 		Value = AnimationCore::ChangeEulerRotationOrder(Value, InRotationOrder, RotationOrder);
 	}
+
+	if(bFixEulerFlips)
+	{
+		const FRotator CurrentRotator = FRotator::MakeFromEuler(GetAngles(bInitial, RotationOrder));
+		const FRotator InRotator = FRotator::MakeFromEuler(Value);
+
+		//Find Diff of the rotation from current and just add that instead of setting so we can go over/under -180
+		FRotator CurrentWinding;
+		FRotator CurrentRotRemainder;
+		CurrentRotator.GetWindingAndRemainder(CurrentWinding, CurrentRotRemainder);
+
+		FRotator DeltaRot = InRotator - CurrentRotRemainder;
+		DeltaRot.Normalize();
+		const FRotator FixedValue = CurrentRotator + DeltaRot;
+
+		Get(bInitial) = FixedValue.Euler();
+		return;
+
+	}
+	
 	Get(bInitial) = Value;
 }
+
+void FRigPreferredEulerAngles::SetRotationOrder(EEulerRotationOrder InRotationOrder)
+{
+	if(RotationOrder != InRotationOrder)
+	{
+		const EEulerRotationOrder PreviousRotationOrder = RotationOrder;
+		const FVector PreviousAnglesCurrent = GetAngles(false, RotationOrder);
+		const FVector PreviousAnglesInitial = GetAngles(true, RotationOrder);
+		RotationOrder = InRotationOrder;
+		SetAngles(PreviousAnglesCurrent, false, PreviousRotationOrder);
+		SetAngles(PreviousAnglesInitial, true, PreviousRotationOrder);
+	}
+}
+
+FRotator FRigPreferredEulerAngles::GetRotatorFromQuat(const FQuat& InQuat) const
+{
+	FVector Vector = AnimationCore::EulerFromQuat(InQuat, RotationOrder, true);
+	return FRotator::MakeFromEuler(Vector);
+}
+
+FQuat FRigPreferredEulerAngles::GetQuatFromRotator(const FRotator& InRotator) const
+{
+	FVector Vector = InRotator.Euler();
+	return AnimationCore::QuatFromEuler(Vector, RotationOrder, true);
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // FRigElementHandle
@@ -616,7 +643,7 @@ void FRigMultiParentElement::Load(FArchive& Ar, URigHierarchy* Hierarchy, ESeria
 			ensure(ParentKey.IsValid());
 
 			ParentConstraints[ParentIndex].ParentElement = Hierarchy->FindChecked<FRigTransformElement>(ParentKey);
-			ParentConstraints[ParentIndex].Cache.bDirty = true;
+			ParentConstraints[ParentIndex].bCacheIsDirty = true;
 
 			if (Ar.CustomVer(FControlRigObjectVersion::GUID) >= FControlRigObjectVersion::RigHierarchyMultiParentConstraints)
 			{
@@ -670,11 +697,38 @@ void FRigMultiParentElement::CopyPose(FRigBaseElement* InOther, bool bCurrent, b
 		FRigMultiParentElement* Source = Cast<FRigMultiParentElement>(InOther);
 		if(ensure(Source))
 		{
-			if(ensure(ParentConstraints.Num() == Source->ParentConstraints.Num()))
+			// Find the map between constraint indices
+			TMap<int32, int32> ConstraintIndexToSourceConstraintIndex;
+			for(int32 ConstraintIndex = 0; ConstraintIndex < ParentConstraints.Num(); ConstraintIndex++)
 			{
-				for(int32 ParentIndex = 0; ParentIndex < ParentConstraints.Num(); ParentIndex++)
+				const FRigElementParentConstraint& ParentConstraint = ParentConstraints[ConstraintIndex];
+				int32 SourceConstraintIndex = Source->ParentConstraints.IndexOfByPredicate([ParentConstraint](const FRigElementParentConstraint& Constraint)
 				{
-					ParentConstraints[ParentIndex].CopyPose(Source->ParentConstraints[ParentIndex], bCurrent, bInitial);
+					return Constraint.ParentElement->GetKey() == ParentConstraint.ParentElement->GetKey();
+				});
+				if (SourceConstraintIndex != INDEX_NONE)
+				{
+					ConstraintIndexToSourceConstraintIndex.Add(ConstraintIndex, SourceConstraintIndex);
+				}
+			}
+			
+			for(int32 ParentIndex = 0; ParentIndex < ParentConstraints.Num(); ParentIndex++)
+			{
+				if (int32* SourceConstraintIndex = ConstraintIndexToSourceConstraintIndex.Find(ParentIndex))
+				{
+					ParentConstraints[ParentIndex].CopyPose(Source->ParentConstraints[*SourceConstraintIndex], bCurrent, bInitial);
+				}
+				else
+				{
+					// Otherwise, reset the weights to 0
+					if (bCurrent)
+					{
+						ParentConstraints[ParentIndex].Weight = 0.f;
+					}
+					if (bInitial)
+					{
+						ParentConstraints[ParentIndex].InitialWeight = 0.f;
+					}
 				}
 			}
 		}
@@ -684,6 +738,9 @@ void FRigMultiParentElement::CopyPose(FRigBaseElement* InOther, bool bCurrent, b
 ////////////////////////////////////////////////////////////////////////////////
 // FRigBoneElement
 ////////////////////////////////////////////////////////////////////////////////
+#if !UE_DETECT_DELEGATES_RACE_CONDITIONS // race detector increases mem footprint but is compiled out from test/shipping builds
+static_assert(sizeof(FRigBoneElement) <= 736, "FRigBoneElement was optimized to fit into 736 bytes bin of MallocBinned3");
+#endif
 
 void FRigBoneElement::Save(FArchive& Ar, URigHierarchy* Hierarchy, ESerializationPhase SerializationPhase)
 {
@@ -740,7 +797,9 @@ FRigControlSettings::FRigControlSettings()
 , ControlEnum(nullptr)
 , Customization()
 , bGroupWithParentControl(false)
-, bRestrictSpaceSwitching(false)
+, bRestrictSpaceSwitching(false) 
+, PreferredRotationOrder(FRigPreferredEulerAngles::DefaultRotationOrder)
+, bUsePreferredRotationOrder(false) 
 {
 	// rely on the default provided by the shape definition
 	ShapeName = FControlRigShapeDefinition().ShapeName; 
@@ -786,6 +845,9 @@ void FRigControlSettings::Save(FArchive& Ar)
 	Ar << bGroupWithParentControl;
 	Ar << bRestrictSpaceSwitching;
 	Ar << FilteredChannels;
+	Ar << PreferredRotationOrder;
+	Ar << bUsePreferredRotationOrder;
+
 }
 
 void FRigControlSettings::Load(FArchive& Ar)
@@ -954,6 +1016,25 @@ void FRigControlSettings::Load(FArchive& Ar)
 	{
 		FilteredChannels.Reset();
 	}
+
+	if (Ar.CustomVer(FControlRigObjectVersion::GUID) >= FControlRigObjectVersion::RigHierarchyControlPreferredRotationOrder)
+	{
+		Ar << PreferredRotationOrder;
+	}
+	else
+	{
+		PreferredRotationOrder = FRigPreferredEulerAngles::DefaultRotationOrder;
+	}
+
+	if (Ar.CustomVer(FControlRigObjectVersion::GUID) >= FControlRigObjectVersion::RigHierarchyControlPreferredRotationOrderFlag)
+	{
+		Ar << bUsePreferredRotationOrder;
+	}
+	else
+	{
+		bUsePreferredRotationOrder = false;
+	}
+
 }
 
 uint32 GetTypeHash(const FRigControlSettings& Settings)
@@ -977,6 +1058,7 @@ uint32 GetTypeHash(const FRigControlSettings& Settings)
 	{
 		Hash = HashCombine(Hash, GetTypeHash(Channel));
 	}
+	Hash = HashCombine(Hash, GetTypeHash(Settings.PreferredRotationOrder));
 	return Hash;
 }
 
@@ -1058,6 +1140,15 @@ bool FRigControlSettings::operator==(const FRigControlSettings& InOther) const
 	{
 		return false;
 	}
+	if(PreferredRotationOrder != InOther.PreferredRotationOrder)
+	{
+		return false;
+	}
+	if (bUsePreferredRotationOrder != InOther.bUsePreferredRotationOrder)
+	{
+		return false;
+	}
+
 
 	const FTransform MinimumTransform = MinimumValue.GetAsTransform(ControlType, PrimaryAxis);
 	const FTransform OtherMinimumTransform = InOther.MinimumValue.GetAsTransform(ControlType, PrimaryAxis);
@@ -1167,6 +1258,7 @@ void FRigControlElement::Load(FArchive& Ar, URigHierarchy* Hierarchy, ESerializa
 		{
 			PreferredEulerAngles.Reset();
 		}
+		PreferredEulerAngles.SetRotationOrder(Settings.PreferredRotationOrder);
 	}
 }
 

@@ -11,6 +11,7 @@
 #include "GameFramework/GameNetworkManager.h"
 #include "NetworkingDistanceConstants.h"
 #include "PhysicsReplication.h"
+#include "PhysicsEngine/PhysicsSettings.h"
 #include "DrawDebugHelpers.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "Interfaces/Interface_ActorSubobject.h"
@@ -259,6 +260,18 @@ void AActor::PostNetReceiveLocationAndRotation()
 
 void AActor::PostNetReceiveVelocity(const FVector& NewVelocity)
 {
+	const FPhysicsPredictionSettings& PhysicsPredictionSettings = UPhysicsSettings::Get()->PhysicsPrediction;
+	if (PhysicsPredictionSettings.bEnablePhysicsPrediction)
+	{
+		// required to keep client deterministic with server simulation
+		if (RootComponent && RootComponent->IsRegistered() && (NewVelocity != GetVelocity()))
+		{
+			if (UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(RootComponent))
+			{
+				PrimitiveComponent->SetPhysicsLinearVelocity(NewVelocity);
+			}
+		}
+	}
 }
 
 void AActor::PostNetReceivePhysicState()
@@ -290,7 +303,7 @@ void AActor::SyncReplicatedPhysicsSimulation()
 				{
 					if (FPhysScene* PhysScene = World->GetPhysicsScene())
 					{
-						if (FPhysicsReplication* PhysicsReplication = PhysScene->GetPhysicsReplication())
+						if (IPhysicsReplication* PhysicsReplication = PhysScene->GetPhysicsReplication())
 						{
 							PhysicsReplication->RemoveReplicatedTarget(RootPrimComp);
 						}
@@ -367,9 +380,10 @@ void AActor::GatherCurrentMovement()
 			bool bFoundInCache = false;
 
 			UWorld* World = GetWorld();
+			int ServerFrame = 0; 
 			if (FPhysScene_Chaos* Scene = static_cast<FPhysScene_Chaos*>(World->GetPhysicsScene()))
 			{
-				if (FRigidBodyState* FoundState = Scene->ReplicationCache.Map.Find(FObjectKey(RootPrimComp)))
+				if (const FRigidBodyState* FoundState = Scene->GetStateFromReplicationCache(RootPrimComp, ServerFrame)) 
 				{
 					ReplicatedMovement.FillFrom(*FoundState, this, Scene->ReplicationCache.ServerFrame);
 					bFoundInCache = true;
@@ -381,7 +395,7 @@ void AActor::GatherCurrentMovement()
 				// fallback to GT data
 				FRigidBodyState RBState;
 				RootPrimComp->GetRigidBodyState(RBState);
-				ReplicatedMovement.FillFrom(RBState, this, 0);
+				ReplicatedMovement.FillFrom(RBState, this, ServerFrame);
 			}
 
 			// Don't replicate movement if we're welded to another parent actor.
@@ -497,8 +511,25 @@ bool AActor::ReplicateSubobjects(UActorChannel *Channel, FOutBunch *Bunch, FRepl
 	{
 		if (ActorComp && ActorComp->GetReplicationCondition() != COND_Never)
 		{
+#if SUBOBJECT_TRANSITION_VALIDATION
+			if (UActorChannel::CanIgnoreDeprecatedReplicateSubObjects() && !ActorComp->IsUsingRegisteredSubObjectList())
+			{
+				// Ignore components that only work with the old virtual method
+				continue;
+			}
+#endif
+
 			UActorChannel::SetCurrentSubObjectOwner(ActorComp);
 			WroteSomething |= ActorComp->ReplicateSubobjects(Channel, Bunch, RepFlags);		// Lets the component add subobjects before replicating its own properties.
+
+#if SUBOBJECT_TRANSITION_VALIDATION
+			if (UActorChannel::CanIgnoreDeprecatedReplicateSubObjects())
+			{
+				// Don't replicate the component below when testing since we know this function is not voluntarily implemented
+				continue;
+			}
+#endif
+
 			UActorChannel::SetCurrentSubObjectOwner(this);
 			WroteSomething |= Channel->ReplicateSubobject(ActorComp, *Bunch, *RepFlags);	// (this makes those subobjects 'supported', and from here on those objects may have reference replicated)		
 		}
@@ -584,7 +615,11 @@ void AActor::RemoveReplicatedComponent(UActorComponent* Component)
 
 void AActor::AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition)
 {
-	check(IsValid(SubObject));
+	if( !IsValid(SubObject) )
+	{
+		ensureMsgf(TEXT("Ignoring AddReplicatedSubObject for %s. Invalid pointer received."), *GetNameSafe(this));
+		return;
+	}
 
 	ensureMsgf(IsUsingRegisteredSubObjectList(), TEXT("%s is registering subobjects but bReplicateUsingRegisteredSubObjectList is false. Without the flag set to true the registered subobjects will not be replicated."), *GetName());
 
@@ -605,13 +640,18 @@ void AActor::AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCo
 #endif
 }
 
-void AActor::RemoveReplicatedSubObject(UObject* SubObject)
+bool AActor::RemoveReplicatedSubObjectFromList(UObject* SubObject)
 {
 	check(SubObject);
 	const bool bWasRemoved = ReplicatedSubObjects.RemoveSubObject(SubObject);
 
 	UE_CLOG(bWasRemoved, LogNetSubObject, Verbose, TEXT("%s (0x%p) removed replicated subobject %s (0x%p)"), *GetName(), this, *SubObject->GetName(), SubObject);
+	return bWasRemoved;
+}
 
+void AActor::RemoveReplicatedSubObject(UObject* SubObject)
+{
+	const bool bWasRemoved = RemoveReplicatedSubObjectFromList(SubObject);
 #if UE_WITH_IRIS
 	if (bWasRemoved)
 	{
@@ -619,7 +659,6 @@ void AActor::RemoveReplicatedSubObject(UObject* SubObject)
 	}
 #endif // UE_WITH_IRIS
 }
-
 
 void AActor::DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject)
 {
@@ -646,10 +685,67 @@ void AActor::DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject)
 
 	if (IsUsingRegisteredSubObjectList())
 	{
-		RemoveReplicatedSubObject(SubObject);
+		RemoveReplicatedSubObjectFromList(SubObject);
 	}
 }
 
+void AActor::DestroyReplicatedSubObjectOnRemotePeers(UActorComponent* OwnerComponent, UObject* SubObject)
+{
+	check(SubObject);
+
+	if (!HasAuthority())
+	{
+		// Only the authority can call this.
+		return;
+	}
+
+	UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) requested to Delete replicated subobject on clients %s (0x%p)"), *GetName(), *OwnerComponent->GetName(), OwnerComponent, *SubObject->GetName(), SubObject);
+
+	if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
+	{
+		for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+		{
+			if (Driver.NetDriver)
+			{
+				Driver.NetDriver->DeleteSubObjectOnClients(this, SubObject);
+			}
+		}
+	}
+
+	if (OwnerComponent->IsUsingRegisteredSubObjectList())
+	{
+		RemoveActorComponentReplicatedSubObjectFromList(OwnerComponent, SubObject);
+	}
+}
+
+void AActor::TearOffReplicatedSubObjectOnRemotePeers(UActorComponent* OwnerComponent, UObject* SubObject)
+{
+	check(SubObject);
+
+	if (!HasAuthority())
+	{
+		// Only the authority can call this.
+		return;
+	}
+
+	UE_LOG(LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) requested to TearOff replicated subobject on clients %s (0x%p)"), *GetName(), *OwnerComponent->GetName(), this, *SubObject->GetName(), SubObject);
+
+	if (FWorldContext* const Context = GEngine->GetWorldContextFromWorld(GetWorld()))
+	{
+		for (const FNamedNetDriver& Driver : Context->ActiveNetDrivers)
+		{
+			if (Driver.NetDriver)
+			{
+				Driver.NetDriver->TearOffSubObjectOnClients(this, SubObject);
+			}
+		}
+	}
+
+	if (OwnerComponent->IsUsingRegisteredSubObjectList())
+	{
+		RemoveActorComponentReplicatedSubObjectFromList(OwnerComponent, SubObject);
+	}
+}
 
 void AActor::TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject)
 {
@@ -676,7 +772,7 @@ void AActor::TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject)
 
 	if (IsUsingRegisteredSubObjectList())
 	{
-		RemoveReplicatedSubObject(SubObject);
+		RemoveReplicatedSubObjectFromList(SubObject);
 	}
 
 }
@@ -684,7 +780,13 @@ void AActor::TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject)
 void AActor::AddActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject, ELifetimeCondition NetCondition)
 {
 	check(IsValid(OwnerComponent));
-	check(IsValid(SubObject));
+
+	if (!IsValid(SubObject))
+	{
+		ensureMsgf(TEXT("Ignoring AddReplicatedSubObject for %s::%s. Invalid pointer received."), *GetNameSafe(this), *GetNameSafe(OwnerComponent));
+		return;
+	}
+	
 	ensureMsgf(OwnerComponent->GetIsReplicated(), TEXT("Only components with replication enabled can register subobjects. %s::%s has replication disabled."), *GetName(), *SubObject->GetName());
 	ensureMsgf(NetCondition != COND_Custom, TEXT("Custom netconditions do not work with SubObjects. %s::%s will not be replicated."), *GetName(), *SubObject->GetName());
 
@@ -722,21 +824,33 @@ void AActor::AddActorComponentReplicatedSubObject(UActorComponent* OwnerComponen
 	}
 }
 
-void AActor::RemoveActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject)
+bool AActor::RemoveActorComponentReplicatedSubObjectFromList(UActorComponent* OwnerComponent, UObject* SubObject)
 {
 	check(OwnerComponent);
 	check(SubObject);
 
 	if (FReplicatedComponentInfo* ComponentInfo = ReplicatedComponentsInfo.FindByKey(OwnerComponent))
 	{
-		bool bWasRemoved = ComponentInfo->SubObjects.RemoveSubObject(SubObject);
+		const bool bWasRemoved = ComponentInfo->SubObjects.RemoveSubObject(SubObject);
 
 		UE_CLOG(bWasRemoved, LogNetSubObject, Verbose, TEXT("%s::%s (0x%p) removed replicated subobject %s (0x%p)"), *GetName(), *OwnerComponent->GetName(), OwnerComponent, *SubObject->GetName(), SubObject);
 
-#if UE_WITH_IRIS
-		UE::Net::FReplicationSystemUtil::EndReplicationForActorComponentSubObject(OwnerComponent, SubObject);
-#endif // UE_WITH_IRIS
+		return bWasRemoved;
 	}
+
+	return false;
+}
+
+void AActor::RemoveActorComponentReplicatedSubObject(UActorComponent* OwnerComponent, UObject* SubObject)
+{
+	const bool bWasRemoved = RemoveActorComponentReplicatedSubObjectFromList(OwnerComponent, SubObject);
+	
+#if UE_WITH_IRIS
+	if (bWasRemoved)
+	{
+		UE::Net::FReplicationSystemUtil::EndReplicationForActorComponentSubObject(OwnerComponent, SubObject);
+	}
+#endif
 }
 
 bool AActor::IsReplicatedSubObjectRegistered(const UObject* SubObject) const
@@ -792,15 +906,7 @@ void AActor::GetSubobjectsWithStableNamesForNetworking(TArray<UObject*> &ObjList
 	}
 
 	// Sort the list so that we generate the same list on client/server
-	struct FCompareComponentNames
-	{
-		FORCEINLINE bool operator()( UObject& A, UObject& B ) const
-		{
-			return A.GetName() < B.GetName();
-		}
-	};
-
-	Sort( ObjList.GetData(), ObjList.Num(), FCompareComponentNames() );
+	Algo::SortBy(ObjList, &UObject::GetFName, FNameLexicalLess());
 }
 
 void AActor::OnSubobjectCreatedFromReplication(UObject *NewSubobject)
@@ -856,8 +962,6 @@ void AActor::OnRep_Owner()
 void AActor::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
 	using namespace UE::Net;
-
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
 
 	// Build descriptors and allocate PropertyReplicationFragments for this object
 	FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags);
@@ -981,3 +1085,22 @@ void AActor::UpdateReplicatePhysicsCondition()
 #endif // UE_WITH_IRIS
 }
 
+bool AActor::CanTriggerResimulation() const
+{
+	return PhysicsReplicationMode == EPhysicsReplicationMode::Resimulation;
+}
+
+void AActor::SetPhysicsReplicationMode(const EPhysicsReplicationMode ReplicationMode)
+{
+	PhysicsReplicationMode = ReplicationMode;
+}
+
+EPhysicsReplicationMode AActor::GetPhysicsReplicationMode()
+{
+	return PhysicsReplicationMode;
+}
+
+float AActor::GetResimulationThreshold() const
+{
+	return UPhysicsSettings::Get()->PhysicsPrediction.ResimulationErrorThreshold;
+}

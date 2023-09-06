@@ -14,7 +14,7 @@
 
 #define VULKAN_RHI_RAYTRACING 						(RHI_RAYTRACING)
 #define VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT			(VULKAN_RHI_RAYTRACING)
-#define VULKAN_SUPPORTS_MULTIVIEW					0
+#define VULKAN_SUPPORTS_MULTIVIEW					1	// needed for VULKAN_PCES31
 
 #if VULKAN_RHI_RAYTRACING
 #	define UE_VK_API_VERSION						VK_API_VERSION_1_2
@@ -30,13 +30,9 @@
 
 #define ENUM_VK_ENTRYPOINTS_PLATFORM_BASE(EnumMacro)
 
-#define ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(EnumMacro) \
+#define ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(EnumMacro)
 
-#define ENUM_VK_ENTRYPOINTS_OPTIONAL_PLATFORM_INSTANCE(EnumMacro) \
-    EnumMacro(PFN_vkCmdWriteBufferMarkerAMD, vkCmdWriteBufferMarkerAMD) \
-    EnumMacro(PFN_vkCmdSetCheckpointNV, vkCmdSetCheckpointNV) \
-    EnumMacro(PFN_vkGetQueueCheckpointDataNV, vkGetQueueCheckpointDataNV) \
-	EnumMacro(PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR, vkGetPhysicalDeviceFragmentShadingRatesKHR)
+#define ENUM_VK_ENTRYPOINTS_OPTIONAL_PLATFORM_INSTANCE(EnumMacro)
 
 // and now, include the GenericPlatform class
 #include "../VulkanGenericPlatform.h"

@@ -9,7 +9,6 @@ public class AnimationData : ModuleRules
         PrivateDependencyModuleNames.AddRange(
             new string[]
             {
-                "Core",
                 "CoreUObject",
                 "Engine",
                 "MovieScene",
@@ -22,7 +21,8 @@ public class AnimationData : ModuleRules
                 "AnimationDataController",
                 "AnimationCore",
                 "AnimationBlueprintLibrary",
-                "TimeManagement"
+				"AnimationEditor",
+				"TimeManagement"
             });
 
         PublicDependencyModuleNames.AddRange(

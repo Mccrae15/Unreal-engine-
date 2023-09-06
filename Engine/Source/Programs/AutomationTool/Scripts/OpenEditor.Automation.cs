@@ -8,12 +8,16 @@ using System.Text.RegularExpressions;
 using EpicGames.Core;
 using UnrealBuildBase;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
+
+using static AutomationTool.CommandUtils;
 
 namespace AutomationTool
 {
 
 	[Help("Opens the specified project.")]
 	[Help("project=<QAGame>", "Project to open. Will search current path and paths in ueprojectdirs. If omitted will open vanilla UnrealEditor")]
+	[ParamHelp("Run", "The name of the commandlet to run")]
 	public class OpenEditor : BuildCommand
 	{
 		// exposed as a property so projects can derive and set this directly
@@ -95,7 +99,7 @@ namespace AutomationTool
 	{ 
 		public static bool RunUntrackedProcess(string BinaryPath, string Args)
 		{
-			CommandUtils.LogInformation("Running {0} {1}", BinaryPath, Args);
+			Logger.LogInformation("Running {BinaryPath} {Args}", BinaryPath, Args);
 
 			var NewProcess = HostPlatform.Current.CreateProcess(BinaryPath);
 			var Result = new ProcessResult(BinaryPath, NewProcess, false, false);

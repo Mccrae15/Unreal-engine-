@@ -3,19 +3,21 @@
 
 #include "CADKernel/Core/Types.h"
 #include "CADKernel/Core/Group.h"
+#ifdef CADKERNEL_DEV
+#include "CADKernel/UI/DefineForDebug.h"
+#endif
 
 #include "Containers/List.h"
 
 
-#define DEBUG_FACTORY
-
 namespace UE::CADKernel
 {
-const int32 MaxSize = 256;
 
 template<class ElementType>
 class TFactory
 {
+	static const int32 MaxSize = 256;
+
 protected:
 	TDoubleLinkedList<TArray<ElementType>> StackOfEntitySet;
 	TArray<ElementType*> FreeEntityStack;
@@ -35,7 +37,9 @@ private:
 		{
 			FreeEntityStack.Add(&Entity);
 		}
+#ifdef DEBUG_FACTORY
 		AllocatedElementNum += MaxSize;
+#endif
 	}
 
 public:
@@ -48,18 +52,24 @@ public:
 	{
 		Entity->Clean();
 		FreeEntityStack.Add(Entity);
+#ifdef DEBUG_FACTORY
 		UsedElementNum--;
 		ensureCADKernel(UsedElementNum + FreeEntityStack.Num() == AllocatedElementNum);
+#endif
 	}
 
 	ElementType& New()
 	{
+#ifdef DEBUG_FACTORY
 		ensureCADKernel(UsedElementNum + FreeEntityStack.Num() == AllocatedElementNum);
+#endif
 		if (FreeEntityStack.IsEmpty())
 		{
 			FillFreeEntityStack();
 		}
+#ifdef DEBUG_FACTORY
 		UsedElementNum++;
+#endif
 		return *FreeEntityStack.Pop(false);
 	}
 };

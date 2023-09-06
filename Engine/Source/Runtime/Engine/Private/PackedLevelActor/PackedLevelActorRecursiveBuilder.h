@@ -7,27 +7,19 @@
 #include "PackedLevelActor/PackedLevelActorTypes.h"
 #include "PackedLevelActor/IPackedLevelActorBuilder.h"
 
-class ALevelInstance;
+class ILevelInstanceInterface;
 
 class FPackedLevelActorRecursiveBuilder : public IPackedLevelActorBuilder
 {
 public:
+	FPackedLevelActorRecursiveBuilder(FPackedLevelActorBuilder& InOwner)
+		: IPackedLevelActorBuilder(InOwner) {}
+
 	static FPackedLevelActorBuilderID BuilderID;
 
 	virtual FPackedLevelActorBuilderID GetID() const override;
 	virtual void GetPackClusters(FPackedLevelActorBuilderContext& InContext, AActor* InActor) const override;
-	virtual void PackActors(FPackedLevelActorBuilderContext& InContext, APackedLevelActor* InPackingActor, const FPackedLevelActorBuilderClusterID& InClusterID, const TArray<UActorComponent*>& InComponents) const override;
-};
-
-class FPackedLevelActorRecursiveBuilderCluster : public FPackedLevelActorBuilderCluster
-{
-public:
-	FPackedLevelActorRecursiveBuilderCluster(FPackedLevelActorBuilderID InBuilderID, ALevelInstance* InLevelInstance);
-
-	virtual bool Equals(const FPackedLevelActorBuilderCluster& InOther) const override;
-	virtual uint32 ComputeHash() const override;
-
-	ALevelInstance* LevelInstance = nullptr;
+	virtual uint32 PackActors(FPackedLevelActorBuilderContext& InContext, const FPackedLevelActorBuilderClusterID& InClusterID, const TArray<UActorComponent*>& InComponents) const override { return 0; }
 };
 
 #endif

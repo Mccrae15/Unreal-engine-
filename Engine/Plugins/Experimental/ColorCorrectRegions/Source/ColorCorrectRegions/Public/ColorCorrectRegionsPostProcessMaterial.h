@@ -14,12 +14,13 @@
 #include "RenderGraphResources.h"
 #include "RenderGraphResources.h"
 #include "RenderResource.h"
+#include "SceneManagement.h"
 #include "ShaderParameterUtils.h"
 #include "UObject/ConstructorHelpers.h"
 
 // FScreenPassTextureViewportParameters and FScreenPassTextureInput
-#include "Runtime/Renderer/Private/ScreenPass.h"
-#include "Runtime/Renderer/Private/SceneTextureParameters.h"
+#include "ScreenPass.h"
+#include "SceneTexturesConfig.h"
 
 
 
@@ -117,11 +118,18 @@ public:
 		: FColorCorrectRegionsPostProcessMaterialShader(Initializer)
 	{}
 
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(BatchedParameters, View.ViewUniformBuffer);
+	}
+
+	UE_DEPRECATED(5.3, "SetParameters with FRHIBatchedShaderParameters should be used.")
 	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
 	{
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundVertexShader(), View.ViewUniformBuffer);
+		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		SetParameters(BatchedParameters, View);
+		RHICmdList.SetBatchedShaderParameters(RHICmdList.GetBoundVertexShader(), BatchedParameters);
 	}
-	
 };
 
 class FColorCorrectGenericPS : public FColorCorrectRegionsPostProcessMaterialShader
@@ -146,16 +154,18 @@ public:
 		: FColorCorrectRegionsPostProcessMaterialShader(Initializer)
 	{}
 
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View)
+	{
+		FGlobalShader::SetParameters<FViewUniformShaderParameters>(BatchedParameters, View.ViewUniformBuffer);
+	}
+
+	UE_DEPRECATED(5.3, "SetParameters with FRHIBatchedShaderParameters should be used.")
 	void SetParameters(FRHICommandList& RHICmdList, const FSceneView& View)
 	{
-		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundPixelShader(), View.ViewUniformBuffer);
+		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		SetParameters(BatchedParameters, View);
+		RHICmdList.SetBatchedShaderParameters(RHICmdList.GetBoundPixelShader(), BatchedParameters);
 	}
-
-	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FColorCorrectRegionsPostProcessMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
 };
 
 class FColorCorrectRegionMaterialPS : public FColorCorrectGenericPS
@@ -197,11 +207,6 @@ class FColorCorrectScreenPassVS : public FGlobalShader
 public:
 	DECLARE_GLOBAL_SHADER(FColorCorrectScreenPassVS);
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters&)
-	{
-		return true;
-	}
-
 	FColorCorrectScreenPassVS() = default;
 	FColorCorrectScreenPassVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FGlobalShader(Initializer)
@@ -213,11 +218,6 @@ class FClearRectPS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FClearRectPS);
 	SHADER_USE_PARAMETER_STRUCT(FClearRectPS, FGlobalShader);
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) 
-	{
-		return true;
-	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
@@ -237,11 +237,6 @@ class FCCRStencilMergerVS : public FGlobalShader
 public:
 	DECLARE_GLOBAL_SHADER(FCCRStencilMergerVS);
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters&)
-	{
-		return true;
-	}
-
 	FCCRStencilMergerVS() = default;
 	FCCRStencilMergerVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FGlobalShader(Initializer)
@@ -256,7 +251,7 @@ class FCCRStencilMergerPS : public FGlobalShader
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return true;
+		return !IsMobilePlatform(Parameters.Platform);
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )

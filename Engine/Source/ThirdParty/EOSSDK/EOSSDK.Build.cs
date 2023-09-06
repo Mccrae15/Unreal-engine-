@@ -16,7 +16,14 @@ public class EOSSDK : ModuleRules
 	{
 		get
 		{
-			return Target.Platform.ToString();
+			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+			{
+				return "Win64";
+			}
+			else
+			{
+				return Target.Platform.ToString();
+			}
 		}
 	}
 
@@ -91,8 +98,8 @@ public class EOSSDK : ModuleRules
 				string PlatformSDKBuildDir = Path.Combine(BinDir, EOSSDKPlatformName + "-" + EOSSDKIdealPlatformSDKBuildName);
 				if(!Directory.Exists(PlatformSDKBuildDir))
 				{
-					// Fall back on any available one.
-					PlatformSDKBuildDir = Directory.GetDirectories(SDKBaseDir, EOSSDKPlatformName + "-*").First();
+					// Fall back to latest one available.
+					PlatformSDKBuildDir = Directory.GetDirectories(SDKBaseDir, EOSSDKPlatformName + "-*").Last();
 					string Fallback = PlatformSDKBuildDir.Split(EOSSDKPlatformName + "-").Last();
 					Log.TraceWarningOnce("Unable to find EOSSDK for platform SDK \"{0}\", falling back on EOSSDK for platform SDK \"{1}\".", EOSSDKIdealPlatformSDKBuildName, Fallback);
 				}

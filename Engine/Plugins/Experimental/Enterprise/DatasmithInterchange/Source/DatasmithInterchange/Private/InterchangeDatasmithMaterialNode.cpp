@@ -30,20 +30,21 @@
 #include "UObject/ObjectRedirector.h"
 #include "InterchangeMaterialInstanceNode.h"
 
-const FName UInterchangeDatasmithPbrMaterialNode::ShadingModelAttrName(TEXT("Datasmith:UEPbrMaterial:ShadingModel"));
-const FName UInterchangeDatasmithPbrMaterialNode::BlendModeAttrName(TEXT("Datasmith:UEPbrMaterial:BlendMode"));
-const FName UInterchangeDatasmithPbrMaterialNode::OpacityMaskClipValueAttrName(TEXT("Datasmith:UEPbrMaterial:OpacityMaskClipValue"));
-const FName UInterchangeDatasmithPbrMaterialNode::TranslucencyLightingModeAttrName(TEXT("Datasmith:UEPbrMaterial:TranslucencyLightingMode"));
+
+const FString UInterchangeDatasmithPbrMaterialNode::ShadingModelAttrName(TEXT("Datasmith:UEPbrMaterial:ShadingModel"));
+const FString UInterchangeDatasmithPbrMaterialNode::BlendModeAttrName(TEXT("Datasmith:UEPbrMaterial:BlendMode"));
+const FString UInterchangeDatasmithPbrMaterialNode::OpacityMaskClipValueAttrName(TEXT("Datasmith:UEPbrMaterial:OpacityMaskClipValue"));
+const FString UInterchangeDatasmithPbrMaterialNode::TranslucencyLightingModeAttrName(TEXT("Datasmith:UEPbrMaterial:TranslucencyLightingMode"));
 const FString UInterchangeDatasmithPbrMaterialNode::MaterialFunctionsDependenciesKey(TEXT("Datasmith:UEPbrMaterial:MaterialFunctionsDependencies"));
 
 namespace UE::DatasmithInterchange::MaterialUtils
 {
-	const FName MaterialFunctionPathAttrName(TEXT("Datasmith:Material:FunctionCall:MaterialFunctionPath"));
-	const FName DefaultOutputIndexAttrName(TEXT("Datasmith:MaterialExpression:DefaultOutputIndex"));
+	const FString MaterialFunctionPathAttrName(TEXT("Datasmith:Material:FunctionCall:MaterialFunctionPath"));
+	const FString DefaultOutputIndexAttrName(TEXT("Datasmith:MaterialExpression:DefaultOutputIndex"));
 
-	const FName MaterialTypeAttrName(TEXT("Datasmith:ReferenceMaterial:MaterialType"));
-	const FName MaterialQualityAttrName(TEXT("Datasmith:ReferenceMaterial:MaterialQuality"));
-	const FName MaterialParentAttrName(TEXT("Datasmith:ReferenceMaterial:MaterialParent"));
+	const FString MaterialTypeAttrName(TEXT("Datasmith:ReferenceMaterial:MaterialType"));
+	const FString MaterialQualityAttrName(TEXT("Datasmith:ReferenceMaterial:MaterialQuality"));
+	const FString MaterialParentAttrName(TEXT("Datasmith:ReferenceMaterial:MaterialParent"));
 
 	class FPbrMaterialHelper
 	{
@@ -68,7 +69,12 @@ namespace UE::DatasmithInterchange::MaterialUtils
 
 			void ConnectOuputToInput(const FString& OutputNodeUid, const FName& OutputName) const
 			{
-				UInterchangeShaderPortsAPI::ConnectOuputToInput(InputNode, InputName, OutputNodeUid, OutputName.ToString());
+				UInterchangeShaderPortsAPI::ConnectOuputToInputByName(InputNode, InputName, OutputNodeUid, OutputName.ToString());
+			}
+
+			void ConnectOuputToInput(const FString& OutputNodeUid, int32 OutputIndex) const
+			{
+				UInterchangeShaderPortsAPI::ConnectOuputToInputByIndex(InputNode, InputName, OutputNodeUid, OutputIndex);
 			}
 		};
 
@@ -233,7 +239,7 @@ namespace UE::DatasmithInterchange::MaterialUtils
 			const FString TextureUid = NodeUtils::TexturePrefix + FDatasmithUtils::SanitizeObjectName(DatasmithExpression.GetTexturePathName());
 			if (NodeContainer.GetNode(TextureUid))
 			{
-				const FName ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureSample::Inputs::Texture.ToString());
+				const FString ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureSample::Inputs::Texture.ToString());
 				ExpressionNode->AddStringAttribute(ValueKey, TextureUid);
 			}
 			else
@@ -272,17 +278,17 @@ namespace UE::DatasmithInterchange::MaterialUtils
 		ExpressionNode->SetCustomShaderType(TextureCoordinate::Name.ToString());
 
 		{
-			const FName ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureCoordinate::Inputs::Index.ToString());
+			const FString ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureCoordinate::Inputs::Index.ToString());
 			ExpressionNode->AddInt32Attribute(ValueKey, DatasmithExpression.GetCoordinateIndex());
 		}
 
 		{
-			const FName ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureCoordinate::Inputs::UTiling.ToString());
+			const FString ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureCoordinate::Inputs::UTiling.ToString());
 			ExpressionNode->AddFloatAttribute(ValueKey, DatasmithExpression.GetUTiling());
 		}
 
 		{
-			const FName ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureCoordinate::Inputs::VTiling.ToString());
+			const FString ValueKey = UInterchangeShaderPortsAPI::MakeInputValueKey(TextureCoordinate::Inputs::VTiling.ToString());
 			ExpressionNode->AddFloatAttribute(ValueKey, DatasmithExpression.GetVTiling());
 		}
 
@@ -446,7 +452,6 @@ namespace UE::DatasmithInterchange::MaterialUtils
 		FString FunctionPath = FPackageName::ExportTextPathToObjectPath(DatasmithExpression.GetFunctionPathName());
 
 		TArray<FString> InputNames;
-		UInterchangeShaderNode* ExpressionNode = nullptr;
 
 		if (FPackageName::DoesPackageExist(FunctionPath))
 		{
@@ -471,7 +476,7 @@ namespace UE::DatasmithInterchange::MaterialUtils
 			const bool bCanProceed = FunctionInputs.Num() < DatasmithExpression.GetInputCount() || FunctionOutputs.IsValidIndex(OutputIndex);
 			if (!ensure(bCanProceed))
 			{
-				// TODO: Log error
+				// TODO: Log warning invalid predefined asset reference used by function call expression
 				return;
 			}
 
@@ -480,10 +485,6 @@ namespace UE::DatasmithInterchange::MaterialUtils
 			{
 				InputNames.Add(FunctionInput.Input.InputName.ToString());
 			}
-
-			ExpressionNode = CreateExpressionNode(DatasmithExpression, ConnectionData.InputNode->GetUniqueID());
-
-			ExpressionNode->AddStringAttribute(MaterialFunctionPathAttrName, FunctionPath);
 		}
 		else
 		{
@@ -491,36 +492,45 @@ namespace UE::DatasmithInterchange::MaterialUtils
 			const UInterchangeDatasmithPbrMaterialNode* PbrMaterialNode = Cast<const UInterchangeDatasmithPbrMaterialNode>(NodeContainer.GetNode(MaterialUid));
 			if (!ensure(PbrMaterialNode))
 			{
-				// TODO: Log error
+				// TODO: Log warning invalid internal reference used by function call expression
 				return;
 			}
 
+			FunctionPath.Empty();
 			UInterchangeShaderPortsAPI::GatherInputs(PbrMaterialNode, InputNames);
 
-			UInterchangeFunctionCallShaderNode* FunctionCallExpressionNode = CreateExpressionNode<UInterchangeFunctionCallShaderNode>(DatasmithExpression, ConnectionData.InputNode->GetUniqueID());
-			FunctionCallExpressionNode->SetCustomMaterialFunction(MaterialUid);
-
 			MaterialFunctionUids.Add(MaterialUid);
-
-			ExpressionNode = FunctionCallExpressionNode;
 		}
 
-		if (!ensure(ExpressionNode))
+		if (FunctionPath.IsEmpty() && MaterialUid.IsEmpty())
+		{
+			// TODO: Log warning invalid reference used by function call expression
+			return;
+		}
+
+		UInterchangeFunctionCallShaderNode* FunctionCallExpressionNode = CreateExpressionNode<UInterchangeFunctionCallShaderNode>(DatasmithExpression, ConnectionData.InputNode->GetUniqueID());
+		if (!ensure(FunctionCallExpressionNode))
 		{
 			// TODO: Log error
 			return;
 		}
 
-		// TODO: Handle case where path is an existing asset vs a material function defined in file
-		ExpressionNode->SetCustomShaderType(TEXT("MaterialFunctionCall"));
+		if (!MaterialUid.IsEmpty())
+		{
+			FunctionCallExpressionNode->SetCustomMaterialFunction(MaterialUid);
+		}
+		else
+		{
+			FunctionCallExpressionNode->SetCustomMaterialFunction(FunctionPath);
+		}
 
-		ConnectionData.ConnectDefaultOuputToInput(ExpressionNode->GetUniqueID());
+		ConnectionData.ConnectOuputToInput(FunctionCallExpressionNode->GetUniqueID(), OutputIndex);
 
 		for (int32 InputIndex = 0; InputIndex < DatasmithExpression.GetInputCount(); ++InputIndex)
 		{
 			if (const IDatasmithExpressionInput* ExpressionInput = DatasmithExpression.GetInput(InputIndex))
 			{
-				FConnectionData InputConnectionData{ ExpressionNode, InputNames[InputIndex]};
+				FConnectionData InputConnectionData{ FunctionCallExpressionNode, InputNames[InputIndex] };
 
 				ConnectExpression(ExpressionInput->GetExpression(), InputConnectionData, ExpressionInput->GetOutputIndex());
 			}
@@ -554,27 +564,26 @@ namespace UE::DatasmithInterchange::MaterialUtils
 			}
 			else
 			{
-				// TODO: Need to find node's output list
-				ConnectionData.ConnectOuputToInput(ExpressionNode->GetUniqueID(), NAME_None);
+				ConnectionData.ConnectOuputToInput(ExpressionNode->GetUniqueID(), OutputIndex);
 			}
 		}
 
 		if (MaterialExpression->IsSubType(EDatasmithMaterialExpressionType::ConstantBool))
 		{
 			const IDatasmithMaterialExpressionBool* BoolExpression = static_cast<const IDatasmithMaterialExpressionBool*>(MaterialExpression);
-			const FName InputName(UInterchangeShaderPortsAPI::MakeInputValueKey(ConnectionData.InputName));
+			const FString InputName(UInterchangeShaderPortsAPI::MakeInputValueKey(ConnectionData.InputName));
 			ConnectionData.InputNode->AddBooleanAttribute(InputName, BoolExpression->GetBool());
 		}
 		else if (MaterialExpression->IsSubType(EDatasmithMaterialExpressionType::ConstantScalar))
 		{
 			const IDatasmithMaterialExpressionScalar* ScalarExpression = static_cast<const IDatasmithMaterialExpressionScalar*>(MaterialExpression);
-			const FName InputName(UInterchangeShaderPortsAPI::MakeInputValueKey(ConnectionData.InputName));
+			const FString InputName(UInterchangeShaderPortsAPI::MakeInputValueKey(ConnectionData.InputName));
 			ConnectionData.InputNode->AddFloatAttribute(InputName, ScalarExpression->GetScalar());
 		}
 		else if (MaterialExpression->IsSubType(EDatasmithMaterialExpressionType::ConstantColor))
 		{
 			const IDatasmithMaterialExpressionColor* ColorExpression = static_cast<const IDatasmithMaterialExpressionColor*>(MaterialExpression);
-			const FName InputName(UInterchangeShaderPortsAPI::MakeInputValueKey(ConnectionData.InputName));
+			const FString InputName(UInterchangeShaderPortsAPI::MakeInputValueKey(ConnectionData.InputName));
 			ConnectionData.InputNode->AddLinearColorAttribute(InputName, ColorExpression->GetColor());
 		}
 		else if (MaterialExpression->IsSubType(EDatasmithMaterialExpressionType::Texture))
@@ -656,23 +665,23 @@ namespace UE::DatasmithInterchange::MaterialUtils
 		}
 		else
 		{
-			ConnectOutputToInput(MaterialElement.GetBaseColor(), PBR::Parameters::BaseColor);
+			ConnectOutputToInput(MaterialElement.GetBaseColor(), PBRMR::Parameters::BaseColor);
 
-			ConnectOutputToInput(MaterialElement.GetMetallic(), PBR::Parameters::Metallic);
+			ConnectOutputToInput(MaterialElement.GetMetallic(), PBRMR::Parameters::Metallic);
 
-			ConnectOutputToInput(MaterialElement.GetSpecular(), PBR::Parameters::Specular);
+			ConnectOutputToInput(MaterialElement.GetSpecular(), PBRMR::Parameters::Specular);
 
-			ConnectOutputToInput(MaterialElement.GetRoughness(), PBR::Parameters::Roughness);
+			ConnectOutputToInput(MaterialElement.GetRoughness(), PBRMR::Parameters::Roughness);
 
-			ConnectOutputToInput(MaterialElement.GetEmissiveColor(), PBR::Parameters::EmissiveColor);
+			ConnectOutputToInput(MaterialElement.GetEmissiveColor(), PBRMR::Parameters::EmissiveColor);
 
-			ConnectOutputToInput(MaterialElement.GetAmbientOcclusion(), PBR::Parameters::Occlusion);
+			ConnectOutputToInput(MaterialElement.GetAmbientOcclusion(), PBRMR::Parameters::Occlusion);
 
-			ConnectOutputToInput(MaterialElement.GetNormal(), PBR::Parameters::Normal);
+			ConnectOutputToInput(MaterialElement.GetNormal(), PBRMR::Parameters::Normal);
 
-			ConnectOutputToInput(MaterialElement.GetOpacity(), PBR::Parameters::Opacity);
+			ConnectOutputToInput(MaterialElement.GetOpacity(), PBRMR::Parameters::Opacity);
 
-			ConnectOutputToInput(MaterialElement.GetRefraction(), PBR::Parameters::IndexOfRefraction);
+			ConnectOutputToInput(MaterialElement.GetRefraction(), PBRMR::Parameters::IndexOfRefraction);
 
 			ConnectOutputToInput(MaterialElement.GetClearCoat(), ClearCoat::Parameters::ClearCoat);
 

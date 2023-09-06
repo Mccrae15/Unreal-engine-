@@ -19,11 +19,13 @@
 #include "Iris/Serialization/NetBitStreamUtil.h"
 #include "Iris/Serialization/NetSerializer.h"
 #include "Iris/Serialization/ObjectNetSerializer.h"
+#include "Iris/ReplicationState/ReplicationStateUtil.h"
 #include "Misc/CoreMiscDefines.h"
 #include "Net/Core/Trace/NetTrace.h"
 #include "Net/Core/Trace/NetDebugName.h"
 #include "DequantizeAndApplyHelper.h"
 #include "HAL/IConsoleManager.h"
+#include "UObject/CoreNetTypes.h"
 
 namespace UE::Net::Private
 {
@@ -44,13 +46,14 @@ static FNetDebugName s_LifetimeConditionDebugNames[] =
 	{TEXT("SimulatedOnlyNoReplay"), 0},
 	{TEXT("SimulatedOrPhysicsNoReplay"), 0},
 	{TEXT("SkipReplay"), 0},
-	{TEXT("ILLEGAL"), 0},
+	{TEXT("Dynamic"), 0},
 	{TEXT("Never"), 0},
 	{TEXT("NetGroup"), 0},
 };
 static_assert(COND_Max == 17, "s_LifetimeConditionDebugNames may need updating.");
 
-static void AppendMemberChangeMasks(FNetBitStreamWriter* ChangeMaskWriter, FNetBitStreamWriter* ConditionalChangeMaskWriter, uint8* ExternalStateBuffer, const FReplicationStateDescriptor* Descriptor);
+// Append changemask bits to ChangeMaskWriter and conditionally to the ConditionalChangeMaskWriter. If the state is dirty, the function will return true.
+static bool AppendMemberChangeMasks(FNetBitStreamWriter* ChangeMaskWriter, FNetBitStreamWriter* ConditionalChangeMaskWriter, uint8* ExternalStateBuffer, const FReplicationStateDescriptor* Descriptor);
 static void ResetMemberChangeMasks(uint8* ExternalStateBuffer, const FReplicationStateDescriptor* Descriptor);
 
 }
@@ -63,6 +66,13 @@ static FAutoConsoleVariableRef CVarbDeltaCompressInitialState(
 	TEXT("net.Iris.DeltaCompressInitialState"),
 	bDeltaCompressInitialState,
 	TEXT("if true we compare with default state when serializing inital state."
+	));
+
+static bool bOnlyQuantizeDirtyMembers = true;
+static FAutoConsoleVariableRef CVarbOnlyQuantizeDirtyMembers(
+	TEXT("net.Iris.OnlyQuantizeDirtyMembers"),
+	bOnlyQuantizeDirtyMembers,
+	TEXT("if true we only quantize members marked as dirty unless this is a new object."
 	));
 
 void FReplicationStateOperations::Quantize(FNetSerializationContext& Context, uint8* RESTRICT DstInternalBuffer, const uint8* RESTRICT SrcExternalBuffer, const FReplicationStateDescriptor* Descriptor)
@@ -85,6 +95,41 @@ void FReplicationStateOperations::Quantize(FNetSerializationContext& Context, ui
 		Args.Target = reinterpret_cast<NetSerializerValuePointer>(DstInternalBuffer + MemberDescriptor.InternalMemberOffset);
 
 		MemberSerializerDescriptor.Serializer->Quantize(Context, Args);
+	}
+}
+
+void FReplicationStateOperations::QuantizeWithMask(FNetSerializationContext& Context, const FNetBitArrayView& ChangeMask, const uint32 ChangeMaskOffset, uint8* RESTRICT DstInternalBuffer, const uint8* RESTRICT SrcExternalBuffer, const FReplicationStateDescriptor* Descriptor)
+{
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+	check(!Descriptor->IsInitState());
+#endif
+
+	check(IsAligned(DstInternalBuffer, Descriptor->InternalAlignment) && IsAligned(SrcExternalBuffer, Descriptor->ExternalAlignment));
+
+	const FReplicationStateMemberDescriptor* MemberDescriptors = Descriptor->MemberDescriptors;
+	const FReplicationStateMemberSerializerDescriptor* MemberSerializerDescriptors = Descriptor->MemberSerializerDescriptors;
+	const uint32 MemberCount = Descriptor->MemberCount;
+
+	for (uint32 MemberIt = 0; MemberIt < MemberCount; ++MemberIt)
+	{
+		const FReplicationStateMemberDescriptor& MemberDescriptor = MemberDescriptors[MemberIt];
+		const FReplicationStateMemberSerializerDescriptor& MemberSerializerDescriptor = MemberSerializerDescriptors[MemberIt];
+		const FReplicationStateMemberChangeMaskDescriptor& MemberChangeMaskDescriptor = Descriptor->MemberChangeMaskDescriptors[MemberIt];
+		const uint32 MemberChangeMaskOffset = ChangeMaskOffset + MemberChangeMaskDescriptor.BitOffset;
+
+		if (ChangeMask.IsAnyBitSet(MemberChangeMaskOffset, MemberChangeMaskDescriptor.BitCount))
+		{
+			FNetQuantizeArgs Args;
+			Args.Version = 0;
+			Args.NetSerializerConfig = MemberSerializerDescriptor.SerializerConfig;
+			Args.Source = reinterpret_cast<NetSerializerValuePointer>(SrcExternalBuffer + MemberDescriptor.ExternalMemberOffset);
+			Args.Target = reinterpret_cast<NetSerializerValuePointer>(DstInternalBuffer + MemberDescriptor.InternalMemberOffset);
+
+			Args.ChangeMaskInfo.BitCount = MemberChangeMaskDescriptor.BitCount;
+			Args.ChangeMaskInfo.BitOffset = MemberChangeMaskOffset;
+
+			MemberSerializerDescriptor.Serializer->Quantize(Context, Args);
+		}
 	}
 }
 
@@ -299,7 +344,7 @@ void FReplicationStateOperations::SerializeWithMask(FNetSerializationContext& Co
 		const FReplicationStateMemberChangeMaskDescriptor& MemberChangeMaskDescriptor = Descriptor->MemberChangeMaskDescriptors[MemberIt];
 		const uint32 MemberChangeMaskOffset = ChangeMaskOffset + MemberChangeMaskDescriptor.BitOffset;
 
-		if (ChangeMask.GetBit(MemberChangeMaskOffset))
+		if (ChangeMask.IsAnyBitSet(MemberChangeMaskOffset, MemberChangeMaskDescriptor.BitCount))
 		{
 #if UE_NET_TRACE_ENABLED
 			const int8 Condition = (MemberLifetimeConditionDescriptors != nullptr) ? MemberLifetimeConditionDescriptors[MemberIt].Condition : int8(ELifetimeCondition::COND_None);
@@ -344,7 +389,7 @@ void FReplicationStateOperations::DeserializeWithMask(FNetSerializationContext& 
 		const FReplicationStateMemberChangeMaskDescriptor& MemberChangeMaskDescriptor = Descriptor->MemberChangeMaskDescriptors[MemberIt];
 		const uint32 MemberChangeMaskOffset = ChangeMaskOffset + MemberChangeMaskDescriptor.BitOffset;
 
-		if (ChangeMask.GetBit(MemberChangeMaskOffset))
+		if (ChangeMask.IsAnyBitSet(MemberChangeMaskOffset, MemberChangeMaskDescriptor.BitCount))
 		{
 #if UE_NET_TRACE_ENABLED
 			const int8 Condition = (MemberLifetimeConditionDescriptors != nullptr) ? MemberLifetimeConditionDescriptors[MemberIt].Condition : int8(ELifetimeCondition::COND_None);
@@ -390,7 +435,7 @@ void FReplicationStateOperations::SerializeDeltaWithMask(FNetSerializationContex
 		const FReplicationStateMemberChangeMaskDescriptor& MemberChangeMaskDescriptor = Descriptor->MemberChangeMaskDescriptors[MemberIt];
 		const uint32 MemberChangeMaskOffset = ChangeMaskOffset + MemberChangeMaskDescriptor.BitOffset;
 
-		if (ChangeMask.GetBit(MemberChangeMaskOffset))
+		if (ChangeMask.IsAnyBitSet(MemberChangeMaskOffset, MemberChangeMaskDescriptor.BitCount))
 		{
 #if UE_NET_TRACE_ENABLED
 			const int8 Condition = (MemberLifetimeConditionDescriptors != nullptr) ? MemberLifetimeConditionDescriptors[MemberIt].Condition : int8(ELifetimeCondition::COND_None);
@@ -436,7 +481,7 @@ void FReplicationStateOperations::DeserializeDeltaWithMask(FNetSerializationCont
 		const FReplicationStateMemberChangeMaskDescriptor& MemberChangeMaskDescriptor = Descriptor->MemberChangeMaskDescriptors[MemberIt];
 		const uint32 MemberChangeMaskOffset = ChangeMaskOffset + MemberChangeMaskDescriptor.BitOffset;
 
-		if (ChangeMask.GetBit(MemberChangeMaskOffset))
+		if (ChangeMask.IsAnyBitSet(MemberChangeMaskOffset, MemberChangeMaskDescriptor.BitCount))
 		{
 #if UE_NET_TRACE_ENABLED
 			const int8 Condition = (MemberLifetimeConditionDescriptors != nullptr) ? MemberLifetimeConditionDescriptors[MemberIt].Condition : int8(ELifetimeCondition::COND_None);
@@ -474,7 +519,7 @@ bool FReplicationInstanceOperations::PollAndRefreshCachedPropertyData(const FRep
 	{
 		const EReplicationFragmentTraits MaskedFragmentTraits = Fragments[StateIt]->GetTraits() & (EReplicationFragmentTraits::NeedsPoll | ExcludeTraits);
 		if (MaskedFragmentTraits == EReplicationFragmentTraits::NeedsPoll)
-		{			
+		{
 			bIsStateDirty |= Fragments[StateIt]->PollReplicatedState(PollOptions);
 		}
 	}
@@ -508,6 +553,8 @@ bool FReplicationInstanceOperations::PollAndRefreshCachedObjectReferences(const 
 
 void FReplicationInstanceOperations::CopyAndQuantize(FNetSerializationContext& Context, uint8* DstObjectStateBuffer, FNetBitStreamWriter* OutChangeMaskWriter, const FReplicationInstanceProtocol* InstanceProtocol, const FReplicationProtocol* Protocol)
 {
+	IRIS_PROFILER_SCOPE_VERBOSE(CopyAndQuantize);
+
 	check(InstanceProtocol && InstanceProtocol->FragmentCount == Protocol->ReplicationStateCount);
 
 	FReplicationInstanceProtocol::FFragmentData* FragmentData = InstanceProtocol->FragmentData;
@@ -533,6 +580,56 @@ void FReplicationInstanceOperations::CopyAndQuantize(FNetSerializationContext& C
 
 		// Append changemask data to bitstreams
 		Private::AppendMemberChangeMasks(OutChangeMaskWriter, OutConditionalChangeMaskWriter, FragmentData[StateIt].ExternalSrcBuffer, CurrentDescriptor);
+		
+		CurrentInternalStateBuffer += CurrentDescriptor->InternalSize;
+	}
+
+	OutChangeMaskWriter->CommitWrites();
+	if (OutConditionalChangeMaskWriter != nullptr)
+	{
+		OutConditionalChangeMaskWriter->CommitWrites();
+	}
+}
+
+void FReplicationInstanceOperations::CopyAndQuantizeIfDirty(FNetSerializationContext& Context, uint8* DstObjectStateBuffer, FNetBitStreamWriter* OutChangeMaskWriter, const FReplicationInstanceProtocol* InstanceProtocol, const FReplicationProtocol* Protocol)
+{
+	IRIS_PROFILER_SCOPE_VERBOSE(CopyAndQuantizeIfDirty);
+
+	check(InstanceProtocol && InstanceProtocol->FragmentCount == Protocol->ReplicationStateCount);
+
+	FReplicationInstanceProtocol::FFragmentData* FragmentData = InstanceProtocol->FragmentData;
+	const FReplicationStateDescriptor** ReplicationStateDescriptors = Protocol->ReplicationStateDescriptors;
+
+	// Set up conditional change mask writer.
+	FNetBitStreamWriter ConditionalChangeMaskWriter;
+	FNetBitStreamWriter* OutConditionalChangeMaskWriter = nullptr;
+	if (EnumHasAnyFlags(Protocol->ProtocolTraits, EReplicationProtocolTraits::HasConditionalChangeMask))
+	{
+		ConditionalChangeMaskWriter.InitBytes(DstObjectStateBuffer + Protocol->GetConditionalChangeMaskOffset(), FNetBitArrayView::CalculateRequiredWordCount(Protocol->ChangeMaskBitCount)*sizeof(FNetBitArrayView::StorageWordType));
+		OutConditionalChangeMaskWriter = &ConditionalChangeMaskWriter;
+	}
+
+	uint8* CurrentInternalStateBuffer = DstObjectStateBuffer;	
+	for (uint32 StateIt = 0; StateIt < Protocol->ReplicationStateCount; ++StateIt)
+	{
+		const FReplicationStateDescriptor* CurrentDescriptor = ReplicationStateDescriptors[StateIt];
+
+		CurrentInternalStateBuffer = Align(CurrentInternalStateBuffer, CurrentDescriptor->InternalAlignment);
+
+		// Append changemask data to bitstreams and quantize state if mask is dirty
+		if (Private::AppendMemberChangeMasks(OutChangeMaskWriter, OutConditionalChangeMaskWriter, FragmentData[StateIt].ExternalSrcBuffer, CurrentDescriptor))
+		{
+			IRIS_PROFILER_PROTOCOL_NAME(CurrentDescriptor->DebugName->Name);
+
+			if (CurrentDescriptor->IsInitState() || !bOnlyQuantizeDirtyMembers)
+			{
+				FReplicationStateOperations::Quantize(Context, CurrentInternalStateBuffer, FragmentData[StateIt].ExternalSrcBuffer, CurrentDescriptor);
+			}
+			else
+			{
+				FReplicationStateOperations::QuantizeWithMask(Context, UE::Net::Private::GetMemberChangeMask(FragmentData[StateIt].ExternalSrcBuffer, CurrentDescriptor), 0, CurrentInternalStateBuffer, FragmentData[StateIt].ExternalSrcBuffer, CurrentDescriptor);
+			}
+		}
 		
 		CurrentInternalStateBuffer += CurrentDescriptor->InternalSize;
 	}
@@ -1114,7 +1211,7 @@ bool FReplicationProtocolOperations::IsEqualQuantizedState(FNetSerializationCont
 namespace UE::Net::Private
 {
 
-static void AppendMemberChangeMasks(FNetBitStreamWriter* ChangeMaskWriter, FNetBitStreamWriter* ConditionalChangeMaskWriter, uint8* StateBuffer, const FReplicationStateDescriptor* Descriptor)
+static bool AppendMemberChangeMasks(FNetBitStreamWriter* ChangeMaskWriter, FNetBitStreamWriter* ConditionalChangeMaskWriter, uint8* StateBuffer, const FReplicationStateDescriptor* Descriptor)
 {
 	FNetBitArrayView::StorageWordType* ChangeMaskStorage = reinterpret_cast<FNetBitArrayView::StorageWordType*>(StateBuffer + Descriptor->GetChangeMaskOffset());
 	const uint32 BitCount = Descriptor->ChangeMaskBitCount;
@@ -1153,6 +1250,9 @@ static void AppendMemberChangeMasks(FNetBitStreamWriter* ChangeMaskWriter, FNetB
 			ConditionalChangeMaskWriter->Seek(ConditionalChangeMaskWriter->GetPosBits() + BitCount);
 		}
 	}
+
+	FReplicationStateHeader& ReplicationStateHeader = Private::GetReplicationStateHeader(StateBuffer, Descriptor);
+	return FReplicationStateHeaderAccessor::GetIsStateDirty(ReplicationStateHeader);
 }
 
 static void ResetMemberChangeMasks(uint8* ExternalStateBuffer, const FReplicationStateDescriptor* Descriptor)

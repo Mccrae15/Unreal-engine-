@@ -5,6 +5,7 @@
 #include "PCGData.h"
 #include "PCGPoint.h" // IWYU pragma: keep
 #include "Elements/PCGProjectionParams.h"
+#include "Metadata/PCGAttributePropertySelector.h"
 #include "Metadata/PCGMetadata.h"
 
 #include "PCGSpatialData.generated.h"
@@ -40,6 +41,10 @@ public:
 
 	// ~Begin UPCGData interface
 	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Spatial; }
+
+	virtual bool HasCachedLastSelector() const override;
+	virtual FPCGAttributePropertyInputSelector GetCachedLastSelector() const override;
+	virtual void SetLastSelector(const FPCGAttributePropertySelector& InSelector) override;
 	// ~End UPCGData interface
 
 	/** Virtual call to allocate a new spacial data object, duplicate this spatial data into
@@ -84,9 +89,6 @@ public:
 
 	virtual const UPCGPointData* ToPointData(FPCGContext* Context, const FBox& InBounds = FBox(EForceInit::ForceInit)) const PURE_VIRTUAL(UPCGSpatialData::ToPointData, return nullptr;);
 
-	/** Transform a world-space position to a world-space position in relation to the current data. (ex: projection on surface) */
-	FVector TransformPosition(const FVector& InPosition) const;
-
 	/** Sample rotation, scale and other attributes from this data at the query position. Returns true if Transform location and Bounds overlaps this data. */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const PURE_VIRTUAL(UPCGSpatialData::SamplePoint, return false;);
@@ -129,12 +131,10 @@ public:
 	/** True if this operation does not have an inverse and cannot be queried analytically/implicitly, and therefore must be collapsed to an explicit point representation. */
 	virtual bool RequiresCollapseToSample() const { return false; }
 
-	/** A call that is made recursively up through the graph to find the best candidate shape for point generation. If InDimension is -1, finds lowest dimensional shape. */
-	virtual const UPCGSpatialData* FindShapeFromNetwork(const int InDimension) const { return (InDimension == -1 || GetDimension() == InDimension) ? this : nullptr; }
-
 	/** Find the first concrete (non-composite) shape in the network. Depth first search. */
 	virtual const UPCGSpatialData* FindFirstConcreteShapeFromNetwork() const { return !!(GetDataType() & EPCGDataType::Concrete) ? this : nullptr; }
 
+	/** Recipient of any artifacts generated using this data. */
 	UPROPERTY(Transient, BlueprintReadWrite, EditAnywhere, Category = Data)
 	TWeakObjectPtr<AActor> TargetActor = nullptr;
 
@@ -149,6 +149,14 @@ public:
 
 protected:
 	virtual UPCGSpatialData* CopyInternal() const PURE_VIRTUAL(UPCGSpatialData::CopyInternal, return nullptr;);
+
+private:
+	/** Cache to keep track of the latest attribute manipulated on this data. */
+	UPROPERTY()
+	bool bHasCachedLastSelector = false;
+
+	UPROPERTY()
+	FPCGAttributePropertyInputSelector CachedLastSelector;
 };
 
 UCLASS(Abstract, ClassGroup = (Procedural))

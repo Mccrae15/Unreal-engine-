@@ -2,24 +2,31 @@
 
 #include "ModelViewViewModelEditorModule.h"
 
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "BlueprintModes/WidgetBlueprintApplicationMode.h"
 #include "BlueprintModes/WidgetBlueprintApplicationModes.h"
+#include "Customizations/MVVMBlueprintViewModelContextCustomization.h"
 #include "Customizations/MVVMPropertyBindingExtension.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/LayoutExtender.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "MessageLogModule.h"
 #include "MVVMBlueprintView.h"
+#include "MVVMDeveloperProjectSettings.h"
 #include "MVVMEditorCommands.h"
 #include "MVVMEditorSubsystem.h"
 #include "MVVMWidgetBlueprintExtension_View.h"
+#include "PropertyEditorModule.h"
 #include "Styling/MVVMEditorStyle.h"
 #include "Tabs/MVVMBindingSummoner.h"
+#include "Tabs/MVVMPreviewSourceSummoner.h"
 #include "Tabs/MVVMViewModelSummoner.h"
+#include "ToolMenus.h"
 #include "UMGEditorModule.h"
-#include "ViewModel/AssetTypeActions_ViewModelBlueprint.h"
 #include "WidgetBlueprintEditor.h"
 #include "WidgetDrawerConfig.h"
+#include "Widgets/SMVVMViewBindingPanel.h"
+#include "Widgets/SMVVMViewModelPanel.h"
 
 #define LOCTEXT_NAMESPACE "ModelViewViewModelModule"
 
@@ -33,18 +40,13 @@ void FModelViewViewModelEditorModule::StartupModule()
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 	UMGEditorModule.OnRegisterTabsForEditor().AddRaw(this, &FModelViewViewModelEditorModule::HandleRegisterBlueprintEditorTab);
 
-	// Register asset types
-	{
-#if UE_MVVM_WITH_VIEWMODEL_EDITOR
-		// Only remove what is related to the viewmodel editor, not the UMG extention for view.
-		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-		ViewModelBlueprintActions = MakeShared<UE::MVVM::FAssetTypeActions_ViewModelBlueprint>();
-		AssetTools.RegisterAssetTypeActions(ViewModelBlueprintActions.ToSharedRef());
-#endif
-	}
-
-	PropertyBindingExtension = MakeShared<FMVVMPropertyBindingExtension>();
+	PropertyBindingExtension = MakeShared<UE::MVVM::FMVVMPropertyBindingExtension>();
 	UMGEditorModule.GetPropertyBindingExtensibilityManager()->AddExtension(PropertyBindingExtension.ToSharedRef());
+
+	UMGEditorModule.RegisterInstancedCustomPropertyTypeLayout(
+		FMVVMBlueprintViewModelContext::StaticStruct()->GetStructPathName()
+		, IUMGEditorModule::FOnGetInstancePropertyTypeCustomizationInstance::CreateStatic(UE::MVVM::FBlueprintViewModelContextDetailCustomization::MakeInstance)
+		);
 
 	FBlueprintEditorUtils::OnRenameVariableReferencesEvent.AddRaw(this, &FModelViewViewModelEditorModule::HandleRenameVariableReferences);
 
@@ -58,12 +60,18 @@ void FModelViewViewModelEditorModule::StartupModule()
 	}
 
 	FMVVMEditorCommands::Register();
-	FWidgetBlueprintDelegates::GetAssetTags.AddRaw(this, &FModelViewViewModelEditorModule::HandleAssetTags);
+	FWidgetBlueprintDelegates::GetAssetTags.AddRaw(this, &FModelViewViewModelEditorModule::HandleWidgetBlueprintAssetTags);
+	FWidgetBlueprintGeneratedClassDelegates::GetAssetTags.AddRaw(this, &FModelViewViewModelEditorModule::HandleClassBlueprintAssetTags);
+
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FModelViewViewModelEditorModule::HandleRegisterMenus));
 }
 
 
 void FModelViewViewModelEditorModule::ShutdownModule()
 {
+	UnregisterMenus();
+
+	FWidgetBlueprintGeneratedClassDelegates::GetAssetTags.RemoveAll(this);
 	FWidgetBlueprintDelegates::GetAssetTags.RemoveAll(this);
 	if (FMessageLogModule* MessageLogModule = FModuleManager::GetModulePtr<FMessageLogModule>("MessageLog"))
 	{
@@ -76,19 +84,12 @@ void FModelViewViewModelEditorModule::ShutdownModule()
 	{
 		UMGEditorModule->OnRegisterTabsForEditor().RemoveAll(this);
 		UMGEditorModule->GetPropertyBindingExtensibilityManager()->RemoveExtension(PropertyBindingExtension.ToSharedRef());
-	}
-	PropertyBindingExtension.Reset();
-
-#if UE_MVVM_WITH_VIEWMODEL_EDITOR
-	// Unregister all the asset types that we registered
-	if (FAssetToolsModule* AssetTools = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools"))
-	{
-		if (ViewModelBlueprintActions)
+		if (UObjectInitialized())
 		{
-			AssetTools->Get().UnregisterAssetTypeActions(ViewModelBlueprintActions.ToSharedRef());
+			UMGEditorModule->UnregisterInstancedCustomPropertyTypeLayout(FMVVMBlueprintViewModelContext::StaticStruct()->GetStructPathName());
 		}
 	}
-#endif
+	PropertyBindingExtension.Reset();
 
 	FMVVMEditorStyle::DestroyInstance();
 
@@ -111,6 +112,18 @@ void FModelViewViewModelEditorModule::HandleRegisterBlueprintEditorTab(const FWi
 			ApplicationMode.OnPostActivateMode.AddRaw(this, &FModelViewViewModelEditorModule::HandleActivateMode);
 			ApplicationMode.OnPreDeactivateMode.AddRaw(this, &FModelViewViewModelEditorModule::HandleDeactiveMode);
 		}
+
+		if (TSharedPtr<FWidgetBlueprintEditor> BP = ApplicationMode.GetBlueprintEditor())
+		{
+			if (UMVVMWidgetBlueprintExtension_View* ExtensionView = UMVVMWidgetBlueprintExtension_View::GetExtension<UMVVMWidgetBlueprintExtension_View>(BP->GetWidgetBlueprintObj()))
+			{
+				ExtensionView->SetFilterSettings(GetDefault<UMVVMDeveloperProjectSettings>()->FilterSettings);
+			}
+		}
+	}
+	else if (ApplicationMode.GetModeName() == FWidgetBlueprintApplicationModes::PreviewMode)
+	{
+		TabFactories.RegisterFactory(MakeShared<UE::MVVM::FPreviewSourceSummoner>(ApplicationMode.GetBlueprintEditor()));
 	}
 }
 
@@ -194,7 +207,7 @@ void FModelViewViewModelEditorModule::HandleActivateMode(FWidgetBlueprintApplica
 	}
 }
 
-void FModelViewViewModelEditorModule::HandleAssetTags(const UWidgetBlueprint* WidgetBlueprint, TArray<UObject::FAssetRegistryTag>& OutTags)
+void FModelViewViewModelEditorModule::HandleWidgetBlueprintAssetTags(const UWidgetBlueprint* WidgetBlueprint, TArray<UObject::FAssetRegistryTag>& OutTags)
 {
 	if (WidgetBlueprint && GEditor)
 	{
@@ -206,6 +219,34 @@ void FModelViewViewModelEditorModule::HandleAssetTags(const UWidgetBlueprint* Wi
 			}
 		}
 	}
+}
+
+void FModelViewViewModelEditorModule::HandleClassBlueprintAssetTags(const UWidgetBlueprintGeneratedClass* GeneratedClass, TArray<UObject::FAssetRegistryTag>& OutTags)
+{
+	if (GeneratedClass && GEditor && GeneratedClass->ClassGeneratedBy)
+	{
+		if (UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(GeneratedClass->ClassGeneratedBy))
+		{
+			HandleWidgetBlueprintAssetTags(WidgetBlueprint, OutTags);
+		}
+	}
+}
+
+
+void FModelViewViewModelEditorModule::HandleRegisterMenus()
+{
+	// Allow cleanup when module unloads
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	UE::MVVM::SMVVMViewModelPanel::RegisterMenu();
+	UE::MVVM::SBindingsPanel::RegisterSettingsMenu();
+}
+
+
+void FModelViewViewModelEditorModule::UnregisterMenus()
+{
+	UToolMenus::UnRegisterStartupCallback(this);
+	UToolMenus::UnregisterOwner(this);
 }
 
 IMPLEMENT_MODULE(FModelViewViewModelEditorModule, ModelViewViewModelEditor);

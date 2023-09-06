@@ -21,6 +21,7 @@
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "ImageCoreUtils.h"
+#include "Math/GuardedInt.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(VolumeTexture)
 
@@ -42,13 +43,8 @@ const int32 MAX_VOLUME_TEXTURE_DEPTH = 512;
 // Returns 0 if the product of A and B would overflow
 static int32 CheckedNonNegativeProduct(int32 A, int32 B)
 {
-	int64 Product = (int64)A * (int64)B;
-	// Either factor negative or product too large to fit in int32?
-	if (A < 0 || B < 0 || Product > 0x7fffffff)
-	{
-		return 0;
-	}
-	return Product;
+	FGuardedInt32 Product = FGuardedInt32(A) * FGuardedInt32(B);
+	return Product.Get(0);
 }
 
 //*****************************************************************************
@@ -78,11 +74,8 @@ UVolumeTexture* UVolumeTexture::CreateTransient(int32 InSizeX, int32 InSizeY, in
 		int32 NumBlocksX = InSizeX / GPixelFormats[InFormat].BlockSizeX;
 		int32 NumBlocksY = InSizeY / GPixelFormats[InFormat].BlockSizeY;
 		int32 NumBlocksZ = InSizeZ / GPixelFormats[InFormat].BlockSizeZ;
-		FTexture2DMipMap* Mip = new FTexture2DMipMap();
+		FTexture2DMipMap* Mip = new FTexture2DMipMap(InSizeX, InSizeY, InSizeZ);
 		NewTexture->GetPlatformData()->Mips.Add(Mip);
-		Mip->SizeX = InSizeX;
-		Mip->SizeY = InSizeY;
-		Mip->SizeZ = InSizeZ;
 		Mip->BulkData.Lock(LOCK_READ_WRITE);
 		Mip->BulkData.Realloc((int64)GPixelFormats[InFormat].BlockBytes * NumBlocksX * NumBlocksY * NumBlocksZ);
 		Mip->BulkData.Unlock();
@@ -166,7 +159,7 @@ bool UVolumeTexture::UpdateSourceFromSourceTexture()
 
 	Modify(true);
 
-	if (Source2DTexture && Source2DTileSizeX > 0 && Source2DTileSizeY > 0)
+	if (Source2DTexture && Source2DTileSizeX > 0 && Source2DTileSizeY > 0 && Source2DTexture->Source.IsValid())
 	{
 		FTextureSource& InitialSource = Source2DTexture->Source;
 		const int32 Num2DTileX = InitialSource.GetSizeX() / Source2DTileSizeX;
@@ -254,7 +247,7 @@ ENGINE_API bool UVolumeTexture::UpdateSourceFromFunction(TFunction<void(int32, i
 	Modify(true);
 
 	Source2DTexture = nullptr;
-	const int32 FormatDataSize = ERawImageFormat::GetBytesPerPixel(FImageCoreUtils::ConvertToRawImageFormat(Format));
+	const int64 FormatDataSize = ERawImageFormat::GetBytesPerPixel(FImageCoreUtils::ConvertToRawImageFormat(Format));
 
 	// Allocate temp buffer used to fill texture
 	uint8* const NewData = (uint8*)FMemory::Malloc(SizeX * SizeY * SizeZ * FormatDataSize);
@@ -565,7 +558,7 @@ void UVolumeTexture::SetDefaultSource2DTileSize()
 	Source2DTileSizeX = 0;
 	Source2DTileSizeY = 0;
 
-	if (Source2DTexture)
+	if (Source2DTexture && Source2DTexture->Source.IsValid())
 	{
 		const int32 SourceSizeX = Source2DTexture->Source.GetSizeX();
 		const int32 SourceSizeY = Source2DTexture->Source.GetSizeY();

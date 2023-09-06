@@ -114,26 +114,6 @@ constexpr int32 GetNum(std::initializer_list<T> List)
 }
 
 /**
- * Returns a non-const pointer type as const.
- */
-template <typename T>
-UE_DEPRECATED(4.26, "Call with a reference instead of a pointer.")
-constexpr FORCEINLINE const T* AsConst(T* const& Ptr)
-{
-	return Ptr;
-}
-
-/**
- * Returns a non-const pointer type as const.
- */
-template <typename T>
-UE_DEPRECATED(4.26, "Call with a reference instead of a pointer.")
-constexpr FORCEINLINE const T* AsConst(T* const&& Ptr)
-{
-	return Ptr;
-}
-
-/**
  * Returns a non-const reference type as const.
  */
 template <typename T>
@@ -229,6 +209,26 @@ OutType FloatCastChecked(InType In, InType Precision)
 	#define VTABLE_OFFSET( Class, MultipleInheritenceParent )	( ((PTRINT) static_cast<MultipleInheritenceParent*>((Class*)1)) - 1)
 #endif
 
+namespace UE::Core::Private
+{
+	template <typename T, T Val>
+	constexpr T TForceConstEval_V = Val;
+}
+
+// Forces an expression to be evaluated at compile-time, even if it is part of a runtime expression:
+//
+// Example:
+//   // Arg 3 is evaluated at runtime as it's used in a runtime context, despite the function being marked constexpr and having a compile-time argument.
+//   // Requires an optimizer pass to eliminate.
+//   RegisterTypeWithSizeAndLog2Alignment("MyType", sizeof(FMyType), FMath::ConstExprCeilLogTwo(alignof(FMyType)));
+//
+//   // Arg 3 is evaluated at compile-time, but is non-intuitive and requires another variable to be introduced
+//   constexpr SIZE_T AlignOfMyTypeLog2 = alignof(FMyType);
+//   RegisterTypeWithSizeAndLog2Alignment("MyType", sizeof(FMyType), AlignOfMyTypeLog2);
+//
+//   // Arg 3 is evaluated at compile time with a more direct syntax
+//   RegisterTypeWithSizeAndLog2Alignment("MyType", sizeof(FMyType), UE_FORCE_CONSTEVAL(FMath::ConstExprCeilLogTwo(alignof(FMyType))));
+#define UE_FORCE_CONSTEVAL(expr) UE::Core::Private::TForceConstEval_V<std::decay_t<decltype(expr)>, (expr)>
 
 /**
  * works just like std::min_element.
@@ -332,6 +332,49 @@ struct TGuardValue : private FNoncopyable
 	~TGuardValue()
 	{
 		RefValue = OldValue;
+	}
+
+	/**
+	 * Overloaded dereference operator.
+	 * Provides read-only access to the original value of the data being tracked by this struct
+	 *
+	 * @return	a const reference to the original data value
+	 */
+	FORCEINLINE const AssignedType& operator*() const
+	{
+		return OldValue;
+	}
+
+private:
+	RefType& RefValue;
+	AssignedType OldValue;
+};
+
+
+/**
+ * exception-safe guard around saving/restoring a value.
+ * Commonly used to make sure a value is restored
+ * even if the code early outs in the future.
+ * Usage:
+ *  	TOptionalGuardValue<bool> GuardSomeBool(bSomeBool, false); // Sets bSomeBool to false, and restores it in dtor.
+ */
+template <typename RefType, typename AssignedType = RefType>
+struct TOptionalGuardValue : private FNoncopyable
+{
+	TOptionalGuardValue(RefType& ReferenceValue, const AssignedType& NewValue)
+		: RefValue(ReferenceValue), OldValue(ReferenceValue)
+	{
+		if (RefValue != NewValue)
+		{
+			RefValue = NewValue;
+		}
+	}
+	~TOptionalGuardValue()
+	{
+		if (RefValue != OldValue)
+		{
+			RefValue = OldValue;
+		}
 	}
 
 	/**
@@ -559,7 +602,7 @@ template <typename T>
 struct TUseBitwiseSwap
 {
 	// We don't use bitwise swapping for 'register' types because this will force them into memory and be slower.
-	enum { Value = !TOrValue<__is_enum(T), TIsPointer<T>, TIsArithmetic<T>>::Value };
+	enum { Value = !(std::is_enum_v<T> || std::is_pointer_v<T> || std::is_arithmetic_v<T>) };
 };
 
 
@@ -567,23 +610,21 @@ struct TUseBitwiseSwap
  * Swap two values.  Assumes the types are trivially relocatable.
  */
 template <typename T>
-inline typename TEnableIf<TUseBitwiseSwap<T>::Value>::Type Swap(T& A, T& B)
+inline void Swap(T& A, T& B)
 {
-	if (LIKELY(&A != &B))
+	if constexpr (TUseBitwiseSwap<T>::Value)
 	{
 		TTypeCompatibleBytes<T> Temp;
-		FMemory::Memcpy(&Temp, &A, sizeof(T));
-		FMemory::Memcpy(&A, &B, sizeof(T));
-		FMemory::Memcpy(&B, &Temp, sizeof(T));
+		*(TTypeCompatibleBytes<T>*)&Temp = *(TTypeCompatibleBytes<T>*)&A;
+		*(TTypeCompatibleBytes<T>*)&A    = *(TTypeCompatibleBytes<T>*)&B;
+		*(TTypeCompatibleBytes<T>*)&B    = *(TTypeCompatibleBytes<T>*)&Temp;
 	}
-}
-
-template <typename T>
-inline typename TEnableIf<!TUseBitwiseSwap<T>::Value>::Type Swap(T& A, T& B)
-{
-	T Temp = MoveTemp(A);
-	A = MoveTemp(B);
-	B = MoveTemp(Temp);
+	else
+	{
+		T Temp = MoveTemp(A);
+		A = MoveTemp(B);
+		B = MoveTemp(Temp);
+	}
 }
 
 template <typename T>

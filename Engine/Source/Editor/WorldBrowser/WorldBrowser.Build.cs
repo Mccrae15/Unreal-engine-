@@ -10,10 +10,7 @@ public class WorldBrowser : ModuleRules
             new string[] {
                 "AssetRegistry",
 				"AssetTools",
-                "ContentBrowser",
-				"Landscape",
                 "MeshUtilities",
-                "MaterialUtilities",
                 "MeshMergeUtilities",
             }
         );
@@ -52,7 +49,9 @@ public class WorldBrowser : ModuleRules
                 "RHI",
                 "Json",
 				"ToolMenus",
-            }
+				"TypedElementRuntime",
+				"TypedElementFramework",
+			}
 		);
 
         DynamicallyLoadedModuleNames.AddRange(

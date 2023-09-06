@@ -3,13 +3,16 @@
 #include "NiagaraAsyncGpuTraceProviderGsdf.h"
 
 #include "DataDrivenShaderPlatformInfo.h"
+#include "FXRenderingUtils.h"
 #include "GlobalShader.h"
 #include "NiagaraDistanceFieldHelper.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraSettings.h"
+#include "RenderGraphUtils.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
-#include "ScenePrivate.h"
-#include "SceneRendering.h"
+#include "SceneView.h"
+#include "ShaderParameterStruct.h"
 
 static int GNiagaraAsyncGpuTraceGsdfEnabled = 1;
 static FAutoConsoleVariableRef CVarNiagaraAsyncGpuTraceGsdfEnabled(
@@ -96,7 +99,7 @@ bool FNiagaraAsyncGpuTraceProviderGsdf::IsAvailable() const
 	}
 
 	// check the feature level of the scene.  Gsdf sampling requires SM5+
-	if (Dispatcher->GetScene()->GetFeatureLevel() < ERHIFeatureLevel::SM5)
+	if (Dispatcher->GetSceneInterface()->GetFeatureLevel() < ERHIFeatureLevel::SM5)
 	{
 		return false;
 	}
@@ -104,14 +107,20 @@ bool FNiagaraAsyncGpuTraceProviderGsdf::IsAvailable() const
 	return true;
 }
 
-void FNiagaraAsyncGpuTraceProviderGsdf::PostRenderOpaque(FRHICommandList& RHICmdList, TConstArrayView<FViewInfo> Views, FCollisionGroupHashMap* CollisionGroupHash)
+void FNiagaraAsyncGpuTraceProviderGsdf::PostRenderOpaque(FRHICommandList& RHICmdList, TConstStridedView<FSceneView> Views, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI, FCollisionGroupHashMap* CollisionGroupHash)
 {
-	const FViewInfo& ReferenceView = Views[0];
-	m_DistanceFieldData = ReferenceView.GlobalDistanceFieldInfo.ParameterData;
-	m_ViewUniformBuffer = ReferenceView.ViewUniformBuffer;
+	if (const FGlobalDistanceFieldParameterData* DistanceFieldData = UE::FXRenderingUtils::GetGlobalDistanceFieldParameterData(Views))
+	{
+		m_DistanceFieldData = *DistanceFieldData;
+	}
+	else
+	{
+		m_DistanceFieldData = {};
+	}
+	m_ViewUniformBuffer = Views[0].ViewUniformBuffer;
 }
 
-void FNiagaraAsyncGpuTraceProviderGsdf::IssueTraces(FRHICommandList& RHICmdList, const FDispatchRequest& Request, FCollisionGroupHashMap* CollisionHashMap)
+void FNiagaraAsyncGpuTraceProviderGsdf::IssueTraces(FRHICommandList& RHICmdList, const FDispatchRequest& Request, TUniformBufferRef<FSceneUniformParameters> SceneUniformBufferRHI, FCollisionGroupHashMap* CollisionHashMap)
 {
 	check(IsAvailable());
 

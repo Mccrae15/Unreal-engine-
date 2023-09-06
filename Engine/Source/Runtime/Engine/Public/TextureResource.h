@@ -43,21 +43,25 @@ struct IPooledRenderTarget;
  */
 struct FTexture2DMipMap
 {
-	/** Width of the mip-map. */
-	int32 SizeX = 0;
-	/** Height of the mip-map. */
-	int32 SizeY = 0;
-	/** Depth of the mip-map. */
-	int32 SizeZ = 0;
-
 	/** Reference to the data for the mip if it can be streamed. */
 	UE::FDerivedData DerivedData;
-
 	/** Stores the data for the mip when it is loaded. */
 	FByteBulkData BulkData;
 
+	/** Width of the mip-map. */
+	uint16 SizeX = 0;
+	/** Height of the mip-map. */
+	uint16 SizeY = 0;
+	/** Depth of the mip-map. */
+	uint16 SizeZ = 0;
+
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FTexture2DMipMap() = default;
+	FTexture2DMipMap(uint32 InSizeX, uint32 InSizeY, uint32 InSizeZ = 0)
+		: SizeX((uint16)InSizeX), SizeY((uint16)InSizeY), SizeZ((uint16)InSizeZ)
+	{
+		check(InSizeX <= 0xFFFF && InSizeY <= 0xFFFF && InSizeZ <= 0xFFFF);
+	}
 	FTexture2DMipMap(FTexture2DMipMap&&) = default;
 	FTexture2DMipMap(const FTexture2DMipMap&) = default;
 	FTexture2DMipMap& operator=(FTexture2DMipMap&&) = default;
@@ -66,7 +70,7 @@ struct FTexture2DMipMap
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Serialization. */
-	ENGINE_API void Serialize(FArchive& Ar, UObject* Owner, int32 MipIndex);
+	ENGINE_API void Serialize(FArchive& Ar, UObject* Owner, int32 MipIndex, bool bSerializeMipData);
 
 #if WITH_EDITORONLY_DATA
 	/** The file region type appropriate for the pixel format of this mip-map. */
@@ -104,17 +108,17 @@ public:
 	virtual bool IsProxy() const { return false; }
 
 	// Dynamic cast methods.
-	ENGINE_API virtual FTexture2DResource* GetTexture2DResource() { return nullptr; }
-	ENGINE_API virtual FTexture3DResource* GetTexture3DResource() { return nullptr; }
-	ENGINE_API virtual FTexture2DArrayResource* GetTexture2DArrayResource() { return nullptr; }
-	ENGINE_API virtual FStreamableTextureResource* GetStreamableTextureResource() { return nullptr; }
-	ENGINE_API virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return nullptr; }
+	virtual FTexture2DResource* GetTexture2DResource() { return nullptr; }
+	virtual FTexture3DResource* GetTexture3DResource() { return nullptr; }
+	virtual FTexture2DArrayResource* GetTexture2DArrayResource() { return nullptr; }
+	virtual FStreamableTextureResource* GetStreamableTextureResource() { return nullptr; }
+	virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return nullptr; }
 	// Dynamic cast methods (const).
-	ENGINE_API virtual const FTexture2DResource* GetTexture2DResource() const { return nullptr; }
-	ENGINE_API virtual const FTexture3DResource* GetTexture3DResource() const { return nullptr; }
-	ENGINE_API virtual const FTexture2DArrayResource* GetTexture2DArrayResource() const { return nullptr; }
-	ENGINE_API virtual const FStreamableTextureResource* GetStreamableTextureResource() const { return nullptr; }
-	ENGINE_API virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return nullptr; }
+	virtual const FTexture2DResource* GetTexture2DResource() const { return nullptr; }
+	virtual const FTexture3DResource* GetTexture3DResource() const { return nullptr; }
+	virtual const FTexture2DArrayResource* GetTexture2DArrayResource() const { return nullptr; }
+	virtual const FStreamableTextureResource* GetStreamableTextureResource() const { return nullptr; }
+	virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return nullptr; }
 
 	// Current mip count. We use "current" to specify that it is not computed from SizeX() which is the size when fully streamed in.
 	FORCEINLINE int32 GetCurrentMipCount() const
@@ -165,13 +169,13 @@ public:
 	ENGINE_API FVirtualTexture2DResource(const UTexture2D* InOwner, struct FVirtualTextureBuiltData* InVTData, int32 FirstMipToUse);
 	ENGINE_API virtual ~FVirtualTexture2DResource();
 
-	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 	ENGINE_API virtual void ReleaseRHI() override;
 
 	// Dynamic cast methods.
-	ENGINE_API virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return this; }
+	virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return this; }
 	// Dynamic cast methods (const).
-	ENGINE_API virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return this; }
+	virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return this; }
 
 #if WITH_EDITOR
 	ENGINE_API virtual void InitializeEditorResources(class IVirtualTexture* InVirtualTexture);
@@ -207,11 +211,26 @@ public:
 	ENGINE_API virtual FIntPoint GetPhysicalTextureSize(uint32 LayerIndex) const;
 
 protected:
-	class IAllocatedVirtualTexture* AllocatedVT;
-	struct FVirtualTextureBuiltData* VTData;
-	const UTexture2D* TextureOwner;
+	/** The FName of the texture asset */
+	FName TextureName;
+	/** The FName of the texture package for stats */
+	FName PackageName;
+	/** Cached sampler config */
+	TEnumAsByte<ESamplerFilter> Filter = SF_Point;
+	TEnumAsByte<ESamplerAddressMode> AddressU = AM_Wrap;
+	TEnumAsByte<ESamplerAddressMode> AddressV = AM_Wrap;
+	/** Cached flags for texture creation. */
+	ETextureCreateFlags TexCreateFlags = ETextureCreateFlags::None;
+	/** Cached runtime virtual texture settings */
+	bool bContinuousUpdate = false;
+	bool bSinglePhysicalSpace = false;
+	/** Mip offset */
+	int32 FirstMipToUse = 0;
+	/** Built data owned by texture asset */
+	struct FVirtualTextureBuiltData* VTData = nullptr;
+	/** Local allocated VT objects used for editor views etc. */
+	class IAllocatedVirtualTexture* AllocatedVT = nullptr;
 	FVirtualTextureProducerHandle ProducerHandle;
-	int32 FirstMipToUse;
 };
 
 /** A dynamic 2D texture resource. */
@@ -228,7 +247,7 @@ public:
 	virtual uint32 GetSizeY() const override;
 
 	/** Called when the resource is initialized. This is only called by the rendering thread. */
-	ENGINE_API virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	/** Called when the resource is released. This is only called by the rendering thread. */
 	ENGINE_API virtual void ReleaseRHI() override;
@@ -441,7 +460,7 @@ public:
 	 * Resources that need to initialize after a D3D device reset must implement this function.
 	 * This is only called by the rendering thread.
 	 */
-	virtual void InitDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	/**
 	 * Releases the dynamic RHI resource and/or RHI render target resources used by this resource.
@@ -449,7 +468,7 @@ public:
 	 * Resources that need to release before a D3D device reset must implement this function.
 	 * This is only called by the rendering thread.
 	 */
-	virtual void ReleaseDynamicRHI() override;
+	virtual void ReleaseRHI() override;
 
 	// FDeferredClearResource interface
 
@@ -536,7 +555,7 @@ public:
 	 * Resources that need to initialize after a D3D device reset must implement this function.
 	 * This is only called by the rendering thread.
 	 */
-	virtual void InitDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	/**
 	 * Releases the dynamic RHI resource and/or RHI render target resources used by this resource.
@@ -544,7 +563,7 @@ public:
 	 * Resources that need to release before a D3D device reset must implement this function.
 	 * This is only called by the rendering thread.
 	 */
-	virtual void ReleaseDynamicRHI() override;
+	virtual void ReleaseRHI() override;
 
 	// FRenderTarget interface.
 
@@ -621,6 +640,11 @@ private:
 	/** Face currently used for target surface */
 	ECubeFace CurrentTargetFace;
 };
+
+/**
+ * Do not call these (GetDefaultTextureFormatName) directly, use GetPlatformTextureFormatNamesWithPrefix instead
+ * this should only be called by TargetPlatform::GetTextureFormats()
+ */
 
 /** Gets the name of a format for the given LayerIndex */
 ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, int32 LayerIndex, bool bSupportCompressedVolumeTexture, int32 Unused_BlockSize, bool bSupportFilteredFloat32Textures);

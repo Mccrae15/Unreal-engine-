@@ -12,25 +12,23 @@ class FContentBundleClient;
 class IWorldPartitionCookPackageContext;
 class URuntimeHashExternalStreamingObjectBase;
 
-class ENGINE_API FContentBundle : public FContentBundleBase
+class FContentBundle : public FContentBundleBase
 {
 public:
-	FContentBundle(TSharedPtr<FContentBundleClient>& InClient, UWorld* InWorld);
+	ENGINE_API FContentBundle(TSharedPtr<FContentBundleClient>& InClient, UWorld* InWorld);
 
 	//~ Begin IContentBundle Interface
-	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	ENGINE_API virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
-	virtual bool IsValid() const override;
+	ENGINE_API virtual bool IsValid() const override;
 	//~ End IContentBundle Interface
-
-	static int32 GetContentBundleEpoch() { return ContentBundlesEpoch; }
 
 protected:
 	//~ Begin IContentBundle Interface
-	virtual void DoInitialize() override;
-	virtual void DoUninitialize() override;
-	virtual void DoInjectContent() override;
-	virtual void DoRemoveContent() override;
+	ENGINE_API virtual void DoInitialize() override;
+	ENGINE_API virtual void DoUninitialize() override;
+	ENGINE_API virtual void DoInjectContent() override;
+	ENGINE_API virtual void DoRemoveContent() override;
 	//~ End IContentBundle Interface
 	
 private:
@@ -38,8 +36,6 @@ private:
 	void InitializeForPIE();
 #endif
 
-	static int32 ContentBundlesEpoch;
-
-	UPackage* ExternalStreamingObjectPackage;
-	URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject;
+	TObjectPtr<UPackage> ExternalStreamingObjectPackage;
+	TObjectPtr<URuntimeHashExternalStreamingObjectBase> ExternalStreamingObject;
 };

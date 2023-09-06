@@ -16,6 +16,14 @@ UDEPRECATED_PhysicalMaterialPropertyBase::UDEPRECATED_PhysicalMaterialPropertyBa
 {
 }
 
+FPhysicalMaterialStrength::FPhysicalMaterialStrength()
+{
+	// using concrete as default ( lowest values of it )
+	TensileStrength = 2;
+	CompressionStrength = 20;
+	ShearStrength = 6;
+}
+
 UPhysicalMaterial::UPhysicalMaterial(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -27,7 +35,6 @@ UPhysicalMaterial::UPhysicalMaterial(const FObjectInitializer& ObjectInitializer
 	SleepLinearVelocityThreshold = 1.f;
 	SleepAngularVelocityThreshold = 0.05f;
 	SleepCounterThreshold = 4;
-	DestructibleDamageThresholdScale = 1.0f;
 	bOverrideFrictionCombineMode = false;
 	UserData = FChaosUserData(this);
 }

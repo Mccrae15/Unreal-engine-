@@ -227,7 +227,7 @@ private:
 	bool CanBuildWorld();
 	bool CanCommitWorld();
 
-	virtual bool OnRequestClose() override;
+	virtual bool OnRequestClose(EAssetEditorCloseReason InCloseReason) override;
 
 	/** Create a snapshot of the world and tracked assets */
 	void TakeSnapshot();
@@ -306,17 +306,17 @@ private:
 	/**
 	 * The world used to preview the inputs
 	 */
-	UWorld* PreviewWorld;
+	TObjectPtr<UWorld> PreviewWorld;
 
 	/**
 	 * The package that contains the assets of a dataprep import
 	 */
-	UPackage* AssetsTransientPackage;
+	TObjectPtr<UPackage> AssetsTransientPackage;
 
 	/**
 	 * The graph used to manipulate actions and steps
 	 */
-	UDataprepGraph* DataprepGraph;
+	TObjectPtr<UDataprepGraph> DataprepGraph;
 
 	TSet<class AActor*> DefaultActorsInPreviewWorld;
 

@@ -19,6 +19,7 @@ class FExtensibilityManager;
 class FMenuBuilder;
 class FSequencerCustomizationManager;
 class ISequencerTrackEditor;
+class ISequencerOutlinerColumn;
 class ISequencerEditorObjectBinding;
 class IToolkitHost;
 class UMovieSceneSequence;
@@ -54,6 +55,9 @@ DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<ISequencerEditorObjectBinding>, FOnC
 
 /** A delegate which will create a track model. */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<UE::Sequencer::FTrackModel>, FOnCreateTrackModel, UMovieSceneTrack*);
+
+/** A delegate which will create an outliner column */
+DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<ISequencerOutlinerColumn>, FOnCreateOutlinerColumn, TSharedRef<ISequencer>);
 
 /** A delegate that is executed when adding menu content. */
 DECLARE_DELEGATE_OneParam(FOnGetContextMenuContent, FMenuBuilder& /*MenuBuilder*/);
@@ -235,6 +239,22 @@ public:
 	 */
 	virtual void UnregisterTrackModel(FDelegateHandle InHandle) = 0;
 
+	/**
+	 * Registers a delegate that will create a gutter column view model for a given Outliner column
+	 *
+	 * @param InCreator Delegate to register
+	 * @return A handle to the newly added delegate
+	 */
+	virtual FDelegateHandle RegisterOutlinerColumn(FOnCreateOutlinerColumn InCreator) = 0;
+
+	/**
+	 * Unregisters a previously registered delegate for creating Outliner columns
+	 *
+	 * @param InHandle Handle to the delegate to unregister
+	 */
+	virtual void UnregisterOutlinerColumn(FDelegateHandle InHandle) = 0;
+
+
 	/** 
 	 * Registers a delegate that will be called when a sequencer is created
 	 *
@@ -296,14 +316,14 @@ public:
 	virtual bool CanAnimateProperty(FProperty* Property) = 0;
 
 	/**
-	* Get the extensibility manager for menus.
+	* Get the extensibility manager for object binding menus.
 	*
 	* @return ObjectBinding Context Menu extensibility manager.
 	*/
 	virtual TSharedPtr<FExtensibilityManager> GetObjectBindingContextMenuExtensibilityManager() const = 0;
 
 	/**
-	 * Get the extensibility manager for menus.
+	 * Get the extensibility manager for add track menus.
 	 *
 	 * @return Add Track Menu extensibility manager.
 	 */

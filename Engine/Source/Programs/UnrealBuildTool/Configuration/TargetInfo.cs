@@ -1,13 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Runtime.Serialization;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
-using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -37,6 +32,11 @@ namespace UnrealBuildTool
 		public readonly UnrealArchitectures Architectures;
 
 		/// <summary>
+		/// Intermediate environment. Determines if the intermediates end up in a different folder than normal.
+		/// </summary>
+		public UnrealIntermediateEnvironment IntermediateEnvironment;
+
+		/// <summary>
 		/// The project containing the target
 		/// </summary>
 		public readonly FileReference? ProjectFile;
@@ -44,10 +44,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The current build version
 		/// </summary>
-		public ReadOnlyBuildVersion Version
-		{
-			get { return ReadOnlyBuildVersion.Current; }
-		}
+		public ReadOnlyBuildVersion Version => ReadOnlyBuildVersion.Current;
 
 		/// <summary>
 		/// Additional command line arguments for this target
@@ -63,11 +60,13 @@ namespace UnrealBuildTool
 		/// <param name="Architectures">The architectures being built for</param>
 		/// <param name="ProjectFile">Path to the project file containing the target</param>
 		/// <param name="Arguments">Additional command line arguments for this target</param>
-		public TargetInfo(string Name, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UnrealArchitectures? Architectures, FileReference? ProjectFile, CommandLineArguments? Arguments)
+		/// <param name="IntermediateEnvironment">Intermediate environment to use</param>
+		public TargetInfo(string Name, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, UnrealArchitectures? Architectures, FileReference? ProjectFile, CommandLineArguments? Arguments, UnrealIntermediateEnvironment IntermediateEnvironment = UnrealIntermediateEnvironment.Default)
 		{
 			this.Name = Name;
 			this.Platform = Platform;
 			this.Configuration = Configuration;
+			this.IntermediateEnvironment = IntermediateEnvironment;
 			this.ProjectFile = ProjectFile;
 			this.Arguments = Arguments;
 
@@ -87,17 +86,23 @@ namespace UnrealBuildTool
 		/// <param name="Reader">Archive to read from</param>
 		public TargetInfo(BinaryArchiveReader Reader)
 		{
-			this.Name = Reader.ReadString()!;
-			this.Platform = UnrealTargetPlatform.Parse(Reader.ReadString()!);
+			Name = Reader.ReadString()!;
+			Platform = UnrealTargetPlatform.Parse(Reader.ReadString()!);
 			string ConfigurationStr = Reader.ReadString()!;
-			this.Architectures = new UnrealArchitectures(Reader.ReadArray(() => Reader.ReadString()!)!);
-			this.ProjectFile = Reader.ReadFileReferenceOrNull();
+			Architectures = new UnrealArchitectures(Reader.ReadArray(() => Reader.ReadString()!)!);
+			ProjectFile = Reader.ReadFileReferenceOrNull();
 			string[]? ArgumentStrs = Reader.ReadArray(() => Reader.ReadString()!);
 
 			if (!UnrealTargetConfiguration.TryParse(ConfigurationStr, out Configuration))
 			{
-				throw new BuildException(string.Format("The configration name {0} is not a valid configration name. Valid names are ({1})", Name,
-					string.Join(",", Enum.GetValues(typeof(UnrealTargetConfiguration)).Cast<UnrealTargetConfiguration>().Select(x => x.ToString()))));
+				throw new BuildException(String.Format("The configration name {0} is not a valid configration name. Valid names are ({1})", Name,
+					String.Join(",", Enum.GetValues(typeof(UnrealTargetConfiguration)).Cast<UnrealTargetConfiguration>().Select(x => x.ToString()))));
+			}
+
+			string? IntermediateEnvironmentStr = Reader.ReadString();
+			if (IntermediateEnvironmentStr != null)
+			{
+				UnrealIntermediateEnvironment.TryParse(IntermediateEnvironmentStr, out IntermediateEnvironment);
 			}
 
 			Arguments = ArgumentStrs == null ? null : new CommandLineArguments(ArgumentStrs);
@@ -115,6 +120,7 @@ namespace UnrealBuildTool
 			Writer.WriteArray(Architectures.Architectures.ToArray(), Item => Writer.WriteString(Item.ToString()));
 			Writer.WriteFileReference(ProjectFile);
 			Writer.WriteArray(Arguments?.GetRawArray(), Item => Writer.WriteString(Item));
+			Writer.WriteString(IntermediateEnvironment.ToString());
 		}
 	}
 }

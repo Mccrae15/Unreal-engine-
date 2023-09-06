@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
+#include "Engine/GameViewportClient.h"
 
 class AActor;
 class SWindow;
@@ -61,7 +62,12 @@ namespace AutomationCommon
 	ENGINE_API SWidget* FindWidgetByTag(const FName Tag);
 
 	ENGINE_API UWorld* GetAnyGameWorld();
+
 #endif
+	ENGINE_API UGameViewportClient* GetAnyGameViewportClient();
+
+	/* Get the adjusted World name to use for screenshot paths */
+	ENGINE_API FString GetWorldContext(UWorld* InWorld);
 }
 
 #if WITH_AUTOMATION_TESTS
@@ -162,13 +168,13 @@ DEFINE_ENGINE_LATENT_AUTOMATION_COMMAND(FWaitForShadersToFinishCompilingInGame);
  *
  * If values are zero the defaults in [/Script/Engine.AutomationTestSetting] will be used
  */
-class ENGINE_API FWaitForInteractiveFrameRate : public IAutomationLatentCommand
+class FWaitForInteractiveFrameRate : public IAutomationLatentCommand
 {
 public:
 
-	FWaitForInteractiveFrameRate(float InDesiredFrameRate = 0, float InDuration = 0, float InMaxWaitTime = 0);
+	ENGINE_API FWaitForInteractiveFrameRate(float InDesiredFrameRate = 0, float InDuration = 0, float InMaxWaitTime = 0);
 
-	bool Update() override;
+	ENGINE_API bool Update() override;
 
 public:
 
@@ -212,6 +218,21 @@ private:
 
 	// How many samples we hold
 	const int kSampleCount = (int32)kTickRate * 5;
+};
+
+/**
+ * Latent command to wait for one engine frame
+ */
+class FWaitForNextEngineFrameCommand : public IAutomationLatentCommand
+{
+public:
+
+	ENGINE_API bool Update() override;
+
+private:
+
+	// Frame to be passed to consider the waiting over
+	uint64 LastFrame = 0;
 };
 
 /**

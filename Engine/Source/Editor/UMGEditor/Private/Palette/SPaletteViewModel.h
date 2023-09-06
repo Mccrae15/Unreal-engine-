@@ -25,6 +25,11 @@ public:
 
 	virtual bool IsTemplate() const = 0;
 
+	virtual bool IsCategory() const
+	{
+		return false;
+	}
+
 	/** @param OutStrings - Returns an array of strings used for filtering/searching this item. */
 	virtual void GetFilterStrings(TArray<FString>& OutStrings) const = 0;
 
@@ -101,6 +106,11 @@ public:
 		return false;
 	}
 
+	virtual bool IsCategory() const override
+	{
+		return true;
+	}
+
 	virtual void GetFilterStrings(TArray<FString>& OutStrings) const override
 	{
 		// Headers should never be included in filtering to avoid showing a header with all of
@@ -156,10 +166,10 @@ public:
 	bool NeedUpdate() const { return bRebuildRequested; }
 
 	/** Add the widget template to the list of favorites */
-	virtual void AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) = 0;
+	static void AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel);
 
 	/** Remove the widget template to the list of favorites */
-	virtual void RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) = 0;
+	static void RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel);
 
 	typedef TArray< TSharedPtr<FWidgetViewModel> > ViewModelsArray;
 	ViewModelsArray& GetWidgetViewModels() { return WidgetViewModels; }
@@ -174,15 +184,17 @@ public:
 	FText GetSearchText() const { return SearchText; }
 
 protected:
+	virtual void BuildWidgetList();
+
+	void AddHeader(TSharedPtr<FWidgetHeaderViewModel>& Header);
+	void AddToFavoriteHeader(TSharedPtr<FWidgetTemplateViewModel>& Favorite);
+
+private:
 	FWidgetCatalogViewModel() {};
 
 	UWidgetBlueprint* GetBlueprint() const;
-
-	virtual void BuildWidgetList();
 	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates, TArray<FString>& FavoritesList) = 0;
 	void BuildClassWidgetList();
-
-	static bool FilterAssetData(FAssetData& BPAssetData);
 
 	void AddWidgetTemplate(TSharedPtr<FWidgetTemplate> Template);
 
@@ -224,8 +236,6 @@ public:
 
 	//~ Begin FWidgetCatalogViewModel Interface
 	virtual void BuildWidgetTemplateCategory(FString& Category, TArray<TSharedPtr<FWidgetTemplate>>& Templates, TArray<FString>& FavoritesList) override;
-	virtual void AddToFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) override;
-	virtual void RemoveFromFavorites(const FWidgetTemplateViewModel* WidgetTemplateViewModel) override;
 	//~ End FWidgetCatalogViewModel Interface
 };
 

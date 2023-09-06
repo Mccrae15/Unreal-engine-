@@ -25,7 +25,7 @@ namespace Chaos
 	/// Physics thread side representation of a character ground constraint
 	/// Data accessed through this class is synced from the game thread
 	/// representation FCharacterGroundConstraint
-	class CHAOS_API FCharacterGroundConstraintHandle final : public TIntrusiveConstraintHandle<FCharacterGroundConstraintHandle>
+	class FCharacterGroundConstraintHandle final : public TIntrusiveConstraintHandle<FCharacterGroundConstraintHandle>
 	{
 	public:
 		using Base = TIntrusiveConstraintHandle<FCharacterGroundConstraintHandle>;
@@ -52,15 +52,37 @@ namespace Chaos
 		virtual void SetEnabled(bool InEnabled) override { bDisabled = !InEnabled; }
 		virtual bool IsEnabled() const { return !bDisabled; }
 
-		/// Currently settings and data are only modifiable on the game thread
-		/// via FCharacterGroundConstraint
+		/// Settings is only modifiable on the game thread via FCharacterGroundConstraint
+		/// but Data can be modified on the physics thread and is synced with the game thread
 		const FCharacterGroundConstraintSettings& GetSettings() const { return Settings; }
 		const FCharacterGroundConstraintDynamicData& GetData() const { return Data; }
+
+		void SetData(const FCharacterGroundConstraintDynamicData& InData)
+		{
+			Data = InData;
+		}
 
 		// Declared final so that TPBDConstraintGraphRuleImpl::AddToGraph() does not need to hit vtable
 		virtual FParticlePair GetConstrainedParticles() const override final { return { CharacterParticle, GroundParticle }; }
 		FGeometryParticleHandle* GetCharacterParticle() const { return CharacterParticle; }
 		FGeometryParticleHandle* GetGroundParticle() const { return GroundParticle; }
+
+		void SetGroundParticle(FGeometryParticleHandle* InGroundParticle)
+		{
+			if (InGroundParticle != GroundParticle)
+			{
+				if (GroundParticle)
+				{
+					GroundParticle->RemoveConstraintHandle(this);
+				}
+				GroundParticle = InGroundParticle;
+				if (GroundParticle)
+				{
+					GroundParticle->AddConstraintHandle(this);
+				}
+				bGroundParticleChanged = true;
+			}
+		}
 
 		// Get the force applied by the solver due to this constraint. Units are ML/T^2
 		FVec3 GetSolverAppliedForce() const { return SolverAppliedForce; }
@@ -82,30 +104,31 @@ namespace Chaos
 		FGeometryParticleHandle* GroundParticle;
 		bool bDisabled = false;
 		bool bEnabledDuringResim;
+		bool bGroundParticleChanged = false;
 		EResimType ResimType = EResimType::FullResim;
 		ESyncState SyncState = ESyncState::InSync;
 	};
 
 	/// Container class for all character ground constraints on the physics thread
-	class CHAOS_API FCharacterGroundConstraintContainer : public FPBDConstraintContainer
+	class FCharacterGroundConstraintContainer : public FPBDConstraintContainer
 	{
 	public:
 		using Base = FPBDConstraintContainer;
 		using FConstraints = TArrayView<FCharacterGroundConstraintHandle* const>;
 		using FConstConstraints = TArrayView<const FCharacterGroundConstraintHandle* const>;
 
-		FCharacterGroundConstraintContainer();
-		virtual ~FCharacterGroundConstraintContainer();
+		CHAOS_API FCharacterGroundConstraintContainer();
+		CHAOS_API virtual ~FCharacterGroundConstraintContainer();
 
 		int32 NumConstraints() const { return Constraints.Num(); }
 
-		FCharacterGroundConstraintHandle* AddConstraint(
+		CHAOS_API FCharacterGroundConstraintHandle* AddConstraint(
 			const FCharacterGroundConstraintSettings& InConstraintSettings,
 			const FCharacterGroundConstraintDynamicData& InConstraintData,
 			FGeometryParticleHandle* CharacterParticle,
 			FGeometryParticleHandle* GroundParticle = nullptr);
 
-		void RemoveConstraint(FCharacterGroundConstraintHandle* Constraint);
+		CHAOS_API void RemoveConstraint(FCharacterGroundConstraintHandle* Constraint);
 
 		FConstraints GetConstraints() { return MakeArrayView(Constraints); }
 		FConstConstraints GetConstConstraints() const { return MakeArrayView(Constraints); }
@@ -115,22 +138,22 @@ namespace Chaos
 
 		//////////////////////////////////////////////////////////////////////////
 		// FConstraintContainer Implementation
-		virtual TUniquePtr<FConstraintContainerSolver> CreateSceneSolver(const int32 Priority) override final;
-		virtual TUniquePtr<FConstraintContainerSolver> CreateGroupSolver(const int32 Priority) override final;
+		CHAOS_API virtual TUniquePtr<FConstraintContainerSolver> CreateSceneSolver(const int32 Priority) override final;
+		CHAOS_API virtual TUniquePtr<FConstraintContainerSolver> CreateGroupSolver(const int32 Priority) override final;
 		virtual int32 GetNumConstraints() const override final { return Constraints.Num(); }
 		virtual void ResetConstraints() override final {}
-		virtual void AddConstraintsToGraph(Private::FPBDIslandManager& IslandManager) override final;
-		virtual void PrepareTick() override final;
-		virtual void UnprepareTick() override final;
-		virtual void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) override final;
+		CHAOS_API virtual void AddConstraintsToGraph(Private::FPBDIslandManager& IslandManager) override final;
+		CHAOS_API virtual void PrepareTick() override final;
+		CHAOS_API virtual void UnprepareTick() override final;
+		CHAOS_API virtual void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) override final;
 
 		//////////////////////////////////////////////////////////////////////////
 		// Required API from FConstraintContainer
-		void SetConstraintEnabled(int32 ConstraintIndex, bool bEnabled);
+		CHAOS_API void SetConstraintEnabled(int32 ConstraintIndex, bool bEnabled);
 		bool IsConstraintEnabled(int32 ConstraintIndex) const { check(ConstraintIndex < NumConstraints()); return Constraints[ConstraintIndex]->IsEnabled(); }
 
 	private:
-		bool CanEvaluate(const FCharacterGroundConstraintHandle* Constraint) const;
+		CHAOS_API bool CanEvaluate(const FCharacterGroundConstraintHandle* Constraint) const;
 
 		TObjectPool<FCharacterGroundConstraintHandle> ConstraintPool;
 		TArray<FCharacterGroundConstraintHandle*> Constraints;

@@ -19,7 +19,6 @@ public class PoseSearchEditor : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"PoseSearch",
-				"GameplayTags",
 				"StructUtils",
 				
 				// Trace-related dependencies
@@ -42,10 +41,9 @@ public class PoseSearchEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"AnimationEditor",
+				"AssetDefinition",
 				"BlueprintGraph",
-				"PropertyEditor",
-				"SlateCore",
-				"Slate",
 				"EditorStyle",
 				"DetailCustomizations",
 				"AdvancedPreviewScene",

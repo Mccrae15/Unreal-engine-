@@ -12,6 +12,50 @@ class UMVVMWidgetBlueprintExtension_View;
 class UWidget;
 class UWidgetBlueprint;
 
+namespace  UE::MVVM
+{
+	enum class EBindingMessageType : uint8
+	{
+		Info,
+		Warning,
+		Error
+	};
+
+	struct FBindingMessage
+	{
+		FText MessageText;
+		EBindingMessageType MessageType;
+	};
+}
+
+/**
+ *
+ */
+UCLASS(MinimalAPI)
+class UMVVMBlueprintViewSettings : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	/**
+	 * Auto initialize the view sources when the Widget is constructed.
+	 * If false, the user will have to initialize the sources manually.
+	 * It prevents the sources evaluating until you are ready.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Viewmodel")
+	bool bInitializeSourcesOnConstruct = true;
+	/**
+	 * Auto initialize the view bindings when the Widget is constructed.
+	 * If false, the user will have to initialize the bindings manually.
+	 * It prevents bindings execution and improves performance when you know the widget won't be visible.
+	 * @note All bindings are executed when the view is automatically initialized or manually initialized.
+	 * @note Sources needs to be initialized before initializing the bindings.
+	 * @note When Sources is manually initialized, the bindings will also be initialized if this is true.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Viewmodel", meta=(EditCondition="bInitializeSourcesOnConstruct"))
+	bool bInitializeBindingsOnConstruct = true;
+};
+
 /**
  * 
  */
@@ -21,6 +65,14 @@ class MODELVIEWVIEWMODELBLUEPRINT_API UMVVMBlueprintView : public UObject
 	GENERATED_BODY()
 
 public:
+	UMVVMBlueprintView();
+
+public:
+	UMVVMBlueprintViewSettings* GetSettings()
+	{
+		return Settings;
+	}
+
 	FMVVMBlueprintViewModelContext* FindViewModel(FGuid ViewModelId);
 	const FMVVMBlueprintViewModelContext* FindViewModel(FGuid ViewModelId) const;
 	const FMVVMBlueprintViewModelContext* FindViewModel(FName ViewModelName) const;
@@ -29,7 +81,6 @@ public:
 	bool RemoveViewModel(FGuid ViewModelId);
 	int32 RemoveViewModels(const TArrayView<FGuid> ViewModelIds);
 	bool RenameViewModel(FName OldViewModelName, FName NewViewModelName);
-	void SetViewModels(const TArray<FMVVMBlueprintViewModelContext>& ViewModelContexts);
 
 	const TArrayView<const FMVVMBlueprintViewModelContext> GetViewModels() const
 	{
@@ -65,20 +116,28 @@ public:
 		return Bindings;
 	}
 
-#if WITH_EDITOR
-//	virtual void PostEditUndo() override;
+	TArray<FText> GetBindingMessages(FGuid Id, UE::MVVM::EBindingMessageType InMessageType) const;
+	bool HasBindingMessage(FGuid Id, UE::MVVM::EBindingMessageType InMessageType) const;
+	void AddMessageToBinding(FGuid Id, UE::MVVM::FBindingMessage MessageToAdd);
+	void ResetBindingMessages();
 
+#if WITH_EDITOR
+	virtual void PostLoad() override;
+	virtual void PreSave(FObjectPreSaveContext Context) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChainEvent) override;
 
-	void AddAssetTags(TArray<FAssetRegistryTag>& OutTags);
+	void AddAssetTags(TArray<FAssetRegistryTag>& OutTags) const;
 	void WidgetRenamed(FName OldObjectName, FName NewObjectName);
 #endif
 
-	virtual void PostLoad() override;
+	virtual void Serialize(FArchive& Ar) override;
 
 	DECLARE_EVENT(UMVVMBlueprintView, FOnBindingsUpdated);
 	FOnBindingsUpdated OnBindingsUpdated;
+
+	DECLARE_EVENT(UMVVMBlueprintView, FOnBindingsAdded);
+	FOnBindingsAdded OnBindingsAdded;
 
 	DECLARE_EVENT(UMVVMBlueprintView, FOnViewModelsUpdated);
 	FOnViewModelsUpdated OnViewModelsUpdated;
@@ -88,11 +147,18 @@ public:
 	TArray<TObjectPtr<UEdGraph>> TemporaryGraph;
 
 private:
-	UPROPERTY(EditAnywhere, Category = "MVVM")
+	UPROPERTY()
+	TObjectPtr<UMVVMBlueprintViewSettings> Settings;
+
+	UPROPERTY(EditAnywhere, Category = "Viewmodel")
 	TArray<FMVVMBlueprintViewBinding> Bindings;
 
-	UPROPERTY(EditAnywhere, Category = "MVVM")
+	UPROPERTY(EditAnywhere, Category = "Viewmodel")
 	TArray<FMVVMBlueprintViewModelContext> AvailableViewModels;
+
+	TMap<FGuid, TArray<UE::MVVM::FBindingMessage>> BindingMessages;
+
+	bool bIsContextSensitive;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

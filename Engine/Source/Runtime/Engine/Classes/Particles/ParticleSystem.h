@@ -10,6 +10,7 @@
 #include "Particles/ParticlePerfStats.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "RHIDefinitions.h"
+#include "PSOPrecache.h"
 
 #include "ParticleSystem.generated.h"
 
@@ -121,8 +122,10 @@ public:
 
 	ENGINE_API virtual void PostInitProperties() override;
 
+	ENGINE_API virtual bool IsReadyForFinishDestroy() override;
+
 	/** Max number of components of this system to keep resident in the world component pool. */
-	UPROPERTY(EditAnywhere, Category = Performance)
+	UPROPERTY(EditAnywhere, Category = Performance, AdvancedDisplay)
 	uint32 MaxPoolSize;
 	//TODO: Allow pool size overriding per world and possibly implement some preallocation too.
 
@@ -131,7 +134,7 @@ public:
 	* This can amortize runtime activation cost by moving it to load time.
 	* Use with care as this could cause large hitches for systems loaded/unloaded during play rather than at level load.
 	*/
-	UPROPERTY(EditAnywhere, Category = Performance)
+	UPROPERTY(EditAnywhere, Category = Performance, AdvancedDisplay)
 	uint32 PoolPrimeSize = 0;
 
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
@@ -153,7 +156,7 @@ public:
 #endif
 #endif
 
-	const FGraphEventArray& GetPrecachePSOsEvents() const { return PrecachePSOsEvents; }
+	const FGraphEventRef& GetPrecachePSOsEvent() const { return PrecachePSOsEvent; }
 	const TArray<FMaterialPSOPrecacheRequestID>& GetMaterialPSOPrecacheRequestIDs() const { return MaterialPSOPrecacheRequestIDs; }
 
 protected:
@@ -162,12 +165,12 @@ protected:
 		UMaterialInterface* MaterialInterface = nullptr;
 		EPrimitiveType PrimitiveType = PT_TriangleList; // must match FPSOPrecacheParams::PrimitiveType default value
 		bool bDisableBackfaceCulling = false;  // must match FPSOPrecacheParams::bDisableBackfaceCulling default value
-		TArray<const class FVertexFactoryType*, TInlineAllocator<2>> VertexFactoryTypes;
+		FPSOPrecacheVertexFactoryDataList VertexFactoryData;
 	};
 
 	ENGINE_API void LaunchPSOPrecaching(TArrayView<VFsPerMaterialData> VFsPerMaterials);
 
-	FGraphEventArray PrecachePSOsEvents;
+	FGraphEventRef PrecachePSOsEvent;
 	TArray<FMaterialPSOPrecacheRequestID> MaterialPSOPrecacheRequestIDs;
 };
 

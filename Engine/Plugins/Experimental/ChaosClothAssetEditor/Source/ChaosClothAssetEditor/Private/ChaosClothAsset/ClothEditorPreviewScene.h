@@ -9,11 +9,15 @@
 class UChaosClothAsset;
 class USkeletalMesh;
 class UChaosClothComponent;
-class FChaosClothPreviewScene;
-class UPhysicsAsset;
-class UAnimSequence;
-class ASkeletalMeshActor;
 class FAssetEditorModeManager;
+class UAnimationAsset;
+class UAnimSingleNodeInstance;
+class FTransformGizmoDataBinder;
+
+namespace UE::Chaos::ClothAsset
+{
+class FChaosClothPreviewScene;
+}
 
 ///
 /// The UChaosClothPreviewSceneDescription is a description of the Preview scene contents, intended to be editable in an FAdvancedPreviewSettingsWidget
@@ -24,28 +28,48 @@ class CHAOSCLOTHASSETEDITOR_API UChaosClothPreviewSceneDescription : public UObj
 public:
 	GENERATED_BODY()
 
-	void SetPreviewScene(FChaosClothPreviewScene* PreviewScene);
+	UChaosClothPreviewSceneDescription()
+	{
+		SetFlags(RF_Transactional);
+	}
+
+	void SetPreviewScene(UE::Chaos::ClothAsset::FChaosClothPreviewScene* PreviewScene);
 
 	// Skeletal Mesh source asset
-	UPROPERTY(EditAnywhere, Category="SkeletalMesh")
+	UPROPERTY(EditAnywhere, Transient, Category="SkeletalMesh")
 	TObjectPtr<USkeletalMesh> SkeletalMeshAsset;
 
-	UPROPERTY(EditAnywhere, Category = "SkeletalMesh")
-	FTransform SkeletalMeshTransform;
+	UPROPERTY(EditAnywhere, Transient, Category = "SkeletalMesh")
+	TObjectPtr<UAnimationAsset> AnimationAsset;
 
-	// TODO: Add anything else to the scene, e.g.:
-	//UPROPERTY(EditAnywhere, Category = "Animation")
-	//TObjectPtr<UAnimSequence> AnimationSequence;
+	UPROPERTY(EditAnywhere, Transient, Category = "Transform", Meta=(DisplayName="Location"))
+	FVector3d Translation = FVector3d::ZeroVector;
+
+	UPROPERTY(EditAnywhere, Transient, Category = "Transform")
+	FVector3d Rotation = FVector3d::ZeroVector;
+
+	UPROPERTY(EditAnywhere, Transient, Category = "Transform", Meta = (AllowPreserveRatio))
+	FVector3d Scale = FVector3d::OneVector;
+
+	// TODO: We should be able to hook this boolean property up to the EditCondition meta tag for the properties above and toggle it
+	// on and off when the selection changes in the scene. However the EditCondition does not seem to propagate for some reason, 
+	// even if we manually call PostEditChangeProperty() after toggling it. It will take some more digging to figure out exactly
+	// what's going on. (UE-189504)
+	//UPROPERTY(Transient)
+	//bool bValidSelectionForTransform = true;
 
 private:
 
-	// Listen for changes to the scene description members and notify the PreviewScene
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 
-	FChaosClothPreviewScene* PreviewScene;
+	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
+
+	UE::Chaos::ClothAsset::FChaosClothPreviewScene* PreviewScene;
 };
 
 
+namespace UE::Chaos::ClothAsset
+{
 ///
 /// FChaosClothPreviewScene is the actual Preview scene, with contents specified by the SceneDescription
 /// 
@@ -61,31 +85,47 @@ public:
 	const UChaosClothPreviewSceneDescription* GetPreviewSceneDescription() const { return PreviewSceneDescription; }
 	UChaosClothPreviewSceneDescription* GetPreviewSceneDescription() { return PreviewSceneDescription; }
 
-	void CreateClothActor(UChaosClothAsset* Asset);
+	void SetClothAsset(UChaosClothAsset* Asset);
 
 	// Update Scene in response to the SceneDescription changing
-	void SceneDescriptionPropertyChanged(struct FPropertyChangedEvent& PropertyChangedEvent);
+	void SceneDescriptionPropertyChanged(const FName& PropertyName);
 
-	// Preview simulation mesh
-	TObjectPtr<AActor> ClothActor;
-	TObjectPtr<UChaosClothComponent> ClothComponent;
+	UAnimSingleNodeInstance* GetPreviewAnimInstance();
+	const UAnimSingleNodeInstance* const GetPreviewAnimInstance() const;
 
-	// Skeletal Mesh
-	TObjectPtr<ASkeletalMeshActor> SkeletalMeshActor;
+	UChaosClothComponent* GetClothComponent();
+	const UChaosClothComponent* GetClothComponent() const;
+	
+	const USkeletalMeshComponent* GetSkeletalMeshComponent() const;
 
 	void SetModeManager(TSharedPtr<FAssetEditorModeManager> InClothPreviewEditorModeManager);
+	const TSharedPtr<const FAssetEditorModeManager> GetClothPreviewEditorModeManager() const;
+
+	void SetGizmoDataBinder(TSharedPtr<FTransformGizmoDataBinder> InDataBinder);
 
 private:
 
-	void SkeletalMeshTransformChanged(USceneComponent* UpdatedComponent, EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport);
+	// Create the PreviewAnimationInstance if the AnimationAsset and SkeletalMesh both exist, and set the animation to run on the SkeletalMeshComponent
+	void UpdateSkeletalMeshAnimation();
 
-	void CreateSkeletalMeshActor();
+	// Attach the cloth component to the skeletal mesh component, if it exists
+	void UpdateClothComponentAttachment();
 
 	bool IsComponentSelected(const UPrimitiveComponent* InComponent);
 
 	TObjectPtr<UChaosClothPreviewSceneDescription> PreviewSceneDescription;
 
 	TSharedPtr<FAssetEditorModeManager> ClothPreviewEditorModeManager;
-};
 
+	TObjectPtr<UAnimSingleNodeInstance> PreviewAnimInstance;
+
+	TObjectPtr<AActor> SceneActor;
+
+	TObjectPtr<UChaosClothComponent> ClothComponent;
+
+	TObjectPtr<USkeletalMeshComponent> SkeletalMeshComponent;
+
+	TSharedPtr<FTransformGizmoDataBinder> DataBinder = nullptr;
+};
+} // namespace UE::Chaos::ClothAsset
 

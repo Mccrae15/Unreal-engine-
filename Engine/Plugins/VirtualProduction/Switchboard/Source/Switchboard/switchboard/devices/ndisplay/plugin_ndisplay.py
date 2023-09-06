@@ -1,6 +1,5 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
 
-import concurrent.futures
 import json
 import os
 import sys
@@ -19,11 +18,13 @@ from switchboard import switchboard_widgets as sb_widgets
 from switchboard import switchboard_dialog as sb_dialog
 from switchboard.config import CONFIG, BoolSetting, IntSetting, FilePathSetting, \
     LoggingSetting, OptionSetting, Setting, StringSetting, SETTINGS, \
-    StringListSetting, migrate_comma_separated_string_to_list
+    StringListSetting, AddressSetting, migrate_comma_separated_string_to_list, \
+    map_name_is_valid, get_game_launch_level_path
 from switchboard.devices.device_widget_base import AddDeviceDialog
 from switchboard.devices.unreal.plugin_unreal import DeviceUnreal, \
     DeviceWidgetUnreal, LiveLinkPresetSetting, MediaProfileSetting
 from switchboard.devices.unreal.uassetparser import UassetParser
+from switchboard.devices.device_base import DeviceStatus
 from switchboard.switchboard_logging import LOGGER
 
 from .ndisplay_monitor_ui import nDisplayMonitorUI
@@ -225,6 +226,16 @@ class DeviceWidgetnDisplay(DeviceWidgetUnreal):
 
     signal_device_widget_primary = QtCore.Signal(object)
 
+    def on_name_changed(self, text):
+        super().on_name_changed(text)
+
+        if self.name_line_edit.is_valid:
+            point = self.name_line_edit.parent().mapToGlobal(
+                self.name_line_edit.geometry().topRight())
+            self.help_tool_tip.showText(
+                point,
+                "WARNING: Device names must match the nDisplay configuration")
+
     def _add_control_buttons(self):
         self._autojoin_visible = False
         super()._add_control_buttons()
@@ -320,6 +331,25 @@ class DevicenDisplay(DeviceUnreal):
                 "dx12 -sm6", 
                 "vulkan"
             ],
+        ),
+        'multiplayer_mode': OptionSetting(
+            attr_name="multiplayer_mode",
+            nice_name="Multiplayer Server Mode",
+            value='None',
+            possible_values=['None', 'Listen server', 'Dedicated server']
+        ),
+        'dedicated_server_address': AddressSetting(
+            attr_name="dedicated_server_address",
+            nice_name="Dedicated Server Address",
+            value='127.0.0.1',
+            tool_tip='Server address to connect to. Not used if Multiplayer Server Mode '
+                     'is set to "Listen Server" or auto start of dedicated server is enabled'
+        ),
+        'dedicated_server_port': IntSetting(
+            attr_name="dedicated_server_port",
+            nice_name="Dedicated Server Port",
+            value='7777',
+            tool_tip='Server port to connect to. Not used if Multiplayer Server Mode is not Dedicated Server'
         ),
         'render_mode': OptionSetting(
             attr_name="render_mode",
@@ -431,6 +461,7 @@ class DevicenDisplay(DeviceUnreal):
                 'LogDisplayClusterRenderSync',
                 'LogDisplayClusterViewport',
                 'LogDisplayClusterMedia',
+                'LogDisplayClusterStageMonitoringDWM',
                 'LogLiveLink',
                 'LogRemoteControl',
             ],
@@ -561,8 +592,6 @@ class DevicenDisplay(DeviceUnreal):
         self.path_to_config_on_host = DevicenDisplay.csettings[
             'ndisplay_config_file'].get_value()
 
-        if len(self.settings['ue_command_line'].get_value()) == 0:
-            self.generate_unreal_command_line()
 
         CONFIG.ENGINE_DIR.signal_setting_overridden.connect(
             self.on_cmdline_affecting_override)
@@ -590,6 +619,9 @@ class DevicenDisplay(DeviceUnreal):
 
         # node configuration (updated from config file)
         self.nodeconfig = {}
+
+        if len(self.settings['ue_command_line'].get_value()) == 0:
+            self.generate_unreal_command_line()
 
         try:
             cfg_file = DevicenDisplay.csettings[
@@ -677,8 +709,81 @@ class DevicenDisplay(DeviceUnreal):
         return DevicenDisplay.csettings[
             'udpmessaging_extra_static_endpoints'].get_value(self.name)
 
+    def generate_multiplayer_map_name_args(self, map_name):
+
+        primary_device = self.get_primary_node_device()
+        primary_device_name = 'Node_0' if primary_device is None else primary_device.name
+        primary_device_address = '127.0.0.1' if primary_device is None else primary_device.address
+
+        primary_node_binary_event_port = 41004
+
+        # set primary node binary event port
+        if self.nodeconfig and 'port_ce_binary' in self.nodeconfig:
+            primary_node_binary_event_port = self.nodeconfig['port_ce_binary']
+
+        cluster_nodes_count = 0
+        for device in self.active_unreal_devices:
+            is_device_connected = (device.status == DeviceStatus.CLOSED) or (device.status == DeviceStatus.OPEN)
+            if (device.device_type == "nDisplay") and is_device_connected:
+                cluster_nodes_count = cluster_nodes_count + 1
+
+        def get_common_args():
+            """ 
+            get common args for client and server 
+            """
+            return '?'.join([
+                    f'ClusterId={os.getpid()}',
+                    f'PrimaryNodeId={primary_device_name}',
+                    f'PrimaryNodePort={primary_node_binary_event_port}',
+                    f'ClusterNodesCount={cluster_nodes_count}'
+                ])
+
+        def get_client_args(server_address):
+            return '?'.join([
+                    server_address,
+                    f'node={self.name}',
+                    get_common_args()
+                ])
+
+        multiplayer_mode_name = DevicenDisplay.csettings["multiplayer_mode"].get_value()
+
+        # single player
+        if multiplayer_mode_name == 'None':
+            return map_name
+        
+        def is_local_address(address):
+            return address == SETTINGS.ADDRESS.get_value() or address == '127.0.0.1'
+
+        # dedicated server
+        if multiplayer_mode_name == 'Dedicated server':
+            dedicated_server_address = DevicenDisplay.csettings["dedicated_server_address"].get_value()
+
+            if dedicated_server_address == self.address or is_local_address(self.address):
+                dedicated_server_address = '127.0.0.1'
+
+            return get_client_args(
+                f'{dedicated_server_address}:{DevicenDisplay.csettings["dedicated_server_port"].get_value()}')
+
+        # listen server
+        if not self.is_primary():
+            return get_client_args(primary_device_address)
+
+        if map_name_is_valid(map_name):
+            return '?'.join([map_name,'Listen', get_common_args()])
+         
+        current_map_name = get_game_launch_level_path()
+        if current_map_name.strip() == '':
+            return map_name
+
+        return '?'.join([current_map_name, 'Listen', get_common_args()])
+
     def generate_unreal_command_line(self, map_name=""):
-        uproject = os.path.normpath(CONFIG.UPROJECT_PATH.get_value(self.name))
+        uproject = CONFIG.UPROJECT_PATH.get_value(self.name)
+        
+        # normalize path if not empty
+        if uproject != "":
+            uproject = os.path.normpath(uproject)
+            uproject = f'"{uproject}"'
 
         # Extra arguments specified in settings
         additional_args = self.extra_cmdline_args_setting
@@ -798,9 +903,12 @@ class DevicenDisplay(DeviceUnreal):
             if DevicenDisplay.csettings['disable_all_screen_messages'].get_value()
             else '')
 
+        # Modify map name arg for multiplayer mode
+        map_name = self.generate_multiplayer_map_name_args(map_name)
+
         # fill in fixed arguments
         args = [
-            f'"{uproject}"',
+            f'{uproject}',
             "-game",                      # render nodes run in -game
             f'{map_name}',                # map to open
             "-messaging",                 # enables messaging, needed for MultiUser
@@ -833,6 +941,13 @@ class DevicenDisplay(DeviceUnreal):
             f'{udpm_transport_unicast}',  # -UDPMESSAGING_TRANSPORT_UNICAST=
             f'{udpm_transport_static}',   # -UDPMESSAGING_TRANSPORT_STATIC=
         ]
+
+        # Specify multiplayer with listen server mode by arg for clients if enabled
+        if DevicenDisplay.csettings["multiplayer_mode"].get_value() == 'Listen server'and not self.is_primary():
+            args.extend([
+                '-dc_replicationserver_type listen'
+            ])
+
 
         # fill in ExecCmds
         exec_cmds = self.csettings["ndisplay_exec_cmds"].get_value(self.name).copy()
@@ -895,7 +1010,7 @@ class DevicenDisplay(DeviceUnreal):
         # Insights traces parameters
         if CONFIG.INSIGHTS_TRACE_ENABLE.get_value():
 
-            LOGGER.warning(f"Unreal Insight Tracing is enabled for '{self.name}'. This may effect Unreal Engine performance.")
+            LOGGER.warning(f"Unreal Insight Tracing is enabled for '{self.name}'. This may affect Unreal Engine performance.")
 
             remote_utrace_path = self.get_utrace_filepath()
 
@@ -1030,10 +1145,16 @@ class DevicenDisplay(DeviceUnreal):
 
         # Update the state of the button depending on whether this device is
         # the primary or not.
-        is_primary = (
-            self.name ==
-            DevicenDisplay.csettings['primary_device_name'].get_value())
-        device_widget.primary_button.setChecked(is_primary)
+        device_widget.primary_button.setChecked(self.is_primary())
+
+    def get_primary_node_device(self):
+        for device in self.active_unreal_devices:
+            if device.device_type == 'nDisplay' and device.is_primary():
+                return device
+
+    def is_primary(self):
+        '''Check if the device is the primary or not'''
+        return self.name == DevicenDisplay.csettings['primary_device_name'].get_value()
 
     def select_as_primary(self):
         ''' Selects this node as the primary node in the nDisplay cluster '''
@@ -1097,8 +1218,9 @@ class DevicenDisplay(DeviceUnreal):
             dev for dev in cls.active_unreal_devices
             if dev.device_type == 'nDisplay']
 
-        for device in devices:
+        shown_unknown_node_warning = False
 
+        for device in devices:
             # We exclude devices by disconnecting from them
             if device.is_disconnected:
                 continue
@@ -1109,9 +1231,19 @@ class DevicenDisplay(DeviceUnreal):
             # No name match, no node. Renaming nodes in Switchboard is not
             # currently supported.
             if node is None:
-                LOGGER.warning(
+                LOGGER.error(
                     f'Skipped "{device.name}" because it did not match any '
                     'node in the nDisplay configuration')
+
+                if not shown_unknown_node_warning:
+                    shown_unknown_node_warning = True
+                    QtWidgets.QMessageBox.warning(
+                        None, 'Unknown nDisplay Node',
+                        'One or more nDisplay devices have names that do not '
+                        'correspond to nodes in the configuration. This may '
+                        'prevent the cluster from launching correctly. Refer '
+                        'to the log for more details.')
+
                 continue
 
             # override address
@@ -1206,6 +1338,7 @@ class DevicenDisplay(DeviceUnreal):
                 "address": cnode['host'],
                 "primary": primary,
                 "port_ce": int(primaryNode['ports']['ClusterEventsJson']),
+                "port_ce_binary": int(primaryNode['ports']['ClusterEventsBinary']),
                 "kwargs": kwargs,
             })
 

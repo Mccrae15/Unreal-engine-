@@ -38,7 +38,7 @@ private:
 	/** Resolves the state a transition points to. SourceState is nullptr for global tasks. */
 	bool ResolveTransitionState(const UStateTreeState* SourceState, const FStateTreeStateLink& Link, FStateTreeStateHandle& OutTransitionHandle) const;
 	FStateTreeStateHandle GetStateHandle(const FGuid& StateID) const;
-	UStateTreeState* GetState(const FGuid& StateID);
+	UStateTreeState* GetState(const FGuid& StateID) const;
 
 	bool CreateStates();
 	bool CreateStateRecursive(UStateTreeState& State, const FStateTreeStateHandle Parent);
@@ -50,18 +50,25 @@ private:
 	
 	bool CreateConditions(UStateTreeState& State, TConstArrayView<FStateTreeEditorNode> Conditions);
 	bool CreateCondition(UStateTreeState& State, const FStateTreeEditorNode& CondNode, const EStateTreeConditionOperand Operand, const int8 DeltaIndent);
-	bool CreateTask(UStateTreeState* State, const FStateTreeEditorNode& TaskNode, bool& bOutHasTransitionTasks);
+	bool CreateTask(UStateTreeState* State, const FStateTreeEditorNode& TaskNode);
 	bool CreateEvaluator(const FStateTreeEditorNode& EvalNode);
-	bool GetAndValidateBindings(const FStateTreeBindableStructDesc& TargetStruct, TArray<FStateTreeEditorPropertyBinding>& OutBindings) const;
-	bool IsPropertyAnyEnum(const FStateTreeBindableStructDesc& Struct, FStateTreeEditorPropertyPath Path) const;
-	bool ValidateStructRef(const FStateTreeBindableStructDesc& SourceStruct, FStateTreeEditorPropertyPath SourcePath,
-							const FStateTreeBindableStructDesc& TargetStruct, FStateTreeEditorPropertyPath TargetPath) const;
-	bool CompileAndValidateNode(const UStateTreeState* SourceState, const FStateTreeBindableStructDesc& NodeDesc, FStructView NodeView, const FStateTreeDataView InstanceData) const;
+	bool GetAndValidateBindings(const FStateTreeBindableStructDesc& TargetStruct, FStateTreeDataView TargetValue, TArray<FStateTreePropertyPathBinding>& OutBindings) const;
+	bool IsPropertyAnyEnum(const FStateTreeBindableStructDesc& Struct, FStateTreePropertyPath Path) const;
+	bool ValidateStructRef(const FStateTreeBindableStructDesc& SourceStruct, FStateTreePropertyPath SourcePath,
+							const FStateTreeBindableStructDesc& TargetStruct, FStateTreePropertyPath TargetPath) const;
+	bool CompileAndValidateNode(const UStateTreeState* SourceState, const FStateTreeBindableStructDesc& NodeDesc, FStructView NodeView, const FStateTreeDataView InstanceData);
 
+	void InstantiateStructSubobjects(FStructView Struct);
+	
+	FStateTreeDataView GetBindingSourceValue(const int32 SourceIndex);
+	
 	FStateTreeCompilerLog& Log;
 	UStateTree* StateTree = nullptr;
 	UStateTreeEditorData* EditorData = nullptr;
+	TMap<FGuid, int32> IDToNode;
 	TMap<FGuid, int32> IDToState;
+	TMap<FGuid, int32> IDToTransition;
+	TMap<FGuid, const FStateTreeDataView > IDToStructValue;
 	TArray<UStateTreeState*> SourceStates;
 
 	TArray<FInstancedStruct> Nodes;

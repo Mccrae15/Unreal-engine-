@@ -20,9 +20,12 @@ class URigHierarchy;
 class URigHierarchyController;
 
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FRigHierarchyModifiedEvent, ERigHierarchyNotification /* type */, URigHierarchy* /* hierarchy */, const FRigBaseElement* /* element */);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FRigHierarchyModifiedDynamicEvent, ERigHierarchyNotification, NotifType, URigHierarchy*, Hierarchy, FRigElementKey, Subject);
 DECLARE_EVENT_FiveParams(URigHierarchy, FRigHierarchyUndoRedoTransformEvent, URigHierarchy*, const FRigElementKey&, ERigTransformType::Type, const FTransform&, bool /* bUndo */);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FRigHierarchyMetadataChangedDelegate, const FRigElementKey& /* Key */, const FName& /* Name */);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FRigHierarchyMetadataTagChangedDelegate, const FRigElementKey& /* Key */, const FName& /* Tag */, bool /* AddedOrRemoved */);
+
+extern CONTROLRIG_API TAutoConsoleVariable<bool> CVarControlRigHierarchyEnableRotationOrder;
 
 UENUM()
 enum ERigTransformStackEntryType : int
@@ -195,6 +198,11 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
     void ResetCurveValues();
+
+	/**
+	 * Resets all curves to be unset (defaulting to 0.0)
+	 */
+	void UnsetCurveValues(bool bSetupUndo = false);
 
 	/**
 	 * Returns the number of elements in the Hierarchy.
@@ -1985,7 +1993,7 @@ public:
 	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
 	 * @return Returns the current preferred rotator
 	 */
-	FRotator GetControlPreferredRotator(FRigControlElement* InControlElement, bool bInitial = false) const
+	FRotator GetControlPreferredRotator(const FRigControlElement* InControlElement, bool bInitial = false) const
 	{
 		if(InControlElement)
 		{
@@ -1997,32 +2005,32 @@ public:
 	/**
 	 * Sets a control's preferred rotator (local transform rotation)
 	 * @param InKey The key of the element to retrieve the current value for
-	 * @param InValue The new preferred rotator to set
+	 * @param InRotator The new preferred rotator to set
 	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
 	 * @param bFixEulerFlips If true the new rotator value will use the shortest path
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
-	void SetControlPreferredRotator(FRigElementKey InKey, const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false)
+	void SetControlPreferredRotator(FRigElementKey InKey, const FRotator& InRotator, bool bInitial = false, bool bFixEulerFlips = false)
 	{
-		SetControlPreferredRotatorByIndex(GetIndex(InKey), InValue, bInitial, bFixEulerFlips);
+		SetControlPreferredRotatorByIndex(GetIndex(InKey), InRotator, bInitial, bFixEulerFlips);
 	}
 	
 
 	/**
 	 * Sets a control's preferred rotator (local transform rotation)
 	 * @param InElementIndex The element index to look up
-	 * @param InValue The new preferred rotator to set
+	 * @param InRotator The new preferred rotator to set
 	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
 	 * @param bFixEulerFlips If true the new rotator value will use the shortest path
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
-	void SetControlPreferredRotatorByIndex(int32 InElementIndex, const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false)
+	void SetControlPreferredRotatorByIndex(int32 InElementIndex, const FRotator& InRotator, bool bInitial = false, bool bFixEulerFlips = false)
 	{
 		if(Elements.IsValidIndex(InElementIndex))
 		{
 			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
 			{
-				SetControlPreferredRotator(ControlElement, InValue, bInitial, bFixEulerFlips);
+				SetControlPreferredRotator(ControlElement, InRotator, bInitial, bFixEulerFlips);
 			}
 		}
 	}
@@ -2030,18 +2038,305 @@ public:
 	/**
 	 * Sets a control's preferred rotator (local transform rotation)
 	 * @param InControlElement The element to look up
-	 * @param InValue The new preferred rotator to set
+	 * @param InRotator The new preferred rotator to set
 	 * @param bInitial If true we'll return the preferred rotator for the initial - otherwise current transform
 	 * @param bFixEulerFlips If true the new rotator value will use the shortest path
 	 */
-	void SetControlPreferredRotator(FRigControlElement* InControlElement, const FRotator& InValue, bool bInitial = false, bool bFixEulerFlips = false)
+	void SetControlPreferredRotator(FRigControlElement* InControlElement, const FRotator& InRotator, bool bInitial = false, bool bFixEulerFlips = false)
 	{
 		if(InControlElement)
 		{
-			InControlElement->PreferredEulerAngles.SetRotator(InValue, bInitial, bFixEulerFlips);
+			InControlElement->PreferredEulerAngles.SetRotator(InRotator, bInitial, bFixEulerFlips);
 		}
 	}
+
+	/**
+	 * Returns a control's preferred euler angles (local transform rotation)
+	 * @param InKey The key of the element to retrieve the current value for
+	 * @param InRotationOrder The rotation order to use when retrieving the euler angles
+	 * @param bInitial If true we'll return the preferred euler angles for the initial - otherwise current transform
+	 * @return Returns the current preferred euler angles
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FVector GetControlPreferredEulerAngles(FRigElementKey InKey, EEulerRotationOrder InRotationOrder, bool bInitial = false) const
+	{
+		return GetControlPreferredEulerAnglesByIndex(GetIndex(InKey), InRotationOrder, bInitial);
+	}
+
+	/**
+	 * Returns a control's preferred euler angles (local transform rotation)
+	 * @param InElementIndex The element index to look up
+	 * @param InRotationOrder The rotation order to use when retrieving the euler angles
+	 * @param bInitial If true we'll return the preferred euler angles for the initial - otherwise current transform
+	 * @return Returns the current preferred euler angles
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	FVector GetControlPreferredEulerAnglesByIndex(int32 InElementIndex, EEulerRotationOrder InRotationOrder, bool bInitial = false) const
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				return GetControlPreferredEulerAngles(ControlElement, InRotationOrder, bInitial);
+			}
+		}
+		return FVector::ZeroVector;
+	}
+
+	/**
+	 * Returns a control's preferred euler angles (local transform rotation)
+	 * @param InControlElement The element to look up
+	 * @param InRotationOrder The rotation order to use when retrieving the euler angles
+	 * @param bInitial If true we'll return the preferred euler angles for the initial - otherwise current transform
+	 * @return Returns the current preferred euler angles
+	 */
+	FVector GetControlPreferredEulerAngles(const FRigControlElement* InControlElement, EEulerRotationOrder InRotationOrder, bool bInitial = false) const
+	{
+		if(InControlElement)
+		{
+			return InControlElement->PreferredEulerAngles.GetAngles(bInitial, InRotationOrder);
+		}
+		return FVector::ZeroVector;
+	}
+
+	/**
+	 * Sets a control's preferred euler angles (local transform rotation)
+	 * @param InKey The key of the element to retrieve the current value for
+	 * @param InEulerAngles The new preferred euler angles to set
+	 * @param InRotationOrder The rotation order to use when setting the euler angles
+	 * @param bInitial If true we'll return the preferred euler angles for the initial - otherwise current transform
+	 * @param bFixEulerFlips If true the new euler angles value will use the shortest path
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	void SetControlPreferredEulerAngles(FRigElementKey InKey, const FVector& InEulerAngles, EEulerRotationOrder InRotationOrder, bool bInitial = false, bool bFixEulerFlips = false)
+	{
+		SetControlPreferredEulerAnglesByIndex(GetIndex(InKey), InEulerAngles, InRotationOrder, bInitial, bFixEulerFlips);
+	}
 	
+
+	/**
+	 * Sets a control's preferred euler angles (local transform rotation)
+	 * @param InElementIndex The element index to look up
+	 * @param InEulerAngles The new preferred euler angles to set
+	 * @param InRotationOrder The rotation order to use when setting the euler angles
+	 * @param bInitial If true we'll return the preferred euler angles for the initial - otherwise current transform
+	 * @param bFixEulerFlips If true the new euler angles value will use the shortest path
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	void SetControlPreferredEulerAnglesByIndex(int32 InElementIndex, const FVector& InEulerAngles, EEulerRotationOrder InRotationOrder, bool bInitial = false, bool bFixEulerFlips = false)
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				SetControlPreferredEulerAngles(ControlElement, InEulerAngles, InRotationOrder, bInitial, bFixEulerFlips);
+			}
+		}
+	}
+
+	/**
+	 * Sets a control's preferred euler angles (local transform rotation)
+	 * @param InControlElement The element to look up
+	 * @param InEulerAngles The new preferred euler angles to set
+	 * @param InRotationOrder The rotation order to use when setting the euler angles
+	 * @param bInitial If true we'll return the preferred euler angles for the initial - otherwise current transform
+	 * @param bFixEulerFlips If true the new euler angles value will use the shortest path
+	 */
+	void SetControlPreferredEulerAngles(FRigControlElement* InControlElement, const FVector& InEulerAngles, EEulerRotationOrder InRotationOrder, bool bInitial = false, bool bFixEulerFlips = false)
+	{
+		if(InControlElement)
+		{
+			InControlElement->PreferredEulerAngles.SetRotationOrder(InRotationOrder);
+			InControlElement->PreferredEulerAngles.SetAngles(InEulerAngles, bInitial, InRotationOrder, bFixEulerFlips);
+		}
+	}
+
+	/**
+	 * Returns a control's preferred euler rotation order
+	 * @param InKey The key of the element to retrieve the current value for
+	 * @param bFromSettings If true the rotation order will be looked up from the control's settings, otherwise from the currently set animation value
+	 * @return Returns the current preferred euler rotation order
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	EEulerRotationOrder GetControlPreferredEulerRotationOrder(FRigElementKey InKey, bool bFromSettings = true) const
+	{
+		return GetControlPreferredEulerRotationOrderByIndex(GetIndex(InKey), bFromSettings);
+	}
+
+	/**
+	 * Returns a control's preferred euler rotation order
+	 * @param InElementIndex The element index to look up
+	 * @param bFromSettings If true the rotation order will be looked up from the control's settings, otherwise from the currently set animation value
+	 * @return Returns the current preferred euler rotation order
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	EEulerRotationOrder GetControlPreferredEulerRotationOrderByIndex(int32 InElementIndex, bool bFromSettings = true) const
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				return GetControlPreferredEulerRotationOrder(ControlElement, bFromSettings);
+			}
+		}
+		return FRigPreferredEulerAngles::DefaultRotationOrder;
+	}
+
+	/**
+	 * Returns a control's preferred euler rotation order
+	 * @param InControlElement The element to look up
+	 * @param bFromSettings If true the rotation order will be looked up from the control's settings, otherwise from the currently set animation value
+	 * @return Returns the current preferred euler rotation order
+	 */
+	EEulerRotationOrder GetControlPreferredEulerRotationOrder(const FRigControlElement* InControlElement, bool bFromSettings = true) const
+	{
+		if(InControlElement)
+		{
+			if(bFromSettings)
+			{
+				return InControlElement->Settings.PreferredRotationOrder;
+			}
+			return InControlElement->PreferredEulerAngles.RotationOrder;
+		}
+		return FRigPreferredEulerAngles::DefaultRotationOrder;
+	}
+	
+	/**
+	 * Sets a control's preferred euler rotation order
+	 * @param InKey The key of the element to retrieve the current value for
+	 * @param InRotationOrder The rotation order to use when setting the euler angles
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	void SetControlPreferredRotationOrder(FRigElementKey InKey, EEulerRotationOrder InRotationOrder)
+	{
+		SetControlPreferredRotationOrderByIndex(GetIndex(InKey), InRotationOrder);
+	}
+	
+
+	/**
+	 * Sets a control's preferred euler rotation order
+	 * @param InElementIndex The element index to look up
+	 * @param InRotationOrder The rotation order to use when setting the euler angles
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchy)
+	void SetControlPreferredRotationOrderByIndex(int32 InElementIndex, EEulerRotationOrder InRotationOrder)
+	{
+		if(Elements.IsValidIndex(InElementIndex))
+		{
+			if(FRigControlElement* ControlElement = Cast<FRigControlElement>(Elements[InElementIndex]))
+			{
+				SetControlPreferredRotationOrder(ControlElement, InRotationOrder);
+			}
+		}
+	}
+
+	/**
+	 * Sets a control's preferred euler rotation order
+	 * @param InControlElement The element to look up
+	 * @param InRotationOrder The rotation order to use when setting the euler angles
+	 */
+	void SetControlPreferredRotationOrder(FRigControlElement* InControlElement, EEulerRotationOrder InRotationOrder)
+	{
+		if(InControlElement)
+		{
+			InControlElement->PreferredEulerAngles.SetRotationOrder(InRotationOrder);
+		}
+	}
+
+	bool GetUsePreferredRotationOrder(const FRigControlElement* InControlElement) const
+	{
+		if (InControlElement)
+		{
+			{
+				return InControlElement->Settings.bUsePreferredRotationOrder;
+			}
+		}
+		return false;
+	}
+
+	void  SetUsePreferredRotationOrder(FRigControlElement* InControlElement, bool bVal)
+	{
+		if (InControlElement)
+		{
+			{
+				InControlElement->Settings.bUsePreferredRotationOrder = bVal;
+			}
+		}
+	}
+
+	FVector GetControlSpecifiedEulerAngle(const FRigControlElement* InControlElement, bool bIsInitial = false) const
+	{
+		FVector EulerAngle = FVector::ZeroVector;
+		if (InControlElement)
+		{
+			if (bIsInitial == false && GetUsePreferredRotationOrder(InControlElement))
+			{
+				EEulerRotationOrder RotationOrder = GetControlPreferredEulerRotationOrder(InControlElement);
+				EulerAngle = InControlElement->PreferredEulerAngles.GetAngles(false, RotationOrder);
+			}
+			else
+			{
+				FRotator Rotator = GetControlPreferredRotator(InControlElement);
+				EulerAngle = FVector(Rotator.Roll, Rotator.Pitch, Rotator.Yaw);
+			}
+		}
+		return EulerAngle;
+	}
+	
+	void SetControlSpecifiedEulerAngle(FRigControlElement* InControlElement, const FVector& InEulerAngle, bool bIsInitial = false)
+	{
+		if (InControlElement)
+		{
+			if (GetUsePreferredRotationOrder(InControlElement))
+			{
+				EEulerRotationOrder RotationOrder = GetControlPreferredEulerRotationOrder(InControlElement);
+				SetControlPreferredEulerAngles(InControlElement, InEulerAngle, RotationOrder, bIsInitial);
+			}
+			else
+			{
+				FRotator Rotator(InEulerAngle[1], InEulerAngle[2], InEulerAngle[0]);
+				SetControlPreferredRotator(InControlElement, Rotator, bIsInitial, false /* fix euler flips*/); //test fix todo mikez
+			}
+		}
+	}
+
+	FQuat GetControlQuaternion(const FRigControlElement* InControlElement, const FVector& InEulerAngle) const
+	{
+		if (InControlElement)
+		{
+			FRotator Rotator(InEulerAngle[1], InEulerAngle[2], InEulerAngle[0]);
+
+			if (GetUsePreferredRotationOrder(InControlElement))
+			{
+				return InControlElement->PreferredEulerAngles.GetQuatFromRotator(Rotator);
+			}
+			else
+			{
+				return Rotator.Quaternion();
+			}
+		}
+		return FQuat();
+	}
+
+	FVector GetControlAnglesFromQuat(const FRigControlElement* InControlElement, const FQuat& InQuat) const
+	{
+		FVector Angle(0, 0, 0);
+		if (InControlElement)
+		{
+
+			if (GetUsePreferredRotationOrder(InControlElement))
+			{
+				FRotator Rotator = InControlElement->PreferredEulerAngles.GetRotatorFromQuat(InQuat);
+				Angle = Rotator.Euler();
+			}
+			else
+			{
+				FRotator Rotator(InQuat);
+				Angle = Rotator.Euler();
+			}
+		}
+		return Angle;
+	}
 	/**
 	 * Returns the pin type to use for a control
 	 * @param InControlElement The control to return the pin type for
@@ -3238,6 +3533,10 @@ public:
 private:
 
 	FRigHierarchyModifiedEvent ModifiedEvent;
+
+	UPROPERTY(BlueprintReadOnly, Category = RigHierarchy, meta = (ScriptName = "ModifiedEvent", AllowPrivateAccess = "true"))
+	FRigHierarchyModifiedDynamicEvent ModifiedEventDynamic;
+	
 	FRigHierarchyMetadataChangedDelegate MetadataChangedDelegate;
 	FRigHierarchyMetadataTagChangedDelegate MetadataTagChangedDelegate;
 	FRigEventDelegate EventDelegate;
@@ -3606,7 +3905,7 @@ private:
 
 	// Storage for the elements
 	mutable TArray<FRigBaseElement*> Elements;
-	FCriticalSection ElementsLock;
+	mutable FCriticalSection ElementsLock;
 
 	// Storage for the elements
 	mutable TArray<TArray<FRigBaseElement*>> ElementsPerType;
@@ -4047,13 +4346,13 @@ protected:
 	bool bUpdatePreferedEulerAngleWhenSettingTransform;
 	
 private:
+	
+	void EnsureCacheValidityImpl();
 
 	// NOTE: it is not safe to read or write the execute context without locking it first as the
 	// FRigHierarchyExecuteContextBracket can change the context from the main thread (from sequencer for example)
 	// at the same time that a control rig is being evaluated on an animation thread.
 	mutable FCriticalSection ExecuteContextLock;
-	void EnsureCacheValidityImpl();
-
 	const FRigVMExtendedExecuteContext* ExecuteContext;
 
 #if WITH_EDITOR
@@ -4086,6 +4385,7 @@ private:
 
 	void QueueNotification(ERigHierarchyNotification InNotification, const FRigBaseElement* InElement);
 	void SendQueuedNotifications();
+	void Reset_Impl(bool bResetElements);
 	
 	friend class URigHierarchyController;
 	friend class UControlRig;

@@ -9,10 +9,12 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/App.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
+
 
 namespace UE
 {
@@ -22,30 +24,15 @@ namespace UE
 		{
 			static FString ProcessorPath = [&]()
 			{
-				FString Path = FPaths::Combine(FPaths::EngineDir(), TEXT("Binaries"));
-
-#if PLATFORM_MAC
-				Path = FPaths::Combine(Path, TEXT("Mac/InterchangeWorker"));
-#elif PLATFORM_LINUX
-				Path = FPaths::Combine(Path, TEXT("Linux/InterchangeWorker"));
-#elif PLATFORM_WINDOWS
-#if UE_BUILD_DEBUG
+				
+				const FString InterchangeWorkerApplicationName = TEXT("InterchangeWorker");
+				FString Path = FPlatformProcess::GenerateApplicationPath(InterchangeWorkerApplicationName, FApp::GetBuildConfiguration());
+				if (!FPaths::FileExists(Path))
 				{
-					FString DebugPath = FPaths::Combine(Path, TEXT("Win64/InterchangeWorker-Win64-Debug.exe"));
-					if (!FPaths::FileExists(DebugPath))
-					{
-						//Try the development build if we cannot find the debug build
-						Path = FPaths::Combine(Path, TEXT("Win64/InterchangeWorker.exe"));
-					}
-					else
-					{
-						Path = MoveTemp(DebugPath);
-					}
+					//Force the development build if the path is not right
+					Path = FPlatformProcess::GenerateApplicationPath(InterchangeWorkerApplicationName, EBuildConfiguration::Development);
 				}
-#else //#if UE_BUILD_DEBUG
-				Path = FPaths::Combine(Path, TEXT("Win64/InterchangeWorker.exe"));
-#endif //#else UE_BUILD_DEBUG
-#endif //#elif PLATFORM_WINDOWS
+
 				if (!FPaths::FileExists(Path))
 				{
 					UE_LOG(LogInterchangeDispatcher, Display, TEXT("InterchangeWorker executable not found. Expected location: %s"), *FPaths::ConvertRelativePathToFull(Path));

@@ -42,6 +42,18 @@ struct FMicrosoftPlatformString :
 	using FGenericPlatformString::Strncmp;
 	using FGenericPlatformString::Strnicmp;
 
+#if !PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
+	template <typename CharType>
+	static CharType* Strupr(CharType* Dest, SIZE_T DestCount)
+	{
+		for (CharType* Char = Dest; *Char && DestCount > 0; Char++, DestCount--)
+		{
+			*Char = TChar<CharType>::ToUpper(*Char);
+		}
+		return Dest;
+	}
+#endif
+
 	/** 
 	 * Wide character implementation 
 	 **/
@@ -60,11 +72,6 @@ struct FMicrosoftPlatformString :
 	static FORCEINLINE WIDECHAR* Strcat(WIDECHAR* Dest, SIZE_T DestCount, const WIDECHAR* Src)
 	{
 		return (WIDECHAR*)_tcscat(Dest, Src);
-	}
-
-	static FORCEINLINE WIDECHAR* Strupr(WIDECHAR* Dest, SIZE_T DestCount)
-	{
-		return (WIDECHAR*)_tcsupr(Dest);
 	}
 
 	static FORCEINLINE int32 Strcmp( const WIDECHAR* String1, const WIDECHAR* String2 )
@@ -149,7 +156,6 @@ struct FMicrosoftPlatformString :
 	static FORCEINLINE int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr )
 	{
 		int32 Result = vswprintf(Dest, DestSize, Fmt, ArgPtr);
-		va_end( ArgPtr );
 		return Result;
 	}
 #endif
@@ -172,11 +178,6 @@ struct FMicrosoftPlatformString :
 	static FORCEINLINE ANSICHAR* Strcat(ANSICHAR* Dest, SIZE_T DestCount, const ANSICHAR* Src)
 	{
 		return (ANSICHAR*)strcat( Dest, Src );
-	}
-
-	static FORCEINLINE ANSICHAR* Strupr(ANSICHAR* Dest, SIZE_T DestCount)
-	{
-		return (ANSICHAR*)_strupr(Dest);
 	}
 
 	static FORCEINLINE int32 Strcmp( const ANSICHAR* String1, const ANSICHAR* String2 )
@@ -257,7 +258,6 @@ struct FMicrosoftPlatformString :
 	static FORCEINLINE int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, const ANSICHAR*& Fmt, va_list ArgPtr )
 	{
 		int32 Result = vsnprintf( Dest, DestSize, Fmt, ArgPtr );
-		va_end( ArgPtr );
 		return (Result != -1 && Result < (int32)DestSize) ? Result : -1;
 	}
 
@@ -291,11 +291,6 @@ struct FMicrosoftPlatformString :
 	static FORCEINLINE UTF8CHAR* Strcat(UTF8CHAR* Dest, SIZE_T DestCount, const UTF8CHAR* Src)
 	{
 		return (UTF8CHAR*)Strcat((ANSICHAR*)Dest, DestCount, (const ANSICHAR*)Src);
-	}
-
-	static FORCEINLINE UTF8CHAR* Strupr(UTF8CHAR* Dest, SIZE_T DestCount)
-	{
-		return (UTF8CHAR*)Strupr((ANSICHAR*)Dest, DestCount);
 	}
 
 	static FORCEINLINE int32 Strcmp(const UTF8CHAR* String1, const UTF8CHAR* String2)

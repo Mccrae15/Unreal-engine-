@@ -7,8 +7,6 @@ public class DerivedDataEditor : ModuleRules
 	public DerivedDataEditor(ReadOnlyTargetRules Target)
 		 : base(Target)
 	{
-		PublicIncludePaths.Add(ModuleDirectory + "/Public");
-
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -37,7 +35,6 @@ public class DerivedDataEditor : ModuleRules
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
-				"MainFrame",
 			});
 		UnsafeTypeCastWarningLevel = WarningLevel.Error;
 	}

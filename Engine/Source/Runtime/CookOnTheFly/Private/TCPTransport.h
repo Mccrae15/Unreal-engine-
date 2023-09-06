@@ -24,5 +24,5 @@ private:
 
 	class FSocket*		FileSocket;
 	class FMultichannelTcpSocket* MCSocket;
-
+	FString HostName;
 };

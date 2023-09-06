@@ -7,19 +7,24 @@
 
 FKeyHandle::FKeyHandle()
 {
-	static uint32 LastKeyHandleIndex = 1;
+	static std::atomic<uint32> LastKeyHandleIndex = 1;
 	Index = ++LastKeyHandleIndex;
 
-	if (LastKeyHandleIndex == 0)
+	if (Index == 0)
 	{
 		// If we are cooking, allow wrap-around
 		if (IsRunningCookCommandlet())
 		{
-			Index = LastKeyHandleIndex = 1;
+			// Skip indices until it's not 0 anymore as we can't 
+			// assign without loss of thread-safety.
+			while (Index == 0)
+			{
+				Index = ++LastKeyHandleIndex;
+			}
 		}
 		else
 		{
-			check(LastKeyHandleIndex != 0); // check in the unlikely event that this overflows
+			check(Index != 0); // check in the unlikely event that this overflows
 		}
 	}
 }
@@ -50,11 +55,6 @@ void FKeyHandleMap::Initialize(TArrayView<const FKeyHandle> InKeyHandles)
 
 void FKeyHandleMap::Add( const FKeyHandle& InHandle, int32 InIndex )
 {
-	for (auto It = KeyHandlesToIndices.CreateIterator(); It; ++It)
-	{
-		int32& KeyIndex = It.Value();
-		if (KeyIndex >= InIndex) { ++KeyIndex; }
-	}
 
 	if (InIndex > KeyHandles.Num())
 	{
@@ -68,6 +68,14 @@ void FKeyHandleMap::Add( const FKeyHandle& InHandle, int32 InIndex )
 	}
 	else
 	{
+		if (InIndex < KeyHandles.Num())
+		{
+			for (auto It = KeyHandlesToIndices.CreateIterator(); It; ++It)
+			{
+				int32& KeyIndex = It.Value();
+				if (KeyIndex >= InIndex) { ++KeyIndex; }
+			}
+		}
 		KeyHandles.Insert(InHandle, InIndex);
 	}
 
@@ -92,6 +100,13 @@ void FKeyHandleMap::Empty(int32 ExpectedNumElements)
 {
 	KeyHandlesToIndices.Empty(ExpectedNumElements);
 	KeyHandles.Empty(ExpectedNumElements);
+}
+
+
+void FKeyHandleMap::Reserve(int32 NumElements)
+{
+	KeyHandlesToIndices.Reserve(NumElements);
+	KeyHandles.Reserve(NumElements);
 }
 
 

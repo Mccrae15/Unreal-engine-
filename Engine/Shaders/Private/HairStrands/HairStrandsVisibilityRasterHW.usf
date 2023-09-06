@@ -21,7 +21,6 @@ float3				ViewDir;
 uint				HairMaterialId;
 float3				CameraOrigin;
 float				RadiusAtDepth1;
-uint				ControlPointStart;
 uint				PrimIDsBufferSize;
 uint				bIsOrthoView;
 
@@ -54,7 +53,7 @@ VSOutput VSMain(VSInput Input)
 	#if PERMUTATION_CULLING
 	uint PrimID = Input.InstanceID;
 
-	if (HairStrandsVF_bIsCullingEnable)
+	if (HairStrandsVF_bCullingEnable)
 	{
 		const uint NumVerticesAfterCulling = HairStrandsVF_CullingIndirectBuffer[3];
 		if (PrimID >= NumVerticesAfterCulling)
@@ -78,12 +77,8 @@ VSOutput VSMain(VSInput Input)
 			PrimID = VertexIndex0;
 		}
 	}
-	else
-	{
-		PrimID += ControlPointStart;
-	}
 	#else
-	const uint PrimID = ControlPointStart + Input.InstanceID;
+	const uint PrimID = Input.InstanceID;
 	#endif // PERMUTATION_CULLING
 #endif // PERMUTATION_DRAW_INDIRECT
 
@@ -132,7 +127,7 @@ VSOutput VSMain(VSInput Input)
 	
 	Output.Position = mul(float4(WP, 1.0f), LWCHackToFloat(PrimaryView.WorldToClip));
 	Output.Radius = CPWorldRadius * 2000.0f;
-	Output.PrimMatID = PackHairVisPrimitiveMaterialId(PrimID, HairMaterialId);
+	Output.PrimMatID = PackHairVisControlPointMaterialId(PrimID, HairMaterialId);
 
 	return Output;
 }
@@ -144,7 +139,7 @@ VSOutput VSMain(VSInput Input)
 RWTexture2D<uint>	OutHairCountTexture;
 RWTexture2D<uint>	OutDepthCovTexture;
 RWTexture2D<uint>	OutPrimMatTexture;
-float				SampleWeight;
+float				CoverageScale;
 
 [earlydepthstencil]
 void PSMain(
@@ -156,7 +151,7 @@ void PSMain(
 	const uint2 Coord = Position.xy;
 	const uint PackedDepthCov = PackHairVisDepthCoverage(Position.z, 1.0f);
 
-	InterlockedAdd(OutHairCountTexture[Coord], min(Radius / Position.w, 0.5f) * 2.0f * 1000.0f * SampleWeight);
+	InterlockedAdd(OutHairCountTexture[Coord], min(Radius / Position.w, 0.5f) * 2.0f * 1000.0f * CoverageScale);
 
 	// Write Depth + PrimMatID if depth test against hair depths is passed
 	uint OldValue;

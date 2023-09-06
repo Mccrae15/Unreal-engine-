@@ -4,6 +4,8 @@
 
 #include "StageActor/DisplayClusterWeakStageActorPtr.h"
 
+#include "Components/DisplayClusterLabelConfiguration.h"
+
 #include "DisplayClusterMeshProjectionRenderer.h"
 
 #include "SceneView.h"
@@ -111,6 +113,7 @@ public:
 	 *
 	 * @param bShowNorthMap If true, return the texture for the north normal map. Otherwise, return the texture for the south normal map.
 	 */
+	UE_DEPRECATED(5.3, "The raw stage geoemetry normal maps are no longer exposed by the stage geometry component")
 	DISPLAYCLUSTERSCENEPREVIEW_API const UTexture2D* GetNormalMapTexture(bool bShowNorthMap);
 
 	/**
@@ -234,13 +237,18 @@ public:
 
 	struct FAddLightCardArgs
 	{
-		bool bShowLabels;
-		float LabelScale;
+		UE_DEPRECATED(5.3, "Use LabelConfiguration to configure label visibility.")
+		bool bShowLabels = false;
+		UE_DEPRECATED(5.3, "Use LabelConfiguration to configure label scale.")
+		float LabelScale = 1.f;
+
+		/** Label configuration to use for the new light card */
+		FDisplayClusterLabelConfiguration LabelConfiguration;
 
 		FAddLightCardArgs():
-		bShowLabels(false),
-		LabelScale(1.f)
-		{}
+			LabelConfiguration()
+		{
+		}
 	};
 	
 	struct FSpawnActorArgs

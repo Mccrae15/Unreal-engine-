@@ -216,16 +216,6 @@ void FLinker::Serialize( FArchive& Ar )
 	}
 }
 
-void FLinker::AddReferencedObjects(FReferenceCollector& Collector)
-{
-#if WITH_EDITOR
-	if (GIsEditor)
-	{
-		Collector.AddReferencedObject(*(UObject**)&LinkerRoot);
-	}
-#endif
-}
-
 /**
  * Return the path name of the UObject represented by the specified import. 
  * (can be used with StaticFindObject)
@@ -927,13 +917,6 @@ FLinkerLoad* LoadPackageLinker(UPackage* InOuter, const TCHAR* InLongPackageName
 FLinkerLoad* LoadPackageLinker(UPackage* InOuter, const TCHAR* InLongPackageName, uint32 LoadFlags, UPackageMap* Sandbox, FGuid* CompatibleGuid, FArchive* InReaderOverride)
 {
 	return LoadPackageLinker(InOuter, GetPackagePath(InOuter, InLongPackageName), LoadFlags, Sandbox, InReaderOverride, [](FLinkerLoad* InLinker) {});
-}
-
-
-void ResetLoadersForSave(UObject* InOuter, const TCHAR* Filename)
-{
-	UPackage* Package = dynamic_cast<UPackage*>(InOuter);
-	ResetLoadersForSave(Package, Filename);
 }
 
 void ResetLoadersForSave(UPackage* Package, const TCHAR* Filename)

@@ -9,16 +9,12 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-					"AssetTools",
+					"AssetDefinition",
 					"Core",
 					"CoreUObject",
-					"EditorFramework",
-					"Engine",
 					"ImagePlate",
-					"RHI",
-					"Slate",
+					"Settings",
 					"SlateCore",
-                    "TimeManagement",
 					"UnrealEd",
 				}
 			);

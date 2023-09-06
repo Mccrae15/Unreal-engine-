@@ -35,6 +35,7 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STableViewBase.h"
 #include "Widgets/Views/STreeView.h"
+#include "Algo/LevenshteinDistance.h"
 
 class ITableRow;
 class SComboButton;
@@ -50,6 +51,31 @@ struct FPointerEvent;
 struct FSlateBrush;
 
 DECLARE_DELEGATE_OneParam(FOnPinTypeChanged, const FEdGraphPinType&)
+
+template <typename ItemType>
+struct FTopLevenshteinResult
+{
+	ItemType Item;
+	float Score = INDEX_NONE;
+
+	bool IsSet() const { return Score != static_cast<float>(INDEX_NONE); }
+
+	void CompareAndUpdate(FStringView SearchValue, const ItemType& NewItem, FStringView NewItemValue)
+	{
+		if (SearchValue.IsEmpty() || NewItemValue.IsEmpty())
+		{
+			return;
+		}
+
+		const float WorstCase = static_cast<float>(SearchValue.Len() + NewItemValue.Len());
+		const float NormalizedDistance = 1.0f - (Algo::LevenshteinDistance(SearchValue, NewItemValue) / WorstCase);
+		if (NormalizedDistance > Score)
+		{
+			Score = NormalizedDistance;
+			Item = NewItem;
+		}
+	}
+};
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -91,7 +117,7 @@ public:
 		, _TypeTreeFilter(ETypeTreeFilter::None)
 		, _bAllowArrays(true)
 		, _TreeViewWidth(300.f)
-		, _TreeViewHeight(400.f)
+		, _TreeViewHeight(350.f)
 		, _Font(FAppStyle::GetFontStyle(TEXT("NormalFont")))
 		, _SelectorType(ESelectorType::Full)
 		, _ReadOnly(false)
@@ -192,6 +218,9 @@ protected:
 	TWeakPtr<SListView<FObjectReferenceListItem>> WeakListView;
 	TWeakPtr<SMenuOwner> PinTypeSelectorMenuOwner;
 
+	/** Holds a cache of the allowed Object Reference types for the current pin type, to be shown inline. */
+	TArray<FObjectReferenceListItem> CurrentPinAllowedObjectReferenceTypes;
+
 	/** An interface to optionally apply a custom filter to the available pin type items for display. */
 	TArray<TSharedPtr<class IPinTypeSelectorFilter>> CustomFilters;
 
@@ -233,7 +262,7 @@ protected:
 	bool GetChildrenWithSupportedTypes(const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList);
 
 	/** Helper to generate the filtered list of types, based on the search string matching */
-	bool GetChildrenMatchingSearch(const FText& SearchText, const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList);
+	bool GetChildrenMatchingSearch(const FText& SearchText, const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList, FTopLevenshteinResult<FPinTypeTreeItem>& OutTopLevenshteinResult);
 
 	/** Callback to get the tooltip text for the pin type combo box */
 	FText GetToolTipForComboBoxType() const;
@@ -262,6 +291,9 @@ protected:
 
 	/** Gets the allowable object types for an tree item, used for building the sub-menu */
 	TSharedRef< SWidget > GetAllowedObjectTypes(FPinTypeTreeItem InItem, bool bForSecondaryType);
+
+	/** Fills the provided array with generated list items based on a pin type's allowed reference types, which could then be used as the item source for a list view */
+	void GenerateAllowedObjectTypesList(TArray<FObjectReferenceListItem>& OutList, FPinTypeTreeItem InItem, bool bForSecondaryType) const;
 	
 	/**
 	 * When a pin type is selected, handle it

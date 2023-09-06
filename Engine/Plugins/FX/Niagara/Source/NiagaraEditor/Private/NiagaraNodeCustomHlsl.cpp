@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraNodeCustomHlsl.h"
-#include "SNiagaraGraphNodeCustomHlsl.h"
+
 #include "EdGraphSchema_Niagara.h"
-#include "ScopedTransaction.h"
-#include "NiagaraGraph.h"
 #include "Misc/FileHelper.h"
+#include "NiagaraGraph.h"
+#include "NiagaraHlslTranslator.h"
+#include "ScopedTransaction.h"
+#include "Widgets/SNiagaraGraphNodeCustomHlsl.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeCustomHlsl)
 
@@ -307,7 +309,7 @@ bool UNiagaraNodeCustomHlsl::VerifyEditablePinName(const FText& InName, FText& O
 	// Check to see if the symbol has to be mangled to be valid hlsl. If it does, then prevent it from being 
 	// valid. This helps clear up any ambiguity downstream in the translator.
 	FString NewName = InName.ToString();
-	FString SanitizedNewName = FHlslNiagaraTranslator::GetSanitizedSymbolName(NewName);
+	FString SanitizedNewName = FNiagaraHlslTranslator::GetSanitizedSymbolName(NewName);
 
 	if (NewName != SanitizedNewName || NewName.Len() == 0)
 	{
@@ -367,7 +369,9 @@ void UNiagaraNodeCustomHlsl::OnNewTypedPinAdded(UEdGraphPin*& NewPin)
 		if (Pins[i] != NewPin)
 			Names.Add(Pins[i]->GetFName());
 	}
-	FName Name = FNiagaraUtilities::GetUniqueName(NewPin->GetFName(), Names);
+	FNameBuilder OriginalPinName(NewPin->GetFName());
+	const FName SanitizedName = *FNiagaraHlslTranslator::GetSanitizedSymbolName(OriginalPinName.ToView());
+	FName Name = FNiagaraUtilities::GetUniqueName(SanitizedName, Names);
 	NewPin->PinName = Name;
 	UNiagaraNodeWithDynamicPins::OnNewTypedPinAdded(NewPin);
 	RebuildSignatureFromPins();
@@ -457,7 +461,7 @@ void UNiagaraNodeCustomHlsl::BuildParameterMapHistory(FNiagaraParameterMapHistor
 		}
 
 		TArray<FString> PossibleNamespaces;
-		FNiagaraParameterMapHistory::GetValidNamespacesForReading(OutHistory.GetBaseUsageContext(), 0, PossibleNamespaces);
+		FNiagaraParameterUtilities::GetValidNamespacesForReading(OutHistory.GetBaseUsageContext(), 0, PossibleNamespaces);
 
 		if ((bHasParamMapOutput || bHasParamMapInput) && ParamMapIdx != INDEX_NONE)
 		{

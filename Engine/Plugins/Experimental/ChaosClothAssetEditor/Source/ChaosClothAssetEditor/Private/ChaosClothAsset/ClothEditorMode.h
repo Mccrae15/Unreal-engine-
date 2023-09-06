@@ -5,6 +5,7 @@
 #include "BaseCharacterFXEditorMode.h"
 #include "GeometryBase.h"
 #include "Delegates/IDelegateInstance.h"
+#include "ChaosClothAsset/ClothPatternVertexType.h"
 #include "ClothEditorMode.generated.h"
 
 PREDECLARE_GEOMETRY(class FDynamicMesh3);
@@ -17,17 +18,26 @@ class UPreviewMesh;
 class UToolTarget;
 class FToolTargetTypeRequirements;
 class UWorld;
-class FChaosClothAssetEditorModeToolkit;
 class UInteractiveToolPropertySet; 
 class UMeshOpPreviewWithBackgroundCompute;
 class UClothToolViewportButtonsAPI;
 class UDynamicMeshComponent;
 class UChaosClothComponent;
 class FEditorViewportClient;
-class FChaosClothEditorRestSpaceViewportClient;
 class FViewport;
+class UDataflow;
 class UDataflowComponent;
+class SDataflowGraphEditor;
+struct FManagedArrayCollection;
+namespace UE::Chaos::ClothAsset
+{
 class FChaosClothPreviewScene;
+class FChaosClothAssetEditorModeToolkit;
+class FChaosClothAssetEditorToolkit;
+class FChaosClothEditorRestSpaceViewportClient;
+}
+class IChaosClothAssetEditorToolBuilder;
+class UEdGraphNode;
 
 /**
  * The cloth editor mode is the mode used in the cloth asset editor. It holds most of the inter-tool state.
@@ -51,9 +61,16 @@ public:
 	// Bounding box for sim space meshes
 	FBox PreviewBoundingBox() const;
 
-	// Toggle between 2D pattern and 3D rest space mesh view
-	void TogglePatternMode();
-	bool CanTogglePatternMode() const;
+	void SetConstructionViewMode(UE::Chaos::ClothAsset::EClothPatternVertexType InMode);
+	UE::Chaos::ClothAsset::EClothPatternVertexType GetConstructionViewMode() const;
+	bool CanChangeConstructionViewModeTo(UE::Chaos::ClothAsset::EClothPatternVertexType NewViewMode) const;
+
+	void ToggleConstructionViewWireframe();
+	bool CanSetConstructionViewWireframeActive() const;
+	bool IsConstructionViewWireframeActive() const
+	{
+		return bConstructionViewWireframe;
+	}
 
 	// Simulation controls
 	void SoftResetSimulation();
@@ -61,12 +78,26 @@ public:
 	void SuspendSimulation();
 	void ResumeSimulation();
 	bool IsSimulationSuspended() const;
+	void SetEnableSimulation(bool bEnabled);
+	bool IsSimulationEnabled() const;
+
+	// LODIndex == INDEX_NONE is LOD Auto
+	void SetLODModel(int32 LODIndex);
+	bool IsLODModelSelected(int32 LODIndex) const;
+	int32 GetLODModel() const;
+	int32 GetNumLODs() const;
 
 	UDataflowComponent* GetDataflowComponent() const;
 
+	TObjectPtr<UEditorInteractiveToolsContext> GetActiveToolsContext()
+	{
+		return ActiveToolsContext;
+	}
+
 private:
 
-	friend class FChaosClothAssetEditorToolkit;
+	friend class UE::Chaos::ClothAsset::FChaosClothAssetEditorToolkit;
+	friend class UE::Chaos::ClothAsset::FChaosClothAssetEditorModeToolkit;
 
 	// UEdMode
 	virtual void Enter() final;
@@ -75,7 +106,6 @@ private:
 	virtual bool ShouldToolStartBeAllowed(const FString& ToolIdentifier) const override;
 	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override;
 	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override;
-	virtual void PostUndo() override;
 	virtual void CreateToolkit() override;
 	virtual void BindCommands() override;
 
@@ -92,68 +122,122 @@ private:
 	// to turn them into the input objects that tools get (since these need preview meshes, etc).
 	static const FToolTargetTypeRequirements& GetToolTargetRequirements();
 
-	void SetPreviewScene(FChaosClothPreviewScene* PreviewScene);
+	// Use this function to register tools rather than UEdMode::RegisterTool() because we need to specify the ToolsContext
+	void RegisterClothTool(TSharedPtr<FUICommandInfo> UICommand, 
+		FString ToolIdentifier, 
+		UInteractiveToolBuilder* Builder,
+		const IChaosClothAssetEditorToolBuilder* ClothToolBuilder,
+		UEditorInteractiveToolsContext* UseToolsContext, 
+		EToolsContextScope ToolScope = EToolsContextScope::Default);
+
+	void RegisterAddNodeCommand(TSharedPtr<FUICommandInfo> AddNodeCommand, const FName& NewNodeType, TSharedPtr<FUICommandInfo> StartToolCommand);
+
+	// Register the set of tools that operate on objects in the 3D preview world 
+	void RegisterPreviewTools();
+
+	void SetPreviewScene(UE::Chaos::ClothAsset::FChaosClothPreviewScene* PreviewScene);
 
 	// Bounding box for rest space meshes
 	virtual FBox SceneBoundingBox() const override;
 
-	void SetRestSpaceViewportClient(TWeakPtr<FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> ViewportClient);
+	void SetRestSpaceViewportClient(TWeakPtr<UE::Chaos::ClothAsset::FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> ViewportClient);
 	void RefocusRestSpaceViewportClient();
+	void FirstTimeFocusRestSpaceViewport();
+
+	// intended to be called by the toolkit when selected node in the Dataflow graph changes
+	void SetSelectedClothCollection(TSharedPtr<FManagedArrayCollection> Collection);
+
+	// gets the currently selected cloth collection, as specified by the toolkit
+	TSharedPtr<FManagedArrayCollection> GetClothCollection();
+
+	void SetDataflowGraphEditor(TSharedPtr<SDataflowGraphEditor> InGraphEditor);
+	
+	void StartToolForSelectedNode(const UObject* SelectedNode);
+	void OnDataflowNodeDeleted(const TSet<UObject*>& DeletedNodes);
+
+	/**
+	* Return the single selected node in the Dataflow Graph Editor only if it has an output of the specified type
+	* If there is not a single node selected, or if it does not have the specified output, return null
+	*/
+	UEdGraphNode* GetSingleSelectedNodeWithOutputType(const FName& SelectedNodeOutputTypeName) const;
+
+	/**
+	 * Create a node with the specified type in the graph
+	*/
+	UEdGraphNode* CreateNewNode(const FName& NewNodeTypeName);
+
+	/** Create a node with the specified type, then connect it to the output of the specified UpstreamNode.
+	* If the specified output of the upstream node is already connected to another node downstream, we first break
+	* that connecttion, then insert the new node along the previous connection.
+	* We want to turn this:
+	*
+	* [UpstreamNode] ----> [DownstreamNode(s)]
+	*
+	* to this:
+	*
+	* [UpstreamNode] ----> [NewNode] ----> [DownstreamNode(s)]
+	*
+	*
+	* @param NewNodeTypeName The type of node to create, by name
+	* @param UpstreamNode Node to connect the new node to
+	* @param ConnectionTypeName The type of output of the upstream node to connect our new node to
+	* @param NewNodeConnectionName The name of the input/output connection on our new node that will be connected
+	* @return The newly-created node
+	*/
+	UEdGraphNode* CreateAndConnectNewNode(const FName& NewNodeTypeName,	UEdGraphNode& UpstreamNode,	const FName& ConnectionTypeName, const FName& NewNodeConnectionName);
 
 
-	// Rest space wireframes. They have to get ticked to be able to respond to setting changes. 
+	void InitializeContextObject();
+	void DeleteContextObject();
+
+	bool IsComponentSelected(const UPrimitiveComponent* InComponent);
+
+	// Rest space wireframe. They have to get ticked to be able to respond to setting changes. 
 	UPROPERTY()
-	TArray<TObjectPtr<UMeshElementsVisualizer>> WireframesToTick;
+	TObjectPtr<UMeshElementsVisualizer> WireframeToTick = nullptr;
 
 	// Preview Scene, here largely for convenience to avoid having to pass it around functions. Owned by the ClothEditorToolkit.
-	FChaosClothPreviewScene* PreviewScene = nullptr;
+	UE::Chaos::ClothAsset::FChaosClothPreviewScene* PreviewScene = nullptr;
 
 	// Mode-level property objects (visible or not) that get ticked.
 	UPROPERTY()
 	TArray<TObjectPtr<UInteractiveToolPropertySet>> PropertyObjectsToTick;
 
-	// Rest space editable meshes
+	// Rest space editable mesh
 	UPROPERTY()
-	TArray<TObjectPtr<UDynamicMeshComponent>> DynamicMeshComponents;
+	TObjectPtr<UDynamicMeshComponent> DynamicMeshComponent = nullptr;
 
-	// Actors required for hit testing DynamicMeshComponents
+	// Actor required for hit testing DynamicMeshComponent
 	UPROPERTY()
-	TArray<TObjectPtr<AActor>> DynamicMeshComponentParentActors;
+	TObjectPtr<AActor> DynamicMeshComponentParentActor = nullptr;
 
-	// Map back to original asset location for each DynamicMeshComponent
-	struct FDynamicMeshSourceInfo
-	{
-		int32 LodIndex;
-		int32 PatternIndex;
-	};
-	TArray<FDynamicMeshSourceInfo> DynamicMeshSourceInfos;
+	TWeakPtr<UE::Chaos::ClothAsset::FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> RestSpaceViewportClient;
 
-	TWeakPtr<FChaosClothEditorRestSpaceViewportClient, ESPMode::ThreadSafe> RestSpaceViewportClient;
-
-	// Handle to a callback triggered when the current selection changes
-	FDelegateHandle SelectionModifiedEventHandle;
-
-	// Whether to display the 2D pattern or 3D assembly in the rest space viewport
-	bool bPattern2DMode = true;
-
-	// Whether we can switch between 2D and 3D rest configuration
-	bool bCanTogglePattern2DMode = true;
+	// The first time we get a valid mesh, refocus the camera on it
+	bool bFirstValid2DMesh = true;
+	bool bFirstValid3DMesh = true;
 
 	// Whether the rest space viewport should focus on the rest space mesh on the next tick
 	bool bShouldFocusRestSpaceView = true;
+
 	void RestSpaceViewportResized(FViewport* RestspaceViewport, uint32 Unused);
 
-	// Whether to combine all patterns into a single DynamicMeshComponent, or have separate components for each pattern
-	// TODO: Expose this to the user
-	bool bCombineAllPatterns = false;
+	UE::Chaos::ClothAsset::EClothPatternVertexType ConstructionViewMode;
 
-	bool IsComponentSelected(const UPrimitiveComponent* InComponent);
+	// The Construction view mode that was active before starting the current tool. When the tool ends, restore this view mode if bShouldRestoreSavedConstructionViewMode is true.
+	UE::Chaos::ClothAsset::EClothPatternVertexType SavedConstructionViewMode;
+
+	// Whether we should restore the previous view mode when a tool ends
+	bool bShouldRestoreSavedConstructionViewMode = false;
+
+	// Dataflow node type whose corresponding tool should be started on the next Tick
+	FName NodeTypeForPendingToolStart;
+
+	bool bConstructionViewWireframe = false;
+	bool bShouldRestoreConstructionViewWireframe = false;
 
 	// Create dynamic mesh components from the cloth component's rest space info
 	void ReinitializeDynamicMeshComponents();
-
-	// Set up the preview simulation mesh from the given rest-space mesh
-	void UpdateSimulationMeshes();
 
 	// Simulation controls
 	bool bShouldResetSimulation = false;
@@ -162,5 +246,18 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UDataflowComponent> DataflowComponent = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UDataflow> DataflowGraph = nullptr;
+
+	TWeakPtr<SDataflowGraphEditor> DataflowGraphEditor;
+
+	UPROPERTY()
+	TObjectPtr<UEditorInteractiveToolsContext> ActiveToolsContext = nullptr;
+
+	TSharedPtr<FManagedArrayCollection> SelectedClothCollection = nullptr;
+
+	// Correspondence between node types and commands to launch tools
+	TMap<FName, TSharedPtr<const FUICommandInfo>> NodeTypeToToolCommandMap;
 };
 

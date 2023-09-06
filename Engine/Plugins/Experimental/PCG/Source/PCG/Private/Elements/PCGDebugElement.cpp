@@ -22,7 +22,7 @@
 
 namespace PCGDebugElement
 {
-	void ExecuteDebugDisplay(FPCGContext* Context)
+	void ExecuteDebugDisplay(FPCGContext* Context, AActor* InTargetActor)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(PCGDebugElement::ExecuteDebugDisplay);
 #if WITH_EDITOR
@@ -93,7 +93,7 @@ namespace PCGDebugElement
 				continue;
 			}
 
-			AActor* TargetActor = Context->GetTargetActor(SpatialData);
+			AActor* TargetActor = InTargetActor ? InTargetActor : Context->GetTargetActor(nullptr);
 
 			if (!TargetActor)
 			{
@@ -231,6 +231,11 @@ FPCGElementPtr UPCGDebugSettings::CreateElement() const
 	return MakeShared<FPCGDebugElement>();
 }
 
+TArray<FPCGPinProperties> UPCGDebugSettings::InputPinProperties() const
+{
+	return Super::DefaultPointInputPinProperties();
+}
+
 TArray<FPCGPinProperties> UPCGDebugSettings::OutputPinProperties() const
 {
 	return TArray<FPCGPinProperties>();
@@ -239,7 +244,7 @@ TArray<FPCGPinProperties> UPCGDebugSettings::OutputPinProperties() const
 bool FPCGDebugElement::ExecuteInternal(FPCGContext* Context) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGDebugElement::Execute);
-	PCGDebugElement::ExecuteDebugDisplay(Context);
+	PCGDebugElement::ExecuteDebugDisplay(Context, Context->GetInputSettings<UPCGDebugSettings>()->TargetActor.Get());
 	
 	return true;
 }

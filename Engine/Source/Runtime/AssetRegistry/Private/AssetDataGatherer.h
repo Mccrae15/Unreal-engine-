@@ -18,7 +18,7 @@
 #include "Misc/DateTime.h"
 #include "Misc/Optional.h"
 #include "PackageDependencyData.h"
-#include "PackageReader.h"
+#include "AssetRegistry/PackageReader.h"
 #include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
 
@@ -52,6 +52,18 @@ typedef FScopeLock FGathererScopeLock;
 #define CHECK_IS_NOT_LOCKED_CURRENT_THREAD(CritSec) do {} while (false)
 #endif
 
+struct FAssetGatherDiagnostics
+{
+	/** Time spent identifying asset files on disk */
+	float DiscoveryTimeSeconds;
+	/** Time spent reading asset files on disk / from cache */
+	float GatherTimeSeconds;
+	/** How many files in the search results were read from the cache. */
+	int32 NumCachedAssetFiles;
+	/** How many files in the search results were not in the cache and were read by parsing the file. */
+	int32 NumUncachedAssetFiles;
+};
+
 /**
  * Async task for gathering asset data from from the file list in FAssetRegistry
  */
@@ -59,7 +71,7 @@ class FAssetDataGatherer : public FRunnable
 {
 public:
 	FAssetDataGatherer(const TArray<FString>& InLongPackageNamesDenyList,
-		const TArray<FString>& InMountRelativePathsDenyList, bool bInIsSynchronous);
+		const TArray<FString>& InMountRelativePathsDenyList, bool bInAsyncEnabled);
 	virtual ~FAssetDataGatherer();
 
 
@@ -80,6 +92,7 @@ public:
 	virtual void Stop() override;
 	virtual void Exit() override;
 
+	bool IsAsyncEnabled() const;
 	bool IsSynchronous() const;
 	/** Signals to end the thread and waits for it to close before returning */
 	void EnsureCompletion();
@@ -93,11 +106,13 @@ public:
 		TMultiMap<FName, FPackageDependencyData> Dependencies;
 		TRingBuffer<FString> CookedPackageNamesWithoutAssetData;
 		TRingBuffer<FName> VerseFiles;
+		TArray<FString> BlockedFiles;
 
 		SIZE_T GetAllocatedSize() const
 		{
 			return Assets.GetAllocatedSize() + Paths.GetAllocatedSize() + Dependencies.GetAllocatedSize() +
-				CookedPackageNamesWithoutAssetData.GetAllocatedSize() + VerseFiles.GetAllocatedSize();
+				CookedPackageNamesWithoutAssetData.GetAllocatedSize() + VerseFiles.GetAllocatedSize() +
+				BlockedFiles.GetAllocatedSize();
 		}
 		void Shrink()
 		{
@@ -106,6 +121,7 @@ public:
 			Dependencies.Shrink();
 			CookedPackageNamesWithoutAssetData.Trim();
 			VerseFiles.Trim();
+			BlockedFiles.Shrink();
 		}
 	};
 	struct FResultContext
@@ -120,7 +136,7 @@ public:
 	/** Gets search results from the data gatherer. */
 	void GetAndTrimSearchResults(FResults& InOutResults, FResultContext& OutContext);
 	/** Get diagnostics for telemetry or logging. */
-	void GetDiagnostics(float& OutGatherTimeSeconds, float& OutDiscoverTimeSeconds);
+	FAssetGatherDiagnostics GetDiagnostics();
 	/** Gets just the AssetResults and DependencyResults from the data gatherer. */
 	void GetPackageResults(TMultiMap<FName, FAssetData*>& OutAssetResults,
 		TMultiMap<FName, FPackageDependencyData>& OutDependencyResults);
@@ -167,7 +183,7 @@ public:
 	/** Calculate the cache filename that should be used for the given list of package paths. */
 	FString GetCacheFilename(TConstArrayView<FString> CacheFilePackagePaths);
 	/** Attempt to read the cache file at the given LocalPath, and store all of its results in the in-memory cache. */
-	void LoadCacheFile(FStringView CacheFilename);
+	void LoadCacheFiles(TConstArrayView<FString> CacheFilename);
 	/** Return the memory used by the gatherer. Used for performance metrics. */
 	SIZE_T GetAllocatedSize() const;
 
@@ -229,7 +245,7 @@ private:
 	 * Helper function to run the tick in a loop-within-a-loop to minimize critical section entry, and to move expensive
 	 * operations out of the critical section
 	 */
-	void InnerTickLoop(bool bInIsSynchronousTick, bool bContributeToCacheSave);
+	void InnerTickLoop(bool bInSynchronousTick, bool bContributeToCacheSave);
 	/**
 	 * Tick function to pump scanning and push results into the search results structure. May be called from devoted
 	 * thread or inline from synchronous functions on other threads.
@@ -275,25 +291,35 @@ private:
 		TArray<FString>& CookedPackagesToLoadUponDiscovery, bool& OutCanRetry) const;
 
 	/** Add the given AssetDatas into DiskCachedAssetDataMap and DiskCachedAssetBlocks. */
-	void ConsumeCacheFile(UE::AssetDataGather::Private::FCachePayload&& Payload);
+	void ConsumeCacheFiles(TArray<UE::AssetDataGather::Private::FCachePayload> Payloads);
 	/**
 	 * If a save of the monolithic cache has been triggered, get the cache filename and pointers to all elements that
 	 * should be saved, for later saving outside of the critical section.
 	 */
 	void TryReserveSaveMonolithicCache(bool& bOutShouldSave, TArray<TPair<FName,FDiskCachedAssetData*>>& AssetsToSave);
+	/** 
+	 * Save a monolithic cache for the main asset discovery process, possibly sharded into multiple files.
+	*/
+	void SaveMonolithicCacheFile(const TArray<TPair<FName,FDiskCachedAssetData*>>& AssetsToSave);
 	/**
 	 * If the CacheFilename/AssetsToSave are non empty, save the cache file. 
 	 * This function reads the read-only-after-creation data from each FDiskCachedAssetData*, but otherwise does not use
 	 * data from this Gatherer and so can be run outside any critical section.
+	 * Returns the size of the saved file, or 0 if nothing was saved for any reason.
 	 */
-	void SaveCacheFileInternal(const FString& CacheFilename,
-		const TArray<TPair<FName,FDiskCachedAssetData*>>& AssetsToSave, bool bIsAsyncCacheSave);
+	int64 SaveCacheFileInternal(const FString& CacheFilename,
+		const TArray<TPair<FName,FDiskCachedAssetData*>>& AssetsToSave);
 	/**
 	 * Get the list of FDiskCachedAssetData* that have been loaded in the gatherer, for saving into a cachefile.
 	 * Filters the list of assets by child paths of the elements in SaveCacheLongPackageNameDirs, if it is non-empty.
 	 */
 	void GetAssetsToSave(TArrayView<const FString> SaveCacheLongPackageNameDirs,
 		TArray<TPair<FName,FDiskCachedAssetData*>>& OutAssetsToSave);
+	/**
+	 * Get the list of FDiskCachedAssetData* for saving into the monolithic cache.
+	 * Includes both assets that were loaded in the gatherer and assets which were loaded from the monolithic cache and have not been pruned.
+	 */
+	void GetMonolithicCacheAssetsToSave(TArray<TPair<FName,FDiskCachedAssetData*>>& OutAssetsToSave);
 
 	/* Adds the given pair into NewCachedAssetDataMap. Detects collisions for multiple files with the same PackageName */
 	void AddToCache(FName PackageName, FDiskCachedAssetData* DiskCachedAssetData);
@@ -321,6 +347,7 @@ private:
 	/** Convert the LongPackageName into our normalized version. */
 	static FStringView NormalizeLongPackageName(FStringView LongPackageName);
 
+	void OnAllModuleLoadingPhasesComplete();
 private:
 
 	/**
@@ -337,18 +364,24 @@ private:
 
 	// Variable section for variables that are constant during threading.
 
-	/** Thread to run async Ticks on. Constant during threading. */
+	/**
+	 * Thread to run async Ticks on. Constant during threading.
+	 * Activated when StartAsync is called and bAsyncEnabled is true.
+	 * If null, results will only be added when Wait functions are called. Constant during threading.
+	 */
 	FRunnableThread* Thread;
 	/**
-	 * True if this Gatherer is synchronous, false if it has a worker thread. If synchronous, results will only be
-	 * added when Wait functions are called. Constant during threading.
+	 * True if async gathering is enabled, false if e.g. singlethreaded or disabled by commandline.
+ 	 * Even when enabled, gathering is still synchronous until StartAsync is called.
 	 */
-	bool bIsSynchronous;
+	bool bAsyncEnabled;
 	/** True if AssetPackageData should be gathered. Constant during threading. */
 	bool bGatherAssetPackageData;
 	/** True if dependency data should be gathered. Constant during threading. */
 	bool bGatherDependsData;
 
+	/** Timestamp of the start of the gather for consistent marking of 'last discovered' time in caching */
+	FDateTime GatherStartTime;
 
 	// Variable section for variables that are atomics read/writable from outside critical sections.
 
@@ -386,6 +419,8 @@ private:
 	TArray<FString> CookedPackageNamesWithoutAssetDataResults;
 	/** File paths (in UE LongPackagePath notation) of the Verse source code gathered from the searched files. */
 	TArray<FName> VerseResults;
+	/** File paths (in regular filesystem notation) of blocked packages from the searched files. */
+	TArray<FString> BlockedResults;
 
 	/** All the search times since the last call to GetAndTrimSearchResults. */
 	TArray<double> SearchTimes;
@@ -401,6 +436,10 @@ private:
 	double LastCacheWriteTime;
 	/** The cached value of the NumPathsToSearch returned by Discovery the last time we synchronized with it. */
 	int32 NumPathsToSearchAtLastSyncPoint;
+	/** The total number of files in the search results that were read from the cache. */
+	int32 NumCachedAssetFiles = 0;
+	/** The total number of files in the search results that were not in the cache and were read by parsing the file. */
+	int32 NumUncachedAssetFiles = 0;
 	/**
 	 * Track whether we are allowed to read from a monolithic cache that should be loaded during tick.
 	 * Even if we are or not, if bCacheReadEnabled the AssetRegistry can also call LoadCacheFile/ScanPathsSynchronous to
@@ -421,6 +460,12 @@ private:
 	bool bFirstTickAfterIdle;
 	/** True if we have finished discovering our first wave of files, to report metrics for that most-important wave. */
 	bool bFinishedInitialDiscovery;
+	/**
+	 * Flag to indicate LaunchEngineLoop's AllModuleLoadingPhases is complete; finishing the initial discovery is
+	 * blocked until preloading complete because plugins can be mounted during startup up until that point, and
+	 * we need to wait for all the plugins that will load before declaring completion.
+	 */
+	bool bAllModuleLoadingPhasesComplete = false;
 
 
 	// Variable section for variables that are read/writable only within TickLock.
@@ -433,27 +478,27 @@ private:
 	TArray<TPair<int32, FDiskCachedAssetData*>> DiskCachedAssetBlocks;
 	/**
 	 * Map of PackageName to cached discovered assets that were loaded from disk.
-	 * This should only be modified by ConsumeCacheFile.
+	 * This should only be modified by ConsumeCacheFiles.
 	 */
 	TMap<FName, FDiskCachedAssetData*> DiskCachedAssetDataMap;
 	/** Map of PackageName to cached discovered assets that will be written to disk at shutdown. */
 	TMap<FName, FDiskCachedAssetData*> NewCachedAssetDataMap;
 	/** Used to block on gather results. If non-zero, tick should end when WaitBatchCount files have been processed. */
 	int32 WaitBatchCount;
-	/** How many files in the search results were read from the cache. */
-	int32 NumCachedAssetFiles;
-	/** How many files in the search results were not in the cache and were read by parsing the file. */
-	int32 NumUncachedAssetFiles;
+	/** How many uncached asset files had been discovered at the last async cache save */
+	int32 LastMonolithicCacheSaveUncachedAssetFiles;
 	/**
 	 * Incremented when a thread is in the middle of saving any cache and therefore the cache cannot be deleted,
 	 * decremented when the thread is done. Only incremented when bCacheEnabled has been recently confirmed to be true.
 	 */
 	int32 CacheInUseCount;
 	/**
-	 * True if the current TickInternal is synchronous, which may be because bIsSynchronous or because the game thread has
+	 * True if the current TickInternal is synchronous, which may be because !IsSynchronous or because the game thread has
 	 * taken over the tick for a synchronous function.
 	 */
-	bool bIsSynchronousTick;
+	bool bSynchronousTick;
 	/** True when a thread is saving an async cache and so another save of the cache should not be triggered. */
 	bool bIsSavingAsyncCache;
+	/** Packages can be marked for retry up until bInitialPluginsLoaded is set. After it is set, we retry them once. */
+	bool bFlushedRetryFiles;
 };

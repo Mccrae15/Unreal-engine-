@@ -2,6 +2,9 @@
 
 #include "MuCO/CustomizableSkeletalComponent.h"
 
+#include "MuCO/CustomizableObjectSystem.h"
+#include "MuCO/CustomizableInstancePrivateData.h"
+
 #include "AnimationRuntime.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
@@ -9,9 +12,9 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "MuCO/CustomizableInstancePrivateData.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "UObject/ObjectSaveContext.h"
+#include "MuCO/UnrealPortabilityHelpers.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CustomizableSkeletalComponent)
 
@@ -23,12 +26,9 @@ UCustomizableSkeletalComponent::UCustomizableSkeletalComponent()
 }
 
 
-void UCustomizableSkeletalComponent::Updated(EUpdateResult Result) const
+void UCustomizableSkeletalComponent::Callbacks() const
 {
-	if (Result == EUpdateResult::Success)
-	{
-		UpdatedDelegate.ExecuteIfBound();
-	}	
+	UpdatedDelegate.ExecuteIfBound();
 }
 
 
@@ -55,7 +55,7 @@ void UCustomizableSkeletalComponent::SetSkeletalMesh(USkeletalMesh* SkeletalMesh
 		}
 #endif
 
-		if(Parent->GetSkinnedAsset() == SkeletalMesh)
+		if(UE_MUTABLE_GETSKINNEDASSET(Parent) == SkeletalMesh)
 		{
 			Parent->RecreateRenderState_Concurrent();
 		}
@@ -100,7 +100,7 @@ void UCustomizableSkeletalComponent::SetPhysicsAsset(UPhysicsAsset* PhysicsAsset
 {
 	USkeletalMeshComponent* Parent = Cast<USkeletalMeshComponent>(GetAttachParent());
 
-	if (Parent && GetWorld())
+	if (Parent && Parent->GetWorld())
 	{
 		Parent->SetPhysicsAsset(PhysicsAsset, true);
 	}
@@ -113,7 +113,7 @@ USkeletalMesh* UCustomizableSkeletalComponent::GetAttachedSkeletalMesh() const
 
 	if (Parent)
 	{
-		return Parent->GetSkeletalMeshAsset();
+		return UE_MUTABLE_GETSKELETALMESHASSET(Parent);
 	}
 
 	return nullptr;
@@ -129,17 +129,18 @@ void UCustomizableSkeletalComponent::UpdateSkeletalMeshAsync(bool bNeverSkipUpda
 }
 
 
-void UCustomizableSkeletalComponent::BeginDestroy()
+void UCustomizableSkeletalComponent::UpdateSkeletalMeshAsyncResult(FInstanceUpdateDelegate Callback, bool bIgnoreCloseDist, bool bForceHighPriority)
 {
-	Super::BeginDestroy();
+	if (CustomizableObjectInstance)
+	{
+		CustomizableObjectInstance->UpdateSkeletalMeshAsyncResult(Callback, false, false);
+	}
 }
 
 
-void UCustomizableSkeletalComponent::PreSave(FObjectPreSaveContext ObjectSaveContext)
+void UCustomizableSkeletalComponent::BeginDestroy()
 {
-	SetSkeletalMesh(nullptr); // To prevent "Graph is linked to private object(s) in an external package" errors when saving in editor after having PIE and generated customized skeletal meshes while in PIE
-
-	Super::PreSave(ObjectSaveContext);
+	Super::BeginDestroy();
 }
 
 
@@ -257,11 +258,11 @@ void UCustomizableSkeletalComponent::UpdateDistFromComponentToPlayer(const AActo
 
 				if (ViewCenter && ViewCenter->IsValidLowLevel())
 				{
-					APawn* pawn = Cast<APawn>(ParentActor);
-					bool bIsPawn = pawn ? pawn->IsLocallyControlled() : false;
-					CustomizableObjectInstance->SetIsPlayerOrNearIt(bIsPawn);
+					APawn* Pawn = Cast<APawn>(ParentActor);
+					bool bIsPlayer = Pawn ? Pawn->IsPlayerControlled() : false;
+					CustomizableObjectInstance->SetIsPlayerOrNearIt(bIsPlayer);
 
-					if (bIsPawn)
+					if (bIsPlayer)
 					{
 						SquareDist = -0.01f; // Negative value to give the player character more priority than any other character
 					}
@@ -304,24 +305,32 @@ void UCustomizableSkeletalComponent::TickComponent(float DeltaTime, ELevelTick T
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!bPendingSetSkeletalMesh)
+	if (!bPendingSetSkeletalMesh || !CustomizableObjectInstance || !CustomizableObjectInstance->GetCustomizableObject())
 	{
-		USkeletalMeshComponent* Parent = Cast<USkeletalMeshComponent>(GetAttachParent());
+		return;
+	}
 
-		if (Parent && CustomizableObjectInstance)
+	if (USkeletalMeshComponent* Parent = Cast<USkeletalMeshComponent>(GetAttachParent()))
+	{
+		UCustomizableObject* CustomizableObject = CustomizableObjectInstance->GetCustomizableObject();
+
+		// Hacky. Replace once we know if the instance has been generated
+		const bool bInstanceGenerated = CustomizableObjectInstance->HasAnySkeletalMesh();
+
+		// Generated SkeletalMesh to set, can be null if the component is empty
+		USkeletalMesh* SkeletalMesh = CustomizableObjectInstance->GetSkeletalMesh(ComponentIndex);
+
+		// If not generated yet, conditionally set the SkeletalMesh of reference
+		if (!bInstanceGenerated && !bSkipSetReferenceSkeletalMesh)
 		{
-			UCustomizableObject* CustomizableObject = CustomizableObjectInstance->GetCustomizableObject(); 
+			// Can be nullptr
+			SkeletalMesh = CustomizableObject->GetRefSkeletalMesh(ComponentIndex);
+		}
 
-			bPendingSetSkeletalMesh = true;
-
-			if (CustomizableObjectInstance->GetSkeletalMesh(ComponentIndex))
-			{
-				Parent->SetSkeletalMesh(CustomizableObjectInstance->GetSkeletalMesh(ComponentIndex));
-			}
-			else if (!bSkipSetReferenceSkeletalMesh && CustomizableObject)
-			{
-				Parent->SetSkeletalMesh(CustomizableObject->GetRefSkeletalMesh(ComponentIndex));
-			}
+		// Set SkeletalMesh
+		if (bInstanceGenerated || SkeletalMesh)
+		{
+			Parent->SetSkeletalMesh(SkeletalMesh);
 
 			if (Parent->OverrideMaterials.Num() > 0)
 			{
@@ -335,6 +344,7 @@ void UCustomizableSkeletalComponent::TickComponent(float DeltaTime, ELevelTick T
 				Parent->EmptyOverrideMaterials();
 			}
 
+			bPendingSetSkeletalMesh = false;
 		}
 	}
 }
@@ -348,7 +358,7 @@ void UCustomizableSkeletalComponent::OnAttachmentChanged()
 
 	if (Parent)
 	{
-		bPendingSetSkeletalMesh = false;
+		bPendingSetSkeletalMesh = true;
 	}
 	else if(!GetAttachParent())
 	{

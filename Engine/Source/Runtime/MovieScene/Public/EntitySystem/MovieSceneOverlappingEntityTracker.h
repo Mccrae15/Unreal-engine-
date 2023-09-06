@@ -34,17 +34,30 @@ struct FGarbageTraits
 	{
 		return false;
 	}
-	FORCEINLINE static bool IsGarbage(UObject* InObject)
+	template<typename T>
+	FORCEINLINE static std::enable_if_t<TPointerIsConvertibleFromTo<T, const UObject>::Value, bool> IsGarbage(T* InObject)
+	{
+		constexpr bool bTypeDependentFalse = !std::is_same_v<T, T>;
+		static_assert(bTypeDependentFalse, "Raw object pointers are no longer supported. Please use TObjectPtr<T> instead.");
+	}
+	FORCEINLINE static bool IsGarbage(FObjectKey InObject)
+	{
+		return FBuiltInComponentTypes::IsBoundObjectGarbage(InObject.ResolveObjectPtr());
+	}
+	template<typename T>
+	FORCEINLINE static bool IsGarbage(TObjectPtr<T>& InObject)
 	{
 		return FBuiltInComponentTypes::IsBoundObjectGarbage(InObject);
 	}
-	FORCEINLINE static constexpr void AddReferencedObjects(FReferenceCollector& ReferenceCollector, ...)
-	{}
+
+	
 	template<typename T>
-	FORCEINLINE static typename TEnableIf<TPointerIsConvertibleFromTo<T, volatile const UObject>::Value>::Type
-		AddReferencedObjects(FReferenceCollector& ReferenceCollector, T*& InObjectPtr)
+	FORCEINLINE static void AddReferencedObjects(FReferenceCollector& ReferenceCollector, T* In)
 	{
-		ReferenceCollector.AddReferencedObject(InObjectPtr);
+		if constexpr (THasAddReferencedObjectForComponent<T>::Value)
+		{
+			AddReferencedObjectForComponent(&ReferenceCollector, In);
+		}
 	}
 };
 
@@ -54,8 +67,6 @@ template<typename... T> struct TOverlappingEntityInput;
 template<typename... T, int... Indices>
 struct TGarbageTraitsImpl<TIntegerSequence<int, Indices...>, T...>
 {
-	static constexpr bool bCanBeGarbage = (TPointerIsConvertibleFromTo<typename TDecay<typename TRemovePointer<T>::Type>::Type, UObject>::Value || ...);
-
 	static bool IsGarbage(TOverlappingEntityInput<T...>& InParam)
 	{
 		return (FGarbageTraits::IsGarbage(InParam.Key.template Get<Indices>()) || ...);
@@ -63,7 +74,7 @@ struct TGarbageTraitsImpl<TIntegerSequence<int, Indices...>, T...>
 
 	static void AddReferencedObjects(FReferenceCollector& ReferenceCollector, TOverlappingEntityInput<T...>& InParam)
 	{
-		(FGarbageTraits::AddReferencedObjects(ReferenceCollector, InParam.Key.template Get<Indices>()), ...);
+		(FGarbageTraits::AddReferencedObjects(ReferenceCollector, &InParam.Key.template Get<Indices>()), ...);
 	}
 
 	template<typename CallbackType>
@@ -111,7 +122,6 @@ struct TOverlappingEntityInput
  * Templated utility class that assists in tracking the state of many -> one data relationships in an FEntityManager.
  * InputKeyTypes defines the component type(s) which defines the key that determines whether an entity animates the same output.
  * OutputType defines the user-specfied data to be associated with the multiple inputs (ie, its output)
- * NOTE: Where any of InputKeyTypes is a UObject*, AddReferencedObjects and CleanupGarbage must be called
  */
 template<typename OutputType, typename... InputKeyTypes>
 struct TOverlappingEntityTrackerImpl
@@ -130,6 +140,16 @@ struct TOverlappingEntityTrackerImpl
 	 */
 	void Update(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<InputKeyTypes>... InKeyComponents, const FEntityComponentFilter& InFilter)
 	{
+		UpdateFromComponents(Linker, InFilter, InKeyComponents...);
+	}
+
+	/**
+	 * Update this tracker by iterating any entity that contains InKeyComponent, and matches the additional optional filter
+	 * Only entities tagged as NeedsLink or NeedsUnlink are iterated, invalidating their outputs
+	 */
+	template<typename ...ComponentTypes>
+	void UpdateFromComponents(UMovieSceneEntitySystemLinker* Linker, const FEntityComponentFilter& InFilter, TComponentTypeID<ComponentTypes>... InKeyComponents)
+	{
 		check(bIsInitialized);
 
 		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
@@ -145,14 +165,15 @@ struct TOverlappingEntityTrackerImpl
 		.ReadAllOf(InKeyComponents...)
 		.CombineFilter(InFilter)
 		.FilterAll({ BuiltInComponents->Tags.NeedsLink })
-		.Iterate_PerAllocation(&Linker->EntityManager, [this](const FEntityAllocation* Allocation, TRead<InputKeyTypes>... ReadKeys){ this->VisitLinkedAllocation(Allocation, ReadKeys...); });
+		.Iterate_PerAllocation(&Linker->EntityManager, [this](const FEntityAllocation* Allocation, TRead<ComponentTypes>... ReadKeys){ this->VisitLinkedAllocation(Allocation, ReadKeys...); });
 	}
 
 	/**
 	 * Update this tracker by iterating any entity that contains InKeyComponent, and matches the additional optional filter
 	 * Only entities tagged as NeedsUnlink are iterated, invalidating their outputs
 	 */
-	void UpdateUnlinkedOnly(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<InputKeyTypes>... InKeyComponent, const FEntityComponentFilter& InFilter)
+	template<typename ...ComponentTypes>
+	void UpdateUnlinkedOnly(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<ComponentTypes>... InKeyComponent, const FEntityComponentFilter& InFilter)
 	{
 		check(bIsInitialized);
 
@@ -168,14 +189,16 @@ struct TOverlappingEntityTrackerImpl
 	/**
 	 * Update this tracker by (re)linking the specified allocation
 	 */
-	void VisitActiveAllocation(const FEntityAllocation* Allocation, TComponentPtr<const InputKeyTypes>... ReadKeys)
+	template<typename ...ComponentTypes>
+	void VisitActiveAllocation(const FEntityAllocation* Allocation, TComponentPtr<const ComponentTypes>... ReadKeys)
 	{
 		VisitActiveAllocationImpl(Allocation, ReadKeys...);
 	}
 	/**
 	 * Update this tracker by (re)linking the specified allocation
 	 */
-	void VisitLinkedAllocation(const FEntityAllocation* Allocation, TComponentPtr<const InputKeyTypes>... ReadKeys)
+	template<typename ...ComponentTypes>
+	void VisitLinkedAllocation(const FEntityAllocation* Allocation, TComponentPtr<const ComponentTypes>... ReadKeys)
 	{
 		VisitActiveAllocationImpl(Allocation, ReadKeys...);
 	}
@@ -354,7 +377,8 @@ struct TOverlappingEntityTrackerImpl
 
 protected:
 
-	void VisitActiveAllocationImpl(const FEntityAllocation* Allocation, TComponentPtr<const InputKeyTypes>... Keys)
+	template<typename ...ComponentTypes>
+	void VisitActiveAllocationImpl(const FEntityAllocation* Allocation, TComponentPtr<const ComponentTypes>... Keys)
 	{
 		check(bIsInitialized);
 
@@ -528,6 +552,7 @@ struct TOverlappingEntityTracker_WithGarbage : TOverlappingEntityTrackerImpl<Out
 		if (Linker)
 		{
 			Linker->Events.TagGarbage.RemoveAll(this);
+			Linker->Events.CleanTaggedGarbage.RemoveAll(this);
 			Linker->Events.AddReferencedObjects.RemoveAll(this);
 		}
 	}
@@ -542,11 +567,12 @@ struct TOverlappingEntityTracker_WithGarbage : TOverlappingEntityTrackerImpl<Out
 		this->bIsInitialized = true;
 		WeakOwningSystem = OwningSystem;
 
-		OwningSystem->GetLinker()->Events.TagGarbage.AddRaw(this, &ThisType::CleanupGarbage);
+		OwningSystem->GetLinker()->Events.TagGarbage.AddRaw(this, &ThisType::TagGarbage);
+		OwningSystem->GetLinker()->Events.CleanTaggedGarbage.AddRaw(this, &ThisType::CleanTaggedGarbage);
 		OwningSystem->GetLinker()->Events.AddReferencedObjects.AddRaw(this, &ThisType::AddReferencedObjects);
 	}
 
-	void CleanupGarbage(UMovieSceneEntitySystemLinker* Linker)
+	void TagGarbage(UMovieSceneEntitySystemLinker* Linker)
 	{
 		for (int32 Index = this->Outputs.GetMaxIndex()-1; Index >= 0; --Index)
 		{
@@ -576,6 +602,27 @@ struct TOverlappingEntityTracker_WithGarbage : TOverlappingEntityTrackerImpl<Out
 			if (KeyType::GarbageTraits::IsGarbage(It.Key()) || !this->Outputs.IsValidIndex(It.Value()))
 			{
 				It.RemoveCurrent();
+			}
+		}
+	}
+
+	void CleanTaggedGarbage(UMovieSceneEntitySystemLinker* Linker)
+	{
+		FComponentTypeID NeedsUnlink = FBuiltInComponentTypes::Get()->Tags.NeedsUnlink;
+
+		// Check whether any of our inputs are about to be destroyed
+		for (auto EntityToOutputIt = this->EntityToOutput.CreateIterator(); EntityToOutputIt; ++EntityToOutputIt)
+		{
+			const FMovieSceneEntityID EntityID    = EntityToOutputIt.Key();
+			const uint16              OutputIndex = EntityToOutputIt.Value();
+			if (OutputIndex != Super::NO_OUTPUT && Linker->EntityManager.HasComponent(EntityID, NeedsUnlink))
+			{
+				this->OutputToEntity.Remove(OutputIndex, EntityID);
+
+				this->InvalidatedOutputs.PadToNum(OutputIndex + 1, false);
+				this->InvalidatedOutputs[OutputIndex] = true;
+
+				EntityToOutputIt.RemoveCurrent();
 			}
 		}
 	}

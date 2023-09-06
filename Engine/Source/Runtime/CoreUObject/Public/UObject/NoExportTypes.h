@@ -25,6 +25,7 @@
 #include "UObject/TopLevelAssetPath.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/PropertyAccessUtil.h"
+#include "Serialization/TestUndeclaredScriptStructObjectReferences.h"
 
 #include "Math/InterpCurvePoint.h"
 #include "Math/UnitConversion.h"
@@ -116,7 +117,7 @@ namespace ELogTimes
 }
 
 /** Generic axis enum (mirrored for native use in Axis.h). */
-UENUM(meta=(ScriptName="AxisType"))
+UENUM(BlueprintType, meta=(ScriptName="AxisType"))
 namespace EAxis
 {
 	enum Type : int
@@ -296,6 +297,11 @@ enum EPixelFormat : int
 	PF_R64_UINT,
 	PF_R9G9B9EXP5,
 	PF_P010,
+	PF_ASTC_4x4_NORM_RG,
+	PF_ASTC_6x6_NORM_RG,
+	PF_ASTC_8x8_NORM_RG,
+	PF_ASTC_10x10_NORM_RG,
+	PF_ASTC_12x12_NORM_RG,
 	PF_MAX,
 };
 
@@ -369,7 +375,10 @@ enum class EUnit : uint8
 	Micrograms, Milligrams, Grams, Kilograms, MetricTons, Ounces, Pounds, Stones,
 	
 	/** Force units */
-	Newtons, PoundsForce, KilogramsForce,
+	Newtons, PoundsForce, KilogramsForce, KilogramCentimetersPerSecondSquared,
+
+	/** Torque units */
+	NewtonMeters, KilogramCentimetersSquaredPerSecondSquared,
 	
 	/** Frequency units */
 	Hertz, Kilohertz, Megahertz, Gigahertz, RevolutionsPerMinute,
@@ -407,6 +416,19 @@ enum class EPropertyAccessChangeNotifyMode : uint8
 	Never,
 	/** Always notify that a value change has occurred, even if the value is unchanged */
 	Always,
+};
+
+/**
+ * Enumerates supported message dialog category types.
+ * @note Mirrored from GenericPlatformMisc.h
+ */
+UENUM(BlueprintType)
+enum class EAppMsgCategory : uint8
+{
+	Warning,
+	Error,
+	Success,
+	Info,
 };
 
 /**
@@ -481,7 +503,7 @@ struct FGuid
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
  */
-USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector3f"))
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector"))
 struct FVector3f
 {
 	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
@@ -533,7 +555,7 @@ struct FVector
 * A 4-D homogeneous vector.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
 */
-USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector4", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector4"))
 struct FVector4f
 {
 	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
@@ -574,7 +596,7 @@ struct FVector4d
 * A 4-D homogeneous vector.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
 */
-USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector4", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector4"))
+USTRUCT(immutable, noexport, BlueprintType, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector4", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector4"))
 struct FVector4
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
@@ -595,13 +617,13 @@ struct FVector4
 * A vector in 2-D space composed of components (X, Y) with floating point precision.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector2D.h
 */
-USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake="/Script/Engine.KismetMathLibrary.MakeVector2D", HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeVector2D", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakVector2D"))
 struct FVector2f
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
 	float X;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
 	float Y;
 };
 
@@ -729,7 +751,7 @@ struct FRay
  * An orthogonal rotation in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
  */
-USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeRotator", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakRotator"))
 struct FRotator3f
 {
 	/** Pitch (degrees) around Y axis */
@@ -835,7 +857,7 @@ struct FSphere
  * Quaternion.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
  */
-USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, HasNoOpConstructor, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeQuat", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakQuat"))
 struct FQuat4f
 {
 	UPROPERTY(EditAnywhere, Category=Quat, SaveGame)
@@ -1918,7 +1940,7 @@ struct FInterpCurveLinearColor
  * Transform composed of Quat/Translation/Scale.
  * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
  */
-USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, IsCoreType)
+USTRUCT(immutable, noexport, BlueprintType, BlueprintInternalUseOnly, IsAlwaysAccessible, HasDefaults, IsCoreType, meta = (ScriptDefaultMake, ScriptDefaultBreak, HasNativeMake = "/Script/Engine.KismetMathLibrary.MakeTransform", HasNativeBreak = "/Script/Engine.KismetMathLibrary.BreakTransform"))
 struct FTransform3f
 {
 	/** Rotation of this transformation, as a quaternion. */
@@ -2636,7 +2658,7 @@ struct FARFilter
 };
 
 USTRUCT(noexport)
-struct COREUOBJECT_API FAssetBundleEntry
+struct FAssetBundleEntry
 {
 	/** Specific name of this bundle */
 	UPROPERTY()
@@ -2654,7 +2676,7 @@ struct COREUOBJECT_API FAssetBundleEntry
 
 /** A struct with a list of asset bundle entries. If one of these is inside a UObject it will get automatically exported as the asset registry tag AssetBundleData */
 USTRUCT(noexport, IsAlwaysAccessible, HasDefaults)
-struct COREUOBJECT_API FAssetBundleData
+struct FAssetBundleData
 {
 	/** List of bundles defined */
 	UPROPERTY()
@@ -2714,6 +2736,22 @@ struct FTestUninitializedScriptStructMembersTest
 
 	UPROPERTY(Transient)
 	float UnusedValue;
+};
+
+USTRUCT(noexport, IsAlwaysAccessible, HasDefaults)
+struct FTestUndeclaredScriptStructObjectReferencesTest
+{
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> StrongObjectPointer;
+
+	UPROPERTY(Transient)
+	TSoftObjectPtr<UObject> SoftObjectPointer;
+
+	UPROPERTY(Transient)
+	FSoftObjectPath SoftObjectPath;
+	
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UObject> WeakObjectPointer;
 };
 
 /**

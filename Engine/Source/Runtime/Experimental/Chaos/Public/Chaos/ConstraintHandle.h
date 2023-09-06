@@ -31,6 +31,11 @@ namespace Chaos
 	using FParticlePair = TVec2<FGeometryParticleHandle*>;
 	using FConstParticlePair = TVec2<const FGeometryParticleHandle*>;
 
+	namespace Private
+	{
+		class FPBDIslandConstraint;
+	}
+
 	/**
 	 * @brief A type id for constraint handles to support safe up/down casting (including intermediate classes in the hierrachy)
 	 *
@@ -88,25 +93,27 @@ namespace Chaos
 	 * 
 	 * @see FIndexedConstraintHandle, FIntrusiveConstraintHandle
 	*/
-	class CHAOS_API FConstraintHandle
+	class FConstraintHandle
 	{
 	public:
 		using FGeometryParticleHandle = TGeometryParticleHandle<FReal, 3>;
 
 		FConstraintHandle() 
 			: ConstraintContainer(nullptr)
-			, GraphIndex(INDEX_NONE)
+			, GraphEdge(nullptr)
 		{
 		}
 
 		FConstraintHandle(FPBDConstraintContainer* InContainer)
 			: ConstraintContainer(InContainer)
-			, GraphIndex(INDEX_NONE)
+			, GraphEdge(nullptr)
 		{
 		}
 
 		virtual ~FConstraintHandle()
 		{
+			// Make sure we are not still in the graph
+			check(GraphEdge == nullptr);
 		}
 
 		virtual bool IsValid() const
@@ -126,17 +133,21 @@ namespace Chaos
 
 		bool IsInConstraintGraph() const
 		{
-			return (GraphIndex != INDEX_NONE);
+			return (GraphEdge != nullptr);
 		}
 
-		int32 GetConstraintGraphIndex() const
+		Private::FPBDIslandConstraint* GetConstraintGraphEdge() const
 		{
-			return GraphIndex;
+			return GraphEdge;
 		}
 
-		void SetConstraintGraphIndex(const int32 InIndex)
+		// NOTE: Should only be called by the IslandManager
+		void SetConstraintGraphEdge(Private::FPBDIslandConstraint* InEdge)
 		{
-			GraphIndex = InIndex;
+			// Check for double add
+			check((InEdge == nullptr) || (GraphEdge == nullptr));
+
+			GraphEdge = InEdge;
 		}
 
 		virtual TVec2<FGeometryParticleHandle*> GetConstrainedParticles() const = 0;
@@ -157,7 +168,7 @@ namespace Chaos
 		virtual void SetWasAwakened(const bool bInWasAwakened) {}
 
 		// Implemented in ConstraintContainer.h
-		int32 GetContainerId() const;
+		CHAOS_API int32 GetContainerId() const;
 
 		// Implemented in ConstraintContainer.h
 		template<typename T>  T* As();
@@ -167,7 +178,7 @@ namespace Chaos
 		template<typename T>  T* AsUnsafe() { check(As<T>() != nullptr); return static_cast<T*>(this); }
 		template<typename T>  const T* AsUnsafe() const { check(As<T>() != nullptr); return static_cast<const T*>(this); }
 
-		const FConstraintHandleTypeID& GetType() const;
+		CHAOS_API const FConstraintHandleTypeID& GetType() const;
 
 		static const FConstraintHandleTypeID& StaticType()
 		{
@@ -181,12 +192,16 @@ namespace Chaos
 			return STypeID;
 		}
 
+		// Deprecated API
+		UE_DEPRECATED(5.3, "Use GetConstraintGraphEdge") int32 GetConstraintGraphIndex() const { return INDEX_NONE; }
+		UE_DEPRECATED(5.3, "Not supported") void SetConstraintGraphIndex(const int32 InIndex) const {}
+
 	protected:
 		friend class FPBDConstraintContainer;
 
 		FPBDConstraintContainer* ConstraintContainer;
 		
-		int32 GraphIndex;
+		Private::FPBDIslandConstraint* GraphEdge;
 	};
 
 
@@ -197,7 +212,7 @@ namespace Chaos
 	 * address (as opposed to array-based containers where the array could relocate). The constraint class should inherit
 	 * this handle class. This effectively eliminates the handle, reducing cache misses and allocations.
 	*/
-	class CHAOS_API FIntrusiveConstraintHandle : public FConstraintHandle
+	class FIntrusiveConstraintHandle : public FConstraintHandle
 	{
 	public:
 		FIntrusiveConstraintHandle()
@@ -226,7 +241,7 @@ namespace Chaos
 	 * @tparam T_CONSTRAINT The constraint type
 	*/
 	template<typename T_CONSTRAINT>
-	class CHAOS_API TIntrusiveConstraintHandle : public FIntrusiveConstraintHandle
+	class TIntrusiveConstraintHandle : public FIntrusiveConstraintHandle
 	{
 	public:
 		using FConstraint = T_CONSTRAINT;
@@ -260,7 +275,7 @@ namespace Chaos
 	 * @todo(ccaulfield): block allocator for handles, or support custom allocators in constraint containers.
 	 */
 	template<class T_CONTAINER>
-	class CHAOS_API TConstraintHandleAllocator
+	class TConstraintHandleAllocator
 	{
 	public:
 		using FConstraintContainer = T_CONTAINER;
@@ -277,7 +292,7 @@ namespace Chaos
 	 * This acts as a FConstraintHandle*, but caches some extra debug data useful in tracking
 	 * down dangling pointer issues when they arise.
 	*/
-	class CHAOS_API FConstraintHandleHolder
+	class FConstraintHandleHolder
 	{
 	public:
 		FConstraintHandleHolder()
@@ -314,7 +329,7 @@ namespace Chaos
 		const FGeometryParticleHandle* GetParticle1() const { return Particles[1]; }
 
 	private:
-		void InitDebugData();
+		CHAOS_API void InitDebugData();
 
 		const FConstraintHandleTypeID* ConstraintType;
 		const FGeometryParticleHandle* Particles[2];

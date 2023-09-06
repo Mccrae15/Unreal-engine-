@@ -4,6 +4,7 @@
 #include "EntitySystem/MovieSceneEntitySystem.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneSystemTaskDependencies.h"
+#include "EntitySystem/MovieSceneTaskScheduler.h"
 
 #include "Templates/SubclassOf.h"
 #include "Algo/IndexOf.h"
@@ -20,6 +21,12 @@ void FMovieSceneEntitySystemGraphNodes::AddStructReferencedObjects(FReferenceCol
 		Collector.AddReferencedObject(Node.System);
 	}
 }
+
+FMovieSceneEntitySystemGraph::FMovieSceneEntitySystemGraph() = default;
+FMovieSceneEntitySystemGraph::~FMovieSceneEntitySystemGraph() = default;
+
+FMovieSceneEntitySystemGraph::FMovieSceneEntitySystemGraph(FMovieSceneEntitySystemGraph&&) = default;
+FMovieSceneEntitySystemGraph& FMovieSceneEntitySystemGraph::operator=(FMovieSceneEntitySystemGraph&&) = default;
 
 void FMovieSceneEntitySystemGraph::AddSystem(UMovieSceneEntitySystem* InSystem)
 {
@@ -94,7 +101,7 @@ int32 FMovieSceneEntitySystemGraph::RemoveIrrelevantSystems(UMovieSceneEntitySys
 
 	int32 NumRemoved = 0;
 
-	FMovieSceneEntitySystemDirectedGraph::FBreadthFirstSearch Search(&ReferenceGraph);
+	UE::MovieScene::FDirectedGraph::FBreadthFirstSearch Search(&ReferenceGraph);
 
 	// Search from all non-intermediate systems and mark systems that are still referenced
 	for (const FMovieSceneEntitySystemGraphNode& Node : Nodes.Array)
@@ -161,6 +168,7 @@ void FMovieSceneEntitySystemGraph::UpdateCache()
 
 	SpawnPhase.Empty();
 	InstantiationPhase.Empty();
+	SchedulingPhase.Empty();
 	EvaluationPhase.Empty();
 	FinalizationPhase.Empty();
 
@@ -177,6 +185,8 @@ void FMovieSceneEntitySystemGraph::UpdateCache()
 		SortedNodeIDs.Add(GlobalToLocalNodeIDs[GlobalNodeID]);
 	}
 
+	const bool bCombineSchedulingAndEvaluation = !FEntitySystemScheduler::IsCustomSchedulingEnabled();
+
 	for (uint16 NodeID : SortedNodeIDs)
 	{
 		ESystemPhase SystemPhase = Nodes.Array[NodeID].System->GetPhase();
@@ -188,6 +198,17 @@ void FMovieSceneEntitySystemGraph::UpdateCache()
 		if (EnumHasAnyFlags(SystemPhase, ESystemPhase::Instantiation))
 		{
 			InstantiationPhase.Emplace(NodeID);
+		}
+		if (EnumHasAnyFlags(SystemPhase, ESystemPhase::Scheduling))
+		{
+			if (bCombineSchedulingAndEvaluation)
+			{
+				EvaluationPhase.Emplace(NodeID);
+			}
+			else
+			{
+				SchedulingPhase.Emplace(NodeID);
+			}
 		}
 		if (EnumHasAnyFlags(SystemPhase, ESystemPhase::Evaluation))
 		{
@@ -269,7 +290,7 @@ FString FMovieSceneEntitySystemGraph::ToString() const
 	String += TEXT("\t}\n");
 
 	{
-		FMovieSceneEntitySystemDirectedGraph::FDiscoverCyclicEdges CyclicEdges(&ReferenceGraph);
+		FDirectedGraph::FDiscoverCyclicEdges CyclicEdges(&ReferenceGraph);
 		CyclicEdges.Search();
 
 		TArrayView<const FDirectionalEdge> ReferenceEdges = ReferenceGraph.GetEdges();
@@ -309,16 +330,28 @@ UMovieSceneEntitySystem* FMovieSceneEntitySystemGraph::FindSystemOfType(TSubclas
 	return nullptr;
 }
 
+int32 FMovieSceneEntitySystemGraph::NumInPhase(UE::MovieScene::ESystemPhase Phase) const
+{
+	switch (Phase)
+	{
+	case UE::MovieScene::ESystemPhase::Spawn:         return SpawnPhase.Num();
+	case UE::MovieScene::ESystemPhase::Instantiation: return InstantiationPhase.Num();
+	case UE::MovieScene::ESystemPhase::Evaluation:    return EvaluationPhase.Num();
+	case UE::MovieScene::ESystemPhase::Finalization:  return FinalizationPhase.Num();
+	default: ensureMsgf(false, TEXT("Invalid phase specified for execution.")); return 0;
+	}
+}
+
 void FMovieSceneEntitySystemGraph::ExecutePhase(UE::MovieScene::ESystemPhase Phase, UMovieSceneEntitySystemLinker* Linker, FGraphEventArray& OutTasks)
 {
 	UpdateCache();
 
 	switch (Phase)
 	{
-	case UE::MovieScene::ESystemPhase::Spawn:         ExecutePhase(SpawnPhase,         Linker, OutTasks); break;
-	case UE::MovieScene::ESystemPhase::Instantiation: ExecutePhase(InstantiationPhase, Linker, OutTasks); break;
-	case UE::MovieScene::ESystemPhase::Evaluation:    ExecutePhase(EvaluationPhase,    Linker, OutTasks); break;
-	case UE::MovieScene::ESystemPhase::Finalization:  ExecutePhase(FinalizationPhase,  Linker, OutTasks); break;
+	case UE::MovieScene::ESystemPhase::Spawn:         ExecutePhase(Phase, SpawnPhase,         Linker, OutTasks); break;
+	case UE::MovieScene::ESystemPhase::Instantiation: ExecutePhase(Phase, InstantiationPhase, Linker, OutTasks); break;
+	case UE::MovieScene::ESystemPhase::Evaluation:    ExecutePhase(Phase, EvaluationPhase,    Linker, OutTasks); break;
+	case UE::MovieScene::ESystemPhase::Finalization:  ExecutePhase(Phase, FinalizationPhase,  Linker, OutTasks); break;
 	default: ensureMsgf(false, TEXT("Invalid phase specified for execution.")); break;
 	}
 }
@@ -332,6 +365,7 @@ void FMovieSceneEntitySystemGraph::IteratePhase(UE::MovieScene::ESystemPhase Pha
 	{
 	case UE::MovieScene::ESystemPhase::Spawn:         Array = SpawnPhase;         break;
 	case UE::MovieScene::ESystemPhase::Instantiation: Array = InstantiationPhase; break;
+	case UE::MovieScene::ESystemPhase::Scheduling:    Array = SchedulingPhase;    break;
 	case UE::MovieScene::ESystemPhase::Evaluation:    Array = EvaluationPhase;    break;
 	case UE::MovieScene::ESystemPhase::Finalization:  Array = FinalizationPhase;  break;
 	default: ensureMsgf(false, TEXT("Invalid phase specified for iteration."));   return;
@@ -344,9 +378,11 @@ void FMovieSceneEntitySystemGraph::IteratePhase(UE::MovieScene::ESystemPhase Pha
 }
 
 template<typename ArrayType>
-void FMovieSceneEntitySystemGraph::ExecutePhase(const ArrayType& SortedEntries, UMovieSceneEntitySystemLinker* Linker, FGraphEventArray& OutTasks)
+void FMovieSceneEntitySystemGraph::ExecutePhase(UE::MovieScene::ESystemPhase Phase, const ArrayType& SortedEntries, UMovieSceneEntitySystemLinker* Linker, FGraphEventArray& OutTasks)
 {
 	using namespace UE::MovieScene;
+
+	const bool bCustomSchedulingEnabled = FEntitySystemScheduler::IsCustomSchedulingEnabled();
 
 	Linker->EntityManager.UpdateThreadingModel();
 
@@ -427,14 +463,95 @@ void FMovieSceneEntitySystemGraph::ExecutePhase(const ArrayType& SortedEntries, 
 				if (ToNodeID)
 				{
 					FMovieSceneEntitySystemGraphNode& ToNode = Nodes.Array[*ToNodeID];
-					if (!ToNode.Prerequisites)
+					if (EnumHasAnyFlags(ToNode.System->GetPhase(), Phase)
+						// If custom scheduling is disabled, allow propagation between evaluation/scheduling phase as well
+						|| (!bCustomSchedulingEnabled && Phase == ESystemPhase::Evaluation && EnumHasAnyFlags(ToNode.System->GetPhase(), ESystemPhase::Scheduling))
+						)
 					{
-						ToNode.Prerequisites = MakeShared<FSystemTaskPrerequisites>();
+						if (!ToNode.Prerequisites)
+						{
+							ToNode.Prerequisites = MakeShared<FSystemTaskPrerequisites>();
+						}
+						ToNode.Prerequisites->Consume(*DownstreamTasks.Subsequents);
 					}
-					ToNode.Prerequisites->Consume(*DownstreamTasks.Subsequents);
+				}
+			}
+
+			// Done with subsequents now
+			DownstreamTasks.Subsequents->Empty();
+		}
+	}
+}
+
+void FMovieSceneEntitySystemGraph::ReconstructTaskSchedule(UE::MovieScene::FEntityManager* EntityManager)
+{
+	using namespace UE::MovieScene;
+
+	if (!FEntitySystemScheduler::IsCustomSchedulingEnabled())
+	{
+		// When disabled, we combine the scheduling phase with the evaluation phase and
+		// execute them using the legacy procedural task prerequisites API through OnRun
+
+		return;
+	}
+
+	UpdateCache();
+
+	if (!TaskScheduler)
+	{
+		TaskScheduler = MakeUnique<FEntitySystemScheduler>(EntityManager);
+	}
+
+	TaskScheduler->BeginConstruction();
+
+	for (int32 CurrentIndex = 0; CurrentIndex < SchedulingPhase.Num(); ++CurrentIndex)
+	{
+		const uint16 NodeID = SchedulingPhase[CurrentIndex];
+
+		UMovieSceneEntitySystem* System = Nodes.Array[NodeID].System;
+		checkSlow(System);
+
+		// Initilaize downstream task structure for this system
+		TaskScheduler->BeginSystem(NodeID);
+
+		System->SchedulePersistentTasks(TaskScheduler.Get());
+
+		// Propagate subsequent tasks
+		if (TaskScheduler->HasAnyTasksToPropagateDownstream())
+		{
+			TArray<uint16> ToGlobalNodeIDs;
+			UMovieSceneEntitySystem::GetSubsequentSystems(System->GetGlobalDependencyGraphID(), ToGlobalNodeIDs);
+			for (uint16 ToGlobalNodeID : ToGlobalNodeIDs)
+			{
+				uint16* ToNodeID = GlobalToLocalNodeIDs.Find(ToGlobalNodeID);
+				if (ToNodeID)
+				{
+					TaskScheduler->PropagatePrerequisite(*ToNodeID);
 				}
 			}
 		}
+
+		TaskScheduler->EndSystem(NodeID);
+	}
+
+	TaskScheduler->EndConstruction();
+
+	SchedulerSerialNumber = EntityManager->GetSystemSerial();
+}
+
+void FMovieSceneEntitySystemGraph::ScheduleTasks(UE::MovieScene::FEntityManager* EntityManager)
+{
+	// @todo: First off go through and increase the WriteContexts?
+	if (TaskScheduler)
+	{
+		EntityManager->IncrementSystemSerial();
+
+		if (EntityManager->HasStructureChangedSince(SchedulerSerialNumber))
+		{
+			ReconstructTaskSchedule(EntityManager);
+		}
+
+		TaskScheduler->ExecuteTasks();
 	}
 }
 

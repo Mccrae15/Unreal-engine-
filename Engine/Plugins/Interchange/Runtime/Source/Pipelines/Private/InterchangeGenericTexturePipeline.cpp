@@ -10,6 +10,7 @@
 #include "InterchangeTexture2DArrayNode.h"
 #include "InterchangeTexture2DFactoryNode.h"
 #include "InterchangeTexture2DNode.h"
+#include "InterchangeTextureBlurNode.h"
 #include "InterchangeTextureCubeArrayFactoryNode.h"
 #include "InterchangeTextureCubeArrayNode.h"
 #include "InterchangeTextureCubeFactoryNode.h"
@@ -21,7 +22,6 @@
 #include "InterchangeVolumeTextureNode.h"
 #include "InterchangeVolumeTextureFactoryNode.h"
 #include "Misc/Paths.h"
-#include "Engine/Texture.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeGenericTexturePipeline)
 
@@ -63,6 +63,11 @@ namespace UE::Interchange::Private
 		if (UInterchangeVolumeTextureNode::StaticClass() == NodeClass)
 		{
 			return UInterchangeVolumeTextureFactoryNode::StaticClass();
+		}
+
+		if(UInterchangeTextureBlurNode::StaticClass() == NodeClass)
+		{
+			return UInterchangeTexture2DFactoryNode::StaticClass();
 		}
 
 		return nullptr;
@@ -162,9 +167,17 @@ void UInterchangeGenericTexturePipeline::ExecutePipeline(UInterchangeBaseNodeCon
 
 	if (bImportTextures)
 	{
-		for (const UInterchangeTextureNode* TextureNode : TextureNodes)
+		UInterchangeTextureFactoryNode* TextureFactoryNode = nullptr;
+		for (UInterchangeTextureNode* TextureNode : TextureNodes)
 		{
-			HandleCreationOfTextureFactoryNode(TextureNode);
+			TextureFactoryNode = HandleCreationOfTextureFactoryNode(TextureNode);
+		}
+		//If we have a valid override name
+		const bool bOverrideAssetName = TextureNodes.Num() == 1 && IsStandAlonePipeline() && !AssetName.IsEmpty();
+		if (TextureFactoryNode && bOverrideAssetName)
+		{
+			TextureFactoryNode->SetAssetName(AssetName);
+			TextureFactoryNode->SetDisplayLabel(AssetName);
 		}
 	}
 }

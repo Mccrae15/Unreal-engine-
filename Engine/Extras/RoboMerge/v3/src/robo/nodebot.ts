@@ -1251,6 +1251,20 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 	onAlreadyIntegrated(event: AlreadyIntegrated) {
 		this.conflicts.onAlreadyIntegrated(event)
+
+		if (event.change.userRequest && this.slackMessages) {
+			if (this.slackMessages) {
+				const message = `Change ${event.change.cl} was not necessary in ${event.action.branch.name}`
+				let dm: SlackMessage = {
+					text: message,
+					style: SlackMessageStyles.WARNING,
+					channel: '',
+					mrkdwn: true
+				}
+				
+				this.slackMessages.postDM(this.findEmail(event.change.owner!), event.change.cl, this.branch, dm)			
+			}
+		}
 	}
 
 	onEndIntegratingToGate(event: EndIntegratingToGateEvent) {
@@ -1360,22 +1374,30 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 		for (let changeIndex = 0; changeIndex < changes.length; ++changeIndex) {
 			const change = changes[changeIndex]
 
-			// If the user of a change is robomerge or this is a change submitted via swarm on behalf of someone
-			// don't process the change for a minute to give the change owner command time to be processed
-			if ((Date.now() - ((change.time || 0) * 1000)) < 60000) {
-				if (change.user === "robomerge") {
-					this.nodeBotLogger.info(`Delaying processing of ${change.change} while robomerge changes owner.  Now: ${Date.now()} Change time: ${change.time}`)
-					return
+			// If the user of the CL is robomerge, lookup the actual author from the tag
+			if (change.user === "robomerge") {
+				let bAuthorFound = false
+				for (const line of change.desc.split('\n')) {
+					const authorMatch = line.match("#ROBOMERGE-AUTHOR: (.*)")
+					if (authorMatch) {
+						change.user = authorMatch[1]
+						bAuthorFound = true
+						break
+					}
 				}
-				else if (change.client.startsWith("swarm-")) {
+				if (!bAuthorFound) {
+					this.nodeBotLogger.warn(`Processing change ${change.change} by user robomerge. Now: ${Date.now()} Change time: ${change.time}`)
+				}
+			}
+			// If this is a change submitted via swarm on behalf of someone don't process the
+			// change for a few minutes to give the change owner command time to be processed
+			else if (change.client.startsWith("swarm-")) {
+				// TODO: Use the Swarm API to lookup the actual author
+				if ((Date.now() - ((change.time || 0) * 1000)) < 120000) {
 					this.nodeBotLogger.info(`Delaying processing of ${change.change} to give swarm time to change owner.  Now: ${Date.now()} Change time: ${change.time}`)
 					return
 				}
 			}
-
-			if (change.user === "robomerge") {
-				this.nodeBotLogger.warn(`Processing change ${change.change} by user robomerge. Now: ${Date.now()} Change time: ${change.time}`)
-            }
 
 			const changeResult = await this._processAndMergeCl(availableEdges, change, false)
 
@@ -1636,13 +1658,27 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 			change.desc = '<description not available>'
 		}
 
+		let combinedMacros: { [name: string]: string[] } = {}
+		for (let macroName in this.branch.macros)
+		{
+			combinedMacros[macroName.toLowerCase()] = this.branch.macros[macroName]
+		}
+		for (let macroName in this.branchGraph.config.macros)
+		{
+			const macroNameLower = macroName.toLowerCase()
+			if (combinedMacros[macroNameLower] === undefined)
+			{
+				combinedMacros[macroNameLower] = this.branchGraph.config.macros[macroName]
+			}
+		}
+
 		const parse = (lines: string[]) => parseDescriptionLines({
 			lines,
 			isDefaultBot: this.branch.isDefaultBot,
 			graphBotName: this.graphBotName,
 			cl: change.change,
 			aliasesUpper: this.branchGraph.config.aliases.map(s => s.toUpperCase()),
-			macros: this.branchGraph.config.macros,
+			macros: combinedMacros,
 			logger: this.nodeBotLogger
 		})
 
@@ -2008,7 +2044,8 @@ export class NodeBot extends PerforceStatefulBot implements NodeBotInterface {
 
 			const opts: SlackMessage = { 
 				title:'', 
-				text: `${channelPing}'s change needs to be approved.`, 
+				text: `${channelPing}'s change in ${pending.action.branch.name} needs to be approved.\n\n` +
+						approval.description, 
 				style: SlackMessageStyles.DANGER, 
 				fields,
 				mrkdwn: true,

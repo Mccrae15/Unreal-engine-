@@ -2,16 +2,18 @@
 
 // Movie Pipeline Includes
 #include "Widgets/SMoviePipelineQueuePanel.h"
+#include "Customizations/JobCustomization.h"
 #include "Widgets/MoviePipelineWidgetConstants.h"
 #include "SMoviePipelineQueueEditor.h"
 #include "SMoviePipelineConfigPanel.h"
 #include "MovieRenderPipelineSettings.h"
 #include "MovieRenderPipelineStyle.h"
-#include "MoviePipelineBlueprintLibrary.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "MoviePipelineQueue.h"
 #include "MoviePipelinePrimaryConfig.h"
 #include "MoviePipelineQueueSubsystem.h"
+#include "Graph/MovieGraphConfig.h"
+#include "Graph/MovieGraphAssetToolkit.h"
 
 // Slate Includes
 #include "Widgets/SBoxPanel.h"
@@ -22,10 +24,8 @@
 #include "Widgets/SWindow.h"
 #include "Styling/AppStyle.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
-#include "Widgets/Notifications/SNotificationList.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/Images/SImage.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -64,6 +64,10 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 	DetailsViewArgs.ColumnWidth = 0.7f;
 
 	JobDetailsPanelWidget = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+
+	JobDetailsPanelWidget->RegisterInstancedCustomPropertyLayout(
+		UMoviePipelineExecutorJob::StaticClass(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FJobDetailsCustomization::MakeInstance));
 
 	// Create the child widgets that need to know about our pipeline
 	PipelineQueueEditorWidget = SNew(SMoviePipelineQueueEditor)
@@ -362,6 +366,25 @@ void SMoviePipelineQueuePanel::OnEditJobConfigRequested(TWeakObjectPtr<UMoviePip
 		return;
 	}
 
+	// Handle editing a graph vs. a standard configuration
+	UMovieGraphConfig* GraphToEdit = nullptr;
+	if (InShot.IsValid() && InShot->IsUsingGraphConfiguration())
+	{
+		GraphToEdit = (InShot->GetGraphPreset() != nullptr) ? InShot->GetGraphPreset() : InShot->GetGraphConfig();
+	}
+	else if (InJob.IsValid() && InJob->IsUsingGraphConfiguration())
+	{
+		GraphToEdit = (InJob->GetGraphPreset() != nullptr) ? InJob->GetGraphPreset() : InJob->GetGraphConfig();
+	}
+
+	if (GraphToEdit)
+	{
+		const TSharedRef<FMovieGraphAssetToolkit> MovieGraphEditor(new FMovieGraphAssetToolkit());
+		MovieGraphEditor->InitMovieGraphAssetToolkit(EToolkitMode::Standalone, TSharedPtr<IToolkitHost>(), GraphToEdit);
+
+		return;
+	}
+
 	TSubclassOf<UMoviePipelineConfigBase> ConfigType;
 	UMoviePipelineConfigBase* BasePreset = nullptr;
 	UMoviePipelineConfigBase* BaseConfig = nullptr;
@@ -575,15 +598,14 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 
 FText SMoviePipelineQueuePanel::GetQueueMenuButtonText() const
 {
-	const FString QueueName = GetQueueOriginName();
-	if (!QueueName.IsEmpty())
+	FText QueueName = FText::FromString(GetQueueOriginName());
+	if (QueueName.IsEmpty())
 	{
-		return FText::Format(FText::FromString(TEXT("{0}{1}")),
-			FText::FromString(QueueName),
-			FText::FromString(IsQueueDirty() ? TEXT(" *") : TEXT("")));
+		QueueName = LOCTEXT("QueueSaveMenuUnsavedConfig_Text", "Unsaved Queue");
 	}
-	
-	return LOCTEXT("QueueSaveMenuUnsavedConfig_Text", "Unsaved Queue *");
+	return FText::Format(FText::FromString(TEXT("{0}{1}")),
+		QueueName,
+		FText::FromString(IsQueueDirty() ? TEXT(" *") : TEXT("")));
 }
 
 bool SMoviePipelineQueuePanel::OpenSaveDialog(const FString& InDefaultPath, const FString& InNewNameSuggestion, FString& OutPackageName)
@@ -717,7 +739,8 @@ void SMoviePipelineQueuePanel::SaveTransientQueueToAsset(UMoviePipelineQueue* De
 	FEditorFileUtils::EPromptReturnCode PromptReturnCode = FEditorFileUtils::PromptForCheckoutAndSave({ DestinationQueue->GetPackage() }, bCheckDirty, bPromptToSave);
 	if (PromptReturnCode == FEditorFileUtils::EPromptReturnCode::PR_Success)
 	{
-		LoadQueue(DestinationQueue);
+		constexpr bool bPromptOnReplacingDirtyQueue = false;
+		Subsystem->LoadQueue(DestinationQueue, bPromptOnReplacingDirtyQueue);
 	}
 }
 
@@ -725,74 +748,19 @@ void SMoviePipelineQueuePanel::OnImportSavedQueueAsset(const FAssetData& InPrese
 {
 	FSlateApplication::Get().DismissAllMenus();
 
-	if (IsQueueDirty())
-	{
-		const FText TitleText = LOCTEXT("UnsavedQueueWarningTitle", "Unsaved Changes to Queue");
-		const FText MessageText = LOCTEXT("UnsavedQueueWarningMessage", "The changes made to the current queue will be lost by importing another queue. Do you want to continue with this import?");
-
-		if (FMessageDialog::Open(EAppMsgType::YesNo, MessageText, &TitleText) == EAppReturnType::No)
-		{
-			return;
-		}
-	}
+	UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+	check(Subsystem);
 
 	UMoviePipelineQueue* SavedQueue = CastChecked<UMoviePipelineQueue>(InPresetAsset.GetAsset());
-	LoadQueue(SavedQueue);
-}
-
-void SMoviePipelineQueuePanel::LoadQueue(UMoviePipelineQueue* SavedQueue) const
-{
-	if (SavedQueue)
-	{
-		UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
-		check(Subsystem);
-
-		UMoviePipelineQueue* CurrentQueue = Subsystem->GetQueue();
-		CurrentQueue->CopyFrom(SavedQueue);
-		CurrentQueue->SetQueueOrigin(SavedQueue);
-		CurrentQueue->SetIsDirty(false);
-
-		// Update the shot list in case the stored queue being copied is out of date with the sequence
-		for (UMoviePipelineExecutorJob* Job : Subsystem->GetQueue()->GetJobs())
-		{
-			ULevelSequence* LoadedSequence = Cast<ULevelSequence>(Job->Sequence.TryLoad());
-			if (LoadedSequence)
-			{
-				bool bShotsChanged = false;
-				UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(LoadedSequence, Job, bShotsChanged);
-
-				if (bShotsChanged)
-				{
-					FNotificationInfo Info(LOCTEXT("QueueShotsUpdated", "Shots have changed since the queue was saved, please resave the queue"));
-					Info.ExpireDuration = 5.0f;
-					FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);
-				}
-			}
-		}
-
-		// Automatically select the first job in the queue
-		TArray<UMoviePipelineExecutorJob*> Jobs;
-		if (Subsystem->GetQueue()->GetJobs().Num() > 0)
-		{
-			Jobs.Add(Subsystem->GetQueue()->GetJobs()[0]);
-		}
-
-		// Go through the UI so it updates the UI selection too and then this will loop back
-		// around to OnSelectionChanged to update ourself.
-		PipelineQueueEditorWidget->SetSelectedJobs(Jobs);
-	}
+	Subsystem->LoadQueue(SavedQueue);
 }
 
 bool SMoviePipelineQueuePanel::IsQueueDirty() const
 {
-	UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+	const UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
 	check(Subsystem);
 
-	const UMoviePipelineQueue* Queue = Subsystem->GetQueue();
-
-	// The queue is considered dirty if the current queue has no origin (ie, it has never been saved) or it has been
-	// modified since it was loaded
-	return !GetQueueOrigin() || (Queue && Queue->IsDirty());
+	return Subsystem->IsQueueDirty();
 }
 
 UMoviePipelineQueue* SMoviePipelineQueuePanel::GetQueueOrigin() const

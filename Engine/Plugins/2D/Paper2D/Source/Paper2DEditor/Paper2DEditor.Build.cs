@@ -11,10 +11,12 @@ public class Paper2DEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"ApplicationCore",
+				"AssetTools",
 				"Slate",
 				"SlateCore",
 				"Engine",
 				"InputCore",
+				"ImageCore",
 				"EditorFramework",
 				"UnrealEd", // for AssetEditorSubsystem
 				"KismetWidgets",
@@ -39,14 +41,7 @@ public class Paper2DEditor : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"Settings",
-				"AssetTools",
 				"LevelEditor"
 			});
-
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[] {
-				"AssetTools"
-			});
-
 	}
 }

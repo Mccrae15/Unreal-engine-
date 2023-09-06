@@ -52,7 +52,7 @@ namespace AudioModulation
 					AudioModulation::PluginAuthor,
 					AudioModulation::PluginNodeMissingPrompt,
 					GetDefaultInterface(),
-					{ },
+					{ AudioModulation::PluginNodeCategory },
 					{ },
 					{ }
 				};
@@ -70,13 +70,21 @@ namespace AudioModulation
 
 			const FInputVertexInterface& InputInterface = InParams.Node.GetVertexInterface().GetInputInterface();
 			const FDataReferenceCollection& InputCollection = InParams.InputDataReferences;
+				
+			if (InParams.Environment.Contains<Audio::FDeviceId>(Metasound::Frontend::SourceInterface::Environment::DeviceID))
+			{
+				FSoundModulatorAssetReadRef Modulator1ReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulatorAsset>("In1");
+				FSoundModulatorAssetReadRef Modulator2ReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulatorAsset>("In2");
+				FSoundModulationParameterAssetReadRef ParameterReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulationParameterAsset>("MixParameter");
+				FBoolReadRef NormalizedReadRef = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, "Normalized", InParams.OperatorSettings);
 
-			FSoundModulatorAssetReadRef Modulator1ReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulatorAsset>("In1");
-			FSoundModulatorAssetReadRef Modulator2ReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulatorAsset>("In2");
-			FSoundModulationParameterAssetReadRef ParameterReadRef = InputCollection.GetDataReadReferenceOrConstruct<FSoundModulationParameterAsset>("MixParameter");
-			FBoolReadRef NormalizedReadRef = InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<bool>(InputInterface, "Normalized", InParams.OperatorSettings);
-
-			return MakeUnique<FMixModulatorsNodeOperator>(InParams, Modulator1ReadRef, Modulator2ReadRef, ParameterReadRef, NormalizedReadRef);
+				return MakeUnique<FMixModulatorsNodeOperator>(InParams, Modulator1ReadRef, Modulator2ReadRef, ParameterReadRef, NormalizedReadRef);
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Cannot create mix modulators node when no audio device ID supplied. Expected metasound environment variable '%s'"), *Metasound::Frontend::SourceInterface::Environment::DeviceID.ToString());
+				return nullptr;
+			}
 		}
 
 		FMixModulatorsNodeOperator(
@@ -97,27 +105,37 @@ namespace AudioModulation
 
 		virtual ~FMixModulatorsNodeOperator() = default;
 
-		virtual Metasound::FDataReferenceCollection GetInputs() const override
+		virtual void BindInputs(Metasound::FInputVertexInterfaceData& InOutVertexData) override
 		{
 			using namespace Metasound;
+			
+			InOutVertexData.BindReadVertex("In1", Modulator1);
+			InOutVertexData.BindReadVertex("In2", Modulator2);
+			InOutVertexData.BindReadVertex("MixParameter", Parameter);
+			InOutVertexData.BindReadVertex("Normalized", Normalized);
+		}
 
-			FDataReferenceCollection Inputs;
-			Inputs.AddDataReadReference("In1", Modulator1);
-			Inputs.AddDataReadReference("In2", Modulator2);
-			Inputs.AddDataReadReference("MixParameter", Parameter);
-			Inputs.AddDataReadReference("Normalized", Normalized);
+		virtual void BindOutputs(Metasound::FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace Metasound;
+			
+			InOutVertexData.BindReadVertex("Out", OutValue);
+		}
 
-			return Inputs;
+		virtual Metasound::FDataReferenceCollection GetInputs() const override
+		{
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual Metasound::FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace Metasound;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference("Out", FFloatReadRef(OutValue));
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
@@ -168,8 +186,30 @@ namespace AudioModulation
 			*OutValue = Value1;
 		}
 
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			if (InParams.Environment.Contains<Audio::FDeviceId>(Metasound::Frontend::SourceInterface::Environment::DeviceID))
+			{
+				Audio::FDeviceId PriorDeviceId = DeviceId;
+				DeviceId = InParams.Environment.GetValue<Audio::FDeviceId>(Metasound::Frontend::SourceInterface::Environment::DeviceID);
+
+				if (PriorDeviceId != DeviceId)
+				{
+					// Reset modulator handles because modulator ids are not unique across devices.
+					ModHandle1 = Audio::FModulatorHandle{};
+					ModHandle2 = Audio::FModulatorHandle{};
+				}
+			}
+			else
+			{
+				UE_LOG(LogMetaSound, Warning, TEXT("Missing audio device ID environment variable (%s) required to properly configure node (Modulation.MixModulators)"), *Metasound::Frontend::SourceInterface::Environment::DeviceID.ToString());
+			}
+			Execute();
+		}
+
 	private:
-		const Audio::FDeviceId DeviceId;
+
+		Audio::FDeviceId DeviceId;
 
 		Audio::FModulatorHandle ModHandle1;
 		Audio::FModulatorHandle ModHandle2;

@@ -1932,6 +1932,30 @@ void FDatasmithSceneXmlWriter::Serialize( TSharedRef< IDatasmithScene > Datasmit
 	XmlString = TEXT("<User ID=\"") + FPlatformMisc::GetLoginId() + TEXT("\" OS=\"") + OSVersion + TEXT("\"/>") + LINE_TERMINATOR;
 	FDatasmithSceneXmlWriterImpl::SerializeToArchive(Archive, XmlString);
 
+	FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);
+
+	// Geolocation
+	{
+		FVector Geolocation = DatasmithScene->GetGeolocation();
+
+		XmlString = FString::Printf( TEXT("<%s"), DATASMITH_GEOLOCATION);
+
+		auto WriteGeolocationComponent = [&XmlString](const TCHAR* AttrName, double Value)
+		{
+			if (Value != TNumericLimits<double>::Max())
+			{
+				XmlString += FString::Printf( TEXT(" %s=\"%s\""), AttrName, *FString::SanitizeFloat(Value));
+			}
+		};
+		WriteGeolocationComponent(DATASMITH_GEOLOCATION_LATITUDE, Geolocation.X);
+		WriteGeolocationComponent(DATASMITH_GEOLOCATION_LONGITUDE, Geolocation.Y);
+		WriteGeolocationComponent(DATASMITH_GEOLOCATION_ELEVATION, Geolocation.Z);
+		XmlString += TEXT("/>");
+		XmlString += LINE_TERMINATOR;
+
+		FDatasmithSceneXmlWriterImpl::SerializeToArchive(Archive, XmlString);
+	}
+
 	FDatasmithSceneXmlWriterImpl::WritePostProcessElement( DatasmithScene->GetPostProcess(), Archive, 1 );
 
 	bool bHasIlluminationEnvironment = false;

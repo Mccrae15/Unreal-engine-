@@ -7,6 +7,7 @@ D3D12Device.h: D3D12 Device Interfaces
 #pragma once
 
 #include "CoreMinimal.h"
+#include "D3D12BindlessDescriptors.h"
 #include "D3D12Descriptors.h"
 
 class FD3D12Device;
@@ -49,6 +50,10 @@ struct FD3D12DiagnosticBuffer
 		, GpuAddress(GpuAddress)
 	{}
 
+	TArray<uint16> FreeContextIds;
+	FCriticalSection CriticalSection;
+	uint32 BreadCrumbsContextSize = 0;
+
 	uint32 BreadCrumbsOffset = 0;
 	uint32 BreadCrumbsSize = 0;
 
@@ -69,6 +74,8 @@ public:
 
 	uint64 BusyCycles = 0;
 
+	D3D12_QUERY_DATA_PIPELINE_STATISTICS PipelineStats {};
+
 	uint64 GetCurrentTimestamp()  const { return Timestamps[TimestampIndex]; }
 	uint64 GetPreviousTimestamp() const { return Timestamps[TimestampIndex - 1]; }
 
@@ -80,19 +87,6 @@ public:
 	FD3D12Timing(FD3D12Queue& Queue)
 		: Queue(Queue)
 	{}
-};
-
-// Lock free pointer list that auto-destructs items remaining in the list.
-template <typename TObjectType>
-struct TD3D12ObjectPool : public TLockFreePointerListUnordered<TObjectType, PLATFORM_CACHE_LINE_SIZE>
-{
-	~TD3D12ObjectPool()
-	{
-		while (TObjectType* Object = TLockFreePointerListUnordered<TObjectType, PLATFORM_CACHE_LINE_SIZE>::Pop())
-		{
-			delete Object;
-		}
-	}
 };
 
 // Encapsulates a single D3D command queue, and maintains the 
@@ -124,6 +118,7 @@ public:
 	TArray<FD3D12QueryRange   > PendingQueryRanges;
 	TArray<FD3D12QueryLocation> PendingTimestampQueries;
 	TArray<FD3D12QueryLocation> PendingOcclusionQueries;
+	TArray<FD3D12QueryLocation> PendingPipelineStatsQueries;
 
 	// Executes the current payload, returning the latest fence value signaled for this queue.
 	uint64 ExecutePayload();
@@ -240,19 +235,6 @@ public:
 	void SetupAfterDeviceCreation();
 };
 
-struct FD3D12DefaultViews
-{
-	FD3D12ViewDescriptorHandle* NullSRV = nullptr;
-	FD3D12ViewDescriptorHandle* NullRTV = nullptr;
-	FD3D12ViewDescriptorHandle* NullUAV = nullptr;
-
-#if USE_STATIC_ROOT_SIGNATURE
-	FD3D12ConstantBufferView* NullCBV = nullptr;
-#endif
-
-	TRefCountPtr<FD3D12SamplerState> DefaultSampler;
-};
-
 class FD3D12Device final : public FD3D12SingleNodeGPUObject, public FNoncopyable, public FD3D12AdapterChild
 {
 public:
@@ -272,6 +254,7 @@ public:
 
 	// Misc
 	void BlockUntilIdle();
+	D3D12_RESOURCE_ALLOCATION_INFO GetResourceAllocationInfoUncached(const FD3D12ResourceDesc& InDesc);
 	D3D12_RESOURCE_ALLOCATION_INFO GetResourceAllocationInfo(const FD3D12ResourceDesc& InDesc);
 	TUniquePtr<FD3D12DiagnosticBuffer> CreateDiagnosticBuffer(const D3D12_RESOURCE_DESC& Desc, const TCHAR* Name);
 
@@ -290,6 +273,10 @@ public:
 
 	TRefCountPtr<ID3D12StateObject>			  DeserializeRayTracingStateObject(D3D12_SHADER_BYTECODE Bytecode, ID3D12RootSignature* RootSignature);
 
+	void GetRaytracingAccelerationStructurePrebuildInfo(
+		const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS* pDesc,
+		D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO* pInfo);
+
 	// Queries ray tracing pipeline state object metrics such as VGPR usage (if available/supported). Returns true if query succeeded.
 	bool GetRayTracingPipelineInfo(ID3D12StateObject* Pipeline, FD3D12RayTracingPipelineInfo* OutInfo);
 #endif // D3D12_RHI_RAYTRACING
@@ -301,7 +288,9 @@ public:
 
 	// Descriptor Managers
 	inline FD3D12DescriptorHeapManager&     GetDescriptorHeapManager    () { return DescriptorHeapManager;     }
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 	inline FD3D12BindlessDescriptorManager& GetBindlessDescriptorManager() { return BindlessDescriptorManager; }
+#endif
 	inline FD3D12OnlineDescriptorManager&   GetOnlineDescriptorManager  () { return OnlineDescriptorManager;   }
 	inline FD3D12OfflineDescriptorManager&  GetOfflineDescriptorManager (ERHIDescriptorHeapType InType)
 	{
@@ -340,7 +329,7 @@ public:
 	void                          ReleaseQueryHeap(FD3D12QueryHeap* QueryHeap);
 	
 	// Command Lists
-	FD3D12CommandList* ObtainCommandList (FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator);
+	FD3D12CommandList* ObtainCommandList (FD3D12CommandAllocator* CommandAllocator, FD3D12QueryAllocator* TimestampAllocator, FD3D12QueryAllocator* PipelineStatsAllocator);
 	void               ReleaseCommandList(FD3D12CommandList* CommandList);
 
 	// Queues
@@ -366,7 +355,9 @@ private:
 	} ResidencyManager;
 
 	FD3D12DescriptorHeapManager     DescriptorHeapManager;
+#if PLATFORM_SUPPORTS_BINDLESS_RENDERING
 	FD3D12BindlessDescriptorManager BindlessDescriptorManager;
+#endif
 	TArray<FD3D12OfflineDescriptorManager, TInlineAllocator<(uint32)ERHIDescriptorHeapType::Count>> OfflineDescriptorManagers;
 
 	FD3D12GlobalOnlineSamplerHeap GlobalSamplerHeap;
@@ -374,7 +365,7 @@ private:
 
 	FD3D12DefaultViews DefaultViews;
 
-	TD3D12ObjectPool<FD3D12QueryHeap> QueryHeapPool[3];
+	TStaticArray<TD3D12ObjectPool<FD3D12QueryHeap>, 4> QueryHeapPool { InPlace };
 	
 	FD3D12CommandContext* ImmediateCommandContext = nullptr;
 

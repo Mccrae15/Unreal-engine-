@@ -8,7 +8,6 @@
 #include "GameFramework/InputSettings.h"
 #include "IOpenXRExtensionPlugin.h"
 #include "HeadMountedDisplayFunctionLibrary.h"
-#include "Epic_openxr.h"
 
 #include "EnhancedInputLibrary.h"
 #include "EnhancedInputSubsystemInterface.h"
@@ -241,6 +240,7 @@ FOpenXRInputPlugin::FOpenXRInput::FOpenXRInput(FOpenXRHMD* HMD)
 	, bActionsAttached(false)
 	, bDirectionalBindingSupported(false)
 	, bPalmPoseSupported(false)
+	, bActionSetPrioritySupported(false)
 	, MessageHandler(new FGenericApplicationMessageHandler())
 {
 	IModularFeatures::Get().RegisterModularFeature(GetModularFeatureName(), this);
@@ -249,8 +249,9 @@ FOpenXRInputPlugin::FOpenXRInput::FOpenXRInput(FOpenXRHMD* HMD)
 	if (OpenXRHMD)
 	{
 		Instance = OpenXRHMD->GetInstance();
-		bDirectionalBindingSupported = OpenXRHMD->IsExtensionEnabled("XR_EXT_dpad_binding");
-		bPalmPoseSupported = OpenXRHMD->IsExtensionEnabled("XR_EXT_palm_pose");
+		bDirectionalBindingSupported = OpenXRHMD->IsExtensionEnabled(XR_EXT_DPAD_BINDING_EXTENSION_NAME);
+		bPalmPoseSupported = OpenXRHMD->IsExtensionEnabled(XR_EXT_PALM_POSE_EXTENSION_NAME);
+		bActionSetPrioritySupported = OpenXRHMD->IsExtensionEnabled(XR_EXT_ACTIVE_ACTION_SET_PRIORITY_EXTENSION_NAME);
 
 		// Note: AnyHand needs special handling because it tries left then falls back to right in each call.
 		MotionSourceToControllerHandMap.Add(OpenXRSourceNames::Left, EControllerHand::Left);
@@ -373,6 +374,7 @@ bool FOpenXRInputPlugin::FOpenXRInput::BuildActions(XrSession Session)
 		}
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (!MappableInputConfig)
 	{
 		// Attempt to load the default input config from the OpenXR input settings.
@@ -393,6 +395,7 @@ bool FOpenXRInputPlugin::FOpenXRInput::BuildActions(XrSession Session)
 
 		BuildLegacyActions(Profiles);
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	for (TPair<FString, FInteractionProfile>& Pair : Profiles)
 	{
@@ -551,6 +554,7 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildEnhancedActions(TMap<FString, FInter
 		return;
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	for (const TPair<TObjectPtr<UInputMappingContext>, int32> MappingContext : MappableInputConfig->GetMappingContexts())
 	{
 		FOpenXRActionSet ActionSet(Instance, MappingContext.Key->GetFName(), MappingContext.Key->ContextDescription.ToString(), ToXrPriority(MappingContext.Value), MappingContext.Key);
@@ -584,6 +588,7 @@ void FOpenXRInputPlugin::FOpenXRInput::BuildEnhancedActions(TMap<FString, FInter
 		}
 		ActionSets.Emplace(MoveTemp(ActionSet));
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FOpenXRInputPlugin::FOpenXRInput::DestroyActions()
@@ -805,8 +810,14 @@ void FOpenXRInputPlugin::FOpenXRInput::SyncActions(XrSession Session)
 		}
 
 		XrActionsSyncInfo SyncInfo = { XR_TYPE_ACTIONS_SYNC_INFO };
-		XrActiveActionSetPrioritiesEXT PrioritiesInfo = { XR_TYPE_ACTIVE_ACTION_SET_PRIORITY_EXT };
-		SyncInfo.next = &PrioritiesInfo;
+		XrActiveActionSetPrioritiesEXT PrioritiesInfo = { XR_TYPE_ACTIVE_ACTION_SET_PRIORITIES_EXT };
+		// This is a workaround to avoid log spam from some OpenXR runtimes when they do not support this extension.
+		if (bActionSetPrioritySupported)
+		{
+			SyncInfo.next = &PrioritiesInfo;
+			PrioritiesInfo.actionSetPriorityCount = ActivePriorities.Num();
+			PrioritiesInfo.actionSetPriorities = ActivePriorities.GetData();
+		}
 
 		for (IOpenXRExtensionPlugin* Plugin : OpenXRHMD->GetExtensionPlugins())
 		{
@@ -815,8 +826,6 @@ void FOpenXRInputPlugin::FOpenXRInput::SyncActions(XrSession Session)
 			SyncInfo.next = Plugin->OnSyncActions(Session, SyncInfo.next);
 		}
 
-		PrioritiesInfo.countActionSetPriorities = ActivePriorities.Num();
-		PrioritiesInfo.actionSetPriorities = ActivePriorities.GetData();
 		SyncInfo.countActiveActionSets = ActiveActionSets.Num();
 		SyncInfo.activeActionSets = ActiveActionSets.GetData();
 
@@ -1165,7 +1174,15 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPosition(const
 	return false;
 }
 
-bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTime(const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& OutTimeWasUsed, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityRadPerSec, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
+bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPosition(const int32 ControllerIndex, const FName MotionSource, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityAsAxisAndLength, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
+{
+	// FTimespan initializes to 0 and GetControllerOrientationAndPositionForTime with time 0 will return the latest data.
+	FTimespan Time;
+	bool OutTimeWasUsed = false;
+	return GetControllerOrientationAndPositionForTime(ControllerIndex, MotionSource, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+}
+
+bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTime(const int32 ControllerIndex, const FName MotionSource, FTimespan Time, bool& OutTimeWasUsed, FRotator& OutOrientation, FVector& OutPosition, bool& OutbProvidedLinearVelocity, FVector& OutLinearVelocity, bool& OutbProvidedAngularVelocity, FVector& OutAngularVelocityAsAxisAndLength, bool& OutbProvidedLinearAcceleration, FVector& OutLinearAcceleration, float WorldToMetersScale) const
 {
 	if (!bActionsAttached || OpenXRHMD == nullptr)
 	{
@@ -1176,18 +1193,18 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTim
 	{
 		if (MotionSource == OpenXRSourceNames::AnyHand)
 		{
-			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale)
-				|| GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale)
+				|| GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		}
 
 		if (MotionSource == OpenXRSourceNames::Left)
 		{
-			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::LeftGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		}
 
 		if (MotionSource == OpenXRSourceNames::Right)
 		{
-			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+			return GetControllerOrientationAndPositionForTime(ControllerIndex, OpenXRSourceNames::RightGrip, Time, OutTimeWasUsed, OutOrientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		}
 	}
 
@@ -1218,7 +1235,7 @@ bool FOpenXRInputPlugin::FOpenXRInput::GetControllerOrientationAndPositionForTim
 	if (Result >= XR_SUCCESS && State.isActive)
 	{
 		FQuat Orientation;
-		OpenXRHMD->GetPoseForTime(GetDeviceIDForMotionSource(MotionSource), Time, OutTimeWasUsed, Orientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityRadPerSec, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
+		OpenXRHMD->GetPoseForTime(GetDeviceIDForMotionSource(MotionSource), Time, OutTimeWasUsed, Orientation, OutPosition, OutbProvidedLinearVelocity, OutLinearVelocity, OutbProvidedAngularVelocity, OutAngularVelocityAsAxisAndLength, OutbProvidedLinearAcceleration, OutLinearAcceleration, WorldToMetersScale);
 		OutOrientation = FRotator(Orientation);
 		return true;
 	}
@@ -1385,6 +1402,7 @@ float FOpenXRInputPlugin::FOpenXRInput::GetHapticAmplitudeScale() const
 	return 1.0f;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool FOpenXRInputPlugin::FOpenXRInput::SetPlayerMappableInputConfig(TObjectPtr<class UPlayerMappableInputConfig> InputConfig)
 {
 	if (bActionsAttached)
@@ -1397,5 +1415,6 @@ bool FOpenXRInputPlugin::FOpenXRInput::SetPlayerMappableInputConfig(TObjectPtr<c
 	MappableInputConfig = TStrongObjectPtr<class UPlayerMappableInputConfig>(InputConfig);
 	return true;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #undef LOCTEXT_NAMESPACE // "OpenXRInputPlugin"

@@ -22,7 +22,7 @@ class FPropertyViewerImpl;
 }
 
 /** */
-class ADVANCEDWIDGETS_API SPropertyViewer : public SCompoundWidget
+class SPropertyViewer : public SCompoundWidget
 {
 private:
 	using Super = SCompoundWidget;
@@ -71,6 +71,7 @@ public:
 	DECLARE_DELEGATE_RetVal_TwoParams(TSharedPtr<SWidget>, FOnContextMenuOpening, FHandle, TArrayView<const FFieldVariant>);
 	DECLARE_DELEGATE_ThreeParams(FOnSelectionChanged, FHandle, TArrayView<const FFieldVariant>, ESelectInfo::Type);
 	DECLARE_DELEGATE_TwoParams(FOnDoubleClicked, FHandle, TArrayView<const FFieldVariant>);
+	DECLARE_DELEGATE_RetVal_FourParams(FReply, FOnDragDetected, const FGeometry&, const FPointerEvent&, FHandle, TArrayView<const FFieldVariant>);
 	DECLARE_DELEGATE_RetVal_TwoParams(TSharedRef<SWidget>, FOnGenerateContainer, FHandle, TOptional<FText> DisplayName);
 
 	SLATE_BEGIN_ARGS(SPropertyViewer)
@@ -109,31 +110,33 @@ public:
 		SLATE_EVENT(FOnDoubleClicked, OnDoubleClicked);
 		/** Delegate to invoke when we generate the entry for an added container. */
 		SLATE_EVENT(FOnGenerateContainer, OnGenerateContainer)
+		/** Delegate to invoke when an item is dragged. */
+		SLATE_EVENT(FOnDragDetected, OnDragDetected);
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs);
-	void Construct(const FArguments& InArgs, const UScriptStruct* Struct);
-	void Construct(const FArguments& InArgs, const UScriptStruct* Struct, void* Data);
-	void Construct(const FArguments& InArgs, const UClass* Class);
-	void Construct(const FArguments& InArgs, UObject* ObjectInstance);
-	void Construct(const FArguments& InArgs, const UFunction* Function);
+	ADVANCEDWIDGETS_API void Construct(const FArguments& InArgs);
+	ADVANCEDWIDGETS_API void Construct(const FArguments& InArgs, const UScriptStruct* Struct);
+	ADVANCEDWIDGETS_API void Construct(const FArguments& InArgs, const UScriptStruct* Struct, void* Data);
+	ADVANCEDWIDGETS_API void Construct(const FArguments& InArgs, const UClass* Class);
+	ADVANCEDWIDGETS_API void Construct(const FArguments& InArgs, UObject* ObjectInstance);
+	ADVANCEDWIDGETS_API void Construct(const FArguments& InArgs, const UFunction* Function);
 
-	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	ADVANCEDWIDGETS_API virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 public:
-	FHandle AddContainer(const UScriptStruct* Struct, TOptional<FText> DisplayName = TOptional<FText>());
-	FHandle AddContainer(const UClass* Class, TOptional<FText> DisplayName = TOptional<FText>());
-	FHandle AddContainer(const UFunction* Function, TOptional<FText> DisplayName = TOptional<FText>());
-	FHandle AddInstance(const UScriptStruct* Struct, void* Data, TOptional<FText> DisplayName = TOptional<FText>());
-	FHandle AddInstance(UObject* ObjectInstance, TOptional<FText> DisplayName = TOptional<FText>());
+	ADVANCEDWIDGETS_API FHandle AddContainer(const UScriptStruct* Struct, TOptional<FText> DisplayName = TOptional<FText>());
+	ADVANCEDWIDGETS_API FHandle AddContainer(const UClass* Class, TOptional<FText> DisplayName = TOptional<FText>());
+	ADVANCEDWIDGETS_API FHandle AddContainer(const UFunction* Function, TOptional<FText> DisplayName = TOptional<FText>());
+	ADVANCEDWIDGETS_API FHandle AddInstance(const UScriptStruct* Struct, void* Data, TOptional<FText> DisplayName = TOptional<FText>());
+	ADVANCEDWIDGETS_API FHandle AddInstance(UObject* ObjectInstance, TOptional<FText> DisplayName = TOptional<FText>());
 
-	void Remove(FHandle Identifier);
-	void RemoveAll();
+	ADVANCEDWIDGETS_API void Remove(FHandle Identifier);
+	ADVANCEDWIDGETS_API void RemoveAll();
 
-	TArray<FSelectedItem> GetSelectedItems() const;
+	ADVANCEDWIDGETS_API TArray<FSelectedItem> GetSelectedItems() const;
 
-	void SetRawFilterText(const FText& InFilterText);
-	void SetSelection(FHandle Container, TArrayView<const FFieldVariant> FieldPath);
+	ADVANCEDWIDGETS_API void SetRawFilterText(const FText& InFilterText);
+	ADVANCEDWIDGETS_API void SetSelection(FHandle Container, TArrayView<const FFieldVariant> FieldPath);
 
 private:
 	void ConstructInternal(const FArguments& InArgs);

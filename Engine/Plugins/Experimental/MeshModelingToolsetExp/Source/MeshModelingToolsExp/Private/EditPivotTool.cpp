@@ -407,7 +407,12 @@ void UEditPivotTool::UpdateAssets(const FFrame3d& NewPivotWorldFrame)
 	// TODO: this may not be necessary anymore. Also may not be the most efficient
 	for (int32 ComponentIdx = 0; ComponentIdx < Targets.Num(); ComponentIdx++)
 	{
-		const FMeshDescription* MeshDescription = UE::ToolTarget::GetMeshDescription(Targets[ComponentIdx]);
+		bool bTargetSupportsLODs = false;
+		TArray<EMeshLODIdentifier> LODs = UE::ToolTarget::GetMeshDescriptionLODs(Targets[ComponentIdx], bTargetSupportsLODs, !TransformProps->bApplyToAllLODs);
+		for (EMeshLODIdentifier LOD : LODs)
+		{
+			UE::ToolTarget::GetMeshDescription(Targets[ComponentIdx], FGetMeshParameters(bTargetSupportsLODs, LOD));
+		}
 	}
 
 	// If the targets have any convex hulls, we need to update those first in a separate transaction to work around a crash
@@ -436,6 +441,7 @@ void UEditPivotTool::UpdateAssets(const FFrame3d& NewPivotWorldFrame)
 
 	// First pre-compute all the transforms we will need to apply
 	TArray<FTransformSequence3d> BakeTransforms;
+	BakeTransforms.SetNum(Targets.Num());
 	TArray<FTransform> ComponentTransforms;
 	FTransform NewWorldTransform = NewPivotWorldFrame.ToFTransform();
 	FTransform NewWorldInverse = NewPivotWorldFrame.ToInverseFTransform();
@@ -453,7 +459,6 @@ void UEditPivotTool::UpdateAssets(const FFrame3d& NewPivotWorldFrame)
 		if (InstancedComponent != nullptr)
 		{
 			// no bake for instancedcomponents, nothing needs to be precomputed here
-			BakeTransforms.Emplace();
 			ComponentTransforms.Add(FTransform::Identity);
 		}
 		else if (MapToFirstOccurrences[ComponentIdx] == ComponentIdx)
@@ -507,7 +512,7 @@ void UEditPivotTool::UpdateAssets(const FFrame3d& NewPivotWorldFrame)
 				// else do nothing -- scale is not invertible and must be baked
 			}
 
-			FTransformSequence3d& Sequence = BakeTransforms.Emplace_GetRef();
+			FTransformSequence3d& Sequence = BakeTransforms[ComponentIdx];
 			Sequence.Append(ToBake);
 			if (bNeedSeparateScale)
 			{
@@ -523,7 +528,7 @@ void UEditPivotTool::UpdateAssets(const FFrame3d& NewPivotWorldFrame)
 			FTransform ApproxBaked = OriginalTransforms[FirstOccurrence] * NewWorldInverse;
 			FTransform ComponentTransform = ApproxBaked.Inverse() * OriginalTransforms[ComponentIdx];
 			ComponentTransforms.Add(ComponentTransform);
-			BakeTransforms.Add(BakeTransforms[FirstOccurrence]);
+			BakeTransforms[ComponentIdx] = BakeTransforms[FirstOccurrence];
 		}
 	}
 
@@ -595,16 +600,21 @@ void UEditPivotTool::UpdateAssets(const FFrame3d& NewPivotWorldFrame)
 		}
 		else if (MapToFirstOccurrences[ComponentIdx] == ComponentIdx)
 		{
-			FMeshDescription SourceMesh(UE::ToolTarget::GetMeshDescriptionCopy(Target));
-			FMeshDescriptionEditableTriangleMeshAdapter EditableMeshDescAdapter(&SourceMesh);
-			
-			for (const FTransformSRT3d& ToBake : BakeTransforms[ComponentIdx].GetTransforms())
+			bool bTargetSupportsLODs = false;
+			TArray<EMeshLODIdentifier> LODs = UE::ToolTarget::GetMeshDescriptionLODs(Targets[ComponentIdx], bTargetSupportsLODs, !TransformProps->bApplyToAllLODs);
+			for (EMeshLODIdentifier LOD : LODs)
 			{
-				MeshAdapterTransforms::ApplyTransform(EditableMeshDescAdapter, ToBake);
+				FMeshDescription SourceMesh(UE::ToolTarget::GetMeshDescriptionCopy(Target, FGetMeshParameters(bTargetSupportsLODs, LOD)));
+				FMeshDescriptionEditableTriangleMeshAdapter EditableMeshDescAdapter(&SourceMesh);
+
+				for (const FTransformSRT3d& ToBake : BakeTransforms[ComponentIdx].GetTransforms())
+				{
+					MeshAdapterTransforms::ApplyTransform(EditableMeshDescAdapter, ToBake);
+				}
+
+				// todo: support vertex-only update
+				UE::ToolTarget::CommitMeshDescriptionUpdate(Target, &SourceMesh, nullptr /*no material set changes*/, FCommitMeshParameters(bTargetSupportsLODs, LOD));
 			}
-			
-			// todo: support vertex-only update
-			UE::ToolTarget::CommitMeshDescriptionUpdate(Target, &SourceMesh);
 
 			// transform simple collision geometry
 			if (!bNeedSeparateTransactionForSimpleCollision)

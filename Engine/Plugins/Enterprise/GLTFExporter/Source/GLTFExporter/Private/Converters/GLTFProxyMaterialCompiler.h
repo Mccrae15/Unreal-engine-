@@ -38,16 +38,16 @@ public:
 
 	using FProxyMaterialCompiler::FProxyMaterialCompiler;
 
-	virtual int32 ActorWorldPosition() override
+	virtual int32 ActorWorldPosition(EPositionOrigin OriginType) override
 	{
 		bUsesActorPosition = true;
-		return Compiler->ActorWorldPosition();
+		return Compiler->ActorWorldPosition(OriginType);
 	}
 
-	virtual int32 ObjectWorldPosition() override
+	virtual int32 ObjectWorldPosition(EPositionOrigin OriginType) override
 	{
 		bUsesObjectPosition = true;
-		return Compiler->ObjectWorldPosition();
+		return Compiler->ObjectWorldPosition(OriginType);
 	}
 
 	virtual int32 ObjectOrientation() override
@@ -167,6 +167,11 @@ public:
 	virtual int32 ParticleSize() override
 	{
 		return Compiler->ParticleSize();
+	}
+
+	virtual int32 ParticleSpriteRotation() override
+	{
+		return Compiler->ParticleSpriteRotation();
 	}
 
 	virtual int32 VertexInterpolator(uint32 InterpolatorIndex) override

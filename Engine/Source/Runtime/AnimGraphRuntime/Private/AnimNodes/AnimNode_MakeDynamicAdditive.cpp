@@ -2,6 +2,7 @@
 
 #include "AnimNodes/AnimNode_MakeDynamicAdditive.h"
 #include "AnimationRuntime.h"
+#include "Animation/AnimStats.h"
 #include "Animation/AnimTrace.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_MakeDynamicAdditive)
@@ -42,6 +43,8 @@ void FAnimNode_MakeDynamicAdditive::Update_AnyThread(const FAnimationUpdateConte
 void FAnimNode_MakeDynamicAdditive::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(MakeDynamicAdditive, !IsInGameThread());
+
 	FScopedExpectsAdditiveOverride ScopedExpectsAdditiveOverride(Output, false);
 	FPoseContext BaseEvalContext(Output);
 

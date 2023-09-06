@@ -2,10 +2,12 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "HAL/Platform.h"
 #include "Templates/Function.h"
 #include "TraceServices/Containers/Tables.h"
 #include "TraceServices/Model/AnalysisSession.h"
+#include "UObject/NameTypes.h"
+
 #include <limits>
 
 namespace TraceServices
@@ -86,11 +88,16 @@ struct FNetProfilerLifeTime
 
 struct FNetProfilerObjectInstance
 {
-	uint32 ObjectIndex = 0U;		// Index in the object array
-	uint16 NameIndex = 0U;			// Index in the Name array
-	uint64 TypeId = uint64(0);		// ProtocolIdentifier
-	uint32 NetId = 0U;				// NetHandleIndex or NetGUID
-	FNetProfilerLifeTime LifeTime;	// Lifetime of this instance
+	FNetProfilerLifeTime LifeTime;			// Lifetime of this instance
+	union
+	{
+		UE_DEPRECATED(5.3, "Please use NetObjectId instead")
+		uint32 NetId;						// NetHandleIndex or NetGUID
+		uint64 NetObjectId = 0;				// NetHandleIndex or NetGUID
+	};
+	uint64 TypeId = uint64(0);				// ProtocolIdentifier
+	uint32 ObjectIndex = 0U;				// Index in the object array
+	uint16 NameIndex = 0U;					// Index in the Name array
 };
 
 union FNetProfilerBunchInfo
@@ -104,6 +111,7 @@ union FNetProfilerBunchInfo
 		uint64 bPartial : 1;
 		uint64 bPartialInitial : 1;
 		uint64 bPartialFinal : 1;
+		UE_DEPRECATED(5.3, "Replication pausing is now deprecated.")
 		uint64 bIsReplicationPaused : 1;
 		uint64 bOpen : 1;
 		uint64 bClose : 1;
@@ -127,7 +135,7 @@ struct FNetProfilerContentEvent
 	uint64 Level : 8;			// Level
 	uint64 Padding : 8;		// Padding
 
-	FNetProfilerBunchInfo BunchInfo;	
+	FNetProfilerBunchInfo BunchInfo;
 
 	uint32 EventTypeIndex;		// Will replace name index
 	uint32 NameIndex;			// Identify the name / type, should we store the actual Name as well
@@ -295,12 +303,11 @@ public:
 	virtual void ReadNetStatsCounterTypes(TFunctionRef<void(const FNetProfilerStatsCounterType*, uint64)> Callback) const = 0;
 	virtual void ReadNetStatsCounterType(uint32 TypeIndex, TFunctionRef<void(const FNetProfilerStatsCounterType&)> Callback) const = 0;
 
-
 	// Computes aggregated stats for a packet interval or for a range of content events in a single packet.
 	// [PacketIndexIntervalStart, PacketIndexIntervalEnd] is the inclusive packet interval.
 	// [StartPosition, EndPosition) is the exclusive bit range interval; only used when PacketIndexIntervalStart == PacketIndexIntervalEnd.
 	virtual ITable<FNetProfilerAggregatedStats>* CreateAggregation(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode, uint32 PacketIndexIntervalStart, uint32 PacketIndexIntervalEnd, uint32 StartPosition, uint32 EndPosition) const = 0;
-	
+
 	// Computes aggregated statscounters for a packet interval
 	// [PacketIndexIntervalStart, PacketIndexIntervalEnd] is the inclusive packet interval.
 	virtual ITable<FNetProfilerAggregatedStatsCounterStats>* CreateStatsCountersAggregation(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode, uint32 PacketIndexIntervalStart, uint32 PacketIndexIntervalEnd) const = 0;

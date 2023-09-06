@@ -145,19 +145,59 @@ void UFXSystemAsset::PostInitProperties()
 #endif
 }
 
+bool UFXSystemAsset::IsReadyForFinishDestroy()
+{
+	// Don't touch PrecachePSOsEvent directly because the cleanup task could set to a nullptr
+	if (PrecachePSOsEvent)
+	{
+		return false;
+	}
+
+	return Super::IsReadyForFinishDestroy();
+}
+
 void UFXSystemAsset::LaunchPSOPrecaching(TArrayView<VFsPerMaterialData> VFsPerMaterials)
 {
 	FPSOPrecacheParams PreCachePSOParams;
 	PreCachePSOParams.SetMobility(EComponentMobility::Movable);
 
+	FGraphEventArray PrecachePSOsEvents;
 	for (VFsPerMaterialData& VFsPerMaterial : VFsPerMaterials)
 	{
 		if (VFsPerMaterial.MaterialInterface)
 		{
 			PreCachePSOParams.PrimitiveType = (EPrimitiveType)VFsPerMaterial.PrimitiveType;
 			PreCachePSOParams.bDisableBackFaceCulling = VFsPerMaterial.bDisableBackfaceCulling;
-			PrecachePSOsEvents.Append(VFsPerMaterial.MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PreCachePSOParams,EPSOPrecachePriority::Medium, MaterialPSOPrecacheRequestIDs));
+			PrecachePSOsEvents.Append(VFsPerMaterial.MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryData, PreCachePSOParams,EPSOPrecachePriority::Medium, MaterialPSOPrecacheRequestIDs));
 		}
+	}
+
+	// Create task to signal that the PSO precache events are done by adding them as prerequisite to the task.
+	if (PrecachePSOsEvents.Num() > 0)
+	{
+		struct FReleasePrecachePSOsEventTask
+		{
+			explicit FReleasePrecachePSOsEventTask(FGraphEventRef& InPrecachePSOsEvent)
+				: PrecachePSOsEvent(&InPrecachePSOsEvent)
+			{
+			}
+
+			static TStatId GetStatId() { return TStatId(); }
+			static ENamedThreads::Type GetDesiredThread() { return ENamedThreads::AnyThread; }
+			static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+			void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+			{
+				*PrecachePSOsEvent = nullptr;
+			}
+
+			FGraphEventRef* PrecachePSOsEvent;
+		};
+
+		// need to set `PrecachePSOsEvent` before the task is launched to not race with its execution
+		TGraphTask<FReleasePrecachePSOsEventTask>* ReleasePrecachePSOsEventTask = TGraphTask<FReleasePrecachePSOsEventTask>::CreateTask(&PrecachePSOsEvents).ConstructAndHold(PrecachePSOsEvent);
+		PrecachePSOsEvent = ReleasePrecachePSOsEventTask->GetCompletionEvent();
+		ReleasePrecachePSOsEventTask->Unlock();
 	}
 }
 
@@ -197,17 +237,13 @@ FAutoConsoleVariableRef CVarFXLWCTileRecache(
 	TEXT("Setting this value to 0 will remove this behavior but could introduce rendering & simulation artifacts.\n"),
 	ECVF_Default);
 
-int32 OldDetailModeToBitmask(int32 OldMode)
-{
-	// low = L+M+H, Medium = M+H, High = H
-	uint32 AllDetailModes = /*(1<<EParticleDetailMode::PDM_VeryLow) |*/ (1 << EParticleDetailMode::PDM_Low) | (1 << EParticleDetailMode::PDM_Medium) | (1 << EParticleDetailMode::PDM_High);
-	uint32 DetailModeBitmask = OldMode == EDetailMode::DM_Low ? AllDetailModes
-		: OldMode == EDetailMode::DM_Medium ? ((1 << EParticleDetailMode::PDM_Medium) | (1 << EParticleDetailMode::PDM_High))
-		: OldMode == EDetailMode::DM_High ? (1 << EParticleDetailMode::PDM_High) : AllDetailModes;
-
-	return DetailModeBitmask;
-}
-
+static bool GFXSkipZeroDeltaTime = true;
+FAutoConsoleVariableRef CVarFXSkipZeroDeltaTime(
+	TEXT("fx.Cascade.SkipZeroDeltaTime"),
+	GFXSkipZeroDeltaTime,
+	TEXT("When enabled a delta tick time of nearly 0.0 will cause us to skip the component update.\n")
+	TEXT("This fixes issue like PSA_Velocity aligned sprites, but could cause issues with things that rely on accurate velocities (i.e. TSR)."),
+	ECVF_Default);
 
 /** Whether to allow particle systems to perform work. */
 ENGINE_API bool GIsAllowingParticles = true;
@@ -1025,7 +1061,16 @@ void UParticleEmitter::PostLoad()
 	if (PSysVer < FParticleSystemCustomVersion::FixLegacySpawningBugs)
 	{
 		bUseLegacySpawningBehavior = true;
-	}	
+	}
+
+	if (PSysVer < FParticleSystemCustomVersion::AddEpicDetailMode)
+	{
+		// Init epic detail mode to enabled if high is set
+		if (DetailModeBitmask & (1 << EParticleDetailMode::PDM_High))
+		{
+			DetailModeBitmask |= (1 << EParticleDetailMode::PDM_Epic);
+		}
+	}
 
 	for (int32 LODIndex = 0; LODIndex < LODLevels.Num(); LODIndex++)
 	{
@@ -1052,13 +1097,7 @@ void UParticleEmitter::PostLoad()
 		}
 	}
 
-#if	WITH_EDITORONLY_DATA
-	// set up DetailModeFlags from deprecated DetailMode if needed
-	if (DetailModeBitmask == PDM_DefaultValue)
-	{
-		DetailModeBitmask = OldDetailModeToBitmask(DetailMode_DEPRECATED);
-	}
-
+#if WITH_EDITORONLY_DATA
 	UpdateDetailModeDisplayString();
 #endif
 
@@ -2252,6 +2291,11 @@ bool UParticleSystem::DoesAnyEmitterHaveMotionBlur(int32 LODLevelIndex) const
 			{
 				return true;
 			}
+
+			if (EmitterLOD->RequiredModule && EmitterLOD->RequiredModule->ShouldUseVelocityForMotionBlur())
+			{
+				return true;
+			}
 		}
 	}
 
@@ -2580,7 +2624,7 @@ void UParticleSystem::PostLoad()
 							{
 								if (Emitter->CreateLODLevel(NewLODIndex) != NewLODIndex)
 								{
-									UE_LOG(LogParticles, Warning, TEXT("Failed to add LOD level %s"), NewLODIndex);
+									UE_LOG(LogParticles, Warning, TEXT("Failed to add LOD level %d"), NewLODIndex);
 								}
 							}
 						}
@@ -2650,7 +2694,7 @@ void UParticleSystem::PrecachePSOs()
 		return;
 	}
 
-	TArray<VFsPerMaterialData, TInlineAllocator<2>> VFsPerMaterials;
+	TArray<VFsPerMaterialData, TInlineAllocator<4>> VFsPerMaterials;
 
 	// No per component emitter materials known at this point in time
 	TArray<UMaterialInterface*> EmptyEmitterMaterials;
@@ -2670,15 +2714,28 @@ void UParticleSystem::PrecachePSOs()
 			const UParticleLODLevel* LOD = Emitter->LODLevels[LodIndex];
 			if (LOD && LOD->bEnabled)
 			{
-				const FVertexFactoryType* VFType = LOD->TypeDataModule ? LOD->TypeDataModule->GetVertexFactoryType() : &FParticleSpriteVertexFactory::StaticType;
-				check(VFType);
-				EPrimitiveType PrimitiveType = LOD->TypeDataModule ? LOD->TypeDataModule->GetPrimitiveType() : PT_TriangleList;
+				UParticleModuleTypeDataBase::FPSOPrecacheParams PrecacheParams;
+				if (LOD->TypeDataModule)
+				{
+					LOD->TypeDataModule->CollectPSOPrecacheData(Emitter, PrecacheParams);
+				}
+				else
+				{
+					bool bUsesDynamicParameter = (Emitter->DynamicParameterDataOffset > 0);
+					FPSOPrecacheVertexFactoryData VFData;
+					VFData.VertexFactoryType = &FParticleSpriteVertexFactory::StaticType;
+					VFData.CustomDefaultVertexDeclaration = FParticleSpriteVertexFactory::GetPSOPrecacheVertexDeclaration(bUsesDynamicParameter);
+					PrecacheParams.VertexFactoryDataList.Add(VFData);
+					PrecacheParams.PrimitiveType = PT_TriangleList;
+				}
 
 				Materials.Empty();
 				LOD->GetUsedMaterials(Materials, NamedMaterialSlots, EmptyEmitterMaterials);
 
 				for (UMaterialInterface* MaterialInterface : Materials)
 				{
+					EPrimitiveType PrimitiveType = PrecacheParams.PrimitiveType;
+
 					VFsPerMaterialData* VFsPerMaterial = VFsPerMaterials.FindByPredicate([MaterialInterface, PrimitiveType](const VFsPerMaterialData& Other)
 						{
 							return Other.MaterialInterface == MaterialInterface && Other.PrimitiveType == PrimitiveType;
@@ -2689,7 +2746,11 @@ void UParticleSystem::PrecachePSOs()
 						VFsPerMaterial->MaterialInterface = MaterialInterface;
 						VFsPerMaterial->PrimitiveType = PrimitiveType;
 					}
-					VFsPerMaterial->VertexFactoryTypes.AddUnique(VFType);
+					
+					for (FPSOPrecacheVertexFactoryData VFData : PrecacheParams.VertexFactoryDataList)
+					{
+						VFsPerMaterial->VertexFactoryData.AddUnique(VFData);
+					}
 				}
 			}
 		}
@@ -3487,7 +3548,7 @@ void UFXSystemComponent::PrecacheAssetPSOs(UFXSystemAsset* FXSystemAsset)
 		return;
 	}
 
-	const FGraphEventArray& GraphEvents = FXSystemAsset->GetPrecachePSOsEvents();
+	FGraphEventRef GraphEvent = FXSystemAsset->GetPrecachePSOsEvent();
 
 	check(IsInGameThread() || IsInParallelGameThread());
 
@@ -3496,20 +3557,14 @@ void UFXSystemComponent::PrecacheAssetPSOs(UFXSystemAsset* FXSystemAsset)
 	bPSOPrecacheRequestBoosted = false;
 
 	// The asset will keep the Precache events alive, but these might be over. Avoid delaying scene proxy creation if everything is finished
-	bool bAllEventsDone = true;
-	for (FGraphEventRef GraphEvent : GraphEvents)
-	{
-		if (!GraphEvent->IsComplete())
-		{
-			bAllEventsDone = false;
-			break;
-		}
-	}
-
+	bool bAllEventsDone = GraphEvent == nullptr || GraphEvent->IsComplete();
 	if (!bAllEventsDone)
 	{
 		MaterialPSOPrecacheRequestIDs.Append(FXSystemAsset->GetMaterialPSOPrecacheRequestIDs());
-		RequestRecreateRenderStateWhenPSOPrecacheFinished(GraphEvents);
+
+		FGraphEventArray Events;
+		Events.Add(GraphEvent);
+		RequestRecreateRenderStateWhenPSOPrecacheFinished(Events);
 	}
 
 	bPSOPrecacheCalled = true;
@@ -5406,8 +5461,13 @@ void UParticleSystemComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 	}
 
 	bForcedInActive = false;
+
 	DeltaTime *= CustomTimeDilation;
 	DeltaTimeTick = DeltaTime;
+	if (FMath::IsNearlyZero(DeltaTimeTick) && GFXSkipZeroDeltaTime)
+	{
+		return;
+	}
 
 	AccumTickTime += DeltaTime;
 
@@ -5866,7 +5926,7 @@ void UParticleSystemComponent::InitParticles()
 			if (Emitter)
 			{
 				FParticleEmitterInstance* Instance = NumInstances == 0 ? NULL : EmitterInstances[Idx];
-				check(GlobalDetailMode < NUM_DETAILMODE_FLAGS);
+				check(GlobalDetailMode < EParticleDetailMode::PDM_MAX);
 				const bool bDetailModeAllowsRendering = DetailMode <= GlobalDetailMode && (Emitter->DetailModeBitmask & (1 << GlobalDetailMode));
 				const bool bShouldCreateAndOrInit = bDetailModeAllowsRendering && Emitter->HasAnyEnabledLODs() && bCanEverRender;
 
@@ -6985,7 +7045,7 @@ void UParticleSystemComponent::CacheViewRelevanceFlags(UParticleSystem* Template
 				if (EmitterLODLevel->bEnabled == true)
 				{
 					auto World = GetWorld();
-					EmitterInst->GatherMaterialRelevance(&LODViewRel, EmitterLODLevel, World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel);
+					EmitterInst->GatherMaterialRelevance(&LODViewRel, EmitterLODLevel, World ? World->GetFeatureLevel() : GMaxRHIFeatureLevel);
 				}
 			}
 		}

@@ -9,6 +9,7 @@
 #include "IRivermaxManager.h"
 #include "Misc/ByteSwap.h"
 #include "RivermaxLog.h"
+#include "RivermaxTracingUtils.h"
 #include "RivermaxUtils.h"
 #include "RTPHeader.h"
 
@@ -29,18 +30,6 @@ namespace UE::RivermaxCore::Private
 		1500,
 		TEXT("Expected payload size used to initialize rivermax stream."),
 		ECVF_Default);
-
-	/** 
-	 * Converts a timestamp in MediaClock period units to a frame number for a given frame rate 
-	 * 2110-20 streams uses a standard media clock rate of 90kHz
-	 */
-	uint32 TimestampToFrameNumber(uint32 Timestamp, const FFrameRate& FrameRate)
-	{
-		using namespace UE::RivermaxCore::Private::Utils;
-		const double MediaFrameTime = Timestamp / MediaClockSampleRate;
-		const uint32 FrameNumber = FMath::Floor(MediaFrameTime * FrameRate.AsDecimal());
-		return FrameNumber;
-	}
 
 	void FFrameDescriptionTrackingData::ResetSingleFrameTracking()
 	{
@@ -121,7 +110,7 @@ namespace UE::RivermaxCore::Private
 	bool FRivermaxInputStream::Initialize(const FRivermaxInputStreamOptions& InOptions, IRivermaxInputStreamListener& InListener)
 	{
 		IRivermaxCoreModule& RivermaxModule = FModuleManager::LoadModuleChecked<IRivermaxCoreModule>(TEXT("RivermaxCore"));
-		if (RivermaxModule.GetRivermaxManager()->IsLibraryInitialized() == false)
+		if (RivermaxModule.GetRivermaxManager()->ValidateLibraryIsLoaded() == false)
 		{
 			UE_LOG(LogRivermax, Warning, TEXT("Can't create Rivermax Input Stream. Library isn't initialized."));
 			return false;
@@ -132,6 +121,8 @@ namespace UE::RivermaxCore::Private
 		FormatInfo = FStandardVideoFormat::GetVideoFormatInfo(Options.PixelFormat);
 		ExpectedPayloadSize = CVarExpectedPayloadSize.GetValueOnGameThread();
 		bIsDynamicHeaderEnabled = RivermaxModule.GetRivermaxManager()->EnableDynamicHeaderSupport(Options.InterfaceAddress);
+		CachedAPI = RivermaxModule.GetRivermaxManager()->GetApi();
+		checkSlow(CachedAPI);
 
 		if (Options.bEnforceVideoFormat)
 		{
@@ -201,7 +192,9 @@ namespace UE::RivermaxCore::Private
 					BufferConfiguration.HeaderMemory.max_size = BufferConfiguration.HeaderMemory.min_size = BufferConfiguration.HeaderExpectedSize;
 					BufferAttributes.hdr = &BufferConfiguration.HeaderMemory;
 
-					rmax_status_t Status = rmax_in_query_buffer_size(StreamType, &RivermaxInterface, &BufferAttributes, &BufferConfiguration.PayloadSize, &BufferConfiguration.HeaderSize);
+
+
+					rmax_status_t Status = CachedAPI->rmax_in_query_buffer_size(StreamType, &RivermaxInterface, &BufferAttributes, &BufferConfiguration.PayloadSize, &BufferConfiguration.HeaderSize);
 					if (Status == RMAX_OK)
 					{
 						AllocateBuffers();
@@ -209,10 +202,10 @@ namespace UE::RivermaxCore::Private
 						//Buffers configured, now configure stream and attach flow
 						const rmax_in_timestamp_format TimestampFormat = rmax_in_timestamp_format::RMAX_PACKET_TIMESTAMP_RAW_NANO; //how packets are stamped. counter or nanoseconds
 						const rmax_in_flags InputFlags = rmax_in_flags::RMAX_IN_CREATE_STREAM_INFO_PER_PACKET; //default value for 2110 in example
-						Status = rmax_in_create_stream(StreamType, &RivermaxInterface, &BufferAttributes, TimestampFormat, InputFlags, &StreamId);
+						Status = CachedAPI->rmax_in_create_stream(StreamType, &RivermaxInterface, &BufferAttributes, TimestampFormat, InputFlags, &StreamId);
 						if (Status == RMAX_OK)
 						{
-							Status = rmax_in_attach_flow(StreamId, &FlowAttribute);
+							Status = CachedAPI->rmax_in_attach_flow(StreamId, &FlowAttribute);
 							if (Status == RMAX_OK)
 							{
 								bIsActive = true;
@@ -290,7 +283,9 @@ namespace UE::RivermaxCore::Private
 		const int Flags = 0;
 		rmax_in_completion Completion;
 		FMemory::Memset(&Completion, 0, sizeof(Completion));
-		rmax_status_t Status = rmax_in_get_next_chunk(StreamId, MinChunkSize, MaxChunkSize, Timeout, Flags, &Completion);
+		
+		checkSlow(CachedAPI);
+		rmax_status_t Status = CachedAPI->rmax_in_get_next_chunk(StreamId, MinChunkSize, MaxChunkSize, Timeout, Flags, &Completion);
 		if (Status == RMAX_OK)
 		{
 			ParseChunks(Completion);
@@ -318,13 +313,14 @@ namespace UE::RivermaxCore::Private
 
 		if (StreamId)
 		{
-			rmax_status_t Status = rmax_in_detach_flow(StreamId, &FlowAttribute);
+			checkSlow(CachedAPI);
+			rmax_status_t Status = CachedAPI->rmax_in_detach_flow(StreamId, &FlowAttribute);
 			if (Status != RMAX_OK)
 			{
 				UE_LOG(LogRivermax, Warning, TEXT("Failed to detach rivermax flow %d from input stream %d. Status: %d"), FlowAttribute.flow_id, StreamId, Status);
 			}
 
-			Status = rmax_in_destroy_stream(StreamId);
+			Status = CachedAPI->rmax_in_destroy_stream(StreamId);
 
 			if (Status != RMAX_OK)
 			{
@@ -375,8 +371,8 @@ namespace UE::RivermaxCore::Private
 					// Add trace for the first packet of a frame to help visualize reception of a full frame in time
 					if (bIsFirstPacketReceived == false)
 					{
-						const FString TraceName = FString::Format(TEXT("RmaxInput::StartingFrame {0}"), { RTPHeader.Timestamp });
-						TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*TraceName);
+						const uint32 FrameNumber = Utils::TimestampToFrameNumber(RTPHeader.Timestamp, Options.FrameRate);
+						TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FRivermaxTracingUtils::RmaxInStartingFrameTraceEvents[FrameNumber % 10]);
 						bIsFirstPacketReceived = true;
 					}
 
@@ -525,7 +521,7 @@ namespace UE::RivermaxCore::Private
 		const ERHIInterfaceType RHIType = RHIGetInterfaceType();
 		if (RHIType != ERHIInterfaceType::D3D12)
 		{
-			UE_LOG(LogRivermax, Warning, TEXT("Can't initialize input to use GPUDirect. RHI is %d but only Dx12 is supported at the moment."), RHIType);
+			UE_LOG(LogRivermax, Warning, TEXT("Can't initialize input to use GPUDirect. RHI is %d but only Dx12 is supported at the moment."), int(RHIType));
 			return false;
 		}
 
@@ -854,14 +850,13 @@ namespace UE::RivermaxCore::Private
 		Descriptor.Timestamp = RTPHeader.Timestamp;
 		const uint32 PixelCount = StreamResolution.X * StreamResolution.Y;
 		Descriptor.VideoBufferSize = PixelCount / FormatInfo.PixelGroupCoverage * FormatInfo.PixelGroupSize;
-		Descriptor.FrameNumber = TimestampToFrameNumber(RTPHeader.Timestamp, Options.FrameRate);
+		Descriptor.FrameNumber = Utils::TimestampToFrameNumber(RTPHeader.Timestamp, Options.FrameRate);
 
 		if (StreamData.ReceivedSize == StreamData.ExpectedSize)
 		{
 			++StreamStats.FramesReceived;
 			
-			const FString TraceName = FString::Format(TEXT("RmaxReceivedFrame {0}|{1}"), { RTPHeader.Timestamp, Descriptor.FrameNumber });
-			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*TraceName);
+			TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FRivermaxTracingUtils::RmaxInReceivedFrameTraceEvents[Descriptor.FrameNumber % 10]);
 
 			if (bIsUsingGPUDirect)
 			{
@@ -1015,7 +1010,7 @@ namespace UE::RivermaxCore::Private
 		const uint32 PixelCount = StreamResolution.X * StreamResolution.Y;
 		const uint32 FrameSize = PixelCount / FormatInfo.PixelGroupCoverage * FormatInfo.PixelGroupSize;
 		Descriptor.VideoBufferSize = FrameSize;
-		Descriptor.FrameNumber = TimestampToFrameNumber(RTPHeader.Timestamp, Options.FrameRate);
+		Descriptor.FrameNumber = Utils::TimestampToFrameNumber(RTPHeader.Timestamp, Options.FrameRate);
 
 		const uint64 LastSequenceNumberIncremented = StreamData.LastSequenceNumber + 1;
 

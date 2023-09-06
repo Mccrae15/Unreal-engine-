@@ -7,18 +7,22 @@
 #include "RenderCommandFence.h"
 #include "ClothAsset.generated.h"
 
-namespace UE::Chaos::ClothAsset { class FClothCollection; }
 class FSkeletalMeshRenderData;
 class FSkeletalMeshModel;
+class FSkinnedAssetCompilationContext;
+class USkeletalMesh;
+class UDataflow;
 struct FChaosClothSimulationModel;
 struct FSkeletalMeshLODInfo;
-class UDataflow;
+struct FManagedArrayCollection;
+struct FChaosClothAssetLodTransitionDataCache;
 
 UENUM()
 enum class EClothAssetAsyncProperties : uint64
 {
 	None = 0,
 	RenderData = 1 << 0,
+	ThumbnailInfo = 1 << 1,
 	All = MAX_uint64
 };
 ENUM_CLASS_FLAGS(EClothAssetAsyncProperties);
@@ -72,10 +76,12 @@ public:
 	virtual TArray<class USkeletalMeshSocket*> GetActiveSocketList() const override { static TArray<class USkeletalMeshSocket*> Dummy; return Dummy; }
 	virtual USkeletalMeshSocket* FindSocket(FName InSocketName) const override	{ return nullptr; }
 	virtual USkeletalMeshSocket* FindSocketInfo(FName InSocketName, FTransform& OutTransform, int32& OutBoneIndex, int32& OutIndex) const override { return nullptr; }
-	virtual USkeleton* GetSkeleton() override									{ return nullptr; }
-	virtual const USkeleton* GetSkeleton() const override						{ return nullptr; }
-	virtual void SetSkeleton(USkeleton* InSkeleton) override					{}
+	virtual USkeleton* GetSkeleton() override									{ return Skeleton; }  // Note: The USkeleton isn't a reliable source of reference skeleton
+	virtual const USkeleton* GetSkeleton() const override						{ return Skeleton; }
+	virtual void SetSkeleton(USkeleton* InSkeleton) override					{ Skeleton = InSkeleton; }
 	virtual UMeshDeformer* GetDefaultMeshDeformer() const override				{ return nullptr; }
+	virtual class UMaterialInterface* GetOverlayMaterial() const override		{ return nullptr; }
+	virtual float GetOverlayMaterialMaxDrawDistance() const override			{ return 0.f; }
 	virtual bool IsValidLODIndex(int32 Index) const override					{ return LODInfo.IsValidIndex(Index); }
 	virtual int32 GetMinLodIdx(bool bForceLowestLODIdx = false) const override	{ return 0; }
 	virtual bool NeedCPUData(int32 LODIndex) const override						{ return false; }
@@ -96,39 +102,61 @@ public:
 	//~ End USkinnedAsset interface
 
 	/** Return the enclosed Cloth Collection object. */
-	TSharedPtr<UE::Chaos::ClothAsset::FClothCollection> GetClothCollection() { return ClothCollection; }
+	TArray<TSharedRef<FManagedArrayCollection>>& GetClothCollections() { return ClothCollections; }
 
 	/** Return the enclosed Cloth Collection object, const version. */
-	TSharedPtr<const UE::Chaos::ClothAsset::FClothCollection> GetClothCollection() const { return ClothCollection; }
+	const TArray<TSharedRef<const FManagedArrayCollection>>& GetClothCollections() const { return reinterpret_cast<const TArray<TSharedRef<const FManagedArrayCollection>>&>(ClothCollections); }
 
 	/** Return the cloth simulation ready LOD model data. */
 	TSharedPtr<const FChaosClothSimulationModel> GetClothSimulationModel() const { return ClothSimulationModel; }
 
 	/** Build this asset static render and simulation data. This needs to be done every time the asset has changed. */
-	void Build();
+	void Build(TArray<FChaosClothAssetLodTransitionDataCache>* InOutTransitionCache = nullptr);
 
 	/**
 	 * Copy the draped simulation mesh patterns into the render mesh data.
 	 * This is useful to visualize the simulation mesh, or when the simulation mesh can be used for both simulation and rendering.
-	 * @param MaterialIndex The index of the Materials array.
+	 * @param Material The material used to render. If none is specified the default debug cloth material will be used.
 	 */
-	void CopySimMeshToRenderMesh(int32 MaterialIndex);
+	void CopySimMeshToRenderMesh(UMaterialInterface* Material = nullptr);
 
 	/** Set the physics asset for this cloth. */
-	void SetPhysicsAsset(UPhysicsAsset* InPhysicsAsset) { PhysicsAsset = InPhysicsAsset; }
+	void SetPhysicsAsset(UPhysicsAsset* InPhysicsAsset);
+
+	/**
+	 * Set the skeleton asset using the LOD0 reference skeleton of the skeletal mesh specified in the cloth collection, or set a default reference skeleton if there isn't any.
+	 * @param bRebuildModels Whether to rebuild the simulation and rendering models (editor builds only).
+	 */
+	void UpdateSkeletonFromCollection(bool bRebuildModels);
+
+	/**
+	 * Set the specified reference skeleton for this cloth, and rebuild the models.
+	 * Use nullptr to set to a default single bone root reference skeleton.
+	 * @param bRebuildModels Whether to rebuild the mesh static models. This is always required, but could be skipped if done soon after.
+	 * @param bRebindMeshes Bindings could be invalid after a change of reference skeleton, use this option to clear the existing binding and bind the sim and render meshes to the root bone.
+	 */
+	void SetReferenceSkeleton(const FReferenceSkeleton* ReferenceSkeleton, bool bRebuildModels = true, bool bRebindMeshes = true);
 
 	/** Set the bone hierachy to use for this cloth. */
+	UE_DEPRECATED(5.3, "Use SetReferenceSkeleton(const FReferenceSkeleton*, bool, bool) instead")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	void SetReferenceSkeleton(const FReferenceSkeleton& InReferenceSkeleton, bool bRebuildClothSimulationModel = true) { RefSkeleton = InReferenceSkeleton; UpdateSkeleton(bRebuildClothSimulationModel); }
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/** Set the skinning weights for all of the sim vertices to be bound to the root node of the reference skeleton. */
+	UE_DEPRECATED(5.3, "Use FClothGeometryTools::BindMeshToRootBone or SetReferenceSkeleton(const FReferenceSkeleton*, bool, bool) instead.")
+	void BindSimMeshToRootBone();
 
 	//
 	// Dataflow
 	//
+	UE_DEPRECATED(5.3, "Do not use. Will be made private in 5.4")
 	UPROPERTY(EditAnywhere, Category = "Dataflow")
 	TObjectPtr<UDataflow> DataflowAsset;
 
+	UE_DEPRECATED(5.3, "Do not use. Will be made private in 5.4")
 	UPROPERTY(EditAnywhere, Category = "Dataflow")
 	FString DataflowTerminal = "ClothAssetTerminal";
-
 
 private:
 	//~ Begin USkinnedAsset interface
@@ -154,10 +182,8 @@ private:
 	/** Re-calculate the bounds for this asset. */
 	void CalculateBounds();
 
-	/** Re-calculate the reference bone index, from which the cloth gets transformed when the simulation is suspended. */
-	void CalculateReferenceBoneIndex();
-
 	/** Update the bone informations after a change of skeleton. */
+	UE_DEPRECATED(5.3, "Use Build() instead")
 	void UpdateSkeleton(bool bRebuildClothSimulationModel = true);
 
 #if WITH_EDITORONLY_DATA
@@ -166,7 +192,7 @@ private:
 #endif
 
 	/** Build the clothing simulation meshes from the Cloth Collection. */
-	void BuildClothSimulationModel();
+	void BuildClothSimulationModel(TArray<FChaosClothAssetLodTransitionDataCache>* InOutTransitionCache = nullptr);
 
 	/** Initialize all render resources. */
 	void InitResources();
@@ -179,16 +205,28 @@ private:
 
 #if WITH_EDITOR
 	/** Load render data from DDC if the data is cached, otherwise generate render data and save into DDC */
-	void CacheDerivedData(FSkinnedAssetPostLoadContext* Context);
+	void CacheDerivedData(FSkinnedAssetCompilationContext* Context);
+
+	/** Initial step for the building process - Can't be done in parallel. USkinnedAsset Interface. */
+	virtual void BeginBuildInternal(FSkinnedAssetBuildContext& Context) override;
+
+	/** Thread-safe part. USkinnedAsset Interface. */
+	virtual void ExecuteBuildInternal(FSkinnedAssetBuildContext& Context) override;
+
+	/** Complete the building process - Can't be done in parallel. USkinnedAsset Interface. */
+	virtual void FinishBuildInternal(FSkinnedAssetBuildContext& Context) override;
 #endif
 
 	/** Reregister all components using this asset to reset the simulation in case anything has changed. */
 	void ReregisterComponents();
 
-	// TODO: determine if it should be serialized or transient
 	/** List of materials for this cloth asset. */
 	UPROPERTY(EditAnywhere, Category = Materials)
 	TArray<FSkeletalMaterial> Materials;
+
+	/** Skeleton asset used at creation time. This is of limited use since this USkeleton's reference skeleton might not necessarily match the one created for this asset. */
+	UPROPERTY(EditAnywhere, Setter = SetSkeleton, Category = Skeleton)
+	TObjectPtr<USkeleton> Skeleton;
 
 	/** Physics asset used for collision. */
 	UPROPERTY(EditAnywhere, Category = Collision)
@@ -213,15 +251,15 @@ private:
 	int32 RayTracingMinLOD;
 
 	/** Whether to blend positions between the skinned/simulated transitions of the cloth render mesh. */
-	UPROPERTY(EditAnywhere, Category = RayTracing)
+	UPROPERTY(EditAnywhere, Category = ClothDeformer)
 	bool bSmoothTransition = true;
 
-	/** Whether to use multiple triangle influences on the proxy wrap deformer to help smoothen deformations. */
-	UPROPERTY(EditAnywhere, Category = RayTracing)
+	/** Whether to use multiple triangle influences on the proxy wrap deformer to help smoothe deformations. */
+	UPROPERTY(EditAnywhere, Category = ClothDeformer)
 	bool bUseMultipleInfluences = false;
 
 	/** The radius from which to get the multiple triangle influences from the simulated proxy mesh. */
-	UPROPERTY(EditAnywhere, Category = RayTracing)
+	UPROPERTY(EditAnywhere, Category = ClothDeformer)
 	float SkinningKernelRadius = 30.f;
 
 	/**
@@ -241,8 +279,8 @@ private:
 	/** Mesh-space ref pose, where parent matrices are applied to ref pose matrices. */
 	TArray<FMatrix> CachedComposedRefPoseMatrices;
 
-	/** Cloth Collection containing this asset data. */
-	TSharedPtr<UE::Chaos::ClothAsset::FClothCollection> ClothCollection;
+	/** Cloth Collection containing this asset data. One per LOD. */
+	TArray<TSharedRef<FManagedArrayCollection>> ClothCollections;
 
 	/** Reference skeleton created from the provided skeleton asset. */
 	FReferenceSkeleton RefSkeleton;

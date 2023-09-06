@@ -12,7 +12,6 @@
 
 class UMassVisualizationComponent;
 class AMassVisualizer;
-class UHierarchicalInstancedStaticMeshComponent;
 struct FStaticMeshInstanceVisualizationDesc;
 struct FMassInstancedStaticMeshInfo;
 struct FMassActorSpawnRequestHandle;
@@ -164,3 +163,11 @@ protected:
 	TMap<FMassEntityHandle, int32> HandledMassAgents;
 };
 
+template<>
+struct TMassExternalSubsystemTraits<UMassRepresentationSubsystem> final
+{
+	enum
+	{
+		GameThreadOnly = true
+	};
+};

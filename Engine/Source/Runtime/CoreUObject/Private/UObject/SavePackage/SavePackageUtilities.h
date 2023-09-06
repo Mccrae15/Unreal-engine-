@@ -14,6 +14,7 @@
 #include "UObject/NameTypes.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectMarks.h"
+#include "UObject/ObjectPtr.h"
 
 // This file contains private utilities shared by UPackage::Save and UPackage::Save2 
 
@@ -120,26 +121,12 @@ using FSavePackageOutputFileArray = TArray<FSavePackageOutputFile, TInlineAlloca
   */
 struct FObjectImportSortHelper
 {
-private:
-	/**
-	 * Map of UObject => full name; optimization for sorting.
-	 */
-	TMap<UObject*, FString>			ObjectToFullNameMap;
-
-	/** the linker that we're sorting names for */
-	friend struct TDereferenceWrapper<FObjectImport, FObjectImportSortHelper>;
-
-	/** Comparison function used by Sort */
-	bool operator()(const FObjectImport& A, const FObjectImport& B) const;
-
-public:
-
 	/**
 	 * Sorts imports according to the order in which they occur in the list of imports.
 	 *
 	 * @param	Linker				linker containing the imports that need to be sorted
 	 */
-	void SortImports(FLinkerSave* Linker);
+	static void SortImports(FLinkerSave* Linker);
 };
 
 /**
@@ -148,25 +135,12 @@ public:
  */
 struct FObjectExportSortHelper
 {
-public:
 	/**
 	 * Sorts exports alphabetically.
 	 *
 	 * @param	Linker				linker containing the exports that need to be sorted
 	 */
-	void SortExports(FLinkerSave* Linker);
-
-private:
-	/** Comparison function used by Sort */
-	bool operator()(const FObjectExport& A, const FObjectExport& B) const;
-
-	/** the linker that we're sorting exports for */
-	friend struct TDereferenceWrapper<FObjectExport, FObjectExportSortHelper>;
-
-	/**
-	 * Map of UObject => full name; optimization for sorting.
-	 */
-	TMap<UObject*, FString>			ObjectToFullNameMap;
+	static void SortExports(FLinkerSave* Linker);
 };
 
 struct FEDLCookCheckerThreadState;
@@ -180,7 +154,7 @@ struct FEDLCookChecker
 
 	void Reset();
 
-	void AddImport(UObject* Import, UPackage* ImportingPackage);
+	void AddImport(TObjectPtr<UObject> Import, UPackage* ImportingPackage);
 	void AddExport(UObject* Export);
 	void AddArc(UObject* DepObject, bool bDepIsSerialize, UObject* Export, bool bExportIsSerialize);
 	void AddPackageWithUnknownExports(FName LongPackageName);
@@ -215,7 +189,7 @@ public: // FEDLNodeHash is public only so that GetTypeHash can be defined
 	{
 		FEDLNodeHash(); // creates an uninitialized node; only use this to provide as an out parameter
 		FEDLNodeHash(const TArray<FEDLNodeData>* InNodes, FEDLNodeID InNodeID, EObjectEvent InObjectEvent);
-		FEDLNodeHash(const UObject* InObject, EObjectEvent InObjectEvent);
+		FEDLNodeHash(TObjectPtr<UObject> InObject, EObjectEvent InObjectEvent);
 		bool operator==(const FEDLNodeHash& Other) const;
 		friend uint32 GetTypeHash(const FEDLNodeHash& A);
 
@@ -225,8 +199,8 @@ public: // FEDLNodeHash is public only so that GetTypeHash can be defined
 		void SetNodes(const TArray<FEDLNodeData>* InNodes);
 
 	private:
-		static FName ObjectNameFirst(const FEDLNodeHash& InNode, uint32& OutNodeID, const UObject*& OutObject);
-		static FName ObjectNameNext(const FEDLNodeHash& InNode, uint32& OutNodeID, const UObject*& OutObject);
+		static FName ObjectNameFirst(const FEDLNodeHash& InNode, uint32& OutNodeID, TObjectPtr<const UObject>& OutObject);
+		static FName ObjectNameNext(const FEDLNodeHash& InNode, uint32& OutNodeID, TObjectPtr<const UObject>& OutObject);
 			
 		union
 		{
@@ -237,7 +211,7 @@ public: // FEDLNodeHash is public only so that GetTypeHash can be defined
 			 */
 			const TArray<FEDLNodeData>* Nodes;
 			/** Pointer to the Object we are looking up, if this hash was created during lookup-by-objectpath for an object */
-			const UObject* Object;
+			TObjectPtr<const UObject> Object;
 		};
 		/** The identifier for the FEDLNodeData this hash is wrapping. Only used if bIsNode is true. */
 		FEDLNodeID NodeID;
@@ -320,7 +294,7 @@ struct FEDLCookCheckerThreadState : public TThreadSingleton<FEDLCookCheckerThrea
 {
 	FEDLCookCheckerThreadState();
 
-	void AddImport(UObject* Import, UPackage* ImportingPackage)
+	void AddImport(TObjectPtr<UObject> Import, UPackage* ImportingPackage)
 	{
 		Checker.AddImport(Import, ImportingPackage);
 	}
@@ -344,51 +318,65 @@ private:
 };
 
 // Utility functions used by both UPackage::Save and/or UPackage::Save2
-namespace SavePackageUtilities
+namespace UE::SavePackageUtilities
 {
-	extern const FName NAME_World;
-	extern const FName NAME_Level;
-	extern const FName NAME_PrestreamPackage;
 
-	void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
+extern const FName NAME_World;
+extern const FName NAME_Level;
+extern const FName NAME_PrestreamPackage;
 
-	/**
-	 * Used to append additional data to the end of the package file by invoking callbacks stored in the linker.
-	 * They may be saved to the end of the file, or to a separate archive passed into the PackageWriter.
+void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
+
+/**
+	* Used to append additional data to the end of the package file by invoking callbacks stored in the linker.
+	* They may be saved to the end of the file, or to a separate archive passed into the PackageWriter.
 	 
-	 * @param Linker The linker containing the exports. Provides the list of AdditionalData, and the data may write to it as their target archive.
-	 * @param InOutStartOffset In value is the offset in the Linker's archive where the datas will be put. If SavePackageContext settings direct
-	 *        the datas to write in a separate archive that will be combined after the linker, the value is the offset after the Linker archive's 
-	 *        totalsize and after any previous post-Linker archive data such as BulkDatas.
-	 *        Output value is incremented by the number of bytes written the Linker or the separate archive at the end of the linker.
-	 * @param SavePackageContext If non-null and configured to require it, data is passed to this PackageWriter on this context rather than appended to the Linker archive.
-	  */
-	ESavePackageResult AppendAdditionalData(FLinkerSave& Linker, int64& InOutDataStartOffset, FSavePackageContext* SavePackageContext);
+	* @param Linker The linker containing the exports. Provides the list of AdditionalData, and the data may write to it as their target archive.
+	* @param InOutStartOffset In value is the offset in the Linker's archive where the datas will be put. If SavePackageContext settings direct
+	*        the datas to write in a separate archive that will be combined after the linker, the value is the offset after the Linker archive's 
+	*        totalsize and after any previous post-Linker archive data such as BulkDatas.
+	*        Output value is incremented by the number of bytes written the Linker or the separate archive at the end of the linker.
+	* @param SavePackageContext If non-null and configured to require it, data is passed to this PackageWriter on this context rather than appended to the Linker archive.
+	*/
+ESavePackageResult AppendAdditionalData(FLinkerSave& Linker, int64& InOutDataStartOffset, FSavePackageContext* SavePackageContext);
 	
-	/** Used to create the sidecar file (.upayload) from payloads that have been added to the linker */
-	ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackagePath& PackagePath, const bool bSaveToMemory,
-		FSavePackageOutputFileArray& AdditionalPackageFiles, FSavePackageContext* SavePackageContext);
+/** Used to create the sidecar file (.upayload) from payloads that have been added to the linker */
+ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackagePath& PackagePath, const bool bSaveToMemory,
+	FSavePackageOutputFileArray& AdditionalPackageFiles, FSavePackageContext* SavePackageContext);
 	
-	void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FRecord Record);
-	EObjectMark GetExcludedObjectMarksForTargetPlatform(const class ITargetPlatform* TargetPlatform);
-	void FindMostLikelyCulprit(const TArray<UObject*>& BadObjects, UObject*& MostLikelyCulprit, FString& OutReferencer, FSaveContext* InOptionalSaveContext = nullptr);
+void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FRecord Record);
+EObjectMark GetExcludedObjectMarksForTargetPlatform(const class ITargetPlatform* TargetPlatform);
+void FindMostLikelyCulprit(const TArray<UObject*>& BadObjects, UObject*& MostLikelyCulprit, FString& OutReferencer, FSaveContext* InOptionalSaveContext = nullptr);
 	
-	/** 
-	  * Search 'OutputFiles' for output files that were saved to the temp directory and move those files
-	  * to their final location. Output files that were not saved to the temp directory will be ignored.
-	  * 
-	  * If errors are encountered then the original state of the package will be restored and should continue to work.
-	  */
-	ESavePackageResult FinalizeTempOutputFiles(const FPackagePath& PackagePath, const FSavePackageOutputFileArray& OutputFiles, const FDateTime& FinalTimeStamp);
+/** 
+	* Search 'OutputFiles' for output files that were saved to the temp directory and move those files
+	* to their final location. Output files that were not saved to the temp directory will be ignored.
+	* 
+	* If errors are encountered then the original state of the package will be restored and should continue to work.
+	*/
+ESavePackageResult FinalizeTempOutputFiles(const FPackagePath& PackagePath, const FSavePackageOutputFileArray& OutputFiles, const FDateTime& FinalTimeStamp);
 
-	void WriteToFile(const FString& Filename, const uint8* InDataPtr, int64 InDataSize);
-	void AsyncWriteFile(FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions);
-	void AsyncWriteFile(EAsyncWriteOptions Options, FSavePackageOutputFile& File);
+void WriteToFile(const FString& Filename, const uint8* InDataPtr, int64 InDataSize);
+void AsyncWriteFile(FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions);
+void AsyncWriteFile(EAsyncWriteOptions Options, FSavePackageOutputFile& File);
 
-	void GetCDOSubobjects(UObject* CDO, TArray<UObject*>& Subobjects);
+void GetCDOSubobjects(UObject* CDO, TArray<UObject*>& Subobjects);
 
-	/** Returns result of IsEditorOnlyObject if Engine:[Core.System]:CanStripEditorOnlyExportsAndImports (ini) is set to true */
-	bool IsStrippedEditorOnlyObject(const UObject* InObject, bool bCheckRecursive = true, bool bCheckMarks = true);
+enum class EEditorOnlyObjectFlags
+{
+	None = 0,
+	CheckRecursive = 1 << 1,
+	ApplyHasNonEditorOnlyReferences = 1 << 2,
+	CheckMarks UE_DEPRECATED(5.3, "CheckMarks is no longer supported") = 1 << 3,
+
+};
+ENUM_CLASS_FLAGS(EEditorOnlyObjectFlags);
+
+/** Returns result of IsEditorOnlyObjectInternal if Engine:[Core.System]:CanStripEditorOnlyExportsAndImports (ini) is set to true */
+bool IsStrippedEditorOnlyObject(const UObject* InObject, EEditorOnlyObjectFlags Flags);
+
+bool IsEditorOnlyObjectInternal(const UObject* InObject, EEditorOnlyObjectFlags Flags);
+
 }
 
 #if ENABLE_COOK_STATS

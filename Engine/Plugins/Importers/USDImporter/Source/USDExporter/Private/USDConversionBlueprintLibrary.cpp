@@ -18,11 +18,14 @@
 
 #include "AnalyticsBlueprintLibrary.h"
 #include "AnalyticsEventAttribute.h"
+#include "AssetCompilingManager.h"
+#include "ContentStreaming.h"
 #include "CoreMinimal.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
 #include "Engine/Level.h"
 #include "Engine/LevelStreaming.h"
+#include "Engine/Texture.h"
 #include "Engine/World.h"
 #include "InstancedFoliageActor.h"
 #include "ISequencer.h"
@@ -35,6 +38,26 @@ namespace UE
 	{
 		namespace Private
 		{
+			void WaitForAllAsyncAndSteamingTasks(UWorld* World)
+			{
+				FlushAsyncLoading();
+
+				if (World)
+				{
+					World->BlockTillLevelStreamingCompleted();
+
+					if (!FPlatformProperties::RequiresCookedData())
+					{
+						UMaterialInterface::SubmitRemainingJobsForWorld(World);
+						FAssetCompilingManager::Get().FinishAllCompilation();
+					}
+				}
+
+				UTexture::ForceUpdateTextureStreaming();
+
+				IStreamingManager::Get().StreamAllResources(0.0f);
+			}
+
 			void StreamInLevels( ULevel* Level, const TSet<FString>& LevelsToIgnore )
 			{
 				UWorld* InnerWorld = Level->GetTypedOuter<UWorld>();
@@ -134,6 +157,8 @@ namespace UE
 				// Synchronously show levels right now
 				InnerWorld->FlushLevelStreaming( EFlushLevelStreamingType::Visibility );
 
+				WaitForAllAsyncAndSteamingTasks(InnerWorld);
+
 				if ( bCreatedContext )
 				{
 					GEngine->DestroyWorldContext( InnerWorld );
@@ -141,6 +166,37 @@ namespace UE
 			}
 		}
 	}
+}
+
+int32 UUsdConversionBlueprintLibrary::GetNumLevelsToExport(UWorld* World, const TSet<FString>& LevelsToIgnore)
+{
+	int32 Count = 0;
+
+	if (!World)
+	{
+		return Count;
+	}
+
+	if (!LevelsToIgnore.Contains("Persistent Level"))
+	{
+		Count += 1;
+	}
+
+	for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+	{
+		if (StreamingLevel)
+		{
+			const FString LevelName = FPaths::GetBaseFilename(StreamingLevel->GetWorldAssetPackageName());
+			if (!LevelsToIgnore.Contains(LevelName))
+			{
+				continue;
+			}
+
+			Count += 1;
+		}
+	}
+
+	return Count;
 }
 
 void UUsdConversionBlueprintLibrary::StreamInRequiredLevels( UWorld* World, const TSet<FString>& LevelsToIgnore )
@@ -250,6 +306,8 @@ void UUsdConversionBlueprintLibrary::StreamOutLevels( UWorld* OwningWorld, const
 		}
 	}
 
+	UE::UsdConversionBlueprintLibraryImpl::Private::WaitForAllAsyncAndSteamingTasks(OwningWorld);
+
 	if ( bCreatedContext )
 	{
 		GEngine->DestroyWorldContext( OwningWorld );
@@ -271,7 +329,7 @@ TSet<AActor*> UUsdConversionBlueprintLibrary::GetActorsToConvert( UWorld* World 
 			return;
 		}
 
-		Result.Append( Level->Actors );
+		Result.Append( ObjectPtrDecay(Level->Actors) );
 	};
 
 	CollectActors( World->PersistentLevel );
@@ -369,6 +427,29 @@ void UUsdConversionBlueprintLibrary::InsertSubLayer( const FString& ParentLayerP
 	else
 	{
 		UE_LOG( LogUsd, Error, TEXT( "Failed to find a parent layer '%s' when trying to insert sublayer '%s'" ), *ParentLayerPath, *SubLayerPath );
+	}
+#endif // USE_USD_SDK
+}
+
+void UUsdConversionBlueprintLibrary::AddReference( const FString& ReferencingStagePath, const FString& ReferencingPrimPath, const FString& TargetStagePath )
+{
+#if USE_USD_SDK
+	TArray<UE::FUsdStage> PreviouslyOpenedStages = UnrealUSDWrapper::GetAllStagesFromCache();
+
+	// Open using the stage cache as it's very likely this stage is already in there anyway
+	UE::FUsdStage ReferencingStage = UnrealUSDWrapper::OpenStage( *ReferencingStagePath, EUsdInitialLoadSet::LoadAll );
+	if ( ReferencingStage )
+	{
+		if ( UE::FUsdPrim ReferencingPrim = ReferencingStage.GetPrimAtPath( UE::FSdfPath( *ReferencingPrimPath ) ) )
+		{
+			UsdUtils::AddReference( ReferencingPrim, *TargetStagePath );
+		}
+	}
+
+	// Cleanup or else the stage cache will keep these stages open forever
+	if ( !PreviouslyOpenedStages.Contains( ReferencingStage ) )
+	{
+		UnrealUSDWrapper::EraseStageFromCache( ReferencingStage );
 	}
 #endif // USE_USD_SDK
 }

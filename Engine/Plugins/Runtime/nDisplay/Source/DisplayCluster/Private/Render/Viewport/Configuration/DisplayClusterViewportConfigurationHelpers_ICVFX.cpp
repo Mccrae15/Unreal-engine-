@@ -58,16 +58,11 @@ static FAutoConsoleVariableRef CVarDisplayClusterPreviewEnableReuseViewportInClu
 ////////////////////////////////////////////////////////////////////////////////
 namespace DisplayClusterViewportConfigurationHelpers_ICVFX_Impl
 {
-	static float ImplGetFieldOfViewMultiplier(const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings)
-	{
-		return CameraSettings.CustomFrustum.bEnable ? CameraSettings.CustomFrustum.FieldOfViewMultiplier : 1.f;
-	}
-
 	// Initialize camera policy with camera component and settings
-	static bool ImplUpdateCameraProjectionSettings(TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InOutCameraProjection, const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings, UCameraComponent* const CameraComponent)
+	static bool ImplUpdateCameraProjectionSettings(TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& InOutCameraProjection, ADisplayClusterRootActor& RootActor, const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings, UCameraComponent* const CameraComponent)
 	{
 		FDisplayClusterProjectionCameraPolicySettings PolicyCameraSettings;
-		PolicyCameraSettings.FOVMultiplier = ImplGetFieldOfViewMultiplier(CameraSettings);
+		PolicyCameraSettings.FOVMultiplier = CameraSettings.GetCameraFieldOfViewMultiplier(RootActor.GetStageSettings());
 
 		// Lens correction
 		PolicyCameraSettings.FrustumRotation = CameraSettings.FrustumRotation;
@@ -92,17 +87,9 @@ namespace DisplayClusterViewportConfigurationHelpers_ICVFX_Impl
 	{
 		if (GDisplayClusterPreviewEnableReuseViewportInCluster > 0)
 		{
-			FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(InRootActor);
-			if (ViewportManager)
+			if (InRootActor.GetRenderMode() == EDisplayClusterRenderFrameMode::PreviewInScene)
 			{
-				const FDisplayClusterRenderFrameSettings& RenderFrameSettings = ViewportManager->GetRenderFrameSettings();
-				switch (RenderFrameSettings.RenderMode)
-				{
-				case EDisplayClusterRenderFrameMode::PreviewInScene:
-					return true;
-				default:
-					break;
-				}
+				return true;
 			}
 		}
 
@@ -118,10 +105,11 @@ using namespace DisplayClusterViewportConfigurationHelpers_ICVFX_Impl;
 ////////////////////////////////////////////////////////////////////////////////
 FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::ImplFindViewport(ADisplayClusterRootActor& RootActor, const FString& InViewportId, const FString& InResourceId)
 {
-	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor);
-	if (ViewportManager != nullptr)
+	if (FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor))
 	{
-		return ViewportManager->ImplFindViewport(ImplGetNameICVFX(ViewportManager->GetRenderFrameSettings().ClusterNodeId, InViewportId, InResourceId));
+		TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe> Viewport = ViewportManager->ImplFindViewport(ImplGetNameICVFX(ViewportManager->GetRenderFrameSettings().ClusterNodeId, InViewportId, InResourceId));
+
+		return Viewport.Get();
 	}
 
 	return nullptr;
@@ -129,8 +117,7 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::Impl
 
 static bool ImplCreateProjectionPolicy(ADisplayClusterRootActor& RootActor, const FString& InViewportId, const FString& InResourceId, bool bIsCameraProjection, TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& OutProjPolicy)
 {
-	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor);
-	if (ViewportManager != nullptr)
+	if (FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor))
 	{
 		const FString& ClusterNodeId = ViewportManager->GetRenderFrameSettings().ClusterNodeId;
 
@@ -160,12 +147,11 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::Impl
 {
 	check(InProjectionPolicy.IsValid());
 
-	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor);
-	if (ViewportManager != nullptr)
+	if (FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(RootActor))
 	{
 		// Create viewport for new projection policy
-		FDisplayClusterViewport* NewViewport = ViewportManager->ImplCreateViewport(ImplGetNameICVFX(ViewportManager->GetRenderFrameSettings().ClusterNodeId, InViewportId, InResourceId), InProjectionPolicy);
-		if (NewViewport != nullptr)
+		TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe> NewViewport = ViewportManager->ImplCreateViewport(ImplGetNameICVFX(ViewportManager->GetRenderFrameSettings().ClusterNodeId, InViewportId, InResourceId), InProjectionPolicy);
+		if (NewViewport.IsValid())
 		{
 			// Mark as internal resource
 			EnumAddFlags(NewViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::InternalResource);
@@ -173,7 +159,7 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::Impl
 			// Dont show ICVFX composing viewports on frame target
 			NewViewport->RenderSettings.bVisible = false;
 
-			return NewViewport;
+			return NewViewport.Get();
 		}
 	}
 
@@ -231,44 +217,39 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetO
 
 void FDisplayClusterViewportConfigurationHelpers_ICVFX::ReuseUVLightCardViewportWithinClusterNode(FDisplayClusterViewport& InUVLightCardViewport)
 {
-	const TArray<FDisplayClusterViewport*>& Viewports = 
-#if WITH_EDITOR
-		InUVLightCardViewport.ImplGetOwner().ImplGetWholeClusterViewports_Editor();
-#else
-		InUVLightCardViewport.ImplGetOwner().ImplGetViewports();
-#endif
-
-	for (FDisplayClusterViewport* ViewportIt : Viewports)
+	if (FDisplayClusterViewportManager* ViewportManager = InUVLightCardViewport.GetViewportManagerImpl())
 	{
-		if(ViewportIt && ViewportIt != &InUVLightCardViewport && !ViewportIt->RenderSettings.IsViewportOverrided()
-		&& EnumHasAnyFlags(ViewportIt->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard))
+		for (const TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>& ViewportIt : ViewportManager->ImplGetEntireClusterViewports())
 		{
-			if (ViewportIt->IsOpenColorIOEquals(InUVLightCardViewport))
+			if (ViewportIt.IsValid() && ViewportIt != InUVLightCardViewport.AsShared() && !ViewportIt->RenderSettings.IsViewportOverrided()
+				&& EnumHasAnyFlags(ViewportIt->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard))
 			{
-				// Reuse exist viewport:
-				InUVLightCardViewport.RenderSettings.SetViewportOverride(ViewportIt->GetId(), EDisplayClusterViewportOverrideMode::All);
-				break;
+				if (ViewportIt->IsOpenColorIOEquals(InUVLightCardViewport))
+				{
+					// Reuse exist viewport:
+					InUVLightCardViewport.RenderSettings.SetViewportOverride(ViewportIt->GetId(), EDisplayClusterViewportOverrideMode::All);
+					break;
+				}
 			}
 		}
 	}
 }
 
 #if WITH_EDITOR
-TArray<FDisplayClusterViewport*> FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewGetRenderedInCameraViewports(ADisplayClusterRootActor& InRootActor, UDisplayClusterICVFXCameraComponent& InCameraComponent, bool bGetChromakey)
+TArray<TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>> FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewGetRenderedInCameraViewports(ADisplayClusterRootActor& InRootActor, UDisplayClusterICVFXCameraComponent& InCameraComponent, bool bGetChromakey)
 {
-	TArray<FDisplayClusterViewport*> OutViewports;
+	TArray<TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>> OutViewports;
 
 	// Search for rendered camera viewport on other cluster nodes
-	FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(InRootActor);
-	if (ViewportManager != nullptr)
+	if (FDisplayClusterViewportManager* ViewportManager = FDisplayClusterViewportConfigurationHelpers_ICVFX::GetViewportManager(InRootActor))
 	{
 		const FString ICVFXCameraId = InCameraComponent.GetCameraUniqueId();
 		const EDisplayClusterViewportRuntimeICVFXFlags InRuntimeFlagsMask = bGetChromakey ? EDisplayClusterViewportRuntimeICVFXFlags::Chromakey : EDisplayClusterViewportRuntimeICVFXFlags::InCamera;
 		const FString ViewportTypeId = bGetChromakey ? DisplayClusterViewportStrings::icvfx::chromakey : DisplayClusterViewportStrings::icvfx::camera;
 
-		for (FDisplayClusterViewport* ViewportIt : ViewportManager->ImplGetWholeClusterViewports_Editor())
+		for (const TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>& ViewportIt : ViewportManager->ImplGetEntireClusterViewports())
 		{
-			if (ViewportIt != nullptr
+			if (ViewportIt.IsValid()
 				&& EnumHasAnyFlags(ViewportIt->RenderSettingsICVFX.RuntimeFlags, InRuntimeFlagsMask)
 				&& (ViewportIt->InputShaderResources.Num() > 0 && ViewportIt->InputShaderResources[0] != nullptr && ViewportIt->Contexts.Num() > 0)
 				&& (!ViewportIt->RenderSettings.IsViewportOverrided()))
@@ -293,19 +274,15 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewReuseInnerFrustum
 		return;
 	}
 
-	const FDisplayClusterRenderFrameSettings& RenderFrameSettingsConstRef = InCameraViewport.GetRenderFrameSettings();
-	switch (RenderFrameSettingsConstRef.RenderMode)
+	// Only for preview mode
+	if (InCameraViewport.GetRenderMode() != EDisplayClusterRenderFrameMode::PreviewInScene)
 	{
-	case EDisplayClusterRenderFrameMode::PreviewInScene:
-		// Only for preview mode
-		break;
-	default:
 		return;
 	}
 
-	for (FDisplayClusterViewport* ViewportIt : PreviewGetRenderedInCameraViewports(InRootActor, InCameraComponent, false))
+	for (const TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>& ViewportIt : PreviewGetRenderedInCameraViewports(InRootActor, InCameraComponent, false))
 	{
-		if (ViewportIt && ViewportIt != &InCameraViewport && ViewportIt->GetClusterNodeId() != InCameraViewport.GetClusterNodeId()
+		if (ViewportIt.IsValid() && ViewportIt != InCameraViewport.AsShared() && ViewportIt->GetClusterNodeId() != InCameraViewport.GetClusterNodeId()
 			&& FDisplayClusterViewportConfigurationHelpers_Postprocess::IsInnerFrustumViewportSettingsEqual_Editor(*ViewportIt, InCameraViewport, InCameraComponent))
 		{
 			EDisplayClusterViewportOverrideMode ViewportOverrideMode = ViewportIt->IsOpenColorIOEquals(InCameraViewport) ?
@@ -324,20 +301,16 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewReuseChromakeyVie
 	{
 		return;
 	}
-
-	const FDisplayClusterRenderFrameSettings& RenderFrameSettingsConstRef = InChromakeyViewport.GetRenderFrameSettings();
-	switch (RenderFrameSettingsConstRef.RenderMode)
+	
+	// Only for preview mode
+	if (InChromakeyViewport.GetRenderMode() != EDisplayClusterRenderFrameMode::PreviewInScene)
 	{
-	case EDisplayClusterRenderFrameMode::PreviewInScene:
-		// Only for preview mode
-		break;
-	default:
 		return;
 	}
 
-	for (FDisplayClusterViewport* ViewportIt : PreviewGetRenderedInCameraViewports(InRootActor, InCameraComponent, true))
+	for (const TSharedPtr<FDisplayClusterViewport, ESPMode::ThreadSafe>& ViewportIt : PreviewGetRenderedInCameraViewports(InRootActor, InCameraComponent, true))
 	{
-		if (ViewportIt && ViewportIt!= &InChromakeyViewport  && ViewportIt->GetClusterNodeId() != InChromakeyViewport.GetClusterNodeId())
+		if (ViewportIt.IsValid() && ViewportIt != InChromakeyViewport.AsShared() && ViewportIt->GetClusterNodeId() != InChromakeyViewport.GetClusterNodeId())
 		{
 			// Chromakey support OCIO
 			EDisplayClusterViewportOverrideMode ViewportOverrideMode = ViewportIt->IsOpenColorIOEquals(InChromakeyViewport) ?
@@ -466,61 +439,24 @@ FDisplayClusterShaderParameters_ICVFX::FCameraSettings FDisplayClusterViewportCo
 {
 	const USceneComponent* OriginComp = RootActor.GetRootComponent();
 	const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = InCameraComponent.GetCameraSettingsICVFX();
+	const FDisplayClusterConfigurationICVFX_StageSettings& StageSettings = RootActor.GetStageSettings();
 
 	FDisplayClusterShaderParameters_ICVFX::FCameraSettings Result;
 
 	Result.Resource.ViewportId = InCameraViewport.GetId();
 	Result.Local2WorldTransform = OriginComp->GetComponentTransform();
 
-	const float RealThicknessScaleValue = 0.1f;
-	Result.InnerCameraBorderColor = CameraSettings.Border.Color;
-	Result.InnerCameraBorderThickness = CameraSettings.Border.Enable ? CameraSettings.Border.Thickness * RealThicknessScaleValue : 0.0f;
-	Result.InnerCameraFrameAspectRatio = (float)CameraSettings.RenderSettings.CustomFrameSize.CustomWidth / (float)CameraSettings.RenderSettings.CustomFrameSize.CustomHeight;
+	// Get camera border settings
+	CameraSettings.GetCameraBorder(StageSettings, Result.InnerCameraBorderColor, Result.InnerCameraBorderThickness);
+	Result.InnerCameraFrameAspectRatio = CameraSettings.GetCameraFrameAspectRatio(StageSettings);
 
+	// Soft edges
+	Result.SoftEdge = CameraSettings.GetCameraSoftEdge(StageSettings);
+
+	// Rendering order for camera overlap
 	const FString InnerFrustumID = InCameraComponent.GetCameraUniqueId();
 	const int32 CameraRenderOrder = RootActor.GetInnerFrustumPriority(InnerFrustumID);
 	Result.RenderOrder = (CameraRenderOrder<0) ? CameraSettings.RenderSettings.RenderOrder : CameraRenderOrder;
-
-	const float FieldOfViewMultiplier = ImplGetFieldOfViewMultiplier(CameraSettings);
-
-	// softedge adjustments	
-	const float Overscan = (FieldOfViewMultiplier > 0) ? FieldOfViewMultiplier : 1;
-	
-	// remap values from 0-1 GUI range into acceptable 0.0 - 0.25 shader range
-	Result.SoftEdge.X = FMath::GetMappedRangeValueClamped(FVector2D(0.0, 1.0f), FVector2D(0.0, 0.25), CameraSettings.SoftEdge.Horizontal) / Overscan; // Left
-	Result.SoftEdge.Y = FMath::GetMappedRangeValueClamped(FVector2D(0.0, 1.0f), FVector2D(0.0, 0.25), CameraSettings.SoftEdge.Vertical) / Overscan; // Top
-	Result.SoftEdge.Z = FMath::GetMappedRangeValueClamped(FVector2D(0.0, 1.0f), FVector2D(0.0, 0.25), CameraSettings.SoftEdge.Horizontal) / Overscan; // right
-	Result.SoftEdge.W = FMath::GetMappedRangeValueClamped(FVector2D(0.0, 1.0f), FVector2D(0.0, 0.25), CameraSettings.SoftEdge.Vertical) / Overscan; // bottom
-
-	// default - percents
-	const float ConvertToPercent = 0.01f;
-	float Left = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Left * ConvertToPercent);
-	float Right = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Right * ConvertToPercent);
-	float Top = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Top * ConvertToPercent);
-	float Bottom = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Bottom * ConvertToPercent);
-
-	if (CameraSettings.CustomFrustum.Mode == EDisplayClusterConfigurationViewportCustomFrustumMode::Pixels)
-	{
-		float FrameWidth = RootActor.GetStageSettings().DefaultFrameSize.Width * CameraSettings.BufferRatio;
-		float FrameHeight = RootActor.GetStageSettings().DefaultFrameSize.Height * CameraSettings.BufferRatio;
-
-		if (CameraSettings.RenderSettings.CustomFrameSize.bUseCustomSize)
-		{
-			FrameWidth = CameraSettings.RenderSettings.CustomFrameSize.CustomWidth * CameraSettings.BufferRatio;
-			FrameHeight = CameraSettings.RenderSettings.CustomFrameSize.CustomHeight * CameraSettings.BufferRatio;
-		}
-
-		Left = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Left / FrameWidth);
-		Right = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Right / FrameWidth);
-		Top = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Top / FrameHeight);
-		Bottom = FDisplayClusterViewport_OverscanSettings::ClampPercent(CameraSettings.CustomFrustum.Bottom / FrameHeight);
-	}
-
-	// recalculate soft edge related offsets based on frustum
-	Result.SoftEdge.X /= (1 + Left + Right);
-	Result.SoftEdge.Y /= (1 + Top + Bottom);
-	Result.SoftEdge.Z /= (1 + Left + Right);
-	Result.SoftEdge.W /= (1 + Top + Bottom);
 
 	return Result;
 }
@@ -537,7 +473,7 @@ bool FDisplayClusterViewportConfigurationHelpers_ICVFX::GetCameraContext(ADispla
 	}
 
 	// Initialize camera policy with camera component and settings
-	if (!ImplUpdateCameraProjectionSettings(CameraProjectionPolicy, CameraSettings, InCameraComponent.GetCameraComponent()))
+	if (!ImplUpdateCameraProjectionSettings(CameraProjectionPolicy, RootActor, CameraSettings, InCameraComponent.GetCameraComponent()))
 	{
 		return false;
 	}
@@ -568,14 +504,13 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportSett
 	DstViewport.RenderSettings.bVisible = false;
 
 	// use framecolor instead of viewport rendering
-	const FDisplayClusterConfigurationICVFX_ChromakeySettings& ChromakeySettings = CameraSettings.Chromakey;
-	if (ChromakeySettings.bEnable && !ChromakeySettings.ChromakeyRenderTexture.bEnable)
+	if (CameraSettings.Chromakey.GetChromakeyType(StageSettings) == EDisplayClusterShaderParametersICVFX_ChromakeySource::FrameColor)
 	{
 		DstViewport.RenderSettings.bSkipRendering = true;
 	}
 
 	// Update camera viewport projection policy settings
-	ImplUpdateCameraProjectionSettings(DstViewport.ProjectionPolicy, CameraSettings, InCameraComponent.GetCameraComponent());
+	ImplUpdateCameraProjectionSettings(DstViewport.ProjectionPolicy, RootActor, CameraSettings, InCameraComponent.GetCameraComponent());
 
 	// Update OCIO for Camera Viewport
 	FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateCameraViewport(DstViewport, RootActor, InCameraComponent);
@@ -588,18 +523,7 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportSett
 	DstViewport.RenderSettings.CameraId.Empty();
 
 	// UDisplayClusterConfigurationICVFX_CameraRenderSettings
-	FIntPoint DesiredSize(0);
-	// Camera viewport frame size:
-	if (CameraSettings.RenderSettings.CustomFrameSize.bUseCustomSize)
-	{
-		DesiredSize.X = CameraSettings.RenderSettings.CustomFrameSize.CustomWidth;
-		DesiredSize.Y = CameraSettings.RenderSettings.CustomFrameSize.CustomHeight;
-	}
-	else
-	{
-		DesiredSize.X = StageSettings.DefaultFrameSize.Width;
-		DesiredSize.Y = StageSettings.DefaultFrameSize.Height;
-	}
+	const FIntPoint DesiredSize = CameraSettings.GetCameraFrameSize(StageSettings);
 
 	DstViewport.RenderSettings.Rect = DstViewport.GetValidRect(FIntRect(FIntPoint(0, 0), DesiredSize), TEXT("Configuration Camera Frame Size"));
 
@@ -623,7 +547,12 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportSett
 
 	// Support inner camera custom frustum
 	FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraCustomFrustum(DstViewport, CameraSettings.CustomFrustum);
-	UpdateCameraViewportBufferRatio(DstViewport, CameraSettings);
+
+	// Set RenderTargetAdaptRatio
+	DstViewport.RenderSettings.RenderTargetAdaptRatio = CameraSettings.GetCameraAdaptResolutionRatio(StageSettings);
+
+	// Set viewport buffer ratio
+	DstViewport.SetViewportBufferRatio(CameraSettings.GetCameraBufferRatio(StageSettings));
 
 	// Set media related configuration (runtime only for now)
 	if (IDisplayCluster::Get().GetOperationMode() == EDisplayClusterOperationMode::Cluster)
@@ -654,8 +583,6 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateChromakeyViewportS
 	const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = InCameraComponent.GetCameraSettingsICVFX();
 	const FDisplayClusterConfigurationICVFX_ChromakeySettings& ChromakeySettings = CameraSettings.Chromakey;
 
-	check(ChromakeySettings.bEnable && ChromakeySettings.ChromakeyRenderTexture.bEnable);
-
 	// Reset runtime flags from prev frame:
 	DstViewport.ResetRuntimeParameters();
 
@@ -666,22 +593,38 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateChromakeyViewportS
 	DstViewport.RenderSettings.CaptureMode = EDisplayClusterViewportCaptureMode::Chromakey;
 
 	// UDisplayClusterConfigurationICVFX_ChromakeyRenderSettings
-	const FDisplayClusterConfigurationICVFX_ChromakeyRenderSettings& InRenderSettings = ChromakeySettings.ChromakeyRenderTexture;
+	if (const FDisplayClusterConfigurationICVFX_ChromakeyRenderSettings* ChromakeyRenderSettings = ChromakeySettings.GetChromakeyRenderSettings(StageSettings))
 	{
-		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_Override(DstViewport, InRenderSettings.Replace);
-		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_PostprocessBlur(DstViewport, InRenderSettings.PostprocessBlur);
-		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_GenerateMips(DstViewport, InRenderSettings.GenerateMips);
+		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_Override(DstViewport, ChromakeyRenderSettings->Replace);
+		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_PostprocessBlur(DstViewport, ChromakeyRenderSettings->PostprocessBlur);
+		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_GenerateMips(DstViewport, ChromakeyRenderSettings->GenerateMips);
 
 		// Update visibility settings only for rendered viewports
 		if (!DstViewport.PostRenderSettings.Replace.IsEnabled())
 		{
-			check(FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(InRenderSettings.ShowOnlyList));
+			check(ChromakeyRenderSettings->ShowOnlyList.IsVisibilityListValid());
 
-			FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateShowOnlyList(DstViewport, RootActor, InRenderSettings.ShowOnlyList);
+			FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateShowOnlyList(DstViewport, RootActor, ChromakeyRenderSettings->ShowOnlyList);
+		}
+
+		FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_OverlayRenderSettings(DstViewport, ChromakeyRenderSettings->AdvancedRenderSettings);
+
+		// Support custom overlay size
+		if (ChromakeyRenderSettings->CustomSize.bUseCustomSize)
+		{
+			FIntPoint DesiredSize;
+			DesiredSize.X = ChromakeyRenderSettings->CustomSize.CustomWidth;
+			DesiredSize.Y = ChromakeyRenderSettings->CustomSize.CustomHeight;
+
+			DstViewport.RenderSettings.Rect = DstViewport.GetValidRect(FIntRect(FIntPoint(0, 0), DesiredSize), TEXT("Configuration custom chromakey Frame Size"));
+		}
+
+		// Debug: override the texture of the target viewport from this chromakeyRTT
+		if (ChromakeyRenderSettings->bReplaceCameraViewport)
+		{
+			InCameraViewport.RenderSettings.SetViewportOverride(DstViewport.GetId());
 		}
 	}
-
-	FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_OverlayRenderSettings(DstViewport, InRenderSettings.AdvancedRenderSettings);
 
 	// Update OCIO for Chromakey Viewport
 	// Note: Chromakey OCIO is temporarily disabled
@@ -692,112 +635,88 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateChromakeyViewportS
 
 	// Attach to parent viewport
 	DstViewport.RenderSettings.AssignParentViewport(InCameraViewport.GetId(), InCameraViewport.RenderSettings);
-
-	// Support custom overlay size
-	if (ChromakeySettings.ChromakeyRenderTexture.CustomSize.bUseCustomSize)
-	{
-		FIntPoint DesiredSize;
-		DesiredSize.X = ChromakeySettings.ChromakeyRenderTexture.CustomSize.CustomWidth;
-		DesiredSize.Y = ChromakeySettings.ChromakeyRenderTexture.CustomSize.CustomHeight;
-
-		DstViewport.RenderSettings.Rect = DstViewport.GetValidRect(FIntRect(FIntPoint(0, 0), DesiredSize), TEXT("Configuration custom chromakey Frame Size"));
-	}
-
-	// Debug: override the texture of the target viewport from this chromakeyRTT
-	if (ChromakeySettings.ChromakeyRenderTexture.bReplaceCameraViewport)
-	{
-		InCameraViewport.RenderSettings.SetViewportOverride(DstViewport.GetId());
-	}
 }
 
-void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraSettings_Chromakey(FDisplayClusterShaderParameters_ICVFX::FCameraSettings& InOutCameraSettings, const FDisplayClusterConfigurationICVFX_ChromakeySettings& InChromakeySettings, FDisplayClusterViewport* InChromakeyViewport)
+void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraSettings_Chromakey(FDisplayClusterShaderParameters_ICVFX::FCameraSettings& InOutCameraSettings, const FDisplayClusterConfigurationICVFX_StageSettings& InStageSettings, const FDisplayClusterConfigurationICVFX_CameraSettings& InCameraSettings, bool bEnableChromakeyMarkers, const FString& InChromakeyViewportId)
 {
-	if (InChromakeySettings.bEnable)
+	// Set chromakey color
+	InOutCameraSettings.ChromakeyColor = InCameraSettings.Chromakey.GetChromakeyColor(InStageSettings);
+
+	// Set chromakey source
+	switch (InOutCameraSettings.ChromakeySource = InCameraSettings.Chromakey.GetChromakeyType(InStageSettings))
 	{
-		if (InChromakeySettings.ChromakeyRenderTexture.bEnable)
+	case EDisplayClusterShaderParametersICVFX_ChromakeySource::ChromakeyLayers:
+		if (InChromakeyViewportId.IsEmpty())
 		{
-			if (InChromakeySettings.ChromakeyRenderTexture.bReplaceCameraViewport)
+			// Disable chromakey: CK viewport required
+			InOutCameraSettings.ChromakeySource = EDisplayClusterShaderParametersICVFX_ChromakeySource::Disabled;
+			return;
+		}
+
+		if (const FDisplayClusterConfigurationICVFX_ChromakeyRenderSettings* ChromakeyRenderSettings = InCameraSettings.Chromakey.GetChromakeyRenderSettings(InStageSettings))
+		{
+			if (ChromakeyRenderSettings->bReplaceCameraViewport)
 			{
+				// Do not show Chromakey layers in this in-camera viewport, because they will be replaced by the Chromakey image (for debugging purposes).
 				InOutCameraSettings.ChromakeySource = EDisplayClusterShaderParametersICVFX_ChromakeySource::Disabled;
 				return;
 			}
-			else
-			{
-				check(InChromakeyViewport);
+		}
 
-				InOutCameraSettings.ChromakeySource = EDisplayClusterShaderParametersICVFX_ChromakeySource::ChromakeyLayers;
-				InOutCameraSettings.Chromakey.ViewportId = InChromakeyViewport->GetId();
-				InOutCameraSettings.ChromakeyColor = InChromakeySettings.ChromakeyColor;
+		// Set the chromakey viewport name in the ICVFX shader params for current camera
+		InOutCameraSettings.Chromakey.ViewportId = InChromakeyViewportId;
+
+		break;
+
+	case EDisplayClusterShaderParametersICVFX_ChromakeySource::Disabled:
+		return;
+
+	default:
+		break;
+	}
+
+	//Setup chromakey markers
+	if (bEnableChromakeyMarkers)
+	{
+		// Setup chromakey markers
+		if (const FDisplayClusterConfigurationICVFX_ChromakeyMarkers* ChromakeyMarkers = InCameraSettings.Chromakey.GetChromakeyMarkers(InStageSettings))
+		{
+			InOutCameraSettings.ChromakeyMarkersColor = ChromakeyMarkers->MarkerColor;
+			InOutCameraSettings.ChromakeyMarkersScale = ChromakeyMarkers->MarkerSizeScale;
+			InOutCameraSettings.ChromakeyMarkersDistance = ChromakeyMarkers->MarkerTileDistance;
+			InOutCameraSettings.ChromakeyMarkersOffset = ChromakeyMarkers->MarkerTileOffset;
+
+			// Assign texture RHI ref
+			if (FTextureResource* MarkersResource = ChromakeyMarkers->MarkerTileRGBA->GetResource())
+			{
+				InOutCameraSettings.ChromakeMarkerTextureRHI = MarkersResource->TextureRHI;
 			}
 		}
-		else
-		{
-			InOutCameraSettings.ChromakeySource = EDisplayClusterShaderParametersICVFX_ChromakeySource::FrameColor;
-			InOutCameraSettings.ChromakeyColor = InChromakeySettings.ChromakeyColor;
-		}
-	}
-	else
-	{
-		InOutCameraSettings.ChromakeySource = EDisplayClusterShaderParametersICVFX_ChromakeySource::Disabled;
 	}
 }
 
-void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraSettings_ChromakeyMarkers(FDisplayClusterShaderParameters_ICVFX::FCameraSettings& InOutCameraSettings, const FDisplayClusterConfigurationICVFX_ChromakeyMarkers& InChromakeyMarkers)
+void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraSettings_OverlapChromakey(FDisplayClusterShaderParameters_ICVFX::FCameraSettings& InOutCameraSettings, const FDisplayClusterConfigurationICVFX_StageSettings& InStageSettings, const FDisplayClusterConfigurationICVFX_CameraSettings& InCameraSettings, bool bEnableChromakeyMarkers)
 {
-	InOutCameraSettings.ChromakeMarkerTextureRHI.SafeRelease();
+	// Setup overlap chromakey color
+	InOutCameraSettings.OverlapChromakeyColor = InCameraSettings.Chromakey.GetOverlapChromakeyColor(InStageSettings);
 
-	if (InChromakeyMarkers.bEnable && InChromakeyMarkers.MarkerTileRGBA != nullptr)
+	// Setup overlap chromakey markers
+	if (bEnableChromakeyMarkers)
 	{
-		InOutCameraSettings.ChromakeyMarkersColor = InChromakeyMarkers.MarkerColor;
-		InOutCameraSettings.ChromakeyMarkersScale = InChromakeyMarkers.MarkerSizeScale;
-		InOutCameraSettings.ChromakeyMarkersDistance = InChromakeyMarkers.MarkerTileDistance;
-		InOutCameraSettings.ChromakeyMarkersOffset = InChromakeyMarkers.MarkerTileOffset;
-
-		// Assign texture RHI ref
-		FTextureResource* MarkersResource = InChromakeyMarkers.MarkerTileRGBA->GetResource();
-		if (MarkersResource)
+		if (const FDisplayClusterConfigurationICVFX_ChromakeyMarkers* OverlapChromakeyMarkers = InCameraSettings.Chromakey.GetOverlapChromakeyMarkers(InStageSettings))
 		{
-			InOutCameraSettings.ChromakeMarkerTextureRHI = MarkersResource->TextureRHI;
+			InOutCameraSettings.OverlapChromakeyMarkersColor = OverlapChromakeyMarkers->MarkerColor;
+			InOutCameraSettings.OverlapChromakeyMarkersScale = OverlapChromakeyMarkers->MarkerSizeScale;
+			InOutCameraSettings.OverlapChromakeyMarkersDistance = OverlapChromakeyMarkers->MarkerTileDistance;
+			InOutCameraSettings.OverlapChromakeyMarkersOffset = OverlapChromakeyMarkers->MarkerTileOffset;
+
+			// Assign texture RHI ref
+			if (FTextureResource* OverlapMarkersResource = OverlapChromakeyMarkers->MarkerTileRGBA->GetResource())
+			{
+				InOutCameraSettings.OverlapChromakeyMarkerTextureRHI = OverlapMarkersResource->TextureRHI;
+			}
 		}
 	}
-}
-
-bool FDisplayClusterViewportConfigurationHelpers_ICVFX::IsShouldUseLightcard(const FDisplayClusterConfigurationICVFX_LightcardSettings& InLightcardSettings)
-{
-	if (InLightcardSettings.bEnable == false)
-	{
-		// dont use lightcard if disabled
-		return false;
-	}
-
-	if (InLightcardSettings.RenderSettings.Replace.bAllowReplace)
-	{
-		if (InLightcardSettings.RenderSettings.Replace.SourceTexture == nullptr)
-		{
-			// LightcardSettings.Override require source texture.
-			return false;
-		}
-
-		return true;
-	}
-
-	// Lightcard require layers for render
-	return FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(InLightcardSettings.ShowOnlyList);
-}
-
-bool FDisplayClusterViewportConfigurationHelpers_ICVFX::IsShouldUseUVLightcard(FDisplayClusterViewportManager& InViewportManager, const FDisplayClusterConfigurationICVFX_LightcardSettings& InLightcardSettings)
-{
-	if (InLightcardSettings.bEnable)
-	{
-		const TSharedPtr<FDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> LightCardManager = InViewportManager.GetLightCardManager();
-		if (LightCardManager.IsValid() && LightCardManager->IsUVLightCardEnabled())
-		{
-			return FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(InLightcardSettings.ShowOnlyList);
-		}
-	}
-
-	// dont use lightcard if disabled
-	return false;
 }
 
 void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(FDisplayClusterViewport& DstViewport, FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor)
@@ -834,7 +753,7 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 		// Update visibility settings only for rendered viewports
 		if (!DstViewport.PostRenderSettings.Replace.IsEnabled())
 		{
-			check(FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(LightcardSettings.ShowOnlyList));
+			check(LightcardSettings.ShowOnlyList.IsVisibilityListValid());
 
 			FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateShowOnlyList(DstViewport, RootActor, LightcardSettings.ShowOnlyList);
 		}
@@ -845,22 +764,6 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 	// Attach to parent viewport
 	DstViewport.RenderSettings.AssignParentViewport(BaseViewport.GetId(), BaseViewport.RenderSettings);
 
-	// Global lighcard rendering mode
-	if (!EnumHasAllFlags(BaseViewport.RenderSettingsICVFX.Flags, EDisplayClusterViewportICVFXFlags::OverrideLightcardMode))
-	{
-		// Use global lightcard blending mode
-		switch (LightcardSettings.Blendingmode)
-		{
-		default:
-		case EDisplayClusterConfigurationICVFX_LightcardRenderMode::Over:
-			BaseViewport.RenderSettingsICVFX.ICVFX.LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
-			break;
-		case EDisplayClusterConfigurationICVFX_LightcardRenderMode::Under:
-			BaseViewport.RenderSettingsICVFX.ICVFX.LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
-			break;
-		};
-	}
-
 	if (EnumHasAnyFlags(DstViewport.RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Lightcard))
 	{
 		// Debug: override the texture of the target viewport from this lightcard RTT
@@ -870,13 +773,13 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 		}
 		else
 		{
-			BaseViewport.RenderSettingsICVFX.ICVFX.Lightcard.ViewportId = DstViewport.GetId();
+			BaseViewport.RenderSettingsICVFX.ICVFX.LightCard.ViewportId = DstViewport.GetId();
 		}
 	}
 
 	if (EnumHasAnyFlags(DstViewport.RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard))
 	{
-		BaseViewport.RenderSettingsICVFX.ICVFX.UVLightcard.ViewportId = DstViewport.GetId();
+		BaseViewport.RenderSettingsICVFX.ICVFX.UVLightCard.ViewportId = DstViewport.GetId();
 	}
 }
 
@@ -915,23 +818,3 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraCustomFrustu
 		DstViewport.CustomFrustumRendering.Set(CustomFrustumSettings);
 	}
 };
-
-void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportBufferRatio(FDisplayClusterViewport& DstViewport, const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings)
-{
-	float BufferRatio = CameraSettings.BufferRatio;
-
-	if (CameraSettings.CustomFrustum.bAdaptResolution)
-	{
-		const float FieldOfViewMultiplier = ImplGetFieldOfViewMultiplier(CameraSettings);
-
-		// adapt resolution should work as a shortcut to improve rendering quality
-		DstViewport.RenderSettings.RenderTargetAdaptRatio = FieldOfViewMultiplier;
-	}
-	else
-	{
-		// Don't use an adaptive resolution multiplier
-		DstViewport.RenderSettings.RenderTargetAdaptRatio = 1.f;
-	}
-
-	DstViewport.Owner.SetViewportBufferRatio(DstViewport, BufferRatio);
-}

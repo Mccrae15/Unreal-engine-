@@ -3,11 +3,14 @@
 #include "Helpers/PCGHelpers.h"
 
 #include "PCGComponent.h"
+#include "PCGGraph.h"
 #include "PCGModule.h"
 #include "PCGSubsystem.h"
+#include "PCGWorldActor.h"
 #include "Grid/PCGPartitionActor.h"
 
 #include "Landscape.h"
+#include "Algo/AnyOf.h"
 #include "UObject/UObjectIterator.h"
 
 #if WITH_EDITOR
@@ -219,7 +222,7 @@ namespace PCGHelpers
 
 		for (TObjectIterator<ALandscape> It; It; ++It)
 		{
-			if (It->GetWorld() == InWorld)
+			if (IsValid(*It) && It->GetWorld() == InWorld)
 			{
 				const FBox LandscapeBounds = GetLandscapeBounds(*It);
 				if (LandscapeBounds.IsValid && LandscapeBounds.Intersect(InBounds))
@@ -244,7 +247,7 @@ namespace PCGHelpers
 
 		for (TObjectIterator<ALandscapeProxy> It; It; ++It)
 		{
-			if (It->GetWorld() == InWorld)
+			if (IsValid(*It) && It->GetWorld() == InWorld)
 			{
 				const FBox LandscapeBounds = GetLandscapeBounds(*It);
 				if (LandscapeBounds.IsValid && LandscapeBounds.Intersect(InBounds))
@@ -283,7 +286,7 @@ namespace PCGHelpers
 		return true;
 	}
 
-	void GatherDependencies(UObject* Object, TSet<TObjectPtr<UObject>>& OutDependencies, int32 MaxDepth)
+	void GatherDependencies(UObject* Object, TSet<TObjectPtr<UObject>>& OutDependencies, int32 MaxDepth, const TArray<UClass*>& InExcludedClasses)
 	{
 		UClass* ObjectClass = Object ? Object->GetClass() : nullptr;
 
@@ -299,6 +302,15 @@ namespace PCGHelpers
 			if (!Property || Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_Deprecated))
 			{
 				continue;
+			}
+
+			// For Object properties, if the class is in the excluded classes, continue
+			if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+			{
+				if (ObjectProperty->PropertyClass && Algo::AnyOf(InExcludedClasses, [InClass = ObjectProperty->PropertyClass](const UClass* ExcludedClass){ return InClass->IsChildOf(ExcludedClass); }))
+				{
+					continue;
+				}
 			}
 
 			GatherDependencies(Property, Object, OutDependencies, MaxDepth);
@@ -391,4 +403,88 @@ namespace PCGHelpers
 		}
 	}
 #endif
+
+	bool IsNewObjectAndNotDefault(const UObject* InObject, bool bCheckHierarchy)
+	{
+		const UObject* CurrentInspectedObject = InObject;
+		while (bCheckHierarchy && CurrentInspectedObject && CurrentInspectedObject->HasAnyFlags(RF_DefaultSubObject))
+		{
+			CurrentInspectedObject = CurrentInspectedObject->GetOuter();
+		}
+
+		// We detect new objects if they are not a default object/archetype and/or they do not need load.
+		// In some cases, where the component is a default sub object (like APCGVolume), it has no loading flags
+		// even if it is loading, so we use the outer found above.
+		return CurrentInspectedObject && !CurrentInspectedObject->HasAnyFlags(RF_ClassDefaultObject | RF_NeedLoad | RF_NeedPostLoad);
+	}
+
+	bool GetGenerationGridSizes(const UPCGGraph* InGraph, const APCGWorldActor* InWorldActor, PCGHiGenGrid::FSizeArray& OutGridSizes, bool& bOutHasUnbounded)
+	{
+		bOutHasUnbounded = false;
+
+		if (InGraph && InGraph->IsHierarchicalGenerationEnabled())
+		{
+			InGraph->GetGridSizes(OutGridSizes, bOutHasUnbounded);
+			return true;
+		}
+		else if (InWorldActor)
+		{
+			OutGridSizes.Add(InWorldActor->PartitionGridSize);
+			return true;
+		}
+		else
+		{
+			OutGridSizes.Add(PCGHiGenGrid::UnboundedGridSize());
+			return true;
+		}
+	}
+
+#if WITH_EDITOR
+	void GetGeneratedActorsFolderPath(const AActor* InTargetActor, FString& OutFolderPath)
+	{
+		if (!InTargetActor)
+		{
+			return;
+		}
+
+		// Reserves reasonable max string length on stack, overflows to heap if exceeded.
+		TStringBuilderWithBuffer<TCHAR, 1024> GeneratedActorsFolder;
+
+		FName TargetActorFolder = InTargetActor->GetFolderPath();
+		if (TargetActorFolder != NAME_None)
+		{
+			GeneratedActorsFolder << TargetActorFolder.ToString() << "/";
+		}
+
+		GeneratedActorsFolder << InTargetActor->GetActorLabel() << "_Generated";
+		OutFolderPath = GeneratedActorsFolder;
+	}
+#endif
+
+	void AttachToParent(AActor* InActorToAttach, AActor* InParent, EPCGAttachOptions AttachOptions, const FString& InGeneratedPath)
+	{
+		if (!InParent)
+		{
+			return;
+		}
+
+		if (AttachOptions == EPCGAttachOptions::Attached)
+		{
+			InActorToAttach->AttachToActor(InParent, FAttachmentTransformRules::KeepWorldTransform);
+		}
+#if WITH_EDITOR
+		else if(AttachOptions == EPCGAttachOptions::InFolder)
+		{
+			FString DefaultFolderPath;
+
+			if (InGeneratedPath.IsEmpty())
+			{
+				GetGeneratedActorsFolderPath(InParent, DefaultFolderPath);
+			}
+
+			const FString& FolderPath = (InGeneratedPath.IsEmpty() ? DefaultFolderPath : InGeneratedPath);
+			InActorToAttach->SetFolderPath(*FolderPath);
+		}
+#endif
+	}
 }

@@ -5,6 +5,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
+#include "Algo/Transform.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionEditorPerProjectUserSettings)
 
@@ -27,8 +28,8 @@ void UWorldPartitionEditorPerProjectUserSettings::SetEditorLoadedRegions(UWorld*
 	if (ShouldSaveSettings(InWorld))
 	{
 		FWorldPartitionPerWorldSettings& PerWorldSettings = PerWorldEditorSettings.FindOrAdd(TSoftObjectPtr<UWorld>(InWorld));
-		PerWorldSettings.LoadedEditorRegions = InEditorLoadedRegions;
-		
+		PerWorldSettings.LoadedEditorRegions.Empty();
+		Algo::TransformIf(InEditorLoadedRegions, PerWorldSettings.LoadedEditorRegions, [](const FBox& InBox) { return InBox.IsValid; }, [](const FBox& InBox) { return InBox; });		
 		SaveConfig();
 	}
 }
@@ -86,6 +87,11 @@ TArray<FName> UWorldPartitionEditorPerProjectUserSettings::GetWorldDataLayersLoa
 
 const FWorldPartitionPerWorldSettings* UWorldPartitionEditorPerProjectUserSettings::GetWorldPartitionPerWorldSettings(UWorld* InWorld) const
 {
+	if (!ShouldLoadSettings(InWorld))
+	{
+		return nullptr;
+	}
+
 	if (const FWorldPartitionPerWorldSettings* ExistingPerWorldSettings = PerWorldEditorSettings.Find(TSoftObjectPtr<UWorld>(InWorld)))
 	{
 		return ExistingPerWorldSettings;
@@ -100,7 +106,12 @@ const FWorldPartitionPerWorldSettings* UWorldPartitionEditorPerProjectUserSettin
 
 bool UWorldPartitionEditorPerProjectUserSettings::ShouldSaveSettings(const UWorld* InWorld) const
 {
-	return InWorld && !InWorld->IsGameWorld() && FPackageName::DoesPackageExist(InWorld->GetPackage()->GetName());
+	return InWorld && !InWorld->IsGameWorld() && (InWorld->WorldType != EWorldType::Inactive) && FPackageName::DoesPackageExist(InWorld->GetPackage()->GetName());
+}
+
+bool UWorldPartitionEditorPerProjectUserSettings::ShouldLoadSettings(const UWorld* InWorld) const
+{
+	return InWorld && (InWorld->WorldType != EWorldType::Inactive);
 }
 
 #endif

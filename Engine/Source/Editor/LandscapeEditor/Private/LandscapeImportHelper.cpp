@@ -7,6 +7,7 @@
 #include "Modules/ModuleManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
+#include "LandscapeEditorUtils.h"
 
 #define LOCTEXT_NAMESPACE "LandscapeImportHelper"
 
@@ -80,19 +81,34 @@ ELandscapeImportResult GetImportDataInternal(const FLandscapeImportDescriptor& I
 		return ELandscapeImportResult::Error;
 	}
 	
-	int32 TotalWidth = ImportDescriptor.ImportResolutions[DescriptorIndex].Width;
-	int32 TotalHeight = ImportDescriptor.ImportResolutions[DescriptorIndex].Height;
+	int64 TotalWidth = ImportDescriptor.ImportResolutions[DescriptorIndex].Width;	// convert from uint32
+	int64 TotalHeight = ImportDescriptor.ImportResolutions[DescriptorIndex].Height;
+
+	if (TotalWidth <= 0 || TotalHeight <= 0)
+	{
+		OutMessage = LOCTEXT("Import_InvalidImportResolution", "Import Resolution is not valid");
+		return ELandscapeImportResult::Error;
+	}
+
+	if (TotalWidth > MAX_int64 / TotalHeight)	// Total Pixels should fit in an int64
+	{
+		OutMessage = LOCTEXT("Import_ImageTooLarge", "Landscape image is too large");
+		return ELandscapeImportResult::Error;
+	}
+
+	int64 TotalPixels = TotalWidth * TotalHeight;
 
 	OutData.Reset();
-	OutData.SetNumZeroed(TotalWidth * TotalHeight);
+	OutData.SetNumZeroed(TotalPixels);
+
 	// Initialize All to default value so that non-covered regions have data
 	TArray<T> StrideData;
 	StrideData.SetNumUninitialized(TotalWidth);
-	for (int32 X = 0; X < TotalWidth; ++X)
+	for (int64 X = 0; X < TotalWidth; ++X)
 	{
 		StrideData[X] = DefaultValue;
 	}
-	for (int32 Y = 0; Y < TotalHeight; ++Y)
+	for (int64 Y = 0; Y < TotalHeight; ++Y)
 	{
 		FMemory::Memcpy(&OutData[Y * TotalWidth], StrideData.GetData(), sizeof(T) * TotalWidth);
 	}
@@ -103,8 +119,8 @@ ELandscapeImportResult GetImportDataInternal(const FLandscapeImportDescriptor& I
 	const ILandscapeFileFormat<T>* FileFormat = LandscapeEditorModule.GetFormatByExtension<T>(*FPaths::GetExtension(ImportDescriptor.FileDescriptors[0].FilePath, true));
 	check(FileFormat);
 
-	int32 FileWidth = ImportDescriptor.FileResolutions[DescriptorIndex].Width;
-	int32 FileHeight = ImportDescriptor.FileResolutions[DescriptorIndex].Height;
+	int64 FileWidth = ImportDescriptor.FileResolutions[DescriptorIndex].Width;	// convert from uint32
+	int64 FileHeight = ImportDescriptor.FileResolutions[DescriptorIndex].Height;
 	
 	for (const FLandscapeImportFileDescriptor& FileDescriptor : ImportDescriptor.FileDescriptors)
 	{
@@ -116,12 +132,13 @@ ELandscapeImportResult GetImportDataInternal(const FLandscapeImportDescriptor& I
 			break;
 		}
 		
-		int32 StartX = FileDescriptor.Coord.X * FileWidth;
-		int32 StartY = FileDescriptor.Coord.Y * FileHeight;
+		// NOTE: this assumes the same file resolution for all descriptors..
+		int64 StartX = FileDescriptor.Coord.X * FileWidth;
+		int64 StartY = FileDescriptor.Coord.Y * FileHeight;
 		
-		for (int32 Y = 0; Y < FileHeight; ++Y)
+		for (int64 Y = 0; Y < FileHeight; ++Y)
 		{		
-			int32 DestY = StartY + Y;
+			int64 DestY = StartY + Y;
 			FMemory::Memcpy(&OutData[DestY * TotalWidth + StartX], &ImportData.Data[Y * FileWidth], FileWidth * sizeof(T));
 		}
 	}
@@ -299,7 +316,7 @@ void TransformImportDataInternal(const TArray<T>& InData, TArray<T>& OutData, co
 		const FIntRect DestRegion(0, 0, RequiredResolution.Width - 1, RequiredResolution.Height - 1);
 		FLandscapeConfigHelper::ResampleData<T>(InData, OutData, SrcRegion, DestRegion);
 	}
-	else if(TransformType != ELandscapeImportTransformType::None)
+	else if(TransformType == ELandscapeImportTransformType::ExpandCentered || TransformType == ELandscapeImportTransformType::ExpandOffset)
 	{
 		int32 OffsetX = 0;
 		int32 OffsetY = 0;
@@ -336,7 +353,7 @@ ELandscapeImportResult FLandscapeImportHelper::GetWeightmapImportDescriptor(cons
 
 ELandscapeImportResult FLandscapeImportHelper::GetHeightmapImportData(const FLandscapeImportDescriptor& ImportDescriptor, int32 DescriptorIndex, TArray<uint16>& OutData, FText& OutMessage)
 {
-	return GetImportDataInternal<uint16>(ImportDescriptor, DescriptorIndex, NAME_None, LandscapeDataAccess::MidValue, OutData, OutMessage);
+	return GetImportDataInternal<uint16>(ImportDescriptor, DescriptorIndex, NAME_None, static_cast<uint16>(LandscapeDataAccess::MidValue), OutData, OutMessage);
 }
 
 ELandscapeImportResult FLandscapeImportHelper::GetWeightmapImportData(const FLandscapeImportDescriptor& ImportDescriptor, int32 DescriptorIndex, FName LayerName, TArray<uint8>& OutData, FText& OutMessage)
@@ -360,11 +377,12 @@ void FLandscapeImportHelper::ChooseBestComponentSizeForImport(int32 Width, int32
 	bool bValidQuadsPerSectionParam = false;
 	check(Width > 0 && Height > 0);
 		
+	const int32 MaxComponents = LandscapeEditorUtils::GetMaxSizeInComponents();
 	bool bFoundMatch = false;
 	// Try to find a section size and number of sections that exactly matches the dimensions of the heightfield
 	for (int32 SectionSizesIdx = UE_ARRAY_COUNT(FLandscapeConfig::SubsectionSizeQuadsValues) - 1; SectionSizesIdx >= 0; SectionSizesIdx--)
 	{
-		for (int32 NumSectionsIdx = UE_ARRAY_COUNT(FLandscapeConfig::NumSectionValues) - 1; NumSectionsIdx >= 0; NumSectionsIdx--)
+		for (int32 NumSectionsIdx = 0; NumSectionsIdx < UE_ARRAY_COUNT(FLandscapeConfig::NumSectionValues); NumSectionsIdx++)
 		{
 			int32 ss = FLandscapeConfig::SubsectionSizeQuadsValues[SectionSizesIdx];
 			int32 ns = FLandscapeConfig::NumSectionValues[NumSectionsIdx];
@@ -373,8 +391,8 @@ void FLandscapeImportHelper::ChooseBestComponentSizeForImport(int32 Width, int32
 			bValidSubsectionSizeParam |= (InOutSectionsPerComponent == ns);
 			bValidQuadsPerSectionParam |= (InOutQuadsPerSection == ss);
 
-			if (((Width - 1) % (ss * ns)) == 0 && ((Width - 1) / (ss * ns)) <= 32 &&
-				((Height - 1) % (ss * ns)) == 0 && ((Height - 1) / (ss * ns)) <= 32)
+			if (((Width - 1) % (ss * ns)) == 0 && ((Width - 1) / (ss * ns)) <= MaxComponents &&
+				((Height - 1) % (ss * ns)) == 0 && ((Height - 1) / (ss * ns)) <= MaxComponents)
 			{
 				bFoundMatch = true;
 				InOutQuadsPerSection = ss;

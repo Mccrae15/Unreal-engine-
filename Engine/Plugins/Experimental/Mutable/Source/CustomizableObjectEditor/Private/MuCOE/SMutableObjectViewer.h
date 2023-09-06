@@ -4,6 +4,7 @@
 
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Input/SNumericDropDown.h"
 
 class STableViewBase;
 namespace ESelectInfo { enum Type : int; }
@@ -41,7 +42,7 @@ public:
 private:
 
 	/** The Mutable Graph to show, represented by its root. */
-	UCustomizableObject* CustomizableObject;
+	TObjectPtr<UCustomizableObject> CustomizableObject;
 
 	/** Compilation options to use in the debugger operations. */
 	FCompilationOptions CompileOptions;
@@ -67,6 +68,7 @@ private:
 	TSharedRef<SWidget> GenerateCompileOptionsMenuContent();
 	TSharedPtr<STextComboBox> CompileOptimizationCombo;
 	TArray< TSharedPtr<FString> > CompileOptimizationStrings;
+	TSharedPtr<SNumericDropDown<float>> CompileTilingCombo;
 	void OnChangeCompileOptimizationLevel(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo);
 	void OnChangeDebugPlatform(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo);
 

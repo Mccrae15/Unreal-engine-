@@ -263,10 +263,7 @@ void UNiagaraNodeSelect::PostLoad()
 	Super::PostLoad();
 	
 	// we assume something changed externally if the input pins are outdated; i.e. the assigned enum changed or value order changed
-	if (AreInputPinsOutdated())
-	{
-		RefreshFromExternalChanges();
-	}
+	AttemptUpdatePins();
 }
 
 void UNiagaraNodeSelect::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
@@ -282,11 +279,11 @@ void UNiagaraNodeSelect::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 			FText::Format(LOCTEXT("BrowseToEnumLabel", "Browse to {0}"), FText::FromString(SelectorPinType.GetEnum()->GetName())),
 			LOCTEXT("BrowseToEnumTooltip", "Browses to the enum in the content browser."),
 			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([=]()
+			FUIAction(FExecuteAction::CreateLambda([this]()
 			{
 				FContentBrowserModule& Module = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 				Module.Get().SyncBrowserToAssets({ FAssetData(SelectorPinType.GetEnum()) });
-			}), FCanExecuteAction::CreateLambda([=]()
+			}), FCanExecuteAction::CreateLambda([this]()
 			{
 				return Cast<UUserDefinedEnum>(SelectorPinType.GetEnum()) != nullptr;
 			})));
@@ -296,17 +293,17 @@ void UNiagaraNodeSelect::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 			FText::Format(LOCTEXT("OpenEnumLabel", "Open {0}"), FText::FromString(SelectorPinType.GetEnum()->GetName())),
 			LOCTEXT("OpenEnumTooltip", "Opens up the enum asset."),
 			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([=]()
+			FUIAction(FExecuteAction::CreateLambda([this]()
 			{
 				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(SelectorPinType.GetEnum());
-			}), FCanExecuteAction::CreateLambda([=]()
+			}), FCanExecuteAction::CreateLambda([this]()
 			{
 				return Cast<UUserDefinedEnum>(SelectorPinType.GetEnum()) != nullptr;
 			})));
 	}
 }
 
-void UNiagaraNodeSelect::Compile(FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs)
+void UNiagaraNodeSelect::Compile(FTranslator* Translator, TArray<int32>& Outputs) const
 {	
 	const UEdGraphPin* SelectorPin = GetSelectorPin();
 
@@ -315,7 +312,7 @@ void UNiagaraNodeSelect::Compile(FHlslNiagaraTranslator* Translator, TArray<int3
 		Translator->Warning(LOCTEXT("SelectNodePinSelectorTypeInvalid", "Select node selector pin should have a valid type."), this, nullptr);
 	}
 	
-	for(FNiagaraVariable& Variable : OutputVars)
+	for(const FNiagaraVariable& Variable : OutputVars)
 	{
 		if(!Variable.GetType().IsValid())
 		{
@@ -323,7 +320,7 @@ void UNiagaraNodeSelect::Compile(FHlslNiagaraTranslator* Translator, TArray<int3
 		}
 	}
 	
-	int32 Selection = Translator->CompilePin(SelectorPin);
+	int32 Selection = Translator->CompileInputPin(SelectorPin);
 
 	// a map from selector value to compiled option pins (i.e.: for selector value 0 all pins that should be case "if 0" get their compiled index added under key 0)
 	TMap<int32, TArray<int32>> OptionValues;
@@ -359,7 +356,7 @@ void UNiagaraNodeSelect::Compile(FHlslNiagaraTranslator* Translator, TArray<int3
 		for (int32 OutputIndex = 0; OutputIndex < OutputVars.Num(); OutputIndex++)
 		{
 			TArray<UEdGraphPin*> OptionPins = GetOptionPins(OutputIndex);
-			int32 CodeChunkIndex = Translator->CompilePin(OptionPins[SelectorValueIndex]);
+			int32 CodeChunkIndex = Translator->CompileInputPin(OptionPins[SelectorValueIndex]);
 			OptionValues[SelectorValues[SelectorValueIndex]].Add(CodeChunkIndex);
 		}
 	}	

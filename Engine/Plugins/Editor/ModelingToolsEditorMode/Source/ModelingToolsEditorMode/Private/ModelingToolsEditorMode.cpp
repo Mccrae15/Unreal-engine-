@@ -3,13 +3,13 @@
 #include "ModelingToolsEditorMode.h"
 #include "Components/StaticMeshComponent.h"
 #include "IGeometryProcessingInterfacesModule.h"
+#include "Editor/UnrealEdEngine.h"
 #include "EdModeInteractiveToolsContext.h"
 #include "GeometryProcessingInterfaces/IUVEditorModularFeature.h"
 #include "IAnalyticsProviderET.h"
 #include "ModelingToolsEditorModeToolkit.h"
 #include "ILevelEditor.h"
 #include "ModelingToolsEditorModeSettings.h"
-#include "IStylusState.h"
 #include "ToolTargetManager.h"
 #include "ContextObjectStore.h"
 #include "InputRouter.h"
@@ -22,6 +22,7 @@
 #include "BaseGizmos/TransformGizmoUtil.h"
 #include "Snapping/ModelingSceneSnappingManager.h"
 #include "Scene/LevelObjectsObserver.h"
+#include "UnrealEdGlobals.h" // GUnrealEd
 
 #include "Features/IModularFeatures.h"
 #include "ModelingModeToolExtensions.h"
@@ -44,6 +45,8 @@
 #include "DrawPolygonTool.h"
 #include "DrawPolyPathTool.h"
 #include "DrawAndRevolveTool.h"
+#include "DrawSplineTool.h"
+#include "RevolveSplineTool.h"
 #include "ShapeSprayTool.h"
 #include "VoxelSolidifyMeshesTool.h"
 #include "VoxelBlendMeshesTool.h"
@@ -85,10 +88,12 @@
 #include "LatticeDeformerTool.h"
 #include "SeamSculptTool.h"
 #include "MeshGroupPaintTool.h"
+#include "MeshVertexPaintTool.h"
 #include "TransferMeshTool.h"
 #include "ConvertMeshesTool.h"
 #include "SplitMeshesTool.h"
 #include "PatternTool.h"
+#include "TriangulateSplinesTool.h"
 
 #include "Polymodeling/ExtrudeMeshSelectionTool.h"
 #include "Polymodeling/OffsetMeshSelectionTool.h"
@@ -96,7 +101,7 @@
 #include "Physics/PhysicsInspectorTool.h"
 #include "Physics/SetCollisionGeometryTool.h"
 #include "Physics/ExtractCollisionGeometryTool.h"
-//#include "Physics/EditCollisionGeometryTool.h"
+#include "Physics/SimpleCollisionEditorTool.h"
 
 // asset tools
 #include "Tools/GenerateStaticMeshLODAssetTool.h"
@@ -113,8 +118,14 @@
 #include "EditorModeManager.h"
 #include "UnrealWidget.h"
 
-// stylus support
+// Stylus support is currently disabled due to issues with the stylus plugin
+// We are leaving the code in this cpp file, defined out, so that it is easier to bring back if/when the stylus plugin is improved.
+#define ENABLE_STYLUS_SUPPORT 0
+
+#if ENABLE_STYLUS_SUPPORT 
+#include "IStylusState.h"
 #include "IStylusInputModule.h"
+#endif
 
 #include "LevelEditor.h"
 #include "SLevelViewport.h"
@@ -132,6 +143,7 @@
 #include "DynamicMeshActor.h"
 #include "Components/BrushComponent.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/World.h" // FWorldDelegates
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ModelingToolsEditorMode)
 
@@ -147,6 +159,8 @@ const FEditorModeID UModelingToolsEditorMode::EM_ModelingToolsEditorModeId = TEX
 
 FDateTime UModelingToolsEditorMode::LastModeStartTimestamp;
 FDateTime UModelingToolsEditorMode::LastToolStartTimestamp;
+
+FDelegateHandle UModelingToolsEditorMode::GlobalModelingWorldTeardownEventHandle;
 
 namespace
 {
@@ -178,11 +192,11 @@ UModelingToolsEditorMode::~UModelingToolsEditorMode()
 
 bool UModelingToolsEditorMode::ProcessEditDelete()
 {
-	if (SelectionManager && SelectionManager->HasSelection())
+	if (GetSelectionManager() && GetSelectionManager()->HasSelection())
 	{
 		if ( UDeleteGeometrySelectionCommand* DeleteCommand = Cast<UDeleteGeometrySelectionCommand>(ModelingModeCommands[0]) )
 		{
-			SelectionManager->ExecuteSelectionCommand(DeleteCommand);
+			GetSelectionManager()->ExecuteSelectionCommand(DeleteCommand);
 			return true;
 		}
 	}
@@ -233,10 +247,14 @@ bool UModelingToolsEditorMode::CanAutoSave() const
 
 bool UModelingToolsEditorMode::ShouldDrawWidget() const
 { 
-	// hide standard xform gizmo if we have an active tool
+	// hide standard xform gizmo if we have an active tool, unless it explicitly opts in via the IInteractiveToolEditorGizmoAPI
 	if (GetInteractiveToolsContext() != nullptr && GetToolManager()->HasAnyActiveTool())
 	{
-		return false;
+		IInteractiveToolEditorGizmoAPI* GizmoAPI = Cast<IInteractiveToolEditorGizmoAPI>(GetToolManager()->GetActiveTool(EToolSide::Left));
+		if (!GizmoAPI || !GizmoAPI->GetAllowStandardEditorGizmos())
+		{
+			return false;
+		}
 	}
 
 	// hide standard xform gizmo if we have an active selection
@@ -259,6 +277,8 @@ void UModelingToolsEditorMode::Tick(FEditorViewportClient* ViewportClient, float
 	}
 }
 
+// Note: Stylus support is currently non-functioning; the code to enable it is left here as reference in case it is brought back
+#if ENABLE_STYLUS_SUPPORT
 //
 // FStylusStateTracker registers itself as a listener for stylus events and implements
 // the IToolStylusStateProviderAPI interface, which allows MeshSurfacePointTool implementations
@@ -287,8 +307,13 @@ public:
 
 	virtual ~FStylusStateTracker()
 	{
-		UStylusInputSubsystem* StylusSubsystem = GEditor->GetEditorSubsystem<UStylusInputSubsystem>();
-		StylusSubsystem->RemoveMessageHandler(*this);
+		if (GEditor)
+		{
+			if (UStylusInputSubsystem* StylusSubsystem = GEditor->GetEditorSubsystem<UStylusInputSubsystem>())
+			{
+				StylusSubsystem->RemoveMessageHandler(*this);
+			}
+		}
 	}
 
 	virtual void OnStylusStateChanged(const FStylusState& NewState, int32 StylusIndex) override
@@ -340,7 +365,7 @@ public:
 	}
 
 };
-
+#endif // ENABLE_STYLUS_SUPPORT
 
 
 
@@ -352,6 +377,8 @@ void UModelingToolsEditorMode::Enter()
 	UEdMode::Enter();
 
 	const UModelingToolsEditorModeSettings* ModelingModeSettings = GetDefault<UModelingToolsEditorModeSettings>();
+	const UModelingToolsModeCustomizationSettings* ModelingEditorSettings = GetDefault<UModelingToolsModeCustomizationSettings>();
+	bSelectionSystemEnabled = ModelingModeSettings->bEnablePersistentSelections;
 
 	// Register builders for tool targets that the mode uses.
 	GetInteractiveToolsContext()->TargetManager->AddTargetFactory(NewObject<UStaticMeshComponentToolTargetFactory>(GetToolManager()));
@@ -372,8 +399,14 @@ void UModelingToolsEditorMode::Enter()
 		return true;
 	});
 
+	// register for OnRender and OnDrawHUD extensions
+	GetInteractiveToolsContext()->OnRender.AddUObject(this, &UModelingToolsEditorMode::OnToolsContextRender);
+	GetInteractiveToolsContext()->OnDrawHUD.AddUObject(this, &UModelingToolsEditorMode::OnToolsContextDrawHUD);
+
+#if ENABLE_STYLUS_SUPPORT 
 	// register stylus event handler
 	StylusStateTracker = MakeUnique<FStylusStateTracker>();
+#endif
 
 	// register gizmo helper
 	UE::TransformGizmoUtil::RegisterTransformGizmoContextObject(GetInteractiveToolsContext());
@@ -394,50 +427,46 @@ void UModelingToolsEditorMode::Enter()
 	UE::Geometry::RegisterSceneSnappingManager(GetInteractiveToolsContext());
 	SceneSnappingManager = UE::Geometry::FindModelingSceneSnappingManager(GetToolManager());
 
-	// register selection manager, if this feature is enabled in the mode settings
-	if (ModelingModeSettings && ModelingModeSettings->GetMeshSelectionsEnabled())
-	{
-		// set up SelectionManager and register known factory types
-		SelectionManager = NewObject<UGeometrySelectionManager>(GetToolManager());
-		SelectionManager->Initialize(GetInteractiveToolsContext(), GetToolManager()->GetContextTransactionsAPI());
-		SelectionManager->RegisterSelectorFactory(MakeUnique<FDynamicMeshComponentSelectorFactory>());
-		SelectionManager->RegisterSelectorFactory(MakeUnique<FBrushComponentSelectorFactory>());
-		SelectionManager->RegisterSelectorFactory(MakeUnique<FStaticMeshComponentSelectorFactory>());
 
-		GetInteractiveToolsContext()->OnRender.AddUObject(this, &UModelingToolsEditorMode::OnToolsContextRender);
-		GetInteractiveToolsContext()->OnDrawHUD.AddUObject(this, &UModelingToolsEditorMode::OnToolsContextDrawHUD);
-		// this is hopefully temporary? kinda gross...
-		GetInteractiveToolsContext()->ContextObjectStore->AddContextObject(SelectionManager);
+	// set up SelectionManager and register known factory types
+	SelectionManager = NewObject<UGeometrySelectionManager>(GetToolManager());
+	SelectionManager->Initialize(GetInteractiveToolsContext(), GetToolManager()->GetContextTransactionsAPI());
+	SelectionManager->RegisterSelectorFactory(MakeUnique<FDynamicMeshComponentSelectorFactory>());
+	SelectionManager->RegisterSelectorFactory(MakeUnique<FBrushComponentSelectorFactory>());
+	SelectionManager->RegisterSelectorFactory(MakeUnique<FStaticMeshComponentSelectorFactory>());
 
-		// rebuild tool palette on any selection changes. This is expensive and ideally will be
-		// optimized in the future.
-		SelectionManager_SelectionModifiedHandle = SelectionManager->OnSelectionModified.AddLambda([this]()
-		{
-			((FModelingToolsEditorModeToolkit*)Toolkit.Get())->ForceToolPaletteRebuild();
-		});
+	// this is hopefully temporary? kinda gross...
+	GetInteractiveToolsContext()->ContextObjectStore->AddContextObject(SelectionManager);
 
-		// set up the selection interaction
-		SelectionInteraction = NewObject<UModelingSelectionInteraction>(GetToolManager());
-		SelectionInteraction->Initialize(SelectionManager,
-			[this]() { return GetGeometrySelectionChangesAllowed(); },
-			[this](const FInputDeviceRay& DeviceRay) { return TestForEditorGizmoHit(DeviceRay); });
-		GetInteractiveToolsContext()->InputRouter->RegisterSource(SelectionInteraction);
+	// rebuild tool palette on any selection changes. This is expensive and ideally will be
+	// optimized in the future.
+	//SelectionManager_SelectionModifiedHandle = SelectionManager->OnSelectionModified.AddLambda([this]()
+	//{
+	//	((FModelingToolsEditorModeToolkit*)Toolkit.Get())->ForceToolPaletteRebuild();
+	//});
 
-		SelectionInteraction->OnTransformBegin.AddLambda([this]() 
-		{ 
-			// Disable the SnappingManager while the SelectionInteraction is editing a mesh via transform gizmo
-			SceneSnappingManager->PauseSceneGeometryUpdates();
+	// set up the selection interaction
+	SelectionInteraction = NewObject<UModelingSelectionInteraction>(GetToolManager());
+	SelectionInteraction->Initialize(SelectionManager,
+		[this]() { return GetGeometrySelectionChangesAllowed(); },
+		[this](const FInputDeviceRay& DeviceRay) { return TestForEditorGizmoHit(DeviceRay); });
+	GetInteractiveToolsContext()->InputRouter->RegisterSource(SelectionInteraction);
 
-			// If the transform is happening via the gizmo numerical UI, then we can run into the same slate
-			// throttling issues as tools. We need to continue receiving render/tick while user scrubs the slate values.
-			FSlateThrottleManager::Get().DisableThrottle(true);
-		});
-		SelectionInteraction->OnTransformEnd.AddLambda([this]() 
-		{ 
-			FSlateThrottleManager::Get().DisableThrottle(false);
-			SceneSnappingManager->UnPauseSceneGeometryUpdates(); 
-		});
-	}
+	SelectionInteraction->OnTransformBegin.AddLambda([this]() 
+	{ 
+		// Disable the SnappingManager while the SelectionInteraction is editing a mesh via transform gizmo
+		SceneSnappingManager->PauseSceneGeometryUpdates();
+
+		// If the transform is happening via the gizmo numerical UI, then we can run into the same slate
+		// throttling issues as tools. We need to continue receiving render/tick while user scrubs the slate values.
+		FSlateThrottleManager::Get().DisableThrottle(true);
+	});
+	SelectionInteraction->OnTransformEnd.AddLambda([this]() 
+	{ 
+		FSlateThrottleManager::Get().DisableThrottle(false);
+		SceneSnappingManager->UnPauseSceneGeometryUpdates(); 
+	});
+
 
 	// register level objects observer that will update the snapping manager as the scene changes
 	LevelObjectsObserver = MakeShared<FLevelObjectsObserver>();
@@ -474,9 +503,27 @@ void UModelingToolsEditorMode::Enter()
 			if (CreatedInfo.NewAsset != nullptr)
 			{
 				UE::Modeling::OnNewAssetCreated(CreatedInfo.NewAsset);
+				// If we are creating a new asset or component, it should be initially unlocked in the Selection system.
+				// Currently have no generic way to do this, the Selection Manager does not necessarily support Static Meshes
+				// or Brush Components. So doing it here...
+				if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(CreatedInfo.NewAsset))
+				{
+					FStaticMeshSelector::SetAssetUnlockedOnCreation(StaticMesh);
+				}
+			}
+			if ( UBrushComponent* BrushComponent = Cast<UBrushComponent>(CreatedInfo.NewComponent) )
+			{
+				FVolumeSelector::SetComponentUnlockedOnCreation(BrushComponent);
 			}
 		});
 		TextureCreatedEventHandle = ModelCreationAPI->OnModelingTextureCreated.AddLambda([](const FCreateTextureObjectResult& CreatedInfo)
+		{
+			if (CreatedInfo.NewAsset != nullptr)
+			{
+				UE::Modeling::OnNewAssetCreated(CreatedInfo.NewAsset);
+			}
+		});
+		MaterialCreatedEventHandle = ModelCreationAPI->OnModelingMaterialCreated.AddLambda([](const FCreateMaterialObjectResult& CreatedInfo)
 		{
 			if (CreatedInfo.NewAsset != nullptr)
 			{
@@ -547,23 +594,37 @@ void UModelingToolsEditorMode::Enter()
 	auto DrawAndRevolveToolBuilder = NewObject<UDrawAndRevolveToolBuilder>();
 	RegisterTool(ToolManagerCommands.BeginDrawAndRevolveTool, TEXT("BeginDrawAndRevolveTool"), DrawAndRevolveToolBuilder);
 
+	auto RevolveSplineToolBuilder = NewObject<URevolveSplineToolBuilder>();
+	RegisterTool(ToolManagerCommands.BeginRevolveSplineTool, TEXT("BeginRevolveSplineTool"), RevolveSplineToolBuilder);
+
 	auto ShapeSprayToolBuilder = NewObject<UShapeSprayToolBuilder>();
 	RegisterTool(ToolManagerCommands.BeginShapeSprayTool, TEXT("BeginShapeSprayTool"), ShapeSprayToolBuilder);
 
 	auto CubeGridToolBuilder = NewObject<UCubeGridToolBuilder>();
 	RegisterTool(ToolManagerCommands.BeginCubeGridTool, TEXT("BeginCubeGridTool"), CubeGridToolBuilder);
 
+	auto DrawSplineToolBuilder = NewObject<UDrawSplineToolBuilder>();
+	RegisterTool(ToolManagerCommands.BeginDrawSplineTool, TEXT("BeginDrawSplineTool"), DrawSplineToolBuilder);
+
+	auto TriangulateSplinesToolBuilder = NewObject<UTriangulateSplinesToolBuilder>();
+	RegisterTool(ToolManagerCommands.BeginTriangulateSplinesTool, TEXT("BeginTriangulateSplinesTool"), TriangulateSplinesToolBuilder);
+
 	//
 	// vertex deform tools
 	//
 
 	auto MoveVerticesToolBuilder = NewObject<UMeshVertexSculptToolBuilder>();
+#if ENABLE_STYLUS_SUPPORT 
 	MoveVerticesToolBuilder->StylusAPI = StylusStateTracker.Get();
+#endif
 	RegisterTool(ToolManagerCommands.BeginSculptMeshTool, TEXT("BeginSculptMeshTool"), MoveVerticesToolBuilder);
 
 	auto MeshGroupPaintToolBuilder = NewObject<UMeshGroupPaintToolBuilder>();
+#if ENABLE_STYLUS_SUPPORT 
 	MeshGroupPaintToolBuilder->StylusAPI = StylusStateTracker.Get();
+#endif
 	RegisterTool(ToolManagerCommands.BeginMeshGroupPaintTool, TEXT("BeginMeshGroupPaintTool"), MeshGroupPaintToolBuilder);
+	RegisterTool(ToolManagerCommands.BeginMeshVertexPaintTool, TEXT("BeginMeshVertexPaintTool"), NewObject<UMeshVertexPaintToolBuilder>());
 
 	RegisterTool(ToolManagerCommands.BeginPolyEditTool, TEXT("BeginPolyEditTool"), NewObject<UEditMeshPolygonsToolBuilder>());
 	UEditMeshPolygonsToolBuilder* TriEditBuilder = NewObject<UEditMeshPolygonsToolBuilder>();
@@ -585,7 +646,10 @@ void UModelingToolsEditorMode::Enter()
 	RegisterTool(ToolManagerCommands.BeginTransformUVIslandsTool, TEXT("BeginTransformUVIslandsTool"), NewObject<UEditUVIslandsToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginLatticeDeformerTool, TEXT("BeginLatticeDeformerTool"), NewObject<ULatticeDeformerToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginSubdividePolyTool, TEXT("BeginSubdividePolyTool"), NewObject<USubdividePolyToolBuilder>());
-	RegisterTool(ToolManagerCommands.BeginPatternTool, TEXT("BeginPatternTool"), NewObject<UPatternToolBuilder>());
+
+	UPatternToolBuilder* PatternToolBuilder = NewObject<UPatternToolBuilder>();
+	PatternToolBuilder->bEnableCreateISMCs = true;
+	RegisterTool(ToolManagerCommands.BeginPatternTool, TEXT("BeginPatternTool"), PatternToolBuilder);
 
 	UCombineMeshesToolBuilder* CombineMeshesToolBuilder = NewObject<UCombineMeshesToolBuilder>();
 	RegisterTool(ToolManagerCommands.BeginCombineMeshesTool, TEXT("BeginCombineMeshesTool"), CombineMeshesToolBuilder);
@@ -599,6 +663,7 @@ void UModelingToolsEditorMode::Enter()
 	RegisterTool(ToolManagerCommands.BeginLODManagerTool, TEXT("BeginLODManagerTool"), LODManagerToolBuilder);
 
 	UGenerateStaticMeshLODAssetToolBuilder* GenerateSMLODToolBuilder = NewObject<UGenerateStaticMeshLODAssetToolBuilder>();
+	GenerateSMLODToolBuilder->bInRestrictiveMode = ModelingModeSettings && ModelingModeSettings->InRestrictiveMode();
 	RegisterTool(ToolManagerCommands.BeginGenerateStaticMeshLODAssetTool, TEXT("BeginGenerateStaticMeshLODAssetTool"), GenerateSMLODToolBuilder);
 
 	UISMEditorToolBuilder* ISMEditorToolBuilder = NewObject<UISMEditorToolBuilder>();
@@ -610,7 +675,9 @@ void UModelingToolsEditorMode::Enter()
 
 	auto DynaSculptToolBuilder = NewObject<UDynamicMeshSculptToolBuilder>();
 	DynaSculptToolBuilder->bEnableRemeshing = true;
+#if ENABLE_STYLUS_SUPPORT 
 	DynaSculptToolBuilder->StylusAPI = StylusStateTracker.Get();
+#endif
 	RegisterTool(ToolManagerCommands.BeginRemeshSculptMeshTool, TEXT("BeginRemeshSculptMeshTool"), DynaSculptToolBuilder);
 
 	RegisterTool(ToolManagerCommands.BeginRemeshMeshTool, TEXT("BeginRemeshMeshTool"), NewObject<URemeshMeshToolBuilder>());
@@ -725,34 +792,38 @@ void UModelingToolsEditorMode::Enter()
 	// Physics Tools
 
 	RegisterTool(ToolManagerCommands.BeginPhysicsInspectorTool, TEXT("BeginPhysicsInspectorTool"), NewObject<UPhysicsInspectorToolBuilder>());
+	RegisterTool(ToolManagerCommands.BeginSimpleCollisionEditorTool, TEXT("BeginSimpleCollisionEditorTool"), NewObject<USimpleCollisionEditorToolBuilder>());
 	RegisterTool(ToolManagerCommands.BeginSetCollisionGeometryTool, TEXT("BeginSetCollisionGeometryTool"), NewObject<USetCollisionGeometryToolBuilder>());
-	//RegisterTool(ToolManagerCommands.BeginEditCollisionGeometryTool, TEXT("EditCollisionGeoTool"), NewObject<UEditCollisionGeometryToolBuilder>());
 
 	auto ExtractCollisionGeoToolBuilder = NewObject<UExtractCollisionGeometryToolBuilder>();
 	RegisterTool(ToolManagerCommands.BeginExtractCollisionGeometryTool, TEXT("BeginExtractCollisionGeometryTool"), ExtractCollisionGeoToolBuilder);
 
 
+
+	bool bAlwaysShowAllSelectionCommands = !ModelingEditorSettings->bUseLegacyModelingPalette;
+
 	// this function registers and tracks an active UGeometrySelectionEditCommand and it's associated UICommand
-	auto RegisterSelectionTool = [&](TSharedPtr<FUICommandInfo> UICommand, FString ToolIdentifier, UInteractiveToolBuilder* Builder, bool bRequiresActiveTarget, bool bRequiresSelection)
+	auto RegisterSelectionTool = [&, bAlwaysShowAllSelectionCommands](TSharedPtr<FUICommandInfo> UICommand, FString ToolIdentifier, UInteractiveToolBuilder* Builder, bool bRequiresActiveTarget, bool bRequiresSelection)
 	{
 		UEditorInteractiveToolsContext* UseToolsContext = GetInteractiveToolsContext(EToolsContextScope::EdMode);
 		const TSharedRef<FUICommandList>& CommandList = Toolkit->GetToolkitCommands();
 		UseToolsContext->ToolManager->RegisterToolType(ToolIdentifier, Builder);
 		CommandList->MapAction(UICommand,
 			FExecuteAction::CreateUObject(UseToolsContext, &UEdModeInteractiveToolsContext::StartTool, ToolIdentifier),
-			FCanExecuteAction::CreateWeakLambda(UseToolsContext, [this, ToolIdentifier, UseToolsContext, bRequiresActiveTarget, bRequiresSelection]() {
+			FCanExecuteAction::CreateWeakLambda(UseToolsContext, [this, ToolIdentifier, UseToolsContext, bRequiresActiveTarget, bRequiresSelection, bAlwaysShowAllSelectionCommands]() {
 				return ShouldToolStartBeAllowed(ToolIdentifier) &&
 					( GetSelectionManager()->HasActiveTargets() || bRequiresActiveTarget == false) &&
 					( GetSelectionManager()->HasSelection() || bRequiresSelection == false ) &&
-					( GetSelectionManager()->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None ) &&
+					( GetSelectionManager()->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None || bAlwaysShowAllSelectionCommands ) &&
 					UseToolsContext->ToolManager->CanActivateTool(EToolSide::Mouse, ToolIdentifier);
 			}),
 			FIsActionChecked::CreateUObject(UseToolsContext, &UEdModeInteractiveToolsContext::IsToolActive, EToolSide::Mouse, ToolIdentifier),
 			//FIsActionButtonVisible::CreateUObject(GetSelectionManager(), &UGeometrySelectionManager::HasSelection),
-			FIsActionButtonVisible::CreateWeakLambda(UseToolsContext, [this, bRequiresActiveTarget, bRequiresSelection]() {
-				return ( GetSelectionManager()->HasActiveTargets() || bRequiresActiveTarget == false) &&
+			FIsActionButtonVisible::CreateWeakLambda(UseToolsContext, [this, bRequiresActiveTarget, bRequiresSelection, bAlwaysShowAllSelectionCommands]() {
+				return (bAlwaysShowAllSelectionCommands) ? true : (
+					( GetSelectionManager()->HasActiveTargets() || bRequiresActiveTarget == false) &&
 					( GetSelectionManager()->HasSelection() || bRequiresSelection == false ) &&
-					( GetSelectionManager()->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None );
+					( GetSelectionManager()->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None ) );
 			}),
 			EUIActionRepeatMode::RepeatDisabled);
 	};
@@ -761,7 +832,7 @@ void UModelingToolsEditorMode::Enter()
 	RegisterSelectionTool(ToolManagerCommands.BeginSelectionAction_Extrude, TEXT("BeginSelectionExtrudeTool"), NewObject<UExtrudeMeshSelectionToolBuilder>(), true, true);
 	RegisterSelectionTool(ToolManagerCommands.BeginSelectionAction_Offset, TEXT("BeginSelectionOffsetTool"), NewObject<UOffsetMeshSelectionToolBuilder>(), true, true);
 
-	RegisterSelectionTool(ToolManagerCommands.BeginPolyModelTool_PolyEd, TEXT("BeginSelectionPolyEdTool"), NewObject<UEditMeshPolygonsToolBuilder>(), true, false);
+	RegisterSelectionTool(ToolManagerCommands.BeginPolyModelTool_PolyEd, TEXT("BeginSelectionPolyEdTool"), NewObject<UEditMeshPolygonsSelectionModeToolBuilder>(), true, false);
 	RegisterSelectionTool(ToolManagerCommands.BeginPolyModelTool_TriSel, TEXT("BeginSelectionTriEdTool"), NewObject<UMeshSelectionToolBuilder>(), true, false);
 
 
@@ -785,18 +856,22 @@ void UModelingToolsEditorMode::Enter()
 	{
 		Toolkit->GetToolkitCommands()->MapAction(UICommand,
 			FExecuteAction::CreateLambda([this, TopoMode, ElementMode]() {
-				GetToolManager()->GetContextTransactionsAPI()->BeginUndoTransaction(LOCTEXT("ChangeSelectionMode", "Selection Mode"));
-				GetSelectionManager()->SetMeshTopologyMode(TopoMode); 
-				GetSelectionManager()->SetSelectionElementType(ElementMode);
-				GetToolManager()->GetContextTransactionsAPI()->EndUndoTransaction();
-
-				UModelingToolsModeCustomizationSettings* ModelingEditorSettings = GetMutableDefault<UModelingToolsModeCustomizationSettings>();
-				ModelingEditorSettings->LastMeshSelectionTopologyMode = static_cast<int>(TopoMode);
-				ModelingEditorSettings->LastMeshSelectionElementType = static_cast<int>(ElementMode);
-				ModelingEditorSettings->SaveConfig();
+				if ( GetToolManager() && GetToolManager()->GetContextTransactionsAPI() && GetSelectionManager() )
+				{
+					GetToolManager()->GetContextTransactionsAPI()->BeginUndoTransaction(LOCTEXT("ChangeSelectionMode", "Selection Mode"));
+					GetSelectionManager()->SetMeshTopologyMode(TopoMode); 
+					GetSelectionManager()->SetSelectionElementType(ElementMode);
+					GetToolManager()->GetContextTransactionsAPI()->EndUndoTransaction();
+					if (UModelingToolsModeCustomizationSettings* ModelingEditorSettings = GetMutableDefault<UModelingToolsModeCustomizationSettings>())
+					{
+						ModelingEditorSettings->LastMeshSelectionTopologyMode = static_cast<int>(TopoMode);
+						ModelingEditorSettings->LastMeshSelectionElementType = static_cast<int>(ElementMode);
+						ModelingEditorSettings->SaveConfig();
+					}
+				}
 			}),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([this, TopoMode, ElementMode]() { return GetSelectionManager()->GetMeshTopologyMode() == TopoMode && GetSelectionManager()->GetSelectionElementType() == ElementMode; }),
+			FCanExecuteAction::CreateLambda([this]() { return (GetToolManager() != nullptr && GetToolManager()->HasAnyActiveTool() == false) ? true : false; }),
+			FIsActionChecked::CreateLambda([this, TopoMode, ElementMode]() { return (GetSelectionManager() != nullptr && GetSelectionManager()->GetMeshTopologyMode() == TopoMode && GetSelectionManager()->GetSelectionElementType() == ElementMode); }),
 			EUIActionRepeatMode::RepeatDisabled);
 	};
 	if (GetSelectionManager() != nullptr)
@@ -826,9 +901,9 @@ void UModelingToolsEditorMode::Enter()
 	};
 
 	// create and register InteractiveCommands for mesh selections
-	RegisterSelectionCommand(NewObject<UDeleteGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_Delete, false);
-	RegisterSelectionCommand(NewObject<UDisconnectGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_Disconnect, false);
-	RegisterSelectionCommand(NewObject<URetriangulateGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_Retriangulate, false);
+	RegisterSelectionCommand(NewObject<UDeleteGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_Delete, bAlwaysShowAllSelectionCommands);
+	RegisterSelectionCommand(NewObject<UDisconnectGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_Disconnect, bAlwaysShowAllSelectionCommands);
+	RegisterSelectionCommand(NewObject<URetriangulateGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_Retriangulate, bAlwaysShowAllSelectionCommands);
 	RegisterSelectionCommand(NewObject<UModifyGeometrySelectionCommand>(), ToolManagerCommands.BeginSelectionAction_SelectAll, true);
 	RegisterSelectionCommand(NewObject<UModifyGeometrySelectionCommand_Invert>(), ToolManagerCommands.BeginSelectionAction_Invert, true);
 	RegisterSelectionCommand(NewObject<UModifyGeometrySelectionCommand_ExpandToConnected>(), ToolManagerCommands.BeginSelectionAction_ExpandToConnected, true);
@@ -929,6 +1004,8 @@ void UModelingToolsEditorMode::Enter()
 		ModelingToolkit->InitializeAfterModeSetup();
 	}
 
+	EditorClosedEventHandle = GEditor->OnEditorClose().AddUObject(this, &UModelingToolsEditorMode::OnEditorClosed);
+
 	// Need to know about selection changes to (eg) clear mesh selections. 
 	// Listening to USelection::SelectionChangedEvent here instead of the underlying UTypedElementSelectionSet
 	// events because they do not fire at the right times, particular wrt undo/redo. 
@@ -936,18 +1013,17 @@ void UModelingToolsEditorMode::Enter()
 		[this](const UObject* Object)  { UpdateSelectionManagerOnEditorSelectionChange(); } );
 
 	// restore various settings
-	const UModelingToolsModeCustomizationSettings* ModelingEditorSettings = GetDefault<UModelingToolsModeCustomizationSettings>();
-	if (SelectionManager)
+	if (GetSelectionManager())
 	{
 		UE::Geometry::EGeometryElementType LastElementType = static_cast<UE::Geometry::EGeometryElementType>(ModelingEditorSettings->LastMeshSelectionElementType);
 		if (LastElementType == UE::Geometry::EGeometryElementType::Edge || LastElementType == UE::Geometry::EGeometryElementType::Face || LastElementType == UE::Geometry::EGeometryElementType::Vertex)
 		{
-			SelectionManager->SetSelectionElementType(LastElementType);
+			GetSelectionManager()->SetSelectionElementType(LastElementType);
 		}
 		UGeometrySelectionManager::EMeshTopologyMode LastTopologyMode = static_cast<UGeometrySelectionManager::EMeshTopologyMode>(ModelingEditorSettings->LastMeshSelectionTopologyMode);
 		if (LastTopologyMode == UGeometrySelectionManager::EMeshTopologyMode::None || LastTopologyMode == UGeometrySelectionManager::EMeshTopologyMode::Triangle || LastTopologyMode == UGeometrySelectionManager::EMeshTopologyMode::Polygroup)
 		{
-			SelectionManager->SetMeshTopologyMode(LastTopologyMode);
+			GetSelectionManager()->SetMeshTopologyMode(LastTopologyMode);
 		}
 
 		bEnableStaticMeshElementSelection = ModelingEditorSettings->bLastMeshSelectionStaticMeshToggle;
@@ -962,9 +1038,48 @@ void UModelingToolsEditorMode::Enter()
 		}
 	}
 
-
 	// initialize SelectionManager w/ active selection
 	UpdateSelectionManagerOnEditorSelectionChange(true);
+
+	// Selection system currently requires the concept of 'locking' for Static Meshes and Volumes. This is maintained
+	// by a global list that we do *not* want to clear between invocations of Modeling Mode (v annoying if frequently switching
+	// modes) but *do* want to clear when the user loads a new level. So, the first time this runs, register a delegate that listens
+	// for level editor map changes. This is a static member and will never be unregistered!
+	if (GlobalModelingWorldTeardownEventHandle.IsValid() == false)
+	{
+		FLevelEditorModule& LevelEditor = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+		GlobalModelingWorldTeardownEventHandle = LevelEditor.OnMapChanged().AddLambda([](UWorld* World, EMapChangeType ChangeType)
+		{
+			if (ChangeType == EMapChangeType::TearDownWorld)
+			{
+				FVolumeSelector::ResetUnlockedBrushComponents();
+				FStaticMeshSelector::ResetUnlockedStaticMeshAssets();
+			}
+		});
+	}
+
+	BlueprintPreCompileHandle = GEditor->OnBlueprintPreCompile().AddUObject(this, &UModelingToolsEditorMode::OnBlueprintPreCompile);
+
+	// Removing levels from the world can happen either by entering/exiting level instance edit mode, or
+	// by using the Levels panel. The problem is that any temporary actors we may have spawned in the 
+	// level for visualization, gizmos, etc. will be garbage collected. While EdModeInteractiveToolsContext
+	// should end the tools for us, we still have to take care of mode-level temporary actors.
+	FWorldDelegates::PreLevelRemovedFromWorld.AddWeakLambda(this, [this](ULevel*, UWorld*) {
+		// The ideal solution would be to just exit the mode, but we don't have a way to do that- we
+		// can only request a mode switch on next tick.Since this is too late to prevent a crash, we
+		// hand-clean up temporary actors here.
+		if (SelectionInteraction)
+		{
+			SelectionInteraction->Shutdown();
+		}
+
+		// Since we're doing this hand-cleanup above, we could actually register to OnCurrentLevelChanged and
+		// reinstate the temporary actors to stay in the mode. That seems a bit brittle, though, and there
+		// is still some hope that we can someday exit the mode instead of having to keep track of what is
+		// in danger of being garbage collected, so we might as well keep the workflow the same (i.e. exit
+		// mode).
+		GetModeManager()->ActivateDefaultMode();
+	});
 }
 
 void UModelingToolsEditorMode::RegisterUVEditor()
@@ -1032,10 +1147,17 @@ void UModelingToolsEditorMode::RegisterUVEditor()
 
 void UModelingToolsEditorMode::Exit()
 {
+	FWorldDelegates::PreLevelRemovedFromWorld.RemoveAll(this);
+	if (BlueprintPreCompileHandle.IsValid())
+	{
+		GEditor->OnBlueprintPreCompile().Remove(BlueprintPreCompileHandle);
+	}
+
 	// shutdown selection interaction
 	if (SelectionInteraction != nullptr)
 	{
 		SelectionInteraction->Shutdown();
+		GetInteractiveToolsContext()->InputRouter->ForceTerminateSource(SelectionInteraction);
 		GetInteractiveToolsContext()->InputRouter->DeregisterSource(SelectionInteraction);
 		SelectionInteraction = nullptr;
 	}
@@ -1085,7 +1207,9 @@ void UModelingToolsEditorMode::Exit()
 		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.MeshModelingMode.Exit"), Attributes);
 	}
 
+#if ENABLE_STYLUS_SUPPORT 
 	StylusStateTracker = nullptr;
+#endif
 
 	// TODO: cannot deregister currently because if another mode is also registering, its Enter()
 	// will be called before our Exit()
@@ -1105,6 +1229,7 @@ void UModelingToolsEditorMode::Exit()
 		ObjectCreationAPI->GetNewAssetPathNameCallback.Unbind();
 		ObjectCreationAPI->OnModelingMeshCreated.Remove(MeshCreatedEventHandle);
 		ObjectCreationAPI->OnModelingTextureCreated.Remove(TextureCreatedEventHandle);
+		ObjectCreationAPI->OnModelingMaterialCreated.Remove(MaterialCreatedEventHandle);
 		//UEditorModelingObjectsCreationAPI::Deregister(ToolsContext.Get());		// cannot do currently because of shared ToolsContext, revisit in future
 	}
 
@@ -1120,6 +1245,48 @@ void UModelingToolsEditorMode::Exit()
 	UEdMode::Exit();
 }
 
+void UModelingToolsEditorMode::OnEditorClosed()
+{
+	// On editor close, Exit() should run to clean up, but this happens very late.
+	// Close out any active Tools or Selections to mitigate any late-destruction issues.
+
+	if (SelectionManager != nullptr)
+	{
+		SelectionManager->ClearSelection();
+		SelectionManager->ClearActiveTargets();
+	}
+
+	if (GetModeManager() != nullptr 
+		&& GetInteractiveToolsContext() != nullptr 
+		&& GetToolManager() != nullptr 
+		&& GetToolManager()->HasAnyActiveTool())
+	{
+		GetToolManager()->DeactivateTool(EToolSide::Mouse, EToolShutdownType::Cancel);
+	}
+
+	if (EditorClosedEventHandle.IsValid() && GEditor)
+	{
+		GEditor->OnEditorClose().Remove(EditorClosedEventHandle);
+	}
+}
+
+
+void UModelingToolsEditorMode::OnBlueprintPreCompile(UBlueprint* Blueprint)
+{
+	// if a Blueprint is compiled, all old instances of it in a level go "stale" and new
+	// instances are created. Currently SelectionManager does not handle this replacement. 
+	// Seems quite hard to know if Blueprint is a parent of any active targets, so if
+	// a Blueprint is compiled we will just clear out any active selection & targets to avoid
+	// potential crashes. Note that this also breaks undo somewhat, as the FChanges seem to 
+	// still be registered against the 'old' instance pointer and hence are ignored/skipped.
+	if (SelectionManager != nullptr)
+	{
+		SelectionManager->ClearSelection();
+		SelectionManager->ClearActiveTargets();
+	}
+}
+
+
 void UModelingToolsEditorMode::OnToolsContextRender(IToolsContextRenderAPI* RenderAPI)
 {
 	if (SelectionInteraction)
@@ -1131,10 +1298,10 @@ void UModelingToolsEditorMode::OnToolsContextRender(IToolsContextRenderAPI* Rend
 		SelectionInteraction->ApplyPendingTransformInteractions();
 	}
 
-	if (SelectionManager)
+	if (GetSelectionManager())
 	{
 		// currently relying on debug rendering to visualize selections
-		SelectionManager->DebugRender(RenderAPI);
+		GetSelectionManager()->DebugRender(RenderAPI);
 	}
 }
 
@@ -1165,6 +1332,12 @@ bool UModelingToolsEditorMode::ShouldToolStartBeAllowed(const FString& ToolIdent
 
 bool UModelingToolsEditorMode::GetGeometrySelectionChangesAllowed() const
 {
+	// disable selection system if it is...disabled
+	if (GetMeshElementSelectionSystemEnabled() == false)
+	{
+		return false;
+	}
+
 	// disable selection system if we are in a Tool
 	if ( GetToolManager() && GetToolManager()->HasAnyActiveTool() )
 	{
@@ -1190,10 +1363,45 @@ bool UModelingToolsEditorMode::TestForEditorGizmoHit(const FInputDeviceRay& Clic
 }
 
 
+bool UModelingToolsEditorMode::GetMeshElementSelectionSystemEnabled() const
+{
+	return bSelectionSystemEnabled;
+}
+
+void UModelingToolsEditorMode::NotifySelectionSystemEnabledStateModified()
+{
+	UModelingToolsEditorModeSettings* Settings = GetMutableDefault<UModelingToolsEditorModeSettings>();
+	bool bNewState = Settings->bEnablePersistentSelections;
+	if (bNewState != bSelectionSystemEnabled)
+	{
+		if (bNewState == true)
+		{
+			UpdateSelectionManagerOnEditorSelectionChange(true);		// do like a mode enter so that we get an undoable active-target state
+		}
+		else
+		{
+			if (SelectionManager && (SelectionManager->HasSelection() || SelectionManager->HasActiveTargets()))
+			{
+				GetToolManager()->GetContextTransactionsAPI()->BeginUndoTransaction(LOCTEXT("InitializeSelection", "Initialize Selection"));
+
+				SelectionManager->SynchronizeActiveTargets(TArray<FGeometryIdentifier>(),
+					[this]() { SelectionManager->ClearSelection(); });
+
+				GetToolManager()->GetContextTransactionsAPI()->EndUndoTransaction();
+			}
+		}
+
+		// update things
+
+		bSelectionSystemEnabled = bNewState;
+		GetInteractiveToolsContext()->PostInvalidation();
+	}
+}
+
 
 void UModelingToolsEditorMode::UpdateSelectionManagerOnEditorSelectionChange(bool bEnteringMode)
 {
-	if (!SelectionManager) return;
+	if (GetMeshElementSelectionSystemEnabled() == false || SelectionManager == nullptr) return;
 
 	// if we are in undo/redo, ignore selection change notifications, the required
 	// changes are handled via FChanges that SelectionManager has emitted
@@ -1202,31 +1410,71 @@ void UModelingToolsEditorMode::UpdateSelectionManagerOnEditorSelectionChange(boo
 		return;
 	}
 
-	// figure out what is selected and then extract valid selection identifiers if there are any
-	TArray<AActor*> SelectedActors;
-	GEditor->GetSelectedActors()->GetSelectedObjects<AActor>(SelectedActors); 
+	// Find selected Component types that are currently supported. Currently determining this via explicit casting,
+	// probably it should be handled by the Selector Factories registered in UModelingToolsEditorMode::Enter(),
+	// possibly via the SelectionManager. 
 
-	// this should probably not be the place we make this kind of decision...but for now it will do
-	TArray<FGeometryIdentifier> ValidIdentifiers;
-	for ( AActor* Actor : SelectedActors)
+	TArray<UDynamicMeshComponent*> SelectedDynamicMeshComponents;
+	TArray<UStaticMeshComponent*> SelectedStaticMeshComponents;
+	TArray<UBrushComponent*> SelectedBrushComponents;
+
+	if (GEditor->GetSelectedComponents()->Num() > 0)
 	{
-		if (Cast<ADynamicMeshActor>(Actor) != nullptr)
+		// if we have supported Components selected on a multi-Component Actor, they will be
+		// returned via these functions
+		GEditor->GetSelectedComponents()->GetSelectedObjects<UDynamicMeshComponent>(SelectedDynamicMeshComponents);
+		GEditor->GetSelectedComponents()->GetSelectedObjects<UStaticMeshComponent>(SelectedStaticMeshComponents);
+		GEditor->GetSelectedComponents()->GetSelectedObjects<UBrushComponent>(SelectedBrushComponents);
+	}
+	// Conceivably this could be an 'else', however currently in the Editor when a Volume Actor is selected,
+	// GetSelectedComponents()->Num() > 0 but no BrushComponent will be found (it appears to be some kind of TypedElement wrapper).
+	// However note that this might result in some unexpected Meshes being Selectable on multi-Component Actors
+	if (SelectedDynamicMeshComponents.Num() == 0 && SelectedStaticMeshComponents.Num() == 0 && SelectedBrushComponents.Num() == 0)
+	{
+		// assume Actor selection, find all valid Components on the selected Actors
+		TArray<AActor*> SelectedActors;
+		GEditor->GetSelectedActors()->GetSelectedObjects<AActor>(SelectedActors);
+		for (AActor* Actor : SelectedActors)
 		{
-			ValidIdentifiers.Add( FGeometryIdentifier::PrimitiveComponent(
-				Cast<ADynamicMeshActor>(Actor)->GetDynamicMeshComponent(), FGeometryIdentifier::EObjectType::DynamicMeshComponent) );
-		}
-		else if (bEnableVolumeElementSelection && Cast<AVolume>(Actor) != nullptr)
-		{
-			ValidIdentifiers.Add( FGeometryIdentifier::PrimitiveComponent(
-				Cast<AVolume>(Actor)->GetBrushComponent(), FGeometryIdentifier::EObjectType::BrushComponent) );
-		}
-		else if (bEnableStaticMeshElementSelection && Cast<AStaticMeshActor>(Actor) != nullptr)
-		{
-			// StaticMeshComponent can exist under any Actor, should not rely on Actor selection...
-			ValidIdentifiers.Add( FGeometryIdentifier::PrimitiveComponent(
-				Cast<AStaticMeshActor>(Actor)->GetStaticMeshComponent(), FGeometryIdentifier::EObjectType::StaticMeshComponent) );
+			Actor->ForEachComponent(false, [&](UActorComponent* Component) 
+			{
+				if (UDynamicMeshComponent* DynamicMeshComponent = Cast<UDynamicMeshComponent>(Component))
+				{
+					SelectedDynamicMeshComponents.Add(DynamicMeshComponent);
+				}
+				if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Component))
+				{
+					SelectedStaticMeshComponents.Add(StaticMeshComponent);
+				}
+				if (UBrushComponent* BrushComponent = Cast<UBrushComponent>(Component))
+				{
+					SelectedBrushComponents.Add(BrushComponent);
+				}
+			});
 		}
 	}
+
+	// convert selected Component types into selection Identifiers
+	TArray<FGeometryIdentifier> ValidIdentifiers;
+	for (UDynamicMeshComponent* DynamicMeshComponent : SelectedDynamicMeshComponents)
+	{
+		ValidIdentifiers.Add(FGeometryIdentifier::PrimitiveComponent(DynamicMeshComponent, FGeometryIdentifier::EObjectType::DynamicMeshComponent));
+	}
+	if (bEnableStaticMeshElementSelection)
+	{
+		for (UStaticMeshComponent* StaticMeshComponent : SelectedStaticMeshComponents)
+		{
+			ValidIdentifiers.Add(FGeometryIdentifier::PrimitiveComponent(StaticMeshComponent, FGeometryIdentifier::EObjectType::StaticMeshComponent));
+		}
+	}
+	if (bEnableVolumeElementSelection)
+	{
+		for (UBrushComponent* BrushComponent : SelectedBrushComponents)
+		{
+			ValidIdentifiers.Add(FGeometryIdentifier::PrimitiveComponent(BrushComponent, FGeometryIdentifier::EObjectType::BrushComponent));
+		}
+	}
+
 
 	// This is gross. If we are entering the Mode, we need to update the SelectionManager w/ the current state. However this
 	// update needs to be undoable. Since we are not part of whatever Transaction was involved in changing modes, we are going
@@ -1267,7 +1515,10 @@ bool UModelingToolsEditorMode::BoxSelect(FBox& InBox, bool InSelect)
 
 bool UModelingToolsEditorMode::FrustumSelect(const FConvexVolume& InFrustum, FEditorViewportClient* InViewportClient, bool InSelect)
 {
-	if (SelectionManager && SelectionManager->HasActiveTargets())
+	if (GetMeshElementSelectionSystemEnabled()
+		&& SelectionManager
+		&& SelectionManager->HasActiveTargets() 
+		&& SelectionManager->GetMeshTopologyMode() != UGeometrySelectionManager::EMeshTopologyMode::None)
 	{
 		UE::Geometry::FGeometrySelectionUpdateConfig UpdateConfig;
 		UpdateConfig.ChangeType = UE::Geometry::EGeometrySelectionChangeType::Replace;
@@ -1335,6 +1586,10 @@ void UModelingToolsEditorMode::OnToolEnded(UInteractiveToolManager* Manager, UIn
 
 	FModelingToolActionCommands::UpdateToolCommandBinding(Tool, Toolkit->GetToolkitCommands(), true);
 	
+	// We may require a gizmo location update despite not having changed the selection (transform tool,
+	// edit pivot, etc).
+	GUnrealEd->UpdatePivotLocationForSelection();
+
 	if( FEngineAnalytics::IsAvailable() )
 	{
 		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.MeshModelingMode.ToolEnded"),
@@ -1448,6 +1703,20 @@ void UModelingToolsEditorMode::ModelingModeShortcutRequested(EModelingModeAction
 	if (Command == EModelingModeActionCommands::FocusViewToCursor)
 	{
 		FocusCameraAtCursorHotkey();
+	}
+	else if (Command == EModelingModeActionCommands::ToggleSelectionLockState)
+	{
+		if (SelectionManager)
+		{
+			if (SelectionManager->GetAnyCurrentTargetsLocked())
+			{
+				SelectionManager->SetCurrentTargetsLockState(false);
+			}
+			else
+			{
+				SelectionManager->SetCurrentTargetsLockState(true);
+			}
+		}
 	}
 }
 

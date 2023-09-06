@@ -2,6 +2,8 @@
 
 #include "RenderGraphPrivate.h"
 #include "DataDrivenShaderPlatformInfo.h"
+#include "Misc/CommandLine.h"
+#include "RHICommandList.h"
 
 #if RDG_ENABLE_DEBUG
 
@@ -37,16 +39,9 @@ int32 GRDGDebugFlushGPU = 0;
 FAutoConsoleVariableRef CVarRDGDebugFlushGPU(
 	TEXT("r.RDG.Debug.FlushGPU"),
 	GRDGDebugFlushGPU,
-	TEXT("Enables flushing the GPU after every pass. Disables async compute when set (r.RDG.AsyncCompute=0).\n")
+	TEXT("Enables flushing the GPU after every pass. Disables async compute (r.RDG.AsyncCompute=0) and parallel execute (r.RDG.ParallelExecute=0) when set.\n")
 	TEXT(" 0: disabled (default);\n")
-	TEXT(" 1: enabled (default)."),
-	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable*)
-	{
-		if (GRDGDebugFlushGPU)
-		{
-			GRDGAsyncCompute = 0;
-		}
-	}),
+	TEXT(" 1: enabled."),
 	ECVF_RenderThreadSafe);
 
 int32 GRDGDebugExtendResourceLifetimes = 0;
@@ -278,6 +273,11 @@ FAutoConsoleVariableSink CVarRDGAsyncComputeSink(FConsoleCommandDelegate::Create
 {
 	GRDGAsyncCompute = CVarRDGAsyncCompute.GetValueOnGameThread();
 
+	if (GRDGDebugFlushGPU)
+	{
+		GRDGAsyncCompute = 0;
+	}
+
 	if (!IsAsyncComputeSupported())
 	{
 		GRDGAsyncCompute = 0;
@@ -365,7 +365,7 @@ FAutoConsoleVariableRef CVarRDGParallelExecute(
 				GRDGParallelExecutePassMax = 1;
 			}
 
-			if (GRDGParallelExecutePassMin < GRDGParallelExecutePassMax)
+			if (GRDGParallelExecutePassMax < GRDGParallelExecutePassMin)
 			{
 				GRDGParallelExecutePassMin = GRDGParallelExecutePassMax;
 			}
@@ -631,8 +631,11 @@ bool IsParallelExecuteEnabled()
 		&& !GRHICommandList.Bypass()
 		&& !IsImmediateMode()
 		&& !GRDGDebug
+		&& !GRDGDebugFlushGPU
 		&& !GRDGTransitionLog
 		&& !IsMobilePlatform(GMaxRHIShaderPlatform)
+		&& !IsOpenGLPlatform(GMaxRHIShaderPlatform)
+		&& !IsVulkanMobileSM5Platform(GMaxRHIShaderPlatform)
 		&& GRHISupportsMultithreadedShaderCreation
 #if WITH_DUMPGPU
 		&& !IsDumpingRDGResources()
@@ -650,6 +653,8 @@ bool IsParallelSetupEnabled()
 		&& !GRDGDebug
 		&& !GRDGTransitionLog
 		&& !IsMobilePlatform(GMaxRHIShaderPlatform)
+		&& !IsOpenGLPlatform(GMaxRHIShaderPlatform)
+		&& !IsVulkanMobileSM5Platform(GMaxRHIShaderPlatform)
 		&& GRHISupportsMultithreadedShaderCreation
 #if WITH_DUMPGPU
 		&& !IsDumpingRDGResources()

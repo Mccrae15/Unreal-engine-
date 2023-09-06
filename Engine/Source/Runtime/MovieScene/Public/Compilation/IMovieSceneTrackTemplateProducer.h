@@ -40,13 +40,7 @@ struct FMovieSceneTrackCompilerArgs
 
 	struct FMovieSceneSequenceTemplateStore {};
 
-	UE_DEPRECATED(4.19, "Template store is no longer supplied as part of track compilation")
-	FMovieSceneSequenceTemplateStore SubSequenceStore;
-
 	struct FMovieSceneTrackCompilationParams { 	bool bForEditorPreview, bDuringBlueprintCompile; };
-
-	UE_DEPRECATED(4.19, "Template store is no longer supplied as part of track compilation")
-	FMovieSceneTrackCompilationParams Params;
 };
 
 
@@ -61,14 +55,14 @@ enum class EMovieSceneCompileResult : uint8
 	Unimplemented
 };
 
-UINTERFACE()
-class MOVIESCENE_API UMovieSceneTrackTemplateProducer : public UInterface
+UINTERFACE(MinimalAPI)
+class UMovieSceneTrackTemplateProducer : public UInterface
 {
 public:
 	GENERATED_BODY()
 };
 
-class MOVIESCENE_API IMovieSceneTrackTemplateProducer
+class IMovieSceneTrackTemplateProducer
 {
 public:
 	GENERATED_BODY()
@@ -83,12 +77,12 @@ public:
 	 *
 	 * @param Args 			Compilation arguments
 	 */
-	virtual void GenerateTemplate(const FMovieSceneTrackCompilerArgs& Args) const;
+	MOVIESCENE_API virtual void GenerateTemplate(const FMovieSceneTrackCompilerArgs& Args) const;
 
 	/**
 	 * Get a raw compiled copy of this track with no additional shared tracks or compiler parameters
 	 */
-	FMovieSceneEvaluationTrack GenerateTrackTemplate(UMovieSceneTrack* SourceTrack) const;
+	MOVIESCENE_API FMovieSceneEvaluationTrack GenerateTrackTemplate(UMovieSceneTrack* SourceTrack) const;
 
 
 protected:
@@ -127,6 +121,6 @@ protected:
 	 * @param Args 			Compilation arguments
 	 * @return Compilation result
 	 */
-	EMovieSceneCompileResult Compile(FMovieSceneEvaluationTrack& Track, const FMovieSceneTrackCompilerArgs& Args) const;
+	MOVIESCENE_API EMovieSceneCompileResult Compile(FMovieSceneEvaluationTrack& Track, const FMovieSceneTrackCompilerArgs& Args) const;
 
 };

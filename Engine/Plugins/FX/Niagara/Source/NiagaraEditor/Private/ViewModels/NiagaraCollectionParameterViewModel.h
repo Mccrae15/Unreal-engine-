@@ -18,15 +18,18 @@ public:
 	void Reset();
 
 	//~ INiagaraParameterViewmodel interface.
+	virtual FNiagaraVariable GetVariable() const override;
 	virtual FName GetName() const override;
-	virtual void NameTextComitted(const FText& Name, ETextCommit::Type CommitInfo) override;
+	virtual void NameTextCommitted(const FText& Name, ETextCommit::Type CommitInfo) override;
 	virtual bool VerifyNodeNameTextChanged(const FText& NewText, FText& OutErrorMessage) override;
 	virtual FText GetTypeDisplayName() const override;
-	virtual TSharedPtr<FNiagaraTypeDefinition> GetType() const override;
+	virtual FNiagaraTypeDefinition GetType() const override;
 	virtual void SelectedTypeChanged(TSharedPtr<FNiagaraTypeDefinition> Item, ESelectInfo::Type SelectionType) override;
 	virtual EDefaultValueType GetDefaultValueType() override;
 	virtual TSharedRef<FStructOnScope> GetDefaultValueStruct() override;
-	virtual UObject* GetDefaultValueObject() override;
+	virtual UNiagaraDataInterface* GetDefaultValueDataInterface() override;
+	virtual UObject* GetDefaultValueObjectAsset() override;
+	virtual void SetDefaultValueObjectAsset(UObject*) override;
 	virtual void NotifyDefaultValuePropertyChanged(const FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void NotifyBeginDefaultValueChange() override;
 	virtual void NotifyEndDefaultValueChange() override;
@@ -62,7 +65,6 @@ private:
 	FOnNameChanged OnNameChangedDelegate;
 
 	UNiagaraParameterCollectionInstance* CollectionInst;
-	//FNiagaraParameterDirectBinding ParameterBinding;
 	FNiagaraVariable Parameter;
 };
 

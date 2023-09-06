@@ -10,7 +10,7 @@
 
 namespace Chaos
 {
-class CHAOS_API FImplicitObject; //needed for legacy serializer
+class FImplicitObject; //needed for legacy serializer
 
 
 #if CHAOS_MEMORY_TRACKING
@@ -68,7 +68,7 @@ class FChaosArchive;
 
 
 
-class CHAOS_API FChaosArchiveContext
+class FChaosArchiveContext
 #if CHAOS_MEMORY_TRACKING
 	: public FChaosArchiveMemoryTrackingContext
 #endif
@@ -80,18 +80,9 @@ public:
 	int32 TagCount;
 
 
-	FChaosArchiveContext()
-		: TagCount(0)
-	{
-	}
+	CHAOS_API FChaosArchiveContext();
 
-	~FChaosArchiveContext()
-	{
-		for (auto Itr : ObjToSharedPtrHolder)
-		{
-			delete Itr.Value;
-		}
-	}
+	CHAOS_API ~FChaosArchiveContext();
 
 	template <typename T, ESPMode Mode>
 	TSharedPtr<T, Mode>& ToSharedPointerHelper(TSerializablePtr<T>& Obj)
@@ -109,6 +100,15 @@ public:
 			ObjToSharedPtrHolder.Add((void*)RawPtr, NewHolder);
 			return NewSP;
 		}
+	}
+
+	int32 GetObjectTag(const void* ObjectPtr) const
+	{
+		if (const int32* SerializedObjectPtrTag = ObjToTag.Find(ObjectPtr))
+		{
+			return *SerializedObjectPtrTag;
+		}
+		return INDEX_NONE;
 	}
 
 private:
@@ -133,7 +133,7 @@ private:
 
 };
 
-class CHAOS_API FChaosArchive : public FArchiveProxy
+class FChaosArchive : public FArchiveProxy
 {
 public:
 	FChaosArchive(FArchive& ArIn)
@@ -158,10 +158,22 @@ public:
 			int32 Tag;
 			InnerArchive << Tag;
 
+			if (Tag < 0)
+			{
+				InnerArchive.SetCriticalError();
+				return;
+			}
+
 			const int32 SlotsNeeded = Tag + 1 - Context->TagToObject.Num();
 			if (SlotsNeeded > 0)
 			{
 				Context->TagToObject.AddZeroed(SlotsNeeded);
+			}
+
+			if (!Context->TagToObject.IsValidIndex(Tag))
+			{
+				InnerArchive.SetCriticalError();
+				return;
 			}
 
 			if (Context->TagToObject[Tag])
@@ -172,6 +184,7 @@ public:
 			{
 				StaticSerialize(Obj);
 				Context->TagToObject[Tag] = (void*)Obj.Get();
+				Context->ObjToTag.Add((void*)Obj.Get(), Tag);
 			}
 		}
 		else if (InnerArchive.IsSaving() || InnerArchive.IsCountingMemory())
@@ -268,7 +281,7 @@ private:
 		check(false);
 	}
 
-	void SerializeLegacy(TUniquePtr<FImplicitObject>& Obj);
+	CHAOS_API void SerializeLegacy(TUniquePtr<FImplicitObject>& Obj);
 
 	template <typename T>
 	void StaticSerialize(TSerializablePtr<T>& Serializable)
@@ -296,7 +309,7 @@ private:
 #endif
 };
 
-class CHAOS_API FChaosArchiveScopedMemory
+class FChaosArchiveScopedMemory
 {
 public:
 	FChaosArchiveScopedMemory(FChaosArchive& ArIn, const FName& SectionName, const bool bAbsorbChildren = true)
@@ -380,7 +393,7 @@ struct CSerializablePtr
 };
 
 template <typename T>
-constexpr typename TEnableIf<TModels<CSerializablePtr, T>::Value, bool>::Type IsSerializablePtr()
+constexpr typename TEnableIf<TModels_V<CSerializablePtr, T>, bool>::Type IsSerializablePtr()
 {
 	return true;
 }

@@ -162,25 +162,25 @@ export enum EventSeverity {
 
 export enum AclActions {
 
-	// No actions allowed	
+	// No actions allowed
 	None = "None",
 
-	// Reading to the object	
+	// Reading to the object
 	Read = "Read",
 
-	// Modifying the object	
+	// Modifying the object
 	Write = "Write",
 
-	// Creating new objects	
+	// Creating new objects
 	Create = "Create",
 
-	// Deleting the object	
+	// Deleting the object
 	Delete = "Delete",
 
-	// Executing the object	
+	// Executing the object
 	Execute = "Execute",
 
-	// Change permissions on the object	
+	// Change permissions on the object
 	ChangePermissions = "ChangePermissions"
 
 }
@@ -762,7 +762,7 @@ export type LeaseUtilizationSettings = {
 export type JobQueueSettings = {
 
 	/// Factor translating queue size to additional agents to grow the pool with
-	/// The result is always rounded up to nearest integer. 
+	/// The result is always rounded up to nearest integer.
 	/// Example: if there are 20 jobs in queue, a factor 0.25 will result in 5 new agents being added (20 * 0.25)
 	scaleOutFactor: number;
 
@@ -802,7 +802,7 @@ export type GetPoolResponse = {
 	/// Settings for lease utilization pool sizing strategy (if used)
 	leaseUtilizationSettings?: LeaseUtilizationSettings;
 
-	/// Settings for job queue pool sizing strategy (if used) 
+	/// Settings for job queue pool sizing strategy (if used)
 	jobQueueSettings?: JobQueueSettings;
 
 	/// The minimum nunmber of agents to retain in this pool
@@ -1113,6 +1113,9 @@ export type GetJobResponse = {
 	/** Whether to update issues based on the outcome of this job */
 	updateIssues?: boolean;
 
+	/** Whether to use the V2 artifacts endpoint */
+	useArtifactsV2?: boolean;
+
 	/**  Custom permissions for this object */
 	acl?: GetAclResponse;
 
@@ -1180,7 +1183,7 @@ export type GetStepResponse = {
 	startTime?: Date | string;
 
 	/**Time at which the run finished (UTC) */
-	finishTime: Date | string;
+	finishTime?: Date | string;
 
 	/** List of reports */
 	reports?: GetReportResponse[];
@@ -1269,6 +1272,9 @@ export type GetBatchResponse = {
 	/**The priority of this batch */
 	weightedPriority: number;
 
+	/**Time at which the group became ready (UTC) */
+	readyTime?: Date | string;
+
 	/**Time at which the group started (UTC). */
 	startTime?: Date | string;
 
@@ -1309,6 +1315,8 @@ export interface GetJobStepRefResponse {
 	/**Time at which the step finished. */
 	finishTime?: Date | string;
 
+	/** Issue ids affecting this step ref */
+	issueIds?: number[];
 }
 
 export interface GetJobStepTraceResponse {
@@ -1414,6 +1422,60 @@ export type GetArtifactZipRequest = {
 	artifactIds?: string[];
 }
 
+
+// Artifacts V2
+
+export type ArtifactContextType = "step-trace" | "step-output" | "step-saved";
+
+/// Request to create a zip file with artifact data
+export type CreateZipRequest = {
+	/// Filter lines for the zip. Uses standard <see cref="FileFilter"/> syntax.
+	filter: string[];
+}
+
+
+/** Describes an artifact */
+export type GetArtifactResponseV2 = {
+
+	id: string;
+
+	type: ArtifactContextType;
+
+	keys: string[]
+
+}
+
+/** Result of an artifact search */
+export type FindArtifactsResponse = {
+	/** List of artifacts matching the search criteria*/
+	artifacts: GetArtifactResponseV2[];
+}
+
+/** Describes a file within an artifact */
+export type GetArtifactFileEntryResponse = {
+
+	name: string;
+	length: number;
+	hash: string;
+}
+
+/** Describes a directory within an artifact */
+export type GetArtifactDirectoryResponse = {
+
+	/** Names of sub-directories */
+	directories?: GetArtifactDirectoryEntryResponse[];
+
+	/** Files within the directory */
+	files?: GetArtifactFileEntryResponse[];
+}
+
+
+/** Describes a directory within an artifact */
+export type GetArtifactDirectoryEntryResponse = GetArtifactDirectoryResponse & {
+	name: string;
+	length: number;
+	hash: string;
+}
 
 /**Parameters required to update a log file */
 export type UpdateLogFileRequest = {
@@ -1698,6 +1760,15 @@ export type GetSchedulePatternResponse = {
 
 }
 
+/**Gate allowing a schedule to trigger.*/
+export type ScheduleGateConfig = {
+	/**The template containing the dependency*/
+	templateId: string;
+
+	/**Target to wait for*/
+	target: string;
+}
+
 /**Response describing a schedule */
 export type GetScheduleResponse = {
 
@@ -1709,6 +1780,9 @@ export type GetScheduleResponse = {
 
 	/**Maximum number of changes the schedule can fall behind head revision. If greater than zero, builds will be triggered for every submitted changelist until the backlog is this size. */
 	maxChanges: number;
+
+	/** Gate for this schedule to trigger */
+	gate?: ScheduleGateConfig;
 
 	/**The template job to execute */
 	templateId: string;
@@ -1730,6 +1804,8 @@ export type GetScheduleResponse = {
 
 	/** List of active jobs */
 	activeJobs: string[];
+
+
 
 }
 
@@ -1932,19 +2008,19 @@ export type ChangeQueryConfig = {
 	/// Name of this query, for display on the dashboard.
 	name?: string;
 
-	/// Condition to evaluate before deciding to use this query. May query tags in a preflight.	
+	/// Condition to evaluate before deciding to use this query. May query tags in a preflight.
 	condition?: any;
 
-	/// The template id to query	
+	/// The template id to query
 	templateId?: string;
 
-	/// The target to query	
+	/// The target to query
 	target?: string;
 
-	/// Whether to match a job that produced warnings	
+	/// Whether to match a job that produced warnings
 	outcomes?: JobStepOutcome[];
 
-	/// Finds the last commit with this tag	
+	/// Finds the last commit with this tag
 	commitTag?: any;
 }
 
@@ -2853,6 +2929,9 @@ export type GetIssueResponse = {
 	/**Time at which the issue was retrieved */
 	retrievedAt: Date | string;
 
+	/**Time at which the issue was retrieved */
+	lastSeenAt: Date | string;
+
 	/**The associated project for the issue */
 	project?: string;
 
@@ -2915,6 +2994,8 @@ export type GetIssueResponse = {
 	/** User info for who force closed the issue */
 	forceClosedByUserInfo?: GetThinUserInfoResponse;
 
+	/** Workflow thread url (Slack, etc) */
+	workflowThreadUrl?: string;
 }
 
 /**Request an issue to be updated */
@@ -3031,6 +3112,56 @@ export type UpdateDashboardSettings = {
 
 }
 
+/** Settings for whether various features should be enabled on the dashboard */
+export type GetDashboardFeaturesResponse = {
+
+	/** Whether the notice editor should be listed in the server menu */
+	showNoticeEditor?: boolean;
+
+	/** Whether controls for modifying pools should be shown */
+	showPoolEditor?: boolean;
+
+	/** Whether the remote desktop button should be shown on the agent modal */
+	showRemoteDesktop?: boolean;
+
+	/** Show the landing page by default */
+	showLandingPage?: boolean;
+
+	/** Enable CI functionality */
+	showCI?: boolean;
+
+	/** Whether to show functionality related to agents, pools, and utilization on the dashboard. */
+	showAgents?: boolean;
+
+	/** Show the Perforce server option on the server menu */
+	showPerforceServers?: boolean;
+
+	/** Show the device manager on the server menu */
+	showDeviceManager?: boolean;
+
+	/** Show automated tests on the server menu */
+	showTests?: boolean;
+}
+
+/// Job template settings for the current user
+export type GetJobTemplateSettingsResponse = {
+
+	/// The stream the job was run in	
+	streamId: string;
+
+	/// The template id of the job	
+	templateId: string;
+
+	/// The hash of the template definition	
+	templateHash: string;
+
+	/// The arguments defined when creating the job	
+	arguments: string[];
+
+	/// The last update time of the job template	
+	updateTimeUtc: Date | string;
+
+}
 
 /**  Response describing the current user */
 export type GetUserResponse = {
@@ -3064,6 +3195,14 @@ export type GetUserResponse = {
 
 	/**  Settings for the dashboard */
 	dashboardSettings?: DashboardSettings;
+
+	/// <summary>
+	/// Settings for whether various dashboard features should be shown for the current user
+	/// </summary>
+	dashboardFeatures?: GetDashboardFeaturesResponse;
+
+	// array of user job templates settings
+	jobTemplateSettings?: GetJobTemplateSettingsResponse[];
 
 	/** List of pinned job ids */
 	pinnedJobIds?: string[];
@@ -3525,7 +3664,7 @@ export type ProjectConfigRef = {
 	/// Unique id for the project
 	id: string;
 
-	/// Config path for the project		
+	/// Config path for the project
 	path: string;
 }
 
@@ -3620,7 +3759,7 @@ export type PerforceCredentials = {
 }
 
 
-/// Information about a cluster of Perforce servers. 
+/// Information about a cluster of Perforce servers.
 export type PerforceCluster = {
 
 	/// The default cluster name
@@ -3937,6 +4076,9 @@ export type GetServerInfoResponse = {
 	/// Server version info
 	serverVersion: string;
 
+	/// The current agent version
+	agentVersion?: string;
+
 	/// The operating system server is hosted on
 	osDescription: string;
 
@@ -3959,7 +4101,7 @@ export type FindIssueSpanResponse = {
 	/// Workflow for this span
 	workflowId?: string;
 
-	/// The previous build 
+	/// The previous build
 	lastSuccess?: GetIssueStepResponse;
 
 	/// The following successful build
@@ -4035,6 +4177,8 @@ export type FindIssueResponse = {
 	/** Workflows for which this issue is open */
 	openWorkflows: string[];
 
+	/** Workflow thread url (Slack, etc) */
+	workflowThreadUrl?: string;
 }
 
 export type GetAgentSoftwareChannelResponse = {
@@ -4113,7 +4257,7 @@ export type CreateExternalIssueResponse = {
 /// External issue project information
 export type GetExternalIssueProjectResponse = {
 
-	/// The project key	
+	/// The project key
 	projectKey: string;
 
 	/// The name of the project
@@ -4253,31 +4397,31 @@ export type GetDevicePoolTelemetryResponse = {
 /// Device telemetry respponse
 export type GetTelemetryInfoResponse = {
 
-	/// The UTC time the telemetry data was created	
+	/// The UTC time the telemetry data was created
 	createTimeUtc: Date | string;
 
-	/// The stream id which utilized device	
+	/// The stream id which utilized device
 	streamId?: string;
 
-	/// The job id which utilized device	
+	/// The job id which utilized device
 	jobId?: string;
 
-	/// The job's step id	
+	/// The job's step id
 	stepId?: string;
 
-	/// The job name which utilized device	
+	/// The job name which utilized device
 	jobName?: string;
 
 	/// The job's step name
 	stepName?: string;
 
-	/// If this telemetry has a reservation, the start time of the reservation	
+	/// If this telemetry has a reservation, the start time of the reservation
 	reservationStartUtc?: Date | string;
 
 	/// If this telemetry has a reservation, the finish time of the reservation
 	reservationFinishUtc?: Date | string;
 
-	/// If this telemetry marks a detected device issue, the time of the issue	
+	/// If this telemetry marks a detected device issue, the time of the issue
 	problemTimeUtc?: Date | string;
 }
 
@@ -4288,32 +4432,32 @@ export type GetDeviceTelemetryResponse = {
 	/// The device id for the telemetry data
 	deviceId: string;
 
-	/// Individual telemetry data points	
+	/// Individual telemetry data points
 	telemetry: GetTelemetryInfoResponse[];
 
 }
 
 // Test Data ----------------------------
 
-/// A test emvironment running in a stream	
+/// A test emvironment running in a stream
 export type GetTestMetaResponse = {
 
 	/// Meta unique id for environment
 	id: string;
 
-	/// The platforms in the environment		
+	/// The platforms in the environment
 	platforms: string[];
 
-	/// The build configurations being tested		
+	/// The build configurations being tested
 	configurations: string[];
 
-	/// The build targets being tested		
+	/// The build targets being tested
 	buildTargets: string[];
 
-	/// The test project name		
+	/// The test project name
 	projectName: string;
 
-	/// The rendering hardware interface being used with the test		
+	/// The rendering hardware interface being used with the test
 	rhi: string;
 
 	/// The test variation identifier (or "default")
@@ -4328,10 +4472,10 @@ export type GetTestResponse = {
 	/// The id of the test
 	id: string;
 
-	/// The name of the test 		
+	/// The name of the test
 	name: string;
 
-	/// The display name of the test, if any 		
+	/// The display name of the test, if any
 	displayName?: string;
 
 	/// The suite the test belongs to, if any
@@ -4348,13 +4492,13 @@ export type GetTestsRequest = {
 }
 
 
-/// A test suite that runs in a stream, contain subtests	
+/// A test suite that runs in a stream, contain subtests
 export type GetTestSuiteResponse = {
 
 	/// The id of the test suite
 	id: string;
 
-	/// The name of the test suite		
+	/// The name of the test suite
 	name: string;
 
 	/// The environments the suite runs in
@@ -4364,16 +4508,16 @@ export type GetTestSuiteResponse = {
 /// Describes tests running in a stream
 export type GetTestStreamResponse = {
 
-	/// The stream id	
+	/// The stream id
 	streamId: string;
 
-	/// Individual tests which run in the stream	
+	/// Individual tests which run in the stream
 	tests: GetTestResponse[];
 
-	/// Test suites that run in the stream	
+	/// Test suites that run in the stream
 	testSuites: GetTestSuiteResponse[];
 
-	/// Test suites that run in the stream	
+	/// Test suites that run in the stream
 	testMetadata: GetTestMetaResponse[];
 }
 
@@ -4386,17 +4530,19 @@ export enum TestOutcome {
 	/// The test was skipped
 	Skipped = "Skipped",
 	/// The test had an unspecified result
-	Unspecified = "Unspecified"
+	Unspecified = "Unspecified",
+	// Warnings
+	Warning = "Warning"
 }
 
 
 /// Suite test data
 export type GetSuiteTestDataResponse = {
 
-	/// The test id	
+	/// The test id
 	testId: string;
 
-	/// The ourcome of the suite test	
+	/// The ourcome of the suite test
 	outcome: TestOutcome;
 
 	/// How long the suite test ran	 (TimeSpan)
@@ -4404,18 +4550,24 @@ export type GetSuiteTestDataResponse = {
 
 	/// Test UID for looking up in test details
 	uid: string;
+
+	// The number of test warnings generated
+	warningCount?: number;
+
+	// The number of test warnings generated
+	errorCount?: number;
 }
 
 /// Test details
 export type GetTestDataDetailsResponse = {
 
-	/// The corresponding test ref	
+	/// The corresponding test ref
 	id: string;
 
-	/// The test documents for this ref	
+	/// The test documents for this ref
 	testDataIds: string[];
 
-	/// Suite test data		
+	/// Suite test data
 	suiteTests?: GetSuiteTestDataResponse[];
 
 }
@@ -4434,7 +4586,7 @@ export type GetTestDataRefResponse = {
 	/// The build changelist upon which the test ran, may not correspond to the job changelist
 	buildChangeList: number;
 
-	/// The environment the test ran on 
+	/// The environment the test ran on
 	metaId: string;
 
 	/// The test id in stream
@@ -4450,8 +4602,28 @@ export type GetTestDataRefResponse = {
 	suiteSkipCount?: number;
 
 	/// The number of suite tests with warnings
-	suiteWaringCount?: number;
+	suiteWarningCount?: number;
 
 	/// The number of suite tests swith errors
 	suiteErrorCount?: number;
+
+	/// The number of suite tests swith errors
+	suiteSuccessCount?: number;
+
+}
+
+/** Summary for a particular tool */
+export type GetToolSummaryResponse = {
+
+	/** Unique id of tool */
+	id: string;
+
+	/** Name of tool */
+	name: string;
+
+	/** Description of tool */
+	description: string;
+
+	/** Version of tool */
+	version?: string;
 }

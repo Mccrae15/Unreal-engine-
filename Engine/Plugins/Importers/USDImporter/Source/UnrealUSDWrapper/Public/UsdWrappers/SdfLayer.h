@@ -3,12 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Map.h"
+#include "Containers/UnrealString.h"
 
 #include "UsdWrappers/ForwardDeclarations.h"
+#include "UsdWrappers/SdfPath.h"
 
 namespace UE
 {
-	class FSdfPath;
 	class FSdfPrimSpec;
 
 	namespace Internal
@@ -27,6 +29,47 @@ namespace UE
 
 		double Offset = 0.0;
 		double Scale = 1.0;
+	};
+
+	struct UNREALUSDWRAPPER_API FSdfPayload
+	{
+		FSdfPayload(
+			const FString& InAssetPath = {},
+			const FSdfPath& InPrimPath = {},
+			const FSdfLayerOffset& InLayerOffset = {})
+			: AssetPath(InAssetPath)
+			, PrimPath(InPrimPath)
+			, LayerOffset(InLayerOffset)
+		{
+		}
+
+		FString AssetPath;
+		FSdfPath PrimPath;
+		FSdfLayerOffset LayerOffset;
+	};
+
+	// In the USD API, pxr::SdfPayload and pxr::SdfReference are very similar
+	// except that the latter includes support for a custom data dictionary.
+	// The UE wrapping of SdfReference does not currently include support for
+	// that custom data, leaving the FSdfReference wrapper identical to the
+	// FSdfPayload wrapper. We keep them as distinct types though to better
+	// mimic the USD API and in case support for custom data dictionaries on
+	// references is added to the FSdfReference wrapper in the future.
+	struct UNREALUSDWRAPPER_API FSdfReference
+	{
+		FSdfReference(
+				const FString& InAssetPath = {},
+				const FSdfPath& InPrimPath = {},
+				const FSdfLayerOffset& InLayerOffset = {})
+			: AssetPath( InAssetPath )
+			, PrimPath( InPrimPath )
+			, LayerOffset ( InLayerOffset )
+		{
+		}
+
+		FString AssetPath;
+		FSdfPath PrimPath;
+		FSdfLayerOffset LayerOffset;
 	};
 
 	/**
@@ -91,8 +134,14 @@ namespace UE
 		void TransferContent( const FSdfLayer& SourceLayer );
 
 		static TSet<FSdfLayerWeak> GetLoadedLayers();
-		static FSdfLayer FindOrOpen( const TCHAR* Identifier );
-		static FSdfLayer CreateNew( const TCHAR* Identifier );
+		static FSdfLayer FindOrOpen(
+			const TCHAR* Identifier,
+			const TMap< FString, FString >& FileFormatArguments = {} );
+		static FSdfLayer CreateNew(
+			const TCHAR* Identifier,
+			const TMap< FString, FString >& FileFormatArguments = {} );
+
+		TMap< FString, FString > GetFileFormatArguments() const;
 
 		bool Save( bool bForce = false ) const;
 
@@ -112,7 +161,10 @@ namespace UE
 		bool IsEmpty() const;
 		bool IsAnonymous() const;
 
-		bool Export( const TCHAR* Filename ) const;
+		bool Export(
+			const TCHAR* Filename,
+			const FString& Comment = {},
+			const TMap< FString, FString >& FileFormatArguments = {} ) const;
 
 		void Clear();
 

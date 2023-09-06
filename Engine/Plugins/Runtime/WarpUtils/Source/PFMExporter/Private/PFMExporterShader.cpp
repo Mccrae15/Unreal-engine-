@@ -47,10 +47,9 @@ public:
 		MeshToPFMMatrixParameter.Bind(Initializer.ParameterMap, TEXT("MeshToPFMMatrix"));
 	}	
 
-	template<typename TShaderRHIParamRef>
-	void SetMeshToPFMMatrix(FRHICommandListImmediate& RHICmdList, const TShaderRHIParamRef ShaderRHI, const FMatrix& MeshToPFMMatrix)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FMatrix& MeshToPFMMatrix)
 	{
-		SetShaderValue(RHICmdList, ShaderRHI, MeshToPFMMatrixParameter, (FMatrix44f)MeshToPFMMatrix);
+		SetShaderValue(BatchedParameters, MeshToPFMMatrixParameter, (FMatrix44f)MeshToPFMMatrix);
 	}
 
 private:
@@ -111,9 +110,9 @@ bool FPFMExporterShader::ApplyPFMExporter_RenderThread(
 	DstPfmMesh.BeginExport_RenderThread(RHICmdList);
 
 	FRHIResourceCreateInfo CreateInfo(TEXT("FPFMExporterShader"));
-	FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FFilterVertex) * NumVertices, BUF_Dynamic, CreateInfo);
+	FBufferRHIRef VertexBufferRHI = RHICmdList.CreateVertexBuffer(sizeof(FFilterVertex) * NumVertices, BUF_Dynamic, CreateInfo);
 	{//Fill buffer with vertex+selected UV channel:
-		void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FFilterVertex) * NumVertices, RLM_WriteOnly);
+		void* VoidPtr = RHICmdList.LockBuffer(VertexBufferRHI, 0, sizeof(FFilterVertex) * NumVertices, RLM_WriteOnly);
 		FFilterVertex* pVertices = reinterpret_cast<FFilterVertex*>(VoidPtr);
 		for (uint32 i = 0; i < NumVertices; i++)
 		{
@@ -121,7 +120,7 @@ bool FPFMExporterShader::ApplyPFMExporter_RenderThread(
 			Vertex.Position = VertexPosition.VertexPosition(i);
 				Vertex.UV = VertexBuffer.GetVertexUV(i, UVIndex); // Get UV from selected channel
 		}
-		RHIUnlockBuffer(VertexBufferRHI);
+		RHICmdList.UnlockBuffer(VertexBufferRHI);
 	}
 	FRHIBuffer* IndexBufferRHI = IndexBuffer.IndexBufferRHI;
 
@@ -162,7 +161,8 @@ bool FPFMExporterShader::ApplyPFMExporter_RenderThread(
 
 				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 			}
-			VertexShader->SetMeshToPFMMatrix(RHICmdList, VertexShader.GetVertexShader(), MeshToPFMMatrix);
+
+			SetShaderParametersLegacyVS(RHICmdList, VertexShader, MeshToPFMMatrix);
 
 			// Render mesh to PFM texture:
 			RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);

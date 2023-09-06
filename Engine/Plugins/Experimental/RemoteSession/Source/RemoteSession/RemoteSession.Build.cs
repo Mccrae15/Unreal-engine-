@@ -6,11 +6,8 @@ public class RemoteSession : ModuleRules
 {
 	public RemoteSession(ReadOnlyTargetRules Target) : base(Target)
 	{
-		DefaultBuildSettings = BuildSettingsVersion.V2;
-
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				System.IO.Path.Combine(GetModuleDirectory("Renderer"), "Private"),
 			}
 		);
 			
@@ -21,6 +18,7 @@ public class RemoteSession : ModuleRules
 				"MediaIOCore",
 				"BackChannel",
 				"ApplicationCore",
+				"XRBase",
 				// ... add other public dependencies that you statically link with here ...
 			}
 		);

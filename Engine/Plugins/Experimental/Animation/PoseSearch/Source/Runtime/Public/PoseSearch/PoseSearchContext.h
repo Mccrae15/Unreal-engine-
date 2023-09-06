@@ -2,45 +2,28 @@
 
 #pragma once
 
+#include "DrawDebugHelpers.h"
 #include "PoseSearch/PoseSearchDefines.h"
+#include "PoseSearch/PoseSearchFeatureChannel.h"
 #include "PoseSearch/PoseSearchIndex.h"
 #include "PoseSearch/PoseSearchResult.h"
 
-struct FGameplayTagContainer;
-struct FTrajectorySampleRange;
+struct FPoseSearchQueryTrajectory;
 class UPoseSearchDatabase;
-class UPoseSearchSchema;
+class UPoseSearchFeatureChannel_Position;
 
 namespace UE::PoseSearch
 {
 
-class FPoseHistory;
 struct FPoseIndicesHistory;
+struct IPoseHistory;
 
 enum class EDebugDrawFlags : uint32
 {
 	None = 0,
 
-	// Draw the entire search index as a point cloud
-	DrawSearchIndex = 1 << 0,
-
 	// Draw using Query colors form the schema / config
 	DrawQuery = 1 << 1,
-
-	/**
-	* Keep rendered data until the next call to FlushPersistentDebugLines().
-	* Combine with DrawSearchIndex to draw the search index only once.
-	*/
-	Persistent = 1 << 2,
-
-	// Label samples with their indices
-	DrawSampleLabels = 1 << 3,
-
-	// Draw Bone Names
-	DrawBoneNames = 1 << 5,
-
-	// Draws simpler shapes to improve performance
-	DrawFast = 1 << 6,
 };
 ENUM_CLASS_FLAGS(EDebugDrawFlags);
 
@@ -58,8 +41,9 @@ enum class EPoseCandidateFlags : uint8
 	DiscardedBy_PoseReselectHistory = 1 << 4,
 	DiscardedBy_BlockTransition = 1 << 5,
 	DiscardedBy_PoseFilter = 1 << 6,
+	DiscardedBy_Search = 1 << 7,
 
-	AnyDiscardedMask = DiscardedBy_PoseJumpThresholdTime | DiscardedBy_PoseReselectHistory | DiscardedBy_BlockTransition | DiscardedBy_PoseFilter,
+	AnyDiscardedMask = DiscardedBy_PoseJumpThresholdTime | DiscardedBy_PoseReselectHistory | DiscardedBy_BlockTransition | DiscardedBy_PoseFilter | DiscardedBy_Search,
 };
 ENUM_CLASS_FLAGS(EPoseCandidateFlags);
 
@@ -68,8 +52,8 @@ struct POSESEARCH_API FCachedTransform
 {
 	FCachedTransform()
 		: SampleTime(0.f)
-		, BoneIndexType(-1)
-		, Transform()
+		, BoneIndexType(RootBoneIndexType)
+		, Transform(FTransformType::Identity)
 	{
 	}
 
@@ -80,13 +64,12 @@ struct POSESEARCH_API FCachedTransform
 	{
 	}
 
-	float SampleTime;
+	float SampleTime = 0.f;
 	
-	// if -1 it represents the root bone
-	FBoneIndexType BoneIndexType;
+	FBoneIndexType BoneIndexType = RootBoneIndexType;
 
 	// associated transform to BoneIndexType in ComponentSpace (except for the root bone stored in global space)
-	FTransformType Transform;
+	FTransformType Transform = FTransformType::Identity;
 };
 
 template<typename FTransformType>
@@ -111,139 +94,205 @@ struct FCachedTransforms
 		CachedTransforms.Reset();
 	}
 
+	bool IsEmpty() const
+	{
+		return CachedTransforms.IsEmpty();
+	}
+
 private:
 	TArray<FCachedTransform<FTransformType>, TInlineAllocator<64>> CachedTransforms;
 };
 
-// @todo: FDebugDrawParams should be enclosed with #if ENABLE_DRAW_DEBUG
+#if ENABLE_DRAW_DEBUG
 struct POSESEARCH_API FDebugDrawParams
 {
-	const UWorld* World = nullptr;
-	const UPoseSearchDatabase* Database = nullptr;
-	EDebugDrawFlags Flags = EDebugDrawFlags::None;
+	FDebugDrawParams(FAnimInstanceProxy* InAnimInstanceProxy, const FTransform& InRootMotionTransform, const UPoseSearchDatabase* InDatabase, EDebugDrawFlags InFlags = EDebugDrawFlags::None);
+	FDebugDrawParams(const UWorld* InWorld, const USkinnedMeshComponent* InMesh, const FTransform& InRootMotionTransform, const UPoseSearchDatabase* InDatabase, EDebugDrawFlags InFlags = EDebugDrawFlags::None);
 
-	float DefaultLifeTime = 5.f;
-	float PointSize = 1.f;
-
-	FTransform RootTransform = FTransform::Identity;
-
-	// Optional Mesh for gathering SocketTransform(s)
-	TWeakObjectPtr<const USkinnedMeshComponent> Mesh = nullptr;
-
-	bool CanDraw() const;
-	FColor GetColor(int32 ColorPreset) const;
-	const FPoseSearchIndex* GetSearchIndex() const;
+	const FSearchIndex* GetSearchIndex() const;
 	const UPoseSearchSchema* GetSchema() const;
 
-	void ClearCachedPositions();
-	void AddCachedPosition(float TimeOffset, int8 SchemaBoneIdx, const FVector& Position);
-	FVector GetCachedPosition(float TimeOffset, int8 SchemaBoneIdx = -1) const;
+	FVector ExtractPosition(TConstArrayView<float> PoseVector, const UPoseSearchFeatureChannel_Position* Position) const;
+	FVector ExtractPosition(TConstArrayView<float> PoseVector, float SampleTimeOffset, int8 SchemaBoneIdx = RootSchemaBoneIdx, EPermutationTimeType PermutationTimeType = EPermutationTimeType::UseSampleTime) const;
+	const FTransform& GetRootTransform() const;
+
+	void DrawLine(const FVector& LineStart, const FVector& LineEnd, const FColor& Color, float Thickness = 0.f) const;
+	void DrawPoint(const FVector& Position, const FColor& Color, float Thickness = 6.f) const;
+	void DrawCircle(const FMatrix& TransformMatrix, float Radius, int32 Segments, const FColor& Color, float Thickness = 1.f) const;
+	void DrawCentripetalCatmullRomSpline(TConstArrayView<FVector> Points, TConstArrayView<FColor> Colors, float Alpha, int32 NumSamplesPerSegment, float Thickness = 1.f) const;
+	
+	void DrawFeatureVector(TConstArrayView<float> PoseVector);
+	void DrawFeatureVector(int32 PoseIdx);
 
 private:
-	FCachedTransforms<FVector> CachedPositions;
+	bool CanDraw() const;
+
+	FAnimInstanceProxy* AnimInstanceProxy = nullptr;
+	const UWorld* World = nullptr;
+	const USkinnedMeshComponent* Mesh = nullptr;
+	const FTransform* RootMotionTransform = nullptr;
+	const UPoseSearchDatabase* Database = nullptr;
+	EDebugDrawFlags Flags = EDebugDrawFlags::None;
 };
 
-POSESEARCH_API void DrawFeatureVector(FDebugDrawParams& DrawParams, TConstArrayView<float> PoseVector);
-POSESEARCH_API void DrawFeatureVector(FDebugDrawParams& DrawParams, int32 PoseIdx);
+#endif // ENABLE_DRAW_DEBUG
 
 struct POSESEARCH_API FSearchContext
 {
-	EPoseSearchBooleanRequest QueryMirrorRequest = EPoseSearchBooleanRequest::Indifferent;
-	UE::PoseSearch::FDebugDrawParams DebugDrawParams;
-	UE::PoseSearch::FPoseHistory* History = nullptr;
-	const FTrajectorySampleRange* Trajectory = nullptr;
-	TObjectPtr<const USkeletalMeshComponent> OwningComponent = nullptr;
-	UE::PoseSearch::FSearchResult CurrentResult;
-	const FBoneContainer* BoneContainer = nullptr;
-	const FGameplayTagContainer* ActiveTagsContainer = nullptr;
-	float PoseJumpThresholdTime = 0.f;
-	bool bIsTracing = false;
-	bool bForceInterrupt = false;
-	// can the continuing pose advance? (if not we skip evaluating it)
-	bool bCanAdvance = true;
+	FSearchContext(const FPoseSearchQueryTrajectory* InTrajectory, const IPoseHistory* InHistory, float InDesiredPermutationTimeOffset, const FPoseIndicesHistory* InPoseIndicesHistory = nullptr,
+		const FSearchResult& InCurrentResult = FSearchResult(), float InPoseJumpThresholdTime = 0.f, bool bInForceInterrupt = false);
 
-	FTransform TryGetTransformAndCacheResults(float SampleTime, const UPoseSearchSchema* Schema, int8 SchemaBoneIdx);
+	FQuat GetSampleRotation(float SampleTimeOffset, const UPoseSearchSchema* Schema, int8 SchemaSampleBoneIdx = RootSchemaBoneIdx, int8 SchemaOriginBoneIdx = RootSchemaBoneIdx, bool bUseHistoryRoot = false, EPermutationTimeType PermutationTimeType = EPermutationTimeType::UseSampleTime);
+	FVector GetSamplePosition(float SampleTimeOffset, const UPoseSearchSchema* Schema, int8 SchemaSampleBoneIdx = RootSchemaBoneIdx, int8 SchemaOriginBoneIdx = RootSchemaBoneIdx, bool bUseHistoryRoot = false, EPermutationTimeType PermutationTimeType = EPermutationTimeType::UseSampleTime);
+	FVector GetSampleVelocity(float SampleTimeOffset, const UPoseSearchSchema* Schema, int8 SchemaSampleBoneIdx = RootSchemaBoneIdx, int8 SchemaOriginBoneIdx = RootSchemaBoneIdx, bool bUseCharacterSpaceVelocities = true, bool bUseHistoryRoot = false, EPermutationTimeType PermutationTimeType = EPermutationTimeType::UseSampleTime);
+
 	void ClearCachedEntries();
 
 	void ResetCurrentBestCost();
 	void UpdateCurrentBestCost(const FPoseSearchCost& PoseSearchCost);
 	float GetCurrentBestTotalCost() const { return CurrentBestTotalCost; }
 
-	void GetOrBuildQuery(const UPoseSearchDatabase* Database, FPoseSearchFeatureVectorBuilder& FeatureVectorBuilder);
-	const FPoseSearchFeatureVectorBuilder* GetCachedQuery(const UPoseSearchDatabase* Database) const;
+	const FFeatureVectorBuilder& GetOrBuildQuery(const UPoseSearchSchema* Schema);
+	const FFeatureVectorBuilder* GetCachedQuery(const UPoseSearchSchema* Schema) const;
 
 	bool IsCurrentResultFromDatabase(const UPoseSearchDatabase* Database) const;
 
-	TConstArrayView<float> GetCurrentResultPrevPoseVector() const;
-	TConstArrayView<float> GetCurrentResultPoseVector() const;
-	TConstArrayView<float> GetCurrentResultNextPoseVector() const;
+	TConstArrayView<float> GetCurrentResultPoseVector() const { return CurrentResultPoseVector; }
 
-	static constexpr int8 SchemaRootBoneIdx = -1;
-
-	const FPoseIndicesHistory* PoseIndicesHistory = nullptr;
+	const FSearchResult& GetCurrentResult() const { return CurrentResult; }
+	float GetPoseJumpThresholdTime() const { return PoseJumpThresholdTime; }
+	const FPoseIndicesHistory* GetPoseIndicesHistory() const { return PoseIndicesHistory; }
+	bool IsHistoryValid() const { return History != nullptr; }
+	float GetDesiredPermutationTimeOffset() const { return DesiredPermutationTimeOffset; }
+	bool IsTrajectoryValid() const { return Trajectory != nullptr; }
+	bool IsForceInterrupt() const { return bForceInterrupt; }
+	FTransform GetRootAtTime(float Time, bool bUseHistoryRoot = false, bool bExtrapolate = true) const;
 
 private:
-	FCachedTransforms<FTransform> CachedTransforms;
-	
-	struct FCachedQuery
-	{
-		// @todo: why do we need to hold on to a Database? isn't the FeatureVectorBuilder.Schema enough?
-		const UPoseSearchDatabase* Database = nullptr;
-		FPoseSearchFeatureVectorBuilder FeatureVectorBuilder;
-	};
+	FTransform GetTransform(float SampleTime, const UPoseSearchSchema* Schema, int8 SchemaBoneIdx = RootSchemaBoneIdx, bool bUseHistoryRoot = false);
+	FTransform GetComponentSpaceTransform(float SampleTime, const UPoseSearchSchema* Schema, int8 SchemaSampleBoneIdx = RootSchemaBoneIdx);
+	FVector GetSamplePositionInternal(float SampleTime, float OriginTime, const UPoseSearchSchema* Schema, int8 SchemaSampleBoneIdx = RootSchemaBoneIdx, int8 SchemaOriginBoneIdx = RootSchemaBoneIdx, bool bUseHistoryRoot = false);
+	FQuat GetSampleRotationInternal(float SampleTime, float OriginTime, const UPoseSearchSchema* Schema, int8 SchemaSampleBoneIdx = RootSchemaBoneIdx, int8 SchemaOriginBoneIdx = RootSchemaBoneIdx, bool bUseHistoryRoot = false);
 
-	TArray<FCachedQuery, TInlineAllocator<8>> CachedQueries;
+	const FPoseSearchQueryTrajectory* Trajectory = nullptr;
+	const IPoseHistory* History = nullptr;
+	float DesiredPermutationTimeOffset = 0.f;
+	const FPoseIndicesHistory* PoseIndicesHistory = nullptr;
+	FSearchResult CurrentResult;
+	float PoseJumpThresholdTime = 0.f;
+	bool bForceInterrupt = false;
+
+	TConstArrayView<float> CurrentResultPoseVector;
+	TStackAlignedArray<float> CurrentResultPoseVectorData;
+
+	// transforms cached in component space
+	FCachedTransforms<FTransform> CachedTransforms;
+	TArray<FFeatureVectorBuilder, TInlineAllocator<PreallocatedCachedQueriesNum>> CachedQueries;
 
 	float CurrentBestTotalCost = MAX_flt;
-
+	
 #if UE_POSE_SEARCH_TRACE_ENABLED
 
 public:
-	struct FPoseCandidate
+	struct FPoseCandidateBase
 	{
 		FPoseSearchCost Cost;
 		int32 PoseIdx = 0;
 		const UPoseSearchDatabase* Database = nullptr;
-		EPoseCandidateFlags PoseCandidateFlags = EPoseCandidateFlags::None;
 
-		bool operator<(const FPoseCandidate& Other) const { return Other.Cost < Cost; } // Reverse compare because BestCandidates is a max heap
+		bool operator<(const FPoseCandidateBase& Other) const { return Other.Cost < Cost; } // Reverse compare because BestCandidates is a max heap
 		bool operator==(const FSearchResult& SearchResult) const { return (PoseIdx == SearchResult.PoseIdx) && (Database == SearchResult.Database.Get()); }
 	};
 
-	struct FBestPoseCandidates : private TArray<FPoseCandidate>
+	struct FPoseCandidate : public FPoseCandidateBase
 	{
-		typedef TArray<FPoseCandidate> Super;
-		using Super::IsEmpty;
+		EPoseCandidateFlags PoseCandidateFlags = EPoseCandidateFlags::None;
+	};
 
-		int32 MaxPoseCandidates = 100;
+	struct FBestPoseCandidates
+	{
+		void Add(const UPoseSearchDatabase* Database)
+		{
+			SearchedDatabases.Add(Database);
+		}
 
 		void Add(const FPoseSearchCost& Cost, int32 PoseIdx, const UPoseSearchDatabase* Database, EPoseCandidateFlags PoseCandidateFlags)
 		{
-			if (Num() < MaxPoseCandidates || Cost < HeapTop().Cost)
+			if (EPoseCandidateFlags* PoseIdxPoseCandidateFlags = PoseIdxToFlags.Find(PoseIdx))
 			{
-				while (Num() >= MaxPoseCandidates)
+				*PoseIdxPoseCandidateFlags |= PoseCandidateFlags;
+			}
+			else if (PoseCandidateHeap.Num() < MaxPoseCandidates || Cost < PoseCandidateHeap.HeapTop().Cost)
+			{
+				bool bPoppedContinuingPoseCandidate = false;
+				FPoseCandidate ContinuingPoseCandidate;
+				while (PoseCandidateHeap.Num() >= MaxPoseCandidates)
 				{
-					ElementType Unused;
-					Pop(Unused);
+					FPoseCandidate PoppedPoseCandidate;
+					Pop(PoppedPoseCandidate);
+
+					if (EnumHasAnyFlags(PoppedPoseCandidate.PoseCandidateFlags, EPoseCandidateFlags::Valid_ContinuingPose))
+					{
+						// we can only have one continuing pose candidate
+						check(!bPoppedContinuingPoseCandidate);
+						ContinuingPoseCandidate = PoppedPoseCandidate;
+						bPoppedContinuingPoseCandidate = true;
+					}					
 				}
 
-				FSearchContext::FPoseCandidate PoseCandidate;
+				if (bPoppedContinuingPoseCandidate)
+				{
+					// if we popped the continuing pose candidate, we make some space fir it and push it back
+					FPoseCandidate PoppedPoseCandidate;
+					Pop(PoppedPoseCandidate);
+					PoseCandidateHeap.HeapPush(ContinuingPoseCandidate);
+					PoseIdxToFlags.Add(ContinuingPoseCandidate.PoseIdx, PoppedPoseCandidate.PoseCandidateFlags);
+				}
+
+				FPoseCandidate PoseCandidate;
 				PoseCandidate.Cost = Cost;
 				PoseCandidate.PoseIdx = PoseIdx;
 				PoseCandidate.Database = Database;
-				PoseCandidate.PoseCandidateFlags = PoseCandidateFlags;
-				HeapPush(PoseCandidate);
+				
+				PoseCandidateHeap.HeapPush(PoseCandidate);
+				PoseIdxToFlags.Add(PoseIdx, PoseCandidateFlags);
 			}
+
+			Add(Database);
 		}
 
 		void Pop(FPoseCandidate& OutItem)
 		{
-			HeapPop(OutItem, false);
+			PoseCandidateHeap.HeapPop(OutItem, false);
+			OutItem.PoseCandidateFlags = PoseIdxToFlags.FindAndRemoveChecked(OutItem.PoseIdx);
 		}
+
+		bool IsEmpty() const
+		{
+			return PoseCandidateHeap.IsEmpty();
+		}
+
+		void SetMaxPoseCandidates(int32 Value)
+		{
+			MaxPoseCandidates = Value;
+		}
+
+		const TSet<const UPoseSearchDatabase*>& GetSearchedDatabases() const
+		{
+			return SearchedDatabases;
+		}
+
+	private:
+		TSet<const UPoseSearchDatabase*> SearchedDatabases;
+		TArray<FPoseCandidateBase> PoseCandidateHeap;
+		TMap<int32, EPoseCandidateFlags> PoseIdxToFlags;
+		int32 MaxPoseCandidates = 200;
 	};
 	
 	FBestPoseCandidates BestCandidates;
 #endif
 };
+
+POSESEARCH_API FTransform MirrorTransform(const FTransform& InTransform, EAxis::Type MirrorAxis, const FQuat& ReferenceRotation);
 
 } // namespace UE::PoseSearch

@@ -73,6 +73,16 @@ namespace UsdToUnreal
 	 */
 	USDUTILITIES_API bool ConvertXformable( const pxr::UsdStageRefPtr& Stage, const pxr::UsdTyped& Schema, FTransform& OutTransform, double EvalTime, bool* bOutResetTransformStack = nullptr );
 
+	/**
+	 * Propagates the transform from Root to Leaf prims inclusively into a UE-space FTransform if they are connected by Xformables
+	 * @param Stage - Stage that contains the prims to process
+	 * @param Root - Prim to start the propagation from
+	 * @param Leaf - Prim where to end the propagation
+	 * @param EvalTime - Time at which to sample the prim's attributes
+	 * @param OutTransform - The composed transform; identity if Leaf is not completely connected to Root by Xformables
+	 */
+	USDUTILITIES_API void PropagateTransform(const pxr::UsdStageRefPtr& Stage, const pxr::UsdPrim& Root, const pxr::UsdPrim& Leaf, double EvalTime, FTransform& OutTransform);
+
 	USDUTILITIES_API bool ConvertGeomCamera( const UE::FUsdPrim& Prim, UCineCameraComponent& CameraComponent, double UsdTimeCode = UsdUtils::GetDefaultTimeCode() );
 
 	/**
@@ -122,9 +132,31 @@ namespace UnrealToUsd
 
 	USDUTILITIES_API bool ConvertSceneComponent( const pxr::UsdStageRefPtr& Stage, const USceneComponent* SceneComponent, pxr::UsdPrim& UsdPrim );
 
-	USDUTILITIES_API bool ConvertMeshComponent( const pxr::UsdStageRefPtr& Stage, const UMeshComponent* MeshComponent, pxr::UsdPrim& UsdPrim );
+	USDUTILITIES_API bool ConvertMeshComponent(
+		const pxr::UsdStageRefPtr& Stage,
+		const UMeshComponent* MeshComponent,
+		pxr::UsdPrim& UsdPrim
+	);
 
-	USDUTILITIES_API bool ConvertHierarchicalInstancedStaticMeshComponent( const UHierarchicalInstancedStaticMeshComponent* HISMComponent, pxr::UsdPrim& UsdPrim, double TimeCode = UsdUtils::GetDefaultTimeCode() );
+	USDUTILITIES_API bool ConvertHierarchicalInstancedStaticMeshComponent(
+		const UHierarchicalInstancedStaticMeshComponent* HISMComponent,
+		pxr::UsdPrim& UsdPrim,
+		double TimeCode = UsdUtils::GetDefaultTimeCode()
+	);
+
+	/**
+	 * Sets the material overrides as opinions on MeshPrim, taking care to figure out whether it needs to create LOD or subsection prims, and
+	 * which ones given the chosen export LOD range.
+	 * Leaving the LOD range at default of INDEX_NONE will author the material override opinions assuming all LODs of the MeshAsset were exported.
+	 * MeshAsset should be an UStaticMesh, USkeletalMesh or UGeometryCache.
+	 */
+	USDUTILITIES_API bool ConvertMaterialOverrides(
+		const UObject* MeshAsset,
+		const TArray<UMaterialInterface*> MaterialOverrides,
+		pxr::UsdPrim& UsdPrim,
+		int32 LowestLOD = INDEX_NONE,
+		int32 HighestLOD = INDEX_NONE
+	);
 
 	/**
 	 * Converts a UMovieScene3DTransformTrack to a UsdGeomXformable

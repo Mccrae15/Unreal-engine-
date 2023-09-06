@@ -11,7 +11,7 @@ public class MicrosoftSpatialSound : ModuleRules
 		string BinariesDir = System.IO.Path.Combine(EngineDir, "Binaries", "ThirdParty", LibraryName);
 
 		string Config = (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT) ? "Debug" : "Release";
-		string Arch = Target.Architecture.WindowsName;
+		string Arch = Target.Architecture.WindowsLibDir;
 		string SubPath = System.IO.Path.Combine(Platform, Config, Arch);
 
 		string BinariesPath = System.IO.Path.Combine(BinariesDir, SubPath);
@@ -44,7 +44,6 @@ public class MicrosoftSpatialSound : ModuleRules
 		
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"MicrosoftSpatialSound/Private",
 				System.IO.Path.Combine(EngineDir, "Source/ThirdParty/SpatialAudioClientInterop"),
 			}
 			);

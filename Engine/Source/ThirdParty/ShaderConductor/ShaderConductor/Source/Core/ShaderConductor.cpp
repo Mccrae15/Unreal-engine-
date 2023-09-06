@@ -98,7 +98,8 @@ static bool ParseSpirvCrossOptionCommon(spirv_cross::CompilerGLSL::Options& opt,
 {
     PARSE_SPIRVCROSS_OPTION(define, "reconstruct_global_uniforms", opt.reconstruct_global_uniforms);
 	PARSE_SPIRVCROSS_OPTION(define, "force_zero_initialized_variables", opt.force_zero_initialized_variables);
-    return false;
+	PARSE_SPIRVCROSS_OPTION(define, "relax_nan_checks", opt.relax_nan_checks);
+	return false;
 }
 
 static bool ParseSpirvCrossOptionGlsl(spirv_cross::CompilerGLSL::Options& opt, const ShaderConductor::MacroDefine& define)
@@ -117,7 +118,6 @@ static bool ParseSpirvCrossOptionGlsl(spirv_cross::CompilerGLSL::Options& opt, c
 	PARSE_SPIRVCROSS_OPTION(define, "pad_ubo_blocks", opt.pad_ubo_blocks);
 	PARSE_SPIRVCROSS_OPTION(define, "force_temporary", opt.force_temporary);
 	PARSE_SPIRVCROSS_OPTION(define, "force_glsl_clipspace", opt.force_glsl_clipspace);
-	PARSE_SPIRVCROSS_OPTION(define, "relax_nan_checks", opt.relax_nan_checks);
     return false;
 }
 
@@ -126,6 +126,7 @@ static bool ParseSpirvCrossOptionHlsl(spirv_cross::CompilerHLSL::Options& opt, c
     PARSE_SPIRVCROSS_OPTION(define, "reconstruct_semantics", opt.reconstruct_semantics);
     PARSE_SPIRVCROSS_OPTION(define, "reconstruct_cbuffer_names", opt.reconstruct_cbuffer_names);
     PARSE_SPIRVCROSS_OPTION(define, "implicit_resource_binding", opt.implicit_resource_binding);
+	PARSE_SPIRVCROSS_OPTION(define, "preserve_structured_buffers", opt.preserve_structured_buffers);
     return false;
 }
 
@@ -1439,8 +1440,8 @@ namespace
             for (unsigned i = 0; i < target.numOptions; i++)
             {
                 auto& Define = target.options[i];
-                if (!ParseSpirvCrossOptionGlsl(glslOpts, Define))
-                {
+				if (!(ParseSpirvCrossOptionCommon(glslOpts, Define) || ParseSpirvCrossOptionGlsl(glslOpts, Define)))
+				{
 					// UE Change Begin: Improved support for PLS and FBF
 					if (!GatherPLSRemaps(PLSInputs, PLSOutputs, PLSInOuts, Define) &&
 						!GatherFBFRemaps(FBFArgs, Define))
@@ -1463,7 +1464,7 @@ namespace
 						}
 					}
 					// UE Change End: Improved support for PLS and FBF
-                }
+				}
             }
 
             // UE Change Begin: Allow remapping of variables in glsl
@@ -1558,15 +1559,20 @@ namespace
             // UE Change End: Ensure base vertex and instance indices start with zero if source language is HLSL.
 
             // UE Change Begin: Support reflection & overriding Metal options & resource bindings to generate correct code.
-            for (unsigned i = 0; i < target.numOptions; i++)
+			auto commonOpts = mslCompiler->get_common_options();
+			for (unsigned i = 0; i < target.numOptions; i++)
             {
-                ParseSpirvCrossOptionMetal(mslOpts, target.options[i]);
+				if (!ParseSpirvCrossOptionCommon(commonOpts, target.options[i]))
+				{
+					ParseSpirvCrossOptionMetal(mslOpts, target.options[i]);
+				}
             }
             // UE Change End: Support reflection & overriding Metal options & resource bindings to generate correct code.
 
             mslOpts.platform = (target.language == ShadingLanguage::Msl_iOS) ? spirv_cross::CompilerMSL::Options::iOS
                                                                              : spirv_cross::CompilerMSL::Options::macOS;
 
+			mslCompiler->set_common_options(commonOpts);
             mslCompiler->set_msl_options(mslOpts);
 
 			// UE Change Begin: Don't re-assign binding slots. This is done with SPIRV-Reflect.

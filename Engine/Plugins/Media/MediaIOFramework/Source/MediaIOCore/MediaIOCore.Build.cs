@@ -13,6 +13,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"AudioExtensions",
+					"ColorManagement",
 					"Core",
 					"CoreUObject",
 					"Engine",
@@ -21,6 +22,7 @@ namespace UnrealBuildTool.Rules
 					"MediaAssets",
 					"MediaUtils",
 					"MovieSceneCapture",
+					"OpenColorIO",
 					"Projects",
 					"RenderCore",
 					"RHI",
@@ -29,13 +31,12 @@ namespace UnrealBuildTool.Rules
 					"TimeManagement"
 				});
 
-			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
-
 			PrivateIncludePaths.AddRange(
 				new string[] {
-				//required for FScreenPassVS, AddDrawScreenPass, and for scene view extensions related headers
-				Path.Combine(EngineDir, "Source", "Runtime", "Renderer", "Private")
+				// required for scene view extensions related headers
+				Path.Combine(GetModuleDirectory("Renderer"), "Private")
 			});
+
 
 			PrivateDependencyModuleNames.AddRange(
                 new string[]
@@ -44,7 +45,6 @@ namespace UnrealBuildTool.Rules
 	                "AudioMixerCore",
 					"GPUTextureTransfer",
 					"ImageWrapper",
-                    "RenderCore",
 					"Renderer",
                     "SignalProcessing", 
 	                "SoundFieldRendering"

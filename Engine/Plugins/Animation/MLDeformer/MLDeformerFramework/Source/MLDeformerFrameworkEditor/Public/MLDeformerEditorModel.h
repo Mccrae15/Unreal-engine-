@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "UObject/GCObject.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ObjectPtr.h"
@@ -12,6 +12,8 @@
 #include "MLDeformerVizSettings.h"
 #include "MLDeformerModule.h"
 #include "MLDeformerModel.h"
+
+#include "MLDeformerEditorModel.generated.h"
 
 class UMLDeformerModel;
 class UMLDeformerInputInfo;
@@ -27,7 +29,6 @@ class USkeletalMesh;
 class UAnimSequence;
 class UMaterial;
 class UGeometryCache;
-class UNeuralNetwork;
 class UMorphTarget;
 class FMorphTargetVertexInfoBuffers;
 
@@ -56,6 +57,7 @@ namespace UE::MLDeformer
 	class FMLDeformerEditorToolkit;
 	class FMLDeformerSampler;
 	class FMLDeformerEditorModel;
+	class SMLDeformerInputWidget;
 
 	/**
 	 * The base class for the editor side of an UMLDeformerModel.
@@ -89,6 +91,19 @@ namespace UE::MLDeformer
 		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 		virtual FString GetReferencerName() const override { return TEXT("FMLDeformerEditorModel"); }
 		// ~END FGCObject overrides.
+
+		/**
+		 * Change the skeletal mesh on a specific skeletal mesh component.
+		 * This internally will not only call SkelMeshComponent->SetSkeletalMesh(Mesh), but also will reassign the materials.
+		 * The reason for this is because if there are material instances set already, the skeletal mesh component will not override them to preserve changes done by the user.
+		 * This helper function will force these to be updated as well. This was needed in case of Metahumans.
+		 * Metahumans use a PostProcessAnimBP with a ControlRig node in it, which drives material curves.
+		 * In order to drive this, material instances are needed instead of regular materials. But as mentioned before, when switching the mesh the 
+		 * code internally will not override the material instances. So we simply have to force this manually, hence this function.
+		 * @param SkelMeshComponent The skeletal mesh component to change the mesh for.
+		 * @param Mesh The new mesh to use.
+		 */
+		static void ChangeSkeletalMeshOnComponent(USkeletalMeshComponent* SkelMeshComponent, USkeletalMesh* Mesh);
 
 		// Required overrides.
 		/**
@@ -513,9 +528,6 @@ namespace UE::MLDeformer
 		 */
 		virtual void UpdateDeformerGraph();
 
-		UE_DEPRECATED(5.2, "This method will be deleted and will just return a nullptr right now.")
-		UNeuralNetwork* LoadNeuralNetworkFromOnnx(const FString& Filename) const { return nullptr; }
-
 		/**
 		 * Sample the vertex deltas between the training base model and target model.
 		 * This will initialize the sampler if needed and set the sampler space to post-skinning deltas, and then samples them using the sampler.
@@ -566,6 +578,24 @@ namespace UE::MLDeformer
 		virtual FString GetHeatMapDeformerGraphPath() const;
 
 		/**
+		 * Refresh the contents of the input widget.
+		 * This includes the bone and curve list contents.
+		 */
+		virtual void RefreshInputWidget();
+
+		/**
+		 * Create the input widget.
+		 * The default widget that is created contains the bone and curve list.
+		 * You can inherit from the SMLDeformerInputWidget base class and override this method to return your custom widget.
+		 * This can be useful when you want to add new types of inputs to your model.
+		 * @return A shared pointer to the input widget that will appear in the UI.
+		 */
+		virtual TSharedPtr<SMLDeformerInputWidget> CreateInputWidget();
+
+		/** Update the persona preview scene's actor, skeletal mesh component, mesh and anim asset. These are based on the current visualization mode. */
+		virtual void UpdatePreviewScene();
+
+		/**
 		 * Generate the normals for a given morph target.
 		 * @param LOD The LOD level.
 		 * @param SkelMesh The skeletal mesh to get the mesh data from.
@@ -574,6 +604,7 @@ namespace UE::MLDeformer
 		 * @param BaseNormals The normals of the base mesh.
 		 * @param OutDeltaNormals The array that we will write the generated normals to. This will automatically be resized by this method.
 		 */
+		UE_DEPRECATED(5.3, "Please call FMLDeformerMorphModelEditorModel::CalcMorphTargetNormals instead.")
 		virtual void GenerateNormalsForMorphTarget(int32 LOD, USkeletalMesh* SkelMesh, int32 MorphTargetIndex, TArrayView<const FVector3f> Deltas, TArrayView<const FVector3f> BaseVertexPositions, TArrayView<FVector3f> BaseNormals, TArray<FVector3f>& OutDeltaNormals);
 
 		/** Invalidate the memory usage, so it gets updated in the UI again. */
@@ -741,6 +772,16 @@ namespace UE::MLDeformer
 		void InitCurveIncludeListToAnimatedCurvesOnly();
 
 		/**
+		 * Add all animated bones to the bone include list.
+		 */
+		void AddAnimatedBonesToBonesIncludeList();
+
+		/**
+		 * Add all animated curves to the curve include list.
+		 */
+		void AddAnimatedCurvesToCurvesIncludeList();
+
+		/**
 		 * Get the number of curves on a specific skeletal mesh.
 		 * @param SkelMesh The skeletal mesh to get the curves count from.
 		 * @return The number of curves found on the skeletal mesh.
@@ -770,6 +811,7 @@ namespace UE::MLDeformer
 		 * @param MorphTargetIndex The morph target number to visualize.
 		 * @param DrawOffset An offset to perform the debug draw at.
 		 */
+		UE_DEPRECATED(5.3, "Please call FMLDeformerMorphModelEditorModel::DebugDrawMorphTargets instead.")
 		void DrawMorphTarget(FPrimitiveDrawInterface* PDI, const TArray<FVector3f>& MorphDeltas, float DeltaThreshold, int32 MorphTargetIndex, const FVector& DrawOffset);
 
 		/**
@@ -779,12 +821,34 @@ namespace UE::MLDeformer
 		 */
 		UMLDeformerComponent* FindMLDeformerComponent(int32 ActorID = ActorID_Test_MLDeformed) const;
 
+
+		/**
+		 * Correct floating point errors that can cause issues when sampling animation using step timing.
+		 * @param FrameNumber The desired frame number
+		 * @param FrameTimeForFrameNumber The frame time computed for the frame number, which may have conversion errors
+		 * @Param FrameRate The frame rate for conversion
+		 * @return A corrected frame time, which is equal to FrameTimeForFrameNumber unless a floating point error means the floor is not equal to the FrameNumber
+		 */
+		static float CorrectedFrameTime(int32 FrameNumber, float FrameTimeForFrameNumber, FFrameRate FrameRate);
+
+		TSharedPtr<SMLDeformerInputWidget> GetInputWidget() const			{ return InputWidget; }
+		void SetInputWidget(TSharedPtr<SMLDeformerInputWidget> Widget)		{ InputWidget = Widget; }
+
 	protected:
 		/**
 		 * Executed when a property changes by a change in the UI.
 		 * This internally calls OnPropertyChanged.
 		 */
 		void OnPostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent);
+
+		/**
+		 * Called whenever an engine object is being modified.
+		 * Use this to set the reinitialize assets flag. For example when a skeletal mesh or anim sequence change (being modified or reimported), we should 
+		 * set the bNeedsAssetReinit member to true, to trigger the actor components and UI etc to be reinitialized.
+		 * The default implementation of this method will check for changes in the skeletal mesh and training and test anim sequence.
+		 * If you want to check more things (your target mesh), you need to check for that.
+		 */
+		virtual void OnObjectModified(UObject* Object);
 
 		/**
 		 * Delete all editor actors.
@@ -802,6 +866,7 @@ namespace UE::MLDeformer
 		bool IsEditorReadyForTrainingBasicChecks();
 
 		/** Zero all deltas with a length equal to, or smaller than the threshold value. */
+		UE_DEPRECATED(5.3, "Please call FMLDeformerMorphModelEditorModel::ZeroDeltasByLengthThreshold instead.")
 		void ZeroDeltasByThreshold(TArray<FVector3f>& Deltas, float Threshold);
 
 		/**
@@ -815,7 +880,10 @@ namespace UE::MLDeformer
 		 *        recomputing normals can lead to lower quality results, in trade for faster performance.
 		 * @param MaskChannel The weight mask mode, which specifies what channel to get the weight data from. Such channel allows the user to define what areas the deformer should for example not be active in.
 		 * @param bInvertMaskChannel Specifies whether the weight mask should be inverted or not.
+		 * @param MaskBuffer An optional mask buffer that contains 'Model->GetNumBaseMeshVerts() * (MorphModel->GetNumMorphTargets() - 1)' number of floats. Deltas will be multiplied by this value. 
+		 *        When the mask buffer is an empty array, it will be ignored.
 		 */
+		UE_DEPRECATED(5.3, "Please call FMLDeformerMorphModelEditorModel::CreateMorphTargets instead.")
 		void CreateEngineMorphTargets(
 			TArray<UMorphTarget*>& OutMorphTargets,
 			const TArray<FVector3f>& Deltas,
@@ -833,7 +901,19 @@ namespace UE::MLDeformer
 		 * @param LOD The LOD index to generate the morphs for.
 		 * @param MorphErrorTolerance The error tolerance for the delta compression, in cm. Higher values compress better but can result in artifacts.
 		 */
+		UE_DEPRECATED(5.3, "Please call FMLDeformerMorphModelEditorModel::CompressMorphTargets instead.")
 		void CompressEngineMorphTargets(FMorphTargetVertexInfoBuffers& OutMorphBuffers, const TArray<UMorphTarget*>& MorphTargets, int32 LOD = 0, float MorphErrorTolerance = 0.01f);
+
+		/**
+		 * Calculate the normals for each vertex, given the triangle data and positions.
+		 * It computes this by summing up the face normals for each vertex using that face, and normalizing them at the end.
+		 * @param VertexPositions The buffer with vertex positions. This is the size of the number of imported vertices.
+		 * @param IndexArray The index buffer, which contains NumTriangles * 3 number of integers.
+		 * @param VertexMap For each render vertex, an imported vertex number. For example, for a cube these indices go from 0..7.
+		 * @param OutNormals The array that will contain the normals. This will automatically be resized internally by this method.
+		 */
+		UE_DEPRECATED(5.3, "Please call FMLDeformerMorphModelEditorModel::CalcVertexNormals instead.")
+		void CalcMeshNormals(TArrayView<const FVector3f> VertexPositions, TArrayView<const uint32> IndexArray, TArrayView<const int32> VertexMap, TArray<FVector3f>& OutNormals) const;
 
 		/**
 		 * Get the base actor depending on the currently active mode (train or test mode).
@@ -861,16 +941,6 @@ namespace UE::MLDeformer
 		 */
 		void UpdateRanges();
 
-		/**
-		 * Calculate the normals for each vertex, given the triangle data and positions.
-		 * It computes this by summing up the face normals for each vertex using that face, and normalizing them at the end.
-		 * @param VertexPositions The buffer with vertex positions. This is the size of the number of imported vertices.
-		 * @param IndexArray The index buffer, which contains NumTriangles * 3 number of integers.
-		 * @param VertexMap For each render vertex, an imported vertex number. For example, for a cube these indices go from 0..7.
-		 * @param OutNormals The array that will contain the normals. This will automatically be resized internally by this method.
-		 */
-		void CalcMeshNormals(TArrayView<const FVector3f> VertexPositions, TArrayView<const uint32> IndexArray, TArrayView<const int32> VertexMap, TArray<FVector3f>& OutNormals) const;
-
 	protected:
 		/** The runtime model associated with this editor model. */
 		TObjectPtr<UMLDeformerModel> Model = nullptr;
@@ -883,6 +953,9 @@ namespace UE::MLDeformer
 
 		/** A pointer to the sampler, which can sample target meshes to calculate deltas. */
 		FMLDeformerSampler* Sampler = nullptr;
+
+		/** The inputs widget. */
+		TSharedPtr<SMLDeformerInputWidget> InputWidget;
 
 		/**
 		 * The input info as currently setup in the editor.
@@ -925,6 +998,15 @@ namespace UE::MLDeformer
 
 		/** Display frame numbers? */
 		bool bDisplayFrames = true;
+
+		/** The delegate that handles when an object got modified (any object). */
+		FDelegateHandle InputObjectModifiedHandle;
+
+		/** The delegate that handles when an object property got changed (any object). */
+		FDelegateHandle InputObjectPropertyChangedHandle;
+
+		/** Set to true when on next tick we need to trigger an input assets changed event. */
+		bool bNeedsAssetReinit = false;
 	};
 
 	/**

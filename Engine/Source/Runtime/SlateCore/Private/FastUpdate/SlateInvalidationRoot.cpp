@@ -15,6 +15,7 @@
 #include "Trace/SlateTrace.h"
 #include "Types/ReflectionMetadata.h"
 #include "Types/SlateAttributeMetaData.h"
+#include "Rendering/DrawElementPayloads.h"
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(SLATECORE_API, Slate);
 
@@ -374,11 +375,17 @@ FSlateInvalidationResult FSlateInvalidationRoot::PaintInvalidationRoot(const FSl
 		bNeedScreenPositionShift = false;
 	}
 
-	TGuardValue<EFlowDirection> FlowGuard(GSlateFlowDirection, RootWidget->ComputeFlowDirection());
+	EFlowDirection NewFlowDirection = GSlateFlowDirection;
+	if (RootWidget->GetFlowDirectionPreference() == EFlowDirectionPreference::Inherit)
+	{
+		NewFlowDirection = GSlateFlowDirectionShouldFollowCultureByDefault ? FLayoutLocalization::GetLocalizedLayoutDirection() : RootWidget->ComputeFlowDirection();
+	}
+	TGuardValue<EFlowDirection> FlowGuard(GSlateFlowDirection, NewFlowDirection);
 	if (!Context.bAllowFastPathUpdate || bNeedsSlowPath || GSlateIsInInvalidationSlowPath)
 	{
 		SCOPED_NAMED_EVENT(Slate_PaintSlowPath, FColor::Red);
-
+		
+		// Clears existing cached element lists
 		ClearAllFastPathData(!Context.bAllowFastPathUpdate);
 
 		GSlateIsOnFastUpdatePath = false;
@@ -394,6 +401,7 @@ FSlateInvalidationResult FSlateInvalidationRoot::PaintInvalidationRoot(const FSl
 				BuildFastPathWidgetList(RootWidget);
 			}
 
+			// Repopulates cached element lists
 			CachedMaxLayerId = PaintSlowPath(Context);
 #if WITH_SLATE_DEBUGGING
 			SetLastPaintType(ESlateInvalidationPaintType::Slow);

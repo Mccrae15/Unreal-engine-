@@ -153,7 +153,7 @@ bool FImageWrapperBase::SetRaw(const void* InRawData, int64 InRawSize, const int
 }
 
 
-int IImageWrapper::GetRGBFormatBytesPerPel(ERGBFormat RGBFormat,int BitDepth)
+int64 IImageWrapper::GetRGBFormatBytesPerPel(ERGBFormat RGBFormat,int BitDepth)
 {
 	switch(RGBFormat)
 	{
@@ -355,6 +355,37 @@ void IImageWrapper::ConvertRawImageFormat(ERawImageFormat::Type RawFormat, ERGBF
 		check(0);
 		break;
 	}
+}
+
+bool FImageWrapperBase::GetImageViewOfSetRawForCompress(FImageView & OutImage) const
+{
+	if ( RawData.IsEmpty() )
+	{
+		return false;
+	}
+	
+	bool bExactMatch;
+	ERawImageFormat::Type RawFormat = GetClosestRawImageFormat(&bExactMatch);
+	
+	// must be bExactMatch, no RB swaps possible, because we just point at the array
+	//	this function will fail if SetRaw is done with RGBA8 rather than BGRA8
+	if ( RawFormat == ERawImageFormat::Invalid || !bExactMatch )
+	{
+		return false;
+	}
+
+	// ImageWrapper RGBFormat doesn't track if pixels are Gamma/sRGB or not
+	//	just assume they are Default for now :
+	EGammaSpace GammaSpace = ERawImageFormat::GetDefaultGammaSpace(RawFormat);
+	
+	OutImage.RawData = (void *) &RawData[0];
+	OutImage.SizeX = Width;
+	OutImage.SizeY = Height;
+	OutImage.NumSlices = 1;
+	OutImage.Format = RawFormat;
+	OutImage.GammaSpace = GammaSpace;
+
+	return true;
 }
 
 bool IImageWrapper::GetRawImage(FImage & OutImage)

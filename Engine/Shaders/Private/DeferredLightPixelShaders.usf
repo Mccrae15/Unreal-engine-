@@ -3,7 +3,7 @@
 /*=============================================================================
 	DeferredLightPixelShaders.usf:
 =============================================================================*/
-
+ 
 #define SUPPORT_CONTACT_SHADOWS 1
 #define STRATA_SSS_TRANSMISSION USE_TRANSMISSION
 
@@ -14,6 +14,9 @@
 	#define STRATA_SINGLEPATH 1
   #elif STRATA_TILETYPE == 2
 	// COMPLEX PATH
+  #elif STRATA_TILETYPE == 3
+	// COMPLEX PATH
+	#define STRATA_COMPLEXSPECIALPATH 1
   #else
 	#error Strata tile type non-implemented
   #endif
@@ -81,7 +84,7 @@ FDerivedParams GetDerivedParams(in FInputParams Input, in float SceneDepth)
 #if LIGHT_SOURCE_SHAPE > 0
 	// With a perspective projection, the clip space position is NDC * Clip.w
 	// With an orthographic projection, clip space is the same as NDC
-	float2 ClipPosition = Input.ScreenPosition.xy / Input.ScreenPosition.w * (View.ViewToClip[3][3] < 1.0f ? SceneDepth : 1.0f);
+	float2 ClipPosition = GetScreenPositionForProjectionType(Input.ScreenPosition.xy / Input.ScreenPosition.w, SceneDepth);
 	Out.TranslatedWorldPosition = mul(float4(ClipPosition, SceneDepth, 1), View.ScreenToTranslatedWorld).xyz;
 	Out.CameraVector = normalize(Out.TranslatedWorldPosition - View.TranslatedWorldCameraOrigin);
 #else
@@ -184,7 +187,7 @@ float3 GetStableTranslatedLargeWorldPosition(float2 SVPos, float DeviceZ)
 
 float4 StrataReadPrecomputedShadowFactors(FStrataPixelHeader StrataPixelHeader, int2 PixelPos)
 {
-	if (HasPrecShadowMask(StrataPixelHeader))
+	if (StrataPixelHeader.HasPrecShadowMask())
 	{
 #if ALLOW_STATIC_LIGHTING
 		float4 GBufferE = SceneTexturesStruct.GBufferETexture.Load(int3(PixelPos, 0));
@@ -193,7 +196,7 @@ float4 StrataReadPrecomputedShadowFactors(FStrataPixelHeader StrataPixelHeader, 
 #endif
 		return GBufferE;
 	}
-	return HasZeroPrecShadowMask(StrataPixelHeader) ? 0.0f : 1.0f;
+	return StrataPixelHeader.HasZeroPrecShadowMask() ? 0.0f : 1.0f;
 }
 
 #endif // STRATA_ENABLED

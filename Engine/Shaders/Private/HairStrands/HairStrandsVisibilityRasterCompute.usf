@@ -73,8 +73,7 @@ uint			HairMaterialId;
 Texture2D<float> SceneDepthTexture;
 
 uint 			VertexCount;
-uint 			VertexStart;
-float			SampleWeight;
+float			CoverageScale;
 
 float3 NDCToPixelCoord(float4 InDC)
 {
@@ -401,7 +400,7 @@ void BinningCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID :
 		group_VerticesNum = IndirectPrimIDCount.Load(0);
 #else // PERMUTATION_INDIRECT_PRIM_IDS
 	#if PERMUTATION_CULLING	
-		group_VerticesNum = HairStrandsVF_bIsCullingEnable ? HairStrandsVF_CullingIndirectBuffer[3] : VertexCount;
+		group_VerticesNum = HairStrandsVF_bCullingEnable ? HairStrandsVF_CullingIndirectBuffer[3] : VertexCount;
 	#else // PERMUTATION_CULLING
 		group_VerticesNum = VertexCount;
 	#endif //PERMUTATION_CULLING
@@ -431,7 +430,7 @@ void BinningCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID :
 		uint PrimID = BatchIndex * 1024 + GroupThreadID;
 		bSegValid = bSegValid && (PrimID < group_VerticesNum);
 
-		if (bSegValid && HairStrandsVF_bIsCullingEnable)
+		if (bSegValid && HairStrandsVF_bCullingEnable)
 		{
 			const uint FetchIndex0 = PrimID;
 			const uint FetchIndex1 = min(FetchIndex0 + 1, group_VerticesNum - 1);
@@ -450,13 +449,9 @@ void BinningCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID :
 				PrimID = VertexIndex0;
 			}
 		}
-		else if (bSegValid)
-		{
-			PrimID += VertexStart;
-		}
 	#else // PERMUTATION_CULLING
-		const uint PrimID = BatchIndex * 1024 + GroupThreadID + VertexStart;
-		bSegValid = bSegValid && (PrimID < (VertexStart + VertexCount));
+		const uint PrimID = BatchIndex * 1024 + GroupThreadID;
+		bSegValid = bSegValid && (PrimID < VertexCount);
 	#endif // PERMUTATION_CULLING
 #endif // PERMUTATION_INDIRECT_PRIM_IDS
 
@@ -856,7 +851,7 @@ void PlotInternal(int2 Coords, float AntiAliasingFactor, float4 P0, float4 P1, f
 		if (PackedDepthCov > group_SubTile[LinearIndex].w)
 		{
 			const float Rad = ComputePerspectiveCorrectRadius(Rad0, Rad1, Alpha, P0.w, P1.w);
-			InterlockedAdd(group_SubTile[LinearIndex].z, min(Rad, 0.5f) * 2.0f * 1000.0f * SampleWeight * AntiAliasingFactor);
+			InterlockedAdd(group_SubTile[LinearIndex].z, min(Rad, 0.5f) * 2.0f * 1000.0f * CoverageScale * AntiAliasingFactor);
 		}
 	}
 }
@@ -961,7 +956,7 @@ void RasterCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : 
 			uint Prim = GroupThreadID;
 			uint PrimID = VisTilePrims[PrimOffset + Prim];
 
-			group_PrimMatID[Prim] = PackHairVisPrimitiveMaterialId(PrimID, HairMaterialId);
+			group_PrimMatID[Prim] = PackHairVisControlPointMaterialId(PrimID, HairMaterialId);
 
 			uint TypeDummy;
 			CalcHomogenousPosAndRad(HairStrandsVF_PositionBuffer[PrimID], group_PositionOffset, group_SP0[Prim], group_Rad0[Prim], TypeDummy);
@@ -980,7 +975,7 @@ void RasterCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : 
 				Coord += uint2(((PackedTileMin >> 0) & 0xffff), ((PackedTileMin >> 16) & 0xffff));
 
 				group_SubTile[LinearIndex].x = OutDepthCovTexture[uint3(Coord, 0)];
-				group_SubTile[LinearIndex].y = GetInvalidHairPrimitiveId();
+				group_SubTile[LinearIndex].y = GetInvalidHairControlPointId();
 				group_SubTile[LinearIndex].z = 0;
 				group_SubTile[LinearIndex].w = PackHairVisDepthCoverage(SceneDepthTexture.Load(uint3(Coord, 0)), 1.0f);
 			}
@@ -1010,7 +1005,7 @@ void RasterCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : 
 			else
 			{
 				uint PrimID = VisTilePrims[PrimOffset + Prim];
-				PrimMatID = PackHairVisPrimitiveMaterialId(PrimID, HairMaterialId);
+				PrimMatID = PackHairVisControlPointMaterialId(PrimID, HairMaterialId);
 
 				uint TypeDummy;
 				CalcHomogenousPosAndRad(HairStrandsVF_PositionBuffer[PrimID], group_PositionOffset, SP0, Rad0, TypeDummy);
@@ -1144,7 +1139,7 @@ void RasterCS(uint DispatchThreadID : SV_DispatchThreadID, uint GroupThreadID : 
 
 				Coord += uint2(((PackedTileMin >> 0) & 0xffff), ((PackedTileMin >> 16) & 0xffff));
 
-				if (group_SubTile[LinearIndex].y != GetInvalidHairPrimitiveId())
+				if (group_SubTile[LinearIndex].y != GetInvalidHairControlPointId())
 				{
 					uint oldValue;
 					InterlockedMax(OutDepthCovTexture[uint3(Coord, 0)], group_SubTile[LinearIndex].x, oldValue);
@@ -1265,7 +1260,7 @@ void Plot(int2 Coord, float4 P0, float4 P1, float Rad0, float Rad1, float Segmen
 		if (PackedDepthCov > group_SubTileSceneDepth[LinearIndex])
 		{
 			const float Rad = ComputePerspectiveCorrectRadius(Rad0, Rad1, Alpha, P0.w, P1.w);
-			const uint HairCount = min(Rad, 0.5f) * 2.0f * 1000.0f * SampleWeight;
+			const uint HairCount = min(Rad, 0.5f) * 2.0f * 1000.0f * CoverageScale;
 
 			const uint CoverageMask = GetCoverageMask(Coord, P0.xy, P1.xy);
 
@@ -1359,7 +1354,7 @@ void RasterMultiSampleCS(uint DispatchThreadID : SV_DispatchThreadID, uint Group
 		if (bThreadValid)
 		{
 			const uint PrimID = VisTilePrims[PrimOffset + Prim];
-			PrimMatID = PackHairVisPrimitiveMaterialId(PrimID, HairMaterialId);
+			PrimMatID = PackHairVisControlPointMaterialId(PrimID, HairMaterialId);
 
 			uint Type;
 			CalcHomogenousPosAndRad(HairStrandsVF_PositionBuffer[PrimID], group_PositionOffset, SP0, Rad0, Type);
@@ -1393,7 +1388,7 @@ void RasterMultiSampleCS(uint DispatchThreadID : SV_DispatchThreadID, uint Group
 				{
 					const uint HairDepth = OutDepthCovTexture[uint3(Coord, SampleIdx)];
 					group_SubTileHairDepth[SampleIdx][GroupThreadID] = HairDepth;
-					group_SubTilePrimMatID[SampleIdx][GroupThreadID] = GetInvalidHairPrimitiveId();
+					group_SubTilePrimMatID[SampleIdx][GroupThreadID] = GetInvalidHairControlPointId();
 				}
 			}
 
@@ -1411,8 +1406,8 @@ void RasterMultiSampleCS(uint DispatchThreadID : SV_DispatchThreadID, uint Group
 				
 				if (bVisible)
 				{
-					const float2 SP0Clipped = lerp(SP0, SP1, T.x);
-					const float2 SP1Clipped = lerp(SP0, SP1, T.y);
+					const float2 SP0Clipped = lerp(SP0, SP1, T.x).xy;
+					const float2 SP1Clipped = lerp(SP0, SP1, T.y).xy;
 					const bool bIsSteep = abs(SP1.x - SP0.x) < abs(SP1.y - SP0.y);
 					const float X0 = bIsSteep ? min(SP0Clipped.y, SP1Clipped.y) : min(SP0Clipped.x, SP1Clipped.x);
 					const float X1 = bIsSteep ? max(SP0Clipped.y, SP1Clipped.y) : max(SP0Clipped.x, SP1Clipped.x);
@@ -1452,7 +1447,7 @@ void RasterMultiSampleCS(uint DispatchThreadID : SV_DispatchThreadID, uint Group
 					const uint3 SampleCoord = uint3(Coord, SampleIdx);
 					
 					const uint PrimMatID = group_SubTilePrimMatID[SampleIdx][GroupThreadID];
-					if (PrimMatID != GetInvalidHairPrimitiveId())
+					if (PrimMatID != GetInvalidHairControlPointId())
 					{
 						const uint HairDepth = group_SubTileHairDepth[SampleIdx][GroupThreadID];
 

@@ -29,6 +29,7 @@
 #include "WorldPartition/WorldPartitionActorDescUtils.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
+#include "Editor.h"
 #include "EditorWorldUtils.h"
 #include "PackageHelperFunctions.h"
 #include "ShaderCompiler.h"
@@ -514,7 +515,7 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 			FText OutError;
 			if (!GatherManifestHelper->AddDependency(ManifestDependency, &OutError))
 			{
-				UE_LOG(LogGatherTextFromAssetsCommandlet, Error, TEXT("The GatherTextFromAssets commandlet couldn't load the specified manifest dependency: '%'. %s"), *ManifestDependency, *OutError.ToString());
+				UE_LOG(LogGatherTextFromAssetsCommandlet, Error, TEXT("The GatherTextFromAssets commandlet couldn't load the specified manifest dependency: '%s'. %s"), *ManifestDependency, *OutError.ToString());
 				HasFailedToAddManifestDependency = true;
 			}
 		}
@@ -543,6 +544,17 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 		if (HasFailedToPreloadAnyModules)
 		{
 			return -1;
+		}
+	}
+
+	// If the editor has loaded a persistent world then create an empty world prior to starting the asset gather
+	// This avoids any issues when loading and initializing worlds during the gather, as WP needs to re-initialize the world
+	if (GEditor)
+	{
+		if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+			EditorWorld && !FPackageName::IsTempPackage(FNameBuilder(EditorWorld->GetPackage()->GetFName()).ToView()))
+		{
+			GEditor->CreateNewMapForEditing(/*bPromptForSave*/false);
 		}
 	}
 
@@ -681,7 +693,7 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 		}
 
 		// Filter out assets whose package file paths do not pass the "fuzzy path" filters.
-		if (FuzzyPathMatcher.TestPath(PackageFilePathWithExtension) != FFuzzyPathMatcher::Included)
+		if (FuzzyPathMatcher.TestPath(PackageFilePathWithExtension) != FFuzzyPathMatcher::EPathMatch::Included)
 		{
 			return true;
 		}

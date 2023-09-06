@@ -160,67 +160,74 @@ namespace Metasound
 				InputValues.Add(InputCollection.GetDataReadReferenceOrConstructWithVertexDefault<ValueType>(InputInterface, GetInputValueName(i), InParams.OperatorSettings));
 			}
 
-			return MakeUnique<TTriggerRouteOperator<ValueType, NumInputs>>(InParams.OperatorSettings, MoveTemp(InputTriggers), MoveTemp(InputValues));
+			return MakeUnique<TTriggerRouteOperator<ValueType, NumInputs>>(InParams, MoveTemp(InputTriggers), MoveTemp(InputValues));
 		}
 
-		TTriggerRouteOperator(const FOperatorSettings& InSettings, TArray<FTriggerReadRef>&& InInputTriggers, TArray<TDataReadReference<ValueType>>&& InInputValues)
+		TTriggerRouteOperator(const FCreateOperatorParams& InParams, TArray<FTriggerReadRef>&& InInputTriggers, TArray<TDataReadReference<ValueType>>&& InInputValues)
 			: InputTriggers(MoveTemp(InInputTriggers))
 			, InputValues(MoveTemp(InInputValues))
-			, OutputTrigger(FTriggerWriteRef::CreateNew(InSettings))
-			, OutputValue(TDataWriteReferenceFactory<ValueType>::CreateAny(InSettings))
+			, OutputTrigger(FTriggerWriteRef::CreateNew(InParams.OperatorSettings))
+			, OutputValue(TDataWriteReferenceFactory<ValueType>::CreateAny(InParams.OperatorSettings))
 		{
-			check(InputValues.Num() > 0)
-			CurrentIndex = 0;
+			check(InputValues.Num() > 0);
 			
-			// Do the initial trigger input to determine the init index
-			for (uint32 i = 0; i < NumInputs; ++i)
-			{
-				InputTriggers[i]->ExecuteBlock(
-					[&](int32 StartFrame, int32 EndFrame)
-					{
-					},
-					[this, i](int32 StartFrame, int32 EndFrame)
-					{
-						CurrentIndex = i;
-					}
-				);
-			}
-			
-			*OutputValue = *InputValues[CurrentIndex];
+			// Call Update() to initialize output value and determine initial
+			// trigger index.
+			Update();
 		}
 
 		virtual ~TTriggerRouteOperator() = default;
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace TriggerRouteVertexNames;
+			for (uint32 i = 0; i < NumInputs; ++i)
+			{
+				InOutVertexData.BindReadVertex(GetInputTriggerName(i), InputTriggers[i]);
+				InOutVertexData.BindReadVertex(GetInputValueName(i), InputValues[i]);
+			}
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace TriggerRouteVertexNames;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputTrigger), OutputTrigger);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputValue), OutputValue);
+		}
 
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			using namespace TriggerRouteVertexNames;
-
-			FDataReferenceCollection Inputs;
-			for (uint32 i = 0; i < NumInputs; ++i)
-			{
-				Inputs.AddDataReadReference(GetInputTriggerName(i), InputTriggers[i]);
-				Inputs.AddDataReadReference(GetInputValueName(i), InputValues[i]);
-			}
-
-			return Inputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			using namespace TriggerRouteVertexNames;
-
-			FDataReferenceCollection Outputs;
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputTrigger), OutputTrigger);
-			Outputs.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputValue), OutputValue);
-
-			return Outputs;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		void Execute()
 		{
 			OutputTrigger->AdvanceBlock();
+			Update();
+		}
 
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			OutputTrigger->Reset();
+			CurrentIndex = 0;
+			Update();
+		}
+
+	private:
+
+		void Update()
+		{
 			for (uint32 i = 0; i < NumInputs; ++i)
 			{
 				InputTriggers[i]->ExecuteBlock(
@@ -237,8 +244,6 @@ namespace Metasound
 
 			*OutputValue = *InputValues[CurrentIndex];
 		}
-
-	private:
 
 		TArray<FTriggerReadRef> InputTriggers;
 		TArray<TDataReadReference<ValueType>> InputValues;

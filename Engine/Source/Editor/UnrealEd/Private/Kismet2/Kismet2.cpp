@@ -414,6 +414,17 @@ void FKismetEditorUtilities::CreateDefaultEventGraphs(UBlueprint* Blueprint)
 
 extern UNREALED_API FSecondsCounterData BlueprintCompileAndLoadTimerData;
 
+/** Create a new Blueprint and initialize it to a valid state but uses the associated blueprint types. */
+UBlueprint* FKismetEditorUtilities::CreateBlueprint(UClass* ParentClass, UObject* Outer, const FName NewBPName,	EBlueprintType BlueprintType, FName CallingContext)
+{
+	UClass* BlueprintClassType = UBlueprint::StaticClass();
+	UClass* BlueprintGeneratedClassType = UBlueprintGeneratedClass::StaticClass();
+	const IKismetCompilerInterface& KismetCompilerModule = FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
+	KismetCompilerModule.GetBlueprintTypesForClass(ParentClass, BlueprintClassType, BlueprintGeneratedClassType);
+
+	return CreateBlueprint(ParentClass, Outer, NewBPName, BlueprintType, BlueprintClassType, BlueprintGeneratedClassType, CallingContext);
+}
+
 /** Create a new Blueprint and initialize it to a valid state. */
 UBlueprint* FKismetEditorUtilities::CreateBlueprint(UClass* ParentClass, UObject* Outer, const FName NewBPName, EBlueprintType BlueprintType, TSubclassOf<UBlueprint> BlueprintClassType, TSubclassOf<UBlueprintGeneratedClass> BlueprintGeneratedClassType, FName CallingContext)
 {
@@ -425,6 +436,9 @@ UBlueprint* FKismetEditorUtilities::CreateBlueprint(UClass* ParentClass, UObject
 	{
 		BlueprintType = BPTYPE_Const;
 	}
+
+	const UBlueprintEditorSettings* Settings = GetDefault<UBlueprintEditorSettings>();
+	check(Settings);
 	
 	// Create new UBlueprint object
 	UBlueprint* NewBP = NewObject<UBlueprint>(Outer, *BlueprintClassType, NewBPName, RF_Public | RF_Standalone | RF_Transactional | RF_LoadCompleted);
@@ -453,10 +467,14 @@ UBlueprint* FKismetEditorUtilities::CreateBlueprint(UClass* ParentClass, UObject
 		NewBP->SimpleConstructionScript->SetFlags(RF_Transactional);
 		NewBP->LastEditedDocuments.Add(ToRawPtr(NewBP->SimpleConstructionScript));
 
-		UEdGraph* UCSGraph = FKismetEditorUtilities::CreateUserConstructionScript(NewBP);
+		// Note: UCS graph creation may be restricted due to editor permissions.
+		if (Settings->IsFunctionAllowed(NewBP, UEdGraphSchema_K2::FN_UserConstructionScript))
+		{
+			UEdGraph* UCSGraph = FKismetEditorUtilities::CreateUserConstructionScript(NewBP);
 
-		NewBP->LastEditedDocuments.Add(UCSGraph);
-		UCSGraph->bAllowDeletion = false;
+			NewBP->LastEditedDocuments.Add(UCSGraph);
+			UCSGraph->bAllowDeletion = false;
+		}
 	}
 
 	// Create default event graph(s)
@@ -508,8 +526,7 @@ UBlueprint* FKismetEditorUtilities::CreateBlueprint(UClass* ParentClass, UObject
 	// Mark the BP as being regenerated, so it will not be confused as needing to be loaded and regenerated when a referenced BP loads.
 	NewBP->bHasBeenRegenerated = true;
 
-	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
-	if(Settings && Settings->bSpawnDefaultBlueprintNodes)
+	if(Settings->bSpawnDefaultBlueprintNodes)
 	{
 		// Only add default events if there is an ubergraph and they are supported
 		if(NewBP->UbergraphPages.Num() && FBlueprintEditorUtils::DoesSupportEventGraphs(NewBP))
@@ -650,7 +667,12 @@ UK2Node_Event* FKismetEditorUtilities::AddDefaultEventNode(UBlueprint* InBluepri
 	EventReference.SetExternalMember(InEventName, InEventClass);
 
 	// Prevent events that are hidden in the Blueprint's class from being auto-generated.
-	if(!FObjectEditorUtils::IsFunctionHiddenFromClass(EventReference.ResolveMember<UFunction>(InBlueprint), InBlueprint->ParentClass))
+	const bool bIsFunctionVisible = !FObjectEditorUtils::IsFunctionHiddenFromClass(EventReference.ResolveMember<UFunction>(InBlueprint), InBlueprint->ParentClass);
+	
+	// Prevent events that are not allowed in the editor (due to permission settings).
+	const bool bIsFunctionAllowed = GetDefault<UBlueprintEditorSettings>()->IsFunctionAllowed(InBlueprint, InEventName);
+
+	if(bIsFunctionVisible && bIsFunctionAllowed)
 	{
 		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 

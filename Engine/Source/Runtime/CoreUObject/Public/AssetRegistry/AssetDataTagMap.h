@@ -27,7 +27,7 @@ namespace FixedTagPrivate { class FStoreBuilder; }
  * [package].[object]
  * [package]
  */
-struct COREUOBJECT_API FAssetRegistryExportPath
+struct FAssetRegistryExportPath
 {
 PRAGMA_DISABLE_DEPRECATION_WARNINGS // Compilers can complain about deprecated members in compiler generated code
 	FAssetRegistryExportPath() = default;
@@ -35,10 +35,10 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS // Compilers can complain about deprecated m
 	FAssetRegistryExportPath(const FAssetRegistryExportPath&) = default;
 	FAssetRegistryExportPath& operator=(FAssetRegistryExportPath&&) = default;
 	FAssetRegistryExportPath& operator=(const FAssetRegistryExportPath&) = default;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+COREUOBJECT_API PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	explicit FAssetRegistryExportPath(FWideStringView String);
-	explicit FAssetRegistryExportPath(FAnsiStringView String);
+	COREUOBJECT_API explicit FAssetRegistryExportPath(FAnsiStringView String);
 
 	FTopLevelAssetPath ClassPath;
 	UE_DEPRECATED(5.1, "Class names are now represented by path names. Please use ClassPath member")
@@ -46,11 +46,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FName Package;
 	FName Object;
 
-	FString ToString() const;
-	FName ToName() const;
-	void ToString(FStringBuilderBase& Out) const;
-	FString ToPath() const;
-	void ToPath(FStringBuilderBase& Out) const;
+	COREUOBJECT_API FString ToString() const;
+	COREUOBJECT_API FName ToName() const;
+	COREUOBJECT_API void ToString(FStringBuilderBase& Out) const;
+	COREUOBJECT_API FString ToPath() const;
+	COREUOBJECT_API void ToPath(FStringBuilderBase& Out) const;
 	FTopLevelAssetPath ToTopLevelAssetPath() const
 	{
 		return FTopLevelAssetPath(Package, Object);
@@ -114,19 +114,19 @@ namespace FixedTagPrivate
 	};
 
 	// Handle to a tag value owned by a managed FStore
-	struct COREUOBJECT_API FValueHandle
+	struct FValueHandle
 	{
 		uint32 StoreIndex;
 		FValueId Id;
 
-		FString						AsDisplayString() const;
-		FString						AsStorageString() const;
-		FName						AsName() const;
-		FAssetRegistryExportPath	AsExportPath() const;
-		bool						AsText(FText& Out) const;
-		bool						AsMarshalledText(FMarshalledText& Out) const;
-		bool						Equals(FStringView Str) const;
-		bool						Contains(const TCHAR* Str) const;
+		COREUOBJECT_API FString						AsDisplayString() const;
+		COREUOBJECT_API FString						AsStorageString() const;
+		COREUOBJECT_API FName						AsName() const;
+		COREUOBJECT_API FAssetRegistryExportPath	AsExportPath() const;
+		COREUOBJECT_API bool						AsText(FText& Out) const;
+		COREUOBJECT_API bool						AsMarshalledText(FMarshalledText& Out) const;
+		COREUOBJECT_API bool						Equals(FStringView Str) const;
+		COREUOBJECT_API bool						Contains(const TCHAR* Str) const;
 
 	private:
 		template <bool bForStorage>
@@ -192,7 +192,7 @@ namespace FixedTagPrivate
  * Helps avoid needless FString conversions when using fixed / cooked tag values
  * that are stored as FName, FText or FAssetRegistryExportPath.
  */
-class COREUOBJECT_API FAssetTagValueRef
+class FAssetTagValueRef
 {
 	friend class FAssetDataTagMapSharedView;
 
@@ -255,20 +255,17 @@ public:
 
 	bool						IsSet() const { return Bits != 0; }
 
-	FString						AsString() const;
-	FName						AsName() const;
-	FAssetRegistryExportPath	AsExportPath() const;
-	FText						AsText() const;
-	bool						TryGetAsText(FText& Out) const; // @return false if value isn't a localized string
+	COREUOBJECT_API FString						AsString() const;
+	COREUOBJECT_API FName						AsName() const;
+	COREUOBJECT_API FAssetRegistryExportPath	AsExportPath() const;
+	COREUOBJECT_API FText						AsText() const;
+	COREUOBJECT_API bool						TryGetAsText(FText& Out) const; // @return false if value isn't a localized string
 
 	FString						GetValue() const { return AsString(); }
 	/** Coerce the type to a Complex String capable of representing the type */
 	FString						GetStorageString() const { return ToLoose(); }
 
-	bool						Equals(FStringView Str) const;
-
-	UE_DEPRECATED(4.27, "Use AsString(), AsName(), AsExportPath() or AsText() instead. ")
-	operator FString () const { return AsString(); }
+	COREUOBJECT_API bool		Equals(FStringView Str) const;
 
 private:
 	/** Return whether this's value is a MarshalledFText, and copy it into out parameter if so */
@@ -277,7 +274,7 @@ private:
 	 * Copy this's value (whether loose or fixed) into the loose format.
 	 * The returned loose value is in StorageFormat (e.g. complex strings) rather than display format.
 	 */
-	FString						ToLoose() const;
+	COREUOBJECT_API FString						ToLoose() const;
 
 	friend class FixedTagPrivate::FStoreBuilder;
 	friend FAssetRegistryState;
@@ -378,19 +375,6 @@ public:
 		return FindTag(Tag).Equals(Value);
 	}
 
-	UE_DEPRECATED(4.27, "Use FindTag().As[String|Name|Text/ExportPath]() instead, this checks internally. ")
-	FString FindChecked(FName Key) const
-	{
-		return FindTag(Key).AsString();
-	}
-	
-	/** Find a value by key (default value if not found) */
-	UE_DEPRECATED(4.27, "Use FindTag() instead. ")
-	FString FindRef(FName Key) const
-	{
-		return FindTag(Key).AsString();
-	}
-
 	/** Determine whether a key is present in the map */
 	bool Contains(FName Key) const
 	{
@@ -406,12 +390,6 @@ public:
 		}
 
 		return Loose != nullptr ? Loose->Num() : 0;
-	}
-
-	UE_DEPRECATED(4.27, "Use CopyMap() instead if you really need to make a copy. ")
-	FAssetDataTagMap GetMap() const
-	{
-		return CopyMap();
 	}
 
 	/** Copy map contents to a loose FAssetDataTagMap */
@@ -436,9 +414,6 @@ public:
 	// Note that FAssetDataTagMap isn't sorted and that order matters
 	COREUOBJECT_API friend bool operator==(const FAssetDataTagMapSharedView& A, const FAssetDataTagMap& B);
 	COREUOBJECT_API friend bool operator==(const FAssetDataTagMapSharedView& A, const FAssetDataTagMapSharedView& B);
-
-	UE_DEPRECATED(4.27, "Use FMemoryCounter instead. ")
-	uint32 GetAllocatedSize() const { return 0; }
 
 	///** Shrinks the contained map */
 	void Shrink();

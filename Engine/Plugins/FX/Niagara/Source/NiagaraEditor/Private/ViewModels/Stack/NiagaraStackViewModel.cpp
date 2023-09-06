@@ -3,7 +3,7 @@
 #include "ViewModels/Stack/NiagaraStackViewModel.h"
 
 #include "NiagaraEmitterEditorData.h"
-#include "NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
 #include "NiagaraStackEditorData.h"
 #include "NiagaraSystem.h"
 #include "NiagaraSystemEditorData.h"
@@ -53,6 +53,18 @@ UNiagaraStackEditorData* UNiagaraStackViewModel::FTopLevelViewModel::GetStackEdi
 	else
 	{
 		return nullptr;
+	}
+}
+
+void UNiagaraStackViewModel::FTopLevelViewModel::GetMessageStores(TArray<FNiagaraMessageSourceAndStore>& OutMessageStores)
+{
+	if (SystemViewModel.IsValid())
+	{
+		SystemViewModel->GetSystemMessageStores(OutMessageStores);
+	}
+	else if (EmitterHandleViewModel.IsValid())
+	{
+		EmitterHandleViewModel->GetEmitterViewModel()->GetEmitterMessageStores(OutMessageStores);
 	}
 }
 
@@ -121,7 +133,7 @@ void UNiagaraStackViewModel::InitializeWithViewModels(TSharedPtr<FNiagaraSystemV
 
 			if (UNiagaraEmitter* Emitter = EmitterViewModel->GetEmitter().Emitter)
 			{
-				EmitterViewModel->GetOrCreateEditorData().OnSummaryViewStateChanged().AddUObject(this, &UNiagaraStackViewModel::RequestRefreshDeferred);
+				EmitterViewModel->GetEditorData().OnSummaryViewStateChanged().AddUObject(this, &UNiagaraStackViewModel::RequestRefreshDeferred);
 			}
 
 		}
@@ -170,7 +182,7 @@ void UNiagaraStackViewModel::InitializeWithRootEntry(UNiagaraStackEntry* InRootE
 	if (EmitterHandleViewModelPinned.IsValid())
 	{
 		TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel = EmitterHandleViewModelPinned->GetEmitterViewModel();
-		EmitterViewModel->GetOrCreateEditorData().OnSummaryViewStateChanged().RemoveAll(this);
+		EmitterViewModel->GetEditorData().OnSummaryViewStateChanged().RemoveAll(this);
 	}
 }
 
@@ -198,7 +210,7 @@ void UNiagaraStackViewModel::Reset()
 		EmitterViewModel->OnParentRemoved().RemoveAll(this);
 		if (EmitterViewModel->GetEmitter().GetEmitterData())
 		{
-			EmitterViewModel->GetOrCreateEditorData().OnSummaryViewStateChanged().RemoveAll(this);
+			EmitterViewModel->GetEditorData().OnSummaryViewStateChanged().RemoveAll(this);
 		}
 	}
 
@@ -363,11 +375,13 @@ void UNiagaraStackViewModel::UndismissAllIssues()
 	FScopedTransaction ScopedTransaction(LOCTEXT("UnDismissIssues", "Undismiss issues"));
 
 	TArray<UNiagaraStackEditorData*> StackEditorDatas;
+	TArray<FNiagaraMessageSourceAndStore> MessageStores;
 	for (TSharedRef<UNiagaraStackViewModel::FTopLevelViewModel> TopLevelViewModel : TopLevelViewModels)
 	{
 		if (TopLevelViewModel->IsValid())
 		{
 			StackEditorDatas.AddUnique(TopLevelViewModel->GetStackEditorData());
+			TopLevelViewModel->GetMessageStores(MessageStores);
 		}
 	}
 
@@ -376,7 +390,14 @@ void UNiagaraStackViewModel::UndismissAllIssues()
 		StackEditorData->Modify();
 		StackEditorData->UndismissAllIssues();
 	}
-	
+
+	for (const FNiagaraMessageSourceAndStore& MessageStore : MessageStores)
+	{
+		MessageStore.GetSource()->Modify();
+		MessageStore.GetStore()->ClearDismissedMessages();
+	}
+
+	RootEntry->GetSystemViewModel()->RefreshAssetMessagesDeferred();
 	RootEntry->RefreshChildren();
 }
 
@@ -384,9 +405,24 @@ bool UNiagaraStackViewModel::HasDismissedStackIssues()
 {
 	for (TSharedRef<FTopLevelViewModel> TopLevelViewModel : TopLevelViewModels)
 	{
-		if (TopLevelViewModel->IsValid() && TopLevelViewModel->GetStackEditorData()->GetDismissedStackIssueIds().Num() > 0)
+		if (TopLevelViewModel->IsValid())
 		{
-			return true;
+			if (TopLevelViewModel->GetStackEditorData()->GetDismissedStackIssueIds().Num() > 0)
+			{
+				return true;
+			}
+			else
+			{
+				TArray<FNiagaraMessageSourceAndStore> MessageStores;
+				TopLevelViewModel->GetMessageStores(MessageStores);
+				for (const FNiagaraMessageSourceAndStore& MessageStore : MessageStores)
+				{
+					if (MessageStore.GetStore()->HasDismissedMessages())
+					{
+						return true;
+					}
+				}
+			}
 		}
 	}
 	return false;
@@ -761,7 +797,7 @@ void UNiagaraStackViewModel::SetLastScrollPosition(double InLastScrollPosition)
 	// TODO: Fix this with the new overview paradigm.
 	if (EmitterHandleViewModel.IsValid())
 	{
-		EmitterHandleViewModel.Pin()->GetEmitterViewModel()->GetOrCreateEditorData().GetStackEditorData().SetLastScrollPosition(InLastScrollPosition);
+		EmitterHandleViewModel.Pin()->GetEmitterViewModel()->GetEditorData().GetStackEditorData().SetLastScrollPosition(InLastScrollPosition);
 	}
 }
 

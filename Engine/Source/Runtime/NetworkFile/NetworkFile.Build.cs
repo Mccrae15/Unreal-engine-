@@ -12,13 +12,9 @@ public class NetworkFile : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"Networking",
 				"Sockets",
 				"CookOnTheFly"
 			});
-
-		PublicIncludePaths.Add("Runtime/CoreUObject/Public/UObject");
-		PublicIncludePaths.Add("Runtime/CoreUObject/Public");
 
 		PublicDefinitions.Add("ENABLE_HTTP_FOR_NETWORK_FILE=0");
 	}

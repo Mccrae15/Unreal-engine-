@@ -125,7 +125,7 @@ namespace Metasound
 			FScopeLock ScopeLock(&LazyInitCommandCritSection);
 			if (LazyInitCommands.Num() >= MaxNumNodesAndDatatypesToInitialize)
 			{
-				UE_LOG(LogMetaSound, Warning, TEXT("Registering more that %d nodes and datatypes for metasounds! Consider increasing MetasoundFrontendRegistryContainer::MaxNumNodesAndDatatypesToInitialize."));
+				UE_LOG(LogMetaSound, Warning, TEXT("Registering more that %d nodes and datatypes for metasounds! Consider increasing MetasoundFrontendRegistryContainer::MaxNumNodesAndDatatypesToInitialize."), MaxNumNodesAndDatatypesToInitialize);
 			}
 
 			LazyInitCommands.Add(MoveTemp(InFunc));
@@ -220,12 +220,14 @@ namespace Metasound
 				Key = NodeRegistryKey::CreateKey(Entry->GetClassInfo());
 
 				// check to see if an identical node was already registered, and log
-				ensureAlwaysMsgf(
-					!RegisteredNodes.Contains(Key),
-					TEXT("Node with registry key '%s' already registered. "
-						"The previously registered node will be overwritten. "
-						"This can happen if two classes share the same name or if METASOUND_REGISTER_NODE is defined in a public header."),
-					*Key);
+				if (RegisteredNodes.Contains(Key))
+				{
+					TSharedRef<INodeRegistryEntry, ESPMode::ThreadSafe> Node = RegisteredNodes[Key];
+					const FNodeClassInfo& ClassInfo = Node->GetClassInfo();
+					UE_LOG(LogMetaSound, Error, TEXT("Node with registry key '%s' already registered by asset '%s'. The previously registered node will be overwritten. " 
+						"This can happen if two classes share the same name or if METASOUND_REGISTER_NODE is defined in a public header."
+					), *Key, *ClassInfo.AssetPath.ToString());
+				}
 
 				// Store update to newly registered node in history so nodes
 				// can be queried by transaction ID
@@ -367,6 +369,16 @@ namespace Metasound
 			}
 
 			return false;
+		}
+
+		const TSet<FMetasoundFrontendVersion>* FRegistryContainerImpl::FindImplementedInterfacesFromRegistered(const Metasound::Frontend::FNodeRegistryKey& InKey) const
+		{
+			if (const INodeRegistryEntry* Entry = FindNodeEntry(InKey))
+			{
+				return Entry->GetImplementedInterfaces();
+			}
+
+			return nullptr;
 		}
 
 		bool FRegistryContainerImpl::FindNodeClassInfoFromRegistered(const Metasound::Frontend::FNodeRegistryKey& InKey, FNodeClassInfo& OutInfo)

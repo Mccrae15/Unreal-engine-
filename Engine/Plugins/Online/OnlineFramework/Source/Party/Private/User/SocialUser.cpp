@@ -883,20 +883,13 @@ bool USocialUser::CanSendFriendInvite(ESocialSubsystem SubsystemType) const
 	{
 		//@todo DanH: Really need OssCaps or something to be able to just ask an OSS if it supports a given feature. For now, we just magically know that we only support sending XB, PSN, and WeGame invites
 		const FName PlatformOssName = USocialManager::GetSocialOssName(ESocialSubsystem::Platform);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (PlatformOssName != LIVE_SUBSYSTEM && PlatformOssName != PS4_SUBSYSTEM && !USocialSettings::IsSonyOSS(PlatformOssName) && PlatformOssName != TENCENT_SUBSYSTEM)
+		if (PlatformOssName != PS4_SUBSYSTEM && !USocialSettings::IsSonyOSS(PlatformOssName) && PlatformOssName != TENCENT_SUBSYSTEM)
 		{
 			return false;
 		}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return HasSubsystemInfo(SubsystemType) && !IsLocalUser() && !IsFriend(SubsystemType) && !IsBlocked(SubsystemType) && !IsFriendshipPending(SubsystemType);
-}
-
-void USocialUser::JoinParty(const FOnlinePartyTypeId& PartyTypeId) const
-{
-	JoinParty(PartyTypeId, PartyJoinMethod::Unspecified);
 }
 
 void USocialUser::JoinParty(const FOnlinePartyTypeId& PartyTypeId, const FName& JoinMethod) const
@@ -1092,22 +1085,19 @@ void USocialUser::HandleRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo
 	NotifyRequestToJoinRemoved(Request, Reason);
 }
 
-void USocialUser::RequestToJoinParty()
-{
-	RequestToJoinParty(PartyJoinMethod::Unspecified);
-}
-
 void USocialUser::RequestToJoinParty(const FName& JoinMethod)
 {
 	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
-	PartyInterface->RequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), IOnlinePartySystem::GetPrimaryPartyTypeId(), *GetUserId(ESocialSubsystem::Primary), FOnRequestToJoinPartyComplete::CreateUObject(this, &USocialUser::HandlePartyRequestToJoinSent, JoinMethod));
+	FPartyInvitationRecipient Recipient(*GetUserId(ESocialSubsystem::Primary));
+	Recipient.PlatformData = JoinMethod.ToString();
+	PartyInterface->RequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), IOnlinePartySystem::GetPrimaryPartyTypeId(), Recipient, FOnRequestToJoinPartyComplete::CreateUObject(this, &USocialUser::HandlePartyRequestToJoinSent, JoinMethod));
 }
 
 void USocialUser::AcceptRequestToJoinParty() const
 {
 	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetParty(IOnlinePartySystem::GetPrimaryPartyTypeId()))
 	{
-		Party->TryInviteUser(*this, ESocialPartyInviteMethod::Other, TEXT("RequestToJoin"));
+		Party->TryInviteUser(*this, ESocialPartyInviteMethod::AcceptRequestToJoin, TEXT("RequestToJoin"));
 		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
 		PartyInterface->ClearRequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), Party->GetPartyId(), *GetUserId(ESocialSubsystem::Primary), EPartyRequestToJoinRemovedReason::Accepted);
 	}
@@ -1128,15 +1118,8 @@ void USocialUser::HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, 
 
 	if (Result == ERequestToJoinPartyCompletionResult::Succeeded)
 	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		NotifyRequestToJoinSent(ExpiresAt);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 		GetOwningToolkit().OnPartyRequestToJoinSent().Broadcast(*this);
 	}
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	GetOwningToolkit().OnRequestToJoinPartyComplete(PartyLeaderId, Result);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 TSharedPtr<const IOnlinePartyJoinInfo> USocialUser::GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const
@@ -1288,7 +1271,7 @@ void USocialUser::EstablishOssInfo(const TSharedRef<FOnlineBlockedPlayer>& InBlo
 
 	if (InBlockedPlayerInfo != SubsystemInfo.BlockedPlayerInfo)
 	{
-		UE_CLOG(!SubsystemInfo.BlockedPlayerInfo.IsValid(), LogParty, Warning, TEXT("SocialUser [%s] is establishing new blocked player info on [%s], but the existing info is still valid."),
+		UE_CLOG(SubsystemInfo.BlockedPlayerInfo.IsValid(), LogParty, Warning, TEXT("SocialUser [%s] is establishing new blocked player info on [%s], but the existing info is still valid."),
 			*ToDebugString(), ToString(SubsystemType));
 
 		SubsystemInfo.BlockedPlayerInfo = InBlockedPlayerInfo;
@@ -1302,7 +1285,7 @@ void USocialUser::EstablishOssInfo(const TSharedRef<FOnlineRecentPlayer>& InRece
 
 	if (InRecentPlayerInfo != SubsystemInfo.RecentPlayerInfo)
 	{
-		UE_CLOG(!SubsystemInfo.RecentPlayerInfo.IsValid(), LogParty, Warning, TEXT("SocialUser [%s] is establishing new recent player info on [%s], but the existing info is still valid."),
+		UE_CLOG(SubsystemInfo.RecentPlayerInfo.IsValid(), LogParty, Warning, TEXT("SocialUser [%s] is establishing new recent player info on [%s], but the existing info is still valid."),
 			*ToDebugString(), ToString(SubsystemType));
 
 		SubsystemInfo.RecentPlayerInfo = InRecentPlayerInfo;

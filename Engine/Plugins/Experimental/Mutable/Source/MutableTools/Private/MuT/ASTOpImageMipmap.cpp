@@ -87,7 +87,7 @@ namespace mu
 	}
 
 
-	void ASTOpImageMipmap::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpImageMipmap::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -113,6 +113,27 @@ namespace mu
 	}
 
 
+	mu::Ptr<ASTOp> ASTOpImageMipmap::OptimiseSemantic(const FModelOptimizationOptions& options, int32 Pass) const
+	{
+		mu::Ptr<ASTOp> at;
+
+		// \TODO: This seems to fail with the bandit test model.
+		//if (Source.child())
+		//{
+		//	ASTOp::FGetImageDescContext context;
+		//	FImageDesc ChildDesc = Source.child()->GetImageDesc(false, &context);
+
+		//	if (ChildDesc.m_lods>0 && ChildDesc.m_lods>=Levels)
+		//	{
+		//		// We can skip the mipmaps, because the child will always contain all lods anyway.
+		//		at = Source.child();
+		//	}
+		//}
+
+		return at;
+	}
+
+
 	mu::Ptr<ASTOp> ASTOpImageMipmap::OptimiseSink(const FModelOptimizationOptions& options, FOptimizeSinkContext& context) const
 	{
 		mu::Ptr<ASTOp> at;
@@ -127,6 +148,15 @@ namespace mu
 			Ptr<ASTOpFixed> mop = mu::Clone<ASTOpFixed>(sourceAt);
 			mop->op.args.ImageBlankLayout.generateMipmaps = 1;    // true
 			mop->op.args.ImageBlankLayout.mipmapCount = Levels;
+			at = mop;
+			break;
+		}
+
+		case OP_TYPE::IM_PLAINCOLOUR:
+		{
+			// Set the mipmap generation on the plaincolour operation
+			Ptr<ASTOpFixed> mop = mu::Clone<ASTOpFixed>(sourceAt);
+			mop->op.args.ImagePlainColour.LODs = Levels;
 			at = mop;
 			break;
 		}
@@ -414,12 +444,20 @@ namespace mu
 					Ptr<ASTOpImagePatch> newOp = mu::Clone<ASTOpImagePatch>(at);
 					newOp->base = Visit(newOp->base.child(), newMip.get());
 					newOp->patch = Visit(newOp->patch.child(), newMip.get());
+					newAt = newOp;
 
-					// We need to add a mipmap on top to finish the mipmapping
-					mu::Ptr<ASTOpImageMipmap> topMipOp = mu::Clone<ASTOpImageMipmap>(currentMipmapOp);
-					topMipOp->Source = newOp;
-					topMipOp->bOnlyTail = true;
-					newAt = topMipOp;
+					if (currentMipmapOp->Levels != currentMipmapOp->BlockLevels						
+						// If the current levels are all of them, we will want to rebuild the mips after patch.
+						// This happens if ignoring layouts, in which case there is no top-most mipmap to ensure the tail already.
+						|| currentMipmapOp->BlockLevels == 0 
+						)
+					{
+						// We need to add a mipmap on top to finish the mipmapping
+						mu::Ptr<ASTOpImageMipmap> topMipOp = mu::Clone<ASTOpImageMipmap>(currentMipmapOp);
+						topMipOp->Source = newOp;
+						topMipOp->bOnlyTail = true;
+						newAt = topMipOp;
+					}
 				}
 				else
 				{
@@ -427,6 +465,7 @@ namespace mu
 					Ptr<ASTOpImagePatch> newOp = mu::Clone<ASTOpImagePatch>(at);
 					newOp->base = Visit(newOp->base.child(), currentMipmapOp);
 					newOp->patch = Visit(newOp->patch.child(), currentMipmapOp);
+					newAt = newOp;
 				}
 			}
 

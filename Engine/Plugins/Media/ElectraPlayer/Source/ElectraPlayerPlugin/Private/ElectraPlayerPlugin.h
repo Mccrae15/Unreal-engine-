@@ -97,16 +97,8 @@ public:
 	bool Open(const TSharedRef<FArchive, ESPMode::ThreadSafe>& Archive, const FString& OriginalUrl, const IMediaOptions* Options) override;
 	void TickInput(FTimespan DeltaTime, FTimespan Timecode) override;
 	void SetLastAudioRenderedSampleTime(FTimespan SampleTime) override;
-	bool FlushOnSeekStarted() const override
-	{
-		return true;
-	}
-	bool FlushOnSeekCompleted() const override
-	{
-		return false;
-	}
 
-	TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>, ESPMode::ThreadSafe> GetMediaMetadata() const override;
+	TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaMetadataItem>>>, ESPMode::ThreadSafe> GetMediaMetadata() const override;
 
 	bool GetPlayerFeatureFlag(EFeatureFlag flag) const override;
 
@@ -151,7 +143,6 @@ private:
 	bool SetVideoTrackFrameRate(int32 TrackIndex, int32 FormatIndex, float FrameRate) override;
 
 	IElectraPlayerResourceDelegate* PlatformCreatePlayerResourceDelegate();
-	static void PlatformSetupResourceParams(Electra::FParamDict& Params);
 
 	// IElectraPlayerAdapterDelegate impl
 	class FPlayerAdapterDelegate : public IElectraPlayerAdapterDelegate
@@ -200,7 +191,7 @@ private:
 
 	/** Current player stream metadata */
 	mutable bool bMetadataChanged = false;
-	mutable TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>, ESPMode::ThreadSafe> CurrentMetadata;
+	mutable TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaMetadataItem>>>, ESPMode::ThreadSafe> CurrentMetadata;
 
 
 	/** Output sample pools */

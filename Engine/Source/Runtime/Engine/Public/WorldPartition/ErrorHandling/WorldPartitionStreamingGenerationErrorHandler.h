@@ -8,7 +8,7 @@
 class UDataLayerInstance;
 class UDataLayerInstanceWithAsset;
 
-class ENGINE_API IStreamingGenerationErrorHandler
+class IStreamingGenerationErrorHandler
 {
 public:
 	virtual ~IStreamingGenerationErrorHandler() {}
@@ -79,13 +79,16 @@ public:
 		WorldAssetNotFound,
 		WorldAssetNotUsingExternalActors,
 		WorldAssetImcompatiblePartitioned,
-		WorldAssetHasInvalidContainer
+		WorldAssetHasInvalidContainer,
+		CirculalReference
 	};
 
 	virtual void OnLevelInstanceInvalidWorldAsset(const FWorldPartitionActorDescView& ActorDescView, FName WorldAsset, ELevelInstanceInvalidReason Reason) = 0;
 
+	virtual void OnInvalidActorFilterReference(const FWorldPartitionActorDescView& ActorDescView, const FWorldPartitionActorDescView& ReferenceActorDescView) = 0;
+
 	// Helpers
-	static FString GetActorName(const FWorldPartitionActorDescView& ActorDescView);
-	static FString GetFullActorName(const FWorldPartitionActorDescView& ActorDescView);
+	static ENGINE_API FString GetActorName(const FWorldPartitionActorDescView& ActorDescView);
+	static ENGINE_API FString GetFullActorName(const FWorldPartitionActorDescView& ActorDescView);
 };
 #endif

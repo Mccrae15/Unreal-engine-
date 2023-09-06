@@ -28,7 +28,7 @@ public:
 	virtual FString GetHeader(const FString& HeaderName) const override;
 	virtual TArray<FString> GetAllHeaders() const override;	
 	virtual FString GetContentType() const override;
-	virtual int32 GetContentLength() const override;
+	virtual uint64 GetContentLength() const override;
 	virtual const TArray<uint8>& GetContent() const override;
 	//~ End IHttpBase Interface
 
@@ -41,11 +41,11 @@ public:
 	virtual void SetContentAsString(const FString& ContentString) override;
 	virtual bool SetContentAsStreamedFile(const FString& Filename) override;
 	virtual bool SetContentFromStream(TSharedRef<FArchive, ESPMode::ThreadSafe> Stream) override;
+	virtual bool SetResponseBodyReceiveStream(TSharedRef<FArchive> Stream) override;
 	virtual void SetHeader(const FString& HeaderName, const FString& HeaderValue) override;
 	virtual void AppendToHeader(const FString& HeaderName, const FString& AdditionalHeaderValue) override;
 	virtual bool ProcessRequest() override;
 	virtual void CancelRequest() override;
-	virtual EHttpRequestStatus::Type GetStatus() const override;
 	virtual const FHttpResponsePtr GetResponse() const override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual float GetElapsedTime() const override;
@@ -100,9 +100,6 @@ private:
 
 	/** Current status of request being processed */
 	EHttpRequestStatus::Type State = EHttpRequestStatus::NotStarted;
-
-	/** Status of request available via GetStatus */
-	EHttpRequestStatus::Type CompletionStatus = EHttpRequestStatus::NotStarted;
 
 	/** */
 	TSharedPtr<FWinHttpConnectionHttp, ESPMode::ThreadSafe> Connection;

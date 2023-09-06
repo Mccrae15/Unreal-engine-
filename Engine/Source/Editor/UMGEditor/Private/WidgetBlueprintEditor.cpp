@@ -38,9 +38,9 @@
 #include "Blueprint/WidgetTree.h"
 #include "WidgetBlueprintEditorUtils.h"
 #include "WorkflowOrientedApp/ApplicationMode.h"
-#include "BlueprintModes/WidgetDebugApplicationMode.h"
 #include "BlueprintModes/WidgetDesignerApplicationMode.h"
 #include "BlueprintModes/WidgetGraphApplicationMode.h"
+#include "BlueprintModes/WidgetPreviewApplicationMode.h"
 #include "WidgetModeManager.h"
 
 #include "WidgetBlueprintEditorToolbar.h"
@@ -53,6 +53,9 @@
 
 #include "Animation/MovieSceneWidgetMaterialTrack.h"
 #include "Animation/WidgetMaterialTrackUtilities.h"
+#include "MVVM/ObjectBindingModelStorageExtension.h"
+#include "MVVM/ViewModels/ObjectBindingModel.h"
+#include "MVVM/ViewModels/SequencerEditorViewModel.h"
 
 #include "ScopedTransaction.h"
 
@@ -64,6 +67,7 @@
 #include "GameProjectGenerationModule.h"
 #include "Tools/ToolCompatible.h"
 
+#include "Preview/PreviewMode.h"
 #include "Palette/SPaletteViewModel.h"
 #include "Library/SLibraryViewModel.h"
 
@@ -126,6 +130,7 @@ FWidgetBlueprintEditor::~FWidgetBlueprintEditor()
 		{
 			Sequencer->OnMovieSceneDataChanged().RemoveAll(this);
 			Sequencer->OnMovieSceneBindingsPasted().RemoveAll(this);
+			Sequencer->Close();
 			Sequencer.Reset();
 		}
 	}
@@ -542,7 +547,7 @@ void FWidgetBlueprintEditor::RegisterApplicationModes(const TArray<UBlueprint*>&
 {
 	//Super::RegisterApplicationModes(InBlueprints, bShouldOpenInDefaultsMode);
 
-	if ( InBlueprints.Num() == 1 )
+	if (InBlueprints.Num() == 1)
 	{
 		TSharedPtr<FWidgetBlueprintEditor> ThisPtr(SharedThis(this));
 
@@ -551,12 +556,13 @@ void FWidgetBlueprintEditor::RegisterApplicationModes(const TArray<UBlueprint*>&
 		TempModeList.Add(MakeShared<FWidgetDesignerApplicationMode>(ThisPtr));
 		TempModeList.Add(MakeShared<FWidgetGraphApplicationMode>(ThisPtr));
 
-		if (FWidgetBlueprintApplicationModes::IsDebugModeEnabled())
+		if (FWidgetBlueprintApplicationModes::IsPreviewModeEnabled())
 		{
-			TempModeList.Add(MakeShared<FWidgetDebugApplicationMode>(ThisPtr));
+			TempModeList.Add(MakeShared<UE::UMG::Editor::FWidgetPreviewApplicationMode>(ThisPtr));
+			PreviewMode = MakeShared<UE::UMG::Editor::FPreviewMode>();
 		}
 
-		for ( TSharedRef<FApplicationMode>& AppMode : TempModeList )
+		for (TSharedRef<FApplicationMode>& AppMode : TempModeList)
 		{
 			AddApplicationMode(AppMode->GetModeName(), AppMode);
 		}
@@ -769,7 +775,7 @@ bool FWidgetBlueprintEditor::CanDeleteSelectedWidgets()
 void FWidgetBlueprintEditor::DeleteSelectedWidgets()
 {
 	TSet<FWidgetReference> Widgets = GetSelectedWidgets();
-	FWidgetBlueprintEditorUtils::DeleteWidgets(GetWidgetBlueprintObj(), Widgets);
+	FWidgetBlueprintEditorUtils::DeleteWidgets(SharedThis(this), GetWidgetBlueprintObj(), Widgets);
 
 	// Clear the selection now that the widget has been deleted.
 	TSet<FWidgetReference> Empty;
@@ -797,7 +803,7 @@ bool FWidgetBlueprintEditor::CanCutSelectedWidgets()
 void FWidgetBlueprintEditor::CutSelectedWidgets()
 {
 	TSet<FWidgetReference> Widgets = GetSelectedWidgets();
-	FWidgetBlueprintEditorUtils::CutWidgets(GetWidgetBlueprintObj(), Widgets);
+	FWidgetBlueprintEditorUtils::CutWidgets(SharedThis(this), GetWidgetBlueprintObj(), Widgets);
 }
 
 const UWidgetAnimation* FWidgetBlueprintEditor::RefreshCurrentAnimation()
@@ -937,7 +943,7 @@ void FWidgetBlueprintEditor::Tick(float DeltaTime)
 	// update is deferred to tick since some edit operations (e.g. drag/drop) cause large numbers of changes to the data.
 	if ( bRefreshGeneratedClassAnimations )
 	{
-		TArray<UWidgetAnimation*>& PreviewAnimations = Cast<UWidgetBlueprintGeneratedClass>( PreviewBlueprint->GeneratedClass )->Animations;
+		TArray<TObjectPtr<UWidgetAnimation>>& PreviewAnimations = Cast<UWidgetBlueprintGeneratedClass>( PreviewBlueprint->GeneratedClass )->Animations;
 		PreviewAnimations.Empty();
 		for ( UWidgetAnimation* WidgetAnimation : PreviewBlueprint->Animations )
 		{
@@ -1035,9 +1041,7 @@ static bool MigratePropertyValue(UObject* SourceObject, UObject* DestinationObje
 void FWidgetBlueprintEditor::AddReferencedObjects( FReferenceCollector& Collector )
 {
 	Super::AddReferencedObjects( Collector );
-
-	UUserWidget* Preview = GetPreview();
-	Collector.AddReferencedObject( Preview );
+	Collector.AddReferencedObject(PreviewWidgetPtr);
 }
 
 void FWidgetBlueprintEditor::MigrateFromChain(FEditPropertyChain* PropertyThatChanged, bool bIsModify)
@@ -1576,9 +1580,9 @@ void FWidgetBlueprintEditor::Compile()
 	}
 }
 
-bool FWidgetBlueprintEditor::OnRequestClose()
+bool FWidgetBlueprintEditor::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
-	bool bAllowClose = Super::OnRequestClose();
+	bool bAllowClose = Super::OnRequestClose(InCloseReason);
 
 	// Give any active modes a chance to shutdown while the toolkit host is still alive
 	// Note: This along side with the default tool palette extension tab being closed 
@@ -1717,7 +1721,11 @@ FGraphAppearanceInfo FWidgetBlueprintEditor::GetGraphAppearance(UEdGraph* InGrap
 {
 	FGraphAppearanceInfo AppearanceInfo = Super::GetGraphAppearance(InGraph);
 
-	if ( GetBlueprintObj()->IsA(UWidgetBlueprint::StaticClass()) )
+	if (FBlueprintEditorUtils::IsEditorUtilityBlueprint(GetBlueprintObj()))
+	{
+		AppearanceInfo.CornerText = LOCTEXT("EditorUtilityWidgetAppearanceCornerText", "EDITOR UTILITY WIDGET");
+	}
+	else if ( GetBlueprintObj()->IsA(UWidgetBlueprint::StaticClass()) )
 	{
 		AppearanceInfo.CornerText = LOCTEXT("AppearanceCornerText", "WIDGET BLUEPRINT");
 	}
@@ -1968,7 +1976,7 @@ void FWidgetBlueprintEditor::OnBuildCustomContextMenuForGuid(FMenuBuilder& MenuB
 			}
 		}
 		
-		if(ValidSelectedWidgets.Num() > 0)
+		if (ValidSelectedWidgets.Num() > 0)
 		{
 			MenuBuilder.AddMenuSeparator();
 			
@@ -2018,6 +2026,11 @@ void FWidgetBlueprintEditor::OnBuildCustomContextMenuForGuid(FMenuBuilder& MenuB
 				FSlateIcon(),
 				FExecuteAction::CreateRaw(this, &FWidgetBlueprintEditor::RemoveMissingWidgetsFromTrack, ObjectBinding)
 			);
+
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("DynamicPossession", "Dynamic Possession"),
+				LOCTEXT("DynamicPossessionToolTip", "Specify a Blueprint method that will find a compatible widget for this binding"),
+				FNewMenuDelegate::CreateRaw(this, &FWidgetBlueprintEditor::AddDynamicPossessionMenu, ObjectBinding));
 		}
 	}
 }
@@ -2292,6 +2305,35 @@ void FWidgetBlueprintEditor::ReplaceTrackWithWidgets(TArray<FWidgetReference> Wi
 
 	UpdateTrackName(NewGuid);
 	SyncSequencersMovieSceneData();
+}
+
+void FWidgetBlueprintEditor::AddDynamicPossessionMenu(FMenuBuilder& MenuBuilder, FGuid ObjectId)
+{
+	using namespace UE::Sequencer;
+
+	TSharedPtr<ISequencer>& ActiveSequencer = GetSequencer();
+
+	UMovieScene* MovieScene = ActiveSequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
+	FMovieScenePossessable* Possessable = MovieScene->FindPossessable(ObjectId);
+	if (!Possessable)
+	{
+		return;
+	}
+
+	TSharedPtr<FSequencerEditorViewModel> SequencerViewModel = ActiveSequencer->GetViewModel();
+	FObjectBindingModelStorageExtension* ObjectStorage = SequencerViewModel->GetRootModel()->CastDynamic<FObjectBindingModelStorageExtension>();
+	if (!ObjectStorage)
+	{
+		return;
+	}
+
+	TSharedPtr<FObjectBindingModel> ObjectBindingModel = ObjectStorage->FindModelForObjectBinding(ObjectId);
+	if (!ObjectBindingModel)
+	{
+		return;
+	}
+
+	ObjectBindingModel->AddDynamicBindingMenu(MenuBuilder, Possessable->DynamicBinding);
 }
 
 void FWidgetBlueprintEditor::AddSlotTrack( UPanelSlot* Slot )

@@ -4,6 +4,7 @@
 
 #include "AssetRegistry/AssetData.h"
 #include "CoreMinimal.h"
+#include "ISequencer.h"
 #include "Misc/PackageName.h"
 #include "MovieScene.h"
 #include "Modules/ModuleManager.h"
@@ -12,10 +13,10 @@
 #include "UObject/UObjectGlobals.h"
 #include "TakesCoreLog.h"
 #include "Misc/Paths.h"
+#include "PackageTools.h"
 
 class UWorld;
 class ULevelSequence;
-class UMovieScene;
 
 namespace TakesUtils
 {
@@ -119,10 +120,11 @@ namespace TakesUtils
 	static AssetType* MakeNewAsset(const FString& BaseAssetPath, const FString& BaseAssetName)
 	{
 		const FString Dot(TEXT("."));
-		FString AssetPath = BaseAssetPath;
-		FString AssetName = BaseAssetName;
-		AssetName = AssetName.Replace(TEXT("."), TEXT("_"));
-		AssetName = AssetName.Replace(TEXT(" "), TEXT("_"));
+		FString SanitizedBaseAssetPath = UPackageTools::SanitizePackageName(BaseAssetPath);
+		FString SanitizedBaseAssetName = UPackageTools::SanitizePackageName(BaseAssetName);
+
+		FString AssetPath = SanitizedBaseAssetPath;
+		FString AssetName = SanitizedBaseAssetName;
 
 		AssetName = FPaths::MakeValidFileName(AssetName);
 
@@ -144,7 +146,7 @@ namespace TakesUtils
 		}
 
 		// Create the new asset in the package we just made
-		AssetPath = (BaseAssetPath / AssetName);
+		AssetPath = (SanitizedBaseAssetPath / AssetName);
 
 		FString FileName;
 		if (FPackageName::TryConvertLongPackageNameToFilename(AssetPath, FileName))
@@ -157,4 +159,11 @@ namespace TakesUtils
 
 		return nullptr;
 	}
+
+	TAKESCORE_API UWorld* DiscoverSourceWorld();
+
+	TAKESCORE_API TSharedPtr<ISequencer> OpenSequencer(ULevelSequence* LevelSequence, FText* OutError);
+	
+	/* The time at which to record. Taken from the Sequencer global time, otherwise based on timecode */
+	TAKESCORE_API FQualifiedFrameTime GetRecordTime(TSharedPtr<ISequencer> Sequencer, ULevelSequence* SequenceAsset, const FTimecode& TimecodeAtStart, bool bStartAtCurrentTimecode);
 }

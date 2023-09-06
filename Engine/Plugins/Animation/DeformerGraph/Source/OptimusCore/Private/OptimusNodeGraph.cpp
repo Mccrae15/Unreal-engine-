@@ -153,6 +153,26 @@ void UOptimusNodeGraph::PostDuplicate(EDuplicateMode::Type DuplicateMode)
 	}
 }
 
+void UOptimusNodeGraph::PostLoad()
+{
+	Super::PostLoad();
+
+	for (UOptimusNodeGraph* SubGraph: SubGraphs)
+	{
+		SubGraph->ConditionalPostLoad();
+	}
+	
+	for (UOptimusNode* Node : Nodes)
+	{
+		Node->ConditionalPostLoad();
+	}
+
+	for (UOptimusNodeLink* Link : Links)
+	{
+		Link->ConditionalPostLoad();
+	}
+}
+
 UOptimusNodeGraph* UOptimusNodeGraph::GetParentGraph() const
 {
 	return Cast<UOptimusNodeGraph>(GetOuter());
@@ -719,7 +739,11 @@ bool UOptimusNodeGraph::RemoveAllLinks(UOptimusNodePin* InNodePin)
 	return GetActionStack()->RunAction(Action);
 }
 
-bool UOptimusNodeGraph::AddPinAndLink(UOptimusNode* InTargetNode, UOptimusNodePin* InSourcePin)
+bool UOptimusNodeGraph::ConnectAdderPin(
+	IOptimusNodeAdderPinProvider* InTargetNode,
+	const IOptimusNodeAdderPinProvider::FAdderPinAction& InSelectedAction,
+	UOptimusNodePin* InSourcePin
+	)
 {
 	IOptimusNodeAdderPinProvider *AdderPinProvider = Cast<IOptimusNodeAdderPinProvider>(InTargetNode);
 	
@@ -738,51 +762,22 @@ bool UOptimusNodeGraph::AddPinAndLink(UOptimusNode* InTargetNode, UOptimusNodePi
 		return false;
 	}
 
-	const EOptimusNodePinDirection PinDirection =
-	InSourcePin->GetDirection() == EOptimusNodePinDirection::Input ?
-		EOptimusNodePinDirection::Output : EOptimusNodePinDirection::Input;
-	if (!AdderPinProvider->CanAddPinFromPin(InSourcePin, PinDirection))
+	
+	IOptimusNodeAdderPinProvider::FAdderPinAction FinalAction = InSelectedAction;
+
+	// For now lets default to not disconnect existing link on the source pin
+	// Additional logic be added in the future if we want to let the user decide
+	if (InSourcePin->GetDirection() == EOptimusNodePinDirection::Input)
 	{
-		return false;
-	}
-
-	// Add a pin according to adder pin provider and link to it
-	FOptimusCompoundAction *Action = new FOptimusCompoundAction(TEXT("Add Pin"));
-
-	// Create a name for the new pin up front, shared between two sub actions
-	FName PinName = AdderPinProvider->GetSanitizedNewPinName(InSourcePin->GetFName());
-
-	Action->AddSubAction<FOptimusNodeAction_ConnectAdderPin>(AdderPinProvider, InSourcePin, PinName);
-
-
-	FString OutputPinPath = FString::Printf(TEXT("%s.%s"),
-	*InTargetNode->GetNodePath(), *PinName.ToString());
-
-	FString InputPinPath = InSourcePin->GetPinPath();
-
-	if (InSourcePin->GetDirection() == EOptimusNodePinDirection::Output)
-	{
-		Swap(OutputPinPath, InputPinPath);
-	}
-	else
-	{
-		// Check to see if there's an existing link on the _input_ pin. Output pins can have any
-		// number of connections coming out.
+		// Check to see if there's an existing link on the _input_ pin.
 		TArray<int32> PinLinks = GetAllLinkIndexesToPin(InSourcePin);
-
-		// This shouldn't happen, but we'll cover for it anyway.
-		checkSlow(PinLinks.Num() <= 1);
-
-		for (int32 LinkIndex : PinLinks)
+		if (PinLinks.Num() > 0)
 		{
-			Action->AddSubAction<FOptimusNodeGraphAction_RemoveLink>(Links[LinkIndex]);
+			FinalAction.bCanAutoLink = false;
 		}
 	}
-	
-	Action->AddSubAction<FOptimusNodeGraphAction_AddLink>(OutputPinPath, InputPinPath);
 
-
-	return GetActionStack()->RunAction(Action);
+	return GetActionStack()->RunAction<FOptimusNodeGraphAction_ConnectAdderPin>(AdderPinProvider, FinalAction, InSourcePin);
 }
 
 UOptimusNode* UOptimusNodeGraph::ConvertCustomKernelToFunction(UOptimusNode* InCustomKernel)
@@ -1141,7 +1136,7 @@ UOptimusNode* UOptimusNodeGraph::CreateNodeDirect(
 		
 		if (!InConfigureNodeFunc(NewNode))
 		{
-			NewNode->Rename(nullptr, GetTransientPackage());
+			Optimus::RemoveObject(NewNode);
 			return nullptr;
 		}
 	}
@@ -1172,7 +1167,7 @@ bool UOptimusNodeGraph::AddNodeDirect(UOptimusNode* InNode)
 			return false;
 		}
 
-		InNode->Rename(nullptr, this);
+		Optimus::RenameObject(InNode, nullptr, this);
 	}
 
 	Nodes.Add(InNode);
@@ -1218,7 +1213,7 @@ bool UOptimusNodeGraph::RemoveNodeDirect(
 	Notify(EOptimusGraphNotifyType::NodeRemoved, InNode);
 
 	// Unparent this node to a temporary storage and mark it for kill.
-	InNode->Rename(nullptr, GetTransientPackage());
+	Optimus::RemoveObject(InNode);
 
 	return true;
 }
@@ -1423,6 +1418,9 @@ TSet<UOptimusComponentSourceBinding*> UOptimusNodeGraph::GetComponentSourceBindi
 		TArray<FOptimusRoutedNodePin> RoutedPins = GetConnectedPinsWithRouting(InNodePin, {});
 		if (RoutedPins.IsEmpty())
 		{
+			// If the input pin is directly on a compute kernel and not connected to anything
+			// we consider it to not have a component source, even if other pins in the same group
+			// has one. Pin group level gathering is caller's responsibility
 			return {};
 		}
 		
@@ -1453,7 +1451,11 @@ TSet<UOptimusComponentSourceBinding*> UOptimusNodeGraph::GetComponentSourceBindi
 		
 		if (const IOptimusComputeKernelProvider* KernelProvider = Cast<const IOptimusComputeKernelProvider>(Node))
 		{
-			InputPins = KernelProvider->GetPrimaryGroupInputPins();
+			const UOptimusNodePin* PrimaryGroupPin = KernelProvider->GetPrimaryGroupPin();
+
+			// Group pin traversal is useful when the kernel does not have any input data pins
+			InputPins.Add(PrimaryGroupPin);
+			InputPins.Append(PrimaryGroupPin->GetSubPins());
 		}
 		else
 		{
@@ -1521,7 +1523,7 @@ void UOptimusNodeGraph::RemoveLinkByIndex(int32 LinkIndex)
 	Notify(EOptimusGraphNotifyType::LinkRemoved, Link);
 
 	// Unparent the link to a temporary storage and mark it for kill.
-	Link->Rename(nullptr, GetTransientPackage());
+	Optimus::RemoveObject(Link);
 }
 
 bool UOptimusNodeGraph::DoesLinkFormCycle(const UOptimusNode* InOutputNode, const UOptimusNode* InInputNode) const
@@ -1585,6 +1587,23 @@ bool UOptimusNodeGraph::DoesLinkFormCycle(const UOptimusNode* InOutputNode, cons
 
 void UOptimusNodeGraph::Notify(EOptimusGraphNotifyType InNotifyType, UObject* InSubject) const
 {
+	if (InNotifyType == EOptimusGraphNotifyType::NodeDiagnosticLevelChanged)
+	{
+		if (UOptimusDeformer* Deformer = Cast<UOptimusDeformer>(GetCollectionRoot()))
+		{
+			Deformer->SetStatusFromDiagnostic(Cast<UOptimusNode>(InSubject)->GetDiagnosticLevel());
+		}
+	}
+	else if (InNotifyType != EOptimusGraphNotifyType::NodePositionChanged &&
+			 InNotifyType != EOptimusGraphNotifyType::PinExpansionChanged
+		)
+	{
+		if (UOptimusDeformer* Deformer = Cast<UOptimusDeformer>(GetCollectionRoot()))
+		{
+			Deformer->MarkModified();
+		}
+	}
+	
 	GraphNotifyDelegate.Broadcast(InNotifyType, const_cast<UOptimusNodeGraph*>(this), InSubject);
 }
 
@@ -1712,7 +1731,7 @@ UOptimusNodeGraph* UOptimusNodeGraph::CreateGraph(
 	{
 		if (!AddGraph(Graph, InInsertBefore.GetValue()))
 		{
-			Graph->Rename(nullptr, GetTransientPackage());
+			Optimus::RemoveObject(Graph);
 			return nullptr;
 		}
 	}
@@ -1773,7 +1792,7 @@ bool UOptimusNodeGraph::RemoveGraph(
 	if (bInDeleteGraph)
 	{
 		// Un-parent this graph to a temporary storage and mark it for kill.
-		InGraph->Rename(nullptr, GetTransientPackage());
+		Optimus::RemoveObject(InGraph);
 	}
 
 	return true;
@@ -1813,6 +1832,26 @@ bool UOptimusNodeGraph::RenameGraph(
 	}
 	return bSuccess;
 }
+
+#if WITH_EDITOR
+void UOptimusNodeGraph::SetViewLocationAndZoom(const FVector2D& InViewLocation, float InViewZoom)
+{
+	bViewLocationSet = true;
+	ViewLocation = InViewLocation;
+	ViewZoom = InViewZoom;
+}
+
+bool UOptimusNodeGraph::GetViewLocationAndZoom(FVector2D& OutViewLocation, float& OutViewZoom) const
+{
+	if (bViewLocationSet)
+	{
+		OutViewLocation = ViewLocation;
+		OutViewZoom = ViewZoom;
+	}
+	return bViewLocationSet;
+}
+
+#endif // WITH_EDITOR
 
 
 #undef LOCTEXT_NAMESPACE

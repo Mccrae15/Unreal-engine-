@@ -482,12 +482,12 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 			if (Report.IsValid())
 			{
 				// Record the artifacts for the test.
-				TMap<FString, FString> LocalFiles;
+				TMap<EComparisonFileTypes, FString> LocalFiles;
 
 				FString ScreenshotResultsFolder = FPaths::AutomationReportsDir();
 	
 				// Paths in the result are relative to the automation report directory.	
-				LocalFiles.Add(TEXT("unapproved"), FPaths::Combine(ScreenshotResultsFolder, Result.ReportIncomingFilePath));
+				LocalFiles.Add(EComparisonFileTypes::Unapproved, FPaths::Combine(ScreenshotResultsFolder, Result.ReportIncomingFilePath));
 
 				// Don't copy reference and delta if the images are similar.
 				if (!Result.AreSimilar())
@@ -495,12 +495,12 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 					// unapproved should always be valid. but approved/difference may be empty if this is a new screenshot
 					if (Result.ReportIncomingFilePath.Len())
 					{
-						LocalFiles.Add(TEXT("approved"), FPaths::Combine(ScreenshotResultsFolder, Result.ReportApprovedFilePath));
+						LocalFiles.Add(EComparisonFileTypes::Approved, FPaths::Combine(ScreenshotResultsFolder, Result.ReportApprovedFilePath));
 					}
 
 					if (Result.ReportComparisonFilePath.Len())
 					{
-						LocalFiles.Add(TEXT("difference"), FPaths::Combine(ScreenshotResultsFolder, Result.ReportComparisonFilePath));
+						LocalFiles.Add(EComparisonFileTypes::Difference, FPaths::Combine(ScreenshotResultsFolder, Result.ReportComparisonFilePath));
 					}
 				}
 
@@ -580,6 +580,10 @@ void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationRepo
 		TestResult.SetEvents(Results.GetEntries(), Results.GetWarningTotal(), Results.GetErrorTotal());
 		TestResult.SetArtifacts(Results.Artifacts);
 		TestResult.Duration = Results.Duration;
+		if (TestResult.DeviceInstance.IsEmpty())
+		{
+			TestResult.DeviceInstance = { Results.GameInstance };
+		}
 
 		JsonTestPassResults.TotalDuration += Results.Duration;
 
@@ -594,14 +598,14 @@ void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationRepo
 		FCriticalSection CS;
 		for (FAutomationArtifact& Artifact : TestResult.GetArtifacts())
 		{
-			TArray<FString> Keys;
+			TArray<EComparisonFileTypes> Keys;
 			Artifact.LocalFiles.GetKeys(Keys);
 
-			bool bOnlyUnapproved = Keys.Num() == 1 && Keys[0] == TEXT("unapproved");
+			bool bOnlyUnapproved = Keys.Num() == 1 && Keys[0] == EComparisonFileTypes::Unapproved;
 
 			ParallelFor(Keys.Num(), [&](int32 Index)
 				{
-					const FString& Key = Keys[Index];
+					const EComparisonFileTypes& Key = Keys[Index];
 					FString Path = Artifact.LocalFiles[Key];
 					FPaths::MakePathRelativeTo(Path, *FPaths::AutomationReportsDir());
 					Path = ArtifactDirName / Path;
@@ -609,7 +613,7 @@ void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationRepo
 						FScopeLock Lock(&CS);
 						Artifact.Files.Add(Key, MoveTemp(Path));
 					}
-					if (Key == TEXT("unapproved"))
+					if (Key == EComparisonFileTypes::Unapproved)
 					{
 						// Copy screenshot report
 						FScreenshotExportResult ExportResult = ScreenshotManager->ExportScreenshotComparisonResult(Artifact.Name, ArtifactExportPath, bOnlyUnapproved);
@@ -777,7 +781,7 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 						for (int32 AddressIndex = 0; AddressIndex < DeviceAddresses.Num(); ++AddressIndex)
 						{
 							FAutomationTestResults TestResults;
-							TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
+							TestResults.GameInstance = DeviceClusterManager.GetClusterGameInstance(ClusterIndex, DeviceIndex);
 							TestResults.State = EAutomationState::InProcess;
 							GameInstances.Add(TestResults.GameInstance);
 							NextTest->SetResults(ClusterIndex, CurrentTestPass, TestResults);
@@ -939,7 +943,7 @@ void FAutomationControllerManager::ProcessResults()
 	bHasWarning = false;
 	bHasLogs = false;
 
-	TArray< TSharedPtr< IAutomationReport > >& TestReports = GetReports();
+	TArray< TSharedPtr< IAutomationReport > > TestReports = GetEnabledReports();
 
 	if ( TestReports.Num() )
 	{
@@ -1130,10 +1134,11 @@ void FAutomationControllerManager::UpdateTests()
 
 					FAutomationTestResults TestResults;
 					TestResults.State = EAutomationState::Fail;
-					TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
-					TestResults.AddEvent(FAutomationEvent(EAutomationEventType::Error, FString::Printf(TEXT("Timeout waiting for device %s"), *TestResults.GameInstance)));
+					TestResults.GameInstance = DeviceClusterManager.GetClusterGameInstance(ClusterIndex, DeviceIndex);
+					FString DeviceName = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
+					TestResults.AddEvent(FAutomationEvent(EAutomationEventType::Error, FString::Printf(TEXT("Timeout waiting for device %s"), *DeviceName)));
 
-					UE_LOG(LogAutomationController, Error, TEXT("Removing test and marking failure after timeout waiting for device %s LastPingTime was greater than %.1f"), *TestResults.GameInstance, GameInstanceLostTimerSeconds);
+					UE_LOG(LogAutomationController, Error, TEXT("Removing test and marking failure after timeout waiting for device %s LastPingTime was greater than %.1f"), *DeviceName, GameInstanceLostTimerSeconds);
 
 					// Set the results
 					Report->SetResults(ClusterIndex, CurrentTestPass, TestResults);
@@ -1474,24 +1479,27 @@ void FAutomationControllerManager::ReportAutomationResult(const TSharedPtr<IAuto
 
 	for (const FAutomationExecutionEntry& Entry : Results.GetEntries())
 	{
+#if WITH_EDITOR
+		TSharedRef<FTextToken> TextToken = FTextToken::Create(FText::FromString(Entry.ToStringFormattedEditorLog()), false);
+#endif
 		switch (Entry.Event.Type)
 		{
 		case EAutomationEventType::Info:
 			UE_LOG(LogAutomationController, Log, TEXT("%s"), *Entry.ToString());
 #if WITH_EDITOR
-			AutomationEditorLog.Info(FText::FromString(Entry.ToString()));
+			AutomationEditorLog.Info()->AddToken(TextToken);
 #endif
 			break;
 		case EAutomationEventType::Warning:
 			UE_LOG(LogAutomationController, Warning, TEXT("%s"), *Entry.ToString());
 #if WITH_EDITOR
-			AutomationEditorLog.Warning(FText::FromString(Entry.ToString()));
+			AutomationEditorLog.Warning()->AddToken(TextToken);
 #endif
 			break;
 		case EAutomationEventType::Error:
 			UE_LOG(LogAutomationController, Error, TEXT("%s"), *Entry.ToString());
 #if WITH_EDITOR
-			AutomationEditorLog.Error(FText::FromString(Entry.ToString()));
+			AutomationEditorLog.Error()->AddToken(TextToken);
 #endif
 			break;
 		}
@@ -1522,7 +1530,7 @@ void FAutomationControllerManager::HandleRunTestsReplyMessage(const FAutomationW
 
 		verify(DeviceClusterManager.FindDevice(Context->GetSender(), ClusterIndex, DeviceIndex));
 
-		TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
+		TestResults.GameInstance = DeviceClusterManager.GetClusterGameInstance(ClusterIndex, DeviceIndex);
 		TestResults.SetEvents(Message.Entries, Message.WarningTotal, Message.ErrorTotal);
 
 		// Verify this device thought it was busy

@@ -2,13 +2,11 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.IO;
-using System.Xml;
 using System.Xml.Linq;
 using EpicGames.Core;
-using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -20,11 +18,11 @@ namespace UnrealBuildTool
 		{
 			OnlyGameProject = InOnlyGameProject;
 		}
-		
+
 		// Check if the XElement is empty.
 		bool IsEmpty(IEnumerable<XElement> en)
 		{
-			foreach(XElement c in en) { return false; }
+			foreach (XElement c in en) { return false; }
 			return true;
 		}
 
@@ -65,7 +63,7 @@ namespace UnrealBuildTool
 			// Create the folder where the project files goes if it does not exist
 			//
 			String FilePath = Path.GetDirectoryName(ProjectFilePath.FullName)!;
-			if( (FilePath.Length > 0) && !Directory.Exists(FilePath))
+			if ((FilePath.Length > 0) && !Directory.Exists(FilePath))
 			{
 				Directory.CreateDirectory(FilePath);
 			}
@@ -79,11 +77,11 @@ namespace UnrealBuildTool
 			//
 			// Write all targets which will be separate projects.
 			//
-			foreach (Project target in ProjectTargets) 
+			foreach (Project target in ProjectTargets)
 			{
 				string[] tmp = target.ToString()!.Split('.');
-				string ProjectTargetFileName = Path.GetDirectoryName (ProjectFilePath.FullName) + "/" + tmp [0] +  ProjectExtension;
-				String TargetName = tmp [0];
+				string ProjectTargetFileName = Path.GetDirectoryName(ProjectFilePath.FullName) + "/" + tmp[0] + ProjectExtension;
+				String TargetName = tmp[0];
 				TargetType ProjectTargetType = target.TargetRules!.Type;
 
 				//
@@ -112,7 +110,7 @@ namespace UnrealBuildTool
 				//
 				// Find/Create the correct virtual folder and place the file into it.
 				//
-				foreach(SourceFile CurrentFile in FilterSourceFile)
+				foreach (SourceFile CurrentFile in FilterSourceFile)
 				{
 					//
 					// Try to get the correct relative folder representation for the project.
@@ -122,7 +120,7 @@ namespace UnrealBuildTool
 					if ((ProjectTargetType == TargetType.Client) ||
 						(ProjectTargetType == TargetType.Editor) ||
 						(ProjectTargetType == TargetType.Game) ||
-						(ProjectTargetType == TargetType.Server) )
+						(ProjectTargetType == TargetType.Server))
 					{
 						if (TargetName.Equals("UnrealClient") ||
 							TargetName.Equals("UnrealServer") ||
@@ -148,7 +146,7 @@ namespace UnrealBuildTool
 					}
 
 					char[] Delimiters = new char[] { '/', '\\' };
-					string [] SplitFolders = CurrentFilePath.Split(Delimiters, StringSplitOptions.RemoveEmptyEntries);
+					string[] SplitFolders = CurrentFilePath.Split(Delimiters, StringSplitOptions.RemoveEmptyEntries);
 					//
 					// Set the CodeLite root folder again.
 					//
@@ -160,11 +158,11 @@ namespace UnrealBuildTool
 					//
 					foreach (string FolderName in SplitFolders)
 					{
-						if (FolderName.Equals(""))
+						if (String.IsNullOrEmpty(FolderName))
 						{
 							continue;
 						}
-							
+
 						//
 						// Let's look if there is a virtual folder withint the current XElement.
 						//
@@ -221,9 +219,9 @@ namespace UnrealBuildTool
 					// If we are at this point we found the correct XElement folder
 					//
 					XElement file = new XElement("File");
-					XAttribute fileAttribute = new XAttribute("Name",  CurrentFile.Reference.FullName);
+					XAttribute fileAttribute = new XAttribute("Name", CurrentFile.Reference.FullName);
 					file.Add(fileAttribute);
-					root.Add(file); 
+					root.Add(file);
 				}
 
 				XElement CodeLiteSettings = new XElement("Settings");
@@ -242,16 +240,16 @@ namespace UnrealBuildTool
 					// Create Configuration General part. 
 					//
 					XElement CodeLiteConfigurationGeneral = new XElement("General");
-						
+
 					//
 					// Create the executable filename.
 					//
 					string ExecutableToRun = "";
-					string PlatformConfiguration = "-" + ProjectPlatformName + "-" + CurConf.ToString ();
+					string PlatformConfiguration = "-" + ProjectPlatformName + "-" + CurConf.ToString();
 					if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux)
 					{
 						ExecutableToRun = "./" + TargetName;
-						if ((ProjectTargetType == TargetType.Game) || 
+						if ((ProjectTargetType == TargetType.Game) ||
 							(ProjectTargetType == TargetType.Program))
 						{
 							if (CurConf != UnrealTargetConfiguration.Development)
@@ -262,20 +260,19 @@ namespace UnrealBuildTool
 						else if (ProjectTargetType == TargetType.Editor)
 						{
 							ExecutableToRun = "./UnrealEditor";
-							if ((CurConf == UnrealTargetConfiguration.Debug) || 
-								(CurConf == UnrealTargetConfiguration.Shipping) || 
+							if ((CurConf == UnrealTargetConfiguration.Debug) ||
+								(CurConf == UnrealTargetConfiguration.Shipping) ||
 								(CurConf == UnrealTargetConfiguration.Test))
 							{
 								ExecutableToRun += PlatformConfiguration;
 							}
 						}
-
 					}
 					else if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 					{
 						ExecutableToRun = "./" + TargetName;
 						if ((ProjectTargetType == TargetType.Game) || (ProjectTargetType == TargetType.Program))
-						{			
+						{
 							if (CurConf != UnrealTargetConfiguration.Development)
 							{
 								ExecutableToRun += PlatformConfiguration;
@@ -285,13 +282,12 @@ namespace UnrealBuildTool
 							{
 								ExecutableToRun += PlatformConfiguration;
 							}
-
 						}
 						else if (ProjectTargetType == TargetType.Editor)
 						{
 							ExecutableToRun = "./UnrealEditor";
-							if ((CurConf == UnrealTargetConfiguration.Debug) || 
-								(CurConf == UnrealTargetConfiguration.Shipping) || 
+							if ((CurConf == UnrealTargetConfiguration.Debug) ||
+								(CurConf == UnrealTargetConfiguration.Shipping) ||
 								(CurConf == UnrealTargetConfiguration.Test))
 							{
 								ExecutableToRun += PlatformConfiguration;
@@ -302,8 +298,7 @@ namespace UnrealBuildTool
 								ExecutableToRun += PlatformConfiguration;
 							}
 						}
-
-					} 
+					}
 					else if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 					{
 						ExecutableToRun = TargetName;
@@ -317,8 +312,8 @@ namespace UnrealBuildTool
 						else if (ProjectTargetType == TargetType.Editor)
 						{
 							ExecutableToRun = "UnrealEditor";
-							if ((CurConf == UnrealTargetConfiguration.Debug) || 
-								(CurConf == UnrealTargetConfiguration.Shipping) || 
+							if ((CurConf == UnrealTargetConfiguration.Debug) ||
+								(CurConf == UnrealTargetConfiguration.Shipping) ||
 								(CurConf == UnrealTargetConfiguration.Test))
 							{
 								ExecutableToRun += PlatformConfiguration;
@@ -326,35 +321,37 @@ namespace UnrealBuildTool
 						}
 
 						ExecutableToRun += ".exe";
-								
+
 					}
 					else
-					{ 
-							throw new BuildException("Unsupported platform.");
+					{
+						throw new BuildException("Unsupported platform.");
 					}
-						
-						
+
 					// Is this project a Game type?
 					XAttribute GeneralExecutableToRun = new XAttribute("Command", ExecutableToRun);
-					if (ProjectTargetType == TargetType.Game) 
+					if (ProjectTargetType == TargetType.Game)
 					{
-						if (CurConf.ToString ().Contains ("Debug")) 
+						if (CurConf.ToString().Contains("Debug"))
 						{
 							string commandArguments = " -debug";
 							XAttribute GeneralExecutableToRunArguments = new XAttribute("CommandArguments", commandArguments);
 							CodeLiteConfigurationGeneral.Add(GeneralExecutableToRunArguments);
 						}
-					if (TargetName.Equals ("UnrealGame")) {
+						if (TargetName.Equals("UnrealGame"))
+						{
 							XAttribute GeneralExecutableWorkingDirectory = new XAttribute("WorkingDirectory", UnrealEngineEditorWorkingDirectory);
 							CodeLiteConfigurationGeneral.Add(GeneralExecutableWorkingDirectory);
-						} else {
+						}
+						else
+						{
 							XAttribute GeneralExecutableWorkingDirectory = new XAttribute("WorkingDirectory", GameWorkingDirectory);
 							CodeLiteConfigurationGeneral.Add(GeneralExecutableWorkingDirectory);
 						}
-					} 
-					else if (ProjectTargetType == TargetType.Editor) 
+					}
+					else if (ProjectTargetType == TargetType.Editor)
 					{
-						if (TargetName != "UnrealEditor" && GameProjectFile != "")
+						if (TargetName != "UnrealEditor" && !String.IsNullOrEmpty(GameProjectFile))
 						{
 							string commandArguments = "\"" + GameProjectFile + "\"" + " -game";
 							XAttribute CommandArguments = new XAttribute("CommandArguments", commandArguments);
@@ -362,18 +359,18 @@ namespace UnrealBuildTool
 						}
 						XAttribute WorkingDirectory = new XAttribute("WorkingDirectory", UnrealEngineEditorWorkingDirectory);
 						CodeLiteConfigurationGeneral.Add(WorkingDirectory);
-					} 
-					else if (ProjectTargetType == TargetType.Program) 
-					{
-						XAttribute WorkingDirectory = new XAttribute("WorkingDirectory", UnrealEngineEditorWorkingDirectory);
-						CodeLiteConfigurationGeneral.Add(WorkingDirectory);
-					} 
-					else if (ProjectTargetType == TargetType.Client) 
+					}
+					else if (ProjectTargetType == TargetType.Program)
 					{
 						XAttribute WorkingDirectory = new XAttribute("WorkingDirectory", UnrealEngineEditorWorkingDirectory);
 						CodeLiteConfigurationGeneral.Add(WorkingDirectory);
 					}
-					else if (ProjectTargetType == TargetType.Server) 
+					else if (ProjectTargetType == TargetType.Client)
+					{
+						XAttribute WorkingDirectory = new XAttribute("WorkingDirectory", UnrealEngineEditorWorkingDirectory);
+						CodeLiteConfigurationGeneral.Add(WorkingDirectory);
+					}
+					else if (ProjectTargetType == TargetType.Server)
 					{
 						XAttribute WorkingDirectory = new XAttribute("WorkingDirectory", UnrealEngineEditorWorkingDirectory);
 						CodeLiteConfigurationGeneral.Add(WorkingDirectory);
@@ -393,7 +390,7 @@ namespace UnrealBuildTool
 					CodeLiteConfiguration.Add(CodeLiteConfigurationGeneral);
 					XAttribute CodeLiteConfigurationCustomBuildEnabled = new XAttribute("Enabled", "yes");
 					CodeLiteConfigurationCustomBuild.Add(CodeLiteConfigurationCustomBuildEnabled);
-						
+
 					//
 					// Add the working directory for the custom build commands.
 					//
@@ -405,8 +402,6 @@ namespace UnrealBuildTool
 					//
 					// End of Add the working directory for the custom build commands.
 					//
-
-
 
 					//
 					// Make Build Target.
@@ -453,7 +448,6 @@ namespace UnrealBuildTool
 
 					CustomCleanCommand.Add(CleanCommandLine);
 
-
 					//
 					// End of Clean Build Target.
 					//
@@ -473,11 +467,10 @@ namespace UnrealBuildTool
 					// End of Clean Build Target.
 					//
 
-
 					//
 					// Some other fun Custom Targets.
 					//
-					if (ProjectTargetType == TargetType.Game) 
+					if (ProjectTargetType == TargetType.Game)
 					{
 						string CookGameCommandLine = "mono AutomationTool.exe BuildCookRun ";
 
@@ -489,7 +482,7 @@ namespace UnrealBuildTool
 
 						// Disables Perforce functionality 
 						CookGameCommandLine += "-noP4 ";
-							
+
 						// Do not kill any spawned processes on exit
 						CookGameCommandLine += "-nokill ";
 						CookGameCommandLine += "-clientconfig=" + CurConf.ToString() + " ";
@@ -498,7 +491,7 @@ namespace UnrealBuildTool
 						CookGameCommandLine += "-targetplatform=" + ProjectPlatformName + " "; // TODO Maybe I can add all the supported one.
 						CookGameCommandLine += "-nocompile ";
 						CookGameCommandLine += "-compressed -stage -deploy";
-							
+
 						//
 						// Cook Game.
 						//

@@ -136,16 +136,24 @@ namespace Metasound
 
 			virtual FDataReferenceCollection GetInputs() const override
 			{
-				FDataReferenceCollection Inputs;
-				Inputs.AddDataReadReference<FromDataType>(GetInputName(), FromData);
-				return Inputs;
+				checkNoEntry();
+				return {};
 			}
 
 			virtual FDataReferenceCollection GetOutputs() const override
 			{
-				FDataReferenceCollection Outputs;
-				Outputs.AddDataReadReference<ToDataType>(GetOutputName(), ToData);
-				return Outputs;
+				checkNoEntry();
+				return {};
+			}
+
+			virtual void BindInputs(FInputVertexInterfaceData& InVertexData) override
+			{
+				InVertexData.BindReadVertex(GetInputName(), FromData);
+			}
+
+			virtual void BindOutputs(FOutputVertexInterfaceData& InVertexData) override
+			{
+				InVertexData.BindReadVertex(GetOutputName(), ToData);
 			}
 
 			void Execute()
@@ -192,6 +200,13 @@ namespace Metasound
 				{
 					*ToData = static_cast<ToDataType>(*FromData);
 				}
+			}
+
+			void Reset(const IOperator::FResetParams& InParams)
+			{
+				PreviousIntValueForEnumConversion = 0;
+				bHasLoggedInvalidEnum = false;
+				Execute();
 			}
 
 			private:

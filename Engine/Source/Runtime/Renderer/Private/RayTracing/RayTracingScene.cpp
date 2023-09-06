@@ -11,10 +11,13 @@
 #include "RenderGraphUtils.h"
 #include "RaytracingOptions.h"
 #include "PrimitiveSceneProxy.h"
+#include "SceneUniformBuffer.h"
+#include "SceneRendering.h"
 
 BEGIN_SHADER_PARAMETER_STRUCT(FBuildInstanceBufferPassParams, )
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer, InstanceBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer, DebugInstanceGPUSceneIndexBuffer)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 END_SHADER_PARAMETER_STRUCT()
 
 FRayTracingScene::FRayTracingScene()
@@ -38,9 +41,9 @@ FRayTracingSceneWithGeometryInstances FRayTracingScene::BuildInitializationData(
 		NumCallableShaderSlots);
 }
 
-void FRayTracingScene::Create(FRDGBuilder& GraphBuilder, const FGPUScene* GPUScene, const FViewMatrices& ViewMatrices)
+void FRayTracingScene::Create(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FGPUScene* GPUScene)
 {
-	CreateWithInitializationData(GraphBuilder, GPUScene, ViewMatrices, BuildInitializationData());
+	CreateWithInitializationData(GraphBuilder, View, GPUScene, BuildInitializationData());
 }
 
 void FRayTracingScene::InitPreViewTranslation(const FViewMatrices& ViewMatrices)
@@ -52,7 +55,7 @@ void FRayTracingScene::InitPreViewTranslation(const FViewMatrices& ViewMatrices)
 	ViewTilePosition = AbsoluteViewOrigin.GetTile();
 }
 
-void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, const FGPUScene* GPUScene, const FViewMatrices& ViewMatrices, FRayTracingSceneWithGeometryInstances SceneWithGeometryInstances)
+void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FGPUScene* GPUScene, FRayTracingSceneWithGeometryInstances SceneWithGeometryInstances)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(FRayTracingScene_BeginCreate);
 
@@ -62,6 +65,8 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 
 	// Make sure that all async tasks complete before we run initialization code again and create new tasks.
 	WaitForTasks();
+
+	FRHICommandListBase& RHICmdList = GraphBuilder.RHICmdList;
 
 	static const uint8 NumLayers = uint8(ERayTracingSceneLayer::NUM);
 
@@ -85,16 +90,18 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 		|| SizeInfo.ResultSize < RayTracingSceneBuffer->GetSize() / 2)
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FRayTracingScene::SceneBuffer"));
-		RayTracingSceneBuffer = RHICreateBuffer(uint32(SizeInfo.ResultSize), EBufferUsageFlags::AccelerationStructure, 0, ERHIAccess::BVHWrite, CreateInfo);
-		State = ERayTracingSceneState::Writable;
+		RayTracingSceneBuffer = GraphBuilder.RHICmdList.CreateBuffer(uint32(SizeInfo.ResultSize), EBufferUsageFlags::AccelerationStructure, 0, ERHIAccess::BVHWrite, CreateInfo);
+
+		FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(1, uint32(SizeInfo.ResultSize));
+		Desc.Usage = EBufferUsageFlags::AccelerationStructure;
+		RayTracingScenePooledBuffer = new FRDGPooledBuffer(RHICmdList, RayTracingSceneBuffer, Desc, Desc.NumElements, TEXT("FRayTracingScene::SceneBuffer::RDG"));
 	}
+	RayTracingSceneBufferRDG = GraphBuilder.RegisterExternalBuffer(RayTracingScenePooledBuffer);
 
 	LayerSRVs.SetNum(NumLayers);
-
 	for (uint32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 	{
-		FShaderResourceViewInitializer ViewInitializer(RayTracingSceneBuffer, RayTracingSceneRHI->GetLayerBufferOffset(LayerIndex), 0);
-		LayerSRVs[LayerIndex] = RHICreateShaderResourceView(ViewInitializer);
+		LayerSRVs[LayerIndex] = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(RayTracingSceneBufferRDG, RayTracingSceneRHI->GetLayerBufferOffset(LayerIndex), 0));
 	}
 
 	{
@@ -125,7 +132,7 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 		{
 			// Need to pass "BUF_MultiGPUAllocate", as virtual addresses are different per GPU
 			AccelerationStructureAddressesBuffer.Initialize(
-				TEXT("FRayTracingScene::AccelerationStructureAddressesBuffer"), AccelerationStructureAddressesBufferSize, BUF_Volatile | BUF_MultiGPUAllocate);
+				GraphBuilder.RHICmdList, TEXT("FRayTracingScene::AccelerationStructureAddressesBuffer"), AccelerationStructureAddressesBufferSize, BUF_Volatile | BUF_MultiGPUAllocate);
 		}
 	}
 
@@ -138,8 +145,8 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 			|| UploadBufferSize < InstanceUploadBuffer->GetSize() / 2)
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("FRayTracingScene::InstanceUploadBuffer"));
-			InstanceUploadBuffer = RHICreateStructuredBuffer(sizeof(FRayTracingInstanceDescriptorInput), UploadBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
-			InstanceUploadSRV = RHICreateShaderResourceView(InstanceUploadBuffer);
+			InstanceUploadBuffer = RHICmdList.CreateStructuredBuffer(sizeof(FRayTracingInstanceDescriptorInput), UploadBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
+			InstanceUploadSRV = RHICmdList.CreateShaderResourceView(InstanceUploadBuffer);
 		}
 	}
 
@@ -152,8 +159,8 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 			|| UploadBufferSize < TransformUploadBuffer->GetSize() / 2)
 		{
 			FRHIResourceCreateInfo CreateInfo(TEXT("FRayTracingScene::TransformUploadBuffer"));
-			TransformUploadBuffer = RHICreateStructuredBuffer(sizeof(FVector4f), UploadBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
-			TransformUploadSRV = RHICreateShaderResourceView(TransformUploadBuffer);
+			TransformUploadBuffer = RHICmdList.CreateStructuredBuffer(sizeof(FVector4f), UploadBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
+			TransformUploadSRV = RHICmdList.CreateShaderResourceView(TransformUploadBuffer);
 		}
 	}
 
@@ -162,8 +169,8 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 		const uint32 InstanceUploadBytes = NumNativeInstances * sizeof(FRayTracingInstanceDescriptorInput);
 		const uint32 TransformUploadBytes = SceneWithGeometryInstances.NumNativeCPUInstances * 3 * sizeof(FVector4f);
 
-		FRayTracingInstanceDescriptorInput* InstanceUploadData = (FRayTracingInstanceDescriptorInput*)RHILockBuffer(InstanceUploadBuffer, 0, InstanceUploadBytes, RLM_WriteOnly);
-		FVector4f* TransformUploadData = (FVector4f*)RHILockBuffer(TransformUploadBuffer, 0, TransformUploadBytes, RLM_WriteOnly);
+		FRayTracingInstanceDescriptorInput* InstanceUploadData = (FRayTracingInstanceDescriptorInput*)RHICmdList.LockBuffer(InstanceUploadBuffer, 0, InstanceUploadBytes, RLM_WriteOnly);
+		FVector4f* TransformUploadData = (FVector4f*)RHICmdList.LockBuffer(TransformUploadBuffer, 0, TransformUploadBytes, RLM_WriteOnly);
 
 		// Fill instance upload buffer on separate thread since results are only needed in RHI thread
 		FillInstanceUploadBufferTask = FFunctionGraphTask::CreateAndDispatchWhenReady(
@@ -175,7 +182,7 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 			InstanceGeometryIndices = MoveTemp(SceneWithGeometryInstances.InstanceGeometryIndices),
 			BaseUploadBufferOffsets = MoveTemp(SceneWithGeometryInstances.BaseUploadBufferOffsets),
 			RayTracingSceneRHI = RayTracingSceneRHI,
-			PreViewTranslation = ViewMatrices.GetPreViewTranslation()]()
+			PreViewTranslation = View.ViewMatrices.GetPreViewTranslation()]()
 		{
 			FTaskTagScope TaskTagScope(ETaskTag::EParallelRenderingThread);
 			FillRayTracingInstanceUploadBuffer(
@@ -199,6 +206,7 @@ void FRayTracingScene::CreateWithInitializationData(FRDGBuilder& GraphBuilder, c
 		FBuildInstanceBufferPassParams* PassParams = GraphBuilder.AllocParameters<FBuildInstanceBufferPassParams>();
 		PassParams->InstanceBuffer = GraphBuilder.CreateUAV(InstanceBuffer);
 		PassParams->DebugInstanceGPUSceneIndexBuffer = nullptr;
+		PassParams->Scene = View.GetSceneUniforms().GetBuffer(GraphBuilder);
 
 		if (bNeedsDebugInstanceGPUSceneIndexBuffer)
 		{
@@ -303,16 +311,23 @@ FRHIRayTracingScene* FRayTracingScene::GetRHIRayTracingSceneChecked() const
 	return Result;
 }
 
-FRHIBuffer* FRayTracingScene::GetBufferChecked() const
+FRDGBufferRef FRayTracingScene::GetBufferChecked() const
 {
-	checkf(RayTracingSceneBuffer.IsValid(), TEXT("Ray tracing scene buffer was not created. Perhaps Create() was not called."));
-	return RayTracingSceneBuffer.GetReference();
+	checkf(RayTracingSceneBufferRDG, TEXT("Ray tracing scene buffer was not created. Perhaps Create() was not called."));
+	return RayTracingSceneBufferRDG;
 }
 
-FRHIShaderResourceView* FRayTracingScene::GetLayerSRVChecked(ERayTracingSceneLayer Layer) const
+FShaderResourceViewRHIRef FRayTracingScene::CreateLayerViewRHI(FRHICommandListBase& RHICmdList, ERayTracingSceneLayer Layer) const
 {
-	checkf(LayerSRVs[uint8(Layer)].IsValid(), TEXT("Ray tracing scene SRV was not created. Perhaps Create() was not called."));
-	return LayerSRVs[uint8(Layer)].GetReference();
+	const uint8 LayerIndex = uint8(Layer);
+	checkf(RayTracingSceneBuffer, TEXT("Ray tracing scene was not created.Perhaps Create() was not called."));
+	return RHICmdList.CreateShaderResourceView(FShaderResourceViewInitializer(RayTracingSceneBuffer, RayTracingSceneRHI->GetLayerBufferOffset(LayerIndex), 0));
+}
+
+FRDGBufferSRVRef FRayTracingScene::GetLayerView(ERayTracingSceneLayer Layer) const
+{
+	checkf(LayerSRVs[uint8(Layer)], TEXT("Ray tracing scene SRV was not created. Perhaps Create() was not called."));
+	return LayerSRVs[uint8(Layer)];
 }
 
 uint32 FRayTracingScene::AddInstance(FRayTracingGeometryInstance Instance, const FPrimitiveSceneProxy* Proxy, bool bDynamic)
@@ -369,31 +384,8 @@ void FRayTracingScene::ResetAndReleaseResources()
 	GeometriesToBuild.Empty();
 	UsedCoarseMeshStreamingHandles.Empty();
 	RayTracingSceneBuffer = nullptr;
+	RayTracingScenePooledBuffer = nullptr;
 	RayTracingSceneRHI = nullptr;
-	State = ERayTracingSceneState::Writable;
-}
-
-void FRayTracingScene::Transition(FRDGBuilder& GraphBuilder, ERayTracingSceneState InState)
-{
-	if (State == InState)
-	{
-		return;
-	}
-
-	GraphBuilder.AddPass(RDG_EVENT_NAME("RayTracingTransition"), ERDGPassFlags::None, 
-		[this, InState](FRHIComputeCommandList& RHICmdList)
-	{
-		if (InState == ERayTracingSceneState::Writable)
-		{
-			RHICmdList.Transition(FRHITransitionInfo(RayTracingSceneBuffer, ERHIAccess::BVHRead | ERHIAccess::SRVMask, ERHIAccess::BVHWrite));
-		}
-		else
-		{
-			RHICmdList.Transition(FRHITransitionInfo(RayTracingSceneBuffer, ERHIAccess::BVHWrite, ERHIAccess::BVHRead | ERHIAccess::SRVMask));
-		}
-	});
-
-	State = InState;
 }
 
 #endif // RHI_RAYTRACING

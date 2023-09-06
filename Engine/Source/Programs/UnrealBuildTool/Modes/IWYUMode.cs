@@ -1,18 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using EpicGames.Core;
-using UnrealBuildBase;
-using Microsoft.Extensions.Logging;
-using System.Linq;
-using System.Text.Json;
-using System.IO;
-using System.Threading.Tasks;
-using System.Text;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
-
+using System.Threading.Tasks;
+using EpicGames.Core;
+using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 // IWYUMode is a mode that can be used to clean up includes in source code. It uses the clang based tool include-what-you-use (IWYU) to figure out what is needed in each .h/.cpp file
 // and then cleans up accordingly. This mode can be used to clean up unreal as well as plugins and projects on top of unreal.
@@ -40,7 +40,6 @@ using System.Threading;
 // 
 //   .build target UnrealEditor linux development -- -Mode=IWYU -PathToUpdate=Engine/Plugins/FX/Niagara -UpdateOnlyPrivate
 
-
 namespace UnrealBuildTool
 {
 	/// <summary>
@@ -67,6 +66,11 @@ namespace UnrealBuildTool
 		/// Decides if printable should be #include quote or angle bracket
 		/// </summary>
 		public bool System { get; set; }
+
+		/// <summary>
+		/// If true #include was found inside a declaration such as a namespace or class/struct/function
+		/// </summary>
+		public bool InsideDecl { get; set; }
 	}
 
 	/// <summary>
@@ -164,6 +168,16 @@ namespace UnrealBuildTool
 		/// Module that this file belongs to
 		/// </summary>
 		public UEBuildModule? Module;
+
+		/// <summary>
+		/// Is true if this file was included inside a declaration such as a namespace or class/struct/function
+		/// </summary>
+		public bool IncludedInsideDecl;
+
+		/// <summary>
+		/// Is true if this file ends with .cpp
+		/// </summary>
+		public bool IsCpp;
 	}
 
 	/// <summary>
@@ -174,7 +188,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The different headers and source files that was covered by this execution of iwyu.
 		/// </summary>
-		public List<IWYUInfo> Files { get; set; } = new ();
+		public List<IWYUInfo> Files { get; set; } = new();
 
 		/// <summary>
 		/// Name of .iwyu file
@@ -237,8 +251,14 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Allow files to not add includes if they are transitively included by other includes
 		/// </summary>
-		[CommandLine("-NoTransitiveIncludes")]
+		[CommandLine("-NoTransitive")]
 		public bool bNoTransitiveIncludes = false;
+
+		/// <summary>
+		/// Will remove headers that are needed but redundant because they are included through other needed includes
+		/// </summary>
+		[CommandLine("-RemoveRedundant")]
+		public bool bRemoveRedundantIncludes = false;
 
 		/// <summary>
 		/// Will skip compiling before updating. Handle with care, this is dangerous since files might not match .iwyu files
@@ -269,11 +289,26 @@ namespace UnrealBuildTool
 				}
 				return EngineIncludeOrderHelper.GetLatestDeprecationDefine();
 			}
-			set
-			{
-				HeaderDeprecationTagOverride = value;
-			}
+			set => HeaderDeprecationTagOverride = value;
 		}
+
+		/// <summary>
+		/// Compare current include structure with how it would look like if iwyu was applied on all files
+		/// </summary>
+		[CommandLine("-Compare")]
+		public bool bCompare = false;
+
+		/// <summary>
+		/// For Development only - Will write a toc referencing all .iwyu files. Toc can be used by -ReadToc
+		/// </summary>
+		[CommandLine("-WriteToc")]
+		public bool bWriteToc = false;
+
+		/// <summary>
+		/// For Development only - Will read a toc to find all .iwyu files instead of building the code.
+		/// </summary>
+		[CommandLine("-ReadToc")]
+		public bool bReadToc = false;
 
 		private string? GetModuleToUpdateName(TargetDescriptor Descriptor)
 		{
@@ -306,7 +341,7 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command line arguments</param>
 		/// <returns>Exit code</returns>
 		/// <param name="Logger"></param>
-		public override int Execute(CommandLineArguments Arguments, ILogger Logger)
+		public override async Task<int> ExecuteAsync(CommandLineArguments Arguments, ILogger Logger)
 		{
 			Logger.LogInformation($"====================================================");
 			Logger.LogInformation($"Running IWYU. {(bWrite ? "" : "(Preview mode. Add -Write to write modifications to files)")}");
@@ -322,7 +357,7 @@ namespace UnrealBuildTool
 			BuildConfiguration.MaxNestedPathLength = 220; // For now since the path is slightly longer
 
 			// Parse all the target descriptors
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(BuildArguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, Logger);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(BuildArguments, BuildConfiguration, Logger);
 
 			if (TargetDescriptors.Count != 1)
 			{
@@ -330,15 +365,17 @@ namespace UnrealBuildTool
 				return 0;
 			}
 
+			TargetDescriptors[0].IntermediateEnvironment = UnrealIntermediateEnvironment.IWYU;
+
 			string? ModuleToUpdateName = GetModuleToUpdateName(TargetDescriptors[0]);
 
-			if (!string.IsNullOrEmpty(ModuleToUpdateName))
+			if (!String.IsNullOrEmpty(ModuleToUpdateName))
 			{
 				foreach (string OnlyModuleName in TargetDescriptors[0].OnlyModuleNames)
 				{
-					if (string.Compare(OnlyModuleName, ModuleToUpdateName, StringComparison.OrdinalIgnoreCase) != 0)
+					if (String.Compare(OnlyModuleName, ModuleToUpdateName, StringComparison.OrdinalIgnoreCase) != 0)
 					{
-						Logger.LogError($"ModuleToUpdate '{ModuleToUpdateName}' was not in list of specified modules: {string.Join(", ", TargetDescriptors[0].OnlyModuleNames)}");
+						Logger.LogError($"ModuleToUpdate '{ModuleToUpdateName}' was not in list of specified modules: {String.Join(", ", TargetDescriptors[0].OnlyModuleNames)}");
 						return -1;
 					}
 				}
@@ -361,14 +398,19 @@ namespace UnrealBuildTool
 					PathToUpdateList[I] = PathToUpdateList[I].Replace('\\', '/');
 				}
 			}
-			
+
+			string TargetName = $"{TargetDescriptors[0].Name}_{TargetDescriptors[0].Configuration}_{TargetDescriptors[0].Platform}";
+
 			// Calculate file paths filter to figure out which files that IWYU will run on
-			Logger.LogInformation($"Calculating file filter for IWYU...");
 			HashSet<string> ValidPaths = new();
-			Dictionary<string, UEBuildModule?> PathToModule = new();
+			Dictionary<string, UEBuildModule> PathToModule = new();
+			Dictionary<string, UEBuildModule> NameToModule = new();
 			{
 				// Create target to be able to traverse all existing modules
-				UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptors[0], BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, Logger);
+				Logger.LogInformation($"Creating BuildTarget for {TargetName}...");
+				UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptors[0], BuildConfiguration, Logger);
+
+				Logger.LogInformation($"Calculating file filter for IWYU...");
 
 				UEBuildModule? UEModuleToUpdate = null;
 
@@ -382,7 +424,7 @@ namespace UnrealBuildTool
 						return -1;
 					}
 				}
-				
+
 				if (PathToUpdateList.Length == 0 && UEModuleToUpdate == null)
 				{
 					Logger.LogError($"Need to provide -ModuleToUpdate <modulename> or -PathToUpdate <partofpath> to run IWYU.");
@@ -393,99 +435,119 @@ namespace UnrealBuildTool
 				int ModulesSkippedCount = 0;
 
 				// Traverse all modules to figure out which ones should be updated. This is based on -ModuleToUpdate and -PathToUpdate
-				foreach (var Binary in Target.Binaries)
+				List<UEBuildModule> ReferencedModules = new();
+				HashSet<UEBuildModule> IgnoreReferencedModules = new();
+				foreach (UEBuildBinary Binary in Target.Binaries)
 				{
-					foreach (var Module in Binary.Modules)
+					foreach (UEBuildModule Module in Binary.Modules)
 					{
-						if (Module.Rules.Type != ModuleRules.ModuleType.CPlusPlus)
+						if (IgnoreReferencedModules.Add(Module))
 						{
-							continue;
+							ReferencedModules.Add(Module);
+							Module.GetAllDependencyModules(ReferencedModules, IgnoreReferencedModules, true, false, false);
 						}
+					}
+				}
+				foreach (UEBuildModule Module in ReferencedModules)
+				{
+					NameToModule.TryAdd(Module.Name, Module);
+					foreach (UEBuildModule Module2 in Module.GetDependencies(true, true))
+					{
+						NameToModule.TryAdd(Module2.Name, Module2);
+					}
+				}
 
-						bool ShouldUpdate = false;
-						string ModuleDir = Module.ModuleDirectory.FullName.Replace('\\', '/');
+				foreach (UEBuildModule Module in NameToModule.Values)
+				{
+					bool ShouldUpdate = false;
+					string ModuleDir = Module.ModuleDirectory.FullName.Replace('\\', '/');
 
-						if (!PathToModule.TryAdd(ModuleDir, Module))
+					if (!PathToModule.TryAdd(ModuleDir, Module))
+					{
+						continue;
+					}
+					foreach (DirectoryReference AdditionalDir in Module.ModuleDirectories)
+					{
+						if (AdditionalDir != Module.ModuleDirectory)
 						{
-							if (PathToModule[ModuleDir] != Module)
-							{
-								Logger.LogError("FOOO");
-								return -1;
-							}
-							continue;
+							PathToModule.TryAdd(AdditionalDir.FullName.Replace('\\', '/'), Module);
 						}
-						foreach (DirectoryReference AdditionalDir in Module.ModuleDirectories)
-						{
-							if (AdditionalDir != Module.ModuleDirectory)
-							{
-								PathToModule.TryAdd(AdditionalDir.FullName.Replace('\\', '/'), Module);
-							}
-						}
+					}
 
-						if (UEModuleToUpdate != null)
+					if (Module.Rules.Type != ModuleRules.ModuleType.CPlusPlus)
+					{
+						continue;
+					}
+
+					if (UEModuleToUpdate != null)
+					{
+						bool DependsOnModule = Module == UEModuleToUpdate;
+						if (bUpdateDependents)
 						{
-							bool DependsOnModule = Module == UEModuleToUpdate;
-							if (bUpdateDependents)
+							if (Module.PublicDependencyModules != null)
 							{
-								foreach (var Dependency in Module.PublicDependencyModules!)
+								foreach (UEBuildModule Dependency in Module.PublicDependencyModules)
 								{
 									DependsOnModule = DependsOnModule || Dependency == UEModuleToUpdate;
 								}
-								foreach (var Dependency in Module.PrivateDependencyModules!)
+							}
+							if (Module.PrivateDependencyModules != null)
+							{
+								foreach (UEBuildModule Dependency in Module.PrivateDependencyModules!)
 								{
 									DependsOnModule = DependsOnModule || Dependency == UEModuleToUpdate;
 								}
 							}
-							ShouldUpdate = DependsOnModule;
 						}
-						
-						if (PathToUpdateList.Length > 0)
-						{
-							bool Match = false;
-							for (int I=0; I!= PathToUpdateList.Length; ++I)
-							{
-								Match = Match || ModuleDir.Contains(PathToUpdateList[I], StringComparison.OrdinalIgnoreCase);
-							}
+						ShouldUpdate = DependsOnModule;
+					}
 
-							if (Match)
+					if (PathToUpdateList.Length > 0)
+					{
+						bool Match = false;
+						for (int I = 0; I != PathToUpdateList.Length; ++I)
+						{
+							Match = Match || ModuleDir.Contains(PathToUpdateList[I], StringComparison.OrdinalIgnoreCase);
+						}
+
+						if (Match)
+						{
+							if (UEModuleToUpdate == null)
 							{
-								if (UEModuleToUpdate == null)
-								{
-									ShouldUpdate = true;
-								}
-							}
-							else
-							{
-								ShouldUpdate = false;
+								ShouldUpdate = true;
 							}
 						}
-						else if (UEModuleToUpdate == null)
+						else
 						{
-							ShouldUpdate = true;
+							ShouldUpdate = false;
 						}
+					}
+					else if (UEModuleToUpdate == null)
+					{
+						ShouldUpdate = true;
+					}
 
-						if (!ShouldUpdate)
+					if (!ShouldUpdate)
+					{
+						continue;
+					}
+
+					if (Module.Rules.IWYUSupport == IWYUSupport.None)
+					{
+						++ModulesSkippedCount;
+						continue;
+					}
+
+					++ModulesToUpdateCount;
+
+					// When adding to ValidPaths, make sure the Module directory ends in a / so we match the exact folder later
+					ValidPaths.Add(AdjustModulePathForMatching(ModuleDir));
+
+					foreach (DirectoryReference AdditionalDir in Module.ModuleDirectories)
+					{
+						if (AdditionalDir != Module.ModuleDirectory)
 						{
-							continue;
-						}
-
-						if (Module.Rules.IWYUSupport == IWYUSupport.None)
-						{
-							++ModulesSkippedCount;
-							continue;
-						}
-
-						++ModulesToUpdateCount;
-
-						// When adding to ValidPaths, make sure the Module directory ends in a / so we match the exact folder later
-						ValidPaths.Add(AdjustModulePathForMatching(ModuleDir));
-
-						foreach (DirectoryReference AdditionalDir in Module.ModuleDirectories)
-						{
-							if (AdditionalDir != Module.ModuleDirectory)
-							{
-								ValidPaths.Add(AdjustModulePathForMatching(AdditionalDir.FullName));
-							}
+							ValidPaths.Add(AdjustModulePathForMatching(AdditionalDir.FullName));
 						}
 					}
 				}
@@ -507,57 +569,87 @@ namespace UnrealBuildTool
 			Dictionary<string, IWYUInfo> Infos = new();
 			HashSet<string> GeneratedHeaderInfos = new();
 			List<IWYUInfo> GeneratedCppInfos = new();
-			IWYUInfo? ObjectMacrosInfo = null;
-			IWYUInfo? ScriptMacrosInfo = null;
-			IWYUInfo? PlatformInfo = null;
-			int ReadSuccess = 1;
 
-			TargetDescriptor Descriptor = TargetDescriptors.First();
 			using (ISourceFileWorkingSet WorkingSet = new EmptySourceFileWorkingSet())
 			{
-				// Create the make file that contains all the actions we will use to find .iwyu files.
-				Logger.LogInformation($"Creating MakeFile for target...");
-				TargetMakefile Makefile = BuildMode.CreateMakefile(BuildConfiguration, Descriptor, WorkingSet, Logger);
+				List<string>? TocContent = null;
+				int ReadSuccess = 1;
 
-				// Use the make file to build unless -NoCompile is set.
-				if (!bNoCompile)
+				if (bReadToc)
 				{
-					BuildMode.Build(new TargetMakefile[] { Makefile }, new List<TargetDescriptor>() { Descriptor }, BuildConfiguration, BuildOptions.None, null, Logger);
-					SourceFileMetadataCache.SaveAll();
-					CppDependencyCache.SaveAll();
-				}
-
-				HashSet<FileItem> OutputItems = new HashSet<FileItem>();
-				if (Descriptor.OnlyModuleNames.Count > 0)
-				{
-					foreach (string OnlyModuleName in Descriptor.OnlyModuleNames)
+					string TocName = TargetName + ".txt";
+					FileReference TocReference = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "IWYU", TocName);
+					Logger.LogInformation($"Reading TOC from {TocReference.FullName}...");
+					if (FileReference.Exists(TocReference))
 					{
-						FileItem[]? OutputItemsForModule;
-						if (!Makefile.ModuleNameToOutputItems.TryGetValue(OnlyModuleName, out OutputItemsForModule))
-						{
-							throw new BuildException("Unable to find output items for module '{0}'", OnlyModuleName);
-						}
-						OutputItems.UnionWith(OutputItemsForModule);
+						TocContent = FileReference.ReadAllLines(TocReference).ToList();
 					}
 				}
-				else
+
+				if (TocContent == null)
 				{
-					// Use all the output items from the target
-					OutputItems.UnionWith(Makefile.OutputItems);
+					TargetDescriptor Descriptor = TargetDescriptors.First();
+
+					// Create the make file that contains all the actions we will use to find .iwyu files.
+					Logger.LogInformation($"Creating MakeFile for target...");
+					TargetMakefile Makefile;
+					try
+					{
+						Makefile = await BuildMode.CreateMakefileAsync(BuildConfiguration, Descriptor, WorkingSet, Logger);
+					}
+					finally
+					{
+						SourceFileMetadataCache.SaveAll();
+					}
+
+					// Use the make file to build unless -NoCompile is set.
+					if (!bNoCompile)
+					{
+						try
+						{
+							await BuildMode.BuildAsync(new TargetMakefile[] { Makefile }, new List<TargetDescriptor>() { Descriptor }, BuildConfiguration, BuildOptions.None, null, Logger);
+						}
+						finally
+						{
+							CppDependencyCache.SaveAll();
+						}
+					}
+
+					HashSet<FileItem> OutputItems = new HashSet<FileItem>();
+					if (Descriptor.OnlyModuleNames.Count > 0)
+					{
+						foreach (string OnlyModuleName in Descriptor.OnlyModuleNames)
+						{
+							FileItem[]? OutputItemsForModule;
+							if (!Makefile.ModuleNameToOutputItems.TryGetValue(OnlyModuleName, out OutputItemsForModule))
+							{
+								throw new BuildException("Unable to find output items for module '{0}'", OnlyModuleName);
+							}
+							OutputItems.UnionWith(OutputItemsForModule);
+						}
+					}
+					else
+					{
+						// Use all the output items from the target
+						OutputItems.UnionWith(Makefile.OutputItems);
+					}
+
+					TocContent = new();
+
+					foreach (FileItem OutputItem in OutputItems)
+					{
+						if (OutputItem.Name.EndsWith(".iwyu"))
+						{
+							TocContent.Add(OutputItem.AbsolutePath);
+						}
+					}
 				}
 
 				// Time to parse all the .iwyu files generated from iwyu.
 				// We Do this in parallel since it involves reading a ton of .iwyu files from disk.
-				Logger.LogInformation("Parsing output from IWYU...");
-				Parallel.ForEach(OutputItems, OutputItem =>
+				Logger.LogInformation($"Parsing {TocContent.Count} .iwyu files...");
+				Parallel.ForEach(TocContent, IWYUFilePath =>
 				{
-					if (!OutputItem.Name.EndsWith(".iwyu"))
-					{
-						return;
-					}
-
-					string IWYUFilePath = OutputItem.AbsolutePath;
-
 					string? JsonContent = File.ReadAllText(IWYUFilePath);
 					if (JsonContent == null)
 					{
@@ -572,15 +664,19 @@ namespace UnrealBuildTool
 						IWYUFile!.Name = IWYUFilePath;
 
 						// Traverse the cpp/inl/h file entries inside the .iwyu file
-						foreach (var Info in IWYUFile!.Files)
+						foreach (IWYUInfo Info in IWYUFile!.Files)
 						{
 							Info.Source = IWYUFile;
+							Info.IsCpp = Info.File.EndsWith(".cpp");
 
 							// We track .gen.cpp in a special list, they need special treatment later
-							if (Info.File.Contains(".gen.cpp"))
+							if (Info.File.Contains(".gen.cpp", StringComparison.Ordinal))
 							{
 								lock (GeneratedCppInfos)
+								{
 									GeneratedCppInfos.Add(Info);
+								}
+
 								continue;
 							}
 
@@ -590,7 +686,7 @@ namespace UnrealBuildTool
 								if (!Infos.TryAdd(Info.File, Info))
 								{
 									// This is a valid scenario when Foo.cpp also registers Foo.h... and then Foo.h registers itself.
-									var ExistingEntry = Infos[Info.File];
+									IWYUInfo ExistingEntry = Infos[Info.File];
 									if (IWYUFile.Files.Count == 1)
 									{
 										if (ExistingEntry.Source!.Files.Count == 1)
@@ -614,36 +710,39 @@ namespace UnrealBuildTool
 								}
 							}
 
-							string FilePath = Info.File;
-							while (true)
+							// TODO: Fix bad formatting coming from iwyu
+							foreach (IWYUIncludeEntry Entry in Info.IncludesSeenInFile)
 							{
-								int LastIndexOfSlash = FilePath.LastIndexOf('/');
-								if (LastIndexOfSlash == -1)
-									break;
-								FilePath = FilePath.Substring(0, LastIndexOfSlash);
-								if (PathToModule.TryGetValue(FilePath, out Info.Module))
-									break;
+								if (Entry.Printable[0] == '<')
+								{
+									Entry.Printable = Entry.Printable.Substring(1, Entry.Printable.Length - 2);
+									Entry.System = true;
+								}
 							}
+
+							Info.Module = GetModule(Info.File, PathToModule);
 
 							// Some special logic for headers.
 							if (Info.File.EndsWith(".h"))
 							{
-								// Find ObjectMacros and ScriptMacros. These are always included in .generated.h files which will generate IWYUInfos for further down
-								if (ObjectMacrosInfo == null && Info.File.EndsWith("UObject/ObjectMacros.h"))
-									ObjectMacrosInfo = Info;
-								else if (ScriptMacrosInfo == null && Info.File.EndsWith("UObject/ScriptMacros.h"))
-									ScriptMacrosInfo = Info;
-								else if (PlatformInfo == null && Info.File.EndsWith("HAL/Platform.h"))
-									PlatformInfo = Info;
-
 								// We need to add entries for .generated.h. They are not in the iwyu files
-								foreach (var Include in Info.Includes)
+								foreach (IWYUIncludeEntry Include in Info.Includes)
 								{
-									if (Include.Printable.EndsWith(".generated.h"))
+									if (Include.Full.Contains("/UHT/"))
 									{
 										lock (GeneratedHeaderInfos)
+										{
 											GeneratedHeaderInfos.Add(Include.Full);
+										}
+
 										break;
+									}
+									else if (Include.Full.Contains("/VNI/"))
+									{
+										lock (GeneratedHeaderInfos)
+										{
+											GeneratedHeaderInfos.Add(Include.Full);
+										}
 									}
 								}
 							}
@@ -657,31 +756,84 @@ namespace UnrealBuildTool
 						return;
 					}
 				});
+
+				// Something went wrong parsing iwyu files.
+				if (ReadSuccess == 0)
+				{
+					return -1;
+				}
+
+				if (bWriteToc)
+				{
+					Logger.LogInformation($"Writing TOC that references all .iwyu files ");
+					DirectoryReference TocDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "IWYU");
+					DirectoryReference.CreateDirectory(TocDir);
+					string TocName = TargetName + ".txt";
+					FileReference TocReference = FileReference.Combine(TocDir, TocName);
+					FileReference.WriteAllLines(TocReference, TocContent);
+				}
 			}
 
-			// Something went wrong parsing iwyu files.
-			if (ReadSuccess == 0)
-				return -1;
+			KeyValuePair<string, IWYUIncludeEntry?> GetInfo(string Include, string Path)
+			{
+				string FullPath = DirectoryReference.Combine(Unreal.EngineDirectory, Path).FullName.Replace('\\', '/');
+				IWYUInfo? Out = null;
+				if (!Infos.TryGetValue(FullPath, out Out))
+				{
+					return new(Include, null);
+				}
+
+				IWYUIncludeEntry Entry = new();
+				Entry.Printable = Include;
+				Entry.Full = FullPath;
+				Entry.Resolved = Out;
+				return new(Include, Entry);
+			}
+
+			Dictionary<string, IWYUIncludeEntry?> SpecialIncludes = new Dictionary<string, IWYUIncludeEntry?>(
+				new[]
+				{
+					GetInfo("UObject/ObjectMacros.h", "Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h"),
+					GetInfo("UObject/ScriptMacros.h", "Source/Runtime/CoreUObject/Public/UObject/ScriptMacros.h"),
+					GetInfo("VerseInteropUtils.h", "Restricted/NotForLicensees/Plugins/Solaris/Source/VerseNative/Public/VerseInteropTypes.h"),
+					GetInfo("Containers/ContainersFwd.h", "Source/Runtime/Core/Public/Containers/ContainersFwd.h"),
+					GetInfo("Misc/OptionalFwd.h", "Source/Runtime/Core/Public/Misc/OptionalFwd.h"),
+				}
+			);
+
+			Dictionary<string, IWYUIncludeEntry?> ForwardingHeaders = new Dictionary<string, IWYUIncludeEntry?>()
+			{
+				{ "TMap", SpecialIncludes["Containers/ContainersFwd.h"] },
+				{ "TSet", SpecialIncludes["Containers/ContainersFwd.h"] },
+				{ "TArray", SpecialIncludes["Containers/ContainersFwd.h"] },
+				{ "TArrayView", SpecialIncludes["Containers/ContainersFwd.h"] },
+				{ "TOptional", SpecialIncludes["Misc/OptionalFwd.h"] },
+			};
 
 			// Add all .generated.h files as entries in the lookup and explicitly add the includes they have which will never be removed
 			Logger.LogInformation($"Generating infos for .generated.h files...");
 			if (GeneratedHeaderInfos.Count > 0)
 			{
-				IWYUIncludeEntry ObjectMacrosInclude = new();
-				IWYUIncludeEntry ScriptMacrosInclude = new();
-				ObjectMacrosInclude.Printable = "UObject/ObjectMacros.h";
-				ObjectMacrosInclude.Full = ObjectMacrosInfo!.File;
-				ObjectMacrosInclude.Resolved = ObjectMacrosInfo;
-				ScriptMacrosInclude.Printable = "UObject/ScriptMacros.h";
-				ScriptMacrosInclude.Full = ScriptMacrosInfo!.File;
-				ScriptMacrosInclude.Resolved = ScriptMacrosInfo;
+				IWYUIncludeEntry ObjectMacrosInclude = SpecialIncludes["UObject/ObjectMacros.h"]!;
+				IWYUIncludeEntry ScriptMacrosInclude = SpecialIncludes["UObject/ScriptMacros.h"]!;
+				IWYUIncludeEntry VerseInteropUtilsInclude = SpecialIncludes["VerseInteropUtils.h"]!;
 
-				foreach (var Gen in GeneratedHeaderInfos)
+				foreach (string Gen in GeneratedHeaderInfos)
 				{
 					IWYUInfo GenInfo = new();
 					GenInfo.File = Gen;
-					GenInfo.Includes.Add(ObjectMacrosInclude);
-					GenInfo.Includes.Add(ScriptMacrosInclude);
+					if (Gen.EndsWith(".generated.h"))
+					{
+						GenInfo.IncludesSeenInFile.Add(ObjectMacrosInclude);
+						GenInfo.IncludesSeenInFile.Add(ScriptMacrosInclude);
+						GenInfo.Includes.Add(ObjectMacrosInclude);
+						GenInfo.Includes.Add(ScriptMacrosInclude);
+					}
+					else
+					{
+						GenInfo.IncludesSeenInFile.Add(VerseInteropUtilsInclude);
+						GenInfo.Includes.Add(VerseInteropUtilsInclude);
+					}
 					Infos.Add(Gen, GenInfo);
 				}
 			}
@@ -689,6 +841,14 @@ namespace UnrealBuildTool
 			Logger.LogInformation($"Found {Infos.Count} IWYU entries...");
 
 			Logger.LogInformation($"Resolving Includes...");
+
+			LinuxPlatformSDK PlatformSDK = new LinuxPlatformSDK(Logger);
+			DirectoryReference? BaseLinuxPath = PlatformSDK.GetBaseLinuxPathForArchitecture(LinuxPlatform.DefaultHostArchitecture);
+			string SystemPath = BaseLinuxPath!.FullName.Replace('\\', '/');
+
+			HashSet<IWYUInfo> IncludedInsideDecl = new();
+			Dictionary<string, IWYUInfo> SkippedHeaders = new();
+
 			Parallel.ForEach(Infos.Values, Info =>
 			{
 				// If KeepAsIs we transfer all "seen includes" into the include list.
@@ -697,15 +857,63 @@ namespace UnrealBuildTool
 					foreach (IWYUIncludeEntry Entry in Info.IncludesSeenInFile)
 					{
 						// Special hack, we don't want CoreMinimal to be the reason we remove includes transitively
-						if (!Entry.Printable.Contains("CoreMinimal.h"))
+						if (!Entry.Printable.Contains("CoreMinimal.h", StringComparison.Ordinal))
 						{
 							Info.Includes.Add(Entry);
 						}
 					}
 				}
 
+				if (!Info.IsCpp)
+				{
+					// See if we need to replace forward declarations with includes
+					Info.ForwardDeclarations.RemoveAll(Entry =>
+					{
+						int LastSpace = Entry.Printable.LastIndexOf(' ');
+						string TypeName = Entry.Printable.Substring(LastSpace + 1, Entry.Printable.Length - LastSpace - 2);
+						IWYUIncludeEntry? IncludeEntry;
+						ForwardingHeaders.TryGetValue(TypeName, out IncludeEntry);
+						if (IncludeEntry == null)
+						{
+							return false;
+						}
+						Info.Includes.Add(IncludeEntry);
+						return true;
+					});
+				}
+
+				// We don't want to mess around with third party includes.. since we can't see the hierarchy we just assumes that they are optimally included
+				Info.Includes.RemoveAll(Entry => Entry.Full.Contains("/ThirdParty/", StringComparison.Ordinal) || Entry.Full.StartsWith(SystemPath));
+
+				foreach (IWYUIncludeEntry Entry in Info.IncludesSeenInFile)
+				{
+					if (Entry.Full.Contains("/ThirdParty/", StringComparison.Ordinal) || Entry.Full.StartsWith(SystemPath, StringComparison.Ordinal))
+					{
+						Info.Includes.Add(Entry);
+					}
+
+					if (Entry.InsideDecl && Infos.TryGetValue(Entry.Full, out Entry.Resolved))
+					{
+						lock (IncludedInsideDecl)
+						{
+							IncludedInsideDecl.Add(Entry.Resolved);
+							Info.Includes.Add(Entry);
+						}
+					}
+				}
+				/*
+				if (Info.IncludesSeenInFile.Count == 0)
+				{
+					if (Info.File.EndsWith(".inl"))
+					{
+						Info.Includes.Clear();
+						Info.ForwardDeclarations.Clear();
+					}
+				}
+				*/
 				// Definitions.h is automatically added in the reponse file and iwyu sees it as not included
 				// If there are no includes but we depend on Definitions.h (which is missing) we add Platform.h because it is most likely a <module>_API entry in the file
+				/*
 				if (Info.Includes.Count == 0)
 				{
 					bool IsUsingDefinitionsH = false;
@@ -718,19 +926,53 @@ namespace UnrealBuildTool
 						Info.Includes.Add(new IWYUIncludeEntry() { Full = PlatformInfo!.File, Printable = "HAL/Platform.h", Resolved = PlatformInfo });
 					}
 				}
-
-				foreach (var Include in Info.Includes)
+				*/
+				foreach (IWYUIncludeEntry Include in Info.Includes)
 				{
 					if (Include.Resolved == null)
-						Infos.TryGetValue(Include.Full, out Include.Resolved);
+					{
+						if (!Infos.TryGetValue(Include.Full, out Include.Resolved))
+						{
+							if (!Include.Full.Contains(".gen.cpp") && !Include.Full.Contains("/ThirdParty/") && !Include.Full.Contains("/AutoSDK/") && !Include.Full.Contains("/VNI/"))
+							{
+								lock (SkippedHeaders)
+								{
+									if (!SkippedHeaders.TryGetValue(Include.Full, out Include.Resolved))
+									{
+										IWYUInfo NewInfo = new();
+										Include.Resolved = NewInfo;
+										NewInfo.File = Include.Full;
+										SkippedHeaders.Add(Include.Full, NewInfo);
+									}
+								}
+							}
+						}
+					}
 				}
 			});
+
+			int InfosCount = Infos.Count;
+			Logger.LogInformation($"Parsing included headers not supporting being compiled...");
+			ParseSkippedHeaders(SkippedHeaders, Infos, PathToModule, NameToModule);
+			Logger.LogInformation($"Added {Infos.Count - InfosCount} more read-only IWYU entries...");
+
+			foreach (IWYUInfo Info in IncludedInsideDecl)
+			{
+				if (Info.IncludesSeenInFile.Count != 0 && !Info.File.EndsWith("ScriptSerialization.h")) // Remove include in ScriptSerialization.h and remove this check
+				{
+					Logger.LogWarning($"{Info.File} - Included inside declaration in other file but has includes itself.");
+				}
+				Info.Includes.Clear();
+				Info.ForwardDeclarations.Clear();
+			}
 
 			Logger.LogInformation($"Generating transitive include lists and forward declaration lists...");
 			Parallel.ForEach(Infos.Values, Info =>
 			{
 				Stack<string> Stack = new();
-				CalculateTransitive(Info, Info, Stack, Info.TransitiveIncludes, Info.TransitiveForwardDeclarations);
+				Info.TransitiveIncludes.EnsureCapacity(300);
+				Info.TransitiveForwardDeclarations.EnsureCapacity(300);
+				CalculateTransitive(Info, Info, Stack, Info.TransitiveIncludes, Info.TransitiveForwardDeclarations, false);
 			});
 
 			// If we have built .gen.cpp it means that it is not inlined in another cpp file
@@ -740,16 +982,19 @@ namespace UnrealBuildTool
 			{
 				// First, check which files .gen.cpp will see
 				HashSet<string> SeenTransitiveIncludes = new();
-				foreach (var SeenInclude in GeneratedCpp.IncludesSeenInFile)
+				foreach (IWYUIncludeEntry SeenInclude in GeneratedCpp.IncludesSeenInFile)
 				{
-					SeenTransitiveIncludes.Add(SeenInclude.Printable);
-					foreach (var Include in GeneratedCpp.Includes)
+					SeenTransitiveIncludes.Add(SeenInclude.Full);
+					foreach (IWYUIncludeEntry Include in GeneratedCpp.Includes)
 					{
 						IWYUInfo? IncludeInfo;
 						if (SeenInclude.Printable == Include.Printable && Infos.TryGetValue(Include.Full, out IncludeInfo))
 						{
 							foreach (string I in IncludeInfo.TransitiveIncludes.Keys)
+							{
 								SeenTransitiveIncludes.Add(I);
+							}
+
 							break;
 						}
 					}
@@ -762,7 +1007,7 @@ namespace UnrealBuildTool
 				{
 					int NameStart = GeneratedCpp.File.LastIndexOf('/');
 					string HeaderName = GeneratedCpp.File.Substring(NameStart + 1, GeneratedCpp.File.Length - NameStart - ".gen.cpp".Length) + "h";
-					foreach (var Include in GeneratedCpp.Includes)
+					foreach (IWYUIncludeEntry Include in GeneratedCpp.Includes)
 					{
 						NameStart = Include.Full.LastIndexOf('/');
 						string IncludeName = Include.Full.Substring(NameStart + 1);
@@ -783,9 +1028,9 @@ namespace UnrealBuildTool
 					return;
 				}
 
-				foreach (var Include in GeneratedCpp.Includes)
+				foreach (IWYUIncludeEntry Include in GeneratedCpp.Includes)
 				{
-					if (SeenTransitiveIncludes.Contains(Include.Printable))
+					if (SeenTransitiveIncludes.Contains(Include.Full))
 					{
 						continue;
 					}
@@ -797,13 +1042,230 @@ namespace UnrealBuildTool
 						continue;
 					}
 
-					if (!IncluderInfo!.TransitiveIncludes.ContainsKey(Include.Printable))
+					if (!IncluderInfo!.TransitiveIncludes.ContainsKey(Include.Full))
 					{
-						IncluderInfo.Includes.Add(Include);
+						if (!Include.Full.Contains("/ThirdParty/") && !Include.Full.StartsWith(SystemPath))
+						{
+							IncluderInfo.Includes.Add(Include);
+						}
 					}
 				}
 			});
 
+			if (bCompare)
+			{
+				return CompareFiles(Infos, ValidPaths, PathToModule, NameToModule, Logger);
+			}
+			else
+			{
+				return UpdateFiles(Infos, ValidPaths, Logger);
+			}
+		}
+
+		static UEBuildModule? GetModule(string File, Dictionary<string, UEBuildModule> PathToModule)
+		{
+			string FilePath = File;
+			while (true)
+			{
+				int LastIndexOfSlash = FilePath.LastIndexOf('/');
+				if (LastIndexOfSlash == -1)
+				{
+					break;
+				}
+
+				FilePath = FilePath.Substring(0, LastIndexOfSlash);
+				UEBuildModule? Module;
+				if (PathToModule.TryGetValue(FilePath, out Module))
+				{
+					return Module;
+				}
+			}
+			return null;
+		}
+
+		static string? GetFullName(string Include, string From, UEBuildModule? Module, Dictionary<string, UEBuildModule> NameToModule, HashSet<UEBuildModule>? Visited = null)
+		{
+			if (Module == null)
+			{
+				return null;
+			}
+			foreach (DirectoryReference? Dir in Module.PublicIncludePaths.Union(Module.PrivateIncludePaths).Union(Module.PublicSystemIncludePaths))
+			{
+				FileReference FileReference = FileReference.Combine(Dir, Include);
+				FileItem FileItem = FileItem.GetItemByFileReference(FileReference);
+				if (FileItem.Exists)
+				{
+					return FileItem.Location.FullName.Replace('\\', '/');
+				}
+			}
+
+			bool Nested = Visited != null;
+
+			if (!Nested)
+			{
+				FileReference FileReference = FileReference.Combine(FileReference.FromString(From).Directory, Include);
+				FileItem FileItem = FileItem.GetItemByFileReference(FileReference);
+				if (FileItem.Exists)
+				{
+					return FileItem.Location.FullName.Replace('\\', '/');
+				}
+			}
+
+			foreach (string? PublicModule in Module.Rules.PublicDependencyModuleNames.Union(Module.Rules.PublicIncludePathModuleNames).Union(Module.Rules.PrivateIncludePathModuleNames).Union(Module.Rules.PrivateDependencyModuleNames))
+			{
+				UEBuildModule? DependencyModule;
+				if (NameToModule.TryGetValue(PublicModule, out DependencyModule))
+				{
+					if (Visited == null)
+					{
+						Visited = new();
+						Visited.Add(Module);
+						Visited.Add(DependencyModule);
+					}
+					else if (!Visited.Add(DependencyModule))
+					{
+						continue;
+					}
+
+					string? Str = GetFullName(Include, From, DependencyModule, NameToModule, Visited);
+					if (Str != null)
+					{
+						return Str;
+					}
+				}
+			}
+
+			if (!Nested)
+			{
+				// This should only show system includes..
+				//Console.WriteLine($"Can't resolve {Include} from module {Module.Name}");
+			}
+
+			return null;
+		}
+
+		static void ParseSkippedHeaders(Dictionary<string, IWYUInfo> SkippedHeaders, Dictionary<string, IWYUInfo> Infos, Dictionary<string, UEBuildModule> PathToModule, Dictionary<string, UEBuildModule> NameToModule)
+		{
+			foreach (KeyValuePair<string, IWYUInfo> Kvp in SkippedHeaders)
+			{
+				Infos.Add(Kvp.Key, Kvp.Value);
+			}
+			while (true)
+			{
+				Dictionary<string, IWYUInfo> NewSkippedHeaders = new();
+				Parallel.ForEach(SkippedHeaders.Values, Info =>
+				{
+					Info.Module = GetModule(Info.File, PathToModule);
+
+					bool HasIncludeGuard = false;
+					int IfCount = 0;
+					string[] Lines = File.ReadAllLines(Info.File);
+					foreach (string Line in Lines)
+					{
+						ReadOnlySpan<char> LineSpan = Line.AsSpan().TrimStart();
+						if (LineSpan.Length == 0 || LineSpan[0] != '#')
+						{
+							continue;
+						}
+						LineSpan = LineSpan.Slice(1).TrimStart();
+						if (LineSpan.StartsWith("if"))
+						{
+							// Include guards are special
+							if (!HasIncludeGuard)
+							{
+								if (LineSpan.StartsWith("ifndef ") && LineSpan.EndsWith("_H"))
+								{
+									HasIncludeGuard = true;
+									continue;
+								}
+							}
+							++IfCount;
+						}
+						else if (LineSpan.StartsWith("endif"))
+						{
+							--IfCount;
+						}
+						else if (LineSpan.StartsWith("include"))
+						{
+							ReadOnlySpan<char> IncludeSpan = LineSpan.Slice("include".Length).TrimStart();
+							char LeadingIncludeChar = IncludeSpan[0];
+							if (LeadingIncludeChar == '"' || LeadingIncludeChar == '<')
+							{
+								ReadOnlySpan<char> Start = IncludeSpan.Slice(1);
+								int EndIndex = Start.IndexOf(LeadingIncludeChar == '"' ? '"' : '>');
+								ReadOnlySpan<char> FileSpan = Start.Slice(0, EndIndex);
+								string Include = FileSpan.ToString();
+								string? File = GetFullName(Include, Info.File, Info.Module, NameToModule);
+								if (File != null)
+								{
+									IWYUInfo? IncludeInfo;
+									lock (Infos)
+									{
+										if (!Infos.TryGetValue(File, out IncludeInfo))
+										{
+											if (!SkippedHeaders.TryGetValue(File, out IncludeInfo))
+											{
+												IncludeInfo = new();
+												IncludeInfo.File = File;
+												NewSkippedHeaders.Add(File, IncludeInfo);
+												Infos.Add(File, IncludeInfo);
+											}
+										}
+									}
+									if (IncludeInfo != null)
+									{
+										IWYUIncludeEntry Entry = new();
+										Entry.Full = File;
+										Entry.Printable = Include;
+										Entry.System = LeadingIncludeChar == '<';
+										Entry.Resolved = IncludeInfo;
+										Info.IncludesSeenInFile.Add(Entry);
+										Info.Includes.Add(Entry);
+									}
+								}
+							}
+						}
+					}
+				});
+				if (NewSkippedHeaders.Count == 0)
+				{
+					return;
+				}
+				SkippedHeaders = NewSkippedHeaders;
+			}
+		}
+
+		static bool IsValidForUpdate(IWYUInfo Info, HashSet<string> ValidPaths, bool ObeyModuleRules)
+		{
+			if (Info.Source == null) // .generated.h is also in this list, ignore them
+			{
+				return false;
+			}
+
+			if (ObeyModuleRules && Info.Module?.Rules.IWYUSupport != IWYUSupport.Full)
+			{
+				return false;
+			}
+
+			// There are some codegen files with this name
+			if (Info.File.Contains(".gen.h"))
+			{
+				return false;
+			}
+
+			// Filter out files
+			foreach (string ValidPath in ValidPaths)
+			{
+				if (Info.File.Contains(ValidPath))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		int UpdateFiles(Dictionary<string, IWYUInfo> Infos, HashSet<string> ValidPaths, ILogger Logger)
+		{
 			object? ShouldLog = bWrite ? null : new();
 
 			List<ValueTuple<IWYUInfo, List<string>>> UpdatedFiles = new(); // <FilePath>, <NewLines>
@@ -818,21 +1280,12 @@ namespace UnrealBuildTool
 
 			Parallel.ForEach(Infos.Values, Info =>
 			{
-				if (Info.Source == null) // .generated.h is also in this list, ignore them
-					return;
-
-				// Filter out files
-				if (!ValidPaths.Any(ValidPath => Info.File.Contains(ValidPath, StringComparison.OrdinalIgnoreCase)))
+				if (!IsValidForUpdate(Info, ValidPaths, true))
 				{
 					return;
 				}
 
-				if (Info.Module?.Rules.IWYUSupport != IWYUSupport.Full)
-				{
-					return;
-				}
-
-				bool IsCpp = Info.File.EndsWith(".cpp");
+				bool IsCpp = Info.IsCpp;
 				bool IsPrivate = IsCpp || Info.File.Contains("/Private/");
 
 				// If we only want to update private files we early out for non-private headers
@@ -854,33 +1307,42 @@ namespace UnrealBuildTool
 				SortedSet<string> CleanedupIncludes = new();
 				SortedSet<string> ForwardDeclarationsToAdd = new();
 
-				foreach (var Include in Info.Includes)
+				foreach (IWYUIncludeEntry Include in Info.Includes)
 				{
 					// We never remove header with name matching cpp
 					string NameWithoutPath = Include.Printable;
 					int LastSlash = NameWithoutPath.LastIndexOf("/");
 					if (LastSlash != -1)
+					{
 						NameWithoutPath = NameWithoutPath.Substring(LastSlash + 1);
+					}
 
 					string QuotedPrintable = Include.System ? $"<{Include.Printable}>" : $"\"{Include.Printable}\"";
 
 					bool Keep = true;
 					if (Info.File == Include.Full) // Sometimes IWYU outputs include to the same file if .gen.cpp is inlined and includes file with slightly different path. just skip those
+					{
 						Keep = false;
+					}
 					else if (IsCpp && MatchingH == NameWithoutPath)
+					{
 						Keep = true;
+					}
 					else if (!bNoTransitiveIncludes)
 					{
-						foreach (var Include2 in Info.Includes)
+						foreach (IWYUIncludeEntry Include2 in Info.Includes)
 						{
 							if (Include2.Resolved != null && Include != Include2)
 							{
-								string Key = Include.Printable; //Full;
+								string Key = Include.Full;
 								string? TransitivePath;
 								if (Include2.Resolved.TransitiveIncludes!.TryGetValue(Key, out TransitivePath))
 								{
 									if (ShouldLog != null)
-										TransitivelyIncluded.TryAdd(QuotedPrintable, string.Join(" -> ", Include2.Printable, TransitivePath));
+									{
+										TransitivelyIncluded.TryAdd(QuotedPrintable, String.Join(" -> ", Include2.Printable, TransitivePath));
+									}
+
 									Keep = false;
 									break;
 								}
@@ -893,14 +1355,29 @@ namespace UnrealBuildTool
 					}
 				}
 
-				if (!IsCpp) // Ignore forward declarations for cpp files. They should never need them afaik
+				// We don't remove seen includes that are redundant because they are included through other includes that are needed.
+				if (!bRemoveRedundantIncludes)
 				{
-					foreach (var ForwardDeclaration in Info.ForwardDeclarations)
+					List<string> ToReadd = new();
+					foreach (IWYUIncludeEntry Seen in Info.IncludesSeenInFile)
+					{
+						string QuotedPrintable = Seen.System ? $"<{Seen.Printable}>" : $"\"{Seen.Printable}\"";
+						if (!CleanedupIncludes.Contains(QuotedPrintable) && Info.TransitiveIncludes.ContainsKey(Seen.Full))
+						{
+							CleanedupIncludes.Add(QuotedPrintable);
+						}
+					}
+				}
+
+				// Ignore forward declarations for cpp files. They are very rarely needed and we let the user add them manually instead
+				if (!IsCpp)
+				{
+					foreach (IWYUForwardEntry ForwardDeclaration in Info.ForwardDeclarations)
 					{
 						bool Add = ForwardDeclaration.Present == false;
 						if (!bNoTransitiveIncludes)
 						{
-							foreach (var Include2 in Info.Includes)
+							foreach (IWYUIncludeEntry Include2 in Info.Includes)
 							{
 								if (Include2.Resolved != null && Include2.Resolved.TransitiveForwardDeclarations!.ContainsKey(ForwardDeclaration.Printable))
 								{
@@ -916,12 +1393,10 @@ namespace UnrealBuildTool
 					}
 				}
 
-
 				// Read all lines of the header/source file
 				string[] ExistingLines = File.ReadAllLines(Info.File);
 
-				SortedSet<string> LinesToRemove = new();
-				SortedSet<string> IncludesToRemove = new();
+				SortedDictionary<string, string> LinesToRemove = new();
 				SortedSet<string> IncludesToAdd = new(CleanedupIncludes);
 
 				bool HasIncludes = false;
@@ -930,44 +1405,75 @@ namespace UnrealBuildTool
 				HashSet<string> SeenIncludes = new();
 				foreach (IWYUIncludeEntry SeenInclude in Info.IncludesSeenInFile)
 				{
-					if (SeenInclude.Printable[0] != '<')
-						SeenIncludes.Add($"\"{SeenInclude.Printable}\"");
+					if (SeenInclude.System)
+					{
+						SeenIncludes.Add($"<{SeenInclude.Printable}>");
+					}
 					else
-						SeenIncludes.Add(SeenInclude.Printable);
+					{
+						SeenIncludes.Add($"\"{SeenInclude.Printable}\"");
+					}
 				}
-
 
 				bool ForceKeepScope = false;
 				bool ErrorOnMoreIncludes = false;
 				int LineIndex = -1;
-				foreach (var L in ExistingLines)
+
+				// This makes sure that we have at least HAL/Platform.h included if the file contains XXX_API
+				bool Contains_API = false;
+				bool LookFor_API = false;
+				if (Info.Includes.Count == 0)
+				{
+					foreach (IWYUMissingInclude Missing in Info.MissingIncludes)
+					{
+						LookFor_API = LookFor_API || Missing.Full.Contains("Definitions.h");
+					}
+				}
+
+				// Traverse all lines in file and figure out which includes that should be added or removed
+				foreach (string Line in ExistingLines)
 				{
 					++LineIndex;
 
-					string Line = L.Trim();
-					if (!Line.StartsWith("#include"))
+					ReadOnlySpan<char> LineSpan = Line.AsSpan().Trim();
+					bool StartsWithHash = LineSpan.Length > 0 && LineSpan[0] == '#';
+					if (StartsWithHash)
+					{
+						LineSpan = LineSpan.Slice(1).TrimStart();
+					}
+
+					if (!StartsWithHash || !LineSpan.StartsWith("include"))
 					{
 						// Might be forward declaration.. 
 						if (ForwardDeclarationsToAdd.Remove(Line)) // Skip adding the ones that already exists
 						{
 							if (FirstForwardDeclareLine == null)
 							{
-								FirstForwardDeclareLine = L;
+								FirstForwardDeclareLine = Line;
 							}
 						}
 
 						if (Line.Contains("IWYU pragma: "))
 						{
 							if (Line.Contains(": begin_keep"))
+							{
 								ForceKeepScope = true;
+							}
 							else if (Line.Contains(": end_keep"))
+							{
 								ForceKeepScope = false;
+							}
 						}
 
 						// File is autogenerated by some tool, don't mess with it
 						if (Line.Contains("AUTO GENERATED CONTENT, DO NOT MODIFY"))
 						{
 							return;
+						}
+
+						if (LookFor_API && !Contains_API && Line.Contains("_API", StringComparison.Ordinal))
+						{
+							Contains_API = true;
 						}
 
 						continue;
@@ -984,7 +1490,7 @@ namespace UnrealBuildTool
 
 					bool ForceKeep = false;
 
-					ReadOnlySpan<char> IncludeSpan = Line.AsSpan(8).TrimStart();
+					ReadOnlySpan<char> IncludeSpan = LineSpan.Slice("include".Length).TrimStart();
 					char LeadingIncludeChar = IncludeSpan[0];
 					if (LeadingIncludeChar != '"' && LeadingIncludeChar != '<')
 					{
@@ -1009,8 +1515,8 @@ namespace UnrealBuildTool
 							// For now, let's assume that if there is one line in the file that is an include 
 							if (IncludesToAdd.Count == 1)
 							{
-								IncludesToAdd.Clear();
-								ErrorOnMoreIncludes = true;
+								//IncludesToAdd.Clear();
+								//ErrorOnMoreIncludes = true;
 							}
 						}
 						continue;
@@ -1023,23 +1529,36 @@ namespace UnrealBuildTool
 							IncludeSpan = IncludeSpan.Slice(0, Index + 2);
 						}
 
-						if (Line.Contains("IWYU pragma: "))
+						if (Line.Contains("IWYU pragma: ", StringComparison.Ordinal))
+						{
 							ForceKeep = true;
+						}
 					}
 
 					string Include = IncludeSpan.ToString();
 
+					// If Include is not seen it means that it is probably inside a #if/#endif with condition false. These includes we can't touch
 					if (!SeenIncludes.Contains(Include))
+					{
 						continue;
+					}
 
 					if (!ForceKeep && !ForceKeepScope && !CleanedupIncludes.Contains(Include))
 					{
-						LinesToRemove.Add(L);
-						IncludesToRemove.Add(Include);
+						LinesToRemove.TryAdd(Line, Include);
 					}
 					else
 					{
 						IncludesToAdd.Remove(Include);
+					}
+				}
+
+				if (Contains_API && LookFor_API)
+				{
+					//IncludesToAdd.Add(new IWYUIncludeEntry() { Full = PlatformInfo!.File, Printable = "HAL/Platform.h", Resolved = PlatformInfo });
+					if (!LinesToRemove.Remove("#include \"HAL/Platform.h\""))
+					{
+						IncludesToAdd.Add("\"HAL/Platform.h\"");
 					}
 				}
 
@@ -1061,7 +1580,6 @@ namespace UnrealBuildTool
 					}
 				}
 
-
 				SortedSet<string> LinesToAdd = new();
 
 				foreach (string IncludeToAdd in IncludesToAdd)
@@ -1074,21 +1592,21 @@ namespace UnrealBuildTool
 					lock (ShouldLog)
 					{
 						System.Console.WriteLine(Info.File);
-						foreach (var I in LinesToAdd)
+						foreach (string I in LinesToAdd)
 						{
 							System.Console.WriteLine("  +" + I);
 						}
-						foreach (var I in IncludesToRemove)
+						foreach (KeyValuePair<string, string> Pair in LinesToRemove)
 						{
-							System.Console.Write("  -" + I);
+							System.Console.Write("  -" + Pair.Key);
 							string? Reason;
-							if (TransitivelyIncluded.TryGetValue(I, out Reason))
+							if (TransitivelyIncluded.TryGetValue(Pair.Value, out Reason))
 							{
 								System.Console.Write("  (Transitively included from " + Reason + ")");
 							}
 							System.Console.WriteLine();
 						}
-						foreach (var I in ForwardDeclarationsToAdd)
+						foreach (string I in ForwardDeclarationsToAdd)
 						{
 							System.Console.WriteLine("  +" + I);
 						}
@@ -1108,10 +1626,15 @@ namespace UnrealBuildTool
 						++LineIndex;
 
 						if (!OldLine.TrimStart().StartsWith("#pragma"))
+						{
 							continue;
+						}
+
 						NewLines.Add("");
 						foreach (string Line in LinesToAdd)
+						{
 							NewLines.Add(Line);
+						}
 
 						NewLines.AddRange(ExistingLines.Skip(LineIndex));
 						break;
@@ -1130,9 +1653,18 @@ namespace UnrealBuildTool
 
 					foreach (string OldLine in ExistingLines)
 					{
+						ReadOnlySpan<char> OldLineSpan = OldLine.AsSpan().TrimStart();
+						bool StartsWithHash = OldLineSpan.Length > 0 && OldLineSpan[0] == '#';
+						if (StartsWithHash)
+						{
+							OldLineSpan = OldLineSpan.Slice(1).TrimStart();
+						}
+
+						bool IsInclude = StartsWithHash && OldLineSpan.StartsWith("include");
+
 						string OldLineTrimmedStart = OldLine.TrimStart();
 
-						if (!OldLineTrimmedStart.StartsWith("#include"))
+						if (!IsInclude)
 						{
 							if (IsInFirstIncludeBlock)
 							{
@@ -1148,7 +1680,9 @@ namespace UnrealBuildTool
 								{
 									// This logic is a bit shaky but handle the situations where file starts with #if and ends with #endif
 									if (LastSeenIncludeBeforeCode != -1)
+									{
 										IsInFirstIncludeBlock = false;
+									}
 								}
 
 								// This need to be inside "IsInFirstIncludeBlock" check because some files have forward declares far down in the file
@@ -1164,7 +1698,7 @@ namespace UnrealBuildTool
 
 						ContiguousNonIncludeLineCount = 0;
 
-						if (!LinesToRemove.Contains(OldLine))
+						if (!LinesToRemove.ContainsKey(OldLine))
 						{
 							// If we find #include SOME_DEFINE we assume that should be last and "end" the include block with that
 							if (!OldLineTrimmedStart.Contains('\"') && !OldLineTrimmedStart.Contains('<'))
@@ -1181,7 +1715,6 @@ namespace UnrealBuildTool
 								}
 							}
 
-
 							NewLines.Add(OldLine);
 						}
 						else
@@ -1191,13 +1724,15 @@ namespace UnrealBuildTool
 						}
 
 						if (IsInFirstIncludeBlock)
+						{
 							LastSeenIncludeBeforeCode = NewLines.Count - 1;
+						}
 					}
 
 					if (LinesToAdd.Count > 0)
 					{
 						int InsertPos = LastSeenIncludeBeforeCode + 1;
-						if (NewLines[LastSeenIncludeBeforeCode].Contains(".generated.h"))
+						if (NewLines[LastSeenIncludeBeforeCode].Contains(".generated.h", StringComparison.Ordinal))
 						{
 							--InsertPos;
 						}
@@ -1206,7 +1741,9 @@ namespace UnrealBuildTool
 						LastSeenIncludeBeforeCode += LinesToAdd.Count;
 
 						if (FirstForwardDeclareLineIndex != -1 && FirstForwardDeclareLineIndex > LastSeenIncludeBeforeCode)
+						{
 							FirstForwardDeclareLineIndex += LinesToAdd.Count;
+						}
 					}
 
 					if (ForwardDeclarationsToAdd.Count > 0)
@@ -1234,6 +1771,12 @@ namespace UnrealBuildTool
 				string EngineDir = Unreal.EngineDirectory.FullName.Replace('\\', '/');
 				if (!IsPrivate && Info.File.StartsWith(EngineDir) && !String.IsNullOrEmpty(HeaderDeprecationTag))
 				{
+					Dictionary<string, string> PrintableToFull = new();
+					foreach (IWYUIncludeEntry Seen in Info.IncludesSeenInFile)
+					{
+						PrintableToFull.TryAdd(Seen.Printable, Seen.Full);
+					}
+
 					// Remove the includes in LinesRemoved
 					LinesRemoved.RemoveWhere(Line =>
 					{
@@ -1249,7 +1792,13 @@ namespace UnrealBuildTool
 							return false;
 						}
 						IncludeSpan = IncludeSpan.Slice(1, Index);
-						return Info.TransitiveIncludes.ContainsKey(IncludeSpan.ToString());
+						string? Full;
+						if (!PrintableToFull.TryGetValue(IncludeSpan.ToString(), out Full))
+						{
+							return false;
+						}
+
+						return Info.TransitiveIncludes.ContainsKey(Full);
 					});
 
 					if (LinesRemoved.Count > 0)
@@ -1281,12 +1830,16 @@ namespace UnrealBuildTool
 					}
 				}
 				lock (UpdatedFiles)
+				{
 					UpdatedFiles.Add(new(Info, NewLines));
+				}
 			});
 
 			// Something went wrong processing code files.
 			if (ProcessSuccess == 0)
+			{
 				return -1;
+			}
 
 			Logger.LogInformation($"Parsed {FilesParseCount} and updated {UpdatedFiles.Count} files (Found {OutOfDateCount} .iwyu files out of date)");
 
@@ -1299,7 +1852,9 @@ namespace UnrealBuildTool
 
 			// If we have been logging we can exit now since we don't want to write any files to disk
 			if (ShouldLog != null)
+			{
 				return 0;
+			}
 
 			List<System.Diagnostics.Process> P4Processes = new();
 
@@ -1318,7 +1873,7 @@ namespace UnrealBuildTool
 			Func<bool> WaitForP4 = () =>
 			{
 				bool P4Success = true;
-				foreach (var P4Process in P4Processes)
+				foreach (System.Diagnostics.Process P4Process in P4Processes)
 				{
 					P4Process.WaitForExit();
 					if (P4Process.ExitCode != 0)
@@ -1335,32 +1890,38 @@ namespace UnrealBuildTool
 			if (!bNoP4)
 			{
 				List<IWYUInfo> ReadOnlyFileInfos = new();
-				foreach (var (Info, NewLines) in UpdatedFiles)
+				foreach ((IWYUInfo Info, List<string> NewLines) in UpdatedFiles)
 				{
 					if (new FileInfo(Info.File).IsReadOnly)
+					{
 						ReadOnlyFileInfos.Add(Info);
+					}
 				}
 
 				if (ReadOnlyFileInfos.Count > 0)
 				{
 					// Check out files in batches. This can go quite crazy if there are lots of files.
 					// Should probably revisit this code to prevent 100s of p4 processes to start at once
-					Logger.LogInformation($"Opening {UpdatedFiles.Count} files for edit in P4... ({SkippedCount} files skipped)");
+					Logger.LogInformation($"Opening {ReadOnlyFileInfos.Count} files for edit in P4... ({SkippedCount} files skipped)");
 					int ShowCount = 8;
-					foreach (var Info in ReadOnlyFileInfos)
+					foreach (IWYUInfo Info in ReadOnlyFileInfos)
 					{
 						Logger.LogInformation($"   edit {Info.File}");
 						if (--ShowCount == 0)
+						{
 							break;
+						}
 					}
-					if (UpdatedFiles.Count > 5)
-						Logger.LogInformation($"   ... and {UpdatedFiles.Count - 5} more.");
+					if (ReadOnlyFileInfos.Count > 5)
+					{
+						Logger.LogInformation($"   ... and {ReadOnlyFileInfos.Count - 5} more.");
+					}
 
 					StringBuilder P4Arguments = new();
 					int BatchSize = 10;
 					int BatchCount = 0;
 					int Index = 0;
-					foreach (var Info in ReadOnlyFileInfos)
+					foreach (IWYUInfo Info in ReadOnlyFileInfos)
 					{
 						if (!SkippedFiles.Contains(Info.Source!))
 						{
@@ -1368,7 +1929,7 @@ namespace UnrealBuildTool
 							++BatchCount;
 						}
 						++Index;
-						if (BatchCount == BatchSize || Index == UpdatedFiles.Count)
+						if (BatchCount == BatchSize || Index == ReadOnlyFileInfos.Count)
 						{
 							AddP4Process($"edit{P4Arguments}");
 							P4Arguments.Clear();
@@ -1387,10 +1948,13 @@ namespace UnrealBuildTool
 			bool WriteSuccess = true;
 			Logger.LogInformation($"Writing {UpdatedFiles.Count - SkippedCount} files to disk...");
 
-			foreach (var (Info, NewLines) in UpdatedFiles)
+			foreach ((IWYUInfo Info, List<string> NewLines) in UpdatedFiles)
 			{
 				if (SkippedFiles.Contains(Info.Source!))
+				{
 					continue;
+				}
+
 				try
 				{
 					File.WriteAllLines(Info.File, NewLines);
@@ -1409,10 +1973,12 @@ namespace UnrealBuildTool
 			if (!WaitForP4())
 			{
 				return -1;
-			}	
+			}
 
 			if (!WriteSuccess)
+			{
 				return -1;
+			}
 
 			Logger.LogInformation($"Done!");
 			return 0;
@@ -1421,11 +1987,13 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Calculate all indirect transitive includes for a file. This list contains does not contain itself and will handle circular dependencies
 		/// </summary>
-		void CalculateTransitive(IWYUInfo Root, IWYUInfo Info, Stack<string> Stack, Dictionary<string, string> TransitiveIncludes, Dictionary<string, string> TransitiveForwardDeclarations)
+		static void CalculateTransitive(IWYUInfo Root, IWYUInfo Info, Stack<string> Stack, Dictionary<string, string> TransitiveIncludes, Dictionary<string, string> TransitiveForwardDeclarations, bool UseSeenIncludes)
 		{
-			foreach (var Include in Info.Includes)
+			List<IWYUIncludeEntry> Includes = UseSeenIncludes ? Info.IncludesSeenInFile : Info.Includes;
+			foreach (IWYUIncludeEntry Include in Includes)
 			{
-				string Key = Include.Printable; // Full
+				string Key = Include.Full;
+
 				if (TransitiveIncludes.ContainsKey(Key) || Include.Resolved == Root)
 				{
 					continue;
@@ -1436,17 +2004,180 @@ namespace UnrealBuildTool
 				TransitiveIncludes.Add(Key, TransitivePath);
 				if (Include.Resolved != null)
 				{
-					CalculateTransitive(Root, Include.Resolved, Stack, TransitiveIncludes, TransitiveForwardDeclarations);
+					CalculateTransitive(Root, Include.Resolved, Stack, TransitiveIncludes, TransitiveForwardDeclarations, UseSeenIncludes);
 				}
 				Stack.Pop();
 			}
 
-			foreach (var ForwardDeclaration in Info.ForwardDeclarations)
+			foreach (IWYUForwardEntry ForwardDeclaration in Info.ForwardDeclarations)
 			{
 				string Key = ForwardDeclaration.Printable;
-				if (!TransitiveForwardDeclarations.ContainsKey(Key))
-					TransitiveForwardDeclarations.Add(Key, Info.File);
+				TransitiveForwardDeclarations.TryAdd(Key, Info.File);
 			}
+		}
+
+		int CompareFiles(Dictionary<string, IWYUInfo> Infos, HashSet<string> ValidPaths, Dictionary<string, UEBuildModule> PathToModule, Dictionary<string, UEBuildModule> NameToModule, ILogger Logger)
+		{
+			Logger.LogInformation($"Comparing code files...");
+
+			Dictionary<string, IWYUInfo> SkippedHeaders = new();
+
+			Logger.LogInformation($"Parsing seen headers not supporting being compiled...");
+			Parallel.ForEach(Infos.Values, Info =>
+			{
+				foreach (IWYUIncludeEntry Include in Info.IncludesSeenInFile)
+				{
+					if (Include.Resolved == null)
+					{
+						if (!Infos.TryGetValue(Include.Full, out Include.Resolved))
+						{
+							lock (SkippedHeaders)
+							{
+								if (!SkippedHeaders.TryGetValue(Include.Full, out Include.Resolved))
+								{
+									IWYUInfo NewInfo = new();
+									Include.Resolved = NewInfo;
+									NewInfo.File = Include.Full;
+									SkippedHeaders.Add(Include.Full, NewInfo);
+								}
+							}
+						}
+					}
+				}
+			});
+			ParseSkippedHeaders(SkippedHeaders, Infos, PathToModule, NameToModule);
+
+			//List<ValueTuple<float, IWYUInfo>> RatioList = new();
+
+			ConcurrentDictionary<string, long> AllSeenIncludes = new();
+
+			List<ValueTuple<IWYUInfo, Dictionary<string, string>>> InfosToCompare = new();
+
+			Logger.LogInformation($"Generating transitive seen include lists...");
+			Parallel.ForEach(Infos.Values, Info =>
+			{
+				if (!IsValidForUpdate(Info, ValidPaths, false) || Info.File.EndsWith(".h"))
+				{
+					return;
+				}
+
+				Dictionary<string, string> SeenTransitiveIncludes = new();
+				Stack<string> Stack = new();
+				CalculateTransitive(Info, Info, Stack, SeenTransitiveIncludes, new Dictionary<string, string>(), true);
+
+				lock (InfosToCompare)
+				{
+					InfosToCompare.Add(new(Info, SeenTransitiveIncludes));
+				}
+
+				foreach (KeyValuePair<string, string> Include in SeenTransitiveIncludes.Union(Info.TransitiveIncludes))
+				{
+					AllSeenIncludes.TryAdd(Include.Key, 0);
+				}
+
+				/*
+				if (Info.TransitiveIncludes.Count < SeenTransitiveIncludes.Count)
+				{
+					float Ratio = (float)Info.TransitiveIncludes.Count / SeenTransitiveIncludes.Count;
+					lock (RatioList)
+						RatioList.Add(new(Ratio, Info));
+				}
+				if (SeenTransitiveIncludes.Count < Info.TransitiveIncludes.Count)
+					Console.WriteLine($"{Info.File} - Now: {SeenTransitiveIncludes.Count}  Optimized: {Info.TransitiveIncludes.Count}");
+				*/
+			});
+
+			Dictionary<string, long> FileToSize = new Dictionary<string, long>(AllSeenIncludes);
+
+			Logger.LogInformation($"Reading file sizes...");
+			Parallel.ForEach(AllSeenIncludes, Info =>
+			{
+				FileToSize[Info.Key] = (new FileInfo(Info.Key)).Length;
+			});
+
+			Logger.LogInformation($"Calculate total amount of bytes included per file...");
+			List<ValueTuple<long, IWYUInfo>> ByteSizeDiffList = new();
+			Parallel.ForEach(InfosToCompare, Kvp =>
+			{
+				long OptimizedSize = 0;
+				long SeenSize = 0;
+				foreach (string Include in Kvp.Item1.TransitiveIncludes.Keys)
+				{
+					OptimizedSize += FileToSize[Include];
+				}
+
+				foreach (string? Include in Kvp.Item2.Keys)
+				{
+					SeenSize += FileToSize[Include];
+				}
+
+				long Diff = SeenSize - OptimizedSize;
+				lock (ByteSizeDiffList)
+				{
+					ByteSizeDiffList.Add(new(Diff, Kvp.Item1));
+				}
+			});
+
+			ByteSizeDiffList.Sort((a, b) =>
+			{
+				if (a.Item1 == b.Item1)
+				{
+					return 0;
+				}
+
+				if (a.Item1 < b.Item1)
+				{
+					return 1;
+				}
+
+				return -1;
+			});
+
+			Func<long, string> PrettySize = (Size) =>
+			{
+				if (Size > 1024 * 1024)
+				{
+					return (((float)Size) / (1024 * 1024)).ToString("0.00") + "mb";
+				}
+
+				if (Size > 1024)
+				{
+					return (((float)Size) / (1024)).ToString("0.00") + "kb";
+				}
+
+				return Size + "b";
+			};
+
+			Logger.LogInformation("");
+			Logger.LogInformation("Top 20 most reduction in bytes parsed by compiler frontend");
+			Logger.LogInformation("----------------------------------------------------------");
+			for (int I = 0; I != Math.Min(20, ByteSizeDiffList.Count); ++I)
+			{
+				long Saved = ByteSizeDiffList[I].Item1;
+				IWYUInfo File = ByteSizeDiffList[I].Item2;
+				long OptimizedSize = 0;
+				foreach (string Include in File.TransitiveIncludes.Keys)
+				{
+					OptimizedSize += FileToSize[Include];
+				}
+
+				float Percent = 100.0f - (((float)OptimizedSize) / (OptimizedSize + Saved) * 100.0f);
+				Logger.LogInformation($"{Path.GetFileName(File.File)}   {PrettySize(OptimizedSize + Saved)} -> {PrettySize(OptimizedSize)}  (Saved {PrettySize(Saved)} or {Percent.ToString("0.0")}%)");
+			}
+			Logger.LogInformation("");
+
+			/*
+			RatioList.Sort((a, b) =>
+			{
+				if (a.Item1 == b.Item1)
+					return 0;
+				if (a.Item1 < b.Item1)
+					return -1;
+				return 1;
+			});
+			*/
+
+			return 0;
 		}
 	}
 }

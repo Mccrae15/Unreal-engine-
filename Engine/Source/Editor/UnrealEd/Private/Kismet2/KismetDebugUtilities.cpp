@@ -247,12 +247,6 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 
 	checkSlow(ActiveObject != nullptr);
 
-	// Ignore script exceptions for preview actors
-	if(FActorEditorUtils::IsAPreviewOrInactiveActor(Cast<const AActor>(ActiveObject)))
-	{
-		return;
-	}
-	
 	UClass* ClassContainingCode = FindClassForNode(ActiveObject, StackFrame.Node);
 	UBlueprint* BlueprintObj = (ClassContainingCode ? Cast<UBlueprint>(ClassContainingCode->ClassGeneratedBy) : nullptr);
 	if (BlueprintObj)
@@ -260,6 +254,19 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 		const FBlueprintExceptionInfo* ExceptionInfo = &Info;
 		bool bResetObjectBeingDebuggedWhenFinished = false;
 		UObject* ObjectBeingDebugged = BlueprintObj->GetObjectBeingDebugged();
+
+		auto IsAPreviewOrInactiveObject = [](const UObject* InObject)
+		{
+			UWorld* World = InObject ? InObject->GetWorld() : nullptr;
+			return World && (World->WorldType == EWorldType::EditorPreview || World->WorldType == EWorldType::Inactive);
+		};
+
+		// Ignore script exceptions for preview objects that are not already being debugged
+		if (IsAPreviewOrInactiveObject(ActiveObject) && ObjectBeingDebugged != ActiveObject)
+		{
+			return;
+		}
+
 		UObject* SavedObjectBeingDebugged = ObjectBeingDebugged;
 		UWorld* WorldBeingDebugged = BlueprintObj->GetWorldBeingDebugged();
 		const FString& PathToDebug = BlueprintObj->GetObjectPathToDebug();
@@ -624,26 +631,39 @@ void FKismetDebugUtilities::CheckBreakConditions(UEdGraphNode* NodeStoppedAt, bo
 				InOutBreakExecution = Data.TargetGraphStackDepth >= ScriptStack.Num();
 				if(InOutBreakExecution && Data.TargetGraphStackDepth == ScriptStack.Num())
 				{
-					// we're at the same stack depth, don't break if we've entered a different graph, but do break if we left the 
-					// graph that we were trying to step over..
-					const FFrame* CurrentFrame = ScriptStack.Last();
-					if(CurrentFrame->Object)
+					// If we have Data.TargetGraphNodes.Num() > 0, see if we can find a BlueprintNode matching a TargetGraphNode by iterating
+					// up the Blueprint class hierarchy of our CurrentFrame->Object calling FindSourceNodeFromCodeLocation at each level.
+					if (Data.TargetGraphNodes.Num() > 0)
 					{
-						if(UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(CurrentFrame->Object->GetClass()))
+						// we're at the same stack depth, don't break if we've entered a different graph, but do break if we left the 
+						// graph that we were trying to step over..
+						const FFrame* CurrentFrame = ScriptStack.Last();
+						if (CurrentFrame->Object)
 						{
-							UEdGraphNode* BlueprintNode = BPGC->DebugData.FindSourceNodeFromCodeLocation(CurrentFrame->Node, BreakpointOffset, true);
-							if(Data.TargetGraphNodes.Num() == 0 || Data.TargetGraphNodes.Contains(BlueprintNode))
+							UClass* BPClass = nullptr;
+							while (true)
 							{
-								InOutBreakExecution = true;
+								BPClass = (BPClass == nullptr) ? CurrentFrame->Object->GetClass() : BPClass->GetSuperClass();
+								if (BPClass == nullptr)
+								{
+									InOutBreakExecution = false;
+									break;
+								}
+
+								const UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(BPClass);
+								if (BPGC == nullptr)
+								{
+									InOutBreakExecution = false;
+									break;
+								}
+
+								const UEdGraphNode* BlueprintNode = BPGC->DebugData.FindSourceNodeFromCodeLocation(CurrentFrame->Node, BreakpointOffset, true);
+
+								if (Data.TargetGraphNodes.Contains(BlueprintNode))
+								{
+									break;
+								}
 							}
-							else
-							{
-								InOutBreakExecution = false; // nowhere to stop
-							}
-						}
-						else
-						{
-							InOutBreakExecution = false;
 						}
 					}
 				}
@@ -781,7 +801,7 @@ void FKismetDebugUtilities::AttemptToBreakExecution(UBlueprint* BlueprintObj, co
 	// Now enter within-the-frame debugging mode
 	if (bShouldInStackDebug)
 	{
-		TGuardValue<int32> GuardDisablePIE(GPlayInEditorID, INDEX_NONE);
+		FTemporaryPlayInEditorIDOverride GuardDisablePIE(INDEX_NONE);
 		TArrayView<const FFrame* const> ScriptStack = FBlueprintContextTracker::Get().GetCurrentScriptStack();
 		Data.LastExceptionMessage = Info.GetDescription();
 		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(NodeStoppedAt);
@@ -2020,15 +2040,16 @@ void FKismetDebugUtilities::GetDebugInfo_InContainer(int32 Index, TSharedPtr<FPr
 
 void FKismetDebugUtilities::GetDebugInfoInternal(TSharedPtr<FPropertyInstanceInfo> &DebugInfo, const FProperty* Property, const void* PropertyValue)
 {
-	TMap<FPropertyInstanceInfo::FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>> VisitedNodes;
-	DebugInfo = FPropertyInstanceInfo::FindOrMake({Property, PropertyValue}, VisitedNodes);
+	DebugInfo = FPropertyInstanceInfo::Make({Property, PropertyValue}, nullptr);
 }
 
-FPropertyInstanceInfo::FPropertyInstanceInfo(FPropertyInstance PropertyInstance) :
+FPropertyInstanceInfo::FPropertyInstanceInfo(FPropertyInstance PropertyInstance, const TSharedPtr<FPropertyInstanceInfo>& InParent) :
 	Name(FText::FromString(PropertyInstance.Property->GetName())),
 	DisplayName(PropertyInstance.Property->GetDisplayNameText()),
 	Type(UEdGraphSchema_K2::TypeToText(PropertyInstance.Property)),
-	Property(PropertyInstance.Property)
+	Property(PropertyInstance.Property),
+	ValueAddress(PropertyInstance.Value),
+	Parent(InParent)
 {
 	const FProperty* ResolvedProperty = Property.Get();
 	check(ResolvedProperty);
@@ -2199,47 +2220,12 @@ FPropertyInstanceInfo::FPropertyInstanceInfo(FPropertyInstance PropertyInstance)
 	ensureMsgf(false, TEXT("Failed to identify property type. This function may need to be expanded to include it: %s"), *ResolvedProperty->GetClass()->GetName());
 }
 
-TSharedPtr<FPropertyInstanceInfo> FPropertyInstanceInfo::FindOrMake(FPropertyInstance PropertyInstance,
-	TMap<FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>>& VisitedNodes)
+TSharedPtr<FPropertyInstanceInfo> FPropertyInstanceInfo::Make(FPropertyInstance PropertyInstance, const TSharedPtr<FPropertyInstanceInfo>& Parent)
 {
-	if(TSharedPtr<FPropertyInstanceInfo>* Found = VisitedNodes.Find(PropertyInstance))
-	{
-		return *Found;
-	}
-
-	// wait to populate children until after inserting into VisitedNodes.
-	// this way we will catch circular references
-	TSharedPtr<FPropertyInstanceInfo> DebugInfo = MakeShared<FPropertyInstanceInfo>(PropertyInstance);
-
-	bool bFoundObject = false;
-	if (DebugInfo->Object.IsValid())
-	{
-		for (const TPair<FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>>& VisitedNode : VisitedNodes)
-		{
-			if (VisitedNode.Value->Object == DebugInfo->Object)
-			{
-				bFoundObject = true;
-				DebugInfo->ReferencedObject = VisitedNode.Value;
-				break;
-			}
-		}
-	}
-	
-	VisitedNodes.Add(
-		PropertyInstance,
-		DebugInfo
-	);
-
-	if (!bFoundObject)
-	{
-		DebugInfo->PopulateChildren(PropertyInstance, VisitedNodes);
-	}
-
-	return DebugInfo;
+	return MakeShared<FPropertyInstanceInfo>(PropertyInstance, Parent);
 }
 
-void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
-	TMap<FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>>& VisitedNodes)
+void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance)
 {
 	check(PropertyInstance.Property);
 	if (PropertyInstance.Value == nullptr)
@@ -2266,11 +2252,12 @@ void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
 				ArrayProperty->Inner,
 				ArrayHelper.GetRawPtr(i)
 			};
-			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = Make(ChildProperty, AsShared());
 			
 			// overwrite the display name with the array index for the current element
 			ChildInfo->DisplayName = FText::Format(LOCTEXT("ArrayIndexName", "[{0}]"), FText::AsNumber(i));
 			ChildInfo->bIsInContainer = true;
+			ChildInfo->ContainerIndex = i;
 			Children.Add(ChildInfo);
 		}
 	}
@@ -2282,7 +2269,7 @@ void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
 				*It,
 				It->ContainerPtrToValuePtr<void>(PropertyInstance.Value, 0)
 			};
-			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = Make(ChildProperty, AsShared());
 			
 			Children.Add(ChildInfo);
 		}
@@ -2290,60 +2277,53 @@ void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
 	else if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property.Get()))
 	{
 		FScriptMapHelper MapHelper(MapProperty, PropertyInstance.Value);
-		uint8* PropData = MapHelper.GetPairPtr(0);
 
 		int32 Index = 0;
-		for (int32 Count = MapHelper.Num(); Count; PropData += MapProperty->MapLayout.SetLayout.Size, ++Index)
+		for (FScriptMapHelper::FIterator Itr = MapHelper.CreateIterator(); Itr; ++Itr, ++Index)
 		{
-			if (MapHelper.IsValidIndex(Index))
-			{
-				FPropertyInstance ChildProperty = {
-					MapProperty->ValueProp,
-					PropData + MapProperty->MapLayout.ValueOffset
-				};
-				const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+			uint8* KeyData = MapHelper.GetKeyPtr(*Itr);
+			uint8* ValData = MapHelper.GetValuePtr(*Itr);
+			FPropertyInstance ChildProperty = {
+				MapProperty->ValueProp,
+				ValData
+			};
+			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = Make(ChildProperty, AsShared());
 				
-				FString NameStr = TEXT("[");
-				MapProperty->KeyProp->ExportTextItem_Direct(
-					NameStr,
-					PropData,
-					nullptr,
-					nullptr,
-					PPF_PropertyWindow | PPF_BlueprintDebugView | PPF_Delimited,
-					nullptr
-				);
-				NameStr += TEXT("] ");
-				ChildInfo->DisplayName = FText::FromString(NameStr);
-				ChildInfo->bIsInContainer = true;
+			FString NameStr = TEXT("[");
+			MapProperty->KeyProp->ExportTextItem_Direct(
+				NameStr,
+				KeyData,
+				nullptr,
+				nullptr,
+				PPF_PropertyWindow | PPF_BlueprintDebugView | PPF_Delimited,
+				nullptr
+			);
+			NameStr += TEXT("] ");
+			ChildInfo->DisplayName = FText::FromString(NameStr);
+			ChildInfo->bIsInContainer = true;
+			ChildInfo->ContainerIndex = Index;
 				
-				Children.Add(ChildInfo);
-				--Count;
-			}
+			Children.Add(ChildInfo);
 		}
 	}
 	else if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property.Get()))
 	{
 		FScriptSetHelper SetHelper(SetProperty, PropertyInstance.Value);
-		uint8* PropData = SetHelper.GetElementPtr(0);
-
 		int32 Index = 0;
-		for (int32 Count = SetHelper.Num(); Count; PropData += SetProperty->SetLayout.Size, ++Index)
+		for (FScriptSetHelper::FIterator Itr = SetHelper.CreateIterator(); Itr; ++Itr, ++Index)
 		{
-			if (SetHelper.IsValidIndex(Index))
-			{
-				FPropertyInstance ChildProperty = {
-					SetProperty->ElementProp,
-					PropData
-				};
-				const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+			uint8* PropData = SetHelper.GetElementPtr(*Itr);
+			FPropertyInstance ChildProperty = {
+				SetProperty->ElementProp,
+				PropData
+			};
+			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = Make(ChildProperty, AsShared());
 				
-				ChildInfo->DisplayName = FText::Format(LOCTEXT("SetIndexName", "[{0}]"), FText::AsNumber(Index));
-				ChildInfo->bIsInContainer = true;
+			ChildInfo->DisplayName = FText::Format(LOCTEXT("SetIndexName", "[{0}]"), FText::AsNumber(Index));
+			ChildInfo->bIsInContainer = true;
+			ChildInfo->ContainerIndex = Index;
 
-				Children.Add(ChildInfo);
-
-				--Count;
-			}
+			Children.Add(ChildInfo);
 		}
 	}
 	else if (const FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Property.Get()))
@@ -2358,7 +2338,7 @@ void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
 						*It,
 						It->ContainerPtrToValuePtr<void*>(Obj)
 					};
-					const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+					const TSharedPtr<FPropertyInstanceInfo> ChildInfo = Make(ChildProperty, AsShared());
 					Children.Add(ChildInfo);
 				}
 			}
@@ -2439,15 +2419,98 @@ FString FPropertyInstanceInfo::GetWatchText() const
 	return Value.ToString();
 }
 
-const TArray<TSharedPtr<FPropertyInstanceInfo>>& FPropertyInstanceInfo::GetChildren() const
+static bool IsAContainer(const FProperty* Property)
 {
-	// If this node represents an object that was already added elsewhere in the tree, return its children instead
-	if (ReferencedObject.IsValid())
+	return Property->IsA<FArrayProperty>() || Property->IsA<FSetProperty>() || Property->IsA<FMapProperty>() ||
+		Property->IsA<FStructProperty>() || Property->IsA<FObjectPropertyBase>();
+}
+
+const TArray<TSharedPtr<FPropertyInstanceInfo>>& FPropertyInstanceInfo::GetChildren()
+{
+	if (Children.IsEmpty() && IsAContainer(Property.Get()))
 	{
-		return ReferencedObject->GetChildren();
+		// Children haven't been generated yet. Generate them.
+		const FPropertyInstance PropertyInstance = GetPropertyInstance();
+		if (PropertyInstance.Value != nullptr)
+		{
+			TMap<FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>> VisitedNodes;
+			PopulateChildren(PropertyInstance);
+		}
 	}
 
 	return Children;
+}
+
+FPropertyInstanceInfo::FPropertyInstance FPropertyInstanceInfo::GetPropertyInstance() const
+{
+	// reiterate the property tree to rebuild data pointer in case it was invalidated
+	
+	TArray<const FPropertyInstanceInfo*> Path;
+	const FPropertyInstanceInfo* Itr = this;
+	while (const FPropertyInstanceInfo* ItrParent = Itr->Parent.Pin().Get())
+	{
+		Path.Add(Itr);
+		Itr = ItrParent;
+	}
+	Path.Add(Itr);
+	Algo::Reverse(Path);
+	const void* Data = Itr->ValueAddress;
+	for (int I = 1; I < Path.Num() && Data != nullptr; ++I)
+	{
+		const FPropertyInstanceInfo* ParentInfo = Path[I - 1];
+		const FPropertyInstanceInfo* Info = Path[I];
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ParentInfo->Property.Get()))
+		{
+			FScriptArrayHelper ArrayHelper(ArrayProperty, Data);
+			const int32 Index = Info->ContainerIndex;
+			if (ArrayHelper.IsValidIndex(Index))
+			{
+				Data = ArrayHelper.GetRawPtr(Index);
+			}
+			else
+			{
+				Data = nullptr;
+				break;
+			}
+		}
+		else if (const FSetProperty* SetProperty = CastField<FSetProperty>(ParentInfo->Property.Get()))
+		{
+			FScriptSetHelper SetHelper(SetProperty, Data);
+			const int32 Index = Info->ContainerIndex;
+			Data = SetHelper.FindNthElementPtr(Index);
+		}
+		else if (const FMapProperty* MapProperty = CastField<FMapProperty>(ParentInfo->Property.Get()))
+		{
+			FScriptMapHelper MapHelper(MapProperty, Data);
+			const int32 Index = Info->ContainerIndex;
+			Data = MapHelper.FindNthValuePtr(Index);
+		}
+		else if (const FStructProperty* StructProperty = CastField<FStructProperty>(ParentInfo->Property.Get()))
+		{
+			Data = Info->Property->ContainerPtrToValuePtr<void>(Data);
+		}
+		else if (const FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ParentInfo->Property.Get()))
+		{
+			if (UObject* Obj = ObjectPropertyBase->GetObjectPropertyValue(Data))
+			{
+				if (!Obj->IsA(Info->Property->GetOwner<UClass>()))
+				{
+					// This node is invalid. (this can happen if it was removed from an array, map, or set)
+					Data = nullptr;
+					break;
+				}
+				Data = Info->Property->ContainerPtrToValuePtr<void>(Obj);
+			}
+		}
+		if (Data != Info->ValueAddress)
+		{
+			// This node is invalid. (this can happen if it was removed from an array, map, or set)
+			Data = nullptr;
+			break;
+		}
+	}
+	
+	return Data ? FPropertyInstance{Property.Get(), Data} : FPropertyInstance{nullptr, nullptr};
 }
 
 FText FKismetDebugUtilities::GetAndClearLastExceptionMessage()

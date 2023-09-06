@@ -1,17 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
+using EpicGames.OIDC;
 using EpicGames.Perforce;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.IO;
-using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -26,20 +22,28 @@ namespace UnrealGameSync
 		string? _serverAndPortOverride;
 		string? _userNameOverride;
 		OpenProjectInfo? _openProjectInfo;
-		IPerforceSettings _defaultSettings;
-		IServiceProvider _serviceProvider;
-		UserSettings _settings;
-		ILogger _logger;
+		readonly IPerforceSettings _defaultSettings;
+		readonly IServiceProvider _serviceProvider;
+		readonly UserSettings _settings;
+		readonly ILogger _logger;
+
+		delegate bool DetectProjectSettingsEvent(OpenProjectInfo openProjectInfo, ILogger logger, [NotNullWhen(false)] out string? error);
+
+#pragma warning disable CS0649 // Avoid unused private fields
+		// Hook called once the project settings have been established. Can be overridden in a specific deployment to log telemetry or perform additional validation.
+		static readonly DetectProjectSettingsEvent? s_onDetectProjectSettings;
+#pragma warning restore CS0649 // Avoid unused private fields
 
 		private OpenProjectWindow(UserSelectedProjectSettings? project, UserSettings settings, IPerforceSettings defaultSettings, IServiceProvider serviceProvider, ILogger logger)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
-			this._settings = settings;
-			this._openProjectInfo = null;
-			this._defaultSettings = defaultSettings;
-			this._serviceProvider = serviceProvider;
-			this._logger = logger;
+			_settings = settings;
+			_openProjectInfo = null;
+			_defaultSettings = defaultSettings;
+			_serviceProvider = serviceProvider;
+			_logger = logger;
 
 			if (project == null)
 			{
@@ -56,7 +60,7 @@ namespace UnrealGameSync
 					_userNameOverride = project.UserName;
 				}
 
-				if(project.ClientPath != null && project.ClientPath.StartsWith("//"))
+				if(project.ClientPath != null && project.ClientPath.StartsWith("//", StringComparison.Ordinal))
 				{
 					int slashIdx = project.ClientPath.IndexOf('/', 2);
 					if(slashIdx != -1)
@@ -87,14 +91,11 @@ namespace UnrealGameSync
 			UpdateOkButton();
 		}
 
-		private IPerforceSettings Perforce
-		{
-			get => Utility.OverridePerforceSettings(_defaultSettings, _serverAndPortOverride, _userNameOverride);
-		}
+		private IPerforceSettings Perforce => Utility.OverridePerforceSettings(_defaultSettings, _serverAndPortOverride, _userNameOverride);
 
-		public static OpenProjectInfo? ShowModal(IWin32Window owner, UserSelectedProjectSettings? project, UserSettings settings, DirectoryReference dataFolder, DirectoryReference cacheFolder, IPerforceSettings defaultPerforceSettings, IServiceProvider serviceProvider, ILogger logger)
+		public static OpenProjectInfo? ShowModal(IWin32Window owner, UserSelectedProjectSettings? project, UserSettings settings, IPerforceSettings defaultPerforceSettings, IServiceProvider serviceProvider, ILogger logger)
 		{
-			OpenProjectWindow window = new OpenProjectWindow(project, settings, defaultPerforceSettings, serviceProvider, logger);
+			using OpenProjectWindow window = new OpenProjectWindow(project, settings, defaultPerforceSettings, serviceProvider, logger);
 			if(window.ShowDialog(owner) == DialogResult.OK)
 			{
 				return window._openProjectInfo;
@@ -161,14 +162,12 @@ namespace UnrealGameSync
 
 		private void UpdateWorkspacePathBrowseButton()
 		{
-			string? workspaceName;
-			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out workspaceName);
+			WorkspacePathBrowseBtn.Enabled = TryGetWorkspaceName(out _);
 		}
 
 		private void UpdateOkButton()
 		{
-			string? projectPath;
-			OkBtn.Enabled = WorkspaceRadioBtn.Checked? TryGetClientPath(out projectPath) : TryGetLocalPath(out projectPath);
+			OkBtn.Enabled = WorkspaceRadioBtn.Checked? TryGetClientPath(out _) : TryGetLocalPath(out _);
 		}
 
 		private void WorkspaceNewBtn_Click(object sender, EventArgs e)
@@ -287,10 +286,11 @@ namespace UnrealGameSync
 			if(TryGetSelectedProject(out selectedProject))
 			{
 				ILogger<OpenProjectInfo> logger = _serviceProvider.GetRequiredService<ILogger<OpenProjectInfo>>();
+				OidcTokenManager oidcTokenManager = _serviceProvider.GetRequiredService<OidcTokenManager>();
 
 				PerforceSettings newPerforceSettings = Utility.OverridePerforceSettings(Perforce, selectedProject.ServerAndPort, selectedProject.UserName);
 
-				ModalTask<OpenProjectInfo>? newOpenProjectInfo = PerforceModalTask.Execute(this, "Opening project", "Opening project, please wait...", newPerforceSettings, (x, y) => DetectSettingsAsync(x, selectedProject, _settings, logger, y), logger);
+				ModalTask<OpenProjectInfo>? newOpenProjectInfo = PerforceModalTask.Execute(this, "Opening project", "Opening project, please wait...", newPerforceSettings, (x, y) => DetectSettingsAsync(x, selectedProject, _settings, oidcTokenManager, logger, y), logger);
 				if (newOpenProjectInfo != null && newOpenProjectInfo.Succeeded)
 				{
 					_openProjectInfo = newOpenProjectInfo.Result;
@@ -300,13 +300,13 @@ namespace UnrealGameSync
 			}
 		}
 
-		public static async Task<OpenProjectInfo> DetectSettingsAsync(IPerforceConnection perforce, UserSelectedProjectSettings selectedProject, UserSettings userSettings, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
+		public static async Task<OpenProjectInfo> DetectSettingsAsync(IPerforceConnection perforce, UserSelectedProjectSettings selectedProject, UserSettings userSettings, OidcTokenManager oidcTokenManager, ILogger<OpenProjectInfo> logger, CancellationToken cancellationToken)
 		{
-			OpenProjectInfo settings = await OpenProjectInfo.CreateAsync(perforce, selectedProject, userSettings, logger, cancellationToken);
-			if (DeploymentSettings.OnDetectProjectSettings != null)
+			OpenProjectInfo settings = await OpenProjectInfo.CreateAsync(perforce, selectedProject, userSettings, oidcTokenManager, logger, cancellationToken);
+			if (s_onDetectProjectSettings != null)
 			{
 				string? message;
-				if (!DeploymentSettings.OnDetectProjectSettings(settings, logger, out message))
+				if (!s_onDetectProjectSettings(settings, logger, out message))
 				{
 					throw new UserErrorException(message);
 				}
@@ -326,7 +326,7 @@ namespace UnrealGameSync
 		{
 			LocalFileRadioBtn.Checked = true;
 
-			OpenFileDialog dialog = new OpenFileDialog();
+			using OpenFileDialog dialog = new OpenFileDialog();
 			dialog.Filter = "Project files (*.uproject)|*.uproject|Project directory lists (*.uprojectdirs)|*.uprojectdirs|All supported files (*.uproject;*.uprojectdirs)|*.uproject;*.uprojectdirs|All files (*.*)|*.*" ;
 			dialog.FilterIndex = _settings.FilterIndex;
 			

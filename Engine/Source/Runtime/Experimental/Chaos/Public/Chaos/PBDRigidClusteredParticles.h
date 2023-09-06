@@ -46,7 +46,7 @@ struct TConnectivityEdge
 		, Strain(0.0)
 	{}
 
-	TConnectivityEdge(TPBDRigidParticleHandle<T, 3>* InSibling, const T InStrain)
+	TConnectivityEdge(TPBDRigidParticleHandle<T, 3>* InSibling, const FRealSingle InStrain)
 		: Sibling(InSibling)
 		, Strain(InStrain) 
 	{}
@@ -60,11 +60,72 @@ struct TConnectivityEdge
 	bool operator==(const TPBDRigidParticleHandle<T, 3>* OtherSibling) const
 	{ return Sibling == OtherSibling; }
 
+	// getter/functions functions to make calling code less confusing 
+	void SetArea(Chaos::FRealSingle Area) { Strain = Area; }
+	Chaos::FRealSingle GetArea() const { return Strain; }
+
 	TPBDRigidParticleHandle<T, 3>* Sibling;
-	T Strain;
+	// this can be both strain or area based on the damage model, but cannot rename it for backward compatibility reasons
+	Chaos::FRealSingle Strain; 
 };
 typedef TConnectivityEdge<FReal> FConnectivityEdge;
 typedef TArray<FConnectivityEdge> FConnectivityEdgeArray;
+
+template<typename T>
+bool IsInterclusterEdge(const TPBDRigidParticleHandle<T, 3>& Particle, const TConnectivityEdge<T>& Edge)
+{
+	if (!Edge.Sibling)
+	{
+		return false;
+	}
+	return Particle.PhysicsProxy() != Edge.Sibling->PhysicsProxy();
+}
+
+class FRigidClusteredFlags
+{
+public:
+	using FStorage = uint8;
+
+	FRigidClusteredFlags()
+		: Bits(0)
+	{
+	}
+
+	// set to true if the particle is an internal cluster formed of the subset of children from an original cluster 
+	bool GetInternalCluster() const { return Flags.bInternalCluster; }
+	void SetInternalCluster(bool bSet) { Flags.bInternalCluster = bSet; }
+
+	// set to true make the particle act as a kinematic anchor, this allows the particle to be broken off while still be anchor contributor through the connection graph   
+	bool GetAnchored() const { return Flags.bAnchored; }
+	void SetAnchored(bool bSet) { Flags.bAnchored = bSet; }
+
+	// set to true to make the particle unbreakable by destruction operations from breaking server authoritative particles
+	bool GetUnbreakable() const { return Flags.bUnbreakable; }
+	void SetUnbreakable(bool bSet) { Flags.bUnbreakable = bSet; }
+
+	// Set to true if we want to soft lock the particle's ChildToParent transform. This prevents its from being updated in Chaos::UpdateGeometry.
+	bool GetChildToParentLocked() const { return Flags.bChildToParentLocked; }
+	void SetChildToParentLocked(bool bSet) { Flags.bChildToParentLocked = bSet; }
+
+private:
+	struct FFlags
+	{
+		FStorage bInternalCluster : 1;
+		FStorage bAnchored : 1;
+		FStorage bUnbreakable : 1;
+		FStorage bChildToParentLocked : 1;
+
+		// Add new properties above this line
+		// Change FStorage typedef if we exceed the max bits
+	};
+	union
+	{
+		FFlags Flags;
+		FStorage Bits;
+	};
+	static_assert(sizeof(FFlags) <= sizeof(FStorage));
+};
+
 
 template<class T, int d>
 class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
@@ -81,14 +142,13 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	, MClusterIds(MoveTemp(Other.MClusterIds))
 	, MChildToParent(MoveTemp(Other.MChildToParent))
 	, MClusterGroupIndex(MoveTemp(Other.MClusterGroupIndex))
-	, MInternalCluster(MoveTemp(Other.MInternalCluster))
 	, MChildrenSpatial(MoveTemp(Other.MChildrenSpatial))
 	, MPhysicsProxies(MoveTemp(Other.MPhysicsProxies))
 	, MCollisionImpulses(MoveTemp(Other.MCollisionImpulses))
 	, MStrains(MoveTemp(Other.MStrains))
 	, MConnectivityEdges(MoveTemp(Other.MConnectivityEdges))
 	, MExternalStrains(MoveTemp(Other.MExternalStrains))
-	, MAnchored(MoveTemp(Other.MAnchored))
+	, MRigidClusteredFlags(MoveTemp(Other.MRigidClusteredFlags))
 	{
 		InitHelper();
 	}
@@ -102,9 +162,6 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 
 	const auto& ClusterGroupIndex(int32 Idx) const { return MClusterGroupIndex[Idx]; }
 	auto& ClusterGroupIndex(int32 Idx) { return MClusterGroupIndex[Idx]; }
-
-	const auto& InternalCluster(int32 Idx) const { return MInternalCluster[Idx]; }
-	auto& InternalCluster(int32 Idx) { return MInternalCluster[Idx]; }
 
 	const auto& ChildrenSpatial(int32 Idx) const { return MChildrenSpatial[Idx]; }
 	auto& ChildrenSpatial(int32 Idx) { return MChildrenSpatial[Idx]; }
@@ -126,8 +183,8 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	const auto& ConnectivityEdges(int32 Idx) const { return MConnectivityEdges[Idx]; }
 	auto& ConnectivityEdges(int32 Idx) { return MConnectivityEdges[Idx]; }
 
-	const bool& Anchored(int32 Idx) const { return MAnchored[Idx]; }
-	bool& Anchored(int32 Idx) { return MAnchored[Idx]; }
+	const FRigidClusteredFlags& RigidClusteredFlags(int32 Idx) const { return MRigidClusteredFlags[Idx]; }
+	FRigidClusteredFlags& RigidClusteredFlags(int32 Idx) { return MRigidClusteredFlags[Idx]; }
 	
 	const auto& ConnectivityEdgesArray() const { return MConnectivityEdges; }
 
@@ -143,11 +200,8 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 	const auto& ClusterGroupIndexArray() const { return MClusterGroupIndex; }
 	auto& ClusterGroupIndexArray() { return MClusterGroupIndex; }
 
-	const auto& InternalClusterArray() const { return MInternalCluster; }
-	auto& InternalClusterArray() { return MInternalCluster; }
-
-	const auto& AnchoredArray() const { return MAnchored; }
-	auto& AnchoredArray() { return MAnchored; }
+	const auto& RigidClusteredFlags() const { return MRigidClusteredFlags; }
+	auto& RigidClusteredFlags() { return MRigidClusteredFlags; }
 
 	
 	typedef TPBDRigidClusteredParticleHandle<T, d> THandleType;
@@ -165,40 +219,36 @@ class TPBDRigidClusteredParticles : public TPBDRigidParticles<T, d>
 		  TArrayCollection::AddArray(&MClusterIds);
 		  TArrayCollection::AddArray(&MChildToParent);
 		  TArrayCollection::AddArray(&MClusterGroupIndex);
-		  TArrayCollection::AddArray(&MInternalCluster);
 		  TArrayCollection::AddArray(&MChildrenSpatial);
 		  TArrayCollection::AddArray(&MPhysicsProxies);
 		  TArrayCollection::AddArray(&MCollisionImpulses);
 		  TArrayCollection::AddArray(&MStrains);
 		  TArrayCollection::AddArray(&MConnectivityEdges);
 	  	  TArrayCollection::AddArray(&MExternalStrains);
-	  	  TArrayCollection::AddArray(&MAnchored);
+	  	  TArrayCollection::AddArray(&MRigidClusteredFlags);
 	  }
 
 	  TArrayCollectionArray<ClusterId> MClusterIds;
 	  TArrayCollectionArray<TRigidTransform<T, d>> MChildToParent;
 	  TArrayCollectionArray<int32> MClusterGroupIndex;
-	  TArrayCollectionArray<bool> MInternalCluster;
 	  TArrayCollectionArray<TUniquePtr<FImplicitObjectUnionClustered>> MChildrenSpatial;
 
 	  // Multiple proxy pointers required for internal clusters
 	  TArrayCollectionArray<TSet<IPhysicsProxyBase*>> MPhysicsProxies;
 
 	  // Collision Impulses
-	  TArrayCollectionArray<T> MCollisionImpulses;
+	  TArrayCollectionArray<Chaos::FRealSingle> MCollisionImpulses;
 
 	  // external strains ( use by fields )
 	  // @todo(chaos) we should eventually merge MCollisionImpulses into MExternalStrains when Clustering code has been updated to not clear the impulses just before processing them 
-	  TArrayCollectionArray<T> MExternalStrains; 
+	  TArrayCollectionArray<Chaos::FRealSingle> MExternalStrains;
 
 	  // User set parameters
-	  TArrayCollectionArray<T> MStrains;
+	  TArrayCollectionArray<Chaos::FRealSingle> MStrains;
 
 	  TArrayCollectionArray<TArray<TConnectivityEdge<T>>> MConnectivityEdges;
-
-	  // make the particle act as a kinematic anchor,
-	  // this allows the particle to be broken off while still be anchor contributor through the connection graph   
-	  TArrayCollectionArray<bool> MAnchored;
+  
+	  TArrayCollectionArray<FRigidClusteredFlags> MRigidClusteredFlags;
 };
 
 using FPBDRigidClusteredParticles = TPBDRigidClusteredParticles<FReal, 3>;

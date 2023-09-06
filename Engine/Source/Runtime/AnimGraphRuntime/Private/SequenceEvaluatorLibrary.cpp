@@ -5,6 +5,8 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "AnimNodes/AnimNode_SequenceEvaluator.h"
 #include "AnimationRuntime.h"
+#include "Animation/AnimTrace.h"
+#include "Animation/AnimInstanceProxy.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SequenceEvaluatorLibrary)
 
@@ -39,7 +41,7 @@ FSequenceEvaluatorReference USequenceEvaluatorLibrary::AdvanceTime(const FAnimUp
 			if (const FAnimationUpdateContext* AnimationUpdateContext = UpdateContext.GetContext())
 			{
 				float ExplicitTime = InSequenceEvaluator.GetExplicitTime();
-				FAnimationRuntime::AdvanceTime(InSequenceEvaluator.GetShouldLoop(), AnimationUpdateContext->GetDeltaTime() * PlayRate, ExplicitTime, InSequenceEvaluator.GetCurrentAssetLength());
+				FAnimationRuntime::AdvanceTime(InSequenceEvaluator.IsLooping(), AnimationUpdateContext->GetDeltaTime() * PlayRate, ExplicitTime, InSequenceEvaluator.GetCurrentAssetLength());
 
 				if (!InSequenceEvaluator.SetExplicitTime(ExplicitTime))
 				{
@@ -90,7 +92,14 @@ FSequenceEvaluatorReference USequenceEvaluatorLibrary::SetSequenceWithInertialBl
 				{
 					if (UE::Anim::IInertializationRequester* InertializationRequester = AnimationUpdateContext->GetMessage<UE::Anim::IInertializationRequester>())
 					{
-						InertializationRequester->RequestInertialization(BlendTime);
+						FInertializationRequest Request;
+						Request.Duration = BlendTime;
+#if ANIM_TRACE_ENABLED
+						Request.NodeId = AnimationUpdateContext->GetCurrentNodeId();
+						Request.AnimInstance = AnimationUpdateContext->AnimInstanceProxy->GetAnimInstanceObject();
+#endif
+
+						InertializationRequester->RequestInertialization(Request);
 					}
 				}
 				else

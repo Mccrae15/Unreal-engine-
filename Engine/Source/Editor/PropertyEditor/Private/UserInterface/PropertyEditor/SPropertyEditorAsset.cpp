@@ -34,11 +34,10 @@
 #include "FileHelpers.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
 #include "AssetThumbnail.h"
+#include "DetailWidgetRow.h"
 
 #define LOCTEXT_NAMESPACE "PropertyEditor"
 
-DECLARE_DELEGATE( FOnCopy );
-DECLARE_DELEGATE( FOnPaste );
 
 // Helper to retrieve the correct property that has the applicable metadata.
 static const FProperty* GetActualMetadataProperty(const FProperty* Property)
@@ -242,10 +241,30 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 	PropertyEditor = InPropertyEditor;
 	PropertyHandle = InArgs._PropertyHandle;
 	OwnerAssetDataArray = InArgs._OwnerAssetDataArray;
+	OnIsEnabled = InArgs._IsEnabled;
 	OnSetObject = InArgs._OnSetObject;
 	OnShouldFilterAsset = InArgs._OnShouldFilterAsset;
 	OnShouldFilterActor = InArgs._OnShouldFilterActor;
 	ObjectPath = InArgs._ObjectPath;
+
+	// Override this as we stole the value to use as OnIsEnabled for the inner widgets
+	SetEnabled(true);
+
+	if(InArgs._InWidgetRow.IsSet() && InArgs._InWidgetRow.GetValue() != nullptr)
+	{
+		if (!InArgs._InWidgetRow.GetValue()->CopyMenuAction.IsBound())
+		{
+			InArgs._InWidgetRow.GetValue()->CopyMenuAction = FUIAction(
+				FExecuteAction::CreateSP(this, &SPropertyEditorAsset::OnCopy),
+				FCanExecuteAction());
+		}
+		if (!InArgs._InWidgetRow.GetValue()->PasteMenuAction.IsBound())
+		{
+			InArgs._InWidgetRow.GetValue()->PasteMenuAction = FUIAction(
+				FExecuteAction::CreateSP(this, &SPropertyEditorAsset::OnPaste),
+				FCanExecuteAction::CreateSP(this, &SPropertyEditorAsset::CanPaste));
+		}
+	}
 
 	FProperty* Property = nullptr;
 	if (PropertyEditor.IsValid())
@@ -538,13 +557,15 @@ void SPropertyEditorAsset::Construct(const FArguments& InArgs, const TSharedPtr<
 
 	if( InArgs._DisplayBrowse )
 	{
+		FSimpleDelegate OnBrowseDelegate = InArgs._OnBrowseOverride.IsBound() ? InArgs._OnBrowseOverride : FSimpleDelegate::CreateSP(this, &SPropertyEditorAsset::OnBrowse);
+
 		ButtonBox->AddSlot()
 		.Padding( 2.0f, 0.0f )
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		[
 			PropertyCustomizationHelpers::MakeBrowseButton(
-				FSimpleDelegate::CreateSP( this, &SPropertyEditorAsset::OnBrowse ),
+				OnBrowseDelegate,
 				TAttribute<FText>( this, &SPropertyEditorAsset::GetOnBrowseToolTip ),
 				true,
 				bIsActor
@@ -743,6 +764,14 @@ bool SPropertyEditorAsset::IsFilteredActor( const AActor* const Actor ) const
 		IsAllowed = OnShouldFilterActor.Execute(Actor);
 	}
 	return IsAllowed;
+}
+
+void SPropertyEditorAsset::OpenComboButton()
+{
+	if (AssetComboButton.IsValid())
+	{
+		AssetComboButton->SetIsOpen(true);
+	}
 }
 
 void SPropertyEditorAsset::CloseComboButton()
@@ -1115,7 +1144,7 @@ void SPropertyEditorAsset::OnBrowse()
 				{
 					if (UWorld* World = Cast<UWorld>(MapObject); World && World->IsPartitionedWorld())
 					{
-						if (const FWorldPartitionActorDesc* ActorDesc = World->GetWorldPartition()->GetActorDesc(Value.ObjectPath))
+						if (const FWorldPartitionActorDesc* ActorDesc = World->GetWorldPartition()->GetActorDescByName(Value.ObjectPath))
 						{
 							World->GetWorldPartition()->PinActors({ ActorDesc->GetGuid() });
 							GetValue(Value);
@@ -1127,7 +1156,7 @@ void SPropertyEditorAsset::OnBrowse()
 			if (Value.Object)
 			{
 				// This code only works on loaded objects
-				if (TSharedPtr<FPropertyNode> PropertyNodeToSync = PropertyHandleToUse->GetPropertyNode())
+				if (TSharedPtr<FPropertyNode> PropertyNodeToSync = StaticCastSharedPtr<FPropertyHandleBase>(PropertyHandleToUse)->GetPropertyNode())
 				{
 					FPropertyEditor::SyncToObjectsInNode(PropertyNodeToSync);
 				}
@@ -1279,14 +1308,32 @@ void SPropertyEditorAsset::OnPaste()
 {
 	FString DestPath;
 	FPlatformApplicationMisc::ClipboardPaste(DestPath);
+	
+	PasteFromText(TEXT(""), DestPath);
+}
 
-	if(DestPath == TEXT("None"))
+void SPropertyEditorAsset::OnPasteFromText(
+	const FString& InTag,
+	const FString& InText,
+	const TOptional<FGuid>& InOperationId)
+{
+	if (CanPasteFromText(InTag, InText))
+	{
+		PasteFromText(InTag, InText);
+	}
+}
+
+void SPropertyEditorAsset::PasteFromText(
+	const FString& InTag,
+	const FString& InText)
+{
+	if(InText == TEXT("None"))
 	{
 		SetValue(nullptr);
 	}
 	else
 	{
-		UObject* Object = LoadObject<UObject>(nullptr, *DestPath);
+		UObject* Object = LoadObject<UObject>(nullptr, *InText);
 		if(Object && Object->IsA(ObjectClass))
 		{
 			// Check against custom asset filter
@@ -1304,7 +1351,19 @@ bool SPropertyEditorAsset::CanPaste()
 	FString ClipboardText;
 	FPlatformApplicationMisc::ClipboardPaste(ClipboardText);
 
-	const FString PossibleObjectPath = FPackageName::ExportTextPathToObjectPath(ClipboardText);
+	return CanPasteFromText(TEXT(""), ClipboardText);
+}
+
+bool SPropertyEditorAsset::CanPasteFromText(
+	const FString& InTag,
+	const FString& InText) const
+{
+	if (!UE::PropertyEditor::TagMatchesProperty(InTag, PropertyHandle))
+	{
+		return false;
+	}
+
+	const FString PossibleObjectPath = FPackageName::ExportTextPathToObjectPath(InText);
 
 	bool bCanPaste = false;
 
@@ -1332,7 +1391,11 @@ FReply SPropertyEditorAsset::OnAssetThumbnailDoubleClick( const FGeometry& InMyG
 
 bool SPropertyEditorAsset::CanEdit() const
 {
-	return PropertyEditor.IsValid() ? !PropertyEditor->IsEditConst() : true;
+	if (PropertyEditor.IsValid() && PropertyEditor->IsEditConst())
+	{
+		return false;
+	}
+	return OnIsEnabled.Get(true);
 }
 
 bool SPropertyEditorAsset::CanSetBasedOnCustomClasses( const FAssetData& InAssetData ) const

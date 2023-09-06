@@ -30,18 +30,27 @@ enum class EInterchangeFactoryAssetType : uint8
 };
 
 /**
- * UObject asset factory implementation:
- * 1. ImportAssetObject_GameThread - Create the asset UObject, and you can also import source data and setup properties synchronously.
- * 2. ImportAssetObject_Async - Import source data and setup properties asynchronously.
- * 3. SetupObject_GameThread - Do any UObject setup required before the build (before PostEditChange), the UObject dependencies should exist and have all the source data and properties imported.
- * 4. FinalizeObject_GameThread - Do any final UObject setup after the build (after PostEditChange)
+ * Asset factory implementation:
  * 
- * Actor factory implementation
+ * The first 3 steps use the interchange factory node to import/re-import the UObject
+ * 
+ * 1. BeginImportAsset_GameThread - Create the asset UObject. You can also import source data (retrieve payloads) and setup properties on the game thread.
+ * 2. ImportAsset_Async - Import source data (retrieve payloads) and setup properties asynchronously on any thread.
+ * 3. EndImportAsset_GameThread - Anything you need to do on the game thread to finalize the import source data and setup properties. (Conflict resolution that need UI)
+ * 
+ * The last two steps are helpful to change the imported/re-imported UObject before and after the PostEditChange (render data build) is call on the asset.
+ * 
+ * 4. SetupObject_GameThread - Do any UObject setup required before the build (before PostEditChange), the UObject dependencies should exist and have all the source data and properties imported.
+ * 5. FinalizeObject_GameThread - Do any final UObject setup after the build (after PostEditChange). Note that the build of an asset can be asynchronous and not finish yet.
+ * 
+ * 
+ * Scene factory implementation
+ * 
  * 1. ImportSceneObject_GameThread - Create an actor in a level.
  */
 
-UCLASS(BlueprintType, Blueprintable, Abstract)
-class INTERCHANGECORE_API UInterchangeFactoryBase : public UObject
+UCLASS(BlueprintType, Blueprintable, Abstract, MinimalAPI)
+class UInterchangeFactoryBase : public UObject
 {
 	GENERATED_BODY()
 public:
@@ -90,49 +99,85 @@ public:
 		UObject* ReimportObject = nullptr;
 	};
 
-	UE_DEPRECATED(5.2, "This function is replaced by ImportAssetObject_GameThread.")
-	virtual UObject* CreateEmptyAsset(const FImportAssetObjectParams& Arguments)
+	struct FImportAssetResult
+	{
+		//If the factory set this to true, the interchange task import object should skip this asset
+		//Asset can be skip if it already exist and its not a re-import. Example, if we import a static mesh and we find an existing material.
+		//We don't want to override the material in this case since the UE material often contains game play graph.
+		bool bIsFactorySkipAsset = false;
+		//Return the UObject import or re-import by the factory, leave it to nullptr if there was an error.
+		UObject* ImportedObject = nullptr;
+	};
+
+	UE_DEPRECATED(5.3, "This function is replaced by BeginImportAsset_GameThread.")
+	virtual UObject* ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
 	{
 		return nullptr;
 	}
-	
+
 	/**
-	 * Create the asset UObject. You can optionally import source data (payload data) and configure the properties synchronously.
+	 * Override it to import/re-import source data and configure the properties synchronously.
+	 * Create the asset package on the game thread since its not thread safe.
 	 *
 	 * @param Arguments - The structure containing all necessary arguments to import the UObject and the package, see the structure definition for the documentation.
-	 * @return the imported UObject or nullptr if there is an error.
+	 * @return the FImportAssetResult, see the structure to access the documentation.
 	 *
-	 * @Note Mandatory to override this function to create the asset UObject. Not mandatory for level actor, use CreateSceneObject instead.
+	 * @Note Mandatory to override this function to create the asset UObject package. Not mandatory for level actor, use CreateSceneObject instead.
 	 */
-	virtual UObject* ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
+	virtual FImportAssetResult BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
 	{
+		FImportAssetResult ImportAssetResult;
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return CreateEmptyAsset(Arguments);
+		ImportAssetResult.ImportedObject = ImportAssetObject_GameThread(Arguments);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return ImportAssetResult;
 	}
 
-	UE_DEPRECATED(5.2, "This function is replaced by ImportAssetObject_Async.")
-	virtual UObject* CreateAsset(const FImportAssetObjectParams& Arguments)
+	UE_DEPRECATED(5.3, "This function is replaced by ImportAsset_Async.")
+	virtual UObject* ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
 	{
-		//By default simply return the UObject created by ImportAssetObject_GameThread that was store in the asset node.
+		//By default simply return the UObject created by BeginImportAsset_GameThread that was store in the asset node.
 		FSoftObjectPath ReferenceObject;
-		if (Arguments.AssetNode->GetCustomReferenceObject(ReferenceObject))
+		if (Arguments.AssetNode && Arguments.AssetNode->GetCustomReferenceObject(ReferenceObject))
 		{
 			return ReferenceObject.TryLoad();
 		}
 		return nullptr;
 	}
+
 	/**
-	 * Override it to setup the UObject source data (payload data) and configure the properties asynchronously. Do not create the asset UObject asynchronously.
+	 * Override it to import/re-import the UObject source data and configure the properties asynchronously. Do not create the asset UObject asynchronously.
+	 * Helpful to get all the payload in parallel or do any long import task
 	 *
 	 * @param Arguments - The structure containing all necessary data to imported the UObject, see the structure definition for the documentation.
-	 * @return the imported UObject or nullptr if there is an error.
+	 * @return the FImportAssetResult, see the structure to access the documentation.
 	 */
-	virtual UObject* ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
+	virtual FImportAssetResult ImportAsset_Async(const FImportAssetObjectParams& Arguments)
 	{
+		FImportAssetResult ImportAssetResult;
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return CreateAsset(Arguments);
+		ImportAssetResult.ImportedObject = ImportAssetObject_Async(Arguments);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return ImportAssetResult;
+	}
+
+	/**
+	 * Override it to end import/re-import on the game thread. Helpful if you need to display ui (i.e. re-import material conflict resolution) or if you
+	 * need to do anything not thread safe to complete the import/re-import.
+	 *
+	 * @param Arguments - The structure containing all necessary data to imported the UObject, see the structure definition for the documentation.
+	 * @return the FImportAssetResult, see the structure to access the documentation.
+	 */
+	virtual FImportAssetResult EndImportAsset_GameThread(const FImportAssetObjectParams& Arguments)
+	{
+		FImportAssetResult ImportAssetResult;
+		//By default simply return the UObject created by BeginImportAssetObject_GameThread that was store in the asset node.
+		FSoftObjectPath ReferenceObject;
+		if (Arguments.AssetNode && Arguments.AssetNode->GetCustomReferenceObject(ReferenceObject))
+		{
+			ImportAssetResult.ImportedObject = ReferenceObject.TryLoad();
+		}
+		return ImportAssetResult;
 	}
 
 	/**
@@ -151,13 +196,17 @@ public:
 
 		/** The node container associated with the current source index */
 		const UInterchangeBaseNodeContainer* NodeContainer = nullptr;
+	
+		/**
+		 * If not null, the factory must perform a reimport of the scene node
+		 */
+		UObject* ReimportObject = nullptr;
+	
+		/**
+		 * Factory base node associated with the reimported scene node
+		 */
+		const UInterchangeFactoryBaseNode* ReimportFactoryNode = nullptr;
 	};
-
-	UE_DEPRECATED(5.2, "This function is replaced by ImportSceneObject_GameThread.")
-	virtual UObject* CreateSceneObject(const FImportSceneObjectsParams& Arguments)
-	{
-		return nullptr;
-	}
 
 	/**
 	 * Creates the scene object from a Scene Node data.
@@ -167,9 +216,7 @@ public:
 	 */
 	virtual UObject* ImportSceneObject_GameThread(const FImportSceneObjectsParams& Arguments)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return CreateSceneObject(Arguments);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return nullptr;
 	}
 
 	/** Call when the user cancel the operation. */
@@ -196,38 +243,22 @@ public:
 ;
 	};
 
-	UE_DEPRECATED(5.2, "This function is replaced by SetupObject_GameThread.")
-	virtual void PreImportPreCompletedCallback(const FSetupObjectParams& Arguments)
-	{
-		check(IsInGameThread());
-	}
-
 	/*
 	 * Do any UObject setup required before the build (before PostEditChange) and after all dependency UObject have been imported.
 	 * @note - This function is called when starting the pre completion task (before PostEditChange is called for the asset).
 	 */
 	virtual void SetupObject_GameThread(const FSetupObjectParams& Arguments)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		PreImportPreCompletedCallback(Arguments);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-	
-	UE_DEPRECATED(5.2, "This function is replace by FinalizeObject_GameThread.")
-	virtual void PostImportPreCompletedCallback(const FSetupObjectParams& Arguments)
-	{
 		check(IsInGameThread());
 	}
-
+	
 	/*
 	 * Do any final UObject setup after the build (after PostEditChange)
 	 * @note - This function is called at the end of the pre completion task (after PostEditChange is called for the asset).
 	 */
 	virtual void FinalizeObject_GameThread(const FSetupObjectParams& Arguments)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		PostImportPreCompletedCallback(Arguments);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		check(IsInGameThread());
 	}
 
 	/**

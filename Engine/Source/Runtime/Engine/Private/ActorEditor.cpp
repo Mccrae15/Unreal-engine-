@@ -12,7 +12,7 @@
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/DataLayer/DataLayer.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "EditorSupportDelegates.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
@@ -26,10 +26,19 @@
 #include "ActorTransactionAnnotation.h"
 #include "Elements/Framework/EngineElementsLibrary.h"
 #include "WorldPartition/DataLayer/IDataLayerEditorModule.h"
+#include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
+#include "WorldPartition/DataLayer/DeprecatedDataLayerInstance.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
 #include "ActorFolder.h"
 #include "WorldPersistentFolders.h"
 #include "Modules/ModuleManager.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "StaticMeshResources.h"
+#include "WorldPartition/DataLayer/DataLayerAsset.h"
+#include "UObject/SoftObjectPtr.h"
+#include "Algo/Transform.h"
+#include "Algo/RemoveIf.h"
+#include "Misc/DataValidation.h"
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
 
@@ -77,16 +86,28 @@ bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
 	const bool bIsRuntimeGridProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, RuntimeGrid);
 	const bool bIsDataLayersProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayerAssets);
 	const bool bIsHLODLayerProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, HLODLayer);
+	const bool bIsMainWorldOnlyProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, bIsMainWorldOnly);
 
-	if (bIsSpatiallyLoadedProperty || bIsRuntimeGridProperty || bIsDataLayersProperty || bIsHLODLayerProperty)
+	if (bIsSpatiallyLoadedProperty || bIsRuntimeGridProperty || bIsDataLayersProperty || bIsHLODLayerProperty || bIsMainWorldOnlyProperty)
 	{
 		if (!IsTemplate())
 		{
-			UWorld* World = GetTypedOuter<UWorld>();
-			UWorldPartition* WorldPartition = World ? World->GetWorldPartition() : nullptr;
-			if (!WorldPartition || (!WorldPartition->IsStreamingEnabled() && !bIsDataLayersProperty && !bIsHLODLayerProperty))
+			UWorld* OwningWorld = GetWorld();
+			UWorld* OuterWorld = GetTypedOuter<UWorld>();
+			UWorldPartition* OwningWorldPartition = OwningWorld ? OwningWorld->GetWorldPartition() : nullptr;
+			UWorldPartition* OuterWorldPartition = OuterWorld ? OuterWorld->GetWorldPartition() : nullptr;			
+
+			if (!OwningWorldPartition || !OuterWorldPartition)
 			{
 				return false;
+			}
+
+			if (!OwningWorldPartition->IsStreamingEnabled())
+			{
+				if (bIsSpatiallyLoadedProperty || bIsRuntimeGridProperty)
+				{
+					return false;
+				}
 			}
 		}
 	}
@@ -96,7 +117,7 @@ bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
 		return false;
 	}
 
-	if (bIsDataLayersProperty && !SupportsDataLayer())
+	if (bIsDataLayersProperty && (!SupportsDataLayerType(UDataLayerInstance::StaticClass()) || !IsUserManaged()))
 	{
 		return false;
 	}
@@ -212,8 +233,30 @@ void AActor::PostEditMove(bool bFinished)
 		UBlueprint* Blueprint = Cast<UBlueprint>(GetClass()->ClassGeneratedBy);
 		if (bFinished || bRunConstructionScriptOnDrag || (Blueprint && Blueprint->bRunConstructionScriptOnDrag))
 		{
+			// Set up a bulk reregister context to optimize RerunConstructionScripts.  We can't move this inside RerunConstructionScripts
+			// for the general case, because in other code paths, we use a context to cover additional code outside this function (a second
+			// pass that overrides instance data, generating additional render commands on the same set of components).  To move it, we
+			// would need to support nesting of these contexts.
+			TInlineComponentArray<UActorComponent*> ActorComponents;
+			GetComponents(ActorComponents);
+			FStaticMeshComponentBulkReregisterContext ReregisterContext(GetWorld()->Scene, MakeArrayView(ActorComponents.GetData(), ActorComponents.Num()));
+
+			TArray<const UBlueprintGeneratedClass*> ParentBPClassStack;
+			UBlueprintGeneratedClass::GetGeneratedClassesHierarchy(GetClass(), ParentBPClassStack);
+			for (const UBlueprintGeneratedClass* BPClass : ParentBPClassStack)
+			{
+				if (BPClass->SimpleConstructionScript)
+				{
+					USimpleConstructionScript* SCS = BPClass->SimpleConstructionScript;
+					ReregisterContext.AddSimpleConstructionScript(SCS);
+				}
+			}
+
 			FNavigationLockContext NavLock(GetWorld(), ENavigationLockReason::AllowUnregister);
 			RerunConstructionScripts();
+			// Construction scripts can have all manner of side effects, including creation of proxies..
+			// remove any static mesh components that have had their proxies created by RerunConstructionScripts:
+			ReregisterContext.SanitizeMeshComponents();
 		}
 	}
 
@@ -1004,6 +1047,23 @@ void AActor::SetHLODLayer(class UHLODLayer* InHLODLayer)
 	HLODLayer = InHLODLayer;
 }
 
+bool AActor::IsMainWorldOnly() const
+{
+	if (bIsMainWorldOnly)
+	{
+		return true;
+	}
+	
+	if (HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return ActorTypeIsMainWorldOnly();
+	}
+	else
+	{
+		return CastChecked<AActor>(GetClass()->GetDefaultObject())->IsMainWorldOnly();
+	}
+}
+
 void AActor::SetPackageExternal(bool bExternal, bool bShouldDirty)
 {
 	// @todo_ow: Call FExternalPackageHelper::SetPackagingMode and keep calling the actor specific code here (components). 
@@ -1056,8 +1116,6 @@ TUniquePtr<FWorldPartitionActorDesc> AActor::CreateClassActorDesc() const
 
 TUniquePtr<FWorldPartitionActorDesc> AActor::CreateActorDesc() const
 {
-	check(!HasAnyFlags(RF_ArchetypeObject | RF_ClassDefaultObject));
-	
 	TUniquePtr<FWorldPartitionActorDesc> ActorDesc(CreateClassActorDesc());
 		
 	ActorDesc->Init(this);
@@ -1512,10 +1570,13 @@ void AActor::CheckForErrors()
 
 bool AActor::GetReferencedContentObjects( TArray<UObject*>& Objects ) const
 {
-	UBlueprint* Blueprint = UBlueprint::GetBlueprintFromClass( GetClass() );
-	if (Blueprint)
+	if (UBlueprint* Blueprint = UBlueprint::GetBlueprintFromClass(GetClass()))
 	{
 		Objects.AddUnique(Blueprint);
+	}
+	else if (UBlueprintGeneratedClass* BlueprintGeneratedClass = Cast<UBlueprintGeneratedClass>(GetClass()))
+	{
+		Objects.AddUnique(BlueprintGeneratedClass);
 	}
 	return true;
 }
@@ -1525,7 +1586,7 @@ bool AActor::GetSoftReferencedContentObjects(TArray<FSoftObjectPath>& SoftObject
 	return false;
 }
 
-EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
+EDataValidationResult AActor::IsDataValid(FDataValidationContext& Context) const
 {
 	// Do not run asset validation on external actors, validation will be caught through map check
 	if (IsPackageExternal())
@@ -1537,31 +1598,31 @@ EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 	if (!bSuccess)
 	{
 		FText ErrorMsg = FText::Format(LOCTEXT("IsDataValid_Failed_CheckDefaultSubobjectsInternal", "{0} failed CheckDefaultSubobjectsInternal()"), FText::FromString(GetName()));
-		ValidationErrors.Add(ErrorMsg);
+		Context.AddError(ErrorMsg);
 	}
 
 	int32 OldNumMapWarningsAndErrors = FMessageLog("MapCheck").NumMessages(EMessageSeverity::Warning);
-	CheckForErrors();
+	const_cast<AActor*>(this)->CheckForErrors();
 	int32 NewNumMapWarningsAndErrors = FMessageLog("MapCheck").NumMessages(EMessageSeverity::Warning);
 	if (NewNumMapWarningsAndErrors != OldNumMapWarningsAndErrors)
 	{
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("ActorName"), FText::FromString(GetName()));
 		FText ErrorMsg = FText::Format(LOCTEXT("IsDataValid_Failed_CheckForErrors", "{ActorName} is not valid. See the MapCheck log messages for details."), Arguments);
-		ValidationErrors.Add(ErrorMsg);
+		Context.AddError(ErrorMsg);
 		bSuccess = false;
 	}
 
 	EDataValidationResult Result = bSuccess ? EDataValidationResult::Valid : EDataValidationResult::Invalid;
 
 	// check the components
-	for (UActorComponent* Component : GetComponents())
+	for (const UActorComponent* Component : GetComponents())
 	{
 		if (Component)
 		{
 			// if any component is invalid, our result is invalid
 			// in the future we may want to update this to say that the actor was not validated if any of its components returns EDataValidationResult::NotValidated
-			EDataValidationResult ComponentResult = Component->IsDataValid(ValidationErrors);
+			EDataValidationResult ComponentResult = Component->IsDataValid(Context);
 			if (ComponentResult == EDataValidationResult::Invalid)
 			{
 				Result = EDataValidationResult::Invalid;
@@ -1577,23 +1638,7 @@ EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 
 bool AActor::AddDataLayer(const UDataLayerInstance* DataLayerInstance)
 {
-	if (!SupportsDataLayer())
-	{
-		return false;
-	}
 	return DataLayerInstance->AddActor(this);
-}
-
-bool AActor::AddDataLayer(const UDataLayerAsset* DataLayerAsset)
-{
-	bool bActorWasModified = false;
-	if (SupportsDataLayer() && DataLayerAsset && !DataLayerAssets.Contains(DataLayerAsset))
-	{
-		Modify();
-		bActorWasModified = true;
-		DataLayerAssets.Add(DataLayerAsset);
-	}
-	return bActorWasModified;
 }
 
 bool AActor::RemoveDataLayer(const UDataLayerInstance* DataLayerInstance)
@@ -1601,32 +1646,30 @@ bool AActor::RemoveDataLayer(const UDataLayerInstance* DataLayerInstance)
 	return DataLayerInstance->RemoveActor(this);
 }
 
-bool AActor::RemoveDataLayer(const UDataLayerAsset* DataLayerAsset)
+TArray<const UDataLayerInstance*> AActor::RemoveAllDataLayers()
 {
-	bool bActorWasModified = false;
-	if (DataLayerAsset && DataLayerAssets.Contains(DataLayerAsset))
-	{
-		if (!bActorWasModified)
-		{
-			Modify();
-			bActorWasModified = true;
-		}
-
-		DataLayerAssets.Remove(DataLayerAsset);
-	}
-	return bActorWasModified;
-}
-
-bool AActor::RemoveAllDataLayers()
-{
-	if ((DataLayerAssets.Num() > 0) || (DataLayers.Num() > 0))
+	TArray<const UDataLayerInstance*> RemovedDataLayerInstances = GetDataLayerInstances();
+	if (!RemovedDataLayerInstances.IsEmpty())
 	{
 		Modify();
-		DataLayerAssets.Empty();
-		DataLayers.Empty();
-		return true;
+		RemovedDataLayerInstances.SetNum(Algo::RemoveIf(
+			RemovedDataLayerInstances, [this] (const UDataLayerInstance* DataLayerInstance) { return !DataLayerInstance->RemoveActor(this); }));
 	}
-	return false;
+
+	return RemovedDataLayerInstances;
+}
+
+TArray<const UDataLayerAsset*> AActor::ResolveDataLayerAssets(const TArray<TSoftObjectPtr<UDataLayerAsset>>& InDataLayerAssets) const
+{
+	TArray<const UDataLayerAsset*> ResolvedAssets;
+	ResolvedAssets.Reserve(InDataLayerAssets.Num());
+	Algo::TransformIf(InDataLayerAssets, ResolvedAssets, [](const TSoftObjectPtr<UDataLayerAsset>& DataLayerAsset) { return DataLayerAsset.IsValid(); }, [](const TSoftObjectPtr<UDataLayerAsset>& DataLayerAsset) { return DataLayerAsset.Get(); });
+	return ResolvedAssets;
+}
+
+TArray<const UDataLayerAsset*> AActor::GetDataLayerAssets() const
+{
+	return ResolveDataLayerAssets(DataLayerAssets);
 }
 
 TArray<FName> AActor::GetDataLayerInstanceNames() const
@@ -1642,91 +1685,124 @@ TArray<FName> AActor::GetDataLayerInstanceNames() const
 }
 
 TArray<const UDataLayerInstance*> AActor::GetDataLayerInstancesForLevel() const
-	{
+{
 	const bool bUseLevelContext = true;
 	return GetDataLayerInstancesInternal(bUseLevelContext);
 }
 
 void AActor::FixupDataLayers(bool bRevertChangesOnLockedDataLayer /*= false*/)
 {
-	if (!GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor))
+	// Always call here because this gets called in AActor::Presave and makes sure the SoftObjectPtrs are resolved before saving.
+	TArray<const UDataLayerAsset*> ResolvedAssets = ResolveDataLayerAssets(DataLayerAssets);
+
+	if (IsTemplate())
 	{
-		if (!SupportsDataLayer())
-		{
-			DataLayerAssets.Empty();
-			DataLayers.Empty();
-			return;
-		}
+		return;
+	}
 
-		if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
+	if (!SupportsDataLayerType(UDeprecatedDataLayerInstance::StaticClass()))
+	{
+		DataLayers.Empty();
+	}
+
+	if (!SupportsDataLayerType(UDataLayerInstanceWithAsset::StaticClass()))
+	{
+		DataLayerAssets.Empty();
+	}
+
+	if (DataLayers.IsEmpty() && DataLayerAssets.IsEmpty())
+	{
+		return;
+	}
+
+	// Don't fixup if the actor is not part of a level (template actors, etc.)
+	if (!GetLevel())
+	{
+		return;
+	}
+
+	// Don't fixup in game world
+	UWorld* World = GetWorld();
+	if ((GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor)) ||
+		(World && (World->IsGameWorld() || (World->WorldType == EWorldType::Inactive))))
+	{ 
+		return;
+	}
+	
+	// Cleanup Data Layer assets we can't reference (Private DLs)
+	DataLayerAssets.SetNum(Algo::RemoveIf(DataLayerAssets, [this](const TSoftObjectPtr<UDataLayerAsset>& AssetPath)
+	{
+		return !UDataLayerAsset::CanBeReferencedByActor(AssetPath, this);
+	}));
+
+	// Use Actor's DataLayerManager since the fixup is relative to this level
+	UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(this);
+	if (!DataLayerManager || !DataLayerManager->CanResolveDataLayers())
+	{
+		return;
+	}
+	
+	if (bRevertChangesOnLockedDataLayer)
+	{
+		TArray<const UDataLayerAsset*> ResolvedPreEditChangeAssets = ResolveDataLayerAssets(PreEditChangeDataLayers);
+		// Since it's not possible to prevent changes of particular elements of an array, rollback change on locked DataLayers.
+		TSet<const UDataLayerAsset*> PreEdit(ResolvedPreEditChangeAssets);
+		TSet<const UDataLayerAsset*> PostEdit(ResolvedAssets);
+
+		auto DifferenceContainsLockedDataLayers = [DataLayerManager](const TSet<const UDataLayerAsset*>& A, const TSet<const UDataLayerAsset*>& B)
 		{
-			if (!DataLayerSubsystem->CanResolveDataLayers())
+			TSet<const UDataLayerAsset*> Diff = A.Difference(B);
+			for (const UDataLayerAsset* DataLayerAsset : Diff)
 			{
-				return;
-			}
-
-			ULevel* Level = GetLevel();
-
-				if (bRevertChangesOnLockedDataLayer)
+				const UDataLayerInstance* DataLayerInstance = DataLayerManager->GetDataLayerInstance(DataLayerAsset);
+				if (DataLayerInstance && DataLayerInstance->IsLocked())
 				{
-					// Since it's not possible to prevent changes of particular elements of an array, rollback change on locked DataLayers.
-					TSet<const UDataLayerAsset*> PreEdit(PreEditChangeDataLayers);
-					TSet<const UDataLayerAsset*> PostEdit(DataLayerAssets);
-
-				auto DifferenceContainsLockedDataLayers = [DataLayerSubsystem, Level](const TSet<const UDataLayerAsset*>& A, const TSet<const UDataLayerAsset*>& B)
-					{
-						TSet<const UDataLayerAsset*> Diff = A.Difference(B);
-						for (const UDataLayerAsset* DataLayerAsset : Diff)
-						{
-						// We pass Actor Level when resolving the DataLayerInstance as we do the fixup relative to this level
-						const UDataLayerInstance* DataLayerInstance = DataLayerSubsystem->GetDataLayerInstance(DataLayerAsset, Level);
-							if (DataLayerInstance && DataLayerInstance->IsLocked())
-							{
-								return true;
-							}
-						}
-						return false;
-					};
-					
-					if (DifferenceContainsLockedDataLayers(PreEdit, PostEdit) || 
-						DifferenceContainsLockedDataLayers(PostEdit, PreEdit))
-					{
-						DataLayerAssets = PreEditChangeDataLayers;
-					}
+					return true;
 				}
-
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			auto CleanupDataLayers = [this, DataLayerSubsystem, Level](auto& DataLayerArray)
-				{
-					using ArrayType = typename TRemoveReference<decltype(DataLayerArray)>::Type;
-					
-					ArrayType ExistingDataLayer;
-					for (int32 Index = 0; Index < DataLayerArray.Num();)
-					{
-					// We pass Actor Level when resolving the DataLayerInstance as we do the fixup relative to this level
-						auto& DataLayer = DataLayerArray[Index];
-					if (!DataLayerSubsystem->GetDataLayerInstance(DataLayer, Level) || ExistingDataLayer.Contains(DataLayer))
-						{
-							DataLayerArray.RemoveAtSwap(Index);
-						}
-						else
-						{
-							ExistingDataLayer.Add(DataLayer);
-							++Index;
-						}
-					}
-				};
-
-				// Only invalidate DataLayerAssets on cook. In Editor we want to be able to re-resolve if the asset gets readded to the WorldDataLayers actor
-				if (IsRunningCookCommandlet())
-				{
-					CleanupDataLayers(DataLayerAssets);
-				}
-				CleanupDataLayers(DataLayers);
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
+			return false;
+		};
+					
+		if (DifferenceContainsLockedDataLayers(PreEdit, PostEdit) || 
+			DifferenceContainsLockedDataLayers(PostEdit, PreEdit))
+		{
+			DataLayerAssets = PreEditChangeDataLayers;
 		}
 	}
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	auto CleanupDataLayers = [this, DataLayerManager](auto& DataLayerArray)
+	{
+		using ArrayType = typename TRemoveReference<decltype(DataLayerArray)>::Type;
+					
+		ArrayType ExistingDataLayer;
+		for (int32 Index = 0; Index < DataLayerArray.Num();)
+		{
+			auto& DataLayer = DataLayerArray[Index];
+			if (!DataLayerManager->GetDataLayerInstance(DataLayer) || ExistingDataLayer.Contains(DataLayer))
+			{
+				DataLayerArray.RemoveAtSwap(Index);
+			}
+			else
+			{
+				ExistingDataLayer.Add(DataLayer);
+				++Index;
+			}
+		}
+	};
+
+	// Only invalidate DataLayerAssets on cook. In Editor we want to be able to re-resolve if the asset gets readded to the WorldDataLayers actor
+	if (IsRunningCookCommandlet())
+	{
+		// Get a new resolved array in case DataLayerAssets changed
+		TArray<const UDataLayerAsset*> CleanedUpDataLayers = ResolveDataLayerAssets(DataLayerAssets);
+		CleanupDataLayers(CleanedUpDataLayers);
+		DataLayerAssets.Empty(CleanedUpDataLayers.Num());
+		Algo::Transform(CleanedUpDataLayers, DataLayerAssets, [](const UDataLayerAsset* DataLayerAsset) { return TSoftObjectPtr<UDataLayerAsset>(DataLayerAsset); });
+	}
+	CleanupDataLayers(DataLayers);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
 
 bool AActor::IsPropertyChangedAffectingDataLayers(FPropertyChangedEvent& PropertyChangedEvent) const
 {
@@ -1746,23 +1822,73 @@ bool AActor::IsPropertyChangedAffectingDataLayers(FPropertyChangedEvent& Propert
 	return false;
 }
 
-bool AActor::SupportsDataLayer() const
+bool AActor::SupportsDataLayerType(TSubclassOf<UDataLayerInstance> InDataLayerType) const
 {
 	ULevel* Level = GetLevel();
 	const bool bIsLevelNotPartitioned = Level ? !Level->bIsPartitioned : false;
 	return (!bIsLevelNotPartitioned &&
-			ActorTypeSupportsDataLayer() &&
-			!FActorEditorUtils::IsABuilderBrush(this) &&
-			!GetClass()->GetDefaultObject<AActor>()->bHiddenEd);
+		IsDataLayerTypeSupported(InDataLayerType) &&
+		!FActorEditorUtils::IsABuilderBrush(this) &&
+		!GetClass()->GetDefaultObject<AActor>()->bHiddenEd);
+}
+
+bool AActor::CanAddDataLayer(const UDataLayerInstance* InDataLayerInstance) const
+{
+	if (InDataLayerInstance && SupportsDataLayerType(InDataLayerInstance->GetClass()))
+	{
+		if (const UDataLayerAsset* DataLayerAsset = InDataLayerInstance->GetAsset())
+		{
+			return !DataLayerAssets.Contains(DataLayerAsset);
+		}
+		else if (const UDeprecatedDataLayerInstance* DataLayerInstance = Cast<UDeprecatedDataLayerInstance>(InDataLayerInstance))
+		{
+			return !DataLayers.Contains(DataLayerInstance->GetActorDataLayer());
+		}
+	}
+
+	return false;
+}
+
+bool FAssignActorDataLayer::AddDataLayerAsset(AActor* InActor, const UDataLayerAsset* InDataLayerAsset)
+{
+	check(InDataLayerAsset != nullptr);
+
+	if (!InActor->DataLayerAssets.Contains(InDataLayerAsset))
+	{
+		InActor->Modify();
+		InActor->DataLayerAssets.Add(InDataLayerAsset);
+		return true;
+	}
+
+	return false;
+}
+
+bool FAssignActorDataLayer::RemoveDataLayerAsset(AActor* InActor, const UDataLayerAsset* InDataLayerAsset)
+{
+	check(InDataLayerAsset != nullptr);
+	
+	if (InActor->DataLayerAssets.Contains(InDataLayerAsset))
+	{
+		InActor->Modify();
+		InActor->DataLayerAssets.Remove(InDataLayerAsset);
+		return true;
+	}
+
+	return false;
 }
 
 //~ Begin Deprecated
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
+bool AActor::SupportsDataLayer() const
+{
+	return SupportsDataLayerType(UDataLayerInstance::StaticClass());
+}
+
 bool AActor::AddDataLayer(const FActorDataLayer& ActorDataLayer)
 {
-	if (SupportsDataLayer() && !ContainsDataLayer(ActorDataLayer))
+	if (SupportsDataLayerType(UDataLayerInstance::StaticClass()) && !DataLayers.Contains(ActorDataLayer))
 	{
 		Modify();
 		DataLayers.Add(ActorDataLayer);
@@ -1774,7 +1900,7 @@ bool AActor::AddDataLayer(const FActorDataLayer& ActorDataLayer)
 
 bool AActor::RemoveDataLayer(const FActorDataLayer& ActorDataLayer)
 {
-	if (ContainsDataLayer(ActorDataLayer))
+	if (DataLayers.Contains(ActorDataLayer))
 	{
 		Modify();
 		DataLayers.Remove(ActorDataLayer);
@@ -1786,7 +1912,7 @@ bool AActor::RemoveDataLayer(const FActorDataLayer& ActorDataLayer)
 
 bool AActor::AddDataLayer(const UDEPRECATED_DataLayer* DataLayer)
 {
-	if (SupportsDataLayer() && DataLayer)
+	if (SupportsDataLayerType(UDataLayerInstance::StaticClass()) && DataLayer)
 	{
 		return AddDataLayer(FActorDataLayer(DataLayer->GetFName()));
 	}

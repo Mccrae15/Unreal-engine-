@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Containers/ContainersFwd.h"
 #include "Templates/UnrealTemplate.h"
 #include "Misc/AssertionMacros.h"
 #include "Containers/ArrayView.h"
@@ -38,7 +39,7 @@
 */
 
 /** Pointer with extent and a stride, similar to TArrayView. Designed to allow functions to take pointers to arbitrarily structured data. */
-template<typename InElementType, typename InSizeType = int32>
+template<typename InElementType, typename InSizeType>
 class TStridedView
 {
 public:
@@ -73,6 +74,16 @@ public:
 		}
 	}
 
+	FORCEINLINE bool IsValidIndex(SizeType Index) const
+	{
+		return (Index >= 0) && (Index < NumElements);
+	}
+
+	FORCEINLINE bool IsEmpty() const
+	{
+		return NumElements == 0;
+	}
+
 	FORCEINLINE SizeType Num() const
 	{
 		return NumElements;
@@ -81,6 +92,11 @@ public:
 	FORCEINLINE SizeType GetStride() const
 	{
 		return BytesBetweenElements;
+	}
+
+	FORCEINLINE ElementType& GetUnsafe(SizeType Index) const
+	{
+		return *GetElementPtrUnsafe(Index);
 	}
 
 	FORCEINLINE ElementType& operator[](SizeType Index) const
@@ -157,17 +173,36 @@ TStridedView<ElementType> MakeStridedView(int32 BytesBetweenElements, ElementTyp
 	return TStridedView<ElementType>(BytesBetweenElements, FirstElement, Count);
 }
 
+template <typename ElementType>
+TConstStridedView<ElementType> MakeConstStridedView(int32 BytesBetweenElements, const ElementType* FirstElement, int32 Count)
+{
+	return TConstStridedView<ElementType>(BytesBetweenElements, FirstElement, Count);
+}
+
 template <typename BaseStructureType, typename DerivedStructureType>
 TStridedView<BaseStructureType> MakeStridedViewOfBase(TArrayView<DerivedStructureType> StructuredView)
 {
-	static_assert(TIsDerivedFrom<DerivedStructureType, BaseStructureType>::IsDerived, "Expecting derived structure type");
+	static_assert(std::is_base_of_v<BaseStructureType, DerivedStructureType>, "Expecting derived structure type");
 	return MakeStridedView<BaseStructureType>((int32)sizeof(DerivedStructureType), GetData(StructuredView), (int32)GetNum(StructuredView));
+}
+
+template <typename BaseStructureType, typename DerivedStructureType>
+TConstStridedView<BaseStructureType> MakeConstStridedViewOfBase(TConstArrayView<DerivedStructureType> StructuredView)
+{
+	static_assert(std::is_base_of_v<BaseStructureType, DerivedStructureType>, "Expecting derived structure type");
+	return MakeConstStridedView<BaseStructureType>((int32)sizeof(DerivedStructureType), GetData(StructuredView), (int32)GetNum(StructuredView));
 }
 
 template <typename StructureType>
 TStridedView<StructureType> MakeStridedView(TArrayView<StructureType> StructuredView)
 {
 	return MakeStridedView((int32)sizeof(StructureType), GetData(StructuredView), (int32)GetNum(StructuredView));
+}
+
+template <typename StructureType>
+TConstStridedView<StructureType> MakeConstStridedView(TConstArrayView<StructureType> StructuredView)
+{
+	return MakeConstStridedView((int32)sizeof(StructureType), GetData(StructuredView), (int32)GetNum(StructuredView));
 }
 
 template <
@@ -182,6 +217,18 @@ TStridedView<ElementType> MakeStridedView(StructuredRangeType&& StructuredRange,
 	return TStridedView<ElementType>((int32)sizeof(*GetData(StructuredRange)), &(GetData(StructuredRange)->*Member), (int32)GetNum(StructuredRange));
 }
 
+template <
+	typename StructuredRangeType,
+	typename ElementType,
+	typename StructureType,
+	decltype(GetData(std::declval<StructuredRangeType>()))* = nullptr,
+	decltype(GetNum(std::declval<StructuredRangeType>()))* = nullptr
+>
+TConstStridedView<ElementType> MakeConstStridedView(StructuredRangeType&& StructuredRange, const ElementType StructureType::* Member)
+{
+	return TConstStridedView<ElementType>((int32)sizeof(*GetData(StructuredRange)), &(GetData(StructuredRange)->*Member), (int32)GetNum(StructuredRange));
+}
+
 template <typename StructuredRangeType>
 auto MakeStridedView(StructuredRangeType&& StructuredRange) -> TStridedView<std::remove_reference_t<decltype(*GetData(StructuredRange))>>
 {
@@ -189,3 +236,9 @@ auto MakeStridedView(StructuredRangeType&& StructuredRange) -> TStridedView<std:
 	return MakeStridedView((int32)sizeof(*GetData(StructuredRange)), GetData(StructuredView), (int32)GetNum(StructuredView));
 }
 
+template <typename StructuredRangeType>
+auto MakeConstStridedView(StructuredRangeType&& StructuredRange) -> TConstStridedView<std::remove_reference_t<decltype(*GetData(StructuredRange))>>
+{
+	auto StructuredView = MakeArrayView(Forward<StructuredRangeType>(StructuredRange));
+	return MakeConstStridedView((int32)sizeof(*GetData(StructuredRange)), GetData(StructuredView), (int32)GetNum(StructuredView));
+}

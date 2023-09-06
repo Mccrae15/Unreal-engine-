@@ -67,15 +67,15 @@ namespace UE::Json
 
 		/** Numeric value types. */
 		template <typename ValueType>
-		using TIsNumeric = TAnd<TModels<Concepts::CNumerical, std::decay_t<ValueType>>>;
+		constexpr bool TIsNumeric_V = TModels_V<Concepts::CNumerical, std::decay_t<ValueType>>;
 
 		/** ValueType has FromJson. */
 		template <typename ValueType>
-		using THasFromJson = TModels<Concepts::CFromJsonable, std::decay_t<ValueType>>;
+		constexpr bool THasFromJson_V = TModels_V<Concepts::CFromJsonable, std::decay_t<ValueType>>;
 
 		/** ValueType is derived from TMap. */
 		template <typename ValueType>
-		using TIsDerivedFromMap = TModels<Concepts::CMap, std::decay_t<ValueType>>;
+		constexpr bool TIsDerivedFromMap_V = TModels_V<Concepts::CMap, std::decay_t<ValueType>>;
 	}
 
 	/** Contains either an object constructed in place, or a reference to an object declared elsewhere. */
@@ -262,7 +262,7 @@ namespace UE::Json
 
 	// Numeric
 	template <typename ValueType>
-	constexpr typename TEnableIf<TypeTraits::TIsNumeric<ValueType>::Value, void>::Type
+	constexpr typename TEnableIf<TypeTraits::TIsNumeric_V<ValueType>, void>::Type
 	As(const TSharedPtr<FJsonValue>& InJsonValue, ValueType& OutValue)
 	{
 		OutValue = InJsonValue->AsNumber();
@@ -286,11 +286,11 @@ namespace UE::Json
 
 	// Numeric
 	template <typename ValueType>
-	constexpr typename TEnableIf<TypeTraits::TIsNumeric<ValueType>::Value, bool>::Type
+	constexpr typename TEnableIf<TypeTraits::TIsNumeric_V<ValueType>, bool>::Type
 	TryGet(const TSharedPtr<FJsonValue>& InJsonValue, ValueType& OutValue);
 
 	template <typename ValueType>
-	constexpr typename TEnableIf<TypeTraits::TIsNumeric<ValueType>::Value, bool>::Type
+	constexpr typename TEnableIf<TypeTraits::TIsNumeric_V<ValueType>, bool>::Type
 	TryGetField(const TSharedPtr<FJsonObject>& InJsonObject, const FString& InFieldName, ValueType& OutValue);
 
 	// Enum
@@ -322,11 +322,11 @@ namespace UE::Json
 
 	// Array
 	template <typename ContainerType>
-	typename TEnableIf<TIsTArray<ContainerType>::Value, bool>::Type
+	typename TEnableIf<TIsTArray_V<ContainerType>, bool>::Type
 	TryGet(const TSharedPtr<FJsonValue>& InJsonValue, ContainerType& OutValues);
 
 	template <typename ContainerType>
-	constexpr typename TEnableIf<TIsTArray<ContainerType>::Value, bool>::Type
+	constexpr typename TEnableIf<TIsTArray_V<ContainerType>, bool>::Type
 	TryGetField(const TSharedPtr<FJsonObject>& InJsonObject, const FString& InFieldName, ContainerType& OutValues);
 
 	// Map
@@ -349,16 +349,14 @@ namespace UE::Json
 	// Object (with FromJson)
 	template <typename ValueType>
 	typename TEnableIf<
-		TAnd<
-			TNot<TypeTraits::TIsDerivedFromMap<ValueType>>,
-			TypeTraits::THasFromJson<ValueType>>::Value, bool>::Type
+		!TypeTraits::TIsDerivedFromMap_V<ValueType> &&
+		TypeTraits::THasFromJson_V<ValueType>, bool>::Type
 	TryGet(const TSharedPtr<FJsonValue>& InJsonValue, ValueType& OutValue);
 
 	template <typename ValueType>
 	typename TEnableIf<
-		TAnd<
-			TNot<TypeTraits::TIsDerivedFromMap<ValueType>>,
-			TypeTraits::THasFromJson<ValueType>>::Value, bool>::Type
+		!TypeTraits::TIsDerivedFromMap_V<ValueType> &&
+		TypeTraits::THasFromJson_V<ValueType>, bool>::Type
 	TryGetField(const TSharedPtr<FJsonObject>& InJsonObject, const FString& InFieldName, ValueType& OutValue);
 
 	// Variant
@@ -393,16 +391,14 @@ namespace UE::Json
 	// Object (with FromJson)
 	template <typename ValueType>
 	typename TEnableIf<
-		TAnd<
-			TNot<TypeTraits::TIsDerivedFromMap<ValueType>>,
-			TypeTraits::THasFromJson<ValueType>>::Value, bool>::Type
+		!TypeTraits::TIsDerivedFromMap_V<ValueType> &&
+		TypeTraits::THasFromJson_V<ValueType>, bool>::Type
 	TryGet(const TSharedPtr<FJsonValue>& InJsonValue, ValueType& OutValue);
 
 	template <typename ValueType>
 	typename TEnableIf<
-		TAnd<
-			TNot<TypeTraits::TIsDerivedFromMap<ValueType>>,
-			TypeTraits::THasFromJson<ValueType>>::Value, bool>::Type
+		!TypeTraits::TIsDerivedFromMap_V<ValueType> &&
+		TypeTraits::THasFromJson_V<ValueType>, bool>::Type
 	TryGetField(const TSharedPtr<FJsonObject>& InJsonObject, const FString& InFieldName, ValueType& OutValue);
 
 	// Object (without FromJson)
@@ -411,10 +407,10 @@ namespace UE::Json
 		!std::is_same_v<ValueType, TSharedPtr<typename ValueType::ElementType>> &&
 		!std::is_same_v<ValueType, TJsonReference<typename ValueType::ElementType>> &&
 		!TIsTMap<ValueType>::Value &&
-		!TIsTArray<ValueType>::Value &&
+		!TIsTArray_V<ValueType> &&
 		!TypeTraits::TIsStringLike<ValueType>::Value &&
 		!TIsPODType<ValueType>::Value &&
-		!TypeTraits::THasFromJson<ValueType>::Value, bool>::Type
+		!TypeTraits::THasFromJson_V<ValueType>, bool>::Type
 	TryGet(const TSharedPtr<FJsonValue>& InJsonValue, ValueType& OutValue);
 
 	// TIsTMap<ContainerType>,
@@ -423,10 +419,10 @@ namespace UE::Json
 		!std::is_same_v<ValueType, TSharedPtr<typename ValueType::ElementType>> &&
 		!std::is_same_v<ValueType, TJsonReference<typename ValueType::ElementType>> &&
 		!TIsTMap<ValueType>::Value &&
-		!TIsTArray<ValueType>::Value &&
+		!TIsTArray_V<ValueType> &&
 		!TypeTraits::TIsStringLike<ValueType>::Value &&
 		!TIsPODType<ValueType>::Value &&
-		!TypeTraits::THasFromJson<ValueType>::Value, bool>::Type
+		!TypeTraits::THasFromJson_V<ValueType>, bool>::Type
 	TryGetField(const TSharedPtr<FJsonObject>& InJsonObject, const FString& InFieldName, ValueType& OutValue);
 
 	// UniqueObj

@@ -42,6 +42,32 @@ public:
 	bool operator > (const FMediaTimeStamp & Other) const { return (SequenceIndex > Other.SequenceIndex) || (SequenceIndex == Other.SequenceIndex && Time > Other.Time); }
 	bool operator >= (const FMediaTimeStamp & Other) const { return (SequenceIndex > Other.SequenceIndex) || (SequenceIndex == Other.SequenceIndex && Time >= Other.Time); }
 
+	static int64 MakeSequenceIndex(int32 PrimaryIndex, int32 SecondaryIndex)
+	{
+		return (static_cast<int64>(PrimaryIndex) << 32) + int64(SecondaryIndex);
+	}
+
+	static int64 AdjustPrimaryIndex(int64 InSequenceIndex, int32 Add)
+	{
+		return InSequenceIndex + (static_cast<int64>(Add) << 32);
+	}
+
+	static int64 AdjustSecondaryIndex(int64 InSequenceIndex, int32 Add)
+	{
+		return InSequenceIndex + Add;
+	}
+
+	static int32 GetPrimaryIndex(int64 InSequenceIndex)
+	{
+		// note: needs to cope with signed operation
+		return static_cast<int32>((InSequenceIndex - int32(InSequenceIndex)) >> 32);	//-V1065 PSV warning "Expression can be simplified" suppressed
+	}
+
+	static int32 GetSecondaryIndex(int64 InSequenceIndex)
+	{
+		return static_cast<int32>(InSequenceIndex);
+	}
+
 	FMediaTimeStamp operator + (const FTimespan & Other) const { return FMediaTimeStamp(Time + Other, SequenceIndex); }
 	FMediaTimeStamp operator - (const FTimespan & Other) const { return FMediaTimeStamp(Time - Other, SequenceIndex); }
 

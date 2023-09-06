@@ -5,8 +5,8 @@
 #include "Iris/Serialization/PolymorphicNetSerializer.h"
 #include "UObject/ObjectMacros.h"
 #include "Tests/ReplicationSystem/ReplicatedTestObject.h"
-#include "Core/Public/Iris/ReplicationState/IrisFastArraySerializer.h"
-#include "Core/Public/Iris/ReplicationState/Private/IrisFastArraySerializerInternal.h"
+#include "Iris/ReplicationState/IrisFastArraySerializer.h"
+#include "Iris/ReplicationState/Private/IrisFastArraySerializerInternal.h"
 #include "TestPolymorphicStructNetSerializer.generated.h"
 
 // Example BaseStruct used to support replication of polymorphic structs
@@ -453,6 +453,21 @@ struct TStructOpsTypeTraits<FExamplePolymorphicStructD> : public TStructOpsTypeT
 	{
 		WithIdenticalViaEquality = true,
 	};
+};
+
+// Derives from a struct with custom NetSerializer and extra properties
+USTRUCT()
+struct FExamplePolymorphicStructD_Derived : public FExamplePolymorphicStructD
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	float FloatInD_Derived = 0.0f;
+
+	virtual UScriptStruct* GetScriptStruct() const override
+	{
+		return FExamplePolymorphicStructD_Derived::StaticStruct();
+	}
 };
 
 namespace UE::Net

@@ -862,7 +862,7 @@ void FDatasmithFBXFileImporter::AddCurvesForProperty(FbxProperty InProperty, Fbx
 			for (uint8 Channel = 0; Channel < CurveNode->GetChannelsCount(); Channel++)
 			{
 				uint32 CurveCount = CurveNode->GetCurveCount(Channel);
-				UE_LOG(LogDatasmithFBXImport, Verbose, TEXT("\tFound %d curves for property %s, channel %d"), CurveCount, PropertyName.Get(), Channel);
+				UE_LOG(LogDatasmithFBXImport, Verbose, TEXT("\tFound %d curves for property %hs, channel %d"), CurveCount, PropertyName.Get(), Channel);
 
 				for (uint32 CurveIndex = 0; CurveIndex < CurveCount; CurveIndex++)
 				{
@@ -1247,11 +1247,11 @@ void FDatasmithFBXFileImporter::DoImportMesh(FbxMesh* InMesh, FDatasmithFBXScene
 		}
 
 		// Skip degenerated polygons
-		FVector RawNormal = ((CornerPositions[1] - CornerPositions[2]) ^ (CornerPositions[0] - CornerPositions[2]));
+		/*FVector RawNormal = ((CornerPositions[1] - CornerPositions[2]) ^ (CornerPositions[0] - CornerPositions[2]));
 		if (RawNormal.SizeSquared() < SMALL_NUMBER)
 		{
 			continue; // this will leave holes...
-		}
+		}*/
 
 		// Create Vertex instances
 		CornerVertexInstanceIDs.SetNumUninitialized(CornerCount, false);

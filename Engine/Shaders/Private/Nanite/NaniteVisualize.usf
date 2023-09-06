@@ -7,9 +7,11 @@
 #include "../ColorMap.ush"
 #include "../Visualization.ush"
 #include "../VirtualShadowMaps/VirtualShadowMapStaticCaching.ush"
+#include "../SplineMeshCommon.ush"
 
 #include "NaniteDataDecode.ush"
 #include "NaniteAttributeDecode.ush"
+#include "NaniteCullingCommon.ush"
 
 RWTexture2D<float4>		DebugOutput;
 
@@ -21,8 +23,10 @@ Texture2D<float>		SceneZDecoded;
 Texture2D<uint4>		SceneZLayout;
 Texture2D<float>		MaterialZDecoded;
 Texture2D<uint4>		MaterialZLayout;
-Texture2D<uint2>		MaterialResolve;
-Texture2D<uint>			MaterialComplexity;
+Texture2D<uint>			ShadingMask;
+
+StructuredBuffer<FNaniteRasterBinMeta> RasterBinMeta;
+StructuredBuffer<FNaniteShadingBinMeta> ShadingBinMeta;
 
 ByteAddressBuffer		MaterialSlotTable;
 ByteAddressBuffer		MaterialDepthTable;
@@ -32,6 +36,7 @@ int4					VisualizeConfig;
 int4					VisualizeScales;
 uint					RegularMaterialRasterBinCount;
 int2					PickingPixelPos;
+uint					FixedFunctionBin;
 
 RWStructuredBuffer<FNanitePickingFeedback> FeedbackBuffer;
 
@@ -123,8 +128,10 @@ bool ShouldApplySobelFilter()
 [numthreads(8, 8, 1)]
 void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 {
+	const uint VisualizeMode = GetVisualizeMode();
+
 	const uint2 PickingPos	= uint2(PickingPixelPos);
-	const uint2 PixelPos	= DTID.xy;
+	const uint2 PixelPos	= DTID.xy + uint2(View.ViewRectMin.xy);
 	const uint2 TilePos		= GID.xy; // 8x8 tile 2D coord
 
 	const UlongType VisPixel = VisBuffer64[PixelPos];
@@ -137,7 +144,7 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 
 	FNaniteView NaniteView = GetNaniteView( 0 );
 
-	FResolvedMaterial ResolvedMaterial = UnpackMaterialResolve(MaterialResolve[PixelPos]);
+	FShadingMask UnpackedMask = UnpackShadingMask(ShadingMask[PixelPos]);
 
 	float3 Result = float3(0, 0, 0);
 	float3 OutlineColor = 1;
@@ -146,7 +153,16 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 	bool bDarkOutline = false;
 	bool bApplySobel = true;
 
-	if (VisibleClusterIndex != 0xFFFFFFFF && (!GetCompositeWithSceneDepth() || ResolvedMaterial.bIsNanitePixel))
+	if (VisualizeMode == NANITE_VISUALIZE_OVERDRAW)
+	{
+		uint DebugValueAdd = DbgBuffer32[PixelPos];
+
+		const float OverdrawScale = GetOverdrawScale();
+		const float OverdrawCount = DebugValueAdd; // Num of evaluations per pixel
+		const float OverdrawColor = 1 - exp2(-OverdrawCount * OverdrawScale);
+		Result = ColorMapInferno(OverdrawColor);
+	}
+	else if (VisibleClusterIndex != 0xFFFFFFFF && (!GetCompositeWithSceneDepth() || UnpackedMask.bIsNanitePixel))
 	{
 		// Nanite Pixel
 
@@ -156,13 +172,13 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		UnpackDbgPixel(DbgPixel, DebugDepthInt, DebugValueMax);
 		uint DebugValueAdd = DbgBuffer32[PixelPos];
 
-		FVisibleCluster VisibleCluster           = GetVisibleCluster(VisibleClusterIndex);
-		FInstanceSceneData InstanceData          = GetInstanceSceneData(VisibleCluster, false);
-		FInstanceDynamicData InstanceDynamicData = CalculateInstanceDynamicData(NaniteView, InstanceData);
-		FPrimitiveSceneData PrimitiveData        = GetPrimitiveData(InstanceData.PrimitiveId);
-		FCluster Cluster                         = GetCluster(VisibleCluster.PageIndex, VisibleCluster.ClusterIndex);
+		FVisibleCluster VisibleCluster				= GetVisibleCluster(VisibleClusterIndex);
+		FInstanceSceneData InstanceData				= GetInstanceSceneData(VisibleCluster, false);
+		FInstanceDynamicData InstanceDynamicData	= CalculateInstanceDynamicData(NaniteView, InstanceData);
+		FPrimitiveSceneData PrimitiveData			= GetPrimitiveData(InstanceData.PrimitiveId);
+		FCluster Cluster							= GetCluster(VisibleCluster.PageIndex, VisibleCluster.ClusterIndex);
 
-		const uint3 TriIndices = DecodeTriangleIndices(Cluster, TriIndex, false);
+		const uint3 TriIndices = DecodeTriangleIndices(Cluster, TriIndex);
 
 		const float3 PointLocal0 = DecodePosition(TriIndices.x, Cluster);
 		const float3 PointLocal1 = DecodePosition(TriIndices.y, Cluster);
@@ -172,14 +188,14 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		const float3 PointWorld1 = mul(float4(PointLocal1, 1), InstanceDynamicData.LocalToTranslatedWorld).xyz;
 		const float3 PointWorld2 = mul(float4(PointLocal2, 1), InstanceDynamicData.LocalToTranslatedWorld).xyz;
 
-		const float4 PointSubpixelClip0 = mul(float4(PointWorld0, 1), NaniteView.TranslatedWorldToSubpixelClip);
-		const float4 PointSubpixelClip1 = mul(float4(PointWorld1, 1), NaniteView.TranslatedWorldToSubpixelClip);
-		const float4 PointSubpixelClip2 = mul(float4(PointWorld2, 1), NaniteView.TranslatedWorldToSubpixelClip);
+		const float4 PointClip0 = mul(float4(PointWorld0, 1), NaniteView.TranslatedWorldToClip);
+		const float4 PointClip1 = mul(float4(PointWorld1, 1), NaniteView.TranslatedWorldToClip);
+		const float4 PointClip2 = mul(float4(PointWorld2, 1), NaniteView.TranslatedWorldToClip);
 
-		const float2 Subpixel = (PixelPos + 0.5) * NANITE_SUBPIXEL_SAMPLES;
+		const float2 PixelClip = (PixelPos + 0.5 - View.ViewRectMin.xy) * View.ViewSizeAndInvSize.zw * float2(2, -2) + float2(-1, 1);
 
 		// Calculate perspective correct barycentric coordinates with screen derivatives
-		const FBarycentrics Barycentrics = CalculateTriangleBarycentrics(Subpixel, PointSubpixelClip0, PointSubpixelClip1, PointSubpixelClip2);
+		const FBarycentrics Barycentrics = CalculateTriangleBarycentrics(PixelClip, PointClip0, PointClip1, PointClip2, View.ViewSizeAndInvSize.zw);
 
 		FNaniteRawAttributeData RawAttributeData[3];
 		GetRawAttributeData3(RawAttributeData, Cluster, TriIndices, NANITE_MAX_UVS);
@@ -199,7 +215,6 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 
 		const bool bWPOEnabled = (VisibleCluster.Flags & NANITE_CULLING_FLAG_ENABLE_WPO) != 0;
 		const int HierarchyOffset = InstanceData.NaniteHierarchyOffset;
-		const uint VisualizeMode = GetVisualizeMode();
 
 		// Note: The mode is no longer a bitmask at this point, just a single visualization mode.
 
@@ -238,20 +253,13 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		else if (VisualizeMode == NANITE_VISUALIZE_RASTER_BINS)
 		{
 			const bool bSecondaryRasterBin = !bWPOEnabled;
-			const uint RasterBin = GetMaterialRasterBin(Cluster, InstanceData.PrimitiveId, TriIndex, RegularMaterialRasterBinCount, bSecondaryRasterBin, MaterialSlotTable);
+			const uint RasterBin = GetMaterialRasterBin(Cluster, InstanceData.PrimitiveId, TriIndex, RegularMaterialRasterBinCount, RenderFlags, FixedFunctionBin, bSecondaryRasterBin, MaterialSlotTable);
 			Result = IntToColor(RasterBin);
 		}
 		else if (VisualizeMode == NANITE_VISUALIZE_SHADING_BINS)
 		{
 			const uint ShadingBin = GetMaterialShadingBin(Cluster, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
 			Result = IntToColor(ShadingBin);
-		}
-		else if (VisualizeMode == NANITE_VISUALIZE_OVERDRAW)
-		{
-			const float OverdrawScale = GetOverdrawScale();
-			const float OverdrawCount = DebugValueAdd; // Num of evaluations per pixel
-			const float OverdrawColor = 1 - exp2( -OverdrawCount * OverdrawScale );
-			Result = ColorMapInferno(OverdrawColor);
 		}
 		else if (VisualizeMode == NANITE_VISUALIZE_HIERARCHY_OFFSET)
 		{
@@ -271,19 +279,29 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		}
 		else if (VisualizeMode == NANITE_VISUALIZE_MATERIAL_DEPTH)
 		{
-			//const uint LegacyShadingId = GetMaterialLegacyShadingId(Cluster, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
-			const uint LegacyShadingId = ResolvedMaterial.LegacyShadingId;
-			const uint MaterialDepthId = GetMaterialDepthId(LegacyShadingId, MaterialDepthTable);
+			const uint MaterialDepthId = GetMaterialDepthId(UnpackedMask.ShadingBin, MaterialDepthTable);
 			Result = IntToColor(MaterialDepthId);
+
+		#if 0
+			// For testing
+			const uint PackedFlags = ShadingBinMeta[UnpackedMask.ShadingBin].w;
+			FNaniteMaterialFlags MaterialFlags = UnpackNaniteMaterialFlags(PackedFlags);
+			if (MaterialFlags.bPixelDiscard)
+			{
+				Result = float3(0.0f, 0.8f, 0.0f);
+			}
+			else
+			{
+				Result = float3(0.0f, 0.0f, 0.8f);
+			}
+		#endif
 		}
-		/*else if (VisualizeMode == NANITE_VISUALIZE_MATERIAL_COMPLEXITY)
+		else if (VisualizeMode == NANITE_VISUALIZE_SHADING_WRITE_MASK)
 		{
-			const uint TileMaterialCount = MaterialComplexity[TilePos];
-			const float ComplexityScale = GetComplexityScale();
-			const float ComplexityCount = TileMaterialCount; // Num of unique materials per tile
-			const float ComplexityColor = 1.0f - exp2(-ComplexityCount * ComplexityScale);
-			Result = ColorMapTurbo(ComplexityColor);
-		}*/
+			const uint PackedFlags = ShadingBinMeta[UnpackedMask.ShadingBin].MaterialFlags;
+			const uint WriteMask = BitFieldExtractU32(PackedFlags, 8u, 24u);
+			Result = IntToColor(WriteMask);
+		}
 		else if (VisualizeMode == NANITE_VISUALIZE_SCENE_Z_MIN || VisualizeMode == NANITE_VISUALIZE_SCENE_Z_MAX || VisualizeMode == NANITE_VISUALIZE_SCENE_Z_DELTA)// || VisualizeMode == NANITE_VISUALIZE_SCENE_Z_MASK)
 		{
 			const uint4 ZLayout = SceneZLayout[PixelPos];
@@ -364,8 +382,13 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		}
 		else if (VisualizeMode == NANITE_VISUALIZE_EVALUATE_WORLD_POSITION_OFFSET)
 		{
+			const bool bAlwaysEvaluateWPO = (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_ALWAYS_EVALUATE_WPO_MATERIALS) != 0u;
 			const bool bEvaluateWPO = !bIsImposter && bWPOEnabled;
-			if (bEvaluateWPO)
+			if (bAlwaysEvaluateWPO)
+			{
+				Result = float3(1, 1, 0);
+			}
+			else if (bEvaluateWPO)
 			{
 				Result = float3(0, 1, 0);
 			}
@@ -470,7 +493,7 @@ void VisualizeCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		}
 	}
 
-	if (bApplySobel && ShouldApplySobelFilter() && (!GetCompositeWithSceneDepth() || ResolvedMaterial.bIsNanitePixel))
+	if (bApplySobel && ShouldApplySobelFilter() && (!GetCompositeWithSceneDepth() || UnpackedMask.bIsNanitePixel))
 	{
 		Result = ApplySobelFilter(PixelPos, DepthInt, Result, OutlineColor, bDarkOutline);
 	}
@@ -496,9 +519,9 @@ void PickingCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 
 	FNaniteView NaniteView = GetNaniteView(0);
 
-	FResolvedMaterial ResolvedMaterial = UnpackMaterialResolve(MaterialResolve[PickingPos]);
+	FShadingMask UnpackedMask = UnpackShadingMask(ShadingMask[PickingPos]);
 
-	if (VisibleClusterIndex != 0xFFFFFFFFu && ResolvedMaterial.bIsNanitePixel)
+	if (VisibleClusterIndex != 0xFFFFFFFFu && UnpackedMask.bIsNanitePixel)
 	{
 		UlongType DbgPixel = DbgBuffer64[PickingPos];
 		uint DebugDepthInt;
@@ -512,7 +535,7 @@ void PickingCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		FPrimitiveSceneData PrimitiveData			= GetPrimitiveData(InstanceData.PrimitiveId);
 		FCluster Cluster							= GetCluster(VisibleCluster.PageIndex, VisibleCluster.ClusterIndex);
 
-		const bool bWPOEnabled = (VisibleCluster.Flags & NANITE_CULLING_FLAG_ENABLE_WPO) != 0;
+		const bool bWPOEnabled = (VisibleCluster.Flags & NANITE_CULLING_FLAG_ENABLE_WPO) != 0;		
 		const bool bSecondaryRasterBin = !bWPOEnabled;
 
 		FeedbackResults.PrimitiveId			= InstanceData.PrimitiveId;
@@ -524,44 +547,91 @@ void PickingCS(uint3 DTID : SV_DispatchThreadID, uint3 GID : SV_GroupID)
 		FeedbackResults.TriangleIndex		= TriIndex;
 		FeedbackResults.DepthInt			= DepthInt;
 		FeedbackResults.RasterMode			= DebugValueMax;
-		FeedbackResults.RasterBin			= GetMaterialRasterBin(Cluster, InstanceData.PrimitiveId, TriIndex, RegularMaterialRasterBinCount, bSecondaryRasterBin, MaterialSlotTable);
+		FeedbackResults.RasterBin			= GetMaterialRasterBin(Cluster, InstanceData.PrimitiveId, TriIndex, RegularMaterialRasterBinCount, RenderFlags, FixedFunctionBin, bSecondaryRasterBin, MaterialSlotTable);
 		FeedbackResults.ShadingBin			= GetMaterialShadingBin(Cluster, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
-		FeedbackResults.LegacyShadingId		= ResolvedMaterial.LegacyShadingId;
+		FeedbackResults.LegacyShadingId		= GetMaterialLegacyShadingId(Cluster, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
+		FeedbackResults.MaterialDepthId		= GetMaterialDepthId(FeedbackResults.LegacyShadingId, MaterialDepthTable);
 		FeedbackResults.MaterialIndex		= GetRelativeMaterialIndex(Cluster, TriIndex);
-		FeedbackResults.MaterialDepthId		= GetMaterialDepthId(ResolvedMaterial.LegacyShadingId, MaterialDepthTable);
 		FeedbackResults.MaterialCount		= GetMaterialCount(Cluster);
 		FeedbackResults.MaterialMode		= IsMaterialFastPath(Cluster) ? 0u : 1u;
 		FeedbackResults.HierarchyOffset		= InstanceData.NaniteHierarchyOffset;
 		FeedbackResults.RuntimeResourceID	= InstanceData.NaniteRuntimeResourceID;
 
-		const float4 ClusterBoundsColor  = ColorLightGreen;
-		const float4 InstanceBoundsColor = ColorOrange;
+		const float4 ClusterBoundsColor		= ColorLightGreen;
+		const float4 InstanceBoundsColor	= ColorOrange;
+		const float4 ClusterLODBoundsColor	= ColorYellow;
 
-		const float4x4 LocalToWorld = LWCHackToFloat(InstanceData.LocalToWorld);
+		FShaderPrintContext ShaderPrint = InitShaderPrintContext();
+		const float4x4 LocalToTranslatedWorld = LWCMultiplyTranslation(InstanceData.LocalToWorld, NaniteView.PreViewTranslation);
 
-		// if WPO is enabled, the cluster bounds will have been dilated to account for max WPO distance
-		const float3 WPOExtent = bWPOEnabled ? abs(PrimitiveData.MaxWPODisplacement * InstanceData.InvNonUniformScale) : (float3)0;
-		const float3 ClusterBoxBoundsCenter = Cluster.BoxBoundsCenter;
-		const float3 ClusterBoxBoundsExtent = Cluster.BoxBoundsExtent + WPOExtent;
+		const float3 WPOExtent = GetLocalMaxWPOExtent(PrimitiveData, InstanceData, bWPOEnabled);
+	#if ACCURATE_DISPLACEMENT_BOUNDS
+		const float AbsMaxMaterialDisplacement = GetAbsMaxMaterialDisplacement(RasterBinMeta, FeedbackResults.RasterBin);
+	#else
+		const float AbsMaxMaterialDisplacement = GetAbsMaxMaterialDisplacement(PrimitiveData);
+	#endif
+
+		// If WPO and/or material displacement is enabled, the cluster bounds will have been dilated to account for max displacement
+		float3 ClusterBoxBoundsCenter = Cluster.BoxBoundsCenter;
+		float3 ClusterBoxBoundsExtent = Cluster.BoxBoundsExtent;
+		float4 ClusterLODSphere = Cluster.LODBounds;
+
+		BRANCH
+		if ((PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_SPLINE_MESH) != 0 &&
+			(InstanceData.Flags & INSTANCE_SCENE_DATA_FLAG_HAS_PAYLOAD_EXTENSION) != 0)
+		{
+			// Only show the spline mesh debug stuff when picking clusters
+			ShaderPrint.bIsActive = GetPickingDomain() == NANITE_PICKING_DOMAIN_CLUSTER;
+
+			const FSplineMeshShaderParams SplineMeshParams = SplineMeshLoadParamsFromInstancePayload(InstanceData);
+			const FSplineMeshDeformedLocalBounds NewBounds = SplineMeshDeformLocalBoundsDebug(
+				SplineMeshParams,
+				ShaderPrint,
+				LocalToTranslatedWorld,
+				ClusterBoxBoundsCenter,
+				ClusterBoxBoundsExtent
+			);
+			ClusterBoxBoundsCenter = NewBounds.BoundsCenter;
+			ClusterBoxBoundsExtent = NewBounds.BoundsExtent;
+
+			ClusterLODSphere = SplineMeshDeformLODSphereBounds(SplineMeshParams, ClusterLODSphere);
+
+			ShaderPrint.bIsActive = true;
+		}
+		ClusterBoxBoundsExtent += WPOExtent + AbsMaxMaterialDisplacement.xxx;
 
 		const float3 InstanceBoxBoundsCenter = InstanceData.LocalBoundsCenter;
-		const float3 InstanceBoxBoundsExtent = InstanceData.LocalBoundsExtent;
+		const float3 InstanceBoxBoundsExtent = InstanceData.LocalBoundsExtent; // TODO: Verify WPO and material disp. is baked in already
 
-		AddOBBWS(
+		AddOBBTWS(
+			ShaderPrint,
 			ClusterBoxBoundsCenter - ClusterBoxBoundsExtent,
 			ClusterBoxBoundsCenter + ClusterBoxBoundsExtent,
 			ClusterBoundsColor,
-			LocalToWorld
+			LocalToTranslatedWorld
 		);
 
-		AddOBBWS(
+		AddOBBTWS(
+			ShaderPrint,
 			InstanceBoxBoundsCenter - InstanceBoxBoundsExtent,
 			InstanceBoxBoundsCenter + InstanceBoxBoundsExtent,
 			InstanceBoundsColor,
-			LocalToWorld
+			LocalToTranslatedWorld
 		);
 
-		AddReferentialWS(LocalToWorld, 50.f);
+		AddReferentialTWS(ShaderPrint, LocalToTranslatedWorld, 50.f);
+
+		// Only show the cluster LOD bounds with cluster picking to reduce visual noise
+		if (GetPickingDomain() == NANITE_PICKING_DOMAIN_CLUSTER)
+		{
+			AddSphereTWS(
+				ShaderPrint,
+				mul(float4(ClusterLODSphere.xyz, 1), LocalToTranslatedWorld).xyz,
+				ClusterLODSphere.w * InstanceData.NonUniformScale.w,
+				ClusterLODBoundsColor,
+				32
+			);
+		}
 	}
 	else
 	{

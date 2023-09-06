@@ -11,12 +11,20 @@ public class EngineAssetDefinitions : ModuleRules
 			{
 				"Core",
 			}
-		);			
-		
+		);
+
+		PublicIncludePathModuleNames.AddRange(
+			new string[]
+			{
+				"SkeletalMeshEditor",
+			}
+		);
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"ContentBrowser",
+				"ContentBrowserData",
 				"AssetDefinition",
 				"UnrealEd",
 				"ToolMenus",
@@ -36,7 +44,12 @@ public class EngineAssetDefinitions : ModuleRules
 				"Kismet",
 				"GameProjectGeneration",
 				"AnimationBlueprintEditor",
-				"ToolWidgets"
+				"ToolWidgets",
+                "SourceControl",
+				"Blutility",
+				"UMGEditor",
+				"ToolWidgets",
+				"BlueprintGraph"
 			}
 		);
 		

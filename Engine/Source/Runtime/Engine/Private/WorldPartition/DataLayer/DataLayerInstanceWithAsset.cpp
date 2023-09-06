@@ -1,17 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #include "Engine/Level.h"
 #include "Misc/StringFormatArg.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "UObject/UnrealType.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/ErrorHandling/WorldPartitionStreamingGenerationErrorHandler.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DataLayerInstanceWithAsset)
 
 UDataLayerInstanceWithAsset::UDataLayerInstanceWithAsset(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+#if WITH_EDITORONLY_DATA
+	, bIsIncludedInActorFilterDefault(true)
+#endif
 {
 
 }
@@ -22,9 +25,14 @@ FName UDataLayerInstanceWithAsset::MakeName(const UDataLayerAsset* DeprecatedDat
 	return FName(FString::Format(TEXT("DataLayer_{0}"), { FGuid::NewGuid().ToString() }));
 }
 
+TSubclassOf<UDataLayerInstanceWithAsset> UDataLayerInstanceWithAsset::GetDataLayerInstanceClass()
+{
+	return UDataLayerManager::GetDataLayerInstanceWithAssetClass();
+}
+
 void UDataLayerInstanceWithAsset::OnCreated(const UDataLayerAsset* Asset)
 {
-	check(!GetOuterAWorldDataLayers()->HasDeprecatedDataLayers() || IsRunningCommandlet());
+	check(!GetOuterWorldDataLayers()->HasDeprecatedDataLayers() || IsRunningCommandlet());
 
 	Modify(/*bAlwaysMarkDirty*/false);
 
@@ -36,7 +44,11 @@ void UDataLayerInstanceWithAsset::OnCreated(const UDataLayerAsset* Asset)
 
 bool UDataLayerInstanceWithAsset::IsReadOnly() const
 {
-	return GetOuterAWorldDataLayers()->IsSubWorldDataLayers();
+	if (Super::IsReadOnly())
+	{
+		return true;
+	}
+	return GetOuterWorldDataLayers()->IsReadOnly();
 }
 
 bool UDataLayerInstanceWithAsset::IsLocked() const
@@ -48,16 +60,26 @@ bool UDataLayerInstanceWithAsset::IsLocked() const
 	return IsReadOnly();
 }
 
-bool UDataLayerInstanceWithAsset::AddActor(AActor* Actor) const
-{	
-	check(GetWorld()->GetSubsystem<UDataLayerSubsystem>()->GetDataLayerInstance(DataLayerAsset) != nullptr);
-	check(GetTypedOuter<ULevel>() == Actor->GetLevel()); // Make sure the instance is part of the same world as the actor.
-	return Actor->AddDataLayer(DataLayerAsset);
+bool UDataLayerInstanceWithAsset::CanAddActor(AActor* InActor) const
+{
+	return DataLayerAsset != nullptr && DataLayerAsset->CanBeReferencedByActor(InActor) && Super::CanAddActor(InActor);
 }
 
-bool UDataLayerInstanceWithAsset::RemoveActor(AActor* Actor) const
+bool UDataLayerInstanceWithAsset::PerformAddActor(AActor* InActor) const
+{	
+	check(GetOuterWorldDataLayers() == InActor->GetLevel()->GetWorldDataLayers()); // Make sure the instance is part of the same WorldDataLayers as the actor's level WorldDataLayer.
+	check(UDataLayerManager::GetDataLayerManager(InActor)->GetDataLayerInstance(DataLayerAsset) != nullptr); // Make sure the DataLayerInstance exists for this level
+	return FAssignActorDataLayer::AddDataLayerAsset(InActor, DataLayerAsset);
+}
+
+bool UDataLayerInstanceWithAsset::CanRemoveActor(AActor* InActor) const
 {
-	return Actor->RemoveDataLayer(DataLayerAsset);
+	return DataLayerAsset != nullptr && Super::CanRemoveActor(InActor);
+}
+
+bool UDataLayerInstanceWithAsset::PerformRemoveActor(AActor* InActor) const
+{
+	return FAssignActorDataLayer::RemoveDataLayerAsset(InActor, DataLayerAsset);
 }
 
 bool UDataLayerInstanceWithAsset::Validate(IStreamingGenerationErrorHandler* ErrorHandler) const
@@ -70,24 +92,28 @@ bool UDataLayerInstanceWithAsset::Validate(IStreamingGenerationErrorHandler* Err
 		return false;
 	}
 
-	UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld());
-	DataLayerSubsystem->ForEachDataLayer([&bIsValid, this, ErrorHandler](UDataLayerInstance* DataLayerInstance)
+	// Get the DataLayerManager for this DataLayerInstance which will be the one of its outer world
+	UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(this);
+	if (ensure(DataLayerManager))
 	{
-		if (DataLayerInstance != this)
+		DataLayerManager->ForEachDataLayerInstance([&bIsValid, this, ErrorHandler](UDataLayerInstance* DataLayerInstance)
 		{
-			if (UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance))
+			if (DataLayerInstance != this)
 			{
-				if (DataLayerInstanceWithAsset->GetAsset() == GetAsset())
+				if (UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance))
 				{
-					ErrorHandler->OnDataLayerAssetConflict(this, DataLayerInstanceWithAsset);
-					bIsValid = false;
-					return false;
+					if (DataLayerInstanceWithAsset->GetAsset() == GetAsset())
+					{
+						ErrorHandler->OnDataLayerAssetConflict(this, DataLayerInstanceWithAsset);
+						bIsValid = false;
+						return false;
+					}
 				}
 			}
-		}
-
-		return true;
-	}, GetOuterAWorldDataLayers()->GetLevel()); // Resolve DataLayerInstances based on outer level
+	
+			return true;
+		});
+	}
 
 	bIsValid &= Super::Validate(ErrorHandler);
 
@@ -102,8 +128,33 @@ void UDataLayerInstanceWithAsset::PostEditChangeProperty(FPropertyChangedEvent& 
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UDataLayerInstanceWithAsset, DataLayerAsset))
 	{
-		GetOuterAWorldDataLayers()->ResolveActorDescContainers();
+		GetOuterWorldDataLayers()->ResolveActorDescContainers();
 	}
+}
+
+bool UDataLayerInstanceWithAsset::CanEditChange(const FProperty* InProperty) const
+{
+	if (!Super::CanEditChange(InProperty))
+	{
+		return false;
+	}
+
+	if (InProperty && (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDataLayerInstanceWithAsset, bIsIncludedInActorFilterDefault)))
+	{
+		return SupportsActorFilters();
+	}
+
+	return true;
+}
+
+bool UDataLayerInstanceWithAsset::SupportsActorFilters() const
+{
+	return DataLayerAsset && DataLayerAsset->SupportsActorFilters();
+}
+
+bool UDataLayerInstanceWithAsset::IsIncludedInActorFilterDefault() const
+{
+	return bIsIncludedInActorFilterDefault;
 }
 
 void UDataLayerInstanceWithAsset::PreEditUndo()
@@ -117,7 +168,7 @@ void UDataLayerInstanceWithAsset::PostEditUndo()
 	Super::PostEditUndo();
 	if (CachedDataLayerAsset != DataLayerAsset)
 	{
-		GetOuterAWorldDataLayers()->ResolveActorDescContainers();
+		GetOuterWorldDataLayers()->ResolveActorDescContainers();
 	}
 	CachedDataLayerAsset = nullptr;
 }

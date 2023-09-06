@@ -31,6 +31,9 @@ using FMetasoundDataTypeId = void const*;
 
 namespace Metasound
 {
+	// Unique ID type which corresponds to the underlying object referred to by a data reference.
+	using FDataReferenceID = const void*;
+
 	/** Helper class to enforce specialization of TDataReferenceTypeInfo */
 	template<typename DataType>
 	struct TSpecializationHelper 
@@ -127,6 +130,12 @@ namespace Metasound
 		/** provides a raw pointer to the storage where the data actually resides. */
 		virtual void* GetRaw() const = 0;
 	};
+
+	/** Return the ID of the data reference. */
+	FORCEINLINE FDataReferenceID GetDataReferenceID(const IDataReference& InDataReference)
+	{
+		return static_cast<FDataReferenceID>(InDataReference.GetRaw());
+	}
 	
 	/** Test if an IDataReference contains the same data type as the template
 	 * parameter.
@@ -645,6 +654,26 @@ namespace Metasound
 						checkNoEntry();
 					}
 				}
+			}
+			return nullptr;
+		}
+
+		/** Return a non-const pointer to the data.
+		 * 
+		 * If the vertex is bound with this will return a valid pointer. 
+		 * Otherwise it will return a nullptr.  This method will assert
+		 * if the reference is bound, but not writable or if the data type
+		 * does match.  
+		 */
+		template<typename DataType>
+		DataType* GetWritableValue() const
+		{
+			if (DataRefPtr.IsValid())
+			{
+				check(IsDataReferenceOfType<DataType>(*DataRefPtr));
+				checkf(EDataReferenceAccessType::Write == AccessType, TEXT("Writable values can only be obtained with data references which have writable access"));
+
+				return static_cast<TDataWriteReference<DataType>*>(DataRefPtr.Get())->Get();
 			}
 			return nullptr;
 		}

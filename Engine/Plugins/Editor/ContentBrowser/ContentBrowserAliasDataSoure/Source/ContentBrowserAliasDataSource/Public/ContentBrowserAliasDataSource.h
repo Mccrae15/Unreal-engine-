@@ -4,6 +4,7 @@
 
 
 #include "ContentBrowserAssetDataPayload.h"
+#include "ContentBrowserAssetDataSource.h"
 #include "ContentBrowserDataSource.h"
 
 #include "AssetRegistry/PathTree.h"
@@ -98,10 +99,21 @@ public:
 	virtual bool Legacy_TryConvertAssetDataToVirtualPath(const FAssetData& InAssetData, const bool InUseFolderPaths, FName& OutPath) override;
 	// ~ End UContentBrowserDataSource interface
 
-	/** Add a list of aliases for a given asset. bInIsFromMetaData should only be true if the list of aliases came from the AliasTagName metadata. */
-	void AddAliases(const FAssetData& Asset, const TArray<FName>& Aliases, bool bInIsFromMetaData = false);
+	virtual void RemoveUnusedCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner, TArrayView<const FName> InVirtualPathsInUse, const FContentBrowserDataFilter& DataFilter) override;
+
+	virtual void ClearCachedFilterData(const FContentBrowserDataFilterCacheIDOwner& IDOwner) override;
+
+	/** 
+	 * Add a list of aliases for a given asset.
+	 *
+	 * @param Asset 						The asset to add aliases for.
+	 * @param Aliases 						The aliases to add
+	 * @param bInIsFromMetaData 			Should only be `true` if the list of aliases came from the `AliasTagName` metadata.
+	 * @param bSkipPrimaryAssetValidation 	Use this if the asset being added is not a primary asset/is a re-director but should still be included in the Content Browser. (e.g. Verse classes)
+	 */
+	void AddAliases(const FAssetData& Asset, const TArray<FName>& Aliases, const bool bInIsFromMetaData = false, const bool bSkipPrimaryAssetValidation = false);
 	/** Add an alias for a given asset. bInIsFromMetaData should only be true if the alias came from the AliasTagName metadata. */
-	void AddAlias(const FAssetData& Asset, const FName Alias, bool bInIsFromMetaData = false);
+	void AddAlias(const FAssetData& Asset, const FName Alias, const bool bInIsFromMetaData = false, const bool bSkipPrimaryAssetValidation = false);
 	/** Remove the given alias from the data source */
 	void RemoveAlias(const FSoftObjectPath& ObjectPath, const FName Alias);
 	/** Remove all aliases for the given object */
@@ -119,6 +131,9 @@ public:
 	/** Calls AddAlias or RemoveAlias for every alias that doesn't match the stored data for the given asset. */
 	void ReconcileAliasesForAsset(const FAssetData& Asset, const TArray<FName>& NewAliases);
 
+	/** Logs all the content browser aliases */
+	void LogAliases() const;
+
 protected:
 	virtual void BuildRootPathVirtualTree() override;
 
@@ -131,7 +146,9 @@ private:
 
 	/** Helper function to remove a folder from the PathTree including all parent folders that are now empty as a result of the removal */
 	void RemoveFoldersRecursively(FStringView LeafFolder);
-	void MakeItemModifiedUpdate(UObject* Object);
+
+	void UpdateAliasesCachedAssetData(const FAssetData& InAssetData);
+	void MakeItemModifiedUpdate(const FSoftObjectPath& ObjectPath);
 
 	FContentBrowserItemData CreateAssetFolderItem(const FName InFolderPath);
 	FContentBrowserItemData CreateAssetFileItem(const FContentBrowserUniqueAlias& Alias);
@@ -145,12 +162,21 @@ private:
 		FAliasData(const FAssetData& InAssetData, const FName InPackagePath, const FName InName, const bool bInIsFromMetaData = false)
 			: AssetData(InAssetData), PackagePath(InPackagePath), AliasName(InName), bIsFromMetaData(bInIsFromMetaData)
 		{
-			FNameBuilder PathBuilder(PackagePath);
-			PathBuilder << TEXT('/');
-			PathBuilder << InAssetData.AssetName;
-			PackageName = FName(PathBuilder.ToView());
-
-			ObjectPath = FSoftObjectPath(PackageName, InAssetData.AssetName, {});
+			FNameBuilder AssetNameBuilder(InAssetData.AssetName);
+			{
+				// Add a hash of the real asset path to the asset name to ensure uniqueness of the FContentBrowserItemKey
+				// so that two different assets with the same name and the same alias both show up in the content browser
+				FNameBuilder AssetPathBuilder;
+				InAssetData.AppendObjectPath(AssetPathBuilder);
+				AssetNameBuilder.Appendf(TEXT("_%08X"), GetTypeHash(AssetPathBuilder.ToView()));
+			}
+			{
+				FNameBuilder PathBuilder(PackagePath);
+				PathBuilder << TEXT('/');
+				PathBuilder << AssetNameBuilder.ToView();
+				PackageName = FName(PathBuilder.ToView());
+			}
+			ObjectPath = FSoftObjectPath(PackageName, FName(AssetNameBuilder.ToView()), {});
 		}
 
 		/** The source asset for this alias */
@@ -178,6 +204,8 @@ private:
 	TMap<FName, TArray<FContentBrowserUniqueAlias>> AliasesInPackagePath;
 	/** A set used for removing duplicate aliases in the same query, stored here to avoid constant reallocation */
 	TSet<FSoftObjectPath> AlreadyAddedOriginalAssets;
+
+	UContentBrowserAssetDataSource::FAssetDataSourceFilterCache FilterCache;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

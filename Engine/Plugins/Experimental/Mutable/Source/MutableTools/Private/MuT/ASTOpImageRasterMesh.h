@@ -23,10 +23,26 @@ namespace mu
 		ASTChild mask;
 		ASTChild projector;
 
-		int32 blockIndex;
-		uint16 sizeX, sizeY;
+		/** If layouts are used, this can indicate a single layout block that we want to raster. */
+		int32 BlockId;
+		int8 LayoutIndex;
+
+		/** Size of the image to generate by rasterization of the mesh. */
+		uint16 SizeX, SizeY;
+
+		/** Expected size of the image that we want to project. */
+		uint16 SourceSizeX, SourceSizeY;
+
+		/** Sub-rect to raster, ignoring all the rest.
+		 * Only valid if any UncroppedSizeX is greater than 0. 
+		 */
+		uint16 CropMinX, CropMinY;
+		uint16 UncroppedSizeX, UncroppedSizeY;
+
 		uint8 bIsRGBFadingEnabled : 1;
 		uint8 bIsAlphaFadingEnabled : 1;
+		ESamplingMethod SamplingMethod;
+		EMinFilterMethod MinFilterMethod;
 
 	public:
 
@@ -39,10 +55,10 @@ namespace mu
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		void Link(FProgram& program, FLinkerOptions* Options) override;
 		FImageDesc GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
-		Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions& options) const;
+		Ptr<ASTOp> OptimiseSemantic(const FModelOptimizationOptions& options, int32 Pass) const;
 		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const;
 
 	};

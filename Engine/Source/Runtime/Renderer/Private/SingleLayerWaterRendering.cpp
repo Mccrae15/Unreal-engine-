@@ -23,6 +23,7 @@
 #include "Lumen/LumenSceneData.h"
 #include "Lumen/LumenTracingUtils.h"
 #include "RenderCore.h"
+#include "UnrealEngine.h"
 
 DECLARE_GPU_STAT_NAMED(RayTracingWaterReflections, TEXT("Ray Tracing Water Reflections"));
 
@@ -113,7 +114,7 @@ static TAutoConsoleVariable<int32> CVarRHICmdFlushRenderThreadTasksSingleLayerWa
 	TEXT("Wait for completion of parallel render thread tasks at the end of Single layer water. A more granular version of r.RHICmdFlushRenderThreadTasks. If either r.RHICmdFlushRenderThreadTasks or r.RHICmdFlushRenderThreadTasksSingleLayerWater is > 0 we will flush."));
 
 static TAutoConsoleVariable<int32> CVarWaterSingleLayerDepthPrepass(
-	TEXT("r.Water.SingleLayer.DepthPrepass"), 0,
+	TEXT("r.Water.SingleLayer.DepthPrepass"), 1,
 	TEXT("Enable a depth prepass for single layer water. Necessary for proper Virtual Shadow Maps support."),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
@@ -403,7 +404,6 @@ class FWaterRefractionCopyPS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FWaterRefractionCopyPS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorCopyDownsampleTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorCopyDownsampleSampler)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthCopyDownsampleTexture)
@@ -659,7 +659,7 @@ FSingleLayerWaterPrePassResult* FDeferredShadingSceneRenderer::RenderSingleLayer
 				ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
 				[this, &View, PassParameters](const FRDGPass* InPass, FRHICommandListImmediate& RHICmdList)
 				{
-					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_WaterSingleLayerPass), *this, View, FParallelCommandListBindings(PassParameters));
+					FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_WaterSingleLayerPass), View, FParallelCommandListBindings(PassParameters));
 					View.ParallelMeshDrawCommandPasses[EMeshPass::SingleLayerWaterDepthPrepass].DispatchDraw(&ParallelCommandListSet, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 				});
 		}
@@ -746,7 +746,6 @@ static FSceneWithoutWaterTextures AddCopySceneWithoutWaterPass(
 		RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
 
 		FWaterRefractionCopyPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FWaterRefractionCopyPS::FParameters>();
-		PassParameters->View = View.GetShaderParameters();
 		PassParameters->SceneColorCopyDownsampleTexture = SceneColorTexture;
 		PassParameters->SceneColorCopyDownsampleSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 		PassParameters->SceneDepthCopyDownsampleTexture = SceneDepthTexture;
@@ -1176,7 +1175,10 @@ void FDeferredShadingSceneRenderer::RenderSingleLayerWaterReflections(
 
 			if (bRunTiled)
 			{
+				const bool bUseTileCoord16bitsEncoding = true;
+
 				FWaterTileVS::FPermutationDomain VsPermutationVector;
+				VsPermutationVector.Set<FWaterTileVS::ETileEncoding>(bUseTileCoord16bitsEncoding ? 0 : 1);
 				TShaderMapRef<FWaterTileVS> VertexShader(View.ShaderMap, VsPermutationVector);
 				ValidateShaderParameters(VertexShader, PassParameters->VS);
 				ClearUnusedGraphResources(VertexShader, &PassParameters->VS);
@@ -1414,7 +1416,7 @@ void FDeferredShadingSceneRenderer::RenderSingleLayerWaterInner(
 				ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass,
 				[this, &View, PassParameters](const FRDGPass* InPass, FRHICommandListImmediate& RHICmdList)
 			{
-				FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_WaterSingleLayerPass), *this, View, FParallelCommandListBindings(PassParameters));
+				FRDGParallelCommandListSet ParallelCommandListSet(InPass, RHICmdList, GET_STATID(STAT_CLP_WaterSingleLayerPass), View, FParallelCommandListBindings(PassParameters));
 				View.ParallelMeshDrawCommandPasses[EMeshPass::SingleLayerWaterPass].DispatchDraw(&ParallelCommandListSet, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 			});
 		}
@@ -1654,7 +1656,7 @@ FMeshPassProcessor* CreateSingleLayerWaterPassProcessor(ERHIFeatureLevel::Type F
 	return new FSingleLayerWaterPassMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, DrawRenderState, InDrawListContext);
 }
 
-REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(SingleLayerWater, CreateSingleLayerWaterPassProcessor, EShadingPath::Deferred, EMeshPass::SingleLayerWaterPass, EMeshPassFlags::MainView);
+REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(SingleLayerWater, CreateSingleLayerWaterPassProcessor, EShadingPath::Deferred, EMeshPass::SingleLayerWaterPass, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);
 
 
 class FSingleLayerWaterDepthPrepassMeshProcessor : public FSceneRenderingAllocatorObject<FSingleLayerWaterDepthPrepassMeshProcessor>, public FMeshPassProcessor
@@ -1743,11 +1745,14 @@ bool FSingleLayerWaterDepthPrepassMeshProcessor::TryAddMeshBatch(
 		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
 		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
+		const bool bVFTypeSupportsNullPixelShader = MeshBatch.VertexFactory->SupportsNullPixelShader();
+		const bool bEvaluateWPO = Material.MaterialModifiesMeshPosition_RenderThread()
+			&& (!ShouldOptimizedWPOAffectNonNaniteShaderSelection() || PrimitiveSceneProxy->EvaluateWorldPositionOffset());
 
 		if (IsOpaqueBlendMode(Material)
 			&& MeshBatch.VertexFactory->SupportsPositionOnlyStream()
-			&& !Material.MaterialModifiesMeshPosition_RenderThread()
-			&& Material.WritesEveryPixel())
+			&& !bEvaluateWPO
+			&& Material.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader))
 		{
 			const FMaterialRenderProxy& DefaultProxy = *UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 			const FMaterial& DefaultMaterial = *DefaultProxy.GetMaterialNoFallback(FeatureLevel);
@@ -1755,11 +1760,11 @@ bool FSingleLayerWaterDepthPrepassMeshProcessor::TryAddMeshBatch(
 		}
 		else
 		{
-			const bool bMaterialMasked = !Material.WritesEveryPixel();
+			const bool bMaterialMasked = !Material.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader);
 			const FMaterialRenderProxy* EffectiveMaterialRenderProxy = &MaterialRenderProxy;
 			const FMaterial* EffectiveMaterial = &Material;
 
-			if (!bMaterialMasked && !Material.MaterialModifiesMeshPosition_RenderThread())
+			if (!bMaterialMasked && !bEvaluateWPO)
 			{
 				// Override with the default material for opaque materials that are not two sided
 				EffectiveMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
@@ -1832,11 +1837,12 @@ void FSingleLayerWaterDepthPrepassMeshProcessor::CollectPSOInitializers(const FS
 		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
 		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
 		const bool bSupportPositionOnlyStream = VertexFactoryData.VertexFactoryType->SupportsPositionOnly();
+		const bool bVFTypeSupportsNullPixelShader = VertexFactoryData.VertexFactoryType->SupportsNullPixelShader();
 
 		if (IsOpaqueBlendMode(Material)
 			&& bSupportPositionOnlyStream
 			&& !Material.MaterialModifiesMeshPosition_GameThread()
-			&& Material.WritesEveryPixel())
+			&& Material.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader))
 		{
 			const FMaterialRenderProxy& DefaultProxy = *UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 			const FMaterial& DefaultMaterial = *DefaultProxy.GetMaterialNoFallback(FeatureLevel);
@@ -1845,14 +1851,14 @@ void FSingleLayerWaterDepthPrepassMeshProcessor::CollectPSOInitializers(const FS
 		}
 		else
 		{
-			const bool bMaterialMasked = !Material.WritesEveryPixel();
+			const bool bMaterialMasked = !Material.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader);
 			const FMaterial* EffectiveMaterial = &Material;
 
 			if (!bMaterialMasked && !Material.MaterialModifiesMeshPosition_GameThread())
 			{
 				// Override with the default material for opaque materials that are not two sided
-				FMaterialRenderProxy* EffectiveMaterialRenderProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-				EffectiveMaterial = EffectiveMaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+				EMaterialQualityLevel::Type ActiveQualityLevel = GetCachedScalabilityCVars().MaterialQualityLevel;
+				EffectiveMaterial = UMaterial::GetDefaultMaterial(MD_Surface)->GetMaterialResource(FeatureLevel, ActiveQualityLevel);
 				check(EffectiveMaterial);
 			}
 
@@ -1929,4 +1935,4 @@ FMeshPassProcessor* CreateSingleLayerWaterDepthPrepassProcessor(ERHIFeatureLevel
 	return new FSingleLayerWaterDepthPrepassMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, DrawRenderState, InDrawListContext);
 }
 
-REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(SingleLayerWaterDepthPrepass, CreateSingleLayerWaterDepthPrepassProcessor, EShadingPath::Deferred, EMeshPass::SingleLayerWaterDepthPrepass, EMeshPassFlags::MainView);
+REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(SingleLayerWaterDepthPrepass, CreateSingleLayerWaterDepthPrepassProcessor, EShadingPath::Deferred, EMeshPass::SingleLayerWaterDepthPrepass, EMeshPassFlags::CachedMeshCommands | EMeshPassFlags::MainView);

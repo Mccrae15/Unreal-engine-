@@ -11,7 +11,7 @@
 #include "ShaderParameterMetadata.h"
 #include "Templates/AlignmentTemplates.h"
 
-class RENDERCORE_API FShaderParametersMetadataBuilder
+class FShaderParametersMetadataBuilder
 {
 public:
 	FShaderParametersMetadataBuilder() {}
@@ -35,7 +35,7 @@ public:
 
 		NextMemberOffset = Align(NextMemberOffset, TParamTypeInfo::Alignment);
 
-		new(Members) FShaderParametersMetadata::FMember(
+		Members.Emplace(
 			Name,
 			TEXT(""),
 			__LINE__,
@@ -62,7 +62,7 @@ public:
 
 		NextMemberOffset = Align(NextMemberOffset, SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
 
-		new(Members) FShaderParametersMetadata::FMember(
+		Members.Emplace(
 			Name,
 			TEXT(""),
 			__LINE__,
@@ -87,7 +87,7 @@ public:
 		AddReferencedStruct(Name, TShaderParameterStructTypeInfo<T>::GetStructMetadata(), Precision);
 	}
 
-	void AddReferencedStruct(
+	RENDERCORE_API void AddReferencedStruct(
 		const TCHAR* Name,
 		const FShaderParametersMetadata* StructMetadata,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
@@ -101,7 +101,7 @@ public:
 		AddIncludedStruct(TShaderParameterStructTypeInfo<T>::GetStructMetadata(), Precision);
 	}
 
-	void AddIncludedStruct(
+	RENDERCORE_API void AddIncludedStruct(
 		const FShaderParametersMetadata* StructMetadata,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
 	);
@@ -117,7 +117,7 @@ public:
 		NextMemberOffset = Align(NextMemberOffset, TParamTypeInfo::Alignment);
 		const uint32 ThisMemberOffset = NextMemberOffset;
 
-		new(Members) FShaderParametersMetadata::FMember(
+		Members.Emplace(
 			Name,
 			TEXT(""),
 			__LINE__,
@@ -134,31 +134,31 @@ public:
 		return ThisMemberOffset;
 	}
 
-	uint32 AddNestedStruct(
+	RENDERCORE_API uint32 AddNestedStruct(
 		const TCHAR* Name,
 		const FShaderParametersMetadata* StructMetadata,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
 		);
 
-	void AddBufferSRV(
+	RENDERCORE_API void AddBufferSRV(
 		const TCHAR* Name,
 		const TCHAR* ShaderType,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
 		);
 
-	void AddBufferUAV(
+	RENDERCORE_API void AddBufferUAV(
 		const TCHAR* Name,
 		const TCHAR* ShaderType,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
 		);
 
-	void AddRDGBufferSRV(
+	RENDERCORE_API void AddRDGBufferSRV(
 		const TCHAR* Name,
 		const TCHAR* ShaderType,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
 		);
 
-	void AddRDGBufferUAV(
+	RENDERCORE_API void AddRDGBufferUAV(
 		const TCHAR* Name,
 		const TCHAR* ShaderType,
 		EShaderPrecisionModifier::Type Precision = EShaderPrecisionModifier::Float
@@ -171,9 +171,23 @@ public:
 
 	uint32 GetNextMemberOffset() const { return NextMemberOffset; }
 
-	FShaderParametersMetadata* Build(
+	RENDERCORE_API FShaderParametersMetadata* Build(
 		FShaderParametersMetadata::EUseCase UseCase,
 		const TCHAR* ShaderParameterName
+		);
+
+	RENDERCORE_API FShaderParametersMetadata* Build(
+		FShaderParametersMetadata::EUseCase InUseCase,
+		EUniformBufferBindingFlags InBindingFlags,
+		const TCHAR* InLayoutName,
+		const TCHAR* InStructTypeName,
+		const TCHAR* InShaderVariableName,
+		const TCHAR* InStaticSlotName,
+		const ANSICHAR* InFileName,
+		const int32 InFileLine,
+		bool bForceCompleteInitialization = false,
+		FRHIUniformBufferLayoutInitializer* OutLayoutInitializer = nullptr,
+		uint32 InUsageFlags = 0
 		);
 
 private:

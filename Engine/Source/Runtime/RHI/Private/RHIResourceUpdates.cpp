@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RHIResourceUpdates.h"
-#include "RHI.h"
+#include "RHICommandList.h"
 
 FRHIResourceUpdateBatcher::FRHIResourceUpdateBatcher(TArrayView<FRHIResourceUpdateInfo> InUpdateInfos)
 	: UpdateInfos(InUpdateInfos)
@@ -42,30 +42,6 @@ void FRHIResourceUpdateBatcher::QueueUpdateRequest(FRHIRayTracingGeometry* DestG
 	if (SrcGeometry)
 	{
 		SrcGeometry->AddRef();
-	}
-}
-
-void FRHIResourceUpdateBatcher::QueueUpdateRequest(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format)
-{
-	FRHIResourceUpdateInfo& UpdateInfo = GetNextUpdateInfo();
-	UpdateInfo.Type = FRHIResourceUpdateInfo::UT_BufferFormatSRV;
-	UpdateInfo.BufferSRV = { SRV, Buffer, Stride, Format };
-	SRV->AddRef();
-	if (Buffer)
-	{
-		Buffer->AddRef();
-	}
-}
-
-void FRHIResourceUpdateBatcher::QueueUpdateRequest(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer)
-{
-	FRHIResourceUpdateInfo& UpdateInfo = GetNextUpdateInfo();
-	UpdateInfo.Type = FRHIResourceUpdateInfo::UT_BufferSRV;
-	UpdateInfo.BufferSRV = { SRV, Buffer };
-	SRV->AddRef();
-	if (Buffer)
-	{
-		Buffer->AddRef();
 	}
 }
 

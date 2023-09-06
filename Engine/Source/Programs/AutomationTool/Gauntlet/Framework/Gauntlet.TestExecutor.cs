@@ -44,7 +44,8 @@ namespace Gauntlet
 				NotStarted,
 				TimedOut,
 				Passed,
-				Failed
+				Failed,
+				Skipped
 			}
 
 			public ITestNode		TestNode;
@@ -71,11 +72,16 @@ namespace Gauntlet
 			/// </summary>
 			public TimeSpan			TestDuration { get { return (TimeTestEnded - TimeSetupEnded); } }
 
+			/// <summary>
+			/// Creates TestExecutionInfo instance from an ITestNode. Sets FirstReadyCheckTime, copies the node
+			/// and sets CancellationReason to empty string.
+			/// </summary>
+			/// <param name="InNode"></param>
 			public TestExecutionInfo(ITestNode InNode)
 			{
 				FirstReadyCheckTime = TimeSetupBegan = TimeSetupEnded = TimeTestEnded = DateTime.MinValue;
 				TestNode = InNode;
-				CancellationReason = "";
+				CancellationReason = string.Empty;
 			}
 
 			public override string ToString()
@@ -253,7 +259,6 @@ namespace Gauntlet
 							{
 								// track the time that this test should have been able to run due to no other tests
 								// consuming resources (at least locally...)
-								// TODO - how can tests express resource requirements in a generic way?
 								// TODO - what about the situation where no tests can run so all FirstCheck times are set, but 
 								// then a test starts and consumes all resources?
 								if (RunningTests.Count() == 0 && StartingTests.Count() == 0)
@@ -266,11 +271,12 @@ namespace Gauntlet
 									double TimeWaiting = (DateTime.Now - NodeInfo.FirstReadyCheckTime).TotalSeconds;
 									if (TimeWaiting >= Options.Wait)
 									{
-										Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Test {Name} has been waiting to run resource-free for {Time:00} seconds. Removing from wait list", Node, TimeWaiting);
-										Node.AddTestEvent(new UnrealTestEvent(EventSeverity.Error, "Insufficient devices found", new List<string> {string.Format("Test {0} was unable to find enough devices after trying for {1:00} seconds.", Node, TimeWaiting), "This is not a test-related failure."}));
+										Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Test {TestName} has been waiting to run resource-free for {Time:00} seconds. Removing from wait list", Node, TimeWaiting);
+										DevicePool.Instance.ReportDeviceReservationState();
+										Node.AddTestEvent(new UnrealTestEvent(EventSeverity.Warning, "Insufficient devices found", new List<string> {string.Format("Test {0} was unable to find enough devices after trying for {1:00} seconds.", Node, TimeWaiting), "This is not a test-related failure."}));
 										PendingTests[i] = null;
 										NodeInfo.TimeSetupBegan = NodeInfo.TimeSetupEnded = NodeInfo.TimeTestEnded = DateTime.Now;
-										NodeInfo.Result = TestExecutionInfo.ExecutionResult.TimedOut;
+										NodeInfo.Result = TestExecutionInfo.ExecutionResult.Skipped;
 										CompletedTests.Add(NodeInfo);
 									}
 								}
@@ -333,6 +339,8 @@ namespace Gauntlet
 					// Tick all running tests
 					foreach (TestExecutionInfo TestInfo in RunningTests)
 					{
+						// TickTest contains logic for determining run time, timeouts, cancellations, and many other
+						// parts of the test process. If overriding TickTest in your Test class, be sure to call base.TickTest.
 						TestResult Result = TickTest(TestInfo);
 
 						// invalid = no result yet
@@ -444,7 +452,7 @@ namespace Gauntlet
 						// status msg, kept uniform to avoid spam on notifiers (ie. don't include timestamps, etc) 
 						string Msg = string.Format("Test {0} {1}", T.TestNode, T.Result);
 
-						bool TestHadErrors = T.Result != TestExecutionInfo.ExecutionResult.Passed;
+						bool TestHadErrors = T.Result != TestExecutionInfo.ExecutionResult.Passed && T.Result != TestExecutionInfo.ExecutionResult.Skipped;
 						bool TestHadWarnings = T.TestNode.GetWarnings().Any();
 
 						if (TestHadErrors)

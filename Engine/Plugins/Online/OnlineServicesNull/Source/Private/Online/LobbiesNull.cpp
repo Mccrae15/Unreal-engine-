@@ -50,7 +50,7 @@ FLobbiesNull::FLobbiesNull(FOnlineServicesNull& InServices)
 
 void FLobbiesNull::Initialize()
 {
-
+	FLobbiesCommon::Initialize();
 }
 
 void FLobbiesNull::PreShutdown()
@@ -66,33 +66,48 @@ void FLobbiesNull::Tick(float DeltaSeconds)
 TOnlineAsyncOpHandle<FCreateLobby> FLobbiesNull::CreateLobby(FCreateLobby::Params&& Params)
 {
 	TOnlineAsyncOpRef<FCreateLobby> Op = GetOp<FCreateLobby>(MoveTemp(Params));
+
+	if (Params.bPresenceEnabled)
+	{
+		TOnlineResult<FGetPresenceLobby> GetPresenceLobbyResult = GetPresenceLobby({ Params.LocalAccountId });
+		if (GetPresenceLobbyResult.IsOk())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[%s] Failed: bPresenceEnabled was set to true, but there is already a presence Lobby"), UTF8_TO_TCHAR(__FUNCTION__));
+			Op->SetError(Errors::InvalidState());
+			return Op->GetHandle();
+		}
+	}
+
 	TSharedRef<FLobbyNull> Lobby = CreateNamedLobby(Op->GetParams());
 	
 	int Result = UpdateLANStatus();
 
-	if (Result != ONLINE_IO_PENDING)
-	{
-		// Set the game state as pending (not started)
-//		Session->SessionState = EOnlineSessionState::Pending; todo: LobbyState
+	// Set the game state as pending (not started)
+	// Session->SessionState = EOnlineSessionState::Pending; todo: LobbyState
 
-		if (Result != ONLINE_SUCCESS)
-		{
-			// Clean up the session info so we don't get into a confused state
-			RemoveLobbyFromRef(Lobby);
-			Op->SetError(Errors::Unknown()); //todo: error
-		}
-		else
-		{
-			//RegisterLocalPlayers(Lobby); todo: RegisterPlayers
-			Op->SetResult(FCreateLobby::Result{Lobby->Data});
-		}
+	if (Result != ONLINE_SUCCESS)
+	{
+		// Clean up the session info so we don't get into a confused state
+		RemoveLobbyFromRef(Lobby);
+		Op->SetError(Errors::Unknown()); //todo: error
 	}
+	else
+	{
+		if (Params.bPresenceEnabled)
+		{
+			PresenceLobbiesUserMap.FindOrAdd(Params.LocalAccountId, Lobby->Data->LobbyId);
+		}
+
+		//RegisterLocalPlayers(Lobby); todo: RegisterPlayers
+		Op->SetResult(FCreateLobby::Result{Lobby->Data});
+	}
+
 	return Op->GetHandle();
 }
 
 TOnlineAsyncOpHandle<FFindLobbies> FLobbiesNull::FindLobbies(FFindLobbies::Params&& Params)
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::FindLobbies"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::FindLobbies"));
 	if (!CurrentLobbySearch.IsValid())
 	{
 		CurrentLobbySearch = MakeShared<FFindLobbies::Result>();
@@ -107,6 +122,18 @@ TOnlineAsyncOpHandle<FFindLobbies> FLobbiesNull::FindLobbies(FFindLobbies::Param
 TOnlineAsyncOpHandle<FJoinLobby> FLobbiesNull::JoinLobby(FJoinLobby::Params&& Params)
 {
 	TOnlineAsyncOpRef<FJoinLobby> Op = GetOp<FJoinLobby>(MoveTemp(Params));
+
+	if (Params.bPresenceEnabled)
+	{
+		TOnlineResult<FGetPresenceLobby> GetPresenceLobbyResult = GetPresenceLobby({ Params.LocalAccountId });
+		if (GetPresenceLobbyResult.IsOk())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[%s] Failed: bPresenceEnabled was set to true, but there is already a presence Lobby"), UTF8_TO_TCHAR(__FUNCTION__));
+			Op->SetError(Errors::InvalidState());
+			return Op->GetHandle();
+		}
+	}
+
 	const FName& LobbyName = Op->GetParams().LocalName;
 	TSharedPtr<FLobbyNull> Lobby = GetLobby(Op->GetParams().LobbyId);
 	TSharedPtr<FLobbyNull> ExistingLobby = GetNamedLobby(LobbyName);
@@ -114,16 +141,21 @@ TOnlineAsyncOpHandle<FJoinLobby> FLobbiesNull::JoinLobby(FJoinLobby::Params&& Pa
 	if (!ExistingLobby.IsValid() && Lobby.IsValid())
 	{
 		AddNamedLobby(Lobby.ToSharedRef(), LobbyName);
+
+		if (Params.bPresenceEnabled)
+		{
+			PresenceLobbiesUserMap.FindOrAdd(Params.LocalAccountId, Lobby->Data->LobbyId);
+		}
 	}
 	else
 	{
 		if (!Lobby.IsValid())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("Failed to find a lobby with ID %d"), Op->GetParams().LobbyId.GetHandle())
+			UE_LOG(LogOnlineServices, Warning, TEXT("Failed to find a lobby with ID %d"), Op->GetParams().LobbyId.GetHandle())
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("Lobby with name %s already exists"), *LobbyName.ToString());
+			UE_LOG(LogOnlineServices, Warning, TEXT("Lobby with name %s already exists"), *LobbyName.ToString());
 		}
 		Op->SetError(Errors::RequestFailure());  
 		return Op->GetHandle();
@@ -138,6 +170,17 @@ TOnlineAsyncOpHandle<FLeaveLobby> FLobbiesNull::LeaveLobby(FLeaveLobby::Params&&
 {
 	TOnlineAsyncOpRef<FLeaveLobby> Op = GetOp<FLeaveLobby>(MoveTemp(Params));
 	RemoveLobbyFromId(Op->GetParams().LobbyId);
+	
+	// We'll clear the presence mapping if this was the presence session
+	TOnlineResult<FIsPresenceLobby> IsPresenceLobbyResult = IsPresenceLobby({ Params.LocalAccountId, Params.LobbyId });
+	if (IsPresenceLobbyResult.IsOk())
+	{
+		if (IsPresenceLobbyResult.GetOkValue().bIsPresenceLobby)
+		{
+			PresenceLobbiesUserMap.Remove(Params.LocalAccountId);
+		}
+	}
+
 	Op->SetResult(FLeaveLobby::Result{});
 	return Op->GetHandle();
 }
@@ -157,19 +200,18 @@ TSharedRef<FLobbyNull> FLobbiesNull::CreateNamedLobby(const FCreateLobby::Params
 	// construct the member data.
 	TSharedRef<FLobbyMember> NewMember = MakeShared<FLobbyMember>();
 	NewMember->AccountId = Params.LocalAccountId;
-	NewMember->PlatformAccountId = Params.LocalAccountId;
-	NewMember->PlatformDisplayName = TEXT("TEMP");
 	NewMember->Attributes = Params.UserAttributes;
 
 	Lobby->Data->Members.Add(Params.LocalAccountId, NewMember);
 
 	AllLobbies.Add(Lobby->Data->LobbyId, Lobby);
+
 	return Lobby;
 }
 
 uint32 FLobbiesNull::FindLANSession()
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::FindLANSession"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::FindLANSession"));
 	uint32 Return = ONLINE_IO_PENDING;
 
 	// Recreate the unique identifier for this client
@@ -182,7 +224,7 @@ uint32 FLobbiesNull::FindLANSession()
 	LANSessionManager.CreateClientQueryPacket(Packet, LANSessionManager.LanNonce);
 	if (LANSessionManager.Search(Packet, ResponseDelegate, TimeoutDelegate) == false)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::FindLANSession: Failed, returning"));
+		UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::FindLANSession: Failed, returning"));
 		Return = ONLINE_FAIL;
 
 		FinalizeLANSearch();
@@ -194,7 +236,7 @@ uint32 FLobbiesNull::FindLANSession()
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::FindLANSession: searching...."));
+		UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::FindLANSession: searching...."));
 	}
 
 
@@ -209,7 +251,7 @@ bool FLobbiesNull::NeedsToAdvertise()
 
 uint32 FLobbiesNull::UpdateLANStatus()
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::UpdateLANStatus"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::UpdateLANStatus"));
 	uint32 Result = ONLINE_SUCCESS;
 
 	if ( NeedsToAdvertise() )
@@ -217,11 +259,11 @@ uint32 FLobbiesNull::UpdateLANStatus()
 		// set up LAN session
 		if (LANSessionManager.GetBeaconState() == ELanBeaconState::NotUsingLanBeacon)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::UpdateLANStatus- Hosting.."));
+			UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::UpdateLANStatus- Hosting.."));
 			FOnValidQueryPacketDelegate QueryPacketDelegate = FOnValidQueryPacketDelegate::CreateRaw(this, &FLobbiesNull::OnValidQueryPacketReceived);
 			if (!LANSessionManager.Host(QueryPacketDelegate))
 			{
-				UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::Failed to host!"));
+				UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::Failed to host!"));
 				Result = ONLINE_FAIL;
 
 				LANSessionManager.StopLANSession();
@@ -245,7 +287,7 @@ void FLobbiesNull::AppendLobbyToPacket(FNboSerializeToBuffer& Packet, const TSha
 	using namespace NboSerializerNullSvc;
 
 	/** Owner of the session */
-	UE_LOG(LogTemp, Warning, TEXT("AppendLobbyToPacket: Appending IP %s"), *Lobby->HostAddr->ToString(true));
+	UE_LOG(LogOnlineServices, Warning, TEXT("AppendLobbyToPacket: Appending IP %s"), *Lobby->HostAddr->ToString(true));
 
 	SerializeToBuffer(Packet, Lobby->Data->OwnerAccountId);
 	SerializeToBuffer(Packet, Lobby->Data->Attributes);
@@ -260,7 +302,7 @@ void FLobbiesNull::AppendLobbyToPacket(FNboSerializeToBuffer& Packet, const TSha
 
 void FLobbiesNull::OnValidQueryPacketReceived(uint8* PacketData, int32 PacketLength, uint64 ClientNonce)
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::OnValidQueryPacketReceived"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::OnValidQueryPacketReceived"));
 	// Iterate through all registered sessions and respond for each one that can be joinable
 	for (TPair<FName, TSharedRef<FLobbyNull>>& Pair : NamedLobbies)
 	{
@@ -282,7 +324,7 @@ void FLobbiesNull::OnValidQueryPacketReceived(uint8* PacketData, int32 PacketLen
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("LAN broadcast packet overflow, cannot broadcast on LAN"));
+			UE_LOG(LogOnlineServices, Warning, TEXT("LAN broadcast packet overflow, cannot broadcast on LAN"));
 		}
 	}
 }
@@ -291,7 +333,7 @@ void FLobbiesNull::ReadLobbyFromPacket(FNboSerializeFromBuffer& Packet, const TS
 {
 	using namespace NboSerializerNullSvc;
 
-	UE_LOG(LogTemp, Verbose, TEXT("Reading session information from server"));
+	UE_LOG(LogOnlineServices, Verbose, TEXT("Reading session information from server"));
 
 	/** Owner of the session */
 	FAccountId OwningAccountId;
@@ -311,13 +353,11 @@ void FLobbiesNull::ReadLobbyFromPacket(FNboSerializeFromBuffer& Packet, const TS
 	Session->HostAddr->SetPort(Session->HostAddrPort);
 	Session->Data->Attributes.Add(FName(TEXT("ConnectAddress")), Session->HostAddr->ToString(true));
 	Session->Data->LobbyId = FOnlineLobbyIdRegistryNull::Get().GetNext(); //TODO: this should be coming from the packet, not a random GUID
-	UE_LOG(LogTemp, Warning, TEXT("ReadLobby: Got IP %s"), *Session->HostAddr->ToString(true));
+	UE_LOG(LogOnlineServices, Warning, TEXT("ReadLobby: Got IP %s"), *Session->HostAddr->ToString(true));
 
 	// todo: make all the members (not just the host
 	TSharedRef<FLobbyMember> NewMember = MakeShared<FLobbyMember>();
 	NewMember->AccountId = OwningAccountId;
-	NewMember->PlatformAccountId = OwningAccountId;
-	NewMember->PlatformDisplayName = TEXT("TEMP");
 	Session->Data->Members.Add(OwningAccountId, NewMember);
 	AllLobbies.Add(Session->Data->LobbyId, Session);
 
@@ -326,7 +366,7 @@ void FLobbiesNull::ReadLobbyFromPacket(FNboSerializeFromBuffer& Packet, const TS
 
 void FLobbiesNull::OnValidResponsePacketReceived(uint8* PacketData, int32 PacketLength)
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::OnValidResponsePacketReceived"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::OnValidResponsePacketReceived"));
 	if (CurrentLobbySearch.IsValid())
 	{
 		TSharedRef<FLobbyNull> Lobby = MakeShared<FLobbyNull>();
@@ -346,13 +386,13 @@ void FLobbiesNull::OnValidResponsePacketReceived(uint8* PacketData, int32 Packet
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Failed to create new online game settings object"));
+		UE_LOG(LogOnlineServices, Warning, TEXT("Failed to create new online game settings object"));
 	}
 }
 
 uint32 FLobbiesNull::FinalizeLANSearch()
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::FinalizeLANSearch"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::FinalizeLANSearch"));
 	if (LANSessionManager.GetBeaconState() == ELanBeaconState::Searching)
 	{
 		LANSessionManager.StopLANSession();
@@ -363,14 +403,14 @@ uint32 FLobbiesNull::FinalizeLANSearch()
 
 void FLobbiesNull::OnLANSearchTimeout()
 {
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::OnLANSearchTimeout"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::OnLANSearchTimeout"));
 	FinalizeLANSearch();
 
 	if (CurrentLobbySearch.IsValid())
 	{
 		if (CurrentLobbySearch->Lobbies.Num() > 0)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::OnLANSearchTimeout: Had results!"));
+			UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::OnLANSearchTimeout: Had results!"));
 			// Allow game code to sort the servers (todo)
 			//CurrentSessionSearch->SortSearchResults();
 			FFindLobbies::Result Result = *CurrentLobbySearch; // copy it- not sure if moving something owned by a shared ptr is a good idea
@@ -382,7 +422,7 @@ void FLobbiesNull::OnLANSearchTimeout()
 		}
 	}
 	
-	UE_LOG(LogTemp, Warning, TEXT("FLobbiesNull::OnLANSearchTimeout: no results"));
+	UE_LOG(LogOnlineServices, Warning, TEXT("FLobbiesNull::OnLANSearchTimeout: no results"));
 	// Trigger the delegate as complete
 	CurrentLobbySearchHandle->SetError(Errors::Unknown());
 	CurrentLobbySearch.Reset();

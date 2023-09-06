@@ -2,8 +2,13 @@
 
 #pragma once
 
+#include "HAL/IConsoleManager.h"
 #include "Engine/StreamableManager.h"
 #include "AssetRegistry/AssetData.h"
+#include "MuCO/CustomizableObjectInstance.h"
+#include "MuCO/CustomizableObjectInstanceDescriptor.h"
+#include "MuR/Parameters.h"
+#include "MuR/Types.h"
 
 #if WITH_EDITOR
 #include "Framework/Notifications/NotificationManager.h"
@@ -11,7 +16,9 @@
 
 #include "CustomizableObjectSystem.generated.h"
 
+class IConsoleVariable;
 class FCustomizableObjectCompilerBase;
+class UCustomizableInstanceLODManagementBase;
 class ITargetPlatform;
 class SNotificationItem;
 class UCustomizableObject;
@@ -21,16 +28,6 @@ class UTexture2D;
 struct FFrame;
 struct FGuid;
 
-// This sets the amount of memory in bytes used to keep streaming data after using it, to reduce the streaming load.
-// High values use more memory, but save object construction time.
-// Setting it to 0 was the original behaviour, and keeps all the data loaded for a mutable operation until the
-// next operation.
-// This can be overwritten with the console variable b.MutableStreamingMemory
-#if !PLATFORM_DESKTOP
-	#define MUTABLE_STREAMING_CACHE				(3 * 1024 * 1024)
-#else
-	#define MUTABLE_STREAMING_CACHE				(12 * 1024 * 1024)
-#endif
 
 // Split StreamedBulkData into chunks smaller than MUTABLE_STREAMED_DATA_MAXCHUNKSIZE
 #define MUTABLE_STREAMED_DATA_MAXCHUNKSIZE		(512 * 1024 * 1024)
@@ -57,18 +54,16 @@ DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num Allocated Mutable Textures"), ST
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Texture Resource Memory"), STAT_MutableTextureResourceMemory, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Texture Generated Memory"), STAT_MutableTextureGeneratedMemory, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Texture Locked Memory"), STAT_MutableTextureCacheMemory, STATGROUP_Mutable, );
-DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Texture Parameter Decoration Memory"), STAT_MutableTextureParameterDecorationMemory, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Pending Instance Updates"), STAT_MutablePendingInstanceUpdates, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Abandoned Instance Updates"), STAT_MutableAbandonedInstanceUpdates, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Last Instance Build Time"), STAT_MutableInstanceBuildTime, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Avrg Instance Build Time"), STAT_MutableInstanceBuildTimeAvrg, STATGROUP_Mutable, );
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Streaming Ops"), STAT_MutableStreamingOps, STATGROUP_Mutable, );
-DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Streaming Cache"), STAT_MutableStreamingCache, STATGROUP_Mutable, );
 
-// These stats are provided by the mutable runtime
-DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Profile-LiveInstanceCount"), STAT_MutableProfile_LiveInstanceCount, STATGROUP_Mutable, );
-DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Profile-StreamingCacheBytes"), STAT_MutableProfile_StreamingCacheBytes, STATGROUP_Mutable, );
-DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Profile-InstanceUpdateCount"), STAT_MutableProfile_InstanceUpdateCount, STATGROUP_Mutable, );
+
+extern TAutoConsoleVariable<bool> CVarClearWorkingMemoryOnUpdateEnd;
+
+extern TAutoConsoleVariable<bool> CVarReuseImagesBetweenInstances;
 
 
 #if WITH_EDITOR
@@ -140,11 +135,11 @@ struct FCustomizableObjectExternalTexture
 	FCustomizableObjectExternalTexture() = default;
 
 	FString Name;
-	int64_t Value = 0;
+	FName Value;
 };
 
 
-//
+/** Base class for Image provider. */
 UCLASS(abstract)
 class CUSTOMIZABLEOBJECT_API UCustomizableSystemImageProvider : public UObject
 {
@@ -171,17 +166,17 @@ public:
 
 	// Query that Mutable will run to find out if a texture will be provided as an Unreal UTexture2D,
 	// or as a raw data blob.
-	virtual ValueType HasTextureParameterValue(int64 ID) { return ValueType::None; }
+	virtual ValueType HasTextureParameterValue(const FName& ID) { return ValueType::None; }
 
 	// In case IsTextureParameterValueUnreal returns false, this will be used to query the texture size data.
-	virtual FIntVector GetTextureParameterValueSize(int64 ID) { return FIntVector(0, 0, 0); }
+	virtual FIntVector GetTextureParameterValueSize(const FName& ID) { return FIntVector(0, 0, 0); }
 
 	// In case IsTextureParameterValueUnreal returns false, this will be used to query the texture data that must
 	// be copied in the preallocated buffer. The pixel format is assumed to be 4-channel RGBA, uint8_t per channel.
-	virtual void GetTextureParameterValueData(int64 ID, uint8* OutData) {}
+	virtual void GetTextureParameterValueData(const FName& ID, uint8* OutData) {}
 
 	// In case IsTextureParameterValueUnreal returns true, this will be used to query the texture.
-	virtual UTexture2D* GetTextureParameterValue(int64 ID) { return nullptr; }
+	virtual UTexture2D* GetTextureParameterValue(const FName& ID) { return nullptr; }
 
 	// Used in the editor to show the list of available options.
 	// Only necessary if the images are required in editor previews.
@@ -189,7 +184,9 @@ public:
 };
 
 
-class UCustomizableInstanceLODManagementBase;
+// Before the Mutable Queue rework this made sense, but this is no longer the case. Remove this when doing MTBL-1409.
+/** End a Customizable Object Instance Update. All code paths of an update have to end here. */
+void FinishUpdateGlobal(UCustomizableObjectInstance* Instance, EUpdateResult UpdateResult, FInstanceUpdateDelegate* UpdateCallback, const FDescriptorRuntimeHash InUpdatedHash = FDescriptorRuntimeHash());
 
 
 UCLASS(Blueprintable, BlueprintType)
@@ -201,10 +198,11 @@ public:
 	UCustomizableObjectSystem() = default;
 	void InitSystem();
 
-	// Get the singleton object. It will be created if it doesn't exist yet.
+	/** Get the singleton object. It will be created if it doesn't exist yet.
+	 * @param bCreate Create a system if it does not has been created yet. */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = Status)
 	static UCustomizableObjectSystem* GetInstance();
-
+	
 	// Return true if the singleton has been created. It is different than GetInstance in that GetInstance will create it if it doesn't exist.
 	static bool IsCreated();
 
@@ -252,14 +250,13 @@ public:
 	FEditorCompileSettings EditorSettings;
 
 #endif
-
-	bool IsCompactSerializationEnabled() const;
-
 	bool IsSupport16BitBoneIndexEnabled() const;
 
 	bool IsProgressiveMipStreamingEnabled() const;
+	void SetProgressiveMipStreamingEnabled(bool bIsEnabled);
 
 	bool IsOnlyGenerateRequestedLODsEnabled() const;
+	void SetOnlyGenerateRequestedLODsEnabled(bool bIsEnabled);
 
 	void AddPendingReleaseSkeletalMesh( USkeletalMesh* SkeletalMesh );
 
@@ -288,17 +285,11 @@ public:
 		memory is used and the real texel data is loaded when needed during an update and then immediately discarded */
 
 	/** [Texture Parameters] Cache an image which has to have been previously registered by an Image provider with the parameter id. */
-	void CacheImage(uint64 ImageId);
+	void CacheImage(FName ImageId);
 	/** [Texture Parameters] Remove an image from the cache. */
-	void UnCacheImage(uint64 ImageId);
-	/** [Texture Parameters] Cache all images which have been previously registered by all registered Image provider with the parameter id
-		that was used in the provider. If bClearPreviousCacheImages is true, then all previous cache state is cleared */
-	void CacheAllImagesInAllProviders(bool bClearPreviousCacheImages);
+	void UnCacheImage(FName ImageId);
 	/** [Texture Parameters] Remove all images from the cache. */
 	void ClearImageCache();
-
-	/** Get the default image provider. Returns null if it was not already initialized. */
-	TObjectPtr<UDefaultImageProvider> GetDefaultImageProvider() const;
 
 	/** Initialize (if was not already) and get the default image provider. */
 	UDefaultImageProvider& GetOrCreateDefaultImageProvider();
@@ -310,8 +301,9 @@ private:
 
 public:
     
-	// Show a warning when a CustomizableObject is being used and it's not compiled 
-	void AddUncompiledCOWarning(UCustomizableObject* InObject);
+	// Show a warning on-screen and via a notification (if in Editor) and log an error when a CustomizableObject is
+	// being used and it's not compiled.  Callers can add additional information to the error log.
+	void AddUncompiledCOWarning(const UCustomizableObject& InObject, FString const* OptionalLogInfo = nullptr);
 
 	// Enables the collection of internal mutabe performance data. It has a performance cost.
 	void EnableBenchmark();
@@ -323,9 +315,12 @@ public:
 
 
 	// Give access to the internal object data.
-	FCustomizableObjectSystemPrivate* GetPrivate() { return Private.Get(); }
-	const FCustomizableObjectSystemPrivate* GetPrivate() const { return Private.Get(); }
+	FCustomizableObjectSystemPrivate* GetPrivate();
+	const FCustomizableObjectSystemPrivate* GetPrivate() const;
 
+	FCustomizableObjectSystemPrivate* GetPrivateChecked();
+	const FCustomizableObjectSystemPrivate* GetPrivateChecked() const;
+	
 	FStreamableManager& GetStreamableManager() { return StreamableManager; }
 
 	UCustomizableInstanceLODManagementBase* GetInstanceLODManagement() { return CurrentInstanceLODManagement.Get(); }
@@ -401,6 +396,9 @@ private:
 	// If there is an on-going operation, advance it.
 	void AdvanceCurrentOperation();
 
+	void DiscardInstances();
+	void ReleaseInstanceIDs();
+
 	// TODO: Can we move this to the editor module?
 #if WITH_EDITOR
 
@@ -429,7 +427,7 @@ private:
 	TMap<FString, int64> PlatformMaxChunkSize;
 	
 #endif
-
+	
 	// Friends
 	friend class FCustomizableObjectSystemPrivate;
 };

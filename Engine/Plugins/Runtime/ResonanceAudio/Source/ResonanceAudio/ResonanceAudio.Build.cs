@@ -1,6 +1,7 @@
 //
 // Copyright (C) Google Inc. 2017. All rights reserved.
 //
+
 using UnrealBuildTool;
 using System.IO;
 
@@ -25,7 +26,6 @@ public class ResonanceAudio : ModuleRules
 
         PrivateIncludePaths.AddRange(
             new string[] {
-                "ResonanceAudio/Private",
                 ResonanceAudioPath,
                 ResonanceAudioLibraryPath,
                 PFFTPath,
@@ -52,13 +52,8 @@ public class ResonanceAudio : ModuleRules
 
         PrivateDependencyModuleNames.AddRange(
             new string[] {
-                "Core",
-                "CoreUObject",
-                "Engine",
                 "InputCore",
                 "Projects",
-                "AudioMixer",
-                "ProceduralMeshComponent",
                 "AudioExtensions"
             }
         );

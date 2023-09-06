@@ -17,6 +17,7 @@
 #include "Chaos/Properties.h"
 #include "Chaos/Framework/PhysicsProxyBase.h"
 #include "Chaos/Framework/PhysicsSolverBase.h"
+#include "Chaos/ShapeInstance.h"
 
 #ifndef CHAOS_DETERMINISTIC
 #define CHAOS_DETERMINISTIC 1
@@ -28,7 +29,6 @@ namespace Chaos
 	class FConstraintHandle;
 	class FParticleCollisions;
 
-	using FShapesArray = TArray<TUniquePtr<FPerShapeData>, TInlineAllocator<1>>;
 	using FConstraintHandleArray = TArray<FConstraintHandle*>;
 
 	namespace CVars
@@ -37,278 +37,10 @@ namespace Chaos
 		CHAOS_API extern bool bCCDAxisThresholdUsesProbeShapes;
 	}
 
-	/** Data that is associated with geometry. If a union is used an entry is created per internal geometry */
-	class CHAOS_API FPerShapeData
+	namespace Private
 	{
-	public:
-
-		static constexpr bool AlwaysSerializable = true;
-		static TUniquePtr<FPerShapeData> CreatePerShapeData(int32 InShapeIdx, TSerializablePtr<FImplicitObject> InGeometry);
-		static void UpdateGeometry(TUniquePtr<FPerShapeData>& ShapePtr, TSerializablePtr<FImplicitObject> InGeometry);
-		static bool RequiresCachedLeafInfo(const FRigidTransformRealSingle3& RelativeTransform, const FImplicitObject* LeafGeometry, const FImplicitObject* Geometry);
-
-		virtual ~FPerShapeData();
-		
-		void UpdateShapeBounds(const FRigidTransform3& WorldTM, const FVec3& BoundsExpansion = FVec3(0));
-
-		static FPerShapeData* SerializationFactory(FChaosArchive& Ar, FPerShapeData*);
-		void Serialize(FChaosArchive& Ar);
-
-		void* GetUserData() const { return CollisionData.Read().UserData; }
-		void SetUserData(void* InUserData)
-		{
-			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [InUserData](FCollisionData& Data){ Data.UserData = InUserData; });
-		}
-
-		const FCollisionFilterData& GetQueryData() const { return CollisionData.Read().QueryData; }
-		void SetQueryData(const FCollisionFilterData& InQueryData)
-		{
-			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [InQueryData](FCollisionData& Data){ Data.QueryData = InQueryData; });
-		}
-
-		const FCollisionFilterData& GetSimData() const { return CollisionData.Read().SimData; }
-		void SetSimData(const FCollisionFilterData& InSimData)
-		{
-			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [InSimData](FCollisionData& Data){ Data.SimData = InSimData; });
-		}
-
-		template <typename Lambda>
-		void ModifySimData(const Lambda& LambdaFunc)
-		{
-			CollisionData.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&LambdaFunc](FCollisionData& Data){ LambdaFunc(Data.SimData);});
-		}
-
-		TSerializablePtr<FImplicitObject> GetGeometry() const { return Geometry; }
-
-		const TAABB<FReal,3>& GetWorldSpaceInflatedShapeBounds() const { return WorldSpaceInflatedShapeBounds; }
-
-		void UpdateWorldSpaceState(const FRigidTransform3& WorldTransform, const FVec3& BoundsExpansion);
-
-		// The leaf shape (with transformed and implicit wrapper removed).
-		const FImplicitObject* GetLeafGeometry() const;
-
-		// The actor-relative transform of the leaf geometry.
-		FRigidTransformRealSingle3 GetLeafRelativeTransform() const;
-
-		// The world-space transform of the leaf geometry.
-		// If we have non-identity leaf relative transform, is cached from the last call to UpdateWorldSpaceState.
-		// If not cahced, is constructed from arguments.
-		FRigidTransform3 GetLeafWorldTransform(const FGeometryParticleHandle* Particle) const;
-		void UpdateLeafWorldTransform(FGeometryParticleHandle* Particle);
-
-		// Are we caching leaf transform info?
-		bool HasCachedLeafInfo() const { return bHasCachedLeafInfo; }
-
-		const TArray<FMaterialHandle>& GetMaterials() const { return Materials.Read().Materials; }
-		const TArray<FMaterialMaskHandle>& GetMaterialMasks() const { return Materials.Read().MaterialMasks; }
-		const TArray<uint32>& GetMaterialMaskMaps() const { return Materials.Read().MaterialMaskMaps; }
-		const TArray<FMaterialHandle>& GetMaterialMaskMapMaterials() const { return Materials.Read().MaterialMaskMapMaterials; }
-
-		const FShapeDirtyFlags GetDirtyFlags() const { return DirtyFlags; }
-
-		void SetMaterial(FMaterialHandle InMaterial)
-		{
-			Materials.Modify(true, DirtyFlags, Proxy, ShapeIdx, [InMaterial](FMaterialData& Data)
-			{
-				Data.Materials.Reset(1);
-				Data.Materials.Add(InMaterial);
-			});
-		}
-
-		void SetMaterials(const TArray<FMaterialHandle>& InMaterials)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&InMaterials](FMaterialData& Data)
-			{
-				Data.Materials = InMaterials;
-			});
-		}
-
-		void SetMaterialMasks(const TArray<FMaterialMaskHandle>& InMaterialMasks)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&InMaterialMasks](FMaterialData& Data)
-			{
-				Data.MaterialMasks = InMaterialMasks;
-			});
-		}
-
-		void SetMaterialMaskMaps(const TArray<uint32>& InMaterialMaskMaps)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&InMaterialMaskMaps](FMaterialData& Data)
-			{
-				Data.MaterialMaskMaps = InMaterialMaskMaps;
-			});
-		}
-
-		void SetMaterialMaskMapMaterials(const TArray<FMaterialHandle>& InMaterialMaskMapMaterials)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&InMaterialMaskMapMaterials](FMaterialData& Data)
-			{
-				Data.MaterialMaskMapMaterials = InMaterialMaskMapMaterials;
-			});
-		}
-
-		template <typename Lambda>
-		void ModifyMaterials(const Lambda& LambdaFunc)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&LambdaFunc](FMaterialData& Data)
-			{
-				LambdaFunc(Data.Materials);
-			});
-		}
-
-		template <typename Lambda>
-		void ModifyMaterialMasks(const Lambda& LambdaFunc)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&LambdaFunc](FMaterialData& Data)
-			{
-				LambdaFunc(Data.MaterialMasks);
-			});
-		}
-
-		template <typename Lambda>
-		void ModifyMaterialMaskMaps(const Lambda& LambdaFunc)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&LambdaFunc](FMaterialData& Data)
-			{
-				LambdaFunc(Data.MaterialMaskMaps);
-			});
-		}
-
-		template <typename Lambda>
-		void ModifyMaterialMaskMapMaterials(const Lambda& LambdaFunc)
-		{
-			Materials.Modify(true,DirtyFlags,Proxy, ShapeIdx,[&LambdaFunc](FMaterialData& Data)
-			{
-				LambdaFunc(Data.MaterialMaskMapMaterials);
-			});
-		}
-
-		bool GetQueryEnabled() const { return CollisionData.Read().bQueryCollision; }
-		void SetQueryEnabled(const bool bEnable)
-		{
-			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [bEnable](FCollisionData& Data){ Data.bQueryCollision = bEnable; });
-		}
-
-		bool GetSimEnabled() const { return CollisionData.Read().bSimCollision; }
-		void SetSimEnabled(const bool bEnable)
-		{
-			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [bEnable](FCollisionData& Data){ Data.bSimCollision = bEnable; });
-		}
-
-		bool GetIsProbe() const { return CollisionData.Read().bIsProbe; }
-		void SetIsProbe(const bool bIsProbe)
-		{
-			CollisionData.Modify(true, DirtyFlags, Proxy, ShapeIdx, [bIsProbe](FCollisionData& Data){ Data.bIsProbe = bIsProbe; });
-		}
-
-		EChaosCollisionTraceFlag GetCollisionTraceType() const { return CollisionData.Read().CollisionTraceType; }
-		void SetCollisionTraceType(const EChaosCollisionTraceFlag InTraceFlag)
-		{
-			CollisionData.Modify(true,DirtyFlags,Proxy, ShapeIdx,[InTraceFlag](FCollisionData& Data){ Data.CollisionTraceType = InTraceFlag; });
-		}
-
-		const FCollisionData& GetCollisionData() const { return CollisionData.Read(); }
-
-		void SetCollisionData(const FCollisionData& Data)
-		{
-			CollisionData.Write(Data,true,DirtyFlags,Proxy, ShapeIdx);
-		}
-
-		const FMaterialData& GetMaterialData() const { return Materials.Read(); }
-
-		void SetMaterialData(const FMaterialData& Data)
-		{
-			Materials.Write(Data,true,DirtyFlags,Proxy,ShapeIdx);
-		}
-
-		void SyncRemoteData(FDirtyPropertiesManager& Manager, int32 ShapeDataIdx, FShapeDirtyData& RemoteData)
-		{
-			RemoteData.SetFlags(DirtyFlags);
-			CollisionData.SyncRemote(Manager, ShapeDataIdx, RemoteData);
-			Materials.SyncRemote(Manager, ShapeDataIdx, RemoteData);
-			DirtyFlags.Clear();
-		}
-
-		void SetProxy(class IPhysicsProxyBase* InProxy)
-		{
-			Proxy = InProxy;
-			if(Proxy)
-			{
-				if(DirtyFlags.IsDirty())
-				{
-					if(FPhysicsSolverBase* PhysicsSolverBase = Proxy->GetSolver<FPhysicsSolverBase>())
-					{
-						PhysicsSolverBase->AddDirtyProxyShape(Proxy,ShapeIdx);
-					}
-				}
-			}
-		}
-
-		int32 GetShapeIndex() const
-		{
-			return ShapeIdx;
-		}
-
-		void ModifyShapeIndex(int32 NewShapeIndex)
-		{
-			ShapeIdx = NewShapeIndex;
-		}
-
-	private:
-
-		void SetLeafRelativeTransform(const FRigidTransformRealSingle3& RelativeTransform);
-		void SetLeafGeometry(const FImplicitObject* LeafGeometry);
-
-	protected:
-		// use CreatePerShapeData
-		FPerShapeData(int32 InShapeIdx, TSerializablePtr<FImplicitObject> InGeometry, bool bInHasCachedLeafInfo = false);
-
-		explicit FPerShapeData(FPerShapeData&& Other);
-
-		// Can we be downcasted to FPerShapeDataCachedLeafInfo?
-		uint8 bHasCachedLeafInfo : 1;
-
-	private:
-		// Should only be used by SerializationFactory.
-		FPerShapeData(int32 InShapeIdx);
-
-		class IPhysicsProxyBase* Proxy;
-		FShapeDirtyFlags DirtyFlags;
-		int32 ShapeIdx;
-
-		TShapeProperty<FCollisionData,EShapeProperty::CollisionData> CollisionData;
-		TShapeProperty<FMaterialData,EShapeProperty::Materials> Materials;
-
-		TSerializablePtr<FImplicitObject> Geometry;
-		TAABB<FReal,3> WorldSpaceInflatedShapeBounds;
-	};
-
-	class CHAOS_API FPerShapeDataCachedLeafInfo final : public FPerShapeData 
-	{
-		friend class FPerShapeData;
-
-	private:
-		FPerShapeDataCachedLeafInfo(int32 InShapeIdx, TSerializablePtr<FImplicitObject> InGeometry, const FImplicitObject* InLeafGeometry, const FRigidTransformRealSingle3& RelativeTransform)
-			: FPerShapeData(InShapeIdx, InGeometry, /*bHasCachedLeafInfo=*/true)
-			, LeafRelativeTransform(RelativeTransform)
-			, LeafWorldTransform()
-			, LeafGeometry(InLeafGeometry)
-		{}
-
-		// Move old shape into shape with cached leaf info
-		FPerShapeDataCachedLeafInfo(FPerShapeData&& PerShapeData, const FImplicitObject* InLeafGeometry, const FRigidTransformRealSingle3& RelativeTransform)
-			: FPerShapeData(MoveTemp(PerShapeData))
-			, LeafRelativeTransform(RelativeTransform)
-			, LeafWorldTransform()
-			, LeafGeometry(InLeafGeometry)
-		{
-			bHasCachedLeafInfo = true;
-		}
-
-		FRigidTransformRealSingle3 LeafRelativeTransform;
-		FRigidTransform3 LeafWorldTransform;
-		const FImplicitObject* LeafGeometry;
-	};
+		class FPBDIslandParticle;
+	}
 
 	/**
 	* Union between shape and shapes array pointers, used for passing around shapes with
@@ -363,14 +95,6 @@ namespace Chaos
 
 		bool bIsSingleShape;
 	};
-
-	inline FChaosArchive& operator<<(FChaosArchive& Ar, FPerShapeData& Shape)
-	{
-		Shape.Serialize(Ar);
-		return Ar;
-	}
-
-	void CHAOS_API UpdateShapesArrayFromGeometry(FShapesArray& ShapesArray, TSerializablePtr<FImplicitObject> Geometry, const FRigidTransform3& ActorTM, IPhysicsProxyBase* Proxy);
 
 	FORCEINLINE uint32 GetTypeHash(const FParticleID& Unique)
 	{
@@ -434,7 +158,7 @@ namespace Chaos
 
 		CHAOS_API static TGeometryParticlesImp<T, d, SimType>* SerializationFactory(FChaosArchive& Ar, TGeometryParticlesImp < T, d, SimType>* Particles);
 		
-		CHAOS_API TGeometryParticlesImp()
+		TGeometryParticlesImp()
 		    : TParticles<T, d>()
 		{
 			MParticleType = EParticleType::Static;
@@ -457,7 +181,7 @@ namespace Chaos
 			TArrayCollection::AddArray(&MWeakParticleHandle);
 			TArrayCollection::AddArray(&MParticleConstraints);
 			TArrayCollection::AddArray(&MParticleCollisions);
-			TArrayCollection::AddArray(&MGraphIndex);
+			TArrayCollection::AddArray(&MGraphNode);
 			TArrayCollection::AddArray(&MResimType);
 			TArrayCollection::AddArray(&MEnabledDuringResim);
 			TArrayCollection::AddArray(&MLightWeightDisabled);
@@ -476,7 +200,7 @@ namespace Chaos
 
 		}
 		TGeometryParticlesImp(const TGeometryParticlesImp<T, d, SimType>& Other) = delete;
-		CHAOS_API TGeometryParticlesImp(TGeometryParticlesImp<T, d, SimType>&& Other)
+		TGeometryParticlesImp(TGeometryParticlesImp<T, d, SimType>&& Other)
 		    : TParticles<T, d>(MoveTemp(Other))
 			, MUniqueIdx(MoveTemp(Other.MUniqueIdx))
 			, MR(MoveTemp(Other.MR))
@@ -497,7 +221,7 @@ namespace Chaos
 			, MWeakParticleHandle(MoveTemp(Other.MWeakParticleHandle))
 			, MParticleConstraints(MoveTemp(Other.MParticleConstraints))
 			, MParticleCollisions(MoveTemp(Other.MParticleCollisions))
-			, MGraphIndex(MoveTemp(Other.MGraphIndex))
+			, MGraphNode(MoveTemp(Other.MGraphNode))
 			, MResimType(MoveTemp(Other.MResimType))
 			, MEnabledDuringResim(MoveTemp(Other.MEnabledDuringResim))
 			, MLightWeightDisabled(MoveTemp(Other.MLightWeightDisabled))
@@ -529,7 +253,7 @@ namespace Chaos
 			TArrayCollection::AddArray(&MWeakParticleHandle);
 			TArrayCollection::AddArray(&MParticleConstraints);
 			TArrayCollection::AddArray(&MParticleCollisions);
-			TArrayCollection::AddArray(&MGraphIndex);
+			TArrayCollection::AddArray(&MGraphNode);
 			TArrayCollection::AddArray(&MResimType);
 			TArrayCollection::AddArray(&MEnabledDuringResim);
 			TArrayCollection::AddArray(&MLightWeightDisabled);
@@ -548,7 +272,7 @@ namespace Chaos
 
 		static constexpr bool IsRigidBodySim() { return SimType == EGeometryParticlesSimType::RigidBodySim; }
 
-		CHAOS_API TGeometryParticlesImp(TParticles<T, d>&& Other)
+		TGeometryParticlesImp(TParticles<T, d>&& Other)
 		    : TParticles<T, d>(MoveTemp(Other))
 		{
 			MParticleType = EParticleType::Static;
@@ -571,7 +295,7 @@ namespace Chaos
 			TArrayCollection::AddArray(&MWeakParticleHandle);
 			TArrayCollection::AddArray(&MParticleConstraints);
 			TArrayCollection::AddArray(&MParticleCollisions);
-			TArrayCollection::AddArray(&MGraphIndex);
+			TArrayCollection::AddArray(&MGraphNode);
 			TArrayCollection::AddArray(&MResimType);
 			TArrayCollection::AddArray(&MEnabledDuringResim);
 			TArrayCollection::AddArray(&MLightWeightDisabled);
@@ -589,35 +313,37 @@ namespace Chaos
 			}
 		}
 
-		CHAOS_API virtual ~TGeometryParticlesImp()
+		virtual ~TGeometryParticlesImp()
 		{}
 
 		FORCEINLINE const TRotation<T, d>& R(const int32 Index) const { return MR[Index]; }
 		FORCEINLINE TRotation<T, d>& R(const int32 Index) { return MR[Index]; }
 
-		CHAOS_API FUniqueIdx UniqueIdx(const int32 Index) const { return MUniqueIdx[Index]; }
-		CHAOS_API FUniqueIdx& UniqueIdx(const int32 Index) { return MUniqueIdx[Index]; }
+		FUniqueIdx UniqueIdx(const int32 Index) const { return MUniqueIdx[Index]; }
+		FUniqueIdx& UniqueIdx(const int32 Index) { return MUniqueIdx[Index]; }
 
-		CHAOS_API ESyncState& SyncState(const int32 Index) { return MSyncState[Index].State; }
-		CHAOS_API ESyncState SyncState(const int32 Index) const { return MSyncState[Index].State; }
+		ESyncState& SyncState(const int32 Index) { return MSyncState[Index].State; }
+		ESyncState SyncState(const int32 Index) const { return MSyncState[Index].State; }
 
-		CHAOS_API TSerializablePtr<FImplicitObject> Geometry(const int32 Index) const { return MGeometry[Index]; }
+		TSerializablePtr<FImplicitObject> Geometry(const int32 Index) const { return MGeometry[Index]; }
 
-		CHAOS_API const TUniquePtr<FImplicitObject>& DynamicGeometry(const int32 Index) const { return MDynamicGeometry[Index]; }
+		const TUniquePtr<FImplicitObject>& DynamicGeometry(const int32 Index) const { return MDynamicGeometry[Index]; }
 
-		CHAOS_API const TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe>& SharedGeometry(const int32 Index) const { return MSharedGeometry[Index]; }
+		const TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe>& SharedGeometry(const int32 Index) const { return MSharedGeometry[Index]; }
 
-		CHAOS_API bool HasCollision(const int32 Index) const { return MHasCollision[Index]; }
-		CHAOS_API bool& HasCollision(const int32 Index) { return MHasCollision[Index]; }
+		bool HasCollision(const int32 Index) const { return MHasCollision[Index]; }
+		bool& HasCollision(const int32 Index) { return MHasCollision[Index]; }
 
-		CHAOS_API const FShapesArray& ShapesArray(const int32 Index) const { return MShapesArray[Index]; }
+		const FShapesArray& ShapesArray(const int32 Index) const { return reinterpret_cast<const FShapesArray&>(MShapesArray[Index]); }
+
+		const FShapeInstanceArray& ShapeInstances(const int32 Index) const { return MShapesArray[Index]; }
 
 #if CHAOS_DETERMINISTIC
-		CHAOS_API FParticleID ParticleID(const int32 Idx) const { return MParticleIDs[Idx]; }
-		CHAOS_API FParticleID& ParticleID(const int32 Idx) { return MParticleIDs[Idx]; }
+		FParticleID ParticleID(const int32 Idx) const { return MParticleIDs[Idx]; }
+		FParticleID& ParticleID(const int32 Idx) { return MParticleIDs[Idx]; }
 #endif
 		// Set a dynamic geometry. Note that X and R must be initialized before calling this function.
-		CHAOS_API void SetDynamicGeometry(const int32 Index, TUniquePtr<FImplicitObject>&& InUnique)
+		void SetDynamicGeometry(const int32 Index, TUniquePtr<FImplicitObject>&& InUnique)
 		{
 			check(!SharedGeometry(Index));	// If shared geometry exists we should not be setting dynamic geometry on top
 			SetGeometryImpl(Index, MakeSerializable(InUnique));
@@ -625,14 +351,14 @@ namespace Chaos
 		}
 
 		// Set a shared geometry. Note that X and R must be initialized before calling this function.
-		CHAOS_API void SetSharedGeometry(const int32 Index, TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe> InShared)
+		void SetSharedGeometry(const int32 Index, TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe> InShared)
 		{
 			check(!DynamicGeometry(Index));	// If dynamic geometry exists we should not be setting shared geometry on top
 			SetGeometryImpl(Index, MakeSerializable(InShared));
 			MSharedGeometry[Index] = InShared;
 		}
 		
-		CHAOS_API void SetGeometry(const int32 Index, TSerializablePtr<FImplicitObject> InGeometry)
+		void SetGeometry(const int32 Index, TSerializablePtr<FImplicitObject> InGeometry)
 		{
 			check(!DynamicGeometry(Index));
 			check(!SharedGeometry(Index));
@@ -640,7 +366,7 @@ namespace Chaos
 		}
 
 	private:
-		CHAOS_API void SetGeometryImpl(const int32 Index, TSerializablePtr<FImplicitObject> InGeometry)
+		void SetGeometryImpl(const int32 Index, TSerializablePtr<FImplicitObject> InGeometry)
 		{
 			MGeometry[Index] = InGeometry;
 
@@ -651,51 +377,8 @@ namespace Chaos
 			{
 				MLocalBounds[Index] = TAABB<T, d>(InGeometry->BoundingBox());
 
-				if (CVars::CCDAxisThresholdMode == 0)
-				{
-					// Use object extents as CCD axis threshold
-					MCCDAxisThreshold[Index] = MLocalBounds[Index].Extents();
-				}
-				else if (CVars::CCDAxisThresholdMode == 1)
-				{
-					// Use thinnest object extents as all axis CCD thresholds
-					MCCDAxisThreshold[Index] = FVec3(MLocalBounds[Index].Extents().GetMin());
-				}
-				else
-				{
-					// Find minimum shape bounds thickness on each axis
-					FVec3 ThinnestBoundsPerAxis = MLocalBounds[Index].Extents();
-					for (const TUniquePtr<FPerShapeData>& Shape : ShapesArray(Index))
-					{
-						// Only sim-enabled shapes should ever be swept with CCD, so make sure the
-						// sim-enabled flag is on for each shape before considering it's min bounds
-						// for CCD extents.
-						if (Shape->GetSimEnabled() && (CVars::bCCDAxisThresholdUsesProbeShapes || !Shape->GetIsProbe()))
-						{
-							const TSerializablePtr<FImplicitObject> Geometry = Shape->GetGeometry();
-							if (Geometry->HasBoundingBox())
-							{
-								const TVector<T, d> ShapeExtents = Geometry->BoundingBox().Extents();
-								TVector<T, d>& CCDAxisThreshold = MCCDAxisThreshold[Index];
-								for (int32 AxisIndex = 0; AxisIndex < d; ++AxisIndex)
-								{
-									ThinnestBoundsPerAxis[AxisIndex] = FMath::Min(ShapeExtents[AxisIndex], ThinnestBoundsPerAxis[AxisIndex]);
-								}
-							}
-						}
-					}
-
-					if (CVars::CCDAxisThresholdMode == 2)
-					{
-						// On each axis, use the thinnest shape bound on that axis
-						MCCDAxisThreshold[Index] = ThinnestBoundsPerAxis;
-					}
-					else if (CVars::CCDAxisThresholdMode == 3)
-					{
-						// Find the thinnest shape bound on any axis and use this for all axes
-						MCCDAxisThreshold[Index] = FVec3(ThinnestBoundsPerAxis.GetMin());
-					}
-				}
+				// Update the threshold we use to determine when to enable CCD. This is based on the bounds.
+				UpdateCCDAxisThreshold(Index);
 
 				// Update the world-space stat of all the shapes - must be called after UpdateShapesArray
 				// world space inflated bounds needs to take expansion into account - this is done in integrate for dynamics anyway, so
@@ -703,39 +386,95 @@ namespace Chaos
 				UpdateWorldSpaceState(Index, TRigidTransform<FReal, 3>(X(Index), R(Index)), FVec3(0));
 			}
 		}
+
+		void UpdateCCDAxisThreshold(const int32 Index)
+		{
+			// NOTE: We get empty bounds (as opposed to no bounds) if we have Geometry that is an empty Union
+			if (!MHasBounds[Index] || MLocalBounds[Index].IsEmpty())
+			{
+				MCCDAxisThreshold[Index] = FVec3(0);
+				return;
+			}
+
+			if (CVars::CCDAxisThresholdMode == 0)
+			{
+				// Use object extents as CCD axis threshold
+				MCCDAxisThreshold[Index] = MLocalBounds[Index].Extents();
+			}
+			else if (CVars::CCDAxisThresholdMode == 1)
+			{
+				// Use thinnest object extents as all axis CCD thresholds
+				MCCDAxisThreshold[Index] = FVec3(MLocalBounds[Index].Extents().GetMin());
+			}
+			else
+			{
+				// Find minimum shape bounds thickness on each axis
+				FVec3 ThinnestBoundsPerAxis = MLocalBounds[Index].Extents();
+				for (const TUniquePtr<FPerShapeData>& Shape : ShapesArray(Index))
+				{
+					// Only sim-enabled shapes should ever be swept with CCD, so make sure the
+					// sim-enabled flag is on for each shape before considering it's min bounds
+					// for CCD extents.
+					if (Shape->GetSimEnabled() && (CVars::bCCDAxisThresholdUsesProbeShapes || !Shape->GetIsProbe()))
+					{
+						const TSerializablePtr<FImplicitObject> Geometry = Shape->GetGeometry();
+						if (Geometry->HasBoundingBox())
+						{
+							const TVector<T, d> ShapeExtents = Geometry->BoundingBox().Extents();
+							TVector<T, d>& CCDAxisThreshold = MCCDAxisThreshold[Index];
+							for (int32 AxisIndex = 0; AxisIndex < d; ++AxisIndex)
+							{
+								ThinnestBoundsPerAxis[AxisIndex] = FMath::Min(ShapeExtents[AxisIndex], ThinnestBoundsPerAxis[AxisIndex]);
+							}
+						}
+					}
+				}
+
+				if (CVars::CCDAxisThresholdMode == 2)
+				{
+					// On each axis, use the thinnest shape bound on that axis
+					MCCDAxisThreshold[Index] = ThinnestBoundsPerAxis;
+				}
+				else if (CVars::CCDAxisThresholdMode == 3)
+				{
+					// Find the thinnest shape bound on any axis and use this for all axes
+					MCCDAxisThreshold[Index] = FVec3(ThinnestBoundsPerAxis.GetMin());
+				}
+			}
+		}
 	public:
 
-		CHAOS_API const TAABB<T,d>& LocalBounds(const int32 Index) const
+		const TAABB<T,d>& LocalBounds(const int32 Index) const
 		{
 			return MLocalBounds[Index];
 		}
 
-		CHAOS_API TAABB<T, d>& LocalBounds(const int32 Index)
+		TAABB<T, d>& LocalBounds(const int32 Index)
 		{
 			return MLocalBounds[Index];
 		}
 
-		CHAOS_API const TVector<T,d>& CCDAxisThreshold(const int32 Index) const
+		const TVector<T,d>& CCDAxisThreshold(const int32 Index) const
 		{
 			return MCCDAxisThreshold[Index];
 		}
 
-		CHAOS_API bool HasBounds(const int32 Index) const
+		bool HasBounds(const int32 Index) const
 		{
 			return MHasBounds[Index];
 		}
 
-		CHAOS_API bool& HasBounds(const int32 Index)
+		bool& HasBounds(const int32 Index)
 		{
 			return MHasBounds[Index];
 		}
 
-		CHAOS_API FSpatialAccelerationIdx SpatialIdx(const int32 Index) const
+		FSpatialAccelerationIdx SpatialIdx(const int32 Index) const
 		{
 			return MSpatialIdx[Index];
 		}
 
-		CHAOS_API FSpatialAccelerationIdx& SpatialIdx(const int32 Index)
+		FSpatialAccelerationIdx& SpatialIdx(const int32 Index)
 		{
 			return MSpatialIdx[Index];
 		}
@@ -752,18 +491,18 @@ namespace Chaos
 		}
 #endif
 
-		CHAOS_API const TAABB<T, d>& WorldSpaceInflatedBounds(const int32 Index) const
+		const TAABB<T, d>& WorldSpaceInflatedBounds(const int32 Index) const
 		{
 			return MWorldSpaceInflatedBounds[Index];
 		}
 
-		CHAOS_API void UpdateWorldSpaceState(const int32 Index, const FRigidTransform3& WorldTransform, const FVec3& BoundsExpansion)
+		void UpdateWorldSpaceState(const int32 Index, const FRigidTransform3& WorldTransform, const FVec3& BoundsExpansion)
 		{
-			// NOTE: Particle bounds are expanded for use by the spatial partitioning and broad phase but individual
-			// shape bounds are not. If expanded Shape bounds are required, the expansion should be done at the calling end.
-			FAABB3 WorldBounds = FAABB3::EmptyAABB();
-
 			const FShapesArray& Shapes = ShapesArray(Index);
+
+			// If we have no shapes we are have a point bounds at our local origin
+			FAABB3 WorldBounds = (Shapes.Num() > 0) ? FAABB3::EmptyAABB() : FAABB3::ZeroAABB();
+
 			for (const auto& Shape : Shapes)
 			{
 				Shape->UpdateWorldSpaceState(WorldTransform, BoundsExpansion);
@@ -775,6 +514,7 @@ namespace Chaos
 
 		void UpdateWorldSpaceStateSwept(const int32 Index, const FRigidTransform3& EndWorldTransform, const FVec3& BoundsExpansion, const FVec3& DeltaX)
 		{
+			// NOTE: Individual shape bounds are not expanded by the DeltaX (velocity term). Maybe they should be...
 			UpdateWorldSpaceState(Index, EndWorldTransform, BoundsExpansion);
 			MWorldSpaceInflatedBounds[Index].GrowByVector(DeltaX);
 		}
@@ -786,17 +526,17 @@ namespace Chaos
 
 		CHAOS_API void SetHandle(int32 Index, FGeometryParticleHandle* Handle);
 		
-		CHAOS_API FGeometryParticle* GTGeometryParticle(const int32 Index) const { return MGeometryParticle[Index]; }
-		CHAOS_API FGeometryParticle*& GTGeometryParticle(const int32 Index) { return MGeometryParticle[Index]; }
+		FGeometryParticle* GTGeometryParticle(const int32 Index) const { return MGeometryParticle[Index]; }
+		FGeometryParticle*& GTGeometryParticle(const int32 Index) { return MGeometryParticle[Index]; }
 
-		CHAOS_API const IPhysicsProxyBase* PhysicsProxy(const int32 Index) const { return MPhysicsProxy[Index];  }
-		CHAOS_API IPhysicsProxyBase* PhysicsProxy(const int32 Index) { return MPhysicsProxy[Index]; }
-		CHAOS_API void SetPhysicsProxy(const int32 Index, IPhysicsProxyBase* InPhysicsProxy)
+		const IPhysicsProxyBase* PhysicsProxy(const int32 Index) const { return MPhysicsProxy[Index];  }
+		IPhysicsProxyBase* PhysicsProxy(const int32 Index) { return MPhysicsProxy[Index]; }
+		void SetPhysicsProxy(const int32 Index, IPhysicsProxyBase* InPhysicsProxy)
 		{
 			MPhysicsProxy[Index] = InPhysicsProxy;
 		}
 
-		CHAOS_API FWeakParticleHandle& WeakParticleHandle(const int32 Index)
+		FWeakParticleHandle& WeakParticleHandle(const int32 Index)
 		{
 			FWeakParticleHandle& WeakHandle = MWeakParticleHandle[Index];
 			if(WeakHandle.IsInitialized())
@@ -811,19 +551,19 @@ namespace Chaos
 		/**
 		 * @brief All of the persistent (non-collision) constraints affecting the particle
 		*/
-		CHAOS_API FConstraintHandleArray& ParticleConstraints(const int32 Index)
+		FConstraintHandleArray& ParticleConstraints(const int32 Index)
 		{
 			return MParticleConstraints[Index];
 		}
 
-		CHAOS_API void AddConstraintHandle(const int32& Index, FConstraintHandle* InConstraintHandle)
+		void AddConstraintHandle(const int32& Index, FConstraintHandle* InConstraintHandle)
 		{
 			CHAOS_ENSURE(!MParticleConstraints[Index].Contains(InConstraintHandle));
 			MParticleConstraints[Index].Add(InConstraintHandle);
 		}
 
 
-		CHAOS_API void RemoveConstraintHandle(const int32& Index, FConstraintHandle* InConstraintHandle)
+		void RemoveConstraintHandle(const int32& Index, FConstraintHandle* InConstraintHandle)
 		{
 			MParticleConstraints[Index].RemoveSingleSwap(InConstraintHandle);
 			CHAOS_ENSURE(!MParticleConstraints[Index].Contains(InConstraintHandle));
@@ -832,13 +572,13 @@ namespace Chaos
 		/**
 		 * @brief All of the collision constraints affecting the particle
 		*/
-		CHAOS_API FParticleCollisions& ParticleCollisions(const int32 Index)
+		FParticleCollisions& ParticleCollisions(const int32 Index)
 		{
 			return MParticleCollisions[Index];
 		}
 
-		FORCEINLINE const int32 ConstraintGraphIndex(const int32 Index) const { return MGraphIndex[Index]; }
-		FORCEINLINE int32& ConstraintGraphIndex(const int32 Index) { return MGraphIndex[Index]; }
+		FORCEINLINE Private::FPBDIslandParticle* ConstraintGraphNode(const int32 Index) const { return MGraphNode[Index]; }
+		FORCEINLINE Private::FPBDIslandParticle*& ConstraintGraphNode(const int32 Index) { return MGraphNode[Index]; }
 
 		FORCEINLINE EResimType ResimType(const int32 Index) const { return MResimType[Index]; }
 		FORCEINLINE EResimType& ResimType(const int32 Index) { return MResimType[Index]; }
@@ -849,9 +589,14 @@ namespace Chaos
 		FORCEINLINE bool LightWeightDisabled(const int32 Index) const { return MLightWeightDisabled[Index]; }
 		FORCEINLINE bool& LightWeightDisabled(const int32 Index) { return MLightWeightDisabled[Index]; }
 
+
+		// Deprecated API
+		UE_DEPRECATED(5.3, "Use ConstraintGraphNode") const int32 ConstraintGraphIndex(const int32 Index) const { return INDEX_NONE; }
+		UE_DEPRECATED(5.3, "Use ConstraintGraphNode") int32& ConstraintGraphIndex(const int32 Index) { static int32 Dummy = INDEX_NONE; return Dummy; }
+
 private:
 		friend THandleType;
-		CHAOS_API void ResetWeakParticleHandle(const int32 Index)
+		void ResetWeakParticleHandle(const int32 Index)
 		{
 			FWeakParticleHandle& WeakHandle = MWeakParticleHandle[Index];
 			if(WeakHandle.IsInitialized())
@@ -867,7 +612,7 @@ public:
 			return FString::Printf(TEXT("%s, MUniqueIdx:%d MR:%s, MGeometry:%s, IsDynamic:%d"), *BaseString, UniqueIdx(index).Idx, *R(index).ToString(), (Geometry(index) ? *(Geometry(index)->ToString()) : TEXT("none")), (DynamicGeometry(index) != nullptr));
 		}
 
-		CHAOS_API virtual void Serialize(FChaosArchive& Ar)
+		virtual void Serialize(FChaosArchive& Ar)
 		{
 			LLM_SCOPE(ELLMTag::ChaosParticles);
 			TParticles<T, d>::Serialize(Ar);
@@ -954,7 +699,7 @@ public:
 		TArrayCollectionArray<FGeometryParticle*> MGeometryParticle;
 		TArrayCollectionArray<IPhysicsProxyBase*> MPhysicsProxy;
 		TArrayCollectionArray<bool> MHasCollision;
-		TArrayCollectionArray<FShapesArray> MShapesArray;
+		TArrayCollectionArray<FShapeInstanceArray> MShapesArray;
 		TArrayCollectionArray<TAABB<T,d>> MLocalBounds;
 		TArrayCollectionArray<TVector<T,d>> MCCDAxisThreshold;
 		TArrayCollectionArray<TAABB<T, d>> MWorldSpaceInflatedBounds;
@@ -964,15 +709,12 @@ public:
 		TArrayCollectionArray<FWeakParticleHandle> MWeakParticleHandle;
 		TArrayCollectionArray<FConstraintHandleArray> MParticleConstraints;
 		TArrayCollectionArray<FParticleCollisions> MParticleCollisions;
-		TArrayCollectionArray<int32> MGraphIndex;
+		TArrayCollectionArray<Private::FPBDIslandParticle*> MGraphNode;
 		TArrayCollectionArray<EResimType> MResimType;
 		TArrayCollectionArray<bool> MEnabledDuringResim;
 		TArrayCollectionArray<bool> MLightWeightDisabled;
 
-		void UpdateShapesArray(const int32 Index)
-		{
-			UpdateShapesArrayFromGeometry(MShapesArray[Index], MGeometry[Index], FRigidTransform3(X(Index), R(Index)), nullptr);
-		}
+		CHAOS_API void UpdateShapesArray(const int32 Index);
 
 		template <typename T2, int d2, EGeometryParticlesSimType SimType2>
 		friend class TGeometryParticlesImp;

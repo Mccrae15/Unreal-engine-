@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sections/ThumbnailSection.h"
+#include "AnimatedRange.h"
 #include "Rendering/DrawElements.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UIAction.h"
@@ -114,7 +115,7 @@ void FThumbnailSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("ThumbnailsMenu", "Thumbnails"),
 			FText(),
-			FNewMenuDelegate::CreateLambda([=](FMenuBuilder& InMenuBuilder){
+			FNewMenuDelegate::CreateLambda([this](FMenuBuilder& InMenuBuilder){
 
 				TSharedPtr<ISequencer> Sequencer = SequencerPtr.Pin();
 
@@ -133,7 +134,7 @@ void FThumbnailSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const
 						LOCTEXT("SetSingleTimeTooltip", "Defines the time at which this section should draw its single thumbnail to the current cursor position"),
 						FSlateIcon(),
 						FUIAction(
-							FExecuteAction::CreateLambda([=]{
+						FExecuteAction::CreateLambda([this, Sequencer]{
 								SetSingleTime(Sequencer->GetLocalTime().AsSeconds());
 								GetMutableDefault<UMovieSceneUserThumbnailSettings>()->bDrawSingleThumbnails = true;
 								GetMutableDefault<UMovieSceneUserThumbnailSettings>()->SaveConfig();

@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CinematicViewport/SCinematicLevelViewport.h"
+#include "AnimatedRange.h"
 #include "EditorModeManager.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Evaluation/MovieSceneSequenceTransform.h"
 #include "Widgets/Layout/SBorder.h"
 #include "LevelSequenceEditorToolkit.h"
+#include "MovieScene.h"
 #include "Rendering/SlateRenderer.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SSpacer.h"
@@ -17,6 +19,7 @@
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "SequencerKeyCollection.h"
+#include "CinematicViewport/CinematicViewportCommands.h"
 #include "CinematicViewport/SCinematicTransportRange.h"
 #include "CinematicViewport/FilmOverlays.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
@@ -222,7 +225,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 				.OnEndSliderMovement(this, &SCinematicLevelViewport::SetTime)
 				.Value(this, &SCinematicLevelViewport::GetTime)
 				.ToolTipText(LOCTEXT("TimeLocalToCurrentSequence", "The current time of the sequence relative to the focused sequence."))
-				.Delta_Lambda([=]()
+				.Delta_Lambda([this]()
 				{
 					return UIData.OuterResolution.AsDecimal() * UIData.OuterPlayRate.AsInterval(); 
 				})
@@ -334,7 +337,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 								[
 									SNew(STextBlock)
 									.ColorAndOpacity(Gray)
-									.Text_Lambda([=]{ return UIData.ShotName; })
+									.Text_Lambda([this]{ return UIData.ShotName; })
 									.ToolTipText(LOCTEXT("CurrentSequence", "The name of the currently evaluated sequence."))
 								]
 
@@ -345,7 +348,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 								[
 									SNew(STextBlock)
 									.ColorAndOpacity(Gray)
-									.Text_Lambda([=] { return UIData.CameraName; })
+									.Text_Lambda([this] { return UIData.CameraName; })
 									.ToolTipText(LOCTEXT("CurrentCamera", "The name of the current camera."))
 								]
 							]
@@ -356,7 +359,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 							[
 								SNew(STextBlock)
 								.ColorAndOpacity(Gray)
-								.Text_Lambda([=] { return UIData.Filmback; })
+								.Text_Lambda([this] { return UIData.Filmback; })
 								.ToolTipText(LOCTEXT("CurrentFilmback", "The name of the current shot's filmback (the imaging area of the frame/sensor)."))
 							]
 
@@ -366,7 +369,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 								SNew(STextBlock)
 								.Font(FAppStyle::GetFontStyle("Sequencer.FixedFont"))
 								.ColorAndOpacity(Gray)
-								.Text_Lambda([=] { return UIData.LocalPlaybackTime; })
+								.Text_Lambda([this] { return UIData.LocalPlaybackTime; })
 								.ToolTipText(LOCTEXT("LocalPlaybackTime", "The current playback time relative to the currently evaluated sequence."))
 							]
 						]
@@ -414,7 +417,7 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock)
 						.ColorAndOpacity(Gray)
-						.Text(LOCTEXT("NoSequencerMessage", "No active Level Sequencer detected. Please edit a Level Sequence to enable full controls."))
+						.Text(LOCTEXT("NoSequencerMessage", "No active Level Sequence Editor detected. Please edit a Level Sequence to enable full controls."))
 					]
 				]
 			]
@@ -446,8 +449,12 @@ void SCinematicLevelViewport::Construct(const FArguments& InArgs)
 	});
 
 	CommandList = MakeShareable( new FUICommandList );
+
 	// Ensure the commands are registered
+	FCinematicViewportCommands::Register();
 	FLevelSequenceEditorCommands::Register();
+
+	FilmOverlayOptions->BindCommands(CommandList.ToSharedRef());
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 

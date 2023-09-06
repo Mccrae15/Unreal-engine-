@@ -432,8 +432,8 @@ namespace mu
 	public:
 		// input
 		mu::Ptr<ASTOp> m_source;
-		bool m_useDiskCache = false;
-		int m_imageCompressionQuality = 0;
+		bool bUseDiskCache = false;
+		int ImageCompressionQuality = 0;
 
 	private:
 
@@ -453,9 +453,9 @@ namespace mu
 			OP_TYPE type = cloned->GetOpType();
 			DATATYPE dtype = GetOpDataType(type);
 
-			SettingsPtr pSettings = new Settings;
+			Ptr<Settings> pSettings = new Settings;
 			pSettings->SetProfile( false );
-			pSettings->SetImageCompressionQuality( m_imageCompressionQuality );
+			pSettings->SetImageCompressionQuality( ImageCompressionQuality );
 			SystemPtr pSystem = new System( pSettings );
 
 			// Don't generate mips suring linking here.
@@ -486,7 +486,7 @@ namespace mu
 				{
 					mu::Ptr<ASTOpConstantResource> constantOp = new ASTOpConstantResource();
 					constantOp->type = OP_TYPE::ME_CONSTANT;
-					constantOp->SetValue( pMesh, m_useDiskCache );
+					constantOp->SetValue( pMesh, bUseDiskCache );
 					m_result = constantOp;
 				  }
 				break;
@@ -496,13 +496,13 @@ namespace mu
 			{
 				MUTABLE_CPUPROFILER_SCOPE(ConstantImage);
 
-				mu::Ptr<const Image> pImage = pSystem->GetPrivate()->BuildImage( model, localParams.get(), at, 0 );
+				mu::Ptr<const Image> pImage = pSystem->GetPrivate()->BuildImage( model, localParams.get(), at, 0, 0 );
 
 				if (pImage)
 				{
 					mu::Ptr<ASTOpConstantResource> constantOp = new ASTOpConstantResource();
 					constantOp->type = OP_TYPE::IM_CONSTANT;
-					constantOp->SetValue( pImage, m_useDiskCache );
+					constantOp->SetValue( pImage, bUseDiskCache );
 					m_result = constantOp;
 				}
 				break;
@@ -518,7 +518,7 @@ namespace mu
 				{
 					mu::Ptr<ASTOpConstantResource> constantOp = new ASTOpConstantResource();
 					constantOp->type = OP_TYPE::LA_CONSTANT;
-					constantOp->SetValue( pLayout, m_useDiskCache );
+					constantOp->SetValue( pLayout, bUseDiskCache );
 					m_result = constantOp;
 				}
 				break;
@@ -542,16 +542,16 @@ namespace mu
 			{
 				MUTABLE_CPUPROFILER_SCOPE(ConstantBool);
 
-				float r=0.0f, g=0.0f, b = 0.0f, a = 0.0f;
-				pSystem->GetPrivate()->BuildColour( model, localParams.get(), at, &r,&g,&b,&a );
+				FVector4f Result(0, 0, 0, 0);
+				Result = pSystem->GetPrivate()->BuildColour( model, localParams.get(), at );
 
 				{
 					mu::Ptr<ASTOpFixed> constantOp = new ASTOpFixed();
 					constantOp->op.type = OP_TYPE::CO_CONSTANT;
-					constantOp->op.args.ColourConstant.value[0] = r;
-					constantOp->op.args.ColourConstant.value[1] = g;
-					constantOp->op.args.ColourConstant.value[2] = b;
-					constantOp->op.args.ColourConstant.value[3] = a;
+					constantOp->op.args.ColourConstant.value[0] = Result[0];
+					constantOp->op.args.ColourConstant.value[1] = Result[1];
+					constantOp->op.args.ColourConstant.value[2] = Result[2];
+					constantOp->op.args.ColourConstant.value[3] = Result[3];
 					m_result = constantOp;
 				}
 				break;
@@ -588,7 +588,7 @@ namespace mu
 		bool modified = false;
 
 		// don't do this if constant optimization has been disabled, usually for debugging.
-		if (!options->m_optimisationOptions.m_constReduction)
+		if (!options->OptimisationOptions.bConstReduction)
 		{
 			return false;
 		}
@@ -632,6 +632,7 @@ namespace mu
 				switch (n->GetOpType())
 				{
 				case OP_TYPE::IM_BLANKLAYOUT:
+				case OP_TYPE::IM_REFERENCE:
 				case OP_TYPE::IM_COMPOSE:
 				//case OP_TYPE::IM_RASTERMESH:            // TODO review this one
 				case OP_TYPE::ME_MERGE:
@@ -746,9 +747,9 @@ namespace mu
 					modified = true;
 
 					ConstantTask* constantTask = new ConstantTask;
-					constantTask->m_useDiskCache = options->m_optimisationOptions.m_useDiskCache;
+					constantTask->bUseDiskCache = options->OptimisationOptions.bUseDiskCache;
 					constantTask->m_source = n;
-					constantTask->m_imageCompressionQuality = options->m_imageCompressionQuality;
+					constantTask->ImageCompressionQuality = options->ImageCompressionQuality;
 
 					constantTask->Run();
 					constantTask->Complete();
@@ -792,7 +793,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeOptimiser::FullOptimiseAST( ASTOpList& roots )
+	void CodeOptimiser::FullOptimiseAST( ASTOpList& roots, int32 Pass )
 	{
 		bool modified = true;
 		int numIterations = 0;
@@ -808,13 +809,13 @@ namespace mu
 			// All kind of optimisations that depend on the meaning of each operation
 			// \TODO: We are doing it for all states.
 			UE_LOG(LogMutableCore, Verbose, TEXT(" - semantic optimiser"));
-			modified |= SemanticOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+			modified |= SemanticOptimiserAST( roots, m_options->GetPrivate()->OptimisationOptions, Pass );
 			//AXE_INT_VALUE("Mutable", Verbose, "ast size", (int64_t)ASTOp::CountNodes(roots));
 			UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 			ASTOp::LogHistogram(roots);
 
 			UE_LOG(LogMutableCore, Verbose, TEXT(" - sink optimiser"));
-			modified |= SinkOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+			modified |= SinkOptimiserAST( roots, m_options->GetPrivate()->OptimisationOptions );
 			//AXE_INT_VALUE("Mutable", Verbose, "ast size", (int64_t)ASTOp::CountNodes(roots));
 			ASTOp::LogHistogram(roots);
 
@@ -1101,25 +1102,25 @@ namespace mu
 					return true;
 				}
 
-				for( auto& rep: replacementsFound )
+				for(ADDMESH_SKELETON& Rep: replacementsFound) 
 				{
-					if ( rep.m_contributingMeshes.Contains(at) )
+					if (Rep.m_contributingMeshes.Contains(at))
 					{
 						mu::Ptr<const Mesh> pMesh =  static_cast<const Mesh*>(typedOp->GetValue().get());
 						pMesh->CheckIntegrity();
 
-						mu::Ptr<Mesh> pNewMesh = MeshRemapSkeleton( pMesh.get(),
-																rep.m_pFinalSkeleton.get());
+						Ptr<Mesh> NewMesh = new Mesh();
+						bool bOutSuccess = false;
+						MeshRemapSkeleton(NewMesh.get(), pMesh.get(), Rep.m_pFinalSkeleton.get(), bOutSuccess);
 
-						// It returns null if there is no need to remap.
-						if (pNewMesh)
+						if (bOutSuccess)
 						{
-							pNewMesh->CheckIntegrity();
+							NewMesh->CheckIntegrity();
 							mu::Ptr<ASTOpConstantResource> newOp = new ASTOpConstantResource();
 							newOp->type = OP_TYPE::ME_CONSTANT;
-							newOp->SetValue( pNewMesh, options.m_useDiskCache );
+							newOp->SetValue(NewMesh, options.bUseDiskCache);
 
-							ASTOp::Replace( at, newOp );
+							ASTOp::Replace(at, newOp);
 						}
 					}
 				}
@@ -1136,7 +1137,7 @@ namespace mu
 	//        // Add new skeleton constant instruction
 	//        Ptr<ASTOpConstantResource> cop = new ASTOpConstantResource();
 	//        cop->type = OP_TYPE::ME_CONSTANT;
-	//        cop->SetValue( rep.m_pFinalSkeleton, options.m_useDiskCache );
+	//        cop->SetValue( rep.m_pFinalSkeleton, options.bUseDiskCache );
 
 	//        // Add new "apply skeleton" instruction
 	//        Ptr<ASTOpFixed> skop = new ASTOpFixed();
@@ -1168,11 +1169,11 @@ namespace mu
 
 		UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 
-		if ( m_options->GetPrivate()->m_optimisationOptions.m_enabled )
+		if ( m_options->GetPrivate()->OptimisationOptions.bEnabled )
 		{
 			// We use 4 times the count because at the time we moved to sharing this count it
 			// was being used 4 times, and we want to keep the tests consistent.
-			m_optimizeIterationsLeft = m_options->GetPrivate()->m_optimisationOptions.m_maxOptimisationLoopCount * 4;
+			m_optimizeIterationsLeft = m_options->GetPrivate()->OptimisationOptions.MaxOptimisationLoopCount * 4;
 			m_optimizeIterationsMax = m_optimizeIterationsLeft;
 
 			// The first duplicated data remover has the special mission of removing
@@ -1190,12 +1191,12 @@ namespace mu
 			UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 
 			// Special optimization stages
-			if ( m_options->GetPrivate()->m_optimisationOptions.m_uniformizeSkeleton )
+			if ( m_options->GetPrivate()->OptimisationOptions.bUniformizeSkeleton )
 			{
 				UE_LOG(LogMutableCore, Verbose, TEXT(" - skeleton cleaner"));
 				ASTOp::LogHistogram(roots);
 
-				SkeletonCleanerAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+				SkeletonCleanerAST( roots, m_options->GetPrivate()->OptimisationOptions );
 				UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 				ASTOp::LogHistogram(roots);
 			}
@@ -1226,7 +1227,11 @@ namespace mu
 			// Main optimisation stage
 			{
 				MUTABLE_CPUPROFILER_SCOPE(MainStage);
-				FullOptimiseAST( roots );
+				FullOptimiseAST( roots, 0 );
+				UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
+				ASTOp::LogHistogram(roots);
+
+				FullOptimiseAST(roots, 1);
 				UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 				ASTOp::LogHistogram(roots);
 			}
@@ -1240,7 +1245,7 @@ namespace mu
 					auto pMesh = static_cast<const Mesh*>(typed->GetValue().get());
 					pMesh->ResetStaticFormatFlags();
 					typed->SetValue( pMesh,
-									 m_options->GetPrivate()->m_optimisationOptions.m_useDiskCache );
+									 m_options->GetPrivate()->OptimisationOptions.bUseDiskCache );
 				}
 			});
 
@@ -1266,7 +1271,7 @@ namespace mu
 		}
 
 	//        // Minimal optimisation of constant subtrees
-		else if ( m_options->GetPrivate()->m_optimisationOptions.m_constReduction )
+		else if ( m_options->GetPrivate()->OptimisationOptions.bConstReduction )
 		{
 			// The first duplicated data remover has the special mission of removing
 			// duplicated data (meshes) that may have been specified in the source

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Misc/QualifiedFrameTime.h"
+#include "ConcertMessageData.h"
 #include "ConcertSequencerMessages.generated.h"
 
 
@@ -46,8 +47,17 @@ struct FConcertSequencerState
 	UPROPERTY()
 	float PlaybackSpeed;
 
+	/** Indicate if we are currently looping */
 	UPROPERTY()
 	bool bLoopMode = false;
+
+	/**
+	 * In the case that the SequenceObjectPath points to a take preset, we capture the preset data
+	 * into a payload that can be applied to take that we are going to open. We store it in the state
+	 * so that we can play it back when new users join.
+	 */
+	UPROPERTY()
+	FConcertByteArray TakeData;
 
 	FConcertSequencerState()
 		: PlayerStatus(EConcertMovieScenePlayerStatus::Stopped)
@@ -66,6 +76,14 @@ struct FConcertSequencerOpenEvent
 	/** The full path name to the root sequence of the sequencer that just opened. */
 	UPROPERTY()
 	FString SequenceObjectPath;
+
+	/**
+	 * In the case that the SequenceObjectPath points to a take preset, we capture the preset data
+	 * into a payload that can be applied to take that we are going to open. We store it in the state
+	 * so that we can play it back when new users join.
+	 */
+	UPROPERTY()
+	FConcertByteArray TakeData;
 };
 
 /**
@@ -127,6 +145,83 @@ struct FConcertSequencerTimeAdjustmentEvent
 	UPROPERTY()
 	FString SequenceObjectPath;
 };
+
+
+/**
+ * Event indicating one or more sequences have been added or removed from the
+ * set of sequences to keep preloaded for quick dynamic instantiation.
+ *
+ * Can be sent by clients as a request to add or remove their references.
+ *
+ * Can also be received from the server in response to changes to the active set,
+ * or as an initial snapshot of the complete set when joining a session.
+ */
+USTRUCT()
+struct FConcertSequencerPreloadRequest
+{
+	GENERATED_BODY()
+
+	/** The list of full paths to affected sequences. */
+	UPROPERTY()
+	TArray<FTopLevelAssetPath> SequenceObjectPaths;
+
+	/** True if being added to the preload set, false if being removed. */
+	UPROPERTY()
+	bool bShouldBePreloaded = false;
+};
+
+UENUM()
+enum class EConcertSequencerPreloadStatus : uint8
+{
+	Pending,
+	Succeeded,
+	Failed,
+};
+
+/**
+ * Can be sent as an event by clients to indicate loading success/failure
+ * result of attempting to preload one or more sequence assets.
+ */
+USTRUCT()
+struct FConcertSequencerPreloadAssetStatusMap
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TMap<FTopLevelAssetPath, EConcertSequencerPreloadStatus> Sequences;
+};
+
+/**
+ * Sent as an event by server with preload status of one or more clients.
+ */
+USTRUCT()
+struct FConcertSequencerPreloadClientStatusMap
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TMap<FGuid, FConcertSequencerPreloadAssetStatusMap> ClientEndpoints;
+
+	/** Merge (add or replace) statuses for a specified client into this object. */
+	void UpdateFrom(const FGuid& Client, const FConcertSequencerPreloadAssetStatusMap& Updates)
+	{
+		FConcertSequencerPreloadAssetStatusMap& List = ClientEndpoints.FindOrAdd(Client);
+		for (const TPair<FTopLevelAssetPath, EConcertSequencerPreloadStatus>& Update : Updates.Sequences)
+		{
+			List.Sequences.FindOrAdd(Update.Key) = Update.Value;
+		}
+	}
+
+	/** Clear all clients' references to a specified asset. */
+	void Remove(const FTopLevelAssetPath& Sequence)
+	{
+		for (TPair<FGuid, FConcertSequencerPreloadAssetStatusMap>& Client : ClientEndpoints)
+		{
+			Client.Value.Sequences.Remove(Sequence);
+		}
+	}
+};
+
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"

@@ -337,6 +337,7 @@ FMaterialDerivativeAutogen::FOperationType1 FMaterialDerivativeAutogen::GetFunc1
 	case EFunc1::InvLength:
 		// Operate on LWCType, but return a float1
 		return FOperationType1(EDerivativeType::Float1, SrcType);
+	case EFunc1::Log:
 	case EFunc1::Log2:
 	case EFunc1::Log10:
 	case EFunc1::Exp:
@@ -484,12 +485,16 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Abs:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCAbs(") + SrcToken + TEXT(")");
 			}
 			else
 			{
 				DstToken = TEXT("abs(") + SrcToken + TEXT(")");
 			}
+			break;
+		case EFunc1::Log:
+			DstToken = TEXT("log(") + SrcToken + TEXT(")");
 			break;
 		case EFunc1::Log2:
 			DstToken = TEXT("log2(") + SrcToken + TEXT(")");
@@ -500,9 +505,13 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Exp:
 			DstToken = TEXT("exp(") + SrcToken + TEXT(")");
 			break;
+		case EFunc1::Exp2:
+			DstToken = TEXT("exp2(") + SrcToken + TEXT(")");
+			break;
 		case EFunc1::Sin:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCSin(") + SrcToken + TEXT(")");
 			}
 			else
@@ -513,6 +522,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Cos:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCCos(") + SrcToken + TEXT(")");
 			}
 			else
@@ -523,6 +533,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Tan:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCTan(") + SrcToken + TEXT(")");
 			}
 			else
@@ -533,6 +544,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Asin:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCASin(") + SrcToken + TEXT(")");
 			}
 			else
@@ -543,6 +555,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::AsinFast:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCASin(") + SrcToken + TEXT(")");
 			}
 			else
@@ -553,6 +566,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Acos:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCACos(") + SrcToken + TEXT(")");
 			}
 			else
@@ -563,6 +577,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::AcosFast:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCACos(") + SrcToken + TEXT(")");
 			}
 			else
@@ -573,6 +588,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Atan:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCATan(") + SrcToken + TEXT(")");
 			}
 			else
@@ -583,6 +599,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::AtanFast:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCATan(") + SrcToken + TEXT(")");
 			}
 			else
@@ -593,6 +610,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Sqrt:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCSqrt(") + SrcToken + TEXT(")");
 			}
 			else
@@ -603,6 +621,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Rcp:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCRcp(") + SrcToken + TEXT(")");
 			}
 			else
@@ -613,6 +632,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Rsqrt:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCRsqrt(") + SrcToken + TEXT(")");
 			}
 			else
@@ -623,6 +643,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Saturate:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCSaturate(") + SrcToken + TEXT(")");
 			}
 			else
@@ -633,6 +654,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Frac:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCFrac(") + SrcToken + TEXT(")");
 			}
 			else
@@ -643,6 +665,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Length:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCLength(") + SrcToken + TEXT(")");
 			}
 			else
@@ -653,6 +676,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::InvLength:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCRcpLength(") + SrcToken + TEXT(")");
 			}
 			else
@@ -663,6 +687,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Normalize:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCNormalize(") + SrcToken + TEXT(")");
 			}
 			else if (OperationType.IntermediateType == EDerivativeType::Float1)
@@ -702,6 +727,9 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 		case EFunc1::Abs:
 			DstToken = TEXT("AbsDeriv") + Suffix + TEXT("(") + SrcToken + TEXT(")");
 			break;
+		case EFunc1::Log:
+			DstToken = TEXT("LogDeriv") + Suffix + TEXT("(") + SrcToken + TEXT(")");
+			break;
 		case EFunc1::Log2:
 			DstToken = TEXT("Log2Deriv") + Suffix + TEXT("(") + SrcToken + TEXT(")");
 			break;
@@ -710,6 +738,9 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc1(FHLSLMaterialTranslato
 			break;
 		case EFunc1::Exp:
 			DstToken = TEXT("ExpDeriv") + Suffix + TEXT("(") + SrcToken + TEXT(")");
+			break;
+		case EFunc1::Exp2:
+			DstToken = TEXT("Exp2Deriv") + Suffix + TEXT("(") + SrcToken + TEXT(")");
 			break;
 		case EFunc1::Sin:
 			DstToken = TEXT("SinDeriv") + Suffix + TEXT("(") + SrcToken + TEXT(")");
@@ -874,6 +905,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Add:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Add);
 				DstToken = TEXT("LWCAdd(") + LhsToken + TEXT(", ") + RhsToken + TEXT(")");
 			}
 			else
@@ -884,6 +916,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Sub:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Subtract);
 				DstToken = TEXT("LWCSubtract(") + LhsToken + TEXT(", ") + RhsToken + TEXT(")");
 			}
 			else
@@ -894,6 +927,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Mul:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::MultiplyVectorVector);
 				DstToken = TEXT("LWCMultiply(") + LhsToken + TEXT(", ") + RhsToken + TEXT(")");
 			}
 			else
@@ -904,6 +938,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Div:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Divide);
 				DstToken = TEXT("LWCDivide(") + LhsToken + TEXT(", ") + RhsToken + TEXT(")");
 			}
 			else
@@ -914,6 +949,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Fmod:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCFmod(") + LhsToken + TEXT(",") + RhsToken + TEXT(")");
 			}
 			else
@@ -924,6 +960,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Min:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCMin(") + LhsToken + TEXT(",") + RhsToken + TEXT(")");
 			}
 			else
@@ -934,6 +971,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Max:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCMax(") + LhsToken + TEXT(",") + RhsToken + TEXT(")");
 			}
 			else
@@ -944,6 +982,7 @@ int32 FMaterialDerivativeAutogen::GenerateExpressionFunc2(FHLSLMaterialTranslato
 		case EFunc2::Dot:
 			if (bIsLWC)
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				DstToken = TEXT("LWCDot(") + LhsToken + TEXT(", ") + RhsToken + TEXT(")");
 			}
 			else
@@ -1066,7 +1105,9 @@ int32 FMaterialDerivativeAutogen::GenerateLerpFunc(FHLSLMaterialTranslator& Tran
 	const uint32 NumResultComponents = GetNumComponents(ResultType);
 
 	const bool bAllZeroDeriv = (ADerivInfo.DerivativeStatus == EDerivativeStatus::Zero && BDerivInfo.DerivativeStatus == EDerivativeStatus::Zero && SDerivInfo.DerivativeStatus == EDerivativeStatus::Zero);
-	const TCHAR* FunctionName = (ResultType & MCT_LWCType) ? TEXT("LWCLerp") : TEXT("lerp");
+	const bool bIsLWC = ResultType & MCT_LWCType;
+	if (bIsLWC) { Translator.AddLWCFuncUsage(ELWCFunctionKind::Other); }
+	const TCHAR* FunctionName = bIsLWC ? TEXT("LWCLerp") : TEXT("lerp");
 	FString FiniteString = FString::Printf(TEXT("%s(%s,%s,%s)"), FunctionName, *Translator.CoerceParameter(A, ResultType), *Translator.CoerceParameter(B, ResultType), *Translator.CoerceParameter(S, AlphaType));
 	
 	if (!bAllZeroDeriv && IsDerivativeValid(ADerivInfo.DerivativeStatus) && IsDerivativeValid(BDerivInfo.DerivativeStatus) && IsDerivativeValid(SDerivInfo.DerivativeStatus))
@@ -1181,6 +1222,7 @@ int32 FMaterialDerivativeAutogen::GenerateIfFunc(FHLSLMaterialTranslator& Transl
 	FString CompareNotEqual;
 	if (IsLWCType(CompareType))
 	{
+		Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 		CompareGreaterEqual = FString::Printf(TEXT("LWCGreaterEqual(%s, %s)"), *AFinite, *BFinite);
 	}
 	else
@@ -1193,6 +1235,7 @@ int32 FMaterialDerivativeAutogen::GenerateIfFunc(FHLSLMaterialTranslator& Transl
 		ThresholdFinite = *Translator.GetParameterCode(Threshold);
 		if (IsLWCType(CompareType))
 		{
+			Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 			CompareNotEqual = FString::Printf(TEXT("(!LWCEqualsApprox(%s, %s, %s))"), *AFinite, *BFinite, *ThresholdFinite);
 		}
 		else
@@ -1202,6 +1245,7 @@ int32 FMaterialDerivativeAutogen::GenerateIfFunc(FHLSLMaterialTranslator& Transl
 
 		if (IsLWCType(ResultType))
 		{
+			Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 			CodeFinite = FString::Printf(
 				TEXT("LWCSelect(%s, LWCSelect(%s, %s, %s), %s)"),
 				*CompareNotEqual, *CompareGreaterEqual,
@@ -1231,6 +1275,7 @@ int32 FMaterialDerivativeAutogen::GenerateIfFunc(FHLSLMaterialTranslator& Transl
 	{
 		if (IsLWCType(ResultType))
 		{
+			Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 			CodeFinite = FString::Printf(
 				TEXT("LWCSelect(%s, %s, %s)"),
 				*CompareGreaterEqual,
@@ -1482,6 +1527,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Add);
 						Ret += TEXT("\tRet.Value = LWCAdd(A.Value, B.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -1500,6 +1546,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Subtract);
 						Ret += TEXT("\tRet.Value = LWCSubtract(A.Value, B.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -1518,6 +1565,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::MultiplyVectorVector);
 						Ret += TEXT("\tRet.Value = LWCMultiply(A.Value, B.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\tRet.Ddx = A.Ddx * LWCToFloat(B.Value) + LWCToFloat(A.Value) * B.Ddx;") LINE_TERMINATOR;
 						Ret += TEXT("\tRet.Ddy = A.Ddy * LWCToFloat(B.Value) + LWCToFloat(A.Value) * B.Ddy;") LINE_TERMINATOR;
@@ -1538,7 +1586,11 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Divide);
 						Ret += TEXT("\tRet.Value = LWCDivide(A.Value, B.Value);") LINE_TERMINATOR;
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Demote, 2);
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::MultiplyVectorVector, 3);
 						Ret += TEXT("\t") + FieldName + TEXT(" Denom = LWCRcp(LWCMultiply(B.Value, B.Value));") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdA =  LWCToFloat(LWCMultiply(B.Value, Denom));") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdB = -LWCToFloat(LWCMultiply(A.Value, Denom));") LINE_TERMINATOR;
@@ -1564,9 +1616,12 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 						Ret += BaseName + TEXT(" DivDeriv") + Suffix + TEXT("(") + BaseName + TEXT(" A, ") + NonLWCBaseName + TEXT(" B)") LINE_TERMINATOR;
 						Ret += TEXT("{") LINE_TERMINATOR;
 						Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Divide);
 						Ret += TEXT("\tRet.Value = LWCDivide(A.Value, B.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" Denom = rcp(B.Value * B.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdA =  B.Value * Denom;") LINE_TERMINATOR;
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Demote);
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::MultiplyVectorVector);
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdB = -LWCToFloat(LWCMultiply(A.Value, Denom));") LINE_TERMINATOR;
 						Ret += TEXT("\tRet.Ddx = dFdA * A.Ddx + dFdB * B.Ddx;") LINE_TERMINATOR;
 						Ret += TEXT("\tRet.Ddy = dFdA * A.Ddy + dFdB * B.Ddy;") LINE_TERMINATOR;
@@ -1583,6 +1638,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCFmod(A.Value, B.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -1601,6 +1657,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\t") + BoolName + TEXT(" Cmp = LWCLess(A.Value, B.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\tRet.Value = LWCSelect(Cmp, A.Value, B.Value);") LINE_TERMINATOR;
 					}
@@ -1621,6 +1678,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\t") + BoolName + TEXT(" Cmp = LWCGreater(A.Value, B.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\tRet.Value = LWCSelect(Cmp, A.Value, B.Value);") LINE_TERMINATOR;
 					}
@@ -1764,6 +1822,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCAbs(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + NonLWCFieldName + TEXT(" dFdA = select(LWCGreaterEqual(A.Value, 0.0f), One, -One);") LINE_TERMINATOR;
 					}
@@ -1785,6 +1844,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCSin(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdA = LWCCos(A.Value);");
 					}
@@ -1805,6 +1865,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCCos(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdA = -LWCSin(A.Value);");
 					}
@@ -1825,6 +1886,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCTan(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + FieldName + TEXT(" dFdA = rcp(Pow2(LWCCos(A.Value)));");
 					}
@@ -1917,6 +1979,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCSqrt(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + NonLWCFieldName + TEXT(" dFdA = 0.5f * LWCRsqrt(LWCMax(A.Value, 0.00001f));") LINE_TERMINATOR;
 					}
@@ -1938,6 +2001,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCRcp(A.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -1957,6 +2021,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCRsqrt(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + NonLWCFieldName + TEXT(" dFdA = -0.5f * LWCRsqrt(A.Value) * LWCRcp(A.Value);");
 					}
@@ -1979,6 +2044,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCSaturate(A.Value);") LINE_TERMINATOR;
 						Ret += TEXT("\t") + BoolName + TEXT(" InRange = LWCEquals(Ret.Value, A.Value);") LINE_TERMINATOR;
 					}
@@ -1999,6 +2065,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\t") + NonLWCBaseName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCFrac(A.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -2007,6 +2074,18 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					}
 					Ret += TEXT("\tRet.Ddx = A.Ddx;") LINE_TERMINATOR;
 					Ret += TEXT("\tRet.Ddy = A.Ddy;") LINE_TERMINATOR;
+					Ret += TEXT("\treturn Ret;") LINE_TERMINATOR;
+					Ret += TEXT("}") LINE_TERMINATOR;
+					Ret += TEXT("") LINE_TERMINATOR;
+					break;
+				case EFunc1::Log:
+					Ret += BaseName + TEXT(" LogDeriv") + Suffix + TEXT("(") + BaseName + TEXT(" A)") LINE_TERMINATOR;
+					Ret += TEXT("{") LINE_TERMINATOR;
+					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
+					Ret += TEXT("\tRet.Value = log(A.Value);") LINE_TERMINATOR;
+					Ret += TEXT("\t") + FieldName + TEXT(" dFdA = rcp(A.Value);");
+					Ret += TEXT("\tRet.Ddx = dFdA * A.Ddx ;") LINE_TERMINATOR;
+					Ret += TEXT("\tRet.Ddy = dFdA * A.Ddy;") LINE_TERMINATOR;
 					Ret += TEXT("\treturn Ret;") LINE_TERMINATOR;
 					Ret += TEXT("}") LINE_TERMINATOR;
 					Ret += TEXT("") LINE_TERMINATOR;
@@ -2046,12 +2125,25 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("}") LINE_TERMINATOR;
 					Ret += TEXT("") LINE_TERMINATOR;
 					break;
+				case EFunc1::Exp2:
+					Ret += BaseName + TEXT(" Exp2Deriv") + Suffix + TEXT("(") + BaseName + TEXT(" A)") LINE_TERMINATOR;
+					Ret += TEXT("{") LINE_TERMINATOR;
+					Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
+					Ret += TEXT("\tRet.Value = exp2(A.Value);") LINE_TERMINATOR;
+					Ret += TEXT("\t") + FieldName + TEXT(" dFdA = exp2(A.Value) * 0.693147f;");
+					Ret += TEXT("\tRet.Ddx = dFdA * A.Ddx;") LINE_TERMINATOR;
+					Ret += TEXT("\tRet.Ddy = dFdA * A.Ddy;") LINE_TERMINATOR;
+					Ret += TEXT("\treturn Ret;") LINE_TERMINATOR;
+					Ret += TEXT("}") LINE_TERMINATOR;
+					Ret += TEXT("") LINE_TERMINATOR;
+					break;
 				case EFunc1::Length:
 					Ret += ScalarName + TEXT(" LengthDeriv") + Suffix + TEXT("(") + BaseName + TEXT(" A)") LINE_TERMINATOR;
 					Ret += TEXT("{") LINE_TERMINATOR;
 					Ret += TEXT("\t") + ScalarName + TEXT(" Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCLength(A.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -2071,6 +2163,7 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 					Ret += TEXT("\tFloatDeriv Ret;") LINE_TERMINATOR;
 					if (IsLWCType(DerivType))
 					{
+						Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 						Ret += TEXT("\tRet.Value = LWCRcpLength(A.Value);") LINE_TERMINATOR;
 					}
 					else
@@ -2127,7 +2220,9 @@ FString FMaterialDerivativeAutogen::GenerateUsedFunctions(FHLSLMaterialTranslato
 			Ret += TEXT("\t") + BaseName + TEXT(" Ret;") LINE_TERMINATOR;
 			if (IsLWCType(DerivType))
 			{
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Other);
 				Ret += TEXT("\tRet.Value = LWCLerp(A.Value, B.Value, S.Value);") LINE_TERMINATOR;
+				Translator.AddLWCFuncUsage(ELWCFunctionKind::Subtract, 2);
 				Ret += TEXT("\tRet.Ddx = lerp(A.Ddx, B.Ddx, S.Value) + S.Ddx * LWCToFloat(LWCSubtract(B.Value, A.Value));") LINE_TERMINATOR;
 				Ret += TEXT("\tRet.Ddy = lerp(A.Ddy, B.Ddy, S.Value) + S.Ddy * LWCToFloat(LWCSubtract(B.Value, A.Value));") LINE_TERMINATOR;
 			}

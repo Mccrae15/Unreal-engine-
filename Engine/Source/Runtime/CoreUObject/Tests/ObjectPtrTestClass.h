@@ -23,6 +23,27 @@ class UObjectPtrTestClassWithRef : public UObject
 public:
 	TObjectPtr<UObjectPtrTestClass> ObjectPtr;
 	TObjectPtr<UObjectPtrTestClass> ObjectPtrNonNullable;
+	TArray<TObjectPtr<UObjectPtrTestClass>> ArrayObjPtr;
+};
+
+
+//test class with typed reference to another class
+class UObjectWithClassProperty : public UObject
+{
+	DECLARE_CLASS_INTRINSIC(UObjectWithClassProperty, UObject, CLASS_MatchedSerializers, TEXT("/Script/CoreUObject"))
+
+public:
+	TObjectPtr<UClass> ClassPtr;
+};
+
+//test class with raw pointer
+class UObjectWithRawProperty : public UObject
+{
+	DECLARE_CLASS_INTRINSIC(UObjectWithRawProperty, UObject, CLASS_MatchedSerializers, TEXT("/Script/CoreUObject"))
+
+public:
+	UObjectPtrTestClass* ObjectPtr;
+	UObjectPtrTestClass* ObjectPtrNonNullable;
 };
 
 

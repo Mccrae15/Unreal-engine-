@@ -61,7 +61,7 @@ const buildColumns = (jobTab: JobsTabData): IColumn[] => {
    if (jobTab.columns) {
       let total = 0;
       jobTab.columns.forEach(c => total += c.relativeWidth ?? 1);
-      const w = (jobTab.showNames ? 1000 : 800) / total;
+      const w = (jobTab.showNames ? 950 - 300 : 750 - 300) / total;
 
       jobTab.columns.forEach(c => { minWidths[c.heading] = w * (c.relativeWidth ?? 1); cnames.push(c.heading); });
    } else {
@@ -562,7 +562,7 @@ const JobList: React.FC<{ tab: string; filter: JobFilterSimple, controller: Call
 
    let nojobs = !jobHandler.initial && !jobs.length;
 
-   const width = 1800;
+   const width = 1440;
 
    // main header
    const onRenderDetailsHeader: IDetailsListProps['onRenderDetailsHeader'] = (props) => {
@@ -587,12 +587,12 @@ const JobList: React.FC<{ tab: string; filter: JobFilterSimple, controller: Call
 
    return (
       <Stack tokens={{ childrenGap: 0 }} className={detailClasses.detailsRow}>
-         <div className={detailClasses.container} style={{ width: "100%", height: 'calc(100vh - 270px)', position: 'relative', marginTop: 0 }}>
+         <div className={detailClasses.container} style={{ width: "100%", height: 'calc(100vh - 240px)', position: 'relative', marginTop: 0 }}>
             {<ScrollablePane scrollbarVisibility={ScrollbarVisibility.always} onScroll={() => { controller.setState(undefined, true) }} style={{ overflow: "visible" }}>
                {renderItems.length > 0 &&
                   <Stack style={{ width: width, marginLeft: 4, boxShadow: "0 1.6px 3.6px 0 rgba(0,0,0,0.132), 0 0.3px 0.9px 0 rgba(0,0,0,0.108)", backgroundColor: "#FFFFFF" }}>
                      <DetailsList
-                        styles={{ headerWrapper: { overflow: "hidden" } }}
+                        styles={{ root: {paddingBottom: 32}, headerWrapper: { overflow: "hidden" } }}
                         indentWidth={0}
                         compact={false}
                         selectionMode={SelectionMode.none}

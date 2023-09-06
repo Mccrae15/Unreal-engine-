@@ -12,67 +12,7 @@
 namespace TraceServices
 {
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// FMetadataProviderLock
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-thread_local FMetadataProviderLock* GThreadCurrentMetadataProviderLock;
-thread_local int32 GThreadCurrentReadMetadataProviderLockCount;
-thread_local int32 GThreadCurrentWriteMetadataProviderLockCount;
-
-void FMetadataProviderLock::ReadAccessCheck() const
-{
-	checkf(GThreadCurrentMetadataProviderLock == this && (GThreadCurrentReadMetadataProviderLockCount > 0 || GThreadCurrentWriteMetadataProviderLockCount > 0),
-		TEXT("Trying to READ from metadata provider outside of a READ scope"));
-}
-
-void FMetadataProviderLock::WriteAccessCheck() const
-{
-	checkf(GThreadCurrentMetadataProviderLock == this && GThreadCurrentWriteMetadataProviderLockCount > 0,
-		TEXT("Trying to WRITE to metadata provider outside of an EDIT/WRITE scope"));
-}
-
-void FMetadataProviderLock::BeginRead()
-{
-	check(!GThreadCurrentMetadataProviderLock || GThreadCurrentMetadataProviderLock == this);
-	checkf(GThreadCurrentWriteMetadataProviderLockCount == 0, TEXT("Trying to lock metadata provider for READ while holding EDIT/WRITE access"));
-	if (GThreadCurrentReadMetadataProviderLockCount++ == 0)
-	{
-		GThreadCurrentMetadataProviderLock = this;
-		RWLock.ReadLock();
-	}
-}
-
-void FMetadataProviderLock::EndRead()
-{
-	check(GThreadCurrentReadMetadataProviderLockCount > 0);
-	if (--GThreadCurrentReadMetadataProviderLockCount == 0)
-	{
-		RWLock.ReadUnlock();
-		GThreadCurrentMetadataProviderLock = nullptr;
-	}
-}
-
-void FMetadataProviderLock::BeginWrite()
-{
-	check(!GThreadCurrentMetadataProviderLock || GThreadCurrentMetadataProviderLock == this);
-	checkf(GThreadCurrentReadMetadataProviderLockCount == 0, TEXT("Trying to lock metadata provider for EDIT/WRITE while holding READ access"));
-	if (GThreadCurrentWriteMetadataProviderLockCount++ == 0)
-	{
-		GThreadCurrentMetadataProviderLock = this;
-		RWLock.WriteLock();
-	}
-}
-
-void FMetadataProviderLock::EndWrite()
-{
-	check(GThreadCurrentWriteMetadataProviderLockCount > 0);
-	if (--GThreadCurrentWriteMetadataProviderLockCount == 0)
-	{
-		RWLock.WriteUnlock();
-		GThreadCurrentMetadataProviderLock = nullptr;
-	}
-}
+thread_local FProviderLock::FThreadLocalState GMetadataProviderLockState;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // FMetadataProvider
@@ -117,7 +57,7 @@ FMetadataProvider::~FMetadataProvider()
 
 uint16 FMetadataProvider::RegisterMetadataType(const TCHAR* InName, const FMetadataSchema& InSchema)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 
 	check(RegisteredTypes.Num() <= MaxMetadataTypeId);
 	const uint16 Type = static_cast<uint16>(RegisteredTypes.Num());
@@ -131,7 +71,7 @@ uint16 FMetadataProvider::RegisterMetadataType(const TCHAR* InName, const FMetad
 
 uint16 FMetadataProvider::GetRegisteredMetadataType(FName InName) const
 {
-	Lock.ReadAccessCheck();
+	ReadAccessCheck();
 
 	const uint16* TypePtr = RegisteredTypesMap.Find(InName);
 	return TypePtr ? *TypePtr : InvalidMetadataType;
@@ -141,7 +81,7 @@ uint16 FMetadataProvider::GetRegisteredMetadataType(FName InName) const
 
 FName FMetadataProvider::GetRegisteredMetadataName(uint16 InType) const
 {
-	Lock.ReadAccessCheck();
+	ReadAccessCheck();
 
 	const FName* Name = RegisteredTypesMap.FindKey(InType);
 	return Name ? *Name : FName();
@@ -151,7 +91,7 @@ FName FMetadataProvider::GetRegisteredMetadataName(uint16 InType) const
 
 const FMetadataSchema* FMetadataProvider::GetRegisteredMetadataSchema(uint16 InType) const
 {
-	Lock.ReadAccessCheck();
+	ReadAccessCheck();
 
 	const int32 Index = (int32)InType;
 	return Index < RegisteredTypes.Num() ? &RegisteredTypes[Index] : nullptr;
@@ -163,10 +103,6 @@ FMetadataProvider::FMetadataThread::FMetadataThread(uint32 InThreadId, ILinearAl
 	: ThreadId(InThreadId)
 	, CurrentStack()
 	, Metadata(InAllocator, 1024)
-	, bIsClearStackScope(false)
-	, bIsRestoreSavedStackScope(false)
-	, RestoreSavedStackId(0)
-	, RestoreSavedStackSize(0)
 {
 }
 
@@ -275,9 +211,39 @@ void FMetadataProvider::InternalClearStack(FMetadataThread& InMetadataThread)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void FMetadataProvider::InternalPushSavedStack(FMetadataThread& InMetadataThread, FMetadataThread& InSavedMetadataThread, uint32 InSavedMetadataId)
+{
+	METADATA_PROVIDER_DEBUG_LOG(InMetadataThread.ThreadId, TEXT("  --> push metadata %u (from thread %u)"), InSavedMetadataId, InSavedMetadataThread.ThreadId);
+
+	auto Iterator = InSavedMetadataThread.Metadata.GetIteratorFromItem(InSavedMetadataId);
+	const FMetadataEntry* Entry = Iterator.GetCurrentItem();
+	while (true)
+	{
+		check(Entry->StoreIndex < MetadataStore.Num());
+		const FMetadataStoreEntry& StoreEntry = *MetadataStore.GetIteratorFromItem(Entry->StoreIndex);
+		const void* Data = (StoreEntry.Size > MaxInlinedMetadataSize) ? StoreEntry.Ptr : StoreEntry.Value;
+
+		if (InMetadataThread.CurrentStack.Num() == MaxMetadataStackSize)
+		{
+			METADATA_PROVIDER_ERROR(PushSavedStackErrors, TEXT("[Meta] Cannot push saved metadata %u (from thread %u) to thread %u. Stack size is too large."), InSavedMetadataId, InSavedMetadataThread.ThreadId, InMetadataThread.ThreadId);
+			break;
+		}
+
+		InternalPushStackEntry(InMetadataThread, StoreEntry.Type, Data, StoreEntry.Size);
+
+		if (Entry->StackSize == 1) // last one
+		{
+			break;
+		}
+		Entry = Iterator.PrevItem();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FMetadataProvider::PushScopedMetadata(uint32 InThreadId, uint16 InType, const void* InData, uint32 InSize)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
 
 	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("PushScopedMetadata(type=%u, size=%u)"), uint32(InType), InSize);
@@ -306,7 +272,7 @@ void FMetadataProvider::PushScopedMetadata(uint32 InThreadId, uint16 InType, con
 
 void FMetadataProvider::PopScopedMetadata(uint32 InThreadId, uint16 InType)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
 
 	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("PopScopedMetadata(type=%u)"), uint32(InType));
@@ -334,28 +300,20 @@ void FMetadataProvider::PopScopedMetadata(uint32 InThreadId, uint16 InType)
 
 void FMetadataProvider::BeginClearStackScope(uint32 InThreadId)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
 
 	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("BeginClearStackScope()"));
 
-	const uint32 ClearSavedStackId = 0;
-
 	FMetadataThread& MetadataThread = GetOrAddThread(InThreadId);
-	if (MetadataThread.bIsClearStackScope)
-	{
-		METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot begin clear stack (thread %u). Already in a clear scope."), InThreadId);
-		return;
-	}
-	MetadataThread.bIsClearStackScope = true;
 
 	// Save the current stack.
-	const uint32 MetadataId = PinAndGetId(InThreadId);
-	SavedStackMap.Add(ClearSavedStackId, { InThreadId, MetadataId });
+	const uint32 SavedMetadataId = PinAndGetId(InThreadId);
+	MetadataThread.SavedMetadataStack.Push(SavedMetadataId);
 
-	if (MetadataId != InvalidMetadataId)
+	if (SavedMetadataId != InvalidMetadataId)
 	{
-		METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> id = %u"), MetadataId);
+		METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> id = %u"), SavedMetadataId);
 	}
 
 	// Clear the current stack.
@@ -366,29 +324,26 @@ void FMetadataProvider::BeginClearStackScope(uint32 InThreadId)
 
 void FMetadataProvider::EndClearStackScope(uint32 InThreadId)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
 
 	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("EndClearStackScope()"));
 
-	const uint32 ClearSavedStackId = 0;
-
 	FMetadataThread& MetadataThread = GetOrAddThread(InThreadId);
-	if (!MetadataThread.bIsClearStackScope)
+	if (MetadataThread.SavedMetadataStack.IsEmpty())
 	{
-		METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot end clear stack (thread %u). Not in a clear scope."), InThreadId);
-		return;
-	}
-	MetadataThread.bIsClearStackScope = false;
-
-	FMetadataSavedStackInfo SavedStackInfo;
-	if (!SavedStackMap.RemoveAndCopyValue(ClearSavedStackId, SavedStackInfo))
-	{
-		METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot end clear stack (thread %u). Invalid saved stack."), InThreadId);
+		METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot end clear stack (thread %u). Clear scope stack is already empty."), InThreadId);
 		return;
 	}
 
-	if (SavedStackInfo.MetadataId == InvalidMetadataId)
+	if (MetadataThread.CurrentStack.Num() > 0)
+	{
+		UE_LOG(LogTraceServices, Warning, TEXT("[Meta] Invalid end clear stack event (thread %u). Current metadata stack is not empty."), InThreadId);
+	}
+
+	const uint32 SavedMetadataId = MetadataThread.SavedMetadataStack.Pop();
+
+	if (SavedMetadataId == InvalidMetadataId)
 	{
 		METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> empty"));
 
@@ -396,46 +351,23 @@ void FMetadataProvider::EndClearStackScope(uint32 InThreadId)
 		return;
 	}
 
-	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> id = %u"), SavedStackInfo.MetadataId);
+	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> id = %u"), SavedMetadataId);
 
-	FMetadataThread* SavedMetadataThread = GetThread(SavedStackInfo.ThreadId);
-
-	if (!SavedMetadataThread || SavedStackInfo.MetadataId >= SavedMetadataThread->Metadata.Num())
+	if (SavedMetadataId >= MetadataThread.Metadata.Num())
 	{
 		METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot end clear stack (thread %u). Invalid saved metadata."), InThreadId);
 		return;
 	}
 
-	// Push the cleared saved stack.
-	auto Iterator = SavedMetadataThread->Metadata.GetIteratorFromItem(SavedStackInfo.MetadataId);
-	const FMetadataEntry* Entry = Iterator.GetCurrentItem();
-	while (true)
-	{
-		check(Entry->StoreIndex < MetadataStore.Num());
-		const FMetadataStoreEntry& StoreEntry = *MetadataStore.GetIteratorFromItem(Entry->StoreIndex);
-		const void* Data = (StoreEntry.Size > MaxInlinedMetadataSize) ? StoreEntry.Ptr : StoreEntry.Value;
-
-		if (MetadataThread.CurrentStack.Num() == MaxMetadataStackSize)
-		{
-			METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot end clear stack (thread %u). Stack size is too large."), InThreadId);
-			break;
-		}
-
-		InternalPushStackEntry(MetadataThread, StoreEntry.Type, Data, StoreEntry.Size);
-
-		if (Entry->StackSize == 1) // last one
-		{
-			break;
-		}
-		Entry = Iterator.PrevItem();
-	}
+	// Push the saved stack.
+	InternalPushSavedStack(MetadataThread, MetadataThread, SavedMetadataId);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void FMetadataProvider::SaveStack(uint32 InThreadId, uint32 InSavedStackId)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
 
 	const uint32 MetadataId = PinAndGetId(InThreadId);
@@ -446,20 +378,24 @@ void FMetadataProvider::SaveStack(uint32 InThreadId, uint32 InSavedStackId)
 
 void FMetadataProvider::BeginRestoreSavedStackScope(uint32 InThreadId, uint32 InSavedStackId)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
+
+	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("BeginRestoreSavedStackScope()"));
 
 	FMetadataThread& MetadataThread = GetOrAddThread(InThreadId);
 
-	if (MetadataThread.bIsRestoreSavedStackScope)
-	{
-		METADATA_PROVIDER_ERROR(RestoreScopeErrors, TEXT("[Meta] Cannot begin restore saved stack (thread %u, id %u). Already in a restore scope."), InThreadId, InSavedStackId);
-		return;
-	}
-	MetadataThread.bIsRestoreSavedStackScope = true;
+	// Save the current stack.
+	const uint32 SavedMetadataId = PinAndGetId(InThreadId);
+	MetadataThread.SavedMetadataStack.Push(SavedMetadataId);
 
-	MetadataThread.RestoreSavedStackId = InSavedStackId;
-	MetadataThread.RestoreSavedStackSize = 0;
+	if (SavedMetadataId != InvalidMetadataId)
+	{
+		METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> id = %u"), SavedMetadataId);
+	}
+
+	// Clear the current stack.
+	InternalClearStack(MetadataThread);
 
 	const FMetadataSavedStackInfo* SavedStackInfo = SavedStackMap.Find(InSavedStackId);
 	if (!SavedStackInfo)
@@ -482,64 +418,56 @@ void FMetadataProvider::BeginRestoreSavedStackScope(uint32 InThreadId, uint32 In
 		return;
 	}
 
-	// Push the saved stack.
-	auto Iterator = SavedMetadataThread->Metadata.GetIteratorFromItem(SavedStackInfo->MetadataId);
-	const FMetadataEntry* Entry = Iterator.GetCurrentItem();
-	while (true)
-	{
-		check(Entry->StoreIndex < MetadataStore.Num());
-		const FMetadataStoreEntry& StoreEntry = *MetadataStore.GetIteratorFromItem(Entry->StoreIndex);
-		const void* Data = (StoreEntry.Size > MaxInlinedMetadataSize) ? StoreEntry.Ptr : StoreEntry.Value;
-
-		InternalPushStackEntry(MetadataThread, StoreEntry.Type, Data, StoreEntry.Size);
-
-		MetadataThread.RestoreSavedStackSize++;
-
-		if (Entry->StackSize == 1) // last one
-		{
-			break;
-		}
-		Entry = Iterator.PrevItem();
-	}
+	// Push the previously saved stack.
+	InternalPushSavedStack(MetadataThread, *SavedMetadataThread, SavedStackInfo->MetadataId);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void FMetadataProvider::EndRestoreSavedStackScope(uint32 InThreadId)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 	++EventCount;
 
-	FMetadataThread& MetadataThread = GetOrAddThread(InThreadId);
+	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("EndRestoreSavedStackScope()"));
 
-	if (!MetadataThread.bIsRestoreSavedStackScope)
+	FMetadataThread& MetadataThread = GetOrAddThread(InThreadId);
+	if (MetadataThread.SavedMetadataStack.IsEmpty())
 	{
-		METADATA_PROVIDER_ERROR(RestoreScopeErrors, TEXT("[Meta] Cannot end restore saved stack (thread %u). Not in a restore scope."), InThreadId);
+		METADATA_PROVIDER_ERROR(RestoreScopeErrors, TEXT("[Meta] Cannot end restore saved stack (thread %u). Restore scope stack is already empty."), InThreadId);
 		return;
 	}
-	MetadataThread.bIsRestoreSavedStackScope = false;
 
-	// Pop the pushed saved stack.
-	for (uint32 Index = MetadataThread.RestoreSavedStackSize; Index > 0; --Index)
+	// Clears the restored saved stack.
+	InternalClearStack(MetadataThread);
+
+	const uint32 SavedMetadataId = MetadataThread.SavedMetadataStack.Pop();
+
+	if (SavedMetadataId == InvalidMetadataId)
 	{
-		if (MetadataThread.CurrentStack.Num() == 0)
-		{
-			METADATA_PROVIDER_ERROR(RestoreScopeErrors, TEXT("[Meta] Cannot end restore saved stack (thread %u). Invalid current stack."), InThreadId);
-			break;
-		}
+		METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> empty"));
 
-		InternalPopStackEntry(MetadataThread);
+		// Empty stack. Nothing to push.
+		return;
 	}
 
-	MetadataThread.RestoreSavedStackId = 0;
-	MetadataThread.RestoreSavedStackSize = 0;
+	METADATA_PROVIDER_DEBUG_LOG(InThreadId, TEXT("  --> id = %u"), SavedMetadataId);
+
+	if (SavedMetadataId >= MetadataThread.Metadata.Num())
+	{
+		METADATA_PROVIDER_ERROR(ClearScopeErrors, TEXT("[Meta] Cannot end restore saved stack (thread %u). Invalid saved metadata."), InThreadId);
+		return;
+	}
+
+	// Push the saved stack.
+	InternalPushSavedStack(MetadataThread, MetadataThread, SavedMetadataId);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 uint32 FMetadataProvider::PinAndGetId(uint32 InThreadId)
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 
 	FMetadataThread* MetadataThread = GetThread(InThreadId);
 
@@ -615,7 +543,7 @@ uint32 FMetadataProvider::PinAndGetId(uint32 InThreadId)
 
 void FMetadataProvider::OnAnalysisCompleted()
 {
-	Lock.WriteAccessCheck();
+	EditAccessCheck();
 
 	if (MetaScopeErrors > 0)
 	{
@@ -638,7 +566,7 @@ void FMetadataProvider::OnAnalysisCompleted()
 
 uint32 FMetadataProvider::GetMetadataStackSize(uint32 InThreadId, uint32 InMetadataId) const
 {
-	Lock.ReadAccessCheck();
+	ReadAccessCheck();
 
 	const FMetadataThread* MetadataThread = GetThread(InThreadId);
 
@@ -657,7 +585,7 @@ uint32 FMetadataProvider::GetMetadataStackSize(uint32 InThreadId, uint32 InMetad
 
 bool FMetadataProvider::GetMetadata(uint32 InThreadId, uint32 InMetadataId, uint32 InStackDepth, uint16& OutType, const void*& OutData, uint32& OutSize) const
 {
-	Lock.ReadAccessCheck();
+	ReadAccessCheck();
 
 	const FMetadataThread* MetadataThread = GetThread(InThreadId);
 
@@ -698,7 +626,7 @@ bool FMetadataProvider::GetMetadata(uint32 InThreadId, uint32 InMetadataId, uint
 
 void FMetadataProvider::EnumerateMetadata(uint32 InThreadId, uint32 InMetadataId, TFunctionRef<bool(uint32 StackDepth, uint16 Type, const void* Data, uint32 Size)> Callback) const
 {
-	Lock.ReadAccessCheck();
+	ReadAccessCheck();
 
 	const FMetadataThread* MetadataThread = GetThread(InThreadId);
 
@@ -731,7 +659,7 @@ void FMetadataProvider::EnumerateMetadata(uint32 InThreadId, uint32 InMetadataId
 
 FName GetMetadataProviderName()
 {
-	static FName Name(TEXT("MetadataProvider"));
+	static const FName Name("MetadataProvider");
 	return Name;
 }
 
@@ -740,6 +668,13 @@ FName GetMetadataProviderName()
 const IMetadataProvider* ReadMetadataProvider(const IAnalysisSession& Session)
 {
 	return Session.ReadProvider<IMetadataProvider>(GetMetadataProviderName());
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+IEditableMetadataProvider* EditMetadataProvider(IAnalysisSession& Session)
+{
+	return Session.EditProvider<IEditableMetadataProvider>(GetMetadataProviderName());
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

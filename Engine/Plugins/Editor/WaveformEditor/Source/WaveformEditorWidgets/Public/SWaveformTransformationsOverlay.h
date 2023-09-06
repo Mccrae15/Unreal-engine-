@@ -5,7 +5,7 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
 
-class FWaveformEditorTransportCoordinator;
+class FSparseSampledSequenceTransportCoordinator;
 class IWaveformTransformationRenderer;
 class SOverlay;
 class SWaveformTransformationRenderLayer;
@@ -16,14 +16,20 @@ class WAVEFORMEDITORWIDGETS_API SWaveformTransformationsOverlay : public SCompou
 {
 public:
 
-	SLATE_BEGIN_ARGS(SWaveformTransformationsOverlay) {}
+	SLATE_BEGIN_ARGS(SWaveformTransformationsOverlay) 
+		: _AnchorsRatioConverter([](const float InRatio) {return InRatio; })
+	{
+	}
+
 		SLATE_DEFAULT_SLOT(FArguments, InArgs)
+
+		SLATE_ARGUMENT(TFunction<float(const float)>, AnchorsRatioConverter)
+
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, TArrayView< const FTransformationLayerRenderInfo> InTransformationRenderers, TSharedRef<FWaveformEditorTransportCoordinator> InTransportCoordinator);
+	void Construct(const FArguments& InArgs, TArrayView< const FTransformationLayerRenderInfo> InTransformationRenderers);
 	void OnLayerChainGenerated(FTransformationLayerRenderInfo* FirstLayerPtr, const int32 NLayers);
 	void UpdateLayerConstraints();
-	void OnNewWaveformDisplayRange(const TRange<float> NewDisplayRange);
 
 	FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -36,13 +42,8 @@ private:
 	void UpdateAnchors();
 	
 	TSharedPtr<SOverlay> MainOverlayPtr;
-	TArray<TSharedPtr<SWaveformTransformationRenderLayer>> TransformationLayers;
+	TArray<TSharedPtr<SWidget>> TransformationLayers;
 	TArray<SConstraintCanvas::FSlot*> LayersSlots;
 	TArrayView<const FTransformationLayerRenderInfo> TransformationRenderers;
-	TSharedPtr<FWaveformEditorTransportCoordinator> TransportCoordinator = nullptr;
-
-	typedef FReply(SWidget::*WidgetMouseInputFunction)(const FGeometry&, const FPointerEvent&);
-	
-	FReply RouteMouseInput(WidgetMouseInputFunction InputFunction, const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
-	FCursorReply RouteCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const; 
+	TFunction<float(const float)> AnchorsRatioConverter;
 };

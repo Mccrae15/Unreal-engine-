@@ -272,6 +272,34 @@ public:
 		return Pairs.Num();
 	}
 
+	/** @return The max valid index of the elements in the sparse storage. */
+	[[nodiscard]] FORCEINLINE int32 GetMaxIndex() const
+	{
+		return Pairs.GetMaxIndex();
+	}
+
+	/**
+	 * Checks whether an element id is valid.
+	 * @param Id - The element id to check.
+	 * @return true if the element identifier refers to a valid element in this map.
+	 */
+	[[nodiscard]] FORCEINLINE bool IsValidId(FSetElementId Id) const
+	{
+		return Pairs.IsValidId(Id);
+	}
+
+	/** Return a mapped pair by internal identifier. Element must be valid (see @IsValidId). */
+	[[nodiscard]] FORCEINLINE ElementType& Get(FSetElementId Id)
+	{
+		return Pairs[Id];
+	}
+
+	/** Return a mapped pair by internal identifier.  Element must be valid (see @IsValidId).*/
+	[[nodiscard]] FORCEINLINE const ElementType& Get(FSetElementId Id) const
+	{
+		return Pairs[Id];
+	}
+
 	/**
 	 * Get the unique keys contained within this map.
 	 *
@@ -488,9 +516,9 @@ public:
 	 *          the subset of elements for which the functor returns true.
 	 */
 	template <typename Predicate>
-	TMap<KeyType, ValueType> FilterByPredicate(Predicate Pred) const
+	TMap<KeyType, ValueType, SetAllocator, KeyFuncs> FilterByPredicate(Predicate Pred) const
 	{
-		TMap<KeyType, ValueType> FilterResults;
+		TMap<KeyType, ValueType, SetAllocator, KeyFuncs> FilterResults;
 		FilterResults.Reserve(Pairs.Num());
 		for (const ElementType& Pair : Pairs)
 		{
@@ -694,7 +722,7 @@ public:
 		OutArray.Empty(Pairs.Num());
 		for (typename ElementSetType::TConstIterator PairIt(Pairs); PairIt; ++PairIt)
 		{
-			new(OutArray) KeyType(PairIt->Key);
+			OutArray.Add(PairIt->Key);
 		}
 	}
 
@@ -708,7 +736,7 @@ public:
 		OutArray.Empty(Pairs.Num());
 		for (typename ElementSetType::TConstIterator PairIt(Pairs); PairIt; ++PairIt)
 		{
-			new(OutArray) ValueType(PairIt->Value);
+			OutArray.Add(PairIt->Value);
 		}
 	}
 
@@ -770,6 +798,11 @@ protected:
 		FORCEINLINE ItKeyType&   Key()   const { return PairIt->Key; }
 		FORCEINLINE ItValueType& Value() const { return PairIt->Value; }
 
+		[[nodiscard]] FORCEINLINE FSetElementId GetId() const
+		{
+			return PairIt.GetId();
+		}
+
 		FORCEINLINE PairType& operator* () const { return  *PairIt; }
 		FORCEINLINE PairType* operator->() const { return &*PairIt; }
 
@@ -810,8 +843,15 @@ protected:
 			return !(bool)*this;
 		}
 
+		[[nodiscard]] FORCEINLINE FSetElementId GetId() const
+		{
+			return SetIt.GetId();
+		}
 		FORCEINLINE ItKeyType&   Key() const { return SetIt->Key; }
 		FORCEINLINE ItValueType& Value() const { return SetIt->Value; }
+
+		FORCEINLINE decltype(auto) operator* () const { return SetIt.operator* (); }
+		FORCEINLINE decltype(auto) operator->() const { return SetIt.operator->(); }
 
 	protected:
 		SetItType SetIt;
@@ -1368,7 +1408,7 @@ public:
 	{
 		for (typename Super::ElementSetType::TConstKeyIterator It(Super::Pairs, Key); It; ++It)
 		{
-			new(OutValues) ValueType(It->Value);
+			OutValues.Add(It->Value);
 		}
 
 		if (bMaintainOrder)
@@ -1673,6 +1713,7 @@ public:
 		return Pairs.Num();
 	}
 
+	/** @return The max valid index of the elements in the sparse storage. */
 	int32 GetMaxIndex() const
 	{
 		return Pairs.GetMaxIndex();

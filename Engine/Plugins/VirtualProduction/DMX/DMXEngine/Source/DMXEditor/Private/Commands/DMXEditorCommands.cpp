@@ -26,6 +26,10 @@ void FDMXEditorCommands::RegisterCommands()
 	UI_COMMAND(OpenPatchTool, "Open Patch Tool", "Open the patch tool - Useful to patch many fixtures at once.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ToggleReceiveDMX, "Receive DMX", "Sets whether DMX is received in editor", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Alt, EKeys::M));
 	UI_COMMAND(ToggleSendDMX, "Send DMX", "Sets whether DMX is sent from editor", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Alt, EKeys::N));
+
+	UI_COMMAND(Align, "Align", "Aligns selected patches", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(Stack, "Stack", "Stacks selected patches", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(AutoAssignSelectedUniverse, "Auto-Assign in selected Universe", "Auto-assigns selected patches to first consecutive range of free channels, starting from the selected Universe.", EUserInterfaceActionType::Button, FInputChord());
 }
 
 #undef LOCTEXT_NAMESPACE

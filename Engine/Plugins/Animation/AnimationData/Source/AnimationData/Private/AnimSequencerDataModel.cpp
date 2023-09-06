@@ -20,9 +20,12 @@
 
 #include "AnimSequencerHelpers.h"
 #include "Animation/AnimationSettings.h"
-#include "MovieScene/Private/Channels/MovieSceneCurveChannelImpl.h"
 #include "Compilation/MovieSceneCompiledDataManager.h"
 #include "UObject/UObjectThreadContext.h"
+#include "Animation/AnimCurveTypes.h"
+#include "Runtime/MovieScene/Private/Channels/MovieSceneCurveChannelImpl.h"
+#include "Containers/StackTracker.h"
+#include "AnimationCompression.h"
 
 #define LOCTEXT_NAMESPACE "AnimSequencerDataModel"
 
@@ -71,7 +74,7 @@ void UAnimationSequencerDataModel::RemoveOutOfDateControls() const
 					Hierarchy->ForEach<FRigCurveElement>([this, &ElementKeysToRemove](const FRigCurveElement* CurveElement) -> bool
 					{
 						const FName TargetCurveName = CurveElement->GetName();
-						if(!LegacyCurveData.FloatCurves.ContainsByPredicate([TargetCurveName](const FFloatCurve& Curve) { return Curve.Name.DisplayName == TargetCurveName; }))
+						if(!LegacyCurveData.FloatCurves.ContainsByPredicate([TargetCurveName](const FFloatCurve& Curve) { return Curve.GetName() == TargetCurveName; }))
 						{
 							ElementKeysToRemove.Add(CurveElement->GetKey());	
 						}
@@ -335,7 +338,7 @@ void UAnimationSequencerDataModel::GetBoneTrackNames(TArray<FName>& OutNames) co
 	if(const UMovieSceneControlRigParameterSection* Section = GetFKControlRigSection())
 	{
 		for (const FTransformParameterNameAndCurves& TransformParameter : Section->GetTransformParameterNamesAndCurves())
-	{
+		{
 			OutNames.Add(UFKControlRig::GetControlTargetName(TransformParameter.ParameterName, ERigElementType::Bone));
 		}
 	}
@@ -386,7 +389,7 @@ const FFloatCurve* UAnimationSequencerDataModel::FindFloatCurve(const FAnimation
 	ensure(CurveIdentifier.CurveType == ERawCurveTrackTypes::RCT_Float);
 	for (const FFloatCurve& FloatCurve : GetCurveData().FloatCurves)
 	{
-		if (FloatCurve.Name == CurveIdentifier.InternalName || (FloatCurve.Name.UID == CurveIdentifier.InternalName.UID && FloatCurve.Name.UID != SmartName::MaxUID))
+		if (FloatCurve.GetName() == CurveIdentifier.CurveName)
 		{
 			return &FloatCurve;
 		}
@@ -400,7 +403,7 @@ const FTransformCurve* UAnimationSequencerDataModel::FindTransformCurve(const FA
 	ensure(CurveIdentifier.CurveType == ERawCurveTrackTypes::RCT_Transform);
     for (const FTransformCurve& TransformCurve : GetCurveData().TransformCurves)
     {
-    	if (TransformCurve.Name == CurveIdentifier.InternalName || (TransformCurve.Name.UID == CurveIdentifier.InternalName.UID && TransformCurve.Name.UID != SmartName::MaxUID))
+    	if (TransformCurve.GetName() == CurveIdentifier.CurveName)
     	{
     		return &TransformCurve;
     	}
@@ -591,9 +594,10 @@ UAnimSequence* UAnimationSequencerDataModel::GetAnimationSequence() const
 
 FGuid UAnimationSequencerDataModel::GenerateGuid() const
 {	
+	FGuid ReturnGuid;
 	if (CachedRawDataGUID.IsValid())
 	{
-		return CachedRawDataGUID;
+		ReturnGuid = CachedRawDataGUID;
 	}
 	else
 	{
@@ -672,7 +676,7 @@ FGuid UAnimationSequencerDataModel::GenerateGuid() const
 
 		for (const FTransformCurve& Curve : GetTransformCurves())
 		{
-		   	const FString CurveName = Curve.Name.DisplayName.ToString();
+		   	const FString CurveName = Curve.GetName().ToString();
     		UpdateSHAWithArray(CurveName.GetCharArray());
 
 			auto UpdateWithComponent = [&UpdateWithFloatCurve](const FVectorCurve& VectorCurve)
@@ -694,8 +698,10 @@ FGuid UAnimationSequencerDataModel::GenerateGuid() const
 		Sha.GetHash(reinterpret_cast<uint8*>(Hash));
 		const FGuid Guid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
 		
-		return Guid;
+		ReturnGuid = Guid;
 	}
+
+	return ReturnGuid;
 }
 
 TScriptInterface<IAnimationDataController> UAnimationSequencerDataModel::GetController()
@@ -744,7 +750,7 @@ void UAnimationSequencerDataModel::OnNotify(const EAnimDataModelNotifyType& Noti
 {
 	Collector.Handle(NotifyType);
 
-	if (Collector.IsNotWithinBracket() && bPopulated)
+	if (bPopulated)
 	{
 		// Once the model has been populated and a modification is made - invalidate the cached GUID
 		auto ResetCachedGUID = [this]()
@@ -752,7 +758,7 @@ void UAnimationSequencerDataModel::OnNotify(const EAnimDataModelNotifyType& Noti
 			// Prevent reset when being populated inside of upgrade path (always happens in UAnimSequenceBase::PostLoad)
 			if (CachedRawDataGUID.IsValid() && (!Collector.Contains(EAnimDataModelNotifyType::Populated) || !FUObjectThreadContext::Get().IsRoutingPostLoad))
 			{
-				CachedRawDataGUID.Invalidate();			
+				CachedRawDataGUID.Invalidate();
 			}
 		};
 
@@ -776,29 +782,41 @@ void UAnimationSequencerDataModel::OnNotify(const EAnimDataModelNotifyType& Noti
 				bRefreshed = true;
 			}
         };	
-		
-		const TArray<EAnimDataModelNotifyType> CurveNotifyTypes = {EAnimDataModelNotifyType::CurveAdded, EAnimDataModelNotifyType::CurveChanged, EAnimDataModelNotifyType::CurveRenamed, EAnimDataModelNotifyType::CurveRemoved,
+
+		if (Collector.IsNotWithinBracket())
+		{
+			const TArray<EAnimDataModelNotifyType> CurveNotifyTypes = {EAnimDataModelNotifyType::CurveAdded, EAnimDataModelNotifyType::CurveChanged, EAnimDataModelNotifyType::CurveRenamed, EAnimDataModelNotifyType::CurveRemoved,
 			EAnimDataModelNotifyType::CurveFlagsChanged, EAnimDataModelNotifyType::CurveScaled, EAnimDataModelNotifyType::CurveColorChanged, EAnimDataModelNotifyType::Populated, EAnimDataModelNotifyType::Reset };
-		if(Collector.Contains(CurveNotifyTypes))
-		{
-			if(!ValidationMode)
+			if(Collector.Contains(CurveNotifyTypes))
 			{
-				GenerateLegacyCurveData();
+				if(!ValidationMode)
+				{
+					GenerateLegacyCurveData();
+				}
+				RefreshControlsAndProxy();
+				ResetCachedGUID();
 			}
-			RefreshControlsAndProxy();
-			ResetCachedGUID();
-		}
 
-		const TArray<EAnimDataModelNotifyType> BonesNotifyTypes = {EAnimDataModelNotifyType::TrackAdded, EAnimDataModelNotifyType::TrackChanged, EAnimDataModelNotifyType::TrackRemoved, EAnimDataModelNotifyType::Populated, EAnimDataModelNotifyType::Reset };
-		if(Collector.Contains(BonesNotifyTypes))
-		{
-			RefreshControlsAndProxy();
-			ResetCachedGUID();
-		}
+			const TArray<EAnimDataModelNotifyType> BonesNotifyTypes = {EAnimDataModelNotifyType::TrackAdded, EAnimDataModelNotifyType::TrackChanged, EAnimDataModelNotifyType::TrackRemoved, EAnimDataModelNotifyType::Populated, EAnimDataModelNotifyType::Reset };
+			if(Collector.Contains(BonesNotifyTypes))
+			{
+				RefreshControlsAndProxy();
+				ResetCachedGUID();
+			}
 
-		if (Collector.Contains(EAnimDataModelNotifyType::Populated))
+			if (Collector.Contains(EAnimDataModelNotifyType::Populated))
+			{
+				RefreshControlsAndProxy();
+			}
+		}
+		else
 		{
-			RefreshControlsAndProxy();
+			// These changes can cause subsequent evaluation to fail due to mismatching data (related to changed controls)
+			const TArray<EAnimDataModelNotifyType> RigModificationTypes = {EAnimDataModelNotifyType::TrackAdded, EAnimDataModelNotifyType::TrackRemoved, EAnimDataModelNotifyType::CurveAdded, EAnimDataModelNotifyType::CurveRenamed, EAnimDataModelNotifyType::CurveRemoved};
+			if(Collector.Contains(RigModificationTypes))
+			{
+				RefreshControlsAndProxy();
+			}
 		}
 				
 		ValidateData();
@@ -814,16 +832,18 @@ UMovieSceneControlRigParameterSection* UAnimationSequencerDataModel::GetFKContro
 {
 	if (MovieScene)
 	{
-		const UMovieSceneControlRigParameterTrack* Track = GetControlRigTrack();
-		for (UMovieSceneSection* TrackSection : Track->GetAllSections())
+		if(const UMovieSceneControlRigParameterTrack* Track = GetControlRigTrack())
 		{
-			if (UMovieSceneControlRigParameterSection* Section = Cast<UMovieSceneControlRigParameterSection>(TrackSection))
+			for (UMovieSceneSection* TrackSection : Track->GetAllSections())
 			{
-				if (const UControlRig* ControlRig = Section->GetControlRig())
+				if (UMovieSceneControlRigParameterSection* Section = Cast<UMovieSceneControlRigParameterSection>(TrackSection))
 				{
-					if (ControlRig->IsA<UFKControlRig>())
+					if (const UControlRig* ControlRig = Section->GetControlRig())
 					{
-						return Section;
+						if (ControlRig->IsA<UFKControlRig>())
+						{
+							return Section;
+						}
 					}
 				}
 			}
@@ -846,8 +866,6 @@ void UAnimationSequencerDataModel::GenerateLegacyCurveData()
 			{
 				if (const UControlRig* ControlRig = Section->GetControlRig())
 				{
-					if (USkeleton* Skeleton = GetSkeleton())
-					{
 						if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
 						{
 							const FString SequencerSuffix(TEXT("_Sequencer"));
@@ -856,7 +874,7 @@ void UAnimationSequencerDataModel::GenerateLegacyCurveData()
 							{
 								LegacyCurveData.FloatCurves.RemoveAll([SequencerSuffix](const FFloatCurve& FloatCurve)
 								{
-									return FloatCurve.Name.DisplayName.ToString().EndsWith(SequencerSuffix);
+								return FloatCurve.GetName().ToString().EndsWith(SequencerSuffix);
 								});
 							}
 							else
@@ -864,7 +882,7 @@ void UAnimationSequencerDataModel::GenerateLegacyCurveData()
 								LegacyCurveData.FloatCurves.Empty();
 							}				
 
-							Hierarchy->ForEach<FRigCurveElement>([Hierarchy,Skeleton, this, ScalarCurves, FrameRate = GetFrameRate(), SequencerSuffix](const FRigCurveElement* CurveElement) -> bool
+						Hierarchy->ForEach<FRigCurveElement>([Hierarchy, this, ScalarCurves, FrameRate = GetFrameRate(), SequencerSuffix](const FRigCurveElement* CurveElement) -> bool
 							{
 								const FRigElementKey ControlKey(UFKControlRig::GetControlName(CurveElement->GetName(), ERigElementType::Curve), ERigElementType::Control);
 								if (const FRigControlElement* Element = Hierarchy->Find<FRigControlElement>(ControlKey))
@@ -872,18 +890,17 @@ void UAnimationSequencerDataModel::GenerateLegacyCurveData()
 									FFloatCurve& FloatCurve = LegacyCurveData.FloatCurves.AddDefaulted_GetRef();
 									if (RetainFloatCurves)
 									{
-										FloatCurve.Name.DisplayName = FName(*(CurveElement->GetName().ToString() + TEXT("_Sequencer")));
+									FloatCurve.SetName(FName(*(CurveElement->GetName().ToString() + TEXT("_Sequencer"))));
 									}
 									else
 									{
-										FloatCurve.Name.DisplayName = CurveElement->GetName();	
+									FloatCurve.SetName(CurveElement->GetName());
 									}						
 								
-									Skeleton->VerifySmartName(USkeleton::AnimCurveMappingName, FloatCurve.Name);
 									FloatCurve.Color = Element->Settings.ShapeColor;
 									
-									const FAnimationCurveIdentifier CurveId(FloatCurve.Name, ERawCurveTrackTypes::RCT_Float);
-									if (!RetainFloatCurves || !FloatCurve.Name.DisplayName.ToString().Contains(SequencerSuffix))
+								const FAnimationCurveIdentifier CurveId(FloatCurve.GetName(), ERawCurveTrackTypes::RCT_Float);
+								if (!RetainFloatCurves || !FloatCurve.GetName().ToString().Contains(SequencerSuffix))
 									{
 										if (CurveIdentifierToMetaData.Contains(CurveId))
 										{
@@ -913,7 +930,6 @@ void UAnimationSequencerDataModel::GenerateLegacyCurveData()
 			}
 		}
 	}
-}
 
 void UAnimationSequencerDataModel::ValidateData() const
 {		
@@ -1003,7 +1019,7 @@ void UAnimationSequencerDataModel::ValidateLegacyAgainstControlRigData() const
 		// Validate curve data against controls
 		for (const FFloatCurve& FloatCurve : LegacyCurveData.FloatCurves)
 		{
-			const FName CurveName = FloatCurve.Name.DisplayName;					
+			const FName CurveName = FloatCurve.GetName();					
 			const FRigElementKey CurveKey(CurveName, ERigElementType::Curve);
 			const FRigCurveElement* CurveElement = Hierarchy->Find<FRigCurveElement>(CurveKey);
 			if (!CurveElement)
@@ -1154,15 +1170,17 @@ void UAnimationSequencerDataModel::GeneratePoseData(UControlRig* ControlRig, FAn
 			RigPose.ResetToRefPose();
 			const FBoneContainer& RequiredBones = RigPose.GetBoneContainer();
 			FBlendedCurve& Curve = InOutPoseData.GetCurve();
+			Curve.Empty();
+
 			UE::Anim::Retargeting::FRetargetingScope RetargetingScope(GetSkeleton(), RigPose, EvaluationContext);
 			
+			const FReferenceSkeleton& MeshRefSkeleton = RequiredBones.GetReferenceSkeleton();
+			// Called during compression that can occur while GC is in progress, marking weakptrs as unreachable temporarily
+			const FReferenceSkeleton& SkeletonRefSkeleton = RequiredBones.GetSkeletonAsset(true)->GetReferenceSkeleton();
+
 			// Populate bone/curve elements to Pose/Curve indices
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_GetMappings);
-				const FReferenceSkeleton& MeshRefSkeleton = RequiredBones.GetReferenceSkeleton();
-				// Called during compression that can occur while GC is in progress, marking weakptrs as unreachable temporarily
-				const FReferenceSkeleton& SkeletonRefSkeleton = RequiredBones.GetSkeletonAsset(true)->GetReferenceSkeleton();
-
 				RigHierarchy->ForEach<FRigBoneElement>([&MeshRefSkeleton, &RequiredBones, &SkeletonRefSkeleton, &RigHierarchy, &RetargetingScope, &RigPose](const FRigBoneElement* BoneElement) -> bool
 				{
 					const FName& BoneName = BoneElement->GetName();
@@ -1170,39 +1188,28 @@ void UAnimationSequencerDataModel::GeneratePoseData(UControlRig* ControlRig, FAn
 					if (BoneIndex != INDEX_NONE)
 					{
 						const int32 SkeletonBoneIndex = SkeletonRefSkeleton.FindBoneIndex(BoneName);
-						const FCompactPoseBoneIndex CompactPoseBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(SkeletonBoneIndex);
-						if (CompactPoseBoneIndex != INDEX_NONE)
+						if (SkeletonBoneIndex != INDEX_NONE)
 						{
-							RetargetingScope.AddTrackedBone(CompactPoseBoneIndex, SkeletonBoneIndex);
-							// Retrieve evaluated bone transform from Hierarchy
-							RigPose[CompactPoseBoneIndex] = RigHierarchy->GetLocalTransform(BoneElement->GetKey());
+							const FCompactPoseBoneIndex CompactPoseBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(SkeletonBoneIndex);
+							if (CompactPoseBoneIndex != INDEX_NONE)
+							{
+								RetargetingScope.AddTrackedBone(CompactPoseBoneIndex, SkeletonBoneIndex);
+								// Retrieve evaluated bone transform from Hierarchy
+								RigPose[CompactPoseBoneIndex] = RigHierarchy->GetLocalTransform(BoneElement->GetKey());
+							}
 						}
 					}
 
 					return true;
 				});
 
-				if (Curve.IsValid())
-				{
-					// Called during compression that can occur while GC is in progress, marking weakptrs as unreachable temporarily
-					const FSmartNameMapping* SmartNameMapping = RequiredBones.GetSkeletonAsset(true)->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-					RigHierarchy->ForEach<FRigCurveElement>([this, &RigHierarchy, &Curve, SmartNameMapping](const FRigCurveElement* CurveElement) -> bool
+				RigHierarchy->ForEach<FRigCurveElement>([this, &RigHierarchy, &Curve](const FRigCurveElement* CurveElement) -> bool
 					{
 						const FName& CurveName = CurveElement->GetName();
-						const SmartName::UID_Type CurveIndex = SmartNameMapping->FindUID(CurveName);
-						if (CurveIndex != INDEX_NONE)
-						{
-							if (Curve.IsEnabled(CurveIndex))
-							{
-								Curve.Set(CurveIndex, RigHierarchy->GetCurveValue(CurveElement->GetKey()));
-							}
-							
-						}
+					Curve.Add(CurveName, RigHierarchy->GetCurveValue(CurveElement->GetKey()));
 						return true;
 					});
 				}
-
-			}			
 
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_NormalizeRotations);
@@ -1210,7 +1217,7 @@ void UAnimationSequencerDataModel::GeneratePoseData(UControlRig* ControlRig, FAn
 			}
 
 			// Apply any additive transform curves - if requested and any are set
-			if (!RigPose.GetBoneContainer().ShouldUseSourceData())
+			if (!RequiredBones.ShouldUseSourceData())
 			{
 				for (const FTransformCurve& TransformCurve : GetTransformCurves())
 				{
@@ -1221,11 +1228,12 @@ void UAnimationSequencerDataModel::GeneratePoseData(UControlRig* ControlRig, FAn
 					}
 			
 					// Add or retrieve curve
-					const FName& CurveName = TransformCurve.Name.DisplayName;
+					const FName& CurveName = TransformCurve.GetName();
 					// note we're not checking Curve.GetCurveTypeFlags() yet
-					FTransform Value = TransformCurve.Evaluate(EvaluationContext.SampleFrameRate.AsSeconds(EvaluationContext.SampleTime), 1.f);
+					FTransform Value = TransformCurve.Evaluate(static_cast<float>(EvaluationContext.SampleFrameRate.AsSeconds(EvaluationContext.SampleTime)), 1.f);
 
-					const FCompactPoseBoneIndex BoneIndex(RigPose.GetBoneContainer().GetPoseBoneIndexForBoneName(CurveName));
+					const FSkeletonPoseBoneIndex SkeletonBoneIndex = FSkeletonPoseBoneIndex(SkeletonRefSkeleton.FindBoneIndex(CurveName));
+					const FCompactPoseBoneIndex BoneIndex(RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(SkeletonBoneIndex));
 					if(BoneIndex != INDEX_NONE)
 					{
 						const FTransform LocalTransform = RigPose[BoneIndex];
@@ -1265,7 +1273,7 @@ void UAnimationSequencerDataModel::GeneratePoseData(UControlRig* ControlRig, FAn
 				// Evaluate attributes at requested time interval
 				for (const FAnimatedBoneAttribute& Attribute : AnimatedBoneAttributes)
 				{
-					const FCompactPoseBoneIndex PoseBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(Attribute.Identifier.GetBoneIndex());
+					const FCompactPoseBoneIndex PoseBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(FSkeletonPoseBoneIndex(Attribute.Identifier.GetBoneIndex()));
 					// Only add attribute if the bone its tied to exists in the currently evaluated set of bones
 					if(PoseBoneIndex.IsValid())
 					{
@@ -1346,7 +1354,7 @@ void UAnimationSequencerDataModel::EvaluateTrack(UMovieSceneControlRigParameterT
 					{
 						FEulerTransform EulerTransform(FEulerTransform::Identity);
 					
-						const double Alpha = BoneSampleTime.GetSubFrame();
+						const float Alpha = BoneSampleTime.GetSubFrame();
 						auto EvaluateToTransform = [&TypedParameter](const FFrameNumber& Frame, FTransform& InOutTransform, TMovieSceneCurveChannelImpl<FMovieSceneFloatChannel>::FTimeEvaluationCache* Cache)
 						{
 							auto EvaluateValue = [Frame, Cache](const auto& Channel, auto& Target)
@@ -1467,7 +1475,7 @@ FTransformCurve* UAnimationSequencerDataModel::FindMutableTransformCurveById(con
 {
 	for (FTransformCurve& TransformCurve : LegacyCurveData.TransformCurves)
 	{
-		if (TransformCurve.Name == CurveIdentifier.InternalName || (TransformCurve.Name.UID == CurveIdentifier.InternalName.UID && TransformCurve.Name.UID != SmartName::MaxUID))
+		if (TransformCurve.GetName() == CurveIdentifier.CurveName)
 		{
 			return &TransformCurve;
 		}
@@ -1480,7 +1488,7 @@ FFloatCurve* UAnimationSequencerDataModel::FindMutableFloatCurveById(const FAnim
 {
 	for (FFloatCurve& FloatCurve : LegacyCurveData.FloatCurves)
 	{
-		if (FloatCurve.Name == CurveIdentifier.InternalName || (FloatCurve.Name.UID == CurveIdentifier.InternalName.UID && FloatCurve.Name.UID != SmartName::MaxUID))
+		if (FloatCurve.GetName() == CurveIdentifier.CurveName)
 		{
 			return &FloatCurve;
 		}

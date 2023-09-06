@@ -4,6 +4,7 @@
 #include "Async/MappedFileHandle.h"
 #include "HAL/IConsoleManager.h"
 #include "IO/IoDispatcher.h"
+#include "Math/GuardedInt.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Optional.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
@@ -150,14 +151,18 @@ FArchive& operator<<(FArchive& Ar, FBulkMetaResource& BulkMeta)
 		Ar << BulkMeta.ElementCount;
 		Ar << BulkMeta.SizeOnDisk;
 		Ar << BulkMeta.Offset;
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (UNLIKELY(BulkMeta.Flags & BULKDATA_BadDataVersion))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			if (Ar.IsLoading())
 			{
 				uint16 DummyValue;
 				Ar << DummyValue;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				BulkMeta.Flags = static_cast<EBulkDataFlags>(BulkMeta.Flags & ~BULKDATA_BadDataVersion);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 
@@ -174,13 +179,17 @@ FArchive& operator<<(FArchive& Ar, FBulkMetaResource& BulkMeta)
 		SerializeAsInt32(Ar, BulkMeta.SizeOnDisk);
 		Ar << BulkMeta.Offset;
 		
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		if (UNLIKELY(BulkMeta.Flags & BULKDATA_BadDataVersion))
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			if (Ar.IsLoading())
 			{
 				uint16 DummyValue;
 				Ar << DummyValue;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				BulkMeta.Flags = static_cast<EBulkDataFlags>(BulkMeta.Flags & ~BULKDATA_BadDataVersion);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 		
@@ -195,10 +204,136 @@ FArchive& operator<<(FArchive& Ar, FBulkMetaResource& BulkMeta)
 	return Ar;
 }
 
+/** 
+ * Attempt to return the best debug name we can from a given archive.
+ * First we check to see the archive has a FLinkerLoad from which we
+ * can find the name of the package being loaded from. If not we 
+ * return an unknown string as the FArchive name is often not very 
+ * useful for identification purposes.
+ */
+FString GetDebugNameFromArchive(FArchive& Ar)
+{
+	if (FLinkerLoad* LinkerLoad = Cast<FLinkerLoad>(Ar.GetLinker()))
+	{
+		return LinkerLoad->GetDebugName();
+	}
+	else
+	{
+		return TEXT("Unknown");
+	}
+}
+
+bool FBulkMetaData::FromSerialized(FArchive& Ar, int64 ElementSize, FBulkMetaData& OutMetaData, int64& OutDuplicateOffset)
+{
+	if (Ar.IsError())
+	{
+		OutMetaData = FBulkMetaData();
+		return false;
+	}
+
+	FBulkMetaResource Resource;
+	Ar << Resource;
+
+	if (Ar.IsError())
+	{
+		// Note that setting the error flag on the archive is not enough to stop the package from being loaded so for now we 
+		// need to fatal error to prevent the process from continuing to use the corrupted package.
+		UE_LOG(LogSerialization, Fatal, TEXT("Bulkdata error when serializing '%s', could not serialize FBulkMetaResource correctly"), *GetDebugNameFromArchive(Ar));
+		OutMetaData = FBulkMetaData();
+		return false;
+	}
+
+	if (Resource.ElementCount > 0)
+	{
+		// TODO: This would be a good use case for FGuardedInt64 once it is moved to core
+		FGuardedInt64 MetadataSize = FGuardedInt64(Resource.ElementCount) * ElementSize;
+		if (MetadataSize.IsValid())
+		{
+			OutMetaData.SetSize(MetadataSize.Get(0));
+		}
+		else
+		{
+			// We should only get here if the package is severely corrupted (which should get detected earlier in package loading)
+			// Note that setting the error flag on the archive is not enough to stop the package from being loaded so for now we 
+			// need to fatal error to prevent the process from continuing to use the corrupted package.
+			Ar.SetError();
+
+			UE_LOG(LogSerialization, Fatal,
+				TEXT("Bulkdata error when serializing '%s', ElementCount (%" INT64_FMT ") and ElementSize (%" INT64_FMT ") would cause an int64 overflow"),
+				*GetDebugNameFromArchive(Ar),
+				Resource.ElementCount,
+				ElementSize);
+
+			OutMetaData = FBulkMetaData();
+			return false;
+		}
+	}
+
+	OutMetaData.SetSizeOnDisk(Resource.SizeOnDisk);
+	OutMetaData.SetOffset(Resource.Offset);
+	OutMetaData.SetFlags(Resource.Flags);
+
+	check(Resource.ElementCount <= 0 || OutMetaData.GetSize() == Resource.ElementCount * ElementSize);
+	check(OutMetaData.GetOffset() == Resource.Offset);
+	check(OutMetaData.GetFlags() == Resource.Flags);
+
+#if !USE_RUNTIME_BULKDATA
+	check(Resource.ElementCount <= 0 || OutMetaData.GetSizeOnDisk() == Resource.SizeOnDisk);
+#endif
+
+	OutDuplicateOffset = Resource.DuplicateOffset;
+
+	return true;
+}
+
+/**
+ * Bulkdata payload lengths are stored as type int64 but FMemory::Malloc takes SIZE_T which could potentially
+ * be 32bit. This utility helps convert between the two and makes sure that if SizeInBytes exceeds the max size
+ * that FMemory::Malloc accepts that we return nullptr rather than a smaller buffer than was requested.
+*/
+inline void* SafeMalloc(int64 SizeInBytes, uint32 Alignment)
+{
+#if !PLATFORM_32BITS
+	return FMemory::Malloc(SizeInBytes, Alignment);
+#else
+	if (SizeInBytes >= 0 && (uint64)SizeInBytes <= TNumericLimits<SIZE_T>::Max())
+	{
+		return FMemory::Malloc(SizeInBytes, Alignment);
+	}
+	else
+	{
+		UE_LOG(LogSerialization, Fatal, TEXT("Bulkdata payload allocation is an invalid length (%" INT64_FMT ") max size allowed (%" SIZE_T_FMT ")"), SizeInBytes, TNumericLimits<SIZE_T>::Max());
+		return nullptr;
+	}
+#endif //!PLATFORM_32BITS
+}
+
+/**
+ * Bulkdata payload lengths are stored as type int64 but FMemory::Malloc takes SIZE_T which could potentially
+ * be 32bit. This utility helps convert between the two and makes sure that if SizeInBytes exceeds the max size
+ * that FMemory::Realloc accepts that we return nullptr rather than a smaller buffer than was requested.
+*/
+inline void* SafeRealloc(void* Original, int64 SizeInBytes, uint32 Alignment)
+{
+#if !PLATFORM_32BITS
+	return FMemory::Realloc(Original, SizeInBytes, DEFAULT_ALIGNMENT);
+#else
+	if (SizeInBytes >= 0 && (uint64)SizeInBytes <= TNumericLimits<SIZE_T>::Max())
+	{
+		return FMemory::Realloc(Original, SizeInBytes, DEFAULT_ALIGNMENT);
+	}
+	else
+	{
+		UE_LOG(LogSerialization, Fatal, TEXT("Bulkdata payload allocation is an invalid length (%" INT64_FMT ") max size allowed (%" SIZE_T_FMT ")"), SizeInBytes, TNumericLimits<SIZE_T>::Max());
+		return nullptr;
+	}
+#endif //!PLATFORM_32BITS
+}
+
 } // namespace UE::BulkData::Private
 
 /*-----------------------------------------------------------------------------
-	Memory managament
+	Memory management
 -----------------------------------------------------------------------------*/
 
 void FBulkData::FAllocatedPtr::Free(FBulkData* Owner)
@@ -215,11 +350,11 @@ void FBulkData::FAllocatedPtr::Free(FBulkData* Owner)
 	}
 }
 
-void* FBulkData::FAllocatedPtr::ReallocateData(FBulkData* Owner, SIZE_T SizeInBytes)
+void* FBulkData::FAllocatedPtr::ReallocateData(FBulkData* Owner, int64 SizeInBytes)
 {
 	checkf(!Owner->IsDataMemoryMapped(),  TEXT("Trying to reallocate a memory mapped BulkData object without freeing it first!"));
 
-	Allocation.RawData = FMemory::Realloc(Allocation.RawData, SizeInBytes, DEFAULT_ALIGNMENT);
+	Allocation.RawData = UE::BulkData::Private::SafeRealloc(Allocation.RawData, SizeInBytes, DEFAULT_ALIGNMENT);
 
 	return Allocation.RawData;
 }
@@ -295,7 +430,7 @@ void FBulkData::FAllocatedPtr::Swap(FBulkData* Owner, void** DstBuffer)
 	{
 		const int64 DataSize = Owner->GetBulkDataSize();
 
-		*DstBuffer = FMemory::Malloc(DataSize, DEFAULT_ALIGNMENT);
+		*DstBuffer = UE::BulkData::Private::SafeMalloc(DataSize, DEFAULT_ALIGNMENT);
 		FMemory::Memcpy(*DstBuffer, Allocation.MemoryMappedData->GetPointer(), DataSize);
 
 		delete Allocation.MemoryMappedData;
@@ -660,13 +795,11 @@ bool FBulkData::IsAsyncLoadingComplete() const
 	return (GetBulkDataFlags() & BULKDATA_HasAsyncReadPending) == 0;
 }
 
-/**
-* Returns whether this bulk data is used
-* @return true if BULKDATA_Unused is not set
-*/
 bool FBulkData::IsAvailableForUse() const
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return BulkMeta.HasAnyFlags(BULKDATA_Unused) == false;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 /*-----------------------------------------------------------------------------
@@ -720,12 +853,12 @@ void FBulkData::GetCopy( void** Dest, bool bDiscardInternalCopy )
 	else
 	{
 		// The data is already loaded so we can simply use a mempcy.
-		if( IsBulkDataLoaded() )
+		if (IsBulkDataLoaded())
 		{
 			// If the internal copy should be discarded and we are still attached to an archive we can
 			// simply "return" the already existing copy and NULL out the internal reference. We can
 			// also do this if the data is single use like e.g. when uploading texture data.
-			if( bDiscardInternalCopy && CanDiscardInternalData() )
+			if (bDiscardInternalCopy && CanDiscardInternalData())
 			{
 				DataAllocation.Swap(this, Dest);
 			}
@@ -735,7 +868,7 @@ void FBulkData::GetCopy( void** Dest, bool bDiscardInternalCopy )
 				if (BulkDataSize != 0)
 				{
 					// Allocate enough memory for data...
-					*Dest = FMemory::Malloc( BulkDataSize, GetBulkDataAlignment() );
+					*Dest = UE::BulkData::Private::SafeMalloc(BulkDataSize, GetBulkDataAlignment());
 
 					// ... and copy it into memory now pointed to by out parameter.
 					FMemory::Memcpy( *Dest, GetDataBufferReadOnly(), BulkDataSize );
@@ -1198,9 +1331,7 @@ void FBulkData::Serialize(FArchive& Ar, UObject* Owner, bool bAttemptFileMapping
 		{
 			checkf(IsUnlocked(), TEXT("Serialize bulk data FAILED, bulk data is locked"));
 
-			FBulkMetaResource MetaResource;
-			Ar << MetaResource;
-			BulkMeta = FBulkMetaData::FromSerialized(MetaResource, ElementSize);
+			FBulkMetaData::FromSerialized(Ar, ElementSize, BulkMeta);
 			BulkChunkId = FIoChunkId::InvalidChunkId;
 
 			const int64 BulkDataSize = GetBulkDataSize();
@@ -1252,7 +1383,10 @@ void FBulkData::SetFlagsFromDiskWrittenValues(
 	int64 InBulkDataSizeOnDisk,
 	int64 LinkerSummaryBulkDataStartOffset)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	check(!(InBulkDataFlags & BULKDATA_BadDataVersion)); // This is a legacy flag that should no longer be set when saving
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	if (GIsEditor)
 	{
 		InBulkDataFlags = static_cast<EBulkDataFlags>(InBulkDataFlags & ~BULKDATA_SingleUse);
@@ -1347,11 +1481,6 @@ void FBulkData::DetachFromArchive( FArchive* Ar, bool bEnsureBulkDataIsLoaded )
 }
 #endif // WITH_EDITOR
 
-void FBulkData::StoreCompressedOnDisk(ECompressionFlags CompressionFlags)
-{
-	StoreCompressedOnDisk(FCompression::GetCompressionFormatFromDeprecatedFlags(CompressionFlags));
-}
-
 void FBulkData::StoreCompressedOnDisk( FName CompressionFormat )
 {
 	if( CompressionFormat != GetDecompressionFormat() )
@@ -1390,7 +1519,9 @@ void FBulkData::SerializeBulkData(FArchive& Ar, void* Data, int64 DataSize, EBul
 #endif
 
 	// skip serializing of unused data
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (InBulkDataFlags & BULKDATA_Unused)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		return;
 	}
@@ -1601,7 +1732,9 @@ void FUntypedBulkData::SerializeBulkData(FArchive& Ar, void* Data, int64 DataSiz
 	SCOPED_LOADTIMER(BulkData_SerializeBulkData);
 
 	// skip serializing of unused data
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (InBulkDataFlags & BULKDATA_Unused)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		return;
 	}

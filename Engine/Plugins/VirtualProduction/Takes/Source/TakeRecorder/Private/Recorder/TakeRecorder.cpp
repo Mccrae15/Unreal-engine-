@@ -3,6 +3,7 @@
 #include "Recorder/TakeRecorder.h"
 
 #include "Algo/Accumulate.h"
+#include "AnimatedRange.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CoreGlobals.h"
 #include "Engine/Engine.h"
@@ -24,16 +25,12 @@
 #include "Stats/Stats.h"
 #include "SequencerSettings.h"
 
-// LevelSequenceEditor includes
-#include "ILevelSequenceEditorToolkit.h"
-
 // Engine includes
 #include "GameFramework/WorldSettings.h"
 
 // UnrealEd includes
 #include "Editor.h"
 
-#include "ObjectTools.h"
 #include "UObject/GCObjectScopeGuard.h"
 
 // Slate includes
@@ -558,43 +555,26 @@ bool UTakeRecorder::Initialize ( ULevelSequence* LevelSequenceBase, UTakeRecorde
 
 void UTakeRecorder::DiscoverSourceWorld()
 {
-	UWorld* WorldToRecordIn = nullptr;
+	WeakWorld = TakesUtils::DiscoverSourceWorld();
 
-	for (const FWorldContext& WorldContext : GEngine->GetWorldContexts())
-	{
-		if (WorldContext.WorldType == EWorldType::PIE || WorldContext.WorldType == EWorldType::Game )
-		{
-			WorldToRecordIn = WorldContext.World();
-			break;
-		}
-		else if (WorldContext.WorldType == EWorldType::Editor)
-		{
-			WorldToRecordIn = WorldContext.World();
-		}
-	}
-
-	check(WorldToRecordIn);
-	WeakWorld = WorldToRecordIn;
-
-	// If CountdownSeconds is zero and the framerate is high, then we can create the overlay but it
-	// never ends up being visible. However, when the framerate is low (e.g. in debug) it does show
-	// for a single frame, which is undesirable, so only make it if it's going to last some time.
-	if (CountdownSeconds > 0)
-	{
-		UClass* Class = StaticLoadClass(UTakeRecorderOverlayWidget::StaticClass(), nullptr, TEXT("/Takes/UMG/DefaultRecordingOverlay.DefaultRecordingOverlay_C"));
-		if (Class)
-		{
-			OverlayWidget = CreateWidget<UTakeRecorderOverlayWidget>(WorldToRecordIn, Class);
-			OverlayWidget->SetFlags(RF_Transient);
-			OverlayWidget->SetRecorder(this);
-			OverlayWidget->AddToViewport();
-		}
-	}
-
-	bool bPlayInGame = WorldToRecordIn->WorldType == EWorldType::PIE || WorldToRecordIn->WorldType == EWorldType::Game;
+	bool bPlayInGame = WeakWorld->WorldType == EWorldType::PIE || WeakWorld->WorldType == EWorldType::Game;
 	// If recording via PIE, be sure to stop recording cleanly when PIE ends
 	if ( bPlayInGame )
 	{
+		// If CountdownSeconds is zero and the framerate is high, then we can create the overlay but it
+		// never ends up being visible. However, when the framerate is low (e.g. in debug) it does show
+		// for a single frame, which is undesirable, so only make it if it's going to last some time.
+		if (CountdownSeconds > 0)
+		{
+			UClass* Class = StaticLoadClass(UTakeRecorderOverlayWidget::StaticClass(), nullptr, TEXT("/Takes/UMG/DefaultRecordingOverlay.DefaultRecordingOverlay_C"));
+			if (Class)
+			{
+				OverlayWidget = CreateWidget<UTakeRecorderOverlayWidget>(WeakWorld.Get(), Class);
+				OverlayWidget->SetFlags(RF_Transient);
+				OverlayWidget->SetRecorder(this);
+				OverlayWidget->AddToViewport();
+			}
+		}
 		FEditorDelegates::EndPIE.AddUObject(this, &UTakeRecorder::HandlePIE);
 	}
 	// If not recording via PIE, be sure to stop recording if PIE Starts
@@ -640,19 +620,16 @@ bool UTakeRecorder::CreateDestinationAsset(const TCHAR* AssetPathFormat, ULevelS
 	SequenceAsset->MarkPackageDirty();
 	FAssetRegistryModule::AssetCreated(SequenceAsset);
 
-	if (!InitializeSequencer(SequenceAsset, OutError))
-	{
-		return false;
-	}
-
-	return true;
+	WeakSequencer = TakesUtils::OpenSequencer(SequenceAsset, OutError);
+	return WeakSequencer.IsValid();
 }
 
 bool UTakeRecorder::SetupDestinationAsset(const FTakeRecorderParameters& InParameters, ULevelSequence* LevelSequenceBase, UTakeRecorderSources* Sources, UTakeMetaData* MetaData, FText* OutError)
 {
 	check(LevelSequenceBase && Sources && MetaData);
 
-	if (!InitializeSequencer(LevelSequenceBase, OutError))
+	WeakSequencer = TakesUtils::OpenSequencer(LevelSequenceBase, OutError);
+	if (!WeakSequencer.IsValid())
 	{
 		return false;
 	}
@@ -681,31 +658,6 @@ bool UTakeRecorder::SetupDestinationAsset(const FTakeRecorderParameters& InParam
 
 	SequenceAsset->MarkPackageDirty();
 	
-	return true;
-}
-
-bool UTakeRecorder::InitializeSequencer(ULevelSequence* LevelSequence, FText* OutError)
-{
-	if ( GEditor != nullptr )
-	{
-		// Open the sequence and set the sequencer ptr
-		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(LevelSequence);
-
-		IAssetEditorInstance*        AssetEditor         = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(LevelSequence, false);
-		ILevelSequenceEditorToolkit* LevelSequenceEditor = static_cast<ILevelSequenceEditorToolkit*>(AssetEditor);
-
-		WeakSequencer = LevelSequenceEditor ? LevelSequenceEditor->GetSequencer() : nullptr;
-
-		if (!WeakSequencer.Pin().IsValid())
-		{
-			if (OutError)
-			{
-				*OutError = FText::Format(LOCTEXT("FailedToOpenSequencerError", "Failed to open Sequencer for asset '{0}."), FText::FromString(LevelSequence->GetPathName()));
-			}
-			return false;
-		}
-	}
-		
 	return true;
 }
 
@@ -789,38 +741,7 @@ void UTakeRecorder::Tick(float DeltaTime)
 
 FQualifiedFrameTime UTakeRecorder::GetRecordTime() const
 {
-	FQualifiedFrameTime RecordTime;
-
-	TSharedPtr<ISequencer> Sequencer = WeakSequencer.Pin();
-	if (Sequencer.IsValid())
-	{
-		RecordTime = Sequencer->GetGlobalTime();
-	}
-	else if (SequenceAsset)
-	{
-		UMovieScene* MovieScene = SequenceAsset->GetMovieScene();
-		if (MovieScene)
-		{
-			FFrameRate FrameRate = MovieScene->GetDisplayRate();
-			FFrameRate TickResolution = MovieScene->GetTickResolution();
-
-			FTimecode CurrentTimecode = FApp::GetTimecode();
-		
-			FFrameNumber CurrentFrame = FFrameRate::TransformTime(FFrameTime(CurrentTimecode.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame();
-			FFrameNumber FrameAtStart = FFrameRate::TransformTime(FFrameTime(TimecodeAtStart.ToFrameNumber(FrameRate)), FrameRate, TickResolution).FloorToFrame();
-
-			if (Parameters.Project.bStartAtCurrentTimecode)
-			{
-				RecordTime = FQualifiedFrameTime(CurrentFrame, TickResolution);
-			}
-			else
-			{
-				RecordTime = FQualifiedFrameTime(CurrentFrame - FrameAtStart, TickResolution);
-			}
-		}
-	}
-
-	return RecordTime;
+	return TakesUtils::GetRecordTime(WeakSequencer.Pin(), SequenceAsset, TimecodeAtStart, Parameters.Project.bStartAtCurrentTimecode);
 }
 
 void UTakeRecorder::InternalTick(float DeltaTime)
@@ -1162,11 +1083,6 @@ void UTakeRecorder::StopInternal(const bool bCancelled)
 				MovieScene->SetPlaybackRange(CachedPlaybackRange);
 			}
 		}
-		else
-		{
-			const bool bUpperBoundOnly = true; // Only expand the upper bound because the lower bound should have been set at the start of recording and should not change if there's existing data before the start
-			TakesUtils::ClampPlaybackRangeToEncompassAllSections(SequenceAsset->GetMovieScene(), bUpperBoundOnly);
-		}
 
 		if (bRecordingFinished)
 		{
@@ -1255,6 +1171,14 @@ void UTakeRecorder::StopInternal(const bool bCancelled)
 		SequenceAsset->RemoveFromRoot();
 		SequenceAsset->MarkAsGarbage();
 		SequenceAsset = nullptr;
+	}
+
+	if (OverlayWidget)
+	{
+		OverlayWidget->RemoveFromParent();
+		OverlayWidget->RemoveFromRoot();
+		OverlayWidget->MarkAsGarbage();
+		OverlayWidget = nullptr;
 	}
 
 	if (SequenceAsset)

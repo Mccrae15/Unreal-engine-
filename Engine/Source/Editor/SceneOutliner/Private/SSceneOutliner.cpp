@@ -67,6 +67,7 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 	bFullRefresh = true;
 	bNeedsRefresh = true;
 	bNeedsColumRefresh = true;
+	bShouldCacheColumnVisibility = true;
 	bIsReentrant = false;
 	bSortDirty = true;
 	bSelectionDirty = true;
@@ -124,7 +125,9 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 			.CanSelectGeneratedColumn(InInitOptions.bCanSelectGeneratedColumns)
 			.OnHiddenColumnsListChanged(this, &SSceneOutliner::HandleHiddenColumnsChanged);
 
-	SetupColumns(*HeaderRowWidget);
+	SetupColumns();
+
+	CacheHiddenColumns = TSet(HeaderRowWidget->GetHiddenColumnIds());
 
 	ChildSlot
 	[
@@ -343,7 +346,12 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 
 void SSceneOutliner::HandleHiddenColumnsChanged()
 {
-	const TArray<FName> HiddenColumns = HeaderRowWidget->GetHiddenColumnIds();
+	if (!bShouldCacheColumnVisibility)
+	{
+		return;
+	}
+	
+	TSet<FName> HiddenColumns = TSet(HeaderRowWidget->GetHiddenColumnIds());
 	FSceneOutlinerConfig* OutlinerConfig = GetMutableConfig();
 
 	if (OutlinerConfig != nullptr)
@@ -351,23 +359,16 @@ void SSceneOutliner::HandleHiddenColumnsChanged()
 		TMap<FName, bool> ColumnVisibilities = OutlinerConfig->ColumnVisibilities;
 
 		bool bAnyColumnVisibilityChanged = false;
-		
+	
 		for (const TPair<FName, TSharedPtr<ISceneOutlinerColumn>>& Pair : Columns)
 		{
-			const bool bIsColumnVisible = HiddenColumns.Find(Pair.Key) == INDEX_NONE;
+			const bool bWasColumnVisible = CacheHiddenColumns.Find(Pair.Key) == nullptr;
+			const bool bIsColumnVisible = HiddenColumns.Find(Pair.Key) == nullptr;
 
-			// If this column already has a visibility saved in the config, only update if it changed
-			if (bool* ExistingColumnVisibility = ColumnVisibilities.Find(Pair.Key))
+			// Only update column visibility if it changed
+			if (bWasColumnVisible != bIsColumnVisible)
 			{
-				if(*ExistingColumnVisibility != bIsColumnVisible)
-				{
-					*ExistingColumnVisibility = bIsColumnVisible;
-					bAnyColumnVisibilityChanged = true;
-				}
-			}
-			else
-			{
-				ColumnVisibilities.Add(Pair.Key, bIsColumnVisible);
+				ColumnVisibilities.FindOrAdd(Pair.Key) = bIsColumnVisible;
 				bAnyColumnVisibilityChanged = true;
 			}
 		}
@@ -375,10 +376,12 @@ void SSceneOutliner::HandleHiddenColumnsChanged()
 		// Only call SaveConfig if something actually changed
 		if(bAnyColumnVisibilityChanged)
 		{
-			OutlinerConfig->ColumnVisibilities = ColumnVisibilities;
-			SaveConfig();
-		}
+		OutlinerConfig->ColumnVisibilities = ColumnVisibilities;
+		SaveConfig();
 	}
+}
+	
+	CacheHiddenColumns = MoveTemp(HiddenColumns);
 }
 
 void SSceneOutliner::GetSortedColumnIDs(TArray<FName>& OutColumnIDs) const
@@ -405,8 +408,119 @@ void SSceneOutliner::GetSortedColumnIDs(TArray<FName>& OutColumnIDs) const
 		});
 }
 
-void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
+void SSceneOutliner::AddColumn_Internal(const FName& ColumnId, const FSceneOutlinerColumnInfo& ColumnInfo, const TMap<FName, bool>& ColumnVisibilities, int32 InsertPosition)
 {
+	if(!HeaderRowWidget)
+	{
+		return;
+	}
+
+	SHeaderRow& HeaderRow = *HeaderRowWidget;
+
+	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
+	
+	// Avoid caching column visibilities while building the columns
+	bool const bPreviousShouldCacheColumnVisibility = bShouldCacheColumnVisibility;
+	bShouldCacheColumnVisibility = false;
+	
+	bool bIsVisible = true;
+
+	// If there is a config saved for this column, ignore the default visibility
+	if (const bool *ColumnVisibility = ColumnVisibilities.Find(ColumnId))
+	{
+		bIsVisible = *ColumnVisibility;
+	}
+	else if (ColumnInfo.Visibility == ESceneOutlinerColumnVisibility::Invisible)
+	{
+		bIsVisible = false;
+	}
+
+	TSharedPtr<ISceneOutlinerColumn> Column;
+
+	if (ColumnInfo.Factory.IsBound())
+	{
+		Column = ColumnInfo.Factory.Execute(*this);
+	}
+	else
+	{
+		Column = SceneOutlinerModule.FactoryColumn(ColumnId, *this);
+	}
+
+	if (ensure(Column.IsValid()))
+	{
+		Columns.Add(ColumnId, Column);
+
+		auto ColumnArgs = Column->ConstructHeaderRowColumn();
+
+		if (Column->SupportsSorting())
+		{
+			ColumnArgs
+				.SortMode(this, &SSceneOutliner::GetColumnSortMode, ColumnId)
+				.OnSort(this, &SSceneOutliner::OnColumnSortModeChanged);
+		}
+
+		if (ColumnInfo.ColumnLabel.IsSet())
+		{
+			ColumnArgs.DefaultLabel(ColumnInfo.ColumnLabel);
+		}
+		else
+		{
+			if (HeaderRow.GetVisibility() == EVisibility::Visible)
+			{
+				UE_LOG(LogSceneOutliner, Log, TEXT("Outliner Column %s does not have a localizable name, please specify one to FSceneOutlinerColumnInfo"), *ColumnId.ToString());
+			}
+				
+			ColumnArgs.DefaultLabel(FText::FromName(ColumnId));
+		}
+			
+		if (!ColumnInfo.bCanBeHidden)
+		{
+			ColumnArgs.ShouldGenerateWidget(true);
+		}
+
+		if (ColumnInfo.FillSize.IsSet())
+		{
+			ColumnArgs.FillWidth(ColumnInfo.FillSize.GetValue());
+		}
+
+		if (ColumnInfo.OnGetHeaderContextMenuContent.IsBound())
+		{
+			ColumnArgs.MenuContent()
+			[
+				ColumnInfo.OnGetHeaderContextMenuContent.Execute()
+			];
+		}
+
+		ColumnArgs.HeaderComboVisibility(ColumnInfo.HeaderComboVisibility);
+
+		if(InsertPosition == INDEX_NONE)
+		{
+			HeaderRow.AddColumn(ColumnArgs);
+		}
+		else
+		{
+			HeaderRow.InsertColumn(ColumnArgs, InsertPosition);
+		}
+		
+		HeaderRow.SetShowGeneratedColumn(ColumnId, bIsVisible);
+	}
+
+	bShouldCacheColumnVisibility = bPreviousShouldCacheColumnVisibility;
+}
+
+void SSceneOutliner::RemoveColumn_Internal(const FName& ColumnId)
+{
+	Columns.Remove(ColumnId);
+	HeaderRowWidget->RemoveColumn(ColumnId);
+}
+
+void SSceneOutliner::SetupColumns()
+{
+	if(!HeaderRowWidget)
+	{
+		return;
+	}
+	
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
 
 	if (SharedData->ColumnMap.Num() == 0)
@@ -424,7 +538,7 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 	}
 
 	Columns.Empty(FilteredColumnMap.Num());
-	HeaderRow.ClearColumns();
+	HeaderRowWidget->ClearColumns();
 
 	TArray<FName> SortedIDs;
 	GetSortedColumnIDs(SortedIDs);
@@ -440,80 +554,9 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 
 	for (const FName& ID : SortedIDs)
 	{
-		bool bIsVisible = true;
-
-		// If there is a config saved for this column, ignore the default visibility
-		if (bool *ColumnVisibility = ColumnVisibilities.Find(ID))
-		{
-			bIsVisible = *ColumnVisibility;
-		}
-		else if (FilteredColumnMap[ID].Visibility == ESceneOutlinerColumnVisibility::Invisible)
-		{
-			bIsVisible = false;
-		}
-
-		TSharedPtr<ISceneOutlinerColumn> Column;
-
-		if (FilteredColumnMap[ID].Factory.IsBound())
-		{
-			Column = FilteredColumnMap[ID].Factory.Execute(*this);
-		}
-		else
-		{
-			Column = SceneOutlinerModule.FactoryColumn(ID, *this);
-		}
-
-		if (ensure(Column.IsValid()))
-		{
-			Columns.Add(ID, Column);
-
-			auto ColumnArgs = Column->ConstructHeaderRowColumn();
-
-			if (Column->SupportsSorting())
-			{
-				ColumnArgs
-					.SortMode(this, &SSceneOutliner::GetColumnSortMode, ID)
-					.OnSort(this, &SSceneOutliner::OnColumnSortModeChanged);
-			}
-
-			if (FilteredColumnMap[ID].ColumnLabel.IsSet())
-			{
-				ColumnArgs.DefaultLabel(FilteredColumnMap[ID].ColumnLabel);
-			}
-			else
-			{
-				if (HeaderRow.GetVisibility() == EVisibility::Visible)
-				{
-					UE_LOG(LogSceneOutliner, Log, TEXT("Outliner Column %s does not have a localizable name, please specify one to FSceneOutlinerColumnInfo"), *ID.ToString());
-				}
-				
-				ColumnArgs.DefaultLabel(FText::FromName(ID));
-			}
-			
-			if (!FilteredColumnMap[ID].bCanBeHidden)
-			{
-				ColumnArgs.ShouldGenerateWidget(true);
-			}
-
-			if (FilteredColumnMap[ID].FillSize.IsSet())
-			{
-				ColumnArgs.FillWidth(FilteredColumnMap[ID].FillSize.GetValue());
-			}
-
-			if (FilteredColumnMap[ID].OnGetHeaderContextMenuContent.IsBound())
-			{
-				ColumnArgs.MenuContent()
-				[
-					FilteredColumnMap[ID].OnGetHeaderContextMenuContent.Execute()
-				];
-			}
-
-			ColumnArgs.HeaderComboVisibility(FilteredColumnMap[ID].HeaderComboVisibility);
-
-			HeaderRow.AddColumn(ColumnArgs);
-			HeaderRow.SetShowGeneratedColumn(ID, bIsVisible);
-		}
+		AddColumn_Internal(ID, FilteredColumnMap[ID], ColumnVisibilities);
 	}
+	
 	Columns.Shrink();
 	bNeedsColumRefresh = false;
 }
@@ -640,14 +683,10 @@ void SSceneOutliner::RefreshSelection()
 
 void SSceneOutliner::Populate()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSceneOutliner::Populate);
+
 	// Block events while we clear out the list
  	TGuardValue<bool> ReentrantGuard(bIsReentrant, true);
-
-	// Get a collection of items and folders which were formerly collapsed
-	if (CachedExpansionStateInfo.Num() == 0)
-	{
-		CachedExpansionStateInfo.Append(GetParentsExpansionState());
-	}
 
 	bool bMadeAnySignificantChanges = false;
 	if (bFullRefresh)
@@ -718,9 +757,8 @@ void SSceneOutliner::Populate()
 	bool bFinalSort = false;
 	if (PendingOperations.Num() == 0)
 	{
-		SetParentsExpansionState(CachedExpansionStateInfo);
-		CachedExpansionStateInfo.Empty();
-		
+		// Update expansion state based on item states
+		SetParentsExpansionState();
 		// When done processing a FullRefresh Scroll to First item in selection as it may have been
 		// scrolled out of view by the Refresh
 		if (bProcessingFullRefresh)
@@ -765,8 +803,6 @@ void SSceneOutliner::EmptyTreeItems()
 	TreeItemMap.Reset();
 	PendingTreeItemMap.Empty();
 
-	FolderCount = 0;
-
 	RootTreeItems.Empty();
 }
 
@@ -803,6 +839,8 @@ void SSceneOutliner::AddPendingItemAndChildren(FSceneOutlinerTreeItemPtr Item)
 
 void SSceneOutliner::RepopulateEntireTree()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSceneOutliner::RepopulateEntireTree);
+
 	EmptyTreeItems();
 
 	// Rebuild the hierarchy
@@ -1005,43 +1043,19 @@ void SSceneOutliner::AddUnfilteredItemToTree(FSceneOutlinerTreeItemRef Item)
 		RootTreeItems.Add(Item);
 	}
 
-	// keep track of the number of active folders
-	if (Item->IsA<FFolderTreeItem>())
-	{
-		++FolderCount;
-	}
+	Item->Flags.bIsExpanded = CachedExpansionStateInfo.FindOrAdd(Item->GetID(), Item->Flags.bIsExpanded);
+	
 	Mode->OnItemAdded(Item);
 }
 
-SSceneOutliner::FParentsExpansionState SSceneOutliner::GetParentsExpansionState() const
-{
-	FParentsExpansionState States;
-	for (const auto& Pair : TreeItemMap)
-	{
-		if (Pair.Value->GetChildren().Num())
-		{
-			States.Add(Pair.Key, Pair.Value->Flags.bIsExpanded);
-		}
-	}
-	return States;
-}
-
-void SSceneOutliner::SetParentsExpansionState(const FParentsExpansionState& ExpansionStateInfo) const
+void SSceneOutliner::SetParentsExpansionState() const
 {
 	for (const auto& Pair : TreeItemMap)
 	{
 		auto& Item = Pair.Value;
 		if (Item->GetChildren().Num())
 		{
-			const bool* bIsExpanded = ExpansionStateInfo.Find(Pair.Key);
-			if (bIsExpanded)
-			{
-				OutlinerTreeView->SetItemExpansion(Item, *bIsExpanded);
-			}
-			else
-			{
-				OutlinerTreeView->SetItemExpansion(Item, Item->Flags.bIsExpanded);
-			}
+			OutlinerTreeView->SetItemExpansion(Item, Item->Flags.bIsExpanded);
 		}
 	}
 }
@@ -1153,21 +1167,33 @@ int32 SSceneOutliner::GetFilterCount() const
 	return Filters->Num();
 }
 
-void SSceneOutliner::AddColumn(FName ColumId, const FSceneOutlinerColumnInfo& ColumInfo)
+void SSceneOutliner::AddColumn(FName ColumnId, const FSceneOutlinerColumnInfo& ColumInfo)
 {
-	if (!SharedData->ColumnMap.Contains(ColumId))
+	if (!SharedData->ColumnMap.Contains(ColumnId))
 	{
-		SharedData->ColumnMap.Add(ColumId, ColumInfo);
-		RefreshColumns();
+		SharedData->ColumnMap.Add(ColumnId, ColumInfo);
+
+		// Get the new sorted list of columns to make sure this is added in the right position
+		TArray<FName> SortedColumnIDs;
+		GetSortedColumnIDs(SortedColumnIDs);
+
+		TMap<FName, bool> ColumnVisibilities;
+		const FSceneOutlinerConfig* OutlinerConfig = GetConstConfig();
+		if(OutlinerConfig)
+		{
+			ColumnVisibilities = OutlinerConfig->ColumnVisibilities;
+		}
+
+		AddColumn_Internal(ColumnId, ColumInfo, ColumnVisibilities, SortedColumnIDs.Find(ColumnId));
 	}
 }
 
-void SSceneOutliner::RemoveColumn(FName ColumId)
+void SSceneOutliner::RemoveColumn(FName ColumnId)
 {
-	if (SharedData->ColumnMap.Contains(ColumId))
+	if (SharedData->ColumnMap.Contains(ColumnId))
 	{
-		SharedData->ColumnMap.Remove(ColumId);
-		RefreshColumns();
+		SharedData->ColumnMap.Remove(ColumnId);
+		RemoveColumn_Internal(ColumnId);
 	}
 }
 
@@ -1322,8 +1348,8 @@ TSharedRef<TSet<FFolder>> SSceneOutliner::GatherInvalidMoveToDestinations() cons
 	
 void SSceneOutliner::AddMoveToFolderOutliner(UToolMenu* Menu) const
 {
-	// We don't show this if there aren't any folders in the world and if the mode is showing folders
-	if (!Mode->ShouldShowFolders() || FolderCount == 0)
+	// We don't show this if the mode does not show folders
+	if (!Mode->ShouldShowFolders())
 	{
 		return;
 	}
@@ -1932,6 +1958,9 @@ void SSceneOutliner::OnItemExpansionChanged(FSceneOutlinerTreeItemPtr TreeItem, 
 			OutlinerTreeView->SetItemExpansion(Child, true);
 		}
 	}
+
+	// Notify Mode
+	CachedExpansionStateInfo.Add(TreeItem->GetID(), TreeItem->Flags.bIsExpanded);
 }
 
 void SSceneOutliner::OnHierarchyChangedEvent(FSceneOutlinerHierarchyChangedData Event)
@@ -2205,6 +2234,8 @@ FReply SSceneOutliner::OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& 
 
 void SSceneOutliner::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {	
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSceneOutliner::Tick);
+
 	for (auto& Pair : Columns)
 	{
 		Pair.Value->Tick(InCurrentTime, InDeltaTime);
@@ -2220,7 +2251,7 @@ void SSceneOutliner::Tick(const FGeometry& AllottedGeometry, const double InCurr
 
 	if ( bNeedsColumRefresh )
 	{
-		SetupColumns(*HeaderRowWidget);
+		SetupColumns();
 	}
 
 	if( bNeedsRefresh )

@@ -16,6 +16,9 @@ struct FRCNetworkAddress
 	GENERATED_BODY()
 
 	FRCNetworkAddress() = default;
+	FRCNetworkAddress(uint8 InClassA, uint8 InClassB, uint8 InClassC, uint8 InClassD)
+		: ClassA(InClassA), ClassB(InClassB), ClassC(InClassC), ClassD(InClassD)
+	{}
 
 	bool operator==(const FRCNetworkAddress& OtherNetworkAddress) const
 	{
@@ -73,6 +76,9 @@ struct FRCNetworkAddressRange
 	GENERATED_BODY()
 
 	FRCNetworkAddressRange() = default;
+	FRCNetworkAddressRange(FRCNetworkAddress InLowerBound, FRCNetworkAddress InUpperBound)
+		: LowerBound(InLowerBound), UpperBound(InUpperBound)
+	{}
 
 	static FRCNetworkAddressRange AllowAllIPs()
 	{
@@ -224,10 +230,10 @@ public:
 
 		if (InClientAddressStr.ParseIntoArray(IndividualClasses, TEXT(".")) == 4)
 		{
-			FRCNetworkAddress LowerAndUpperBounds { FCString::Atoi(*IndividualClasses[0]) // Class A
-				, FCString::Atoi(*IndividualClasses[1]) // Class B
-				, FCString::Atoi(*IndividualClasses[2]) // Class C
-				, FCString::Atoi(*IndividualClasses[3]) // Class D
+			FRCNetworkAddress LowerAndUpperBounds { (uint8)FCString::Atoi(*IndividualClasses[0]) // Class A
+				, (uint8)FCString::Atoi(*IndividualClasses[1]) // Class B
+				, (uint8)FCString::Atoi(*IndividualClasses[2]) // Class C
+				, (uint8)FCString::Atoi(*IndividualClasses[3]) // Class D
 			};
 
 			FRCNetworkAddressRange NewRange = { LowerAndUpperBounds, LowerAndUpperBounds };

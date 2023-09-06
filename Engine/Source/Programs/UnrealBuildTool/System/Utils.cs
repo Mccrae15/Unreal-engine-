@@ -2,19 +2,16 @@
 
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Xml;
 using System.Xml.Serialization;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Linq;
 using EpicGames.Core;
-using UnrealBuildBase;
-using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -93,7 +90,7 @@ namespace UnrealBuildTool
 		public static string ExpandVariables(string InputString, Dictionary<string, string>? AdditionalVariables = null, bool bUseAdditionalVariablesOnly = false)
 		{
 			string Result = InputString;
-			for (int Idx = Result.IndexOf("$("); Idx != -1; Idx = Result.IndexOf("$(", Idx))
+			for (int Idx = Result.IndexOf("$(", StringComparison.Ordinal); Idx != -1; Idx = Result.IndexOf("$(", Idx, StringComparison.Ordinal))
 			{
 				// Find the end of the variable name
 				int EndIdx = Result.IndexOf(')', Idx + 2);
@@ -133,7 +130,8 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		public static string MakePathSafeToUseWithCommandLine(string InPath)
 		{
-			if (InPath.Contains(' ') && InPath[0] != '\"')
+			// just always quote paths if they aren't already
+			if (InPath[0] != '\"')
 			{
 				InPath = "\"" + InPath + "\"";
 			}
@@ -289,9 +287,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		static void LocalProcessOutput(DataReceivedEventArgs Args, bool bIsError, ILogger Logger)
 		{
-			if(Args != null && Args.Data != null)
+			if (Args != null && Args.Data != null)
 			{
-				if(bIsError)
+				if (bIsError)
 				{
 					Logger.LogError("{Message}", Args.Data.TrimEnd());
 				}
@@ -308,7 +306,7 @@ namespace UnrealBuildTool
 		public static int RunLocalProcessAndPrintfOutput(ProcessStartInfo StartInfo, ILogger Logger)
 		{
 			string AppName = Path.GetFileNameWithoutExtension(StartInfo.FileName);
-			string LogFilenameBase = string.Format("{0}_{1}", AppName, DateTime.Now.ToString("yyyy.MM.dd-HH.mm.ss"));
+			string LogFilenameBase = String.Format("{0}_{1}", AppName, DateTime.Now.ToString("yyyy.MM.dd-HH.mm.ss"));
 			string LogDir = Path.Combine(Unreal.EngineDirectory.FullName, "Programs", "AutomationTool", "Saved", "Logs");
 			string LogFilename = "";
 			for (int Attempt = 1; Attempt < 100; ++Attempt)
@@ -318,13 +316,13 @@ namespace UnrealBuildTool
 					if (!Directory.Exists(LogDir))
 					{
 						string? IniPath = UnrealBuildTool.GetRemoteIniPath();
-						if(string.IsNullOrEmpty(IniPath))
+						if (String.IsNullOrEmpty(IniPath))
 						{
 							break;
 						}
 
 						LogDir = Path.Combine(IniPath, "Saved", "Logs");
-						if(!Directory.Exists(LogDir) && !Directory.CreateDirectory(LogDir).Exists)
+						if (!Directory.Exists(LogDir) && !Directory.CreateDirectory(LogDir).Exists)
 						{
 							break;
 						}
@@ -352,18 +350,17 @@ namespace UnrealBuildTool
 				}
 			}
 
-
 			DataReceivedEventHandler Output = (object sender, DataReceivedEventArgs Args) =>
 			{
 				if (Args != null && Args.Data != null)
 				{
 					string data = Args.Data.TrimEnd();
-					if(string.IsNullOrEmpty(data))
+					if (String.IsNullOrEmpty(data))
 					{
 						return;
 					}
 
-					if (!string.IsNullOrEmpty(LogFilename))
+					if (!String.IsNullOrEmpty(LogFilename))
 					{
 						File.AppendAllLines(LogFilename, data.Split('\n'));
 					}
@@ -377,15 +374,14 @@ namespace UnrealBuildTool
 			LocalProcess.StartInfo = StartInfo;
 			LocalProcess.OutputDataReceived += Output;
 			LocalProcess.ErrorDataReceived += Output;
-			var ExitCode = RunLocalProcess(LocalProcess);
-			if(ExitCode != 0 && !string.IsNullOrEmpty(LogFilename))
+			int ExitCode = RunLocalProcess(LocalProcess);
+			if (ExitCode != 0 && !String.IsNullOrEmpty(LogFilename))
 			{
 				Logger.LogError("Process \'{AppName}\' failed. Details are in \'{LogFilename}\'", AppName, LogFilename);
 			}
 
 			return ExitCode;
 		}
-
 
 		/// <summary>
 		/// Runs a local process and pipes the output to the log
@@ -413,7 +409,7 @@ namespace UnrealBuildTool
 		public static string RunLocalProcessAndReturnStdOut(string Command, string Args, ILogger? Logger)
 		{
 			int ExitCode;
-			return RunLocalProcessAndReturnStdOut(Command, Args, Logger, out ExitCode);	
+			return RunLocalProcessAndReturnStdOut(Command, Args, Logger, out ExitCode);
 		}
 
 		/// <summary>
@@ -433,7 +429,7 @@ namespace UnrealBuildTool
 		/// <param name="Args">Arguments to Command</param>
 		/// <param name="ExitCode">The return code from the process after it exits</param>
 		/// <param name="LogOutput">Whether to also log standard output and standard error</param>
-		public static string RunLocalProcessAndReturnStdOut(string Command, string? Args, out int ExitCode, bool LogOutput) => RunLocalProcessAndReturnStdOut(Command, Args, LogOutput? Log.Logger : null, out ExitCode);
+		public static string RunLocalProcessAndReturnStdOut(string Command, string? Args, out int ExitCode, bool LogOutput) => RunLocalProcessAndReturnStdOut(Command, Args, LogOutput ? Log.Logger : null, out ExitCode);
 
 		/// <summary>
 		/// Runs a command line process, and returns simple StdOut output.
@@ -473,7 +469,7 @@ namespace UnrealBuildTool
 				ErrorOutput = ErrorReader.ReadToEnd().Trim();
 				if (Logger != null)
 				{
-					if(FullOutput.Length > 0)
+					if (FullOutput.Length > 0)
 					{
 						Logger.LogInformation("{Output}", FullOutput);
 					}
@@ -675,7 +671,7 @@ namespace UnrealBuildTool
 			for (; ; )
 			{
 				// An empty path is finished
-				if (string.IsNullOrEmpty(LocalString))
+				if (String.IsNullOrEmpty(LocalString))
 				{
 					break;
 				}
@@ -734,7 +730,6 @@ namespace UnrealBuildTool
 			return LocalString;
 		}
 
-
 		/// <summary>
 		/// Given a file path and a directory, returns a file path that is relative to the specified directory
 		/// </summary>
@@ -792,7 +787,6 @@ namespace UnrealBuildTool
 			return RelativePath;
 		}
 
-
 		/// <summary>
 		/// Backspaces the specified number of characters, then displays a progress percentage value to the console
 		/// </summary>
@@ -814,15 +808,14 @@ namespace UnrealBuildTool
 			Console.Write(ProgressString);
 		}
 
-
 		/*
 		 * Read and write classes with xml specifiers
 		 */
-		static private void UnknownAttributeDelegate(object? sender, XmlAttributeEventArgs e)
+		private static void UnknownAttributeDelegate(object? sender, XmlAttributeEventArgs e)
 		{
 		}
 
-		static private void UnknownNodeDelegate(object? sender, XmlNodeEventArgs e)
+		private static void UnknownNodeDelegate(object? sender, XmlNodeEventArgs e)
 		{
 		}
 
@@ -833,7 +826,7 @@ namespace UnrealBuildTool
 		/// <param name="FileName">The XML file to read from</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>New deserialized instance of type T</returns>
-		static public T ReadClass<T>(string FileName, ILogger Logger) where T : new()
+		public static T ReadClass<T>(string FileName, ILogger Logger) where T : new()
 		{
 			T Instance = new T();
 			StreamReader? XmlStream = null;
@@ -876,7 +869,7 @@ namespace UnrealBuildTool
 		/// <param name="DefaultNameSpace">Default namespace for the output elements</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if the file was written successfully</returns>
-		static public bool WriteClass<T>(T Data, string FileName, string DefaultNameSpace, ILogger Logger)
+		public static bool WriteClass<T>(T Data, string FileName, string DefaultNameSpace, ILogger Logger)
 		{
 			bool bSuccess = true;
 			StreamWriter? XmlStream = null;
@@ -929,7 +922,9 @@ namespace UnrealBuildTool
 		{
 			// null objects are always invalid
 			if (p == null)
+			{
 				return false;
+			}
 			// due to multithreading on Windows, lock the object
 			lock (p)
 			{
@@ -980,7 +975,6 @@ namespace UnrealBuildTool
 			}
 		}
 
-
 		/// <summary>
 		/// Returns true if the specified file's path is located under the specified directory, or any of that directory's sub-folders.  Does not care whether the file or directory exist or not.  This is a simple string-based check.
 		/// </summary>
@@ -1026,8 +1020,8 @@ namespace UnrealBuildTool
 			RelationAll = 0xffff
 		}
 
-		[DllImport("kernel32.dll", SetLastError=true)]
-		extern static bool GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP RelationshipType, IntPtr Buffer, ref uint ReturnedLength);
+		[DllImport("kernel32.dll", SetLastError = true)]
+		static extern bool GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP RelationshipType, IntPtr Buffer, ref uint ReturnedLength);
 
 		/// <summary>
 		/// Gets the number of logical cores. We use this rather than Environment.ProcessorCount when possible to handle machines with > 64 cores (the single group limit available to the .NET framework).
@@ -1036,13 +1030,13 @@ namespace UnrealBuildTool
 		public static int GetLogicalProcessorCount()
 		{
 			// This function uses Windows P/Invoke calls; if we're not running on Windows, just return the default.
-			if(RuntimePlatform.IsWindows)
+			if (RuntimePlatform.IsWindows)
 			{
 				const int ERROR_INSUFFICIENT_BUFFER = 122;
 
 				// Determine the required buffer size to store the processor information
 				uint ReturnLength = 0;
-				if(!GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup, IntPtr.Zero, ref ReturnLength) && Marshal.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER)
+				if (!GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup, IntPtr.Zero, ref ReturnLength) && Marshal.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER)
 				{
 					// Allocate a buffer for it
 					IntPtr Ptr = Marshal.AllocHGlobal((int)ReturnLength);
@@ -1051,10 +1045,10 @@ namespace UnrealBuildTool
 						if (GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup, Ptr, ref ReturnLength))
 						{
 							int Count = 0;
-							for(int Pos = 0; Pos < ReturnLength; )
+							for (int Pos = 0; Pos < ReturnLength;)
 							{
 								LOGICAL_PROCESSOR_RELATIONSHIP Type = (LOGICAL_PROCESSOR_RELATIONSHIP)Marshal.ReadInt16(Ptr, Pos);
-								if(Type == LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup)
+								if (Type == LOGICAL_PROCESSOR_RELATIONSHIP.RelationGroup)
 								{
 									// Read the values from the embedded GROUP_RELATIONSHIP structure
 									int GroupRelationshipPos = Pos + 8;
@@ -1062,7 +1056,7 @@ namespace UnrealBuildTool
 
 									// Read the processor counts from the embedded PROCESSOR_GROUP_INFO structures
 									int GroupInfoPos = GroupRelationshipPos + 24;
-									for(int GroupIdx = 0; GroupIdx < ActiveGroupCount; GroupIdx++)
+									for (int GroupIdx = 0; GroupIdx < ActiveGroupCount; GroupIdx++)
 									{
 										Count += Marshal.ReadByte(Ptr, GroupInfoPos + 1);
 										GroupInfoPos += 40 + IntPtr.Size;
@@ -1075,18 +1069,17 @@ namespace UnrealBuildTool
 					}
 					finally
 					{
-						Marshal.FreeHGlobal(Ptr);		
+						Marshal.FreeHGlobal(Ptr);
 					}
 				}
 			}
 			return Environment.ProcessorCount;
 		}
 
-		
 		// int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen); // from man page
 		[DllImport("libc")]
-		extern static int sysctlbyname(string name, out int oldp, ref UInt64 oldlenp, IntPtr newp, UInt64 newlen);
-		
+		static extern int sysctlbyname(string name, out int oldp, ref UInt64 oldlenp, IntPtr newp, UInt64 newlen);
+
 		/// <summary>
 		/// Gets the number of physical cores, excluding hyper threading.
 		/// </summary>
@@ -1103,7 +1096,7 @@ namespace UnrealBuildTool
 					ref ReturnLength) && Marshal.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER)
 				{
 					// Allocate a buffer for it
-					IntPtr Ptr = Marshal.AllocHGlobal((int) ReturnLength);
+					IntPtr Ptr = Marshal.AllocHGlobal((int)ReturnLength);
 					try
 					{
 						if (GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore, Ptr,
@@ -1115,7 +1108,7 @@ namespace UnrealBuildTool
 							for (int Pos = 0; Pos < ReturnLength;)
 							{
 								LOGICAL_PROCESSOR_RELATIONSHIP Type =
-									(LOGICAL_PROCESSOR_RELATIONSHIP) Marshal.ReadInt16(Ptr, Pos);
+									(LOGICAL_PROCESSOR_RELATIONSHIP)Marshal.ReadInt16(Ptr, Pos);
 								if (Type == LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore)
 								{
 									Count++;
@@ -1133,7 +1126,7 @@ namespace UnrealBuildTool
 					}
 				}
 			}
-			else if(RuntimePlatform.IsMac)
+			else if (RuntimePlatform.IsMac)
 			{
 				UInt64 Size = 4;
 				if (0 == sysctlbyname("hw.physicalcpu", out int Value, ref Size, IntPtr.Zero, 0))
@@ -1174,52 +1167,87 @@ namespace UnrealBuildTool
 			return MemoryInfo.TotalAvailableMemoryBytes != 0 ? MemoryInfo.TotalAvailableMemoryBytes : -1;
 		}
 
-		
 		// vm_statistics64, based on the definition in <mach/vm_statistics.h>
 		[StructLayout(LayoutKind.Sequential)]
-        struct vm_statistics64 {
-          	/*natural_t*/ public int	free_count;				/* # of pages free */
-          	/*natural_t*/ public int	active_count;			/* # of pages active */
-          	/*natural_t*/ public int	inactive_count;			/* # of pages inactive */
-          	/*natural_t*/ public int	wire_count;				/* # of pages wired down */
-          	/*uint64_t */ public UInt64	zero_fill_count;		/* # of zero fill pages */
-          	/*uint64_t */ public UInt64	reactivations;			/* # of pages reactivated */
-		  	/*uint64_t */ public UInt64	pageins;				/* # of pageins */
-          	/*uint64_t */ public UInt64	pageouts;				/* # of pageouts */
-          	/*uint64_t */ public UInt64	faults;					/* # of faults */
-          	/*uint64_t */ public UInt64	cow_faults;				/* # of copy-on-writes */
-          	/*uint64_t */ public UInt64	lookups;				/* object cache lookups */
-          	/*uint64_t */ public UInt64	hits;					/* object cache hits */
-          	/*uint64_t */ public UInt64	purges;					/* # of pages purged */
-          	/*natural_t*/ public int	purgeable_count;		/* # of pages purgeable */
-          	/*
+		struct vm_statistics64
+		{
+			/*natural_t*/
+			public int free_count;              /* # of pages free */
+			/*natural_t*/
+			public int active_count;            /* # of pages active */
+			/*natural_t*/
+			public int inactive_count;          /* # of pages inactive */
+			/*natural_t*/
+			public int wire_count;              /* # of pages wired down */
+			/*uint64_t */
+			public UInt64 zero_fill_count;      /* # of zero fill pages */
+			/*uint64_t */
+			public UInt64 reactivations;            /* # of pages reactivated */
+			/*uint64_t */
+			public UInt64 pageins;              /* # of pageins */
+			/*uint64_t */
+			public UInt64 pageouts;             /* # of pageouts */
+			/*uint64_t */
+			public UInt64 faults;                   /* # of faults */
+			/*uint64_t */
+			public UInt64 cow_faults;               /* # of copy-on-writes */
+			/*uint64_t */
+			public UInt64 lookups;              /* object cache lookups */
+			/*uint64_t */
+			public UInt64 hits;                 /* object cache hits */
+			/*uint64_t */
+			public UInt64 purges;                   /* # of pages purged */
+			/*natural_t*/
+			public int purgeable_count;     /* # of pages purgeable */
+			/*
           	 * NB: speculative pages are already accounted for in "free_count",
           	 * so "speculative_count" is the number of "free" pages that are
           	 * used to hold data that was read speculatively from disk but
           	 * haven't actually been used by anyone so far.
           	 */
-          	/*natural_t*/ public int	speculative_count;		/* # of pages speculative */
-          
-          	/* added for rev1 */
-          	/*uint64_t */ public UInt64	decompressions;			/* # of pages decompressed */
-          	/*uint64_t */ public UInt64	compressions;			/* # of pages compressed */
-          	/*uint64_t */ public UInt64	swapins;				/* # of pages swapped in (via compression segments) */
-          	/*uint64_t */ public UInt64	swapouts;				/* # of pages swapped out (via compression segments) */
-          	/*natural_t*/ public int	compressor_page_count;	/* # of pages used by the compressed pager to hold all the compressed data */
-          	/*natural_t*/ public int	throttled_count;		/* # of pages throttled */
-          	/*natural_t*/ public int	external_page_count;	/* # of pages that are file-backed (non-swap) */
-          	/*natural_t*/ public int	internal_page_count;	/* # of pages that are anonymous */
-          	/*uint64_t */ public UInt64	total_uncompressed_pages_in_compressor; /* # of pages (uncompressed) held within the compressor. */
-        } // __attribute__((aligned(8))); 
-		
+			/*natural_t*/
+			public int speculative_count;       /* # of pages speculative */
+
+			/* added for rev1 */
+			/*uint64_t */
+			public UInt64 decompressions;           /* # of pages decompressed */
+			/*uint64_t */
+			public UInt64 compressions;         /* # of pages compressed */
+			/*uint64_t */
+			public UInt64 swapins;              /* # of pages swapped in (via compression segments) */
+			/*uint64_t */
+			public UInt64 swapouts;             /* # of pages swapped out (via compression segments) */
+			/*natural_t*/
+			public int compressor_page_count;   /* # of pages used by the compressed pager to hold all the compressed data */
+			/*natural_t*/
+			public int throttled_count;     /* # of pages throttled */
+			/*natural_t*/
+			public int external_page_count; /* # of pages that are file-backed (non-swap) */
+			/*natural_t*/
+			public int internal_page_count; /* # of pages that are anonymous */
+			/*uint64_t */
+			public UInt64 total_uncompressed_pages_in_compressor; /* # of pages (uncompressed) held within the compressor. */
+		} // __attribute__((aligned(8))); 
+
 		// kern_return_t host_statistics64(host_t host_priv, host_flavor_t flavor, host_info64_t host_info64_out, mach_msg_type_number_t *host_info64_outCnt); // from <mach/mach_host.h>
 		[DllImport("libc")]
-		extern static int host_statistics64(IntPtr host_priv, int flavor, out vm_statistics64 host_info64_out, ref uint host_info_count);
+		static extern int host_statistics64(IntPtr host_priv, int flavor, out vm_statistics64 host_info64_out, ref uint host_info_count);
 
 		// mach_port_t mach_host_self() // from <mach/mach_init.h>
 		[DllImport("libc")]
-		extern static IntPtr mach_host_self();
-		
+		static extern IntPtr mach_host_self();
+
+		/// <summary>
+		/// Gets the total system memory in bytes based on what is known to the garbage collector.
+		/// </summary>
+		/// <remarks>This will return a max of 2GB for a 32bit application.</remarks>
+		/// <returns>The total system memory free, in bytes.</returns>
+		public static long GetTotalSystemMemoryBytes()
+		{
+			GCMemoryInfo MemoryInfo = GC.GetGCMemoryInfo();
+			return MemoryInfo.TotalAvailableMemoryBytes;
+		}
+
 		/// <summary>
 		/// Gets the total memory bytes free, based on what is known to the garbage collector.
 		/// </summary>
@@ -1228,7 +1256,7 @@ namespace UnrealBuildTool
 		public static long GetFreeMemoryBytes()
 		{
 			long FreeMemoryBytes = -1;
-			
+
 			GCMemoryInfo MemoryInfo = GC.GetGCMemoryInfo();
 			// TotalAvailableMemoryBytes will be 0 if garbage collection has not run yet
 			if (MemoryInfo.TotalAvailableMemoryBytes != 0)
@@ -1239,13 +1267,13 @@ namespace UnrealBuildTool
 			// On Mac, MemoryInfo.MemoryLoadBytes includes memory used to cache disk-backed files ("Cached Files" in
 			// Activity Monitor), which can result in a significant over-estimate of memory pressure.
 			// We treat memory used for caching of disk-backed files as free for use in compilation tasks.
-			if (RuntimePlatform.IsMac)	
+			if (RuntimePlatform.IsMac)
 			{
 				// host_statistics64() flavor, from <mach/host_info.h>
 				int HOST_VM_INFO64 = 4;
 				// host_statistics64() count of 32bit values in output struct, from <mach/host_info.h>
 				int HOST_VM_INFO64_COUNT = Marshal.SizeOf(typeof(vm_statistics64)) / 4;
-		
+
 				vm_statistics64 VMStats;
 				uint StructSize = (uint)HOST_VM_INFO64_COUNT;
 				IntPtr Host = mach_host_self();
@@ -1257,10 +1285,68 @@ namespace UnrealBuildTool
 				{
 					PageSize = 4096; // likely result
 				}
-				
+
 				FreeMemoryBytes += (long)PageSize * (long)VMStats.external_page_count;
 			}
 			return FreeMemoryBytes;
+		}
+
+		[DllImport("pdh.dll", SetLastError = true, CharSet = CharSet.Auto)]
+		static extern int PdhOpenQueryW([MarshalAs(UnmanagedType.LPWStr)] string? szDataSource, UIntPtr dwUserData, out IntPtr phQuery);
+
+		[DllImport("pdh.dll", SetLastError = true, CharSet = CharSet.Auto)]
+		static extern UInt32 PdhAddCounter(IntPtr hQuery, string szFullCounterPath, IntPtr dwUserData, out IntPtr phCounter);
+
+		[DllImport("pdh.dll", SetLastError = true)]
+		static extern UInt32 PdhCollectQueryData(IntPtr phQuery);
+
+		struct PDH_FMT_COUNTERVALUE
+		{
+			public uint CStatus;
+			public double doubleValue;
+		};
+
+		[DllImport("pdh.dll", SetLastError = true)]
+		static extern UInt32 PdhGetFormattedCounterValue(IntPtr phCounter, uint dwFormat, IntPtr lpdwType, out PDH_FMT_COUNTERVALUE pValue);
+
+		static IntPtr CpuQuery;
+		static IntPtr CpuTotal;
+		static bool CpuInitialized = false;
+
+		/// <summary>
+		/// Gives the current CPU utilization.
+		/// </summary>
+		/// <param name="Utilization">Percentage of CPU utilization currently.</param>
+		/// <returns>Whether or not it was successful in getting the CPU utilization.</returns>
+		public static bool GetTotalCpuUtilization(out float Utilization)
+		{
+			Utilization = 0.0f;
+			if (RuntimePlatform.IsWindows)
+			{
+				const UInt32 ERROR_SUCCESS = 0;
+				if (!CpuInitialized)
+				{
+					if (PdhOpenQueryW(null, UIntPtr.Zero, out CpuQuery) == ERROR_SUCCESS)
+					{
+						PdhAddCounter(CpuQuery, "\\Processor(_Total)\\% Processor Time", IntPtr.Zero, out CpuTotal);
+						PdhCollectQueryData(CpuQuery);
+						CpuInitialized = true;
+					}
+				}
+
+				if (CpuInitialized)
+				{
+					const uint PDH_FMT_DOUBLE = 0x00000200;
+
+					PDH_FMT_COUNTERVALUE counterVal;
+					PdhCollectQueryData(CpuQuery);
+					PdhGetFormattedCounterValue(CpuTotal, PDH_FMT_DOUBLE, IntPtr.Zero, out counterVal);
+					Utilization = (float)counterVal.doubleValue;
+					return true;
+				}
+			}
+
+			return false;
 		}
 
 		/// <summary>
@@ -1273,6 +1359,14 @@ namespace UnrealBuildTool
 		/// <returns>Max number of actions to execute in parallel</returns>
 		public static int GetMaxActionsToExecuteInParallel(int MaxProcessorCount, double ProcessorCountMultiplier, bool ConsiderLogicalCores, long MemoryPerActionBytes)
 		{
+			// If non-zero then this is the number of actions that can be executed in parallel. This 
+			// matches the BuildConfiguration.MaxLocalActions documentation and the <= 5.1 behavior
+			if (MaxProcessorCount != 0)
+			{
+				Log.TraceInformationOnce($"Executing up to {MaxProcessorCount} actions based on MaxProcessorCount override");
+				return MaxProcessorCount;
+			}
+
 			// Get the number of logical processors
 			int NumLogicalCores = Utils.GetLogicalProcessorCount();
 
@@ -1292,6 +1386,10 @@ namespace UnrealBuildTool
 				// The CPU has more logical cores than physical ones, aka uses hyper-threading. 
 				// Use multiplier if provided
 				MaxActionsToExecuteInParallel = (int)(NumPhysicalCores * ProcessorCountMultiplier);
+
+				// make sure we don't try to run more actions than cores we have
+				MaxActionsToExecuteInParallel = Math.Min(MaxActionsToExecuteInParallel, Math.Max(NumLogicalCores, NumPhysicalCores));
+
 				Log.TraceInformationOnce($"  Requested {ProcessorCountMultiplier} process count multiplier: limiting max parallel actions to {MaxActionsToExecuteInParallel}");
 			}
 			else if (ConsiderLogicalCores && NumLogicalCores > NumPhysicalCores)
@@ -1309,23 +1407,24 @@ namespace UnrealBuildTool
 			// Limit number of actions to execute if the system is memory starved.
 			if (MemoryPerActionBytes > 0)
 			{
-				long FreeMemoryBytes = GetFreeMemoryBytes();
-				if (FreeMemoryBytes != -1)
+				// The OS needs enough memory to serve all the action processes that will be spawned. Historically this check limited
+				// actions based on free memory to ensure action processes weren't forced to use swap, but there's strong evidence that
+				// limiting based on total system memory and relying on the OS to swap out other processes to make room is fine.
+				// That said only Mac has been extensively tested here in this scenario, and does tend to have faster disk access
+				// than other platforms. So for now we'll change Mac and leave Windows/Linux using the old behavior
+				long AvailableMemoryBytes = RuntimePlatform.IsMac ? GetTotalSystemMemoryBytes() : GetFreeMemoryBytes();
+
+				if (AvailableMemoryBytes != -1)
 				{
-					int TotalMemoryActions = Convert.ToInt32(FreeMemoryBytes / MemoryPerActionBytes);
+					int TotalMemoryActions = Convert.ToInt32(AvailableMemoryBytes / MemoryPerActionBytes);
 					if (TotalMemoryActions < MaxActionsToExecuteInParallel)
 					{
 						MaxActionsToExecuteInParallel = Math.Max(1, Math.Min(MaxActionsToExecuteInParallel, TotalMemoryActions));
-						Log.TraceInformationOnce($"  Requested {StringUtils.FormatBytesString(MemoryPerActionBytes)} free memory per action, {StringUtils.FormatBytesString(FreeMemoryBytes)} available: limiting max parallel actions to {MaxActionsToExecuteInParallel}");
+						Log.TraceInformationOnce($"  Requested {StringUtils.FormatBytesString(MemoryPerActionBytes)} memory per action, {StringUtils.FormatBytesString(AvailableMemoryBytes)} available: limiting max parallel actions to {MaxActionsToExecuteInParallel}");
 					}
 				}
 			}
 
-			if (MaxProcessorCount > 0 && MaxProcessorCount < MaxActionsToExecuteInParallel)
-			{
-				MaxActionsToExecuteInParallel = Math.Max(1, Math.Min(MaxActionsToExecuteInParallel, MaxProcessorCount));
-				Log.TraceInformationOnce($"  Requested max {MaxProcessorCount} action(s): limiting max parallel actions to {MaxActionsToExecuteInParallel}");
-			}
 			return MaxActionsToExecuteInParallel;
 		}
 
@@ -1337,12 +1436,12 @@ namespace UnrealBuildTool
 		/// <returns>True if the steps succeeded, false otherwise</returns>
 		public static void ExecuteCustomBuildSteps(FileReference[] ScriptFiles, ILogger Logger)
 		{
-			foreach(FileReference ScriptFile in ScriptFiles)
+			foreach (FileReference ScriptFile in ScriptFiles)
 			{
 				ProcessStartInfo StartInfo = new ProcessStartInfo();
 				StartInfo.FileName = BuildHostPlatform.Current.Shell.FullName;
 
-				if(BuildHostPlatform.Current.ShellType == ShellType.Cmd)
+				if (BuildHostPlatform.Current.ShellType == ShellType.Cmd)
 				{
 					StartInfo.Arguments = String.Format("/C \"{0}\"", ScriptFile.FullName);
 				}
@@ -1352,7 +1451,7 @@ namespace UnrealBuildTool
 				}
 
 				int ReturnCode = Utils.RunLocalProcessAndLogOutput(StartInfo, Logger);
-				if(ReturnCode != 0)
+				if (ReturnCode != 0)
 				{
 					throw new BuildException("Custom build step {0} {1} terminated with exit code {2}", StartInfo.FileName, StartInfo.Arguments, ReturnCode);
 				}
@@ -1499,8 +1598,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		static readonly Dictionary<FileReference, (int WriteRequestCount, int ActualWriteCount)> WriteFileIfChangedRecord = new Dictionary<FileReference, (int, int)>();
 
-		static internal FileReference? WriteFileIfChangedTrace = null;
-		static internal string WriteFileIfChangedContext = "";
+		internal static FileReference? WriteFileIfChangedTrace = null;
+		internal static string WriteFileIfChangedContext = "";
 
 		static void RecordWriteFileIfChanged(FileReference File, bool bNew, bool bChanged, ILogger Logger)
 		{
@@ -1552,7 +1651,6 @@ namespace UnrealBuildTool
 									Logger.Log(OverrideType,
 										"{Prefix}Not writing a file that was previously not written: \"{File}\"{Context}", Prefix, File, Context);
 								}
-
 							}
 						}
 					}
@@ -1673,7 +1771,7 @@ namespace UnrealBuildTool
 					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: true, Logger);
 				}
 				else
-				{ 
+				{
 					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: false, Logger);
 				}
 			}
@@ -1699,44 +1797,8 @@ namespace UnrealBuildTool
 		/// <param name="Logger">Logger for output</param>
 		internal static void WriteFileIfChanged(FileItem FileItem, IEnumerable<string> ContentLines, StringComparison Comparison, ILogger Logger)
 		{
-			// Only write the file if its contents have changed.
-			FileReference Location = FileItem.Location;
-			
-			if (!FileItem.Exists)
-			{
-				DirectoryReference.CreateDirectory(Location.Directory);
-				FileReference.WriteAllLines(Location, ContentLines, GetEncodingForStrings(ContentLines));
-				FileItem.ResetCachedInfo();
-
-				RecordWriteFileIfChanged(FileItem.Location, bNew: true, bChanged: true, Logger);
-			}
-			else
-			{
-				string[] CurrentContents = File.ReadAllLines(FileItem.FullName);
-				if (!CurrentContents.SequenceEqual(ContentLines, StringComparer.FromComparison(Comparison)))
-				{
-					FileReference BackupFile = new FileReference($"{FileItem.FullName}.old");
-					try
-					{
-						Logger.LogDebug("Updating {FileItem}: contents have changed. Saving previous version to {BackupFile}.", FileItem.Location, BackupFile);
-						FileReference.Delete(BackupFile);
-						FileReference.Move(Location, BackupFile);
-					}
-					catch (Exception Ex)
-					{
-						Logger.LogWarning("Unable to rename {FileItem} to {BackupFile}", FileItem, BackupFile);
-						Logger.LogDebug(Ex, "{Ex}", ExceptionUtils.FormatExceptionDetails(Ex));
-					}
-					FileReference.WriteAllLines(Location, ContentLines, GetEncodingForStrings(ContentLines));
-					FileItem.ResetCachedInfo();
-
-					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: true, Logger);
-				}
-				else
-				{ 
-					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: false, Logger);
-				}
-			}
+			string Contents = String.Join(Environment.NewLine, ContentLines);
+			WriteFileIfChanged(FileItem, Contents, Comparison, Logger);
 		}
 
 		/// <summary>
@@ -1750,9 +1812,9 @@ namespace UnrealBuildTool
 		{
 			// If the string length is equivalent to the encoded length, then no non-ASCII characters were present in the string.
 			// Don't write BOM as it messes with clang when loading response files.
-			return (Encoding.UTF8.GetByteCount(Str) != Str.Length) ?  new UTF8Encoding(false) : Encoding.ASCII;
+			return (Encoding.UTF8.GetByteCount(Str) != Str.Length) ? new UTF8Encoding(false) : Encoding.ASCII;
 		}
-		
+
 		/// <summary>
 		/// Determines the appropriate encoding for a list of strings: either ASCII or UTF-8.
 		/// If the string length is equivalent to the encoded length, then no non-ASCII characters were present in the string.

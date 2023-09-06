@@ -146,7 +146,7 @@ void FMeshPaintGeometryAdapterForStaticMeshes::InitializeAdapterGlobals()
 
 void FMeshPaintGeometryAdapterForStaticMeshes::CleanupGlobals()
 {
-	for (TPair<UStaticMesh*, FStaticMeshReferencers>& Pair : MeshToComponentMap)
+	for (auto& Pair : MeshToComponentMap)
 	{
 		if (Pair.Key && Pair.Value.RestoreBodySetup)
 		{
@@ -166,7 +166,7 @@ void FMeshPaintGeometryAdapterForStaticMeshes::OnAdded()
 	FStaticMeshReferencers& StaticMeshReferencers = MeshToComponentMap.FindOrAdd(ReferencedStaticMesh);
 
 	check(!StaticMeshReferencers.Referencers.ContainsByPredicate(
-		[=](const FStaticMeshReferencers::FReferencersInfo& Info)
+		[this](const FStaticMeshReferencers::FReferencersInfo& Info)
 	{
 		return Info.StaticMeshComponent == this->StaticMeshComponent;
 	}
@@ -233,7 +233,7 @@ void FMeshPaintGeometryAdapterForStaticMeshes::OnRemoved()
 	{
 		check(StaticMeshReferencers->Referencers.Num() > 0);
 		int32 Index = StaticMeshReferencers->Referencers.IndexOfByPredicate(
-			[=](const FStaticMeshReferencers::FReferencersInfo& Info)
+			[this](const FStaticMeshReferencers::FReferencersInfo& Info)
 		{
 			return Info.StaticMeshComponent == this->StaticMeshComponent;
 		}
@@ -282,7 +282,7 @@ void FMeshPaintGeometryAdapterForStaticMeshes::ApplyOrRemoveTextureOverride(UTex
 
 void FMeshPaintGeometryAdapterForStaticMeshes::AddReferencedObjectsGlobals(FReferenceCollector& Collector)
 {
-	for (TPair<UStaticMesh*, FStaticMeshReferencers>& Pair : MeshToComponentMap)
+	for (auto& Pair : MeshToComponentMap)
 	{
 		Collector.AddReferencedObject(Pair.Key);
 		Collector.AddReferencedObject(Pair.Value.RestoreBodySetup);

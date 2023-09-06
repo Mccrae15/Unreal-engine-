@@ -171,25 +171,24 @@ void UIKRetargetBatchOperation::RetargetAssets(
 	
 	for (UAnimationAsset* AssetToRetarget : AnimationAssetsToRetarget)
 	{
-		// synchronize curves between old/new asset
-		UAnimSequence* AnimSequenceToRetarget = Cast<UAnimSequence>(AssetToRetarget);
-		if (AnimSequenceToRetarget)
+		// prepare animation sequence asset to receive retargeted animation
+		if (UAnimSequence* AnimSequenceToRetarget = Cast<UAnimSequence>(AssetToRetarget))
 		{
 			// copy curve data from source asset, preserving data in the target if present.
 			UAnimationBlueprintLibrary::CopyAnimationCurveNamesToSkeleton(OldSkeleton, NewSkeleton, AnimSequenceToRetarget, ERawCurveTrackTypes::RCT_Float);	
 			// clear transform curves since those curves won't work in new skeleton
 			IAnimationDataController& Controller = AnimSequenceToRetarget->GetController();
-			const bool ShouldTransactAnimEdits = false;
-			Controller.OpenBracket(FText::FromString("Generating Retargeted Animation Data"), ShouldTransactAnimEdits);
-			Controller.RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Transform);
+			constexpr bool bShouldTransact = false;
+			Controller.OpenBracket(FText::FromString("Preparing for retargeted animation."), bShouldTransact);
+			Controller.RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Transform, bShouldTransact);
 			// clear bone tracks to prevent recompression
-			Controller.RemoveAllBoneTracks(false);
+			Controller.RemoveAllBoneTracks(bShouldTransact);
 			// set the retarget source to the target skeletal mesh
 			AnimSequenceToRetarget->RetargetSource = NAME_None;
 			AnimSequenceToRetarget->RetargetSourceAsset = Context.TargetMesh;
-			Controller.UpdateWithSkeleton(NewSkeleton);
+			Controller.UpdateWithSkeleton(NewSkeleton, bShouldTransact);
 			// done editing sequence data, close bracket
-			Controller.CloseBracket(ShouldTransactAnimEdits);
+			Controller.CloseBracket(bShouldTransact);
 		}
 
 		// replace references to other animation
@@ -282,19 +281,6 @@ void UIKRetargetBatchOperation::ConvertAnimation(
 	// get names of the curves the retargeter is looking for
 	TArray<FName> SpeedCurveNames;
 	Context.IKRetargetAsset->GetSpeedCurveNames(SpeedCurveNames);
-	// get all curve names in the source skeleton
-	const FSmartNameMapping* SourceContainer = Context.SourceMesh->GetSkeleton()->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-	TArray<FName> SourceCurveNames;
-	SourceContainer->FillNameArray(SourceCurveNames);
-	// get list of all the source curve IDs that hold speed values the retargeter is looking for
-	TMap<FName, SmartName::UID_Type> SourceSpeedCurveIDs;
-	for (int32 CurveIndex = 0; CurveIndex < SourceCurveNames.Num(); ++CurveIndex)
-	{
-		if (SpeedCurveNames.Contains(SourceCurveNames[CurveIndex]))
-		{
-			SourceSpeedCurveIDs.Add(SourceCurveNames[CurveIndex],SourceContainer->FindUID(SourceCurveNames[CurveIndex]));
-		}
-	}
 	
 	// for each pair of source / target animation sequences
 	for (TPair<UAnimationAsset*, UAnimationAsset*>& Pair : DuplicatedAnimAssets)
@@ -312,9 +298,9 @@ void UIKRetargetBatchOperation::ConvertAnimation(
 
 		// remove all keys from the destination animation sequence
 		IAnimationDataController& TargetSeqController = DestinationSequence->GetController();
-		const bool ShouldTransactAnimEdits = false;
-		TargetSeqController.OpenBracket(FText::FromString("Generating Retargeted Animation Data"), ShouldTransactAnimEdits);
-		TargetSeqController.RemoveAllBoneTracks();
+		constexpr bool bShouldTransact = false;
+		TargetSeqController.OpenBracket(FText::FromString("Generating Retargeted Animation Data"), bShouldTransact);
+		TargetSeqController.RemoveAllBoneTracks(bShouldTransact);
 
 		// number of frames in this animation
 		const int32 NumFrames = SourceSequence->GetNumberOfSampledKeys();
@@ -363,9 +349,9 @@ void UIKRetargetBatchOperation::ConvertAnimation(
 			
 			// get the curve values from the source sequence (for speed-based IK planting)
 			TMap<FName, float> SpeedCurveValues;
-			for (TPair<FName, SmartName::UID_Type> CurveNameAndID : SourceSpeedCurveIDs)
+			for (const FName& SpeedCurveName : SpeedCurveNames)
 			{
-				SpeedCurveValues.Add(CurveNameAndID.Key, SourceSequence->EvaluateCurveData(CurveNameAndID.Value, TimeAtCurrentFrame));
+				SpeedCurveValues.Add(SpeedCurveName, SourceSequence->EvaluateCurveData(SpeedCurveName, TimeAtCurrentFrame));
 			}
 
 			// run the retargeter
@@ -389,18 +375,16 @@ void UIKRetargetBatchOperation::ConvertAnimation(
 		}
 
 		// add keys to bone tracks
-		const bool bShouldTransact = false;
 		for (int32 TargetBoneIndex=0; TargetBoneIndex<NumTargetBones; ++TargetBoneIndex)
 		{
 			const FName& TargetBoneName = TargetBoneNames[TargetBoneIndex];
 
 			const FRawAnimSequenceTrack& RawTrack = BoneTracks[TargetBoneIndex];
 			TargetSeqController.AddBoneCurve(TargetBoneName, bShouldTransact);
-			TargetSeqController.SetBoneTrackKeys(TargetBoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
+			TargetSeqController.SetBoneTrackKeys(TargetBoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys, bShouldTransact);
 		}
 
-		// done editing sequence data, close bracket
-		TargetSeqController.CloseBracket(ShouldTransactAnimEdits);
+		TargetSeqController.CloseBracket(bShouldTransact);
 	}
 }
 

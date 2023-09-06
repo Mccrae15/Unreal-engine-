@@ -52,7 +52,7 @@ namespace AJA
 				volatile bool bWaitResult;
 
 			public:
-				static bool WaitForVerticalInterrupt(DeviceConnection* InDeviceConnection, ChannelInfo* InChannelInfo);
+				bool WaitForVerticalInterrupt(DeviceConnection* InDeviceConnection, ChannelInfo* InChannelInfo);
 				static bool IsCurrentField(DeviceConnection* InDeviceConnection, ChannelInfo* InChannelInfo, NTV2FieldID InFieldId = NTV2_FIELD0);
 				bool Wait_ExternalThread();
 				virtual bool ThreadLoop() override;
@@ -86,6 +86,7 @@ namespace AJA
 				bool bIsOwned;
 				bool bIsInput;
 				bool bIsAutoDetected;
+				bool bGenlockChannel;
 			};
 
 		public:
@@ -120,7 +121,9 @@ namespace AJA
 				CommandList(DeviceConnection&);
 
 			public:
-				bool RegisterChannel(ETransportType InTransportType, NTV2InputSource InInputSource, NTV2Channel InChannel, bool bInAsInput, bool bConnectChannel, ETimecodeFormat InTimecodeFormat, EPixelFormat InUEPixelFormat, NTV2VideoFormat InDesiredInputFormat, bool bInAsOwner, bool bInIsAutoDetected);
+				bool RegisterChannel(ETransportType InTransportType, NTV2InputSource InInputSource, NTV2Channel InChannel, bool bInAsInput, bool bInAsGenlock, bool bConnectChannel, ETimecodeFormat InTimecodeFormat, EPixelFormat InUEPixelFormat, NTV2VideoFormat InDesiredInputFormat, bool bInAsOwner, bool bInIsAutoDetected);
+				/** RegisterChannel override that handles HDR metadata. */
+				bool RegisterChannel(ETransportType InTransportType, NTV2InputSource InInputSource, NTV2Channel InChannel, bool bInAsInput, bool bInAsGenlock, bool bConnectChannel, ETimecodeFormat InTimecodeFormat, EPixelFormat InUEPixelFormat, NTV2VideoFormat InDesiredInputFormat, FAjaHDROptions& InOutHDROptions, bool bInAsOwner, bool bInIsAutoDetected);
 				bool UnregisterChannel(NTV2Channel InChannel, bool bInAsOwner);
 
 				bool IsChannelConnect(NTV2Channel InChannel);
@@ -130,7 +133,7 @@ namespace AJA
 				void UnregisterAnalogLtc(bool bUseReferencePin);
 
 				bool RegisterReference(EAJAReferenceType OutputReferenceType, NTV2Channel InChannel);
-				void UnregisterReference();
+				void UnregisterReference(NTV2Channel InChannel);
 
 			private:
 				DeviceConnection& Connection;
@@ -144,7 +147,7 @@ namespace AJA
 			void Lock_UnInitialize();
 
 			bool Lock_EnableChannel_SDILinkHelper(CNTV2Card* InCard, ETransportType InTransportType, NTV2Channel InChannel) const;
-			bool Lock_EnableChannel_Helper(CNTV2Card* InCard, ETransportType InTransportType, NTV2InputSource InInputSource, NTV2Channel InChannel, bool InAsInput, bool bConnectChannel, bool bIsAutoDetected, ETimecodeFormat InTimecodeFormat, EPixelFormat InUEPixelFormat, NTV2VideoFormat InDesiredInputFormat, NTV2VideoFormat& OutFoundVideoFormat);
+			bool Lock_EnableChannel_Helper(CNTV2Card* InCard, ETransportType InTransportType, NTV2InputSource InInputSource, NTV2Channel InChannel, bool InAsInput, bool bConnectChannel, bool bIsAutoDetected, ETimecodeFormat InTimecodeFormat, EPixelFormat InUEPixelFormat, NTV2VideoFormat InDesiredInputFormat, NTV2VideoFormat& OutFoundVideoFormat, FAjaHDROptions& InOutHDROptions);
 			void Lock_SubscribeChannel_Helper(CNTV2Card* InCard, NTV2Channel InChannel, bool InAsInput) const;
 
 			uint32_t Lock_AcquireBaseFrameIndex(NTV2Channel InChannel, NTV2VideoFormat InVideoFormat) const;

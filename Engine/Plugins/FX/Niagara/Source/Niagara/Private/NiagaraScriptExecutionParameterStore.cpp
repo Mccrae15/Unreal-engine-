@@ -2,9 +2,8 @@
 
 #include "NiagaraScriptExecutionParameterStore.h"
 #include "NiagaraConstants.h"
-#include "NiagaraStats.h"
 #include "NiagaraDataInterface.h"
-#include "NiagaraSystemInstance.h"
+#include "NiagaraScript.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScriptExecutionParameterStore)
 
@@ -312,28 +311,19 @@ void FNiagaraScriptExecutionParameterStore::AddScriptParams(UNiagaraScript* Scri
 	}
 
 	check(Script->GetVMExecutableData().DataInterfaceInfo.Num() == Script->GetCachedDefaultDataInterfaces().Num());
-	for (FNiagaraScriptDataInterfaceInfo& Info : Script->GetCachedDefaultDataInterfaces())
+	for (const FNiagaraScriptResolvedDataInterfaceInfo& ResolvedDataInterface : Script->GetResolvedDataInterfaces())
 	{
-		FName ParameterName;
-		if (Info.RegisteredParameterMapRead != NAME_None)
-		{
-			ParameterName = Info.RegisteredParameterMapRead;
-		}
-		else
-		{
-			// If the data interface wasn't used in a parameter map, mangle the name so that it doesn't accidentally bind to
-			// a valid parameter.
-			FNameBuilder NameBuilder;
-			NameBuilder.Append(FNiagaraConstants::InternalNamespaceString);
-			NameBuilder.AppendChar(TEXT('.'));
-			Info.Name.AppendString(NameBuilder);
-			ParameterName = FName(NameBuilder.ToString()); ;
-		}
-
-		FNiagaraVariable Var(Info.Type, ParameterName);
 		int32 VarOffset = INDEX_NONE;
-		bAdded |= AddParameter(Var, false, false, &VarOffset);
-		SetDataInterface(Info.DataInterface, VarOffset);
+		bAdded |= AddParameter(ResolvedDataInterface.ParameterStoreVariable, false, false, &VarOffset);
+		SetDataInterface(ResolvedDataInterface.ResolvedDataInterface, VarOffset);
+	}
+
+	check(Script->GetVMExecutableData().UObjectInfos.Num() == Script->GetCachedDefaultUObjects().Num());
+	for (const FNiagaraResolvedUObjectInfo& Info : Script->GetResolvedUObjects())
+	{
+		int32 VarOffset = INDEX_NONE;
+		bAdded |= AddParameter(Info.ResolvedVariable, false, false, &VarOffset);
+		SetUObject(Info.Object, VarOffset);
 	}
 
 	if (bAdded && bTriggerRebind)

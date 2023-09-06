@@ -24,6 +24,7 @@
 #include "MuT/NodeColourSampleImage.h"
 #include "MuT/NodeComponentEdit.h"
 #include "MuT/NodeComponentNew.h"
+#include "MuT/NodeExtensionData.h"
 #include "MuT/NodeImageProject.h"
 #include "MuT/NodeLOD.h"
 #include "MuT/NodeLayout.h"
@@ -31,7 +32,6 @@
 #include "MuT/NodeMeshTable.h"
 #include "MuT/NodeObjectGroup.h"
 #include "MuT/NodeObjectNew.h"
-#include "MuT/NodeObjectState.h"
 #include "MuT/NodePatchImage.h"
 #include "MuT/NodeProjector.h"
 #include "MuT/NodeString.h"
@@ -59,10 +59,9 @@ namespace mu
 	class NodeImageColourMap;
 	class NodeImageConditional;
 	class NodeImageConstant;
-	class NodeImageDifference;
+	class NodeImageReference;
 	class NodeImageFormat;
 	class NodeImageGradient;
-	class NodeImageInterpolate3;
 	class NodeImageInterpolate;
 	class NodeImageInvert;
 	class NodeImageLayer;
@@ -75,7 +74,6 @@ namespace mu
 	class NodeImagePlainColour;
 	class NodeImageResize;
 	class NodeImageSaturate;
-	class NodeImageSelectColour;
 	class NodeImageSwitch;
 	class NodeImageSwizzle;
 	class NodeImageTable;
@@ -92,7 +90,6 @@ namespace mu
 	class NodeMeshMakeMorph;
 	class NodeMeshMorph;
 	class NodeMeshReshape;
-	class NodeMeshSubtract;
 	class NodeMeshSwitch;
 	class NodeMeshTransform;
 	class NodeMeshVariation;
@@ -107,7 +104,7 @@ namespace mu
 	class NodeScalarVariation;
 	class NodeStringConstant;
 	class NodeStringParameter;
-	struct OBJECT_STATE;
+	struct FObjectState;
 	struct FProgram;
 
 
@@ -122,7 +119,6 @@ namespace mu
                           public Visitor<NodeComponentEdit::Private, Ptr<ASTOp>, true>,
                           public Visitor<NodeLOD::Private, Ptr<ASTOp>, true>,
                           public Visitor<NodeObjectNew::Private, Ptr<ASTOp>, true>,
-                          public Visitor<NodeObjectState::Private, Ptr<ASTOp>, true>,
                           public Visitor<NodeObjectGroup::Private, Ptr<ASTOp>, true>,
                           public Visitor<NodePatchImage::Private, Ptr<ASTOp>, true>
     {
@@ -143,7 +139,6 @@ namespace mu
         Ptr<ASTOp> Visit( const NodeComponentEdit::Private& ) override;
         Ptr<ASTOp> Visit( const NodeLOD::Private& ) override;
         Ptr<ASTOp> Visit( const NodeObjectNew::Private& ) override;
-        Ptr<ASTOp> Visit( const NodeObjectState::Private& ) override;
         Ptr<ASTOp> Visit( const NodeObjectGroup::Private& ) override;
         Ptr<ASTOp> Visit( const NodePatchImage::Private& ) override;
 
@@ -155,7 +150,6 @@ namespace mu
 		//!
 		FirstPassGenerator m_firstPass;
 
-
         struct FVisitedKeyMap
         {
             FVisitedKeyMap()
@@ -166,12 +160,6 @@ namespace mu
 			{
 				uint32 KeyHash = 0;
 				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.pNode.get()));
-				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.imageSize[0]));
-				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.imageSize[1]));
-				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.imageRect.min[0]));
-				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.imageRect.min[1]));
-				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.imageRect.size[0]));
-				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.imageRect.size[1]));
 				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.state));
 				KeyHash = HashCombine(KeyHash, ::GetTypeHash((uint64)InKey.activeTags.Num()));
 				return KeyHash;
@@ -181,22 +169,15 @@ namespace mu
 			{
 				if (pNode != InKey.pNode) return false;
 				if (state != InKey.state) return false;
-				if (imageSize != InKey.imageSize) return false;
-				if (imageRect.min != InKey.imageRect.min) return false;
-				if (imageRect.size != InKey.imageRect.size) return false;
 				if (activeTags != InKey.activeTags) return false;
-				if (overrideLayouts != InKey.overrideLayouts) return false;
 				return true;
 			}
 
             // This reference has to be the smart pointer to avoid memory aliasing, keeping
             // processed nodes alive.
             NodePtrConst pNode;
-            vec2<int> imageSize;
-            box< vec2<int> > imageRect;
             int state = -1;
 			TArray<mu::string> activeTags;
-			TArray<LayoutPtrConst> overrideLayouts;
         };
 
         //! This struct contains additional state propagated from bottom to top of the object node graph.
@@ -219,7 +200,7 @@ namespace mu
         int m_currentStateIndex = -1;
 
         //! After the entire code generation this contains the information about all the states
-        typedef TArray< std::pair<OBJECT_STATE, Ptr<ASTOp>> > StateList;
+        typedef TArray< std::pair<FObjectState, Ptr<ASTOp>> > StateList;
         StateList m_states;
 
     private:
@@ -236,17 +217,6 @@ namespace mu
 
         //! First free index to be used to identify mesh vertices.
         uint32 m_freeVertexIndex = 0;
-
-        //! When generating images, here we have the entire source image size and the rect of the
-        //! image that we are generating.
-        struct IMAGE_STATE
-        {
-            vec2<int> m_imageSize;
-            box< vec2<int> > m_imageRect;
-            int32 m_layoutBlockId;
-            LayoutPtrConst m_pLayout;
-        };
-		TArray<IMAGE_STATE> m_imageState;
 
 		// (top-down) Tags that are active when generating nodes.
 		TArray< TArray<mu::string> > m_activeTags;
@@ -310,6 +280,15 @@ namespace mu
         //! Variables added for every node
         map< Ptr<const Node>, Ptr<ASTOpParameter> > m_nodeVariables;
 
+		struct FConditionalExtensionDataOp
+		{
+			Ptr<ASTOp> Condition;
+			Ptr<ASTOp> ExtensionDataOp;
+			string ExtensionDataName;
+		};
+
+		TArray<FConditionalExtensionDataOp> m_conditionalExtensionDataOps;
+
 		//-----------------------------------------------------------------------------------------
 
 		// Get the modifiers that have to be applied to elements with a specific tag.
@@ -324,27 +303,15 @@ namespace mu
         //void GetSurfacesWithTag(const string& tag, vector<FirstPassGenerator::SURFACE>& surfaces);
 
         //-----------------------------------------------------------------------------------------
-        void PrepareForLayout( LayoutPtrConst GeneratedLayout,
-                                  MeshPtr currentLayoutMesh,
-                                  size_t currentLayoutChannel,
-                                  const void* errorContext );
-
-        //-----------------------------------------------------------------------------------------
         //!
         Ptr<ASTOp> GenerateTableVariable( TablePtr pTable, const string& strName );
 
         //!
-        Ptr<ASTOp> GenerateMissingBoolCode( const char* strWhere, bool value,
-                                         const void* errorContext );
+        Ptr<ASTOp> GenerateMissingBoolCode(const TCHAR* strWhere, bool value, const void* errorContext );
 
         //!
 		template<class NODE_TABLE_PRIVATE, TABLE_COLUMN_TYPE TYPE, OP_TYPE OPTYPE, typename F>
 		Ptr<ASTOp> GenerateTableSwitch( const NODE_TABLE_PRIVATE& node, F&& GenerateOption );
-
-        //!
-        Ptr<ASTOp> GenerateImageBlockPatch( Ptr<ASTOp> blockAd,
-                                             const NodePatchImage* pPatch,
-                                             Ptr<ASTOp> conditionAd );
 
 
     private:
@@ -355,11 +322,6 @@ namespace mu
 			FVisitedKeyMap key;
 			key.pNode = InNode;
 			key.state = m_currentStateIndex;
-			if (!m_imageState.IsEmpty())
-			{
-				key.imageSize = m_imageState.Last().m_imageSize;
-				key.imageRect = m_imageState.Last().m_imageRect;
-			}
 			if (!m_activeTags.IsEmpty())
 			{
 				key.activeTags = m_activeTags.Last();
@@ -370,51 +332,118 @@ namespace mu
 
 		//-----------------------------------------------------------------------------------------
 		// Images
+		
+		/** Options that affect the generation of images. It is like list of what required data we want while parsing down the image node graph. */
+		struct FImageGenerationOptions
+		{
+			/** */
+			CompilerOptions::TextureLayoutStrategy ImageLayoutStrategy = CompilerOptions::TextureLayoutStrategy::None;
+
+			/** This is used to introduce additional image generation safety. \TODO: Move this "safety" to optimization? */
+			UE::Math::TIntVector2<int32> RectSize;
+
+			/** */
+			int32 CurrentStateIndex = -1;
+
+			/** Layout block that we are trying to generate if any. */
+			int32 LayoutBlockId = -1;
+			Ptr<const Layout> LayoutToApply;
+
+			/** Tags that are active at this point of the generation. */
+			TArray<mu::string> ActiveTags;
+
+			friend FORCEINLINE uint32 GetTypeHash(const FImageGenerationOptions& InKey)
+			{
+				uint32 KeyHash = 0;
+				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.ImageLayoutStrategy));
+				KeyHash = HashCombine(KeyHash, GetTypeHash(InKey.RectSize));
+				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.CurrentStateIndex));
+				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.LayoutBlockId));
+				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.LayoutToApply.get()));
+				return KeyHash;
+			}
+
+			FORCEINLINE bool operator==(const FImageGenerationOptions& Other) const
+			{
+				return ImageLayoutStrategy == Other.ImageLayoutStrategy
+					&&
+					RectSize == Other.RectSize
+					&&
+					CurrentStateIndex == Other.CurrentStateIndex
+					&&
+					LayoutBlockId == Other.LayoutBlockId
+					&&
+					LayoutToApply == Other.LayoutToApply
+					&&
+					ActiveTags == Other.ActiveTags;
+			}
+
+		};
+
+		/** */
 		struct FImageGenerationResult
 		{
 			Ptr<ASTOp> op;
 		};
 
-		typedef TMap<FVisitedKeyMap, FImageGenerationResult> GeneratedImagesMap;
+		/** */
+		struct FGeneratedImageCacheKey
+		{
+			NodePtrConst Node;
+			FImageGenerationOptions Options;
+
+			friend FORCEINLINE uint32 GetTypeHash(const FGeneratedImageCacheKey& InKey)
+			{
+				uint32 KeyHash = 0;
+				KeyHash = HashCombine(KeyHash, ::GetTypeHash(InKey.Node.get()));
+				KeyHash = HashCombine(KeyHash, GetTypeHash(InKey.Options));
+				return KeyHash;
+			}
+
+			FORCEINLINE bool operator==(const FGeneratedImageCacheKey& Other) const
+			{
+				return Node == Other.Node && Options == Other.Options;
+			}
+		};
+
+		typedef TMap<FGeneratedImageCacheKey, FImageGenerationResult> GeneratedImagesMap;
 		GeneratedImagesMap m_generatedImages;
 
-		void GenerateImage(FImageGenerationResult& result, const NodeImagePtrConst& node);
-		void GenerateImage_Constant(FImageGenerationResult&, const NodeImageConstant*);
-		void GenerateImage_Difference(FImageGenerationResult&, const NodeImageDifference*);
-		void GenerateImage_Interpolate(FImageGenerationResult&, const NodeImageInterpolate*);
-		void GenerateImage_Saturate(FImageGenerationResult&, const NodeImageSaturate*);
-		void GenerateImage_Table(FImageGenerationResult&, const NodeImageTable*);
-		void GenerateImage_Swizzle(FImageGenerationResult&, const NodeImageSwizzle*);
-		void GenerateImage_SelectColour(FImageGenerationResult&, const NodeImageSelectColour*);
-		void GenerateImage_ColourMap(FImageGenerationResult&, const NodeImageColourMap*);
-		void GenerateImage_Gradient(FImageGenerationResult&, const NodeImageGradient*);
-		void GenerateImage_Binarise(FImageGenerationResult&, const NodeImageBinarise*);
-		void GenerateImage_Luminance(FImageGenerationResult&, const NodeImageLuminance*);
-		void GenerateImage_Layer(FImageGenerationResult&, const NodeImageLayer*);
-		void GenerateImage_LayerColour(FImageGenerationResult&, const NodeImageLayerColour*);
-		void GenerateImage_Resize(FImageGenerationResult&, const NodeImageResize*);
-		void GenerateImage_PlainColour(FImageGenerationResult&, const NodeImagePlainColour*);
-		void GenerateImage_Interpolate3(FImageGenerationResult&, const NodeImageInterpolate3*);
-		void GenerateImage_Project(FImageGenerationResult&, const NodeImageProject*);
-		void GenerateImage_Mipmap(FImageGenerationResult&, const NodeImageMipmap*);
-		void GenerateImage_Switch(FImageGenerationResult&, const NodeImageSwitch*);
-		void GenerateImage_Conditional(FImageGenerationResult&, const NodeImageConditional*);
-		void GenerateImage_Format(FImageGenerationResult&, const NodeImageFormat*);
-		void GenerateImage_Parameter(FImageGenerationResult&, const NodeImageParameter*);
-		void GenerateImage_MultiLayer(FImageGenerationResult&, const NodeImageMultiLayer*);
-		void GenerateImage_Invert(FImageGenerationResult&, const NodeImageInvert*);
-		void GenerateImage_Variation(FImageGenerationResult&, const NodeImageVariation*);
-		void GenerateImage_NormalComposite(FImageGenerationResult&, const NodeImageNormalComposite*);
-		void GenerateImage_Transform(FImageGenerationResult&, const NodeImageTransform*);
+		void GenerateImage(const FImageGenerationOptions&, FImageGenerationResult& result, const NodeImagePtrConst& node);
+		void GenerateImage_Constant(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageConstant*);
+		void GenerateImage_Reference(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageReference*);
+		void GenerateImage_Interpolate(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageInterpolate*);
+		void GenerateImage_Saturate(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageSaturate*);
+		void GenerateImage_Table(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageTable*);
+		void GenerateImage_Swizzle(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageSwizzle*);
+		void GenerateImage_ColourMap(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageColourMap*);
+		void GenerateImage_Gradient(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageGradient*);
+		void GenerateImage_Binarise(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageBinarise*);
+		void GenerateImage_Luminance(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageLuminance*);
+		void GenerateImage_Layer(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageLayer*);
+		void GenerateImage_LayerColour(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageLayerColour*);
+		void GenerateImage_Resize(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageResize*);
+		void GenerateImage_PlainColour(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImagePlainColour*);
+		void GenerateImage_Project(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageProject*);
+		void GenerateImage_Mipmap(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageMipmap*);
+		void GenerateImage_Switch(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageSwitch*);
+		void GenerateImage_Conditional(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageConditional*);
+		void GenerateImage_Format(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageFormat*);
+		void GenerateImage_Parameter(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageParameter*);
+		void GenerateImage_MultiLayer(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageMultiLayer*);
+		void GenerateImage_Invert(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageInvert*);
+		void GenerateImage_Variation(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageVariation*);
+		void GenerateImage_NormalComposite(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageNormalComposite*);
+		void GenerateImage_Transform(const FImageGenerationOptions&, FImageGenerationResult&, const NodeImageTransform*);
 
 		//!
-		ImagePtr GenerateMissingImage(EImageFormat);
+		Ptr<Image> GenerateMissingImage(EImageFormat);
 
 		//!
-		Ptr<ASTOp> GenerateMissingImageCode(const char* strWhere, EImageFormat, const void* errorContext);
+		Ptr<ASTOp> GenerateMissingImageCode(const TCHAR* strWhere, EImageFormat, const void* errorContext, const FImageGenerationOptions& Options);
 
 		//!
-		Ptr<ASTOp> GeneratePlainImageCode(const vec3<float>& colour);
+		Ptr<ASTOp> GeneratePlainImageCode(const FVector4f& Color, const FImageGenerationOptions& Options);
 
 		//!
 		Ptr<ASTOp> GenerateImageFormat(Ptr<ASTOp>, EImageFormat);
@@ -423,11 +452,16 @@ namespace mu
 		Ptr<ASTOp> GenerateImageUncompressed(Ptr<ASTOp>);
 
 		//!
-		Ptr<ASTOp> GenerateImageSize(Ptr<ASTOp>, FImageSize);
+		Ptr<ASTOp> GenerateImageSize(Ptr<ASTOp>, UE::Math::TIntVector2<int32>);
 
 		//!
 		FImageDesc CalculateImageDesc(const Node::Private&);
 
+		/** Evaluate if the image to generate is big enough to be split in separate operations and tiled afterwards. */
+		Ptr<ASTOp> ApplyTiling(Ptr<ASTOp> Source, UE::Math::TIntVector2<int32> Size, EImageFormat Format);
+
+		//!
+		Ptr<ASTOp> GenerateImageBlockPatch(Ptr<ASTOp> blockAd, const NodePatchImage* pPatch, Ptr<ASTOp> conditionAd, const FImageGenerationOptions& ImageOptions);
 
         //-----------------------------------------------------------------------------------------
         // Meshes
@@ -438,7 +472,9 @@ namespace mu
 		struct FMeshGenerationOptions
 		{
 			/** TODO: Review and document. */
-			int State = 0;
+			int32 State = 0;
+
+			/** Tags that are active at this point of the generation. */
 			TArray<mu::string> ActiveTags;
 
 			/** Whatever mesh we reach at the leaves of the graph will need to have unique ids for its vertices.
@@ -449,8 +485,16 @@ namespace mu
 			/** The meshes at the leaves will need their own layout block data. */
 			bool bLayouts = false;
 
+			/** If true, Ensure UV Islands are not split between two or more blocks. UVs shared between multiple 
+			* layout blocks will be clamped to fit the one with more vertices belonging to the UV island.
+			* Mainly used to keep consistent layouts when reusing textures between LODs. */
+			bool bClampUVIslands = false;
+
+			/** If true, UVs will be normalized. Normalize UVs should be done in cases where we operate with Images and Layouts */
+			bool bNormalizeUVs = false;
+
 			/** If this has something the layouts in constant meshes will be ignored, because
-			* they are supposed to match some other set of layouts. If the vector is empty, layouts
+			* they are supposed to match some other set of layouts. If the array is empty, layouts
 			* are generated normally.
 			*/
 			TArray<Ptr<const Layout>> OverrideLayouts;			
@@ -469,11 +513,11 @@ namespace mu
 			FORCEINLINE bool operator==(const FMeshGenerationOptions& Other) const
 			{
 				return State==Other.State 
-					&& bUniqueVertexIDs==Other.bUniqueVertexIDs && bLayouts==Other.bLayouts
+					&& bUniqueVertexIDs==Other.bUniqueVertexIDs && bLayouts==Other.bLayouts 
+					&& bClampUVIslands == Other.bClampUVIslands && bNormalizeUVs == Other.bNormalizeUVs
 					&& ActiveTags==Other.ActiveTags
 					&& OverrideLayouts ==Other.OverrideLayouts;
 			}
-
 		};
 
 		//! Store the results of the code generation of a mesh.
@@ -522,12 +566,17 @@ namespace mu
         typedef TMap<FGeneratedMeshCacheKey,FMeshGenerationResult> GeneratedMeshMap;
         GeneratedMeshMap m_generatedMeshes;
 
+		/** Store the mesh generation data for surfaces that we intend to share across LODs. 
+		* The key is the SharedSurfaceId.
+		*/
+		TMap<int32, FMeshGenerationResult> SharedMeshOptionsMap;
+
 		//! Map of layouts found in the code already generated. The map is from the source layout
 		//! pointer of the layouts in the node meshes to the cloned and modified layout. 
 		//! The cloned layout will have absolute block ids assigned.
 		TMap<Ptr<const Layout>, Ptr<const Layout>> m_generatedLayouts;
 
-        void GenerateMesh(const FMeshGenerationOptions&, FMeshGenerationResult& result, const NodeMeshPtrConst& node);
+        void GenerateMesh(const FMeshGenerationOptions&, FMeshGenerationResult& result, const NodeMeshPtrConst&);
         void GenerateMesh_Constant(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshConstant* );
         void GenerateMesh_Format(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshFormat* );
         void GenerateMesh_Morph(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshMorph* );
@@ -535,7 +584,6 @@ namespace mu
         void GenerateMesh_Fragment(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshFragment* );
         void GenerateMesh_Interpolate(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshInterpolate* );
         void GenerateMesh_Switch(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshSwitch* );
-        void GenerateMesh_Subtract(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshSubtract* );
         void GenerateMesh_Transform(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshTransform* );
         void GenerateMesh_ClipMorphPlane(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshClipMorphPlane* );
         void GenerateMesh_ClipWithMesh(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshClipWithMesh* );
@@ -546,8 +594,30 @@ namespace mu
 		void GenerateMesh_Reshape(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshReshape*);
 		void GenerateMesh_ClipDeform(const FMeshGenerationOptions&, FMeshGenerationResult&, const NodeMeshClipDeform*);
 
+		//-----------------------------------------------------------------------------------------
+		void PrepareForLayout(LayoutPtrConst GeneratedLayout,
+			MeshPtr currentLayoutMesh,
+			size_t currentLayoutChannel,
+			const void* errorContext,
+			const FMeshGenerationOptions& MeshOptions);
+
 		//!
 		Ptr<const Layout> AddLayout(Ptr<const Layout> SourceLayout);
+
+		struct FExtensionDataGenerationResult
+		{
+			Ptr<ASTOp> Op;
+		};
+
+		typedef const NodeExtensionData* FGeneratedExtensionDataCacheKey;
+		typedef TMap<FGeneratedExtensionDataCacheKey, FExtensionDataGenerationResult> GeneratedExtensionDataMap;
+		GeneratedExtensionDataMap m_generatedExtensionData;
+
+		void GenerateExtensionData(FExtensionDataGenerationResult& OutResult, const NodeExtensionDataPtrConst& InUntypedNode);
+		void GenerateExtensionData_Constant(FExtensionDataGenerationResult& OutResult, const class NodeExtensionDataConstant* Constant);
+		void GenerateExtensionData_Switch(FExtensionDataGenerationResult& OutResult, const class NodeExtensionDataSwitch* Switch);
+		void GenerateExtensionData_Variation(FExtensionDataGenerationResult& OutResult, const class NodeExtensionDataVariation* Variation);
+		Ptr<ASTOp> GenerateMissingExtensionDataCode(const TCHAR* StrWhere, const void* ErrorContext);
 
         //-----------------------------------------------------------------------------------------
         // Projectors
@@ -601,7 +671,7 @@ namespace mu
 		void GenerateScalar_Arithmetic(FScalarGenerationResult&, const Ptr<const NodeScalarArithmeticOperation>&);
 		void GenerateScalar_Variation(FScalarGenerationResult&, const Ptr<const NodeScalarVariation>&);
 		void GenerateScalar_Table(FScalarGenerationResult&, const Ptr<const NodeScalarTable>&);
-		Ptr<ASTOp> GenerateMissingScalarCode(const char* strWhere, float value, const void* errorContext);
+		Ptr<ASTOp> GenerateMissingScalarCode(const TCHAR* strWhere, float value, const void* errorContext);
 
 		//-----------------------------------------------------------------------------------------
 		// Colors
@@ -622,7 +692,7 @@ namespace mu
 		void GenerateColor_Arithmetic(FColorGenerationResult&, const Ptr<const NodeColourArithmeticOperation>&);
 		void GenerateColor_Variation(FColorGenerationResult&, const Ptr<const NodeColourVariation>&);
 		void GenerateColor_Table(FColorGenerationResult&, const Ptr<const NodeColourTable>&);
-		Ptr<ASTOp> GenerateMissingColourCode(const char* strWhere, const void* errorContext);
+		Ptr<ASTOp> GenerateMissingColourCode(const TCHAR* strWhere, const void* errorContext);
 
 		//-----------------------------------------------------------------------------------------
 		// Strings
@@ -742,7 +812,11 @@ namespace mu
             check( pTable->GetPrivate()->m_rows[i].m_id <= 0xFFFF);
             auto condition = (uint16)pTable->GetPrivate()->m_rows[i].m_id;
             Ptr<ASTOp> Branch = GenerateOption( node, colIndex, (int)i, m_pErrorLog.get() );
-			SwitchOp->cases.Add(ASTOpSwitch::FCase(condition, SwitchOp, Branch ));
+
+			if (Branch || TYPE != TCT_MESH)
+			{
+				SwitchOp->cases.Add(ASTOpSwitch::FCase(condition, SwitchOp, Branch));
+			}
         }
 
         return SwitchOp;

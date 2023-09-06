@@ -26,11 +26,17 @@ namespace mu
 		, mask(this)
 		, projector(this)
 	{
-		blockIndex = -1;
-		sizeX = 0;
-		sizeY = 0;
+		BlockId = -1;
+		LayoutIndex = -1;
+		SizeX = SizeY = 0;
+		SourceSizeX = SourceSizeY = 0;
+		CropMinX = CropMinY = 0;
+		UncroppedSizeX = UncroppedSizeY = 0;
+
 		bIsRGBFadingEnabled = 1;
 		bIsAlphaFadingEnabled = 1;
+		SamplingMethod = ESamplingMethod::Point;
+		MinFilterMethod = EMinFilterMethod::None;
 	}
 
 
@@ -52,11 +58,20 @@ namespace mu
 				angleFadeProperties == Other->angleFadeProperties &&
 				mask == Other->mask &&
 				projector == Other->projector &&
-				blockIndex == Other->blockIndex &&
-				sizeX == Other->sizeX &&
-				sizeY == Other->sizeY &&
+				BlockId == Other->BlockId &&
+				LayoutIndex == Other->LayoutIndex &&
+				SizeX == Other->SizeX &&
+				SizeY == Other->SizeY &&
+				SourceSizeX == Other->SourceSizeX &&
+				SourceSizeY == Other->SourceSizeY &&
+				CropMinX == Other->CropMinX &&
+				CropMinY == Other->CropMinY &&
+				UncroppedSizeX == Other->UncroppedSizeX &&
+				UncroppedSizeY == Other->UncroppedSizeY &&
 				bIsRGBFadingEnabled == Other->bIsRGBFadingEnabled &&
-				bIsAlphaFadingEnabled == Other->bIsAlphaFadingEnabled;
+				bIsAlphaFadingEnabled == Other->bIsAlphaFadingEnabled &&
+				SamplingMethod == Other->SamplingMethod &&
+				MinFilterMethod == Other->MinFilterMethod;
 		}
 		return false;
 	}
@@ -71,7 +86,7 @@ namespace mu
 		hash_combine(res, angleFadeProperties.child().get());
 		hash_combine(res, mask.child().get());
 		hash_combine(res, projector.child().get());
-		hash_combine(res, blockIndex);
+		hash_combine(res, BlockId);
 		return res;
 	}
 
@@ -85,11 +100,20 @@ namespace mu
 		n->angleFadeProperties = mapChild(angleFadeProperties.child());
 		n->mask = mapChild(mask.child());
 		n->projector = mapChild(projector.child());
-		n->blockIndex = blockIndex;
-		n->sizeX = sizeX;
-		n->sizeY = sizeY;
+		n->BlockId = BlockId;
+		n->LayoutIndex = LayoutIndex;
+		n->SizeX = SizeX;
+		n->SizeY = SizeY;
+		n->CropMinX = CropMinX;
+		n->CropMinY = CropMinY;
+		n->UncroppedSizeX = UncroppedSizeX;
+		n->UncroppedSizeY = UncroppedSizeY;
+		n->SourceSizeX = SourceSizeX;
+		n->SourceSizeY = SourceSizeY;
 		n->bIsRGBFadingEnabled = bIsRGBFadingEnabled;
 		n->bIsAlphaFadingEnabled = bIsAlphaFadingEnabled;
+		n->SamplingMethod = SamplingMethod;
+		n->MinFilterMethod = MinFilterMethod;
 		return n;
 	}
 
@@ -106,7 +130,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpImageRasterMesh::Link(FProgram& program, const FLinkerOptions*)
+	void ASTOpImageRasterMesh::Link(FProgram& program, FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -114,11 +138,20 @@ namespace mu
 			OP::ImageRasterMeshArgs args;
 			FMemory::Memzero(&args, sizeof(args));
 
-			args.blockIndex = blockIndex;
-			args.sizeX = sizeX;
-			args.sizeY = sizeY;
+			args.blockId = BlockId;
+			args.LayoutIndex = LayoutIndex;
+			args.sizeX = SizeX;
+			args.sizeY = SizeY;
+			args.SourceSizeX = SourceSizeX;
+			args.SourceSizeY = SourceSizeY;
+			args.CropMinX = CropMinX;
+			args.CropMinY = CropMinY;
+			args.UncroppedSizeX = UncroppedSizeX;
+			args.UncroppedSizeY = UncroppedSizeY;
 			args.bIsRGBFadingEnabled = bIsRGBFadingEnabled;
 			args.bIsAlphaFadingEnabled = bIsAlphaFadingEnabled;
+			args.SamplingMethod = static_cast<uint8>(SamplingMethod);
+			args.MinFilterMethod = static_cast<uint8>(MinFilterMethod);
 
 			if (mesh) args.mesh = mesh->linkedAddress;
 			if (image) args.image = image->linkedAddress;
@@ -159,8 +192,8 @@ namespace mu
 		if (image)
 		{
 			res = image->GetImageDesc( returnBestOption, context);
-			res.m_size[0] = sizeX;
-			res.m_size[1] = sizeY;
+			res.m_size[0] = SizeX;
+			res.m_size[1] = SizeY;
 		}
 
 
@@ -179,14 +212,14 @@ namespace mu
 	{
 		Ptr<ImageSizeExpression> pRes = new ImageSizeExpression;
 		pRes->type = ImageSizeExpression::ISET_CONSTANT;
-		pRes->size[0] = sizeX ? sizeX : 256;
-		pRes->size[1] = sizeY ? sizeY : 256;
+		pRes->size[0] = SizeX ? SizeX : 256;
+		pRes->size[1] = SizeY ? SizeY : 256;
 		return pRes;
 	}
 
 
 	//---------------------------------------------------------------------------------------------
-	Ptr<ASTOp> ASTOpImageRasterMesh::OptimiseSemantic(const FModelOptimizationOptions& options) const
+	Ptr<ASTOp> ASTOpImageRasterMesh::OptimiseSemantic(const FModelOptimizationOptions& options, int32 Pass) const
 	{
 		Ptr<ASTOp> at;
 
@@ -218,10 +251,9 @@ namespace mu
 			if (!imageAt)
 			{
 				// We remove the project from the raster children
-				// \todo: maybe this clone is not necessary
-				const ASTOpFixed* typedSource = dynamic_cast<const ASTOpFixed*>(sourceAt.get());
+				const ASTOpFixed* MeshProjectOp = dynamic_cast<const ASTOpFixed*>(sourceAt.get());
 				Ptr<ASTOpImageRasterMesh> nop = mu::Clone<ASTOpImageRasterMesh>(this);
-				nop->mesh = typedSource->children[typedSource->op.args.MeshProject.mesh].child();
+				nop->mesh = MeshProjectOp->children[MeshProjectOp->op.args.MeshProject.mesh].child();
 				at = nop;
 			}
 			break;
@@ -236,7 +268,7 @@ namespace mu
 			break;
 		}
 
-		case OP_TYPE::ME_MORPH2:
+		case OP_TYPE::ME_MORPH:
 		{
 			const ASTOpMeshMorph* typedSource = dynamic_cast<const ASTOpMeshMorph*>(sourceAt.get());
 			Ptr<ASTOpImageRasterMesh> rasterOp = mu::Clone<ASTOpImageRasterMesh>(this);

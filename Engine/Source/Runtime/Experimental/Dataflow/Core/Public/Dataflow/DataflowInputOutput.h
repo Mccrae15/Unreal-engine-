@@ -20,8 +20,8 @@ struct FDataflowOutput;
 //
 namespace Dataflow
 {
-	struct DATAFLOWCORE_API FInputParameters {
-		FInputParameters(FName InType = FName(""), FName InName = FName(""), FDataflowNode * InOwner = nullptr, FProperty * InProperty = nullptr)
+	struct FInputParameters {
+		FInputParameters(FName InType = FName(""), FName InName = FName(""), FDataflowNode* InOwner = nullptr, const FProperty* InProperty = nullptr)
 			: Type(InType)
 			, Name(InName)
 			, Owner(InOwner)
@@ -29,7 +29,7 @@ namespace Dataflow
 		FName Type;
 		FName Name;
 		FDataflowNode* Owner = nullptr;
-		FProperty* Property = nullptr;
+		const FProperty* Property = nullptr;
 	};
 }
 
@@ -61,7 +61,7 @@ public:
 	template<class T>
 	TFuture<const T&> GetValueParallel(Dataflow::FContext& Context, const T& Default) const;
 
-	virtual void Invalidate() override;
+	virtual void Invalidate(const Dataflow::FTimestamp& ModifiedTimestamp = Dataflow::FTimestamp::Current()) override;
 };
 
 //
@@ -69,9 +69,9 @@ public:
 //
 namespace Dataflow
 {
-	struct DATAFLOWCORE_API FOutputParameters
+	struct FOutputParameters
 	{
-		FOutputParameters(FName InType = FName(""), FName InName = FName(""), FDataflowNode* InOwner = nullptr, FProperty* InProperty = nullptr)
+		FOutputParameters(FName InType = FName(""), FName InName = FName(""), FDataflowNode* InOwner = nullptr, const FProperty* InProperty = nullptr)
 			: Type(InType)
 			, Name(InName)
 			, Owner(InOwner)
@@ -80,11 +80,11 @@ namespace Dataflow
 		FName Type;
 		FName Name;
 		FDataflowNode* Owner = nullptr;
-		FProperty* Property = nullptr;
+		const FProperty* Property = nullptr;
 	};
 }
 USTRUCT()
-struct DATAFLOWCORE_API FDataflowOutput : public FDataflowConnection
+struct FDataflowOutput : public FDataflowConnection
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -92,45 +92,45 @@ struct DATAFLOWCORE_API FDataflowOutput : public FDataflowConnection
 	
 	TArray< FDataflowInput* > Connections;
 
-	size_t PassthroughOffsetAddress = INDEX_NONE;
+	uint32 PassthroughOffset = INDEX_NONE;
 
 public:
-	static FDataflowOutput NoOpOutput;
+	static DATAFLOWCORE_API FDataflowOutput NoOpOutput;
 	
 	mutable TSharedPtr<FCriticalSection> OutputLock;
 	
-	FDataflowOutput(const Dataflow::FOutputParameters& Param = {}, FGuid InGuid = FGuid::NewGuid());
+	DATAFLOWCORE_API FDataflowOutput(const Dataflow::FOutputParameters& Param = {}, FGuid InGuid = FGuid::NewGuid());
 
-	TArray<FDataflowInput*>& GetConnections();
-	const TArray<FDataflowInput*>& GetConnections() const;
+	DATAFLOWCORE_API TArray<FDataflowInput*>& GetConnections();
+	DATAFLOWCORE_API const TArray<FDataflowInput*>& GetConnections() const;
 
-	virtual TArray<FDataflowInput*> GetConnectedInputs();
-	virtual const TArray<const FDataflowInput*> GetConnectedInputs() const;
+	DATAFLOWCORE_API virtual TArray<FDataflowInput*> GetConnectedInputs();
+	DATAFLOWCORE_API virtual const TArray<const FDataflowInput*> GetConnectedInputs() const;
 
-	virtual bool AddConnection(FDataflowConnection* InOutput) override;
+	DATAFLOWCORE_API virtual bool AddConnection(FDataflowConnection* InOutput) override;
 
-	virtual bool RemoveConnection(FDataflowConnection* InInput) override;
+	DATAFLOWCORE_API virtual bool RemoveConnection(FDataflowConnection* InInput) override;
 
-	virtual FORCEINLINE void SetPassthroughOffsetAddress(const size_t InPassthroughOffsetAddress)
+	virtual FORCEINLINE void SetPassthroughOffset(const uint32 InPassthroughOffset)
 	{
-		PassthroughOffsetAddress = InPassthroughOffsetAddress;
+		PassthroughOffset = InPassthroughOffset;
 	}
 
 	virtual FORCEINLINE void* GetPassthroughRealAddress() const
 	{
-		if(PassthroughOffsetAddress != INDEX_NONE)
+		if(PassthroughOffset != INDEX_NONE)
 		{
-			return (void*)((size_t)OwningNode + PassthroughOffsetAddress);
+			return (void*)((size_t)OwningNode + (size_t)PassthroughOffset);
 		}
 		return nullptr;
 	}
  
 	template<class T>
-	void SetValue(const T& InVal, Dataflow::FContext& Context) const
+	void SetValue(T&& InVal, Dataflow::FContext& Context) const
 	{
 		if (Property)
 		{
-			Context.SetData(CacheKey(), Property, InVal);
+			Context.SetData(CacheKey(), Property, Forward<T>(InVal));
 		}
 	}
 
@@ -149,7 +149,7 @@ public:
 		return Default;
 	}
 
-	bool EvaluateImpl(Dataflow::FContext& Context) const;
+	DATAFLOWCORE_API bool EvaluateImpl(Dataflow::FContext& Context) const;
 	
 	template<class T>
 	bool Evaluate(Dataflow::FContext& Context) const;
@@ -157,7 +157,7 @@ public:
 	template<class T>
 	TFuture<bool> EvaluateParallel(Dataflow::FContext& Context) const;
 
-	virtual void Invalidate() override;
+	DATAFLOWCORE_API virtual void Invalidate(const Dataflow::FTimestamp& ModifiedTimestamp = Dataflow::FTimestamp::Current()) override;
 
 };
  
@@ -201,8 +201,8 @@ bool FDataflowOutput::Evaluate(Dataflow::FContext& Context) const
 	else if(const FDataflowInput* PassthroughInput = OwningNode->FindInput(GetPassthroughRealAddress()))
 	{
 		// @todo(dataflow) would be nice if the passthrough does not overwrite the existing cache value.
-		T PassthroughData = PassthroughInput->GetValue<T>(Context, *reinterpret_cast<const T*>(PassthroughInput->RealAddress()));
-		SetValue<T>(PassthroughData, Context);
+		const T& PassthroughData = PassthroughInput->GetValue<T>(Context, *reinterpret_cast<const T*>(PassthroughInput->RealAddress()));
+		SetValue(PassthroughData, Context);
 		return true;
 	}
  

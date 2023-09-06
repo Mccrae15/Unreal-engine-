@@ -3,8 +3,8 @@
 #include "AnimGraphNode_IKRig.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "IKRigDefinition.h"
-#include "IKRigSolver.h"
+#include "Rig/IKRigDefinition.h"
+#include "Rig/Solvers/IKRigSolver.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "AnimationGraphSchema.h"
 #include "ScopedTransaction.h"
@@ -100,13 +100,21 @@ void FIKRigGoalLayout::GenerateChildContent(IDetailChildrenBuilder& InOutChildre
 		if (bExposePosition)
 		{
 			const TSharedPtr<IPropertyHandle> PosSpaceHandle = GoalPropHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FIKRigGoal, PositionSpace));
-			InOutChildrenBuilder.AddProperty(PosSpaceHandle.ToSharedRef());
+			IDetailPropertyRow& PropertyRow = InOutChildrenBuilder.AddProperty(PosSpaceHandle.ToSharedRef());
+			
+			// Hide the reset to default button since it provides little value
+			const FResetToDefaultOverride	ResetDefaultOverride = FResetToDefaultOverride::Create(TAttribute<bool>(false));
+			PropertyRow.OverrideResetToDefault(ResetDefaultOverride);
 		}
 
 		if (bExposeRotation)
 		{
 			const TSharedPtr<IPropertyHandle> RotSpaceHandle = GoalPropHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FIKRigGoal, RotationSpace));
-			InOutChildrenBuilder.AddProperty(RotSpaceHandle.ToSharedRef());
+			IDetailPropertyRow& PropertyRow = InOutChildrenBuilder.AddProperty(RotSpaceHandle.ToSharedRef());
+
+			// Hide the reset to default button since it provides little value
+			const FResetToDefaultOverride	ResetDefaultOverride = FResetToDefaultOverride::Create(TAttribute<bool>(false));
+			PropertyRow.OverrideResetToDefault(ResetDefaultOverride);
 		}
 	}
 }

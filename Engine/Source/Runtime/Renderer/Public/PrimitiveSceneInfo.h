@@ -270,15 +270,10 @@ struct FPersistentPrimitiveIndex
 	int32 Index = INDEX_NONE;
 };
 
-enum class EPrimitiveAddToSceneOps
+inline bool operator == (FPersistentPrimitiveIndex A, FPersistentPrimitiveIndex B)
 {
-	None = 0,
-	AddStaticMeshes = 1 << 0,
-	CacheMeshDrawCommands = 1 << 1,
-	CreateLightPrimitiveInteractions = 1 << 2,
-	All = AddStaticMeshes | CacheMeshDrawCommands | CreateLightPrimitiveInteractions
-};
-ENUM_CLASS_FLAGS(EPrimitiveAddToSceneOps);
+	return A.Index == B.Index;
+}
 
 /**
  * The renderer's internal state for a single UPrimitiveComponent.  This has a one to one mapping with FPrimitiveSceneProxy, which is in the engine module.
@@ -286,6 +281,7 @@ ENUM_CLASS_FLAGS(EPrimitiveAddToSceneOps);
 class FPrimitiveSceneInfo : public FDeferredCleanupInterface
 {
 	friend class FSceneRenderer;
+	friend struct FViewDebugInfo;
 public:
 
 	/** The render proxy for the primitive. */
@@ -377,9 +373,6 @@ public:
 	/** Mapping from instance index in this primitive to index in the LumenPrimitiveGroup array. */
 	TArray<int32, TInlineAllocator<1>> LumenPrimitiveGroupIndices;
 
-	/** Whether the primitive is newly registered or moved and CachedReflectionCaptureProxy needs to be updated on the next render. */
-	uint32 bNeedsCachedReflectionCaptureUpdate : 1;
-
 	static const uint32 MaxCachedReflectionCaptureProxies = 3;
 	const FReflectionCaptureProxy* CachedReflectionCaptureProxies[MaxCachedReflectionCaptureProxies];
 	
@@ -392,45 +385,17 @@ public:
 	/** The ID of the hit proxy which is used to represent the primitive's dynamic elements. */
 	FHitProxyId DefaultDynamicHitProxyId;
 
-	/** The list of lights affecting this primitive. */
-	class FLightPrimitiveInteraction* LightList;
-
 	/** Last render time in seconds since level started play. */
 	float LastRenderTime;
+
+	/** The list of lights affecting this primitive. */
+	class FLightPrimitiveInteraction* LightList;
 
 	/** The scene the primitive is in. */
 	FScene* Scene;
 
 	/** The number of local lights with dynamic lighting for mobile */
 	int32 NumMobileDynamicLocalLights;
-
-	/** Set to true for the primitive to be rendered in the main pass to be visible in a view. */
-	bool bShouldRenderInMainPass : 1;
-
-	/** Set to true for the primitive to be rendered into the real-time sky light reflection capture. */
-	bool bVisibleInRealTimeSkyCapture : 1;
-
-#if RHI_RAYTRACING
-	bool bDrawInGame : 1;
-	bool bRayTracingFarField : 1;
-	bool bIsVisibleInSceneCaptures : 1;
-	bool bIsVisibleInSceneCapturesOnly : 1;
-	bool bIsRayTracingRelevant : 1;
-	bool bIsRayTracingStaticRelevant : 1;
-	bool bIsVisibleInRayTracing : 1;
-	bool bCachedRaytracingDataDirty : 1;
-	Nanite::CoarseMeshStreamingHandle CoarseMeshStreamingHandle;
-
-	TArray<TArray<int32, TInlineAllocator<2>>> CachedRayTracingMeshCommandIndicesPerLOD;
-
-	TArray<uint64> CachedRayTracingMeshCommandsHashPerLOD;
-	// TODO: this should be placed in FRayTracingScene and we have a pointer/handle here. It's here for now for PoC
-	FRayTracingGeometryInstance CachedRayTracingInstance;
-	bool bCachedRayTracingInstanceAnySegmentsDecal : 1;
-	bool bCachedRayTracingInstanceAllSegmentsDecal : 1;
-	TArray<FBoxSphereBounds> CachedRayTracingInstanceWorldBounds;
-	int32 SmallestRayTracingInstanceWorldBoundsIndex;
-#endif
 
 	/** Initialization constructor. */
 	FPrimitiveSceneInfo(UPrimitiveComponent* InPrimitive,FScene* InScene);
@@ -439,24 +404,17 @@ public:
 	~FPrimitiveSceneInfo();
 
 	/** Adds the primitive to the scene. */
-	static void AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, EPrimitiveAddToSceneOps Ops = EPrimitiveAddToSceneOps::All);
+	static void AddToScene(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos);
 
 	/** Removes the primitive from the scene. */
 	void RemoveFromScene(bool bUpdateStaticDrawLists);
 
 	/** Allocate/Free slots for instance data in GPU-Scene */
 	static void AllocateGPUSceneInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
-	static void ReallocateGPUSceneInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
 	void FreeGPUSceneInstances();
 
-	/** return true if we need to call ConditionalUpdateStaticMeshes */
-	bool NeedsUpdateStaticMeshes();
-
-	/** return true if we need to call LazyUpdateForRendering */
-	FORCEINLINE bool NeedsUniformBufferUpdate() const
-	{
-		return bNeedsUniformBufferUpdate;
-	}
+	UE_DEPRECATED(5.3, "ReallocateGPUSceneInstances has been deprecated.")
+	static void ReallocateGPUSceneInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
 
 	/** return true if we need to call LazyUpdateForRendering */
 	FORCEINLINE bool NeedsIndirectLightingCacheBufferUpdate()
@@ -467,23 +425,11 @@ public:
 	/** Updates the primitive's static meshes in the scene. */
 	static void UpdateStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, EUpdateStaticMeshFlags UpdateFlags, bool bReAddToDrawLists = true);
 
-	/** Updates the primitive's uniform buffer. */
-	void UpdateUniformBuffer(FRHICommandListImmediate& RHICmdList);
-
-	/** Updates the primitive's uniform buffer. */
-	FORCEINLINE void ConditionalUpdateUniformBuffer(FRHICommandListImmediate& RHICmdList)
-	{
-		if (NeedsUniformBufferUpdate())
-		{
-			UpdateUniformBuffer(RHICmdList);
-		}
-	}
-
 	/** Sets a flag to update the primitive's static meshes before it is next rendered. */
-	void BeginDeferredUpdateStaticMeshes();
+	void RequestStaticMeshUpdate();
 
-	/** Will update static meshes during next InitViews, even if it's not visible. */
-	void BeginDeferredUpdateStaticMeshesWithoutVisibilityCheck();
+	/** Sets a flag to update the primitive's uniform buffer before it is next rendered. */
+	RENDERER_API bool RequestUniformBufferUpdate();
 
 	/** Adds the primitive's static meshes to the scene. */
 	static void AddStaticMeshes(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos, bool bCacheMeshDrawCommands = true);
@@ -509,7 +455,7 @@ public:
 	/** Marks the primitive UB as needing updated and requests a GPU scene update */
 	void MarkGPUStateDirty(EPrimitiveDirtyState PrimitiveDirtyState = EPrimitiveDirtyState::ChangedAll)
 	{
-		SetNeedsUniformBufferUpdate(true);
+		RequestUniformBufferUpdate();
 		RequestGPUSceneUpdate(PrimitiveDirtyState);
 	}
 
@@ -537,7 +483,7 @@ public:
 	 * This index is only valid until a primitive is added to or removed from
 	 * the scene!
 	 */
-	RENDERER_API FORCEINLINE int32 GetIndex() const { return PackedIndex; }
+	FORCEINLINE int32 GetIndex() const { return PackedIndex; }
 	/** 
 	 * Retrieves the address of the primitives index into in the scene's primitives array.
 	 * This address is only for reference purposes
@@ -566,11 +512,6 @@ public:
 	 */
 	void ApplyWorldOffset(FVector InOffset);
 
-	FORCEINLINE void SetNeedsUniformBufferUpdate(bool bInNeedsUniformBufferUpdate)
-	{
-		bNeedsUniformBufferUpdate = bInNeedsUniformBufferUpdate;
-	}
-
 	FORCEINLINE void MarkIndirectLightingCacheBufferDirty()
 	{
 		if (!bIndirectLightingCacheBufferDirty)
@@ -579,7 +520,7 @@ public:
 		}
 	}
 
-	void UpdateIndirectLightingCacheBuffer();
+	void UpdateIndirectLightingCacheBuffer(FRHICommandListBase& RHICmdList);
 
 	/** Will output the LOD ranges of the static meshes used with this primitive. */
 	RENDERER_API void GetStaticMeshesLODRange(int8& OutMinLOD, int8& OutMaxLOD) const;
@@ -641,6 +582,27 @@ public:
 
 	void SetCacheShadowAsStatic(bool bStatic);
 
+	UE_DEPRECATED(5.3, "NeedsUpdateStaticMeshes has been deprecated.")
+	bool NeedsUpdateStaticMeshes() { return false; }
+
+	UE_DEPRECATED(5.3, "NeedsUniformBufferUpdate has been deprecated.")
+	bool NeedsUniformBufferUpdate() const { return false; }
+	
+	UE_DEPRECATED(5.3, "UpdateUniformBuffer has been deprecated.")
+	void UpdateUniformBuffer(FRHICommandListImmediate& RHICmdList) {}
+	
+	UE_DEPRECATED(5.3, "ConditionalUpdateUniformBuffer has been deprecated.")
+	void ConditionalUpdateUniformBuffer(FRHICommandListImmediate& RHICmdList) {}
+	
+	UE_DEPRECATED(5.3, "BeginDeferredUpdateStaticMeshes has been deprecated. Use RequestStaticMeshUpdate instead.")
+	void BeginDeferredUpdateStaticMeshes() { RequestStaticMeshUpdate(); }
+	
+	UE_DEPRECATED(5.3, "BeginDeferredUpdateStaticMeshesWithoutVisibilityCheck has been deprecated. Use RequestStaticMeshUpdate instead.")
+	void BeginDeferredUpdateStaticMeshesWithoutVisibilityCheck() { RequestStaticMeshUpdate(); }
+	
+	UE_DEPRECATED(5.3, "SetNeedsUniformBufferUpdate is deprecated. Use RequestUniformBufferUpdate instead.")
+	void SetNeedsUniformBufferUpdate(bool bInNeedsUniformBufferUpdate) { RequestUniformBufferUpdate(); }
+
 private:
 
 	/** Let FScene have direct access to the Id. */
@@ -664,8 +626,8 @@ private:
 	 */
 	const UPrimitiveComponent* ComponentForDebuggingOnly;
 
-	/** If this is TRUE, this primitive's static meshes will be update even if it's not visible. */
-	bool bNeedsStaticMeshUpdateWithoutVisibilityCheck : 1;
+	/** These flags carry information about which runtime virtual textures are bound to this primitive. */
+	FPrimitiveVirtualTextureFlags RuntimeVirtualTextureFlags;
 
 	/** If this is TRUE, this primitive's uniform buffer needs to be updated before it can be rendered. */
 	bool bNeedsUniformBufferUpdate : 1;
@@ -687,10 +649,46 @@ private:
 
 	/** True if the primitive is queued for add. */
 	bool bPendingAddToScene : 1;
-	
+
+	/** True if the primitive is queued to have static meshes built. */
+	bool bPendingAddStaticMeshes : 1;
+
 	/** True if the primitive is queued to have its virtual texture flushed. */
 	bool bPendingFlushVirtualTexture : 1;
 
+public:
+	/** Whether the primitive is newly registered or moved and CachedReflectionCaptureProxy needs to be updated on the next render. */
+	bool bNeedsCachedReflectionCaptureUpdate : 1;
+
+	/** Set to true for the primitive to be rendered in the main pass to be visible in a view. */
+	bool bShouldRenderInMainPass : 1;
+
+	/** Set to true for the primitive to be rendered into the real-time sky light reflection capture. */
+	bool bVisibleInRealTimeSkyCapture : 1;
+
+#if RHI_RAYTRACING
+	bool bDrawInGame : 1;
+	bool bRayTracingFarField : 1;
+	bool bIsVisibleInSceneCaptures : 1;
+	bool bIsVisibleInSceneCapturesOnly : 1;
+	bool bIsRayTracingRelevant : 1;
+	bool bIsRayTracingStaticRelevant : 1;
+	bool bIsVisibleInRayTracing : 1;
+	bool bCachedRaytracingDataDirty : 1;
+	bool bCachedRayTracingInstanceAnySegmentsDecal : 1;
+	bool bCachedRayTracingInstanceAllSegmentsDecal : 1;
+	Nanite::CoarseMeshStreamingHandle CoarseMeshStreamingHandle;
+
+	TArray<TArray<int32, TInlineAllocator<2>>> CachedRayTracingMeshCommandIndicesPerLOD;
+
+	TArray<uint64> CachedRayTracingMeshCommandsHashPerLOD;
+	// TODO: this should be placed in FRayTracingScene and we have a pointer/handle here. It's here for now for PoC
+	FRayTracingGeometryInstance CachedRayTracingInstance;
+	TArray<FBoxSphereBounds> CachedRayTracingInstanceWorldBounds;
+	int32 SmallestRayTracingInstanceWorldBoundsIndex;
+#endif
+
+private:
 	/** Index into the scene's PrimitivesNeedingLevelUpdateNotification array for this primitive scene info level. */
 	int32 LevelUpdateNotificationIndex;
 
@@ -713,6 +711,7 @@ private:
 	int32 NumLightmapDataEntries;
 
 	void UpdateIndirectLightingCacheBuffer(
+		FRHICommandListBase& RHICmdList,
 		const class FIndirectLightingCache* LightingCache,
 		const class FIndirectLightingCacheAllocation* LightingAllocation,
 		FVector VolumetricLightmapLookupPosition,
@@ -722,11 +721,11 @@ private:
 	/** Creates cached mesh draw commands for all meshes. */
 	static void CacheMeshDrawCommands(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos);
 
+	/** Updates virtual texture state on the scene primitives. */
+	static void UpdateVirtualTextures(FScene* Scene, TArrayView<FPrimitiveSceneInfo*> SceneInfos);
+
 	/** Removes cached mesh draw commands for all meshes. */
 	void RemoveCachedMeshDrawCommands();
-
-	/** These flags carry information about which runtime virtual textures are bound to this primitive. */
-	FPrimitiveVirtualTextureFlags RuntimeVirtualTextureFlags;
 
 	/** Creates or add ref's cached draw commands for each unique material instance found within the scene. */
 	static void CacheNaniteDrawCommands(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);

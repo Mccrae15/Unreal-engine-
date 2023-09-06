@@ -52,6 +52,7 @@ class AServerStreamingLevelsVisibility;
 class AWorldDataLayers;
 class AWorldSettings;
 class UWorldPartition;
+class UDataLayerManager;
 class Error;
 class FConstPawnIterator;
 class FRegisterComponentContext;
@@ -59,6 +60,7 @@ class FTimerManager;
 class FWorldInGamePerformanceTrackers;
 class IInterface_PostProcessVolume;
 class UAISystemBase;
+class UChaosEventRelay;
 class UCanvas;
 class UDemoNetDriver;
 class UGameViewportClient;
@@ -238,6 +240,9 @@ private:
 
 	void SetHandlerLoadedData(UObject* InLevelPackage, UWorld* InLoadedWorld);
 
+	/** Wrapper for loading transition or destination map, returns false if not found */
+	bool StartLoadingMap(FString MapPackageToLoadFrom);
+
 	/** called to kick off async loading of the destination map and any other packages it requires */
 	void StartLoadingDestination();
 
@@ -258,12 +263,6 @@ public:
 	 * @return whether or not we succeeded in starting the travel
 	 */
 	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL);
-
-	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use StartTravel without a InGuid.")
-	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL, const FGuid& InGuid)
-	{
-		return StartTravel(InCurrentWorld, InURL);
-	}
 
 	/** @return whether a transition is already in progress */
 	FORCEINLINE bool IsInTransition() const
@@ -494,7 +493,10 @@ public:
 	/* Determines whether or not the actor may be spawned when running a construction script. If true spawning will fail if a construction script is being run. */
 	uint8	bAllowDuringConstructionScript:1;
 
-#if WITH_EDITOR
+#if !WITH_EDITOR
+	/* Force the spawned actor to use a globally unique name (provided name should be none). */
+	uint8	bForceGloballyUniqueName:1;
+#else
 	/* Determines whether the begin play cycle will run on the spawned actor when in the editor. */
 	uint8	bTemporaryEditorActor:1;
 
@@ -803,7 +805,7 @@ private:
 	};
 
 	/** Streaming levels that had their priority changed or were added to the container while consideration was underway. */
-	TSortedMap<ULevelStreaming*, EProcessReason> LevelsToProcess;
+	TSortedMap<TObjectPtr<ULevelStreaming>, EProcessReason> LevelsToProcess;
 
 	/** Whether the streaming levels are under active consideration */
 	int32 StreamingLevelsBeingConsidered;
@@ -1034,6 +1036,8 @@ public:
 	/** Return a const version of the streaming levels array */
 	const TArray<ULevelStreaming*>& GetStreamingLevels() const { return StreamingLevels; }
 
+	uint16 GetNumStreamingLevelsBeingLoaded() const { return NumStreamingLevelsBeingLoaded; }
+
 	/** Returns true if StreamingLevel is part of the levels being considered for update */
 	bool IsStreamingLevelBeingConsidered(ULevelStreaming* StreamingLevel) const { return StreamingLevelsToConsider.Contains(StreamingLevel); }
 	
@@ -1149,6 +1153,11 @@ private:
 
 public:
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FORCEINLINE ERHIFeatureLevel::Type GetFeatureLevel() const{ return FeatureLevel; }
+	FORCEINLINE void SetFeatureLevel(ERHIFeatureLevel::Type InFeatureLevel) { FeatureLevel = InFeatureLevel; }
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 	/** View locations rendered in the previous frame, if any. */
 	TArray<FVector>								ViewLocationsRenderedLastFrame;
 
@@ -1158,6 +1167,7 @@ public:
 	double										LastRenderTime = 0.0;
 
 	/** The current renderer feature level of this world */
+	UE_DEPRECATED(5.3, "FeatureLevel will be removed in the future from UWorld. Please use GetFeatureLevel or SetFeatureLevel instead")
 	TEnumAsByte<ERHIFeatureLevel::Type> FeatureLevel;
 
 	/** The current ticking group																								*/
@@ -1493,6 +1503,9 @@ public:
 	/** Default global physics scene. */
 	TSharedPtr<FPhysScene_Chaos> DefaultPhysicsScene_Chaos;
 
+	/** Access to the ChaosEventRelay to access all registered events. */
+	UChaosEventRelay* GetChaosEventRelay();
+
 	/** Physics Field component. */
 	UPROPERTY(Transient)
 	TObjectPtr<class UPhysicsFieldComponent> PhysicsField;
@@ -1647,10 +1660,11 @@ private:
 	/** Broadcasts whenever the number of levels changes */
 	FOnLevelsChangedEvent LevelsChangedEvent;
 
-	DECLARE_EVENT(UWorld, FOnBeginTearingDownEvent);
+	/** Called when all the levels have changed. */
+	DECLARE_EVENT(UWorld, FOnAllLevelsChangedEvent);
 
-	/** Broadcasted on UWorld::BeginTearingDown */
-	FOnBeginTearingDownEvent BeginTearingDownEvent;
+	/** Broadcasts whenever all the levels change */
+	FOnAllLevelsChangedEvent AllLevelsChangedEvent;
 
 	/** Broadcasted when WorldPartition gets initialized */
 	DECLARE_EVENT_OneParam(UWorld, FWorldPartitionInitializedEvent, UWorldPartition*);
@@ -1852,7 +1866,7 @@ private:
 	static uint32 CleanupWorldGlobalTag;
 
 public:
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 	/** List of DDC async requests we need to wait on before we register components. Game thread only. */
 	TArray<TSharedPtr<FAsyncPreRegisterDDCRequest>> AsyncPreRegisterDDCRequests;
 #endif
@@ -2497,14 +2511,6 @@ public:
 	/** @return Returns the number of Controllers. */
 	int32 GetNumControllers() const;
 	
-	/** @return Returns an iterator for the pawn list. */
-	UE_DEPRECATED(4.24, "The PawnIterator is an inefficient mechanism for iterating pawns. Please use TActorIterator<PawnType> instead.")
-	FConstPawnIterator GetPawnIterator() const;
-	
-	/** @return Returns the number of Pawns. */
-	UE_DEPRECATED(4.23, "GetNumPawns is no longer a supported function on UWorld. The version that remains for backwards compatibility is significantly more expensive to call.")
-	int32 GetNumPawns() const;
-
 	/** @return Returns an iterator for the player controller list. */
 	FConstPlayerControllerIterator GetPlayerControllerIterator() const;
 
@@ -2696,6 +2702,14 @@ public:
 	UWorldPartition* GetWorldPartition() const;
 
 	/**
+	 * Returns the UDataLayerManager associated with this world.
+	 *
+	 * @return UDataLayerManager object associated with this world
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Utilities|WorldPartition")
+	UDataLayerManager* GetDataLayerManager() const;
+
+	/**
 	* Returns true if world contains an associated UWorldPartition object.
 	*/
 	bool IsPartitionedWorld() const { return GetWorldPartition() != nullptr; }
@@ -2764,18 +2778,7 @@ public:
 	 * @param	Controller	Controller to remove
 	 */
 	void RemoveController( AController* Controller );
-
-	UE_DEPRECATED(4.23, "There is no longer a reason to AddPawn to UWorld")
-	void AddPawn( APawn* Pawn ) { }
 	
-	/**
-	 * Removes the passed in pawn from the linked list of pawns.
-	 *
-	 * @param	Pawn	Pawn to remove
-	 */
-	UE_DEPRECATED(4.23, "RemovePawn has been deprecated and should no longer need to be called as PawnList is no longer maintained and Unpossess should be handled by EndPlay.")
-	void RemovePawn( APawn* Pawn ) const;
-
 	/**
 	 * Adds the passed in actor to the special network actor list
 	 * This list is used to specifically single out actors that are relevant for networking without having to scan the much large list
@@ -3030,6 +3033,13 @@ public:
 	/** Updates this world's scene with the list of instances, and optionally updates each instance's uniform buffer. */
 	void UpdateParameterCollectionInstances(bool bUpdateInstanceUniformBuffers, bool bRecreateUniformBuffer);
 
+	/* clean up any material parameter collection instances which have had their collections destroyed */
+	void OnPostGC(); 
+
+private:
+	UMaterialParameterCollectionInstance* CreateParameterCollectionInstance(int32 ExistingIndex, UMaterialParameterCollection* Collection, bool bUpdateScene);
+public:
+
 	/** Gets the canvas object for rendering to a render target.  Will allocate one if needed. */
 	UCanvas* GetCanvasForRenderingToTarget();
 	UCanvas* GetCanvasForDrawMaterialToRenderTarget();
@@ -3051,9 +3061,13 @@ public:
 	bool IsInitializedAndNeedsCleanup() const { return bIsWorldInitialized; }
 	/** Returns whether InitWorld has ever been called since this World was created.  */
 	bool HasEverBeenInitialized() const { return bHasEverBeenInitialized; }
+
+	/**
+	 * Calls CleanupWorld and InitWorld, while handling preservation of StreamingLevels and WorldInitialization values
+	 * Gives a warning and does nothing if IsInitialized is not currently true.
+	 */
+	void ReInitWorld();
 #endif
-	UE_DEPRECATED(5.2, "Not for public use. This function is a workaround for UE-170919 and will be removed in 5.3")
-	bool HasEverBeenInitialized_DONOTUSE() const { return bHasEverBeenInitialized; }
 
 	/** Returns whether InitWorld has been called without yet calling CleanupWorld.  */
 	bool IsInitialized() const { return bIsWorldInitialized; }
@@ -3219,7 +3233,7 @@ public:
 	/**
 	 * Return the list of selected levels in this world.
 	 */
-	TArray<class ULevel*>& GetSelectedLevels();
+	TArray<TObjectPtr<class ULevel>>& GetSelectedLevels();
 
 	/** Shrink level elements to their minimum size. */
 	void ShrinkLevel();
@@ -3366,14 +3380,6 @@ public:
 
 	// Start listening for connections.
 	bool Listen( FURL& InURL );
-
-	/** @return true if this level is a client */
-	UE_DEPRECATED(5.0, "Use GetNetMode or IsNetMode instead for more accurate results.")
-	bool IsClient() const;
-
-	/** @return true if this level is a server */
-	UE_DEPRECATED(5.0, "Use GetNetMode or IsNetMode instead for more accurate results")
-	bool IsServer() const;
 
 	/** @return true if the world is in the paused state */
 	bool IsPaused() const;
@@ -3629,6 +3635,21 @@ public:
 	virtual void NotifyControlMessage(UNetConnection* Connection, uint8 MessageType, class FInBunch& Bunch) override;
 	//~ End FNetworkNotify Interface
 
+	/**
+	 * Log error and close connection for prelogin failures.
+	 */
+	bool PreLoginCheckError(UNetConnection* Connection, const FString& ErrorMsg);
+
+	/**
+	 * Check GameMode PreLogin results and welcome player if needed.
+	 */
+	void PreLoginComplete(const FString& ErrorMsg, TWeakObjectPtr<UNetConnection> WeakConnection);
+
+	/**
+	 * Check GameMode PreLogin results for split screen player joins.
+	 */
+	void PreLoginCompleteSplit(const FString& ErrorMsg, TWeakObjectPtr<UNetConnection> WeakConnection, FUniqueNetIdRepl SplitRequestUniqueIdRepl, FString SplitRequestURL);
+
 	/** Welcome a new player joining this server. */
 	void WelcomePlayer(UNetConnection* Connection);
 
@@ -3736,9 +3757,8 @@ public:
 	/** Returns the LevelsChangedEvent member. */
 	FOnLevelsChangedEvent& OnLevelsChanged() { return LevelsChangedEvent; }
 
-	/** Returns the BeginTearingDownEvent member. */
-	UE_DEPRECATED(4.26, "OnBeginTearingDown has been replaced by FWorldDelegates::OnWorldBeginTearDown")
-	FOnBeginTearingDownEvent& OnBeginTearingDown() { return BeginTearingDownEvent; }
+	/** Returns the AllLevelsChangedEvent member. */
+	FOnAllLevelsChangedEvent& OnAllLevelsChanged() { return AllLevelsChangedEvent; }
 
 	/** Returns the actor count. */
 	int32 GetProgressDenominator() const;
@@ -3862,12 +3882,6 @@ public:
 	 * @param bAbsolute (opt) - if true, URL is absolute, otherwise relative
 	 */
 	void SeamlessTravel(const FString& InURL, bool bAbsolute = false);
-
-	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use SeamlessTravel without a NextMapGuid.")
-	void SeamlessTravel(const FString& InURL, bool bAbsolute, FGuid MapPackageGuid)
-	{
-		SeamlessTravel(InURL, bAbsolute);
-	}
 
 	/** @return whether we're currently in a seamless transition */
 	bool IsInSeamlessTravel() const;
@@ -4152,6 +4166,22 @@ public:
 	static FWorldPostRenameEvent OnPostWorldRename;
 
 	static FWorldCurrentLevelChangedEvent OnCurrentLevelChanged;
+
+	// PIE has started
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldPIEStarted, UGameInstance*);
+	static FOnWorldPIEStarted OnPIEStarted;
+
+	// PIE is ready
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldPIEReady, UGameInstance*);
+	static FOnWorldPIEStarted OnPIEReady;
+
+	// PIE has ended
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldPIEEnded, UGameInstance*);
+	static FOnWorldPIEEnded OnPIEEnded;
+
+	// Callback to add references when Serialize is called during SavePackage
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FWorldCollectSaveReferencesEvent, UWorld*, FArchive&);
+	static FWorldCollectSaveReferencesEvent OnCollectSaveReferences;
 #endif // WITH_EDITOR
 
 	// Post duplication event.
@@ -4183,6 +4213,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE_FourParams(FLevelOffsetEvent, ULevel*,  UWorld*, const FVector&, bool);
 	static FLevelOffsetEvent		PostApplyLevelOffset;
 
+	// Called after transform is applied to level
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FLevelTransformEvent, ULevel*, const FTransform&);
+	static FLevelTransformEvent		PostApplyLevelTransform;
+
 	// called by UWorld::GetAssetRegistryTags()
 	static FWorldGetAssetTags GetAssetTags;
 
@@ -4204,6 +4238,9 @@ public:
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSeamlessTravelTransition, UWorld*);
 	static FOnSeamlessTravelTransition OnSeamlessTravelTransition;
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnNetDriverCreated, UWorld*, UNetDriver*);
+	static FOnNetDriverCreated OnNetDriverCreated;
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCopyWorldData, UWorld*, UWorld*);
 	static FOnCopyWorldData OnCopyWorldData;

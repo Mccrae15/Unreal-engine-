@@ -536,10 +536,8 @@ void UWaterSubsystem::MarkWaterZonesInRegionForRebuild(const FBox2D& InUpdateReg
 	}
 }
 
-TSoftObjectPtr<AWaterZone> UWaterSubsystem::FindWaterZone(const FBox2D& Bounds) const
+TSoftObjectPtr<AWaterZone> UWaterSubsystem::FindWaterZone(const UWorld* World, const FBox2D& Bounds, const TSoftObjectPtr<const ULevel> PreferredLevel)
 {
-
-	const UWorld* World = GetWorld();
 	if (!World)
 	{
 		return {};
@@ -586,7 +584,43 @@ TSoftObjectPtr<AWaterZone> UWaterSubsystem::FindWaterZone(const FBox2D& Bounds) 
 		return {};
 	}
 
+	// Return best match in PreferredLevel if there is a match
+	if (!PreferredLevel.IsNull() && ViableZones.Num() > 1)
+	{
+		TSoftObjectPtr<AWaterZone> PreferredZone;
+		int32 PreferredZoneMax = INT32_MIN;
+
+		FNameBuilder ParentPath;
+		PreferredLevel.ToSoftObjectPath().ToString(ParentPath);
+		FStringView ParentPathView(ParentPath);
+
+		for (const TPair<TSoftObjectPtr<AWaterZone>, int32>& It : ViableZones)
+		{
+			if (PreferredZone.IsNull() || (It.Value > PreferredZoneMax))
+			{
+				const TSoftObjectPtr<AWaterZone>& WaterZoneSoftPath = It.Key;
+				FNameBuilder ActorPath;
+				WaterZoneSoftPath.ToSoftObjectPath().ToString(ActorPath);
+				if (ActorPath.ToView().StartsWith(ParentPathView))
+				{
+					PreferredZone = WaterZoneSoftPath;
+					PreferredZoneMax = It.Value;
+				}
+			}
+		}
+
+		if (!PreferredZone.IsNull())
+		{
+			return PreferredZone;
+		}
+	}
+
 	return Algo::MaxElementBy(ViableZones, [](const TPair<TSoftObjectPtr<AWaterZone>, int32>& A) { return A.Value; })->Key;
+}
+
+TSoftObjectPtr<AWaterZone> UWaterSubsystem::FindWaterZone(const FBox2D& Bounds, const TSoftObjectPtr<const ULevel> PreferredLevel) const
+{
+	return FindWaterZone(GetWorld(), Bounds, PreferredLevel);
 }
 
 void UWaterSubsystem::NotifyWaterScalabilityChangedInternal(IConsoleVariable* CVar)
@@ -599,7 +633,7 @@ void UWaterSubsystem::NotifyWaterVisibilityChangedInternal(IConsoleVariable* CVa
 	// Water body visibility depends on various CVars. All need to update the visibility in water body components : 
 	GetWaterBodyManagerInternal().ForEachWaterBodyComponent([](UWaterBodyComponent* WaterBodyComponent)
 	{
-		WaterBodyComponent->UpdateComponentVisibility(/* bAllowWaterMeshRebuild = */true);
+		WaterBodyComponent->UpdateComponentVisibility(/* bAllowWaterZoneRebuild = */true);
 		return true;
 	});
 }
@@ -803,7 +837,7 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FVector& InViewLocation, const
 			MaterialDescription = FString::Format(TEXT("{0} (parent: {1})"), { MID->Parent->GetName(), MID->GetMaterial()->GetName() });
 		}
 		OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_ActivePostprocess", "Active underwater post process water body {0} (material: {1})"),
-			FText::FromString(InDebugInfo.ActiveWaterBodyComponent->GetOwner()->GetName()),
+			FText::FromString(InDebugInfo.ActiveWaterBodyComponent->GetOwner()->GetActorNameOrLabel()),
 			FText::FromString(MaterialDescription)));
 	}
 	else
@@ -843,7 +877,7 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FVector& InViewLocation, const
 				if (WaterBody.IsValid() && WaterBody->GetOwner())
 				{
 					OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_OverlappedWaterBodyDetails", "- {0} (overlap material priority: {1})"),
-						FText::FromString(WaterBody->GetOwner()->GetName()),
+						FText::FromString(WaterBody->GetOwner()->GetActorNameOrLabel()),
 						FText::AsNumber(WaterBody->GetOverlapMaterialPriority())));
 				}
 			}

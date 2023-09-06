@@ -24,7 +24,7 @@ bool ULocationBasedNetObjectPrioritizer::AddObject(uint32 ObjectIndex, FNetObjec
 	// We support either a world location in the state, tagged with RepTag_WorldLocation, or via the WorldLocations instance.
 	UE::Net::FRepTagFindInfo TagInfo;
 	bool bHasWorldLocation = false;
-	if (WorldLocations->HasWorldLocation(ObjectIndex))
+	if (WorldLocations->HasInfoForObject(ObjectIndex))
 	{
 		bHasWorldLocation = true;
 		// Craft tag info that will let us know we need to retrieve the location from WorldLocations
@@ -43,8 +43,8 @@ bool ULocationBasedNetObjectPrioritizer::AddObject(uint32 ObjectIndex, FNetObjec
 	}
 
 	FObjectLocationInfo& ObjectInfo = static_cast<FObjectLocationInfo&>(Params.OutInfo);
-	ObjectInfo.SetLocationStateOffset(TagInfo.ExternalStateOffset);
-	ObjectInfo.SetLocationStateIndex(TagInfo.StateIndex);
+	ObjectInfo.SetLocationStateOffset(static_cast<uint16>(TagInfo.ExternalStateOffset));
+	ObjectInfo.SetLocationStateIndex(static_cast<uint16>(TagInfo.StateIndex));
 	const uint32 LocationIndex = AllocLocation();
 	ObjectInfo.SetLocationIndex(LocationIndex);
 
@@ -111,6 +111,6 @@ void ULocationBasedNetObjectPrioritizer::UpdateLocation(const uint32 ObjectIndex
 		TArrayView<const UE::Net::FReplicationInstanceProtocol::FFragmentData> FragmentDatas = MakeArrayView(InstanceProtocol->FragmentData, InstanceProtocol->FragmentCount);
 		const UE::Net::FReplicationInstanceProtocol::FFragmentData& FragmentData = FragmentDatas[Info.GetLocationStateIndex()];
 		const uint8* LocationOffset = FragmentData.ExternalSrcBuffer + Info.GetLocationStateOffset();
-		SetLocation(Info, VectorLoadFloat3_W0(reinterpret_cast<const float*>(LocationOffset)));
+		SetLocation(Info, VectorLoadFloat3_W0(reinterpret_cast<const FVector*>(LocationOffset)));
 	}
 }

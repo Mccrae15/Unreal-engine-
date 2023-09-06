@@ -172,6 +172,8 @@ private:
 	void TickWorkerConnects(ECookDirectorThread TickThread);
 	/** Tick helper: tick any workers that are shutting down. */
 	void TickWorkerShutdowns(ECookDirectorThread TickThread);
+	/** The LogPath a worker process writes to. */
+	FString GetWorkerLogFileName(int32 ProfileId);
 	/** Get the commandline to launch a worker process with. */
 	FString GetWorkerCommandLine(FWorkerId WorkerId, int32 ProfileId);
 	/** Calls the configured LoadBalanceAlgorithm. Input Requests have been sorted by leaf to root load order. */
@@ -246,6 +248,7 @@ private:
 	int32 CoreLimit = 0;
 	EShowWorker ShowWorkerOption = EShowWorker::CombinedLogs;
 	ELoadBalanceAlgorithm LoadBalanceAlgorithm = ELoadBalanceAlgorithm::CookBurden;
+	bool bAllowLocalCooks = true;
 
 	// Data only accessible from the CommunicationThread (or if the CommunicationThread is inactive)
 	FSocket* WorkerConnectSocket = nullptr;

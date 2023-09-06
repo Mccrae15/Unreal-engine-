@@ -13,6 +13,10 @@ protocol StreamingConnectionDelegate : AnyObject {
     
     func streamingConnectionDidConnect(_ connection : StreamingConnection)
     func streamingConnection(_ connection : StreamingConnection, didDisconnectWithError err: Error?)
+    func streamingConnection(_ connection : StreamingConnection, exitWithError err: Error?)
+    func streamingConnection(_ connection : StreamingConnection, requestsTextEditWithContents contents : String, handler : @escaping (Bool, String?) -> Void)
+    func streamingConnection(_ connection: StreamingConnection, requestStreamerSelectionWithStreamers streamers: Array<String>, handler: @escaping (String) -> Void)
+    func streamingConnection(_ connection: StreamingConnection, receivedGamepadResponse: UInt8)
 }
 
 enum StreamingConnectionType : String {
@@ -25,6 +29,12 @@ enum StreamingConnectionTouchType : String {
     case moved = "Moved"
     case ended = "Ended"
 }
+
+enum StreamingConnectionError: Error {
+    case runtimeError(String)
+}
+
+
 
 enum StreamingConnectionControllerInputType : String {
     case thumbstickLeftX = "Gamepad_LeftX"
@@ -109,6 +119,10 @@ class StreamingConnection : NSObject {
         self.subjectName = subjectName
     }
     
+    func showStats(_ shouldShow : Bool) {
+        // Do nothing, derived classes will implement functionality
+    }
+    
     func shutdown() {
         assertionFailure("not implemented")
     }
@@ -128,6 +142,10 @@ class StreamingConnection : NSObject {
         assertionFailure("not implemented")
     }
     
+    func sendControllerConnected() {
+        assertionFailure("not implemented")
+    }
+    
     func sendControllerAnalog(_ type :StreamingConnectionControllerInputType, controllerIndex : UInt8, value : Float) {
         assertionFailure("not implemented")
     }
@@ -137,6 +155,10 @@ class StreamingConnection : NSObject {
     }
 
     func sendControllerButtonReleased(_ type : StreamingConnectionControllerInputType, controllerIndex : UInt8) {
+        assertionFailure("not implemented")
+    }
+    
+    func sendControllerDisconnected(controllerIndex: UInt8) {
         assertionFailure("not implemented")
     }
 

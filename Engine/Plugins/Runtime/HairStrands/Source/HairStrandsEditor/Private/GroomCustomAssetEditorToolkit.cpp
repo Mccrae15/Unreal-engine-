@@ -326,29 +326,62 @@ void FGroomCustomAssetEditorToolkit::OnClose()
 
 static void ListAllBindingAssets(const UGroomAsset* InGroomAsset, TWeakObjectPtr<UGroomBindingAssetList>& Out)
 {
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UGroomBindingAsset::StaticClass()->GetClassPathName());
-
-	// Search for binding with matching groom asset
-	//{
-	//	const FName GroomAssetProperty = GET_MEMBER_NAME_CHECKED(UGroomBindingAsset, Groom);
-	//	FString GroomAssetName = FAssetData(InGroomAsset).GetExportTextName();
-	//	FString GroomAssetName = TSoftObjectPtr<UGroomAsset>(InGroomAsset).ToString();
-	//	Filter.TagsAndValues.Add(GroomAssetProperty, GroomAssetName);
-	//}
-
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	TArray<FAssetData> BindingAssetData;
-	AssetRegistryModule.Get().GetAssets(Filter, BindingAssetData);
 
-	// Filter binding asset which match the groom asset (as the tag/value filter above does not work)
-	for (FAssetData& Asset :  BindingAssetData)
+	// 1. Use tagged properties for searching compatible binding assets (for assets saved after AssetRegistrySearchable has been added)
 	{
-		if (UGroomBindingAsset* Binding = (UGroomBindingAsset*)Asset.GetAsset())
+		const FName GroomAssetProperty = UGroomBindingAsset::GetGroomMemberName();
+		FString GroomAssetName = FAssetData(InGroomAsset).GetExportTextName();
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UGroomBindingAsset::StaticClass()->GetClassPathName());
+		Filter.TagsAndValues.Add(GroomAssetProperty, GroomAssetName);
+		AssetRegistryModule.Get().GetAssets(Filter, BindingAssetData);
+
+		for (FAssetData& Asset : BindingAssetData)
 		{
-			if (Binding->Groom == InGroomAsset)
+			if (UGroomBindingAsset* Binding = (UGroomBindingAsset*)Asset.GetAsset(/*bLoad*/))
 			{
-				Out->Bindings.Add(Binding);
+				if (Binding->GetGroom() == InGroomAsset)
+				{
+					Out->Bindings.Add(Binding);
+				}
+			}
+		}
+	}
+
+	// 2. Use name matching for searching compatible binding assets
+	if (BindingAssetData.Num() == 0)
+	{
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UGroomBindingAsset::StaticClass()->GetClassPathName());
+		AssetRegistryModule.Get().GetAssets(Filter, BindingAssetData);
+	
+		// Filter binding asset which match the groom asset (as the tag/value filter above does not work)
+		// Avoid to load binding asset to slow down panel opening
+		for (FAssetData& Asset :  BindingAssetData)
+		{
+			UGroomBindingAsset* Binding = (UGroomBindingAsset*)Asset.FastGetAsset(false /*bLoad*/);
+			if (Binding)
+			{
+				if (Binding->GetGroom() == InGroomAsset)
+				{
+					Out->Bindings.Add(Binding);
+				}
+			}
+			else 
+			{
+				// Use heuristic that binding asset usually contain groom asset name (when preserving the auto-generated binding name)
+				const FString BindingAssetName = Asset.AssetName.GetPlainNameString();
+				const FString GroomAssetName = InGroomAsset->GetName();
+				if (TCString<TCHAR>::Strfind(*BindingAssetName, *GroomAssetName, true))
+				{
+					Binding = (UGroomBindingAsset*)Asset.GetAsset(/*bLoad*/);
+					if (Binding->GetGroom() == InGroomAsset)
+					{
+						Out->Bindings.Add(Binding);
+					}
+				}
 			}
 		}
 	}
@@ -491,14 +524,27 @@ void FGroomCustomAssetEditorToolkit::InitCustomAssetEditor(const EToolkitMode::T
 		bCreateDefaultToolbar,
 		(UObject*)InCustomAsset);
 	
-	FProperty* P0 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInterpolation));
-	FProperty* P1 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsRendering));
-	FProperty* P2 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsPhysics));
-	FProperty* P3 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards));
-	FProperty* P4 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD));
-	FProperty* P5 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes));
-	FProperty* P6 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials));
-	FProperty* P7 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo));
+	bIsTabManagerInitialized = true;
+
+	// Initialize the content of the binding tab/
+	// This initialization happens after the tab spawning to check it the binding tab is actually active/visible. 
+	// This avoids to loading the binding assets if the tab is not visibile.
+	{
+		TSharedPtr<SDockTab> BindingTab = TabManager->FindExistingLiveTab(TabId_BindingProperties);
+		if (BindingTab && BindingTab->IsActive())
+		{
+			InitializeBindingAssetTabContent();
+		}
+	}
+
+	FProperty* P0 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsInterpolationMemberName());
+	FProperty* P1 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsRenderingMemberName());
+	FProperty* P2 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsPhysicsMemberName());
+	FProperty* P3 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsCardsMemberName());
+	FProperty* P4 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsLODMemberName());
+	FProperty* P5 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsMeshesMemberName());
+	FProperty* P6 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsMaterialsMemberName());
+	FProperty* P7 = FindFProperty<FProperty>(GroomAsset->GetClass(), UGroomAsset::GetHairGroupsInfoMemberName());
 	FProperty* P9 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, AssetUserData));
 
 	P7->SetMetaData(TEXT("Category"), TEXT("Hidden"));
@@ -835,6 +881,18 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_PreviewGroomCompon
 		];
 }
 
+void FGroomCustomAssetEditorToolkit::InitializeBindingAssetTabContent()
+{
+	UGroomAsset* LocalGroomAsset = GetCustomAsset();
+	if (GroomBindingAssetList == nullptr && LocalGroomAsset)
+	{
+		GroomBindingAssetList = NewObject<UGroomBindingAssetList>(GetTransientPackage(), NAME_None, RF_Transient);
+		ListAllBindingAssets(LocalGroomAsset, GroomBindingAssetList);
+		DetailView_BindingProperties->SetObject(Cast<UObject>(GroomBindingAssetList));
+		DetailView_BindingProperties->ForceRefresh();
+	}
+}
+
 TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_BindingProperties(const FSpawnTabArgs& Args)
 {
 	check(Args.GetTabId() == TabId_BindingProperties);
@@ -846,16 +904,17 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_BindingProperties(
 			DetailView_BindingProperties.ToSharedRef()
 		];
 
-	DockTab->SetOnTabActivated(SDockTab::FOnTabActivatedCallback::CreateLambda([this](TSharedRef<SDockTab> Input, ETabActivationCause)
+	if (bIsTabManagerInitialized)
 	{
-		UGroomAsset* LocalGroomAsset = GetCustomAsset();
-		if (GroomBindingAssetList == nullptr && LocalGroomAsset)
+		InitializeBindingAssetTabContent();
+	}
+	else
+	{	
+		DockTab->SetOnTabActivated(SDockTab::FOnTabActivatedCallback::CreateLambda([this](TSharedRef<SDockTab> Input, ETabActivationCause)
 		{
-			GroomBindingAssetList = NewObject<UGroomBindingAssetList>(GetTransientPackage(), NAME_None, RF_Transient);
-			ListAllBindingAssets(LocalGroomAsset, GroomBindingAssetList);
-			DetailView_BindingProperties->ForceRefresh();
-		}
-	}));
+			InitializeBindingAssetTabContent();
+		}));
+	}
 
 	return DockTab;
 }
@@ -900,7 +959,7 @@ void FGroomCustomAssetEditorToolkit::PreviewBinding(int32 BindingIndex)
 	if (GroomBindingAsset.Get())
 	{
 		PreviewSkeletalMeshComponent = NewObject<USkeletalMeshComponent>(GetTransientPackage(), NAME_None, RF_Transient);
-		PreviewSkeletalMeshComponent->SetSkeletalMesh(GroomBindingAsset->TargetSkeletalMesh);
+		PreviewSkeletalMeshComponent->SetSkeletalMesh(GroomBindingAsset->GetTargetSkeletalMesh());
 		PreviewSkeletalMeshComponent->SetVisibility(true);
 		PreviewSkeletalMeshComponent->Activate(true);
 		PreviewGroomComponent->AttachToComponent(PreviewSkeletalMeshComponent.Get(), FAttachmentTransformRules::KeepRelativeTransform);

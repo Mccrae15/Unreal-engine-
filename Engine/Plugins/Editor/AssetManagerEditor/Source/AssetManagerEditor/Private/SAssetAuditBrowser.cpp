@@ -1,28 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
 #include "SAssetAuditBrowser.h"
-#include "AssetManagerEditorModule.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetDefinitionRegistry.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "ClassViewerModule.h"
+#include "ContentBrowserDataSource.h"
+#include "ContentBrowserModule.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "Editor.h"
+#include "Engine/AssetManager.h"
+#include "Engine/BlueprintCore.h"
+#include "FileHelpers.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-
 #include "Framework/Views/TableViewMetadata.h"
-#include "Widgets/Input/SButton.h"
-#include "FileHelpers.h"
-#include "ClassViewerModule.h"
 #include "IContentBrowserSingleton.h"
-#include "ContentBrowserModule.h"
-#include "ContentBrowserDataSource.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "Toolkits/GlobalEditorCommonCommands.h"
-#include "Engine/AssetManager.h"
-#include "AssetManagerEditorCommands.h"
-#include "Engine/BlueprintCore.h"
-#include "Widgets/Input/SComboBox.h"
-#include "DragAndDrop/AssetDragDropOp.h"
-#include "Blueprint/BlueprintSupport.h"
+#include "Styling/StyleColors.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "Editor.h"
+#include "Toolkits/GlobalEditorCommonCommands.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
+
+#include "AssetManagerEditorModule.h"
+#include "AssetManagerEditorCommands.h"
+#include "Insights/Common/Log.h"
+#include "TreeView/AssetTable.h"
+#include "TreeView/AssetTreeNode.h"
+#include "TreeView/SAssetTableTreeView.h"
 
 #define LOCTEXT_NAMESPACE "AssetManagementBrowser"
 
@@ -152,13 +158,13 @@ void SAssetAuditBrowser::FindReferencesForSelectedAssets() const
 	IAssetManagerEditorModule::ExtractAssetIdentifiersFromAssetDataList(Assets, AssetIdentifiers);
 
 	if (AssetIdentifiers.Num() > 0)
-{
+	{
 		IAssetManagerEditorModule::Get().OpenReferenceViewerUI(AssetIdentifiers);
 	}
 }
 
 void SAssetAuditBrowser::ShowSizeMapForSelectedAssets() const
-	{
+{
 	TArray<FAssetData> Assets = GetCurrentSelectionDelegate.Execute();
 	TArray<FAssetIdentifier> AssetIdentifiers;
 	IAssetManagerEditorModule::ExtractAssetIdentifiersFromAssetDataList(Assets, AssetIdentifiers);
@@ -212,10 +218,7 @@ void SAssetAuditBrowser::OnGetCustomSourceAssets(const FARFilter& Filter, TArray
 
 void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 {
-	if (!UAssetManager::IsValid())
-	{
-		return;
-	}
+	check(UAssetManager::IsInitialized());
 
 	IAssetManagerEditorModule& ManagerEditorModule = IAssetManagerEditorModule::Get();
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
@@ -243,7 +246,7 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 		FExecuteAction::CreateSP(this, &SAssetAuditBrowser::EditSelectedAssets),
 		FCanExecuteAction::CreateSP(this, &SAssetAuditBrowser::IsAnythingSelected)
 	));
-	
+
 	Commands->MapAction(FAssetManagerEditorCommands::Get().ViewReferences, FUIAction(
 		FExecuteAction::CreateSP(this, &SAssetAuditBrowser::FindReferencesForSelectedAssets),
 		FCanExecuteAction::CreateSP(this, &SAssetAuditBrowser::IsAnythingSelected)
@@ -274,27 +277,33 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 	Config.OnGetCustomSourceAssets = FOnGetCustomSourceAssets::CreateSP(this, &SAssetAuditBrowser::OnGetCustomSourceAssets);
 	Config.SyncToAssetsDelegates.Add(&SyncToAssetsDelegate);
 	Config.OnShouldFilterAsset = FOnShouldFilterAsset::CreateSP(this, &SAssetAuditBrowser::HandleFilterAsset);
+	Config.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SAssetAuditBrowser::OnAssetSelected);
 	Config.GetCurrentSelectionDelegates.Add(&GetCurrentSelectionDelegate);
 	Config.SetFilterDelegates.Add(&SetFilterDelegate);
 	Config.bFocusSearchBoxWhenOpened = false;
 
 	Config.SaveSettingsName = SettingsIniSection;
-	
+
 	// Hide path and type by default
 	Config.HiddenColumnNames.Add(TEXT("Class"));
 	Config.HiddenColumnNames.Add(TEXT("Path"));
 	// Hide item disk size since we display a custom version here
 	Config.HiddenColumnNames.Add(ContentBrowserItemAttributes::ItemDiskSize.ToString());
 
+	// These are generally not used so hide them by default.
+	Config.HiddenColumnNames.Add(IAssetManagerEditorModule::ManagedDiskSizeName.ToString());
+	Config.HiddenColumnNames.Add(IAssetManagerEditorModule::TotalUsageName.ToString());
+
 	// Add custom columns
 	Config.CustomColumns.Emplace(FPrimaryAssetId::PrimaryAssetTypeTag, LOCTEXT("AssetType", "Primary Type"), LOCTEXT("AssetTypeTooltip", "Primary Asset Type of this asset, if set"), UObject::FAssetRegistryTag::TT_Alphabetical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
 	Config.CustomColumns.Emplace(FPrimaryAssetId::PrimaryAssetNameTag, LOCTEXT("AssetName", "Primary Name"), LOCTEXT("AssetNameTooltip", "Primary Asset Name of this asset, if set"), UObject::FAssetRegistryTag::TT_Alphabetical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
 	Config.CustomColumns.Emplace(IAssetManagerEditorModule::ManagedDiskSizeName, LOCTEXT("ManagedDiskSize", "Disk Size"), LOCTEXT("ManagedDiskSizeTooltip", "Total disk space used by both this and all managed assets"), UObject::FAssetRegistryTag::TT_Numerical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
-	Config.CustomColumns.Emplace(IAssetManagerEditorModule::DiskSizeName, LOCTEXT("DiskSize", "Exclusive Disk Size"), LOCTEXT("DiskSizeTooltip", "Size of saved file on disk for only this asset"), UObject::FAssetRegistryTag::TT_Numerical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
+	Config.CustomColumns.Emplace(IAssetManagerEditorModule::DiskSizeName, LOCTEXT("DiskSize", "Exclusive Disk Size"), LOCTEXT("DiskSizeTooltip", "Size of saved file(s) on disk for this asset's package. If Asset Registry Writeback is enabled and a platform is selected, this will be the uncompressed size of the iostore chunks for the asset's package."), UObject::FAssetRegistryTag::TT_Numerical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
+	Config.CustomColumns.Emplace(IAssetManagerEditorModule::StageChunkCompressedSizeName, LOCTEXT("StagedCompressedSize", "Staged Compressed Size"), LOCTEXT("StagedCompressedSizeTooltip", "Compressed size of iostore chunks for this asset's package. Only visible after staging."), UObject::FAssetRegistryTag::TT_Numerical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
 	Config.CustomColumns.Emplace(IAssetManagerEditorModule::TotalUsageName, LOCTEXT("TotalUsage", "Total Usage"), LOCTEXT("TotalUsageTooltip", "Weighted count of Primary Assets that use this, higher usage means it's more likely to be in memory at runtime"), UObject::FAssetRegistryTag::TT_Numerical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
-	Config.CustomColumns.Emplace(IAssetManagerEditorModule::CookRuleName, LOCTEXT("CookRule", "Cook Rule"), LOCTEXT("CookRuleTooltip", "Rather this asset will be cooked or not"), UObject::FAssetRegistryTag::TT_Alphabetical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
+	Config.CustomColumns.Emplace(IAssetManagerEditorModule::CookRuleName, LOCTEXT("CookRule", "Cook Rule"), LOCTEXT("CookRuleTooltip", "Whether this asset will be cooked or not"), UObject::FAssetRegistryTag::TT_Alphabetical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
 	Config.CustomColumns.Emplace(IAssetManagerEditorModule::ChunksName, LOCTEXT("Chunks", "Chunks"), LOCTEXT("ChunksTooltip", "List of chunks this will be added to when cooked"), UObject::FAssetRegistryTag::TT_Alphabetical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
-	
+
 	// Ignore these tags as we added them as custom columns
 	AssetRegistryTagsToIgnore.Add(FPrimaryAssetId::PrimaryAssetTypeTag);
 	AssetRegistryTagsToIgnore.Add(FPrimaryAssetId::PrimaryAssetNameTag);
@@ -503,7 +512,7 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 		]
 	];
 
-	// Refresh our data sources to make sure we are displaying up to date info otherwise the user will need to 
+	// Refresh our data sources to make sure we are displaying up to date info otherwise the user will need to
 	// hit "refresh" every time they open the dialog to be able to trust it
 	ManagerEditorModule.RefreshRegistryData();
 }
@@ -745,7 +754,7 @@ void SAssetAuditBrowser::AddAssetsOfType(FPrimaryAssetType AssetType)
 	if (AssetType.IsValid())
 	{
 		TArray<FSoftObjectPath> AssetArray;
-		
+
 		if (AssetType == IAssetManagerEditorModule::AllPrimaryAssetTypes)
 		{
 			TArray<FPrimaryAssetTypeInfo> TypeList;
@@ -758,7 +767,7 @@ void SAssetAuditBrowser::AddAssetsOfType(FPrimaryAssetType AssetType)
 		}
 		else
 		{
-		AssetManager->GetPrimaryAssetPathList(AssetType, AssetArray);
+			AssetManager->GetPrimaryAssetPathList(AssetType, AssetArray);
 		}
 
 		AddAssetsToList(AssetArray, false);
@@ -797,7 +806,7 @@ void SAssetAuditBrowser::AddAssetsOfClass(UClass* AssetClass)
 			AssetRegistry->GetDerivedClassNames(AssetFilter.ClassPaths, TSet<FTopLevelAssetPath>(), DerivedClassNames);
 			AssetFilter.ClassPaths.Add(UBlueprintCore::StaticClass()->GetClassPathName());
 		}
-		
+
 		if (AssetRegistry->GetAssets(AssetFilter, FoundData) && FoundData.Num() > 0)
 		{
 			TArray<FName> AssetPackageArray;
@@ -848,7 +857,11 @@ bool SAssetAuditBrowser::HandleFilterAsset(const FAssetData& InAssetData) const
 	}
 
 	return !EditorModule->IsPackageInCurrentRegistrySource(InAssetData.PackageName);
-	}
+}
+
+void SAssetAuditBrowser::OnAssetSelected(const FAssetData& InAssetData)
+{
+}
 
 TSharedRef<SWidget> SAssetAuditBrowser::GenerateSourceComboItem(TSharedPtr<FString> InItem)
 {
@@ -884,7 +897,6 @@ void SAssetAuditBrowser::SetCurrentRegistrySource(const FAssetManagerEditorRegis
 	}
 	else
 	{
-		
 		if (CurrentRegistrySource->SourceTimestamp.Len() == 0)
 		{
 			RegistrySourceTimeText->SetText(LOCTEXT("AssetRegistryTimestampError", "Unable to get AssetRegistry.bin timestamp (recook?)"));
@@ -906,6 +918,10 @@ void SAssetAuditBrowser::SetCurrentRegistrySource(const FAssetManagerEditorRegis
 	}
 
 	RefreshAssetView();
+}
+
+void SAssetAuditBrowser::OnClose()
+{
 }
 
 #undef LOCTEXT_NAMESPACE

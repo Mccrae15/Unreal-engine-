@@ -3,7 +3,6 @@
 using System;
 using System.Collections.Generic;
 using EpicGames.Core;
-using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
@@ -51,7 +50,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Name">Name of the folder</param>
 		/// <returns>New restricted folder instance</returns>
-		static private RestrictedFolder FindOrAddByName(string Name)
+		private static RestrictedFolder FindOrAddByName(string Name)
 		{
 			return new RestrictedFolder(StringRegistry.FindOrAddByName(Name));
 		}
@@ -85,7 +84,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the restricted folder is equal to the other instance</returns>
 		public override bool Equals(object? Other)
 		{
-			return Other is RestrictedFolder && Id == ((RestrictedFolder)Other).Id;
+			return Other is RestrictedFolder folder && Id == folder.Id;
 		}
 
 		/// <summary>
@@ -143,7 +142,7 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		public static string[] GetNames()
 		{
-			if(Names == null)
+			if (Names == null)
 			{
 				AddConfidentialPlatforms();
 				Names = StringRegistry.GetStringNames();
@@ -157,7 +156,7 @@ namespace UnrealBuildTool
 		/// <returns>Array of restricted folder values</returns>
 		public static RestrictedFolder[] GetValues()
 		{
-			if(Values == null)
+			if (Values == null)
 			{
 				AddConfidentialPlatforms();
 				Values = Array.ConvertAll(StringRegistry.GetStringIds(), x => new RestrictedFolder(x));

@@ -9,6 +9,7 @@
 #include "LevelInstance/LevelInstancePrivate.h"
 #include "LevelInstance/LevelInstanceComponent.h"
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
+#include "WorldPartition/WorldPartitionActorLoaderInterface.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
@@ -38,14 +39,14 @@ void FLevelInstanceActorImpl::RegisterLevelInstance()
 
 void FLevelInstanceActorImpl::UnregisterLevelInstance()
 {
+	// If LevelInstance has already been unregistered it will have an Invalid LevelInstanceID. Avoid processing it.
+	if (!LevelInstanceID.IsValid())
+	{
+		return;
+	}
+
 	if (ULevelInstanceSubsystem* LevelInstanceSubsystem = LevelInstance->GetLevelInstanceSubsystem())
 	{
-		// If LevelInstance has already been unregistered it will have an Invalid LevelInstanceID. Avoid processing it.
-		if (!LevelInstanceID.IsValid())
-		{
-			return;
-		}
-
 		LevelInstanceSubsystem->UnregisterLevelInstance(LevelInstance);
 
 		LevelInstance->UnloadLevelInstance();
@@ -100,6 +101,10 @@ void FLevelInstanceActorImpl::OnLevelInstanceLoaded()
 }
 
 #if WITH_EDITOR
+bool FLevelInstanceActorImpl::SupportsPartialEditorLoading() const
+{
+	return bAllowPartialLoading;
+}
 
 void FLevelInstanceActorImpl::PreEditUndo(TFunctionRef<void()> SuperCall)
 {
@@ -210,7 +215,9 @@ void FLevelInstanceActorImpl::PreEditChange(FProperty* Property, bool bWorldAsse
 	if (bWorldAssetChange)
 	{
 		CachedWorldAsset = LevelInstance->GetWorldAsset();
-	}
+		bAllowPartialLoading = false;
+		IWorldPartitionActorLoaderInterface::RefreshLoadedState(true);
+	}	
 }
 
 void FLevelInstanceActorImpl::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent, bool bWorldAssetChange, TFunction<void(FPropertyChangedEvent&)> SuperCall)

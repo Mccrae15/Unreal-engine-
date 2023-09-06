@@ -2,6 +2,8 @@
 #include "Sound/SoundSubmix.h"
 
 #include "AudioDevice.h"
+#include "Engine/Engine.h"
+#include "Engine/World.h"
 #include "Sound/SampleBufferIO.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SoundSubmix)
@@ -493,14 +495,7 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 			{
 				USoundSubmix* SoundSubmix = this;
 
-				TSet<TObjectPtr<USoundModulatorBase>> NewVolumeMod = OutputVolumeModulation.Modulators;
-				TSet<TObjectPtr<USoundModulatorBase>> NewWetLevelMod = WetLevelModulation.Modulators;
-				TSet<TObjectPtr<USoundModulatorBase>> NewDryLevelMod = DryLevelModulation.Modulators;
-
-				AudioDeviceManager->IterateOverAllDevices([SoundSubmix, VolMod = MoveTemp(NewVolumeMod), WetMod = MoveTemp(NewWetLevelMod), DryMod = MoveTemp(NewDryLevelMod)](Audio::FDeviceId Id, FAudioDevice* Device) mutable
-				{
-					Device->UpdateSubmixModulationSettings(SoundSubmix, VolMod, WetMod, DryMod);
-				});
+				PushModulationChanges();
 
 				float NewVolumeModBase = OutputVolumeModulation.Value;
 				float NewWetModBase = WetLevelModulation.Value;
@@ -522,6 +517,42 @@ void USoundSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Property
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 #endif
+
+void USoundSubmix::SetOutputVolumeModulation(const FSoundModulationDestinationSettings& InVolMod)
+{
+	OutputVolumeModulation = InVolMod;
+	PushModulationChanges();
+}
+
+void USoundSubmix::SetWetVolumeModulation(const FSoundModulationDestinationSettings& InVolMod)
+{
+	WetLevelModulation = InVolMod;
+	PushModulationChanges();
+}
+
+void USoundSubmix::SetDryVolumeModulation(const FSoundModulationDestinationSettings& InVolMod)
+{
+	DryLevelModulation = InVolMod;
+	PushModulationChanges();
+}
+
+void USoundSubmix::PushModulationChanges()
+{
+	if (FAudioDeviceManager* AudioDeviceManager = FAudioDeviceManager::Get())
+	{
+		// Send the changes to the Modulation System
+		TSet<TObjectPtr<USoundModulatorBase>> NewVolumeMod = OutputVolumeModulation.Modulators;
+		TSet<TObjectPtr<USoundModulatorBase>> NewWetLevelMod = WetLevelModulation.Modulators;
+		TSet<TObjectPtr<USoundModulatorBase>> NewDryLevelMod = DryLevelModulation.Modulators;
+		AudioDeviceManager->IterateOverAllDevices([SoundSubmix = this, VolMod = MoveTemp(NewVolumeMod), WetMod = MoveTemp(NewWetLevelMod), DryMod = MoveTemp(NewDryLevelMod)](Audio::FDeviceId Id, FAudioDevice* Device) mutable
+		{
+		    if (Device)
+		    {
+		    	Device->UpdateSubmixModulationSettings(SoundSubmix, VolMod, WetMod, DryMod);
+			}
+		});
+	}
+}
 
 FString USoundSubmixBase::GetDesc()
 {
@@ -671,7 +702,7 @@ void USoundSubmixBase::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
-TArray<USoundSubmixBase*> USoundSubmixBase::BackupChildSubmixes;
+TArray<TObjectPtr<USoundSubmixBase>> USoundSubmixBase::BackupChildSubmixes;
 
 bool USoundSubmixBase::RecurseCheckChild(const USoundSubmixBase* ChildSoundSubmix) const
 {
@@ -778,7 +809,7 @@ void USoundSubmixBase::AddReferencedObjects(UObject* InThis, FReferenceCollector
 
 	Collector.AddReferencedObject(This->SoundSubmixGraph, This);
 
-	for (USoundSubmixBase* Backup : This->BackupChildSubmixes)
+	for (auto& Backup : This->BackupChildSubmixes)
 	{
 		Collector.AddReferencedObject(Backup);
 	}
@@ -925,8 +956,63 @@ void USoundfieldSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& Pro
 		SanitizeLinks();
 	}
 }
+void UEndpointSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{	
+	if (PropertyChangedEvent.Property != nullptr)
+	{
+		const FName PropertyName = PropertyChangedEvent.Property->GetFName();
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UEndpointSubmix, EndpointType)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(UEndpointSubmix, EndpointSettings)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(UEndpointSubmix, EndpointSettingsClass)
+		)
+		{
+			// Remove-re-add submix. Causes reinit with plugins.
+			if (FAudioDeviceManager* AudioDeviceManager = GEngine->GetAudioDeviceManager())
+			{
+				AudioDeviceManager->UnregisterSoundSubmix(this);
+				AudioDeviceManager->RegisterSoundSubmix(this);
+			}
+		}
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
 
 #endif // WITH_EDITOR
+
+void UEndpointSubmix::PostLoad()
+{
+	// Validate our endpoint type is enabled.
+	TArray<FName> EndpointTypeNames = IAudioEndpointFactory::GetAvailableEndpointTypes();
+	if (!EndpointTypeNames.Contains(EndpointType))
+	{
+		const FName DefaultEndpoint = IAudioEndpointFactory::GetTypeNameForDefaultEndpoint();
+		UE_LOG(LogAudio, Warning, TEXT("UEndpointSubmix [%s] has endpoint type [%s] which is not currently currently enabled. Changing to [%s]"),
+			*GetName(), *EndpointType.ToString(), *DefaultEndpoint.ToString());
+		EndpointType = DefaultEndpoint;
+	}
+
+	
+	Super::PostLoad();
+}
+
+void USoundfieldSubmix::PostLoad()
+{
+	// Make sure the Encoding format is something we can use.
+	// Fallback to something that works otherwise and warn.
+
+	TArray<FName> FactoryNames = ISoundfieldFactory::GetAvailableSoundfieldFormats();
+	if (!FactoryNames.Contains(SoundfieldEncodingFormat))
+	{
+		const FName NoEncoding = ISoundfieldFactory::GetFormatNameForNoEncoding();
+		UE_LOG(LogAudio, Warning, TEXT("SoundfieldSubmix [%s] has Encoding format [%s] which is not currently currently enabled. Changing to [%s]"),
+			*GetName(), *SoundfieldEncodingFormat.ToString(), *NoEncoding.ToString());
+		SoundfieldEncodingFormat = NoEncoding;
+		SanitizeLinks();
+	}
+
+	Super::PostLoad();
+}
+
 
 IAudioEndpointFactory* UEndpointSubmix::GetAudioEndpointForSubmix() const
 {
@@ -1015,6 +1101,24 @@ void USoundfieldEndpointSubmix::SanitizeLinks()
 	}
 }
 
+
+void USoundfieldEndpointSubmix::PostLoad()
+{
+	// Validate we're set to something that's enabled.	
+	TArray<FName> SoundfieldEndpointTypeNames = ISoundfieldEndpointFactory::GetAllSoundfieldEndpointTypes();
+	if (!SoundfieldEndpointTypeNames.Contains(SoundfieldEndpointType))
+	{
+		const FName DefaultEndpoint = ISoundfieldEndpointFactory::DefaultSoundfieldEndpointName();
+		UE_LOG(LogAudio, Warning, TEXT("USoundfieldEndpointSubmix [%s] has endpoint type [%s] which is not currently currently enabled. Changing to [%s]"),
+			*GetName(), *SoundfieldEndpointType.ToString(), *DefaultEndpoint.ToString());
+		SoundfieldEndpointType = DefaultEndpoint;
+		SanitizeLinks();
+	}
+
+	Super::PostLoad();	
+}
+
+
 #if WITH_EDITOR
 
 void USoundfieldEndpointSubmix::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
@@ -1024,7 +1128,14 @@ void USoundfieldEndpointSubmix::PostEditChangeProperty(struct FPropertyChangedEv
 		static const FName NAME_SoundfieldFormat(TEXT("SoundfieldEndpointType"));
 
 		if (PropertyChangedEvent.Property->GetFName() == NAME_SoundfieldFormat)
-		{
+		{			
+			// Remove-re-add submix. Causes reinit with plugins.
+			if (FAudioDeviceManager* AudioDeviceManager = GEngine->GetAudioDeviceManager())
+			{
+				AudioDeviceManager->UnregisterSoundSubmix(this);
+				AudioDeviceManager->RegisterSoundSubmix(this);
+			}
+			
 			// Add this sound class to the parent class if it's not already added
 			SanitizeLinks();
 		}
@@ -1055,8 +1166,20 @@ ENGINE_API bool SubmixUtils::AreSubmixFormatsCompatible(const USoundSubmixBase* 
 
 			if (ChildSoundfieldFactory && ParentSoundfieldFactory)
 			{
-				return ChildSoundfieldFactory->CanTranscodeToSoundfieldFormat(ParentSoundfieldFactory->GetSoundfieldFormatName(), *(ParentSoundfieldSubmix->GetSoundfieldEncodingSettings()->GetProxy()))
-					|| ParentSoundfieldFactory->CanTranscodeFromSoundfieldFormat(ChildSoundfieldFactory->GetSoundfieldFormatName(), *(ChildSoundfieldSubmix->GetSoundfieldEncodingSettings()->GetProxy()));
+				bool bCanTranscode = false;
+
+				// To
+				if (const USoundfieldEncodingSettingsBase* ParentEncodingSettings = ParentSoundfieldSubmix->GetSoundfieldEncodingSettings())
+				{
+					bCanTranscode |= ChildSoundfieldFactory->CanTranscodeToSoundfieldFormat(ParentSoundfieldFactory->GetSoundfieldFormatName(), *ParentEncodingSettings->GetProxy());
+				}
+				// From
+				if (const USoundfieldEncodingSettingsBase* ChildEncodingSettings = ChildSoundfieldSubmix->GetSoundfieldEncodingSettings())
+				{
+					bCanTranscode |= ParentSoundfieldFactory->CanTranscodeFromSoundfieldFormat(ChildSoundfieldFactory->GetSoundfieldFormatName(), *ChildEncodingSettings->GetProxy());
+				}
+				
+				return bCanTranscode;
 			}
 			else
 			{
@@ -1076,8 +1199,21 @@ ENGINE_API bool SubmixUtils::AreSubmixFormatsCompatible(const USoundSubmixBase* 
 
 			if (ChildSoundfieldFactory && ParentSoundfieldFactory)
 			{
-				return ChildSoundfieldFactory->CanTranscodeToSoundfieldFormat(ParentSoundfieldFactory->GetSoundfieldFormatName(),  *(ParentSoundfieldEndpointSubmix->GetEncodingSettings()->GetProxy()))
-					|| ParentSoundfieldFactory->CanTranscodeFromSoundfieldFormat(ChildSoundfieldFactory->GetSoundfieldFormatName(), *(ChildSoundfieldSubmix->GetSoundfieldEncodingSettings()->GetProxy()));
+				bool bCanTranscode = false;
+
+				// TO. (Endpoint settings).
+				if (const USoundfieldEncodingSettingsBase* ParentEndpointSettings = ParentSoundfieldEndpointSubmix->GetEncodingSettings())
+				{
+					bCanTranscode |= ChildSoundfieldFactory->CanTranscodeToSoundfieldFormat(ParentSoundfieldFactory->GetSoundfieldFormatName(), *ParentEndpointSettings->GetProxy());
+				}
+
+				// From
+				if (const USoundfieldEncodingSettingsBase* ChildEncodingSettings = ChildSoundfieldSubmix->GetSoundfieldEncodingSettings())
+				{
+					bCanTranscode |= ParentSoundfieldFactory->CanTranscodeFromSoundfieldFormat(ChildSoundfieldFactory->GetSoundfieldFormatName(), *ChildEncodingSettings->GetProxy());
+				}
+				
+				return bCanTranscode;
 			}
 			else
 			{
@@ -1111,7 +1247,7 @@ ENGINE_API void SubmixUtils::RefreshEditorForSubmix(const USoundSubmixBase* InSu
 				TArray<IAssetEditorInstance*> SubmixEditors = EditorSubsystem->FindEditorsForAsset(WeakSubmix.Get());
 				for (IAssetEditorInstance* Editor : SubmixEditors)
 				{
-					Editor->CloseWindow();
+					Editor->CloseWindow(EAssetEditorCloseReason::EditorRefreshRequested);
 				}
 
 				EditorSubsystem->OpenEditorForAsset(WeakSubmix.Get());

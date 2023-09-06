@@ -16,11 +16,6 @@ float EyeAdaptation_ExposureSpeedDown;
 float EyeAdaptation_HistogramScale;
 float EyeAdaptation_HistogramBias;
 float EyeAdaptation_LuminanceMin;
-float EyeAdaptation_LocalExposureHighlightContrastScale;
-float EyeAdaptation_LocalExposureShadowContrastScale;
-float EyeAdaptation_LocalExposureDetailStrength;
-float EyeAdaptation_LocalExposureBlurredLuminanceBlend;
-float EyeAdaptation_LocalExposureMiddleGreyExposureCompensation;
 float EyeAdaptation_BlackHistogramBucketInfluence;
 float EyeAdaptation_IgnoreMaterialsEvaluationPositionBias;
 float EyeAdaptation_IgnoreMaterialsLuminanceScale;
@@ -35,6 +30,13 @@ float EyeAdaptation_ForceTarget;
 int EyeAdaptation_VisualizeDebugType;
 Texture2D EyeAdaptation_MeterMaskTexture;
 SamplerState EyeAdaptation_MeterMaskSampler;
+
+float LocalExposure_HighlightContrastScale;
+float LocalExposure_ShadowContrastScale;
+float LocalExposure_DetailStrength;
+float LocalExposure_BlurredLuminanceBlend;
+float LocalExposure_MiddleGreyExposureCompensation;
+float2 LocalExposure_BilateralGridUVScale;
 
 float CalculateEyeAdaptationLuminance(float3 Color)
 {
@@ -217,8 +219,11 @@ float CalculateBaseLogLuminance(float BilateralLum, float BlurredLum, float Blur
 
 float CalculateBaseLogLuminance(float LogLum, float BlurredLumBlend, float ExposureScale, float2 UV, Texture3D LumBilateralGrid, Texture2D BlurredLogLum, SamplerState LumBilateralGridSampler, SamplerState BlurredLogLumSampler)
 {
-	float LumW = (ComputeHistogramPositionFromLogLuminance(LogLum) * (BILATERAL_GRID_DEPTH - 1) + 0.5f) / BILATERAL_GRID_DEPTH;
-	float2 BilateralGridLum = Texture3DSample(LumBilateralGrid, LumBilateralGridSampler, float3(UV, LumW)).xy;
+	float3 BilateralGridUVW;
+	BilateralGridUVW.xy = UV * LocalExposure_BilateralGridUVScale;
+	BilateralGridUVW.z = (ComputeHistogramPositionFromLogLuminance(LogLum) * (BILATERAL_GRID_DEPTH - 1) + 0.5f) / BILATERAL_GRID_DEPTH;
+	
+	float2 BilateralGridLum = Texture3DSample(LumBilateralGrid, LumBilateralGridSampler, BilateralGridUVW).xy;
 	float BilateralLum = BilateralGridLum.x / BilateralGridLum.y;
 
 	float BlurredLum = Texture2DSample(BlurredLogLum, BlurredLogLumSampler, UV).r;
@@ -233,7 +238,7 @@ float CalculateBaseLogLuminance(float LogLum, float BlurredLumBlend, float Expos
 	return CalculateBaseLogLuminance(BilateralLum, BlurredLum, BlurredLumBlend, ExposureScale);
 }
 
-float CalculateLocalExposure(float LogLum, float BaseLogLum, float LogMiddleGrey, float HighlightContrastScale, float ShadowContrastScale, float DetailStrength)
+float CalculateLogLocalExposure(float LogLum, float BaseLogLum, float LogMiddleGrey, float HighlightContrastScale, float ShadowContrastScale, float DetailStrength)
 {
 	float DetailLogLum = LogLum - BaseLogLum;
 
@@ -241,5 +246,10 @@ float CalculateLocalExposure(float LogLum, float BaseLogLum, float LogMiddleGrey
 	float ContrastScale = BaseCentered > 0 ? HighlightContrastScale : ShadowContrastScale;
 
 	float LogLocalLum = LogMiddleGrey + BaseCentered * ContrastScale + DetailLogLum * DetailStrength;
-	return exp2(LogLocalLum - LogLum);
+	return LogLocalLum - LogLum;
+}
+
+float CalculateLocalExposure(float LogLum, float BaseLogLum, float LogMiddleGrey, float HighlightContrastScale, float ShadowContrastScale, float DetailStrength)
+{
+	return exp2(CalculateLogLocalExposure(LogLum, BaseLogLum, LogMiddleGrey, HighlightContrastScale, ShadowContrastScale, DetailStrength));
 }

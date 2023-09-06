@@ -58,6 +58,10 @@ namespace UE::PixelStreaming
 				VideoConfig->IntraRefreshPeriodFrames = PixelStreaming::Settings::CVarPixelStreamingEncoderIntraRefreshPeriodFrames.GetValueOnAnyThread();
 				VideoConfig->IntraRefreshCountFrames = PixelStreaming::Settings::CVarPixelStreamingEncoderIntraRefreshCountFrames.GetValueOnAnyThread();
 				VideoConfig->KeyframeInterval = PixelStreaming::Settings::CVarPixelStreamingEncoderKeyframeInterval.GetValueOnAnyThread();
+				// The WebRTC spec can only guarantee that the Baseline profile is supported. Therefore we use Baseline, but enable these extra
+				// features to improve bitrate usage
+				VideoConfig->AdaptiveTransformMode = EH264AdaptiveTransformMode::Enable;
+				VideoConfig->EntropyCodingMode = EH264EntropyCodingMode::CABAC;
 				InitialVideoConfig = MoveTemp(VideoConfig);
 				return WEBRTC_VIDEO_CODEC_OK;
 			}
@@ -132,7 +136,11 @@ namespace UE::PixelStreaming
 		webrtc::VideoFrame NewFrame(ExistingFrame);
 		const FPixelCaptureOutputFrameRHI& RHILayer = StaticCast<const FPixelCaptureOutputFrameRHI&>(AdaptedLayer);
 		// TODO-TE
+#if WEBRTC_5414
+		rtc::scoped_refptr<FFrameBufferRHI> RHIBuffer = rtc::make_ref_counted<FFrameBufferRHI>(MakeShared<FVideoResourceRHI>(HardwareEncoder.Pin()->GetDevice().ToSharedRef(), FVideoResourceRHI::FRawData{ RHILayer.GetFrameTexture(), nullptr, 0 }));
+#else
 		rtc::scoped_refptr<FFrameBufferRHI> RHIBuffer = new rtc::RefCountedObject<FFrameBufferRHI>(MakeShared<FVideoResourceRHI>(HardwareEncoder.Pin()->GetDevice().ToSharedRef(), FVideoResourceRHI::FRawData{ RHILayer.GetFrameTexture(), nullptr, 0 }));
+#endif
 		NewFrame.set_video_frame_buffer(RHIBuffer);
 		return NewFrame;
 	}
@@ -171,7 +179,7 @@ namespace UE::PixelStreaming
 		if (TSharedPtr<FVideoEncoderHardware> const& PinnedHardwareEncoder = HardwareEncoder.Pin())
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL_STR("PixelStreaming Hardware Encoding", PixelStreamingChannel);
-			
+
 			IPixelCaptureOutputFrame* AdaptedLayer = FrameBuffer->RequestFormat(PixelCaptureBufferFormat::FORMAT_RHI);
 
 			if (AdaptedLayer == nullptr)
@@ -287,7 +295,9 @@ namespace UE::PixelStreaming
 		VideoEncoder::EncoderInfo info;
 		info.supports_native_handle = true;
 		info.is_hardware_accelerated = true;
+#if !WEBRTC_5414
 		info.has_internal_source = false;
+#endif
 		info.supports_simulcast = false;
 		info.implementation_name = TCHAR_TO_UTF8(*FString::Printf(TEXT("PIXEL_STREAMING_HW_ENCODER_%s"), GDynamicRHI->GetName()));
 

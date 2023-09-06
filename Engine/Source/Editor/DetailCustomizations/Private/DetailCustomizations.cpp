@@ -161,7 +161,6 @@
 #include "VectorStructCustomization.h"
 #include "WindowsTargetSettingsDetails.h"
 #include "WorldSettingsDetails.h"
-#include "XRDeviceVisualizationDetails.h"
 #include "LandscapeGrassTypeDetails.h"
 
 struct FPerPlatformBool;
@@ -352,6 +351,7 @@ void FDetailCustomizationsModule::RegisterPropertyTypeCustomizations()
 	RegisterCustomPropertyTypeLayout("SkeletalMeshOptimizationSettings", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FSkeletalMeshReductionSettingsDetails::MakeInstance));
 	RegisterCustomPropertyTypeLayout("GrassInput", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMaterialExpressionLandscapeGrassInputCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("ComponentReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FComponentReferenceCustomization::MakeInstance));
+	RegisterCustomPropertyTypeLayout("SoftComponentReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FComponentReferenceCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("EMaterialShadingModel", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMaterialShadingModelCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("DebugCameraControllerSettingsViewModeIndex", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDebugCameraControllerSettingsViewModeIndexCustomization::MakeInstance));
 	RegisterCustomPropertyTypeLayout("CustomPrimitiveData", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FCustomPrimitiveDataCustomization::MakeInstance));
@@ -470,7 +470,6 @@ void FDetailCustomizationsModule::RegisterObjectCustomizations()
 	RegisterCustomClassLayout("Skeleton", FOnGetDetailCustomizationInstance::CreateStatic(&FSkeletonDetails::MakeInstance));
 
 	RegisterCustomClassLayout("MotionControllerComponent", FOnGetDetailCustomizationInstance::CreateStatic(&FMotionControllerDetails::MakeInstance));
-	RegisterCustomClassLayout("XRDeviceVisualizationComponent", FOnGetDetailCustomizationInstance::CreateStatic(&FXRDeviceVisualizationDetails::MakeInstance));
 
 	RegisterCustomClassLayout("Landscape", FOnGetDetailCustomizationInstance::CreateStatic(&FLandscapeUIDetails::MakeInstance));
 	RegisterCustomClassLayout("LandscapeProxy", FOnGetDetailCustomizationInstance::CreateStatic(&FLandscapeProxyUIDetails::MakeInstance));
@@ -578,6 +577,7 @@ void FDetailCustomizationsModule::RegisterSectionMappings()
 			Section->AddCategory("Materials");
 			Section->AddCategory("Mobile");
 			Section->AddCategory("Ray Tracing");
+			Section->AddCategory("Path Tracing");
 			Section->AddCategory("Rendering");
 			Section->AddCategory("Texture Streaming");
 			Section->AddCategory("Virtual Texture");
@@ -811,6 +811,16 @@ void FDetailCustomizationsModule::RegisterSectionMappings()
 		{
 			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("GeometryCollectionComponent", "GC", LOCTEXT("GC", "GC"));
 			Section->AddCategory("ChaosPhysics");
+		}
+	}
+
+	// Post Process Volume
+	{
+		{
+			TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("PostProcessVolume", "General", LOCTEXT("General", "General"));
+			Section->AddCategory("PostProcessVolumeSettings");
+			Section->AddCategory("Rendering Features");
+			Section->RemoveCategory("Brush Settings");
 		}
 	}
 }

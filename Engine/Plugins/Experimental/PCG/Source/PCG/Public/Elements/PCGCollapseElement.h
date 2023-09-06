@@ -7,6 +7,7 @@
 
 #include "PCGCollapseElement.generated.h"
 
+/** Convert input to point data, performing sampling with default settings if necessary */
 UCLASS(BlueprintType, ClassGroup = (Procedural))
 class PCG_API UPCGCollapseSettings : public UPCGSettings
 {
@@ -18,6 +19,7 @@ public:
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("ToPoint")); }
 	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGCollapseSettings", "NodeTitle", "To Point"); }
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Spatial; }
+	virtual bool ShouldDrawNodeCompact() const override { return true; }
 #endif
 
 protected:
@@ -31,7 +33,7 @@ class FPCGCollapseElement : public FSimplePCGElement
 {
 public:
 	// Might be sampling spline/landscape or other external data, worth computing a full CRC in case we can halt change propagation/re-executions
-	virtual bool ShouldComputeFullOutputDataCrc() const override { return true; }
+	virtual bool ShouldComputeFullOutputDataCrc(FPCGContext* Context) const override { return true; }
 
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const;

@@ -3,6 +3,7 @@
 #include "StorageServerPlatformFile.h"
 #include "StorageServerIoDispatcherBackend.h"
 #include "HAL/IPlatformFileModule.h"
+#include "HAL/FileManagerGeneric.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeRWLock.h"
@@ -15,6 +16,7 @@
 #include "Misc/CoreDelegates.h"
 #include "Modules/ModuleManager.h"
 #include "CookOnTheFly.h"
+#include "Serialization/CompactBinarySerialization.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogStorageServerPlatformFile, Log, All);
 
@@ -247,28 +249,85 @@ FStorageServerPlatformFile::~FStorageServerPlatformFile()
 {
 }
 
+TUniquePtr<FArchive> FStorageServerPlatformFile::TryFindProjectStoreMarkerFile(IPlatformFile* Inner) const
+{
+	if (Inner == nullptr)
+	{
+		return nullptr;
+	}
+
+	FString RelativeStagedPath = TEXT("../../../");
+	FString RootPath = FPaths::RootDir();
+	FString PlatformName = FPlatformProperties::PlatformName();
+	FString CookedOutputPath = FPaths::Combine(FPaths::ProjectDir(), TEXT("Saved"), TEXT("Cooked"), PlatformName);
+
+	TArray<FString> PotentialProjectStorePaths;
+	PotentialProjectStorePaths.Add(RelativeStagedPath);
+	PotentialProjectStorePaths.Add(CookedOutputPath);
+	PotentialProjectStorePaths.Add(RootPath);
+
+	for (const FString& ProjectStorePath : PotentialProjectStorePaths)
+	{
+		FString ProjectMarkerPath = ProjectStorePath / TEXT(".projectstore");
+		if (IFileHandle* ProjectStoreMarkerHandle = Inner->OpenRead(*ProjectMarkerPath); ProjectStoreMarkerHandle != nullptr)
+		{
+			UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Found '%s'"), *ProjectMarkerPath);
+			return TUniquePtr<FArchive>(new FArchiveFileReaderGeneric(ProjectStoreMarkerHandle, *ProjectMarkerPath, ProjectStoreMarkerHandle->Size()));
+		}
+	}
+	return nullptr;
+}
+
 bool FStorageServerPlatformFile::ShouldBeUsed(IPlatformFile* Inner, const TCHAR* CmdLine) const
 {
+#if WITH_COTF
+	UE::Cook::ICookOnTheFlyModule& CookOnTheFlyModule = FModuleManager::LoadModuleChecked<UE::Cook::ICookOnTheFlyModule>(TEXT("CookOnTheFly"));
+	TSharedPtr<UE::Cook::ICookOnTheFlyServerConnection> DefaultConnection = CookOnTheFlyModule.GetDefaultServerConnection();
+	if (DefaultConnection.IsValid() && !DefaultConnection->GetZenProjectName().IsEmpty())
+	{
+		HostAddrs.Append(DefaultConnection->GetZenHostNames());
+		HostPort = DefaultConnection->GetZenHostPort();
+		return true;
+	}
+#endif
+	TUniquePtr<FArchive> ProjectStoreMarkerReader = TryFindProjectStoreMarkerFile(Inner);
+	if (ProjectStoreMarkerReader != nullptr)
+	{
+		FCbObject ProjectStoreObject = LoadCompactBinary(*ProjectStoreMarkerReader).AsObject();
+
+		if (FCbFieldView ZenServerField = ProjectStoreObject["zenserver"])
+		{
+			if (FUtf8StringView HostName = ZenServerField["hostname"].AsString(); !HostName.IsEmpty())
+			{
+				HostAddrs.Add(FString(HostName));
+			}
+			FCbArrayView RemoteHostNames = ZenServerField["remotehostnames"].AsArrayView();
+			for (FCbFieldView RemoteHostName : RemoteHostNames)
+			{
+				if (FUtf8StringView HostName = RemoteHostName.AsString(); !HostName.IsEmpty())
+				{
+					HostAddrs.Add(FString(HostName));
+				}
+			}
+
+			HostPort = ZenServerField["hostport"].AsUInt16(HostPort);
+			UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Using connection settings from .projectstore: HostAddrs='%s' and HostPort='%d'"), *FString::Join(HostAddrs, TEXT("+")), HostPort);
+		}
+	}
+
 	FString Host;
 	if (FParse::Value(FCommandLine::Get(), TEXT("-ZenStoreHost="), Host))
 	{
+		UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Adding connection settings from command line: -ZenStoreHost='%s'"), *Host);
 		if (!Host.ParseIntoArray(HostAddrs, TEXT("+"), true))
 		{
 			HostAddrs.Add(Host);
 		}
 	}
-	else 
+	if (FParse::Value(CmdLine, TEXT("-ZenStorePort="), HostPort))
 	{
-#if WITH_COTF
-		UE::Cook::ICookOnTheFlyModule& CookOnTheFlyModule = FModuleManager::LoadModuleChecked<UE::Cook::ICookOnTheFlyModule>(TEXT("CookOnTheFly"));
-		TSharedPtr<UE::Cook::ICookOnTheFlyServerConnection> DefaultConnection = CookOnTheFlyModule.GetDefaultServerConnection();
-		if (DefaultConnection.IsValid() && !DefaultConnection->GetZenProjectName().IsEmpty())
-		{
-			HostAddrs.Add(DefaultConnection->GetHost());
-		}
-#endif
+		UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Using connection settings from command line: -ZenStorePort='%d'"), HostPort);
 	}
-
 	return HostAddrs.Num() > 0;
 }
 
@@ -278,8 +337,28 @@ bool FStorageServerPlatformFile::Initialize(IPlatformFile* Inner, const TCHAR* C
 	if (HostAddrs.Num() > 0)
 	{
 		// Don't initialize the connection yet because we want to incorporate project file path information into the initialization.
-		FParse::Value(CmdLine, TEXT("-ZenStoreProject="), ServerProject);
-		FParse::Value(CmdLine, TEXT("-ZenStorePlatform="), ServerPlatform);
+
+		TUniquePtr<FArchive> ProjectStoreMarkerReader = TryFindProjectStoreMarkerFile(Inner);
+		if (ProjectStoreMarkerReader != nullptr)
+		{
+			FCbObject ProjectStoreObject = LoadCompactBinary(*ProjectStoreMarkerReader).AsObject();
+
+			if (FCbFieldView ZenServerField = ProjectStoreObject["zenserver"])
+			{
+				ServerProject = FString(ZenServerField["projectid"].AsString());
+				ServerPlatform = FString(ZenServerField["oplogid"].AsString());
+				UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Using settings from .projectstore: ServerProject='%s' and ServerPlatform='%s'"), *ServerProject, *ServerPlatform);
+			}
+		}
+	
+		if (FParse::Value(CmdLine, TEXT("-ZenStoreProject="), ServerProject))
+		{
+			UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Using settings from command line: -ZenStoreProject='%s'"), *ServerProject);
+		}
+		if (FParse::Value(CmdLine, TEXT("-ZenStorePlatform="), ServerPlatform))
+		{
+			UE_LOG(LogStorageServerPlatformFile, Display, TEXT("Using settings from command line: -ZenStorePlatform='%s'"), *ServerPlatform);
+		}
 		return true;
 	}
 	return false;
@@ -300,7 +379,7 @@ void FStorageServerPlatformFile::InitializeAfterProjectFilePath()
 	Connection.Reset(new FStorageServerConnection());
 	const TCHAR* ProjectOverride = ServerProject.IsEmpty() ? nullptr : *ServerProject;
 	const TCHAR* PlatformOverride = ServerPlatform.IsEmpty() ? nullptr : *ServerPlatform;
-	if (Connection->Initialize(HostAddrs, 1337, ProjectOverride, PlatformOverride))
+	if (Connection->Initialize(HostAddrs, HostPort, ProjectOverride, PlatformOverride))
 	{
 		if (SendGetFileListMessage())
 		{

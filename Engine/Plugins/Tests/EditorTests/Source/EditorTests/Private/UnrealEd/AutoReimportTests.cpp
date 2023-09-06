@@ -97,7 +97,7 @@ struct FAutoReimportTestPayload
 	void WaitForStartup(TFunction<void()>&& Finished)
 	{
 		// Ideally, this would capture-by-move, but we don't have full compiler support for that yet.
-		ADD_LATENT_AUTOMATION_COMMAND(FDelayedCallbackLatentCommand([=]() mutable {
+		ADD_LATENT_AUTOMATION_COMMAND(FDelayedCallbackLatentCommand([this, Finished]() mutable {
 			FileCache->Tick();
 			if (FileCache->MoveDetectionInitialized())
 			{
@@ -157,7 +157,7 @@ bool CopyTestFiles(const FAutoReimportTestPayload& Test, const TArray<FSrcDstFil
 }
 
 const int32 LocalMaxRetryCounter = 5;
-const float LocalRetryDelay = 1.0f;
+const float LocalRetryDelay = 5.0f;
 
 void RetryLatentCommand(TFunction<bool(const bool)>&& LatentCommandFunction, const float RetryDelay, int32& MaxRetryCounter)
 {

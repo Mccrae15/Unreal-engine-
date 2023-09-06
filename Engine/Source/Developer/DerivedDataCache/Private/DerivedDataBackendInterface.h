@@ -64,9 +64,6 @@ enum class EBackendSpeedClass
 /** Debug options that can be applied to backends to simulate different behavior */
 struct FBackendDebugOptions
 {
-	/** Apply behavior of this speed class */
-	EBackendSpeedClass	SpeedClass;
-
 	/** Filter to control the keys for which to simulate a miss. */
 	FCacheKeyFilter SimulateMissFilter;
 
@@ -136,6 +133,8 @@ public:
 	 *  Gather the usage of the DDC hierarchically.
 	 */
 	virtual TSharedRef<FDerivedDataCacheStatsNode> GatherUsageStats() const = 0;
+
+	virtual void GatherResourceStats(TArray<FDerivedDataCacheResourceStat>& DDCResourceStats) const = 0;
 };
 
 /** Lexical conversions from and to enums */

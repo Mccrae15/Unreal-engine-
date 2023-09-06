@@ -15,16 +15,22 @@ class UMaterialExpressionCustomOutput;
 
 struct FGLTFPropertyBakeOutput
 {
-	FGLTFPropertyBakeOutput(const FMaterialPropertyEx& Property, EPixelFormat PixelFormat, const TGLTFSharedArray<FColor>& Pixels, FIntPoint Size, float EmissiveScale, bool bIsSRGB)
-		: Property(Property), PixelFormat(PixelFormat), Pixels(Pixels), Size(Size), EmissiveScale(EmissiveScale), bIsSRGB(bIsSRGB), bIsConstant(false)
-	{}
+	FGLTFPropertyBakeOutput(const TGLTFSharedArray<FColor>& Pixels, FIntPoint Size, float EmissiveScale, bool bSRGB)
+		: Pixels(Pixels)
+		, Size(Size)
+		, EmissiveScale(EmissiveScale)
+		, bIsConstant(Pixels->Num() == 1)
+	{
+		if (bIsConstant)
+		{
+			const FColor& Pixel = (*Pixels)[0];
+			ConstantValue = bSRGB ? FLinearColor(Pixel) : Pixel.ReinterpretAsLinear();
+		}
+	}
 
-	const FMaterialPropertyEx& Property;
-	EPixelFormat PixelFormat;
 	TGLTFSharedArray<FColor> Pixels;
 	FIntPoint Size;
 	float EmissiveScale;
-	bool bIsSRGB;
 	bool bIsConstant;
 	FLinearColor ConstantValue;
 };
@@ -56,7 +62,7 @@ struct FGLTFMaterialUtilities
 
 	static UMaterialExpressionCustomOutput* GetCustomOutputByName(const UMaterialInterface* Material, const FString& FunctionName);
 
-	static FGLTFPropertyBakeOutput BakeMaterialProperty(const FIntPoint& OutputSize, const FMaterialPropertyEx& Property, const UMaterialInterface* Material, int32 TexCoord, const FGLTFMeshData* MeshData = nullptr, const FGLTFIndexArray& MeshSectionIndices = {}, bool bFillAlpha = true, bool bAdjustNormalmaps = true);
+	static FGLTFPropertyBakeOutput BakeMaterialProperty(const FIntPoint& OutputSize, const FMaterialPropertyEx& Property, const UMaterialInterface* Material, const FBox2f& TexCoordBounds, int32 TexCoordIndex, const FGLTFMeshData* MeshData, const FGLTFIndexArray& MeshSectionIndices, bool bFillAlpha, bool bAdjustNormalmaps);
 
 	static FGLTFJsonTexture* AddTexture(FGLTFConvertBuilder& Builder, TGLTFSharedArray<FColor>& Pixels, const FIntPoint& TextureSize, bool bIgnoreAlpha, bool bIsNormalMap, const FString& TextureName, TextureAddress TextureAddress, TextureFilter TextureFilter);
 

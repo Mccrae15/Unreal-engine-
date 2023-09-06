@@ -15,6 +15,12 @@ public class WebRTC : ModuleRules
 			(Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && Target.Architecture == UnrealArch.X64);
 	}
 
+	//Config switch to use new WebRTC version 5414 (M109)
+	protected virtual bool bShouldUse5414WebRTC
+	{
+		get =>
+			false;
+	}
 
 	public WebRTC(ReadOnlyTargetRules Target) : base(Target)
 	{
@@ -36,7 +42,18 @@ public class WebRTC : ModuleRules
 
 		if (bShouldUseWebRTC)
 		{
-			string WebRtcSdkPath = Target.UEThirdPartySourceDirectory + Path.Join("WebRTC", "4664");
+			string WebRtcSdkPath;
+			if (bShouldUse5414WebRTC)
+			{
+				WebRtcSdkPath = Target.UEThirdPartySourceDirectory + Path.Join("WebRTC", "5414");
+				PublicDefinitions.Add("WEBRTC_5414=1");
+			}
+			else
+			{
+				WebRtcSdkPath = Target.UEThirdPartySourceDirectory + Path.Join("WebRTC", "4664");
+				PublicDefinitions.Add("WEBRTC_5414=0");
+			}
+
 			string VS2013Friendly_WebRtcSdkPath = Target.UEThirdPartySourceDirectory;
 
 			string PlatformSubdir = Target.Platform.ToString();
@@ -44,8 +61,16 @@ public class WebRTC : ModuleRules
 			string IncludePath = Path.Combine(WebRtcSdkPath, "Include");
 			PublicSystemIncludePaths.Add(IncludePath);
 
+			// Include our compatiblity headers
+			string CompatIncludesPath = Path.Combine(Target.UEThirdPartySourceDirectory, "WebRTC", "CompatInclude");
+			PublicSystemIncludePaths.Add(CompatIncludesPath);
+
 			string AbslthirdPartyIncludePath = Path.Combine(IncludePath, "third_party", "abseil-cpp");
 			PublicSystemIncludePaths.Add(AbslthirdPartyIncludePath);
+
+			// libyuv is linked inside WebRTC so just use those headers and binaries where avaliable
+			string libyuvthirdPartyIncludePath = Path.Combine(IncludePath, "third_party", "libyuv", "include");
+			PublicSystemIncludePaths.Add(libyuvthirdPartyIncludePath);
 
 			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
@@ -61,8 +86,7 @@ public class WebRTC : ModuleRules
 
 				// The version of webrtc we depend on, depends on an openssl that depends on zlib
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "zlib");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "libOpus");
+
 
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
@@ -73,9 +97,16 @@ public class WebRTC : ModuleRules
 				// This is slightly different than the other platforms
 				string LibraryPath = Path.Combine(WebRtcSdkPath, "Lib", PlatformSubdir, Target.Architecture.LinuxName, ConfigPath);
 				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "libwebrtc.a"));
-				
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "libOpus");
+			}
+
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "libOpus");
+
+			// We remove LibVPX symbols from 5414 and instead depend on the ones provided
+			// in engine third party
+			if(bShouldUse5414WebRTC)
+			{
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "LibVpx");
 			}
 		}
 

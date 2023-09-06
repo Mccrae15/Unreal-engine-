@@ -5,8 +5,8 @@
 #include "Templates/UniquePtr.h"
 #include "UObject/SoftObjectPath.h"
 #include "Agents/MLAdapterAgent.h"
-#include "NNECoreModelData.h"
-#include "NNECoreRuntimeCPU.h"
+#include "NNEModelData.h"
+#include "NNERuntimeCPU.h"
 #include "MLAdapterAgent_Inference.generated.h"
 
 /**
@@ -30,7 +30,7 @@ public:
 	TObjectPtr<UNNEModelData> ModelData;
 
 	/** The neural network controlling this agent. */
-	TUniquePtr<UE::NNECore::IModelCPU> Brain;
+	TUniquePtr<UE::NNE::IModelInstanceCPU> Brain;
 
 private:
 	uint32 InputTensorSizeInBytes = 0;

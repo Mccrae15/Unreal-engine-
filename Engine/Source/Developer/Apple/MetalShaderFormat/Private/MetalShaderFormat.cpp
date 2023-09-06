@@ -64,12 +64,14 @@ public:
 		OutFormats.Add(NAME_SF_METAL_TVOS);
 		OutFormats.Add(NAME_SF_METAL_MRT_TVOS);
 		OutFormats.Add(NAME_SF_METAL_SM5);
+        OutFormats.Add(NAME_SF_METAL_SM6);
+        OutFormats.Add(NAME_SF_METAL_SIM);
 		OutFormats.Add(NAME_SF_METAL_MACES3_1);
 		OutFormats.Add(NAME_SF_METAL_MRT_MAC);
 	}
 	virtual void CompileShader(FName Format, const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output,const FString& WorkingDirectory) const override final
 	{
-		check(Format == NAME_SF_METAL || Format == NAME_SF_METAL_MRT || Format == NAME_SF_METAL_TVOS || Format == NAME_SF_METAL_MRT_TVOS || Format == NAME_SF_METAL_SM5 || Format == NAME_SF_METAL_MACES3_1 || Format == NAME_SF_METAL_MRT_MAC);
+		check(Format == NAME_SF_METAL || Format == NAME_SF_METAL_MRT || Format == NAME_SF_METAL_TVOS || Format == NAME_SF_METAL_MRT_TVOS || Format == NAME_SF_METAL_SM5 || Format == NAME_SF_METAL_SM6 || Format == NAME_SF_METAL_SIM || Format == NAME_SF_METAL_MACES3_1 || Format == NAME_SF_METAL_MRT_MAC);
 		CompileShader_Metal(Input, Output, WorkingDirectory);
 	}
 	virtual bool CanStripShaderCode(bool const bNativeFormat) const override final
@@ -102,7 +104,7 @@ public:
 		check(Components.Num() == 2);
 		FName ShaderFormatName(Components[0]);
 
-		check(ShaderFormatName == NAME_SF_METAL || ShaderFormatName == NAME_SF_METAL_MRT || ShaderFormatName == NAME_SF_METAL_TVOS || ShaderFormatName == NAME_SF_METAL_MRT_TVOS || ShaderFormatName == NAME_SF_METAL_SM5 || ShaderFormatName == NAME_SF_METAL_MACES3_1 || ShaderFormatName == NAME_SF_METAL_MRT_MAC);
+		check(ShaderFormatName == NAME_SF_METAL || ShaderFormatName == NAME_SF_METAL_MRT || ShaderFormatName == NAME_SF_METAL_TVOS || ShaderFormatName == NAME_SF_METAL_MRT_TVOS || ShaderFormatName == NAME_SF_METAL_SM5 || ShaderFormatName == NAME_SF_METAL_SM6  || ShaderFormatName == NAME_SF_METAL_SIM || ShaderFormatName == NAME_SF_METAL_MACES3_1 || ShaderFormatName == NAME_SF_METAL_MRT_MAC);
 
 		const FString ArchivePath = (WorkingDirectory / ShaderFormatAndShaderPlatformName.GetPlainNameString());
 		IFileManager::Get().DeleteDirectory(*ArchivePath, false, true);
@@ -325,13 +327,7 @@ uint32 GetMetalFormatVersion(FName Format)
 	uint32 Result = Version.Raw;
 
 #if UE_METAL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
-	{
-		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shader.RemoveDeadCode"));
-		if (CVar && CVar->GetInt() != 0)
-		{
-			Result = HashCombine(Result, 0x75E2FE85);
-		}
-	}
+	Result = HashCombine(Result, 0x75E2FE85);
 #endif // UE_METAL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 
 	return Result;
@@ -398,18 +394,29 @@ static FMetalCompilerToolchain::EMetalToolchainStatus ParseCompilerVersionAndTar
 		FString& Version = Lines[VersionLineIndex];
 		check(!Version.IsEmpty());
 
-		int32 Major = 0, Minor = 0, Patch = 0;
+		int32 Major = 0, Minor = 0;
 		int32 NumResults = 0;
 #if !PLATFORM_WINDOWS
 		char AppleToolName[PATH_MAX] = { '\0' };
-		NumResults = sscanf(TCHAR_TO_ANSI(*Version), "Apple %s version %d.%d.%d", AppleToolName, &Major, &Minor, &Patch);
+		char SupplementaryVersionName[PATH_MAX] = { '\0' };
+		NumResults = sscanf(TCHAR_TO_ANSI(*Version), "Apple %s version %d.%d (metalfe-%s)", AppleToolName, &Major, &Minor, SupplementaryVersionName);
 #else
 		TCHAR AppleToolName[WINDOWS_MAX_PATH] = { '\0' };
-		NumResults = swscanf_s(*Version, TEXT("Apple %ls version %d.%d.%d"), AppleToolName, WINDOWS_MAX_PATH, &Major, &Minor, &Patch);
+		TCHAR SupplementaryVersionName[WINDOWS_MAX_PATH] = { '\0' };
+		NumResults = swscanf_s(*Version, TEXT("Apple %ls version %d.%d (metalfe-%ls)"), AppleToolName, WINDOWS_MAX_PATH, &Major, &Minor, SupplementaryVersionName, WINDOWS_MAX_PATH);
 #endif
+		if (NumResults != 4)
+		{
+			UE_LOG(LogMetalCompilerSetup, Warning, TEXT("Metal version string format unrecoginzed"));
+			UE_LOG(LogMetalCompilerSetup, Warning, TEXT("Expecting: Apple LLVM version 902.11 (metalfe-902.11.1)"));
+			UE_LOG(LogMetalCompilerSetup, Warning, TEXT("Obtained: %s"), *Version);
+		}
+		
 		PackedVersionNumber.Major = Major;
 		PackedVersionNumber.Minor = Minor;
-		PackedVersionNumber.Patch = Patch;
+		// The version name in brackets is too irregular to extract a useful patch version
+		// Sometimes (metalfe-31001.667.2), sometimes (metalfe-31001.643.2.1), sometimes (metalfe-31001.362-windows)
+		PackedVersionNumber.Patch = 0;
 	}
 
 	if (PackedVersionNumber.Version == 0)
@@ -522,6 +529,8 @@ EShaderPlatform FMetalCompilerToolchain::MetalShaderFormatToLegacyShaderPlatform
 	if (ShaderFormat == NAME_SF_METAL_MRT_TVOS)		return SP_METAL_MRT_TVOS;
 	if (ShaderFormat == NAME_SF_METAL_MRT_MAC)		return SP_METAL_MRT_MAC;
 	if (ShaderFormat == NAME_SF_METAL_SM5)			return SP_METAL_SM5;
+    if (ShaderFormat == NAME_SF_METAL_SM6)          return SP_METAL_SM6;
+    if (ShaderFormat == NAME_SF_METAL_SIM)          return SP_METAL_SIM;
 	if (ShaderFormat == NAME_SF_METAL_MACES3_1)		return SP_METAL_MACES3_1;
 
 	return SP_NumPlatforms;

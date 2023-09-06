@@ -1,12 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.IO;
-using EpicGames.Core;
 using System.Text.RegularExpressions;
-using UnrealBuildBase;
+using EpicGames.Core;
 using Microsoft.Extensions.Logging;
+using UnrealBuildBase;
 
 ///////////////////////////////////////////////////////////////////
 // If you are looking for supported version numbers, look in the
@@ -26,7 +25,6 @@ namespace UnrealBuildTool
 		{
 			return TargetPlatformName;
 		}
-
 
 		protected override string? GetInstalledSDKVersion()
 		{
@@ -52,7 +50,6 @@ namespace UnrealBuildTool
 
 			return SDKVersionString;
 		}
-
 
 		public override bool TryConvertVersionToInt(string? StringValue, out UInt64 OutValue, string? Hint)
 		{
@@ -89,8 +86,6 @@ namespace UnrealBuildTool
 		{
 			return false;
 		}
-
-
 
 		/// <summary>
 		/// Platform name (embeds architecture for now)
@@ -228,7 +223,7 @@ namespace UnrealBuildTool
 			DirectoryReference? MultiArchRoot = GetSDKLocation();
 			DirectoryReference? BaseLinuxPath;
 
-			if (MultiArchRoot != null )
+			if (MultiArchRoot != null)
 			{
 				BaseLinuxPath = DirectoryReference.Combine(MultiArchRoot, Architecture.LinuxName);
 			}

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "MassEntityView.h"
 #include "SmartObjectTypes.h"
 #include "SmartObjectDefinition.h"
 #include "SmartObjectRuntime.generated.h"
@@ -95,7 +94,7 @@ struct SMARTOBJECTSMODULE_API FSmartObjectClaimHandle
  * Runtime data holding the final slot transform (i.e. parent transform applied on slot local offset and rotation)
  */
 USTRUCT()
-struct SMARTOBJECTSMODULE_API FSmartObjectSlotTransform : public FSmartObjectSlotStateData
+struct UE_DEPRECATED(5.3, "Transform is moved to FSmartObjectRuntimeSlot.") SMARTOBJECTSMODULE_API FSmartObjectSlotTransform : public FSmartObjectSlotStateData
 {
 	GENERATED_BODY()
 
@@ -126,13 +125,19 @@ public:
 	/* Provide default constructor to be able to compile template instantiation 'UScriptStruct::TCppStructOps<FSmartObjectSlotState>' */
 	/* Also public to pass void 'UScriptStruct::TCppStructOps<FSmartObjectSlotState>::ConstructForTests(void *)' */
 	FSmartObjectRuntimeSlot() : bSlotEnabled(true), bObjectEnabled(true) {}
-	
-	explicit FSmartObjectRuntimeSlot(const FSmartObjectHandle InRuntimeObjectHandle, const int32 InSlotIndex)
-		: RuntimeObjectHandle(InRuntimeObjectHandle)
-		, SlotIndex(IntCastChecked<uint8>(InSlotIndex))
-		, bSlotEnabled(true)
-		, bObjectEnabled(true)
+
+	FVector3f GetSlotOffset() const { return Offset; }
+
+	FRotator3f GetSlotRotation() const { return Rotation; }
+
+	FTransform GetSlotLocalTransform() const
 	{
+		return FTransform(FRotator(Rotation), FVector(Offset));
+	}
+
+	FTransform GetSlotWorldTransform(const FTransform& OwnerTransform) const
+	{
+		return FTransform(FRotator(Rotation), FVector(Offset)) * OwnerTransform;
 	}
 
 	/** @return Current claim state of the slot. */
@@ -141,20 +146,17 @@ public:
 	/** @return True if the slot can be claimed. */
 	bool CanBeClaimed() const { return IsEnabled() && State == ESmartObjectSlotState::Free; }
 
-	/** @return reference to the slot event delegate. */
-	const FOnSmartObjectEvent& GetEventDelegate() const { return OnEvent; }
-
-	/** @return mutable reference to the slot event delegate. */
-	FOnSmartObjectEvent& GetMutableEventDelegate() { return OnEvent; }
-
 	/** @return the runtime gameplay tags of the slot. */
 	const FGameplayTagContainer& GetTags() const { return Tags; }
 
 	/** @return true if both the slot and its parent smart object are enabled. */
 	bool IsEnabled() const { return bSlotEnabled && bObjectEnabled; }
 
-	/** @return Handle of the owner runtime object. */
-	FSmartObjectHandle GetOwnerRuntimeObject() const { return RuntimeObjectHandle; }
+	/** @return User data struct that can be associated to the slot when claimed or used. */
+	FConstStructView GetUserData() const { return UserData; }
+
+	FInstancedStructContainer& GetMutableStateData() { return StateData; };
+	const FInstancedStructContainer& GetStateData() const { return StateData; };
 	
 protected:
 	/** Struct could have been nested inside the subsystem but not possible with USTRUCT */
@@ -163,36 +165,39 @@ protected:
 
 	bool Claim(const FSmartObjectUserHandle& InUser);
 	bool Release(const FSmartObjectClaimHandle& ClaimHandle, const bool bAborted);
-	
+
 	friend FString LexToString(const FSmartObjectRuntimeSlot& Slot)
 	{
 		return FString::Printf(TEXT("User:%s State:%s"), *LexToString(Slot.User), *UEnum::GetValueAsString(Slot.State));
 	}
 
+	/** Offset of the slot relative to the Smart Object. */
+	FVector3f Offset = FVector3f::ZeroVector;
+
+	/** Rotation of the slot relative to the Smart Object. */
+	FRotator3f Rotation = FRotator3f::ZeroRotator;
+	
 	/** Runtime tags associated with this slot. */
 	FGameplayTagContainer Tags;
 
-	/** Multicast delegate that is fired when the slot state changes. */
-	FOnSmartObjectEvent OnEvent;
+	/** Struct used to store contextual data of the user when claiming or using a slot. */
+	FInstancedStruct UserData;
 
+	/** Slot state data that can be added at runtime. */
+	FInstancedStructContainer StateData;
+	
 	/** Delegate used to notify when a slot gets invalidated. See RegisterSlotInvalidationCallback */
 	FOnSlotInvalidated OnSlotInvalidatedDelegate;
 
-	/** Handle of the owner object */
-	FSmartObjectHandle RuntimeObjectHandle;
-	
 	/** Handle to the user that reserves or uses the slot */
 	FSmartObjectUserHandle User;
-
-	/** Current availability state of the slot */
-	ESmartObjectSlotState State = ESmartObjectSlotState::Free;
 
 	/** World condition runtime state. */
 	UPROPERTY(Transient)
 	mutable FWorldConditionQueryState PreconditionState;
-	
-	/** Index of the slot in the definition. */
-	uint8 SlotIndex = 0;
+
+	/** Current availability state of the slot */
+	ESmartObjectSlotState State = ESmartObjectSlotState::Free;
 
 	/** True if the slot is enabled */
 	uint8 bSlotEnabled : 1;
@@ -212,6 +217,10 @@ struct FSmartObjectRuntime
 	GENERATED_BODY()
 
 public:
+	/* Provide default constructor to be able to compile template instantiation 'UScriptStruct::TCppStructOps<FSmartObjectRuntime>' */
+	/* Also public to pass void 'UScriptStruct::TCppStructOps<FSmartObjectRuntime>::ConstructForTests(void *)' */
+	FSmartObjectRuntime() : bEnabled(true) {}
+
 	FSmartObjectHandle GetRegisteredHandle() const { return RegisteredHandle; }
 	const FTransform& GetTransform() const { return Transform; }
 	const USmartObjectDefinition& GetDefinition() const { checkf(Definition != nullptr, TEXT("Initialized from a valid reference from the constructor")); return *Definition; }
@@ -242,20 +251,28 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	/** @return Pointer to owner actor if present. */
 	AActor* GetOwnerActor() const;
 
-	/* Provide default constructor to be able to compile template instantiation 'UScriptStruct::TCppStructOps<FSmartObjectRuntime>' */
-	/* Also public to pass void 'UScriptStruct::TCppStructOps<FSmartObjectRuntime>::ConstructForTests(void *)' */
-	FSmartObjectRuntime() : bEnabled(true) {}
-
 	/** @return handle of the specified slot. */
+	const FSmartObjectRuntimeSlot& GetSlot(const int32 Index) const
+	{
+		return Slots[Index];
+	}
+
+	FSmartObjectRuntimeSlot& GetMutableSlot(const int32 Index)
+	{
+		return Slots[Index];
+	}
+
+	TConstArrayView<FSmartObjectRuntimeSlot> GetSlots() const
+	{
+		return Slots;
+	}
+
+	UE_DEPRECATED(5.3, "You can access the slots directly via GetSlots().")
 	FSmartObjectSlotHandle GetSlotHandle(const int32 Index) const
 	{
-		if (SlotHandles.IsValidIndex(Index))
-		{
-			return SlotHandles[Index];
-		}
-		return FSmartObjectSlotHandle();
+		return {};
 	}
-	
+
 private:
 	/** Struct could have been nested inside the subsystem but not possible with USTRUCT */
 	friend class USmartObjectSubsystem;
@@ -270,8 +287,9 @@ private:
 	UPROPERTY(Transient)
 	mutable FWorldConditionQueryState PreconditionState;
 	
-	/** Runtime SlotHandles associated to each defined slot */
-	TArray<FSmartObjectSlotHandle> SlotHandles;
+	/** Runtime slots */
+	UPROPERTY(Transient)
+	TArray<FSmartObjectRuntimeSlot> Slots;
 
 	/** Associated smart object definition */
 	UPROPERTY()
@@ -318,9 +336,9 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotView
 public:
 	FSmartObjectSlotView() = default;
 
-	bool IsValid() const { return EntityView.IsSet(); }
+	bool IsValid() const { return SlotHandle.IsValid() && Runtime && Slot; }
 
-	FSmartObjectSlotHandle GetSlotHandle() const { return EntityView.GetEntity(); }
+	FSmartObjectSlotHandle GetSlotHandle() const { return SlotHandle; }
 
 	/**
 	 * Returns a reference to the slot state data of the specified type.
@@ -332,7 +350,19 @@ public:
 		static_assert(TIsDerivedFrom<T, FSmartObjectSlotStateData>::IsDerived,
 			"Given struct doesn't represent a valid runtime data type. Make sure to inherit from FSmartObjectSlotStateData or one of its child-types.");
 
-		return EntityView.GetFragmentData<T>();
+		checkf(Slot, TEXT("StateData can only be accessed through a valid SlotView"));
+
+		T* Item = nullptr;
+		for (FStructView Data : Slot->GetMutableStateData())
+		{
+			Item = Data.template GetPtr<T>();
+			if (Item != nullptr)
+			{
+				break;
+			}
+		}
+		check(Item);
+		return *Item;
 	}
 
 	/**
@@ -345,7 +375,17 @@ public:
 		static_assert(TIsDerivedFrom<T, FSmartObjectSlotStateData>::IsDerived,
 					"Given struct doesn't represent a valid runtime data type. Make sure to inherit from FSmartObjectSlotStateData or one of its child-types.");
 
-		return EntityView.GetFragmentDataPtr<T>();
+		checkf(Slot, TEXT("StateData can only be accessed through a valid SlotView"));
+
+		for (FStructView Data : Slot->GetMutableStateData())
+		{
+			if (T* Item = Data.template GetPtr<T>())
+			{
+				return Item;
+			}
+		}
+		
+		return nullptr;
 	}
 
 	/**
@@ -356,8 +396,8 @@ public:
 	 */
 	const USmartObjectDefinition& GetSmartObjectDefinition() const
 	{
-		checkf(EntityView.IsSet(), TEXT("Definition can only be accessed through a valid SlotView"));
-		return *(EntityView.GetConstSharedFragmentData<FSmartObjectSlotDefinitionFragment>().SmartObjectDefinition);
+		checkf(Runtime, TEXT("Definition can only be accessed through a valid SlotView"));
+		return Runtime->GetDefinition();
 	}
 
 	/**
@@ -366,8 +406,8 @@ public:
 	 */
 	const FSmartObjectSlotDefinition& GetDefinition() const
 	{
-		checkf(EntityView.IsSet(), TEXT("Definition can only be accessed through a valid SlotView"));
-		return *(EntityView.GetConstSharedFragmentData<FSmartObjectSlotDefinitionFragment>().SlotDefinition);
+		checkf(Runtime, TEXT("Definition can only be accessed through a valid SlotView"));
+		return Runtime->GetDefinition().GetSlot(SlotHandle.GetSlotIndex());
 	}
 
 	/**
@@ -376,12 +416,7 @@ public:
 	 */
 	void GetActivityTags(FGameplayTagContainer& OutActivityTags) const
 	{
-		checkf(EntityView.IsSet(), TEXT("Definition can only be accessed through a valid SlotView"));
-		const FSmartObjectSlotDefinitionFragment& DefinitionFragment = EntityView.GetConstSharedFragmentData<FSmartObjectSlotDefinitionFragment>();
-		checkf(DefinitionFragment.SmartObjectDefinition != nullptr, TEXT("SmartObjectDefinition should always be valid in a valid SlotView"));
-		checkf(DefinitionFragment.SlotDefinition != nullptr, TEXT("SlotDefinition should always be valid in a valid SlotView"));
-
-		DefinitionFragment.SmartObjectDefinition->GetSlotActivityTags(*DefinitionFragment.SlotDefinition, OutActivityTags);
+		GetSmartObjectDefinition().GetSlotActivityTags(GetDefinition(), OutActivityTags);
 	}
 
 	/**
@@ -452,18 +487,19 @@ public:
 	/** @return handle to the owning Smart Object. */
 	FSmartObjectHandle GetOwnerRuntimeObject() const
 	{
-		checkf(Slot, TEXT("Tags can only be accessed through a valid SlotView"));
-		return Slot->GetOwnerRuntimeObject();
+		return SlotHandle.GetSmartObjectHandle();
 	}
 
 private:
 	friend class USmartObjectSubsystem;
 
-	FSmartObjectSlotView(const FMassEntityManager& EntityManager, const FSmartObjectSlotHandle SlotHandle, const FSmartObjectRuntimeSlot* InSlot) 
-		: EntityView(EntityManager, SlotHandle.EntityHandle)
-		, Slot(InSlot)
+	FSmartObjectSlotView(const FSmartObjectSlotHandle InSlotHandle, FSmartObjectRuntime& InRuntime, FSmartObjectRuntimeSlot& InSlot) 
+		: SlotHandle(InSlotHandle)
+		, Runtime(&InRuntime)
+		, Slot(&InSlot)
 	{}
 
-	FMassEntityView EntityView;
-	const FSmartObjectRuntimeSlot* Slot = nullptr;
+	FSmartObjectSlotHandle SlotHandle;
+	FSmartObjectRuntime* Runtime;
+	FSmartObjectRuntimeSlot* Slot;
 };

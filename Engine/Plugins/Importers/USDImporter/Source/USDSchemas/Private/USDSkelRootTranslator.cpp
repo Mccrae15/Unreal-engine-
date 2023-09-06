@@ -6,7 +6,8 @@
 
 #include "MeshTranslationImpl.h"
 #include "USDAssetCache.h"
-#include "USDAssetImportData.h"
+#include "USDAssetUserData.h"
+#include "USDClassesModule.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
@@ -34,6 +35,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkinnedAssetCommon.h"
 #include "GroomComponent.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Rendering/SkeletalMeshLODImporterData.h"
@@ -54,6 +56,7 @@
 #endif // WITH_EDITOR
 
 #include "USDIncludesStart.h"
+	#include "pxr/usd/usd/primRange.h"
 	#include "pxr/usd/usdGeom/mesh.h"
 	#include "pxr/usd/usdShade/material.h"
 	#include "pxr/usd/usdSkel/binding.h"
@@ -99,9 +102,11 @@ namespace UsdSkelRootTranslatorImpl
 			ExistingAssignments.Add( SkeletalMaterial.MaterialInterface );
 		}
 
-#if WITH_EDITOR
-		UUsdMeshAssetImportData* ImportData = Cast< UUsdMeshAssetImportData>( SkeletalMesh->GetAssetImportData() );
-#endif // WITH_EDITOR
+		UUsdMeshAssetUserData* UserData = SkeletalMesh->GetAssetUserData<UUsdMeshAssetUserData>();
+		ensureMsgf(UserData, TEXT("Skeletal Mesh '%s' generated for prim '%s' should have an UUsdMeshAssetUserData at this point!"),
+			*SkeletalMesh->GetPathName(),
+			*UsdToUnreal::ConvertPath(UsdPrim.GetPrimPath())
+		);
 
 		TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> ResolvedMaterials = MeshTranslationImpl::ResolveMaterialAssignmentInfo(
 			UsdPrim,
@@ -132,7 +137,7 @@ namespace UsdSkelRootTranslatorImpl
 			{
 				const UsdUtils::FUsdPrimMaterialSlot& Slot = LODSlots[ LODSlotIndex ];
 
-				UMaterialInterface* Material = nullptr;
+				UMaterialInterface* Material = UMaterial::GetDefaultMaterial(MD_Surface);
 
 				if ( UMaterialInterface** FoundMaterial = ResolvedMaterials.Find( &Slot ) )
 				{
@@ -180,13 +185,6 @@ namespace UsdSkelRootTranslatorImpl
 					bMaterialsHaveChanged = true;
 				}
 
-#if WITH_EDITOR
-				if ( ImportData )
-				{
-					ImportData->MaterialSlotToPrimPaths.FindOrAdd( SkeletalMeshSlotIndex ).PrimPaths = Slot.PrimPaths.Array();
-				}
-#endif // WITH_EDITOR
-
 				// Already have a material at that LOD remap slot, need to reassign
 				if ( LODMaterialMap.IsValidIndex( LODSlotIndex ) )
 				{
@@ -203,7 +201,11 @@ namespace UsdSkelRootTranslatorImpl
 		return bMaterialsHaveChanged;
 	}
 
-	FSHAHash ComputeSHAHash( const TArray<FSkeletalMeshImportData>& LODIndexToSkeletalMeshImportData, TArray<SkeletalMeshImportData::FBone>& ImportedBones )
+	FSHAHash ComputeSHAHash(
+		const TArray<FSkeletalMeshImportData>& LODIndexToSkeletalMeshImportData,
+		TArray<SkeletalMeshImportData::FBone>& ImportedBones,
+		UsdUtils::FBlendShapeMap* BlendShapes
+	)
 	{
 		FSHA1 HashState;
 
@@ -226,6 +228,25 @@ namespace UsdSkelRootTranslatorImpl
 			HashState.Update( ( uint8* ) &Bone.BonePos, sizeof( Bone.BonePos ) );
 		}
 
+		if (BlendShapes)
+		{
+			for (const TPair<FString, UsdUtils::FUsdBlendShape>& Pair : *BlendShapes)
+			{
+				const UsdUtils::FUsdBlendShape& BlendShape = Pair.Value;
+				HashState.UpdateWithString(*BlendShape.Name, BlendShape.Name.Len());
+
+				HashState.Update((uint8*)BlendShape.Vertices.GetData(), BlendShape.Vertices.Num() * BlendShape.Vertices.GetTypeSize());
+
+				for (const UsdUtils::FUsdBlendShapeInbetween& InBetween : BlendShape.Inbetweens)
+				{
+					HashState.UpdateWithString(*InBetween.Name, InBetween.Name.Len());
+					HashState.Update((uint8*)&InBetween.InbetweenWeight, sizeof(InBetween.InbetweenWeight));
+				}
+
+				HashState.Update((uint8*)&BlendShape.bHasAuthoredTangents, sizeof(BlendShape.bHasAuthoredTangents));
+			}
+		}
+
 		FSHAHash OutHash;
 
 		HashState.Final();
@@ -234,7 +255,11 @@ namespace UsdSkelRootTranslatorImpl
 		return OutHash;
 	}
 
-	FSHAHash ComputeSHAHash( const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery, const pxr::UsdPrim& RootMotionPrim )
+	FSHAHash ComputeSHAHash(
+		const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery,
+		const pxr::UsdPrim& RootMotionPrim,
+		const FString& SkeletalMeshHashString
+	)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE( UsdSkelRootTranslatorImpl::ComputeSHAHash_SkelQuery );
 
@@ -263,6 +288,19 @@ namespace UsdSkelRootTranslatorImpl
 
 		int32 InterpolationType = static_cast< int32 >( Stage->GetInterpolationType() );
 		HashState.Update( ( uint8* ) &InterpolationType, sizeof( int32 ) );
+
+		// Hash blend shape and joint order tokens
+		TFunction<void(const pxr::VtArray<pxr::TfToken>&)> HashTokens = [&HashState](const pxr::VtArray<pxr::TfToken>& Tokens)
+		{
+			for (const pxr::TfToken& Token : Tokens)
+			{
+				const std::string& TokenString = Token.GetString();
+				const char* TokenCStr = TokenString.c_str();
+				HashState.Update((const uint8*)TokenCStr, sizeof(char) * TokenString.size());
+			}
+		};
+		HashTokens(AnimQuery.GetJointOrder());
+		HashTokens(AnimQuery.GetBlendShapeOrder());
 
 		// Time samples for joint transforms
 		std::vector<double> TimeData;
@@ -317,6 +355,14 @@ namespace UsdSkelRootTranslatorImpl
 			HashState.Update( ( uint8* ) &bResetsXformSack, sizeof( bool ) );
 		}
 
+		// An anim sequence matches a particular skeleton. If the skeleton is different, we'll likely
+		// need a new AnimSequence, even if the SkelAnimation prim itself hashes the same. The same
+		// applies to SkeletalMesh morph targets too: In USD a SkelAnimation has decoupled "blend
+		// shape channel" curves that can animate blend shapes specific to each mesh, but in UE the
+		// AnimSequence curves are specific to each morph target name, so if we have a different mesh,
+		// we're probably better off ensuring we have a different AnimSequence too
+		HashState.UpdateWithString(*SkeletalMeshHashString, SkeletalMeshHashString.Len());
+
 		HashState.Final();
 		HashState.GetHash( &OutHash.Hash[ 0 ] );
 
@@ -353,7 +399,7 @@ namespace UsdSkelRootTranslatorImpl
 		{
 			SkeletalMeshComponent.ActiveMorphTargets.Reset();
 			SkeletalMeshComponent.MorphTargetWeights.Reset();
-			TArray<UMorphTarget*>& MorphTargets = SkeletalMesh->GetMorphTargets();
+			TArray<TObjectPtr<UMorphTarget>>& MorphTargets = SkeletalMesh->GetMorphTargets();
 			for ( int32 MorphTargetIndex = 0; MorphTargetIndex < MorphTargets.Num(); ++MorphTargetIndex )
 			{
 				SkeletalMeshComponent.ActiveMorphTargets.Add( MorphTargets[ MorphTargetIndex ], MorphTargetIndex );
@@ -375,12 +421,9 @@ namespace UsdSkelRootTranslatorImpl
 		FName& OutSkeletonName,
 		UsdUtils::FBlendShapeMap* OutBlendShapes,
 		TSet<FString>& InOutUsedMorphTargetNames,
-		const TMap< FString, TMap< FString, int32 > >& InMaterialToPrimvarsUVSetNames,
-		float InTime,
 		const UUsdAssetCache2& AssetCache,
 		bool bInInterpretLODs,
-		const pxr::TfToken& RenderContext,
-		const pxr::TfToken& MaterialPurpose
+		const UsdToUnreal::FUsdMeshConversionOptions& Options
 	)
 	{
 		if ( !InSkeletonRoot )
@@ -441,7 +484,21 @@ namespace UsdSkelRootTranslatorImpl
 			// In USD, the skinning target need not be a mesh, but for Unreal we are only interested in skinning meshes
 			if ( pxr::UsdGeomMesh SkinningMesh = pxr::UsdGeomMesh( SkinningQuery.GetPrim() ) )
 			{
-				PathsToSkinnedPrims.Add(SkinningMesh.GetPrim().GetPath());
+				// Let's only care about prims with the SkelBindingAPI for now as we'll *need* joint influences and weights
+				if (SkinningQuery.GetPrim().HasAPI<pxr::UsdSkelBindingAPI>())
+				{
+					PathsToSkinnedPrims.Add(SkinningMesh.GetPrim().GetPath());
+				}
+				else
+				{
+					UE_LOG(
+						LogUsd,
+						Log,
+						TEXT("Ignoring skinned prim '%s' when generating Skeletal Mesh for SkelRoot '%s' as the prim doesn't have the SkelBindingAPI"),
+						*UsdToUnreal::ConvertPath(SkinningQuery.GetPrim().GetPrimPath()),
+						*UsdToUnreal::ConvertPath(InSkeletonRoot.GetPrim().GetPrimPath())
+					);
+				}
 			}
 		}
 
@@ -450,13 +507,10 @@ namespace UsdSkelRootTranslatorImpl
 			&LODIndexToSkeletalMeshImportDataMap,
 			&LODIndexToMaterialInfoMap,
 			&SkelQuery,
-			InTime,
-			&InMaterialToPrimvarsUVSetNames,
 			&InOutUsedMorphTargetNames,
 			OutBlendShapes,
 			&StageInfo,
-			RenderContext,
-			MaterialPurpose
+			Options
 		]
 		( const pxr::UsdGeomMesh& LODMesh, int32 LODIndex )
 		{
@@ -472,7 +526,7 @@ namespace UsdSkelRootTranslatorImpl
 			}
 
 			FSkeletalMeshImportData& LODImportData = LODIndexToSkeletalMeshImportDataMap.FindOrAdd( LODIndex );
-			TArray<UsdUtils::FUsdPrimMaterialSlot>& LODSlots = LODIndexToMaterialInfoMap.FindOrAdd( LODIndex ).Slots;
+			UsdUtils::FUsdPrimMaterialAssignmentInfo& LODMaterialInfo = LODIndexToMaterialInfoMap.FindOrAdd( LODIndex );
 
 			// BlendShape data is respective to point indices for each mesh in isolation, but we combine all points
 			// into one FSkeletalMeshImportData per LOD, so we need to remap the indices using this
@@ -482,10 +536,8 @@ namespace UsdSkelRootTranslatorImpl
 				SkinningQuery,
 				SkelQuery,
 				LODImportData,
-				LODSlots,
-				InMaterialToPrimvarsUVSetNames,
-				RenderContext,
-				MaterialPurpose
+				LODMaterialInfo,
+				Options
 			);
 			if ( !bSuccess )
 			{
@@ -728,6 +780,28 @@ namespace UsdSkelRootTranslatorImpl
 			LODIndexToAssignments.Add( MoveTemp( Entry.Value ) );
 		}
 
+		// Stash our mesh PrimvarToUVIndex into the assignment info, as that's where ResolveMaterialAssignmentInfo will look for it
+		UUsdMeshAssetUserData* UserData = nullptr;
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(&MeshComponent))
+		{
+			if (USkeletalMesh* Mesh = SkeletalMeshComponent->GetSkeletalMeshAsset())
+			{
+				UserData = Mesh->GetAssetUserData<UUsdMeshAssetUserData>();
+			}
+		}
+		if (UserData)
+		{
+			LODIndexToAssignments[0].PrimvarToUVIndex = UserData->PrimvarToUVIndex;
+		}
+		else
+		{
+			ensureMsgf(
+				UserData,
+				TEXT("Expected component '%s''s SkeletalMesh to have an instance of UUsdMeshAssetUserData at this point!"),
+				*MeshComponent.GetPathName()
+			);
+		}
+
 		TMap<const UsdUtils::FUsdPrimMaterialSlot*, UMaterialInterface*> ResolvedMaterials = MeshTranslationImpl::ResolveMaterialAssignmentInfo(
 			ValidSkelRootPrim,
 			LODIndexToAssignments,
@@ -799,7 +873,11 @@ namespace UsdSkelRootTranslatorImpl
 		FName AssetName = MakeUniqueObjectName(
 			GetTransientPackage(),
 			UPhysicsAsset::StaticClass(),
-			*FPaths::GetBaseFilename( TEXT( "PHYS_" ) + SkeletalMesh->GetName() )
+			*IUsdClassesModule::SanitizeObjectName(
+				FPaths::GetBaseFilename(
+					TEXT("PHYS_") + SkeletalMesh->GetName()
+				)
+			)
 		);
 
 		UPhysicsAsset* Result = NewObject< UPhysicsAsset >(
@@ -919,7 +997,9 @@ namespace UsdSkelRootTranslatorImpl
 				FName UniqueName = MakeUniqueObjectName(
 					GetTransientPackage(),
 					UAnimBlueprint::StaticClass(),
-					*( PrimName + TEXT( "_DefaultAnimBlueprint" ) )
+					*IUsdClassesModule::SanitizeObjectName(
+						PrimName + TEXT( "_DefaultAnimBlueprint" )
+					)
 				);
 
 				// Duplicate and never reuse these so that they can be assigned independent subject names if desired.
@@ -1175,6 +1255,7 @@ namespace UsdSkelRootTranslatorImpl
 		// Note that we want this to be case insensitive so that our UMorphTarget FNames are unique not only due to case differences
 		TSet<FString> UsedMorphTargetNames;
 		TUsdStore< pxr::UsdSkelCache > SkeletonCache;
+		FString SkeletalMeshHashString;
 
 		// Don't keep a live reference to the prim because other translators may mutate the stage in an ExclusiveSync translation step, invalidating the reference
 		UE::FUsdPrim GetPrim() const { return Context->Stage.GetPrimAtPath( PrimPath ); }
@@ -1212,9 +1293,6 @@ namespace UsdSkelRootTranslatorImpl
 				// No point in importing blend shapes if the import context doesn't want them
 				UsdUtils::FBlendShapeMap* OutBlendShapes = Context->BlendShapesByPath ? &NewBlendShapes : nullptr;
 
-				TMap< FString, TMap< FString, int32 > > Unused;
-				const TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex : &Unused;
-
 				pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
 				if ( !Context->RenderContext.IsNone() )
 				{
@@ -1227,7 +1305,12 @@ namespace UsdSkelRootTranslatorImpl
 					MaterialPurposeToken = UnrealToUsd::ConvertToken( *Context->MaterialPurpose.ToString() ).Get();
 				}
 
-				const bool bContinueTaskChain = UsdSkelRootTranslatorImpl::LoadAllSkeletalData(
+				UsdToUnreal::FUsdMeshConversionOptions Options;
+				Options.TimeCode = Context->Time;
+				Options.RenderContext = RenderContextToken;
+				Options.MaterialPurpose = MaterialPurposeToken;
+
+				bool bContinueTaskChain = UsdSkelRootTranslatorImpl::LoadAllSkeletalData(
 					SkeletonCache.Get(),
 					pxr::UsdSkelRoot( GetPrim() ),
 					LODIndexToSkeletalMeshImportData,
@@ -1236,13 +1319,35 @@ namespace UsdSkelRootTranslatorImpl
 					SkeletonName,
 					OutBlendShapes,
 					UsedMorphTargetNames,
-					*MaterialToPrimvarToUVIndex,
-					Context->Time,
 					*Context->AssetCache.Get(),
 					Context->bAllowInterpretingLODs,
-					RenderContextToken,
-					MaterialPurposeToken
+					Options
 				);
+
+				int32 NumRootBones = 0;
+				for (const SkeletalMeshImportData::FBone& Bone : SkeletonBones)
+				{
+					if (Bone.ParentIndex == -1)
+					{
+						NumRootBones++;
+					}
+
+					if (NumRootBones > 1)
+					{
+						break;
+					}
+				}
+
+				if (NumRootBones != 1)
+				{
+					UE_LOG(
+						LogUsd,
+						Warning,
+						TEXT("Ignoring SkelRoot '%s' as the bound Skeleton prim must have exactly one root bone!"),
+						*PrimPath.GetString()
+					);
+					bContinueTaskChain = false;
+				}
 
 				return bContinueTaskChain;
 			} );
@@ -1251,9 +1356,16 @@ namespace UsdSkelRootTranslatorImpl
 		Then( ESchemaTranslationLaunchPolicy::Sync,
 			[ this ]()
 			{
+				if (!Context->InfoCache || !Context->AssetCache)
+				{
+					return false;
+				}
+
+				UsdUtils::FBlendShapeMap* BlendShapes = Context->BlendShapesByPath ? &NewBlendShapes : nullptr;
+
 				FString SkelRootPath = PrimPath.GetString();
-				FSHAHash SkeletalMeshHash = UsdSkelRootTranslatorImpl::ComputeSHAHash( LODIndexToSkeletalMeshImportData, SkeletonBones );
-				const FString SkeletalMeshHashString = SkeletalMeshHash.ToString();
+				FSHAHash SkeletalMeshHash = UsdSkelRootTranslatorImpl::ComputeSHAHash( LODIndexToSkeletalMeshImportData, SkeletonBones, BlendShapes );
+				SkeletalMeshHashString = SkeletalMeshHash.ToString();
 
 				USkeletalMesh* SkeletalMesh = Cast< USkeletalMesh >( Context->AssetCache->GetCachedAsset( SkeletalMeshHashString ) );
 
@@ -1271,14 +1383,21 @@ namespace UsdSkelRootTranslatorImpl
 					);
 				}
 
-				if ( SkeletalMesh )
+				if (SkeletalMesh)
 				{
-					if (bIsNew && Context->AssetCache && Context->InfoCache)
+					UUsdMeshAssetUserData* UserData = SkeletalMesh->GetAssetUserData<UUsdMeshAssetUserData>();
+					if (!UserData)
 					{
-						UUsdMeshAssetImportData* ImportData = NewObject< UUsdMeshAssetImportData >( SkeletalMesh, TEXT( "USDAssetImportData" ) );
-						ImportData->PrimPath = SkelRootPath;
-						SkeletalMesh->SetAssetImportData(ImportData);
+						UserData = NewObject<UUsdMeshAssetUserData>(SkeletalMesh, TEXT("USDAssetUserData"));
+						UserData->PrimvarToUVIndex = LODIndexToMaterialInfo[0].PrimvarToUVIndex;	// We use the same primvar mapping for all LODs
+						SkeletalMesh->AddAssetUserData(UserData);
+					}
+					UserData->PrimPaths.AddUnique(PrimPath.GetString());
 
+					MeshTranslationImpl::RecordSourcePrimsForMaterialSlots(LODIndexToMaterialInfo, UserData);
+
+					if (bIsNew)
+					{
 						const bool bMaterialsHaveChanged = UsdSkelRootTranslatorImpl::ProcessMaterials(
 							GetPrim(),
 							LODIndexToMaterialInfo,
@@ -1290,14 +1409,22 @@ namespace UsdSkelRootTranslatorImpl
 							NewBlendShapes.Num() > 0
 						);
 
-						if ( bMaterialsHaveChanged )
+						if (bMaterialsHaveChanged)
 						{
 							const bool bRebuildAll = true;
-							SkeletalMesh->UpdateUVChannelData( bRebuildAll );
+							SkeletalMesh->UpdateUVChannelData(bRebuildAll);
 						}
 
 						Context->AssetCache->CacheAsset( SkeletalMeshHashString, SkeletalMesh );
 						Context->AssetCache->CacheAsset( SkeletalMeshHashString + TEXT( "_Skeleton" ), SkeletalMesh->GetSkeleton() );
+
+						// The PreviewSkeletalMesh property on the Skeleton is a soft object path, that is set within
+						// UsdToUnreal::GetSkeletalMeshFromImportData before the SkeletalMesh is part of the cache. When we cache the
+						// SkeletalMesh, it is renamed into the AssetCache package, and so PreviewSkeletalMesh is no longer pointing at it.
+						// Ideally we'd create all our asset cache assets directly outered to the AssetCache to avoid this issue, but
+						// for now I think it's only a problem for SkeletalMesh/Skeleton pairs (since they are created at the same time
+						// already knowing each other), so it's simpler to just do this
+						SkeletalMesh->GetSkeleton()->SetPreviewMesh(SkeletalMesh);
 					}
 
 					if ( bGeneratePhysicsAssets )
@@ -1315,6 +1442,7 @@ namespace UsdSkelRootTranslatorImpl
 									SkeletalMeshHashString + TEXT( "_PhysicsAsset" ),
 									PhysicsAsset
 								);
+								Context->InfoCache->LinkAssetToPrim(PrimPath, PhysicsAsset);
 							}
 						}
 					}
@@ -1324,10 +1452,7 @@ namespace UsdSkelRootTranslatorImpl
 						SkeletalMesh->SetPhysicsAsset( nullptr );
 					}
 
-					if (Context->InfoCache)
-					{
-						Context->InfoCache->LinkAssetToPrim(PrimPath, SkeletalMesh);
-					}
+					Context->InfoCache->LinkAssetToPrim(PrimPath, SkeletalMesh);
 
 					// Track our Skeleton by the source skeleton prim path
 					if ( USkeleton* Skeleton = SkeletalMesh->GetSkeleton() )
@@ -1342,10 +1467,7 @@ namespace UsdSkelRootTranslatorImpl
 						{
 							pxr::UsdSkelBinding& SkeletonBinding = SkeletonBindings[ 0 ];
 							const pxr::UsdSkelSkeleton& UsdSkeleton = SkeletonBinding.GetSkeleton();
-							Context->InfoCache->LinkAssetToPrim(
-								UE::FSdfPath{UsdSkeleton.GetPrim().GetPrimPath()},
-								Skeleton
-							);
+							Context->InfoCache->LinkAssetToPrim(PrimPath, Skeleton);
 						}
 					}
 
@@ -1461,7 +1583,11 @@ namespace UsdSkelRootTranslatorImpl
 								? Skeleton.GetPrim()
 								: pxr::UsdPrim{};
 
-						FSHAHash Hash = UsdSkelRootTranslatorImpl::ComputeSHAHash( SkelQuery, RootMotionPrim );
+						FSHAHash Hash = UsdSkelRootTranslatorImpl::ComputeSHAHash(
+							SkelQuery,
+							RootMotionPrim,
+							SkeletalMeshHashString
+						);
 						FString HashString = Hash.ToString();
 						UAnimSequence* AnimSequence = Cast< UAnimSequence >( Context->AssetCache->GetCachedAsset( HashString ) );
 
@@ -1469,13 +1595,19 @@ namespace UsdSkelRootTranslatorImpl
 						{
 							FScopedUnrealAllocs UEAllocs;
 
+							FName AnimSequenceName = MakeUniqueObjectName(
+								GetTransientPackage(),
+								UAnimSequence::StaticClass(),
+								*IUsdClassesModule::SanitizeObjectName(UsdToUnreal::ConvertToken(SkelAnimationPrim.GetName()))
+							);
+
 							// The UAnimSequence can't be created with the RF_Transactional flag, or else it will be serialized without
 							// Bone/CurveCompressionSettings. Undoing that transaction would call UAnimSequence::Serialize with nullptr values for both, which crashes.
 							// Besides, this particular asset type is only ever created when we import to content folder assets (so never for realtime), and
 							// in that case we don't need it to be transactional anyway
 							AnimSequence = NewObject<UAnimSequence>(
 								GetTransientPackage(),
-								NAME_None,
+								AnimSequenceName,
 								(Context->ObjectFlags & ~EObjectFlags::RF_Transactional) | EObjectFlags::RF_Transient
 							);
 							AnimSequence->SetSkeleton( SkeletalMesh->GetSkeleton() );
@@ -1497,11 +1629,11 @@ namespace UsdSkelRootTranslatorImpl
 
 							if (AnimSequence->GetDataModel()->GetNumBoneTracks() != 0 || AnimSequence->GetDataModel()->GetNumberOfFloatCurves() != 0 )
 							{
-								UUsdAnimSequenceAssetImportData* ImportData = NewObject< UUsdAnimSequenceAssetImportData >( AnimSequence, TEXT( "USDAssetImportData" ) );
-								AnimSequence->AssetImportData = ImportData;
+								UUsdAnimSequenceAssetUserData* UserData = NewObject<UUsdAnimSequenceAssetUserData>(AnimSequence, TEXT("USDAssetUserData"));
+								UserData->PrimPaths = {SkelAnimationPrimPath};
+								UserData->LayerStartOffsetSeconds = LayerStartOffsetSeconds;
 
-								ImportData->PrimPath = SkelAnimationPrimPath;
-								ImportData->LayerStartOffsetSeconds = LayerStartOffsetSeconds;
+								AnimSequence->AddAssetUserData(UserData);
 
 								Context->AssetCache->CacheAsset( HashString, AnimSequence );
 							}
@@ -1513,10 +1645,7 @@ namespace UsdSkelRootTranslatorImpl
 
 						if (AnimSequence && Context->InfoCache)
 						{
-							Context->InfoCache->LinkAssetToPrim(
-								UE::FSdfPath{*SkelAnimationPrimPath},
-								AnimSequence
-							);
+							Context->InfoCache->LinkAssetToPrim(PrimPath, AnimSequence);
 						}
 
 						// For now we shouldn't try to parse the SkelAnimations from skeletal bindings other than the first one as we only
@@ -1536,6 +1665,8 @@ namespace UsdSkelRootTranslatorImpl
 
 void FUsdSkelRootTranslator::CreateAssets()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FUsdSkelRootTranslator::CreateAssets);
+
 #if WITH_EDITOR
 	// Importing skeletal meshes actually works in Standalone mode, but we intentionally block it here
 	// to not confuse users as to why it doesn't work at runtime
@@ -1548,11 +1679,13 @@ void FUsdSkelRootTranslator::CreateAssets()
 
 USceneComponent* FUsdSkelRootTranslator::CreateComponents()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FUsdSkelRootTranslator::CreateComponents);
+
 	USceneComponent* SceneComponent = FUsdGeomXformableTranslator::CreateComponents();
 
 #if WITH_EDITOR
 	// Check if the prim has the GroomBinding schema and setup the component and assets necessary to bind the groom to the SkeletalMesh
-	if ( UsdUtils::PrimHasSchema( GetPrim(), UnrealIdentifiers::GroomBindingAPI ) && Context->AssetCache && Context->InfoCache )
+	if (UsdUtils::PrimHasSchema(GetPrim(), UnrealIdentifiers::GroomBindingAPI) && Context->AssetCache && Context->InfoCache && Context->bAllowParsingGroomAssets)
 	{
 		UsdGroomTranslatorUtils::CreateGroomBindingAsset(
 			GetPrim(),
@@ -1587,7 +1720,6 @@ void FUsdSkelRootTranslator::UpdateComponents( USceneComponent* SceneComponent )
 	UE::FUsdPrim Prim = GetPrim();
 
 	const bool bPrimHasLiveLinkSchema = UsdUtils::PrimHasSchema( Prim, UnrealIdentifiers::LiveLinkAPI );
-	const bool bPrimHasControlRigSchema = UsdUtils::PrimHasSchema( Prim, UnrealIdentifiers::ControlRigAPI );
 
 	bool bPrimHasLiveLinkEnabled = bPrimHasLiveLinkSchema;
 	if ( bPrimHasLiveLinkSchema )
@@ -1604,6 +1736,8 @@ void FUsdSkelRootTranslator::UpdateComponents( USceneComponent* SceneComponent )
 		}
 	}
 
+	SkeletalMeshComponent->Modify();
+
 	SkeletalMeshComponent->SetAnimationMode(
 		bPrimHasLiveLinkEnabled
 			? EAnimationMode::AnimationBlueprint
@@ -1616,7 +1750,7 @@ void FUsdSkelRootTranslator::UpdateComponents( USceneComponent* SceneComponent )
 	if (SkelAnimPrim)
 	{
 		UAnimSequence* TargetAnimSequence = Context->InfoCache->GetSingleAssetForPrim<UAnimSequence>(
-			SkelAnimPrim.GetPrimPath()
+			Prim.GetPrimPath()
 		);
 		if ( TargetAnimSequence != SkeletalMeshComponent->AnimationData.AnimToPlay )
 		{
@@ -1717,9 +1851,9 @@ void FUsdSkelRootTranslator::UpdateComponents( USceneComponent* SceneComponent )
 			}
 
 			double LayerStartOffsetSeconds = 0.0f;
-			if ( UUsdAnimSequenceAssetImportData* ImportData = Cast<UUsdAnimSequenceAssetImportData>( AnimSequence->AssetImportData ) )
+			if (UUsdAnimSequenceAssetUserData* UserData = AnimSequence->GetAssetUserData<UUsdAnimSequenceAssetUserData>())
 			{
-				LayerStartOffsetSeconds = ImportData->LayerStartOffsetSeconds;
+				LayerStartOffsetSeconds = UserData->LayerStartOffsetSeconds;
 			}
 
 			// Always change the mode here because the sequencer will change it back to AnimationCustomMode when animating
@@ -1753,6 +1887,97 @@ void FUsdSkelRootTranslator::UpdateComponents( USceneComponent* SceneComponent )
 		UsdGroomTranslatorUtils::SetGroomFromPrim( Prim, *Context->InfoCache, SceneComponent );
 	}
 #endif // WITH_EDITOR
+}
+
+bool FUsdSkelRootTranslator::CollapsesChildren(ECollapsingType CollapsingType) const
+{
+	return true;
+}
+
+bool FUsdSkelRootTranslator::CanBeCollapsed(ECollapsingType CollapsingType) const
+{
+	return false;
+}
+
+TSet<UE::FSdfPath> FUsdSkelRootTranslator::CollectAuxiliaryPrims() const
+{
+	if (!Context->bIsBuildingInfoCache)
+	{
+		return Context->InfoCache->GetAuxiliaryPrims(PrimPath);
+	}
+
+	if (!Context->InfoCache->DoesPathCollapseChildren(PrimPath, ECollapsingType::Assets))
+	{
+		return {};
+	}
+
+	TSet<UE::FSdfPath> Result;
+	{
+		FScopedUsdAllocs UsdAllocs;
+
+		pxr::UsdPrim Prim = GetPrim();
+
+		pxr::TfType ImageableSchema = pxr::TfType::Find<pxr::UsdGeomImageable>();
+		pxr::TfType MeshSchema = pxr::TfType::Find<pxr::UsdGeomMesh>();
+
+		pxr::UsdPrimRange PrimRange{Prim, pxr::UsdTraverseInstanceProxies()};
+		for (pxr::UsdPrimRange::iterator PrimRangeIt = PrimRange.begin(); PrimRangeIt != PrimRange.end(); ++PrimRangeIt)
+		{
+			if (PrimRangeIt->IsA(MeshSchema))
+			{
+				Result.Add(UE::FSdfPath{PrimRangeIt->GetPrimPath()});
+
+				if (pxr::UsdSkelBindingAPI SkelBindingAPI{*PrimRangeIt})
+				{
+					// Collect blend shapes, which don't have to be within the Mesh or SkelRoot prim at all
+					if (pxr::UsdSkelBlendShapeQuery BlendShapeQuery{SkelBindingAPI})
+					{
+						for (int32 BlendShapeIndex = 0; BlendShapeIndex < BlendShapeQuery.GetNumBlendShapes(); ++BlendShapeIndex)
+						{
+							if (pxr::UsdSkelBlendShape BlendShape = BlendShapeQuery.GetBlendShape(BlendShapeIndex))
+							{
+								Result.Add(UE::FSdfPath{BlendShape.GetPrim().GetPrimPath()});
+							}
+						}
+					}
+				}
+			}
+			// All meshes, xforms, skeleton are imageables. Registering any imageable is also a good idea because their
+			// visibility could affect child Mesh prims, and so the combined skeletal mesh.
+			else if (PrimRangeIt->IsA(ImageableSchema))
+			{
+				Result.Add(UE::FSdfPath{PrimRangeIt->GetPrimPath()});
+			}
+		}
+
+		// Collect the bound SkelAnimation, that doesn't have to be within the actual SkelRoot
+		if (pxr::UsdSkelRoot SkeletonRoot{Prim})
+		{
+			pxr::UsdSkelCache SkeletonCache;
+
+			std::vector< pxr::UsdSkelBinding > SkeletonBindings;
+			SkeletonCache.Populate(SkeletonRoot, pxr::UsdTraverseInstanceProxies());
+			SkeletonCache.ComputeSkelBindings(SkeletonRoot, &SkeletonBindings, pxr::UsdTraverseInstanceProxies());
+
+			if (SkeletonBindings.size() > 0)
+			{
+				// We only handle the first skeleton binding
+				const pxr::UsdSkelBinding& Binding = SkeletonBindings[0];
+
+				const pxr::UsdSkelSkeleton& Skeleton = Binding.GetSkeleton();
+				pxr::UsdSkelSkeletonQuery SkelQuery = SkeletonCache.GetSkelQuery(Skeleton);
+
+				if (pxr::UsdSkelAnimQuery AnimQuery = SkelQuery.GetAnimQuery())
+				{
+					if (pxr::UsdPrim SkelAnimationPrim = AnimQuery.GetPrim())
+					{
+						Result.Add(UE::FSdfPath{SkelAnimationPrim.GetPrimPath()});
+					}
+				}
+			}
+		}
+	}
+	return Result;
 }
 
 #undef LOCTEXT_NAMESPACE

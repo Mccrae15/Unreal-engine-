@@ -9,6 +9,8 @@
 #include "ReflectionEnvironment.h"
 #include "FogRendering.h"
 
+DECLARE_UNIFORM_BUFFER_STRUCT(FSceneUniformParameters, RENDERER_API)
+
 class FLumenCardUpdateContext;
 namespace LumenRadianceCache { class FRadianceCacheInputs; }
 
@@ -33,6 +35,7 @@ public:
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenCardTracingParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FReflectionUniformParameters, ReflectionStruct)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLumenCardScene, LumenCardScene)
 	SHADER_PARAMETER(float, DiffuseColorBoost)
@@ -42,11 +45,6 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenCardTracingParameters, )
 
 	SHADER_PARAMETER(uint32, SampleHeightFog)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FFogUniformParameters, FogUniformParameters)
-
-	// GPU Scene
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstancePayloadData)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUScenePrimitiveSceneData)
 
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWCardPageLastUsedBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWCardPageHighResLastUsedBuffer)
@@ -139,6 +137,11 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenHZBScreenTraceParameters, )
 	SHADER_PARAMETER(FVector4f, HZBUVToScreenUVScaleBias)
 END_SHADER_PARAMETER_STRUCT()
 
+BEGIN_SHADER_PARAMETER_STRUCT(FLumenScreenSpaceBentNormalParameters, )
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float3>, ScreenBentNormal)
+	SHADER_PARAMETER(uint32, UseShortRangeAO)
+END_SHADER_PARAMETER_STRUCT()
+
 extern void CullHeightfieldObjectsForView(
 	FRDGBuilder& GraphBuilder,
 	const FScene* Scene,
@@ -180,9 +183,6 @@ extern FLumenHZBScreenTraceParameters SetupHZBScreenTraceParameters(
 	const FViewInfo& View,
 	const FSceneTextures& SceneTextures);
 
-extern void UpdateDistantScene(FScene* Scene, FViewInfo& View);
-extern float ComputeMaxCardUpdateDistanceFromCamera(const FViewInfo& View);
-
 extern int32 GLumenIrradianceFieldGather;
 
 namespace LumenIrradianceFieldGather
@@ -190,3 +190,7 @@ namespace LumenIrradianceFieldGather
 	LumenRadianceCache::FRadianceCacheInputs SetupRadianceCacheInputs();
 }
 
+namespace LumenDiffuseIndirect
+{
+	bool UseAsyncCompute(const FViewFamilyInfo& ViewFamily);
+}

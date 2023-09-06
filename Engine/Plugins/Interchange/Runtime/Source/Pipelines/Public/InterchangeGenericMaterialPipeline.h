@@ -22,52 +22,13 @@ class UInterchangeMaterialFunctionFactoryNode;
 class UInterchangeMaterialInstanceFactoryNode;
 class UInterchangeResult;
 class UMaterialFunction;
+class UInterchangeTextureNode;
 
 UENUM(BlueprintType)
 enum class EInterchangeMaterialImportOption : uint8
 {
 	ImportAsMaterials,
 	ImportAsMaterialInstances,
-};
-
-
-UENUM(BlueprintType)
-enum class EInterchangeMaterialXShaders : uint8
-{
-	/** Default settings for Autodesk's Standard Surface shader	*/
-	StandardSurface,
-
-	/** Standard Surface shader use for translucency	*/
-	StandardSurfaceTransmission
-};
-
-USTRUCT(BlueprintType)
-struct INTERCHANGEPIPELINES_API FMaterialXPipelineSettings
-{
-	GENERATED_BODY()
-
-public:
-	FMaterialXPipelineSettings();
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MaterialX", meta=(AllowedClasses="/Script/Engine.MaterialFunction"))
-	TMap<EInterchangeMaterialXShaders, FSoftObjectPath> SurfaceShader;
-
-	bool AreRequiredPackagesLoaded();
-
-	FString GetAssetPathString(EInterchangeMaterialXShaders ShaderType) const;
-
-private:
-
-#if WITH_EDITOR
-	friend class FInterchangeMaterialXPipelineSettingsCustomization;
-
-	static bool ShouldFilterAssets(UMaterialFunction* Asset, const TSet<FName>& Inputs, const TSet<FName>& Outputs);
-
-	static TSet<FName> StandardSurfaceInputs;
-	static TSet<FName> StandardSurfaceOutputs;
-	static TSet<FName> TransmissionSurfaceInputs;
-	static TSet<FName> TransmissionSurfaceOutputs;
-#endif // WITH_EDITOR
 };
 
 UCLASS(BlueprintType, editinlinenew)
@@ -82,6 +43,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
 	bool bImportMaterials = true;
 
+	/** If not empty, and there is only one asset and one source data, we will name the asset with this string. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials", meta = (StandAlonePipelineProperty = "True", AlwaysResetToDefault = "True"))
+	FString AssetName;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials", Meta=(EditCondition="bImportMaterials"))
 	EInterchangeMaterialImportOption MaterialImport = EInterchangeMaterialImportOption::ImportAsMaterials;
 
@@ -89,11 +54,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials", Meta= (EditCondition="bImportMaterials && MaterialImport==EInterchangeMaterialImportOption::ImportAsMaterialInstances", AllowedClasses="/Script/Engine.MaterialInterface"))
 	FSoftObjectPath ParentMaterial;
 
-	UPROPERTY(VisibleAnywhere, Instanced, Category = "Textures")
+	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Instanced, Category = "Textures")
 	TObjectPtr<UInterchangeGenericTexturePipeline> TexturePipeline;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MaterialX", DisplayName = "Settings")
-	FMaterialXPipelineSettings MaterialXSettings;
 
 	/** BEGIN UInterchangePipelineBase overrides */
 	virtual void PreDialogCleanup(const FName PipelineStackName) override;
@@ -125,21 +87,46 @@ private:
 	UInterchangeMaterialInstanceFactoryNode* CreateMaterialInstanceFactoryNode(const UInterchangeShaderGraphNode* ShaderGraphNode);
 
 	/** True if the shader graph has a clear coat input. */
-	bool IsClearCoatModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	bool HasClearCoat(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	UE_DEPRECATED(5.3, "Deprecated. Use HasClearCoat.")
+	bool IsClearCoatModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const
+	{
+		return HasClearCoat(ShaderGraphNode);
+	}
 
 	/** True if the shader graph has a sheen color input. */
-	bool IsSheenModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	bool HasSheen(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	UE_DEPRECATED(5.3, "Deprecated. Use HasSheen.")
+	bool IsSheenModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const
+	{
+		return HasSheen(ShaderGraphNode);
+	}
 
 	/** True if the shader graph has a subsurface color input. */
-	bool IsSubsurfaceModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	bool HasSubsurface(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	UE_DEPRECATED(5.3, "Deprecated. Use HasSubsurface.")
+	bool IsSubsurfaceModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const
+	{
+		return HasSubsurface(ShaderGraphNode);
+	}
 
 	/** True if the shader graph has a transmission color input. */
-	bool IsThinTranslucentModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	bool HasThinTranslucency(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	UE_DEPRECATED(5.3, "Deprecated. Use HasThinTranslucency.")
+	bool IsThinTranslucentModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const
+	{
+		return HasThinTranslucency(ShaderGraphNode);
+	}
 
-	/** True if the shader graph has a base color input. */
-	bool IsPBRModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	/** True if the shader graph has a base color input (Metallic/Roughness model. */
+	bool IsMetalRoughModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+	UE_DEPRECATED(5.3, "Deprecated. Use IsMetalRoughModel and IsSpecGlossModel to identify the correct PBR model.")
+	bool IsPBRModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const
+	{
+		return IsMetalRoughModel(ShaderGraphNode);
+	}
 
-	/** True if the shader graph has diffuse color and specular color inputs. */
+	/** True if the shader graph has diffuse color and specular inputs. */
 	bool IsPhongModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
 
 	/** True if the shader graph has a diffuse color input. */
@@ -148,13 +135,18 @@ private:
 	/** True if the shader graph has the standard surface's shader type name */
 	bool IsStandardSurfaceModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
 
+	/** True if the shader graph has the surface unlit's shader type name */
+	bool IsSurfaceUnlitModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+
 	/** True if the shader graph has an unlit color input. */
 	bool IsUnlitModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
 
+	/** True if the shader graph has specular color and glossiness scalar inputs. */
+	bool IsSpecGlossModel(const UInterchangeShaderGraphNode* ShaderGraphNode) const;
+
 	bool HandlePhongModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 	bool HandleLambertModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
-	bool HandlePBRModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
-	bool HandleStandardSurfaceModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
+	bool HandleMetalRoughnessModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 	bool HandleClearCoat(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 	bool HandleSubsurface(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 	bool HandleSheen(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
@@ -162,10 +154,15 @@ private:
 	void HandleCommonParameters(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 	bool HandleBxDFInput(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 	bool HandleUnlitModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
+	bool HandleSpecGlossModel(const UInterchangeShaderGraphNode* ShaderGraphNode, UInterchangeMaterialFactoryNode* MaterialFactoryNode);
 
 	void HandleFlattenNormalNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* FlattenNormalFactoryNode);
+	void HandleNormalFromHeightMapNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* NormalFromHeightMapFactoryNode);
 	void HandleMakeFloat3Node(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* MakeFloat3FactoryNode);
+	void HandleTextureNode(const UInterchangeTextureNode* TextureNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TextureBaseFactoryNode, const FString& ExpressionClassName);
+	void HandleTextureObjectNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TextureObjectFactoryNode);
 	void HandleTextureSampleNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TextureSampleFactoryNode);
+	void HandleTextureSampleBlurNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TextureSampleFactoryNode);
 	void HandleTextureCoordinateNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode*& TextureSampleFactoryNode);
 	void HandleLerpNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* LerpFactoryNode);
 	void HandleMaskNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* MaskFactoryNode);
@@ -174,6 +171,7 @@ private:
 	void HandleTransformVectorNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* TransformVectorFactoryNode);
 	void HandleNoiseNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* NoiseFactoryNode);
 	void HandleVectorNoiseNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* NoiseFactoryNode);
+	void HandleSwizzleNode(const UInterchangeShaderNode* ShaderNode, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, UInterchangeMaterialExpressionFactoryNode* SwizzleFactoryNode);
 
 	UInterchangeMaterialExpressionFactoryNode* CreateMaterialExpressionForShaderNode(UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, const UInterchangeShaderNode* ShaderNode, const FString& ParentUid);
 	TTuple<UInterchangeMaterialExpressionFactoryNode*, FString> CreateMaterialExpressionForInput(UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode, const UInterchangeShaderNode* ShaderNode, const FString& InputName, const FString& ParentUid);
@@ -182,6 +180,7 @@ private:
 	UInterchangeMaterialExpressionFactoryNode* CreateScalarParameterExpression(const UInterchangeShaderNode* ShaderNode, const FString& InputName, const FString& ParentUid);
 	UInterchangeMaterialExpressionFactoryNode* CreateVectorParameterExpression(const UInterchangeShaderNode* ShaderNode, const FString& InputName, const FString& ParentUid);
 	UInterchangeMaterialExpressionFactoryNode* CreateVector2ParameterExpression(const UInterchangeShaderNode* ShaderNode, const FString& InputName, const FString& ParentUid);
+	UInterchangeMaterialExpressionFactoryNode* CreateFunctionCallExpression(const UInterchangeShaderNode* ShaderNode, const FString& MaterialExpressionUid, UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode);
 
 	/**
 	 * Visits a given shader node and its connections to find its strongest value.
@@ -222,4 +221,6 @@ private:
 	};
 
 	TArray<FMaterialExpressionCreationContext> MaterialExpressionCreationContextStack;
+
+	using FParameterMaterialInputType = TTuple<FString, EMaterialInputType>;
 };

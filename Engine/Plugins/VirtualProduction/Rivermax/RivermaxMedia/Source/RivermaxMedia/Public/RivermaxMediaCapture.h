@@ -23,6 +23,10 @@ class RIVERMAXMEDIA_API URivermaxMediaCapture : public UMediaCapture, public UE:
 	GENERATED_BODY()
 
 public:
+	/** Rivermax capture specific API to provide stream options access */
+	UE::RivermaxCore::FRivermaxOutputStreamOptions GetOutputStreamOptions() const;
+
+public:
 
 	//~ Begin UMediaCapture interface
 	virtual bool HasFinishedProcessing() const override;
@@ -50,6 +54,7 @@ protected:
 	virtual EMediaCaptureResourceType GetCustomOutputResourceType() const override;
 	virtual FRDGBufferDesc GetCustomBufferDescription(const FIntPoint& InDesiredSize) const override;
 	virtual void OnCustomCapture_RenderingThread(FRDGBuilder& GraphBuilder, const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FRDGTextureRef InSourceTexture, FRDGBufferRef OutputBuffer, const FRHICopyTextureInfo& CopyInfo, FVector2D CropU, FVector2D CropV) override;
+	virtual bool IsOutputSynchronizationSupported() const override { return true; }
 	//~ End UMediaCapture interface
 
 	//~ Begin UObject interface
@@ -59,6 +64,7 @@ protected:
 	//~ Begin IRivermaxOutputStreamListener interface
 	virtual void OnInitializationCompleted(bool bHasSucceed) override;
 	virtual void OnStreamError() override;
+	virtual void OnPreFrameEnqueue() override;
 	//~ End IRivermaxOutputStreamListener interface
 
 private:
@@ -67,21 +73,11 @@ private:
 	/** Initializes capture and launches stream creation */
 	bool Initialize(URivermaxMediaOutput* InMediaOutput);
 
-	/** Initializes sync handlers, fences, for gpudirect functionality */
-	void InitializeSyncHandlers_RenderThread();
-
-	/** Returns available sync handler. i.e fence not already used */
-	TSharedPtr<FRivermaxCaptureSyncData> GetAvailableSyncHandler() const;
-
-	/** Returns true if one of the sync handler is in flight waiting for its fence */
-	bool AreSyncHandlersBusy() const;
-
 	/** Configures rivermax stream with desired output options */
 	bool ConfigureStream(URivermaxMediaOutput* InMediaOutput, UE::RivermaxCore::FRivermaxOutputStreamOptions& OutOptions) const;
 
-	/** When GPUDirect is involved, we add a pass after the conversion pass to write a fence and know when we can consume the buffer */
-	void AddSyncPointPass(FRDGBuilder& GraphBuilder, const FCaptureBaseData& InBaseData, FRDGBufferRef OutputBuffer);
-
+	/** Enqueues a RHI lambda to reserve a spot for the next frame to capture */
+	void AddFrameReservationPass(FRDGBuilder& GraphBuilder);
 private:
 
 	/** Instance of the rivermax stream opened for this capture */
@@ -90,12 +86,6 @@ private:
 	/** Set of options used to configure output stream */
 	UE::RivermaxCore::FRivermaxOutputStreamOptions Options;
 
-	/** Whether sync handlers have been initialized or not.  */
-	bool bAreSyncHandlersInitialized = false;
-
 	/** Whether capture is active. Used to be queried by sync task */
 	std::atomic<bool> bIsActive;
-
-	/** Array of sync handlers (fence) to sync when captured buffer is completed */
-	TArray<TSharedPtr<FRivermaxCaptureSyncData>> SyncHandlers;
 };

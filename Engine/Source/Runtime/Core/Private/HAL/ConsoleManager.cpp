@@ -12,10 +12,12 @@ ConsoleManager.cpp: console command handling
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ConfigUtilities.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/OutputDeviceFile.h"
 #include "Modules/ModuleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/RemoteConfigIni.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "HAL/FileManager.h"
 
 DEFINE_LOG_CATEGORY(LogConsoleResponse);
 DEFINE_LOG_CATEGORY_STATIC(LogConsoleManager, Log, All);
@@ -47,11 +49,9 @@ bool IsGoodHelpString(const TCHAR* In)
 	return bGoodEndChar;
 }
 
-// Get human readable string
-// @return never 0
-static const TCHAR* GetSetByTCHAR(EConsoleVariableFlags InSetBy)
+const TCHAR* GetConsoleVariableSetByName(EConsoleVariableFlags ConsoleVariableFlags)
 {
-	EConsoleVariableFlags SetBy = (EConsoleVariableFlags)((uint32)InSetBy & ECVF_SetByMask);
+	EConsoleVariableFlags SetBy = (EConsoleVariableFlags)((uint32)ConsoleVariableFlags & ECVF_SetByMask);
 
 	switch(SetBy)
 	{
@@ -61,9 +61,10 @@ static const TCHAR* GetSetByTCHAR(EConsoleVariableFlags InSetBy)
 		CASE(Scalability)
 		CASE(GameSetting)
 		CASE(ProjectSetting)
-		CASE(DeviceProfile)
 		CASE(SystemSettingsIni)
+		CASE(DeviceProfile)
 		CASE(ConsoleVariablesIni)
+		CASE(Hotfix)
 		CASE(Commandline)
 		CASE(Code)
 		CASE(Console)
@@ -176,8 +177,8 @@ public:
 
 			const FString Message = FString::Printf(TEXT("Setting the console variable '%s' with 'SetBy%s' was ignored as it is lower priority than the previous 'SetBy%s'. Value remains '%s'"),
 				CVarName.IsEmpty() ? TEXT("unknown?") : *CVarName,
-				GetSetByTCHAR((EConsoleVariableFlags)NewPri),
-				GetSetByTCHAR((EConsoleVariableFlags)OldPri),
+				GetConsoleVariableSetByName((EConsoleVariableFlags)NewPri),
+				GetConsoleVariableSetByName((EConsoleVariableFlags)OldPri),
 				*GetString()
 				);
 				
@@ -653,8 +654,93 @@ protected:
 #endif
 };
 
+template<class T>
+class FConsoleVariableConversionHelper
+{
+public:
+	static bool GetBool(T Value);
+	static int32 GetInt(T Value);
+	static float GetFloat(T Value);
+	static FString GetString(T Value);
+};
 
+// specialization for bool
+template<> bool FConsoleVariableConversionHelper<bool>::GetBool(bool Value)
+{
+	return Value;
+}
+template<> int32 FConsoleVariableConversionHelper<bool>::GetInt(bool Value)
+{
+	return Value ? 1 : 0;
+}
+template<> float FConsoleVariableConversionHelper<bool>::GetFloat(bool Value)
+{
+	return Value ? 1.0f : 0.0f;
+}
+template<> FString FConsoleVariableConversionHelper<bool>::GetString(bool Value)
+{
+	return Value ? TEXT("true") : TEXT("false");
+}
 
+// specialization for int32
+template<> bool FConsoleVariableConversionHelper<int32>::GetBool(int32 Value)
+{
+	return Value != 0;
+}
+template<> int32 FConsoleVariableConversionHelper<int32>::GetInt(int32 Value)
+{
+	return Value;
+}
+template<> float FConsoleVariableConversionHelper<int32>::GetFloat(int32 Value)
+{
+	return (float)Value;
+}
+template<> FString FConsoleVariableConversionHelper<int32>::GetString(int32 Value)
+{
+	return FString::Printf(TEXT("%d"), Value);
+}
+
+// specialization for float
+template<> bool FConsoleVariableConversionHelper<float>::GetBool(float Value)
+{
+	return Value != 0.0f;
+}
+template<> int32 FConsoleVariableConversionHelper<float>::GetInt(float Value)
+{
+	return (int32)Value;
+}
+template<> float FConsoleVariableConversionHelper<float>::GetFloat(float Value)
+{
+	return Value;
+}
+template<> FString FConsoleVariableConversionHelper<float>::GetString(float Value)
+{
+	return FString::Printf(TEXT("%g"), Value);
+}
+
+// specialization for FString
+template<> bool FConsoleVariableConversionHelper<FString>::GetBool(FString Value)
+{
+	bool OutValue = false;
+	TTypeFromString<bool>::FromString(OutValue, *Value);
+	return OutValue;
+}
+template<> int32 FConsoleVariableConversionHelper<FString>::GetInt(FString Value)
+{
+	int32 OutValue = 0;
+	TTypeFromString<int32>::FromString(OutValue, *Value);
+	return OutValue;
+}
+template<> float FConsoleVariableConversionHelper<FString>::GetFloat(FString Value)
+{
+	float OutValue = 0.0f;
+	TTypeFromString<float>::FromString(OutValue, *Value);
+	return OutValue;
+}
+template<> FString FConsoleVariableConversionHelper<FString>::GetString(FString Value)
+{
+	return Value;
+}
 
 
 // T: bool, int32, float, FString
@@ -689,10 +775,10 @@ public:
 		}
 	}
 
-	virtual bool GetBool() const override;
-	virtual int32 GetInt() const override;
-	virtual float GetFloat() const override;
-	virtual FString GetString() const override;
+	virtual bool GetBool() const override { return FConsoleVariableConversionHelper<T>::GetBool(Value()); }
+	virtual int32 GetInt() const override { return FConsoleVariableConversionHelper<T>::GetInt(Value()); }
+	virtual float GetFloat() const override { return FConsoleVariableConversionHelper<T>::GetFloat(Value()); }
+	virtual FString GetString() const override { return FConsoleVariableConversionHelper<T>::GetString(Value()); }
 
 	virtual bool IsVariableBool() const override { return false; }
 	virtual bool IsVariableInt() const override { return false; }
@@ -745,45 +831,12 @@ template<> bool FConsoleVariable<FString>::IsVariableString() const
 
 // specialization for bool
 
-template<> bool FConsoleVariable<bool>::GetBool() const
-{
-	return Value();
-}
-template<> int32 FConsoleVariable<bool>::GetInt() const
-{
-	return Value() ? 1 : 0;
-}
-template<> float FConsoleVariable<bool>::GetFloat() const
-{
-	return Value() ? 1.0f : 0.0f;
-}
-template<> FString FConsoleVariable<bool>::GetString() const
-{
-	return Value() ? TEXT("true") : TEXT("false");
-}
 template<> TConsoleVariableData<bool>* FConsoleVariable<bool>::AsVariableBool()
 {
 	return &Data;
 }
 
 // specialization for int32
-
-template<> bool FConsoleVariable<int32>::GetBool() const
-{
-	return Value() != 0;
-}
-template<> int32 FConsoleVariable<int32>::GetInt() const
-{
-	return Value();
-}
-template<> float FConsoleVariable<int32>::GetFloat() const
-{
-	return (float)Value();
-}
-template<> FString FConsoleVariable<int32>::GetString() const
-{
-	return FString::Printf(TEXT("%d"), Value());
-}
 
 template<> TConsoleVariableData<int32>* FConsoleVariable<int32>::AsVariableInt()
 {
@@ -792,22 +845,6 @@ template<> TConsoleVariableData<int32>* FConsoleVariable<int32>::AsVariableInt()
 
 // specialization for float
 
-template<> bool FConsoleVariable<float>::GetBool() const
-{
-	return Value() != 0;
-}
-template<> int32 FConsoleVariable<float>::GetInt() const
-{
-	return (int32)Value();
-}
-template<> float FConsoleVariable<float>::GetFloat() const
-{
-	return Value();
-}
-template<> FString FConsoleVariable<float>::GetString() const
-{
-	return FString::Printf(TEXT("%g"), Value());
-}
 template<> TConsoleVariableData<float>* FConsoleVariable<float>::AsVariableFloat()
 {
 	return &Data;
@@ -823,28 +860,7 @@ template<> void FConsoleVariable<FString>::Set(const TCHAR* InValue, EConsoleVar
 		OnChanged(SetBy);
 	}
 }
-template<> bool FConsoleVariable<FString>::GetBool() const
-{
-	bool OutValue = false;
-	TTypeFromString<bool>::FromString(OutValue, *Value());
-	return OutValue;
-}
-template<> int32 FConsoleVariable<FString>::GetInt() const
-{
-	int32 OutValue = 0;
-	TTypeFromString<int32>::FromString(OutValue, *Value());
-	return OutValue;
-}
-template<> float FConsoleVariable<FString>::GetFloat() const
-{
-	float OutValue = 0.0f;
-	TTypeFromString<float>::FromString(OutValue, *Value());
-	return OutValue;
-}
-template<> FString FConsoleVariable<FString>::GetString() const
-{
-	return Value();
-}
+
 template<> TConsoleVariableData<FString>* FConsoleVariable<FString>::AsVariableString()
 {
 	return &Data;
@@ -955,22 +971,10 @@ public:
 	virtual bool IsVariableFloat() const override { return false; }
 	virtual bool IsVariableString() const override { return false; }
 
-	virtual bool GetBool() const
-	{
-		return (bool)MainValue;
-	}
-	virtual int32 GetInt() const
-	{
-		return (int32)MainValue;
-	}
-	virtual float GetFloat() const
-	{
-		return (float)MainValue;
-	}
-	virtual FString GetString() const
-	{
-		return TTypeToString<T>::ToString(MainValue);
-	}
+	virtual bool GetBool() const override { return FConsoleVariableConversionHelper<T>::GetBool(Value()); }
+	virtual int32 GetInt() const override { return FConsoleVariableConversionHelper<T>::GetInt(Value()); }
+	virtual float GetFloat() const override { return FConsoleVariableConversionHelper<T>::GetFloat(Value()); }
+	virtual FString GetString() const override { return FConsoleVariableConversionHelper<T>::GetString(Value()); }
 
 private: // ----------------------------------------------------
 
@@ -1015,14 +1019,6 @@ bool FConsoleVariableRef<float>::IsVariableFloat() const
 	return true;
 }
 
-// specialization for float
-
-template <>
-FString FConsoleVariableRef<float>::GetString() const
-{
-	// otherwise we get 2.1f would become "2.100000"
-	return FString::SanitizeFloat(RefValue);
-}
 
 // string version
 
@@ -1827,10 +1823,127 @@ void FConsoleManager::ForEachConsoleObjectThatContains(const FConsoleObjectVisit
 	}
 }
 
+template <typename FmtType, typename... Types>
+static void MultiLogf(FOutputDevice* Device, FArchive* File, const FmtType& Fmt, Types... Args)
+{
+	if (Device != nullptr)
+	{
+		Device->Logf(Fmt, Args...);
+	}
+	if (File != nullptr)
+	{
+		File->Logf(Fmt, Args...);
+	}
+}
+
+static void DumpObjects(const TMap<FString, IConsoleObject*>& ConsoleObjects, const TCHAR* Params, FOutputDevice& InAr, bool bDisplayCommands)
+{
+	bool bShowHelp = FParse::Param(Params, TEXT("showhelp"));
+	FString CSVFilename;
+	bool bWriteToCSV = FParse::Value(Params, TEXT("-csv="), CSVFilename);
+	bWriteToCSV = bWriteToCSV || FParse::Param(Params, TEXT("csv"));
+	FString Prefix = FParse::Token(Params, false);
+	if (Prefix.StartsWith(TEXT("-")))
+	{
+		Prefix = TEXT("");
+	}
+
+	// get sorted list of keys of all console objects
+	TArray<FString> SortedKeys;
+	ConsoleObjects.GetKeys(SortedKeys);
+	SortedKeys.Sort();
+
+	FOutputDevice* Log = nullptr;
+	FArchive* CSV = nullptr;
+	if (bWriteToCSV)
+	{
+		if (CSVFilename.IsEmpty())
+		{
+			CSVFilename = FPaths::Combine(FPaths::ProjectLogDir(), bDisplayCommands ? TEXT("ConsoleCommands.csv") : TEXT("ConsoleVars.csv"));
+		}
+		CSV = IFileManager::Get().CreateFileWriter(*CSVFilename, FILEWRITE_AllowRead);
+		if (CSV == nullptr)
+		{
+			InAr.Logf(TEXT("Unable to create CSV file for writing: '%s'"), *CSVFilename);
+			return;
+		}
+
+		InAr.Logf(TEXT("Dumping to CSV file: '%s'"), *CSVFilename);
+		if (bDisplayCommands)
+		{
+			CSV->Logf(TEXT("NAME%s"), bShowHelp ? TEXT(",HELP") : TEXT(""));
+		}
+		else
+		{
+			CSV->Logf(TEXT("NAME,VALUE,SETBY%s"), bShowHelp ? TEXT(",HELP") : TEXT(""));
+		}
+	}
+	else
+	{
+		// only write to the log if CSV is not used
+		Log = &InAr;
+	}
+
+	for (const FString& Key : SortedKeys)
+	{
+		if (Prefix.IsEmpty() || Key.StartsWith(Prefix))
+		{
+			IConsoleObject* Obj = ConsoleObjects[Key];
+			IConsoleVariable* CVar = Obj->AsVariable();
+			IConsoleCommand* CCmd = Obj->AsCommand();
+
+			// process optional help
+			FString Help;
+			if (bShowHelp)
+			{
+				Help = FString(Obj->GetHelp()).TrimStartAndEnd();
+				if (bWriteToCSV)
+				{
+					// newlines and commas in help will throw off the csv
+					Help = FString::Printf(TEXT(",\"%s\""), *Help.Replace(TEXT("\n"), TEXT("\\n")));
+				}
+				else
+				{
+					Help = FString::Printf(TEXT("\n%s\n "), *Help);
+				}
+			}
+
+			if (bDisplayCommands && CCmd != nullptr)
+			{
+				MultiLogf(Log, CSV, TEXT("%s%s"), *Key, *Help);
+			}
+			if (!bDisplayCommands && CVar != nullptr)
+			{
+				if (bWriteToCSV)
+				{
+					MultiLogf(Log, CSV, TEXT("%s,%s,%s%s"), *Key, *CVar->GetString(), GetConsoleVariableSetByName(CVar->GetFlags()), *Help);
+				}
+				else
+				{
+					MultiLogf(Log, CSV, TEXT("%s = \"%s\"      LastSetBy: %s%s"), *Key, *CVar->GetString(), GetConsoleVariableSetByName(CVar->GetFlags()), *Help);
+				}
+			}
+		}
+	}
+
+	delete CSV;
+}
+
 bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevice& Ar, UWorld* InWorld)
 {
 	check(InInput);
 	CSV_EVENT_GLOBAL(TEXT("Cmd: %s"), InInput);
+
+	if (FParse::Command(&InInput, TEXT("dumpcvars")))
+	{
+		DumpObjects(ConsoleObjects, InInput, Ar, false);
+		return true;
+	}
+	if (FParse::Command(&InInput, TEXT("dumpccmds")))
+	{
+		DumpObjects(ConsoleObjects, InInput, Ar, true);
+		return true;
+	}
 
 	const TCHAR* It = InInput;
 
@@ -1993,7 +2106,7 @@ bool FConsoleManager::ProcessUserConsoleInput(const TCHAR* InInput, FOutputDevic
 
 		if(bShowCurrentState)
 		{
-			Ar.Logf(TEXT("%s = \"%s\"      LastSetBy: %s"), *Param1, *CVar->GetString(), GetSetByTCHAR(CVar->GetFlags()));
+			Ar.Logf(TEXT("%s = \"%s\"      LastSetBy: %s"), *Param1, *CVar->GetString(), GetConsoleVariableSetByName(CVar->GetFlags()));
 		}
 	}
 
@@ -2542,6 +2655,14 @@ void CreateConsoleVariables()
 
 #if	!UE_BUILD_SHIPPING
 	IConsoleManager::Get().RegisterConsoleCommand( TEXT( "DumpConsoleCommands" ), TEXT( "Dumps all console vaiables and commands and all exec that can be discovered to the log/console" ), ECVF_Default );
+
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("DumpCVars"),
+		TEXT("Lists all CVars (or a subset) and their values. Can also show help, and can save to .csv.\nUsage: DumpCVars [Prefix] [-showhelp] [-csv=[path]]\nIf -csv does not have a file specified, it will create a file in the Project Logs directory"),
+		ECVF_Default);
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("DumpCCmds"),
+		TEXT("Lists all CVars (or a subset) and their values. Can also show help, and can save to .csv.\nUsage: DumpCCmds [Prefix] [-showhelp] [-csv=[path]]\nIf -csv does not have a file specified, it will create a file in the Project Logs directory"),
+		ECVF_Default);
+
 #endif // !UE_BUILD_SHIPPING
 
 	// testing code
@@ -2610,7 +2731,7 @@ static TAutoConsoleVariable<int32> CVarTranslucentSortPolicy(
 	TEXT("r.TranslucentSortPolicy"),
 	0,
 	TEXT("0: Sort based on distance from camera centerpoint to bounding sphere centerpoint. (default, best for 3D games)\n"
-		 "1: Sort based on projected distance to camera."
+		 "1: Sort based on projected distance to camera.\n"
 		 "2: Sort based on the projection onto a fixed axis. (best for 2D games)"),
 	ECVF_RenderThreadSafe);
 
@@ -2624,8 +2745,15 @@ static TAutoConsoleVariable<int32> CVarMobileHDR(
 static TAutoConsoleVariable<int32> CVarMobileShadingPath(
 	TEXT("r.Mobile.ShadingPath"),
 	0,
-	TEXT("0: Forward shading (default)"
+	TEXT("0: Forward shading (default)\n"
 		 "1: Deferred shading"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarMobileAllowDeferredShadingOpenGL(
+	TEXT("r.Mobile.AllowDeferredShadingOpenGL"),
+	0,
+	TEXT("0: Do not Allow Deferred Shading on OpenGL (default)\n"
+		 "1: Allow Deferred Shading on OpenGL"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 static TAutoConsoleVariable<int32> CVarMobileEnableStaticAndCSMShadowReceivers(
@@ -2696,14 +2824,14 @@ static TAutoConsoleVariable<int32> CVarMobileAllowDitheredLODTransition(
 static TAutoConsoleVariable<int32> CVarMobileAllowPixelDepthOffset(
 	TEXT("r.Mobile.AllowPixelDepthOffset"),
 	1,
-	TEXT("Whether to allow 'Pixel Depth Offset' in materials for ES3.1 feature level. Depth modification in pixel shaders may reduce GPU performance"),
+	TEXT("Whether to allow 'Pixel Depth Offset' in materials for Mobile feature level. Depth modification in pixel shaders may reduce GPU performance"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
 static TAutoConsoleVariable<int32> CVarMobileAllowPerPixelShadingModels(
 	TEXT("r.Mobile.AllowPerPixelShadingModels"),
 	1,
-	TEXT("Whether to allow 'Per-Pixel Shader Models (From Material Expression)' in materials for ES3.1 feature level."),
+	TEXT("Whether to allow 'Per-Pixel Shader Models (From Material Expression)' in materials for Mobile feature level."),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
@@ -2717,7 +2845,9 @@ static TAutoConsoleVariable<int32> CVarMobileEnabledShadingModelsMask(
 static TAutoConsoleVariable<int32> CVarMobileForwardEnableLocalLights(
 	TEXT("r.Mobile.Forward.EnableLocalLights"),
 	1,
-	TEXT("Enable local lights support on mobile forward. 0 is disabled, 1 is enabled (default)"),
+	TEXT("0: Local Lights Disabled (default)\n"
+		"1: Local Lights Enabled\n"
+		"2: Local Lights Prepass Enabled\n"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
 static TAutoConsoleVariable<int32> CVarMobileForwardEnableClusteredReflections(
@@ -2729,7 +2859,7 @@ static TAutoConsoleVariable<int32> CVarMobileForwardEnableClusteredReflections(
 static TAutoConsoleVariable<int32> CVarMobileSupportGPUScene(
 	TEXT("r.Mobile.SupportGPUScene"),
 	0,
-	TEXT("Whether to support GPU scene, required for auto-instancing (only ES3.1 feature level)"),
+	TEXT("Whether to support GPU scene, required for auto-instancing (only Mobile feature level)"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
@@ -3171,13 +3301,6 @@ static TAutoConsoleVariable<int32> CVarFreeSkeletalMeshBuffers(
 		 "1: Free buffers"),
 	ECVF_RenderThreadSafe);
 
-static TAutoConsoleVariable<int32> CVarTonemapperGrainQuantization(
-	TEXT("r.Tonemapper.GrainQuantization"),
-	1,
-	TEXT("0: low (minor performance benefit)\n"
-		 "1: high (default, with high frequency pixel pattern to fight 8 bit color quantization)"),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
-
 static TAutoConsoleVariable<int32> CVarDetailMode(
 	TEXT("r.DetailMode"),
 	2,
@@ -3322,7 +3445,7 @@ static TAutoConsoleVariable<int32> CVarDisableOpenGLTextureStreamingSupport(
 static FAutoConsoleVariable CVarOpenGLUseEmulatedUBs(
 	TEXT("OpenGL.UseEmulatedUBs"),
 	1,
-	TEXT("If true, enable using emulated uniform buffers on OpenGL ES3.1 mode."),
+	TEXT("If true, enable using emulated uniform buffers on OpenGL Mobile mode."),
 	ECVF_ReadOnly
 	);
 

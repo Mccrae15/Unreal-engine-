@@ -14,6 +14,14 @@
 // 3) delete permissions database then reboot mac:
 //  ~/Library/Application\\ Support/com.apple.TCC
 
+// new API doesn't compile on old IOS sdk
+#if (PLATFORM_IOS && (defined(__IPHONE_17_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_17_0))
+	#define USE_NEW_MICROPHONE_API 1
+#else
+	#define USE_NEW_MICROPHONE_API 0
+#endif
+
+
 @interface AvfMediaCaptureHelper()<AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate>
 
 @property (nonatomic,readwrite,assign) AVCaptureSession* 		captureSession;
@@ -170,11 +178,14 @@
 - (AVCaptureDevice*) CaptureDeviceWithID:(NSString*)deviceID
 {
 	AVCaptureDevice* foundDevice = nil;
-		
-	NSArray* deviceTypes = @[
-								AVCaptureDeviceTypeBuiltInWideAngleCamera,
-								AVCaptureDeviceTypeBuiltInMicrophone
-							];
+    NSArray* deviceTypes = nil;
+    
+#if USE_NEW_MICROPHONE_API
+    deviceTypes = @[AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeMicrophone];
+#else
+    deviceTypes = @[AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeBuiltInMicrophone];
+#endif
+
 
 	AVCaptureDeviceDiscoverySession* localDiscoverySession = [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:deviceTypes
 																													mediaType:nil
@@ -230,8 +241,12 @@
 		// If we have an input add output capture
 		if(self.captureSession.inputs.count > 0)
 		{
-			// Video or Audio Device - need the correct output
-			if(self.captureDevice.deviceType != AVCaptureDeviceTypeBuiltInMicrophone)
+            // Video or Audio Device - need the correct output
+#if USE_NEW_MICROPHONE_API
+            if(self.captureDevice.deviceType != AVCaptureDeviceTypeMicrophone)
+#else
+            if(self.captureDevice.deviceType != AVCaptureDeviceTypeBuiltInMicrophone)
+#endif
 			{
 				AVCaptureVideoDataOutput* videoOutput = [[AVCaptureVideoDataOutput alloc] init];
 				
@@ -346,7 +361,11 @@
 	AVMediaType type = nil;
 	if(self.captureDevice != nil)
 	{
-		if(self.captureDevice.deviceType != AVCaptureDeviceTypeBuiltInMicrophone)
+#if USE_NEW_MICROPHONE_API
+		if(self.captureDevice.deviceType != AVCaptureDeviceTypeMicrophone)
+#else
+        if(self.captureDevice.deviceType != AVCaptureDeviceTypeBuiltInMicrophone)
+#endif
 		{
 			type = AVMediaTypeVideo;
 		}

@@ -15,6 +15,7 @@ public class ModelViewViewModelBlueprint : ModuleRules
 				"CoreUObject",
 				"DeveloperSettings",
 				"Engine",
+				"FieldNotification",
 				"ModelViewViewModel",
 			});
 
@@ -22,21 +23,15 @@ public class ModelViewViewModelBlueprint : ModuleRules
 			new string[]
 			{
 				"BlueprintGraph",
+				"Kismet",
 				"KismetCompiler",
+				"PropertyEditor",
+				"PropertyPath",
 				"SlateCore",
 				"Slate",
 				"UMG",
 				"UMGEditor",
 				"UnrealEd",
 			});
-
-		PrivateIncludePaths.AddRange(
-			new string[]
-			{
-				"ModelViewViewModel/Private",
-			});
-
-
-		PublicDefinitions.Add("UE_MVVM_WITH_VIEWMODEL_EDITOR=0");
 	}
 }

@@ -42,7 +42,7 @@
 #include "InterchangePythonPipelineBase.h"
 
 
-void UMeshPaintModeSubsystem::SetViewportColorMode(EMeshPaintDataColorViewMode ColorViewMode, FEditorViewportClient* ViewportClient)
+void UMeshPaintModeSubsystem::SetViewportColorMode(EMeshPaintActiveMode ActiveMode, EMeshPaintDataColorViewMode ColorViewMode, FEditorViewportClient* ViewportClient)
 {
 	if (ViewportClient->IsPerspective())
 	{
@@ -108,6 +108,35 @@ void UMeshPaintModeSubsystem::SetViewportColorMode(EMeshPaintDataColorViewMode C
 				}
 				break;
 				}
+				UTexture* SelectedTexture = nullptr;
+				float UVChannel = 0.0f; // Keep as float since it must be a fed to the material as a scalar parameter
+				if (ActiveMode == EMeshPaintActiveMode::Texture)
+				{
+					UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+					UMeshTexturePaintingToolProperties* Settings = UMeshPaintMode::GetTextureToolProperties();
+					if (MeshPaintingSubsystem && MeshPaintingSubsystem->OverridePaintTexture.IsValid())
+					{
+						SelectedTexture = MeshPaintingSubsystem->OverridePaintTexture.Get();
+					}
+					
+					if (Settings)
+					{
+						if (!SelectedTexture)
+						{
+							SelectedTexture = Settings->PaintTexture;
+						}
+						UVChannel = Settings->UVChannel;
+					}
+
+					const UMeshComponent* LastPaintedComponent = MeshPaintingSubsystem ? MeshPaintingSubsystem->LastPaintedComponent : nullptr;
+					if (LastPaintedComponent)
+					{
+						GVertexViewModeOverrideOwnerName = *LastPaintedComponent->GetOwner()->GetName();
+					}
+				}
+
+				GVertexViewModeOverrideTexture = SelectedTexture;
+				GVertexViewModeOverrideUVChannel = UVChannel;
 			}
 		}
 	}
@@ -248,8 +277,9 @@ void UMeshPaintModeSubsystem::ImportVertexColorsToSkeletalMesh(USkeletalMesh* Sk
 	checkf(SkeletalMesh && Options && Texture, TEXT("Invalid ptr"));
 
 	// Extract color data from texture
+	// todo: better to use GetMipImage rather than GetMipData
 	TArray64<uint8> SrcMipData;
-	Texture->Source.GetMipData(SrcMipData, 0);
+	verify( Texture->Source.GetMipData(SrcMipData, 0) );
 	const uint8* MipData = SrcMipData.GetData();
 
 	TUniquePtr< FSkinnedMeshComponentRecreateRenderStateContext > RecreateRenderStateContext;
@@ -309,13 +339,14 @@ void UMeshPaintModeSubsystem::ImportVertexColorsToSkeletalMesh(USkeletalMesh* Sk
 		UInterchangeAssetImportData* InterchangeAssetImportData = Cast<UInterchangeAssetImportData>(SkeletalMesh->GetAssetImportData());
 		if (InterchangeAssetImportData)
 		{
-			for (TObjectPtr<UObject> PipelineBase : InterchangeAssetImportData->Pipelines)
+			TArray<UObject*> Pipelines = InterchangeAssetImportData->GetPipelines();
+			for (UObject* PipelineBase : Pipelines)
 			{
-				UInterchangeGenericAssetsPipeline* GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PipelineBase.Get());
+				UInterchangeGenericAssetsPipeline* GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PipelineBase);
 
 				if (!GenericAssetPipeline)
 				{
-					if (UInterchangePythonPipelineAsset* PythonPipelineAsset = Cast<UInterchangePythonPipelineAsset>(PipelineBase.Get()))
+					if (UInterchangePythonPipelineAsset* PythonPipelineAsset = Cast<UInterchangePythonPipelineAsset>(PipelineBase))
 					{
 						GenericAssetPipeline = Cast<UInterchangeGenericAssetsPipeline>(PythonPipelineAsset->GeneratedPipeline);
 					}
@@ -381,8 +412,9 @@ void UMeshPaintModeSubsystem::ImportVertexColorsToStaticMesh(UStaticMesh* Static
 	checkf(StaticMesh && Options && Texture, TEXT("Invalid ptr"));
 
 	// Extract color data from texture
+	// todo: better to use GetMipImage rather than GetMipData
 	TArray64<uint8> SrcMipData;
-	Texture->Source.GetMipData(SrcMipData, 0);
+	verify( Texture->Source.GetMipData(SrcMipData, 0) );
 	const uint8* MipData = SrcMipData.GetData();
 
 	TUniquePtr< FStaticMeshComponentRecreateRenderStateContext > RecreateRenderStateContext = MakeUnique<FStaticMeshComponentRecreateRenderStateContext>(StaticMesh);
@@ -426,8 +458,9 @@ void UMeshPaintModeSubsystem::ImportVertexColorsToStaticMeshComponent(UStaticMes
 	checkf(StaticMeshComponent && Options && Texture, TEXT("Invalid ptr"));
 
 	// Extract color data from texture
+	// todo: better to use GetMipImage rather than GetMipData
 	TArray64<uint8> SrcMipData;
-	Texture->Source.GetMipData(SrcMipData, 0);
+	verify( Texture->Source.GetMipData(SrcMipData, 0) );
 	const uint8* MipData = SrcMipData.GetData();
 
 	TUniquePtr< FComponentReregisterContext > ComponentReregisterContext;

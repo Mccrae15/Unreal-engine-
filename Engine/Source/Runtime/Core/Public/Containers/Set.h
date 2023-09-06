@@ -258,6 +258,11 @@ public:
 	}
 };
 
+namespace UE::Core::Private
+{
+	[[noreturn]] CORE_API void OnInvalidSetNum(unsigned long long NewNum);
+}
+
 /**
  * A set with an optional KeyFuncs parameters for customizing how the elements are compared and searched.  
  * E.g. You can specify a mapping from elements to keys if you want to find elements by specifying a subset of 
@@ -290,6 +295,8 @@ public:
 	static_assert(std::is_same_v<SizeType, int32>, "TSet currently only supports 32-bit allocators");
 
 private:
+	using USizeType = std::make_unsigned_t<SizeType>;
+
 	template <typename, typename>
 	friend class TScriptSet;
 
@@ -497,8 +504,14 @@ public:
 	{
 		// makes sense only when Number > Elements.Num() since TSparseArray::Reserve 
 		// does any work only if that's the case
-		if (Number > Elements.Num())
+		if ((USizeType)Number > (USizeType)Elements.Num())
 		{
+			// Trap negative reserves
+			if (Number < 0)
+			{
+				UE::Core::Private::OnInvalidSetNum((unsigned long long)Number);
+			}
+
 			// Preallocates memory for array of elements
 			Elements.Reserve(Number);
 
@@ -574,14 +587,26 @@ public:
 			Elements.IsAllocated(Index);
 	}
 
-	/** Accesses the identified element's value. */
+	/** Accesses the identified element's value. Element must be valid (see @IsValidId). */
 	FORCEINLINE ElementType& operator[](FSetElementId Id)
 	{
 		return Elements[Id.Index].Value;
 	}
 
-	/** Accesses the identified element's value. */
+	/** Accesses the identified element's value. Element must be valid (see @IsValidId). */
 	FORCEINLINE const ElementType& operator[](FSetElementId Id) const
+	{
+		return Elements[Id.Index].Value;
+	}
+
+	/** Accesses the identified element's value. Element must be valid (see @IsValidId). */
+	[[nodiscard]] FORCEINLINE ElementType& Get(FSetElementId Id)
+	{
+		return Elements[Id.Index].Value;
+	}
+
+	/** Accesses the identified element's value. Element must be valid (see @IsValidId). */
+	[[nodiscard]] FORCEINLINE const ElementType& Get(FSetElementId Id) const
 	{
 		return Elements[Id.Index].Value;
 	}
@@ -915,7 +940,10 @@ public:
 	template<typename ComparableKey>
 	FSetElementId FindIdByHash(uint32 KeyHash, const ComparableKey& Key) const
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		// Disable deprecations warnings to stop warnings being thrown by our check macro.
 		checkSlow(KeyHash == KeyFuncs::GetKeyHash(Key));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		return FSetElementId(FindIndexByHash(KeyHash, Key));
 	}
@@ -1032,7 +1060,10 @@ public:
 	template<typename ComparableKey>
 	int32 RemoveByHash(uint32 KeyHash, const ComparableKey& Key)
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		// Disable deprecations warnings to stop warnings being thrown by our check macro.
 		checkSlow(KeyHash == KeyFuncs::GetKeyHash(Key));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		if (Elements.Num())
 		{
@@ -1060,7 +1091,10 @@ public:
 	template<typename ComparableKey>
 	FORCEINLINE bool ContainsByHash(uint32 KeyHash, const ComparableKey& Key) const
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		// Disable deprecations warnings to stop warnings being thrown by our check macro.
 		checkSlow(KeyHash == KeyFuncs::GetKeyHash(Key));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		return FindIndexByHash(KeyHash, Key) != INDEX_NONE;
 	}
@@ -2043,7 +2077,10 @@ public:
 
 			// We don't update the hash because we don't need to - the new element
 			// should have the same hash, but let's just check.
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			// Disable deprecations warnings to stop warnings being thrown by our check macro.
 			checkSlow(KeyHash == GetKeyHash(ElementPtr));
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 		else
 		{
@@ -2161,7 +2198,7 @@ struct TSetPrivateFriend
 		// Load the set's new elements.
 		Ar << Set.Elements;
 
-		if(Ar.IsLoading())
+		if(Ar.IsLoading() || Ar.IsModifyingWeakAndStrongReferences())
 		{
 			// Free the old hash.
 			Set.Hash.ResizeAllocation(0,0,sizeof(FSetElementId));
@@ -2180,7 +2217,7 @@ struct TSetPrivateFriend
  	{
 		Slot << Set.Elements;
 
-		if (Slot.GetUnderlyingArchive().IsLoading())
+		if (Slot.GetUnderlyingArchive().IsLoading() || Slot.GetUnderlyingArchive().IsModifyingWeakAndStrongReferences())
 		{
 			// Free the old hash.
 			Set.Hash.ResizeAllocation(0, 0, sizeof(FSetElementId));

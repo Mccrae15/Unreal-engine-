@@ -2,8 +2,6 @@
 	
 #include "CoreMinimal.h"
 
-#if WINDOWS_USE_FEATURE_LAUNCH
-
 #include "Misc/App.h"
 #include "Misc/OutputDeviceError.h"
 #include "LaunchEngineLoop.h"
@@ -14,6 +12,19 @@
 
 #if UE_BUILD_DEBUG
 #include <crtdbg.h>
+#endif
+
+#if USING_ADDRESS_SANITISER
+
+#include <sanitizer/asan_interface.h>
+
+DEFINE_LOG_CATEGORY_STATIC(LogASan, Log, All);
+
+static void ASanErrorCallback(const char* ErrorStr)
+{
+	UE_LOG(LogASan, Fatal, TEXT("ASan Error: %s"), ANSI_TO_TCHAR(ErrorStr));
+}
+
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogLaunchWindows, Log, All);
@@ -36,7 +47,7 @@ extern "C" { _declspec(dllexport) uint32 AmdPowerXpressRequestHighPerformance = 
 // versions of Windows will transparently load default OS-provided D3D12 library.
 #define USE_D3D12_REDIST (PLATFORM_DESKTOP && PLATFORM_CPU_X86_FAMILY && PLATFORM_64BITS && 1)
 #if USE_D3D12_REDIST
-extern "C" { _declspec(dllexport) extern const UINT D3D12SDKVersion = 608; }
+extern "C" { _declspec(dllexport) extern const UINT D3D12SDKVersion = 610; }
 extern "C" { _declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\"; }
 #endif // USE_D3D12_REDIST
 
@@ -169,6 +180,9 @@ bool ProcessCommandLine()
 LAUNCH_API int32 LaunchWindowsStartup( HINSTANCE hInInstance, HINSTANCE hPrevInstance, char*, int32 nCmdShow, const TCHAR* CmdLine )
 {
 	TRACE_BOOKMARK(TEXT("WinMain.Enter"));
+#if USING_ADDRESS_SANITISER
+	__asan_set_error_report_callback(ASanErrorCallback);
+#endif
 
 	// Setup common Windows settings
 	SetupWindowsEnvironment();
@@ -257,7 +271,7 @@ LAUNCH_API int32 LaunchWindowsStartup( HINSTANCE hInInstance, HINSTANCE hPrevIns
 			}
 			LaunchStaticShutdownAfterError();
 			FPlatformMallocCrash::Get().PrintPoolsUsage();
-			FPlatformMisc::RequestExit( true );
+			FPlatformMisc::RequestExit( true, TEXT("LaunchWindowsStartup.ExceptionHandler"));
 		}
 #endif
 	}
@@ -285,6 +299,4 @@ int32 WINAPI WinMain(_In_ HINSTANCE hInInstance, _In_opt_ HINSTANCE hPrevInstanc
 	LaunchWindowsShutdown();
 	return Result;
 }
-
-#endif //WINDOWS_USE_FEATURE_LAUNCH
 

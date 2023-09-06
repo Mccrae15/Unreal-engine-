@@ -8,9 +8,11 @@
 #include "GameFramework/DefaultPhysicsVolume.h"
 #include "EngineUtils.h"
 #include "Engine/AssetUserData.h"
+#include "Engine/Engine.h"
 #include "Engine/WorldComposition.h"
 #include "WorldPartition/WorldPartition.h"
 #include "Net/UnrealNetwork.h"
+#include "Net/Core/PushModel/PushModel.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "AudioDevice.h"
 #include "Logging/MessageLog.h"
@@ -28,12 +30,13 @@
 #include "Engine/BookMark.h"
 #include "WorldSettingsCustomVersion.h"
 #include "Materials/Material.h"
+#include "ComponentRecreateRenderStateContext.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Misc/TransactionObjectEvent.h"
 #include "HierarchicalLOD.h"
-#include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerManager.h"
 #endif 
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
@@ -48,6 +51,7 @@ ENGINE_API float GNewWorldToMetersScale = 0.0f;
 AWorldSettings::FOnBookmarkClassChanged AWorldSettings::OnBookmarkClassChanged;
 AWorldSettings::FOnNumberOfBookmarksChanged AWorldSettings::OnNumberOfBoomarksChanged;
 #endif
+AWorldSettings::FOnNaniteSettingsChanged AWorldSettings::OnNaniteSettingsChanged;
 
 AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.DoNotCreateDefaultSubobject(TEXT("Sprite")))
@@ -87,6 +91,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	InstancedFoliageGridSize = DefaultPlacementGridSize = LandscapeSplineMeshesGridSize = 25600;
 	NavigationDataChunkGridSize = 102400;
 	NavigationDataBuilderLoadingCellSize = 102400 * 4;
+	bHideEnableStreamingWarning = false;
 	bIncludeGridSizeInNameForFoliageActors = false;
 	bIncludeGridSizeInNameForPartitionedActors = false;
 #endif
@@ -123,6 +128,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	LastBookmarkClass = DefaultBookmarkClass;
 
 	LevelInstancePivotOffset = FVector::ZeroVector;
+
+	bReuseAddressAndPort = false;
 }
 
 void AWorldSettings::PostInitProperties()
@@ -252,6 +259,23 @@ void AWorldSettings::OnRep_WorldGravityZ()
 	bWorldGravitySet = true;
 }
 
+void AWorldSettings::OnRep_NaniteSettings()
+{
+	// Need to recreate scene proxies when Nanite settings changes.
+	FGlobalComponentRecreateRenderStateContext Context;
+
+	OnNaniteSettingsChanged.Broadcast(this);
+}
+
+void AWorldSettings::SetAllowMaskedMaterials(bool bState)
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		NaniteSettings.bAllowMaskedMaterials = bState;
+		MARK_PROPERTY_DIRTY_FROM_NAME(AWorldSettings, NaniteSettings, this);
+	}
+}
+
 float AWorldSettings::FixupDeltaSeconds(float DeltaSeconds, float RealDeltaSeconds)
 {
 	// DeltaSeconds is assumed to be fully dilated at this time, so we will dilate the clamp range as well
@@ -301,6 +325,10 @@ void AWorldSettings::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & O
 	DOREPLIFETIME( AWorldSettings, CinematicTimeDilation );
 	DOREPLIFETIME( AWorldSettings, WorldGravityZ );
 	DOREPLIFETIME( AWorldSettings, bHighPriorityLoading );
+
+	FDoRepLifetimeParams SharedParams;
+	SharedParams.bIsPushBased = true;
+	DOREPLIFETIME_WITH_PARAMS_FAST( AWorldSettings, NaniteSettings, SharedParams );
 }
 
 const FGuid FWorldSettingCustomVersion::GUID(0x1ED048F4, 0x2F2E4C68, 0x89D053A4, 0xF18F102D);
@@ -351,9 +379,10 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	{
 		if (Ar.CustomVer(FEnterpriseObjectVersion::GUID) < FEnterpriseObjectVersion::BookmarkExtensibilityUpgrade)
 		{
-			UBookmarkBase** LocalBookmarks = reinterpret_cast<UBookmarkBase**>(static_cast<UBookMark**>(ToRawPtrArrayUnsafe(BookMarks))); //-V777
+			const TObjectPtr<UBookmarkBase>* LocalBookmarks =
+				reinterpret_cast<TObjectPtr<UBookmarkBase>*>(BookMarks);
 			const int32 NumBookmarks = sizeof(BookMarks) / sizeof(UBookMark*);
-			BookmarkArray = TArray<UBookmarkBase*>(LocalBookmarks, NumBookmarks);
+			BookmarkArray = TArray<TObjectPtr<UBookmarkBase>>(LocalBookmarks, NumBookmarks);
 			AdjustNumberOfBookmarks();
 		}
 
@@ -488,9 +517,9 @@ void AWorldSettings::SaveDefaultWorldPartitionSettings()
 	{
 		DefaultWorldPartitionSettings.LoadedEditorRegions = WorldPartition->GetUserLoadedEditorRegions();
 
-		if (const UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
+		if (const UDataLayerManager* DataLayerManager = UDataLayerManager::GetDataLayerManager(GetWorld()))
 		{
-			DataLayerSubsystem->GetUserLoadedInEditorStates(DefaultWorldPartitionSettings.LoadedDataLayers, DefaultWorldPartitionSettings.NotLoadedDataLayers);
+			DataLayerManager->GetUserLoadedInEditorStates(DefaultWorldPartitionSettings.LoadedDataLayers, DefaultWorldPartitionSettings.NotLoadedDataLayers);
 		}
 	}
 }
@@ -809,6 +838,13 @@ void AWorldSettings::InternalPostPropertyChanged(FName PropertyName)
 					OverrideBaseMaterial = GEngine->DefaultHLODFlattenMaterial;
 				}
 			}
+		}
+		else if (PropertyName == GET_MEMBER_NAME_CHECKED(FNaniteSettings, bAllowMaskedMaterials))
+		{
+			// Need to recreate scene proxies when this flag changes.
+			FGlobalComponentRecreateRenderStateContext Context;
+		
+			OnNaniteSettingsChanged.Broadcast(this);
 		}
 	}
 }

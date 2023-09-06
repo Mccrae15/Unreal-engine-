@@ -20,7 +20,7 @@ struct FProgram;
 
 		ASTChild base;
 		ASTChild patch;
-		vec2<uint16> location;
+		UE::Math::TIntVector2<uint16> location = UE::Math::TIntVector2<uint16>(0, 0);
 
 	public:
 
@@ -33,10 +33,10 @@ struct FProgram;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		void Link(FProgram& program, FLinkerOptions* Options) override;
 		FImageDesc GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
-		//TODO: void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
+		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
 		//TODO: bool IsImagePlainConstant(vec4<float>& colour) const override;
 	};
 

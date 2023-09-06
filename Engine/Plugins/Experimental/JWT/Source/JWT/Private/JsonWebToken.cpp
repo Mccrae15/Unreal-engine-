@@ -1,10 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "JsonWebToken.h"
-#include "Algo/Count.h"
+
 #include "JwtGlobals.h"
-#include "Misc/Base64.h"
+#include "JwtUtils.h"
+#include "JwtAlgorithms.h"
+
+#include "Algo/Count.h"
 #include "Serialization/JsonSerializer.h"
+
 
 // JWT header field names
 const TCHAR *const FJsonWebToken::HEADER_TYPE = TEXT("typ");
@@ -18,92 +22,10 @@ const TCHAR *const FJsonWebToken::TYPE_VALUE_JWT = TEXT("JWT");
 const TCHAR *const FJsonWebToken::CLAIM_ISSUER = TEXT("iss");
 const TCHAR *const FJsonWebToken::CLAIM_ISSUED_AT = TEXT("iat");
 const TCHAR *const FJsonWebToken::CLAIM_EXPIRATION = TEXT("exp");
+const TCHAR* const FJsonWebToken::CLAIM_NOT_BEFORE = TEXT("nbf");
 const TCHAR *const FJsonWebToken::CLAIM_SUBJECT = TEXT("sub");
 const TCHAR *const FJsonWebToken::CLAIM_AUDIENCE = TEXT("aud");
 
-
-namespace
-{
-	/**
-	 * Helper for splitting FStringViews, like FString.
-	 */
-	bool SplitStringView(const FStringView InSourceString, const TCHAR InDelimiter, FStringView& OutLeft, FStringView& OutRight)
-	{
-		int32 Position = INDEX_NONE;
-		if (!InSourceString.FindChar(InDelimiter, Position) || Position == INDEX_NONE)
-		{
-			return false;
-		}
-
-		OutLeft = InSourceString.Left(Position);
-		OutRight = InSourceString.RightChop(Position + 1);
-		return true;
-	}
-
-	/**
-	 * Splits an encoded JWT string into the 3 header, payload, and signature parts.
-	 */
-	bool SplitEncodedJsonWebTokenString(const FStringView InEncodedJsonWebTokenString, FStringView& OutEncodedHeaderPart, FStringView& OutEncodedPayloadPart, FStringView& OutEncodedSignaturePart)
-	{
-		FStringView Rest;
-
-		if (!SplitStringView(InEncodedJsonWebTokenString, TEXT('.'), OutEncodedHeaderPart, Rest))
-		{
-			UE_LOG(LogJwt, Warning, TEXT("[SplitEncodedJsonWebTokenString] Cannot extract header from token string."));
-			return false;
-		}
-
-		if (!SplitStringView(Rest, TEXT('.'), OutEncodedPayloadPart, OutEncodedSignaturePart))
-		{
-			UE_LOG(LogJwt, Warning, TEXT("[SplitEncodedJsonWebTokenString] Cannot extract payload from token string."));
-			return false;
-		}
-
-		if (OutEncodedHeaderPart.IsEmpty() || OutEncodedPayloadPart.IsEmpty())
-		{
-			UE_LOG(LogJwt, Warning, TEXT("[SplitEncodedJsonWebTokenString] Empty header and/or payload in token string."));
-			return false;
-		}
-
-		return true;
-	}
-
-	bool Base64Decode(const FStringView InSource, FString& OutDest)
-	{
-		if (InSource.IsEmpty())
-		{
-			return false;
-		}
-
-		return FBase64::Decode(FString(InSource), OutDest);
-	}
-
-	bool Base64Decode(const FStringView InSource, TArray<uint8>& OutDest)
-	{
-		if (InSource.IsEmpty())
-		{
-			return false;
-		}
-
-		return FBase64::Decode(FString(InSource), OutDest);
-	}
-
-	bool StringViewToBytes(const FStringView In, TArray<uint8>& OutBytes, const bool IsEncoded)
-	{
-		if (IsEncoded)
-		{
-			return Base64Decode(In, OutBytes);
-		}
-
-		OutBytes.Reserve(In.Len());
-		for (const TCHAR& Ch : In)
-		{
-			OutBytes.Add(static_cast<uint8>(Ch));
-		}
-
-		return true;
-	}
-}
 
 void FJsonWebToken::DumpJsonObject(const FJsonObject& InJsonObject)
 {
@@ -189,7 +111,7 @@ TSharedPtr<FJsonObject> FJsonWebToken::ParseEncodedJson(const FStringView InEnco
 	TSharedPtr<FJsonObject> ParsedObj;
 
 	FString DecodedJson;
-	if (Base64Decode(InEncodedJson, DecodedJson))
+	if (FJwtUtils::Base64UrlDecode(InEncodedJson, DecodedJson))
 	{
 		ParsedObj = FromJson(DecodedJson);
 	}
@@ -197,9 +119,10 @@ TSharedPtr<FJsonObject> FJsonWebToken::ParseEncodedJson(const FStringView InEnco
 	return ParsedObj;
 }
 
-bool FJsonWebToken::FromString(const FStringView InEncodedJsonWebToken, FJsonWebToken& OutJsonWebToken, const bool bIsSignatureEncoded)
+bool FJsonWebToken::FromString(const FStringView InEncodedJsonWebToken, FJsonWebToken& OutJsonWebToken)
 {
-	TOptional<FJsonWebToken> JsonWebToken = FromString(InEncodedJsonWebToken, bIsSignatureEncoded);
+	TOptional<FJsonWebToken> JsonWebToken = FromString(InEncodedJsonWebToken);
+
 	if (!JsonWebToken.IsSet())
 	{
 		return false;
@@ -209,7 +132,7 @@ bool FJsonWebToken::FromString(const FStringView InEncodedJsonWebToken, FJsonWeb
 	return true;
 }
 
-TOptional<FJsonWebToken> FJsonWebToken::FromString(const FStringView InEncodedJsonWebToken, const bool bIsSignatureEncoded)
+TOptional<FJsonWebToken> FJsonWebToken::FromString(const FStringView InEncodedJsonWebToken)
 {
 	// Check for the correct number of dots.
 	if (Algo::Count(InEncodedJsonWebToken, TEXT('.')) != 2)
@@ -222,10 +145,14 @@ TOptional<FJsonWebToken> FJsonWebToken::FromString(const FStringView InEncodedJs
 	FStringView EncodedHeader;
 	FStringView EncodedPayload;
 	FStringView SignaturePart;
-	if (!SplitEncodedJsonWebTokenString(InEncodedJsonWebToken, EncodedHeader, EncodedPayload, SignaturePart))
+	if (!FJwtUtils::SplitEncodedJsonWebTokenString(InEncodedJsonWebToken, EncodedHeader, EncodedPayload, SignaturePart))
 	{
 		return {};
 	}
+
+	// Store the encoded header and payload for signature validation
+	FString EncodedHeaderPayload = FString::Printf(TEXT("%s.%s"),
+		*FString(EncodedHeader), *FString(EncodedPayload));
 
 	// Decode and parse the header.
 	UE_LOG(LogJwt, VeryVerbose, TEXT("[FJsonWebToken::FromString] Parsing JWT header."));
@@ -247,11 +174,14 @@ TOptional<FJsonWebToken> FJsonWebToken::FromString(const FStringView InEncodedJs
 
 	// Decode (but do not parse) the signature if it not empty.
 	TOptional<TArray<uint8>> Signature;
+
 	if (!SignaturePart.IsEmpty())
 	{
 		UE_LOG(LogJwt, VeryVerbose, TEXT("[FJsonWebToken::FromString] Decoding JWT signature."));
+
 		TArray<uint8> SignatureBytes;
-		if (!StringViewToBytes(SignaturePart, SignatureBytes, bIsSignatureEncoded))
+
+		if (!FJwtUtils::Base64UrlDecode(SignaturePart, SignatureBytes))
 		{
 			UE_LOG(LogJwt, Verbose, TEXT("[FJsonWebToken::FromString] Failed to decode the signature."));
 			return {};
@@ -260,7 +190,8 @@ TOptional<FJsonWebToken> FJsonWebToken::FromString(const FStringView InEncodedJs
 		Signature = MoveTemp(SignatureBytes);
 	}
 
-	const FJsonWebToken JsonWebToken(InEncodedJsonWebToken, HeaderPtr.ToSharedRef(), PayloadPtr.ToSharedRef(), Signature);
+	const FJsonWebToken JsonWebToken(EncodedHeaderPayload,
+		HeaderPtr.ToSharedRef(), PayloadPtr.ToSharedRef(), Signature);
 
 	// Validate the type.  If it exists but is not a JWT, then fail.
 	FString Type;
@@ -273,13 +204,14 @@ TOptional<FJsonWebToken> FJsonWebToken::FromString(const FStringView InEncodedJs
 	return JsonWebToken;
 }
 
+
 FJsonWebToken::FJsonWebToken(
-	const FStringView InEncodedJsonWebToken,
+	const FStringView InEncodedHeaderPayload,
 	const TSharedRef<FJsonObject>& InHeaderPtr,
 	const TSharedRef<FJsonObject>& InPayloadPtr,
 	const TOptional<TArray<uint8>>& InSignature
 )
-	: EncodedJsonWebToken(InEncodedJsonWebToken)
+	: EncodedHeaderPayload(InEncodedHeaderPayload)
 	, Header(InHeaderPtr)
 	, Payload(InPayloadPtr)
 	, Signature(InSignature)
@@ -301,6 +233,36 @@ bool FJsonWebToken::GetAlgorithm(FString& OutValue) const
 	return Header->TryGetStringField(HEADER_ALGORITHM, OutValue);
 }
 
+bool FJsonWebToken::GetIssuer(FString& OutValue) const
+{
+	return Payload->TryGetStringField(CLAIM_ISSUER, OutValue);
+}
+
+bool FJsonWebToken::GetIssuedAt(int64& OutValue) const
+{
+	return Payload->TryGetNumberField(CLAIM_ISSUED_AT, OutValue);
+}
+
+bool FJsonWebToken::GetExpiration(int64& OutValue) const
+{
+	return Payload->TryGetNumberField(CLAIM_EXPIRATION, OutValue);
+}
+
+bool FJsonWebToken::GetNotBefore(int64& OutValue) const
+{
+	return Payload->TryGetNumberField(CLAIM_NOT_BEFORE, OutValue);
+}
+
+bool FJsonWebToken::GetSubject(FString& OutValue) const
+{
+	return Payload->TryGetStringField(CLAIM_SUBJECT, OutValue);
+}
+
+bool FJsonWebToken::GetAudience(FString& OutValue) const
+{
+	return Payload->TryGetStringField(CLAIM_AUDIENCE, OutValue);
+}
+
 bool FJsonWebToken::GetClaim(const FStringView InName, TSharedPtr<FJsonValue>& OutClaim) const
 {
 	OutClaim = Payload->TryGetField(FString(InName));
@@ -308,9 +270,134 @@ bool FJsonWebToken::GetClaim(const FStringView InName, TSharedPtr<FJsonValue>& O
 }
 
 
+bool FJsonWebToken::HasExpired() const
+{
+	int64 ExpirationTimestamp = 0;
+
+	if (!GetExpiration(ExpirationTimestamp))
+	{
+		UE_LOG(LogJwt, Error, TEXT("[FJsonWebToken::HasExpired] Could not get expiration timestamp."));
+
+		return false;
+	}
+
+	const FDateTime Now = FDateTime::UtcNow();
+	const FDateTime TimeExpires = FDateTime::FromUnixTimestamp(ExpirationTimestamp);
+
+	return Now > TimeExpires;
+}
+
+
 bool FJsonWebToken::Verify() const
 {
-	// Signature verification is yet to be implemented, so return true for now.
-	// TODO: Add support for RSA crypto algorithm (PlatformCrypto plugin) and key management so that signature verification can be performed.
+	UE_LOG(LogJwt, Error, TEXT("[FJsonWebToken::Verify] JWT signature verification is not implemented yet and will always return false."));
+	return false;
+}
+
+
+bool FJsonWebToken::Verify(
+	const IJwtAlgorithm& Algorithm, const FStringView ExpectedIssuer) const
+{
+	// Check whether the signature is set
+	if (!Signature.IsSet())
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] No signature to verify."));
+
+		return false;
+	}
+
+	FString IndicatedAlgorithm;
+
+	// Check whether the algorithm is set
+	if (!GetAlgorithm(IndicatedAlgorithm))
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] Could not get token's algorithm."));
+
+		return false;
+	}
+
+	// Check whether the algorithms match
+	if (Algorithm.GetAlgString() != IndicatedAlgorithm)
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] Algorithms don't match."));
+
+		return false;
+	}
+
+	TArray<uint8> EncodedHeaderPayloadBytes;
+	FJwtUtils::StringViewToBytes(EncodedHeaderPayload, EncodedHeaderPayloadBytes);
+
+	// Verify the signature
+	if (!Algorithm.VerifySignature(EncodedHeaderPayloadBytes, Signature.GetValue()))
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] Signature verification failed."));
+
+		return false;
+	}
+
+	FString Issuer;
+
+	// Check whether the issuer is set
+	if (!GetIssuer(Issuer))
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] Issuer not set."));
+
+		return false;
+	}
+
+	// Check whether the issuers match
+	if (ExpectedIssuer != FStringView(Issuer))
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] Issuer does not match expected issuer."));
+
+		return false;
+	}
+
+	int64 IssuedAt = 0, Expiration = 0;
+
+	// Check whether IssuedAt and Expiration timestamps are set
+	if (!GetIssuedAt(IssuedAt) || !GetExpiration(Expiration))
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] IssuedAt or Expiration timestamp is not set."));
+
+		return false;
+	}
+
+	const FDateTime Now = FDateTime::UtcNow();
+	const FDateTime TimeIssuedAt = FDateTime::FromUnixTimestamp(IssuedAt);
+
+	// Check whether the token has expired or is invalid
+	if (TimeIssuedAt >= Now || HasExpired())
+	{
+		UE_LOG(LogJwt, Error,
+			TEXT("[FJsonWebToken::Verify] Token not valid or has expired already."));
+
+		return false;
+	}
+
+	int64 NotBefore = 0;
+
+	// Check whether the token is used before NotBefore, if it's set
+	if (GetNotBefore(NotBefore))
+	{
+		const FDateTime TimeNotBefore = FDateTime::FromUnixTimestamp(NotBefore);
+
+		if (TimeNotBefore >= Now)
+		{
+			UE_LOG(LogJwt, Error,
+				TEXT("[FJsonWebToken::Verify] Token not valid yet."));
+
+			return false;
+		}
+	}
+
 	return true;
 }
+

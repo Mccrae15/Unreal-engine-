@@ -5,28 +5,15 @@
 =============================================================================*/
 
 #include "Shader.h"
+#include "Misc/App.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/StringBuilder.h"
-#include "Stats/StatsMisc.h"
 #include "VertexFactory.h"
-#include "ProfilingDebugging/DiagnosticTable.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Interfaces/IShaderFormat.h"
 #include "ShaderCodeLibrary.h"
 #include "ShaderCore.h"
-#include "RenderUtils.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeLock.h"
 #include "UObject/RenderingObjectVersion.h"
-#include "UObject/FortniteMainBranchObjectVersion.h"
-#include "Misc/ScopeRWLock.h"
-#include "ProfilingDebugging/LoadTimeTracker.h"
 #include "DataDrivenShaderPlatformInfo.h"
-
-#if WITH_EDITORONLY_DATA
-#include "Interfaces/IShaderFormat.h"
-#endif
 
 static EShaderPermutationFlags GetCurrentShaderPermutationFlags()
 {
@@ -486,8 +473,11 @@ void FShaderMapContent::GetShaderList(const FShaderMapBase& InShaderMap, TMap<FH
 {
 	for (int32 ShaderIndex = 0; ShaderIndex < Shaders.Num(); ++ShaderIndex)
 	{
-		FShader* Shader = Shaders[ShaderIndex].GetChecked();
-		OutShaders.Add(ShaderTypes[ShaderIndex], TShaderRef<FShader>(Shader, InShaderMap));
+		FShader* Shader = Shaders[ShaderIndex].Get();
+		if (ensure(Shader))
+		{
+			OutShaders.Add(ShaderTypes[ShaderIndex], TShaderRef<FShader>(Shader, InShaderMap));
+		}
 	}
 
 	for (const FShaderPipeline* ShaderPipeline : ShaderPipelines)
@@ -595,7 +585,10 @@ uint32 FShaderMapContent::GetMaxTextureSamplersShaderMap(const FShaderMapBase& I
 
 	for (FShader* Shader : Shaders)
 	{
-		MaxTextureSamplers = FMath::Max(MaxTextureSamplers, Shader->GetNumTextureSamplers());
+		if (ensure(Shader))
+		{
+			MaxTextureSamplers = FMath::Max(MaxTextureSamplers, Shader->GetNumTextureSamplers());
+		}
 	}
 
 	for (FShaderPipeline* Pipeline : ShaderPipelines)

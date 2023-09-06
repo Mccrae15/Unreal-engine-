@@ -152,7 +152,7 @@ UObjectBase::~UObjectBase()
 		check(IsValidLowLevel());
 		check(GetFName() == NAME_None);
 #if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
-		UE::CoreUObject::Private::FreeObjectHandle(*this);
+		UE::CoreUObject::Private::FreeObjectHandle(this);
 #endif 
 		GUObjectArray.FreeUObjectIndex(this);
 	}
@@ -218,13 +218,8 @@ void UObjectBase::AddObject(FName InName, EInternalObjectFlags InSetInternalFlag
 		InternalFlagsToSet |= EInternalObjectFlags::Native;
 		ObjectFlags &= ~RF_MarkAsNative;
 	}
-	GUObjectArray.AllocateUObjectIndex(this, InInternalIndex, InSerialNumber);
+	GUObjectArray.AllocateUObjectIndex(this, InternalFlagsToSet, InInternalIndex, InSerialNumber);
 	check(InName != NAME_None && InternalIndex >= 0);
-	if (InternalFlagsToSet != EInternalObjectFlags::None)
-	{
-		GUObjectArray.IndexToObject(InternalIndex)->SetFlags(InternalFlagsToSet);
-	
-	}	
 	HashObject(this);
 	check(IsValidLowLevel());
 }
@@ -261,8 +256,6 @@ UPackage* UObjectBase::GetExternalPackage() const
 	if ((GetFlags() & RF_HasExternalPackage) != 0)
 	{
 		ExternalPackage = GetObjectExternalPackageThreadSafe(this);
-		// if the flag is set there should be an override set.
-		ensure(ExternalPackage);
 	}
 	return ExternalPackage;
 }
@@ -289,11 +282,11 @@ void UObjectBase::SetExternalPackage(UPackage* InPackage)
 	HashObjectExternalPackage(this, InPackage);
 	if (InPackage)
 	{
-		SetFlagsTo(GetFlags() | RF_HasExternalPackage);
+		AtomicallySetFlags(RF_HasExternalPackage);
 	}
 	else
 	{
-		SetFlagsTo(GetFlags() & ~RF_HasExternalPackage);
+		AtomicallyClearFlags(RF_HasExternalPackage);
 	}
 }
 
@@ -359,11 +352,11 @@ bool UObjectBase::IsValidLowLevelFast(bool bRecursive /*= true*/) const
 	}
 
 	// These should all be 0.
-	const UPTRINT CheckZero = (ObjectFlags & ~RF_AllFlags) | ((UPTRINT)ClassPrivate & AlignmentCheck) | ((UPTRINT)OuterPrivate & AlignmentCheck);
+	const UPTRINT CheckZero = (GetFlagsInternal() & ~RF_AllFlags) | ((UPTRINT)ClassPrivate & AlignmentCheck) | ((UPTRINT)OuterPrivate & AlignmentCheck);
 	if (!!CheckZero)
 	{
 		UE_LOG(LogUObjectBase, Error, TEXT("Object flags are invalid or either Class or Outer is misaligned"));
-		return false;
+    return false;
 	}
 	// These should all be non-NULL (except CDO-alignment check which should be 0)
 	if (ClassPrivate == nullptr || ClassPrivate->ClassDefaultObject == nullptr || ((UPTRINT)ClassPrivate->ClassDefaultObject & AlignmentCheck) != 0)
@@ -391,11 +384,6 @@ bool UObjectBase::IsValidLowLevelFast(bool bRecursive /*= true*/) const
 		return false;
 	}
 	return true;
-}
-
-void UObjectBase::EmitBaseReferences(UE::GC::FTokenStreamBuilder& TokenStream)
-{
-	TokenStream.EmitExternalPackageReference();
 }
 
 #if USE_PER_MODULE_UOBJECT_BOOTSTRAP
@@ -1059,7 +1047,7 @@ void UObjectBaseInit()
 	GUObjectAllocator.AllocatePermanentObjectPool(SizeOfPermanentObjectPool);
 	GUObjectArray.AllocateObjectPool(MaxUObjects, MaxObjectsNotConsideredByGC, bPreAllocateUObjectArray);
 #if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
-	UE::CoreUObject::Private::InitObjectHandles(MaxUObjects);
+	UE::CoreUObject::Private::InitObjectHandles(GUObjectArray.GetObjectArrayCapacity());
 #endif
 
 	void InitNoPendingKill();

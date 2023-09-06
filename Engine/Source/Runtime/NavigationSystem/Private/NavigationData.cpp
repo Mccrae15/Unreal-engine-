@@ -47,16 +47,6 @@ FPathFindingQuery::FPathFindingQuery(const INavAgentInterface& InNavAgent, const
 	}
 }
 
-FPathFindingQuery::FPathFindingQuery(const FPathFindingQuery& Source) :
-	FPathFindingQueryData(Source.Owner.Get(), Source.StartLocation, Source.EndLocation, Source.QueryFilter, Source.NavDataFlags, Source.bAllowPartialPaths, Source.CostLimit, Source.bRequireNavigableEndLocation),
-	NavData(Source.NavData), PathInstanceToFill(Source.PathInstanceToFill), NavAgentProperties(Source.NavAgentProperties)
-{
-	if (!QueryFilter.IsValid() && NavData.IsValid())
-	{
-		QueryFilter = NavData->GetDefaultQueryFilter();
-	}
-}
-
 FPathFindingQuery::FPathFindingQuery(FNavPathSharedRef PathToRecalculate, const ANavigationData* NavDataOverride) :
 	FPathFindingQueryData(PathToRecalculate->GetQueryData()),
 	NavData(NavDataOverride ? NavDataOverride : PathToRecalculate->GetNavigationDataUsed()), PathInstanceToFill(PathToRecalculate), NavAgentProperties(FNavAgentProperties::DefaultProperties)
@@ -528,7 +518,7 @@ void ANavigationData::CleanUpAndMarkPendingKill()
 			World->RemoveNetworkActor(this);
 		}
 		MarkAsGarbage();
-		MarkComponentsAsPendingKill();
+		MarkComponentsAsGarbage();
 	}
 }
 

@@ -38,11 +38,12 @@ public:
 	virtual void SetBlendProfileMode(FName InBlendProfileName, EBlendProfileMode ProfileMode);
 	virtual USkeletalMeshSocket* DuplicateSocket(const FSelectedSocketInfo& SocketInfoToDuplicate, const FName& NewParentBoneName, USkeletalMesh* InSkeletalMesh) override;
 	virtual int32 ValidatePreviewAttachedObjects() override;
-	virtual int32 DeleteAnimNotifies(const TArray<FName>& InSelectedNotifyNames) override;
-	virtual void DeleteSyncMarkers(const TArray<FName>& ISyncMarkerNames) override;
+	virtual int32 DeleteAnimNotifies(const TArray<FName>& InSelectedNotifyNames, bool bDeleteFromAnimations = true) override;
+	virtual int32 DeleteSyncMarkers(const TArray<FName>& ISyncMarkerNames, bool bDeleteFromAnimations = true) override;
 	virtual void AddNotify(FName NewName) override;
 	virtual void AddSyncMarker(FName NewName) override;
-	virtual int32 RenameNotify(const FName NewName, const FName OldName) override;
+	virtual int32 RenameNotify(const FName NewName, const FName OldName, bool bRenameInAnimations = true) override;
+	virtual int32 RenameSyncMarker(const FName NewName, const FName OldName, bool bRenameInAnimations = true) override;
 	virtual void BroadcastNotifyChanged() override;
 	virtual void GetCompatibleAnimSequences(TArray<struct FAssetData>& OutAssets) override;
 	virtual void RenameSocket(const FName OldSocketName, const FName NewSocketName, USkeletalMesh* InSkeletalMesh) override;
@@ -50,12 +51,6 @@ public:
 	virtual bool DoesSocketAlreadyExist(const class USkeletalMeshSocket* InSocket, const FText& InSocketName, ESocketParentType SocketParentType, USkeletalMesh* InSkeletalMesh) const override;
 	virtual bool DoesVirtualBoneAlreadyExist(const FString& InVBName) const override;
 	virtual void RenameVirtualBone(const FName OriginalName, const FName InVBName) override;
-	virtual bool AddSmartname(const FName& InContainerName, const FName& InNewName, FSmartName& OutSmartName) override;
-	virtual void RenameSmartname(const FName InContainerName, SmartName::UID_Type InNameUid, const FName InNewName) override;
-	virtual void RemoveSmartnamesAndFixupAnimations(const FName& InContainerName, const TArray<FName>& InNames) override;
-	virtual void SetCurveMetaDataMaterial(const FSmartName& CurveName, bool bOverrideMaterial) override;
-	virtual void SetCurveMetaDataMorphTarget(const FSmartName& CurveName, bool bOverrideMorphTarget) override;
-	virtual void SetCurveMetaBoneLinks(const FSmartName& CurveName, const TArray<FBoneReference>& BoneLinks, uint8 InMaxLOD) override;
 	virtual void SetPreviewMesh(class USkeletalMesh* InSkeletalMesh) override;
 	virtual void LoadAdditionalPreviewSkeletalMeshes() override;
 	virtual void SetAdditionalPreviewSkeletalMeshes(class UDataAsset* InPreviewCollectionAsset) override;
@@ -77,8 +72,6 @@ public:
 	virtual void DeleteSlotName(const FName& InSlotName) override;
 	virtual void DeleteSlotGroup(const FName& InGroupName) override;
 	virtual void RenameSlotName(const FName InOldSlotName, const FName InNewSlotName) override;
-	virtual FDelegateHandle RegisterOnSmartNameChanged(const FOnSmartNameChanged::FDelegate& InOnSmartNameChanged) override;
-	virtual void UnregisterOnSmartNameChanged(FDelegateHandle InHandle) override;
 	virtual void RegisterOnNotifiesChanged(const FSimpleMulticastDelegate::FDelegate& InDelegate) override;
 	virtual void UnregisterOnNotifiesChanged(void* Thing) override;
 	virtual FDelegateHandle RegisterOnSlotsChanged(const FSimpleMulticastDelegate::FDelegate& InOnSlotsChanged) override;
@@ -164,7 +157,7 @@ private:
 
 private:
 	/** The skeleton we are editing */
-	class USkeleton* Skeleton;
+	TObjectPtr<class USkeleton> Skeleton;
 
 	/** All skeleton tree widgets that are editing this skeleton */
 	TArray<TWeakPtr<class SSkeletonTree>> SkeletonTrees;
@@ -174,9 +167,6 @@ private:
 
 	/** Delegate called when trees need refreshing */
 	FSimpleMulticastDelegate OnTreeRefresh;
-
-	/** Delegate called when a smart name is changed */
-	FOnSmartNameChanged OnSmartNameChanged;
 
 	/** Delegate called when notifies are modified */
 	FSimpleMulticastDelegate OnNotifiesChanged;

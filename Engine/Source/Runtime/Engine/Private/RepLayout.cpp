@@ -21,6 +21,7 @@
 #include "Serialization/ArchiveCountMem.h"
 #include "Net/Core/PushModel/Types/PushModelPerNetDriverState.h"
 #include "Net/Core/Trace/NetTrace.h"
+#include "Net/Core/NetCoreModule.h"
 #include "Stats/StatsTrace.h"
 #include "UObject/EnumProperty.h"
 #if UE_WITH_IRIS
@@ -106,12 +107,14 @@ namespace UE::Net::Private
 	 */
 	static bool bReplicateCustomDeltaPropertiesInRepIndexOrder = false;
 	static FAutoConsoleVariableRef CVarReplicateCustomDeltaPropertiesInRepIndexOrder(TEXT("net.ReplicateCustomDeltaPropertiesInRepIndexOrder"), bReplicateCustomDeltaPropertiesInRepIndexOrder, TEXT("If false (default) custom delta properties will replicate in the same order as they're added to the lifetime property array during the call to GetLifetimeReplicatedProps. If true custom delta properties will be replicated in the property RepIndex order, which is typically in increasing property offset order. Note that custom delta properties are always serialized after regular properties."));
+
+	static bool bAlwaysUpdateGuidReferenceMapForNetSerializeObjectStruct = false;
+	static FAutoConsoleVariableRef CVarAlwaysUpdateGuidReferenceMapForNetSerializeStruct(TEXT("net.AlwaysUpdateGuidReferenceMapForNetSerializeObjectStruct"), bAlwaysUpdateGuidReferenceMapForNetSerializeObjectStruct,
+		TEXT("Requires net.TrackNetSerializeObjectReferences. If true, entries in the GuidReferenceMap for NetSerialize struct properties with object properties will always be updated, not just when the Guid changes or goes NULL. This should prevent issues with old property data being applied when an unmapped actor ref in the struct is mapped."));
 }
 
 extern int32 GNumSharedSerializationHit;
 extern int32 GNumSharedSerializationMiss;
-
-extern NETCORE_API TAutoConsoleVariable<int32> CVarNetEnableDetailedScopeCounters;
 
 /** 
 * Helper method to allow us to instrument FBitArchive using FNetTraceCollector
@@ -1395,7 +1398,19 @@ static bool CompareParentProperty(
 	// Further, this will keep the last active state of the property in the shadow buffer,
 	// meaning the next time the property becomes active it will be sent to all connections.
 	const bool bIsActive = SharedParams.bForceCustomPropsActive || !SharedParams.RepChangedPropertyTracker || SharedParams.RepChangedPropertyTracker->IsParentActive(ParentIndex);
-	const bool bShouldSkip = !bIsLifetime || !bIsActive || (Parent.Condition == COND_InitialOnly && !SharedParams.bIsInitial);
+	bool bShouldSkip = !bIsLifetime || !bIsActive;
+	if (!bShouldSkip)
+	{
+		ELifetimeCondition Condition = Parent.Condition;
+		if (Condition == COND_Dynamic)
+		{
+			Condition = SharedParams.RepChangedPropertyTracker ? SharedParams.RepChangedPropertyTracker->GetDynamicCondition(ParentIndex) : COND_Dynamic;
+			bShouldSkip = Condition == COND_Never;
+		}
+
+		// Skip initial state if we're not replicating it.
+		bShouldSkip |= !SharedParams.bIsInitial && Condition == COND_InitialOnly;
+	}
 
 	if (bShouldSkip)
 	{
@@ -1510,7 +1525,8 @@ static void CompareParentProperties(
 
 			for (int32 ParentIndex = 0; ParentIndex < SharedParams.Parents.Num(); ++ParentIndex)
 			{
-				const bool bRecompareInitialProperties = SharedParams.bIsInitial && SharedParams.Parents[ParentIndex].Condition == COND_InitialOnly;
+				const ELifetimeCondition Condition = SharedParams.Parents[ParentIndex].Condition;
+				const bool bRecompareInitialProperties = SharedParams.bIsInitial && (Condition == COND_InitialOnly || (Condition == COND_Dynamic && SharedParams.RepChangedPropertyTracker && SharedParams.RepChangedPropertyTracker->GetDynamicCondition(ParentIndex) == COND_InitialOnly));
 
 				const bool bIsPropertyDirty = bRecompareInitialProperties ||
 												UE_RepLayout_Private::IsPropertyDirty(ParentIndex, bRecentlyCollectedGarbage, SharedParams, StackParams);
@@ -1522,7 +1538,7 @@ static void CompareParentProperties(
 		}
 #endif // WITH_PUSH_VALIDATION_SUPPORT
 
-		else if (UNLIKELY(SharedParams.bIsInitial && EnumHasAnyFlags(SharedParams.Flags, ERepLayoutFlags::HasInitialOnlyProperties)))
+		else if (UNLIKELY(SharedParams.bIsInitial && EnumHasAnyFlags(SharedParams.Flags, ERepLayoutFlags::HasInitialOnlyProperties | ERepLayoutFlags::HasDynamicConditionProperties)))
 		{
 			/*
 				Most replication conditions don't actually effect whether or not we compare properties,
@@ -1554,8 +1570,9 @@ static void CompareParentProperties(
 
 			for (int32 ParentIndex = 0; ParentIndex < SharedParams.Parents.Num(); ++ParentIndex)
 			{
-				if (SharedParams.Parents[ParentIndex].Condition == COND_InitialOnly ||
-					UE_RepLayout_Private::IsPropertyDirty(ParentIndex, bRecentlyCollectedGarbage, SharedParams, StackParams))
+				const ELifetimeCondition Condition = SharedParams.Parents[ParentIndex].Condition;
+				if (Condition == COND_InitialOnly || UE_RepLayout_Private::IsPropertyDirty(ParentIndex, bRecentlyCollectedGarbage, SharedParams, StackParams)
+					|| (Condition == COND_Dynamic && SharedParams.RepChangedPropertyTracker && SharedParams.RepChangedPropertyTracker->GetDynamicCondition(ParentIndex) == COND_InitialOnly))
 				{
 					UE_RepLayout_Private::CompareParentPropertyHelper(ParentIndex, SharedParams, StackParams);
 				}
@@ -1732,7 +1749,7 @@ ERepLayoutResult FRepLayout::CompareProperties(
 	const FConstRepObjectDataBuffer Data,
 	const FReplicationFlags& RepFlags) const
 {
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetReplicateDynamicPropCompareTime, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetReplicateDynamicPropCompareTime, GUseDetailedScopeCounters);
 
 	if (IsEmpty())
 	{
@@ -1926,7 +1943,7 @@ bool FRepLayout::ReplicateProperties(
 	FNetBitWriter& Writer,
 	const FReplicationFlags& RepFlags) const
 {
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetReplicateDynamicPropTime, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_NetReplicateDynamicPropTime, GUseDetailedScopeCounters);
 
 	check(ObjectClass == Owner);
 
@@ -2653,21 +2670,6 @@ void FRepSerializationSharedInfo::CountBytes(FArchive& Ar) const
 		}
 	);
 }
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-const FRepSerializedPropertyInfo* FRepSerializationSharedInfo::WriteSharedProperty(
-	const FRepLayoutCmd& Cmd,
-	const FGuid& PropertyGuid,
-	const int32 CmdIndex,
-	const uint16 Handle,
-	const FConstRepObjectDataBuffer Data,
-	const bool bWriteHandle,
-	const bool bDoChecksum)
-{
-	FRepSharedPropertyKey PropertyKey(PropertyGuid.A, PropertyGuid.B, PropertyGuid.C, (void*)Data.Data);
-	return WriteSharedProperty(Cmd, PropertyKey, CmdIndex, Handle, Data, bWriteHandle, bDoChecksum);
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 const FRepSerializedPropertyInfo* FRepSerializationSharedInfo::WriteSharedProperty(
 	const FRepLayoutCmd& Cmd,
@@ -3397,6 +3399,13 @@ static bool ReceivePropertyHelper(
 				// First time tracking these guids (or guids changed), so add (or replace) new entry
 				GuidReferencesMap->Add(AbsOffset, FGuidReferences(Bunch, Mark, TrackedUnmappedGuids, TrackedDynamicMappedGuids, Cmd.ParentIndex, CmdIndex));
 				bOutGuidsChanged = true;
+			}
+			else if (UE::Net::Private::bAlwaysUpdateGuidReferenceMapForNetSerializeObjectStruct && Cmd.Type == ERepLayoutCmdType::NetSerializeStructWithObjectReferences)
+			{
+				// If this is a NetSerialize struct with object references, there may be other properties "wrapped up" with this GUID reference.
+				// In this case, the entry in the map should be always be updated, so there isn't outdated data in the entry that also gets
+				// applied when the Guid possibly goes unmapped and then mapped later.
+				GuidReferencesMap->Add(AbsOffset, FGuidReferences(Bunch, Mark, TrackedUnmappedGuids, TrackedDynamicMappedGuids, Cmd.ParentIndex, CmdIndex));
 			}
 		}
 		else
@@ -5606,22 +5615,22 @@ static int32 InitFromStructProperty(
 	// Sort NetProperties by memory offset
 	struct FCompareUFieldOffsets
 	{
-		FORCEINLINE bool operator()(FProperty& A, FProperty& B) const
+		FORCEINLINE bool operator()(FProperty* A, FProperty* B) const
 		{
-			const int32 AOffset = GetOffsetForProperty<BuildType>(A);
-			const int32 BOffset = GetOffsetForProperty<BuildType>(B);
+			const int32 AOffset = GetOffsetForProperty<BuildType>(*A);
+			const int32 BOffset = GetOffsetForProperty<BuildType>(*B);
 
 			// Ensure stable sort
 			if (AOffset == BOffset)
 			{
-				return A.GetName() < B.GetName();
+				return A->GetName() < B->GetName();
 			}
 
 			return AOffset < BOffset;
 		}
 	};
 
-	Sort(NetProperties.GetData(), NetProperties.Num(), FCompareUFieldOffsets());
+	Algo::Sort(NetProperties, FCompareUFieldOffsets());
 
 	const uint32 StructChecksum = GetRepLayoutCmdCompatibleChecksum(SharedParams, StackParams);
 
@@ -5684,7 +5693,7 @@ static int32 InitFromProperty_r(
 		if (CmdEnd - CmdStart <= 2)
 		{
 			SharedParams.Cmds[CmdStart].Flags |= ERepLayoutCmdFlags::IsEmptyArrayStruct;
-			UE_LOG(LogRep, Warning, TEXT("InitFromProperty_r: Array property has empty inner struct: Outer=%s, Array=%s, Inner=%2"),
+			UE_LOG(LogRep, Warning, TEXT("InitFromProperty_r: Array property has empty inner struct: Outer=%s, Array=%s, Inner=%s"),
 				*ArrayProp->Owner.GetName(), *ArrayProp->GetName(), *ArrayProp->Inner->GetName());
 		}
 	}
@@ -6248,6 +6257,10 @@ void FRepLayout::InitFromClass(
 			else if (LifetimeProps[i].Condition == COND_InitialOnly)
 			{
 				Flags |= ERepLayoutFlags::HasInitialOnlyProperties;
+			}
+			else if (LifetimeProps[i].Condition == COND_Dynamic)
+			{
+				Flags |= ERepLayoutFlags::HasDynamicConditionProperties;
 			}
 
 			if (EnumHasAnyFlags(Parents[ParentIndex].Flags, ERepParentFlags::HasNetSerializeProperties | ERepParentFlags::HasObjectProperties))
@@ -7149,6 +7162,7 @@ TStaticBitArray<COND_Max> FSendingRepState::BuildConditionMapFromRepFlags(const 
 	ConditionMap[COND_SkipReplay] = !bIsReplay;
 
 	ConditionMap[COND_Custom] = true;
+	ConditionMap[COND_Dynamic] = true;
 	ConditionMap[COND_Never] = false;
 
 	return ConditionMap;
@@ -7167,19 +7181,33 @@ bool FSendingRepState::HasAnyPendingRetirements() const
 	return false;
 }
 
-void FRepLayout::RebuildConditionalProperties(
-	FSendingRepState* RESTRICT RepState,
-	const FReplicationFlags& RepFlags) const
+void FRepLayout::RebuildConditionalProperties(FSendingRepState* RepState, const FReplicationFlags RepFlags) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NetRebuildConditionalTime);
 	
-	TStaticBitArray<COND_Max> ConditionMap = FSendingRepState::BuildConditionMapFromRepFlags(RepFlags);
-	for (auto It = TBitArray<>::FIterator(RepState->InactiveParents); It; ++It)
-	{
-		It.GetValue() = !ConditionMap[Parents[It.GetIndex()].Condition];
-	}
-
 	RepState->RepFlags = RepFlags;
+
+	TStaticBitArray<COND_Max> ConditionMap = FSendingRepState::BuildConditionMapFromRepFlags(RepFlags);
+	if (EnumHasAnyFlags(Flags, ERepLayoutFlags::HasDynamicConditionProperties) && RepState->RepChangedPropertyTracker.IsValid())
+	{
+		const FRepChangedPropertyTracker* RepChangedPropertyTracker = RepState->RepChangedPropertyTracker.Get();
+		for (auto It = TBitArray<>::FIterator(RepState->InactiveParents); It; ++It)
+		{
+			ELifetimeCondition Condition = Parents[It.GetIndex()].Condition;
+			if (Condition == COND_Dynamic)
+			{
+				Condition = RepChangedPropertyTracker->GetDynamicCondition(It.GetIndex());
+			}
+			It.GetValue() = !ConditionMap[Condition];
+		}
+	}
+	else
+	{
+		for (auto It = TBitArray<>::FIterator(RepState->InactiveParents); It; ++It)
+		{
+			It.GetValue() = !ConditionMap[Parents[It.GetIndex()].Condition];
+		}
+	}
 }
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -7509,7 +7537,7 @@ ERepLayoutResult FRepLayout::DeltaSerializeFastArrayProperty(FFastArrayDeltaSeri
 {
 	using namespace UE_RepLayout_Private;
 
-	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_RepLayout_DeltaSerializeFastArray, CVarNetEnableDetailedScopeCounters.GetValueOnAnyThread() > 0);
+	CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_RepLayout_DeltaSerializeFastArray, GUseDetailedScopeCounters);
 
 	// A portion of this work could be shared across all Fast Array Properties for a given object,
 	// but that would be easier to do if the Custom Delta Serialization was completely encapsulated in FRepLayout.
@@ -8440,6 +8468,8 @@ const TCHAR* LexToString(ERepLayoutFlags Flag)
 		return TEXT("FullPushProperties");
 	case ERepLayoutFlags::HasInitialOnlyProperties:
 		return TEXT("HasInitialOnlyProperties");
+	case ERepLayoutFlags::HasDynamicConditionProperties:
+		return TEXT("HasDynamicConditionProperties");
 	default:
 		check(false);
 		return TEXT("Unknown");

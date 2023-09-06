@@ -7,6 +7,8 @@ namespace UnrealBuildTool.Rules
 	{
 		public NaniteBuilder(ReadOnlyTargetRules Target) : base(Target)
 		{
+			UnsafeTypeCastWarningLevel = WarningLevel.Error;
+
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{

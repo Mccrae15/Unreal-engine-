@@ -10,6 +10,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using Amazon.EC2.Model;
 using EpicGames.Core;
+using EpicGames.Horde.Storage;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -19,6 +20,8 @@ using Horde.Agent.Leases.Handlers;
 using Horde.Agent.Parser;
 using Horde.Agent.Services;
 using Horde.Agent.Utility;
+using Horde.Common;
+using Horde.Common.Rpc;
 using HordeCommon;
 using HordeCommon.Rpc;
 using HordeCommon.Rpc.Messages;
@@ -54,10 +57,15 @@ namespace Horde.Agent.Tests
 
 		class FakeServerLoggerFactory : IServerLoggerFactory
 		{
-			public IServerLogger CreateLogger(ISession session, string logId, string? jobId, string? batchId, string? stepId, bool? warnings = null) => new FakeServerLogger();
+			public IServerLogger CreateLogger(ISession session, string logId, string? jobId, string? batchId, string? stepId, bool? warnings = null, bool? useNewLogger = null) => new FakeServerLogger();
 		}
 
-		internal static JobExecutor NullExecutor = new SimpleTestExecutor(async (step, logger, cancellationToken) =>
+		class FakeSessionStorageFactory : IServerStorageFactory
+		{
+			public IStorageClient CreateStorageClient(Uri baseAddress, string token) => null!;
+		}
+
+		internal static IJobExecutor NullExecutor = new SimpleTestExecutor(async (step, logger, cancellationToken) =>
 		{
 			await Task.Delay(1, cancellationToken);
 			return JobStepOutcome.Success;
@@ -68,6 +76,7 @@ namespace Horde.Agent.Tests
 			_serviceCollection = new ServiceCollection();
 			_serviceCollection.AddLogging();
 			_serviceCollection.AddSingleton<IServerLoggerFactory, FakeServerLoggerFactory>();
+			_serviceCollection.AddSingleton<IServerStorageFactory, FakeSessionStorageFactory>();
 
 			_serviceCollection.Configure<AgentSettings>(settings =>
 			{
@@ -84,6 +93,7 @@ namespace Horde.Agent.Tests
 			});
 
 			_serviceCollection.AddSingleton<WorkerService>();
+			_serviceCollection.AddSingleton<StatusService>();
 
 			_serviceCollection.AddSingleton<JobHandler>();
 			_serviceCollection.AddSingleton<LeaseHandler>(sp => sp.GetRequiredService<JobHandler>());
@@ -96,7 +106,7 @@ namespace Horde.Agent.Tests
 				using CancellationTokenSource cancelSource = new CancellationTokenSource();
 				using CancellationTokenSource stepCancelSource = new CancellationTokenSource();
 
-				JobExecutor executor = new SimpleTestExecutor(async (stepResponse, logger, cancelToken) =>
+				IJobExecutor executor = new SimpleTestExecutor(async (stepResponse, logger, cancelToken) =>
 				{
 					cancelSource.CancelAfter(10);
 					await Task.Delay(5000, cancelToken);
@@ -111,7 +121,7 @@ namespace Horde.Agent.Tests
 				using CancellationTokenSource cancelSource = new CancellationTokenSource();
 				using CancellationTokenSource stepCancelSource = new CancellationTokenSource();
 
-				JobExecutor executor = new SimpleTestExecutor(async (stepResponse, logger, cancelToken) =>
+				IJobExecutor executor = new SimpleTestExecutor(async (stepResponse, logger, cancelToken) =>
 				{
 					stepCancelSource.CancelAfter(10);
 					await Task.Delay(5000, cancelToken);
@@ -135,12 +145,12 @@ namespace Horde.Agent.Tests
 			executeJobTask.BatchId = "batchId1";
 			executeJobTask.LogId = "logId1";
 			executeJobTask.JobName = "jobName1";
-			executeJobTask.Executor = SimpleTestExecutor.Name;
+			executeJobTask.JobOptions = new JobOptions { Executor = SimpleTestExecutor.Name };
 			executeJobTask.AutoSdkWorkspace = new AgentWorkspace();
 			executeJobTask.Workspace = new AgentWorkspace();
 
-			HordeRpcClientStub client = new HordeRpcClientStub(NullLogger.Instance);
-			await using RpcConnectionStub rpcConnection = new RpcConnectionStub(null!, client);
+			JobRpcClientStub client = new JobRpcClientStub(NullLogger.Instance);
+			await using RpcConnectionStub rpcConnection = new RpcConnectionStub(null!, null!, client);
 
 			await using ISession session = FakeServerSessionFactory.CreateSession(rpcConnection);
 
@@ -152,13 +162,13 @@ namespace Horde.Agent.Tests
 			GetStepResponse step2Res = new GetStepResponse(JobStepOutcome.Unspecified, JobStepState.Unspecified, true);
 			client.GetStepResponses[step2Req] = step2Res;
 
-			JobExecutor executor = new SimpleTestExecutor(async (step, logger, cancelToken) =>
+			SimpleTestExecutor executor = new SimpleTestExecutor(async (step, logger, cancelToken) =>
 			{
 				await Task.Delay(50, cancelToken);
 				return JobStepOutcome.Success;
 			});
 
-			_serviceCollection.AddSingleton<JobExecutorFactory>(x => new SimpleTestExecutorFactory(executor));
+			_serviceCollection.AddSingleton<IJobExecutorFactory>(x => new SimpleTestExecutorFactory(executor));
 			using ServiceProvider serviceProvider = _serviceCollection.BuildServiceProvider();
 
 			JobHandler jobHandler = serviceProvider.GetRequiredService<JobHandler>();
@@ -180,20 +190,20 @@ namespace Horde.Agent.Tests
 		[TestMethod]
 		public async Task PollForStepAbortFailureTest()
 		{
-			JobExecutor executor = new SimpleTestExecutor(async (step, logger, cancelToken) =>
+			IJobExecutor executor = new SimpleTestExecutor(async (step, logger, cancelToken) =>
 			{
 				await Task.Delay(50, cancelToken);
 				return JobStepOutcome.Success;
 			});
 
-			_serviceCollection.AddSingleton<JobExecutorFactory>(x => new SimpleTestExecutorFactory(executor));
+			_serviceCollection.AddSingleton<IJobExecutorFactory>(x => new SimpleTestExecutorFactory(executor));
 			using ServiceProvider serviceProvider = _serviceCollection.BuildServiceProvider();
 
 			JobHandler jobHandler = serviceProvider.GetRequiredService<JobHandler>();
 			jobHandler._stepAbortPollInterval = TimeSpan.FromMilliseconds(5);
 
-			HordeRpcClientStub client = new HordeRpcClientStub(NullLogger.Instance);
-			await using RpcConnectionStub rpcConnection = new RpcConnectionStub(null!, client);
+			JobRpcClientStub client = new JobRpcClientStub(NullLogger.Instance);
+			await using RpcConnectionStub rpcConnection = new RpcConnectionStub(null!, null!, client);
 
 			int c = 0;
 			client._getStepFunc = (request) =>
@@ -218,14 +228,14 @@ namespace Horde.Agent.Tests
 		[TestMethod]
 		public async Task Shutdown()
 		{
-			JobExecutor executor = new SimpleTestExecutor(async (step, logger, cancellationToken) =>
+			IJobExecutor executor = new SimpleTestExecutor(async (step, logger, cancellationToken) =>
 			{
 				await Task.Delay(50, cancellationToken);
 				return JobStepOutcome.Success;
 			});
 
-			_serviceCollection.AddSingleton<JobExecutorFactory>(x => new SimpleTestExecutorFactory(executor));
-			using ServiceProvider serviceProvider = _serviceCollection.BuildServiceProvider();
+			_serviceCollection.AddSingleton<IJobExecutorFactory>(x => new SimpleTestExecutorFactory(executor));
+			await using ServiceProvider serviceProvider = _serviceCollection.BuildServiceProvider();
 
 			using CancellationTokenSource cts = new ();
 			cts.CancelAfter(20000);
@@ -233,7 +243,7 @@ namespace Horde.Agent.Tests
 			await using FakeHordeRpcServer fakeServer = new();
 			await using ISession session = FakeServerSessionFactory.CreateSession(fakeServer.GetConnection());
 
-			LeaseManager manager = new LeaseManager(session, null!, serviceProvider.GetRequiredService<IEnumerable<LeaseHandler>>(), serviceProvider.GetRequiredService<IOptions<AgentSettings>>(), NullLogger.Instance);
+			LeaseManager manager = new LeaseManager(session, null!, serviceProvider.GetRequiredService<StatusService>(), serviceProvider.GetRequiredService<IEnumerable<LeaseHandler>>(), serviceProvider.GetRequiredService<IOptions<AgentSettings>>(), NullLogger.Instance);
 
 			Task handleSessionTask = Task.Run(() => manager.RunAsync(false, cts.Token), cts.Token);
 			await fakeServer.UpdateSessionReceived.Task.WaitAsync(cts.Token);
@@ -242,7 +252,7 @@ namespace Horde.Agent.Tests
 		}
 	}
 
-	internal class FakeServerSessionFactory : ISessionFactoryService
+	internal class FakeServerSessionFactory : ISessionFactory
 	{
 		readonly FakeHordeRpcServer _fakeServer;
 
@@ -256,10 +266,11 @@ namespace Horde.Agent.Tests
 		public static ISession CreateSession(IRpcConnection rpcConnection)
 		{
 			Mock<ISession> fakeSession = new Mock<ISession>(MockBehavior.Strict);
+			fakeSession.Setup(x => x.ServerUrl).Returns(new Uri("https://localhost:9999"));
 			fakeSession.Setup(x => x.AgentId).Returns("LocalAgent");
 			fakeSession.Setup(x => x.SessionId).Returns("Session");
 			fakeSession.Setup(x => x.RpcConnection).Returns(rpcConnection);
-			fakeSession.Setup(x => x.TerminateProcessesAsync(It.IsAny<ILogger>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
+			fakeSession.Setup(x => x.TerminateProcessesAsync(It.IsAny<TerminateCondition>(), It.IsAny<ILogger>(), It.IsAny<CancellationToken>())).Returns(Task.CompletedTask);
 			fakeSession.Setup(x => x.DisposeAsync()).Returns(new ValueTask());
 			fakeSession.Setup(x => x.WorkingDir).Returns(DirectoryReference.GetCurrentDirectory());
 			return fakeSession.Object;
@@ -287,7 +298,7 @@ namespace Horde.Agent.Tests
 		public readonly TaskCompletionSource<bool> UpdateSessionReceived = new();
 
 		private readonly RpcConnectionStub _connection;
-		private readonly FakeHordeRpcClient _client;
+		private readonly FakeJobRpcClient _client;
 
 		private class FakeHordeRpcClient : HordeRpc.HordeRpcClient
 		{
@@ -298,11 +309,26 @@ namespace Horde.Agent.Tests
 				_outer = outer;
 			}
 
+			public override AsyncDuplexStreamingCall<UpdateSessionRequest, UpdateSessionResponse> UpdateSession(Metadata headers = null!, DateTime? deadline = null, CancellationToken cancellationToken = default)
+			{
+				return _outer.GetUpdateSessionCall(CancellationToken.None);
+			}
+		}
+
+		private class FakeJobRpcClient : JobRpc.JobRpcClient
+		{
+			private readonly FakeHordeRpcServer _outer;
+
+			public FakeJobRpcClient(FakeHordeRpcServer outer)
+			{
+				_outer = outer;
+			}
+
 			public override AsyncUnaryCall<GetStreamResponse> GetStreamAsync(GetStreamRequest request, CallOptions options)
 			{
 				if (_outer._streamIdToStreamResponse.TryGetValue(request.StreamId, out GetStreamResponse? streamResponse))
 				{
-					return HordeRpcClientStub.Wrap(streamResponse);
+					return JobRpcClientStub.Wrap(streamResponse);
 				}
 
 				throw new RpcException(new Status(StatusCode.NotFound, $"Stream ID {request.StreamId} not found"));
@@ -312,15 +338,10 @@ namespace Horde.Agent.Tests
 			{
 				if (_outer._jobIdToJobResponse.TryGetValue(request.JobId, out GetJobResponse? jobResponse))
 				{
-					return HordeRpcClientStub.Wrap(jobResponse);
+					return JobRpcClientStub.Wrap(jobResponse);
 				}
 
 				throw new RpcException(new Status(StatusCode.NotFound, $"Job ID {request.JobId} not found"));
-			}
-
-			public override AsyncDuplexStreamingCall<UpdateSessionRequest, UpdateSessionResponse> UpdateSession(Metadata headers = null!, DateTime? deadline = null, CancellationToken cancellationToken = default)
-			{
-				return _outer.GetUpdateSessionCall(CancellationToken.None);
 			}
 		}
 		
@@ -329,13 +350,14 @@ namespace Horde.Agent.Tests
 			_serverName = "FakeServer";
 			_mockClient = new (MockBehavior.Strict);
 			_logger = NullLogger<FakeHordeRpcServer>.Instance;
-			_client = new FakeHordeRpcClient(this);
-			_connection = new RpcConnectionStub(null!, _client);
+			FakeHordeRpcClient hordeClient = new FakeHordeRpcClient(this);
+			_client = new FakeJobRpcClient(this);
+			_connection = new RpcConnectionStub(null!, hordeClient, _client);
 
 			_mockClientRef = new Mock<IRpcClientRef<HordeRpc.HordeRpcClient>>();
 			_mockClientRef
 				.Setup(m => m.Client)
-				.Returns(() => _client);
+				.Returns(() => hordeClient);
 
 			_mockConnection = new(MockBehavior.Strict);
 			_mockConnection
@@ -420,7 +442,7 @@ namespace Horde.Agent.Tests
 		public CreateSessionResponse OnCreateSessionRequest(CreateSessionRequest request)
 		{
 			CreateSessionReceived.TrySetResult(true);
-			_logger.LogInformation("OnCreateSessionRequest: {Name} {Status}", request.Name, request.Status);
+			_logger.LogInformation("OnCreateSessionRequest: {AgentId} {Status}", request.Id, request.Status);
 			CreateSessionResponse response = new()
 			{
 				AgentId = "bogusAgentId",

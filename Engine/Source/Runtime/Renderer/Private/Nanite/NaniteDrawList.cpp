@@ -224,14 +224,16 @@ void FNaniteDrawListContext::Apply(FScene& Scene)
 			FNaniteCommandInfo CommandInfo = ShadingCommands.Register(Command.MeshDrawCommand, Command.CommandHash, InstructionCount, Command.bWPOEnabled);
 			AddShadingCommand(*PrimitiveSceneInfo, CommandInfo, ENaniteMeshPass::Type(MeshPass), Command.SectionIndex);
 
-			FNaniteVisibility::PrimitiveDrawType& ShadingDraws = Visibility.GetShadingDrawReferences(PrimitiveSceneInfo);
-			ShadingDraws.Add(Command.CommandHash.AsUInt());
+			if (FNaniteVisibility::PrimitiveDrawType* ShadingDraws = Visibility.GetShadingDrawReferences(PrimitiveSceneInfo))
+			{
+				ShadingDraws->Add(Command.CommandHash.AsUInt());
+			}
 		}
 
 		for (const FDeferredPipelines& PipelinesCommand : DeferredPipelines[MeshPass])
 		{
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = PipelinesCommand.PrimitiveSceneInfo;
-			FNaniteVisibility::PrimitiveBinsType& RasterBins = Visibility.GetRasterBinReferences(PrimitiveSceneInfo);
+			FNaniteVisibility::PrimitiveBinsType* RasterBins = Visibility.GetRasterBinReferences(PrimitiveSceneInfo);
 
 			check(!bAllowComputeMaterials || (PipelinesCommand.RasterPipelines.Num() == PipelinesCommand.ShadingPipelines.Num()));
 			const int32 MaterialSectionCount = PipelinesCommand.RasterPipelines.Num();
@@ -251,7 +253,11 @@ void FNaniteDrawListContext::Apply(FScene& Scene)
 					}
 
 					AddRasterBin(*PrimitiveSceneInfo, PrimaryRasterBin, SecondaryRasterBin, ENaniteMeshPass::Type(MeshPass), uint8(MaterialSectionIndex));
-					RasterBins.Add(FNaniteVisibility::FPrimitiveBins{ PrimaryRasterBin.BinIndex, SecondaryRasterBin.BinIndex });
+
+					if (RasterBins)
+					{
+						RasterBins->Add(FNaniteVisibility::FPrimitiveBins{ PrimaryRasterBin.BinIndex, SecondaryRasterBin.BinIndex });
+					}
 				}
 
 				// Register shading bin
@@ -454,7 +460,15 @@ void FNaniteMeshProcessor::CollectPSOInitializers(
 	TArray<FPSOPrecacheData>& PSOInitializers
 )
 {
-	// Only support for the nanite vertex factory type
+	EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
+
+	// Make sure Nanite rendering is supported.
+	if (!UseNanite(ShaderPlatform))
+	{
+		return;
+	}
+
+	// Only support the Nanite vertex factory type.
 	if (VertexFactoryData.VertexFactoryType != &Nanite::FVertexFactory::StaticType)
 	{
 		return;
@@ -467,17 +481,20 @@ void FNaniteMeshProcessor::CollectPSOInitializers(
 	{
 		return;
 	}
+
+	// Nanite passes always use the forced fixed vertex element and not custom default vertex declaration even if it's provided
+	FPSOPrecacheVertexFactoryData NaniteVertexFactoryData = VertexFactoryData;
+	NaniteVertexFactoryData.CustomDefaultVertexDeclaration = nullptr;
 		
 	{
 		// generate for both skylight enabled/disabled? Or can this be known already at this point?
 		bool bRenderSkyLight = true;
-		CollectPSOInitializersForSkyLight(SceneTexturesConfig, VertexFactoryData, Material, bRenderSkyLight, PSOInitializers);
+		CollectPSOInitializersForSkyLight(SceneTexturesConfig, NaniteVertexFactoryData, Material, bRenderSkyLight, PSOInitializers);
 		
 		bRenderSkyLight = false;
-		CollectPSOInitializersForSkyLight(SceneTexturesConfig, VertexFactoryData, Material, bRenderSkyLight, PSOInitializers);
+		CollectPSOInitializersForSkyLight(SceneTexturesConfig, NaniteVertexFactoryData, Material, bRenderSkyLight, PSOInitializers);
 	}
 
-	EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
 	Nanite::CollectRasterPSOInitializers(SceneTexturesConfig, Material, PreCacheParams, ShaderPlatform, PSOInitializers);
 }
 
@@ -551,21 +568,9 @@ FMeshPassProcessor* CreateNaniteMeshProcessor(
 )
 {
 	FMeshPassProcessorRenderState PassDrawRenderState;
-
-	const bool bStencilExport = (NANITE_MATERIAL_STENCIL != 0) && !UseComputeDepthExport();
-	if (bStencilExport)
-	{
-		SetupBasePassState(FExclusiveDepthStencil::DepthWrite_StencilWrite, false, PassDrawRenderState);
-		PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Equal, true, CF_Equal>::GetRHI());
-		PassDrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthWrite_StencilWrite);
-		PassDrawRenderState.SetStencilRef(STENCIL_SANDBOX_MASK);
-	}
-	else
-	{
-		SetupBasePassState(FExclusiveDepthStencil::DepthWrite_StencilNop, false, PassDrawRenderState);
-		PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Equal>::GetRHI());
-		PassDrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthWrite_StencilNop);
-	}
+	SetupBasePassState(FExclusiveDepthStencil::DepthWrite_StencilNop, false, PassDrawRenderState);
+	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Equal>::GetRHI());
+	PassDrawRenderState.SetDepthStencilAccess(FExclusiveDepthStencil::DepthWrite_StencilNop);
 
 	return new FNaniteMeshProcessor(Scene, FeatureLevel, InViewIfDynamicMeshCommand, PassDrawRenderState, InDrawListContext);
 }

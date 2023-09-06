@@ -28,6 +28,7 @@
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
 #include "VisualizeTexture.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 /** Number of cone traced directions. */
 static const int32 NumConeSampleDirections = 9;
@@ -66,6 +67,11 @@ FVector2f JitterOffsets[4] =
 
 extern float GAOConeHalfAngle;
 extern bool DistanceFieldAOUseHistory(const FViewInfo& View);
+
+bool ShouldCompileDFScreenGridLightingShaders(EShaderPlatform ShaderPlatform)
+{
+	return ShouldCompileDistanceFieldShaders(ShaderPlatform) && !IsMobilePlatform(ShaderPlatform);
+}
 
 FVector2f GetJitterOffset(const FViewInfo& View)
 {
@@ -157,7 +163,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFScreenGridLightingShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -200,7 +206,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFScreenGridLightingShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -238,7 +244,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileDistanceFieldShaders(Parameters.Platform);
+		return ShouldCompileDFScreenGridLightingShaders(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -341,8 +347,8 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldAOScreenGrid(
 
 		auto ComputeShader = View.ShaderMap->GetShader<FConeTraceScreenGridGlobalOcclusionCS>(PermutationVector);
 
-		const uint32 GroupSizeX = FMath::DivideAndRoundUp(View.ViewRect.Size().X / GAODownsampleFactor / GConeTraceDownsampleFactor, GConeTraceGlobalDFTileSize);
-		const uint32 GroupSizeY = FMath::DivideAndRoundUp(View.ViewRect.Size().Y / GAODownsampleFactor / GConeTraceDownsampleFactor, GConeTraceGlobalDFTileSize);
+		const uint32 GroupSizeX = FMath::DivideAndRoundUp(ConeTraceBufferSize.X, GConeTraceGlobalDFTileSize);
+		const uint32 GroupSizeY = FMath::DivideAndRoundUp(ConeTraceBufferSize.Y, GConeTraceGlobalDFTileSize);
 
 		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("ConeTraceGlobal"), ComputeShader, PassParameters, FIntVector(GroupSizeX, GroupSizeY, 1));
 	}
@@ -400,7 +406,7 @@ void FDeferredShadingSceneRenderer::RenderDistanceFieldAOScreenGrid(
 		PassParameters->ScreenGridParameters = SetupScreenGridParameters(View, DistanceFieldNormal);
 		PassParameters->AOSampleParameters = SetupAOSampleParameters(View.Family->FrameNumber);
 		PassParameters->RWDistanceFieldBentNormal = GraphBuilder.CreateUAV(DownsampledBentNormal);
-		PassParameters->ConeBufferMax = FIntPoint(View.ViewRect.Width() / GAODownsampleFactor / GConeTraceDownsampleFactor - 1, View.ViewRect.Height() / GAODownsampleFactor / GConeTraceDownsampleFactor - 1);
+		PassParameters->ConeBufferMax = FIntPoint(ConeTraceBufferSize.X - 1, ConeTraceBufferSize.Y - 1);
 		PassParameters->DFNormalBufferUVMax = DFNormalBufferUVMaxValue;
 
 		auto ComputeShader = View.ShaderMap->GetShader<FCombineConeVisibilityCS>();

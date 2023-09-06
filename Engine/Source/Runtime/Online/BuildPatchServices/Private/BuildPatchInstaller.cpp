@@ -53,6 +53,10 @@
 #include "Installer/Statistics/VerifierStatistics.h"
 #include "Installer/Statistics/FileOperationTracker.h"
 
+#if !defined(ENABLE_PATCH_DISK_OVERFLOW_STORE)
+#	define ENABLE_PATCH_DISK_OVERFLOW_STORE 1
+#endif
+
 DEFINE_LOG_CATEGORY_STATIC(LogBPSInstallerConfig, Log, All);
 
 namespace ConfigHelpers
@@ -731,6 +735,24 @@ namespace BuildPatchServices
 			BuildStats.FailureType = InstallerError->GetErrorType();
 		}
 
+		// Check for any filepath violations.
+		FString InstallDirectoryWithSlash = Configuration.InstallDirectory;
+		FPaths::NormalizeDirectoryName(InstallDirectoryWithSlash);
+		FPaths::CollapseRelativeDirectories(InstallDirectoryWithSlash);
+		InstallDirectoryWithSlash /= TEXT("/");
+		TSet<FString> ExpectedFiles;
+		ManifestSet->GetExpectedFiles(ExpectedFiles);
+		for (const FString& ExpectedFile : ExpectedFiles)
+		{
+			const FString InstallConstructionFile = FPaths::ConvertRelativePathToFull(Configuration.InstallDirectory, ExpectedFile);
+			if (!InstallConstructionFile.StartsWith(InstallDirectoryWithSlash))
+			{
+				UE_LOG(LogBuildPatchServices, Error, TEXT("Installer setup: Filepath in manifest escaped install directory. %s -> %s"), *ExpectedFile, *InstallConstructionFile);
+				InstallerError->SetError(EBuildPatchInstallError::InitializationError, InitializationErrorCodes::InvalidDataInManifest);
+				bInstallerInitSuccess = false;
+			}
+		}
+
 		bIsInited = true;
 		return bInstallerInitSuccess;
 	}
@@ -1236,15 +1258,21 @@ namespace BuildPatchServices
 			TSet<FGuid> ReferencedChunks = ChunkReferenceTracker->GetReferencedChunks();
 			TUniquePtr<IChunkEvictionPolicy> MemoryEvictionPolicy(FChunkEvictionPolicyFactory::Create(
 				ChunkReferenceTracker.Get()));
+#if ENABLE_PATCH_DISK_OVERFLOW_STORE
 			TUniquePtr<IDiskChunkStore> DiskOverflowStore(FDiskChunkStoreFactory::Create(
 				FileSystem.Get(),
 				ChunkDataSerialization.Get(),
 				DiskChunkStoreStatistics.Get(),
 				FDiskChunkStoreConfig(DataStagingDir)));
+#endif // ENABLE_PATCH_DISK_OVERFLOW_STORE
 			TUniquePtr<IMemoryChunkStore> CloudChunkStore(FMemoryChunkStoreFactory::Create(
 				ChunkStoreMemorySize,
 				MemoryEvictionPolicy.Get(),
+#if ENABLE_PATCH_DISK_OVERFLOW_STORE
 				DiskOverflowStore.Get(),
+#else
+				nullptr,
+#endif // ENABLE_PATCH_DISK_OVERFLOW_STORE
 				MemoryChunkStoreStatistics.Get()));
 			TUniquePtr<IChunkDbChunkSource> ChunkDbChunkSource(FChunkDbChunkSourceFactory::Create(
 				BuildChunkDbSourceConfig(),
@@ -1315,7 +1343,9 @@ namespace BuildPatchServices
 			{
 				ChainedChunkSource->AddRepeatRequirement(LostChunk);
 			};
+#if ENABLE_PATCH_DISK_OVERFLOW_STORE
 			DiskOverflowStore->SetLostChunkCallback(LostChunkCallback);
+#endif // ENABLE_PATCH_DISK_OVERFLOW_STORE
 			CloudChunkStore->SetLostChunkCallback(LostChunkCallback);
 
 
@@ -1365,7 +1395,7 @@ namespace BuildPatchServices
 
 			// Wait for the file constructor to complete
 			ConstructTimer.Start();
-			FileConstructor->Wait();
+			FileConstructor->Run();
 			ConstructTimer.Stop();
 			FileConstructor->OnBeforeDeleteFile().Remove(OnBeforeDeleteFileHandle);
 			UE_LOG(LogBuildPatchServices, Log, TEXT("File construction complete"));

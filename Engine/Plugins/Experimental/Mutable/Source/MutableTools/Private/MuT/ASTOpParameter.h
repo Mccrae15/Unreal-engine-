@@ -31,9 +31,6 @@ namespace mu
 		//** Ranges adding dimensions to this parameter. */
 		TArray<FRangeData> ranges;
 
-		//! Additional images attached to the parameter
-		TArray<ASTChild> additionalImages;
-
 		/** Index of the parameter in the program parameter list. Generated ar link time. */
 		int32 LinkedParameterIndex = -1;
 
@@ -47,7 +44,7 @@ namespace mu
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void Assert() override;
-		void Link(FProgram& program, const FLinkerOptions*) override;
+		void Link(FProgram& program, FLinkerOptions*) override;
 		int EvaluateInt(ASTOpList& facts, bool& unknown) const override;
 		FBoolEvalResult EvaluateBool(ASTOpList& /*facts*/, FEvaluateBoolCache* = nullptr) const override;
 		FImageDesc GetImageDesc(bool, FGetImageDescContext*) const override;

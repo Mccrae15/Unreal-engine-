@@ -30,6 +30,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Net/Core/PushModel/PushModel.h"
+#include  "UObject/ICookInfo.h"
 
 #define LOCTEXT_NAMESPACE "SceneComponent"
 
@@ -713,7 +714,10 @@ void USceneComponent::CreateSpriteComponent(class UTexture2D* SpriteTexture, boo
 	if (bVisualizeComponent && SpriteComponent == nullptr && GetOwner() && !GetWorld()->IsGameWorld())
 	{
 		// Create a new billboard component to serve as a visualization of the actor until there is another primitive component
-		SpriteComponent = NewObject<UBillboardComponent>(GetOwner(), NAME_None, RF_Transactional | RF_Transient | RF_TextExportTransient);
+		{
+			FCookLoadScope EditorOnlyLoadScope(ECookLoadType::EditorOnly);
+			SpriteComponent = NewObject<UBillboardComponent>(GetOwner(), NAME_None, RF_Transactional | RF_Transient | RF_TextExportTransient);
+		}
 
 		SpriteComponent->Sprite = SpriteTexture? SpriteTexture : LoadObject<UTexture2D>(nullptr, TEXT("/Engine/EditorResources/EmptyActor.EmptyActor"));
 		SpriteComponent->SetRelativeScale3D_Direct(FVector(0.5f, 0.5f, 0.5f));
@@ -1209,29 +1213,40 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				if (USceneComponent* Child = AttachChildren.Last())
 				{
-					if (Child->GetAttachParent())
+					USceneComponent* ChildAttachParentWas = Child->GetAttachParent();
+					if (ChildAttachParentWas)
 					{
-						// If the child is also being destroyed during GC, don't reattach it to anything
-						if (Child->HasAnyInternalFlags(SkipFlags))
-						{
-							Child->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-						}
-						else if (Child->GetAttachParent() == this)
+						if (ChildAttachParentWas == this)
 						{
 							bool bNeedsDetach = true;
-							USceneComponent* NewParent = GetAttachParent();
-							// Walk up the hierarchy until we find a valid parent which is not marked for destruction by gameplay or GC 
-							while (NewParent && NewParent->HasAnyInternalFlags(SkipFlags))
+							// If the child is also being destroyed during GC, don't reattach it to anything
+							if (!Child->HasAnyInternalFlags(SkipFlags))
 							{
-								NewParent = NewParent->GetAttachParent();
+								// child is alive, attempt to reattach it to some living parent:
+								USceneComponent* NewParent = GetAttachParent();
+								// Walk up the hierarchy until we find a valid parent which is not marked for destruction by gameplay or GC 
+								while (NewParent && NewParent->HasAnyInternalFlags(SkipFlags))
+								{
+									NewParent = NewParent->GetAttachParent();
+								}
+								if(NewParent)
+								{
+									// if we reattach to a new parent, we won't need to detach, in that case AttachChildren should decrement
+									// from the AttachToComponent call
+									const bool bAttachedToNewParent = Child->AttachToComponent(NewParent, FAttachmentTransformRules::KeepWorldTransform);
+									if(bAttachedToNewParent)
+									{
+										checkf(ChildCount > AttachChildren.Num(), TEXT("AttachChildren count did not decrease while reattaching '%s', likely caused by OnAttachmentChanged introducing new children, which could lead to an infinite loop."), *Child->GetName());
+									}
+									bNeedsDetach = !bAttachedToNewParent;
+								}
 							}
-							if (NewParent)
-							{
-								bNeedsDetach = (Child->AttachToComponent(NewParent, FAttachmentTransformRules::KeepWorldTransform) == false);
-							}
+
 							if (bNeedsDetach)
 							{
+								checkf(ChildAttachParentWas->GetAttachChildren().Contains(Child), TEXT("Did not find '%s', in Child->AttachParent->AttachChildren. Child: '%s', Child->AttachParent: '%s'"), *GetFullName(), *Child->GetFullName(), *Child->GetAttachParent()->GetFullName());
 								Child->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+								checkf(ChildCount > AttachChildren.Num(), TEXT("AttachChildren count increased while detaching '%s', likely caused by OnAttachmentChanged introducing new children, which could lead to an infinite loop."), *Child->GetName());
 							}
 						}
 						else
@@ -1259,7 +1274,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 						}
 						AttachChildren.Pop(false);
 					}
-					checkf(ChildCount > AttachChildren.Num(), TEXT("AttachChildren count increased while detaching '%s', likely caused by OnAttachmentChanged introducing new children, which could lead to an infinite loop."), *Child->GetName());
 				}
 				else
 				{
@@ -2262,8 +2276,8 @@ void USceneComponent::DetachFromComponent(const FDetachmentTransformRules& Detac
 			PrimComp->UnWeldFromParent();
 		}
 		
-		// Due to replication order the ensure below is only valid on server OR if not both parent and child are replicated
-		if ((Owner && Owner->GetLocalRole() == ROLE_Authority) || !(GetIsReplicated() && GetAttachParent()->GetIsReplicated()))
+		// Due to replication order the ensure below is only valid on server OR if neither the parent nor child are replicated
+		if ((Owner && Owner->GetLocalRole() == ROLE_Authority) || !(GetIsReplicated() || GetAttachParent()->GetIsReplicated()))
 		{
 			// Make sure parent points to us if we're registered
 			ensureMsgf(!bRegistered || GetAttachParent()->GetAttachChildren().Contains(this), TEXT("Attempt to detach SceneComponent '%s' owned by '%s' from AttachParent '%s' while not attached."), *GetName(), (Owner ? *Owner->GetName() : TEXT("Unowned")), *GetAttachParent()->GetName());
@@ -2523,16 +2537,6 @@ void USceneComponent::UpdateChildTransforms(EUpdateTransformFlags UpdateTransfor
 				}
 			}
 		}
-	}
-}
-
-void USceneComponent::PostInterpChange(FProperty* PropertyThatChanged)
-{
-	Super::PostInterpChange(PropertyThatChanged);
-
-	if (PropertyThatChanged->GetFName() == GetRelativeScale3DPropertyName())
-	{
-		UpdateComponentToWorld();
 	}
 }
 

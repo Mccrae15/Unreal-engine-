@@ -106,6 +106,9 @@ TOnlineAsyncOpHandle<FQueryAchievementStates> FAchievementsNull::QueryAchievemen
 	}
 
 	Op->SetResult({});
+
+	OnAchievementStatesQueried(Op->GetParams().LocalAccountId);
+
 	return Op->GetHandle();
 }
 
@@ -215,9 +218,9 @@ TOnlineResult<FDisplayAchievementUI> FAchievementsNull::DisplayAchievementUI(FDi
 	}
 
 	const FAchievementState& AchievementState = LocalUserAchievementStates->FindChecked(Params.AchievementId);
-	UE_LOG(LogTemp, Display, TEXT("AchievementsNull: DisplayAchievementUI LocalAccountId=[%s]"), *ToLogString(Params.LocalAccountId));
-	UE_LOG(LogTemp, Display, TEXT("AchievementsNull: DisplayAchievementUI AchievementDefinition=[%s]"), *ToLogString(*AchievementDefinition));
-	UE_LOG(LogTemp, Display, TEXT("AchievementsNull: DisplayAchievementUI AchievementState=[%s]"), *ToLogString(AchievementState));
+	UE_LOG(LogOnlineServices, Display, TEXT("AchievementsNull: DisplayAchievementUI LocalAccountId=[%s]"), *ToLogString(Params.LocalAccountId));
+	UE_LOG(LogOnlineServices, Display, TEXT("AchievementsNull: DisplayAchievementUI AchievementDefinition=[%s]"), *ToLogString(*AchievementDefinition));
+	UE_LOG(LogOnlineServices, Display, TEXT("AchievementsNull: DisplayAchievementUI AchievementState=[%s]"), *ToLogString(AchievementState));
 
 	return TOnlineResult<FDisplayAchievementUI>(FDisplayAchievementUI::Result());
 }

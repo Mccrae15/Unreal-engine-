@@ -23,42 +23,25 @@
 #include "DerivedDataSharedString.h"
 #include "HAL/IConsoleManager.h"
 
+#include "astcenc.h"
+
 /****
 * 
-* TextureFormatASTC runs the ARM astcenc.exe command line tool
+* TextureFormatASTC runs the ARM astcenc
 * 
-* or (by default) redirects to Intel ISPC texcomp* 
+* or redirects to Intel ISPC texcomp* 
 * 
 *****/
 
 // when GASTCCompressor == 0 ,use TextureFormatIntelISPCTexComp instead of this
 // @todo Oodle : GASTCCompressor global breaks DDC2.  Need to pass through so TBW can see.
-int32 GASTCCompressor = 0;
+int32 GASTCCompressor = 1;
 static FAutoConsoleVariableRef CVarASTCCompressor(
 	TEXT("cook.ASTCTextureCompressor"),
 	GASTCCompressor,
 	TEXT("0: IntelISPC, 1: Arm"),
 	ECVF_Default | ECVF_ReadOnly
 );
-
-// turn on to leave temp files in Intermediate/Cache for debugging
-static int32 GASTCDebugLeaveTempFiles = 0;
-static FAutoConsoleVariableRef CVarDebugLeaveTempFiles(
-	TEXT("cook.ASTCDebugLeaveTempFiles"),
-	GASTCDebugLeaveTempFiles,
-	TEXT("0: default, 1: leave debug temp files in Intermediate/Cache"),
-	ECVF_Default | ECVF_ReadOnly
-);
-
-// turn on to write decoded image in Intermediate/Cache for debugging
-static int32 GASTCDebugWriteDecodedImage = 0;
-static FAutoConsoleVariableRef CVarDebugWriteDecodedImage(
-	TEXT("cook.ASTCDebugWriteDecodedImage"),
-	GASTCDebugWriteDecodedImage,
-	TEXT("0: default, 1: write decoded image in Intermediate/Cache"),
-	ECVF_Default | ECVF_ReadOnly
-);
-
 
 #if PLATFORM_WINDOWS || PLATFORM_LINUX || PLATFORM_MAC
 	#define SUPPORTS_ISPC_ASTC	1
@@ -67,7 +50,7 @@ static FAutoConsoleVariableRef CVarDebugWriteDecodedImage(
 #endif
 
 // increment this if you change anything that will affect compression in this file
-#define BASE_ASTC_FORMAT_VERSION 46
+#define BASE_ASTC_FORMAT_VERSION 48
 
 #define MAX_QUALITY_BY_SIZE 4
 #define MAX_QUALITY_BY_SPEED 3
@@ -100,8 +83,10 @@ class FASTCTextureBuildFunction final : public FTextureBuildFunction
 	op(ASTC_RGBAuto) \
 	op(ASTC_RGBA_HQ) \
 	op(ASTC_RGB_HDR) \
+	op(ASTC_NormalLA) \
 	op(ASTC_NormalAG) \
-	op(ASTC_NormalRG)
+	op(ASTC_NormalRG) \
+	op(ASTC_NormalRG_Precise) // Encoded as LA for precision, mapped to RG at runtime. RHI needs to support PF_ASTC_*_NORM_RG formats (requires runtime swizzle)
 
 	#define DECL_FORMAT_NAME(FormatName) static FName GTextureFormatName##FormatName = FName(TEXT(#FormatName));
 		ENUM_SUPPORTED_FORMATS(DECL_FORMAT_NAME);
@@ -136,6 +121,14 @@ class FASTCTextureBuildFunction final : public FTextureBuildFunction
 	#pragma pack(pop)
 #endif
 
+static bool IsNormalMapFormat(FName TextureFormatName)
+{
+	return
+		TextureFormatName == GTextureFormatNameASTC_NormalAG ||
+		TextureFormatName == GTextureFormatNameASTC_NormalRG ||
+		TextureFormatName == GTextureFormatNameASTC_NormalLA ||
+		TextureFormatName == GTextureFormatNameASTC_NormalRG_Precise;
+}
 
 static int32 GetDefaultCompressionBySizeValue(FCbObjectView InFormatConfigOverride)
 {
@@ -202,49 +195,6 @@ static int32 GetDefaultCompressionBySpeedValue(FCbObjectView InFormatConfigOverr
 	}
 }
 
-static FString GetQualityString(EPixelFormat PixelFormat,const FCbObjectView& InFormatConfigOverride)
-{
-	// convert to a string
-	FString CompressionMode;
-
-	switch (PixelFormat)
-	{
-		case PF_ASTC_12x12:
-		case PF_ASTC_12x12_HDR:
-			CompressionMode = TEXT("12x12"); 
-			break;
-		case PF_ASTC_10x10:
-		case PF_ASTC_10x10_HDR:
-			CompressionMode = TEXT("10x10"); 
-			break;
-		case PF_ASTC_8x8:
-		case PF_ASTC_8x8_HDR:
-			CompressionMode = TEXT("8x8"); 
-			break;
-		case PF_ASTC_6x6:
-		case PF_ASTC_6x6_HDR:
-			CompressionMode = TEXT("6x6");
-			break;
-		case PF_ASTC_4x4:
-		case PF_ASTC_4x4_HDR:
-			CompressionMode = TEXT("4x4");
-			break;
-		default:
-			UE_LOG(LogTextureFormatASTC, Fatal, TEXT("ASTC size quality higher than expected"));
-	}
-	
-	switch ( GetDefaultCompressionBySpeedValue(InFormatConfigOverride) )
-	{
-		case 0:	CompressionMode += TEXT(" -fastest"); break;
-		case 1:	CompressionMode += TEXT(" -fast"); break;
-		case 2:	CompressionMode += TEXT(" -medium"); break;
-		case 3:	CompressionMode += TEXT(" -thorough"); break;
-		default: UE_LOG(LogTextureFormatASTC, Fatal, TEXT("ASTC speed quality higher than expected"));
-	}
-
-	return CompressionMode;
-}
-
 static EPixelFormat GetQualityFormat(const FTextureBuildSettings& BuildSettings)
 {
 	// code dupe between TextureFormatASTC  and TextureFormatISPC
@@ -252,12 +202,16 @@ static EPixelFormat GetQualityFormat(const FTextureBuildSettings& BuildSettings)
 	const FCbObjectView& InFormatConfigOverride = BuildSettings.FormatConfigOverride;
 	int32 OverrideSizeValue= BuildSettings.CompressionQuality;
 
-	bool bIsNormalMap = (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalAG || BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG);
+	bool bIsNormalMap = IsNormalMapFormat(BuildSettings.TextureFormatName);
 	bool bIsHQ = BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBA_HQ;
 	bool bHDRFormat = BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB_HDR;
 
 	if ( bIsNormalMap )
 	{
+		if ( BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG_Precise )
+		{
+			return PF_ASTC_6x6_NORM_RG;
+		}
 		return PF_ASTC_6x6;
 	}
 	else if ( bIsHQ )
@@ -300,250 +254,219 @@ static EPixelFormat GetQualityFormat(const FTextureBuildSettings& BuildSettings)
 	return Format;
 }
 
-static bool CompressSliceToASTC(
-	const FImageView & SourceImage,
-	FString CompressionParameters,
-	TArray64<uint8>& OutCompressedData,
-	IImageWrapperModule& ImageWrapperModule,
-	bool bSRGB
-	)
+
+static bool ASTCEnc_Compress(
+	const FImage& InImage,
+	const FTextureBuildSettings& BuildSettings,
+	const FIntVector3& InMip0Dimensions,
+	int32 InMip0NumSlicesNoDepth,
+	FStringView DebugTexturePathName,
+	bool bImageHasAlphaChannel,
+	FCompressedImage2D& OutCompressedImage)
 {
-	// at this point, SourceImage has been converted to RGBA8 or RGBA16F based on whether
-	//	 the request TextureFormatName is "ASTC_RGB_HDR" or not, so we can ask if "source" is HDR :
-	bool bHDR = ERawImageFormat::IsHDR(SourceImage.Format);
-	
-	EImageFormat FileFormat = bHDR ? EImageFormat::EXR : EImageFormat::PNG;
-	TArray64<uint8> FileData;
-	bool bCompressSucceeded = ImageWrapperModule.CompressImage(FileData,FileFormat,SourceImage,(int32)EImageCompressionQuality::Uncompressed);
-	if ( ! bCompressSucceeded )
+	bool bHDRImage = BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB_HDR;
+	// DestGamma is how the texture will be bound to GPU
+	bool bSRGB = BuildSettings.GetDestGammaSpace() == EGammaSpace::sRGB;
+	check( !bHDRImage || !bSRGB );
+
+	// Get Raw Image Data from passed in FImage & convert to BGRA8 or RGBA16F
+	// note: wasteful, often copies image to same format
+	FImage Image;
+	InImage.CopyTo(Image, bHDRImage ? ERawImageFormat::RGBA16F : ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
+
+	if (bHDRImage)
 	{
-		UE_LOG(LogTextureFormatASTC, Error, TEXT("CompressSliceToASTC CompressImage failed"));
-		return false;
+		// ASTC can encode floats that BC6H can't
+		//  but still clamp as if we were BC6H, so that the same output is made
+		// (eg. ASTC can encode A but BC6 can't; we stuff 1 in A here)
+		FImageCore::SanitizeFloat16AndSetAlphaOpaqueForBC6H(Image);
 	}
 
-	int64 FileDataSize = FileData.Num();
-
-	// make a random file name to write the image :
-	FGuid Guid;
-	FPlatformMisc::CreateGuid(Guid);
-	FString BaseFilePath = FPaths::ProjectIntermediateDir() + FString::Printf(TEXT("Cache/TFASTC-%08x-%08x-%08x-%08x-"), Guid.A, Guid.B, Guid.C, Guid.D);
-	FString InputFilePath = BaseFilePath + TEXT("In.") + ImageWrapperModule.GetExtension(FileFormat);
-	FString OutputFilePath = BaseFilePath + TEXT("Out.astc");
-
-	// write to InputFilePath :
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ASTC.WriteFile);
-
-		FArchive* PNGFile = IFileManager::Get().CreateFileWriter(*InputFilePath);
-		while (!PNGFile)
-		{
-			// CreateFileWriter occasionally returns NULL due to error code ERROR_SHARING_VIOLATION
-			// ... no choice but to wait for the file to become free to access
+	bool bIsNormalMap = IsNormalMapFormat(BuildSettings.TextureFormatName);
 		
-			UE_LOG(LogTextureFormatASTC, Display, TEXT("CreateFileWriter for %s failed, trying again..."), *InputFilePath);
+	// Determine the compressed pixel format and compression parameters
+	EPixelFormat CompressedPixelFormat = GetQualityFormat(BuildSettings);
 
-			FPlatformProcess::Sleep(0.01f);                             
-			PNGFile = IFileManager::Get().CreateFileWriter(*InputFilePath);   
-		}
-		PNGFile->Serialize((void*)&FileData[0], FileDataSize);
-		delete PNGFile;
-	}
-
-	// FileData written, can free now :
-	FileData.Reset();
-	
-	// Compress PNG file to ASTC (using the reference astcenc.exe from ARM)
-	
-	/*
-
-	The modes available are:
-
-		-cl : use the linear LDR color profile.
-		-cs : use the sRGB LDR color profile.
-		-ch : use the HDR color profile, tuned for HDR RGB and LDR A.
-		-cH : use the HDR color profile, tuned for HDR RGBA.
-
-	*/
-
-	const TCHAR * CompressionMode;
-	if ( bHDR )
+	uint32 EncFlags = 0;
+	if (bIsNormalMap)
 	{
-		CompressionMode = TEXT("-ch");
+		EncFlags |= ASTCENC_FLG_MAP_NORMAL;
 	}
-	else if ( bSRGB )
-	{	
-		CompressionMode = TEXT("-cs");
+
+	astcenc_profile EncProfile = (bHDRImage ? ASTCENC_PRF_HDR_RGB_LDR_A : (bSRGB ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR));
+	float EncQuality = ASTCENC_PRE_FAST;
+	switch (GetDefaultCompressionBySpeedValue(BuildSettings.FormatConfigOverride))
+	{
+		case 0:	EncQuality = ASTCENC_PRE_FASTEST; break;
+		case 1:	EncQuality = ASTCENC_PRE_FAST; break;
+		case 2:	EncQuality = ASTCENC_PRE_MEDIUM; break;
+		case 3:	EncQuality = ASTCENC_PRE_THOROUGH; break;
+		default: UE_LOG(LogTextureFormatASTC, Fatal, TEXT("ASTC speed quality higher than expected"));
+	}
+
+	uint32 BlockSizeX = GPixelFormats[CompressedPixelFormat].BlockSizeX;
+	uint32 BlockSizeY = GPixelFormats[CompressedPixelFormat].BlockSizeX;
+	uint32 BlockSizeZ = 1;
+
+	astcenc_config EncConfig;
+	{
+		astcenc_error EncStatus = astcenc_config_init(
+			EncProfile,
+			BlockSizeX,
+			BlockSizeX,
+			BlockSizeZ,
+			EncQuality,
+			EncFlags,
+			&EncConfig);
+
+		if (EncStatus != ASTCENC_SUCCESS)
+		{
+			UE_LOG(LogTextureFormatASTC, Error, TEXT("astcenc_config_init has failed: %s"), ANSI_TO_TCHAR(astcenc_get_error_string(EncStatus)));
+			return false;
+		}
+	}
+
+	astcenc_swizzle EncSwizzle { ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A };
+
+	if (bHDRImage)
+	{
+		// BC6H does not support A
+		EncSwizzle.a = ASTCENC_SWZ_1;
+	}
+	else if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB ||
+		BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBA || 
+		BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBAuto || 
+		BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBA_HQ)
+	{
+		if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB || !bImageHasAlphaChannel)
+		{
+			// even if Name was RGBA we still use the RGB profile if !bImageHasAlphaChannel
+			//	so that "Compress Without Alpha" can force us to opaque
+
+			// we need to set alpha to opaque here
+			// can do it using "1" in the bgra swizzle to astcenc
+			EncSwizzle.a = ASTCENC_SWZ_1;
+		}
+
+		// source is BGRA
+		EncSwizzle.r = ASTCENC_SWZ_B;
+		EncSwizzle.b = ASTCENC_SWZ_R;
+	}
+	else if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalAG)
+	{
+		// note that DXT5n processing does "1g0r"
+		EncSwizzle.r = ASTCENC_SWZ_1;
+		EncSwizzle.g = ASTCENC_SWZ_G;
+		EncSwizzle.b = ASTCENC_SWZ_0;
+		EncSwizzle.a = ASTCENC_SWZ_B; // source is BGRA
+		
+		EncConfig.tune_db_limit = FMath::Max(60.f, EncConfig.tune_db_limit);
+		EncConfig.cw_r_weight = 0.0f;
+		EncConfig.cw_g_weight = 1.0f;
+		EncConfig.cw_b_weight = 0.0f;
+		EncConfig.cw_a_weight = 1.0f;
+	}
+	else if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG)
+	{
+		EncSwizzle.r = ASTCENC_SWZ_B; // source is BGRA
+		EncSwizzle.g = ASTCENC_SWZ_G;
+		EncSwizzle.b = ASTCENC_SWZ_0;
+		EncSwizzle.a = ASTCENC_SWZ_1;
+
+		EncConfig.tune_db_limit = FMath::Max(60.f, EncConfig.tune_db_limit);
+		EncConfig.cw_r_weight = 1.0f;
+		EncConfig.cw_g_weight = 1.0f;
+		EncConfig.cw_b_weight = 0.0f;
+		EncConfig.cw_a_weight = 0.0f;
+	}
+	else if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalLA || BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG_Precise)
+	{
+		// L+A mode: rrrg
+		EncSwizzle.r = ASTCENC_SWZ_B;
+		EncSwizzle.g = ASTCENC_SWZ_B;
+		EncSwizzle.b = ASTCENC_SWZ_B;
+		EncSwizzle.a = ASTCENC_SWZ_G;
+
+		EncConfig.tune_db_limit = FMath::Max(60.f, EncConfig.tune_db_limit);
+		EncConfig.cw_r_weight = 1.0f;
+		EncConfig.cw_g_weight = 0.0f;
+		EncConfig.cw_b_weight = 0.0f;
+		EncConfig.cw_a_weight = 1.0f;
 	}
 	else
 	{
-		CompressionMode = TEXT("-cl");
+		check(false);
 	}
 
-	FString Params = FString::Printf(TEXT("%s \"%s\" \"%s\" %s -silent"),
-		CompressionMode,
-		*InputFilePath,
-		*OutputFilePath,
-		*CompressionParameters
-	);
-	
-	// maybe?
-	// could use -j option to set thread count ? when we're running lots of textures at the same time in a cook,
-	//	 it might be better to limit the astcenc process to fewer threads?
-
-	UE_LOG(LogTextureFormatASTC, Verbose, TEXT("Compressing to ASTC (astcenc %s)..."), *Params);
-
-	// Start Compressor
-	// @todo Oodle : check if we have sse4 and use those
-#if PLATFORM_MAC_X86
-	FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Mac/astcenc-sse2"));
-	//FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Mac/astcenc-sse4.1"));
-#elif PLATFORM_MAC_ARM64
-	FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Mac/astcenc-neon"));
-#elif PLATFORM_LINUX
-	FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Linux64/astcenc-sse2"));
-	//FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Linux64/astcenc-sse4.1"));
-#elif PLATFORM_WINDOWS
-	FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Win64/astcenc-sse2.exe"));
-	//FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Win64/astcenc-sse4.1.exe"));
-
-	// avx2 is no faster than sse4 , so just use the sse4 variant when possible
-	//FString CompressorPath(FPaths::EngineDir() + TEXT("Binaries/ThirdParty/ARM/Win64/astcenc-avx2.exe"));
-#else
-#error Unsupported platform
-#endif
-
-	// run the astcenc process :
+	astcenc_context* EncContext = nullptr;
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ASTC.RunProc);
-
-		FProcHandle Proc = FPlatformProcess::CreateProc(*CompressorPath, *Params, true, false, false, NULL, -1, NULL, NULL);
-
-		// Failed to start the compressor process
-		if (!Proc.IsValid())
+		uint32 EncThreadCount = 1;
+		astcenc_error EncStatus = astcenc_context_alloc(&EncConfig, EncThreadCount, &EncContext);
+		if (EncStatus != ASTCENC_SUCCESS)
 		{
-			UE_LOG(LogTextureFormatASTC, Error, TEXT("Failed to start astcenc for compressing images (%s)"), *CompressorPath);
-			return false;
-		}
-
-		// Wait for the process to complete
-		FPlatformProcess::WaitForProc(Proc);
-		int ReturnCode = -1;
-		FPlatformProcess::GetProcReturnCode(Proc, &ReturnCode);
-		FPlatformProcess::CloseProc(Proc);
-		
-		// Did it work?
-		if ( ReturnCode != 0)
-		{
-			UE_LOG(LogTextureFormatASTC, Error, TEXT("ASTC encoder failed with return code %d, mip size (%d, %d). Leaving '%s' for testing.  Full params = '%s'"), 
-				ReturnCode, SourceImage.SizeX, SourceImage.SizeY, *InputFilePath, *Params);
+			UE_LOG(LogTextureFormatASTC, Error, TEXT("astcenc_context_alloc has failed: %s"), ANSI_TO_TCHAR(astcenc_get_error_string(EncStatus)));
 			return false;
 		}
 	}
 
-	// Open compressed file and put the data in OutCompressedImage
+	const int AlignedSizeX = AlignArbitrary(Image.SizeX, BlockSizeX);
+	const int AlignedSizeY = AlignArbitrary(Image.SizeY, BlockSizeY);
+	const int WidthInBlocks = AlignedSizeX / BlockSizeX;
+	const int HeightInBlocks = AlignedSizeY / BlockSizeY;
+	const int64 SizePerSlice = (int64)WidthInBlocks * HeightInBlocks * 16;
+	OutCompressedImage.RawData.AddUninitialized(SizePerSlice * Image.NumSlices);
+
+	TArray<uint8*, TInlineAllocator<1>> ImageSrcData;
+	ImageSrcData.Reserve(Image.NumSlices);
+
+	for (int32 SliceIdx = 0; SliceIdx < Image.NumSlices; SliceIdx++)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ASTC.ReadFile);
-
-		// Get raw file data
-		TArray64<uint8> ASTCData;
-		if ( ! FFileHelper::LoadFileToArray(ASTCData, *OutputFilePath) )
+		FImageView Slice = Image.GetSlice(SliceIdx);
+		uint8* SliceData;
+		if (bHDRImage)
 		{
-			UE_LOG(LogTextureFormatASTC, Error, TEXT("Failed load output of astcenc (%s -> %s)"),*InputFilePath,*OutputFilePath);
-			return false;
-		}
-
-		// Process it
-		FASTCHeader* Header = (FASTCHeader*)ASTCData.GetData();
-			
-		// Fiddle with the texel count data to get the right value
-		uint32 TexelCountX =
-			(Header->TexelCountX[0] <<  0) + 
-			(Header->TexelCountX[1] <<  8) + 
-			(Header->TexelCountX[2] << 16);
-		uint32 TexelCountY =
-			(Header->TexelCountY[0] <<  0) + 
-			(Header->TexelCountY[1] <<  8) + 
-			(Header->TexelCountY[2] << 16);
-		uint32 TexelCountZ =
-			(Header->TexelCountZ[0] <<  0) + 
-			(Header->TexelCountZ[1] <<  8) + 
-			(Header->TexelCountZ[2] << 16);
-
-		if ( TexelCountX != SourceImage.SizeX ||
-			 TexelCountY != SourceImage.SizeY )
-		{
-			UE_LOG(LogTextureFormatASTC, Warning, TEXT("Unexpected image size mismatch : %d x %d != %d x %d"),
-				TexelCountX,TexelCountY,SourceImage.SizeX,SourceImage.SizeY);
-		}
-
-		// Calculate size of this mip in blocks
-		uint32 MipSizeX = (TexelCountX + Header->BlockSizeX - 1) / Header->BlockSizeX;
-		uint32 MipSizeY = (TexelCountY + Header->BlockSizeY - 1) / Header->BlockSizeY;
-
-		// TexelCountZ ignored
-
-		// A block is always 16 bytes
-		uint64 MipSize = (uint64)MipSizeX * MipSizeY * 16;
-
-		// Copy the compressed data
-		OutCompressedData.Empty(MipSize);
-		OutCompressedData.AddUninitialized(MipSize);
-		void* MipData = OutCompressedData.GetData();
-
-		// Calculate the offset to get to the mip data
-		check(sizeof(FASTCHeader) == 16);
-		check(ASTCData.Num() == (sizeof(FASTCHeader) + MipSize));
-		FMemory::Memcpy(MipData, ASTCData.GetData() + sizeof(FASTCHeader), MipSize);
-	}
-
-	if ( GASTCDebugWriteDecodedImage )
-	{	
-		FString DecodedFilePath = BaseFilePath + TEXT("Dec.") + ImageWrapperModule.GetExtension(FileFormat);
-
-		// Params starts with -cl or -ch or -cs , grab that character and change to -dl etc :
-		check( Params[0] == TEXT('-') );
-		check( Params[1] == TEXT('c') );
-
-		FString DecoderParams = TEXT("-d");
-		DecoderParams += Params[2];
-		DecoderParams += FString::Printf(TEXT(" \"%s\" \"%s\""),*OutputFilePath,*DecodedFilePath);
-		
-		UE_LOG(LogTextureFormatASTC, Verbose, TEXT("Decoding ASTC (encode options = '%s' , decode = '%s')..."), *CompressionParameters, *DecoderParams);
-
-		FProcHandle Proc = FPlatformProcess::CreateProc(*CompressorPath, *DecoderParams, true, false, false, NULL, -1, NULL, NULL);
-
-		// Failed to start the compressor process
-		if (!Proc.IsValid())
-		{
-			UE_LOG(LogTextureFormatASTC, Error, TEXT("Failed to start astcenc for decompressing images (%s)"), *CompressorPath);
+			SliceData = (uint8*)Slice.AsRGBA16F().GetData();
 		}
 		else
 		{
-			FPlatformProcess::WaitForProc(Proc);
-			FPlatformProcess::CloseProc(Proc);
-
-			// right after we make it, delete it to clean up
-			// break point here to examine
-			// or turn on GASTCDebugLeaveTempFiles
-
-			if ( ! GASTCDebugLeaveTempFiles )
-			{
-				IFileManager::Get().Delete(*DecodedFilePath);
-			}
+			SliceData = (uint8*)Slice.AsBGRA8().GetData();
 		}
+		ImageSrcData.Add(SliceData);
 	}
+	
+	astcenc_image EncImage;
+	EncImage.dim_x = Image.SizeX;
+	EncImage.dim_y = Image.SizeY;
+	EncImage.dim_z = Image.NumSlices;
+	EncImage.data = (void**)ImageSrcData.GetData();
+	EncImage.data_type = (bHDRImage ? ASTCENC_TYPE_F16 : ASTCENC_TYPE_U8);
 
-	// Delete intermediate files
-	if ( ! GASTCDebugLeaveTempFiles )
+	astcenc_error EncStatus = astcenc_compress_image(
+			EncContext,
+			&EncImage,
+			&EncSwizzle,
+			OutCompressedImage.RawData.GetData(),
+			OutCompressedImage.RawData.Num(),
+			0);
+	
+	astcenc_context_free(EncContext);
+
+	if (EncStatus == ASTCENC_SUCCESS)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(ASTC.DeleteFiles);
-
-		IFileManager::Get().Delete(*InputFilePath);
-		IFileManager::Get().Delete(*OutputFilePath);
+		OutCompressedImage.SizeX = Image.SizeX;
+		OutCompressedImage.SizeY = Image.SizeY;
+		OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
+		OutCompressedImage.PixelFormat = CompressedPixelFormat;
+		return true;
 	}
-
-	return true;
+	else
+	{
+		
+		UE_LOG(LogTextureFormatASTC, Error, TEXT("astcenc_compress_image has failed: %s"), ANSI_TO_TCHAR(astcenc_get_error_string(EncStatus)));
+		return false;
+	}
 }
+
 
 /**
  * ASTC texture format handler.
@@ -615,18 +538,18 @@ public:
 		return BASE_ASTC_FORMAT_VERSION;
 	}
 
-	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& BuildSettings) const override
+	virtual FString GetDerivedDataKeyString(const FTextureBuildSettings& InBuildSettings, int32 InMipCount, const FIntVector3& InMip0Dimensions) const override
 	{
 #if SUPPORTS_ISPC_ASTC
 		if(GASTCCompressor == 0)
 		{
-			return IntelISPCTexCompFormat.GetDerivedDataKeyString(BuildSettings);
+			return IntelISPCTexCompFormat.GetDerivedDataKeyString(InBuildSettings, InMipCount, InMip0Dimensions);
 		}
 #endif
 
 		// ASTC block size chosen is in PixelFormat
-		EPixelFormat PixelFormat = GetQualityFormat(BuildSettings);
-		int Speed = GetDefaultCompressionBySpeedValue(BuildSettings.FormatConfigOverride);
+		EPixelFormat PixelFormat = GetQualityFormat(InBuildSettings);
+		int Speed = GetDefaultCompressionBySpeedValue(InBuildSettings.FormatConfigOverride);
 
  		return FString::Printf(TEXT("ASTC_%d_%d"), (int)PixelFormat,Speed);
 	}
@@ -642,10 +565,12 @@ public:
 	}
 
 	virtual bool CompressImage(
-			FImage& InImage,
+			const FImage& InImage,
 			const FTextureBuildSettings& BuildSettings,
 			const FIntVector3& InMip0Dimensions,
 			int32 InMip0NumSlicesNoDepth,
+			int32 InMipIndex,
+			int32 InMipCount,
 			FStringView DebugTexturePathName,
 			bool bImageHasAlphaChannel,
 			FCompressedImage2D& OutCompressedImage
@@ -660,7 +585,7 @@ public:
 
 			// Route ASTC compression work to the ISPC module instead.
 			// note: ISPC can't do HDR, will throw an error
-			return IntelISPCTexCompFormat.CompressImage(InImage, BuildSettings, InMip0Dimensions, InMip0NumSlicesNoDepth, DebugTexturePathName, bImageHasAlphaChannel, OutCompressedImage);
+			return IntelISPCTexCompFormat.CompressImage(InImage, BuildSettings, InMip0Dimensions, InMip0NumSlicesNoDepth, InMipIndex, InMipCount, DebugTexturePathName, bImageHasAlphaChannel, OutCompressedImage);
 		}
 #endif
 
@@ -670,96 +595,7 @@ public:
 			UE_LOG(LogTextureFormatASTC, Display, TEXT("TextureFormatASTC using astcenc"))
 		} );
 
-		bool bHDRImage = BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB_HDR;
-		// DestGamma is how the texture will be bound to GPU
-		bool bSRGB = BuildSettings.GetDestGammaSpace() == EGammaSpace::sRGB;
-		check( !bHDRImage || !bSRGB );
-
-		// Get Raw Image Data from passed in FImage & convert to BGRA8 or RGBA16F
-		// note: wasteful, often copies image to same format
-		FImage Image;
-		InImage.CopyTo(Image, bHDRImage ? ERawImageFormat::RGBA16F : ERawImageFormat::BGRA8, BuildSettings.GetDestGammaSpace());
-
-		// Determine the compressed pixel format and compression parameters
-		EPixelFormat CompressedPixelFormat = GetEncodedPixelFormat(BuildSettings, bImageHasAlphaChannel);
-
-		FString CompressionParameters = TEXT("");
-
-		FString QualityString = GetQualityString(CompressedPixelFormat,BuildSettings.FormatConfigOverride);
-		
-		if (bHDRImage)
-		{
-			CompressionParameters = QualityString;
-			
-			// ASTC can encode floats that BC6H can't
-			//  but still clamp as if we were BC6H, so that the same output is made
-			// (eg. ASTC can encode A but BC6 can't; we stuff 1 in A here)
-			FImageCore::SanitizeFloat16AndSetAlphaOpaqueForBC6H(Image);
-		}
-		else if ( BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB ||
-			BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBA || 
-			BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBAuto || 
-			BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGBA_HQ )
-		{
-			// astcenc has "-perceptual" but it just does luma weighting so its not very interesting
-
-			if ( BuildSettings.TextureFormatName == GTextureFormatNameASTC_RGB ||
-				! bImageHasAlphaChannel )
-			{
-				// even if Name was RGBA we still use the RGB profile if !bImageHasAlphaChannel
-				//	so that "Compress Without Alpha" can force us to opaque
-
-				// we need to set alpha to opaque here
-				// can do it using "1" in the bgra swizzle to astcenc
-				
-				CompressionParameters = FString::Printf(TEXT("%s -esw rgb1"), *QualityString );
-			}
-			else
-			{
-				CompressionParameters = QualityString;
-			}
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalAG)
-		{
-			// or "gggr" ?
-			// note that DXT5n processing does "1g0r"
-			CompressionParameters = FString::Printf(TEXT("%s -esw 0g0r -cw 0 1 0 1 -dblimit 60"), *QualityString);
-		}
-		else if (BuildSettings.TextureFormatName == GTextureFormatNameASTC_NormalRG)
-		{
-			CompressionParameters = FString::Printf(TEXT("%s -esw rg00 -cw 1 1 0 0 -dblimit 60"), *QualityString);
-		}
-		else
-		{
-			check(false);
-		}
-
-		// Compress the image, slice by slice
-		bool bCompressionSucceeded = true;
-
-		for (int32 SliceIndex = 0; SliceIndex < Image.NumSlices; ++SliceIndex)
-		{
-			TArray64<uint8> CompressedSliceData;
-
-			FImageView Slice = Image.GetSlice(SliceIndex);
-			
-			bCompressionSucceeded = CompressSliceToASTC(Slice,CompressionParameters,CompressedSliceData,ImageWrapperModule,bSRGB);
-
-			if ( ! bCompressionSucceeded )
-			{
-				return false;
-			}
-			OutCompressedImage.RawData.Append(CompressedSliceData);
-		}
-
-		if (bCompressionSucceeded)
-		{
-			OutCompressedImage.SizeX = Image.SizeX;
-			OutCompressedImage.SizeY = Image.SizeY;
-			OutCompressedImage.SizeZ = (BuildSettings.bVolume || BuildSettings.bTextureArray) ? Image.NumSlices : 1;
-			OutCompressedImage.PixelFormat = CompressedPixelFormat;
-		}
-		return bCompressionSucceeded;
+		return ASTCEnc_Compress(InImage, BuildSettings, InMip0Dimensions, InMip0NumSlicesNoDepth, DebugTexturePathName, bImageHasAlphaChannel, OutCompressedImage);
 	}
 
 private:

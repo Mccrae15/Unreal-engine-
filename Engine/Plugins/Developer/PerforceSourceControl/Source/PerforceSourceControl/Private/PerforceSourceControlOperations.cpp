@@ -12,6 +12,7 @@
 #include "Misc/EngineVersion.h"
 #include "Misc/Paths.h"
 #include "PerforceConnection.h"
+#include "PerforceMessageLog.h"
 #include "PerforceSourceControlChangeStatusOperation.h"
 #include "PerforceSourceControlChangelistState.h"
 #include "PerforceSourceControlCommand.h"
@@ -170,6 +171,49 @@ static void RemoveRedundantErrors(FPerforceSourceControlCommand& InCommand, cons
 
 	// if we have no error messages now, assume success!
 	if(bFoundRedundantError && InCommand.ResultInfo.ErrorMessages.Num() == 0 && !InCommand.bCommandSuccessful)
+	{
+		InCommand.bCommandSuccessful = true;
+	}
+}
+
+/**
+ * Occasionally some error messages returned by the server can be a bit misleading depending on the context
+ * of the original command. This utility allows us to replace an error that we feel is misleading with a
+ * better version.
+ *
+ * If the misleading error is found we don't just replace that exact string, we remove everything from the
+ * string, starting at the misleading error and then append the correct error on the end. This is because
+ * the error messages can often contain variable info (such as the port or client) which can be hard to
+ * match the misleading error string against.
+ */
+static void ReplaceErrors(FPerforceSourceControlCommand& InCommand, const TCHAR* InMisleadingError, const TCHAR* InCorrectedError, bool bMoveToInfo)
+{
+	TArray<FText>& ErrorMessages = InCommand.ResultInfo.ErrorMessages;
+
+	for (int32 Index = 0; Index < ErrorMessages.Num(); ++Index)
+	{
+		const FString Error = ErrorMessages[Index].ToString();
+
+		const int32 Pos = Error.Find(InMisleadingError);
+		if (Pos != INDEX_NONE)
+		{
+			TStringBuilder<128> NewError;
+			NewError << FStringView(Error).Left(Pos) << InCorrectedError << TEXT("\n");
+
+			if (bMoveToInfo)
+			{
+				InCommand.ResultInfo.InfoMessages.Add(FText::FromString(NewError.ToString()));
+				ErrorMessages.RemoveAt(Index);
+				--Index;
+			}
+			else
+			{
+				ErrorMessages[Index] = FText::FromString(NewError.ToString());
+			}
+		}
+	}
+
+	if (InCommand.ResultInfo.ErrorMessages.IsEmpty())
 	{
 		InCommand.bCommandSuccessful = true;
 	}
@@ -522,9 +566,7 @@ static bool RemoveFilesFromChangelist(const TMap<FString, EPerforceState::Type>&
 {
 	return ChangelistState->Files.RemoveAll([&Results](FSourceControlStateRef& State) -> bool
 		{
-			return Algo::AnyOf(Results, [&State](auto& Result) {
-				return State->GetFilename() == Result.Key;
-				});
+			return Results.Contains(State->GetFilename());
 		}) > 0;
 }
 
@@ -1355,7 +1397,11 @@ static void ParseUpdateStatusResults(const FP4RecordSet& InRecords, const TArray
 					if (!ClientRecord.Contains(*VarName))
 					{
 						// No more revisions
-						ensureMsgf( ResolveActionNumber > 0, TEXT("Resolve is pending but no resolve actions for file %s"), *FileName );
+						if (ResolveActionNumber == 0)
+						{
+							FTSMessageLog SourceControlLog("SourceControl");
+							SourceControlLog.Error(FText::Format(LOCTEXT("P4Operation_ResolveWithoutAction", "Resolve is pending but no resolve actions for file {0}"), FText::FromString(FileName)));
+						}
 						break;
 					}
 
@@ -1363,15 +1409,24 @@ static void ParseUpdateStatusResults(const FP4RecordSet& InRecords, const TArray
 					const FString& ResolveBaseFile = ClientRecord(VarName);
 					VarName = FString::Printf(TEXT("resolveFromFile%d"), ResolveActionNumber);
 					const FString& ResolveFromFile = ClientRecord(VarName);
-					if(!ensureMsgf( ResolveFromFile == ResolveBaseFile, TEXT("Text cannot resolve %s with %s, we do not support cross file merging"), *ResolveBaseFile, *ResolveFromFile ) )
+
+					if(ResolveFromFile != ResolveBaseFile)
 					{
+						FTSMessageLog SourceControlLog("SourceControl");
+						SourceControlLog.Error(FText::Format(LOCTEXT("P4Operation_UnsupportedCrossFileMerge", "Text cannot resolve {0} with {1}, we do not support cross file merging"), FText::FromString(ResolveBaseFile), FText::FromString(ResolveFromFile)));
 						break;
 					}
 
 					VarName = FString::Printf(TEXT("resolveBaseRev%d"), ResolveActionNumber);
 					const FString& ResolveBaseRev = ClientRecord(VarName);
 
-					TTypeFromString<int>::FromString(State.PendingResolveRevNumber, *ResolveBaseRev);
+					VarName = FString::Printf(TEXT("resolveEndFromRev%d"), ResolveActionNumber);
+					const FString& ResolveEndFromRev = ClientRecord(VarName);
+
+					State.PendingResolveInfo.BaseFile = ResolveBaseFile;
+					State.PendingResolveInfo.BaseRevision = ResolveBaseRev;
+					State.PendingResolveInfo.RemoteFile = ResolveFromFile;
+					State.PendingResolveInfo.RemoteRevision = ResolveEndFromRev;
 
 					++ResolveActionNumber;
 				}
@@ -2002,13 +2057,27 @@ FName FPerforceGetPendingChangelistsWorker::GetName() const
 	return "GetPendingChangelists";
 }
 
-static bool GetOpenedFilesInChangelist(FPerforceConnection& Connection, FPerforceSourceControlCommand& InCommand, const FPerforceSourceControlChangelist& Changelist, TArray<FPerforceSourceControlState>& FilesStates)
+static bool GetOpenedFilesInChangelist(
+	FPerforceConnection& Connection,
+	FPerforceSourceControlCommand& InCommand,
+	TOptional<FPerforceSourceControlChangelist> Changelist,
+	TArray<FPerforceSourceControlState>& FilesStates)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPerforce::GetOpenedFilesInChangelist);
 
 	TArray<FString> Parameters;
-	Parameters.Add(TEXT("-c"));	// -c	Changelist
-	Parameters.Add(Changelist.ToString());	// <changelist>
+	if (Changelist.IsSet())
+	{
+		Parameters.Add(TEXT("-c"));	// -c	Changelist
+		Parameters.Add(Changelist.GetValue().ToString());	// <changelist>
+	}
+	else 
+	{
+		Parameters.Add(TEXT("-u"));									// -u			For user
+		Parameters.Add(InCommand.ConnectionInfo.UserName);			// <username>
+		Parameters.Add(TEXT("-C"));									// -C			For workspace
+		Parameters.Add(InCommand.ConnectionInfo.Workspace);			// <workspace>
+	}
 
 	FP4RecordSet Records;
 	Connection.RunCommand(TEXT("opened"), Parameters, Records, InCommand.ResultInfo.ErrorMessages, FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), InCommand.bConnectionDropped);
@@ -2125,15 +2194,30 @@ bool FPerforceGetPendingChangelistsWorker::Execute(FPerforceSourceControlCommand
 		if (Operation->ShouldUpdateFilesStates())
 		{
 			OutCLFilesStates.Reserve(OutChangelistsStates.Num());
+			TArray<FPerforceSourceControlState> AllFilesStates;
+			GetOpenedFilesInChangelist(Connection, InCommand, {}, AllFilesStates);
 
-			for (FPerforceSourceControlChangelistState& ChangelistState : OutChangelistsStates)
+			if (ShouldContinueProcessing() && AllFilesStates.Num() && OutChangelistsStates.Num())
 			{
-				if (!ShouldContinueProcessing())
+				Algo::SortBy(AllFilesStates, [](const FPerforceSourceControlState& State){ return State.Changelist.ToInt(); });
+				Algo::SortBy(OutChangelistsStates, [](const FPerforceSourceControlChangelistState& State){ 
+					return StaticCastSharedRef<FPerforceSourceControlChangelist>(State.GetChangelist())->ToInt();});
+				
+				OutCLFilesStates.AddDefaulted(OutChangelistsStates.Num());
+				for (int32 ChangelistIndex = 0, FileIndex = 0; FileIndex < AllFilesStates.Num() && ChangelistIndex < OutChangelistsStates.Num();)
 				{
-					break;
+					int32 FileChangelist = AllFilesStates[FileIndex].Changelist.ToInt();
+					int32 ChangelistChangelist = StaticCastSharedRef<FPerforceSourceControlChangelist>(OutChangelistsStates[ChangelistIndex].GetChangelist())->ToInt();
+					if(FileChangelist == ChangelistChangelist)
+					{
+						OutCLFilesStates[ChangelistIndex].Add(MoveTemp(AllFilesStates[FileIndex]));
+						++FileIndex;
+					}
+					else
+					{
+						++ChangelistIndex;
+					}
 				}
-
-				GetOpenedFilesInChangelist(Connection, InCommand, ChangelistState.Changelist, OutCLFilesStates.Emplace_GetRef());
 			}
 		}
 
@@ -2412,7 +2496,7 @@ bool FPerforceResolveWorker::UpdateStates() const
 	{
 		auto State = GetSCCProvider().GetStateInternal( Filename );
 		State->LocalRevNumber = State->DepotRevNumber;
-		State->PendingResolveRevNumber = FPerforceSourceControlState::INVALID_REVISION;
+		State->PendingResolveInfo = {};
 	}
 
 	return UpdatedFiles.Num() > 0;
@@ -3071,10 +3155,12 @@ bool FPerforceDownloadFileWorker::Execute(FPerforceSourceControlCommand& InComma
 																	FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), 
 																	InCommand.bConnectionDropped, Flags);
 			
-			RemoveRedundantErrors(InCommand, TEXT(" - no such file(s)."));
-			RemoveRedundantErrors(InCommand, TEXT(" - file(s) not on client"));
-			RemoveRedundantErrors(InCommand, TEXT("' is not under client's root '"));
-			RemoveRedundantErrors(InCommand, TEXT(" - no file(s) at that changelist number."));
+			const bool bMoveToInfo = true;
+			RemoveRedundantErrors(InCommand, TEXT(" - no such file(s)."), bMoveToInfo);
+			RemoveRedundantErrors(InCommand, TEXT(" - file(s) not on client"), bMoveToInfo);
+			RemoveRedundantErrors(InCommand, TEXT("' is not under client's root '"), bMoveToInfo);
+			RemoveRedundantErrors(InCommand, TEXT(" - no file(s) at that changelist number."), bMoveToInfo);
+			ReplaceErrors(InCommand, TEXT(" - must refer to client"), TEXT(" - no such depot!"), bMoveToInfo);
 
 			if (!InCommand.ResultInfo.ErrorMessages.IsEmpty() || (InCommand.Files.Num() != FilesData.Num()))
 			{
@@ -3087,7 +3173,7 @@ bool FPerforceDownloadFileWorker::Execute(FPerforceSourceControlCommand& InComma
 
 				for (int32 Index = 0; Index < InCommand.Files.Num(); ++Index)
 				{
-					Operation->AddFileData(InCommand.Files[Index], FilesData[Index]);
+					Operation->__Internal_AddFileData(InCommand.Files[Index], FilesData[Index]);
 				}
 			}
 		}
@@ -3113,10 +3199,12 @@ bool FPerforceDownloadFileWorker::Execute(FPerforceSourceControlCommand& InComma
 																		FOnIsCancelled::CreateRaw(&InCommand, &FPerforceSourceControlCommand::IsCanceled), 
 																		InCommand.bConnectionDropped, Flags);
 
-				RemoveRedundantErrors(InCommand, TEXT(" - no such file(s)."));
-				RemoveRedundantErrors(InCommand, TEXT(" - file(s) not on client"));
-				RemoveRedundantErrors(InCommand, TEXT("' is not under client's root '"));
-				RemoveRedundantErrors(InCommand, TEXT(" - no file(s) at that changelist number."));
+				const bool bMoveToInfo = true;
+				RemoveRedundantErrors(InCommand, TEXT(" - no such file(s)."), bMoveToInfo);
+				RemoveRedundantErrors(InCommand, TEXT(" - file(s) not on client"), bMoveToInfo);
+				RemoveRedundantErrors(InCommand, TEXT("' is not under client's root '"), bMoveToInfo);
+				RemoveRedundantErrors(InCommand, TEXT(" - no file(s) at that changelist number."), bMoveToInfo);
+				ReplaceErrors(InCommand, TEXT(" - must refer to client"), TEXT(" - no such depot!"), bMoveToInfo);
 
 				if (InCommand.bCommandSuccessful)
 				{
@@ -3358,25 +3446,26 @@ bool FPerforceGetFileWorker::Execute(FPerforceSourceControlCommand& InCommand)
 
 	FScopedPerforceConnection ScopedConnection(InCommand);
 
-	if (!InCommand.IsCanceled() && ScopedConnection.IsValid())
+	if (InCommand.IsCanceled() || !ScopedConnection.IsValid())
 	{
-		FPerforceConnection& Connection = ScopedConnection.GetConnection();
-		TSharedRef<FGetFile, ESPMode::ThreadSafe> Operation = StaticCastSharedRef<FGetFile>(InCommand.Operation);
+		return false;
+	}
 
-		TSharedRef<FPerforceSourceControlRevision, ESPMode::ThreadSafe> Revision = MakeShareable(new FPerforceSourceControlRevision(GetSCCProvider()));
-		Revision->FileName = Operation->GetDepotFilePath();
-		Revision->ChangelistNumber = FCString::Atoi(*Operation->GetChangelistNumber());
-		Revision->RevisionNumber = FCString::Atoi(*Operation->GetRevisionNumber());
-		Revision->bIsShelve = Operation->IsShelve();
-	
-		FString OutFilename;
+	TSharedRef<FGetFile, ESPMode::ThreadSafe> Operation = StaticCastSharedRef<FGetFile>(InCommand.Operation);
 
-		InCommand.bCommandSuccessful = Revision->Get(OutFilename, InCommand.Concurrency);
+	FPerforceSourceControlRevision Revision(GetSCCProvider());
 
-		if (InCommand.bCommandSuccessful)
-		{
-			Operation->SetOutPackageFilename(OutFilename);
-		}
+	Revision.FileName = Operation->GetDepotFilePath();
+	Revision.ChangelistNumber = FCString::Atoi(*Operation->GetChangelistNumber());
+	Revision.RevisionNumber = FCString::Atoi(*Operation->GetRevisionNumber());
+	Revision.bIsShelve = Operation->IsShelve();
+
+	FString OutFilename;
+	InCommand.bCommandSuccessful = Revision.Get(OutFilename, ScopedConnection.GetConnection());
+
+	if (InCommand.bCommandSuccessful)
+	{
+		Operation->SetOutPackageFilename(OutFilename);
 	}
 
 	return InCommand.bCommandSuccessful;

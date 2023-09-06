@@ -8,6 +8,7 @@ public class TemplateSequenceEditor : ModuleRules
 	{
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"AssetDefinition",
 				"TemplateSequence",
 				"BlueprintGraph",
 				"CinematicCamera",
@@ -27,12 +28,6 @@ public class TemplateSequenceEditor : ModuleRules
 				"TimeManagement",
 				"LevelSequence",
 				"LevelSequenceEditor"
-			}
-		);
-
-		PrivateIncludePaths.AddRange(
-			new string[] {
-				"TemplateSequenceEditor/Private",
 			}
 		);
 

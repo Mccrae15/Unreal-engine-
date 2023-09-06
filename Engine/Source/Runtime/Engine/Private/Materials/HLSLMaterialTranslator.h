@@ -225,6 +225,13 @@ enum class EMaterialCastFlags : uint32
 };
 ENUM_CLASS_FLAGS(EMaterialCastFlags);
 
+enum EStrataCompilationContext : uint8
+{
+	SCC_Default = 0u,
+	SCC_FullySimplified = 1u,
+	SCC_MAX = 2u
+};
+
 class FHLSLMaterialTranslator : public FMaterialCompiler
 {
 	friend class FMaterialDerivativeAutogen;
@@ -322,7 +329,7 @@ protected:
 
 	/** Used by interpolator pre-translation to hold potential errors until actually confirmed. */
 	TArray<FString>* CompileErrorsSink;
-	TArray<UMaterialExpression*>* CompileErrorExpressionsSink;
+	TArray<TObjectPtr<UMaterialExpression>>* CompileErrorExpressionsSink;
 
 	/** Keeps track of which variations of analytic derivative functions are used, and generates the code during translation. **/
 	FMaterialDerivativeAutogen DerivativeAutogen;
@@ -357,6 +364,8 @@ protected:
 	uint32 bNeedsWorldPositionExcludingShaderOffsets : 1;
 	/** true if the material needs particle size. */
 	uint32 bNeedsParticleSize : 1;
+	/** true if the material needs particle sprite rotation. */
+	uint32 bNeedsParticleSpriteRotation : 1;
 	/** true if any scene texture expressions are reading from post process inputs */
 	uint32 bNeedsSceneTexturePostProcessInputs : 1;
 	/** true if any atmospheric fog expressions are used */
@@ -387,6 +396,7 @@ protected:
 	uint32 bOutputsBasePassVelocities : 1;
 	uint32 bUsesPixelDepthOffset : 1;
 	uint32 bUsesWorldPositionOffset : 1;
+	uint32 bUsesDisplacement : 1;
 	uint32 bUsesEmissiveColor : 1;
 	uint32 bUsesDistanceCullFade : 1;
 	/** true if the Roughness input evaluates to a constant 1.0 */
@@ -400,7 +410,10 @@ protected:
 	/** True if the material is detected as a strata material at compile time.
 	 * This is decoupled from runtime FMaterialResource::IsStrataMaterial but practically fine since this is only temporary until Strata is the main shading system. Only really used at runtime for translucency dual source blending.
 	 */
-	uint32 bMaterialIsStrata : 1; // 
+	uint32 bMaterialIsStrata : 1;
+
+	/** True if the opacity input is plugged in */
+	uint32 bOpacityPropertyIsUsed : 1;
 	
 	uint32 bEnableExecutionFlow : 1;
 
@@ -416,12 +429,39 @@ protected:
 	/** Will contain all the shading models picked up from the material expression graph */
 	FMaterialShadingModelField ShadingModelsFromCompilation;
 
-	/** The code initializing the array of shared local bases. */
-	FString StrataPixelNormalInitializerValues;
-	/** The next free index that can be used to represent a unique macros pointing to the position in the array of shared local bases written to memory once the shader is executed. */
-	uint8 NextFreeStrataShaderNormalIndex;
-	/** The effective final shared local bases count used by the final shader. */
-	uint8 FinalUsedSharedLocalBasesCount;
+	// Describe the simplification status. Once the material has been compiled, it can be used to understand if and how it has been simplified.
+	struct FStrataSimplificationStatus
+	{
+		bool bMaterialFitsInMemoryBudget = false;	// Track whether or not the material fits.
+
+		uint32 OriginalRequestedByteSize = 0;
+		bool bRunFullSimplification = false;	// Simple implementation for now: if the material does not fit, we simply everything.
+
+		struct FOperatorToSimplify
+		{
+			union
+			{
+				uint32 PackedData;
+				struct
+				{
+					uint32 Index : 16; // Index of the operator
+					uint32 Depth : 16; // Depth of the operator
+				} Data;
+			};
+
+			FORCEINLINE bool operator!=(FOperatorToSimplify B) const
+			{
+				return PackedData != B.PackedData;
+			}
+
+			FORCEINLINE bool operator<(FOperatorToSimplify B) const
+			{
+				return PackedData < B.PackedData;
+			}
+		};
+		TArray<FOperatorToSimplify> OperatorSimplificationOrder;
+	};
+
 	/** Represent a shared local basis description with its associated code. */
 	struct FStrataSharedLocalBasesInfo
 	{
@@ -429,49 +469,74 @@ protected:
 		FString NormalCode;
 		FString TangentCode;
 	};
-	/** Tracks shared local bases used by strata materials, mapping a normal code chunk hash to a SharedMaterialInfo.
-	 * A normal code chunk hash can point to multiple shared info in case it is paired with different tangents. */
-	TMultiMap<uint64, FStrataSharedLocalBasesInfo> CodeChunkToStrataSharedLocalBasis;
 
-	TMap<FGuid, int32> StrataMaterialExpressionToOperatorIndex;
-	TArray<FStrataOperator> StrataMaterialExpressionRegisteredOperators;
-	FStrataOperator* StrataMaterialRootOperator;
-	uint32 StrataMaterialBSDFCount;
-	uint32 StrataMaterialRequestedSizeByte;
-	bool bStrataMaterialIsSimple;
-	bool bStrataMaterialIsSingle;
-	bool bStrataMaterialIsUnlitNode;
+	struct FStrataCompilationContext
+	{
+		FStrataCompilationContext();
+
+		FStrataCompilationContext(EStrataCompilationContext InCompilationContext);
+
+		EStrataCompilationContext CompilationContextIndex;
+
+		/** The code initializing the array of shared local bases. */
+		FString StrataPixelNormalInitializerValues;
+		/** The next free index that can be used to represent a unique macros pointing to the position in the array of shared local bases written to memory once the shader is executed. */
+		uint8 NextFreeStrataShaderNormalIndex;
+		/** The effective final shared local bases count used by the final shader. */
+		uint8 FinalUsedSharedLocalBasesCount;
+		/** Tracks shared local bases used by strata materials, mapping a normal code chunk hash to a SharedMaterialInfo.
+		 * A normal code chunk hash can point to multiple shared info in case it is paired with different tangents. */
+		TMultiMap<uint64, FStrataSharedLocalBasesInfo> CodeChunkToStrataSharedLocalBasis;
+
+		TMap<FGuid, int32> StrataMaterialExpressionToOperatorIndex;
+		TArray<FStrataOperator> StrataMaterialExpressionRegisteredOperators;
+		FStrataOperator* StrataMaterialRootOperator;
+		uint32 StrataMaterialBSDFCount;
+		uint32 StrataMaterialRequestedSizeByte;
+		bool bStrataMaterialIsSimple;
+		bool bStrataMaterialIsSingle;
+		bool bStrataMaterialIsUnlitNode;
+
+		/** Stack of unique id for each node of the strata tree
+		* This is transient and updated on the fly in the exact same way when parsing node for
+		*  1- StrataGenerateMaterialTopologyTree: generating a picture of the strata material tree for code generation and simplifications.
+		*  2- CompilePropertyAndSetMaterialProperty(MP_ShadingModel): compiling the code with some features enabled/disabled and accounting for tree simplification decided beforehand.
+		* It is not valid to use that information outside of those functions.
+		*/
+		TArray<FGuid> StrataNodeIdentifierStack;
+
+		/**
+		 * This can be used to know if the strata tree we are trying to build is too deep and we should stop the compilation.
+		 * True means that we have likely encountered node re-entry leading to cyclic graph we cannot handle and compile internally: we must fail the compilation.
+		 */
+		bool bStrataTreeOutOfStackDepthOccurred;
+
+		/** Stack of thickness input used for propagating thickness information from root node and vertical operation
+		* This is transient and updated when calling StrataGenerateMaterialTopologyTree. The information is then stored into the FStratOperator
+		*/
+		TArray<int32> StrataThicknessStack;
+		TArray<FExpressionInput*> StrataThicknessIndexToExpressionInput;
+
+		FStrataSimplificationStatus StrataSimplificationStatus;
+
+		bool StrataGenerateDerivedMaterialOperatorData(FHLSLMaterialTranslator* Compiler);
+
+		void StrataEvaluateSharedLocalBases(FHLSLMaterialTranslator* Compiler, uint8& RequestedSharedLocalBasesCount, FShaderCompilerEnvironment* OutEnvironment);
+
+		FStrataSharedLocalBasesInfo StrataCompilationInfoGetMatchingSharedLocalBasisInfo(const FStrataRegisteredSharedLocalBasis& SearchedSharedLocalBasis);
+
+	private:
+		void Initialise();
+	};
+	FStrataCompilationContext StrataCompilationContext[EStrataCompilationContext::SCC_MAX];
+
+	EStrataCompilationContext CurrentStrataCompilationContext = EStrataCompilationContext::SCC_Default;
+	int32 FullySimplifiedStrataFrontMaterialCodeChunk = INDEX_NONE;
+	FString FullySimplifiedStrataFrontMaterialTranslatedCodeChunkDefinitions;
+	FString FullySimplifiedStrataFrontMaterialTranslatedCodeChunks;
+
 	bool bStrataUsesConversionFromLegacy;
 	bool bStrataOutputsOpaqueRoughRefractions;
-
-	/** Stack of unique id for each node of the strata tree 
-	* This is transient and updated on the fly in the exact same way when parsing node for 
-	*  1- StrataGenerateMaterialTopologyTree: generating a picture of the strata material tree for code generation and simplifications.
-	*  2- CompilePropertyAndSetMaterialProperty(MP_ShadingModel): compiling the code with some features enabled/disabled and accounting for tree simplification decided beforehand.
-	* It is not valid to uise that information outside of those functions.
-	*/
-	TArray<FGuid> StrataNodeIdentifierStack;
-
-	/**
-	 * This can be used to know if the strata tree we are trying to build is too deep and we should stop the compilation.
-	 * True means that we have likely encountered node re-entry leading to cyclic graph we cannot handle and compile internally: we must fail the compilation.
-	 */
-	bool bStrataTreeOutOfStackDepthOccurred;
-
-	/** Stack of thickness input used for propagating thickness information from root node and vertical operation
-	* This is transient and updated when calling StrataGenerateMaterialTopologyTree. The information is then stored into the FStratOperator
-	*/
-	TArray<int32> StrataThicknessStack;
-	TArray<FExpressionInput*> StrataThicknessIndexToExpressionInput;
-
-	struct FStrataSimplificationStatus
-	{
-		bool bMaterialFitsInMemoryBudget = false;	// Track whether or not the material fits.
-
-		uint32 OriginalRequestedByteSize = 0;
-		bool bRunFullSimplification = false;	// Simple implementation for now: if the material does not fit, we simply everything.
-	};
-	FStrataSimplificationStatus StrataSimplificationStatus;
 
 	/** Tracks the total number of vt samples in the shader. */
 	uint32 NumVtSamples;
@@ -579,11 +644,13 @@ protected:
 	int32 NonPixelShaderExpressionError();
 
 	int32 ErrorUnlessFeatureLevelSupported(ERHIFeatureLevel::Type RequiredFeatureLevel);
+	int32 ErrorUnlessPlatformSupports(const bool (*SupportFunction)(const FStaticShaderPlatform Platform), const TCHAR* ConditionString);
 
 	int32 NonVertexShaderExpressionError();
 	int32 NonVertexOrPixelShaderExpressionError();
 
 	void AddEstimatedTextureSample(const uint32 Count = 1);
+	void AddLWCFuncUsage(ELWCFunctionKind Kind, const uint32 Count = 1);
 
 	/** Creates a unique symbol name and adds it to the symbol list. */
 	FString CreateSymbolName(const TCHAR* SymbolNameHint);
@@ -689,13 +756,38 @@ protected:
 	// GetArithmeticResultType
 	EMaterialValueType GetArithmeticResultType(EMaterialValueType TypeA, EMaterialValueType TypeB);
 
+	// Same as GetConstParameterValue, but ensures that the value that comes out has zero in components that are not included in EMaterialValueType
+	FLinearColor GetTypeMaskedValue(EMaterialValueType Type, FLinearColor ConstValue, bool* OutSuccess);
+
+	// Same as GetConstParameterValue, but ensures that the value that comes out has zero in components that are not included in EMaterialValueType
+	bool GetConstMaskedParameterValue(EMaterialValueType Type, FMaterialUniformExpression* Expression, FLinearColor& OutConstValue);
+
+	// Attempts to fetch the constant value for a parameter code.
+	// returns true if the value was a valid const expression
+	// OutConstValue will only get filled in if it is valid
+	bool GetConstParameterValue(FMaterialUniformExpression* Expression, FLinearColor& OutConstValue);
+
+	// Properly casts a const type to another const type
+	// Returns false if the case fails
+	bool CoerceConstantType(FLinearColor SourceValue, EMaterialValueType SourceType, EMaterialValueType DestinationType, FLinearColor& OutResult);
+	bool CastConstantType(FLinearColor SourceValue, EMaterialValueType SourceType, EMaterialValueType DestinationType, EMaterialCastFlags Flags, FLinearColor& OutResult);
+	int32 LWCCastIfNeccessary(EMaterialValueType ResultType, int32 ResultCode);
+
+	// Returns a constant of the specified typ
+	int32 ConstResultValue(EMaterialValueType Type, FLinearColor ConstantValue);
+	int32 ConstResultValue(EMaterialValueType Type, float ConstantValue);
+	
+
+	// Returns a valid constant result for an arithmetic expression that has a known const value
+	int32 ConstArithmeticResultValue(int LeftEpression, int RightExpression, FLinearColor ConstantValue);
+	int32 ConstArithmeticResultValue(int LeftEpression, int RightExpression, float ConstantValue);
+
+	// Returns true of the expression results in a specific constant value
+	bool IsExpressionConstantValue(int Code, float ConstantValue);
+
 	int32 GenericSwitch(const TCHAR* Function, int32 IfTrue, int32 IfFalse);
 
-	bool StrataGenerateDerivedMaterialOperatorData();
-	void StrataEvaluateSharedLocalBases(uint8& UsedSharedLocalBasesCount, uint8& RequestedSharedLocalBasesCount, FString* OutStrataPixelNormalInitializerValues, FShaderCompilerEnvironment* OutEnvironment) const;
 	FString StrataGetCastParameterCode(int32 Index, EMaterialValueType DestType);
-
-	bool ValidateMaterialExpressionPermission(const UMaterialExpression* Expression);
 
 	// FMaterialCompiler interface.
 
@@ -820,7 +912,7 @@ protected:
 	virtual int32 ParticleSubUV(int32 TextureIndex, EMaterialSamplerType SamplerType, int32 MipValue0Index, int32 MipValue1Index, ETextureMipValueMode MipValueMode, bool bBlend) override;
 	virtual int32 ParticleSubUVProperty(int32 PropertyIndex) override;
 	virtual int32 ParticleColor() override;
-	virtual int32 ParticlePosition() override;
+	virtual int32 ParticlePosition(EPositionOrigin OriginType) override;
 	virtual int32 ParticleRadius() override;
 
 	virtual int32 SphericalParticleOpacity(int32 Density) override;
@@ -831,10 +923,11 @@ protected:
 	virtual int32 ParticleDirection() override;
 	virtual int32 ParticleSpeed() override;
 	virtual int32 ParticleSize() override;
+	virtual int32 ParticleSpriteRotation() override;
 
 	virtual int32 WorldPosition(EWorldPositionIncludedOffsets WorldPositionIncludedOffsets) override;
 
-	virtual int32 ObjectWorldPosition() override;
+	virtual int32 ObjectWorldPosition(EPositionOrigin OriginType) override;
 	virtual int32 ObjectRadius() override;
 	virtual int32 ObjectBounds() override;
 
@@ -843,7 +936,7 @@ protected:
 
 	virtual int32 DistanceCullFade() override;
 
-	virtual int32 ActorWorldPosition() override;
+	virtual int32 ActorWorldPosition(EPositionOrigin OriginType) override;
 
 	virtual int32 DynamicBranch(int32 Condition, int32 A, int32 B) override;
 	virtual int32 If(int32 A, int32 B, int32 AGreaterThanB, int32 AEqualsB, int32 ALessThanB, int32 ThresholdArg) override;
@@ -904,6 +997,8 @@ protected:
 
 	virtual int32 DBufferTextureLookup(int32 ViewportUV, uint32 DBufferTextureIndex) override;
 
+	virtual int32 PathTracingBufferTextureLookup(int32 ViewportUV, uint32 PathTracingBufferTextureIndex) override;
+
 	// @param bTextureLookup true: texture, false:no texture lookup, usually to get the size
 	void UseSceneTextureId(ESceneTextureId SceneTextureId, bool bTextureLookup);
 
@@ -928,12 +1023,12 @@ protected:
 	virtual int32 ExternalTextureCoordinateOffset(int32 TextureReferenceIndex, TOptional<FName> ParameterName) override;
 	virtual int32 ExternalTextureCoordinateOffset(const FGuid& ExternalTextureGuid) override;
 
-	virtual int32 SparseVolumeTexture(USparseVolumeTexture* Texture, int32 SubTextureId, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType) override;
-	virtual int32 SparseVolumeTextureParameter(FName ParameterName, USparseVolumeTexture* InDefaultTexture, int32 SubTextureId, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType) override;
-	virtual int32 SparseVolumeTextureSample(int32 TextureIndex, int32 CoordinateIndex) override;
+	virtual int32 SparseVolumeTexture(USparseVolumeTexture* Texture, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType) override;
+	virtual int32 SparseVolumeTextureParameter(FName ParameterName, USparseVolumeTexture* InDefaultTexture, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType) override;
 	virtual int32 SparseVolumeTextureUniform(int32 TextureIndex, int32 VectorIndex, UE::Shader::EValueType Type) override;
 	virtual int32 SparseVolumeTextureUniformParameter(FName ParameterName, int32 TextureIndex, int32 VectorIndex, UE::Shader::EValueType Type) override;
-	virtual int32 SparseVolumeTextureGetVoxelCoord(int32 PackedPhysicalTileCoord, int32 TileSize, int32 CoordPageTable, int32 CoordVolume) override;
+	virtual int32 SparseVolumeTextureSamplePageTable(int32 SparseVolumeTextureIndex, int32 UVWIndex, int32 MipLevelIndex, ESamplerSourceMode SamplerSource) override;
+	virtual int32 SparseVolumeTextureSamplePhysicalTileData(int32 SparseVolumeTextureIndex, int32 VoxelCoordIndex, int32 PhysicalTileDataIdxIndex) override;
 
 	virtual UObject* GetReferencedTexture(int32 Index);
 
@@ -961,6 +1056,9 @@ protected:
 	virtual int32 Dot(int32 A, int32 B) override;
 	virtual int32 Cross(int32 A, int32 B) override;
 	virtual int32 Power(int32 Base, int32 Exponent) override;
+	virtual int32 Exponential(int32 X) override;
+	virtual int32 Exponential2(int32 X) override;
+	virtual int32 Logarithm(int32 X) override;
 	virtual int32 Logarithm2(int32 X) override;
 	virtual int32 Logarithm10(int32 X) override;
 	virtual int32 SquareRoot(int32 X) override;
@@ -976,6 +1074,8 @@ protected:
 	virtual int32 Saturate(int32 X) override;
 	virtual int32 ComponentMask(int32 Vector, bool R, bool G, bool B, bool A) override;
 	virtual int32 AppendVector(int32 A, int32 B) override;
+	virtual int32 HsvToRgb(int32 X) override;
+	virtual int32 RgbToHsv(int32 X) override;
 
 	int32 TransformBase(EMaterialCommonBasis SourceCoordBasis, EMaterialCommonBasis DestCoordBasis, int32 A, int AWComponent);
 	
@@ -1098,6 +1198,9 @@ protected:
 		int32 SecondRoughness, int32 SecondRoughnessWeight, int32 SecondRoughnessAsSimpleClearCoat,
 		int32 FuzzAmount, int32 FuzzColor, int32 FuzzRoughness,
 		int32 Thickness,
+		int32 GlintValue, int32 GlintUV,
+		int32 SpecularProfileId,
+		bool bIsAtTheBottomOfTopology,
 		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
 		FStrataOperator* PromoteToOperator) override;
 	virtual int32 StrataConversionFromLegacy(
@@ -1116,7 +1219,7 @@ protected:
 		int32 CustomTangent_Tangent,
 		FStrataOperator* PromoteToOperator) override;
 	virtual int32 StrataVolumetricFogCloudBSDF(int32 Albedo, int32 Extinction, int32 EmissiveColor, int32 AmbientOcclusion) override;
-	virtual int32 StrataUnlitBSDF(int32 EmissiveColor, int32 TransmittanceColor) override;
+	virtual int32 StrataUnlitBSDF(int32 EmissiveColor, int32 TransmittanceColor, int32 Normal) override;
 	virtual int32 StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override;
 	virtual int32 StrataEyeBSDF(int32 DiffuseColor, int32 Roughness, int32 IrisMask, int32 IrisDistance, int32 EmissiveColor, int32 CorneaNormal, int32 IrisNormal, int32 IrisPlaneNormal, int32 SSSProfileId, const FString& SharedLocalBasisIndexMacro, FStrataOperator* PromoteToOperator) override;
 	virtual int32 StrataSingleLayerWaterBSDF(
@@ -1149,17 +1252,16 @@ protected:
 	virtual int32 StrataThicknessStackPush(UMaterialExpression* Expression, FExpressionInput* Input) override;
 	virtual void StrataThicknessStackPop() override;
 
-	virtual FStrataOperator& StrataCompilationRegisterOperator(int32 OperatorType, FGuid StrataExpressionGuid, UMaterialExpression* Parent, FGuid StrataParentExpressionGuid, bool bUseParameterBlending = false) override;
+	virtual FStrataOperator& StrataCompilationRegisterOperator(int32 OperatorType, FGuid StrataExpressionGuid, UMaterialExpression* Child, UMaterialExpression* Parent, FGuid StrataParentExpressionGuid, bool bUseParameterBlending = false) override;
 	virtual FStrataOperator& StrataCompilationGetOperator(FGuid StrataExpressionGuid) override;
 	virtual FStrataOperator* StrataCompilationGetOperatorFromIndex(int32 OperatorIndex) override;
 
 	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk) override;
 	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk, int32 TangentCodeChunk) override;
+	virtual FString GetStrataSharedLocalBasisIndexMacro(const FStrataRegisteredSharedLocalBasis& SharedLocalBasis) override;
 	virtual int32 StrataAddParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 ACodeChunk, int32 BCodeChunk) override;
 	virtual int32 StrataVerticalLayeringParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 TopCodeChunk) override;
 	virtual int32 StrataHorizontalMixingParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 BackgroundCodeChunk, int32 ForegroundCodeChunk, int32 HorizontalMixCodeChunk) override;
-
-	FStrataSharedLocalBasesInfo StrataCompilationInfoGetMatchingSharedLocalBasisInfo(const FStrataRegisteredSharedLocalBasis& SearchedSharedLocalBasis) const;
 
 #if HANDLE_CUSTOM_OUTPUTS_AS_MATERIAL_ATTRIBUTES
 	/** Used to translate code for custom output attributes such as ClearCoatBottomNormal */

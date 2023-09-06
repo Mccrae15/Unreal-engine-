@@ -132,6 +132,45 @@ namespace GeometryCollection::Facades
 		return OutBones;
 	}
 
+	TArray<int32> FCollectionTransformSelectionFacade::GetBonesExactlyAtLevel(const int32 Level, bool bOnlyClusteredOrRigid) const
+	{
+		TArray<int32> OutBones;
+
+		if (LevelAttribute.IsValid() && SimulationTypeAttribute.IsValid())
+		{
+			const TManagedArray<int32>& Levels = LevelAttribute.Get();
+			bool bHasSimType = SimulationTypeAttribute.IsValid();
+
+			if (!bHasSimType)
+			{
+				// cannot filter by cluster/rigid if simulation type is not available
+				ensure(!bOnlyClusteredOrRigid);
+				bOnlyClusteredOrRigid = false;
+			}
+
+			bool bAllLevels = Level == INDEX_NONE;
+
+			const int32 NumTransforms = ParentAttribute.Num();
+			for (int32 BoneIdx = 0; BoneIdx < NumTransforms; BoneIdx++)
+			{
+				bool bIsRigid = bHasSimType && SimulationTypeAttribute[BoneIdx] == FGeometryCollection::ESimulationTypes::FST_Rigid;
+				bool bIsClustered = bHasSimType && SimulationTypeAttribute[BoneIdx] == FGeometryCollection::ESimulationTypes::FST_Clustered;
+				if (
+					// (if skipping embedded) sim type is clustered or rigid 
+					(!bOnlyClusteredOrRigid || bIsClustered || bIsRigid)
+					&&
+					// level is at or before the target
+					(bAllLevels || Levels[BoneIdx] == Level)
+					)
+				{
+					OutBones.Add(BoneIdx);
+				}
+			}
+		}
+
+		return OutBones;
+	}
+
 	void FCollectionTransformSelectionFacade::Sanitize(TArray<int32>& InOutSelection, bool bFavorParents) const
 	{
 		if (ParentAttribute.IsValid())
@@ -186,6 +225,79 @@ namespace GeometryCollection::Facades
 		}
 
 		InOutSelection = RigidSelection;
+	}
+
+	void FCollectionTransformSelectionFacade::ConvertEmbeddedSelectionToParents(TArray<int32>& InOutSelection) const
+	{
+		if (!SimulationTypeAttribute.IsValid()) // if no simulation type, no embedded to convert
+		{
+			return;
+		}
+
+		const TManagedArray<int32>& Parents = ParentAttribute.Get();
+		const TManagedArray<int32>& SimulationType = SimulationTypeAttribute.Get();
+
+		Sanitize(InOutSelection);
+
+		for (int32 SelBoneIdx = 0; SelBoneIdx < InOutSelection.Num(); ++SelBoneIdx)
+		{
+			int32 Bone = InOutSelection[SelBoneIdx];
+			if (SimulationType[Bone] == FGeometryCollection::ESimulationTypes::FST_None)
+			{
+				int32 Parent = Parents[Bone];
+				if (Parent != INDEX_NONE)
+				{
+					InOutSelection[SelBoneIdx] = Parent;
+				}
+				else // embedded should always have a parent, but if it somehow does not, just remove from selection
+				{
+					InOutSelection.RemoveAtSwap(SelBoneIdx, 1, false);
+					--SelBoneIdx; // reconsider swapped-in-element at this idx next iter
+				}
+			}
+		}
+	}
+
+	void FCollectionTransformSelectionFacade::ConvertSelectionToClusterNodes(TArray<int32>& InOutSelection, bool bLeaveRigidRoots) const
+	{
+		const TManagedArray<int32>& Parents = ParentAttribute.Get();
+		const TManagedArray<int32>& SimulationType = SimulationTypeAttribute.Get();
+
+		Sanitize(InOutSelection);
+
+		TSet<int32> ClusterNodes;
+		for (int32 Index : InOutSelection)
+		{
+			int32 SimType = SimulationType[Index];
+			if (SimType == FGeometryCollection::ESimulationTypes::FST_Clustered)
+			{
+				ClusterNodes.Add(Index);
+			}
+			else // if Index is not a cluster, select the cluster containing Index
+			{
+				int32 Parent = Parents[Index];
+				int32 CouldBeRoot = Index;
+				if (SimType == FGeometryCollection::ESimulationTypes::FST_None && Parent != -1)
+				{
+					CouldBeRoot = Parent;
+					Parent = Parents[Parent];
+				}
+				// Special case handling for the rigid root case; only discard from selection if !bLeaveRigidRoots
+				if (Parent == -1 && SimulationType[CouldBeRoot] == FGeometryCollection::ESimulationTypes::FST_Rigid)
+				{
+					if (bLeaveRigidRoots)
+					{
+						ClusterNodes.Add(Index);
+					}
+					continue;
+				}
+				else if (Parent != FGeometryCollection::Invalid && SimulationType[Parent] == FGeometryCollection::ESimulationTypes::FST_Clustered)
+				{
+					ClusterNodes.Add(Parent);
+				}
+			}
+		}
+		InOutSelection = ClusterNodes.Array();
 	}
 
 	TArray<int32> FCollectionTransformSelectionFacade::SelectRootBones() const
@@ -516,16 +628,29 @@ namespace GeometryCollection::Facades
 		InOutSelection.SetNum(NewNumElements);
 	}
 
-	TArray<int32> FCollectionTransformSelectionFacade::SelectBySize(float SizeMin, float SizeMax, bool bInclusive, bool bInsideRange) const
+	TArray<int32> FCollectionTransformSelectionFacade::SelectBySize(float SizeMin, float SizeMax, bool bInclusive, bool bInsideRange, bool bUseRelativeSize) const
 	{
+		// if not using relative size, convert sizes to volumes and select by volume
+		if (!bUseRelativeSize)
+		{
+			float VolumeMin = SizeMin * SizeMin * SizeMin;
+			float VolumeMax = SizeMax * SizeMax * SizeMax;
+			return SelectByVolume(VolumeMin, VolumeMax, bInclusive, bInsideRange);
+		}
+
 		TArray<int32> OutSelection;
 
+		// TODO: (See also SelectByVolume) We should add a method to get the volumes without modifying the collection, and then remove this full geometrycollection copy
 		if (TUniquePtr<FGeometryCollection> TempGeomCollection = TUniquePtr<FGeometryCollection>(ConstCollection.NewCopy<FGeometryCollection>()))
 		{
 			FGeometryCollectionConvexUtility::SetVolumeAttributes(TempGeomCollection.Get());
 
-			const TManagedArrayAccessor<float> SizeAttribute((FManagedArrayCollection)*TempGeomCollection, "Size", FTransformCollection::TransformGroup);
-			const TManagedArray<float>& Sizes = SizeAttribute.Get();
+			const TManagedArray<float>* SizesPtr = TempGeomCollection->FindAttribute<float>("Size", FTransformCollection::TransformGroup);
+			if (!ensure(SizesPtr))
+			{
+				return OutSelection;
+			}
+			const TManagedArray<float>& Sizes = *SizesPtr;
 
 			for (int32 BoneIdx = 0; BoneIdx < Sizes.Num(); ++BoneIdx)
 			{
@@ -575,12 +700,17 @@ namespace GeometryCollection::Facades
 	{
 		TArray<int32> OutSelection;
 
+		// TODO: (See also SelectBySize) We should add a method to get the volumes without modifying the collection, and then remove this full geometrycollection copy
 		if (TUniquePtr<FGeometryCollection> TempGeomCollection = TUniquePtr<FGeometryCollection>(ConstCollection.NewCopy<FGeometryCollection>()))
 		{
 			FGeometryCollectionConvexUtility::SetVolumeAttributes(TempGeomCollection.Get());
 
-			const TManagedArrayAccessor<float> VolumeAttribute((FManagedArrayCollection)*TempGeomCollection, "Volume", FTransformCollection::TransformGroup);
-			const TManagedArray<float>& Volumes = VolumeAttribute.Get();
+			const TManagedArray<float>* VolumesPtr = TempGeomCollection->FindAttribute<float>("Volume", FTransformCollection::TransformGroup);
+			if (!ensure(VolumesPtr))
+			{
+				return OutSelection;
+			}
+			const TManagedArray<float>& Volumes = *VolumesPtr;
 
 			for (int32 BoneIdx = 0; BoneIdx < Volumes.Num(); ++BoneIdx)
 			{

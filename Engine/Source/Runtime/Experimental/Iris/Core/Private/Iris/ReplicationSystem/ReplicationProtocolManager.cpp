@@ -14,6 +14,11 @@
 #include "Containers/StringFwd.h"
 #include "Logging/LogScopedVerbosityOverride.h"
 
+#ifndef UE_NET_ENABLE_PROTOCOLMANAGER_LOG
+// Default is to enable protocol logs in non-shipping
+#	define UE_NET_ENABLE_PROTOCOLMANAGER_LOG !(UE_BUILD_SHIPPING)
+#endif
+
 #if UE_NET_ENABLE_PROTOCOLMANAGER_LOG
 #	define UE_LOG_PROTOCOLMANAGER(Log, Format, ...)  UE_LOG(LogIris, Log, Format, ##__VA_ARGS__)
 #else
@@ -35,6 +40,10 @@ static FAutoConsoleVariableRef CVarIrisLogReplicationProtocols(
 FReplicationInstanceProtocol* FReplicationProtocolManager::CreateInstanceProtocol(const FReplicationFragments& Fragments)
 {
 	const uint32 FragmentCount = Fragments.Num();
+	if (!ensure(FragmentCount < 65536))
+	{
+		return nullptr;
+	}
 
 	// We want to keep this as a single allocation so we first build a layout and allocate enough space for the InstanceProtocol and its data
 	struct FReplicationInstanceProtocolLayoutData
@@ -51,14 +60,13 @@ FReplicationInstanceProtocol* FReplicationProtocolManager::CreateInstanceProtoco
 	FMemoryLayoutUtil::AddToLayout<FReplicationFragment*>(Layout, LayoutData.FragmentsSizeAndOffset, FragmentCount);
 
 	// Allocate memory for the instance protocol
-	uint8* Buffer = (uint8*)FMemory::Malloc(Layout.CurrentOffset, Layout.MaxAlignment);
-	FMemory::Memset(Buffer, 0, Layout.CurrentOffset);
+	uint8* Buffer = static_cast<uint8*>(FMemory::MallocZeroed(Layout.CurrentOffset, static_cast<uint32>(Layout.MaxAlignment)));
 
 	// Init FReplicationInstanceProtocol
 	FReplicationInstanceProtocol* InstanceProtocol = new (Buffer) FReplicationInstanceProtocol;
 	InstanceProtocol->FragmentData = reinterpret_cast<FReplicationInstanceProtocol::FFragmentData*>(Buffer + LayoutData.FragmentDataSizeAndOffset.Offset);
 	InstanceProtocol->Fragments = reinterpret_cast<FReplicationFragment* const *>(Buffer + LayoutData.FragmentsSizeAndOffset.Offset);
-	InstanceProtocol->FragmentCount = FragmentCount;
+	InstanceProtocol->FragmentCount = static_cast<uint16>(FragmentCount);
 
 	// Fill in fragment data and fragment pointer
 	uint32 FragmentIt = 0u;
@@ -230,6 +238,10 @@ const FReplicationProtocol* FReplicationProtocolManager::CreateReplicationProtoc
 
 	// Create the protocol
 	const uint32 FragmentCount = Fragments.Num();
+	if (!ensure(FragmentCount <= 65536))
+	{
+		return nullptr;
+	}
 
 	// We want to keep this as a single allocation so we first build a layout and allocate enough space for the InstanceProtocol and its data
 	struct FReplicationProtocolLayoutData
@@ -245,8 +257,7 @@ const FReplicationProtocol* FReplicationProtocolManager::CreateReplicationProtoc
 
 	// Allocate memory for the protocol, the replication protocol must be refcounted by all NetObjects
 	// We could also choose to explicitly control the lifetime 
-	uint8* Buffer = (uint8*)FMemory::Malloc(Layout.CurrentOffset, Layout.MaxAlignment);
-	FMemory::Memset(Buffer, 0, Layout.CurrentOffset);
+	uint8* Buffer = static_cast<uint8*>(FMemory::MallocZeroed(Layout.CurrentOffset, static_cast<uint32>(Layout.MaxAlignment)));
 
 	// Init FReplicationInstanceProtocol
 	FReplicationProtocol* Protocol = new (Buffer) FReplicationProtocol;
@@ -335,8 +346,8 @@ const FReplicationProtocol* FReplicationProtocolManager::CreateReplicationProtoc
 
 		Protocol->InternalChangeMasksOffset = InternalSize;
 
-		Protocol->FirstLifetimeConditionalsStateIndex = FirstLifetimeConditionalsStateIndex;
-		Protocol->LifetimeConditionalsStateCount = LifetimeConditionalsStateCount;
+		Protocol->FirstLifetimeConditionalsStateIndex = static_cast<uint16>(FirstLifetimeConditionalsStateIndex);
+		Protocol->LifetimeConditionalsStateCount = static_cast<uint16>(LifetimeConditionalsStateCount);
 		Protocol->FirstLifetimeConditionalsChangeMaskOffset = FirstLifetimeConditionalsChangeMaskOffset;
 
 		InternalSize += FNetBitArrayView::CalculateRequiredWordCount(ChangeMaskBitCount)*sizeof(FNetBitArrayView::StorageWordType);
@@ -361,7 +372,7 @@ const FReplicationProtocol* FReplicationProtocolManager::CreateReplicationProtoc
 	RegisteredProtocols.AddUnique(ProtocolId, Info);
 	ProtocolToInfoMap.Add(Protocol, Info);
 
-	UE_LOG_PROTOCOLMANAGER(Log, TEXT("FReplicationProtocolManager::CreateReplicationProtocol Created new protocol %s with ProtocolId:0x%" UINT64_x_FMT), ToCStr(Protocol->DebugName), ProtocolId);
+	UE_LOG_PROTOCOLMANAGER(Verbose, TEXT("FReplicationProtocolManager::CreateReplicationProtocol Created new protocol %s with ProtocolId:0x%" UINT64_x_FMT), ToCStr(Protocol->DebugName), ProtocolId);
 #if UE_NET_ENABLE_PROTOCOLMANAGER_LOG
 	if (bIrisLogReplicationProtocols)
 	{
@@ -391,7 +402,7 @@ void FReplicationProtocolManager::InternalDestroyReplicationProtocol(const FRepl
 {
 	if (Protocol)
 	{
-		UE_LOG_PROTOCOLMANAGER(Log, TEXT("FReplicationProtocolManager::InternalDestroyReplicationProtocol Destroyed protocol %s with ProtocolId:0x%" UINT64_x_FMT), ToCStr(Protocol->DebugName), Protocol->ProtocolIdentifier);
+		UE_LOG_PROTOCOLMANAGER(Verbose, TEXT("FReplicationProtocolManager::InternalDestroyReplicationProtocol Destroyed protocol %s with ProtocolId:0x%" UINT64_x_FMT), ToCStr(Protocol->DebugName), Protocol->ProtocolIdentifier);
 
 		// Remove tracked descriptors
 		for (const FReplicationStateDescriptor* Descriptor : MakeArrayView(Protocol->ReplicationStateDescriptors, Protocol->ReplicationStateCount))

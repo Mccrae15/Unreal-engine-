@@ -286,6 +286,10 @@ void FTransaction::FObjectRecord::Save(FTransaction* Owner)
 	check(Owner->bFlip);
 	if (!bRestored)
 	{
+		// Since the transaction will be reset, we want to preserve if this transaction affected the garbage flag at all
+		// (since the only thing that should change is the updated state of the object)
+		FSerializedObject::EPendingKillChange PendingKillChange = SerializedObjectFlip.PendingKillChange;
+
 		SerializedObjectFlip.Reset();
 
 		UObject* CurrentObject = Object.Get();
@@ -296,6 +300,8 @@ void FTransaction::FObjectRecord::Save(FTransaction* Owner)
 
 		FWriter Writer(SerializedObjectFlip, bWantsBinarySerialization);
 		SerializeContents(Writer, -Oper);
+
+		SerializedObjectFlip.PendingKillChange = PendingKillChange;
 	}
 }
 
@@ -392,6 +398,12 @@ void FTransaction::FObjectRecord::Finalize( FTransaction* Owner, UE::Transaction
 			
 			// Diff against the object state when the transaction started
 			UE::Transaction::DiffUtil::GenerateObjectDiff(*DiffableObject, CurrentDiffableObject, DeltaChange, UE::Transaction::DiffUtil::FGenerateObjectDiffOptions(), &ArchetypeCache);
+
+			if (DeltaChange.bHasPendingKillChange)
+			{
+				SerializedObject.PendingKillChange = IsValid(CurrentObject) ? FSerializedObject::EPendingKillChange::DeadToAlive: FSerializedObject::EPendingKillChange::AliveToDead;
+				SerializedObjectFlip.PendingKillChange = IsValid(CurrentObject) ? FSerializedObject::EPendingKillChange::AliveToDead : FSerializedObject::EPendingKillChange::DeadToAlive;
+			}
 
 			// If we have a previous snapshot then we need to consider that part of the diff for the finalized object, as systems may 
 			// have been tracking delta-changes between snapshots and this finalization will need to account for those changes too
@@ -810,7 +822,7 @@ void FTransaction::Apply()
 	UE::Transaction::DiffUtil::FDiffableObjectArchetypeCache ArchetypeCache;
 
 	// Update the package dirty states
-	// We do this prior to applying any object updates as we want to respect if an undo operation causes an object to dirty its own package
+	// We do this prior to applying any object updates since a package cannot be re-dirtied during an undo/redo operation
 	if (bFlip)
 	{
 		for (TTuple<UE::Transaction::FPersistentObjectRef, FPackageRecord>& PackageRecordPair : PackageRecordMap)
@@ -854,6 +866,16 @@ void FTransaction::Apply()
 				Object->CheckDefaultSubobjects();
 				Object->PreEditUndo();
 			}
+			
+			// If we get here, we are undoing - in that case, we need to reverse whatever was in the transaction.
+			if (Record.SerializedObject.PendingKillChange == FObjectRecord::FSerializedObject::EPendingKillChange::AliveToDead)
+			{
+				Object->ClearGarbage();
+			}
+			else if (Record.SerializedObject.PendingKillChange == FObjectRecord::FSerializedObject::EPendingKillChange::DeadToAlive)
+			{
+				Object->MarkAsGarbage();
+			}
 
 			ChangedObjects.Add(Object, FChangedObjectValue(i, Record.SerializedObject.ObjectAnnotation));
 		}
@@ -885,10 +907,32 @@ void FTransaction::Apply()
 		return Cast<UActorComponent>(&A) != nullptr;
 	});
 
+	auto ObjectWasInvalidatedDuringTransaction = [](const UObject* InObject) -> bool
+	{
+		// skip records which point to a SKEL_ or REINST_ class
+		// (any class that we're keeping around only to GC old instances of the class).
+		// a previous record may have caused a blueprint compilation
+		// which may cause the consecutive changed object to turn invalid.
+		if(InObject != nullptr && !IsValid(InObject) &&
+			InObject->GetOutermost() == GetTransientPackage())
+		{
+			if(InObject->GetClass() && InObject->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
 	TArray<ULevel*> LevelsToCommitModelSurface;
 	for (const TTuple<UObject*, FChangedObjectValue>& ChangedObjectIt : ChangedObjects)
 	{
 		UObject* ChangedObject = ChangedObjectIt.Key;
+		if(ObjectWasInvalidatedDuringTransaction(ChangedObject))
+		{
+			continue;
+		}
+		
 		UModel* Model = Cast<UModel>(ChangedObject);
 		if (Model && Model->Nodes.Num())
 		{
@@ -965,7 +1009,11 @@ void FTransaction::Apply()
 	for (auto ChangedObjectIt : ChangedObjects)
 	{
 		UObject* ChangedObject = ChangedObjectIt.Key;
-		ChangedObject->CheckDefaultSubobjects();
+		if(ObjectWasInvalidatedDuringTransaction(ChangedObject))
+        {
+        	continue;
+        }
+		(void)ChangedObject->CheckDefaultSubobjects();
 	}
 
 	ChangedObjects.Reset();
@@ -1119,13 +1167,15 @@ void UTransBuffer::Initialize(SIZE_T InMaxMemory)
 	Reset( NSLOCTEXT("UnrealEd", "Startup", "Startup") );
 	CheckState();
 
+	FCoreUObjectDelegates::OnObjectsReinstanced.AddUObject(this, &UTransBuffer::OnObjectsReinstanced);
+
 	UE_LOG(LogInit, Log, TEXT("Transaction tracking system initialized") );
 }
 
 // UObject interface.
 void UTransBuffer::Serialize( FArchive& Ar )
 {
-	check( !Ar.IsPersistent() );
+	check( !Ar.IsPersistent() || this->HasAnyFlags(RF_ClassDefaultObject) );
 
 	CheckState();
 
@@ -1148,6 +1198,42 @@ void UTransBuffer::FinishDestroy()
 		UE_LOG(LogExit, Log, TEXT("Transaction tracking system shut down") );
 	}
 	Super::FinishDestroy();
+}
+
+void UTransBuffer::OnObjectsReinstanced(const TMap<UObject*, UObject*>& OldToNewInstances)
+{
+	if (OldToNewInstances.Num() == 0)
+	{
+		return;
+	}
+
+	class FReinstancingReferenceCollector : public FReferenceCollector
+	{
+	public:
+		virtual bool IsIgnoringArchetypeRef() const override
+		{
+			return false;
+		}
+
+		virtual bool IsIgnoringTransient() const override
+		{
+			return false;
+		}
+
+		virtual void HandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const FProperty* ReferencingProperty) override
+		{
+			if (UObject* NewObject = OldToNewInstancesPtr->FindRef(Object))
+			{
+				Object = NewObject;
+			}
+		}
+
+		const TMap<UObject*, UObject*>* OldToNewInstancesPtr = nullptr;
+	};
+
+	FReinstancingReferenceCollector Collector;
+	Collector.OldToNewInstancesPtr = &OldToNewInstances;
+	CallAddReferencedObjects(Collector);
 }
 
 void UTransBuffer::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)

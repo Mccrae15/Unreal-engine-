@@ -5,9 +5,11 @@
 #include "PCGComponent.h"
 #include "PCGContext.h"
 #include "PCGGraph.h"
+#include "PCGSubsystem.h"
 #include "Data/PCGPointData.h"
 #include "Elements/PCGDebugElement.h"
 #include "Elements/PCGSelfPruning.h"
+#include "Grid/PCGPartitionActor.h"
 
 #include "HAL/IConsoleManager.h"
 #include "Utils/PCGExtraCapture.h"
@@ -18,6 +20,16 @@ static TAutoConsoleVariable<bool> CVarPCGValidatePointMetadata(
 	TEXT("pcg.debug.ValidatePointMetadata"),
 	true,
 	TEXT("Controls whether we validate that the metadata entry keys on the output point data are consistent"));
+
+#if WITH_EDITOR
+#define PCG_ELEMENT_EXECUTION_BREAKPOINT() \
+	if (Context && Context->GetInputSettingsInterface() && Context->GetInputSettingsInterface()->bBreakDebugger) \
+	{ \
+		UE_DEBUG_BREAK(); \
+	}
+#else
+#define PCG_ELEMENT_EXECUTION_BREAKPOINT()
+#endif
 
 bool IPCGElement::Execute(FPCGContext* Context) const
 {
@@ -34,6 +46,8 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 			case EPCGExecutionPhase::NotExecuted:
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::NotExecuted);
+				PCG_ELEMENT_EXECUTION_BREAKPOINT();
+
 				PreExecute(Context);
 
 				// Will override the settings if there is any override.
@@ -45,6 +59,7 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 			case EPCGExecutionPhase::PrepareData:
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::PrepareData);
+				PCG_ELEMENT_EXECUTION_BREAKPOINT();
 
 				if (PrepareDataInternal(Context))
 				{
@@ -60,6 +75,8 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 			case EPCGExecutionPhase::Execute:
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::Execute);
+				PCG_ELEMENT_EXECUTION_BREAKPOINT();
+
 				if (ExecuteInternal(Context))
 				{
 					Context->CurrentPhase = EPCGExecutionPhase::PostExecute;
@@ -74,6 +91,8 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 			case EPCGExecutionPhase::PostExecute:
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::PostExecute);
+				PCG_ELEMENT_EXECUTION_BREAKPOINT();
+
 				PostExecute(Context);
 				break;
 			}
@@ -190,7 +209,7 @@ void IPCGElement::PostExecute(FPCGContext* Context) const
 		// Some nodes benefit from computing an actual CRC from the data. This can halt the propagation of change/executions through the graph. For
 		// data like landscapes we will never have a full accurate data crc for it so we'll tend to assume changed which triggers downstream
 		// execution. Performing a detailed CRC of output data can detect real change in the data and halt the cascade of execution.
-		const bool bShouldComputeFullOutputDataCrc = ShouldComputeFullOutputDataCrc();
+		const bool bShouldComputeFullOutputDataCrc = ShouldComputeFullOutputDataCrc(Context);
 
 		// Compute Crc from output data
 		Context->OutputData.Crc = Context->OutputData.ComputeCrc(bShouldComputeFullOutputDataCrc);
@@ -237,17 +256,22 @@ void IPCGElement::DisabledPassThroughData(FPCGContext* Context) const
 		return;
 	}
 
-	const UPCGPin* PassThroughPin = Context->Node->GetPassThroughInputPin();
-	if (PassThroughPin == nullptr)
+	const UPCGPin* PassThroughInputPin = Context->Node->GetPassThroughInputPin();
+	const UPCGPin* PassThroughOutputPin = Context->Node->GetPassThroughOutputPin();
+	if (!PassThroughInputPin || !PassThroughOutputPin)
 	{
-		// No pin to grab pass through data from
+		// No pin to grab pass through data from or to pass data to.
 		return;
 	}
 
-	// Grab data from pass-through pin
-	Context->OutputData.TaggedData = Context->InputData.GetInputsByPin(PassThroughPin->Properties.Label);
+	const EPCGDataType OutputType = PassThroughOutputPin->GetCurrentTypes();
 
-	const EPCGDataType OutputType = Context->Node->GetOutputPins()[0]->Properties.AllowedTypes;
+	// Grab data from pass-through pin, push it all to output pin
+	Context->OutputData.TaggedData = Context->InputData.GetInputsByPin(PassThroughInputPin->Properties.Label);
+	for (FPCGTaggedData& Data : Context->OutputData.TaggedData)
+	{
+		Data.Pin = PassThroughOutputPin->Properties.Label;
+	}
 
 	// Pass through input data if it is not params, and if the output type supports it (e.g. if we have a incoming
 	// surface connected to an input pin of type Any, do not pass the surface through to an output pin of type Point).
@@ -269,7 +293,7 @@ void IPCGElement::DisabledPassThroughData(FPCGContext* Context) const
 	if (Settings->OnlyPassThroughOneEdgeWhenDisabled())
 	{
 		// Find first incoming non-params data that is coming through the pass through pin
-		TArray<FPCGTaggedData> InputsOnFirstPin = Context->InputData.GetInputsByPin(PassThroughPin->Properties.Label);
+		TArray<FPCGTaggedData> InputsOnFirstPin = Context->InputData.GetInputsByPin(PassThroughInputPin->Properties.Label);
 		const int FirstNonParamsDataIndex = InputsOnFirstPin.IndexOfByPredicate(InputDataShouldPassThrough);
 
 		if (FirstNonParamsDataIndex != INDEX_NONE)
@@ -292,7 +316,7 @@ void IPCGElement::DisabledPassThroughData(FPCGContext* Context) const
 	else
 	{
 		// Remove any incoming non-params data that is coming through the pass through pin
-		TArray<FPCGTaggedData> InputsOnFirstPin = Context->InputData.GetInputsByPin(PassThroughPin->Properties.Label);
+		TArray<FPCGTaggedData> InputsOnFirstPin = Context->InputData.GetInputsByPin(PassThroughInputPin->Properties.Label);
 		for (int Index = InputsOnFirstPin.Num() - 1; Index >= 0; --Index)
 		{
 			const FPCGTaggedData& Data = InputsOnFirstPin[Index];
@@ -308,22 +332,62 @@ void IPCGElement::DisabledPassThroughData(FPCGContext* Context) const
 #if WITH_EDITOR
 void IPCGElement::DebugDisplay(FPCGContext* Context) const
 {
+	// Check Debug flag.
 	const UPCGSettingsInterface* SettingsInterface = Context->GetInputSettingsInterface();
-	if (SettingsInterface && SettingsInterface->bDebug)
+	if (!SettingsInterface || !SettingsInterface->bDebug)
 	{
-		FPCGDataCollection ElementInputs = Context->InputData;
-		FPCGDataCollection ElementOutputs = Context->OutputData;
-
-		Context->InputData = ElementOutputs;
-		Context->OutputData = FPCGDataCollection();
-
-		PCGDebugElement::ExecuteDebugDisplay(Context);
-
-		Context->InputData = ElementInputs;
-		Context->OutputData = ElementOutputs;
+		return;
 	}
-}
 
+	// If graph is being inspected, only display Debug if the component is being inspected, or in the HiGen case also display if
+	// this component is a parent of an inspected component (because this data is available to child components).
+
+	// If the graph is not being inspected, or the current component is being inspected, then we know we should display
+	// debug, if not then we do further checks.
+	UPCGGraph* Graph = Context->SourceComponent.Get() ? Context->SourceComponent->GetGraph() : nullptr;
+	if (Graph && Graph->IsInspecting() && !Context->SourceComponent->IsInspecting() && Graph->DebugFlagAppliesToIndividualComponents())
+	{
+		// If we're no doing HiGen, or if the current component is not a local component (and therefore will not have children),
+		// then do not display debug.
+		if (!Graph->IsHierarchicalGenerationEnabled())
+		{
+			return;
+		}
+
+		// If a child of this component is being inspected (a local component on smaller grid and overlapping) then we still show debug,
+		// because this data is available to that child for use.
+		if (UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(Context->SourceComponent->GetWorld()))
+		{
+			const uint32 ThisGenerationGridSize = Context->SourceComponent->GetGenerationGridSize();
+
+			bool bFoundInspectedChildComponent = false;
+			Subsystem->ForAllOverlappingComponentsInHierarchy(Context->SourceComponent.Get(), [ThisGenerationGridSize, &bFoundInspectedChildComponent](UPCGComponent* InLocalComponent)
+			{
+				if (InLocalComponent->GetGenerationGridSize() < ThisGenerationGridSize && InLocalComponent->IsInspecting())
+				{
+					bFoundInspectedChildComponent = true;
+				}
+			});
+
+			// If no inspected child component then don't display debug.
+			if (!bFoundInspectedChildComponent)
+			{
+				return;
+			}
+		}
+	}
+
+	FPCGDataCollection ElementInputs = Context->InputData;
+	FPCGDataCollection ElementOutputs = Context->OutputData;
+
+	Context->InputData = ElementOutputs;
+	Context->OutputData = FPCGDataCollection();
+
+	PCGDebugElement::ExecuteDebugDisplay(Context);
+
+	Context->InputData = ElementInputs;
+	Context->OutputData = ElementOutputs;
+}
 #endif // WITH_EDITOR
 
 void IPCGElement::CleanupAndValidateOutput(FPCGContext* Context) const
@@ -351,6 +415,19 @@ void IPCGElement::CleanupAndValidateOutput(FPCGContext* Context) const
 #if WITH_EDITOR
 		if (SettingsInterface->bEnabled)
 		{
+			// remove null outputs
+			Context->OutputData.TaggedData.RemoveAll([this, Context](const FPCGTaggedData& TaggedData){
+
+				if (TaggedData.Data == nullptr)
+				{
+					PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("NullPinOutputData", "Invalid output(s) generated for pin '{0}'"), FText::FromName(TaggedData.Pin)));
+					return true;
+				}
+
+				return false;
+			});
+
+
 			for (FPCGTaggedData& TaggedData : Context->OutputData.TaggedData)
 			{
 				const int32 MatchIndex = OutputPinProperties.IndexOfByPredicate([&TaggedData](const FPCGPinProperties& InProp) { return TaggedData.Pin == InProp.Label; });
@@ -362,10 +439,14 @@ void IPCGElement::CleanupAndValidateOutput(FPCGContext* Context) const
 						PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("OutputCannotBeRouted", "Output data generated for non-existent output pin '{0}'"), FText::FromName(TaggedData.Pin)));
 					}
 				}
-				else if (TaggedData.Data)
+				else if (ensure(TaggedData.Data))
 				{
-					const bool bTypesOverlap = !!(OutputPinProperties[MatchIndex].AllowedTypes & TaggedData.Data->GetDataType());
-					const bool bTypeIsSubset = !(~OutputPinProperties[MatchIndex].AllowedTypes & TaggedData.Data->GetDataType());
+					// Try to get dynamic current pin types, otherwise settle for static types
+					const UPCGPin* OutputPin = Context->Node ? Context->Node->GetOutputPin(OutputPinProperties[MatchIndex].Label) : nullptr;
+					const EPCGDataType PinTypes = OutputPin ? OutputPin->GetCurrentTypes() : OutputPinProperties[MatchIndex].AllowedTypes;
+
+					const bool bTypesOverlap = !!(PinTypes & TaggedData.Data->GetDataType());
+					const bool bTypeIsSubset = !(~PinTypes & TaggedData.Data->GetDataType());
 					// TODO: Temporary fix for Settings directly from InputData (ie. from elements with code and not PCG nodes)
 					if ((!bTypesOverlap || !bTypeIsSubset) && TaggedData.Data->GetDataType() != EPCGDataType::Settings)
 					{

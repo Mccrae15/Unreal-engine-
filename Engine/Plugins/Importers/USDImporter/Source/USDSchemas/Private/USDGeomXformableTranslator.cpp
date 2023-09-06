@@ -2,10 +2,10 @@
 
 #include "USDGeomXformableTranslator.h"
 
-#include "Engine/Level.h"
 #include "MeshTranslationImpl.h"
 #include "UnrealUSDWrapper.h"
 #include "USDAssetCache.h"
+#include "USDClassesModule.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
@@ -22,6 +22,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "LiveLinkComponentController.h"
@@ -221,9 +222,6 @@ void FUsdGeomXformableCreateAssetsTaskChain::SetupTasks()
 			FMeshDescription& AddedMeshDescription = LODIndexToMeshDescription.Emplace_GetRef();
 			UsdUtils::FUsdPrimMaterialAssignmentInfo& AssignmentInfo = LODIndexToMaterialInfo.Emplace_GetRef();
 
-			TMap< FString, TMap< FString, int32 > > Unused;
-			TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex : &Unused;
-
 			pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
 			if ( !Context->RenderContext.IsNone() )
 			{
@@ -244,7 +242,6 @@ void FUsdGeomXformableCreateAssetsTaskChain::SetupTasks()
 			Options.PurposesToLoad = Context->PurposesToLoad;
 			Options.RenderContext = RenderContextToken;
 			Options.MaterialPurpose = MaterialPurposeToken;
-			Options.MaterialToPrimvarToUVIndex = MaterialToPrimvarToUVIndex;
 			Options.bMergeIdenticalMaterialSlots = Context->bMergeIdenticalMaterialSlots;
 
 			UsdToUnreal::ConvertGeomMeshHierarchy(
@@ -263,13 +260,13 @@ void FUsdGeomXformableCreateAssetsTaskChain::SetupTasks()
 
 void FUsdGeomXformableTranslator::CreateAssets()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomMeshTranslator::CreateAssets );
+
 	if ( !CollapsesChildren( ECollapsingType::Assets ) )
 	{
 		// We only have to create assets when our children are collapsed together
 		return;
 	}
-
-	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomMeshTranslator::CreateAssets );
 
 	Context->TranslatorTasks.Add( MakeShared< FUsdGeomXformableCreateAssetsTaskChain >( Context, PrimPath ) );
 }
@@ -292,8 +289,7 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponents()
 	// the same: A single static mesh will be shared between them and one of the task chains will manage to put their
 	// material assignments on the mesh directly. To ensure the correct materials for the second subtree, we need to
 	// set overrides.
-	// Note how we don't have to handle geometry caches in here like the geom mesh translator does though: We don't
-	// collapse geometry caches, at least for now
+	// Note how we don't have to handle geometry caches in here as they're handled by the geometry cache translator now
 	if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(SceneComponent))
 	{
 		if (Context->InfoCache)
@@ -420,14 +416,17 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 
 	// Can't have public or standalone on spawned actors and components because that
 	// will lead to asserts when trying to collect them during a level change, or when
-	// trying to replace them (right-clicking from the world outliner)
-	EObjectFlags ComponentFlags = Context->ObjectFlags & ~RF_Standalone & ~RF_Public;
+	// trying to replace them (right-clicking from the world outliner). Also, must set
+	// the transient flag after spawn to make sure the spawned actor get an external
+	// package if needed.
+	const EObjectFlags PreComponentFlags = Context->ObjectFlags & ~(RF_Standalone | RF_Public | RF_Transient);
+	const EObjectFlags PostComponentFlags = Context->ObjectFlags & RF_Transient;
 
 	if ( bNeedsActor.GetValue() )
 	{
 		// Spawn actor
 		FActorSpawnParameters SpawnParameters;
-		SpawnParameters.ObjectFlags = ComponentFlags;
+		SpawnParameters.ObjectFlags = PreComponentFlags;
 		SpawnParameters.OverrideLevel =  Context->Level;
 		SpawnParameters.Name = Prim.GetName();
 		SpawnParameters.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested; // Will generate a unique name in case of a conflict
@@ -437,6 +436,8 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 
 		if ( SpawnedActor )
 		{
+			SpawnedActor->SetFlags(PostComponentFlags);
+
 #if WITH_EDITOR
 			const bool bMarkDirty = false;
 			SpawnedActor->SetActorLabel( Prim.GetName().ToString(), bMarkDirty );
@@ -510,8 +511,13 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 
 		if ( ComponentType.IsSet() && ComponentType.GetValue() != nullptr )
 		{
-			const FName ComponentName = MakeUniqueObjectName( ComponentOuter, ComponentType.GetValue(), FName( Prim.GetName() ) );
-			SceneComponent = NewObject< USceneComponent >( ComponentOuter, ComponentType.GetValue(), ComponentName, ComponentFlags );
+			const FName ComponentName = MakeUniqueObjectName(
+				ComponentOuter,
+				ComponentType.GetValue(),
+				*IUsdClassesModule::SanitizeObjectName(Prim.GetName().ToString())
+			);
+			SceneComponent = NewObject< USceneComponent >( ComponentOuter, ComponentType.GetValue(), ComponentName, PreComponentFlags );
+			SceneComponent->SetFlags(PostComponentFlags);
 
 			if ( AActor* Owner = SceneComponent->GetOwner() )
 			{
@@ -544,19 +550,21 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 		// so we must force them movable here
 		const bool bIsAssociating = Context->Level && Context->Level->bIsAssociatingLevel;
 		const bool bParentIsMovable = Context->ParentComponent && Context->ParentComponent->Mobility == EComponentMobility::Movable;
+		const bool bParentIsStationary = Context->ParentComponent && Context->ParentComponent->Mobility == EComponentMobility::Stationary;
 
 		// Don't call SetMobility as it would trigger a reregister, queuing unnecessary rhi commands since this is a brand new component
-		if ( bIsAssociating || bParentIsMovable )
+		// Always have movable Skeletal mesh components or else we get some warnings when building physics assets
+		if (bIsAssociating || bParentIsMovable || SceneComponent->IsA<USkeletalMeshComponent>() || UsdUtils::IsAnimated(Prim))
 		{
 			SceneComponent->Mobility = EComponentMobility::Movable;
 		}
+		else if (bParentIsStationary || SceneComponent->IsA<ULightComponentBase>())
+		{
+			SceneComponent->Mobility = EComponentMobility::Stationary;
+		}
 		else
 		{
-			SceneComponent->Mobility = UsdUtils::IsAnimated( Prim )
-				? EComponentMobility::Movable
-				: SceneComponent->IsA<ULightComponentBase>()	// Lights need to be stationary by default
-					? EComponentMobility::Stationary
-					: EComponentMobility::Static;
+			SceneComponent->Mobility = EComponentMobility::Static;
 		}
 
 		// Attach to parent
@@ -669,9 +677,9 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomXformableTranslator::CollapsesChildren );
 
-	if ( Context->InfoCache.IsValid() )
+	if (!Context->bIsBuildingInfoCache)
 	{
-		return Context->InfoCache->DoesPathCollapseChildren( PrimPath, CollapsingType );
+		return Context->InfoCache->DoesPathCollapseChildren(PrimPath, CollapsingType);
 	}
 
 	bool bCollapsesChildren = false;
@@ -684,7 +692,12 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 	if ( Model )
 	{
 		EUsdDefaultKind PrimKind = UsdUtils::GetDefaultKind( Prim );
-		bCollapsesChildren = Context->KindsToCollapse != EUsdDefaultKind::None && ( EnumHasAnyFlags( Context->KindsToCollapse, PrimKind ) || ( PrimKind == EUsdDefaultKind::None && GCollapsePrimsWithoutKind ) );
+
+		// Note that this is false if PrimKind is None
+		const bool bPrimKindShouldCollapse = EnumHasAnyFlags( Context->KindsToCollapse, PrimKind );
+
+		bCollapsesChildren = Context->KindsToCollapse != EUsdDefaultKind::None &&
+			( bPrimKindShouldCollapse || ( PrimKind == EUsdDefaultKind::None && GCollapsePrimsWithoutKind ) );
 
 		if ( !bCollapsesChildren )
 		{
@@ -728,17 +741,52 @@ bool FUsdGeomXformableTranslator::CanBeCollapsed( ECollapsingType CollapsingType
 		return false;
 	}
 
-	if ( UsdUtils::IsAnimated( UsdPrim ) )
+	if (UsdUtils::IsAnimated(UsdPrim) ||
+		UsdUtils::PrimHasSchema(UsdPrim, UnrealIdentifiers::LiveLinkAPI) ||
+		(Context->bAllowInterpretingLODs && UsdUtils::DoesPrimContainMeshLODs(UsdPrim))
+	)
 	{
 		return false;
 	}
 
-	if ( UsdUtils::PrimHasSchema( UsdPrim, UnrealIdentifiers::LiveLinkAPI ) )
+	EUsdDefaultKind PrimKind = UsdUtils::GetDefaultKind(GetPrim());
+	// Note that this is false if PrimKind is None
+	const bool bThisPrimCanCollapse = EnumHasAnyFlags(Context->KindsToCollapse, PrimKind);
+	return bThisPrimCanCollapse || (PrimKind == EUsdDefaultKind::None && GCollapsePrimsWithoutKind);
+}
+
+TSet<UE::FSdfPath> FUsdGeomXformableTranslator::CollectAuxiliaryPrims() const
+{
+	if (!Context->bIsBuildingInfoCache)
 	{
-		return false;
+		return Context->InfoCache->GetAuxiliaryPrims(PrimPath);
 	}
 
-	return true;
+	if (!Context->InfoCache->DoesPathCollapseChildren(PrimPath, ECollapsingType::Assets))
+	{
+		return {};
+	}
+
+	TSet<UE::FSdfPath> Result;
+	{
+		FScopedUsdAllocs UsdAllocs;
+
+		pxr::UsdPrim Prim = GetPrim();
+
+		// We check imageable because that is the most basal schema that is still relevant for collapsed meshes (it
+		// holds the visibility attribute)
+		TArray<TUsdStore<pxr::UsdPrim>> ChildPrims = UsdUtils::GetAllPrimsOfType(
+			Prim,
+			pxr::TfType::Find<pxr::UsdGeomImageable>()
+		);
+
+		Result.Reserve(ChildPrims.Num());
+		for (const TUsdStore<pxr::UsdPrim>& ChildPrim : ChildPrims)
+		{
+			Result.Add(UE::FSdfPath{ChildPrim.Get().GetPrimPath()});
+		}
+	}
+	return Result;
 }
 
 #endif // #if USE_USD_SDK

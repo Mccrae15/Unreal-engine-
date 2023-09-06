@@ -3,7 +3,6 @@
 #include "WorldPartition/RuntimeSpatialHash/RuntimeSpatialHashGridHelper.h"
 #include "ActorPartition/PartitionActor.h"
 #include "HAL/IConsoleManager.h"
-#include "ProfilingDebugging/ScopedTimers.h"
 #include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionStreamingGeneration.h"
 #include "WorldPartition/WorldPartitionStreamingSource.h"
@@ -31,6 +30,11 @@ static FAutoConsoleVariableRef CVarRuntimeSpatialHashPlacePartitionActorsUsingLo
 	TEXT("wp.Runtime.RuntimeSpatialHashPlacePartitionActorsUsingLocation"),
 	GRuntimeSpatialHashPlacePartitionActorsUsingLocation,
 	TEXT("Set RuntimeSpatialHashPlacePartitionActorsUsingLocation to true to place partitioned actors into their corresponding cell using their location instead of their bounding box."));
+
+bool GRuntimeSpatialHashUseAlignedGridLevelsEffective = true;
+bool GRuntimeSpatialHashSnapNonAlignedGridLevelsToLowerLevelsEffective = true;
+bool GRuntimeSpatialHashPlaceSmallActorsUsingLocationEffective = false;
+bool GRuntimeSpatialHashPlacePartitionActorsUsingLocationEffective = true;
 
 FSquare2DGridHelper::FSquare2DGridHelper(const FBox& InWorldBounds, const FVector& InOrigin, int64 InCellSize)
 	: WorldBounds(InWorldBounds)
@@ -67,7 +71,7 @@ FSquare2DGridHelper::FSquare2DGridHelper(const FBox& InWorldBounds, const FVecto
 	{
 		int64 LevelGridSize = CurrentGridSize;
 
-		if (!GRuntimeSpatialHashUseAlignedGridLevels)
+		if (!GRuntimeSpatialHashUseAlignedGridLevelsEffective)
 		{
 			// Except for top level, adding 1 to CurrentGridSize (which is always a power of 2) breaks the pattern of perfectly aligned cell edges between grid level cells.
 			// This will prevent weird artefact during actor promotion when an actor is placed using its bounds and which overlaps multiple cells.
@@ -82,13 +86,10 @@ FSquare2DGridHelper::FSquare2DGridHelper(const FBox& InWorldBounds, const FVecto
 		CurrentGridSize >>= 1;
 	}
 
-#if WITH_EDITOR
 	// Make sure the always loaded cell exists
 	GetAlwaysLoadedCell();
-#endif
 }
 
-#if WITH_EDITOR
 void FSquare2DGridHelper::ForEachCells(TFunctionRef<void(const FSquare2DGridHelper::FGridLevel::FGridCell&)> InOperation) const
 {
 	for (int32 Level = 0; Level < Levels.Num(); Level++)
@@ -99,7 +100,6 @@ void FSquare2DGridHelper::ForEachCells(TFunctionRef<void(const FSquare2DGridHelp
 		}
 	}
 }
-#endif
 
 int32 FSquare2DGridHelper::ForEachIntersectingCells(const FBox& InBox, TFunctionRef<void(const FGridCellCoord&)> InOperation, int32 InStartLevel) const
 {
@@ -138,22 +138,20 @@ int32 FSquare2DGridHelper::ForEachIntersectingCells(const FSphericalSector& InSh
 }
 
 #if WITH_EDITOR
-FSquare2DGridHelper GetGridHelper(const FBox& WorldBounds, int64 GridCellSize)
+FSquare2DGridHelper GetGridHelper(const FBox& WorldBounds, const FVector& GridOrigin, int64 GridCellSize)
 {
 	// Default grid to a minimum of 1 level and 1 cell, for always loaded actors
-	FVector GridOrigin = FVector::ZeroVector;
 	return FSquare2DGridHelper(WorldBounds, GridOrigin, GridCellSize);
 }
 
 FSquare2DGridHelper GetPartitionedActors(const FBox& WorldBounds, const FSpatialHashRuntimeGrid& Grid, const TArray<const IStreamingGenerationContext::FActorSetInstance*>& ActorSetInstances)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(GetPartitionedActors);
-	UE_SCOPED_TIMER(TEXT("GetPartitionedActors"), LogWorldPartition, Display);
 
 	//
 	// Create the hierarchical grids for the game
 	//	
-	FSquare2DGridHelper PartitionedActors = GetGridHelper(WorldBounds, Grid.CellSize);
+	FSquare2DGridHelper PartitionedActors = GetGridHelper(WorldBounds, FVector(Grid.Origin, 0), Grid.CellSize);
 	if (ensure(PartitionedActors.Levels.Num()) && WorldBounds.IsValid)
 	{
 		int32 IntersectingCellCount = 0;
@@ -172,24 +170,26 @@ FSquare2DGridHelper GetPartitionedActors(const FBox& WorldBounds, const FSpatial
 	auto ShouldActorUseLocationPlacement = [CellArea, CellSize, GridLevelCount](const IStreamingGenerationContext::FActorSetInstance* InActorSetInstance, const FBox2D& InActorSetInstanceBounds, int32& OutGridLevel)
 	{
 		OutGridLevel = 0;
-		if (GRuntimeSpatialHashPlaceSmallActorsUsingLocation && (InActorSetInstanceBounds.GetArea() <= CellArea))
+		if (GRuntimeSpatialHashPlaceSmallActorsUsingLocationEffective && (InActorSetInstanceBounds.GetArea() <= CellArea))
 		{
 			return true;
 		}
 
-		if (GRuntimeSpatialHashPlacePartitionActorsUsingLocation)
+		if (GRuntimeSpatialHashPlacePartitionActorsUsingLocationEffective)
 		{
 			bool bUseLocation = true;
-			for (const FGuid& ActorGuid : InActorSetInstance->ActorSet->Actors)
+			InActorSetInstance->ForEachActor([InActorSetInstance, &bUseLocation](const FGuid& ActorGuid)
 			{
 				const FWorldPartitionActorDescView& ActorDescView = InActorSetInstance->ContainerInstance->ActorDescViewMap->FindByGuidChecked(ActorGuid);
 
 				if (!ActorDescView.GetActorNativeClass()->IsChildOf<APartitionActor>())
 				{
 					bUseLocation = false;
-					break;
+					return false;
 				}
-			}
+
+				return true;
+			});
 			if (bUseLocation)
 			{
 				// Find grid level that best matches actor set bounds
@@ -205,6 +205,7 @@ FSquare2DGridHelper GetPartitionedActors(const FBox& WorldBounds, const FSpatial
 	for (const IStreamingGenerationContext::FActorSetInstance* ActorSetInstance : ActorSetInstances)
 	{
 		check(ActorSetInstance->ActorSet->Actors.Num() > 0);
+
 		FSquare2DGridHelper::FGridLevel::FGridCell* GridCell = nullptr;
 
 		if (ActorSetInstance->bIsSpatiallyLoaded)

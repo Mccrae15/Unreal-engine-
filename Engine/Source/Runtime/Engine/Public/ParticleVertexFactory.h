@@ -85,13 +85,14 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FParticleSpriteUniformParameters, ENGINE_A
 	SHADER_PARAMETER_EX( float, InvDeltaSeconds, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER( FVector3f, LWCTile )
 	SHADER_PARAMETER_EX( FVector2f, PivotOffset, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER(float, UseVelocityForMotionBlur)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FParticleSpriteUniformParameters> FParticleSpriteUniformBufferRef;
 
 /**
  * Vertex factory for rendering particle sprites.
  */
-class ENGINE_API FParticleSpriteVertexFactory : public FParticleVertexFactoryBase
+class FParticleSpriteVertexFactory : public FParticleVertexFactoryBase
 {
 	DECLARE_VERTEX_FACTORY_TYPE(FParticleSpriteVertexFactory);
 
@@ -119,31 +120,32 @@ public:
 	{}
 
 	// FRenderResource interface.
-	virtual void InitRHI() override;
+	ENGINE_API virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
 
 	virtual bool RendersPrimitivesAsCameraFacingSprites() const override { return true; }
 
 	/**
 	 * Should we cache the material's shadertype on this platform with this vertex factory? 
 	 */
-	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+	static ENGINE_API bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 
 	/**
 	 * Can be overridden by FVertexFactory subclasses to modify their compile environment just before compilation occurs.
 	 */
-	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	static ENGINE_API void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 
 	/**
 	 * Get vertex elements used when during PSO precaching materials using this vertex factory type
 	 */
-	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+	static ENGINE_API void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+	static ENGINE_API FRHIVertexDeclaration* GetPSOPrecacheVertexDeclaration(bool bUsesDynamicParameter);
 
 	/**
 	 * Set the source vertex buffer that contains particle instance data.
 	 */
-	void SetInstanceBuffer(const FVertexBuffer* InInstanceBuffer, uint32 StreamOffset, uint32 Stride);
+	ENGINE_API void SetInstanceBuffer(const FVertexBuffer* InInstanceBuffer, uint32 StreamOffset, uint32 Stride);
 
-	void SetTexCoordBuffer(const FVertexBuffer* InTexCoordBuffer);
+	ENGINE_API void SetTexCoordBuffer(const FVertexBuffer* InTexCoordBuffer);
 
 	inline void SetNumVertsInInstanceBuffer(int32 InNumVertsInInstanceBuffer)
 	{
@@ -153,7 +155,7 @@ public:
 	/**
 	 * Set the source vertex buffer that contains particle dynamic parameter data.
 	 */
-	void SetDynamicParameterBuffer(const FVertexBuffer* InDynamicParameterBuffer, uint32 StreamOffset, uint32 Stride);
+	ENGINE_API void SetDynamicParameterBuffer(const FVertexBuffer* InDynamicParameterBuffer, uint32 StreamOffset, uint32 Stride);
 	inline void SetUsesDynamicParameter(bool bInUsesDynamicParameter, uint32 Stride)
 	{
 		bUsesDynamicParameter = bInUsesDynamicParameter;
@@ -197,7 +199,7 @@ public:
 
 protected:
 	/** Initialize streams for this vertex factory. */
-	void InitStreams();
+	ENGINE_API void InitStreams();
 
 private:
 

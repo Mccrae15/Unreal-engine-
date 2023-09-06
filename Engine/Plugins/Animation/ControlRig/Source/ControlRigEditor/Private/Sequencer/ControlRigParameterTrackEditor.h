@@ -33,7 +33,7 @@ struct FMovieSceneControlRigSpaceChannel;
 struct FMovieSceneChannel;
 struct FKeyAddOrDeleteEventItem;
 struct FKeyMoveEventItem;
-
+struct FBakingAnimationKeySettings;
 /**
  * Tools for animation tracks
  */
@@ -166,15 +166,19 @@ private:
 	/** Select control rig if not selected, select controls from key areas */
 	void SelectRigsAndControls(UControlRig* Subject, const TArray<const IKeyArea*>& KeyAreas);
 
-	/** Handle Creation for SkelMeshComp or Actor Owner, either may have a binding*/
-	FMovieSceneTrackEditor::FFindOrCreateHandleResult FindOrCreateHandleToSceneCompOrOwner(USceneComponent* InComp);
+	/** Handle Creation for SkelMeshComp or Actor Owner, either may have a binding, use optional control rig to pick one*/
+	FMovieSceneTrackEditor::FFindOrCreateHandleResult FindOrCreateHandleToSceneCompOrOwner(USceneComponent* InComp, UControlRig* InControlRig = nullptr);
 
 	/** Handle Creation for control rig track given the object binding and the control rig */	
 	FMovieSceneTrackEditor::FFindOrCreateTrackResult FindOrCreateControlRigTrackForObject(FGuid ObjectBinding, UControlRig* ControlRig, FName PropertyName = NAME_None, bool bCreateTrackIfMissing = true);
 
 	/** Import FBX*/
 	void ImportFBX(UMovieSceneControlRigParameterTrack* InTrack, UMovieSceneControlRigParameterSection* InSection, 
-		TArray<FFBXNodeAndChannels>* NodeAndChannels);
+		TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels);
+
+	/** Export FBX*/
+	void ExportFBX(UMovieSceneControlRigParameterTrack* InTrack, UMovieSceneControlRigParameterSection* InSection);
+	
 	/** Find Track for given ControlRig*/
 	UMovieSceneControlRigParameterTrack* FindTrack(const UControlRig* InControlRig) const;
 
@@ -229,7 +233,7 @@ public:
 	bool ModifyOurGeneratedKeysByCurrentAndWeight(UObject* Object, UControlRig* InControlRig, FName RigControlName, UMovieSceneTrack *Track, UMovieSceneSection* SectionToKey, FFrameNumber EvaluateTime, FGeneratedTrackKeys& InOutGeneratedTotalKeys, float Weight) const;
 
 	//**Function to collapse all layers from this section onto the first absoluate layer.*/
-	static bool CollapseAllLayers(TSharedPtr<ISequencer>& SequencerPtr, UMovieSceneTrack* OwnerTrack, UMovieSceneControlRigParameterSection* ParameterSection, bool bKeyReduce = false, float Tolerance = 0.001f);
+	static bool CollapseAllLayers(TSharedPtr<ISequencer>& SequencerPtr, UMovieSceneTrack* OwnerTrack, const FBakingAnimationKeySettings& InSettings);
 
 private:
 	FDelegateHandle SelectionChangedHandle;

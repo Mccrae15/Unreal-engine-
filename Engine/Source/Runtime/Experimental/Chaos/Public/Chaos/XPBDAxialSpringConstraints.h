@@ -155,11 +155,13 @@ private:
 	}
 
 protected:
+	using Base::Constraints;
+	using Base::ParticleOffset;
+	using Base::ParticleCount;
 	using Base::Stiffness;
 
 private:
 	using Base::Barys;
-	using Base::Constraints;
 	using Base::Dists;
 
 	mutable TArray<FSolverReal> Lambdas;
@@ -178,6 +180,26 @@ public:
 		int32 ParticleOffset,
 		int32 ParticleCount,
 		const TArray<TVec3<int32>>& InConstraints,
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps,
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		bool bTrimKinematicConstraints)
+		: FXPBDAxialSpringConstraints(
+			Particles,
+			ParticleOffset,
+			ParticleCount,
+			InConstraints,
+			WeightMaps.FindRef(GetXPBDAreaSpringStiffnessString(PropertyCollection, XPBDAreaSpringStiffnessName.ToString())),
+			FSolverVec2(GetWeightedFloatXPBDAreaSpringStiffness(PropertyCollection, MaxStiffness)),
+			bTrimKinematicConstraints)
+		, XPBDAreaSpringStiffnessIndex(PropertyCollection)
+	{}
+
+	UE_DEPRECATED(5.3, "Use weight map constructor instead.")
+	FXPBDAreaSpringConstraints(
+		const FSolverParticles& Particles,
+		int32 ParticleOffset,
+		int32 ParticleCount,
+		const TArray<TVec3<int32>>& InConstraints,
 		const TConstArrayView<FRealSingle>& StiffnessMultipliers,
 		const FCollectionPropertyConstFacade& PropertyCollection,
 		bool bTrimKinematicConstraints)
@@ -189,19 +211,48 @@ public:
 			StiffnessMultipliers,
 			FSolverVec2(GetWeightedFloatXPBDAreaSpringStiffness(PropertyCollection, MaxStiffness)),
 			bTrimKinematicConstraints)
+		, XPBDAreaSpringStiffnessIndex(PropertyCollection)
 	{}
 
 	virtual ~FXPBDAreaSpringConstraints() override = default;
 
-	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
+	void SetProperties(
+		const FCollectionPropertyConstFacade& PropertyCollection,
+		const TMap<FString, TConstArrayView<FRealSingle>>& WeightMaps)
 	{
 		if (IsXPBDAreaSpringStiffnessMutable(PropertyCollection))
 		{
-			Stiffness.SetWeightedValue(FSolverVec2(GetWeightedFloatXPBDAreaSpringStiffness(PropertyCollection)), MaxStiffness);
+			const FSolverVec2 WeightedValue(GetWeightedFloatXPBDAreaSpringStiffness(PropertyCollection));
+			if (IsXPBDAreaSpringStiffnessStringDirty(PropertyCollection))
+			{
+				const FString& WeightMapName = GetXPBDAreaSpringStiffnessString(PropertyCollection);
+				Stiffness = FPBDStiffness(
+					WeightedValue,
+					WeightMaps.FindRef(WeightMapName),
+					TConstArrayView<TVec3<int32>>(Constraints),
+					ParticleOffset,
+					ParticleCount,
+					FPBDStiffness::DefaultTableSize,
+					FPBDStiffness::DefaultParameterFitBase,
+					MaxStiffness);
+			}
+			else
+			{
+				Stiffness.SetWeightedValue(WeightedValue, MaxStiffness);
+			}
 		}
 	}
 
+	UE_DEPRECATED(5.3, "Use SetProperties(const FCollectionPropertyConstFacade&, const TMap<FString, TConstArrayView<FRealSingle>>&, FSolverReal) instead.")
+	void SetProperties(const FCollectionPropertyConstFacade& PropertyCollection)
+	{
+		SetProperties(PropertyCollection, TMap<FString, TConstArrayView<FRealSingle>>());
+	}
+
 private:
+	using FXPBDAxialSpringConstraints::Constraints;
+	using FXPBDAxialSpringConstraints::ParticleOffset;
+	using FXPBDAxialSpringConstraints::ParticleCount;
 	using FXPBDAxialSpringConstraints::Stiffness;
 
 	UE_CHAOS_DECLARE_PROPERTYCOLLECTION_NAME(XPBDAreaSpringStiffness, float);

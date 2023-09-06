@@ -251,6 +251,11 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 		AActor* Actor = WaterBodyComponent->GetOwner();
 		check(Actor);
 
+		if (WaterBodyComponent->GetWaterSpline() == nullptr)
+		{
+			return true;
+		}
+
 		const FBox SplineCompBounds = WaterBodyComponent->GetWaterSpline()->Bounds.GetBox();
 
 		// Don't process water bodies that has their spline outside of this water mesh
@@ -519,6 +524,9 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 				Polygon.Reserve(PolyLineVertices.Num());
 				Algo::Transform(PolyLineVertices, Polygon, [](const FVector& Vertex) { return FVector2D(Vertex); });
 
+				FBox OceanBounds = WaterBodyComponent->Bounds.GetBox();
+				OceanBounds.Max.Z += WaterBodyComponent->GetMaxWaveHeight();
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 				if (!!CVarWaterMeshShowTileGenerationGeometry.GetValueOnGameThread())
 				{
@@ -530,11 +538,12 @@ void UWaterMeshComponent::RebuildWaterMesh(float InTileSize, const FIntPoint& In
 						const FVector2D& Point1 = Polygon[(i + 1) % NumVertices];
 						DrawDebugLine(GetWorld(), FVector(Point0.X, Point0.Y, Z), FVector(Point1.X, Point1.Y, Z), FColor::Blue);
 					}
+
+					DrawDebugBox(GetWorld(), OceanBounds.GetCenter(), OceanBounds.GetExtent(), FColor::Blue);
 				}
 #endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-				const FBox OceanBounds = Actor->GetComponentsBoundingBox();
-				WaterQuadTree.AddOcean(Polygon, FVector2D(OceanBounds.Min.Z, OceanBounds.Max.Z + WaterBodyComponent->GetMaxWaveHeight()), WaterBodyRenderDataIndex);
+				WaterQuadTree.AddOcean(Polygon, OceanBounds, WaterBodyRenderDataIndex);
 			}
 
 			// Place far mesh height just below the ocean level
@@ -606,18 +615,6 @@ void UWaterMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Property
 	{
 		const FName PropertyName = PropertyThatChanged->GetFName();
 
-		// Properties that require water body geometry to be rebuilt since they depend on the mesh grid layout
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, TileSize)
-			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, ExtentInTiles)
-			|| PropertyName == TEXT("RelativeScale3D")
-			|| PropertyName == TEXT("RelativeLocation")
-			|| PropertyName == TEXT("RelativeRotation"))
-		{
-			AWaterZone* WaterZone = GetOwner<AWaterZone>();
-			check(WaterZone);
-			WaterZone->MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterBodyLODSections);
-		}
-
 		// Properties that needs the scene proxy to be rebuilt
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, LODScale)
 			|| PropertyName == GET_MEMBER_NAME_CHECKED(UWaterMeshComponent, TessellationFactor)
@@ -631,16 +628,6 @@ void UWaterMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Property
 			MarkWaterMeshGridDirty();
 			MarkRenderStateDirty();
 		}
-	}
-}
-
-void UWaterMeshComponent::PostEditComponentMove(bool bFinished)
-{
-	if (bFinished)
-	{
-		AWaterZone* WaterZone = GetOwner<AWaterZone>();
-		check(WaterZone);
-		WaterZone->MarkForRebuild(EWaterZoneRebuildFlags::UpdateWaterBodyLODSections);
 	}
 }
 #endif

@@ -4,6 +4,7 @@
 
 #include "ChaosEventListenerComponent.h"
 #include "PhysicsPublic.h"
+#include "Physics/Experimental/ChaosEventType.h"
 #include "ChaosNotifyHandlerInterface.h"
 #include "ChaosGameplayEventDispatcher.generated.h"
 
@@ -19,123 +20,11 @@ namespace Chaos
 	struct FBreakingData;
 }
 
-USTRUCT(BlueprintType)
-struct CHAOSSOLVERENGINE_API FChaosBreakEvent
-{
-	GENERATED_BODY()
-
-public:
-
-	FChaosBreakEvent();
-	FChaosBreakEvent(const Chaos::FBreakingData& BreakingData);
-
-	/** primitive component involved in the break event */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	TObjectPtr<UPrimitiveComponent> Component = nullptr;
-
-	/** World location of the break */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	FVector Location;
-
-	/** Linear Velocity of the breaking particle  */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	FVector Velocity;
-
-	/** Angular Velocity of the breaking particle  */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	FVector AngularVelocity;
-
-	/** Extents of the bounding box */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	FVector Extents;
-
-	/** Mass of the breaking particle  */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	float Mass;
-
-	/** Index of the geometry collection bone if positive */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	int32 Index;
-
-	/** Whether the break event originated from a crumble event */
-	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	bool bFromCrumble;
-};
-
-USTRUCT(BlueprintType)
-struct CHAOSSOLVERENGINE_API FChaosRemovalEvent
-{
-	GENERATED_BODY()
-
-public:
-
-	FChaosRemovalEvent();
-
-	UPROPERTY(BlueprintReadOnly, Category = "Removal Event")
-	TObjectPtr<UPrimitiveComponent> Component = nullptr;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Removal Event")
-	FVector Location;
-
-	UPROPERTY(BlueprintReadOnly, Category = "Removal Event")
-	float Mass;
-};
-
-
-USTRUCT(BlueprintType)
-struct CHAOSSOLVERENGINE_API FChaosCrumblingEvent
-{
-	GENERATED_BODY()
-
-public:
-	FChaosCrumblingEvent()
-		: Component(nullptr)
-		, Location(FVector::ZeroVector)
-		, Orientation(FQuat::Identity)
-		, LinearVelocity(FVector::ZeroVector)
-		, AngularVelocity(FVector::ZeroVector)
-		, Mass(0)
-		, LocalBounds(ForceInitToZero)
-	{}
-
-	/** primitive component involved in the crumble event */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	TObjectPtr<UPrimitiveComponent> Component = nullptr;
-
-	/** World location of the crumbling cluster */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	FVector Location;
-
-	/** World orientation of the crumbling cluster */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	FQuat Orientation;
-
-	/** Linear Velocity of the crumbling cluster */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	FVector LinearVelocity;
-
-	/** Angular Velocity of the crumbling cluster  */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	FVector AngularVelocity;
-
-	/** Mass of the crumbling cluster  */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	float Mass;
-
-	/** Local bounding box of the crumbling cluster  */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	FBox LocalBounds;
-	
-	/** List of children indices released (optional : see geometry collection component bCrumblingEventIncludesChildren) */
-	UPROPERTY(BlueprintReadOnly, Category = "Crumble Event")
-	TArray<int32> Children;
-};
-
 typedef TFunction<void(const FChaosBreakEvent&)> FOnBreakEventCallback;
 
 /** UStruct wrapper so we can store the TFunction in a TMap */
 USTRUCT()
-struct CHAOSSOLVERENGINE_API FBreakEventCallbackWrapper
+struct FBreakEventCallbackWrapper
 {
 	GENERATED_BODY()
 
@@ -147,7 +36,7 @@ typedef TFunction<void(const FChaosRemovalEvent&)> FOnRemovalEventCallback;
 
 /** UStruct wrapper so we can store the TFunction in a TMap */
 USTRUCT()
-struct CHAOSSOLVERENGINE_API FRemovalEventCallbackWrapper
+struct FRemovalEventCallbackWrapper
 {
 	GENERATED_BODY()
 
@@ -159,7 +48,7 @@ typedef TFunction<void(const FChaosCrumblingEvent&)> FOnCrumblingEventCallback;
 
 /** UStruct wrapper so we can store the TFunction in a TMap */
 USTRUCT()
-struct CHAOSSOLVERENGINE_API FCrumblingEventCallbackWrapper
+struct FCrumblingEventCallbackWrapper
 {
 	GENERATED_BODY()
 
@@ -187,15 +76,20 @@ struct FChaosPendingCollisionNotify
 };
 
 
-UCLASS()
-class CHAOSSOLVERENGINE_API UChaosGameplayEventDispatcher : public UChaosEventListenerComponent
+UCLASS(MinimalAPI)
+class UChaosGameplayEventDispatcher : public UChaosEventListenerComponent
 {
 	GENERATED_BODY()
 
 public:
 
-	virtual void OnRegister() override;
-	virtual void OnUnregister() override;
+	CHAOSSOLVERENGINE_API UChaosGameplayEventDispatcher();
+
+	CHAOSSOLVERENGINE_API virtual void OnRegister() override;
+	CHAOSSOLVERENGINE_API virtual void OnUnregister() override;
+
+	CHAOSSOLVERENGINE_API void RegisterChaosEvents();
+	CHAOSSOLVERENGINE_API void UnregisterChaosEvents();
 
 private:
 
@@ -231,26 +125,23 @@ private:
 	/** Holds the list of pending legacy notifies that are to be processed */
 	TArray<FCollisionNotifyInfo> PendingCollisionNotifies;
 
-	/** Holds the list of pending legacy sleep/wake notifies */
-	TMap<FBodyInstance*, ESleepEvent> PendingSleepNotifies;
-
 public:
 	/** 
 	 * Use to subscribe to collision events. 
 	 * @param ComponentToListenTo	The component whose collisions will be reported
 	 * @param ObjectToNotify		The object that will receive the notifications. Should be a PrimitiveComponent or implement IChaosNotifyHandlerInterface, or both.
 	 */
-	void RegisterForCollisionEvents(UPrimitiveComponent* ComponentToListenTo, UObject* ObjectToNotify);
-	void UnRegisterForCollisionEvents(UPrimitiveComponent* ComponentToListenTo, UObject* ObjectToNotify);
+	CHAOSSOLVERENGINE_API void RegisterForCollisionEvents(UPrimitiveComponent* ComponentToListenTo, UObject* ObjectToNotify);
+	CHAOSSOLVERENGINE_API void UnRegisterForCollisionEvents(UPrimitiveComponent* ComponentToListenTo, UObject* ObjectToNotify);
 
-	void RegisterForBreakEvents(UPrimitiveComponent* Component, FOnBreakEventCallback InFunc);
-	void UnRegisterForBreakEvents(UPrimitiveComponent* Component);
+	CHAOSSOLVERENGINE_API void RegisterForBreakEvents(UPrimitiveComponent* Component, FOnBreakEventCallback InFunc);
+	CHAOSSOLVERENGINE_API void UnRegisterForBreakEvents(UPrimitiveComponent* Component);
 
-	void RegisterForRemovalEvents(UPrimitiveComponent* Component, FOnRemovalEventCallback InFunc);
-	void UnRegisterForRemovalEvents(UPrimitiveComponent* Component);
+	CHAOSSOLVERENGINE_API void RegisterForRemovalEvents(UPrimitiveComponent* Component, FOnRemovalEventCallback InFunc);
+	CHAOSSOLVERENGINE_API void UnRegisterForRemovalEvents(UPrimitiveComponent* Component);
 
-	void RegisterForCrumblingEvents(UPrimitiveComponent* Component, FOnCrumblingEventCallback InFunc);
-	void UnRegisterForCrumblingEvents(UPrimitiveComponent* Component);
+	CHAOSSOLVERENGINE_API void RegisterForCrumblingEvents(UPrimitiveComponent* Component, FOnCrumblingEventCallback InFunc);
+	CHAOSSOLVERENGINE_API void UnRegisterForCrumblingEvents(UPrimitiveComponent* Component);
 	
 private:
 
@@ -273,16 +164,19 @@ private:
 	float LastCrumblingDataTime = -1.f;
 
 	void DispatchPendingCollisionNotifies();
-	void DispatchPendingWakeNotifies();
 
-	void RegisterChaosEvents();
-	void UnregisterChaosEvents();
+	template <typename EventIterator>
+	void FillPhysicsProxy(FPhysScene_Chaos& Scene, TArray<UObject*>& Result, EventIterator& It);
+
+	TArray<UObject*> GetInterestedProxyOwnersForCollisionEvents();
+	TArray<UObject*> GetInterestedProxyOwnersForBreakingEvents();
+	TArray<UObject*> GetInterestedProxyOwnersForRemovalEvents();
+	TArray<UObject*> GetInterestedProxyOwnersForCrumblingEvents();
 
 	// Chaos Event Handlers
 	void HandleCollisionEvents(const Chaos::FCollisionEventData& CollisionData);
 	void HandleBreakingEvents(const Chaos::FBreakingEventData& BreakingData);
 	void HandleSleepingEvents(const Chaos::FSleepingEventData& SleepingData);
-	void AddPendingSleepingNotify(FBodyInstance* BodyInstance, ESleepEvent SleepEventType);
 	void HandleRemovalEvents(const Chaos::FRemovalEventData& RemovalData);
 	void HandleCrumblingEvents(const Chaos::FCrumblingEventData& CrumblingData);
 

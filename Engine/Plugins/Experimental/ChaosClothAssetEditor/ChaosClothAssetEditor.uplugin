@@ -27,6 +27,12 @@
 			"PlatformAllowList": [ "Win64" ]
 		},
 		{
+			"Name": "ChaosClothAssetDataflowNodes",
+			"Type": "Editor",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [ "Win64" ]
+		},
+		{
 			"Name": "ChaosClothAssetTools",
 			"Type": "UncookedOnly",
 			"LoadingPhase": "Default",
@@ -59,7 +65,17 @@
 		{
 			"Name": "Dataflow",
 			"Enabled": true
+		},
+		{
+			"Name": "DatasmithImporter",
+			"Enabled": true
+		},
+		{
+			"Name": "DatasmithCloTranslator",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64"
+			]
 		}
-
 	]
 }

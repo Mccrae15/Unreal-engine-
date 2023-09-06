@@ -56,8 +56,8 @@ public:
 
 	virtual UClass* GetFactoryClass() const override;
 	virtual EInterchangeFactoryAssetType GetFactoryAssetType() override { return EInterchangeFactoryAssetType::Textures; }
-	virtual UObject* ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments) override;
-	virtual UObject* ImportAssetObject_Async(const FImportAssetObjectParams& Arguments) override;
+	virtual FImportAssetResult BeginImportAsset_GameThread(const FImportAssetObjectParams& Arguments) override;
+	virtual FImportAssetResult ImportAsset_Async(const FImportAssetObjectParams& Arguments) override;
 	virtual void SetupObject_GameThread(const FSetupObjectParams& Arguments) override;
 	virtual bool GetSourceFilenames(const UObject* Object, TArray<FString>& OutSourceFilenames) const override;
 	virtual bool SetSourceFilename(const UObject* Object, const FString& SourceFilename, int32 SourceIndex) const override;
@@ -72,11 +72,15 @@ private:
 	void CheckForInvalidResolutions(UE::Interchange::Private::InterchangeTextureFactory::FTexturePayloadVariant& InPayloadVariant, const UInterchangeSourceData* SourceData, const UInterchangeTextureFactoryNode* TextureFactoryNode);
 	
 	UE::Interchange::Private::InterchangeTextureFactory::FProcessedPayload ProcessedPayload;
+	TOptional<FString> AlternateTexturePath;
 
 #if WITH_EDITORONLY_DATA
 	//  The data for the source files will be stored here during the import
 	TArray<FAssetImportInfo::FSourceFile> SourceFiles;
 #endif // WITH_EDITORONLY_DATA
+
+	//If we import without a pure texture translator, we should not override an existing texture and we must skip the import. See the implementation of BeginImportAssetObject_GameThread function.
+	bool bSkipImport = false;
 };
 
 

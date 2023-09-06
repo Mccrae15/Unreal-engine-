@@ -6,6 +6,7 @@ using System.Threading;
 using System.Reflection;
 using AutomationTool;
 using UnrealBuildTool;
+using Microsoft.Extensions.Logging;
 
 namespace AutomationScripts
 {
@@ -29,7 +30,7 @@ namespace AutomationScripts
 				bool bShouldPackage = false; 
 				foreach (var SC in DeployContextList)
 				{
-					if (Params.Package || (SC.StageTargetPlatform.RequiresPackageToDeploy && Params.Deploy))
+					if (Params.Package || (SC.StageTargetPlatform.RequiresPackageToDeploy(Params) && Params.Deploy))
 					{
 						bShouldPackage = true;
 						break;
@@ -38,19 +39,19 @@ namespace AutomationScripts
 
 				if (bShouldPackage)
 				{
-					LogInformation("********** PACKAGE COMMAND STARTED **********");
+					Logger.LogInformation("********** PACKAGE COMMAND STARTED **********");
 					var StartTime = DateTime.UtcNow;
 
 					foreach (var SC in DeployContextList)
 					{
-						if (Params.Package || (SC.StageTargetPlatform.RequiresPackageToDeploy && Params.Deploy))
+						if (Params.Package || (SC.StageTargetPlatform.RequiresPackageToDeploy(Params) && Params.Deploy))
 						{
 							SC.StageTargetPlatform.Package(Params, SC, WorkingCL);
 						}
 					}
 
-					LogInformation("Package command time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
-					LogInformation("********** PACKAGE COMMAND COMPLETED **********");
+					Logger.LogInformation("Package command time: {0:0.00} s", (DateTime.UtcNow - StartTime).TotalMilliseconds / 1000);
+					Logger.LogInformation("********** PACKAGE COMMAND COMPLETED **********");
 				}
 			}
 		}

@@ -763,8 +763,7 @@ bool UCameraNodalOffsetAlgoPoints::OnViewportClicked(const FGeometry& MyGeometry
 
 		if (!ValidateNewRow(Row, ErrorMessage))
 		{
-			const FText TitleError = LOCTEXT("NewRowError", "New Row Error");
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, LOCTEXT("NewRowError", "New Row Error"));
 			return true;
 		}
 	}
@@ -1425,9 +1424,12 @@ TSharedRef<SWidget> UCameraNodalOffsetAlgoPoints::BuildCalibrationComponentMenu(
 	// Generate menu
 	FMenuBuilder MenuBuilder(true, nullptr);
 	MenuBuilder.BeginSection("CalibrationComponents", LOCTEXT("CalibrationComponents", "Calibration Point Components"));
+
+	AActor* CalibratorPtr = Calibrator.Get();
+	if (CalibratorPtr)
 	{
 		TArray<UCalibrationPointComponent*, TInlineAllocator<NumInlineAllocations>> CalibrationPointComponents;
-		Calibrator->GetComponents(CalibrationPointComponents);
+		CalibratorPtr->GetComponents(CalibrationPointComponents);
 
 		for (UCalibrationPointComponent* CalibratorComponent : CalibrationPointComponents)
 		{
@@ -1448,6 +1450,21 @@ TSharedRef<SWidget> UCameraNodalOffsetAlgoPoints::BuildCalibrationComponentMenu(
 			}
 		}
 	}
+	else
+	{
+		MenuBuilder.AddMenuEntry(
+			FText::FromName(NAME_None),
+			FText::FromName(NAME_None),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction(),
+				FIsActionChecked()
+			),
+			NAME_None,
+			EUserInterfaceActionType::None
+		);
+	}
 	MenuBuilder.EndSection();
 
 	return MenuBuilder.MakeWidget();
@@ -1461,7 +1478,7 @@ TSharedRef<SWidget> UCameraNodalOffsetAlgoPoints::BuildCalibrationComponentPicke
 		.Padding(FMargin(0.0f, 0.0f, 0.0f, 0.0f))
 		[
 			SNew(SComboButton)
-			.OnGetMenuContent_Lambda([=]() { return BuildCalibrationComponentMenu(); })
+			.OnGetMenuContent_Lambda([this]() { return BuildCalibrationComponentMenu(); })
 			.ContentPadding(FMargin(4.0, 2.0))
 			.ButtonContent()
 			[
@@ -1652,7 +1669,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 	if (!Calibrator.IsValid())
 	{
 		ErrorMessage = LOCTEXT("MissingCalibrator", "Missing Calibrator");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1660,7 +1677,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 	if (!CalibrationRows.Num())
 	{
 		ErrorMessage = LOCTEXT("NotEnoughSampleRows", "Not enough sample rows. Please add more and try again.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1674,7 +1691,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 		if (Row->CameraData.CalibratorUniqueId != Calibrator->GetUniqueID())
 		{
 			ErrorMessage = LOCTEXT("WrongCalibrator", "All rows must belong to the same calibrator");
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -1687,7 +1704,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 	if (CalibratorMovedInAnyRow(CalibrationRows))
 	{
 		ErrorMessage = LOCTEXT("CalibratorMoved", "The calibrator moved during the calibration");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1714,7 +1731,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 
 		if (!bSucceeded)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -1727,7 +1744,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 	{
 		ErrorMessage = LOCTEXT("NoSinglePoseResults",
 			"There were no valid single pose results. See Output Log for additional details.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1738,7 +1755,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibrator()
 	{
 		ErrorMessage = LOCTEXT("CouldNotAverageSinglePoseResults",
 			"There was an error when averaging the single pose results");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1810,7 +1827,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	if (!ensure(GetStepsControllerAndLensFile(&StepsController, &LensFile)))
 	{
 		ErrorMessage = LOCTEXT("ToolNotFound", "Tool not found");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1820,7 +1837,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	if (!Camera)
 	{
 		ErrorMessage = LOCTEXT("CameraNotFound", "Camera Not Found");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1832,7 +1849,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	if (!ParentActor)
 	{
 		ErrorMessage = LOCTEXT("CameraParentNotFound", "Camera Parent not found");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1840,7 +1857,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	if (!CalibrationRows.Num())
 	{
 		ErrorMessage = LOCTEXT("NotEnoughSamples", "Not Enough Samples");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1851,7 +1868,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	if (LastRow->CameraData.ParentUniqueId != ParentActor->GetUniqueID())
 	{
 		ErrorMessage = LOCTEXT("ParentChanged", "Parent changed");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1872,7 +1889,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 
 		if (!bSucceeded)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -1885,7 +1902,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	{
 		ErrorMessage = LOCTEXT("NoSinglePoseResults",
 			"There were no valid single pose results. See Output Log for additional details.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1896,7 +1913,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToTrackingOrigin()
 	{
 		ErrorMessage = LOCTEXT("CouldNotAverageSinglePoseResults",
 			"There was an error when averaging the single pose results");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1958,7 +1975,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 	if (!Calibrator.IsValid())
 	{
 		ErrorMessage = LOCTEXT("MissingCalibrator", "Missing Calibrator");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1970,7 +1987,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 	if (!ParentActor)
 	{
 		ErrorMessage = LOCTEXT("CalibratorParentNotFound", "Calibrator Parent not found");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -1984,7 +2001,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 		if (Row->CameraData.CalibratorUniqueId != Calibrator->GetUniqueID())
 		{
 			ErrorMessage = LOCTEXT("WrongCalibrator", "All rows must belong to the same calibrator");
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -1992,7 +2009,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 		if (Row->CameraData.CalibratorParentUniqueId != ParentActor->GetUniqueID())
 		{
 			ErrorMessage = LOCTEXT("WrongCalibratorParent", "All rows must belong to the same calibrator parent");
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -2002,7 +2019,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 	if (CalibratorMovedInAnyRow(CalibrationRows))
 	{
 		ErrorMessage = LOCTEXT("CalibratorMoved", "The calibrator moved during the calibration");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2014,7 +2031,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 	if (!SamePoseRowGroups.Num())
 	{
 		ErrorMessage = LOCTEXT("NotEnoughRows", "Not enough calibration rows. Please add more samples and try again.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2031,7 +2048,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 
 		if (!bSucceeded)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -2044,7 +2061,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 	{
 		ErrorMessage = LOCTEXT("NoSinglePoseResults",
 			"There were no valid single pose results. See Output Log for additional details.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2055,7 +2072,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorParent()
 	{
 		ErrorMessage = LOCTEXT("CouldNotAverageSinglePoseResults",
 			"There was an error when averaging the single pose results");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2087,7 +2104,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 	if (!Calibrator.IsValid())
 	{
 		ErrorMessage = LOCTEXT("MissingCalibrator", "Missing Calibrator");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 	
 		return false;
@@ -2107,7 +2124,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 			else
 			{
 				ErrorMessage = FText::Format(LOCTEXT("CalibratorSceneComponentNotFound", "{0} is not attached to another scene component.\n\nConsider \"Apply To Calibrator\" instead."), FText::FromString(CalibratorComponent->GetName()));
-				FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+				FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 				return false;
 			}
@@ -2123,7 +2140,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 		if (Row->CameraData.CalibratorUniqueId != Calibrator->GetUniqueID())
 		{
 			ErrorMessage = LOCTEXT("WrongCalibrator", "All rows must belong to the same calibrator");
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -2136,7 +2153,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
  		if (CalibratorComponentUniqueIDs != ActiveComponentUniqueIDs)
  		{
  			ErrorMessage = LOCTEXT("CalibratorComponentsChanged", "The set of active calibrator components changed during the calibration");
- 			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+ 			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
  
  			return false;
  		}
@@ -2146,7 +2163,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 	if (CalibratorMovedInAnyRow(CalibrationRows))
 	{
 		ErrorMessage = LOCTEXT("CalibratorMoved", "The calibrator moved during the calibration");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2158,7 +2175,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 	if (!SamePoseRowGroups.Num())
 	{
 		ErrorMessage = LOCTEXT("NotEnoughRows", "Not enough calibration rows. Please add more samples and try again.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2175,7 +2192,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 
 		if (!bSucceeded)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 			return false;
 		}
@@ -2188,7 +2205,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 	{
 		ErrorMessage = LOCTEXT("NoSinglePoseResults",
 			"There were no valid single pose results. See Output Log for additional details.");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}
@@ -2199,7 +2216,7 @@ bool UCameraNodalOffsetAlgoPoints::ApplyNodalOffsetToCalibratorComponents()
 	{
 		ErrorMessage = LOCTEXT("CouldNotAverageSinglePoseResults",
 			"There was an error when averaging the single pose results");
-		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
+		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, TitleError);
 
 		return false;
 	}

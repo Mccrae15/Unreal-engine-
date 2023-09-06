@@ -16,6 +16,7 @@
 #include "MeshPassProcessor.inl"
 #include "VolumetricCloudRendering.h"
 #include "HeterogeneousVolumes/HeterogeneousVolumes.h"
+#include "SceneUniformBuffer.h"
 
 int32 GVolumetricFogVoxelizationSlicesPerGSPass = 8;
 FAutoConsoleVariableRef CVarVolumetricFogVoxelizationSlicesPerPass(
@@ -50,7 +51,7 @@ TRDGUniformBufferRef<FVoxelizeVolumePassUniformParameters> CreateVoxelizeVolumeP
 	auto* Parameters = GraphBuilder.AllocParameters<FVoxelizeVolumePassUniformParameters>();
 	SetupSceneTextureUniformParameters(GraphBuilder, &View.GetSceneTextures(), View.FeatureLevel, ESceneTextureSetupMode::None, Parameters->SceneTextures);
 
-	Parameters->ClipRatio = GetVolumetricFogFroxelToScreenSVPosRatio(View.ViewRect.Size());
+	Parameters->ClipRatio = GetVolumetricFogFroxelToScreenSVPosRatio(View);
 
 	Parameters->ViewToVolumeClip = FMatrix44f(View.ViewMatrices.ComputeProjectionNoAAMatrix());		// LWC_TODO: Precision loss?
 	Parameters->ViewToVolumeClip.M[2][0] += Jitter.X;
@@ -107,17 +108,15 @@ public:
 		}
 	}
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
-		Buffers.PositionVertexBuffer.InitResource();
-		Buffers.StaticMeshVertexBuffer.InitResource();
+		Buffers.PositionVertexBuffer.InitResource(RHICmdList);
+		Buffers.StaticMeshVertexBuffer.InitResource(RHICmdList);
 	}
 
 	virtual void ReleaseRHI() override
 	{
-		Buffers.PositionVertexBuffer.ReleaseRHI();
 		Buffers.PositionVertexBuffer.ReleaseResource();
-		Buffers.StaticMeshVertexBuffer.ReleaseRHI();
 		Buffers.StaticMeshVertexBuffer.ReleaseResource();
 	}
 };
@@ -138,7 +137,7 @@ public:
 		ReleaseResource();
 	}
 
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FQuadMeshVertexBuffer* VertexBuffer = &GQuadMeshVertexBuffer;
 		FLocalVertexFactory::FDataType NewData;
@@ -150,7 +149,7 @@ public:
 		// Don't call SetData(), because that ends up calling UpdateRHI(), and if the resource has already been initialized
 		// (e.g. when switching the feature level in the editor), that calls InitRHI(), resulting in an infinite loop.
 		Data = NewData;
-		FLocalVertexFactory::InitRHI();
+		FLocalVertexFactory::InitRHI(RHICmdList);
 	}
 
 	bool HasIncompatibleFeatureLevel(ERHIFeatureLevel::Type InFeatureLevel)
@@ -185,8 +184,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) 
-			&& DoesPlatformSupportVolumetricFogVoxelization(Parameters.Platform)
+		return DoesPlatformSupportVolumetricFogVoxelization(Parameters.Platform)
 			&& Parameters.MaterialParameters.MaterialDomain == MD_Volume;
 	}
 
@@ -270,8 +268,8 @@ public:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) 
-			&& RHISupportsGeometryShaders(Parameters.Platform)
+		return
+			RHISupportsGeometryShaders(Parameters.Platform)
 			&& DoesPlatformSupportVolumetricFogVoxelization(Parameters.Platform)
 			&& Parameters.MaterialParameters.MaterialDomain == MD_Volume;
 	}
@@ -343,8 +341,7 @@ public:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) 
-			&& DoesPlatformSupportVolumetricFogVoxelization(Parameters.Platform)
+		return DoesPlatformSupportVolumetricFogVoxelization(Parameters.Platform)
 			&& Parameters.MaterialParameters.MaterialDomain == MD_Volume;
 	}
 };
@@ -543,7 +540,7 @@ bool FVoxelizeVolumeMeshProcessor::Process(
 void VoxelizeVolumePrimitive(FVoxelizeVolumeMeshProcessor& PassMeshProcessor,
 	FRHICommandListImmediate& RHICmdList,
 	const FViewInfo& View,
-	FIntVector VolumetricFogGridSize,
+	FIntVector VolumetricFogViewGridSize,
 	FVector GridZParams,
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
 	const FMeshBatch& OriginalMesh)
@@ -579,8 +576,8 @@ void VoxelizeVolumePrimitive(FVoxelizeVolumeMeshProcessor& PassMeshProcessor,
 		int32 NearSlice = ComputeZSliceFromDepth(BoundsCenterDepth - Bounds.SphereRadius, GridZParams);
 		int32 FarSlice = ComputeZSliceFromDepth(BoundsCenterDepth + Bounds.SphereRadius, GridZParams);
 
-		NearSlice = FMath::Clamp(NearSlice, 0, VolumetricFogGridSize.Z - 1);
-		FarSlice = FMath::Clamp(FarSlice, 0, VolumetricFogGridSize.Z - 1);
+		NearSlice = FMath::Clamp(NearSlice, 0, VolumetricFogViewGridSize.Z - 1);
+		FarSlice = FMath::Clamp(FarSlice, 0, VolumetricFogViewGridSize.Z - 1);
 
 		const int32 NumSlices = FarSlice - NearSlice + 1;
 		const int32 NumVoxelizationPasses = FMath::DivideAndRoundUp(NumSlices, GetVoxelizationSlicesPerPass(View.GetShaderPlatform()));
@@ -592,16 +589,17 @@ void VoxelizeVolumePrimitive(FVoxelizeVolumeMeshProcessor& PassMeshProcessor,
 
 BEGIN_SHADER_PARAMETER_STRUCT(FVoxelizeVolumePassParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVoxelizeVolumePassUniformParameters, Pass)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FInstanceCullingGlobalUniforms, InstanceCulling)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
-void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
+void FSceneRenderer::VoxelizeFogVolumePrimitives(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FVolumetricFogIntegrationParameterData& IntegrationData,
-	FIntVector VolumetricFogGridSize,
+	FIntVector VolumetricFogViewGridSize,
 	FVector GridZParams,
 	float VolumetricFogDistance,
 	bool bVoxelizeEmissive)
@@ -609,8 +607,8 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 	if (View.VolumetricMeshBatches.Num() > 0 && DoesPlatformSupportVolumetricFogVoxelization(View.GetShaderPlatform()))
 	{
 		const FVector2D Jitter(
-			IntegrationData.FrameJitterOffsetValues[0].X / VolumetricFogGridSize.X,
-			IntegrationData.FrameJitterOffsetValues[0].Y / VolumetricFogGridSize.Y);
+			IntegrationData.FrameJitterOffsetValues[0].X / VolumetricFogViewGridSize.X,
+			IntegrationData.FrameJitterOffsetValues[0].Y / VolumetricFogViewGridSize.Y);
 
 		auto* PassParameters = GraphBuilder.AllocParameters<FVoxelizeVolumePassParameters>();
 		PassParameters->Pass = CreateVoxelizeVolumePassUniformBuffer(GraphBuilder, View, IntegrationData, Jitter, Scene->GetVolumetricCloudSceneInfo());
@@ -627,14 +625,15 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 			// Update the parts of VoxelizeParameters which are dependent on the buffer size and view rect
 			View.SetupViewRectUniformBufferParameters(
 				ViewVoxelizeParameters,
-				FIntPoint(VolumetricFogGridSize.X, VolumetricFogGridSize.Y),
-				FIntRect(0, 0, VolumetricFogGridSize.X, VolumetricFogGridSize.Y),
+				FIntPoint(VolumetricFogViewGridSize.X, VolumetricFogViewGridSize.Y),
+				FIntRect(0, 0, VolumetricFogViewGridSize.X, VolumetricFogViewGridSize.Y),
 				View.ViewMatrices,
 				View.PrevViewInfo.ViewMatrices
 			);
 
 			PassParameters->View = TUniformBufferRef<FViewUniformShaderParameters>::CreateUniformBufferImmediate(ViewVoxelizeParameters, UniformBuffer_SingleFrame);
 		}
+		PassParameters->Scene = GetSceneUniforms().GetBuffer(GraphBuilder);
 
 		if (!GQuadMeshVertexFactory || GQuadMeshVertexFactory->HasIncompatibleFeatureLevel(View.GetFeatureLevel()))
 		{
@@ -644,20 +643,19 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 				delete GQuadMeshVertexFactory;
 			}
 			GQuadMeshVertexFactory = new FQuadMeshVertexFactory(View.GetFeatureLevel());
-			GQuadMeshVertexBuffer.UpdateRHI();
-			GQuadMeshVertexFactory->InitResource();
+			GQuadMeshVertexBuffer.UpdateRHI(GraphBuilder.RHICmdList);
+			GQuadMeshVertexFactory->InitResource(GraphBuilder.RHICmdList);
 		}
 
 		GraphBuilder.AddPass(
 			RDG_EVENT_NAME("VoxelizeVolumePrimitives"),
 			PassParameters,
 			ERDGPassFlags::Raster,
-			[PassParameters, Scene = Scene, &View, VolumetricFogGridSize, IntegrationData, VolumetricFogDistance, GridZParams](FRHICommandListImmediate& RHICmdList)
-		{
-			FMeshPassProcessorRenderState DrawRenderState;
+			[PassParameters, Scene = Scene, &View, VolumetricFogViewGridSize, IntegrationData, VolumetricFogDistance, GridZParams](FRHICommandListImmediate& RHICmdList)
+			{
 
 			DrawDynamicMeshPass(View, RHICmdList,
-				[&View, VolumetricFogDistance, &RHICmdList, &VolumetricFogGridSize, &GridZParams](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+				[&View, VolumetricFogDistance, &RHICmdList, &VolumetricFogViewGridSize, &GridZParams](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 				{
 					FVoxelizeVolumeMeshProcessor PassMeshProcessor(
 						View.Family->Scene->GetRenderScene(),
@@ -666,6 +664,9 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 						DynamicMeshPassContext);
 
 					const bool bShouldRenderHeterogeneousVolumes = ShouldRenderHeterogeneousVolumesForView(View);
+
+					// Set the sub region of the texture according to the current dynamic resolution scale.
+					RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, VolumetricFogViewGridSize.X, VolumetricFogViewGridSize.Y, 1.0f);
 
 					for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.VolumetricMeshBatches.Num(); ++MeshBatchIndex)
 					{
@@ -682,7 +683,7 @@ void FDeferredShadingSceneRenderer::VoxelizeFogVolumePrimitives(
 
 						if ((View.ViewMatrices.GetViewOrigin() - Bounds.Origin).SizeSquared() < (VolumetricFogDistance + Bounds.SphereRadius) * (VolumetricFogDistance + Bounds.SphereRadius))
 						{
-							VoxelizeVolumePrimitive(PassMeshProcessor, RHICmdList, View, VolumetricFogGridSize, GridZParams, PrimitiveSceneProxy, *Mesh);
+							VoxelizeVolumePrimitive(PassMeshProcessor, RHICmdList, View, VolumetricFogViewGridSize, GridZParams, PrimitiveSceneProxy, *Mesh);
 						}
 					}
 				},

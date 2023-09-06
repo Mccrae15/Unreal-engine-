@@ -2,19 +2,26 @@
 
 #pragma once
 
-#include "GameplayTagContainer.h"
-#include "MassEntityTypes.h"
 #include "Engine/DataAsset.h"
+#include "GameplayTagContainer.h"
 #include "Math/Box.h"
 #include "WorldConditionQuery.h"
 #include "WorldConditions/SmartObjectWorldConditionSchema.h"
 #include "SmartObjectDefinition.generated.h"
 
 struct FSmartObjectSlotIndex;
-
 class UGameplayBehaviorConfig;
+class USmartObjectSlotValidationFilter;
 enum class ESmartObjectTagFilteringPolicy: uint8;
 enum class ESmartObjectTagMergingPolicy: uint8;
+
+/** Indicates how Tags from slots and parent object are combined to be evaluated by a TagQuery from a find request. */
+UENUM()
+enum class ESmartObjectSlotShape : uint8
+{
+	Circle,
+	Rectangle
+};
 
 /**
  * Abstract class that can be extended to bind a new type of behavior framework
@@ -40,6 +47,12 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 
 	UPROPERTY(EditAnywhere, Category = "SmartObject", meta = (DisplayName = "Color"))
 	FColor DEBUG_DrawColor = FColor::Yellow;
+
+	UPROPERTY(EditAnywhere, Category = "SmartObject", meta = (DisplayName = "Shape"))
+	ESmartObjectSlotShape DEBUG_DrawShape = ESmartObjectSlotShape::Circle;
+	
+	UPROPERTY(EditAnywhere, Category = "SmartObject", meta = (DisplayName = "Size"))
+	float DEBUG_DrawSize = 40.0f;
 
 	UPROPERTY(EditAnywhere, Category = "SmartObject", meta = (Hidden))
 	FGuid ID;
@@ -71,11 +84,11 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 
 	/** Offset relative to the parent object where the slot is located. */
 	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
-	FVector Offset = FVector::ZeroVector;
+	FVector3f Offset = FVector3f::ZeroVector;
 
 	/** Rotation relative to the parent object. */
 	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
-	FRotator Rotation = FRotator::ZeroRotator;
+	FRotator3f Rotation = FRotator3f::ZeroRotator;
 
 	/** Custom data (struct inheriting from SmartObjectSlotDefinitionData) that can be added to the slot definition and accessed through a FSmartObjectSlotView */
 	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", meta = (BaseStruct = "/Script/SmartObjectsModule.SmartObjectSlotDefinitionData", ExcludeBaseStruct))
@@ -90,6 +103,31 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 	TArray<TObjectPtr<USmartObjectBehaviorDefinition>> BehaviorDefinitions;
 };
 
+
+/**
+ * Data used for previewing in the Smart Object editor. 
+ */
+USTRUCT()
+struct SMARTOBJECTSMODULE_API FSmartObjectDefinitionPreviewData
+{
+	GENERATED_BODY()
+	
+	/** Actor class used as the object for previewing the definition in the asset editor. */
+	UPROPERTY(EditDefaultsOnly, Category = "Object Preview")
+	TSoftClassPtr<AActor> ObjectActorClass;
+
+	/** Path of the static mesh used as the object for previewing the definition in the asset editor. */
+	UPROPERTY(EditDefaultsOnly, Category = "Object Preview", meta = (AllowedClasses = "/Script/Engine.StaticMesh"))
+	FSoftObjectPath ObjectMeshPath;
+
+	/** Actor class used for previewing the smart object user actor in the asset editor. */
+	UPROPERTY(EditDefaultsOnly, Category = "User Preview")
+	TSoftClassPtr<AActor> UserActorClass;
+
+	/** Validation filter used for previewing the smart object user in the asset editor. */
+	UPROPERTY(EditDefaultsOnly, Category = "User Preview")
+	TSoftClassPtr<USmartObjectSlotValidationFilter> UserValidationFilterClass;
+};
 
 /**
  * SmartObject definition asset. Contains sharable information that can be used by multiple SmartObject instances at runtime.
@@ -111,7 +149,7 @@ public:
 	 * @param DefinitionClass	Type of the requested behavior definition
 	 * @return The behavior definition found or null if none are available for the requested type.
 	 */
-	const USmartObjectBehaviorDefinition* GetBehaviorDefinition(const FSmartObjectSlotIndex& SlotIndex, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass) const;
+	const USmartObjectBehaviorDefinition* GetBehaviorDefinition(const int32 SlotIndex, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass) const;
 
 	/** @return Preconditions that must pass for the object to be found/used. */
 	const FWorldConditionQueryDefinition& GetPreconditions() const { return Preconditions; }
@@ -134,6 +172,10 @@ public:
 #if WITH_EDITOR
 	/** Returns a view on all the slot definitions */
 	TArrayView<FSmartObjectSlotDefinition> GetMutableSlots() { return Slots; }
+
+	/** @return validation filter class for preview. */
+	TSubclassOf<USmartObjectSlotValidationFilter> GetPreviewValidationFilterClass() const;
+
 #endif
 
 	/** Return bounds encapsulating all slots */
@@ -149,14 +191,26 @@ public:
 	 * @return Transform (in world space) of the slot associated to SlotIndex.
 	 * @note Method will ensure on invalid invalid index.
 	 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.3, "Please use GetSlotWorldTransform() instead.")
 	TOptional<FTransform> GetSlotTransform(const FTransform& OwnerTransform, const FSmartObjectSlotIndex SlotIndex) const;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/**
+	 * Returns the transform (in world space) of the given slot index.
+	 * @param OwnerTransform Transform (in world space) of the slot owner.
+	 * @param SlotIndex Index within the list of slots.
+	 * @return Transform (in world space) of the slot associated to SlotIndex, or OwnerTransform if index is invalid.
+	 * @note Method will ensure on invalid invalid index.
+	 */
+	FTransform GetSlotWorldTransform(const int32 SlotIndex, const FTransform& OwnerTransform) const;
 
 	/**
 	 * Fills the provided GameplayTagContainer with the activity tags associated to the slot according to the tag merging policy.
 	 * @param SlotIndex	Index of the slot for which the tags are requested
 	 * @param OutActivityTags Tag container to fill with the activity tags associated to the slot
 	 */
-	void GetSlotActivityTags(const FSmartObjectSlotIndex& SlotIndex, FGameplayTagContainer& OutActivityTags) const;
+	void GetSlotActivityTags(const int32 SlotIndex, FGameplayTagContainer& OutActivityTags) const;
 
 	/**
 	 * Fills the provided GameplayTagContainer with the activity tags associated to the slot according to the tag merging policy.
@@ -222,12 +276,18 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/** Actor class used for previewing the definition in the asset editor. */
+	UE_DEPRECATED(5.3, "Use ObjectActorClass in PreviewData instead.")
 	UPROPERTY()
-	TSoftClassPtr<AActor> PreviewClass;
+	TSoftClassPtr<AActor> PreviewClass_DEPRECATED;
 
 	/** Path of the static mesh used for previewing the definition in the asset editor. */
+	UE_DEPRECATED(5.3, "Use ObjectMeshPath in PreviewData instead.")
 	UPROPERTY()
-	FSoftObjectPath PreviewMeshPath;
+	FSoftObjectPath PreviewMeshPath_DEPRECATED;
+
+	/** Actor class used for previewing the user in the asset editor. */
+	UPROPERTY()
+	FSmartObjectDefinitionPreviewData PreviewData;
 #endif // WITH_EDITORONLY_DATA
 
 	const USmartObjectWorldConditionSchema* GetWorldConditionSchema() const { return WorldConditionSchemaClass.GetDefaultObject(); }
@@ -243,7 +303,7 @@ protected:
 
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
-	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 #endif // WITH_EDITOR
 
 	virtual void PostLoad() override;
@@ -297,26 +357,6 @@ private:
 	mutable TOptional<bool> bValid;
 
 	friend class FSmartObjectSlotReferenceDetails;
-};
-
-/**
- * Mass Fragment used to share slot definition between slot instances.
- */
-USTRUCT()
-struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinitionFragment : public FMassSharedFragment
-{
-	GENERATED_BODY()
-
-	FSmartObjectSlotDefinitionFragment() = default;
-	explicit FSmartObjectSlotDefinitionFragment(const USmartObjectDefinition& InObjectDefinition, const FSmartObjectSlotDefinition& InSlotDefinition)
-		: SmartObjectDefinition(&InObjectDefinition), SlotDefinition(&InSlotDefinition) {}
-
-	/** Pointer to the parent object definition to preserve slot definition pointer validity. */
-	UPROPERTY(Transient)
-	TObjectPtr<const USmartObjectDefinition> SmartObjectDefinition = nullptr;
-
-	/** Pointer to the slot definition contained by the SmartObject definition. */
-	const FSmartObjectSlotDefinition* SlotDefinition = nullptr;
 };
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2

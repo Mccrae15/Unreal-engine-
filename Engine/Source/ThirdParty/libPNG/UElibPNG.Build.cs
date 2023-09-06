@@ -44,17 +44,17 @@ public class UElibPNG : ModuleRules
 		// due to better vectorization and FMV support that will take advantage of the different instruction
 		// sets depending on CPU supported features.
 		// Please, take care of bringing those changes over if you upgrade the library
-		if (Target.Platform == UnrealTargetPlatform.Win64 &&
-		    Target.WindowsPlatform.Architecture.bIsX64)
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows) &&
+			Target.WindowsPlatform.Architecture != UnrealArch.Arm64)
 		{
 			string LibFileName = string.Format("libpng15_static{0}.lib", Target.Configuration != UnrealTargetConfiguration.Debug ? "" : "d");
 			LibDir = Path.Combine(LibPNGPath, "Win64-llvm", Target.Configuration != UnrealTargetConfiguration.Debug ? "Release" : "Debug");
 			PublicAdditionalLibraries.Add(Path.Combine(LibDir, LibFileName));
 		}
 		// arm64 case
-		else if (Target.Platform == UnrealTargetPlatform.Win64)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
-			LibDir = Path.Combine(LibPNGPath, "Win64", "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), Target.Architecture.WindowsName);
+			LibDir = Path.Combine(LibPNGPath, "Win64", "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), Target.Architecture.WindowsLibDir);
 
 			string LibFileName = "libpng" + (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT ? "d" : "") + "_64.lib";
 			PublicAdditionalLibraries.Add(Path.Combine(LibDir, LibFileName));

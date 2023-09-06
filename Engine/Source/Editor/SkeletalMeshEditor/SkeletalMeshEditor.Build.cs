@@ -40,19 +40,8 @@ public class SkeletalMeshEditor : ModuleRules
 				"StatusBar",
 				"PhysicsUtilities",
 				"InterchangeCore",
-				"InterchangeEngine",
+				"InterchangeEngine"
 			}
-		);
-
-        PrivateIncludePathModuleNames.AddRange(
-            new string[] {
-                "PropertyEditor",
-            }
-        );
-
-		DynamicallyLoadedModuleNames.AddRange(
-			new string[] {
-            }
 		);
 	}
 }

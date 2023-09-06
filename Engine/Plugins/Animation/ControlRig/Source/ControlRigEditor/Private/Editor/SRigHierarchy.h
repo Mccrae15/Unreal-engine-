@@ -8,13 +8,15 @@
 #include "Engine/SkeletalMesh.h"
 #include "Editor/SRigHierarchyTreeView.h"
 #include "Units/RigUnitContext.h"
+#include "ControlRigBlueprint.h"
+#include "Editor/RigVMEditor.h"
 #include "SRigHierarchy.generated.h"
 
 class SRigHierarchy;
 class FControlRigEditor;
 class SSearchBox;
 class FUICommandList;
-class UControlRigBlueprint;
+class URigVMBlueprint;
 class UControlRig;
 struct FAssetData;
 class FMenuBuilder;
@@ -85,7 +87,7 @@ public:
 
 private:
 
-	void OnEditorClose(const FControlRigEditor* InEditor, UControlRigBlueprint* InBlueprint);
+	void OnEditorClose(const FRigVMEditor* InEditor, URigVMBlueprint* InBlueprint);
 
 	/** Bind commands that this widget handles */
 	void BindCommands();
@@ -149,13 +151,13 @@ private:
 	TOptional<EItemDropZone> OnCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FRigTreeElement> TargetItem);
 	FReply OnAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FRigTreeElement> TargetItem);
 
-	const FName ContextMenuName = TEXT("ControlRigEditor.RigHierarchy.ContextMenu");
-	void CreateContextMenu() const;
+	static const FName ContextMenuName;
+	static void CreateContextMenu();
 	UToolMenu* GetContextMenu();
 	TSharedPtr<FUICommandList> GetContextMenuCommands() const;
 	
-	const FName DragDropMenuName = TEXT("ControlRigEditor.RigHierarchy.DragDropMenu");
-	void CreateDragDropMenu() const;
+	static const FName DragDropMenuName;
+	static void CreateDragDropMenu();
 	UToolMenu* GetDragDropMenu(const TArray<FRigElementKey>& DraggedKeys, FRigElementKey TargetKey);
 
 	/** Our owning control rig editor */
@@ -197,8 +199,10 @@ private:
 	void ImportHierarchy(const FAssetData& InAssetData);
 	void CreateImportMenu(FMenuBuilder& MenuBuilder);
 	void CreateRefreshMenu(FMenuBuilder& MenuBuilder);
+	void CreateResetCurvesMenu(FMenuBuilder& MenuBuilder);
 	bool ShouldFilterOnImport(const FAssetData& AssetData) const;
-	void RefreshHierarchy(const FAssetData& InAssetData);
+	void RefreshHierarchy(const FAssetData& InAssetData, bool bOnlyResetCurves);
+	void UpdateMesh(USkeletalMesh* InMesh, const bool bImport) const;
 
 	void HandleResetTransform(bool bSelectionOnly);
 	void HandleResetInitialTransform();
@@ -222,7 +226,7 @@ private:
 	bool bIsChangingRigHierarchy;
 	void OnHierarchyModified(ERigHierarchyNotification InNotif, URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
 	void OnHierarchyModified_AnyThread(ERigHierarchyNotification InNotif, URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
-	void HandleRefreshEditorFromBlueprint(UControlRigBlueprint* InBlueprint);
+	void HandleRefreshEditorFromBlueprint(URigVMBlueprint* InBlueprint);
 	void HandleSetObjectBeingDebugged(UObject* InObject);
 	void OnPreConstruction_AnyThread(UControlRig* InRig, const FName& InEventName);
 	void OnPostConstruction_AnyThread(UControlRig* InRig, const FName& InEventName);
@@ -240,4 +244,5 @@ public:
 
 	friend class FRigTreeElement;
 	friend class SRigHierarchyItem;
+	friend class UControlRigBlueprintEditorLibrary;
 };

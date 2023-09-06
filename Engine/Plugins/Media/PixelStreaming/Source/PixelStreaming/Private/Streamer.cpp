@@ -35,6 +35,7 @@
 #include "PixelCaptureOutputFrameRHI.h"
 #include "PixelCaptureInputFrameRHI.h"
 #include "SignallingConnectionObserver.h"
+#include "ToStringExtensions.h"
 
 namespace UE::PixelStreaming
 {
@@ -148,19 +149,9 @@ namespace UE::PixelStreaming
 	{
 		// This method is marked as deprecated but still calls the deprecated method on the input handler. As such, we disable
 		// the warnings that arise from using the input handlers method
-#if PLATFORM_WINDOWS
-	#pragma warning(push)
-	#pragma warning(disable : 4996)
-#elif PLATFORM_LINUX
-	#pragma clang diagnostic push
-	#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		InputHandler->SetTargetScreenSize(InTargetScreenSize);
-#if PLATFORM_WINDOWS
-	#pragma warning(pop)
-#elif PLATFORM_LINUX
-	#pragma clang diagnostic pop
-#endif
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	TWeakPtr<FIntPoint> FStreamer::GetTargetScreenSize()
@@ -379,6 +370,26 @@ namespace UE::PixelStreaming
 		// TODO Delete player session?
 	}
 
+	void FStreamer::SetPlayerLayerPreference(FPixelStreamingPlayerId PlayerId, int SpatialLayerId, int TemporalLayerId)
+	{
+		TSharedPtr<FJsonObject> LayerJson = MakeShared<FJsonObject>();
+		LayerJson->SetStringField(TEXT("type"), TEXT("layerPreference"));
+		int32 PlayerIdAsInt = PlayerIdToInt(PlayerId);
+		LayerJson->SetNumberField(TEXT("playerId"), PlayerIdAsInt);
+		LayerJson->SetNumberField(TEXT("spatialLayer"), SpatialLayerId);
+		LayerJson->SetNumberField(TEXT("temporalLayer"), TemporalLayerId);
+		SignallingServerConnection->SendMessage(UE::PixelStreaming::ToString(LayerJson, false));
+	}
+
+	TArray<FPixelStreamingPlayerId> FStreamer::GetConnectedPlayers()
+	{
+		TArray<FPixelStreamingPlayerId> ConnectedPlayerIds;
+		Players.Apply([&ConnectedPlayerIds, this](FPixelStreamingPlayerId PlayerId, FPlayerContext& PlayerContext) {
+			ConnectedPlayerIds.Add(PlayerId);
+		});
+		return ConnectedPlayerIds;
+	}
+
 	void FStreamer::SetInputHandlerType(EPixelStreamingInputType InputType)
 	{
 		InputHandler->SetInputType(InputType);
@@ -482,7 +493,11 @@ namespace UE::PixelStreaming
 					AddNewDataChannel(PlayerId, NewChannel);
 				});
 
+#if WEBRTC_5414
+				NewConnection->SetWebRTCStatsCallback(rtc::scoped_refptr<FRTCStatsCollector>(new FRTCStatsCollector(PlayerId)));
+#else
 				NewConnection->SetWebRTCStatsCallback(new rtc::RefCountedObject<FRTCStatsCollector>(PlayerId));
+#endif
 
 				PlayerContext->PeerConnection = MakeShareable(NewConnection.Release());
 
@@ -702,7 +717,7 @@ namespace UE::PixelStreaming
 	void FStreamer::DeleteAllPlayerSessions()
 	{
 		VideoSourceGroup->RemoveAllVideoSources();
-		Players.Clear();
+		Players.Empty();
 		SFUPlayerId = INVALID_PLAYER_ID;
 		QualityControllingId = INVALID_PLAYER_ID;
 		InputControllingId = INVALID_PLAYER_ID;

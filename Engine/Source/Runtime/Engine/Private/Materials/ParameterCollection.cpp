@@ -3,6 +3,7 @@
 #include "ParameterCollection.h"
 #include "UObject/UObjectIterator.h"
 #include "RenderingThread.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "MaterialShared.h"
 #include "MaterialCachedData.h"
@@ -53,11 +54,15 @@ void UMaterialParameterCollection::PostLoad()
 
 void UMaterialParameterCollection::SetupWorldParameterCollectionInstances()
 {
-	// Create an instance for this collection in every world
 	for (TObjectIterator<UWorld> It; It; ++It)
 	{
 		UWorld* CurrentWorld = *It;
-		CurrentWorld->AddParameterCollectionInstance(this, true);
+		ULevel* Level = CurrentWorld->PersistentLevel;
+		const bool bIsWorldPartitionRuntimeCell = Level && Level->IsWorldPartitionRuntimeCell();
+		if (!bIsWorldPartitionRuntimeCell)
+		{
+			CurrentWorld->AddParameterCollectionInstance(this, true);
+		}
 	}
 }
 
@@ -325,7 +330,7 @@ void UMaterialParameterCollection::PostEditChangeProperty(FPropertyChangedEvent&
 
 #endif // WITH_EDITOR
 
-int32 UMaterialParameterCollection::GetScalarParameterIndexByName(FName ParameterName)
+int32 UMaterialParameterCollection::GetScalarParameterIndexByName(FName ParameterName) const
 {
 	// loop over all the available scalar parameters and look for a name match
 	for (int32 ParameterIndex = 0; ParameterIndex < ScalarParameters.Num(); ParameterIndex++)
@@ -339,7 +344,7 @@ int32 UMaterialParameterCollection::GetScalarParameterIndexByName(FName Paramete
 	return -1;
 }
 
-int32 UMaterialParameterCollection::GetVectorParameterIndexByName(FName ParameterName)
+int32 UMaterialParameterCollection::GetVectorParameterIndexByName(FName ParameterName) const
 {
 	// loop over all the available vector parameters and look for a name match
 	for (int32 ParameterIndex = 0; ParameterIndex < VectorParameters.Num(); ParameterIndex++)
@@ -353,21 +358,21 @@ int32 UMaterialParameterCollection::GetVectorParameterIndexByName(FName Paramete
 	return -1;
 }
 
-TArray<FName> UMaterialParameterCollection::GetScalarParameterNames()
+TArray<FName> UMaterialParameterCollection::GetScalarParameterNames() const
 {
 	TArray<FName> Names;
 	GetParameterNames(Names, false);
 	return Names;
 }
 
-TArray<FName> UMaterialParameterCollection::GetVectorParameterNames()
+TArray<FName> UMaterialParameterCollection::GetVectorParameterNames() const
 {
 	TArray<FName> Names;
 	GetParameterNames(Names, true);
 	return Names;
 }
 
-float UMaterialParameterCollection::GetScalarParameterDefaultValue(FName ParameterName, bool& bParameterFound)
+float UMaterialParameterCollection::GetScalarParameterDefaultValue(FName ParameterName, bool& bParameterFound) const
 {
 	const int32 ParameterIndex = GetScalarParameterIndexByName(ParameterName);
 	bParameterFound = true;
@@ -380,7 +385,7 @@ float UMaterialParameterCollection::GetScalarParameterDefaultValue(FName Paramet
 	return ScalarParameters[ParameterIndex].DefaultValue;
 }
 
-FLinearColor UMaterialParameterCollection::GetVectorParameterDefaultValue(FName ParameterName, bool& bParameterFound)
+FLinearColor UMaterialParameterCollection::GetVectorParameterDefaultValue(FName ParameterName, bool& bParameterFound) const
 {
 	const int32 ParameterIndex = GetVectorParameterIndexByName(ParameterName);
 	bParameterFound = true;
@@ -626,7 +631,7 @@ void UMaterialParameterCollectionInstance::SetCollection(UMaterialParameterColle
 
 bool UMaterialParameterCollectionInstance::SetScalarParameterValue(FName ParameterName, float ParameterValue)
 {
-	check(World.IsValid() && Collection);
+	check(World.IsValid() && Collection.IsValid());
 
 	if (Collection->GetScalarParameterByName(ParameterName))
 	{
@@ -660,7 +665,7 @@ bool UMaterialParameterCollectionInstance::SetScalarParameterValue(FName Paramet
 
 bool UMaterialParameterCollectionInstance::SetVectorParameterValue(FName ParameterName, const FLinearColor& ParameterValue)
 {
-	check(World.IsValid() && Collection);
+	check(World.IsValid() && Collection.IsValid());
 
 	if (Collection->GetVectorParameterByName(ParameterName))
 	{
@@ -752,7 +757,7 @@ void UMaterialParameterCollectionInstance::DeferredUpdateRenderState(bool bRecre
 		// Propagate the new values to the rendering thread
 		TArray<FVector4f> ParameterData;
 		GetParameterData(ParameterData);
-		Resource->GameThread_UpdateContents(Collection ? Collection->StateId : FGuid(), ParameterData, GetFName(), bRecreateUniformBuffer);
+		Resource->GameThread_UpdateContents(Collection.IsValid() ? Collection->StateId : FGuid(), ParameterData, GetFName(), bRecreateUniformBuffer);
 	}
 
 	bNeedsRenderStateUpdate = false;
@@ -762,7 +767,7 @@ void UMaterialParameterCollectionInstance::GetParameterData(TArray<FVector4f>& P
 {
 	// The memory layout created here must match the index assignment in UMaterialParameterCollection::GetParameterIndex
 
-	if (Collection)
+	if (Collection.IsValid())
 	{
 		ParameterData.Empty(FMath::DivideAndRoundUp(Collection->ScalarParameters.Num(), 4) + Collection->VectorParameters.Num());
 
@@ -853,7 +858,7 @@ void FMaterialParameterCollectionInstanceResource::UpdateContents(const FGuid& I
 		{
 			check(NewSize == UniformBufferLayout->ConstantBufferSize);
 			check(UniformBuffer->GetLayoutPtr() == UniformBufferLayout);
-			RHIUpdateUniformBuffer(UniformBuffer, Data.GetData());
+			FRHICommandListImmediate::Get().UpdateUniformBuffer(UniformBuffer, Data.GetData());
 		}
 		else
 		{

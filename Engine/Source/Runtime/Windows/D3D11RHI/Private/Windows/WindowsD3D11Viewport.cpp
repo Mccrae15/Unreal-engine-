@@ -77,7 +77,7 @@ FD3D11Viewport::FD3D11Viewport(FD3D11DynamicRHI* InD3DRHI,HWND InWindowHandle,ui
 		static bool bCustomSwapchainLogged = false;
 		if (!bCustomSwapchainLogged)
 		{
-			UE_LOG(LogD3D11RHI, Log, TEXT("Found a custom swapchain provider: '%s'."), DXGISwapchainProvider->GetName());
+			UE_LOG(LogD3D11RHI, Log, TEXT("Found a custom swapchain provider: '%s'."), DXGISwapchainProvider->GetProviderName());
 			bCustomSwapchainLogged = true;
 		}
 	}
@@ -216,9 +216,8 @@ FD3D11Viewport::FD3D11Viewport(FD3D11DynamicRHI* InD3DRHI,HWND InWindowHandle,ui
 				SwapChain1->QueryInterface(IID_PPV_ARGS(SwapChain.GetInitReference()));
 
 				RECT WindowRect = {};
-#if PLATFORM_WINDOWS
 				GetWindowRect(WindowHandle, &WindowRect);
-#endif
+
 				FVector2D WindowTopLeft((float)WindowRect.left, (float)WindowRect.top);
 				FVector2D WindowBottomRight((float)WindowRect.right, (float)WindowRect.bottom);
 				bool bHDREnabled = false;
@@ -269,7 +268,7 @@ FD3D11Viewport::FD3D11Viewport(FD3D11DynamicRHI* InD3DRHI,HWND InWindowHandle,ui
 				D3DRHI->GetFactory()->CreateSwapChain(D3DRHI->GetDevice(), &SwapChainDesc, SwapChain.GetInitReference());
 			if (CreateSwapChainResult == E_INVALIDARG)
 			{
-				const TCHAR* D3DFormatString = GetD3D11TextureFormatString(SwapChainDesc.BufferDesc.Format);
+				const TCHAR* D3DFormatString = UE::DXGIUtilities::GetFormatString(SwapChainDesc.BufferDesc.Format);
 
 				UE_LOG(LogD3D11RHI, Error,
 					TEXT("CreateSwapChain failed with E_INVALIDARG: \n")

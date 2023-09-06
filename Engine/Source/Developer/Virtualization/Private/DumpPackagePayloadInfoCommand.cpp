@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#include "HAL/FileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Logging/LogMacros.h"
-#include "Misc/PackagePath.h"
-#include "UObject/PackageTrailer.h"
 #include "Misc/PackageName.h"
-#include "HAL/FileManager.h"
+#include "Misc/PackagePath.h"
+#include "UObject/PackageFileSummary.h"
+#include "UObject/PackageResourceManager.h"
+#include "UObject/PackageTrailer.h"
 
 namespace UE
 {
@@ -20,14 +22,62 @@ FString BytesToString(int64 SizeInBytes)
 	}
 	else if (SizeInBytes < (1024 * 1024))
 	{
-		double SizeInKb = SizeInBytes / (1024.0);
+		double SizeInKb = static_cast<double>(SizeInBytes) / (1024.0);
 		return FString::Printf(TEXT("%.2f KB"), SizeInKb);
 	}
 	else
 	{
-		double SizeInMB = SizeInBytes / (1024.0 * 1024.0);
+		double SizeInMB = static_cast<double>(SizeInBytes) / (1024.0 * 1024.0);
 		return FString::Printf(TEXT("%.2f MB"), SizeInMB);
 	}
+}
+
+void LogPackageError(FArchive* Ar, const TCHAR* DebugName)
+{
+	if (Ar == nullptr)
+	{
+		UE_LOG(LogVirtualization, Error, TEXT("Could not find the package file: '%s'"), DebugName);
+		return;
+	}
+
+	FPackageFileSummary Summary;
+	*Ar << Summary;
+
+	if (Ar->IsError())
+	{
+		UE_LOG(LogVirtualization, Error, TEXT("Could not find load the package summary from disk: '%s'"), DebugName);
+		return;
+	}
+
+	if (Summary.Tag != PACKAGE_FILE_TAG)
+	{
+		UE_LOG(LogVirtualization, Error, TEXT("Package summary seems to be corrupted: '%s'"), DebugName);
+		return;
+	}
+
+	int32 PackageVersion = Summary.GetFileVersionUE().ToValue();
+	if (PackageVersion >= (int32)EUnrealEngineObjectUE5Version::PAYLOAD_TOC)
+	{
+		UE_LOG(LogVirtualization, Error, TEXT("Package trailer is missing from the package file: '%s'"), DebugName);
+		return;
+	}
+
+	UE_LOG(LogVirtualization, Error, TEXT("Package is tool old (version %d) to have a package trailer (version %d): '%s'"), PackageVersion, int(EUnrealEngineObjectUE5Version::PAYLOAD_TOC), DebugName);
+}
+
+void LogPackageError(const FPackagePath& Path)
+{
+	const FString DebugName = Path.GetPackageName();
+	TUniquePtr<FArchive> PackageAr = IPackageResourceManager::Get().OpenReadExternalResource(EPackageExternalResource::WorkspaceDomainFile, DebugName);
+	
+	LogPackageError(PackageAr.Get(), *DebugName);
+}
+
+void LogPackageError(const FString& Path)
+{
+	TUniquePtr<FArchive> PackageAr(IFileManager::Get().CreateFileReader(*Path));
+
+	LogPackageError(PackageAr.Get(), *Path);
 }
 
 /**
@@ -65,7 +115,7 @@ void DumpPackagePayloadInfo(const TArray<FString>& Args)
 		{	
 			if (!FPackageTrailer::TryLoadFromPackage(Path, Trailer))
 			{
-				UE_LOG(LogVirtualization, Error, TEXT("Failed to load the package trailer from: '%s'"), *Path.GetDebugName());
+				LogPackageError(Path);
 				continue;
 			}
 		}
@@ -76,7 +126,7 @@ void DumpPackagePayloadInfo(const TArray<FString>& Args)
 			
 			if (!FPackageTrailer::TryLoadFromFile(PathString, Trailer))
 			{
-				UE_LOG(LogVirtualization, Error, TEXT("Failed to load the package trailer from: '%s'"), *PathString);
+				LogPackageError(PathString);
 				continue;
 			}	
 		}

@@ -9,6 +9,8 @@ import subprocess
 import threading
 from typing import Optional
 
+# NOTE: This file should not depend on Qt, directly or indirectly.
+
 
 class PriorityModifier(Enum):
     ''' Corresponds to `int32 PriorityModifier` parameter to `FPlatformProcess::CreateProc`. '''

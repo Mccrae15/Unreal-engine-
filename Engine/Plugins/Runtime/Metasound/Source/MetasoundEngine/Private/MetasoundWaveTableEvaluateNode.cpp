@@ -65,8 +65,8 @@ namespace Metasound
 					PluginAuthor,
 					PluginNodeMissingPrompt,
 					GetDefaultInterface(),
-					{ NodeCategories::Envelopes },
-					{ METASOUND_LOCTEXT("WaveTableEvaluateEnvelopeKeyword", "Envelope"), METASOUND_LOCTEXT("WaveTableEvaluateCurveKeyword", "Curve")},
+					{ NodeCategories::WaveTables },
+					{ NodeCategories::Envelopes, METASOUND_LOCTEXT("WaveTableEvaluateCurveKeyword", "Curve")},
 					{ }
 				};
 
@@ -101,10 +101,7 @@ namespace Metasound
 			, InterpModeReadRef(InInterpModeReadRef)
 			, OutWriteRef(TDataWriteReferenceFactory<float>::CreateAny(InParams.OperatorSettings))
 		{
-			using namespace WaveTable;
-			FWaveTableSampler::FSettings Settings;
-			Settings.Freq = 0.0f; // Sampler phase is manually progressed via this node
-			Sampler = FWaveTableSampler(MoveTemp(Settings));
+			Reset(InParams);
 		}
 
 		virtual ~FMetasoundWaveTableEvaluateNodeOperator() = default;
@@ -114,12 +111,22 @@ namespace Metasound
 			using namespace WaveTableEvaluateNode;
 			
 			FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(WaveTableParam), WaveTableReadRef);
-			Inputs.BindReadVertex(METASOUND_GET_PARAM_NAME(InputParam), InputReadRef);
-			Inputs.BindReadVertex("Interpolation", InterpModeReadRef);
 
 			FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
-			Outputs.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParam), OutWriteRef);
+		}
+
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace WaveTableEvaluateNode;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(WaveTableParam), WaveTableReadRef);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputParam), InputReadRef);
+			InOutVertexData.BindReadVertex("Interpolation", InterpModeReadRef);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			using namespace WaveTableEvaluateNode;
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutParam), OutWriteRef);
 		}
 		
 		virtual FDataReferenceCollection GetInputs() const override
@@ -159,6 +166,16 @@ namespace Metasound
 			Sampler.Process(WaveTableView, NextValue, SampleMode);
 
 			*OutWriteRef = NextValue;
+		}
+
+		void Reset(const IOperator::FResetParams& InParams)
+		{
+			using namespace WaveTable;
+			FWaveTableSampler::FSettings Settings;
+			Settings.Freq = 0.0f; // Sampler phase is manually progressed via this node
+			Sampler = FWaveTableSampler(MoveTemp(Settings));
+
+			*OutWriteRef = 0.f;
 		}
 
 	private:

@@ -38,7 +38,7 @@ namespace mu
         int m_optimizeIterationsLeft=0;
 
         //! Full optimisation pass
-        void FullOptimiseAST( ASTOpList& roots );
+        void FullOptimiseAST( ASTOpList& roots, int32 Pass);
 
         //! Optimise the code of a model for a specific state, generating new instructions and
         //! state information.
@@ -118,8 +118,7 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //! All kinds of optimisations that depend on the meaning of each operation
     //---------------------------------------------------------------------------------------------
-    extern bool SemanticOptimiserAST( ASTOpList& roots,
-                                      const FModelOptimizationOptions& optimisationOptions );
+    extern bool SemanticOptimiserAST( ASTOpList& roots, const FModelOptimizationOptions& optimisationOptions, int32 Pass);
 
     //---------------------------------------------------------------------------------------------
     //! Semantic operator that reorders instructions moving expensive ones down to the
@@ -216,7 +215,7 @@ namespace mu
     {
     public:
 
-        RuntimeTextureCompressionRemoverAST( STATE_COMPILATION_DATA* state );
+        RuntimeTextureCompressionRemoverAST( STATE_COMPILATION_DATA* state, bool bInAlwaysUncompress );
 
     protected:
 
@@ -225,6 +224,7 @@ namespace mu
     private:
 
         RuntimeParameterVisitorAST m_hasRuntimeParamVisitor;
+		bool bAlwaysUncompress = false;
 
     };
 
@@ -253,7 +253,7 @@ namespace mu
 
         bool m_modified;
 
-        FModelOptimizationOptions m_optimisationOptions;
+        FModelOptimizationOptions OptimisationOptions;
 
         RuntimeParameterVisitorAST m_hasRuntimeParamVisitor;
 

@@ -8,6 +8,7 @@
 #include "StateTreeInstanceData.h"
 #include "StateTree.generated.h"
 
+class UUserDefinedStruct;
 
 /** Custom serialization version for StateTree Asset */
 struct STATETREEMODULE_API FStateTreeCustomVersion
@@ -32,6 +33,10 @@ struct STATETREEMODULE_API FStateTreeCustomVersion
 		TransitionDelay,
 		// Added external transitions
 		AddedExternalTransitions,
+		// Changed how bindings are represented
+		ChangedBindingsRepresentation,
+		// Added guid to transitions
+		AddedTransitionIds,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -79,6 +84,8 @@ class STATETREEMODULE_API UStateTree : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	/** @return Default instance data. */
+	const FStateTreeInstanceData& GetDefaultInstanceData() const { return DefaultInstanceData; }
 
 	/** @return Shared instance data. */
 	TSharedPtr<FStateTreeInstanceData> GetSharedInstanceData() const;
@@ -101,6 +108,39 @@ public:
 	/** @return schema that was used to compile the StateTree. */
 	const UStateTreeSchema* GetSchema() const { return Schema; }
 
+	/** @return Pointer to a state or null if state not found */ 
+	const FCompactStateTreeState* GetStateFromHandle(const FStateTreeStateHandle StateHandle) const;
+
+	/** @return State handle matching a given Id; invalid handle if state not found. */
+	FStateTreeStateHandle GetStateHandleFromId(const FGuid Id) const;
+
+	/** @return Id of the state matching a given state handle; invalid Id if state not found. */
+	FGuid GetStateIdFromHandle(const FStateTreeStateHandle Handle) const;
+
+	/** @return Struct view of the node matching a given node index; invalid view if state not found. */
+	FConstStructView GetNode(const int32 NodeIndex) const;
+
+	/** @return Struct views of all nodes */
+	const FInstancedStructContainer& GetNodes() const { return Nodes; }
+
+	/** @return Node index matching a given Id; invalid index if node not found. */
+	FStateTreeIndex16 GetNodeIndexFromId(const FGuid Id) const;
+
+	/** @return Id of the node matching a given node index; invalid Id if node not found. */
+	FGuid GetNodeIdFromIndex(const FStateTreeIndex16 NodeIndex) const;
+
+	/** @return View of all states. */
+	TConstArrayView<FCompactStateTreeState> GetStates() const { return States; }
+
+	/** @return Pointer to the transition at a given index; null if not found. */ 
+	const FCompactStateTransition* GetTransitionFromIndex(const FStateTreeIndex16 TransitionIndex) const;
+	
+	/** @return Runtime transition index matching a given Id; invalid index if node not found. */
+	FStateTreeIndex16 GetTransitionIndexFromId(const FGuid Id) const;
+
+	/** @return Id of the transition matching a given runtime transition index; invalid Id if transition not found. */
+	FGuid GetTransitionIdFromIndex(const FStateTreeIndex16 Index) const;	
+
 #if WITH_EDITOR
 	/** Resets the compiled data to empty. */
 	void ResetCompiled();
@@ -114,10 +154,13 @@ public:
 	UPROPERTY()
 	TObjectPtr<UObject> EditorData;
 
-	/** Hash of the editor data from last compile. */
+	FDelegateHandle OnObjectsReinstancedHandle;
+	FDelegateHandle OnUserDefinedStructReinstancedHandle;
+#endif
+
+	/** Hash of the editor data from last compile. Also used to detect mismatching events from recorded traces. */
 	UPROPERTY()
 	uint32 LastCompiledEditorDataHash = 0;
-#endif
 
 protected:
 	
@@ -134,8 +177,14 @@ protected:
 	virtual void Serialize(FStructuredArchiveRecord Record) override;
 	
 #if WITH_EDITOR
+	using FReplacementObjectMap = TMap<UObject*, UObject*>;
+	void OnObjectsReinstanced(const FReplacementObjectMap& ObjectMap);
+	void OnUserDefinedStructReinstanced(const UUserDefinedStruct& UserDefinedStruct);
+	virtual void PostInitProperties() override;
+	virtual void BeginDestroy() override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
-	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const;
+	virtual void PostLoadAssetRegistryTags(const FAssetData& InAssetData, TArray<FAssetRegistryTag>& OutTagsAndValuesToUpdate) const override;
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 #endif
 
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
@@ -147,6 +196,8 @@ private:
      * Used during linking, or to invalidate the linked data when data version is old (requires recompile). 
 	 */
 	void ResetLinked();
+
+	bool PatchBindings();
 
 	// Data created during compilation, source data in EditorData.
 	
@@ -183,6 +234,18 @@ private:
 
 	UPROPERTY()
 	FStateTreePropertyBindings PropertyBindings;
+
+	/** Mapping of state guid for the Editor and state handles, created at compilation. */
+	UPROPERTY()
+	TArray<FStateTreeStateIdToHandle> IDToStateMappings;
+
+	/** Mapping of node guid for the Editor and node index, created at compilation. */
+	UPROPERTY()
+	TArray<FStateTreeNodeIdToIndex> IDToNodeMappings;
+	
+	/** Mapping of state transition identifiers and runtime compact transition index, created at compilation. */
+	UPROPERTY()
+	TArray<FStateTreeTransitionIdToIndex> IDToTransitionMappings;
 
 	/**
 	 * Parameters that could be used for bindings within the Tree.

@@ -17,6 +17,7 @@ class FActiveTimerHandle;
 class ITableRow;
 class SEditableTextBox;
 class SNotificationList;
+class SScrollBox;
 class SSearchBox;
 class STableViewBase;
 class SVerticalBox;
@@ -53,6 +54,17 @@ typedef TWeakPtr<class SNotificationItem> SNotificationItemWeak;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+enum class ETraceDirOperations : uint8
+{
+	None		= 0,
+	ModifyStore	= 1 << 0,
+	Delete		= 1 << 1,
+	Explore		= 1 << 2,
+};
+ENUM_CLASS_FLAGS(ETraceDirOperations);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 struct FTraceViewModel
 {
 	uint32 TraceId = 0;
@@ -62,6 +74,7 @@ struct FTraceViewModel
 
 	FText Name;
 	FText Uri;
+	FSlateColor DirectoryColor;
 
 	FDateTime Timestamp = 0;
 	uint64 Size = 0;
@@ -77,6 +90,7 @@ struct FTraceViewModel
 
 	bool bIsMetadataUpdated = false;
 	bool bIsRenaming = false;
+	bool bWasJustRenamed = false;
 	bool bIsLive = false;
 	uint32 IpAddress = 0;
 
@@ -233,6 +247,7 @@ protected:
 class STraceStoreWindow : public SCompoundWidget
 {
 	friend class STraceListRow;
+	friend class STraceDirectoryItem;
 
 public:
 	/** Default constructor. */
@@ -268,6 +283,8 @@ private:
 	TSharedRef<SWidget> ConstructFiltersToolbar();
 	TSharedRef<SWidget> ConstructSessionsPanel();
 	TSharedRef<SWidget> ConstructLoadPanel();
+	FText GetConnectionStatusTooltip() const;
+	const FSlateBrush* GetConnectionStatusIcon() const;
 	TSharedRef<SWidget> ConstructTraceStoreDirectoryPanel();
 	TSharedRef<SWidget> ConstructAutoStartPanel();
 
@@ -279,6 +296,7 @@ private:
 	bool CanEditTraceFile() const;
 	void RenameTraceFile();
 	void DeleteTraceFile();
+	bool HasAnyLiveTrace() const;
 
 	//////////////////////////////////////////////////
 	// "Starting Analysis" Splash Screen
@@ -327,6 +345,7 @@ private:
 	void BuildBranchFilterSubMenu(FMenuBuilder& InMenuBuilder);
 
 	FReply RefreshTraces_OnClicked();
+	FSlateColor GetColorByPath(const FString& Uri);
 
 	void RefreshTraceList();
 	void UpdateTrace(FTraceViewModel& InOutTrace, const Insights::FStoreBrowserTraceInfo& InSourceTrace);
@@ -346,6 +365,35 @@ private:
 
 	FText GetTraceStoreDirectory() const;
 	FReply ExploreTraceStoreDirectory_OnClicked();
+
+	//////////////////////////////////////////////////
+	// Store settings
+
+	/** View model for a source of traces. This could be the trace store default directory or a watch directory.*/
+	struct FTraceDirectoryModel
+	{
+		FTraceDirectoryModel(FString&& InPath, const FName& InColor, ETraceDirOperations InOperations)
+			: Path(MoveTemp(InPath)), Color(InColor), Operations(InOperations) {}
+
+		/** Path to directory */
+		FString Path;
+		/** Assigned color */
+		FName Color;
+		/** Supported operations */
+		ETraceDirOperations Operations;
+	};
+
+	static bool CanChangeStoreSettings();
+	TSharedRef<ITableRow> TraceDirs_OnGenerateRow(TSharedPtr<FTraceDirectoryModel> Item, const TSharedRef<STableViewBase>& Owner) const;
+	FReply StoreSettingsArea_Toggle() const;
+	const FSlateBrush* StoreSettingsToggle_Icon() const;
+	FReply AddWatchDir_Clicked();
+	FString GetStoreDirectory() const;
+
+	TArray<TSharedPtr<FTraceDirectoryModel>> StoreDirectoryModel;
+	TArray<TSharedPtr<FTraceDirectoryModel>> WatchDirectoriesModel;
+
+	friend class STraceWatchDirTableRow;
 
 	//////////////////////////////////////////////////
 
@@ -462,11 +510,17 @@ private:
 
 	TUniquePtr<Insights::FStoreBrowser> StoreBrowser;
 	uint64 TracesChangeSerial;
+	uint32 SettingsChangeSerial;
 
 	TArray<TSharedPtr<FTraceViewModel>> TraceViewModels; // all available trace view models
 	TArray<TSharedPtr<FTraceViewModel>> FilteredTraceViewModels; // the filtered list of trace view models
 	TMap<uint32, TSharedPtr<FTraceViewModel>> TraceViewModelMap;
 
+	TSharedPtr<SEditableTextBox> StoreDirTextBox;
+	TSharedPtr<SEditableTextBox> StoreHostTextBox;
+	TSharedPtr<STableViewBase> StoreDirListView;
+	TSharedPtr<SScrollBox> StoreSettingsArea;
+	TSharedPtr<STableViewBase> WatchDirsListView;
 	TSharedPtr<SListView<TSharedPtr<FTraceViewModel>>> TraceListView;
 	TSharedPtr<FTraceViewModel> SelectedTrace;
 	bool bIsUserSelectedTrace;
@@ -514,6 +568,8 @@ private:
 	bool bEnableAutomaticTesting = false;
 	bool bEnableDebugTools = false;
 	bool bStartProcessWithStompMalloc = false;
+
+	bool bSetKeyboardFocusOnNextTick = false;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

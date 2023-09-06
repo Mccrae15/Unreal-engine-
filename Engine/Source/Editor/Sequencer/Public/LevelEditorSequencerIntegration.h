@@ -16,12 +16,14 @@ class FMenuBuilder;
 class FSequencer;
 class FObjectPostSaveContext;
 class FObjectPreSaveContext;
+class SLevelViewport;
 class FUICommandList;
 class IAssetViewport;
 class ISequencer;
 class ULevel;
+class UToolMenu;
 struct FPropertyAndParent;
-
+struct FPilotedSpawnable;
 
 struct FLevelEditorSequencerIntegrationOptions
 {
@@ -172,11 +174,9 @@ private:
 
 	void OnPropertyEditorOpened();
 
-	TSharedRef<FExtender> GetLevelViewportExtender(const TSharedRef<FUICommandList> CommandList, const TArray<AActor*> InActors);
+	void RegisterMenus();
 
-	TSharedRef<FExtender> OnExtendLevelEditorViewMenu(const TSharedRef<FUICommandList> CommandList);
-
-	void MakeBrowseToSelectedActorSubMenu(FMenuBuilder& MenuBuilder, AActor* Actor, const TArray<TPair<FMovieSceneSequenceID, FSequencer*> > FoundInSequences);
+	void MakeBrowseToSelectedActorSubMenu(UToolMenu* Menu);
 	void BrowseToSelectedActor(AActor* Actor, FSequencer* Sequencer, FMovieSceneSequenceID SequenceId);
 
 	bool IsPropertyReadOnly(const FPropertyAndParent& InPropertyAndParent);
@@ -194,6 +194,9 @@ private:
 	void RestoreToSavedState(UWorld* World);
 	void ResetToAnimatedState(UWorld* World);
 
+	void BackupSpawnablePilotData();
+	void RestoreSpawnablePilotData();
+
 	struct FSequencerAndOptions
 	{
 		TWeakPtr<FSequencer> Sequencer;
@@ -203,6 +206,8 @@ private:
 	};
 	TArray<FSequencerAndOptions> BoundSequencers;
 
+public:
+	
 	TSharedRef< ISceneOutlinerColumn > CreateSequencerInfoColumn( ISceneOutliner& SceneOutliner ) const;
 	TSharedRef< ISceneOutlinerColumn > CreateSequencerSpawnableColumn( ISceneOutliner& SceneOutliner ) const;
 
@@ -212,11 +217,14 @@ private:
 	void UpdateDetails(bool bForceRefresh = false);
 
 	FLevelEditorSequencerIntegration();
+	~FLevelEditorSequencerIntegration();
 
 private:
 	FAcquiredResources AcquiredResources;
 
 	TSharedPtr<class FDetailKeyframeHandlerWrapper> KeyFrameHandler;
+
+	TArray<FPilotedSpawnable> PilotedSpawnables;
 
 	bool bDeferUpdates;
 

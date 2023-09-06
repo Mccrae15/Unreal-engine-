@@ -14,6 +14,7 @@
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MessageDialog.h"
+#include "EngineAnalytics.h"
 
 
 #define LOCTEXT_NAMESPACE "StaticLightingSystem"
@@ -147,7 +148,10 @@ bool CheckStaticMeshesForLightmapUVVersionUpgrade(const UWorld* World)
 			
 	for (const UStaticMeshComponent* Component : TObjectRange<UStaticMeshComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
 	{
-		if (Component->GetWorld() == World && Component->GetStaticMesh() && Component->GetStaticMesh()->GetLightmapUVVersion() != (int32)ELightmapUVVersion::Latest)
+		if (Component->GetWorld() == World &&
+			Component->HasValidSettingsForStaticLighting(false) &&
+			Component->GetStaticMesh() &&
+			Component->GetStaticMesh()->GetLightmapUVVersion() != (int32)ELightmapUVVersion::Latest)
 		{
 			StaticMeshesToUpgradeLightmapUVVersion.Add(Component->GetStaticMesh().Get());
 		}
@@ -271,6 +275,11 @@ void UGPULightmassSubsystem::Launch()
 
 						SubSlowTask.EnterProgressFrame(1, LOCTEXT("RegisteringComponentsWithStaticLightingSystem", "Registering components with static lighting system"));
 					}
+				}
+
+				if (FEngineAnalytics::IsAvailable())
+				{
+					FEngineAnalytics::GetProvider().RecordEvent(TEXT("GPULightmass.Capture"));
 				}
 			}
 			else

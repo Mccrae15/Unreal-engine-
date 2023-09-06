@@ -45,20 +45,20 @@ namespace Audio {
 	}
 
 	// Indicates a platform-specific format
-	static FName NAME_PLATFORM_SPECIFIC(TEXT("PLATFORM_SPECIFIC"));
-	static FName NAME_PROJECT_DEFINED(TEXT("PROJECT_DEFINED"));
+	inline FName NAME_PLATFORM_SPECIFIC(TEXT("PLATFORM_SPECIFIC"));
+	inline FName NAME_PROJECT_DEFINED(TEXT("PROJECT_DEFINED"));
 
 	// Supported on all platforms:
-	static FName NAME_BINKA(TEXT("BINKA"));
-	static FName NAME_ADPCM(TEXT("ADPCM"));
-	static FName NAME_PCM(TEXT("PCM"));
+	inline FName NAME_BINKA(TEXT("BINKA"));
+	inline FName NAME_ADPCM(TEXT("ADPCM"));
+	inline FName NAME_PCM(TEXT("PCM"));
 
 	// Not yet supported on all platforms as a selectable option so is included under "platform specific" enumeration for now. 
-	static FName NAME_OGG(TEXT("OGG"));
-	static FName NAME_OPUS(TEXT("OPUS"));
+	inline FName NAME_OGG(TEXT("OGG"));
+	inline FName NAME_OPUS(TEXT("OPUS"));
 }
 
-struct AUDIOMIXERCORE_API FAudioPlatformSettings
+struct FAudioPlatformSettings
 {
 	/** Sample rate to use on the platform for the mixing engine. Higher sample rates will incur more CPU cost. */
 	int32 SampleRate;
@@ -75,7 +75,7 @@ struct AUDIOMIXERCORE_API FAudioPlatformSettings
 	/** The number of workers to use to compute source audio. Will only use up to the max number of sources. Will evenly divide sources to each source worker. */
 	int32 NumSourceWorkers;
 
-	static FAudioPlatformSettings GetPlatformSettings(const TCHAR* PlatformSettingsConfigFile);
+	static AUDIOMIXERCORE_API FAudioPlatformSettings GetPlatformSettings(const TCHAR* PlatformSettingsConfigFile);
 
 	FAudioPlatformSettings()
 		: SampleRate(48000)

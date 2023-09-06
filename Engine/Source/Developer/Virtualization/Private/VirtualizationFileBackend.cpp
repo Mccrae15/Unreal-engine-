@@ -57,7 +57,7 @@ bool FFileSystemBackend::Initialize(const FString& ConfigEntry)
 	}
 
 	// Now log a summary of the backend settings to make issues easier to diagnose
-	UE_LOG(LogVirtualization, Log, TEXT("[%s] Using path: '%s'"), *GetDebugName(), *RootDirectory);
+	UE_LOG(LogVirtualization, Log, TEXT("[%s] Using path: '%s'"), *GetDebugName(), *FPaths::ConvertRelativePathToFull(RootDirectory));
 	UE_LOG(LogVirtualization, Log, TEXT("[%s] Will retry failed read attempts %d times with a gap of %dms betwen them"), *GetDebugName(), RetryCount, RetryWaitTimeMS);
 
 	return true;
@@ -68,17 +68,19 @@ IVirtualizationBackend::EConnectionStatus FFileSystemBackend::OnConnect()
 	return IVirtualizationBackend::EConnectionStatus::Connected;
 }
 
-bool FFileSystemBackend::PushData(TArrayView<FPushRequest> Requests)
+bool FFileSystemBackend::PushData(TArrayView<FPushRequest> Requests, EPushFlags Flags)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FFileSystemBackend::PushData);
 
 	int32 ErrorCount = 0;
 
+	const bool bEnableExistenceCheck = !EnumHasAllFlags(Flags, EPushFlags::Force);
+
 	for (FPushRequest& Request : Requests)
 	{
 		const FIoHash& PayloadId = Request.GetIdentifier();
-
-		if (DoesPayloadExist(PayloadId))
+	
+		if (bEnableExistenceCheck && DoesPayloadExist(PayloadId))
 		{
 			UE_LOG(LogVirtualization, Verbose, TEXT("[%s] Already has a copy of the payload '%s'."), *GetDebugName(), *LexToString(PayloadId));
 			Request.SetResult(FPushResult::GetAsAlreadyExists());
@@ -177,7 +179,7 @@ bool FFileSystemBackend::PushData(TArrayView<FPushRequest> Requests)
 	return ErrorCount == 0;
 }
 
-bool FFileSystemBackend::PullData(TArrayView<FPullRequest> Requests)
+bool FFileSystemBackend::PullData(TArrayView<FPullRequest> Requests, EPullFlags Flags, FText& OutErrors)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FFileSystemBackend::PullData);
 
@@ -266,7 +268,7 @@ TUniquePtr<FArchive> FFileSystemBackend::OpenFileForReading(const TCHAR* FilePat
 		else
 		{
 			UE_LOG(LogVirtualization, Warning, TEXT("[%s] Failed to open '%s' for reading attempt retrying (%d/%d) in %dms..."), *GetDebugName(), FilePath, Retries, RetryCount, RetryWaitTimeMS);
-			FPlatformProcess::SleepNoStats(RetryWaitTimeMS * 0.001f);
+			FPlatformProcess::SleepNoStats(static_cast<float>(RetryWaitTimeMS) * 0.001f);
 
 			Retries++;
 		}

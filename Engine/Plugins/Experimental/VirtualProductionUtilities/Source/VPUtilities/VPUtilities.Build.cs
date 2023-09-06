@@ -11,6 +11,7 @@ public class VPUtilities : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
+				"AssetRegistry",
 				"CinematicCamera",
 				"Composure",
 				"Core",
@@ -28,6 +29,8 @@ public class VPUtilities : ModuleRules
 			new string[]
 			{
 				"ApplicationCore",
+				"Projects",
+				"Renderer",
 				"RenderCore",
 				"RHI",
 				"Slate",
@@ -45,6 +48,7 @@ public class VPUtilities : ModuleRules
 					"Blutility",
 					"EditorFramework",
 					"LevelEditor",
+					"UMGEditor",
 					"UnrealEd",
 					"ViewportInteraction",
 					"VPBookmarkEditor",

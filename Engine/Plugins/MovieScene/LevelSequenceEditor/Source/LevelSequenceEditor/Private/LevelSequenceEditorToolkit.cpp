@@ -8,7 +8,9 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Containers/ArrayBuilder.h"
 #include "KeyParams.h"
+#include "ILevelSequenceModule.h"
 #include "LevelSequenceEditorModule.h"
+#include "LevelSequenceEditorSubsystem.h"
 #include "Misc/LevelSequenceEditorSettings.h"
 #include "Misc/LevelSequenceEditorSpawnRegister.h"
 #include "Misc/LevelSequenceEditorHelpers.h"
@@ -24,6 +26,7 @@
 #include "Sections/MovieSceneSubSection.h"
 #include "ToolMenu.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
+#include "Tracks/IMovieSceneTransformOrigin.h"
 #include "MovieSceneToolsProjectSettings.h"
 #include "MovieSceneToolHelpers.h"
 #include "ScopedTransaction.h"
@@ -336,6 +339,25 @@ void FLevelSequenceEditorToolkit::ExtendSequencerToolbar(FName InToolMenuName)
 	}
 }
 
+FTransform GetTransformOrigin(TSharedPtr<ISequencer> Sequencer)
+{
+	FTransform TransformOrigin;
+
+	const IMovieScenePlaybackClient* Client = Sequencer->GetPlaybackClient();
+	const UObject* InstanceData = Client ? Client->GetInstanceData() : nullptr;
+	const IMovieSceneTransformOrigin* RawInterface = Cast<const IMovieSceneTransformOrigin>(InstanceData);
+
+	const bool bHasInterface = RawInterface || (InstanceData && InstanceData->GetClass()->ImplementsInterface(UMovieSceneTransformOrigin::StaticClass()));
+	if (bHasInterface)
+	{
+		// Retrieve the current origin
+		TransformOrigin = RawInterface ? RawInterface->GetTransformOrigin() : IMovieSceneTransformOrigin::Execute_BP_GetTransformOrigin(InstanceData);
+	}
+
+	return TransformOrigin;
+}
+
+
 void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const FGuid Binding)
 {
 	// get focused movie scene
@@ -389,18 +411,21 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 		{
 			auto TransformSection = Cast<UMovieScene3DTransformSection>(NewSection);
 
-			FVector Location = Actor.GetActorLocation();
-			FRotator Rotation = Actor.GetActorRotation();
-			FVector Scale = Actor.GetActorScale();
+			FTransform Transform = Actor.GetTransform();
 
 			if (USceneComponent* SceneComponent = Cast<USceneComponent>(InComponent))
 			{
-				FTransform ActorRelativeTransform = SceneComponent->GetRelativeTransform();
+				Transform = SceneComponent->GetRelativeTransform();
 
-				Location = ActorRelativeTransform.GetTranslation();
-				Rotation = ActorRelativeTransform.GetRotation().Rotator();
-				Scale = ActorRelativeTransform.GetScale3D();
+				if (!SceneComponent->GetAttachParent())
+				{
+					Transform *= GetTransformOrigin(GetSequencer()).Inverse();
+				}
 			}
+
+			FVector Location = Transform.GetTranslation();
+			FRotator Rotation = Transform.GetRotation().Rotator();
+			FVector Scale = Transform.GetScale3D();
 
 			TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
 			DoubleChannels[0]->SetDefault(Location.X);
@@ -501,8 +526,7 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 				{
 					TArray<FString> PropertyNames;
 					PropertyTrackSettings.PropertyPath.ParseIntoArray(PropertyNames, TEXT("."));
-
-					ExcludePropertyTracksMap.Add(PropertyOwner, PropertyNames);
+					ExcludePropertyTracksMap.FindOrAdd(PropertyOwner).Append(PropertyNames);
 				}
 			}
 		}
@@ -601,6 +625,10 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 			Sequencer->KeyProperty(KeyPropertyParams);
 		}
 	}
+
+	// callback to set up default tracks via code
+	ILevelSequenceModule& LevelSequenceModule = FModuleManager::LoadModuleChecked<ILevelSequenceModule>("LevelSequence");
+	LevelSequenceModule.OnNewActorTrackAdded().Broadcast(Actor, Binding, Sequencer);
 }
 
 
@@ -681,7 +709,7 @@ void FLevelSequenceEditorToolkit::HandleMapChanged(class UWorld* NewWorld, EMapC
 	if( ( MapChangeType == EMapChangeType::LoadMap || MapChangeType == EMapChangeType::NewMap || MapChangeType == EMapChangeType::TearDownWorld) )
 	{
 		Sequencer->GetSpawnRegister().CleanUp(*Sequencer);
-		CloseWindow();
+		CloseWindow(EAssetEditorCloseReason::AssetUnloadingOrInvalid);
 	}
 }
 
@@ -711,7 +739,7 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 		int32 RowIndex = 0;
 		for (auto SubSequenceName : LevelSequenceSettings->SubSequenceNames)
 		{
-			FString SubSequenceAssetName = ShotAssetName + ProjectSettings->SubSequenceSeparator + SubSequenceName.ToString();
+			FString SubSequenceAssetName = ShotAssetName + ProjectSettings->TakeSeparator + SubSequenceName.ToString();
 
 			UMovieSceneSequence* SubSequence = nullptr;
 			if (!LevelSequenceSettings->bInstanceSubSequences || ShotTrack->GetAllSections().Num() == 1)
@@ -726,7 +754,7 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 				UMovieSceneSequence* FirstShotSequence = FirstShotSubSection->GetSequence();
 				UMovieSceneSubTrack* FirstShotSubTrack = Cast<UMovieSceneSubTrack>(FirstShotSequence->GetMovieScene()->FindTrack(UMovieSceneSubTrack::StaticClass()));
 			
-				FString FirstShotSubSequenceAssetName = FirstShotAssetName + ProjectSettings->SubSequenceSeparator + SubSequenceName.ToString();
+				FString FirstShotSubSequenceAssetName = FirstShotAssetName + ProjectSettings->TakeSeparator + SubSequenceName.ToString();
 
 				for (auto Section : FirstShotSubTrack->GetAllSections())
 				{
@@ -777,14 +805,6 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 		}
 		
 		AddDefaultTracksForActor(*NewCamera, CameraGuid);
-
-		// Create a new camera cut section and add it to the camera cut track
-		CameraCutTrack = ShotSequence->GetMovieScene()->AddCameraCutTrack(UMovieSceneCameraCutTrack::StaticClass());
-		UMovieSceneCameraCutSection* CameraCutSection = NewObject<UMovieSceneCameraCutSection>(CameraCutTrack, NAME_None, RF_Transactional);
-
-		CameraCutSection->SetRange(ShotSequence->GetMovieScene()->GetPlaybackRange());
-		CameraCutSection->SetCameraGuid(CameraGuid);
-		CameraCutTrack->AddSection(*CameraCutSection);
 	}
 }
 
@@ -812,14 +832,23 @@ void FLevelSequenceEditorToolkit::HandleLevelSequenceWithShotsCreated(UObject* L
 	FFrameNumber SequenceStartTime = (ProjectSettings->DefaultStartTime * TickResolution).FloorToFrame();
 	FFrameNumber ShotStartTime = SequenceStartTime;
 	FFrameNumber ShotEndTime   = ShotStartTime;
+
 	int32        ShotDuration  = (ProjectSettings->DefaultDuration * TickResolution).RoundToFrame().Value;
+	
+	if (ProjectSettings->DefaultDuration * NumShots > TickResolution.MaxSeconds())
+	{
+		ShotDuration = ((TickResolution.MaxSeconds() / NumShots) * TickResolution).RoundToFrame().Value;
+
+		UE_LOG(LogLevelSequenceEditor, Warning, TEXT("Default shot duration: %f is too large for creating %d shots. Clamping shot duration to: %f"), ProjectSettings->DefaultDuration, NumShots, TickResolution.MaxSeconds() / NumShots);
+	}
+	
 	FString FirstShotName; 
 	for (uint32 ShotIndex = 0; ShotIndex < NumShots; ++ShotIndex)
 	{
 		ShotEndTime += ShotDuration;
 
-		FString ShotName = MovieSceneToolHelpers::GenerateNewShotName(ShotTrack->GetAllSections(), ShotStartTime);
-		FString ShotPackagePath = MovieSceneToolHelpers::GenerateNewShotPath(LevelSequenceWithShots->GetMovieScene(), ShotName);
+		FString ShotName = MovieSceneToolHelpers::GenerateNewSubsequenceName(ShotTrack->GetAllSections(), ProjectSettings->ShotPrefix, ShotStartTime);
+		FString ShotPackagePath = MovieSceneToolHelpers::GenerateNewSubsequencePath(LevelSequenceWithShots->GetMovieScene(), ProjectSettings->ShotPrefix, ShotName);
 
 		if (ShotIndex == 0)
 		{
@@ -852,17 +881,18 @@ void FLevelSequenceEditorToolkit::HandleLevelSequenceWithShotsCreated(UObject* L
 		return;
 	}
 
-	ALevelSequenceActor* NewActor = CastChecked<ALevelSequenceActor>(GEditor->UseActorFactory(ActorFactory, FAssetData(LevelSequenceWithShotsAsset), &FTransform::Identity));
-	if (GCurrentLevelEditingViewportClient != nullptr && GCurrentLevelEditingViewportClient->IsPerspective())
+	if (ALevelSequenceActor* NewActor = Cast<ALevelSequenceActor>(GEditor->UseActorFactory(ActorFactory, FAssetData(LevelSequenceWithShotsAsset), &FTransform::Identity)))
 	{
-		GEditor->MoveActorInFrontOfCamera(*NewActor, GCurrentLevelEditingViewportClient->GetViewLocation(), GCurrentLevelEditingViewportClient->GetViewRotation().Vector());
-	}
-	else
-	{
-		GEditor->MoveViewportCamerasToActor(*NewActor, false);
+		if (GCurrentLevelEditingViewportClient != nullptr && GCurrentLevelEditingViewportClient->IsPerspective())
+		{
+			GEditor->MoveActorInFrontOfCamera(*NewActor, GCurrentLevelEditingViewportClient->GetViewLocation(), GCurrentLevelEditingViewportClient->GetViewRotation().Vector());
+		}
+		else
+		{
+			GEditor->MoveViewportCamerasToActor(*NewActor, false);
+		}
 	}
 }
-
 
 TSharedRef<FExtender> FLevelSequenceEditorToolkit::HandleMenuExtensibilityGetExtender(const TSharedRef<FUICommandList> CommandList, const TArray<UObject*> ContextSensitiveObjects)
 {
@@ -918,11 +948,20 @@ void FLevelSequenceEditorToolkit::HandleTrackMenuExtensionAddTrack(FMenuBuilder&
 			{
 				if (Component)
 				{
-					bool bValidComponent = Component && !Component->IsVisualizationComponent();
+					bool bValidComponent = !Component->IsVisualizationComponent();
 
 					if (GlobalClassFilter.IsValid())
 					{
-						bValidComponent = GlobalClassFilter->IsClassAllowed(ClassViewerOptions, Component->GetClass(), ClassFilterFuncs);
+						// Hack - forcibly allow USkeletalMeshComponentBudgeted until FORT-527888
+						static const FName SkeletalMeshComponentBudgetedClassName(TEXT("USkeletalMeshComponentBudgeted"));
+						if (Component->GetClass()->GetName() == SkeletalMeshComponentBudgetedClassName)
+						{
+							bValidComponent = true;
+						}
+						else
+						{
+							bValidComponent = GlobalClassFilter->IsClassAllowed(ClassViewerOptions, Component->GetClass(), ClassFilterFuncs);
+						}
 					}
 
 					if (bValidComponent)

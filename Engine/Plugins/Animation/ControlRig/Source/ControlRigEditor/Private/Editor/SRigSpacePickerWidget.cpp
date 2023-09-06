@@ -20,6 +20,7 @@
 #include "Modules/ModuleManager.h"
 #include "ControlRig.h"
 #include "ControlRigBlueprint.h"
+#include "RigVMBlueprintGeneratedClass.h"
 
 #define LOCTEXT_NAMESPACE "SRigSpacePickerWidget"
 
@@ -186,6 +187,10 @@ void SRigSpacePickerWidget::Construct(const FArguments& InArgs)
 				.ButtonStyle(FAppStyle::Get(), "FlatButton.Default")
 				.Text(LOCTEXT("BakeButton", "Bake..."))
 				.OnClicked(InArgs._OnBakeButtonClicked)
+				.IsEnabled_Lambda([this]()
+				{
+					return (ControlKeys.Num() > 0);
+				})
 				.ToolTipText(LOCTEXT("BakeButtonToolTip", "Allows to bake the animation of one or more controls to a single space."))
 			];
 		}
@@ -683,7 +688,7 @@ FReply SRigSpacePickerWidget::HandleAddElementClicked()
 						}
 						else if(UControlRigBlueprint* RigBlueprint = StrongHierarchy->GetTypedOuter<UControlRigBlueprint>())
 						{
-							if(UControlRig* CDO = Cast<UControlRig>(RigBlueprint->GetControlRigClass()->GetDefaultObject()))
+							if(UControlRig* CDO = Cast<UControlRig>(RigBlueprint->GetRigVMBlueprintGeneratedClass()->GetDefaultObject()))
 							{
 								DependencyMap = StrongHierarchy->GetDependenciesForVM(CDO->GetVM()); 
 							}
@@ -1121,6 +1126,8 @@ void SRigSpacePickerBakeWidget::Construct(const FArguments& InArgs)
 	Settings = MakeShared<TStructOnScope<FRigSpacePickerBakeSettings>>();
 	Settings->InitializeAs<FRigSpacePickerBakeSettings>();
 	*Settings = InArgs._Settings;
+	//always setting space to be parent as default, since stored space may not be available.
+	Settings->Get()->TargetSpace = URigHierarchy::GetDefaultParentKey();
 	Sequencer = InArgs._Sequencer;
 
 	FStructureDetailsViewArgs StructureViewArgs;
@@ -1187,7 +1194,7 @@ void SRigSpacePickerBakeWidget::Construct(const FArguments& InArgs)
 
 			+SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0.f, 8.f, 0.f, 0.f)
+			.Padding(0.f, 0.f, 0.f, 0.f)
 			[
 				DetailsView->GetWidget().ToSharedRef()
 			]

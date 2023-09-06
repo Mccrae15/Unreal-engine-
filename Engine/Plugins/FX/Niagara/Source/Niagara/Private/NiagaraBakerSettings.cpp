@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraBakerSettings.h"
-#include "Framework/Application/SlateApplication.h"
+#include "EngineDefines.h"
 #include "NiagaraBakerOutputTexture2D.h"
+#include "Math/InverseRotationMatrix.h"
 #include "NiagaraCustomVersion.h"
-#include "NiagaraEffectType.h"
-#include "NiagaraSystem.h"
 #include "Engine/Texture2D.h"
+#include "Math/OrthoMatrix.h"
 #include "Misc/PathViews.h"
+#include "Math/PerspectiveMatrix.h"
 #include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraBakerSettings)
@@ -201,7 +202,6 @@ void UNiagaraBakerSettings::PostLoad()
 		OutputTextures_DEPRECATED.Empty();
 	}
 
-
 	if (NiagaraVersion < FNiagaraCustomVersion::AddBakerCameraBookmarks)
 	{
 		for ( int32 i=0; i < int(ENiagaraBakerViewMode::Num); ++i )
@@ -217,6 +217,10 @@ void UNiagaraBakerSettings::PostLoad()
 		}
 		CurrentCameraIndex = int(CameraViewportMode_DEPRECATED);
 	}
+
+	// Sanitize outputs are not nullptr
+	// This should not occur but an asset has been seen to get into this state
+	Outputs.Remove(nullptr);
 }
 
 #if WITH_EDITORONLY_DATA

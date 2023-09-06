@@ -7,9 +7,10 @@
 #pragma once
 
 #include "RHIDefinitions.h"
+#include "Logging/LogMacros.h"
 
 #ifndef VULKAN_SUPPORTS_GEOMETRY_SHADERS
-	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					(!PLATFORM_ANDROID) && PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 #endif
 
 // This defines controls shader generation (so will cause a format rebuild)
@@ -113,11 +114,14 @@ namespace ShaderStage
 
 namespace VulkanBindless
 {
+	static constexpr uint32 MaxUniformBuffersPerStage = 8;
+
 	enum EDescriptorSets
 	{
 		BindlessSamplerSet = 0,
 
 		BindlessStorageBufferSet,
+		BindlessUniformBufferSet,
 
 		BindlessStorageImageSet,
 		BindlessSampledImageSet,
@@ -127,8 +131,9 @@ namespace VulkanBindless
 
 		BindlessAccelerationStructureSet,
 
+		BindlessSingleUseUniformBufferSet,  // Keep last
 		NumBindlessSets,
-		MaxNumSets = ShaderStage::EStage::NumStages + NumBindlessSets
+		MaxNumSets = NumBindlessSets
 	};
 
 	// Prefix used to declare arrays of samplers/resources for bindless

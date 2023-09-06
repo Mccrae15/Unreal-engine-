@@ -4,6 +4,7 @@
 #include "ConversationInstance.h"
 #include "Misc/RuntimeErrors.h"
 #include "ConversationRegistry.h"
+#include "Engine/World.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ConversationContext)
 
@@ -11,22 +12,28 @@
 
 FConversationContext FConversationContext::CreateServerContext(UConversationInstance* InActiveConversation, const UConversationTaskNode* InTaskBeingConsidered)
 {
+	UWorld* World = InActiveConversation->GetWorld();
+
 	FConversationContext Context;
 	Context.ActiveConversation = InActiveConversation;
 	Context.TaskBeingConsidered = InTaskBeingConsidered;
-	Context.bServer = true;
-	Context.ConversationRegistry = UConversationRegistry::GetFromWorld(InActiveConversation->GetWorld());
+	Context.bServer_PRIVATE = true;
+	Context.bClient_PRIVATE = World->GetNetMode() != NM_DedicatedServer;
+	Context.ConversationRegistry = UConversationRegistry::GetFromWorld(World);
 
 	return Context;
 }
 
 FConversationContext FConversationContext::CreateClientContext(UConversationParticipantComponent* InParticipantComponent, const UConversationTaskNode* InTaskBeingConsidered)
 {
+	UWorld* World = InParticipantComponent->GetWorld();
+
 	FConversationContext Context;
 	Context.ClientParticipant = InParticipantComponent;
 	Context.TaskBeingConsidered = InTaskBeingConsidered;
-	Context.bServer = false;
-	Context.ConversationRegistry = UConversationRegistry::GetFromWorld(InParticipantComponent->GetWorld());
+	Context.bServer_PRIVATE = false;
+	Context.bClient_PRIVATE = true;
+	Context.ConversationRegistry = UConversationRegistry::GetFromWorld(World);
 
 	return Context;
 }
@@ -49,7 +56,7 @@ FConversationContext FConversationContext::CreateReturnScopeContext(const FConve
 
 UWorld* FConversationContext::GetWorld() const
 {
-	if (bServer)
+	if (IsServerContext())
 	{
 		if (ActiveConversation)
 		{
@@ -69,7 +76,7 @@ UWorld* FConversationContext::GetWorld() const
 
 FConversationNodeHandle FConversationContext::GetCurrentNodeHandle() const
 {
-	if (bServer)
+	if (IsServerContext())
 	{
 		if (ActiveConversation)
 		{
@@ -89,7 +96,7 @@ FConversationNodeHandle FConversationContext::GetCurrentNodeHandle() const
 
 FConversationParticipants FConversationContext::GetParticipantsCopy() const
 {
-	if (bServer)
+	if (IsServerContext())
 	{
 		if (ActiveConversation)
 		{
@@ -109,7 +116,7 @@ FConversationParticipants FConversationContext::GetParticipantsCopy() const
 
 const FConversationParticipantEntry* FConversationContext::GetParticipant(const FGameplayTag& ParticipantTag) const
 {
-	if (bServer)
+	if (IsServerContext())
 	{
 		if (ActiveConversation)
 		{

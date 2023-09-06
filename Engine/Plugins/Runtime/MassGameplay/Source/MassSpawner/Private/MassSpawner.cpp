@@ -300,7 +300,7 @@ void AMassSpawner::DoSpawning()
 
 	if (TotalProportion <= 0.0f)
 	{
-		UE_VLOG_UELOG(this, LogMassSpawner, Error, TEXT("The total combined porportion of all the generator needs to be greater than 0.0f."));
+		UE_VLOG_UELOG(this, LogMassSpawner, Error, TEXT("The total combined proportion of all the generator needs to be greater than 0."));
 		return;
 	}
 	
@@ -498,7 +498,7 @@ void AMassSpawner::DoDespawning()
 
 	for (const FSpawnedEntities& SpawnedEntities : AllSpawnedEntities)
 	{
-		SpawnerSystem->DestroyEntities(SpawnedEntities.TemplateID, SpawnedEntities.Entities);
+		SpawnerSystem->DestroyEntities(SpawnedEntities.Entities);
 	}
 	AllSpawnedEntities.Reset();
 
@@ -549,7 +549,7 @@ bool AMassSpawner::DespawnEntity(const FMassEntityHandle Entity)
 		const int32 Index = SpawnedEntities.Entities.Find(Entity);
 		if (Index != INDEX_NONE)
 		{
-			SpawnerSystem->DestroyEntities(SpawnedEntities.TemplateID, MakeArrayView(&Entity, 1));
+			SpawnerSystem->DestroyEntities(MakeArrayView(&Entity, 1));
 			SpawnedEntities.Entities.RemoveAtSwap(Index, 1, /*bAllowShrinking=*/false);
 			return true;
 		}

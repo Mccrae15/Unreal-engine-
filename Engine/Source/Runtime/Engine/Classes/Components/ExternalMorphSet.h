@@ -6,7 +6,7 @@
 #include "Rendering/MorphTargetVertexInfoBuffers.h"
 
 /** An external morph target set. External morph targets are managed by systems outside of the skinned meshes. */
-struct ENGINE_API FExternalMorphSet
+struct FExternalMorphSet
 {
 	/** A name for this set, useful for debugging. */
 	FName Name = FName(TEXT("Unknown"));
@@ -16,13 +16,13 @@ struct ENGINE_API FExternalMorphSet
 };
 
 /** The weight data for a specific external morph set. */
-struct ENGINE_API FExternalMorphSetWeights
+struct FExternalMorphSetWeights
 {
 	/** Update the number of active morph targets. */
-	void UpdateNumActiveMorphTargets();
+	ENGINE_API void UpdateNumActiveMorphTargets();
 
 	/** Set all weights to 0. Optionally set the NumActiveMorphTargets to zero as well. */
-	void ZeroWeights(bool bZeroNumActiveMorphTargets=true);
+	ENGINE_API void ZeroWeights(bool bZeroNumActiveMorphTargets=true);
 
 	/** The debug name. */
 	FName Name = FName(TEXT("Unknown ExternalMorphSetWeights"));
@@ -38,10 +38,10 @@ struct ENGINE_API FExternalMorphSetWeights
 };
 
 /** The morph target weight data for all external morph target sets. */
-struct ENGINE_API FExternalMorphWeightData
+struct FExternalMorphWeightData
 {
 	/** Update the number of active morph targets for all sets. */
-	void UpdateNumActiveMorphTargets();
+	ENGINE_API void UpdateNumActiveMorphTargets();
 
 	/** Reset the morph target sets. */
 	void Reset() { MorphSets.Reset(); NumActiveMorphTargets = 0; }

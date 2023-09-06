@@ -2,8 +2,8 @@
 #pragma once
 
 #include "Internationalization/Text.h"
+#include "Interfaces/MetasoundFrontendInterfaceRegistry.h"
 #include "MetasoundAssetBase.h"
-#include "MetasoundFrontendArchetypeRegistry.h"
 #include "MetasoundFrontendController.h"
 #include "MetasoundFrontendDocument.h"
 #include "MetasoundVertex.h"
@@ -49,8 +49,8 @@ namespace Metasound
 		public:
 			virtual ~IGraphTransform() = default;
 
-			// Returns reference to the node's owning document.
-			virtual FMetasoundFrontendDocument& GetOwningDocument() const = 0;
+			UE_DEPRECATED(5.3, "Deprecated: unused function which encouraged breaking const behavior of transform state.")
+			virtual FMetasoundFrontendDocument& GetOwningDocument() const { static FMetasoundFrontendDocument BaseDoc; return BaseDoc; };
 
 			/** Return true if the graph was modified, false otherwise. */
 			virtual bool Transform(FMetasoundFrontendGraph& InOutGraph) const = 0;
@@ -62,11 +62,11 @@ namespace Metasound
 		public:
 			virtual ~INodeTransform() = default;
 
-			// Returns reference to the node's owning document.
-			virtual FMetasoundFrontendDocument& GetOwningDocument() const = 0;
+			UE_DEPRECATED(5.3, "Deprecated: unused function which encouraged breaking const behavior of transform state.")
+			virtual FMetasoundFrontendDocument& GetOwningDocument() const { static FMetasoundFrontendDocument BaseDoc; return BaseDoc; };
 
-			// Returns reference to the node's owning graph.
-			virtual FMetasoundFrontendGraph& GetOwningGraph() const = 0;
+			UE_DEPRECATED(5.3, "Deprecated: unused function which encouraged breaking const behavior of transform state.")
+			virtual FMetasoundFrontendGraph& GetOwningGraph() const { static FMetasoundFrontendGraph BaseGraph; return BaseGraph; }
 
 			/** Return true if the node was modified, false otherwise. */
 			virtual bool Transform(FMetasoundFrontendNode& InOutNode) const = 0;
@@ -90,14 +90,21 @@ namespace Metasound
 			// that may be related but not be named the same.
 			void SetNamePairingFunction(const TFunction<bool(FName, FName)>& InNamePairingFunction);
 
-			bool Transform(FDocumentHandle InDocument) const override;
+			virtual bool Transform(FDocumentHandle InDocument) const override;
+			virtual bool Transform(FMetasoundFrontendDocument& InOutDocument) const override;
 
 		private:
+			bool AddMissingVertices(FGraphHandle GraphHandle) const;
 			void Init(const TFunction<bool(FName, FName)>* InNamePairingFunction = nullptr);
+			bool SwapPairedVertices(FGraphHandle GraphHandle) const;
+			bool RemoveUnsupportedVertices(FGraphHandle GraphHandle) const;
+			bool UpdateInterfacesInternal(FDocumentHandle DocumentHandle) const;
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
+			void UpdateAddedVertexNodePositions(FGraphHandle GraphHandle) const;
+
 			bool bSetDefaultNodeLocations = true;
-#endif // WITH_EDITOR
+#endif // WITH_EDITORONLY_DATA
 
 			TArray<FMetasoundFrontendInterface> InterfacesToRemove;
 			TArray<FMetasoundFrontendInterface> InterfacesToAdd;
@@ -129,8 +136,9 @@ namespace Metasound
 		class METASOUNDFRONTEND_API FUpdateRootGraphInterface : public IDocumentTransform
 		{
 		public:
-			FUpdateRootGraphInterface(const FMetasoundFrontendVersion& InInterfaceVersion)
+			FUpdateRootGraphInterface(const FMetasoundFrontendVersion& InInterfaceVersion, const FString& InOwningAssetName=FString(TEXT("Unknown")))
 				: InterfaceVersion(InInterfaceVersion)
+				, OwningAssetName(InOwningAssetName)
 			{
 			}
 
@@ -141,6 +149,7 @@ namespace Metasound
 			bool UpdateDocumentInterface(const TArray<const IInterfaceRegistryEntry*>& InUpgradePath, FDocumentHandle InDocument) const;
 
 			FMetasoundFrontendVersion InterfaceVersion;
+			FString OwningAssetName;
 		};
 
 		/** Completely rebuilds the graph connecting a preset's inputs to the reference
@@ -157,7 +166,10 @@ namespace Metasound
 			{
 			}
 
-			bool Transform(FDocumentHandle InDocument) const override;
+			FRebuildPresetRootGraph(const FMetasoundFrontendDocument& InReferencedDocument);
+
+			virtual bool Transform(FDocumentHandle InDocument) const override;
+			virtual bool Transform(FMetasoundFrontendDocument& InOutDocument) const override;
 
 		private:
 
@@ -175,7 +187,7 @@ namespace Metasound
 			// Add outputs to parent graph and connect to wrapped graph node.
 			void AddAndConnectOutputs(const TArray<FMetasoundFrontendClassOutput>& InClassOutputs, FGraphHandle& InParentGraphHandle, FNodeHandle& InReferencedNode) const;
 
-			FConstDocumentHandle ReferencedDocument;
+			FConstDocumentHandle ReferencedDocument = IDocumentController::GetInvalidHandle();
 		};
 
 		/** Automatically updates all nodes and respective dependencies in graph where
@@ -218,12 +230,19 @@ namespace Metasound
 				return FRenameRootGraphClass(GeneratedClassName).Transform(InDocument);
 			}
 
+			static bool Generate(FMetasoundFrontendDocument& InDocument, const FGuid& InGuid, const FName Namespace = { }, const FName Variant = { })
+			{
+				const FMetasoundFrontendClassName GeneratedClassName = { Namespace, *InGuid.ToString(), Variant };
+				return FRenameRootGraphClass(GeneratedClassName).Transform(InDocument);
+			}
+
 			FRenameRootGraphClass(const FMetasoundFrontendClassName InClassName)
 				: NewClassName(InClassName)
 			{
 			}
 
 			bool Transform(FDocumentHandle InDocument) const override;
+			bool Transform(FMetasoundFrontendDocument& InOutDocument) const override;
 		};
 	}
 }

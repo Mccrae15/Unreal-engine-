@@ -6,6 +6,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "RHI.h"
+#include "NiagaraUseOpenVDB.h"
 
 #include "VolumeCache.generated.h"
 
@@ -17,8 +18,8 @@ enum class EVolumeCacheType : uint8
 	OpenVDB
 };
 
-UCLASS(Experimental)
-class NIAGARA_API UVolumeCache : public UObject
+UCLASS(Experimental, MinimalAPI)
+class UVolumeCache : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
@@ -39,13 +40,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = File, meta = (DisplayName = "Frame Range End"))
 	int32 FrameRangeEnd;
 		
-	void InitData();
+	NIAGARA_API void InitData();
 
-	bool LoadFile(int frame);
-	bool UnloadFile(int frame);		
-	bool LoadRange();
-	void UnloadAll();
-	FString GetAssetPath(int frame);
+	NIAGARA_API bool LoadFile(int frame);
+	NIAGARA_API bool UnloadFile(int frame);		
+	NIAGARA_API bool LoadRange();
+	NIAGARA_API void UnloadAll();
+	NIAGARA_API FString GetAssetPath(int frame);
 	
 	TSharedPtr<FVolumeCacheData> GetData() { return CachedVolumeFiles;  }
 
@@ -56,13 +57,13 @@ private:
 	TSharedPtr<FVolumeCacheData> CachedVolumeFiles;
 };
 
-class NIAGARA_API FVolumeCacheData
+class FVolumeCacheData
 {
 public:		
 	FVolumeCacheData() : DenseResolution(-1, -1, -1) {}
 	virtual ~FVolumeCacheData() {}
 
-	FString GetAssetPath(FString PathFormat, int32 FrameIndex) const;
+	NIAGARA_API FString GetAssetPath(FString PathFormat, int32 FrameIndex) const;
 
 	FIntVector GetDenseResolution() { return DenseResolution;  }
 
@@ -78,7 +79,9 @@ protected:
 	FIntVector DenseResolution;
 };
 
+#if UE_USE_OPENVDB
 namespace OpenVDBTools
 {
 	NIAGARA_API bool WriteImageDataToOpenVDBFile(FStringView FilePath, FIntVector ImageSize, TArrayView<FFloat16Color> ImageData, bool UseFloatGrids = false);
 }
+#endif

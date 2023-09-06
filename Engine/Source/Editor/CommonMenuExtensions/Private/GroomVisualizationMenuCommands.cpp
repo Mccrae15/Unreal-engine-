@@ -114,7 +114,7 @@ void FGroomVisualizationMenuCommands::InternalBuildVisualisationSubMenu(FMenuBui
 		{
 			Menu.BeginSection("LevelViewportGroomVisualizationAdvanced", LOCTEXT("GroomVisualizationAdvanced", "Groom Strands Advanced"));
 			Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::VoxelsDensity);
-			Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::Cluster);
+			//Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::Cluster);
 			Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::ClusterAABB);
 			if (!bIsGroomEditor)
 			{
@@ -128,6 +128,7 @@ void FGroomVisualizationMenuCommands::InternalBuildVisualisationSubMenu(FMenuBui
 				Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::Coverage);
 				Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::Tile);
 			}
+			Commands.AddCommandTypeToMenu(Menu, EGroomViewMode::Memory);
 			Menu.EndSection();
 		}
 	}

@@ -470,7 +470,7 @@ void FDisplayClusterConfiguratorSCSEditorViewportClient::ProcessClick(class FSce
 
 				if (ActorProxy->Actor == PreviewActor)
 				{
-					UPrimitiveComponent* TestComponent = const_cast<UPrimitiveComponent*>(ActorProxy->PrimComponent);
+					UPrimitiveComponent* TestComponent = ConstCast(ActorProxy->PrimComponent);
 					if (ActorProxy->Actor->GetComponents().Contains(TestComponent))
 					{
 						SelectedCompInstance = TestComponent;
@@ -1283,7 +1283,7 @@ void FDisplayClusterConfiguratorSCSEditorViewportClient::RefreshPreviewBounds()
 	if (PreviewActor)
 	{
 		// Compute actor bounds as the sum of its visible parts
-		PreviewActorBounds = FBoxSphereBounds(ForceInitToZero);
+		FBoxSphereBounds::Builder BoundsBuilder;
 		for (UActorComponent* Component : PreviewActor->GetComponents())
 		{
 			// Aggregate primitive components that either have collision enabled or are otherwise visible components in-game
@@ -1291,10 +1291,11 @@ void FDisplayClusterConfiguratorSCSEditorViewportClient::RefreshPreviewBounds()
 			{
 				if (PrimComp->IsRegistered() && (!PrimComp->bHiddenInGame || PrimComp->IsCollisionEnabled()) && PrimComp->Bounds.SphereRadius < HALF_WORLD_MAX)
 				{
-					PreviewActorBounds = PreviewActorBounds + PrimComp->Bounds;
+					BoundsBuilder += PrimComp->Bounds;
 				}
 			}
 		}
+		PreviewActorBounds = BoundsBuilder;
 	}
 }
 

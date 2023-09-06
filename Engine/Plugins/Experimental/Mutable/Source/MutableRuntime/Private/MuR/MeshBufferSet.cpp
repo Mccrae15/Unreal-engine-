@@ -8,11 +8,17 @@
 #include "Math/UnrealMathSSE.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/MutableTrace.h"
+#include "MuR/SerialisationPrivate.h"
 
 
 namespace mu
 {
+	MUTABLE_IMPLEMENT_POD_SERIALISABLE(MESH_BUFFER_CHANNEL);
+	MUTABLE_IMPLEMENT_POD_VECTOR_SERIALISABLE(MESH_BUFFER_CHANNEL);
+	MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(MESH_BUFFER_FORMAT);
+	MUTABLE_IMPLEMENT_ENUM_SERIALISABLE(MESH_BUFFER_SEMANTIC);
 
+	
 	//---------------------------------------------------------------------------------------------
 	static FMeshBufferFormatData s_meshBufferFormatData[MBF_COUNT] =
 	{
@@ -52,6 +58,22 @@ namespace mu
 	}
 
 
+	//-----------------------------------------------------------------------------------------
+	void FMeshBufferSet::Serialise(OutputArchive& arch) const
+	{
+		arch << m_elementCount;
+		arch << m_buffers;
+	}
+
+
+	//-----------------------------------------------------------------------------------------
+	void FMeshBufferSet::Unserialise(InputArchive& arch)
+	{
+		arch >> m_elementCount;
+		arch >> m_buffers;
+	}
+
+
 	//---------------------------------------------------------------------------------------------
 	//---------------------------------------------------------------------------------------------
 	//---------------------------------------------------------------------------------------------
@@ -62,17 +84,23 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	void FMeshBufferSet::SetElementCount(int32 count)
+	void FMeshBufferSet::SetElementCount(int32 Count)
 	{
-		check(count >= 0);
+		check(Count >= 0);
 		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
 
-		m_elementCount = count;
+		// If the new size is 0, allow shrinking.
+		// TODO: Add better shrink policy or let the user decide. Denying shrinking
+		// unconditionally could mean having small meshes that use lots of memory. For now
+		// allow it if no other allocation will be done.  
+		const bool bAllowShrinking = Count == 0;
 
 		for (MESH_BUFFER& buf : m_buffers)
 		{
-			buf.m_data.SetNumUninitialized(buf.m_elementSize * count, false);
+			buf.m_data.SetNumUninitialized(buf.m_elementSize * Count, bAllowShrinking);
 		}
+		
+		m_elementCount = Count;
 	}
 
 
@@ -246,6 +274,21 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
+	uint32 FMeshBufferSet::GetBufferDataSize(int32 buffer) const
+	{
+		check(buffer >= 0 && buffer < m_buffers.Num());
+		const uint32 Result = m_buffers[buffer].m_data.Num();
+
+#if WITH_EDITOR
+		int32 Size = m_buffers[buffer].m_elementSize * m_elementCount;
+		ensure(Size == Result);
+#endif
+
+		return Result;
+	}
+
+
+	//---------------------------------------------------------------------------------------------
 	void FMeshBufferSet::FindChannel
 	(
 		MESH_BUFFER_SEMANTIC semantic, int32 semanticIndex,
@@ -358,9 +401,9 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	size_t FMeshBufferSet::GetDataSize() const
+	int32 FMeshBufferSet::GetDataSize() const
 	{
-		size_t res = 0;
+		int32 res = 0;
 
 		for (int32 b = 0; b < m_buffers.Num(); ++b)
 		{
@@ -370,6 +413,17 @@ namespace mu
 		return res;
 	}
 
+	int32 FMeshBufferSet::GetAllocatedSize() const
+	{
+		int32 ByteCount = 0;
+
+		for (int32 BufferIndex = 0; BufferIndex < m_buffers.Num(); ++BufferIndex)
+		{
+			ByteCount += m_buffers[BufferIndex].m_data.GetAllocatedSize();
+		}
+
+		return ByteCount;
+	}
 
 	//-----------------------------------------------------------------------------------------
 	void FMeshBufferSet::CopyElement(uint32_t fromIndex, uint32_t toIndex)
@@ -605,4 +659,23 @@ namespace mu
 			m_buffers[b].m_elementSize = offset;
 	}
 
+	
+	//-----------------------------------------------------------------------------------------
+	void MESH_BUFFER::Serialise(OutputArchive& arch) const
+	{
+		arch << m_channels;
+		arch << m_data;
+		arch << m_elementSize;
+	}
+
+	
+	//-----------------------------------------------------------------------------------------
+	void MESH_BUFFER::Unserialise(InputArchive& arch)
+	{
+		arch >> m_channels;
+		arch >> m_data;
+		arch >> m_elementSize;
+	}
+	
 }
+

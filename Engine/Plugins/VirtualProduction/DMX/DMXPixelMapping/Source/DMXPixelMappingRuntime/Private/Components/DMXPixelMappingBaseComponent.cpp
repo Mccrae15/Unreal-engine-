@@ -3,7 +3,6 @@
 #include "Components/DMXPixelMappingBaseComponent.h"
 
 #include "DMXPixelMapping.h"
-#include "DMXPixelMappingRuntimeCommon.h"
 #include "DMXPixelMappingMainStreamObjectVersion.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
 #include "Components/DMXPixelMappingRootComponent.h"
@@ -13,8 +12,6 @@ UDMXPixelMappingBaseComponent::FDMXPixelMappingOnComponentAdded UDMXPixelMapping
 UDMXPixelMappingBaseComponent::FDMXPixelMappingOnComponentRemoved UDMXPixelMappingBaseComponent::OnComponentRemoved;
 UDMXPixelMappingBaseComponent::FDMXPixelMappingOnComponentRenamed UDMXPixelMappingBaseComponent::OnComponentRenamed;
 
-UDMXPixelMappingBaseComponent::UDMXPixelMappingBaseComponent()
-{}
 
 UDMXPixelMappingBaseComponent::FDMXPixelMappingOnComponentAdded& UDMXPixelMappingBaseComponent::UDMXPixelMappingBaseComponent::GetOnComponentAdded()
 {
@@ -52,7 +49,7 @@ void UDMXPixelMappingBaseComponent::PostRename(UObject* OldOuter, const FName Ol
 {
 	Super::PostRename(OldOuter, OldName);
 
-	OnComponentRenamed.Broadcast(GetPixelMapping(), this, OldOuter, OldName);
+	OnComponentRenamed.Broadcast(this);
 }
 
 #if WITH_EDITOR
@@ -80,11 +77,6 @@ const FName& UDMXPixelMappingBaseComponent::GetNamePrefix()
 
 	static FName NamePrefix = TEXT("");
 	return NamePrefix;
-}
-
-TStatId UDMXPixelMappingBaseComponent::GetStatId() const
-{
-	RETURN_QUICK_DECLARE_CYCLE_STAT(UDMXPixelMappingBaseComponent, STATGROUP_Tickables);
 }
 
 int32 UDMXPixelMappingBaseComponent::GetChildrenCount() const
@@ -192,7 +184,7 @@ UDMXPixelMappingBaseComponent* UDMXPixelMappingBaseComponent::GetChildAt(int32 I
 void UDMXPixelMappingBaseComponent::AddChild(UDMXPixelMappingBaseComponent* InComponent)
 {
 #if WITH_EDITOR
-	ensureMsgf(InComponent, TEXT("Trying to add nullptr to %s"), *GetUserFriendlyName());
+	ensureMsgf(InComponent, TEXT("Trying to add nullptr to %s"), *GetUserName());
 #endif 
 
 	if (InComponent)
@@ -235,7 +227,17 @@ void UDMXPixelMappingBaseComponent::ClearChildren()
 
 FString UDMXPixelMappingBaseComponent::GetUserFriendlyName() const
 {
-	return GetName();
+	return GetUserName();
+}
+
+FString UDMXPixelMappingBaseComponent::GetUserName() const
+{
+	return UserName.IsEmpty() ? GetName() : UserName;
+}
+
+void UDMXPixelMappingBaseComponent::SetUserName(const FString& NewName)
+{
+	UserName = NewName;
 }
 
 void UDMXPixelMappingBaseComponent::GetChildComponentsRecursively(TArray<UDMXPixelMappingBaseComponent*>& Components)

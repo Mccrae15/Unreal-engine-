@@ -1128,13 +1128,11 @@ FArchive& operator << (FArchive& Ar, FGfxPipelineDesc& Entry)
 #endif
 	Ar << Entry.RenderTargets;
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	uint8 ShadingRate = static_cast<uint8>(Entry.ShadingRate);
 	uint8 Combiner = static_cast<uint8>(Entry.Combiner);
 	
 	Ar << ShadingRate;
 	Ar << Combiner;
-#endif
 
 	Ar << Entry.UseAlphaToCoverage;
 
@@ -1165,7 +1163,6 @@ FVulkanPSOKey FGfxPipelineDesc::CreateKey2() const
 	return Result;
 }
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 // Map Unreal VRS combiner operation enums to Vulkan enums.
 static const TMap<uint8, VkFragmentShadingRateCombinerOpKHR> FragmentCombinerOpMap
 {
@@ -1176,21 +1173,20 @@ static const TMap<uint8, VkFragmentShadingRateCombinerOpKHR> FragmentCombinerOpM
 	{ VRSRB_Sum,			VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR },		// No concept of Sum in Vulkan - fall back to max.
 	// @todo: Add "VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MUL_KHR"?
 };
-#endif
 
 FString FVulkanPipelineStateCacheManager::ShaderHashesToString(FVulkanShader* Shaders[ShaderStage::NumStages])
 {
 	FString ShaderHashes = "";
-	if (Shaders[ShaderStage::Vertex] && Shaders[ShaderStage::Vertex]->StageFlag == VK_SHADER_STAGE_VERTEX_BIT)
+	if (Shaders[ShaderStage::Vertex] && Shaders[ShaderStage::Vertex]->Frequency == SF_Vertex)
 	{
 		ShaderHashes += TEXT("VS: ") + static_cast<FVulkanVertexShader*>(Shaders[ShaderStage::Vertex])->GetHash().ToString() + TEXT("\n");
 	}
-	if (Shaders[ShaderStage::Pixel] && Shaders[ShaderStage::Pixel]->StageFlag == VK_SHADER_STAGE_FRAGMENT_BIT)
+	if (Shaders[ShaderStage::Pixel] && Shaders[ShaderStage::Pixel]->Frequency == SF_Pixel)
 	{
 		ShaderHashes += TEXT("PS: ") + static_cast<FVulkanPixelShader*>(Shaders[ShaderStage::Pixel])->GetHash().ToString() + TEXT("\n");
 	}
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
-	if (Shaders[ShaderStage::Geometry] && Shaders[ShaderStage::Geometry]->StageFlag == VK_SHADER_STAGE_GEOMETRY_BIT)
+	if (Shaders[ShaderStage::Geometry] && Shaders[ShaderStage::Geometry]->Frequency == SF_Geometry)
 	{
 		ShaderHashes += TEXT("GS: ") + static_cast<FVulkanGeometryShader*>(Shaders[ShaderStage::Geometry])->GetHash().ToString() + TEXT("\n");
 	}
@@ -1288,11 +1284,11 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 				const bool bSupportedSize = ((ShaderHeader.WaveSize >= SubgroupSizeControlProperties.minSubgroupSize) && (ShaderHeader.WaveSize <= SubgroupSizeControlProperties.maxSubgroupSize));
 				if (bSupportedStage && bSupportedSize)
 				{
-					ZeroVulkanStruct(RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
-					RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount].requiredSubgroupSize = ShaderHeader.WaveSize;
-					ShaderStages[PipelineInfo.stageCount].pNext = &RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount];
-				}
+				ZeroVulkanStruct(RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+				RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount].requiredSubgroupSize = ShaderHeader.WaveSize;
+				ShaderStages[PipelineInfo.stageCount].pNext = &RequiredSubgroupSizeCreateInfo[PipelineInfo.stageCount];
 			}
+		}
 		}
 
 		PipelineInfo.stageCount++;
@@ -1303,7 +1299,7 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	// Vertex Input. The structure is mandatory even without vertex attributes.
 	VkPipelineVertexInputStateCreateInfo VBInfo;
 	ZeroVulkanStruct(VBInfo, VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
-	TArray<VkVertexInputBindingDescription> VBBindings;
+	TArray<VkVertexInputBindingDescription, TInlineAllocator<32>> VBBindings;
 	for (const FGfxPipelineDesc::FVertexBinding& SourceBinding : GfxEntry->VertexBindings)
 	{
 		VkVertexInputBindingDescription* Binding = new(VBBindings) VkVertexInputBindingDescription;
@@ -1311,7 +1307,7 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	}
 	VBInfo.vertexBindingDescriptionCount = VBBindings.Num();
 	VBInfo.pVertexBindingDescriptions = VBBindings.GetData();
-	TArray<VkVertexInputAttributeDescription> VBAttributes;
+	TArray<VkVertexInputAttributeDescription, TInlineAllocator<32>> VBAttributes;
 	for (const FGfxPipelineDesc::FVertexAttribute& SourceAttr : GfxEntry->VertexAttributes)
 	{
 		VkVertexInputAttributeDescription* Attr = new(VBAttributes) VkVertexInputAttributeDescription;
@@ -1357,9 +1353,8 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 
 	PipelineInfo.pDynamicState = &DynamicState;
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 	VkPipelineFragmentShadingRateStateCreateInfoKHR PipelineFragmentShadingRate;
-	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && PSO->Desc.ShadingRate != EVRSShadingRate::VRSSR_1x1)
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled && GRHIVariableRateShadingImageDataType == VRSImage_Palette)
 	{
 		const VkExtent2D FragmentSize = Device->GetBestMatchedFragmentSize(PSO->Desc.ShadingRate);
 		VkFragmentShadingRateCombinerOpKHR PipelineToPrimitiveCombinerOperation = FragmentCombinerOpMap[(uint8)PSO->Desc.Combiner];
@@ -1371,7 +1366,11 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 
 		PipelineInfo.pNext = (void*)&PipelineFragmentShadingRate;
 	}
-#endif
+
+	if (Device->SupportsBindless())
+	{
+		PipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+	}
 
 	VkResult Result = VK_ERROR_INITIALIZATION_FAILED;
 
@@ -1398,16 +1397,11 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	return true;
 }
 
-VkResult FVulkanPipelineStateCacheManager::CreateVKPipeline(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], VkGraphicsPipelineCreateInfo PipelineInfo, bool bIsPrecompileJob)
+VkResult FVulkanPipelineStateCacheManager::CreateVKPipeline(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], const VkGraphicsPipelineCreateInfo& PipelineInfo, bool bIsPrecompileJob)
 {
 	VkPipeline* Pipeline = &PSO->VulkanPipeline;
 
 	FPipelineCache& Cache = bIsPrecompileJob ? CurrentPrecompilingPSOCache : GlobalPSOCache;
-
-	if (Device->SupportsBindless())
-	{
-		PipelineInfo.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-	}
 
 	VkPipelineCache LocalPipelineCache = VK_NULL_HANDLE;
 	VkResult Result = VK_ERROR_INITIALIZATION_FAILED;
@@ -1484,6 +1478,8 @@ VkResult FVulkanPipelineStateCacheManager::CreateVKPipeline(FVulkanRHIGraphicsPi
 	{
 		if (bWantPSOSize)
 		{
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_VulkanPSOCreationTimeLRU);
+
 			// We create a single pipeline cache for this create so we can observe the size for LRU cache's accounting.
 			// measuring deltas from the global PipelineCache is not thread safe.
 			VkPipelineCacheCreateInfo PipelineCacheInfo;
@@ -1874,7 +1870,6 @@ void FVulkanPipelineStateCacheManager::NotifyDeletedGraphicsPSO(FRHIGraphicsPipe
 		FScopeLock Lock(&GraphicsPSOLockedCS);
 		FVulkanRHIGraphicsPipelineState** Contained = GraphicsPSOLockedMap.Find(Key);
 		check(Contained && *Contained == PSO);
-		GraphicsPSOLockedMap.Remove(Key);
 		VkPSO->bIsRegistered = false;
 		if(bUseLRU)
 		{
@@ -1886,7 +1881,7 @@ void FVulkanPipelineStateCacheManager::NotifyDeletedGraphicsPSO(FRHIGraphicsPipe
 			(*Contained)->DeleteVkPipeline(true);
 			check(VkPSO->GetVulkanPipeline() == 0 );
 		}
-		
+		GraphicsPSOLockedMap.Remove(Key);
 	}
 	else
 	{
@@ -1932,9 +1927,10 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 	// We stall precompile PSOs which increases the likelihood for non-precompile PSO to jump the queue.
 	// Not using GraphicsPSOLockedCS as the create could take a long time on some platforms, holding GraphicsPSOLockedCS the whole time could cause hitching.
 	const ESingleThreadedPSOCreateMode ThreadingMode = (ESingleThreadedPSOCreateMode)GVulkanPSOForceSingleThreaded;
+	const bool bIsPrecache = Initializer.bFromPSOFileCache || Initializer.bPSOPrecache;
 	bool bShouldLock = ThreadingMode == ESingleThreadedPSOCreateMode::All
-		|| (ThreadingMode == ESingleThreadedPSOCreateMode::Precompile && Initializer.bFromPSOFileCache)
-		|| (ThreadingMode == ESingleThreadedPSOCreateMode::NonPrecompiled && !Initializer.bFromPSOFileCache);
+		|| (ThreadingMode == ESingleThreadedPSOCreateMode::Precompile && bIsPrecache)
+		|| (ThreadingMode == ESingleThreadedPSOCreateMode::NonPrecompiled && !bIsPrecache);
 
 	FPSOOptionalLock PSOSingleThreadedLock(bShouldLock ? &CreateGraphicsPSOMutex : nullptr);
 
@@ -1958,7 +1954,7 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 			if(PSO)
 			{
 				check(*PSO);
-				if(!Initializer.bFromPSOFileCache)
+				if(!bIsPrecache)
 				{
 					LRUTouch(*PSO);
 				}
@@ -2002,7 +1998,7 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 			const FVulkanShaderHeader& VSHeader = VS->GetCodeHeader();
 			NewPSO->VertexInputState.Generate(ResourceCast(Initializer.BoundShaderState.VertexDeclarationRHI), VSHeader.InOutMask);
 
-			if((!Initializer.bFromPSOFileCache || !LRUEvictImmediately()) 
+			if((!bIsPrecache || !LRUEvictImmediately()) 
 	#if !UE_BUILD_SHIPPING
 				&& 0 == CVarPipelineDebugForceEvictImmediately.GetValueOnAnyThread()
 	#endif
@@ -2023,7 +2019,7 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 			
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_Vulkan_RHICreateGraphicsPipelineState_CREATE_PART0);
 
-				if(!CreateGfxPipelineFromEntry(NewPSO, VulkanShaders, Initializer.bFromPSOFileCache))
+				if(!CreateGfxPipelineFromEntry(NewPSO, VulkanShaders, bIsPrecache))
 				{
 					DeleteNewPSO(NewPSO);
 					return nullptr;
@@ -2176,12 +2172,12 @@ FVulkanComputePipeline* FVulkanPipelineStateCacheManager::CreateComputePipelineF
 		{
 			// Check if requested size is supported
 			if ((CSHeader.WaveSize >= SubgroupSizeControlProperties.minSubgroupSize) && (CSHeader.WaveSize <= SubgroupSizeControlProperties.maxSubgroupSize))
-		{
-			ZeroVulkanStruct(RequiredSubgroupSizeCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
-			RequiredSubgroupSizeCreateInfo.requiredSubgroupSize = CSHeader.WaveSize;
-			PipelineInfo.stage.pNext = &RequiredSubgroupSizeCreateInfo;
+			{
+				ZeroVulkanStruct(RequiredSubgroupSizeCreateInfo, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO);
+				RequiredSubgroupSizeCreateInfo.requiredSubgroupSize = CSHeader.WaveSize;
+				PipelineInfo.stage.pNext = &RequiredSubgroupSizeCreateInfo;
+			}
 		}
-	}
 	}
 
 	VkResult Result;

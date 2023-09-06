@@ -69,25 +69,42 @@ bool FWorldPartitionActorDescView::GetActorIsHLODRelevant() const
 	return ActorDesc->GetActorIsHLODRelevant();
 }
 
-FName FWorldPartitionActorDescView::GetHLODLayer() const
+FSoftObjectPath FWorldPartitionActorDescView::GetHLODLayer() const
 {
 	return ActorDesc->GetHLODLayer();
 }
 
-const TArray<FName>& FWorldPartitionActorDescView::GetDataLayers() const
+void FWorldPartitionActorDescView::SetDataLayerInstanceNames(const TArray<FName>& InDataLayerInstanceNames)
 {
-	static TArray<FName> EmptyDataLayers;
-	return bInvalidDataLayers ? EmptyDataLayers : ActorDesc->GetDataLayerInstanceNames();
+	check(!ActorDesc->HasResolvedDataLayerInstanceNames());
+	ResolvedDataLayerInstanceNames = InDataLayerInstanceNames;
 }
 
 const TArray<FName>& FWorldPartitionActorDescView::GetDataLayerInstanceNames() const
 {
+	static TArray<FName> EmptyDataLayers;
+	if (bInvalidDataLayers)
+	{
+		return EmptyDataLayers;
+	}
+	else if (ResolvedDataLayerInstanceNames.IsSet())
+	{
+		return ResolvedDataLayerInstanceNames.GetValue();
+	}
 	return ActorDesc->GetDataLayerInstanceNames();
 }
-const TArray<FName>& FWorldPartitionActorDescView::GetRuntimeDataLayers() const
+
+const TArray<FName>& FWorldPartitionActorDescView::GetRuntimeDataLayerInstanceNames() const
 {
 	static TArray<FName> EmptyDataLayers;
-	return (bInvalidDataLayers || !RuntimeDataLayers.IsSet()) ? EmptyDataLayers : RuntimeDataLayers.GetValue();
+	if (!bInvalidDataLayers)
+	{
+		if (ensure(RuntimeDataLayerInstanceNames.IsSet()))
+		{
+			return RuntimeDataLayerInstanceNames.GetValue();
+		}
+	}
+	return EmptyDataLayers;
 }
 
 const TArray<FName>& FWorldPartitionActorDescView::GetTags() const
@@ -137,6 +154,11 @@ const TArray<FGuid>& FWorldPartitionActorDescView::GetReferences() const
 	return RuntimeReferences.IsSet() ? RuntimeReferences.GetValue() : ActorDesc->GetReferences();
 }
 
+const TArray<FGuid>& FWorldPartitionActorDescView::GetEditorReferences() const
+{
+	return EditorReferences;
+}
+
 FString FWorldPartitionActorDescView::ToString() const
 {
 	return ActorDesc->ToString();
@@ -162,14 +184,25 @@ bool FWorldPartitionActorDescView::IsContainerInstance() const
 	return ActorDesc->IsContainerInstance();
 }
 
-FName FWorldPartitionActorDescView::GetLevelPackage() const
+EWorldPartitionActorFilterType FWorldPartitionActorDescView::GetContainerFilterType() const
 {
-	return ActorDesc->GetLevelPackage();
+	return ActorDesc->GetContainerFilterType();
 }
 
-bool FWorldPartitionActorDescView::GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const
+FName FWorldPartitionActorDescView::GetContainerPackage() const
 {
-	return ActorDesc->GetContainerInstance(OutLevelContainer, OutLevelTransform, OutClusterMode);
+	return ActorDesc->GetContainerPackage();
+}
+
+bool FWorldPartitionActorDescView::GetContainerInstance(FWorldPartitionActorDesc::FContainerInstance& OutContainerInstance) const
+{
+	return ActorDesc->GetContainerInstance(OutContainerInstance);
+}
+
+const FWorldPartitionActorFilter* FWorldPartitionActorDescView::GetContainerFilter() const
+{
+	check(GetContainerFilterType() != EWorldPartitionActorFilterType::None);
+	return ActorDesc->GetContainerFilter();
 }
 
 void FWorldPartitionActorDescView::CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const
@@ -212,18 +245,37 @@ void FWorldPartitionActorDescView::SetInvalidDataLayers()
 	}
 }
 
-void FWorldPartitionActorDescView::SetRuntimeDataLayers(TArray<FName>& InRuntimeDataLayers)
+void FWorldPartitionActorDescView::SetRuntimeDataLayerInstanceNames(const TArray<FName>& InRuntimeDataLayerInstanceNames)
 {
-	RuntimeDataLayers = InRuntimeDataLayers;
+	RuntimeDataLayerInstanceNames = InRuntimeDataLayerInstanceNames;
 }
 
-void FWorldPartitionActorDescView::SetRuntimeReferences(TArray<FGuid>& InRuntimeReferences)
+void FWorldPartitionActorDescView::SetRuntimeReferences(const TArray<FGuid>& InRuntimeReferences)
 {
 	RuntimeReferences = InRuntimeReferences;
+}
+
+void FWorldPartitionActorDescView::SetEditorReferences(const TArray<FGuid>& InEditorReferences)
+{
+	EditorReferences = InEditorReferences;
 }
 
 AActor* FWorldPartitionActorDescView::GetActor() const
 {
 	return ActorDesc->GetActor();
+}
+
+bool FWorldPartitionActorDescView::IsEditorOnlyReference(const FGuid& ReferenceGuid) const
+{
+	return ActorDesc->IsEditorOnlyReference(ReferenceGuid);
+}
+
+bool FWorldPartitionActorDescView::GetProperty(FName PropertyName, FName* PropertyValue) const
+{
+	return ActorDesc->GetProperty(PropertyName, PropertyValue);
+}
+bool FWorldPartitionActorDescView::HasProperty(FName PropertyName) const
+{
+	return ActorDesc->HasProperty(PropertyName);
 }
 #endif

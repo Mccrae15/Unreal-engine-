@@ -3,13 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Stats/Stats2.h"
+#include "Stats/Stats.h"
 
 // Module-wide log categories
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterEngine,     Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterModule,     Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterCluster,    Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterConfig,     Log, All);
+DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterBarrier,    Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterGame,       Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterNetwork,    Log, All);
 DECLARE_LOG_CATEGORY_EXTERN(LogDisplayClusterRender,     Log, All);

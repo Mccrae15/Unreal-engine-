@@ -54,6 +54,8 @@ static inline void ReadShaderOptionalData(FShaderCodeReader& InShaderCode, TShad
 	int32 IsSm6ShaderSize = 1;
 	const uint8* IsSm6Shader = InShaderCode.FindOptionalData('6', IsSm6ShaderSize);
 	OutShader.bIsSm6Shader = IsSm6Shader && IsSm6ShaderSize && *IsSm6Shader;
+
+	UE::RHICore::SetupShaderCodeValidationData(&OutShader, InShaderCode);
 }
 
 static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency Frequency, const FD3D11ShaderData* ShaderData, bool& OutNeedsReset)
@@ -64,10 +66,10 @@ static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency
 	}
 
 	bool IsValidHardwareExtension = true;
-#if !PLATFORM_HOLOLENS
+
 	for (const FShaderCodeVendorExtension& Extension : ShaderData->VendorExtensions)
 	{
-		if (Extension.VendorId == 0x10DE) // NVIDIA
+		if (Extension.VendorId == EGpuVendorId::Nvidia)
 		{
 			if (!IsRHIDeviceNVIDIA())
 			{
@@ -84,7 +86,7 @@ static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency
 			}
 #endif
 		}
-		else if (Extension.VendorId == 0x1002) // AMD
+		else if (Extension.VendorId == EGpuVendorId::Amd)
 		{
 			if (!IsRHIDeviceAMD())
 			{
@@ -93,7 +95,7 @@ static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency
 			}
 			// TODO: https://github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/blob/master/ags_lib/hlsl/ags_shader_intrinsics_dx11.hlsl
 		}
-		else if (Extension.VendorId == 0x8086) // Intel
+		else if (Extension.VendorId == EGpuVendorId::Intel)
 		{
 			if (!IsRHIDeviceIntel())
 			{
@@ -103,7 +105,7 @@ static bool ApplyVendorExtensions(ID3D11Device* Direct3DDevice, EShaderFrequency
 			// TODO: https://github.com/intel/intel-graphics-compiler/blob/master/inc/IntelExtensions.hlsl
 		}
 	}
-#endif
+
 	return IsValidHardwareExtension;
 }
 

@@ -5,6 +5,10 @@
 #include "../SceneTextureParameters.ush"
 #include "../VelocityCommon.ush"
 
+// Additional rewiring to make DeferredShadingCommon happy
+#define PreIntegratedGF				ReflectionStruct.PreIntegratedGF
+#define PreIntegratedGFSampler		GlobalBilinearClampedSampler
+
 #include "LumenCardCommon.ush"
 #include "LumenTracingCommon.ush"
 #include "LumenVisualize.ush"
@@ -423,13 +427,13 @@ StructuredBuffer<FRayTracingSceneMetadataRecord> RayTracingSceneMetadata;
 uint ThreadCount;
 uint GroupCount;
 uint LightingMode;
-uint MaxTranslucentSkipCount;
+uint UseReflectionCaptures;
 uint MaxTraversalIterations;
 float3 FarFieldReferencePos;
-float FarFieldDitheredStartDistanceFactor;
+float NearFieldMaxTraceDistanceDitherScale;
+float NearFieldSceneRadius;
 uint ApplySkylightStage;
-
-#include "LumenFog.ush"
+uint MaxReflectionBounces;
 
 LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenVisualizeHardwareRayTracing)
 {
@@ -458,14 +462,20 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenVisualizeHardwareRayTracing)
 		HitLightingMode = LightingMode;
 #endif // DIM_TRACE_MODE
 
-		float DitheredStartDistance = FarFieldDitheredStartDistanceFactor * MaxTraceDistance;
-		float DitheredMaxTraceDistance = CalcDitheredDistance(TraceCoord, DitheredStartDistance, MaxTraceDistance);
-
 		// We are rendering after TAAU, remove jitter
 		BufferUV += View.TemporalAAJitter.xy * View.ScreenPositionScaleBias.xy;
 
 		FRayDesc Ray = CreatePrimaryRay(BufferUV);
-		Ray.TMax = min(Ray.TMax, DitheredMaxTraceDistance);
+
+		float ClippedNearFieldMaxTraceDistance = ClipAndDitherNearFieldMaxTraceDistance(
+			Ray.Origin,
+			Ray.Direction,
+			TraceCoord,
+			NearFieldSceneRadius,
+			MaxTraceDistance,
+			NearFieldMaxTraceDistanceDitherScale);
+
+		Ray.TMax = min(Ray.TMax, ClippedNearFieldMaxTraceDistance);
 #if DIM_HIT_LIGHTING
 		FTraceDataLocal TraceData = UnpackTraceData(TraceDataPacked[RayIndex]);
 		if (TraceData.bIsValidMeshCardIndex)
@@ -484,14 +494,13 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenVisualizeHardwareRayTracing)
 		const bool bHiResSurface = VisualizeHiResSurface != 0 ? true : false;
 
 		FRayTracedLightingContext Context = CreateRayTracedLightingContext(
-			TLAS,
 			RayCone,
 			TraceCoord,
 			LinearCoord,
 			CullingMode,
-			MaxTranslucentSkipCount,
 			MaxTraversalIterations,
 			bHiResSurface);
+		Context.MaxReflectionBounces = MaxReflectionBounces;
 		Context.FarFieldMaxTraceDistance = FarFieldMaxTraceDistance;
 		Context.FarFieldReferencePos = FarFieldReferencePos;
 
@@ -504,7 +513,7 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenVisualizeHardwareRayTracing)
 				Ray.TMax = FarFieldMaxTraceDistance;
 			}
 
-			Result = TraceAndCalculateRayTracedLighting(Ray, Context, HitLightingMode);
+			Result = TraceAndCalculateRayTracedLighting(TLAS, Ray, Context, HitLightingMode, UseReflectionCaptures != 0);
 
 			#define DEBUG_VISUAL_ASSERT_ON_RETRACE_MISS 0
 			#if DEBUG_VISUAL_ASSERT_ON_RETRACE_MISS && DIM_HIT_LIGHTING
@@ -524,7 +533,7 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenVisualizeHardwareRayTracing)
 				Context.RayTracingSceneMetadata = RayTracingSceneMetadata;
 			#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
 
-			Result = TraceAndCalculateRayTracedLightingFromSurfaceCache(Ray, Context);
+			Result = TraceAndCalculateRayTracedLightingFromSurfaceCache(TLAS, Ray, Context);
 		}
 		#endif
 

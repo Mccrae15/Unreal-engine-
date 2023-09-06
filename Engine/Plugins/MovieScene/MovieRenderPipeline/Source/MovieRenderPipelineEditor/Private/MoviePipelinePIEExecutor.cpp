@@ -13,12 +13,14 @@
 #include "Editor.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "MoviePipelineQueue.h"
+#include "MoviePipelineBlueprintLibrary.h"
 #include "MoviePipelinePIEExecutorSettings.h"
 #include "MoviePipelineEditorBlueprintLibrary.h"
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 #include "MessageLogModule.h"
 #include "Logging/MessageLog.h"
+#include "Graph/MovieGraphPipeline.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelinePIEExecutor)
 
@@ -217,7 +219,7 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 	// Allow the user to have overridden which Pipeline is actually run. This is an unlikely scenario but allows
 	// the user to create their own implementation while still re-using the rest of our UI and infrastructure.
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
-	TSubclassOf<UMoviePipeline> PipelineClass = ProjectSettings->DefaultPipeline.TryLoadClass<UMoviePipeline>();
+	TSubclassOf<UMoviePipelineBase> PipelineClass = ProjectSettings->DefaultPipeline.TryLoadClass<UMoviePipelineBase>();
 	if (!PipelineClass)
 	{
 		UE_LOG(LogMovieRenderPipeline, Error, TEXT("Failed to load project specified MoviePipeline class type!"));
@@ -225,8 +227,17 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 		return;
 	}
 
+	UMoviePipelineExecutorJob* CurrentJob = Queue->GetJobs()[CurrentPipelineIndex];
+	if (CurrentJob->GetGraphConfig())
+	{
+		PipelineClass = UMovieGraphPipeline::StaticClass();
+	}
+
 	// This Pipeline belongs to the world being created so that they have context for things they execute.
-	ActiveMoviePipeline = NewObject<UMoviePipeline>(ExecutingWorld, PipelineClass);
+	ActiveMoviePipeline = NewObject<UMoviePipelineBase>(ExecutingWorld, PipelineClass);
+
+	UMoviePipeline* PipelineAsLegacy = Cast<UMoviePipeline>(ActiveMoviePipeline);
+
 	
 	// We allow users to set a multi-frame delay before we actually run the Initialization function and start thinking.
 	// This solves cases where there are engine systems that need to finish loading before we do anything.
@@ -238,12 +249,23 @@ void UMoviePipelinePIEExecutor::OnPIEStartupFinished(bool)
 	// Listen for when the pipeline thinks it has finished.
 	ActiveMoviePipeline->OnMoviePipelineWorkFinished().AddUObject(this, &UMoviePipelinePIEExecutor::OnPIEMoviePipelineFinished);
 	ActiveMoviePipeline->OnMoviePipelineShotWorkFinished().AddUObject(this, &UMoviePipelinePIEExecutor::OnJobShotFinished);
-	ActiveMoviePipeline->SetViewportInitArgs(ViewportInitArgs);
+	if (PipelineAsLegacy)
+	{
+
+		PipelineAsLegacy->SetViewportInitArgs(ViewportInitArgs);
+	}
 	
 	if (ExecutorSettings->InitialDelayFrameCount == 0)
 	{
 		OnIndividualJobStartedImpl(Queue->GetJobs()[CurrentPipelineIndex]);
-		ActiveMoviePipeline->Initialize(Queue->GetJobs()[CurrentPipelineIndex]);
+		if (PipelineAsLegacy)
+		{
+			PipelineAsLegacy->Initialize(Queue->GetJobs()[CurrentPipelineIndex]);
+		}
+		else if (UMovieGraphPipeline* PipelineAsGraph = Cast<UMovieGraphPipeline>(ActiveMoviePipeline))
+		{
+			PipelineAsGraph->Initialize(Queue->GetJobs()[CurrentPipelineIndex], FMovieGraphInitConfig());
+		}
 		RemainingInitializationFrames = -1;
 	}
 	else
@@ -261,18 +283,31 @@ void UMoviePipelinePIEExecutor::OnTick()
 	{
 		if (RemainingInitializationFrames == 0)
 		{
-			if (CustomInitializationTime.IsSet())
-			{
-				ActiveMoviePipeline->SetInitializationTime(CustomInitializationTime.GetValue());
-			}
-
 			OnIndividualJobStartedImpl(Queue->GetJobs()[CurrentPipelineIndex]);
-			ActiveMoviePipeline->Initialize(Queue->GetJobs()[CurrentPipelineIndex]);
+			
+			UMoviePipeline* PipelineAsLegacy = Cast<UMoviePipeline>(ActiveMoviePipeline);
+			if (PipelineAsLegacy)
+			{
+				PipelineAsLegacy->Initialize(Queue->GetJobs()[CurrentPipelineIndex]);
+				if (CustomInitializationTime.IsSet())
+				{
+					PipelineAsLegacy->SetInitializationTime(CustomInitializationTime.GetValue());
+				}
+			}
+			else if (UMovieGraphPipeline* PipelineAsGraph = Cast<UMovieGraphPipeline>(ActiveMoviePipeline))
+			{
+				// PipelineAsGraph->Initialize(Queue->GetJobs()[CurrentPipelineIndex], FMovieGraphInitConfig());
+			}
 		}
 
 		RemainingInitializationFrames--;
 	}
-
+	
+	if (RemainingInitializationFrames <= 0)
+	{
+		Queue->GetJobs()[CurrentPipelineIndex]->SetStatusProgress(UMoviePipelineBlueprintLibrary::GetCompletionPercentage(Cast<UMoviePipeline>(ActiveMoviePipeline)));
+	}
+	
 	FText WindowTitle = GetWindowTitle();
 	TSharedPtr<SWindow> CustomWindow = WeakCustomWindow.Pin();
 	if (CustomWindow)
@@ -290,6 +325,9 @@ void UMoviePipelinePIEExecutor::OnPIEMoviePipelineFinished(FMoviePipelineOutputD
 
 	// Unsubscribe to the EndPIE event so we don't think the user canceled it.
 	FCoreDelegates::OnBeginFrame.RemoveAll(this);
+
+	// Reset progress for UI (regardless of success)
+	Queue->GetJobs()[CurrentPipelineIndex]->SetStatusProgress(0.0f);
 
 	if (ActiveMoviePipeline)
 	{
@@ -321,6 +359,7 @@ void UMoviePipelinePIEExecutor::OnPIEEnded(bool)
 	FEditorDelegates::EndPIE.RemoveAll(this);
 
 	CachedOutputDataParams = FMoviePipelineOutputData();
+	UMoviePipeline* PipelineAsLegacy = Cast<UMoviePipeline>(ActiveMoviePipeline);
 
 	// Only call Shutdown if the pipeline hasn't been finished.
 	if (ActiveMoviePipeline && ActiveMoviePipeline->GetPipelineState() != EMovieRenderPipelineState::Finished)
@@ -331,16 +370,15 @@ void UMoviePipelinePIEExecutor::OnPIEEnded(bool)
 		ActiveMoviePipeline->Shutdown(true);
 		UE_LOG(LogMovieRenderPipeline, Log, TEXT("MoviePipelinePIEExecutor: Stalling finished, pipeline has shut down."));
 	}
-	if (ActiveMoviePipeline)
+	if (PipelineAsLegacy)
 	{
 		// Cache this off so we can use it in DelayedFinishNotification, at which point ActiveMoviePipeline is null.
-		CachedOutputDataParams = ActiveMoviePipeline->GetOutputDataParams();
+		CachedOutputDataParams = PipelineAsLegacy->GetOutputDataParams();
 	}
 
 	// We need to null out this reference this frame, otherwise we try to hold onto a PIE
 	// object after PIE finishes which causes a GC leak.
 	ActiveMoviePipeline = nullptr;
-	// ToDo: bAnyJobHadFatalError
 
 	// Delay for one frame so that PIE can finish shut down. It's not a huge fan of us starting up on the same frame.
 	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateUObject(this, &UMoviePipelinePIEExecutor::DelayedFinishNotification));
@@ -373,8 +411,8 @@ void UMoviePipelinePIEExecutor::OnIndividualJobFinishedImpl(FMoviePipelineOutput
 {
 	// Broadcast to both Native and Python/BP
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	OnIndividualJobFinishedDelegateNative.Broadcast(InOutputData.Job, IsAnyJobErrored());
-	OnIndividualJobFinishedDelegate.Broadcast(InOutputData.Job, IsAnyJobErrored());
+	OnIndividualJobFinishedDelegateNative.Broadcast(InOutputData.Job, !IsAnyJobErrored());
+	OnIndividualJobFinishedDelegate.Broadcast(InOutputData.Job, !IsAnyJobErrored());
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	OnIndividualJobWorkFinishedDelegateNative.Broadcast(InOutputData);

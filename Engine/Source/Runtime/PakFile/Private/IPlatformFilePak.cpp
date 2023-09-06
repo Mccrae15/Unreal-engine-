@@ -2,6 +2,7 @@
 
 #include "IPlatformFilePak.h"
 #include "HAL/FileManager.h"
+#include "Math/GuardedInt.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/CommandLine.h"
 #include "Async/AsyncWork.h"
@@ -324,6 +325,49 @@ void FPakPlatformFile::GetFilenamesFromIostoreContainer(const FString& InContain
 	}
 }
 
+void FPakPlatformFile::ForeachPackageInIostoreWhile(TFunctionRef<bool(FName)> Predicate)
+{
+	FPakPlatformFile* PakPlatformFile = static_cast<FPakPlatformFile*>(FPlatformFileManager::Get().FindPlatformFile(FPakPlatformFile::GetTypeName()));
+	if (!PakPlatformFile || !PakPlatformFile->IoDispatcherFileBackend.IsValid())
+	{
+		return;
+	}
+	FScopeLock ScopedLock(&PakPlatformFile->PakListCritical);
+	for (const FPakListEntry& PakListEntry : PakPlatformFile->PakFiles)
+	{
+		TUniquePtr<FIoStoreReader> IoStoreReader(new FIoStoreReader());
+		FIoStatus Status = IoStoreReader->Initialize(*FPaths::ChangeExtension(PakListEntry.PakFile->PakFilename, TEXT("")), GetRegisteredEncryptionKeys().GetKeys());
+		if (Status.IsOk())
+		{
+			const FIoDirectoryIndexReader& DirectoryIndex = IoStoreReader->GetDirectoryIndexReader();
+
+			const bool Result = DirectoryIndex.IterateDirectoryIndex(
+				FIoDirectoryIndexHandle::RootDirectory(),
+				TEXT(""),
+				[Predicate](FString Filename, uint32) -> bool
+				{
+					const FString Ext = FPaths::GetExtension(Filename);
+					if (Ext != TEXT("umap") && Ext != TEXT("uasset"))
+					{
+						return true; // ignore non package files
+					}
+
+					FString PackageName;
+					if (FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageName))
+					{
+						return Invoke(Predicate, FName(*PackageName));
+					}
+
+					return true; // ignore not mapped packages
+				});
+			if (!Result)
+			{
+				return;
+			}
+		}
+	}
+}
+
 #if !defined(PLATFORM_BYPASS_PAK_PRECACHE)
 	#error "PLATFORM_BYPASS_PAK_PRECACHE must be defined."
 #endif
@@ -483,7 +527,11 @@ public:
 		while (!*(volatile bool*)&bCompleteAndCallbackCalled);
 	}
 
-	virtual void CancelImpl()
+	virtual void CancelImpl() override
+	{
+	}
+
+	virtual void ReleaseMemoryOwnershipImpl() override
 	{
 	}
 };
@@ -2671,7 +2719,6 @@ private: // below here we assume CachedFilesScopeLock until we get to the next s
 		if (Block.InRequestRefCount == 0 || bWasCanceled)
 		{
 			check(Block.Size > 0);
-			DEC_MEMORY_STAT_BY(STAT_AsyncFileMemory, Block.Size);
 			FMemory::Free(Memory);
 			UE_LOG(LogPakFile, VeryVerbose, TEXT("FPakReadRequest[%016llX, %016llX) Cancelled"), Block.OffsetAndPakIndex, Block.OffsetAndPakIndex + Block.Size);
 			ClearBlock(Block);
@@ -2682,7 +2729,6 @@ private: // below here we assume CachedFilesScopeLock until we get to the next s
 			check(Block.Memory && Block.Size);
 			BlockMemory += Block.Size;
 			check(BlockMemory > 0);
-			DEC_MEMORY_STAT_BY(STAT_AsyncFileMemory, Block.Size);
 			check(Block.Size > 0);
 			INC_MEMORY_STAT_BY(STAT_PakCacheMem, Block.Size);
 
@@ -2875,6 +2921,11 @@ public:
 		{
 			return false;
 		}
+		// Use NotifyRecursion to turn off maintenance functions like ClearOldBlockTasks that can BusyWait
+		// (and thereby reenter this class and take locks in the wrong order) while we are holding the lock.
+		++NotifyRecursion;
+		ON_SCOPE_EXIT{ --NotifyRecursion; };
+
 		uint16 PakIndex = *PakIndexPtr;
 		FPakData& Pak = CachedPakData[PakIndex];
 		check(Pak.Name == File && Pak.TotalSize == PakFileSize && Pak.Handle);
@@ -3358,6 +3409,11 @@ public:
 		}
 	}
 
+	virtual void ReleaseMemoryOwnershipImpl() override
+	{
+		DEC_MEMORY_STAT_BY(STAT_AsyncFileMemory, BytesToRead);
+	}
+
 	FCachedAsyncBlock& GetBlock()
 	{
 		check(bInternalRequest && BlockPtr);
@@ -3616,6 +3672,11 @@ public:
 				}
 			}
 		}
+	}
+
+	virtual void ReleaseMemoryOwnershipImpl() override
+	{
+		DEC_MEMORY_STAT_BY(STAT_AsyncFileMemory, BytesToRead);
 	}
 
 	void RequestIsComplete()
@@ -4067,13 +4128,14 @@ public:
 				FMemory::Free(Block.Raw);
 				Block.Raw = nullptr;
 				check(Block.RawSize > 0);
-				DEC_MEMORY_STAT_BY(STAT_AsyncFileMemory, Block.RawSize);
 				Block.RawSize = 0;
 			}
 		}
 		else
 		{
 			check(Block.Raw);
+			// Even though Raw memory has already been loaded, we're treating it as part of the AsyncFileMemory budget until it's processed.
+			INC_MEMORY_STAT_BY(STAT_AsyncFileMemory, Block.RawSize);
 			Block.ProcessedSize = FileEntry.CompressionBlockSize;
 			if (Block.BlockIndex == Blocks.Num() - 1)
 			{
@@ -5394,7 +5456,7 @@ FArchive* FPakFile::CreatePakReader(IPlatformFile* LowerLevel, const TCHAR* File
 			Decryptor = MakeUnique<FChunkCacheWorker>(MoveTemp(DecryptorReader), Filename);
 		}
 
-		if (!Decryptor.IsValid())
+		if (!Decryptor.IsValid() || !Decryptor->IsValid())
 		{
 			return nullptr;
 		}
@@ -5536,14 +5598,19 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 	bWillPruneDirectoryIndex = false;
 #endif
 
-	if (CachedTotalSize < (Info.IndexOffset + Info.IndexSize))
+	FGuardedInt64 IndexEndPosition = FGuardedInt64(Info.IndexOffset) + Info.IndexSize;
+	if (Info.IndexOffset < 0 || 
+		Info.IndexSize < 0 ||
+		IndexEndPosition.InvalidOrGreaterThan(CachedTotalSize) ||
+		IntFitsIn<int32>(Info.IndexSize) == false)
 	{
 		UE_LOG(LogPakFile, Fatal, TEXT("Corrupted index offset in pak file."));
 		return false;
 	}
+
 	TArray<uint8> PrimaryIndexData;
 	Reader.Seek(Info.IndexOffset);
-	PrimaryIndexData.SetNum(IntCastChecked<int32>(Info.IndexSize));
+	PrimaryIndexData.SetNum((int32)(Info.IndexSize));
 	{
 		SCOPED_BOOT_TIMING("PakFile_LoadPrimaryIndex");
 		Reader.Serialize(PrimaryIndexData.GetData(), Info.IndexSize);
@@ -5557,9 +5624,9 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 			UE_LOG(LogPakFile, Log, TEXT("Corrupt pak PrimaryIndex detected!"));
 			UE_LOG(LogPakFile, Log, TEXT(" Filename: %s"), *PakFilename);
 			UE_LOG(LogPakFile, Log, TEXT(" Encrypted: %d"), Info.bEncryptedIndex);
-			UE_LOG(LogPakFile, Log, TEXT(" Total Size: %d"), Reader.TotalSize());
-			UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %d"), Info.IndexOffset);
-			UE_LOG(LogPakFile, Log, TEXT(" Index Size: %d"), Info.IndexSize);
+			UE_LOG(LogPakFile, Log, TEXT(" Total Size: %lld"), Reader.TotalSize());
+			UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %lld"), Info.IndexOffset);
+			UE_LOG(LogPakFile, Log, TEXT(" Index Size: %lld"), Info.IndexSize);
 			UE_LOG(LogPakFile, Log, TEXT(" Stored Index Hash: %s"), *Info.IndexHash.ToString());
 			UE_LOG(LogPakFile, Log, TEXT(" Computed Index Hash: %s"), *ComputedHash.ToString());
 			return false;
@@ -5571,8 +5638,22 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 	// Read the scalar data (mount point, numentries, etc) and all entries.
 	NumEntries = 0;
 	PrimaryIndexReader << MountPoint;
+	// We are just deserializing a string, which could get however long. Since we know it's a path
+	// and paths are bound to file system rules, we know it can't get absurdly long (e.g. windows is _at best_ 32k)
+	// we just sanity check it to prevent operating on massive buffers and risking overflows.
+	if (MountPoint.Len() > 65535)
+	{
+		UE_LOG(LogPakFile, Error, TEXT("Corrupt pak index data: MountPoint path is longer than 65k"));
+		return false;
+	}
+
 	MakeDirectoryFromPath(MountPoint);
 	PrimaryIndexReader << NumEntries;
+	if (NumEntries < 0)
+	{
+		UE_LOG(LogPakFile, Error, TEXT("Corrupt pak index data: Negative entries count in pak file."));
+		return false;
+	}
 	PrimaryIndexReader << PathHashSeed;
 
 	bool bReaderHasPathHashIndex = false;
@@ -5667,18 +5748,22 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 	FMemoryReader PathHashIndexReader(PathHashIndexData);
 	if (bWillUsePathHashIndex)
 	{
-		if (PathHashIndexOffset < 0 || CachedTotalSize < (PathHashIndexOffset + PathHashIndexSize))
+		FGuardedInt64 PathHashIndexEndPosition = FGuardedInt64(PathHashIndexOffset) + PathHashIndexSize;
+		if (PathHashIndexOffset < 0 || 
+			PathHashIndexSize < 0 ||
+			PathHashIndexEndPosition.InvalidOrGreaterThan(CachedTotalSize) || 
+			IntFitsIn<int32>(PathHashIndexSize) == false)
 		{
 			// Should not be possible for these values (which came from the PrimaryIndex) to be invalid, since we verified the index hash of the PrimaryIndex
 			UE_LOG(LogPakFile, Log, TEXT("Corrupt pak PrimaryIndex detected!"));
 			UE_LOG(LogPakFile, Log, TEXT(" Filename: %s"), *PakFilename);
-			UE_LOG(LogPakFile, Log, TEXT(" Total Size: %d"), Reader.TotalSize());
-			UE_LOG(LogPakFile, Log, TEXT(" PathHashIndexOffset : %d"), PathHashIndexOffset);
-			UE_LOG(LogPakFile, Log, TEXT(" PathHashIndexSize: %d"), PathHashIndexSize);
+			UE_LOG(LogPakFile, Log, TEXT(" Total Size: %lld"), Reader.TotalSize());
+			UE_LOG(LogPakFile, Log, TEXT(" PathHashIndexOffset : %lld"), PathHashIndexOffset);
+			UE_LOG(LogPakFile, Log, TEXT(" PathHashIndexSize: %lld"), PathHashIndexSize);
 			return false;
 		}
 		Reader.Seek(PathHashIndexOffset);
-		PathHashIndexData.SetNum(IntCastChecked<int32>(PathHashIndexSize));
+		PathHashIndexData.SetNum((int32)(PathHashIndexSize));
 		{
 			SCOPED_BOOT_TIMING("PakFile_LoadPathHashIndex");
 			Reader.Serialize(PathHashIndexData.GetData(), PathHashIndexSize);
@@ -5691,9 +5776,9 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 				UE_LOG(LogPakFile, Log, TEXT("Corrupt pak PathHashIndex detected!"));
 				UE_LOG(LogPakFile, Log, TEXT(" Filename: %s"), *PakFilename);
 				UE_LOG(LogPakFile, Log, TEXT(" Encrypted: %d"), Info.bEncryptedIndex);
-				UE_LOG(LogPakFile, Log, TEXT(" Total Size: %d"), Reader.TotalSize());
-				UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %d"), FullDirectoryIndexOffset);
-				UE_LOG(LogPakFile, Log, TEXT(" Index Size: %d"), FullDirectoryIndexSize);
+				UE_LOG(LogPakFile, Log, TEXT(" Total Size: %lld"), Reader.TotalSize());
+				UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %lld"), FullDirectoryIndexOffset);
+				UE_LOG(LogPakFile, Log, TEXT(" Index Size: %lld"), FullDirectoryIndexSize);
 				UE_LOG(LogPakFile, Log, TEXT(" Stored Index Hash: %s"), *PathHashIndexHash.ToString());
 				UE_LOG(LogPakFile, Log, TEXT(" Computed Index Hash: %s"), *ComputedHash.ToString());
 				return false;
@@ -5722,20 +5807,23 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 	}
 	else
 	{
-		if (CachedTotalSize < (FullDirectoryIndexOffset  + FullDirectoryIndexSize) ||
-			FullDirectoryIndexOffset  < 0)
+		FGuardedInt64 FullDirectoryIndexEndPosition = FGuardedInt64(FullDirectoryIndexOffset) + FullDirectoryIndexSize;
+		if (FullDirectoryIndexOffset  < 0 || 
+			FullDirectoryIndexSize < 0 ||
+			FullDirectoryIndexEndPosition.InvalidOrGreaterThan(CachedTotalSize) || 
+			IntFitsIn<int32>(FullDirectoryIndexSize) == false)
 		{
 			// Should not be possible for these values (which came from the PrimaryIndex) to be invalid, since we verified the index hash of the PrimaryIndex
 			UE_LOG(LogPakFile, Log, TEXT("Corrupt pak PrimaryIndex detected!"));
 			UE_LOG(LogPakFile, Log, TEXT(" Filename: %s"), *PakFilename);
-			UE_LOG(LogPakFile, Log, TEXT(" Total Size: %d"), Reader.TotalSize());
-			UE_LOG(LogPakFile, Log, TEXT(" FullDirectoryIndexOffset : %d"), FullDirectoryIndexOffset );
-			UE_LOG(LogPakFile, Log, TEXT(" FullDirectoryIndexSize: %d"), FullDirectoryIndexSize);
+			UE_LOG(LogPakFile, Log, TEXT(" Total Size: %lld"), Reader.TotalSize());
+			UE_LOG(LogPakFile, Log, TEXT(" FullDirectoryIndexOffset : %lld"), FullDirectoryIndexOffset );
+			UE_LOG(LogPakFile, Log, TEXT(" FullDirectoryIndexSize: %lld"), FullDirectoryIndexSize);
 			return false;
 		}
 		TArray<uint8> FullDirectoryIndexData;
 		Reader.Seek(FullDirectoryIndexOffset );
-		FullDirectoryIndexData.SetNum(IntCastChecked<int32>(FullDirectoryIndexSize));
+		FullDirectoryIndexData.SetNum((int32)(FullDirectoryIndexSize));
 		{
 			SCOPED_BOOT_TIMING("PakFile_LoadDirectoryIndex");
 			Reader.Serialize(FullDirectoryIndexData.GetData(), FullDirectoryIndexSize);
@@ -5748,9 +5836,9 @@ bool FPakFile::LoadIndexInternal(FArchive& Reader)
 				UE_LOG(LogPakFile, Log, TEXT("Corrupt pak FullDirectoryIndex detected!"));
 				UE_LOG(LogPakFile, Log, TEXT(" Filename: %s"), *PakFilename);
 				UE_LOG(LogPakFile, Log, TEXT(" Encrypted: %d"), Info.bEncryptedIndex);
-				UE_LOG(LogPakFile, Log, TEXT(" Total Size: %d"), Reader.TotalSize());
-				UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %d"), FullDirectoryIndexOffset);
-				UE_LOG(LogPakFile, Log, TEXT(" Index Size: %d"), FullDirectoryIndexSize);
+				UE_LOG(LogPakFile, Log, TEXT(" Total Size: %lld"), Reader.TotalSize());
+				UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %lld"), FullDirectoryIndexOffset);
+				UE_LOG(LogPakFile, Log, TEXT(" Index Size: %lld"), FullDirectoryIndexSize);
 				UE_LOG(LogPakFile, Log, TEXT(" Stored Index Hash: %s"), *FullDirectoryIndexHash.ToString());
 				UE_LOG(LogPakFile, Log, TEXT(" Computed Index Hash: %s"), *ComputedHash.ToString());
 				return false;
@@ -5801,16 +5889,20 @@ bool FPakFile::LoadLegacyIndex(FArchive& Reader)
 #endif
 
 	// Load index into memory first.
-
-	TArray<uint8> IndexData;
-	if (CachedTotalSize < (Info.IndexOffset + Info.IndexSize))
+	FGuardedInt64 IndexEndPosition = FGuardedInt64(Info.IndexOffset) + Info.IndexSize;
+	if (Info.IndexSize < 0 ||
+		Info.IndexOffset < 0 ||
+		IndexEndPosition.InvalidOrGreaterThan(CachedTotalSize) ||
+		IntFitsIn<int32>(Info.IndexSize) == false)
 	{
-		UE_LOG(LogPakFile, Fatal, TEXT("Corrupted index offset in pak file."));
+		UE_LOG(LogPakFile, Fatal, TEXT("Corrupted index offset/size in pak file."));
 		return false;
 	}
 
+	TArray<uint8> IndexData;
+	IndexData.SetNum((int32)(Info.IndexSize));
+
 	Reader.Seek(Info.IndexOffset);
-	IndexData.SetNum(IntCastChecked<int32>(Info.IndexSize));
 	Reader.Serialize(IndexData.GetData(), Info.IndexSize);
 
 	FSHAHash ComputedHash;
@@ -5819,9 +5911,9 @@ bool FPakFile::LoadLegacyIndex(FArchive& Reader)
 		UE_LOG(LogPakFile, Log, TEXT("Corrupt pak index detected!"));
 		UE_LOG(LogPakFile, Log, TEXT(" Filename: %s"), *PakFilename);
 		UE_LOG(LogPakFile, Log, TEXT(" Encrypted: %d"), Info.bEncryptedIndex);
-		UE_LOG(LogPakFile, Log, TEXT(" Total Size: %d"), Reader.TotalSize());
-		UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %d"), Info.IndexOffset);
-		UE_LOG(LogPakFile, Log, TEXT(" Index Size: %d"), Info.IndexSize);
+		UE_LOG(LogPakFile, Log, TEXT(" Total Size: %lld"), Reader.TotalSize());
+		UE_LOG(LogPakFile, Log, TEXT(" Index Offset: %lld"), Info.IndexOffset);
+		UE_LOG(LogPakFile, Log, TEXT(" Index Size: %lld"), Info.IndexSize);
 		UE_LOG(LogPakFile, Log, TEXT(" Stored Index Hash: %s"), *Info.IndexHash.ToString());
 		UE_LOG(LogPakFile, Log, TEXT(" Computed Index Hash: %s"), *ComputedHash.ToString());
 		return false;
@@ -5833,7 +5925,22 @@ bool FPakFile::LoadLegacyIndex(FArchive& Reader)
 	// Read the default mount point and all entries.
 	NumEntries = 0;
 	IndexReader << MountPoint;
+
+	// We are just deserializing a string, which could get however long. Since we know it's a path
+	// and paths are bound to file system rules, we know it can't get absurdly long (e.g. windows is _at best_ 32k)
+	// we just sanity check it to prevent operating on massive buffers and risking overflows.
+	if (MountPoint.Len() > 65535)
+	{
+		UE_LOG(LogPakFile, Error, TEXT("Corrupt pak index data: MountPoint path is longer than 65k"));
+		return false;
+	}
 	IndexReader << NumEntries;
+
+	if (NumEntries < 0)
+	{
+		UE_LOG(LogPakFile, Error, TEXT("Corrupt pak index data: NumEntries is negative"));
+		return false;
+	}
 
 	MakeDirectoryFromPath(MountPoint);
 
@@ -7006,7 +7113,7 @@ void FPakFile::ValidateDirectorySearch(const TSet<FString>& FullFoundFiles, cons
 
 bool FPakFile::RecreatePakReaders(IPlatformFile* LowerLevel)
 {
-	FScopeLock ScopedLock(&CriticalSection);
+	FScopeLock ScopedLock(&ReadersCriticalSection);
 
 	if (CurrentlyUsedReaders > 0)
 	{
@@ -7043,7 +7150,7 @@ FSharedPakReader FPakFile::GetSharedReader(IPlatformFile* LowerLevel)
 	LLM_SCOPE_BYTAG(PakSharedReaders);
 	FArchive* PakReader = nullptr;
 	{
-		FScopeLock ScopedLock(&CriticalSection);
+		FScopeLock ScopedLock(&ReadersCriticalSection);
 		if (Readers.Num())
 		{
 			FArchiveAndLastAccessTime Reader = Readers.Pop();
@@ -7067,29 +7174,35 @@ FSharedPakReader FPakFile::GetSharedReader(IPlatformFile* LowerLevel)
 
 void FPakFile::ReturnSharedReader(FArchive* Archive)
 {
-	FScopeLock ScopedLock(&CriticalSection);
+	FScopeLock ScopedLock(&ReadersCriticalSection);
 	--CurrentlyUsedReaders;
 	Readers.Push(FArchiveAndLastAccessTime{ TUniquePtr<FArchive>{Archive }, FPlatformTime::Seconds()});
 }
 
 void FPakFile::ReleaseOldReaders(double MaxAgeSeconds)
 {
-	FScopeLock ScopedLock(&CriticalSection);
-	double SearchTime = FPlatformTime::Seconds() - MaxAgeSeconds;
-	for (int32 i = Readers.Num() - 1; i >= 0; --i)
+	if (ReadersCriticalSection.TryLock())
 	{
-		const FArchiveAndLastAccessTime& Reader = Readers[i];
-		if (Reader.LastAccessTime <= SearchTime)
+		ON_SCOPE_EXIT
 		{
-			// Remove this and all readers older than it (pushed before it)
-			Readers.RemoveAt(0, i + 1);
-			break;
+			ReadersCriticalSection.Unlock();
+		};
+		double SearchTime = FPlatformTime::Seconds() - MaxAgeSeconds;
+		for (int32 i = Readers.Num() - 1; i >= 0; --i)
+		{
+			const FArchiveAndLastAccessTime& Reader = Readers[i];
+			if (Reader.LastAccessTime <= SearchTime)
+			{
+				// Remove this and all readers older than it (pushed before it)
+				Readers.RemoveAt(0, i + 1);
+				break;
+			}
 		}
-	}
 
-	if (Readers.Num() == 0 && CurrentlyUsedReaders == 0)
-	{
-		Decryptor.Reset();
+		if (Readers.Num() == 0 && CurrentlyUsedReaders == 0)
+		{
+			Decryptor.Reset();
+		}
 	}
 }
 
@@ -7280,6 +7393,8 @@ FPakPlatformFile::FPakPlatformFile()
 
 FPakPlatformFile::~FPakPlatformFile()
 {
+	UE_LOG(LogPakFile, Log, TEXT("Destroying PakPlatformFile"));
+
 	FTSTicker::GetCoreTicker().RemoveTicker(RetireReadersHandle);
 
 	FCoreDelegates::GetRegisterEncryptionKeyMulticastDelegate().RemoveAll(this);
@@ -7435,6 +7550,8 @@ static bool PakPlatformFile_IsForceUseIoStore(const TCHAR* CmdLine)
 
 bool FPakPlatformFile::Initialize(IPlatformFile* Inner, const TCHAR* CmdLine)
 {
+	UE_LOG(LogPakFile, Log, TEXT("Initializing PakPlatformFile"));
+
 	LLM_SCOPE(ELLMTag::FileSystem);
 	SCOPED_BOOT_TIMING("FPakPlatformFile::Initialize");
 	// Inner is required.
@@ -7592,9 +7709,9 @@ void FPakPlatformFile::ReleaseOldReaders()
 		return;
 	}
 
-	FScopeLock ScopedLock(&PakListCritical);
-
-	for (FPakListEntry& Entry : PakFiles)
+	TArray<FPakListEntry> LocalPaks;
+	GetMountedPaks(LocalPaks);
+	for (FPakListEntry& Entry : LocalPaks)
 	{
 		Entry.PakFile->ReleaseOldReaders(GPakReaderReleaseDelay);
 	}
@@ -7822,7 +7939,12 @@ bool FPakPlatformFile::Mount(const TCHAR* InPakFilename, uint32 PakOrder, const 
 			double OnPakFileMounted2Time = 0.0;
 			{
 				FScopedDurationTimer Timer(OnPakFileMounted2Time);
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				FCoreDelegates::OnPakFileMounted2.Broadcast(*Pak);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+				FCoreDelegates::GetOnPakFileMounted2().Broadcast(*Pak);
 			}
 
 			UE_LOG(LogPakFile, Display, TEXT("Mounted Pak file '%s', mount point: '%s'"), InPakFilename, *Pak->GetMountPoint());
@@ -8200,7 +8322,10 @@ IFileHandle* FPakPlatformFile::OpenRead(const TCHAR* Filename, bool bAllowWrite)
 
 		if (Result)
 		{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			FCoreDelegates::OnFileOpenedForReadFromPakFile.Broadcast(*PakFile->GetFilename(), Filename);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			FCoreDelegates::GetOnFileOpenedForReadFromPakFile().Broadcast(*PakFile->GetFilename(), Filename);
 		}
 	}
 	else

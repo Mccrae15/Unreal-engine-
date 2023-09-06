@@ -66,6 +66,27 @@ enum class EMediaIOAutoDetectableTimecodeFormat : uint8
 	Auto = 255,
 };
 
+/**
+ * Which interlace field should be set first in the buffer.
+ */
+UENUM()
+enum class EMediaIOInterlaceFieldOrder : uint8
+{
+	TopFieldFirst,
+	BottomFieldFirst
+};
+
+/**
+ * Various sample evaluation types availalbe in MediaIO.
+ */
+UENUM()
+enum class EMediaIOSampleEvaluationType : uint8
+{
+	Latest,
+	PlatformTime,
+	Timecode,
+};
+
 namespace UE::MediaIO
 {
 	static EMediaIOAutoDetectableTimecodeFormat ToAutoDetectableTimecodeFormat(EMediaIOTimecodeFormat TimecodeFormat)

@@ -995,3 +995,22 @@ void SDockTab::UpdateActivationTime()
 		LastActivationTime = FSlateApplication::Get().GetCurrentTime();
 	}
 }
+
+
+void SDockTab::SetParentDockTabStackTabWellHidden(bool bIsTabWellHidden)
+{
+	if ( const TSharedPtr<SDockingTabStack> ParentStack = GetParentDockTabStack() )
+	{
+		if ( bIsTabWellHidden )
+		{
+			if ( ParentStack->CanHideTabWell() )
+			{
+				ParentStack->SetTabWellHidden(true);				
+			}
+		}
+		else
+		{
+			ParentStack->SetTabWellHidden(false);
+		}
+	}
+}

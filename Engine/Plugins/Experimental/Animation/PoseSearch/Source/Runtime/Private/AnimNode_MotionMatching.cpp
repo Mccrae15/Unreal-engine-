@@ -6,10 +6,9 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimRootMotionProvider.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimStats.h"
 #include "Animation/BlendSpace.h"
-#include "Animation/MotionTrajectoryTypes.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "DrawDebugHelpers.h"
 #include "PoseSearch/AnimNode_PoseSearchHistoryCollector.h"
 #include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearch/PoseSearchDerivedData.h"
@@ -19,6 +18,13 @@
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_MotionMatching)
 
 #define LOCTEXT_NAMESPACE "AnimNode_MotionMatching"
+
+#if ENABLE_ANIM_DEBUG
+static TAutoConsoleVariable<int32> CVarAnimNodeMotionMatchingDrawQuery(TEXT("a.AnimNode.MotionMatching.DebugDrawQuery"), 0, TEXT("Draw input query"));
+static TAutoConsoleVariable<int32> CVarAnimNodeMotionMatchingDrawCurResult(TEXT("a.AnimNode.MotionMatching.DebugDrawCurResult"), 0, TEXT("Draw current result"));
+static TAutoConsoleVariable<int32> CVarAnimNodeMotionMatchingDrawInfo(TEXT("a.AnimNode.MotionMatching.DebugDrawInfo"), 0, TEXT("Draw info like current databases to search"));
+static TAutoConsoleVariable<float> CVarAnimNodeMotionMatchingDrawInfoHeight(TEXT("a.AnimNode.MotionMatching.DebugDrawInfoHeight"), 50.f, TEXT("Vertical offset for DebugDrawInfo"));
+#endif
 
 /////////////////////////////////////////////////////
 // FAnimNode_MotionMatching
@@ -33,36 +39,57 @@ void FAnimNode_MotionMatching::Initialize_AnyThread(const FAnimationInitializeCo
 
 	Source.SetLinkNode(&BlendStackNode);
 	Source.Initialize(Context);
+
+	MotionMatchingState.UpdateRootBoneControl(Context.AnimInstanceProxy, 0.f);
 }
 
 void FAnimNode_MotionMatching::Evaluate_AnyThread(FPoseContext& Output)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread);
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(MotionMatching, !IsInGameThread());
 
 	Source.Evaluate(Output);
 
-#if WITH_EDITORONLY_DATA
-	bWasEvaluated = true;
-#endif
-
-#if UE_POSE_SEARCH_TRACE_ENABLED
-	MotionMatchingState.RootMotionTransformDelta = FTransform::Identity;
-
 	const UE::Anim::IAnimRootMotionProvider* RootMotionProvider = UE::Anim::IAnimRootMotionProvider::Get();
-
-	if (ensureMsgf(RootMotionProvider, TEXT("Could not get Root Motion Provider.")))
+	FTransform RootMotionTransformDelta;
+	if (RootMotionProvider && RootMotionProvider->HasRootMotion(Output.CustomAttributes))
 	{
-		if (RootMotionProvider->HasRootMotion(Output.CustomAttributes))
+		RootMotionProvider->ExtractRootMotion(Output.CustomAttributes, RootMotionTransformDelta);
+	}
+	else
+	{
+		RootMotionTransformDelta = FTransform::Identity;
+		RootMotionProvider = nullptr;
+	}
+
+	// applying MotionMatchingState.ComponentDeltaYaw (considered as root bone delta yaw) to the root bone and the root motion delta transform
+	if (!FMath::IsNearlyZero(MotionMatchingState.ComponentDeltaYaw))
+	{
+		const FQuat RootBoneDelta(FRotator(0.f, MotionMatchingState.ComponentDeltaYaw, 0.f));
+		FCompactPoseBoneIndex RootBoneIndex(RootBoneIndexType);
+		Output.Pose[RootBoneIndex].SetRotation(Output.Pose[RootBoneIndex].GetRotation() * RootBoneDelta);
+		Output.Pose[RootBoneIndex].NormalizeRotation();
+
+		RootMotionTransformDelta.SetTranslation(RootBoneDelta.RotateVector(RootMotionTransformDelta.GetTranslation()));
+
+		if (RootMotionProvider)
 		{
-			RootMotionProvider->ExtractRootMotion(Output.CustomAttributes, MotionMatchingState.RootMotionTransformDelta);
+			RootMotionProvider->OverrideRootMotion(RootMotionTransformDelta, Output.CustomAttributes);
 		}
 	}
-#endif
+
+	MotionMatchingState.AnimationDeltaYaw = FRotator(RootMotionTransformDelta.GetRotation()).Yaw;
+
+#if UE_POSE_SEARCH_TRACE_ENABLED
+	MotionMatchingState.RootMotionTransformDelta = RootMotionTransformDelta;
+#endif //UE_POSE_SEARCH_TRACE_ENABLED
 }
 
 void FAnimNode_MotionMatching::UpdateAssetPlayer(const FAnimationUpdateContext& Context)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(UpdateAssetPlayer);
+
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_PoseSearch_UpdateAssetPlayer);
 
 	using namespace UE::PoseSearch;
 
@@ -73,21 +100,20 @@ void FAnimNode_MotionMatching::UpdateAssetPlayer(const FAnimationUpdateContext& 
 		UpdateCounter.HasEverBeenUpdated() &&
 		!UpdateCounter.WasSynchronizedCounter(Context.AnimInstanceProxy->GetUpdateCounter());
 
+#if WITH_EDITOR
+	if (!FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(MotionMatchingState.CurrentSearchResult.Database.Get(), ERequestAsyncBuildFlag::ContinueRequest))
+	{
+		bNeedsReset = true;
+	}
+#endif // WITH_EDITOR
+
 	// If we just became relevant and haven't been initialized yet, then reset motion matching state, otherwise update the asset time using the player node.
 	if (bNeedsReset)
 	{
-		MotionMatchingState.Reset();
+		MotionMatchingState.Reset(Context.AnimInstanceProxy->GetComponentTransform());
 	}
 	else
 	{
-#if WITH_EDITOR
-		// in case we're still indexing MotionMatchingState.CurrentSearchResult.Database we Reset the MotionMatchingState
-		if (!FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(MotionMatchingState.CurrentSearchResult.Database.Get(), ERequestAsyncBuildFlag::ContinueRequest))
-		{
-			MotionMatchingState.Reset();
-		}
-#endif // WITH_EDITOR
-
 		// We adjust the motion matching state asset time to the current player node's asset time. This is done 
 		// because the player node may have ticked more or less time than we expected due to variable dt or the 
 		// dynamic playback rate adjustment and as such the motion matching state does not update by itself
@@ -95,128 +121,155 @@ void FAnimNode_MotionMatching::UpdateAssetPlayer(const FAnimationUpdateContext& 
 	}
 	UpdateCounter.SynchronizeWith(Context.AnimInstanceProxy->GetUpdateCounter());
 
+	// If the Database property hasn't been overridden, set it as the only database to search.
+	if (!bOverrideDatabaseInput && Database)
+	{
+		DatabasesToSearch.Reset(1);
+		DatabasesToSearch.Add(Database);
+	}
+
+#if ENABLE_ANIM_DEBUG
+	if (CVarAnimNodeMotionMatchingDrawInfo.GetValueOnAnyThread() > 0)
+	{
+		FString DebugInfo = FString::Printf(TEXT("bForceInterruptNextUpdate(%d)\n"), bForceInterruptNextUpdate);
+		DebugInfo += FString::Printf(TEXT("Current Database(%s)\n"), *GetNameSafe(MotionMatchingState.CurrentSearchResult.Database.Get()));
+		DebugInfo += FString::Printf(TEXT("Databases to search:\n"));
+		for (const UPoseSearchDatabase* DatabaseToSearch : DatabasesToSearch)
+		{
+			DebugInfo += FString::Printf(TEXT("  %s\n"), *GetNameSafe(DatabaseToSearch));
+		}
+		Context.AnimInstanceProxy->AnimDrawDebugInWorldMessage(DebugInfo, FVector::UpVector * CVarAnimNodeMotionMatchingDrawInfoHeight.GetValueOnAnyThread(), FColor::Yellow, 1.f /*TextScale*/);
+	}
+#endif // ENABLE_ANIM_DEBUG
+
 	// Execute core motion matching algorithm
-	UpdateMotionMatchingState(
+	UPoseSearchLibrary::UpdateMotionMatchingState(
 		Context,
-		Searchable,
-		&ActiveTagsContainer,
+		DatabasesToSearch,
 		Trajectory,
-		Settings,
+		TrajectorySpeedMultiplier,
+		BlendTime,
+		MaxActiveBlends,
+		PoseJumpThresholdTime,
+		PoseReselectHistory,
+		SearchThrottleTime,
+		PlayRate,
 		MotionMatchingState,
-		bForceInterrupt
+		YawFromAnimationBlendRate,
+		YawFromAnimationTrajectoryBlendTime,
+		bForceInterruptNextUpdate,
+		bShouldSearch
+		#if ENABLE_ANIM_DEBUG
+		, CVarAnimNodeMotionMatchingDrawQuery.GetValueOnAnyThread() > 0
+		, CVarAnimNodeMotionMatchingDrawCurResult.GetValueOnAnyThread() > 0
+		#endif // ENABLE_ANIM_DEBUG
 	);
 
 	// If a new pose is requested, blend into the new asset via BlendStackNode
-	const FPoseSearchIndexAsset* SearchIndexAsset = MotionMatchingState.CurrentSearchResult.GetSearchIndexAsset();
-	if (SearchIndexAsset)
+	if (MotionMatchingState.bJumpedToPose)
 	{
-		const UPoseSearchDatabase* Database = MotionMatchingState.CurrentSearchResult.Database.Get();
-		if (Database && Database->Schema && EnumHasAnyFlags(MotionMatchingState.Flags, EMotionMatchingFlags::JumpedToPose))
+		const FSearchIndexAsset* SearchIndexAsset = MotionMatchingState.CurrentSearchResult.GetSearchIndexAsset();
+		const UPoseSearchDatabase* CurrentResultDatabase = MotionMatchingState.CurrentSearchResult.Database.Get();
+		if (SearchIndexAsset && CurrentResultDatabase && CurrentResultDatabase->Schema)
 		{
-			if (const FPoseSearchDatabaseAnimationAssetBase* DatabaseAsset = Database->GetAnimationAssetBase(*SearchIndexAsset))
+			if (const FPoseSearchDatabaseAnimationAssetBase* DatabaseAsset = CurrentResultDatabase->GetAnimationAssetBase(*SearchIndexAsset))
 			{
-				BlendStackNode.BlendTo(SearchIndexAsset->Type, DatabaseAsset->GetAnimationAsset(), MotionMatchingState.CurrentSearchResult.AssetTime,
-					DatabaseAsset->IsLooping(), SearchIndexAsset->bMirrored, Database->Schema->MirrorDataTable.Get(),
-					Settings.MaxActiveBlends, Settings.BlendTime, Settings.BlendProfile, Settings.BlendOption, SearchIndexAsset->BlendParameters, MotionMatchingState.WantedPlayRate);
+				// root bone blending needs to be immediate if MM node controls the offset between mesh component and root bone
+				const float RootBoneBlendTime = YawFromAnimationBlendRate < 0.f ? BlendTime : 0.f;
+				BlendStackNode.BlendTo(DatabaseAsset->GetAnimationAsset(), MotionMatchingState.CurrentSearchResult.AssetTime,
+					DatabaseAsset->IsLooping(), SearchIndexAsset->bMirrored, CurrentResultDatabase->Schema->MirrorDataTable.Get(),
+					MaxActiveBlends, BlendTime, RootBoneBlendTime, BlendProfile, BlendOption, SearchIndexAsset->BlendParameters, MotionMatchingState.WantedPlayRate);
 			}
-
 		}
 	}
 	BlendStackNode.UpdatePlayRate(MotionMatchingState.WantedPlayRate);
 
 	Source.Update(Context);
-}
 
-bool FAnimNode_MotionMatching::HasPreUpdate() const
-{
-#if WITH_EDITORONLY_DATA
-	return true;
-#else
-	return false;
-#endif
-}
-
-void FAnimNode_MotionMatching::PreUpdate(const UAnimInstance* InAnimInstance)
-{
-#if WITH_EDITORONLY_DATA
-	using namespace UE::PoseSearch;
-
-	if (bWasEvaluated && bDebugDraw)
-	{
-		USkeletalMeshComponent* SkeletalMeshComponent = InAnimInstance->GetSkelMeshComponent();
-		check(SkeletalMeshComponent);
-
-		const UE::PoseSearch::FSearchResult& CurResult = MotionMatchingState.CurrentSearchResult;
-
-#if WITH_EDITOR
-		// in case we're still indexing MotionMatchingState.CurrentSearchResult.Database we Reset the MotionMatchingState
-		if (!FAsyncPoseSearchDatabasesManagement::RequestAsyncBuildIndex(CurResult.Database.Get(), ERequestAsyncBuildFlag::ContinueRequest))
-		{
-		}
-		else
-#endif // WITH_EDITOR
-		{
-			UE::PoseSearch::FDebugDrawParams DrawParams;
-			DrawParams.RootTransform = SkeletalMeshComponent->GetComponentTransform();
-			DrawParams.Database = CurResult.Database.Get();
-			DrawParams.World = SkeletalMeshComponent->GetWorld();
-			DrawParams.DefaultLifeTime = 0.0f;
-
-			if (DrawParams.CanDraw())
-			{
-				if (bDebugDrawMatch)
-				{
-					DrawFeatureVector(DrawParams, CurResult.PoseIdx);
-				}
-
-				if (bDebugDrawQuery)
-				{
-					EnumAddFlags(DrawParams.Flags, EDebugDrawFlags::DrawQuery);
-					DrawFeatureVector(DrawParams, CurResult.ComposedQuery.GetValues());
-				}
-
-				if (DrawParams.Database->PoseSearchMode == EPoseSearchMode::PCAKDTree_Compare)
-				{
-					FDebugFloatHistory& C = MotionMatchingState.SearchCostHistoryContinuing;
-					FDebugFloatHistory& B = MotionMatchingState.SearchCostHistoryBruteForce;
-					FDebugFloatHistory& K = MotionMatchingState.SearchCostHistoryKDTree;
-
-					C.AddSample(CurResult.ContinuingPoseCost.IsValid() ? CurResult.ContinuingPoseCost.GetTotalCost() : C.MaxValue);
-					B.AddSample(CurResult.BruteForcePoseCost.IsValid() ? CurResult.BruteForcePoseCost.GetTotalCost() : B.MaxValue);
-					K.AddSample(CurResult.PoseCost.IsValid() ? CurResult.PoseCost.GetTotalCost() : K.MaxValue);
-
-					// making SearchCostHistoryKDTree and SearchCostHistoryBruteForce min max consistent
-					const float MinValue = FMath::Min(C.MinValue, FMath::Min(B.MinValue, K.MinValue));
-					const float MaxValue = FMath::Max(C.MaxValue, FMath::Max(B.MaxValue, K.MaxValue));
-
-					C.MinValue = MinValue;
-					C.MaxValue = MaxValue;
-
-					B.MinValue = MinValue;
-					B.MaxValue = MaxValue;
-
-					K.MinValue = MinValue;
-					K.MaxValue = MaxValue;
-
-					const FVector2D DrawSize(150.f, 100.f);
-					const FTransform OffsetTransform(FRotator(0.f, 0.f, 0.f), FVector(-50.f, -75.f, 100.f));
-					const FTransform DrawTransform = OffsetTransform * DrawParams.RootTransform;
-
-					DrawDebugFloatHistory(*DrawParams.World, K, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(255, 192, 203, 160)); // pink
-					DrawDebugFloatHistory(*DrawParams.World, B, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(0, 0, 255, 160)); // blue
-					DrawDebugFloatHistory(*DrawParams.World, C, OffsetTransform * DrawParams.RootTransform, DrawSize, FColor(160, 160, 160, 160)); // gray
-				}
-			}
-		}
-	}
-
-	bWasEvaluated = false;
-#endif
+	bForceInterruptNextUpdate = false;
 }
 
 void FAnimNode_MotionMatching::GatherDebugData(FNodeDebugData& DebugData)
 {
 	Source.GatherDebugData(DebugData);
+}
+
+void FAnimNode_MotionMatching::SetDatabaseToSearch(UPoseSearchDatabase* InDatabase, bool bForceInterruptIfNew)
+{
+	if (DatabasesToSearch.Num() == 1 && DatabasesToSearch[0] == InDatabase)
+	{
+		UE_LOG(LogPoseSearch, Verbose, TEXT("FAnimNode_MotionMatching::SetDatabaseToSearch - Database(%s) is already set."), *GetNameSafe(InDatabase));
+	}
+	else
+	{
+		DatabasesToSearch.Reset();
+		bOverrideDatabaseInput = false;
+		if (InDatabase)
+		{
+			DatabasesToSearch.Add(InDatabase);
+			bOverrideDatabaseInput = true;
+		}
+
+		bForceInterruptNextUpdate |= bForceInterruptIfNew;
+
+		UE_LOG(LogPoseSearch, Verbose, TEXT("FAnimNode_MotionMatching::SetDatabaseToSearch - Setting to Database(%s), bForceInterruptIfNew(%d)."), *GetNameSafe(InDatabase), bForceInterruptIfNew);
+	}
+}
+
+void FAnimNode_MotionMatching::SetDatabasesToSearch(const TArray<UPoseSearchDatabase*>& InDatabases, bool bForceInterruptIfNew)
+{
+	// Check if InDatabases and DatabasesToSearch are the same.
+	bool bDatabasesAlreadySet = true;
+	if (DatabasesToSearch.Num() != InDatabases.Num())
+	{
+		bDatabasesAlreadySet = false;
+	}
+	else
+	{
+		for (int32 Index = 0; Index < InDatabases.Num(); ++Index)
+		{
+			if (DatabasesToSearch[Index] != InDatabases[Index])
+			{
+				bDatabasesAlreadySet = false;
+				break;
+			}
+		}
+	}
+
+	if (bDatabasesAlreadySet)
+	{
+		UE_LOG(LogPoseSearch, Verbose, TEXT("FAnimNode_MotionMatching::SetDatabasesToSearch - Databases(#%d) already set."), InDatabases.Num());
+	}
+	else
+	{
+		DatabasesToSearch.Reset();
+		bOverrideDatabaseInput = false;
+		if (!InDatabases.IsEmpty())
+		{
+			DatabasesToSearch.Append(InDatabases);
+			bOverrideDatabaseInput = true;
+		}
+
+		bForceInterruptNextUpdate |= bForceInterruptIfNew;
+
+		UE_LOG(LogPoseSearch, Verbose, TEXT("FAnimNode_MotionMatching::SetDatabaseToSearch - Setting to Databases(#%d), bForceInterruptIfNew(%d)."), InDatabases.Num(), bForceInterruptIfNew);
+	}
+}
+
+void FAnimNode_MotionMatching::ResetDatabasesToSearch(bool bInForceInterrupt)
+{
+	DatabasesToSearch.Reset();
+	bOverrideDatabaseInput = false;
+	bForceInterruptNextUpdate = bInForceInterrupt;
+
+	UE_LOG(LogPoseSearch, Verbose, TEXT("FAnimNode_MotionMatching::ResetDatabasesToSearch - Resetting databases, bInForceInterrupt(%d)."), bInForceInterrupt);
+}
+
+void FAnimNode_MotionMatching::ForceInterruptNextUpdate()
+{
+	bForceInterruptNextUpdate = true;
+
+	UE_LOG(LogPoseSearch, Verbose, TEXT("FAnimNode_MotionMatching::ForceInterruptNextUpdate - Forcing interrupt."));
 }
 
 // FAnimNode_AssetPlayerBase interface

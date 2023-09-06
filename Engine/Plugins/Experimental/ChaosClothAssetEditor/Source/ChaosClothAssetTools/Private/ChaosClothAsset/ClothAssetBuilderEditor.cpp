@@ -2,8 +2,10 @@
 
 #include "ChaosClothAsset/ClothAssetBuilderEditor.h"
 #include "ChaosClothAsset/ClothAsset.h"
-#include "ChaosClothAsset/ClothCollection.h"
+#include "ChaosClothAsset/CollectionClothFacade.h"
+#include "Chaos/CollectionPropertyFacade.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Modules/ModuleManager.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Utils/ClothingMeshUtils.h"
@@ -15,6 +17,9 @@
 
 void UClothAssetBuilderEditor::BuildLod(FSkeletalMeshLODModel& LODModel, const UChaosClothAsset& ClothAsset, int32 LodIndex) const
 {
+	using namespace UE::Chaos::ClothAsset;
+	using namespace ::Chaos::Softs;
+
 	// Start from an empty LODModel
 	LODModel.Empty();
 
@@ -28,35 +33,12 @@ void UClothAssetBuilderEditor::BuildLod(FSkeletalMeshLODModel& LODModel, const U
 	// Init the size of the vertex buffer
 	LODModel.NumVertices = 0;
 
-	// Build the section/faces map from the LOD patterns
-	TMap<int32, TArray<int32>> SectionFacesMap;
-	SectionFacesMap.Reserve(ClothAsset.GetMaterials().Num());
+	// Create a table to remap the LOD materials to the asset materials
+	const TArray<FSkeletalMaterial>& Materials = ClothAsset.GetMaterials();
 
-	const TSharedPtr<const UE::Chaos::ClothAsset::FClothCollection> ClothCollection = ClothAsset.GetClothCollection();
-	const int32 PatternStart = ClothCollection->PatternStart[LodIndex];
-	const int32 PatternEnd = ClothCollection->PatternEnd[LodIndex];
+	const TSharedRef<const FManagedArrayCollection> ClothCollection = ClothAsset.GetClothCollections()[LodIndex];
 
-	for (int32 PatternIndex = PatternStart; PatternIndex <= PatternEnd; ++PatternIndex)
-	{
-		const int32 RenderFacesStart = ClothCollection->RenderFacesStart[PatternIndex];
-		const int32 RenderFacesEnd = ClothCollection->RenderFacesEnd[PatternIndex];
-
-		for (int32 RenderFaceIndex = RenderFacesStart; RenderFaceIndex <= RenderFacesEnd; ++RenderFaceIndex)
-		{
-			const int32 MaterialIndex = ClothCollection->RenderMaterialIndex[RenderFaceIndex];
-
-			TArray<int32>& SectionFaces = SectionFacesMap.FindOrAdd(MaterialIndex);
-			SectionFaces.Add(RenderFaceIndex);
-		}
-	}
-
-	// Initialize the remapping array to start at LodRenderVerticesStart with the maximum number of vertices used in this LOD
-	const int32 LodRenderVerticesStart = ClothCollection->RenderVerticesStart[PatternStart];
-	const int32 LodRenderVerticesEnd = ClothCollection->RenderVerticesEnd[PatternEnd];
-	const int32 NumLodRenderVertices = LodRenderVerticesEnd - LodRenderVerticesStart + 1;
-
-	TArray<uint32> LodRenderIndexRemap;
-	LodRenderIndexRemap.SetNumUninitialized(NumLodRenderVertices);
+	const FCollectionClothConstFacade ClothFacade(ClothCollection);
 
 	// Keep track of the active bone indices for this LOD model
 	TSet<FBoneIndexType> ActiveBoneIndices;
@@ -69,32 +51,41 @@ void UClothAssetBuilderEditor::BuildLod(FSkeletalMeshLODModel& LODModel, const U
 	const ClothingMeshUtils::ClothMeshDesc SourceMesh(
 		GetSimPositions(ClothAsset, LodIndex),
 		GetSimIndices(ClothAsset, LodIndex));  // Let it calculate the averaged normals as to match the simulation data output
+	const bool bIsValidSourceMesh = (SourceMesh.GetPositions().Num() > 0);
 
 	const int32 NumLodSimVertices = GetNumVertices(ClothAsset, LodIndex);
 
-	// Retrieve the MaxDistance map
-	FPointWeightMap MaxDistances;
-	MaxDistances.Initialize(NumLodSimVertices);
-	for (int32 Index = 0; Index < NumLodSimVertices; ++Index)
-	{
-		MaxDistances[Index] = 200.f;
-	}
+	// Retrieve MaxDistance information (weight map and Low/High values)
+	FCollectionPropertyConstFacade Properties(ClothCollection);
+
+	int32 MaxDistancePropertyKeyIndex;
+	FString MaxDistanceString = TEXT("MaxDistance");
+	MaxDistanceString = Properties.GetStringValue(MaxDistanceString, MaxDistanceString, &MaxDistancePropertyKeyIndex);
+	const float MaxDistanceBase = (MaxDistancePropertyKeyIndex != INDEX_NONE) ? Properties.GetLowValue<float>(MaxDistancePropertyKeyIndex) : 0.f;
+	const float MaxDistanceRange = (MaxDistancePropertyKeyIndex != INDEX_NONE) ? Properties.GetHighValue<float>(MaxDistancePropertyKeyIndex) - MaxDistanceBase : 1.f;
+	const TConstArrayView<float> MaxDistanceWeightMap = ClothFacade.GetWeightMap(FName(MaxDistanceString));
+
+	const FPointWeightMap MaxDistances = (MaxDistanceWeightMap.Num() == NumLodSimVertices) ?
+		FPointWeightMap(MaxDistanceWeightMap) : 
+		FPointWeightMap(NumLodSimVertices, TNumericLimits<float>::Max());
+
+	const int32 NumRenderVertices = ClothFacade.GetNumRenderVertices();
+	LODModel.MeshToImportVertexMap.Reserve(NumRenderVertices);
 
 	// Populate this LOD's sections and the LOD index buffer
-	const int32 NumSections = SectionFacesMap.Num();
+	const int32 NumSections = ClothFacade.GetNumRenderPatterns();  // Cloth Render Patterns == Skeletal Mesh Sections
 	LODModel.Sections.SetNum(NumSections);
 
-	int32 SectionIndex = 0;
 	int32 BaseIndex = 0;
-	for (const TPair<int32, TArray<int32>>& SectionFaces : SectionFacesMap)
+	for(int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex)
 	{
+		FCollectionClothRenderPatternConstFacade RenderPatternFacade = ClothFacade.GetRenderPattern(SectionIndex);
 		FSkelMeshSection& Section = LODModel.Sections[SectionIndex];
 
-		Section.OriginalDataSectionIndex = SectionIndex++;
+		Section.OriginalDataSectionIndex = SectionIndex;
 
-		const int32 MaterialIndex = SectionFaces.Key;
-		const TArray<int32>& Faces = SectionFaces.Value;
-		const int32 NumFaces = Faces.Num();
+		const int32 MaterialIndex = SectionIndex;
+		const int32 NumFaces = RenderPatternFacade.GetNumRenderFaces();
 		const int32 NumIndices = NumFaces * 3;
 
 		// Build the section face data (indices)
@@ -106,16 +97,17 @@ void UClothAssetBuilderEditor::BuildLod(FSkeletalMeshLODModel& LODModel, const U
 		Section.NumTriangles = (uint32)NumFaces;
 
 		TArray<uint32> Indices;
-		TSet<int32> UniqueIndicesSet;
 		Indices.SetNumUninitialized(NumIndices);
+
+		const TConstArrayView<FIntVector3> PatternRenderIndices = RenderPatternFacade.GetRenderIndices();
+
 		for (int32 FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
 		{
-			const FIntVector3& RenderIndices = ClothCollection->RenderIndices[Faces[FaceIndex]];
+			const FIntVector3& RenderIndices = PatternRenderIndices[FaceIndex];
 			for (int32 VertexIndex = 0; VertexIndex < 3; ++VertexIndex)
 			{
 				const int32 RenderIndex = RenderIndices[VertexIndex];
 				Indices[FaceIndex * 3 + VertexIndex] = (uint32)RenderIndex;
-				UniqueIndicesSet.Add(RenderIndex);
 			}
 		}
 
@@ -123,103 +115,155 @@ void UClothAssetBuilderEditor::BuildLod(FSkeletalMeshLODModel& LODModel, const U
 
 		LODModel.IndexBuffer.Append(MoveTemp(Indices));
 
-		// Build the section vertex data from the unique indices
-		TArray<int32> UniqueIndices = UniqueIndicesSet.Array();
-		const int32 NumVertices = UniqueIndices.Num();
+		// Build the section vertex data 
+		const int32 NumVertices = RenderPatternFacade.GetNumRenderVertices();
 
 		Section.SoftVertices.SetNumUninitialized(NumVertices);
 		Section.NumVertices = NumVertices;
 		Section.BaseVertexIndex = LODModel.NumVertices;
 		LODModel.NumVertices += (uint32)NumVertices;
 
-		TSet<FBoneIndexType> SectionBoneMap;
-		SectionBoneMap.Reserve(ClothAsset.RefSkeleton.GetNum());
+		const int32 PatternVertexOffset = RenderPatternFacade.GetRenderVerticesOffset();
+		checkSlow(Section.BaseVertexIndex == PatternVertexOffset); // Otherwise Section's Indices don't match RenderPattern indices
+
+		// Map reference skeleton bone index to the index in the section's bone map
+		TMap<FBoneIndexType, FBoneIndexType> ReferenceToSectionBoneMap; 
+
+		// Track how many bones we added to the section's bone map so far
+		int CurSectionBoneMapNum = 0; 
+
+		const TConstArrayView<FVector3f> PatternRenderPosition = RenderPatternFacade.GetRenderPosition();
+		const TConstArrayView<FVector3f> PatternRenderTangentU = RenderPatternFacade.GetRenderTangentU();
+		const TConstArrayView<FVector3f> PatternRenderTangentV = RenderPatternFacade.GetRenderTangentV();
+		const TConstArrayView<FVector3f> PatternRenderNormal = RenderPatternFacade.GetRenderNormal();
+		const TConstArrayView<FLinearColor> PatternRenderColor = RenderPatternFacade.GetRenderColor();
+		const TConstArrayView<TArray<FVector2f>> PatternRenderUVs = RenderPatternFacade.GetRenderUVs();
+		const TConstArrayView<TArray<int32>> PatternRenderBoneIndices = RenderPatternFacade.GetRenderBoneIndices();
+		const TConstArrayView<TArray<float>> PatternRenderBoneWeights = RenderPatternFacade.GetRenderBoneWeights();
 
 		for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
 		{
-			const int32 RenderIndex = UniqueIndices[VertexIndex];
-			LODModel.MaxImportVertex = FMath::Max(LODModel.MaxImportVertex, RenderIndex);
-
-			LodRenderIndexRemap[RenderIndex] = Section.BaseVertexIndex + (uint32)VertexIndex;
+			// Save the original indices for the newly added vertices
+			LODModel.MeshToImportVertexMap.Add(VertexIndex + PatternVertexOffset);
+			LODModel.MaxImportVertex = VertexIndex + PatternVertexOffset;
 
 			FSoftSkinVertex& SoftVertex = Section.SoftVertices[VertexIndex];
 
-			SoftVertex.Position = ClothCollection->RenderPosition[RenderIndex];
-			SoftVertex.TangentX = ClothCollection->RenderTangentU[RenderIndex];
-			SoftVertex.TangentY = ClothCollection->RenderTangentV[RenderIndex];
-			SoftVertex.TangentZ = ClothCollection->RenderNormal[RenderIndex];
+			SoftVertex.Position = PatternRenderPosition[VertexIndex];
+			SoftVertex.TangentX = PatternRenderTangentU[VertexIndex];
+			SoftVertex.TangentY = PatternRenderTangentV[VertexIndex];
+			SoftVertex.TangentZ = PatternRenderNormal[VertexIndex];
 
 			constexpr bool bSRGB = false; // Avoid linear to srgb conversion
-			SoftVertex.Color = ClothCollection->RenderColor[RenderIndex].ToFColor(bSRGB);
+			SoftVertex.Color = PatternRenderColor[VertexIndex].ToFColor(bSRGB);
 
-			const TArray<FVector2f>& RenderUVs = ClothCollection->RenderUVs[RenderIndex];
+			const TArray<FVector2f>& RenderUVs = PatternRenderUVs[VertexIndex];
 			for (int32 TexCoord = 0; TexCoord < FMath::Min(RenderUVs.Num(), (int32)MAX_TEXCOORDS); ++TexCoord)
 			{
 				SoftVertex.UVs[TexCoord] = RenderUVs[TexCoord];
 			}
 
-			for (int32 Influence = 0; Influence < MAX_TOTAL_INFLUENCES; ++Influence)
+			const int32 NumInfluences = PatternRenderBoneIndices[VertexIndex].Num();
+			check(NumInfluences <= MAX_TOTAL_INFLUENCES);
+			
+			// Add all of the bones that have non-zero influence to the section's bone map and keep track of the order
+			// that we added the reference bone via CurSectionBoneMapNum
+			for (int32 Influence = 0; Influence < NumInfluences; ++Influence)
 			{
-				const FBoneIndexType InfluenceBone = (FBoneIndexType)0;  // TODO: Set the correct bone influence from the cloth collection data
-				const int16 InfluenceWeight = (Influence == 0) ? UE::AnimationCore::MaxRawBoneWeight : 0;
+				const FBoneIndexType InfluenceBone = (FBoneIndexType)PatternRenderBoneIndices[VertexIndex][Influence];
 
-				SoftVertex.InfluenceBones[Influence] = InfluenceBone;
-				SoftVertex.InfluenceWeights[Influence] = InfluenceWeight;
-
-				if (InfluenceWeight)
+				if (ReferenceToSectionBoneMap.Contains(InfluenceBone) == false)
 				{
-					SectionBoneMap.Add(InfluenceBone);
+					ReferenceToSectionBoneMap.Add(InfluenceBone, CurSectionBoneMapNum);
+					++CurSectionBoneMapNum; 
 				}
+			}
+
+			int32 Influence = 0;
+			for (;Influence < NumInfluences; ++Influence)
+			{
+				const FBoneIndexType InfluenceBone = (FBoneIndexType)PatternRenderBoneIndices[VertexIndex][Influence];
+				const float InWeight = PatternRenderBoneWeights[VertexIndex][Influence];
+				const uint16 InfluenceWeight = static_cast<uint16>(InWeight * static_cast<float>(UE::AnimationCore::MaxRawBoneWeight) + 0.5f);
+				
+				// FSoftSkinVertex::InfluenceBones contain indices into the section's bone map and not the reference
+				// skeleton, so we need to remap
+				const FBoneIndexType* const MappedIndexPtr = ReferenceToSectionBoneMap.Find(InfluenceBone);
+				
+				// ReferenceToSectionBoneMap should always contain InfluenceBone since it was added above
+				checkSlow(MappedIndexPtr);
+				if (MappedIndexPtr != nullptr)
+				{
+					SoftVertex.InfluenceBones[Influence] = *MappedIndexPtr;
+					SoftVertex.InfluenceWeights[Influence] = InfluenceWeight;
+				}
+			}
+			
+			for (;Influence < MAX_TOTAL_INFLUENCES; ++Influence)
+			{
+				SoftVertex.InfluenceBones[Influence] = 0;
+				SoftVertex.InfluenceWeights[Influence] = 0;
 			}
 		}
 
-		// Remap the LOD indices with the new vertex indices
-		for (uint32& RenderIndex : LODModel.IndexBuffer)
+		// Initialize the section bone map
+		Section.BoneMap.SetNumUninitialized(ReferenceToSectionBoneMap.Num());
+		for (const TPair<FBoneIndexType, FBoneIndexType>& Pair : ReferenceToSectionBoneMap)
 		{
-			RenderIndex = LodRenderIndexRemap[RenderIndex];
+			Section.BoneMap[Pair.Value] = Pair.Key;
 		}
 
-		// Update the section bone map
-		Section.BoneMap = SectionBoneMap.Array();
-		ActiveBoneIndices.Append(MoveTemp(SectionBoneMap));
+		ActiveBoneIndices.Append(Section.BoneMap);
 
 		// Update max bone influences
 		Section.CalcMaxBoneInfluences();
 		Section.CalcUse16BitBoneIndex();
 
 		// Setup clothing data
-		Section.ClothMappingDataLODs.SetNum(1);  // TODO: LODBias maps for raytracing
-
-		Section.ClothingData.AssetLodIndex = LodIndex;
-		Section.ClothingData.AssetGuid = ClothAsset.AssetGuid;  // There is only one cloth asset,
-		Section.CorrespondClothAssetIndex = 0;       // this one
-
-		TArray<FVector3f> RenderPositions;
-		TArray<FVector3f> RenderNormals;
-		TArray<FVector3f> RenderTangents;
-		for (const FSoftSkinVertex& SoftVert : Section.SoftVertices)
+		if (bIsValidSourceMesh)
 		{
-			RenderPositions.Add(SoftVert.Position);
-			RenderNormals.Add(SoftVert.TangentZ);
-			RenderTangents.Add(SoftVert.TangentX);
+			Section.ClothMappingDataLODs.SetNum(1);  // TODO: LODBias maps for raytracing
+
+			Section.ClothingData.AssetLodIndex = LodIndex;
+			Section.ClothingData.AssetGuid = ClothAsset.AssetGuid;  // There is only one cloth asset,
+			Section.CorrespondClothAssetIndex = 0;       // this one
+
+			TArray<FVector3f> SectionRenderPositions;
+			TArray<FVector3f> SectionRenderNormals;
+			TArray<FVector3f> SectionRenderTangents;
+			SectionRenderPositions.Reserve(NumVertices);
+			SectionRenderNormals.Reserve(NumVertices);
+			SectionRenderTangents.Reserve(NumVertices);
+			for (const FSoftSkinVertex& SoftVert : Section.SoftVertices)
+			{
+				SectionRenderPositions.Add(SoftVert.Position);
+				SectionRenderNormals.Add(SoftVert.TangentZ);
+				SectionRenderTangents.Add(SoftVert.TangentX);
+			}
+			TArray<uint32> SectionRenderIndices;
+			SectionRenderIndices.Reserve(NumIndices);
+			const TArrayView<uint32> SectionIndexBuffer(LODModel.IndexBuffer.GetData() + Section.BaseIndex, NumIndices);
+			for (const uint32 LodModelVertIndex : SectionIndexBuffer)
+			{
+				SectionRenderIndices.Add(LodModelVertIndex - Section.BaseVertexIndex);
+			}
+
+			const ClothingMeshUtils::ClothMeshDesc TargetMesh(
+				SectionRenderPositions, 
+				SectionRenderNormals, 
+				SectionRenderTangents,
+				SectionRenderIndices);
+
+			ClothingMeshUtils::GenerateMeshToMeshVertData(
+				Section.ClothMappingDataLODs[0],
+				TargetMesh,
+				SourceMesh,
+				&MaxDistances,
+				ClothAsset.bSmoothTransition,
+				ClothAsset.bUseMultipleInfluences,
+				ClothAsset.SkinningKernelRadius);
 		}
 
-		const ClothingMeshUtils::ClothMeshDesc TargetMesh(RenderPositions, 
-			RenderNormals, 
-			RenderTangents,
-			LODModel.IndexBuffer);
-
-		ClothingMeshUtils::GenerateMeshToMeshVertData(
-			Section.ClothMappingDataLODs[0],
-			TargetMesh,
-			SourceMesh,
-			&MaxDistances,
-			ClothAsset.bSmoothTransition,
-			ClothAsset.bUseMultipleInfluences,
-			ClothAsset.SkinningKernelRadius);
-
-		// Save the original indices for the newly added vertices
-		LODModel.MeshToImportVertexMap.Append(MoveTemp(UniqueIndices));
 
 		// Compute the overlapping vertices map (inspired from MeshUtilities::BuildSkeletalMesh)
 		const TArray<FSoftSkinVertex>& SoftVertices = Section.SoftVertices;

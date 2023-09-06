@@ -161,8 +161,6 @@ UMovieSceneEntitySystemLinker::UMovieSceneEntitySystemLinker(const FObjectInitia
 		EntityManager.SetDebugName(GetName() + TEXT("[Entity Manager]"));
 		EntityManager.SetComponentRegistry(&GComponentRegistry);
 
-		FWorldDelegates::OnWorldCleanup.AddUObject(this, &UMovieSceneEntitySystemLinker::OnWorldCleanup);
-
 		InstanceRegistry.Reset(new FInstanceRegistry(this));
 
 #if WITH_EDITOR
@@ -185,7 +183,6 @@ void UMovieSceneEntitySystemLinker::Reset()
 	Events.CleanTaggedGarbage.Clear();
 	Events.AddReferencedObjects.Clear();
 	Events.AbandonLinker.Clear();
-	Events.CleanUpWorld.Clear();
 
 	SystemGraph.Shutdown();
 	EntitySystemsByGlobalGraphID.Reset();
@@ -254,7 +251,6 @@ void UMovieSceneEntitySystemLinker::SystemUnlinked(UMovieSceneEntitySystem* InSy
 	Events.CleanTaggedGarbage.RemoveAll(InSystem);
 	Events.AddReferencedObjects.RemoveAll(InSystem);
 	Events.AbandonLinker.RemoveAll(InSystem);
-	Events.CleanUpWorld.RemoveAll(InSystem);
 
 	// Add the system to the recycling pool.
 	ensure(EntitySystemsRecyclingPool.Contains(InSystem->GetClass()) == false);
@@ -293,8 +289,9 @@ void UMovieSceneEntitySystemLinker::TagInvalidBoundObjects()
 	// Tag any bound objects that are now invalid
 	TArray<FMovieSceneEntityID> ExpiredBoundObjects;
 
-	auto Iter = [&ExpiredBoundObjects](FMovieSceneEntityID EntityID, UObject* BoundObject)
+	auto Iter = [&ExpiredBoundObjects](FMovieSceneEntityID EntityID, const FObjectKey& BoundObjectKey)
 	{
+		UObject* BoundObject = BoundObjectKey.ResolveObjectPtr();
 		if (FBuiltInComponentTypes::IsBoundObjectGarbage(BoundObject))
 		{
 			ExpiredBoundObjects.Add(EntityID);
@@ -302,11 +299,12 @@ void UMovieSceneEntitySystemLinker::TagInvalidBoundObjects()
 	};
 	FEntityTaskBuilder()
 	.ReadEntityIDs()
-	.Read(BuiltInComponents->BoundObject)
+	.Read(BuiltInComponents->BoundObjectKey)
 	.Iterate_PerEntity(&EntityManager, Iter);
 
 	for (FMovieSceneEntityID Entity : ExpiredBoundObjects)
 	{
+		EntityManager.RemoveComponent(Entity, BuiltInComponents->Tags.NeedsLink, EEntityRecursion::Full);
 		EntityManager.AddComponent(Entity, BuiltInComponents->Tags.NeedsUnlink, EEntityRecursion::Full);
 	}
 }
@@ -369,6 +367,9 @@ void UMovieSceneEntitySystemLinker::HandlePostGarbageCollection()
 {
 	using namespace UE::MovieScene;
 
+	// Increment the system serial number to ensure that any structural mutation that occurs in this function does so under a unique serial
+	EntityManager.IncrementSystemSerial();
+
 	// All the instance registry to unlink garbage first
 	InstanceRegistry->TagGarbage();
 
@@ -400,12 +401,15 @@ void UMovieSceneEntitySystemLinker::CleanGarbage()
 	// the next time a runner gets flushed
 	LastInstantiationVersion = 0;
 
-	// Allow any other system to cleanup garbage
-	Events.CleanTaggedGarbage.Broadcast(this);
-
 	auto RouteCleanTaggedGarbage = [](UMovieSceneEntitySystem* System){ System->CleanTaggedGarbage(); };
 	SystemGraph.IteratePhase(ESystemPhase::Spawn, RouteCleanTaggedGarbage);
 	SystemGraph.IteratePhase(ESystemPhase::Instantiation, RouteCleanTaggedGarbage);
+
+	// Allow any other system to cleanup garbage
+	// NOTE: Order is important here - we need to broadcast this after systems have CleanTaggedGarbage called
+	//       since systems are able to (and more likely to) cause additional entities to be unlinked in response
+	//       to finding entities tagged NeedsUnlink.
+	Events.CleanTaggedGarbage.Broadcast(this);
 
 	TArray<FMovieSceneEntityID> UnresolvedEntities;
 
@@ -469,14 +473,6 @@ void UMovieSceneEntitySystemLinker::OnObjectsReplaced(const TMap<UObject*, UObje
 #endif
 }
 
-void UMovieSceneEntitySystemLinker::OnWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResources)
-{
-	Events.CleanUpWorld.Broadcast(this, InWorld);
-	InstanceRegistry->WorldCleanup(InWorld);
-
-	HandlePostGarbageCollection();
-}
-
 void UMovieSceneEntitySystemLinker::AddReferencedObjects(UObject* Object, FReferenceCollector& Collector)
 {
 	Super::AddReferencedObjects(Object, Collector);
@@ -521,7 +517,7 @@ UMovieSceneEntitySystem* UMovieSceneEntitySystemLinker::LinkSystemImpl(TSubclass
 	// This means we can do our own recycling within the scope of this linker, to save on the cost of re-creating
 	// systems when the first instantiation phase kicks in after a period without any sequence playing.
 	UMovieSceneEntitySystem* NewSystem = nullptr;
-	UMovieSceneEntitySystem** Recycled = EntitySystemsRecyclingPool.Find(InClassType);
+	auto* Recycled = EntitySystemsRecyclingPool.Find(InClassType);
 	if (Recycled)
 	{
 		// Revive a recycled system.

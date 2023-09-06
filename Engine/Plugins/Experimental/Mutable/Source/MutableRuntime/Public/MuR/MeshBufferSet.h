@@ -2,16 +2,21 @@
 
 #pragma once
 
-#include "MuR/SerialisationPrivate.h"
+#include "MuR/Serialisation.h"
 #include "Containers/Array.h"
 #include "HAL/PlatformMath.h"
 #include "MuR/MutableMemory.h"
-#include "MuR/Serialisation.h"
 
+#include "MuR/MemoryTrackingAllocationPolicy.h"
+
+namespace mu::MemoryCounters
+{
+	struct FMeshMemoryCounterTag {};
+	using FMeshMemoryCounter = TMemoryCounter<FMeshMemoryCounterTag>;
+}
 
 namespace mu
 {
-
 	//! Supported formats for the elements in mesh buffers.
 	//! \ingroup runtime
 	typedef enum
@@ -163,14 +168,12 @@ namespace mu
 
 	};
 
-	MUTABLE_DEFINE_POD_SERIALISABLE(MESH_BUFFER_CHANNEL);
-	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(MESH_BUFFER_CHANNEL);
-	MUTABLE_DEFINE_ENUM_SERIALISABLE(MESH_BUFFER_FORMAT);
-	MUTABLE_DEFINE_ENUM_SERIALISABLE(MESH_BUFFER_SEMANTIC);
-
 
 	struct MESH_BUFFER
 	{
+		template<typename Type>
+		using TMemoryTrackedArray = TArray<Type, FDefaultMemoryTrackingAllocator<MemoryCounters::FMeshMemoryCounter>>;
+
 		//!
 		MESH_BUFFER()
 		{
@@ -178,29 +181,19 @@ namespace mu
 		}
 
 		//!
-		TArray<MESH_BUFFER_CHANNEL> m_channels;
+		TArray<mu::MESH_BUFFER_CHANNEL> m_channels;
 
 		//!
-		TArray<uint8> m_data;
+		TMemoryTrackedArray<uint8> m_data;
 
 		//!
 		uint32 m_elementSize;
 
 		//!
-		inline void Serialise(OutputArchive& arch) const
-		{
-			arch << m_channels;
-			arch << m_data;
-			arch << m_elementSize;
-		}
+		void Serialise(mu::OutputArchive& arch) const;
 
 		//!
-		inline void Unserialise(InputArchive& arch)
-		{
-			arch >> m_channels;
-			arch >> m_data;
-			arch >> m_elementSize;
-		}
+		inline void Unserialise(mu::InputArchive& arch);
 
 		//!
 		inline bool operator==(const MESH_BUFFER& o) const
@@ -226,18 +219,10 @@ namespace mu
 		TArray<MESH_BUFFER> m_buffers;
 
 		//!
-		inline void Serialise(OutputArchive& arch) const
-		{
-			arch << m_elementCount;
-			arch << m_buffers;
-		}
+		void Serialise(OutputArchive& arch) const;
 
 		//!
-		inline void Unserialise(InputArchive& arch)
-		{
-			arch >> m_elementCount;
-			arch >> m_buffers;
-		}
+		void Unserialise(InputArchive& arch);
 
 		//!
 		inline bool operator==(const FMeshBufferSet& o) const
@@ -331,7 +316,8 @@ namespace mu
 		//! \param buffer index of the buffer from 0 to GetBufferCount()-1
 		//! \todo Add padding support for better alignment of buffer elements.
         uint8* GetBufferData( int32 buffer );
-        const uint8* GetBufferData( int32 buffer ) const;
+		const uint8* GetBufferData(int32 buffer) const;
+		uint32 GetBufferDataSize( int32 buffer ) const;
 
 		//-----------------------------------------------------------------------------------------
 		// Utility methods
@@ -377,8 +363,10 @@ namespace mu
 		//! Compare the format of the two buffers at index buffer and return true if they match.
 		bool HasSameFormat(int32 buffer, const FMeshBufferSet& pOther) const;
 
-		//! Get the total memory size of the buffers
-		size_t GetDataSize() const;
+		//! Get the total memory size of the buffers and this struct
+		int32 GetDataSize() const;
+
+		int32 GetAllocatedSize() const;
 
 		//! Compare the mesh buffer with another one, but ignore internal data like generated
 		//! vertex indices.
@@ -401,7 +389,12 @@ namespace mu
 
 		//!
 		void UpdateOffsets(int32 b);
-	};
+	};	
 
+	
+	MUTABLE_DEFINE_POD_SERIALISABLE(MESH_BUFFER_CHANNEL);
+	MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(MESH_BUFFER_CHANNEL);
+	MUTABLE_DEFINE_ENUM_SERIALISABLE(MESH_BUFFER_FORMAT);
+	MUTABLE_DEFINE_ENUM_SERIALISABLE(MESH_BUFFER_SEMANTIC);
 }
 

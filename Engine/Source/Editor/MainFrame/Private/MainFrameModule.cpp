@@ -305,8 +305,7 @@ void FMainFrameModule::CreateDefaultMainFrameAuxiliary(const bool bStartImmersiv
 				// If user is trying to load a specific layout with "Load", also warn them with a message dialog
 				if (bIsBeingRecreated)
 				{
-					const FText TextTitle = LOCTEXT("MainFrameModuleVersionErrorTitle", "Unreal Editor Layout Version Mismatch");
-					FMessageDialog::Open(EAppMsgType::Ok, WarningText, &TextTitle);
+					FMessageDialog::Open(EAppMsgType::Ok, WarningText, LOCTEXT("MainFrameModuleVersionErrorTitle", "Unreal Editor Layout Version Mismatch"));
 				}
 			}
 
@@ -383,6 +382,9 @@ bool FMainFrameModule::IsRecreatingDefaultMainFrame() const
 
 TSharedRef<SWidget> FMainFrameModule::MakeMainMenu(const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext) const
 {
+	// Can't make the MainMenu without the global editor commands having been registered
+	FGlobalEditorCommonCommands::Register();
+
 	return FMainMenu::MakeMainMenu(TabManager, MenuName, ToolMenuContext);
 }
 

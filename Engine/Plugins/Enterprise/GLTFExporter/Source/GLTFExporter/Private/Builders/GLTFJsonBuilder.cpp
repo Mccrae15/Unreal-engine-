@@ -3,17 +3,23 @@
 #include "Builders/GLTFJsonBuilder.h"
 #include "Interfaces/IPluginManager.h"
 #include "Runtime/Launch/Resources/Version.h"
+#include "GeneralProjectSettings.h"
 
 FGLTFJsonBuilder::FGLTFJsonBuilder(const FString& FileName, const UGLTFExportOptions* ExportOptions)
 	: FGLTFFileBuilder(FileName, ExportOptions)
 	, DefaultScene(JsonRoot.DefaultScene)
 {
 	JsonRoot.Asset.Generator = GetGeneratorString();
+	if (ExportOptions->bIncludeCopyrightNotice)
+	{
+		JsonRoot.Asset.Copyright = GetCopyrightString();
+	}
 }
 
-void FGLTFJsonBuilder::WriteJsonArchive(FArchive& Archive)
+bool FGLTFJsonBuilder::WriteJsonArchive(FArchive& Archive)
 {
 	JsonRoot.WriteJson(Archive, !bIsGLB, ExportOptions->bSkipNearDefaultValues ? KINDA_SMALL_NUMBER : 0);
+	return true;
 }
 
 void FGLTFJsonBuilder::AddExtension(EGLTFJsonExtension Extension, bool bIsRequired)
@@ -105,7 +111,12 @@ const FGLTFJsonRoot& FGLTFJsonBuilder::GetRoot() const
 	return JsonRoot;
 }
 
-const TCHAR* FGLTFJsonBuilder::GetGeneratorString()
+FString FGLTFJsonBuilder::GetGeneratorString()
 {
 	return TEXT(EPIC_PRODUCT_NAME) TEXT(" ") ENGINE_VERSION_STRING;
+}
+
+FString FGLTFJsonBuilder::GetCopyrightString()
+{
+	return GetDefault<UGeneralProjectSettings>()->CopyrightNotice;
 }

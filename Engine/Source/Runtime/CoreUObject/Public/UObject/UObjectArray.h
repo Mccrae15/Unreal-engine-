@@ -16,13 +16,18 @@
 * By default it is only tracked in WITH_EDITOR builds as it adds a small amount of tracking overhead
 */
 #if !defined(UE_GC_TRACK_OBJ_AVAILABLE)
-#define UE_GC_TRACK_OBJ_AVAILABLE (WITH_EDITOR)
+#define UE_GC_TRACK_OBJ_AVAILABLE UE_DEPRECATED_MACRO(5.2, "The UE_GC_TRACK_OBJ_AVAILABLE macro has been deprecated because it is no longer necessary.") 1
 #endif
 
 /**
 * Single item in the UObject array.
 */
-struct FUObjectItem
+struct
+#if !STATS && !ENABLE_STATNAMEDEVENTS_UOBJECT
+	// Packing avoids 20% mem waste and improves perf
+	GCC_PACK(4)
+#endif
+	FUObjectItem
 {
 	// Pointer to the allocated object
 	class UObjectBase* Object;
@@ -222,6 +227,20 @@ private:
 	}
 };
 
+namespace UE::UObjectArrayPrivate
+{
+	COREUOBJECT_API void FailMaxUObjectCountExceeded(const int32 MaxUObjects, const int32 NewUObjectCount);
+
+	FORCEINLINE void CheckUObjectLimitReached(const int32 NumUObjects, const int32 MaxUObjects, const int32 NewUObjectCount)
+	{
+		if ((NumUObjects + NewUObjectCount) > MaxUObjects)
+		{
+			FailMaxUObjectCountExceeded(MaxUObjects, NewUObjectCount);
+		}
+	}
+};
+
+
 /**
 * Fixed size UObject array.
 */
@@ -262,7 +281,7 @@ public:
 	int32 AddSingle() TSAN_SAFE
 	{
 		int32 Result = NumElements;
-		checkf(NumElements + 1 <= MaxElements, TEXT("Maximum number of UObjects (%d) exceeded, make sure you update MaxObjectsInGame/MaxObjectsInEditor/MaxObjectsInProgram in project settings."), MaxElements);
+		UE::UObjectArrayPrivate::CheckUObjectLimitReached(NumElements, MaxElements, 1);
 		check(Result == NumElements);
 		++NumElements;
 		FPlatformMisc::MemoryBarrier();
@@ -273,7 +292,7 @@ public:
 	int32 AddRange(int32 Count) TSAN_SAFE
 	{
 		int32 Result = NumElements + Count - 1;
-		checkf(NumElements + Count <= MaxElements, TEXT("Maximum number of UObjects (%d) exceeded, make sure you update MaxObjectsInGame/MaxObjectsInEditor/MaxObjectsInProgram in project settings."), MaxElements);
+		UE::UObjectArrayPrivate::CheckUObjectLimitReached(NumElements, MaxElements, Count);
 		check(Result == (NumElements + Count - 1));
 		NumElements += Count;
 		FPlatformMisc::MemoryBarrier();
@@ -383,7 +402,7 @@ class FChunkedFixedUObjectArray
 	/**
 	* Allocates new chunk for the array
 	**/
-	void ExpandChunksToIndex(int32 Index)
+	void ExpandChunksToIndex(int32 Index) TSAN_SAFE
 	{
 		check(Index >= 0 && Index < MaxElements);
 		int32 ChunkIndex = Index / NumElementsPerChunk;
@@ -395,7 +414,7 @@ class FChunkedFixedUObjectArray
 			if (FPlatformAtomics::InterlockedCompareExchangePointer((void**)Chunk, NewChunk, nullptr))
 			{
 				// someone else beat us to the add, we don't support multiple concurrent adds
-				check(0)
+				check(0);
 			}
 			else
 			{
@@ -546,7 +565,7 @@ public:
 	int32 AddRange(int32 NumToAdd) TSAN_SAFE
 	{
 		int32 Result = NumElements;
-		checkf(Result + NumToAdd <= MaxElements, TEXT("Maximum number of UObjects (%d) exceeded, make sure you update MaxObjectsInGame/MaxObjectsInEditor/MaxObjectsInProgram in project settings."), MaxElements);
+		UE::UObjectArrayPrivate::CheckUObjectLimitReached(Result, MaxElements, NumToAdd);
 		ExpandChunksToIndex(Result + NumToAdd - 1);
 		NumElements += NumToAdd;
 		return Result;
@@ -581,7 +600,7 @@ public:
 * that non-GC objects come before GC ones during iteration.
 *
 **/
-class COREUOBJECT_API FUObjectArray
+class FUObjectArray
 {
 	friend class UObject;
 	friend COREUOBJECT_API UObject* StaticAllocateObject(const UClass*, UObject*, FName, EObjectFlags, EInternalObjectFlags, bool, bool*, UPackage*);
@@ -592,7 +611,7 @@ private:
 	 *
 	 * @param Object to reset
 	 */
-	void ResetSerialNumber(UObjectBase* Object);
+	COREUOBJECT_API void ResetSerialNumber(UObjectBase* Object);
 
 public:
 
@@ -647,7 +666,7 @@ public:
 	/**
 	 * Constructor, initializes to no permanent object pool
 	 */
-	FUObjectArray();
+	COREUOBJECT_API FUObjectArray();
 
 	/**
 	 * Allocates and initializes the permanent object pool
@@ -655,23 +674,23 @@ public:
 	 * @param MaxUObjects maximum number of UObjects that can ever exist in the array
 	 * @param MaxObjectsNotConsideredByGC number of objects in the permanent object pool
 	 */
-	void AllocateObjectPool(int32 MaxUObjects, int32 MaxObjectsNotConsideredByGC, bool bPreAllocateObjectArray);
+	COREUOBJECT_API void AllocateObjectPool(int32 MaxUObjects, int32 MaxObjectsNotConsideredByGC, bool bPreAllocateObjectArray);
 
 	/**
 	 * Disables the disregard for GC optimization.
 	 *
 	 */
-	void DisableDisregardForGC();
+	COREUOBJECT_API void DisableDisregardForGC();
 
 	/**
 	* If there's enough slack in the disregard pool, we can re-open it and keep adding objects to it
 	*/
-	void OpenDisregardForGC();
+	COREUOBJECT_API void OpenDisregardForGC();
 
 	/**
 	 * After the initial load, this closes the disregard pool so that new object are GC-able
 	 */
-	void CloseDisregardForGC();
+	COREUOBJECT_API void CloseDisregardForGC();
 
 	/** Returns true if the disregard for GC pool is open */
 	bool IsOpenForDisregardForGC() const
@@ -693,17 +712,18 @@ public:
 	 * Adds a uobject to the global array which is used for uobject iteration
 	 *
 	 * @param	Object Object to allocate an index for
+	 * @param	InitialFlags Flags to set in the object array before the object pointer becomes visible to other threads. 
 	 * @param	AlreadyAllocatedIndex already allocated internal index to use, negative value means allocate a new index
 	 * @param	SerialNumber serial number to use
 	 */
-	void AllocateUObjectIndex(class UObjectBase* Object, int32 AlreadyAllocatedIndex = -1, int32 SerialNumber = 0);
+	COREUOBJECT_API void AllocateUObjectIndex(class UObjectBase* Object, EInternalObjectFlags InitialFlags, int32 AlreadyAllocatedIndex = -1, int32 SerialNumber = 0);
 
 	/**
 	 * Returns a UObject index top to the global uobject array
 	 *
 	 * @param Object object to free
 	 */
-	void FreeUObjectIndex(class UObjectBase* Object);
+	COREUOBJECT_API void FreeUObjectIndex(class UObjectBase* Object);
 
 	/**
 	 * Returns the index of a UObject. Be advised this is only for very low level use.
@@ -812,35 +832,35 @@ public:
 	 *
 	 * @param Listener listener to notify when an object is deleted
 	 */
-	void AddUObjectCreateListener(FUObjectCreateListener* Listener);
+	COREUOBJECT_API void AddUObjectCreateListener(FUObjectCreateListener* Listener);
 
 	/**
 	 * Removes a listener for object creation
 	 *
 	 * @param Listener listener to remove
 	 */
-	void RemoveUObjectCreateListener(FUObjectCreateListener* Listener);
+	COREUOBJECT_API void RemoveUObjectCreateListener(FUObjectCreateListener* Listener);
 
 	/**
 	 * Adds a new listener for object deletion
 	 *
 	 * @param Listener listener to notify when an object is deleted
 	 */
-	void AddUObjectDeleteListener(FUObjectDeleteListener* Listener);
+	COREUOBJECT_API void AddUObjectDeleteListener(FUObjectDeleteListener* Listener);
 
 	/**
 	 * Removes a listener for object deletion
 	 *
 	 * @param Listener listener to remove
 	 */
-	void RemoveUObjectDeleteListener(FUObjectDeleteListener* Listener);
+	COREUOBJECT_API void RemoveUObjectDeleteListener(FUObjectDeleteListener* Listener);
 
 	/**
 	 * Removes an object from delete listeners
 	 *
 	 * @param Object to remove from delete listeners
 	 */
-	void RemoveObjectFromDeleteListeners(UObjectBase* Object);
+	COREUOBJECT_API void RemoveObjectFromDeleteListeners(UObjectBase* Object);
 
 	/**
 	 * Checks if a UObject pointer is valid
@@ -848,7 +868,7 @@ public:
 	 * @param	Object object to test for validity
 	 * @return	true if this index is valid
 	 */
-	bool IsValid(const UObjectBase* Object) const;
+	COREUOBJECT_API bool IsValid(const UObjectBase* Object) const;
 
 	/** Checks if the object index is valid. */
 	FORCEINLINE bool IsValidIndex(const UObjectBase* Object) const 
@@ -896,38 +916,44 @@ public:
 		return ObjLastNonGCIndex + 1;
 	}
 
-#if UE_GC_TRACK_OBJ_AVAILABLE
 	/**
 	 * Returns the number of actual object indices that are claimed (the total size of the global object array minus
 	 * the number of available object array elements
 	 *
 	 * @return	The number of objects claimed
 	 */
-	int32 GetObjectArrayNumMinusAvailable()
+	int32 GetObjectArrayNumMinusAvailable() const
 	{
-		return ObjObjects.Num() - ObjAvailableCount.GetValue();
+		return ObjObjects.Num() - ObjAvailableList.Num();
 	}
 
 	/**
 	* Returns the estimated number of object indices available for allocation
 	*/
-	int32 GetObjectArrayEstimatedAvailable()
+	int32 GetObjectArrayEstimatedAvailable() const
 	{
 		return ObjObjects.Capacity() - GetObjectArrayNumMinusAvailable();
 	}
-#endif
+
+	/**
+	* Returns the estimated number of object indices available for allocation
+	*/
+	int32 GetObjectArrayCapacity() const
+	{
+		return ObjObjects.Capacity();
+	}
 
 	/**
 	 * Clears some internal arrays to get rid of false memory leaks
 	 */
-	void ShutdownUObjectArray();
+	COREUOBJECT_API void ShutdownUObjectArray();
 
 	/**
 	* Given a UObject index return the serial number. If it doesn't have a serial number, give it one. Threadsafe.
 	* @param Index - UObject Index
 	* @return - the serial number for this UObject
 	*/
-	int32 AllocateSerialNumber(int32 Index);
+	COREUOBJECT_API int32 AllocateSerialNumber(int32 Index);
 
 	/**
 	* Given a UObject index return the serial number. If it doesn't have a serial number, return 0. Threadsafe.
@@ -1096,10 +1122,7 @@ private:
 	mutable FCriticalSection ObjObjectsCritical;
 	/** Available object indices.											*/
 	TArray<int32> ObjAvailableList;
-#if UE_GC_TRACK_OBJ_AVAILABLE
-	/** Available object index count.										*/
-	FThreadSafeCounter ObjAvailableCount;
-#endif
+
 	/**
 	 * Array of things to notify when a UObjectBase is created
 	 */
@@ -1126,10 +1149,17 @@ public:
 		return ObjObjects;
 	}
     
+	const TUObjectArray& GetObjectItemArrayUnsafe() const
+	{
+		return ObjObjects;
+	}
+
     int64 GetAllocatedSize() const
     {
         return ObjObjects.GetAllocatedSize();
     }
+
+	COREUOBJECT_API void DumpUObjectCountsToLog() const;
 };
 
 /** UObject cluster. Groups UObjects into a single unit for GC. */
@@ -1155,7 +1185,7 @@ struct FUObjectCluster
 	bool bNeedsDissolving;
 };
 
-class COREUOBJECT_API FUObjectClusterContainer
+class FUObjectClusterContainer
 {
 	/** List of all clusters */
 	TArray<FUObjectCluster> Clusters;
@@ -1167,11 +1197,11 @@ class COREUOBJECT_API FUObjectClusterContainer
 	bool bClustersNeedDissolving;
 
 	/** Dissolves a cluster */
-	void DissolveCluster(FUObjectCluster& Cluster);
+	COREUOBJECT_API void DissolveCluster(FUObjectCluster& Cluster);
 
 public:
 
-	FUObjectClusterContainer();
+	COREUOBJECT_API FUObjectClusterContainer();
 
 	FORCEINLINE FUObjectCluster& operator[](int32 Index)
 	{
@@ -1180,35 +1210,35 @@ public:
 	}
 
 	/** Returns an index to a new cluster */
-	int32 AllocateCluster(int32 InRootObjectIndex);
+	COREUOBJECT_API int32 AllocateCluster(int32 InRootObjectIndex);
 
 	/** Frees the cluster at the specified index */
-	void FreeCluster(int32 InClusterIndex);
+	COREUOBJECT_API void FreeCluster(int32 InClusterIndex);
 
 	/**
 	* Gets the cluster the specified object is a root of or belongs to.
 	* @Param ClusterRootOrObjectFromCluster Root cluster object or object that belongs to a cluster
 	*/
-	FUObjectCluster* GetObjectCluster(UObjectBaseUtility* ClusterRootOrObjectFromCluster);
+	COREUOBJECT_API FUObjectCluster* GetObjectCluster(UObjectBaseUtility* ClusterRootOrObjectFromCluster);
 
 
 	/** 
 	 * Dissolves a cluster and all clusters that reference it 
 	 * @Param ClusterRootOrObjectFromCluster Root cluster object or object that belongs to a cluster
 	 */
-	void DissolveCluster(UObjectBaseUtility* ClusterRootOrObjectFromCluster);
+	COREUOBJECT_API void DissolveCluster(UObjectBaseUtility* ClusterRootOrObjectFromCluster);
 
 	/** 
 	 * Dissolve all clusters marked for dissolving 
 	 * @param bForceDissolveAllClusters if true, dissolves all clusters even if they're not marked for dissolving
 	 */
-	void DissolveClusters(bool bForceDissolveAllClusters = false);
+	COREUOBJECT_API void DissolveClusters(bool bForceDissolveAllClusters = false);
 
 	/** Dissolve the specified cluster and all clusters that reference it */
-	void DissolveClusterAndMarkObjectsAsUnreachable(FUObjectItem* RootObjectItem);
+	COREUOBJECT_API void DissolveClusterAndMarkObjectsAsUnreachable(FUObjectItem* RootObjectItem);
 
 	/*** Returns the minimum cluster size as specified in ini settings */
-	int32 GetMinClusterSize() const;
+	COREUOBJECT_API int32 GetMinClusterSize() const;
 
 	/** Gets the clusters array (for internal use only!) */
 	TArray<FUObjectCluster>& GetClustersUnsafe() 

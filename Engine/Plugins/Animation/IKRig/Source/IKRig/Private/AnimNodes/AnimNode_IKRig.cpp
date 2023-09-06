@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_IKRig.h"
+
+#include "Rig/IKRigProcessor.h"
+#include "Rig/IKRigDefinition.h"
+#include "Rig/Solvers/IKRigSolver.h"
+
 #include "Components/SkeletalMeshComponent.h"
-#include "IKRigProcessor.h"
-#include "IKRigDefinition.h"
-#include "IKRigSolver.h"
 #include "ActorComponents/IKRigInterface.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 #include "Algo/ForEach.h"
 #include "SceneManagement.h"
 
@@ -22,6 +25,7 @@ FAnimNode_IKRig::FAnimNode_IKRig()
 void FAnimNode_IKRig::Evaluate_AnyThread(FPoseContext& Output) 
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(IKRig, !IsInGameThread());
 
 	if (Source.GetLinkNode() && !bStartFromRefPose)
 	{

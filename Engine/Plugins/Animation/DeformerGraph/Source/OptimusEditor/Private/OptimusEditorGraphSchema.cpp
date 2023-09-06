@@ -15,13 +15,19 @@
 
 #include "EdGraphSchema_K2.h"
 #include "Editor.h"
+#include "OptimusActionStack.h"
+#include "OptimusComponentSource.h"
 #include "OptimusComputeDataInterface.h"
 #include "OptimusEditorGraphConnectionDrawingPolicy.h"
 #include "Styling/SlateIconFinder.h"
 
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+
 #define LOCTEXT_NAMESPACE "OptimusEditor"
 
-static bool IsValidAdderPinConnection(const UEdGraphPin* InPinA, const UEdGraphPin* InPinB, 
+static bool IsValidAdderPinConnection(const UEdGraphPin* InPinA, const UEdGraphPin* InPinB, TArray<IOptimusNodeAdderPinProvider::FAdderPinAction>* OutActions = nullptr,
 	FString* OutReason = nullptr)
 {
 	const bool bIsPinAAdderPin = OptimusEditor::IsAdderPin(InPinA);
@@ -62,9 +68,14 @@ static bool IsValidAdderPinConnection(const UEdGraphPin* InPinA, const UEdGraphP
 	const IOptimusNodeAdderPinProvider *AdderPinProvider = Cast<IOptimusNodeAdderPinProvider>(TargetNode);
 	check(AdderPinProvider);
 
-	const bool bCanConnect = AdderPinProvider->CanAddPinFromPin(SourcePin, NewPinDirection, OutReason);
+	if (OutActions)
+	{
+		*OutActions = AdderPinProvider->GetAvailableAdderPinActions(SourcePin, NewPinDirection, OutReason);
+		return OutActions->Num() > 0;
+	}
 	
-	return bCanConnect;
+	const TArray<IOptimusNodeAdderPinProvider::FAdderPinAction> Actions = AdderPinProvider->GetAvailableAdderPinActions(SourcePin, NewPinDirection, OutReason);
+	return Actions.Num() > 0;
 }
 
 UOptimusEditorGraphSchema::UOptimusEditorGraphSchema()
@@ -188,7 +199,8 @@ bool UOptimusEditorGraphSchema::TryCreateConnection(
 	// Pins might be connectable if one of the two pins is an adder pin;
 	if (OptimusEditor::IsAdderPin(InPinA) || OptimusEditor::IsAdderPin(InPinB))
 	{
-		const bool bCanConnect = IsValidAdderPinConnection(InPinA, InPinB);
+		TArray<IOptimusNodeAdderPinProvider::FAdderPinAction> AvailableActions;
+		const bool bCanConnect = IsValidAdderPinConnection(InPinA, InPinB, &AvailableActions);
 
 		if (!bCanConnect)
 		{
@@ -205,8 +217,56 @@ bool UOptimusEditorGraphSchema::TryCreateConnection(
 			TargetNode = OptimusEditor::GetModelNodeFromGraphPin(InPinA);
 			SourcePin = InputModelPin;
 		}
+
+		IOptimusNodeAdderPinProvider *AdderPinProvider = Cast<IOptimusNodeAdderPinProvider>(TargetNode);
 		UOptimusNodeGraph *Graph = TargetNode->GetOwningGraph();
-		return Graph->AddPinAndLink(TargetNode, SourcePin);
+		
+		if (AvailableActions.Num() == 1)
+		{
+			return Graph->ConnectAdderPin(AdderPinProvider, AvailableActions[0], SourcePin);
+		}
+
+		FMenuBuilder MenuBuilder(true, NULL);
+
+		MenuBuilder.BeginSection(NAME_None, FText::FromString(TEXT("Add Pin To Group")));
+
+		for (const IOptimusNodeAdderPinProvider::FAdderPinAction& Action : AvailableActions)
+		{
+			FText EntryName;
+
+			if (Action.bCanAutoLink)
+			{
+				EntryName = FText::FromString(Action.DisplayName.ToString() + TEXT(" * "));
+			}
+			else
+			{
+				EntryName = FText::FromName(Action.DisplayName);
+			}
+			
+			MenuBuilder.AddMenuEntry(
+				EntryName,
+				Action.ToolTip,
+				FSlateIcon(),
+				FUIAction(
+				FExecuteAction::CreateLambda([AdderPinProvider, Graph, Action, SourcePin]()
+					{
+						Graph->ConnectAdderPin(AdderPinProvider, Action, SourcePin);
+					}),
+					FCanExecuteAction()
+				));
+		}
+
+		MenuBuilder.EndSection();
+		
+		FSlateApplication::Get().PushMenu(
+			FSlateApplication::Get().GetUserFocusedWidget(0).ToSharedRef(),
+			FWidgetPath(),
+			MenuBuilder.MakeWidget(),
+			FSlateApplication::Get().GetCursorPos(),
+			FPopupTransitionEffect( FPopupTransitionEffect::ContextMenu)
+			);
+
+		return false;
 	}
 
 	return false;
@@ -241,7 +301,7 @@ const FPinConnectionResponse UOptimusEditorGraphSchema::CanCreateConnection(
 	if (OptimusEditor::IsAdderPin(InPinA) || OptimusEditor::IsAdderPin(InPinB))
 	{
 		FString FailureReason;
-		const bool bCanConnect = IsValidAdderPinConnection(InPinA, InPinB, &FailureReason);
+		const bool bCanConnect = IsValidAdderPinConnection(InPinA, InPinB, nullptr, &FailureReason);
 
 		return FPinConnectionResponse(
 			bCanConnect ? CONNECT_RESPONSE_MAKE :  CONNECT_RESPONSE_DISALLOW,
@@ -371,6 +431,17 @@ FLinearColor UOptimusEditorGraphSchema::GetColorFromPinType(const FEdGraphPinTyp
 	{
 		const UGraphEditorSettings* Settings = GetDefault<UGraphEditorSettings>();
 		return Settings->WildcardPinTypeColor;
+	}
+	
+	if (InPinType.PinCategory == UOptimusEditorGraphNode::GroupTypeName)
+	{
+		// We allow direct connection from component source to group pin, thus use the same color for them
+		FOptimusDataTypeHandle ComponentSourceType = FOptimusDataTypeRegistry::Get().FindType(*UOptimusComponentSourceBinding::StaticClass());
+
+		if (ensure(ComponentSourceType->bHasCustomPinColor))
+		{
+			return ComponentSourceType->CustomPinColor;
+		}
 	}
 	
 	// Use the PinSubCategory value to resolve the type. It's set in

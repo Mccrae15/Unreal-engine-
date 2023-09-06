@@ -1,29 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "NiagaraDataInterfaceStaticMesh.h"
-#include "NiagaraEmitterInstance.h"
-#include "NiagaraComponent.h"
-#include "NiagaraDistanceFieldHelper.h"
+#include "DataInterface/NiagaraDataInterfaceStaticMesh.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "NiagaraStats.h"
+#include "Containers/StridedView.h"
 #include "NiagaraSystemInstance.h"
+#include "Engine/StaticMesh.h"
 #include "NiagaraRenderer.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "NiagaraSettings.h"
-#include "NiagaraScript.h"
+#include "NiagaraCompileHashVisitor.h"
+#include "NiagaraFunctionLibrary.h"
 #include "NiagaraShaderParametersBuilder.h"
+#include "NiagaraDataInterfaceMeshCommon.h"
 #include "NiagaraWorldManager.h"
 #include "NiagaraDataInterfaceUtilities.h"
-#include "ScenePrivate.h"
-#include "SceneRendering.h"
-#include "ShaderParameterUtils.h"
+#include "NiagaraSystem.h"
+#include "SceneInterface.h"
+#include "SceneView.h"
 #include "StaticMeshComponentLODInfo.h"
 #include "NiagaraStats.h"
+#include "PrimitiveSceneInfo.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#include "StaticMeshResources.h"
 #include "Subsystems/ImportSubsystem.h"
+#include "INiagaraEditorOnlyDataUtlities.h"
+#include "Modules/ModuleManager.h"
+#include "NiagaraModule.h"
 #endif
 
-#include "DistanceFieldLightingShared.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMeshSocket.h"
 #include "NiagaraDataInterfaceStaticMeshUvMapping.h"
@@ -32,8 +40,7 @@
 #include "ShaderCompilerCore.h"
 
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "NiagaraGpuComputeDispatch.h"
-
+#include "FXRenderingUtils.h"
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceStaticMesh)
 
 #if WITH_EDITOR
@@ -219,6 +226,9 @@ namespace NDIStaticMeshLocal
 	static const FName	GetLocalToWorldName("GetLocalToWorld");
 	static const FName	GetLocalToWorldInverseTransposedName("GetLocalToWorldInverseTransposed");
 	static const FName	GetWorldVelocityName("GetWorldVelocity");
+
+	static const FName	GetInstanceIndexName("GetInstanceIndex");
+	static const FName	SetInstanceIndexName("SetInstanceIndex");
 
 	//////////////////////////////////////////////////////////////////////////
 	// VM UV mapping functions
@@ -426,7 +436,7 @@ namespace NDIStaticMeshLocal
 			Release();
 		}
 
-		void Init(FGpuInitializeData& GpuInitializeData)
+		void Init(FRHICommandListBase& RHICmdList, FGpuInitializeData& GpuInitializeData)
 		{
 			// Gather mesh buffers
 			if (GpuInitializeData.LODResource)
@@ -434,14 +444,19 @@ namespace NDIStaticMeshLocal
 				FBufferRHIRef IndexBufferRHIRef = GpuInitializeData.LODResource->IndexBuffer.IndexBufferRHI;
 				const bool bCanCreateIndexSRV = IndexBufferRHIRef.IsValid() && ((IndexBufferRHIRef->GetUsage() & EBufferUsageFlags::ShaderResource) == EBufferUsageFlags::ShaderResource);
 
-			#if DO_CHECK
-				if (bCanCreateIndexSRV == false)
+				if (bCanCreateIndexSRV)
 				{
-					UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by GPU emitter but does not have SRV access on this platform.  Enable CPU access to fix this issue. System: %s, Mesh: %s"), *GpuInitializeData.SystemFName.ToString(), *GpuInitializeData.StaticMeshFName.ToString());
+					bool b32Bit = GpuInitializeData.LODResource->IndexBuffer.Is32Bit();
+					MeshIndexBufferSRV = RHICmdList.CreateShaderResourceView(IndexBufferRHIRef, b32Bit ? 4 : 2, b32Bit ? PF_R32_UINT : PF_R16_UINT);
 				}
-			#endif
+				else
+				{
+#if DO_CHECK
+					UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by GPU emitter but does not have SRV access on this platform.  Enable CPU access to fix this issue. System: %s, Mesh: %s"), *GpuInitializeData.SystemFName.ToString(), *GpuInitializeData.StaticMeshFName.ToString());
+#endif
+					MeshIndexBufferSRV = nullptr;
+				}
 
-				MeshIndexBufferSRV = bCanCreateIndexSRV ? RHICreateShaderResourceView(IndexBufferRHIRef) : nullptr;
 				MeshPositionBufferSRV = GpuInitializeData.LODResource->VertexBuffers.PositionVertexBuffer.GetSRV();
 				MeshTangentBufferSRV = GpuInitializeData.LODResource->VertexBuffers.StaticMeshVertexBuffer.GetTangentsSRV();
 				MeshUVBufferSRV = GpuInitializeData.LODResource->VertexBuffers.StaticMeshVertexBuffer.GetTexCoordsSRV();
@@ -475,11 +490,11 @@ namespace NDIStaticMeshLocal
 				SectionCounts.Z = GpuInitializeData.NumUnfilteredSections;
 				if (GpuInitializeData.SectionInfos.Num() > 0)
 				{
-					SectionInfos.Initialize(TEXT("NDISkelMesh_SectionInfos"), sizeof(FIntVector4), GpuInitializeData.SectionInfos.Num(), EPixelFormat::PF_R32G32B32A32_UINT, BUF_Static, &GpuInitializeData.SectionInfos);
+					SectionInfos.Initialize(RHICmdList, TEXT("NDISkelMesh_SectionInfos"), sizeof(FIntVector4), GpuInitializeData.SectionInfos.Num(), EPixelFormat::PF_R32G32B32A32_UINT, BUF_Static, &GpuInitializeData.SectionInfos);
 				}
 				if (GpuInitializeData.FilteredAndUnfilteredSections.Num() > 0)
 				{
-					FilteredAndUnfilteredSections.Initialize(TEXT("NDISkelMesh_FilteredAndUnfilteredSections"), sizeof(uint16), GpuInitializeData.FilteredAndUnfilteredSections.Num(), EPixelFormat::PF_R16_UINT, BUF_Static, &GpuInitializeData.FilteredAndUnfilteredSections);
+					FilteredAndUnfilteredSections.Initialize(RHICmdList, TEXT("NDISkelMesh_FilteredAndUnfilteredSections"), sizeof(uint16), GpuInitializeData.FilteredAndUnfilteredSections.Num(), EPixelFormat::PF_R16_UINT, BUF_Static, &GpuInitializeData.FilteredAndUnfilteredSections);
 				}
 			}
 			else
@@ -501,11 +516,11 @@ namespace NDIStaticMeshLocal
 			SocketCounts.Z = GpuInitializeData.NumUnfilteredSockets;
 			if ( GpuInitializeData.SocketTransforms.Num() > 0 )
 			{
-				SocketTransforms.Initialize(TEXT("NDISkelMesh_SocketTransforms"), sizeof(FVector4f), GpuInitializeData.SocketTransforms.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &GpuInitializeData.SocketTransforms);
+				SocketTransforms.Initialize(RHICmdList, TEXT("NDISkelMesh_SocketTransforms"), sizeof(FVector4f), GpuInitializeData.SocketTransforms.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &GpuInitializeData.SocketTransforms);
 			}
 			if ( GpuInitializeData.FilteredAndUnfilteredSockets.Num() > 0 )
 			{
-				FilteredAndUnfilteredSockets.Initialize(TEXT("NDISkelMesh_FilteredAndUnfilteredSockets"), sizeof(uint16), GpuInitializeData.FilteredAndUnfilteredSockets.Num(), EPixelFormat::PF_R16_UINT, BUF_Static, &GpuInitializeData.FilteredAndUnfilteredSockets);
+				FilteredAndUnfilteredSockets.Initialize(RHICmdList, TEXT("NDISkelMesh_FilteredAndUnfilteredSockets"), sizeof(uint16), GpuInitializeData.FilteredAndUnfilteredSockets.Num(), EPixelFormat::PF_R16_UINT, BUF_Static, &GpuInitializeData.FilteredAndUnfilteredSockets);
 			}
 		#if STATS
 			GPUMemoryUsage = SectionInfos.NumBytes + FilteredAndUnfilteredSections.NumBytes + SocketTransforms.NumBytes + FilteredAndUnfilteredSockets.NumBytes;
@@ -570,6 +585,9 @@ namespace NDIStaticMeshLocal
 		/** Vector from system owners instance location to the sampled mesh location. */
 		FVector3f OwnerToMeshVector = FVector3f::ZeroVector;
 
+		/** Which instance index we are reading from. */
+		int32 InstanceIndex = INDEX_NONE;
+
 		/** Cached ComponentToWorld. (Falls back to WorldTransform of the system instance) */
 		FMatrix Transform;
 		/** InverseTranspose of above for transforming normals/tangents. */
@@ -579,6 +597,15 @@ namespace NDIStaticMeshLocal
 		FMatrix PrevTransform;
 		/** Cached Previous InverseTranspose of above for transforming normals/tangents. */
 		FMatrix PrevTransformInverseTransposed;
+
+		/** When attached to an ISM contains all the transforms, so safe to use concurrently */
+		TArray<FTransform> ISMTransforms;
+
+		/** Cached SystemInstance World Transform */
+		FTransform SystemInstanceWorldTransform = FTransform::Identity;
+
+		/** Cached LWC tile offset */
+		FVector LWCTileOffset = FVector::ZeroVector;
 
 		/** Cached Rotation. */
 		FQuat4f Rotation;
@@ -594,6 +621,10 @@ namespace NDIStaticMeshLocal
 
 		/** Velocity set by the physics body of the mesh component */
 		FVector PhysicsVelocity;
+
+		/** True we capture the transforms from the mesh component each frame. */
+		uint32 bCaptureTransformsPerFrame : 1;
+
 		/** True if velocity should not be calculated via the transforms, but rather read the physics data from the mesh component */
 		uint32 bUsePhysicsVelocity : 1;
 
@@ -711,6 +742,80 @@ namespace NDIStaticMeshLocal
 		}
 #endif
 
+		void UpdateTransforms(USceneComponent* SceneComponent, FNiagaraSystemInstance* SystemInstance)
+		{
+			SystemInstanceWorldTransform = SystemInstance->GetWorldTransform();
+
+			FTransform ComponentTransform;
+			if (SceneComponent)
+			{
+				ComponentTransform = SceneComponent->GetComponentToWorld();
+				if (UInstancedStaticMeshComponent* ISMComponent = Cast<UInstancedStaticMeshComponent>(SceneComponent))
+				{
+					const int32 NumInstances = ISMComponent->PerInstanceSMData.Num();
+					ISMTransforms.SetNum(NumInstances);
+					for (int32 i = 0; i < NumInstances; ++i)
+					{
+						ISMComponent->GetInstanceTransform(i, ISMTransforms[i], true);
+					}
+
+					if (ISMTransforms.IsValidIndex(InstanceIndex))
+					{
+						ComponentTransform = ISMTransforms[InstanceIndex];
+					}
+				}
+				else
+				{
+					ISMTransforms.Empty();
+				}
+			}
+			else
+			{
+				ISMTransforms.Empty();
+				ComponentTransform = SystemInstanceWorldTransform;
+			}
+
+			OwnerToMeshVector = FVector3f(ComponentTransform.GetLocation() - SystemInstanceWorldTransform.GetLocation());
+			LWCTileOffset = FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize();
+			ComponentTransform.AddToTranslation(LWCTileOffset);
+
+			Transform = ComponentTransform.ToMatrixWithScale();
+			TransformInverseTransposed = ComponentTransform.Inverse().ToMatrixWithScale().GetTransposed();
+			Rotation = FQuat4f(ComponentTransform.GetRotation());
+		}
+
+		void UpdateTransformsResetPrevious(USceneComponent* SceneComponent, FNiagaraSystemInstance* SystemInstance)
+		{
+			UpdateTransforms(SceneComponent, SystemInstance);
+			PrevTransform = Transform;
+			PrevTransformInverseTransposed = TransformInverseTransposed;
+			PrevRotation = Rotation;
+		}
+
+		void UpdateTransformsCopyPrevious(USceneComponent* SceneComponent, FNiagaraSystemInstance* SystemInstance)
+		{
+			PrevTransform = Transform;
+			PrevTransformInverseTransposed = TransformInverseTransposed;
+			PrevRotation = Rotation;
+			UpdateTransforms(SceneComponent, SystemInstance);
+		}
+
+		void UpdateTransformsInstanceIndexChanged()
+		{
+			FTransform ComponentTransform = ISMTransforms.IsValidIndex(InstanceIndex) ? ISMTransforms[InstanceIndex] : SystemInstanceWorldTransform;
+
+			OwnerToMeshVector = FVector3f(ComponentTransform.GetLocation() - SystemInstanceWorldTransform.GetLocation());
+			ComponentTransform.AddToTranslation(LWCTileOffset);
+
+			Transform = ComponentTransform.ToMatrixWithScale();
+			TransformInverseTransposed = ComponentTransform.Inverse().ToMatrixWithScale().GetTransposed();
+			Rotation = FQuat4f(ComponentTransform.GetRotation());
+
+			PrevTransform = Transform;
+			PrevTransformInverseTransposed = TransformInverseTransposed;
+			PrevRotation = Rotation;
+		}
+
 		bool Init(UNiagaraDataInterfaceStaticMesh* Interface, FNiagaraSystemInstance* SystemInstance)
 		{
 			check(SystemInstance);
@@ -729,6 +834,7 @@ namespace NDIStaticMeshLocal
 			PreSkinnedLocalBoundsExtents = FVector3f::ZeroVector;
 			OwnerToMeshVector = FVector3f::ZeroVector;
 			PhysicsVelocity = FVector::ZeroVector;
+			bCaptureTransformsPerFrame = Interface->bCaptureTransformsPerFrame;
 			bUsePhysicsVelocity = Interface->bUsePhysicsBodyVelocity;
 			bComponentValid = false;
 			bMeshValid = false;
@@ -754,18 +860,8 @@ namespace NDIStaticMeshLocal
 			SceneComponentWeakPtr = SceneComponent;
 
 			// Gather attached information
-			bComponentValid = SceneComponent != nullptr;
-			FTransform ComponentTransform = bComponentValid ? SceneComponent->GetComponentToWorld() : SystemInstance->GetWorldTransform();
-			OwnerToMeshVector = FVector3f(ComponentTransform.GetLocation() -  SystemInstance->GetWorldTransform().GetLocation());
-			ComponentTransform.AddToTranslation(FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());
-
-			Transform = ComponentTransform.ToMatrixWithScale();
-			TransformInverseTransposed = ComponentTransform.Inverse().ToMatrixWithScale().GetTransposed();
-			PrevTransform = Transform;
-			PrevTransformInverseTransposed = ComponentTransform.Inverse().ToMatrixWithScale().GetTransposed();
-
-			Rotation = FQuat4f(ComponentTransform.GetRotation());
-			PrevRotation = Rotation;
+			InstanceIndex = Interface->InstanceIndex;
+			UpdateTransformsResetPrevious(SceneComponent, SystemInstance);
 
 			if (bUsePhysicsVelocity)
 			{
@@ -789,7 +885,7 @@ namespace NDIStaticMeshLocal
 			else if (!StaticMesh->bAllowCPUAccess)
 			{
 				//-TODO: This will be modified with the refactor to allow GPU to be used when CPU is also used
-				if (Interface->IsUsedWithGPUEmitter() && !Interface->IsUsedWithCPUEmitter())
+				if (Interface->IsUsedWithGPUScript() && !Interface->IsUsedWithCPUScript())
 				{
 					if (!FNiagaraUtilities::AreBufferSRVsAlwaysCreated(GMaxRHIShaderPlatform))
 					{
@@ -799,11 +895,25 @@ namespace NDIStaticMeshLocal
 				}
 				else
 				{
-					if (Interface->IsUsedWithCPUEmitter())
+					bool bNeedsCpuAccess = false;
+					FNiagaraDataInterfaceUtilities::ForEachVMFunction(
+						Interface,
+						SystemInstance,
+						[&bNeedsCpuAccess](const UNiagaraScript* Script, const FVMExternalFunctionBindingInfo& VMFunction) -> bool
+						{
+							bNeedsCpuAccess |= UNiagaraDataInterfaceStaticMesh::FunctionNeedsCpuAccess(VMFunction.Name);
+							return bNeedsCpuAccess == false;
+						}
+					);
+
+					if (bNeedsCpuAccess)
 					{
-						UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by CPU emitter and does not allow CPU access. System: %s, Mesh: %s"), *GetFullNameSafe(SystemInstance->GetSystem()), *GetFullNameSafe(StaticMesh));
+						if (Interface->IsUsedWithCPUScript())
+						{
+							UE_LOG(LogNiagara, Log, TEXT("NiagaraStaticMeshDataInterface used by CPU emitter and does not allow CPU access. System: %s, Mesh: %s"), *GetFullNameSafe(SystemInstance->GetSystem()), *GetFullNameSafe(StaticMesh));
+						}
+						StaticMesh = nullptr;
 					}
-					StaticMesh = nullptr;
 				}
 			}
 
@@ -944,7 +1054,7 @@ namespace NDIStaticMeshLocal
 
 				const bool MeshValid = IsValid(StaticMesh);
 				const bool SupportUvMappingCpu = UsedByCpuUvMapping && MeshValid;
-				const bool SupportUvMappingGpu = UsedByGpuUvMapping && MeshValid && Interface->IsUsedWithGPUEmitter();
+				const bool SupportUvMappingGpu = UsedByGpuUvMapping && MeshValid && Interface->IsUsedWithGPUScript();
 
 				UvMappingUsage = FMeshUvMappingUsage(SupportUvMappingCpu, SupportUvMappingGpu);
 
@@ -986,17 +1096,10 @@ namespace NDIStaticMeshLocal
 			DeltaSeconds = InDeltaSeconds;
 
 			USceneComponent* SceneComponent = SceneComponentWeakPtr.Get();
-			FTransform ComponentTransform = SceneComponent != nullptr ? SceneComponent->GetComponentToWorld() : SystemInstance->GetWorldTransform();
-			OwnerToMeshVector = FVector3f(ComponentTransform.GetLocation() - SystemInstance->GetWorldTransform().GetLocation());
-			ComponentTransform.AddToTranslation(FVector(SystemInstance->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());
-
-			PrevTransform = Transform;
-			PrevTransformInverseTransposed = TransformInverseTransposed;
-			Transform = ComponentTransform.ToMatrixWithScale();
-			TransformInverseTransposed = ComponentTransform.Inverse().ToMatrixWithScale().GetTransposed();
-
-			PrevRotation = Rotation;
-			Rotation = FQuat4f(ComponentTransform.GetRotation());
+			if (bCaptureTransformsPerFrame)
+			{
+				UpdateTransformsCopyPrevious(SceneComponent, SystemInstance);
+			}
 
 			if (bUsePhysicsVelocity)
 			{
@@ -1660,7 +1763,7 @@ bool UNiagaraDataInterfaceStaticMesh::InitPerInstanceData(void* PerInstanceData,
 	const bool bIsValid = InstanceData->Init(this, SystemInstance);
 
 	// Create render thread data?
-	if (bIsValid && IsUsedWithGPUEmitter() )
+	if (bIsValid && IsUsedWithGPUScript() )
 	{
 		TUniquePtr<NDIStaticMeshLocal::FGpuInitializeData> GpuInitializeData = MakeUnique<NDIStaticMeshLocal::FGpuInitializeData>();
 		GpuInitializeData->RenderProxy = GetProxyAs<NDIStaticMeshLocal::FRenderProxy>();
@@ -1755,7 +1858,7 @@ bool UNiagaraDataInterfaceStaticMesh::InitPerInstanceData(void* PerInstanceData,
 			[GpuInitializeData_RT=MoveTemp(GpuInitializeData)](FRHICommandListImmediate& CmdList)
 			{
 				NDIStaticMeshLocal::FInstanceData_RenderThread& InstanceData_RT = GpuInitializeData_RT->RenderProxy->PerInstanceData_RT.Add(GpuInitializeData_RT->SystemInstanceID);
-				InstanceData_RT.Init(*(GpuInitializeData_RT.Get()));
+				InstanceData_RT.Init(CmdList, *(GpuInitializeData_RT.Get()));
 			}
 		);
 	}
@@ -1769,7 +1872,7 @@ void UNiagaraDataInterfaceStaticMesh::DestroyPerInstanceData(void* PerInstanceDa
 	InstanceData->Release();
 	InstanceData->~FInstanceData_GameThread();
 
-	if ( IsUsedWithGPUEmitter() )
+	if ( IsUsedWithGPUScript() )
 	{
 		NDIStaticMeshLocal::FRenderProxy* Proxy_RT = GetProxyAs<NDIStaticMeshLocal::FRenderProxy>();
 		FNiagaraSystemInstanceID InstanceID_RT = SystemInstance->GetId();
@@ -2215,6 +2318,19 @@ void UNiagaraDataInterfaceStaticMesh::GetMiscFunctions(TArray<FNiagaraFunctionSi
 		Sig.Name = GetWorldVelocityName;
 		Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Velocity"));
 	}
+	//-TBD: There's not really a benefit to getting this in the graph currently
+	//{
+	//	FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(BaseSignature);
+	//	Sig.Name = GetInstanceIndexName;
+	//	Sig.Outputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
+	//}
+	{
+		FNiagaraFunctionSignature& Sig = OutFunctions.Add_GetRef(BaseSignature);
+		Sig.Name = SetInstanceIndexName;
+		Sig.Inputs.Emplace(FNiagaraTypeDefinition::GetIntDef(), TEXT("Index"));
+		Sig.bRequiresExecPin = true;
+		Sig.bSupportsGPU = false;
+	}
 }
 
 void UNiagaraDataInterfaceStaticMesh::GetUVMappingFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions, const FNiagaraFunctionSignature& BaseSignature) const
@@ -2381,25 +2497,24 @@ void UNiagaraDataInterfaceStaticMesh::GetDeprecatedFunctions(TArray<FNiagaraFunc
 	}
 }
 
-void UNiagaraDataInterfaceStaticMesh::GetCpuAccessFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions)
+bool UNiagaraDataInterfaceStaticMesh::FunctionNeedsCpuAccess(FName InName)
 {
 	using namespace NDIStaticMeshLocal;
 
-	// Setup base signature
-	FNiagaraFunctionSignature BaseSignature;
-	BaseSignature.Inputs.Emplace(FNiagaraTypeDefinition(GetClass()), TEXT("StaticMesh"));
-	BaseSignature.bMemberFunction = true;
-	BaseSignature.bRequiresContext = false;
-#if WITH_EDITORONLY_DATA
-	BaseSignature.FunctionVersion = EDIFunctionVersion::LatestVersion;
-#endif
+	static TSet<FName> SafeFunctions =
+	{
+		IsValidName,
+		GetPreSkinnedLocalBoundsName,
+		GetMeshBoundsName,
+		GetMeshBoundsWSName,
+		GetLocalToWorldName,
+		GetLocalToWorldInverseTransposedName,
+		GetWorldVelocityName,
+		//GetInstanceIndexName,
+		SetInstanceIndexName,
+	};
 
-	GetVertexSamplingFunctions(OutFunctions, BaseSignature);
-	GetTriangleSamplingFunctions(OutFunctions, BaseSignature);
-	GetSectionFunctions(OutFunctions, BaseSignature);
-	GetUVMappingFunctions(OutFunctions, BaseSignature);
-	GetDistanceFieldFunctions(OutFunctions, BaseSignature);
-	GetDeprecatedFunctions(OutFunctions, BaseSignature);
+	return SafeFunctions.Contains(InName) == false;
 }
 
 #if WITH_EDITORONLY_DATA
@@ -2774,6 +2889,14 @@ void UNiagaraDataInterfaceStaticMesh::GetVMExternalFunction(const FVMExternalFun
 	{
 		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { VMGetWorldVelocity(Context); });
 	}
+	else if (BindingInfo.Name == GetInstanceIndexName)
+	{
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { VMGetInstanceIndex(Context); });
+	}
+	else if (BindingInfo.Name == SetInstanceIndexName)
+	{
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { VMSetInstanceIndex(Context); });
+	}
 
 	//////////////////////////////////////////////////////////////////////////
 	// VM UV mapping functions
@@ -2972,15 +3095,20 @@ bool UNiagaraDataInterfaceStaticMesh::GetFunctionHLSL(const FNiagaraDataInterfac
 		OutHLSL += FString::Format(FormatSample, ArgsSample);
 	}
 
-	return true;
+	static const TSet<FName> UnsupportedGpuFunctions =
+	{
+		SetInstanceIndexName,
+	};
+
+	return UnsupportedGpuFunctions.Contains(FunctionInfo.DefinitionName) ? false : true;
 }
 #endif
 
 void UNiagaraDataInterfaceStaticMesh::BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const
 {
 	ShaderParametersBuilder.AddNestedStruct<NDIStaticMeshLocal::FShaderParameters>();
-	ShaderParametersBuilder.AddIncludedStruct<FDistanceFieldObjectBufferParameters>();
-	ShaderParametersBuilder.AddIncludedStruct<FDistanceFieldAtlasParameters>();
+	ShaderParametersBuilder.AddIncludedStruct(UE::FXRenderingUtils::DistanceFields::GetObjectBufferParametersMetadata());
+	ShaderParametersBuilder.AddIncludedStruct(UE::FXRenderingUtils::DistanceFields::GetAtlasParametersMetadata());
 }
 
 void UNiagaraDataInterfaceStaticMesh::SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const
@@ -3040,6 +3168,9 @@ void UNiagaraDataInterfaceStaticMesh::SetShaderParameters(const FNiagaraDataInte
 	ShaderParameters->SocketTransforms	= InstanceData.SocketTransforms.SRV.IsValid() ? InstanceData.SocketTransforms.SRV.GetReference() : FNiagaraRenderer::GetDummyFloat4Buffer();
 	ShaderParameters->FilteredAndUnfilteredSockets = InstanceData.FilteredAndUnfilteredSockets.SRV.IsValid() ? InstanceData.FilteredAndUnfilteredSockets.SRV.GetReference() : FNiagaraRenderer::GetDummyUIntBuffer();
 
+	ShaderParameters->SectionInfos = InstanceData.SectionInfos.SRV.IsValid() ? InstanceData.SectionInfos.SRV.GetReference() : FNiagaraRenderer::GetDummyUInt4Buffer();
+	ShaderParameters->SocketTransforms	= InstanceData.SocketTransforms.SRV.IsValid() ? InstanceData.SocketTransforms.SRV.GetReference() : FNiagaraRenderer::GetDummyFloat4Buffer();
+
 	// Set misc data
 	const float InvDeltaTime = InstanceData.DeltaSeconds > 0.0f ? 1.0f / InstanceData.DeltaSeconds : 0.0f;
 	const FVector3f DeltaPosition = InstanceData.Transform.GetOrigin() - InstanceData.PrevTransform.GetOrigin();
@@ -3053,39 +3184,40 @@ void UNiagaraDataInterfaceStaticMesh::SetShaderParameters(const FNiagaraDataInte
 	ShaderParameters->InstancePreviousRotation						= InstanceData.PrevRotation;
 	ShaderParameters->InstanceWorldVelocity							= DeltaPosition;
 
-	const FDistanceFieldSceneData* DistanceFieldSceneData = nullptr;
-	TConstArrayView<FViewInfo> SimulationViewInfos = Context.GetComputeDispatchInterface().GetSimulationViewInfos();
-	if (SimulationViewInfos.Num() > 0 && SimulationViewInfos[0].Family && SimulationViewInfos[0].Family->Scene && SimulationViewInfos[0].Family->Scene->GetRenderScene())
-	{
-		DistanceFieldSceneData = &SimulationViewInfos[0].Family->Scene->GetRenderScene()->DistanceFieldSceneData;
-	}
+	TConstStridedView<FSceneView> SimulationSceneViews = Context.GetComputeDispatchInterface().GetSimulationSceneViews();
+	const FSceneView* PrimaryView = SimulationSceneViews.Num() > 0 ? &SimulationSceneViews[0] : nullptr;
+
+	const bool bDistanceFieldParametersExist = PrimaryView ? UE::FXRenderingUtils::DistanceFields::HasDataToBind(*PrimaryView) : false;
 
 	if (Context.IsParameterBound(&ShaderParameters->InstanceDistanceFieldIndex))
 	{
-		int32 DistanceFieldIndex = -1;
-		if (DistanceFieldSceneData != nullptr && InstanceData.DistanceFieldPrimitiveId.IsValid())
+		int32 DistanceFieldIndex = INDEX_NONE;
+		if (bDistanceFieldParametersExist && InstanceData.DistanceFieldPrimitiveId.IsValid())
 		{
-			if (FScene* Scene = Context.GetComputeDispatchInterface().GetScene())
+			const FSceneInterface* Scene = Context.GetComputeDispatchInterface().GetSceneInterface();
+			if (const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene ? Scene->GetPrimitiveSceneInfo(InstanceData.DistanceFieldPrimitiveId) : nullptr)
 			{
-				// Kind of gross, but currently no way to reference other primitive scene infos
-				const int32 PrimitiveSceneIndex = Scene->PrimitiveComponentIds.Find(InstanceData.DistanceFieldPrimitiveId);
-				if (PrimitiveSceneIndex != INDEX_NONE)
-				{
-					const TArray<int32, TInlineAllocator<1>>& DFIndices = Scene->Primitives[PrimitiveSceneIndex]->DistanceFieldInstanceIndices;
-					DistanceFieldIndex = DFIndices.Num() > 0 ? DFIndices[0] : -1;
-				}
+				DistanceFieldIndex = PrimitiveSceneInfo->DistanceFieldInstanceIndices.Num() > 0 ? PrimitiveSceneInfo->DistanceFieldInstanceIndices[0] : INDEX_NONE;
 			}
 		}
 		ShaderParameters->InstanceDistanceFieldIndex = DistanceFieldIndex;
 	}
 
 	// Bind Mesh Distance Field Data
-	FDistanceFieldObjectBufferParameters* ShaderDistanceFieldObjectParameters = Context.GetParameterIncludedStruct<FDistanceFieldObjectBufferParameters>();
-	FDistanceFieldAtlasParameters* ShaderDistanceFieldAtlasParameters = Context.GetParameterIncludedStruct<FDistanceFieldAtlasParameters>();
-	const bool bDistanceFieldDataBound = Context.IsStructBound<FDistanceFieldObjectBufferParameters>(ShaderDistanceFieldObjectParameters) || Context.IsStructBound<FDistanceFieldAtlasParameters>(ShaderDistanceFieldAtlasParameters);
+	const FShaderParametersMetadata* ObjectBufferParametersMetadata = UE::FXRenderingUtils::DistanceFields::GetObjectBufferParametersMetadata();
+	const FShaderParametersMetadata* AtlasParametersMetadata = UE::FXRenderingUtils::DistanceFields::GetAtlasParametersMetadata();
+
+	uint8* ShaderDistanceFieldObjectParameters = Context.GetParameterIncludedStruct(ObjectBufferParametersMetadata);
+	uint8* ShaderDistanceFieldAtlasParameters = Context.GetParameterIncludedStruct(AtlasParametersMetadata);
+
+	const bool bDistanceFieldDataBound =
+		Context.IsStructBound(ShaderDistanceFieldObjectParameters, ObjectBufferParametersMetadata) ||
+		Context.IsStructBound(ShaderDistanceFieldAtlasParameters, AtlasParametersMetadata);
+
 	if (bDistanceFieldDataBound)
 	{
-		FNiagaraDistanceFieldHelper::SetMeshDistanceFieldParameters(Context.GetGraphBuilder(), DistanceFieldSceneData, *ShaderDistanceFieldObjectParameters, *ShaderDistanceFieldAtlasParameters, FNiagaraRenderer::GetDummyFloat4Buffer());
+		UE::FXRenderingUtils::DistanceFields::SetupObjectBufferParameters(Context.GetGraphBuilder(), ShaderDistanceFieldObjectParameters, PrimaryView);
+		UE::FXRenderingUtils::DistanceFields::SetupAtlasParameters(Context.GetGraphBuilder(), ShaderDistanceFieldAtlasParameters, PrimaryView);
 	}
 
 	const FBox3f MeshBounds(InstanceData.PreSkinnedLocalBoundsCenter - InstanceData.PreSkinnedLocalBoundsExtents, InstanceData.PreSkinnedLocalBoundsCenter + InstanceData.PreSkinnedLocalBoundsExtents);
@@ -3129,10 +3261,12 @@ bool UNiagaraDataInterfaceStaticMesh::Equals(const UNiagaraDataInterface* Other)
 		OtherTyped->SoftSourceActor == SoftSourceActor &&
 		OtherTyped->SourceComponent == SourceComponent &&
 		OtherTyped->SectionFilter.AllowedMaterialSlots == SectionFilter.AllowedMaterialSlots &&
+		OtherTyped->bCaptureTransformsPerFrame == bCaptureTransformsPerFrame &&
 		OtherTyped->bUsePhysicsBodyVelocity == bUsePhysicsBodyVelocity &&
 		OtherTyped->bAllowSamplingFromStreamingLODs == bAllowSamplingFromStreamingLODs &&
 		OtherTyped->LODIndex == LODIndex &&
 		OtherTyped->LODIndexUserParameter == LODIndexUserParameter &&
+		OtherTyped->InstanceIndex == InstanceIndex &&
 		OtherTyped->FilteredSockets == FilteredSockets;
 }
 
@@ -3153,19 +3287,21 @@ bool UNiagaraDataInterfaceStaticMesh::CopyToInternal(UNiagaraDataInterface* Dest
 	OtherTyped->SoftSourceActor = SoftSourceActor;
 	OtherTyped->SourceComponent = SourceComponent;
 	OtherTyped->SectionFilter = SectionFilter;
+	OtherTyped->bCaptureTransformsPerFrame = bCaptureTransformsPerFrame;
 	OtherTyped->bUsePhysicsBodyVelocity = bUsePhysicsBodyVelocity;
 	OtherTyped->FilteredSockets = FilteredSockets;
 	OtherTyped->bAllowSamplingFromStreamingLODs = bAllowSamplingFromStreamingLODs;
 	OtherTyped->LODIndex = LODIndex;
 	OtherTyped->LODIndexUserParameter = LODIndexUserParameter;
+	OtherTyped->InstanceIndex = InstanceIndex;
 	OtherTyped->BindSourceDelegates();
 	return true;
 }
 
 #if WITH_NIAGARA_DEBUGGER
-void UNiagaraDataInterfaceStaticMesh::DrawDebugHud(UCanvas* Canvas, FNiagaraSystemInstance* SystemInstance, FString& VariableDataString, bool bVerbose) const
+void UNiagaraDataInterfaceStaticMesh::DrawDebugHud(FNDIDrawDebugHudContext& DebugHudContext) const
 {
-	NDIStaticMeshLocal::FInstanceData_GameThread* InstanceData_GT = SystemInstance->FindTypedDataInterfaceInstanceData<NDIStaticMeshLocal::FInstanceData_GameThread>(this);
+	const NDIStaticMeshLocal::FInstanceData_GameThread* InstanceData_GT = DebugHudContext.GetSystemInstance()->FindTypedDataInterfaceInstanceData<NDIStaticMeshLocal::FInstanceData_GameThread>(this);
 	if (InstanceData_GT == nullptr)
 	{
 		return;
@@ -3173,13 +3309,18 @@ void UNiagaraDataInterfaceStaticMesh::DrawDebugHud(UCanvas* Canvas, FNiagaraSyst
 
 	USceneComponent* SceneComponent = InstanceData_GT->SceneComponentWeakPtr.Get();
 	UStaticMesh* SkeletalMesh = InstanceData_GT->StaticMeshWeakPtr.Get();
-	VariableDataString = FString::Printf(TEXT("StaticMesh(%s) StaticMeshComp(%s)"), *GetNameSafe(SkeletalMesh), *GetNameSafe(SceneComponent));
+	DebugHudContext.GetOutputString().Appendf(TEXT("StaticMesh(%s) StaticMeshComp(%s)"), *GetNameSafe(SkeletalMesh), *GetNameSafe(SceneComponent));
 }
 #endif
 
 #if WITH_EDITOR
 void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagaraComponent* Component, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo)
 {
+	if (Asset == nullptr)
+	{
+		return;
+	}
+
 	AActor* SourceActor = SoftSourceActor.Get();
 	UStaticMesh* CurrentMesh = DefaultMesh;
 
@@ -3190,37 +3331,39 @@ void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagar
 		bHasNoMeshAssignedWarning = CurrentMesh == nullptr;
 	}
 
+	INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+	const INiagaraEditorOnlyDataUtilities& EditorOnlyDataUtilities = NiagaraModule.GetEditorOnlyDataUtilities();
+	UNiagaraDataInterface* RuntimeInstanceOfThis = EditorOnlyDataUtilities.IsEditorDataInterfaceInstance(this)
+		? EditorOnlyDataUtilities.GetResolvedRuntimeInstanceForEditorDataInterfaceInstance(*Asset, *this)
+		: this;
+
 	if (CurrentMesh != nullptr)
 	{
 		if (CurrentMesh->bAllowCPUAccess == false)
 		{
-			// Get list of functions that require CPU access, this is slightly conservative but reduces the level of false warnings
-			TArray<FNiagaraFunctionSignature> CpuAccessFunctions;
-			GetCpuAccessFunctions(CpuAccessFunctions);
+			bool bNeedsCpuAccess = false;
 
-			bool bCpuAccessWarning = false;
-
-			FNiagaraDataInterfaceUtilities::ForEachVMFunctionEquals(
-				this,
+			FNiagaraDataInterfaceUtilities::ForEachVMFunction(
+				RuntimeInstanceOfThis,
 				Asset,
-				[&](const UNiagaraScript* Script, const FVMExternalFunctionBindingInfo& VMFunction) -> bool
+				[&bNeedsCpuAccess](const UNiagaraScript* Script, const FVMExternalFunctionBindingInfo& VMFunction) -> bool
 				{
-					bCpuAccessWarning |= CpuAccessFunctions.ContainsByPredicate([&](const FNiagaraFunctionSignature& CheckFunction) { return CheckFunction.Name == VMFunction.Name; });
-					return bCpuAccessWarning == false;
+					bNeedsCpuAccess |= FunctionNeedsCpuAccess(VMFunction.Name);
+					return bNeedsCpuAccess == false;
 				}
 			);
 
-			FNiagaraDataInterfaceUtilities::ForEachGpuFunctionEquals(
-				this,
+			FNiagaraDataInterfaceUtilities::ForEachGpuFunction(
+				RuntimeInstanceOfThis,
 				Asset,
-				[&](const UNiagaraScript* Script,const FNiagaraDataInterfaceGeneratedFunction& GpuFunction) -> bool
+				[&bNeedsCpuAccess](const UNiagaraScript* Script,const FNiagaraDataInterfaceGeneratedFunction& GpuFunction) -> bool
 				{
-					bCpuAccessWarning |= CpuAccessFunctions.ContainsByPredicate([&](const FNiagaraFunctionSignature& CheckFunction) { return CheckFunction.Name == GpuFunction.DefinitionName; });
-					return bCpuAccessWarning == false;
+					bNeedsCpuAccess |= FunctionNeedsCpuAccess(GpuFunction.DefinitionName);
+					return bNeedsCpuAccess == false;
 				}
 			);
 
-			if (bCpuAccessWarning)
+			if (bNeedsCpuAccess)
 			{
 				OutErrors.Emplace(
 					FText::Format(LOCTEXT("CPUAccessNotAllowedError", "This mesh needs CPU access in order to be used properly.({0})"), FText::FromString(CurrentMesh->GetName())),
@@ -3249,8 +3392,7 @@ void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagar
 
 	if (GetDefault<UNiagaraSettings>()->NDIStaticMesh_AllowDistanceFields == false)
 	{
-		FNiagaraDataInterfaceUtilities::ForEachGpuFunctionEquals(
-			this, Asset, Component,
+		auto GenerateWarnings = 
 			[&](const UNiagaraScript* Script, const FNiagaraDataInterfaceGeneratedFunction& FunctionBinding)
 			{
 				if (FunctionBinding.DefinitionName == NDIStaticMeshLocal::QueryDistanceFieldName )
@@ -3264,8 +3406,16 @@ void UNiagaraDataInterfaceStaticMesh::GetFeedback(UNiagaraSystem* Asset, UNiagar
 					return false;
 				}
 				return true;
-			}
-		);
+			};
+
+		if (Component != nullptr)
+		{
+			FNiagaraDataInterfaceUtilities::ForEachGpuFunction(RuntimeInstanceOfThis, Component, GenerateWarnings);
+		}
+		else if (Asset != nullptr)
+		{
+			FNiagaraDataInterfaceUtilities::ForEachGpuFunction(RuntimeInstanceOfThis, Asset, GenerateWarnings);
+		}
 	}
 }
 #endif //WITH_EDITOR
@@ -3386,6 +3536,18 @@ void UNiagaraDataInterfaceStaticMesh::SetSourceComponentFromBlueprints(UStaticMe
 	SourceComponent = ComponentToUse;
 	SoftSourceActor = ComponentToUse->GetOwner();
 	BindSourceDelegates();
+}
+
+void UNiagaraDataInterfaceStaticMesh::SetNiagaraStaticMeshDIInstanceIndex(UNiagaraComponent* NiagaraSystem, const FName UserParameterName, int32 NewInstanceIndex)
+{
+	if (UNiagaraDataInterfaceStaticMesh* DataInterface = UNiagaraFunctionLibrary::GetDataInterface<UNiagaraDataInterfaceStaticMesh>(NiagaraSystem, UserParameterName))
+	{
+		if (DataInterface->InstanceIndex != NewInstanceIndex)
+		{
+			++DataInterface->ChangeId;
+			DataInterface->InstanceIndex = NewInstanceIndex;
+		}
+	}
 }
 
 void UNiagaraDataInterfaceStaticMesh::BindSourceDelegates()
@@ -4868,6 +5030,35 @@ void UNiagaraDataInterfaceStaticMesh::VMGetWorldVelocity(FVectorVMExternalFuncti
 	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		OutVelocity.SetAndAdvance((FVector3f)InstanceData->PhysicsVelocity);
+	}
+}
+
+void UNiagaraDataInterfaceStaticMesh::VMGetInstanceIndex(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<NDIStaticMeshLocal::FInstanceData_GameThread> InstanceData(Context);
+	FNDIOutputParam<int32> OutInstanceIndex(Context);
+
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		OutInstanceIndex.SetAndAdvance(InstanceData->InstanceIndex);
+	}
+}
+
+void UNiagaraDataInterfaceStaticMesh::VMSetInstanceIndex(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<NDIStaticMeshLocal::FInstanceData_GameThread> InstanceData(Context);
+	FNDIInputParam<int32> InInstanceIndex(Context);
+
+	bool bUpdateTransforms = false;
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		const int32 NewInstanceIndex = InInstanceIndex.GetAndAdvance();
+		bUpdateTransforms |= InstanceData->InstanceIndex != NewInstanceIndex;
+		InstanceData->InstanceIndex = NewInstanceIndex;
+	}
+	if (bUpdateTransforms)
+	{
+		InstanceData->UpdateTransformsInstanceIndexChanged();
 	}
 }
 

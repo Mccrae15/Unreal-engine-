@@ -17,6 +17,12 @@ struct FGeometry;
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
 
+TSharedPtr<SGraphNode> UCustomizableObjectNodeTextureBase::CreateVisualWidget()
+{
+	return SNew(SGraphNodeTexture, this);
+}
+
+
 void UCustomizableObjectNodeTexture::AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins)
 {
 	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
@@ -24,6 +30,22 @@ void UCustomizableObjectNodeTexture::AllocateDefaultPins(UCustomizableObjectNode
 	FString PinName = TEXT("Texture");
 	UEdGraphPin* PinImagePin = CustomCreatePin(EGPD_Output, Schema->PC_Image, FName(*PinName));
 	PinImagePin->bDefaultValueIsIgnored = true;
+}
+
+
+void UCustomizableObjectNodeTexture::BackwardsCompatibleFixup()
+{
+	Super::BackwardsCompatibleFixup();
+
+	const int32 CustomizableObjectCustomVersion = GetLinkerCustomVersion(FCustomizableObjectCustomVersion::GUID);
+
+	if (CustomizableObjectCustomVersion < FCustomizableObjectCustomVersion::FixPinsNamesImageToTexture2)
+	{
+		if (UEdGraphPin* TexturePin = FindPin(TEXT("Image"))) {
+			TexturePin->PinName = TEXT("Texture");
+			UCustomizableObjectNode::ReconstructNode();
+		}
+	}
 }
 
 
@@ -56,16 +78,10 @@ FText UCustomizableObjectNodeTexture::GetTooltipText() const
 }
 
 
-TSharedPtr<SGraphNode> UCustomizableObjectNodeTexture::CreateVisualWidget()
-{
-	return SNew(SGraphNodeTexture, this);
-}
-
-
 void SGraphNodeTexture::Construct(const FArguments& InArgs, UEdGraphNode* InGraphNode)
 {
 	GraphNode = InGraphNode;
-	NodeTexture = Cast< UCustomizableObjectNodeTexture >(GraphNode);
+	NodeTexture = Cast<UCustomizableObjectNodeTextureBase>(GraphNode);
 
 	FPropertyEditorModule& PropPlugin = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 

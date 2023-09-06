@@ -29,7 +29,7 @@
 #include "Misc/FileHelper.h"
 #include "Components/ReflectionCaptureComponent.h"
 #include "ReflectionEnvironment.h"
-#include "ScenePrivate.h"
+#include "RHIStaticStates.h"
 
 #define LOCTEXT_NAMESPACE "StaticLightingSystem"
 
@@ -44,7 +44,7 @@ FScene::FScene(FGPULightmass* InGPULightmass)
 	: GPULightmass(InGPULightmass)
 	, Settings(InGPULightmass->Settings)
 	, Geometries(*this)
-	, FeatureLevel(InGPULightmass->World->FeatureLevel)
+	, FeatureLevel(InGPULightmass->World->GetFeatureLevel())
 {
 	StaticMeshInstances.LinkRenderStateArray(RenderState.StaticMeshInstanceRenderStates);
 	InstanceGroups.LinkRenderStateArray(RenderState.InstanceGroupRenderStates);
@@ -434,7 +434,7 @@ void FScene::AddLight(LightComponentType* LightComponent)
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = SceneProxy->GetPrimitiveSceneInfo();
 			if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 			{
-				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex(), EPrimitiveDirtyState::ChangedStaticLighting);
+				PrimitiveSceneInfo->RequestGPUSceneUpdate(EPrimitiveDirtyState::ChangedStaticLighting);
 			}
 		}
 	});
@@ -457,7 +457,7 @@ void FScene::AddLight(LightComponentType* LightComponent)
 		{
 			LightRenderStateRef->RenderStaticShadowDepthMap(RHICmdList, RenderState);
 			StaticShadowDepthMap.Data = DepthMapPtr;
-			StaticShadowDepthMap.InitRHI();
+			StaticShadowDepthMap.InitRHI(RHICmdList);
 		}
 
 		for (FGeometryRenderStateToken Token : RelevantGeometriesToUpdateOnRenderThread)
@@ -531,7 +531,7 @@ void FScene::RemoveLight(LightComponentType* PointLightComponent)
 			FPrimitiveSceneInfo* PrimitiveSceneInfo = SceneProxy->GetPrimitiveSceneInfo();
 			if (PrimitiveSceneInfo && PrimitiveSceneInfo->IsIndexValid())
 			{
-				PrimitiveSceneInfo->Scene->GPUScene.AddPrimitiveToUpdate(PrimitiveSceneInfo->GetIndex(), EPrimitiveDirtyState::ChangedStaticLighting);
+				PrimitiveSceneInfo->RequestGPUSceneUpdate(EPrimitiveDirtyState::ChangedStaticLighting);
 			}
 		}
 	});
@@ -630,7 +630,7 @@ void FScene::AddLight(USkyLightComponent* SkyLight)
 		NewSkyLightRenderState.ProcessedTexture = ProcessedSkyTexture->TextureRHI;
 		NewSkyLightRenderState.ProcessedTextureSampler = ProcessedSkyTexture->SamplerStateRHI;
 
-		NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Initialize(TEXT("SkyIrradianceEnvironmentMap"), sizeof(FVector4f), 7);
+		NewSkyLightRenderState.SkyIrradianceEnvironmentMap.Initialize(RHICmdList, TEXT("SkyIrradianceEnvironmentMap"), sizeof(FVector4f), 7);
 
 		NewSkyLightRenderState.PrepareSkyTexture(RHICmdList, FeatureLevel);
 
@@ -1261,6 +1261,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 		if (InstanceRenderState.SharedBuffers == nullptr)
 		{
 			InstanceRenderState.SharedBuffers = new FLandscapeSharedBuffers(
+				RHICmdList,
 				InstanceRenderState.SharedBuffersKey, Initializer.SubsectionSizeQuads, Initializer.NumSubsections,
 				LocalFeatureLevel);
 
@@ -1268,7 +1269,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 
 			FLandscapeFixedGridVertexFactory* LandscapeVertexFactory = new FLandscapeFixedGridVertexFactory(LocalFeatureLevel);
 			LandscapeVertexFactory->Data.PositionComponent = FVertexStreamComponent(InstanceRenderState.SharedBuffers->VertexBuffer, 0, sizeof(FLandscapeVertex), VET_Float4);
-			LandscapeVertexFactory->InitResource();
+			LandscapeVertexFactory->InitResource(RHICmdList);
 			InstanceRenderState.SharedBuffers->FixedGridVertexFactory = LandscapeVertexFactory;
 		}
 		check(InstanceRenderState.SharedBuffers);
@@ -1283,7 +1284,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 		InstanceRenderStateRef->LandscapeFixedGridUniformShaderParameters.AddDefaulted(MaxLOD + 1);
 		for (int32 LodIndex = 0; LodIndex <= MaxLOD; ++LodIndex)
 		{
-			InstanceRenderStateRef->LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource();
+			InstanceRenderStateRef->LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource(RHICmdList);
 			FLandscapeFixedGridUniformShaderParameters Parameters;
 			Parameters.LodValues = FVector4f(
 				LodIndex,
@@ -1354,7 +1355,7 @@ void FScene::AddGeometryInstanceFromComponent(ULandscapeComponent* InComponent)
 			LandscapeParams.XYOffsetmapTextureSampler = GBlackTexture->SamplerStateRHI;
 
 			InstanceRenderStateRef->LandscapeUniformShaderParameters = MakeUnique<TUniformBuffer<FLandscapeUniformShaderParameters>>();
-			InstanceRenderStateRef->LandscapeUniformShaderParameters->InitResource();
+			InstanceRenderStateRef->LandscapeUniformShaderParameters->InitResource(RHICmdList);
 			InstanceRenderStateRef->LandscapeUniformShaderParameters->SetContents(LandscapeParams);
 		}
 
@@ -1491,6 +1492,15 @@ void FScene::BackgroundTick()
 {
 	int32 Percentage = FPlatformAtomics::AtomicRead(&RenderState.Percentage);
 
+	if (Percentage != 100)
+	{
+		GPULightmass->ShowLightBuildNotification();
+	}
+	else
+	{
+		GPULightmass->RemoveLightBuildNotification();
+	}
+	
 	if (GPULightmass->LightBuildNotification.IsValid())
 	{
 		bool bIsViewportNonRealtime = GCurrentLevelEditingViewportClient && !GCurrentLevelEditingViewportClient->IsRealtime();
@@ -1853,7 +1863,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 	UWorld* World = GPULightmass->World;
 
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
-	const bool bUseVirtualTextures = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(World->FeatureLevel);
+	const bool bUseVirtualTextures = (CVar->GetValueOnAnyThread() != 0) && UseVirtualTexturing(World->GetFeatureLevel());
 
 	bool bHasSkyShadowing = LightScene.SkyLight.IsSet() && LightScene.SkyLight->CastsStationaryShadow();
 	
@@ -1942,6 +1952,7 @@ void FScene::ApplyFinishedLightmapsToWorld()
 					ReadbackVolumetricLightmapDataLayerFromGPU(RHICmdList, SubLevelData.BrickData.SHCoefficients[i], SubLevelData.BrickDataDimensions);
 				}
 				ReadbackVolumetricLightmapDataLayerFromGPU(RHICmdList, SubLevelData.BrickData.DirectionalLightShadowing, SubLevelData.BrickDataDimensions);
+				ReadbackVolumetricLightmapDataLayerFromGPU(RHICmdList, SubLevelData.BrickData.SkyBentNormal, SubLevelData.BrickDataDimensions);
 			});
 		}
 

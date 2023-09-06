@@ -97,25 +97,35 @@ namespace Metasound
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioInput), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), Frequency);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamResonance), Resonance);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioOutput), AudioOutput);
+		}
+
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioInput), FAudioBufferReadRef(AudioInput));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), FFloatReadRef(Frequency));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamResonance), FFloatReadRef(Resonance));
-
-			return InputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			// expose read access to our output buffer for other processors in the graph
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioOutput), FAudioBufferReadRef(AudioOutput));
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 
@@ -224,6 +234,14 @@ namespace Metasound
 			);
 	}
 
+	void FLadderFilterOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		PreviousFrequency = InvalidValue;
+		PreviousResonance = InvalidValue;
+		AudioOutput->Zero();
+		LadderFilter.Init(SampleRate, 1 /* NumChannels */);
+	}
+
 	void FLadderFilterOperator::Execute()
 	{
 		const float CurrentFrequency = FMath::Clamp(*Frequency, 0.f, MaxCutoffFrequency);
@@ -263,29 +281,39 @@ namespace Metasound
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioInput), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), Frequency);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamResonance), Resonance);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamBandStopControl), BandStopControl);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamLowPassOutput), LowPassOutput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamHighPassOutput), HighPassOutput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamBandPassOutput), BandPassOutput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamBandStopOutput), BandStopOutput);
+		}
+
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioInput), FAudioBufferReadRef(AudioInput));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), FFloatReadRef(Frequency));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamResonance), FFloatReadRef(Resonance));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamBandStopControl), FFloatReadRef(BandStopControl));
-
-			return InputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			// expose read access to our output buffer for other processors in the graph
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamLowPassOutput), FAudioBufferReadRef(LowPassOutput));
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamHighPassOutput), FAudioBufferReadRef(HighPassOutput));
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamBandPassOutput), FAudioBufferReadRef(BandPassOutput));
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamBandStopOutput), FAudioBufferReadRef(BandStopOutput));
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 
@@ -416,6 +444,21 @@ namespace Metasound
 			);
 	}
 
+	void FStateVariableFilterOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		PreviousFrequency = InvalidValue;
+		PreviousResonance = InvalidValue;
+		PreviousBandStopControl = InvalidValue;
+
+		// output pins
+		LowPassOutput->Zero();
+		HighPassOutput->Zero();
+		BandPassOutput->Zero();
+		BandStopOutput->Zero();
+
+		StateVariableFilter.Init(SampleRate, 1 /* NumChannels */);
+	}
+
 	void FStateVariableFilterOperator::Execute()
 	{
 		const float CurrentFrequency = FMath::Clamp(*Frequency, 0.f, MaxCutoffFrequency);
@@ -466,24 +509,34 @@ namespace Metasound
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioInput), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), Frequency);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioOutput), AudioOutput);
+		}
+
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioInput), FAudioBufferReadRef(AudioInput));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), FFloatReadRef(Frequency));
-
-			return InputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			// expose read access to our output buffer for other processors in the graph
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioOutput), FAudioBufferReadRef(AudioOutput));
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 
@@ -580,6 +633,12 @@ namespace Metasound
 			);
 	}
 
+	void FOnePoleLowPassFilterOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		AudioOutput->Zero();
+		OnePoleLowPassFilter.Init(SampleRate, 1 /* NumChannels */);
+	}
+
 	void FOnePoleLowPassFilterOperator::Execute()
 	{
 		float ClampedFreq = FMath::Clamp(0.0f, *Frequency, SampleRate);
@@ -604,24 +663,41 @@ namespace Metasound
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioInput), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), Frequency);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioOutput), AudioOutput);
+		}
+
+		virtual void Bind(FVertexInterfaceData& InVertexData) const override
+		{
+			FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
+
+			FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
+		}
+
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioInput), FAudioBufferReadRef(AudioInput));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), FFloatReadRef(Frequency));
-
-			return InputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			// expose read access to our output buffer for other processors in the graph
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioOutput), FAudioBufferReadRef(AudioOutput));
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 
@@ -718,6 +794,12 @@ namespace Metasound
 			);
 	}
 
+	void FOnePoleHighPassFilterOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		AudioOutput->Zero();
+		OnePoleHighPassFilter.Init(SampleRate, 1 /* NumChannels */);
+	}
+
 	void FOnePoleHighPassFilterOperator::Execute()
 	{
 		float ClampedFreq = FMath::Clamp(0.0f, *Frequency, SampleRate);
@@ -730,7 +812,7 @@ namespace Metasound
 
 
 #pragma region Biquad Filter
-		class FBiquadFilterOperator : public TExecutableOperator<FBiquadFilterOperator>
+	class FBiquadFilterOperator : public TExecutableOperator<FBiquadFilterOperator>
 	{
 	private:
 		static constexpr float InvalidValue = -1.f;
@@ -742,31 +824,50 @@ namespace Metasound
 
 		static TUniquePtr<IOperator> CreateOperator(const FCreateOperatorParams& InParams, FBuildErrorArray& OutErrors);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioInput), AudioInput);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), Frequency);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamBandwidth), Bandwidth);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamGainDb), FilterGainDb);
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamFilterType), FilterType);
+		}
+
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override
+		{
+			InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(ParamAudioOutput), AudioOutput);
+		}
+
+		virtual void Bind(FVertexInterfaceData& InVertexData) const override
+		{
+			FInputVertexInterfaceData& Inputs = InVertexData.GetInputs();
+			FOutputVertexInterfaceData& Outputs = InVertexData.GetOutputs();
+
+		}
+
 		virtual FDataReferenceCollection GetInputs() const override
 		{
-			FDataReferenceCollection InputDataReferences;
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioInput), FAudioBufferReadRef(AudioInput));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamCutoffFrequency), FFloatReadRef(Frequency));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamBandwidth), FFloatReadRef(Bandwidth));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamGainDb), FFloatReadRef(FilterGainDb));
-			InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamFilterType), FEnumBiQuadFilterReadRef(FilterType));
-
-			return InputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
 		virtual FDataReferenceCollection GetOutputs() const override
 		{
-			// expose read access to our output buffer for other processors in the graph
-			FDataReferenceCollection OutputDataReferences;
-			OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(ParamAudioOutput), FAudioBufferReadRef(AudioOutput));
-
-			return OutputDataReferences;
+			// This should never be called. Bind(...) is called instead. This method
+			// exists as a stop-gap until the API can be deprecated and removed.
+			checkNoEntry();
+			return {};
 		}
 
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 
-	private: // members
+	private: 
+		void ResetInternal();
+
 		// input pins
 		FAudioBufferReadRef AudioInput;
 		FFloatReadRef Frequency;
@@ -813,9 +914,7 @@ namespace Metasound
 			, MaxCutoffFrequency(0.5f * SampleRate)
 			, PreviousFilterType(*FilterType)
 		{
-			// verify our buffer sizes:
-			check(AudioOutput->Num() == BlockSize);
-			BiquadFilter.Init(SampleRate, 1, *FilterType);
+			ResetInternal();
 		}
 	};
 
@@ -897,6 +996,22 @@ namespace Metasound
 			, FilterGainDbIn
 			, FilterType
 			);
+	}
+
+	void FBiquadFilterOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		ResetInternal();
+	}
+
+	void FBiquadFilterOperator::ResetInternal()
+	{
+		PreviousFrequency = InvalidValue;
+		PreviousBandwidth = InvalidValue;
+		PreviousFilterGainDb = InvalidValue;
+		PreviousFilterType = *FilterType;
+
+		AudioOutput->Zero();
+		BiquadFilter.Init(SampleRate, 1, *FilterType);
 	}
 
 	void FBiquadFilterOperator::Execute()

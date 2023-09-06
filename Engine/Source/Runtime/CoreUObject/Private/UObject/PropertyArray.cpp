@@ -217,7 +217,7 @@ void FArrayProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, 
 		{
 			const int64 StartOfProperty = Slot.GetUnderlyingArchive().Tell();
 			FStructProperty* StructProperty = CastFieldChecked<FStructProperty>(Inner);
-			switch(StructProperty->ConvertFromType(SerializeFromMismatchedTag.GetValue(), Slot, Item, nullptr))
+			switch(StructProperty->ConvertFromType(SerializeFromMismatchedTag.GetValue(), Slot, Item, nullptr, nullptr))
 			{
 				case EConvertFromTypeResult::Converted:
 					return;
@@ -377,7 +377,7 @@ void FArrayProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, 
 		FPropertyTag& InnerTag = MaybeInnerTag.GetValue();
 
 		// set the tag's size
-		InnerTag.Size = UnderlyingArchive.Tell() - DataOffset;
+		InnerTag.Size = IntCastChecked<int32>(UnderlyingArchive.Tell() - DataOffset);
 
 		if (InnerTag.Size > 0)
 		{
@@ -729,7 +729,7 @@ void FArrayProperty::CopyValuesInternal( void* Dest, void const* Src, int32 Coun
 	}
 	if (Num)
 	{
-		int32 Size = Inner->ElementSize;
+		size_t Size = Inner->ElementSize;
 		uint8* SrcData = (uint8*)SrcArrayHelper.GetRawPtr();
 		uint8* DestData = (uint8*)DestArrayHelper.GetRawPtr();
 		if( !(Inner->PropertyFlags & CPF_IsPlainOldData) )
@@ -803,7 +803,7 @@ bool FArrayProperty::SameType(const FProperty* Other) const
 	return Super::SameType(Other) && Inner && Inner->SameType(((FArrayProperty*)Other)->Inner);
 }
 
-EConvertFromTypeResult FArrayProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct)
+EConvertFromTypeResult FArrayProperty::ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, const uint8* Defaults)
 {
 	// TODO: The ArrayProperty Tag really doesn't have adequate information for
 	// many types. This should probably all be moved in to ::SerializeItem
@@ -840,11 +840,11 @@ EConvertFromTypeResult FArrayProperty::ConvertFromType(const FPropertyTag& Tag, 
 		{
 			FStructuredArchive::FStream ValueStream = Slot.EnterStream();
 
-			if (Inner->ConvertFromType(InnerPropertyTag, ValueStream.EnterElement(), ScriptArrayHelper.GetRawPtr(0), DefaultsStruct) == EConvertFromTypeResult::Converted)
+			if (Inner->ConvertFromType(InnerPropertyTag, ValueStream.EnterElement(), ScriptArrayHelper.GetRawPtr(0), DefaultsStruct, nullptr) == EConvertFromTypeResult::Converted)
 			{
 				for (int32 i = 1; i < ElementCount; ++i)
 				{
-					verify(Inner->ConvertFromType(InnerPropertyTag, ValueStream.EnterElement(), ScriptArrayHelper.GetRawPtr(i), DefaultsStruct) == EConvertFromTypeResult::Converted);
+					verify(Inner->ConvertFromType(InnerPropertyTag, ValueStream.EnterElement(), ScriptArrayHelper.GetRawPtr(i), DefaultsStruct, nullptr) == EConvertFromTypeResult::Converted);
 				}
 
 				return EConvertFromTypeResult::Converted;

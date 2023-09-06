@@ -22,6 +22,7 @@ namespace UE::Net
 	{
 		typedef uint32 FInternalNetRefIndex;
 		class FObjectPollFrequencyLimiter;
+		class FObjectPoller;
 	}
 }
 
@@ -45,23 +46,25 @@ public:
 
 	struct FCreateNetRefHandleParams
 	{
-		uint32 bCanReceive : 1;
-		uint32 bNeedsPreUpdate : 1;
-		uint32 bNeedsWorldLocationUpdate : 1;
-		uint32 bAllowDynamicFilter : 1;
+		//$IRIS TODO: These need documentation
+		bool bCanReceive = false;
+		bool bNeedsPreUpdate = false;
+		bool bNeedsWorldLocationUpdate = false;
+		bool bAllowDynamicFilter = false;
 
 		/**
-		  * If StaticPriority is > 0 the ReplicationSystem will use that as priority when scheduling objects.
-		  * If it's <= 0.0f one will look for a world location support and then use the default spatial prioritizer.
-		  */
-		float StaticPriority;
+		 * If StaticPriority is > 0 the ReplicationSystem will use that as priority when scheduling objects. 
+		 * If it's <= 0.0f one will look for a world location support and then use the default spatial prioritizer.
+		 */
+		float StaticPriority = 0.0f;
 
 		/**
-		  * How often the object should be polled for dirtiness, including calling the InstancePreUpdate function.
-		  * The period is zero based so 0 means poll every frame and 255 means poll every 256th frame.
-		  */
-		uint8 PollFramePeriod;
+		 * How often per second the object should be polled for dirtiness, including calling the InstancePreUpdate function. 
+		 * When set to zero it will be polled every frame.
+		 */
+		float PollFrequency = 0.0f;
 	};
+
 	IRISCORE_API static FCreateNetRefHandleParams DefaultCreateNetRefHandleParams;
 
 	IRISCORE_API UObjectReplicationBridge();
@@ -191,24 +194,30 @@ protected:
 	IRISCORE_API UObject* GetObjectFromReferenceHandle(FNetRefHandle RefHandle) const;
 
 	/** Helper method that calls provided PreUpdateFunction and polls state data for all replicated instances with the NeedsPoll trait. */
-	using FInstancePreUpdateFunction = void(*)(FNetRefHandle, UObject*, const UReplicationBridge*);
+	using FInstancePreUpdateFunction = TFunction<void(FNetRefHandle, UObject*, const UReplicationBridge*)>;
 
 	/** Set the function that we should call before copying state data. */
 	IRISCORE_API void SetInstancePreUpdateFunction(FInstancePreUpdateFunction InPreUpdateFunction);
 	
-	/** Helper method to get the world location for replicated instances with the HasWorldLocation trait. */
-	using FInstanceGetWorldLocationFunction = FVector(*)(FNetRefHandle, const UObject*);
+	/** Helper method to get the world location & cull distance for replicated instances with the HasWorldLocation trait. */
+	using FInstanceGetWorldObjectInfoFunction = TFunction<void(UE::Net::FNetRefHandle, const UObject*, FVector&, float&)>;
 
 	/** Set the function that we should call to get the world location of an object. */
-	IRISCORE_API void SetInstanceGetWorldLocationFunction(FInstanceGetWorldLocationFunction InGetWorldLocationFunction);
+	IRISCORE_API void SetInstanceGetWorldObjectInfoFunction(FInstanceGetWorldObjectInfoFunction InGetWorldObjectInfoFunction);
 	
 	// Poll frequency support
 
-	/** Set poll frame period for a specific object. Zero based period where 0 means every frame and 255 means every 256th frame. */
-	IRISCORE_API void SetPollFramePeriod(UE::Net::Private::FInternalNetRefIndex InternalReplicationIndex, uint8 FramePeriod);
-
 	/** Force polling of Object when ObjectToPollWith is polled. */
 	IRISCORE_API void SetPollWithObject(FNetRefHandle ObjectToPollWith, FNetRefHandle Object);
+
+	/** Transform a poll frequency (in updates per second) to an equivalent number of frames. */
+	IRISCORE_API uint8 ConvertPollFrequencyIntoFrames(float PollFrequency) const;
+
+	/** Returns the poll frequency of a specific root object. */
+	IRISCORE_API virtual float GetPollFrequencyOfRootObject(const UObject* ReplicatedObject) const;
+
+	/** Re-initialize the poll frequency of all replicated root objects. */
+	IRISCORE_API void ReinitPollFrequency();
 
 	/** Re-initialize config-driven parameters found in ObjectReplicationBridgeConfig. */
 	IRISCORE_API void LoadConfig();
@@ -222,9 +231,29 @@ protected:
 	/** Set the function used to determine whether two classes are to be considered equal when it comes to filtering. Used on subclasses. */
 	IRISCORE_API void SetShouldSubclassUseSameFilterFunction(TFunction<bool(const UClass* Class, const UClass* Subclass)>);
 
+	/** Finds the final poll frequency for a class and cache it for future lookups. OutPollPeriod will only be modified if this method returns true. */
+	IRISCORE_API bool FindOrCachePollFrequency(const UClass* Class, float& OutPollPeriod);
+
+	/**
+	 * Find the poll period of a class if it was configured with an override. 
+	 * Use this only if all class configs have been properly cached.
+	 * OutPollPeriod will only be modified if this method returns true.
+	 */
+	IRISCORE_API bool GetClassPollFrequency(const UClass* Class, float& OutPollPeriod) const;
+
+	/** Current max tick rate set by the engine */
+	float GetMaxTickRate() const { return MaxTickRate; }
+
+	/** Change the max tick rate to match the one from the engine */
+	void SetMaxTickRate(float InMaxTickRate) { MaxTickRate = InMaxTickRate; }
+
 private:
 
-	void PreUpdateAndPollImpl(FNetRefHandle RefHandle);
+	/** Forcibly poll a single replicated object */
+	void ForcePollObject(FNetRefHandle RefHandle);
+
+	/** Pre update and poll all relevant objects who hit their polling period or are force net update. */
+	void PreUpdateAndPoll();
 
 	/** Remove mapping between handle and object instance. */
 	void UnregisterInstance(FNetRefHandle RefHandle);
@@ -233,8 +262,6 @@ private:
 
 	void SetNetPushIdOnInstance(UE::Net::FReplicationInstanceProtocol* InstanceProtocol, FNetHandle NetHandle);
 
-	/** Finds a poll period override if it exists. OutPollPeriod will only be modified if this method returns true. */
-	bool FindPollInfo(const UClass* Class, uint8& OutPollPeriod);
 
 	/** Tries to load the classes used in poll period overrides. */
 	void FindClassesInPollPeriodOverrides();
@@ -242,29 +269,46 @@ private:
 	/** Retrieves the dynamic filter to set for the given class. Will return an invalid handle if no dynamic filter should be set. */
 	UE::Net::FNetObjectFilterHandle GetDynamicFilter(const UClass* Class);
 
-	/** Retrieves the prioritizer to set for the given class. Will return an invalid handle if no prioritizer should be set. */
-	UE::Net::FNetObjectPrioritizerHandle GetPrioritizer(const UClass* Class);
+	/** Retrieves the prioritizer to set for the given class. If bRequireForceEnabled the config needs to have bForceEnableOnAllInstances set in order for this method to return the configured prioritizer. Returns an invalid handle if no prioritizer should be set. */
+	UE::Net::FNetObjectPrioritizerHandle GetPrioritizer(const UClass* Class, bool bRequireForceEnabled);
 
 	/** Returns true if instances of this class should be delta compressed */
 	bool ShouldClassBeDeltaCompressed(const UClass* Class);
 
 	FInstancePreUpdateFunction PreUpdateInstanceFunction;
-	FInstanceGetWorldLocationFunction GetInstanceWorldLocationFunction;
+	FInstanceGetWorldObjectInfoFunction GetInstanceWorldObjectInfoFunction;
+	
 
 	FName GetConfigClassPathName(const UClass* Class);
 
+	void InitConditionalPropertyDelegates();
+
 private:
+
+	friend UE::Net::Private::FObjectPoller;
 
 	TMap<const UClass*, FName> ConfigClassPathNameCache;
 
+	// Prioritization
+	struct FClassPrioritizerInfo
+	{
+		UE::Net::FNetObjectPrioritizerHandle PrioritizerHandle;
+		uint32 bForceEnable : 1;
+	};
+
 	// Polling
+
+	/** The maximum tick per second of the engine. Default is to use 30hz */
+	float MaxTickRate = 30.0f;
+
 	struct FPollInfo
 	{
-		uint8 PollFramePeriod = 0;
+		float PollFrequency = 0.0f;
 		TWeakObjectPtr<const UClass> Class;
 	};
 	UE::Net::Private::FObjectPollFrequencyLimiter* PollFrequencyLimiter;
 
+	//$IRIS TODO: The poll class config management code should be moved into it's own class. Maybe in a class that handles any type of per-class settings.
 	// Class hierarchies with poll period overrides
 	TMap<FName, FPollInfo> ClassHierarchyPollPeriodOverrides;
 	// Exact classes with poll period overrides
@@ -278,7 +322,7 @@ private:
 	TFunction<bool(const UClass*,const UClass*)> ShouldSubclassUseSameFilterFunction;
 
 	// Prioritizer mapping
-	TMap<FName, UE::Net::FNetObjectPrioritizerHandle> ClassesWithPrioritizer;
+	TMap<FName, FClassPrioritizerInfo> ClassesWithPrioritizer;
 
 	// Delta compression
 	TMap<FName, bool> ClassesWithDeltaCompression;
@@ -294,6 +338,7 @@ private:
 	UE::Net::FNetObjectFilterHandle DefaultSpatialFilterHandle;
 
 	FDelegateHandle OnCustomConditionChangedHandle;
+	FDelegateHandle OnDynamicConditionChangedHandle;
 
 	bool bHasPollOverrides = false;
 	bool bHasDirtyClassesInPollPeriodOverrides = false;

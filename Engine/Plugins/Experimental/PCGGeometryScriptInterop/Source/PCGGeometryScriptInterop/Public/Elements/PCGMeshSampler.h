@@ -47,6 +47,10 @@ class PCGGEOMETRYSCRIPTINTEROP_API UPCGMeshSamplerSettings : public UPCGSettings
 public:
 	UPCGMeshSamplerSettings();
 
+	//~Begin UObject interface
+	virtual void PostLoad() override;
+	//~End UObject interface
+
 	//~Begin UPCGSettings interface
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override { return FName(TEXT("MeshSampler")); }
@@ -67,8 +71,8 @@ public:
 	EPCGMeshSamplingMethod SamplingMethod = EPCGMeshSamplingMethod::OnePointPerTriangle;
 
 	/** Soft Object Path to the mesh to sample from. Will be loaded. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings", meta = (PCG_Overridable, AllowedClasses = "/Script/Engine.StaticMesh", DisplayName = "Static Mesh"))
-	FSoftObjectPath StaticMeshPath;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings", meta = (PCG_Overridable))
+	TSoftObjectPtr<UStaticMesh> StaticMesh;
 
 	/** In "One Point Per Vertex" option, will assign point density from the red component of the vertex color. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Per-Vertex Options", meta = (PCG_Overridable, EditCondition = "SamplingMethod == EPCGMeshSamplingMethod::OnePointPerVertex"))
@@ -99,6 +103,21 @@ public:
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Poisson sampling", meta = (PCG_Overridable, EditCondition = "SamplingMethod == EPCGMeshSamplingMethod::PoissonSampling"))
 	FGeometryScriptNonUniformPointSamplingOptions NonUniformSamplingOptions;
+
+	/** Each PCG point represents a discretized, volumetric region of world space. The points' Steepness value [0.0 to
+	 * 1.0] establishes how "hard" or "soft" that volume will be represented. From 0, it will ramp up linearly
+	 * increasing its influence over the density from the point's center to up to two times the bounds. At 1, it will
+	 * represent a binary box function with the size of the point's bounds.
+	 */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Points", meta=(ClampMin="0", ClampMax="1", PCG_Overridable))
+	float PointSteepness = 0.5f;
+	
+protected:
+#if WITH_EDITORONLY_DATA
+	// Deprecated in UE 5.3 in favor of StaticMesh
+	UPROPERTY()
+	FSoftObjectPath StaticMeshPath_DEPRECATED;
+#endif
 };
 
 /**

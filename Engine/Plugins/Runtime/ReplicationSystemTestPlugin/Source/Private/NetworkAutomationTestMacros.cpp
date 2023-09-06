@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetworkAutomationTestMacros.h"
+#include "ReplicationSystemTestPlugin/NetworkAutomationTest.h"
 #include "NetworkAutomationTest.h"
 
 DEFINE_LOG_CATEGORY(LogNetworkAutomationTest);
@@ -56,7 +57,6 @@ FTestMessageLog::~FTestMessageLog()
 		break;
 	case ELogVerbosity::Error:
 		UE_TEST_MESSAGE_LOG_(Error);
-		UE_DEBUG_BREAK();
 		break;
 	case ELogVerbosity::Warning:
 		UE_TEST_MESSAGE_LOG_(Warning);

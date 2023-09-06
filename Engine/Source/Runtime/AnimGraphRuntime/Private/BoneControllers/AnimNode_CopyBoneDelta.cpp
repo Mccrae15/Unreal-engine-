@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimStats.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_CopyBoneDelta)
 
@@ -36,6 +37,8 @@ void FAnimNode_CopyBoneDelta::EvaluateSkeletalControl_AnyThread(FComponentSpaceP
 	{
 		return;
 	}
+
+	ANIM_MT_SCOPE_CYCLE_COUNTER_VERBOSE(CopyBoneDelta, !IsInGameThread());
 
 	const FBoneContainer& BoneContainer = Output.Pose.GetPose().GetBoneContainer();
 	FCompactPoseBoneIndex SourceBoneIndex = SourceBone.GetCompactPoseIndex(BoneContainer);

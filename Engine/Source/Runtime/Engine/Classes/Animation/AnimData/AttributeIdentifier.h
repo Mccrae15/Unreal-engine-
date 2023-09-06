@@ -13,12 +13,12 @@
 /** Script-friendly structure for identifying an attribute (curve).
 * Wrapping the attribute name, bone name and index, and underlying data type for use within the AnimDataController API. */
 USTRUCT(BlueprintType)
-struct ENGINE_API FAnimationAttributeIdentifier
+struct FAnimationAttributeIdentifier
 {
 	GENERATED_USTRUCT_BODY();
 
 	FAnimationAttributeIdentifier() : Name(NAME_None), BoneName(NAME_None), BoneIndex(INDEX_NONE), ScriptStruct(nullptr), ScriptStructPath(nullptr) {}
-	FAnimationAttributeIdentifier(const FName& InName, const int32 InBoneIndex, const FName InBoneName, UScriptStruct* InStruct) : Name(InName), BoneName(InBoneName), BoneIndex(InBoneIndex), ScriptStruct(InStruct) {}
+	FAnimationAttributeIdentifier(const FName& InName, const int32 InBoneIndex, const FName InBoneName, UScriptStruct* InStruct) : Name(InName), BoneName(InBoneName), BoneIndex(InBoneIndex), ScriptStruct(InStruct), ScriptStructPath(InStruct) {}
 
 	const FName& GetName() const { return Name; }
 	const FName& GetBoneName() const { return BoneName; }
@@ -92,8 +92,8 @@ struct TStructOpsTypeTraits<FAnimationAttributeIdentifier> : public TStructOpsTy
 };
 
 /** Script-exposed functionality for wrapping native functionality and constructing valid FAnimationAttributeIdentifier instances */
-UCLASS()
-class ENGINE_API UAnimationAttributeIdentifierExtensions : public UBlueprintFunctionLibrary
+UCLASS(MinimalAPI)
+class UAnimationAttributeIdentifierExtensions : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 public:
@@ -111,7 +111,7 @@ public:
 	* @return	Valid FAnimationCurveIdentifier if the operation was successful
 	*/
 	UFUNCTION(BlueprintCallable, Category = Attributes, meta=(ScriptMethod))
-	static FAnimationAttributeIdentifier CreateAttributeIdentifier(UAnimationAsset* AnimationAsset, const FName AttributeName, const FName BoneName, UScriptStruct* AttributeType, bool bValidateExistsOnAsset = false);
+	static ENGINE_API FAnimationAttributeIdentifier CreateAttributeIdentifier(UAnimationAsset* AnimationAsset, const FName AttributeName, const FName BoneName, UScriptStruct* AttributeType, bool bValidateExistsOnAsset = false);
 #endif // WITH_EDITOR
 
 	/**

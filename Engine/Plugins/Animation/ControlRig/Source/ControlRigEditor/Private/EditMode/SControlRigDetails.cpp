@@ -14,6 +14,7 @@
 #include "EditorModeManager.h"
 #include "ISequencer.h"
 #include "LevelSequence.h"
+#include "MovieScene.h"
 #include "Selection.h"
 #include "Editor.h"
 #include "LevelEditor.h"
@@ -705,7 +706,8 @@ bool SControlRigDetails::IsPropertyAnimated(const IPropertyHandle& PropertyHandl
 	ISequencer* Sequencer = GetSequencer();
 	if (Sequencer && Sequencer->GetFocusedMovieSceneSequence())
 	{
-		FGuid ObjectHandle = Sequencer->GetHandleToObject(ParentObject);
+		constexpr bool bCreateHandleIfMissing = false;
+		FGuid ObjectHandle = Sequencer->GetHandleToObject(ParentObject, bCreateHandleIfMissing);
 		if (ObjectHandle.IsValid())
 		{
 			UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();

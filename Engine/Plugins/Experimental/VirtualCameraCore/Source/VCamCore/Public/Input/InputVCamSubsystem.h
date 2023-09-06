@@ -32,6 +32,8 @@ public:
 	//~ Begin USubsystem Interface
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+	virtual void InitalizeUserSettings() override;
+	virtual UEnhancedInputUserSettings* GetUserSettings() const override { return UserSettings; }
 	//~ End USubsystem Interface
 
 	//~ Begin USubsystem Interface
@@ -45,9 +47,6 @@ public:
 	void PushInputComponent(UInputComponent* InInputComponent);
 	/** Removes this input component onto the stack to be processed by this subsystem's tick function */
 	bool PopInputComponent(UInputComponent* InInputComponent);
-	
-	UFUNCTION(BlueprintCallable, Category = "Input")
-	void SetShouldConsumeGamepadInput(EVCamGamepadInputMode GamepadInputMode);
 
 	const FVCamInputDeviceConfig& GetInputSettings() const;
 	void SetInputSettings(const FVCamInputDeviceConfig& Input);
@@ -66,4 +65,8 @@ private:
 	/** Internal. This is the current stack of InputComponents that is being processed by the PlayerInput. */
 	UPROPERTY(Transient)
 	TArray<TWeakObjectPtr<UInputComponent>> CurrentInputStack;
+
+	/** The user settings for this subsystem used to store each user's input related settings */
+	UPROPERTY(Transient)
+	TObjectPtr<UEnhancedInputUserSettings> UserSettings;
 };

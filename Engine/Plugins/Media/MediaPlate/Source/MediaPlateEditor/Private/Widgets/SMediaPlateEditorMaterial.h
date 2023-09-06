@@ -30,9 +30,19 @@ public:
 
 private:
 	/**
-	 * Callback for when we press the default button.
+	 * Callback for when we browse a material.
 	 */
-	FReply OnDefaultButtonClicked() const;
+	FReply OnBrowseMaterial() const;
+
+	/**
+	 * Callback to get a list of media plate materials.
+	 */
+	TSharedRef<SWidget> OnGetMaterials();
+
+	/**
+	 * Callback for when we select a material.
+	 */
+	void OnSelectMaterial(FAssetData AssetData) const;
 
 	/** Weak pointer to current component using the current material */
 	TWeakObjectPtr<AMediaPlate> MediaPlate = nullptr;

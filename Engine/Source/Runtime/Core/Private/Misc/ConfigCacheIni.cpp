@@ -21,6 +21,7 @@
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
 #include "Misc/StringBuilder.h"
 #include "Misc/Paths.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/LargeMemoryReader.h"
@@ -425,9 +426,6 @@ static void FixupArrayOfStructKeysForSection(FConfigSection* Section, const FStr
 	// will any delegates return contents via TSPreLoadConfigFileDelegate()?
 	int32 ResponderCount = 0;
 	FCoreDelegates::TSCountPreLoadConfigFileRespondersDelegate().Broadcast(IniFile, ResponderCount);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::CountPreLoadConfigFileRespondersDelegate.Broadcast(IniFile, ResponderCount);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	if (ResponderCount > 0)
 	{
@@ -474,9 +472,6 @@ static bool LoadConfigFileWrapper(const TCHAR* IniFile, FString& Contents, bool 
 {
 	// let other systems load the file instead of the standard load below
 	FCoreDelegates::TSPreLoadConfigFileDelegate().Broadcast(IniFile, Contents);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::PreLoadConfigFileDelegate.Broadcast(IniFile, Contents);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// if this loaded any text, we are done, and we won't override the contents with standard ini file data
 	if (Contents.Len())
@@ -510,9 +505,6 @@ static bool SaveConfigFileWrapper(const TCHAR* IniFile, const FString& Contents)
 	// let anyone that needs to save it, do so (counting how many did)
 	int32 SavedCount = 0;
 	FCoreDelegates::TSPreSaveConfigFileDelegate().Broadcast(IniFile, Contents, SavedCount);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::PreSaveConfigFileDelegate.Broadcast(IniFile, Contents, SavedCount);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// save it even if a delegate did as well
 	bool bLocalWriteSucceeded = false;
@@ -550,9 +542,6 @@ FConfigFile::FConfigFile()
 , SourceConfigFile(nullptr)
 {
 	FCoreDelegates::TSOnFConfigCreated().Broadcast(this);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::OnFConfigCreated.Broadcast(this);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FConfigFile::~FConfigFile()
@@ -562,9 +551,6 @@ FConfigFile::~FConfigFile()
 	if ( !GExitPurge )
 	{
 		FCoreDelegates::TSOnFConfigDeleted().Broadcast(this);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FCoreDelegates::OnFConfigDeleted.Broadcast(this);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	delete SourceConfigFile;
@@ -649,9 +635,17 @@ ValueType& FindOrAddHeterogeneous(TMap<KeyType, ValueType>& Map, const AltKeyTyp
 namespace
 {
 
+// don't allow warning until all redirects are read in
+bool GAllowConfigRemapWarning = false;
+
 // either show an editor warning, or just write to log for non-editor
 void LogOrEditorWarning(const FText& Msg, const FString& PartialKey, const FString& File)
 {
+	if (!GAllowConfigRemapWarning)
+	{
+		return;
+	}
+	
 	if (GIsEditor)
 	{
 		static TSet<FString> AlreadyWarnedKeys;
@@ -683,6 +677,11 @@ void LogOrEditorWarning(const FText& Msg, const FString& PartialKey, const FStri
 // warn about a section name that's deprecated
 void WarnAboutSectionRemap(const FString& OldValue, const FString& NewValue, const FString& File)
 {
+	if (!GAllowConfigRemapWarning)
+	{
+		return;
+	}
+
 	FFormatNamedArguments Arguments;
 	Arguments.Add(TEXT("OldValue"), FText::FromString(OldValue));
 	Arguments.Add(TEXT("NewValue"), FText::FromString(NewValue));
@@ -708,7 +707,7 @@ static void WarnAboutKeyRemap(const FString& OldValue, const FString& NewValue, 
 	Arguments.Add(TEXT("NewValue"), FText::FromString(NewValue));
 	Arguments.Add(TEXT("Section"), FText::FromString(Section));
 	Arguments.Add(TEXT("File"), FText::FromString(File));
-	FText Msg = FText::Format(LOCTEXT("DeprecatedConfig", "Found a deprecated ini section name in {File}. Search for [{OldValue}] and replace with [{NewValue}]"), Arguments);
+	FText Msg = FText::Format(LOCTEXT("DeprecatedConfigKey", "Found a deprecated ini key name in {File}. Search for [{OldValue}] and replace with [{NewValue}]"), Arguments);
 	
 	FString Key = OldValue+Section;
 	if (!IsInGameThread())
@@ -835,6 +834,7 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer, const FString& FileHi
 				}
 
 				const TCHAR* KeyName = Start;
+				FConfigSection* OriginalCurrentSection = CurrentSection;
 				// look up for key remap
 				if (CurrentKeyRemap != nullptr)
 				{
@@ -845,6 +845,16 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer, const FString& FileHi
 
 						// the Remap will not ever reallocate, so we can just point right into the FString
 						KeyName = **FoundRemap;
+
+						// look for a section:name remap
+						int32 ColonLoc;
+						if (FoundRemap->FindChar(':', ColonLoc))
+						{
+							// find or create a section for name before the :
+							CurrentSection = FindOrAddSection(*FoundRemap->Mid(0, ColonLoc));
+							// the name can still point right into the FString, but right after the :
+							KeyName = **FoundRemap + ColonLoc + 1;
+						}
 					}
 				}
 				
@@ -920,6 +930,9 @@ void FConfigFile::CombineFromBuffer(const FString& Buffer, const FString& FileHi
 						}
 					}
 				}
+				
+				// restore the current section, in case it was overridden
+				CurrentSection = OriginalCurrentSection;
 
 				// Mark as dirty so "Write" will actually save the changes.
 				Dirty = true;
@@ -1315,13 +1328,6 @@ void FConfigFile::AddDynamicLayerToHierarchy(const FString& Filename)
 
 	SourceIniHierarchy.AddDynamicLayer(Filename);
 	CombineFromBuffer(ConfigContent, Filename);
-
-	// Removing NoSave flag that was being set to true when adding a dynamic layered to a config hierarchy 
-	// (usually from plugins), which was causing settings in the editor to not be saved out
-	if (!GIsEditor)
-	{
-		NoSave = true;
-	}
 }
 
 
@@ -2082,6 +2088,18 @@ void FConfigFile::ProcessPropertyAndWriteForDefaults(int IniCombineThreshold, co
 /*-----------------------------------------------------------------------------
 	FConfigCacheIni
 -----------------------------------------------------------------------------*/
+
+namespace
+{
+	void OnConfigSectionsChanged(const FString& IniFilename, const TSet<FString>& SectionNames)
+	{
+		if (IniFilename == GEngineIni && SectionNames.Contains(TEXT("ConsoleVariables")))
+		{
+			UE::ConfigUtilities::ApplyCVarSettingsFromIni(TEXT("ConsoleVariables"), *GEngineIni, ECVF_SetByHotfix);
+		}
+	}
+}
+
 #if WITH_EDITOR
 static TMap<FName, TFuture<void>>& GetPlatformConfigFutures()
 {
@@ -2503,9 +2521,6 @@ bool FConfigCacheIni::GetString( const TCHAR* Section, const TCHAR* Key, FString
 	Value = ConfigValue->GetValue();
 
 	FCoreDelegates::TSOnConfigValueRead().Broadcast(*Filename, Section, Key);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::OnConfigValueRead.Broadcast(*Filename, Section, Key);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return true;
 }
@@ -2537,9 +2552,6 @@ bool FConfigCacheIni::GetText( const TCHAR* Section, const TCHAR* Key, FText& Va
 	}
 
 	FCoreDelegates::TSOnConfigValueRead().Broadcast(*Filename, Section, Key);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::OnConfigValueRead.Broadcast(*Filename, Section, Key);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return true;
 }
@@ -2565,9 +2577,6 @@ bool FConfigCacheIni::GetSection( const TCHAR* Section, TArray<FString>& Result,
 	}
 
 	FCoreDelegates::TSOnConfigSectionRead().Broadcast(*Filename, Section);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::OnConfigSectionRead.Broadcast(*Filename, Section);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return true;
 }
@@ -2610,9 +2619,6 @@ bool FConfigCacheIni::DoesSectionExist(const TCHAR* Section, const FString& File
 	if (bReturnVal)
 	{
 		FCoreDelegates::TSOnConfigSectionNameRead().Broadcast(*Filename, Section);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FCoreDelegates::OnConfigSectionNameRead.Broadcast(*Filename, Section);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return bReturnVal;
@@ -2774,9 +2780,6 @@ bool FConfigCacheIni::GetSectionNames( const FString& Filename, TArray<FString>&
 			out_SectionNames.Add(It.Key());
 
 			FCoreDelegates::TSOnConfigSectionNameRead().Broadcast(*Filename, *It.Key());
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FCoreDelegates::OnConfigSectionNameRead.Broadcast(*Filename, *It.Key());
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 		bResult = true;
 	}
@@ -2820,9 +2823,6 @@ bool FConfigCacheIni::GetPerObjectConfigSections( const FString& Filename, const
 					bResult = true;
 
 					FCoreDelegates::TSOnConfigSectionNameRead().Broadcast(*Filename, *SectionName);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					FCoreDelegates::OnConfigSectionNameRead.Broadcast(*Filename, *SectionName);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 			}
 		}
@@ -2901,9 +2901,25 @@ bool FConfigCacheIni::GetInt
 	if( GetString( Section, Key, Text, Filename ) )
 	{
 		Value = FCString::Atoi(*Text);
-		return 1;
+		return true;
 	}
-	return 0;
+	return false;
+}
+bool FConfigCacheIni::GetInt64
+(
+	const TCHAR* Section,
+	const TCHAR* Key,
+	int64& Value,
+	const FString& Filename
+)
+{
+	FString Text;
+	if (GetString(Section, Key, Text, Filename))
+	{
+		Value = FCString::Atoi64(*Text);
+		return true;
+	}
+	return false;
 }
 bool FConfigCacheIni::GetFloat
 (
@@ -2917,9 +2933,9 @@ bool FConfigCacheIni::GetFloat
 	if( GetString( Section, Key, Text, Filename ) )
 	{
 		Value = FCString::Atof(*Text);
-		return 1;
+		return true;
 	}
-	return 0;
+	return false;
 }
 bool FConfigCacheIni::GetDouble
 	(
@@ -2933,12 +2949,10 @@ bool FConfigCacheIni::GetDouble
 	if( GetString( Section, Key, Text, Filename ) )
 	{
 		Value = FCString::Atod(*Text);
-		return 1;
+		return true;
 	}
-	return 0;
+	return false;
 }
-
-
 bool FConfigCacheIni::GetBool
 (
 	const TCHAR*		Section,
@@ -2951,9 +2965,9 @@ bool FConfigCacheIni::GetBool
 	if( GetString( Section, Key, Text, Filename ) )
 	{
 		Value = FCString::ToBool(*Text);
-		return 1;
+		return true;
 	}
-	return 0;
+	return false;
 }
 int32 FConfigCacheIni::GetArray
 (
@@ -2974,9 +2988,6 @@ int32 FConfigCacheIni::GetArray
 	if (out_Arr.Num())
 	{
 		FCoreDelegates::TSOnConfigValueRead().Broadcast(*Filename, Section, Key);
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FCoreDelegates::OnConfigValueRead.Broadcast(*Filename, Section, Key);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	return out_Arr.Num();
@@ -3004,7 +3015,7 @@ int32 FConfigCacheIni::GetSingleLineArray
 	FString NextToken;
 	while ( FParse::Token(RawString, NextToken, false) )
 	{
-		new(out_Arr) FString(NextToken);
+		out_Arr.Add(MoveTemp(NextToken));
 	}
 	return bValueExisted;
 }
@@ -3314,7 +3325,7 @@ struct FConfigMemoryData
 		SizeIndent = FMath::Max(SizeIndent, FString::FromInt((int32)TotalMem).Len());
 		MaxSizeIndent = FMath::Max(MaxSizeIndent, FString::FromInt((int32)MaxMem).Len());
 		
-		new(MemoryData) FConfigFileMemoryData( ConfigFilename, TotalMem, MaxMem );
+		MemoryData.Emplace( ConfigFilename, TotalMem, MaxMem );
 	}
 
 	void SortBySize()
@@ -3694,10 +3705,10 @@ bool FConfigCacheIni::CreateGConfigFromSaved(const TCHAR* Filename)
 	// now let the delegates pull their data out, after GConfig is set up
 //	FCoreDelegates::TSAccessExtraBinaryConfigData().Broadcast(ExtraData);
 
-	FCoreDelegates::TSConfigReadyForUse().Broadcast();
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::ConfigReadyForUse.Broadcast();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ConfigReadyForUseBroadcast);
+		FCoreDelegates::TSConfigReadyForUse().Broadcast();
+	}
 
 	FMemory::Free(PreloadedData);
 	return true;
@@ -3743,26 +3754,39 @@ static void InitializeConfigRemap()
 	// read in the single remap file
 	FConfigFile RemapFile;
 	FConfigContext Context = FConfigContext::ReadSingleIntoLocalFile(RemapFile);
-	Context.Load(*FPaths::Combine(FPaths::EngineDir(), TEXT("Config/ConfigRedirects.ini")));
 	
-	for (const TPair<FString, FConfigSection>& Section : RemapFile)
+	// read in engine and project ini files (these are not hierarchical, so it has to be done in two passes)
+	for (int Pass = 0; Pass < 2; Pass++)
 	{
-		if (Section.Key == TEXT("SectionNameRemap"))
+		// if there isn't an active project, then skip the project pass
+		if (Pass == 1 && FPaths::ProjectDir() == FPaths::EngineDir())
 		{
-			for (const TPair<FName, FConfigValue>& Line : Section.Value)
-			{
-				SectionRemap.Add(Line.Key.ToString(), Line.Value.GetSavedValue());
-			}
+			continue;
 		}
-		else
+		
+		Context.Load(*FPaths::Combine(Pass == 0 ? FPaths::EngineDir() : FPaths::ProjectDir(), TEXT("Config/ConfigRedirects.ini")));
+		
+		for (const TPair<FString, FConfigSection>& Section : RemapFile)
 		{
-			TMap<FString, FString>& KeyRemaps = KeyRemap.FindOrAdd(Section.Key);
-			for (const TPair<FName, FConfigValue>& Line : Section.Value)
+			if (Section.Key == TEXT("SectionNameRemap"))
 			{
-				KeyRemaps.Add(Line.Key.ToString(), Line.Value.GetSavedValue());
+				for (const TPair<FName, FConfigValue>& Line : Section.Value)
+				{
+					SectionRemap.Add(Line.Key.ToString(), Line.Value.GetSavedValue());
+				}
+			}
+			else
+			{
+				TMap<FString, FString>& KeyRemaps = KeyRemap.FindOrAdd(Section.Key);
+				for (const TPair<FName, FConfigValue>& Line : Section.Value)
+				{
+					KeyRemaps.Add(Line.Key.ToString(), Line.Value.GetSavedValue());
+				}
 			}
 		}
 	}
+	
+	GAllowConfigRemapWarning = true;
 }
 
 void FConfigCacheIni::InitializeConfigSystem()
@@ -3776,10 +3800,6 @@ void FConfigCacheIni::InitializeConfigSystem()
 	
 	InitializeConfigRemap();
 	
-#if WITH_EDITOR
-	AsyncInitializeConfigForPlatforms();
-#endif
-
 #if PLATFORM_SUPPORTS_BINARYCONFIG && PRELOAD_BINARY_CONFIG
 	// attempt to load from staged binary config data
 	if (!FParse::Param(FCommandLine::Get(), TEXT("textconfig")) &&
@@ -3803,6 +3823,7 @@ void FConfigCacheIni::InitializeConfigSystem()
 	FString IniBootstrapFilename;
 	if (FParse::Value( FCommandLine::Get(), TEXT("IniBootstrap="), IniBootstrapFilename))
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(IniBootstrap);
 		TArray<uint8> FileContent;
 		if (FFileHelper::LoadFileToArray(FileContent, *IniBootstrapFilename, FILEREAD_Silent))
 		{
@@ -3810,10 +3831,8 @@ void FConfigCacheIni::InitializeConfigSystem()
 			GConfig = new FConfigCacheIni(EConfigCacheType::Temporary);
 			GConfig->SerializeStateForBootstrap_Impl(MemoryReader);
 			GConfig->bIsReadyForUse = true;
+			TRACE_CPUPROFILER_EVENT_SCOPE(ConfigReadyForUseBroadcast);
 			FCoreDelegates::TSConfigReadyForUse().Broadcast();
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FCoreDelegates::ConfigReadyForUse.Broadcast();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			return;
 		}
 		else
@@ -3860,13 +3879,19 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// load editor, etc config files
 	LoadRemainingConfigFiles(Context);
 
+	FCoreDelegates::TSOnConfigSectionsChanged().AddStatic(OnConfigSectionsChanged);
+
 	// now we can make use of GConfig
 	GConfig->bIsReadyForUse = true;
 
+#if WITH_EDITOR
+	// this needs to be called after setting bIsReadyForUse, because it uses ProjectDir, and bIsReadyForUse can reset the 
+	// ProjectDir array while the async threads are using it and crash
+	AsyncInitializeConfigForPlatforms();
+#endif
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(ConfigReadyForUseBroadcast);
 	FCoreDelegates::TSConfigReadyForUse().Broadcast();
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FCoreDelegates::ConfigReadyForUse.Broadcast();
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 const FString& FConfigCacheIni::GetCustomConfigString()
@@ -3878,16 +3903,28 @@ const FString& FConfigCacheIni::GetCustomConfigString()
 		bInitialized = true;
 
 		// Set to compiled in value, then possibly override
+		bool bCustomConfigOverrideApplied = false;
 		CustomConfigString = TEXT(CUSTOM_CONFIG);
 
 #if ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
 		if (FParse::Value(FCommandLine::Get(), CommandlineOverrideSpecifiers::CustomConfigIdentifier, CustomConfigString))
 		{
-			UE_LOG(LogConfig, Log, TEXT("Overriding CustomConfig from %s to %s"), TEXT(CUSTOM_CONFIG), *CustomConfigString);
+			bCustomConfigOverrideApplied = true;
+			UE_LOG(LogConfig, Log, TEXT("Overriding CustomConfig from %s to %s using -customconfig cmd line param"), TEXT(CUSTOM_CONFIG), *CustomConfigString);
 		}
-		else
 #endif
-		if (!CustomConfigString.IsEmpty())
+
+#ifdef UE_USE_COMMAND_LINE_PARAM_FOR_CUSTOM_CONFIG
+		FString CustomName = PREPROCESSOR_TO_STRING(UE_USE_COMMAND_LINE_PARAM_FOR_CUSTOM_CONFIG);
+		if (!bCustomConfigOverrideApplied && FParse::Param(FCommandLine::Get(), *CustomName))
+		{
+			bCustomConfigOverrideApplied = true;
+			CustomConfigString = CustomName;
+			UE_LOG(LogConfig, Log, TEXT("Overriding CustomConfig from %s to %s using a custom cmd line param"), TEXT(CUSTOM_CONFIG), *CustomConfigString);
+		}
+#endif
+
+		if (!bCustomConfigOverrideApplied && !CustomConfigString.IsEmpty())
 		{
 			UE_LOG(LogConfig, Log, TEXT("Using compiled CustomConfig %s"), *CustomConfigString);
 		}

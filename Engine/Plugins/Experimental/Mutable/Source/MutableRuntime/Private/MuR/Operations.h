@@ -40,6 +40,7 @@ namespace mu
         LA_CONSTANT,
         PR_CONSTANT,
         ST_CONSTANT,
+		ED_CONSTANT,
 
         //! User parameter
         BO_PARAMETER,
@@ -50,6 +51,9 @@ namespace mu
         IM_PARAMETER,
         ST_PARAMETER,
 
+		//! A referenced, but opaque engine resource
+		IM_REFERENCE,
+
         //! Select one value or the other depending on a boolean input
         NU_CONDITIONAL,
         SC_CONDITIONAL,
@@ -58,6 +62,7 @@ namespace mu
         ME_CONDITIONAL,
         LA_CONDITIONAL,
         IN_CONDITIONAL,
+		ED_CONDITIONAL,
 
         //! Select one of several values depending on an int input
         NU_SWITCH,
@@ -67,6 +72,7 @@ namespace mu
         ME_SWITCH,
         LA_SWITCH,
         IN_SWITCH,
+		ED_SWITCH,
 
         //-----------------------------------------------------------------------------------------
         // Boolean operations
@@ -163,14 +169,8 @@ namespace mu
         //! Copy an image into a rect of another one.
         IM_COMPOSE,
 
-        //! Compare two images and generate a one channel image with 1 in the different pixels.
-        IM_DIFFERENCE,
-
         //! Interpolate between 2 images taken from a row of targets (2 consecutive targets).
         IM_INTERPOLATE,
-
-        //! Interpolate between 3 images.
-        IM_INTERPOLATE3,
 
         //! Change the saturation of the image.
         IM_SATURATE,
@@ -180,9 +180,6 @@ namespace mu
 
         //! Recombine the channels of several images into one.
         IM_SWIZZLE,
-
-        //! Create a black and white image with the pixels of another image that match a colour.
-        IM_SELECTCOLOUR,
 
         //! Convert the source image colours using a "palette" image sampled with the source
         //! grey-level.
@@ -196,10 +193,6 @@ namespace mu
 
         //! Generate a plain colour image
         IM_PLAINCOLOUR,
-
-        //! Image resulting from a GPU program
-		//! \TODO: Deprecated?
-		IM_GPU,
 
         //! Cut a rect from an image
         IM_CROP,
@@ -239,9 +232,8 @@ namespace mu
         //! The meshes must have the same topology, etc.
         ME_DIFFERENCE,
 
-        //! Apply a linear combination of two morphs on a base. The 2 morphs are taken from a
-        //! sequence.
-        ME_MORPH2,
+        //! Apply a one morphs on a base. 
+        ME_MORPH,
 
         //! Merge a mesh to a mesh
         ME_MERGE,
@@ -255,10 +247,6 @@ namespace mu
 
         //! Create a new mask mesh selecting all the faces of a source that match another mesh.
         ME_MASKDIFF,
-
-        //! Remove from a source mesh all the faces in common with another mesh
-		//! \TODO: Deprecated?
-		ME_SUBTRACT,
 
         //! Remove all the geometry selected by a mask.
         ME_REMOVEMASK,
@@ -344,6 +332,9 @@ namespace mu
         //! Add all LODs to an instance. This operation can only appear once in a model.
         IN_ADDLOD,
 
+		//! Add extension data to an instance
+		IN_ADDEXTENSIONDATA,
+
         //-----------------------------------------------------------------------------------------
         // Layout operations
         //-----------------------------------------------------------------------------------------
@@ -379,6 +370,24 @@ namespace mu
 	};
 	ENUM_CLASS_FLAGS(EMeshBindShapeFlags);
 
+	enum class EMeshBindColorChannelUsage : uint8
+	{
+		None       = 0,
+		ClusterId  = 1,
+		MaskWeight = 2,
+	};
+
+	struct FMeshBindColorChannelUsages
+	{
+		EMeshBindColorChannelUsage R;
+		EMeshBindColorChannelUsage G;
+		EMeshBindColorChannelUsage B;
+		EMeshBindColorChannelUsage A;
+	};
+
+
+	static_assert(sizeof(FMeshBindColorChannelUsages) == sizeof(uint32));
+
     //---------------------------------------------------------------------------------------------
     //!
     //---------------------------------------------------------------------------------------------
@@ -397,7 +406,7 @@ namespace mu
 
         struct IntConstantArgs
         {
-            int value;
+            int32 value;
         };
 
         struct ScalarConstantArgs
@@ -438,6 +447,11 @@ namespace mu
         {
             ADDRESS condition, yes, no;
         };
+
+		struct ResourceReferenceArgs
+		{
+			int32 ID;
+		};
 
         //-------------------------------------------------------------------------------------
         struct BoolLessArgs
@@ -505,7 +519,7 @@ namespace mu
 
 		struct ColourFromScalarsArgs
 		{
-			ADDRESS x, y, z, w;
+			ADDRESS v[MUTABLE_OP_MAX_SWIZZLE_CHANNELS];
 		};
 
         struct ArithmeticArgs
@@ -531,7 +545,13 @@ namespace mu
             ADDRESS mask;
             ADDRESS blended;
 			uint8 blendType;		// One of EBlendType
-			uint8 blendTypeAlpha;	// One of EBlendType
+
+			/** One of EBlendType. If this is different than NONE, it will be applied to the alpha with the channel BlendAlphaSourceChannel of the blended. */
+			uint8 blendTypeAlpha;
+
+			/** Channel to use from the source blended argument to apply blendTypeAlpha, if any. */
+			uint8 BlendAlphaSourceChannel;
+
 			uint8 flags;
 			typedef enum
             {
@@ -544,6 +564,8 @@ namespace mu
 				F_USE_MASK_FROM_BLENDED = 1 << 2,
 				/** Use the alpha channel of the base image as its RGB.*/
 				F_BASE_RGB_FROM_ALPHA = 1 << 3,
+				/** Use the alpha channel of the blended image as its RGB.*/
+				F_BLENDED_RGB_FROM_ALPHA = 1 << 4,
 			} FLAGS;
         };
 
@@ -555,7 +577,13 @@ namespace mu
             ADDRESS rangeSize;
             uint16 rangeId;
 			uint8 blendType;		// One of EBlendType
-			uint8 blendTypeAlpha;	// One of EBlendType
+			
+			/** One of EBlendType. If this is different than NONE, it will be applied to the alpha with the channel BlendAlphaSourceChannel of the blended. */
+			uint8 blendTypeAlpha;
+
+			/** Channel to use from the source color argument to apply blendTypeAlpha, if any. */
+			uint8 BlendAlphaSourceChannel;
+
 			uint8 bUseMaskFromBlended;	
 		};
 
@@ -565,8 +593,15 @@ namespace mu
             ADDRESS mask;
             ADDRESS colour;
 			uint8 blendType;		// One of EBlendType
-			uint8 blendTypeAlpha;	// One of EBlendType
-			uint8 flags;			// Like in ImageLayerArgs
+
+			/** One of EBlendType. If this is different than NONE, it will be applied to the alpha but with the channel BlendAlphaSourceChannel of the color. */
+			uint8 blendTypeAlpha;	
+
+			/** Channel to use from the source color argument to apply blendTypeAlpha, if any. */
+			uint8 BlendAlphaSourceChannel;
+
+			/** Like in ImageLayerArgs. */
+			uint8 flags;
 		};
 
         struct ImagePixelFormatArgs
@@ -640,7 +675,7 @@ namespace mu
             uint16 blockSize[2];
 			EImageFormat format;
 
-            //! If true, generate all the mipmaps except the ones in skipMipmaps
+            //! If true, generate mipmaps
             uint8 generateMipmaps;
 
             //! Mipmaps to generate if mipmaps are to be generated. 0 means all.
@@ -652,12 +687,6 @@ namespace mu
             ADDRESS layout, base, blockImage;
             ADDRESS mask;
             uint32 blockIndex;
-        };
-
-        struct ImageDifferenceArgs
-        {
-            ADDRESS a;
-            ADDRESS b;
         };
 
         struct ImageInterpolateArgs
@@ -695,12 +724,6 @@ namespace mu
             ADDRESS sources[ MUTABLE_OP_MAX_SWIZZLE_CHANNELS ];
         };
 
-        struct ImageSelectColourArgs
-        {
-            ADDRESS base;
-            ADDRESS colour;
-        };
-
         struct ImageColourMapArgs
         {
             ADDRESS base;
@@ -726,6 +749,9 @@ namespace mu
             ADDRESS colour;
 			EImageFormat format;
             uint16 size[2];
+
+			/** Number of mipmaps to generate. 0 means all the chain. */
+			uint8 LODs;
         };
 
         struct ImageGPUArgs
@@ -761,10 +787,20 @@ namespace mu
 			//! like cylindrical projections.
 			ADDRESS projector;
 			
-			int32 blockIndex;
+			int32 blockId;
 			uint16 sizeX, sizeY;
+			uint16 SourceSizeX, SourceSizeY;
+			uint16 CropMinX, CropMinY;
+			uint16 UncroppedSizeX, UncroppedSizeY;
 			uint8 bIsRGBFadingEnabled : 1;
 			uint8 bIsAlphaFadingEnabled : 1;
+			
+			// Currently only 2 sampling methods are contemplated, but reserve 3 bits for future uses. 
+			uint8 SamplingMethod : 3;
+			// Currently only 2 min filter methods are contemplated, but reserve 3 bits for future uses. 
+			uint8 MinFilterMethod : 3;
+
+			uint8 LayoutIndex;
         };
 
         struct ImageMakeGrowMapArgs
@@ -801,6 +837,8 @@ namespace mu
 			ADDRESS scaleX = 0;
 			ADDRESS scaleY = 0;
 			ADDRESS rotation = 0;
+
+			uint32 AddressMode = 0;
 		};
 
         //-------------------------------------------------------------------------------------
@@ -844,12 +882,6 @@ namespace mu
         {
             ADDRESS source;
             ADDRESS fragment;
-        };
-
-        struct MeshSubtractArgs
-        {
-            ADDRESS a;
-            ADDRESS b;
         };
 
         struct MeshFormatArgs
@@ -943,6 +975,7 @@ namespace mu
 			ADDRESS shape;
 			uint32 flags;
 			uint32 bindingMethod;
+			uint32 ColorUsage;
 		};
 
 		struct MeshApplyShapeArgs
@@ -979,7 +1012,11 @@ namespace mu
             ADDRESS instance;
             ADDRESS value;
             uint32 id;
-            uint32 externalId;
+            uint32 ExternalId;
+
+			// Id used to identify shared surfaces between lods.
+			int32 SharedSurfaceId;
+
             ADDRESS name;
 
             // Index in the FProgram::m_parameterLists with the parameters that are relevant
@@ -992,6 +1029,19 @@ namespace mu
         {
             ADDRESS lod[ MUTABLE_OP_MAX_ADD_COUNT ];
         };
+
+		struct InstanceAddExtensionDataArgs
+		{
+			// This is a reference to an op that produces the Instance that the ExtensionData will
+			// be added to.
+			ADDRESS Instance;
+			// An op that produces the ExtensionData to add to the Instance
+			ADDRESS ExtensionData;
+			// The name to associate with the ExtensionData
+			//
+			// This is an index into the string table
+			ADDRESS ExtensionDataName;
+		};
 
         //-------------------------------------------------------------------------------------
         struct LayoutPackArgs
@@ -1097,19 +1147,16 @@ namespace mu
             ImageResizeVarArgs ImageResizeVar;
             ImageResizeRelArgs ImageResizeRel;
             ImageBlankLayoutArgs ImageBlankLayout;
-            ImageDifferenceArgs ImageDifference;
             ImageInterpolateArgs ImageInterpolate;
             ImageInterpolate3Args ImageInterpolate3;
             ImageSaturateArgs ImageSaturate;
             ImageLuminanceArgs ImageLuminance;
-            ImageSelectColourArgs ImageSelectColour;
             ImageColourMapArgs ImageColourMap;
             ImageGradientArgs ImageGradient;
             ImageBinariseArgs ImageBinarise;
             ImagePlainColourArgs ImagePlainColour;
             ImageGPUArgs ImageGPU;
             ImageCropArgs ImageCrop;
-//            ImageRasterMeshArgs ImageRasterMesh;
             ImageDisplaceArgs ImageDisplace;
 			ImageInvertArgs ImageInvert;
 
@@ -1118,7 +1165,6 @@ namespace mu
             MeshMergeArgs MeshMerge;
             MeshInterpolateArgs MeshInterpolate;
             MeshMaskDiffArgs MeshMaskDiff;
-            MeshSubtractArgs MeshSubtract;
             MeshExtractFaceGroupArgs MeshExtractFaceGroup;
 			MeshClipMorphPlaneArgs MeshClipMorphPlane;
             MeshClipWithMeshArgs MeshClipWithMesh;
@@ -1133,8 +1179,8 @@ namespace mu
     typedef t_OP<uint32> OP;
 
     // OP is not serialisable anymore, we link code now.
-    MUTABLE_DEFINE_POD_SERIALISABLE( OP );
-    MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE( OP );
+    MUTABLE_DEFINE_POD_SERIALISABLE(OP);
+    MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE(OP);
     
     // Check that we didn't go out of control with the operation size
     static_assert( sizeof(OP::FArgs)==28, "Argument union has an unexpected size." );
@@ -1156,6 +1202,7 @@ namespace mu
 		DT_INSTANCE,
 		DT_PROJECTOR,
 		DT_STRING,
+		DT_EXTENSION_DATA,
 
 		// Supporting data types : Never returned as an actual data type for any operation.
 		DT_MATRIX,
@@ -1210,6 +1257,8 @@ namespace mu
         case DT_COLOUR: return OP_TYPE::CO_SWITCH;
         case DT_SCALAR: return OP_TYPE::SC_SWITCH;
         case DT_INT: return OP_TYPE::NU_SWITCH;
+		case DT_EXTENSION_DATA: return OP_TYPE::ED_SWITCH;
+
         default:
 			check(false);
 			break;

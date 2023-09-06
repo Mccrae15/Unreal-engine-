@@ -20,10 +20,7 @@ public:
 	 *
 	 * @return NULL if default implementation is to be used
 	 */
-	static FHttpManager* CreatePlatformHttpManager()
-	{
-		return nullptr;
-	}
+	static FHttpManager* CreatePlatformHttpManager();
 
 	/**
 	 * Platform shutdown step
@@ -36,6 +33,13 @@ public:
 	 * @return request object
 	 */
 	static IHttpRequest* ConstructRequest();
+
+	/**
+	 * Check if a platform uses the HTTP thread
+	 *
+	 * @return true if the platform uses threaded HTTP, false if not
+	 */
+	static bool UsesThreadedHttp();
 
 private:
 	/** Flag to allow fall back to use NSUrlConnection instead of NSUrlSession. Assigned from commandline */

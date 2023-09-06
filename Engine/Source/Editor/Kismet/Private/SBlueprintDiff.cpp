@@ -35,6 +35,8 @@
 #include "Misc/AssertionMacros.h"
 #include "Misc/CString.h"
 #include "PropertyEditorDelegates.h"
+#include "ReviewComments.h"
+#include "SDetailsSplitter.h"
 #include "SKismetInspector.h"
 #include "SMyBlueprint.h"
 #include "SlateOptMacros.h"
@@ -68,6 +70,7 @@ static const FName MyBlueprintMode = FName(TEXT("MyBlueprintMode"));
 static const FName DefaultsMode = FName(TEXT("DefaultsMode"));
 static const FName ClassSettingsMode = FName(TEXT("ClassSettingsMode"));
 static const FName ComponentsMode = FName(TEXT("ComponentsMode"));
+static const FName CommentsMode = FName(TEXT("CommentsMode"));
 static const FName GraphMode = FName(TEXT("GraphMode"));
 
 TSharedRef<SWidget>	FDiffResultItem::GenerateWidget() const
@@ -368,6 +371,14 @@ SBlueprintDiff::~SBlueprintDiff()
 	}
 }
 
+void SBlueprintDiff::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	if (const TSharedPtr<IDiffControl> DiffControl = ModePanels[CurrentMode].DiffControl)
+	{
+		DiffControl->Tick();
+	}
+}
+
 void SBlueprintDiff::OnCloseAssetEditor(UObject* Asset, EAssetEditorCloseReason CloseReason)
 {
 	if (PanelOld.Blueprint == Asset || PanelNew.Blueprint == Asset || CloseReason == EAssetEditorCloseReason::CloseAllAssetEditors)
@@ -390,6 +401,8 @@ void SBlueprintDiff::OnCloseAssetEditor(UObject* Asset, EAssetEditorCloseReason 
 void SBlueprintDiff::CreateGraphEntry( UEdGraph* GraphOld, UEdGraph* GraphNew )
 {
 	Graphs.Add(MakeShared<FGraphToDiff>(this, GraphOld, GraphNew, PanelOld.RevisionInfo, PanelNew.RevisionInfo));
+	Graphs.Last()->EnableComments(DifferencesTreeView.ToWeakPtr());
+	
 }
 
 void SBlueprintDiff::OnGraphSelectionChanged(TSharedPtr<FGraphToDiff> Item, ESelectInfo::Type SelectionType)
@@ -732,7 +745,10 @@ bool FDiffPanel::CanCopyNodes() const
 
 void FDiffPanel::FocusDiff(UEdGraphPin& Pin)
 {
-	GraphEditor.Pin()->JumpToPin(&Pin);
+	if (GraphEditor.IsValid())
+	{
+		GraphEditor.Pin()->JumpToPin(&Pin);
+	}
 }
 
 void FDiffPanel::FocusDiff(UEdGraphNode& Node)
@@ -945,6 +961,8 @@ void SBlueprintDiff::GenerateDifferencesList()
 	{
 		Graph->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
 	}
+	
+	ModePanels.Add(CommentsMode, GenerateGeneralFileCommentEntries());
 
 	DifferencesTreeView->RebuildList();
 }
@@ -952,6 +970,7 @@ void SBlueprintDiff::GenerateDifferencesList()
 SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateBlueprintTypePanel()
 {
 	TSharedPtr<FBlueprintTypeDiffControl> NewDiffControl = MakeShared<FBlueprintTypeDiffControl>(PanelOld.Blueprint, PanelNew.Blueprint, FOnDiffEntryFocused::CreateRaw(this, &SBlueprintDiff::SetCurrentMode, BlueprintTypeMode));
+	NewDiffControl->EnableComments(DifferencesTreeView.ToWeakPtr());
 	NewDiffControl->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
 
 	SBlueprintDiff::FDiffControl Ret;
@@ -984,6 +1003,7 @@ SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateBlueprintTypePanel()
 SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateMyBlueprintPanel()
 {
 	TSharedPtr<FMyBlueprintDiffControl> NewDiffControl = MakeShared<FMyBlueprintDiffControl>(PanelOld.Blueprint, PanelNew.Blueprint, FOnDiffEntryFocused::CreateRaw(this, &SBlueprintDiff::SetCurrentMode, MyBlueprintMode));
+	NewDiffControl->EnableComments(DifferencesTreeView.ToWeakPtr());
 	NewDiffControl->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
 
 	SBlueprintDiff::FDiffControl Ret;
@@ -1090,52 +1110,71 @@ SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateDefaultsPanel()
 	const UObject* B = DiffUtils::GetCDO(PanelNew.Blueprint);
 
 	TSharedPtr<FCDODiffControl> NewDiffControl = MakeShared<FCDODiffControl>(A, B, FOnDiffEntryFocused::CreateRaw(this, &SBlueprintDiff::SetCurrentMode, DefaultsMode));
+	NewDiffControl->EnableComments(DifferencesTreeView.ToWeakPtr());
 	NewDiffControl->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
+
+	const TSharedRef<SDetailsSplitter> Splitter = SNew(SDetailsSplitter);
+	if (A)
+	{
+		Splitter->AddSlot(
+			SDetailsSplitter::Slot()
+			.Value(0.5f)
+			.DetailsView(NewDiffControl->GetDetailsWidget(A))
+			.DifferencesWithRightPanel(NewDiffControl.ToSharedRef(), &FDetailsDiffControl::GetDifferencesWithRight, A)
+		);
+	}
+	if (B)
+	{
+		Splitter->AddSlot(
+			SDetailsSplitter::Slot()
+			.Value(0.5f)
+			.DetailsView(NewDiffControl->GetDetailsWidget(B))
+			.DifferencesWithRightPanel(NewDiffControl.ToSharedRef(), &FDetailsDiffControl::GetDifferencesWithRight, B)
+		);
+	}
 
 	SBlueprintDiff::FDiffControl Ret;
 	Ret.DiffControl = NewDiffControl;
-	Ret.Widget = SNew(SSplitter)
-		.PhysicalSplitterHandleSize(10.0f)
-		+ SSplitter::Slot()
-		.Value(0.5f)
-		[
-			NewDiffControl->OldDetailsWidget()
-		]
-		+ SSplitter::Slot()
-		.Value(0.5f)
-		[
-			NewDiffControl->NewDetailsWidget()
-		];
-
+	Ret.Widget = Splitter;
 	return Ret;
 }
 
 SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateClassSettingsPanel()
 {
 	TSharedPtr<FClassSettingsDiffControl> NewDiffControl = MakeShared<FClassSettingsDiffControl>(PanelOld.Blueprint, PanelNew.Blueprint, FOnDiffEntryFocused::CreateRaw(this, &SBlueprintDiff::SetCurrentMode, ClassSettingsMode));
+	NewDiffControl->EnableComments(DifferencesTreeView.ToWeakPtr());
 	NewDiffControl->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
 
+	const TSharedRef<SDetailsSplitter> Splitter = SNew(SDetailsSplitter);
+	if (PanelOld.Blueprint)
+	{
+		Splitter->AddSlot(
+			SDetailsSplitter::Slot()
+			.Value(0.5f)
+			.DetailsView(NewDiffControl->GetDetailsWidget(PanelOld.Blueprint))
+			.DifferencesWithRightPanel(NewDiffControl.ToSharedRef(), &FDetailsDiffControl::GetDifferencesWithRight, Cast<UObject>(PanelOld.Blueprint))
+		);
+	}
+	if (PanelNew.Blueprint)
+	{
+		Splitter->AddSlot(
+			SDetailsSplitter::Slot()
+			.Value(0.5f)
+			.DetailsView(NewDiffControl->GetDetailsWidget(PanelNew.Blueprint))
+			.DifferencesWithRightPanel(NewDiffControl.ToSharedRef(), &FDetailsDiffControl::GetDifferencesWithRight, Cast<UObject>(PanelNew.Blueprint))
+		);
+	}
+	
 	SBlueprintDiff::FDiffControl Ret;
 	Ret.DiffControl = NewDiffControl;
-	Ret.Widget = SNew(SSplitter)
-		.PhysicalSplitterHandleSize(10.0f)
-		+ SSplitter::Slot()
-		.Value(0.5f)
-		[
-			NewDiffControl->OldDetailsWidget()
-		]
-		+ SSplitter::Slot()
-		.Value(0.5f)
-		[
-			NewDiffControl->NewDetailsWidget()
-		];
-
+	Ret.Widget = Splitter;
 	return Ret;
 }
 
 SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateComponentsPanel()
 {
 	TSharedPtr<FSCSDiffControl> NewDiffControl = MakeShared<FSCSDiffControl>(PanelOld.Blueprint, PanelNew.Blueprint, FOnDiffEntryFocused::CreateRaw(this, &SBlueprintDiff::SetCurrentMode, ComponentsMode));
+	NewDiffControl->EnableComments(DifferencesTreeView.ToWeakPtr());
 	NewDiffControl->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
 
 	SBlueprintDiff::FDiffControl Ret;
@@ -1152,6 +1191,19 @@ SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateComponentsPanel()
 		[
 			NewDiffControl->NewTreeWidget()
 		];
+
+	return Ret;
+}
+
+SBlueprintDiff::FDiffControl SBlueprintDiff::GenerateGeneralFileCommentEntries()
+{
+	const UPackage* Package = PanelOld.Blueprint ? PanelOld.Blueprint->GetPackage() : PanelNew.Blueprint->GetPackage();
+	const FPackagePath PackagePath = FPackagePath::FromPackageNameChecked(Package->GetName());
+	const TSharedPtr<FReviewCommentsDiffControl> NewDiffControl = MakeShared<FReviewCommentsDiffControl>(PackagePath.GetLocalFullPath(), DifferencesTreeView.ToWeakPtr());
+	NewDiffControl->GenerateTreeEntries(PrimaryDifferencesList, RealDifferences);
+
+	SBlueprintDiff::FDiffControl Ret;
+	Ret.DiffControl = NewDiffControl;
 
 	return Ret;
 }

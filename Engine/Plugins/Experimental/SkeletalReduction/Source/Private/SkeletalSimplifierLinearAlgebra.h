@@ -37,12 +37,6 @@ namespace SkeletalSimplifier
 				memset(Data, 0, sizeof(Data));
 			}
 
-			ArrayBase(const ArrayBase& other)
-			{
-				//for (int i = 0; i < SIZE; ++i) Data[i] = other.Data[i];
-				memcpy(Data, other.Data, sizeof(Data));
-			}
-
 			// Data access
 			ScalarType& operator() (const int32 idx)
 			{
@@ -271,10 +265,6 @@ namespace SkeletalSimplifier
 				                                Data[5] = a33;
 			}
 
-			SymmetricMatrix(const SymmetricMatrix& other) :
-				MyBase(other)
-			{}
-
 			SymmetricMatrix(const MyBase& base) :
 				MyBase(base)
 			{}
@@ -491,10 +481,6 @@ namespace SkeletalSimplifier
 				Data[3] = Row1[0];  Data[4] = Row1[1];  Data[5] = Row1[2];
 				Data[6] = Row2[0];  Data[7] = Row2[1];  Data[8] = Row2[2];
 			}
-
-			DMatrix(const DMatrix& Other) :
-				MyBase(Other)
-			{}
 
 			/**
 			* Accesses elements in the matrix using standard M(i,j) notation
@@ -885,6 +871,12 @@ namespace SkeletalSimplifier
 				Size = size;
 			}
 
+			TDenseArrayWrapper(TArrayView<DataType> InArrayView)
+			{
+				Data = InArrayView.GetData();
+				Size = InArrayView.Num();
+			}
+
 			int32 Num() const { return Size; }
 
 			void SetElement(const int32 j, const DataType Value) { checkSlow(j < Size);  Data[j] = Value; }
@@ -895,7 +887,7 @@ namespace SkeletalSimplifier
 			DataType& operator() (const int32 j) { return operator[](j); }
 			DataType operator() (const int32 j) const { return operator[](j); }
 
-			TDenseArrayWrapper& operator*= (const double& Scalar)
+			TDenseArrayWrapper& operator*= (double Scalar)
 			{
 				int32 Num = Size;
 				for (int32 i = 0; i < Num; ++i) Data[i] *= Scalar;
@@ -993,7 +985,8 @@ namespace SkeletalSimplifier
 				}
 			}
 
-			TDenseVecD(const TDenseVecD& Other) : MyBase(Other) {};
+			TDenseVecD(const TDenseVecD& Other) = default;
+			TDenseVecD& operator=(const TDenseVecD& Other) = default;
 
 			void SetElement(const int32 j, const double Value) { MyBase::operator[](j) = Value; }
 			ScalarType GetElement(const int32 j) const { return MyBase::operator[](j); }
@@ -1065,15 +1058,6 @@ namespace SkeletalSimplifier
 			double operator()(int32 i, int32 j) const
 			{
 				return GetColumn(j)[i];
-			}
-
-			/**
-			* Assignment.
-			*/
-			SparseBMatrix& operator=(const SparseBMatrix& Other)
-			{
-				SparseData = Other.SparseData;
-				return *this;
 			}
 
 			/**
@@ -1361,63 +1345,62 @@ namespace SkeletalSimplifier
 		* This class generates the interpolation coefficients vector (Vec3d) g  and distance (double) d
 		* defined over the face of a triangle.
 		*
-		* The Position Matrix is defined in terms of the three corners of triangle
-		*  {pa, pb, pc} with corresponding normal 'FaceNormal'
-		*
-		* Position Matrix =
-		*   ( pa_0, pa_1, pa_2 )
-		*   ( pb_0, pb_1, pb_2 )
-		*   ( pc_0, pc_1, pc_2 )
-		*
+		* *
 		* The actual system solved is:
 		*  <pa | g> + d = s0
 		*  <pb | g> + d = s1
 		*  <pc | g> + d = s2
 		*  <FaceNormal | g> = 0
 		*
+		* But we re-write this as
+		* <(pc - pa) | g >  = s2 - s0
+		* <(pb - pa) | g >  = s1 - s0
+		* < FaceNormal | g > = 0
+		* d = s0 - <pa | g>
 		*
-		* In matrix form   ( PositionMatrix   Vec3(1) )   ( g )  = ( s )
-		*                  ( FaceNormal^T ,     0     )   ( d )    ( 0 )
+		* The first three equations can be solved for "g", in terms of s, and the result can be used to
+		* compute d.
 		*
-		* where the vector (Vec3d) 's' represents the per-vertex data that forms boundary conditions
-		* for the interpolation.
+		* The BasisMatrix is defined in terms of the three corners of triangle
+		*  {pa, pb, pc} and the normal corresponding normal 'FaceNormal'
 		*
-		*  The actual solution is given by:
-		*  -- Distance
-		*  double d = < FaceNormal | InvsPositionMatrix * s> / <FaceNormal | InversePositionMatrix * Vec3d(1) >;
-		*  -- Gradient
-		*  Vec3d  g = InversePositionMatrix * s - d * InversePositionMatrix * Vec3d(1);
+		* BasisMatrix =
+		*   ( pc_0 - pa_0 , pc_1 - pa_1 , pc_2 - pa_2 )
+		*   ( pb_0 - pa_0 , pb_1 - pa_1 , pb_2 - pa_2)
+		*   ( FaceNormal_0, FaceNormal_1, FaceNormal_2 )
+		* The rows corresponds to vectors along two sides of the triangle and the face normal
+		*
+		* Solving for "g" is simply solving
+		*  BasisMatrix * g = vec(s2-s0, s1-s0, 0)
+		*
+		* or
+		*  g  = Invserse(BasisMatrix) * vec(s2-s0, s1-s0, 0)
+		* the Inverse(BasisMatrix) is cached as the CoBasisMatrix
+		*
 		*
 		* The computation is broken up do allow for reuse with multiple sets of per-vertex data.
 		*/
 		class InverseGradientProjection
 		{
 		public:
-			InverseGradientProjection(const DMatrix& PositionMatrix, const Vec3d& FaceNormal)
+			InverseGradientProjection(const Vec3d& Pos0, const Vec3d& Pos1, const Vec3d& Pos2, const Vec3d& FaceNormal)
 			{
+
 				// Threshold for computing the matrix inverse.
-				const double DetThreshold = 1.e-8;
+				constexpr  double DetThreshold = 1.e-8;
 
-				// Compute the inverse of the position matrix
-				PosInv = PositionMatrix.Inverse(bIsValid, DetThreshold);
-				if (bIsValid)
-				{
-					// InversePositionMatrix * Vec3(1)
-					MInv1 = PosInv.RowSum();
+				Origin = Pos0;
 
-					// <FaceNormal | InversePositionMatrix 
-					Dhat = FaceNormal * PosInv;
+				const Vec3d Side20 = Pos2 - Pos0;
+				const Vec3d Side10 = Pos1 - Pos0;
 
-					// <FaceNormal | InvesePositionMatrix Vec3d(1)> 
-					double ReScale = Dhat[0] + Dhat[1] + Dhat[2];
+				DMatrix BasisMatrix(Side20,
+									Side10,
+									FaceNormal);
 
-					bIsValid = bIsValid && (FMath::Abs(ReScale) > 1.e-8);
-
-					// divide by <FaceNormal | InvesePositionMatrix Vec3d(1)> 
-					Dhat *= ( 1. / ReScale );
-					//now:  Dhat =  <FaceNormal | InvPos  / <FaceNormal | InvPos. Vec3d(1) >
-				}
+				CoBasisMatrix = BasisMatrix.Inverse(bIsValid, DetThreshold);
 			}
+
 
 			bool IsValid() const
 			{
@@ -1429,14 +1412,10 @@ namespace SkeletalSimplifier
 			// @return  Distance
 			double ComputeGradient(const Vec3d& PerVertexData, Vec3d& OutGradient) const
 			{
-				// PosInv . s
-				Vec3d MInvS = PosInv * PerVertexData;
+				Vec3d DataVec(PerVertexData[2] - PerVertexData[0], PerVertexData[1] - PerVertexData[0], 0.);
 
-				// Dist = <dhat | s>
-				double Distance = Dhat.DotProduct(PerVertexData);
-				
-				// Grad =  PosInv . s - Dist * PosInv . (1, 1, 1} 
-				OutGradient = MInvS - Distance * MInv1;
+				OutGradient = CoBasisMatrix * DataVec;
+				double Distance = PerVertexData[0] - Origin.DotProduct(OutGradient);
 
 				return Distance;
 			}
@@ -1444,9 +1423,8 @@ namespace SkeletalSimplifier
 		private:
 
 			bool    bIsValid;  // Indicates if the inversions incurred a divide by very-small-number.
-			DMatrix PosInv;    // Inverse(PositionMatrix)
-			Vec3d   Dhat;      // n * Inverse(PositinoMatrix) / < n | Inverse(PositionMatrix) Vec3(1) >
-			Vec3d   MInv1;     // Inverse(PositionMatrix) * Vec3(1)
+			DMatrix CoBasisMatrix;   // Inverse( {P2-P0}, {P1 - P0}, Normal}
+			Vec3d   Origin;    // corresponds to P0
 		};
 
 		template <typename SparseVecDOrDenseVecD>

@@ -5,6 +5,7 @@
 #include "Misc/Optional.h"
 #include "IMediaEventSink.h"
 #include "IMediaOptions.h"
+#include "IMediaMetadataItem.h"
 #include "MediaSamples.h"
 #include "MediaPlayerOptions.h"
 
@@ -16,19 +17,7 @@
 #include "MediaSubtitleDecoderOutput.h"
 #include "MediaMetaDataDecoderOutput.h"
 
-#include "HAL/IConsoleManager.h"
-
 using namespace Electra;
-
-//-----------------------------------------------------------------------------
-
-static int GElectraEnableBlockOnFetch = 0;							// Temporarily disable Electra's support for BlockOnFetch by default
-static FAutoConsoleVariableRef CVarElectraEnableBlockOnFetch(
-	TEXT("ElectraPlayer.EnableBlockOnFetch"),
-	GElectraEnableBlockOnFetch,
-	TEXT("Whether 'BlockOnFetch' support is enabled.\n")
-	TEXT(" 0: disabled (default)\n")
-	TEXT(" 1: enabled"));
 
 //-----------------------------------------------------------------------------
 
@@ -68,6 +57,9 @@ FElectraPlayerPlugin::FElectraPlayerPlugin()
 
 	static_assert((int32)EMediaTrackType::Audio == (int32)IElectraPlayerInterface::EPlayerTrackType::Audio, "check alignment of both enums");
 	static_assert((int32)EMediaTrackType::Video == (int32)IElectraPlayerInterface::EPlayerTrackType::Video, "check alignment of both enums");
+
+	static_assert((int32)EMediaRateThinning::Unthinned == (int32)IElectraPlayerInterface::EPlayRateType::Unthinned, "check alignment of both enums");
+	static_assert((int32)EMediaRateThinning::Thinned == (int32)IElectraPlayerInterface::EPlayRateType::Thinned, "check alignment of both enums");
 
 	static_assert(IMediaPlayerLifecycleManagerDelegate::ResourceFlags_Decoder == IElectraPlayerInterface::ResourceFlags_Decoder, "check alignment of both enums");
 	static_assert(IMediaPlayerLifecycleManagerDelegate::ResourceFlags_OutputBuffers == IElectraPlayerInterface::ResourceFlags_OutputBuffers, "check alignment of both enums");
@@ -239,7 +231,7 @@ public:
 
 //-----------------------------------------------------------------------------
 
-class FStreamMetadataItem : public IMediaPlayer::IMetadataItem
+class FStreamMetadataItem : public IMediaMetadataItem
 {
 public:
 	FStreamMetadataItem(const TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>& InItem) : Item(InItem.ToSharedRef())
@@ -428,14 +420,19 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::OnSubtitleFlush()
 }
 
 
-void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentVideoFrame(const FVideoDecoderOutputPtr & InVideoFrame)
+void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentVideoFrame(const FVideoDecoderOutputPtr& InVideoFrame)
 {
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		FElectraTextureSampleRef TextureSample = PinnedHost->OutputTexturePool->AcquireShared();
-		TextureSample->Initialize(InVideoFrame.Get());
-		PinnedHost->MediaSamples->AddVideo(TextureSample);
+		FVideoDecoderOutputPtr VideoFrame = InVideoFrame;
+		TSharedPtr<FElectraTextureSamplePool, ESPMode::ThreadSafe> TexturePool = PinnedHost->OutputTexturePool;
+		if (VideoFrame.IsValid() && TexturePool.IsValid())
+		{
+			FElectraTextureSampleRef TextureSample = TexturePool->AcquireShared();
+			TextureSample->Initialize(VideoFrame.Get());
+			PinnedHost->MediaSamples->AddVideo(TextureSample);
+		}
 	}
 }
 
@@ -445,32 +442,46 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentAudioFrame(const IAudi
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		TSharedRef<FElectraPlayerAudioSample, ESPMode::ThreadSafe> AudioSample = PinnedHost->OutputAudioPool.AcquireShared();
-		AudioSample->Initialize(InAudioFrame);
-		PinnedHost->MediaSamples->AddAudio(AudioSample);
+		IAudioDecoderOutputPtr AudioFrame = InAudioFrame;
+		if (AudioFrame.IsValid())
+		{
+			TSharedRef<FElectraPlayerAudioSample, ESPMode::ThreadSafe> AudioSample = PinnedHost->OutputAudioPool.AcquireShared();
+			AudioSample->Initialize(InAudioFrame);
+			PinnedHost->MediaSamples->AddAudio(AudioSample);
+		}
 	}
 }
+
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentSubtitleSample(const ISubtitleDecoderOutputPtr& InSubtitleSample)
 {
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		TSharedRef<FElectraSubtitleSample, ESPMode::ThreadSafe> SubtitleSample = MakeShared<FElectraSubtitleSample, ESPMode::ThreadSafe>();
-		SubtitleSample->Subtitle = InSubtitleSample;
-		PinnedHost->MediaSamples->AddSubtitle(SubtitleSample);
+		ISubtitleDecoderOutputPtr Subtitle = InSubtitleSample;
+		if (Subtitle.IsValid())
+		{
+			TSharedRef<FElectraSubtitleSample, ESPMode::ThreadSafe> SubtitleSample = MakeShared<FElectraSubtitleSample, ESPMode::ThreadSafe>();
+			SubtitleSample->Subtitle = InSubtitleSample;
+			PinnedHost->MediaSamples->AddSubtitle(SubtitleSample);
+		}
 	}
 }
+
 
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentMetadataSample(const IMetaDataDecoderOutputPtr& InMetadataFrame)
 {
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		// Create a binary media sample of our extended format and pass it up.
-		TSharedRef<FElectraBinarySample, ESPMode::ThreadSafe> MetaDataSample = MakeShared<FElectraBinarySample, ESPMode::ThreadSafe>();
-		MetaDataSample->Metadata = InMetadataFrame;
-		PinnedHost->MediaSamples->AddMetadata(MetaDataSample);
+		IMetaDataDecoderOutputPtr MetadataFrame = InMetadataFrame;
+		if (MetadataFrame.IsValid())
+		{
+			// Create a binary media sample of our extended format and pass it up.
+			TSharedRef<FElectraBinarySample, ESPMode::ThreadSafe> MetaDataSample = MakeShared<FElectraBinarySample, ESPMode::ThreadSafe>();
+			MetaDataSample->Metadata = InMetadataFrame;
+			PinnedHost->MediaSamples->AddMetadata(MetaDataSample);
+		}
 	}
 }
 
@@ -631,14 +642,6 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 		PlayerOptions.Set("max_resoY_above_30fps", Electra::FVariantValue(MaxVerticalHeightAt60));
 		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Limiting vertical resolution to %d for streams >30fps"), this, (int32)MaxVerticalHeightAt60);
 	}
-
-	int64 MaxVerticalHeightForWindowsSoftware = Options->GetMediaOption(TEXT("MaxElectraVerticalResolutionOfWindowsSWD"), (int64)-1);
-	if (MaxVerticalHeightForWindowsSoftware > 0)
-	{
-		PlayerOptions.Set("max_resoY_windows_software", Electra::FVariantValue(MaxVerticalHeightForWindowsSoftware));
-		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Limiting vertical resolution to %d for Windows software decoding"), this, (int32)MaxVerticalHeightForWindowsSoftware);
-	}
-
 	double LiveEdgeDistanceForNormalPresentation = Options->GetMediaOption(TEXT("ElectraLivePresentationOffset"), (double)-1.0);
 	if (LiveEdgeDistanceForNormalPresentation > 0.0)
 	{
@@ -738,17 +741,17 @@ void FElectraPlayerPlugin::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 /**
 	Returns the current metadata, if any.
 */
-TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>, ESPMode::ThreadSafe> FElectraPlayerPlugin::GetMediaMetadata() const
+TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaMetadataItem>>>, ESPMode::ThreadSafe> FElectraPlayerPlugin::GetMediaMetadata() const
 {
 	if (bMetadataChanged && Player.IsValid())
 	{
 		TSharedPtr<TMap<FString, TArray<TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>>>, ESPMode::ThreadSafe> PlayerMeta = Player->GetMediaMetadata();
 		if (PlayerMeta.IsValid())
 		{
-			TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>, ESPMode::ThreadSafe> NewMeta(new TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>);
+			TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaMetadataItem>>>, ESPMode::ThreadSafe> NewMeta(new TMap<FString, TArray<TUniquePtr<IMediaMetadataItem>>>);
 			for(auto& PlayerMetaItem : *PlayerMeta)
 			{
-				TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>& NewItemList = NewMeta->Emplace(PlayerMetaItem.Key);
+				TArray<TUniquePtr<IMediaMetadataItem>>& NewItemList = NewMeta->Emplace(PlayerMetaItem.Key);
 				for(auto& PlayerMetaListItem : PlayerMetaItem.Value)
 				{
 					if (PlayerMetaListItem.IsValid())
@@ -830,11 +833,7 @@ bool FElectraPlayerPlugin::CanControl(EMediaControl Control) const
 	EMediaState CurrentState = GetState();
 	if (Control == EMediaControl::BlockOnFetch)
 	{
-		if (GElectraEnableBlockOnFetch == 0)
-		{
-			return false;
-		}
-		return CurrentState == EMediaState::Playing;
+		return CurrentState == EMediaState::Paused || CurrentState == EMediaState::Playing;
 	}
 	else if (Control == EMediaControl::Pause)
 	{
@@ -896,10 +895,7 @@ bool FElectraPlayerPlugin::SetLooping(bool bLooping)
  */
 TRangeSet<float> FElectraPlayerPlugin::GetSupportedRates(EMediaRateThinning Thinning) const
 {
-	TRangeSet<float> Res;
-	Res.Add(TRange<float>{1.0f}); // only normal (real-time) playback rate
-	Res.Add(TRange<float>{0.0f}); // and pause
-	return Res;
+	return Player->GetSupportedRates(Thinning == EMediaRateThinning::Thinned ? IElectraPlayerInterface::EPlayRateType::Thinned : IElectraPlayerInterface::EPlayRateType::Unthinned);
 }
 
 

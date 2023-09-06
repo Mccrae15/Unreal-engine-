@@ -15,6 +15,7 @@ LandscapeEditLayers.cpp: Landscape editing layers mode
 #include "LandscapePrivate.h"
 #include "LandscapeEditReadback.h"
 #include "LandscapeEditResources.h"
+#include "LandscapeEditTypes.h"
 #include "LandscapeUtils.h"
 #include "LandscapeSubsystem.h"
 
@@ -32,6 +33,7 @@ LandscapeEditLayers.cpp: Landscape editing layers mode
 #include "Rendering/Texture2DResource.h"
 #include "SceneView.h"
 #include "MaterialCachedData.h"
+#include "ContentStreaming.h"
 
 #if WITH_EDITOR
 #include "LandscapeEditorModule.h"
@@ -111,7 +113,6 @@ static TAutoConsoleVariable<int32> CVarOutputLayersWeightmapsRTContent(
 	0,
 	TEXT("This will output the content of render target used for weightmap. This is used for debugging only."));
 
-
 static TAutoConsoleVariable<int32> CVarLandscapeSimulatePhysics(
 	TEXT("landscape.SimulatePhysics"),
 	0,
@@ -127,10 +128,35 @@ static TAutoConsoleVariable<int32> CVarLandscapeLayerBrushOptim(
 	0,
 	TEXT("This will enable landscape layers optim."));
 
-static TAutoConsoleVariable<int32> CVarLandscapeOutputDiffBitmap(
-	TEXT("landscape.OutputDiffBitmap"),
+static TAutoConsoleVariable<int32> CVarLandscapeDumpHeightmapDiff(
+	TEXT("landscape.DumpHeightmapDiff"),
 	0,
-	TEXT("This will save images for readback textures that have changed in the last layer blend phase. (= 1 Heightmap Diff, = 2 Weightmap Diff, = 3 All Diffs"));
+	TEXT("This will save images for readback heightmap textures that have changed in the last edit layer blend phase. (= 0 No Diff, 1 = Mip 0 Diff, 2 = All Mips Diff"));
+
+static TAutoConsoleVariable<int32> CVarLandscapeDumpWeightmapDiff(
+	TEXT("landscape.DumpWeightmapDiff"),
+	0,
+	TEXT("This will save images for readback weightmap textures that have changed in the last edit layer blend phase. (= 0 No Diff, 1 = Mip 0 Diff, 2 = All Mips Diff"));
+
+static TAutoConsoleVariable<bool> CVarLandscapeDumpDiffDetails(
+	TEXT("landscape.DumpDiffDetails"),
+	false,
+	TEXT("When dumping diffs for heightmap (landscape.DumpHeightmapDiff) or weightmap (landscape.DumpWeightmapDiff), dumps additional details about the pixels being different"));
+
+TAutoConsoleVariable<int32> CVarLandscapeDirtyHeightmapHeightThreshold(
+	TEXT("landscape.DirtyHeightmapHeightThreshold"),
+	0,
+	TEXT("Threshold to avoid imprecision issues on certain GPUs when detecting when a heightmap height changes, i.e. only a height difference > than this threshold (N over 16-bits uint height) will be detected as a change."));
+
+TAutoConsoleVariable<int32> CVarLandscapeDirtyHeightmapNormalThreshold(
+	TEXT("landscape.DirtyHeightmapNormalThreshold"),
+	0,
+	TEXT("Threshold to avoid imprecision issues on certain GPUs when detecting when a heightmap normal changes, i.e. only a normal channel difference > than this threshold (N over each 8-bits uint B & A channels independently) will be detected as a change."));
+
+TAutoConsoleVariable<int32> CVarLandscapeDirtyWeightmapThreshold(
+	TEXT("landscape.DirtyWeightmapThreshold"),
+	0,
+	TEXT("Threshold to avoid imprecision issues on certain GPUs when detecting when a weightmap changes, i.e. only a difference > than this threshold (N over each 8-bits uint weightmap channel)."));
 
 TAutoConsoleVariable<int32> CVarLandscapeShowDirty(
 	TEXT("landscape.ShowDirty"),
@@ -165,7 +191,7 @@ void OnLandscapeEditLayersLocalMergeChanged(IConsoleVariable* CVar)
 		if (!CurrentWorld->IsGameWorld())
 		{
 			ULandscapeInfoMap& LandscapeInfoMap = ULandscapeInfoMap::GetLandscapeInfoMap(CurrentWorld);
-			for (TPair<FGuid, ULandscapeInfo*>& Pair : LandscapeInfoMap.Map)
+			for (auto& Pair : LandscapeInfoMap.Map)
 			{
 				if (ULandscapeInfo* LandscapeInfo = Pair.Value)
 				{
@@ -220,7 +246,7 @@ private:
 			if (!CurrentWorld->IsGameWorld())
 			{
 				ULandscapeInfoMap& LandscapeInfoMap = ULandscapeInfoMap::GetLandscapeInfoMap(CurrentWorld);
-				for (TPair<FGuid, ULandscapeInfo*>& Pair : LandscapeInfoMap.Map)
+				for (auto& Pair : LandscapeInfoMap.Map)
 				{
 					if (Pair.Value && Pair.Value->SupportsLandscapeEditing())
 					{
@@ -371,7 +397,7 @@ public:
 	/** Destructor. */
 	virtual ~FLandscapeLayersVertexDeclaration() {}
 
-	virtual void InitRHI()
+	virtual void InitRHI(FRHICommandListBase& RHICmdList)
 	{
 		FVertexDeclarationElementList Elements;
 		constexpr uint16 Stride = sizeof(FLandscapeLayersVertex);
@@ -397,7 +423,7 @@ public:
 private:
 
 	/** Initialize the RHI for this rendering resource */
-	void InitRHI() override
+	void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		TResourceArray<FLandscapeLayersVertex, VERTEXBUFFER_ALIGNMENT> Vertices;
 		Vertices.SetNumUninitialized(TriangleList.Num() * 3);
@@ -411,7 +437,7 @@ private:
 
 		// Create vertex buffer. Fill buffer with initial data upon creation
 		FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeLayersVertexBuffer"), &Vertices);
-		VertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
+		VertexBufferRHI = RHICmdList.CreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
 	}
 
 	TArray<FLandscapeLayersTriangle> TriangleList;
@@ -443,9 +469,9 @@ public:
 	FLandscapeLayersVS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FMatrix44f& InProjectionMatrix)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FMatrix44f& InProjectionMatrix)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), TransformParam, InProjectionMatrix);
+		SetShaderValue(BatchedParameters, TransformParam, InProjectionMatrix);
 	}
 
 private:
@@ -461,6 +487,7 @@ struct FLandscapeLayersHeightmapShaderParameters
 		, ReadHeightmap2(nullptr)
 		, HeightmapSize(0, 0)
 		, ApplyLayerModifiers(false)
+		, SetAlphaOne(false)
 		, LayerAlpha(1.0f)
 		, LayerVisible(true)
 		, LayerBlendMode(LSBM_AdditiveBlend)
@@ -475,6 +502,7 @@ struct FLandscapeLayersHeightmapShaderParameters
 	UTexture* ReadHeightmap2;
 	FIntPoint HeightmapSize;
 	bool ApplyLayerModifiers;
+	bool SetAlphaOne;
 	float LayerAlpha;
 	bool LayerVisible;
 	ELandscapeBlendMode LayerBlendMode;
@@ -517,20 +545,20 @@ public:
 	FLandscapeLayersHeightmapPS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FLandscapeLayersHeightmapShaderParameters& InParams)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FLandscapeLayersHeightmapShaderParameters& InParams)
 	{
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadHeightmap1->GetResource()->TextureRHI);
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture2Param, ReadTexture2SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadHeightmap2 != nullptr ? InParams.ReadHeightmap2->GetResource()->TextureRHI : GWhiteTexture->TextureRHI);
+		SetTextureParameter(BatchedParameters, ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadHeightmap1->GetResource()->TextureRHI);
+		SetTextureParameter(BatchedParameters, ReadTexture2Param, ReadTexture2SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadHeightmap2 != nullptr ? InParams.ReadHeightmap2->GetResource()->TextureRHI : GWhiteTexture->TextureRHI);
 
 		FVector4f LayerInfo(InParams.LayerAlpha, InParams.LayerVisible ? 1.0f : 0.0f, InParams.LayerBlendMode == LSBM_AlphaBlend ? 1.0f : 0.f, 0.f);
-		FVector4f OutputConfig(InParams.ApplyLayerModifiers ? 1.0f : 0.0f, 0.0f /*unused*/, InParams.ReadHeightmap2 ? 1.0f : 0.0f, InParams.GenerateNormals ? 1.0f : 0.0f);
+		FVector4f OutputConfig(InParams.ApplyLayerModifiers ? 1.0f : 0.0f, InParams.SetAlphaOne ? 1.0f : 0.0f, InParams.ReadHeightmap2 ? 1.0f : 0.0f, InParams.GenerateNormals ? 1.0f : 0.0f);
 		FVector2f TextureSize(static_cast<float>(InParams.HeightmapSize.X), static_cast<float>(InParams.HeightmapSize.Y));
 
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), LayerInfoParam, LayerInfo);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), OutputConfigParam, OutputConfig);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), TextureSizeParam, TextureSize);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), LandscapeGridScaleParam, FVector3f(InParams.GridSize));
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
+		SetShaderValue(BatchedParameters, LayerInfoParam, LayerInfo);
+		SetShaderValue(BatchedParameters, OutputConfigParam, OutputConfig);
+		SetShaderValue(BatchedParameters, TextureSizeParam, TextureSize);
+		SetShaderValue(BatchedParameters, LandscapeGridScaleParam, FVector3f(InParams.GridSize));
+		SetShaderValue(BatchedParameters, ComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
 	}
 
 private:
@@ -574,13 +602,13 @@ public:
 	FLandscapeLayersHeightmapMipsPS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FLandscapeLayersHeightmapShaderParameters& InParams)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FLandscapeLayersHeightmapShaderParameters& InParams)
 	{
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadHeightmap1->GetResource()->TextureRHI);
+		SetTextureParameter(BatchedParameters, ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadHeightmap1->GetResource()->TextureRHI);
 
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), CurrentMipSizeParam, FVector2f(static_cast<float>(InParams.CurrentMipSize.X), static_cast<float>(InParams.CurrentMipSize.Y)));
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ParentMipSizeParam, FVector2f(static_cast<float>(InParams.ParentMipSize.X), static_cast<float>(InParams.ParentMipSize.Y)));
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), CurrentMipComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
+		SetShaderValue(BatchedParameters, CurrentMipSizeParam, FVector2f(static_cast<float>(InParams.CurrentMipSize.X), static_cast<float>(InParams.CurrentMipSize.Y)));
+		SetShaderValue(BatchedParameters, ParentMipSizeParam, FVector2f(static_cast<float>(InParams.ParentMipSize.X), static_cast<float>(InParams.ParentMipSize.Y)));
+		SetShaderValue(BatchedParameters, CurrentMipComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
 	}
 
 private:
@@ -651,17 +679,17 @@ public:
 	FLandscapeLayersWeightmapPS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FLandscapeLayersWeightmapShaderParameters& InParams)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FLandscapeLayersWeightmapShaderParameters& InParams)
 	{
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadWeightmap1->GetResource()->TextureRHI);
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture2Param, ReadTexture2SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadWeightmap2 != nullptr ? InParams.ReadWeightmap2->GetResource()->TextureRHI : GWhiteTexture->TextureRHI);
+		SetTextureParameter(BatchedParameters, ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadWeightmap1->GetResource()->TextureRHI);
+		SetTextureParameter(BatchedParameters, ReadTexture2Param, ReadTexture2SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadWeightmap2 != nullptr ? InParams.ReadWeightmap2->GetResource()->TextureRHI : GWhiteTexture->TextureRHI);
 
 		FVector4f LayerInfo(InParams.LayerAlpha, InParams.LayerVisible ? 1.0f : 0.0f, InParams.LayerBlendMode == LSBM_AlphaBlend ? 1.0f : 0.f, 0.f);
 		FVector4f OutputConfig(InParams.ApplyLayerModifiers ? 1.0f : 0.0f, InParams.OutputAsSubstractive ? 1.0f : 0.0f, InParams.ReadWeightmap2 != nullptr ? 1.0f : 0.0f, InParams.OutputAsNormalized ? 1.0f : 0.0f);
 
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), LayerInfoParam, LayerInfo);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), OutputConfigParam, OutputConfig);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
+		SetShaderValue(BatchedParameters, LayerInfoParam, LayerInfo);
+		SetShaderValue(BatchedParameters, OutputConfigParam, OutputConfig);
+		SetShaderValue(BatchedParameters, ComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
 	}
 
 private:
@@ -703,13 +731,13 @@ public:
 	FLandscapeLayersWeightmapMipsPS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FLandscapeLayersWeightmapShaderParameters& InParams)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FLandscapeLayersWeightmapShaderParameters& InParams)
 	{
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadWeightmap1->GetResource()->TextureRHI);
+		SetTextureParameter(BatchedParameters, ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InParams.ReadWeightmap1->GetResource()->TextureRHI);
 
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), CurrentMipSizeParam, FVector2f(static_cast<float>(InParams.CurrentMipSize.X), static_cast<float>(InParams.CurrentMipSize.Y)));
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ParentMipSizeParam, FVector2f(static_cast<float>(InParams.ParentMipSize.X), static_cast<float>(InParams.ParentMipSize.Y)));
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), CurrentMipComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
+		SetShaderValue(BatchedParameters, CurrentMipSizeParam, FVector2f(static_cast<float>(InParams.CurrentMipSize.X), static_cast<float>(InParams.CurrentMipSize.Y)));
+		SetShaderValue(BatchedParameters, ParentMipSizeParam, FVector2f(static_cast<float>(InParams.ParentMipSize.X), static_cast<float>(InParams.ParentMipSize.Y)));
+		SetShaderValue(BatchedParameters, CurrentMipComponentVertexCountParam, (float)InParams.CurrentMipComponentVertexCount);
 	}
 
 private:
@@ -759,19 +787,28 @@ public:
 	{
 		ReadTexture1Param.Bind(Initializer.ParameterMap, TEXT("ReadTexture1"));
 		ReadTexture1SamplerParam.Bind(Initializer.ParameterMap, TEXT("ReadTexture1Sampler"));
+		SourceOffsetAndSizeUVParam.Bind(Initializer.ParameterMap, TEXT("SourceOffsetAndSizeUV"));
 	}
 
 	FLandscapeCopyTexturePS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* TextureRHI)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, FRHITexture* InSourceTextureRHI, const FIntPoint& InSourcePosition = FIntPoint(0, 0), const FIntPoint& InCopySizePixels = FIntPoint(0, 0))
 	{
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), TextureRHI);
+		FVector2f SourceSize(InSourceTextureRHI->GetSizeXY());
+		FVector2f SourceOffsetUV = FVector2f(InSourcePosition) / SourceSize;
+		FVector2f FinalCopySizePixels;
+		FinalCopySizePixels.X = (InCopySizePixels.X > 0) ? InCopySizePixels.X : SourceSize.X;
+		FinalCopySizePixels.Y = (InCopySizePixels.Y > 0) ? InCopySizePixels.Y : SourceSize.Y;
+		FVector2f CopySizeUV = FinalCopySizePixels / SourceSize;
+		SetTextureParameter(BatchedParameters, ReadTexture1Param, ReadTexture1SamplerParam, TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), InSourceTextureRHI);
+		SetShaderValue(BatchedParameters, SourceOffsetAndSizeUVParam, FVector4f(SourceOffsetUV.X, SourceOffsetUV.Y, CopySizeUV.X, CopySizeUV.Y));
 	}
 
 private:
 	LAYOUT_FIELD(FShaderResourceParameter, ReadTexture1Param);
 	LAYOUT_FIELD(FShaderResourceParameter, ReadTexture1SamplerParam);
+	LAYOUT_FIELD(FShaderParameter, SourceOffsetAndSizeUVParam);
 };
 
 IMPLEMENT_GLOBAL_SHADER(FLandscapeCopyTextureVS, "/Engine/Private/LandscapeLayersPS.usf", "CopyTextureVS", SF_Vertex);
@@ -805,18 +842,18 @@ public:
 	}
 
 	/** Called when the resource is initialized. This is only called by the rendering thread. */
-	virtual void InitDynamicRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeLayerWeightmapExtractMaterialLayersComputeShaderResource"));
-		ComponentsData = RHICreateStructuredBuffer(sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData), OriginalComponentsData.Num() * sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData), BUF_ShaderResource | BUF_Volatile, CreateInfo);
-		ComponentsDataSRV = RHICreateShaderResourceView(ComponentsData);
+		ComponentsData = RHICmdList.CreateStructuredBuffer(sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData), OriginalComponentsData.Num() * sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData), BUF_ShaderResource | BUF_Volatile, CreateInfo);
+		ComponentsDataSRV = RHICmdList.CreateShaderResourceView(ComponentsData);
 
-		uint8* Buffer = (uint8*)RHILockBuffer(ComponentsData, 0, OriginalComponentsData.Num() * sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData), RLM_WriteOnly);
+		uint8* Buffer = (uint8*)RHICmdList.LockBuffer(ComponentsData, 0, OriginalComponentsData.Num() * sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData), RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, OriginalComponentsData.GetData(), OriginalComponentsData.Num() * sizeof(FLandscapeLayerWeightmapExtractMaterialLayersComponentData));
-		RHIUnlockBuffer(ComponentsData);
+		RHICmdList.UnlockBuffer(ComponentsData);
 	}
 
-	virtual void ReleaseDynamicRHI() override
+	virtual void ReleaseRHI() override
 	{
 		ComponentsData.SafeRelease();
 		ComponentsDataSRV.SafeRelease();
@@ -879,20 +916,17 @@ public:
 	FLandscapeLayerWeightmapExtractMaterialLayersCS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FLandscapeLayerWeightmapExtractMaterialLayersComputeShaderParameters& InParams)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FLandscapeLayerWeightmapExtractMaterialLayersComputeShaderParameters& InParams)
 	{
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentWeightmapParam, InParams.ComponentWeightmapResource->TextureRHI);
-		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), AtlasPaintListsParam, InParams.AtlasWeightmapsPerLayer->GetTextureUAV(/*InMipLevel = */0));
-		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentsDataParam, InParams.ComputeShaderResource->ComponentsDataSRV);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentSizeParam, InParams.ComponentSize);
-		
-		// In case the CS is executed twice in a row, we need a barrier since we want to prevent UAV overlaps:
-		RHICmdList.Transition(FRHITransitionInfo(InParams.AtlasWeightmapsPerLayer->TextureRHI, ERHIAccess::UAVMask, ERHIAccess::UAVMask));
+		SetTextureParameter(BatchedParameters, ComponentWeightmapParam, InParams.ComponentWeightmapResource->TextureRHI);
+		SetUAVParameter(BatchedParameters, AtlasPaintListsParam, InParams.AtlasWeightmapsPerLayer->GetTextureUAV(/*InMipLevel = */0));
+		SetSRVParameter(BatchedParameters, ComponentsDataParam, InParams.ComputeShaderResource->ComponentsDataSRV);
+		SetShaderValue(BatchedParameters, ComponentSizeParam, InParams.ComponentSize);
 	}
 
-	void UnsetParameters(FRHICommandList& RHICmdList)
+	void UnsetParameters(FRHIBatchedShaderUnbinds& BatchedUnbinds)
 	{
-		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), AtlasPaintListsParam, nullptr);
+		UnsetUAVParameter(BatchedUnbinds, AtlasPaintListsParam);
 	}
 
 private:
@@ -918,14 +952,20 @@ public:
 
 		TShaderMapRef<FLandscapeLayerWeightmapExtractMaterialLayersCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 		SetComputePipelineState(InRHICmdList, ComputeShader.GetComputeShader());
-		ComputeShader->SetParameters(InRHICmdList, ShaderParams);
+
+		SetShaderParametersLegacyCS(InRHICmdList, ComputeShader, ShaderParams);
+
+		// In case the CS is executed twice in a row, we need a barrier since we want to prevent UAV overlaps:
+		InRHICmdList.Transition(FRHITransitionInfo(ShaderParams.AtlasWeightmapsPerLayer->TextureRHI, ERHIAccess::UAVMask, ERHIAccess::UAVMask));
 
 		uint32 ThreadGroupCountX = FMath::CeilToInt((float)ShaderParams.ComponentSize / (float)GLandscapeLayerWeightmapThreadGroupSizeX);
 		uint32 ThreadGroupCountY = FMath::CeilToInt((float)ShaderParams.ComponentSize / (float)GLandscapeLayerWeightmapThreadGroupSizeY);
 		check(ThreadGroupCountX > 0 && ThreadGroupCountY > 0);
 
 		DispatchComputeShader(InRHICmdList, ComputeShader.GetShader(), ThreadGroupCountX, ThreadGroupCountY, ShaderParams.ComputeShaderResource->GetComponentsDataCount());
-		ComputeShader->UnsetParameters(InRHICmdList);
+
+		UnsetShaderParametersLegacyCS(InRHICmdList, ComputeShader);
+
 		ShaderParams.ComputeShaderResource->ReleaseResource();
 		delete ShaderParams.ComputeShaderResource;
 	}
@@ -961,37 +1001,37 @@ public:
 	}
 
 	/** Called when the resource is initialized. This is only called by the rendering thread. */
-	virtual void InitDynamicRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		FRHIResourceCreateInfo CreateInfo(TEXT("ComponentsData"));
 		uint32 ComponentsDataMemSize = OriginalComponentsData.Num() * sizeof(FLandscapeLayerWeightmapPackMaterialLayersComponentData);
-		ComponentsData = RHICreateStructuredBuffer(sizeof(FLandscapeLayerWeightmapPackMaterialLayersComponentData), ComponentsDataMemSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
-		ComponentsDataSRV = RHICreateShaderResourceView(ComponentsData);
+		ComponentsData = RHICmdList.CreateStructuredBuffer(sizeof(FLandscapeLayerWeightmapPackMaterialLayersComponentData), ComponentsDataMemSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
+		ComponentsDataSRV = RHICmdList.CreateShaderResourceView(ComponentsData);
 
-		uint8* Buffer = (uint8*)RHILockBuffer(ComponentsData, 0, ComponentsDataMemSize, RLM_WriteOnly);
+		uint8* Buffer = (uint8*)RHICmdList.LockBuffer(ComponentsData, 0, ComponentsDataMemSize, RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, OriginalComponentsData.GetData(), ComponentsDataMemSize);
-		RHIUnlockBuffer(ComponentsData);
+		RHICmdList.UnlockBuffer(ComponentsData);
 
 		FRHIResourceCreateInfo WeightBlendCreateInfo(TEXT("WeightmapWeightBlendMode"));
 		uint32 WeightBlendMemSize = OriginalWeightmapWeightBlendModeData.Num() * sizeof(float);
-		WeightmapWeightBlendMode = RHICreateVertexBuffer(WeightBlendMemSize, BUF_ShaderResource | BUF_Volatile, WeightBlendCreateInfo);
-		WeightmapWeightBlendModeSRV = RHICreateShaderResourceView(WeightmapWeightBlendMode, sizeof(float), PF_R32_FLOAT);
+		WeightmapWeightBlendMode = RHICmdList.CreateVertexBuffer(WeightBlendMemSize, BUF_ShaderResource | BUF_Volatile, WeightBlendCreateInfo);
+		WeightmapWeightBlendModeSRV = RHICmdList.CreateShaderResourceView(WeightmapWeightBlendMode, sizeof(float), PF_R32_FLOAT);
 
-		void* WeightmapWeightBlendModePtr = RHILockBuffer(WeightmapWeightBlendMode, 0, WeightBlendMemSize, RLM_WriteOnly);
+		void* WeightmapWeightBlendModePtr = RHICmdList.LockBuffer(WeightmapWeightBlendMode, 0, WeightBlendMemSize, RLM_WriteOnly);
 		FMemory::Memcpy(WeightmapWeightBlendModePtr, OriginalWeightmapWeightBlendModeData.GetData(), WeightBlendMemSize);
-		RHIUnlockBuffer(WeightmapWeightBlendMode);
+		RHICmdList.UnlockBuffer(WeightmapWeightBlendMode);
 
 		FRHIResourceCreateInfo TextureOutputOffsetCreateInfo(TEXT("WeightmapTextureOutputOffset"));
 		uint32 TextureOutputOffsetMemSize = OriginalTextureOutputOffset.Num() * sizeof(FVector2f);
-		WeightmapTextureOutputOffset = RHICreateVertexBuffer(TextureOutputOffsetMemSize, BUF_ShaderResource | BUF_Volatile, TextureOutputOffsetCreateInfo);
-		WeightmapTextureOutputOffsetSRV = RHICreateShaderResourceView(WeightmapTextureOutputOffset, sizeof(FVector2f), PF_G32R32F);
+		WeightmapTextureOutputOffset = RHICmdList.CreateVertexBuffer(TextureOutputOffsetMemSize, BUF_ShaderResource | BUF_Volatile, TextureOutputOffsetCreateInfo);
+		WeightmapTextureOutputOffsetSRV = RHICmdList.CreateShaderResourceView(WeightmapTextureOutputOffset, sizeof(FVector2f), PF_G32R32F);
 
-		void* TextureOutputOffsetPtr = RHILockBuffer(WeightmapTextureOutputOffset, 0, TextureOutputOffsetMemSize, RLM_WriteOnly);
+		void* TextureOutputOffsetPtr = RHICmdList.LockBuffer(WeightmapTextureOutputOffset, 0, TextureOutputOffsetMemSize, RLM_WriteOnly);
 		FMemory::Memcpy(TextureOutputOffsetPtr, OriginalTextureOutputOffset.GetData(), TextureOutputOffsetMemSize);
-		RHIUnlockBuffer(WeightmapTextureOutputOffset);
+		RHICmdList.UnlockBuffer(WeightmapTextureOutputOffset);
 	}
 
-	virtual void ReleaseDynamicRHI() override
+	virtual void ReleaseRHI() override
 	{
 		ComponentsData.SafeRelease();
 		ComponentsDataSRV.SafeRelease();
@@ -1066,19 +1106,19 @@ public:
 	FLandscapeLayerWeightmapPackMaterialLayersCS()
 	{}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FLandscapeLayerWeightmapPackMaterialLayersComputeShaderParameters& InParams)
+	void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, const FLandscapeLayerWeightmapPackMaterialLayersComputeShaderParameters& InParams)
 	{
-		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentWeightmapParam, InParams.ComponentWeightmapResource->GetTextureUAV(/*InMipLevel = */0));
-		SetTextureParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), AtlasPaintListsParam, InParams.AtlasWeightmapsPerLayer->TextureRHI);
-		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentsDataParam, InParams.ComputeShaderResource->ComponentsDataSRV);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentSizeParam, InParams.ComponentSize);
-		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), WeightmapWeightBlendModeParam, InParams.ComputeShaderResource->WeightmapWeightBlendModeSRV);
-		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), WeightmapTextureOutputOffsetParam, InParams.ComputeShaderResource->WeightmapTextureOutputOffsetSRV);
+		SetUAVParameter(BatchedParameters, ComponentWeightmapParam, InParams.ComponentWeightmapResource->GetTextureUAV(/*InMipLevel = */0));
+		SetTextureParameter(BatchedParameters, AtlasPaintListsParam, InParams.AtlasWeightmapsPerLayer->TextureRHI);
+		SetSRVParameter(BatchedParameters, ComponentsDataParam, InParams.ComputeShaderResource->ComponentsDataSRV);
+		SetShaderValue(BatchedParameters, ComponentSizeParam, InParams.ComponentSize);
+		SetSRVParameter(BatchedParameters, WeightmapWeightBlendModeParam, InParams.ComputeShaderResource->WeightmapWeightBlendModeSRV);
+		SetSRVParameter(BatchedParameters, WeightmapTextureOutputOffsetParam, InParams.ComputeShaderResource->WeightmapTextureOutputOffsetSRV);
 	}
 
-	void UnsetParameters(FRHICommandList& RHICmdList)
+	void UnsetParameters(FRHIBatchedShaderUnbinds& BatchedUnbinds)
 	{
-		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ComponentWeightmapParam, nullptr);
+		UnsetUAVParameter(BatchedUnbinds, ComponentWeightmapParam);
 	}
 
 private:
@@ -1106,14 +1146,17 @@ public:
 
 		TShaderMapRef<FLandscapeLayerWeightmapPackMaterialLayersCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 		SetComputePipelineState(InRHICmdList, ComputeShader.GetComputeShader());
-		ComputeShader->SetParameters(InRHICmdList, ShaderParams);
+
+		SetShaderParametersLegacyCS(InRHICmdList, ComputeShader, ShaderParams);
 
 		uint32 ThreadGroupCountX = FMath::CeilToInt((float)ShaderParams.ComponentSize / (float)GLandscapeLayerWeightmapThreadGroupSizeX);
 		uint32 ThreadGroupCountY = FMath::CeilToInt((float)ShaderParams.ComponentSize / (float)GLandscapeLayerWeightmapThreadGroupSizeY);
 		check(ThreadGroupCountX > 0 && ThreadGroupCountY > 0);
 
 		DispatchComputeShader(InRHICmdList, ComputeShader.GetShader(), ThreadGroupCountX, ThreadGroupCountY, ShaderParams.ComputeShaderResource->GetComponentsDataCount());
-		ComputeShader->UnsetParameters(InRHICmdList);
+
+		UnsetShaderParametersLegacyCS(InRHICmdList, ComputeShader);
+
 		ShaderParams.ComputeShaderResource->ReleaseResource();
 		delete ShaderParams.ComputeShaderResource;
 	}
@@ -1446,7 +1489,7 @@ struct FLandscapeLayersCopyTextureParams
 		}
 		if (InDestTexture != nullptr)
 		{
-			DestResourceDebugName = InDestTexture->GetName();
+			SourceResourceDebugName = InDestTexture->GetName();
 			DestResource = InDestTexture->GetResource();
 		}
 	}
@@ -1485,7 +1528,6 @@ public:
 	{}
 
 	const FLandscapeLayersCopyTextureParams& GetParams() const { return Params; }
-
 	void Copy(FRHICommandListImmediate& InRHICmdList)
 	{
 		SCOPED_GPU_STAT(InRHICmdList, LandscapeLayers_CopyTexture);
@@ -1610,8 +1652,8 @@ public:
 		InRHICmdList.Transition(FRHITransitionInfo(ViewFamily.RenderTarget->GetRenderTargetTexture(), ERHIAccess::SRVMask, ERHIAccess::RTV));
 
 		// Init VB/IB Resource
-		VertexDeclaration.InitResource();
-		VertexBufferResource.InitResource();
+		VertexDeclaration.InitResource(InRHICmdList);
+		VertexBufferResource.InitResource(InRHICmdList);
 
 		// Setup Pipeline
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -1641,8 +1683,8 @@ public:
 			SetGraphicsPipelineState(InRHICmdList, GraphicsPSOInit, 0);
 
 			// Set shader params
-			VertexShader->SetParameters(InRHICmdList, FMatrix44f(ProjectionMatrix));		// LWC_TODo: Precision loss?
-			PixelShader->SetParameters(InRHICmdList, ShaderParams);
+			SetShaderParametersLegacyVS(InRHICmdList, VertexShader, FMatrix44f(ProjectionMatrix));		// LWC_TODo: Precision loss?
+			SetShaderParametersLegacyPS(InRHICmdList, PixelShader, ShaderParams);
 		}
 		else
 		{
@@ -1659,8 +1701,8 @@ public:
 			SetGraphicsPipelineState(InRHICmdList, GraphicsPSOInit, 0);
 
 			// Set shader params
-			VertexShader->SetParameters(InRHICmdList, FMatrix44f(ProjectionMatrix));		// LWC_TODo: Precision loss?
-			PixelShader->SetParameters(InRHICmdList, ShaderParams);
+			SetShaderParametersLegacyVS(InRHICmdList, VertexShader, FMatrix44f(ProjectionMatrix));		// LWC_TODo: Precision loss?
+			SetShaderParametersLegacyPS(InRHICmdList, PixelShader, ShaderParams);
 		}
 
 		InRHICmdList.SetScissorRect(false, 0, 0, 0, 0);
@@ -1715,7 +1757,7 @@ bool ALandscape::IsMaterialResourceCompiled(FMaterialResource* InMaterialResourc
 
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(Landscape_WaitForMaterialCompilation);
-		InMaterialResource->SubmitCompileJobs_GameThread(EShaderCompileJobPriority::ForceLocal);
+		InMaterialResource->SubmitCompileJobs_GameThread(EShaderCompileJobPriority::High);
 		if (bInWaitForCompilation)
 		{
 			InMaterialResource->FinishCompilation();
@@ -1968,7 +2010,7 @@ void ALandscape::ReleaseLayersRenderingResource()
 		return;
 	}
 
-	Info->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		for (auto& ItPair : Proxy->HeightmapsCPUReadback)
 		{
@@ -1983,6 +2025,7 @@ void ALandscape::ReleaseLayersRenderingResource()
 			delete WeightmapCPUReadback;
 		}
 		Proxy->WeightmapsCPUReadback.Empty();
+		return true;
 	});
 
 	if (CombinedLayersWeightmapAllMaterialLayersResource != nullptr)
@@ -2034,7 +2077,7 @@ FIntPoint ALandscape::ComputeComponentCounts() const
 	FIntPoint MaxSectionBase(TNumericLimits<int32>::Min(), TNumericLimits<int32>::Min());
 	FIntPoint MinSectionBase(TNumericLimits<int32>::Max(), TNumericLimits<int32>::Max());
 
-	Info->ForAllLandscapeProxies([&MaxSectionBase, &MinSectionBase](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&MaxSectionBase, &MinSectionBase](ALandscapeProxy* Proxy)
 	{
 		for (ULandscapeComponent* Component : Proxy->LandscapeComponents)
 		{
@@ -2044,6 +2087,7 @@ FIntPoint ALandscape::ComputeComponentCounts() const
 			MinSectionBase.X = FMath::Min(MinSectionBase.X, Component->SectionBaseX);
 			MinSectionBase.Y = FMath::Min(MinSectionBase.Y, Component->SectionBaseY);
 		}
+		return true;
 	});
 
 	if ((MaxSectionBase.X >= MinSectionBase.X) && (MaxSectionBase.Y >= MinSectionBase.Y))
@@ -2064,9 +2108,10 @@ void ALandscape::CopyOldDataToDefaultLayer()
 		return;
 	}
 
-	Info->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		CopyOldDataToDefaultLayer(Proxy);
+		return true;
 	});
 }
 
@@ -2231,9 +2276,10 @@ void ALandscape::UpdateProxyLayersWeightmapUsage()
 		return;
 	}
 
-	Info->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		Proxy->UpdateProxyLayersWeightmapUsage();
+		return true;
 	});
 }
 
@@ -2262,9 +2308,10 @@ void ALandscape::InitializeLandscapeLayersWeightmapUsage()
 		return;
 	}
 
-	Info->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		Proxy->InitializeProxyLayersWeightmapUsage();
+		return true;
 	});
 }
 
@@ -2313,7 +2360,7 @@ void ULandscapeComponent::InitializeLayersWeightmapUsage(const FGuid& InLayerGui
 
 	const TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = GetWeightmapLayerAllocations(InLayerGuid);
 	const TArray<UTexture2D*>& ComponentWeightmapTextures = GetWeightmapTextures(InLayerGuid);
-	TArray<ULandscapeWeightmapUsage*>& ComponentWeightmapTexturesUsage = GetWeightmapTexturesUsage(InLayerGuid);
+	TArray<TObjectPtr<ULandscapeWeightmapUsage>>& ComponentWeightmapTexturesUsage = GetWeightmapTexturesUsage(InLayerGuid);
 
 	ComponentWeightmapTexturesUsage.Reset();
 	ComponentWeightmapTexturesUsage.AddDefaulted(ComponentWeightmapTextures.Num());
@@ -2378,9 +2425,10 @@ void ALandscape::ValidateProxyLayersWeightmapUsage() const
 		return;
 	}
 
-	Info->ForAllLandscapeProxies([=](const ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([=](const ALandscapeProxy* Proxy)
 	{
 		Proxy->ValidateProxyLayersWeightmapUsage();
+		return true;
 	});
 }
 
@@ -2528,7 +2576,10 @@ struct FLandscapeLayersCopyReadbackTextureParams
 void ExecuteCopyToReadbackTexture(TArray<FLandscapeLayersCopyReadbackTextureParams>& InParams)
 {
 	SCOPED_DRAW_EVENTF_GAMETHREAD(LandscapeLayers, TEXT("Copy to readback textures (%d copies)"), InParams.Num());
-
+	if (!FApp::CanEverRender())
+	{
+		return;
+	}
 	for (FLandscapeLayersCopyReadbackTextureParams& Params : InParams)
 	{
 		Params.Dest->Enqueue(Params.Source, MoveTemp(Params.Context));
@@ -2613,7 +2664,7 @@ void ALandscape::CopyTexturePS(const FString& InSourceDebugName, FTextureResourc
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-		PixelShader->SetParameters(RHICmdList, InSourceResource->TextureRHI);
+		SetShaderParametersLegacyPS(RHICmdList, PixelShader, InSourceResource->TextureRHI);
 
 		RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)InDestResource->GetSizeX(), (float)InDestResource->GetSizeY(), 1.0f);
 		RHICmdList.DrawIndexedPrimitive(GTwoTrianglesIndexBuffer.IndexBufferRHI, 0, 0, 4, 0, 2, 1);
@@ -2802,6 +2853,10 @@ void ALandscape::DrawHeightmapComponentsToRenderTarget(const FString& InDebugNam
 {
 	check(InHeightmapRTRead != nullptr);
 	check(InHeightmapRTWrite != nullptr);
+	if (!FApp::CanEverRender())
+	{
+		return;
+	}
 
 	FIntPoint HeightmapWriteTextureSize(InHeightmapRTWrite->SizeX, InHeightmapRTWrite->SizeY);
 	FIntPoint HeightmapReadTextureSize(InHeightmapRTRead->Source.GetSizeX(), InHeightmapRTRead->Source.GetSizeY());
@@ -3178,7 +3233,7 @@ void ALandscape::PrintLayersDebugHeightData(const FString& InContext, const TArr
 
 			if (DisplayHeightAsDelta)
 			{
-				HeightDelta = HeightDelta >= 32768 ? HeightDelta - 32768 : HeightDelta;
+				HeightDelta = static_cast<int32>(HeightDelta >= LandscapeDataAccess::MidValue ? HeightDelta - LandscapeDataAccess::MidValue : HeightDelta);
 			}
 
 			if (X > 0 && MipSize > 0 && X % MipSize == 0)
@@ -3364,7 +3419,7 @@ bool ALandscape::PrepareTextureResources(bool bInWaitForStreaming)
 	TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeLayers_PrepareTextureResources);
 
 	ULandscapeInfo* Info = GetLandscapeInfo();
-	if (Info == nullptr)
+	if (Info == nullptr || !FApp::CanEverRender())
 	{
 		return false;
 	}
@@ -3388,7 +3443,7 @@ bool ALandscape::PrepareTextureResources(bool bInWaitForStreaming)
 	TSet<ULandscapeComponent*> StreamedInHeightmapComponents;
 
 	bool bIsReady = true;
-	Info->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		for (ULandscapeComponent* Component : Proxy->LandscapeComponents)
 		{
@@ -3431,6 +3486,7 @@ bool ALandscape::PrepareTextureResources(bool bInWaitForStreaming)
 				bIsReady &= bIsTextureReady;
 			}
 		}
+		return true;
 	});
 
 	// The assets that were streaming in before and are not anymore can be considered streamed in: 
@@ -3485,7 +3541,7 @@ void ALandscape::InvalidateRVTForTextures(const TSet<UTexture2D*>& InTextures)
 				//  gets fully streamed in so that we're not left with low-res mips being rendered in the RVT tiles : 
 				for (UMaterialInterface* MaterialInterface : ObjectCacheScope.GetContext().GetMaterialsAffectedByTexture(Texture))
 				{
-					if (MaterialInterface->GetCachedExpressionData().bHasRuntimeVirtualTextureOutput)
+					if (MaterialInterface->WritesToRuntimeVirtualTexture())
 					{
 						for (UPrimitiveComponent* PrimitiveComponent : ObjectCacheScope.GetContext().GetPrimitivesAffectedByMaterial(MaterialInterface))
 						{
@@ -3530,7 +3586,7 @@ bool ALandscape::PrepareLayersTextureResources(const TArray<FLandscapeLayer>& In
 	}
 
 	bool bIsReady = true;
-	Info->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		for (const FLandscapeLayer& Layer : InLayers)
 		{
@@ -3547,6 +3603,7 @@ bool ALandscape::PrepareLayersTextureResources(const TArray<FLandscapeLayer>& In
 				}
 			}
 		}
+		return true;
 	});
 
 	return bIsReady;
@@ -3562,7 +3619,7 @@ bool ALandscape::PrepareLayersBrushResources(ERHIFeatureLevel::Type InFeatureLev
 		{
 			if (ALandscapeBlueprintBrushBase* LandscapeBrush = Brush.GetBrush())
 			{
-				if (LandscapeBrush->IsAffectingWeightmap() || LandscapeBrush->IsAffectingHeightmap())
+				if (LandscapeBrush->AffectsWeightmap() || LandscapeBrush->AffectsHeightmap() || LandscapeBrush->AffectsVisibilityLayer())
 				{
 					LandscapeBrush->GetRenderDependencies(Dependencies);
 				}
@@ -4308,8 +4365,8 @@ namespace EditLayersHeightmapLocalMerge_RenderThread
 			const FLandscapeRDGTrackedTexture* TrackedTexture = InTrackedTextures.Find(TextureResolveInfo.Texture);
 			check((TrackedTexture != nullptr) && (TrackedTexture->ScratchTextureRef != nullptr));
 
-			check(TextureResolveInfo.NumMips == TrackedTexture->ScratchTextureRef->Desc.NumMips);
-			check(TrackedTexture->ScratchTextureMipsSRVRefs.Num() == TextureResolveInfo.NumMips);
+			//check(TextureResolveInfo.NumMips == TrackedTexture->ScratchTextureRef->Desc.NumMips);
+			//check(TrackedTexture->ScratchTextureMipsSRVRefs.Num() == TextureResolveInfo.NumMips);
 
 			FIntPoint CurrentMipSubregionSize = InLocalMergeInfo.ComponentSizeVerts;
 			for (int32 MipLevel = 1; MipLevel < TextureResolveInfo.NumMips; ++MipLevel)
@@ -4711,13 +4768,11 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 	// Calculate Top Left Lambda
 	auto GetUniqueHeightmaps = [&](const TArray<ULandscapeComponent*>& InLandscapeComponents, TArray<FHeightmapCopyInfo>& OutHeightmaps, const FIntPoint& LandscapeBaseQuads, const FGuid& InLayerGuid = FGuid())
 	{
-		FScopedSetLandscapeEditingLayer Scope(this, InLayerGuid);
-
 		const int32 ComponentSizeQuad = SubsectionSizeQuads * NumSubsections;
 		const int32 ComponentSizeVerts = (SubsectionSizeQuads + 1) * NumSubsections;
 		for (ULandscapeComponent* Component : InLandscapeComponents)
 		{
-			UTexture2D* ComponentHeightmap = Component->GetHeightmap(true);
+			UTexture2D* ComponentHeightmap = Component->GetHeightmap(InLayerGuid);
 
 			int32 Index = OutHeightmaps.IndexOfByPredicate([=](const FHeightmapCopyInfo& LayerHeightmap) { return LayerHeightmap.Texture == ComponentHeightmap; });
 
@@ -4749,8 +4804,9 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 
 	for (FLandscapeLayer& Layer : LandscapeLayers)
 	{
-		//Draw Layer heightmap to Combined RT Atlas
+		// Draw each Layer's heightmaps to a Combined RT Atlas in LandscapeScratchRT1
 		ShaderParams.ApplyLayerModifiers = false;
+		ShaderParams.SetAlphaOne = false;
 		ShaderParams.LayerVisible = Layer.bVisible;
 		ShaderParams.GenerateNormals = false;
 		ShaderParams.LayerBlendMode = Layer.BlendMode;
@@ -4783,13 +4839,14 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 			ExecuteCopyLayersTexture(MoveTemp(DeferredCopyTextures));
 		}
 
-		// NOTE: From this point on, we always work in non atlas, we'll convert back at the end to atlas only
+		// Convert Atlas LandscapeScratchRT1 to the world-projected NonAtlas in LandscapeScratchRT2
+		// TODO: just use this format from the beginning above...
 		DrawHeightmapComponentsToRenderTarget(FString::Printf(TEXT("LS Height: %s += -> NonAtlas %s"), *Layer.Name.ToString(), *LandscapeScratchRT1->GetName(), *LandscapeScratchRT2->GetName()),
 			InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, LandscapeScratchRT1, nullptr, LandscapeScratchRT2, ERTDrawingType::RTAtlasToNonAtlas, true, ShaderParams);
 
 		ShaderParams.ApplyLayerModifiers = true;
 
-		// Combine Current layer with current result
+		// Combine Current layer NonAtlas LandscapeScratchRT2 with current result in LandscapeScratchRT3, writing final result to CombinedHeightmapNonAtlasRT
 		DrawHeightmapComponentsToRenderTarget(FString::Printf(TEXT("LS Height: %s += -> CombinedNonAtlas %s"), *Layer.Name.ToString(), *LandscapeScratchRT2->GetName(), *CombinedHeightmapNonAtlasRT->GetName()),
 			InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, LandscapeScratchRT2, FirstLayer ? nullptr : LandscapeScratchRT3, CombinedHeightmapNonAtlasRT, ERTDrawingType::RTNonAtlas, FirstLayer, ShaderParams);
 
@@ -4804,7 +4861,9 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 				// TODO: handle conversion/handling of RT not same size as internal size
 
 				FLandscapeLayerBrush& Brush = Layer.Brushes[i];
-				UTextureRenderTarget2D* BrushOutputNonAtlasRT = Brush.Render(true, LandscapeExtent, CombinedHeightmapNonAtlasRT);
+				FLandscapeBrushParameters BrushParameters(ELandscapeToolTargetType::Heightmap, CombinedHeightmapNonAtlasRT);
+
+				UTextureRenderTarget2D* BrushOutputNonAtlasRT = Brush.RenderLayer(LandscapeExtent, BrushParameters);
 				if ((BrushOutputNonAtlasRT == nullptr) 
 					|| (BrushOutputNonAtlasRT->SizeX != CombinedHeightmapNonAtlasRT->SizeX)
 					|| (BrushOutputNonAtlasRT->SizeY != CombinedHeightmapNonAtlasRT->SizeY))
@@ -4828,14 +4887,19 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 			}
 		}
 
+		// copy CombinedHeightmapNonAtlasRT to LandscapeScratchRT3 (as a source for later layers... this is wasted on the last layer I think...)
+		// TODO: you can get the same effect for much cheaper by swapping these two pointers before the render above...
 		ExecuteCopyLayersTexture({ FLandscapeLayersCopyTextureParams(CombinedHeightmapNonAtlasRT, LandscapeScratchRT3) });
 		PrintLayersDebugRT(FString::Printf(TEXT("LS Height: %s Component %s += -> CombinedNonAtlas %s"), *Layer.Name.ToString(), *CombinedHeightmapNonAtlasRT->GetName(), *LandscapeScratchRT3->GetName()), LandscapeScratchRT3);
 
 		FirstLayer = false;
 	}
 
-	ShaderParams.GenerateNormals = true;
-	ShaderParams.GridSize = GetRootComponent()->GetRelativeScale3D();
+	// Set Alpha channel of valid areas to 1 (via shader copy to LandscapeScratchRT2)
+	ShaderParams.SetAlphaOne = true;
+	DrawHeightmapComponentsToRenderTarget(FString::Printf(TEXT("Mark Valid Area Alpha 1: %s -> %s"), *CombinedHeightmapNonAtlasRT->GetName(), *LandscapeScratchRT2->GetName()),
+		InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, CombinedHeightmapNonAtlasRT, nullptr, LandscapeScratchRT2, ERTDrawingType::RTNonAtlas, true, ShaderParams);
+	ShaderParams.SetAlphaOne = false;
 
 	// Broadcast Event of the Full Render
 	if ((InMergeParams.HeightmapUpdateModes & Update_Heightmap_All) == Update_Heightmap_All)
@@ -4843,14 +4907,19 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 		LandscapeFullHeightmapRenderDoneDelegate.Broadcast(LandscapeScratchRT3);
 	}
 
-	DrawHeightmapComponentsToRenderTarget(FString::Printf(TEXT("LS Height: %s = -> CombinedNonAtlasNormals : %s"), *CombinedHeightmapNonAtlasRT->GetName(), *LandscapeScratchRT1->GetName()),
-		InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, CombinedHeightmapNonAtlasRT, nullptr, LandscapeScratchRT1, ERTDrawingType::RTNonAtlas, true, ShaderParams);
+	// compute Normals into LandscapeScratchRT1
+	ShaderParams.GenerateNormals = true;
+	ShaderParams.GridSize = GetRootComponent()->GetRelativeScale3D();
+	DrawHeightmapComponentsToRenderTarget(FString::Printf(TEXT("LS Height: %s = -> CombinedNonAtlasNormals : %s"), *LandscapeScratchRT2->GetName(), *LandscapeScratchRT1->GetName()),
+		InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, LandscapeScratchRT2, nullptr, LandscapeScratchRT1, ERTDrawingType::RTNonAtlas, true, ShaderParams);
 
 	ShaderParams.GenerateNormals = false;
 
+	// convert back to atlas (TODO: we could do this on the first mip downsample instead...)
 	DrawHeightmapComponentsToRenderTarget(FString::Printf(TEXT("LS Height: %s = -> CombinedAtlasFinal : %s"), *LandscapeScratchRT1->GetName(), *CombinedHeightmapAtlasRT->GetName()),
 		InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, LandscapeScratchRT1, nullptr, CombinedHeightmapAtlasRT, ERTDrawingType::RTNonAtlasToAtlas, true, ShaderParams);
 
+	// Downsample to generate mips...
 	DrawHeightmapComponentsToRenderTargetMips(InUpdateLayersContentContext.LandscapeComponentsHeightmapsToRender, LandscapeExtent.Min, CombinedHeightmapAtlasRT, true, ShaderParams);
 
 	// List of UTexture2D that we need to kick off readbacks for :
@@ -4867,9 +4936,24 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 
 			const FIntPoint Mip0CopySize = Heightmap.SectionRect.Size();
 			const FIntPoint Mip0SourcePosition = Heightmap.SectionRect.Min;
+
+			FString SourceTextureName = CombinedHeightmapAtlasRT->GetName();
+			FString DestinationTextureName = Heightmap.Texture->GetName();
+			if (const TArray<ULandscapeComponent*>* Components = InUpdateLayersContentContext.MapHelper.HeightmapToComponents.Find(Heightmap.Texture))
+			{
+				FString ComponentName;
+				FString ActorName;
+				for (ULandscapeComponent* Component : *Components)
+				{
+					ComponentName += Component->GetName() + TEXT(", ");
+					ActorName = Component->GetLandscapeProxy()->GetActorLabel();
+				}
+				DestinationTextureName = FString::Format(TEXT("{0}-{1}-{2}"), { ActorName, ComponentName, Heightmap.Texture->GetName() });
+			}
+
 			// Mip 0
 			{
-				FLandscapeLayersCopyTextureParams& CopyTextureParams = DeferredCopyTextures.Add_GetRef(FLandscapeLayersCopyTextureParams(CombinedHeightmapAtlasRT, Heightmap.Texture));
+				FLandscapeLayersCopyTextureParams& CopyTextureParams = DeferredCopyTextures.Add_GetRef(FLandscapeLayersCopyTextureParams(SourceTextureName, CombinedHeightmapAtlasRT->GetResource(), DestinationTextureName, Heightmap.Texture->GetResource()));
 				// Only copy the size that's actually needed : 
 				CopyTextureParams.CopySize = Mip0CopySize;
 				// Copy from the composited texture's position to the top-left corner of the heightmap
@@ -4883,7 +4967,8 @@ int32 ALandscape::PerformLayersHeightmapsGlobalMerge(const FUpdateLayersContentC
 				UTextureRenderTarget2D* RenderTargetMip = HeightmapRTList[MipRTIndex];
 				if (RenderTargetMip != nullptr)
 				{
-					FLandscapeLayersCopyTextureParams& CopyTextureParams = DeferredCopyTextures.Add_GetRef(FLandscapeLayersCopyTextureParams(RenderTargetMip, Heightmap.Texture));
+					SourceTextureName = RenderTargetMip->GetName();
+					FLandscapeLayersCopyTextureParams& CopyTextureParams = DeferredCopyTextures.Add_GetRef(FLandscapeLayersCopyTextureParams(SourceTextureName, RenderTargetMip->GetResource(), DestinationTextureName, Heightmap.Texture->GetResource()));
 					CopyTextureParams.CopySize.X = Mip0CopySize.X >> MipIndex;
 					CopyTextureParams.CopySize.Y = Mip0CopySize.Y >> MipIndex;
 					CopyTextureParams.SourcePosition.X = Mip0SourcePosition.X >> MipIndex;
@@ -4940,7 +5025,7 @@ int32 ALandscape::RegenerateLayersHeightmaps(const FUpdateLayersContentContext& 
 			{
 				FLandscapeEditLayerReadback* NewCPUReadback = new FLandscapeEditLayerReadback();
 				const uint8* LockedMip = ComponentHeightmap->Source.LockMip(0);
-				const uint32 Hash = FLandscapeEditLayerReadback::CalculateHash(LockedMip, ComponentHeightmap->Source.GetSizeX() * ComponentHeightmap->Source.GetSizeY() * sizeof(FColor));
+				const uint64 Hash = FLandscapeEditLayerReadback::CalculateHash(LockedMip, ComponentHeightmap->Source.GetSizeX() * ComponentHeightmap->Source.GetSizeY() * sizeof(FColor));
 				ComponentHeightmap->Source.UnlockMip(0);
 				NewCPUReadback->SetHash(Hash);
 				Proxy->HeightmapsCPUReadback.Add(ComponentHeightmap, NewCPUReadback);
@@ -5102,11 +5187,20 @@ void ALandscape::UpdateWeightDirtyData(ULandscapeComponent* InLandscapeComponent
 	LandscapeEdit.SetDirtyData(X1, Y1, X2, Y2, DirtyData.Get(), 0);
 }
 
-void ALandscape::OnDirtyWeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData)
+void ALandscape::OnDirtyWeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InWeightmap, FColor const* InOldData, FColor const* InNewData, int32 InMipLevel)
 {
-	const bool bWriteDiff = (CVarLandscapeOutputDiffBitmap.GetValueOnAnyThread() & 2) != 0;
-	const bool bTrackDirty = CVarLandscapeTrackDirty.GetValueOnAnyThread() != 0;
-	if (!bWriteDiff && !bTrackDirty)
+	int32 DumpWeightmapDiff = CVarLandscapeDumpWeightmapDiff.GetValueOnGameThread();
+	const bool bDumpDiff = (DumpWeightmapDiff > 0);
+	const bool bDumpDiffAllMips = (DumpWeightmapDiff > 1);
+	const bool bDumpDiffDetails = CVarLandscapeDumpDiffDetails.GetValueOnGameThread();
+	const bool bTrackDirty = CVarLandscapeTrackDirty.GetValueOnGameThread() != 0;
+	ULandscapeSubsystem* LandscapeSubsystem = GetWorld()->GetSubsystem<ULandscapeSubsystem>();
+	check(LandscapeSubsystem != nullptr);
+	const FDateTime CurrentTime = LandscapeSubsystem->GetAppCurrentDateTime();
+
+	if ((!bDumpDiff && !bTrackDirty)
+		|| (bDumpDiff && !bDumpDiffAllMips && (InMipLevel > 0))
+		|| (bTrackDirty && (InMipLevel > 0)))
 	{
 		return;
 	}
@@ -5129,14 +5223,59 @@ void ALandscape::OnDirtyWeightmap(FTextureToComponentHelper const& MapHelper, UT
 						UpdateWeightDirtyData(Component, InWeightmap, InOldData, InNewData, AllocInfo.WeightmapTextureChannel);
 					}
 
-					if (bWriteDiff)
+					if (bDumpDiff)
 					{
+						const int32 SizeU = InWeightmap->Source.GetSizeX() >> InMipLevel;
+						const int32 SizeV = InWeightmap->Source.GetSizeY() >> InMipLevel;
+
+						FString WorldName = GetWorld()->GetName();
+						FString ParentLandscapeActorName = GetActorLabel();
+						ALandscapeProxy* Proxy = Cast<ALandscapeProxy>(Component->GetOwner());
+						check(Proxy);
+						FString ActorName = Proxy->GetActorLabel();
+						FString FilePattern = FString::Format(TEXT("{0}/LandscapeLayers/{1}/{2}/{3}/Weightmaps/{4}-{5}-{6}[mip{7}]"), { FPaths::ProjectSavedDir(), CurrentTime.ToString(), WorldName, ParentLandscapeActorName, ActorName, Component->GetName(), InWeightmap->GetName(), InMipLevel });
+
 						FFileHelper::EColorChannel ColorChannel = GetWeightmapColorChannel(AllocInfo);
-						FString LevelName = FPackageName::GetShortName(Component->GetOutermost());
-						FString FilePattern = FString::Format(TEXT("LandscapeLayers/{0}-{1}-{2}-WM"), { LevelName, Component->GetName(), AllocInfo.GetLayerName().ToString() });
-						FFileHelper::CreateBitmap(*(FilePattern + "-Pre.bmp"), InWeightmap->Source.GetSizeX(), InWeightmap->Source.GetSizeY(), InOldData, nullptr, nullptr, nullptr, true, ColorChannel);
-						FFileHelper::CreateBitmap(*(FilePattern + "-Post.bmp"), InWeightmap->Source.GetSizeX(), InWeightmap->Source.GetSizeY(), InNewData, nullptr, nullptr, nullptr, true, ColorChannel);
+						FFileHelper::CreateBitmap(*(FilePattern + "_a(pre).bmp"), SizeU, SizeV, InOldData, /*SubRectangle = */nullptr, &IFileManager::Get(), /*OutFilename = */nullptr, /*bool bInWriteAlpha = */true, ColorChannel);
+						FFileHelper::CreateBitmap(*(FilePattern + "_b(post).bmp"), SizeU, SizeV, InNewData, /*SubRectangle = */nullptr, &IFileManager::Get(), /*OutFilename = */nullptr, /*bool bInWriteAlpha = */true, ColorChannel);
+			
+						if (bDumpDiffDetails)
+						{
+							int32 NumDifferentPixels = 0;
+							uint8 MaxDiff = 0;
+							FStringBuilderBase StrBuilder;
+							for (int32 V = 0; V < SizeV; ++V)
+							{
+								for (int32 U = 0; U < SizeU; ++U)
+								{
+									const FColor* OldDataPtr = InOldData + (V * SizeU + U);
+									const FColor* NewDataPtr = InNewData + (V * SizeU + U);
+									if (*OldDataPtr != *NewDataPtr)
+									{
+										auto ComputeMaxDiff = [&MaxDiff](uint8 OldValue, uint8 NewValue) -> uint8
+										{
+											uint8 Diff = (NewValue > OldValue) ? (NewValue - OldValue) : (OldValue - NewValue);
+											MaxDiff = FMath::Max<uint8>(Diff, MaxDiff);
+											return Diff;
+										};
+
+										StrBuilder.Appendf(TEXT("Pixel (%4u,%4u) : R (%3u -> %3u, absdiff %3u), G (%3u -> %3u, absdiff %3u), B (%3u -> %3u, absdiff %3u), A (%3u -> %3u, absdiff %3u)\n"), U, V, 
+											OldDataPtr->R, NewDataPtr->R, ComputeMaxDiff(OldDataPtr->R, NewDataPtr->R),
+											OldDataPtr->G, NewDataPtr->G, ComputeMaxDiff(OldDataPtr->G, NewDataPtr->G),
+											OldDataPtr->B, NewDataPtr->B, ComputeMaxDiff(OldDataPtr->B, NewDataPtr->B),
+											OldDataPtr->A, NewDataPtr->A, ComputeMaxDiff(OldDataPtr->A, NewDataPtr->A));
+
+										++NumDifferentPixels;
+									}
+								}
+							}
+							StrBuilder.Appendf(TEXT("----------------------------------------\n"));
+							StrBuilder.Appendf(TEXT("Num diffs = %u\n"), NumDifferentPixels);
+							StrBuilder.Appendf(TEXT("Max diff = %u (%1.3f%%)\n"), MaxDiff, 100.0 * static_cast<float>(MaxDiff) / MAX_uint8);
+							FFileHelper::SaveStringToFile(StrBuilder.ToView(), *(FilePattern + "_diff.txt"));
+						}
 					}
+
 				}
 			}
 		}
@@ -5180,12 +5319,20 @@ void ALandscape::UpdateHeightDirtyData(ULandscapeComponent* InLandscapeComponent
 	LandscapeEdit.SetDirtyData(X1, Y1, X2, Y2, DirtyData.Get(), 0);
 }
 
-void ALandscape::OnDirtyHeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InHeightmap, FColor const* InOldData, FColor const* InNewData)
+void ALandscape::OnDirtyHeightmap(FTextureToComponentHelper const& MapHelper, UTexture2D const* InHeightmap, FColor const* InOldData, FColor const* InNewData, int32 InMipLevel)
 {
-	const bool bHeightmapDiff = (CVarLandscapeOutputDiffBitmap.GetValueOnAnyThread() & 1) != 0;
-	const bool bTrackDirty = CVarLandscapeTrackDirty.GetValueOnAnyThread() != 0;
+	int32 DumpHeightmapDiff = CVarLandscapeDumpHeightmapDiff.GetValueOnGameThread();
+	const bool bDumpDiff = (DumpHeightmapDiff > 0);
+	const bool bDumpDiffAllMips = (DumpHeightmapDiff > 1);
+	const bool bDumpDiffDetails = CVarLandscapeDumpDiffDetails.GetValueOnGameThread();
+	const bool bTrackDirty = CVarLandscapeTrackDirty.GetValueOnGameThread() != 0;
+	ULandscapeSubsystem* LandscapeSubsystem = GetWorld()->GetSubsystem<ULandscapeSubsystem>();
+	check(LandscapeSubsystem != nullptr);
+	const FDateTime CurrentTime = LandscapeSubsystem->GetAppCurrentDateTime();
 
-	if (!bHeightmapDiff && !bTrackDirty)
+	if ((!bDumpDiff && !bTrackDirty)
+		|| (bDumpDiff && !bDumpDiffAllMips && (InMipLevel > 0))
+		|| (bTrackDirty && (InMipLevel > 0)))
 	{
 		return;
 	}
@@ -5200,23 +5347,162 @@ void ALandscape::OnDirtyHeightmap(FTextureToComponentHelper const& MapHelper, UT
 				UpdateHeightDirtyData(Component, InHeightmap, InOldData, InNewData);
 			}
 
-			if (bHeightmapDiff)
+			if (bDumpDiff)
 			{
-				FString LevelName = FPackageName::GetShortName(Component->GetOutermost());
-				FString FilePattern = FString::Format(TEXT("LandscapeLayers/{0}-{1}-HM"), { LevelName, Component->GetName() });
+				FString WorldName = GetWorld()->GetName();
+				FString ParentLandscapeActorName = GetActorLabel();
+				ALandscapeProxy* Proxy = Cast<ALandscapeProxy>(Component->GetOwner());
+				check(Proxy);
+				FString ActorName = Proxy->GetActorLabel();
+				FString FilePattern = FString::Format(TEXT("{0}/LandscapeLayers/{1}/{2}/{3}/Heightmaps/{4}-{5}-{6}[mip{7}]"), { FPaths::ProjectSavedDir(), CurrentTime.ToString(), WorldName, ParentLandscapeActorName, ActorName, Component->GetName(), InHeightmap->GetName(), InMipLevel });
 
-				const int32 SizeU = InHeightmap->Source.GetSizeX();
-				const int32 SizeV = InHeightmap->Source.GetSizeY();
+				const int32 SizeU = InHeightmap->Source.GetSizeX() >> InMipLevel;
+				const int32 SizeV = InHeightmap->Source.GetSizeY() >> InMipLevel;
 				const int32 HeightmapOffsetX = static_cast<int32>(Component->HeightmapScaleBias.Z * SizeU);
 				const int32 HeightmapOffsetY = static_cast<int32>(Component->HeightmapScaleBias.W * SizeV);
-				const int32 ComponentWidth = (SubsectionSizeQuads + 1) * NumSubsections;
+				const int32 ComponentWidth = ((SubsectionSizeQuads + 1) * NumSubsections) >> InMipLevel;
 				FIntRect SubRegion(HeightmapOffsetX, HeightmapOffsetY, HeightmapOffsetX + ComponentWidth, HeightmapOffsetY + ComponentWidth);
 
-				FFileHelper::CreateBitmap(*(FilePattern + "-Pre.bmp"), InHeightmap->Source.GetSizeX(), InHeightmap->Source.GetSizeY(), InOldData, &SubRegion, &IFileManager::Get(), nullptr, true);
-				FFileHelper::CreateBitmap(*(FilePattern + "-Post.bmp"), InHeightmap->Source.GetSizeX(), InHeightmap->Source.GetSizeY(), InNewData, &SubRegion, &IFileManager::Get(), nullptr, true);
+				FFileHelper::CreateBitmap(*(FilePattern + "_a(pre).bmp"), SizeU, SizeV, InOldData, &SubRegion, &IFileManager::Get(), /*OutFilename = */nullptr, /*bool bInWriteAlpha = */true);
+				FFileHelper::CreateBitmap(*(FilePattern + "_b(post).bmp"), SizeU, SizeV, InNewData, &SubRegion, &IFileManager::Get(), /*OutFilename = */nullptr, /*bool bInWriteAlpha = */true);
+
+				if (bDumpDiffDetails)
+				{
+					int32 NumDifferentPixels = 0;
+					uint16 MaxHeightDiff = 0;
+					uint8 MaxNormalDiff = 0;
+					FStringBuilderBase StrBuilder;
+					const FColor* OldDataStartPtr = InOldData + (HeightmapOffsetY * SizeU + HeightmapOffsetX);
+					const FColor* NewDataStartPtr = InNewData + (HeightmapOffsetY * SizeU + HeightmapOffsetX);
+					for (int32 V = 0; V < ComponentWidth; ++V)
+					{
+						for (int32 U = 0; U < ComponentWidth; ++U)
+						{
+							const FColor* OldDataPtr = OldDataStartPtr + (V * SizeU + U);
+							const FColor* NewDataPtr = NewDataStartPtr + (V * SizeU + U);
+							if (*OldDataPtr != *NewDataPtr)
+							{
+								uint16 OldHeight = ((static_cast<uint16>(OldDataPtr->R) << 8) | static_cast<uint16>(OldDataPtr->G));
+								uint16 NewHeight = ((static_cast<uint16>(NewDataPtr->R) << 8) | static_cast<uint16>(NewDataPtr->G));
+								uint16 HeightDiff = (NewHeight > OldHeight) ? (NewHeight - OldHeight) : (OldHeight - NewHeight);
+								MaxHeightDiff = FMath::Max<uint16>(HeightDiff, MaxHeightDiff);
+
+								uint8 OldNormalX = (OldDataPtr->B);
+								uint8 NewNormalX = (NewDataPtr->B);
+								uint8 NormalXDiff = (NewNormalX > OldNormalX) ? (NewNormalX - OldNormalX) : (OldNormalX - NewNormalX);
+								MaxNormalDiff = FMath::Max<uint8>(NormalXDiff, MaxNormalDiff);
+
+								uint8 OldNormalY = (OldDataPtr->A);
+								uint8 NewNormalY = (NewDataPtr->A);
+								uint8 NormalYDiff = (NewNormalY > OldNormalY) ? (NewNormalY - OldNormalY) : (OldNormalY - NewNormalY);
+								MaxNormalDiff = FMath::Max<uint8>(NormalYDiff, MaxNormalDiff);
+
+								StrBuilder.Appendf(TEXT("Pixel (%4u,%4u) : Height (%5u -> %5u, absdiff %5u), NormalX (%3u -> %3u, absdiff %3u), NormalY (%3u -> %3u, absdiff %3u)\n"), U, V, 
+									OldHeight, NewHeight, HeightDiff, 
+									OldNormalX, NewNormalX, NormalXDiff, 
+									OldNormalY, NewNormalY, NormalYDiff);
+
+								++NumDifferentPixels;
+							}
+						}
+					}
+					StrBuilder.Appendf(TEXT("----------------------------------------\n"));
+					StrBuilder.Appendf(TEXT("Num diffs = %u\n"), NumDifferentPixels);
+					StrBuilder.Appendf(TEXT("Max height diff = %u (%1.3f%%)\n"), MaxHeightDiff, 100.0f * static_cast<float>(MaxHeightDiff) / MAX_uint16);
+					StrBuilder.Appendf(TEXT("Max normal diff = %u (%1.3f%%)\n"), MaxNormalDiff, 100.0f * static_cast<float>(MaxNormalDiff) / MAX_uint8);
+					FFileHelper::SaveStringToFile(StrBuilder.ToView(), *(FilePattern + "_diff.txt"));
+				}
 			}
 		}
 	}
+}
+
+bool ALandscape::HasTextureDataChanged(TArrayView<const FColor> InOldData, TArrayView<const FColor> InNewData, bool bInIsWeightmap, uint64 InPreviousHash, uint64& OutNewHash) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ALandscape::HasTextureDataChanged);
+
+	OutNewHash = FLandscapeEditLayerReadback::CalculateHash((uint8*)InNewData.GetData(), InNewData.Num() * sizeof(FColor));
+	if (OutNewHash != InPreviousHash)
+	{
+		int32 TextureSize = InOldData.Num();
+		check(TextureSize == InNewData.Num());
+
+		// If necessary, perform a deep comparison to avoid taking into account precision issues as actual changes :
+		if (bInIsWeightmap)
+		{
+			if (int32 DirtyWeightmapThreshold = CVarLandscapeDirtyWeightmapThreshold.GetValueOnGameThread(); DirtyWeightmapThreshold > 0)
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(DeepCompareWeightmap);
+				for (int32 Index = 0; Index < TextureSize; ++Index)
+				{
+					const FColor& OldColor = InOldData[Index];
+					const FColor& NewColor = InNewData[Index];
+					if (OldColor != NewColor)
+					{
+						if (uint8 Diff = (NewColor.R > OldColor.R) ? (NewColor.R - OldColor.R) : (OldColor.R - NewColor.R); Diff > DirtyWeightmapThreshold)
+						{
+							return true;
+						}
+						if (uint8 Diff = (NewColor.G > OldColor.G) ? (NewColor.G - OldColor.G) : (OldColor.G - NewColor.G); Diff > DirtyWeightmapThreshold)
+						{
+							return true;
+						}
+						if (uint8 Diff = (NewColor.B > OldColor.B) ? (NewColor.B - OldColor.B) : (OldColor.B - NewColor.B); Diff > DirtyWeightmapThreshold)
+						{
+							return true;
+						}
+						if (uint8 Diff = (NewColor.A > OldColor.A) ? (NewColor.A - OldColor.A) : (OldColor.A - NewColor.A); Diff > DirtyWeightmapThreshold)
+						{
+							return true;
+						}
+					}
+				}
+
+				// No significant difference detected : 
+				return false;
+			}
+		}
+		else 
+		{
+			int32 DirtyHeightmapHeightThreshold = CVarLandscapeDirtyHeightmapHeightThreshold.GetValueOnGameThread();
+			int32 DirtyHeightmapNormalThreshold = CVarLandscapeDirtyHeightmapNormalThreshold.GetValueOnGameThread();
+			if (DirtyHeightmapHeightThreshold > 0 || DirtyHeightmapNormalThreshold > 0)
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(DeepCompareHeightmap);
+				for (int32 Index = 0; Index < TextureSize; ++Index)
+				{
+					const FColor& OldColor = InOldData[Index];
+					const FColor& NewColor = InNewData[Index];
+					if (OldColor != NewColor)
+					{
+						uint16 OldHeight = ((static_cast<uint16>(OldColor.R) << 8) | static_cast<uint16>(OldColor.G));
+						uint16 NewHeight = ((static_cast<uint16>(NewColor.R) << 8) | static_cast<uint16>(NewColor.G));
+						if (uint16 Diff = (NewHeight > OldHeight) ? (NewHeight - OldHeight) : (OldHeight - NewHeight); Diff > DirtyHeightmapHeightThreshold)
+						{
+							return true;
+						}
+						if (uint8 Diff = (NewColor.B > OldColor.B) ? (NewColor.B - OldColor.B) : (OldColor.B - NewColor.B); Diff > DirtyHeightmapNormalThreshold)
+						{
+							return true;
+						}
+						if (uint8 Diff = (NewColor.A > OldColor.A) ? (NewColor.A - OldColor.A) : (OldColor.A - NewColor.A); Diff > DirtyHeightmapNormalThreshold)
+						{
+							return true;
+						}
+					}
+				}
+
+				// No significant difference detected : 
+				return false;
+			}
+		}
+
+		// Hash is different and we don't need a deep comparison : 
+		return true;
+	}
+
+	// Hash is identical : 
+	return false;
 }
 
 bool ALandscape::ResolveLayersTexture(
@@ -5266,7 +5552,8 @@ bool ALandscape::ResolveLayersTexture(
 
 		for (int8 MipIndex = 0; MipIndex < OutMipsData.Num(); ++MipIndex)
 		{
-			if (OutMipsData[MipIndex].Num() > 0)
+			int32 TextureSize = OutMipsData[MipIndex].Num();
+			if (TextureSize > 0)
 			{
 				uint8* TextureData = InOutputTexture->Source.LockMip(MipIndex);
 
@@ -5274,37 +5561,41 @@ bool ALandscape::ResolveLayersTexture(
 				// Don't do this for intermediate renders.
 				if (MipIndex == 0 && !bIntermediateRender)
 				{
-					uint32 Hash = 0;
+					uint64 Hash = 0;
+					if (HasTextureDataChanged(MakeArrayView(reinterpret_cast<const FColor*>(TextureData), TextureSize), MakeArrayView(OutMipsData[MipIndex].GetData(), TextureSize), bIsWeightmap, InCPUReadback->GetHash(), Hash))
 					{
-						TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeLayers_CalculateHash);
-						Hash = FLandscapeEditLayerReadback::CalculateHash((uint8*)OutMipsData[MipIndex].GetData(), OutMipsData[MipIndex].Num() * sizeof(FColor));
+						bChanged |= InCPUReadback->SetHash(Hash);
+						check(bChanged);
 					}
-					if (InCPUReadback->SetHash(Hash))
-					{
-						if (bIsWeightmap)
-						{
-							OnDirtyWeightmap(MapHelper, InOutputTexture, (FColor*)TextureData, OutMipsData[MipIndex].GetData());
-						}
-						else
-						{
-							OnDirtyHeightmap(MapHelper, InOutputTexture, (FColor*)TextureData, OutMipsData[MipIndex].GetData());
-						}
-						bChanged = true;
 
+					if (bChanged)
+					{
 						// We're about to modify the texture's source data, the texture needs to know so that it can handle properly update cached platform data (additionally, the package needs to be dirtied) :
 						if (GetDefault<ULandscapeSettings>()->LandscapeDirtyingMode == ELandscapeDirtyingMode::InLandscapeModeAndUserTriggeredChanges)
 						{
 							FLandscapeDirtyOnlyInModeScope Scope(GetLandscapeInfo(), !bUserTriggered);
-							GetLandscapeInfo()->ModifyObject(InOutputTexture);	
+							GetLandscapeInfo()->ModifyObject(InOutputTexture);
 						}
 						else
 						{
 							GetLandscapeInfo()->ModifyObject(InOutputTexture);
 						}
-							
 					}
 				}
 
+				if (bChanged)
+				{
+					if (bIsWeightmap)
+					{
+						OnDirtyWeightmap(MapHelper, InOutputTexture, (FColor*)TextureData, OutMipsData[MipIndex].GetData(), MipIndex);
+					}
+					else
+					{
+						OnDirtyHeightmap(MapHelper, InOutputTexture, (FColor*)TextureData, OutMipsData[MipIndex].GetData(), MipIndex);
+					}
+				}
+
+				TRACE_CPUPROFILER_EVENT_SCOPE(ReadbackToCPU);
 				FMemory::Memcpy(TextureData, OutMipsData[MipIndex].GetData(), OutMipsData[MipIndex].Num() * sizeof(FColor));
 			}
 		}
@@ -5623,7 +5914,7 @@ void ALandscape::ReallocateLayersWeightmaps(FUpdateLayersContentContext& InUpdat
 			BaseWeightmapAllocation.Free();
 		}
 
-		TArray<ULandscapeWeightmapUsage*>& WeightmapTexturesUsage = Component->GetWeightmapTexturesUsage();
+		TArray<TObjectPtr<ULandscapeWeightmapUsage>>& WeightmapTexturesUsage = Component->GetWeightmapTexturesUsage();
 		for (int32 i = 0; i < WeightmapTexturesUsage.Num(); ++i)
 		{
 			ULandscapeWeightmapUsage* Usage = WeightmapTexturesUsage[i];
@@ -5728,7 +6019,7 @@ void ALandscape::ReallocateLayersWeightmaps(FUpdateLayersContentContext& InUpdat
 	//GDisableAutomaticTextureMaterialUpdateDependencies = false;
 
 	// Clean-up unused weightmap CPUReadback resources
-	Info->ForAllLandscapeProxies([](ALandscapeProxy* Proxy)
+	Info->ForEachLandscapeProxy([](ALandscapeProxy* Proxy)
 	{
 		TArray<UTexture2D*, TInlineAllocator<64>> EntriesToRemoveFromMap;
 		for (auto& Pair : Proxy->WeightmapsCPUReadback)
@@ -5764,6 +6055,8 @@ void ALandscape::ReallocateLayersWeightmaps(FUpdateLayersContentContext& InUpdat
 				}
 			}
 		}
+
+		return true;
 	});
 
 	ValidateProxyLayersWeightmapUsage();
@@ -6553,7 +6846,7 @@ void ALandscape::PrepareLayersWeightmapsLocalMergeRenderThreadData(const FUpdate
 							// Lazily create the readback objects as required (ReallocateLayersWeightmaps might have created new weightmaps)
 							FLandscapeEditLayerReadback* NewCPUReadback = new FLandscapeEditLayerReadback();
 							const uint8* LockedMip = ComponentWeightmap->Source.LockMipReadOnly(0);
-							const uint32 Hash = FLandscapeEditLayerReadback::CalculateHash(LockedMip, ComponentWeightmap->Source.GetSizeX() * ComponentWeightmap->Source.GetSizeY() * sizeof(FColor));
+							const uint64 Hash = FLandscapeEditLayerReadback::CalculateHash(LockedMip, ComponentWeightmap->Source.GetSizeX() * ComponentWeightmap->Source.GetSizeY() * sizeof(FColor));
 							NewCPUReadback->SetHash(Hash);
 							ComponentWeightmap->Source.UnlockMip(0);
 							CPUReadback = &Proxy->WeightmapsCPUReadback.Add(ComponentWeightmap, NewCPUReadback);
@@ -6759,9 +7052,20 @@ int32 ALandscape::PerformLayersWeightmapsGlobalMerge(FUpdateLayersContentContext
 						for (int32 i = 0; i < Layer.Brushes.Num(); ++i)
 						{
 							FLandscapeLayerBrush& Brush = Layer.Brushes[i];
-							if (Brush.IsAffectingWeightmapLayer(InfoLayerSettings.GetLayerName()) && !LayerInfoObjects.Contains(InfoLayerSettings.LayerInfoObj))
+							TOptional<int32> LayerInfoSettingsAllocatedIndex;
+
+							if (Brush.AffectsWeightmapLayer(InfoLayerSettings.GetLayerName()) && !LayerInfoObjects.Contains(InfoLayerSettings.LayerInfoObj))
 							{
-								LayerInfoObjects.Add(InfoLayerSettings.LayerInfoObj, LayerInfoSettingsIndex + 1); // due to visibility layer that is at 0
+								LayerInfoSettingsAllocatedIndex = LayerInfoSettingsIndex + 1; // due to visibility layer that is at 0
+							}
+							else if (Brush.AffectsVisibilityLayer() && UE::Landscape::IsVisibilityLayer(InfoLayerSettings.LayerInfoObj) && !LayerInfoObjects.Contains(InfoLayerSettings.LayerInfoObj))
+							{
+								LayerInfoSettingsAllocatedIndex = GetVisibilityLayerAllocationIndex();
+							}
+
+							if (LayerInfoSettingsAllocatedIndex.IsSet())
+							{
+								LayerInfoObjects.Add(InfoLayerSettings.LayerInfoObj, LayerInfoSettingsAllocatedIndex.GetValue());
 								bHasWeightmapData = true;
 							}
 						}
@@ -6909,13 +7213,17 @@ int32 ALandscape::PerformLayersWeightmapsGlobalMerge(FUpdateLayersContentContext
 					// Handle brush blending
 					if (Layer.bVisible && !InMergeParams.bSkipBrush)
 					{
+						const ELandscapeToolTargetType LayerType = UE::Landscape::IsVisibilityLayer(LayerInfoObj) ? ELandscapeToolTargetType::Visibility : ELandscapeToolTargetType::Weightmap;
+
 						// Draw each brushes				
 						for (int32 i = 0; i < Layer.Brushes.Num(); ++i)
 						{
 							// TODO: handle conversion/handling of RT not same size as internal size
 
 							FLandscapeLayerBrush& Brush = Layer.Brushes[i];
-							UTextureRenderTarget2D* BrushOutputRT = Brush.Render(false, LandscapeExtent, LandscapeScratchRT3, LayerInfoObj->LayerName);
+							FLandscapeBrushParameters BrushParameters(LayerType, LandscapeScratchRT3, LayerInfoObj->LayerName);
+
+							UTextureRenderTarget2D* BrushOutputRT = Brush.RenderLayer( LandscapeExtent, BrushParameters);
 							if (BrushOutputRT == nullptr || BrushOutputRT->SizeX != LandscapeScratchRT3->SizeX || BrushOutputRT->SizeY != LandscapeScratchRT3->SizeY)
 							{
 								continue;
@@ -6989,7 +7297,7 @@ int32 ALandscape::PerformLayersWeightmapsGlobalMerge(FUpdateLayersContentContext
 					{
 						FLandscapeEditLayerReadback* NewCPUReadback = new FLandscapeEditLayerReadback();
 						const uint8* LockedMip = WeightmapTexture->Source.LockMipReadOnly(0);
-						const uint32 Hash = FLandscapeEditLayerReadback::CalculateHash(LockedMip, WeightmapTexture->Source.GetSizeX() * WeightmapTexture->Source.GetSizeY() * sizeof(FColor));
+						const uint64 Hash = FLandscapeEditLayerReadback::CalculateHash(LockedMip, WeightmapTexture->Source.GetSizeX() * WeightmapTexture->Source.GetSizeY() * sizeof(FColor));
 						NewCPUReadback->SetHash(Hash);
 						WeightmapTexture->Source.UnlockMip(0);
 						Proxy->WeightmapsCPUReadback.Add(WeightmapTexture, NewCPUReadback);
@@ -7557,7 +7865,7 @@ void ALandscape::RequestLayersContentUpdateForceAll(ELandscapeLayerUpdateMode In
 	const bool bUpdateClientUdpateEditing = (InModeMask & ELandscapeLayerUpdateMode::Update_Client_Editing) != 0;
 	if (ULandscapeInfo* LandscapeInfo = GetLandscapeInfo())
 	{
-		LandscapeInfo->ForAllLandscapeProxies([bUpdateHeightmap, bUpdateWeightmap, bUpdateAllHeightmap, bUpdateAllWeightmap, bUpdateHeightCollision, bUpdateWeightCollision, bUpdateClientUdpateEditing, bInUserTriggered](ALandscapeProxy* Proxy)
+		LandscapeInfo->ForEachLandscapeProxy([bUpdateHeightmap, bUpdateWeightmap, bUpdateAllHeightmap, bUpdateAllWeightmap, bUpdateHeightCollision, bUpdateWeightCollision, bUpdateClientUdpateEditing, bInUserTriggered](ALandscapeProxy* Proxy)
 		{
 			if (Proxy)
 			{
@@ -7579,6 +7887,7 @@ void ALandscape::RequestLayersContentUpdateForceAll(ELandscapeLayerUpdateMode In
 					}
 				}
 			}
+			return true;
 		});
 	}
 
@@ -7728,7 +8037,7 @@ void ALandscape::MonitorLandscapeEdModeChanges()
 		bRequiredEditingClientFullUpdate = true;
 	}
 
-	ELandscapeToolTargetType::Type NewValue = LandscapeEdMode ? LandscapeEdMode->GetLandscapeToolTargetType() : ELandscapeToolTargetType::Invalid;
+	ELandscapeToolTargetType NewValue = LandscapeEdMode ? LandscapeEdMode->GetLandscapeToolTargetType() : ELandscapeToolTargetType::Invalid;
 	if (LandscapeEdModeInfo.ToolTarget != NewValue)
 	{
 		LandscapeEdModeInfo.ToolTarget = NewValue;
@@ -7865,7 +8174,7 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 	bool bResourcesReady = PrepareTextureResources(bInWaitForStreaming);
 
 	ULandscapeInfo* LandscapeInfo = GetLandscapeInfo();
-	if ((LandscapeInfo == nullptr) || !CanHaveLayersContent() || !LandscapeInfo->AreAllComponentsRegistered())
+	if ((LandscapeInfo == nullptr) || !CanHaveLayersContent() || !LandscapeInfo->AreAllComponentsRegistered() || !FApp::CanEverRender())
 	{
 		return;
 	}
@@ -7957,7 +8266,7 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 	};
 	
 	// The Edit layers shaders only work on SM5 : cancel any update that might happen when SM5+ shading model is not active :
-	if (World->FeatureLevel < ERHIFeatureLevel::SM5)
+	if (World->GetFeatureLevel() < ERHIFeatureLevel::SM5)
 	{
 		if (LandscapeNotificationManager)
 		{
@@ -8000,7 +8309,7 @@ void ALandscape::UpdateLayersContent(bool bInWaitForStreaming, bool bInSkipMonit
 		WaitingForLandscapeTextureResourcesStartTime = -1.0;
 	}
 
-	bResourcesReady &= PrepareLayersBrushResources(World->FeatureLevel, bInWaitForStreaming);
+	bResourcesReady &= PrepareLayersBrushResources(World->GetFeatureLevel(), bInWaitForStreaming);
 	if (!bResourcesReady && LandscapeNotificationManager)
 	{
 		WaitingForLandscapeBrushResourcesStartTime = GetCurrentTime();
@@ -8270,6 +8579,14 @@ void ALandscape::ForceUpdateLayersContent(bool bIntermediateRender)
 
 void ALandscape::ForceLayersFullUpdate()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ALandscape::ForceLayersFullUpdate);
+
+	FAssetCompilingManager::Get().FinishAllCompilation();
+
+	FStreamingManagerCollection& StreamingManagers = IStreamingManager::Get();
+	StreamingManagers.UpdateResourceStreaming(GetWorld()->GetDeltaSeconds(), /* bProcessEverything */ true);
+	StreamingManagers.BlockTillAllRequestsFinished();
+
 	RequestSplineLayerUpdate();
 	RequestLayersContentUpdateForceAll();
 	ForceUpdateLayersContent(/* bIntermediateRender */ false);
@@ -8526,6 +8843,28 @@ void ALandscapeProxy::InitializeLayerWithEmptyContent(const FGuid& InLayerGuid)
 		}
 	}
 }
+
+TArray<FName> ALandscapeProxy::SynchronizeUnmarkedSharedProperties(ALandscapeProxy* InLandscape)
+{
+	check(InLandscape != nullptr);
+	TArray<FName> SynchronizedProperties;
+	USceneComponent* OwnRootComponent = GetRootComponent();
+	USceneComponent* ProxyRootComponent = InLandscape->GetRootComponent();
+
+	if ((OwnRootComponent != nullptr) && (ProxyRootComponent != nullptr))
+	{
+		FVector ProxyScale3D = ProxyRootComponent->GetComponentToWorld().GetScale3D();
+
+		if (!OwnRootComponent->GetRelativeScale3D().Equals(ProxyScale3D))
+		{
+			OwnRootComponent->SetRelativeScale3D(ProxyScale3D);
+			SynchronizedProperties.Emplace(TEXT("RelativeScale3D"));
+		}
+	}
+
+	return SynchronizedProperties;
+}
+
 #endif
 
 void ALandscape::BeginDestroy()
@@ -8584,6 +8923,11 @@ void ALandscape::FinishDestroy()
 
 bool ALandscape::IsUpToDate() const
 {
+	if (!FApp::CanEverRender())
+	{
+		return true;
+	}
+
 #if WITH_EDITORONLY_DATA
 	if (CanHaveLayersContent() && GetWorld() != nullptr && !GetWorld()->IsGameWorld())
 	{
@@ -8750,9 +9094,10 @@ void ALandscape::DeleteLayer(int32 InLayerIndex)
 	FGuid LayerGuid = Layer->Guid;
 
 	// Clean up Weightmap usage in LandscapeProxies
-	LandscapeInfo->ForAllLandscapeProxies([&LayerGuid](ALandscapeProxy* Proxy)
+	LandscapeInfo->ForEachLandscapeProxy([&LayerGuid](ALandscapeProxy* Proxy)
 	{
 		Proxy->DeleteLayer(LayerGuid);
+		return true;
 	});
 
 	const FLandscapeLayer* SplinesReservedLayer = GetLandscapeSplinesReservedLayer();
@@ -8872,16 +9217,17 @@ void ALandscape::ClearPaintLayer(const FGuid& InLayerGuid, ULandscapeLayerInfoOb
 	}
 
 	Modify();
-	FScopedSetLandscapeEditingLayer Scope(this, InLayerGuid, [=] { RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_Weightmap_All); });
+	FScopedSetLandscapeEditingLayer Scope(this, InLayerGuid, [this] { RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_Weightmap_All); });
 
 	FLandscapeEditDataInterface LandscapeEdit(LandscapeInfo);
-	LandscapeInfo->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	LandscapeInfo->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 	{
 		Proxy->Modify();
 		for (ULandscapeComponent* Component : Proxy->LandscapeComponents)
 		{
 			Component->DeleteLayer(InLayerInfo, LandscapeEdit);
 		}
+		return true;
 	});
 }
 
@@ -8906,7 +9252,7 @@ void ALandscape::ClearLayer(const FGuid& InLayerGuid, TSet<TObjectPtr<ULandscape
 	}
 
 	Modify(bMarkPackageDirty);
-	FScopedSetLandscapeEditingLayer Scope(this, Layer->Guid, [=] { RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_All); });
+	FScopedSetLandscapeEditingLayer Scope(this, Layer->Guid, [this] { RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_All); });
 
 	TArray<uint16> NewHeightData;
 	NewHeightData.AddZeroed(FMath::Square(ComponentSizeQuads + 1));
@@ -8949,10 +9295,11 @@ void ALandscape::ClearLayer(const FGuid& InLayerGuid, TSet<TObjectPtr<ULandscape
 	}
 	else
 	{
-		LandscapeInfo->ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+		LandscapeInfo->ForEachLandscapeProxy([&](ALandscapeProxy* Proxy)
 		{
 			Proxy->Modify(bMarkPackageDirty);
 			Components.Append(Proxy->LandscapeComponents);
+			return true;
 		});
 	}
 
@@ -9113,7 +9460,7 @@ void ALandscape::UpdateLandscapeSplines(const FGuid& InTargetLayer, bool bInUpda
 	const FLandscapeLayer* TargetLayer = GetLayer(TargetLayerGuid);
 	if (LandscapeInfo && TargetLayer)
 	{
-		FScopedSetLandscapeEditingLayer Scope(this, TargetLayerGuid, [=] { this->RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_All); });
+		FScopedSetLandscapeEditingLayer Scope(this, TargetLayerGuid, [this] { this->RequestLayersContentUpdate(ELandscapeLayerUpdateMode::Update_All); });
 		// Temporarily disable material instance updates since it will be done once at the end (requested by RequestLayersContentUpdateForceAll)
 		GDisableUpdateLandscapeMaterialInstances = true;
 		TSet<TObjectPtr<ULandscapeComponent>>* ModifiedComponent = nullptr;
@@ -9208,7 +9555,7 @@ bool ALandscape::IsEditingLayerReservedForSplines() const
 	if (CanHaveLayersContent())
 	{
 		const FLandscapeLayer* SplinesReservedLayer = GetLandscapeSplinesReservedLayer();
-		return SplinesReservedLayer && SplinesReservedLayer->Guid == EditingLayer;
+		return SplinesReservedLayer && SplinesReservedLayer->Guid == GetEditingLayer();
 	}
 	return false;
 }
@@ -9281,9 +9628,10 @@ FLandscapeLayer* ALandscape::DuplicateLayerAndMoveBrushes(const FLandscapeLayer&
 	int32 AddedIndex = LandscapeLayers.Add(NewLayer);
 
 	// Create associated layer data in each landscape proxy
-	LandscapeInfo->ForAllLandscapeProxies([&NewLayer](ALandscapeProxy* Proxy)
+	LandscapeInfo->ForEachLandscapeProxy([&NewLayer](ALandscapeProxy* Proxy)
 	{
 		Proxy->AddLayer(NewLayer.Guid);
+		return true;
 	});
 
 	return &LandscapeLayers[AddedIndex];
@@ -9303,9 +9651,10 @@ int32 ALandscape::CreateLayer(FName InName)
 	int32 LayerIndex = LandscapeLayers.Add(NewLayer);
 
 	// Create associated layer data in each landscape proxy
-	LandscapeInfo->ForAllLandscapeProxies([&NewLayer](ALandscapeProxy* Proxy)
+	LandscapeInfo->ForEachLandscapeProxy([&NewLayer](ALandscapeProxy* Proxy)
 	{
 		Proxy->AddLayer(NewLayer.Guid);
+		return true;
 	});
 
 	return LayerIndex;
@@ -9594,19 +9943,28 @@ void FLandscapeLayerBrush::SetOwner(ALandscape* InOwner)
 #endif
 }
 
-bool FLandscapeLayerBrush::IsAffectingHeightmap() const
+bool FLandscapeLayerBrush::AffectsHeightmap() const
 {
 #if WITH_EDITORONLY_DATA
-	return BlueprintBrush && BlueprintBrush->IsVisible() && BlueprintBrush->IsAffectingHeightmap();
+	return BlueprintBrush && BlueprintBrush->IsVisible() && BlueprintBrush->AffectsHeightmap();
 #else
 	return false;
 #endif
 }
 
-bool FLandscapeLayerBrush::IsAffectingWeightmapLayer(const FName& InWeightmapLayerName) const
+bool FLandscapeLayerBrush::AffectsWeightmapLayer(const FName& InWeightmapLayerName) const
 {
 #if WITH_EDITORONLY_DATA
-	return BlueprintBrush && BlueprintBrush->IsVisible() && BlueprintBrush->IsAffectingWeightmap() && BlueprintBrush->IsAffectingWeightmapLayer(InWeightmapLayerName);
+	return BlueprintBrush && BlueprintBrush->IsVisible() && BlueprintBrush->AffectsWeightmap() && BlueprintBrush->AffectsWeightmapLayer(InWeightmapLayerName);
+#else
+	return false;
+#endif
+}
+
+bool FLandscapeLayerBrush::AffectsVisibilityLayer() const
+{
+#if WITH_EDITORONLY_DATA
+	return BlueprintBrush && BlueprintBrush->IsVisible() && BlueprintBrush->AffectsVisibilityLayer();
 #else
 	return false;
 #endif
@@ -9614,20 +9972,47 @@ bool FLandscapeLayerBrush::IsAffectingWeightmapLayer(const FName& InWeightmapLay
 
 UTextureRenderTarget2D* FLandscapeLayerBrush::Render(bool InIsHeightmap, const FIntRect& InLandscapeExtent, UTextureRenderTarget2D* InLandscapeRenderTarget, const FName& InWeightmapLayerName)
 {
+	const ELandscapeToolTargetType LayerType = InIsHeightmap ? ELandscapeToolTargetType::Heightmap : ELandscapeToolTargetType::Weightmap;
+	FLandscapeBrushParameters BrushParameters(LayerType, InLandscapeRenderTarget, InWeightmapLayerName);
+
+	return RenderLayer(InLandscapeExtent, BrushParameters);
+}
+
+UTextureRenderTarget2D* FLandscapeLayerBrush::RenderLayer(const FIntRect& InLandscapeSize, const FLandscapeBrushParameters& InParameters)
+{
 #if WITH_EDITORONLY_DATA
 	TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeLayers_LayerBrushRender);
-	if ((InIsHeightmap && !IsAffectingHeightmap()) ||
-		(!InIsHeightmap && !IsAffectingWeightmapLayer(InWeightmapLayerName)))
+	if (((InParameters.LayerType == ELandscapeToolTargetType::Heightmap) && !AffectsHeightmap()) ||
+		((InParameters.LayerType == ELandscapeToolTargetType::Weightmap) && !AffectsWeightmapLayer(InParameters.WeightmapLayerName)) ||
+		((InParameters.LayerType == ELandscapeToolTargetType::Visibility) && !AffectsVisibilityLayer()))
 	{
 		return nullptr;
 	}
-	if (Initialize(InLandscapeExtent, InLandscapeRenderTarget))
+
+	if (Initialize(InLandscapeSize, InParameters.CombinedResult))
 	{
-		FString ProfilingEventName = FString::Format(TEXT("LandscapeLayers_RenderLayerBrush {0}: {1}"), { InIsHeightmap ? TEXT("LS Height") : TEXT("LS Weight"), BlueprintBrush->GetName() });
+		const TCHAR* LayerName = TEXT("");
+		
+		switch (InParameters.LayerType)
+		{
+		case ELandscapeToolTargetType::Heightmap:
+			LayerName = TEXT("LS Height");
+			break;
+		case ELandscapeToolTargetType::Weightmap:
+			LayerName = TEXT("LS Weight");
+			break;
+		case ELandscapeToolTargetType::Visibility:
+			LayerName = TEXT("LS VisibilityLayer");
+			break;
+		default:
+			check(false);
+		}
+
+		FString ProfilingEventName = FString::Format(TEXT("LandscapeLayers_RenderLayerBrush {0}: {1}"), { LayerName , BlueprintBrush->GetName() });
 		SCOPED_DRAW_EVENTF_GAMETHREAD(LandscapeLayers, *ProfilingEventName);
 
 		TGuardValue<bool> AutoRestore(GAllowActorScriptExecutionInEditor, true);
-		UTextureRenderTarget2D* Result = BlueprintBrush->Render(InIsHeightmap, InLandscapeRenderTarget, InWeightmapLayerName);
+		UTextureRenderTarget2D* Result = BlueprintBrush->RenderLayer(InParameters);
 
 		return Result;
 	}

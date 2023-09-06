@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-import { ConstrainMode, ContextualMenu, DefaultButton, DetailsHeader, DetailsList, DetailsListLayoutMode, DetailsRow, Dialog, DialogFooter, DialogType, GroupedList, GroupHeader, IColumn, IContextualMenuItem, IContextualMenuProps, IDetailsHeaderProps, IDetailsHeaderStyles, IDetailsListProps, IGroup, ITooltipHostStyles, mergeStyleSets, Modal, Pivot, PivotItem, PrimaryButton, ScrollablePane, ScrollbarVisibility, Selection, SelectionMode, Spinner, SpinnerSize, Stack, Sticky, StickyPositionType, Text } from "@fluentui/react";
+import { ConstrainMode, DefaultButton, DetailsHeader, DetailsList, DetailsListLayoutMode, DetailsRow, Dialog, DialogFooter, DialogType, GroupedList, GroupHeader, IColumn, IContextualMenuItem, IContextualMenuProps, IDetailsHeaderProps, IDetailsHeaderStyles, IDetailsListProps, IGroup, ITooltipHostStyles, mergeStyleSets, Modal, Pivot, PivotItem, PrimaryButton, ScrollablePane, ScrollbarVisibility, Selection, SelectionMode, Spinner, SpinnerSize, Stack, Sticky, StickyPositionType, Text } from "@fluentui/react";
 import { action, makeObservable, observable } from "mobx";
 import { observer } from "mobx-react-lite";
 import React, { useState } from "react";
@@ -9,6 +9,7 @@ import backend from "../backend";
 import { agentStore } from "../backend/AgentStore";
 import { AgentData, GetAgentLeaseResponse, GetAgentSessionResponse, JobStepBatchError, LeaseData, SessionData, UpdateAgentRequest } from "../backend/Api";
 import dashboard from "../backend/Dashboard";
+import { getShortNiceTime } from "../base/utilities/timeUtils";
 import { hordeClasses, modeColors } from "../styles/Styles";
 import { BatchStatusIcon, LeaseStatusIcon } from "./StatusIcon";
 
@@ -47,8 +48,17 @@ class HistoryModalState {
    constructor() {
       makeObservable(this);
    }
+
+   @observable
+   selectedAgentUpdated = 0;
+
+   get selectedAgent(): AgentData | undefined {
+      // subscribe in any observers
+      if (this.selectedAgentUpdated) { }
+      return this._selectedAgent;
+   } 
    
-   @observable.ref selectedAgent: AgentData | undefined = undefined;
+   private _selectedAgent: AgentData | undefined = undefined;
    @observable.shallow currentData: any = [];
    @observable.shallow infoItems: InfoPanelItem[] = [];
    @observable.shallow infoSubItems: InfoPanelSubItem[] = [];
@@ -68,7 +78,7 @@ class HistoryModalState {
    @action
    setSelectedAgent(selectedAgent?: AgentData | undefined) {
       // if we're closing don't reset
-      this.selectedAgent = selectedAgent;
+      this._selectedAgent = selectedAgent;
       if (this.selectedAgent) {
          // set date to now
          this._initBuilderItems();
@@ -80,6 +90,8 @@ class HistoryModalState {
          }
          this._doUpdate();
       }
+
+      this.selectedAgentUpdated++;
    }
 
    @action
@@ -188,7 +200,7 @@ class HistoryModalState {
                                  subItemData[1] += " GB";
                               }
                               else if (subItemData[0].indexOf("Disk") !== -1) {
-                                 subItemData[1] = (Number(subItemData[1]) / 1000000000).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " GB";
+                                 subItemData[1] = (Number(subItemData[1]) / 1073741824).toLocaleString(undefined, { maximumFractionDigits: 0 }) + " GiB";
                               }
                               subItems.push({ name: subItemData[0], value: subItemData[1] });
                            }
@@ -344,7 +356,7 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
          return <Modal isOpen={true} isBlocking={true} topOffsetFixed={true} styles={{ main: { padding: 16, width: 1200, hasBeenOpened: false, top: "80px", position: "absolute" } }} className={hordeClasses.modal}>
             <Stack tokens={{ childrenGap: 40 }} styles={{ root: { padding: 8 } }}>
                <Stack grow verticalAlign="center">
-                  <Text variant="mediumPlus" styles={{ root: { fontWeight: "unset", fontFamily: "Horde Open Sans SemiBold" } }}>Loading Agent {agentId}</Text>
+                  <Text variant="mediumPlus" styles={{ root: { fontWeight: "unset", fontFamily: "Horde Open Sans SemiBold", fontSize: "20px" } }}>Agent {agentId}</Text>
                </Stack>
                <Stack verticalAlign="center">
                   <Spinner size={SpinnerSize.large} />
@@ -475,7 +487,7 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
          poolItems.push({
             key: `pools_${poolId}`,
             text: pool.name,
-            href: `/pool/${pool.id}`,
+            href: `/pools?pool=${pool.id}`,
             target: "_blank"
          })
       }
@@ -669,9 +681,9 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
             case 'name':
                return <Stack>{lease.name}</Stack>;
             case 'startTime':
-               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{lease.startTime.toString().substring(0, 24)}</Stack.Item></Stack>
+               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{getShortNiceTime(lease.startTime, false, true, true)}</Stack.Item></Stack>
             case 'endTime':
-               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{lease.finishTime?.toString().substring(0, 24) || ""}</Stack.Item></Stack>
+               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{getShortNiceTime(lease.finishTime, false, true, true)}</Stack.Item></Stack>
             case 'description':
                link = "";
                if (lease.details) {
@@ -701,9 +713,9 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
             case 'id':
                return <Stack styles={{ root: { height: '100%', } }} horizontal><Stack.Item align={"center"}>{session.id}</Stack.Item></Stack>
             case 'startTime':
-               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{session.startTime.toString().substring(0, 24)}</Stack.Item></Stack>
+               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{getShortNiceTime(session.startTime, false, true)}</Stack.Item></Stack>
             case 'endTime':
-               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{session.finishTime?.toString().substring(0, 24) || ""}</Stack.Item></Stack>
+               return <Stack styles={{ root: { height: '100%', } }} horizontal horizontalAlign={'center'}><Stack.Item align={"center"}>{getShortNiceTime(session.finishTime, false, true)}</Stack.Item></Stack>
             default:
                return <span>{session[column!.fieldName as keyof SessionData] as string}</span>;
          }
@@ -784,11 +796,6 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
          modalProps={{
             isBlocking: false,
             topOffsetFixed: true,
-            dragOptions: {
-               closeMenuItemText: "Close",
-               moveMenuItemText: "Move",
-               menu: ContextualMenu
-            },
             styles: {
                main: {
                   hasBeenOpened: false,
@@ -812,7 +819,7 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
          dialogContentProps={{
             type: DialogType.close,
             onDismiss: onDismissHistoryModal,
-            title: state.selectedAgent?.name,
+            title: `Agent ${state.selectedAgent?.name}`,
          }}
       >
          <Stack>
@@ -853,7 +860,7 @@ export const HistoryModal: React.FC<{ agentId: string | undefined, onDismiss: (.
                   </Stack>
                </Stack>
                {!!poolItems.length && <Stack style={{ paddingRight: 24 }}><DefaultButton text="Pools" menuProps={{ shouldFocusOnMount: true, items: poolItems }} /></Stack>}
-               {dashboard.hordeAdmin && <Stack> <Stack horizontal tokens={{ childrenGap: 24 }}>
+               {!!dashboard.user?.dashboardFeatures?.showRemoteDesktop && <Stack> <Stack horizontal tokens={{ childrenGap: 24 }}>
                   <Stack>
                      <DefaultButton text="Actions" menuProps={actionMenuProps} />
                   </Stack>

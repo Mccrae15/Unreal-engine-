@@ -5,18 +5,18 @@
 #include "CADKernel/Math/Geometry.h"
 #include "CADKernel/Math/Point.h"
 #include "CADKernel/Math/SlopeUtils.h"
+#include "CADKernel/Mesh/Meshers/IsoTriangulator/IntersectionIsoSegmentTool.h"
 #include "CADKernel/Mesh/Meshers/IsoTriangulator/IntersectionSegmentTool.h"
 #include "CADKernel/Mesh/Meshers/IsoTriangulator/IsoNode.h"
 #include "CADKernel/Mesh/Meshers/IsoTriangulator/IsoSegment.h"
+#include "CADKernel/Mesh/Meshers/ParametricMesherConstantes.h"
 #include "CADKernel/UI/Visu.h"
 
 #ifdef CADKERNEL_DEV
-#include "CADKernel/Mesh/Meshers/IsoTriangulator/DefineForDebug.h"
+#include "CADKernel/UI/DefineForDebug.h"
 #include "CADKernel/Mesh/Meshers/MesherReport.h"
 #endif
 
-//#define NEED_TO_CHECK_USEFULNESS
-//#define DEBUG_DELAUNAY
 namespace UE::CADKernel
 {
 
@@ -25,13 +25,12 @@ class FIntersectionSegmentTool;
 class FFaceMesh;
 struct FCell;
 
+using FMeshPolygonFunc = TFunction<void(const FGrid&, FIsoNode*[], FFaceMesh&)>;
+
+struct FCellConnexion;
 
 struct CADKERNEL_API FIsoTriangulatorChronos
 {
-	FDuration TriangulateDuration1 = FChrono::Init();
-	FDuration TriangulateDuration2 = FChrono::Init();
-	FDuration TriangulateDuration3 = FChrono::Init();
-	FDuration TriangulateDuration4 = FChrono::Init();
 	FDuration TriangulateDuration = FChrono::Init();
 	FDuration BuildIsoNodesDuration = FChrono::Init();
 	FDuration BuildLoopSegmentsDuration = FChrono::Init();
@@ -41,7 +40,6 @@ struct CADKERNEL_API FIsoTriangulatorChronos
 	FDuration FindIsoSegmentToLinkInnerToLoopDuration = FChrono::Init();
 	FDuration FindInnerSegmentToLinkLoopToLoopDuration = FChrono::Init();
 	FDuration FindSegmentToLinkLoopToLoopDuration = FChrono::Init();
-	FDuration FindSegmentToLinkLoopToLoopByDelaunayDuration = FChrono::Init();
 	FDuration FindSegmentToLinkInnerToLoopDuration = FChrono::Init();
 	FDuration TriangulateOverCycleDuration = FChrono::Init();
 	FDuration TriangulateInnerNodesDuration = FChrono::Init();
@@ -58,7 +56,6 @@ struct CADKERNEL_API FIsoTriangulatorChronos
 		IsoTriangulerDuration += FindLoopSegmentOfInnerTriangulationDuration;
 		IsoTriangulerDuration += FindIsoSegmentToLinkInnerToLoopDuration;
 		IsoTriangulerDuration += FindSegmentToLinkLoopToLoopDuration;
-		IsoTriangulerDuration += FindSegmentToLinkLoopToLoopByDelaunayDuration;
 		IsoTriangulerDuration += FindSegmentToLinkInnerToLoopDuration;
 		IsoTriangulerDuration += TriangulateOverCycleDuration;
 		IsoTriangulerDuration += TriangulateInnerNodesDuration;
@@ -71,28 +68,24 @@ struct CADKERNEL_API FIsoTriangulatorChronos
 		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("FindLoopSegmentOfInnerTriangulation"), FindLoopSegmentOfInnerTriangulationDuration);
 		FChrono::PrintClockElapse(Log, TEXT("      "), TEXT("FindSegmentIsoUVSurroundingSmallLoop"), FindSegmentIsoUVSurroundingSmallLoopDuration);
 		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Find IsoSegment ToLink InnerToLoop"), FindIsoSegmentToLinkInnerToLoopDuration);
-		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Find Segment ToLink LoopToLoop by Delaunay"), FindSegmentToLinkLoopToLoopByDelaunayDuration);
 		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Find Segment ToLink LoopToLoop"), FindSegmentToLinkLoopToLoopDuration);
 		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Find Segment ToLink InnerToLoop"), FindSegmentToLinkInnerToLoopDuration);
 		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Mesh Over Cycle"), TriangulateOverCycleDuration);
 		FChrono::PrintClockElapse(Log, TEXT("    "), TEXT("Mesh Inner Nodes"), TriangulateInnerNodesDuration);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("Triangulate1"), TriangulateDuration1);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("Triangulate2"), TriangulateDuration2);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("Triangulate3"), TriangulateDuration3);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("Triangulate4"), TriangulateDuration4);
-		FChrono::PrintClockElapse(Log, TEXT("  "), TEXT("Triangulate "), TriangulateDuration);
 	}
 };
 
 class FIsoTriangulator
 {
-	friend class FParametricMesher;
+	friend class FCycleTriangulator;
 	friend class FLoopCleaner;
+	friend class FParametricMesher;
+	friend struct FCell;
 
 protected:
 
 	FGrid& Grid;
-	TSharedRef<FFaceMesh> Mesh;
+	FFaceMesh& Mesh;
 
 	TArray<int32> LoopStartIndex;
 	TArray<FLoopNode> LoopNodes;
@@ -117,15 +110,27 @@ protected:
 	TArray<FIsoSegment*> FinalInnerSegments;
 	TArray<FIsoSegment*> InnerToOuterSegments;
 
+	/** 
+	 * Waiting list for SelectSegmentsToLinkInnerToLoop
+	 * Segments are identified in each cell but not directly processed 
+	 */
+	TArray<FIsoSegment*> InnerToLoopCandidateSegments;
+
 	/**
 	 * Tool to check if a segment intersect or not existing segments.
 	 * To be optimal, depending on the segment, only a subset of segment is used.
 	 * Checks intersection with loop.
 	 */
 	FIntersectionSegmentTool LoopSegmentsIntersectionTool;
+
+	/** Boundary of the inner grid */
 	FIntersectionSegmentTool InnerSegmentsIntersectionTool;
-	FIntersectionSegmentTool InnerToLoopSegmentsIntersectionTool;
-	FIntersectionNodePairTool InnerToOuterSegmentsIntersectionTool;
+	
+	/** To check if the candidate segment intersect a iso line */
+	FIntersectionIsoSegmentTool InnerToOuterIsoSegmentsIntersectionTool;
+	
+	/** To check if a candidate segment intersect a thin zone that is already meshed */
+	FIntersectionSegmentTool ThinZoneIntersectionTool;
 
 	/**
 	 * Define all the lower left index of grid node that the upper cell is surrounding a loop
@@ -146,33 +151,16 @@ protected:
 	 */
 	TArray<FIsoSegment*> CandidateSegments;
 
-	TArray<FIsoSegment*> NewTestSegments;
-
 	bool bDisplay = false;
 
 	bool bNeedCheckOrientation = false;
 
-	static const double GeometricToMeshingToleranceFactor;
-	const double GeometricTolerance;
-	const double SquareGeometricTolerance;
-	const double SquareGeometricTolerance2;
-	const double MeshingTolerance;
-	const double SquareMeshingTolerance;
-
-#ifdef CADKERNEL_DEV
-	FMesherReport* MesherReport;
-#endif
+public:
+	const FMeshingTolerances& Tolerances;
 
 public:
 
-	FIsoTriangulator(FGrid& InGrid, TSharedRef<FFaceMesh> EntityMesh);
-
-#ifdef CADKERNEL_DEV
-	void SetMesherReport(FMesherReport& InMesherReport)
-	{
-		MesherReport = &InMesherReport;
-	}
-#endif
+	FIsoTriangulator(FGrid& InGrid, FFaceMesh& OutMesh, const FMeshingTolerances& InTolerance);
 
 	/**
 	 * Main method
@@ -194,7 +182,8 @@ public:
 	 * Add temporary loops defining thin zones to avoid the tessellation of these zone.
 	 * These zones are tessellated in a specific process
 	 */
-	void BuildThinZoneSegments();
+	void GetThinZonesMesh();
+	void GetThinZoneMesh(const TMap<int32, FLoopNode*>& IndexToNode, const FThinZone2D& ThinZone);
 
 	/**
 	 * Fill mesh node data (Position, normal, UV, Index) of the FFaceMesh object
@@ -227,51 +216,14 @@ public:
 	 */
 	void FindInnerGridCellSurroundingSmallLoop();
 
-#ifdef NEED_TO_CHECK_USEFULNESS
-	/**
-	 *
-	 */
-	void CompleteIsoSegmentLoopToLoop();
-#endif
-
 	void ConnectCellLoops();
 	void FindCellContainingBoundaryNodes(TArray<FCell>& Cells);
 
-	/**
-	 * The closest loops are connected together
-	 * To do it, a Delaunay triangulation of the loop barycenter is realized.
-	 * Each edge of this mesh defined a near loops pair
-	 * The shortest segment is then build between this pair of loops
-	 */
-	void ConnectCellSubLoopsByNeighborhood(FCell& cell);
+	void FindCandidateToConnectCellCornerToLoops(FCell& Cell);
 
-	void FindIsoSegmentToLinkOuterLoopNodes(FCell& Cell);	
+	void SelectSegmentsToLinkInnerToLoop();
 
-	void FindSegmentToLinkOuterLoopNodes(FCell& Cell);
-
-	void FindSegmentToLinkOuterToInnerLoopNodes(FCell& Cell);
-
-	void ConnectCellCornerToInnerLoop(FCell& Cell);
-
-	/**
-	 * The goal of this algorithm is to connect iso U (or V) aligned loop nodes as soon as they are nearly in the same iso V (or U) strip.
-	 * I.e.:
-	 * - Iso U aligned: NodeA.U = NodeB.U +/-TolU
-	 * - In the same strip: each node of the segment has the same index "i" that verify: isoV[i] - TolV < Node.V < isoV[i+1] + TolV
-	 */
-	void FindIsoSegmentToLinkLoopToLoop();
-
-	void FindCandidateSegmentsToLinkInnerAndLoop();
-
-	/**
-	 * Complete the final set of segments with the best subset of segments in CandidateSegments
-	 */
-	void SelectSegmentInCandidateSegments();
-
-	/**
-	 * The goal of this algorithm is to connect unconnected inner segment extremity i.e. extremity with one or less connected segment to the closed boundary node
-	 */
-	void ConnectUnconnectedInnerSegments();
+	void InitCellCorners(FCell& Cell);
 
 	/**
 	 * Finalize the tessellation between inner grid boundary and loops.
@@ -282,7 +234,7 @@ public:
 
 	/**
 	 * Find in the network a minimal cycle stating from a segment
-	 * @return false if the new cycle crosses a segement already used
+	 * @return false if the new cycle crosses a segment already used
 	 */
 	bool FindCycle(FIsoSegment* StartSegment, bool bLeftSide, TArray<FIsoSegment*>& Cycle, TArray<bool>& CycleOrientation);
 
@@ -290,7 +242,21 @@ public:
 	 * Generate the "Delaunay" tessellation of the cycle.
 	 * The algorithm is based on frontal process
 	 */
-	void MeshCycle(const EGridSpace Space, const TArray<FIsoSegment*>& cycle, const TArray<bool>& cycleOrientation);
+	void MeshCycle(const TArray<FIsoSegment*>& Cycle, const TArray<bool>& CycleOrientation);
+	void MeshLargeCycle(const TArray<FIsoSegment*>& Cycle, const TArray<bool>& CycleOrientation);
+
+	template <uint32 Dim>
+	void MeshCycleOf(const TArray<FIsoSegment*>& Cycle, const TArray<bool>& CycleOrientation, FMeshPolygonFunc MeshPolygonFunc)
+	{
+		FIsoNode* Nodes[Dim];
+		for (int32 Index = 0; Index < Dim; ++Index)
+		{
+			Nodes[Index] = CycleOrientation[Index] ? &Cycle[Index]->GetFirstNode() : &Cycle[Index]->GetSecondNode();
+		}
+
+		MeshPolygonFunc(Grid, Nodes, Mesh);
+	}
+
 
 	bool CanCycleBeMeshed(const TArray<FIsoSegment*>& Cycle, FIntersectionSegmentTool& CycleIntersectionTool);
 
@@ -318,6 +284,11 @@ public:
 			});
 	}
 
+	const FGrid& GetGrid() const
+	{
+		return Grid;
+	}
+
 private:
 
 	FIsoSegment* FindNextSegment(EGridSpace Space, const FIsoSegment* StartSegment, const FIsoNode* StartNode, SlopeMethod GetSlop) const;
@@ -325,20 +296,6 @@ private:
 	// ==========================================================================================
 	// 	   Create segments
 	// ==========================================================================================
-
-	/**
-	 *  SubLoopA                  SubLoopB
-	 *      --X---X             X-----X--
-	 *             \           /
-	 *              \         /
-	 *               X=======X
-	 *              /         \
-	 *             /           \
-	 *      --X---X             X-----X--
-	 *
-	 *     ======= ShortestSegment
-	 */
-	void TryToConnectTwoSubLoopsWithShortestSegment(FCell& Cell, const TArray<FLoopNode*>& SubLoopA, const TArray<FLoopNode*>& SubLoopB);
 
 	void TryToConnectTwoLoopsWithIsocelesTriangle(FCell& Cell, const TArray<FLoopNode*>& SubLoopA, const TArray<FLoopNode*>& SubLoopB);
 
@@ -361,12 +318,14 @@ private:
 	 *
 	 */
 	void TryToConnectVertexSubLoopWithTheMostIsoSegment(FCell& Cell, const TArray<FLoopNode*>& SubLoop);
-	bool TryToCreateSegment(FCell& Cell, FLoopNode* NodeA, const FPoint2D& ACoordinates, FIsoNode* NodeB, const FPoint2D& BCoordinates, const double FlatAngle);
+	FIsoSegment* GetOrTryToCreateSegment(FCell& Cell, FLoopNode* NodeA, const FPoint2D& ACoordinates, FIsoNode* NodeB, const FPoint2D& BCoordinates, const double FlatAngle);
 
-#ifdef CADKERNEL_DEV
 public:
+#ifdef CADKERNEL_DEV
 	FIsoTriangulatorChronos Chronos;
+#endif
 
+#ifdef CADKERNEL_DEBUG
 	void DisplayPixels(TArray<uint8>& Pixel) const;
 
 	void DisplayPixel(const int32 Index) const;
@@ -380,6 +339,9 @@ public:
 	void DisplayCells(const TArray<FCell>& Cells) const;
 	void DisplayCell(const FCell& Cell) const;
 	void DrawCellBoundary(int32 Index, EVisuProperty Property) const;
+
+	void DisplayCellConnexion(const FCellConnexion& LoopConnexion, EVisuProperty Property) const;
+	void DisplayCellConnexions(const FString& Message, const TArray<FCellConnexion>& LoopConnexions, EVisuProperty Property) const;
 #endif
 
 };
@@ -440,11 +402,48 @@ inline double CotangentCriteria(const FPoint2D& APoint, const FPoint2D& BPoint, 
 	return ScalareProduct / NormOFPointProduct;
 }
 
-template<class PointType>
-inline double IsoscelesCriteria(const PointType& APoint, const PointType& BPoint, const PointType& IsoscelesVertex)
+struct FPairOfDouble
 {
-	double Coord = CoordinateOfProjectedPointOnSegment(IsoscelesVertex, APoint, BPoint, false);
-	return FMath::Abs(Coord - 0.5);
+	double Value1;
+	double Value2;
+};
+
+inline FPairOfDouble IsoscelesCriteria(const FPoint2D& APoint, const FPoint2D& BPoint, const FPoint2D& CPoint)
+{
+	const double SlopeAB = ComputeSlope(APoint, BPoint);
+	const double SlopeAC = ComputeSlope(APoint, CPoint);
+	const double SlopeBC = ComputeSlope(BPoint, CPoint);
+	const double SlopeBA = SwapSlopeOrientation(SlopeAB);
+
+	return { TransformIntoOrientedSlope(SlopeAC - SlopeAB), TransformIntoOrientedSlope(SlopeBA - SlopeBC) };
+}
+
+inline double IsoscelesCriteriaMax(const FPoint2D& APoint, const FPoint2D& BPoint, const FPoint2D& CPoint)
+{
+	const FPairOfDouble Criteria = IsoscelesCriteria(APoint, BPoint, CPoint);
+	return FMath::Max(Criteria.Value1, Criteria.Value2);
+}
+
+inline double IsoscelesCriteriaMin(const FPoint2D& APoint, const FPoint2D& BPoint, const FPoint2D& CPoint)
+{
+	const FPairOfDouble Criteria = IsoscelesCriteria(APoint, BPoint, CPoint);
+	return FMath::Min(Criteria.Value1, Criteria.Value2);
+}
+
+inline double EquilateralSlopeCriteria(const FPoint2D& APoint, const FPoint2D& BPoint, const FPoint2D& CPoint)
+{
+	const double SlopeAB = ComputeSlope(APoint, BPoint);
+	const double SlopeAC = ComputeSlope(APoint, CPoint);
+	const double SlopeBC = ComputeSlope(BPoint, CPoint);
+	const double SlopeBA = SwapSlopeOrientation(SlopeAB);
+	const double SlopeCA = SwapSlopeOrientation(SlopeAC);
+	const double SlopeCB = SwapSlopeOrientation(SlopeBC);
+
+	const double A = TransformIntoOrientedSlope(SlopeAC - SlopeAB);
+	const double B = TransformIntoOrientedSlope(SlopeBA - SlopeBC);
+	const double C = TransformIntoOrientedSlope(SlopeCB - SlopeCA);
+
+	return FMath::Max3(A, B, C);
 }
 
 template<class PointType>

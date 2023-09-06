@@ -430,8 +430,9 @@ bool CheckerFromSceneColorUV(float2 UVSceneColor)
 
 #if GBUFFER_REFACTOR
 #include "GBufferHelpers.ush"
-
-#include "/Engine/Generated/ShaderAutogen/AutogenShaderHeaders.ush"
+	#if FEATURE_LEVEL > FEATURE_LEVEL_ES3_1
+	#include "/Engine/Generated/ShaderAutogen/AutogenShaderHeaders.ush"
+	#endif
 #endif
 
 struct FScreenSpaceData
@@ -771,8 +772,10 @@ void MobileFetchGBuffer(in float2 UV, out half4 GBufferA, out half4 GBufferB, ou
 	GBufferC = SubpassFetchRGBA_3(); 
 #if MOBILE_EXTENDED_GBUFFER
 	GBufferD = SubpassFetchRGBA_4();
-#endif
+	SceneDepth = ConvertFromDeviceZ(SubpassFetchR_5());
+#else
 	SceneDepth = ConvertFromDeviceZ(SubpassFetchR_4());
+#endif
 #elif USE_GLES_FBF_DEFERRED
 	GBufferA = GLSubpassFetch1(); 
 	GBufferB = GLSubpassFetch2(); 
@@ -786,6 +789,10 @@ void MobileFetchGBuffer(in float2 UV, out half4 GBufferA, out half4 GBufferB, ou
 #if MOBILE_EXTENDED_GBUFFER
 	GBufferD = Texture2DSampleLevel(MobileSceneTextures.GBufferDTexture, MobileSceneTextures.GBufferDTextureSampler, UV, 0);
 #endif
+	SceneDepth = ConvertFromDeviceZ(Texture2DSampleLevel(MobileSceneTextures.SceneDepthTexture, MobileSceneTextures.SceneDepthTextureSampler, UV, 0).r);
+#endif
+
+#if FORCE_DEPTH_TEXTURE_READS || PLATFORM_NEEDS_DEPTH_TEXTURE_READS
 	SceneDepth = ConvertFromDeviceZ(Texture2DSampleLevel(MobileSceneTextures.SceneDepthTexture, MobileSceneTextures.SceneDepthTextureSampler, UV, 0).r);
 #endif
 }
@@ -862,7 +869,7 @@ void EncodeGBuffer(
 		OutGBufferC.rgb = EncodeBaseColor( GBuffer.BaseColor );
 
 #if GBUFFER_HAS_DIFFUSE_SAMPLE_OCCLUSION
-		OutGBufferC.a = float(GBuffer.DiffuseIndirectSampleOcclusion) * rcp(255) + (0.5 / 255.0);
+		OutGBufferC.a = float(GBuffer.DiffuseIndirectSampleOcclusion) * (1.0f / 255.0f);
 #elif ALLOW_STATIC_LIGHTING
 		// No space for AO. Multiply IndirectIrradiance by AO instead of storing.
 		OutGBufferC.a = EncodeIndirectIrradiance(GBuffer.IndirectIrradiance * GBuffer.GBufferAO) + QuantizationBias * (1.0 / 255.0);

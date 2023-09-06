@@ -1,8 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using UnrealBuildTool;
-using System.IO;
-
 namespace UnrealBuildTool.Rules
 {
     public class OpenXRHandTracking: ModuleRules
@@ -10,19 +7,7 @@ namespace UnrealBuildTool.Rules
         public OpenXRHandTracking(ReadOnlyTargetRules Target) 
 				: base(Target)
         {
-			PublicDependencyModuleNames.AddRange(
-			   new string[]
-			   {
-					"InputDevice"
-			   }
-		   );
-
-			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
-            PrivateIncludePaths.AddRange(
-                new string[] {
-                    EngineDir + "/Source/ThirdParty/OpenXR/include"
-				}
-                );
+			PublicDependencyModuleNames.Add("InputDevice");
 
             PrivateDependencyModuleNames.AddRange(
                 new string[]
@@ -31,6 +16,7 @@ namespace UnrealBuildTool.Rules
                     "CoreUObject",
                     "Engine",
 					"HeadMountedDisplay",
+					"XRBase",
                     "InputCore",
 					"LiveLinkAnimationCore",
 					"LiveLinkInterface",
@@ -46,7 +32,9 @@ namespace UnrealBuildTool.Rules
 
             if (Target.bBuildEditor == true)
             {
-                PrivateDependencyModuleNames.Add("UnrealEd");
+				PrivateDependencyModuleNames.Add("EditorFramework");
+				PrivateDependencyModuleNames.Add("UnrealEd");
+				PrivateDependencyModuleNames.Add("InputEditor");
             }
         }
     }

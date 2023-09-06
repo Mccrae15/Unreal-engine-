@@ -3,6 +3,7 @@
 #include "../Common.ush"
 #include "../SceneData.ush"
 #include "../DeferredShadingCommon.ush"
+#include "../VariableRateShading/VRSShadingRateCommon.ush"
 #include "../HTileEncoding.ush"
 #include "../VelocityCommon.ush"
 
@@ -33,13 +34,19 @@ RWTexture2D<uint>			SceneStencil;
 
 RWTexture2D<float4>			Velocity;
 
-RWTexture2D<uint2>			MaterialResolve;
+#if SHADING_MASK_EXPORT
+RWTexture2D<uint>			ShadingMask;
+#endif
+
+#if MATERIAL_DEPTH_EXPORT
 RWStructuredBuffer<uint>	MaterialHTile;
 RWTexture2D<float>			MaterialDepth;
+#endif
 
 ByteAddressBuffer			MaterialSlotTable;
+#if MATERIAL_DEPTH_EXPORT
 ByteAddressBuffer			MaterialDepthTable;
-ByteAddressBuffer			MaterialHitProxyTable;
+#endif
 
 uint EncodeTileMinMaxDepth(float MinDepth, float MaxDepth, uint PlatformConfig)
 {
@@ -52,7 +59,8 @@ uint EncodeTileMinMaxDepth(float MinDepth, float MaxDepth, uint PlatformConfig)
 			HTILE_DEFAULT_XX,
 			HTILE_DEFAULT_SMEM,
 			HTILE_DEFAULT_SR0,
-			HTILE_DEFAULT_SR1
+			HTILE_DEFAULT_SR1,
+			IsZCompareGE(PlatformConfig)
 		);
 	}
 	else
@@ -65,9 +73,9 @@ uint EncodeTileMinMaxDepth(float MinDepth, float MaxDepth, uint PlatformConfig)
 void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 {
 	const uint2 PixelLocalPos = SwizzleThreadIndex(ThreadIndex & 63u);
-	const uint2 PixelPos = (GroupId << 3) | PixelLocalPos;
+	const uint2 PixelPos = ((GroupId << 3) | PixelLocalPos) + ViewRect.xy;
 
-	if (any(PixelPos.xy >= ViewRect.zw)) // TODO: Support offset views
+	if (any(PixelPos.xy >= ViewRect.zw))
 	{
 		return;
 	}
@@ -86,16 +94,23 @@ void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 	uint TriIndex = 0;
 	UnpackVisPixel(VisPixel, DepthInt, VisibleClusterIndex, TriIndex);
 
+	uint HTileValue = ToScalarMemory(SceneHTile[TileIndex]);
+	uint SceneZMask = BitFieldExtractU32(HTileValue, 4u, 0u);
+	uint SceneSMem = IsHiStencilTileConfig(PlatformConfig) ? BitFieldExtractU32(HTileValue, 2u, 8u) : 0x3;
+	float SceneDepthValue = DecompressDepthValue(SceneDepth, SceneZMask, PixelPos.xy, ThreadIndex, 0.0f, PlatformConfig);
+	uint SceneStencilValue = DecompressStencilValue(SceneStencil, SceneSMem, PixelPos.xy, 0);
+
+	bool bWriteDepthStencil = false;
+
 	// Avoid the parallel reduction and exports if the tile has no Nanite
 	// pixels. This is an optimization of course, but it also will preserve
 	// existing plane equation compression for scene depth tiles rasterized
 	// outside of Nanite.
 	if (WaveActiveAnyTrue(VisibleClusterIndex != 0xFFFFFFFF)) // Tile has Nanite coverage
 	{
-		uint SceneZMask = ToScalarMemory(BitFieldExtractU32(SceneHTile[TileIndex], 4u, 0u));
-		float SceneDepthValue = DecompressDepthValue(SceneDepth, SceneZMask, PixelPos.xy, ThreadIndex, SceneDepthValue, PlatformConfig);
-		
+	#if MATERIAL_DEPTH_EXPORT
 		float MaterialDepthValue = 0.0f;
+	#endif
 
 		bool NanitePixelVisible = false;
 
@@ -108,28 +123,39 @@ void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 			NanitePixelVisible = NaniteDepthValue >= SceneDepthValue;
 			if (NanitePixelVisible)
 			{
+				FVisibleCluster VisibleCluster = GetVisibleCluster(VisibleClusterIndex);
+				checkSlow(VisibleCluster.InstanceId < PageConstants.x);
+
 			#if VELOCITY_EXPORT
+			#if INSTANCED_STEREO
+				checkSlow(VisibleCluster.ViewId < 2);					// see INSTANCED_VIEW_COUNT in SceneView.h.  
+																		// Velocity export uses a per-view TemporalAAJitter anyway, so it is a fair assumption that each NaniteView has a backing FViewInfo at this point.
+				FNaniteView NaniteView = GetNaniteView(VisibleCluster.ViewId);
+				ResolvedView = ResolveView(VisibleCluster.ViewId);
+			#else
 				FNaniteView NaniteView = GetNaniteView(0);
 				ResolvedView = ResolveView();
 			#endif
+			#endif
 
-				FVisibleCluster VisibleCluster = GetVisibleCluster(VisibleClusterIndex);
-				checkSlow(VisibleCluster.InstanceId < PageConstants.x);
 				const FInstanceSceneData InstanceData = GetInstanceSceneData(VisibleCluster, false);
 				const FPrimitiveSceneData PrimitiveData = GetPrimitiveData(InstanceData.PrimitiveId);
 				const FCluster ClusterData = GetCluster(VisibleCluster.PageIndex, VisibleCluster.ClusterIndex);
 
-				const uint LegacyShadingId = GetMaterialLegacyShadingId(ClusterData, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
+			#if LEGACY_CULLING
+				const uint ShadingBin = GetMaterialLegacyShadingId(ClusterData, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
+			#else
 				const uint ShadingBin = GetMaterialShadingBin(ClusterData, InstanceData.PrimitiveId, TriIndex, MaterialSlotTable);
-				MaterialDepthValue = asfloat(GetMaterialDepthId(LegacyShadingId, MaterialDepthTable));
+			#endif
+			#if MATERIAL_DEPTH_EXPORT
+				MaterialDepthValue = asfloat(GetMaterialDepthId(ShadingBin, MaterialDepthTable));
+			#endif
 
 				const bool bIsDecalReceiver = (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER) != 0 && View.ShowDecalsMask > 0;
 				const bool bHasDistanceField = (PrimitiveData.Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_DISTANCE_FIELD_REPRESENTATION) != 0;
 
 				SceneDepthValue = NaniteDepthValue;
-				SceneDepth[PixelPos.xy] = SceneDepthValue; // Write uncompressed depth value out
 
-				uint OutStencil;
 				if (bWriteCustomStencil)
 				{
 					uint CustomStencilMask = (PrimitiveData.CustomStencilValueAndMask >> 8u) & 0xFFu;
@@ -140,14 +166,12 @@ void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 						CustomStencilMask = 0xFFu;
 					}
 
-					OutStencil = PrimitiveData.CustomStencilValueAndMask & CustomStencilMask;
+					SceneStencilValue = PrimitiveData.CustomStencilValueAndMask & CustomStencilMask;
 				}
 				else 
 				{
-					OutStencil = select(bIsDecalReceiver, DepthExportConfig.z, 0u);
+					SceneStencilValue = select(bIsDecalReceiver, DepthExportConfig.z, 0u);
 				}
-
-				SceneStencil[PixelPos.xy] = OutStencil;
 
 			#if VELOCITY_EXPORT
 				// Don't output velocity here for WPO clusters, as their velocity must be calculated in the base pass.
@@ -174,10 +198,10 @@ void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 				}
 			#endif
 
-			#if MATERIAL_DATA_EXPORT
-				MaterialResolve[PixelPos.xy] = PackMaterialResolve(
-					LegacyShadingId,
+			#if SHADING_MASK_EXPORT
+				ShadingMask[PixelPos.xy] = PackShadingMask(
 					ShadingBin,
+					D3D12_SHADING_RATE_1X1,
 					bIsDecalReceiver,
 					bHasDistanceField,
 					GetPrimitive_LightingChannelMask_FromFlags(PrimitiveData.Flags)
@@ -186,7 +210,7 @@ void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 			}
 		}
 
-	#if MATERIAL_DATA_EXPORT
+	#if MATERIAL_DEPTH_EXPORT
 		MaterialDepth[PixelPos.xy] = MaterialDepthValue;
 
 		const float TileMinMaterialDepth = WaveActiveMin(MaterialDepthValue);
@@ -199,15 +223,21 @@ void DepthExport(uint2 GroupId : SV_GroupID, uint ThreadIndex : SV_GroupIndex)
 	#endif
 
 		// Only write out SceneDepth and expand SceneHTile if there are Nanite fragments that survive depth testing against the scene
-		if (WaveActiveAnyTrue(NanitePixelVisible))
-		{
-			const float TileMinSceneDepth = WaveActiveMin(SceneDepthValue);
-			const float TileMaxSceneDepth = WaveActiveMax(SceneDepthValue);
+		bWriteDepthStencil = WaveActiveAnyTrue(NanitePixelVisible);
+	}
 
-			if (WaveIsFirstLane())
-			{
-				SceneHTile[TileIndex] = EncodeTileMinMaxDepth(TileMinSceneDepth, TileMaxSceneDepth, PlatformConfig);
-			}
+	const float TileMinSceneDepth = WaveActiveMin(SceneDepthValue);
+	const float TileMaxSceneDepth = WaveActiveMax(SceneDepthValue);
+
+	BRANCH
+	if (bWriteDepthStencil)
+	{
+		SceneDepth[PixelPos.xy] = SceneDepthValue; // Write uncompressed depth value out
+		SceneStencil[PixelPos.xy] = SceneStencilValue;
+
+		if (WaveIsFirstLane())
+		{
+			SceneHTile[TileIndex] = EncodeTileMinMaxDepth(TileMinSceneDepth, TileMaxSceneDepth, PlatformConfig);
 		}
 	}
 }

@@ -28,6 +28,16 @@ void FControlRigLayerInstanceProxy::CacheBones()
 	}
 }
 
+void FControlRigLayerInstanceProxy::PreEvaluateAnimation(UAnimInstance* InAnimInstance)
+{
+	Super::PreEvaluateAnimation(InAnimInstance);
+
+	if (CurrentSourceAnimInstance)
+	{
+		CurrentSourceAnimInstance->PreEvaluateAnimation();
+	}
+}
+
 bool FControlRigLayerInstanceProxy::Evaluate(FPoseContext& Output)
 {
 	check(CurrentRoot);
@@ -262,6 +272,14 @@ void FControlRigLayerInstanceProxy::AddReferencedObjects(UAnimInstance* InAnimIn
 	if (CurrentSourceAnimInstance)
 	{
 		Collector.AddReferencedObject(CurrentSourceAnimInstance);
+	}
+
+	for (TSharedPtr<FAnimNode_ControlRig_ExternalSource>& Node : ControlRigNodes)
+	{
+#if WITH_EDITORONLY_DATA
+		Collector.AddReferencedObject(Node->SourceInstance);
+#endif
+		Collector.AddReferencedObject(Node->TargetInstance);
 	}
 }
 

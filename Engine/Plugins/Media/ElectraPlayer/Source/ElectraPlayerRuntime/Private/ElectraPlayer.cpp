@@ -7,6 +7,7 @@
 
 #include "PlayerRuntimeGlobal.h"
 #include "Player/AdaptiveStreamingPlayer.h"
+#include "Player/IExternalDataReader.h"
 #include "Renderer/RendererVideo.h"
 #include "Renderer/RendererAudio.h"
 #include "MediaMetaDataDecoderOutput.h"
@@ -266,6 +267,11 @@ bool FElectraPlayer::OpenInternal(const FString& Url, const FParamDict& InPlayer
 	if (!NewPlayer.IsValid())
 	{
 		FParamDict PlayerOptions(InPlayerOptions);
+		if (PlaystartOptions.ExternalDataReader.IsValid())
+		{
+			PlayerOptions.Set(TEXT("use_external_data_reader"), FVariantValue(true));
+			StaticResourceProvider->SetExternalDataReader(PlaystartOptions.ExternalDataReader);
+		}
 
 		// Create a new empty player structure. This contains the actual player instance, its associated renderers and sample queues.
 		NewPlayer = MakeShared<FInternalPlayerImpl, ESPMode::ThreadSafe>();
@@ -284,6 +290,10 @@ bool FElectraPlayer::OpenInternal(const FString& Url, const FParamDict& InPlayer
 		NewPlayer->AdaptivePlayer->AddMetricsReceiver(this);
 		NewPlayer->AdaptivePlayer->SetStaticResourceProviderCallback(StaticResourceProvider);
 		NewPlayer->AdaptivePlayer->SetVideoDecoderResourceDelegate(VideoDecoderResourceDelegate);
+		if (PlaystartOptions.ExternalDataCache.IsValid())
+		{
+			NewPlayer->AdaptivePlayer->SetPlayerDataCache(PlaystartOptions.ExternalDataCache);
+		}
 
 		// Create the subtitle receiver and register it with the player.
 		MediaPlayerSubtitleReceiver = MakeSharedTS<FSubtitleEventReceiver>();
@@ -570,9 +580,9 @@ void FElectraPlayer::FPlayerState::SetPlayRateFromPlayer(float InCurrentPlayerPl
 /**
 * Suspends or resumes decoder instances.
 */
-void FElectraPlayer::SuspendOrResumeDecoders(bool bSuspend)
+void FElectraPlayer::SuspendOrResumeDecoders(bool bSuspend, const Electra::FParamDict& InOptions)
 {
-	PlatformSuspendOrResumeDecoders(bSuspend);
+	PlatformSuspendOrResumeDecoders(bSuspend, InOptions);
 }
 
 
@@ -930,20 +940,6 @@ bool FElectraPlayer::CanPresentAudioFrames(uint64 NumFrames)
 	return false;
 }
 
-float FElectraPlayer::GetRate() const
-{
-	return PlayerState.GetRate();
-/*
-	if (PlayerState.bUseInternal)
-	{
-		return 0.0f;
-	}
-	else
-	{
-		return CurrentPlayer.Get() && CurrentPlayer->AdaptivePlayer->IsPlaying() ? 1.0f : 0.0f;
-	}
-*/
-}
 
 FElectraPlayer::EPlayerState FElectraPlayer::GetState() const
 {
@@ -1049,6 +1045,31 @@ FTimespan FElectraPlayer::GetSeekableDuration() const
 }
 
 
+TRangeSet<float> FElectraPlayer::GetSupportedRates(EPlayRateType InPlayRateType) const
+{
+	TRangeSet<float> Res;
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+	if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+	{
+		TArray<TRange<double>> SupportedRanges;
+		LockedPlayer->AdaptivePlayer->GetSupportedRates(InPlayRateType == IElectraPlayerInterface::EPlayRateType::Unthinned ? IAdaptiveStreamingPlayer::EPlaybackRateType::Unthinned : IAdaptiveStreamingPlayer::EPlaybackRateType::Thinned).GetRanges(SupportedRanges);
+		for(auto &Rate : SupportedRanges)
+		{
+			TRange<float> r;
+			if (Rate.HasLowerBound())
+			{
+				r.SetLowerBound(TRange<float>::BoundsType::Inclusive((float) Rate.GetLowerBoundValue()));
+			}
+			if (Rate.HasUpperBound())
+			{
+				r.SetUpperBound(TRange<float>::BoundsType::Inclusive((float) Rate.GetUpperBoundValue()));
+			}
+			Res.Add(r);
+		}
+	}
+	return Res;
+}
+
 bool FElectraPlayer::SetRate(float Rate)
 {
 	//UE_LOG(LogElectraPlayer, Verbose, TEXT("[%p][%p] IMediaPlayer::SetRate(%.3f)"), this, CurrentPlayer.Get(), Rate);
@@ -1068,11 +1089,29 @@ bool FElectraPlayer::SetRate(float Rate)
 				TriggerFirstSeekIfNecessary();
 				CurrentPlayer->AdaptivePlayer->Resume();
 			}
+			IAdaptiveStreamingPlayer::FTrickplayParams Params;
+			CurrentPlayer->AdaptivePlayer->SetPlayRate((double) Rate, Params);
 		}
 		return true;
 	}
 	return false;
 }
+
+float FElectraPlayer::GetRate() const
+{
+	return PlayerState.GetRate();
+/*
+	if (PlayerState.bUseInternal)
+	{
+		return 0.0f;
+	}
+	else
+	{
+		return CurrentPlayer.Get() && CurrentPlayer->AdaptivePlayer->IsPlaying() ? 1.0f : 0.0f;
+	}
+*/
+}
+
 
 void FElectraPlayer::TriggerFirstSeekIfNecessary()
 {
@@ -1082,6 +1121,10 @@ void FElectraPlayer::TriggerFirstSeekIfNecessary()
 
 		// Set up the initial playback position
 		IAdaptiveStreamingPlayer::FSeekParam playParam;
+
+		// Whatever the initial seek target: we will ignore it for sequence index updates
+		playParam.bIgnoreForSequenceIndex = true;
+
 		// First we look at any potential time offset specified in the playstart options.
 		if (PlaystartOptions.TimeOffset.IsSet())
 		{
@@ -3071,8 +3114,15 @@ bool FElectraPlayer::MediaStateOnPlay()
 
 	CSV_EVENT(ElectraPlayer, TEXT("MediaStateOnPlay"));
 
+	double CurrentRate = 1.0;
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+	if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+	{
+		CurrentRate = LockedPlayer->AdaptivePlayer->GetPlayRate();
+	}
+
 	PlayerState.State = EPlayerState::Playing;
-	PlayerState.SetPlayRateFromPlayer(1.0f);
+	PlayerState.SetPlayRateFromPlayer(CurrentRate);
 
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::PlaybackResumed);
 	return true;
@@ -3139,7 +3189,8 @@ void FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::ProcessPendingSta
 	{
 		check(InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::Empty ||
 			  InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::Playlist ||
-			  InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::LicenseKey);
+			  InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::LicenseKey ||
+			  InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::BinaryData);
 		if (InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::Playlist)
 		{
 			TSharedPtr<IElectraPlayerAdapterDelegate, ESPMode::ThreadSafe> PinnedAdapterDelegate = AdapterDelegate.Pin();
@@ -3163,7 +3214,7 @@ void FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::ProcessPendingSta
 						// Create a plain array from this.
 						TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> ResponseDataPtr = MakeShared<TArray<uint8>, ESPMode::ThreadSafe>((const uint8*)TCHAR_TO_UTF8(*PlaylistData), PlaylistData.Len());
 						// And put it into the request
-						InOutRequest->SetPlaybackData(ResponseDataPtr);
+						InOutRequest->SetPlaybackData(ResponseDataPtr, 0);
 					}
 				}
 			}
@@ -3183,9 +3234,25 @@ void FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::ProcessPendingSta
 						BinKey.AddUninitialized(LicenseKeyData.Len());
 						BinKey.SetNum(HexToBytes(LicenseKeyData, BinKey.GetData()));
 						TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe> ResponseDataPtr = MakeShared<TArray<uint8>, ESPMode::ThreadSafe>(BinKey);
-						InOutRequest->SetPlaybackData(ResponseDataPtr);
+						InOutRequest->SetPlaybackData(ResponseDataPtr, 0);
 					}
 				}
+			}
+		}
+		else if (InOutRequest->GetResourceType() == Electra::IAdaptiveStreamingPlayerResourceRequest::EPlaybackResourceType::BinaryData)
+		{
+			TSharedPtr<IElectraPlayerExternalDataReader, ESPMode::ThreadSafe> dr = ExternalDataReader.Pin();
+			if (dr.IsValid())
+			{
+				Electra::IAdaptiveStreamingPlayerResourceRequest::FBinaryDataParams src = InOutRequest->GetBinaryDataParams();
+				IElectraPlayerExternalDataReader::FReadParam rp;
+				rp.URL = InOutRequest->GetResourceURL();
+				rp.AbsoluteFileOffset = src.AbsoluteFileOffset;
+				rp.NumBytesToRead = src.NumBytesToRead;
+				// Retain the request so it does not go out of scope.
+				rp.Custom = new TSharedPtr<Electra::IAdaptiveStreamingPlayerResourceRequest, ESPMode::ThreadSafe>(InOutRequest);
+				dr->ReadDataFromFile(rp, ExternalDataCompletedDelegate);
+				return;
 			}
 		}
 		InOutRequest->SignalDataReady();
@@ -3196,6 +3263,30 @@ void FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::ClearPendingReque
 {
 	PendingStaticResourceRequests.Empty();
 }
+
+void FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::SetExternalDataReader(TWeakPtr<IElectraPlayerExternalDataReader, ESPMode::ThreadSafe> InExternalDataReader)
+{
+	ExternalDataReader = MoveTemp(InExternalDataReader);
+	ExternalDataCompletedDelegate.BindStatic(&FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::OnExternalDataReadCompleted);
+}
+
+void FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::OnExternalDataReadCompleted(IElectraPlayerExternalDataReader::FResponseDataPtr InResponseData, int64 InTotalFileSize, const IElectraPlayerExternalDataReader::FReadParam& InFromRequestParams)
+{
+	TSharedPtr<Electra::IAdaptiveStreamingPlayerResourceRequest, ESPMode::ThreadSafe>* rreq = reinterpret_cast<TSharedPtr<Electra::IAdaptiveStreamingPlayerResourceRequest, ESPMode::ThreadSafe>*>(InFromRequestParams.Custom);
+	TSharedPtr<Electra::IAdaptiveStreamingPlayerResourceRequest, ESPMode::ThreadSafe> Req(*rreq);
+	delete rreq;
+	if (Req.IsValid())
+	{
+		Req->SetPlaybackData(InResponseData, InTotalFileSize);
+		Req->SignalDataReady();
+	}
+}
+
+FElectraPlayer::FAdaptiveStreamingPlayerResourceProvider::~FAdaptiveStreamingPlayerResourceProvider()
+{
+	ExternalDataCompletedDelegate.Unbind();
+}
+
 
 // ------------------------------------------------------------------------------------------------------------------
 

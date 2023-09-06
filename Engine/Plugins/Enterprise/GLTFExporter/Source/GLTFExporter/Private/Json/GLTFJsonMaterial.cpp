@@ -33,6 +33,13 @@ void FGLTFJsonNormalTextureInfo::WriteObject(IGLTFJsonWriter& Writer) const
 	{
 		Writer.Write(TEXT("scale"), Scale);
 	}
+
+	if (!Transform.IsNearlyDefault(Writer.DefaultTolerance))
+	{
+		Writer.StartExtensions();
+		Writer.Write(EGLTFJsonExtension::KHR_TextureTransform, Transform);
+		Writer.EndExtensions();
+	}
 }
 
 void FGLTFJsonOcclusionTextureInfo::WriteObject(IGLTFJsonWriter& Writer) const
@@ -47,6 +54,13 @@ void FGLTFJsonOcclusionTextureInfo::WriteObject(IGLTFJsonWriter& Writer) const
 	if (!FMath::IsNearlyEqual(Strength, 1, Writer.DefaultTolerance))
 	{
 		Writer.Write(TEXT("strength"), Strength);
+	}
+
+	if (!Transform.IsNearlyDefault(Writer.DefaultTolerance))
+	{
+		Writer.StartExtensions();
+		Writer.Write(EGLTFJsonExtension::KHR_TextureTransform, Transform);
+		Writer.EndExtensions();
 	}
 }
 
@@ -153,19 +167,27 @@ void FGLTFJsonMaterial::WriteObject(IGLTFJsonWriter& Writer) const
 		Writer.Write(TEXT("doubleSided"), DoubleSided);
 	}
 
-	if (ShadingModel == EGLTFJsonShadingModel::Unlit || ShadingModel == EGLTFJsonShadingModel::ClearCoat)
+	const bool HasEmissiveStrength = !FMath::IsNearlyEqual(EmissiveStrength, 1.0f, Writer.DefaultTolerance);
+	if (ShadingModel == EGLTFJsonShadingModel::Unlit || ShadingModel == EGLTFJsonShadingModel::ClearCoat || HasEmissiveStrength)
 	{
 		Writer.StartExtensions();
 
 		if (ShadingModel == EGLTFJsonShadingModel::Unlit)
 		{
-			Writer.StartExtension(EGLTFJsonExtension::KHR_MaterialsUnlit);
 			// Write empty object
+			Writer.StartExtension(EGLTFJsonExtension::KHR_MaterialsUnlit);
 			Writer.EndExtension();
 		}
 		else if (ShadingModel == EGLTFJsonShadingModel::ClearCoat)
 		{
 			Writer.Write(EGLTFJsonExtension::KHR_MaterialsClearCoat, ClearCoat);
+		}
+
+		if (HasEmissiveStrength)
+		{
+			Writer.StartExtension(EGLTFJsonExtension::KHR_MaterialsEmissiveStrength);
+			Writer.Write(TEXT("emissiveStrength"), EmissiveStrength);
+			Writer.EndExtension();
 		}
 
 		Writer.EndExtensions();

@@ -34,11 +34,13 @@ public:
 
 	// UObject interface.
 	virtual void Serialize(FArchive& Ar) override;
-
+	virtual void BeginPostDuplicate(bool bDuplicateForPIE) override;
+	
 	// UCustomizableObjectNode
 	virtual void PostBackwardsCompatibleFixup() override;
 	virtual void BackwardsCompatibleFixup() override;
-	
+	virtual void UpdateReferencedNodeId(const FGuid& NewGuid) override;
+
 	// Begin EdGraphNode interface
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FLinearColor GetNodeTitleColor() const override;
@@ -55,6 +57,7 @@ public:
 	// UCustomizableObjectNodeMaterialBase interface
 	virtual UEdGraphPin* OutputPin() const override;
 	virtual void SetParentNode(UCustomizableObject* Object, FGuid NodeId) override;
+	TArray<UCustomizableObjectLayout*> GetLayouts() override;
 	
 	// FCustomizableObjectNodeParentMaterial interface
 	virtual void SaveParentNode(UCustomizableObject* Object, FGuid NodeId) override;

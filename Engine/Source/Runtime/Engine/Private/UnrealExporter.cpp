@@ -16,6 +16,7 @@
 #include "Model.h"
 #include "Misc/FeedbackContext.h"
 #include "AssetExportTask.h"
+#include "Misc/AsciiSet.h"
 #include "UObject/GCObjectScopeGuard.h"
 
 #if WITH_EDITOR
@@ -468,15 +469,19 @@ void UExporter::EmitBeginObject( FOutputDevice& Ar, UObject* Obj, uint32 PortFla
 			UObject* Archetype = Obj->GetArchetype();
 			// since we could have two object owners with the same name (like named Blueprints in different folders),
 			// we need the fully qualified path for the archetype (so we don't get confused when unpacking this)
-			Ar.Logf(TEXT(" Archetype=%s"), *FObjectPropertyBase::GetExportPath(Archetype, Archetype->GetOutermost(), /*ExportRootScope =*/nullptr, PortFlags & ~PPF_ExportsNotFullyQualified));
+			Ar.Logf(TEXT(" Archetype=%s"), *FObjectPropertyBase::GetExportPath(Archetype, nullptr, /*ExportRootScope =*/nullptr, (PortFlags | PPF_Delimited) & ~PPF_ExportsNotFullyQualified));
 		}
 	}
 
-	// Emit the object path
-	Ar.Logf(TEXT(" ExportPath=%s"), *FObjectPropertyBase::GetExportPath(Obj, nullptr, nullptr, PortFlags | (PPF_Delimited  & ~PPF_ExportsNotFullyQualified)));
-
+	// When exporting for diffs, export paths can cause false positives. since diff files don't get imported, we can
+	// skip adding this info the file.
+	if (!(PortFlags & PPF_ForDiff))
+	{
+		// Emit the object path
+		Ar.Logf(TEXT(" ExportPath=%s"), *FObjectPropertyBase::GetExportPath(Obj, nullptr, nullptr, (PortFlags | PPF_Delimited) & ~PPF_ExportsNotFullyQualified));
+	}
 	// end in a return
-	Ar.Logf(TEXT("\r\n"));
+	Ar.Logf(LINE_TERMINATOR);
 
 	if ( bEnableDebugBrackets )
 	{
@@ -675,7 +680,6 @@ void ExportProperties
 	UObject*		ExportRootScope
 )
 {
-	FString ThisName = TEXT("(none)");
 	check(ObjectClass != NULL);
 
 	for( FProperty* Property = ObjectClass->PropertyLink; Property; Property = Property->PropertyLinkNext )
@@ -683,7 +687,15 @@ void ExportProperties
 		if (!Property->ShouldPort(PortFlags))
 			continue;
 
-		ThisName = Property->GetName();
+		FString SanitizedPropertyName = Property->GetName();
+		constexpr FAsciiSet Whitespace("\t ");
+		constexpr FAsciiSet SpecialCharacters("=()[].\"\'");
+		if (FAsciiSet::HasAny(SanitizedPropertyName, SpecialCharacters) || Whitespace.Contains(SanitizedPropertyName[0]))
+		{
+			// to increase frequency of forward compatibility, only sanitize property names that absolutely need it
+			SanitizedPropertyName = FString::Format(TEXT("\"{0}\""), {Property->GetName().ReplaceCharWithEscapedChar()});
+		}
+
 		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
 		FObjectPropertyBase* ExportObjectProp = (Property->PropertyFlags & CPF_ExportObject) != 0 ? CastField<FObjectPropertyBase>(Property) : NULL;
 		const uint32 ExportFlags = PortFlags | PPF_Delimited;
@@ -720,7 +732,7 @@ void ExportProperties
 				// If the current size of the array is 0 and the default one is not, add in an empty item so on import it will be empty
 				if( ArrayHelper.Num() == 0 && DiffArrayHelper.Num() != 0 )
 				{
-					Out.Logf(TEXT("%s%s=\r\n"), FCString::Spc(Indent), *Property->GetName());
+					Out.Logf(TEXT("%s%s=\r\n"), FCString::Spc(Indent), *SanitizedPropertyName);
 				}
 				else
 				{
@@ -775,12 +787,12 @@ void ExportProperties
 								}
 							}
 
-							Out.Logf(TEXT("%s%s(%i)=%s\r\n"), FCString::Spc(Indent), *Property->GetName(), DynamicArrayIndex, *Value);
+							Out.Logf(TEXT("%s%s(%i)=%s\r\n"), FCString::Spc(Indent), *SanitizedPropertyName, DynamicArrayIndex, *Value);
 						}
 					}
 					for (int32 DynamicArrayIndex = DiffArrayHelper.Num()-1; DynamicArrayIndex >= ArrayHelper.Num(); --DynamicArrayIndex)
 					{
-						Out.Logf(TEXT("%s%s.RemoveIndex(%d)\r\n"), FCString::Spc(Indent), *Property->GetName(), DynamicArrayIndex);
+						Out.Logf(TEXT("%s%s.RemoveIndex(%d)\r\n"), FCString::Spc(Indent), *SanitizedPropertyName, DynamicArrayIndex);
 					}
 				}
 			}
@@ -833,11 +845,11 @@ void ExportProperties
 
 					if( Property->ArrayDim == 1 )
 					{
-						Out.Logf( TEXT("%s%s=%s\r\n"), FCString::Spc(Indent), *Property->GetName(), *Value );
+						Out.Logf( TEXT("%s%s=%s\r\n"), FCString::Spc(Indent), *SanitizedPropertyName, *Value );
 					}
 					else
 					{
-						Out.Logf( TEXT("%s%s(%i)=%s\r\n"), FCString::Spc(Indent), *Property->GetName(), PropertyArrayIndex, *Value );
+						Out.Logf( TEXT("%s%s(%i)=%s\r\n"), FCString::Spc(Indent), *SanitizedPropertyName, PropertyArrayIndex, *Value );
 					}
 				}
 			}

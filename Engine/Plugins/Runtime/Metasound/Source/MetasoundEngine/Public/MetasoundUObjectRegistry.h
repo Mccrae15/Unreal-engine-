@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
 
 #include "Engine/Engine.h"
 #include "MetasoundAssetBase.h"
+#include "MetasoundDocumentInterface.h"
 #include "Subsystems/EngineSubsystem.h"
 #include "UObject/Object.h"
 #include "Templates/Function.h"
@@ -26,8 +26,12 @@ namespace Metasound
 	public:
 		virtual ~IMetasoundUObjectRegistryEntry() = default;
 
-		/** Interface version associated with this entry. */
-		virtual const FMetasoundFrontendVersion& GetInterfaceVersion() const = 0;
+		UE_DEPRECATED(5.3, "Interfaces queries are no longer restricted to a single UObjectRegistryEntry. Options set upon registering interface determines supported UClasses.")
+		virtual const FMetasoundFrontendVersion& GetInterfaceVersion() const
+		{
+			static const FMetasoundFrontendVersion InterfaceVersion;
+			return InterfaceVersion;
+		}
 
 		/** UClass associated with this entry. */
 		virtual UClass* GetUClass() const = 0;
@@ -38,6 +42,9 @@ namespace Metasound
 		/** Returns true if the UClass is a child of this UClass associated with this entry. */
 		virtual bool IsChildClass(const UClass* InClass) const = 0;
 
+		/** Returns whether entry's class is a serialized asset or a transient type */
+		virtual bool IsAssetType() const = 0;
+
 		/** Attempts to cast the UObject to an FMetasoundAssetBase */
 		virtual FMetasoundAssetBase* Cast(UObject* InObject) const = 0;
 
@@ -45,7 +52,12 @@ namespace Metasound
 		virtual const FMetasoundAssetBase* Cast(const UObject* InObject) const = 0;
 
 		/** Creates a new object of the UClass type. */
-		virtual UObject* NewObject(UPackage* InPackage, const FName& InName) const = 0;
+		UE_DEPRECATED(5.3, "NewObject is now done via the MetaSoundBuilder system. Attempting to create a MetaSound via this call will now always fail.")
+		virtual UObject* NewObject(UPackage* InPackage, const FName& InName) const
+		{
+			checkNoEntry();
+			return nullptr;
+		}
 
 	private:
 		IMetasoundUObjectRegistryEntry() = default;
@@ -57,34 +69,26 @@ namespace Metasound
 
 	/** An entry into the Metasound-UObject registry.
 	 *
-	 * @Tparam UClassType A class which derives from UObject and FMetasoundAssetBase.
+	 * @Tparam UClassType A class which derives from UObject and IMetaSoundDocumentInterface.
+	 * @Tparam IsAssetType If true, type derives from FMetasoundAssetBase and is considered a serializable, playable asset.
 	 */
 	template<typename UClassType>
 	class TMetasoundUObjectRegistryEntry : public IMetasoundUObjectRegistryEntry
 	{
-		// Ensure that this is a subclass of FMetasoundAssetBase and UObject.
-		static_assert(std::is_base_of<FMetasoundAssetBase, UClassType>::value, "UClass must be derived from FMetasoundAssetBase");
+		// Ensure that this is a subclass of IMetaSoundDocumentInterface and UObject.
+		static_assert(std::is_base_of<IMetaSoundDocumentInterface, UClassType>::value, "UClass must be derived from IMetaSoundDocumentInterface");
 		static_assert(std::is_base_of<UObject, UClassType>::value, "UClass must be derived from UObject");
 
 	public:
-		TMetasoundUObjectRegistryEntry(const FMetasoundFrontendVersion& InInterfaceVersion)
-		:	InterfaceVersion(InInterfaceVersion)
-		{
-		}
-
+		TMetasoundUObjectRegistryEntry() = default;
 		virtual ~TMetasoundUObjectRegistryEntry() = default;
-
-		virtual const FMetasoundFrontendVersion& GetInterfaceVersion() const override
-		{
-			return InterfaceVersion;
-		}
 
 		UClass* GetUClass() const override
 		{
 			return UClassType::StaticClass();
 		}
 
-		bool IsChildClass(const UObject* InObject) const override
+		virtual bool IsChildClass(const UObject* InObject) const override
 		{
 			if (nullptr != InObject)
 			{
@@ -93,7 +97,7 @@ namespace Metasound
 			return false;
 		}
 
-		bool IsChildClass(const UClass* InClass) const override
+		virtual bool IsChildClass(const UClass* InClass) const override
 		{
 			if (nullptr != InClass)
 			{
@@ -102,32 +106,44 @@ namespace Metasound
 			return false;
 		}
 
-		FMetasoundAssetBase* Cast(UObject* InObject) const override
+		virtual bool IsAssetType() const override
 		{
-			if (nullptr == InObject)
+			return std::is_base_of<FMetasoundAssetBase, UClassType>::value;
+		}
+
+		virtual FMetasoundAssetBase* Cast(UObject * InObject) const override
+		{
+			if constexpr (!std::is_base_of<FMetasoundAssetBase, UClassType>::value)
 			{
 				return nullptr;
 			}
-			return static_cast<FMetasoundAssetBase*>(CastChecked<UClassType>(InObject));
+			else
+			{
+				if (InObject)
+				{
+					return static_cast<FMetasoundAssetBase*>(CastChecked<UClassType>(InObject));
+				}
+
+				return nullptr;
+			}
 		}
 
-		const FMetasoundAssetBase* Cast(const UObject* InObject) const override
+		virtual const FMetasoundAssetBase* Cast(const UObject* InObject) const override
 		{
-			if (nullptr == InObject)
+			if constexpr (!std::is_base_of<FMetasoundAssetBase, UClassType>::value)
 			{
 				return nullptr;
 			}
-			return static_cast<const FMetasoundAssetBase*>(CastChecked<const UClassType>(InObject));
+			else
+			{
+				if (InObject)
+				{
+					return static_cast<const FMetasoundAssetBase*>(CastChecked<const UClassType>(InObject));
+				}
+
+				return nullptr;
+			}
 		}
-
-		UObject* NewObject(UPackage* InPackage, const FName& InName) const override
-		{
-			return ::NewObject<UClassType>(InPackage, InName);
-		}
-
-	private:
-
-		FMetasoundFrontendVersion InterfaceVersion;
 	};
 
 
@@ -145,13 +161,16 @@ namespace Metasound
 			static IMetasoundUObjectRegistry& Get();
 
 			/** Adds an entry to the registry. */
-			virtual void RegisterUClassInterface(TUniquePtr<IMetasoundUObjectRegistryEntry>&& InEntry) = 0;
+			virtual void RegisterUClass(TUniquePtr<IMetasoundUObjectRegistryEntry>&& InEntry) = 0;
 
-			/** Returns all RegistryEntries with the given name */
-			virtual TArray<const IMetasoundUObjectRegistryEntry*> FindInterfaceEntriesByName(FName InName) const = 0;
+			UE_DEPRECATED(5.3, "Interfaces are no longer registered with the UObject registry as interfaces now support multiple UClasses that are registered with the interface registry.")
+			virtual void RegisterUClassInterface(TUniquePtr<IMetasoundUObjectRegistryEntry>&& InEntry) { }
 
-			/** Returns all UClasses registered to the interface version. */
-			virtual TArray<UClass*> FindSupportedInterfaceClasses(const FMetasoundFrontendVersion& InInterfaceVersion) const = 0;
+			UE_DEPRECATED(5.3, "Interfaces are no longer registered with the UObject registry as interfaces now support multiple UClasses that are registered with the interface registry.")
+			virtual TArray<const IMetasoundUObjectRegistryEntry*> FindInterfaceEntriesByName(FName InName) const { return { }; }
+
+			UE_DEPRECATED(5.3, "Interfaces are no longer registered with the UObject registry as interfaces now support multiple UClasses that are registered with the interface registry.")
+			virtual TArray<UClass*> FindSupportedInterfaceClasses(const FMetasoundFrontendVersion& InInterfaceVersion) const { return { }; }
 
 			/** Creates a new object from a MetaSound document.
 			 *
@@ -162,13 +181,17 @@ namespace Metasound
 			 *
 			 * @return A new object. A nullptr on error.
 			 */
-			virtual UObject* NewObject(UClass* InClass, const FMetasoundFrontendDocument& InDocument, const FString& InPath) const = 0;
+			 UE_DEPRECATED(5.3, "UObject registry form of NewObject is no longer used. Use UMetaSoundBuilderSubsystem to author MetaSounds instead.")
+			virtual UObject* NewObject(UClass* InClass, const FMetasoundFrontendDocument& InDocument, const FString& InPath) const { return nullptr; }
 
 			/** Iterate all registered UClasses that serve as MetaSound assets.*/
-			virtual void IterateRegisteredUClasses(TFunctionRef<void(UClass&)> InFunc) const = 0;
+			virtual void IterateRegisteredUClasses(TFunctionRef<void(UClass&)> InFunc, bool bAssetTypesOnly = true) const = 0;
 
 			/** Returns true if the InObject is of a class or child class which is registered. */
 			virtual bool IsRegisteredClass(UObject* InObject) const = 0;
+
+			/** Returns true if the InClass matches a class or child class which is registered. */
+			virtual bool IsRegisteredClass(const UClass& InClass) const = 0;
 
 			/** Returns casts the UObject to a FMetasoundAssetBase if the UObject is of a registered type.
 			 * If the UObject's UClass is not registered, then a nullptr is returned. 

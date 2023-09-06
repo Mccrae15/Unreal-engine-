@@ -21,11 +21,19 @@ public:
 	{		
 	}
 
-	/** @return the filter weight given a 2D distance vector. */
+	/** @return The filter weight given a 2D distance vector
+	 *  @note   Works on general 2D point sets i.e., does not assume Cartesian/pixel grids
+	 */
 	float GetWeight(const FVector2d& Dist) const
 	{
-		// [-Radius, Radius)
-		return Dist.X >= -Radius && Dist.X < Radius && Dist.Y >= -Radius && Dist.Y < Radius; 
+		// Returns 1 if Dist is within the region [-Radius, Radius)x[-Radius, Radius) and 0 otherwise.
+		return -Radius <= Dist.X && Dist.X < Radius && -Radius <= Dist.Y && Dist.Y < Radius;
+	}
+
+	/** @return true if the given 2D distance vector is in the region where the filter is defined and false otherwise */
+	bool IsInFilterRegion(const FVector2d& Dist) const
+	{
+		return -Radius <= Dist.X && Dist.X < Radius && -Radius <= Dist.Y && Dist.Y < Radius;
 	}
 };
 

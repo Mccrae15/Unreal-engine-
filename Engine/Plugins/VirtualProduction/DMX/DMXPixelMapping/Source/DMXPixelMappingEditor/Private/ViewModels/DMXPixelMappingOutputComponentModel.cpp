@@ -12,6 +12,7 @@
 #include "Library/DMXLibrary.h"
 #include "MVR/DMXMVRGeneralSceneDescription.h"
 #include "MVR/Types/DMXMVRFixtureNode.h"
+#include "Settings/DMXPixelMappingEditorSettings.h"
 #include "Toolkits/DMXPixelMappingToolkit.h"
 
 
@@ -64,19 +65,30 @@ FText FDMXPixelMappingOutputComponentModel::GetName() const
 {
 	if (UDMXPixelMappingOutputComponent* OutputComponent = Cast<UDMXPixelMappingOutputComponent>(WeakOutputComponent.Get()))
 	{
-		return FText::FromString(OutputComponent->GetUserFriendlyName());
+		return FText::FromString(OutputComponent->GetUserName());
 	}
 
 	return FText::GetEmpty();
 }
 
+bool FDMXPixelMappingOutputComponentModel::ShouldDraw() const
+{
+	if (UDMXPixelMappingMatrixCellComponent* CellComponent = Cast<UDMXPixelMappingMatrixCellComponent>(WeakOutputComponent.Get()))
+	{
+		const FDMXPixelMappingDesignerSettings& DesignerSettings = GetDefault<UDMXPixelMappingEditorSettings>()->DesignerSettings;
+		return DesignerSettings.bShowMatrixCells;
+	}
+
+	return true;
+}
+
 bool FDMXPixelMappingOutputComponentModel::ShouldDrawName() const
 {
-	if (UDMXPixelMappingOutputComponent* OutputComponent = Cast<UDMXPixelMappingOutputComponent>(WeakOutputComponent.Get()))
-	{
-		return OutputComponent->GetClass() != UDMXPixelMappingMatrixCellComponent::StaticClass();
-	}
-	return true;
+	const FDMXPixelMappingDesignerSettings& DesignerSettings = GetDefault<UDMXPixelMappingEditorSettings>()->DesignerSettings;
+
+	return DesignerSettings.bShowComponentNames &&
+		WeakOutputComponent.IsValid() && 
+		WeakOutputComponent->GetClass() != UDMXPixelMappingMatrixCellComponent::StaticClass();
 }
 
 bool FDMXPixelMappingOutputComponentModel::ShouldDrawNameAbove() const
@@ -90,9 +102,23 @@ bool FDMXPixelMappingOutputComponentModel::ShouldDrawNameAbove() const
 	return true;
 }
 
-bool FDMXPixelMappingOutputComponentModel::HasPatchInfo() const
+bool FDMXPixelMappingOutputComponentModel::ShouldDrawCellID() const
 {
-	return GetFixturePatch() != nullptr;
+	const FDMXPixelMappingDesignerSettings& DesignerSettings = GetDefault<UDMXPixelMappingEditorSettings>()->DesignerSettings;
+
+	return
+		DesignerSettings.bShowCellIDs &&
+		WeakOutputComponent.IsValid() &&
+		WeakOutputComponent->GetClass() == UDMXPixelMappingMatrixCellComponent::StaticClass();
+}
+
+bool FDMXPixelMappingOutputComponentModel::ShouldDrawPatchInfo() const
+{
+	const FDMXPixelMappingDesignerSettings& DesignerSettings = GetDefault<UDMXPixelMappingEditorSettings>()->DesignerSettings;
+
+	return
+		DesignerSettings.bShowPatchInfo &&
+		GetFixturePatch() != nullptr;;
 }
 
 FText FDMXPixelMappingOutputComponentModel::GetAddressesText() const
@@ -107,7 +133,6 @@ FText FDMXPixelMappingOutputComponentModel::GetAddressesText() const
 	return FText::GetEmpty();
 }
 
-
 FText FDMXPixelMappingOutputComponentModel::GetFixtureIDText() const
 {
 	if (UDMXMVRFixtureNode* FixtureNode = WeakFixtureNode.Get())
@@ -117,15 +142,6 @@ FText FDMXPixelMappingOutputComponentModel::GetFixtureIDText() const
 	}
 
 	return FText::GetEmpty();
-}
-
-bool FDMXPixelMappingOutputComponentModel::HasCellID() const
-{
-	if (UDMXPixelMappingMatrixCellComponent* MatrixCell = Cast<UDMXPixelMappingMatrixCellComponent>(WeakOutputComponent.Get()))
-	{
-		return true;
-	}
-	return false;
 }
 
 FText FDMXPixelMappingOutputComponentModel::GetCellIDText() const
@@ -150,7 +166,8 @@ FLinearColor FDMXPixelMappingOutputComponentModel::GetColor() const
 			}
 			else
 			{
-				return OutputComponent->GetEditorColor().CopyWithNewOpacity(0.6f);
+				const float Opacity = OutputComponent->GetEditorColor().A * .75f;
+				return OutputComponent->GetEditorColor().CopyWithNewOpacity(Opacity);
 			}
 		}
 	}

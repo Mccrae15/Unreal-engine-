@@ -6,12 +6,15 @@
 #include "Engine/SkeletalMeshSocket.h"
 #include "Engine/TextureLODSettings.h"
 #include "Interfaces/ITargetPlatform.h"
+#include "MuCO/CustomizableObjectExtension.h"
+#include "MuCO/ICustomizableObjectModule.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceGroupProjector.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceModifier.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceSurface.h"
 #include "MuCOE/GraphTraversal.h"
+#include "MuCOE/ICustomizableObjectExtensionNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeEditMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeExtendMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
@@ -21,6 +24,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeObjectGroup.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTexture.h"
+#include "MuCOE/Nodes/CustomizableObjectNodePassThroughTexture.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureBinarise.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureColourMap.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureFromChannels.h"
@@ -30,6 +34,7 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureParameter.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureProject.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSwitch.h"
+#include "MuCOE/Nodes/CustomizableObjectNodePassThroughTextureSwitch.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureToChannels.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureTransform.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSaturate.h"
@@ -115,6 +120,7 @@ void CheckNumOutputs(const UEdGraphPin& Pin, const FMutableGraphGenerationContex
 
 FMutableGraphGenerationContext::FMutableGraphGenerationContext(UCustomizableObject* InObject, FCustomizableObjectCompiler* InCompiler, const FCompilationOptions& InOptions)
 	: Object(InObject), Compiler(InCompiler), Options(InOptions)
+	, ExtensionDataCompilerInterface(*this)
 {
 	// Default flags for mesh generation nodes.
 	MeshGenerationFlags.Push(EMutableMeshConversionFlags::None);
@@ -186,7 +192,7 @@ void FMutableGraphGenerationContext::GenerateClippingCOInternalTags()
 
 		for (j = 0; j < It->Value.Num(); ++j)
 		{
-			It->Value[j]->AddTag(TCHAR_TO_ANSI(*TagName));
+			It->Value[j]->AddTag(StringCast<ANSICHAR>(*TagName).Get());
 		}
 
 		UCustomizableObjectNodeMeshClipWithMesh* CustomizableObjectNodeMeshClipWithMesh = It->Key;
@@ -213,7 +219,7 @@ void FMutableGraphGenerationContext::GenerateClippingCOInternalTags()
 
 					for (int32 k = 0; k < It2->Value.Num(); ++k)
 					{
-						It2->Value[k]->AddTag(TCHAR_TO_ANSI(*TagName));
+						It2->Value[k]->AddTag(StringCast<ANSICHAR>(*TagName).Get());
 					}
 				}
 			}
@@ -248,7 +254,7 @@ FMutableComponentInfo& FMutableGraphGenerationContext::GetCurrentComponentInfo()
 }
 
 
-FGeneratedKey::FGeneratedKey(void* InFunctionAddress, const UEdGraphPin& InPin, const UCustomizableObjectNode& Node, FMutableGraphGenerationContext& GenerationContext, const bool UseMesh)
+FGeneratedKey::FGeneratedKey(void* InFunctionAddress, const UEdGraphPin& InPin, const UCustomizableObjectNode& Node, FMutableGraphGenerationContext& GenerationContext, const bool UseMesh, const bool InbOnlyConnectedLOD)
 {
 	FunctionAddress = InFunctionAddress;
 	Pin = &InPin;
@@ -258,6 +264,7 @@ FGeneratedKey::FGeneratedKey(void* InFunctionAddress, const UEdGraphPin& InPin, 
 	{
 		Flags = GenerationContext.MeshGenerationFlags.Last();
 		MeshMorphStack = GenerationContext.MeshMorphStack;
+		bOnlyConnectedLOD = InbOnlyConnectedLOD;
 	}
 }
 
@@ -268,7 +275,8 @@ bool FGeneratedKey::operator==(const FGeneratedKey& Other) const
 		Pin == Other.Pin &&
 		LOD == Other.LOD &&
 		Flags == Other.Flags &&
-		MeshMorphStack == Other.MeshMorphStack;
+		MeshMorphStack == Other.MeshMorphStack &&
+		bOnlyConnectedLOD == Other.bOnlyConnectedLOD;
 }
 
 
@@ -279,6 +287,7 @@ uint32 GetTypeHash(const FGeneratedKey& Key)
 	Hash = HashCombine(Hash, GetTypeHash(Key.LOD));
 	Hash = HashCombine(Hash, GetTypeHash(Key.Flags));
 	//Hash = HashCombine(Hash, GetTypeHash(Key.MeshMorphStack)); // Does not support array
+	Hash = HashCombine(Hash, GetTypeHash(Key.bOnlyConnectedLOD));
 	
 	return Hash;
 }
@@ -324,7 +333,7 @@ void FPinData::Push(const UEdGraphPin* Pin)
 }
 
 
-FGraphCycleKey::FGraphCycleKey(const UEdGraphPin& Pin, uint32 Id) :
+FGraphCycleKey::FGraphCycleKey(const UEdGraphPin& Pin, const FString& Id) :
 	Pin(Pin),
 	Id(Id)
 {
@@ -367,6 +376,11 @@ UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationCo
 		Result = TypedNodeTex->Texture;
 	}
 
+	else if (const UCustomizableObjectNodePassThroughTexture* TypedNodePassThroughTex = Cast<UCustomizableObjectNodePassThroughTexture>(Node))
+	{
+		Result = TypedNodePassThroughTex->Texture;
+	}
+
 	else if (const UCustomizableObjectNodeTextureParameter* ParamNodeTex = Cast<UCustomizableObjectNodeTextureParameter>(Node))
 	{
 		Result = ParamNodeTex->DefaultValue;
@@ -399,7 +413,7 @@ UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationCo
 		{
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeLayer->LayerPin(LayerIndex)))
 			{
-				if (ConnectedPin->PinType.PinCategory == Helper_GetPinCategory(Schema->PC_Image))
+				if (ConnectedPin->PinType.PinCategory == Schema->PC_Image)
 				{
 					Result = FindReferenceImage(ConnectedPin, GenerationContext);
 				}
@@ -412,6 +426,17 @@ UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationCo
 		for (int SelectorIndex = 0; !Result && SelectorIndex < TypedNodeSwitch->GetNumElements(); ++SelectorIndex)
 		{
 			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeSwitch->GetElementPin(SelectorIndex)))
+			{
+				Result = FindReferenceImage(ConnectedPin, GenerationContext);
+			}
+		}
+	}
+
+	else if (const UCustomizableObjectNodePassThroughTextureSwitch* TypedNodePassThroughSwitch = Cast<UCustomizableObjectNodePassThroughTextureSwitch>(Node))
+	{
+		for (int32 SelectorIndex = 0; !Result && SelectorIndex < TypedNodePassThroughSwitch->GetNumElements(); ++SelectorIndex)
+		{
+			if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodePassThroughSwitch->GetElementPin(SelectorIndex)))
 			{
 				Result = FindReferenceImage(ConnectedPin, GenerationContext);
 			}
@@ -535,7 +560,7 @@ UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationCo
 
 	else if (const UCustomizableObjectNodeTable* TypedNodeTable = Cast<UCustomizableObjectNodeTable>(Node))
 	{
-		if (Pin->PinType.PinCategory == Helper_GetPinCategory(Schema->PC_MaterialAsset))
+		if (Pin->PinType.PinCategory == Schema->PC_MaterialAsset)
 		{
 			Result = TypedNodeTable->FindReferenceTextureParameter(Pin, GenerationContext.CurrentMaterialTableParameter);
 		}
@@ -549,7 +574,7 @@ UTexture2D* FindReferenceImage(const UEdGraphPin* Pin, FMutableGraphGenerationCo
 }
 
 
-mu::NodeMeshApplyPosePtr CreateNodeMeshApplyPose(mu::NodeMeshPtr InputMeshNode, UCustomizableObject * CustomizableObject, TArray<FString> ArrayBoneName, TArray<FTransform> ArrayTransform)
+mu::NodeMeshApplyPosePtr CreateNodeMeshApplyPose(FMutableGraphGenerationContext& GenerationContext, mu::NodeMeshPtr InputMeshNode, const TArray<FName>& ArrayBoneName, const TArray<FTransform>& ArrayTransform)
 {
 	check(ArrayBoneName.Num() == ArrayTransform.Num());
 
@@ -564,8 +589,12 @@ mu::NodeMeshApplyPosePtr CreateNodeMeshApplyPose(mu::NodeMeshPtr InputMeshNode, 
 
 	for (int32 i = 0; i < ArrayBoneName.Num(); ++i)
 	{
-		MutableSkeleton->SetBoneName(i, TCHAR_TO_ANSI(*ArrayBoneName[i]));
-		MutableMesh->SetBonePose(i, TCHAR_TO_ANSI(*ArrayBoneName[i]), (FTransform3f)ArrayTransform[i], mu::EBoneUsageFlags::Skinning);
+		const FName BoneName = ArrayBoneName[i];
+		const uint16 BoneId = uint16(GenerationContext.BoneNames.AddUnique(BoneName));
+
+		MutableSkeleton->SetBoneFName(i, BoneName);
+		MutableSkeleton->SetBoneId(i, BoneId);
+		MutableMesh->SetBonePose(i, BoneId, (FTransform3f)ArrayTransform[i], mu::EBoneUsageFlags::Skinning);
 	}
 
 	mu::NodeMeshApplyPosePtr NodeMeshApplyPose = new mu::NodeMeshApplyPose;
@@ -604,11 +633,11 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 			bStartedComponent = true;
 		}
 
-		mu::NodeObjectNewPtr ObjectNode = new mu::NodeObjectNew();
+		mu::Ptr<mu::NodeObjectNew> ObjectNode = new mu::NodeObjectNew();
 		Result = ObjectNode;
 
-		ObjectNode->SetName(TCHAR_TO_ANSI(*TypedNodeObj->ObjectName));
-		ObjectNode->SetUid(TCHAR_TO_ANSI(*GenerationContext.GetNodeIdUnique(TypedNodeObj).ToString()));
+		ObjectNode->SetName(StringCast<ANSICHAR>(*TypedNodeObj->ObjectName).Get());
+		ObjectNode->SetUid(StringCast<ANSICHAR>(*GenerationContext.GetNodeIdUnique(TypedNodeObj).ToString()).Get());
 
 		// LOD
 		const int32 NumLODs = TypedNodeObj->GetNumLODPins();
@@ -626,6 +655,11 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 				if (RefSkeletalMesh && RefSkeletalMesh->GetLODNum() > MaxRefMeshLODs)
 				{
 					MaxRefMeshLODs = RefSkeletalMesh->GetLODNum();
+				}
+
+				if (TypedNodeObj->ComponentSettings.IsValidIndex(MeshIndex))
+				{
+					GenerationContext.ComponentInfos[MeshIndex].AccumulateBonesToRemovePerLOD(TypedNodeObj->ComponentSettings[MeshIndex], TypedNodeObj->NumLODs);
 				}
 			}
 
@@ -699,16 +733,28 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 		for (int StateIndex = 0; StateIndex < NumStates && bFilterStates; ++StateIndex)
 		{
 			const FCustomizableObjectState& State = TypedNodeObj->States[StateIndex];
-			ObjectNode->SetStateName(StateIndex, TCHAR_TO_ANSI(*State.Name));
+			ObjectNode->SetStateName(StateIndex, StringCast<ANSICHAR>(*State.Name).Get());
 			for (int ParamIndex = 0; ParamIndex < State.RuntimeParameters.Num(); ++ParamIndex)
 			{
-				ObjectNode->AddStateParam(StateIndex, TCHAR_TO_ANSI(*State.RuntimeParameters[ParamIndex]));
+				ObjectNode->AddStateParam(StateIndex, StringCast<ANSICHAR>(*State.RuntimeParameters[ParamIndex]).Get());
 			}
-			ObjectNode->SetStateProperties(StateIndex, State.bDontCompressRuntimeTextures, State.bBuildOnlyFirstLOD, GenerationContext.FirstLODAvailable);
+
+			const ITargetPlatform* TargetPlatform = GenerationContext.Options.TargetPlatform;
+
+			int32 NumExtraLODsToBuildAfterFirstLOD = 0;
+
+			const int32* AuxNumExtraLODs = State.NumExtraLODsToBuildPerPlatform.Find(TargetPlatform->PlatformName());
+
+			if (AuxNumExtraLODs)
+			{
+				NumExtraLODsToBuildAfterFirstLOD = *AuxNumExtraLODs;
+			}
+
+			ObjectNode->SetStateProperties(StateIndex, State.TextureCompressionStrategy, State.bBuildOnlyFirstLOD, GenerationContext.FirstLODAvailable, NumExtraLODsToBuildAfterFirstLOD);
 
 			// UI Data
 			FParameterUIData ParameterUIData(State.Name, State.StateUIMetadata, EMutableParameterType::None);
-			ParameterUIData.bDontCompressRuntimeTextures = State.bDontCompressRuntimeTextures;
+			ParameterUIData.TextureCompressionStrategy = State.TextureCompressionStrategy;
 			ParameterUIData.bLiveUpdateMode = State.bLiveUpdateMode;
 			ParameterUIData.bReuseInstanceTextures = State.bReuseInstanceTextures;
 			ParameterUIData.ForcedParameterValues = State.ForcedParameterValues;
@@ -855,6 +901,41 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 			}
 		}
 
+		// Generate inputs to Object node pins added by extensions
+		for (const FRegisteredObjectNodeInputPin& ExtensionInputPin : ICustomizableObjectModule::Get().GetAdditionalObjectNodePins())
+		{
+			const UEdGraphPin* GraphPin = TypedNodeObj->FindPin(ExtensionInputPin.GlobalPinName, EGPD_Input);
+			if (!GraphPin)
+			{
+				continue;
+			}
+
+			TArray<UEdGraphPin*> ConnectedPins = FollowInputPinArray(*GraphPin);
+
+			// If the pin isn't supposed to take more than one connection, ignore all but the first
+			// incoming connection.
+			if (!ExtensionInputPin.InputPin.bIsArray && ConnectedPins.Num() > 1)
+			{
+				FString Msg = FString::Printf(TEXT("Extension input %s has multiple incoming connections but is only expecting one connection."),
+					*ExtensionInputPin.InputPin.DisplayName.ToString());
+
+				GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node, EMessageSeverity::Warning);
+			}
+
+			for (const UEdGraphPin* ConnectedPin : ConnectedPins)
+			{
+				const UEdGraphNode* ConnectedNode = ConnectedPin->GetOwningNode();
+				
+				if (const ICustomizableObjectExtensionNode* ExtensionNode = Cast<ICustomizableObjectExtensionNode>(ConnectedNode))
+				{
+					if (mu::NodeExtensionDataPtr GeneratedNode = ExtensionNode->GenerateMutableNode(GenerationContext.ExtensionDataCompilerInterface))
+					{
+						ObjectNode->AddExtensionDataNode(GeneratedNode, TCHAR_TO_ANSI(*ExtensionInputPin.GlobalPinName.ToString()));
+					}
+				}
+			}
+		}
+
 		// Children
 		TArray<UEdGraphPin*> ConnectedChildrenPins = FollowInputPinArray(*TypedNodeObj->ChildrenPin());
 		ObjectNode->SetChildCount(ConnectedChildrenPins.Num());
@@ -882,8 +963,8 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 		GenerationContext.SocketPriorityStack.Push(TypedNodeGroup->SocketPriority);
 
 		GenerationContext.AddParameterNameUnique(TypedNodeGroup, TypedNodeGroup->GroupName);
-		GroupNode->SetName(TCHAR_TO_ANSI(*TypedNodeGroup->GroupName));
-		GroupNode->SetUid(TCHAR_TO_ANSI(*TypedNodeGroup->NodeGuid.ToString()));
+		GroupNode->SetName(StringCast<ANSICHAR>(*TypedNodeGroup->GroupName).Get());
+		GroupNode->SetUid(StringCast<ANSICHAR>(*TypedNodeGroup->NodeGuid.ToString()).Get());
 
 		// Get all group projectors and put them in the generation context so that they are available to the child material nodes of this group node
 		uint32 NumProjectorCountBeforeNode = GenerationContext.ProjectorGroupMap.Num();
@@ -969,7 +1050,7 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 			else
 			{
 				mu::NodeObjectPtr ChildNode = new mu::NodeObjectNew;
-				ChildNode->SetName(TCHAR_TO_ANSI(*CustomizableObjectNodeObject->ObjectName));
+				ChildNode->SetName(StringCast<ANSICHAR>(*CustomizableObjectNodeObject->ObjectName).Get());
 				GroupNode->SetChild(ChildIndex, ChildNode.get());
 			}
 		}
@@ -1057,7 +1138,7 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 			else
 			{
 				mu::NodeObjectPtr ChildNode = new mu::NodeObjectNew;
-				ChildNode->SetName(TCHAR_TO_ANSI(*CustomizableObjectNodeObject->ObjectName));
+				ChildNode->SetName(StringCast<ANSICHAR>(*CustomizableObjectNodeObject->ObjectName).Get());
 				GroupNode->SetChild(ChildIndex, ChildNode.get());
 			}
 
@@ -1079,6 +1160,8 @@ mu::NodeObjectPtr GenerateMutableSource(const UEdGraphPin * Pin, FMutableGraphGe
 					BooleanParam.Name,
 					BooleanParam.ParamUIMetadata,
 					EMutableParameterType::Bool);
+
+				ParameterUIDataBoolean.ParamUIMetadata.ExtraInformation = ParameterUIData.ParamUIMetadata.ExtraInformation;
 
 				GenerationContext.ParameterUIDataMap.Add(BooleanParam.Name, ParameterUIDataBoolean);
 			}
@@ -1207,9 +1290,9 @@ int32 AddTagToMutableMeshUnique(mu::Mesh& MutableMesh, const FString& Tag)
 	return TagCount;
 }
 
-FString GenerateAnimationInstanceTag(const FString& AnimInstance, int32 SlotIndex)
+FString GenerateAnimationInstanceTag(const FString& AnimInstance, const FName& SlotIndex)
 {
-	return FString("__AnimBP:") + FString::Printf(TEXT("%d_Slot_"), SlotIndex) + AnimInstance;
+	return FString("__AnimBP:") + FString::Printf(TEXT("%s_Slot_"), *SlotIndex.ToString()) + AnimInstance;
 }
 
 
@@ -1229,11 +1312,16 @@ void PopulateReferenceSkeletalMeshesData(FMutableGraphGenerationContext& Generat
 	GenerationContext.ReferenceSkeletalMeshesData.AddDefaulted(ComponentCount);
 	for(uint32 ComponentIndex = 0; ComponentIndex < ComponentCount; ++ComponentIndex)
 	{
-		const USkeletalMesh* RefSkeletalMesh = GenerationContext.ComponentInfos[ComponentIndex].RefSkeletalMesh;
+		USkeletalMesh* RefSkeletalMesh = GenerationContext.ComponentInfos[ComponentIndex].RefSkeletalMesh;
 		check(RefSkeletalMesh);
 
-		// Gather LODData, this may include per LOD settings such as render data config or LODDataInfoArray
 		FMutableRefSkeletalMeshData& Data = GenerationContext.ReferenceSkeletalMeshesData[ComponentIndex];
+
+		// Set the RefSkeletalMesh
+		Data.SkeletalMesh = TObjectPtr<USkeletalMesh>(RefSkeletalMesh);
+		Data.SkeletalMeshAssetPath = FSoftObjectPath(RefSkeletalMesh);
+
+		// Gather LODData, this may include per LOD settings such as render data config or LODDataInfoArray
 		Data.LODData.AddDefaulted(GenerationContext.NumLODsInRoot);
 		
 		const uint32 RefSkeletalMeshLODCount = RefSkeletalMesh->GetLODNum();
@@ -1252,7 +1340,7 @@ void PopulateReferenceSkeletalMeshesData(FMutableGraphGenerationContext& Generat
 				LODData.LODInfo.bAllowCPUAccess = LODInfo.bAllowCPUAccess;
 
 				// Copy Render data settings from the reference skeletal mesh
-				const FSkeletalMeshLODRenderData& ReferenceLODModel = Helper_GetLODData(RefSkeletalMesh)[LODIndex];
+				const FSkeletalMeshLODRenderData& ReferenceLODModel = RefSkeletalMesh->GetResourceForRendering()->LODRenderData[LODIndex];
 				LODData.RenderData.bIsLODOptional = ReferenceLODModel.bIsLODOptional;
 				LODData.RenderData.bStreamedDataInlined = ReferenceLODModel.bStreamedDataInlined;
 			}
@@ -1327,6 +1415,21 @@ void PopulateReferenceSkeletalMeshesData(FMutableGraphGenerationContext& Generat
 			Data.PhysicsAsset = PhysicsAsset;
 			GenerationContext.PhysicsAssetMap.FindOrAdd(Data.PhysicsAsset.ToString(), Data.PhysicsAsset);
 		}
+
+		// Asset User Data
+		if (const TArray<UAssetUserData*>* AssetUserDataArray = RefSkeletalMesh->GetAssetUserDataArray())
+		{
+			for (UAssetUserData* AssetUserData : *AssetUserDataArray)
+			{
+				if (AssetUserData)
+				{
+					FMutableRefAssetUserData& MutAssetUserData = Data.AssetUserData.AddDefaulted_GetRef();
+
+					// Duplicate the AssetUserData using the CO as an outer, so we can save it.
+					MutAssetUserData.AssetUserData = Cast<UAssetUserData>(StaticDuplicateObject(AssetUserData, GenerationContext.Object));
+				}
+			}
+		}
 	}
 }
 
@@ -1334,24 +1437,16 @@ void PopulateReferenceSkeletalMeshesData(FMutableGraphGenerationContext& Generat
 int32 ComputeLODBias(const FMutableGraphGenerationContext& GenerationContext, const UTexture2D* ReferenceTexture, int32 MaxTextureSize,
 	const UCustomizableObjectNodeMaterial* MaterialNode, const int32 ImageIndex, bool bUseLODAsBias)
 {
-	int32 LODBias = 0;
+	constexpr int32 MaxAllowedLODBias = 6;
 
 	if (GenerationContext.Options.bForceLargeLODBias)
 	{
-		// This seems to be the highest LODBias we get during cook.
-		return GenerationContext.Options.DebugBias;
+		return FMath::Min(GenerationContext.Options.DebugBias, MaxAllowedLODBias);
 	}
+	
+	int32 LODBias = 0;
 
-	// We used to calculate the lod bias directly from the group like this:
-	//int LODBias = 0;
-	//if (LODSettings.TextureLODGroups.IsValidIndex(ReferenceTexture->LODGroup))
-	//{
-	//	const FTextureLODGroup& Group = LODSettings.GetTextureLODGroup(ReferenceTexture->LODGroup);
-	//	LODBias = Group.LODBias;
-	//}
-
-	// ...but now it seems to be more complicated and we may need this:
-	// This is not 100% correct either because it makes assumptions about the final texture size
+	// This is not 100% correct because it makes assumptions about the final texture size
 	// that may not be correct, but if the reference texture is really representative of the average 
 	// case, then it is as good as we can do.
 	if (ReferenceTexture)
@@ -1360,14 +1455,6 @@ int32 ComputeLODBias(const FMutableGraphGenerationContext& GenerationContext, co
 
 		LODBias = LODSettings.CalculateLODBias(ReferenceTexture->Source.GetSizeX(), ReferenceTexture->Source.GetSizeY(), MaxTextureSize,
 			ReferenceTexture->LODGroup, ReferenceTexture->LODBias, false, ReferenceTexture->MipGenSettings, ReferenceTexture->IsCurrentlyVirtualTextured());
-	}
-
-	// Reduce data size and compilation time for server platforms.
-	// \todo: review this hack
-	bool bIsServer = GenerationContext.Options.TargetPlatform->GetTargetPlatformInfo().PlatformType == EBuildTargetType::Server;
-	if (bIsServer)
-	{
-		LODBias += 4;
 	}
 
 	// Increment the LOD bias per each LOD if we are using automatic LODs
@@ -1393,7 +1480,7 @@ int32 ComputeLODBias(const FMutableGraphGenerationContext& GenerationContext, co
 		UE_LOG(LogMutable, Verbose, TEXT("Compiling texture without reference will have LOD Bias %d."), LODBias);
 	}
 
-	return FMath::Min(6, LODBias);
+	return FMath::Min(LODBias, MaxAllowedLODBias);
 }
 
 
@@ -1441,5 +1528,74 @@ void AddSocketTagsToMesh(const USkeletalMesh* SourceMesh, mu::MeshPtr MutableMes
 		AddTagToMutableMeshUnique(*MutableMesh, SocketTag);
 	}
 }
+
+
+FMutableComponentInfo::FMutableComponentInfo(USkeletalMesh* InRefSkeletalMesh)
+{
+	if (!InRefSkeletalMesh || !InRefSkeletalMesh->GetSkeleton())
+	{
+		return;
+	}
+
+	RefSkeletalMesh = InRefSkeletalMesh;
+	RefSkeleton = RefSkeletalMesh->GetSkeleton();
+
+	const int32 NumBones = RefSkeleton->GetReferenceSkeleton().GetRawBoneNum();
+	BoneNamesToPathHash.Reserve(NumBones);
+
+	const TArray<FMeshBoneInfo>& Bones = RefSkeleton->GetReferenceSkeleton().GetRawRefBoneInfo();
+
+	for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+	{
+		const FMeshBoneInfo& Bone = Bones[BoneIndex];
+
+		// Retrieve parent bone name and respective hash, root-bone is assumed to have a parent hash of 0
+		const FName ParentName = Bone.ParentIndex != INDEX_NONE ? Bones[Bone.ParentIndex].Name : NAME_None;
+		const uint32 ParentHash = Bone.ParentIndex != INDEX_NONE ? GetTypeHash(ParentName) : 0;
+
+		// Look-up the path-hash from root to the parent bone
+		const uint32* ParentPath = BoneNamesToPathHash.Find(ParentName);
+		const uint32 ParentPathHash = ParentPath ? *ParentPath : 0;
+
+		// Append parent hash to path to give full path hash to current bone
+		const uint32 BonePathHash = HashCombine(ParentPathHash, ParentHash);
+
+		// Add path hash to current bone
+		BoneNamesToPathHash.Add(Bone.Name, BonePathHash);
+	}
+}
+
+
+void FMutableComponentInfo::AccumulateBonesToRemovePerLOD(const FComponentSettings& ComponentSettings, int32 NumLODs)
+{
+	BonesToRemovePerLOD.SetNum(NumLODs);
+
+	TMap<FName, bool> BonesToRemove;
+
+	const int32 ComponentSettingsLODCount = ComponentSettings.LODReductionSettings.Num();
+	for (int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex)
+	{
+		if (LODIndex < ComponentSettingsLODCount)
+		{
+			const FLODReductionSettings& LODReductionSettings = ComponentSettings.LODReductionSettings[LODIndex];
+
+			for (const FBoneToRemove& Bone : LODReductionSettings.BonesToRemove)
+			{
+				if (bool* bOnlyRemoveChildren = BonesToRemove.Find(Bone.BoneName))
+				{
+					// Removed by a previous LOD
+					*bOnlyRemoveChildren = (*bOnlyRemoveChildren) && Bone.bOnlyRemoveChildren;
+				}
+				else
+				{
+					BonesToRemove.Add(Bone.BoneName, Bone.bOnlyRemoveChildren);
+				}
+			}
+		}
+		
+		BonesToRemovePerLOD[LODIndex] = BonesToRemove;
+	}
+}
+
 
 #undef LOCTEXT_NAMESPACE

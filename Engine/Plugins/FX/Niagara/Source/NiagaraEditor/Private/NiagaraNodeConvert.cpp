@@ -3,7 +3,7 @@
 #include "NiagaraNodeConvert.h"
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraEditorUtilities.h"
-#include "SNiagaraGraphNodeConvert.h"
+#include "Widgets/SNiagaraGraphNodeConvert.h"
 #include "NiagaraHlslTranslator.h"
 #include "UObject/UnrealType.h"
 #include "Kismet2/StructureEditorUtils.h"
@@ -127,6 +127,17 @@ UNiagaraNodeConvert::UNiagaraNodeConvert() : UNiagaraNodeWithDynamicPins(), bIsW
 
 }
 
+void UNiagaraNodeConvert::PostLoad()
+{
+	Super::PostLoad();
+
+	if (IsLocalConstantValue())
+	{
+		// collapse convert nodes with simple constant values on load
+		SetWiringShown(false);
+	}
+}
+
 void UNiagaraNodeConvert::AllocateDefaultPins()
 {
 	CreateAddPin(EGPD_Input);
@@ -138,10 +149,10 @@ TSharedPtr<SGraphNode> UNiagaraNodeConvert::CreateVisualWidget()
 	return SNew(SNiagaraGraphNodeConvert, this);
 }
 
-void UNiagaraNodeConvert::Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& CompileOutputs)
+void UNiagaraNodeConvert::Compile(FTranslator* Translator, TArray<int32>& CompileOutputs) const
 {
 	FPinCollectorArray InputPins;
-	GetInputPins(InputPins);
+	GetCompilationInputPins(InputPins);
 
 	TArray<int32, TInlineAllocator<16>> CompileInputs;
 	CompileInputs.Reserve(InputPins.Num());
@@ -152,7 +163,7 @@ void UNiagaraNodeConvert::Compile(class FHlslNiagaraTranslator* Translator, TArr
 			InputPin->PinType.PinCategory == UEdGraphSchema_Niagara::PinCategoryStaticType ||
 			InputPin->PinType.PinCategory == UEdGraphSchema_Niagara::PinCategoryStaticEnum)
 		{
-			int32 CompiledInput = Translator->CompilePin(InputPin);
+			int32 CompiledInput = Translator->CompileInputPin(InputPin);
 			if (CompiledInput == INDEX_NONE)
 			{
 				Translator->Error(LOCTEXT("InputError", "Error compiling input for convert node."), this, InputPin);
@@ -165,7 +176,7 @@ void UNiagaraNodeConvert::Compile(class FHlslNiagaraTranslator* Translator, TArr
 	check(Schema);
 
 	FPinCollectorArray OutputPins;
-	GetOutputPins(OutputPins);
+	GetCompilationOutputPins(OutputPins);
 
 	// Go through all the output nodes and cross-reference them with the connections list. Output errors if any connections are incomplete.
 	{
@@ -628,6 +639,7 @@ void UNiagaraNodeConvert::AutowireNewNode(UEdGraphPin* FromPin)
 				}
 			}
 		}
+		SetWiringShown(false);
 	}
 	else
 	{
@@ -725,6 +737,11 @@ FText UNiagaraNodeConvert::GetNodeTitle(ENodeTitleType::Type TitleType)const
 }
 
 TArray<FNiagaraConvertConnection>& UNiagaraNodeConvert::GetConnections()
+{
+	return Connections;
+}
+
+const TArray<FNiagaraConvertConnection>& UNiagaraNodeConvert::GetConnections() const
 {
 	return Connections;
 }
@@ -842,6 +859,27 @@ bool UNiagaraNodeConvert::IsWiringShown() const
 void UNiagaraNodeConvert::SetWiringShown(bool bInShown)
 {
 	bIsWiringShown = bInShown;
+	VisualsChangedDelegate.Broadcast(this);
+}
+
+bool UNiagaraNodeConvert::IsLocalConstantValue() const
+{
+	FPinCollectorArray Outputs;
+	FPinCollectorArray Inputs;
+	GetOutputPins(Outputs);
+	GetInputPins(Inputs);
+	if (Outputs.Num() == 2 && IsAddPin(Outputs.Last()) && Inputs.Num() >= 2 && IsAddPin(Inputs.Last()))
+	{
+		for (UEdGraphPin* InPin : Inputs)
+		{
+			if (InPin->LinkedTo.Num() != 0)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+	return false;
 }
 
 void UNiagaraNodeConvert::RemoveExpandedRecord(const FNiagaraConvertPinRecord& InRecord)

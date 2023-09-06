@@ -31,7 +31,7 @@ void FOpenXRSwapchain::IncrementSwapChainIndex_RHIThread()
 	ImageAcquired.compare_exchange_strong(WasAcquired, true);
 	if (WasAcquired)
 	{
-		UE_LOG(LogHMD, Verbose, TEXT("Attempted to redundantly acquire image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), Handle);
+		UE_LOG(LogHMD, Verbose, TEXT("Attempted to redundantly acquire image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), reinterpret_cast<const void*>(Handle));
 		return;
 	}
 
@@ -43,7 +43,7 @@ void FOpenXRSwapchain::IncrementSwapChainIndex_RHIThread()
 	Info.next = nullptr;
 	XR_ENSURE(xrAcquireSwapchainImage(Handle, &Info, &SwapChainIndex));
 
-	UE_LOG(LogHMD, VeryVerbose, TEXT("Acquired image %d in swapchain %p"), SwapChainIndex, Handle);
+	UE_LOG(LogHMD, VeryVerbose, TEXT("Acquired image %d in swapchain %p"), SwapChainIndex, reinterpret_cast<const void*>(Handle));
 
 	RHITexture = RHITextureSwapChain[SwapChainIndex];
 	SwapChainIndex_RHIThread = SwapChainIndex;
@@ -57,7 +57,7 @@ void FOpenXRSwapchain::WaitCurrentImage_RHIThread(int64 Timeout)
 	ImageAcquired.compare_exchange_strong(WasAcquired, false);
 	if (!WasAcquired)
 	{
-		UE_LOG(LogHMD, Warning, TEXT("Attempted to wait on unacquired image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), Handle);
+		UE_LOG(LogHMD, Warning, TEXT("Attempted to wait on unacquired image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), reinterpret_cast<const void*>(Handle));
 		return;
 	}
 
@@ -65,7 +65,7 @@ void FOpenXRSwapchain::WaitCurrentImage_RHIThread(int64 Timeout)
 	ImageReady.compare_exchange_strong(WasReady, true);
 	if (WasReady)
 	{
-		UE_LOG(LogHMD, Verbose, TEXT("Attempted to redundantly wait on image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), Handle);
+		UE_LOG(LogHMD, Verbose, TEXT("Attempted to redundantly wait on image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), reinterpret_cast<const void*>(Handle));
 		return;
 	}
 
@@ -93,7 +93,7 @@ void FOpenXRSwapchain::WaitCurrentImage_RHIThread(int64 Timeout)
 		UE_LOG(LogHMD, Fatal, TEXT("Failed to wait on acquired swapchain image. This usually indicates a problem with the OpenXR runtime."));
 	}
 
-	UE_LOG(LogHMD, VeryVerbose, TEXT("Waited on image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), Handle);
+	UE_LOG(LogHMD, VeryVerbose, TEXT("Waited on image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), reinterpret_cast<const void*>(Handle));
 }
 
 void FOpenXRSwapchain::ReleaseCurrentImage_RHIThread()
@@ -104,7 +104,7 @@ void FOpenXRSwapchain::ReleaseCurrentImage_RHIThread()
 	ImageReady.compare_exchange_strong(WasReady, false);
 	if (!WasReady)
 	{
-		UE_LOG(LogHMD, Warning, TEXT("Attempted to release image %d in swapchain %p that wasn't ready for being written to."), SwapChainIndex_RHIThread.load(), Handle);
+		UE_LOG(LogHMD, Warning, TEXT("Attempted to release image %d in swapchain %p that wasn't ready for being written to."), SwapChainIndex_RHIThread.load(), reinterpret_cast<const void*>(Handle));
 		return;
 	}
 
@@ -115,7 +115,7 @@ void FOpenXRSwapchain::ReleaseCurrentImage_RHIThread()
 	ReleaseInfo.next = nullptr;
 	XR_ENSURE(xrReleaseSwapchainImage(Handle, &ReleaseInfo));
 
-	UE_LOG(LogHMD, VeryVerbose, TEXT("Released on image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), Handle);
+	UE_LOG(LogHMD, VeryVerbose, TEXT("Released on image %d in swapchain %p"), SwapChainIndex_RHIThread.load(), reinterpret_cast<const void*>(Handle));
 }
 
 uint8 FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(XrSession InSession, uint8 RequestedFormat, TFunction<uint32(uint8)> ToPlatformFormat /*= nullptr*/)
@@ -234,7 +234,7 @@ XrSwapchain FOpenXRSwapchain::CreateSwapchain(XrSession InSession, uint32 Platfo
 }
 
 template<typename T>
-TArray<T> EnumerateImages(XrSwapchain InSwapchain, XrStructureType InType)
+TArray<T> EnumerateImages(XrSwapchain InSwapchain, XrStructureType InType, void* Next = nullptr)
 {
 	TArray<T> Images;
 	uint32_t ChainCount;
@@ -243,13 +243,42 @@ TArray<T> EnumerateImages(XrSwapchain InSwapchain, XrStructureType InType)
 	for (auto& Image : Images)
 	{
 		Image.type = InType;
+		Image.next = Next;
 	}
 	XR_ENSURE(xrEnumerateSwapchainImages(InSwapchain, ChainCount, &ChainCount, reinterpret_cast<XrSwapchainImageBaseHeader*>(Images.GetData())));
 	return Images;
 }
 
+void FOpenXRSwapchain::GetFragmentDensityMaps(TArray<FTextureRHIRef>& OutTextureChain, const bool bIsMobileMultiViewEnabled)
+{
+#ifdef XR_USE_GRAPHICS_API_VULKAN
+	IVulkanDynamicRHI* VulkanRHI = GetIVulkanDynamicRHI();
+
+	XrSwapchainImageFoveationVulkanFB FoveationImage{ XR_TYPE_SWAPCHAIN_IMAGE_FOVEATION_VULKAN_FB };
+	FoveationImage.next = nullptr;
+	void* Next = &FoveationImage;
+
+	XrSwapchain Swapchain = GetHandle();
+
+	TArray<XrSwapchainImageVulkanKHR> Images = EnumerateImages<XrSwapchainImageVulkanKHR>(Swapchain, XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR, Next);
+
+	for (const XrSwapchainImageVulkanKHR& Image : Images)
+	{
+		const XrBaseOutStructure* NextHeader = reinterpret_cast<const XrBaseOutStructure*>(Image.next);
+		const XrSwapchainImageFoveationVulkanFB* FoveationImageVulkan = reinterpret_cast<const XrSwapchainImageFoveationVulkanFB*>(NextHeader);
+		OutTextureChain.Add(static_cast<FTextureRHIRef>(bIsMobileMultiViewEnabled ?
+			VulkanRHI->RHICreateTexture2DArrayFromResource(GPixelFormats[PF_R8G8].UnrealFormat, FoveationImageVulkan->width, FoveationImageVulkan->height, 2, 1, 1, FoveationImageVulkan->image, TexCreate_Foveation, FClearValueBinding::White) :
+			VulkanRHI->RHICreateTexture2DFromResource(GPixelFormats[PF_R8G8].UnrealFormat, FoveationImageVulkan->width, FoveationImageVulkan->height, 1, 1, FoveationImageVulkan->image, TexCreate_Foveation, FClearValueBinding::White)
+			));
+	}
+#else
+	OutTextureChain.Empty();
+#endif
+}
+
+
 #ifdef XR_USE_GRAPHICS_API_D3D11
-FXRSwapChainPtr CreateSwapchain_D3D11(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding)
+FXRSwapChainPtr CreateSwapchain_D3D11(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding, ETextureCreateFlags AuxiliaryCreateFlags)
 {
 	TFunction<uint32(uint8)> ToPlatformFormat = [](uint8 InFormat)
 	{
@@ -285,7 +314,7 @@ FXRSwapChainPtr CreateSwapchain_D3D11(XrSession InSession, uint8 Format, uint8& 
 #endif
 
 #ifdef XR_USE_GRAPHICS_API_D3D12
-FXRSwapChainPtr CreateSwapchain_D3D12(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding)
+FXRSwapChainPtr CreateSwapchain_D3D12(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding, ETextureCreateFlags AuxiliaryCreateFlags)
 {
 	TFunction<uint32(uint8)> ToPlatformFormat = [](uint8 InFormat)
 	{
@@ -320,7 +349,7 @@ FXRSwapChainPtr CreateSwapchain_D3D12(XrSession InSession, uint8 Format, uint8& 
 #endif
 
 #ifdef XR_USE_GRAPHICS_API_OPENGL
-FXRSwapChainPtr CreateSwapchain_OpenGL(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding)
+FXRSwapChainPtr CreateSwapchain_OpenGL(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding, ETextureCreateFlags AuxiliaryCreateFlags)
 {
 	Format = FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(InSession, Format);
 	if (!Format)
@@ -350,7 +379,7 @@ FXRSwapChainPtr CreateSwapchain_OpenGL(XrSession InSession, uint8 Format, uint8&
 #endif
 
 #ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-FXRSwapChainPtr CreateSwapchain_OpenGLES(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding)
+FXRSwapChainPtr CreateSwapchain_OpenGLES(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding, ETextureCreateFlags AuxiliaryCreateFlags)
 {
 	Format = FOpenXRSwapchain::GetNearestSupportedSwapchainFormat(InSession, Format);
 	if (!Format)
@@ -359,7 +388,17 @@ FXRSwapChainPtr CreateSwapchain_OpenGLES(XrSession InSession, uint8 Format, uint
 	}
 
 	OutActualFormat = Format;
-	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, GPixelFormats[Format].PlatformFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags);
+
+	void* Next = nullptr;
+	XrSwapchainCreateInfoFoveationFB FoveationCreateInfo{ XR_TYPE_SWAPCHAIN_CREATE_INFO_FOVEATION_FB };
+	if (EnumHasAllFlags(AuxiliaryCreateFlags, TexCreate_Foveation))
+	{
+		FoveationCreateInfo.next = Next;
+		FoveationCreateInfo.flags = XR_SWAPCHAIN_CREATE_FOVEATION_SCALED_BIN_BIT_FB;
+
+		Next = &FoveationCreateInfo;
+	}
+	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, GPixelFormats[Format].PlatformFormat, SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, Next);
 	if (!Swapchain)
 	{
 		return nullptr;
@@ -380,7 +419,7 @@ FXRSwapChainPtr CreateSwapchain_OpenGLES(XrSession InSession, uint8 Format, uint
 #endif
 
 #ifdef XR_USE_GRAPHICS_API_VULKAN
-FXRSwapChainPtr CreateSwapchain_Vulkan(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding)
+FXRSwapChainPtr CreateSwapchain_Vulkan(XrSession InSession, uint8 Format, uint8& OutActualFormat, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags CreateFlags, const FClearValueBinding& ClearValueBinding, ETextureCreateFlags AuxiliaryCreateFlags)
 {
 	TFunction<uint32(uint8)> ToPlatformFormat = [](uint8 InFormat)
 	{
@@ -408,6 +447,15 @@ FXRSwapChainPtr CreateSwapchain_Vulkan(XrSession InSession, uint8 Format, uint8&
 	// The XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT will also be set in FOpenXRSwapchain::CreateSwapchain.
 	// We don't need to specify additional formats if the swapchain is being created as sRGB.
 	void* Next = !(CreateFlags & TexCreate_SRGB) ? &FormatListInfo : nullptr;
+
+	XrSwapchainCreateInfoFoveationFB FoveationCreateInfo { XR_TYPE_SWAPCHAIN_CREATE_INFO_FOVEATION_FB };
+	if (EnumHasAllFlags(AuxiliaryCreateFlags, TexCreate_Foveation))
+	{
+		FoveationCreateInfo.next = Next;
+		FoveationCreateInfo.flags = XR_SWAPCHAIN_CREATE_FOVEATION_FRAGMENT_DENSITY_MAP_BIT_FB;
+
+		Next = &FoveationCreateInfo;
+	}
 
 	XrSwapchain Swapchain = FOpenXRSwapchain::CreateSwapchain(InSession, ViewFormatList[0], SizeX, SizeY, ArraySize, NumMips, NumSamples, CreateFlags, Next);
 	if (!Swapchain)

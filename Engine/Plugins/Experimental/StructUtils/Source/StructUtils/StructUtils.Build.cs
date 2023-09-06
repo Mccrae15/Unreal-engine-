@@ -8,19 +8,21 @@ namespace UnrealBuildTool.Rules
 		{
 			PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
-			PublicIncludePaths.AddRange(
-				new string[] {
-				ModuleDirectory + "/Public",
-				}
-			);
-
 			PublicDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"Engine",
 			}
 			);
+
+			// Code such as FInstancedStruct::NetSerialize relies on the engine, but if the engine
+			// isn't available, this code will be compiled out using #if WITH_ENGINE.
+			if (Target.bCompileAgainstEngine)
+			{
+				PrivateDependencyModuleNames.Add("Engine");
+			}
+
+			bAllowAutoRTFMInstrumentation = true;
 		}
 	}
 }

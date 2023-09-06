@@ -131,7 +131,11 @@ void FAsyncRenderAssetStreamingData::UpdatePerfectWantedMips_Async(FStreamingRen
 	}
 	else
 #endif
-	if (Settings.bFullyLoadUsedTextures)
+	if (Settings.bFullyLoadMeshes && StreamingRenderAsset.IsMesh())
+	{
+		MaxSize_VisibleOnly = MaxSize = FLT_MAX;
+	}
+	else if (Settings.bFullyLoadUsedTextures)
 	{
 		if (StreamingRenderAsset.LastRenderTime < 300 || StreamingRenderAsset.bForceFullyLoad)
 		{
@@ -325,8 +329,8 @@ void FRenderAssetStreamingMipCalcTask::ApplyPakStateChanges_Async()
 	// Acquire the pending file state changes from the streaming manager.
 	{
 		FScopeLock Lock(&StreamingManager.MountedStateDirtyFilesCS);
-		FMemory::Memswap(&MountedStateDirtyFiles, &StreamingManager.MountedStateDirtyFiles, sizeof(FIoFilenameHashSet));
-		FMemory::Memswap(&bRecacheAllFiles, &StreamingManager.bRecacheAllFiles, sizeof(bool));
+		Swap(MountedStateDirtyFiles, StreamingManager.MountedStateDirtyFiles);
+		Swap(bRecacheAllFiles, StreamingManager.bRecacheAllFiles);
 	}
 
 	if (bRecacheAllFiles || MountedStateDirtyFiles.Num())
@@ -576,7 +580,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async()
 	if (GPoolSizeVRAMPercentage > 0 && TotalGraphicsMemory > 0)
 	{
 		const int64 UsableVRAM = FMath::Max<int64>(TotalGraphicsMemory * GPoolSizeVRAMPercentage / 100, TotalGraphicsMemory - Settings.VRAMPercentageClamp * 1024ll * 1024ll);
-		const int64 UsedVRAM = (int64)GCurrentRendertargetMemorySize * 1024ll + NonStreamingRenderAssetMemory; // Add any other...
+		const int64 UsedVRAM = (int64)GRHIGlobals.NonStreamingTextureMemorySizeInKB * 1024ll + NonStreamingRenderAssetMemory; // Add any other...
 		const int64 AvailableVRAMForStreaming = FMath::Min<int64>(UsableVRAM - UsedVRAM - MemoryMargin, PoolSize);
 		if (Settings.bLimitPoolSizeToVRAM || AvailableVRAMForStreaming > AvailableMemoryForStreaming)
 		{
@@ -585,7 +589,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async()
 	}
 
 	// Update EffectiveStreamingPoolSize, trying to stabilize it independently of temp memory, allocator overhead and non-streaming resources normal variation.
-	// It's hard to know how much temp memory and allocator overhead is actually in AllocatedMemorySize as it is platform specific.
+	// It's hard to know how much temp memory and allocator overhead is actually in StreamingMemorySize as it is platform specific.
 	// We handle it by not using all memory available. If temp memory and memory margin values are effectively bigger than the actual used values, the pool will stabilize.
 	if (AvailableMemoryForStreaming < MemoryBudget)
 	{
@@ -630,6 +634,7 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async()
 
 			if (StreamingRenderAsset.BudgetMipBias > 0
 				&& (bResetMipBias
+					|| (Settings.bFullyLoadMeshes && StreamingRenderAsset.IsMesh())
 					|| FMath::Max<int32>(
 						StreamingRenderAsset.VisibleWantedMips,
 						StreamingRenderAsset.HiddenWantedMips + StreamingRenderAsset.NumMissingMips) < StreamingRenderAsset.MaxAllowedMips))
@@ -660,7 +665,10 @@ void FRenderAssetStreamingMipCalcTask::UpdateBudgetedMips_Async()
 			if (!StreamingRenderAsset.RenderAsset) continue;
 
 			// Ignore textures/meshes for which we are not allowed to reduce resolution.
-			if (!StreamingRenderAsset.IsMaxResolutionAffectedByGlobalBias()) continue;
+			if (!StreamingRenderAsset.IsMaxResolutionAffectedByGlobalBias() || (Settings.bFullyLoadMeshes && StreamingRenderAsset.IsMesh()))
+			{
+				continue;
+			}
 
 			// Ignore texture/mesh that can't drop any mips
 			const int32 MinAllowedMips = FMath::Max(StreamingRenderAsset.MinAllowedMips, StreamingRenderAsset.NumForcedMips);
@@ -791,18 +799,23 @@ void FRenderAssetStreamingMipCalcTask::UpdateLoadAndCancelationRequests_Async()
 	for (int32 AssetIndex = 0; AssetIndex < StreamingRenderAssets.Num() && !IsAborted(); ++AssetIndex)
 	{
 		FStreamingRenderAsset& StreamingRenderAsset = StreamingRenderAssets[AssetIndex];
+		const bool bWasMissingTooManyMips = StreamingRenderAsset.IsMissingTooManyMips();
 
 		// If we need to change the number of resident mips.
-		if (StreamingRenderAsset.UpdateLoadOrderPriority_Async(Settings.MinMipForSplitRequest))
+		if (StreamingRenderAsset.UpdateLoadOrderPriority_Async(Settings))
 		{
 			// If there is no pending update, kick one if the budget allows it.
 			if (StreamingRenderAsset.RequestedMips == StreamingRenderAsset.ResidentMips)
 			{
 				PrioritizedRenderAssets.Add(AssetIndex);
 			}
-			// Otherwise, if the update is trying to load to many mips, or if it is trying to unload required mips, (try to) cancel it.
-			else if (StreamingRenderAsset.RequestedMips > FMath::Max<int32>(StreamingRenderAsset.ResidentMips, StreamingRenderAsset.WantedMips + 1) ||
-					StreamingRenderAsset.RequestedMips < FMath::Min<int32>(StreamingRenderAsset.ResidentMips, StreamingRenderAsset.WantedMips))
+			// Otherwise, if the update is trying to load too many, too few, or unload required MIPs, (try to) cancel it.
+			else if (
+				// If marked as missing too many MIPs, a high priority request was created so be more aggressive on canceling it.
+				StreamingRenderAsset.RequestedMips > FMath::Max<int32>(StreamingRenderAsset.ResidentMips, StreamingRenderAsset.WantedMips + (bWasMissingTooManyMips ? 0 : 1)) ||
+				// If too many missing MIPs, cancel existing request if it is not loading enough so a high priority one can be created.
+				// Otherwise, only cancel if it is trying to unload resident MIPs.
+				StreamingRenderAsset.RequestedMips < (StreamingRenderAsset.IsMissingTooManyMips() ? StreamingRenderAsset.WantedMips : FMath::Min<int32>(StreamingRenderAsset.ResidentMips, StreamingRenderAsset.WantedMips)))
 			{
 				CancelationRequests.Add(AssetIndex);
 			}

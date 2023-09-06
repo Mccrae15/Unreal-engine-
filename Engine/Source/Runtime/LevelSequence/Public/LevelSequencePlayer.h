@@ -27,10 +27,6 @@ class UCameraComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnLevelSequencePlayerCameraCutEvent, UCameraComponent*, CameraComponent);
 
-USTRUCT(BlueprintType)
-struct UE_DEPRECATED(5.0, "Snapshot settings are deprecated. Use the frame rate from the FQualifiedFrameTime on the RootTime and the ShotTime") FLevelSequenceSnapshotSettings
-{ GENERATED_BODY() };
-
 /**
  * Frame snapshot information for a level sequence
  */
@@ -84,12 +80,12 @@ private:
  * This class keeps track of playback state and provides functions for manipulating
  * an level sequence while its playing.
  */
-UCLASS(BlueprintType)
-class LEVELSEQUENCE_API ULevelSequencePlayer
+UCLASS(BlueprintType, MinimalAPI)
+class ULevelSequencePlayer
 	: public UMovieSceneSequencePlayer
 {
 public:
-	ULevelSequencePlayer(const FObjectInitializer&);
+	LEVELSEQUENCE_API ULevelSequencePlayer(const FObjectInitializer&);
 
 	GENERATED_BODY()
 
@@ -100,7 +96,7 @@ public:
 	 * @param InLevel The level that the animation is played in.
 	 * @param InCameraSettings The desired camera settings
 	 */
-	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FLevelSequenceCameraSettings& InCameraSettings);
+	LEVELSEQUENCE_API void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FLevelSequenceCameraSettings& InCameraSettings);
 
 	UE_DEPRECATED(5.1, "Use SetPlaybackSettings(...) then Initialize(ULevelSequence*, ULevel*, const FLevelSequenceCameraSettings&)")
 	void Initialize(ULevelSequence* InLevelSequence, ULevel* InLevel, const FMovieSceneSequencePlaybackSettings& Settings, const FLevelSequenceCameraSettings& InCameraSettings)
@@ -120,7 +116,7 @@ public:
 	 * @param OutActor The level sequence actor created to play this sequence.
 	 */
 	UFUNCTION(BlueprintCallable, Category="Sequencer|Player", meta=(WorldContext="WorldContextObject", DynamicOutputParam="OutActor"))
-	static ULevelSequencePlayer* CreateLevelSequencePlayer(UObject* WorldContextObject, ULevelSequence* LevelSequence, FMovieSceneSequencePlaybackSettings Settings, ALevelSequenceActor*& OutActor);
+	static LEVELSEQUENCE_API ULevelSequencePlayer* CreateLevelSequencePlayer(UObject* WorldContextObject, ULevelSequence* LevelSequence, FMovieSceneSequencePlaybackSettings Settings, ALevelSequenceActor*& OutActor);
 
 	/** Event triggered when there is a camera cut */
 	UPROPERTY(BlueprintAssignable, Category="Sequencer|Player")
@@ -133,37 +129,40 @@ public:
 public:
 
 	// IMovieScenePlayer interface
-	virtual UObject* GetPlaybackContext() const override;
-	virtual TArray<UObject*> GetEventContexts() const override;
+	LEVELSEQUENCE_API virtual UObject* GetPlaybackContext() const override;
+	LEVELSEQUENCE_API virtual TArray<UObject*> GetEventContexts() const override;
 
-	void RewindForReplay();
+	LEVELSEQUENCE_API void RewindForReplay();
 
 protected:
 
 	// IMovieScenePlayer interface
-	virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) override;
-	virtual void ResolveBoundObjects(const FGuid& InBindingId, FMovieSceneSequenceID SequenceID, UMovieSceneSequence& InSequence, UObject* ResolutionContext, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
+	LEVELSEQUENCE_API virtual void UpdateCameraCut(UObject* CameraObject, const EMovieSceneCameraCutParams& CameraCutParams) override;
+	LEVELSEQUENCE_API virtual void ResolveBoundObjects(const FGuid& InBindingId, FMovieSceneSequenceID SequenceID, UMovieSceneSequence& InSequence, UObject* ResolutionContext, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
 
 	//~ UMovieSceneSequencePlayer interface
-	virtual bool CanPlay() const override;
-	virtual void OnStartedPlaying() override;
-	virtual void OnStopped() override;
-	virtual void UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, const FMovieSceneUpdateArgs& Args) override;
+	LEVELSEQUENCE_API virtual bool CanPlay() const override;
+	LEVELSEQUENCE_API virtual void OnStartedPlaying() override;
+	LEVELSEQUENCE_API virtual void OnStopped() override;
+	LEVELSEQUENCE_API virtual void UpdateMovieSceneInstance(FMovieSceneEvaluationRange InRange, EMovieScenePlayerStatus::Type PlayerStatus, const FMovieSceneUpdateArgs& Args) override;
 
 public:
 
 	/** Populate the specified array with any given event contexts for the specified world */
-	static void GetEventContexts(UWorld& InWorld, TArray<UObject*>& OutContexts);
+	static LEVELSEQUENCE_API void GetEventContexts(UWorld& InWorld, TArray<UObject*>& OutContexts);
 
 	/** Take a snapshot of the current state of this player */
-	void TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSnapshot) const;
+	LEVELSEQUENCE_API void TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSnapshot) const;
 
 	/** Set the offset time for the snapshot in play rate frames. */
 	void SetSnapshotOffsetFrames(int32 InFrameOffset) { SnapshotOffsetTime = TOptional<int32>(InFrameOffset); }
 
 private:
 
-	void EnableCinematicMode(bool bEnable);
+	LEVELSEQUENCE_API void EnableCinematicMode(bool bEnable);
+
+	// Save the last view target, so that it can all be restored when the camera object is null.
+	void ValidateLastViewTarget(UObject* CameraObject, AActor* ViewTarget);
 
 private:
 
@@ -176,14 +175,23 @@ private:
 	/** The full asset path (/Game/Folder/MapName.MapName) of the streaming level this player resides within. Bindings to actors with the same FSoftObjectPath::GetAssetPath are resolved within the cached level, rather than globally.. */
 	FTopLevelAssetPath StreamedLevelAssetPath;
 
+	/** The world to use for resolving FWorldPartitionResolveData */
+	TWeakObjectPtr<UWorld> StreamingWorld;
+
 	/** The camera settings to use when playing the sequence */
 	FLevelSequenceCameraSettings CameraSettings;
 
 	/** The last view target to reset to when updating camera cuts to null */
 	TWeakObjectPtr<AActor> LastViewTarget;
 
+	/** The last player on which to reset the aspect ratio axis constraint in case the level is changing */
+	TWeakObjectPtr<ULocalPlayer> LastLocalPlayer;
+
 	/** The last aspect ratio axis constraint to reset to when the camera cut is null */
 	TOptional<EAspectRatioAxisConstraint> LastAspectRatioAxisConstraint;
+
+	/** The last camera cut object received during a cinematic */
+	UObject* LastCameraObject = nullptr;
 
 protected:
 

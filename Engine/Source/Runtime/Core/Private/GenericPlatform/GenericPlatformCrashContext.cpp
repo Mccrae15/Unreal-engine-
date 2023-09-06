@@ -74,6 +74,18 @@ static bool NeedsEscape(FStringView Str)
 	return false;
 }
 
+static const TCHAR* AttendedStatusToString(EUnattendedStatus Status)
+{
+	switch(Status)
+	{
+	case EUnattendedStatus::Attended: return TEXT("Attended");
+	case EUnattendedStatus::Unattended: return TEXT("Unattended");
+	case EUnattendedStatus::Unknown: // fallthrough
+	default:
+		return TEXT("Unknown");
+	}
+}
+
 /*-----------------------------------------------------------------------------
 	FGenericCrashContext
 -----------------------------------------------------------------------------*/
@@ -117,6 +129,12 @@ int32 FGenericCrashContext::StaticCrashContextIndex = 0;
 
 const FGuid FGenericCrashContext::ExecutionGuid = FGuid::NewGuid();
 
+FEngineDataResetDelegate FGenericCrashContext::OnEngineDataReset;
+FEngineDataSetDelegate FGenericCrashContext::OnEngineDataSet;
+
+FGameDataResetDelegate FGenericCrashContext::OnGameDataReset;
+FGameDataSetDelegate FGenericCrashContext::OnGameDataSet;
+
 #if WITH_ADDITIONAL_CRASH_CONTEXTS
 FAdditionalCrashContextDelegate FGenericCrashContext::AdditionalCrashContextDelegate;
 #endif //WITH_ADDITIONAL_CRASH_CONTEXTS
@@ -141,9 +159,13 @@ void FGenericCrashContext::Initialize()
 #if !NOINITCRASHREPORTER
 	NCached::Session.bIsInternalBuild = FEngineBuildSettings::IsInternalBuild();
 	NCached::Session.bIsPerforceBuild = FEngineBuildSettings::IsPerforceBuild();
+	NCached::Session.bWithDebugInfo = FApp::GetIsWithDebugInfo();
 	NCached::Session.bIsSourceDistribution = FEngineBuildSettings::IsSourceDistribution();
 	NCached::Session.ProcessId = FPlatformProcess::GetCurrentProcessId();
 
+	NCached::Set(NCached::Session.EngineVersion, *FEngineVersion::Current().ToString());
+	NCached::Set(NCached::Session.EngineCompatibleVersion, *FEngineVersion::Current().ToString());
+	NCached::Set(NCached::Session.BuildVersion, FApp::GetBuildVersion());
 	NCached::Set(NCached::Session.GameName, *FString::Printf(TEXT("UE-%s"), FApp::GetProjectName()));
 	NCached::Set(NCached::Session.GameSessionID, TEXT("")); // Updated by callback
 	NCached::Set(NCached::Session.GameStateName, TEXT("")); // Updated by callback
@@ -186,6 +208,7 @@ void FGenericCrashContext::Initialize()
 
 	NCached::Set(NCached::Session.PlatformName, FPlatformProperties::PlatformName());
 	NCached::Set(NCached::Session.PlatformNameIni, FPlatformProperties::IniPlatformName());
+	NCached::Set(NCached::Session.AttendedStatus, AttendedStatusToString(EUnattendedStatus::Unknown));
 
 	// Information that cannot be gathered if command line is not initialized (e.g. crash during static init)
 	if (FCommandLine::IsInitialized())
@@ -215,7 +238,10 @@ void FGenericCrashContext::Initialize()
 			}
 		}
 
-		NCached::UserSettings.bNoDialog = FApp::IsUnattended() || IsRunningDedicatedServer();
+		const bool IsUnattended = FApp::IsUnattended();
+
+		NCached::UserSettings.bNoDialog = IsUnattended|| IsRunningDedicatedServer();
+		NCached::Set(NCached::Session.AttendedStatus, AttendedStatusToString(IsUnattended ? EUnattendedStatus::Unattended : EUnattendedStatus::Attended));
 	}
 
 	// Create a unique base guid for bug report ids
@@ -312,6 +338,16 @@ void FGenericCrashContext::Initialize()
 		}
 	});
 
+	// Store some additional info in the generic maps if it is available
+	if (const TCHAR* BuildURL = FApp::GetBuildURL())
+	{
+		SetEngineData(TEXT("BuildURL"), BuildURL);
+	}
+	if (const TCHAR* ExecutingJobURL = FApp::GetExecutingJobURL())
+	{
+		SetEngineData(TEXT("ExecutingJobURL"), ExecutingJobURL);
+	}
+
 	SerializeTempCrashContextToFile();
 
 	CleanupPlatformSpecificFiles();
@@ -391,7 +427,8 @@ void FGenericCrashContext::CopySharedCrashContext(FSharedCrashContext& Dst)
 	TCHAR* DynamicDataStart = &Dst.DynamicData[0];
 	TCHAR* DynamicDataPtr = DynamicDataStart;
 
-	#define CR_DYNAMIC_BUFFER_REMAIN uint32((CR_MAX_DYNAMIC_BUFFER_CHARS) - (DynamicDataPtr-DynamicDataStart))
+	// -1 to allow space for null terminator
+	#define CR_DYNAMIC_BUFFER_REMAIN uint32((CR_MAX_DYNAMIC_BUFFER_CHARS) - (DynamicDataPtr-DynamicDataStart) - 1)
 
 	Dst.EnabledPluginsOffset = (uint32)(DynamicDataPtr - DynamicDataStart);
 	Dst.EnabledPluginsNum = NCached::EnabledPluginsList.Num();
@@ -605,6 +642,8 @@ void FGenericCrashContext::SerializeTempCrashContextToFile()
 	FFileHelper::SaveStringToFile(SessionBuffer, *SessionFilePath);
 }
 
+// This function may be called in the crashing executable or in an external crash reporter program. Take care with accessing global variables vs member variables or 
+// fields in NCached!
 void FGenericCrashContext::SerializeSessionContext(FString& Buffer)
 {
 	AddCrashPropertyInternal(Buffer, TEXT("ProcessId"), NCached::Session.ProcessId);
@@ -612,6 +651,7 @@ void FGenericCrashContext::SerializeSessionContext(FString& Buffer)
 
 	AddCrashPropertyInternal(Buffer, TEXT("IsInternalBuild"), NCached::Session.bIsInternalBuild);
 	AddCrashPropertyInternal(Buffer, TEXT("IsPerforceBuild"), NCached::Session.bIsPerforceBuild);
+	AddCrashPropertyInternal(Buffer, TEXT("IsWithDebugInfo"), NCached::Session.bWithDebugInfo);
 	AddCrashPropertyInternal(Buffer, TEXT("IsSourceDistribution"), NCached::Session.bIsSourceDistribution);
 
 	if (FCString::Strlen(NCached::Session.GameName) > 0)
@@ -635,17 +675,19 @@ void FGenericCrashContext::SerializeSessionContext(FString& Buffer)
 	AddCrashPropertyInternal(Buffer, TEXT("GameSessionID"), NCached::Session.GameSessionID);
 
 	AddCrashPropertyInternal(Buffer, TEXT("PlatformName"), NCached::Session.PlatformName);
+	AddCrashPropertyInternal(Buffer, TEXT("PlatformFullName"), NCached::Session.PlatformName);
 	AddCrashPropertyInternal(Buffer, TEXT("PlatformNameIni"), NCached::Session.PlatformNameIni);
 	AddCrashPropertyInternal(Buffer, TEXT("EngineMode"), NCached::Session.EngineMode);
 	AddCrashPropertyInternal(Buffer, TEXT("EngineModeEx"), NCached::Session.EngineModeEx);
 
 	AddCrashPropertyInternal(Buffer, TEXT("DeploymentName"), NCached::Session.DeploymentName);
 
-	AddCrashPropertyInternal(Buffer, TEXT("EngineVersion"), *FEngineVersion::Current().ToString());
+	AddCrashPropertyInternal(Buffer, TEXT("EngineVersion"), NCached::Session.EngineVersion); 
+	AddCrashPropertyInternal(Buffer, TEXT("EngineCompatibleVersion"), NCached::Session.EngineCompatibleVersion); 
 	AddCrashPropertyInternal(Buffer, TEXT("CommandLine"), NCached::Session.CommandLine);
 	AddCrashPropertyInternal(Buffer, TEXT("LanguageLCID"), NCached::Session.LanguageLCID);
 	AddCrashPropertyInternal(Buffer, TEXT("AppDefaultLocale"), NCached::Session.DefaultLocale);
-	AddCrashPropertyInternal(Buffer, TEXT("BuildVersion"), FApp::GetBuildVersion());
+	AddCrashPropertyInternal(Buffer, TEXT("BuildVersion"), NCached::Session.BuildVersion);
 	AddCrashPropertyInternal(Buffer, TEXT("Symbols"), NCached::Session.SymbolsLabel);
 	AddCrashPropertyInternal(Buffer, TEXT("IsUERelease"), NCached::Session.bIsUERelease);
 
@@ -711,6 +753,8 @@ void FGenericCrashContext::SerializeUserSettings(FString& Buffer)
 	AddCrashPropertyInternal(Buffer, TEXT("LogFilePath"), FPlatformOutputDevices::GetAbsoluteLogFilename()); // Don't use the value cached, it may be out of date.
 }
 
+// This function may be called in the crashing executable or in an external crash reporter program. Take care with accessing global variables vs member variables or 
+// fields in NCached!
 void FGenericCrashContext::SerializeContentToBuffer() const
 {
 	// Clear the buffer in case the content is serialized more than once, keeping the most up to date values and preventing to store several XML documents in the same buffer.
@@ -735,6 +779,7 @@ void FGenericCrashContext::SerializeContentToBuffer() const
 	AddCrashProperty( TEXT( "CrashType" ), GetCrashTypeString(Type) );
 	AddCrashProperty( TEXT( "ErrorMessage" ), ErrorMessage );
 	AddCrashProperty( TEXT( "CrashReporterMessage" ), NCached::Session.CrashReportClientRichText );
+	AddCrashProperty( TEXT( "AttendedStatus"), NCached::Session.AttendedStatus);
 
 	SerializeSessionContext(CommonBuffer);
 
@@ -1094,9 +1139,15 @@ void FGenericCrashContext::PurgeOldCrashConfig()
 	}
 }
 
+void FGenericCrashContext::SetEpicAccountId(const FString& EpicAccountId)
+{
+	NCached::Set(NCached::Session.EpicAccountId, *EpicAccountId);
+}
+
 void FGenericCrashContext::ResetEngineData()
 {
 	NCached::EngineData.Reset();
+	OnEngineDataReset.Broadcast();
 }
 
 void FGenericCrashContext::SetEngineData(const FString& Key, const FString& Value)
@@ -1125,6 +1176,13 @@ void FGenericCrashContext::SetEngineData(const FString& Key, const FString& Valu
 		});
 		OldVal = Value;
 	}
+
+	OnEngineDataSet.Broadcast(Key, Value);
+}
+
+const TMap<FString, FString>& FGenericCrashContext::GetEngineData()
+{
+	return NCached::EngineData;
 }
 
 /** Get arbitrary engine data from the crash context */
@@ -1136,6 +1194,7 @@ const FString* FGenericCrashContext::GetEngineData(const FString& Key)
 void FGenericCrashContext::ResetGameData()
 {
 	NCached::GameData.Reset();
+	OnGameDataReset.Broadcast();
 }
 
 void FGenericCrashContext::SetGameData(const FString& Key, const FString& Value)
@@ -1164,6 +1223,13 @@ void FGenericCrashContext::SetGameData(const FString& Key, const FString& Value)
 		});
 		OldVal = Value;
 	}
+
+	OnGameDataSet.Broadcast(Key, Value);
+}
+
+const TMap<FString, FString>& FGenericCrashContext::GetGameData()
+{
+	return NCached::GameData;
 }
 
 /** Get arbitrary game data from the crash context */

@@ -30,6 +30,10 @@ public:
 		double NumberOfFrames,
 		const FString& Extension
 	);
+	USDCLASSES_API static void SendAnalytics(
+		TArray<FAnalyticsEventAttribute>&& InAttributes,
+		const FString& EventName
+	);
 
 	/**
 	 * Updates HashToUpdate with the Object's package's persistent guid, the corresponding file save
@@ -46,4 +50,7 @@ public:
 	 * When given a mesh, will return materials, etc.)
 	 */
 	USDCLASSES_API static TSet<UObject*> GetAssetDependencies(UObject* Asset);
+
+	// Adapted from ObjectTools as it is within an Editor-only module
+	USDCLASSES_API static FString SanitizeObjectName(const FString& InObjectName);
 };

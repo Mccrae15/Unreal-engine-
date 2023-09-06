@@ -5,7 +5,6 @@
 #include "Sound/SoundWave.h"
 #include "MovieScene.h"
 #include "Sections/MovieSceneAudioSection.h"
-#include "Evaluation/MovieSceneAudioTemplate.h"
 #include "Kismet/GameplayStatics.h"
 #include "AudioDecompress.h"
 #include "Evaluation/MovieSceneSegment.h"
@@ -25,11 +24,6 @@ UMovieSceneAudioTrack::UMovieSceneAudioTrack( const FObjectInitializer& ObjectIn
 	TrackTint = FColor(93, 95, 136);
 	RowHeight = 50;
 #endif
-}
-
-FMovieSceneEvalTemplatePtr UMovieSceneAudioTrack::CreateTemplateForSection(const UMovieSceneSection& InSection) const
-{
-	return FMovieSceneAudioSectionTemplate(*CastChecked<UMovieSceneAudioSection>(&InSection));
 }
 
 const TArray<UMovieSceneSection*>& UMovieSceneAudioTrack::GetAllSections() const
@@ -95,8 +89,8 @@ UMovieSceneSection* UMovieSceneAudioTrack::AddNewSoundOnRow(USoundBase* Sound, F
 	// @todo ^^ Why? Infinte sections would mean there's no starting time?
 	FFrameTime DurationToUse = 1.f * FrameRate; // if all else fails, use 1 second duration
 
-	float SoundDuration = MovieSceneHelpers::GetSoundDuration(Sound);
-	if (SoundDuration != INDEFINITELY_LOOPING_DURATION)
+	const float SoundDuration = MovieSceneHelpers::GetSoundDuration(Sound);
+	if (SoundDuration != INDEFINITELY_LOOPING_DURATION && SoundDuration > 0)
 	{
 		DurationToUse = SoundDuration * FrameRate;
 	}
@@ -148,6 +142,20 @@ UMovieSceneSection* UMovieSceneAudioTrack::AddNewSoundOnRow(USoundBase* Sound, F
 UMovieSceneSection* UMovieSceneAudioTrack::CreateNewSection()
 {
 	return NewObject<UMovieSceneAudioSection>(this, NAME_None, RF_Transactional);
+}
+
+void UMovieSceneAudioTrack::PostRename(UObject* OldOuter, const FName OldName)
+{
+	Super::PostRename(OldOuter, OldName);
+
+	// Recache the channel proxy because attach in FAudioChannelEditorData is dependent upon the outer chain
+	for (TObjectPtr<UMovieSceneSection> Section : AudioSections)
+	{
+		if (UMovieSceneAudioSection* AudioSection = Cast<UMovieSceneAudioSection>(Section.Get()))
+		{
+			AudioSection->CacheChannelProxy();
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

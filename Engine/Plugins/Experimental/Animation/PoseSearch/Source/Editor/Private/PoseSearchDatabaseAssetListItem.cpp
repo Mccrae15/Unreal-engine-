@@ -1,31 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearchDatabaseAssetListItem.h"
-#include "PoseSearchDatabaseViewModel.h"
 
-#include "Animation/AnimSequence.h"
 #include "Animation/AnimComposite.h"
+#include "Animation/AnimSequence.h"
 #include "Animation/BlendSpace.h"
-
-#include "Misc/TransactionObjectEvent.h"
-#include "DragAndDrop/AssetDragDropOp.h"
-#include "Misc/FeedbackContext.h"
+#include "Animation/DebugSkelMeshComponent.h"
+#include "AnimPreviewInstance.h"
 #include "AssetSelection.h"
 #include "ClassIconFinder.h"
 #include "DetailColumnSizeData.h"
-#include "PoseSearch/PoseSearchDatabase.h"
-#include "PoseSearchDatabaseAssetTree.h"
-
-#include "Widgets/Text/SRichTextBlock.h"
-#include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SSearchBox.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "Editor.h"
 #include "Framework/Commands/GenericCommands.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "IAnimationEditor.h"
+#include "IPersonaToolkit.h"
+#include "Misc/FeedbackContext.h"
+#include "Misc/TransactionObjectEvent.h"
+#include "PoseSearch/PoseSearchDatabase.h"
+#include "PoseSearchDatabaseAssetTree.h"
+#include "PoseSearchDatabaseViewModel.h"
+#include "ScopedTransaction.h"
 #include "SPositiveActionButton.h"
 #include "Styling/AppStyle.h"
-
-#include "ScopedTransaction.h"
 #include "Styling/StyleColors.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Text/SRichTextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SDatabaseAssetListItem"
 
@@ -45,7 +48,7 @@ namespace UE::PoseSearch
 		EditorViewModel = InEditorViewModel;
 		SkeletonView = InHierarchy;
 
-		if (InAssetTreeNode->SourceAssetType == ESearchIndexAssetType::Invalid)
+		if (InAssetTreeNode->SourceAssetIdx == INDEX_NONE)
 		{
 			ConstructGroupItem(OwnerTable);
 		}
@@ -104,6 +107,50 @@ namespace UE::PoseSearch
 		SkeletonView.Pin()->RefreshTreeView(false);
 	}
 
+	void SDatabaseAssetListItem::OnAddAnimMontage()
+	{
+		EditorViewModel.Pin()->AddAnimMontageToDatabase(nullptr);
+		SkeletonView.Pin()->RefreshTreeView(false);
+	}
+
+	FReply SDatabaseAssetListItem::OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent)
+	{
+		TSharedPtr<FDatabaseAssetTreeNode> Node = WeakAssetTreeNode.Pin();
+		TSharedPtr<FDatabaseViewModel> ViewModel = EditorViewModel.Pin();
+		if (const UPoseSearchDatabase* Database = ViewModel->GetPoseSearchDatabase())
+		{
+			if (const FPoseSearchDatabaseAnimationAssetBase* DatabaseAnimationAsset = Database->GetAnimationAssetBase(Node->SourceAssetIdx))
+			{
+				if (UAssetEditorSubsystem* AssetEditorSS = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+				{
+					UAnimationAsset* AnimationAsset = DatabaseAnimationAsset->GetAnimationAsset();
+
+					AssetEditorSS->OpenEditorForAsset(AnimationAsset);
+
+					if (IAssetEditorInstance* Editor = AssetEditorSS->FindEditorForAsset(AnimationAsset, true))
+					{
+						if (Editor->GetEditorName() == "AnimationEditor")
+						{
+							float AnimationAssetTime = 0.f;
+							FVector AnimationAssetBlendParameters = FVector::ZeroVector;
+							ViewModel->GetAnimationTime(Node->SourceAssetIdx, AnimationAssetTime, AnimationAssetBlendParameters);
+							
+							const IAnimationEditor* AnimationEditor = static_cast<IAnimationEditor*>(Editor);
+							const UDebugSkelMeshComponent* PreviewComponent = AnimationEditor->GetPersonaToolkit()->GetPreviewMeshComponent();
+
+							// Open asset paused and at specific time as seen on the pose search debugger.
+							PreviewComponent->PreviewInstance->SetPosition(AnimationAssetTime);
+							PreviewComponent->PreviewInstance->SetPlaying(false);
+							PreviewComponent->PreviewInstance->SetBlendSpacePosition(AnimationAssetBlendParameters);
+						}
+					}
+				}
+			}
+		}
+
+		return STableRow<TSharedPtr<FDatabaseAssetTreeNode>>::OnMouseButtonDoubleClick(InMyGeometry, InMouseEvent);
+	}
+
 	FText SDatabaseAssetListItem::GetName() const
 	{
 		TSharedPtr<FDatabaseAssetTreeNode> Node = WeakAssetTreeNode.Pin();
@@ -131,7 +178,7 @@ namespace UE::PoseSearch
 		TSharedPtr<SWidget> ItemWidget;
 		const FDetailColumnSizeData& ColumnSizeData = SkeletonView.Pin()->GetColumnSizeData();
 		
-		if (Node->SourceAssetType == ESearchIndexAssetType::Invalid)
+		if (Node->SourceAssetIdx == INDEX_NONE)
 		{
 			// it's a group
 			SAssignNew(ItemWidget, SBorder)
@@ -155,14 +202,6 @@ namespace UE::PoseSearch
 					.TransformPolicy(ETextTransformPolicy::ToUpper)
 					.DecoratorStyleSet(&FAppStyle::Get())
 					.TextStyle(FAppStyle::Get(), "DetailsView.CategoryTextStyle")
-				]
-				+SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.HAlign(HAlign_Right)
-				.Padding(2, 0, 0, 0)
-				[
-					GenerateAddButtonWidget()
 				]
 			];
 		}
@@ -306,54 +345,6 @@ namespace UE::PoseSearch
 		return ItemWidget.ToSharedRef();
 	}
 
-	TSharedRef<SWidget> SDatabaseAssetListItem::GenerateAddButtonWidget()
-	{
-		FMenuBuilder AddOptions(true, nullptr);
-
-		AddOptions.AddMenuEntry(
-			LOCTEXT("AddSequence", "Add Sequence"),
-			LOCTEXT("AddSequenceTooltip", "Add new sequence to this group"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetListItem::OnAddSequence)),
-			NAME_None,
-			EUserInterfaceActionType::Button);
-
-		AddOptions.AddMenuEntry(
-			LOCTEXT("AddBlendSpaceOption", "Add Blend Space"),
-			LOCTEXT("AddBlendSpaceOptionTooltip", "Add new blend space to this group"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetListItem::OnAddBlendSpace)),
-			NAME_None,
-			EUserInterfaceActionType::Button);
-
-		AddOptions.AddMenuEntry(
-			LOCTEXT("AnimCompositeOption", "Add Anim Composite"),
-			LOCTEXT("AddAnimCompositeToDefaultGroupTooltip", "Add new anim composite to this group"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(this, &SDatabaseAssetListItem::OnAddAnimComposite)),
-			NAME_None,
-			EUserInterfaceActionType::Button);
-
-		TSharedPtr<SComboButton> AddButton;
-		SAssignNew(AddButton, SComboButton)
-		.ContentPadding(0)
-		.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
-		.HasDownArrow(false)
-		.ButtonContent()
-		[
-			SNew(SImage)
-			.ColorAndOpacity(FSlateColor::UseForeground())
-			.Image(FAppStyle::Get().GetBrush("Icons.PlusCircle"))
-		]
-		.MenuContent()
-		[
-			AddOptions.MakeWidget()
-		];
-
-		return AddButton.ToSharedRef();
-	}
-
-
 	const FSlateBrush* SDatabaseAssetListItem::GetGroupBackgroundImage() const
 	{
 		if (STableRow<TSharedPtr<FDatabaseAssetTreeNode>>::IsHovered())
@@ -370,10 +361,9 @@ namespace UE::PoseSearch
 	{
 		TSharedPtr<FDatabaseViewModel> ViewModelPtr = EditorViewModel.Pin();
 		TSharedPtr<FDatabaseAssetTreeNode> TreeNodePtr = WeakAssetTreeNode.Pin();
-		if (const FPoseSearchIndexAsset* SelectedIndexAsset = ViewModelPtr->GetSelectedActorIndexAsset())
+		if (const FSearchIndexAsset* SelectedIndexAsset = ViewModelPtr->GetSelectedActorIndexAsset())
 		{
-			if (TreeNodePtr->SourceAssetType == ESearchIndexAssetType::Sequence &&
-				TreeNodePtr->SourceAssetIdx == SelectedIndexAsset->SourceAssetIdx)
+			if (TreeNodePtr->SourceAssetIdx == SelectedIndexAsset->SourceAssetIdx)
 			{
 				return EVisibility::Visible;
 			}

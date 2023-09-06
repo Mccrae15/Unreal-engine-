@@ -17,6 +17,8 @@
 #include "GlobalDistanceField.h"
 #include "LumenTracingUtils.h"
 
+extern int32 GLumenSceneGlobalSDFSimpleCoverageBasedExpand;
+
 FLumenGatherCvarState GLumenGatherCvars;
 
 FLumenGatherCvarState::FLumenGatherCvarState()
@@ -162,6 +164,14 @@ FAutoConsoleVariableRef CVarLumenDiffuseIndirectApplySSAO(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
+int32 GLumenShouldUseStereoOptimizations = 1;
+FAutoConsoleVariableRef CVarLumenShouldUseStereoOptimizations(
+	TEXT("r.Lumen.StereoOptimizations"),
+	GLumenShouldUseStereoOptimizations,
+	TEXT("Whether to to share certain Lumen state between views during the instanced stereo rendering."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 bool LumenDiffuseIndirect::UseAsyncCompute(const FViewFamilyInfo& ViewFamily)
 {
 	return Lumen::UseAsyncCompute(ViewFamily) && CVarLumenDiffuseIndirectAsyncCompute.GetValueOnRenderThread() != 0;
@@ -177,6 +187,11 @@ bool Lumen::UseMeshSDFTracing(const FSceneViewFamily& ViewFamily)
 bool Lumen::UseGlobalSDFTracing(const FSceneViewFamily& ViewFamily)
 {
 	return ViewFamily.EngineShowFlags.LumenGlobalTraces;
+}
+
+bool Lumen::UseGlobalSDFSimpleCoverageBasedExpand()
+{
+	return GLumenSceneGlobalSDFSimpleCoverageBasedExpand != 0;
 }
 
 float Lumen::GetMaxTraceDistance(const FViewInfo& View)
@@ -262,6 +277,11 @@ bool ShouldRenderAOWithLumenGI()
 {
 	extern int32 GLumenShortRangeAmbientOcclusion;
 	return GLumenDiffuseIndirectApplySSAO != 0 && GLumenShortRangeAmbientOcclusion == 0;
+}
+
+bool ShouldUseStereoLumenOptimizations()
+{
+	return GLumenShouldUseStereoOptimizations != 0;
 }
 
 void SetupLumenDiffuseTracingParameters(const FViewInfo& View, FLumenIndirectTracingParameters& OutParameters)

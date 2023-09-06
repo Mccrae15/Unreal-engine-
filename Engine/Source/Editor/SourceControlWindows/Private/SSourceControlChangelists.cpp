@@ -32,6 +32,7 @@
 #include "SourceControlMenuContext.h"
 #include "SourceControlSettings.h"
 #include "AssetToolsModule.h"
+#include "ComponentReregisterContext.h"
 #include "FileHelpers.h"
 #include "Misc/CString.h"
 #include "Misc/MessageDialog.h"
@@ -42,7 +43,7 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/FileManager.h"
 #include "ToolMenus.h"
-#include "UnsavedAssetsTracker/Source/Public/UnsavedAssetsTrackerModule.h"
+#include "UnsavedAssetsTrackerModule.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Package.h"
 #include "SSourceControlSubmit.h"
@@ -50,6 +51,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Misc/ComparisonUtility.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlChangelist"
@@ -1871,7 +1873,7 @@ FReply SSourceControlChangelistsWidget::OnKeyDown(const FGeometry& MyGeometry, c
 		else
 		{
 			FText Title(LOCTEXT("Cannot_Submit_Changelist_From_Key_Title", "Cannot Submit Changelist"));
-			FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, FailureMessage, &Title);
+			FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, FailureMessage, Title);
 		}
 
 		return FReply::Handled();
@@ -1886,7 +1888,7 @@ FReply SSourceControlChangelistsWidget::OnKeyDown(const FGeometry& MyGeometry, c
 		else
 		{
 			FText Title(LOCTEXT("Cannot_Delete_Changelist_From_Key_Title", "Cannot Delete Changelist"));
-			FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, FailureMessage, &Title);
+			FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, FailureMessage, Title);
 		}
 
 		return FReply::Handled();
@@ -2056,7 +2058,7 @@ void SSourceControlChangelistsWidget::OnRevert()
 		DialogTitle = LOCTEXT("SourceControl_ConfirmReverFiles_Title", "Confirm files revert");
 	}
 	
-	EAppReturnType::Type UserConfirmation = FMessageDialog::Open(EAppMsgType::OkCancel, EAppReturnType::Ok, DialogText, &DialogTitle);
+	EAppReturnType::Type UserConfirmation = FMessageDialog::Open(EAppMsgType::OkCancel, EAppReturnType::Ok, DialogText, DialogTitle);
 
 	if (UserConfirmation != EAppReturnType::Ok)
 	{
@@ -2396,10 +2398,14 @@ void SSourceControlChangelistsWidget::OnSubmitChangelist()
 		// Check if any of the presubmit hooks fail. (This might also update the changelist description)
 		if (GetOnPresubmitResult(ChangelistState, Description))
 		{
-			// If the description was modified, add it to the operation to update the changelist
+			// If the user modified the description, ensure the 'validation tag' wasn't removed if validation is enabled.
 			if (!ChangelistDescriptionToSubmit.EqualTo(Description.Description))
 			{
 				SubmitChangelistOperation->SetDescription(UpdateChangelistDescriptionToSubmitIfNeeded(bValidationResult, Description.Description));
+			}
+			else
+			{
+				SubmitChangelistOperation->SetDescription(Description.Description);
 			}
 
 			Execute(LOCTEXT("Submitting_Changelist", "Submitting changelist..."), SubmitChangelistOperation, ChangelistState->GetChangelist(), EConcurrency::Synchronous, FSourceControlOperationComplete::CreateLambda(
@@ -2588,7 +2594,7 @@ bool SSourceControlChangelistsWidget::CanDeleteUncontrolledChangelist()
 	return (UncontrolledChangelistState != nullptr) && !UncontrolledChangelistState->Changelist.IsDefault() && !UncontrolledChangelistState->ContainsFiles();
 }
 
-void SSourceControlChangelistsWidget::OnMoveFiles()
+TValueOrError<void, void> SSourceControlChangelistsWidget::TryMoveFiles()
 {
 	TArray<FString> SelectedControlledFiles;
 	TArray<FString> SelectedUncontrolledFiles;
@@ -2597,7 +2603,7 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 
 	if (SelectedControlledFiles.IsEmpty() && SelectedUncontrolledFiles.IsEmpty())
 	{
-		return;
+		return MakeError();
 	}
 
 	const bool bAddNewChangelistEntry = true;
@@ -2658,11 +2664,13 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 
 	if (!bOk)
 	{
-		return;
+		return MakeError();
 	}
 
 	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
 
+	bool bFailed = false;
+	
 	// Move files to a new changelist
 	if (bAddNewChangelistEntry && PickedItem == 0)
 	{
@@ -2670,7 +2678,7 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 		TSharedRef<FNewChangelist> NewChangelistOperation = ISourceControlOperation::Create<FNewChangelist>();
 		NewChangelistOperation->SetDescription(ChangelistDescription);
 		Execute(LOCTEXT("Moving_Files_New_Changelist", "Moving file(s) to a new changelist..."), NewChangelistOperation, SelectedControlledFiles, EConcurrency::Synchronous, FSourceControlOperationComplete::CreateLambda(
-			[this, SelectedUncontrolledFiles](const TSharedRef<ISourceControlOperation>& Operation, ECommandResult::Type InResult)
+			[this, &SelectedUncontrolledFiles, &bFailed](const TSharedRef<ISourceControlOperation>& Operation, ECommandResult::Type InResult)
 			{
 				if (InResult == ECommandResult::Succeeded)
 				{
@@ -2685,6 +2693,7 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 				if (InResult == ECommandResult::Failed)
 				{
 					SSourceControlCommon::DisplaySourceControlOperationNotification(LOCTEXT("Move_Files_New_Changelist_Failed", "Failed to move the file to the new changelist."), SNotificationItem::CS_Fail);
+					bFailed = true;
 				}
 			}));
 	}
@@ -2703,6 +2712,7 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 			if (!NewUncontrolledChangelist.IsSet())
 			{
 				SSourceControlCommon::DisplaySourceControlOperationNotification(LOCTEXT("Move_Files_New_Uncontrolled_Changelist_Failed", "Failed to create a new uncontrolled changelist."), SNotificationItem::CS_Fail);
+				bFailed = true;
 			}
 			else if (!SelectedControlledFileStates.IsEmpty() || !SelectedUnControlledFileStates.IsEmpty())
 			{
@@ -2739,7 +2749,7 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 			if (!SelectedControlledFiles.IsEmpty())
 			{
 				Execute(LOCTEXT("Moving_File_Between_Changelists", "Moving file(s) to the selected changelist..."), ISourceControlOperation::Create<FMoveToChangelist>(), Changelist, SelectedControlledFiles, EConcurrency::Synchronous, FSourceControlOperationComplete::CreateLambda(
-					[](const TSharedRef<ISourceControlOperation>& Operation, ECommandResult::Type InResult)
+					[&bFailed](const TSharedRef<ISourceControlOperation>& Operation, ECommandResult::Type InResult)
 					{
 						if (InResult == ECommandResult::Succeeded)
 						{
@@ -2748,6 +2758,7 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 						else if (InResult == ECommandResult::Failed)
 						{
 							SSourceControlCommon::DisplaySourceControlOperationNotification(LOCTEXT("Move_Files_Between_Changelist_Failed", "Failed to move the file(s) to the selected changelist."), SNotificationItem::CS_Fail);
+							bFailed = true;
 						}
 					}));
 			}
@@ -2777,6 +2788,11 @@ void SSourceControlChangelistsWidget::OnMoveFiles()
 			}
 		}
 	}
+	if (bFailed)
+	{
+		return MakeError();
+	}
+	return MakeValue();
 }
 
 void SSourceControlChangelistsWidget::OnShowHistory()
@@ -2850,6 +2866,8 @@ TSharedPtr<SWidget> SSourceControlChangelistsWidget::OnOpenContextMenu()
 	ContextObject->SelectedFiles.Append(SelectedControlledFiles);
 	ContextObject->SelectedFiles.Append(SelectedUncontrolledFiles);
 
+	ContextObject->SelectedChangelist = GetChangelistFromSelection();
+
 	UToolMenu* Menu = ToolMenus->GenerateMenu(MenuName, Context);
 
 	FToolMenuSection& Section = *Menu->FindSection("Source Control");
@@ -2865,10 +2883,15 @@ TSharedPtr<SWidget> SSourceControlChangelistsWidget::OnOpenContextMenu()
 				TArray<FString> SelectedFiles;
 				GetSelectedFiles(SelectedFiles, SelectedFiles);
 				TArray<UPackage*> Packages;
-				for (const FString& Filename : SelectedFiles)
+				Packages.Reserve(SelectedFiles.Num());
 				{
-					FString PackageName = UPackageTools::FilenameToPackageName(Filename);
-					Packages.Add(UPackageTools::LoadPackage(PackageName));
+					// Reregister here because otherwise LoadPackage will do it once per call and it can be very slow
+					FGlobalComponentReregisterContext ReregisterContext;
+					for (const FString& Filename : SelectedFiles)
+					{
+						FString PackageName = UPackageTools::FilenameToPackageName(Filename);
+						Packages.Add(UPackageTools::LoadPackage(PackageName));
+					}
 				}
 				const bool bOnlyDirty = false;
 				UEditorLoadingAndSavingUtils::SavePackages(Packages, bOnlyDirty);
@@ -2896,13 +2919,22 @@ TSharedPtr<SWidget> SSourceControlChangelistsWidget::OnOpenContextMenu()
 				}
 				
 				// Handles almost everything else
-				OnMoveFiles();
-
-				// Actaully save the assets 
-				TArray<UPackage*> Packages;
-				for (const FString& PackageName : PackageNames)
+				if (TryMoveFiles().HasError())
 				{
-					Packages.Add(UPackageTools::LoadPackage(PackageName));
+					return;
+				}
+
+				// Actually save the assets
+				TArray<UPackage*> Packages;
+				Packages.Reserve(PackageNames.Num());
+				{
+					// Reregister here because otherwise LoadPackage will do it once per call and it can be very slow
+					FGlobalComponentReregisterContext ReregisterContext;
+
+					for (const FString& PackageName : PackageNames)
+					{
+						Packages.Add(UPackageTools::LoadPackage(PackageName));
+					}
 				}
 				const bool bOnlyDirty = false;
 				UEditorLoadingAndSavingUtils::SavePackages(Packages, bOnlyDirty);
@@ -3052,7 +3084,7 @@ TSharedPtr<SWidget> SSourceControlChangelistsWidget::OnOpenContextMenu()
 			"MoveFiles", LOCTEXT("SourceControl_MoveFiles", "Move Files To..."),
 			LOCTEXT("SourceControl_MoveFiles_Tooltip", "Move Files To A Different Changelist..."),
 			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(this, &SSourceControlChangelistsWidget::OnMoveFiles)));
+			FUIAction(FExecuteAction::CreateLambda([this] { TryMoveFiles(); })));
 
 		Section.AddMenuEntry(
 			"ShowHistory",
@@ -3413,8 +3445,7 @@ void SSourceControlChangelistsWidget::OnItemDoubleClicked(TSharedPtr<IChangelist
 		}
 		else
 		{
-			FText Title(LOCTEXT("Cannot_Submit_Changelist_Title", "Cannot Submit Changelist"));
-			FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, FailureMessage, &Title);
+			FMessageDialog::Open(EAppMsgType::Ok, EAppReturnType::Ok, FailureMessage, LOCTEXT("Cannot_Submit_Changelist_Title", "Cannot Submit Changelist"));
 		}
 	}
 }
@@ -3512,7 +3543,7 @@ void SSourceControlChangelistsWidget::OnColumnSortModeChanged(const EColumnSortP
 	}
 
 	SortFileView();
-	FileListView->RequestListRefresh();
+	GetActiveFileListView().RequestListRefresh();
 }
 
 bool SSourceControlChangelistsWidget::IsFileViewSortedByFileStatusIcon() const
@@ -3543,7 +3574,7 @@ void SSourceControlChangelistsWidget::SortFileView()
 
 	auto CompareNames = [](const IFileViewTreeItem* Lhs, const IFileViewTreeItem* Rhs)
 	{
-		return FCString::Stricmp(*Lhs->GetName(), *Rhs->GetName());
+		return UE::ComparisonUtility::CompareNaturalOrder(*Lhs->GetName(), *Rhs->GetName());
 	};
 
 	auto ComparePaths = [](const IFileViewTreeItem* Lhs, const IFileViewTreeItem* Rhs)

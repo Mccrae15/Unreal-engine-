@@ -269,8 +269,10 @@ export const getElapsedString = (start: Moment, end: Moment, includeSeconds:bool
         }
 
         if (includeSeconds || !duration) {
-            if (d.seconds()) {
+            if (d.seconds() > 0) {
                 duration += `${d.seconds()}s `;
+            } else {
+                duration += `0s `;
             }
         }
     }
@@ -379,7 +381,7 @@ export const getHumanTime = (timeIn: Date | string | undefined): string => {
 };
 
 
-export const getShortNiceTime = (timeIn: Date | string | undefined, relative: boolean = false, includeHour:boolean = false): string => {
+export const getShortNiceTime = (timeIn: Date | string | undefined, relative: boolean = false, includeHour:boolean = false, includeDay: boolean = true): string => {
 
     if (!timeIn) {
         return "";
@@ -401,7 +403,10 @@ export const getShortNiceTime = (timeIn: Date | string | undefined, relative: bo
 
     if (includeHour) {
         const format = dashboard.display24HourClock ? "HH:mm:ss z" : "LT z";
-        timeStr += ` at ${time.format(format)}`;
+        if (includeDay)
+            timeStr += ` at ${time.format(format)}`;
+        else
+            timeStr = time.format(format);
     }
     
     return timeStr;

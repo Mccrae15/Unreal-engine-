@@ -36,6 +36,9 @@ public:
 	/** Called when the current registry source changes */
 	void SetCurrentRegistrySource(const FAssetManagerEditorRegistrySource* RegistrySource);
 
+	/** Called when tab is closed */
+	void OnClose();
+
 protected:
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
@@ -101,6 +104,8 @@ protected:
 
 	/** Perform additional filtering */
 	bool HandleFilterAsset(const FAssetData& InAssetData) const;
+
+	void OnAssetSelected(const FAssetData& InAssetData);
 
 	/** Button callbacks */
 	FReply ClearAssets();

@@ -16,19 +16,21 @@ LandscapeDataAccess.h: Classes for the editor to access to Landscape data
 #define LANDSCAPE_XYOFFSET_SCALE	(1.0f/256.f)
 #define LANDSCAPE_INV_XYOFFSET_SCALE	256.f
 
+#define LANDSCAPE_VISIBILITY_THRESHOLD (2.0f/3.0f)
+
 class ULandscapeComponent;
 class ULandscapeLayerInfoObject;
 
 namespace LandscapeDataAccess
 {
-	inline const int32 MaxValue = 65535;
-	inline const float MidValue = 32768.f;
+	inline constexpr int32 MaxValue = 65535;
+	inline constexpr float MidValue = 32768.f;
 	// Reserved 2 bits for other purpose
 	// Most significant bit - Visibility, 0 is visible(default), 1 is invisible
 	// 2nd significant bit - Triangle flip, not implemented yet
 	FORCEINLINE float GetLocalHeight(uint16 Height)
 	{
-		return ((float)Height - MidValue) * LANDSCAPE_ZSCALE;
+		return (static_cast<float>(Height) - MidValue) * LANDSCAPE_ZSCALE;
 	}
 
 	FORCEINLINE uint16 GetTexHeight(float Height)
@@ -42,6 +44,21 @@ namespace LandscapeDataAccess
 		Color.R = Height >> 8;
 		Color.G = Height & 255;
 		return MoveTemp(Color);
+	}
+
+	FORCEINLINE float UnpackHeight(const FColor& InHeightmapSample)
+	{
+		uint16 Height = (InHeightmapSample.R << 8) + InHeightmapSample.G;
+		return GetLocalHeight(Height);
+	}
+
+	FORCEINLINE FVector UnpackNormal(const FColor& InHeightmapSample)
+	{
+		FVector Normal;
+		Normal.X = 2.f * static_cast<float>(InHeightmapSample.B) / 255.f - 1.f;
+		Normal.Y = 2.f * static_cast<float>(InHeightmapSample.A) / 255.f - 1.f;
+		Normal.Z = FMath::Sqrt(FMath::Max(1.0f - (FMath::Square(Normal.X) + FMath::Square(Normal.Y)), 0.0f));
+		return Normal;
 	}
 };
 
@@ -75,6 +92,7 @@ public:
 
 	void* LockMip(UTexture2D* Texture, int32 MipLevel)
 	{
+		check(Texture->Source.IsValid());
 		check(MipLevel < Texture->Source.GetNumMips());
 
 		TArray<FLockedMipDataInfo>* MipInfo = LockedMipInfoMap.Find(Texture);
@@ -89,7 +107,7 @@ public:
 
 		if( (*MipInfo)[MipLevel].MipData.Num() == 0 )
 		{
-			Texture->Source.GetMipData((*MipInfo)[MipLevel].MipData, MipLevel);
+			verify( Texture->Source.GetMipData((*MipInfo)[MipLevel].MipData, MipLevel) );
 		}
 		(*MipInfo)[MipLevel].LockCount++;
 
@@ -115,16 +133,11 @@ private:
 	TMap<UTexture2D*, TArray<FLockedMipDataInfo> > LockedMipInfoMap;
 };
 	
-//
-// FLandscapeComponentDataInterface
-//
-struct FLandscapeComponentDataInterface
-{
-	friend struct FLandscapeDataInterface;
 
-	// tors
-	LANDSCAPE_API FLandscapeComponentDataInterface(ULandscapeComponent* InComponent, int32 InMipLevel = 0, bool InWorkOnEditingLayer = true);
-	LANDSCAPE_API ~FLandscapeComponentDataInterface();
+struct FLandscapeComponentDataInterfaceBase
+{
+	FLandscapeComponentDataInterfaceBase() {}
+	LANDSCAPE_API FLandscapeComponentDataInterfaceBase(ULandscapeComponent* InComponent, int32 InMipLevel, bool InWorkOnEditingLayer = true);
 
 	// Accessors
 	void VertexIndexToXY(int32 VertexIndex, int32& OutX, int32& OutY) const
@@ -198,6 +211,78 @@ struct FLandscapeComponentDataInterface
 		return TexelY * ComponentNumSubsections * SubsectionSizeVerts + TexelX;
 	}
 
+	uint16 GetHeight(int32 LocalX, int32 LocalY, const TArray<FColor>& HeightAndNormals) const
+	{
+		const FColor* Texel = GetHeightData(LocalX, LocalY, HeightAndNormals);
+		return (Texel->R << 8) + Texel->G;
+	}
+
+	float GetScaleFactor() const
+	{
+		return (float)ComponentSizeQuads / (float)(ComponentSizeVerts - 1);
+	}
+
+	FVector GetLocalVertex(int32 LocalX, int32 LocalY, const TArray<FColor>& HeightAndNormals) const
+	{
+		const float ScaleFactor = GetScaleFactor();
+		
+		return FVector(LocalX * ScaleFactor , LocalY * ScaleFactor, LandscapeDataAccess::GetLocalHeight(GetHeight(LocalX, LocalY, HeightAndNormals)));
+	}
+
+	float GetLocalHeight(int32 LocalX, int32 LocalY, const TArray<FColor>& HeightAndNormals) const
+	{
+		return LandscapeDataAccess::GetLocalHeight(GetHeight(LocalX, LocalY, HeightAndNormals));
+	}
+
+	const FColor* GetHeightData(int32 LocalX, int32 LocalY, const TArray<FColor>& HeightAndNormals) const
+	{
+#if LANDSCAPE_VALIDATE_DATA_ACCESS
+		check(LocalX >= 0 && LocalY >= 0 && LocalX < ComponentSizeVerts&& LocalY < HeightmapStride);
+#endif
+
+		int32 TexelX, TexelY;
+		VertexXYToTexelXY(LocalX, LocalY, TexelX, TexelY);
+
+		return &HeightAndNormals[TexelX + HeightmapComponentOffsetX + (TexelY + HeightmapComponentOffsetY) * HeightmapStride];
+	}
+
+	void GetLocalTangentVectors(int32 LocalX, int32 LocalY, FVector& LocalTangentX, FVector& LocalTangentY, FVector& LocalTangentZ, const TArray<FColor>& HeightAndNormals) const
+	{
+		// Note: these are still pre-scaled, just not rotated
+		const FColor* Data = GetHeightData(LocalX, LocalY, HeightAndNormals);
+		LocalTangentZ = LandscapeDataAccess::UnpackNormal(*Data);
+		LocalTangentX = FVector(-LocalTangentZ.Z, 0.f, LocalTangentZ.X);
+		LocalTangentY = FVector(0.f, LocalTangentZ.Z, -LocalTangentZ.Y);
+	}
+
+	int32 GetComponentSizeVerts() const { return ComponentSizeVerts; }
+
+public:
+	// offset of this component's data into heightmap texture
+	int32 HeightmapStride = 0;
+	int32 HeightmapComponentOffsetX = 0;
+	int32 HeightmapComponentOffsetY = 0;
+	int32 HeightmapSubsectionOffset = 0;
+	const int32 MipLevel = 0;
+
+protected:
+	int32 ComponentSizeQuads = 0;
+	int32 ComponentSizeVerts = 0;
+	int32 SubsectionSizeVerts = 0;
+	int32 ComponentNumSubsections = 0;
+};
+
+//
+// FLandscapeComponentDataInterface
+//
+struct FLandscapeComponentDataInterface : public FLandscapeComponentDataInterfaceBase
+{
+	friend struct FLandscapeDataInterface;
+
+	// tors
+	LANDSCAPE_API FLandscapeComponentDataInterface(ULandscapeComponent* InComponent, int32 InMipLevel = 0, bool InWorkOnEditingLayer = true);
+	LANDSCAPE_API ~FLandscapeComponentDataInterface();
+
 	FColor* GetRawHeightData() const
 	{
 		return HeightMipData;
@@ -224,14 +309,14 @@ struct FLandscapeComponentDataInterface
 	/* Return the raw heightmap data exactly same size for Heightmap texture which belong to only this component */
 	LANDSCAPE_API void GetHeightmapTextureData(TArray<FColor>& OutData, bool bOkToFail = false);
 
-	LANDSCAPE_API bool GetWeightmapTextureData(ULandscapeLayerInfoObject* LayerInfo, TArray<uint8>& OutData, bool InUseEditingWeightmap = false);
+	LANDSCAPE_API bool GetWeightmapTextureData(ULandscapeLayerInfoObject* InLayerInfo, TArray<uint8>& OutData, bool bInUseEditingWeightmap = false, bool bInRemoveSubsectionDuplicates = false);
 
 	FColor* GetHeightData(int32 LocalX, int32 LocalY) const
 	{
 #if LANDSCAPE_VALIDATE_DATA_ACCESS
 		check(Component);
 		check(HeightMipData);
-		check(LocalX >=0 && LocalY >=0 && LocalX < ComponentSizeVerts && LocalY < ComponentSizeVerts );
+		check(LocalX >=0 && LocalY >=0 && LocalX < ComponentSizeVerts && LocalY < ComponentSizeVerts);
 #endif
 
 		int32 TexelX, TexelY;
@@ -283,9 +368,7 @@ struct FLandscapeComponentDataInterface
 		// Note: these are still pre-scaled, just not rotated
 
 		FColor* Data = GetHeightData( LocalX, LocalY );
-		LocalTangentZ.X = 2.f * (float)Data->B / 255.f - 1.f;
-		LocalTangentZ.Y = 2.f * (float)Data->A / 255.f - 1.f;
-		LocalTangentZ.Z = FMath::Sqrt(1.f - (FMath::Square(LocalTangentZ.X)+FMath::Square(LocalTangentZ.Y)));
+		LocalTangentZ = LandscapeDataAccess::UnpackNormal(*Data);
 		LocalTangentX = FVector(-LocalTangentZ.Z, 0.f, LocalTangentZ.X);
 		LocalTangentY = FVector(0.f, LocalTangentZ.Z, -LocalTangentZ.Y);
 	}
@@ -336,22 +419,10 @@ private:
 	ULandscapeComponent* Component;
 	bool bWorkOnEditingLayer;
 
-public:
-	// offset of this component's data into heightmap texture
-	int32 HeightmapStride;
-	int32 HeightmapComponentOffsetX;
-	int32 HeightmapComponentOffsetY;
-	int32 HeightmapSubsectionOffset;
-
 private:
 	FColor* HeightMipData;
 	FColor* XYOffsetMipData;
-
-	int32 ComponentSizeVerts;
-	int32 SubsectionSizeVerts;
-	int32 ComponentNumSubsections;
-public:
-	const int32 MipLevel;
+	
 };
 
 // Helper functions

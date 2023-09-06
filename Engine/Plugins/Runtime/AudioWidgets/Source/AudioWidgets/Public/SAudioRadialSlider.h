@@ -10,12 +10,21 @@
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateWidgetStyleAsset.h"
 
-class SAudioTextBox;
-class SImage;
-class SWidgetSwitcher;
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AudioDefines.h"
+#include "SAudioTextBox.h"
+#include "Styling/CoreStyle.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SEditableText.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SOverlay.h"
+#endif
 
 #include "SAudioRadialSlider.generated.h"
 
+class SAudioTextBox;
+class SImage;
+class SWidgetSwitcher;
 class SRadialSlider;
 
 UENUM()
@@ -196,13 +205,3 @@ public:
 	const float GetOutputValue(const float InSliderValue);
 	const float GetSliderValue(const float OutputValue);
 };
-
-#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
-#include "AudioDefines.h"
-#include "SAudioTextBox.h"
-#include "Styling/CoreStyle.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SEditableText.h"
-#include "Widgets/Layout/SWidgetSwitcher.h"
-#include "Widgets/SOverlay.h"
-#endif

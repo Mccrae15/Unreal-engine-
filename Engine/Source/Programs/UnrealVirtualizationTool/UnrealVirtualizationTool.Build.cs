@@ -16,10 +16,10 @@ public class UnrealVirtualizationTool : ModuleRules
 				"ApplicationCore",
 				"SourceControl",
 				"PerforceSourceControl",
-				"DesktopPlatform"
+				"DesktopPlatform",
+				"Json"
 			});
 
-		PublicIncludePaths.Add("Runtime/Launch/Public");
-		PrivateIncludePaths.Add("Runtime/Launch/Private");      // For LaunchEngineLoop.cpp include
+		PublicIncludePathModuleNames.Add("Launch");
 	}
 }

@@ -71,6 +71,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -433,6 +434,16 @@ void FFontEditor::OnPreviewTextChanged(const FText& Text)
 	FontPreviewWidget->SetPreviewText(Text);
 }
 
+TOptional<float> FFontEditor::GetDrawFontScale() const
+{
+	return FontPreviewWidget->GetPreviewFontScale();
+}
+
+void FFontEditor::OnDrawFontScaleChanged(float InNewValue, ETextCommit::Type CommitType)
+{
+	FontPreviewWidget->SetPreviewFontScale(InNewValue);
+}
+
 ECheckBoxState FFontEditor::GetDrawFontMetricsState() const
 {
 	return (FontPreviewWidget->GetPreviewFontMetrics()) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -462,11 +473,10 @@ void FFontEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChanged
 	if(PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == FontCacheTypePropertyName)
 	{
 		// Show a warning message, as what we're about to do will destroy any existing data in this font object
-		const FText Title = LOCTEXT("ChangeCacheTypeWarningTitle", "Really change the font cache type?");
 		const EAppReturnType::Type DlgResult = FMessageDialog::Open(
 			EAppMsgType::YesNo, 
 			LOCTEXT("ChangeCacheTypeWarningMsg", "Changing the cache type will cause this font to be reinitialized (discarding any existing data).\n\nAre you sure you want to proceed?"), 
-			&Title
+			LOCTEXT("ChangeCacheTypeWarningTitle", "Really change the font cache type?")
 			);
 
 		bool bSuccessfullyChangedCacheType = false;
@@ -481,6 +491,7 @@ void FFontEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyChanged
 
 			// If we changed the font cache type, then we need to update the UI to hide the invalid tabs and spawn the new ones
 			UpdateLayout();
+			FontProperties->ForceRefresh();
 		}
 		else
 		{
@@ -641,6 +652,17 @@ void FFontEditor::CreateInternalWidgets()
 			.SelectAllTextWhenFocused(true)
 			.OnTextChanged(this, &FFontEditor::OnPreviewTextChanged)
 		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SNumericEntryBox<float>)
+			.Value(this, &FFontEditor::GetDrawFontScale)
+			.MinValue(1.f)
+			.MaxValue(10.f)
+			.OnValueCommitted(this, &FFontEditor::OnDrawFontScaleChanged)
+		]
+
 
 		+SHorizontalBox::Slot()
 		.AutoWidth()

@@ -2,10 +2,10 @@
 
 #include "NiagaraComponent.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/Level.h"
 #include "Engine/TextureRenderTarget.h"
-#include "EngineUtils.h"
-#include "Materials/MaterialInstanceDynamic.h"
 #include "NiagaraCommon.h"
+#include "NiagaraComponentPool.h"
 #include "NiagaraComponentSettings.h"
 #include "NiagaraConstants.h"
 #include "NiagaraCustomVersion.h"
@@ -14,16 +14,22 @@
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraSceneProxy.h"
+#include "NiagaraSimCache.h"
 #include "NiagaraStats.h"
 #include "NiagaraSystem.h"
 #include "NiagaraSystemInstanceController.h"
 #include "NiagaraWorldManager.h"
 #include "PrimitiveSceneInfo.h"
+#include "PrimitiveViewRelevance.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "SceneManagement.h"
 #include "UObject/NameTypes.h"
 #include "Engine/StaticMesh.h"
 #include "NiagaraCullProxyComponent.h"
 #include "SceneInterface.h"
+#include "UObject/UObjectIterator.h"
+#include "PrimitiveUniformShaderParametersBuilder.h"
+#include "NiagaraActor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraComponent)
 
@@ -142,7 +148,7 @@ FAutoConsoleCommandWithWorldAndArgs DumpNiagaraComponentsCommand(
 
 				if (Component->PoolingMethod == ENCPoolMethod::FreeInPool)
 				{
-					UE_LOG(LogNiagara, Log, TEXT("Component '%s' Asset '%s' Free In Compnent Pool"), *GetNameSafe(Component), *GetNameSafe(NiagaraSystem));
+					UE_LOG(LogNiagara, Log, TEXT("Component '%s' Asset '%s' Free In Component Pool"), *GetNameSafe(Component), *GetNameSafe(NiagaraSystem));
 				}
 				else
 				{
@@ -180,6 +186,7 @@ bool FitsIntoFloat(FVector InValue)
 
 FNiagaraSceneProxy::FNiagaraSceneProxy(UNiagaraComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent, InComponent->GetAsset() ? InComponent->GetAsset()->GetFName() : FName())
+	, OcclusionQueryMode(InComponent->GetOcclusionQueryMode())
 {
 	if (FNiagaraSystemInstanceControllerConstPtr SystemInstanceController = InComponent->GetSystemInstanceController())
 	{
@@ -192,6 +199,9 @@ FNiagaraSceneProxy::FNiagaraSceneProxy(UNiagaraComponent* InComponent)
 		bIsHeterogeneousVolume = RenderData->HasAnyHeterogeneousVolumesEnabled();
 
 		SystemStatID = InComponent->GetAsset()->GetStatID(false, false);
+#if NIAGARAPROXY_EVENTS_ENABLED
+		SystemStatString = InComponent->GetAsset()->GetFName().ToString();
+#endif
 	}
 }
 
@@ -323,6 +333,13 @@ TUniformBuffer<FPrimitiveUniformShaderParameters>* FNiagaraSceneProxy::GetCustom
 		KeyHash = HashCombine(KeyHash, UE::Math::GetTypeHash(InstanceBounds.Max));
 	}
 
+	const FCustomPrimitiveData* LocalCustomPrimitiveData = GetCustomPrimitiveData();
+	if (LocalCustomPrimitiveData && LocalCustomPrimitiveData->Data.Num())
+	{
+		const uint32 CustomFloatHash = FCrc::MemCrc32(LocalCustomPrimitiveData->Data.GetData(), LocalCustomPrimitiveData->Data.Num() * LocalCustomPrimitiveData->Data.GetTypeSize());
+		KeyHash = HashCombine(KeyHash, CustomFloatHash);
+	}
+
 	TUniformBuffer<FPrimitiveUniformShaderParameters>*& CustomUBRef = CustomUniformBuffers.FindOrAdd(KeyHash);
 	if (CustomUBRef == nullptr)
 	{
@@ -333,7 +350,7 @@ TUniformBuffer<FPrimitiveUniformShaderParameters>* FNiagaraSceneProxy::GetCustom
 				.ActorWorldPosition(GetActorPosition())
 				.WorldBounds(GetBounds())
 				.LocalBounds(GetLocalBounds())
-				.CustomPrimitiveData(GetCustomPrimitiveData())
+				.CustomPrimitiveData(LocalCustomPrimitiveData)
 				.LightingChannelMask(GetLightingChannelMask())
 				.LightmapDataIndex(LocalPrimitiveSceneInfo ? LocalPrimitiveSceneInfo->GetLightmapDataOffset() : 0)
 				.LightmapUVIndex(GetLightMapCoordinateIndex())
@@ -361,7 +378,7 @@ TUniformBuffer<FPrimitiveUniformShaderParameters>* FNiagaraSceneProxy::GetCustom
 
 		CustomUBRef = new TUniformBuffer<FPrimitiveUniformShaderParameters>();
 		CustomUBRef->SetContents(UBBuilder.Build());
-		CustomUBRef->InitResource();
+		CustomUBRef->InitResource(FRHICommandListImmediate::Get());
 	}
 
 	return CustomUBRef;
@@ -406,12 +423,59 @@ void FNiagaraSceneProxy::SetRenderingEnabled(bool bInRenderingEnabled)
 	}
 }
 
+bool FNiagaraSceneProxy::CanBeOccluded() const
+{
+	switch (OcclusionQueryMode)
+	{
+		case ENiagaraOcclusionQueryMode::AlwaysEnabled:		return true;
+		case ENiagaraOcclusionQueryMode::AlwaysDisabled:	return false;
+
+		// TODO account for MaterialRelevance.bDisableDepthTest and MaterialRelevance.bPostMotionBlurTranslucency as well
+		//case ENiagaraOcclusionQueryMode::Default:
+		default:											return !ShouldRenderCustomDepth();
+	}
+}
+
 void FNiagaraSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_RT);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentGetDynamicMeshElements);
 
 	FScopeCycleCounter SystemStatCounter(SystemStatID);
+
+#if NIAGARAPROXY_EVENTS_ENABLED
+	bool bEndPlatformEvent = false;
+#if CPUPROFILERTRACE_ENABLED
+	bool bEndTraceEvent = false;
+	if (UE_TRACE_CHANNELEXPR_IS_ENABLED(CpuChannel))
+	{
+		bEndTraceEvent = true;
+		FCpuProfilerTrace::OutputBeginDynamicEvent(GetResourceName());
+	}
+	else
+#endif //CPUPROFILERTRACE_ENABLED
+#if ENABLE_STATNAMEDEVENTS
+	{
+		bEndPlatformEvent = true;
+		FPlatformMisc::BeginNamedEvent(FColor(0), *SystemStatString);
+	}
+#endif //ENABLE_STATNAMEDEVENTS
+	ON_SCOPE_EXIT
+	{
+#if CPUPROFILERTRACE_ENABLED
+		if (bEndTraceEvent)
+		{
+			FCpuProfilerTrace::OutputEndEvent();
+		}
+#endif //CPUPROFILERTRACE_ENABLED
+#if ENABLE_STATNAMEDEVENTS
+		if (bEndPlatformEvent)
+		{
+			FPlatformMisc::EndNamedEvent();
+		}
+#endif //ENABLE_STATNAMEDEVENTS
+	};
+#endif
 
 	if (RenderData)
 	{
@@ -487,6 +551,7 @@ UNiagaraComponent::UNiagaraComponent(const FObjectInitializer& ObjectInitializer
 	, bForceLocalPlayerEffect(false)
 	, bIsCulledByScalability(false)
 	, bDuringUpdateContextReset(false)
+	, bDesiredPauseState(false)
 	//, bIsChangingAutoAttachment(false)
 	, ScalabilityManagerHandle(INDEX_NONE)
 	, ForceUpdateTransformTime(0.0f)
@@ -704,7 +769,13 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Effects);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraComponentTick);
 
-	FScopeCycleCounter SystemStatCounter(Asset ? Asset->GetStatID(true, false) : TStatId());
+	if (!::IsValid(Asset))
+	{
+		//-TODO: If our Asset is null or has become Garbage should we force deactive the component / ticking?
+		return;
+	}
+
+	FScopeCycleCounter SystemStatCounter(Asset->GetStatID(true, false));
 
 	if (bAwaitingActivationDueToNotReady)
 	{
@@ -801,6 +872,10 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 							// Cannot do multiple tick off the game thread here without additional work. So we pass in null for the completion event which will force GT execution.
 							// If this becomes a perf problem I can add a new path for the tick code to handle multiple ticks.
 							SystemInstanceController->ManualTick(TickDelta, nullptr);
+							if (IsComplete())
+							{
+								break;
+							}
 							--TicksToProcess;
 
 							// This limits the amount of time we will consume seeking forward
@@ -912,19 +987,58 @@ void UNiagaraComponent::AdvanceSimulationByTime(float SimulateTime, float TickDe
 
 void UNiagaraComponent::SetPaused(bool bInPaused)
 {
-	if (SystemInstanceController.IsValid())
+	bDesiredPauseState = bInPaused;
+
+	bool bIsActuallyActive = SystemInstanceController.IsValid() &&
+		SystemInstanceController->GetRequestedExecutionState() == ENiagaraExecutionState::Active &&
+		SystemInstanceController->GetActualExecutionState() == ENiagaraExecutionState::Active;
+
+	if(!bIsActuallyActive)
 	{
-		SystemInstanceController->SetPaused(bInPaused);
+		//Don't allow pausing when the system is not active.
+		//Activate/Deactivate should clear the pause state.
+		return;
 	}
+
+	if(bIsActuallyActive && !bInPaused)
+	{
+		//If we're active and we unpause, try to re-register with the scalability manager
+		RegisterWithScalabilityManager();
+	}
+	else 
+	{
+		//If we're being paused externally, unregister from scalability.
+		UnregisterWithScalabilityManager();
+	}
+	
+	SetPausedInternal(bDesiredPauseState, false);
 }
 
 bool UNiagaraComponent::IsPaused()const
 {
+	//check the system instance is actually in the right state. 
+	//In cases where we don't have a system instance or we're culled by scalability, the instance can have a differnt internal state to the user's desired state.
+	check(SystemInstanceController.IsValid() == false || bIsCulledByScalability || SystemInstanceController->IsPaused() == bDesiredPauseState);
+	return bDesiredPauseState;
+}
+
+void UNiagaraComponent::SetPausedInternal(bool bInPaused, bool bIsScalabilityCull)
+{
+	if(bIsScalabilityCull)
+	{
+		bIsCulledByScalability = bInPaused;
+	}
+	
 	if (SystemInstanceController.IsValid())
 	{
-		return SystemInstanceController->IsPaused();
+		bool bShouldPauseFromScalability = false;
+		check(GetAsset());
+		if(UNiagaraEffectType* FXType = GetAsset()->GetEffectType())
+		{
+			bShouldPauseFromScalability = FXType->CullReaction == ENiagaraCullReaction::PauseResume && bIsCulledByScalability;
+		}
+		SystemInstanceController->SetPaused(bShouldPauseFromScalability || bDesiredPauseState);
 	}
-	return false;
 }
 
 UNiagaraDataInterface* UNiagaraComponent::GetDataInterface(const FString& Name)
@@ -1126,6 +1240,13 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 
 	bIsCulledByScalability = false;
 	
+	//Ensure we're not paused. Non-scalability activate calls should override pause state.
+	if(bIsScalabilityCull == false)
+	{
+		bDesiredPauseState = false;
+		SetPausedInternal(false, false);
+	}
+
 	//Update our owner scalability state but don't register with the manager.
 	ResolveOwnerAllowsScalability(false);
 	
@@ -1161,8 +1282,15 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		SystemInstanceController->GetRequestedExecutionState() == ENiagaraExecutionState::Active &&
 		SystemInstanceController->GetActualExecutionState() == ENiagaraExecutionState::Active)
 	{
+		// It would be incorrect for the component tick to be enabled and not be in solo mode but we will verify this
+		ensure(SystemInstanceController->IsSolo() == IsComponentTickEnabled());
+		ScopedComponentTickEnabled.bTickEnabled = IsComponentTickEnabled();
 		return;
 	}
+	
+	//Unpause on activate if needed.
+	checkf(!(bIsCulledByScalability && IsPaused()), TEXT("We should never be paused when being re-activated by scalability. We unregister from the manager when paused so we should never get here."));
+	SetPausedInternal(false, false);
 
 	DestroyCullProxy();
 
@@ -1257,6 +1385,12 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 			ScopedComponentTickEnabled.bTickEnabled = true;
 		}
 	}
+
+	if(bIsScalabilityCull)
+	{
+		//If this is an activate call from a scalability cull we may need to begin in a paused state if someone paused us while we were culled from scalability.
+		SetPausedInternal(bDesiredPauseState, false);
+	}
 }
 
 void UNiagaraComponent::Deactivate()
@@ -1283,6 +1417,10 @@ void UNiagaraComponent::DeactivateInternal(bool bIsScalabilityCull /* = false */
 		// Unregister with the scalability manager if this is a genuine deactivation from outside.
 		// The scalability manager itself can call this function when culling systems.
 		UnregisterWithScalabilityManager();
+	
+		//Ensure we're not paused.
+		bDesiredPauseState = false;
+		SetPausedInternal(false, false);
 	}
 
 	if (IsActive() && SystemInstanceController)
@@ -1742,7 +1880,7 @@ void UNiagaraComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 		{
 			if (FNiagaraUtilities::LogVerboseWarnings())
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::OnComponentDestroyed: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), PoolingMethod);
+				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::OnComponentDestroyed: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), int(PoolingMethod));
 			}
 			if (FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World))
 			{
@@ -1756,7 +1894,7 @@ void UNiagaraComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 		{
 			if (FNiagaraUtilities::LogVerboseWarnings())
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::OnComponentDestroyed: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying and world it nullptr!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), PoolingMethod);
+				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::OnComponentDestroyed: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying and world it nullptr!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), int(PoolingMethod));
 			}
 		}
 
@@ -1848,7 +1986,7 @@ void UNiagaraComponent::BeginDestroy()
 		{
 			if (FNiagaraUtilities::LogVerboseWarnings())
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::BeginDestroy: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), PoolingMethod);
+				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::BeginDestroy: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), int(PoolingMethod));
 			}
 
 			if (FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World))
@@ -1863,7 +2001,7 @@ void UNiagaraComponent::BeginDestroy()
 		{
 			if (FNiagaraUtilities::LogVerboseWarnings())
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::BeginDestroy: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying and world is nullptr!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), PoolingMethod);
+				UE_LOG(LogNiagara, Warning, TEXT("UNiagaraComponent::BeginDestroy: Component (%p - %s) Asset (%s) is still pooled (%d) while destroying and world is nullptr!"), this, *GetFullNameSafe(this), *GetFullNameSafe(Asset), int(PoolingMethod));
 			}
 		}
 
@@ -1877,6 +2015,15 @@ void UNiagaraComponent::BeginDestroy()
 	DestroyInstance();
 
 	Super::BeginDestroy();
+}
+
+void UNiagaraComponent::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+{
+	Super::GetResourceSizeEx(CumulativeResourceSize);
+	if (SystemInstanceController)
+	{
+		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(SystemInstanceController->GetTotalBytesUsed());
+	}
 }
 
 void UNiagaraComponent::CreateCullProxy(bool bForce)
@@ -2076,7 +2223,7 @@ FPrimitiveSceneProxy* UNiagaraComponent::CreateSceneProxy()
 			PrecacheAssetPSOs(Asset);
 		}
 
-		if (IsPSOPrecaching())
+		if (CheckPSOPrecachingAndBoostPriority() && GetPSOPrecacheProxyCreationStrategy() != EPSOPrecacheProxyCreationStrategy::AlwaysCreate)
 		{
 			UE_LOG(LogNiagara, Verbose, TEXT("Skipping CreateSceneProxy for UNiagaraComponent %s (UNiagaraSystem PSOs are still compiling)"), *GetFullName());
 			return nullptr;
@@ -2165,13 +2312,20 @@ void UNiagaraComponent::OnChildDetached(USceneComponent* ChildComponent)
 
 bool UNiagaraComponent::IsVisible() const
 {
-	if (PoolingMethod == ENCPoolMethod::None || GetAttachParent() == nullptr)
+	// Pooled components are owned by the persistent level, so we need to check their current attached parent's level visibility, otherwise they ignore sublevel visibility
+	// Note we do not test the attached parents visibility as that doesn't match how Cascade works, and can cause visibility issues with gameplay cues who often attach to hidden components
+	if (PoolingMethod != ENCPoolMethod::None)
 	{
-		return Super::IsVisible();
+		if (USceneComponent* OwnerComponent = GetAttachParent())
+		{
+			if (OwnerComponent->CachedLevelCollection && !OwnerComponent->CachedLevelCollection->IsVisible())
+			{
+				return false;
+			}
+		}
 	}
 
-	// pooled components are owned by the persistent level, so we need to check their current attached parent visibility, otherwise they ignore sublevel visibility
-	return Super::IsVisible() && GetAttachParent()->IsVisible();
+	return Super::IsVisible();
 }
 
 void UNiagaraComponent::SetTickBehavior(ENiagaraTickBehavior NewTickBehavior)
@@ -2435,7 +2589,7 @@ void UNiagaraComponent::SetVariableActor(FName InVariableName, AActor* InValue)
 
 void UNiagaraComponent::SetNiagaraVariableActor(const FString& InVariableName, AActor* InValue)
 {
-	SetNiagaraVariableObject(InVariableName, InValue);
+	SetVariableObject(FName(*InVariableName), InValue);
 }
 
 void UNiagaraComponent::SetVariableObject(FName InVariableName, UObject* InValue)
@@ -3155,30 +3309,52 @@ void UNiagaraComponent::FixDataInterfaceOuters()
 
 void UNiagaraComponent::CopyParametersFromAsset(bool bResetExistingOverrideParameters)
 {
-	TArray<FNiagaraVariable> ExistingVars;
-	OverrideParameters.GetParameters(ExistingVars);
+	// Copy Asset Override Parameters into Component Overrides
+	const FNiagaraUserRedirectionParameterStore& AssetExposedParameters = Asset->GetExposedParameters();
 
-	TArray<FNiagaraVariable> SourceVars;
-	Asset->GetExposedParameters().GetParameters(SourceVars);
+	FNiagaraUserRedirectionParameterStore ExistingOverrideParameters;
+	Swap(ExistingOverrideParameters, OverrideParameters);
+	OverrideParameters = AssetExposedParameters;
+	OverrideParameters.SetOwner(this);
 
-	// insert new asset parameters (and keep existing overrides)
-	for (FNiagaraVariable& Param : SourceVars)
+	// Copy Existing Variables into new parameter data
+	if (bResetExistingOverrideParameters == false)
 	{
-		bool bNewParam = OverrideParameters.AddParameter(Param, true);
-
-		bool bCopyAssetValue = bResetExistingOverrideParameters || bNewParam;
-		if (bCopyAssetValue || Param.IsDataInterface())
+		for (const FNiagaraVariableWithOffset& ExistingOverrideVar : ExistingOverrideParameters.ReadParameterVariables())
 		{
-			Asset->GetExposedParameters().CopyParameterData(OverrideParameters, Param);
+			OverrideParameters.AddParameter(ExistingOverrideVar, true);
+			if (ExistingOverrideVar.IsDataInterface())
+			{
+				UNiagaraDataInterface* ExistingDataInterface = ExistingOverrideParameters.GetDataInterface(ExistingOverrideVar.Offset);
+				OverrideParameters.SetDataInterface(ExistingDataInterface, ExistingOverrideVar);
+			}
+			else if (ExistingOverrideVar.IsUObject())
+			{
+				UObject* ExistingUObject = ExistingOverrideParameters.GetUObject(ExistingOverrideVar.Offset);
+				OverrideParameters.SetUObject(ExistingUObject, ExistingOverrideVar);
+			}
+			else
+			{
+				ExistingOverrideParameters.CopyParameterData(OverrideParameters, ExistingOverrideVar);
+			}
 		}
 	}
 
-	// remove parameters that don't exist in the source asset
-	for (FNiagaraVariable& ExistingVar : ExistingVars)
+	// DataInterfaces are unique per component so we need to make new instances if they are not already
+	for (int32 i = 0; i < AssetExposedParameters.GetDataInterfaces().Num(); ++i)
 	{
-		if (!SourceVars.Contains(ExistingVar))
+		UNiagaraDataInterface* AssetDataInterface = AssetExposedParameters.GetDataInterface(i);
+		UNiagaraDataInterface* OverrideDataInterface = OverrideParameters.GetDataInterface(i);
+		if (AssetDataInterface != OverrideDataInterface)
 		{
-			OverrideParameters.RemoveParameter(ExistingVar);
+			// We must copy the data regardless as there is an expectation that data interfaces are always reset to the original state
+			AssetDataInterface->CopyTo(OverrideDataInterface);
+		}
+		else
+		{
+			OverrideDataInterface = NewObject<UNiagaraDataInterface>(this, AssetDataInterface->GetClass(), NAME_None, RF_Transactional | RF_Public);
+			AssetDataInterface->CopyTo(OverrideDataInterface);
+			OverrideParameters.SetDataInterface(OverrideDataInterface, i);
 		}
 	}
 }
@@ -3330,7 +3506,24 @@ void UNiagaraComponent::AssetExposedParametersChanged()
 		// In that case we skip the sync with the system, as that happens in PostLoad anyways.
 		return;
 	}
-	bool bCurrentlyActive = IsActive();
+
+#if WITH_EDITOR
+	// Some owner actors might have destroy on finish enabled, if we were to tweak parameters this would trigger completion and destroy the actor
+	// Lens effects for example set this making it impossible to tweak them without storing and restoring this information
+	TWeakObjectPtr<ANiagaraActor> WeakNiagaraActor = Cast<ANiagaraActor>(GetOwner());
+	bool bDestroyOnSystemFinish = false;
+	if (ANiagaraActor* NiagaraActor = WeakNiagaraActor.Get())
+	{
+		if (NiagaraActor->GetDestroyOnSystemFinish())
+		{
+			bDestroyOnSystemFinish = true;
+			NiagaraActor->SetDestroyOnSystemFinish(false);
+		}
+	}
+#endif
+
+	const bool bCurrentlyActive = IsActive();
+
 	SynchronizeWithSourceSystem();
 #if WITH_EDITOR
 	if ( !GIsTransacting )
@@ -3341,6 +3534,16 @@ void UNiagaraComponent::AssetExposedParametersChanged()
 			// only reactivate systems that were running before
 			ReinitializeSystem();
 		}
+
+#if WITH_EDITOR
+		if (bDestroyOnSystemFinish)
+		{
+			if (ANiagaraActor* NiagaraActor = WeakNiagaraActor.Get())
+			{
+				NiagaraActor->SetDestroyOnSystemFinish(true);
+			}
+		}
+#endif
 	}
 }
 
@@ -3478,8 +3681,8 @@ void UNiagaraComponent::SetOverrideParameterStoreValue(const FNiagaraVariableBas
 		UNiagaraDataInterface* OriginalDI = InValue.GetDataInterface();
 		UNiagaraDataInterface* DuplicatedDI = DuplicateObject(OriginalDI, this);
 		OverrideParameters.SetDataInterface(DuplicatedDI, InKey);
-		DuplicatedDI->SetUsedByCPUEmitter(OriginalDI->IsUsedWithCPUEmitter());
-		DuplicatedDI->SetUsedByGPUEmitter(OriginalDI->IsUsedWithGPUEmitter());
+		DuplicatedDI->SetUsedWithCPUScript(OriginalDI->IsUsedWithCPUScript());
+		DuplicatedDI->SetUsedWithGPUScript(OriginalDI->IsUsedWithGPUScript());
 	}
 	else if (InKey.IsUObject())
 	{
@@ -3815,7 +4018,16 @@ void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset, bool bResetExistingOve
 	}
 }
 
-void UNiagaraComponent::SetForceSolo(bool bInForceSolo) 
+void UNiagaraComponent::SetOcclusionQueryMode(ENiagaraOcclusionQueryMode Mode)
+{
+	if (Mode != OcclusionQueryMode)
+	{
+		OcclusionQueryMode = Mode;
+		MarkRenderStateDirty();
+	}
+}
+
+void UNiagaraComponent::SetForceSolo(bool bInForceSolo)
 { 
 	if (bForceSolo != bInForceSolo)
 	{

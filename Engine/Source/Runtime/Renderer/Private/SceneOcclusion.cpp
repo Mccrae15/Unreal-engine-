@@ -21,6 +21,7 @@
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "PixelShaderUtils.h"
 #include "RenderCore.h"
+#include "MobileBasePassRendering.h"
 
 
 /*-----------------------------------------------------------------------------
@@ -105,7 +106,7 @@ FOcclusionRandomStream GOcclusionRandomStream;
 int32 FOcclusionQueryHelpers::GetNumBufferedFrames(ERHIFeatureLevel::Type FeatureLevel)
 {
 	int32 NumGPUS = 1;
-#if WITH_SLI || WITH_MGPU
+#if WITH_MGPU
 	// TODO:  Should this still be differentiated for MGPU?  Originally this logic was here for AFR, which has been removed.
 	return FMath::Min<int32>(1, (int32)FOcclusionQueryHelpers::MaxBufferedOcclusionFrames);
 #endif
@@ -257,17 +258,11 @@ void FSceneViewState::TrimOcclusionHistory(float CurrentTime, float MinHistoryTi
 	{
 		int32 NumBufferedFrames = FOcclusionQueryHelpers::GetNumBufferedFrames(GetFeatureLevel());
 
-		for(TSet<FPrimitiveOcclusionHistory,FPrimitiveOcclusionHistoryKeyFuncs>::TIterator PrimitiveIt(PrimitiveOcclusionHistorySet);
+		for(TSet<FPrimitiveOcclusionHistory,FPrimitiveOcclusionHistoryKeyFuncs>::TIterator PrimitiveIt(Occlusion.PrimitiveOcclusionHistorySet);
 			PrimitiveIt;
 			++PrimitiveIt
 			)
 		{
-			// If the primitive has an old pending occlusion query, release it.
-			if(PrimitiveIt->LastConsideredTime < MinQueryTime)
-			{
-				PrimitiveIt->ReleaseStaleQueries(FrameNumber, NumBufferedFrames);
-			}
-
 			// If the primitive hasn't been considered for visibility recently, remove its history from the set.
 			if (PrimitiveIt->LastConsideredTime < MinHistoryTime || PrimitiveIt->LastConsideredTime > CurrentTime)
 			{
@@ -325,23 +320,22 @@ SIZE_T FSceneViewState::GetSizeBytes() const
 
 	return sizeof(*this) 
 		+ ShadowOcclusionQuerySize
-		+ ParentPrimitives.GetAllocatedSize() 
 		+ PrimitiveFadingStates.GetAllocatedSize()
-		+ PrimitiveOcclusionHistorySet.GetAllocatedSize();
+		+ Occlusion.PrimitiveOcclusionHistorySet.GetAllocatedSize();
 }
 
 class FOcclusionQueryIndexBuffer : public FIndexBuffer
 {
 public:
-	virtual void InitRHI() override
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override
 	{
 		const uint32 MaxBatchedPrimitives = FOcclusionQueryBatcher::OccludedPrimitiveQueryBatchSize;
 		const uint32 Stride = sizeof(uint16);
 		const uint32 SizeInBytes = MaxBatchedPrimitives * NUM_CUBE_VERTICES * Stride;
 
 		FRHIResourceCreateInfo CreateInfo(TEXT("FOcclusionQueryIndexBuffer"));
-		IndexBufferRHI = RHICreateBuffer(SizeInBytes, BUF_Static | BUF_IndexBuffer, Stride, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
-		uint16* RESTRICT Indices = (uint16*) RHILockBuffer(IndexBufferRHI, 0, SizeInBytes, RLM_WriteOnly);
+		IndexBufferRHI = RHICmdList.CreateBuffer(SizeInBytes, BUF_Static | BUF_IndexBuffer, Stride, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		uint16* RESTRICT Indices = (uint16*) RHICmdList.LockBuffer(IndexBufferRHI, 0, SizeInBytes, RLM_WriteOnly);
 
 		for(uint32 PrimitiveIndex = 0;PrimitiveIndex < MaxBatchedPrimitives;PrimitiveIndex++)
 		{
@@ -350,7 +344,7 @@ public:
 				Indices[PrimitiveIndex * NUM_CUBE_VERTICES + Index] = PrimitiveIndex * 8 + GCubeIndices[Index];
 			}
 		}
-		RHIUnlockBuffer(IndexBufferRHI);
+		RHICmdList.UnlockBuffer(IndexBufferRHI);
 	}
 };
 TGlobalResource<FOcclusionQueryIndexBuffer> GOcclusionQueryIndexBuffer;
@@ -423,7 +417,7 @@ void FFrameBasedOcclusionQueryPool::AdvanceFrame(uint32 InOcclusionFrameCounter,
 			if (Frame.OcclusionFrameCounter > NewFrame.OcclusionFrameCounter)
 			{
 				Frame.Queries.Append(MoveTemp(NewFrame.Queries));
-				FMemory::Memswap(&Frame, &NewFrame, sizeof(FFrameOcclusionQueries));
+				Swap(Frame, NewFrame);
 			}
 			else
 			{
@@ -431,7 +425,7 @@ void FFrameBasedOcclusionQueryPool::AdvanceFrame(uint32 InOcclusionFrameCounter,
 			}
 		}
 
-		FMemory::Memswap(FrameQueries, TmpFrameQueries, sizeof(FrameQueries));
+		Swap(FrameQueries, TmpFrameQueries);
 		NumBufferedFrames = InNumBufferedFrames;
 	}
 	
@@ -491,7 +485,7 @@ void FOcclusionQueryBatcher::Flush(FRHICommandList& RHICmdList)
 	}
 }
 
-FRHIRenderQuery* FOcclusionQueryBatcher::BatchPrimitive(const FVector& BoundsOrigin,const FVector& BoundsBoxExtent, FGlobalDynamicVertexBuffer& DynamicVertexBuffer)
+FRHIRenderQuery* FOcclusionQueryBatcher::BatchPrimitive(FRHICommandList& RHICmdList, const FVector& BoundsOrigin,const FVector& BoundsBoxExtent, FGlobalDynamicVertexBuffer& DynamicVertexBuffer)
 {
 	// Check if the current batch is full.
 	if(CurrentBatchOcclusionQuery == NULL || NumBatchedPrimitives >= MaxBatchedPrimitives)
@@ -499,7 +493,7 @@ FRHIRenderQuery* FOcclusionQueryBatcher::BatchPrimitive(const FVector& BoundsOri
 		check(OcclusionQueryPool);
 		CurrentBatchOcclusionQuery = new(BatchOcclusionQueries) FOcclusionBatch;
 		CurrentBatchOcclusionQuery->Query = OcclusionQueryPool->AllocateQuery();
-		CurrentBatchOcclusionQuery->VertexAllocation = DynamicVertexBuffer.Allocate(MaxBatchedPrimitives * 8 * sizeof(FVector3f));
+		CurrentBatchOcclusionQuery->VertexAllocation = DynamicVertexBuffer.Allocate(RHICmdList, MaxBatchedPrimitives * 8 * sizeof(FVector3f));
 		check(CurrentBatchOcclusionQuery->VertexAllocation.IsValid());
 		NumBatchedPrimitives = 0;
 	}
@@ -602,7 +596,8 @@ static void ExecutePointLightShadowOcclusionQuery(FRHICommandList& RHICmdList, F
 	RHICmdList.BeginRenderQuery(ShadowOcclusionQuery);
 	
 	// Draw bounding sphere
-	VertexShader->SetParametersWithBoundingSphere(RHICmdList, View, LightBounds);
+	SetShaderParametersLegacyVS(RHICmdList, VertexShader, View, LightBounds);
+
 	StencilingGeometry::DrawVectorSphere(RHICmdList);
 		
 	RHICmdList.EndRenderQuery(ShadowOcclusionQuery);
@@ -801,7 +796,7 @@ void FHZBOcclusionTester::SetInvalidFrameNumber()
 	checkSlow(IsInvalidFrame());
 }
 
-void FHZBOcclusionTester::InitDynamicRHI()
+void FHZBOcclusionTester::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	if (GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 	{
@@ -809,7 +804,7 @@ void FHZBOcclusionTester::InitDynamicRHI()
 	}
 }
 
-void FHZBOcclusionTester::ReleaseDynamicRHI()
+void FHZBOcclusionTester::ReleaseRHI()
 {
 	if (GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 	{
@@ -1208,7 +1203,7 @@ static FViewOcclusionQueriesPerView AllocateOcclusionTests(const FScene* Scene, 
 
 			// Don't do primitive occlusion if we have a view parent or are frozen - only applicable to Debug & Development.
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-			ViewQuery.bFlushQueries &= (!ViewState->HasViewParent() && !ViewState->bIsFrozen);
+			ViewQuery.bFlushQueries &= (!ViewState->bIsFrozen);
 #endif
 
 			bBatchedQueries |= (View.IndividualOcclusionQueries.HasBatches() || View.GroupedOcclusionQueries.HasBatches() || ViewQuery.bFlushQueries);
@@ -1317,7 +1312,7 @@ static void BeginOcclusionTests(
 
 			{
 				SCOPED_DRAW_EVENT(RHICmdList, ShadowFrustumQueries);
-				VertexShader->SetParameters(RHICmdList, View);
+				SetShaderParametersLegacyVS(RHICmdList, VertexShader, View);
 				RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 				BaseVertexOffset = 0;
 
@@ -1349,7 +1344,7 @@ static void BeginOcclusionTests(
 
 		if (ViewQuery.bFlushQueries)
 		{
-			VertexShader->SetParameters(RHICmdList, View);
+			SetShaderParametersLegacyVS(RHICmdList, VertexShader, View);
 
 			if (GOcclusionQueryDispatchOrder == 0)
 			{
@@ -1436,7 +1431,7 @@ void FDeferredShadingSceneRenderer::RenderOcclusion(
 					FViewInfo& View = Views[ViewIndex];
 					FSceneViewState* ViewState = (FSceneViewState*)View.State;
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-					if (!ViewState->HasViewParent() && !ViewState->bIsFrozen)
+					if (!ViewState->bIsFrozen)
 #endif
 					{
 						NumQueriesForBatch += View.IndividualOcclusionQueries.GetNumBatchOcclusionQueries();
@@ -1484,7 +1479,7 @@ void FDeferredShadingSceneRenderer::RenderOcclusion(
 	}
 }
 
-void FMobileSceneRenderer::RenderOcclusion(FRHICommandListImmediate& RHICmdList)
+void FMobileSceneRenderer::RenderOcclusion(FRHICommandList& RHICmdList)
 {
 	if (!DoOcclusionQueries())
 	{
@@ -1632,7 +1627,7 @@ FOcclusionFeedback::~FOcclusionFeedback()
 {
 }
 
-void FOcclusionFeedback::InitDynamicRHI()
+void FOcclusionFeedback::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	for (int32 i = 0; i < UE_ARRAY_COUNT(OcclusionBuffers); ++i)
 	{
@@ -1647,7 +1642,7 @@ void FOcclusionFeedback::InitDynamicRHI()
 		OcclusionVertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 }
-void FOcclusionFeedback::ReleaseDynamicRHI()
+void FOcclusionFeedback::ReleaseRHI()
 {
 	BatchOcclusionQueries.Empty();
 
@@ -1793,7 +1788,7 @@ void FOcclusionFeedback::ReadbackResults(FRHICommandList& RHICmdList)
 	}
 }
 
-void FOcclusionFeedback::AddPrimitive(FPrimitiveComponentId PrimitiveId, const FVector& BoundsOrigin, const FVector& BoundsBoxExtent, FGlobalDynamicVertexBuffer& DynamicVertexBuffer)
+void FOcclusionFeedback::AddPrimitive(FRHICommandList& RHICmdList, const FPrimitiveOcclusionHistoryKey& PrimitiveKey, const FVector& BoundsOrigin, const FVector& BoundsBoxExtent, FGlobalDynamicVertexBuffer& DynamicVertexBuffer)
 {
 	constexpr uint32 MaxBatchedPrimitives = 512;
 	constexpr uint32 PrimitiveStride = sizeof(FVector4f) * 2u;
@@ -1803,7 +1798,7 @@ void FOcclusionFeedback::AddPrimitive(FPrimitiveComponentId PrimitiveId, const F
 	{
 		FOcclusionBatch OcclusionBatch;
 		OcclusionBatch.NumBatchedPrimitives = 0u;
-		OcclusionBatch.VertexAllocation = DynamicVertexBuffer.Allocate(MaxBatchedPrimitives * PrimitiveStride);
+		OcclusionBatch.VertexAllocation = DynamicVertexBuffer.Allocate(RHICmdList, MaxBatchedPrimitives * PrimitiveStride);
 		check(OcclusionBatch.VertexAllocation.IsValid());
 		BatchOcclusionQueries.Add(OcclusionBatch);
 	}
@@ -1822,7 +1817,7 @@ void FOcclusionFeedback::AddPrimitive(FPrimitiveComponentId PrimitiveId, const F
 	OcclusionBatch.NumBatchedPrimitives++;
 
 	FOcclusionBuffer& OcclusionBuffer = OcclusionBuffers[CurrentBufferIndex];
-	OcclusionBuffer.BatchedPrimitives.Add(PrimitiveId);
+	OcclusionBuffer.BatchedPrimitives.Add(PrimitiveKey);
 }
 
 class FOcclusionFeedbackVS : public FGlobalShader
@@ -1856,7 +1851,9 @@ public:
 	class FPixelDiscard : SHADER_PERMUTATION_BOOL("PERMUTATION_PIXEL_DISCARD");
 	using FPermutationDomain = TShaderPermutationDomain<FPixelDiscard>;
 
-	using FParameters = FEmptyShaderParameters;
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FMobileBasePassUniformParameters, MobileBasePass)
+	END_SHADER_PARAMETER_STRUCT()
 };
 
 IMPLEMENT_GLOBAL_SHADER(FOcclusionFeedbackVS,"/Engine/Private/OcclusionFeedbackShaders.usf","MainVS",SF_Vertex);

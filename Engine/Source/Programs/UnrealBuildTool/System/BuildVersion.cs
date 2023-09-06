@@ -1,12 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using EpicGames.Core;
 using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
@@ -70,13 +66,15 @@ namespace UnrealBuildTool
 		public string? BuildVersionString;
 
 		/// <summary>
+		/// Optional URL for a continuous integration job associated with this build version. (e.g. the job that build a set of binaries)
+		/// </summary>
+		public string? BuildURL;
+
+		/// <summary>
 		/// Returns the value which can be used as the compatible changelist. Requires that the regular changelist is also set, and defaults to the 
 		/// regular changelist if a specific compatible changelist is not set.
 		/// </summary>
-		public int EffectiveCompatibleChangelist
-		{
-			get { return (Changelist != 0 && CompatibleChangelist != 0)? CompatibleChangelist : Changelist; }
-		}
+		public int EffectiveCompatibleChangelist => (Changelist != 0 && CompatibleChangelist != 0) ? CompatibleChangelist : Changelist;
 
 		/// <summary>
 		/// Try to read a version file from disk
@@ -117,11 +115,11 @@ namespace UnrealBuildTool
 		{
 			// Get the architecture suffix. Platforms have the option of overriding whether to include this string in filenames.
 			string ArchitectureSuffix = "";
-			if(UnrealArchitectureConfig.ForPlatform(Platform).RequiresArchitectureFilenames(Architectures))
+			if (UnrealArchitectureConfig.ForPlatform(Platform).RequiresArchitectureFilenames(Architectures))
 			{
 				ArchitectureSuffix = Architectures.ToString();
 			}
-		
+
 			// Build the output filename
 			if (String.IsNullOrEmpty(ArchitectureSuffix) && Configuration == UnrealTargetConfiguration.Development)
 			{
@@ -162,6 +160,7 @@ namespace UnrealBuildTool
 			Object.TryGetStringField("BranchName", out NewVersion.BranchName);
 			Object.TryGetStringField("BuildId", out NewVersion.BuildId);
 			Object.TryGetStringField("BuildVersion", out NewVersion.BuildVersionString);
+			Object.TryGetStringField("BuildURL", out NewVersion.BuildURL);
 
 			Version = NewVersion;
 			return true;
@@ -217,8 +216,8 @@ namespace UnrealBuildTool
 			Writer.WriteValue("PatchVersion", PatchVersion);
 			Writer.WriteValue("Changelist", Changelist);
 			Writer.WriteValue("CompatibleChangelist", CompatibleChangelist);
-			Writer.WriteValue("IsLicenseeVersion", IsLicenseeVersion? 1 : 0);
-			Writer.WriteValue("IsPromotedBuild", IsPromotedBuild? 1 : 0);
+			Writer.WriteValue("IsLicenseeVersion", IsLicenseeVersion ? 1 : 0);
+			Writer.WriteValue("IsPromotedBuild", IsPromotedBuild ? 1 : 0);
 			Writer.WriteValue("BranchName", BranchName);
 			if (!String.IsNullOrEmpty(BuildId))
 			{
@@ -227,6 +226,10 @@ namespace UnrealBuildTool
 			if (!String.IsNullOrEmpty(BuildVersionString))
 			{
 				Writer.WriteValue("BuildVersion", BuildVersionString);
+			}
+			if (!String.IsNullOrEmpty(BuildURL))
+			{
+				Writer.WriteValue("BuildURL", BuildURL);
 			}
 		}
 	}
@@ -262,16 +265,16 @@ namespace UnrealBuildTool
 		{
 			get
 			{
-				if(CurrentCached == null)
+				if (CurrentCached == null)
 				{
 					FileReference File = BuildVersion.GetDefaultFileName();
-					if(!FileReference.Exists(File))
+					if (!FileReference.Exists(File))
 					{
 						throw new BuildException("Version file is missing ({0})", File);
 					}
 
 					BuildVersion? Version;
-					if(!BuildVersion.TryRead(File, out Version))
+					if (!BuildVersion.TryRead(File, out Version))
 					{
 						throw new BuildException("Unable to read version file ({0}). Check that this file is present and well-formed JSON.", File);
 					}
@@ -286,59 +289,30 @@ namespace UnrealBuildTool
 		/// Accessors for fields on the inner BuildVersion instance
 		/// </summary>
 		#region Read-only accessor properties 
-		#pragma warning disable CS1591
+#pragma warning disable CS1591
 
-		public int MajorVersion
-		{
-			get { return Inner.MajorVersion; }
-		}
+		public int MajorVersion => Inner.MajorVersion;
 
-		public int MinorVersion
-		{
-			get { return Inner.MinorVersion; }
-		}
+		public int MinorVersion => Inner.MinorVersion;
 
-		public int PatchVersion
-		{
-			get { return Inner.PatchVersion; }
-		}
+		public int PatchVersion => Inner.PatchVersion;
 
-		public int Changelist
-		{
-			get { return Inner.Changelist; }
-		}
+		public int Changelist => Inner.Changelist;
 
-		public int CompatibleChangelist
-		{
-			get { return Inner.CompatibleChangelist; }
-		}
+		public int CompatibleChangelist => Inner.CompatibleChangelist;
 
-		public int EffectiveCompatibleChangelist
-		{
-			get { return Inner.EffectiveCompatibleChangelist; }
-		}
+		public int EffectiveCompatibleChangelist => Inner.EffectiveCompatibleChangelist;
 
-		public bool IsLicenseeVersion
-		{
-			get { return Inner.IsLicenseeVersion; }
-		}
+		public bool IsLicenseeVersion => Inner.IsLicenseeVersion;
 
-		public bool IsPromotedBuild
-		{
-			get { return Inner.IsPromotedBuild; }
-		}
+		public bool IsPromotedBuild => Inner.IsPromotedBuild;
 
-		public string? BranchName
-		{
-			get { return Inner.BranchName; }
-		}
+		public string? BranchName => Inner.BranchName;
 
-		public string? BuildVersionString
-		{
-			get { return Inner.BuildVersionString; }
-		}
+		public string? BuildVersionString => Inner.BuildVersionString;
+		public string? BuildURL => Inner.BuildURL;
 
-		#pragma warning restore C1591
+#pragma warning restore C1591
 		#endregion
 	}
 }

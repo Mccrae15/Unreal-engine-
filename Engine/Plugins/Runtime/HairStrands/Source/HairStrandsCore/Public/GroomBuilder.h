@@ -9,8 +9,8 @@
 #include "Math/IntVector.h"
 
 struct FHairStrandsDatas;
-struct FHairStrandsClusterCullingData;
-struct FHairStrandsClusterCullingBulkData;
+struct FHairStrandsClusterData;
+struct FHairStrandsClusterBulkData;
 struct FHairGroupsLOD;
 struct FHairGroupData;
 struct FHairDescriptionGroups;
@@ -67,7 +67,8 @@ struct HAIRSTRANDSCORE_API FGroomBuilder
 		const FHairGroupsInterpolation& InSettings,
 		FHairGroupInfo& OutGroupInfo,
 		FHairStrandsDatas& OutStrands,
-		FHairStrandsDatas& OutGuides);
+		FHairStrandsDatas& OutGuides,
+		bool bAllowCurveReordering=true);
 
 	// 2.b Build FHairStrandsDatas for Strands or Guides. 
 	// This version:
@@ -100,7 +101,7 @@ struct HAIRSTRANDSCORE_API FGroomBuilder
 		const FHairStrandsDatas& InRenData,
 		const float InGroomAssetRadius,
 		const FHairGroupsLOD& InSettings,
-		FHairStrandsClusterCullingBulkData& OutClusterCullingData);
+		FHairStrandsClusterBulkData& OutClusterData);
 
 	// Optional: Voxelize hair group index
 	static void VoxelizeGroupIndex(

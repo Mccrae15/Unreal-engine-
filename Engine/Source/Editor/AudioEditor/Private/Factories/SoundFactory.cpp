@@ -23,10 +23,53 @@
 #include "EditorFramework/AssetImportData.h"
 #include "AudioCompressionSettingsUtils.h"
 #include "SoundFileIO/SoundFileIO.h"
+#include "Misc/NamePermissionList.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "Math/NumericLimits.h"
+
+// Disable user import
+static int32 EnableUserSoundwaveImportCvar = 1;
+FAutoConsoleVariableRef CVarEnableUserSoundwaveImport(
+	TEXT("au.EnableUserSoundwaveImport"),
+	EnableUserSoundwaveImportCvar,
+	TEXT("Enables letting the user import soundwaves in editor.\n")
+	TEXT("0: Disabled, 1: Enabled"),
+	ECVF_Default);
+
+static float SoundWaveImportLengthLimitInSecondsCVar = -1.f;
+FAutoConsoleVariableRef CVarSoundWaveImportLengthLimitInSeconds(
+	TEXT("au.SoundWaveImportLengthLimitInSeconds"),
+	SoundWaveImportLengthLimitInSecondsCVar,
+	TEXT("When set to a value > 0.0f, Soundwaves with durations greater than the value will fail to import.\n")
+	TEXT("if the value is < 0.0f, the length will be unlimited"),
+	ECVF_Default);
 
 
 namespace
 {
+
+	bool CanImportSoundWaves()
+	{
+		// disabled via cvar?
+		if(EnableUserSoundwaveImportCvar == 0)
+		{
+			return false;
+		}
+
+		IAssetTools& AssetTools = FAssetToolsModule::GetModule().Get();
+		TSharedPtr<FPathPermissionList> AssetClassPermissionList = AssetTools.GetAssetClassPathPermissionList(EAssetClassAction::ImportAsset);
+		if (AssetClassPermissionList && AssetClassPermissionList->HasFiltering())
+		{
+			if (!AssetClassPermissionList->PassesFilter(USoundWave::StaticClass()->GetPathName()))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	void InsertSoundNode(USoundCue* SoundCue, UClass* NodeClass, int32 NodeIndex)
 	{
 		USoundNode* SoundNode = SoundCue->ConstructSoundNode<USoundNode>(NodeClass);
@@ -106,6 +149,7 @@ USoundFactory::USoundFactory(const FObjectInitializer& ObjectInitializer)
 
 #if WITH_SNDFILE_IO
 	Formats.Add(TEXT("aif;Audio Interchange File"));
+	Formats.Add(TEXT("aiff;Audio Interchange File Format"));
 	Formats.Add(TEXT("ogg;OGG Vorbis bitstream format "));
 	Formats.Add(TEXT("flac;Free Lossless Audio Codec"));
 #endif // WITH_SNDFILE_IO
@@ -134,6 +178,16 @@ UObject* USoundFactory::FactoryCreateBinary
 	)
 {
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPreImport(this, Class, InParent, Name, FileType);
+
+	{ // Refuse to accept big files. We currently use TArray<> which will fail if we go over an int32.
+		const uint64 Size = BufferEnd - Buffer;
+		if (!IntFitsIn<int32>(Size))
+		{
+			Warn->Logf(ELogVerbosity::Error, TEXT("File '%s' is too big (%umb), Max=%umb"), *Name.ToString(), Size>>20, TNumericLimits<int32>::Max()>>20);
+			GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
+			return nullptr;
+		}
+	}
 
 	UObject* SoundObject = nullptr;
 
@@ -212,6 +266,14 @@ UObject* USoundFactory::CreateObject
 				return nullptr;
 			}
 		}
+
+		if (!CanImportSoundWaves())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(NSLOCTEXT("SoundFactory", "Soundwave Import Not Allowed", "Soundwave import is not allowed ({0}: {1})"), FText::FromString(CuePackageName), Reason));
+			GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
+			return nullptr;
+		}
+
 
 		// if we are creating the cue move it when necessary
 		UPackage* CuePackage = bMoveCue ? CreatePackage( *CuePackageName) : nullptr;
@@ -320,11 +382,11 @@ UObject* USoundFactory::CreateObject
 		if (*WaveInfo.pBitsPerSample != 16)
 		{
 #if WITH_SNDFILE_IO
+			const uint32 OrigNumSamples = WaveInfo.GetNumSamples();
+
 			// Attempt to convert to 16 bit audio
 			if (Audio::ConvertAudioToWav(RawWaveData, ConvertedRawWaveData))
 			{
-				// Icky, Reencoding with SNDFILE will strip the timecode info, so back it up.
-				auto CachedTimeCodeInfo = MoveTemp(WaveInfo.TimecodeInfo);
 				WaveInfo = FWaveModInfo();				
 				if (!WaveInfo.ReadWaveInfo(ConvertedRawWaveData.GetData(), ConvertedRawWaveData.Num(), &ErrorMessage))
 				{
@@ -332,7 +394,10 @@ UObject* USoundFactory::CreateObject
 					GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
 					return nullptr;
 				}
-				WaveInfo.TimecodeInfo = MoveTemp(CachedTimeCodeInfo);
+
+				// Sanity check that the same number of samples exist in the converted file as the original
+				const uint32 ConvertedNumSamples = WaveInfo.GetNumSamples();
+				ensure(ConvertedNumSamples == OrigNumSamples);
 			}
 
 			// Copy over the data
@@ -372,6 +437,8 @@ UObject* USoundFactory::CreateObject
 		{
 			Sound->SoundClassObject = TemplateSoundWave->SoundClassObject;
 			Sound->ConcurrencySet = TemplateSoundWave->ConcurrencySet;
+			Sound->CompressionQuality = TemplateSoundWave->CompressionQuality;
+			Sound->SoundAssetCompressionType = TemplateSoundWave->SoundAssetCompressionType;
 
 			// we do not want to inherit these values from the template, as the data may be incorrect
 			// rather we re-parse them from the incoming file.
@@ -539,12 +606,25 @@ UObject* USoundFactory::CreateObject
 		Sound->NumChannels = ChannelCount;
 		Sound->TotalSamples = *WaveInfo.pSamplesPerSec * Sound->Duration;
 
+		const bool bLimitingSoundWaveLength = SoundWaveImportLengthLimitInSecondsCVar > 0.0f; 
+		if (bLimitingSoundWaveLength && Sound->Duration >= SoundWaveImportLengthLimitInSecondsCVar)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(NSLOCTEXT("SoundFactory", "Soundwave is too long to import"
+				, "{0} is {1} seconds in duration (this is over the limit of {2} seconds) {3}")
+				, FText::FromString(CuePackageName), Sound->Duration, SoundWaveImportLengthLimitInSecondsCVar, Reason));
+				
+			GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
+			return nullptr;			
+		}
+
 		// Store the current file path and timestamp for re-import purposes
 		Sound->AssetImportData->Update(CurrentFilename);
 
 		// Setup the cue points
-		Sound->CuePoints.Reset(WaveInfo.WaveCues.Num());
+		int TotalNum = WaveInfo.WaveCues.Num() + WaveInfo.WaveSampleLoops.Num();
+		Sound->CuePoints.Reset(TotalNum);
 
+		// Start with WaveCues
 		for (FWaveCue& WaveCue : WaveInfo.WaveCues)
 		{
 			FSoundWaveCuePoint NewCuePoint;
@@ -553,6 +633,36 @@ UObject* USoundFactory::CreateObject
 			NewCuePoint.FramePosition = (int32)WaveCue.Position;
 			NewCuePoint.Label = WaveCue.Label;
 			Sound->CuePoints.Add(NewCuePoint);
+		}
+
+		// add Sample Loops to end
+		bool FoundInvalidSampleLoops = false;
+		for (FWaveSampleLoop& SampleLoop : WaveInfo.WaveSampleLoops)
+		{
+			FSoundWaveCuePoint NewCuePoint;
+			NewCuePoint.bIsLoopRegion = true;
+			NewCuePoint.CuePointID = (int32)SampleLoop.LoopID;
+			NewCuePoint.FramePosition = (int32)SampleLoop.StartFrame;
+			NewCuePoint.FrameLength = (int32)SampleLoop.EndFrame - (int32)SampleLoop.StartFrame;
+			if (SampleLoop.EndFrame <= SampleLoop.StartFrame)
+			{
+				Warn->Logf(ELogVerbosity::Error, 
+					TEXT("Found invalid start and end frames when creating Cue Point from Sample Loop Region! LoopID = %d, StartFrame = %d, EndFrame = %d"), 
+					SampleLoop.LoopID, SampleLoop.StartFrame, SampleLoop.EndFrame);
+
+				FoundInvalidSampleLoops = true;
+			}
+			Sound->CuePoints.Add(NewCuePoint);
+		}
+
+		// fail import if we found invalid sample loops
+		// each invalid sample loop is logged
+		if (FoundInvalidSampleLoops)
+		{
+			FText InvalidSamplesText = NSLOCTEXT("SoundFactory", "Invalid Sample Loops", "Found sample loops with invalid start and end frames. See logs for more info.");
+			FMessageDialog::Open(EAppMsgType::Ok, FText::Format(NSLOCTEXT("SoundFactory", "Import Failed", "Import failed for {0}: {1}"), FText::FromString(Name.ToString()), InvalidSamplesText));
+			GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPostImport(this, nullptr);
+			return nullptr;
 		}
 
 		// If we've read some time-code.

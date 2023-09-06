@@ -69,7 +69,7 @@ void UMoviePipelineImagePassBase::TeardownImpl()
 {
 	for (TPair<FIntPoint, TWeakObjectPtr<UTextureRenderTarget2D>>& TileRenderTargetIt : TileRenderTargets)
 	{
-		if (!TileRenderTargetIt.Value.IsValid())
+		if (TileRenderTargetIt.Value.IsValid())
 		{
 			TileRenderTargetIt.Value->RemoveFromRoot();
 		}
@@ -149,7 +149,7 @@ TWeakObjectPtr<UTextureRenderTarget2D> UMoviePipelineImagePassBase::CreateViewRe
 	// OCIO: Since this is a manually created Render target we don't need Gamma to be applied.
 	// We use this render target to render to via a display extension that utilizes Display Gamma
 	// which has a default value of 2.2 (DefaultDisplayGamma), therefore we need to set Gamma on this render target to 2.2 to cancel out any unwanted effects.
-	NewTarget->TargetGamma = FOpenColorIODisplayExtension::DefaultDisplayGamma;
+	NewTarget->TargetGamma = FOpenColorIORendering::DefaultDisplayGamma;
 
 	// Initialize to the tile size (not final size) and use a 16 bit back buffer to avoid precision issues when accumulating later
 	NewTarget->InitCustomFormat(InSize.X, InSize.Y, EPixelFormat::PF_FloatRGBA, false);
@@ -194,6 +194,26 @@ TSharedPtr<FSceneViewFamilyContext> UMoviePipelineImagePassBase::CalculateViewFa
 	OutViewFamily->bWorldIsPaused = InOutSampleState.bWorldIsPaused;
 	OutViewFamily->ViewMode = ViewModeIndex;
 	OutViewFamily->bOverrideVirtualTextureThrottle = true;
+	
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	OutViewFamily->OverrideFrameCounter = UE::MovieRenderPipeline::GetRendererFrameCount();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+	// Kept as an if/else statement to avoid the confusion with setting all of these values to some permutation of !/!!bHasRenderedFirstViewThisFrame.
+	if (!GetPipeline()->bHasRenderedFirstViewThisFrame)
+	{
+		GetPipeline()->bHasRenderedFirstViewThisFrame = true;
+		
+		OutViewFamily->bIsFirstViewInMultipleViewFamily = true;
+		OutViewFamily->bIsMultipleViewFamily = true;
+		OutViewFamily->bAdditionalViewFamily = false;
+	}
+	else
+	{
+		OutViewFamily->bIsFirstViewInMultipleViewFamily = false;
+		OutViewFamily->bAdditionalViewFamily = true;
+		OutViewFamily->bIsMultipleViewFamily = true;
+	}
 
 	const bool bIsPerspective = true;
 	ApplyViewMode(OutViewFamily->ViewMode, bIsPerspective, OutViewFamily->EngineShowFlags);
@@ -1003,6 +1023,13 @@ namespace MoviePipeline
 
 			// Free the memory in the accumulator.
 			PinnedImageAccumulator->Reset();
+		}
+
+		{
+			// Explicitly free the SamplePixelData (which by now has been copied into the accumulator)
+			// so that we can profile how long freeing the allocation takes.
+			TRACE_CPUPROFILER_EVENT_SCOPE(ReleasePixelDataSample);
+			SamplePixelData.Reset();
 		}
 	}
 }

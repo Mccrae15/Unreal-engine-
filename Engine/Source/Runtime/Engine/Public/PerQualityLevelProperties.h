@@ -61,7 +61,7 @@ namespace QualityLevelProperty
 };
 
 template<typename _StructType, typename _ValueType, EName _BasePropertyName>
-struct ENGINE_API FPerQualityLevelProperty
+struct FPerQualityLevelProperty
 {
 	typedef _ValueType ValueType;
 	typedef _StructType StructType;
@@ -174,7 +174,7 @@ template<typename _StructType, typename _ValueType, EName _BasePropertyName>
 ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, FPerQualityLevelProperty<_StructType, _ValueType, _BasePropertyName>& Property);
 
 USTRUCT()
-struct ENGINE_API FPerQualityLevelInt 
+struct FPerQualityLevelInt 
 #if CPP
 	:	public FPerQualityLevelProperty<FPerQualityLevelInt, int32, NAME_IntProperty>
 #endif
@@ -197,7 +197,7 @@ struct ENGINE_API FPerQualityLevelInt
 		Default = InDefaultValue;
 	}
 
-	FString ToString() const;
+	ENGINE_API FString ToString() const;
 	int32 MaxType() const { return MAX_int32; }
 };
 
@@ -213,10 +213,11 @@ struct TStructOpsTypeTraits<FPerQualityLevelInt>
 		WithSerializeFromMismatchedTag = true,
 		WithSerializer = true
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 
 USTRUCT()
-struct ENGINE_API FPerQualityLevelFloat
+struct FPerQualityLevelFloat
 #if CPP
 	:	public FPerQualityLevelProperty<FPerQualityLevelFloat, float, NAME_FloatProperty>
 #endif
@@ -239,7 +240,7 @@ struct ENGINE_API FPerQualityLevelFloat
 		Default = InDefaultValue;
 	}
 
-	FString ToString() const;
+	ENGINE_API FString ToString() const;
 	float MaxType() const { return UE_MAX_FLT; }
 };
 
@@ -255,5 +256,6 @@ struct TStructOpsTypeTraits<FPerQualityLevelFloat>
 		WithSerializeFromMismatchedTag = true,
 		WithSerializer = true
 	};
+	static constexpr EPropertyObjectReferenceType WithSerializerObjectReferences = EPropertyObjectReferenceType::None;
 };
 

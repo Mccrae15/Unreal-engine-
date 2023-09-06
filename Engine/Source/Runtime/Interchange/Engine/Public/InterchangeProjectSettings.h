@@ -14,12 +14,28 @@
 class UInterchangeSourceData;
 
 USTRUCT()
+struct FInterchangeTranslatorPipelines
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "TranslatorPipelines", meta = (AllowedClasses = "/Script/InterchangeCore.InterchangeTranslatorBase"))
+	TSoftClassPtr<UInterchangeTranslatorBase> Translator;
+
+	UPROPERTY(EditAnywhere, Category = "TranslatorPipelines", meta = (AllowedClasses = "/Script/InterchangeCore.InterchangePipelineBase, /Script/InterchangeEngine.InterchangeBlueprintPipelineBase, /Script/InterchangeEngine.InterchangePythonPipelineAsset"))
+	TArray<FSoftObjectPath> Pipelines;
+};
+
+USTRUCT()
 struct FInterchangePipelineStack
 {
 	GENERATED_BODY()
 	
 	UPROPERTY(EditAnywhere, Category = "Pipelines", meta = (AllowedClasses = "/Script/InterchangeCore.InterchangePipelineBase, /Script/InterchangeEngine.InterchangeBlueprintPipelineBase, /Script/InterchangeEngine.InterchangePythonPipelineAsset"))
 	TArray<FSoftObjectPath> Pipelines;
+
+	/** This tells Interchange which pipeline to add based on the type of the source */
+	UPROPERTY(EditAnywhere, Category = "TranslatorPipelines")
+	TArray<FInterchangeTranslatorPipelines> PerTranslatorPipelines;
 };
 
 USTRUCT()
@@ -96,16 +112,16 @@ public:
 	TSoftClassPtr <UInterchangePipelineBase> GenericPipelineClass;
 };
 
-class INTERCHANGEENGINE_API FInterchangeProjectSettingsUtils
+class FInterchangeProjectSettingsUtils
 {
 public:
-	static const FInterchangeImportSettings& GetImportSettings(const UInterchangeProjectSettings& InterchangeProjectSettings, const bool bIsSceneImport);
-	static FInterchangeImportSettings& GetMutableImportSettings(UInterchangeProjectSettings& InterchangeProjectSettings, const bool bIsSceneImport);
-	static const FInterchangeImportSettings& GetDefaultImportSettings(const bool bIsSceneImport);
-	static FInterchangeImportSettings& GetMutableDefaultImportSettings(const bool bIsSceneImport);
+	static INTERCHANGEENGINE_API const FInterchangeImportSettings& GetImportSettings(const UInterchangeProjectSettings& InterchangeProjectSettings, const bool bIsSceneImport);
+	static INTERCHANGEENGINE_API FInterchangeImportSettings& GetMutableImportSettings(UInterchangeProjectSettings& InterchangeProjectSettings, const bool bIsSceneImport);
+	static INTERCHANGEENGINE_API const FInterchangeImportSettings& GetDefaultImportSettings(const bool bIsSceneImport);
+	static INTERCHANGEENGINE_API FInterchangeImportSettings& GetMutableDefaultImportSettings(const bool bIsSceneImport);
 
-	static FName GetDefaultPipelineStackName(const bool bIsSceneImport, const UInterchangeSourceData& SourceData);
-	static void SetDefaultPipelineStackName(const bool bIsSceneImport, const UInterchangeSourceData& SourceData, const FName StackName);
+	static INTERCHANGEENGINE_API FName GetDefaultPipelineStackName(const bool bIsSceneImport, const UInterchangeSourceData& SourceData);
+	static INTERCHANGEENGINE_API void SetDefaultPipelineStackName(const bool bIsSceneImport, const UInterchangeSourceData& SourceData, const FName StackName);
 
-	static bool ShouldShowPipelineStacksConfigurationDialog(const bool bIsSceneImport, const UInterchangeSourceData& SourceData);
+	static INTERCHANGEENGINE_API bool ShouldShowPipelineStacksConfigurationDialog(const bool bIsSceneImport, const UInterchangeSourceData& SourceData);
 };

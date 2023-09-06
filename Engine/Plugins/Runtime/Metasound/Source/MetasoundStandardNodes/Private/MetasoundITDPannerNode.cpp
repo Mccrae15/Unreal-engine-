@@ -46,8 +46,11 @@ namespace Metasound
 			const FFloatReadRef& InDistanceFactor,
 			const FFloatReadRef& InHeadWidth);
 
+		virtual void BindInputs(FInputVertexInterfaceData& InOutVertexData) override;
+		virtual void BindOutputs(FOutputVertexInterfaceData& InOutVertexData) override;
 		virtual FDataReferenceCollection GetInputs() const override;
 		virtual FDataReferenceCollection GetOutputs() const override;
+		void Reset(const IOperator::FResetParams& InParams);
 		void Execute();
 
 	private:
@@ -107,28 +110,38 @@ namespace Metasound
 		PrevRightGain = CurrRightGain;
 	}
 
-	FDataReferenceCollection FITDPannerOperator::GetInputs() const
+	void FITDPannerOperator::BindInputs(FInputVertexInterfaceData& InOutVertexData)
 	{
 		using namespace ITDPannerVertexNames;
 
-		FDataReferenceCollection InputDataReferences;
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputPanAngle), PanningAngle);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputDistanceFactor), DistanceFactor);
-		InputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(InputHeadWidth), HeadWidth);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputAudio), AudioInput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputPanAngle), PanningAngle);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputDistanceFactor), DistanceFactor);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(InputHeadWidth), HeadWidth);
+	}
 
-		return InputDataReferences;
+	void FITDPannerOperator::BindOutputs(FOutputVertexInterfaceData& InOutVertexData)
+	{
+		using namespace ITDPannerVertexNames;
+
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudioLeft), AudioLeftOutput);
+		InOutVertexData.BindReadVertex(METASOUND_GET_PARAM_NAME(OutputAudioRight), AudioRightOutput);
+	}
+
+	FDataReferenceCollection FITDPannerOperator::GetInputs() const
+	{
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	FDataReferenceCollection FITDPannerOperator::GetOutputs() const
 	{
-		using namespace ITDPannerVertexNames;
-
-		FDataReferenceCollection OutputDataReferences;
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioLeft), AudioLeftOutput);
-		OutputDataReferences.AddDataReadReference(METASOUND_GET_PARAM_NAME(OutputAudioRight), AudioRightOutput);
-
-		return OutputDataReferences;
+		// This should never be called. Bind(...) is called instead. This method
+		// exists as a stop-gap until the API can be deprecated and removed.
+		checkNoEntry();
+		return {};
 	}
 
 	void FITDPannerOperator::UpdateParams(bool bIsInit)
@@ -177,6 +190,24 @@ namespace Metasound
 		}
 	}
 	
+
+	void FITDPannerOperator::Reset(const IOperator::FResetParams& InParams)
+	{
+		AudioLeftOutput->Zero();
+		AudioRightOutput->Zero();
+
+		LeftDelay.Reset();
+		RightDelay.Reset();
+
+		CurrAngle = FMath::Clamp(*PanningAngle, 0.0f, 360.0f);
+		CurrDistanceFactor = FMath::Clamp(*DistanceFactor, 0.0f, 1.0f);
+		CurrHeadWidth = FMath::Max(*HeadWidth, 0.0f);
+
+		UpdateParams(true);
+
+		PrevLeftGain = CurrLeftGain;
+		PrevRightGain = CurrRightGain;
+	}
 
 	void FITDPannerOperator::Execute()
 	{

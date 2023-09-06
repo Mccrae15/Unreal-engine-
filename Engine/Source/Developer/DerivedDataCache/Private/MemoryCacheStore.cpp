@@ -9,14 +9,10 @@
 #include "DerivedDataBackendInterface.h"
 #include "DerivedDataCachePrivate.h"
 #include "DerivedDataCacheRecord.h"
-#include "DerivedDataCacheUsageStats.h"
 #include "DerivedDataValue.h"
-#include "HAL/FileManager.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/ScopeRWLock.h"
-#include "ProfilingDebugging/CookStats.h"
 #include "Serialization/CompactBinary.h"
-#include "Templates/UniquePtr.h"
 
 namespace UE::DerivedData
 {
@@ -27,7 +23,11 @@ namespace UE::DerivedData
 class FMemoryCacheStore final : public IMemoryCacheStore
 {
 public:
-	explicit FMemoryCacheStore(const TCHAR* InName, int64 InMaxCacheSize = -1, bool bCanBeDisabled = false);
+	explicit FMemoryCacheStore(
+		IMemoryCacheStore*& OutCache,
+		const TCHAR* InName,
+		const TCHAR* InConfig,
+		ICacheStoreOwner* InOwner);
 	~FMemoryCacheStore() final;
 
 	// ICacheStore Interface
@@ -66,8 +66,6 @@ public:
 	void Disable() final;
 
 private:
-	FDerivedDataCacheUsageStats UsageStats;
-
 	struct FCacheRecordComponents
 	{
 		FCbObject Meta;
@@ -76,6 +74,9 @@ private:
 
 	/** Name of this cache (used for debugging) */
 	FString Name;
+
+	ICacheStoreOwner* StoreOwner;
+	ICacheStoreStats* StoreStats = nullptr;
 
 	/** Set of records in this cache. */
 	TMap<FCacheKey, FCacheRecordComponents> CacheRecords;
@@ -117,20 +118,52 @@ protected:
 	FBackendDebugOptions DebugOptions;
 };
 
-FMemoryCacheStore::FMemoryCacheStore(const TCHAR* InName, int64 InMaxCacheSize, bool bInCanBeDisabled)
+FMemoryCacheStore::FMemoryCacheStore(
+	IMemoryCacheStore*& OutCache,
+	const TCHAR* InName,
+	const TCHAR* InConfig,
+	ICacheStoreOwner* InOwner)
 	: Name(InName)
-	, MaxCacheSize(InMaxCacheSize < 0 ? 0 : uint64(InMaxCacheSize))
+	, StoreOwner(InOwner)
+	, MaxCacheSize(0)
 	, bDisabled(false)
 	, CurrentCacheSize(0)
 	, bMaxSizeExceeded(false)
-	, bCanBeDisabled(bInCanBeDisabled)
+	, bCanBeDisabled(false)
 {
+	OutCache = this;
+
+	// Make sure MaxCacheSize does not exceed 2 GB
+	int64 SignedMaxCacheSize = -1; // in MB
+	FParse::Value(InConfig, TEXT("MaxCacheSize="), SignedMaxCacheSize);
+	const int64 MaxSupportedCacheSize = 2048; // 2 GB
+	MaxCacheSize = FMath::Min(SignedMaxCacheSize, MaxSupportedCacheSize);
+	UE_LOG(LogDerivedDataCache, Display, TEXT("%s: Max Cache Size: %d MB"), *Name, SignedMaxCacheSize);
+	MaxCacheSize = SignedMaxCacheSize < 0 ? 0 : SignedMaxCacheSize * 1024 * 1024;
+
+	if (StoreOwner)
+	{
+		ECacheStoreFlags Flags = ECacheStoreFlags::Local | ECacheStoreFlags::Query;
+		if (!FParse::Param(InConfig, TEXT("ReadOnly")))
+		{
+			Flags |= ECacheStoreFlags::Store;
+		}
+		StoreOwner->Add(this, Flags);
+		if (!FParse::Param(InConfig, TEXT("NoStats")))
+		{
+			StoreStats = StoreOwner->CreateStats(this, Flags, TEXTVIEW("Memory"), Name);
+		}
+	}
 }
 
 FMemoryCacheStore::~FMemoryCacheStore()
 {
 	bShuttingDown = true;
 	Disable();
+	if (StoreStats)
+	{
+		StoreOwner->DestroyStats(StoreStats);
+	}
 }
 
 void FMemoryCacheStore::Disable()
@@ -145,8 +178,7 @@ void FMemoryCacheStore::Disable()
 
 void FMemoryCacheStore::LegacyStats(FDerivedDataCacheStatsNode& OutNode)
 {
-	OutNode = {!bCanBeDisabled ? TEXT("Memory") : TEXT("Boot"), TEXT(""), /*bIsLocal*/ true};
-	OutNode.UsageStats.Add(TEXT(""), UsageStats);
+	checkNoEntry();
 }
 
 bool FMemoryCacheStore::LegacyDebugOptions(FBackendDebugOptions& InOptions)
@@ -177,6 +209,23 @@ void FMemoryCacheStore::Put(
 		const FCacheKey& Key = Record.GetKey();
 		const TConstArrayView<FValueWithId> Values = Record.GetValues();
 
+		FRequestStats RequestStats;
+		RequestStats.Name = Request.Name;
+		RequestStats.Bucket = Key.Bucket;
+		RequestStats.Type = ERequestType::Record;
+		RequestStats.Op = ERequestOp::Put;
+		ON_SCOPE_EXIT
+		{
+			RequestStats.Latency = RequestStats.EndTime - RequestStats.StartTime;
+			RequestStats.Status = Status;
+			if (StoreStats)
+			{
+				StoreStats->AddRequest(RequestStats);
+			}
+		};
+
+		FRequestTimer RequestTimer(RequestStats);
+
 		if (Algo::NoneOf(Values, &FValue::HasData))
 		{
 			continue;
@@ -189,7 +238,6 @@ void FMemoryCacheStore::Put(
 			continue;
 		}
 
-		COOK_STAT(auto Timer = UsageStats.TimePut());
 		const bool bReplaceExisting = !EnumHasAnyFlags(Request.Policy.GetRecordPolicy(), ECachePolicy::QueryLocal);
 
 		FWriteScopeLock ScopeLock(SynchronizationObject);
@@ -276,12 +324,21 @@ void FMemoryCacheStore::Put(
 		{
 			Components.Meta = Record.GetMeta();
 			Components.Values = Record.GetValues();
+			RequestStats.LogicalWriteSize += Components.Meta.GetSize();
+			RequestStats.PhysicalWriteSize += Components.Meta.GetSize();
+			for (const FValue& Value : Components.Values)
+			{
+				RequestStats.AddLogicalWrite(Value);
+				RequestStats.PhysicalWriteSize += Value.GetData().GetCompressedSize();
+			}
 		}
 		else if (!bReplaceExisting)
 		{
 			if (!Components.Meta)
 			{
 				Components.Meta = Record.GetMeta();
+				RequestStats.LogicalWriteSize += Components.Meta.GetSize();
+				RequestStats.PhysicalWriteSize += Components.Meta.GetSize();
 			}
 			for (FValueWithId& Value : Components.Values)
 			{
@@ -290,6 +347,8 @@ void FMemoryCacheStore::Put(
 					if (const FValueWithId& NewValue = Record.GetValue(Value.GetId()); NewValue && NewValue.GetRawHash() == Value.GetRawHash())
 					{
 						Value = NewValue;
+						RequestStats.AddLogicalWrite(Value);
+						RequestStats.PhysicalWriteSize += Value.GetData().GetCompressedSize();
 					}
 				}
 			}
@@ -299,8 +358,12 @@ void FMemoryCacheStore::Put(
 			FCacheRecordComponents ExistingComponents = MoveTemp(Components);
 			Components.Meta = Record.GetMeta();
 			Components.Values = Record.GetValues();
+			RequestStats.LogicalWriteSize += Components.Meta.GetSize();
+			RequestStats.PhysicalWriteSize += Components.Meta.GetSize();
 			for (FValueWithId& Value : Components.Values)
 			{
+				RequestStats.AddLogicalWrite(Value);
+				RequestStats.PhysicalWriteSize += Value.GetData().GetCompressedSize();
 				if (!Value.HasData())
 				{
 					if (const int32 ExistingValueIndex = Algo::BinarySearchBy(ExistingComponents.Values, Value.GetId(), &FValueWithId::GetId);
@@ -313,8 +376,6 @@ void FMemoryCacheStore::Put(
 				}
 			}
 		}
-
-		COOK_STAT(Timer.AddHit(RequiredSize));
 	}
 }
 
@@ -332,9 +393,25 @@ void FMemoryCacheStore::Get(
 	{
 		const FCacheKey& Key = Request.Key;
 		const FCacheRecordPolicy& Policy = Request.Policy;
-		COOK_STAT(auto Timer = EnumHasAnyFlags(Policy.GetRecordPolicy(), ECachePolicy::SkipData) ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
 		FCacheRecordComponents Components;
 		EStatus Status = EStatus::Error;
+
+		FRequestStats RequestStats;
+		RequestStats.Name = Request.Name;
+		RequestStats.Bucket = Key.Bucket;
+		RequestStats.Type = ERequestType::Record;
+		RequestStats.Op = ERequestOp::Get;
+		ON_SCOPE_EXIT
+		{
+			RequestStats.Latency = RequestStats.EndTime - RequestStats.StartTime;
+			RequestStats.Status = Status;
+			if (StoreStats)
+			{
+				StoreStats->AddRequest(RequestStats);
+			}
+		};
+
+		FRequestTimer RequestTimer(RequestStats);
 
 		if (bCanBeDisabled && DebugOptions.ShouldSimulateGetMiss(Key))
 		{
@@ -356,9 +433,11 @@ void FMemoryCacheStore::Get(
 		{
 			const ECachePolicy RecordPolicy = Policy.GetRecordPolicy();
 
-			if (!EnumHasAnyFlags(RecordPolicy, ECachePolicy::SkipMeta))
+			if (!EnumHasAnyFlags(RecordPolicy, ECachePolicy::SkipMeta) && Components.Meta)
 			{
 				Builder.SetMeta(CopyTemp(Components.Meta));
+				RequestStats.LogicalReadSize += Components.Meta.GetSize();
+				RequestStats.PhysicalReadSize += Components.Meta.GetSize();
 			}
 
 			for (const FValueWithId& Value : Components.Values)
@@ -378,16 +457,20 @@ void FMemoryCacheStore::Get(
 						break;
 					}
 				}
-				const bool bExistsOnly = EnumHasAnyFlags(ValuePolicy, ECachePolicy::SkipData);
-				Builder.AddValue(bExistsOnly ? Value.RemoveData() : Value);
+				if (EnumHasAnyFlags(ValuePolicy, ECachePolicy::SkipData))
+				{
+					Builder.AddValue(Value.RemoveData());
+				}
+				else
+				{
+					Builder.AddValue(Value);
+					RequestStats.AddLogicalRead(Value);
+					RequestStats.PhysicalReadSize += Value.GetData().GetCompressedSize();
+				}
 			}
 		}
 
-		FCacheRecord Record = Builder.Build();
-		COOK_STAT(Timer.AddHitOrMiss(
-			Status == EStatus::Ok ? FCookStats::CallStats::EHitOrMiss::Hit : FCookStats::CallStats::EHitOrMiss::Miss,
-			Private::GetCacheRecordCompressedSize(Record)));
-		OnComplete({Request.Name, MoveTemp(Record), Request.UserData, Status});
+		OnComplete({Request.Name, Builder.Build(), Request.UserData, Status});
 	}
 }
 
@@ -424,6 +507,23 @@ void FMemoryCacheStore::PutValue(
 		const FCacheKey& Key = Request.Key;
 		const FValue& Value = Request.Value;
 
+		FRequestStats RequestStats;
+		RequestStats.Name = Request.Name;
+		RequestStats.Bucket = Key.Bucket;
+		RequestStats.Type = ERequestType::Value;
+		RequestStats.Op = ERequestOp::Put;
+		ON_SCOPE_EXIT
+		{
+			RequestStats.Latency = RequestStats.EndTime - RequestStats.StartTime;
+			RequestStats.Status = Status;
+			if (StoreStats)
+			{
+				StoreStats->AddRequest(RequestStats);
+			}
+		};
+
+		FRequestTimer RequestTimer(RequestStats);
+
 		if (!Value.HasData())
 		{
 			continue;
@@ -436,7 +536,6 @@ void FMemoryCacheStore::PutValue(
 			continue;
 		}
 
-		COOK_STAT(auto Timer = UsageStats.TimePut());
 		const int64 ValueSize = Value.GetData().GetCompressedSize();
 		const bool bReplaceExisting = !EnumHasAnyFlags(Request.Policy, ECachePolicy::QueryLocal);
 
@@ -472,7 +571,9 @@ void FMemoryCacheStore::PutValue(
 			CacheValues.Add(Key, Value);
 		}
 
-		COOK_STAT(Timer.AddHit(ValueSize));
+		RequestStats.AddLogicalWrite(Value);
+		RequestStats.PhysicalWriteSize += Value.GetData().GetCompressedSize();
+
 		Status = EStatus::Ok;
 	}
 }
@@ -491,10 +592,27 @@ void FMemoryCacheStore::GetValue(
 	{
 		const FCacheKey& Key = Request.Key;
 		const bool bExistsOnly = EnumHasAllFlags(Request.Policy, ECachePolicy::SkipData);
-		COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
 
 		FValue Value;
 		EStatus Status = EStatus::Error;
+
+		FRequestStats RequestStats;
+		RequestStats.Name = Request.Name;
+		RequestStats.Bucket = Key.Bucket;
+		RequestStats.Type = ERequestType::Value;
+		RequestStats.Op = ERequestOp::Get;
+		ON_SCOPE_EXIT
+		{
+			RequestStats.Latency = RequestStats.EndTime - RequestStats.StartTime;
+			RequestStats.Status = Status;
+			if (StoreStats)
+			{
+				StoreStats->AddRequest(RequestStats);
+			}
+		};
+
+		FRequestTimer RequestTimer(RequestStats);
+
 		if (bCanBeDisabled && DebugOptions.ShouldSimulateGetMiss(Key))
 		{
 			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%s'"),
@@ -507,8 +625,10 @@ void FMemoryCacheStore::GetValue(
 		{
 			Status = EStatus::Ok;
 			Value = !bExistsOnly ? *CacheValue : CacheValue->RemoveData();
-			COOK_STAT(Timer.AddHit(Value.GetData().GetCompressedSize()));
 		}
+
+		RequestStats.AddLogicalRead(Value);
+		RequestStats.PhysicalReadSize += Value.GetData().GetCompressedSize();
 
 		OnComplete({Request.Name, Request.Key, MoveTemp(Value), Request.UserData, Status});
 	}
@@ -542,9 +662,24 @@ void FMemoryCacheStore::GetChunks(
 	FCompressedBufferReader Reader;
 	for (const FCacheGetChunkRequest& Request : Requests)
 	{
+		FRequestStats RequestStats;
+		RequestStats.Name = Request.Name;
+		RequestStats.Bucket = Request.Key.Bucket;
+		RequestStats.Type = Request.Id.IsNull() ? ERequestType::Value : ERequestType::Record;
+		RequestStats.Op = ERequestOp::GetChunk;
+		ON_SCOPE_EXIT
+		{
+			RequestStats.Latency = RequestStats.EndTime - RequestStats.StartTime;
+			if (StoreStats)
+			{
+				StoreStats->AddRequest(RequestStats);
+			}
+		};
+
+		FRequestTimer RequestTimer(RequestStats);
+
 		bool bProcessHit = false;
 		const bool bExistsOnly = EnumHasAnyFlags(Request.Policy, ECachePolicy::SkipData);
-		COOK_STAT(auto Timer = bExistsOnly ? UsageStats.TimeProbablyExists() : UsageStats.TimeGet());
 		if (bCanBeDisabled && DebugOptions.ShouldSimulateGetMiss(Request.Key))
 		{
 			UE_LOG(LogDerivedDataCache, Verbose, TEXT("%s: Simulated miss for get of %s from '%s'"),
@@ -595,26 +730,28 @@ void FMemoryCacheStore::GetChunks(
 		if (bProcessHit && Request.RawOffset <= Value.GetRawSize())
 		{
 			const uint64 RawSize = FMath::Min(Value.GetRawSize() - Request.RawOffset, Request.RawSize);
-			COOK_STAT(Timer.AddHit(RawSize));
 			FSharedBuffer Buffer;
 			if (Value.HasData() && !bExistsOnly)
 			{
 				Buffer = Reader.Decompress(Request.RawOffset, RawSize);
+				RequestStats.LogicalReadSize += Buffer.GetSize();
 			}
 			const EStatus Status = bExistsOnly || Buffer ? EStatus::Ok : EStatus::Error;
+			RequestStats.Status = Status;
 			OnComplete({Request.Name, Request.Key, Request.Id, Request.RawOffset,
 				RawSize, Value.GetRawHash(), MoveTemp(Buffer), Request.UserData, Status});
 		}
 		else
 		{
+			RequestStats.Status = EStatus::Error;
 			OnComplete(Request.MakeResponse(EStatus::Error));
 		}
 	}
 }
 
-IMemoryCacheStore* CreateMemoryCacheStore(const TCHAR* Name, int64 MaxCacheSize, bool bCanBeDisabled)
+void CreateMemoryCacheStore(IMemoryCacheStore*& OutCache, const TCHAR* Name, const TCHAR* Config, ICacheStoreOwner* Owner)
 {
-	return new FMemoryCacheStore(Name, MaxCacheSize, bCanBeDisabled);
+	new FMemoryCacheStore(OutCache, Name, Config, Owner);
 }
 
 } // UE::DerivedData

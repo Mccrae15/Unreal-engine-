@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "MuR/Types.h"
+
 #include "CustomizableObjectParameterTypeDefinitions.generated.h"
 
 class UTexture2D;
@@ -46,6 +48,10 @@ struct FCustomizableObjectBoolParameterValue
 {
 	GENERATED_USTRUCT_BODY()
 
+	static constexpr bool DEFAULT_PARAMETER_VALUE = false;
+
+	inline static const FString DEFAULT_PARAMETER_VALUE_NAME;
+	
 	UPROPERTY(Category = CustomizableObjectBoolParameterValue, VisibleAnywhere)
 	FString ParameterName;
 
@@ -71,6 +77,8 @@ struct FCustomizableObjectIntParameterValue
 {
 	GENERATED_USTRUCT_BODY()
 
+	static constexpr int32 DEFAULT_PARAMETER_VALUE = INDEX_NONE;
+	
 	UPROPERTY(Category = CustomizableObjectIntParameterValue, VisibleAnywhere)
 	FString ParameterName;
 
@@ -116,6 +124,8 @@ struct FCustomizableObjectFloatParameterValue
 {
 	GENERATED_USTRUCT_BODY()
 
+	static constexpr float DEFAULT_PARAMETER_VALUE = 0;
+
 	UPROPERTY(Category = CustomizableObjectFloatParameterValue, VisibleAnywhere)
 	FString ParameterName;
 
@@ -148,18 +158,18 @@ USTRUCT(BlueprintType)
 struct FCustomizableObjectTextureParameterValue
 {
 	GENERATED_USTRUCT_BODY()
-
+	
 	UPROPERTY(Category = CustomizableObjectTextureParameterValue, VisibleAnywhere)
 	FString ParameterName;
 
 	UPROPERTY(Category = CustomizableObjectTextureParameterValue, VisibleAnywhere)
-	uint64 ParameterValue = 0;
+	FName ParameterValue;
 
 	UPROPERTY(Category = CustomizableObjectTextureParameterValue, VisibleAnywhere)
 	FString Uid;
 
 	UPROPERTY(Category = CustomizableObjectTextureParameterValue, VisibleAnywhere)
-	TArray<uint64> ParameterRangeValues;
+	TArray<FName> ParameterRangeValues;
 };
 
 
@@ -168,7 +178,7 @@ inline uint32 GetTypeHash(const FCustomizableObjectTextureParameterValue& Key)
 	uint32 Hash = GetTypeHash(Key.ParameterName);
 	Hash = HashCombine(Hash, GetTypeHash(Key.ParameterValue));
 
-	for (const uint64 Value : Key.ParameterRangeValues)
+	for (const FName& Value : Key.ParameterRangeValues)
     {
     	Hash = HashCombine(Hash, GetTypeHash(Value));
     }
@@ -182,6 +192,8 @@ struct FCustomizableObjectVectorParameterValue
 {
 	GENERATED_USTRUCT_BODY()
 
+	inline static const FLinearColor DEFAULT_PARAMETER_VALUE = FLinearColor::Black;
+	
 	UPROPERTY(Category = CustomizableObjectVectorParameterValue, VisibleAnywhere)
 	FString ParameterName;
 
@@ -266,6 +278,8 @@ USTRUCT(BlueprintType)
 struct FCustomizableObjectProjectorParameterValue
 {
 	GENERATED_USTRUCT_BODY()
+
+	inline static const FCustomizableObjectProjector DEFAULT_PARAMETER_VALUE = {};
 
 	UPROPERTY(Category = CustomizableObjectVectorParameterValue, VisibleAnywhere)
 	FString ParameterName;

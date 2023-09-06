@@ -11,6 +11,8 @@
 #include "NiagaraScriptMergeManager.h"
 #include "Misc/SecureHash.h"
 #include "ScopedTransaction.h"
+#include "ViewModels/HierarchyEditor/NiagaraHierarchyViewModelBase.h"
+#include "ViewModels/HierarchyEditor/NiagaraSummaryViewViewModel.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraStackEntry)
 
@@ -71,17 +73,20 @@ UNiagaraStackEntry::EStackIssueFixStyle UNiagaraStackEntry::FStackIssueFix::GetS
 	return Style;
 }
 
-UNiagaraStackEntry::FStackIssue::FStackIssue() : Severity(EStackIssueSeverity::None)
+UNiagaraStackEntry::FStackIssue::FStackIssue() 
+	: Severity(EStackIssueSeverity::None)
+	, DismissHandler(nullptr)
 {
 }
 
-UNiagaraStackEntry::FStackIssue::FStackIssue(EStackIssueSeverity InSeverity, FText InShortDescription, FText InLongDescription, FString InStackEditorDataKey, bool bInCanBeDismissed, const TArray<FStackIssueFix>& InFixes)
+UNiagaraStackEntry::FStackIssue::FStackIssue(EStackIssueSeverity InSeverity, FText InShortDescription, FText InLongDescription, FString InStackEditorDataKey, bool bInCanBeDismissed, const TArray<FStackIssueFix>& InFixes, const FSimpleDelegate& InDismissHandler)
 	: Severity(InSeverity)
 	, ShortDescription(InShortDescription)
 	, LongDescription(InLongDescription)
 	, UniqueIdentifier(FMD5::HashAnsiString(*FString::Printf(TEXT("%s-%s-%s"), *InStackEditorDataKey, *InShortDescription.ToString(), *InLongDescription.ToString())))
 	, bCanBeDismissed(bInCanBeDismissed)
 	, Fixes(InFixes)
+	, DismissHandler(InDismissHandler)
 {
 	checkf(ShortDescription.IsEmptyOrWhitespace() == false, TEXT("Short description can not be empty."));
 	//checkf(LongDescription.IsEmptyOrWhitespace() == false, TEXT("Long description can not be empty."));
@@ -125,6 +130,11 @@ const FText& UNiagaraStackEntry::FStackIssue::GetLongDescription() const
 bool UNiagaraStackEntry::FStackIssue::GetCanBeDismissed() const
 {
 	return bCanBeDismissed;
+}
+
+const FSimpleDelegate& UNiagaraStackEntry::FStackIssue::GetDismissHandler() const
+{
+	return DismissHandler;
 }
 
 const FString& UNiagaraStackEntry::FStackIssue::GetUniqueIdentifier() const
@@ -765,7 +775,7 @@ void UNiagaraStackEntry::RefreshChildren()
 	}
 	
 	// Stack issues refresh
-	NewStackIssues.RemoveAll([=](const FStackIssue& Issue) { return Issue.GetCanBeDismissed() && GetStackEditorData().GetDismissedStackIssueIds().Contains(Issue.GetUniqueIdentifier()); }); 
+	NewStackIssues.RemoveAll([this](const FStackIssue& Issue) { return Issue.GetCanBeDismissed() && GetStackEditorData().GetDismissedStackIssueIds().Contains(Issue.GetUniqueIdentifier()); }); 
 
 	StackIssues.Empty();
 	StackIssues.Append(NewStackIssues);
@@ -1088,6 +1098,91 @@ void UNiagaraStackEntry::OnRenamed(FText NewName)
 			AlternateDisplayNameChangedDelegate.Broadcast();
 		}
 	}
+}
+
+FNiagaraHierarchyIdentity UNiagaraStackEntry::DetermineSummaryIdentity() const
+{
+	return FNiagaraHierarchyIdentity();
+}
+
+bool UNiagaraStackEntry::IsInSummaryView() const
+{
+	if(GetEmitterViewModel().IsValid())
+	{
+		if(SupportsSummaryView())
+		{
+			FNiagaraHierarchyIdentity Identity = DetermineSummaryIdentity();
+			if(Identity.IsValid())
+			{
+				return GetEmitterViewModel()->GetSummaryHierarchyViewModel()->GetHierarchyRootViewModel()->FindViewModelForChild(Identity, true) != nullptr;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool UNiagaraStackEntry::IsAnyParentInSummaryView() const
+{
+	if(GetEmitterViewModel().IsValid())
+	{
+		for(UNiagaraStackEntry* Parent = Cast<UNiagaraStackEntry>(GetOuter()); Parent != nullptr; Parent = Cast<UNiagaraStackEntry>(Parent->GetOuter()))
+		{
+			if(Parent->IsInSummaryView())
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool UNiagaraStackEntry::IsAnyChildInSummaryView(bool bRecursive) const
+{
+	if(GetEmitterViewModel().IsValid())
+	{
+		TArray<UNiagaraStackEntry*> AllChildren;
+		GetUnfilteredChildren(AllChildren);
+		for(UNiagaraStackEntry* Child : AllChildren)
+		{
+			if(Child->IsInSummaryView())
+			{
+				return true;
+			}
+		}
+
+		if(bRecursive)
+		{
+			for(UNiagaraStackEntry* Child : AllChildren)
+			{
+				if(Child->IsAnyChildInSummaryView(bRecursive))
+				{
+					return true;
+				}
+			}			
+		}		
+	}
+
+	return false;
+}
+
+bool UNiagaraStackEntry::ExistsInParentEmitterSummary() const
+{
+	if(GetEmitterViewModel().IsValid())
+	{
+		if(GetEmitterViewModel()->GetParentEmitter().Emitter != nullptr)
+		{
+			FVersionedNiagaraEmitter BaseEmitter = GetEmitterViewModel()->GetParentEmitter();
+			FNiagaraHierarchyIdentity Identity = DetermineSummaryIdentity();
+			if(BaseEmitter.GetEmitterData() != nullptr && Identity.IsValid())
+			{
+				return Cast<UNiagaraEmitterEditorData>(BaseEmitter.GetEmitterData()->GetEditorData())->GetSummaryRoot()->FindChildWithIdentity(Identity, true) != nullptr;
+			}
+		}
+	}
+
+	return false;
 }
 
 void UNiagaraStackSpacer::Initialize(FRequiredEntryData InRequiredEntryData, float InSpacerHeight, TAttribute<bool> InShouldShowInStack, FString InOwningStackItemEditorDataKey)

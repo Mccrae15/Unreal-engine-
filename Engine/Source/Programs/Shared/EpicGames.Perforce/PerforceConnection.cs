@@ -581,7 +581,7 @@ namespace EpicGames.Perforce
 			{
 				for (int idx = 0; idx < responses.Count; idx++)
 				{
-					connection.Logger.LogDebug("Unexpected response {Idx}: {Text}", idx, responses[idx].ToString());
+					connection.Logger.LogInformation("Unexpected response {Idx}: {Text}", idx, responses[idx].ToString());
 				}
 				throw new PerforceException("Expected one result from 'p4 {0}', got {1}", command, responses.Count);
 			}
@@ -3808,7 +3808,7 @@ namespace EpicGames.Perforce
 			// Using multiple threads is not supported through p4.exe due to threaded output not being parsable
 			if(numThreads != -1 && (connection is NativePerforceConnection))
 			{
-				StringBuilder argument = new StringBuilder($"--parallel-threads={numThreads}");
+				StringBuilder argument = new StringBuilder($"--parallel=threads={numThreads}");
 				if(batch != -1)
 				{
 					argument.Append($",batch={batch}");

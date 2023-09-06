@@ -270,39 +270,38 @@ public:
 
 	bool Matches(const FRHISetRenderTargetsInfo& RTInfo) const;
 
-	inline uint32 GetNumColorAttachments() const
+	uint32 GetNumColorAttachments() const
 	{
 		return NumColorAttachments;
 	}
 
 	void Destroy(FVulkanDevice& Device);
 
-	inline VkFramebuffer GetHandle()
+	VkFramebuffer GetHandle()
 	{
 		return Framebuffer;
 	}
 
-	inline const FVulkanTextureView& GetPartialDepthTextureView() const
+	const FVulkanView::FTextureView& GetPartialDepthTextureView() const
 	{
-		check(PartialDepthTextureView.View != VK_NULL_HANDLE);
-		return PartialDepthTextureView;
+		check(PartialDepthTextureView);
+		return PartialDepthTextureView->GetTextureView();
 	}
 
-	TArray<FVulkanTextureView> AttachmentTextureViews;
+	TIndirectArray<FVulkanView> OwnedTextureViews;
+	TArray<FVulkanView const*> AttachmentTextureViews;
+
 	// Copy from the Depth render target partial view
-	FVulkanTextureView PartialDepthTextureView;
+	FVulkanView const* PartialDepthTextureView = nullptr;
 
-	// Image views and memory allocations we need to addref + release
-	TArray<VkImageView> AttachmentViewsToDelete;
-
-	inline bool ContainsRenderTarget(FRHITexture* Texture) const
+	bool ContainsRenderTarget(FRHITexture* Texture) const
 	{
 		ensure(Texture);
-		FVulkanTexture* VulkanTexture = FVulkanTexture::Cast(Texture);
+		FVulkanTexture* VulkanTexture = ResourceCast(Texture);
 		return ContainsRenderTarget(VulkanTexture->Image);
 	}
 
-	inline bool ContainsRenderTarget(VkImage Image) const
+	bool ContainsRenderTarget(VkImage Image) const
 	{
 		ensure(Image != VK_NULL_HANDLE);
 		for (uint32 Index = 0; Index < NumColorAttachments; ++Index)
@@ -316,7 +315,7 @@ public:
 		return (DepthStencilRenderTargetImage == Image);
 	}
 
-	inline VkRect2D GetRenderArea() const
+	VkRect2D GetRenderArea() const
 	{
 		return RenderArea;
 	}
@@ -778,55 +777,6 @@ namespace VulkanRHI
 #endif
 #endif
 
-	// For cases when we want to use DepthRead_StencilDONTCARE
-	inline bool IsDepthReadOnly(FExclusiveDepthStencil DepthStencilAccess)
-	{
-		return DepthStencilAccess.IsUsingDepth() && !DepthStencilAccess.IsDepthWrite();
-	}
-
-	// For cases when we want to use DepthRead_StencilWrite (when we want to read in a shader the current bound depth stencil render target)
-	inline bool IsStencilWrite(FExclusiveDepthStencil DepthStencilAccess)
-	{
-		return DepthStencilAccess.IsUsingStencil() && DepthStencilAccess.IsStencilWrite();
-	}
-
-	inline VkImageLayout GetDepthStencilLayout(FExclusiveDepthStencil RequestedDSAccess, FVulkanDevice& InDevice)
-	{
-		if (!RequestedDSAccess.IsUsingStencil() && InDevice.SupportsParallelRendering())
-		{
-			if (RequestedDSAccess.IsDepthRead())
-			{
-				return VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
-			}
-			else if (RequestedDSAccess.IsDepthWrite())
-			{
-				return VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
-			}
-		}
-
-		if (RequestedDSAccess == FExclusiveDepthStencil::DepthRead_StencilNop || RequestedDSAccess == FExclusiveDepthStencil::DepthRead_StencilRead)
-		{
-			return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-		}
-		else if (RequestedDSAccess == FExclusiveDepthStencil::DepthRead_StencilWrite && InDevice.GetOptionalExtensions().HasKHRMaintenance2)
-		{
-			return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
-		}
-
-		else if (RequestedDSAccess.IsDepthWrite() && !RequestedDSAccess.IsStencilWrite() && InDevice.SupportsParallelRendering())
-		{
-			return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL;
-		}
-
-		if(!RequestedDSAccess.IsUsingDepth() && RequestedDSAccess.IsUsingStencil())  // todo-jn: wussat?  still needs maintenance2?
-		{
-			return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
-		}
-
-		ensure(RequestedDSAccess.IsDepthWrite() || RequestedDSAccess.IsStencilWrite());
-		return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	}
-
 	// Merge a depth and a stencil layout for drivers that don't support VK_KHR_separate_depth_stencil_layouts
 	inline VkImageLayout GetMergedDepthStencilLayout(VkImageLayout DepthLayout, VkImageLayout StencilLayout)
 	{
@@ -855,13 +805,16 @@ namespace VulkanRHI
 
 		if (DepthLayout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL)
 		{
-			if ((StencilLayout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL) || (StencilLayout == VK_IMAGE_LAYOUT_UNDEFINED))
+			// :todo-jn:  barrier downgrades from sync2 to sync1 happen before the tracking is updated sometimes, which causes the StencilLayout to contain an older sync1 value. 
+			// temporarily accept those values until we fix it at the source.
+			// see FORT-645241
+			if ((StencilLayout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL) || (StencilLayout == VK_IMAGE_LAYOUT_UNDEFINED) || (StencilLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL))
 			{
 				return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 			}
 			else
 			{
-				check(StencilLayout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL);
+				check(StencilLayout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL || StencilLayout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 				return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL;
 			}
 		}
@@ -901,7 +854,11 @@ namespace VulkanRHI
 			VK_ACCESS_TRANSFER_READ_BIT |
 			VK_ACCESS_TRANSFER_WRITE_BIT |
 			VK_ACCESS_HOST_READ_BIT |
-			VK_ACCESS_HOST_WRITE_BIT;
+			VK_ACCESS_HOST_WRITE_BIT |
+			VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+			VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | 
+			VK_ACCESS_FRAGMENT_DENSITY_MAP_READ_BIT_EXT |
+			VK_ACCESS_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
 		Barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
 			VK_ACCESS_INDEX_READ_BIT |
 			VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT |
@@ -916,7 +873,11 @@ namespace VulkanRHI
 			VK_ACCESS_TRANSFER_READ_BIT |
 			VK_ACCESS_TRANSFER_WRITE_BIT |
 			VK_ACCESS_HOST_READ_BIT |
-			VK_ACCESS_HOST_WRITE_BIT;
+			VK_ACCESS_HOST_WRITE_BIT |
+			VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+			VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
+			VK_ACCESS_FRAGMENT_DENSITY_MAP_READ_BIT_EXT |
+			VK_ACCESS_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
 		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &Barrier, 0, nullptr, 0, nullptr);
 	}
 
@@ -933,7 +894,8 @@ namespace VulkanRHI
 
 inline bool UseVulkanDescriptorCache()
 {
-	return (PLATFORM_ANDROID)|| GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1;
+	// Descriptor cache path for WriteAccelerationStructure() is not implemented, so disable if RT is enabled
+	return ((PLATFORM_ANDROID) && !(VULKAN_RHI_RAYTRACING)) || GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1;
 }
 
 inline bool ValidateShadingRateDataType()
@@ -941,20 +903,10 @@ inline bool ValidateShadingRateDataType()
 	switch (GRHIVariableRateShadingImageDataType)
 	{
 	case VRSImage_Palette:
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 		return true;
-#else
-		checkf(false, TEXT("GRHIVariableRateShadingImageDataType was specified as VRSImage_Palette, but the VK_KHR_fragment_shading_rate extension is not supported on this platform."));
-		break;
-#endif
 
 	case VRSImage_Fractional:
-#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
 		return true;
-#else
-		checkf(false, TEXT("GRHIVariableRateShadingImageDataType was specified as VRSImage_Fractional, but the VK_EXT_fragment_density_map extension is not supported on this platform."));
-		break;
-#endif
 
 	case VRSImage_NotSupported:
 		checkf(false, TEXT("A texture was marked as a shading rate source but attachment VRS is not supported on this device. Ensure GRHISupportsAttachmentVariableRateShading and GRHIAttachmentVariableRateShadingEnabled are true before specifying a shading rate attachment."));

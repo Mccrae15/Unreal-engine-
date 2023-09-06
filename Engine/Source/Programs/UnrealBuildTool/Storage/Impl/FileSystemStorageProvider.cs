@@ -1,10 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Text;
 using EpicGames.Core;
 using UnrealBuildBase;
 
@@ -67,10 +65,10 @@ namespace UnrealBuildTool.Storage.Impl
 
 			public StorageWriter(FileReference Location)
 			{
-				this.FinalLocation = Location;
+				FinalLocation = Location;
 				DirectoryReference.CreateDirectory(FinalLocation.Directory);
 
-				this.TempLocation = new FileReference(String.Format("{0}.{1}", Location.FullName, ProcessId));
+				TempLocation = new FileReference(String.Format("{0}.{1}", Location.FullName, ProcessId));
 				Stream = FileReference.Open(TempLocation, FileMode.Create, FileAccess.Write, FileShare.Read | FileShare.Delete);
 			}
 

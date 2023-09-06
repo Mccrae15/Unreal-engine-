@@ -8,7 +8,7 @@
 
 //Description of an actor selected parts we can find world transforms on 
 USTRUCT(BlueprintType)
-struct  MOVIESCENE_API FActorForWorldTransforms
+struct  FActorForWorldTransforms
 {
 	GENERATED_BODY()
 
@@ -22,4 +22,26 @@ struct  MOVIESCENE_API FActorForWorldTransforms
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Actor")
 	FName SocketName;
+
+	bool operator ==(const FActorForWorldTransforms& Other) const
+	{
+		if (Actor == Other.Actor)
+		{
+			if (Component.IsValid())
+			{
+				if (Component == Other.Component)
+				{
+					if (SocketName == Other.SocketName)
+					{
+						return true;
+					}
+				}
+			}
+			else if(Other.Component.IsValid() == false)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 };

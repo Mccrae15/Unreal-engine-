@@ -46,8 +46,8 @@ public:
 	FVector3f				TextureV;				// Texture V vector.
 	VerticesArrayType	Vertices;
 	uint32				PolyFlags;				// FPoly & Bsp poly bit flags (PF_).
-	ABrush*				Actor;					// Brush where this originated, or NULL.
-	UMaterialInterface*	Material;				// Material.
+	TObjectPtr<ABrush>				Actor;					// Brush where this originated, or NULL.
+	TObjectPtr<UMaterialInterface>	Material;				// Material.
 	FName				RulesetVariation;		// Name of variation within a ProcBuilding Ruleset for this face
 	FName				ItemName;				// Item name.
 	int32					iLink;					// iBspSurf, or brush fpoly index of first identical polygon, or MAX_uint16.
@@ -218,7 +218,7 @@ public:
 	* @param	InPolygons		An array of FPolys that will be replaced with a new set of polygons that are merged together as much as possible.
 	*/
 	template<typename ArrayType>
-	ENGINE_API static void OptimizeIntoConvexPolys(ABrush* InOwnerBrush, ArrayType& InPolygons);
+	static void OptimizeIntoConvexPolys(ABrush* InOwnerBrush, ArrayType& InPolygons);
 
 	/**
 	* Takes a set of polygons and returns a vertex array representing the outside winding

@@ -9,11 +9,10 @@
 #include "RenderGrid/RenderGrid.h"
 #include "RenderGrid/RenderGridQueue.h"
 #include "IRenderGridEditor.h"
-#include "RenderGridUtils.h"
+#include "Utils/RenderGridUtils.h"
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Misc/MessageDialog.h"
-#include "MoviePipelineExecutor.h"
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelinePrimaryConfig.h"
 #include "MoviePipelineQueue.h"
@@ -26,7 +25,6 @@
 #include "Styling/AppStyle.h"
 #include "Tracks/MovieSceneSubTrack.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SScaleBox.h"
 
@@ -95,7 +93,7 @@ void UE::RenderGrid::Private::SRenderGridJobList::Construct(const FArguments& In
 				.OnTextChanged(this, &SRenderGridJobList::OnSearchBarTextChanged)
 			]
 
-			// Filters
+			/* // Filters
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(0.f, 2.f, 2.f, 2.f)
@@ -111,9 +109,9 @@ void UE::RenderGrid::Private::SRenderGridJobList::Construct(const FArguments& In
 					SNew(STextBlock)
 					.TextStyle(FAppStyle::Get(), "GenericFilters.TextStyle")
 					.Font(FAppStyle::Get().GetFontStyle("FontAwesome.12"))
-					.Text(FText::FromString(FString(TEXT("\xf0b0"))) /*fa-filter*/)
+					.Text(FText::FromString(FString(TEXT("\xf0b0")))) // fa-filter
 				]
-			]
+			] */
 		]
 
 		// Job List
@@ -535,11 +533,10 @@ TSharedRef<SWidget> UE::RenderGrid::Private::SRenderGridJobListTableRow::Generat
 							{
 								if (Grid->DoesJobIdExist(NewJobId))
 								{
-									const FText TitleText = LOCTEXT("JobIdNotUniqueTitle", "Duplicate Job IDs");
 									FMessageDialog::Open(
 										EAppMsgType::Ok,
 										FText::Format(LOCTEXT("JobIdNotUniqueMessage", "Job ID \"{0}\" is not unique."), FText::FromString(NewJobId)),
-										&TitleText);
+										LOCTEXT("JobIdNotUniqueTitle", "Duplicate Job IDs"));
 									return FText::FromString(OldJobId);
 								}
 
@@ -696,7 +693,7 @@ TSharedRef<SWidget> UE::RenderGrid::Private::SRenderGridJobListTableRow::Generat
 		else if (ColumnName == FRenderGridJobListColumns::Duration)
 		{
 			FText Text;
-			if (TOptional<double> Duration = Job->GetDurationInSeconds())
+			if (TOptional<double> Duration = Job->GetDuration())
 			{
 				FTimespan Timespan = FTimespan::FromSeconds(*Duration);
 				int32 Hours = static_cast<int32>(Timespan.GetTotalHours());

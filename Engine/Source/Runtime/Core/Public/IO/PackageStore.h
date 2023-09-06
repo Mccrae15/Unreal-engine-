@@ -20,21 +20,6 @@ class FCbWriter;
 class FStructuredArchiveSlot;
 
 /**
- * Package export information.
- */
-struct FPackageStoreExportInfo
-{
-	int32 ExportCount = 0;
-	int32 ExportBundleCount = 0;
-	
-	CORE_API friend FArchive& operator<<(FArchive& Ar, FPackageStoreExportInfo& ExportInfo);
-	
-	CORE_API friend FCbWriter& operator<<(FCbWriter& Writer, const FPackageStoreExportInfo& ExportInfo);
-	
-	CORE_API static FPackageStoreExportInfo FromCbObject(const FCbObject& Obj);
-};
-
-/**
  * Package store entry status.
  */
 enum class EPackageStoreEntryStatus
@@ -50,14 +35,11 @@ enum class EPackageStoreEntryStatus
  */ 
 struct FPackageStoreEntry
 {
-	FPackageStoreExportInfo ExportInfo;
 	TArrayView<const FPackageId> ImportedPackageIds;
 	TArrayView<const FSHAHash> ShaderMapHashes;
 #if WITH_EDITOR
-	FName UncookedPackageName;
-	uint8 UncookedPackageHeaderExtension; // TODO: Can't include PackagePath.h
-	FPackageStoreExportInfo OptionalSegmentExportInfo;
 	TArrayView<const FPackageId> OptionalSegmentImportedPackageIds;
+	bool bHasOptionalSegment = false;
 #endif
 };
 
@@ -67,8 +49,8 @@ struct FPackageStoreEntry
 enum class EPackageStoreEntryFlags : uint32
 {
 	None		= 0,
-	Redirected	= 0x01,
 	AutoOptional= 0x02,
+	OptionalSegment = 0x04,
 };
 ENUM_CLASS_FLAGS(EPackageStoreEntryFlags);
 
@@ -85,48 +67,29 @@ struct FPackageStoreEntryResource
 	EPackageStoreEntryFlags Flags = EPackageStoreEntryFlags::None;
 	/** The package name. */
 	FName PackageName;
-	/** Used for localized and redirected packages. */
-	FName SourcePackageName;
-	/** Region name for localized packages. */
-	FName Region;
-	/** The package export information. */
-	FPackageStoreExportInfo ExportInfo;
+	FPackageId PackageId;
 	/** Imported package IDs. */
 	TArray<FPackageId> ImportedPackageIds;
-	/** Referenced shader map hashes - must be sorted in order to preserve determinism across builds. */
+	/** Referenced shader map hashes. */
 	TArray<FSHAHash> ShaderMapHashes;
-	/** The editor data package export information. */
-	FPackageStoreExportInfo OptionalSegmentExportInfo;
 	/** Editor data imported package IDs. */
 	TArray<FPackageId> OptionalSegmentImportedPackageIds;
 
 	/** Returns the package ID. */
 	FPackageId GetPackageId() const
 	{
-		return FPackageId::FromName(PackageName);
-	}
-
-	/** Returns the source package ID. */
-	FPackageId GetSourcePackageId() const
-	{
-		return SourcePackageName.IsNone() ? FPackageId() : FPackageId::FromName(SourcePackageName);
-	}
-
-	FName GetSourcePackageName() const
-	{
-		return SourcePackageName;
-	}
-
-	/** Returns whether this package is redirected. */
-	bool IsRedirected() const
-	{
-		return EnumHasAnyFlags(Flags, EPackageStoreEntryFlags::Redirected); 
+		return PackageId;
 	}
 
 	/** Returns whether this package was saved as auto optional */
 	bool IsAutoOptional() const
 	{
 		return EnumHasAnyFlags(Flags, EPackageStoreEntryFlags::AutoOptional);
+	}
+
+	bool HasOptionalSegment() const
+	{
+		return EnumHasAnyFlags(Flags, EPackageStoreEntryFlags::OptionalSegment);
 	}
 
 	CORE_API friend FArchive& operator<<(FArchive& Ar, FPackageStoreEntryResource& PackageStoreEntry);
@@ -224,7 +187,7 @@ public:
 	CORE_API static FPackageStore& Get();
 
 	/* Mount a package store backend. */
-	CORE_API void Mount(TSharedRef<IPackageStoreBackend> Backend);
+	CORE_API void Mount(TSharedRef<IPackageStoreBackend> Backend, int32 Priority = 0);
 
 	/* Returns the package store entry data with export info and imported packages for the specified package ID. */
 	CORE_API EPackageStoreEntryStatus GetPackageStoreEntry(FPackageId PackageId, FPackageStoreEntry& OutPackageStoreEntry);
@@ -234,13 +197,17 @@ public:
 
 	CORE_API FPackageStoreBackendContext::FPendingEntriesAddedEvent& OnPendingEntriesAdded();
 
+	CORE_API bool HasAnyBackendsMounted() const;
+
 private:
 	FPackageStore();
 
 	friend class FPackageStoreReadScope;
 
 	TSharedRef<FPackageStoreBackendContext> BackendContext;
-	TArray<TSharedRef<IPackageStoreBackend>> Backends;
+	
+	using FBackendAndPriority = TTuple<int32, TSharedRef<IPackageStoreBackend>>;
+	TArray<FBackendAndPriority> Backends;
 
 	static thread_local int32 ThreadReadCount;
 };

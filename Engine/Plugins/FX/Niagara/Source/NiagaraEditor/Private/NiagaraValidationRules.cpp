@@ -28,6 +28,9 @@
 #include "AssetToolsModule.h"
 #include "Materials/MaterialInterface.h"
 
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
+
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraValidationRules)
 
 #define LOCTEXT_NAMESPACE "NiagaraValidationRules"
@@ -177,6 +180,66 @@ namespace NiagaraValidation
 			return *EmitterViewModel;
 		}
 		return nullptr;
+	}
+
+	TOptional<int32> GetModuleStaticInt32Value(const UNiagaraStackModuleItem* Module, FName ParameterName)
+	{
+		TArray<UNiagaraStackFunctionInput*> ModuleInputs;
+		Module->GetParameterInputs(ModuleInputs);
+
+		for (UNiagaraStackFunctionInput* Input : ModuleInputs)
+		{
+			if (Input->IsStaticParameter() && Input->GetInputParameterHandle().GetName() == ParameterName)
+			{
+				return TOptional<int32>(*(int32*)Input->GetLocalValueStruct()->GetStructMemory());
+			}
+		}
+		return TOptional<int32>();
+	}
+
+	void SetModuleStaticInt32Value(UNiagaraStackModuleItem* Module, FName ParameterName, int32 NewValue)
+	{
+		TArray<UNiagaraStackFunctionInput*> ModuleInputs;
+		Module->GetParameterInputs(ModuleInputs);
+
+		for (UNiagaraStackFunctionInput* Input : ModuleInputs)
+		{
+			if (Input->IsStaticParameter() && Input->GetInputParameterHandle().GetName() == ParameterName)
+			{
+				TSharedRef<FStructOnScope> ValueStruct = MakeShared<FStructOnScope>(Input->GetLocalValueStruct()->GetStruct());
+				*(int32*)ValueStruct->GetStructMemory() = NewValue;
+				Input->SetLocalValue(ValueStruct);
+			}
+		}
+	};
+
+	bool StructContainsUObjectProperty(UStruct* Struct)
+	{
+		for (TFieldIterator<const FProperty> PropertyIt(Struct); PropertyIt; ++PropertyIt)
+		{
+			const FProperty* Property = *PropertyIt;
+			if (const FArrayProperty* ArrayProperty = CastField<const FArrayProperty>(Property))
+			{
+				// If we are an array change the property to be the inner one to check for struct / object
+				Property = ArrayProperty->Inner;
+			}
+
+			if (const FStructProperty* StructProperty = CastField<const FStructProperty>(Property))
+			{
+				if (StructProperty->Struct)
+				{
+					if (StructContainsUObjectProperty(StructProperty->Struct))
+					{
+						return true;
+					}
+				}
+			}
+			else if (CastField<const FWeakObjectProperty>(Property) || CastField<const FObjectProperty>(Property) || CastField<const FSoftObjectProperty>(Property))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 }
 
@@ -530,6 +593,81 @@ void UNiagaraValidationRule_BannedDataInterfaces::CheckValidity(const FNiagaraVa
 	);
 }
 
+void UNiagaraValidationRule_GpuUsage::CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const
+{
+	UNiagaraSystem& System = Context.ViewModel->GetSystem();
+	for (TSharedRef<FNiagaraEmitterHandleViewModel> EmitterHandleModel : Context.ViewModel->GetEmitterHandleViewModels())
+	{
+		FNiagaraEmitterHandle* EmitterHandle = EmitterHandleModel.Get().GetEmitterHandle();
+		FVersionedNiagaraEmitterData* EmitterData = EmitterHandle->GetEmitterData();
+		if (EmitterData->SimTarget != ENiagaraSimTarget::GPUComputeSim)
+		{
+			continue;
+		}
+
+		const FString PlatformConflictsString = NiagaraValidation::GetPlatformConflictsString(Platforms, EmitterData->Platforms);
+		if (PlatformConflictsString.IsEmpty())
+		{
+			continue;
+		}
+
+		FNiagaraValidationResult& ValidationResult = OutResults.Emplace_GetRef(
+			Severity,
+			LOCTEXT("GpuUsageInfo", "GPU usage may not function as expected"),
+			FText::Format(LOCTEXT("GpuUsageInfoDetails", "GPU usage may not function as expected on '{0}'."), FText::FromString(PlatformConflictsString)),
+			NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterHandleModel->GetEmitterStackViewModel())
+		);
+		
+		ValidationResult.Fixes.Emplace(
+			FText::Format(LOCTEXT("GpuUsageInfoFix_DisablePlatforms", "Disable emitter on '{0}'."), FText::FromString(PlatformConflictsString)),
+			FNiagaraValidationFixDelegate::CreateLambda(
+				[WeakEmitterPtr=EmitterHandle->GetInstance().ToWeakPtr(), PlatformsToDisable=Platforms]()
+				{
+					FVersionedNiagaraEmitter VersionedEmitter = WeakEmitterPtr.ResolveWeakPtr();
+					if (FVersionedNiagaraEmitterData* VersionedEmitterData = VersionedEmitter.GetEmitterData())
+					{
+						TArray<FNiagaraPlatformSetConflictInfo> ConflictInfos;
+						FNiagaraPlatformSet::GatherConflicts({&VersionedEmitterData->Platforms, &PlatformsToDisable}, ConflictInfos);
+
+						for (const FNiagaraPlatformSetConflictInfo& ConflictInfo : ConflictInfos)
+						{
+							for (const FNiagaraPlatformSetConflictEntry& ConflictEntry : ConflictInfo.Conflicts)
+							{
+								UDeviceProfile* DeviceProfile = UDeviceProfileManager::Get().FindProfile(ConflictEntry.ProfileName.ToString());
+								for (int32 iQualityLevel=0; iQualityLevel < 32; ++iQualityLevel)
+								{
+									if ( (ConflictEntry.QualityLevelMask & (1 << iQualityLevel)) != 0 )
+									{
+										VersionedEmitterData->Platforms.SetDeviceProfileState(DeviceProfile, iQualityLevel, ENiagaraPlatformSelectionState::Disabled);
+									}
+								}
+							}
+						}
+					}
+				}
+			)
+		);
+			
+		ValidationResult.Fixes.Emplace(
+			LOCTEXT("GpuUsageInfoFix_SwitchToCput", "Set emitter to CPU"),
+			FNiagaraValidationFixDelegate::CreateLambda(
+				[WeakEmitterPtr=EmitterHandle->GetInstance().ToWeakPtr()]()
+				{
+					FVersionedNiagaraEmitter VersionedEmitter = WeakEmitterPtr.ResolveWeakPtr();
+					if (FVersionedNiagaraEmitterData* VersionedEmitterData = VersionedEmitter.GetEmitterData())
+					{
+						VersionedEmitterData->SimTarget = ENiagaraSimTarget::CPUSim;
+
+						FProperty* SimTargetProperty = FindFProperty<FProperty>(FVersionedNiagaraEmitterData::StaticStruct(), GET_MEMBER_NAME_CHECKED(FVersionedNiagaraEmitterData, SimTarget));
+						FPropertyChangedEvent PropertyChangedEvent(SimTargetProperty);
+						VersionedEmitter.Emitter->PostEditChangeVersionedProperty(PropertyChangedEvent, VersionedEmitter.Version);
+					}
+				}
+			)
+		);
+	}
+}
+
 void UNiagaraValidationRule_InvalidEffectType::CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& Results)  const
 {
 	UNiagaraStackSystemPropertiesItem* SystemProperties = NiagaraValidation::GetStackEntry<UNiagaraStackSystemPropertiesItem>(Context.ViewModel->GetSystemStackViewModel());
@@ -617,19 +755,8 @@ void UNiagaraValidationRule_NoOpaqueRenderMaterial::CheckValidity(const FNiagara
 	UNiagaraStackModuleItem* SourceModule = Cast<UNiagaraStackModuleItem>(Context.Source);
 	if (SourceModule && SourceModule->GetIsEnabled() && SourceModule->GetEmitterViewModel())
 	{
-		auto GetCollisionTypeInput = [](const UNiagaraStackModuleItem* Module)
-		{
-			TArray<UNiagaraStackFunctionInput*> ModuleInputs;
-			Module->GetParameterInputs(ModuleInputs);
-			for (UNiagaraStackFunctionInput* Input : ModuleInputs)
-			{
-				if (Input->IsStaticParameter() && Input->GetInputParameterHandle().GetName() == FName("GPU Collision Type"))
-				{
-					return Input;
-				}
-			}
-			return static_cast<UNiagaraStackFunctionInput*>(nullptr);
-		};
+		static const FName NAME_GPUCollisionType("GPU Collision Type");
+		static const FName NAME_ZDepthQueryType("Z Depth Query Type");
 		
 		// search for the right emitter view model
 		for (const TSharedRef<FNiagaraEmitterHandleViewModel>& EmitterHandleModel : Context.ViewModel->GetEmitterHandleViewModels())
@@ -637,21 +764,18 @@ void UNiagaraValidationRule_NoOpaqueRenderMaterial::CheckValidity(const FNiagara
 			FVersionedNiagaraEmitterData* EmitterData = EmitterHandleModel->GetEmitterHandle()->GetEmitterData();
 			if (EmitterHandleModel->GetIsEnabled() && EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim && EmitterHandleModel->GetEmitterViewModel() == SourceModule->GetEmitterViewModel())
 			{
-				// check if we are using depth buffer collisions
-				if (UNiagaraStackFunctionInput* Input = GetCollisionTypeInput(SourceModule))
-				{
-					// the first entry of the enum is depth buffer collision
-					// Unfortunately it's a BP enum, so we can't match the named values in C++
-					if (int32 Value = *(int32*)Input->GetLocalValueStruct()->GetStructMemory(); Value != 0)
-					{
-						continue;
-					}
-				}
-				else
+				// Note: for these BP driven enums we can't compare the values
+				TOptional<int32> GPUCollisionType = NiagaraValidation::GetModuleStaticInt32Value(SourceModule, NAME_GPUCollisionType);
+				if (!GPUCollisionType.IsSet() || GPUCollisionType.GetValue() != 0)
 				{
 					continue;
 				}
-				
+				TOptional<int32> ZDepthQueryType = NiagaraValidation::GetModuleStaticInt32Value(SourceModule, NAME_ZDepthQueryType);
+				if (!ZDepthQueryType.IsSet() || ZDepthQueryType.GetValue() != 0)
+				{
+					continue;
+				}
+
 				// check the renderers
 				TArray<UNiagaraStackRendererItem*> RendererItems = NiagaraValidation::GetStackEntries<UNiagaraStackRendererItem>(EmitterHandleModel->GetEmitterStackViewModel());
 				for (UNiagaraStackRendererItem* Renderer : RendererItems)
@@ -681,16 +805,11 @@ void UNiagaraValidationRule_NoOpaqueRenderMaterial::CheckValidity(const FNiagara
 									TWeakObjectPtr<UNiagaraStackModuleItem> WeakSourceModule = SourceModule;
 								
 									DisableRendererFix.FixDelegate = FNiagaraValidationFixDelegate::CreateLambda(
-										[WeakSourceModule, GetCollisionTypeInput]()
+										[WeakSourceModule]()
 										{
 											if (UNiagaraStackModuleItem* CollisionModule = WeakSourceModule.Get())
 											{
-												if (UNiagaraStackFunctionInput* Input = GetCollisionTypeInput(CollisionModule))
-												{
-													TSharedRef<FStructOnScope> ValueStruct = MakeShared<FStructOnScope>(Input->GetLocalValueStruct()->GetStruct());
-													*(int32*)ValueStruct->GetStructMemory() = 1;
-													Input->SetLocalValue(ValueStruct);
-												}
+												NiagaraValidation::SetModuleStaticInt32Value(CollisionModule, NAME_GPUCollisionType, 1);
 											}
 										});
 								}
@@ -765,15 +884,16 @@ void UNiagaraValidationRule_SimulationStageBudget::CheckValidity(const FNiagaraV
 				continue;
 			}
 
+			const int32 StageNumIterations = SimStage->NumIterations.GetDefaultValue<int32>();
 			++TotalEnabledStages;
-			TotalIterations += SimStage->Iterations;
-			if ( bMaxIterationsPerStageEnabled && SimStage->Iterations > MaxIterationsPerStage )
+			TotalIterations += StageNumIterations;
+			if ( bMaxIterationsPerStageEnabled && StageNumIterations > MaxIterationsPerStage)
 			{
 				UNiagaraStackEmitterPropertiesItem* EmitterProperties = NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterHandleModel.Get().GetEmitterStackViewModel());
 				OutResults.Emplace_GetRef(
 					Severity,
 					FText::Format(LOCTEXT("SimStageTooManyIterationsFormat", "Simulation Stage '{0}' has too many iterations"), FText::FromName(SimStage->SimulationStageName)),
-					FText::Format(LOCTEXT("SimStageTooManyIterationsDetailedFormat", "Simulation Stage '{0}' has {1} iterations and we only allow {2}"), FText::FromName(SimStage->SimulationStageName), FText::AsNumber(SimStage->Iterations), FText::AsNumber(MaxIterationsPerStage)),
+					FText::Format(LOCTEXT("SimStageTooManyIterationsDetailedFormat", "Simulation Stage '{0}' has {1} iterations and we only allow {2}"), FText::FromName(SimStage->SimulationStageName), FText::AsNumber(StageNumIterations), FText::AsNumber(MaxIterationsPerStage)),
 					EmitterProperties
 				);
 			}
@@ -865,6 +985,51 @@ void UNiagaraValidationRule_TickDependencyCheck::CheckValidity(const FNiagaraVal
 			}
 		}
 	);
+}
+
+void UNiagaraValidationRule_UserDataInterfaces::CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const
+{
+	UNiagaraSystem* NiagaraSystem = &Context.ViewModel->GetSystem();
+	const FNiagaraUserRedirectionParameterStore& ExposedParameters = NiagaraSystem->GetExposedParameters();
+	if (ExposedParameters.GetDataInterfaces().Num() == 0)
+	{
+		return;
+	}
+
+	UObject* StackObject = NiagaraValidation::GetStackEntry<UNiagaraStackSystemPropertiesItem>(Context.ViewModel->GetSystemStackViewModel());
+	for (const FNiagaraVariableWithOffset& Variable : ExposedParameters.ReadParameterVariables())
+	{
+		if (Variable.IsDataInterface() == false)
+		{
+			continue;
+		}
+
+		UClass* DIClass = Variable.GetType().GetClass();
+		if (BannedDataInterfaces.Num() > 0 && !BannedDataInterfaces.Contains(DIClass))
+		{
+			continue;
+		}
+
+
+		if (AllowDataInterfaces.Num() > 0 && AllowDataInterfaces.Contains(DIClass))
+		{
+			continue;
+		}
+
+		if (bOnlyIncludeExposedUObjects && !NiagaraValidation::StructContainsUObjectProperty(DIClass))
+		{
+			continue;
+		}
+
+		const FText DIClassText = FText::FromName(DIClass->GetFName());
+		const FText VariableText = FText::FromName(Variable.GetName());
+		OutResults.Emplace(
+			Severity,
+			FText::Format(LOCTEXT("UserDataInterfaceFormat", "User DataInterface '{0}' should be removed."), VariableText),
+			FText::Format(LOCTEXT("UserDataInterfaceDetailedFormat", "DataInterface '{0}' type '{1}' may cause issues when exposed to UEFN and reduce performance when creating an instance.  Consider moving to system level and use object parameter binding on the data interface instead."), VariableText, DIClassText),
+			StackObject
+		);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

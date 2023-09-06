@@ -133,9 +133,10 @@ FIOSLocalNotificationService::FIOSLocalNotificationService()
 void FIOSLocalNotificationService::ClearAllLocalNotifications()
 {
 #if !PLATFORM_TVOS
-	UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
-	
-	[Center removeAllPendingNotificationRequests];
+	dispatch_async(dispatch_get_main_queue(), ^{
+		UNUserNotificationCenter *Center = [UNUserNotificationCenter currentNotificationCenter];
+		[Center removeAllPendingNotificationRequests];
+	});
 #endif
 }
 
@@ -175,6 +176,11 @@ int32 FIOSLocalNotificationService::ScheduleLocalNotificationAtTime(const FDateT
 #else
 	return -1;
 #endif
+}
+
+int32 FIOSLocalNotificationService::ScheduleLocalNotificationAtTimeOverrideId(const FDateTime& FireDateTime, bool LocalTime, const FText& Title, const FText& Body, const FText& Action, const FString& ActivationEvent, int32 IdOverride)
+{
+	return ScheduleLocalNotificationAtTime(FireDateTime, LocalTime, Title, Body, Action, ActivationEvent);
 }
 
 int32 FIOSLocalNotificationService::ScheduleLocalNotificationBadgeAtTime(const FDateTime& FireDateTime, bool LocalTime, const FString& ActivationEvent)

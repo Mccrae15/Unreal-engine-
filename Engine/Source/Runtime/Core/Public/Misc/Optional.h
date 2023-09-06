@@ -4,12 +4,48 @@
 
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/IntrusiveUnsetOptionalState.h"
 #include "Misc/OptionalFwd.h"
-#include "Templates/TypeCompatibleBytes.h"
 #include "Templates/UnrealTemplate.h"
 #include "Serialization/Archive.h"
 
 inline constexpr FNullOpt NullOpt{0};
+
+namespace UE::Core::Private
+{
+	struct CIntrusiveUnsettable
+	{
+		template <typename T>
+		auto Requires(bool& b) -> decltype(
+			b = std::decay_t<typename T::IntrusiveUnsetOptionalStateType>::bHasIntrusiveUnsetOptionalState
+		);
+	};
+
+	template <size_t N>
+	struct TNonIntrusiveOptionalStorage
+	{
+		uint8 Storage[N];
+		bool bIsSet;
+	};
+}
+
+template <typename T>
+constexpr bool HasIntrusiveUnsetOptionalState()
+{
+	if constexpr (!TModels<UE::Core::Private::CIntrusiveUnsettable, T>::Value)
+	{
+		return false;
+	}
+	// Derived types are not guaranteed to have an intrusive state, so ensure IntrusiveUnsetOptionalStateType matches the type in the optional
+	else if constexpr (!std::is_same_v<const typename T::IntrusiveUnsetOptionalStateType, const T>)
+	{
+		return false;
+	}
+	else
+	{
+		return T::bHasIntrusiveUnsetOptionalState;
+	}
+}
 
 /**
  * When we have an optional value IsSet() returns true, and GetValue() is meaningful.
@@ -18,37 +54,69 @@ inline constexpr FNullOpt NullOpt{0};
 template<typename OptionalType>
 struct TOptional
 {
+private:
+	static constexpr bool bUsingIntrusiveUnsetState = HasIntrusiveUnsetOptionalState<OptionalType>();
+
 public:
 	using ElementType = OptionalType;
 	
 	/** Construct an OptionalType with a valid value. */
 	TOptional(const OptionalType& InValue)
+		: TOptional(InPlace, InValue)
 	{
-		new(&Value) OptionalType(InValue);
-		bIsSet = true;
 	}
 	TOptional(OptionalType&& InValue)
+		: TOptional(InPlace, MoveTempIfPossible(InValue))
 	{
-		new(&Value) OptionalType(MoveTempIfPossible(InValue));
-		bIsSet = true;
 	}
 	template <typename... ArgTypes>
 	explicit TOptional(EInPlace, ArgTypes&&... Args)
 	{
+		// If this fails to compile when trying to call TOptional(EInPlace, ...) with a non-public constructor,
+		// do not make TOptional a friend.
+		//
+		// Instead, prefer this pattern:
+		//
+		//     class FMyType
+		//     {
+		//     private:
+		//         struct FPrivateToken { explicit FPrivateToken() = default; };
+		//
+		//     public:
+		//         // This has an equivalent access level to a private constructor,
+		//         // as only friends of FMyType will have access to FPrivateToken,
+		//         // but the TOptional constructor can legally call it since it's public.
+		//         explicit FMyType(FPrivateToken, int32 Int, float Real, const TCHAR* String);
+		//     };
+		//
+		//     // Won't compile if the caller doesn't have access to FMyType::FPrivateToken
+		//     TOptional<FMyType> Opt(InPlace, FMyType::FPrivateToken{}, 5, 3.14f, TEXT("Banana"));
+		//
 		new(&Value) OptionalType(Forward<ArgTypes>(Args)...);
-		bIsSet = true;
+
+		if constexpr (!bUsingIntrusiveUnsetState)
+		{
+			Value.bIsSet = true;
+		}
 	}
 	
 	/** Construct an OptionalType with an invalid value. */
 	TOptional(FNullOpt)
-		: bIsSet(false)
+		: TOptional()
 	{
 	}
 
 	/** Construct an OptionalType with no value; i.e. unset */
 	TOptional()
-		: bIsSet(false)
 	{
+		if constexpr (bUsingIntrusiveUnsetState)
+		{
+			new (&Value) OptionalType(FIntrusiveUnsetOptionalState{});
+		}
+		else
+		{
+			Value.bIsSet = false;
+		}
 	}
 
 	~TOptional()
@@ -57,47 +125,71 @@ public:
 	}
 
 	/** Copy/Move construction */
-	TOptional(const TOptional& InValue)
-		: bIsSet(false)
+	TOptional(const TOptional& Other)
 	{
-		if (InValue.bIsSet)
+		if constexpr (!bUsingIntrusiveUnsetState)
 		{
-			new(&Value) OptionalType(*(const OptionalType*)&InValue.Value);
-			bIsSet = true;
+			bool bLocalIsSet = Other.Value.bIsSet;
+			Value.bIsSet = bLocalIsSet;
+			if (!bLocalIsSet)
+			{
+				return;
+			}
 		}
+
+		new(&Value) OptionalType(*(const OptionalType*)&Other.Value);
 	}
-	TOptional(TOptional&& InValue)
-		: bIsSet(false)
+	TOptional(TOptional&& Other)
 	{
-		if (InValue.bIsSet)
+		if constexpr (!bUsingIntrusiveUnsetState)
 		{
-			new(&Value) OptionalType(MoveTempIfPossible(*(OptionalType*)&InValue.Value));
-			bIsSet = true;
+			bool bLocalIsSet = Other.Value.bIsSet;
+			Value.bIsSet = bLocalIsSet;
+			if (!bLocalIsSet)
+			{
+				return;
+			}
 		}
+
+		new(&Value) OptionalType(MoveTempIfPossible(*(OptionalType*)&Other.Value));
 	}
 
-	TOptional& operator=(const TOptional& InValue)
+	TOptional& operator=(const TOptional& Other)
 	{
-		if (&InValue != this)
+		if (&Other != this)
 		{
-			Reset();
-			if (InValue.bIsSet)
+			if constexpr (bUsingIntrusiveUnsetState)
 			{
-				new(&Value) OptionalType(*(const OptionalType*)&InValue.Value);
-				bIsSet = true;
+				*(OptionalType*)&Value = *(const OptionalType*)&Other.Value;
+			}
+			else
+			{
+				Reset();
+				if (Other.Value.bIsSet)
+				{
+					new(&Value) OptionalType(*(const OptionalType*)&Other.Value);
+					Value.bIsSet = true;
+				}
 			}
 		}
 		return *this;
 	}
-	TOptional& operator=(TOptional&& InValue)
+	TOptional& operator=(TOptional&& Other)
 	{
-		if (&InValue != this)
+		if (&Other != this)
 		{
-			Reset();
-			if (InValue.bIsSet)
+			if constexpr (bUsingIntrusiveUnsetState)
 			{
-				new(&Value) OptionalType(MoveTempIfPossible(*(OptionalType*)&InValue.Value));
-				bIsSet = true;
+				*(OptionalType*)&Value = MoveTempIfPossible(*(OptionalType*)&Other.Value);
+			}
+			else
+			{
+				Reset();
+				if (Other.Value.bIsSet)
+				{
+					new(&Value) OptionalType(MoveTempIfPossible(*(OptionalType*)&Other.Value));
+					Value.bIsSet = true;
+				}
 			}
 		}
 		return *this;
@@ -105,73 +197,122 @@ public:
 
 	TOptional& operator=(const OptionalType& InValue)
 	{
-		if (&InValue != (OptionalType*)&Value)
+		if (&InValue != (const OptionalType*)&Value)
 		{
-			Reset();
-			new(&Value) OptionalType(InValue);
-			bIsSet = true;
+			Emplace(InValue);
 		}
 		return *this;
 	}
 	TOptional& operator=(OptionalType&& InValue)
 	{
-		if (&InValue != (OptionalType*)&Value)
+		if (&InValue != (const OptionalType*)&Value)
 		{
-			Reset();
-			new(&Value) OptionalType(MoveTempIfPossible(InValue));
-			bIsSet = true;
+			Emplace(MoveTempIfPossible(InValue));
 		}
 		return *this;
 	}
 
 	void Reset()
 	{
-		if (bIsSet)
+		if constexpr (bUsingIntrusiveUnsetState)
 		{
-			bIsSet = false;
+			*(OptionalType*)&Value = FIntrusiveUnsetOptionalState{};
+		}
+		else
+		{
+			if (Value.bIsSet)
+			{
+				Value.bIsSet = false;
 
-			// We need a typedef here because VC won't compile the destructor call below if OptionalType itself has a member called OptionalType
-			typedef OptionalType OptionalDestructOptionalType;
-			((OptionalType*)&Value)->OptionalDestructOptionalType::~OptionalDestructOptionalType();
+				// We need a typedef here because VC won't compile the destructor call below if OptionalType itself has a member called OptionalType
+				typedef OptionalType OptionalDestructOptionalType;
+				((OptionalType*)&Value)->OptionalDestructOptionalType::~OptionalDestructOptionalType();
+			}
 		}
 	}
 
 	template <typename... ArgsType>
 	OptionalType& Emplace(ArgsType&&... Args)
 	{
-		Reset();
+		if constexpr (bUsingIntrusiveUnsetState)
+		{
+			// Destroy the member in-place before replacing it - a bit nasty, but it'll work since we don't support exceptions
+
+			// We need a typedef here because VC won't compile the destructor call below if OptionalType itself has a member called OptionalType
+			typedef OptionalType OptionalDestructOptionalType;
+			((OptionalType*)&Value)->OptionalDestructOptionalType::~OptionalDestructOptionalType();
+		}
+		else
+		{
+			Reset();
+		}
+
+		// If this fails to compile when trying to call Emplace with a non-public constructor,
+		// do not make TOptional a friend.
+		//
+		// Instead, prefer this pattern:
+		//
+		//     class FMyType
+		//     {
+		//     private:
+		//         struct FPrivateToken { explicit FPrivateToken() = default; };
+		//
+		//     public:
+		//         // This has an equivalent access level to a private constructor,
+		//         // as only friends of FMyType will have access to FPrivateToken,
+		//         // but Emplace can legally call it since it's public.
+		//         explicit FMyType(FPrivateToken, int32 Int, float Real, const TCHAR* String);
+		//     };
+		//
+		//     TOptional<FMyType> Opt:
+		//
+		//     // Won't compile if the caller doesn't have access to FMyType::FPrivateToken
+		//     Opt.Emplace(FMyType::FPrivateToken{}, 5, 3.14f, TEXT("Banana"));
+		//
 		OptionalType* Result = new(&Value) OptionalType(Forward<ArgsType>(Args)...);
-		bIsSet = true;
+
+		if constexpr (!bUsingIntrusiveUnsetState)
+		{
+			Value.bIsSet = true;
+		}
+
 		return *Result;
 	}
 
-	friend bool operator==(const TOptional& lhs, const TOptional& rhs)
+	friend bool operator==(const TOptional& Lhs, const TOptional& Rhs)
 	{
-		if (lhs.bIsSet != rhs.bIsSet)
+		if constexpr (!bUsingIntrusiveUnsetState)
 		{
-			return false;
+			bool bIsLhsSet = Lhs.Value.bIsSet;
+			bool bIsRhsSet = Rhs.Value.bIsSet;
+			if (bIsLhsSet != bIsRhsSet)
+			{
+				return false;
+			}
+			if (!bIsLhsSet) // both unset
+			{
+				return true;
+			}
 		}
-		if (!lhs.bIsSet) // both unset
-		{
-			return true;
-		}
-		return (*(OptionalType*)&lhs.Value) == (*(OptionalType*)&rhs.Value);
+
+		return (*(const OptionalType*)&Lhs.Value) == (*(const OptionalType*)&Rhs.Value);
 	}
 
-	friend bool operator!=(const TOptional& lhs, const TOptional& rhs)
+	friend bool operator!=(const TOptional& Lhs, const TOptional& Rhs)
 	{
-		return !(lhs == rhs);
+		return !(Lhs == Rhs);
 	}
 
 	void Serialize(FArchive& Ar)
 	{
-		bool bOptionalIsSet = bIsSet;
-		Ar << bOptionalIsSet;
+		bool bOptionalIsSet = IsSet();
 		if (Ar.IsLoading())
 		{
-			if (bOptionalIsSet)
+			bool bOptionalWasSaved = false;
+			Ar << bOptionalWasSaved;
+			if (bOptionalWasSaved)
 			{
-				if (!bIsSet)
+				if (!bOptionalIsSet)
 				{
 					Emplace();
 				}
@@ -184,6 +325,7 @@ public:
 		}
 		else
 		{
+			Ar << bOptionalIsSet;
 			if (bOptionalIsSet)
 			{
 				Ar << GetValue();
@@ -192,29 +334,70 @@ public:
 	}
 
 	/** @return true when the value is meaningful; false if calling GetValue() is undefined. */
-	bool IsSet() const { return bIsSet; }
-	FORCEINLINE explicit operator bool() const { return bIsSet; }
+	bool IsSet() const
+	{
+		if constexpr (bUsingIntrusiveUnsetState)
+		{
+			return !(*(const OptionalType*)&Value == FIntrusiveUnsetOptionalState{});
+		}
+		else
+		{
+			return Value.bIsSet;
+		}
+	}
+	FORCEINLINE explicit operator bool() const
+	{
+		return IsSet();
+	}
 
 	/** @return The optional value; undefined when IsSet() returns false. */
-	const OptionalType& GetValue() const { checkf(IsSet(), TEXT("It is an error to call GetValue() on an unset TOptional. Please either check IsSet() or use Get(DefaultValue) instead.")); return *(OptionalType*)&Value; }
-		  OptionalType& GetValue()		 { checkf(IsSet(), TEXT("It is an error to call GetValue() on an unset TOptional. Please either check IsSet() or use Get(DefaultValue) instead.")); return *(OptionalType*)&Value; }
+	OptionalType& GetValue()
+	{
+		checkf(IsSet(), TEXT("It is an error to call GetValue() on an unset TOptional. Please either check IsSet() or use Get(DefaultValue) instead."));
+		return *(OptionalType*)&Value;
+	}
+	FORCEINLINE const OptionalType& GetValue() const
+	{
+		return const_cast<TOptional*>(this)->GetValue();
+	}
 
-	const OptionalType* operator->() const { return &GetValue(); }
-		  OptionalType* operator->()	   { return &GetValue(); }
+	OptionalType* operator->()
+	{
+		return &GetValue();
+	}
+	FORCEINLINE const OptionalType* operator->() const
+	{
+		return const_cast<TOptional*>(this)->operator->();
+	}
 
-	const OptionalType& operator*() const { return GetValue(); }
-		  OptionalType& operator*()		  { return GetValue(); }
+	OptionalType& operator*()
+	{
+		return GetValue();
+	}
+	FORCEINLINE const OptionalType& operator*() const
+	{
+		return const_cast<TOptional*>(this)->operator*();
+	}
 
 	/** @return The optional value when set; DefaultValue otherwise. */
-	const OptionalType& Get(const OptionalType& DefaultValue) const { return IsSet() ? *(OptionalType*)&Value : DefaultValue; }
+	const OptionalType& Get(const OptionalType& DefaultValue UE_LIFETIMEBOUND) const UE_LIFETIMEBOUND
+	{
+		return IsSet() ? *(const OptionalType*)&Value : DefaultValue;
+	}
 
 	/** @return A pointer to the optional value when set, nullptr otherwise. */
-	OptionalType* GetPtrOrNull() { return IsSet() ? (OptionalType*)&Value : nullptr; }
-	const OptionalType* GetPtrOrNull() const { return IsSet() ? (const OptionalType*)&Value : nullptr; }
+	OptionalType* GetPtrOrNull()
+	{
+		return IsSet() ? (OptionalType*)&Value : nullptr;
+	}
+	FORCEINLINE const OptionalType* GetPtrOrNull() const
+	{
+		return const_cast<TOptional*>(this)->GetPtrOrNull();
+	}
 
 private:
-	TTypeCompatibleBytes<OptionalType> Value;
-	bool bIsSet;
+	using ValueStorageType = std::conditional_t<bUsingIntrusiveUnsetState, uint8[sizeof(OptionalType)], UE::Core::Private::TNonIntrusiveOptionalStorage<sizeof(OptionalType)>>;
+	alignas(OptionalType) ValueStorageType Value;
 };
 
 template<typename OptionalType>

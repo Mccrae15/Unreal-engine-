@@ -13,24 +13,7 @@
 bool FLoaderAdapterPinnedActors::PassActorDescFilter(const FWorldPartitionHandle& ActorHandle) const
 {
 	// We want to be able to pin any type of actors (HLODs, etc).
-	return ActorHandle.IsValid() && !ActorsToRemove.Contains(ActorHandle);
-}
-
-FText FLoaderAdapterPinnedActors::GetUnloadedReason(FWorldPartitionActorDesc* InActorDesc)
-{
-	if (InActorDesc)
-	{
-		UActorDescContainer* ActorDescContainer = InActorDesc->GetContainer();
-		UWorld* World = ActorDescContainer != nullptr ? ActorDescContainer->GetWorld() : nullptr;
-		UWorldPartition* WorldPartition = World != nullptr ? World->GetWorldPartition() : nullptr;
-		bool bShouldBeLoaded = !InActorDesc->GetIsSpatiallyLoaded() && !InActorDesc->GetActorIsRuntimeOnly();
-		if (WorldPartition && (bShouldBeLoaded || WorldPartition->IsActorPinned(InActorDesc->GetGuid())))
-		{
-			return LOCTEXT("UnloadedDataLayerReason", "Unloaded DataLayer");
-		}
-	}
-	
-	return LOCTEXT("UnloadedReason", "Unloaded");
+	return ActorHandle.IsValid() && !ActorsToRemove.Contains(ActorHandle) && SupportsPinning(ActorHandle.Get());
 }
 
 bool FLoaderAdapterPinnedActors::SupportsPinning(FWorldPartitionActorDesc* InActorDesc)
@@ -46,21 +29,16 @@ bool FLoaderAdapterPinnedActors::SupportsPinning(FWorldPartitionActorDesc* InAct
 		return false;
 	}
 
+	// This allows skipping actors that can never be loaded in current context: ex: bActorShouldSkipLevelInstance
+	if (!InActorDesc->IsEditorRelevant() && !InActorDesc->GetActorIsRuntimeOnly())
+	{
+		return false;
+	}
+
 	if (UActorDescContainer* Container = InActorDesc->GetContainer())
 	{
-		if (Container->IsMainPartitionContainer())
-		{
-			return true;
-		}
-		else if (InActorDesc->GetContentBundleGuid().IsValid())
-		{
-			const UWorld* ContainerWorld = Container->GetWorld();
-			const UWorldPartition* ContainerWorldPartition = ContainerWorld ? ContainerWorld->GetWorldPartition() : nullptr;
-			if (ContainerWorldPartition && ContainerWorldPartition->IsMainWorldPartition())
-			{
-				return InActorDesc->GetActorSoftPath().GetAssetPath().GetPackageName() == ContainerWorld->GetPackage()->GetFName();
-			}
-		}
+		const UWorldPartition* ContainerWorldPartition = Container->GetWorldPartition();
+		return ContainerWorldPartition && ContainerWorldPartition->IsMainWorldPartition();
 	}
 
 	return false;

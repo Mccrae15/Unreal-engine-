@@ -4,6 +4,7 @@
 
 #include "Containers/Array.h"
 #include "Containers/ContainerAllocationPolicies.h"
+#include "Evaluation/MovieSceneSectionParameters.h"
 #include "EntitySystem/MovieSceneEntityBuilder.h"
 #include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieSceneEntitySystemTypes.h"
@@ -68,6 +69,7 @@ struct FEntityImportSequenceParams
 		: HierarchicalBias(0)
 		, SequenceID(MovieSceneSequenceID::Root)
 		, DefaultCompletionMode(EMovieSceneCompletionMode::KeepState)
+		, SubSectionFlags(EMovieSceneSubSectionFlags::None)
 		, bPreRoll(false)
 		, bPostRoll(false)
 		, bDynamicWeighting(false)
@@ -80,6 +82,7 @@ struct FEntityImportSequenceParams
 	FRootInstanceHandle RootInstanceHandle;
 
 	EMovieSceneCompletionMode DefaultCompletionMode;
+	EMovieSceneSubSectionFlags SubSectionFlags;
 
 	bool bPreRoll : 1;
 	bool bPostRoll : 1;
@@ -105,8 +108,8 @@ struct FEntityImportParams
 } // namespace UE
 
 
-UINTERFACE()
-class MOVIESCENE_API UMovieSceneEntityProvider : public UInterface
+UINTERFACE(MinimalAPI)
+class UMovieSceneEntityProvider : public UInterface
 {
 public:
 	GENERATED_BODY()
@@ -115,7 +118,7 @@ public:
 /**
  * Interface to be added to UMovieSceneSection types when they contain entity data
  */
-class MOVIESCENE_API IMovieSceneEntityProvider
+class IMovieSceneEntityProvider
 {
 public:
 
@@ -135,8 +138,8 @@ public:
 	}
 
 
-	void ImportEntity(UMovieSceneEntitySystemLinker* EntityLinker, const FEntityImportParams& Params, FImportedEntity* OutImportedEntity);
-	void InterrogateEntity(UMovieSceneEntitySystemLinker* EntityLinker, const FEntityImportParams& Params, FImportedEntity* OutImportedEntity);
+	MOVIESCENE_API void ImportEntity(UMovieSceneEntitySystemLinker* EntityLinker, const FEntityImportParams& Params, FImportedEntity* OutImportedEntity);
+	MOVIESCENE_API void InterrogateEntity(UMovieSceneEntitySystemLinker* EntityLinker, const FEntityImportParams& Params, FImportedEntity* OutImportedEntity);
 
 private:
 

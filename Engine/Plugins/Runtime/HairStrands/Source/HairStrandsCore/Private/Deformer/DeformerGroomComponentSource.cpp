@@ -6,16 +6,6 @@
 
 #define LOCTEXT_NAMESPACE "DeformersGroomComponentSource"
 
-static const FHairGroupInstance* GetGroomInstance(const UGroomComponent* In)
-{
-	// HAIR_TODO: apply to all hair group, or only selected one
-	if (In && In->GetGroupCount() > 0)
-	{
-		return In->GetGroupInstance(0);
-	}
-	return nullptr;
-}
-
 FName UOptimusGroomComponentSource::Domains::ControlPoint("ControlPoint");
 FName UOptimusGroomComponentSource::Domains::Curve("Curve");
 
@@ -44,6 +34,22 @@ int32 UOptimusGroomComponentSource::GetLodIndex(const UActorComponent* InCompone
 	return 0;
 }
 
+uint32 UOptimusGroomComponentSource::GetDefaultNumInvocations(
+	const UActorComponent* InComponent,
+	int32 InLod
+	) const
+{
+	const UGroomComponent* GroomComponent = Cast<UGroomComponent>(InComponent);
+	if (!GroomComponent)
+	{
+		return 0;
+	}
+
+	const uint32 GroupCount = GroomComponent->GetGroupCount();
+
+	return GroupCount;
+}
+
 bool UOptimusGroomComponentSource::GetComponentElementCountsForExecutionDomain(
 	FName InDomainName,
 	const UActorComponent* InComponent,
@@ -57,27 +63,31 @@ bool UOptimusGroomComponentSource::GetComponentElementCountsForExecutionDomain(
 		return false;
 	}
 
-	const FHairGroupInstance* Instance = GetGroomInstance(GroomComponent);
-	if (!Instance)
+	// Ensure all groups are valid
+	const uint32 GroupCount = GroomComponent->GetGroupCount();
+	for (uint32 GroupIt=0;GroupIt<GroupCount;++GroupIt)
 	{
-		return 0;
+		if (!GroomComponent->GetGroupInstance(GroupIt))
+		{
+			return 0;
+		}
 	}
-
-	const int32 NumVertices = Instance->Strands.Data->PointCount;
-	const int32 NumCurves = Instance->Strands.Data->CurveCount;
 
 	OutInvocationElementCounts.Reset();
 
 	if (InDomainName == Domains::ControlPoint || InDomainName == Domains::Curve)
 	{
-		const int32 NumInvocations = 1; //TODO: num hair group?
-
-		OutInvocationElementCounts.Reset();
+		const int32 NumInvocations = GroupCount;
 		OutInvocationElementCounts.Reserve(NumInvocations);
 		for (int32 InvocationIndex = 0; InvocationIndex < NumInvocations; ++InvocationIndex)
 		{
-			const int32 NumThreads = InDomainName == Domains::ControlPoint ? NumVertices : NumCurves;
-			OutInvocationElementCounts.Add(NumThreads);
+			if (const FHairGroupInstance* Instance = GroomComponent->GetGroupInstance(InvocationIndex))
+			{
+				const int32 NumControlPoints = Instance->Strands.Data->GetNumPoints();
+				const int32 NumCurves = Instance->Strands.Data->GetNumCurves();
+				const int32 NumThreads = InDomainName == Domains::ControlPoint ? NumControlPoints : NumCurves;
+				OutInvocationElementCounts.Add(NumThreads);
+			}
 		}
 
 		return true;

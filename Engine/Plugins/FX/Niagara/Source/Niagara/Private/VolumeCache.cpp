@@ -6,19 +6,19 @@
 
 #include "VolumeCache.h"
 #include "NiagaraSettings.h"
+#include "NiagaraUseOpenVDB.h"
+#include "RHICommandList.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(VolumeCache)
 
-// @todo: we need builds for OpenVDB for platforms other than windows
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 #include "NiagaraOpenVDB.h"
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogVolumeCache, Log, All);
 
 
-// @todo: we need builds for OpenVDB for platforms other than windows
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 class NIAGARA_API FOpenVDBCacheData : public FVolumeCacheData
 {
 public:
@@ -70,7 +70,7 @@ void UVolumeCache::InitData()
 	{
 		case EVolumeCacheType::OpenVDB :
 		{			
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 			CachedVolumeFiles = TSharedPtr<FVolumeCacheData>(new FOpenVDBCacheData());
 #else
 			UE_LOG(LogVolumeCache, Warning, TEXT("OpenVDB not supported on the platform"));
@@ -141,8 +141,7 @@ FString FVolumeCacheData::GetAssetPath(FString PathFormat, int32 FrameIndex) con
 	return AssetPath;
 }
 
-// @todo: we need builds for OpenVDB for platforms other than windows
-#if PLATFORM_WINDOWS
+#if UE_USE_OPENVDB
 void FOpenVDBCacheData::Init(FIntVector Resolution)
 {
 	FScopeLock ScopeLock(&DenseGridGuard);
@@ -192,19 +191,12 @@ bool FOpenVDBCacheData::LoadFile(FString Path, int frame)
 			return false;
 		}
 
-		Vec4Grid::Ptr ColorGrid;		
-		ColorGrid = openvdb::gridPtrCast<Vec4Grid>(file.readGrid(openvdb::Name("Color")));		
-
-		if (ColorGrid == nullptr)
-		{
-			UE_LOG(LogVolumeCache, Warning, TEXT("Cache has invalid grids: %s"), *FullPath);
-			return false;
-		}
-
 		openvdb::MetaMap::Ptr Metadata = file.getMetadata();
-		FIntVector Size;
+
 		try
 		{
+			FIntVector Size;
+
 			Size.X = Metadata->metaValue<int>("DenseResolutionX");
 			Size.Y = Metadata->metaValue<int>("DenseResolutionY");
 			Size.Z = Metadata->metaValue<int>("DenseResolutionZ");
@@ -218,32 +210,51 @@ bool FOpenVDBCacheData::LoadFile(FString Path, int frame)
 				return false;
 			}
 
-			OpenVDBGrids.Add(frame, ColorGrid);
+			bool UseFloatGrids = Metadata->metaValue<bool>("FloatGridStorage");
 
-			// add total memory usage reported in bytes
-			TotalMemoryUsage += ColorGrid->memUsage() / 1000000;
-
-			// enqueue 
-			CacheQueue.Enqueue(frame);
-
-			// if total memory usage is over the limit, dequeue oldest one
-			int64 MaxMemory = GetDefault<UNiagaraSettings>()->SimCacheMaxCPUMemoryVolumetrics;
-			if (TotalMemoryUsage > MaxMemory && !CacheQueue.IsEmpty())
+			if (UseFloatGrids)
 			{
-				int FrameToRemove = CacheQueue.Pop();
-				UnloadFile(FrameToRemove);
+				UE_LOG(LogVolumeCache, Warning, TEXT("Cache has float grids, which are not used for cache reading: %s"), *FullPath);
+				return false;
 			}
-
-			// if dense vdb buffer doesn't match current resolution, re initialize it				
-			FScopeLock ScopeLock(&DenseGridGuard);
-			if (DenseGridPtr == nullptr || (DenseGridPtr->bbox().dim() != openvdb::Coord(DenseResolution.X - 1, DenseResolution.Y - 1, DenseResolution.Z - 1)))
+			else
 			{
-				Init(DenseResolution);
-			}
+				Vec4Grid::Ptr ColorGrid;
+				ColorGrid = openvdb::gridPtrCast<Vec4Grid>(file.readGrid(openvdb::Name("Color")));
 
-			// load to dense buffer	
-			openvdb::tools::CopyToDense<Vec4Tree, Vec4Dense> Copier(ColorGrid->tree(), *DenseGridPtr);
-			Copier.copy();
+				if (ColorGrid == nullptr)
+				{
+					UE_LOG(LogVolumeCache, Warning, TEXT("Cache has invalid grids: %s"), *FullPath);
+					return false;
+				}
+
+				OpenVDBGrids.Add(frame, ColorGrid);
+
+				// add total memory usage reported in bytes
+				TotalMemoryUsage += ColorGrid->memUsage() / 1000000;
+
+				// enqueue 
+				CacheQueue.Enqueue(frame);
+
+				// if total memory usage is over the limit, dequeue oldest one
+				int64 MaxMemory = GetDefault<UNiagaraSettings>()->SimCacheMaxCPUMemoryVolumetrics;
+				if (TotalMemoryUsage > MaxMemory && !CacheQueue.IsEmpty())
+				{
+					int FrameToRemove = CacheQueue.Pop();
+					UnloadFile(FrameToRemove);
+				}
+
+				// if dense vdb buffer doesn't match current resolution, re initialize it				
+				FScopeLock ScopeLock(&DenseGridGuard);
+				if (DenseGridPtr == nullptr || (DenseGridPtr->bbox().dim() != openvdb::Coord(DenseResolution.X - 1, DenseResolution.Y - 1, DenseResolution.Z - 1)))
+				{
+					Init(DenseResolution);
+				}
+
+				// load to dense buffer	
+				openvdb::tools::CopyToDense<Vec4Tree, Vec4Dense> Copier(ColorGrid->tree(), *DenseGridPtr);
+				Copier.copy();
+			}
 		}
 		catch (openvdb::Exception e)
 		{
@@ -462,6 +473,9 @@ bool OpenVDBTools::WriteImageDataToOpenVDBFile(FStringView FilePath, FIntVector 
 	openvdb::MetaMap outMeta;
 	outMeta.insertMeta("creator",
 		openvdb::StringMetadata("Unreal Engine"));
+
+	outMeta.insertMeta("FloatGridStorage", 
+		openvdb::BoolMetadata(UseFloatGrids));
 
 	outMeta.insertMeta("DenseResolutionX",
 		openvdb::Int32Metadata(ImageSize.X));

@@ -32,6 +32,7 @@ namespace EMeshPass
 	enum Type : uint8
 	{
 		DepthPass,
+		SecondStageDepthPass,
 		BasePass,
 		AnisotropyPass,
 		SkyPass,
@@ -80,6 +81,7 @@ inline const TCHAR* GetMeshPassName(EMeshPass::Type MeshPass)
 	switch (MeshPass)
 	{
 	case EMeshPass::DepthPass: return TEXT("DepthPass");
+	case EMeshPass::SecondStageDepthPass: return TEXT("SecondStageDepthPass");
 	case EMeshPass::BasePass: return TEXT("BasePass");
 	case EMeshPass::AnisotropyPass: return TEXT("AnisotropyPass");
 	case EMeshPass::SkyPass: return TEXT("SkyPass");
@@ -117,9 +119,9 @@ inline const TCHAR* GetMeshPassName(EMeshPass::Type MeshPass)
 	}
 
 #if WITH_EDITOR
-	static_assert(EMeshPass::Num == 29 + 4, "Need to update switch(MeshPass) after changing EMeshPass"); // GUID to prevent incorrect auto-resolves, please change when changing the expression: {A6E82589-44B3-4DAD-AC57-8AF6BD50DF43}
+	static_assert(EMeshPass::Num == 30 + 4, "Need to update switch(MeshPass) after changing EMeshPass"); // GUID to prevent incorrect auto-resolves, please change when changing the expression: {A6E82589-44B3-4DAD-AC57-8AF6BD50DF43}
 #else
-	static_assert(EMeshPass::Num == 29, "Need to update switch(MeshPass) after changing EMeshPass"); // GUID to prevent incorrect auto-resolves, please change when changing the expression: {A6E82589-44B3-4DAD-AC57-8AF6BD50DF43}
+	static_assert(EMeshPass::Num == 30, "Need to update switch(MeshPass) after changing EMeshPass"); // GUID to prevent incorrect auto-resolves, please change when changing the expression: {A6E82589-44B3-4DAD-AC57-8AF6BD50DF43}
 #endif
 
 	checkf(0, TEXT("Missing case for EMeshPass %u"), (uint32)MeshPass);
@@ -313,18 +315,19 @@ public:
 		, bDepthBounds(InMinimalState.bDepthBounds)
 		, DrawShadingRate(InMinimalState.DrawShadingRate)
 		, PrimitiveType(InMinimalState.PrimitiveType)
-		, PrecachePSOHash(InMinimalState.PrecachePSOHash)
-		, bPSOPrecached(InMinimalState.bPSOPrecached)
+		, StatePrecachePSOHash(InMinimalState.StatePrecachePSOHash)
+		, PSOPrecacheState(InMinimalState.PSOPrecacheState)
 	{
 	}
 
 	RENDERER_API void SetupBoundShaderState(FRHIVertexDeclaration* VertexDeclaration, const FMeshProcessorShaders& Shaders);
-	RENDERER_API void ComputePrecachePSOHash();
+
+ 	RENDERER_API void ComputeStatePrecachePSOHash();
 
 	FGraphicsPipelineStateInitializer AsGraphicsPipelineStateInitializer() const
 	{	
-		return FGraphicsPipelineStateInitializer
-		(	BoundShaderState.AsBoundShaderState()
+		FGraphicsPipelineStateInitializer result(
+			BoundShaderState.AsBoundShaderState()
 			, BlendState
 			, RasterizerState
 			, DepthStencilState
@@ -349,8 +352,15 @@ public:
 			, MultiViewCount
 			, bHasFragmentDensityAttachment
 			, DrawShadingRate
-			, PrecachePSOHash
 		);
+
+		if (PipelineStateCache::IsPSOPrecachingEnabled() )
+		{
+			checkSlow(StatePrecachePSOHash == 0 || RHIComputeStatePrecachePSOHash(result) == StatePrecachePSOHash);
+			result.StatePrecachePSOHash = StatePrecachePSOHash == 0 ? RHIComputeStatePrecachePSOHash(result) : StatePrecachePSOHash;			
+		}
+
+		return result;
 	}
 
 	inline bool operator==(const FGraphicsMinimalPipelineStateInitializer& rhs) const
@@ -489,9 +499,9 @@ public:
 	EPrimitiveType					PrimitiveType;
 		
 	// Data hash of the minimal PSO which is used to optimize the computation of the full PSO
-	uint64							PrecachePSOHash = 0;
-	// Is the PSO is precached - updated at draw time and can be used to skip draw when still precaching
-	mutable bool					bPSOPrecached = false;
+	uint64							StatePrecachePSOHash = 0;
+	// The PSO precache state - updated at draw time and can be used to skip draw when still precaching
+	mutable EPSOPrecacheResult		PSOPrecacheState = EPSOPrecacheResult::Unknown;
 };
 
 static_assert(sizeof(FMeshPassMask::Data) * 8 >= EMeshPass::Num, "FMeshPassMask::Data is too small to fit all mesh passes.");
@@ -874,6 +884,8 @@ public:
 
 	/** Set shader bindings on the commandlist, filtered by state cache. */
 	RENDERER_API void SetOnCommandList(FRHICommandList& RHICmdList, const FBoundShaderStateInput& Shaders, class FShaderBindingState* StateCacheShaderBindings) const;
+
+	RENDERER_API void SetParameters(FRHIBatchedShaderParameters& BatchedParameters, FRHIComputeShader* Shader, class FShaderBindingState* StateCacheShaderBindings = nullptr) const;
 	RENDERER_API void SetOnCommandList(FRHIComputeCommandList& RHICmdList, FRHIComputeShader* Shader, class FShaderBindingState* StateCacheShaderBindings = nullptr) const;
 
 #if RHI_RAYTRACING
@@ -980,17 +992,13 @@ private:
 
 	RENDERER_API void Release();
 
-	template<class RHICmdListType, class RHIShaderType>
 	static void SetShaderBindings(
-		RHICmdListType& RHICmdList,
-		RHIShaderType Shader,
+		FRHIBatchedShaderParameters& BatchedParameters,
 		const class FReadOnlyMeshDrawSingleShaderBindings& RESTRICT SingleShaderBindings,
 		FShaderBindingState& RESTRICT ShaderBindingState);
 
-	template<class RHICmdListType, class RHIShaderType>
 	static void SetShaderBindings(
-		RHICmdListType& RHICmdList,
-		RHIShaderType Shader,
+		FRHIBatchedShaderParameters& BatchedParameters,
 		const class FReadOnlyMeshDrawSingleShaderBindings& RESTRICT SingleShaderBindings);
 };
 
@@ -1284,7 +1292,7 @@ public:
 };
 
 /** FVisibleMeshDrawCommand sort key. */
-class RENDERER_API FMeshDrawCommandSortKey
+class FMeshDrawCommandSortKey
 {
 public:
 	union 
@@ -1322,7 +1330,7 @@ public:
 		return PackedData < B.PackedData;
 	}
 
-	static const FMeshDrawCommandSortKey Default;
+	static RENDERER_API const FMeshDrawCommandSortKey Default;
 };
 
 
@@ -1333,20 +1341,23 @@ enum class EFVisibleMeshDrawCommandFlags : uint8
 	/** If set, the FMaterial::MaterialUsesWorldPositionOffset_RenderThread() indicates that WPO is active for the given material. */
 	MaterialUsesWorldPositionOffset = 1U << 0U,
 
-	/** If set, the FMaterial::MaterialModifiesMeshPosition_RenderThread() indicates that WPO or something similar is active for the given material. */
-	MaterialMayModifyPosition UE_DEPRECATED(5.1, "Use MaterialUsesWorldPositionOffset, MaterialMayModifyPosition is now an alias for this and no longer represents MaterialModifiesMeshPosition_RenderThread().")  =  MaterialUsesWorldPositionOffset,
+	/**
+	 * If set, the FMaterial::ShouldAlwaysEvaluateWorldPositionOffset() indicates that WPO is ALWAYS active for the given material.
+	 * NOTE: This flag is only set if MaterialUsesWorldPositionOffset is also set.
+	 */
+	MaterialAlwaysEvaluatesWorldPositionOffset = 1U << 1U,
 
 	/** If set, the mesh draw command supports primitive ID steam (required for dynamic instancing and GPU-Scene instance culling). */
-	HasPrimitiveIdStreamIndex = 1U << 1U,
+	HasPrimitiveIdStreamIndex = 1U << 2U,
 
 	/** If set, forces individual instances to always be culled independently from the primitive */
-	ForceInstanceCulling = 1U << 2U,
+	ForceInstanceCulling = 1U << 3U,
 
 	/** If set, requires that instances preserve their original draw order in the draw command */
-	PreserveInstanceOrder = 1U << 3U,
+	PreserveInstanceOrder = 1U << 4U,
 
 	All = MaterialUsesWorldPositionOffset | HasPrimitiveIdStreamIndex | ForceInstanceCulling | PreserveInstanceOrder,
-	NumBits = 4U
+	NumBits = 5U
 };
 ENUM_CLASS_FLAGS(EFVisibleMeshDrawCommandFlags);
 static_assert(uint32(EFVisibleMeshDrawCommandFlags::All) < (1U << uint32(EFVisibleMeshDrawCommandFlags::NumBits)), "EFVisibleMeshDrawCommandFlags::NumBits too small to represent all flags in EFVisibleMeshDrawCommandFlags.");
@@ -1828,31 +1839,8 @@ ENUM_CLASS_FLAGS(EMeshPassFeatures);
 struct FMeshPassProcessorRenderState
 {
 	FMeshPassProcessorRenderState() = default;
-
 	FMeshPassProcessorRenderState(const FMeshPassProcessorRenderState& DrawRenderState) = default;
-
 	~FMeshPassProcessorRenderState() = default;
-
-	UE_DEPRECATED(5.1, "FMeshPassProcessorRenderState with pass / view uniform buffers is deprecated.")
-	FMeshPassProcessorRenderState(
-		const TUniformBufferRef<FViewUniformShaderParameters>& InViewUniformBuffer, 
-		FRHIUniformBuffer* InPassUniformBuffer = nullptr
-		)
-		: ViewUniformBuffer(InViewUniformBuffer)
-		, PassUniformBuffer(InPassUniformBuffer)
-	{
-	}
-
-	UE_DEPRECATED(5.1, "FMeshPassProcessorRenderState with pass / view uniform buffers is deprecated.")
-	FMeshPassProcessorRenderState(
-		const FSceneView& SceneView, 
-		FRHIUniformBuffer* InPassUniformBuffer = nullptr
-		)
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		: FMeshPassProcessorRenderState(SceneView.ViewUniformBuffer, InPassUniformBuffer)
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	{
-	}
 
 public:
 	FORCEINLINE_DEBUGGABLE void SetBlendState(FRHIBlendState* InBlendState)
@@ -1889,30 +1877,6 @@ public:
 	FORCEINLINE_DEBUGGABLE FExclusiveDepthStencil::Type GetDepthStencilAccess() const
 	{
 		return DepthStencilAccess;
-	}
-
-	UE_DEPRECATED(5.1, "SetViewUniformBuffer is deprecated. Use View.ViewUniformBuffer and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE void SetViewUniformBuffer(const TUniformBufferRef<FViewUniformShaderParameters>& InViewUniformBuffer)
-	{
-		ViewUniformBuffer = InViewUniformBuffer;
-	}
-
-	UE_DEPRECATED(5.1, "GetViewUniformBuffer is deprecated. Use View.ViewUniformBuffer and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE const FRHIUniformBuffer* GetViewUniformBuffer() const
-	{
-		return ViewUniformBuffer;
-	}
-
-	UE_DEPRECATED(5.1, "GetNaniteUniformBuffer is deprecated. Use a static uniform buffer and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE void SetNaniteUniformBuffer(FRHIUniformBuffer* InNaniteUniformBuffer)
-	{
-		NaniteUniformBuffer = InNaniteUniformBuffer;
-	}
-
-	UE_DEPRECATED(5.1, "GetNaniteUniformBuffer is deprecated. Use a static uniform buffer and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE FRHIUniformBuffer* GetNaniteUniformBuffer() const
-	{
-		return NaniteUniformBuffer;
 	}
 
 	FORCEINLINE_DEBUGGABLE uint32 GetStencilRef() const
@@ -1996,18 +1960,6 @@ public:
 	RENDERER_API static FMeshDrawingPolicyOverrideSettings ComputeMeshOverrideSettings(const FPSOPrecacheParams& PrecachePSOParams);
 	RENDERER_API static FMeshDrawingPolicyOverrideSettings ComputeMeshOverrideSettings(const FMeshBatch& Mesh);
 
-	UE_DEPRECATED(5.1, "ComputeMeshFillMode with FMeshBatch is deprecated.")
-	static ERasterizerFillMode ComputeMeshFillMode(const FMeshBatch& Mesh, const FMaterial& InMaterialResource, const FMeshDrawingPolicyOverrideSettings& InOverrideSettings)
-	{
-		return ComputeMeshFillMode(InMaterialResource, InOverrideSettings);
-	}
-
-	UE_DEPRECATED(5.1, "ComputeMeshCullMode with FMeshBatch is deprecated.")
-	RENDERER_API static ERasterizerCullMode ComputeMeshCullMode(const FMeshBatch& Mesh, const FMaterial& InMaterialResource, const FMeshDrawingPolicyOverrideSettings& InOverrideSettings)
-	{
-		return ComputeMeshCullMode(InMaterialResource, InOverrideSettings);
-	}
-
 	RENDERER_API static ERasterizerFillMode ComputeMeshFillMode(const FMaterial& InMaterialResource, const FMeshDrawingPolicyOverrideSettings& InOverrideSettings);
 	RENDERER_API static ERasterizerCullMode ComputeMeshCullMode(const FMaterial& InMaterialResource, const FMeshDrawingPolicyOverrideSettings& InOverrideSettings);
 
@@ -2040,6 +1992,22 @@ public:
 		bool bRequired,
 		TArray<FPSOPrecacheData>& PSOInitializers);
 
+	template<typename PassShadersType>
+	void AddGraphicsPipelineStateInitializer(
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
+		const FMaterial& RESTRICT MaterialResource,
+		const FMeshPassProcessorRenderState& RESTRICT DrawRenderState,
+		const FGraphicsPipelineRenderTargetsInfo& RESTRICT RenderTargetsInfo,
+		PassShadersType PassShaders,
+		ERasterizerFillMode MeshFillMode,
+		ERasterizerCullMode MeshCullMode,
+		EPrimitiveType PrimitiveType,
+		EMeshPassFeatures MeshPassFeatures,
+		ESubpassHint SubpassHint,
+		uint8 SubpassIndex,
+		bool bRequired,
+		TArray<FPSOPrecacheData>& PSOInitializers);
+
 protected:
 	RENDERER_API FMeshDrawCommandPrimitiveIdInfo GetDrawCommandPrimitiveId(
 		const FPrimitiveSceneInfo* RESTRICT PrimitiveSceneInfo,
@@ -2055,9 +2023,20 @@ protected:
 
 namespace PSOCollectorStats
 {
-	// Add, check & track the minimal PSO initializer during precaching and MeshDrawCommand building
-	RENDERER_API extern void AddMinimalPipelineStateToCache(const FGraphicsMinimalPipelineStateInitializer& PipelineStateInitializer, uint32 MeshPassType, const FVertexFactoryType* VertexFactoryType);
-	RENDERER_API extern void CheckMinimalPipelineStateInCache(const FGraphicsMinimalPipelineStateInitializer& PSOInitialize, uint32 MeshPassType, const FVertexFactoryType* VertexFactoryType);
+	/**
+	 * Create a shaders-only initializer where all state except for shaders is removed from the given initializer.
+	 */
+	RENDERER_API extern FGraphicsMinimalPipelineStateInitializer GetShadersOnlyInitializer(const FGraphicsMinimalPipelineStateInitializer& Initializer);
+
+	/**
+	 * Apply a custom mask to the given initializer removing some state.
+	 */
+	RENDERER_API extern FGraphicsMinimalPipelineStateInitializer PatchMinimalPipelineStateToCheck(const FGraphicsMinimalPipelineStateInitializer& Initializer);
+
+	/**
+	 * Compute the hash of a minimal graphics PSO initializer to be used by PSO precaching validation.
+	 */
+	RENDERER_API extern uint64 GetPSOPrecacheHash(const FGraphicsMinimalPipelineStateInitializer& Initializer);
 }
 
 #endif // PSO_PRECACHING_VALIDATE
@@ -2092,15 +2071,6 @@ public:
 		}
 	}
 
-	UE_DEPRECATED(5.1, "GetCreateFunction is deprecated. Use CreateMeshPassProcessor above.")
-	static DeprecatedPassProcessorCreateFunction GetCreateFunction(EShadingPath ShadingPath, EMeshPass::Type PassType)
-	{
-		check(ShadingPath < EShadingPath::Num && PassType < EMeshPass::Num);
-		uint32 ShadingPathIdx = (uint32)ShadingPath;
-		checkf(DeprecatedJumpTable[ShadingPathIdx][PassType], TEXT("Pass type %u create function was never registered for shading path %u.  Use a FRegisterPassProcessorCreateFunction to register a create function for this enum value."), (uint32)PassType, ShadingPathIdx);
-		return DeprecatedJumpTable[ShadingPathIdx][PassType];
-	}
-
 	static EMeshPassFlags GetPassFlags(EShadingPath ShadingPath, EMeshPass::Type PassType)
 	{
 		check(ShadingPath < EShadingPath::Num && PassType < EMeshPass::Num);
@@ -2127,16 +2097,6 @@ public:
 	{
 		uint32 ShadingPathIdx = (uint32)ShadingPath;
 		FPassProcessorManager::JumpTable[ShadingPathIdx][PassType] = CreateFunction;
-		FPassProcessorManager::Flags[ShadingPathIdx][PassType] = PassFlags;
-	}
-
-	UE_DEPRECATED(5.1, "FRegisterPassProcessorCreateFunction with DeprecatedPassProcessorCreateFunction is deprecated. Use new PassProcessorCreateFunction with extra ERHIFeatureLevel::Type argument.")
-	FRegisterPassProcessorCreateFunction(DeprecatedPassProcessorCreateFunction CreateFunction, EShadingPath InShadingPath, EMeshPass::Type InPassType, EMeshPassFlags PassFlags)
-		: ShadingPath(InShadingPath)
-		, PassType(InPassType)
-	{
-		uint32 ShadingPathIdx = (uint32)ShadingPath;
-		FPassProcessorManager::DeprecatedJumpTable[ShadingPathIdx][PassType] = CreateFunction;
 		FPassProcessorManager::Flags[ShadingPathIdx][PassType] = PassFlags;
 	}
 
@@ -2231,6 +2191,7 @@ public:
 	RENDERER_API void SetRayTracingShaderBindingsForHitGroup(
 		FRayTracingLocalShaderBindingWriter* BindingWriter,
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
+		FRHIUniformBuffer* SceneUniformBuffer,
 		FRHIUniformBuffer* NaniteUniformBuffer,
 		uint32 InstanceIndex,
 		uint32 SegmentIndex,
@@ -2240,8 +2201,10 @@ public:
 	/** Sets ray hit group shaders on the mesh command and allocates room for the shader bindings. */
 	RENDERER_API void SetShaders(const FMeshProcessorShaders& Shaders);
 
+	RENDERER_API bool IsUsingNaniteRayTracing() const;
 private:
 	FShaderUniformBufferParameter ViewUniformBufferParameter;
+	FShaderUniformBufferParameter SceneUniformBufferParameter;
 	FShaderUniformBufferParameter NaniteUniformBufferParameter;
 };
 
@@ -2371,6 +2334,7 @@ public:
 	RENDERER_API void SetRayTracingShaderBindings(
 		FRayTracingLocalShaderBindingWriter* BindingWriter,
 		const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer,
+		FRHIUniformBuffer* SceneUniformBuffer,
 		FRHIUniformBuffer* NaniteUniformBuffer,
 		uint32 ShaderIndexInPipeline,
 		uint32 ShaderSlot) const;
@@ -2380,5 +2344,6 @@ public:
 
 private:
 	FShaderUniformBufferParameter ViewUniformBufferParameter;
+	FShaderUniformBufferParameter SceneUniformBufferParameter;
 	FShaderUniformBufferParameter NaniteUniformBufferParameter;
 };

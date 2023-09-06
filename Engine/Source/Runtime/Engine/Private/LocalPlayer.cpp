@@ -21,6 +21,7 @@
 #include "SceneManagement.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Framework/Application/SlateApplication.h"
 
 #include "IXRTrackingSystem.h"
@@ -85,13 +86,6 @@ FLocalPlayerContext::FLocalPlayerContext( const class ULocalPlayer* InLocalPlaye
 FLocalPlayerContext::FLocalPlayerContext( const class APlayerController* InPlayerController )
 {
 	SetPlayerController( InPlayerController );
-}
-
-FLocalPlayerContext::FLocalPlayerContext( const FLocalPlayerContext& InPlayerContext )
-	: World(InPlayerContext.World)
-{
-	check(InPlayerContext.GetLocalPlayer());
-	SetLocalPlayer(InPlayerContext.GetLocalPlayer());
 }
 
 bool FLocalPlayerContext::IsValid() const
@@ -714,6 +708,23 @@ void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo) const
 	OutViewInfo.DesiredFOV = OutViewInfo.FOV;
 }
 
+void ULocalPlayer::ReceivedPlayerController(APlayerController* NewController)
+{
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_LocalPlayer_HandlePlayerControllerChanged);
+	
+	Super::ReceivedPlayerController(NewController);
+	
+	// Broadcast an event for anyone that may be listening
+	OnPlayerControllerChanged().Broadcast(NewController);
+
+	// Tell any local player subsystems
+	const TArray<ULocalPlayerSubsystem*>& LPSubsystems = SubsystemCollection.GetSubsystemArray<ULocalPlayerSubsystem>(ULocalPlayerSubsystem::StaticClass());
+	for (ULocalPlayerSubsystem* WorldSubsystem : LPSubsystems)
+	{
+		WorldSubsystem->PlayerControllerChanged(NewController);
+	}
+}
+
 bool ULocalPlayer::CalcSceneViewInitOptions(
 	struct FSceneViewInitOptions& ViewInitOptions,
 	FViewport* Viewport,
@@ -784,7 +795,7 @@ bool ULocalPlayer::CalcSceneViewInitOptions(
 	if (ViewStates[ViewIndex].GetReference() == nullptr)
 	{
 		const UWorld* CurrentWorld = GetWorld();
-		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->GetFeatureLevel() : GMaxRHIFeatureLevel;
 
 		ViewStates[ViewIndex].Allocate(FeatureLevel);
 	}
@@ -858,26 +869,43 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 	ViewFamily->Views.Add(View);
 
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_PostprocessSettings);
+		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(PostProcessSettings);
 		View->StartFinalPostprocessSettings(ViewInfo.Location);
 
-		// CameraAnim override
+		TArray<FPostProcessSettings> const* CameraAnimPPSettings = nullptr;
+		TArray<float> const* CameraAnimPPBlendWeights = nullptr;
+		TArray<EViewTargetBlendOrder> const* CameraAnimPPBlendOrders = nullptr;
+
+		// Base overrides (post process volumes, etc)
 		if (PlayerController->PlayerCameraManager)
 		{
-			TArray<FPostProcessSettings> const* CameraAnimPPSettings;
-			TArray<float> const* CameraAnimPPBlendWeights;
-			PlayerController->PlayerCameraManager->GetCachedPostProcessBlends(CameraAnimPPSettings, CameraAnimPPBlendWeights);
+			PlayerController->PlayerCameraManager->GetCachedPostProcessBlends(CameraAnimPPSettings, CameraAnimPPBlendWeights, CameraAnimPPBlendOrders);
 
 			for (int32 PPIdx = 0; PPIdx < CameraAnimPPBlendWeights->Num(); ++PPIdx)
 			{
-				View->OverridePostProcessSettings( (*CameraAnimPPSettings)[PPIdx], (*CameraAnimPPBlendWeights)[PPIdx]);
+				if ((*CameraAnimPPBlendOrders)[PPIdx] == VTBlendOrder_Base)
+				{
+					View->OverridePostProcessSettings( (*CameraAnimPPSettings)[PPIdx], (*CameraAnimPPBlendWeights)[PPIdx]);
+				}
 			}
 		}
 
-		//	CAMERA OVERRIDE
+		// Main camera
 		View->OverridePostProcessSettings(ViewInfo.PostProcessSettings, ViewInfo.PostProcessBlendWeight);
 
-		if (PlayerController->PlayerCameraManager)
+		// Camera overrides (cameras blending in, camera modifiers, etc)
+		if (PlayerController->PlayerCameraManager &&
+				CameraAnimPPSettings && CameraAnimPPBlendWeights && CameraAnimPPBlendOrders)
 		{
+			for (int32 PPIdx = 0; PPIdx < CameraAnimPPBlendWeights->Num(); ++PPIdx)
+			{
+				if ((*CameraAnimPPBlendOrders)[PPIdx] == VTBlendOrder_Override)
+				{
+					View->OverridePostProcessSettings( (*CameraAnimPPSettings)[PPIdx], (*CameraAnimPPBlendWeights)[PPIdx]);
+				}
+			}
+
 			PlayerController->PlayerCameraManager->UpdatePhotographyPostProcessing(View->FinalPostProcessSettings);
 		}
 
@@ -1637,7 +1665,7 @@ void ULocalPlayer::SetControllerId( int32 NewControllerId )
 		if (GEngine->IsControllerIdUsingPlatformUserId())
 		{
 			// This won't recurse back because we've already modified ControllerId
-			SetPlatformUserId(FPlatformMisc::GetPlatformUserForUserIndex(NewControllerId));
+			SetPlatformUserId(IPlatformInputDeviceMapper::Get().GetPlatformUserForUserIndex(NewControllerId));
 		}
 	}
 }
@@ -1660,14 +1688,19 @@ void ULocalPlayer::SetPlatformUserId(FPlatformUserId NewPlatformUserId)
 
 		if (GEngine->IsControllerIdUsingPlatformUserId())
 		{
-			SetControllerId(FPlatformMisc::GetUserIndexForPlatformUser(PlatformUserId));
+			SetControllerId(IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(PlatformUserId));
 		}
 	}
 }
 
+int32 ULocalPlayer::GetPlatformUserIndex() const
+{
+	FPlatformUserId UserId = GetPlatformUserId();
+	return IPlatformInputDeviceMapper::Get().GetUserIndexForPlatformUser(UserId);
+}
+
 int32 ULocalPlayer::GetLocalPlayerIndex() const
 {
-	// TODO: Add caching
 	return GetIndexInGameInstance();
 }
 
@@ -1811,14 +1844,14 @@ bool ULocalPlayer::IsPrimaryPlayer() const
 	return GetLocalPlayerIndex() == 0;
 }
 
-void ULocalPlayer::CleanupViewState()
+void ULocalPlayer::CleanupViewState(FStringView MidParentRootPath /*= {}*/)
 {
 	for (FSceneViewStateReference& State : ViewStates)
 	{
 		FSceneViewStateInterface* Ref = State.GetReference();
 		if (Ref)
 		{
-			Ref->ClearMIDPool();
+			Ref->ClearMIDPool(MidParentRootPath);
 		}
 	}
 }

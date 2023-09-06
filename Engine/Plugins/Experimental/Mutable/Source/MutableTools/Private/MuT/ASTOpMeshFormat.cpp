@@ -78,7 +78,7 @@ void ASTOpMeshFormat::ForEachChild(const TFunctionRef<void(ASTChild&)> f )
 }
 
 
-void ASTOpMeshFormat::Link( FProgram& program, const FLinkerOptions* )
+void ASTOpMeshFormat::Link( FProgram& program, FLinkerOptions* )
 {
     // Already linked?
     if (!linkedAddress)
@@ -264,7 +264,7 @@ mu::Ptr<ASTOp> Sink_MeshFormatAST::Visit(const mu::Ptr<ASTOp>& at, const ASTOpMe
 		break;
 	}
 
-	case OP_TYPE::ME_MORPH2:
+	case OP_TYPE::ME_MORPH:
 	{
 		// Move the format down the base of the morph
 		Ptr<ASTOpMeshMorph> newOp = mu::Clone<ASTOpMeshMorph>(at);
@@ -280,18 +280,15 @@ mu::Ptr<ASTOp> Sink_MeshFormatAST::Visit(const mu::Ptr<ASTOp>& at, const ASTOpMe
 		motaop->SetValue(pTargetMorphFormat, false /* useDiskCache */);
 		auto targetMorphFormatAt = motaop;
 
-		for (int32 t=0; t<newOp->Targets.Num(); ++t)
+		if (newOp->Target)
 		{
-			if (newOp->Targets[t])
-			{
-				mu::Ptr<ASTOpMeshFormat> newFormat = mu::Clone<ASTOpMeshFormat>(currentFormatOp);
-				newFormat->Buffers =
-					OP::MeshFormatArgs::BT_VERTEX
-					| OP::MeshFormatArgs::BT_IGNORE_MISSING;
-				newFormat->Format = targetMorphFormatAt;
+			mu::Ptr<ASTOpMeshFormat> newFormat = mu::Clone<ASTOpMeshFormat>(currentFormatOp);
+			newFormat->Buffers =
+				OP::MeshFormatArgs::BT_VERTEX
+				| OP::MeshFormatArgs::BT_IGNORE_MISSING;
+			newFormat->Format = targetMorphFormatAt;
 
-				newOp->Targets[t] = Visit(newOp->Targets[t].child(), newFormat.get());
-			}
+			newOp->Target = Visit(newOp->Target.child(), newFormat.get());
 		}
 
 		newAt = newOp;
@@ -387,7 +384,6 @@ mu::Ptr<ASTOp> Sink_MeshFormatAST::Visit(const mu::Ptr<ASTOp>& at, const ASTOpMe
 		break;
 
 	case OP_TYPE::ME_DIFFERENCE:
-	case OP_TYPE::ME_SUBTRACT:
 
 	default:
 		if (at != m_initialSource)

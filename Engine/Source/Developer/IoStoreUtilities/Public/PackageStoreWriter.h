@@ -5,6 +5,8 @@
 #include "IO/PackageStore.h"
 #include "Serialization/PackageWriter.h"
 
+class FZenStoreWriter;
+
 class IPackageStoreWriter : public ICookedPackageWriter
 {
 public:
@@ -12,6 +14,12 @@ public:
 	virtual IPackageStoreWriter* AsPackageStoreWriter() override
 	{
 		return this;
+	}
+
+	/** Downcast function for IPackageStoreWriter that is of class FZenStoreWriter. */
+	virtual FZenStoreWriter* AsZenStoreWriter()
+	{
+		return nullptr;
 	}
 
 	struct FOplogCookInfo
@@ -22,7 +30,7 @@ public:
 			FIoHash Hash;
 		};
 
-		ICookedPackageWriter::FCookedPackageInfo CookInfo;
+		FName PackageName;
 		TArray<FAttachment> Attachments;
 		bool bUpToDate = false;
 	};

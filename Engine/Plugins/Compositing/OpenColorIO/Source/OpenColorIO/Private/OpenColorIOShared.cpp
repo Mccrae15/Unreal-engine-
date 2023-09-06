@@ -9,9 +9,11 @@
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"
 #include "OpenColorIOConfiguration.h"
+#include "OpenColorIOModule.h"
 #include "OpenColorIOShaderType.h"
 #include "OpenColorIOShader.h"
 #include "OpenColorIOShaderCompilationManager.h"
+#include "OpenColorIOWrapperDefines.h"
 #include "RendererInterface.h"
 #include "ShaderCompiler.h"
 #include "Stats/StatsMisc.h"
@@ -25,6 +27,15 @@
 IMPLEMENT_TYPE_LAYOUT(FOpenColorIOCompilationOutput);
 IMPLEMENT_TYPE_LAYOUT(FOpenColorIOShaderMapId);
 IMPLEMENT_TYPE_LAYOUT(FOpenColorIOShaderMapContent);
+
+FOpenColorIOTransformResource::FOpenColorIOTransformResource()
+	: GameThreadShaderMap(nullptr)
+	, RenderingThreadShaderMap(nullptr)
+	, FeatureLevel(ERHIFeatureLevel::SM5)
+	, bContainsInlineShaders(false)
+	, bLoadedCookedShaderMapId(false)
+	, WorkingColorSpaceTransformType(EOpenColorIOWorkingColorSpaceTransform::None)
+{}
 
 FOpenColorIOTransformResource::~FOpenColorIOTransformResource()
 {
@@ -190,6 +201,7 @@ void FOpenColorIOTransformResource::SerializeShaderMap(FArchive& Ar)
 				if (bSuccessfullyLoaded && FApp::CanEverRender())
 				{
 					GameThreadShaderMap = RenderingThreadShaderMap = LoadedShaderMap;
+					GameThreadShaderMap->GetResource()->SetOwnerName(GetOwnerFName());
 #if WITH_EDITOR
 					GameThreadShaderMap->AssociateWithAsset(AssetPath);
 #endif
@@ -199,7 +211,7 @@ void FOpenColorIOTransformResource::SerializeShaderMap(FArchive& Ar)
 	}
 }
 
-void FOpenColorIOTransformResource::SetupResource(ERHIFeatureLevel::Type InFeatureLevel, const FString& InShaderCodeHash, const FString& InShadercode, const FString& InRawConfigHash, const FString& InFriendlyName, const FName& InAssetPath)
+void FOpenColorIOTransformResource::SetupResource(ERHIFeatureLevel::Type InFeatureLevel, const FString& InShaderCodeHash, const FString& InShadercode, const FString& InRawConfigHash, const FString& InFriendlyName, const FName& InAssetPath, EOpenColorIOWorkingColorSpaceTransform InWorkingColorSpaceTransformType)
 {
 	// When this happens we assume that shader was cooked and we don't need to do anything. 
 	if (InShaderCodeHash.IsEmpty() && InRawConfigHash.IsEmpty())
@@ -207,18 +219,16 @@ void FOpenColorIOTransformResource::SetupResource(ERHIFeatureLevel::Type InFeatu
 		return;
 	}
 
-	FString FullShaderCodeHash;
-	FullShaderCodeHash.Reserve(InShaderCodeHash.Len());
-	const FString ConcatHashes = InShaderCodeHash + InRawConfigHash;
+
+	const FString ConcatHashes = InShaderCodeHash + InRawConfigHash + FString::FromInt((int32)InWorkingColorSpaceTransformType);
 	FSHAHash FullHash;
 	FSHA1::HashBuffer(TCHAR_TO_ANSI(*(ConcatHashes)), ConcatHashes.Len(), FullHash.Hash);
 
 	ShaderCodeAndConfigHash = FullHash.ToString();
 	ShaderCode = InShadercode;
 	FriendlyName = InFriendlyName.Replace(TEXT("/"), TEXT(""));
-#if WITH_EDITOR
+	WorkingColorSpaceTransformType = InWorkingColorSpaceTransformType;
 	AssetPath = InAssetPath;
-#endif // WITH_EDITOR
 
 	SetFeatureLevel(InFeatureLevel);
 }
@@ -287,11 +297,11 @@ bool FOpenColorIOTransformResource::CacheShaders(const FOpenColorIOShaderMapId& 
 				FOpenColorIOShaderMap::LoadFromDerivedDataCache(this, InShaderMapId, InPlatform, GameThreadShaderMap);
 				if (GameThreadShaderMap && GameThreadShaderMap->IsValid())
 				{
-					UE_LOG(LogTemp, Display, TEXT("Loaded shader %s for OCIO ColorSpace %s from DDC"), *GameThreadShaderMap->GetFriendlyName(), *GetFriendlyName());
+					UE_LOG(LogOpenColorIO, Display, TEXT("Loaded shader %s for OCIO ColorSpace %s from DDC"), *GameThreadShaderMap->GetFriendlyName(), *GetFriendlyName());
 				}
 				else
 				{
-					UE_LOG(LogTemp, Display, TEXT("Loading shader for OCIO ColorSpace %s from DDC failed. Shader needs recompile."), *GetFriendlyName());
+					UE_LOG(LogOpenColorIO, Display, TEXT("Loading shader for OCIO ColorSpace %s from DDC failed. Shader needs recompile."), *GetFriendlyName());
 				}
 #endif // WITH_EDITOR
 			}

@@ -28,10 +28,15 @@ public:
 	//~Begin UPCGSettings interface
 	virtual FName GetDefaultNodeName() const override;
 	virtual FText GetDefaultNodeTitle() const override;
-	//~End UPCGSettings interface
 #endif
+	virtual bool DoesInputSupportDefaultValue(uint32 Index) const override;
+	virtual UPCGParamData* CreateDefaultValueParam(uint32 Index) const override;
+#if WITH_EDITOR
+	virtual FString GetDefaultValueString(uint32 Index) const override;
+#endif // WITH_EDITORs
+	//~End UPCGSettings interface
 
-	FPCGAttributePropertySelector GetInputSource(uint32 Index) const override;
+	FPCGAttributePropertyInputSelector GetInputSource(uint32 Index) const override;
 
 	virtual FName GetInputPinLabel(uint32 Index) const override;
 	virtual uint32 GetInputPinNum() const override;
@@ -46,13 +51,13 @@ protected:
 
 public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
-	FPCGAttributePropertySelector InputSource1;
+	FPCGAttributePropertyInputSelector InputSource1;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
-	FPCGAttributePropertySelector InputSource2;
+	FPCGAttributePropertyInputSelector InputSource2;
 	
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
-	FPCGAttributePropertySelector InputSource3;
+	FPCGAttributePropertyInputSelector InputSource3;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()

@@ -347,7 +347,7 @@ void UReplicationBridge::InternalAttachInstanceToNetRefHandle(FNetRefHandle RefH
 	if (bBindInstanceProtocol)
 	{
 		FReplicationInstanceOperationsInternal::BindInstanceProtocol(NetHandle, InstanceProtocol, NetRefHandleManager->GetReplicatedObjectDataNoCheck(InternalReplicationIndex).Protocol);
-		MarkNetObjectStateDirty(ReplicationSystemId, InternalReplicationIndex);
+		ForceNetUpdate(ReplicationSystemId, InternalReplicationIndex);
 	}
 }
 
@@ -464,8 +464,8 @@ void UReplicationBridge::InternalAddSubObject(FNetRefHandle OwnerHandle, FNetRef
 
 	if (NetRefHandleManager->AddSubObject(OwnerHandle, SubObjectHandle, InsertRelativeToSubObjectHandle, AddSubObjectFlags))
 	{
-		// If the subobject is not new we need to mark it as dirty to pick it up for replication with its new parent
-		MarkNetObjectStateDirty(ReplicationSystem->GetId(), NetRefHandleManager->GetInternalIndex(SubObjectHandle));
+		// If the subobject is new we need to update it immediately to pick it up for replication with its new parent
+		ForceNetUpdate(ReplicationSystem->GetId(), NetRefHandleManager->GetInternalIndex(SubObjectHandle));
 
 		// We set the priority of subobjects to be static as they will be prioritized with owner
 		ReplicationSystem->SetStaticPriority(SubObjectHandle, 1.0f);
@@ -579,8 +579,7 @@ void UReplicationBridge::RemoveDestructionInfosForGroup(UE::Net::FNetObjectGroup
 
 		for (FInternalNetRefIndex InternalReplicationIndex : MakeArrayView(ObjectIndicesToRemove))
 		{
-			constexpr bool bHasWorldLocation = false;
-			WorldLocations.SetHasWorldLocation(InternalReplicationIndex, bHasWorldLocation);
+			WorldLocations.RemoveObjectInfoCache(InternalReplicationIndex);
 		}
 	}
 	else
@@ -594,8 +593,7 @@ void UReplicationBridge::RemoveDestructionInfosForGroup(UE::Net::FNetObjectGroup
 		// Remove from WorldLocations
 		for (const auto& It : StaticObjectsPendingDestroy)
 		{
-			constexpr bool bHasWorldLocation = false;
-			WorldLocations.SetHasWorldLocation(It.Value.InternalReplicationIndex, bHasWorldLocation);
+			WorldLocations.RemoveObjectInfoCache(It.Value.InternalReplicationIndex);
 		}
 
 		StaticObjectsPendingDestroy.Empty();
@@ -613,10 +611,13 @@ void UReplicationBridge::TearOffHandlesPendingTearOff()
 
 void UReplicationBridge::UpdateHandlesPendingTearOff()
 {
+	using namespace UE::Net;
+	using namespace UE::Net::Private;
+
 	TArray<FTearOffInfo, TInlineAllocator<32>> ObjectsStillPendingTearOff;
 	for (FTearOffInfo Info : MakeArrayView(HandlesPendingTearOff))
 	{
-		if (uint32 ObjectInternalIndex = NetRefHandleManager->GetInternalIndex(Info.Handle))
+		if (FInternalNetRefIndex ObjectInternalIndex = NetRefHandleManager->GetInternalIndex(Info.Handle))
 		{
 			// Immediate tear-off or object that no longer are referenced by any connections are destroyed
 			if (NetRefHandleManager->GetNetObjectRefCount(ObjectInternalIndex) == 0U || Info.bIsImmediate)
@@ -628,8 +629,12 @@ void UReplicationBridge::UpdateHandlesPendingTearOff()
 				// If the object is still in scope remove it from scope as objects being torn-off should not be added to new connections
 				if (NetRefHandleManager->IsScopableIndex(ObjectInternalIndex))
 				{
-					// Mark object as no longer scopable, and that we should not propagate changed states
+					// Mark object and subobjects as no longer scopable, and that we should not propagate changed states
 					NetRefHandleManager->RemoveFromScope(ObjectInternalIndex);
+					for (FInternalNetRefIndex SubObjectIndex : NetRefHandleManager->GetSubObjects(ObjectInternalIndex))
+					{
+						NetRefHandleManager->RemoveFromScope(SubObjectIndex);
+					}
 				}
 			
 				// Keep object in the pending tear-off list until the object is no longer referenced by any ReplicationWriter
@@ -828,8 +833,8 @@ UE::Net::FNetRefHandle UReplicationBridge::InternalAddDestructionInfo(FNetRefHan
 	{
 		// Use WorldLocations to feed the location of the destruction info so that it can be prioritized properly.
 		FWorldLocations& WorldLocations = GetReplicationSystem()->GetReplicationSystemInternal()->GetWorldLocations();
-		WorldLocations.SetHasWorldLocation(InternalReplicationIndex, true);
-		WorldLocations.SetWorldLocation(InternalReplicationIndex, Parameters.Location);
+		WorldLocations.InitObjectInfoCache(InternalReplicationIndex);
+		WorldLocations.UpdateWorldLocation(InternalReplicationIndex, Parameters.Location);
 
 		GetReplicationSystem()->SetPrioritizer(DestructionInfoHandle, DefaultSpatialNetObjectPrioritizerHandle);
 	}

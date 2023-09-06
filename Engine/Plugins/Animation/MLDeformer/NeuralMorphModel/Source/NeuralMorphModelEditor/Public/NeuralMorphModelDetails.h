@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreTypes.h"
 #include "MLDeformerMorphModelDetails.h"
 #include "IDetailCustomization.h"
 
@@ -23,9 +23,5 @@ namespace UE::NeuralMorphModel
 		// ILayoutDetails overrides.
 		virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 		// ~END ILayoutDetails overrides.
-
-		// FMLDeformerModelDetails overrides.
-		virtual void AddTrainingInputFilters() override;
-		// ~END FMLDeformerModelDetails overrides.
 	};
 }	// namespace UE::NeuralMorphModel

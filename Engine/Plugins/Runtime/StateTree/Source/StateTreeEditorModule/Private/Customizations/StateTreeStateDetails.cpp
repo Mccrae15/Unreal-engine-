@@ -5,9 +5,10 @@
 #include "DetailLayoutBuilder.h"
 #include "PropertyCustomizationHelpers.h"
 #include "IPropertyUtilities.h"
+#include "StateTreeEditor.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeSchema.h"
-
+#include "Debugger/StateTreeDebuggerUIExtensions.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -20,14 +21,14 @@ TSharedRef<IDetailCustomization> FStateTreeStateDetails::MakeInstance()
 void FStateTreeStateDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
 	// Find StateTreeEditorData associated with this panel.
-	const UStateTreeEditorData* EditorData = nullptr;
+	UStateTreeEditorData* EditorData = nullptr;
 	TArray<TWeakObjectPtr<UObject>> Objects;
 	DetailBuilder.GetObjectsBeingCustomized(Objects);
 	for (TWeakObjectPtr<UObject>& WeakObject : Objects)
 	{
 		if (const UObject* Object = WeakObject.Get())
 		{
-			const UStateTreeEditorData* OuterEditorData = Object->GetTypedOuter<UStateTreeEditorData>();
+			if (UStateTreeEditorData* OuterEditorData = Object->GetTypedOuter<UStateTreeEditorData>())
 			{
 				EditorData = OuterEditorData;
 				break;
@@ -36,13 +37,22 @@ void FStateTreeStateDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 	}
 	const UStateTreeSchema* Schema = EditorData ? EditorData->Schema : nullptr;
 
-	TSharedPtr<IPropertyHandle> TasksProperty = DetailBuilder.GetProperty(TEXT("Tasks"));
-	TSharedPtr<IPropertyHandle> SingleTaskProperty = DetailBuilder.GetProperty(TEXT("SingleTask"));
-	TSharedPtr<IPropertyHandle> EnterConditionsProperty = DetailBuilder.GetProperty(TEXT("EnterConditions"));
-	TSharedPtr<IPropertyHandle> TransitionsProperty = DetailBuilder.GetProperty(TEXT("Transitions"));
-	TSharedPtr<IPropertyHandle> TypeProperty = DetailBuilder.GetProperty(TEXT("Type"));
-	TSharedPtr<IPropertyHandle> LinkedSubtreeProperty = DetailBuilder.GetProperty(TEXT("LinkedSubtree"));
-	TSharedPtr<IPropertyHandle> ParametersProperty = DetailBuilder.GetProperty(TEXT("Parameters"));
+	const TSharedPtr<IPropertyHandle> IDProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, ID));
+	const TSharedPtr<IPropertyHandle> EnabledProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, bEnabled));
+	const TSharedPtr<IPropertyHandle> TasksProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, Tasks));
+	const TSharedPtr<IPropertyHandle> SingleTaskProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, SingleTask));
+	const TSharedPtr<IPropertyHandle> EnterConditionsProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, EnterConditions));
+	const TSharedPtr<IPropertyHandle> TransitionsProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, Transitions));
+	const TSharedPtr<IPropertyHandle> TypeProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, Type));
+	const TSharedPtr<IPropertyHandle> LinkedSubtreeProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, LinkedSubtree));
+	const TSharedPtr<IPropertyHandle> ParametersProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, Parameters));
+	const TSharedPtr<IPropertyHandle> SelectionBehaviorProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStateTreeState, SelectionBehavior));
+
+	EnabledProperty->MarkHiddenByCustomization();
+	if (UE::StateTree::Editor::GbDisplayItemIds == false)
+	{
+		IDProperty->MarkHiddenByCustomization();
+	}
 
 	uint8 StateTypeValue = 0;
 	TypeProperty->GetValue(StateTypeValue);
@@ -50,6 +60,8 @@ void FStateTreeStateDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 	
 	IDetailCategoryBuilder& StateCategory = DetailBuilder.EditCategory(TEXT("State"), LOCTEXT("StateDetailsState", "State"));
 	StateCategory.SetSortOrder(0);
+
+	StateCategory.HeaderContent(UE::StateTreeEditor::DebuggerExtensions::CreateStateWidget(DetailBuilder, EditorData));
 
 	if (StateType != EStateTreeStateType::Linked)
 	{
@@ -59,6 +71,11 @@ void FStateTreeStateDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilde
 	if (!(StateType == EStateTreeStateType::Subtree || StateType == EStateTreeStateType::Linked))
 	{
 		ParametersProperty->MarkHiddenByCustomization();
+	}
+
+	if (StateType == EStateTreeStateType::Linked)
+	{
+		SelectionBehaviorProperty->MarkHiddenByCustomization();
 	}
 	
 	const FName EnterConditionsCategoryName(TEXT("Enter Conditions"));
@@ -115,7 +132,7 @@ void FStateTreeStateDetails::MakeArrayCategory(IDetailLayoutBuilder& DetailBuild
 	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(CategoryName, DisplayName);
 	Category.SetSortOrder(SortOrder);
 
-	TSharedRef<SHorizontalBox> HeaderContentWidget = SNew(SHorizontalBox);
+	const TSharedRef<SHorizontalBox> HeaderContentWidget = SNew(SHorizontalBox);
 	HeaderContentWidget->AddSlot()
 	.HAlign(HAlign_Right)
 	.VAlign(VAlign_Center)
@@ -125,7 +142,7 @@ void FStateTreeStateDetails::MakeArrayCategory(IDetailLayoutBuilder& DetailBuild
 	Category.HeaderContent(HeaderContentWidget);
 
 	// Add items inline
-	TSharedRef<FDetailArrayBuilder> Builder = MakeShareable(new FDetailArrayBuilder(PropertyHandle.ToSharedRef(), /*InGenerateHeader*/ false, /*InDisplayResetToDefault*/ true, /*InDisplayElementNum*/ false));
+	const TSharedRef<FDetailArrayBuilder> Builder = MakeShareable(new FDetailArrayBuilder(PropertyHandle.ToSharedRef(), /*InGenerateHeader*/ false, /*InDisplayResetToDefault*/ true, /*InDisplayElementNum*/ false));
 	Builder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateLambda([](TSharedRef<IPropertyHandle> PropertyHandle, int32 ArrayIndex, IDetailChildrenBuilder& ChildrenBuilder)
 	{
 		ChildrenBuilder.AddProperty(PropertyHandle);

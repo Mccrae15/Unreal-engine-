@@ -4,6 +4,7 @@
 
 
 #include "LandscapeBlueprintBrushBase.h"
+#include "LandscapeEditTypes.h"
 
 #include "LandscapePatchManager.generated.h"
 
@@ -30,9 +31,8 @@ public:
 	virtual void Initialize_Native(const FTransform& InLandscapeTransform,
 		const FIntPoint& InLandscapeSize,
 		const FIntPoint& InLandscapeRenderTargetSize) override;
-	virtual UTextureRenderTarget2D* Render_Native(bool InIsHeightmap,
-		UTextureRenderTarget2D* InCombinedResult,
-		const FName& InWeightmapLayerName) override;
+
+	virtual UTextureRenderTarget2D* RenderLayer_Native(const FLandscapeBrushParameters& InParameters) override;
 
 	// Adds the brush to the given landscape, removing it from any previous one. This differs from SetOwningLandscape
 	// in that SetOwningLandscape is called by the landscape itself from AddBrushToLayer to update the manager.
@@ -66,7 +66,10 @@ public:
 	
 #if WITH_EDITOR
 	// ALandscapeBlueprintBrushBase
+	UE_DEPRECATED(5.3, "Use AffectsWeightmapLayer")
 	virtual bool IsAffectingWeightmapLayer(const FName& InLayerName) const override;
+	virtual bool AffectsWeightmapLayer(const FName& InLayerName) const override;
+	virtual bool AffectsVisibilityLayer() const override;
 	virtual void SetOwningLandscape(class ALandscape* InOwningLandscape) override;
 
 	// UObject

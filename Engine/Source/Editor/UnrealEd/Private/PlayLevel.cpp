@@ -122,7 +122,7 @@
 #include "IAssetViewport.h"
 #include "IPIEAuthorizer.h"
 #include "Features/IModularFeatures.h"
-#include "Containers/DepletableMpmcQueue.h"
+#include "Containers/ConsumeAllMpmcQueue.h"
 #include "TickableEditorObject.h"
 
 DEFINE_LOG_CATEGORY(LogPlayLevel);
@@ -166,7 +166,7 @@ public:
 			}
 			else
 			{
-				QueuedLines.Enqueue(MoveTemp(Line));
+				QueuedLines.ProduceItem(MoveTemp(Line));
 			}
 		}
 	}
@@ -180,7 +180,7 @@ public:
 
 	virtual void Tick(float DeltaTime) final
 	{
-		QueuedLines.Deplete(LogLine);
+		QueuedLines.ConsumeAllFifo(LogLine);
 	}
 
 	virtual ETickableTickType GetTickableTickType() const final
@@ -216,7 +216,7 @@ private:
 		}
 	}
 
-	UE::TDepletableMpmcQueue<FLine> QueuedLines;
+	UE::TConsumeAllMpmcQueue<FLine> QueuedLines;
 };
 
 void UEditorEngine::EndPlayMap()
@@ -499,7 +499,7 @@ void UEditorEngine::EndPlayMap()
 	TArray<FString> Paths;
 	if (LeakedObjects.Num() > 0)
 	{
-		Paths = FindAndPrintStaleReferencesToObjects(LeakedObjects, EPrintStaleReferencesOptions::Ensure);
+		Paths = FReferenceChainSearch::FindAndPrintStaleReferencesToObjects(LeakedObjects, EPrintStaleReferencesOptions::Ensure);
 	}
 	for (int32 i = 0; i < LeakedObjects.Num(); ++i)
 	{
@@ -977,94 +977,6 @@ void UEditorEngine::RequestPlaySession(const FRequestPlaySessionParams& InParams
 	}
 }
 
-// Deprecated, just format to match our new style.
-void UEditorEngine::RequestPlaySession(bool bAtPlayerStart, TSharedPtr<class IAssetViewport> DestinationViewport, bool bInSimulateInEditor, const FVector* StartLocation, const FRotator* StartRotation, int32 DestinationConsole, bool bUseMobilePreview, bool bUseVRPreview, bool bUseVulkanPreview)
-{
-	FRequestPlaySessionParams Params;
-
-	if (StartLocation)
-	{
-		Params.StartLocation = *StartLocation;
-		Params.StartRotation = StartRotation ? *StartRotation : FRotator::ZeroRotator;
-	}
-	if (DestinationViewport != nullptr)
-	{
-		Params.DestinationSlateViewport = DestinationViewport;
-	}
-
-	if (bInSimulateInEditor)
-	{
-		Params.WorldType = EPlaySessionWorldType::SimulateInEditor;
-	}
-
-	if (bUseVRPreview)
-	{
-		check(!bUseMobilePreview && !bUseVulkanPreview);
-		Params.SessionPreviewTypeOverride = EPlaySessionPreviewType::VRPreview;
-	}
-
-	if (bUseVulkanPreview)
-	{
-		check(!bUseMobilePreview && !bUseVRPreview);
-		Params.SessionPreviewTypeOverride = EPlaySessionPreviewType::VulkanPreview;
-		Params.SessionDestination = EPlaySessionDestinationType::NewProcess;
-	}
-
-	if (bUseMobilePreview)
-	{
-		check(!bUseVRPreview && !bUseVulkanPreview);
-		Params.SessionPreviewTypeOverride = EPlaySessionPreviewType::MobilePreview;
-		Params.SessionDestination = EPlaySessionDestinationType::NewProcess;
-	}
-	
-	RequestPlaySession(Params);
-}
-
-// Deprecated, forwards request onto the FRequestPlaySessionParams version.
-void UEditorEngine::RequestPlaySession(const FVector* StartLocation, const FRotator* StartRotation, bool MobilePreview, bool VulkanPreview, const FString& MobilePreviewTargetDevice, FString AdditionalLaunchParameters)
-{
-	FRequestPlaySessionParams Params;
-
-	if (MobilePreview)
-	{
-		check(!VulkanPreview);
-		Params.SessionDestination = EPlaySessionDestinationType::NewProcess;
-		Params.SessionPreviewTypeOverride = EPlaySessionPreviewType::MobilePreview;
-		Params.MobilePreviewTargetDevice = MobilePreviewTargetDevice;
-		Params.AdditionalStandaloneCommandLineParameters = AdditionalLaunchParameters;
-	}
-
-	if (VulkanPreview)
-	{
-		check(!MobilePreview);
-		Params.SessionDestination = EPlaySessionDestinationType::NewProcess;
-		Params.SessionPreviewTypeOverride = EPlaySessionPreviewType::VulkanPreview;
-		Params.AdditionalStandaloneCommandLineParameters = AdditionalLaunchParameters;
-	}
-	
-	if (StartLocation)
-	{
-		Params.StartLocation = *StartLocation;
-		Params.StartRotation = StartRotation ? *StartRotation : FRotator::ZeroRotator;
-	}
-
-	RequestPlaySession(Params);
-}
-
-// Deprecated, forwards request onto the FRequestPlaySessionParams version.
-void UEditorEngine::RequestPlaySession(const FString& DeviceId, const FString& DeviceName)
-{
-	FRequestPlaySessionParams::FLauncherDeviceInfo DeviceInfo;
-	DeviceInfo.DeviceId = DeviceId;
-	DeviceInfo.DeviceName = DeviceName;
-
-	FRequestPlaySessionParams Params;
-	Params.LauncherTargetDevice = DeviceInfo;
-	Params.SessionDestination = EPlaySessionDestinationType::Launcher;
-
-	RequestPlaySession(Params);
-}
-
 void UEditorEngine::CancelRequestPlaySession()
 {
 	FEditorDelegates::CancelPIE.Broadcast();
@@ -1139,12 +1051,6 @@ bool UEditorEngine::ProcessDebuggerCommands(const FKey InKey, const FModifierKey
 	return false;
 }
 
-// This function is deprecated, just call the non-deprecated version.
-void UEditorEngine::StartQueuedPlayMapRequest()
-{
-	StartQueuedPlaySessionRequest();
-}
-
 void UEditorEngine::StartQueuedPlaySessionRequest()
 {
 	if (!PlaySessionRequest.IsSet())
@@ -1190,7 +1096,7 @@ void UEditorEngine::StartQueuedPlaySessionRequestImpl()
 
 	PlayInEditorSessionInfo = FPlayInEditorSessionInfo();
 	PlayInEditorSessionInfo->PlayRequestStartTime = FPlatformTime::Seconds();
-	PlayInEditorSessionInfo->PlayRequestStartTime_StudioAnalytics = FStudioAnalytics::GetAnalyticSeconds();
+	PlayInEditorSessionInfo->PlayRequestStartTime_StudioAnalytics = FPlatformTime::Seconds();;
 
 	// Keep a copy of their original request settings for any late
 	// joiners or async processes that need access to the settings after launch.
@@ -2452,7 +2358,7 @@ UWorld* UEditorEngine::CreatePIEWorldByDuplication(FWorldContext &WorldContext, 
 	UWorld::WorldTypePreLoadMap.Remove(PlayWorldMapFName);
 
 	check( NewPIEWorld );
-	NewPIEWorld->FeatureLevel = InWorld->FeatureLevel;
+	NewPIEWorld->SetFeatureLevel(InWorld->GetFeatureLevel());
 	NewPIEWorld->WorldType = EWorldType::PIE;
 	
 	UE_LOG(LogPlayLevel, Log, TEXT("PIE: Created PIE world by copying editor world from %s to %s (%fs)"), *InWorld->GetPathName(), *NewPIEWorld->GetPathName(), float(FPlatformTime::Seconds() - StartTime));
@@ -2468,6 +2374,14 @@ void UEditorEngine::PostCreatePIEWorld(UWorld *NewPIEWorld)
 	// make sure we can clean up this world!
 	NewPIEWorld->ClearFlags(RF_Standalone);
 
+	// Force the new world to use a dedicated server net mode if needed
+	// The other types will correctly derive it from the URL as it changes during play
+	FWorldContext* const Context = GetWorldContextFromWorld(NewPIEWorld);
+	if (Context && Context->RunAsDedicated)
+	{
+		NewPIEWorld->SetPlayInEditorInitialNetMode(NM_DedicatedServer);
+	}
+	
 	// Init the PIE world
 	NewPIEWorld->InitWorld();
 	UE_LOG(LogPlayLevel, Log, TEXT("PIE: World Init took: (%fs)"),  float(FPlatformTime::Seconds() - WorldInitStart));
@@ -2632,7 +2546,7 @@ void UEditorEngine::StartPlayInEditorSession(FRequestPlaySessionParams& InReques
 
 	// Broadcast PreBeginPIE before checks that might block PIE below (BeginPIE is broadcast below after the checks)
 	FEditorDelegates::PreBeginPIE.Broadcast(InRequestParams.WorldType == EPlaySessionWorldType::SimulateInEditor);
-	const double PIEStartTime = FStudioAnalytics::GetAnalyticSeconds();
+	const double PIEStartTime = FPlatformTime::Seconds();;
 	const FScopedBusyCursor BusyCursor;
 
 	// Cancel the transaction if one is opened when PIE is requested. This is generally avoided
@@ -3739,20 +3653,4 @@ void UEditorEngine::StoreWindowSizeAndPositionForInstanceIndex(const int32 InVie
 	}
 }
 
-// Deprecated Stubs
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-UGameInstance* UEditorEngine::CreatePIEGameInstance(int32 InPIEInstance, bool bInSimulateInEditor, bool bAnyBlueprintErrors, bool bStartInSpectatorMode, bool bPlayNetDedicated, bool bPlayStereoscopic, float PIEStartTime)
-{
-	return nullptr;
-}
-
-void UEditorEngine::LoginPIEInstances(bool bAnyBlueprintErrors, bool bStartInSpectatorMode, double PIEStartTime)
-{}
-
-void UEditorEngine::OnLoginPIEAllComplete()
-{}
-
-void UEditorEngine::PlayInEditor(UWorld* InWorld, bool bInSimulateInEditor, FPlayInEditorOverrides Overrides /* = FPlayInEditorOverrides() */)
-{}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #undef LOCTEXT_NAMESPACE

@@ -12,6 +12,7 @@
 #include "Async/Async.h"
 #include "SoundWaveCompiler.h"
 #include "DerivedDataCacheInterface.h"
+#include "DerivedDataCacheKey.h"
 #include "ProfilingDebugging/CookStats.h"
 #include "AudioResampler.h"
 #include "AudioCompressionSettingsUtils.h"
@@ -19,6 +20,8 @@
 #include "Sound/SoundWaveProcedural.h"
 #include "DSP/FloatArrayMath.h"
 #include "DSP/MultichannelBuffer.h"
+#include "Containers/UnrealString.h"
+#include "Sound/StreamedAudioChunkSeekTable.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAudioDerivedData, Log, All);
 
@@ -156,7 +159,6 @@ FName FStreamedAudioPlatformData::GetAudioFormat() const
 	return AudioFormat;
 }
 
-#if WITH_EDITORONLY_DATA
 
 /*------------------------------------------------------------------------------
 Derived data key generation.
@@ -164,7 +166,37 @@ Derived data key generation.
 
 // If you want to bump this version, generate a new guid using
 // VS->Tools->Create GUID and paste it here. https://www.guidgen.com works too.
-#define STREAMEDAUDIO_DERIVEDDATA_VER		TEXT("0E2C7011AFE845488C383F8A3531A3F1")
+#define AUDIO_DERIVEDDATA_VER				TEXT("78D1D5180FCF4D3FB7E8B2A4799AD116")				// Change this if you want to bump all audio formats at once
+#define STREAMEDAUDIO_DERIVEDDATA_VER		TEXT("1A69BFC09E8146E08A1B7FD9BD5B9BA4")				// This depends on the above key, but will regenerate all streaming chunk data derived from the compressed audio
+
+#if WITH_EDITORONLY_DATA
+
+#ifndef CASE_ENUM_TO_TEXT
+#define CASE_ENUM_TO_TEXT(X) case X: return TEXT(#X);
+#endif
+
+const TCHAR* LexToString(const ESoundwaveSampleRateSettings Enum)
+{
+	switch (Enum)
+	{
+		FOREACH_ENUM_ESOUNDWAVESAMPLERATESETTINGS(CASE_ENUM_TO_TEXT)
+	}
+	return TEXT("<Unknown ESoundwaveSampleRateSettings>");
+}
+
+static FString GetSoundWaveHash(const USoundWave& InWave)
+{
+	// Hash the parts of the SoundWave that can affect the compressed data. It doesn't hurt to do this. 
+	// Typically the GUID will change if compressed data changes, but some settings can affect 
+	// the SoundWave. i.e. DefaultSoundWaveQuality which won't change the GUID. So is better
+	// it's reflected here.
+	using FPCU = FPlatformCompressionUtilities;
+	FString SoundWaveHash;
+	FPCU::AppendHash(SoundWaveHash, TEXT("QLT"), InWave.GetCompressionQuality());
+	FPCU::AppendHash(SoundWaveHash, TEXT("CHN"), InWave.NumChannels);
+	FPCU::AppendHash(SoundWaveHash, TEXT("SRQ"), InWave.SampleRateQuality);
+	return SoundWaveHash;
+}
 
 /**
  * Computes the derived data key suffix for a SoundWave's Streamed Audio.
@@ -200,12 +232,15 @@ static void GetStreamedAudioDerivedDataKeySuffix(
 		FPlatformAudioCookOverrides::GetHashSuffix(CompressionOverrides, AudioFormatNameString);
 	}
 
+	FString SoundWaveHash = GetSoundWaveHash(SoundWave);
+		
 	// build the key
-	OutKeySuffix = FString::Printf(TEXT("%s_%d_%s"),
+	OutKeySuffix = FString::Printf(TEXT("%s_%d_%s_%s"),
 		*AudioFormatNameString,
 		Version,
+		*SoundWaveHash,
 		*SoundWave.CompressedDataGuid.ToString()
-		);
+	);
 
 #if PLATFORM_CPU_ARM_FAMILY
 	// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
@@ -222,6 +257,7 @@ static void GetStreamedAudioDerivedDataKeySuffix(
  */
 static void GetStreamedAudioDerivedDataKeyFromSuffix(const FString& KeySuffix, FString& OutKey)
 {
+	static UE::DerivedData::FCacheBucket LegacyBucket(TEXTVIEW("LegacySTREAMEDAUDIO"), TEXTVIEW("Audio"));
 	OutKey = FDerivedDataCacheInterface::BuildCacheKey(
 		TEXT("STREAMEDAUDIO"),
 		STREAMEDAUDIO_DERIVEDDATA_VER,
@@ -267,28 +303,6 @@ static void GetStreamedAudioDerivedDataKey(
 	GetStreamedAudioDerivedDataKeyFromSuffix(KeySuffix, OutKey);
 }
 
-static ITargetPlatform* GetRunningTargetPlatform(ITargetPlatformManagerModule* TPM)
-{
-	ITargetPlatform* CurrentPlatform = NULL;
-	const TArray<ITargetPlatform*>& Platforms = TPM->GetActiveTargetPlatforms();
-
-	check(Platforms.Num());
-
-	CurrentPlatform = Platforms[0];
-
-	for (int32 Index = 1; Index < Platforms.Num(); Index++)
-	{
-		if (Platforms[Index]->IsRunningPlatform())
-		{
-			CurrentPlatform = Platforms[Index];
-			break;
-		}
-	}
-
-	check(CurrentPlatform != NULL);
-	return CurrentPlatform;
-}
-
 /**
  * Gets Wave format for a SoundWave on the current running platform
  * @param SoundWave - The SoundWave to get format for.
@@ -299,8 +313,9 @@ static FName GetWaveFormatForRunningPlatform(USoundWave& SoundWave)
 	ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
 	if (TPM)
 	{
-		ITargetPlatform* CurrentPlatform = GetRunningTargetPlatform(TPM);
+		ITargetPlatform* CurrentPlatform = TPM->GetRunningTargetPlatform();
 
+		check( CurrentPlatform != nullptr );
 
 		return CurrentPlatform->GetWaveFormat(&SoundWave);
 	}
@@ -435,6 +450,193 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 		return false;
 	}
 
+	static void MakeChunkSeekTable(const IAudioFormat::FSeekTable& InTable, uint32 InChunkStart, uint32 InChunkEnd, FStreamedAudioChunkSeekTable& Out)
+	{
+		int32 SearchFrom = Algo::LowerBound(InTable.Offsets, InChunkStart);
+		if (SearchFrom < 0)
+		{
+			return;
+		}
+
+		for (int32 i=SearchFrom;i<InTable.Offsets.Num();++i)
+		{
+			uint32 Offset = InTable.Offsets[i];
+			uint32 TimeInAudioFrames = InTable.Times[i];
+
+			if (Offset > InChunkEnd) 
+			{
+				break;
+			}
+			if (Offset >= InChunkStart && Offset < InChunkEnd)
+			{
+				Out.Add(TimeInAudioFrames,Offset - InChunkStart);
+			}
+		}
+	}	
+
+	// Returns the size of the new seek-table in bytes.
+	static int32 PrefixChunkWithSeekTable(FStreamedAudioChunkSeekTable& InSeekTable, TArray<uint8>& InOutChunkBytes)
+	{	
+		TArray<uint8> Bytes;
+		FMemoryWriter Writer(Bytes);
+		InSeekTable.Serialize(Writer);
+		InOutChunkBytes.Insert(Bytes,0);
+		return Bytes.Num();
+	}
+
+	static EChunkSeekTableMode DetermineSeekTableMode(const IAudioFormat::FSeekTable& InTable)
+	{
+		const TArray<uint32>& Times = InTable.Times;
+		if (InTable.Times.Num()>2)
+		{
+			int32 Delta = Times[1] - Times[0];
+			for (int32 i = 2; i < Times.Num(); ++i)
+			{
+				if (Times[i] - Times[i - 1] != Delta)
+				{
+					return EChunkSeekTableMode::VariableSamplesPerEntry;
+				}
+			}
+		}
+		return EChunkSeekTableMode::ConstantSamplesPerEntry;
+	}
+
+	static void CreateChunkSeektableAndPrefix(const EChunkSeekTableMode InMode, const IAudioFormat::FSeekTable& InTable, const uint32 InChunkStart, const uint32 InChunkEnd, 
+		TArray<uint8>& OutChunk, TArray<uint32>& OutChunkOffsets, const int32 InEstimatedSeekTableSize, const int32 InBlockCount, const uint32 InAudioSize, const int32 InBudget)
+	{
+		FStreamedAudioChunkSeekTable ChunkTable(InMode);
+		MakeChunkSeekTable(InTable, InChunkStart, InChunkEnd, ChunkTable);
+		const int32 SeekTableSize = PrefixChunkWithSeekTable(ChunkTable, OutChunk);
+
+		ensureMsgf(SeekTableSize == InEstimatedSeekTableSize, TEXT("FStreamedAudioChunkSeekTable:CalcSize doesn't match Serialize. SerializedSize=%d, CaclSize=%d"), SeekTableSize, InEstimatedSeekTableSize);
+		ensureMsgf(OutChunk.Num() <= InBudget, TEXT("Chunk is over budget: Size=%d, Budget=%d"), OutChunk.Num(), InBudget);
+		ensure(SeekTableSize + InAudioSize == OutChunk.Num());
+		ensureMsgf(InBlockCount == ChunkTable.Num(), TEXT("Expecting to have same number of items in our table as we're budgeted for: Planned=%d, Table=%d"), InBlockCount, ChunkTable.Num());
+	
+		OutChunkOffsets.Add(ChunkTable.FindTime(0));
+	}
+
+	bool SplitUsingSeekTable(const IAudioFormat::FSeekTable& InTable, const TArray<uint8>& InSrcBuffer, TArray<TArray<uint8>>& OutBuffers, const int32 InFirstChunkMaxSize, const int32 InMaxChunkSize, TArray<uint32>& OutChunkOffsets)
+	{
+		const TArray<uint32>& Offsets = InTable.Offsets;
+		
+		// Reject bad inputs.
+		if (Offsets.IsEmpty() || InSrcBuffer.IsEmpty() || InFirstChunkMaxSize <= 0 || InMaxChunkSize <=0)
+		{
+			return false;
+		}
+
+		EChunkSeekTableMode Mode = DetermineSeekTableMode(InTable);
+
+		uint8 const* Source = InSrcBuffer.GetData();
+		uint32 SourceLen = InSrcBuffer.Num();
+		uint8 const* SourceEnd = Source + SourceLen;
+
+		uint8 const* ChunkStart = Source;
+		uint8 const* Current = Source + Offsets[0];	
+
+		int32 BlockCount = 0;
+		int32 CurrentBlock = 0;
+
+		uint32 Budget = InFirstChunkMaxSize;
+
+		while (Current < SourceEnd)
+		{	
+			// A block is the span between two neighboring offsets in our table.
+			const uint32 BlockStart = Offsets[CurrentBlock];
+			const uint32 BlockEnd = CurrentBlock < Offsets.Num() - 1 ? Offsets[CurrentBlock + 1] : SourceLen;
+			if (!ensureMsgf(BlockStart < BlockEnd, TEXT("Malformed Table: BlockStart=%u, BlockEnd=%u"), BlockStart, BlockEnd))
+			{
+				return false;
+			}
+			const uint32 BlockSize = BlockEnd - BlockStart;
+			if (!ensureMsgf(BlockSize < 1024*1024, TEXT("Malformed Table: Block is too large to be real. BlockSize=%u"), BlockSize) )
+			{
+				return false;
+			}
+			
+			// Current chunk stats.
+			const int32 CurrentTableSize = FStreamedAudioChunkSeekTable::CalcSize(BlockCount, Mode);
+			checkf(CurrentTableSize >= 0, TEXT("CurrentTableSize=%d"), CurrentTableSize);
+			const uint32 CurrentChunkSize = (Current - ChunkStart) + CurrentTableSize;
+			
+			// Adding a new item will grow the table by 1.
+			const int32 NewTableSize = FStreamedAudioChunkSeekTable::CalcSize(BlockCount + 1, Mode);
+			checkf(NewTableSize >= 0, TEXT("NewTableSize=%d"), NewTableSize);
+			const int32 TableDelta = NewTableSize - CurrentTableSize;
+			checkf(TableDelta > 0, TEXT("Table should grow when we add a new entry: TableDelta=%d"), TableDelta);
+			
+			// Accumulated enough?
+			if (CurrentChunkSize + BlockSize + TableDelta > Budget)
+			{
+				// can't add this chunk, emit.
+				TArray<uint8> Chunk(ChunkStart, Current - ChunkStart);
+				const int32 AudioSize = Chunk.Num();
+
+				CreateChunkSeektableAndPrefix(Mode, InTable, ChunkStart-Source, Current-Source, Chunk, OutChunkOffsets, CurrentTableSize, BlockCount, AudioSize, Budget);
+		
+				UE_LOG(LogAudio, Verbose, TEXT("Adding Chunk %d: Blocks=%d (%u bytes), SeekTableEntries=%d (%d bytes), ChunkSize=%u bytes, PercentFull=%2.2f, Remaining=%u bytes"),
+					OutBuffers.Num(), BlockCount, AudioSize, BlockCount, CurrentTableSize, Chunk.Num(), ((float)Chunk.Num() / Budget) * 100.f, Budget-Chunk.Num());
+
+				OutBuffers.Add(Chunk);
+
+				ChunkStart = Current;
+				Budget = InMaxChunkSize;
+				BlockCount = 0;				
+			
+				// retry.
+				continue;
+			}
+				
+			// Include this block.
+			Current += BlockSize;
+			BlockCount++;
+			CurrentBlock++;
+
+			UE_LOG(LogAudio, VeryVerbose, TEXT("\tAdding Block: Chunk_Block_Count=%d, BlockSize=%d, ChunkSize=%lld"), BlockCount, BlockSize, Current - ChunkStart);
+		}
+
+		// emit any remainder chunks
+		if (Current - ChunkStart)
+		{
+			// emit this chunk
+			TArray<uint8> Chunk(ChunkStart, Current - ChunkStart);
+			const int32 AudioSize = Chunk.Num();
+			const int32 CurrentTableSize = FStreamedAudioChunkSeekTable::CalcSize(BlockCount, Mode);
+			CreateChunkSeektableAndPrefix(Mode, InTable, ChunkStart - Source, Current - Source, Chunk, OutChunkOffsets, CurrentTableSize, BlockCount, AudioSize, Budget);
+
+			UE_LOG(LogAudio, Verbose, TEXT("Adding Chunk %d: Blocks=%d (%u bytes), SeekTableEntries=%d (%d bytes), ChunkSize=%u bytes, PercentFull=%2.2f, Remaining=%u bytes"),
+				OutBuffers.Num(), BlockCount, AudioSize, BlockCount, CurrentTableSize, Chunk.Num(), ((float)Chunk.Num() / Budget) * 100.f, Budget - Chunk.Num());
+
+			OutBuffers.Add(Chunk);
+		}
+
+		return true;
+	}
+
+	bool SplitDataForStreaming(const IAudioFormat* InFormat, const TArray<uint8>& InSrcBuffer, TArray<TArray<uint8>>& OutBuffers, const int32 InFirstChunkMaxSize, const int32 InMaxChunkSize, TArray<uint32>& OutChunkOffsets)
+	{
+		bool bRequiresSeekTable = InFormat->RequiresStreamingSeekTable();	
+
+		// Split using the seek-table if we have one.
+		if (bRequiresSeekTable)
+		{
+			// Because the extract call modifies the source buffer inline (to remove the embedded seek table) we must keep a copy as if
+			// the call was to fail to split the calling code must contend with the original.
+			TArray<uint8> InSrcBufferCopy = InSrcBuffer;
+		
+			IAudioFormat::FSeekTable Table;			
+			if (!ensureMsgf(InFormat->ExtractSeekTableForStreaming(InSrcBufferCopy, Table), TEXT("SoundWave: '%s' requires a Seektable, but doesn't contain one."), *SoundWaveFullName))
+			{
+				return false;
+			}
+			return SplitUsingSeekTable(Table, InSrcBufferCopy,OutBuffers,InFirstChunkMaxSize,InMaxChunkSize, OutChunkOffsets);
+		}
+
+		// otherwise... ask the format to split.
+		return InFormat->SplitDataForStreaming(InSrcBuffer, OutBuffers, InFirstChunkMaxSize, InMaxChunkSize);
+	}
+
 	/** Build the streamed audio. This function is safe to call from any thread. */
 	void BuildStreamedAudio()
 	{
@@ -512,29 +714,33 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 						MaxChunkSizeForCurrentWave = FMath::Min(MaxChunkSizeOverrideBytes, MaxChunkSizeForCurrentWave);
 					}
 
-					UE_LOG(LogAudio, Display, TEXT("Chunk size for %s: %d"), *SoundWaveFullName, MaxChunkSizeForCurrentWave);
+					UE_LOG(LogAudio, Display, TEXT("Chunk sizes for %s: Chunk0=%d bytes, Chunk1-N=%dk"), *SoundWaveFullName, FirstChunkSize, MaxChunkSizeForCurrentWave>>10);
 				}
 				
 				check(FirstChunkSize != 0 && MaxChunkSizeForCurrentWave != 0);
 
-				if (AudioFormat->SplitDataForStreaming(CompressedBuffer, ChunkBuffers, FirstChunkSize, MaxChunkSizeForCurrentWave))
+				TArray<uint32> ChunkOffsets;
+				if (SplitDataForStreaming(AudioFormat, CompressedBuffer, ChunkBuffers, FirstChunkSize, MaxChunkSizeForCurrentWave, ChunkOffsets))
 				{
 					if (ChunkBuffers.Num() > 32)
 					{
 						UE_LOG(LogAudio, Display, TEXT("Sound Wave %s is very large, requiring %d chunks."), *SoundWaveFullName, ChunkBuffers.Num());
 					}
 
+					int32 TotalAudioBytesExcludingSeektable = 0;
 					if (ChunkBuffers.Num() > 0)
 					{
 						// The zeroth chunk should not be zero-padded.
-						const int32 AudioDataSize = ChunkBuffers[0].Num();
+						int32 AudioDataSize = ChunkBuffers[0].Num();
 
 						//FStreamedAudioChunk* NewChunk = new(DerivedData->Chunks) FStreamedAudioChunk();
 						int32 ChunkIndex = DerivedData->Chunks.Add(new FStreamedAudioChunk());
 						FStreamedAudioChunk* NewChunk = &(DerivedData->Chunks[ChunkIndex]);
+
 						// Store both the audio data size and the data size so decoders will know what portion of the bulk data is real audio
 						NewChunk->AudioDataSize = AudioDataSize;
 						NewChunk->DataSize = AudioDataSize;
+						NewChunk->SeekOffsetInAudioFrames = ChunkOffsets.IsValidIndex(ChunkIndex) ? ChunkOffsets[ChunkIndex] : INDEX_NONE;
 
 						if (NewChunk->BulkData.IsLocked())
 						{
@@ -551,8 +757,9 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 					for (int32 ChunkIndex = 1; ChunkIndex < ChunkBuffers.Num(); ++ChunkIndex)
 					{
 						// Zero pad the reallocation if the chunk isn't precisely the max chunk size to keep the reads aligned to MaxChunkSize
-						const int32 AudioDataSize = ChunkBuffers[ChunkIndex].Num();
-						check(AudioDataSize != 0 && AudioDataSize <= MaxChunkSizeForCurrentWave);
+						int32 AudioDataSize = ChunkBuffers[ChunkIndex].Num();
+						check(AudioDataSize != 0);
+						ensureMsgf(AudioDataSize <= MaxChunkSizeForCurrentWave, TEXT("Chunk is overbudget by %d bytes"), AudioDataSize - MaxChunkSizeForCurrentWave);
 
 						int32 ZeroPadBytes = 0;
 
@@ -568,7 +775,8 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 						// Store both the audio data size and the data size so decoders will know what portion of the bulk data is real audio
 						NewChunk->AudioDataSize = AudioDataSize;
 						NewChunk->DataSize = AudioDataSize + ZeroPadBytes;
-
+						NewChunk->SeekOffsetInAudioFrames = ChunkOffsets.IsValidIndex(ChunkIndex) ? ChunkOffsets[ChunkIndex] : INDEX_NONE;
+						
 						if (NewChunk->BulkData.IsLocked())
 						{
 							UE_LOG(LogAudioDerivedData, Warning, TEXT("While building split chunk for streaming: Raw PCM data already being written to. Chunk Index: %d SoundWave: %s "), ChunkIndex, *SoundWaveFullName);
@@ -804,7 +1012,8 @@ void FStreamedAudioPlatformData::Cache(USoundWave& InSoundWave, const FPlatformA
 			FWriteScopeLock AsyncTaskScope(AsyncTaskLock.Get());
 			check(AsyncTask == nullptr);
 			AsyncTask = new FStreamedAudioAsyncCacheDerivedDataTask(this, &InSoundWave, CompressionOverrides, AudioFormatName, Flags);
-			AsyncTask->StartBackgroundTask(SoundWaveThreadPool, BasePriority, EQueuedWorkFlags::DoNotRunInsideBusyWait);
+			int64 RequiredMemory = -1; // @todo RequiredMemory
+			AsyncTask->StartBackgroundTask(SoundWaveThreadPool, BasePriority, EQueuedWorkFlags::DoNotRunInsideBusyWait, RequiredMemory, TEXT("AudioDerivedData") );
 		}
 
 		if (IsInAudioThread())
@@ -1263,7 +1472,8 @@ struct FAudioCookInputs
 	float                       SampleRateOverride = -1.0f;
 	bool                        bIsStreaming;
 	float                       CompressionQualityModifier;
-	
+	FString						SoundWaveHash;
+		
 	TArray<Audio::FTransformationPtr> WaveTransformations;
 
 	// Those are the only refs we keep on the actual USoundWave until
@@ -1287,6 +1497,7 @@ struct FAudioCookInputs
 		, bIsSoundWaveProcedural(InSoundWave->IsA<USoundWaveProcedural>())
 		, CompressionQuality(InSoundWave->GetCompressionQuality())
 		, CompressionQualityModifier(InCookOverrides ? InCookOverrides->CompressionQualityModifier : 1.0f)
+		, SoundWaveHash(GetSoundWaveHash(*InSoundWave))
 		, WaveTransformations(InSoundWave->CreateTransformations())
 		, BulkDataCriticalSection(InSoundWave->RawDataCriticalSection)
 		, BulkData(InSoundWave->RawData)
@@ -1323,6 +1534,12 @@ struct FAudioCookInputs
 };
 
 #if WITH_EDITORONLY_DATA
+
+static int32 CalculateModifiedCompressionQuality(int32 InQuality, float InQualityModifier)
+{
+	float ModifiedCompressionQuality = (float)InQuality * InQualityModifier;
+	return FMath::Clamp<int32>(FMath::FloorToInt(ModifiedCompressionQuality), 1, 100);
+}
 
 /**
  * Cook a simple mono or stereo wave
@@ -1438,17 +1655,12 @@ static void CookSimpleWave(const FAudioCookInputs& Inputs, TArray<uint8>& Output
 	}
 
 	// Compression Quality
-	FSoundQualityInfo QualityInfo = { 0 };
-	float ModifiedCompressionQuality = (float)Inputs.CompressionQuality * Inputs.CompressionQualityModifier;
-	if (ModifiedCompressionQuality >= 1.0f)
-	{
-		QualityInfo.Quality = FMath::FloorToInt(ModifiedCompressionQuality);
-		UE_CLOG(Inputs.CompressionQuality != QualityInfo.Quality, LogAudioDerivedData, Display, TEXT("Compression Quality for %s will be modified from %d to %d."), *Inputs.SoundFullName, Inputs.CompressionQuality, QualityInfo.Quality);
-	}
-	else
-	{
-		QualityInfo.Quality = Inputs.CompressionQuality;
-	}
+	FSoundQualityInfo QualityInfo = { 0 };	
+	QualityInfo.Quality = CalculateModifiedCompressionQuality(Inputs.CompressionQuality, Inputs.CompressionQualityModifier);
+
+	UE_CLOG(Inputs.CompressionQuality != QualityInfo.Quality, LogAudioDerivedData,
+		Display, TEXT("Compression Quality for %s will be modified from %d to %d, with modifier [%.2f] "),
+		*Inputs.SoundFullName, Inputs.CompressionQuality, QualityInfo.Quality, Inputs.CompressionQualityModifier);
 
 	QualityInfo.NumChannels = NumChannels;
 	QualityInfo.SampleRate = WaveSampleRate;
@@ -1693,22 +1905,11 @@ static void CookSurroundWave(const FAudioCookInputs& Inputs,  TArray<uint8>& Out
 	UE_LOG(LogAudioDerivedData, Display, TEXT("Cooking %d channels for: %s"), ChannelCount, *Inputs.SoundFullName);
 
 	FSoundQualityInfo QualityInfo = { 0 };
+	QualityInfo.Quality = CalculateModifiedCompressionQuality(Inputs.CompressionQuality,Inputs.CompressionQualityModifier);
 
-	float ModifiedCompressionQuality = (float)Inputs.CompressionQuality;
-
-	if (!FMath::IsNearlyEqual(Inputs.CompressionQualityModifier, 1.0f))
-	{
-		ModifiedCompressionQuality = (float)Inputs.CompressionQuality * Inputs.CompressionQualityModifier;
-	}
-	
-	if (ModifiedCompressionQuality >= 1.0f)
-	{
-		QualityInfo.Quality = FMath::FloorToInt(ModifiedCompressionQuality);
-	}
-	else
-	{
-		QualityInfo.Quality = Inputs.CompressionQuality;
-	}
+	UE_CLOG(Inputs.CompressionQuality != QualityInfo.Quality, LogAudioDerivedData,
+		Display, TEXT("Compression Quality for %s will be modified from %d to %d, with modifier [%.2f] "),
+		*Inputs.SoundFullName, Inputs.CompressionQuality, QualityInfo.Quality, Inputs.CompressionQualityModifier);
 
 	QualityInfo.NumChannels = ChannelCount;
 	QualityInfo.SampleRate = WaveSampleRate;
@@ -1738,6 +1939,11 @@ FDerivedAudioDataCompressor::FDerivedAudioDataCompressor(USoundWave* InSoundNode
 {
 }
 
+const TCHAR* FDerivedAudioDataCompressor::GetVersionString() const
+{	
+	return AUDIO_DERIVEDDATA_VER;
+}
+
 FString FDerivedAudioDataCompressor::GetPluginSpecificCacheKeySuffix() const
 {
 	int32 FormatVersion = 0xffff; // if the compressor is NULL, this will be used as the version...and in that case we expect everything to fail anyway
@@ -1748,7 +1954,13 @@ FString FDerivedAudioDataCompressor::GetPluginSpecificCacheKeySuffix() const
 
 	check(CookInputs->CompressedDataGuid.IsValid());
 	FString FormatHash = CookInputs->HashedFormat.ToString().ToUpper();
-	return FString::Printf(TEXT("%s_%04X_%s"), *FormatHash, FormatVersion, *CookInputs->CompressedDataGuid.ToString());
+	FString SoundWaveHash;
+
+#if WITH_EDITORONLY_DATA
+	SoundWaveHash = CookInputs->SoundWaveHash;
+#endif //WITH_EDITORONLY_DATA
+	
+	return FString::Printf(TEXT("%s_%04X_%s%s"), *FormatHash, FormatVersion, *SoundWaveHash, *CookInputs->CompressedDataGuid.ToString());
 }
 
 bool FDerivedAudioDataCompressor::IsBuildThreadsafe() const

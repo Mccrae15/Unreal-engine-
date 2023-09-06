@@ -4,6 +4,7 @@
 
 #include "AudioDevice.h"
 #include "AudioMixerLog.h"
+#include "Engine/World.h"
 #include "Sound/AudioSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SynthComponent)
@@ -22,18 +23,7 @@ void USynthSound::Init(USynthComponent* InSynthComponent, const int32 InNumChann
 	VirtualizationMode = EVirtualizationMode::PlayWhenSilent;
 	NumChannels = InNumChannels;
 	NumSamplesToGeneratePerCallback = InCallbackSize;
-	// Turn off async generation in old audio engine on mac.
-#if PLATFORM_MAC
-	const FAudioDevice* AudioDevice = InSynthComponent->GetAudioDevice();
-	if (AudioDevice && !AudioDevice->IsAudioMixerEnabled())
-	{
-		bCanProcessAsync = false;
-	}
-	else
-#endif // #if PLATFORM_MAC
-	{
-		bCanProcessAsync = true;
-	}
+	bCanProcessAsync = true;
 
 	Duration = INDEFINITELY_LOOPING_DURATION;
 	bLooping = true;
@@ -42,8 +32,6 @@ void USynthSound::Init(USynthComponent* InSynthComponent, const int32 InNumChann
 
 void USynthSound::StartOnAudioDevice(FAudioDevice* InAudioDevice)
 {
-	check(InAudioDevice != nullptr);
-	bAudioMixer = InAudioDevice->IsAudioMixerEnabled();
 }
 
 void USynthSound::OnBeginGenerate()
@@ -60,46 +48,18 @@ int32 USynthSound::OnGeneratePCMAudio(TArray<uint8>& OutAudio, int32 NumSamples)
 
 	OutAudio.Reset();
 
-	if (bAudioMixer)
+	// If running with audio mixer, the output audio buffer will be in floats already
+	OutAudio.AddZeroed(NumSamples * sizeof(float));
+
+	// Mark pending kill can null this out on the game thread in rare cases.
+	if (!OwningSynthComponent.IsValid())
 	{
-		// If running with audio mixer, the output audio buffer will be in floats already
-		OutAudio.AddZeroed(NumSamples * sizeof(float));
-
-		// Mark pending kill can null this out on the game thread in rare cases.
-		if (!OwningSynthComponent.IsValid())
-		{
-			return 0;
-		}
-
-		return OwningSynthComponent->OnGeneratePCMAudio((float*)OutAudio.GetData(), NumSamples);
-	}
-	else
-	{
-		// Use the float scratch buffer instead of the out buffer directly
-		FloatBuffer.Reset();
-		FloatBuffer.AddZeroed(NumSamples * sizeof(float));
-
-		// Mark pending kill can null this out on the game thread in rare cases.
-		if (!OwningSynthComponent.IsValid())
-		{
-			return 0;
-		}
-
-		float* FloatBufferDataPtr = FloatBuffer.GetData();
-		int32 NumSamplesGenerated = OwningSynthComponent->OnGeneratePCMAudio(FloatBufferDataPtr, NumSamples);
-
-		// Convert the float buffer to int16 data
-		OutAudio.AddZeroed(NumSamples * sizeof(int16));
-		int16* OutAudioBuffer = (int16*)OutAudio.GetData();
-		for (int32 i = 0; i < NumSamples; ++i)
-		{
-			OutAudioBuffer[i] = (int16)(32767.0f * FMath::Clamp(FloatBufferDataPtr[i], -1.0f, 1.0f));
-		}
-		return NumSamplesGenerated;
+		return 0;
 	}
 
-	return NumSamples;
-}
+	return OwningSynthComponent->OnGeneratePCMAudio((float*)OutAudio.GetData(), NumSamples);
+
+}	
 
 void USynthSound::OnEndGenerate()
 {
@@ -122,7 +82,7 @@ ISoundGeneratorPtr USynthSound::CreateSoundGenerator(const FSoundGeneratorInitPa
 Audio::EAudioMixerStreamDataFormat::Type USynthSound::GetGeneratedPCMDataFormat() const
 {
 	// Only audio mixer supports return float buffers
-	return bAudioMixer ? Audio::EAudioMixerStreamDataFormat::Float : Audio::EAudioMixerStreamDataFormat::Int16;
+	return Audio::EAudioMixerStreamDataFormat::Float;
 }
 
 USynthComponent::USynthComponent(const FObjectInitializer& ObjectInitializer)
@@ -512,6 +472,7 @@ void USynthComponent::Start()
 		AudioComponent->SoundClassOverride = SoundClass;
 		AudioComponent->EnvelopeFollowerAttackTime = EnvelopeFollowerAttackTime;
 		AudioComponent->EnvelopeFollowerReleaseTime = EnvelopeFollowerReleaseTime;
+		AudioComponent->ModulationRouting = ModulationRouting;
 
 		// Copy sound base data to the sound
 		Synth->AttenuationSettings = AttenuationSettings;
@@ -568,6 +529,38 @@ void USynthComponent::SetSubmixSend(USoundSubmixBase* Submix, float SendLevel)
 	}
 }
 
+void USynthComponent::SetSourceBusSendPreEffect(USoundSourceBus* SoundSourceBus, float SourceBusSendLevel)
+{
+	if (AudioComponent)
+	{
+		AudioComponent->SetSourceBusSendPreEffect(SoundSourceBus, SourceBusSendLevel);
+	}
+}
+
+void USynthComponent::SetSourceBusSendPostEffect(USoundSourceBus* SoundSourceBus, float SourceBusSendLevel)
+{
+	if (AudioComponent)
+	{
+		AudioComponent->SetSourceBusSendPostEffect(SoundSourceBus, SourceBusSendLevel);
+	}
+}
+
+void USynthComponent::SetAudioBusSendPreEffect(UAudioBus* AudioBus, float AudioBusSendLevel)
+{
+	if (AudioComponent)
+	{
+		AudioComponent->SetAudioBusSendPreEffect(AudioBus, AudioBusSendLevel);
+	}
+}
+
+void USynthComponent::SetAudioBusSendPostEffect(UAudioBus* AudioBus, float AudioBusSendLevel)
+{
+	if (AudioComponent)
+	{
+		AudioComponent->SetAudioBusSendPostEffect(AudioBus, AudioBusSendLevel);
+	}
+}
+
 void USynthComponent::SetLowPassFilterEnabled(bool InLowPassFilterEnabled)
 {
 	if (AudioComponent)
@@ -614,6 +607,24 @@ void USynthComponent::AdjustVolume(float AdjustVolumeDuration, float AdjustVolum
 	{
 		AudioComponent->AdjustVolume(AdjustVolumeDuration, AdjustVolumeLevel, FadeCurve);
 	}
+}
+
+void USynthComponent::SetModulationRouting(const TSet<USoundModulatorBase*>& Modulators, const EModulationDestination Destination, const EModulationRouting RoutingMethod)
+{
+	if (AudioComponent)
+	{
+		AudioComponent->SetModulationRouting(Modulators, Destination, RoutingMethod);
+	}
+}
+
+TSet<USoundModulatorBase*> USynthComponent::GetModulators(const EModulationDestination Destination)
+{
+	if (AudioComponent)
+	{
+		return AudioComponent->GetModulators(Destination);
+	}
+
+	return TSet<USoundModulatorBase*>();
 }
 
 void USynthComponent::SynthCommand(TFunction<void()> Command)

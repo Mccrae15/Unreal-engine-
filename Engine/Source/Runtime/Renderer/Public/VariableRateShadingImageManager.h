@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "Logging/LogMacros.h"
 #include "RHI.h"
 #include "RendererInterface.h"
 #include "RenderGraphDefinitions.h"
@@ -15,11 +16,13 @@ struct FMinimalSceneTextures; // Forward declaration from SceneTextures.
 
 class IVariableRateShadingImageGenerator;
 
+DECLARE_LOG_CATEGORY_EXTERN(LogVRS, Log, All);
+
 class FVariableRateShadingImageManager : public FRenderResource
 {
 public:
 	/**
-	 * Pass type used by some generators. Must be provided by passes requesting a VRS image.
+	 * Pass type used to determine requested image type based on current CVar settings.
 	 */
 	enum EVRSPassType
 	{
@@ -32,6 +35,16 @@ public:
 		LightFunctions,
 		Decals,
 		Num
+	};
+
+	/**
+	 * Image type to request from generator. Only the CAS generator currently distinguishes between Full and Conservative
+	 */
+	enum EVRSImageType : uint32
+	{
+		Disabled = 0,
+		Full = 1,
+		Conservative = 2
 	};
 
 	/**
@@ -64,14 +77,15 @@ public:
 	FVariableRateShadingImageManager();
 	virtual ~FVariableRateShadingImageManager();
 
-	virtual void ReleaseDynamicRHI() override;
+	virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+	virtual void ReleaseRHI() override;
 
 	/**
 	 * Get the combined VRS image for the specified view setup, target size/configuration, and application flags.
 	 * May be run multiple times from different passes.
 	 */
 	FRDGTextureRef GetVariableRateShadingImage(FRDGBuilder& GraphBuilder, const FViewInfo& ViewInfo, EVRSPassType PassType,
-		const TArray<TRefCountPtr<IPooledRenderTarget>>* ExternalVRSSources, FVariableRateShadingImageManager::EVRSSourceType VRSTypesToExclude = FVariableRateShadingImageManager::EVRSSourceType::None);
+		FVariableRateShadingImageManager::EVRSSourceType VRSTypesToExclude = FVariableRateShadingImageManager::EVRSSourceType::None);
 
 	/**
 	 * Prepare VRS images and store them for later access.
@@ -82,28 +96,38 @@ public:
 	/**
 	 * Returns true if any generator among the given types is enabled, false otherwise.
 	 */
-	bool IsTypeEnabledForView(const FSceneView& View, EVRSSourceType Type) const;
+	bool IsTypeEnabledForView(const FSceneView& View, EVRSSourceType Type);
 
-
-	/** 
-	 *  Special case (currently) for mobile devices; right now this will return either no image, or a static fixed-foveation shading rate image
-	 *  provided by the stereo device runtime.
-	 */
-	TRefCountPtr<IPooledRenderTarget> GetMobileVariableRateShadingImage(const FSceneViewFamily& ViewFamily);
+	RENDERER_API void RegisterExternalImageGenerator(IVariableRateShadingImageGenerator* ExternalGenerator);
+	RENDERER_API void UnregisterExternalImageGenerator(IVariableRateShadingImageGenerator* ExternalGenerator);
 
 	static bool IsVRSSupportedByRHI();
+	static bool IsVRSEnabled();
 	static bool IsVRSCompatibleWithView(const FViewInfo& View);
 	static bool IsVRSCompatibleWithOutputType(const EDisplayOutputFormat& DisplayOutputFormat);
 
 	static FIntPoint GetSRITileSize();
+	static FRDGTextureDesc GetSRIDesc();
 
 	void DrawDebugPreview(FRDGBuilder& GraphBuilder, const FSceneViewFamily& ViewFamily, FRDGTextureRef OutputSceneColor);
 
 private:
 	TRefCountPtr<IPooledRenderTarget> MobileHMDFixedFoveationOverrideImage;
-	TArray<TUniquePtr<IVariableRateShadingImageGenerator>> ImageGenerators;
+	// Used to access the generators functionalities.
+	TArray<IVariableRateShadingImageGenerator*> ImageGenerators;
+	// This is used only to own the memory of generators created in the FVariableRateShadingImageManager constructor.
+	TArray<TUniquePtr<IVariableRateShadingImageGenerator>> InternalGenerators;
+	// Guards ImageGenerators because most of the calls of the manager are on the render thread but the 
+	// Register/UnregisterExternalImageGenerator could come from the game thread.
+	FRWLock	GeneratorsMutex;
 
 	FRDGTextureRef CombineShadingRateImages(FRDGBuilder& GraphBuilder, const FViewInfo& ViewInfo, TArray<FRDGTextureRef> Sources);
+	FRDGTextureRef GetForceRateImage(FRDGBuilder& GraphBuilder, int RateIndex = 0, EVRSImageType ImageType = EVRSImageType::Full);
+
+	EVRSImageType GetImageTypeFromPassType(EVRSPassType PassType);
+
+	bool bVRSEnabledForFrame = false;
+	int32 VRSForceRateForFrame = -1;
 };
 
 ENUM_CLASS_FLAGS(FVariableRateShadingImageManager::EVRSSourceType);
@@ -116,7 +140,7 @@ public:
 	virtual ~IVariableRateShadingImageGenerator() {};
 
 	// Returns cached VRS image.
-	virtual FRDGTextureRef GetImage(FRDGBuilder& GraphBuilder, const FViewInfo& ViewInfo, FVariableRateShadingImageManager::EVRSPassType PassType) = 0;
+	virtual FRDGTextureRef GetImage(FRDGBuilder& GraphBuilder, const FViewInfo& ViewInfo, FVariableRateShadingImageManager::EVRSImageType ImageType) = 0;
 
 	// Generates image(s) and saves to generator cache. Should only be run once per view per frame, in Render().
 	virtual void PrepareImages(FRDGBuilder& GraphBuilder, const FSceneViewFamily& ViewFamily, const FMinimalSceneTextures& SceneTextures) = 0;
@@ -128,5 +152,5 @@ public:
 	virtual FVariableRateShadingImageManager::EVRSSourceType GetType() const { return FVariableRateShadingImageManager::EVRSSourceType::None; };
 
 	// Get VRS image to be used w/ debug overlay
-	virtual FRDGTextureRef GetDebugImage(FRDGBuilder& GraphBuilder, const FViewInfo& ViewInfo) = 0;
+	virtual FRDGTextureRef GetDebugImage(FRDGBuilder& GraphBuilder, const FViewInfo& ViewInfo, FVariableRateShadingImageManager::EVRSImageType ImageType) = 0;
 };

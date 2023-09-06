@@ -13,14 +13,13 @@ public class UnsavedAssetsTracker : ModuleRules
 				"Engine",
 				"EditorSubsystem",
 				"SourceControl",
+				"UncontrolledChangelists",
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-				"Core",
 				"CoreUObject",
-				"Engine",
 				"SlateCore",
 				"Slate",
 				"UnrealEd",

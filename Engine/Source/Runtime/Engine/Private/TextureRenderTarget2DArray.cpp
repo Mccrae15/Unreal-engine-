@@ -12,6 +12,8 @@
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/Texture2DArray.h"
+#include "RHIUtilities.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTarget2DArray)
 
@@ -219,7 +221,7 @@ UTexture2DArray* UTextureRenderTarget2DArray::ConstructTexture2DArray(UObject* O
  * Called when the resource is initialized, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
+void FTextureRenderTarget2DArrayResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
 
@@ -256,7 +258,7 @@ void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
 
 		if (EnumHasAnyFlags(TexCreateFlags, ETextureCreateFlags::UAV))
 		{
-			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(TextureRHI);
+			UnorderedAccessViewRHI = RHICmdList.CreateUnorderedAccessView(TextureRHI);
 		}
 
 		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, TextureRHI);
@@ -266,12 +268,15 @@ void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
 	}
 
 	// Create the sampler state RHI resource.
+	const UTextureLODSettings* TextureLODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
 	FSamplerStateInitializerRHI SamplerStateInitializer
 	(
-		(ESamplerFilter)UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings()->GetSamplerFilter(Owner),
+		(ESamplerFilter)TextureLODSettings->GetSamplerFilter(Owner),
 		AM_Wrap,
 		AM_Wrap,
-		AM_Wrap
+		AM_Wrap,
+		0,
+		TextureLODSettings->GetTextureLODGroup(Owner->LODGroup).MaxAniso
 	);
 	SamplerStateRHI = GetOrCreateSamplerState(SamplerStateInitializer);
 }
@@ -281,10 +286,10 @@ void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
  * Called when the resource is released, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTarget2DArrayResource::ReleaseDynamicRHI()
+void FTextureRenderTarget2DArrayResource::ReleaseRHI()
 {
 	// release the FTexture RHI resources here as well
-	ReleaseRHI();
+	FTexture::ReleaseRHI();
 
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, nullptr);
 	RenderTargetTextureRHI.SafeRelease();

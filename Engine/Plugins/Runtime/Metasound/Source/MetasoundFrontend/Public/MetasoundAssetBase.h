@@ -76,6 +76,7 @@ public:
 	void UnregisterGraphWithFrontend();
 
 	// Sets/overwrites the root class metadata
+	UE_DEPRECATED(5.3, "Directly setting graph class Metadata is no longer be supported. Use the FMetaSoundFrontendDocumentBuilder to modify class data.")
 	virtual void SetMetadata(FMetasoundFrontendClassMetadata& InMetadata);
 
 #if WITH_EDITOR
@@ -84,6 +85,7 @@ public:
 #endif // WITH_EDITOR
 
 	// Returns the interface entries declared by the given asset's document from the InterfaceRegistry.
+	UE_DEPRECATED(5.3, "Use static FMetaSoundFrontendDocumentBuilder 'FindDeclaredInterfaces instead.")
 	bool GetDeclaredInterfaces(TArray<const Metasound::Frontend::IInterfaceRegistryEntry*>& OutInterfaces) const;
 
 	// Returns whether an interface with the given version is declared by the given asset's document.
@@ -108,7 +110,10 @@ public:
 
 	bool AddingReferenceCausesLoop(const FSoftObjectPath& InReferencePath) const;
 	bool IsReferencedAsset(const FMetasoundAssetBase& InAssetToCheck) const;
+
+	UE_DEPRECATED(5.3, "ConvertFromPreset moved to FMetaSoundFrontendDocumentBuilder.")
 	void ConvertFromPreset();
+
 	bool IsRegistered() const;
 
 	// Imports data from a JSON string directly
@@ -128,10 +133,14 @@ public:
 	// Overwrites the existing document. If the document's interface is not supported,
 	// the FMetasoundAssetBase be while queried for a new one using `GetPreferredInterface`.
 	void SetDocument(const FMetasoundFrontendDocument& InDocument);
+	void SetDocument(FMetasoundFrontendDocument&& InDocument);
 
 	FMetasoundFrontendDocument& GetDocumentChecked();
 	const FMetasoundFrontendDocument& GetDocumentChecked() const;
 
+	const Metasound::Frontend::FNodeRegistryKey& GetRegistryKey() const;
+
+	UE_DEPRECATED(5.3, "AddDefaultInterfaces is included in now applied via FMetaSoundFrontendDocumentBuilder::InitDocument and no longer directly supported via this function.")
 	void AddDefaultInterfaces();
 
 	bool VersionAsset();
@@ -172,6 +181,7 @@ protected:
 #endif
 
 	// Get information for communicating asynchronously with MetaSound running instance.
+	UE_DEPRECATED(5.3, "MetaSounds no longer communicate using FSendInfo.")
 	TArray<FSendInfoAndVertexName> GetSendInfos(uint64 InInstanceID) const;
 
 #if WITH_EDITORONLY_DATA
@@ -179,10 +189,10 @@ protected:
 #endif // WITH_EDITORONLY_DATA
 
 	// Returns an access pointer to the document.
-	virtual Metasound::Frontend::FDocumentAccessPtr GetDocument() = 0;
+	virtual Metasound::Frontend::FDocumentAccessPtr GetDocumentAccessPtr() = 0;
 
 	// Returns an access pointer to the document.
-	virtual Metasound::Frontend::FConstDocumentAccessPtr GetDocument() const = 0;
+	virtual Metasound::Frontend::FConstDocumentAccessPtr GetDocumentConstAccessPtr() const = 0;
 
 protected:
 	// Container for runtime data of MetaSound graph.
@@ -198,7 +208,7 @@ protected:
 		TArray<FMetasoundFrontendClassInput> TransmittableInputs;
 
 		// Core graph.
-		TSharedPtr<Metasound::IGraph, ESPMode::ThreadSafe> Graph;
+		TSharedPtr<Metasound::FGraph, ESPMode::ThreadSafe> Graph;
 	};
 
 	// Returns the cached runtime data.
@@ -225,7 +235,5 @@ private:
 	FGuid CurrentCachedRuntimeDataChangeID;
 	FRuntimeData CachedRuntimeData;
 
-	TSharedPtr<Metasound::IGraph, ESPMode::ThreadSafe> BuildMetasoundDocument(const FMetasoundFrontendDocument& InPreprocessDoc, const TSet<FName>& InTransmittableInputNames) const;
-	Metasound::FSendAddress CreateSendAddress(uint64 InInstanceID, const Metasound::FVertexName& InVertexName, const FName& InDataTypeName) const;
-	Metasound::Frontend::FNodeHandle AddInputPinForSendAddress(const Metasound::FMetaSoundParameterTransmitter::FSendInfo& InSendInfo, Metasound::Frontend::FGraphHandle InGraph) const;
+	TSharedPtr<Metasound::FGraph, ESPMode::ThreadSafe> BuildMetasoundDocument(const FMetasoundFrontendDocument& InPreprocessDoc, const TSet<FName>& InTransmittableInputNames) const;
 };

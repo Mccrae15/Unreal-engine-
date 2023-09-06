@@ -42,6 +42,8 @@ namespace UE
 
 		bool operator==( const FSdfPath& Other ) const;
 		bool operator!=( const FSdfPath& Other ) const;
+		bool operator<(const FSdfPath& Other) const;
+		bool operator<=(const FSdfPath& Other) const;
 
 		friend UNREALUSDWRAPPER_API uint32 GetTypeHash( const UE::FSdfPath& Path );
 		friend UNREALUSDWRAPPER_API FArchive& operator<<( FArchive& Ar, FSdfPath& Path );
@@ -73,6 +75,7 @@ namespace UE
 		FSdfPath ReplaceName( const TCHAR* NewLeafName ) const;
 
 		FSdfPath GetParentPath() const;
+		FSdfPath AppendPath(const UE::FSdfPath& NewRelativeSuffix) const;
 		FSdfPath AppendChild( const TCHAR* ChildName ) const;
 		FSdfPath AppendProperty( FName PropertyName ) const;
 
@@ -83,6 +86,9 @@ namespace UE
 		TArray<FSdfPath> GetPrefixes() const;
 
 		bool HasPrefix(const UE::FSdfPath& Prefix) const;
+
+		FSdfPath MakeAbsolutePath(const FSdfPath& Anchor) const;
+		FSdfPath MakeRelativePath(const FSdfPath& Anchor) const;
 
 	private:
 		TUniquePtr< Internal::FSdfPathImpl > Impl;

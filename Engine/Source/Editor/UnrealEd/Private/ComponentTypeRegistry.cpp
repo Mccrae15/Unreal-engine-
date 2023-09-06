@@ -553,7 +553,7 @@ void FComponentTypeRegistryData::ForceRefreshComponentList()
 					}
 				}
 
-				FComponentTypeEntry Entry = { Class->GetName(), FString(), Class };
+				FComponentTypeEntry Entry = { Class->GetName(), FString(), ObjectPtrWrap(Class) };
 				ComponentTypeList.Add(MoveTemp(Entry));
 			}
 		}
@@ -636,7 +636,7 @@ void FComponentTypeRegistryData::ForceRefreshComponentList()
 	
 	if (SortedClassList.Num() > 0)
 	{
-		Sort(SortedClassList.GetData(), SortedClassList.Num(), SortComboEntry());
+		Algo::Sort(SortedClassList, SortComboEntry());
 
 		FString PreviousHeading;
 		for (int32 ClassIndex = 0; ClassIndex < SortedClassList.Num(); ClassIndex++)
@@ -671,6 +671,8 @@ void FComponentTypeRegistryData::ForceRefreshComponentList()
 
 void FComponentTypeRegistryData::Tick(float)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FComponentTypeRegistryData::Tick);
+
 	bool bRequiresRefresh = bNeedsRefreshNextTick;
 
 	if (PendingAssetData.Num() != 0)

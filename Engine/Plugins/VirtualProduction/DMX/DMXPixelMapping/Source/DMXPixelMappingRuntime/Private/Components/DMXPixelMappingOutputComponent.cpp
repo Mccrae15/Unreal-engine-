@@ -13,8 +13,7 @@
 
 
 UDMXPixelMappingOutputComponent::UDMXPixelMappingOutputComponent()
-	: CellBlendingQuality(EDMXPixelBlendingQuality::Low)
-	, PositionX(0.f)
+	: PositionX(0.f)
 	, PositionY(0.f)
 	, SizeX(1.f)
 	, SizeY(1.f)
@@ -53,17 +52,6 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			}, bSetVisibilityRecursive);
 	}
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	// Apply cell belending quality
-	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDMXPixelMappingOutputComponent, CellBlendingQuality))
-	{
-		// Propagonate to children
-		constexpr bool bSetCellBlendingQualityToChildsRecursive = true;
-		ForEachChildOfClass<UDMXPixelMappingOutputComponent>([this](UDMXPixelMappingOutputComponent* ChildComponent)
-			{
-				ChildComponent->CellBlendingQuality = CellBlendingQuality;
-			}, bSetCellBlendingQualityToChildsRecursive);
-	}
 }
 #endif // WITH_EDITOR
 
@@ -273,20 +261,35 @@ bool UDMXPixelMappingOutputComponent::OverlapsComponent(UDMXPixelMappingOutputCo
 
 void UDMXPixelMappingOutputComponent::SetPosition(const FVector2D& Position) 
 {
-	if (Position.X != PositionX || Position.Y != PositionY)
-	{
-		PositionX = Position.X;
-		PositionY = Position.Y;
-	}
+	PositionX = Position.X;
+	PositionY = Position.Y;
+}
+
+FVector2D UDMXPixelMappingOutputComponent::GetPosition() const
+{
+	return FVector2D(PositionX, PositionY);
 }
 
 void UDMXPixelMappingOutputComponent::SetSize(const FVector2D& Size) 
 {
-	SizeX = Size.X;
-	SizeY = Size.Y;
+	SizeX = FMath::Max(Size.X, 1.f);
+	SizeY = FMath::Max(Size.Y, 1.f);
 
-	SizeX = FMath::Max(SizeX, 1.f);
-	SizeY = FMath::Max(SizeY, 1.f);
+	// Limit all components size to max texture size, logged
+	const uint32 MaxTextureDimensions = GetMax2DTextureDimension();
+	if (SizeX > MaxTextureDimensions || SizeY > MaxTextureDimensions)
+	{
+		SizeX = MaxTextureDimensions;
+		SizeY = MaxTextureDimensions;
+	}
+}
+
+void UDMXPixelMappingOutputComponent::InvalidatePixelMapRenderer()
+{
+	if (UDMXPixelMappingRendererComponent* RendererComponent = GetRendererComponent())
+	{
+		RendererComponent->InvalidatePixelMapRenderer();
+	}
 }
 
 UDMXPixelMappingRendererComponent* UDMXPixelMappingOutputComponent::FindRendererComponent() const
@@ -309,35 +312,42 @@ UDMXPixelMappingRendererComponent* UDMXPixelMappingOutputComponent::FindRenderer
 }
 
 #if WITH_EDITOR
-void UDMXPixelMappingOutputComponent::MakeHighestZOrderInComponentRect()
+void UDMXPixelMappingOutputComponent::ZOrderTopmost()
 {
-	if (UDMXPixelMappingRendererComponent* RendererComponent = FindRendererComponent())
+	UDMXPixelMappingRendererComponent* RendererComponent = FindRendererComponent();
+	if (!RendererComponent)
 	{
-		constexpr bool bRecursive = true;
-		RendererComponent->ForEachChildOfClass<UDMXPixelMappingOutputComponent>([this](UDMXPixelMappingOutputComponent* InComponent)
+		return;
+	}
+
+	// Gather all components, sort them by zorder and rebase all
+	constexpr bool bRecursive = true;
+
+	TArray<UDMXPixelMappingOutputComponent*> AllOutputComoponents;
+	RendererComponent->ForEachChildOfClass<UDMXPixelMappingOutputComponent>([&AllOutputComoponents](UDMXPixelMappingOutputComponent* Component)
+		{
+			AllOutputComoponents.Add(Component);
+		}, bRecursive);
+	Algo::SortBy(AllOutputComoponents, &UDMXPixelMappingOutputComponent::GetZOrder);
+
+	int32 NewZOrder = 0;
+	for (UDMXPixelMappingOutputComponent* OutputComponent : AllOutputComoponents)
+	{
+		OutputComponent->SetZOrder(++NewZOrder);
+	}
+
+	// Order this component and its children topmost
+	SetZOrder(++NewZOrder);
+	for (UDMXPixelMappingOutputComponent* OutputComponent : AllOutputComoponents)
+	{
+		// Increment zorder for all children that are a sibling of this component
+		for (UDMXPixelMappingBaseComponent* Parent = OutputComponent->GetParent(); Parent; Parent = Parent->GetParent())
+		{
+			if (Parent == this)
 			{
-				if (InComponent == this)
-				{
-					return;
-				}
-
-				// Exclude children, they're updated when SetZOrder is called below
-				for (UDMXPixelMappingBaseComponent* OtherParent = InComponent->GetParent(); OtherParent; OtherParent = OtherParent->GetParent())
-				{
-					if (OtherParent == this)
-					{
-						return;
-					}
-				}
-
-				if (this->OverlapsComponent(InComponent))
-				{
-					if (InComponent->ZOrder + 1 > ZOrder)
-					{
-						SetZOrder(InComponent->ZOrder + 1);
-					}
-				}
-			}, bRecursive);
+				OutputComponent->SetZOrder(++NewZOrder);
+			}
+		}
 	}
 }
 #endif // WITH_EDITOR

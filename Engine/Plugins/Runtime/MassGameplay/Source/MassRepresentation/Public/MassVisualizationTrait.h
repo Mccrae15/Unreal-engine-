@@ -13,7 +13,8 @@ class UMassRepresentationSubsystem;
 class UMassRepresentationActorManagement;
 class UMassProcessor;
 
-UCLASS(meta=(DisplayName="Visualization"))
+/** This class has been soft-deprecated. Use MassStationaryVisualizationTrait or MassMovableVisualizationTrait */
+UCLASS(meta=(DisplayName="DEPRECATED Visualization"))
 class MASSREPRESENTATION_API UMassVisualizationTrait : public UMassEntityTraitBase
 {
 	GENERATED_BODY()
@@ -24,7 +25,7 @@ public:
 
 	/** Instanced static mesh information for this agent */
 	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
-	FStaticMeshInstanceVisualizationDesc StaticMeshInstanceDesc;
+	mutable FStaticMeshInstanceVisualizationDesc StaticMeshInstanceDesc;
 
 	/** Actor class of this agent when spawned in high resolution*/
 	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
@@ -35,7 +36,7 @@ public:
 	TSubclassOf<AActor> LowResTemplateActor;
 
 	/** Allow subclasses to override the representation subsystem to use */
-	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
+	UPROPERTY(EditAnywhere, Category = "Mass|Visual", meta = (EditCondition = "bCanModifyRepresentationSubsystemClass"))
 	TSubclassOf<UMassRepresentationSubsystem> RepresentationSubsystemClass;
 
 	/** Configuration parameters for the representation processor */
@@ -45,4 +46,15 @@ public:
 	/** Configuration parameters for the visualization LOD processor */
 	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
 	FMassVisualizationLODParameters LODParams;
+
+	/** If set to true will result in the visualization-related fragments being added to server-size entities as well.
+	 *  By default only the clients require visualization fragments */
+	UPROPERTY(EditAnywhere, Category = "Mass|Visual")
+	bool bAllowServerSideVisualization = false;
+
+#if WITH_EDITORONLY_DATA
+	/** the property is marked like this to ensure it won't show up in UI */
+	UPROPERTY(EditDefaultsOnly, Category = "Mass|Visual")
+	bool bCanModifyRepresentationSubsystemClass = true;
+#endif // WITH_EDITORONLY_DATA
 };

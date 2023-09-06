@@ -51,11 +51,13 @@ bool USequencerToolsFunctionLibrary::RenderMovie(UMovieSceneCapture* InCaptureSe
 		return false;
 	}
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (IsRenderingMovie())
 	{
 		FFrame::KismetExecutionMessage(TEXT("Capture already in progress."), ELogVerbosity::Error);
 		return false;
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// If they're capturing a level sequence we'll do some additional checking as there are more parameters on the Automated Level Sequence capture.
 	UAutomatedLevelSequenceCapture* LevelSequenceCapture = Cast<UAutomatedLevelSequenceCapture>(InCaptureSettings);
@@ -734,7 +736,7 @@ bool USequencerToolsFunctionLibrary::ImportFBXToControlRig(UWorld* World, ULevel
 				INodeAndChannelMappings* ChannelMapping = Cast<INodeAndChannelMappings>(Track); 
 				if (ChannelMapping)
 				{
-					TArray<FFBXNodeAndChannels>* NodeAndChannels = ChannelMapping->GetNodeAndChannelMappings(nullptr);
+					TArray<FRigControlFBXNodeAndChannels>* NodeAndChannels = ChannelMapping->GetNodeAndChannelMappings(nullptr);
 					//use passed in controls for selected, actually selected controls should almost be empty anyway since we just loaded/set everything up.
 					for (const FString& StringName : ControlRigNames)
 					{
@@ -758,6 +760,51 @@ bool USequencerToolsFunctionLibrary::ImportFBXToControlRig(UWorld* World, ULevel
 	return false;
 	
 
+}
+
+bool USequencerToolsFunctionLibrary::ExportFBXFromControlRig(ULevelSequence* Sequence,
+	const FString& ActorWithControlRigTrack,
+	const UMovieSceneUserExportFBXControlRigSettings* ExportFBXControlRigSettings)
+{
+	bool bValid = false;
+
+	if (!Sequence || !ExportFBXControlRigSettings)
+	{
+		return false;
+	}
+	
+	UMovieScene* MovieScene = Sequence->GetMovieScene();
+	if (!MovieScene || MovieScene->IsReadOnly())
+	{
+		return false;
+	}
+
+	const TArray<FMovieSceneBinding>& Bindings =  MovieScene->GetBindings();
+	for (const FMovieSceneBinding& Binding : Bindings)
+	{
+		if (Binding.GetName() != ActorWithControlRigTrack)
+		{
+			continue;
+		}
+
+		for (UMovieSceneTrack* Track : Binding.GetTracks())
+		{
+			INodeAndChannelMappings* ChannelMapping = Cast<INodeAndChannelMappings>(Track);
+			const UMovieSceneSection* Section = Track->GetSectionToKey();
+			if (!ChannelMapping || !Section)
+			{
+				continue;
+			}
+
+			TArray<FName> SelectedControls;
+			ChannelMapping->GetSelectedNodes(SelectedControls);
+
+			const FMovieSceneSequenceTransform RootToLocalTransform;
+			return MovieSceneToolHelpers::ExportFBXFromControlRigChannels(Section, ExportFBXControlRigSettings, SelectedControls, RootToLocalTransform);
+		}
+	}
+
+	return false;
 }
 
 
@@ -787,7 +834,7 @@ FMovieSceneEvent USequencerToolsFunctionLibrary::CreateEvent(UMovieSceneSequence
 	InSection->Modify();
 	FMovieSceneEventUtils::BindEventSectionToBlueprint(InSection, InEndpoint.EventEndpoint->GetBlueprint());
 
-	UEdGraphPin* BoundObjectPin = FMovieSceneEventUtils::FindBoundObjectPin(InEndpoint.EventEndpoint, BoundObjectPinClass);
+	UEdGraphPin* BoundObjectPin = FMovieSceneDirectorBlueprintUtils::FindCallTargetPin(InEndpoint.EventEndpoint, BoundObjectPinClass);
 	FMovieSceneEventUtils::SetEndpoint(&Event, InSection, InEndpoint.EventEndpoint, BoundObjectPin);
 
 	if (InEndpoint.PayloadNames.Num() != InPayload.Num())
@@ -835,10 +882,11 @@ FSequencerQuickBindingResult USequencerToolsFunctionLibrary::CreateQuickBinding(
 
 	UMovieScene* MovieScene = InSequence->GetMovieScene();
 	
-	FMovieSceneEventEndpointParameters Params;
-	Params.SanitizedObjectName = InObject->GetName();
-	Params.SanitizedEventName = InFunctionName;
-	Params.BoundObjectPinClass = InObject->GetClass();
+	FMovieSceneDirectorBlueprintEndpointDefinition EndpointDefinition;
+	EndpointDefinition.EndpointType = EMovieSceneDirectorBlueprintEndpointType::Event;
+	EndpointDefinition.EndpointName = InFunctionName;
+	EndpointDefinition.PossibleCallTargetClass = InObject->GetClass();
+	EndpointDefinition.AddExtraOutputPin(InObject->GetName(), UEdGraphSchema_K2::PC_Object, InObject->GetClass());
 	UFunction* Function = InObject->GetClass()->FindFunctionByName(FName(InFunctionName));
 	if (Function == nullptr)
 	{
@@ -850,12 +898,12 @@ FSequencerQuickBindingResult USequencerToolsFunctionLibrary::CreateQuickBinding(
 	UBlueprintFunctionNodeSpawner* BlueprintFunctionNodeSpawner = UBlueprintFunctionNodeSpawner::Create(Function);
 	FBlueprintActionMenuItem Action(BlueprintFunctionNodeSpawner);
 
-	UK2Node_CustomEvent* NewEventEndpoint = FMovieSceneEventUtils::CreateUserFacingEvent(Blueprint, Params);
+	UK2Node_CustomEvent* NewEventEndpoint = FMovieSceneDirectorBlueprintUtils::CreateEventEndpoint(Blueprint, EndpointDefinition);
 	NewEventEndpoint->bCallInEditor = bCallInEditor;
 	Result.EventEndpoint = NewEventEndpoint;
 
 	UEdGraphPin* ThenPin = NewEventEndpoint->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
-	UEdGraphPin* BoundObjectPin = FMovieSceneEventUtils::FindBoundObjectPin(NewEventEndpoint, Params.BoundObjectPinClass);
+	UEdGraphPin* BoundObjectPin = FMovieSceneDirectorBlueprintUtils::FindCallTargetPin(NewEventEndpoint, EndpointDefinition.PossibleCallTargetClass);
 
 	FVector2D NodePosition(NewEventEndpoint->NodePosX + 400.f, NewEventEndpoint->NodePosY);
 	UEdGraphNode* NewNode = Action.PerformAction(NewEventEndpoint->GetGraph(), BoundObjectPin ? BoundObjectPin : ThenPin, NodePosition);

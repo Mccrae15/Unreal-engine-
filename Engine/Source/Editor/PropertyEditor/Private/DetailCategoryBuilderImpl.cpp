@@ -10,15 +10,12 @@
 #include "DetailItemNode.h"
 #include "DetailPropertyRow.h"
 #include "IPropertyGenerationUtilities.h"
-#include "ItemPropertyNode.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectPropertyNode.h"
-#include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorModule.h"
-#include "PropertyEditorPermissionList.h"
+#include "PropertyPermissionList.h"
 #include "SDetailCategoryTableRow.h"
-#include "SDetailSingleItemRow.h"
 #include "StructurePropertyNode.h"
 #include "Styling/StyleColors.h"
  
@@ -101,7 +98,6 @@ bool FDetailLayoutCustomization::IsHidden() const
 		|| (HasPropertyNode() && PropertyRow->GetPropertyVisibility() != EVisibility::Visible);
 }
 
-
 TSharedPtr<FPropertyNode> FDetailLayoutCustomization::GetPropertyNode() const
 {
 	return PropertyRow.IsValid() ? PropertyRow->GetPropertyNode() : nullptr;
@@ -125,6 +121,27 @@ FDetailWidgetRow FDetailLayoutCustomization::GetWidgetRow() const
 	{
 		return DetailGroup->GetWidgetRow();
 	}
+}
+
+TArrayView<TSharedPtr<IPropertyHandle>> FDetailLayoutCustomization::GetPropertyHandles() const
+{
+	if (HasCustomWidget())
+	{
+		return WidgetDecl->PropertyHandles;
+	}
+	else if (HasCustomBuilder())
+	{
+		return CustomBuilderRow->GetWidgetRow()->PropertyHandles;
+	}
+	else if (HasPropertyNode())
+	{
+		return PropertyRow->GetPropertyHandles();
+	}
+	else if (DetailGroup->GetHeaderPropertyRow())
+	{
+		return DetailGroup->GetHeaderPropertyRow()->GetPropertyHandles();
+	}
+	return TArrayView<TSharedPtr<IPropertyHandle>>();
 }
 
 const IDetailLayoutRow* FDetailLayoutCustomization::GetDetailLayoutRow() const
@@ -169,6 +186,7 @@ TOptional<FResetToDefaultOverride> FDetailLayoutCustomization::GetCustomResetToD
 FDetailCategoryImpl::FDetailCategoryImpl(FName InCategoryName, TSharedRef<FDetailLayoutBuilderImpl> InDetailLayout)
 	: HeaderContentWidget(nullptr)
 	, DetailLayoutBuilder(InDetailLayout)
+	, PasteFromTextDelegate(MakeShared<FOnPasteFromText>())
 	, CategoryName(InCategoryName)
 	, SortOrder(0)
 	, bRestoreExpansionState(!ContainsOnlyAdvanced())
@@ -602,6 +620,25 @@ void FDetailCategoryImpl::SetSortOrder(int32 InSortOrder)
 	SortOrder = InSortOrder;
 }
 
+void FDetailCategoryImpl::AddPropertyDisableInstancedReference(TSharedPtr<IPropertyHandle> PropertyHandle)
+{
+	FDetailLayoutCustomization NewCustomization;
+	NewCustomization.bCustom = true;
+
+	TSharedPtr<FDetailLayoutBuilderImpl> ParentLayout = GetParentLayoutImpl();
+	TSharedPtr<FPropertyNode> PropertyNode = ParentLayout->GetPropertyNode(PropertyHandle);
+	if (PropertyNode.IsValid())
+	{
+		ParentLayout->SetCustomProperty(PropertyNode);
+		PropertyNode->SetIgnoreInstancedReference();
+	}
+
+	NewCustomization.PropertyRow = MakeShareable(new FDetailPropertyRow(PropertyNode, AsShared()));
+	NewCustomization.bAdvanced = IsAdvancedLayout(NewCustomization);
+
+	AddCustomLayout(NewCustomization);
+}
+
 bool FDetailCategoryImpl::IsAdvancedDropdownEnabled() const
 {
 	return !bForceAdvanced;
@@ -627,6 +664,7 @@ void FDetailCategoryImpl::RefreshTree(bool bRefilterCategory)
 		TSharedPtr<FDetailLayoutBuilderImpl> ParentLayout = GetParentLayoutImpl();
 		if (ParentLayout.IsValid())
 		{
+			ParentLayout->RefreshNodeVisbility();
 			FilterNode(ParentLayout->GetCurrentFilter());
 			ParentLayout->GetPropertyGenerationUtilities().RebuildTreeNodes();
 		}
@@ -766,11 +804,11 @@ TSharedRef<ITableRow> FDetailCategoryImpl::GenerateWidgetForTableView(const TSha
 	TSharedPtr<FDetailLayoutBuilderImpl> ParentLayout = GetParentLayoutImpl();
 
 	return SNew(SDetailCategoryTableRow, AsShared(), OwnerTable)
+		.PasteFromText(OnPasteFromText())
 		.InnerCategory(ParentLayout.IsValid() ? ParentLayout->IsLayoutForExternalRoot() : false)
 		.DisplayName(GetDisplayName())
 		.HeaderContent(HeaderContent);
 }
-
 
 bool FDetailCategoryImpl::GenerateStandaloneWidget(FDetailWidgetRow& OutRow) const
 {
@@ -1023,9 +1061,9 @@ void FDetailCategoryImpl::GenerateChildrenForLayouts()
 	}
 }
 
-void FDetailCategoryImpl::GetChildren(FDetailNodeList& OutChildren)
+void FDetailCategoryImpl::GetChildren(FDetailNodeList& OutChildren, const bool& bInIgnoreVisibility)
 {
-	GetGeneratedChildren(OutChildren, false, false);
+	GetGeneratedChildren(OutChildren, bInIgnoreVisibility, false);
 }
 
 void FDetailCategoryImpl::GetGeneratedChildren(FDetailNodeList& OutChildren, bool bIgnoreVisibility, bool bIgnoreAdvanced)
@@ -1036,7 +1074,7 @@ void FDetailCategoryImpl::GetGeneratedChildren(FDetailNodeList& OutChildren, boo
 		{
 			if (Child->ShouldShowOnlyChildren())
 			{
-				Child->GetChildren(OutChildren);
+				Child->GetChildren(OutChildren, bIgnoreVisibility);
 			}
 			else
 			{
@@ -1052,7 +1090,8 @@ void FDetailCategoryImpl::GetGeneratedChildren(FDetailNodeList& OutChildren, boo
 			OutChildren.Add(AdvancedDropdownNode.ToSharedRef());
 		}
 
-		if (ShouldAdvancedBeExpanded())
+		// bIgnoreVisibility treats advanced as expanded
+		if (bIgnoreVisibility || ShouldAdvancedBeExpanded())
 		{
 			for (TSharedRef<FDetailTreeNode>& Child : AdvancedChildNodes)
 			{
@@ -1060,7 +1099,7 @@ void FDetailCategoryImpl::GetGeneratedChildren(FDetailNodeList& OutChildren, boo
 				{
 					if (Child->ShouldShowOnlyChildren())
 					{
-						Child->GetChildren(OutChildren);
+						Child->GetChildren(OutChildren, bIgnoreVisibility);
 					}
 					else
 					{

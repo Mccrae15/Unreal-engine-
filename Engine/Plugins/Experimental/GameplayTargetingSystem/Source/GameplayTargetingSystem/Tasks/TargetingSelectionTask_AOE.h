@@ -4,7 +4,7 @@
 #include "CollisionShape.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/EngineTypes.h"
-#include "GameplayTargetingSystem/Types/TargetingSystemTypes.h"
+#include "Types/TargetingSystemTypes.h"
 #include "ScalableFloat.h"
 #include "TargetingTask.h"
 #include "UObject/Object.h"
@@ -44,7 +44,7 @@ enum class ETargetingAOEShape : uint8
 *	SourceComponent - Use a collision component with a specific component tag as the shape
 */
 UCLASS(Blueprintable)
-class UTargetingSelectionTask_AOE : public UTargetingTask
+class TARGETINGSYSTEM_API UTargetingSelectionTask_AOE : public UTargetingTask
 {
 	GENERATED_BODY()
 
@@ -53,6 +53,14 @@ public:
 
 	/** Evaluation function called by derived classes to process the targeting request */
 	virtual void Execute(const FTargetingRequestHandle& TargetingHandle) const override;
+
+	/** Debug draws the outlines of the set shape type. */
+	void DebugDrawBoundingVolume(const FTargetingRequestHandle& TargetingHandle, const FColor& Color, const FOverlapDatum* OverlapDatum = nullptr) const;
+
+	void SetShapeType(ETargetingAOEShape InShapeType);
+	void SetHalfExtent(FVector InHalfExtent);
+	void SetRadius(FScalableFloat InRadius);
+	void SetHalfHeight(FScalableFloat InHalfHeight);
 
 private:
 	/** Method to process the trace task immediately */
@@ -76,6 +84,10 @@ protected:
 	UFUNCTION(BlueprintNativeEvent, Category = "Target AOE Selection")
 	FVector GetSourceOffset(const FTargetingRequestHandle& TargetingHandle) const;
 
+	/** Native event to get the source rotation for the AOE  */
+	UFUNCTION(BlueprintNativeEvent, Category = "Target AOE Selection")
+	FQuat GetSourceRotation(const FTargetingRequestHandle& TargetingHandle) const;
+	
 private:
 	/** Helper method to build the Collision Shape */
 	FCollisionShape GetCollisionShape() const;
@@ -106,6 +118,10 @@ protected:
 	/** The default source location offset used by GetSourceOffset */
 	UPROPERTY(EditAnywhere, Category = "Target AOE Selection | Data")
 	FVector DefaultSourceOffset = FVector::ZeroVector;
+
+	/** Should we offset based on world or relative Source object transform? */
+	UPROPERTY(EditAnywhere, Category = "Target AOE Selection | Data")
+	uint8 bUseRelativeOffset : 1;
 	
 	/** Indicates the trace should ignore the source actor */
 	UPROPERTY(EditAnywhere, Category = "Target AOE Selection | Data")

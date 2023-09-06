@@ -15,6 +15,7 @@ namespace Private
 {
 
 ////////////////////////////////////////////////////////////////////////////////
+void	Message_SetCallback(OnMessageFunc Callback);
 void	Writer_MemorySetHooks(AllocFunc, FreeFunc);
 void	Writer_Initialize(const FInitializeDesc&);
 void	Writer_WorkerCreate();
@@ -25,6 +26,7 @@ bool	Writer_WriteTo(const ANSICHAR*, uint32);
 bool	Writer_WriteSnapshotTo(const ANSICHAR*);
 bool	Writer_SendSnapshotTo(const ANSICHAR*, uint32);	
 bool	Writer_IsTracing();
+bool	Writer_IsTracingTo(uint32 (&OutSessionGuid)[4], uint32 (&OutTraceGuid)[4]);
 bool	Writer_Stop();
 uint32	Writer_GetThreadId();
 
@@ -58,6 +60,12 @@ void SetMemoryHooks(AllocFunc Alloc, FreeFunc Free)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+void SetMessageCallback(OnMessageFunc MessageFunc)
+{
+	Private::Message_SetCallback(MessageFunc);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 void Initialize(const FInitializeDesc& Desc)
 {
 	Private::Writer_Initialize(Desc);
@@ -68,6 +76,12 @@ void Initialize(const FInitializeDesc& Desc)
 void Shutdown()
 {
 	Private::Writer_Shutdown();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void Panic()
+{
+	FChannel::PanicDisableAll();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -120,6 +134,12 @@ bool IsTracing()
 	return Private::Writer_IsTracing();
 }
 
+////////////////////////////////////////////////////////////////////////////////
+bool IsTracingTo(uint32 (&OutSessionGuid)[4], uint32 (&OutTraceGuid)[4])
+{
+	return Private::Writer_IsTracingTo(OutSessionGuid, OutTraceGuid);
+}
+	
 ////////////////////////////////////////////////////////////////////////////////
 bool Stop()
 {

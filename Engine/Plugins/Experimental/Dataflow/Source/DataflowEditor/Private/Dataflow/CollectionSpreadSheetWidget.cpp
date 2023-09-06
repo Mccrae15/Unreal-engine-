@@ -46,6 +46,11 @@ namespace CollectionSpreadSheetHelpers
 		return Value ? FString("true") : FString("false");
 	}
 
+	FString AttributeValueToString(const FConstBitReference& Value)
+	{
+		return Value ? FString("true") : FString("false");
+	}
+
 	FString AttributeValueToString(TSet<int32> Value)
 	{
 		TArray<int32> Array = Value.Array();
@@ -182,7 +187,7 @@ namespace CollectionSpreadSheetHelpers
 			break;
 
 		default:
-			ensure(false);
+			//ensure(false);
 			ValueAsString = "<Unknown Data Type>";
 		}
 

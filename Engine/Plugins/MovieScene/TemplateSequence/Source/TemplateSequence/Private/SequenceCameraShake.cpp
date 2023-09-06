@@ -5,6 +5,7 @@
 #include "CameraAnimationSequencePlayer.h"
 #include "EntitySystem/MovieSceneEntityManager.h"
 #include "MovieScene.h"
+#include "MovieSceneFwd.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SequenceCameraShake)
 
@@ -69,24 +70,56 @@ void USequenceCameraShakePattern::StartShakePatternImpl(const FCameraShakeStartP
 	// Initialize it and start playing.
 	Player->Initialize(Sequence);
 	Player->Play(bRandomSegment, bRandomSegment);
+
+	// Initialize our state.
+	State.Start(this);
 }
 
 void USequenceCameraShakePattern::UpdateShakePatternImpl(const FCameraShakeUpdateParams& Params, FCameraShakeUpdateResult& OutResult)
 {
-	const FFrameRate InputRate = Player->GetInputRate();
-	const FFrameTime NewPosition = Player->GetCurrentPosition() + Params.DeltaTime * PlayRate * InputRate;
-	UpdateCamera(NewPosition, Params.POV, OutResult);
+	const float BlendWeight = State.Update(Params.DeltaTime);
+	if (State.IsPlaying())
+	{
+		const FFrameRate DisplayRate = Player->GetInputRate();
+		const FFrameTime CurrentPosition = Player->GetCurrentPosition();
+
+		const FFrameTime NewPosition = CurrentPosition + Params.DeltaTime * PlayRate * DisplayRate;
+		UpdateCamera(NewPosition, Params.POV, OutResult);
+
+		OutResult.ApplyScale(BlendWeight);
+	}
+	else
+	{
+		// We could have stopped playing if we were blending out as a result of a call to Stop(false)
+		// In this case, the sequence might still be playing (i.e. in a valid position inside its playback
+		// range) and we need to explicitly stop it.
+		check(Player);
+		Player->Stop();
+	}
 }
 
 void USequenceCameraShakePattern::ScrubShakePatternImpl(const FCameraShakeScrubParams& Params, FCameraShakeUpdateResult& OutResult)
 {
-	Player->StartScrubbing();
+	const float BlendWeight = State.Scrub(Params.AbsoluteTime);
+	if (State.IsPlaying())
 	{
 		const FFrameRate InputRate = Player->GetInputRate();
 		const FFrameTime NewPosition = Params.AbsoluteTime * PlayRate * InputRate;
 		UpdateCamera(NewPosition, Params.POV, OutResult);
+
+		OutResult.ApplyScale(BlendWeight);
 	}
-	Player->EndScrubbing();
+	else
+	{
+		// See the similar else clause in UpdateShakePatternImpl. 
+		check(Player);
+		Player->Stop();
+	}
+}
+
+bool USequenceCameraShakePattern::IsFinishedImpl() const
+{
+	return (Player == nullptr || Player->GetPlaybackStatus() == EMovieScenePlayerStatus::Stopped);
 }
 
 void USequenceCameraShakePattern::StopShakePatternImpl(const FCameraShakeStopParams& Params)
@@ -101,18 +134,9 @@ void USequenceCameraShakePattern::StopShakePatternImpl(const FCameraShakeStopPar
 			// Stop playing!
 			Player->Stop();
 		}
-		else
-		{
-			// Move the playback position to the start of the blend out.
-			const TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
-			if (PlaybackRange.HasUpperBound())
-			{
-				const FFrameRate InputRate = Player->GetInputRate();
-				const FFrameTime BlendOutTimeInFrames  = BlendOutTime * InputRate;
-				const FFrameTime BlendOutStartFrame = FFrameTime(PlaybackRange.GetUpperBoundValue()) - BlendOutTimeInFrames;
-				Player->Jump(BlendOutStartFrame);
-			}
-		}
+
+		// Make our state tracking stop or start blending out.
+		State.Stop(Params.bImmediately);
 	}
 }
 
@@ -123,6 +147,9 @@ void USequenceCameraShakePattern::TeardownShakePatternImpl()
 	// Stop if we had reached the end of the animation and the sequence needs finishing.
 	// If the shake had been stopped explicitly, this basically won't do anything.
 	Player->Stop();
+
+	// Reset our time tracking.
+	State = FCameraShakeState();
 }
 
 void USequenceCameraShakePattern::UpdateCamera(FFrameTime NewPosition, const FMinimalViewInfo& InPOV, FCameraShakeUpdateResult& OutResult)

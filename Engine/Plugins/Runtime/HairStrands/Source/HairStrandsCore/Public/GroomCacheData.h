@@ -5,6 +5,8 @@
 #include "UObject/Object.h"
 #include "GroomCacheData.generated.h"
 
+class FRDGPooledBuffer;
+
 /** Attributes in groom that can be animated */
 UENUM()
 enum class EGroomCacheAttributes : uint8
@@ -120,6 +122,10 @@ struct FGroomCacheVertexData
 	TArray<float> PointsCoordU;
 	TArray<FLinearColor> PointsBaseColor;
 
+	// GPU resources. Lazily allocated
+	TRefCountPtr<FRDGPooledBuffer> PositionBuffer;
+	TRefCountPtr<FRDGPooledBuffer> RadiusBuffer;
+
 	void Serialize(FArchive& Ar, int32 Version, EGroomCacheAttributes InAttributes);
 };
 
@@ -127,7 +133,7 @@ struct FGroomCacheVertexData
 struct FGroomCacheStrandData
 {
 	FGroomCacheStrandData() = default;
-	FGroomCacheStrandData(struct FHairStrandsCurves&& CurvesData);
+	FGroomCacheStrandData(struct FHairStrandsCurves&& CurvesData, float InMaxLength, float InMaxRadius);
 
 	TArray<float> CurvesLength;
 	float MaxLength = 0.0f;
@@ -171,7 +177,6 @@ public:
 
 	virtual const FGroomCacheAnimationData& GetCurrentFrameBuffer() = 0;
 	virtual const FGroomCacheAnimationData& GetNextFrameBuffer() = 0;
-	virtual const FGroomCacheAnimationData& GetInterpolatedFrameBuffer() = 0;
 
 	virtual int32 GetCurrentFrameIndex() const = 0;
 	virtual int32 GetNextFrameIndex() const = 0;

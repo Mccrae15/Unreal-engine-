@@ -6,8 +6,8 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SubdividePoly)
 
-// OpenSubdiv currently only available on Windows. On other platforms we will make this a no-op
-#if PLATFORM_WINDOWS
+// OpenSubdiv currently only available on Windows, Mac and Unix. On other platforms we will make this a no-op
+#if PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_UNIX
 #define HAVE_OPENSUBDIV 1
 #else
 #define HAVE_OPENSUBDIV 0
@@ -28,7 +28,7 @@
 #include "opensubdiv/far/primvarRefiner.h"
 #pragma warning(pop)     
 
-#if LOCAL_M_PI
+#ifdef LOCAL_M_PI
 #undef M_PI
 #endif
 
@@ -631,7 +631,28 @@ bool FSubdividePoly::ComputeTopologySubdivision()
 	using RefinerFactory = OpenSubdiv::Far::TopologyRefinerFactory<OpenSubdiv::Far::TopologyDescriptor>;
 	RefinerFactory::Options RefinerOptions;
 
-	RefinerOptions.schemeOptions.SetVtxBoundaryInterpolation(OpenSubdiv::Sdc::Options::VTX_BOUNDARY_EDGE_AND_CORNER);
+	OpenSubdiv::Sdc::Options::VtxBoundaryInterpolation BoundaryInterpolation = OpenSubdiv::Sdc::Options::VTX_BOUNDARY_EDGE_ONLY;
+	switch (BoundaryScheme)
+	{
+	case ESubdivisionBoundaryScheme::SmoothCorners:
+		BoundaryInterpolation = OpenSubdiv::Sdc::Options::VTX_BOUNDARY_EDGE_ONLY;
+		break;
+	case ESubdivisionBoundaryScheme::SharpCorners:
+		BoundaryInterpolation = OpenSubdiv::Sdc::Options::VTX_BOUNDARY_EDGE_AND_CORNER;
+		break;
+
+	// Note that supporting the below option is a little bit more work than just uncommenting.
+	// This option tags the boundary faces as holes, so we have to use the FTopologyLevel::IsFaceHole
+	// function where we output the faces, and then probably remove unused verts on the boundary.
+	//case ESubdivisionBoundaryScheme::NoBoundaryFaces:
+	//	BoundaryInterpolation = OpenSubdiv::Sdc::Options::VTX_BOUNDARY_NONE;
+	//	break;
+
+	default:
+		ensure(false);
+		break;
+	}
+	RefinerOptions.schemeOptions.SetVtxBoundaryInterpolation(BoundaryInterpolation);
 
 	switch (SubdivisionScheme)
 	{
@@ -914,28 +935,50 @@ bool FSubdividePoly::ComputeSubdividedMesh(FDynamicMesh3& OutMesh)
 			FIndex3i TriB{ Face[2], Face[3], Face[1] };
 			int TriAIndex = OutMesh.AppendTriangle(TriA, GroupID);
 			int TriBIndex = OutMesh.AppendTriangle(TriB, GroupID);
+			bool bHasValidTriA = TriAIndex >= 0;
+			bool bHasValidTriB = TriBIndex >= 0;
+			if (!bHasValidTriA && !bHasValidTriB)
+			{
+				continue;
+			}
 
 			if (bShouldInterpolateUVs)
 			{
 				OpenSubdiv::Far::ConstIndexArray FaceUVIndices = FinalLevel.GetFaceFVarValues(FaceID);
 				
 				FIndex3i UVTriA{ FaceUVIndices[0], FaceUVIndices[1], FaceUVIndices[3] };
-				AddUVTriangleIfValid(UVTriA);
+				if (bHasValidTriA)
+				{
+					AddUVTriangleIfValid(UVTriA);
+				}
 
 				FIndex3i UVTriB{ FaceUVIndices[2], FaceUVIndices[3], FaceUVIndices[1] };
-				AddUVTriangleIfValid(UVTriB);
+				if (bHasValidTriB)
+				{
+					AddUVTriangleIfValid(UVTriB);
+				}
 			}
 
 			if (bHasMaterialIDs)
 			{
-				OutMesh.Attributes()->GetMaterialID()->SetValue(TriAIndex, RefinedMaterialIDs[FaceID]);
-				OutMesh.Attributes()->GetMaterialID()->SetValue(TriBIndex, RefinedMaterialIDs[FaceID]);
+				if (bHasValidTriA)
+				{
+					OutMesh.Attributes()->GetMaterialID()->SetValue(TriAIndex, RefinedMaterialIDs[FaceID]);
+				}
+				if (bHasValidTriB)
+				{
+					OutMesh.Attributes()->GetMaterialID()->SetValue(TriBIndex, RefinedMaterialIDs[FaceID]);
+				}
 			}
 		}
 		else
 		{
 			check(Face.size() == 3);
 			int TriIndex = OutMesh.AppendTriangle(FIndex3i{ Face[0], Face[1], Face[2] }, GroupID);
+			if (TriIndex < 0)
+			{
+				continue;
+			}
 
 			if (bShouldInterpolateUVs)
 			{
@@ -1003,11 +1046,6 @@ FSubdividePoly::ETopologyCheckResult FSubdividePoly::ValidateTopology()
 		return ETopologyCheckResult::NoGroups;
 	}
 
-	if (GroupTopology.Groups.Num() < 2)
-	{
-		return ETopologyCheckResult::InsufficientGroups;
-	}
-
 	for (const FGroupTopology::FGroup& Group : GroupTopology.Groups)
 	{
 		if (Group.Boundaries.Num() == 0)
@@ -1028,6 +1066,12 @@ FSubdividePoly::ETopologyCheckResult FSubdividePoly::ValidateTopology()
 			}
 		}
 	}
+
+	// May be necessary if we ever support this option:
+	//if (BoundaryScheme == ESubdivisionBoundaryScheme::NoBoundaryFaces)
+	//{
+	//	// Verify that there is at least one non-boundary face.
+	//}
 
 	return ETopologyCheckResult::Ok;
 }

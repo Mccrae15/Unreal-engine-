@@ -24,16 +24,19 @@ struct FProgram;
 		ASTChild Mesh;
 		ASTChild Shape;
 
-		TArray<string> BonesToDeform;
-		TArray<string> PhysicsToDeform;
+		TArray<uint16> BonesToDeform;
+		TArray<uint16> PhysicsToDeform;
 
 		uint32 BindingMethod = 0;
 		
 		uint32 bReshapeSkeleton	      : 1;
-		uint32 bEnableRigidParts      : 1;
 		uint32 bReshapePhysicsVolumes : 1;
 		uint32 bReshapeVertices       : 1;
 
+		EVertexColorUsage RChannelUsage = EVertexColorUsage::None;
+		EVertexColorUsage GChannelUsage = EVertexColorUsage::None;
+		EVertexColorUsage BChannelUsage = EVertexColorUsage::None;
+		EVertexColorUsage AChannelUsage = EVertexColorUsage::None;
 	public:
 
 		ASTOpMeshBindShape();
@@ -45,7 +48,7 @@ struct FProgram;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		void Link(FProgram& program, FLinkerOptions* Options) override;
 		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const override;
 
 	};

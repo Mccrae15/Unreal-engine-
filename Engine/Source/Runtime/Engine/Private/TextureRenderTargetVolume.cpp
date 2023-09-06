@@ -12,6 +12,8 @@
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/VolumeTexture.h"
 #include "HAL/LowLevelMemStats.h"
+#include "RHIUtilities.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTargetVolume)
 
@@ -225,7 +227,7 @@ UVolumeTexture* UTextureRenderTargetVolume::ConstructTextureVolume(UObject* ObjO
  * Called when the resource is initialized, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTargetVolumeResource::InitDynamicRHI()
+void FTextureRenderTargetVolumeResource::InitRHI(FRHICommandListBase& RHICmdList)
 {
 	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
 
@@ -262,7 +264,7 @@ void FTextureRenderTargetVolumeResource::InitDynamicRHI()
 
 		if (EnumHasAnyFlags(TexCreateFlags, TexCreate_UAV))
 		{
-			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(TextureRHI);
+			UnorderedAccessViewRHI = RHICmdList.CreateUnorderedAccessView(TextureRHI);
 		}
 
 		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI,TextureRHI);
@@ -289,10 +291,10 @@ void FTextureRenderTargetVolumeResource::InitDynamicRHI()
  * Called when the resource is released, or when reseting all RHI resources.
  * This is only called by the rendering thread.
  */
-void FTextureRenderTargetVolumeResource::ReleaseDynamicRHI()
+void FTextureRenderTargetVolumeResource::ReleaseRHI()
 {
 	// release the FTexture RHI resources here as well
-	ReleaseRHI();
+	FTexture::ReleaseRHI();
 
 	RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI, nullptr);
 	RenderTargetTextureRHI.SafeRelease();

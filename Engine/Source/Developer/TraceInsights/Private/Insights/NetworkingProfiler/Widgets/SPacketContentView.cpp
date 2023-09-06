@@ -783,8 +783,8 @@ void SPacketContentView::FilterNetId_OnTextCommitted(const FText& InNewText, ETe
 {
 	if (InNewText.IsNumeric())
 	{
-		int32 NewNetId = 0;
-		TTypeFromString<int32>::FromString(NewNetId, *InNewText.ToString());
+		uint64 NewNetId = 0;
+		TTypeFromString<uint64>::FromString(NewNetId, *InNewText.ToString());
 		SetFilterNetId(NewNetId);
 	}
 }
@@ -922,7 +922,7 @@ void SPacketContentView::SetPacket(uint32 InGameInstanceIndex, uint32 InConnecti
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void SPacketContentView::SetFilterNetId(const uint32 InNetId)
+void SPacketContentView::SetFilterNetId(const uint64 InNetId)
 {
 	FilterNetId = InNetId;
 
@@ -1044,31 +1044,61 @@ void SPacketContentView::UpdateState(float FontScale)
 			{
 				const FAxisViewportDouble& ViewportX = Viewport.GetHorizontalAxisViewport();
 
-				//const int64 StartPos = static_cast<int64>(FMath::FloorToDouble(ViewportX.GetValueAtOffset(0.0f)));
-				//const int64 EndPos = static_cast<int64>(FMath::CeilToDouble(ViewportX.GetValueAtOffset(ViewportX.GetSize())));
-				const uint32 StartPos = 0;
-				const uint32 EndPos = static_cast<uint32>(PacketBitSize);
-				NetProfilerProvider->EnumeratePacketContentEventsByPosition(ConnectionIndex, ConnectionMode, PacketIndex, StartPos, EndPos, [this, &Builder, &FilteredDrawStateBuilder, NetProfilerProvider](const TraceServices::FNetProfilerContentEvent& Event)
+				// Count all events in packet, including split data
+				const uint32 StartPos = 0U;
+				const uint32 EndPos = ~0U;
+				uint32 EndNetIdMatchPos = ~0U;
+				uint32 EndEventTypeMatchPos = ~0U;
+
+				NetProfilerProvider->EnumeratePacketContentEventsByPosition(ConnectionIndex, ConnectionMode, PacketIndex, StartPos, EndPos, [this, &Builder, &FilteredDrawStateBuilder, NetProfilerProvider, &EndNetIdMatchPos, &EndEventTypeMatchPos](const TraceServices::FNetProfilerContentEvent& Event)
 				{
 					const TCHAR* Name = nullptr;
-					NetProfilerProvider->ReadName(Event.NameIndex, [&Name](const TraceServices::FNetProfilerName& NetProfilerName)
+
+					uint32 NameIndex = Event.NameIndex;
+					uint64 NetId = 0;
+					if (Event.ObjectInstanceIndex != 0)
+					{
+						NetProfilerProvider->ReadObject(GameInstanceIndex, Event.ObjectInstanceIndex, [&NetId, &NameIndex](const TraceServices::FNetProfilerObjectInstance& ObjectInstance)
+						{
+							NameIndex = ObjectInstance.NameIndex;
+							NetId = ObjectInstance.NetObjectId;
+						});
+					}
+
+					NetProfilerProvider->ReadName(NameIndex, [&Name](const TraceServices::FNetProfilerName& NetProfilerName)
 					{
 						Name = NetProfilerName.Name;
 					});
 
-					uint32 NetId = 0;
-					if (Event.ObjectInstanceIndex != 0)
-					{
-						NetProfilerProvider->ReadObject(GameInstanceIndex, Event.ObjectInstanceIndex, [&NetId](const TraceServices::FNetProfilerObjectInstance& ObjectInstance)
-						{
-							NetId = ObjectInstance.NetId;
-						});
-					}
-
 					Builder.AddEvent(Event, Name, NetId);
 
-					if ((!bFilterByEventType || FilterEventTypeIndex == Event.EventTypeIndex) &&
-						(!bFilterByNetId || (Event.ObjectInstanceIndex != 0 && FilterNetId == NetId)))
+					// Include events and sub-events matching event type
+					if (bFilterByEventType)
+					{
+						if (Event.EndPos > EndEventTypeMatchPos)
+						{
+							EndEventTypeMatchPos = ~0U;
+						}
+						if (EndEventTypeMatchPos == ~0U && FilterEventTypeIndex == Event.EventTypeIndex)
+						{
+							EndEventTypeMatchPos = Event.EndPos;
+						}
+					}
+
+					// Include events and sub-events matching net id
+					if (bFilterByNetId)
+					{
+						if (Event.EndPos > EndNetIdMatchPos)
+						{
+							EndNetIdMatchPos = ~0U;
+						}
+						if (EndNetIdMatchPos == ~0U && (Event.ObjectInstanceIndex != 0 && FilterNetId == NetId))
+						{
+							EndNetIdMatchPos = Event.EndPos;
+						}
+					}
+
+					if ((!bFilterByNetId || EndNetIdMatchPos != ~0U) && (!bFilterByEventType || EndEventTypeMatchPos != ~0U))
 					{
 						FilteredDrawStateBuilder.AddEvent(Event, Name, NetId);
 					}
@@ -1139,7 +1169,7 @@ void SPacketContentView::UpdateHoveredEvent()
 
 		if (Event.ObjectInstanceIndex != 0)
 		{
-			Tooltip.AddNameValueTextLine(TEXT("Net Id:"), FText::AsNumber(ObjectInstance.NetId).ToString());
+			Tooltip.AddNameValueTextLine(TEXT("Net Id:"), FText::AsNumber(ObjectInstance.NetObjectId).ToString());
 			Tooltip.AddNameValueTextLine(TEXT("Type Id:"), FString::Printf(TEXT("0x%016" UINT64_x_FMT), ObjectInstance.TypeId));
 			Tooltip.AddNameValueTextLine(TEXT("Obj. LifeTime:"), FString::Format(TEXT("from {0} to {1}"),
 				{ TimeUtils::FormatTimeAuto(ObjectInstance.LifeTime.Begin), TimeUtils::FormatTimeAuto(ObjectInstance.LifeTime.End) }));

@@ -4,9 +4,31 @@
 #include "Units/RigUnitContext.h"
 #include "Features/IModularFeatures.h"
 #include "Algo/BinarySearch.h"
-#include "RigUnit_FitChainToCurve.h"
+#include "Units/Highlevel/Hierarchy/RigUnit_FitChainToCurve.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSplineUnits)
+
+FTransform ApplyPrimarySecondaryAxis(const FTransform& OriginalTransform, const FVector& PrimaryAxis, const FVector& SecondaryAxis)
+{
+	FTransform Transform = OriginalTransform;
+	if (!PrimaryAxis.IsNearlyZero())
+	{
+		FVector Axis = Transform.TransformVectorNoScale(PrimaryAxis);
+		FVector Target1 = Transform.GetRotation().GetForwardVector();
+		FQuat Rotation1 = FQuat::FindBetweenNormals(Axis, Target1);
+		Transform.SetRotation((Rotation1 * Transform.GetRotation()).GetNormalized());
+	}
+
+	if (!SecondaryAxis.IsNearlyZero())
+	{
+		FVector Axis = Transform.TransformVectorNoScale(SecondaryAxis);
+		FVector Target1 = Transform.GetRotation().GetUpVector();
+		FQuat Rotation1 = FQuat::FindBetweenNormals(Axis, Target1);
+		Transform.SetRotation((Rotation1 * Transform.GetRotation()).GetNormalized());
+	}
+
+	return Transform;
+}
 
 FRigUnit_ControlRigSplineFromPoints_Execute()
 {
@@ -23,6 +45,21 @@ FRigUnit_ControlRigSplineFromPoints_Execute()
 	Spline.SetControlPoints(PointsView, SplineMode, bClosed, SamplesPerSegment, Compression, Stretch);
 }
 
+FRigUnit_ControlRigSplineFromTransforms_Execute()
+{
+	// reset the spline
+	Spline = FControlRigSpline();
+
+	if (Transforms.Num() < 4)
+	{
+		UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Cannot create a spline with less than 4 transforms (%d received)."), Transforms.Num());
+		return;
+	}
+		
+	const TArrayView<const FTransform> TransformsView(Transforms.GetData(), Transforms.Num());
+	Spline.SetControlTransforms(TransformsView, SplineMode, bClosed, SamplesPerSegment, Compression, Stretch);
+}
+
 FRigUnit_SetSplinePoints_Execute()
 {
 	if (!Spline.SplineData.IsValid())
@@ -35,19 +72,19 @@ FRigUnit_SetSplinePoints_Execute()
 	{
 		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
 		return;
-	}	
+	}
 
 	if (!Spline.SplineData->bClosed)
 	{
-		if (Points.Num() != Spline.SplineData->GetControlPoints().Num())
+		if (Points.Num() != Spline.SplineData->GetControlTransforms().Num())
 		{
 			UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
 			return;
 		}
 	}
-	else if(Points.Num() != Spline.SplineData->GetControlPoints().Num() - Spline.GetDegree())
+	else if(Points.Num() != Spline.SplineData->GetControlTransforms().Num() - Spline.GetDegree())
 	{
-		if (Points.Num() != Spline.SplineData->GetControlPoints().Num())
+		if (Points.Num() != Spline.SplineData->GetControlTransforms().Num())
 		{
 			UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
 			return;
@@ -56,6 +93,41 @@ FRigUnit_SetSplinePoints_Execute()
 
 	const TArrayView<const FVector> PointsView(Points.GetData(), Points.Num());
 	Spline.SetControlPoints(PointsView, Spline.SplineData->SplineMode, Spline.SplineData->bClosed, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
+}
+
+FRigUnit_SetSplineTransforms_Execute()
+{
+	if (!Spline.SplineData.IsValid())
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline."));
+		return;
+	}
+	
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+
+	if (!Spline.SplineData->bClosed)
+	{
+		if (Transforms.Num() != Spline.SplineData->GetControlTransforms().Num())
+		{
+			UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
+			return;
+		}
+	}
+	else if(Transforms.Num() != Spline.SplineData->GetControlTransforms().Num() - Spline.GetDegree())
+	{
+		if (Transforms.Num() != Spline.SplineData->GetControlTransforms().Num())
+		{
+			UE_LOG(LogControlRig, Error, TEXT("Number of input points does not match the number of point in the spline."));
+			return;
+		}
+	}
+
+	const TArrayView<const FTransform> TransformsView(Transforms.GetData(), Transforms.Num());
+	Spline.SetControlTransforms(TransformsView, Spline.SplineData->SplineMode, Spline.SplineData->bClosed, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
 }
 
 FRigUnit_PositionFromControlRigSpline_Execute()
@@ -107,6 +179,36 @@ FRigUnit_TransformFromControlRigSpline_Execute()
 
 	Transform.SetFromMatrix(RotationMatrix);
 	Transform.SetTranslation(Spline.PositionAtParam(U));
+}
+
+FRigVMStructUpgradeInfo FRigUnit_TransformFromControlRigSpline::GetUpgradeInfo() const
+{
+	FRigUnit_TransformFromControlRigSpline2 NewNode;
+	NewNode.Spline = Spline; 
+	NewNode.U = U; 
+	NewNode.SecondaryAxis = UpVector; 
+	NewNode.Transform = Transform; 
+
+	return FRigVMStructUpgradeInfo(*this, NewNode);
+}
+
+FRigUnit_TransformFromControlRigSpline2_Execute()
+{
+	if (!Spline.SplineData.IsValid())
+	{
+		return;
+	}
+
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+
+	const float ClampedU = FMath::Clamp<float>(U, 0.f, 1.f);
+	Transform = Spline.TransformAtParam(ClampedU);
+
+	Transform = ApplyPrimarySecondaryAxis(Transform, PrimaryAxis, SecondaryAxis);
 }
 
 FRigUnit_TangentFromControlRigSpline_Execute()
@@ -189,6 +291,22 @@ FRigUnit_GetLengthControlRigSpline_Execute()
 	Length = Spline.SplineData->AccumulatedLenth.Last();
 }
 
+FRigUnit_GetLengthAtParamControlRigSpline_Execute()
+{
+	if (!Spline.SplineData.IsValid())
+	{
+		return;
+	}
+
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+	
+	Length = Spline.LengthAtParam(U);
+}
+
 FRigUnit_FitChainToSplineCurve_Execute()
 {
 	FRigUnit_FitChainToSplineCurveItemArray::StaticExecute(
@@ -230,6 +348,11 @@ FRigVMStructUpgradeInfo FRigUnit_FitChainToSplineCurve::GetUpgradeInfo() const
 	NewNode.WorkData = WorkData;
 
 	return FRigVMStructUpgradeInfo(*this, NewNode);
+}
+
+FRigUnit_FitSplineCurveToChain_Execute()
+{
+	FRigUnit_FitSplineCurveToChainItemArray::StaticExecute(ExecuteContext, Items.Keys, Spline);
 }
 
 FRigUnit_FitChainToSplineCurveItemArray_Execute()
@@ -466,7 +589,7 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 
 		float DistanceA = (LastPosition - A).Size();
 		float DistanceB = (LastPosition - B).Size();
-		
+
 		if (DistanceB > BoneLength)
 		{
 			float Ratio = BoneLength / DistanceB;
@@ -639,9 +762,147 @@ FRigUnit_FitChainToSplineCurveItemArray_Execute()
 	}
 }
 
-FRigUnit_FitSplineCurveToChain_Execute()
+FRigUnit_SplineConstraint_Execute()
 {
-	FRigUnit_FitSplineCurveToChainItemArray::StaticExecute(ExecuteContext, Items.Keys, Spline);
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
+
+	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
+	if (Hierarchy == nullptr)
+	{
+		return;
+	}
+
+	if (!Spline.SplineData.IsValid())
+	{
+		return;
+	}
+
+	if (Spline.SplineData->Spline == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Invalid input spline implementation."));
+		return;
+	}
+
+	const float ClampedMin = FMath::Min(FMath::Max(Minimum, 0.f), 1.f);
+	float ClampedMax = FMath::Min(FMath::Max(Maximum, 0.f), 1.f);
+	ClampedMax = FMath::Max(ClampedMax, ClampedMin);
+
+	float& ChainLength = WorkData.ChainLength;
+	TArray<FTransform>& ItemTransforms = WorkData.ItemTransforms;
+	TArray<float>& ItemSegments = WorkData.ItemSegments;
+	TArray<FCachedRigElement>& CachedItems = WorkData.CachedItems;
+
+	if(CachedItems.Num() == 0 && Items.Num() > 1)
+	{
+		ItemTransforms.Reset();
+		ItemSegments.Reset();
+
+		for (FRigElementKey Item : Items)
+		{
+			CachedItems.Add(FCachedRigElement(Item, Hierarchy));
+		}
+
+		if (CachedItems.Num() < 2)
+		{
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Didn't find enough bones. You need at least two in the chain!"));
+			return;
+		}
+
+		ItemTransforms.SetNumZeroed(CachedItems.Num());
+		ItemSegments.SetNumZeroed(CachedItems.Num());
+		ChainLength = 0.f;
+		ItemSegments[0] = 0.f;
+		for (int32 Index = 1; Index < CachedItems.Num(); Index++)
+		{
+			FVector A = Hierarchy->GetGlobalTransform(CachedItems[Index - 1]).GetLocation();
+			FVector B = Hierarchy->GetGlobalTransform(CachedItems[Index]).GetLocation();
+			ItemSegments[Index] = (A - B).Size();
+			ChainLength += ItemSegments[Index];
+		}
+	}
+
+	if (CachedItems.Num() < 2)
+	{
+		return;
+	}
+
+	TArray<float> InitialLengths;
+	if (Alignment == EControlRigCurveAlignment::Front)
+	{
+		ItemTransforms[0] = Spline.TransformAtParam(ClampedMin);
+		float PrevParam = ClampedMin;
+		float PrevLength = Spline.LengthAtParam(PrevParam);
+		const float TotalSplineLength = Spline.LengthAtParam(1.f);
+		const int32 LastIndex = Spline.SplineData->NumSamples() - 1;
+		float AccumulatedLength = Spline.LengthAtParam(ClampedMin);
+		for (int32 SegmentIndex = 1; SegmentIndex < ItemSegments.Num(); ++SegmentIndex)
+		{
+			const float& SegmentLenth = ItemSegments[SegmentIndex];
+			AccumulatedLength += SegmentLenth;
+			FTransform& Transform = ItemTransforms[SegmentIndex];
+			bool bFoundSample = false;
+			if (AccumulatedLength < TotalSplineLength)
+			{
+				const float fStartSampleSearch = PrevParam * LastIndex;	
+				const int32 StartSampleSearch = FMath::Floor<int32>(fStartSampleSearch);
+
+				// Find the sample interval where the bone should be
+				for(int32 SampleIndex = StartSampleSearch; SampleIndex <= LastIndex; SampleIndex++)
+				{
+					const float CurrentSegmentLength = Spline.SplineData->AccumulatedLenth[SampleIndex];
+					if (CurrentSegmentLength > AccumulatedLength)
+					{
+						const int32 IndexPrev = SampleIndex-1;
+						const int32 IndexNext = SampleIndex;
+						const float& IndexPrevLength = Spline.SplineData->AccumulatedLenth[IndexPrev];
+						const float& IndexNextLength = Spline.SplineData->AccumulatedLenth[IndexNext];
+						const float ULocal = (AccumulatedLength - IndexPrevLength) / (IndexNextLength - IndexPrevLength);
+						check(ULocal >= 0.f && ULocal <= 1.f);
+						const float UPrev = IndexPrev / (float)LastIndex;
+						const float UNext = IndexNext / (float)LastIndex;
+						PrevParam = UPrev + (ULocal * (UNext - UPrev));
+						check(PrevParam >= ClampedMin && PrevParam <= 1.f);
+						PrevLength = (ULocal-1.f) * IndexPrevLength + ULocal * IndexNextLength;
+
+						Transform = Spline.TransformAtParam(PrevParam);
+						bFoundSample = true;
+						break;
+					}
+				}
+			}
+			if (!bFoundSample)
+			{
+				Transform = ItemTransforms.IsValidIndex(SegmentIndex-1) ? ItemTransforms[SegmentIndex-1] : FTransform::Identity;
+				Transform.SetLocation(Transform.GetLocation() + SegmentLenth*Transform.GetRotation().GetForwardVector());
+			}
+			check(Transform.GetRotation().IsNormalized());
+		}
+	}
+	else if (Alignment == EControlRigCurveAlignment::Stretched)
+	{
+		ItemTransforms[0] = Spline.TransformAtParam(ClampedMin);
+		ItemTransforms.Last() = Spline.TransformAtParam(ClampedMax);
+
+		float AccumulatedLength = 0.f;
+		for (int32 SegmentIndex=0; SegmentIndex < ItemSegments.Num(); ++SegmentIndex)
+		{
+			AccumulatedLength += ItemSegments[SegmentIndex];
+			const float U = AccumulatedLength*ClampedMax/ChainLength;
+			const float LocalParam = (1.f - U)*ClampedMin + U*ClampedMax;
+			ItemTransforms[SegmentIndex] = Spline.TransformAtParam(LocalParam);
+		}
+	}
+
+	for (int32 Index = 0; Index < ItemTransforms.Num(); Index++)
+	{
+		FTransform& Transform = ItemTransforms[Index];
+		Transform = ApplyPrimarySecondaryAxis(Transform, PrimaryAxis, SecondaryAxis);
+	}
+	
+	for (int32 Index = 0; Index < CachedItems.Num(); Index++)
+	{
+		Hierarchy->SetGlobalTransform(CachedItems[Index], ItemTransforms[Index], bPropagateToChildren);
+	}
 }
 
 FRigVMStructUpgradeInfo FRigUnit_FitSplineCurveToChain::GetUpgradeInfo() const
@@ -683,36 +944,36 @@ FRigUnit_FitSplineCurveToChainItemArray_Execute()
 	const bool bClosed = Spline.SplineData->bClosed;
 
 	// 1.- Create spline from chain
-	TArray<FVector> AuxControlPoints;
-	AuxControlPoints.SetNumUninitialized(Items.Num());	
+	TArray<FTransform> AuxControlTransforms;
+	AuxControlTransforms.SetNumUninitialized(Items.Num());	
 	for (int32 i = 0; i < Items.Num(); ++i)
 	{
 		const FRigElementKey& Key = Items[i];
-		AuxControlPoints[i] = Hierarchy->GetGlobalTransform(Key).GetLocation();
+		AuxControlTransforms[i] = Hierarchy->GetGlobalTransform(Key);
 	}
     FControlRigSpline AuxSpline;
-	const TArrayView<const FVector> PointsView(AuxControlPoints.GetData(), AuxControlPoints.Num());
-	AuxSpline.SetControlPoints(PointsView, ESplineType::Hermite, bClosed, Spline.SplineData->SamplesPerSegment);
+	const TArrayView<const FTransform> TransformsView(AuxControlTransforms.GetData(), AuxControlTransforms.Num());
+	AuxSpline.SetControlTransforms(TransformsView, ESplineType::Hermite, bClosed, Spline.SplineData->SamplesPerSegment);
 	
 
 	// 2.-  for each control point in the original spline
 	//			figure out its u in the original spline (preprocess)
 	//			query position at u on the new spline
-	const TArray<FVector> ControlPoints = Spline.SplineData->GetControlPointsWithoutDuplicates();
-	const int32 NumControlPoints = ControlPoints.Num();
-	TArray<FVector> NewControlPoints;
-	NewControlPoints.SetNumUninitialized(NumControlPoints);
+	const TArray<FTransform> ControlTransforms = Spline.SplineData->GetControlTransformsWithoutDuplicates();
+	const int32 NumControlPoints = ControlTransforms.Num();
+	TArray<FTransform> NewControlTransforms;
+	NewControlTransforms.SetNumUninitialized(NumControlPoints);
 	float U = 0;
 	const float DeltaU = bClosed ? 1 / (float)(NumControlPoints) : 1 / (float)(NumControlPoints - 1);
 	for (int32 i = 0; i < NumControlPoints; ++i)
 	{
-		FVector NewPosition = AuxSpline.PositionAtParam(U);
-		NewControlPoints[i] = NewPosition;
+		FTransform NewPosition = AuxSpline.TransformAtParam(U);
+		NewControlTransforms[i] = NewPosition;
 		U += DeltaU;
 	}
 
-	const TArrayView<const FVector> NewPointsView(NewControlPoints.GetData(), NewControlPoints.Num());
-	Spline.SetControlPoints(NewPointsView, Spline.SplineData->SplineMode, bClosed, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
+	const TArrayView<const FTransform> NewTransformsView(NewControlTransforms.GetData(), NewControlTransforms.Num());
+	Spline.SetControlTransforms(NewTransformsView, Spline.SplineData->SplineMode, bClosed, Spline.SplineData->SamplesPerSegment, Spline.SplineData->Compression, Spline.SplineData->Stretch);
 }
 
 FRigUnit_ClosestParameterFromControlRigSpline_Execute()
@@ -733,8 +994,8 @@ FRigUnit_ClosestParameterFromControlRigSpline_Execute()
 	auto DistanceToSegment = [&](int32 Index0, int32 Index1, float& OutParam) -> float
 	{
 		const int32 MaxIndex = Spline.SplineData->SamplesArray.Num()-1;
-		const FVector& P0 = Spline.SplineData->SamplesArray[Index0];
-		const FVector& P1 = Spline.SplineData->SamplesArray[Index1];
+		const FVector& P0 = Spline.SplineData->SamplesArray[Index0].GetTranslation();
+		const FVector& P1 = Spline.SplineData->SamplesArray[Index1].GetTranslation();
 
 		const FVector V = P1 - P0;
 		const FVector U = P0 - Position;
@@ -768,7 +1029,7 @@ FRigUnit_ClosestParameterFromControlRigSpline_Execute()
 			ClosestDistance = Distance;
 			U = Param;
 		}
-	}				
+	}
 }
 
 FRigUnit_ParameterAtPercentage_Execute()
@@ -811,7 +1072,7 @@ FRigUnit_ParameterAtPercentage_Execute()
 	float LengthNext = Spline.SplineData->AccumulatedLenth[NextIndex];
 
 	float Interp = (SearchLength - LengthPrev) / (LengthNext - LengthPrev);
-	U = (1 - Interp) * UPrev + Interp * UNext;			
+	U = (1 - Interp) * UPrev + Interp * UNext;
 }
 
 

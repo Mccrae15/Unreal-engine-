@@ -42,6 +42,7 @@ public:
 	TSharedPtr<FUICommandInfo> InterpolationConstant;
 	TSharedPtr<FUICommandInfo> InterpolationLinear;
 	TSharedPtr<FUICommandInfo> InterpolationCubicAuto;
+	TSharedPtr<FUICommandInfo> InterpolationCubicSmartAuto;
 	TSharedPtr<FUICommandInfo> InterpolationCubicUser;
 	TSharedPtr<FUICommandInfo> InterpolationCubicBreak;
 	TSharedPtr<FUICommandInfo> InterpolationToggleWeighted;
@@ -73,6 +74,7 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleSnapTimeToSelection;
 	TSharedPtr<FUICommandInfo> ToggleShowBufferedCurves;
 	TSharedPtr<FUICommandInfo> ToggleShowCurveEditorCurveToolTips;
+	TSharedPtr<FUICommandInfo> ToggleShowBars;
 
 	TSharedPtr<FUICommandInfo> SetRandomCurveColorsForSelected;
 	TSharedPtr<FUICommandInfo> SetCurveColorsForSelected;
@@ -119,6 +121,7 @@ public:
 	TSharedPtr<FUICommandInfo> StepBackward;
 	TSharedPtr<FUICommandInfo> JumpToStart;
 	TSharedPtr<FUICommandInfo> JumpToEnd;
+	TSharedPtr<FUICommandInfo> ScrubTime;
 
 	// Selection Range
 	TSharedPtr< FUICommandInfo > SetSelectionRangeStart;

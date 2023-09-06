@@ -355,6 +355,14 @@ struct FVulkanRenderPassFragmentDensityMapCreateInfoEXT
 	}
 };
 
+struct FVulkanRenderPassMultiviewCreateInfo
+	: public VkRenderPassMultiviewCreateInfo
+{
+	FVulkanRenderPassMultiviewCreateInfo()
+	{
+		ZeroVulkanStruct(*this, VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO);
+	}
+};
 
 template<>
 struct FVulkanRenderPassCreateInfo<VkRenderPassCreateInfo2>
@@ -417,7 +425,12 @@ public:
 
 		const bool bDeferredShadingSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DeferredShadingSubpass;
 		const bool bDepthReadSubpass = RTLayout.GetSubpassHint() == ESubpassHint::DepthReadSubpass;
-		const bool bApplyFragmentShadingRate =  GRHISupportsAttachmentVariableRateShading && GRHIVariableRateShadingEnabled && GRHIAttachmentVariableRateShadingEnabled && RTLayout.GetFragmentDensityAttachmentReference() != nullptr;
+		const bool bApplyFragmentShadingRate =  GRHISupportsAttachmentVariableRateShading 
+												&& GRHIVariableRateShadingEnabled 
+												&& GRHIAttachmentVariableRateShadingEnabled 
+												&& RTLayout.GetFragmentDensityAttachmentReference() != nullptr
+												&& Device.GetOptionalExtensions().HasKHRFragmentShadingRate 
+												&& Device.GetOptionalExtensionProperties().FragmentShadingRateFeatures.attachmentFragmentShadingRate == VK_TRUE;
 		const bool bHasDepthStencilAttachmentReference = (RTLayout.GetDepthAttachmentReference() != nullptr);
 
 		if (bApplyFragmentShadingRate)
@@ -436,10 +449,34 @@ public:
 			}
 		}
 
-
+		uint32_t DepthInputAttachment = VK_ATTACHMENT_UNUSED;
+		VkImageLayout DepthInputAttachmentLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageAspectFlags DepthInputAspectMask = 0;
 		if (bHasDepthStencilAttachmentReference)
 		{
 			DepthStencilAttachmentReference.SetDepthStencilAttachment(*RTLayout.GetDepthAttachmentReference(), RTLayout.GetStencilAttachmentReference(), 0, Device.SupportsParallelRendering());
+
+			if (bDepthReadSubpass || bDeferredShadingSubpass)
+			{
+				DepthStencilAttachment.attachment = RTLayout.GetDepthAttachmentReference()->attachment;
+				DepthStencilAttachment.SetAspect(VK_IMAGE_ASPECT_DEPTH_BIT);	// @todo?
+
+				// FIXME: checking a Depth layout is not correct in all cases
+				// PSO cache can create a PSO for subpass 1 or 2 first, where depth is read-only but that does not mean depth pre-pass is enabled
+				if (false && RTLayout.GetDepthAttachmentReference()->layout == VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL)
+				{
+					// Depth is read only and is expected to be sampled as a regular texture
+					DepthStencilAttachment.layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+				}
+				else
+				{
+					DepthStencilAttachment.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+					DepthInputAttachment = DepthStencilAttachment.attachment;
+					DepthInputAttachmentLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+					DepthInputAspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+				}
+			}
 		}
 
 		// main sub-pass
@@ -467,7 +504,6 @@ public:
 		// Color write and depth read sub-pass
 		if (bDepthReadSubpass)
 		{
-			DepthStencilAttachmentOG.SetAttachment(*RTLayout.GetDepthAttachmentReference(), VK_IMAGE_ASPECT_DEPTH_BIT);
 			TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 
 			SubpassDesc.SetColorAttachments(ColorAttachmentReferences);
@@ -476,12 +512,12 @@ public:
 			check(RTLayout.GetDepthAttachmentReference());
 
 			// Depth as Input0
-			InputAttachments1[0].SetAttachment(DepthStencilAttachmentOG, VK_IMAGE_ASPECT_DEPTH_BIT);
-			InputAttachments1[0].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-
+			InputAttachments1[0].attachment = DepthInputAttachment;
+			InputAttachments1[0].layout = DepthInputAttachmentLayout;
+			InputAttachments1[0].SetAspect(DepthInputAspectMask);
 			SubpassDesc.SetInputAttachments(InputAttachments1, InputAttachment1Count);
 			// depth attachment is same as input attachment
-			SubpassDesc.SetDepthStencilAttachment(InputAttachments1);
+			SubpassDesc.SetDepthStencilAttachment(&DepthStencilAttachment);
 
 			if (bApplyFragmentShadingRate)
 			{
@@ -502,11 +538,6 @@ public:
 		// Two subpasses for deferred shading
 		if (bDeferredShadingSubpass)
 		{
-			// both sub-passes only test DepthStencil
-			DepthStencilAttachment.attachment = RTLayout.GetDepthAttachmentReference()->attachment;
-			DepthStencilAttachment.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-			DepthStencilAttachment.SetAspect(VK_IMAGE_ASPECT_DEPTH_BIT);	// @todo?
-
 			//const VkAttachmentReference* ColorRef = RTLayout.GetColorAttachmentReferences();
 			//uint32 NumColorAttachments = RTLayout.GetNumColorAttachments();
 			//check(RTLayout.GetNumColorAttachments() == 5); //current layout is SceneColor, GBufferA/B/C/D
@@ -516,7 +547,10 @@ public:
 				TSubpassDescriptionClass& SubpassDesc = SubpassDescriptions[NumSubpasses++];
 				SubpassDesc.SetColorAttachments(ColorAttachmentReferences);
 				SubpassDesc.SetDepthStencilAttachment(&DepthStencilAttachment);
-				SubpassDesc.SetInputAttachments(&DepthStencilAttachment, 1);
+				InputAttachments1[0].attachment = DepthInputAttachment;
+				InputAttachments1[0].layout = DepthInputAttachmentLayout;
+				InputAttachments1[0].SetAspect(DepthInputAspectMask);
+				SubpassDesc.SetInputAttachments(InputAttachments1, InputAttachment1Count);
 
 				if (bApplyFragmentShadingRate)
 				{
@@ -542,9 +576,9 @@ public:
 				SubpassDesc.SetDepthStencilAttachment(&DepthStencilAttachment);
 
 				// Depth as Input0
-				InputAttachments2[0].attachment = DepthStencilAttachment.attachment;
-				InputAttachments2[0].layout = DepthStencilAttachment.layout;
-				InputAttachments2[0].SetAspect(VK_IMAGE_ASPECT_DEPTH_BIT);
+				InputAttachments2[0].attachment = DepthInputAttachment;
+				InputAttachments2[0].layout = DepthInputAttachmentLayout;
+				InputAttachments2[0].SetAspect(DepthInputAspectMask);
 
 				// SceneColor write only
 				InputAttachments2[1].attachment = VK_ATTACHMENT_UNUSED;
@@ -614,7 +648,6 @@ public:
 		*/
 		CorrelationMask = MultiviewMask;
 
-		VkRenderPassMultiviewCreateInfo MultiviewInfo;
 		if (RTLayout.GetIsMultiView())
 		{
 			if (Device.GetOptionalExtensions().HasKHRRenderPass2)
@@ -623,8 +656,7 @@ public:
 			}
 			else
 			{
-				checkf(Device.GetOptionalExtensions().HasKHRMultiview, TEXT("Layout is multiview but extension is not supported!"))
-				ZeroVulkanStruct(MultiviewInfo, VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO);
+				checkf(Device.GetOptionalExtensions().HasKHRMultiview, TEXT("Layout is multiview but extension is not supported!"));
 				MultiviewInfo.subpassCount = NumSubpasses;
 				MultiviewInfo.pViewMasks = ViewMask;
 				MultiviewInfo.dependencyCount = 0;
@@ -677,7 +709,6 @@ private:
 	// Color write and depth read sub-pass
 	static const uint32 InputAttachment1Count = 1;
 	TAttachmentReferenceClass InputAttachments1[InputAttachment1Count];
-	TAttachmentReferenceClass DepthStencilAttachmentOG;
 
 	// Two subpasses for deferred shading
 	TAttachmentReferenceClass InputAttachments2[MaxSimultaneousRenderTargets + 1];
@@ -690,6 +721,7 @@ private:
 	FVulkanFragmentShadingRateAttachmentInfo FragmentShadingRateAttachmentInfo;
 
 	FVulkanRenderPassFragmentDensityMapCreateInfoEXT FragDensityCreateInfo;
+	FVulkanRenderPassMultiviewCreateInfo MultiviewInfo;
 
 	TRenderPassCreateInfoClass CreateInfo;
 	FVulkanDevice& Device;

@@ -172,7 +172,13 @@ void FLevelStreamingGCHelper::PrepareStreamedOutLevelForGC(ULevel* InLevel)
 			Packages.Add(Package, &bIsAlreadyInSet);
 			if (!bIsAlreadyInSet)
 			{
-				ForEachObjectWithPackage(Package, [](UObject* PackageObject) { PackageObject->MarkAsGarbage(); return true; }, true, RF_NoFlags, EInternalObjectFlags::Garbage);
+				ForEachObjectWithPackage(Package, [](UObject* PackageObject)
+				{
+					PackageObject->ClearFlags(RF_Standalone);
+					PackageObject->MarkAsGarbage();
+					return true;
+				}, true, RF_NoFlags, EInternalObjectFlags::Garbage);
+
 				Package->MarkAsGarbage();
 			}
 		}, true, RF_NoFlags, EInternalObjectFlags::Garbage);
@@ -183,7 +189,7 @@ void FLevelStreamingGCHelper::PrepareStreamedOutLevelForGC(ULevel* InLevel)
 			for (UPackage* Package : Packages)
 			{
 				FCoreUObjectInternalDelegates::GetOnLeakedPackageRenameDelegate().Broadcast(Package);
-				FName NewName = MakeUniqueObjectName(nullptr, UPackage::StaticClass(), Package->GetFName());
+				const FName NewName = MakeUniqueObjectName(nullptr, UPackage::StaticClass(), FName(FString::Printf(TEXT("%s_PreparedForGC"), *Package->GetFName().GetPlainNameString())));
 				Package->Rename(*NewName.ToString(), nullptr, REN_ForceNoResetLoaders | REN_DontCreateRedirectors | REN_NonTransactional);
 			}
 

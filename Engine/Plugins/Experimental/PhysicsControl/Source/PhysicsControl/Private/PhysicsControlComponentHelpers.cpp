@@ -15,11 +15,11 @@ namespace PhysicsControlComponent
 //======================================================================================================================
 void ConvertStrengthToSpringParams(
 	FVector& OutSpring, FVector& OutDamping, 
-	const FVector& InStrength, float InDampingRatio, const FVector& InExtraDamping)
+	const FVector& InStrength, const FVector& InDampingRatio, const FVector& InExtraDamping)
 {
-	ConvertStrengthToSpringParams(OutSpring.X, OutDamping.X, InStrength.X, InDampingRatio, InExtraDamping.X);
-	ConvertStrengthToSpringParams(OutSpring.Y, OutDamping.Y, InStrength.Y, InDampingRatio, InExtraDamping.Y);
-	ConvertStrengthToSpringParams(OutSpring.Z, OutDamping.Z, InStrength.Z, InDampingRatio, InExtraDamping.Z);
+	ConvertStrengthToSpringParams(OutSpring.X, OutDamping.X, InStrength.X, InDampingRatio.X, InExtraDamping.X);
+	ConvertStrengthToSpringParams(OutSpring.Y, OutDamping.Y, InStrength.Y, InDampingRatio.Y, InExtraDamping.Y);
+	ConvertStrengthToSpringParams(OutSpring.Z, OutDamping.Z, InStrength.Z, InDampingRatio.Z, InExtraDamping.Z);
 }
 
 inline double GetLinearDriveStiffness(const FLinearDriveConstraint& InDrive)
@@ -94,8 +94,7 @@ void ConvertConstraintProfileToControlData(
 		GetLinearDriveStiffness(InProfileProperties.LinearDrive), 
 		GetLinearDriveDamping(InProfileProperties.LinearDrive));
 
-	OutControlData.MaxForce = FloatCastChecked<float>(
-		GetLinearDriveMaxForce(InProfileProperties.LinearDrive), UE::LWC::DefaultFloatPrecision);
+	OutControlData.MaxForce = float(GetLinearDriveMaxForce(InProfileProperties.LinearDrive));
 
 	ConvertSpringToStrengthParams(
 		OutControlData.AngularStrength,
@@ -104,8 +103,7 @@ void ConvertConstraintProfileToControlData(
 		GetAngularDriveStiffness(InProfileProperties.AngularDrive),
 		GetAngularDriveDamping(InProfileProperties.AngularDrive));
 
-	OutControlData.MaxTorque = FloatCastChecked<float>(
-		GetAngularDriveMaxTorque(InProfileProperties.AngularDrive), UE::LWC::DefaultFloatPrecision);
+	OutControlData.MaxTorque = float(GetAngularDriveMaxTorque(InProfileProperties.AngularDrive));
 }
 
 //======================================================================================================================

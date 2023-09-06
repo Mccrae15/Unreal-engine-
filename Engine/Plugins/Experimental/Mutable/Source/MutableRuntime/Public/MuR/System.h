@@ -13,53 +13,71 @@
 #include "MuR/Types.h"
 #include "Templates/Tuple.h"
 
-// This define will use the newer task graph interface to manage mutable concurrency. 
-// This is currently broken in Switch and maybe other consoles, for some unknown reason.
+/** This define will use the newer task graph interface to manage mutable concurrency. It has not been fully tested. */
 //#define MUTABLE_USE_NEW_TASKGRAPH
+
+/** If set to 1, this enables some expensive Unreal Insights traces, but can lead to 5x slower mutable operation. 
+* Other cheaper traces are enabled at all times.
+*/
+#define UE_MUTABLE_ENABLE_SLOW_TRACES	0
+
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+#include "Tasks/Task.h"
+#else
+#endif
+
+#include "System.generated.h"
+
+
+/** Despite being an UEnum, this is not always version-serialized (in MutableTools).
+ * Beware of changing the enum options or order.
+ */
+UENUM()
+enum class ETextureCompressionStrategy : uint8
+{
+	/** Don't change the generated format. */
+	None,
+
+	/** If a texture depends on run-time parameters for an object state, don't compress. */
+	DontCompressRuntime,
+
+	/** Never compress the textures for this state. */
+	NeverCompress
+};
 
 
 namespace mu
 {
 	// Forward references
 	class Model;
-	class ModelStreamer;
+	class ModelReader;
 	class Parameters;
     class Mesh;
+	class ExtensionDataStreamer;
 
     class System;
     using SystemPtr=Ptr<System>;
     using SystemPtrConst=Ptr<const System>;
 
 
+	MUTABLE_DEFINE_ENUM_SERIALISABLE(ETextureCompressionStrategy);
 
-    //! List of critical errors that may happen during execution of mutable code
-    enum class Error
-    {
-        //! No error happened.
-        None = 0,
 
-        //! A memory allocation failed
-        OutOfMemory,
+	/** */
+	enum class EExecutionStrategy : uint8
+	{
+		/** Undefined. */
+		None = 0,
 
-        //! A file was missing or the data was corrupted.
-        StreamingError,
+		/** Always try to run operations that reduce working memory first. */
+		MinimizeMemory,
 
-        //! The necessary functionality is not supported in this version of Mutable.
-        Unsupported,
+		/** Always try to run operations that unlock more operations first. */
+		MaximizeConcurrency,
 
-        //! Utility value with the number of error types.
-        Count
-    };
-
-    //! \brief Get an error code for the most critical error that happened since mutable
-    //! initialisation.
-    //! \ingroup runtime
-	MUTABLERUNTIME_API extern Error GetError();
-
-    //! \brief Remove the last error code, setting it to Error::None. This should obnly be used
-    //! in case of possible recovery from one of the critical errors, which is very unlikely.
-    //! \ingroup runtime
-	MUTABLERUNTIME_API extern void ClearError();
+		/** Utility value with the number of error types. */
+		Count
+	};
 
 
     //! \brief Interface to request external images used as parameters.
@@ -72,9 +90,13 @@ namespace mu
         virtual ~ImageParameterGenerator() = default;
 
         //! Returns the completion event and a cleanup function that must be called once event is completed.
-        virtual TTuple<FGraphEventRef, TFunction<void()>> GetImageAsync(EXTERNAL_IMAGE_ID Id, uint8 MipmapsToSkip, TFunction<void (Ptr<Image>)>& ResultCallback) = 0;
+#ifdef MUTABLE_USE_NEW_TASKGRAPH
+		virtual TTuple<UE::Tasks::FTask, TFunction<void()>> GetImageAsync(FName Id, uint8 MipmapsToSkip, TFunction<void(Ptr<Image>)>& ResultCallback) = 0;
+#else
+		virtual TTuple<FGraphEventRef, TFunction<void()>> GetImageAsync(FName Id, uint8 MipmapsToSkip, TFunction<void(Ptr<Image>)>& ResultCallback) = 0;
+#endif
 
-        virtual mu::FImageDesc GetImageDesc(EXTERNAL_IMAGE_ID Id, uint8 MipmapsToSkip) = 0;
+        virtual mu::FImageDesc GetImageDesc(FName Id, uint8 MipmapsToSkip) = 0;
     };
 
 
@@ -85,33 +107,35 @@ namespace mu
     public:
 
         //! This constant can be used in place of the lodMask in methods like BeginUpdate
-        static constexpr unsigned AllLODs = 0xffffffff;
+        static constexpr uint32 AllLODs = 0xffffffff;
 
     public:
 
 		//! Constructor of a system object to build data.
         //! \param Settings Optional class with the settings to use in this system. The default
         //! value configures a production-ready system.
-        System( const Ptr<Settings>& Settings = nullptr );
+		//! \param DataStreamer Optional interface to allow the Model to stream in ExtensionData from disk
+        System( const Ptr<Settings>& Settings = nullptr, const TSharedPtr<ExtensionDataStreamer>& DataStreamer = nullptr );
 
-        //! Set a new provider for model data. The provider will become owned by this instance and
-        //! destroyed when necessary.
-        void SetStreamingInterface( ModelStreamer* );
+        //! Set a new provider for model data. 
+        void SetStreamingInterface(const TSharedPtr<ModelReader>& );
 
-        //! Overwrite the streaming memory limit set in the settings when the system was created.
-        //! Refer to Settings::SetStreamingCache for more information.
-        void SetStreamingCache( uint64 bytes );
+        /** Set the working memory limit, overrding any set in the settings when the system was created.
+         * Refer to Settings::SetWorkingMemoryBudget for more information.
+		 */
+        void SetWorkingMemoryBytes( uint64 Bytes );
+
+        /** Removes all the possible working memory regardless of the budget set. This may make following 
+		* operations take longer.
+		*/
+		void ClearWorkingMemory();
+		
+		/** Set the amount of generated resources keys that will be stored for resource reusal. */
+		void SetGeneratedCacheSize(uint32 InCount);
 
         //! Set a new provider for external image data. This is only necessary if image parameters
         //! are used in the models.
-		//! The provided pointer becomes owned by the system.
-        void SetImageParameterGenerator( ImageParameterGenerator* );
-
-        //! Set the maximum memory that this system can use. This memory is used for built data,
-        //! cached data, and streaming. If set to 0, the system will use as much memory as required.
-        //! \warning This limit is ignored if the system was built with SF_REFERENCE.
-        //! \param mem Maximum memory, in bytes
-        void SetMemoryLimit( uint32 mem );
+        void SetImageParameterGenerator(const TSharedPtr<ImageParameterGenerator>& );
 
         //! Create a new instance from the given model. The instance can then be configured through
         //! calls to BeginUpdate/EndUpdate.
@@ -140,16 +164,16 @@ namespace mu
 
 		//! Only valid between BeginUpdate and EndUpdate
 		//! Calculate the description of an image, without generating it.
-		void GetImageDesc(Instance::ID InstanceID, RESOURCE_ID ImageId, FImageDesc& OutDesc );
+		void GetImageDesc(Instance::ID InstanceID, FResourceID ImageId, FImageDesc& OutDesc );
 
 		//! Only valid between BeginUpdate and EndUpdate
 		//! \param MipsToSkip Number of mips to skip compared from the full image.
 		//! If 0, all mip levels will be generated. If more levels than possible to discard are specified, 
 		//! the image will still contain a minimum number of mips specified at model compile time.
-		Ptr<const Image> GetImage(Instance::ID InstanceID, RESOURCE_ID ImageId, int32 MipsToSkip = 0);
+		Ptr<const Image> GetImage(Instance::ID InstanceID, FResourceID ImageId, int32 MipsToSkip = 0, int32 LOD = 0);
 
         //! Only valid between BeginUpdate and EndUpdate
-        Ptr<const Mesh> GetMesh(Instance::ID InstanceID, RESOURCE_ID MeshId);
+        Ptr<const Mesh> GetMesh(Instance::ID InstanceID, FResourceID MeshId);
 
         //! Invalidate and free the last Instance data returned by a call to BeginUpdate with
         //! the same instance index. After a call to this method, that Instance cannot be used any
@@ -162,13 +186,6 @@ namespace mu
         //! \param instance The id of the instance to destroy.
         void ReleaseInstance( Instance::ID InstanceID);
 
-		//! Build one of the images defined in a model parameter as additional description. These
-		//! images can be used for colour bars, icons, etc...
-		Ptr<const Image> BuildParameterAdditionalImage(const TSharedPtr<const Model>& Model,
-														const Ptr<const Parameters>& Params,
-														int32 Parameter,
-														int32 ImageIndex );
-
 		//! Calculate the relevancy of every parameter. Some parameters may be unused depending on
 		//! the values of other parameters. This method will set to true the flags for parameters
 		//! that are relevant, and to false otherwise. This is useful to hide irrelevant parameters
@@ -177,42 +194,9 @@ namespace mu
         //! \param pParameters Parameter set that we want to find the relevancy of.
         //! \param pFlags is a pointer to a preallocated array of booleans that contains at least
 		//! pParameters->GetCount() elements.
-        void GetParameterRelevancy(const TSharedPtr<const Model>& Model,
+        void GetParameterRelevancy( Instance::ID InstanceID,
 									const Ptr<const Parameters>& Parameters,
 									bool* Flags );
-
-        //! Free memory used in internal runtime caches. This is useful for long-running processes
-        //! that keep models loaded. This could be called when a game finishes, or a change of
-        //! level.
-        void ClearCaches();
-
-        //-----------------------------------------------------------------------------------------
-        // Debugging and profiling
-        //-----------------------------------------------------------------------------------------
-
-        //! Types of metrics that can be queried
-        enum class ProfileMetric : uint8
-        {
-            //! No metric
-            None,
-
-            //! Number of model instances currently being created or updated.
-            LiveInstanceCount,
-
-            //! Number of bytes currently loaded for streaming data.
-            StreamingCacheBytes,
-
-            //! Number of update operations performed since the system was created.
-            InstanceUpdateCount,
-
-            //! Utility value that doesn't really represent a metric.
-            _Count
-        };
-
-        //! Get the values of several profile metrics. This can be called any time in a valid
-        //! system object from any thread.
-        //! These values can change any time.
-        uint64 GetProfileMetric( ProfileMetric ) const;
 
 		//-----------------------------------------------------------------------------------------
 		// Interface pattern

@@ -21,15 +21,25 @@ class FControlFlowTask_BranchLegacy;
  *
  *  'QueueWait': Queues a 'void (FControlFlowNodeRef FlowHandle, ...)' function.
  *               The flow will stop until 'FlowHandle->ContinueFlow()' is called.
- *	             BE RESPONSIBLE and make sure all code paths call to continue, otherwise the flow will hang.
+ *	             BE RESPONSIBLE and make sure all code paths call to continue xOR cancel, otherwise the flow will hang.
  *
  *  'QueueControlFlow': Queues a 'void (TSharedRef<FControlFlow> Subflow, ...)' function.
  * 
- *  'QueueControlFlowBranch': Queues a 'int32(TSharedRef<FControlFlowBranch> Branch, ...)' function. TODO: Allow any return-type for branch selection, and not restricted to only int32.
+ *  'QueueControlFlowBranch': Queues a 'int32(TSharedRef<FControlFlowBranch> Branch, ...)' function.
+ *							  TODO: Allow any return-type for branch selection, and not restricted to only int32.
+ *							  Lambda-Syntax: '.BranchFlow([this](TSharedRef<FControlFlowBranch> Branch) { })'
+ * 
+ *  'QueueConcurrentFlows': Queues a 'void(TSharedRef<FConcurrentControlFlows> ForkedFlow, ...)' function
+ *							Lambda-Syntax: '.ForkFlow([this](TSharedRef<FConcurrentControlFlows> Fork) { })'
+ * 
+ *  'QueueConditionalLoop': Queues a 'EConditionalLoopResult(TSharedRef<FConditionalLoop> Loop, ...)' function
+ *							The public functions of 'FConditionalLoop' forces the caller to define the loop as as a 'while (CONDITION) {}' or a 'do {} while(CONDITION);'
+ *							The return is a FControlFlow& and queue your flow as normal
+ *							Lambda-Syntax: '.Loop([this](TSharedRef<FConditionalLoop> Loop) { })'
  * 
  *  'QueueStep': Usable in #UObject's or classes that derive from #TSharedFromThis<UserClass>. The Control Flow will automatically deduce if this is a
- *				 '#QueueFunction', '#QueueWait', '#QueueControlFlow', '#QueueControlFlowBranch' based on the function signature.
- *				 Returns a ref to the ControlFlow - enables chained step queue-ing.
+ *				 '#QueueFunction', '#QueueWait', '#QueueControlFlow', '#QueueControlFlowBranch', '#QueueConcurrentFlows', '#EConditionalLoopResult' based on the function signature.
+ *				 Returns a ref to the ControlFlow - enables chained step queueing.
  *
  *  Using the auto-deduction of 'QueueStep', you can change the queue from a synchronous function (QueueFunction) to an asynchronous one (QueueWait) or vice-versa
  *  by adding/removing the 'FControlFlowNodeRef FlowHandle' as your first parameter. And you can change it to (QueueControlFlow) if need be as well!
@@ -46,31 +56,99 @@ class FControlFlowTask_BranchLegacy;
  *		.QueueStep(this, &UserClass:MyFunction3, ...);
  * 
  *  This allow ease of going from Synchronous Functionality to Asynchronously Functionality to Subflows as you build out your Flow.
+ * 
+ *  ******************
+ *  Full Example Class
+ * 
+ *	struct FMyFlowClass : public TSharedFromThis<FMyFlowClass>
+ *	{
+ *		typedef FMyFlowClass ThisClass;
+ * 
+ * 		FMyFlowClass() : MyPurpose(MakeShared<FControlFlow>()) {}
+ *
+ * 		void RunMyPurpose()
+ * 		{
+ * 			MyPurpose
+ *				.QueueStep(this, &ThisClass::Construct)
+ *				.Loop([this](TSharedRef<FConditionalLoop> Outerloop)
+ *				{
+ *					Outerloop->RunLoopFirst()
+ *						.SetCancelledNodeAsComplete(true)
+ *						.QueueStep(this, &ThisClass::Foo)
+ *						.QueueStep(this, &ThisClass::Foo)
+ *						.Loop([this](TSharedRef<FConditionalLoop> InnerLoop)
+ *						{
+ *							InnerLoop->CheckConditionFirst()
+ *								.BranchFlow([this], TSharedRef<FConditionalLoop> Branch)
+ *								{
+ *									Branch->AddOrGetBranch(0)
+ *										.QueueStep(this, &ThisClass::Foo)
+ *										.QueueStep(this, &ThisClass::Foo);
+ * 
+ *									Branch->AddOrGetBranch(1)
+ *										.QueueStep(this, &ThisClass::Foo)
+ *										.ForkFlow([this], TSharedRef<FConcurrentControlFlows> ConcurrentFlows)
+ *										{
+ *											ConcurrentFlows->AddOrGetFlow(0)
+ *												.QueueStep(this, &ThisClass::Foo)
+ *												.QueueStep(this, &ThisClass::Foo);
+ * 
+ *											ConcurrentFlows->AddOrGetFlow(1)
+ *												.QueueStep(this, &ThisClass::Foo);
+ *										});
+ * 
+ *									return FMath::RandBool() ? EConditionalLoopResult::RunLoop : EConditionalLoopResult::LoopFinished;
+ *								})
+ *								.QueueStep(this, &ThisClass::Foo);
+ *
+ *							return FMath::RandBool() ? EConditionalLoopResult::RunLoop : EConditionalLoopResult::LoopFinished;
+ *						})
+ *						.QueueStep(this, &ThisClass::Foo);
+ *
+ *					return EConditionalLoopResult::RunLoop; // OuterLoop will never end in this example
+ *				})
+ *				.QueueStep(this, &ThisClass::Destruct)
+ *				.ExecuteFlow();
+ *		}
+ *
+ *	private:
+ *		void Foo();
+ *		void Construct(); // Equivalent to Init
+ *		void Destruct(); // Equivalent to Uninit
+ *
+ *		TSharedRef<FControlFlow> MyPurpose;
+ *	};
+ * 
+ * The implementation details of a flow can be fully disjointed from the Flow logic itself!
  */
 
-class CONTROLFLOWS_API FControlFlow : public TSharedFromThis<FControlFlow>
+class FControlFlow : public TSharedFromThis<FControlFlow>
 {
 public:
-	FControlFlow(const FString& FlowDebugName = TEXT(""));
-	virtual ~FControlFlow() = default;
+	CONTROLFLOWS_API FControlFlow(const FString& FlowDebugName = TEXT(""));
 
 public:
 	/** This needs to be called, otherwise nothing will happen!! Call after you finish adding functions to the queue. Calling with an empty queue is safe. */
-	void ExecuteFlow();
-	void Reset();
+	CONTROLFLOWS_API void ExecuteFlow();
+	CONTROLFLOWS_API void Reset();
 	bool IsRunning() const { return CurrentNode.IsValid(); }
 	size_t NumInQueue() const { return FlowQueue.Num(); }
 
+	FSimpleMulticastDelegate& OnNodeComplete() const { return OnStepCompletedDelegate; }
+	FSimpleMulticastDelegate& OnFlowComplete() const { return OnFlowCompleteDelegate; }
+	FSimpleMulticastDelegate& OnFlowCancel() const { return OnFlowCancelledDelegate; }
+
 	/** Will cancel ALL flows, both child ControlFlows and ControlFlows who owns this Flow. You've been warned. */
-	void CancelFlow();
+	CONTROLFLOWS_API void CancelFlow();
 
-	FControlFlow& SetCancelledNodeAsComplete(bool bCancelledNodeIsComplete);
+	CONTROLFLOWS_API FControlFlow& SetCancelledNodeAsComplete(bool bCancelledNodeIsComplete);
 
-	TOptional<FString> GetCurrentStepDebugName() const;
+	CONTROLFLOWS_API TOptional<FString> GetCurrentStepDebugName() const;
 
-	TSharedPtr<FTrackedActivity> GetTrackedActivity() const;
+	CONTROLFLOWS_API TSharedPtr<FTrackedActivity> GetTrackedActivity() const;
 
 public:
+	CONTROLFLOWS_API FControlFlow& QueueDelay(const float InDelay, const FString& NodeName = FString());
 
 	template<typename...ArgsT>
 	FControlFlow& QueueStep(const FString& NodeName, ArgsT...Params)
@@ -102,6 +180,13 @@ public:
 
 public:
 	template<typename FunctionT, typename...ArgsT>
+	FControlFlow& Loop(FunctionT InLoopLambda, ArgsT...Params)
+	{
+		QueueConditionalLoop(FormatOrGetNewNodeDebugName()).BindLambda(InLoopLambda, Params...);
+		return *this;
+	}
+
+	template<typename FunctionT, typename...ArgsT>
 	FControlFlow& BranchFlow(FunctionT InBranchLambda, ArgsT...Params)
 	{
 		QueueControlFlowBranch(FormatOrGetNewNodeDebugName()).BindLambda(InBranchLambda, Params...);
@@ -115,14 +200,15 @@ public:
 		return *this;
 	}
 
-	FControlFlow& TrackActivities(TSharedPtr<FTrackedActivity> InActivity = nullptr);
+	CONTROLFLOWS_API FControlFlow& TrackActivities(TSharedPtr<FTrackedActivity> InActivity = nullptr);
 
 public:
-	FSimpleDelegate& QueueFunction(const FString& FlowNodeDebugName = TEXT(""));
-	FControlFlowWaitDelegate& QueueWait(const FString& FlowNodeDebugName = TEXT(""));
-	FControlFlowPopulator& QueueControlFlow(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
-	FControlFlowBranchDefiner& QueueControlFlowBranch(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
-	FConcurrentFlowsDefiner& QueueConcurrentFlows(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FSimpleDelegate& QueueFunction(const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FControlFlowWaitDelegate& QueueWait(const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FControlFlowPopulator& QueueControlFlow(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FControlFlowBranchDefiner& QueueControlFlowBranch(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FConcurrentFlowsDefiner& QueueConcurrentFlows(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FControlFlowConditionalLoopDefiner& QueueConditionalLoop(const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
 
 private:
 	template<typename BindingObjectT, typename...PayloadParamsT>
@@ -158,6 +244,12 @@ private:
 private:
 	
 	template<typename BindingObjectClassT, typename...PayloadParamsT>
+	void QueueStep_Internal_TSharedFromThis(const FString& InDebugName, TSharedRef<BindingObjectClassT> InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, EConditionalLoopResult(TSharedRef<FConditionalLoop>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
+	{
+		QueueConditionalLoop(InDebugName).BindSP(InBindingObject, InFunction, Params...);
+	}
+
+	template<typename BindingObjectClassT, typename...PayloadParamsT>
 	void QueueStep_Internal_TSharedFromThis(const FString& InDebugName, TSharedRef<BindingObjectClassT> InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, void(TSharedRef<FConcurrentControlFlows>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
 	{
 		QueueConcurrentFlows(InDebugName).BindSP(InBindingObject, InFunction, Params...);
@@ -188,6 +280,12 @@ private:
 	}
 
 private:
+
+	template<typename BindingObjectClassT, typename...PayloadParamsT>
+	void QueueStep_Internal_UObject(const FString& InDebugName, BindingObjectClassT* InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, EConditionalLoopResult(TSharedRef<FConditionalLoop>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
+	{
+		QueueConditionalLoop(InDebugName).BindUObject(InBindingObject, InFunction, Params...);
+	}
 
 	template<typename BindingObjectClassT, typename...PayloadParamsT>
 	void QueueStep_Internal_UObject(const FString& InDebugName, BindingObjectClassT* InBindingObject, typename TMemFunPtrType<false, BindingObjectClassT, void(TSharedRef<FConcurrentControlFlows>, PayloadParamsT...)>::Type InFunction, PayloadParamsT...Params)
@@ -227,41 +325,31 @@ private:
 	friend class FControlFlowTask_LoopDeprecated;
 	friend class FControlFlowTask_BranchLegacy;
 	friend class FControlFlowTask_Branch;
+	friend class FControlFlowTask_ConditionalLoop;
 	friend class FControlFlowStatics;
 	friend struct FConcurrencySubFlowContainer;
 
 public:
-	/** These work, but they are a bit clunky to use. The heart of the issue is that it requires the caller to define two functions. We want only the caller to use one function.
-	  * Not making templated versions of them until a better API is figured out. */	
-	TSharedRef<FControlFlowTask_BranchLegacy> QueueBranch(FControlFlowBranchDecider_Legacy& BranchDecider, const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
-
-	//TODO: Implement #define QueueLoop_Signature TMemFunPtrType<false, BindingObjectClassType, bool(TSharedRef<FControlFlow> SubFlow, VarTypes...)> and delete
-
-	/** Adds a Loop to your flow. The flow will use FControlFlowLoopComplete - if this returns false, the flow will execute FControlTaskQueuePopulator until true is returned */
-	FControlFlowPopulator& QueueLoop(FControlFlowLoopComplete& LoopCompleteDelgate, const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
-
-	FSimpleMulticastDelegate& OnNodeComplete() const { return OnStepCompletedDelegate; }
-	FSimpleMulticastDelegate& OnComplete() const { return OnCompleteDelegate; }
-	FSimpleMulticastDelegate& OnCancel() const { return OnCancelledDelegate; }
-	FSimpleMulticastDelegate& OnExecuteWithoutAnyNodes() const { return OnExecutedWithoutAnyNodesDelegate; }	
+	// Both of these implementations are deprecated
+	CONTROLFLOWS_API TSharedRef<FControlFlowTask_BranchLegacy> QueueBranch(FControlFlowBranchDecider_Legacy& BranchDecider, const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FControlFlowPopulator& QueueLoop(FControlFlowLoopComplete& LoopCompleteDelgate, const FString& TaskName = TEXT(""), const FString& FlowNodeDebugName = TEXT(""));
 	
 private:
 	void HandleControlFlowNodeCompleted(TSharedRef<const FControlFlowNode> NodeCompleted);
 
 	mutable FSimpleMulticastDelegate OnStepCompletedDelegate;
-	mutable FSimpleMulticastDelegate OnExecutedWithoutAnyNodesDelegate;
-	mutable FSimpleMulticastDelegate OnCompleteDelegate;
-	mutable FSimpleMulticastDelegate OnCancelledDelegate;
+	mutable FSimpleMulticastDelegate OnFlowCompleteDelegate;
+	mutable FSimpleMulticastDelegate OnFlowCancelledDelegate;
 	
 	mutable FSimpleDelegate OnCompleteDelegate_Internal;
 	mutable FSimpleDelegate OnExecutedWithoutAnyNodesDelegate_Internal;
 	mutable FSimpleDelegate OnCancelledDelegate_Internal;
+	mutable FSimpleDelegate OnNodeWasNotBoundedOnExecution_Internal;
 
 private:
 	void ExecuteNextNodeInQueue();
 
 	void ExecuteNode(TSharedRef<FControlFlowNode_SelfCompleting> SelfCompletingNode);
-
 private:
 	void HandleTaskNodeExecuted(TSharedRef<FControlFlowNode_Task> TaskNode);
 	void HandleTaskNodeCancelled(TSharedRef<FControlFlowNode_Task> TaskNode);
@@ -269,6 +357,7 @@ private:
 	void HandleOnTaskComplete();
 	void HandleOnTaskCancelled();
 
+	void BroadcastCancellation();
 private:
 
 	void LogNodeExecution(const FControlFlowNode& NodeExecuted);
@@ -281,7 +370,7 @@ public:
 	const FString& GetDebugName() const { return DebugName; }
 
 private:
-	FString FormatOrGetNewNodeDebugName(const FString& FlowNodeDebugName = TEXT(""));
+	CONTROLFLOWS_API FString FormatOrGetNewNodeDebugName(const FString& FlowNodeDebugName = TEXT(""));
 
 private:
 

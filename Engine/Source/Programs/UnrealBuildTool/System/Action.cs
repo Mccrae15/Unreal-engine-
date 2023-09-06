@@ -3,13 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using EpicGames.Core;
+using Microsoft.Extensions.Logging;
 using UnrealBuildBase;
 
 namespace UnrealBuildTool
@@ -40,12 +37,48 @@ namespace UnrealBuildTool
 		ParseTimingInfo,
 	}
 
+	/// <summary>
+	/// Defines the action's support for artifacts
+	/// </summary>
+	[Flags]
+	enum ArtifactMode : byte
+	{
+
+		/// <summary>
+		/// Cached artifacts aren't enabled
+		/// </summary>
+		None = 0,
+
+		/// <summary>
+		/// If set, the outputs should be cached but respect the flags below
+		/// </summary>
+		Enabled = 1 << 0,
+
+		/// <summary>
+		/// Absolute file paths must be used when recording inputs and outputs
+		/// </summary>
+		AbsolutePath = 1 << 1,
+
+		/// <summary>
+		/// For actions that can't be cached, by setting this flag, the inputs for the action in question
+		/// will be used as additional inputs for any action that references outputs of this action.  
+		/// For example, PCH files shouldn't be cached, but compiles that use the PCH should still be 
+		/// valid if consider the inputs used to create the PCH file.
+		/// </summary>
+		PropagateInputs = 1 << 2,
+	}
+
 	interface IExternalAction
 	{
 		/// <summary>
 		/// The type of this action (for debugging purposes).
 		/// </summary>
 		ActionType ActionType { get; }
+
+		/// <summary>
+		/// Artifact support for this step
+		/// </summary>
+		ArtifactMode ArtifactMode { get; }
 
 		/// <summary>
 		/// Every file this action depends on.  These files need to exist and be up to date in order for this action to even be considered
@@ -108,6 +141,16 @@ namespace UnrealBuildTool
 		bool bCanExecuteRemotelyWithSNDBS { get; }
 
 		/// <summary>
+		/// True if this action is allowed to be run on a remote machine with XGE. Files with #import directives must be compiled locally. Also requires bCanExecuteRemotely = true.
+		/// </summary>
+		bool bCanExecuteRemotelyWithXGE { get; }
+
+		/// <summary>
+		/// True if this action can be executed by box
+		/// </summary>
+		bool bCanExecuteInBox { get; }
+
+		/// <summary>
 		/// True if this action is using the GCC compiler.  Some build systems may be able to optimize for this case.
 		/// </summary>
 		bool bIsGCCCompiler { get; }
@@ -127,6 +170,17 @@ namespace UnrealBuildTool
 		/// Whether changes in the command line used to generate these produced items should invalidate the action
 		/// </summary>
 		bool bUseActionHistory { get; }
+
+		/// <summary>
+		/// True if this action should be scheduled early. Some actions can take a long time (pch) and need to start very early
+		/// If set to true it will propagate high priority to all its prerequisite tasks
+		/// </summary>
+		bool bIsHighPriority { get; }
+
+		/// <summary>
+		/// Used to determine how much weight(CPU and Memory work) this action is.
+		/// </summary>
+		double Weight { get; }
 	}
 
 	/// <summary>
@@ -142,6 +196,11 @@ namespace UnrealBuildTool
 		/// The type of this action (for debugging purposes).
 		/// </summary>
 		public ActionType ActionType { get; set; }
+
+		/// <summary>
+		/// Artifact support for this step
+		/// </summary>
+		public ArtifactMode ArtifactMode { get; set; } = ArtifactMode.None;
 
 		/// <summary>
 		/// Every file this action depends on.  These files need to exist and be up to date in order for this action to even be considered
@@ -177,7 +236,7 @@ namespace UnrealBuildTool
 		/// Command-line parameters to pass to the program
 		/// </summary>
 		public string CommandArguments { get; set; } = null!;
-		
+
 		/// <summary>
 		/// Version of the command used for this action. This will be considered a dependency.
 		/// </summary>
@@ -204,6 +263,16 @@ namespace UnrealBuildTool
 		public bool bCanExecuteRemotelyWithSNDBS { get; set; } = true;
 
 		/// <summary>
+		/// True if this action is allowed to be run on a remote machine with XGE. Files with #import directives must be compiled locally. Also requires bCanExecuteRemotely = true.
+		/// </summary>
+		public bool bCanExecuteRemotelyWithXGE { get; set; } = true;
+
+		/// <summary>
+		/// True if this action can be executed in box
+		/// </summary>
+		public bool bCanExecuteInBox { get; set; } = true;
+
+		/// <summary>
 		/// True if this action is using the GCC compiler.  Some build systems may be able to optimize for this case.
 		/// </summary>
 		public bool bIsGCCCompiler { get; set; } = false;
@@ -222,6 +291,12 @@ namespace UnrealBuildTool
 		/// <inheritdoc/>
 		public bool bUseActionHistory { get; set; } = true;
 
+		/// <inheritdoc/>
+		public bool bIsHighPriority { get; set; } = false;
+
+		/// <inheritdoc/>
+		public double Weight { get; set; } = 1.0;
+
 		IEnumerable<FileItem> IExternalAction.PrerequisiteItems => PrerequisiteItems;
 		IEnumerable<FileItem> IExternalAction.ProducedItems => ProducedItems;
 		IEnumerable<FileItem> IExternalAction.DeleteItems => DeleteItems;
@@ -231,7 +306,7 @@ namespace UnrealBuildTool
 			ActionType = InActionType;
 
 			// link actions are going to run locally on SN-DBS so don't try to distribute them as that generates warnings for missing tool templates
-			if ( ActionType == ActionType.Link )
+			if (ActionType == ActionType.Link)
 			{
 				bCanExecuteRemotelyWithSNDBS = false;
 			}
@@ -240,6 +315,7 @@ namespace UnrealBuildTool
 		public Action(IExternalAction InOther)
 		{
 			ActionType = InOther.ActionType;
+			ArtifactMode = InOther.ArtifactMode;
 			PrerequisiteItems = new SortedSet<FileItem>(InOther.PrerequisiteItems);
 			ProducedItems = new SortedSet<FileItem>(InOther.ProducedItems);
 			DeleteItems = new SortedSet<FileItem>(InOther.DeleteItems);
@@ -252,15 +328,20 @@ namespace UnrealBuildTool
 			StatusDescription = InOther.StatusDescription;
 			bCanExecuteRemotely = InOther.bCanExecuteRemotely;
 			bCanExecuteRemotelyWithSNDBS = InOther.bCanExecuteRemotelyWithSNDBS;
+			bCanExecuteRemotelyWithXGE = InOther.bCanExecuteRemotelyWithXGE;
+			bCanExecuteInBox = InOther.bCanExecuteInBox;
 			bIsGCCCompiler = InOther.bIsGCCCompiler;
 			bShouldOutputStatusDescription = InOther.bShouldOutputStatusDescription;
 			bProducesImportLibrary = InOther.bProducesImportLibrary;
 			bUseActionHistory = InOther.bUseActionHistory;
+			bIsHighPriority = InOther.bIsHighPriority;
+			Weight = InOther.Weight;
 		}
 
 		public Action(BinaryArchiveReader Reader)
 		{
 			ActionType = (ActionType)Reader.ReadByte();
+			ArtifactMode = (ArtifactMode)Reader.ReadByte();
 			WorkingDirectory = Reader.ReadDirectoryReferenceNotNull();
 			CommandPath = Reader.ReadFileReference();
 			CommandArguments = Reader.ReadString()!;
@@ -269,6 +350,8 @@ namespace UnrealBuildTool
 			StatusDescription = Reader.ReadString()!;
 			bCanExecuteRemotely = Reader.ReadBool();
 			bCanExecuteRemotelyWithSNDBS = Reader.ReadBool();
+			bCanExecuteRemotelyWithXGE = Reader.ReadBool();
+			bCanExecuteInBox = Reader.ReadBool();
 			bIsGCCCompiler = Reader.ReadBool();
 			bShouldOutputStatusDescription = Reader.ReadBool();
 			bProducesImportLibrary = Reader.ReadBool();
@@ -277,6 +360,9 @@ namespace UnrealBuildTool
 			DeleteItems = Reader.ReadSortedSet(() => Reader.ReadFileItem())!;
 			DependencyListFile = Reader.ReadFileItem();
 			bUseActionHistory = Reader.ReadBool();
+			bIsHighPriority = Reader.ReadBool();
+			Weight = Reader.ReadDouble();
+
 		}
 
 		/// <summary>
@@ -285,6 +371,7 @@ namespace UnrealBuildTool
 		public void Write(BinaryArchiveWriter Writer)
 		{
 			Writer.WriteByte((byte)ActionType);
+			Writer.WriteByte((byte)ArtifactMode);
 			Writer.WriteDirectoryReference(WorkingDirectory);
 			Writer.WriteFileReference(CommandPath);
 			Writer.WriteString(CommandArguments);
@@ -293,6 +380,8 @@ namespace UnrealBuildTool
 			Writer.WriteString(StatusDescription);
 			Writer.WriteBool(bCanExecuteRemotely);
 			Writer.WriteBool(bCanExecuteRemotelyWithSNDBS);
+			Writer.WriteBool(bCanExecuteRemotelyWithXGE);
+			Writer.WriteBool(bCanExecuteInBox);
 			Writer.WriteBool(bIsGCCCompiler);
 			Writer.WriteBool(bShouldOutputStatusDescription);
 			Writer.WriteBool(bProducesImportLibrary);
@@ -301,6 +390,8 @@ namespace UnrealBuildTool
 			Writer.WriteSortedSet(DeleteItems, Item => Writer.WriteFileItem(Item));
 			Writer.WriteFileItem(DependencyListFile);
 			Writer.WriteBool(bUseActionHistory);
+			Writer.WriteBool(bIsHighPriority);
+			Writer.WriteDouble(Weight);
 		}
 
 		/// <summary>
@@ -311,20 +402,26 @@ namespace UnrealBuildTool
 		{
 			Action Action = new Action(Object.GetEnumField<ActionType>("Type"));
 
+			ArtifactMode ArtifactMode;
+			if (Object.TryGetEnumField("ArtifactMode", out ArtifactMode))
+			{
+				Action.ArtifactMode = ArtifactMode;
+			}
+
 			string? WorkingDirectory;
-			if(Object.TryGetStringField("WorkingDirectory", out WorkingDirectory))
+			if (Object.TryGetStringField("WorkingDirectory", out WorkingDirectory))
 			{
 				Action.WorkingDirectory = new DirectoryReference(WorkingDirectory);
 			}
 
 			string? CommandPath;
-			if(Object.TryGetStringField("CommandPath", out CommandPath))
+			if (Object.TryGetStringField("CommandPath", out CommandPath))
 			{
 				Action.CommandPath = new FileReference(CommandPath);
 			}
-			
+
 			string? CommandArguments;
-			if(Object.TryGetStringField("CommandArguments", out CommandArguments))
+			if (Object.TryGetStringField("CommandArguments", out CommandArguments))
 			{
 				Action.CommandArguments = CommandArguments;
 			}
@@ -336,43 +433,55 @@ namespace UnrealBuildTool
 			}
 
 			string? CommandDescription;
-			if(Object.TryGetStringField("CommandDescription", out CommandDescription))
+			if (Object.TryGetStringField("CommandDescription", out CommandDescription))
 			{
 				Action.CommandDescription = CommandDescription;
 			}
-			
+
 			string? StatusDescription;
-			if(Object.TryGetStringField("StatusDescription", out StatusDescription))
+			if (Object.TryGetStringField("StatusDescription", out StatusDescription))
 			{
 				Action.StatusDescription = StatusDescription;
 			}
 
 			bool bCanExecuteRemotely;
-			if(Object.TryGetBoolField("bCanExecuteRemotely", out bCanExecuteRemotely))
+			if (Object.TryGetBoolField("bCanExecuteRemotely", out bCanExecuteRemotely))
 			{
 				Action.bCanExecuteRemotely = bCanExecuteRemotely;
 			}
 
 			bool bCanExecuteRemotelyWithSNDBS;
-			if(Object.TryGetBoolField("bCanExecuteRemotelyWithSNDBS", out bCanExecuteRemotelyWithSNDBS))
+			if (Object.TryGetBoolField("bCanExecuteRemotelyWithSNDBS", out bCanExecuteRemotelyWithSNDBS))
 			{
 				Action.bCanExecuteRemotelyWithSNDBS = bCanExecuteRemotelyWithSNDBS;
 			}
 
+			bool bCanExecuteRemotelyWithXGE;
+			if (Object.TryGetBoolField("bCanExecuteRemotelyWithXGE", out bCanExecuteRemotelyWithXGE))
+			{
+				Action.bCanExecuteRemotelyWithXGE = bCanExecuteRemotelyWithXGE;
+			}
+
+			bool bCanExecuteInBox;
+			if (Object.TryGetBoolField("bCanExecuteInBox", out bCanExecuteInBox))
+			{
+				Action.bCanExecuteInBox = bCanExecuteInBox;
+			}
+
 			bool bIsGCCCompiler;
-			if(Object.TryGetBoolField("bIsGCCCompiler", out bIsGCCCompiler))
+			if (Object.TryGetBoolField("bIsGCCCompiler", out bIsGCCCompiler))
 			{
 				Action.bIsGCCCompiler = bIsGCCCompiler;
 			}
 
 			bool bShouldOutputStatusDescription;
-			if(Object.TryGetBoolField("bShouldOutputStatusDescription", out bShouldOutputStatusDescription))
+			if (Object.TryGetBoolField("bShouldOutputStatusDescription", out bShouldOutputStatusDescription))
 			{
 				Action.bShouldOutputStatusDescription = bShouldOutputStatusDescription;
 			}
 
 			bool bProducesImportLibrary;
-			if(Object.TryGetBoolField("bProducesImportLibrary", out bProducesImportLibrary))
+			if (Object.TryGetBoolField("bProducesImportLibrary", out bProducesImportLibrary))
 			{
 				Action.bProducesImportLibrary = bProducesImportLibrary;
 			}
@@ -401,6 +510,12 @@ namespace UnrealBuildTool
 				Action.DependencyListFile = FileItem.GetItemByPath(DependencyListFile);
 			}
 
+			double Weight;
+			if (Object.TryGetDoubleField("Weight", out Weight))
+			{
+				Action.Weight = Weight;
+			}
+
 			return Action;
 		}
 
@@ -420,6 +535,23 @@ namespace UnrealBuildTool
 	}
 
 	/// <summary>
+	/// Interface that is used when -SingleFile=xx is used on the cmd line to make specific files compile
+	/// Actions that has this interface can be used to create real actions that can compile the specific files
+	/// </summary>
+	interface ISpecificFileAction
+	{
+		/// <summary>
+		/// The directory this action can create actions for
+		/// </summary>
+		DirectoryReference RootDirectory { get; }
+
+		/// <summary>
+		/// Creates an action for a specific file. It can return null if for example file extension is not handled
+		/// </summary>
+		IExternalAction? CreateAction(FileItem SourceFile, ILogger Logger);
+	}
+
+	/// <summary>
 	/// Extension methods for action classes
 	/// </summary>
 	static class ActionExtensions
@@ -434,6 +566,7 @@ namespace UnrealBuildTool
 		{
 			Writer.WriteValue("Id", LinkedActionToId[Action]);
 			Writer.WriteEnumValue("Type", Action.ActionType);
+			Writer.WriteEnumValue("ArtifactMode", Action.ArtifactMode);
 			Writer.WriteValue("WorkingDirectory", Action.WorkingDirectory.FullName);
 			Writer.WriteValue("CommandPath", Action.CommandPath.FullName);
 			Writer.WriteValue("CommandArguments", Action.CommandArguments);
@@ -442,9 +575,12 @@ namespace UnrealBuildTool
 			Writer.WriteValue("StatusDescription", Action.StatusDescription);
 			Writer.WriteValue("bCanExecuteRemotely", Action.bCanExecuteRemotely);
 			Writer.WriteValue("bCanExecuteRemotelyWithSNDBS", Action.bCanExecuteRemotelyWithSNDBS);
+			Writer.WriteValue("bCanExecuteRemotelyWithXGE", Action.bCanExecuteRemotelyWithXGE);
+			Writer.WriteValue("bCanExecuteInBox", Action.bCanExecuteInBox);
 			Writer.WriteValue("bIsGCCCompiler", Action.bIsGCCCompiler);
 			Writer.WriteValue("bShouldOutputStatusDescription", Action.bShouldOutputStatusDescription);
 			Writer.WriteValue("bProducesImportLibrary", Action.bProducesImportLibrary);
+			Writer.WriteValue("Weight", Action.Weight);
 
 			Writer.WriteArrayStart("PrerequisiteActions");
 			foreach (LinkedAction PrerequisiteAction in Action.PrerequisiteActions)
@@ -480,7 +616,8 @@ namespace UnrealBuildTool
 		/// <returns>True if conflicts are ignored, else false.</returns>
 		public static bool IgnoreConflicts(this IExternalAction Action)
 		{
-			return Action.ActionType == ActionType.WriteMetadata;
+			return Action.ActionType == ActionType.WriteMetadata ||
+				Action.ActionType == ActionType.CreateAppBundle;
 		}
 	}
 
@@ -529,6 +666,17 @@ namespace UnrealBuildTool
 		public int NumTotalDependentActions = 0;
 
 		/// <summary>
+		/// Additional field used for sorting that can be used to control sorting of link actions from outside
+		/// </summary>
+		public int SortIndex = 0;
+
+		/// <summary>
+		/// True if this action should be scheduled early. Some actions can take a long time (pch) and need to start very early
+		/// If set to 1 it will propagate high priority to all its prerequisite tasks. (Note it is an int to be able to do interlocked operations)
+		/// </summary>
+		public int IsHighPriority;
+
+		/// <summary>
 		/// If set, will be output whenever the group differs to the last executed action. Set when executing multiple targets at once.
 		/// </summary>
 		public List<string> GroupNames = new List<string>();
@@ -536,6 +684,7 @@ namespace UnrealBuildTool
 		#region Wrapper implementation of IAction
 
 		public ActionType ActionType => Inner.ActionType;
+		public ArtifactMode ArtifactMode => Inner.ArtifactMode;
 		public IEnumerable<FileItem> PrerequisiteItems => Inner.PrerequisiteItems;
 		public IEnumerable<FileItem> ProducedItems => Inner.ProducedItems;
 		public IEnumerable<FileItem> DeleteItems => Inner.DeleteItems;
@@ -548,10 +697,14 @@ namespace UnrealBuildTool
 		public string StatusDescription => Inner.StatusDescription;
 		public bool bCanExecuteRemotely => Inner.bCanExecuteRemotely;
 		public bool bCanExecuteRemotelyWithSNDBS => Inner.bCanExecuteRemotelyWithSNDBS;
+		public bool bCanExecuteRemotelyWithXGE => Inner.bCanExecuteRemotelyWithXGE;
+		public bool bCanExecuteInBox => Inner.bCanExecuteInBox;
 		public bool bIsGCCCompiler => Inner.bIsGCCCompiler;
 		public bool bShouldOutputStatusDescription => Inner.bShouldOutputStatusDescription;
 		public bool bProducesImportLibrary => Inner.bProducesImportLibrary;
 		public bool bUseActionHistory => Inner.bUseActionHistory;
+		public bool bIsHighPriority => IsHighPriority != 0;
+		public double Weight => Inner.Weight;
 
 		#endregion
 
@@ -564,31 +717,48 @@ namespace UnrealBuildTool
 		{
 			this.Inner = Inner;
 			this.Target = Target;
+			IsHighPriority = Inner.bIsHighPriority ? 1 : 0;
 		}
 
 		/// <summary>
 		/// Increment the number of dependents, recursively
 		/// </summary>
 		/// <param name="VisitedActions">Set of visited actions</param>
-		public void IncrementDependentCount(HashSet<LinkedAction> VisitedActions)
+		/// <param name="bIsHighPriority">Propagate high priority to this and prerequisite actions</param>
+		public void IncrementDependentCount(HashSet<LinkedAction> VisitedActions, bool bIsHighPriority)
 		{
 			if (VisitedActions.Add(this))
 			{
+				if (bIsHighPriority)
+				{
+					Interlocked.Exchange(ref IsHighPriority, 1);
+				}
+
 				Interlocked.Increment(ref NumTotalDependentActions);
 				foreach (LinkedAction PrerequisiteAction in PrerequisiteActions)
 				{
-					PrerequisiteAction.IncrementDependentCount(VisitedActions);
+					PrerequisiteAction.IncrementDependentCount(VisitedActions, bIsHighPriority);
 				}
 			}
 		}
 
 		/// <summary>
-		/// Compares two actions based on total number of dependent items, descending.
+		/// Compares two actions based on total number of sort index, priority and dependent items, descending.
 		/// </summary>
 		/// <param name="A">Action to compare</param>
 		/// <param name="B">Action to compare</param>
 		public static int Compare(LinkedAction A, LinkedAction B)
 		{
+			if (A.SortIndex != B.SortIndex)
+			{
+				return Math.Sign(A.SortIndex - B.SortIndex);
+			}
+
+			if (A.IsHighPriority != B.IsHighPriority)
+			{
+				return B.IsHighPriority - A.IsHighPriority;
+			}
+
 			// Primary sort criteria is total number of dependent files, up to max depth.
 			if (B.NumTotalDependentActions != A.NumTotalDependentActions)
 			{

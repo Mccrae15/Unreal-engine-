@@ -10,6 +10,7 @@
 #include "EngineGlobals.h"
 #include "UnrealEngine.h"
 #include "RendererModule.h"
+#include "SceneRendering.h"
 #include "StereoRendering.h"
 #include "StereoRenderTargetManager.h"
 #include "CompositionLighting/PostProcessAmbientOcclusion.h"
@@ -77,9 +78,9 @@ static TAutoConsoleVariable<int32> CVarDefaultBackBufferPixelFormat(
 
 RDG_REGISTER_BLACKBOARD_STRUCT(FSceneTextures);
 
-static EPixelFormat GetGBufferFFormat()
+EPixelFormat FSceneTextures::GetGBufferFFormatAndCreateFlags(ETextureCreateFlags& OutCreateFlags)
 {
-	const int32 GBufferFormat = CVarGBufferFormat.GetValueOnRenderThread();
+	const int32 GBufferFormat = CVarGBufferFormat.GetValueOnAnyThread();
 	const bool bHighPrecisionGBuffers = (GBufferFormat >= EGBufferFormat::Force16BitsPerChannel);
 	const bool bEnforce8BitPerChannel = (GBufferFormat == EGBufferFormat::Force8BitsPerChannel);
 	EPixelFormat NormalGBufferFormat = bHighPrecisionGBuffers ? PF_FloatRGBA : PF_B8G8R8A8;
@@ -93,6 +94,7 @@ static EPixelFormat GetGBufferFFormat()
 		NormalGBufferFormat = PF_FloatRGBA;
 	}
 
+	OutCreateFlags = TexCreate_RenderTargetable | TexCreate_ShaderResource | GFastVRamConfig.GBufferF;
 	return NormalGBufferFormat;
 }
 
@@ -127,14 +129,15 @@ static IStereoRenderTargetManager* FindStereoRenderTargetManager()
 	return GEngine->StereoRenderingDevice->GetRenderTargetManager();
 }
 
-static TRefCountPtr<FRHITexture2D> FindStereoDepthTexture(uint32 bSupportsXRDepth, FIntPoint TextureExtent, uint32 NumSamples)
+static TRefCountPtr<FRHITexture2D> FindStereoDepthTexture(uint32 bSupportsXRDepth, FIntPoint TextureExtent, ETextureCreateFlags RequestedCreateFlags)
 {
 	if (bSupportsXRDepth == 1)
 	{
 		if (IStereoRenderTargetManager* StereoRenderTargetManager = FindStereoRenderTargetManager())
 		{
 			TRefCountPtr<FRHITexture2D> DepthTex, SRTex;
-			StereoRenderTargetManager->AllocateDepthTexture(0, TextureExtent.X, TextureExtent.Y, PF_DepthStencil, 1, TexCreate_None, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead, DepthTex, SRTex, NumSamples);
+			constexpr uint32 NumSamples = 1;
+			StereoRenderTargetManager->AllocateDepthTexture(0, TextureExtent.X, TextureExtent.Y, PF_DepthStencil, 1, RequestedCreateFlags, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead, DepthTex, SRTex, NumSamples);
 			return MoveTemp(SRTex);
 		}
 	}
@@ -441,7 +444,7 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 
 	// If not using MSAA, we need to make sure to grab the stereo depth texture if appropriate.
 	FTexture2DRHIRef StereoDepthRHI;
-	if (Config.NumSamples == 1 && (StereoDepthRHI = FindStereoDepthTexture(Config.bSupportsXRTargetManagerDepthAlloc, Config.Extent, Config.NumSamples)) != nullptr)
+	if (Config.NumSamples == 1 && (StereoDepthRHI = FindStereoDepthTexture(Config.bSupportsXRTargetManagerDepthAlloc, Config.Extent, ETextureCreateFlags::None)) != nullptr)
 	{
 		SceneTextures.Depth = RegisterExternalTexture(GraphBuilder, StereoDepthRHI, TEXT("SceneDepthZ"));
 		SceneTextures.Stencil = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::CreateWithPixelFormat(SceneTextures.Depth.Target, PF_X24_G8));
@@ -459,7 +462,7 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 		{
 			Desc.NumSamples = 1;
 
-			if ((StereoDepthRHI = FindStereoDepthTexture(Config.bSupportsXRTargetManagerDepthAlloc, Config.Extent, Desc.NumSamples)) != nullptr)
+			if ((StereoDepthRHI = FindStereoDepthTexture(Config.bSupportsXRTargetManagerDepthAlloc, Config.Extent, ETextureCreateFlags::DepthStencilResolveTarget)) != nullptr)
 			{
 				ensureMsgf(Desc.ArraySize == StereoDepthRHI->GetDesc().ArraySize, TEXT("Resolve texture does not agree in dimensionality with Target (Resolve.ArraySize=%d, Target.ArraySize=%d)"),
 					Desc.ArraySize, StereoDepthRHI->GetDesc().ArraySize);
@@ -479,19 +482,17 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 		const bool bIsMobilePlatform = Config.ShadingPath == EShadingPath::Mobile;
 		const ETextureCreateFlags sRGBFlag = (bIsMobilePlatform && IsMobileColorsRGB()) ? TexCreate_SRGB : TexCreate_None;
 
-		const TCHAR* SceneColorName = TEXT("SceneColor");
-
 		// Create the scene color.
 		// TODO: Array-size could be values > 2, on upcoming XR devices. This should be part of the config.
 		FRDGTextureDesc Desc(Config.bRequireMultiView ?
 							 FRDGTextureDesc::Create2DArray(Config.Extent, Config.ColorFormat, Config.ColorClearValue, Config.ColorCreateFlags, 2) :
 							 FRDGTextureDesc::Create2D(Config.Extent, Config.ColorFormat, Config.ColorClearValue, Config.ColorCreateFlags));
 		Desc.NumSamples = Config.NumSamples;
-		SceneTextures.Color = CreateTextureMSAA(GraphBuilder, Desc, SceneColorName, GFastVRamConfig.SceneColor | sRGBFlag);
+		SceneTextures.Color = CreateTextureMSAA(GraphBuilder, Desc, TEXT("SceneColorMS"), TEXT("SceneColor"), GFastVRamConfig.SceneColor | sRGBFlag);
 	}
 
 	// Custom Depth
-	SceneTextures.CustomDepth = FCustomDepthTextures::Create(GraphBuilder, Config.Extent);
+	SceneTextures.CustomDepth = FCustomDepthTextures::Create(GraphBuilder, Config.Extent, Config.ShaderPlatform);
 
 	ViewFamily.bIsSceneTexturesInitialized = true;
 }
@@ -579,7 +580,9 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 		// GBufferF is not yet part of the data driven GBuffer info.
 		if (Config.ShadingPath == EShadingPath::Deferred)
 		{
-			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(Config.Extent, GetGBufferFFormat(), FClearValueBinding({ 0.5f, 0.5f, 0.5f, 0.5f }), TexCreate_RenderTargetable | TexCreate_ShaderResource | FlagsToAdd | GFastVRamConfig.GBufferF);
+			ETextureCreateFlags GBufferFCreateFlags;
+			EPixelFormat GBufferFPixelFormat = GetGBufferFFormatAndCreateFlags(GBufferFCreateFlags);
+			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(Config.Extent, GBufferFPixelFormat, FClearValueBinding({ 0.5f, 0.5f, 0.5f, 0.5f }), GBufferFCreateFlags | FlagsToAdd);
 			SceneTextures.GBufferF = GraphBuilder.CreateTexture(Desc, TEXT("GBufferF"));
 		}
 	}
@@ -603,7 +606,7 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 			FRDGTextureDesc::Create2DArray(Config.Extent, DepthAuxFormat, FClearValueBinding(FarDepthColor), TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead | MemorylessFlag, 2) :
 			FRDGTextureDesc::Create2D(Config.Extent, DepthAuxFormat, FClearValueBinding(FarDepthColor), TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_InputAttachmentRead| MemorylessFlag);
 		Desc.NumSamples = Config.NumSamples;
-		SceneTextures.DepthAux = CreateTextureMSAA(GraphBuilder, Desc, TEXT("SceneDepthAux"));
+		SceneTextures.DepthAux = CreateTextureMSAA(GraphBuilder, Desc, TEXT("SceneDepthAuxMS"), TEXT("SceneDepthAux"));
 	}
 #if WITH_EDITOR
 	{
@@ -614,6 +617,16 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 		SceneTextures.EditorPrimitiveDepth = GraphBuilder.CreateTexture(DepthDesc, TEXT("Editor.PrimitivesDepth"));
 	}
 #endif
+
+	extern bool MobileForwardEnablePrepassLocalLights(const FStaticShaderPlatform Platform);
+	if(MobileForwardEnablePrepassLocalLights(Config.ShaderPlatform))
+	{
+		FRDGTextureDesc MobileLocalLightTextureADesc = FRDGTextureDesc::Create2D(Config.Extent, PF_FloatR11G11B10, FClearValueBinding::Transparent, TexCreate_RenderTargetable | TexCreate_ShaderResource);
+		SceneTextures.MobileLocalLightTextureA = GraphBuilder.CreateTexture(MobileLocalLightTextureADesc, TEXT("MobileLocalLightTextureA"));
+
+		FRDGTextureDesc MobileLocalLightTextureBDesc = FRDGTextureDesc::Create2D(Config.Extent, PF_A2B10G10R10, FClearValueBinding::Transparent, TexCreate_RenderTargetable | TexCreate_ShaderResource);
+		SceneTextures.MobileLocalLightTextureB = GraphBuilder.CreateTexture(MobileLocalLightTextureBDesc, TEXT("MobileLocalLightTextureB"));
+	}
 
 #if WITH_DEBUG_VIEW_MODES
 	if (AllowDebugViewShaderMode(DVSM_QuadComplexity, Config.ShaderPlatform, Config.FeatureLevel))
@@ -629,8 +642,7 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 }
 
 uint32 FSceneTextures::GetGBufferRenderTargets(
-	TStaticArray<FTextureRenderTargetBinding,
-	MaxSimultaneousRenderTargets>& RenderTargets,
+	TArrayView<FTextureRenderTargetBinding> RenderTargets,
 	EGBufferLayout Layout) const
 {
 	uint32 RenderTargetCount = 0;
@@ -716,6 +728,7 @@ void FSceneTextureExtracts::QueueExtractions(FRDGBuilder& GraphBuilder, const FS
 	{
 		SetupMode |= ESceneTextureSetupMode::SceneDepth;
 		ExtractIfProduced(SceneTextures.Depth.Resolve, Depth);
+		ExtractIfProduced(SceneTextures.PartialDepth.Resolve, PartialDepth);
 	}
 
 	if (EnumHasAnyFlags(SceneTextures.Config.Extracts, ESceneTextureExtracts::CustomDepth))
@@ -767,6 +780,28 @@ void QueueSceneTextureExtractions(FRDGBuilder& GraphBuilder, const FSceneTexture
 	return GSceneTextureExtracts.QueueExtractions(GraphBuilder, SceneTextures);
 }
 
+FRDGTextureRef GetSceneTexture(const FSceneTextures& SceneTextures, ESceneTexture InSceneTexture)
+{
+	switch (InSceneTexture)
+	{
+	case ESceneTexture::Color:          return SceneTextures.Color.Resolve;
+	case ESceneTexture::Depth:          return SceneTextures.Depth.Resolve;
+	case ESceneTexture::SmallDepth:     return SceneTextures.SmallDepth;
+	case ESceneTexture::Velocity:       return SceneTextures.Velocity;
+	case ESceneTexture::GBufferA:       return SceneTextures.GBufferA;
+	case ESceneTexture::GBufferB:       return SceneTextures.GBufferB;
+	case ESceneTexture::GBufferC:       return SceneTextures.GBufferC;
+	case ESceneTexture::GBufferD:       return SceneTextures.GBufferD;
+	case ESceneTexture::GBufferE:       return SceneTextures.GBufferE;
+	case ESceneTexture::GBufferF:       return SceneTextures.GBufferF;
+	case ESceneTexture::SSAO:           return SceneTextures.ScreenSpaceAO;
+	case ESceneTexture::CustomDepth:	return SceneTextures.CustomDepth.Depth;
+	default:
+		checkNoEntry();
+		return nullptr;
+	}
+}
+
 void SetupSceneTextureUniformParameters(
 	FRDGBuilder& GraphBuilder,
 	const FSceneTextures* SceneTextures,
@@ -779,6 +814,7 @@ void SetupSceneTextureUniformParameters(
 	SceneTextureParameters.PointClampSampler = TStaticSamplerState<SF_Point>::GetRHI();
 	SceneTextureParameters.SceneColorTexture = SystemTextures.Black;
 	SceneTextureParameters.SceneDepthTexture = SystemTextures.DepthDummy;
+	SceneTextureParameters.ScenePartialDepthTexture = SystemTextures.DepthDummy;
 	SceneTextureParameters.GBufferATexture = SystemTextures.Black;
 	SceneTextureParameters.GBufferBTexture = SystemTextures.Black;
 	SceneTextureParameters.GBufferCTexture = SystemTextures.Black;
@@ -802,6 +838,7 @@ void SetupSceneTextureUniformParameters(
 		if (EnumHasAnyFlags(SetupMode, ESceneTextureSetupMode::SceneDepth))
 		{
 			SceneTextureParameters.SceneDepthTexture = SceneTextures->Depth.Resolve;
+			SceneTextureParameters.ScenePartialDepthTexture = SceneTextures->PartialDepth.Resolve;
 		}
 
 		if (IsUsingGBuffers(ShaderPlatform))
@@ -871,6 +908,19 @@ TRDGUniformBufferRef<FSceneTextureUniformParameters> CreateSceneTextureUniformBu
 	return GraphBuilder.CreateUniformBuffer(SceneTexturesParameters);
 }
 
+TRDGUniformBufferRef<FSceneTextureUniformParameters> CreateSceneTextureUniformBuffer(
+	FRDGBuilder& GraphBuilder,
+	const FSceneView& View,
+	ESceneTextureSetupMode SetupMode)
+{
+	if (View.bIsViewInfo)
+	{
+		return CreateSceneTextureUniformBuffer(GraphBuilder, ((const FViewInfo&)View).GetSceneTexturesChecked(), View.GetFeatureLevel(), SetupMode);
+	}
+
+	return nullptr;
+}
+
 EMobileSceneTextureSetupMode Translate(ESceneTextureSetupMode InSetupMode)
 {
 	EMobileSceneTextureSetupMode OutSetupMode = EMobileSceneTextureSetupMode::None;
@@ -897,6 +947,8 @@ void SetupMobileSceneTextureUniformParameters(
 	SceneTextureParameters.SceneColorTextureSampler = TStaticSamplerState<>::GetRHI();
 	SceneTextureParameters.SceneDepthTexture = SystemTextures.DepthDummy;
 	SceneTextureParameters.SceneDepthTextureSampler = TStaticSamplerState<>::GetRHI();
+	SceneTextureParameters.ScenePartialDepthTexture = SystemTextures.DepthDummy;
+	SceneTextureParameters.ScenePartialDepthTextureSampler = TStaticSamplerState<>::GetRHI();
 	// CustomDepthTexture is a color texture on mobile, with DeviceZ values
 	SceneTextureParameters.CustomDepthTexture = SystemTextures.Black;
 	SceneTextureParameters.CustomDepthTextureSampler = TStaticSamplerState<>::GetRHI();
@@ -909,6 +961,8 @@ void SetupMobileSceneTextureUniformParameters(
 	SceneTextureParameters.GBufferDTexture = SystemTextures.Black;
 	// SceneDepthAuxTexture is a color texture on mobile, with DeviceZ values
 	SceneTextureParameters.SceneDepthAuxTexture = SystemTextures.Black;
+	SceneTextureParameters.LocalLightTextureA = SystemTextures.Black;
+	SceneTextureParameters.LocalLightTextureB = SystemTextures.Black;
 	SceneTextureParameters.GBufferATextureSampler = TStaticSamplerState<>::GetRHI();
 	SceneTextureParameters.GBufferBTextureSampler = TStaticSamplerState<>::GetRHI();
 	SceneTextureParameters.GBufferCTextureSampler = TStaticSamplerState<>::GetRHI();
@@ -927,6 +981,13 @@ void SetupMobileSceneTextureUniformParameters(
 			!EnumHasAnyFlags(SceneTextures->Depth.Resolve->Desc.Flags, TexCreate_Memoryless))
 		{
 			SceneTextureParameters.SceneDepthTexture = SceneTextures->Depth.Resolve;
+		}
+
+		if (EnumHasAnyFlags(SetupMode, EMobileSceneTextureSetupMode::SceneDepth) &&
+			HasBeenProduced(SceneTextures->PartialDepth.Resolve) &&
+			!EnumHasAnyFlags(SceneTextures->PartialDepth.Resolve->Desc.Flags, TexCreate_Memoryless))
+		{
+			SceneTextureParameters.ScenePartialDepthTexture = SceneTextures->PartialDepth.Resolve;
 		}
 
 		if (SceneTextures->Config.bIsUsingGBuffers)
@@ -960,6 +1021,16 @@ void SetupMobileSceneTextureUniformParameters(
 			}
 		}
 
+		if (HasBeenProduced(SceneTextures->MobileLocalLightTextureA))
+		{
+			SceneTextureParameters.LocalLightTextureA = SceneTextures->MobileLocalLightTextureA;
+		}
+
+		if (HasBeenProduced(SceneTextures->MobileLocalLightTextureB))
+		{
+			SceneTextureParameters.LocalLightTextureB = SceneTextures->MobileLocalLightTextureB;
+		}
+
 		if (EnumHasAnyFlags(SetupMode, EMobileSceneTextureSetupMode::CustomDepth))
 		{
 			const FCustomDepthTextures& CustomDepthTextures = SceneTextures->CustomDepth;
@@ -989,6 +1060,16 @@ TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> CreateMobileSceneText
 	return GraphBuilder.CreateUniformBuffer(SceneTexturesParameters);
 }
 
+TRDGUniformBufferRef<FMobileSceneTextureUniformParameters> CreateMobileSceneTextureUniformBuffer(FRDGBuilder& GraphBuilder, const FSceneView& View, EMobileSceneTextureSetupMode SetupMode)
+{
+	if (View.bIsViewInfo)
+	{
+		return CreateMobileSceneTextureUniformBuffer(GraphBuilder, ((const FViewInfo&)View).GetSceneTexturesChecked(), SetupMode);
+	}
+
+	return nullptr;
+}
+
 FSceneTextureShaderParameters CreateSceneTextureShaderParameters(
 	FRDGBuilder& GraphBuilder,
 	const FSceneTextures* SceneTextures,
@@ -1005,6 +1086,37 @@ FSceneTextureShaderParameters CreateSceneTextureShaderParameters(
 		Parameters.MobileSceneTextures = CreateMobileSceneTextureUniformBuffer(GraphBuilder, SceneTextures, Translate(SetupMode));
 	}
 	return Parameters;
+}
+
+FSceneTextureShaderParameters CreateSceneTextureShaderParameters(FRDGBuilder& GraphBuilder, const FSceneView& View, ESceneTextureSetupMode SetupMode)
+{
+	FSceneTextureShaderParameters Parameters;
+	if (FSceneInterface::GetShadingPath(View.FeatureLevel) == EShadingPath::Deferred)
+	{
+		Parameters.SceneTextures = CreateSceneTextureUniformBuffer(GraphBuilder, View, SetupMode);
+	}
+	else if (FSceneInterface::GetShadingPath(View.FeatureLevel) == EShadingPath::Mobile)
+	{
+		Parameters.MobileSceneTextures = CreateMobileSceneTextureUniformBuffer(GraphBuilder, View, Translate(SetupMode));
+	}
+	return Parameters;
+}
+
+FSceneTextureShaderParameters GetSceneTextureShaderParameters(const FSceneView& View)
+{
+	check(View.bIsViewInfo);
+	const FMinimalSceneTextures& SceneTextures = static_cast<const FViewInfo&>(View).GetSceneTextures();
+	return SceneTextures.GetSceneTextureShaderParameters(View.GetFeatureLevel());
+}
+
+TRDGUniformBufferRef<FSceneTextureUniformParameters> GetSceneTextureUnformBuffer(const FSceneView& View)
+{
+	if (const FSceneTextures* SceneTextures = static_cast<const FViewFamilyInfo*>(View.Family)->GetSceneTexturesChecked())
+	{
+		return SceneTextures->UniformBuffer;
+	}
+
+	return TRDGUniformBufferRef<FSceneTextureUniformParameters>{};
 }
 
 bool IsSceneTexturesValid()

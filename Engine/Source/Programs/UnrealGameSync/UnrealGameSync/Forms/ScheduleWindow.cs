@@ -2,22 +2,16 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
-using System.Drawing;
 using System.Globalization;
-using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
 {
 	partial class ScheduleWindow : Form
 	{
-
-		Dictionary<UserSelectedProjectSettings, List<LatestChangeType>> _projectToLatestChangeTypes;
+		readonly Dictionary<UserSelectedProjectSettings, List<LatestChangeType>> _projectToLatestChangeTypes;
 
 		public ScheduleWindow(
 			bool inEnabled,
@@ -28,6 +22,7 @@ namespace UnrealGameSync
 			Dictionary<UserSelectedProjectSettings, List<LatestChangeType>> inProjectToLatestChangeTypes)
 		{
 			InitializeComponent();
+			Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
 
 			EnableCheckBox.Checked = inEnabled;
 
@@ -69,14 +64,14 @@ namespace UnrealGameSync
 					menuItem.Name = changeType.Name;
 					menuItem.Text = changeType.Description;
 					menuItem.Size = new System.Drawing.Size(189, 22);
-					menuItem.Click += (sender, e) => SyncTypeDropDown_Click(sender, e, changeType.Name);
+					menuItem.Click += (sender, e) => SyncTypeDropDown_Click(changeType.Name);
 
 					SyncTypeDropDown.Items.Add(menuItem);
 				}
 			}
 		}
 
-		private void ProjectListBox_ItemCheck(object sender, ItemCheckEventArgs e)
+		private void ProjectListBox_ItemCheck(object? sender, ItemCheckEventArgs e)
 		{
 			bool isAnyOpenProjectIndex = e.Index == 0;
 			if (e.NewValue == CheckState.Checked && !isAnyOpenProjectIndex)
@@ -90,7 +85,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		private void SyncTypeDropDown_Closed(object sender, ToolStripDropDownClosedEventArgs e)
+		private void SyncTypeDropDown_Closed(object? sender, ToolStripDropDownClosedEventArgs e)
 		{
 			if (e.CloseReason != ToolStripDropDownCloseReason.ItemClicked)
 			{
@@ -98,7 +93,7 @@ namespace UnrealGameSync
 			}
 		}
 
-		private void SyncTypeDropDown_Click(object? sender, EventArgs e, string syncTypeId)
+		private void SyncTypeDropDown_Click(string syncTypeId)
 		{
 			UserSelectedProjectSettings? projectSetting = ProjectListBox.Items[ProjectListBox.SelectedIndex] as UserSelectedProjectSettings;
 			if (projectSetting != null)
@@ -108,7 +103,7 @@ namespace UnrealGameSync
 			SyncTypeDropDown.Close();
 		}
 
-		private void AddProjects(IEnumerable<UserSelectedProjectSettings> projects, Dictionary<string, UserSelectedProjectSettings> localFileToProject)
+		private static void AddProjects(IEnumerable<UserSelectedProjectSettings> projects, Dictionary<string, UserSelectedProjectSettings> localFileToProject)
 		{
 			foreach(UserSelectedProjectSettings project in projects)
 			{
@@ -119,26 +114,25 @@ namespace UnrealGameSync
 			}
 		}
 
-		public void CopySettings(out bool outEnabled, out TimeSpan outTime, out bool outAnyOpenProject, out List<UserSelectedProjectSettings> outScheduledProjects)
+		public void CopySettings(UserSettings settings)
 		{
-			outEnabled = EnableCheckBox.Checked;
-			outTime = TimePicker.Value.TimeOfDay;
+			settings.ScheduleEnabled = EnableCheckBox.Checked;
+			settings.ScheduleTime = TimePicker.Value.TimeOfDay;
 
-			outAnyOpenProject = false;
+			settings.ScheduleAnyOpenProject = false;
+			settings.ScheduleProjects.Clear();
 
-			List<UserSelectedProjectSettings> scheduledProjects = new List<UserSelectedProjectSettings>();
 			foreach(int index in ProjectListBox.CheckedIndices.OfType<int>())
 			{
 				if(index == 0)
 				{
-					outAnyOpenProject = true;
+					settings.ScheduleAnyOpenProject = true;
 				}
 				else
 				{
-					scheduledProjects.Add((UserSelectedProjectSettings)ProjectListBox.Items[index]);
+					settings.ScheduleProjects.Add((UserSelectedProjectSettings)ProjectListBox.Items[index]);
 				}
 			}
-			outScheduledProjects = scheduledProjects;
 		}
 
 		private void EnableCheckBox_CheckedChanged(object sender, EventArgs e)

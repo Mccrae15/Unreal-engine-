@@ -349,6 +349,7 @@ UK2Node::ERedirectType UK2Node_BreakStruct::DoPinsMatchForReconstruction(const U
 	{
 		Result = ERedirectType_Name;
 	}
+
 	return Result;
 }
 

@@ -147,7 +147,7 @@ class FLumenCardGPUData
 {
 public:
 	// Must match usf
-	enum { DataStrideInFloat4s = 9 };
+	enum { DataStrideInFloat4s = 10 };
 	enum { DataStrideInBytes = DataStrideInFloat4s * sizeof(FVector4f) };
 
 	static void PackSurfaceMipMap(const FLumenCard& Card, int32 ResLevel, uint32& PackedSizeInPages, uint32& PackedPageTableOffset)
@@ -171,9 +171,13 @@ public:
 	{
 		// Note: layout must match GetLumenCardData in usf
 
-		OutData[0] = FVector4f(Card.WorldOBB.AxisX[0], Card.WorldOBB.AxisY[0], Card.WorldOBB.AxisZ[0], Card.WorldOBB.Origin.X); // LWC_TODO
-		OutData[1] = FVector4f(Card.WorldOBB.AxisX[1], Card.WorldOBB.AxisY[1], Card.WorldOBB.AxisZ[1], Card.WorldOBB.Origin.Y); // LWC_TODO
-		OutData[2] = FVector4f(Card.WorldOBB.AxisX[2], Card.WorldOBB.AxisY[2], Card.WorldOBB.AxisZ[2], Card.WorldOBB.Origin.Z); // LWC_TODO
+		const FLargeWorldRenderPosition WorldPosition(Card.WorldOBB.Origin);
+		const FVector3f Offset = WorldPosition.GetOffset();
+
+		OutData[0] = WorldPosition.GetTile();
+		OutData[1] = FVector4f(Card.WorldOBB.AxisX[0], Card.WorldOBB.AxisY[0], Card.WorldOBB.AxisZ[0], Offset.X);
+		OutData[2] = FVector4f(Card.WorldOBB.AxisX[1], Card.WorldOBB.AxisY[1], Card.WorldOBB.AxisZ[1], Offset.Y);
+		OutData[3] = FVector4f(Card.WorldOBB.AxisX[2], Card.WorldOBB.AxisY[2], Card.WorldOBB.AxisZ[2], Offset.Z);
 
 		const FIntPoint ResLevelBias = Card.ResLevelToResLevelXYBias();
 		const uint32 LightingChannelMask = InPrimitiveGroup ? InPrimitiveGroup->LightingChannelMask : UINT32_MAX;
@@ -186,8 +190,8 @@ public:
 		Packed3W |= Card.bVisible && Card.IsAllocated() ? (1 << 24) : 0;
 		Packed3W |= Card.bHeightfield && Card.IsAllocated() ? (1 << 25) : 0;
 
-		OutData[3] = FVector4f(Card.WorldOBB.Extent.X, Card.WorldOBB.Extent.Y, Card.WorldOBB.Extent.Z, 0.0f);
-		OutData[3].W = *((float*)&Packed3W);
+		OutData[4] = FVector4f(Card.WorldOBB.Extent.X, Card.WorldOBB.Extent.Y, Card.WorldOBB.Extent.Z, 0.0f);
+		OutData[4].W = *((float*)&Packed3W);
 
 		// Map low-res level for diffuse
 		uint32 PackedSizeInPages = 0;
@@ -199,10 +203,10 @@ public:
 		uint32 PackedHiResPageTableOffset = 0;
 		PackSurfaceMipMap(Card, Card.MaxAllocatedResLevel, PackedHiResSizeInPages, PackedHiResPageTableOffset);
 
-		OutData[4].X = *((float*)&PackedSizeInPages);
-		OutData[4].Y = *((float*)&PackedPageTableOffset);
-		OutData[4].Z = *((float*)&PackedHiResSizeInPages);
-		OutData[4].W = *((float*)&PackedHiResPageTableOffset);
+		OutData[5].X = *((float*)&PackedSizeInPages);
+		OutData[5].Y = *((float*)&PackedPageTableOffset);
+		OutData[5].Z = *((float*)&PackedHiResSizeInPages);
+		OutData[5].W = *((float*)&PackedHiResPageTableOffset);
 
 		float AverageTexelSize = 100.0f;
 		if (Card.IsAllocated())
@@ -212,19 +216,19 @@ public:
 			AverageTexelSize = 0.5f * (Card.MeshCardsOBB.Extent.X / MipMapDesc.Resolution.X + Card.MeshCardsOBB.Extent.Y / MipMapDesc.Resolution.Y);
 		}
 
-		OutData[5] = FVector4f(Card.MeshCardsOBB.AxisX[0], Card.MeshCardsOBB.AxisY[0], Card.MeshCardsOBB.AxisZ[0], Card.MeshCardsOBB.Origin.X);
-		OutData[6] = FVector4f(Card.MeshCardsOBB.AxisX[1], Card.MeshCardsOBB.AxisY[1], Card.MeshCardsOBB.AxisZ[1], Card.MeshCardsOBB.Origin.Y);
-		OutData[7] = FVector4f(Card.MeshCardsOBB.AxisX[2], Card.MeshCardsOBB.AxisY[2], Card.MeshCardsOBB.AxisZ[2], Card.MeshCardsOBB.Origin.Z);
-		OutData[8] = FVector4f(Card.MeshCardsOBB.Extent, AverageTexelSize);
+		OutData[6] = FVector4f(Card.MeshCardsOBB.AxisX[0], Card.MeshCardsOBB.AxisY[0], Card.MeshCardsOBB.AxisZ[0], Card.MeshCardsOBB.Origin.X);
+		OutData[7] = FVector4f(Card.MeshCardsOBB.AxisX[1], Card.MeshCardsOBB.AxisY[1], Card.MeshCardsOBB.AxisZ[1], Card.MeshCardsOBB.Origin.Y);
+		OutData[8] = FVector4f(Card.MeshCardsOBB.AxisX[2], Card.MeshCardsOBB.AxisY[2], Card.MeshCardsOBB.AxisZ[2], Card.MeshCardsOBB.Origin.Z);
+		OutData[9] = FVector4f(Card.MeshCardsOBB.Extent, AverageTexelSize);
 
-		static_assert(DataStrideInFloat4s == 9, "Data stride doesn't match");
+		static_assert(DataStrideInFloat4s == 10, "Data stride doesn't match");
 	}
 };
 
 struct FLumenMeshCardsGPUData
 {
 	// Must match LUMEN_MESH_CARDS_DATA_STRIDE in LumenCardCommon.ush
-	enum { DataStrideInFloat4s = 7 };
+	enum { DataStrideInFloat4s = 6 };
 	enum { DataStrideInBytes = DataStrideInFloat4s * 16 };
 
 	static void FillData(const class FLumenMeshCards& RESTRICT MeshCards, FVector4f* RESTRICT OutData);
@@ -233,10 +237,14 @@ struct FLumenMeshCardsGPUData
 void FLumenMeshCardsGPUData::FillData(const FLumenMeshCards& RESTRICT MeshCards, FVector4f* RESTRICT OutData)
 {
 	// Note: layout must match GetLumenMeshCardsData in usf
-	const FVector WorldOrigin = MeshCards.LocalToWorld.GetOrigin();
-	OutData[0] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::X), WorldOrigin.X)); // LWC_TODO
-	OutData[1] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Y), WorldOrigin.Y)); // LWC_TODO
-	OutData[2] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Z), WorldOrigin.Z)); // LWC_TODO
+
+	const FLargeWorldRenderPosition WorldOrigin(MeshCards.LocalToWorld.GetOrigin());
+	const FVector3f WorldOriginOffset = WorldOrigin.GetOffset();
+
+	OutData[0] = WorldOrigin.GetTile();
+	OutData[1] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::X), WorldOriginOffset.X));
+	OutData[2] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Y), WorldOriginOffset.Y));
+	OutData[3] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Z), WorldOriginOffset.Z));
 
 	uint32 PackedData[4];
 	PackedData[0] = MeshCards.FirstCardIndex;
@@ -245,22 +253,232 @@ void FLumenMeshCardsGPUData::FillData(const FLumenMeshCards& RESTRICT MeshCards,
 	PackedData[1] |= MeshCards.bMostlyTwoSided ? 0x20000 : 0;
 	PackedData[2] = MeshCards.CardLookup[0];
 	PackedData[3] = MeshCards.CardLookup[1];
-	OutData[3] = *(FVector4f*)&PackedData;
+	OutData[4] = *(FVector4f*)&PackedData;
 
 	PackedData[0] = MeshCards.CardLookup[2];
 	PackedData[1] = MeshCards.CardLookup[3];
 	PackedData[2] = MeshCards.CardLookup[4];
 	PackedData[3] = MeshCards.CardLookup[5];
-	OutData[4] = *(FVector4f*)&PackedData;
+	OutData[5] = *(FVector4f*)&PackedData;
 
-	// Small (world space) epsilon to handle arithmetic errors during surface cache sampling
-	const float SamplingEps = 0.01f;
-	const FVector3f MinMeshCardsPosition = FVector3f(MeshCards.LocalBounds.Min) * MeshCards.LocalToWorldScale + SamplingEps;
-	const FVector3f MaxMeshCardsPosition = FVector3f(MeshCards.LocalBounds.Max) * MeshCards.LocalToWorldScale - SamplingEps;
-	OutData[5] = FVector4f(MinMeshCardsPosition, 0.0f);
-	OutData[6] = FVector4f(MaxMeshCardsPosition, 0.0f);
+	static_assert(DataStrideInFloat4s == 6, "Data stride doesn't match");
+}
 
-	static_assert(DataStrideInFloat4s == 7, "Data stride doesn't match");
+struct FLumenPrimitiveGroupGPUData
+{
+	// Must match LUMEN_PRIMITIVE_GROUP_DATA_STRIDE in LumenScene.usf
+	enum { DataStrideInFloat4s = 2 };
+	enum { DataStrideInBytes = DataStrideInFloat4s * 16 };
+
+	static void FillData(const class FLumenPrimitiveGroup& RESTRICT PrimitiveGroup, FVector4f* RESTRICT OutData);
+};
+
+void FLumenPrimitiveGroupGPUData::FillData(const FLumenPrimitiveGroup& RESTRICT PrimitiveGroup, FVector4f* RESTRICT OutData)
+{
+	// Note: layout must match GetLumenPrimitiveGroupData in usf
+
+	OutData[0] = PrimitiveGroup.WorldSpaceBoundingBox.GetCenter();
+	OutData[1] = PrimitiveGroup.WorldSpaceBoundingBox.GetExtent();
+
+	uint32 MeshCardsIndex = PrimitiveGroup.MeshCardsIndex >= 0 ? PrimitiveGroup.MeshCardsIndex : UINT32_MAX;
+	OutData[0].W = *((float*) &MeshCardsIndex);
+
+	uint32 PackedFlags = 0;
+	PackedFlags |= PrimitiveGroup.bValidMeshCards		? 0x01 : 0;
+	PackedFlags |= PrimitiveGroup.bFarField				? 0x02 : 0;
+	PackedFlags |= PrimitiveGroup.bHeightfield			? 0x04 : 0;
+	PackedFlags |= PrimitiveGroup.bEmissiveLightSource	? 0x08 : 0;
+	OutData[1].W = *((float*) &PackedFlags);
+
+	static_assert(DataStrideInFloat4s == 2, "Data stride doesn't match");
+}
+
+void UpdateLumenMeshCards(FRDGBuilder& GraphBuilder, const FScene& Scene, const FDistanceFieldSceneData& DistanceFieldSceneData, FLumenSceneFrameTemporaries& FrameTemporaries, FLumenSceneData& LumenSceneData)
+{
+	LLM_SCOPE_BYTAG(Lumen);
+	QUICK_SCOPE_CYCLE_COUNTER(UpdateLumenMeshCards);
+
+	extern int32 GLumenSceneUploadEveryFrame;
+	if (GLumenSceneUploadEveryFrame)
+	{
+		LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Reset();
+		for (int32 i = 0; i < LumenSceneData.Heightfields.Num(); ++i)
+		{
+			LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Add(i);
+		}
+
+		LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Reset();
+		for (int32 i = 0; i < LumenSceneData.MeshCards.Num(); ++i)
+		{
+			LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Add(i);
+		}
+
+		LumenSceneData.PrimitiveGroupIndicesToUpdateInBuffer.Reset();
+		for (int32 i = 0; i < LumenSceneData.PrimitiveGroups.Num(); ++i)
+		{
+			LumenSceneData.PrimitiveGroupIndicesToUpdateInBuffer.Add(i);
+		}
+	}
+
+	// Upload primitive groups
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(UpdatePrimitiveGroups);
+
+		const uint32 NumPrimitiveGroups = LumenSceneData.PrimitiveGroups.Num();
+		const uint32 PrimitiveGroupNumFloat4s = FMath::RoundUpToPowerOfTwo(NumPrimitiveGroups * FLumenPrimitiveGroupGPUData::DataStrideInFloat4s);
+		const uint32 PrimitiveGroupNumBytes = PrimitiveGroupNumFloat4s * sizeof(FVector4f);
+		FRDGBuffer* PrimitiveGroupBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, LumenSceneData.PrimitiveGroupBuffer, PrimitiveGroupNumBytes, TEXT("Lumen.PrimitiveGroup"));
+		FrameTemporaries.PrimitiveGroupBufferSRV = GraphBuilder.CreateSRV(PrimitiveGroupBuffer);
+
+		const int32 NumPrimitiveGroupUploads = LumenSceneData.PrimitiveGroupIndicesToUpdateInBuffer.Num();
+
+		if (NumPrimitiveGroupUploads > 0)
+		{
+			FLumenPrimitiveGroup NullPrimitiveGroup;
+			NullPrimitiveGroup.WorldSpaceBoundingBox.Min = FVector3f(0.0f, 0.0f, 0.0f);
+			NullPrimitiveGroup.WorldSpaceBoundingBox.Max = FVector3f(0.0f, 0.0f, 0.0f);
+
+			LumenSceneData.PrimitiveGroupUploadBuffer.Init(GraphBuilder, NumPrimitiveGroupUploads, FLumenPrimitiveGroupGPUData::DataStrideInBytes, true, TEXT("Lumen.PrimitiveGroupUpload"));
+
+			for (int32 Index : LumenSceneData.PrimitiveGroupIndicesToUpdateInBuffer)
+			{
+				if (Index < LumenSceneData.PrimitiveGroups.Num())
+				{
+					const FLumenPrimitiveGroup& PrimitiveGroup = LumenSceneData.PrimitiveGroups.IsAllocated(Index) ? LumenSceneData.PrimitiveGroups[Index] : NullPrimitiveGroup;
+
+					FVector4f* Data = (FVector4f*)LumenSceneData.PrimitiveGroupUploadBuffer.Add_GetRef(Index);
+					FLumenPrimitiveGroupGPUData::FillData(PrimitiveGroup, Data);
+				}
+			}
+
+			LumenSceneData.PrimitiveGroupUploadBuffer.ResourceUploadTo(GraphBuilder, PrimitiveGroupBuffer);
+		}
+	}
+
+	// Upload MeshCards
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(UpdateMeshCards);
+
+		const uint32 NumMeshCards = LumenSceneData.MeshCards.Num();
+		const uint32 MeshCardsNumFloat4s = FMath::RoundUpToPowerOfTwo(NumMeshCards * FLumenMeshCardsGPUData::DataStrideInFloat4s);
+		const uint32 MeshCardsNumBytes = MeshCardsNumFloat4s * sizeof(FVector4f);
+		FRDGBuffer* MeshCardsBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, LumenSceneData.MeshCardsBuffer, MeshCardsNumBytes, TEXT("Lumen.MeshCards"));
+		FrameTemporaries.MeshCardsBufferSRV = GraphBuilder.CreateSRV(MeshCardsBuffer);
+
+		const int32 NumMeshCardsUploads = LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Num();
+
+		if (NumMeshCardsUploads > 0)
+		{
+			FLumenMeshCards NullMeshCards;
+			LumenSceneData.MeshCardsUploadBuffer.Init(GraphBuilder, NumMeshCardsUploads, FLumenMeshCardsGPUData::DataStrideInBytes, true, TEXT("Lumen.MeshCardsUpload"));
+
+			for (int32 Index : LumenSceneData.MeshCardsIndicesToUpdateInBuffer)
+			{
+				if (Index < LumenSceneData.MeshCards.Num())
+				{
+					const FLumenMeshCards& MeshCards = LumenSceneData.MeshCards.IsAllocated(Index) ? LumenSceneData.MeshCards[Index] : NullMeshCards;
+
+					FVector4f* Data = (FVector4f*)LumenSceneData.MeshCardsUploadBuffer.Add_GetRef(Index);
+					FLumenMeshCardsGPUData::FillData(MeshCards, Data);
+				}
+			}
+
+			LumenSceneData.MeshCardsUploadBuffer.ResourceUploadTo(GraphBuilder, MeshCardsBuffer);
+		}
+	}
+
+	// Upload Heightfields
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(UpdateHeightfields);
+
+		const uint32 NumHeightfields = LumenSceneData.Heightfields.Num();
+		const uint32 HeightfieldsNumFloat4s = FMath::RoundUpToPowerOfTwo(NumHeightfields * FLumenHeightfieldGPUData::DataStrideInFloat4s);
+		const uint32 HeightfieldsNumBytes = HeightfieldsNumFloat4s * sizeof(FVector4f);
+		FRDGBuffer* HeightfieldBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, LumenSceneData.HeightfieldBuffer, HeightfieldsNumBytes, TEXT("Lumen.Heightfield"));
+		FrameTemporaries.HeightfieldBufferSRV = GraphBuilder.CreateSRV(HeightfieldBuffer);
+
+		const int32 NumHeightfieldsUploads = LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Num();
+
+		if (NumHeightfieldsUploads > 0)
+		{
+			FLumenHeightfield NullHeightfield;
+
+			LumenSceneData.HeightfieldUploadBuffer.Init(GraphBuilder, NumHeightfieldsUploads, FLumenHeightfieldGPUData::DataStrideInBytes, true, TEXT("Lumen.HeightfieldUpload"));
+
+			for (int32 Index : LumenSceneData.HeightfieldIndicesToUpdateInBuffer)
+			{
+				if (Index < LumenSceneData.Heightfields.Num())
+				{
+					const FLumenHeightfield& Heightfield = LumenSceneData.Heightfields.IsAllocated(Index) ? LumenSceneData.Heightfields[Index] : NullHeightfield;
+
+					FVector4f* Data = (FVector4f*)LumenSceneData.HeightfieldUploadBuffer.Add_GetRef(Index);
+					FLumenHeightfieldGPUData::FillData(Heightfield, LumenSceneData.MeshCards, Data);
+				}
+			}
+
+			LumenSceneData.HeightfieldUploadBuffer.ResourceUploadTo(GraphBuilder, HeightfieldBuffer);
+		}
+	}
+
+	// Upload SceneInstanceIndexToMeshCardsIndexBuffer
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(UpdateSceneInstanceIndexToMeshCardsIndexBuffer);
+
+		if (GLumenSceneUploadEveryFrame)
+		{
+			LumenSceneData.PrimitivesToUpdateMeshCards.Reset();
+
+			for (int32 PrimitiveIndex = 0; PrimitiveIndex < Scene.Primitives.Num(); ++PrimitiveIndex)
+			{
+				LumenSceneData.PrimitivesToUpdateMeshCards.Add(PrimitiveIndex);
+			}
+		}
+
+		const int32 NumIndices = FMath::Max(FMath::RoundUpToPowerOfTwo(Scene.GPUScene.GetInstanceIdUpperBoundGPU()), 1024u);
+		const uint32 IndexSizeInBytes = GPixelFormats[PF_R32_UINT].BlockBytes;
+		const uint32 IndicesSizeInBytes = NumIndices * IndexSizeInBytes;
+		FRDGBuffer* SceneInstanceIndexToMeshCardsIndexBuffer = ResizeByteAddressBufferIfNeeded(GraphBuilder, LumenSceneData.SceneInstanceIndexToMeshCardsIndexBuffer, IndicesSizeInBytes, TEXT("Lumen.SceneInstanceIndexToMeshCardsIndexBuffer"));
+		FrameTemporaries.SceneInstanceIndexToMeshCardsIndexBufferSRV = GraphBuilder.CreateSRV(SceneInstanceIndexToMeshCardsIndexBuffer);
+
+		uint32 NumIndexUploads = 0;
+
+		for (int32 PrimitiveIndex : LumenSceneData.PrimitivesToUpdateMeshCards)
+		{
+			if (PrimitiveIndex < Scene.Primitives.Num())
+			{
+				const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene.Primitives[PrimitiveIndex];
+				NumIndexUploads += PrimitiveSceneInfo->GetNumInstanceSceneDataEntries();
+			}
+		}
+
+		if (NumIndexUploads > 0)
+		{
+			LumenSceneData.SceneInstanceIndexToMeshCardsIndexUploadBuffer.Init(GraphBuilder, NumIndexUploads, IndexSizeInBytes, false, TEXT("Lumen.SceneInstanceIndexToMeshCardsIndexUploadBuffer"));
+
+			for (int32 PrimitiveIndex : LumenSceneData.PrimitivesToUpdateMeshCards)
+			{
+				if (PrimitiveIndex < Scene.Primitives.Num())
+				{
+					const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene.Primitives[PrimitiveIndex];
+					const int32 NumInstances = PrimitiveSceneInfo->GetNumInstanceSceneDataEntries();
+					const int32 InstanceDataOffset = PrimitiveSceneInfo->GetInstanceSceneDataOffset();
+
+					for (int32 InstanceIndex = 0; InstanceIndex < NumInstances; ++InstanceIndex)
+					{
+						const int32 MeshCardsIndex = LumenSceneData.GetMeshCardsIndex(PrimitiveSceneInfo, InstanceIndex);
+
+						int32 DestIndex = InstanceDataOffset + InstanceIndex;
+						if (DestIndex < NumIndices)
+						{
+							LumenSceneData.SceneInstanceIndexToMeshCardsIndexUploadBuffer.Add(DestIndex, &MeshCardsIndex);
+						}
+					}
+				}
+			}
+
+			LumenSceneData.SceneInstanceIndexToMeshCardsIndexUploadBuffer.ResourceUploadTo(GraphBuilder, SceneInstanceIndexToMeshCardsIndexBuffer);
+		}
+	}
 }
 
 void Lumen::UpdateCardSceneBuffer(FRDGBuilder& GraphBuilder, FLumenSceneFrameTemporaries& FrameTemporaries, const FSceneViewFamily& ViewFamily, FScene* Scene)
@@ -344,153 +562,6 @@ int32 FLumenSceneData::GetMeshCardsIndex(const FPrimitiveSceneInfo* PrimitiveSce
 	}
 
 	return -1;
-}
-
-void UpdateLumenMeshCards(FRDGBuilder& GraphBuilder, const FScene& Scene, const FDistanceFieldSceneData& DistanceFieldSceneData, FLumenSceneFrameTemporaries& FrameTemporaries, FLumenSceneData& LumenSceneData)
-{
-	LLM_SCOPE_BYTAG(Lumen);
-	QUICK_SCOPE_CYCLE_COUNTER(UpdateLumenMeshCards);
-
-	extern int32 GLumenSceneUploadEveryFrame;
-	if (GLumenSceneUploadEveryFrame)
-	{
-		LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Reset();
-		for (int32 i = 0; i < LumenSceneData.Heightfields.Num(); ++i)
-		{
-			LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Add(i);
-		}
-
-		LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Reset();
-		for (int32 i = 0; i < LumenSceneData.MeshCards.Num(); ++i)
-		{
-			LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Add(i);
-		}
-	}
-
-	// Upload MeshCards
-	{
-		QUICK_SCOPE_CYCLE_COUNTER(UpdateMeshCards);
-
-		const uint32 NumMeshCards = LumenSceneData.MeshCards.Num();
-		const uint32 MeshCardsNumFloat4s = FMath::RoundUpToPowerOfTwo(NumMeshCards * FLumenMeshCardsGPUData::DataStrideInFloat4s);
-		const uint32 MeshCardsNumBytes = MeshCardsNumFloat4s * sizeof(FVector4f);
-		FRDGBuffer* MeshCardsBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, LumenSceneData.MeshCardsBuffer, MeshCardsNumBytes, TEXT("Lumen.MeshCards"));
-		FrameTemporaries.MeshCardsBufferSRV = GraphBuilder.CreateSRV(MeshCardsBuffer);
-
-		const int32 NumMeshCardsUploads = LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Num();
-
-		if (NumMeshCardsUploads > 0)
-		{
-			FLumenMeshCards NullMeshCards;
-			LumenSceneData.MeshCardsUploadBuffer.Init(GraphBuilder, NumMeshCardsUploads, FLumenMeshCardsGPUData::DataStrideInBytes, true, TEXT("Lumen.MeshCardsUpload"));
-
-			for (int32 Index : LumenSceneData.MeshCardsIndicesToUpdateInBuffer)
-			{
-				if (Index < LumenSceneData.MeshCards.Num())
-				{
-					const FLumenMeshCards& MeshCards = LumenSceneData.MeshCards.IsAllocated(Index) ? LumenSceneData.MeshCards[Index] : NullMeshCards;
-
-					FVector4f* Data = (FVector4f*)LumenSceneData.MeshCardsUploadBuffer.Add_GetRef(Index);
-					FLumenMeshCardsGPUData::FillData(MeshCards, Data);
-				}
-			}
-
-			LumenSceneData.MeshCardsUploadBuffer.ResourceUploadTo(GraphBuilder, MeshCardsBuffer);
-		}
-	}
-
-	// Upload Heightfields
-	{
-		QUICK_SCOPE_CYCLE_COUNTER(UpdateHeightfields);
-
-		const uint32 NumHeightfields = LumenSceneData.Heightfields.Num();
-		const uint32 HeightfieldsNumFloat4s = FMath::RoundUpToPowerOfTwo(NumHeightfields * FLumenHeightfieldGPUData::DataStrideInFloat4s);
-		const uint32 HeightfieldsNumBytes = HeightfieldsNumFloat4s * sizeof(FVector4f);
-		FRDGBuffer* HeightfieldBuffer = ResizeStructuredBufferIfNeeded(GraphBuilder, LumenSceneData.HeightfieldBuffer, HeightfieldsNumBytes, TEXT("Lumen.Heightfield"));
-		FrameTemporaries.HeightfieldBufferSRV = GraphBuilder.CreateSRV(HeightfieldBuffer);
-
-		const int32 NumHeightfieldsUploads = LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Num();
-
-		if (NumHeightfieldsUploads > 0)
-		{
-			FLumenHeightfield NullHeightfield;
-
-			LumenSceneData.HeightfieldUploadBuffer.Init(GraphBuilder, NumHeightfieldsUploads, FLumenHeightfieldGPUData::DataStrideInBytes, true, TEXT("Lumen.HeightfieldUpload"));
-
-			for (int32 Index : LumenSceneData.HeightfieldIndicesToUpdateInBuffer)
-			{
-				if (Index < LumenSceneData.Heightfields.Num())
-				{
-					const FLumenHeightfield& Heightfield = LumenSceneData.Heightfields.IsAllocated(Index) ? LumenSceneData.Heightfields[Index] : NullHeightfield;
-
-					FVector4f* Data = (FVector4f*)LumenSceneData.HeightfieldUploadBuffer.Add_GetRef(Index);
-					FLumenHeightfieldGPUData::FillData(Heightfield, LumenSceneData.MeshCards, Data);
-				}
-			}
-
-			LumenSceneData.HeightfieldUploadBuffer.ResourceUploadTo(GraphBuilder, HeightfieldBuffer);
-		}
-	}
-
-	// Upload SceneInstanceIndexToMeshCardsIndexBuffer
-	{
-		QUICK_SCOPE_CYCLE_COUNTER(UpdateSceneInstanceIndexToMeshCardsIndexBuffer);
-
-		if (GLumenSceneUploadEveryFrame)
-		{
-			LumenSceneData.PrimitivesToUpdateMeshCards.Reset();
-
-			for (int32 PrimitiveIndex = 0; PrimitiveIndex < Scene.Primitives.Num(); ++PrimitiveIndex)
-			{
-				LumenSceneData.PrimitivesToUpdateMeshCards.Add(PrimitiveIndex);
-			}
-		}
-
-		const int32 NumIndices = FMath::Max(FMath::RoundUpToPowerOfTwo(Scene.GPUScene.InstanceSceneDataAllocator.GetMaxSize()), 1024u);
-		const uint32 IndexSizeInBytes = GPixelFormats[PF_R32_UINT].BlockBytes;
-		const uint32 IndicesSizeInBytes = NumIndices * IndexSizeInBytes;
-		FRDGBuffer* SceneInstanceIndexToMeshCardsIndexBuffer = ResizeByteAddressBufferIfNeeded(GraphBuilder, LumenSceneData.SceneInstanceIndexToMeshCardsIndexBuffer, IndicesSizeInBytes, TEXT("SceneInstanceIndexToMeshCardsIndexBuffer"));
-		FrameTemporaries.SceneInstanceIndexToMeshCardsIndexBufferSRV = GraphBuilder.CreateSRV(SceneInstanceIndexToMeshCardsIndexBuffer);
-
-		uint32 NumIndexUploads = 0;
-
-		for (int32 PrimitiveIndex : LumenSceneData.PrimitivesToUpdateMeshCards)
-		{
-			if (PrimitiveIndex < Scene.Primitives.Num())
-			{
-				const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene.Primitives[PrimitiveIndex];
-				NumIndexUploads += PrimitiveSceneInfo->GetNumInstanceSceneDataEntries();
-			}
-		}
-
-		if (NumIndexUploads > 0)
-		{
-			LumenSceneData.SceneInstanceIndexToMeshCardsIndexUploadBuffer.Init(GraphBuilder, NumIndexUploads, IndexSizeInBytes, false, TEXT("Lumen.SceneInstanceIndexToMeshCardsIndexUploadBuffer"));
-
-			for (int32 PrimitiveIndex : LumenSceneData.PrimitivesToUpdateMeshCards)
-			{
-				if (PrimitiveIndex < Scene.Primitives.Num())
-				{
-					const FPrimitiveSceneInfo* PrimitiveSceneInfo = Scene.Primitives[PrimitiveIndex];
-					const int32 NumInstances = PrimitiveSceneInfo->GetNumInstanceSceneDataEntries();
-
-					for (int32 InstanceIndex = 0; InstanceIndex < NumInstances; ++InstanceIndex)
-					{
-						const int32 MeshCardsIndex = LumenSceneData.GetMeshCardsIndex(PrimitiveSceneInfo, InstanceIndex);
-
-						LumenSceneData.SceneInstanceIndexToMeshCardsIndexUploadBuffer.Add(PrimitiveSceneInfo->GetInstanceSceneDataOffset() + InstanceIndex, &MeshCardsIndex);
-					}
-				}
-			}
-
-			LumenSceneData.SceneInstanceIndexToMeshCardsIndexUploadBuffer.ResourceUploadTo(GraphBuilder, SceneInstanceIndexToMeshCardsIndexBuffer);
-		}
-	}
-
-	// Reset arrays, but keep allocated memory for 1024 elements
-	LumenSceneData.HeightfieldIndicesToUpdateInBuffer.Empty(1024);
-	LumenSceneData.MeshCardsIndicesToUpdateInBuffer.Empty(1024);
-	LumenSceneData.PrimitivesToUpdateMeshCards.Empty(1024);
 }
 
 class FLumenMergedMeshCards
@@ -734,7 +805,9 @@ void FLumenSceneData::AddMeshCards(int32 PrimitiveGroupIndex)
 
 		if (PrimitiveGroup.MeshCardsIndex < 0)
 		{
+			// Can't spawn mesh cards, mark this primitive as invalid
 			PrimitiveGroup.bValidMeshCards = false;
+			PrimitiveGroupIndicesToUpdateInBuffer.Add(PrimitiveGroupIndex);
 		}
 	}
 }
@@ -854,12 +927,16 @@ void FLumenSceneData::AddMeshCardsFromBuildData(int32 PrimitiveGroupIndex, const
 			}
 
 			MeshCardsInstance.UpdateLookup(Cards);
+
+			PrimitiveGroupIndicesToUpdateInBuffer.Add(PrimitiveGroupIndex);
 		}
 	}
 }
 
-void FLumenSceneData::RemoveMeshCards(FLumenPrimitiveGroup& PrimitiveGroup)
+void FLumenSceneData::RemoveMeshCards(int32 PrimitiveGroupIndex)
 {
+	FLumenPrimitiveGroup& PrimitiveGroup = PrimitiveGroups[PrimitiveGroupIndex];
+
 	if (PrimitiveGroup.MeshCardsIndex >= 0)
 	{
 		const FLumenMeshCards& MeshCardsInstance = MeshCards[PrimitiveGroup.MeshCardsIndex];
@@ -888,6 +965,8 @@ void FLumenSceneData::RemoveMeshCards(FLumenPrimitiveGroup& PrimitiveGroup)
 		{
 			PrimitivesToUpdateMeshCards.Add(ScenePrimitive->GetIndex());
 		}
+
+		PrimitiveGroupIndicesToUpdateInBuffer.Add(PrimitiveGroupIndex);
 	}
 }
 

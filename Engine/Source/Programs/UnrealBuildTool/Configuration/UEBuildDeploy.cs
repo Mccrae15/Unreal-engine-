@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using EpicGames.Core;
-using System.Linq;
-using System.IO;
 using System;
+using System.IO;
 using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
@@ -22,7 +20,7 @@ namespace UnrealBuildTool
 
 		protected bool CopyFilesRecursively(string FromDir, string ToDir)
 		{
-			var FromDirInfo = new DirectoryInfo(FromDir);
+			DirectoryInfo FromDirInfo = new DirectoryInfo(FromDir);
 
 			if (!FromDirInfo.Exists)
 			{
@@ -39,14 +37,15 @@ namespace UnrealBuildTool
 				try
 				{
 					// Ensure we can overrwrite dest file as non-read only.
-					var ToDestFile = Path.Combine(ToDir, FromFile.Name);
+					string ToDestFile = Path.Combine(ToDir, FromFile.Name);
 					if (File.Exists(ToDestFile))
 					{
 						File.SetAttributes(ToDestFile, File.GetAttributes(ToDestFile) & ~FileAttributes.ReadOnly);
 					}
 
 					FromFile.CopyTo(ToDestFile, true);
-				} catch (Exception ex)
+				}
+				catch (Exception ex)
 				{
 					Logger.LogError(ex, "Error while copying {FromFile} from {FromDir} to {ToDir}: {Ex}", FromFile, FromDir, ToDir, ex);
 					return false;

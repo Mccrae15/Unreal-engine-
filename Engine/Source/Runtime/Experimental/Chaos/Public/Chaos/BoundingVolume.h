@@ -164,16 +164,16 @@ class TBoundingVolume final : public ISpatialAcceleration<InPayloadType, T,d>
 
 public:
 
-	virtual ISpatialAcceleration<TPayloadType, T, d>& operator=(const ISpatialAcceleration<TPayloadType, T, d>& Other) override
+	virtual void DeepAssign(const ISpatialAcceleration<TPayloadType, T, d>& Other) override
 	{
 
 		check(Other.GetType() == ESpatialAcceleration::BoundingVolume);
-		return operator=(static_cast<const TBoundingVolume<TPayloadType, T, d>&>(Other));
+		*this = static_cast<const TBoundingVolume<TPayloadType, T, d>&>(Other);
 	}
 
 	TBoundingVolume<TPayloadType, T, d>& operator=(const TBoundingVolume<TPayloadType, T, d>& Other)
 	{
-		ISpatialAcceleration<TPayloadType, FReal, 3>::operator=(Other);
+		ISpatialAcceleration<TPayloadType, FReal, 3>::DeepAssign(Other);
 		MGlobalPayloads = Other.MGlobalPayloads;
 		MGrid = Other.MGrid;
 		MElements = Other.MElements;
@@ -241,7 +241,7 @@ public:
 		bIsEmpty = true;
 	}
 
-	virtual void RemoveElement(const TPayloadType& Payload) override
+	virtual bool RemoveElement(const TPayloadType& Payload) override
 	{
 		SCOPE_CYCLE_COUNTER(STAT_BoundingVolumeRemoveElement);
 		if (const FPayloadInfo* PayloadInfo = MPayloadInfo.Find(Payload))
@@ -256,12 +256,15 @@ public:
 			}
 
 			MPayloadInfo.Remove(Payload);
+			return true;
 		}
+		return false;
 	}
 
-	virtual void UpdateElement(const TPayloadType& Payload, const TAABB<T,d>& NewBounds, bool bHasBounds) override
+	virtual bool UpdateElement(const TPayloadType& Payload, const TAABB<T,d>& NewBounds, bool bHasBounds) override
 	{
 		SCOPE_CYCLE_COUNTER(STAT_BoundingVolumeUpdateElement);
+		bool bElementExisted = true;
 		if (FPayloadInfo* PayloadInfo = MPayloadInfo.Find(Payload))
 		{
 			ensure(bHasBounds || PayloadInfo->GlobalPayloadIdx != INDEX_NONE);
@@ -278,9 +281,11 @@ public:
 		}
 		else
 		{
+			bElementExisted = false;
 			FPayloadInfo& NewPayloadInfo = MPayloadInfo.Add(Payload);
 			AddElementToExistingGrid(Payload, NewPayloadInfo, NewBounds, bHasBounds);
 		}
+		return bElementExisted;
 	}
 
 	inline void AddElement(const TPayloadBoundsElement<TPayloadType, T>& Payload)

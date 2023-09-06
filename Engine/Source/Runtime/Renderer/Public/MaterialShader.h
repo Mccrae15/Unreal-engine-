@@ -10,6 +10,7 @@
 #include "MaterialShared.h"
 #include "SceneView.h"
 #include "Shader.h"
+#include "ShaderParameterUtils.h"
 #include "RHIFwd.h"
 #include "Serialization/MemoryLayout.h"
 
@@ -65,45 +66,53 @@ struct FMaterialShaderPermutationParameters : public FShaderPermutationParameter
 };
 
 /** Base class of all shaders that need material parameters. */
-class RENDERER_API FMaterialShader : public FShader
+class FMaterialShader : public FShader
 {
-	DECLARE_TYPE_LAYOUT(FMaterialShader, NonVirtual);
+	DECLARE_EXPORTED_TYPE_LAYOUT(FMaterialShader, RENDERER_API, NonVirtual);
 public:
 	using FPermutationParameters = FMaterialShaderPermutationParameters;
 	using ShaderMetaType = FMaterialShaderType;
 
-	static FName UniformBufferLayoutName;
+	static RENDERER_API FName UniformBufferLayoutName;
 
-	FMaterialShader();
+	RENDERER_API FMaterialShader();
 
-	FMaterialShader(const FMaterialShaderType::CompiledShaderInitializerType& Initializer);
+	RENDERER_API FMaterialShader(const FMaterialShaderType::CompiledShaderInitializerType& Initializer);
 
-	FRHIUniformBuffer* GetParameterCollectionBuffer(const FGuid& Id, const FSceneInterface* SceneInterface) const;
+	RENDERER_API FRHIUniformBuffer* GetParameterCollectionBuffer(const FGuid& Id, const FSceneInterface* SceneInterface) const;
+
+	RENDERER_API void SetViewParameters(FRHIBatchedShaderParameters& BatchedParameters, const FSceneView& View, const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer);
 
 	template<typename ShaderRHIParamRef, typename TRHICommandList>
 	FORCEINLINE_DEBUGGABLE void SetViewParameters(TRHICommandList& RHICmdList, const ShaderRHIParamRef ShaderRHI, const FSceneView& View, const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer)
 	{
-		const auto& ViewUniformBufferParameter = GetUniformBufferParameter<FViewUniformShaderParameters>();
-		SetUniformBufferParameter(RHICmdList, ShaderRHI, ViewUniformBufferParameter, ViewUniformBuffer);
-
-		if (View.bShouldBindInstancedViewUB)
-		{
-			// When drawing an instanced stereo scene, the instanced view UB should be taken from the same view where it will contains a copy of both left and eye values (see FViewInfo::CreateViewUniformBuffers).
-			const auto& InstancedViewUniformBufferParameter = GetUniformBufferParameter<FInstancedViewUniformShaderParameters>();
-			SetUniformBufferParameter(RHICmdList, ShaderRHI, InstancedViewUniformBufferParameter, View.GetInstancedViewUniformBuffer());
-		}
+		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		SetViewParameters(BatchedParameters, View, ViewUniformBuffer);
+		RHICmdList.SetBatchedShaderParameters(ShaderRHI, BatchedParameters);
 	}
 
 	/** Sets pixel parameters that are material specific but not FMeshBatch specific. */
-	template<typename TRHIShader, typename TRHICommandList>
-	void SetParameters(
-		TRHICommandList& RHICmdList,
-		TRHIShader* ShaderRHI,
+	RENDERER_API void SetParameters(
+		FRHIBatchedShaderParameters& BatchedParameters,
 		const FMaterialRenderProxy* MaterialRenderProxy, 
 		const FMaterial& Material,
 		const FSceneView& View);
 
-	void GetShaderBindings(
+	/** Sets pixel parameters that are material specific but not FMeshBatch specific. */
+	template<typename TRHIShader, typename TRHICommandList>
+	inline void SetParameters(
+		TRHICommandList& RHICmdList,
+		TRHIShader* ShaderRHI,
+		const FMaterialRenderProxy* MaterialRenderProxy,
+		const FMaterial& Material,
+		const FSceneView& View)
+	{
+		FRHIBatchedShaderParameters& BatchedParameters = RHICmdList.GetScratchShaderParameters();
+		SetParameters(BatchedParameters, MaterialRenderProxy, Material, View);
+		RHICmdList.SetBatchedShaderParameters(ShaderRHI, BatchedParameters);
+	}
+
+	RENDERER_API void GetShaderBindings(
 		const FScene* Scene,
 		ERHIFeatureLevel::Type FeatureLevel,
 		const FMaterialRenderProxy& MaterialRenderProxy,
@@ -112,12 +121,12 @@ public:
 
 private:
 	/** If true, cached uniform expressions are allowed. */
-	static int32 bAllowCachedUniformExpressions;
+	static RENDERER_API int32 bAllowCachedUniformExpressions;
 	/** Console variable ref to toggle cached uniform expressions. */
-	static FAutoConsoleVariableRef CVarAllowCachedUniformExpressions;
+	static RENDERER_API FAutoConsoleVariableRef CVarAllowCachedUniformExpressions;
 
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING || !WITH_EDITOR)
-	void VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material, const FUniformExpressionCache* UniformExpressionCache) const;
+	RENDERER_API void VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material, const FUniformExpressionCache* UniformExpressionCache) const;
 #endif
 
 	LAYOUT_FIELD(TMemoryImageArray<FShaderUniformBufferParameter>, ParameterCollectionUniformBuffers);

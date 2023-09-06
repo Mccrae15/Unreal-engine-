@@ -2,7 +2,6 @@
 
 #include "Helpers.h"
 
-
 namespace AJA
 {
 	namespace Private
@@ -130,7 +129,6 @@ namespace AJA
 
 		AJA_PixelFormat Helpers::ConvertToPixelFormat(EPixelFormat InPixelFormat)
 		{
-			NTV2FrameBufferFormat Result = NTV2_FBF_ARGB;
 			switch (InPixelFormat)
 			{
 			case EPixelFormat::PF_8BIT_YCBCR:
@@ -142,6 +140,90 @@ namespace AJA
 			case EPixelFormat::PF_8BIT_ARGB:
 			default:
 				return AJA_PixelFormat_ARGB8;
+			}
+		}
+
+		NTV2HDRXferChars Helpers::ConvertToAjaHDRXferChars(EAjaHDRMetadataEOTF HDRXferChars)
+		{
+			switch(HDRXferChars)
+			{
+			case EAjaHDRMetadataEOTF::PQ:
+				return NTV2_VPID_TC_PQ;
+			case EAjaHDRMetadataEOTF::HLG:
+				return NTV2_VPID_TC_HLG;
+			case EAjaHDRMetadataEOTF::SDR:
+				return NTV2_VPID_TC_SDR_TV;
+			default:
+				return NTV2_VPID_TC_Unspecified;
+			}
+		}
+		
+		EAjaHDRMetadataEOTF Helpers::ConvertFromAjaHDRXferChars(NTV2HDRXferChars HDRXferChars)
+		{
+			switch(HDRXferChars)
+			{
+			case NTV2_VPID_TC_PQ:
+				return EAjaHDRMetadataEOTF::PQ;
+			case NTV2_VPID_TC_HLG:
+				return EAjaHDRMetadataEOTF::HLG;
+			case NTV2_VPID_TC_SDR_TV:
+				return EAjaHDRMetadataEOTF::SDR;
+			default:
+				return EAjaHDRMetadataEOTF::Unspecified;
+			}
+		}
+
+		NTV2HDRColorimetry Helpers::ConvertToAjaHDRColorimetry(EAjaHDRMetadataGamut HDRColorimetry)
+		{
+			switch (HDRColorimetry)
+			{
+			case EAjaHDRMetadataGamut::Rec709:
+				return NTV2_VPID_Color_Rec709;
+			case EAjaHDRMetadataGamut::Rec2020:
+				return NTV2_VPID_Color_UHDTV;
+			default:
+				return NTV2_VPID_Color_Unknown;
+			}
+		}
+
+		EAjaHDRMetadataGamut Helpers::ConvertFromAjaHDRColorimetry(NTV2HDRColorimetry HDRColorimetry)
+		{
+			switch (HDRColorimetry)
+			{
+			case NTV2_VPID_Color_Rec709:
+				return EAjaHDRMetadataGamut::Rec709;
+			case NTV2_VPID_Color_UHDTV:
+				return EAjaHDRMetadataGamut::Rec2020;
+			default:
+				return EAjaHDRMetadataGamut::Invalid;
+			}
+		}
+		
+		NTV2HDRLuminance Helpers::ConvertToAjaHDRLuminance(EAjaHDRMetadataLuminance HDRLuminance)
+		{
+			switch (HDRLuminance)
+			{
+			case EAjaHDRMetadataLuminance::ICtCp:
+				return NTV2_VPID_Luminance_ICtCp;
+			case EAjaHDRMetadataLuminance::YCbCr:
+				return NTV2_VPID_Luminance_YCbCr;
+			default:
+				checkNoEntry();
+				return NTV2_VPID_Luminance_YCbCr;
+			}
+		}
+		
+		EAjaHDRMetadataLuminance Helpers::ConvertFromAjaHDRLuminance(NTV2HDRLuminance HDRLuminance)
+		{
+			switch (HDRLuminance)
+			{
+			case NTV2_VPID_Luminance_ICtCp:
+				return EAjaHDRMetadataLuminance::ICtCp;
+			case NTV2_VPID_Luminance_YCbCr:
+				return EAjaHDRMetadataLuminance::YCbCr;
+			default:
+				checkNoEntry();
+				return EAjaHDRMetadataLuminance::YCbCr;
 			}
 		}
 
@@ -233,7 +315,7 @@ namespace AJA
 			{
 				if (bInLogError)
 				{
-					UE_LOG(LogTemp, Warning,  TEXT("AJA: The timecode type is not present for LTC Input '%d' on device '%S'.\n"), uint32_t(AnalogLTCInput)+1, InCard->GetDisplayName().c_str());
+					UE_LOG(LogAjaCore, Warning,  TEXT("AJA: The timecode type is not present for LTC Input '%d' on device '%S'.\n"), uint32_t(AnalogLTCInput)+1, InCard->GetDisplayName().c_str());
 				}
 				return false;
 			}
@@ -243,7 +325,7 @@ namespace AJA
 			{
 				if (bInLogError)
 				{
-					UE_LOG(LogTemp, Warning,  TEXT("AJA: The timecode type is not present for LTC Input '%d' on device '%S'.\n"), uint32_t(AnalogLTCInput) + 1, InCard->GetDisplayName().c_str());
+					UE_LOG(LogAjaCore, Warning,  TEXT("AJA: The timecode type is not present for LTC Input '%d' on device '%S'.\n"), uint32_t(AnalogLTCInput) + 1, InCard->GetDisplayName().c_str());
 				}
 				return false;
 			}
@@ -394,6 +476,28 @@ namespace AJA
 			return false;
 		}
 
+		bool Helpers::GetInputHDRMetadata(CNTV2Card* InCard, NTV2Channel InChannel, FAjaHDROptions& OutHDRMetadata)
+		{
+			NTV2VPIDTransferCharacteristics EOTF = NTV2VPIDTransferCharacteristics::NTV2_VPID_TC_SDR_TV;
+			NTV2VPIDColorimetry Colorimetry = NTV2VPIDColorimetry::NTV2_VPID_Color_Rec709;
+			NTV2VPIDLuminance Luminance = NTV2VPIDLuminance::NTV2_VPID_Luminance_YCbCr;
+			
+			const bool bSuccess = InCard->GetVPIDTransferCharacteristics(EOTF, InChannel)
+				&& InCard->GetVPIDColorimetry(Colorimetry, InChannel)
+				&& InCard->GetVPIDLuminance(Luminance, InChannel);
+
+			if (!bSuccess)
+			{
+				return false;
+			}
+			
+			OutHDRMetadata.EOTF = ConvertFromAjaHDRXferChars(EOTF);
+			OutHDRMetadata.Gamut = ConvertFromAjaHDRColorimetry(Colorimetry);
+			OutHDRMetadata.Luminance = ConvertFromAjaHDRLuminance(Luminance);
+			
+			return true;
+		}
+
 		bool Helpers::SetSDIOutLevelAtoLevelBConversion(CNTV2Card* InCard, ETransportType InTransportType, NTV2Channel InChannel, NTV2VideoFormat InFormat, bool bValue)
 		{
 			const int32_t NumberOfLinkChannel = Helpers::GetNumberOfLinkChannel(InTransportType);
@@ -409,7 +513,7 @@ namespace AJA
 
 			return bDoLevelConversion;
 		}
-
+		
 		void Helpers::SetSDIInLevelBtoLevelAConversion(CNTV2Card* InCard, ETransportType InTransportType, NTV2Channel InChannel, NTV2VideoFormat InFormat, NTV2VideoFormat& OutFormat)
 		{
 			const int32_t NumberOfLinkChannel = Helpers::GetNumberOfLinkChannel(InTransportType);
@@ -533,7 +637,7 @@ namespace AJA
 				}
 				else
 				{
-					UE_LOG(LogTemp, Warning,  TEXT("RouteSignal: This input routing is not supported. %S.\n"), Helpers::TransportTypeToString(InTransportType));
+					UE_LOG(LogAjaCore, Warning,  TEXT("RouteSignal: This input routing is not supported. %S.\n"), Helpers::TransportTypeToString(InTransportType));
 				}
 			}
 			else //is output
@@ -647,7 +751,7 @@ namespace AJA
 				}
 				else
 				{
-					UE_LOG(LogTemp, Warning,  TEXT("RouteSignal: This output routing is not supported. %S.\n"), Helpers::TransportTypeToString(InTransportType));
+					UE_LOG(LogAjaCore, Warning,  TEXT("RouteSignal: This output routing is not supported. %S.\n"), Helpers::TransportTypeToString(InTransportType));
 				}
 			}
 		}
@@ -836,7 +940,7 @@ namespace AJA
 			}
 			else
 			{
-				UE_LOG(LogTemp, Warning,  TEXT("RouteKeySignal: Key routing is not supported. %S.\n"), Helpers::TransportTypeToString(InTransportType));
+				UE_LOG(LogAjaCore, Warning,  TEXT("RouteKeySignal: Key routing is not supported. %S.\n"), Helpers::TransportTypeToString(InTransportType));
 			}
 		}
 
@@ -885,7 +989,7 @@ namespace AJA
 			{
 				if (InInputSource != NTV2_INPUTSOURCE_HDMI1 && InInputSource != NTV2_INPUTSOURCE_HDMI2)
 				{
-					UE_LOG(LogTemp, Warning,  TEXT("AJA: 4K HDMI is only supported in inputs 1 and 2.\n"));
+					UE_LOG(LogAjaCore, Warning,  TEXT("AJA: 4K HDMI is only supported in inputs 1 and 2.\n"));
 					return NTV2_OUTPUT_CROSSPOINT_INVALID;
 				}
 			}
@@ -934,7 +1038,7 @@ namespace AJA
 					NTV2DeviceInfo DeviceInfo;
 					if (!Scanner.GetDeviceInfo(DeviceIndex, DeviceInfo, false))
 					{
-						UE_LOG(LogTemp, Error, TEXT("ConfigureVideo: Device not found.\n"));
+						UE_LOG(LogAjaCore, Error, TEXT("ConfigureVideo: Device not found.\n"));
 						return false;
 					}
 					DeviceID = DeviceInfo.deviceID;
@@ -1089,6 +1193,17 @@ namespace AJA
 			case AJA::ETransportType::TT_SdiQuadTSI: return "Quad link (TSI)";
 			case AJA::ETransportType::TT_Hdmi: return "HDMI";
 			case AJA::ETransportType::TT_Hdmi4kTSI: return "HDMI (TSI)";
+			}
+			return "<Invalid>";
+		}
+
+		const char* Helpers::ReferenceTypeToString(EAJAReferenceType InReferenceType)
+		{
+			switch (InReferenceType)
+			{
+			case EAJAReferenceType::EAJA_REFERENCETYPE_EXTERNAL: return "External";
+			case EAJAReferenceType::EAJA_REFERENCETYPE_FREERUN: return "Free Run";
+			case EAJAReferenceType::EAJA_REFERENCETYPE_INPUT: return "Input";
 			}
 			return "<Invalid>";
 		}
@@ -1252,7 +1367,7 @@ namespace AJA
 			{
 				if (bInLogError)
 				{
-					UE_LOG(LogTemp, Warning,  TEXT("AJA: There is no timecode present for channel '%d' on device '%S'.\n"), uint32_t(InChannel) + 1, InCard->GetDisplayName().c_str());
+					UE_LOG(LogAjaCore, Warning,  TEXT("AJA: There is no timecode present for channel '%d' on device '%S'.\n"), uint32_t(InChannel) + 1, InCard->GetDisplayName().c_str());
 				}
 				return false;
 			}
@@ -1268,7 +1383,7 @@ namespace AJA
 					{
 						if (bInLogError)
 						{
-							UE_LOG(LogTemp, Warning,  TEXT("AJA: The timecode type is not present for channel '%d' on device '%S'.\n"), uint32_t(InChannel) + 1, InCard->GetDisplayName().c_str());
+							UE_LOG(LogAjaCore, Warning,  TEXT("AJA: The timecode type is not present for channel '%d' on device '%S'.\n"), uint32_t(InChannel) + 1, InCard->GetDisplayName().c_str());
 						}
 					}
 					break;
@@ -1280,7 +1395,7 @@ namespace AJA
 					{
 						if (bInLogError)
 						{
-							UE_LOG(LogTemp, Warning,  TEXT("AJA: The timecode type is not present for channel '%d' on device '%S'.\n"), uint32_t(InChannel) + 1, InCard->GetDisplayName().c_str());
+							UE_LOG(LogAjaCore, Warning,  TEXT("AJA: The timecode type is not present for channel '%d' on device '%S'.\n"), uint32_t(InChannel) + 1, InCard->GetDisplayName().c_str());
 						}
 					}
 					break;

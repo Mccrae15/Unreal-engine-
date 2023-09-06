@@ -21,19 +21,19 @@
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraGraph.h"
-#include "NiagaraMessageLogViewModel.h"
+#include "ViewModels/NiagaraMessageLogViewModel.h"
 #include "NiagaraNode.h"
 #include "NiagaraNodeOutput.h"
 #include "NiagaraObjectSelection.h"
 #include "NiagaraScript.h"
-#include "NiagaraScriptGraphViewModel.h"
-#include "NiagaraScriptInputCollectionViewModel.h"
+#include "ViewModels/NiagaraScriptGraphViewModel.h"
+#include "ViewModels/NiagaraScriptInputCollectionViewModel.h"
 #include "NiagaraScriptSource.h"
-#include "NiagaraStandaloneScriptViewModel.h"
+#include "ViewModels/NiagaraStandaloneScriptViewModel.h"
 #include "NiagaraVersionMetaData.h"
 #include "PropertyEditorModule.h"
 #include "SGraphActionMenu.h"
-#include "SNiagaraScriptVersionWidget.h"
+#include "Widgets/SNiagaraScriptVersionWidget.h"
 #include "UObject/Linker.h"
 #include "UObject/Package.h"
 #include "ViewModels/NiagaraParameterDefinitionsPanelViewModel.h"
@@ -219,12 +219,16 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	VersionMetadata = NewObject<UNiagaraVersionMetaData>(InputScript, "VersionMetadata", RF_Transient);
 	SAssignNew(VersionsWidget, SNiagaraScriptVersionWidget, EditedNiagaraScript.Script, VersionMetadata, InputScript->GetOutermost()->GetName())
 		.OnChangeToVersion(this, &FNiagaraScriptToolkit::SwitchToVersion)
-		.OnVersionDataChanged_Lambda([this]()
+		.OnVersionDataChanged_Lambda([this](const FPropertyChangedEvent* PropertyChangedEvent, FGuid SelectedVersion)
 		{
 	        if (UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(EditedNiagaraScript.Script->GetSource(EditedNiagaraScript.Version)))
 	        {
 	            ScriptSource->NodeGraph->NotifyGraphChanged();
 	        }
+
+			static FProperty* VersionProperty = FindFProperty<FProperty>(UNiagaraScript::StaticClass(), FName("VersionData"));
+			FPropertyChangedEvent ChangeEvent = PropertyChangedEvent ? *PropertyChangedEvent : FPropertyChangedEvent(VersionProperty);
+			EditedNiagaraScript.Script->PostEditChangeVersionedProperty(ChangeEvent, SelectedVersion);
 		});
 
 	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_Layout_v12")
@@ -767,7 +771,7 @@ FText FNiagaraScriptToolkit::GetVersionMenuLabel(FNiagaraAssetVersion Version) c
 
 bool FNiagaraScriptToolkit::IsEditScriptDifferentFromOriginalScript() const
 {
-	return OriginalNiagaraScript.Script->GetBaseChangeID() != EditedNiagaraScript.Script->GetBaseChangeID();
+	return OriginalNiagaraScript.Script->GetBaseChangeID(EditedNiagaraScript.Version) != EditedNiagaraScript.Script->GetBaseChangeID(EditedNiagaraScript.Version);
 }
 
 void FNiagaraScriptToolkit::OnApply()
@@ -908,7 +912,7 @@ void FNiagaraScriptToolkit::UpdateOriginalNiagaraScript()
 }
 
 
-bool FNiagaraScriptToolkit::OnRequestClose()
+bool FNiagaraScriptToolkit::OnRequestClose(EAssetEditorCloseReason InCloseReason)
 {
 	if (bChangesDiscarded == false && IsEditScriptDifferentFromOriginalScript())
 	{

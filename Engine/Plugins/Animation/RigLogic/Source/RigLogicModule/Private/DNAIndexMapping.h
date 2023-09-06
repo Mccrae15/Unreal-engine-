@@ -5,10 +5,11 @@
 #include "CoreMinimal.h"
 #include "BoneIndices.h"
 #include "Engine/AssetUserData.h"
+#include "Animation/AnimCurveTypes.h"
 
 #include "DNAIndexMapping.generated.h"
 
-class IBehaviorReader;
+class IDNAReader;
 class USkeleton;
 class USkeletalMesh;
 class USkeletalMeshComponent;
@@ -20,21 +21,23 @@ struct FDNAIndexMapping
 	{
 		TArray<T> Values;
 	};
+	
+	using FCachedIndexedCurve = TBaseBlendedCurve<FDefaultAllocator, UE::Anim::FCurveElementIndexed>; 
 
 	FGuid SkeletonGuid;
-	// For maps, we use int32 instead of SmartName::UID_Ttype directly to allow storing INDEX_NONE for missing elements
-	// if value is valid, it is cast to SmartName::UID_Type
-	TArray<int32> ControlAttributesMapDNAIndicesToUEUIDs;
-	TArray<FMeshPoseBoneIndex> JointsMapDNAIndicesToMeshPoseBoneIndices;
-	TArray<TArrayWrapper<int32>> BlendShapeIndicesPerLOD;
-	TArray<TArrayWrapper<int32>> MorphTargetIndicesPerLOD;
-	TArray<TArrayWrapper<int32>> AnimatedMapIndicesPerLOD;
-	TArray<TArrayWrapper<int32>> MaskMultiplierIndicesPerLOD;
 
-	void MapControlCurves(const IBehaviorReader* DNABehavior, const USkeleton* Skeleton);
-	void MapJoints(const IBehaviorReader* DNABehavior, const USkeletalMeshComponent* SkeletalMeshComponent);
-	void MapMorphTargets(const IBehaviorReader* DNABehavior, const USkeleton* Skeleton, const USkeletalMesh* SkeletalMesh);
-	void MapMaskMultipliers(const IBehaviorReader* DNABehavior, const USkeleton* Skeleton);
+	// all the control attributes that we will need to extract, alongside their control index
+	FCachedIndexedCurve ControlAttributeCurves;
+	FCachedIndexedCurve NeuralNetworkMaskCurves;
+	TArray<FMeshPoseBoneIndex> JointsMapDNAIndicesToMeshPoseBoneIndices;
+	TArray<FCachedIndexedCurve> MorphTargetCurvesPerLOD;
+	TArray<FCachedIndexedCurve> MaskMultiplierCurvesPerLOD;
+
+	void MapControlCurves(const IDNAReader* DNAReader, const USkeleton* Skeleton);
+	void MapNeuralNetworkMaskCurves(const IDNAReader* DNAReader, const USkeleton* Skeleton);
+	void MapJoints(const IDNAReader* DNAReader, const USkeletalMeshComponent* SkeletalMeshComponent);
+	void MapMorphTargets(const IDNAReader* DNAReader, const USkeleton* Skeleton, const USkeletalMesh* SkeletalMesh);
+	void MapMaskMultipliers(const IDNAReader* DNAReader, const USkeleton* Skeleton);
 
 };
 

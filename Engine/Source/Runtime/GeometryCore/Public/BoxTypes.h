@@ -262,8 +262,6 @@ struct TAxisAlignedBox3
 			TMathUtil<RealType>::Max3(A.Z, B.Z, C.Z));
 	}
 
-	TAxisAlignedBox3(const TAxisAlignedBox3& OtherBox) = default;
-
 	template<typename OtherRealType>
 	explicit TAxisAlignedBox3(const TAxisAlignedBox3<OtherRealType>& OtherBox)
 	{
@@ -331,12 +329,21 @@ struct TAxisAlignedBox3
 
 	explicit operator FBox() const
 	{
-		return FBox((FVector)Min, (FVector)Max);
+		FBox ToRet((FVector)Min, (FVector)Max);
+		ToRet.IsValid = !IsEmpty();
+		return ToRet;
 	}
 	TAxisAlignedBox3(const FBox& Box)
 	{
-		Min = TVector<RealType>(Box.Min);
-		Max = TVector<RealType>(Box.Max);
+		if (Box.IsValid)
+		{
+			Min = TVector<RealType>(Box.Min);
+			Max = TVector<RealType>(Box.Max);
+		}
+		else
+		{
+			*this = Empty();
+		}
 	}
 
 	/**
@@ -500,7 +507,7 @@ struct TAxisAlignedBox3
 		return dx * dx + dy * dy + dz * dz;
 	}
 
-	RealType DistanceSquared(const TAxisAlignedBox3<RealType>& Box)
+	RealType DistanceSquared(const TAxisAlignedBox3<RealType>& Box) const
 	{
 		// compute lensqr( max(0, abs(center1-center2) - (extent1+extent2)) )
 		RealType delta_x = TMathUtil<RealType>::Abs((Box.Min.X + Box.Max.X) - (Min.X + Max.X))
@@ -606,8 +613,6 @@ struct TAxisAlignedBox2
 	{
 	}
 
-	TAxisAlignedBox2(const TAxisAlignedBox2& OtherBox) = default;
-
 	template<typename OtherRealType>
 	explicit TAxisAlignedBox2(const TAxisAlignedBox2<OtherRealType>& OtherBox)
 	{
@@ -644,12 +649,21 @@ struct TAxisAlignedBox2
 
 	explicit operator FBox2D() const
 	{
-		return FBox2D((FVector2D)Min, (FVector2D)Max);
+		FBox2D ToRet((FVector2D)Min, (FVector2D)Max);
+		ToRet.bIsValid = !IsEmpty();
+		return ToRet;
 	}
 	TAxisAlignedBox2(const FBox2D& Box)
 	{
-		Min = Box.Min;
-		Max = Box.Max;
+		if (Box.bIsValid)
+		{
+			Min = Box.Min;
+			Max = Box.Max;
+		}
+		else
+		{
+			*this = Empty();
+		}
 	}
 
 	static TAxisAlignedBox2<RealType> Empty()

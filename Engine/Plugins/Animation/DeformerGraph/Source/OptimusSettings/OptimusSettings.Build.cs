@@ -2,25 +2,13 @@
 
 namespace UnrealBuildTool.Rules
 {
-    public class OptimusSettings : ModuleRules
-    {
-        public OptimusSettings(ReadOnlyTargetRules Target) : base(Target)
-        {
-            PrivateIncludePaths.AddRange(
-                new string[] {
-					"OptimusSettings/Private",
-				}
-            );
-
-            PublicDependencyModuleNames.AddRange(
+	public class OptimusSettings : ModuleRules
+	{
+		public OptimusSettings(ReadOnlyTargetRules Target) : base(Target)
+		{
+			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-				}
-			);
-
-            PrivateDependencyModuleNames.AddRange(
-                new string[]
-                {
 					"ComputeFramework",
 					"Core",
 					"CoreUObject",
@@ -30,6 +18,6 @@ namespace UnrealBuildTool.Rules
 					"RHI",
 				}
 			);
-        }
-    }
+		}
+	}
 }

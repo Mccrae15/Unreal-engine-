@@ -202,6 +202,13 @@ namespace DatasmithSolidworks
 			return true;
 		}
 
+		private static int OnAppDestroy()
+		{
+			// Calling this only on App exit(see comment below)
+			FDatasmithFacadeDirectLink.Shutdown();
+			return 0;
+		}
+
 		public bool DisconnectFromSW()
 		{
 			// Disabled Shutdown as Initing again crashes if the plugin is re-enabled in SW
@@ -325,6 +332,7 @@ namespace DatasmithSolidworks
 				AppEvents.FileCloseNotify += new DSldWorksEvents_FileCloseNotifyEventHandler(OnFileClose);
 				AppEvents.CommandCloseNotify += new DSldWorksEvents_CommandCloseNotifyEventHandler(OnCommandClose);
 				AppEvents.OnIdleNotify += new DSldWorksEvents_OnIdleNotifyEventHandler(OnIdle);
+				AppEvents.DestroyNotify += OnAppDestroy;
 			}
 			catch {}
 		}
@@ -340,6 +348,8 @@ namespace DatasmithSolidworks
 				AppEvents.FileCloseNotify -= new DSldWorksEvents_FileCloseNotifyEventHandler(OnFileClose);
 				AppEvents.CommandCloseNotify -= new DSldWorksEvents_CommandCloseNotifyEventHandler(OnCommandClose);
 				AppEvents.OnIdleNotify -= new DSldWorksEvents_OnIdleNotifyEventHandler(OnIdle);
+				// AppEvents.DestroyNotify - don't teach destroy handler as Detach is called in DisconnectFromSW(which also executed on addin disable)
+				// and we need this handler to shutdown DirectLink(with all the Unreal engine) that we can do only once
 			}
 			catch {}
 		}
@@ -617,29 +627,77 @@ namespace DatasmithSolidworks
 		}
 
 		[Conditional("DatasmithSolidworksDebugOutput")]
-		public void LogDebug(string Message)  
+		public static void LogDebug(string Message)
 		{
-			DebugLog.LogDebug(Message);
+			Instance.DebugLog.LogDebug(Message);
 		}
 
 		[Conditional("DatasmithSolidworksDebugOutput")]
-		public void LogDebugThread(string Message)  
+		public static void LogDebugThread(string Message)  
 		{
-			DebugLog.LogDebugThread(Message);
+			Instance.DebugLog.LogDebugThread(Message);
 		}
 
 		[Conditional("DatasmithSolidworksDebugOutput")]
-		public void LogIndent()  
+		public static void LogIndent()  
 		{
-			DebugLog.Indent();
+			Instance.DebugLog.Indent();
 		}
 
 		[Conditional("DatasmithSolidworksDebugOutput")]
-		public void LogDedent()  
+		public static void LogDedent()  
 		{
-			DebugLog.Dedent();
+			Instance.DebugLog.Dedent();
 		}
 
+		public static IDisposable LogScopedIndent()
+		{
+#if DatasmithSolidworksDebugOutput
+			return new FLogScopedIndent();
+#else
+			return null;
+#endif
+		}
+
+		private class FLogScopedIndent : IDisposable
+		{
+			public FLogScopedIndent()
+			{
+				LogIndent();
+			}
+
+			public void Dispose()
+			{
+				LogDedent();
+			}
+		}
 		#endregion
+
+	}
+
+	public static class DictionaryExtensions
+	{
+		public static V FindOrAdd<K, V>(this Dictionary<K, V> Map, K Key) 
+			where V : new()
+		{
+			if (!Map.TryGetValue(Key, out V Value))
+			{
+				Value = new V();
+				Map.Add(Key, Value);
+			}
+			return Value;
+		}
+
+		public static bool TryRemove<K, V>(this Dictionary<K, V> Map, K Key, out V OutValue) 
+		{
+			if (Map.TryGetValue(Key, out OutValue))
+			{
+				Map.Remove(Key);
+				return true;
+			}			
+			return false;
+
+
+		}
 	}
 }

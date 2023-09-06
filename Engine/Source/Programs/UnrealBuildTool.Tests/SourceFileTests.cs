@@ -1,10 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using EpicGames.Core;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTracing.Util;
 using UnrealBuildBase;
 using UnrealBuildTool;
@@ -20,11 +20,6 @@ namespace UnrealBuildToolTests
 		[TestMethod]
 		public void Run()
 		{
-			// Test assemblies are built into a temporary directory outside of the unreal source tree, which prevents Unreal.FindRootDirectory()
-			// from being able to deduce the correct location - so override it.q
-			// The default working directory for this test is ...\Engine\Source\Programs\UnrealBuildToolTests\bin\[configuration]\netcoreapp3.1
-			Unreal.LocationOverride.RootDirectory = DirectoryReference.Combine(DirectoryReference.GetCurrentDirectory(), @"..\..\..\..\..\..\..");
-
 			List<DirectoryReference> BaseDirectories = new List<DirectoryReference>();
 			BaseDirectories.Add(DirectoryReference.Combine(Unreal.EngineSourceDirectory, "Runtime"));
 			BaseDirectories.Add(DirectoryReference.Combine(Unreal.EngineSourceDirectory, "Developer"));
@@ -50,8 +45,6 @@ namespace UnrealBuildToolTests
 					}
 				}
 			}
-
-			Log.TraceLog("Read {0} source files", SourceFiles.Count);
 
 			FileReference TempDataFile = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Temp", "SourceFileTests.bin");
 			DirectoryReference.CreateDirectory(TempDataFile.Directory);

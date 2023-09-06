@@ -49,6 +49,7 @@
 #include "SourcesData.h"
 #include "SourcesSearch.h"
 #include "SourcesViewWidgets.h"
+#include "TelemetryRouter.h"
 #include "Styling/AppStyle.h"
 #include "Styling/ISlateStyle.h"
 #include "Styling/SlateColor.h"
@@ -1061,7 +1062,7 @@ void SCollectionView::DeleteCollectionItems( const TArray<TSharedPtr<FCollection
 		else
 		{
 			// Display a warning
-			const FVector2D& CursorPos = FSlateApplication::Get().GetCursorPos();
+			const FVector2f& CursorPos = FSlateApplication::Get().GetCursorPos();
 			FSlateRect MessageAnchor(CursorPos.X, CursorPos.Y, CursorPos.X, CursorPos.Y);
 			ContentBrowserUtils::DisplayMessage(
 				FText::Format( LOCTEXT("CollectionDestroyFailed", "Failed to destroy collection. {0}"), CollectionManagerModule.Get().GetLastError() ),
@@ -1333,6 +1334,7 @@ FReply SCollectionView::HandleDragDropOnCollectionItem(TSharedRef<FCollectionIte
 	}
 	else if (Operation->IsOfType<FAssetDragDropOp>())
 	{
+			
 		TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>(Operation);
 		const TArray<FAssetData>& DroppedAssets = DragDropOp->GetAssets();
 
@@ -1343,6 +1345,7 @@ FReply SCollectionView::HandleDragDropOnCollectionItem(TSharedRef<FCollectionIte
 			ObjectPaths.Add(AssetData.GetSoftObjectPath());
 		}
 
+		const double BeginTimeSec = FPlatformTime::Seconds();
 		int32 NumAdded = 0;
 		FText Message;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -1362,6 +1365,17 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				Args.Add(TEXT("Number"), NumAdded);
 				Args.Add(TEXT("CollectionName"), FText::FromName(CollectionItem->CollectionName));
 				Message = FText::Format(LOCTEXT("CollectionAssetsAdded", "Added {Number} asset(s) to {CollectionName}"), Args);
+			}
+
+			const double DurationSec = FPlatformTime::Seconds() - BeginTimeSec;
+
+			{
+				FAssetAddedToCollectionTelemetryEvent AssetAdded;
+				AssetAdded.DurationSec = DurationSec;
+				AssetAdded.NumAdded = NumAdded;
+				AssetAdded.CollectionShareType = CollectionItem->CollectionType;
+				AssetAdded.Workflow = ECollectionTelemetryAssetAddedWorkflow::DragAndDrop;
+				FTelemetryRouter::Get().ProvideTelemetry(AssetAdded);
 			}
 		}
 		else
@@ -1491,6 +1505,8 @@ bool SCollectionView::CollectionNameChangeCommit( const TSharedPtr< FCollectionI
 			NewCollectionParentKey = FCollectionNameType(ParentCollectionItem->CollectionName, ParentCollectionItem->CollectionType);
 		}
 
+		double BeginTimeSec = FPlatformTime::Seconds();
+
 		// If we canceled the name change when creating a new asset, we want to silently remove it
 		if ( !bChangeConfirmed )
 		{
@@ -1527,6 +1543,13 @@ bool SCollectionView::CollectionNameChangeCommit( const TSharedPtr< FCollectionI
 		{
 			CollectionItem->OnCollectionCreatedEvent.Execute(FCollectionNameType(NewNameFinal, CollectionItem->CollectionType));
 			CollectionItem->OnCollectionCreatedEvent.Unbind();
+		}
+		
+		{
+			FCollectionCreatedTelemetryEvent CollectionCreatedEvent;
+			CollectionCreatedEvent.DurationSec = FPlatformTime::Seconds() - BeginTimeSec;
+			CollectionCreatedEvent.CollectionShareType = CollectionItem->CollectionType;
+			FTelemetryRouter::Get().ProvideTelemetry(CollectionCreatedEvent);
 		}
 	}
 	else

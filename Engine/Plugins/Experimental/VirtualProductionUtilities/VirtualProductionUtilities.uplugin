@@ -17,7 +17,7 @@
 		{
 			"Name": "VPUtilities",
 			"Type": "Runtime",
-			"LoadingPhase": "PostDefault"
+			"LoadingPhase": "PostConfigInit"
 		},
 		{
 			"Name": "VPUtilitiesEditor",
@@ -76,7 +76,10 @@
 		{
 			"Name": "ConsoleVariables",
 			"Enabled": true			
+		},
+		{
+			"Name": "XRBase",
+			"Enabled": true
 		}
-
 	]
 }

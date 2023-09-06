@@ -29,11 +29,20 @@ private:
 	TSharedRef<FExtender> ExtendSkelMeshEditorToolbar(const TSharedRef<FUICommandList> InCommandList, TSharedRef<ISkeletalMeshEditor> InSkeletalMeshEditor);
 
 
-	bool IsModelingToolModeActive(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor) const;
-	void OnToggleModelingToolsMode(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor);
+	bool IsEditingToolModeActive(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor) const;
+	void OnToggleEditingToolsMode(TWeakPtr<ISkeletalMeshEditor> InSkeletalMeshEditor);
 
+	void OnPostEngineInit();
+	
+	void RegisterPropertyCustomizations();
+	void UnregisterPropertyCustomizations();
+
+	TArray<FName> CustomizedProperties;
+	TArray<FName> CustomizedClasses;
+	
 	// The handle for the extender delegate we added. Needed for clean module shutdown.
 	FDelegateHandle SkelMeshEditorExtenderHandle;
+	FDelegateHandle SkelMeshEditorPostInitHandle;
 
 	TArray<TWeakPtr<FApplicationMode>> RegisteredApplicationModes;
 };

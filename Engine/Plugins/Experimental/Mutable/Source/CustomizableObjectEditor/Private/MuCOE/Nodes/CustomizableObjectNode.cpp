@@ -58,7 +58,10 @@ UEdGraphPin* UCustomizableObjectNode::CustomCreatePin(EEdGraphPinDirection Direc
 UEdGraphPin* UCustomizableObjectNode::CustomCreatePin(EEdGraphPinDirection Direction, const FName& Type, const FName& Name, UCustomizableObjectNodePinData* PinData)
 {
 	UEdGraphPin* Pin = CreatePin(Direction, Type, Name);
-	PinsDataId.Add(Pin->PinId, PinData);
+	if (Pin && PinData)
+	{
+		AddPinData(*Pin, *PinData);		
+	}
 	
 	return Pin;
 }
@@ -105,6 +108,12 @@ bool UCustomizableObjectNode::CustomRemovePin(UEdGraphPin& Pin)
 	PinsDataId.Remove(Pin.PinId);
 	
 	return RemovePin(&Pin);	
+}
+
+
+bool UCustomizableObjectNode::ShouldAddToContextMenu(FText& OutCategory) const
+{
+	return false;
 }
 
 
@@ -231,7 +240,7 @@ void UCustomizableObjectNode::ReconstructNode(UCustomizableObjectNodeRemapPins* 
 
 	TMap<UEdGraphPin*, UEdGraphPin*> PinsToRemap;
 	TArray<UEdGraphPin*> PinsToOrphan;
-	RemapPinsAction->RemapPins(OldPins, NewPins, PinsToRemap, PinsToOrphan);
+	RemapPinsAction->RemapPins(*this, OldPins, NewPins, PinsToRemap, PinsToOrphan);
 
 	// Check only.
 	for (const TTuple<UEdGraphPin*, UEdGraphPin*>& Pair : PinsToRemap)
@@ -305,20 +314,17 @@ void UCustomizableObjectNode::AutowireNewNode(UEdGraphPin* FromPin)
 
 	const UEdGraphSchema_CustomizableObject* Schema = GetDefault<UEdGraphSchema_CustomizableObject>();
 
-	for ( int PinIndex=0; PinIndex<Pins.Num(); ++PinIndex )
-	{
-		if ( FromPin->PinType.PinCategory == Pins[PinIndex]->PinType.PinCategory 
-			&&
-			FromPin->Direction != Pins[PinIndex]->Direction )
+	for (UEdGraphPin* Pin : GetAllNonOrphanPins())
+	{	
+		UEdGraphNode* OwningNode = FromPin->GetOwningNode(); // TryCreateConnection can reconstruct the node invalidating the FromPin. Get the OwningNode before.
+
+		if (Schema->TryCreateConnection(FromPin, Pin))
 		{
-			UEdGraphNode* OwningNode = FromPin->GetOwningNode(); // TryCreateConnection can reconstruct the node invalidating the FromPin. Save the OwningNode here.
-			if (Schema->TryCreateConnection(FromPin, Pins[PinIndex]))
-			{
-				OwningNode->NodeConnectionListChanged();
-				NodeConnectionListChanged();
-			}
+			OwningNode->NodeConnectionListChanged();
+			NodeConnectionListChanged();
+
 			break;
-		}
+		}		
 	}
 }
 
@@ -395,19 +401,11 @@ bool UCustomizableObjectNode::CanConnect( const UEdGraphPin* InOwnedInputPin, co
 {
 	bOutIsOtherNodeBlocklisted = false;
 
-	bOutArePinsCompatible = InOwnedInputPin->PinType.PinCategory == InOutputPin->PinType.PinCategory;
+	bOutArePinsCompatible = InOwnedInputPin->PinType.PinCategory == InOutputPin->PinType.PinCategory ||
+		InOwnedInputPin->PinType.PinCategory == UEdGraphSchema_CustomizableObject::PC_Wildcard ||
+		InOutputPin->PinType.PinCategory == UEdGraphSchema_CustomizableObject::PC_Wildcard;
+	
 	return bOutArePinsCompatible;
-}
-
-void UCustomizableObjectNode::MarkForReconstruct()
-{
-	TSharedPtr<FCustomizableObjectEditor> Editor = StaticCastSharedPtr<FCustomizableObjectEditor>(GetGraphEditor());
-
-	// This could be called if a skeletal mesh asset in the graph is deleted without the editor being open. 
-	if (Editor)
-	{
-		Editor->MarkForReconstruct(this);
-	}
 }
 
 
@@ -445,9 +443,9 @@ void UCustomizableObjectNode::RemapPinsData(const TMap<UEdGraphPin*, UEdGraphPin
 	for (const TTuple<UEdGraphPin*, UEdGraphPin*>& Pair : PinsToRemap)
 	{
 		// Move pin data.
-		if (TObjectPtr<UCustomizableObjectNodePinData>* PinDataOldPin = PinsDataId.Find(Pair.Key->PinId))
+		if (const TObjectPtr<UCustomizableObjectNodePinData>* PinDataOldPin = PinsDataId.Find(Pair.Key->PinId))
 		{
-			PinsDataId[Pair.Value->PinId] = *PinDataOldPin;		
+			PinsDataId[Pair.Value->PinId]->Copy(**PinDataOldPin);
 		}
 	}
 }
@@ -455,6 +453,7 @@ void UCustomizableObjectNode::RemapPinsData(const TMap<UEdGraphPin*, UEdGraphPin
 
 void UCustomizableObjectNode::AddPinData(const UEdGraphPin& Pin, UCustomizableObjectNodePinData& PinData)
 {
+	check(PinData.GetOuter() != GetTransientPackage())
 	PinsDataId.Add(Pin.PinId, &PinData);
 }
 
@@ -498,6 +497,24 @@ UCustomizableObjectNodePinData::UCustomizableObjectNodePinData()
 }
 
 
+bool UCustomizableObjectNodePinData::operator==(const UCustomizableObjectNodePinData& Other) const
+{
+	return Equals(Other);
+}
+
+
+bool UCustomizableObjectNodePinData::operator!=(const UCustomizableObjectNodePinData& Other) const
+{
+	return !operator==(Other);
+}
+
+
+bool UCustomizableObjectNodePinData::Equals(const UCustomizableObjectNodePinData& Other) const
+{
+	return GetClass() == Other.GetClass();	
+}
+
+
 void UCustomizableObjectNode::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
@@ -523,11 +540,11 @@ int32 UCustomizableObjectNode::GetLOD() const
 	const UCustomizableObjectNode* CurrentElement;
 	while (PotentialCustomizableNodeObjects.Dequeue(CurrentElement))
 	{
-		for (UEdGraphPin* Pin : CurrentElement->GetAllNonOrphanPins())
+		for (const UEdGraphPin* Pin : CurrentElement->GetAllNonOrphanPins())
 		{
-			if (Pin->Direction == EEdGraphPinDirection::EGPD_Output)
+			if (Pin->Direction == EGPD_Output)
 			{
-				for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+				for (UEdGraphPin* LinkedPin : FollowOutputPinArray(*Pin))
 				{
 					if (UCustomizableObjectNodeObject* CurrentCustomizableObjectNode = Cast<UCustomizableObjectNodeObject>(LinkedPin->GetOwningNode()))
 					{

@@ -376,7 +376,7 @@ void FMassArchetypeData::MoveEntityToAnotherArchetype(const FMassEntityHandle En
 	RemoveEntityInternal(AbsoluteIndex);
 }
 
-void FMassArchetypeData::ExecuteFunction(FMassExecutionContext& RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, FMassArchetypeEntityCollection::FConstEntityRangeArrayView EntityRangeContainer)
+void FMassArchetypeData::ExecuteFunction(FMassExecutionContext& RunContext, const FMassExecuteFunction& Function, const FMassQueryRequirementIndicesMapping& RequirementMapping, FMassArchetypeEntityCollection::FConstEntityRangeArrayView EntityRangeContainer, const FMassChunkConditionFunction& ChunkCondition)
 {
 	if (GetNumEntities() == 0)
 	{
@@ -406,9 +406,12 @@ void FMassArchetypeData::ExecuteFunction(FMassExecutionContext& RunContext, cons
 
 			RunContext.SetCurrentChunkSerialModificationNumber(Chunk.GetSerialModificationNumber());
 			BindChunkFragmentRequirements(RunContext, RequirementMapping.ChunkFragments, Chunk);
-			BindEntityRequirements(RunContext, RequirementMapping.EntityFragments, Chunk, ChunkIterator->SubchunkStart, ChunkLength);
 
-			Function(RunContext);
+			if (!ChunkCondition || ChunkCondition(RunContext))
+			{
+				BindEntityRequirements(RunContext, RequirementMapping.EntityFragments, Chunk, ChunkIterator->SubchunkStart, ChunkLength);
+				Function(RunContext);
+			}
 		}
 	}
 }
@@ -1178,13 +1181,14 @@ void FMassArchetypeData::BatchSetFragmentValues(TConstArrayView<FMassArchetypeEn
 			FStructArrayView FragmentPayload = Payload[i];
 			check(FragmentPayload.Num() - EntitiesHandled >= EntityRange.Length);
 
-			const UScriptStruct& FragmentType = FragmentPayload.GetFragmentType();
+			const UScriptStruct* FragmentType = FragmentPayload.GetScriptStruct();
+			check(FragmentType);
 
-			const int32 FragmentIndex = FragmentIndexMap.FindChecked(&FragmentType);
+			const int32 FragmentIndex = FragmentIndexMap.FindChecked(FragmentType);
 			void* Dst = FragmentConfigs[FragmentIndex].GetFragmentData(Chunk.GetRawMemory(), EntityRange.SubchunkStart);
 			const void* Src = FragmentPayload.GetDataAt(EntitiesHandled);
 
-			FragmentType.CopyScriptStruct(Dst, Src, EntityRange.Length);
+			FragmentType->CopyScriptStruct(Dst, Src, EntityRange.Length);
 		}
 
 		EntitiesHandled += EntityRange.Length;
